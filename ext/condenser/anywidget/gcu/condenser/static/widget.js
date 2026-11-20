@@ -16,13 +16,21 @@
 // formats, condenser knows rendering, nothing else crosses the seam.
 //
 // Provider contract (micro-spec §2.4):
-//   openLas(blob) → { header, streamChunks(opts): AsyncIterable<RawChunk> }
+//   openLas(blob) → { header, streamChunks(opts), columnBatches(names, opts), fetchRecord(rec) }
 //   RawChunk = { count, x, y, z: Float64Array, intensity: Uint16Array,
 //                classification: Uint8Array, rgb: Uint8Array(3N) | null,
 //                recStart: number }   — recStart = record index of element 0.
+//
+// COLUMNS. Every field of the point record is a column (header.columns): the
+// coordinates, intensity, the return numbers, classification, scan angle, user
+// data, point source id, GPS time, RGB and NIR as the format carries them —
+// plus the EXTRA BYTES a file declares (LAS 1.4 VLR LASF_Spec/4: named, typed,
+// scaled per-point attributes such as reflectance or deviation). columnBatches
+// streams only the columns asked for; fetchRecord reads one point's every column.
 
 const RECLEN = { 0: 20, 1: 28, 2: 26, 3: 34, 6: 30, 7: 36, 8: 38 };
 const RGB_OFF = { 2: 20, 3: 28, 7: 30, 8: 30 };
+const GPS_OFF = { 1: 20, 3: 20, 6: 22, 7: 22, 8: 22 };
 
 class LasFormatError extends Error {
   constructor(msg) { super(msg); this.name = 'LasFormatError'; }
@@ -38,6 +46,7 @@ function parseLasHeader(bytes) {
   const verMajor = dv.getUint8(24), verMinor = dv.getUint8(25);
   const headerSize = dv.getUint16(94, true);
   const pointOffset = dv.getUint32(96, true);
+  const vlrCount = dv.getUint32(100, true);
   const fmtByte = dv.getUint8(104);
   if (fmtByte & 0x80) throw new LasFormatError('LAZ (compressed) — not supported; export uncompressed LAS');
   const format = fmtByte & 0x3f;
@@ -57,12 +66,93 @@ function parseLasHeader(bytes) {
     min: [dv.getFloat64(187, true), dv.getFloat64(203, true), dv.getFloat64(219, true)],
     max: [dv.getFloat64(179, true), dv.getFloat64(195, true), dv.getFloat64(211, true)],
   };
-  return {
+  const header = {
     kind: 'las', version: `${verMajor}.${verMinor}`, format, recordLen,
-    count, pointOffset, scale, offset, bbox,
+    count, pointOffset, headerSize, vlrCount, scale, offset, bbox,
     hasRgb: format in RGB_OFF,
     attributes: ['intensity', 'classification', ...(format in RGB_OFF ? ['rgb'] : [])],
+    extraBytes: [],
   };
+  header.columns = lasFieldsOf(header).map((f) => f.name);
+  return header;
+}
+
+// ── extra bytes (LAS 1.4 §2.6, VLR "LASF_Spec" / 4): 192-byte descriptors, in
+// record order, starting right after the format's standard fields ──
+const EB_SIZE = [0, 1, 1, 2, 2, 4, 4, 8, 8, 4, 8];
+const EB_GET = [null, 'getUint8', 'getInt8', 'getUint16', 'getInt16', 'getUint32', 'getInt32', 'getBigUint64', 'getBigInt64', 'getFloat32', 'getFloat64'];
+const cstr = (dv, o, n) => { let s = ''; for (let i = 0; i < n; i++) { const c = dv.getUint8(o + i); if (!c) break; s += String.fromCharCode(c); } return s.trim(); };
+
+// the VLR block (bytes [headerSize, pointOffset)) → the header's extraBytes
+function parseLasVlrs(header, bytes) {
+  const dv = bytes instanceof DataView ? bytes : new DataView(bytes.buffer ? bytes.buffer : bytes, bytes.byteOffset || 0, bytes.byteLength);
+  const out = [];
+  let o = 0;
+  for (let k = 0; k < header.vlrCount && o + 54 <= dv.byteLength; k++) {
+    const user = cstr(dv, o + 2, 16), id = dv.getUint16(o + 18, true), len = dv.getUint16(o + 20, true);
+    const data = o + 54;
+    if (user === 'LASF_Spec' && id === 4 && data + len <= dv.byteLength) {
+      let at = RECLEN[header.format];
+      for (let d = data; d + 192 <= data + len; d += 192) {
+        const type = dv.getUint8(d + 2), opts = dv.getUint8(d + 3), name = cstr(dv, d + 4, 32) || `extra_${out.length}`;
+        const base = type >= 1 && type <= 10 ? type : type >= 11 && type <= 20 ? type - 10 : type >= 21 && type <= 30 ? type - 20 : 0;
+        const n = type >= 21 ? 3 : type >= 11 ? 2 : 1;
+        const size = base ? EB_SIZE[base] : opts;           // type 0: `options` is the byte count, undocumented
+        for (let e = 0; e < n; e++) {
+          if (base) {
+            const isFloat = base >= 9, isSigned = base % 2 === 0;
+            const nd = !isFloat && !isSigned ? Number(dv.getBigUint64(d + 40 + 8 * e, true)) : !isFloat ? Number(dv.getBigInt64(d + 40 + 8 * e, true)) : dv.getFloat64(d + 40 + 8 * e, true);
+            out.push({
+              name: n > 1 ? `${name}[${e}]` : name, type: base, offset: at, size,
+              noData: opts & 1 ? nd : null,
+              scale: opts & 8 ? dv.getFloat64(d + 112 + 8 * e, true) : 1,
+              add: opts & 16 ? dv.getFloat64(d + 136 + 8 * e, true) : 0,
+              description: cstr(dv, d + 160, 32),
+            });
+          }
+          at += size;
+        }
+      }
+    }
+    o = data + len;
+  }
+  const fit = out.filter((f) => f.offset + f.size <= header.recordLen);   // a descriptor past the record is the file's error, not a column
+  header.extraBytes = fit;
+  header.columns = lasFieldsOf(header).map((f) => f.name);
+  return header;
+}
+
+// every column of a record: { name, read(dv, o) → number } (o = the record's byte offset)
+function lasFieldsOf(header) {
+  const { format, scale, offset } = header;
+  const legacy = format < 6;
+  const f = [
+    { name: 'X', read: (dv, o) => dv.getInt32(o, true) * scale[0] + offset[0] },
+    { name: 'Y', read: (dv, o) => dv.getInt32(o + 4, true) * scale[1] + offset[1] },
+    { name: 'Z', read: (dv, o) => dv.getInt32(o + 8, true) * scale[2] + offset[2] },
+    { name: 'intensity', read: (dv, o) => dv.getUint16(o + 12, true) },
+    { name: 'return_number', read: legacy ? (dv, o) => dv.getUint8(o + 14) & 7 : (dv, o) => dv.getUint8(o + 14) & 15 },
+    { name: 'number_of_returns', read: legacy ? (dv, o) => (dv.getUint8(o + 14) >> 3) & 7 : (dv, o) => dv.getUint8(o + 14) >> 4 },
+    { name: 'classification', read: legacy ? (dv, o) => dv.getUint8(o + 15) & 31 : (dv, o) => dv.getUint8(o + 16) },
+    { name: 'scan_angle', read: legacy ? (dv, o) => dv.getInt8(o + 16) : (dv, o) => dv.getInt16(o + 18, true) * 0.006 },   // degrees
+    { name: 'user_data', read: legacy ? (dv, o) => dv.getUint8(o + 17) : (dv, o) => dv.getUint8(o + 17) },
+    { name: 'point_source_id', read: legacy ? (dv, o) => dv.getUint16(o + 18, true) : (dv, o) => dv.getUint16(o + 20, true) },
+  ];
+  if (GPS_OFF[format] != null) { const g = GPS_OFF[format]; f.push({ name: 'gps_time', read: (dv, o) => dv.getFloat64(o + g, true) }); }
+  if (RGB_OFF[format] != null) {
+    const r = RGB_OFF[format];
+    f.push({ name: 'red', read: (dv, o) => dv.getUint16(o + r, true) }, { name: 'green', read: (dv, o) => dv.getUint16(o + r + 2, true) }, { name: 'blue', read: (dv, o) => dv.getUint16(o + r + 4, true) });
+  }
+  if (format === 8) f.push({ name: 'nir', read: (dv, o) => dv.getUint16(o + 36, true) });
+  const taken = new Set(f.map((x) => x.name.toLowerCase()));
+  for (const e of header.extraBytes || []) {
+    let name = e.name; while (taken.has(name.toLowerCase())) name += '_x';
+    taken.add(name.toLowerCase());
+    const g = EB_GET[e.type], big = e.type === 7 || e.type === 8;
+    const raw = big ? (dv, o) => Number(dv[g](o + e.offset, true)) : (dv, o) => dv[g](o + e.offset, true);
+    f.push({ name, extra: true, read: (dv, o) => { const v = raw(dv, o); return e.noData != null && v === e.noData ? NaN : v * e.scale + e.add; } });
+  }
+  return f;
 }
 
 // Decode `n` fixed-size records from dv starting at byte 0 into columnar arrays.
@@ -100,22 +190,27 @@ function decodeLasRecords(dv, header, n, recStart, { forceRgb16 = false } = {}) 
 }
 
 /**
- * Open a LAS Blob/File. Reads the header up front (one small slice), then
- * streamChunks() yields RawChunks of ≤ chunkPoints records, parsing from a
- * fresh ReadableStream (a cold re-runnable recipe — call it again for a second
- * sweep). Carries partial records across stream chunk boundaries.
+ * Open a LAS Blob/File. Reads the header up front (one small slice) and the VLR
+ * block (for extra-bytes columns), then streamChunks() yields RawChunks of ≤
+ * chunkPoints records, parsing from a fresh ReadableStream (a cold re-runnable
+ * recipe — call it again for a second sweep). Carries partial records across
+ * stream chunk boundaries.
  */
 async function openLas(blob, { headerBytes = 512 } = {}) {
   const head = new DataView(await blob.slice(0, Math.min(headerBytes, blob.size)).arrayBuffer());
   const header = parseLasHeader(head);
+  if (header.vlrCount && header.pointOffset > header.headerSize) {
+    const end = Math.min(header.pointOffset, header.headerSize + (8 << 20), blob.size);
+    try { parseLasVlrs(header, new DataView(await blob.slice(header.headerSize, end).arrayBuffer())); } catch { /* a damaged VLR block costs only the extra columns */ }
+  }
   const recordLen = header.recordLen;
 
-  async function* streamChunks({ chunkPoints = 1 << 20, signal } = {}) {
+  // record slabs: (DataView over n whole records, n, recStart), from a fresh stream
+  async function* slabs({ chunkPoints = 1 << 20, signal } = {}) {
     const stream = blob.slice(header.pointOffset).stream();
     const reader = stream.getReader();
     let carry = new Uint8Array(0);
     let recDone = 0;
-    let rgb16 = false;                                     // sticky: once 16-bit color is seen, stay >>8
     try {
       while (recDone < header.count) {
         const { done, value } = await reader.read();
@@ -133,10 +228,7 @@ async function openLas(blob, { headerBytes = 512 } = {}) {
         let off = 0;
         while (avail > 0) {
           const n = Math.min(avail, chunkPoints);
-          const dv = new DataView(buf.buffer, buf.byteOffset + off, n * recordLen);
-          const chunk = decodeLasRecords(dv, header, n, recDone, { forceRgb16: rgb16 });
-          if (chunk.rgbIs16) rgb16 = true;                 // sticky: once 16-bit color is seen, stay >>8
-          yield chunk;
+          yield { dv: new DataView(buf.buffer, buf.byteOffset + off, n * recordLen), n, recStart: recDone };
           recDone += n; off += n * recordLen; avail -= n;
         }
       }
@@ -146,7 +238,34 @@ async function openLas(blob, { headerBytes = 512 } = {}) {
     }
   }
 
-  return { header, streamChunks };
+  async function* streamChunks(opts = {}) {
+    let rgb16 = false;                                     // sticky: once 16-bit color is seen, stay >>8
+    for await (const { dv, n, recStart } of slabs(opts)) {
+      const chunk = decodeLasRecords(dv, header, n, recStart, { forceRgb16: rgb16 });
+      if (chunk.rgbIs16) rgb16 = true;
+      yield chunk;
+    }
+  }
+
+  // only the named columns: { n, recStart, cols: { name: Float64Array } }
+  const fields = lasFieldsOf(header);
+  async function* columnBatches(names, opts = {}) {
+    const want = names.map((nm) => { const f = fields.find((q) => q.name === nm) || fields.find((q) => q.name.toLowerCase() === String(nm).toLowerCase()); if (!f) throw new Error(`LAS: no column “${nm}”`); return f; });
+    for await (const { dv, n, recStart } of slabs({ chunkPoints: opts.chunkPoints || 1 << 18, signal: opts.signal })) {
+      const cols = {};
+      want.forEach((f, k) => { const a = new Float64Array(n), rd = f.read; for (let i = 0; i < n; i++) a[i] = rd(dv, i * recordLen); cols[names[k]] = a; });
+      yield { n, recStart, cols };
+    }
+  }
+
+  async function fetchRecord(rec) {
+    if (rec < 0 || rec >= header.count) return null;
+    const off = header.pointOffset + rec * recordLen;
+    const dv = new DataView(await blob.slice(off, off + recordLen).arrayBuffer());
+    return fields.map((f) => { const v = f.read(dv, 0); return Number.isFinite(v) && !Number.isInteger(v) ? +v.toFixed(6) : v; });
+  }
+
+  return { header, streamChunks, columnBatches, fetchRecord };
 }
 
 // ── ../frame/src/frame.js ──
@@ -3066,6 +3185,197 @@ function dhDesurveySamples$index(tables, opts) {
   return { header: header, rows: rows, report: { checks: checkList, nHoles: nHoles, nSamples: rows.length, dipConvention: dipConvention } };
 }
 
+// ── ../drillhole/src/composite.js ──
+
+// @gcu/drillhole — composite: fixed-length down-hole composites over validated holes.
+
+
+// Tidied mode of (TO−FROM) — the default composite length (D3; a seed, always
+// user-editable).
+function dhDefaultLength(intervals) {
+  let counts = {};
+  let n = intervals.from.length; // only FROM/TO matter — callers may omit bhid
+  for (let i = 0; i < n; i++) {
+    let len = intervals.to[i] - intervals.from[i];
+    if (!isFinite(len) || len <= 0) continue;
+    let key = (Math.round(len * 100) / 100).toFixed(2); // 1cm buckets
+    counts[key] = (counts[key] || 0) + 1;
+  }
+  let best = null, bestN = 0;
+  for (let k in counts) { if (counts[k] > bestN) { bestN = counts[k]; best = parseFloat(k); } }
+  return best || 1;
+}
+
+// Fixed-length down-hole composites over validated holes.
+// opts = { length, domainColName|null, splitColNames|null, densityColName|null,
+//          combine|null, minCoverage (0..1)|null, method }
+// Numeric: length-weighted mean over covered length WITH a value (missing assays
+// shrink that column's weight, never poison the mean; no value in the window → null).
+// Categorical: majority by covered length (D6). SUPPORT = total covered length (D5:
+// low coverage emitted, not dropped; the optional minCoverage filter is visible and
+// counted). XYZ = the covered-length centroid depth on the desurveyed path.
+function dhComposite(validated, opts) {
+  let ivt = validated.intervals;
+  let cols = ivt.cols || [];
+  let L = opts.length;
+  let densityIdx = -1;
+  for (let dci = 0; dci < cols.length; dci++) {
+    // optional mass weighting — numeric means weight by length × density (the density
+    // column itself stays length-weighted). Missing density on an interval excludes it
+    // from mass-weighting and is counted (never silent).
+    if (opts.densityColName && cols[dci].name === opts.densityColName && cols[dci].type === 'num') densityIdx = dci;
+  }
+  // split columns — composites restart where the TUPLE of these columns changes (any
+  // one flips → new composite). Generalizes the single domain break; falls back to
+  // [domainColName] for back-compat. Each split column is constant within a run by
+  // construction, so it rides into the output 1:1.
+  let splitNames = (opts.splitColNames && opts.splitColNames.length) ? opts.splitColNames
+    : (opts.domainColName ? [opts.domainColName] : []);
+  let splitIdxs = [];
+  for (let si = 0; si < splitNames.length; si++) {
+    for (let sj = 0; sj < cols.length; sj++) { if (cols[sj].name === splitNames[si]) { splitIdxs.push(sj); break; } }
+  }
+  // per-column combine rules keyed by column name. Numeric: 'mean' (default,
+  // length/mass-weighted), 'sum' (Σ length×value), 'min', 'max'. Categorical:
+  // 'majority' (default, by covered length), 'first' (shallowest). An unknown rule for
+  // a column's type falls back to that type's default.
+  let combineMap = opts.combine || {};
+  let checks = validated.checks;
+  function hit(id, label, bhid) {
+    let c = checks[id];
+    if (!c) { c = checks[id] = { id: id, label: label, count: 0, bhids: [] }; }
+    c.count++;
+    if (bhid != null && c.bhids.indexOf(bhid) < 0 && c.bhids.length < 200) c.bhids.push(bhid);
+  }
+
+  let header = ['BHID', 'X', 'Y', 'Z', 'FROM', 'TO', 'SUPPORT'];
+  for (let hc = 0; hc < cols.length; hc++) header.push(cols[hc].name);
+  let rows = [];
+
+  for (let hI = 0; hI < validated.holes.length; hI++) {
+    let hole = validated.holes[hI];
+    let path = dhDesurveyHole$index(hole.collar, hole.stations, opts.method);
+    let idx = hole.iv; // sorted by FROM
+
+    // domain runs: contiguous spans sharing the split tuple (D4) — composites restart
+    // at every change; without split columns the whole hole is one run. Run extent =
+    // min(FROM)…max(TO) over the run (sorted by FROM, so max(TO) needs a scan — an
+    // early long interval can outrun the last one).
+    function makeRun(slice) {
+      let maxTo = -Infinity;
+      for (let mi = 0; mi < slice.length; mi++) maxTo = Math.max(maxTo, ivt.to[slice[mi]]);
+      return { from: ivt.from[slice[0]], to: maxTo, idx: slice };
+    }
+    let SPLIT_SEP = String.fromCharCode(31);   // unit separator → no cross-column key collisions
+    function splitKey(r2) {
+      let parts = [];
+      for (let sk = 0; sk < splitIdxs.length; sk++) parts.push(String(cols[splitIdxs[sk]].values[r2]));
+      return parts.join(SPLIT_SEP);
+    }
+    let runs = [];
+    if (!splitIdxs.length) {
+      runs.push(makeRun(idx));
+    } else {
+      let runStart = 0, startKey = idx.length ? splitKey(idx[0]) : '';
+      for (let ri = 1; ri <= idx.length; ri++) {
+        let changed = ri === idx.length || splitKey(idx[ri]) !== startKey;
+        if (changed) {
+          runs.push(makeRun(idx.slice(runStart, ri)));
+          runStart = ri;
+          if (ri < idx.length) startKey = splitKey(idx[ri]);
+        }
+      }
+    }
+
+    for (let rI = 0; rI < runs.length; rI++) {
+      let run = runs[rI];
+      let nWin = Math.ceil((run.to - run.from - 1e-9) / L);
+      for (let wI = 0; wI < nWin; wI++) {
+        let w0 = run.from + wI * L; // index-stepped: no float drift over long holes
+        let w1 = Math.min(w0 + L, run.to);
+        let covered = 0, centroidW = 0, hadMissingDensity = false;
+        let numW = new Float64Array(cols.length);
+        let numSum = new Float64Array(cols.length);
+        let numLSum = new Float64Array(cols.length);     // Σ length×value (for 'sum')
+        let numMin = new Float64Array(cols.length);
+        let numMax = new Float64Array(cols.length);
+        let seenNum = new Uint8Array(cols.length);
+        let catW = [], catFirst = []; // per col: {value → weight}, and first value by depth
+        for (let ci2 = 0; ci2 < cols.length; ci2++) { catW.push(null); catFirst.push(undefined); numMin[ci2] = Infinity; numMax[ci2] = -Infinity; }
+
+        for (let k2 = 0; k2 < run.idx.length; k2++) {
+          let r = run.idx[k2];
+          let ovFrom = Math.max(w0, ivt.from[r]);
+          let ovTo = Math.min(w1, ivt.to[r]);
+          let ov = ovTo - ovFrom;
+          if (ov <= 1e-12) continue;
+          covered += ov;
+          centroidW += ov * (ovFrom + ovTo) / 2;
+          // mass weight for numeric grades when a density column is set; the density
+          // column itself stays length-weighted (no self-reference).
+          let massW = ov;
+          if (densityIdx >= 0) {
+            let dval = cols[densityIdx].values[r];
+            if (typeof dval === 'number' && isFinite(dval) && dval > 0) massW = ov * dval;
+            else { massW = 0; hadMissingDensity = true; }
+          }
+          for (let c3 = 0; c3 < cols.length; c3++) {
+            let v = cols[c3].values[r];
+            if (cols[c3].type === 'num') {
+              let nw = (c3 === densityIdx) ? ov : massW;   // density col: length-weighted
+              if (typeof v === 'number' && isFinite(v)) {
+                numW[c3] += nw; numSum[c3] += nw * v;       // weighted mean
+                numLSum[c3] += ov * v;                       // length integral (sum)
+                if (v < numMin[c3]) numMin[c3] = v;
+                if (v > numMax[c3]) numMax[c3] = v;
+                seenNum[c3] = 1;
+              }
+            } else {
+              if (v != null && v !== '') {
+                if (!catW[c3]) catW[c3] = {};
+                let sk = String(v);
+                catW[c3][sk] = (catW[c3][sk] || 0) + ov;
+                if (catFirst[c3] === undefined) catFirst[c3] = sk;   // run is FROM-sorted → shallowest first
+              }
+            }
+          }
+        }
+        if (covered <= 1e-12) continue; // window entirely in a gap — nothing to emit
+
+        if (opts.minCoverage && covered / (w1 - w0) < opts.minCoverage) {
+          hit('low-coverage-filtered', 'Composites below the min-coverage filter (dropped — filter is user-set)', hole.bhid);
+          continue;
+        }
+        if (hadMissingDensity) hit('missing-density', 'Composites with intervals lacking usable density (excluded from mass-weighting)', hole.bhid);
+
+        let midDepth = centroidW / covered;
+        let pos = dhPositionAt$index(path, midDepth);
+        let row = [hole.bhid, pos[0], pos[1], pos[2], w0, w1, covered];
+        for (let c4 = 0; c4 < cols.length; c4++) {
+          if (cols[c4].type === 'num') {
+            let nrule = combineMap[cols[c4].name];
+            if (nrule === 'sum') row.push(seenNum[c4] ? numLSum[c4] : null);
+            else if (nrule === 'min') row.push(seenNum[c4] ? numMin[c4] : null);
+            else if (nrule === 'max') row.push(seenNum[c4] ? numMax[c4] : null);
+            else row.push(numW[c4] > 0 ? numSum[c4] / numW[c4] : null);   // 'mean' (default)
+          } else {
+            if (combineMap[cols[c4].name] === 'first') { row.push(catFirst[c4] !== undefined ? catFirst[c4] : null); continue; }
+            let bag = catW[c4];
+            if (!bag) { row.push(null); continue; }
+            let bestV = null, bestW = -1, total = 0;
+            for (let key2 in bag) { total += bag[key2]; if (bag[key2] > bestW) { bestW = bag[key2]; bestV = key2; } }
+            if (bestW < total - 1e-9) hit('mixed-domain', 'Composites whose categorical majority is < 100% of covered length', hole.bhid);
+            row.push(bestV);
+          }
+        }
+        rows.push(row);
+      }
+    }
+  }
+
+  return { header: header, rows: rows };
+}
+
 // ── ../drillhole/src/qa.js ──
 
 // @gcu/drillhole — qa: the drillhole QA report, ROW by row. validate (validate.js)
@@ -3705,6 +4015,68 @@ async function drillholeQa({ collar, survey, intervals = [] }, opts = {}) {
   const r = dhQa({ collars, surveys, intervals: ivTables }, opts);
   if (extra.length) { r.findings = r.findings.concat(extra); r.summary = dhQaSummary(r.findings); }
   return { ...r, values, columns: { collar: tCollar.columns, survey: tSurvey.columns } };
+}
+
+// Fixed-length DOWN-HOLE COMPOSITES of one interval table — @gcu/drillhole's
+// composite over the set's own files. Every non-key column rides: numbers
+// (incl. <x / >x / lab codes, read by the column's qualify policy) are
+// length-weighted (mass-weighted when a density column is named), text is the
+// majority by covered length. Composites restart where any split column changes
+// (domain boundaries). opts = { mappings, length (default: the commonest
+// interval length), splitCols: [names], densityCol, minSupport (0..1 — drop a
+// composite whose covered length is below this share of the composite length: a
+// short leftover at a contact or the hole's end, or a window mostly in a gap;
+// counted), method, dipConvention, qualify: { [col]: policy } }.
+// → { header: ['BHID','X','Y','Z','FROM','TO','SUPPORT', …columns], rows, report }
+async function drillholeComposite({ collar, survey, intervals }, opts = {}) {
+  const tCollar = await readDelimited(collar);
+  const tSurvey = await readDelimited(survey);
+  const tIv = await readDelimited(intervals);
+  const mc = (opts.mappings && opts.mappings.collar) || (classifyDrillholeHeader(tCollar.columns) || {}).mapping;
+  const ms = (opts.mappings && opts.mappings.survey) || (classifyDrillholeHeader(tSurvey.columns) || {}).mapping;
+  const mi = (opts.mappings && opts.mappings.intervals) || (classifyDrillholeHeader(tIv.columns) || {}).mapping;
+  if (!mc || mc.x == null) throw new Error('composite: collar columns not identified (need BHID + X/Y/Z)');
+  if (!ms || ms.az == null) throw new Error('composite: survey columns not identified (need BHID + AZ + DIP)');
+  if (!mi || mi.from == null || mi.to == null) throw new Error('composite: interval columns not identified (need BHID + FROM + TO)');
+  const { collars } = parseCollars(tCollar, mc);
+  const { surveys } = parseSurveys(tSurvey, ms);
+  const keys = new Set([mi.bhid, mi.from, mi.to]);
+  const probe = tIv.rows.slice(0, 500);
+  const cols = [];
+  tIv.columns.forEach((name, i) => {
+    if (keys.has(i)) return;
+    const vals = probe.map((r) => (r[i] || '').trim()).filter(Boolean);
+    const cq = censusQualified(vals);
+    const pol = (opts.qualify && opts.qualify[name]) || QUALIFIED_DEFAULT;
+    cols.push(cq.numeric
+      ? { name, type: 'num', i, values: tIv.rows.map((r) => { const v = qualifiedNumber((r[i] || '').trim(), pol); return Number.isFinite(v) ? v : null; }) }
+      : { name, type: 'cat', i, values: tIv.rows.map((r) => { const v = (r[i] == null ? '' : String(r[i])).trim(); return v === '' ? null : v; }) });
+  });
+  const iv = { bhid: [], from: [], to: [], cols: cols.map((c) => ({ name: c.name, type: c.type, values: [] })) };
+  for (const r of tIv.rows) {
+    const f = coordNum(r[mi.from]), t = coordNum(r[mi.to]);
+    if (!Number.isFinite(f) || !Number.isFinite(t)) continue;
+    iv.bhid.push(r[mi.bhid]); iv.from.push(f); iv.to.push(t);
+  }
+  // the column values for the placeable rows only, in the same order
+  let k = 0;
+  tIv.rows.forEach((r, row) => {
+    const f = coordNum(r[mi.from]), t = coordNum(r[mi.to]);
+    if (!Number.isFinite(f) || !Number.isFinite(t)) return;
+    cols.forEach((c, j) => { iv.cols[j].values[k] = c.values[row]; });
+    k++;
+  });
+  const validated = dhValidate$index({ collars, surveys, intervals: iv }, { dipConvention: opts.dipConvention || 'auto' });
+  const length = opts.length > 0 ? +opts.length : dhDefaultLength(validated.intervals);
+  const res = dhComposite(validated, {
+    length, method: opts.method || 'minimumCurvature',
+    splitColNames: opts.splitCols && opts.splitCols.length ? opts.splitCols : null,
+    densityColName: opts.densityCol || null, combine: opts.combine || null, minCoverage: opts.minCoverage || null,
+  });
+  let rows = res.rows, short = 0;
+  if (opts.minSupport > 0) { const keep = rows.filter((r) => r[6] >= opts.minSupport * length - 1e-9); short = rows.length - keep.length; rows = keep; }
+  const checks = Object.values(validated.checks);
+  return { header: res.header, rows, report: { length, holes: validated.holes.length, composites: rows.length, short, checks, dipConvention: validated.dipConvention, intervals: iv.from.length } };
 }
 
 // ── src/core/sticks.js ──
@@ -4769,8 +5141,8 @@ async function openPly(blob, { signal, onProgress } = {}) {
   // binary: DataView slabs; ascii: line stream. Both yield {fields, recStart}
   // where fields[k] is a Float64Array per needed property.
   const NEED = [...new Set([idx.x, idx.y, idx.z, idx.i, idx.r, idx.g, idx.b].filter((v) => v >= 0))];
-  async function* recordBatches(batchRecords, s2, op2) {
-    const alloc = () => { const o = {}; for (const k of NEED) o[k] = new Float64Array(batchRecords); return o; };
+  async function* recordBatches(batchRecords, s2, op2, need = NEED) {
+    const alloc = () => { const o = {}; for (const k of need) o[k] = new Float64Array(batchRecords); return o; };
     if (!ascii) {
       let rec = 0;
       while (rec < count) {
@@ -4779,7 +5151,7 @@ async function openPly(blob, { signal, onProgress } = {}) {
         const off = ply.dataOffset + rec * stride;
         const dv = new DataView(await blob.slice(off, off + n * stride).arrayBuffer());
         const fields = alloc();
-        for (const k of NEED) {
+        for (const k of need) {
           const p = props[k], g = p.getter, po = p.offset, col = fields[k];
           for (let i = 0; i < n; i++) col[i] = dv[g](i * stride + po, true);
         }
@@ -4801,7 +5173,7 @@ async function openPly(blob, { signal, onProgress } = {}) {
             const t = l.trim();
             if (!t) continue;
             const f = t.split(/\s+/);
-            for (const k of NEED) fields[k][n] = +f[k];
+            for (const k of need) fields[k][n] = +f[k];
             n++;
             if (n === batchRecords) { yield { fields, n, recStart: rec }; rec += n; fields = alloc(); n = 0; }
           }
@@ -4856,6 +5228,16 @@ async function openPly(blob, { signal, onProgress } = {}) {
     }
   }
 
+  // ── only the named properties, every vertex: { n, recStart, cols: { name: Float64Array } } ──
+  async function* columnBatches(names, opts = {}) {
+    const ks = names.map((nm) => { const k = props.findIndex((p) => p.name === nm); const k2 = k >= 0 ? k : props.findIndex((p) => p.name.toLowerCase() === String(nm).toLowerCase()); if (k2 < 0) throw new Error(`ply: no property “${nm}”`); return k2; });
+    for await (const { fields, n, recStart } of recordBatches(opts.chunkPoints || 1 << 18, opts.signal, null, [...new Set(ks)])) {
+      const cols = {};
+      ks.forEach((k, j) => { cols[names[j]] = fields[k].subarray(0, n); });
+      yield { n, recStart, cols };
+    }
+  }
+
   // ── record fetch (the pick join): O(1) binary, early-exit sweep ascii ──
   async function fetchRecord(rec) {
     if (rec < 0 || rec >= count) return null;
@@ -4882,7 +5264,7 @@ async function openPly(blob, { signal, onProgress } = {}) {
     } finally { reader.releaseLock(); }
   }
 
-  return { header, streamChunks, fetchRecord };
+  return { header, streamChunks, columnBatches, fetchRecord };
 }
 
 // ── src/io/mesh-io.js ──
@@ -12354,7 +12736,7 @@ function dhDesurveySamples$samples(tables, opts) {
   return { header: header, rows: rows, report: { checks: checkList, nHoles: nHoles, nSamples: rows.length, dipConvention: dipConvention } };
 }
 
-// ── src/parquet-blocks.js ──
+// ── ../view/src/parquet-blocks.js ──
 
 // via='files' Parquet block models — micro's openParquetBlocks ported onto the
 // widget's RemoteBlob. The blob is sliced by range for every read (footer, then
@@ -12475,7 +12857,7 @@ async function openParquetBlocks(blob, { map = null } = {}) {
   return { header, streamChunks };
 }
 
-// ── src/toolbar.js ──
+// ── ../view/src/toolbar.js ──
 
 // @gcu/condenser anywidget — the in-view toolbar.
 //
@@ -12855,20 +13237,35 @@ function createToolbar(host, api) {
   };
 }
 
-// ── src/widget.js ──
+// ── ../view/src/view.js ──
 
-// @gcu/condenser — the anywidget (Jupyter) front half. Glue only: it decodes
-// the packed columnar payload, feeds each layer through the engine's chunk
-// builders, and drives one progressive render loop per widget instance. All
-// the rendering intelligence (Morton order, prefix LOD, box impostors, capsule
-// impostors, EDL, true sections, the ID-buffer pick) is @gcu/condenser/core,
-// unchanged — the SAME engine micro ships, so a notebook and the desktop tool
-// agree by construction. Drillholes desurvey through @gcu/drillhole, also the
-// same code, so a hole lands in the same place in both.
+// @gcu/condenser — the VIEW: a complete viewer (layers, sections, picking,
+// selection, measure, toolbar, legend, figure chrome) over any element. Glue
+// only: it decodes the packed columnar payload, feeds each layer through the
+// engine's chunk builders, and drives one progressive render loop per view.
+// All the rendering intelligence (Morton order, prefix LOD, box impostors,
+// capsule impostors, EDL, true sections, the ID-buffer pick) is
+// @gcu/condenser/core, unchanged — the SAME engine micro ships, so a notebook,
+// a page and the desktop tool agree by construction. Drillholes desurvey
+// through @gcu/drillhole, also the same code, so a hole lands in the same
+// place in all of them.
 //
-// anywidget contract: default-export an object with render({model, el}),
-// returning a cleanup function. `_payload` is one atomic Bytes blob holding
-// EVERY layer against ONE shared frame; `_styles` is a per-layer style dict.
+// mountView(el, store) → cleanup. Everything the view shows and everything it
+// reports goes through `store`, a small observable state:
+//
+//   store.get(key)             the current value
+//   store.set(key, value)      change it (the view's own reports: selection,
+//                              measurement, camera, _styles round-trips …)
+//   store.save_changes()       publish what set() changed (a no-op for a page)
+//   store.on(ev, fn) / off     'change:<key>' → fn(); 'msg:custom' → fn(content, buffers)
+//   store.send(content)        a message to whoever drives the view
+//
+// That is anywidget's model API, on purpose: in Jupyter the model IS the store
+// (anywidget/src/widget.js passes it straight through), and the keys are the
+// widget's trait names — so the Python API, the JS API (./api.js) and this
+// view share ONE vocabulary. ./store.js is the plain-JS store for a page.
+// `_payload` is one atomic Bytes blob holding EVERY layer against ONE shared
+// frame; `_styles` is a per-layer style dict.
 
 
 // ── ramp presets. rampPixels' default is the viridis-ish walk; these are the
@@ -12884,7 +13281,7 @@ const RAMPS = {
 };
 RAMPS.greys = RAMPS.grays;    // matplotlib spells it 'Greys'; don't punish the muscle memory
 
-const TYPES$widget = { f64: Float64Array, f32: Float32Array, u32: Uint32Array, u16: Uint16Array, u8: Uint8Array };
+const TYPES$view = { f64: Float64Array, f32: Float32Array, u32: Uint32Array, u16: Uint16Array, u8: Uint8Array };
 
 // ── the wire format (mirrors gcu_condenser/__init__.py's _pack) ──
 //   'CDNS' | u32 version | u32 headerLen | header JSON (utf-8) | pad | body
@@ -12904,7 +13301,7 @@ function decodePayload(raw) {
   const bodyStart = (12 + headerLen + 7) & ~7;
   const all = {};
   for (const [name, c] of Object.entries(head.cols || {})) {
-    const T = TYPES$widget[c.type];
+    const T = TYPES$view[c.type];
     if (T) all[name] = new T(buf, base + bodyStart + c.off, c.len);
   }
   const layers = (head.layers || []).map((L) => {
@@ -13132,10 +13529,7 @@ if (typeof document === 'undefined' && typeof self !== 'undefined' && typeof sel
   };
 }
 
-// anywidget wants a DEFAULT export; @gcu/build emits named exports only (its
-// rename-on-collision pass needs names). So this is named, and build.js appends
-// the one-line `export default { render }` footer to the bundle.
-function render({ model, el }) {
+function mountView(el, store) {
   const host = document.createElement('div');
   host.style.cssText = 'position:relative;width:100%;background:#121212;border-radius:3px;overflow:hidden;';
   // right-drag PANS, so JupyterLab's own context menu must stay out of the way.
@@ -13177,7 +13571,7 @@ function render({ model, el }) {
     return () => { el.innerHTML = ''; };
   }
 
-  const styles = () => model.get('_styles') || [];
+  const styles = () => store.get('_styles') || [];
   const styleAt = (i) => styles()[i] || {};
   const viewOpts = () => {                                 // point size / points-view are VIEW-wide in the engine
     let pointPx = 2.5, asPoints = false;
@@ -13229,7 +13623,7 @@ function render({ model, el }) {
       }
     });
 
-    if (model.get('decorations') === false) { g.restore(); return; }
+    if (store.get('decorations') === false) { g.restore(); return; }
     // scale at the CAMERA TARGET depth: unproject a 100-px screen step on the
     // plane through the target, z divided back by zExag → REAL meters
     const t = cam.state.target;
@@ -13312,13 +13706,13 @@ function render({ model, el }) {
     });
     const vo = viewOpts();
     const opts = {
-      budget: model.get('budget') || 3_000_000,
+      budget: store.get('budget') || 3_000_000,
       pointPx: vo.pointPx, blocksAsPoints: vo.asPoints, blockEdges: false,
-      section: sectionOf(model.get('section'), (payload && payload.frame) || [0, 0, 0]),
+      section: sectionOf(store.get('section'), (payload && payload.frame) || [0, 0, 0]),
       clip: null, layerOpts,
     };
     const r = edl.render(w, h, cam, () => renderer.draw(cam, opts),
-      { enabled: model.get('edl') !== false, strength: model.get('edl_strength') != null ? model.get('edl_strength') : 1.0 });
+      { enabled: store.get('edl') !== false, strength: store.get('edl_strength') != null ? store.get('edl_strength') : 1.0 });
     converged = r.converged;
     if (payload) {
       const tot = renderer.elementCount, acc = renderer.accumulated;
@@ -13343,7 +13737,7 @@ function render({ model, el }) {
     if (streams) for (const k in streams) { const stw = streams[k] && streams[k].worker; if (stw) try { stw.terminate(); } catch { /* gone */ } }
     streams = null; streamEpoch = Math.random().toString(36).slice(2);
     fileQueue = Promise.resolve(); fileMsg = null;
-    const p = decodePayload(model.get('_payload'));
+    const p = decodePayload(store.get('_payload'));
     if (!p || !p.layers.length) { hud.textContent = 'no data'; if (tb) { tb.showPick(null); tb.syncLegend(null); } schedule(); return; }
     payload = p;
     const bb = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
@@ -13367,7 +13761,7 @@ function render({ model, el }) {
     applyStyles();
     if (tb) { tb.showPick(null); syncChrome(); }
     invalidate();
-    if (streams) model.send({ type: 'ready', epoch: streamEpoch });
+    if (streams) store.send({ type: 'ready', epoch: streamEpoch });
   };
 
   // merge a layer's local bbox as it becomes known (files-mode discovery)
@@ -13395,11 +13789,11 @@ function render({ model, el }) {
     if (tb) syncChrome();
     invalidate();
     try {                                                  // the kernel learns what the browser found
-      const info = { ...(model.get('_file_info') || {}) };
+      const info = { ...(store.get('_file_info') || {}) };
       info[i] = { count: L.count, value_range: L.value_range || null,
         cat_labels: L.cat_labels || null, cat_n: L.cat_n || null };
-      model.set('_file_info', info);
-      model.save_changes();
+      store.set('_file_info', info);
+      store.save_changes();
     } catch { /* a detached test model */ }
   };
   const adoptFrame = (header) => {                         // a files-only view takes the first real frame
@@ -13989,15 +14383,15 @@ function render({ model, el }) {
   };
 
   const applyBackground = () => {
-    const hex = String(model.get('background') || '#121212').replace('#', '');
+    const hex = String(store.get('background') || '#121212').replace('#', '');
     if (hex.length !== 6) return;
     const v = parseInt(hex, 16);
     renderer.setBackground([((v >> 16) & 255) / 255, ((v >> 8) & 255) / 255, (v & 255) / 255, 1]);
     schedule();
   };
-  const applyHeight = () => { host.style.height = `${model.get('height') || 460}px`; invalidate(); };
+  const applyHeight = () => { host.style.height = `${store.get('height') || 460}px`; invalidate(); };
   const applyZExag = () => {                               // display-only: queries stay in real coords
-    cam.state.zExag = Math.max(0.1, +model.get('z_exaggeration') || 1);
+    cam.state.zExag = Math.max(0.1, +store.get('z_exaggeration') || 1);
     cam.update();
     invalidate();
   };
@@ -14022,10 +14416,10 @@ function render({ model, el }) {
     const j = JSON.stringify(camToDict());
     if (j === camLast) return;
     camLast = j;
-    try { model.set('camera', JSON.parse(j)); model.save_changes(); } catch { /* detached */ }
+    try { store.set('camera', JSON.parse(j)); store.save_changes(); } catch { /* detached */ }
   };
   const applyCamera = () => {
-    const v = model.get('camera') || {};
+    const v = store.get('camera') || {};
     if (!Object.keys(v).length) return;
     const cur = camToDict();
     if (['azimuth', 'plunge', 'distance', 'ortho'].every((k) => v[k] == null || JSON.stringify(v[k]) === JSON.stringify(cur[k]))
@@ -14069,8 +14463,8 @@ function render({ model, el }) {
       if (hid.has(label)) hid.delete(label); else hid.add(label);
       return { ...s, categories_hidden: [...hid] };
     });
-    model.set('_styles', next);                            // round-trips to the Python Layer
-    model.save_changes();
+    store.set('_styles', next);                            // round-trips to the Python Layer
+    store.save_changes();
     applyStyles();
     syncChrome();
   };
@@ -14102,7 +14496,7 @@ function render({ model, el }) {
 
   const syncChrome = () => {
     if (!tb) return;
-    const sec = model.get('section');
+    const sec = store.get('section');
     tb.syncSection(sec, sec ? sectionExtent(sec) : null);
     tb.syncLegend(legendInfo());
     tb.syncOrtho(cam.state.ortho);
@@ -14126,7 +14520,7 @@ function render({ model, el }) {
   // displayed a second time (any cell whose value is the Viewer) builds a fresh
   // view, and it must not come up pointing somewhere else than its sibling.
   const applyView = () => {
-    const v = model.get('_view') || {};
+    const v = store.get('_view') || {};
     if (v.name) setView(v.name);
     if (v.ortho != null) { cam.setOrtho(!!v.ortho); if (tb) tb.syncOrtho(!!v.ortho); }
     invalidate();
@@ -14146,13 +14540,13 @@ function render({ model, el }) {
   // ── the toolbar ──
   const buildToolbar = () => {
     if (tb) { tb.destroy(); tb = null; }
-    if (model.get('toolbar') === false) return;
+    if (store.get('toolbar') === false) return;
     tb = createToolbar(host, {
       layers: () => (payload ? payload.layers.map((L, i) => ({ name: styleAt(i).name || L.kind, kind: L.kind, visible: styleAt(i).visible !== false })) : []),
       setStyle: (i, patch) => {
         const next = styles().map((s, k) => (k === i ? { ...s, ...patch } : s));
-        model.set('_styles', next);                        // syncs back to the Python Layer
-        model.save_changes();
+        store.set('_styles', next);                        // syncs back to the Python Layer
+        store.save_changes();
         applyStyles();
         syncChrome();
       },
@@ -14160,8 +14554,8 @@ function render({ model, el }) {
       setView,
       toggleOrtho: () => { const on = !cam.state.ortho; cam.setOrtho(on); invalidate(); return on; },
       isOrtho: () => cam.state.ortho,
-      getSection: () => model.get('section'),
-      setSection: (s) => { model.set('section', s); model.save_changes(); syncChrome(); invalidate(); },
+      getSection: () => store.get('section'),
+      setSection: (s) => { store.set('section', s); store.save_changes(); syncChrome(); invalidate(); },
       snapshot: () => {
         schedule();
         requestAnimationFrame(async () => {
@@ -14182,9 +14576,9 @@ function render({ model, el }) {
       },
       clearSelection: () => { selected.clear(); pushSelection(); if (tb) tb.showPick(null); },
       toggleThrough: () => {
-        const on = !model.get('select_through');
-        model.set('select_through', on);
-        model.save_changes();
+        const on = !store.get('select_through');
+        store.set('select_through', on);
+        store.save_changes();
         return on;
       },
     });
@@ -14224,9 +14618,9 @@ function render({ model, el }) {
     const n = [-dy / len, dx / len, 0];                    // horizontal perpendicular to the drag
     const o = payload ? payload.frame : [0, 0, 0];
     const position = (p1[0] + o[0]) * n[0] + (p1[1] + o[1]) * n[1] + (p1[2] + o[2]) * n[2];
-    const cur = model.get('section') || {};
-    model.set('section', { normal: n, position, thickness: cur.thickness || 20 });
-    model.save_changes();
+    const cur = store.get('section') || {};
+    store.set('section', { normal: n, position, thickness: cur.thickness || 20 });
+    store.save_changes();
     syncChrome();
     invalidate();
   };
@@ -14305,8 +14699,8 @@ function render({ model, el }) {
       for (const r of set) if (r < mask.length) mask[r] = 1;
       renderer.setLayerSelection(i, mask);
     });
-    model.set('_sel_rows', new DataView(packSelection()));
-    model.save_changes();
+    store.set('_sel_rows', new DataView(packSelection()));
+    store.save_changes();
     schedule();
   };
   // ── SELECT THROUGH: the swept volume, not the visible surface.
@@ -14325,7 +14719,7 @@ function render({ model, el }) {
   const selectThrough = (rectCss, polyCss, additive) => {
     const vp = cam.state.viewProj, o = payload.frame;
     const W = canvas.clientWidth || 1, H = canvas.clientHeight || 1;
-    const secAll = sectionOf(model.get('section'), o);
+    const secAll = sectionOf(store.get('section'), o);
     if (!additive) selected.clear();
     styles().forEach((sty, li) => {
       const L = payload.layers[li];
@@ -14365,16 +14759,16 @@ function render({ model, el }) {
     if (!tb) return;
     const counts = [...selected.entries()].filter(([, v]) => v.size)
       .map(([li, v]) => [styleAt(li).name || `layer ${li}`, v.size.toLocaleString()]);
-    tb.showPick(counts.length ? { title: model.get('select_through') ? 'selected (through)' : 'selected', rows: counts } : null);
+    tb.showPick(counts.length ? { title: store.get('select_through') ? 'selected (through)' : 'selected', rows: counts } : null);
   };
 
   const selectRegion = (rectCss, polyCss, additive) => {
     if (!payload) return;
-    if (model.get('select_through')) return selectThrough(rectCss, polyCss, additive);
+    if (store.get('select_through')) return selectThrough(rectCss, polyCss, additive);
     const vo = viewOpts();
     const reg = renderer.pickRegion(rectCss, cam, {
       pointPx: vo.pointPx, blocksAsPoints: vo.asPoints,
-      section: sectionOf(model.get('section'), payload.frame),
+      section: sectionOf(store.get('section'), payload.frame),
     });
     if (!additive) selected.clear();
     if (reg && reg.data) {
@@ -14414,11 +14808,11 @@ function render({ model, el }) {
     const horiz = Math.hypot(dx, dy);
     const bearing = (Math.atan2(dx, dy) * 180 / Math.PI + 360) % 360;   // from north, clockwise
     const plunge = -Math.atan2(dz, horiz) * 180 / Math.PI;              // + is downward
-    model.set('measurement', {
+    store.set('measurement', {
       from: [a[0], a[1], a[2]], to: [b[0], b[1], b[2]],
       distance: dist, dx, dy, dz, bearing, plunge,
     });
-    model.save_changes();
+    store.save_changes();
     if (tb) {
       tb.setBand('measure', measA.xy, xy);
       tb.showPick({ title: 'measure', rows: [
@@ -14485,12 +14879,12 @@ function render({ model, el }) {
     const vo = viewOpts();
     const hit = renderer.pick(xy[0], xy[1], cam, {
       pointPx: vo.pointPx, blocksAsPoints: vo.asPoints,
-      section: sectionOf(model.get('section'), payload.frame),
+      section: sectionOf(store.get('section'), payload.frame),
     });
     if (t === 'measure') { doMeasure(hit, xy); schedule(); return; }
     renderer.setPicked(hit || null);
-    model.set('selection', hit ? { layer: hit.layer, name: styleAt(hit.layer).name || '', row: hit.rec } : {});
-    model.save_changes();
+    store.set('selection', hit ? { layer: hit.layer, name: styleAt(hit.layer).name || '', row: hit.rec } : {});
+    store.save_changes();
     if (tb) tb.showPick(pickInfo(hit));
     schedule();
   };
@@ -14498,7 +14892,7 @@ function render({ model, el }) {
   // without clicking. Throttled; only under the plain pick tool.
   let hoverAt = 0;
   const onHover = (e) => {
-    if (!model.get('hover') || !payload || !tb || dragging || down) return;
+    if (!store.get('hover') || !payload || !tb || dragging || down) return;
     if (tb.tool !== 'pick') return;
     const now = performance.now();
     if (now - hoverAt < 90) return;
@@ -14507,11 +14901,11 @@ function render({ model, el }) {
     const vo = viewOpts();
     const hit = renderer.pick(hx, hy, cam, {
       pointPx: vo.pointPx, blocksAsPoints: vo.asPoints,
-      section: sectionOf(model.get('section'), payload.frame),
+      section: sectionOf(store.get('section'), payload.frame),
     });
     tb.showPick(hit ? pickInfo(hit) : null);
   };
-  const onHoverLeave = () => { if (model.get('hover') && tb) tb.showPick(null); };
+  const onHoverLeave = () => { if (store.get('hover') && tb) tb.showPick(null); };
   canvas.addEventListener('pointermove', onHover);
   canvas.addEventListener('pointerleave', onHoverLeave);
 
@@ -14535,23 +14929,23 @@ function render({ model, el }) {
     ['change:edl', invalidate], ['change:edl_strength', invalidate], ['change:budget', invalidate],
     ['change:_fit', () => { needFit = true; invalidate(); }],
     ['change:_clear_sel', () => { selected.clear(); pushSelection(); if (tb) tb.showPick(null); }],
-    ['change:select_through', () => { if (tb) tb.syncThrough(model.get('select_through')); }],
+    ['change:select_through', () => { if (tb) tb.syncThrough(store.get('select_through')); }],
     ['change:_view', applyView],
     ['change:camera', applyCamera],
-    ['change:hover', () => { if (!model.get('hover') && tb) tb.showPick(null); }],
+    ['change:hover', () => { if (!store.get('hover') && tb) tb.showPick(null); }],
     ['change:_snapshot_req', () => {                       // w.snapshot(): PNG bytes back to the kernel
       schedule();
       requestAnimationFrame(async () => {
         try {
           const b = await compositeBlob();
-          model.set('snapshot_png', new DataView(await b.arrayBuffer()));
-          model.save_changes();
+          store.set('snapshot_png', new DataView(await b.arrayBuffer()));
+          store.save_changes();
         } catch { /* headless contexts without toBlob */ }
       });
     }],
     ['msg:custom', onCustom],
   ];
-  for (const [ev, fn] of subs) model.on(ev, fn);
+  for (const [ev, fn] of subs) store.on(ev, fn);
 
   ro = new ResizeObserver(() => invalidate());
   ro.observe(host);
@@ -14559,7 +14953,7 @@ function render({ model, el }) {
   applyBackground();
   applyZExag();                                            // a re-displayed widget must match its stored state
   buildToolbar();
-  if (tb) tb.syncThrough(model.get('select_through'));
+  if (tb) tb.syncThrough(store.get('select_through'));
   load();
   applyView();                                             // match any camera state already on the widget
   applyCamera();                                           // a stored numeric camera wins over the preset
@@ -14576,12 +14970,27 @@ function render({ model, el }) {
     host.removeEventListener('pointerup', onUp, true);
     canvas.removeEventListener('pointermove', onHover);
     canvas.removeEventListener('pointerleave', onHoverLeave);
-    for (const [ev, fn] of subs) model.off(ev, fn);
+    for (const [ev, fn] of subs) store.off(ev, fn);
     try { renderer.clearChunks(); } catch { /* context already gone */ }
     const lose = renderer.gl.getExtension('WEBGL_lose_context');
     if (lose) lose.loseContext();
     el.innerHTML = '';
   };
+}
+
+// ── src/widget.js ──
+
+// @gcu/condenser — the anywidget (Jupyter) adapter. The viewer itself is the plain-JS view
+// (../../view/src/view.js), shared with pages; it talks to a small state store whose
+// contract is anywidget's model API, and whose keys are this widget's trait names. So the
+// adapter is the identity: the model IS the store.
+//
+// anywidget wants a DEFAULT export; @gcu/build emits named exports only (its
+// rename-on-collision pass needs names). So this is named, and build.js appends the
+// one-line `export default { render }` footer to the bundle.
+
+function render({ model, el }) {
+  return mountView(el, model);
 }
 
 export {
