@@ -59,6 +59,12 @@ const TYPES = { f64: Float64Array, f32: Float32Array, u32: Uint32Array, u16: Uin
 // depending on the header's own length. ONE blob keeps a data change ATOMIC.
 function decodePayload(raw) {
   if (!raw) return null;
+  // the JS API (./api.js) builds the decoded form directly: typed arrays are used where
+  // they are, never copied into a blob. Layers are shallow-cloned because the view
+  // stashes its own state on them (_pos, _seg, …).
+  if (typeof raw === 'object' && !ArrayBuffer.isView(raw) && !(raw instanceof ArrayBuffer) && Array.isArray(raw.layers)) {
+    return { frame: raw.frame, frame_auto: !!raw.frame_auto, layers: raw.layers.map((L) => ({ ...L, cols: { ...L.cols } })) };
+  }
   const buf = raw instanceof ArrayBuffer ? raw : (raw.buffer || raw);
   const base = raw.byteOffset || 0;
   const len = raw.byteLength != null ? raw.byteLength : (buf ? buf.byteLength : 0);
@@ -340,6 +346,10 @@ export function mountView(el, store) {
     return () => { el.innerHTML = ''; };
   }
 
+  // events for a page: what was picked, hovered, measured, selected — with the data the
+  // view has at that moment. A page's store implements notify(); anywidget's model has
+  // no such method, so in Jupyter this is a no-op (the traits carry what Python needs).
+  const notify = (type, data) => { if (typeof store.notify === 'function') store.notify(type, data); };
   const styles = () => store.get('_styles') || [];
   const styleAt = (i) => styles()[i] || {};
   const viewOpts = () => {                                 // point size / points-view are VIEW-wide in the engine
@@ -982,7 +992,9 @@ export function mountView(el, store) {
   };
   const spawnStreamWorker = (L, i, st, init) => {
     try {
-      if (typeof Worker === 'undefined' || !import.meta.url) return null;
+      // workers: false — a page whose CSP allows no workers says so, and nothing is attempted
+      // (an attempt would still log a CSP violation before the inline fallback takes over)
+      if (store.get('workers') === false || typeof Worker === 'undefined' || !import.meta.url) return null;
       const wk = new Worker(import.meta.url, { type: 'module' });
       wk.onmessage = (e) => {
         const m = e.data;
@@ -1417,6 +1429,26 @@ export function mountView(el, store) {
     return { title: name, rows };
   };
 
+  // a pick as data (the page events): layer, its name, the ROW in the table it came
+  // from, the world position, the active value channel and the category label
+  const pickDetail = (hit) => {
+    if (!hit || !payload) return null;
+    const L = payload.layers[hit.layer];
+    if (!L) return null;
+    const c = L.cols, r = hit.rec;
+    const p = posOf(hit.layer, r);
+    const out = { layer: hit.layer, name: styleAt(hit.layer).name || L.kind, index: r,
+      x: p ? p[0] : null, y: p ? p[1] : null, z: p ? p[2] : null,
+      value: c.value ? c.value[r] : null, channel: c.value ? (L._active || (L.value_channels && L.value_channels[0]) || 'value') : null,
+      category: c.cat && L.cat_labels ? (L.cat_labels[c.cat[r]] ?? null) : null };
+    if (L.kind === 'drillholes') {
+      const code = c.i_bhid ? c.i_bhid[r] : null;
+      out.hole = code != null && L.hole_names && L.hole_names[code] != null ? L.hole_names[code] : code;
+      if (c.i_from) { out.from = c.i_from[r]; out.to = c.i_to[r]; }
+    }
+    return out;
+  };
+
   // a record's WORLD position (blocks/points carry their columns; drillholes
   // get theirs from the desurvey stash above)
   const posOf = (li, rec) => {
@@ -1470,6 +1502,9 @@ export function mountView(el, store) {
     });
     store.set('_sel_rows', new DataView(packSelection()));
     store.save_changes();
+    const out = [];
+    for (const [li, set] of selected) if (set && set.size) out.push({ layer: li, name: styleAt(li).name || '', rows: Uint32Array.from(set).sort() });
+    notify('select', out);
     schedule();
   };
   // ── SELECT THROUGH: the swept volume, not the visible surface.
@@ -1582,6 +1617,7 @@ export function mountView(el, store) {
       distance: dist, dx, dy, dz, bearing, plunge,
     });
     store.save_changes();
+    notify('measure', store.get('measurement'));
     if (tb) {
       tb.setBand('measure', measA.xy, xy);
       tb.showPick({ title: 'measure', rows: [
@@ -1654,6 +1690,7 @@ export function mountView(el, store) {
     renderer.setPicked(hit || null);
     store.set('selection', hit ? { layer: hit.layer, name: styleAt(hit.layer).name || '', row: hit.rec } : {});
     store.save_changes();
+    notify('pick', pickDetail(hit));
     if (tb) tb.showPick(pickInfo(hit));
     schedule();
   };
@@ -1661,8 +1698,8 @@ export function mountView(el, store) {
   // without clicking. Throttled; only under the plain pick tool.
   let hoverAt = 0;
   const onHover = (e) => {
-    if (!store.get('hover') || !payload || !tb || dragging || down) return;
-    if (tb.tool !== 'pick') return;
+    if (!store.get('hover') || !payload || dragging || down) return;
+    if (tb && tb.tool !== 'pick') return;
     const now = performance.now();
     if (now - hoverAt < 90) return;
     hoverAt = now;
@@ -1672,9 +1709,10 @@ export function mountView(el, store) {
       pointPx: vo.pointPx, blocksAsPoints: vo.asPoints,
       section: sectionOf(store.get('section'), payload.frame),
     });
-    tb.showPick(hit ? pickInfo(hit) : null);
+    if (tb) tb.showPick(hit ? pickInfo(hit) : null);
+    notify('hover', pickDetail(hit));
   };
-  const onHoverLeave = () => { if (store.get('hover') && tb) tb.showPick(null); };
+  const onHoverLeave = () => { if (!store.get('hover')) return; if (tb) tb.showPick(null); notify('hover', null); };
   canvas.addEventListener('pointermove', onHover);
   canvas.addEventListener('pointerleave', onHoverLeave);
 

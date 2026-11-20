@@ -1,0 +1,15842 @@
+// ⚠ GENERATED FILE — DO NOT EDIT. Source: src/  Build: @gcu/build src/api.js
+
+// ── ../index.js ──
+
+// ⚠ GENERATED FILE — DO NOT EDIT. Source: src/  Build: @gcu/build src/main.js
+// @gcu/condenser — Streaming no-preprocess renderer for massive spatial elements (point clouds, block models): stream-parse → quantize → chunk → prefix-LOD → progressive accumulation → EDL. The engine under micro.
+
+// ── src/io/las.js ──
+
+// @gcu/condenser — LAS provider (uncompressed point record formats 0–3 and 6–8).
+// Header-driven: the public header block gives bbox, count, format, and scale/offset
+// up front — no discovery pass. streamChunks() parses chunk-at-a-time from a
+// ReadableStream, never holding raw file bytes beyond the current chunk (+ a
+// partial-record carry). Positions come out as WORLD f64 (scale·raw + offset);
+// frame-local quantization happens downstream in chunks.js — providers know
+// formats, condenser knows rendering, nothing else crosses the seam.
+//
+// Provider contract (micro-spec §2.4):
+//   openLas(blob) → { header, streamChunks(opts), columnBatches(names, opts), fetchRecord(rec) }
+//   RawChunk = { count, x, y, z: Float64Array, intensity: Uint16Array,
+//                classification: Uint8Array, rgb: Uint8Array(3N) | null,
+//                recStart: number }   — recStart = record index of element 0.
+//
+// COLUMNS. Every field of the point record is a column (header.columns): the
+// coordinates, intensity, the return numbers, classification, scan angle, user
+// data, point source id, GPS time, RGB and NIR as the format carries them —
+// plus the EXTRA BYTES a file declares (LAS 1.4 VLR LASF_Spec/4: named, typed,
+// scaled per-point attributes such as reflectance or deviation). columnBatches
+// streams only the columns asked for; fetchRecord reads one point's every column.
+
+const RECLEN = { 0: 20, 1: 28, 2: 26, 3: 34, 6: 30, 7: 36, 8: 38 };
+const RGB_OFF = { 2: 20, 3: 28, 7: 30, 8: 30 };
+const GPS_OFF = { 1: 20, 3: 20, 6: 22, 7: 22, 8: 22 };
+
+class LasFormatError extends Error {
+  constructor(msg) { super(msg); this.name = 'LasFormatError'; }
+}
+
+// Parse the public header block from the file's first bytes (≥ 375 recommended).
+function parseLasHeader(bytes) {
+  const dv = bytes instanceof DataView ? bytes : new DataView(bytes.buffer ? bytes.buffer : bytes, bytes.byteOffset || 0, bytes.byteLength);
+  if (dv.byteLength < 227) throw new LasFormatError('file too small for a LAS header');
+  if (dv.getUint8(0) !== 0x4C || dv.getUint8(1) !== 0x41 || dv.getUint8(2) !== 0x53 || dv.getUint8(3) !== 0x46) {
+    throw new LasFormatError('not a LAS file (no LASF signature)');
+  }
+  const verMajor = dv.getUint8(24), verMinor = dv.getUint8(25);
+  const headerSize = dv.getUint16(94, true);
+  const pointOffset = dv.getUint32(96, true);
+  const vlrCount = dv.getUint32(100, true);
+  const fmtByte = dv.getUint8(104);
+  if (fmtByte & 0x80) throw new LasFormatError('LAZ (compressed) — not supported; export uncompressed LAS');
+  const format = fmtByte & 0x3f;
+  if (!(format in RECLEN)) throw new LasFormatError(`unsupported point record format ${format} (supported: 0–3, 6–8)`);
+  const recordLen = dv.getUint16(105, true);
+  if (recordLen < RECLEN[format]) throw new LasFormatError(`record length ${recordLen} < format ${format} minimum ${RECLEN[format]}`);
+  const legacyCount = dv.getUint32(107, true);
+  let count = legacyCount;
+  if (verMinor >= 4 && headerSize >= 255 && dv.byteLength >= 255) {
+    const c64 = dv.getBigUint64(247, true);
+    if (c64 > 0n) count = Number(c64);                    // 1.4 files may zero the legacy field
+  }
+  const scale = [dv.getFloat64(131, true), dv.getFloat64(139, true), dv.getFloat64(147, true)];
+  const offset = [dv.getFloat64(155, true), dv.getFloat64(163, true), dv.getFloat64(171, true)];
+  // bbox stored max/min interleaved per axis
+  const bbox = {
+    min: [dv.getFloat64(187, true), dv.getFloat64(203, true), dv.getFloat64(219, true)],
+    max: [dv.getFloat64(179, true), dv.getFloat64(195, true), dv.getFloat64(211, true)],
+  };
+  const header = {
+    kind: 'las', version: `${verMajor}.${verMinor}`, format, recordLen,
+    count, pointOffset, headerSize, vlrCount, scale, offset, bbox,
+    hasRgb: format in RGB_OFF,
+    attributes: ['intensity', 'classification', ...(format in RGB_OFF ? ['rgb'] : [])],
+    extraBytes: [],
+  };
+  header.columns = lasFieldsOf(header).map((f) => f.name);
+  return header;
+}
+
+// ── extra bytes (LAS 1.4 §2.6, VLR "LASF_Spec" / 4): 192-byte descriptors, in
+// record order, starting right after the format's standard fields ──
+const EB_SIZE = [0, 1, 1, 2, 2, 4, 4, 8, 8, 4, 8];
+const EB_GET = [null, 'getUint8', 'getInt8', 'getUint16', 'getInt16', 'getUint32', 'getInt32', 'getBigUint64', 'getBigInt64', 'getFloat32', 'getFloat64'];
+const cstr = (dv, o, n) => { let s = ''; for (let i = 0; i < n; i++) { const c = dv.getUint8(o + i); if (!c) break; s += String.fromCharCode(c); } return s.trim(); };
+
+// the VLR block (bytes [headerSize, pointOffset)) → the header's extraBytes
+function parseLasVlrs(header, bytes) {
+  const dv = bytes instanceof DataView ? bytes : new DataView(bytes.buffer ? bytes.buffer : bytes, bytes.byteOffset || 0, bytes.byteLength);
+  const out = [];
+  let o = 0;
+  for (let k = 0; k < header.vlrCount && o + 54 <= dv.byteLength; k++) {
+    const user = cstr(dv, o + 2, 16), id = dv.getUint16(o + 18, true), len = dv.getUint16(o + 20, true);
+    const data = o + 54;
+    if (user === 'LASF_Spec' && id === 4 && data + len <= dv.byteLength) {
+      let at = RECLEN[header.format];
+      for (let d = data; d + 192 <= data + len; d += 192) {
+        const type = dv.getUint8(d + 2), opts = dv.getUint8(d + 3), name = cstr(dv, d + 4, 32) || `extra_${out.length}`;
+        const base = type >= 1 && type <= 10 ? type : type >= 11 && type <= 20 ? type - 10 : type >= 21 && type <= 30 ? type - 20 : 0;
+        const n = type >= 21 ? 3 : type >= 11 ? 2 : 1;
+        const size = base ? EB_SIZE[base] : opts;           // type 0: `options` is the byte count, undocumented
+        for (let e = 0; e < n; e++) {
+          if (base) {
+            const isFloat = base >= 9, isSigned = base % 2 === 0;
+            const nd = !isFloat && !isSigned ? Number(dv.getBigUint64(d + 40 + 8 * e, true)) : !isFloat ? Number(dv.getBigInt64(d + 40 + 8 * e, true)) : dv.getFloat64(d + 40 + 8 * e, true);
+            out.push({
+              name: n > 1 ? `${name}[${e}]` : name, type: base, offset: at, size,
+              noData: opts & 1 ? nd : null,
+              scale: opts & 8 ? dv.getFloat64(d + 112 + 8 * e, true) : 1,
+              add: opts & 16 ? dv.getFloat64(d + 136 + 8 * e, true) : 0,
+              description: cstr(dv, d + 160, 32),
+            });
+          }
+          at += size;
+        }
+      }
+    }
+    o = data + len;
+  }
+  const fit = out.filter((f) => f.offset + f.size <= header.recordLen);   // a descriptor past the record is the file's error, not a column
+  header.extraBytes = fit;
+  header.columns = lasFieldsOf(header).map((f) => f.name);
+  return header;
+}
+
+// every column of a record: { name, read(dv, o) → number } (o = the record's byte offset)
+function lasFieldsOf(header) {
+  const { format, scale, offset } = header;
+  const legacy = format < 6;
+  const f = [
+    { name: 'X', read: (dv, o) => dv.getInt32(o, true) * scale[0] + offset[0] },
+    { name: 'Y', read: (dv, o) => dv.getInt32(o + 4, true) * scale[1] + offset[1] },
+    { name: 'Z', read: (dv, o) => dv.getInt32(o + 8, true) * scale[2] + offset[2] },
+    { name: 'intensity', read: (dv, o) => dv.getUint16(o + 12, true) },
+    { name: 'return_number', read: legacy ? (dv, o) => dv.getUint8(o + 14) & 7 : (dv, o) => dv.getUint8(o + 14) & 15 },
+    { name: 'number_of_returns', read: legacy ? (dv, o) => (dv.getUint8(o + 14) >> 3) & 7 : (dv, o) => dv.getUint8(o + 14) >> 4 },
+    { name: 'classification', read: legacy ? (dv, o) => dv.getUint8(o + 15) & 31 : (dv, o) => dv.getUint8(o + 16) },
+    { name: 'scan_angle', read: legacy ? (dv, o) => dv.getInt8(o + 16) : (dv, o) => dv.getInt16(o + 18, true) * 0.006 },   // degrees
+    { name: 'user_data', read: legacy ? (dv, o) => dv.getUint8(o + 17) : (dv, o) => dv.getUint8(o + 17) },
+    { name: 'point_source_id', read: legacy ? (dv, o) => dv.getUint16(o + 18, true) : (dv, o) => dv.getUint16(o + 20, true) },
+  ];
+  if (GPS_OFF[format] != null) { const g = GPS_OFF[format]; f.push({ name: 'gps_time', read: (dv, o) => dv.getFloat64(o + g, true) }); }
+  if (RGB_OFF[format] != null) {
+    const r = RGB_OFF[format];
+    f.push({ name: 'red', read: (dv, o) => dv.getUint16(o + r, true) }, { name: 'green', read: (dv, o) => dv.getUint16(o + r + 2, true) }, { name: 'blue', read: (dv, o) => dv.getUint16(o + r + 4, true) });
+  }
+  if (format === 8) f.push({ name: 'nir', read: (dv, o) => dv.getUint16(o + 36, true) });
+  const taken = new Set(f.map((x) => x.name.toLowerCase()));
+  for (const e of header.extraBytes || []) {
+    let name = e.name; while (taken.has(name.toLowerCase())) name += '_x';
+    taken.add(name.toLowerCase());
+    const g = EB_GET[e.type], big = e.type === 7 || e.type === 8;
+    const raw = big ? (dv, o) => Number(dv[g](o + e.offset, true)) : (dv, o) => dv[g](o + e.offset, true);
+    f.push({ name, extra: true, read: (dv, o) => { const v = raw(dv, o); return e.noData != null && v === e.noData ? NaN : v * e.scale + e.add; } });
+  }
+  return f;
+}
+
+// Decode `n` fixed-size records from dv starting at byte 0 into columnar arrays.
+// RGB: LAS stores u16 per channel, but many files carry 8-bit values in the low
+// byte. Decode as u16, decide once per chunk (any channel > 255 → 16-bit → >>8),
+// or accept a `forceRgb16` override (sticky across chunks — see streamChunks).
+function decodeLasRecords(dv, header, n, recStart, { forceRgb16 = false } = {}) {
+  const { format, recordLen, scale, offset } = header;
+  const clsOff = format >= 6 ? 16 : 15;
+  const rgbOff = RGB_OFF[format];
+  const x = new Float64Array(n), y = new Float64Array(n), z = new Float64Array(n);
+  const intensity = new Uint16Array(n), classification = new Uint8Array(n);
+  const rgb16 = rgbOff != null ? new Uint16Array(3 * n) : null;
+  for (let i = 0; i < n; i++) {
+    const o = i * recordLen;
+    x[i] = dv.getInt32(o, true) * scale[0] + offset[0];
+    y[i] = dv.getInt32(o + 4, true) * scale[1] + offset[1];
+    z[i] = dv.getInt32(o + 8, true) * scale[2] + offset[2];
+    intensity[i] = dv.getUint16(o + 12, true);
+    classification[i] = dv.getUint8(o + clsOff);
+    if (rgb16) {
+      rgb16[i * 3] = dv.getUint16(o + rgbOff, true);
+      rgb16[i * 3 + 1] = dv.getUint16(o + rgbOff + 2, true);
+      rgb16[i * 3 + 2] = dv.getUint16(o + rgbOff + 4, true);
+    }
+  }
+  let rgb = null, rgbIs16 = forceRgb16;
+  if (rgb16) {
+    if (!rgbIs16) { for (let k = 0; k < rgb16.length; k++) if (rgb16[k] > 255) { rgbIs16 = true; break; } }
+    rgb = new Uint8Array(3 * n);
+    if (rgbIs16) for (let k = 0; k < rgb16.length; k++) rgb[k] = rgb16[k] >> 8;
+    else rgb.set(rgb16);                                   // values ≤255 fit as-is
+  }
+  return { count: n, x, y, z, intensity, classification, rgb, recStart, rgbIs16 };
+}
+
+/**
+ * Open a LAS Blob/File. Reads the header up front (one small slice) and the VLR
+ * block (for extra-bytes columns), then streamChunks() yields RawChunks of ≤
+ * chunkPoints records, parsing from a fresh ReadableStream (a cold re-runnable
+ * recipe — call it again for a second sweep). Carries partial records across
+ * stream chunk boundaries.
+ */
+async function openLas(blob, { headerBytes = 512 } = {}) {
+  const head = new DataView(await blob.slice(0, Math.min(headerBytes, blob.size)).arrayBuffer());
+  const header = parseLasHeader(head);
+  if (header.vlrCount && header.pointOffset > header.headerSize) {
+    const end = Math.min(header.pointOffset, header.headerSize + (8 << 20), blob.size);
+    try { parseLasVlrs(header, new DataView(await blob.slice(header.headerSize, end).arrayBuffer())); } catch { /* a damaged VLR block costs only the extra columns */ }
+  }
+  const recordLen = header.recordLen;
+
+  // record slabs: (DataView over n whole records, n, recStart), from a fresh stream
+  async function* slabs({ chunkPoints = 1 << 20, signal } = {}) {
+    const stream = blob.slice(header.pointOffset).stream();
+    const reader = stream.getReader();
+    let carry = new Uint8Array(0);
+    let recDone = 0;
+    try {
+      while (recDone < header.count) {
+        const { done, value } = await reader.read();
+        if (signal && signal.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+        if (done) break;
+        let buf = value;
+        if (carry.length) {                                // stitch the partial record from last read
+          const joined = new Uint8Array(carry.length + value.length);
+          joined.set(carry, 0); joined.set(value, carry.length);
+          buf = joined; carry = new Uint8Array(0);
+        }
+        let avail = Math.floor(buf.length / recordLen);
+        if (avail * recordLen < buf.length) carry = buf.slice(avail * recordLen);
+        avail = Math.min(avail, header.count - recDone);
+        let off = 0;
+        while (avail > 0) {
+          const n = Math.min(avail, chunkPoints);
+          yield { dv: new DataView(buf.buffer, buf.byteOffset + off, n * recordLen), n, recStart: recDone };
+          recDone += n; off += n * recordLen; avail -= n;
+        }
+      }
+    } finally {
+      reader.releaseLock();
+      try { await stream.cancel(); } catch { /* already done */ }
+    }
+  }
+
+  async function* streamChunks(opts = {}) {
+    let rgb16 = false;                                     // sticky: once 16-bit color is seen, stay >>8
+    for await (const { dv, n, recStart } of slabs(opts)) {
+      const chunk = decodeLasRecords(dv, header, n, recStart, { forceRgb16: rgb16 });
+      if (chunk.rgbIs16) rgb16 = true;
+      yield chunk;
+    }
+  }
+
+  // only the named columns: { n, recStart, cols: { name: Float64Array } }
+  const fields = lasFieldsOf(header);
+  async function* columnBatches(names, opts = {}) {
+    const want = names.map((nm) => { const f = fields.find((q) => q.name === nm) || fields.find((q) => q.name.toLowerCase() === String(nm).toLowerCase()); if (!f) throw new Error(`LAS: no column “${nm}”`); return f; });
+    for await (const { dv, n, recStart } of slabs({ chunkPoints: opts.chunkPoints || 1 << 18, signal: opts.signal })) {
+      const cols = {};
+      want.forEach((f, k) => { const a = new Float64Array(n), rd = f.read; for (let i = 0; i < n; i++) a[i] = rd(dv, i * recordLen); cols[names[k]] = a; });
+      yield { n, recStart, cols };
+    }
+  }
+
+  async function fetchRecord(rec) {
+    if (rec < 0 || rec >= header.count) return null;
+    const off = header.pointOffset + rec * recordLen;
+    const dv = new DataView(await blob.slice(off, off + recordLen).arrayBuffer());
+    return fields.map((f) => { const v = f.read(dv, 0); return Number.isFinite(v) && !Number.isInteger(v) ? +v.toFixed(6) : v; });
+  }
+
+  return { header, streamChunks, columnBatches, fetchRecord };
+}
+
+// ── ../frame/src/frame.js ──
+
+// @gcu/frame — the coordinate-frame contract for the whole GCU geometry stack.
+//
+// Geological work lives at projected-coordinate magnitudes (UTM easting ~5e5,
+// northing ~7.7e6, RL ~1e3). Two failures follow and share one cause — doing math
+// and rendering directly in those large numbers:
+//   • the float32 wall — at northing 7.7e6 a 32-bit float resolves to ~1 m, so any
+//     GPU/Float32Array path jitters and z-fights;
+//   • catastrophic cancellation — derived quantities (lengths, cross products,
+//     intersection params) lose relative precision, and a fixed ε like 1e-9 is
+//     meaningless against operands of magnitude 1e6.
+// The fix is to work in a small-magnitude LOCAL frame and keep the offset to WORLD
+// as explicit, inspectable metadata. This module is that contract — a tiny value
+// type plus pure functions, zero-dependency, that every coordinate-bearing package
+// can speak.
+//
+// A Frame has two faculties with different reach:
+//   1. numerical framing — the world↔local offset (`origin`), for the precision path
+//      (dee/voxmesh/geometry/regula/dxf/moncad compute in it; it gates every F32 downcast);
+//   2. coordinate identity — the `crs` descriptor + `units`, universal provenance so
+//      "what do these world numbers mean" is never silent.
+//
+// HARD BOUNDARY: frame NAMES a CRS, it never CHANGES one. Reprojection (datum shifts,
+// projection changes) is a geodetic operation that lives elsewhere (spinifex/proj4
+// today, a future @gcu/proj if it ever becomes a stack primitive). Crossing CRS here
+// throws — see `delta`. A working offset is a translation for numerical convenience,
+// not a reprojection.
+//
+// Points and origins are ARRAYS — [x, y] or [x, y, z] — matching the rest of the tree
+// (dee.origin, grid.origin, flat Float64/Float32 vertex buffers), not the {x,y,z}
+// objects the prose spec sketches. The frame is pure translation: rotation/scale are
+// deliberately out of scope (a block model's own dip/rake orientation is intrinsic
+// model geometry, a separate concern from the local frame — never conflated).
+
+// A Frame value. `origin` is the WORLD coordinate of the local origin, so
+// `local = world − origin`. `crs` is an optional projection descriptor (e.g. an EPSG
+// code) — null means "unstated", which opts out of cross-frame CRS checking. `units`
+// defaults to metres.
+function makeFrame({ origin, crs = null, units = 'm' } = {}) {
+  const o = origin ? Array.from(origin, Number) : [0, 0, 0];
+  while (o.length < 3) o.push(0);
+  return { origin: o.slice(0, 3), crs, units };
+}
+
+// The identity frame: origin at world zero. World == local. Useful as a default and
+// as the "already in world coordinates" marker.
+const WORLD = makeFrame({ origin: [0, 0, 0] });
+
+// Normalise a CRS code for IDENTITY comparison: uppercase + strip a leading `EPSG:`, so
+// `'EPSG:31983'`, `'epsg:31983'`, and `'31983'` all compare equal. It lives HERE, not in a
+// geo/reprojection layer: frame is zero-dep and sits *under* any such layer, so importing a
+// helper from geo would invert the dependency. A reprojection layer's richer code resolution
+// is a superset built on this. Comparison only — the stored `crs` keeps its original spelling.
+function canonCrs(code) {
+  return code == null ? null : String(code).trim().toUpperCase().replace(/^EPSG:/, '');
+}
+
+// Two frames describe the same projection iff their (canonicalised) CRS agree (a null CRS on
+// either side is a wildcard — you can't assert a mismatch you never declared) and their units
+// match. This is the gate that keeps a frame shift from masquerading as a reprojection.
+function sameProjection(a, b) {
+  const ca = canonCrs(a.crs), cb = canonCrs(b.crs);
+  if (ca != null && cb != null && ca !== cb) return false;
+  return (a.units ?? 'm') === (b.units ?? 'm');
+}
+
+// Full structural equality: same origin, (canonicalised) CRS, and units.
+function frameEq(a, b) {
+  return canonCrs(a.crs) === canonCrs(b.crs) && (a.units ?? 'm') === (b.units ?? 'm') &&
+    a.origin[0] === b.origin[0] && a.origin[1] === b.origin[1] && a.origin[2] === b.origin[2];
+}
+
+// ── Point transforms (single [x,y] or [x,y,z]) ──────────────────────────────────
+
+// World → local: subtract the origin component-wise. Round-trips losslessly with
+// `toWorld` at f64 (invariant 3) — exact when the origin is chosen near the data, the
+// intended use.
+function toLocal(worldPt, frame) {
+  const o = frame.origin, r = new Array(worldPt.length);
+  for (let i = 0; i < worldPt.length; i++) r[i] = worldPt[i] - (o[i] || 0);
+  return r;
+}
+
+// Local → world: add the origin back. The inverse of `toLocal`.
+function toWorld(localPt, frame) {
+  const o = frame.origin, r = new Array(localPt.length);
+  for (let i = 0; i < localPt.length; i++) r[i] = localPt[i] + (o[i] || 0);
+  return r;
+}
+
+// ── Bulk buffer transforms (flat x,y,z,x,y,z,… arrays) ──────────────────────────
+// These consolidate the hand-rolled F64-recentre loops currently duplicated in the
+// dee importers (lfm/msh adapters): subtract the origin at full f64 precision and hand
+// the small local magnitudes to the F32/GPU downcast. The one hard rule of §5 —
+// anything bound for a Float32Array passes through the local frame FIRST — is this
+// call. Returns a NEW Float64Array; input is never mutated.
+
+function toLocalCoords(coords, frame, { stride = 3 } = {}) {
+  const o = frame.origin, out = new Float64Array(coords.length);
+  for (let i = 0; i < coords.length; i += stride)
+    for (let j = 0; j < stride; j++) out[i + j] = coords[i + j] - (o[j] || 0);
+  return out;
+}
+
+function toWorldCoords(coords, frame, { stride = 3 } = {}) {
+  const o = frame.origin, out = new Float64Array(coords.length);
+  for (let i = 0; i < coords.length; i += stride)
+    for (let j = 0; j < stride; j++) out[i + j] = coords[i + j] + (o[j] || 0);
+  return out;
+}
+
+// ── Choosing an origin ──────────────────────────────────────────────────────────
+
+// Pick a sticky origin from world-coordinate bounds. Default strategy 'centroid'
+// (bbox centre); 'floor' keeps locals strictly positive (handy across tiled exports).
+// The result is rounded to `round` so the anchor reads as a "nice" number in logs and
+// diffs rather than an arbitrary fractional point. bounds = { min:[…], max:[…] }.
+// The origin is chosen ONCE per document/session and is sticky — recomputing it
+// per-operation drifts the frame and invalidates cached geometry (§4).
+function originFromBounds(bounds, { round = 1, strategy = 'centroid' } = {}) {
+  const { min, max } = bounds, n = Math.min(min.length, max.length), o = [];
+  for (let i = 0; i < n; i++) {
+    const c = strategy === 'floor' ? min[i] : (min[i] + max[i]) / 2;
+    o.push(round ? Math.round(c / round) * round : c);
+  }
+  while (o.length < 3) o.push(0);
+  return o.slice(0, 3);
+}
+
+// Convenience: a Frame straight from bounds (origin via `originFromBounds`, carrying
+// the given CRS/units).
+function frameFromBounds(bounds, opts = {}) {
+  return makeFrame({
+    origin: originFromBounds(bounds, opts),
+    crs: opts.crs ?? null,
+    units: opts.units ?? 'm',
+  });
+}
+
+// ── Frame-relative tolerance ────────────────────────────────────────────────────
+
+// A tolerance scaled to the working extent, so coincidence / parallel / on-curve tests
+// stay meaningful at any magnitude — a fixed absolute 1e-9 is meaningless against UTM
+// operands, the same failure class as the original silent-shift bug. `extent` is the
+// working span (e.g. the local bbox diagonal); `rel` is the relative floor. Feeds the
+// @gcu/regula tolerance model. Note exact sign/orientation tests stay EXACT (@gcu/geometry
+// predicates) — this ε is only for constructed quantities.
+function extentTolerance(frame, extent, { rel = 1e-9 } = {}) {
+  const e = Math.abs(extent) || 1;
+  return { eps: rel * e, rel, extent: e, units: frame.units };
+}
+
+// ── Frame ↔ frame ───────────────────────────────────────────────────────────────
+
+// The translation to add to a point expressed local-in `from` to re-express it
+// local-in `to`:  localTo = localFrom + (fromOrigin − toOrigin). Throws if the frames
+// describe different projections — moving between those is a reprojection, which frame
+// does not perform (the hard boundary).
+function delta(from, to) {
+  if (!sameProjection(from, to)) {
+    throw new Error(
+      `frame.delta: frames differ in CRS/units (${from.crs}/${from.units} → ${to.crs}/${to.units}); ` +
+      'that is a reprojection, which @gcu/frame does not perform',
+    );
+  }
+  return [
+    from.origin[0] - to.origin[0],
+    from.origin[1] - to.origin[1],
+    from.origin[2] - to.origin[2],
+  ];
+}
+
+// Declare an artifact's frame WITHOUT moving its coordinates (invariant 2: a coordinate
+// expressed in a local frame always carries an inspectable origin). Shallow, pure —
+// returns a copy with `.frame` stamped. Re-EXPRESSING coordinates into a different
+// frame is `rebaseCoords`, a separate and logged transform.
+function withFrame(artifact, frame) {
+  return { ...artifact, frame };
+}
+
+// Re-express a flat coordinate buffer from one frame into another. Returns BOTH the new
+// Float64Array and a provenance record — rebasing is an explicit, accountable transform
+// (invariants 4/5), so you cannot get the moved coordinates without the record of what
+// moved them (the same "numbers plus an account of what I did to them" discipline as
+// the DXF contract). Throws via `delta` on a CRS/units mismatch. Pure; input untouched.
+function rebaseCoords(coords, from, to, { stride = 3 } = {}) {
+  const d = delta(from, to);
+  const out = new Float64Array(coords.length);
+  for (let i = 0; i < coords.length; i += stride)
+    for (let j = 0; j < stride; j++) out[i + j] = coords[i + j] + (d[j] || 0);
+  return { coords: out, record: rebaseRecord(from, to, d) };
+}
+
+// A provenance entry for a rebase — what the caller pushes onto its frame log.
+function rebaseRecord(from, to, d) {
+  return {
+    op: 'rebase',
+    from: { origin: [...from.origin], crs: from.crs, units: from.units },
+    to: { origin: [...to.origin], crs: to.crs, units: to.units },
+    delta: d,
+  };
+}
+
+// ── src/core/morton.js ──
+
+// @gcu/condenser — Morton (Z-order) keys + a radix sort over indices.
+// Batch-wise spatial chunking (micro-spec §2.1.3): quantize each point to a
+// 10-bit lattice per axis against the batch bbox, interleave to a 30-bit key,
+// radix-sort an index array by key (three 10-bit passes, ping-pong — sorting
+// indices, not elements, avoids the 2× transient), then slice the sorted order
+// into chunks. Points that are near in space land in the same chunk → tight
+// chunk AABBs → frustum culling and front-to-back order fall out.
+
+// Spread the low 10 bits of v so there are two zero bits between each.
+function part1by2(v) {
+  v &= 0x3ff;
+  v = (v | (v << 16)) & 0x30000ff;
+  v = (v | (v << 8)) & 0x300f00f;
+  v = (v | (v << 4)) & 0x30c30c3;
+  v = (v | (v << 2)) & 0x9249249;
+  return v;
+}
+
+// 30-bit Morton key from 10-bit lattice coordinates.
+function mortonKey(ix, iy, iz) {
+  return (part1by2(iz) << 2) | (part1by2(iy) << 1) | part1by2(ix);
+}
+
+// Keys for a batch: quantize x/y/z (f64, any space — only intra-batch
+// consistency matters) to 10 bits against the batch extent.
+function mortonKeys(x, y, z, n) {
+  let minX = Infinity, minY = Infinity, minZ = Infinity, maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  for (let i = 0; i < n; i++) {
+    if (x[i] < minX) minX = x[i]; if (x[i] > maxX) maxX = x[i];
+    if (y[i] < minY) minY = y[i]; if (y[i] > maxY) maxY = y[i];
+    if (z[i] < minZ) minZ = z[i]; if (z[i] > maxZ) maxZ = z[i];
+  }
+  const sx = maxX > minX ? 1023 / (maxX - minX) : 0;
+  const sy = maxY > minY ? 1023 / (maxY - minY) : 0;
+  const sz = maxZ > minZ ? 1023 / (maxZ - minZ) : 0;
+  const keys = new Uint32Array(n);
+  for (let i = 0; i < n; i++) {
+    keys[i] = mortonKey(((x[i] - minX) * sx) | 0, ((y[i] - minY) * sy) | 0, ((z[i] - minZ) * sz) | 0);
+  }
+  return keys;
+}
+
+// Radix sort 0..n-1 by keys[] — three 10-bit passes, counting sort each,
+// ping-pong index buffers. Stable; returns the sorted index array.
+function radixSortIndices(keys, n) {
+  let src = new Uint32Array(n), dst = new Uint32Array(n);
+  for (let i = 0; i < n; i++) src[i] = i;
+  const counts = new Uint32Array(1024);
+  for (let pass = 0; pass < 3; pass++) {
+    const shift = pass * 10;
+    counts.fill(0);
+    for (let i = 0; i < n; i++) counts[(keys[src[i]] >>> shift) & 0x3ff]++;
+    let sum = 0;
+    for (let b = 0; b < 1024; b++) { const c = counts[b]; counts[b] = sum; sum += c; }
+    for (let i = 0; i < n; i++) dst[counts[(keys[src[i]] >>> shift) & 0x3ff]++] = src[i];
+    const t = src; src = dst; dst = t;
+  }
+  return src;
+}
+
+// ── src/core/chunks.js ──
+
+// @gcu/condenser — the chunk store: RawChunks (world f64, from a provider) →
+// render-ready Chunks (frame-local uint16 positions + attributes + record index).
+//
+// Frame-local first (micro-spec Addendum A.1): one @gcu/frame per document, chosen
+// from the header bbox; everything downstream (chunk bboxes, camera, clip uniforms)
+// lives at small local magnitudes so the f32/GPU path never sees a 7.7e6 northing.
+// The frame is pure translation with CRS identity — publish world coordinates by
+// adding the origin back at the boundary.
+//
+// The invariant everything rests on (micro-spec §2.1.4): after building, elements
+// inside a chunk are RANDOMLY PERMUTED, so any prefix of a chunk is a uniform
+// random subsample of that chunk's region. Prefix-LOD, progressive accumulation,
+// and budget-capped drawing all read prefixes and inherit their correctness from
+// this shuffle. Seeded PRNG (mulberry32) → deterministic for tests.
+//
+// Chunking is BATCH-MORTON (§2.1.3): accumulate ~batchSize elements, Morton-radix-
+// sort the batch, slice the sorted order into chunks → spatially tight chunk AABBs
+// (frustum culling + front-to-back fall out) while peak CPU memory stays bounded
+// by batchSize × constant — never proportional to the file (§3 heap bound).
+//
+// Chunk = {
+//   count, bboxLocal: Float64Array(6) [minX,minY,minZ,maxX,maxY,maxZ],
+//   pos: Uint16Array(3N)  — quantized against bboxLocal (denormalize in-shader),
+//   intensity: Uint16Array, classification: Uint8Array, rgb: Uint8Array(3N)|null,
+//   recIdx: Uint32Array   — row number in the source file: THE join key (§4).
+// }
+
+
+// mulberry32 — tiny seeded PRNG; good enough for a decorrelating shuffle.
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// Fisher–Yates permutation of 0..n-1.
+function shuffledIndices(n, rnd) {
+  const idx = new Uint32Array(n);
+  for (let i = 0; i < n; i++) idx[i] = i;
+  for (let i = n - 1; i > 0; i--) {
+    const j = (rnd() * (i + 1)) | 0;
+    const t = idx[i]; idx[i] = idx[j]; idx[j] = t;
+  }
+  return idx;
+}
+
+// In-place Fisher–Yates over an existing index array (a gather list).
+function shuffleInPlace(idx, rnd) {
+  for (let i = idx.length - 1; i > 0; i--) {
+    const j = (rnd() * (i + 1)) | 0;
+    const t = idx[i]; idx[i] = idx[j]; idx[j] = t;
+  }
+  return idx;
+}
+
+// Pick the document frame from a provider header (bbox in world coords). CRS is
+// identity metadata only — condenser never reprojects.
+function documentFrame(header, { crs = null } = {}) {
+  const b = header.bbox;
+  if (b && Number.isFinite(b.min[0]) && Number.isFinite(b.max[0]) && (b.max[0] || b.min[0])) {
+    return frameFromBounds({ min: b.min, max: b.max }, { crs, round: 1 });
+  }
+  return makeFrame({ origin: [0, 0, 0], crs });            // no usable bbox → identity
+}
+
+/**
+ * Build one render Chunk from columnar source arrays. `indices` is an optional
+ * gather list (element ids into the columns — e.g. one Morton-ordered slice of a
+ * batch); omitted → all elements. The gather list is SHUFFLED (in a copy) before
+ * the single gather-quantize pass — gather and shuffle cost one pass together.
+ */
+function buildChunk({ x, y, z, intensity, classification, rgb, recIdx }, frame, rnd, indices = null) {
+  const n = indices ? indices.length : x.length;
+  const o = frame.origin;
+  // pass 1 — frame-local bbox (f64 subtract BEFORE any narrowing — the one hard rule)
+  let minX = Infinity, minY = Infinity, minZ = Infinity, maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  for (let k = 0; k < n; k++) {
+    const i = indices ? indices[k] : k;
+    const px = x[i] - o[0], py = y[i] - o[1], pz = z[i] - o[2];
+    if (px < minX) minX = px; if (px > maxX) maxX = px;
+    if (py < minY) minY = py; if (py > maxY) maxY = py;
+    if (pz < minZ) minZ = pz; if (pz > maxZ) maxZ = pz;
+  }
+  const sx = maxX > minX ? 65535 / (maxX - minX) : 0;
+  const sy = maxY > minY ? 65535 / (maxY - minY) : 0;
+  const sz = maxZ > minZ ? 65535 / (maxZ - minZ) : 0;
+  // pass 2 — shuffle the gather order, then gather + quantize in one sweep
+  const perm = indices ? shuffleInPlace(Uint32Array.from(indices), rnd) : shuffledIndices(n, rnd);
+  const pos = new Uint16Array(3 * n);
+  const outI = new Uint16Array(n), outC = new Uint8Array(n), outR = new Uint32Array(n);
+  const outRgb = rgb ? new Uint8Array(3 * n) : null;
+  for (let k = 0; k < n; k++) {
+    const i = perm[k];
+    pos[k * 3] = ((x[i] - o[0] - minX) * sx + 0.5) | 0;
+    pos[k * 3 + 1] = ((y[i] - o[1] - minY) * sy + 0.5) | 0;
+    pos[k * 3 + 2] = ((z[i] - o[2] - minZ) * sz + 0.5) | 0;
+    outI[k] = intensity[i];
+    outC[k] = classification[i];
+    outR[k] = recIdx[i];
+    if (outRgb) { outRgb[k * 3] = rgb[i * 3]; outRgb[k * 3 + 1] = rgb[i * 3 + 1]; outRgb[k * 3 + 2] = rgb[i * 3 + 2]; }
+  }
+  return {
+    count: n,
+    bboxLocal: Float64Array.of(minX, minY, minZ, maxX, maxY, maxZ),
+    pos, intensity: outI, classification: outC, rgb: outRgb, recIdx: outR,
+  };
+}
+
+// Denormalize one quantized element back to frame-local f64 (tests + picking).
+function chunkLocalPosition(chunk, k) {
+  const b = chunk.bboxLocal;
+  const d = (v, mn, mx) => (mx > mn ? mn + (v / 65535) * (mx - mn) : mn);
+  return [
+    d(chunk.pos[k * 3], b[0], b[3]),
+    d(chunk.pos[k * 3 + 1], b[1], b[4]),
+    d(chunk.pos[k * 3 + 2], b[2], b[5]),
+  ];
+}
+
+/**
+ * ChunkBuilder — feed RawChunks as they stream in; emits finished Chunks via
+ * onChunk. Batch-Morton by default: elements accumulate to ~batchSize, the batch
+ * is Morton-sorted and sliced into chunkSize chunks (each internally shuffled).
+ * `morton: false` slices in arrival order instead (still shuffled). flush()
+ * emits the remainder and returns the document summary.
+ */
+function createChunkBuilder({ frame, chunkSize = 1 << 20, batchSize = 0, morton = true, seed = 1, onChunk }) {
+  const rnd = mulberry32(seed);
+  const batchN = batchSize || chunkSize * 4;               // default: 4 chunks per spatial batch
+  let pend = [];                                           // pending RawChunk column slices
+  let pendCount = 0;
+  const doc = { count: 0, bboxLocal: Float64Array.of(Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity), hasRgb: false };
+
+  const concat = (Type, parts, per) => {
+    const out = new Type(pendCount * per);
+    let off = 0;
+    for (const p of parts) { out.set(p, off); off += p.length; }
+    return out;
+  };
+  const emitChunk = (chunk) => {
+    doc.count += chunk.count;
+    doc.hasRgb = doc.hasRgb || !!chunk.rgb;
+    const b = doc.bboxLocal, cb = chunk.bboxLocal;
+    for (let i = 0; i < 3; i++) { if (cb[i] < b[i]) b[i] = cb[i]; if (cb[i + 3] > b[i + 3]) b[i + 3] = cb[i + 3]; }
+    onChunk(chunk);
+  };
+  const flushBatch = () => {
+    if (!pendCount) return;
+    const cols = {
+      x: concat(Float64Array, pend.map((p) => p.x), 1),
+      y: concat(Float64Array, pend.map((p) => p.y), 1),
+      z: concat(Float64Array, pend.map((p) => p.z), 1),
+      intensity: concat(Uint16Array, pend.map((p) => p.intensity), 1),
+      classification: concat(Uint8Array, pend.map((p) => p.classification), 1),
+      rgb: pend.every((p) => p.rgb) ? concat(Uint8Array, pend.map((p) => p.rgb), 3) : null,
+      recIdx: concat(Uint32Array, pend.map((p) => p.recIdx), 1),
+    };
+    const n = pendCount;
+    pend = []; pendCount = 0;
+    const order = morton ? radixSortIndices(mortonKeys(cols.x, cols.y, cols.z, n), n) : null;
+    for (let start = 0; start < n; start += chunkSize) {
+      const end = Math.min(start + chunkSize, n);
+      const slice = order ? order.subarray(start, end)
+        : Uint32Array.from({ length: end - start }, (_, i) => start + i);
+      emitChunk(buildChunk(cols, frame, rnd, slice));
+    }
+  };
+
+  return {
+    push(raw) {
+      // record indices: the provider may supply raw.recIdx directly (RAW record
+      // numbers, gaps allowed — .dm skips bad rows but keeps true row numbers so
+      // O(1) record fetch works); default = recStart + i (gapless providers).
+      let recIdx = raw.recIdx;
+      if (!recIdx) {
+        recIdx = new Uint32Array(raw.count);
+        for (let i = 0; i < raw.count; i++) recIdx[i] = raw.recStart + i;
+      }
+      let taken = 0;
+      while (taken < raw.count) {
+        const room = batchN - pendCount;
+        const n = Math.min(room, raw.count - taken);
+        const slice = (a, per = 1) => (a ? a.subarray(taken * per, (taken + n) * per) : null);
+        pend.push({ x: slice(raw.x), y: slice(raw.y), z: slice(raw.z), intensity: slice(raw.intensity), classification: slice(raw.classification), rgb: slice(raw.rgb, 3), recIdx: recIdx.subarray(taken, taken + n) });
+        pendCount += n; taken += n;
+        if (pendCount >= batchN) flushBatch();
+      }
+    },
+    flush() { flushBatch(); return doc; },
+    get doc() { return doc; },
+  };
+}
+
+// ── src/core/msort.js ──
+
+// @gcu/condenser — an EXTERNAL Morton sort: records in, records back out in
+// Z-order, whatever the model size, in bounded memory.
+//
+// Sorting in memory meant holding every column of every record at once (boxed
+// JS values, 16-24 B each: ~2 GB at the 8M-block ceiling micro had to impose,
+// with bigger models written unsorted). Here:
+//   push    — each record's key is its 30-bit Morton key against a FIXED bbox
+//             (so keys from any pass compare); the record lands in the BUCKET of
+//             its key's top bits, staged a few thousand records at a time and
+//             SPILLED as a Blob part (keys · source record numbers · numbers as
+//             Float64 · strings as JSON). The browser pages large Blob data to
+//             disk itself — no file permission, no OPFS.
+//   batches — bucket by bucket (buckets ARE key ranges, so their order is the
+//             global order), read back, radix-sort by the full key (stable), and
+//             yield groups of `groupSize` records with their source record
+//             numbers (`recs`) — the permutation a caller applies to anything
+//             else it keeps per record.
+// Peak memory ≈ one bucket (target records × columns) + the staging buffers.
+
+// opts: { bbox: { min:[x,y,z], max:[x,y,z] }, n (expected records), kinds:
+// ['num'|'str', …] per column, target (records per bucket, ~1M), staging (bytes
+// of staging across buckets, ~64 MB) }
+function createMortonSorter({ bbox, n = 0, kinds, target = 1 << 20, staging = 64 << 20 }) {
+  const nc = kinds.length, isNum = kinds.map((k) => k === 'num');
+  const lo = bbox.min, hi = bbox.max;
+  const sc = [0, 1, 2].map((a) => (hi[a] > lo[a] ? 1023 / (hi[a] - lo[a]) : 0));
+  const q = (v, a) => { const t = ((v - lo[a]) * sc[a]) | 0; return t < 0 ? 0 : t > 1023 ? 1023 : t; };
+  // 2 bits of slack over n/target: real models fill their bbox unevenly
+  const bits = Math.max(0, Math.min(15, Math.ceil(Math.log2(Math.max(1, n / target))) + 2));
+  const B = 1 << bits, shift = 30 - bits;
+  const chunk = Math.max(256, Math.min(1 << 14, Math.floor(staging / (B * (nc + 1) * 8))));
+  const buckets = Array.from({ length: B }, () => ({ parts: [], n: 0, keys: null, recs: null, cols: null, c: 0 }));
+  const enc = new TextEncoder(), dec = new TextDecoder();
+  let total = 0;
+  const stage = (bk) => {
+    bk.keys = new Uint32Array(chunk); bk.recs = new Uint32Array(chunk);
+    bk.cols = kinds.map((k) => (k === 'num' ? new Float64Array(chunk) : new Array(chunk)));
+    bk.c = 0;
+  };
+  const spill = (bk) => {
+    const c = bk.c; if (!c) return;
+    const pieces = [bk.keys.slice(0, c), bk.recs.slice(0, c)], strLens = [];
+    for (let j = 0; j < nc; j++) {
+      if (isNum[j]) pieces.push(bk.cols[j].slice(0, c));
+      else { const b = enc.encode(JSON.stringify(bk.cols[j].slice(0, c))); strLens.push(b.length); pieces.push(b); }
+    }
+    bk.parts.push({ blob: new Blob(pieces), c, strLens });
+    stage(bk);
+  };
+  return {
+    bits, buckets: B,
+    get count() { return total; },
+    // values: one per column — a number or null for 'num', a string or null for 'str'
+    push(x, y, z, values, rec) {
+      const key = mortonKey(q(x, 0), q(y, 1), q(z, 2)) >>> 0;
+      const bk = buckets[key >>> shift];
+      if (!bk.keys) stage(bk);
+      const i = bk.c++;
+      bk.keys[i] = key; bk.recs[i] = rec;
+      for (let j = 0; j < nc; j++) { const v = values[j]; bk.cols[j][i] = isNum[j] ? (v == null ? NaN : v) : (v == null ? null : v); }
+      bk.n++; total++;
+      if (bk.c === chunk) spill(bk);
+    },
+    // → async iterator of { count, cols: [Array(count)] (numbers or null / strings
+    //   or null), recs: Uint32Array(count) }, in Morton order
+    async *batches(groupSize = 1 << 16) {
+      for (const bk of buckets) spill(bk);
+      let gCols = kinds.map(() => []), gRecs = [], gN = 0;
+      const flush = function* () { if (gN) { yield { count: gN, cols: gCols, recs: Uint32Array.from(gRecs) }; gCols = kinds.map(() => []); gRecs = []; gN = 0; } };
+      for (const bk of buckets) {
+        if (!bk.n) continue;
+        const m = bk.n, keys = new Uint32Array(m), recs = new Uint32Array(m);
+        const cols = kinds.map((k) => (k === 'num' ? new Float64Array(m) : new Array(m)));
+        let at = 0;
+        for (const pt of bk.parts) {
+          const buf = await pt.blob.arrayBuffer(), c = pt.c;
+          keys.set(new Uint32Array(buf, 0, c), at); recs.set(new Uint32Array(buf, 4 * c, c), at);
+          let off = 8 * c, s = 0;
+          for (let j = 0; j < nc; j++) {
+            if (isNum[j]) { cols[j].set(new Float64Array(buf.slice(off, off + 8 * c)), at); off += 8 * c; }
+            else { const arr = JSON.parse(dec.decode(new Uint8Array(buf, off, pt.strLens[s]))); off += pt.strLens[s++]; for (let i = 0; i < c; i++) cols[j][at + i] = arr[i]; }
+          }
+          at += c;
+        }
+        bk.parts = null;                                   // the bucket's spill is consumed
+        const order = radixSortIndices(keys, m);
+        for (let r = 0; r < m; r++) {
+          const i = order[r];
+          for (let j = 0; j < nc; j++) { const v = cols[j][i]; gCols[j].push(isNum[j] ? (v !== v ? null : v) : v); }
+          gRecs.push(recs[i]); gN++;
+          if (gN === groupSize) yield* flush();
+        }
+      }
+      yield* flush();
+    },
+  };
+}
+
+// ── src/core/blocks.js ──
+
+// @gcu/condenser — block-model chunks: IJK-exact representation (micro-spec §2.5).
+//
+// For a REGULAR uniform grid, a block's centroid is fully determined by its integer
+// IJK: center = grid.originLocal + ijk · size, where originLocal is the CENTROID of
+// block (0,0,0) — the centroid convention throughout. Chunks store raw uint16 IJK
+// (not bbox-normalized lattice positions), so reconstruction is EXACT — and IJK is
+// itself useful for the grid-view join. Half-dims are a chunk-level uniform (all
+// blocks one size) for a REGULAR grid. SUB-BLOCKED models use the same IJK scheme
+// against a FINE lattice (pitch = min dim /2) plus a per-block u8 size code into a
+// shared half-dim palette (chunk.dim + chunk.dimPalette); centroids stay exact.
+//
+// Attributes per block: one SCALAR channel (grade — f32 in, quantized u16 against
+// the chunk's min/max, range carried per chunk) + one CATEGORY channel (u8 codes
+// from the provider's dictionary, ≤255 distinct) + uint32 record index (the join).
+// The intra-chunk shuffle invariant (§2.1.4) applies unchanged.
+//
+// BlockChunk = {
+//   kind: 'blocks', count,
+//   grid: { originLocal: [x,y,z], size: [dx,dy,dz] },   — shared, frame-local
+//   ijk: Uint16Array(3N), chan: Uint16Array(N), chanRange: [min,max],
+//   cat: Uint8Array(N), recIdx: Uint32Array(N),
+//   bboxLocal: Float64Array(6)                          — outer faces, for culling
+// }
+
+
+// Grid from three axes + a frame → the block-chunk grid descriptor. origin here
+// is the centroid of block (0,0,0), frame-local.
+//
+// ROTATED lattices (grid/basis.js): `rot` is the rotation R (column-major,
+// columns = the unit U/V/W directions) and `anchor` the world point the lattice
+// coordinates are measured from (block 0's centroid, canonically). The axes are
+// then LATTICE coordinates q = Rᵀ·(p − anchor), where the lattice is
+// axis-aligned; block (i,j,k)'s world centroid is anchor + R·(origin_q + ijk·pitch).
+// An axis-aligned grid is rot = null, so every existing caller is unchanged.
+function makeBlockGrid(axes, frame, rot = null, anchor = null) {
+  const o = frame.origin;
+  const q0 = [axes[0].origin, axes[1].origin, axes[2].origin];
+  const R = rot && !isIdentity3(rot) ? Array.from(rot) : null;
+  let originLocal;
+  if (R) {
+    const A = anchor || [0, 0, 0];
+    const d = [R[0] * q0[0] + R[3] * q0[1] + R[6] * q0[2], R[1] * q0[0] + R[4] * q0[1] + R[7] * q0[2], R[2] * q0[0] + R[5] * q0[1] + R[8] * q0[2]];
+    originLocal = [(A[0] - o[0]) + d[0], (A[1] - o[1]) + d[1], (A[2] - o[2]) + d[2]];   // anchor − frame first: small numbers meet small numbers
+  } else originLocal = [q0[0] - o[0], q0[1] - o[1], q0[2] - o[2]];
+  const g = {
+    originLocal,
+    size: [axes[0].pitch || 1, axes[1].pitch || 1, axes[2].pitch || 1],
+    count: [axes[0].count, axes[1].count, axes[2].count],
+  };
+  if (R) { g.rot = Float32Array.from(R); g.rotD = R; }       // f32 for the GPU, f64 for CPU math
+  return g;
+}
+const isIdentity3 = (r) => Math.abs(r[0] - 1) < 1e-12 && Math.abs(r[4] - 1) < 1e-12 && Math.abs(r[8] - 1) < 1e-12
+  && Math.abs(r[1]) < 1e-12 && Math.abs(r[2]) < 1e-12 && Math.abs(r[3]) < 1e-12 && Math.abs(r[5]) < 1e-12 && Math.abs(r[6]) < 1e-12 && Math.abs(r[7]) < 1e-12;
+
+/**
+ * Build one BlockChunk from columnar world-space block centroids + attributes.
+ * `indices` = optional gather list (a Morton slice); shuffled like point chunks.
+ * IJK is computed against the grid; anything off-lattice snaps to the nearest
+ * cell (the provider validated regularity during discovery).
+ */
+function buildBlockChunk({ x, y, z, chan, cat, recIdx, dim }, grid, frame, rnd, indices = null, dimPalette = null) {
+  const n = indices ? indices.length : x.length;
+  const o = frame.origin;
+  const [gx, gy, gz] = grid.originLocal, [sx, sy, sz] = grid.size;
+  const perm = indices ? shuffleInPlace(Uint32Array.from(indices), rnd) : shuffledIndices(n, rnd);
+  const ijk = new Uint16Array(3 * n);
+  const outChan = new Uint16Array(n), outCat = new Uint8Array(n), outR = new Uint32Array(n);
+  const sub = !!(dim && dimPalette);                        // sub-blocked → per-block size code
+  const outDim = sub ? new Uint8Array(n) : null;
+  // chan range over this chunk (quantize against it — per-chunk min/max, §2.1.2)
+  let cMin = Infinity, cMax = -Infinity;
+  for (let k = 0; k < n; k++) { const v = chan[perm[k]]; if (Number.isFinite(v)) { if (v < cMin) cMin = v; if (v > cMax) cMax = v; } }
+  if (!Number.isFinite(cMin)) { cMin = 0; cMax = 0; }
+  const cScale = cMax > cMin ? 65535 / (cMax - cMin) : 0;
+  let minI = 65535, minJ = 65535, minK = 65535, maxI = 0, maxJ = 0, maxK = 0;
+  // sub-blocked: track actual box faces (variable half-dims) for the cull bbox
+  let fx0 = Infinity, fy0 = Infinity, fz0 = Infinity, fx1 = -Infinity, fy1 = -Infinity, fz1 = -Infinity;
+  const R = grid.rotD || null;                              // rotated lattice: IJK in the lattice frame
+  for (let k = 0; k < n; k++) {
+    const i = perm[k];
+    let bi, bj, bk;
+    if (R) {
+      const dx = x[i] - o[0] - gx, dy = y[i] - o[1] - gy, dz = z[i] - o[2] - gz;
+      bi = Math.max(0, Math.round((R[0] * dx + R[1] * dy + R[2] * dz) / sx));
+      bj = Math.max(0, Math.round((R[3] * dx + R[4] * dy + R[5] * dz) / sy));
+      bk = Math.max(0, Math.round((R[6] * dx + R[7] * dy + R[8] * dz) / sz));
+    } else {
+      bi = Math.max(0, Math.round((x[i] - o[0] - gx) / sx));
+      bj = Math.max(0, Math.round((y[i] - o[1] - gy) / sy));
+      bk = Math.max(0, Math.round((z[i] - o[2] - gz) / sz));
+    }
+    ijk[k * 3] = bi; ijk[k * 3 + 1] = bj; ijk[k * 3 + 2] = bk;
+    if (bi < minI) minI = bi; if (bi > maxI) maxI = bi;
+    if (bj < minJ) minJ = bj; if (bj > maxJ) maxJ = bj;
+    if (bk < minK) minK = bk; if (bk > maxK) maxK = bk;
+    const cv = chan[i];
+    outChan[k] = Number.isFinite(cv) ? ((cv - cMin) * cScale + 0.5) | 0 : 0;
+    outCat[k] = cat ? cat[i] : 0;
+    outR[k] = recIdx[i];
+    if (sub) {
+      const dc = dim[i]; outDim[k] = dc;
+      const h = dimPalette[dc] || [sx / 2, sy / 2, sz / 2];
+      const cx = gx + bi * sx, cy = gy + bj * sy, cz = gz + bk * sz;
+      if (cx - h[0] < fx0) fx0 = cx - h[0]; if (cx + h[0] > fx1) fx1 = cx + h[0];
+      if (cy - h[1] < fy0) fy0 = cy - h[1]; if (cy + h[1] > fy1) fy1 = cy + h[1];
+      if (cz - h[2] < fz0) fz0 = cz - h[2]; if (cz + h[2] > fz1) fz1 = cz + h[2];
+    }
+  }
+  // culling bbox = outer faces of the extreme blocks (variable-size when sub-blocked).
+  // Rotated: the world AABB of the chunk's IJK box (its 8 corners through R).
+  let bboxLocal;
+  if (R) {
+    bboxLocal = Float64Array.of(Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity);
+    for (const ci of [minI - 0.5, maxI + 0.5]) for (const cj of [minJ - 0.5, maxJ + 0.5]) for (const ck of [minK - 0.5, maxK + 0.5]) {
+      const u = ci * sx, v = cj * sy, w = ck * sz;
+      const p = [gx + R[0] * u + R[3] * v + R[6] * w, gy + R[1] * u + R[4] * v + R[7] * w, gz + R[2] * u + R[5] * v + R[8] * w];
+      for (let a = 0; a < 3; a++) { if (p[a] < bboxLocal[a]) bboxLocal[a] = p[a]; if (p[a] > bboxLocal[a + 3]) bboxLocal[a + 3] = p[a]; }
+    }
+  } else {
+    bboxLocal = sub
+      ? Float64Array.of(fx0, fy0, fz0, fx1, fy1, fz1)
+      : Float64Array.of(
+          gx + minI * sx - sx / 2, gy + minJ * sy - sy / 2, gz + minK * sz - sz / 2,
+          gx + maxI * sx + sx / 2, gy + maxJ * sy + sy / 2, gz + maxK * sz + sz / 2,
+        );
+  }
+  const chunk = { kind: 'blocks', count: n, grid, ijk, chan: outChan, chanRange: [cMin, cMax], cat: outCat, recIdx: outR, bboxLocal };
+  if (sub) { chunk.dim = outDim; chunk.dimPalette = dimPalette; }
+  return chunk;
+}
+
+// Exact centroid of element k, frame-local (tests + picking).
+function blockLocalCenter(chunk, k) {
+  const g = chunk.grid;
+  const u = chunk.ijk[k * 3] * g.size[0], v = chunk.ijk[k * 3 + 1] * g.size[1], w = chunk.ijk[k * 3 + 2] * g.size[2];
+  const R = g.rotD;
+  if (R) return [g.originLocal[0] + R[0] * u + R[3] * v + R[6] * w, g.originLocal[1] + R[1] * u + R[4] * v + R[7] * w, g.originLocal[2] + R[2] * u + R[5] * v + R[8] * w];
+  return [g.originLocal[0] + u, g.originLocal[1] + v, g.originLocal[2] + w];
+}
+
+// a batch's own random stream (seedPerBatch): batch k shuffles the same way
+// whoever builds it and whatever was built before — what lets batches be built
+// in parallel (micro's chunkworker) and still come out byte-identical
+const batchSeed = (seed, k) => (Math.imul(k + 1, 0x9E3779B1) ^ seed) >>> 0;
+
+// ONE Morton batch → its chunks: sort the batch by Morton key, slice it into
+// chunkSize pieces, build (and shuffle) each. cols = { x, y, z, chan, cat, dim,
+// recIdx } of n records. The builder's batch step, exported so a worker can run it.
+function buildBlockBatch(cols, n, { grid, frame, dimPalette = null, chunkSize, rnd }) {
+  const order = radixSortIndices(mortonKeys(cols.x, cols.y, cols.z, n), n);
+  const out = [];
+  for (let start = 0; start < n; start += chunkSize) out.push(buildBlockChunk(cols, grid, frame, rnd, order.subarray(start, Math.min(start + chunkSize, n)), dimPalette));
+  return out;
+}
+
+/**
+ * BlockChunkBuilder — same shape as createChunkBuilder but for block RawChunks
+ * ({ count, x, y, z, chan: Float32Array|Float64Array, cat: Uint8Array|null,
+ * recStart }). Batch-Morton, sliced, shuffled. Tracks the document chan range
+ * (for the color ramp) alongside the local bbox.
+ */
+function createBlockChunkBuilder({ frame, grid, dimPalette = null, chunkSize = 1 << 20, batchSize = 0, seed = 1, seedPerBatch = false, onChunk }) {
+  let rnd = mulberry32(seed), batchNo = 0;
+  const batchN = batchSize || chunkSize * 4;
+  let pend = [], pendCount = 0;
+  const doc = {
+    count: 0,
+    bboxLocal: Float64Array.of(Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity),
+    chanRange: [Infinity, -Infinity],
+  };
+  const concat = (Type, parts, per = 1) => {
+    const out = new Type(pendCount * per);
+    let off = 0;
+    for (const p of parts) { out.set(p, off); off += p.length; }
+    return out;
+  };
+  const flushBatch = () => {
+    if (!pendCount) return;
+    const cols = {
+      x: concat(Float64Array, pend.map((p) => p.x)),
+      y: concat(Float64Array, pend.map((p) => p.y)),
+      z: concat(Float64Array, pend.map((p) => p.z)),
+      chan: concat(Float64Array, pend.map((p) => p.chan)),
+      cat: pend.every((p) => p.cat) ? concat(Uint8Array, pend.map((p) => p.cat)) : null,
+      dim: dimPalette && pend.every((p) => p.dim) ? concat(Uint8Array, pend.map((p) => p.dim)) : null,
+      recIdx: concat(Uint32Array, pend.map((p) => p.recIdx)),
+    };
+    const n = pendCount;
+    pend = []; pendCount = 0;
+    if (seedPerBatch) rnd = mulberry32(batchSeed(seed, batchNo));
+    batchNo++;
+    for (const chunk of buildBlockBatch(cols, n, { grid, frame, dimPalette, chunkSize, rnd })) {
+      doc.count += chunk.count;
+      const b = doc.bboxLocal, cb = chunk.bboxLocal;
+      for (let i = 0; i < 3; i++) { if (cb[i] < b[i]) b[i] = cb[i]; if (cb[i + 3] > b[i + 3]) b[i + 3] = cb[i + 3]; }
+      if (chunk.chanRange[0] < doc.chanRange[0]) doc.chanRange[0] = chunk.chanRange[0];
+      if (chunk.chanRange[1] > doc.chanRange[1]) doc.chanRange[1] = chunk.chanRange[1];
+      onChunk(chunk);
+    }
+  };
+  return {
+    push(raw) {
+      // record indices: the provider may supply raw.recIdx directly (RAW record
+      // numbers, gaps allowed — .dm skips bad rows but keeps true row numbers so
+      // O(1) record fetch works); default = recStart + i (gapless providers).
+      let recIdx = raw.recIdx;
+      if (!recIdx) {
+        recIdx = new Uint32Array(raw.count);
+        for (let i = 0; i < raw.count; i++) recIdx[i] = raw.recStart + i;
+      }
+      let taken = 0;
+      while (taken < raw.count) {
+        const room = batchN - pendCount;
+        const n = Math.min(room, raw.count - taken);
+        const s = (a) => (a ? a.subarray(taken, taken + n) : null);
+        pend.push({ x: s(raw.x), y: s(raw.y), z: s(raw.z), chan: s(raw.chan), cat: s(raw.cat), dim: s(raw.dim), recIdx: recIdx.subarray(taken, taken + n) });
+        pendCount += n; taken += n;
+        if (pendCount >= batchN) flushBatch();
+      }
+    },
+    flush() { flushBatch(); return doc; },
+    get doc() { return doc; },
+  };
+}
+
+// ── src/grid/infer.js ──
+
+// @gcu/condenser — grid inference (the grid layer): recover a regular lattice
+// from what a provider's discovery sweep observed. Home of the axis inference
+// today and the rotated-basis inference tomorrow (micro-rotated-models spec:
+// cluster nearest-neighbour centroid displacements → U/V/W generators).
+
+/**
+ * Infer a regular grid from per-axis distinct centroid values (collected by a
+ * provider's discovery sweep). Returns { origin (CENTROID of block 0 — i.e. the
+ * first lattice value), pitch, count } per axis, or null when the axis isn't a
+ * consistent lattice. `values` must be sorted ascending, deduped.
+ */
+function inferAxis(values, { rel = 1e-6 } = {}) {
+  if (!values.length) return null;
+  if (values.length === 1) return { origin: values[0], pitch: 0, count: 1 };
+  let pitch = Infinity;
+  for (let i = 1; i < values.length; i++) {
+    const d = values[i] - values[i - 1];
+    if (d > 0 && d < pitch) pitch = d;
+  }
+  if (!Number.isFinite(pitch) || pitch <= 0) return null;
+  const span = values[values.length - 1] - values[0];
+  const count = Math.round(span / pitch) + 1;
+  if (count > 65535) return null;                          // beyond u16 IJK — not this path
+  // tolerance: a thousandth of the pitch, widened by a magnitude-relative slack
+  // for coordinates stored at float32-ish precision (≈0.6 m at a UTM easting) —
+  // but NEVER past a tenth of the pitch. Uncapped, that slack is wider than the
+  // blocks at UTM northings (7.8 m at 7.8×10⁶), so any scatter of values passed
+  // as a "lattice": a ROTATED model's centroids read as an axis-aligned grid of
+  // their min spacing and drew as wrong boxes.
+  const eps = Math.max(pitch * 1e-3, Math.min(Math.abs(values[0]) * rel, pitch * 0.1));
+  for (const v of values) {
+    const k = Math.round((v - values[0]) / pitch);
+    if (Math.abs(values[0] + k * pitch - v) > eps) return null;   // off-lattice → not regular
+  }
+  return { origin: values[0], pitch, count };
+}
+
+// ── sub-blocked models: a fine lattice + a size palette ──────────────────────
+// A sub-blocked model carries per-block sizes (DX/DY/DZ, XINC…). Every provider
+// (delimited, Datamine, Parquet) collects the same three things in its discovery
+// sweep: per-axis distinct centroids, the smallest size per axis, and the
+// distinct size triples (as dimKey strings). This turns them into the fine
+// lattice (pitch = min size / 2, so every power-of-2 sub-block centre lands on
+// it) and the half-size palette the box shader reads. null = no sub-block
+// lattice: sizes don't vary, a centre is off the fine lattice (non-power-of-2
+// splits), an axis overflows u16, or there are more than 256 distinct sizes
+// (the per-block size code is a u8 — past that a code would be wrong, so the
+// caller falls back to points rather than drawing some blocks the wrong size).
+
+const DIM_PALETTE_MAX = 256;
+const r10 = (v) => Number(v.toPrecision(10));
+/** The canonical key of one (dx, dy, dz) size triple — full sizes, not halves. */
+const dimKey = (dx, dy, dz) => `${r10(dx)},${r10(dy)},${r10(dz)}`;
+/**
+ * dimKey with a memo: the same triple builds its string once. Distinct sizes are
+ * few (≤ DIM_PALETTE_MAX on any model we draw), so the memo stays small.
+ */
+function makeDimKeyer() {
+  const memo = new Map();
+  return (dx, dy, dz) => {
+    let my = memo.get(dx); if (!my) memo.set(dx, my = new Map());
+    let mz = my.get(dy); if (!mz) my.set(dy, mz = new Map());
+    let k = mz.get(dz); if (k === undefined) mz.set(dz, k = dimKey(dx, dy, dz));
+    return k;
+  };
+}
+/**
+ * One axis's distinct centroids, rounded to 10 significant digits. `add(v)` gives
+ * exactly `if (set.size < cap) set.add(r10(v))`, but rounds each distinct RAW value
+ * once: r10 goes through a string, and per value it was 60 s of a 60M-block open.
+ * A block model repeats a few hundred values per axis, so almost every add is a
+ * Set hit. The raw memo is bounded; past it, values are rounded as they come.
+ */
+function axisDistinct(cap) {
+  const set = new Set(), seen = new Set(), RAW = cap * 4;
+  let last = NaN;
+  return {
+    set,
+    add(v) {
+      if (v === last || set.size >= cap) return;
+      last = v;
+      if (seen.size < RAW) { if (seen.has(v)) return; seen.add(v); }
+      set.add(r10(v));
+    },
+  };
+}
+/** size key → palette code, rebuilt from a persisted half-size palette. */
+function dimCodeFromPalette(dimPalette) {
+  return new Map(dimPalette.map((h, i) => [dimKey(h[0] * 2, h[1] * 2, h[2] * 2), i]));
+}
+
+/**
+ * @param axisValues [Set|Array ×3] distinct centroid values per axis (any order)
+ * @param minDim     [dx, dy, dz] the smallest positive size seen per axis
+ * @param dimKeys    Set of dimKey strings (collect at least DIM_PALETTE_MAX + 1 to detect overflow)
+ * @returns { grid: {x,y,z}, dimPalette: [[hx,hy,hz]…], dimCode: Map } | null
+ */
+function inferSubBlockLattice(axisValues, minDim, dimKeys, { cap = 300000 } = {}) {
+  if (!(dimKeys.size > 1) || dimKeys.size > DIM_PALETTE_MAX || !minDim.every((d) => Number.isFinite(d) && d > 0)) return null;
+  const axes = [0, 1, 2].map((a) => {
+    const set = axisValues[a], n = set.size != null ? set.size : set.length;
+    if (!n || n >= cap) return null;
+    const vals = [...set].sort((u, v) => u - v);
+    const origin = vals[0], pitch = minDim[a] / 2;
+    const count = Math.round((vals[vals.length - 1] - origin) / pitch) + 1;
+    if (count > 65535) return null;
+    // relative slack for float noise at big magnitudes, but never past a tenth of the pitch:
+    // |origin|·1e-6 is ~7 m at a UTM northing, which would swallow a whole 2 m sub-block
+    const eps = Math.min(pitch / 10, Math.max(pitch * 1e-3, Math.abs(origin) * 1e-6));
+    for (const v of vals) if (Math.abs(origin + Math.round((v - origin) / pitch) * pitch - v) > eps) return null;
+    return { origin, pitch, count };
+  });
+  if (!axes.every(Boolean)) return null;
+  const dims = [...dimKeys].map((k) => k.split(',').map(Number));
+  return {
+    grid: { x: axes[0], y: axes[1], z: axes[2] },
+    dimPalette: dims.map(([dx, dy, dz]) => [dx / 2, dy / 2, dz / 2]),
+    dimCode: new Map(dims.map((d, i) => [dimKey(d[0], d[1], d[2]), i])),
+  };
+}
+
+// ── src/grid/basis.js ──
+
+// @gcu/condenser — ROTATED lattices (the grid layer; micro-rotated-models spec §2–§3).
+//
+// One internal representation: the rotation R, a 3×3 matrix stored COLUMN-MAJOR
+// as 9 numbers whose columns are the unit U / V / W lattice directions, plus an
+// ANCHOR — the world position of block (0,0,0)'s centroid. Angles exist only at
+// the borders (a producer converts its own convention once and hands over
+// vectors; `source` keeps the raw angles for provenance).
+//
+// A rotated grid is an axis-aligned grid in LATTICE coordinates q = Rᵀ·(p − anchor):
+//   header.grid = { x, y, z: { origin, pitch, count } in q-space, rot: R, anchor }
+// with origin the q-space centroid of block (0,0,0) (0 when anchored there, the
+// canonical form). World centroid of block (i,j,k) = anchor + R·(origin + ijk·pitch).
+//
+// Why an anchor and not "rotate about the world origin": a model sits at UTM
+// magnitudes (~7×10⁶ m), so a direction error of 10⁻⁵ rad — what rounded export
+// centroids give you — would move block 0 by 70 m. About an anchor at the model,
+// the same error moves things by fractions of a millimetre.
+//
+// So the whole lattice machinery (inferAxis, gridsCompatible, commonLattice, the
+// resampler) runs verbatim on lattice coordinates for two models that share a
+// basis, once both are expressed about ONE anchor (inFrameOf).
+//
+// Only rotations are representable: U/V/W must be mutually orthogonal (a
+// sheared lattice is refused, not approximated).
+
+
+const ORTHO_TOL = 2e-3;                                    // |cos| between generators
+const I3 = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+
+const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const len = (a) => Math.hypot(a[0], a[1], a[2]);
+const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const unit = (a) => { const l = len(a); return [a[0] / l, a[1] / l, a[2] / l]; };
+
+/** a world offset d → lattice coords: Rᵀ·d */
+function toLattice(R, x, y, z) {
+  return [R[0] * x + R[1] * y + R[2] * z, R[3] * x + R[4] * y + R[5] * z, R[6] * x + R[7] * y + R[8] * z];
+}
+/** lattice coords → a world offset: R·q */
+function fromLattice(R, u, v, w) {
+  return [R[0] * u + R[3] * v + R[6] * w, R[1] * u + R[4] * v + R[7] * w, R[2] * u + R[5] * v + R[8] * w];
+}
+function isAxisAligned(R, tol = 1e-9) {
+  if (!R) return true;
+  return Math.abs(R[0] - 1) < tol && Math.abs(R[4] - 1) < tol && Math.abs(R[8] - 1) < tol;
+}
+/**
+ * two bases are the same lattice orientation (null ≡ identity). The tolerance
+ * (≈0.006°) absorbs two INDEPENDENT fits of one lattice from rounded export
+ * centroids (they agree to ~10⁻⁵); over a 2 km model it is 20 cm, a fiftieth of
+ * a 10 m block — well inside the snap the resampler does.
+ */
+function sameBasis(A, B, tol = 1e-4) {
+  const a = A || I3, b = B || I3;
+  for (let i = 0; i < 9; i++) if (Math.abs(a[i] - b[i]) > tol) return false;
+  return true;
+}
+/** a grid's world → lattice map: (x,y,z) → q, for a grid { rot, anchor } (identity when axis-aligned) */
+function latticeMapOf(grid) {
+  const R = grid && grid.rot, A = (grid && grid.anchor) || [0, 0, 0];
+  if (!R) return (x, y, z) => [x, y, z];
+  return (x, y, z) => toLattice(R, x - A[0], y - A[1], z - A[2]);
+}
+/**
+ * a grid's world point → its cell: (x,y,z) → i + nx·(j + ny·k), or -1 outside.
+ * Nearest centroid, in the grid's OWN lattice frame — so a rotated grid is looked
+ * up through its basis, never with world coordinates against lattice-frame
+ * origins. A z pitch of 0/null is a 2D grid (k = 0).
+ */
+function cellOf(grid) {
+  const toQ = latticeMapOf(grid), X = grid.x, Y = grid.y, Z = grid.z, nx = X.count, ny = Y.count, nz = Z.count || 1;
+  return (x, y, z) => {
+    const q = toQ(x, y, z);
+    const i = Math.round((q[0] - X.origin) / (X.pitch || 1)), j = Math.round((q[1] - Y.origin) / (Y.pitch || 1)), k = Z.pitch ? Math.round((q[2] - Z.origin) / Z.pitch) : 0;
+    return i >= 0 && i < nx && j >= 0 && j < ny && k >= 0 && k < nz ? i + nx * (j + ny * k) : -1;
+  };
+}
+/** a grid's lattice → world map (inverse of latticeMapOf) */
+function worldMapOf(grid) {
+  const R = grid && grid.rot, A = (grid && grid.anchor) || [0, 0, 0];
+  if (!R) return (u, v, w) => [u, v, w];
+  return (u, v, w) => { const d = fromLattice(R, u, v, w); return [A[0] + d[0], A[1] + d[1], A[2] + d[2]]; };
+}
+/**
+ * Re-express grid G's axes about REF's anchor (same basis required), so the
+ * axis-wise lattice machinery can compare / resample them. Axis-aligned grids
+ * come back unchanged.
+ */
+function inFrameOf(G, ref) {
+  if (!G.rot && !(ref && ref.rot)) return G;
+  if (!sameBasis(G.rot, ref.rot)) throw new Error('inFrameOf: grids do not share a basis');
+  // one side may be axis-aligned (no rot, anchor = the world origin) while the
+  // other is a NEAR-identity rotation that sameBasis accepts as the same basis
+  const ga = G.anchor || [0, 0, 0], ra = (ref && ref.anchor) || [0, 0, 0];
+  const d = toLattice(G.rot || (ref && ref.rot) || I3, ga[0] - ra[0], ga[1] - ra[1], ga[2] - ra[2]);
+  return {
+    x: { ...G.x, origin: G.x.origin + d[0] }, y: { ...G.y, origin: G.y.origin + d[1] }, z: { ...G.z, origin: G.z.origin + d[2] },
+    rot: ref.rot, anchor: ref.anchor,
+  };
+}
+
+/**
+ * U/V/W world generators (pitch × direction) → { rot, pitch: [|U|,|V|,|W|] }.
+ * Throws on a non-orthogonal (sheared) or degenerate basis.
+ */
+function basisFromVectors(U, V, W) {
+  const G = [U, V, W].map((g) => g.map(Number));
+  const L = G.map(len);
+  if (!L.every((l) => l > 0 && Number.isFinite(l))) throw new Error('lattice basis: U, V and W must be non-zero vectors');
+  for (const [a, b] of [[0, 1], [0, 2], [1, 2]]) {
+    const c = dot(G[a], G[b]) / (L[a] * L[b]);
+    if (Math.abs(c) > ORTHO_TOL) throw new Error(`lattice basis: ${'UVW'[a]} and ${'UVW'[b]} are not perpendicular (cos ${c.toFixed(4)}) — only rotated lattices are supported, not sheared ones`);
+  }
+  const d = G.map(unit);
+  return { rot: [...d[0], ...d[1], ...d[2]], pitch: L };
+}
+
+/** compass facts for display/lineage: azimuth of V (clockwise from north), tilt of W from vertical, all degrees */
+function basisAngles(R) {
+  const V = [R[3], R[4], R[5]], W = [R[6], R[7], R[8]];
+  let az = Math.atan2(V[0], V[1]) * 180 / Math.PI; if (az < 0) az += 360;
+  const tilt = Math.acos(Math.max(-1, Math.min(1, W[2]))) * 180 / Math.PI;
+  return { azimuth: az, tilt, zOnly: tilt < 1e-3 };
+}
+
+/**
+ * Recover the lattice DIRECTIONS from centroids alone (spec §3): nearest-
+ * neighbour displacement vectors cluster on the generators. `pts` = a flat
+ * Float64Array [x,y,z, …] — a reservoir (e.g. the first rows of a file, which
+ * an export writes in lattice order, so they are neighbours). Returns
+ * { rot, minStep } with columns ordered/signed to sit closest to E / N / Up, or
+ * null (irregular, sheared, too few points, or simply axis-aligned). Pitches
+ * and the precise directions come from fitLattice over all records.
+ */
+function inferLatticeBasis(pts, { samples = 300, k = 6 } = {}) {
+  const n = Math.floor(pts.length / 3);
+  if (n < 8) return null;
+  const S = Math.min(samples, n), step = n / S;
+  const disp = [];
+  const bestD = new Float64Array(k), bestI = new Int32Array(k);
+  for (let s = 0; s < S; s++) {
+    const i = Math.floor(s * step);
+    const xi = pts[i * 3], yi = pts[i * 3 + 1], zi = pts[i * 3 + 2];
+    bestD.fill(Infinity); bestI.fill(-1);
+    for (let j = 0; j < n; j++) {
+      if (j === i) continue;
+      const dx = pts[j * 3] - xi, dy = pts[j * 3 + 1] - yi, dz = pts[j * 3 + 2] - zi;
+      const d = dx * dx + dy * dy + dz * dz;
+      if (!(d > 0) || d >= bestD[k - 1]) continue;
+      let m = k - 1;
+      while (m > 0 && bestD[m - 1] > d) { bestD[m] = bestD[m - 1]; bestI[m] = bestI[m - 1]; m--; }
+      bestD[m] = d; bestI[m] = j;
+    }
+    for (let m = 0; m < k; m++) {
+      const j = bestI[m]; if (j < 0) continue;
+      let v = [pts[j * 3] - xi, pts[j * 3 + 1] - yi, pts[j * 3 + 2] - zi];
+      // one hemisphere: ±v are the same generator
+      const a = Math.abs(v[0]) >= Math.abs(v[1]) && Math.abs(v[0]) >= Math.abs(v[2]) ? 0 : Math.abs(v[1]) >= Math.abs(v[2]) ? 1 : 2;
+      if (v[a] < 0) v = [-v[0], -v[1], -v[2]];
+      disp.push(v);
+    }
+  }
+  // greedy clustering (relative tolerance — exports round their centroids)
+  const clusters = [];
+  for (const v of disp) {
+    const l = len(v);
+    let hit = null;
+    for (const c of clusters) { const dd = Math.hypot(v[0] - c.v[0], v[1] - c.v[1], v[2] - c.v[2]); if (dd < 2e-3 * Math.max(l, c.l)) { hit = c; break; } }
+    if (hit) { hit.n++; hit.s[0] += v[0]; hit.s[1] += v[1]; hit.s[2] += v[2]; }
+    else clusters.push({ v, l, n: 1, s: [...v] });
+  }
+  const minN = Math.max(3, Math.round(S * 0.05));
+  const cand = clusters.filter((c) => c.n >= minN).map((c) => { const m = [c.s[0] / c.n, c.s[1] / c.n, c.s[2] / c.n]; return { v: m, l: len(m), n: c.n }; }).sort((a, b) => a.l - b.l);
+  if (cand.length < 2) return null;
+  const g1 = cand[0];
+  const g2 = cand.find((c) => c !== g1 && Math.abs(dot(c.v, g1.v)) / (c.l * g1.l) < ORTHO_TOL);
+  if (!g2) return null;
+  const d1 = unit(g1.v), d2 = unit(g2.v), d3 = unit(cross(d1, d2));
+  const R = orientNearWorld([d1, d2, d3]);
+  if (isAxisAligned(R, 1e-6)) return null;                 // axis-aligned: not this path's call
+  return { rot: R, minStep: g1.l };
+}
+// order + sign three orthonormal directions to sit closest to world E / N / Up,
+// right-handed (a rotation, not a reflection)
+function orientNearWorld(dirs) {
+  const cols = [null, null, null], used = new Set(), pairs = [];
+  for (let di = 0; di < 3; di++) for (let a = 0; a < 3; a++) pairs.push({ di, a, w: Math.abs(dirs[di][a]) });
+  pairs.sort((p, q) => q.w - p.w || p.di - q.di || p.a - q.a);
+  for (const p of pairs) { if (cols[p.a] || used.has(p.di)) continue; const d = dirs[p.di]; cols[p.a] = d[p.a] < 0 ? [-d[0], -d[1], -d[2]] : d; used.add(p.di); }
+  if (dot(cols[0], cross(cols[1], cols[2])) < 0) cols[2] = cols[2].map((c) => -c);
+  return [...cols[0], ...cols[1], ...cols[2]];
+}
+
+// distinct lattice coordinates on one axis, robust to rounding jitter: values
+// are bucketed by a quantum τ (key = round(v/τ), holding the SUM and COUNT of
+// the real values), then buckets closer than 3τ merge — so 12.5004 and 12.4996
+// are one lattice plane, and its centre is the mean of the real values
+function clusterBuckets(buckets) {
+  const keys = [...buckets.keys()].sort((a, b) => a - b), out = [];
+  let sum = 0, n = 0, prev = null;
+  for (const k of keys) {
+    if (prev !== null && k - prev >= 3) { out.push(sum / n); sum = 0; n = 0; }
+    const b = buckets.get(k); sum += b[0]; n += b[1]; prev = k;
+  }
+  if (n) out.push(sum / n);
+  return out;
+}
+
+/**
+ * Measure a rotated lattice from ALL records: two coordinate sweeps.
+ *   1. bucket the lattice coordinates (about a provisional anchor) → per-axis
+ *      lattice planes → pitch / count (inferAxis on the plane centres);
+ *   2. least-squares the generators from every record's (i,j,k) — refining the
+ *      directions the reservoir guessed — and count records off the lattice.
+ * `sweep()` returns a FRESH async iterable of { x, y, z, count } each call.
+ * `minStep` = the smallest generator length (the jitter quantum is 1/1000 of it).
+ * → { grid: { x, y, z (origins 0), rot, anchor }, misfits } or null.
+ */
+async function fitLattice(R0, sweep, { minStep, cap = 300000, tol = 0.05 } = {}) {
+  if (!(minStep > 0)) throw new Error('fitLattice: minStep required');
+  const tau = minStep * 1e-3;
+  let R = R0, A = null;
+  // ── pass 1: planes per axis ──
+  const sets = [new Map(), new Map(), new Map()];
+  let n = 0;
+  for await (const b of sweep()) {
+    for (let i = 0; i < b.count; i++) {
+      const x = +b.x[i], y = +b.y[i], z = +b.z[i];
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+      if (!A) A = [x, y, z];
+      const q = toLattice(R, x - A[0], y - A[1], z - A[2]);
+      n++;
+      for (let a = 0; a < 3; a++) { const key = Math.round(q[a] / tau), e = sets[a].get(key); if (e) { e[0] += q[a]; e[1]++; } else sets[a].set(key, [q[a], 1]); }
+    }
+    if (sets[0].size > cap || sets[1].size > cap || sets[2].size > cap) return null;
+  }
+  if (!n) return null;
+  const axes = [0, 1, 2].map((a) => inferAxis(clusterBuckets(sets[a]), { rel: 0 }));
+  if (!axes.every(Boolean)) return null;
+  // ── pass 2: least squares p − A0 = i·U + j·V + k·W (+ a residual offset), and the misfit count ──
+  const o = axes.map((g) => g.origin), pit = axes.map((g) => g.pitch || 1);
+  const M = new Float64Array(16), B = new Float64Array(12);  // normal equations over [i, j, k, 1]
+  for await (const b of sweep()) {
+    for (let r = 0; r < b.count; r++) {
+      const x = +b.x[r], y = +b.y[r], z = +b.z[r];
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+      const d = [x - A[0], y - A[1], z - A[2]], q = toLattice(R, d[0], d[1], d[2]);
+      const f = [0, 1, 2].map((a) => Math.round((q[a] - o[a]) / pit[a])).concat(1);
+      for (let u = 0; u < 4; u++) { for (let v = 0; v < 4; v++) M[u * 4 + v] += f[u] * f[v]; for (let c = 0; c < 3; c++) B[u * 3 + c] += f[u] * d[c]; }
+    }
+  }
+  const X = solve4(M, B);                                    // rows 0..2 = U, V, W (world); row 3 = block-0 offset from A
+  if (X) {
+    const G = [0, 1, 2].map((a) => (axes[a].count > 1 ? [X[a * 3], X[a * 3 + 1], X[a * 3 + 2]] : null));
+    // a single-plane axis has no generator to fit — keep the reservoir's direction
+    const dirs = G.map((g, a) => (g ? unit(g) : [R[a * 3], R[a * 3 + 1], R[a * 3 + 2]]));
+    // re-orthonormalize (Gram–Schmidt in fitted order: longest-sampled first)
+    const e0 = dirs[0], e1 = unit(dirs[1].map((v, c) => v - dot(dirs[1], e0) * e0[c])), e2 = cross(e0, e1);
+    const R1 = [...e0, ...e1, ...(dot(e2, dirs[2]) < 0 ? e2.map((v) => -v) : e2)];
+    if (dot([R1[0], R1[1], R1[2]], cross([R1[3], R1[4], R1[5]], [R1[6], R1[7], R1[8]])) > 0) R = R1;
+    for (let a = 0; a < 3; a++) if (G[a]) axes[a] = { ...axes[a], pitch: snapPitch(len(G[a])) };
+    A = [A[0] + X[9], A[1] + X[10], A[2] + X[11]];            // the anchor moves to block 0's fitted centroid
+  }
+  // ── the honest check: every record within tol·pitch of its lattice node ──
+  let misfits = 0, worst = 0;
+  const pit2 = axes.map((g) => g.pitch || 1);
+  for await (const b of sweep()) {
+    for (let r = 0; r < b.count; r++) {
+      const x = +b.x[r], y = +b.y[r], z = +b.z[r];
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+      const q = toLattice(R, x - A[0], y - A[1], z - A[2]);
+      for (let a = 0; a < 3; a++) {
+        const kf = q[a] / pit2[a], e = Math.abs(kf - Math.round(kf));
+        if (e > worst) worst = e;
+        if (e > tol || Math.round(kf) < 0 || Math.round(kf) >= axes[a].count) { misfits++; break; }
+      }
+    }
+  }
+  return {
+    grid: { x: { origin: 0, pitch: axes[0].pitch, count: axes[0].count }, y: { origin: 0, pitch: axes[1].pitch, count: axes[1].count }, z: { origin: 0, pitch: axes[2].pitch, count: axes[2].count }, rot: R, anchor: A },
+    misfits, worst,
+  };
+}
+// A fitted pitch from rounded centroids is a MEASUREMENT of a block size that a
+// person chose (10, 12.5, 3.125, 1.5625 m): 9.9998 and 10.00003 are both "10",
+// and two models of one lattice must agree exactly for the join's common-
+// lattice test. (Measured: a 4-block axis of mm-rounded centroids fits to
+// ~2×10⁻⁵ relative.) Snap to the nearest SIMPLE size — 4 significant figures,
+// or a multiple of 1/64 m — when within 3×10⁻⁵ of it; otherwise keep it.
+function snapPitch(p) {
+  if (!(p > 0)) return p;
+  const step = 10 ** (Math.floor(Math.log10(p)) - 3);
+  for (const s of [+(Math.round(p / step) * step).toPrecision(4), Math.round(p * 64) / 64]) if (s > 0 && Math.abs(s - p) < 3e-5 * p) return s;
+  return p;
+}
+// solve the 4×4 symmetric system M·X = B (B has 3 columns), Gaussian elimination
+// with partial pivoting; null when singular (e.g. an axis with one plane)
+function solve4(M, B) {
+  const a = Array.from({ length: 4 }, (_, r) => [M[r * 4], M[r * 4 + 1], M[r * 4 + 2], M[r * 4 + 3], B[r * 3], B[r * 3 + 1], B[r * 3 + 2]]);
+  for (let c = 0; c < 4; c++) {
+    let p = c; for (let r = c + 1; r < 4; r++) if (Math.abs(a[r][c]) > Math.abs(a[p][c])) p = r;
+    if (Math.abs(a[p][c]) < 1e-12) { a[c][c] = 1; for (let k = c + 1; k < 7; k++) a[c][k] = 0; continue; }   // singular column: leave it at zero
+    [a[c], a[p]] = [a[p], a[c]];
+    for (let r = 0; r < 4; r++) { if (r === c) continue; const f = a[r][c] / a[c][c]; if (!f) continue; for (let k = c; k < 7; k++) a[r][k] -= f * a[c][k]; }
+  }
+  const X = new Float64Array(12);
+  for (let r = 0; r < 4; r++) for (let k = 0; k < 3; k++) X[r * 3 + k] = a[r][4 + k] / a[r][r];
+  return X;
+}
+
+/**
+ * The honest check for ONE centroid against a declared rotated lattice. Returns
+ * null when it sits on a node, else a reason string. `grid` = { x,y,z, rot, anchor }.
+ */
+function latticeMisfit(grid, x, y, z, i, { tol = 1e-3 } = {}) {
+  const q = latticeMapOf(grid)(+x, +y, +z);
+  for (let a = 0; a < 3; a++) {
+    const g = [grid.x, grid.y, grid.z][a];
+    if (!(g.pitch > 0)) { if (Math.abs(q[a] - g.origin) > 1e-6) return `record ${i} is off the single ${'UVW'[a]} plane`; continue; }
+    const kf = (q[a] - g.origin) / g.pitch, kr = Math.round(kf);
+    if (Math.abs(kf - kr) > tol) return `record ${i} is off the lattice along ${'UVW'[a]} by ${Math.abs(kf - kr).toFixed(3)} blocks`;
+    if (kr < 0 || kr >= g.count) return `record ${i} lies outside the lattice along ${'UVW'[a]} (index ${kr} of ${g.count})`;
+  }
+  return null;
+}
+
+/**
+ * The detector a provider runs when centroids are NOT an axis-aligned grid:
+ * reservoir → basis → a fit over every record. → { grid, angles, worst } or
+ * null. The result is a CANDIDATE: nothing here applies it.
+ */
+async function detectRotatedLattice(reservoir, sweep) {
+  const b = inferLatticeBasis(reservoir);
+  if (!b) return null;
+  const fit = await fitLattice(b.rot, sweep, { minStep: b.minStep });
+  if (!fit || fit.misfits) return null;
+  return { grid: fit.grid, angles: basisAngles(fit.grid.rot), worst: fit.worst };
+}
+
+/**
+ * An axis-aligned grid inferred from rotated centroids can be WRONG and still
+ * look regular: at 45° (or any rational-tangent angle — 3-4-5 is 36.87°) the
+ * centroids also sit on a finer axis lattice, so the model would open as boxes
+ * of the wrong size (half the volume at 45°, a 25th at 3-4-5) — tonnage wrong,
+ * nothing said. The tell is occupancy: such a lattice is mostly empty. When the
+ * inferred grid is sparse, try the rotated detector; if it finds a rotated
+ * lattice with BIGGER cells that fits every record, that is the model, and the
+ * axis grid was an artefact. A genuinely sparse axis-aligned model (ore-only
+ * export) has axis-aligned nearest neighbours, so the detector declines it.
+ * → a candidate as detectRotatedLattice gives, or null (keep the axis grid).
+ */
+async function detectRotatedOverAxisGrid(grid, count, reservoir, sweep, { maxOccupancy = 0.75 } = {}) {
+  if (!grid || grid.rot || !(count > 0) || !reservoir || reservoir.length < 24) return null;
+  const cells = grid.x.count * grid.y.count * grid.z.count;
+  if (!(cells > 0) || count / cells > maxOccupancy) return null;
+  const cand = await detectRotatedLattice(reservoir, sweep);
+  if (!cand) return null;
+  const vol = (g) => [g.x, g.y, g.z].reduce((p, a) => p * (a.pitch > 0 ? a.pitch : 1), 1);
+  return vol(cand.grid) > vol(grid) * 1.4 ? cand : null;
+}
+
+/**
+ * A producer's basis form — { origin: [x,y,z] (block 0's CENTROID), U, V, W
+ * (world vectors = pitch × direction), counts: [nu,nv,nw], source? } — into
+ * the internal grid. An axis-aligned basis comes back as a plain per-axis
+ * grid; a rotated one as { x,y,z (origins 0), rot, anchor: origin }.
+ */
+function gridFromBasis(b) {
+  const o = b.origin, c = b.counts || b.count;
+  if (!o || o.length !== 3 || !c || c.length !== 3) throw new Error('lattice basis: needs origin [x,y,z], U, V, W and counts [nu,nv,nw]');
+  const { rot, pitch } = basisFromVectors(b.U, b.V, b.W);
+  const counts = c.map((v) => v | 0);
+  if (!counts.every((v) => v >= 1)) throw new Error('lattice basis: counts must be ≥ 1');
+  if (isAxisAligned(rot, 1e-9)) {
+    return { x: { origin: +o[0], pitch: pitch[0], count: counts[0] }, y: { origin: +o[1], pitch: pitch[1], count: counts[1] }, z: { origin: +o[2], pitch: pitch[2], count: counts[2] } };
+  }
+  return { x: { origin: 0, pitch: pitch[0], count: counts[0] }, y: { origin: 0, pitch: pitch[1], count: counts[1] }, z: { origin: 0, pitch: pitch[2], count: counts[2] }, rot, anchor: o.map(Number), source: b.source || null };
+}
+/** the internal grid → the producer's basis form (what micro writes in micro:model) */
+function basisOfGrid(g) {
+  const R = g.rot || I3;
+  const origin = g.rot ? worldMapOf(g)(g.x.origin, g.y.origin, g.z.origin) : [g.x.origin, g.y.origin, g.z.origin];
+  const P = [g.x.pitch, g.y.pitch, g.z.pitch];
+  return { origin, U: [R[0] * P[0], R[1] * P[0], R[2] * P[0]], V: [R[3] * P[1], R[4] * P[1], R[5] * P[1]], W: [R[6] * P[2], R[7] * P[2], R[8] * P[2]], counts: [g.x.count, g.y.count, g.z.count], ...(g.source ? { source: g.source } : {}) };
+}
+
+// ── src/grid/grid-join.js ──
+
+// @gcu/condenser — grid compatibility + volume-weighted resample (micro join).
+//
+// A regular grid axis = { origin, pitch, count }, origin = block-0 CENTROID
+// (condenser convention). Cell i spans world [origin+(i-0.5)·pitch,
+// origin+(i+0.5)·pitch].
+//
+// Two grids are COMPATIBLE (per axis) when they share a common lattice
+// g = gcd(pitchA, pitchB) (both pitches integer multiples of g) AND their
+// origins are phase-aligned on g (offset an integer multiple of g). Then every
+// cell decomposes exactly into g-cells and a source→target resample is EXACT
+// (integer g-unit overlap weights, no float fuzz):
+//   - source coarser than target → refine-replicate,
+//   - source finer  → aggregate,
+//   - non-nested but common-lattice (e.g. 10 & 12 on g=2) → exact mixed weights.
+// Incompatible (no small common lattice, or off-phase) → refused with a reason.
+//
+// v1: axis-aligned grids. Rotated grids must share azimuth (not modelled here).
+
+const REL = 1e-6;                                          // relative tolerance
+
+// tolerant Euclidean gcd of two positive floats
+
+// ROTATED lattices (grid/basis.js): two grids are comparable only when they
+// share a basis — then both are expressed about ONE anchor (inFrameOf) and the
+// axis-wise machinery below runs unchanged on lattice coordinates. Different
+// orientations have no common lattice; the reason says so (cross-basis
+// oriented-box resampling is the v2 path).
+function basisMismatch(A, B) {
+  if (!A.rot && !B.rot) return null;
+  if (sameBasis(A.rot, B.rot)) return null;
+  const d = (G) => (G.rot ? `rotated (azimuth ${basisAngles(G.rot).azimuth.toFixed(1)}°)` : 'axis-aligned');
+  return `different lattice orientations — ${d(A)} vs ${d(B)}; no common lattice (cross-orientation resampling isn't supported yet)`;
+}
+const sameFrame = (G, ref) => (G.rot || ref.rot ? inFrameOf(G, ref) : G);
+
+function floatGcd(a, b, tol) {
+  a = Math.abs(a); b = Math.abs(b);
+  if (a < b) { const t = a; a = b; b = t; }
+  let guard = 0;
+  while (b > tol && guard++ < 1000) { const r = a % b; a = b; b = r; }
+  return a;
+}
+
+// Per-axis source→target overlap map. Returns { ok, reason } or
+// { ok:true, g, sp, tp, map:[[{t,w}...] per source index], nested }.
+// map[si] = target cells overlapping source cell si, w = overlap in g-units.
+function axisMap(src, tgt, opts = {}) {
+  // degenerate (single-plane) axis: trivial pass-through
+  if (src.count === 1 && tgt.count === 1) return { ok: true, g: 1, sp: 1, tp: 1, map: [[{ t: 0, w: 1 }]], nested: true };
+  if (!(src.pitch > 0) || !(tgt.pitch > 0)) return { ok: false, reason: 'a single-plane axis cannot join a multi-cell axis' };
+  const tol = opts.tol || REL * Math.max(src.pitch, tgt.pitch, 1);
+  const g = floatGcd(src.pitch, tgt.pitch, tol);
+  if (!(g > tol)) return { ok: false, reason: 'no common lattice (pitches share no usable factor)' };
+  const sp = Math.round(src.pitch / g), tp = Math.round(tgt.pitch / g);
+  const capped = opts.cap || 4096;
+  if (sp > capped || tp > capped) return { ok: false, reason: `pitches ${src.pitch} and ${tgt.pitch} share no small common lattice (would need a ${g} unit grid)` };
+  // g-units measured from the target lattice low face (cell-0 low boundary)
+  const ref = tgt.origin - tgt.pitch / 2;
+  const srcLow0 = src.origin - src.pitch / 2;
+  const phaseF = (srcLow0 - ref) / g;
+  if (Math.abs(phaseF - Math.round(phaseF)) > 1e-4) return { ok: false, reason: `origins off-phase by ${(+(phaseF - Math.round(phaseF)) * g).toFixed(4)} on the ${g} lattice` };
+  const p0 = Math.round(phaseF);
+  const map = new Array(src.count);
+  for (let si = 0; si < src.count; si++) {
+    const lo = p0 + si * sp, hi = lo + sp;
+    const t0 = Math.floor(lo / tp), t1 = Math.floor((hi - 1) / tp);
+    const lst = [];
+    for (let ti = Math.max(0, t0); ti <= Math.min(tgt.count - 1, t1); ti++) {
+      const ov = Math.min(hi, (ti + 1) * tp) - Math.max(lo, ti * tp);
+      if (ov > 0) lst.push({ t: ti, w: ov });
+    }
+    map[si] = lst;
+  }
+  return { ok: true, g, sp, tp, map, nested: (sp % tp === 0 || tp % sp === 0) };
+}
+
+// Are two whole grids (each { x, y, z } of axes) compatible? → { ok, reason,
+// axes:[ax,ay,az], nested }. Uses each axis as source vs the other as target
+// (symmetric compatibility — direction doesn't change compatibility).
+function gridsCompatible(A, B, opts = {}) {
+  const bad = basisMismatch(A, B);
+  if (bad) return { ok: false, reason: bad };
+  B = sameFrame(B, A);
+  const axes = [];
+  let nested = true;
+  for (const k of ['x', 'y', 'z']) {
+    const m = axisMap(A[k], B[k], opts);
+    if (!m.ok) return { ok: false, reason: `${k.toUpperCase()}: ${m.reason}` };
+    axes.push(m); nested = nested && m.nested;
+  }
+  return { ok: true, axes, nested, rotated: !!A.rot };
+}
+
+// Build a resampler from source axes → target axes. Returns { ok, reason } or a
+// resampler with dense target accumulators. Numeric ops: mean (weighted), sum,
+// count, coverage. Categorical: majority (weighted vote).
+function makeResampler(srcAxes, tgtAxes, opts = {}) {
+  // source INDICES stay in the source's own lattice frame; only its origins are
+  // re-expressed about the target's anchor so the phases compare
+  const bad = basisMismatch(srcAxes, tgtAxes);
+  if (bad) return { ok: false, reason: bad };
+  srcAxes = sameFrame(srcAxes, tgtAxes);
+  const X = axisMap(srcAxes.x, tgtAxes.x, opts);
+  const Y = axisMap(srcAxes.y, tgtAxes.y, opts);
+  const Z = axisMap(srcAxes.z, tgtAxes.z, opts);
+  for (const [k, m] of [['X', X], ['Y', Y], ['Z', Z]]) if (!m.ok) return { ok: false, reason: `${k}: ${m.reason}` };
+  const nx = tgtAxes.x.count, ny = tgtAxes.y.count, nz = tgtAxes.z.count;
+  const cells = nx * ny * nz;
+  const idxOf = (ti, tj, tk) => ti + nx * (tj + ny * tk);
+  // full target-cell g-volume, for coverage (= tp_x·tp_y·tp_z)
+  const fullW = X.tp * Y.tp * Z.tp;
+  const nested = X.nested && Y.nested && Z.nested;
+  return {
+    ok: true, nx, ny, nz, cells, idxOf, fullW, nested, X, Y, Z,
+    newAcc: () => ({ sum: new Float64Array(cells), w: new Float64Array(cells) }),
+    // scatter one NUMERIC source cell (si,sj,sk index in the SOURCE lattice)
+    scatter(si, sj, sk, v, wt, acc) {
+      const xm = X.map[si], ym = Y.map[sj], zm = Z.map[sk];
+      if (!xm || !ym || !zm) return;
+      for (const { t: ti, w: wi } of xm) for (const { t: tj, w: wj } of ym) for (const { t: tk, w: wk } of zm) {
+        const w = wi * wj * wk * wt; if (w <= 0) continue;
+        const idx = idxOf(ti, tj, tk); acc.sum[idx] += v * w; acc.w[idx] += w;
+      }
+    },
+    // finalize numeric → { out: Float64Array(cells), coverage: Float32Array, present: Uint8Array }
+    finalize(acc, op = 'mean') {
+      const out = new Float64Array(cells), coverage = new Float32Array(cells), present = new Uint8Array(cells);
+      for (let i = 0; i < cells; i++) {
+        const w = acc.w[i]; if (w <= 0) { out[i] = NaN; continue; }
+        present[i] = 1; coverage[i] = Math.min(1, w / fullW);
+        out[i] = op === 'sum' ? acc.sum[i] : op === 'count' ? acc.w[i] : op === 'coverage' ? coverage[i] : acc.sum[i] / w;   // mean default
+      }
+      return { out, coverage, present };
+    },
+    // categorical: separate vote accumulator (Map per touched cell)
+    newCatAcc: () => new Map(),                             // idx → Map(code → weight)
+    scatterCat(si, sj, sk, code, wt, votes) {
+      const xm = X.map[si], ym = Y.map[sj], zm = Z.map[sk];
+      if (!xm || !ym || !zm) return;
+      for (const { t: ti, w: wi } of xm) for (const { t: tj, w: wj } of ym) for (const { t: tk, w: wk } of zm) {
+        const w = wi * wj * wk * wt; if (w <= 0) continue;
+        const idx = idxOf(ti, tj, tk);
+        let m = votes.get(idx); if (!m) { m = new Map(); votes.set(idx, m); }
+        m.set(code, (m.get(code) || 0) + w);
+      }
+    },
+    finalizeCat(votes) {   // → { out: Int32Array(cells) of winning code (-1 empty), tie: Uint8Array }
+      const out = new Int32Array(cells).fill(-1), tie = new Uint8Array(cells);
+      for (const [idx, m] of votes) {
+        let best = -1, bw = -1, tied = false;
+        for (const [code, w] of m) { if (w > bw + 1e-9) { best = code; bw = w; tied = false; } else if (Math.abs(w - bw) <= 1e-9) tied = true; }
+        out[idx] = best; tie[idx] = tied ? 1 : 0;
+      }
+      return { out, tie };
+    },
+  };
+}
+
+// Box → grid volume-weighted aggregator (sub-blocked reconcile). A sub-blocked
+// model has no source LATTICE — it's a set of variable-size axis-aligned boxes.
+// This scatters each box (world centroid + half-dims) onto a regular TARGET grid
+// weighted by geometric OVERLAP VOLUME, so a sub-blocked model aggregates up to
+// any compatible regular grid — the PARENT grid being the natural choice (each
+// sub-block lands wholly in its parent cell). Reuses the same acc/finalize shape
+// as makeResampler, so the reconcile Δ-map machinery is identical. The caller
+// controls WHICH boxes scatter (a selection/filter): just skip the ones it wants
+// excluded — volume weighting handles partial parent coverage correctly.
+function makeBoxAggregator(tgt, opts = {}) {
+  const nx = tgt.x.count, ny = tgt.y.count, nz = tgt.z.count;
+  const cells = nx * ny * nz;
+  const idxOf = (ti, tj, tk) => ti + nx * (tj + ny * tk);
+  // world volume of a full target cell (degenerate axes factor out as 1)
+  const cellVol = ['x', 'y', 'z'].reduce((p, k) => p * (tgt[k].pitch > 0 ? tgt[k].pitch : 1), 1);
+  // target cells overlapping world interval [lo,hi] on one axis → [{ i, ov }]
+  const axisCells = (ax, lo, hi) => {
+    if (!(ax.pitch > 0)) return [{ i: 0, ov: 1 }];           // single-plane axis: unit overlap (factors out)
+    const low0 = ax.origin - ax.pitch / 2;
+    const first = Math.floor((lo - low0) / ax.pitch);
+    const last = Math.floor((hi - low0) / ax.pitch - 1e-9);
+    const out = [];
+    for (let i = Math.max(0, first); i <= Math.min(ax.count - 1, last); i++) {
+      const cLo = low0 + i * ax.pitch, cHi = cLo + ax.pitch;
+      const ov = Math.min(hi, cHi) - Math.max(lo, cLo);
+      if (ov > 1e-12) out.push({ i, ov });
+    }
+    return out;
+  };
+  return {
+    ok: true, nx, ny, nz, cells, idxOf, cellVol,
+    newAcc: () => ({ sum: new Float64Array(cells), w: new Float64Array(cells) }),
+    // scatter one box (world centroid cx,cy,cz + half-dims hx,hy,hz), value v,
+    // extra weight wt (e.g. 0 to exclude). Accumulates v·overlapVol and overlapVol.
+    scatterBox(cx, cy, cz, hx, hy, hz, v, wt, acc) {
+      if (!(wt > 0) || !Number.isFinite(v)) return;
+      const xs = axisCells(tgt.x, cx - hx, cx + hx);
+      if (!xs.length) return;
+      const ys = axisCells(tgt.y, cy - hy, cy + hy);
+      if (!ys.length) return;
+      const zs = axisCells(tgt.z, cz - hz, cz + hz);
+      for (const X of xs) for (const Y of ys) for (const Z of zs) {
+        const w = X.ov * Y.ov * Z.ov * wt; if (w <= 0) continue;
+        const idx = idxOf(X.i, Y.i, Z.i); acc.sum[idx] += v * w; acc.w[idx] += w;
+      }
+    },
+    // → { out: Float64Array (NaN where empty), coverage: Float32Array (w/cellVol),
+    // present: Uint8Array }. op: 'mean' (default) | 'sum' | 'volume' | 'coverage'.
+    finalize(acc, op = 'mean') {
+      const out = new Float64Array(cells), coverage = new Float32Array(cells), present = new Uint8Array(cells);
+      for (let i = 0; i < cells; i++) {
+        const w = acc.w[i]; if (w <= 0) { out[i] = NaN; continue; }
+        present[i] = 1; coverage[i] = cellVol > 0 ? Math.min(1, w / cellVol) : 1;
+        out[i] = op === 'sum' ? acc.sum[i] : op === 'volume' ? w : op === 'coverage' ? coverage[i] : acc.sum[i] / w;
+      }
+      return { out, coverage, present };
+    },
+    // categorical: volume-weighted majority vote (parity with makeResampler)
+    newCatAcc: () => new Map(),                              // idx → Map(code → volume)
+    scatterCatBox(cx, cy, cz, hx, hy, hz, code, wt, votes) {
+      if (!(wt > 0)) return;
+      const xs = axisCells(tgt.x, cx - hx, cx + hx); if (!xs.length) return;
+      const ys = axisCells(tgt.y, cy - hy, cy + hy); if (!ys.length) return;
+      const zs = axisCells(tgt.z, cz - hz, cz + hz);
+      for (const X of xs) for (const Y of ys) for (const Z of zs) {
+        const w = X.ov * Y.ov * Z.ov * wt; if (w <= 0) continue;
+        const idx = idxOf(X.i, Y.i, Z.i);
+        let m = votes.get(idx); if (!m) { m = new Map(); votes.set(idx, m); }
+        m.set(code, (m.get(code) || 0) + w);
+      }
+    },
+    finalizeCat(votes) {
+      const out = new Int32Array(cells).fill(-1), tie = new Uint8Array(cells);
+      for (const [idx, m] of votes) {
+        let best = -1, bw = -1, tied = false;
+        for (const [code, w] of m) { if (w > bw + 1e-9) { best = code; bw = w; tied = false; } else if (Math.abs(w - bw) <= 1e-9) tied = true; }
+        out[idx] = best; tie[idx] = tied ? 1 : 0;
+      }
+      return { out, tie };
+    },
+  };
+}
+
+// A common target lattice covering the union of N grids AND compatible with all.
+// grids: [{x,y,z}]. resolution: 'finest' | 'coarsest' | 'gcd' | number(pitch,
+// per-axis via {x,y,z}). Returns { ok, reason } or { x, y, z } target axes.
+function commonLattice(grids, opts = {}) {
+  if (!grids.length) return { ok: false, reason: 'no grids' };
+  for (const G of grids.slice(1)) { const bad = basisMismatch(grids[0], G); if (bad) return { ok: false, reason: bad }; }
+  const ref = grids[0];
+  if (ref.rot) { const out = commonLattice(grids.map((G) => { const g = sameFrame(G, ref); return { x: g.x, y: g.y, z: g.z }; }), opts); return out.ok ? { ...out, rot: ref.rot, anchor: ref.anchor } : out; }
+  const res = opts.resolution || 'finest';
+  const out = {};
+  for (const k of ['x', 'y', 'z']) {
+    const ax = grids.map((G) => G[k]);
+    const real = ax.filter((a) => a.pitch > 0);            // count-1 with a real pitch still counts
+    if (!real.length) { out[k] = { origin: ax[0].origin, pitch: ax[0].pitch || 0, count: 1 }; continue; }
+    const tol = REL * Math.max(...real.map((a) => a.pitch), 1);
+    // common g across all real axes
+    let g = real[0].pitch;
+    for (const a of real) g = floatGcd(g, a.pitch, tol);
+    if (!(g > tol)) return { ok: false, reason: `${k.toUpperCase()}: grids share no common lattice` };
+    // all origins must share the same residue mod g (pairwise phase alignment)
+    const low = (a) => a.origin - a.pitch / 2;
+    const r0 = ((low(real[0]) % g) + g) % g;
+    for (const a of real) {
+      const r = ((low(a) % g) + g) % g;
+      let d = Math.abs(r - r0); d = Math.min(d, g - d);
+      if (d > 1e-4 + tol) return { ok: false, reason: `${k.toUpperCase()}: grids are off-phase (can't share a lattice)` };
+    }
+    // choose target pitch
+    let tp;
+    if (res === 'gcd') tp = g;
+    else if (res === 'coarsest') tp = Math.max(...real.map((a) => a.pitch));
+    else if (typeof res === 'object' && res && res[k] != null) tp = res[k];
+    else if (typeof res === 'number') tp = res;
+    else tp = Math.min(...real.map((a) => a.pitch));        // 'finest'
+    const kk = Math.round(tp / g);
+    if (Math.abs(kk * g - tp) > 1e-4 + tol || kk < 1) return { ok: false, reason: `${k.toUpperCase()}: resolution ${tp} is not a multiple of the common lattice ${g}` };
+    tp = kk * g;
+    // union extent (low faces / high faces)
+    const uLo = Math.min(...ax.map((a) => a.origin - (a.pitch || 0) / 2));
+    const uHi = Math.max(...ax.map((a) => a.origin + (a.count - 0.5) * (a.pitch || 0)));
+    // anchor target low face at the shared residue near uLo
+    const L = r0 + Math.floor((uLo - r0) / tp) * tp;
+    const count = Math.max(1, Math.ceil((uHi - L) / tp - 1e-6));
+    if (count > 65535) return { ok: false, reason: `${k.toUpperCase()}: ${count} cells at pitch ${tp} exceeds the grid limit` };
+    out[k] = { origin: L + tp / 2, pitch: tp, count };
+  }
+  return { ok: true, ...out };
+}
+
+// ── src/io/delimited.js ──
+
+// @gcu/condenser — delimited RECORDS (RFC 4180 quoting), shared by every
+// delimited reader (block models, tables, drillhole trios, the filter sweeps).
+//
+// A record is usually one line, but a quoted field may hold the delimiter, a
+// line break, or a doubled quote (""). Readers split text on '\n' as before and
+// hand each line to a RecordJoiner, which glues lines back together while a
+// quote is open. A line without a '"' costs one indexOf, so files that never
+// quote anything read at the old speed.
+//
+// A quote opens a field only at the field's start (after optional spaces); a
+// '"' inside an unquoted field is a literal character (12" core), as in
+// Python's csv module. Field values come back unquoted and un-doubled, but are
+// otherwise untrimmed — the callers trim where they always did.
+
+const WS = 'ws';                                    // whitespace-delimiter sentinel ('\s' in a string is just 's')
+
+const isSpace = (c) => c === 32 || c === 9;
+const plainSplit = (delim) => (delim === WS ? (l) => l.trim().split(/\s+/) : (l) => l.split(delim));
+
+/** Split one RECORD (possibly multi-line) into fields. */
+// A COORDINATE as a number: a blank (or whitespace, or null) is NO coordinate —
+// NaN, so the row is no record — never the 0 unary plus makes of it (a block at
+// the origin nobody put there). Everything that decides "is this row a record"
+// reads coordinates through this.
+const coordNum = (v) => (typeof v === 'number' ? v : v == null || v === '' || (v.charCodeAt(0) <= 32 && v.trim() === '') ? NaN : +v);
+
+function splitFields(line, delim) {
+  if (line.indexOf('"') < 0) return plainSplit(delim)(line);
+  const ws = delim === WS, n = line.length, out = [];
+  // padding before an opening quote: spaces, and tabs unless tab IS the delimiter
+  const isPad = (c) => c === 32 || (c === 9 && delim !== '\t');
+  const endOf = (k) => {
+    if (ws) { let e = k; while (e < n && !isSpace(line.charCodeAt(e))) e++; return e; }
+    const e = line.indexOf(delim, k); return e < 0 ? n : e;
+  };
+  let i = 0;
+  if (ws) { while (i < n && isSpace(line.charCodeAt(i))) i++; if (i >= n) return ['']; }
+  for (;;) {
+    let j = i;
+    if (!ws) while (j < n && isPad(line.charCodeAt(j))) j++;
+    let v, e;
+    if (j < n && line.charCodeAt(j) === 34) {
+      v = ''; let k = j + 1;
+      for (;;) {
+        const q = line.indexOf('"', k);
+        if (q < 0) { v += line.slice(k); k = n; break; }   // unterminated: take the rest
+        v += line.slice(k, q);
+        if (line.charCodeAt(q + 1) === 34) { v += '"'; k = q + 2; } else { k = q + 1; break; }
+      }
+      e = endOf(k);
+      v += line.slice(k, e);                               // text between the closing quote and the delimiter is kept (lenient)
+    } else { e = endOf(i); v = line.slice(i, e); }
+    out.push(v);
+    if (e >= n) return out;
+    i = ws ? e : e + delim.length;
+    if (ws) { while (i < n && isSpace(line.charCodeAt(i))) i++; if (i >= n) return out; }
+  }
+}
+
+/** Which fields of one record were written QUOTED (a quote at the field's start). */
+function quotedFields(line, delim) {
+  const out = [];
+  if (line.indexOf('"') < 0) { const n = splitFields(line, delim).length; for (let k = 0; k < n; k++) out.push(false); return out; }
+  const ws = delim === WS, dc = ws ? -1 : delim.charCodeAt(0), n = line.length;
+  let inQ = false, atStart = true, i = 0;
+  if (ws) while (i < n && isSpace(line.charCodeAt(i))) i++;
+  let cur = false;
+  for (; i < n; i++) {
+    const c = line.charCodeAt(i);
+    if (inQ) { if (c === 34) { if (line.charCodeAt(i + 1) === 34) i++; else inQ = false; } continue; }
+    if (ws ? isSpace(c) : c === dc) {
+      if (ws) { while (i + 1 < n && isSpace(line.charCodeAt(i + 1))) i++; if (i + 1 >= n) break; }
+      out.push(cur); cur = false; atStart = true; continue;
+    }
+    if (atStart && (c === 32 || (c === 9 && delim !== '\t'))) continue;
+    if (atStart && c === 34) { inQ = true; cur = true; atStart = false; continue; }
+    atStart = false;
+  }
+  out.push(cur);
+  return out;
+}
+
+/** Does `line` end inside an open quoted field? `open` = the state it started in. */
+function endsInQuote(line, delim, open = false) {
+  if (!open && line.indexOf('"') < 0) return false;
+  const ws = delim === WS, dc = ws ? -1 : delim.charCodeAt(0);
+  const n = line.length;
+  let inQ = open, atStart = !open;                         // a continuation line resumes INSIDE a field
+  for (let i = 0; i < n; i++) {
+    const c = line.charCodeAt(i);
+    if (inQ) {
+      if (c === 34) { if (line.charCodeAt(i + 1) === 34) i++; else inQ = false; }
+      continue;
+    }
+    if (ws ? isSpace(c) : c === dc) { atStart = true; continue; }
+    if (atStart && (c === 32 || c === 9)) continue;
+    if (atStart && c === 34) { inQ = true; atStart = false; continue; }
+    atStart = false;
+  }
+  return inQ;
+}
+
+/**
+ * Line → record assembler. push(line) returns the completed record string, or
+ * null while a quoted field is still open. `start` (the caller's line number of
+ * the record's first line) is kept so byte-offset readers can locate records.
+ */
+class RecordJoiner {
+  constructor(delim) { this.delim = delim; this.buf = null; this.start = -1; }
+  get pending() { return this.buf !== null; }
+  push(line, lineNo = -1) {
+    if (this.buf === null) {
+      if (!endsInQuote(line, this.delim, false)) { this.start = lineNo; return line; }
+      this.buf = line; this.start = lineNo; return null;
+    }
+    const open = endsInQuote(line, this.delim, true);
+    this.buf += '\n' + line;
+    if (open) return null;
+    const r = this.buf; this.buf = null; return r;
+  }
+  /** end of input: an unterminated quoted record is returned as-is (lenient). */
+  flush() { const r = this.buf; this.buf = null; return r; }
+}
+
+/** All complete records of a text sample (the sniff / head-sample path). */
+function sampleRecords(text, delim, { max = Infinity, dropPartial = true } = {}) {
+  const lines = text.split('\n'), out = [], j = new RecordJoiner(delim);
+  for (let l of lines) {
+    if (l.endsWith('\r')) l = l.slice(0, -1);
+    if (!j.pending && (!l.trim() || l[0] === '#')) continue;
+    const r = j.push(l);
+    if (r != null) { out.push(r); if (out.length >= max) return out; }
+  }
+  if (!dropPartial) { const r = j.flush(); if (r != null) out.push(r); }
+  return out;
+}
+
+/** The delimiter of a small table, chosen from its header line (most fields wins; ',' on a tie). */
+function delimiterOfLine(line) {
+  return [',', ';', '\t'].reduce((a, b) => (splitFields(line, b).length > splitFields(line, a).length ? b : a), ',');
+}
+
+// ── src/io/qualified.js ──
+
+// ── qualified numbers: assay values with a detection-limit qualifier ──────────
+// A lab table writes `<0.001` for "below detection" and `>10` for "over the
+// upper limit", plus codes for "no value" (BDL, ND, LNR, IS, -). Read as plain
+// numbers those are NaN, so ONE such cell made the whole column text. This is
+// the one place they become numbers, under a policy:
+//   below: 'half' (the resource-estimation convention, default) | 'limit' | 'zero' | 'blank'
+//   above: 'limit' (default) | 'blank'
+//   negBelow: false — when true a NEGATIVE value means "below |v|" (some labs
+//     write -0.001 for <0.001). Off by default: -99/-999 usually means MISSING,
+//     so it's a per-column decision, never a guess.
+// A plain number is untouched; blank stays blank (NaN); text stays NaN.
+
+const QUALIFIED_DEFAULT = Object.freeze({ below: 'half', above: 'limit', negBelow: false });
+
+const QUAL_RE = /^([<>]=?|≤|≥)\s*([+]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)$/;
+// "no value" codes labs write in a numeric column (case-insensitive, dots optional)
+const CODE_RE = /^(?:b\.?d\.?l\.?|n\.?d\.?|l\.?n\.?r\.?|i\.?s\.?|n\.?s\.?s?\.?|n\.?r\.?|n\/?a|n\.a\.|nan|null|none|missing|-+|\*+)$/i;
+
+// what a cell IS: { kind: 'num'|'below'|'above'|'code'|'blank'|'text', v }
+function classifyQualified(s) {
+  if (s == null) return { kind: 'blank', v: NaN };
+  if (typeof s === 'number') return Number.isFinite(s) ? { kind: 'num', v: s } : { kind: 'blank', v: NaN };
+  const t = String(s).trim();
+  if (t === '') return { kind: 'blank', v: NaN };
+  const n = +t;
+  if (Number.isFinite(n)) return { kind: 'num', v: n };
+  const m = QUAL_RE.exec(t);
+  if (m) {
+    const lim = +m[2];
+    return { kind: m[1][0] === '<' || m[1] === '≤' ? 'below' : 'above', v: lim };
+  }
+  if (CODE_RE.test(t)) return { kind: 'code', v: NaN };
+  return { kind: 'text', v: NaN };
+}
+
+// a cell → number under a policy (NaN = blank). The fast path is a plain number.
+function qualifiedNumber(s, policy = QUALIFIED_DEFAULT) {
+  if (typeof s === 'number') return s;
+  if (s == null || s === '') return NaN;
+  const n = +s;
+  if (Number.isFinite(n)) {
+    if (n < 0 && policy && policy.negBelow) return belowValue(-n, policy);
+    return n;
+  }
+  const c = classifyQualified(s);
+  if (c.kind === 'below') return belowValue(c.v, policy);
+  if (c.kind === 'above') return (policy && policy.above === 'blank') ? NaN : c.v;
+  return NaN;
+}
+function belowValue(lim, policy) {
+  const b = (policy && policy.below) || 'half';
+  return b === 'limit' ? lim : b === 'zero' ? 0 : b === 'blank' ? NaN : lim / 2;
+}
+
+// Census of a sample of cells: is this a numeric column once qualifiers count?
+// numeric: every non-blank cell is a number, a qualified number or a code, and
+// at least one is a real number (a column of nothing but codes is not data).
+function censusQualified(vals) {
+  const out = { n: 0, num: 0, below: 0, above: 0, code: 0, text: 0 };
+  for (const s of vals) {
+    const k = classifyQualified(s).kind;
+    if (k === 'blank') continue;
+    out.n++; out[k]++;
+  }
+  out.numeric = out.n > 0 && out.text === 0 && out.num > 0;
+  out.qualified = out.numeric && (out.below + out.above + out.code) > 0;
+  return out;
+}
+
+// a policy's one-line description (UI + lineage)
+function describeQualified(policy = QUALIFIED_DEFAULT) {
+  const b = policy.below || 'half';
+  const below = b === 'half' ? '<x → x/2' : b === 'limit' ? '<x → x' : b === 'zero' ? '<x → 0' : '<x → blank';
+  const above = policy.above === 'blank' ? '>x → blank' : '>x → x';
+  return `${below} · ${above}${policy.negBelow ? ' · −x → below x' : ''}`;
+}
+
+// ── src/io/zones.js ──
+
+// ZONE MAPS — per-k-record statistics of a delimited model, for skipping.
+//
+// A zone is k consecutive RECORDS (the renderer's numbering), the grain of the
+// sparse line index, so zone z's bytes are [index.offsets[z], index.offsets[z+1])
+// and a reader can seek straight past it. Per zone:
+//   numeric column → min, max, and whether a blank may read there;
+//   category column → the set of values present (a 256-bit set over the
+//   column's dictionary; a column with more than 256 values keeps none).
+// Built in the open's discovery pass (every value is read there anyway).
+//
+// SOUND under every qualifier policy, so a policy change never invalidates them:
+// what a cell can read as is covered, whatever the policy says —
+//   <x  → 0, x/2, x or blank   ⇒ the range takes in [0, x], and a blank
+//   >x  → x or blank            ⇒ x, and a blank
+//   −n  → −n, or (negBelow) [0, n] or blank  ⇒ [−n, n], and a blank
+//   a code / text / ''          ⇒ a blank
+// Coordinates take no qualifier (the row qualifier skips them): just the value.
+// A zone with nothing finite keeps min > max — "no stats", it must be read.
+
+const grow$zones = (a, n, Type, fill) => {
+  if (a.length >= n) return a;
+  const b = new Type(Math.max(n, a.length * 2)); if (fill !== undefined) b.fill(fill); b.set(a); return b;
+};
+
+function createZoneBuilder(columns, { num, coord, k = 1024, catMax = 256 }) {
+  const coordSet = new Set(coord);
+  const nums = [...num].map((i) => ({ i, name: columns[i], coord: coordSet.has(i), min: new Float64Array(64).fill(Infinity), max: new Float64Array(64).fill(-Infinity), blank: new Uint8Array(64) }));
+  const numSet = new Set(num);
+  const cats = columns.map((name, i) => i).filter((i) => !numSet.has(i)).map((i) => ({ i, name: columns[i], dict: new Map(), bits: new Uint32Array(64 * 8), dead: false }));
+  let nz = 0;
+  const widen = (c, z, x) => { if (x < c.min[z]) c.min[z] = x; if (x > c.max[z]) c.max[z] = x; };
+  return {
+    // one accepted record's fields (rec = its record number, in order)
+    push(f, rec) {
+      const z = (rec / k) | 0;
+      if (z >= nz) {
+        nz = z + 1;
+        for (const c of nums) { c.min = grow$zones(c.min, nz, Float64Array, Infinity); c.max = grow$zones(c.max, nz, Float64Array, -Infinity); c.blank = grow$zones(c.blank, nz, Uint8Array); }
+        for (const c of cats) if (!c.dead) c.bits = grow$zones(c.bits, nz * 8, Uint32Array);
+      }
+      for (let q = 0; q < nums.length; q++) {
+        const c = nums[q], v = f[c.i];
+        const x = typeof v === 'number' ? v : v == null || v === '' ? NaN : +v;
+        if (x === x && x !== Infinity && x !== -Infinity) {
+          widen(c, z, x);
+          if (x < 0 && !c.coord) { widen(c, z, -x); widen(c, z, 0); c.blank[z] = 1; }
+          continue;
+        }
+        c.blank[z] = 1;
+        if (c.coord || v == null || v === '') continue;
+        const cq = classifyQualified(v);
+        if (cq.kind === 'below') { widen(c, z, 0); widen(c, z, cq.v); }
+        else if (cq.kind === 'above') widen(c, z, cq.v);
+      }
+      for (let q = 0; q < cats.length; q++) {
+        const c = cats[q];
+        if (c.dead) continue;
+        const v = f[c.i] == null ? '' : String(f[c.i]);
+        let code = c.dict.get(v);
+        if (code === undefined) {
+          if (c.dict.size >= catMax) { c.dead = true; c.bits = null; c.dict = null; continue; }
+          code = c.dict.size; c.dict.set(v, code);
+        }
+        c.bits[z * 8 + (code >>> 5)] |= 1 << (code & 31);
+      }
+    },
+    finish(count) {
+      const n = Math.ceil(count / k);
+      const num = {}, cat = {};
+      for (const c of nums) num[c.name] = { min: c.min.slice(0, n), max: c.max.slice(0, n), blank: c.blank.slice(0, n) };
+      for (const c of cats) if (!c.dead) cat[c.name] = { dict: [...c.dict.keys()], bits: c.bits.slice(0, n * 8) };
+      return { k, n, count, num, cat };
+    },
+  };
+}
+
+// the statistics of zones [z0, z1] (inclusive), as canMatch reads them
+// ({ name → { min, max, hasBlank } | { values } }), for the columns in `names`
+// (all when omitted)
+function zoneRanges(zones, z0, z1, names = null) {
+  const out = {};
+  const want = names ? new Set(names.map((s) => String(s).toLowerCase())) : null;
+  for (const name in zones.num) {
+    if (want && !want.has(name.toLowerCase())) continue;
+    const c = zones.num[name];
+    let mn = Infinity, mx = -Infinity, bl = false;
+    for (let z = z0; z <= z1; z++) { if (c.min[z] < mn) mn = c.min[z]; if (c.max[z] > mx) mx = c.max[z]; if (c.blank[z]) bl = true; }
+    out[name] = { min: mn, max: mx, hasBlank: bl };
+  }
+  for (const name in zones.cat) {
+    if (want && !want.has(name.toLowerCase())) continue;
+    const c = zones.cat[name], values = [];
+    for (let code = 0; code < c.dict.length; code++) {
+      const w = code >>> 5, b = 1 << (code & 31);
+      for (let z = z0; z <= z1; z++) if (c.bits[z * 8 + w] & b) { values.push(c.dict[code]); break; }
+    }
+    out[name] = { values };
+  }
+  return out;
+}
+
+// to and from a sidecar (JSON): the arrays as base64 of their bytes
+const b64 = (a) => { const u = new Uint8Array(a.buffer, a.byteOffset, a.byteLength); let s = ''; for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(s); };
+const unb64 = (s, Type) => { const bin = atob(s), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return new Type(u.buffer); };
+function zonesToJSON(zones) {
+  if (!zones) return null;
+  const num = {}, cat = {};
+  for (const n in zones.num) { const c = zones.num[n]; num[n] = { min: b64(c.min), max: b64(c.max), blank: b64(c.blank) }; }
+  for (const n in zones.cat) { const c = zones.cat[n]; cat[n] = { dict: c.dict, bits: b64(c.bits) }; }
+  return { k: zones.k, n: zones.n, count: zones.count, num, cat };
+}
+function zonesFromJSON(j) {
+  if (!j || !j.num) return null;
+  const num = {}, cat = {};
+  for (const n in j.num) { const c = j.num[n]; num[n] = { min: unb64(c.min, Float64Array), max: unb64(c.max, Float64Array), blank: unb64(c.blank, Uint8Array) }; }
+  for (const n in j.cat) { const c = j.cat[n]; cat[n] = { dict: c.dict, bits: unb64(c.bits, Uint32Array) }; }
+  return { k: j.k, n: j.n, count: j.count, num, cat };
+}
+
+// ── src/io/blockmodel.js ──
+
+// @gcu/condenser — delimited block-model provider (CSV/GSLIB-ish exports).
+// Centroid columns (XC/YC/ZC by convention, overridable) + one scalar grade
+// channel + one categorical channel. A CSV carries no header bbox, so this
+// provider runs an honest TWO-SWEEP recipe (both cold-re-runnable over the
+// Blob): sweep 1 (discovery) parses coordinates only → per-axis distinct
+// values → regular-grid inference (§2.5); sweep 2 streams full RawChunks.
+// Sub-blocked / off-lattice models fail grid inference and should be routed
+// to the points pipeline by the caller (header.grid === null).
+//
+// openBlockModel(blob, { mapping? }) → { header, streamChunks }
+//   header = { kind:'blockmodel', count, bbox, grid|null, columns, mapping,
+//              categories: string[]|null (code → value, ≤255) }
+//   RawChunk = { count, x, y, z: Float64Array, chan: Float64Array,
+//                cat: Uint8Array|null, recStart }
+
+
+const X_RE$blockmodel = /^(x|xc|xcent(er|re)?|xmid|east(ing)?|xworld|centroid_?x)$/i;
+const Y_RE$blockmodel = /^(y|yc|ycent(er|re)?|ymid|north(ing)?|yworld|centroid_?y)$/i;
+const Z_RE$blockmodel = /^(z|zc|zcent(er|re)?|zmid|elev(ation)?|rl|level|zworld|centroid_?z)$/i;
+const DIM_RE = /^(d[xyz]|[xyz]inc|[xyz]size|[xyz]dim|dim_?[xyz])$/i;
+const DIMX_RE = /^(dx|xinc|xsize|xdim|dim_?x)$/i;
+const DIMY_RE = /^(dy|yinc|ysize|ydim|dim_?y)$/i;
+const DIMZ_RE = /^(dz|zinc|zsize|zdim|dim_?z)$/i;
+const NONGRADE_RE = /^(ijk|id|index|row|i|j|k|dens|density|sg|topo|pct|proportion)$/i;
+
+// a RECORD splitter: RFC 4180 quotes honoured (delimited.js); unquoted lines take the plain split
+// a DECIMAL COMMA (1,5 — the Brazilian / European convention, with ';' or tab
+// between fields): normalized where the fields are split, so every reader —
+// coordinates, grades, the qualifier's <0,05 — sees 1.5 and nothing downstream
+// has to know. Only a field that is entirely a comma-decimal number changes.
+const COMMA_NUM = /^(\s*[<>]?=?\s*[-+]?\d*),(\d+(?:[eE][-+]?\d+)?\s*)$/;
+const fixDecimal = (f) => { for (let i = 0; i < f.length; i++) { const v = f[i]; if (v && v.indexOf(',') >= 0) { const m = COMMA_NUM.exec(v); if (m) f[i] = m[1] + '.' + m[2]; } } return f; };
+const splitter = (delim, decimal) => (decimal === ',' && delim !== ',' ? (l) => fixDecimal(splitFields(l, delim)) : (l) => splitFields(l, delim));
+
+// Detect delimiter + header from the first text block.
+function sniffDelimited(text) {
+  if (!text.split(/\r?\n/).some((l) => l.trim() && !l.startsWith('#'))) throw new Error('blockmodel: no data lines');
+  // a sample can end mid-record; a quoted record cut off at the edge is dropped,
+  // and a cut plain last line is dropped too unless it is all there is
+  const cut = !/\n\s*$/.test(text);
+  let best = null;
+  const consistent = [];
+  for (const d of [',', ';', '\t', WS]) {
+    let recs = sampleRecords(text, d, { max: 25 });
+    if (cut && recs.length > 1 && recs.length < 25) recs = recs.slice(0, -1);
+    recs = recs.slice(0, 24);
+    if (!recs.length) continue;
+    const split = splitter(d);
+    const counts = recs.map((l) => split(l).length);
+    const n = counts[0];
+    if (n < 2 || !counts.every((c) => c === n)) continue;
+    const cand = { delim: d, n, first: recs[0], second: recs[1] };
+    if (d !== WS) consistent.push(cand);
+    if (!best || n > best.n) best = cand;
+  }
+  if (!best) throw new Error('blockmodel: no consistent delimiter found');
+  // Whitespace wins on field count whenever text fields hold spaces in step
+  // ("hole id,rock type" / "DH 01,fresh rock" splits 3 ways on spaces, 2 on
+  // commas). A comma inside a whitespace token is a real delimiter, unless that
+  // token is a decimal-comma number (500 600 100 1,5: whitespace, decimal ',').
+  // Tabs that split every record alike are a TSV's (whitespace sees them as spaces).
+  if (best.delim === WS && consistent.length) {
+    const toks = splitFields(best.first, WS).map((t) => t.trim());
+    const real = consistent.filter((c) => c.delim === '\t' || toks.some((t) => t.includes(c.delim) && !COMMA_NUM.test(t)));
+    if (real.length) best = real.reduce((a, b) => (b.n > a.n ? b : a));
+  }
+  const first = splitter(best.delim)(best.first).map((s) => s.trim());
+  const numericish = (s) => s !== '' && !Number.isNaN(Number(s));
+  // the decimal mark: with a non-comma delimiter, data fields that are comma-
+  // decimal numbers (1,5) and none that are point-decimal (1.5) → ','
+  let decimal = '.';
+  if (best.delim !== ',') {
+    let comma = 0, point = 0;
+    for (const r of sampleRecords(text, best.delim, { max: 25 }).slice(1)) for (const f of splitter(best.delim)(r)) { const t = f.trim(); if (COMMA_NUM.test(t)) comma++; else if (/^[<>]?=?\s*[-+]?\d*\.\d+(?:[eE][-+]?\d+)?$/.test(t)) point++; }
+    if (comma > 0 && point === 0) decimal = ',';
+  }
+  let hasHeader = first.some((s) => !numericish(decimal === ',' ? s.replace(COMMA_NUM, '$1.$2') : s));
+  // all-numeric names (2019,2020) are a header when the first record QUOTES every
+  // field and the next record quotes no number: a writer marking names as text
+  // (a quote-everything writer quotes the data's numbers too, and stays headerless)
+  if (!hasHeader && best.second) {
+    const q1 = quotedFields(best.first, best.delim), q2 = quotedFields(best.second, best.delim);
+    const sec = splitter(best.delim)(best.second).map((s) => s.trim());
+    if (q1.length === first.length && q1.every(Boolean) && !q2.some((q, k) => q && numericish(sec[k]))) hasHeader = true;
+  }
+  return { delim: best.delim, header: hasHeader ? first : null, columns: best.n, decimal };
+}
+
+// Per-block size columns (DX/DY/DZ, XINC…) by name → { x, y, z } indices, or
+// null unless all three are present. Shared with every columnar reader so a
+// Parquet file is recognised by the same names a CSV is.
+function findDimColumns(header) {
+  if (!header) return null;
+  const find = (re) => header.findIndex((h) => re.test(String(h).trim()));
+  const d = { x: find(DIMX_RE), y: find(DIMY_RE), z: find(DIMZ_RE) };
+  return d.x >= 0 && d.y >= 0 && d.z >= 0 ? d : null;
+}
+/** is this column name a per-block size column? */
+const isDimColumn = (name) => DIM_RE.test(String(name).trim());
+
+// Pick column roles from names. Returns null when centroids can't be identified.
+function mapColumns(header) {
+  if (!header) return null;
+  const find = (re) => header.findIndex((h) => re.test(h.trim()));
+  const x = find(X_RE$blockmodel), y = find(Y_RE$blockmodel), z = find(Z_RE$blockmodel);
+  if (x < 0 || y < 0 || z < 0) return null;
+  const taken = new Set([x, y, z]);
+  header.forEach((h, i) => { if (DIM_RE.test(h.trim())) taken.add(i); });
+  let chan = -1;
+  for (let i = 0; i < header.length; i++) {
+    if (!taken.has(i) && !NONGRADE_RE.test(header[i].trim())) { chan = i; break; }
+  }
+  return { x, y, z, chan: chan >= 0 ? chan : null, cat: null };
+}
+
+// Async generator over the blob's data lines (cold recipe — call again for the
+// next sweep). Skips blanks + '#'; yields trimmed field arrays in batches so the
+// consumer controls pacing. Exported: the filter sweep (a mask by record index)
+// re-reads raw rows through the same path.
+async function* lineFields(blob, delim, hasHeader, { signal, onProgress, decimal = '.' } = {}) {
+  const reader = blob.stream().pipeThrough(new TextDecoderStream()).getReader();
+  const split = splitter(delim, decimal), join = new RecordJoiner(delim);
+  let carry = '', first = hasHeader, bytesSeen = 0;
+  const take = (l, batch) => {
+    if (l.endsWith('\r')) l = l.slice(0, -1);
+    if (!join.pending && (!l || l[0] === '#')) return;
+    const r = join.push(l);
+    if (r == null) return;
+    if (first) { first = false; return; }
+    batch.push(split(r));
+  };
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (signal && signal.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+      if (done) break;
+      bytesSeen += value.length;
+      const text = carry + value;
+      const lines = text.split('\n');
+      carry = lines.pop();
+      const batch = [];
+      for (const l of lines) take(l, batch);
+      if (onProgress) onProgress(bytesSeen, blob.size);
+      if (batch.length) yield batch;
+    }
+    const batch = [];
+    if (carry && (join.pending || carry.trim())) take(carry, batch);
+    const rest = join.flush();
+    if (rest != null && !first) batch.push(split(rest));
+    if (batch.length) yield batch;
+  } finally { reader.releaseLock(); }
+}
+
+// Byte-tracking sibling of lineFields for the discovery sweep: yields
+// { fields, at } batches where at[i] is the ABSOLUTE byte offset of that data
+// line's first byte. 0x0A never occurs inside a UTF-8 multi-byte sequence, so
+// byte-level line splitting is exact; text still decodes in BULK per chunk
+// (per-line decode would be ~50× slower at 50M rows). These offsets feed the
+// sparse record index (fetchDelimitedRecord) — the pick join on big CSVs.
+async function* lineFieldsWithOffsets(blob, delim, hasHeader, { signal, onProgress, decimal = '.' } = {}) {
+  const reader = blob.stream().getReader();
+  const dec = new TextDecoder();
+  const split = splitter(delim, decimal), join = new RecordJoiner(delim);
+  let carryText = '', carryAt = 0, pos = 0, first = hasHeader, bytesSeen = 0, recAt = 0;
+  // one line (its byte offset `start`) into the joiner; a completed record keeps
+  // the offset of its FIRST line, so the sparse index always points at a record start
+  const take = (l, start, fields, at) => {
+    if (l.endsWith('\r')) l = l.slice(0, -1);
+    if (!join.pending && (!l || l[0] === '#')) return;
+    const wasPending = join.pending;
+    const r = join.push(l);
+    if (!wasPending) recAt = start;
+    if (r == null) return;
+    if (first) { first = false; return; }
+    fields.push(split(r)); at.push(recAt);
+  };
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (signal && signal.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+      if (done) break;
+      bytesSeen += value.length;
+      // newline BYTE positions in this chunk (absolute)
+      const nl = [];
+      for (let j = 0; j < value.length; j++) if (value[j] === 10) nl.push(pos + j);
+      const text = carryText + dec.decode(value, { stream: true });
+      const lines = text.split('\n');
+      const nextCarry = lines.pop();                       // == nl.length complete lines remain
+      const fields = [], at = [];
+      for (let i = 0; i < lines.length; i++) take(lines[i], i === 0 ? carryAt : nl[i - 1] + 1, fields, at);
+      carryText = nextCarry;
+      carryAt = nl.length ? nl[nl.length - 1] + 1 : carryAt;
+      pos += value.length;
+      if (onProgress) onProgress(bytesSeen, blob.size);
+      if (fields.length) yield { fields, at };
+    }
+    const tail = carryText + dec.decode();                 // flush any held-back multi-byte bytes
+    const fields = [], at = [];
+    if (tail && (join.pending || tail.trim())) take(tail, carryAt, fields, at);
+    const rest = join.flush();
+    if (rest != null && !first) { fields.push(split(rest)); at.push(recAt); }
+    if (fields.length) yield { fields, at };
+  } finally { reader.releaseLock(); }
+}
+
+// O(anchors) record fetch: jump to the nearest preceding anchor, walk forward
+// applying the SAME accept predicate as the sweeps (blank/# skipped in the
+// reader; non-finite coords skipped here — record numbers count accepted rows
+// only). Reads ~indexEvery lines instead of the whole file.
+async function fetchDelimitedRecord(blob, header, rec) {
+  const idx = header.index;
+  if (!idx || !idx.offsets.length || rec < 0 || rec >= header.count) return null;
+  const a = Math.min(Math.floor(rec / idx.k), idx.offsets.length - 1);
+  let remaining = rec - a * idx.k;
+  const m = header.mapping;
+  const split = splitter(header.delim, header.decimal), join = new RecordJoiner(header.delim);
+  const reader = blob.slice(idx.offsets[a]).stream().pipeThrough(new TextDecoderStream()).getReader();
+  let carry = '';
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      const lines = done ? (carry ? [carry] : []) : (carry + value).split('\n');
+      if (!done) carry = lines.pop();
+      if (done && join.pending) lines.push(null);           // end of file: flush an unterminated quoted record
+      for (let l of lines) {
+        let rec2;
+        if (l === null) rec2 = join.flush();
+        else {
+          if (l.endsWith('\r')) l = l.slice(0, -1);
+          if (!join.pending && (!l || l[0] === '#')) continue;
+          rec2 = join.push(l);
+        }
+        if (rec2 == null) continue;
+        const f = split(rec2);
+        const xv = coordNum(f[m.x]), yv = coordNum(f[m.y]), zv = coordNum(f[m.z]);
+        if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;
+        if (remaining === 0) return f;
+        remaining--;
+      }
+      if (done) return null;
+    }
+  } finally { reader.releaseLock(); }
+}
+
+// A RUN of a delimited model as columns: the bytes [run.byteStart, run.byteEnd)
+// — both anchors of the sparse index, so the run starts at a record and the
+// quote state is clean — read with the same rules as every sweep (blank/#
+// skipped in the reader, non-finite coordinates skipped here), so its records are
+// run.start … run.start + run.count in the renderer's numbering. The count is
+// CHECKED: an index that doesn't fit the bytes throws instead of renumbering.
+// o: { delim, x, y, z (coordinate field indices), cols: [{ i, num, policy }] } →
+// one column per entry: num → Float64Array (blank / non-number → NaN, the pin
+// cache's rule); else the field text. policy (a qualifier policy, or null) is
+// applied as the page's row qualifier applies it: <0.001 → its substitute, a code
+// → blank, before the number is taken.
+async function readDelimitedRun(blob, run, o) {
+  const n = run.count, outs = o.cols.map((c) => (c.num ? new Float64Array(n) : new Array(n)));
+  const coord = new Set([o.x, o.y, o.z]);
+  const conv = o.cols.map((c) => {
+    // a coordinate as the record test reads it (coordNum), so positions agree
+    // with the drawn blocks
+    if (c.num && coord.has(c.i)) return coordNum;
+    const pol = c.policy;
+    const qual = pol ? (v) => {
+      if (typeof v !== 'string' || v === '') return v;
+      const x = +v;
+      if (x === x && !(x < 0 && pol.negBelow)) return v;
+      const q = qualifiedNumber(v, pol);
+      return q === q ? q : '';
+    } : (v) => v;
+    return c.num
+      ? (v) => { v = qual(v); const x = +v; return v == null || v === '' || !Number.isFinite(x) ? NaN : x; }
+      : (v) => { v = qual(v); return v == null ? '' : typeof v === 'string' ? v : String(v); };
+  });
+  let m = 0;
+  for await (const batch of lineFields(blob.slice(run.byteStart, run.byteEnd), o.delim, false, { decimal: o.decimal })) {
+    for (const f of batch) {
+      const xv = coordNum(f[o.x]), yv = coordNum(f[o.y]), zv = coordNum(f[o.z]);
+      if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;
+      if (m >= n) throw new Error(`the record index doesn't match the file: more than ${n} records from byte ${run.byteStart}`);
+      for (let k = 0; k < outs.length; k++) outs[k][m] = conv[k](f[o.cols[k].i]);
+      m++;
+    }
+  }
+  if (m !== n) throw new Error(`the record index doesn't match the file: ${m} records from byte ${run.byteStart}, ${n} expected`);
+  return outs;
+}
+
+// The runs a delimited model is read in by the columnar engine: up to `anchors`
+// index entries each (index.k records per entry; an entry is a ZONE), the last to
+// the end of the file. keep(z) → false leaves zone z out — a run is consecutive
+// kept zones, so a skipped zone's bytes are never read. [] without a complete
+// index (an old sidecar) → the caller keeps the row path.
+function delimitedRuns(header, size, anchors = 256, keep = null) {
+  const idx = header.index, n = header.count;
+  if (!idx || !idx.k || !idx.offsets || !n || idx.offsets.length !== Math.ceil(n / idx.k)) return [];
+  const runs = [], nz = idx.offsets.length;
+  const push = (a, b) => { const start = a * idx.k; runs.push({ start, count: Math.min(n, b * idx.k) - start, byteStart: idx.offsets[a], byteEnd: b < nz ? idx.offsets[b] : size }); };
+  let a = -1;
+  for (let z = 0; z <= nz; z++) {
+    const kept = z < nz && (!keep || keep(z));
+    if (kept && a < 0) a = z;
+    if (a >= 0 && (!kept || z - a === anchors)) { push(a, z); a = kept ? z : -1; }
+  }
+  return runs;
+}
+
+// the colour channel's qualifier policy: qualify = { [column name]: policy } (else the default)
+function policyOf(qualify, columns, i) {
+  const name = columns && i != null ? columns[i] : null;
+  return (qualify && name != null && qualify[name]) || QUALIFIED_DEFAULT;
+}
+
+const CAP_DISTINCT = 300000;                               // per-axis discovery cap
+
+// sweep 2 as a shared factory: the same cold-recipe stream whether the header
+// came from a live discovery or a cached `discovered` payload (sidecars)
+function makeDelimitedStream(blob, delim, hasHeaderRow, map, catCol, catCode, dimInfo = null, chanPolicy = QUALIFIED_DEFAULT, decimal = '.') {
+  return async function* streamChunks({ chunkPoints = 1 << 18, signal: s2, onProgress: op2 } = {}) {
+    const alloc = () => ({ x: new Float64Array(chunkPoints), y: new Float64Array(chunkPoints), z: new Float64Array(chunkPoints), chan: new Float64Array(chunkPoints), cat: catCode ? new Uint8Array(chunkPoints) : null, dim: dimInfo ? new Uint8Array(chunkPoints) : null });
+    let buf = alloc(), fill = 0, recStart = 0;
+    const dimKeyOf = makeDimKeyer();
+    for await (const batch of lineFields(blob, delim, hasHeaderRow, { signal: s2, onProgress: op2, decimal })) {
+      for (const f of batch) {
+        const xv = coordNum(f[map.x]), yv = coordNum(f[map.y]), zv = coordNum(f[map.z]);
+        if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;
+        buf.x[fill] = xv; buf.y[fill] = yv; buf.z[fill] = zv;
+        buf.chan[fill] = map.chan != null ? qualifiedNumber(f[map.chan], chanPolicy) : 0;   // <0.001 → a number under the column's policy
+        if (buf.cat) { const c = catCode.get((f[catCol] || '').trim()); buf.cat[fill] = c === undefined ? 0 : c; }
+        if (buf.dim) { const c = dimInfo.code.get(dimKeyOf(+f[dimInfo.cols.x], +f[dimInfo.cols.y], +f[dimInfo.cols.z])); buf.dim[fill] = c === undefined ? 0 : c; }
+        fill++;
+        if (fill === chunkPoints) {
+          yield { count: fill, x: buf.x, y: buf.y, z: buf.z, chan: buf.chan, cat: buf.cat, dim: buf.dim, recStart };
+          recStart += fill; buf = alloc(); fill = 0;
+        }
+      }
+    }
+    if (fill) yield { count: fill, x: buf.x.subarray(0, fill), y: buf.y.subarray(0, fill), z: buf.z.subarray(0, fill), chan: buf.chan.subarray(0, fill), cat: buf.cat ? buf.cat.subarray(0, fill) : null, dim: buf.dim ? buf.dim.subarray(0, fill) : null, recStart };
+  };
+}
+
+// opts.lattice — a DECLARED lattice ({ x, y, z } axes, optionally rot + anchor
+//   for a rotated one; see grid/basis.js): applied as stated, never inferred,
+//   but every record is checked against it in the discovery sweep and the open
+//   throws (naming the record) if one is off it.
+// opts.rotated — false skips the rotated-lattice detection. Otherwise a model
+//   that is NOT an axis-aligned grid is tried as a rotated one (reservoir →
+//   basis → a fit over every record); a hit is returned as
+//   header.latticeCandidate and NOT applied — the caller confirms it (an
+//   inferred rotation is never applied silently).
+// opts.dims — { x, y, z } column indices of the per-block size columns, stated
+//   by the caller (otherwise found by name: DX/DY/DZ, XINC…).
+// mapping.cat = -1 — "no category" (no auto-pick from the text columns).
+async function openBlockModel(blob, { mapping = null, discovered = null, lattice = null, rotated = true, dims = null, qualify = null, sample = 512 * 1024, indexEvery = 1024, zones = false, signal, onProgress } = {}) {
+  // a cached discovery (project sidecars / channel re-streams): skip sweep 1
+  // entirely — the header is rebuilt from the payload, sweep 2 streams as usual
+  if (discovered) {
+    const header = {
+      ...discovered,
+      bbox: { min: [...discovered.bbox.min], max: [...discovered.bbox.max] },
+      index: discovered.index
+        ? { k: discovered.index.k, offsets: discovered.index.offsets instanceof Float64Array ? discovered.index.offsets : Float64Array.from(discovered.index.offsets) }
+        : undefined,
+      zones: discovered.zones && discovered.zones.num && typeof Object.values(discovered.zones.num)[0]?.min === 'string' ? zonesFromJSON(discovered.zones) : (discovered.zones || null),
+    };
+    const map2 = header.mapping;
+    const catCode2 = header.categories ? new Map(header.categories.map((v, i) => [v, i])) : null;
+    // sub-blocked: rebuild the size-code map from the persisted half-dim palette (×2)
+    const dimInfo2 = header.subBlocked && header.dimCols && header.dimPalette
+      ? { cols: header.dimCols, code: dimCodeFromPalette(header.dimPalette) }
+      : null;
+    return { header, streamChunks: makeDelimitedStream(blob, header.delim, header.hasHeaderRow, map2, map2.cat, catCode2, dimInfo2, policyOf(qualify, header.columns, map2.chan), header.decimal) };
+  }
+  const head = await blob.slice(0, Math.min(sample, blob.size)).text();
+  const sniff = sniffDelimited(head);
+  // headerless numeric files (XYZ dumps): columns 0/1/2 = x/y/z, a 4th numeric = the
+  // scalar channel; names generated so schema/filter/autocomplete still work.
+  if (!sniff.header && sniff.columns >= 3) {
+    sniff.header = Array.from({ length: sniff.columns }, (_, i) => (i === 0 ? 'X' : i === 1 ? 'Y' : i === 2 ? 'Z' : `V${i + 1}`));
+    sniff.generated = true;
+    if (!mapping) mapping = { x: 0, y: 1, z: 2, chan: sniff.columns > 3 ? 3 : null, cat: null };
+  }
+  const map = mapping || mapColumns(sniff.header);
+  if (!map) throw new Error('blockmodel: could not identify X/Y/Z centroid columns — pass a mapping');
+
+  // mapColumns picks the channel BY NAME (first leftover column) — a text
+  // column (XC,YC,ZC,LITO) would claim it, killing both the channel and the
+  // category detection below (which skips map.chan). Demote a non-numeric
+  // AUTO pick; an explicit mapping stays the caller's call.
+  if (!mapping && map.chan != null && sniff.header) {
+    const lines0 = sampleRecords(head, sniff.delim, { max: 40 }).slice(1);
+    const split0 = splitter(sniff.delim, sniff.decimal);
+    const vals0 = lines0.map((l) => (split0(l)[map.chan] || '').trim()).filter(Boolean);
+    if (vals0.length && !censusQualified(vals0).numeric) map.chan = null;
+  }
+
+  // auto category: first column whose head-sample values are all non-numeric
+  let catCol = map.cat;
+  if (catCol === -1) catCol = null;                         // stated: no category
+  else if (catCol == null && sniff.header) {
+    const lines = sampleRecords(head, sniff.delim, { max: 40 }).slice(1);
+    const split = splitter(sniff.delim, sniff.decimal);
+    for (let i = 0; i < sniff.columns && catCol == null; i++) {
+      if (i === map.x || i === map.y || i === map.z || i === map.chan) continue;
+      const vals = lines.map((l) => (split(l)[i] || '').trim()).filter(Boolean);
+      if (vals.length && (({ num, below, above }) => num + below + above === 0)(censusQualified(vals))) catCol = i;
+    }
+  }
+
+  // per-block dimension columns (DX/DY/DZ, XINC…) → the model may be SUB-BLOCKED
+  // (variable box size). Discovery tracks the fine pitch (min dim/axis) + the
+  // distinct (dx,dy,dz) triples that become the size-code palette.
+  const dimCols = dims || findDimColumns(sniff.header) || { x: -1, y: -1, z: -1 };
+  const hasDims = dimCols.x >= 0;
+  const minDim = [Infinity, Infinity, Infinity];
+  const dimSet = new Set();
+
+  // every plausible scalar column (numeric in the head sample, not a coord/dim) —
+  // the UI offers these as color channels; switching re-runs sweep 2 only.
+  const numericColumns = [], qualifiedColumns = [];
+  if (sniff.header) {
+    const lines2 = sampleRecords(head, sniff.delim, { max: 40 }).slice(1);
+    const split2 = splitter(sniff.delim, sniff.decimal);
+    for (let i = 0; i < sniff.columns; i++) {
+      if (i === map.x || i === map.y || i === map.z || DIM_RE.test(sniff.header[i].trim())) continue;
+      const vals = lines2.map((l) => (split2(l)[i] || '').trim()).filter(Boolean);
+      const cq = vals.length ? censusQualified(vals) : null;
+      if (cq && cq.numeric) numericColumns.push({ i, name: sniff.header[i] });
+      if (cq && cq.qualified) qualifiedColumns.push({ i, name: sniff.header[i], below: cq.below, above: cq.above, code: cq.code });
+    }
+  }
+  // zone maps (opts.zones): per-index-entry skip statistics, filled in the same
+  // pass — numeric = the coordinates, the size columns and the numeric columns;
+  // every other column is a category candidate
+  const zb = zones && sniff.header ? createZoneBuilder(sniff.header, {
+    num: [map.x, map.y, map.z, ...sniff.header.map((h, i) => (DIM_RE.test(String(h).trim()) ? i : -1)).filter((i) => i >= 0), ...numericColumns.map((c) => c.i)].filter((i, q, a) => a.indexOf(i) === q),
+    coord: [map.x, map.y, map.z], k: indexEvery,
+  }) : null;
+
+  // ── sweep 1: discovery — axis distincts + extents + category dictionary ──
+  const axc = [axisDistinct(CAP_DISTINCT), axisDistinct(CAP_DISTINCT), axisDistinct(CAP_DISTINCT)];
+  const ax = axc.map((c) => c.set);
+  const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+  const catCounts = new Map();
+  const dimKeyOf = makeDimKeyer();
+  let count = 0;
+  const hasHeaderRow = !!sniff.header && !sniff.generated;
+  const anchors = [];                                      // sparse record index: byte offset of every indexEvery-th accepted row
+  const RES = 50000, res = [];                             // reservoir: the first centroids (rotated-lattice inference)
+  let declaredMisfit = null;
+  // rows that are no record, by reason — reported, never silent (the first one's
+  // data-row number, to find it): a blank coordinate, or one that isn't a number
+  const dropped = { blank: 0, text: 0, firstRow: -1 };
+  let dataRow = 0;
+  for await (const { fields, at } of lineFieldsWithOffsets(blob, sniff.delim, hasHeaderRow, { signal, onProgress, decimal: sniff.decimal })) {
+    for (let fi = 0; fi < fields.length; fi++, dataRow++) {
+      const f = fields[fi];
+      const xv = coordNum(f[map.x]), yv = coordNum(f[map.y]), zv = coordNum(f[map.z]);
+      if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) {
+        const blank = [f[map.x], f[map.y], f[map.z]].some((v) => v == null || String(v).trim() === '');
+        if (blank) dropped.blank++; else dropped.text++;
+        if (dropped.firstRow < 0) dropped.firstRow = dataRow + 1;
+        continue;
+      }
+      if (count % indexEvery === 0) anchors.push(at[fi]);
+      if (zb) zb.push(f, count);
+      if (lattice && declaredMisfit === null) declaredMisfit = latticeMisfit(lattice, xv, yv, zv, count);
+      else if (!lattice && res.length < RES * 3) res.push(xv, yv, zv);
+      count++;
+      if (xv < min[0]) min[0] = xv; if (xv > max[0]) max[0] = xv;
+      if (yv < min[1]) min[1] = yv; if (yv > max[1]) max[1] = yv;
+      if (zv < min[2]) min[2] = zv; if (zv > max[2]) max[2] = zv;
+      axc[0].add(xv); axc[1].add(yv); axc[2].add(zv);
+      if (catCol != null && catCounts.size <= 256) { const v = (f[catCol] || '').trim(); catCounts.set(v, (catCounts.get(v) || 0) + 1); }   // a blank is its own category, ''
+      if (hasDims) {
+        const dx = +f[dimCols.x], dy = +f[dimCols.y], dz = +f[dimCols.z];
+        if (dx > 0 && dy > 0 && dz > 0) {
+          if (dx < minDim[0]) minDim[0] = dx; if (dy < minDim[1]) minDim[1] = dy; if (dz < minDim[2]) minDim[2] = dz;
+          if (dimSet.size <= DIM_PALETTE_MAX) dimSet.add(dimKeyOf(dx, dy, dz));
+        }
+      }
+    }
+  }
+
+  if (lattice && declaredMisfit) throw new Error(`declared lattice rejected — ${declaredMisfit}`);
+  const axes = ax.map((s) => (s.size < CAP_DISTINCT ? inferAxis([...s].sort((a, b) => a - b)) : null));
+  let grid = lattice ? { ...lattice } : axes.every(Boolean) ? { x: axes[0], y: axes[1], z: axes[2] } : null;
+
+  // ── sub-blocked detection ── dims vary → fine-lattice IJK (pitch = min dim /2,
+  // so every power-of-2 sub-block centroid lands on it) + a size-code palette.
+  // Off the fine lattice (non-power-of-2 splits) → leave it null → points fallback.
+  let subBlocked = false, dimPalette = null, dimInfo = null;
+  const sb = hasDims && !lattice ? inferSubBlockLattice(ax, minDim, dimSet, { cap: CAP_DISTINCT }) : null;
+  if (sb) {
+    subBlocked = true;
+    dimPalette = sb.dimPalette;                                // half-dims (box radius)
+    dimInfo = { cols: dimCols, code: sb.dimCode };
+    grid = sb.grid;                                            // fine lattice → IJK
+  }
+  // not an axis-aligned grid → maybe a ROTATED one (a candidate, for the caller to confirm)
+  let latticeCandidate = null;
+  const coordSweep = () => (async function* () {
+      for await (const batch of lineFields(blob, sniff.delim, hasHeaderRow, { signal, decimal: sniff.decimal })) {
+        const n = batch.length, x = new Float64Array(n), y = new Float64Array(n), z = new Float64Array(n);
+        for (let i = 0; i < n; i++) { const f = batch[i]; x[i] = coordNum(f[map.x]); y[i] = coordNum(f[map.y]); z[i] = coordNum(f[map.z]); }
+        yield { x, y, z, count: n };
+      }
+    })();
+  if (!grid && !subBlocked && rotated && res.length >= 24) {
+    latticeCandidate = await detectRotatedLattice(Float64Array.from(res), coordSweep);
+  } else if (grid && !lattice && !subBlocked && rotated) {
+    // a rotated model can ALSO read as a sparse, wrong axis grid (45°, 3-4-5…)
+    const c = await detectRotatedOverAxisGrid(grid, count, Float64Array.from(res), coordSweep);
+    if (c) { grid = null; latticeCandidate = c; }
+  }
+  const categories = catCol != null && catCounts.size > 0 && catCounts.size <= 255
+    ? [...catCounts.keys()].sort() : null;
+  const catCode = categories ? new Map(categories.map((v, i) => [v, i])) : null;
+
+  const header = {
+    kind: 'blockmodel', count,
+    bbox: { min, max },
+    grid,                                                   // null → not a regular grid (points fallback)
+    latticeCandidate,                                       // a detected ROTATED lattice, not applied (caller confirms) — or null
+    lattice: lattice ? { basis: 'declared' } : null,
+    subBlocked, dimPalette, dimCols: subBlocked ? dimCols : null,   // variable-size boxes: half-dim palette + size-code per block
+    columns: sniff.header, mapping: { ...map, cat: categories ? catCol : null },
+    delim: sniff.delim, hasHeaderRow,                       // for external sweeps (the filter mask)
+    decimal: sniff.decimal,                                 // ',' — every re-read normalizes 1,5 the same way
+    index: { k: indexEvery, offsets: Float64Array.from(anchors) },   // sparse line-offset index (fetchDelimitedRecord)
+    dropped: dropped.blank || dropped.text ? dropped : null,   // rows that are no record (no usable coordinates)
+    zones: zb ? zb.finish(count) : null,                   // per-index-entry skip statistics (io/zones.js)
+    numericColumns,
+    qualifiedColumns,                                       // numeric once <x / >x / lab codes count (seen in the head sample)
+    categories,
+    attributes: [
+      ...(map.chan != null && sniff.header ? [sniff.header[map.chan]] : []),
+      ...(categories && sniff.header ? [sniff.header[catCol]] : []),
+    ],
+  };
+
+  // ── sweep 2 (cold recipe): the shared stream factory ──
+  const streamChunks = makeDelimitedStream(blob, sniff.delim, hasHeaderRow, map, catCol, catCode, dimInfo, policyOf(qualify, sniff.header, map.chan), sniff.decimal);
+
+  return { header, streamChunks };
+}
+
+// ── the TABLE provider: a delimited file with NO geometry ─────────────────────
+// Not every table in a project is spatial — a join source, a parameter table, a
+// cut-off/density lookup, a price deck, an analysis result. This reads one as a
+// plain tabular document: columns, a row count, numeric-column detection, and
+// the line index `fetchDelimitedRecord` needs. No coordinates, no bbox, no
+// chunks — nothing here reaches the renderer.
+async function openTable(blob, { signal, onProgress } = {}) {
+  const sniff = sniffDelimited(await blob.slice(0, 64 * 1024).text());   // { delim, header: [names]|null, columns: n }
+  const hasHeaderRow = !!sniff.header;
+  const columns = sniff.header
+    ? sniff.header.map((h, i) => String(h).trim() || `col${i + 1}`)
+    : Array.from({ length: sniff.columns }, (_, i) => `col${i + 1}`);
+  // one pass: count the rows and sample each column's type (a column is numeric
+  // when ≥90% of its non-empty values parse — the same tolerance the block
+  // provider uses, so mixed columns with a stray 'n/a' still read as numbers)
+  const stat = columns.map(() => ({ n: 0, num: 0 }));
+  let count = 0;
+  for await (const batch of lineFields(blob, sniff.delim, hasHeaderRow, { signal, onProgress, decimal: sniff.decimal })) {
+    for (const f of batch) {
+      for (let i = 0; i < columns.length && i < f.length; i++) {
+        const v = f[i];
+        if (v === '' || v == null) continue;
+        stat[i].n++;
+        if (classifyQualified(v).kind !== 'text') stat[i].num++;   // numbers, <x / >x and lab codes all count
+      }
+      count++;
+    }
+  }
+  const numericColumns = [];
+  for (let i = 0; i < columns.length; i++) if (stat[i].n && stat[i].num / stat[i].n >= 0.9) numericColumns.push({ i, name: columns[i] });
+  // a table needs ROWS. Prose lands here with a plausible-looking delimiter and
+  // no data — "0 rows · 10 columns" is not a table, it is a misread file.
+  if (!count) throw new Error('no data rows — this does not look like a table');
+  return { header: { table: true, columns, count, delim: sniff.delim, decimal: sniff.decimal, hasHeaderRow, numericColumns, mapping: null, grid: null, bbox: null } };
+}
+
+// ── ../drillhole/src/desurvey.js ──
+
+// @gcu/drillhole — desurvey: collar + survey stations → the 3D hole trace, and a
+// method-consistent position at any down-hole depth.
+//
+// Conventions (D1): azimuth = degrees clockwise from north; dip = MINING convention,
+// positive DOWN (normalizeSurveys flips neg-down files; detectDipConvention infers
+// from the median); depths/lengths in any consistent unit (metres in practice).
+// World frame: x = east, y = north, z = up.
+//
+// Reverse-vendored from BMA (A7 Phase 0, Arthur 2026-06-11) — developed there in the
+// concat-source style, always intended to live here. BMA + dee re-vendor from here now.
+
+// Unit tangent from azimuth/dip (mining pos-down): x east, y north, z up.
+function dhTangent$index(azDeg, dipDeg) {
+  let az = azDeg * Math.PI / 180, dip = dipDeg * Math.PI / 180;
+  let c = Math.cos(dip);
+  return [Math.sin(az) * c, Math.cos(az) * c, -Math.sin(dip)];
+}
+
+// 'pos-down' (mining: +60 = 60° below horizontal) vs 'neg-down' (signed math: -60 =
+// below). Inferred from the median dip — exploration holes point down, so the sign of
+// the bulk tells the convention.
+function dhDetectDipConvention$index(surveys) {
+  let dips = [];
+  for (let i = 0; i < surveys.length; i++) {
+    let d = surveys[i].dip;
+    if (typeof d === 'number' && isFinite(d) && d !== 0) dips.push(d);
+  }
+  if (dips.length === 0) return 'pos-down';
+  dips.sort(function(a, b) { return a - b; });
+  let med = dips[Math.floor(dips.length / 2)];
+  return med < 0 ? 'neg-down' : 'pos-down';
+}
+
+// Sort, dedupe (last wins), normalize dip to pos-down, synthesize a station at depth 0
+// when the list starts deeper (copies the first attitude). Returns { stations:
+// [{depth, az, dip}], dupCount, badCount }.
+function dhNormalizeSurveys$index(rawSurveys, dipConvention) {
+  let flip = dipConvention === 'neg-down' ? -1 : 1;
+  let clean = [], badCount = 0;
+  for (let i = 0; i < rawSurveys.length; i++) {
+    let s = rawSurveys[i];
+    let depth = s.depth, az = s.az, dip = s.dip * flip;
+    if (!isFinite(depth) || depth < 0 || !isFinite(az) || !isFinite(dip) || Math.abs(dip) > 90.000001) {
+      badCount++;
+      continue;
+    }
+    clean.push({ depth: depth, az: az, dip: dip });
+  }
+  clean.sort(function(a, b) { return a.depth - b.depth; });
+  let stations = [], dupCount = 0;
+  for (let j = 0; j < clean.length; j++) {
+    if (stations.length && Math.abs(stations[stations.length - 1].depth - clean[j].depth) < 1e-9) {
+      stations[stations.length - 1] = clean[j]; // last wins
+      dupCount++;
+    } else {
+      stations.push(clean[j]);
+    }
+  }
+  if (stations.length && stations[0].depth > 1e-9) {
+    stations.unshift({ depth: 0, az: stations[0].az, dip: stations[0].dip });
+  }
+  return { stations: stations, dupCount: dupCount, badCount: badCount };
+}
+
+// Desurvey one hole. Methods:
+// - 'minimumCurvature' (default): circular-arc model, RF = (2/θ)·tan(θ/2)
+// - 'balancedTangential': the same without RF — averages the two end tangents per
+//   segment (matches legacy desurveys from several packages)
+// - 'tangential': straight segments along the LOWER station's attitude (sparse/legacy
+//   surveys; matches dee's simple-tangential seed)
+// collar = [x, y, z]; stations from dhNormalizeSurveys (pos-down). Returns { method,
+// depths, px, py, pz, tx, ty, tz, dogleg, dls } — tangents + method ride along so
+// dhPositionAt interpolates consistently. `dogleg[k]` is the angular change (degrees)
+// between stations k−1 and k; `dls[k]` is the dogleg SEVERITY in °/30 length-units (the
+// metric drilling-QC convention — multiply by ⅓ for °/10 m, or recompute from `dogleg`
+// for °/100 ft). Both are geometry of the survey attitudes — independent of `method` —
+// so they're the same whichever desurvey you pick. dogleg[0] = dls[0] = 0.
+function dhDesurveyHole$index(collar, stations, method) {
+  method = method || 'minimumCurvature';
+  let n = stations.length;
+  let out = {
+    method: method,
+    depths: new Float64Array(n),
+    px: new Float64Array(n), py: new Float64Array(n), pz: new Float64Array(n),
+    tx: new Float64Array(n), ty: new Float64Array(n), tz: new Float64Array(n),
+    dogleg: new Float64Array(n), dls: new Float64Array(n),
+  };
+  for (let i = 0; i < n; i++) {
+    out.depths[i] = stations[i].depth;
+    let t = dhTangent$index(stations[i].az, stations[i].dip);
+    out.tx[i] = t[0]; out.ty[i] = t[1]; out.tz[i] = t[2];
+  }
+  out.px[0] = collar[0]; out.py[0] = collar[1]; out.pz[0] = collar[2];
+
+  for (let k = 1; k < n; k++) {
+    let dl = out.depths[k] - out.depths[k - 1];
+    // dogleg angle between the two station tangents — drives both the min-curvature RF
+    // and the QC severity, and is the same for every method (it's the survey geometry).
+    let dot = out.tx[k - 1] * out.tx[k] + out.ty[k - 1] * out.ty[k] + out.tz[k - 1] * out.tz[k];
+    let doglegRad = Math.acos(Math.max(-1, Math.min(1, dot)));
+    out.dogleg[k] = doglegRad * 180 / Math.PI;
+    out.dls[k] = dl > 1e-12 ? out.dogleg[k] / dl * 30 : 0;
+    if (method === 'tangential') {
+      out.px[k] = out.px[k - 1] + dl * out.tx[k];
+      out.py[k] = out.py[k - 1] + dl * out.ty[k];
+      out.pz[k] = out.pz[k - 1] + dl * out.tz[k];
+    } else {
+      let rf = 1; // balanced tangential
+      // minimum curvature: RF = (2/θ)·tan(θ/2)
+      if (method !== 'balancedTangential') rf = doglegRad > 1e-6 ? (2 / doglegRad) * Math.tan(doglegRad / 2) : 1;
+      out.px[k] = out.px[k - 1] + 0.5 * dl * (out.tx[k - 1] + out.tx[k]) * rf;
+      out.py[k] = out.py[k - 1] + 0.5 * dl * (out.ty[k - 1] + out.ty[k]) * rf;
+      out.pz[k] = out.pz[k - 1] + 0.5 * dl * (out.tz[k - 1] + out.tz[k]) * rf;
+    }
+  }
+  return out;
+}
+
+// Position at an arbitrary down-hole depth, consistent with the hole's desurvey method
+// (depths between stations land on the SAME path the stations were placed on):
+// - minimumCurvature: arc-correct (D2) — the closed-form integral of the slerp of the
+//   end tangents: p(s) = p1 + L/(θ·sinθ)·[(cos(θ−φ) − cosθ)·d1 + (1 − cosφ)·d2],
+//   φ = θ·s/L (at s = L this reduces to the RF endpoint formula; the harness pins
+//   mid-segment points to an analytic circle at 1e-14)
+// - tangential: straight along the lower station's attitude (how the segment was built)
+// - balancedTangential: linear along the segment chord
+// Beyond the last station: straight extrapolation along the last tangent (standard
+// practice — intervals routinely outrun the survey).
+function dhPositionAt$index(hole, depth) {
+  let d = hole.depths, n = d.length;
+  if (n === 0) return null;
+  if (depth <= d[0]) {
+    let s0 = depth - d[0]; // above collar station (negative) — straight
+    return [hole.px[0] + s0 * hole.tx[0], hole.py[0] + s0 * hole.ty[0], hole.pz[0] + s0 * hole.tz[0]];
+  }
+  if (depth >= d[n - 1]) {
+    let sE = depth - d[n - 1];
+    return [hole.px[n - 1] + sE * hole.tx[n - 1], hole.py[n - 1] + sE * hole.ty[n - 1], hole.pz[n - 1] + sE * hole.tz[n - 1]];
+  }
+  // binary search: segment [lo, lo+1] with d[lo] <= depth < d[lo+1]
+  let lo = 0, hi = n - 1;
+  while (hi - lo > 1) {
+    let mid = (lo + hi) >> 1;
+    if (d[mid] <= depth) lo = mid; else hi = mid;
+  }
+  let L = d[lo + 1] - d[lo], s = depth - d[lo];
+  if (L < 1e-12) return [hole.px[lo], hole.py[lo], hole.pz[lo]];
+
+  if (hole.method === 'tangential') {
+    return [
+      hole.px[lo] + s * hole.tx[lo + 1],
+      hole.py[lo] + s * hole.ty[lo + 1],
+      hole.pz[lo] + s * hole.tz[lo + 1],
+    ];
+  }
+  if (hole.method === 'balancedTangential') {
+    let t = s / L;
+    return [
+      hole.px[lo] + t * (hole.px[lo + 1] - hole.px[lo]),
+      hole.py[lo] + t * (hole.py[lo + 1] - hole.py[lo]),
+      hole.pz[lo] + t * (hole.pz[lo + 1] - hole.pz[lo]),
+    ];
+  }
+
+  let d1 = [hole.tx[lo], hole.ty[lo], hole.tz[lo]];
+  let d2 = [hole.tx[lo + 1], hole.ty[lo + 1], hole.tz[lo + 1]];
+  let dot = d1[0] * d2[0] + d1[1] * d2[1] + d1[2] * d2[2];
+  let theta = Math.acos(Math.max(-1, Math.min(1, dot)));
+  if (theta < 1e-9) {
+    return [hole.px[lo] + s * d1[0], hole.py[lo] + s * d1[1], hole.pz[lo] + s * d1[2]];
+  }
+  let phi = theta * s / L;
+  let kk = L / (theta * Math.sin(theta));
+  let a = (Math.cos(theta - phi) - Math.cos(theta)) * kk;
+  let b = (1 - Math.cos(phi)) * kk;
+  return [
+    hole.px[lo] + a * d1[0] + b * d2[0],
+    hole.py[lo] + a * d1[1] + b * d2[1],
+    hole.pz[lo] + a * d1[2] + b * d2[2],
+  ];
+}
+
+// ── ../drillhole/src/validate.js ──
+
+// @gcu/drillhole — validate: join + check the three tables. Nothing is silently
+// dropped; every exclusion lands in the report with a count and a BHID list.
+//
+// The collar+survey join (dhJoinHoles) and per-hole station normalization
+// (dhNormalizeHoleStations) are factored out so the point-sample locator
+// (dhDesurveySamples) reuses the exact same hole-building — one join, two consumers.
+
+
+// Build the per-hole structure from collars + surveys (NOT normalized yet — callers
+// normalize only the holes that pass their own gate, so a skipped hole doesn't accrue
+// advisory counts). Returns { holes: bhid→{bhid,collar,eoh,rawSurveys}, order: [] }.
+function dhJoinHoles$index(tables, dipConvention, hit) {
+  let holes = {}, order = [];
+  for (let ci = 0; ci < (tables.collars || []).length; ci++) {
+    let c0 = tables.collars[ci];
+    let bid = String(c0.bhid).trim();
+    if (!bid) { hit('bad-collar', 'Collar rows with missing BHID or non-numeric coordinates', null); continue; }
+    if (!isFinite(c0.x) || !isFinite(c0.y) || !isFinite(c0.z)) {
+      hit('bad-collar', 'Collar rows with missing BHID or non-numeric coordinates', bid);
+      continue;
+    }
+    if (holes[bid]) { hit('dup-collar', 'Duplicate collar BHIDs (first kept)', bid); continue; }
+    holes[bid] = { bhid: bid, collar: [c0.x, c0.y, c0.z], eoh: isFinite(c0.eoh) ? c0.eoh : null, rawSurveys: [] };
+    order.push(bid);
+  }
+  for (let si = 0; si < (tables.surveys || []).length; si++) {
+    let s0 = tables.surveys[si];
+    let sb = String(s0.bhid).trim();
+    let h = holes[sb];
+    if (!h) { hit('orphan-survey', 'Survey rows whose BHID has no collar (excluded)', sb); continue; }
+    h.rawSurveys.push({ depth: s0.depth, az: s0.az, dip: s0.dip });
+  }
+  return { holes: holes, order: order };
+}
+
+// Normalize one hole's raw surveys → hole.stations (pos-down, sorted, deduped, depth-0
+// synthesized), with the no-usable-survey straight-down fallback and the survey-side
+// past-EOH advisory. Counts ride into `hit`. Mutates + returns the hole.
+function dhNormalizeHoleStations$index(hole, dipConvention, hit) {
+  let norm = dhNormalizeSurveys$index(hole.rawSurveys, dipConvention);
+  if (norm.badCount) for (let bi = 0; bi < norm.badCount; bi++) hit('bad-survey', 'Survey rows with non-numeric depth/azimuth or |dip| > 90 (excluded)', hole.bhid);
+  if (norm.dupCount) for (let di = 0; di < norm.dupCount; di++) hit('dup-survey-depth', 'Duplicate survey depths in a hole (last kept)', hole.bhid);
+  if (norm.stations.length === 0) {
+    hit('collar-no-survey', 'Holes with no usable survey (desurveyed straight down)', hole.bhid);
+    norm.stations = [{ depth: 0, az: 0, dip: 90 }];
+  }
+  hole.stations = norm.stations;
+  if (hole.eoh != null && norm.stations[norm.stations.length - 1].depth > hole.eoh + 1e-9) {
+    hit('past-eoh', 'Survey or interval depths past the collar EOH (kept — EOH is advisory)', hole.bhid);
+  }
+  return hole;
+}
+
+// tables = {
+//   collars:  [{ bhid, x, y, z, eoh }],            // eoh optional/null
+//   surveys:  [{ bhid, depth, az, dip }],          // dip raw (per file)
+//   intervals: { bhid: [], from: [], to: [],
+//                cols: [{ name, type: 'num'|'cat', values: [] }] }
+// }
+// opts = { dipConvention: 'auto'|'pos-down'|'neg-down', method }
+function dhValidate$index(tables, opts) {
+  opts = opts || {};
+  let checks = {};
+  function hit(id, label, bhid) {
+    let c = checks[id];
+    if (!c) { c = checks[id] = { id: id, label: label, count: 0, bhids: [] }; }
+    c.count++;
+    if (bhid != null && c.bhids.indexOf(bhid) < 0 && c.bhids.length < 200) c.bhids.push(bhid);
+  }
+
+  let dipConvention = opts.dipConvention || 'auto';
+  if (dipConvention === 'auto') dipConvention = dhDetectDipConvention$index(tables.surveys || []);
+
+  let joined = dhJoinHoles$index(tables, dipConvention, hit);
+  let holes = joined.holes, order = joined.order;
+  for (let oi = 0; oi < order.length; oi++) holes[order[oi]].iv = [];
+
+  // intervals
+  let iv = tables.intervals || { bhid: [], from: [], to: [], cols: [] };
+  let nIv = iv.bhid.length;
+  for (let ii = 0; ii < nIv; ii++) {
+    let ib = String(iv.bhid[ii]).trim();
+    let h2 = holes[ib];
+    if (!h2) { hit('orphan-interval', 'Interval rows whose BHID has no collar (excluded)', ib); continue; }
+    let f = iv.from[ii], t = iv.to[ii];
+    if (!isFinite(f) || !isFinite(t) || f < 0 || t <= f) {
+      hit('bad-interval', 'Interval rows with FROM ≥ TO, negative or non-numeric depths (excluded)', ib);
+      continue;
+    }
+    h2.iv.push(ii);
+  }
+
+  // per-hole structure (normalize only the holes that have intervals)
+  let ready = [];
+  for (let oi = 0; oi < order.length; oi++) {
+    let hh = holes[order[oi]];
+    if (hh.iv.length === 0) { hit('collar-no-intervals', 'Collars with no interval rows (hole skipped)', hh.bhid); continue; }
+
+    dhNormalizeHoleStations$index(hh, dipConvention, hit);
+
+    // interval-side past-EOH advisory (kept, counted)
+    if (hh.eoh != null) {
+      for (let ei = 0; ei < hh.iv.length; ei++) {
+        if (iv.to[hh.iv[ei]] > hh.eoh + 1e-9) {
+          hit('past-eoh', 'Survey or interval depths past the collar EOH (kept — EOH is advisory)', hh.bhid);
+          break;
+        }
+      }
+    }
+
+    // overlap flag (composited as-is; SUPPORT double-counts — flagged per hole)
+    let idx = hh.iv.slice().sort(function(a, b) { return iv.from[a] - iv.from[b]; });
+    for (let vi = 1; vi < idx.length; vi++) {
+      if (iv.from[idx[vi]] < iv.to[idx[vi - 1]] - 1e-9) {
+        hit('overlap', 'Holes with overlapping intervals (composited as-is; SUPPORT double-counts)', hh.bhid);
+        break;
+      }
+    }
+    hh.iv = idx;
+    ready.push(hh);
+  }
+
+  return { holes: ready, checks: checks, dipConvention: dipConvention, intervals: iv };
+}
+
+// ── ../drillhole/src/samples.js ──
+
+// @gcu/drillhole — point-sample locator. Some data is point-support, not intervals:
+// single-depth assays (handheld XRF, density readings) or already-composited samples
+// re-imported. Compositing (length-weighting into windows) doesn't apply — you just
+// want each sample placed in 3D on the desurveyed trace. This is that path; it reuses
+// the same collar+survey join + station normalization as dhValidate.
+
+
+// tables = { collars, surveys, samples: { bhid:[], depth:[], cols:[{name,type,values}] } }
+// opts   = { dipConvention, method }
+// Returns { header: ['BHID','X','Y','Z','DEPTH', ...cols], rows, report } — one located
+// row per valid sample (sorted down-hole within each hole), with the same non-silent
+// consistency report style as the interval pipeline.
+function dhDesurveySamples$index(tables, opts) {
+  opts = opts || {};
+  let checks = {};
+  function hit(id, label, bhid) {
+    let c = checks[id];
+    if (!c) { c = checks[id] = { id: id, label: label, count: 0, bhids: [] }; }
+    c.count++;
+    if (bhid != null && c.bhids.indexOf(bhid) < 0 && c.bhids.length < 200) c.bhids.push(bhid);
+  }
+
+  let dipConvention = opts.dipConvention || 'auto';
+  if (dipConvention === 'auto') dipConvention = dhDetectDipConvention$index(tables.surveys || []);
+
+  let joined = dhJoinHoles$index(tables, dipConvention, hit);
+  let holes = joined.holes, order = joined.order;
+  for (let oi = 0; oi < order.length; oi++) holes[order[oi]].smp = [];
+
+  // samples → per-hole index lists
+  let smp = tables.samples || { bhid: [], depth: [], cols: [] };
+  let cols = smp.cols || [];
+  let nS = smp.bhid.length;
+  for (let ii = 0; ii < nS; ii++) {
+    let bid = String(smp.bhid[ii]).trim();
+    let h = holes[bid];
+    if (!h) { hit('orphan-sample', 'Sample rows whose BHID has no collar (excluded)', bid); continue; }
+    let d = smp.depth[ii];
+    if (!isFinite(d) || d < 0) { hit('bad-sample', 'Sample rows with negative or non-numeric depth (excluded)', bid); continue; }
+    h.smp.push(ii);
+  }
+
+  let header = ['BHID', 'X', 'Y', 'Z', 'DEPTH'];
+  for (let hc = 0; hc < cols.length; hc++) header.push(cols[hc].name);
+  let rows = [];
+  let nHoles = 0;
+
+  for (let oi = 0; oi < order.length; oi++) {
+    let hh = holes[order[oi]];
+    if (hh.smp.length === 0) { hit('collar-no-samples', 'Collars with no sample rows (hole skipped)', hh.bhid); continue; }
+    dhNormalizeHoleStations$index(hh, dipConvention, hit);
+    let path = dhDesurveyHole$index(hh.collar, hh.stations, opts.method);
+    nHoles++;
+
+    // EOH advisory (kept, counted)
+    if (hh.eoh != null) {
+      for (let ei = 0; ei < hh.smp.length; ei++) {
+        if (smp.depth[hh.smp[ei]] > hh.eoh + 1e-9) {
+          hit('past-eoh', 'Sample depths past the collar EOH (kept — EOH is advisory)', hh.bhid);
+          break;
+        }
+      }
+    }
+
+    let idx = hh.smp.slice().sort(function(a, b) { return smp.depth[a] - smp.depth[b]; });
+    for (let k = 0; k < idx.length; k++) {
+      let ii = idx[k], d = smp.depth[ii];
+      let pos = dhPositionAt$index(path, d);
+      let row = [hh.bhid, pos[0], pos[1], pos[2], d];
+      for (let c = 0; c < cols.length; c++) row.push(cols[c].values[ii]);
+      rows.push(row);
+    }
+  }
+
+  let checkList = [];
+  for (let k in checks) checkList.push(checks[k]);
+  return { header: header, rows: rows, report: { checks: checkList, nHoles: nHoles, nSamples: rows.length, dipConvention: dipConvention } };
+}
+
+// ── ../drillhole/src/composite.js ──
+
+// @gcu/drillhole — composite: fixed-length down-hole composites over validated holes.
+
+
+// Tidied mode of (TO−FROM) — the default composite length (D3; a seed, always
+// user-editable).
+function dhDefaultLength(intervals) {
+  let counts = {};
+  let n = intervals.from.length; // only FROM/TO matter — callers may omit bhid
+  for (let i = 0; i < n; i++) {
+    let len = intervals.to[i] - intervals.from[i];
+    if (!isFinite(len) || len <= 0) continue;
+    let key = (Math.round(len * 100) / 100).toFixed(2); // 1cm buckets
+    counts[key] = (counts[key] || 0) + 1;
+  }
+  let best = null, bestN = 0;
+  for (let k in counts) { if (counts[k] > bestN) { bestN = counts[k]; best = parseFloat(k); } }
+  return best || 1;
+}
+
+// Fixed-length down-hole composites over validated holes.
+// opts = { length, domainColName|null, splitColNames|null, densityColName|null,
+//          combine|null, minCoverage (0..1)|null, method }
+// Numeric: length-weighted mean over covered length WITH a value (missing assays
+// shrink that column's weight, never poison the mean; no value in the window → null).
+// Categorical: majority by covered length (D6). SUPPORT = total covered length (D5:
+// low coverage emitted, not dropped; the optional minCoverage filter is visible and
+// counted). XYZ = the covered-length centroid depth on the desurveyed path.
+function dhComposite(validated, opts) {
+  let ivt = validated.intervals;
+  let cols = ivt.cols || [];
+  let L = opts.length;
+  let densityIdx = -1;
+  for (let dci = 0; dci < cols.length; dci++) {
+    // optional mass weighting — numeric means weight by length × density (the density
+    // column itself stays length-weighted). Missing density on an interval excludes it
+    // from mass-weighting and is counted (never silent).
+    if (opts.densityColName && cols[dci].name === opts.densityColName && cols[dci].type === 'num') densityIdx = dci;
+  }
+  // split columns — composites restart where the TUPLE of these columns changes (any
+  // one flips → new composite). Generalizes the single domain break; falls back to
+  // [domainColName] for back-compat. Each split column is constant within a run by
+  // construction, so it rides into the output 1:1.
+  let splitNames = (opts.splitColNames && opts.splitColNames.length) ? opts.splitColNames
+    : (opts.domainColName ? [opts.domainColName] : []);
+  let splitIdxs = [];
+  for (let si = 0; si < splitNames.length; si++) {
+    for (let sj = 0; sj < cols.length; sj++) { if (cols[sj].name === splitNames[si]) { splitIdxs.push(sj); break; } }
+  }
+  // per-column combine rules keyed by column name. Numeric: 'mean' (default,
+  // length/mass-weighted), 'sum' (Σ length×value), 'min', 'max'. Categorical:
+  // 'majority' (default, by covered length), 'first' (shallowest). An unknown rule for
+  // a column's type falls back to that type's default.
+  let combineMap = opts.combine || {};
+  let checks = validated.checks;
+  function hit(id, label, bhid) {
+    let c = checks[id];
+    if (!c) { c = checks[id] = { id: id, label: label, count: 0, bhids: [] }; }
+    c.count++;
+    if (bhid != null && c.bhids.indexOf(bhid) < 0 && c.bhids.length < 200) c.bhids.push(bhid);
+  }
+
+  let header = ['BHID', 'X', 'Y', 'Z', 'FROM', 'TO', 'SUPPORT'];
+  for (let hc = 0; hc < cols.length; hc++) header.push(cols[hc].name);
+  let rows = [];
+
+  for (let hI = 0; hI < validated.holes.length; hI++) {
+    let hole = validated.holes[hI];
+    let path = dhDesurveyHole$index(hole.collar, hole.stations, opts.method);
+    let idx = hole.iv; // sorted by FROM
+
+    // domain runs: contiguous spans sharing the split tuple (D4) — composites restart
+    // at every change; without split columns the whole hole is one run. Run extent =
+    // min(FROM)…max(TO) over the run (sorted by FROM, so max(TO) needs a scan — an
+    // early long interval can outrun the last one).
+    function makeRun(slice) {
+      let maxTo = -Infinity;
+      for (let mi = 0; mi < slice.length; mi++) maxTo = Math.max(maxTo, ivt.to[slice[mi]]);
+      return { from: ivt.from[slice[0]], to: maxTo, idx: slice };
+    }
+    let SPLIT_SEP = String.fromCharCode(31);   // unit separator → no cross-column key collisions
+    function splitKey(r2) {
+      let parts = [];
+      for (let sk = 0; sk < splitIdxs.length; sk++) parts.push(String(cols[splitIdxs[sk]].values[r2]));
+      return parts.join(SPLIT_SEP);
+    }
+    let runs = [];
+    if (!splitIdxs.length) {
+      runs.push(makeRun(idx));
+    } else {
+      let runStart = 0, startKey = idx.length ? splitKey(idx[0]) : '';
+      for (let ri = 1; ri <= idx.length; ri++) {
+        let changed = ri === idx.length || splitKey(idx[ri]) !== startKey;
+        if (changed) {
+          runs.push(makeRun(idx.slice(runStart, ri)));
+          runStart = ri;
+          if (ri < idx.length) startKey = splitKey(idx[ri]);
+        }
+      }
+    }
+
+    for (let rI = 0; rI < runs.length; rI++) {
+      let run = runs[rI];
+      let nWin = Math.ceil((run.to - run.from - 1e-9) / L);
+      for (let wI = 0; wI < nWin; wI++) {
+        let w0 = run.from + wI * L; // index-stepped: no float drift over long holes
+        let w1 = Math.min(w0 + L, run.to);
+        let covered = 0, centroidW = 0, hadMissingDensity = false;
+        let numW = new Float64Array(cols.length);
+        let numSum = new Float64Array(cols.length);
+        let numLSum = new Float64Array(cols.length);     // Σ length×value (for 'sum')
+        let numMin = new Float64Array(cols.length);
+        let numMax = new Float64Array(cols.length);
+        let seenNum = new Uint8Array(cols.length);
+        let catW = [], catFirst = []; // per col: {value → weight}, and first value by depth
+        for (let ci2 = 0; ci2 < cols.length; ci2++) { catW.push(null); catFirst.push(undefined); numMin[ci2] = Infinity; numMax[ci2] = -Infinity; }
+
+        for (let k2 = 0; k2 < run.idx.length; k2++) {
+          let r = run.idx[k2];
+          let ovFrom = Math.max(w0, ivt.from[r]);
+          let ovTo = Math.min(w1, ivt.to[r]);
+          let ov = ovTo - ovFrom;
+          if (ov <= 1e-12) continue;
+          covered += ov;
+          centroidW += ov * (ovFrom + ovTo) / 2;
+          // mass weight for numeric grades when a density column is set; the density
+          // column itself stays length-weighted (no self-reference).
+          let massW = ov;
+          if (densityIdx >= 0) {
+            let dval = cols[densityIdx].values[r];
+            if (typeof dval === 'number' && isFinite(dval) && dval > 0) massW = ov * dval;
+            else { massW = 0; hadMissingDensity = true; }
+          }
+          for (let c3 = 0; c3 < cols.length; c3++) {
+            let v = cols[c3].values[r];
+            if (cols[c3].type === 'num') {
+              let nw = (c3 === densityIdx) ? ov : massW;   // density col: length-weighted
+              if (typeof v === 'number' && isFinite(v)) {
+                numW[c3] += nw; numSum[c3] += nw * v;       // weighted mean
+                numLSum[c3] += ov * v;                       // length integral (sum)
+                if (v < numMin[c3]) numMin[c3] = v;
+                if (v > numMax[c3]) numMax[c3] = v;
+                seenNum[c3] = 1;
+              }
+            } else {
+              if (v != null && v !== '') {
+                if (!catW[c3]) catW[c3] = {};
+                let sk = String(v);
+                catW[c3][sk] = (catW[c3][sk] || 0) + ov;
+                if (catFirst[c3] === undefined) catFirst[c3] = sk;   // run is FROM-sorted → shallowest first
+              }
+            }
+          }
+        }
+        if (covered <= 1e-12) continue; // window entirely in a gap — nothing to emit
+
+        if (opts.minCoverage && covered / (w1 - w0) < opts.minCoverage) {
+          hit('low-coverage-filtered', 'Composites below the min-coverage filter (dropped — filter is user-set)', hole.bhid);
+          continue;
+        }
+        if (hadMissingDensity) hit('missing-density', 'Composites with intervals lacking usable density (excluded from mass-weighting)', hole.bhid);
+
+        let midDepth = centroidW / covered;
+        let pos = dhPositionAt$index(path, midDepth);
+        let row = [hole.bhid, pos[0], pos[1], pos[2], w0, w1, covered];
+        for (let c4 = 0; c4 < cols.length; c4++) {
+          if (cols[c4].type === 'num') {
+            let nrule = combineMap[cols[c4].name];
+            if (nrule === 'sum') row.push(seenNum[c4] ? numLSum[c4] : null);
+            else if (nrule === 'min') row.push(seenNum[c4] ? numMin[c4] : null);
+            else if (nrule === 'max') row.push(seenNum[c4] ? numMax[c4] : null);
+            else row.push(numW[c4] > 0 ? numSum[c4] / numW[c4] : null);   // 'mean' (default)
+          } else {
+            if (combineMap[cols[c4].name] === 'first') { row.push(catFirst[c4] !== undefined ? catFirst[c4] : null); continue; }
+            let bag = catW[c4];
+            if (!bag) { row.push(null); continue; }
+            let bestV = null, bestW = -1, total = 0;
+            for (let key2 in bag) { total += bag[key2]; if (bag[key2] > bestW) { bestW = bag[key2]; bestV = key2; } }
+            if (bestW < total - 1e-9) hit('mixed-domain', 'Composites whose categorical majority is < 100% of covered length', hole.bhid);
+            row.push(bestV);
+          }
+        }
+        rows.push(row);
+      }
+    }
+  }
+
+  return { header: header, rows: rows };
+}
+
+// ── ../drillhole/src/qa.js ──
+
+// @gcu/drillhole — qa: the drillhole QA report, ROW by row. validate (validate.js)
+// counts what it excludes per hole; this names every row a reviewer has to look
+// at — which table, which row, which depths, what's wrong — before anything is
+// estimated from the holes. Nothing here changes a table: it reads and reports.
+//
+// tables = {
+//   collars:   [{ bhid, x, y, z, eoh, row }],          // blanks as NaN — NOT pre-dropped
+//   surveys:   [{ bhid, depth, az, dip, row }],        // dip raw (per file)
+//   intervals: [{ name, bhid: [], from: [], to: [], rows?: [] }],   // one or more tables
+// }
+// opts = {
+//   dipConvention: 'auto' | 'pos-down' | 'neg-down',
+//   doglegMax: 10,      // °/30 length-units between consecutive stations (dogleg severity)
+//   gapMin: 0.001,      // a gap between consecutive intervals shorter than this is a join
+//   extrapMax: 30,      // an interval deeper than the deepest survey by more than this
+// }
+// → { findings: [{ check, severity, table, row, bhid, from, to, detail }],
+//     summary: [{ check, label, severity, count, holes }], holes, dipConvention, tables }
+// `row` is the 0-based data row of `table` (null for a whole-hole finding); `from`/`to`
+// are the depths involved (a station's depth rides in `from`). Findings come in table
+// order (collars, surveys, then each interval table), rows ascending within a check.
+
+
+const DH_QA_CHECKS = {
+  'collar-no-bhid': ['error', 'collar rows with no hole ID'],
+  'collar-blank-xyz': ['error', 'collars with a blank or non-numeric X/Y/Z (dropped)'],
+  'collar-dup': ['error', 'duplicate collar hole IDs (the first is kept)'],
+  'collar-eoh-bad': ['warn', 'collars with an end-of-hole depth ≤ 0'],
+  'hole-no-survey': ['warn', 'holes with no usable survey (desurveyed straight down)'],
+  'hole-no-intervals': ['info', 'holes with no rows in an interval table'],
+  'survey-orphan': ['error', 'survey rows whose hole has no collar'],
+  'survey-blank': ['error', 'survey rows with a blank or non-numeric depth / azimuth / dip (dropped)'],
+  'survey-depth-neg': ['error', 'survey rows with a negative depth'],
+  'survey-dip-range': ['error', 'survey rows with |dip| > 90°'],
+  'survey-az-range': ['warn', 'survey rows with an azimuth outside 0–360° (read modulo 360)'],
+  'survey-dup-depth': ['warn', 'survey stations at the same depth in a hole (the last is kept)'],
+  'survey-dogleg': ['warn', 'survey intervals bending faster than the dogleg limit'],
+  'survey-past-eoh': ['warn', 'survey stations deeper than the collar end of hole'],
+  'interval-orphan': ['error', 'interval rows whose hole has no collar'],
+  'interval-blank': ['error', 'interval rows with a blank or non-numeric FROM / TO (not placed)'],
+  'interval-negative': ['error', 'interval rows with a negative depth'],
+  'interval-inverted': ['error', 'interval rows with FROM ≥ TO'],
+  'interval-overlap': ['error', 'intervals overlapping an earlier one in the same hole'],
+  'interval-gap': ['warn', 'gaps between consecutive intervals in a hole'],
+  'interval-past-eoh': ['warn', 'intervals deeper than the collar end of hole'],
+  'interval-past-survey': ['info', 'intervals well past the deepest survey station (extrapolated along it)'],
+  'value-text': ['warn', 'interval columns of numbers holding some text (read as blank)'],
+};
+
+// findings → one line per check that fired, in DH_QA_CHECKS order (a caller adding
+// its own findings, e.g. a values census, re-summarizes with this)
+function dhQaSummary(findings) {
+  let by = new Map();
+  for (let fi = 0; fi < findings.length; fi++) {
+    let f = findings[fi], s = by.get(f.check);
+    if (!s) by.set(f.check, s = { check: f.check, label: DH_QA_CHECKS[f.check][1], severity: DH_QA_CHECKS[f.check][0], count: 0, holes: new Set() });
+    s.count++;
+    if (f.bhid) s.holes.add(f.bhid);
+  }
+  return Object.keys(DH_QA_CHECKS).filter(function(k) { return by.has(k); }).map(function(k) { let s = by.get(k); return { check: s.check, label: s.label, severity: s.severity, count: s.count, holes: s.holes.size }; });
+}
+
+function dhQa(tables, opts) {
+  opts = opts || {};
+  let doglegMax = opts.doglegMax != null ? opts.doglegMax : 10;
+  let gapMin = opts.gapMin != null ? opts.gapMin : 0.001;
+  let extrapMax = opts.extrapMax != null ? opts.extrapMax : 30;
+  let findings = [];
+  function add(check, table, row, bhid, from, to, detail) {
+    findings.push({ check: check, severity: DH_QA_CHECKS[check][0], table: table, row: row, bhid: bhid, from: from, to: to, detail: detail || '' });
+  }
+  let fmt = function(v) { return Number.isFinite(v) ? String(Math.round(v * 1000) / 1000) : '—'; };
+  let idOf = function(v) { return v == null ? '' : String(v).trim(); };
+
+  // ── collars ──
+  let holes = new Map();                                  // bhid → { row, eoh, stations: [], deepest }
+  let dropped = new Set();                                // a collar that couldn't be placed: its rows aren't orphans too
+  let collars = tables.collars || [];
+  for (let ci = 0; ci < collars.length; ci++) {
+    let c = collars[ci], row = c.row != null ? c.row : ci, id = idOf(c.bhid);
+    if (!id) { add('collar-no-bhid', 'collar', row, '', null, null); continue; }
+    if (!Number.isFinite(c.x) || !Number.isFinite(c.y) || !Number.isFinite(c.z)) {
+      let which = ['x', 'y', 'z'].filter(function(k) { return !Number.isFinite(c[k]); }).join('/').toUpperCase();
+      add('collar-blank-xyz', 'collar', row, id, null, null, which + ' blank');
+      if (!holes.has(id)) dropped.add(id);
+      continue;
+    }
+    if (holes.has(id)) { add('collar-dup', 'collar', row, id, null, null, 'first at row ' + (holes.get(id).row + 1)); continue; }
+    let eoh = Number.isFinite(c.eoh) ? c.eoh : null;
+    if (eoh != null && eoh <= 0) add('collar-eoh-bad', 'collar', row, id, eoh, null, 'EOH ' + fmt(eoh));
+    holes.set(id, { row: row, eoh: eoh != null && eoh > 0 ? eoh : null, stations: [] });
+  }
+
+  // ── surveys ──
+  let surveys = tables.surveys || [];
+  let conv = opts.dipConvention && opts.dipConvention !== 'auto' ? opts.dipConvention
+    : dhDetectDipConvention$index(surveys.filter(function(s) { return Number.isFinite(s.dip); }));
+  let flip = conv === 'neg-down' ? -1 : 1;
+  for (let si = 0; si < surveys.length; si++) {
+    let s = surveys[si], row = s.row != null ? s.row : si, id = idOf(s.bhid);
+    let h = holes.get(id);
+    if (!h && dropped.has(id)) continue;                  // reported once, at its collar
+    if (!h) { add('survey-orphan', 'survey', row, id, Number.isFinite(s.depth) ? s.depth : null, null); continue; }
+    let blank = [['depth', s.depth], ['azimuth', s.az], ['dip', s.dip]].filter(function(p) { return !Number.isFinite(p[1]); }).map(function(p) { return p[0]; });
+    if (blank.length) { add('survey-blank', 'survey', row, id, Number.isFinite(s.depth) ? s.depth : null, null, blank.join(' / ') + ' blank'); continue; }
+    if (s.depth < 0) { add('survey-depth-neg', 'survey', row, id, s.depth, null, 'depth ' + fmt(s.depth)); continue; }
+    if (Math.abs(s.dip) > 90.000001) { add('survey-dip-range', 'survey', row, id, s.depth, null, 'dip ' + fmt(s.dip)); continue; }
+    if (s.az < 0 || s.az > 360) add('survey-az-range', 'survey', row, id, s.depth, null, 'azimuth ' + fmt(s.az));
+    if (h.eoh != null && s.depth > h.eoh + 1e-9) add('survey-past-eoh', 'survey', row, id, s.depth, null, 'station at ' + fmt(s.depth) + ', EOH ' + fmt(h.eoh));
+    h.stations.push({ depth: s.depth, az: s.az, dip: s.dip * flip, row: row });
+  }
+  for (let [id, h] of holes) {
+    if (!h.stations.length) { add('hole-no-survey', 'collar', h.row, id, null, null); h.deepest = 0; continue; }
+    h.stations.sort(function(a, b) { return a.depth - b.depth || a.row - b.row; });
+    let kept = [];
+    for (let k = 0; k < h.stations.length; k++) {
+      let st = h.stations[k], prev = kept[kept.length - 1];
+      if (prev && Math.abs(prev.depth - st.depth) < 1e-9) {
+        add('survey-dup-depth', 'survey', st.row, id, st.depth, null, 'same depth as row ' + (prev.row + 1));
+        kept[kept.length - 1] = st;                       // last wins, as normalizeSurveys does
+      } else kept.push(st);
+    }
+    for (let k = 1; k < kept.length; k++) {
+      let a = kept[k - 1], b = kept[k];
+      let ta = dhTangent$index(a.az, a.dip), tb = dhTangent$index(b.az, b.dip);
+      let cos = Math.max(-1, Math.min(1, ta[0] * tb[0] + ta[1] * tb[1] + ta[2] * tb[2]));
+      let deg = Math.acos(cos) * 180 / Math.PI, dls = deg * 30 / (b.depth - a.depth);
+      if (dls > doglegMax) add('survey-dogleg', 'survey', b.row, id, a.depth, b.depth, fmt(deg) + '° over ' + fmt(b.depth - a.depth) + ' (' + fmt(dls) + '°/30, limit ' + fmt(doglegMax) + ')');
+    }
+    h.deepest = kept[kept.length - 1].depth;
+  }
+
+  // ── interval tables ──
+  let ivTables = tables.intervals || [];
+  for (let ti = 0; ti < ivTables.length; ti++) {
+    let iv = ivTables[ti], name = iv.name || 'intervals' + (ivTables.length > 1 ? ' ' + (ti + 1) : '');
+    let per = new Map();                                  // bhid → [row index]
+    for (let i = 0; i < iv.bhid.length; i++) {
+      let row = iv.rows ? iv.rows[i] : i, id = idOf(iv.bhid[i]), f = iv.from[i], t = iv.to[i];
+      let fv = Number.isFinite(f) ? f : null, tv = Number.isFinite(t) ? t : null;
+      if (!holes.has(id) && dropped.has(id)) continue;
+      if (!holes.has(id)) { add('interval-orphan', name, row, id, fv, tv); continue; }
+      if (fv == null || tv == null) { add('interval-blank', name, row, id, fv, tv, [fv == null ? 'FROM' : '', tv == null ? 'TO' : ''].filter(Boolean).join(' / ') + ' blank'); continue; }
+      if (f < 0 || t < 0) { add('interval-negative', name, row, id, f, t); continue; }
+      if (f >= t) { add('interval-inverted', name, row, id, f, t, f === t ? 'zero length' : 'FROM > TO'); continue; }
+      let l = per.get(id); if (!l) per.set(id, l = []);
+      l.push(i);
+    }
+    for (let [id, h] of holes) {
+      let l = per.get(id);
+      if (!l) { add('hole-no-intervals', name, null, id, null, null, 'collar row ' + (h.row + 1)); continue; }
+      l.sort(function(a, b) { return iv.from[a] - iv.from[b] || iv.to[a] - iv.to[b] || a - b; });
+      let reach = -Infinity, reachAt = -1, pastEoh = false, pastSurvey = false;
+      for (let k = 0; k < l.length; k++) {
+        let i = l[k], row = iv.rows ? iv.rows[i] : i, f = iv.from[i], t = iv.to[i];
+        if (k > 0 && f < reach - 1e-9) {
+          let j = l[reachAt], jr = iv.rows ? iv.rows[j] : j;
+          add('interval-overlap', name, row, id, f, t, 'overlaps row ' + (jr + 1) + ' (' + fmt(iv.from[j]) + '–' + fmt(iv.to[j]) + ')');
+        } else if (k > 0 && f - reach > gapMin) add('interval-gap', name, row, id, reach, f, 'no interval for ' + fmt(f - reach));
+        if (t > reach) { reach = t; reachAt = k; }
+        if (!pastEoh && h.eoh != null && t > h.eoh + 1e-9) { pastEoh = true; add('interval-past-eoh', name, row, id, f, t, 'TO ' + fmt(t) + ', EOH ' + fmt(h.eoh)); }
+        if (!pastSurvey && h.stations.length && t - h.deepest > extrapMax) { pastSurvey = true; add('interval-past-survey', name, row, id, f, t, 'deepest survey at ' + fmt(h.deepest) + ', ' + fmt(t - h.deepest) + ' past it'); }
+      }
+    }
+  }
+
+  return {
+    findings: findings, summary: dhQaSummary(findings), holes: holes.size, dipConvention: conv,
+    tables: { collars: collars.length, surveys: surveys.length, intervals: ivTables.map(function(t) { return { name: t.name || null, rows: t.bhid.length }; }) },
+  };
+}
+
+// ── src/io/drillholes.js ──
+
+// @gcu/condenser — drillhole provider: collar + survey + interval tables →
+// desurveyed interval midpoints as an element layer (micro-layers spec §5).
+// The math is @gcu/drillhole's (minimum curvature / balanced tangential /
+// tangential, dip-convention detection, the non-silent consistency report);
+// this module is table intake + the identity plumbing.
+//
+// THE IDENTITY: record N == interval-table row N. desurveySamples returns
+// rows depth-sorted per hole, so a hidden __row column threads the original
+// row index through — recIdx survives the sort, and pick/measure/filter all
+// join back to the source assay row.
+//
+// Tables are read FULLY into memory (drillhole files are 10³–10⁶ rows — the
+// streaming machinery is for the 10⁸ element tables), which also makes
+// fetchRecord O(1) and channel switches free.
+
+
+const BHID_RE = /^(bhid|holeid|hole_?id|dhid|dh_?id|hole|collar_?id|id)$/i;
+const X_RE$drillholes = /^(x|xc|xcollar|east(ing)?|utm_?e)$/i;
+const Y_RE$drillholes = /^(y|yc|ycollar|north(ing)?|utm_?n)$/i;
+const Z_RE$drillholes = /^(z|zc|zcollar|elev(ation)?|rl)$/i;
+const AT_RE = /^(at|depth|dist(ance)?|md|measured_?depth)$/i;
+const AZ_RE = /^(az|azm|azim(uth)?|brg|bearing)$/i;
+const DIP_RE = /^(dip|incl(ination)?|plunge)$/i;
+const FROM_RE = /^(from|depfrom|depth_?from|de)$/i;
+const TO_RE = /^(to|depto|depth_?to|a)$/i;
+const EOH_RE = /^(eoh|depth|maxdepth|max_?depth|td|total_?depth|length)$/i;
+
+const find = (header, re) => header.findIndex((h) => re.test(String(h).trim()));
+
+// Classify one delimited header as collar / survey / intervals (or null).
+// Survey and intervals are keyed on their unambiguous columns (AZ+DIP / FROM+TO);
+// collar is BHID + coordinates. Returns { role, mapping }.
+function classifyDrillholeHeader(header) {
+  if (!header) return null;
+  const bhid = find(header, BHID_RE);
+  if (bhid < 0) return null;
+  const from = find(header, FROM_RE), to = find(header, TO_RE);
+  if (from >= 0 && to >= 0) return { role: 'intervals', mapping: { bhid, from, to } };
+  const az = find(header, AZ_RE), dip = find(header, DIP_RE), at = find(header, AT_RE);
+  if (az >= 0 && dip >= 0) return { role: 'survey', mapping: { bhid, at: at >= 0 ? at : -1, az, dip } };
+  const x = find(header, X_RE$drillholes), y = find(header, Y_RE$drillholes), z = find(header, Z_RE$drillholes);
+  if (x >= 0 && y >= 0 && z >= 0) {
+    let eoh = -1;
+    header.forEach((h, i) => { if (eoh < 0 && i !== x && i !== y && i !== z && EOH_RE.test(String(h).trim())) eoh = i; });
+    return { role: 'collar', mapping: { bhid, x, y, z, eoh } };
+  }
+  return null;
+}
+
+// Read a delimited blob fully: { columns, rows } (field arrays, header skipped).
+async function readDelimited(blob, { sample = 256 * 1024 } = {}) {
+  const head = await blob.slice(0, Math.min(sample, blob.size)).text();
+  const sniff = sniffDelimited(head);
+  if (!sniff.header) throw new Error('drillholes: table has no header row');
+  const rows = [];
+  for await (const batch of lineFields(blob, sniff.delim, true, { decimal: sniff.decimal })) {
+    for (const f of batch) rows.push(f);
+  }
+  return { columns: sniff.header.map((c) => String(c).trim()), rows };
+}
+
+// Sniff a set of blobs into drillhole roles. Returns { collar, survey,
+// intervals } of { blob, name, columns, mapping } when all three distinct
+// roles are present, else null.
+async function sniffDrillholeFiles(files) {
+  const out = {};
+  for (const f of files) {
+    let sniff;
+    try { sniff = sniffDelimited(await f.slice(0, 64 * 1024).text()); } catch { continue; }
+    const cls = classifyDrillholeHeader(sniff.header);
+    if (cls && !out[cls.role]) out[cls.role] = { blob: f, name: f.name || cls.role, columns: sniff.header.map((c) => String(c).trim()), mapping: cls.mapping };
+  }
+  return out.collar && out.survey && out.intervals ? out : null;
+}
+
+/**
+ * openDrillholes({ collar, survey, intervals }, opts) — each input is a Blob.
+ * opts: mappings { collar: {bhid,x,y,z,eoh}, survey: {bhid,at,az,dip},
+ * intervals: {bhid,from,to} } (sniffed when omitted), method
+ * ('minimumCurvature' | 'balancedTangential' | 'tangential'), dipConvention
+ * ('auto' | 'pos-down' | 'neg-down'), chan (interval column index for the
+ * grade channel; default = first numeric non-key column), cat (category
+ * column index; default = first all-text non-key column).
+ *
+ * → { header, streamChunks, fetchRecord }
+ *   header = { kind:'drillholes', count (ORIGINAL interval rows), bbox,
+ *              columns, mapping {chan, cat}, numericColumns, categories,
+ *              attributes, report, method, dipConvention, holes }
+ *   RawChunk = { count, x, y, z, chan, cat, recIdx } (blockmodel shape —
+ *              the page's centroids-as-points path renders it)
+ *   fetchRecord(rec) → the ORIGINAL interval row (O(1), in memory)
+ */
+// A BLANK IS NO NUMBER (the CSV coordinate rule, 9f295586): `+''` is 0, which put
+// a collar at the origin, bent a survey horizontal at a blank dip (or north at a
+// blank azimuth), and started an interval at the collar on a blank FROM. Rows like
+// that are DROPPED and REPORTED — a check on header.report, shown with the others:
+//   a collar with a blank X/Y/Z      → dropped (its intervals report as no-collar)
+//   a survey station with a blank depth/azimuth/dip → dropped (the hole
+//                                      interpolates across it)
+//   an interval with a blank FROM/TO → not placed (still a record, not drawn)
+//   a blank EOH                      → no EOH (the deepest station / interval TO)
+// A collar keeps its file ROW (`row`): a trace's record is the collar row.
+function blankCheck(checks, id, label, bhids) {
+  if (!bhids.length) return;
+  checks.push({ id, label, count: bhids.length, bhids: [...new Set(bhids.map((b) => String(b ?? '')))].slice(0, 200) });
+}
+function parseCollars(t, mc) {
+  const collars = [], blank = [];
+  t.rows.forEach((r, row) => {
+    const x = coordNum(r[mc.x]), y = coordNum(r[mc.y]), z = coordNum(r[mc.z]);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) { blank.push(r[mc.bhid]); return; }
+    const e = mc.eoh != null && mc.eoh >= 0 ? coordNum(r[mc.eoh]) : NaN;
+    collars.push({ bhid: r[mc.bhid], x, y, z, eoh: Number.isFinite(e) ? e : undefined, row });
+  });
+  return { collars, blank };
+}
+function parseSurveys(t, ms) {
+  const surveys = [], blank = [];
+  for (const r of t.rows) {
+    const depth = ms.at != null && ms.at >= 0 ? coordNum(r[ms.at]) : 0, az = coordNum(r[ms.az]), dip = coordNum(r[ms.dip]);
+    if (!Number.isFinite(depth) || !Number.isFinite(az) || !Number.isFinite(dip)) { blank.push(r[ms.bhid]); continue; }
+    surveys.push({ bhid: r[ms.bhid], depth, az, dip });
+  }
+  return { surveys, blank };
+}
+async function openDrillholes({ collar, survey, intervals }, opts = {}) {
+  const tCollar = await readDelimited(collar);
+  const tSurvey = await readDelimited(survey);
+  const tIv = await readDelimited(intervals);
+  const m = {
+    collar: (opts.mappings && opts.mappings.collar) || (classifyDrillholeHeader(tCollar.columns) || {}).mapping,
+    survey: (opts.mappings && opts.mappings.survey) || (classifyDrillholeHeader(tSurvey.columns) || {}).mapping,
+    intervals: (opts.mappings && opts.mappings.intervals) || (classifyDrillholeHeader(tIv.columns) || {}).mapping,
+  };
+  if (!m.collar || m.collar.x == null) throw new Error('drillholes: collar columns not identified (need BHID + X/Y/Z)');
+  if (!m.survey || m.survey.az == null) throw new Error('drillholes: survey columns not identified (need BHID + AZ + DIP)');
+  if (!m.intervals || m.intervals.from == null) throw new Error('drillholes: interval columns not identified (need BHID + FROM + TO)');
+
+  // @gcu/drillhole table shapes — blanks dropped and reported (see parseCollars)
+  const { collars, blank: blankCollars } = parseCollars(tCollar, m.collar);
+  const { surveys, blank: blankSurveys } = parseSurveys(tSurvey, m.survey);
+  const collarOfRow = new Map(collars.map((c) => [c.row, c]));
+
+  const n = tIv.rows.length;
+  const keyCols = new Set([m.intervals.bhid, m.intervals.from, m.intervals.to]);
+  // numeric / categorical detection over a head sample of the interval table
+  const probe = tIv.rows.slice(0, 200);
+  const numericCols = [], textCols = [], qualifiedCols = [];
+  tIv.columns.forEach((name, i) => {
+    if (keyCols.has(i)) return;
+    const vals = probe.map((r) => (r[i] || '').trim()).filter(Boolean);
+    if (!vals.length) return;
+    const cq = censusQualified(vals);                     // <0.001, >10 and lab codes count as numeric
+    if (cq.numeric) numericCols.push({ i, name });
+    else if (cq.num + cq.below + cq.above === 0) textCols.push({ i, name });
+    if (cq.qualified) qualifiedCols.push({ i, name, below: cq.below, above: cq.above, code: cq.code });
+  });
+  const chan = opts.chan != null ? opts.chan : (numericCols[0] ? numericCols[0].i : null);
+  const catCol = opts.cat != null ? opts.cat : (textCols[0] ? textCols[0].i : null);
+  // opts.qualify = { [column name]: policy } — the channel's <x / >x rule (default <x → x/2)
+  const chanPolicy = (chan != null && opts.qualify && opts.qualify[tIv.columns[chan]]) || QUALIFIED_DEFAULT;
+
+  // samples = BOTH interval endpoints (2 per row): the desurveyed FROM and TO
+  // positions are the capsule segment, arc-correct via positionAt; the render
+  // midpoint derives as (A+B)/2. __row + __end thread the source row and
+  // which endpoint through the per-hole depth sort (the identity).
+  const fromOf = new Float64Array(n), toOf = new Float64Array(n), blankIv = [];
+  for (let i = 0; i < n; i++) {
+    const r = tIv.rows[i];
+    fromOf[i] = coordNum(r[m.intervals.from]); toOf[i] = coordNum(r[m.intervals.to]);
+    if (!Number.isFinite(fromOf[i]) || !Number.isFinite(toOf[i])) blankIv.push(r[m.intervals.bhid]);
+  }
+  const nS = n - blankIv.length;
+  const bhid = new Array(2 * nS), depth = new Float64Array(2 * nS);
+  const rowIdx = new Float64Array(2 * nS), endIdx = new Float64Array(2 * nS);
+  const chanVals = new Float64Array(n), catVals = catCol != null ? new Array(n) : null;
+  const catCounts = new Map();
+  const iv = { bhid: [], from: [], to: [], cols: [] };     // ONE entry per placeable row, for validate + the section paths
+  for (let i = 0, s2 = 0; i < n; i++) {
+    const r = tIv.rows[i];
+    chanVals[i] = chan != null ? qualifiedNumber(r[chan], chanPolicy) : 0;
+    if (catVals) { const v = (r[catCol] || '').trim(); catVals[i] = v; if (catCounts.size <= 256) catCounts.set(v, (catCounts.get(v) || 0) + 1); }   // a blank is its own category, ''
+    if (!Number.isFinite(fromOf[i]) || !Number.isFinite(toOf[i])) continue;
+    const hb = r[m.intervals.bhid];
+    bhid[2 * s2] = hb; bhid[2 * s2 + 1] = hb;
+    depth[2 * s2] = fromOf[i]; depth[2 * s2 + 1] = toOf[i];
+    rowIdx[2 * s2] = i; rowIdx[2 * s2 + 1] = i;
+    endIdx[2 * s2] = 0; endIdx[2 * s2 + 1] = 1;
+    iv.bhid.push(hb); iv.from.push(fromOf[i]); iv.to.push(toOf[i]);
+    s2++;
+  }
+  const samples = { bhid, depth, cols: [{ name: '__row', values: rowIdx }, { name: '__end', values: endIdx }] };
+
+  const ds = dhDesurveySamples$index({ collars, surveys, samples }, { method: opts.method || 'minimumCurvature', dipConvention: opts.dipConvention || 'auto' });
+
+  // the interval-shape checks (overlaps, inverted from/to…) come from validate
+  // (iv above: ONE entry per row — the samples' `bhid` has two, FROM and TO ends)
+  let report = ds.report;
+  try {
+    const v = dhValidate$index({ collars, surveys, intervals: iv }, { dipConvention: opts.dipConvention || 'auto' });
+    const seen = new Set(report.checks.map((c) => c.id));
+    const extra = Object.values(v.checks || {}).filter((c) => !seen.has(c.id));
+    report = { ...report, checks: report.checks.concat(extra) };
+  } catch { /* validate's report is a bonus, not a gate */ }
+  {
+    const blanks = [];
+    blankCheck(blanks, 'blank-collar', 'collars with a blank X/Y/Z — dropped', blankCollars);
+    blankCheck(blanks, 'blank-survey', 'survey stations with a blank depth / azimuth / dip — dropped (the hole interpolates across)', blankSurveys);
+    blankCheck(blanks, 'blank-interval', 'intervals with a blank FROM / TO — not placed', blankIv);
+    if (blanks.length) report = { ...report, checks: blanks.concat(report.checks) };
+  }
+
+  const categories = catCounts.size > 0 && catCounts.size <= 255 ? [...catCounts.keys()].sort() : null;
+  const catCode = categories ? new Map(categories.map((v, i) => [v, i])) : null;
+
+  // pair the placed endpoints back into SEGMENTS keyed by source row
+  const endA = new Map(), endB = new Map();               // src row → [x,y,z]
+  for (let k = 0; k < ds.rows.length; k++) {
+    const row = ds.rows[k];
+    const src = row[5] | 0, end = row[6] | 0;             // __row, __end
+    (end === 0 ? endA : endB).set(src, [row[1], row[2], row[3]]);
+  }
+  const placedRows = [];
+  for (const [src, a] of endA) if (endB.has(src)) placedRows.push(src);
+  placedRows.sort((x, y) => x - y);
+  const nP = placedRows.length;
+  const ax = new Float64Array(nP), ay = new Float64Array(nP), az = new Float64Array(nP);
+  const bx = new Float64Array(nP), by = new Float64Array(nP), bz = new Float64Array(nP);
+  const px = new Float64Array(nP), py = new Float64Array(nP), pz = new Float64Array(nP);
+  const pChan = new Float64Array(nP), pCat = catCode ? new Uint8Array(nP) : null;
+  const pRec = new Uint32Array(nP);
+  const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+  for (let k = 0; k < nP; k++) {
+    const src = placedRows[k];
+    const A = endA.get(src), B = endB.get(src);
+    ax[k] = A[0]; ay[k] = A[1]; az[k] = A[2];
+    bx[k] = B[0]; by[k] = B[1]; bz[k] = B[2];
+    px[k] = (A[0] + B[0]) / 2; py[k] = (A[1] + B[1]) / 2; pz[k] = (A[2] + B[2]) / 2;
+    pChan[k] = chanVals[src];                            // a blank grade is missing (NaN), not 0
+    if (pCat) { const c = catCode.get(catVals[src]); pCat[k] = c === undefined ? 0 : c; }
+    pRec[k] = src;
+    for (let a2 = 0; a2 < 3; a2++) {
+      if (A[a2] < min[a2]) min[a2] = A[a2]; if (A[a2] > max[a2]) max[a2] = A[a2];
+      if (B[a2] < min[a2]) min[a2] = B[a2]; if (B[a2] > max[a2]) max[a2] = B[a2];
+    }
+  }
+
+  let cLo = Infinity, cHi = -Infinity;
+  for (let k = 0; k < nP; k++) { const v = pChan[k]; if (v < cLo) cLo = v; if (v > cHi) cHi = v; }
+  const header = {
+    kind: 'drillholes', count: n,
+    bbox: { min, max },
+    chanRange: [cLo === Infinity ? 0 : cLo, cHi === -Infinity ? 1 : cHi],
+    columns: tIv.columns,
+    mapping: { x: -1, y: -1, z: -1, chan, cat: categories ? catCol : null },
+    intervalMapping: m.intervals,                          // resolved bhid/from/to (role badges + joins)
+    // the collar/survey tables, so a host can re-map their columns and
+    // re-desurvey — the interval table above is only a third of the mapping
+    collarColumns: tCollar.columns, surveyColumns: tSurvey.columns,
+    collarMapping: m.collar, surveyMapping: m.survey,
+    numericColumns: numericCols,
+    qualifiedColumns: qualifiedCols,
+    categories,
+    attributes: [
+      ...(chan != null ? [tIv.columns[chan]] : []),
+      ...(categories ? [tIv.columns[catCol]] : []),
+    ],
+    report, method: opts.method || 'minimumCurvature', dipConvention: report.dipConvention,
+    holes: report.nHoles, placed: nP,
+  };
+
+  async function* streamChunks({ chunkPoints = 1 << 18 } = {}) {
+    for (let at = 0; at < nP; at += chunkPoints) {
+      const k = Math.min(chunkPoints, nP - at);
+      yield {
+        count: k,
+        // midpoints (points mode / section center / measure)
+        x: px.subarray(at, at + k), y: py.subarray(at, at + k), z: pz.subarray(at, at + k),
+        // segment endpoints (sticks mode)
+        ax: ax.subarray(at, at + k), ay: ay.subarray(at, at + k), az: az.subarray(at, at + k),
+        bx: bx.subarray(at, at + k), by: by.subarray(at, at + k), bz: bz.subarray(at, at + k),
+        chan: pChan.subarray(at, at + k), cat: pCat ? pCat.subarray(at, at + k) : null,
+        recIdx: pRec.subarray(at, at + k),
+      };
+    }
+  }
+
+  const fetchRecord = (rec) => (rec >= 0 && rec < n ? tIv.rows[rec] : null);
+  // the placed midpoint of a source row (measure across layers) — null for
+  // rows that never placed (orphans)
+  const recToPlaced = new Map();
+  for (let k = 0; k < nP; k++) recToPlaced.set(pRec[k], k);
+  const recordPosition = (rec) => {
+    const k = recToPlaced.get(rec >>> 0);
+    return k === undefined ? null : [px[k], py[k], pz[k]];
+  };
+
+  // each hole's collar → EOH path (lazy: only a "keep holes that cross the
+  // slab" section asks). → Map(bhid → Float64Array [x,y,z, x,y,z, …]) in world
+  // coordinates, depth order. The EOH reaches at least the deepest interval TO.
+  let _paths = null;
+  const holePaths = () => {
+    if (_paths) return _paths;
+    const deepest = new Map();
+    for (let i = 0; i < iv.bhid.length; i++) { const hb = iv.bhid[i], t = iv.to[i]; if (Number.isFinite(t) && !(deepest.get(hb) >= t)) deepest.set(hb, t); }
+    const { perHole } = desurveyHolePaths(collars, surveys, opts, deepest);
+    _paths = new Map();
+    for (const [hi, pts] of perHole) {
+      const xyz = new Float64Array(pts.length * 3);
+      pts.forEach((pt, k) => { xyz[3 * k] = pt[1]; xyz[3 * k + 1] = pt[2]; xyz[3 * k + 2] = pt[3]; });
+      _paths.set(collarOfRow.get(hi).bhid, xyz);
+    }
+    return _paths;
+  };
+
+  return { header, streamChunks, fetchRecord, recordPosition, holePaths };
+}
+
+// Each hole's PATH, collar → end of hole: desurveyed at depth 0, every survey
+// station, and the EOH (the collar's, else the deepest survey station, else
+// `extraEoh` — the deepest interval TO, so a path always covers its samples).
+// → { perHole: Map(collar row → [[seq, x, y, z], …] in depth order), report }.
+// Shared by openDrillholeTraces (the path layer) and openDrillholes' holePaths
+// (a section's "keep holes that cross the slab").
+function desurveyHolePaths(collars, surveys, opts = {}, extraEoh = null) {
+  const depthsOf = new Map(), holeIdx = new Map(), maxSurvey = new Map();
+  collars.forEach((c, i) => { if (!depthsOf.has(c.bhid)) { depthsOf.set(c.bhid, new Set([0])); holeIdx.set(c.bhid, c.row ?? i); } });   // a hole is its collar ROW
+  for (const s of surveys) { if (depthsOf.has(s.bhid)) { depthsOf.get(s.bhid).add(s.depth); maxSurvey.set(s.bhid, Math.max(maxSurvey.get(s.bhid) || 0, s.depth)); } }
+  for (const c of collars) {
+    if (!depthsOf.has(c.bhid)) continue;
+    let eoh = c.eoh != null && Number.isFinite(c.eoh) ? c.eoh : maxSurvey.get(c.bhid);
+    const deep = extraEoh ? extraEoh.get(c.bhid) : null;
+    if (deep != null && Number.isFinite(deep) && !(eoh >= deep)) eoh = deep;
+    if (eoh) depthsOf.get(c.bhid).add(eoh);
+  }
+  const sBhid = [], sDepth = [], sRow = [], sSeq = [];
+  for (const [hb, ds] of depthsOf) {
+    const sorted = [...ds].filter((d) => Number.isFinite(d)).sort((a, b) => a - b);
+    sorted.forEach((d, k) => { sBhid.push(hb); sDepth.push(d); sRow.push(holeIdx.get(hb)); sSeq.push(k); });
+  }
+  const samples = { bhid: sBhid, depth: Float64Array.from(sDepth), cols: [{ name: '__row', values: Float64Array.from(sRow) }, { name: '__seq', values: Float64Array.from(sSeq) }] };
+  const ds = dhDesurveySamples$index({ collars, surveys, samples }, { method: opts.method || 'minimumCurvature', dipConvention: opts.dipConvention || 'auto' });
+  const perHole = new Map();
+  for (const row of ds.rows) { const hi = row[5] | 0, sq = row[6] | 0; if (!perHole.has(hi)) perHole.set(hi, []); perHole.get(hi).push([sq, row[1], row[2], row[3]]); }
+  for (const pts of perHole.values()) pts.sort((a, b) => a[0] - b[0]);
+  return { perHole, report: ds.report };
+}
+
+/**
+ * openDrillholeTraces({ collar, survey }, opts) — the bare hole PATHS: each
+ * hole's collar→EOH trace desurveyed at its survey stations (+ 0 and EOH),
+ * rendered as consecutive stick SEGMENTS. recIdx = the collar row (a hole), so
+ * pick → the collar record. No interval data — this is the geometry a set owns,
+ * so a drillhole set shows full coverage even where an assay table has gaps.
+ * → { header, streamChunks, fetchRecord } — RawChunk in the sticks shape.
+ */
+async function openDrillholeTraces({ collar, survey }, opts = {}) {
+  const tCollar = await readDelimited(collar);
+  const tSurvey = await readDelimited(survey);
+  const mc = (opts.mappings && opts.mappings.collar) || (classifyDrillholeHeader(tCollar.columns) || {}).mapping;
+  const ms = (opts.mappings && opts.mappings.survey) || (classifyDrillholeHeader(tSurvey.columns) || {}).mapping;
+  if (!mc || mc.x == null) throw new Error('drillhole traces: collar columns not identified (need BHID + X/Y/Z)');
+  if (!ms || ms.az == null) throw new Error('drillhole traces: survey columns not identified (need BHID + AZ + DIP)');
+  const { collars } = parseCollars(tCollar, mc);          // blanks dropped (openDrillholes reports them)
+  const { surveys } = parseSurveys(tSurvey, ms);
+  const collarOfRow = new Map(collars.map((c) => [c.row, c]));
+
+  const { perHole, report: pathReport } = desurveyHolePaths(collars, surveys, opts);
+  let nSeg = 0;
+  for (const pts of perHole.values()) { pts.sort((a, b) => a[0] - b[0]); nSeg += Math.max(0, pts.length - 1); }
+  const ax = new Float64Array(nSeg), ay = new Float64Array(nSeg), az = new Float64Array(nSeg);
+  const bx = new Float64Array(nSeg), by = new Float64Array(nSeg), bz = new Float64Array(nSeg);
+  const px = new Float64Array(nSeg), py = new Float64Array(nSeg), pz = new Float64Array(nSeg);
+  const pChan = new Float64Array(nSeg), pRec = new Uint32Array(nSeg);
+  const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+  let si = 0;
+  for (const [hi, pts] of perHole) {
+    for (let k = 0; k + 1 < pts.length; k++, si++) {
+      const a = pts[k], b = pts[k + 1];
+      ax[si] = a[1]; ay[si] = a[2]; az[si] = a[3]; bx[si] = b[1]; by[si] = b[2]; bz[si] = b[3];
+      px[si] = (a[1] + b[1]) / 2; py[si] = (a[2] + b[2]) / 2; pz[si] = (a[3] + b[3]) / 2;
+      pRec[si] = hi; pChan[si] = 0;
+      for (const pt of [a, b]) for (let d = 0; d < 3; d++) { const v = pt[d + 1]; if (v < min[d]) min[d] = v; if (v > max[d]) max[d] = v; }
+    }
+  }
+  const header = {
+    kind: 'drillholeTraces', count: nSeg, holes: perHole.size,
+    bbox: { min, max }, chanRange: [0, 1],
+    columns: tCollar.columns, collarMapping: mc, surveyMapping: ms,
+    method: opts.method || 'minimumCurvature', dipConvention: pathReport ? pathReport.dipConvention : (opts.dipConvention || 'auto'),
+  };
+  async function* streamChunks({ chunkPoints = 1 << 16 } = {}) {
+    for (let at = 0; at < nSeg; at += chunkPoints) {
+      const k = Math.min(chunkPoints, nSeg - at);
+      yield {
+        count: k,
+        x: px.subarray(at, at + k), y: py.subarray(at, at + k), z: pz.subarray(at, at + k),
+        ax: ax.subarray(at, at + k), ay: ay.subarray(at, at + k), az: az.subarray(at, at + k),
+        bx: bx.subarray(at, at + k), by: by.subarray(at, at + k), bz: bz.subarray(at, at + k),
+        chan: pChan.subarray(at, at + k), cat: null, recIdx: pRec.subarray(at, at + k),
+      };
+    }
+  }
+  const fetchRecord = (rec) => (rec >= 0 && rec < tCollar.rows.length ? tCollar.rows[rec] : null);
+  // a trace record is a hole; its position is the collar (endpoint 0). Coarse
+  // but correct — the same "fall back to the centroid" the picker uses when a hit
+  // has no face. Was a hard `() => null`, which made Measure silently no-op on a
+  // trace segment.
+  const recordPosition = (rec) => {
+    const c = collarOfRow.get(rec);
+    return c ? [c.x, c.y, c.z] : null;
+  };
+  return { header, streamChunks, fetchRecord, recordPosition };
+}
+
+/**
+ * drillholeQa({ collar, survey, intervals: [{ blob, name, mapping? }] }, opts) —
+ * the QA report of a drillhole SET, row by row (@gcu/drillhole qa), read from its
+ * own files: nothing is pre-dropped, so a blank coordinate is a finding at its row
+ * rather than an absence. Plus a census of every interval column (blank / number /
+ * <x / >x / code / text), and a `value-text` finding for a column of numbers that
+ * holds a little text (a typo reads as blank — the report says where).
+ * opts = { mappings: { collar, survey }, dipConvention, doglegMax, gapMin, extrapMax }
+ * → dhQa's { findings, summary, holes, dipConvention, tables } + { values }
+ */
+async function drillholeQa({ collar, survey, intervals = [] }, opts = {}) {
+  const tCollar = await readDelimited(collar);
+  const tSurvey = await readDelimited(survey);
+  const mc = (opts.mappings && opts.mappings.collar) || (classifyDrillholeHeader(tCollar.columns) || {}).mapping;
+  const ms = (opts.mappings && opts.mappings.survey) || (classifyDrillholeHeader(tSurvey.columns) || {}).mapping;
+  if (!mc || mc.x == null) throw new Error('drillhole QA: collar columns not identified (need BHID + X/Y/Z)');
+  if (!ms || ms.az == null) throw new Error('drillhole QA: survey columns not identified (need BHID + AZ + DIP)');
+  const num = (r, i) => (i != null && i >= 0 ? coordNum(r[i]) : NaN);
+  const collars = tCollar.rows.map((r, row) => ({ bhid: r[mc.bhid], x: num(r, mc.x), y: num(r, mc.y), z: num(r, mc.z), eoh: num(r, mc.eoh), row }));
+  // no depth column: every station is at the collar (as parseSurveys reads it)
+  const surveys = tSurvey.rows.map((r, row) => ({ bhid: r[ms.bhid], depth: ms.at != null && ms.at >= 0 ? num(r, ms.at) : 0, az: num(r, ms.az), dip: num(r, ms.dip), row }));
+  const ivTables = [], values = [], extra = [];
+  for (const [k, iv] of intervals.entries()) {
+    const t = await readDelimited(iv.blob);
+    const mi = iv.mapping || (classifyDrillholeHeader(t.columns) || {}).mapping;
+    if (!mi || mi.from == null || mi.to == null) throw new Error(`drillhole QA: ${iv.name || 'an interval table'} — FROM / TO not identified`);
+    const name = iv.name || `intervals ${k + 1}`;
+    ivTables.push({ name, bhid: t.rows.map((r) => r[mi.bhid]), from: t.rows.map((r) => num(r, mi.from)), to: t.rows.map((r) => num(r, mi.to)) });
+    const keys = new Set([mi.bhid, mi.from, mi.to]);
+    t.columns.forEach((column, i) => {
+      if (keys.has(i)) return;
+      const c = { table: name, column, rows: t.rows.length, blank: 0, num: 0, below: 0, above: 0, code: 0, text: 0, firstText: -1, textSample: null };
+      t.rows.forEach((r, row) => {
+        const kind = classifyQualified(r[i]).kind;
+        c[kind]++;
+        if (kind === 'text' && c.firstText < 0) { c.firstText = row; c.textSample = String(r[i]).trim(); }
+      });
+      const filled = c.rows - c.blank;
+      // a column of numbers: numbers are the bulk and text a stray few (≤ 2, or ≤ 10%)
+      const nums = c.num + c.below + c.above + c.code;
+      c.numeric = c.num > 0 && nums > c.text && c.text <= Math.max(2, 0.1 * filled);
+      if (c.numeric && c.text) extra.push({ check: 'value-text', severity: DH_QA_CHECKS['value-text'][0], table: name, row: c.firstText, bhid: String(t.rows[c.firstText][mi.bhid] ?? '').trim(), from: num(t.rows[c.firstText], mi.from), to: num(t.rows[c.firstText], mi.to), detail: `${column}: ${c.text} text ${c.text === 1 ? 'entry' : 'entries'} (first: “${c.textSample}”)` });
+      values.push(c);
+    });
+  }
+  const r = dhQa({ collars, surveys, intervals: ivTables }, opts);
+  if (extra.length) { r.findings = r.findings.concat(extra); r.summary = dhQaSummary(r.findings); }
+  return { ...r, values, columns: { collar: tCollar.columns, survey: tSurvey.columns } };
+}
+
+// Fixed-length DOWN-HOLE COMPOSITES of one interval table — @gcu/drillhole's
+// composite over the set's own files. Every non-key column rides: numbers
+// (incl. <x / >x / lab codes, read by the column's qualify policy) are
+// length-weighted (mass-weighted when a density column is named), text is the
+// majority by covered length. Composites restart where any split column changes
+// (domain boundaries). opts = { mappings, length (default: the commonest
+// interval length), splitCols: [names], densityCol, minSupport (0..1 — drop a
+// composite whose covered length is below this share of the composite length: a
+// short leftover at a contact or the hole's end, or a window mostly in a gap;
+// counted), method, dipConvention, qualify: { [col]: policy } }.
+// → { header: ['BHID','X','Y','Z','FROM','TO','SUPPORT', …columns], rows, report }
+async function drillholeComposite({ collar, survey, intervals }, opts = {}) {
+  const tCollar = await readDelimited(collar);
+  const tSurvey = await readDelimited(survey);
+  const tIv = await readDelimited(intervals);
+  const mc = (opts.mappings && opts.mappings.collar) || (classifyDrillholeHeader(tCollar.columns) || {}).mapping;
+  const ms = (opts.mappings && opts.mappings.survey) || (classifyDrillholeHeader(tSurvey.columns) || {}).mapping;
+  const mi = (opts.mappings && opts.mappings.intervals) || (classifyDrillholeHeader(tIv.columns) || {}).mapping;
+  if (!mc || mc.x == null) throw new Error('composite: collar columns not identified (need BHID + X/Y/Z)');
+  if (!ms || ms.az == null) throw new Error('composite: survey columns not identified (need BHID + AZ + DIP)');
+  if (!mi || mi.from == null || mi.to == null) throw new Error('composite: interval columns not identified (need BHID + FROM + TO)');
+  const { collars } = parseCollars(tCollar, mc);
+  const { surveys } = parseSurveys(tSurvey, ms);
+  const keys = new Set([mi.bhid, mi.from, mi.to]);
+  const probe = tIv.rows.slice(0, 500);
+  const cols = [];
+  tIv.columns.forEach((name, i) => {
+    if (keys.has(i)) return;
+    const vals = probe.map((r) => (r[i] || '').trim()).filter(Boolean);
+    const cq = censusQualified(vals);
+    const pol = (opts.qualify && opts.qualify[name]) || QUALIFIED_DEFAULT;
+    cols.push(cq.numeric
+      ? { name, type: 'num', i, values: tIv.rows.map((r) => { const v = qualifiedNumber((r[i] || '').trim(), pol); return Number.isFinite(v) ? v : null; }) }
+      : { name, type: 'cat', i, values: tIv.rows.map((r) => { const v = (r[i] == null ? '' : String(r[i])).trim(); return v === '' ? null : v; }) });
+  });
+  const iv = { bhid: [], from: [], to: [], cols: cols.map((c) => ({ name: c.name, type: c.type, values: [] })) };
+  for (const r of tIv.rows) {
+    const f = coordNum(r[mi.from]), t = coordNum(r[mi.to]);
+    if (!Number.isFinite(f) || !Number.isFinite(t)) continue;
+    iv.bhid.push(r[mi.bhid]); iv.from.push(f); iv.to.push(t);
+  }
+  // the column values for the placeable rows only, in the same order
+  let k = 0;
+  tIv.rows.forEach((r, row) => {
+    const f = coordNum(r[mi.from]), t = coordNum(r[mi.to]);
+    if (!Number.isFinite(f) || !Number.isFinite(t)) return;
+    cols.forEach((c, j) => { iv.cols[j].values[k] = c.values[row]; });
+    k++;
+  });
+  const validated = dhValidate$index({ collars, surveys, intervals: iv }, { dipConvention: opts.dipConvention || 'auto' });
+  const length = opts.length > 0 ? +opts.length : dhDefaultLength(validated.intervals);
+  const res = dhComposite(validated, {
+    length, method: opts.method || 'minimumCurvature',
+    splitColNames: opts.splitCols && opts.splitCols.length ? opts.splitCols : null,
+    densityColName: opts.densityCol || null, combine: opts.combine || null, minCoverage: opts.minCoverage || null,
+  });
+  let rows = res.rows, short = 0;
+  if (opts.minSupport > 0) { const keep = rows.filter((r) => r[6] >= opts.minSupport * length - 1e-9); short = rows.length - keep.length; rows = keep; }
+  const checks = Object.values(validated.checks);
+  return { header: res.header, rows, report: { length, holes: validated.holes.length, composites: rows.length, short, checks, dipConvention: validated.dipConvention, intervals: iv.from.length } };
+}
+
+// ── src/core/sticks.js ──
+
+// @gcu/condenser — stick chunks: drillhole interval SEGMENTS (desurveyed
+// endpoint pairs) as instanced capsule impostors (micro-layers spec §6).
+// Same chunk discipline as blocks/points: batch-Morton on the midpoints,
+// intra-chunk shuffle (any prefix = a uniform subsample), per-chunk channel
+// quantization. Coordinates stay Float32 frame-local — stick counts are
+// 10³–10⁶, so the uint16 squeeze isn't needed and endpoints stay exact
+// to ~mm at frame-local magnitudes.
+
+
+/**
+ * Build one StickChunk from columnar world-space endpoints + attributes.
+ * raw = { ax..az, bx..bz (endpoints), x,y,z (midpoints), chan, cat, recIdx }.
+ * `indices` = optional gather list (a Morton slice); shuffled like the others.
+ */
+function buildStickChunk(raw, frame, rnd, indices = null) {
+  const n = indices ? indices.length : raw.x.length;
+  const o = frame.origin;
+  const perm = indices ? shuffleInPlace(Uint32Array.from(indices), rnd) : shuffledIndices(n, rnd);
+  const seg = new Float32Array(6 * n);                     // ax ay az bx by bz, frame-local
+  const outChan = new Uint16Array(n), outCat = new Uint8Array(n), outR = new Uint32Array(n);
+  let cMin = Infinity, cMax = -Infinity;
+  for (let k = 0; k < n; k++) { const v = raw.chan[perm[k]]; if (Number.isFinite(v)) { if (v < cMin) cMin = v; if (v > cMax) cMax = v; } }
+  if (!Number.isFinite(cMin)) { cMin = 0; cMax = 0; }
+  const cScale = cMax > cMin ? 65535 / (cMax - cMin) : 0;
+  const bb = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+  for (let k = 0; k < n; k++) {
+    const i = perm[k];
+    const A = [raw.ax[i] - o[0], raw.ay[i] - o[1], raw.az[i] - o[2]];
+    const B = [raw.bx[i] - o[0], raw.by[i] - o[1], raw.bz[i] - o[2]];
+    seg[k * 6] = A[0]; seg[k * 6 + 1] = A[1]; seg[k * 6 + 2] = A[2];
+    seg[k * 6 + 3] = B[0]; seg[k * 6 + 4] = B[1]; seg[k * 6 + 5] = B[2];
+    for (let a = 0; a < 3; a++) {
+      if (A[a] < bb[a]) bb[a] = A[a]; if (A[a] > bb[a + 3]) bb[a + 3] = A[a];
+      if (B[a] < bb[a]) bb[a] = B[a]; if (B[a] > bb[a + 3]) bb[a + 3] = B[a];
+    }
+    const cv = raw.chan[i];
+    outChan[k] = Number.isFinite(cv) ? ((cv - cMin) * cScale + 0.5) | 0 : 0;
+    outCat[k] = raw.cat ? raw.cat[i] : 0;
+    outR[k] = raw.recIdx[i];
+  }
+  // NB: the culling bbox covers the SEGMENTS; the renderer pads it by the
+  // current stick radius at cull time (the radius is a live per-layer knob).
+  return { kind: 'sticks', count: n, seg, chan: outChan, chanRange: [cMin, cMax], cat: outCat, recIdx: outR, bboxLocal: Float64Array.from(bb) };
+}
+
+// Exact midpoint of element k, frame-local (tests + pick verification).
+function stickLocalCenter(chunk, k) {
+  const s = chunk.seg;
+  return [(s[k * 6] + s[k * 6 + 3]) / 2, (s[k * 6 + 1] + s[k * 6 + 4]) / 2, (s[k * 6 + 2] + s[k * 6 + 5]) / 2];
+}
+
+/**
+ * StickChunkBuilder — the blocks builder's shape over segment RawChunks
+ * ({ count, ax..bz, x,y,z, chan, cat, recIdx }). Batch-Morton on midpoints,
+ * sliced, shuffled.
+ */
+function createStickChunkBuilder({ frame, chunkSize = 1 << 17, batchSize = 0, seed = 1, onChunk }) {
+  const rnd = mulberry32(seed);
+  const batchN = batchSize || chunkSize * 4;
+  let pend = [], pendCount = 0;
+  const doc = {
+    count: 0,
+    bboxLocal: Float64Array.of(Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity),
+    chanRange: [Infinity, -Infinity],
+  };
+  const concat = (Type, parts) => {
+    const out = new Type(parts.reduce((t, p) => t + p.length, 0));
+    let off = 0;
+    for (const p of parts) { out.set(p, off); off += p.length; }
+    return out;
+  };
+  const flushBatch = () => {
+    if (!pendCount) return;
+    const cols = {
+      ax: concat(Float64Array, pend.map((p) => p.ax)), ay: concat(Float64Array, pend.map((p) => p.ay)), az: concat(Float64Array, pend.map((p) => p.az)),
+      bx: concat(Float64Array, pend.map((p) => p.bx)), by: concat(Float64Array, pend.map((p) => p.by)), bz: concat(Float64Array, pend.map((p) => p.bz)),
+      x: concat(Float64Array, pend.map((p) => p.x)), y: concat(Float64Array, pend.map((p) => p.y)), z: concat(Float64Array, pend.map((p) => p.z)),
+      chan: concat(Float64Array, pend.map((p) => p.chan)),
+      cat: pend.every((p) => p.cat) ? concat(Uint8Array, pend.map((p) => p.cat)) : null,
+      recIdx: concat(Uint32Array, pend.map((p) => p.recIdx)),
+    };
+    const n = pendCount;
+    pend = []; pendCount = 0;
+    const order = radixSortIndices(mortonKeys(cols.x, cols.y, cols.z, n), n);
+    for (let start = 0; start < n; start += chunkSize) {
+      const slice = order.subarray(start, Math.min(start + chunkSize, n));
+      const chunk = buildStickChunk(cols, frame, rnd, slice);
+      doc.count += chunk.count;
+      const b = doc.bboxLocal, cb = chunk.bboxLocal;
+      for (let i = 0; i < 3; i++) { if (cb[i] < b[i]) b[i] = cb[i]; if (cb[i + 3] > b[i + 3]) b[i + 3] = cb[i + 3]; }
+      if (chunk.chanRange[0] < doc.chanRange[0]) doc.chanRange[0] = chunk.chanRange[0];
+      if (chunk.chanRange[1] > doc.chanRange[1]) doc.chanRange[1] = chunk.chanRange[1];
+      onChunk(chunk);
+    }
+  };
+  return {
+    push(raw) {
+      let recIdx = raw.recIdx;
+      if (!recIdx) {
+        recIdx = new Uint32Array(raw.count);
+        for (let i = 0; i < raw.count; i++) recIdx[i] = (raw.recStart || 0) + i;
+      }
+      let taken = 0;
+      while (taken < raw.count) {
+        const room = batchN - pendCount;
+        const n = Math.min(room, raw.count - taken);
+        const s = (a) => (a ? a.subarray(taken, taken + n) : null);
+        pend.push({ ax: s(raw.ax), ay: s(raw.ay), az: s(raw.az), bx: s(raw.bx), by: s(raw.by), bz: s(raw.bz), x: s(raw.x), y: s(raw.y), z: s(raw.z), chan: s(raw.chan), cat: s(raw.cat), recIdx: recIdx.subarray(taken, taken + n) });
+        pendCount += n; taken += n;
+        if (pendCount >= batchN) flushBatch();
+      }
+    },
+    flush() { flushBatch(); return doc; },
+    get doc() { return doc; },
+  };
+}
+
+// ── src/core/ratio.js ──
+
+// the canvas's BACKING ratio — device pixels per CSS pixel as the renderer actually
+// sized it. Not window.devicePixelRatio: the renderer may cap it (a phone at DPR 2.8
+// renders ~2× the pixels of DPR 2 for no visible gain), and every CSS→device mapping
+// — picks, marquees, splat sizes — must use the ratio the buffer really has.
+function backingRatio(canvas) {
+  const cw = canvas && canvas.clientWidth;
+  return cw ? canvas.width / cw : ((typeof window !== 'undefined' && window.devicePixelRatio) || 1);
+}
+
+// ── src/core/gl-util.js ──
+
+// @gcu/condenser — shared GL scaffolding (used by the splat + impostor pipelines).
+function compile(gl, type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error('condenser shader: ' + gl.getShaderInfoLog(s));
+  return s;
+}
+function makeProgram(gl, vsrc, fsrc) {
+  const p = gl.createProgram();
+  gl.attachShader(p, compile(gl, gl.VERTEX_SHADER, vsrc));
+  gl.attachShader(p, compile(gl, gl.FRAGMENT_SHADER, fsrc));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error('condenser link: ' + gl.getProgramInfoLog(p));
+  return p;
+}
+
+// a block chunk's lattice rotation when it has none (axis-aligned), column-major mat3
+const IDENTITY3 = new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1]);
+
+// ── src/core/gl-sticks.js ──
+
+// @gcu/condenser — capsule impostors for drillhole sticks (micro-layers §6).
+// gl-blocks' trick with a different intersection: one instanced quad per
+// SEGMENT, billboarded to enclose the capsule's silhouette (spanned by the
+// segment axis and the axis⊥view direction), fragment ray-capsule test with a
+// real gl_FragDepth + surface normal (headlight shading). <2px → splat
+// demotion; a cheap no-gl_FragDepth program serves fully-demoted far chunks.
+// Radius is a live per-layer uniform (world meters) — the "stick thickness"
+// knob. Mask / section / picked-glow / repaint identical to blocks.
+
+
+// 4×4-Bayer screen-door opacity (see gl-mesh / gl-blocks): see-through without
+// alpha blending — real depth writes stay correct, no back-to-front sort.
+const SCREENDOOR$gl_sticks = `
+uniform float uOpacity;
+const float _BAYER[16] = float[16](0.0,8.0,2.0,10.0,12.0,4.0,14.0,6.0,3.0,11.0,1.0,9.0,15.0,7.0,13.0,5.0);
+bool _screendoor() { if (uOpacity >= 0.999) return false; int bi = (int(gl_FragCoord.x) & 3) + ((int(gl_FragCoord.y) & 3) << 2); return uOpacity < (_BAYER[bi] + 0.5) / 16.0; }`;
+
+const VERT$gl_sticks = `#version 300 es
+precision highp float;
+layout(location=0) in vec3 aA;          // segment start, frame-local
+layout(location=1) in vec3 aB;          // segment end
+layout(location=2) in float aChan;      // uint16 normalized (per-chunk range)
+layout(location=3) in float aCat;       // uint8 raw
+layout(location=4) in uint aRec;        // uint32 partitioned record id
+uniform mat4 uViewProj;
+uniform vec3 uEye;
+uniform float uRadius;                  // stick radius, world meters
+uniform float uPerspScale, uDemotePx, uPointPx, uFixedSplat, uOrtho;
+uniform vec3 uFwd;
+uniform int uColorMode;                 // 0 elevation | 1 channel | 2 category | 3 solid
+uniform vec2 uZRange;
+uniform vec2 uChanChunk;                // chunk chan min/span (dequantize)
+uniform vec2 uChanDoc;                  // doc chan min/span (ramp)
+uniform sampler2D uRamp;
+uniform sampler2D uPalette;
+uniform sampler2D uMask;
+uniform float uFilterOn, uIsolate;
+uniform sampler2D uSel;
+uniform float uSelOn;
+uniform sampler2D uCatVis;
+uniform float uCatVisOn;
+uniform sampler2D uRule;                // rule-code byte by record index (8192-wide)
+uniform float uRuleOn;                  // rule mode: the code replaces the category
+uniform sampler2D uChanTex;             // OPT-IN: raw f32 VALUE by record (8192-wide) — replaces the
+uniform float uChanTexOn;               // chunk's quantized aChan in mode 1 (another interval column)
+uniform uint uPicked;                   // picked RECORD (0xFFFFFFFF = none)
+uniform uint uPickedLayer;              // …and the layer it belongs to
+uniform uint uLayer;                    // this draw's layer (per-draw, not per-element)
+uniform uvec2 uRepaint;
+uniform vec4 uSecPlane;
+uniform vec2 uSecCfg;
+flat out vec3 vA;
+flat out vec3 vB;
+flat out vec4 vColor;
+flat out float vMode;                   // 0 = capsule, 1 = splat
+flat out float vCull;
+out vec2 vCorner;
+out vec3 vWorldPos;
+void main() {
+  vec3 center = (aA + aB) * 0.5;
+  vec3 axis = aB - aA;
+  float len = max(length(axis), 1e-6);
+  vec3 u = axis / len;
+  float dist = max(distance(uEye, center), 1e-3);
+  float distEff = uOrtho > 0.5 ? 1.0 : dist;
+  vec3 viewDir = uOrtho > 0.5 ? uFwd : (center - uEye) / dist;
+  // quad plane: the segment axis × the axis-perpendicular-to-view — encloses
+  // the capsule silhouette. Axis ∥ view → any perpendicular works.
+  vec3 v = cross(u, viewDir);
+  float vl = length(v);
+  v = vl > 1e-4 ? v / vl : normalize(abs(u.z) < 0.9 ? cross(u, vec3(0.0, 0.0, 1.0)) : cross(u, vec3(1.0, 0.0, 0.0)));
+  float pxR = (len * 0.5 + uRadius) * uPerspScale / distEff;
+  float demoted = max(pxR < uDemotePx ? 1.0 : 0.0, uFixedSplat);
+  float m = 1.0;
+  if (uFilterOn > 0.5) {
+    int rec = int(aRec);
+    m = texelFetch(uMask, ivec2(rec & 8191, rec >> 13), 0).r > 0.5 ? 1.0 : 0.0;
+  }
+  // section cull: keep any capsule that TOUCHES the slab (segment support along
+  // the normal + radius) — the fragment shader clips exactly (see gl-blocks).
+  float secSupp = demoted > 0.5 ? 0.0 : (abs(dot(axis, uSecPlane.xyz)) * 0.5 + uRadius);
+  float secCull = (uSecCfg.x > 0.5 && abs(dot(center, uSecPlane.xyz) - uSecPlane.w) > uSecCfg.y + secSupp) ? 1.0 : 0.0;
+  vCull = max((uIsolate > 0.5 && m < 0.5) ? 1.0 : 0.0, secCull);
+  float cls = aCat;
+  if (uRuleOn > 0.5) {
+    int rr = int(aRec);
+    cls = floor(texelFetch(uRule, ivec2(rr & 8191, rr >> 13), 0).r * 255.0 + 0.5);
+  }
+  if (uCatVisOn > 0.5 && texelFetch(uCatVis, ivec2(int(cls) & 255, 0), 0).r < 0.5) vCull = 1.0;
+  vec2 corner = vec2(float(gl_VertexID & 1), float(gl_VertexID >> 1)) * 2.0 - 1.0;
+  vec3 wp;
+  if (demoted > 0.5) {                                   // splat: camera-facing square at the center
+    float quadR = max(uPointPx * 0.5, min(pxR, uPointPx * 2.0)) * distEff / uPerspScale;
+    vec3 sv = normalize(cross(viewDir, v));
+    wp = center + (v * corner.x + sv * corner.y) * quadR;
+  } else {
+    wp = center + u * (corner.x * (len * 0.5 + uRadius)) + v * (corner.y * uRadius);
+  }
+  gl_Position = uViewProj * vec4(wp, 1.0);
+  vA = aA; vB = aB; vMode = demoted; vCorner = corner; vWorldPos = wp;
+  if (uColorMode == 0) {
+    float t = clamp((center.z - uZRange.x) / max(uZRange.y, 1e-6), 0.0, 1.0);
+    vColor = texture(uRamp, vec2(t, 0.5));
+  } else if (uColorMode == 1) {
+    float cv;
+    if (uChanTexOn > 0.5) { int rc = int(aRec); cv = texelFetch(uChanTex, ivec2(rc & 8191, rc >> 13), 0).r; }
+    else cv = uChanChunk.x + aChan * uChanChunk.y;
+    float t = clamp((cv - uChanDoc.x) / max(uChanDoc.y, 1e-6), 0.0, 1.0);
+    vColor = texture(uRamp, vec2(t, 0.5));
+  } else if (uColorMode == 2) {
+    vColor = texture(uPalette, vec2((cls + 0.5) / 256.0, 0.5));
+  } else {
+    vColor = vec4(0.62, 0.63, 0.66, 1.0);
+  }
+  if (uSelOn > 0.5) {
+    int rs = int(aRec);
+    if (texelFetch(uSel, ivec2(rs & 8191, rs >> 13), 0).r > 0.5) vColor = vec4(mix(vColor.rgb, vec3(1.0, 0.85, 0.3), 0.55), vColor.a);
+  }
+  if (uFilterOn > 0.5 && m < 0.5) vColor = vec4(vColor.rgb * 0.3, vColor.a);
+  if (aRec == uPicked && uLayer == uPickedLayer) vColor = vec4(mix(vColor.rgb, vec3(1.0, 0.15, 0.7), 0.85) + 0.1, vColor.a);
+  if ((uRepaint.x != 0xFFFFFFFFu || uRepaint.y != 0xFFFFFFFFu) && aRec != uRepaint.x && aRec != uRepaint.y) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+}`;
+
+const FRAG$gl_sticks = `#version 300 es
+precision highp float;
+flat in vec3 vA;
+flat in vec3 vB;
+flat in vec4 vColor;
+flat in float vMode;
+flat in float vCull;
+in vec2 vCorner;
+in vec3 vWorldPos;
+uniform vec3 uEye;
+uniform vec3 uFwd;
+uniform float uOrthoRay;
+uniform float uBackoff;
+uniform float uRadius;
+uniform vec3 uLightDir;
+uniform mat4 uViewProj;
+uniform vec4 uSecPlane;
+uniform vec2 uSecCfg;
+out vec4 outColor;
+${SCREENDOOR$gl_sticks}
+void main() {
+  if (vCull > 0.5) discard;
+  if (_screendoor()) discard;           // per-layer opacity (screen-door)
+  if (vMode > 0.5) {                    // demoted splat
+    if (dot(vCorner, vCorner) > 1.0) discard;
+    gl_FragDepth = gl_FragCoord.z;
+    outColor = vColor;
+    return;
+  }
+  vec3 ro = uOrthoRay > 0.5 ? vWorldPos - uFwd * uBackoff : uEye;
+  vec3 rd = uOrthoRay > 0.5 ? uFwd : normalize(vWorldPos - uEye);
+  // ray-capsule (body cylinder + cap spheres)
+  vec3 ba = vB - vA;
+  vec3 oa = ro - vA;
+  float baba = dot(ba, ba), bard = dot(ba, rd), baoa = dot(ba, oa);
+  float rdoa = dot(rd, oa), oaoa = dot(oa, oa);
+  float a = baba - bard * bard;
+  float b = baba * rdoa - baoa * bard;
+  float c = baba * oaoa - baoa * baoa - uRadius * uRadius * baba;
+  float h = b * b - a * c;
+  float t = -1.0;
+  vec3 n = vec3(0.0);
+  if (h >= 0.0) {
+    float tb = (-b - sqrt(h)) / max(a, 1e-9);
+    float y = baoa + tb * bard;
+    if (y > 0.0 && y < baba && tb > 0.0) {
+      t = tb;
+      vec3 p = ro + rd * t;
+      n = (p - vA - ba * (y / baba)) / uRadius;
+    }
+  }
+  if (t < 0.0) {                        // the caps: try both, keep the nearest forward hit
+    for (int i = 0; i < 2; i++) {
+      vec3 capC = i == 0 ? vA : vB;
+      vec3 o2 = ro - capC;
+      float b2 = dot(rd, o2);
+      float c2 = dot(o2, o2) - uRadius * uRadius;
+      float h2 = b2 * b2 - c2;
+      if (h2 >= 0.0) {
+        float t2 = -b2 - sqrt(h2);
+        if (t2 > 0.0 && (t < 0.0 || t2 < t)) {
+          t = t2;
+          n = (ro + rd * t2 - capC) / uRadius;
+        }
+      }
+    }
+  }
+  if (t < 0.0) discard;
+  // TRUE SECTION on the capsule (convex, so one inside-test at the slab face is
+  // exact): a hit outside the slab either becomes the flat cut CROSS-SECTION at
+  // the face, or the capsule never overlaps the slab and the pixel is gone.
+  float cutFace = 0.0;
+  if (uSecCfg.x > 0.5) {
+    float den = dot(rd, uSecPlane.xyz);
+    float dc = dot(ro, uSecPlane.xyz) - uSecPlane.w;
+    if (abs(dc + t * den) > uSecCfg.y) {
+      if (abs(den) < 1e-9) discard;
+      float sIn = min((-uSecCfg.y - dc) / den, (uSecCfg.y - dc) / den);
+      if (sIn <= t) discard;                               // hit past the slab exit
+      vec3 q = ro + rd * sIn;                              // at the slab face: still inside?
+      vec3 qa = q - vA;
+      float yq = clamp(dot(qa, ba) / baba, 0.0, 1.0);
+      if (length(qa - ba * yq) > uRadius) discard;
+      t = sIn;
+      n = uSecPlane.xyz * -sign(den);
+      cutFace = 1.0;
+    }
+  }
+  vec3 p = ro + rd * t;
+  vec4 clip = uViewProj * vec4(p, 1.0);
+  gl_FragDepth = clamp(clip.z / clip.w * 0.5 + 0.5, 0.0, 1.0);
+  float shade = (0.55 + 0.45 * max(dot(n, uLightDir), 0.0)) * (cutFace > 0.5 ? 0.85 : 1.0);
+  outColor = vec4(vColor.rgb * shade, vColor.a);
+}`;
+
+const FRAG_CHEAP$gl_sticks = `#version 300 es
+precision highp float;
+flat in vec3 vA;
+flat in vec3 vB;
+flat in vec4 vColor;
+flat in float vMode;
+flat in float vCull;
+in vec2 vCorner;
+in vec3 vWorldPos;
+uniform vec3 uEye;
+uniform vec3 uLightDir;
+uniform mat4 uViewProj;
+out vec4 outColor;
+${SCREENDOOR$gl_sticks}
+void main() {
+  if (vCull > 0.5) discard;
+  if (_screendoor()) discard;
+  if (dot(vCorner, vCorner) > 1.0) discard;
+  outColor = vColor;
+}`;
+
+function createSticksPipeline(gl) {
+  const mkProg = (frag) => {
+    const prog = makeProgram(gl, VERT$gl_sticks, frag);
+    const U = (n) => gl.getUniformLocation(prog, n);
+    return { prog, uni: {
+      viewProj: U('uViewProj'), eye: U('uEye'), radius: U('uRadius'), opacity: U('uOpacity'),
+      perspScale: U('uPerspScale'), demotePx: U('uDemotePx'), pointPx: U('uPointPx'), fixedSplat: U('uFixedSplat'),
+      colorMode: U('uColorMode'), zRange: U('uZRange'), chanChunk: U('uChanChunk'), chanDoc: U('uChanDoc'),
+      ramp: U('uRamp'), palette: U('uPalette'), lightDir: U('uLightDir'),
+      mask: U('uMask'), filterOn: U('uFilterOn'), isolate: U('uIsolate'), picked: U('uPicked'), pickedLayer: U('uPickedLayer'), layer: U('uLayer'), repaint: U('uRepaint'),
+      catVis: U('uCatVis'), catVisOn: U('uCatVisOn'), sel: U('uSel'), selOn: U('uSelOn'),
+      rule: U('uRule'), ruleOn: U('uRuleOn'), chanTex: U('uChanTex'), chanTexOn: U('uChanTexOn'),
+      secPlane: U('uSecPlane'), secCfg: U('uSecCfg'),
+      ortho: U('uOrtho'), fwd: U('uFwd'), orthoRay: U('uOrthoRay'), backoff: U('uBackoff'),
+    } };
+  };
+  const full = mkProg(FRAG$gl_sticks), cheap = mkProg(FRAG_CHEAP$gl_sticks);
+  let active = full;
+
+  function upload(chunk) {
+    const vao = gl.createVertexArray();
+    gl.bindVertexArray(vao);
+    const mkBuf = (data) => { const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b); gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW); return b; };
+    const bSeg = mkBuf(chunk.seg), bChan = mkBuf(chunk.chan), bCat = mkBuf(chunk.cat), bRec = mkBuf(chunk.recIdx);
+    gl.bindVertexArray(null);
+    return {
+      kind: 'sticks', vao, buffers: [bSeg, bChan, bCat, bRec],
+      bSeg, bChan, bCat, bRec,
+      count: chunk.count, bboxLocal: chunk.bboxLocal, cursor: 0,
+      chanRange: chunk.chanRange,
+    };
+  }
+
+  function drawSlice(c, first, k, useCheap = false) {
+    const pp = useCheap ? cheap : full;
+    if (pp !== active) { gl.useProgram(pp.prog); active = pp; }
+    const uni = active.uni;
+    gl.uniform1f(uni.fixedSplat, useCheap ? 1 : 0);
+    gl.bindVertexArray(c.vao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, c.bSeg);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 24, first * 24);
+    gl.vertexAttribDivisor(0, 1);
+    gl.enableVertexAttribArray(1);
+    gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 24, first * 24 + 12);
+    gl.vertexAttribDivisor(1, 1);
+    gl.bindBuffer(gl.ARRAY_BUFFER, c.bChan);
+    gl.enableVertexAttribArray(2);
+    gl.vertexAttribPointer(2, 1, gl.UNSIGNED_SHORT, true, 0, first * 2);
+    gl.vertexAttribDivisor(2, 1);
+    gl.bindBuffer(gl.ARRAY_BUFFER, c.bCat);
+    gl.enableVertexAttribArray(3);
+    gl.vertexAttribPointer(3, 1, gl.UNSIGNED_BYTE, false, 0, first);
+    gl.vertexAttribDivisor(3, 1);
+    gl.bindBuffer(gl.ARRAY_BUFFER, c.bRec);
+    gl.enableVertexAttribArray(4);
+    gl.vertexAttribIPointer(4, 1, gl.UNSIGNED_INT, 0, first * 4);
+    gl.vertexAttribDivisor(4, 1);
+    const span = c.chanRange[1] - c.chanRange[0];
+    gl.uniform2f(uni.chanChunk, c.chanRange[0], span > 0 ? span : 0);
+    gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, k);
+  }
+
+  function begin(cam, { pointPx, colorMode, zRange, chanDoc, ramp, palette, viewportH, maskTex = null, isolate = false, pointsView = false, picked = 0xFFFFFFFF, pickedLayer = 0xFFFFFFFF, layer = 0, section = null, radius = 1, catVisTex = null, selTex = null, ruleTex = null, chanTex = null, opacity = 1 }) {
+    const s = cam.state;
+    for (const pp of [full, cheap]) {
+      gl.useProgram(pp.prog);
+      const uni = pp.uni;
+      gl.uniformMatrix4fv(uni.viewProj, false, s.viewProj);
+      gl.uniform3f(uni.eye, s.eye[0], s.eye[1], s.eye[2]);
+      const v = s.view;
+      let lx = s.eye[0] - s.target[0], ly = s.eye[1] - s.target[1], lz = s.eye[2] - s.target[2];
+      const ll = Math.hypot(lx, ly, lz) || 1;
+      lx = lx / ll + v[1] * 0.4; ly = ly / ll + v[5] * 0.4; lz = lz / ll + v[9] * 0.4;
+      const l2 = Math.hypot(lx, ly, lz) || 1;
+      gl.uniform3f(uni.lightDir, lx / l2, ly / l2, lz / l2);
+      gl.uniform1f(uni.radius, radius);
+      gl.uniform1f(uni.opacity, Math.max(0.02, Math.min(1, opacity)));   // per-layer screen-door opacity
+      gl.uniform1f(uni.perspScale, s.ortho ? (viewportH / 2) / s.halfH : (viewportH / 2) / Math.tan(s.fovY / 2));
+      gl.uniform1f(uni.ortho, s.ortho ? 1 : 0);
+      gl.uniform1f(uni.orthoRay, s.ortho ? 1 : 0);
+      {
+        const f = [s.target[0] - s.eye[0], s.target[1] - s.eye[1], s.target[2] - s.eye[2]];
+        const fl = Math.hypot(...f) || 1;
+        gl.uniform3f(uni.fwd, f[0] / fl, f[1] / fl, f[2] / fl);
+        gl.uniform1f(uni.backoff, s.radius * 2);
+      }
+      gl.uniform1f(uni.demotePx, 2.0);
+      gl.uniform1f(uni.pointPx, pointPx * backingRatio(gl.canvas));
+      gl.uniform1i(uni.colorMode, colorMode);
+      gl.uniform2f(uni.zRange, zRange[0], zRange[1]);
+      gl.uniform2f(uni.chanDoc, chanDoc[0], chanDoc[1]);
+      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, ramp); gl.uniform1i(uni.ramp, 0);
+      gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, palette); gl.uniform1i(uni.palette, 1);
+      gl.uniform1f(uni.fixedSplat, pointsView ? 1 : 0);
+      gl.uniform1ui(uni.picked, picked >>> 0);
+      gl.uniform1ui(uni.pickedLayer, pickedLayer >>> 0);
+      gl.uniform1ui(uni.layer, layer >>> 0);              // this draw's layer — the id no longer hides in aRec
+      gl.uniform2ui(uni.repaint, 0xFFFFFFFF, 0xFFFFFFFF);
+      gl.uniform4f(uni.secPlane, section ? section.n[0] : 0, section ? section.n[1] : 0, section ? section.n[2] : 1, section ? section.d : 0);
+      gl.uniform2f(uni.secCfg, section ? 1 : 0, section ? section.half : 0);
+      gl.uniform1f(uni.filterOn, maskTex ? 1 : 0);
+      gl.uniform1f(uni.isolate, isolate ? 1 : 0);
+      if (maskTex) { gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, maskTex); gl.uniform1i(uni.mask, 4); }
+      gl.uniform1f(uni.catVisOn, catVisTex ? 1 : 0);
+      if (catVisTex) { gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, catVisTex); gl.uniform1i(uni.catVis, 5); }
+      gl.uniform1f(uni.selOn, selTex ? 1 : 0);
+      if (selTex) { gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D, selTex); gl.uniform1i(uni.sel, 6); }
+      gl.uniform1f(uni.ruleOn, ruleTex ? 1 : 0);
+      if (ruleTex) { gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, ruleTex); gl.uniform1i(uni.rule, 7); }
+      gl.uniform1f(uni.chanTexOn, chanTex ? 1 : 0);
+      if (chanTex) { gl.activeTexture(gl.TEXTURE8); gl.bindTexture(gl.TEXTURE_2D, chanTex); gl.uniform1i(uni.chanTex, 8); }
+    }
+    active = full;
+    gl.useProgram(full.prog);
+  }
+
+  function setRepaint(a, b) {
+    for (const pp of [full, cheap]) { gl.useProgram(pp.prog); gl.uniform2ui(pp.uni.repaint, a >>> 0, b >>> 0); }
+    if (active) gl.useProgram(active.prog);
+  }
+
+  return { upload, drawSlice, begin, setRepaint };
+}
+
+// ── ../msh/msh.js ──
+
+// @gcu/msh — ARANZ-1.0 mesh file (.msh) reader and writer.
+// Single-file ESM, zero runtime deps. Works in browsers and Node 18+.
+//
+// Format (self-describing):
+//
+//   %ARANZ-1.0\n
+//   \n
+//   [index]\n
+//   <Name> <Type> <Components> <Count>;\n
+//   ...
+//   \n
+//   [binary]<12-byte signature><binary data in declared order, little-endian>
+//
+// The [index] section declares each binary array by name, element type
+// (Double | Integer), components per element (e.g. 3 for 3D vertices),
+// and element count. The [binary] section starts with a fixed 12-byte
+// signature whose meaning is undocumented; we preserve it verbatim on
+// round-trip. See the README for the bytes we've observed and our best
+// guesses about their meaning (short version: probably an ARANZ-internal
+// format sentinel; opaque to us).
+//
+// Common arrays in practice (single triangulated mesh per file):
+//   Location   Double  3   N    — flat XYZ, length 3*N
+//   Tri        Integer 3   M    — flat IJK indices, length 3*M
+//
+// Coordinates are returned unmodified — typically a UTM-like grid in
+// metres. Recentring is a rendering concern, not a parsing one (WebGL
+// f32 precision drops at the absolute coordinate magnitudes typical of
+// UTM, so renderers should subtract a centroid before uploading).
+//
+// SPDX-License-Identifier: BSD-3-Clause
+// Reference: vendor format, no public spec; reverse-engineered from
+// MacPass HG/LG and other Leapfrog Geo / Edge exports. ARANZ Geo was
+// the original developer (now Seequent / Bentley).
+
+/** Magic line at the start of every .msh file. */
+const MSH_MAGIC = '%ARANZ-1.0';
+
+/** Section headers we recognise (case-sensitive). */
+const SECTION_INDEX  = '[index]';
+const SECTION_BINARY = '[binary]';
+
+/** Length of the opaque-magic prefix that sits between '[binary]' and
+ *  the first array's bytes. See README "12-byte signature" section. */
+const BINARY_PREFIX_LENGTH = 12;
+
+/** The signature observed across all files we've seen — preserved on
+ *  writeback when the caller doesn't supply their own. Probably an
+ *  ARANZ-internal format sentinel; we don't interpret it. */
+const DEFAULT_BINARY_SIGNATURE = new Uint8Array([
+  0xFF, 0x0F, 0xF0, 0x00, 0x1B, 0xDE, 0x83, 0x42,
+  0xCA, 0xC0, 0xF3, 0x3F,
+]);
+
+/** Type catalog. Maps the index-declared Type name to its byte width
+ *  and a constructor for the typed-array we'll hand back. Little-endian
+ *  is assumed throughout; we don't write any other endianness either. */
+const MSH_TYPES = {
+  Double:  { bytes: 8, ctor: Float64Array, kind: 'float' },
+  Float:   { bytes: 4, ctor: Float32Array, kind: 'float' },
+  Integer: { bytes: 4, ctor: Int32Array,   kind: 'int'   },
+  Long:    { bytes: 8, ctor: BigInt64Array, kind: 'int'  },
+  Short:   { bytes: 2, ctor: Int16Array,   kind: 'int'   },
+  Byte:    { bytes: 1, ctor: Uint8Array,   kind: 'int'   },
+};
+
+/** Thrown on any MSH-specific failure: bad magic, malformed index,
+ *  unsupported type, declared/decoded size mismatch, out-of-range
+ *  triangle indices. */
+class MSHError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'MSHError';
+  }
+}
+
+/** @typedef {Object} MSHArray
+ *  @property {string} type        e.g. "Double", "Integer"
+ *  @property {number} components  values per element (3 for 3D vertex / triangle)
+ *  @property {number} count       element count (vertices, triangles, ...)
+ *  @property {TypedArray} data    flat values, length = components * count.
+ *                                  Float64Array for Double, Int32Array for
+ *                                  Integer, etc. */
+
+/** @typedef {Object} MSHResult
+ *  @property {string} version              From the magic line; '1.0' in practice.
+ *  @property {Map<string,MSHArray>} arrays Declared arrays, keyed by name in
+ *                                          DECLARATION ORDER (Map iteration
+ *                                          preserves insertion order).
+ *  @property {Uint8Array} binarySignature  The 12 bytes between '[binary]'
+ *                                          and the first array. Preserved
+ *                                          for byte-identical round-trip.
+ *  @property {Float64Array=} vertices      Convenience: the first Double-3
+ *                                          array (typically named "Location"),
+ *                                          if present.
+ *  @property {Int32Array=} triangles       Convenience: the first Integer-3
+ *                                          array (typically "Tri"), if present. */
+
+/** Read an .msh ArrayBuffer / Uint8Array and return a fully decoded
+ *  {@link MSHResult}. Throws {@link MSHError} on any structural problem.
+ *  @param {ArrayBuffer|Uint8Array} input
+ *  @param {Object} [opts]
+ *  @param {boolean} [opts.validateIndices=true]  Bounds-check triangle
+ *      indices against vertex count. Set false to skip if you have a
+ *      file with non-Location/Tri arrays whose meaning we can't infer.
+ *  @returns {Promise<MSHResult>}
+ */
+async function readMSH(input, opts = {}) {
+  if (typeof Blob !== 'undefined' && input instanceof Blob) return _readMSHBlob(input, opts);
+  const bytes = _coerceBytes(input);
+  const validateIndices = opts.validateIndices !== false;
+
+  // 1. Find the [binary] header by locating its literal bytes — the
+  //    section header sits on its own line in practice, but the binary
+  //    data starts IMMEDIATELY after the closing ']' (no newline).
+  const binaryHeaderStart = _indexOfBytes(bytes, SECTION_BINARY);
+  if (binaryHeaderStart < 0) {
+    throw new MSHError('missing [binary] section header');
+  }
+  const binaryStart = binaryHeaderStart + SECTION_BINARY.length;
+
+  // 2. Decode the text header (everything before [binary]) as UTF-8
+  //    and parse out the magic + index declarations.
+  const headerText = new TextDecoder('utf-8').decode(bytes.subarray(0, binaryHeaderStart));
+  const { version, declarations } = _parseTextHeader(headerText);
+
+  // 3. Capture the 12-byte signature.
+  if (binaryStart + BINARY_PREFIX_LENGTH > bytes.length) {
+    throw new MSHError('binary section truncated before signature');
+  }
+  const binarySignature = bytes.slice(binaryStart, binaryStart + BINARY_PREFIX_LENGTH);
+
+  // 4. Walk declarations in order, slicing the appropriate number of
+  //    bytes per array. Little-endian — we copy into a fresh typed
+  //    array rather than view-aliasing the source so the result is
+  //    independent of the input buffer (the caller may free it).
+  let cursor = binaryStart + BINARY_PREFIX_LENGTH;
+  const arrays = new Map();
+  for (const decl of declarations) {
+    const info = MSH_TYPES[decl.type];
+    if (!info) {
+      throw new MSHError(`unsupported type "${decl.type}" for array "${decl.name}"`);
+    }
+    const totalValues = decl.components * decl.count;
+    const totalBytes = totalValues * info.bytes;
+    if (cursor + totalBytes > bytes.length) {
+      throw new MSHError(
+        `array "${decl.name}" declared ${totalBytes} bytes but file has only ${bytes.length - cursor} remaining`
+      );
+    }
+    const data = _readTypedArray(bytes, cursor, totalValues, info);
+    arrays.set(decl.name, {
+      type: decl.type,
+      components: decl.components,
+      count: decl.count,
+      data,
+    });
+    cursor += totalBytes;
+  }
+  // Trailing bytes? Real files don't have any, but tolerate up to 8
+  // bytes of alignment padding (some writers append a record terminator).
+  const trailing = bytes.length - cursor;
+  if (trailing > 8) {
+    throw new MSHError(`${trailing} unexpected bytes after the last declared array`);
+  }
+
+  const result = { version, arrays, binarySignature };
+
+  // 5. Convenience accessors. Pick the FIRST Double-3 array as
+  //    vertices and the FIRST Integer-3 array as triangles. Files with
+  //    multiple Double-3 arrays (e.g. per-vertex normals) would need
+  //    the caller to reach into `arrays` directly — we don't try to
+  //    guess from names alone.
+  let vertices, triangles;
+  for (const [, arr] of arrays) {
+    if (!vertices && arr.type === 'Double' && arr.components === 3) {
+      vertices = arr.data;
+    } else if (!triangles && arr.type === 'Integer' && arr.components === 3) {
+      triangles = arr.data;
+    }
+  }
+  if (vertices) result.vertices = vertices;
+  if (triangles) result.triangles = triangles;
+
+  // 6. Validation: every triangle index must reference a real vertex.
+  //    Catches truncation / corruption that survived the size checks
+  //    (e.g. a swapped array order).
+  if (validateIndices && vertices && triangles) {
+    const vCount = vertices.length / 3 | 0;
+    for (let i = 0; i < triangles.length; i++) {
+      const idx = triangles[i];
+      if (idx < 0 || idx >= vCount) {
+        throw new MSHError(
+          `triangle index ${idx} at position ${i} is out of range (0..${vCount - 1})`
+        );
+      }
+    }
+  }
+
+  return result;
+}
+
+/** The file's LAYOUT without reading its arrays: version, signature, and each
+ *  declared array with its byte `offset` and `bytes` — plus `vertices` /
+ *  `triangles` naming the first Double-3 and Integer-3 arrays (readMSH's rule).
+ *  A Blob/File is read only at its head (the text index), so a multi-GB mesh is
+ *  described for free and a streaming reader can slice one array at a time.
+ *  @param {Blob|ArrayBuffer|Uint8Array} input */
+async function readMSHLayout(input) {
+  const isBlob = typeof Blob !== 'undefined' && input instanceof Blob;
+  const size = isBlob ? input.size : _coerceBytes(input).length;
+  let head, binaryHeaderStart = -1;
+  for (let len = 64 * 1024; ; len *= 4) {                   // the text index is small; grow until [binary] shows
+    head = isBlob ? new Uint8Array(await input.slice(0, Math.min(size, len)).arrayBuffer()) : _coerceBytes(input).subarray(0, Math.min(size, len));
+    binaryHeaderStart = _indexOfBytes(head, SECTION_BINARY);
+    if (binaryHeaderStart >= 0 || len >= size || len >= 64 * 1024 * 1024) break;
+  }
+  if (binaryHeaderStart < 0) throw new MSHError('missing [binary] section header');
+  const binaryStart = binaryHeaderStart + SECTION_BINARY.length;
+  const { version, declarations } = _parseTextHeader(new TextDecoder('utf-8').decode(head.subarray(0, binaryHeaderStart)));
+  if (binaryStart + BINARY_PREFIX_LENGTH > size) throw new MSHError('binary section truncated before signature');
+  const sig = isBlob
+    ? new Uint8Array(await input.slice(binaryStart, binaryStart + BINARY_PREFIX_LENGTH).arrayBuffer())
+    : _coerceBytes(input).slice(binaryStart, binaryStart + BINARY_PREFIX_LENGTH);
+  let cursor = binaryStart + BINARY_PREFIX_LENGTH;
+  const arrays = [];
+  for (const decl of declarations) {
+    const info = MSH_TYPES[decl.type];
+    if (!info) throw new MSHError(`unsupported type "${decl.type}" for array "${decl.name}"`);
+    const bytes = decl.components * decl.count * info.bytes;
+    if (cursor + bytes > size) {
+      throw new MSHError(`array "${decl.name}" declared ${bytes} bytes but file has only ${size - cursor} remaining`);
+    }
+    arrays.push({ ...decl, offset: cursor, bytes });
+    cursor += bytes;
+  }
+  if (size - cursor > 8) throw new MSHError(`${size - cursor} unexpected bytes after the last declared array`);
+  const vertices = arrays.find((a) => a.type === 'Double' && a.components === 3) || null;
+  const triangles = arrays.find((a) => a.type === 'Integer' && a.components === 3) || null;
+  return { version, binarySignature: sig, arrays, vertices, triangles, size };
+}
+
+// readMSH over a Blob: the layout from the head, then each array sliced on its own
+// — never one whole-file buffer (and no second copy of it).
+async function _readMSHBlob(blob, opts) {
+  const lay = await readMSHLayout(blob);
+  const arrays = new Map();
+  for (const a of lay.arrays) {
+    const bytes = new Uint8Array(await blob.slice(a.offset, a.offset + a.bytes).arrayBuffer());
+    arrays.set(a.name, { type: a.type, components: a.components, count: a.count, data: _readTypedArray(bytes, 0, a.components * a.count, MSH_TYPES[a.type]) });
+  }
+  const result = { version: lay.version, arrays, binarySignature: lay.binarySignature };
+  if (lay.vertices) result.vertices = arrays.get(lay.vertices.name).data;
+  if (lay.triangles) result.triangles = arrays.get(lay.triangles.name).data;
+  if (opts.validateIndices !== false && result.vertices && result.triangles) {
+    const vCount = result.vertices.length / 3 | 0, t = result.triangles;
+    for (let i = 0; i < t.length; i++) {
+      if (t[i] < 0 || t[i] >= vCount) throw new MSHError(`triangle index ${t[i]} at position ${i} is out of range (0..${vCount - 1})`);
+    }
+  }
+  return result;
+}
+
+/** Serialise an {@link MSHResult} (or a synthesised mesh) back to bytes.
+ *  Round-trips byte-identical when given a result from readMSH that
+ *  hasn't been modified.
+ *  @param {Object} input
+ *  @param {string} [input.version='1.0']
+ *  @param {Map<string,MSHArray>|Object<string,MSHArray>} input.arrays
+ *  @param {Uint8Array} [input.binarySignature]   12-byte prefix; defaults
+ *      to the canonical observed signature.
+ *  @returns {Promise<Uint8Array>}
+ */
+async function writeMSH(input) {
+  const version = input.version || '1.0';
+  const arrays = input.arrays instanceof Map
+    ? input.arrays
+    : new Map(Object.entries(input.arrays || {}));
+  if (arrays.size === 0) {
+    throw new MSHError('writeMSH: at least one declared array is required');
+  }
+  const signature = input.binarySignature || DEFAULT_BINARY_SIGNATURE;
+  if (signature.length !== BINARY_PREFIX_LENGTH) {
+    throw new MSHError(`binarySignature must be ${BINARY_PREFIX_LENGTH} bytes`);
+  }
+
+  // 1. Validate every array AND compute total binary length so we can
+  //    allocate once. Keeps the writer single-pass and predictable.
+  let binaryLen = BINARY_PREFIX_LENGTH;
+  const orderedDeclarations = [];
+  for (const [name, arr] of arrays) {
+    const info = MSH_TYPES[arr.type];
+    if (!info) {
+      throw new MSHError(`writeMSH: unsupported type "${arr.type}" for array "${name}"`);
+    }
+    const declaredValues = arr.components * arr.count;
+    if (!arr.data || arr.data.length !== declaredValues) {
+      throw new MSHError(
+        `writeMSH: array "${name}" declares ${declaredValues} values but data has ${arr.data?.length ?? 0}`
+      );
+    }
+    orderedDeclarations.push({ name, ...arr, info });
+    binaryLen += declaredValues * info.bytes;
+  }
+
+  // 2. Build the text header.
+  const lines = [];
+  lines.push(`%ARANZ-${version}`);
+  lines.push('');
+  lines.push(SECTION_INDEX);
+  for (const decl of orderedDeclarations) {
+    lines.push(`${decl.name} ${decl.type} ${decl.components} ${decl.count};`);
+  }
+  lines.push('');
+  // The binary section header has NO trailing newline — the magic
+  // signature starts immediately after the closing ']' (matching what
+  // the readers in the wild expect, including the one this is based on).
+  // Join with \n and append the literal '[binary]' separately so we
+  // don't accidentally add one.
+  const headerText = lines.join('\n') + '\n' + SECTION_BINARY;
+  const headerBytes = new TextEncoder().encode(headerText);
+
+  // 3. Allocate the final buffer and copy in:
+  //    [header][signature][array 0 bytes][array 1 bytes]...
+  const out = new Uint8Array(headerBytes.length + binaryLen);
+  out.set(headerBytes, 0);
+  let cursor = headerBytes.length;
+  out.set(signature, cursor);
+  cursor += BINARY_PREFIX_LENGTH;
+  for (const decl of orderedDeclarations) {
+    _writeTypedArray(out, cursor, decl.data, decl.info);
+    cursor += decl.data.length * decl.info.bytes;
+  }
+  return out;
+}
+
+// ── internals ──
+
+function _coerceBytes(input) {
+  if (input instanceof Uint8Array) return input;
+  if (input instanceof ArrayBuffer) return new Uint8Array(input);
+  if (input && input.buffer instanceof ArrayBuffer) {
+    // Other typed-array view: use its underlying buffer slice.
+    return new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
+  }
+  throw new MSHError('readMSH: input must be ArrayBuffer or Uint8Array');
+}
+
+function _indexOfBytes(haystack, needleString) {
+  // Search for an ASCII substring in a Uint8Array. Used to find the
+  // [binary] header; we don't decode the whole file as UTF-8 because
+  // the binary section will contain arbitrary bytes that may form
+  // partial-UTF-8 sequences and corrupt the decoder.
+  const needle = new TextEncoder().encode(needleString);
+  outer: for (let i = 0; i + needle.length <= haystack.length; i++) {
+    for (let j = 0; j < needle.length; j++) {
+      if (haystack[i + j] !== needle[j]) continue outer;
+    }
+    return i;
+  }
+  return -1;
+}
+
+function _parseTextHeader(text) {
+  // Magic must be the first non-empty content line.
+  const lines = text.split('\n');
+  if (lines.length === 0 || !lines[0].startsWith('%ARANZ-')) {
+    throw new MSHError('missing %ARANZ-N magic line');
+  }
+  const version = lines[0].slice('%ARANZ-'.length).trim();
+  // Walk lines looking for [index]. Everything between [index] and the
+  // next bracketed-section header (we expect [binary]) is declarations.
+  let inIndex = false;
+  const declarations = [];
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (line === '') continue;
+    if (line.startsWith('[') && line.endsWith(']')) {
+      if (line === SECTION_INDEX) { inIndex = true; continue; }
+      // Any other bracketed section ends the index. (We only know
+      // about [binary] here, but other vendors might extend later.)
+      inIndex = false;
+      continue;
+    }
+    if (!inIndex) continue;
+    declarations.push(_parseDeclaration(line));
+  }
+  if (declarations.length === 0) {
+    throw new MSHError('[index] section is missing or empty');
+  }
+  return { version, declarations };
+}
+
+function _parseDeclaration(line) {
+  // Shape: "<Name> <Type> <Components> <Count>;"
+  // Name can contain spaces in theory (vendor-defined); we treat the
+  // trailing ';' as the terminator and walk backwards through the
+  // 3 numeric / type tokens. Anything before them is the name.
+  const stripped = line.endsWith(';') ? line.slice(0, -1).trim() : line.trim();
+  const tokens = stripped.split(/\s+/);
+  if (tokens.length < 4) {
+    throw new MSHError(`malformed index declaration: "${line}"`);
+  }
+  const count      = parseInt(tokens[tokens.length - 1], 10);
+  const components = parseInt(tokens[tokens.length - 2], 10);
+  const type       = tokens[tokens.length - 3];
+  const name       = tokens.slice(0, tokens.length - 3).join(' ');
+  if (!Number.isFinite(count) || count < 0
+      || !Number.isFinite(components) || components < 1
+      || !name) {
+    throw new MSHError(`malformed index declaration: "${line}"`);
+  }
+  return { name, type, components, count };
+}
+
+function _readTypedArray(bytes, offset, length, info) {
+  // The src bytes may not be aligned to the typed-array's stride, and
+  // even when aligned, slicing into a fresh buffer guarantees the
+  // returned array is independent of the input (we make NO promises
+  // about the lifetime of the input ArrayBuffer). Copy bytes then
+  // build the typed view on the copy.
+  const totalBytes = length * info.bytes;
+  const buf = new ArrayBuffer(totalBytes);
+  new Uint8Array(buf).set(bytes.subarray(offset, offset + totalBytes));
+  // BigInt64Array constructor takes (buffer, byteOffset, length).
+  // All others same shape.
+  return new info.ctor(buf, 0, length);
+}
+
+function _writeTypedArray(dst, offset, src, info) {
+  // src is already a typed array (Float64Array etc.). We need its raw
+  // bytes copied into dst at the given byte offset. The simplest path
+  // is to view the SAME bytes via Uint8Array and let .set() handle
+  // the copy.
+  const view = new Uint8Array(src.buffer, src.byteOffset, src.byteLength);
+  // Sanity check: declared values × stride MUST match.
+  if (view.byteLength !== src.length * info.bytes) {
+    throw new MSHError(
+      `writeMSH: typed-array stride mismatch (got ${view.byteLength}, expected ${src.length * info.bytes})`
+    );
+  }
+  dst.set(view, offset);
+}
+
+// ── src/io/ply.js ──
+
+// @gcu/condenser — PLY point-cloud provider (ascii + binary_little_endian).
+// Reads the vertex element only (meshes: faces are ignored — micro shows the
+// vertices). PLY carries no header bbox, so this provider runs a discovery
+// sweep (bbox + intensity range) before streaming — both cold recipes over
+// the Blob, same shape as the delimited provider. RawChunks match the LAS
+// shape so the points pipeline + chunk builder are reused verbatim:
+//   { count, x, y, z: Float64Array, intensity: Uint16Array,
+//     classification: Uint8Array, rgb: Uint8Array(3n)|null, recStart }
+//
+// openPly(blob) → { header, streamChunks, fetchRecord }
+//   header = { kind:'ply', format, count, bbox, columns, attributes, ply:{…} }
+//   fetchRecord(rec) → [values in property order] (O(1) binary, sweep ascii)
+//
+// Honest limits: binary_big_endian and list-typed VERTEX properties throw;
+// the vertex element must come first (a variable-size element before it
+// would make the binary offset unknowable).
+
+const TYPES$index = {
+  char: [1, 'getInt8'], int8: [1, 'getInt8'],
+  uchar: [1, 'getUint8'], uint8: [1, 'getUint8'],
+  short: [2, 'getInt16'], int16: [2, 'getInt16'],
+  ushort: [2, 'getUint16'], uint16: [2, 'getUint16'],
+  int: [4, 'getInt32'], int32: [4, 'getInt32'],
+  uint: [4, 'getUint32'], uint32: [4, 'getUint32'],
+  float: [4, 'getFloat32'], float32: [4, 'getFloat32'],
+  double: [8, 'getFloat64'], float64: [8, 'getFloat64'],
+};
+
+// Parse the ASCII header block. Returns null when 'end_header' isn't in the
+// sample (caller retries with a bigger slice).
+function parsePlyHeader(text) {
+  const endAt = text.indexOf('end_header');
+  if (endAt < 0) return null;
+  const nl = text.indexOf('\n', endAt);
+  if (nl < 0) return null;
+  const lines = text.slice(0, endAt).split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  if (lines[0] !== 'ply') throw new Error('ply: missing magic');
+  let format = null;
+  const elements = [];
+  for (const l of lines.slice(1)) {
+    const f = l.split(/\s+/);
+    if (f[0] === 'format') {
+      if (f[1] === 'ascii') format = 'ascii';
+      else if (f[1] === 'binary_little_endian') format = 'binary_le';
+      else throw new Error(`ply: unsupported format ${f[1]}`);
+    } else if (f[0] === 'element') {
+      elements.push({ name: f[1], count: +f[2], props: [] });
+    } else if (f[0] === 'property') {
+      const el = elements[elements.length - 1];
+      if (!el) throw new Error('ply: property before element');
+      if (f[1] === 'list') el.props.push({ name: f[4], list: true, countType: f[2], idxType: f[3] });
+      else el.props.push({ name: f[2], type: f[1] });
+    }
+    // 'comment' / 'obj_info' — skipped
+  }
+  if (!format) throw new Error('ply: no format line');
+  const vertex = elements[0];
+  if (!vertex || vertex.name !== 'vertex') throw new Error('ply: vertex must be the first element');
+  let stride = 0;
+  for (const p of vertex.props) {
+    if (p.list) throw new Error('ply: list-typed vertex property unsupported');
+    const t = TYPES$index[p.type];
+    if (!t) throw new Error(`ply: unknown type ${p.type}`);
+    p.size = t[0]; p.getter = t[1]; p.offset = stride;
+    stride += t[0];
+  }
+  return { format, count: vertex.count, props: vertex.props, stride, dataOffset: nl + 1, elements };
+}
+
+const findProp = (props, ...names) => {
+  for (const n of names) { const p = props.find((q) => q.name.toLowerCase() === n); if (p) return p; }
+  return null;
+};
+
+async function openPly(blob, { signal, onProgress } = {}) {
+  // header is ASCII even for binary files — sample up front, grow if needed
+  let sampleLen = 64 * 1024, ply = null;
+  for (;;) {
+    const text = new TextDecoder('latin1').decode(await blob.slice(0, Math.min(sampleLen, blob.size)).arrayBuffer());
+    ply = parsePlyHeader(text);
+    if (ply) break;
+    if (sampleLen >= blob.size) throw new Error('ply: no end_header');
+    sampleLen *= 4;
+  }
+  const { props, stride, count } = ply;
+  const px = findProp(props, 'x'), py = findProp(props, 'y'), pz = findProp(props, 'z');
+  if (!px || !py || !pz) throw new Error('ply: vertex needs x/y/z properties');
+  const pr = findProp(props, 'red', 'r', 'diffuse_red'), pg = findProp(props, 'green', 'g', 'diffuse_green'), pb = findProp(props, 'blue', 'b', 'diffuse_blue');
+  const hasRgb = !!(pr && pg && pb);
+  const pi = findProp(props, 'intensity', 'scalar_intensity', 'quality', 'confidence');
+  const idx = { x: props.indexOf(px), y: props.indexOf(py), z: props.indexOf(pz), i: pi ? props.indexOf(pi) : -1, r: pr ? props.indexOf(pr) : -1, g: pg ? props.indexOf(pg) : -1, b: pb ? props.indexOf(pb) : -1 };
+  const ascii = ply.format === 'ascii';
+
+  // ── record iteration (cold recipe): yields batches of decoded raw fields ──
+  // binary: DataView slabs; ascii: line stream. Both yield {fields, recStart}
+  // where fields[k] is a Float64Array per needed property.
+  const NEED = [...new Set([idx.x, idx.y, idx.z, idx.i, idx.r, idx.g, idx.b].filter((v) => v >= 0))];
+  async function* recordBatches(batchRecords, s2, op2, need = NEED) {
+    const alloc = () => { const o = {}; for (const k of need) o[k] = new Float64Array(batchRecords); return o; };
+    if (!ascii) {
+      let rec = 0;
+      while (rec < count) {
+        if (s2 && s2.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+        const n = Math.min(batchRecords, count - rec);
+        const off = ply.dataOffset + rec * stride;
+        const dv = new DataView(await blob.slice(off, off + n * stride).arrayBuffer());
+        const fields = alloc();
+        for (const k of need) {
+          const p = props[k], g = p.getter, po = p.offset, col = fields[k];
+          for (let i = 0; i < n; i++) col[i] = dv[g](i * stride + po, true);
+        }
+        if (op2) op2(off + n * stride, blob.size);
+        yield { fields, n, recStart: rec };
+        rec += n;
+      }
+    } else {
+      const reader = blob.slice(ply.dataOffset).stream().pipeThrough(new TextDecoderStream()).getReader();
+      let carry = '', rec = 0, fields = alloc(), n = 0, seen = ply.dataOffset;
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (s2 && s2.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+          const lines = done ? (carry ? [carry] : []) : (carry + value).split('\n');
+          if (!done) { carry = lines.pop(); seen += value.length; }
+          for (const l of lines) {
+            if (rec + n >= count) break;                    // face lines follow — stop at the vertex count
+            const t = l.trim();
+            if (!t) continue;
+            const f = t.split(/\s+/);
+            for (const k of need) fields[k][n] = +f[k];
+            n++;
+            if (n === batchRecords) { yield { fields, n, recStart: rec }; rec += n; fields = alloc(); n = 0; }
+          }
+          if (op2) op2(Math.min(seen, blob.size), blob.size);
+          if (done || rec + n >= count) break;
+        }
+        if (n) yield { fields, n, recStart: rec };
+      } finally { reader.releaseLock(); }
+    }
+  }
+
+  // ── discovery sweep: bbox + intensity range ──
+  const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+  let iMin = Infinity, iMax = -Infinity;
+  for await (const { fields, n } of recordBatches(1 << 16, signal, onProgress)) {
+    const xs = fields[idx.x], ys = fields[idx.y], zs = fields[idx.z], is = idx.i >= 0 ? fields[idx.i] : null;
+    for (let i = 0; i < n; i++) {
+      const xv = xs[i], yv = ys[i], zv = zs[i];
+      if (xv < min[0]) min[0] = xv; if (xv > max[0]) max[0] = xv;
+      if (yv < min[1]) min[1] = yv; if (yv > max[1]) max[1] = yv;
+      if (zv < min[2]) min[2] = zv; if (zv > max[2]) max[2] = zv;
+      if (is) { const v = is[i]; if (v < iMin) iMin = v; if (v > iMax) iMax = v; }
+    }
+  }
+  const iScale = idx.i >= 0 && iMax > iMin ? 65535 / (iMax - iMin) : 0;
+
+  const header = {
+    kind: 'ply', format: ply.format, count,
+    bbox: { min, max },
+    columns: props.map((p) => p.name),
+    attributes: [...(pi ? [pi.name] : []), ...(hasRgb ? ['rgb'] : [])],
+    hasRgb,
+    ply: { props, stride, dataOffset: ply.dataOffset, ascii },
+  };
+
+  // ── streaming sweep (cold recipe): LAS-shaped RawChunks ──
+  async function* streamChunks({ chunkPoints = 1 << 18, signal: s2, onProgress: op2 } = {}) {
+    for await (const { fields, n, recStart } of recordBatches(chunkPoints, s2, op2)) {
+      const intensity = new Uint16Array(n);
+      if (idx.i >= 0) { const is = fields[idx.i]; for (let i = 0; i < n; i++) intensity[i] = ((is[i] - iMin) * iScale) | 0; }
+      let rgb = null;
+      if (hasRgb) {
+        rgb = new Uint8Array(3 * n);
+        const rs = fields[idx.r], gs = fields[idx.g], bs = fields[idx.b];
+        for (let i = 0; i < n; i++) { rgb[3 * i] = rs[i]; rgb[3 * i + 1] = gs[i]; rgb[3 * i + 2] = bs[i]; }
+      }
+      yield {
+        count: n,
+        x: fields[idx.x].subarray(0, n), y: fields[idx.y].subarray(0, n), z: fields[idx.z].subarray(0, n),
+        intensity, classification: new Uint8Array(n), rgb, recStart,
+      };
+    }
+  }
+
+  // ── only the named properties, every vertex: { n, recStart, cols: { name: Float64Array } } ──
+  async function* columnBatches(names, opts = {}) {
+    const ks = names.map((nm) => { const k = props.findIndex((p) => p.name === nm); const k2 = k >= 0 ? k : props.findIndex((p) => p.name.toLowerCase() === String(nm).toLowerCase()); if (k2 < 0) throw new Error(`ply: no property “${nm}”`); return k2; });
+    for await (const { fields, n, recStart } of recordBatches(opts.chunkPoints || 1 << 18, opts.signal, null, [...new Set(ks)])) {
+      const cols = {};
+      ks.forEach((k, j) => { cols[names[j]] = fields[k].subarray(0, n); });
+      yield { n, recStart, cols };
+    }
+  }
+
+  // ── record fetch (the pick join): O(1) binary, early-exit sweep ascii ──
+  async function fetchRecord(rec) {
+    if (rec < 0 || rec >= count) return null;
+    if (!ascii) {
+      const off = ply.dataOffset + rec * stride;
+      const dv = new DataView(await blob.slice(off, off + stride).arrayBuffer());
+      return props.map((p) => dv[p.getter](p.offset, true));
+    }
+    const reader = blob.slice(ply.dataOffset).stream().pipeThrough(new TextDecoderStream()).getReader();
+    let carry = '', at = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        const lines = done ? (carry ? [carry] : []) : (carry + value).split('\n');
+        if (!done) carry = lines.pop();
+        for (const l of lines) {
+          const t = l.trim();
+          if (!t) continue;
+          if (at === rec) return t.split(/\s+/).map(Number);
+          at++;
+        }
+        if (done) return null;
+      }
+    } finally { reader.releaseLock(); }
+  }
+
+  return { header, streamChunks, columnBatches, fetchRecord };
+}
+
+// ── src/io/mesh-io.js ──
+
+// @gcu/condenser — context-tier mesh providers (micro-layers §7, tier 1).
+// Wireframes, solids, TINs: whole-file reads into { vertices, triangles },
+// then buildMeshChunk rebases to frame-local Float32 for the static indexed
+// pipeline (gl-mesh.js). The tier is bounded by design — huge triangle-soup
+// scans (photogrammetry) belong to the roadmapped streaming tier, which gets
+// the full Morton/prefix treatment. Context meshes carry no records: scenery.
+//
+// Providers (each → { header, vertices: Float64Array(3n), triangles: Uint32Array(3m) }):
+//   openMsh(blob)      — Leapfrog ARANZ-1.0 .msh via @gcu/msh
+//   openObj(blob)      — Wavefront OBJ (v/f; fans n-gons; negative indices)
+//   openPlyMesh(blob)  — PLY with a face element (ascii + binary_little_endian)
+// header = { kind:'mesh', format, vertexCount, triCount, bbox:{min,max}, vertexColumns }
+//
+// PLY additionally returns `attrs` — one typed array per non-coordinate vertex
+// property, named as the file named them, with `header.vertexColumns` listing
+// them in file order. That is where a painted mesh's red/green/blue lives, and
+// where nx/ny/nz and per-vertex quality live, so the vertex record space has
+// real columns rather than only coordinates. OBJ and .msh declare no per-vertex
+// attributes in their formats, so they report an empty list.
+
+
+function meshBbox(vertices) {
+  const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < vertices.length; i += 3) {
+    for (let k = 0; k < 3; k++) {
+      const v = vertices[i + k];
+      if (v < min[k]) min[k] = v;
+      if (v > max[k]) max[k] = v;
+    }
+  }
+  return { min, max };
+}
+
+function meshHeader(format, vertices, triangles) {
+  return {
+    kind: 'mesh', format,
+    vertexCount: (vertices.length / 3) | 0,
+    triCount: (triangles.length / 3) | 0,
+    bbox: meshBbox(vertices),
+    vertexColumns: [],            // per-vertex attribute names carried by the file
+  };
+}
+
+// A per-vertex attribute keeps the width the file declared: a painted mesh's
+// red/green/blue is three bytes per vertex, and widening it to Float64 would
+// cost 24 on a model with millions of them.
+const ARRAY_FOR = {
+  char: Int8Array, int8: Int8Array, uchar: Uint8Array, uint8: Uint8Array,
+  short: Int16Array, int16: Int16Array, ushort: Uint16Array, uint16: Uint16Array,
+  int: Int32Array, int32: Int32Array, uint: Uint32Array, uint32: Uint32Array,
+  float: Float32Array, float32: Float32Array, double: Float64Array, float64: Float64Array,
+};
+
+// ── Leapfrog .msh ──
+async function openMsh(blob) {
+  const msh = await readMSH(blob);                     // sliced per array — never one whole-file buffer
+  if (!msh.vertices || !msh.triangles) throw new Error('msh: no vertex/triangle arrays found');
+  const vertices = Float64Array.from(msh.vertices);
+  const triangles = Uint32Array.from(msh.triangles);
+  return { header: meshHeader('msh', vertices, triangles), vertices, triangles };
+}
+
+// ── Wavefront OBJ — v + f only (groups/materials are the records roadmap) ──
+async function openObj(blob) {
+  const text = await blob.text();
+  const vx = [], tris = [];
+  let nv = 0;
+  for (const rawLine of text.split('\n')) {
+    const line = rawLine.trim();
+    if (!line || line[0] === '#') continue;
+    if (line.startsWith('v ')) {
+      const f = line.split(/\s+/);
+      vx.push(+f[1], +f[2], +f[3]);
+      nv++;
+    } else if (line.startsWith('f ')) {
+      const f = line.split(/\s+/);
+      const ix = [];
+      for (let k = 1; k < f.length; k++) {
+        // "v", "v/vt", "v//vn", "v/vt/vn" — the vertex index leads; negatives
+        // count back from the vertices seen so far (OBJ spec)
+        let v = parseInt(f[k], 10);
+        if (!Number.isFinite(v) || v === 0) continue;
+        if (v < 0) v = nv + v; else v = v - 1;
+        ix.push(v);
+      }
+      for (let k = 2; k < ix.length; k++) tris.push(ix[0], ix[k - 1], ix[k]);   // fan
+    }
+  }
+  if (!nv || !tris.length) throw new Error('obj: no v/f geometry found');
+  const vertices = Float64Array.from(vx);
+  const triangles = Uint32Array.from(tris);
+  for (let i = 0; i < triangles.length; i++) if (triangles[i] >= nv) throw new Error(`obj: face index ${triangles[i]} out of range (${nv} vertices)`);
+  return { header: meshHeader('obj', vertices, triangles), vertices, triangles };
+}
+
+// ── PLY with faces — reuses ply.js's header parse (vertex first, face after) ──
+async function openPlyMesh(blob) {
+  let sampleLen = 64 * 1024, ply = null;
+  for (;;) {
+    const text = new TextDecoder('latin1').decode(await blob.slice(0, Math.min(sampleLen, blob.size)).arrayBuffer());
+    ply = parsePlyHeader(text);
+    if (ply) break;
+    if (sampleLen >= blob.size) throw new Error('ply: no end_header');
+    sampleLen *= 4;
+  }
+  const face = ply.elements.find((e) => e.name === 'face');
+  if (!face || !face.count) throw new Error('ply: no face element (points file — use openPly)');
+  const px = ply.props.findIndex((p) => p.name.toLowerCase() === 'x');
+  const py = ply.props.findIndex((p) => p.name.toLowerCase() === 'y');
+  const pz = ply.props.findIndex((p) => p.name.toLowerCase() === 'z');
+  if (px < 0 || py < 0 || pz < 0) throw new Error('ply: vertex needs x/y/z');
+  const nv = ply.count;
+  const vertices = new Float64Array(3 * nv);
+  const tris = [];
+  const SIZES = { char: 1, int8: 1, uchar: 1, uint8: 1, short: 2, int16: 2, ushort: 2, uint16: 2, int: 4, int32: 4, uint: 4, uint32: 4, float: 4, float32: 4, double: 8, float64: 8 };
+  const GETTERS = { 1: 'getUint8', 2: 'getUint16', 4: 'getUint32' };
+
+  // Every vertex property that is not a coordinate becomes a per-vertex column:
+  // red/green/blue from a painted mesh, nx/ny/nz, quality, confidence, whatever
+  // the producing tool wrote. These are the mesh's own data and dropping them
+  // was silent loss — a painted outcrop's set colors live here.
+  const attrProps = ply.props
+    .map((p, i) => ({ p, i }))
+    .filter(({ i }) => i !== px && i !== py && i !== pz)
+    .map(({ p, i }) => ({ ...p, field: i, arr: new (ARRAY_FOR[p.type] || Float64Array)(nv) }));
+  const attrs = {};
+  for (const a of attrProps) attrs[a.name] = a.arr;
+
+  if (ply.format === 'ascii') {
+    const text = await blob.text();
+    const lines = text.slice(ply.dataOffset).split('\n');
+    let at = 0, rec = 0;
+    while (rec < nv && at < lines.length) {
+      const t = lines[at++].trim();
+      if (!t) continue;
+      const f = t.split(/\s+/);
+      vertices[3 * rec] = +f[px]; vertices[3 * rec + 1] = +f[py]; vertices[3 * rec + 2] = +f[pz];
+      for (const a of attrProps) a.arr[rec] = +f[a.field];
+      rec++;
+    }
+    let fc = 0;
+    while (fc < face.count && at < lines.length) {
+      const t = lines[at++].trim();
+      if (!t) continue;
+      const f = t.split(/\s+/);
+      const k = +f[0];
+      for (let j = 2; j < k; j++) tris.push(+f[1], +f[j], +f[j + 1]);   // fan
+      fc++;
+    }
+  } else {
+    const bytes = await blob.arrayBuffer();
+    const dv = new DataView(bytes);
+    for (let i = 0; i < nv; i++) {
+      const base = ply.dataOffset + i * ply.stride;
+      vertices[3 * i] = dv[ply.props[px].getter](base + ply.props[px].offset, true);
+      vertices[3 * i + 1] = dv[ply.props[py].getter](base + ply.props[py].offset, true);
+      vertices[3 * i + 2] = dv[ply.props[pz].getter](base + ply.props[pz].offset, true);
+      for (const a of attrProps) a.arr[i] = dv[a.getter](base + a.offset, true);
+    }
+    // faces: sequential walk (variable-size records). Only the vertex-index
+    // list is kept; other per-face properties are stepped over.
+    let off = ply.dataOffset + nv * ply.stride;
+    // counts + indices are unsigned in practice (int32 indices are non-negative)
+    const rd = (size) => { const v = dv[GETTERS[size]](off, true); off += size; return v; };
+    for (let i = 0; i < face.count; i++) {
+      for (const p of face.props) {
+        if (p.list) {
+          const cs = SIZES[p.countType] || 1, is = SIZES[p.idxType] || 4;
+          const k = rd(cs);
+          if (/vertex_ind/i.test(p.name) || face.props.length === 1) {
+            const ix = new Array(k);
+            for (let j = 0; j < k; j++) ix[j] = rd(is);
+            for (let j = 2; j < k; j++) tris.push(ix[0], ix[j - 1], ix[j]);
+          } else off += k * is;
+        } else {
+          const sz = SIZES[p.type] || 4;
+          off += sz;
+        }
+      }
+    }
+  }
+  if (!tris.length) throw new Error('ply: face element yielded no triangles');
+  const triangles = Uint32Array.from(tris);
+  for (let i = 0; i < triangles.length; i++) if (triangles[i] >= nv) throw new Error(`ply: face index ${triangles[i]} out of range (${nv} vertices)`);
+  const header = meshHeader(ply.format === 'ascii' ? 'ply-ascii' : 'ply-binary', vertices, triangles);
+  header.vertexColumns = attrProps.map((a) => a.name);
+  return { header, vertices, triangles, attrs };
+}
+
+// ── src/core/mesh-geom.js ──
+
+// @gcu/condenser — mesh GEOMETRY builders (core: no I/O). World-f64 vertices
+// → frame-local Float32 chunks for the static indexed pipeline (gl-mesh.js),
+// plus the heightfield triangulator (a regular grid IS a single-valued
+// surface). The file readers (.msh/.obj/.ply) live in io/mesh-io.js.
+// ── world f64 → one frame-local GPU-ready chunk ──
+// Float32 positions are safe at frame-local magnitudes (the whole point of
+// @gcu/frame); indices stay u32. Context meshes are ONE chunk — they draw
+// whole on clear frames, no prefix, no budget.
+function buildMeshChunk({ vertices, triangles, frame }) {
+  const o = frame ? frame.origin : [0, 0, 0];
+  const n = (vertices.length / 3) | 0;
+  const pos = new Float32Array(3 * n);
+  const bb = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < n; i++) {
+    for (let k = 0; k < 3; k++) {
+      const v = vertices[3 * i + k] - o[k];
+      pos[3 * i + k] = v;
+      if (v < bb[k]) bb[k] = v;
+      if (v > bb[k + 3]) bb[k + 3] = v;
+    }
+  }
+  return {
+    kind: 'mesh',
+    pos,
+    idx: triangles instanceof Uint32Array ? triangles : Uint32Array.from(triangles),
+    count: (triangles.length / 3) | 0,                     // elements = triangles
+    vertexCount: n,
+    bboxLocal: Float64Array.from(bb),
+  };
+}
+
+// A regular grid IS a single-valued heightfield — triangulate its lattice into a
+// mesh chunk with per-vertex smooth normals (grid-gradient central differences)
+// and a per-vertex value (the caller maps it to a color via its own colormap).
+// Quads touching a nodata corner are dropped → clean holes. Coords are frame-
+// local. Strided to a display cap by the caller (bounded triangle count).
+// flatZ (a world elevation) makes a FLAT horizontal sheet at that z instead of a
+// heightfield — for a 2D data grid (grade/geochem) with no DEM; `values` stays the
+// grid value so the caller still colors by it, and the normal is straight up.
+function buildHeightfieldMesh(grid, { stride = 1, frame = null, flatZ = null } = {}) {
+  const { nx, ny, data, x0, y0, dx, dy, nodata } = grid;
+  const o = (frame && frame.origin) || [0, 0, 0];
+  const flat = flatZ != null, flatLocal = flat ? flatZ - o[2] : 0;
+  const isBad = (v) => Number.isNaN(v) || (nodata != null && (nodata >= 1.7e38 ? v >= 1.7014e38 : v === nodata));
+  const cols = Math.floor((nx - 1) / stride) + 1, rows = Math.floor((ny - 1) / stride) + 1;
+  const vidx = new Int32Array(rows * cols).fill(-1);
+  let nv = 0;
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    if (!isBad(data[Math.min(ny - 1, r * stride) * nx + Math.min(nx - 1, c * stride)])) vidx[r * cols + c] = nv++;
+  }
+  if (!nv) return null;
+  const pos = new Float32Array(nv * 3), normal = new Float32Array(nv * 3), values = new Float32Array(nv);
+  const bb = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+  const zAt = (r, c) => { const v = data[Math.min(ny - 1, Math.max(0, r * stride)) * nx + Math.min(nx - 1, Math.max(0, c * stride))]; return isBad(v) ? NaN : v; };
+  const sx = 2 * stride * dx, sy = 2 * stride * dy;
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    const vi = vidx[r * cols + c]; if (vi < 0) continue;
+    const gr = Math.min(ny - 1, r * stride), gc = Math.min(nx - 1, c * stride), z = data[gr * nx + gc];
+    const px = (x0 + gc * dx) - o[0], py = (y0 - gr * dy) - o[1], pz = flat ? flatLocal : z - o[2];
+    pos[vi * 3] = px; pos[vi * 3 + 1] = py; pos[vi * 3 + 2] = pz; values[vi] = z;
+    if (px < bb[0]) bb[0] = px; if (py < bb[1]) bb[1] = py; if (pz < bb[2]) bb[2] = pz;
+    if (px > bb[3]) bb[3] = px; if (py > bb[4]) bb[4] = py; if (pz > bb[5]) bb[5] = pz;
+    if (flat) { normal[vi * 3] = 0; normal[vi * 3 + 1] = 0; normal[vi * 3 + 2] = 1; continue; }   // flat sheet → up
+    // heightfield normal N = (-∂z/∂x, -∂z/∂y, 1); y decreases as row increases
+    let zl = zAt(r, c - 1), zr = zAt(r, c + 1), zdn = zAt(r - 1, c), zup = zAt(r + 1, c);
+    if (Number.isNaN(zl)) zl = z; if (Number.isNaN(zr)) zr = z; if (Number.isNaN(zdn)) zdn = z; if (Number.isNaN(zup)) zup = z;
+    const nX = -(zr - zl) / sx, nY = -(zdn - zup) / sy, nZ = 1, nl = Math.hypot(nX, nY, nZ) || 1;
+    normal[vi * 3] = nX / nl; normal[vi * 3 + 1] = nY / nl; normal[vi * 3 + 2] = nZ / nl;
+  }
+  const tris = [];
+  for (let r = 0; r < rows - 1; r++) for (let c = 0; c < cols - 1; c++) {
+    const a = vidx[r * cols + c], b = vidx[r * cols + c + 1], d = vidx[(r + 1) * cols + c], e = vidx[(r + 1) * cols + c + 1];
+    if (a < 0 || b < 0 || d < 0 || e < 0) continue;        // drop quads touching nodata → clean holes
+    tris.push(a, d, b, b, d, e);
+  }
+  return { kind: 'mesh', pos, idx: Uint32Array.from(tris), normal, values, count: (tris.length / 3) | 0, vertexCount: nv, bboxLocal: Float64Array.from(bb) };
+}
+
+// ── src/core/gl-mesh.js ──
+
+// @gcu/condenser — the context-mesh pipeline (micro-layers §7, tier 1).
+// Static indexed triangles: one VAO + element buffer per mesh, drawn whole on
+// clear frames (no prefix, no budget — the tier is bounded at open). Flat
+// shading comes from screen-space derivatives (no normals buffer), two-sided
+// (geological wireframes are rarely consistently wound). The section cut is
+// PER-PIXEL — a triangle crossing the plane is clipped at it, not dropped —
+// which is exactly the sectioned-solid view. Opacity is 4×4-Bayer screen-door:
+// depth-correct, blend-free, safe under progressive accumulation and EDL.
+
+
+const VERT$gl_mesh = `#version 300 es
+precision highp float;
+layout(location=0) in vec3 aPos;        // frame-local vertex
+layout(location=1) in vec3 aColor;      // per-vertex rgb (heightfield drape); ignored when uVColor=0
+layout(location=2) in vec3 aNormal;     // per-vertex normal (smooth relief); ignored when uVNormal=0
+uniform mat4 uViewProj;
+uniform vec4 uSecPlane;
+out vec3 vWorldPos;
+out vec3 vColor;
+out vec3 vNormal;
+out float vSecDist;
+void main() {
+  gl_Position = uViewProj * vec4(aPos, 1.0);
+  vWorldPos = aPos;
+  vColor = aColor;
+  vNormal = aNormal;
+  vSecDist = dot(aPos, uSecPlane.xyz) - uSecPlane.w;
+}`;
+
+// Per-vertex drape (uVColor) + smooth normals (uVNormal) are OPT-IN — default 0
+// keeps the flat-shaded solid-tint behavior byte-for-byte. The heightfield
+// surface sets both: vColor from a colormap, vNormal from the grid gradient, and
+// the normal's z is divided by uZExag (inverse-transpose of the display z-scale)
+// so lighting matches the vertically-exaggerated relief.
+const SHADE_COMMON = `
+uniform vec4 uTint;                     // rgb + opacity
+uniform vec3 uLightDir;
+uniform vec3 uEye;
+uniform float uVColor;                  // 0/1 use vColor
+uniform float uVNormal;                 // 0/1 use vNormal (else flat derivative)
+uniform float uZExag;                   // vertical exaggeration (for the normal correction)
+const float BAYER[16] = float[16](0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
+vec3 shadeSurface() {
+  vec3 n = (uVNormal > 0.5)
+    ? normalize(vec3(vNormal.xy, vNormal.z / max(uZExag, 1e-4)))   // exaggeration-correct
+    : normalize(cross(dFdx(vWorldPos), dFdy(vWorldPos)));          // flat shading
+  vec3 vd = normalize(uEye - vWorldPos);
+  if (dot(n, vd) < 0.0) n = -n;                                    // two-sided
+  float shade = 0.42 + 0.58 * max(dot(n, uLightDir), 0.0);
+  vec3 base = (uVColor > 0.5) ? vColor : uTint.rgb;
+  return base * shade;
+}`;
+
+const FRAG$gl_mesh = `#version 300 es
+precision highp float;
+in vec3 vWorldPos;
+in vec3 vColor;
+in vec3 vNormal;
+in float vSecDist;
+uniform vec2 uSecCfg;                   // x: on, y: half-thickness
+${SHADE_COMMON}
+out vec4 outColor;
+void main() {
+  if (uSecCfg.x > 0.5 && abs(vSecDist) > uSecCfg.y) discard;   // per-pixel plane cut
+  if (uTint.a < 0.999) {
+    int bi = (int(gl_FragCoord.x) & 3) + ((int(gl_FragCoord.y) & 3) << 2);
+    if (uTint.a < (BAYER[bi] + 0.5) / 16.0) discard;
+  }
+  outColor = vec4(shadeSurface(), 1.0);
+}`;
+
+// TRACE-OVER-THE-WALL variant, used while the layer is sectioned: with blocks
+// cutting TRUE at the slab plane (gl-blocks), the mesh inside the slab sits
+// BEHIND the painted cut wall and would be fully occluded — and the mesh AT the
+// plane is edge-on (invisible). This program pulls each in-slab fragment's DEPTH
+// onto the camera-side slab face (minus an epsilon), so the whole in-slab mesh
+// projects onto the section and draws over the wall — the wireframe-trace-on-a-
+// section-plot look. Color/shading unchanged; costs early-z only while sectioned.
+const FRAG_OVERLAY$gl_mesh = `#version 300 es
+precision highp float;
+in vec3 vWorldPos;
+in vec3 vColor;
+in vec3 vNormal;
+in float vSecDist;
+uniform vec4 uSecPlane;
+uniform vec2 uSecCfg;
+uniform mat4 uViewProj;
+uniform vec3 uFwd;
+uniform float uOrtho;
+${SHADE_COMMON}
+out vec4 outColor;
+void main() {
+  if (abs(vSecDist) > uSecCfg.y) discard;
+  if (uTint.a < 0.999) {
+    int bi = (int(gl_FragCoord.x) & 3) + ((int(gl_FragCoord.y) & 3) << 2);
+    if (uTint.a < (BAYER[bi] + 0.5) / 16.0) discard;
+  }
+  outColor = vec4(shadeSurface(), 1.0);
+  gl_FragDepth = gl_FragCoord.z;
+  float dcEye = dot(uEye, uSecPlane.xyz) - uSecPlane.w;
+  if (abs(dcEye) > uSecCfg.y) {                            // eye outside the slab → a wall may occlude
+    float side = sign(dcEye);
+    vec3 q; bool front = false;
+    if (uOrtho > 0.5) {                                    // parallel rays: march back along the view dir
+      float den = dot(uFwd, uSecPlane.xyz);
+      if (abs(den) > 1e-9) {
+        float s = (vSecDist - side * uSecCfg.y) / den;
+        if (s > 0.0) { q = vWorldPos - uFwd * s; front = true; }
+      }
+    } else {
+      vec3 rdm = vWorldPos - uEye;
+      float den = dot(rdm, uSecPlane.xyz);
+      if (abs(den) > 1e-9) {
+        float tF = (side * uSecCfg.y - dcEye) / den;       // where the eye ray crosses the near face
+        if (tF > 0.0 && tF < 1.0) { q = uEye + rdm * tF; front = true; }
+      }
+    }
+    if (front) {
+      vec4 clipQ = uViewProj * vec4(q, 1.0);
+      gl_FragDepth = clamp(clipQ.z / clipQ.w * 0.5 + 0.5, 0.0, 1.0) - 3e-5;
+    }
+  }
+}`;
+
+function createMeshPipeline(gl) {
+  const mk = (frag) => {
+    const prog = makeProgram(gl, VERT$gl_mesh, frag);
+    const U = (n) => gl.getUniformLocation(prog, n);
+    return { prog, uni: {
+      viewProj: U('uViewProj'), secPlane: U('uSecPlane'), secCfg: U('uSecCfg'),
+      tint: U('uTint'), lightDir: U('uLightDir'), eye: U('uEye'),
+      fwd: U('uFwd'), ortho: U('uOrtho'),
+      vColor: U('uVColor'), vNormal: U('uVNormal'), zExag: U('uZExag'),
+    } };
+  };
+  const base = mk(FRAG$gl_mesh), overlay = mk(FRAG_OVERLAY$gl_mesh);
+
+  function upload(chunk) {
+    const vao = gl.createVertexArray();
+    gl.bindVertexArray(vao);
+    const bufs = [];
+    const bPos = gl.createBuffer(); bufs.push(bPos);
+    gl.bindBuffer(gl.ARRAY_BUFFER, bPos);
+    gl.bufferData(gl.ARRAY_BUFFER, chunk.pos, gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+    let bCol = null;
+    if (chunk.color) {                                     // heightfield drape: per-vertex rgb (loc 1)
+      bCol = gl.createBuffer(); bufs.push(bCol);
+      gl.bindBuffer(gl.ARRAY_BUFFER, bCol);
+      gl.bufferData(gl.ARRAY_BUFFER, chunk.color, gl.DYNAMIC_DRAW);
+      gl.enableVertexAttribArray(1);
+      gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
+    }
+    if (chunk.normal) {                                    // smooth relief: per-vertex normal (loc 2)
+      const bNrm = gl.createBuffer(); bufs.push(bNrm);
+      gl.bindBuffer(gl.ARRAY_BUFFER, bNrm);
+      gl.bufferData(gl.ARRAY_BUFFER, chunk.normal, gl.STATIC_DRAW);
+      gl.enableVertexAttribArray(2);
+      gl.vertexAttribPointer(2, 3, gl.FLOAT, false, 0, 0);
+    }
+    const bIdx = gl.createBuffer(); bufs.push(bIdx);       // stays bound in the VAO
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, bIdx);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, chunk.idx, gl.STATIC_DRAW);
+    gl.bindVertexArray(null);
+    return {
+      kind: 'mesh', vao, buffers: bufs, colorBuf: bCol,
+      count: chunk.count, idxCount: chunk.idx.length, vertexCount: (chunk.pos.length / 3) | 0,
+      hasColor: !!chunk.color, hasNormal: !!chunk.normal,
+      bboxLocal: chunk.bboxLocal, cursor: 0,
+    };
+  }
+
+  // Replace a mesh's per-vertex colours after upload — painting a set onto an outcrop
+  // recolours a few thousand vertices per stroke, and rebuilding the chunk would
+  // re-send the whole mesh. rgb: Float32Array(3·vertexCount), or null to go back to
+  // the tint. [lo, hi) limits the upload to the vertex range a stroke touched (the
+  // array is still the WHOLE mesh's; only that slice is sent).
+  function setColor(c, rgb, lo = 0, hi = c.vertexCount) {
+    if (!rgb) { c.hasColor = false; return; }
+    if (rgb.length < c.vertexCount * 3) throw new Error(`setColor: ${rgb.length / 3} colours for ${c.vertexCount} vertices`);
+    if (!c.colorBuf) {                                     // first colours: a buffer the size of the mesh
+      c.colorBuf = gl.createBuffer(); c.buffers.push(c.colorBuf);
+      gl.bindVertexArray(c.vao);
+      gl.bindBuffer(gl.ARRAY_BUFFER, c.colorBuf);
+      gl.bufferData(gl.ARRAY_BUFFER, rgb.subarray(0, c.vertexCount * 3), gl.DYNAMIC_DRAW);
+      gl.enableVertexAttribArray(1);
+      gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
+      gl.bindVertexArray(null);
+      c.bytes = (c.bytes || 0) + c.vertexCount * 12;
+    } else {
+      lo = Math.max(0, lo | 0); hi = Math.min(c.vertexCount, hi | 0);
+      if (hi > lo) {
+        gl.bindBuffer(gl.ARRAY_BUFFER, c.colorBuf);
+        gl.bufferSubData(gl.ARRAY_BUFFER, lo * 12, rgb, lo * 3, (hi - lo) * 3);
+      }
+    }
+    c.hasColor = true;
+  }
+
+  // per-layer uniforms — tint [r,g,b] 0..1, opacity 0..1, section may be null.
+  // Sectioned → the overlay program (depth flattened onto the slab face so the
+  // trace draws over the true-cut block wall); unsectioned → the base program.
+  function begin(cam, { tint = [0.62, 0.64, 0.66], opacity = 1, section = null, vcolor = false, vnormal = false }) {
+    const s = cam.state;
+    const { prog, uni } = section ? overlay : base;
+    gl.useProgram(prog);
+    gl.uniformMatrix4fv(uni.viewProj, false, s.viewProj);
+    gl.uniform1f(uni.vColor, vcolor ? 1 : 0);              // heightfield drape colors
+    gl.uniform1f(uni.vNormal, vnormal ? 1 : 0);            // smooth grid normals
+    gl.uniform1f(uni.zExag, s.zExag || 1);                 // normal correction under exaggeration
+    gl.uniform3f(uni.eye, s.eye[0], s.eye[1], s.eye[2]);
+    // the headlight of blocks/sticks: eye direction + a little up
+    const v = s.view;
+    let lx = s.eye[0] - s.target[0], ly = s.eye[1] - s.target[1], lz = s.eye[2] - s.target[2];
+    const ll = Math.hypot(lx, ly, lz) || 1;
+    lx = lx / ll + v[1] * 0.4; ly = ly / ll + v[5] * 0.4; lz = lz / ll + v[9] * 0.4;
+    const l2 = Math.hypot(lx, ly, lz) || 1;
+    gl.uniform3f(uni.lightDir, lx / l2, ly / l2, lz / l2);
+    gl.uniform4f(uni.tint, tint[0], tint[1], tint[2], Math.max(0.02, Math.min(1, opacity)));
+    gl.uniform4f(uni.secPlane, section ? section.n[0] : 0, section ? section.n[1] : 0, section ? section.n[2] : 1, section ? section.d : 0);
+    gl.uniform2f(uni.secCfg, section ? 1 : 0, section ? section.half : 0);
+    if (uni.fwd) {
+      const f = [s.target[0] - s.eye[0], s.target[1] - s.eye[1], s.target[2] - s.eye[2]];
+      const fl = Math.hypot(...f) || 1;
+      gl.uniform3f(uni.fwd, f[0] / fl, f[1] / fl, f[2] / fl);
+      gl.uniform1f(uni.ortho, s.ortho ? 1 : 0);
+    }
+  }
+
+  function draw(c) {
+    gl.bindVertexArray(c.vao);
+    gl.drawElements(gl.TRIANGLES, c.idxCount, gl.UNSIGNED_INT, 0);
+  }
+
+  return { upload, begin, draw, setColor };
+}
+
+// ── src/core/soup-geom.js ──
+
+// @gcu/condenser — streaming-tier meshes (micro-layers §7, tier 2): TRIANGLE
+// SOUP under the full chunk discipline. Photogrammetry-scale meshes (10⁷–10⁸
+// tris) get what points get: batch-Morton on centroids, intra-chunk shuffle
+// (any prefix = a uniform subsample — valid because triangle size
+// anti-correlates with mesh size: a mesh is huge BECAUSE its triangles are
+// pixel-scale, and pixel-scale triangles subsample like points), per-chunk u16
+// quantization (~18 B/tri resident), budgeted progressive accumulation.
+// Flat shading needs no stored normals (screen-space derivatives in-shader).
+// Soup carries no records in v1 — context semantics at scale.
+//
+// Precision: streamed vertices are kept Float32 LOCAL to a provisional origin
+// (the first vertex) — world-f32 at UTM magnitudes loses ~1 m, local-f32 keeps
+// mm — and re-widened to world f64 on emit for the frame-local rebase.
+
+
+/**
+ * Build one SoupChunk from columnar world-space corners + centroids.
+ * raw = { ax..az, bx..bz, cx..cz (corners), x,y,z (centroids) }.
+ * Corners are u16-quantized against the chunk bbox (the points trick ×3).
+ */
+function buildSoupChunk(raw, frame, rnd, indices = null) {
+  const n = indices ? indices.length : raw.x.length;
+  const o = frame.origin;
+  const perm = indices ? shuffleInPlace(Uint32Array.from(indices), rnd) : shuffledIndices(n, rnd);
+  const C = [raw.ax, raw.ay, raw.az, raw.bx, raw.by, raw.bz, raw.cx, raw.cy, raw.cz];
+  const bb = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+  for (let k = 0; k < n; k++) {
+    const i = perm[k];
+    for (let c = 0; c < 9; c++) {
+      const a = c % 3, v = C[c][i] - o[a];
+      if (v < bb[a]) bb[a] = v;
+      if (v > bb[a + 3]) bb[a + 3] = v;
+    }
+  }
+  const sx = bb[3] > bb[0] ? 65535 / (bb[3] - bb[0]) : 0;
+  const sy = bb[4] > bb[1] ? 65535 / (bb[4] - bb[1]) : 0;
+  const sz = bb[5] > bb[2] ? 65535 / (bb[5] - bb[2]) : 0;
+  const S = [sx, sy, sz];
+  const tri = new Uint16Array(9 * n);
+  for (let k = 0; k < n; k++) {
+    const i = perm[k];
+    for (let c = 0; c < 9; c++) {
+      const a = c % 3;
+      tri[k * 9 + c] = ((C[c][i] - o[a] - bb[a]) * S[a] + 0.5) | 0;
+    }
+  }
+  return { kind: 'soup', count: n, tri, bboxLocal: Float64Array.from(bb) };
+}
+
+// Exact centroid of element k, frame-local (tests).
+function soupLocalCentroid(chunk, k) {
+  const b = chunk.bboxLocal, t = chunk.tri;
+  const d = (v, a) => (b[a + 3] > b[a] ? b[a] + (v / 65535) * (b[a + 3] - b[a]) : b[a]);
+  const out = [0, 0, 0];
+  for (let c = 0; c < 9; c++) out[c % 3] += d(t[k * 9 + c], c % 3) / 3;
+  return out;
+}
+
+/**
+ * SoupChunkBuilder — the sticks builder's shape over triangle RawChunks
+ * ({ count, ax..cz, x,y,z }). Batch-Morton on centroids, sliced, shuffled.
+ */
+function createSoupChunkBuilder({ frame, chunkSize = 1 << 17, batchSize = 0, seed = 1, onChunk }) {
+  const rnd = mulberry32(seed);
+  const batchN = batchSize || chunkSize * 4;
+  let pend = [], pendCount = 0;
+  const doc = {
+    count: 0,
+    bboxLocal: Float64Array.of(Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity),
+  };
+  const concat = (Type, parts) => {
+    const out = new Type(parts.reduce((t, p) => t + p.length, 0));
+    let off = 0;
+    for (const p of parts) { out.set(p, off); off += p.length; }
+    return out;
+  };
+  const COLS = ['ax', 'ay', 'az', 'bx', 'by', 'bz', 'cx', 'cy', 'cz', 'x', 'y', 'z'];
+  const flushBatch = () => {
+    if (!pendCount) return;
+    const cols = {};
+    for (const c of COLS) cols[c] = concat(Float64Array, pend.map((p) => p[c]));
+    const n = pendCount;
+    pend = []; pendCount = 0;
+    const order = radixSortIndices(mortonKeys(cols.x, cols.y, cols.z, n), n);
+    for (let start = 0; start < n; start += chunkSize) {
+      const slice = order.subarray(start, Math.min(start + chunkSize, n));
+      const chunk = buildSoupChunk(cols, frame, rnd, slice);
+      doc.count += chunk.count;
+      const b = doc.bboxLocal, cb = chunk.bboxLocal;
+      for (let i = 0; i < 3; i++) { if (cb[i] < b[i]) b[i] = cb[i]; if (cb[i + 3] > b[i + 3]) b[i + 3] = cb[i + 3]; }
+      onChunk(chunk);
+    }
+  };
+  return {
+    push(raw) {
+      let taken = 0;
+      while (taken < raw.count) {
+        const room = batchN - pendCount;
+        const n = Math.min(room, raw.count - taken);
+        const part = {};
+        for (const c of COLS) part[c] = raw[c].subarray(taken, taken + n);
+        pend.push(part);
+        pendCount += n; taken += n;
+        if (pendCount >= batchN) flushBatch();
+      }
+    },
+    flush() { flushBatch(); return doc; },
+    get doc() { return doc; },
+  };
+}
+
+// world f64 corner columns from a resolved index triple against local-f32
+// vertices + their origin (the precision dance in the header comment)
+function emitBatch(verts, vo, ia, ib, ic, n) {
+  const out = { count: n };
+  for (const c of ['ax', 'ay', 'az', 'bx', 'by', 'bz', 'cx', 'cy', 'cz', 'x', 'y', 'z']) out[c] = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    const a = ia[i] * 3, b = ib[i] * 3, c = ic[i] * 3;
+    const AX = vo[0] + verts[a], AY = vo[1] + verts[a + 1], AZ = vo[2] + verts[a + 2];
+    const BX = vo[0] + verts[b], BY = vo[1] + verts[b + 1], BZ = vo[2] + verts[b + 2];
+    const CX = vo[0] + verts[c], CY = vo[1] + verts[c + 1], CZ = vo[2] + verts[c + 2];
+    out.ax[i] = AX; out.ay[i] = AY; out.az[i] = AZ;
+    out.bx[i] = BX; out.by[i] = BY; out.bz[i] = BZ;
+    out.cx[i] = CX; out.cy[i] = CY; out.cz[i] = CZ;
+    out.x[i] = (AX + BX + CX) / 3; out.y[i] = (AY + BY + CY) / 3; out.z[i] = (AZ + BZ + CZ) / 3;
+  }
+  return out;
+}
+
+/**
+ * Soup-stream an ALREADY-PARSED mesh (oversized .msh/.obj — their formats are
+ * whole-file reads anyway; the vertices are transient, the soup is resident).
+ * Yields RawChunks for createSoupChunkBuilder.
+ */
+async function* soupFromMesh({ vertices, triangles }, { batchTris = 1 << 16 } = {}) {
+  const nv = (vertices.length / 3) | 0;
+  const vo = nv ? [vertices[0], vertices[1], vertices[2]] : [0, 0, 0];
+  const verts = new Float32Array(3 * nv);
+  for (let i = 0; i < nv; i++) {
+    verts[3 * i] = vertices[3 * i] - vo[0];
+    verts[3 * i + 1] = vertices[3 * i + 1] - vo[1];
+    verts[3 * i + 2] = vertices[3 * i + 2] - vo[2];
+  }
+  const nt = (triangles.length / 3) | 0;
+  const ia = new Uint32Array(batchTris), ib = new Uint32Array(batchTris), ic = new Uint32Array(batchTris);
+  let n = 0;
+  for (let t = 0; t < nt; t++) {
+    ia[n] = triangles[3 * t]; ib[n] = triangles[3 * t + 1]; ic[n] = triangles[3 * t + 2];
+    n++;
+    if (n === batchTris) { yield emitBatch(verts, vo, ia, ib, ic, n); n = 0; }
+  }
+  if (n) yield emitBatch(verts, vo, ia, ib, ic, n);
+}
+
+// ── src/io/soup-io.js ──
+
+// @gcu/condenser — the streaming triangle-soup PROVIDER (io): openPlySoup
+// walks a photogrammetry-scale PLY in two passes, neither holding the file,
+// and emits RawChunk batches for core/soup-geom's builder. The geometry
+// discipline (Morton, shuffle, quantize) lives in core/soup-geom.js.
+
+
+// ── byte-level text walking (OBJ, ASCII PLY): no per-line strings, no whole read ──
+const SLAB$soup_io = 8 << 20;
+const POW10$soup_io = []; for (let i = 0; i <= 22; i++) POW10$soup_io.push(Number('1e' + i));
+function slowNum(b, s, e) { let t = ''; for (let i = s; i < e; i++) t += String.fromCharCode(b[i]); return parseFloat(t); }
+// parseFloat over bytes [s,e): exact for ≤15 significant digits (one correctly
+// rounded op), parseFloat itself for exponents / long mantissas
+function numAt(b, s, e) {
+  let i = s, neg = false;
+  if (b[i] === 45 || b[i] === 43) { neg = b[i] === 45; i++; }
+  let mant = 0, sig = 0, exp = 0, dot = false, digits = 0;
+  for (; i < e; i++) {
+    const c = b[i];
+    if (c >= 48 && c <= 57) { digits++; if (sig || c !== 48) { if (++sig > 15) return slowNum(b, s, e); } mant = mant * 10 + (c - 48); if (dot) exp--; }
+    else if (c === 46 && !dot) dot = true;
+    else return slowNum(b, s, e);
+  }
+  if (!digits || -exp > 22) return slowNum(b, s, e);
+  const v = exp ? mant / POW10$soup_io[-exp] : mant;
+  return neg ? -v : v;
+}
+// blob[from, to) in ~8 MB slabs, each cut at its last newline (the tail rides into
+// the next slab): yields { b, base, n } where b[0..n) holds only complete lines
+// and base is b[0]'s file offset. Per-SLAB, not per-line — a promise per line
+// would cost more than parsing the line.
+async function* lineSlabs(blob, from, to, { onProgress, signal, slab = SLAB$soup_io } = {}) {
+  let at = from, carry = null, carryAbs = 0;
+  while (at < to) {
+    if (signal && signal.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+    const end = Math.min(to, at + slab);
+    let b = new Uint8Array(await blob.slice(at, end).arrayBuffer()), base = at;
+    if (carry) { const m = new Uint8Array(carry.length + b.length); m.set(carry); m.set(b, carry.length); b = m; base = carryAbs; carry = null; }
+    at = end;
+    let n = b.length;
+    if (at < to) {
+      n = b.lastIndexOf(10) + 1;
+      if (n < b.length) { carry = b.slice(n); carryAbs = base + n; }
+    }
+    if (onProgress) onProgress(at, to);
+    yield { b, base, n };
+  }
+}
+// the lines of one slab: onLine(b, start, end, absStart) — end excludes \r\n; → false stops
+function forLines({ b, base, n }, onLine) {
+  let s = 0;
+  for (let i = 0; i < n; i++) {
+    if (b[i] !== 10) continue;
+    if (onLine(b, s, i > s && b[i - 1] === 13 ? i - 1 : i, base + s) === false) return false;
+    s = i + 1;
+  }
+  if (s < n && onLine(b, s, n, base + s) === false) return false;
+  return true;
+}
+async function eachLine(blob, from, to, onLine, opts) {
+  for await (const sl of lineSlabs(blob, from, to, opts)) if (forLines(sl, onLine) === false) return;
+}
+// whitespace-separated tokens of one line → calls tok(s, e) in order
+function tokens(b, s, e, tok) {
+  let i = s;
+  while (i < e) {
+    while (i < e && (b[i] === 32 || b[i] === 9)) i++;
+    if (i >= e) break;
+    const t = i;
+    while (i < e && b[i] !== 32 && b[i] !== 9) i++;
+    if (tok(t, i) === false) return;
+  }
+}
+
+// the vertex table every soup provider builds: local f32 against the first
+// vertex (mm at UTM magnitudes), plus the world bbox — 12 B/vertex, transient
+function soupVertexTable(cap = 1 << 16) {
+  let verts = new Float32Array(3 * cap), n = 0;
+  const vo = [0, 0, 0], min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+  return {
+    push(X, Y, Z) {
+      if (n === 0) { vo[0] = X; vo[1] = Y; vo[2] = Z; }
+      if (3 * n === verts.length) { const g = new Float32Array(verts.length * 2); g.set(verts); verts = g; }
+      verts[3 * n] = X - vo[0]; verts[3 * n + 1] = Y - vo[1]; verts[3 * n + 2] = Z - vo[2];
+      if (X < min[0]) min[0] = X; if (X > max[0]) max[0] = X;
+      if (Y < min[1]) min[1] = Y; if (Y > max[1]) max[1] = Y;
+      if (Z < min[2]) min[2] = Z; if (Z > max[2]) max[2] = Z;
+      n++;
+    },
+    get n() { return n; }, get verts() { return verts; }, vo, min, max,
+  };
+}
+// triangle index batches → RawChunk batches (the createSoupChunkBuilder contract)
+function soupTriBatcher(vt, batchTris) {
+  const ia = new Uint32Array(batchTris), ib = new Uint32Array(batchTris), ic = new Uint32Array(batchTris);
+  let n = 0, tris = 0, dropped = 0;
+  const out = [];
+  return {
+    tri(a, b, c) {
+      const nv = vt.n;
+      if (a < 0 || b < 0 || c < 0 || a >= nv || b >= nv || c >= nv) { dropped++; return; }
+      ia[n] = a; ib[n] = b; ic[n] = c;
+      if (++n === batchTris) { out.push(emitBatch(vt.verts, vt.vo, ia, ib, ic, n)); tris += n; n = 0; }
+    },
+    flush() { if (n) { out.push(emitBatch(vt.verts, vt.vo, ia, ib, ic, n)); tris += n; n = 0; } },
+    take() { return out.splice(0); },
+    get tris() { return tris; }, get dropped() { return dropped; },
+  };
+}
+
+/**
+ * openObjSoup(blob) — a Wavefront OBJ too big to read whole, as a STREAMED soup.
+ * Two passes, neither holding the file: (1) `v` lines → the local-f32 vertex table
+ * + bbox, (2) `f` lines (fanned; v, v/vt, v//vn, v/vt/vn; negative = relative to the
+ * vertices seen so far) → RawChunk batches. Groups/materials are not split here
+ * (a split of a multi-GB OBJ would rewrite it); that's the context tier's job.
+ */
+async function openObjSoup(blob, { onProgress, slab = SLAB$soup_io } = {}) {
+  const vt = soupVertexTable();
+  await eachLine(blob, 0, blob.size, (b, s, e) => {
+    while (s < e && (b[s] === 32 || b[s] === 9)) s++;
+    if (b[s] !== 118 || (b[s + 1] !== 32 && b[s + 1] !== 9)) return;   // "v "
+    const v = [];
+    tokens(b, s + 2, e, (t0, t1) => { v.push(numAt(b, t0, t1)); return v.length < 3; });
+    vt.push(v[0], v[1], v[2] || 0);
+  }, { onProgress, slab });
+  if (!vt.n) throw new Error('obj: no v lines');
+  const header = { kind: 'mesh', soup: true, format: 'obj', vertexCount: vt.n, triCount: 0, bbox: { min: vt.min, max: vt.max } };
+
+  async function* streamChunks({ batchTris = 1 << 16, signal, onProgress: op2 } = {}) {
+    const tb = soupTriBatcher(vt, batchTris);
+    let seenV = 0;
+    const ix = [];
+    const onLine = (b, s, e) => {
+      while (s < e && (b[s] === 32 || b[s] === 9)) s++;
+      if (b[s] === 118 && (b[s + 1] === 32 || b[s + 1] === 9)) { seenV++; return; }
+      if (b[s] !== 102 || (b[s + 1] !== 32 && b[s + 1] !== 9)) return;   // "f "
+      ix.length = 0;
+      tokens(b, s + 2, e, (t0, t1) => {
+        let i = t0, neg = false, v = 0, any = false;
+        if (b[i] === 45) { neg = true; i++; }
+        for (; i < t1 && b[i] >= 48 && b[i] <= 57; i++) { v = v * 10 + (b[i] - 48); any = true; }
+        if (!any || v === 0) return;
+        ix.push(neg ? seenV - v : v - 1);
+      });
+      for (let k = 2; k < ix.length; k++) tb.tri(ix[0], ix[k - 1], ix[k]);
+    };
+    for await (const sl of lineSlabs(blob, 0, blob.size, { signal, onProgress: op2, slab })) {
+      forLines(sl, onLine);
+      yield* tb.take();                                     // batches leave per slab — nothing accumulates
+    }
+    tb.flush();
+    yield* tb.take();
+    header.triCount = tb.tris;
+    header.dropped = tb.dropped;
+  }
+  return { header, streamChunks };
+}
+
+/**
+ * openPlySoup(blob) — the TRUE streaming provider (binary_le + ascii PLY, the
+ * formats photogrammetry exports). Two passes over the blob, neither holding
+ * the file: (1) the vertex block → local-f32 xyz (12 B/vertex transient RAM —
+ * the honest open-time cost; freed when streaming ends), (2) the face block
+ * walked in slabs, fanned, emitted as RawChunk batches.
+ * → { header, streamChunks } — header = { kind:'mesh', soup:true, format,
+ *    vertexCount, triCount(≈ faces, exact after stream), bbox }
+ */
+async function openPlySoup(blob, { onProgress, slab = SLAB$soup_io } = {}) {
+  let sampleLen = 64 * 1024, ply = null;
+  for (;;) {
+    const text = new TextDecoder('latin1').decode(await blob.slice(0, Math.min(sampleLen, blob.size)).arrayBuffer());
+    ply = parsePlyHeader(text);
+    if (ply) break;
+    if (sampleLen >= blob.size) throw new Error('ply: no end_header');
+    sampleLen *= 4;
+  }
+  const face = ply.elements.find((e) => e.name === 'face');
+  if (!face || !face.count) throw new Error('ply: no face element');
+  const px = ply.props.find((p) => p.name.toLowerCase() === 'x');
+  const py = ply.props.find((p) => p.name.toLowerCase() === 'y');
+  const pz = ply.props.find((p) => p.name.toLowerCase() === 'z');
+  if (!px || !py || !pz) throw new Error('ply: vertex needs x/y/z');
+  const nv = ply.count, ascii = ply.format === 'ascii';
+  const SIZES = { char: 1, int8: 1, uchar: 1, uint8: 1, short: 2, int16: 2, ushort: 2, uint16: 2, int: 4, int32: 4, uint: 4, uint32: 4, float: 4, float32: 4, double: 8, float64: 8 };
+  const GETTERS = { 1: 'getUint8', 2: 'getUint16', 4: 'getUint32' };
+
+  // ── pass 1: vertices → local f32 (+ bbox in world f64) ──
+  const verts = new Float32Array(3 * nv);
+  const vo = [0, 0, 0];
+  const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+  let faceStart;                                            // byte offset where faces begin (binary) / line index (ascii)
+  if (!ascii) {
+    const SLAB = 1 << 23;                                   // 8 MB windows
+    let seen = 0;
+    while (seen < nv) {
+      const n = Math.min(Math.floor(SLAB / ply.stride) || 1, nv - seen);
+      const off = ply.dataOffset + seen * ply.stride;
+      const dv = new DataView(await blob.slice(off, off + n * ply.stride).arrayBuffer());
+      for (let i = 0; i < n; i++) {
+        const X = dv[px.getter](i * ply.stride + px.offset, true);
+        const Y = dv[py.getter](i * ply.stride + py.offset, true);
+        const Z = dv[pz.getter](i * ply.stride + pz.offset, true);
+        if (seen === 0 && i === 0) { vo[0] = X; vo[1] = Y; vo[2] = Z; }
+        const k = (seen + i) * 3;
+        verts[k] = X - vo[0]; verts[k + 1] = Y - vo[1]; verts[k + 2] = Z - vo[2];
+        if (X < min[0]) min[0] = X; if (X > max[0]) max[0] = X;
+        if (Y < min[1]) min[1] = Y; if (Y > max[1]) max[1] = Y;
+        if (Z < min[2]) min[2] = Z; if (Z > max[2]) max[2] = Z;
+      }
+      seen += n;
+      if (onProgress) onProgress(off + n * ply.stride, blob.size);
+    }
+    faceStart = ply.dataOffset + nv * ply.stride;
+  } else {
+    // ascii: the vertex lines walked in slabs (never one string — an ascii
+    // photogrammetry export can be gigabytes); faceStart = the byte offset of the
+    // first line after the nv-th vertex
+    const xi = ply.props.indexOf(px), yi = ply.props.indexOf(py), zi = ply.props.indexOf(pz);
+    const need = Math.max(xi, yi, zi);
+    const f = new Float64Array(need + 1);
+    let rec = 0;
+    faceStart = blob.size;
+    await eachLine(blob, ply.dataOffset, blob.size, (b, s, e, abs) => {
+      if (rec >= nv) { faceStart = abs; return false; }
+      let k = 0, any = false;
+      tokens(b, s, e, (t0, t1) => { any = true; if (k <= need) f[k] = numAt(b, t0, t1); k++; return k <= need; });
+      if (!any) return;                                     // blank line
+      const X = f[xi], Y = f[yi], Z = f[zi];
+      if (rec === 0) { vo[0] = X; vo[1] = Y; vo[2] = Z; }
+      verts[rec * 3] = X - vo[0]; verts[rec * 3 + 1] = Y - vo[1]; verts[rec * 3 + 2] = Z - vo[2];
+      if (X < min[0]) min[0] = X; if (X > max[0]) max[0] = X;
+      if (Y < min[1]) min[1] = Y; if (Y > max[1]) max[1] = Y;
+      if (Z < min[2]) min[2] = Z; if (Z > max[2]) max[2] = Z;
+      rec++;
+    }, { onProgress: onProgress ? (a) => onProgress(a, blob.size) : null, slab });
+  }
+
+  const header = {
+    kind: 'mesh', soup: true, format: ascii ? 'ply-ascii' : 'ply-binary',
+    vertexCount: nv, triCount: face.count, faces: face.count,
+    bbox: { min, max },
+  };
+
+  // ── pass 2: the face walk → RawChunk batches ──
+  async function* streamChunks({ batchTris = 1 << 16, signal, onProgress: op2 } = {}) {
+    const ia = new Uint32Array(batchTris), ib = new Uint32Array(batchTris), ic = new Uint32Array(batchTris);
+    let n = 0, tris = 0;
+    const flushTo = function* (force) {
+      if (n && (force || n === batchTris)) { const b = emitBatch(verts, vo, ia, ib, ic, n); tris += n; n = 0; yield b; }
+    };
+    const pushFan = function* (ix, k) {
+      for (let j = 2; j < k; j++) {
+        ia[n] = ix[0]; ib[n] = ix[j - 1]; ic[n] = ix[j];
+        n++;
+        if (n === batchTris) yield* flushTo(true);
+      }
+    };
+    if (!ascii) {
+      const MAXREC = 4 + 255 * 8;                           // count + a generous n-gon
+      const SLAB = 1 << 23;
+      let base = faceStart, carry = new Uint8Array(0), done = 0;
+      const ix = new Uint32Array(256);
+      while (done < face.count && base < blob.size) {
+        if (signal && signal.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+        const take = Math.min(SLAB, blob.size - base);
+        const slab = new Uint8Array(carry.length + take);
+        slab.set(carry, 0);
+        slab.set(new Uint8Array(await blob.slice(base, base + take).arrayBuffer()), carry.length);
+        base += take;
+        const dv = new DataView(slab.buffer);
+        let off = 0;
+        const last = base >= blob.size;
+        while (done < face.count && (last ? off < slab.length : off + MAXREC <= slab.length)) {
+          let rOff = off, bad = false;
+          for (const pr of face.props) {
+            if (pr.list) {
+              const cs = SIZES[pr.countType] || 1, is = SIZES[pr.idxType] || 4;
+              if (rOff + cs > slab.length) { bad = true; break; }
+              const k = dv[GETTERS[cs]](rOff, true); rOff += cs;
+              if (rOff + k * is > slab.length) { bad = true; break; }
+              if (/vertex_ind/i.test(pr.name) || face.props.length === 1) {
+                for (let j = 0; j < k; j++) ix[j] = dv[GETTERS[is]](rOff + j * is, true);
+                rOff += k * is;
+                yield* pushFan(ix, k);
+              } else rOff += k * is;
+            } else {
+              rOff += SIZES[pr.type] || 4;
+              if (rOff > slab.length) { bad = true; break; }
+            }
+          }
+          if (bad) break;
+          off = rOff;
+          done++;
+        }
+        carry = slab.subarray(off);
+        if (op2) op2(base, blob.size);
+      }
+    } else {
+      // face lines in slabs: "k i0 i1 … i(k-1) [other props]" — the vertex list leads
+      let fc = 0;
+      const ix = new Uint32Array(256);
+      const ready = [];
+      for await (const sl of lineSlabs(blob, faceStart, blob.size, { signal, slab })) {
+        forLines(sl, (b, s, e) => {
+          if (fc >= face.count) return false;
+          let k = -1, j = 0;
+          tokens(b, s, e, (t0, t1) => {
+            const v = numAt(b, t0, t1);
+            if (k < 0) { k = Math.min(255, v | 0); return k > 0; }
+            ix[j++] = v;
+            return j < k;
+          });
+          if (k < 0) return;                                // blank line
+          for (const x of pushFan(ix, k)) ready.push(x);
+          fc++;
+        });
+        while (ready.length) yield ready.shift();
+        if (op2) op2(sl.base + sl.n, blob.size);
+        if (fc >= face.count) break;
+      }
+    }
+    yield* flushTo(true);
+    header.triCount = tris + n;                             // exact after the stream (fans expand quads)
+  }
+
+  return { header, streamChunks };
+}
+
+/**
+ * openMshSoup(blob) — a Leapfrog .msh too big for the context tier, STREAMED.
+ * The text index names each array's offset (readMSHLayout reads only the head),
+ * so: (1) the Location array in 8 MB slices → the local-f32 vertex table + bbox,
+ * (2) the Tri array in slices → RawChunk batches. Out-of-range indices are
+ * dropped and counted (readMSH throws on them; a stream reports instead).
+ */
+async function openMshSoup(blob, { onProgress, slab = SLAB$soup_io } = {}) {
+  const lay = await readMSHLayout(blob);
+  if (!lay.vertices || !lay.triangles) throw new Error('msh: no vertex/triangle arrays found');
+  const V = lay.vertices, T = lay.triangles;
+  const vt = soupVertexTable(V.count);
+  const VREC = 24, per = Math.max(1, Math.floor(slab / VREC));
+  for (let i = 0; i < V.count; i += per) {
+    const n = Math.min(per, V.count - i);
+    const dv = new DataView(await blob.slice(V.offset + i * VREC, V.offset + (i + n) * VREC).arrayBuffer());
+    for (let k = 0; k < n; k++) vt.push(dv.getFloat64(k * VREC, true), dv.getFloat64(k * VREC + 8, true), dv.getFloat64(k * VREC + 16, true));
+    if (onProgress) onProgress(V.offset + (i + n) * VREC, blob.size);
+  }
+  const header = { kind: 'mesh', soup: true, format: 'msh', vertexCount: V.count, triCount: T.count, bbox: { min: vt.min, max: vt.max } };
+
+  async function* streamChunks({ batchTris = 1 << 16, signal, onProgress: op2 } = {}) {
+    const tb = soupTriBatcher(vt, batchTris);
+    const TREC = 12, tper = Math.max(1, Math.floor(slab / TREC));
+    for (let i = 0; i < T.count; i += tper) {
+      if (signal && signal.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+      const n = Math.min(tper, T.count - i);
+      const dv = new DataView(await blob.slice(T.offset + i * TREC, T.offset + (i + n) * TREC).arrayBuffer());
+      for (let k = 0; k < n; k++) tb.tri(dv.getInt32(k * TREC, true), dv.getInt32(k * TREC + 4, true), dv.getInt32(k * TREC + 8, true));
+      yield* tb.take();
+      if (op2) op2(T.offset + (i + n) * TREC, blob.size);
+    }
+    tb.flush();
+    yield* tb.take();
+    header.triCount = tb.tris;
+    header.dropped = tb.dropped;
+  }
+  return { header, streamChunks };
+}
+
+// ── src/core/gl-soup.js ──
+
+// @gcu/condenser — the streaming-mesh (triangle soup) pipeline (micro-layers
+// §7 tier 2). The points pipeline's shape over TRIANGLES: u16 positions
+// dequantized against the chunk bbox, prefix slices (first/k in TRIANGLE
+// units), budgeted accumulation. The fragment shader is gl-mesh's: derivative
+// flat shading, two-sided, Bayer screen-door opacity, per-pixel section cut.
+
+
+const VERT$gl_soup = `#version 300 es
+precision highp float;
+layout(location=0) in vec3 aPos;        // u16 normalized against the chunk bbox
+uniform mat4 uViewProj;
+uniform vec3 uBoxMin;
+uniform vec3 uBoxSpan;
+uniform vec4 uSecPlane;
+out vec3 vWorldPos;
+out float vSecDist;
+void main() {
+  vec3 p = uBoxMin + aPos * uBoxSpan;
+  gl_Position = uViewProj * vec4(p, 1.0);
+  vWorldPos = p;
+  vSecDist = dot(p, uSecPlane.xyz) - uSecPlane.w;
+}`;
+
+const FRAG$gl_soup = `#version 300 es
+precision highp float;
+in vec3 vWorldPos;
+in float vSecDist;
+uniform vec2 uSecCfg;
+uniform vec4 uTint;
+uniform vec3 uLightDir;
+uniform vec3 uEye;
+out vec4 outColor;
+const float BAYER[16] = float[16](0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
+void main() {
+  if (uSecCfg.x > 0.5 && abs(vSecDist) > uSecCfg.y) discard;
+  if (uTint.a < 0.999) {
+    int bi = (int(gl_FragCoord.x) & 3) + ((int(gl_FragCoord.y) & 3) << 2);
+    if (uTint.a < (BAYER[bi] + 0.5) / 16.0) discard;
+  }
+  vec3 n = normalize(cross(dFdx(vWorldPos), dFdy(vWorldPos)));
+  vec3 vd = normalize(uEye - vWorldPos);
+  if (dot(n, vd) < 0.0) n = -n;
+  float shade = 0.42 + 0.58 * max(dot(n, uLightDir), 0.0);
+  outColor = vec4(uTint.rgb * shade, 1.0);
+}`;
+
+// sectioned variant: flatten in-slab fragment depth onto the camera-side slab
+// face so the streamed-mesh trace draws over the true-cut block wall (gl-mesh's
+// FRAG_OVERLAY, same math — see the rationale there)
+const FRAG_OVERLAY$gl_soup = `#version 300 es
+precision highp float;
+in vec3 vWorldPos;
+in float vSecDist;
+uniform vec4 uSecPlane;
+uniform vec2 uSecCfg;
+uniform vec4 uTint;
+uniform vec3 uLightDir;
+uniform vec3 uEye;
+uniform mat4 uViewProj;
+uniform vec3 uFwd;
+uniform float uOrtho;
+out vec4 outColor;
+const float BAYER[16] = float[16](0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
+void main() {
+  if (abs(vSecDist) > uSecCfg.y) discard;
+  if (uTint.a < 0.999) {
+    int bi = (int(gl_FragCoord.x) & 3) + ((int(gl_FragCoord.y) & 3) << 2);
+    if (uTint.a < (BAYER[bi] + 0.5) / 16.0) discard;
+  }
+  vec3 n = normalize(cross(dFdx(vWorldPos), dFdy(vWorldPos)));
+  vec3 vd = normalize(uEye - vWorldPos);
+  if (dot(n, vd) < 0.0) n = -n;
+  float shade = 0.42 + 0.58 * max(dot(n, uLightDir), 0.0);
+  outColor = vec4(uTint.rgb * shade, 1.0);
+  gl_FragDepth = gl_FragCoord.z;
+  float dcEye = dot(uEye, uSecPlane.xyz) - uSecPlane.w;
+  if (abs(dcEye) > uSecCfg.y) {
+    float side = sign(dcEye);
+    vec3 q; bool front = false;
+    if (uOrtho > 0.5) {
+      float den = dot(uFwd, uSecPlane.xyz);
+      if (abs(den) > 1e-9) {
+        float s = (vSecDist - side * uSecCfg.y) / den;
+        if (s > 0.0) { q = vWorldPos - uFwd * s; front = true; }
+      }
+    } else {
+      vec3 rdm = vWorldPos - uEye;
+      float den = dot(rdm, uSecPlane.xyz);
+      if (abs(den) > 1e-9) {
+        float tF = (side * uSecCfg.y - dcEye) / den;
+        if (tF > 0.0 && tF < 1.0) { q = uEye + rdm * tF; front = true; }
+      }
+    }
+    if (front) {
+      vec4 clipQ = uViewProj * vec4(q, 1.0);
+      gl_FragDepth = clamp(clipQ.z / clipQ.w * 0.5 + 0.5, 0.0, 1.0) - 3e-5;
+    }
+  }
+}`;
+
+function createSoupPipeline(gl) {
+  const mk = (frag) => {
+    const prog = makeProgram(gl, VERT$gl_soup, frag);
+    const U = (n) => gl.getUniformLocation(prog, n);
+    return { prog, uni: {
+      viewProj: U('uViewProj'), boxMin: U('uBoxMin'), boxSpan: U('uBoxSpan'),
+      secPlane: U('uSecPlane'), secCfg: U('uSecCfg'),
+      tint: U('uTint'), lightDir: U('uLightDir'), eye: U('uEye'),
+      fwd: U('uFwd'), ortho: U('uOrtho'),
+    } };
+  };
+  const base = mk(FRAG$gl_soup), overlay = mk(FRAG_OVERLAY$gl_soup);
+  let uni = base.uni;                                      // drawSlice uses the ACTIVE program's locations
+
+  function upload(chunk) {
+    const vao = gl.createVertexArray();
+    gl.bindVertexArray(vao);
+    const b = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, b);
+    gl.bufferData(gl.ARRAY_BUFFER, chunk.tri, gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 3, gl.UNSIGNED_SHORT, true, 0, 0);
+    gl.bindVertexArray(null);
+    return {
+      kind: 'soup', vao, buffers: [b],
+      count: chunk.count, bboxLocal: chunk.bboxLocal, cursor: 0,
+    };
+  }
+
+  function begin(cam, { tint = [0.62, 0.64, 0.66], opacity = 1, section = null }) {
+    const s = cam.state;
+    const pp = section ? overlay : base;
+    uni = pp.uni;
+    gl.useProgram(pp.prog);
+    gl.uniformMatrix4fv(uni.viewProj, false, s.viewProj);
+    gl.uniform3f(uni.eye, s.eye[0], s.eye[1], s.eye[2]);
+    const v = s.view;
+    let lx = s.eye[0] - s.target[0], ly = s.eye[1] - s.target[1], lz = s.eye[2] - s.target[2];
+    const ll = Math.hypot(lx, ly, lz) || 1;
+    lx = lx / ll + v[1] * 0.4; ly = ly / ll + v[5] * 0.4; lz = lz / ll + v[9] * 0.4;
+    const l2 = Math.hypot(lx, ly, lz) || 1;
+    gl.uniform3f(uni.lightDir, lx / l2, ly / l2, lz / l2);
+    gl.uniform4f(uni.tint, tint[0], tint[1], tint[2], Math.max(0.02, Math.min(1, opacity)));
+    gl.uniform4f(uni.secPlane, section ? section.n[0] : 0, section ? section.n[1] : 0, section ? section.n[2] : 1, section ? section.d : 0);
+    gl.uniform2f(uni.secCfg, section ? 1 : 0, section ? section.half : 0);
+    if (uni.fwd) {
+      const f = [s.target[0] - s.eye[0], s.target[1] - s.eye[1], s.target[2] - s.eye[2]];
+      const fl = Math.hypot(...f) || 1;
+      gl.uniform3f(uni.fwd, f[0] / fl, f[1] / fl, f[2] / fl);
+      gl.uniform1f(uni.ortho, s.ortho ? 1 : 0);
+    }
+  }
+
+  // first/k in TRIANGLES — the prefix invariant rides the shuffled build order
+  function drawSlice(c, first, k) {
+    gl.bindVertexArray(c.vao);
+    gl.uniform3f(uni.boxMin, c.bboxLocal[0], c.bboxLocal[1], c.bboxLocal[2]);
+    gl.uniform3f(uni.boxSpan, c.bboxLocal[3] - c.bboxLocal[0], c.bboxLocal[4] - c.bboxLocal[1], c.bboxLocal[5] - c.bboxLocal[2]);
+    gl.drawArrays(gl.TRIANGLES, first * 3, k * 3);
+  }
+
+  return { upload, begin, drawSlice };
+}
+
+// ── src/core/gl-blocks.js ──
+
+// @gcu/condenser — box impostors for block models (micro-spec §2.3).
+// One screen-aligned quad per block (instanced TRIANGLE_STRIP — no point-sprite
+// size cap): the vertex shader expands a camera-basis billboard sized to the
+// block's bounding sphere; the fragment shader ray-intersects the block's ACTUAL
+// AABB analytically (slab test), discards on miss, writes correct gl_FragDepth
+// and the face normal on hit → pixel-perfect cube silhouettes and correct
+// inter-block occlusion at one quad per block. Face-normal flat shading; EDL
+// does the rest on top.
+//
+// LOD demotion: a block whose projected radius falls below ~2 px renders as a
+// plain circular splat (no ray test) — near field looks like blocks, far field
+// looks like the dense cloud it visually is (§2.3).
+//
+// WebGL2 has no baseInstance, so accumulation slices [first, first+k) work by
+// re-pointing the instance attributes at byte offsets before each draw — the
+// chunk's VAO records the new pointers (cheap: 3 pointer calls per chunk-draw).
+//
+// TRUE SECTIONS: the section slab clips the ray-box interval analytically in the
+// fragment shader (a couple of dots + interval min/max on top of the existing
+// slab test) — a block straddling the plane shows its CUT INTERIOR (flat, plane
+// normal, slightly darkened) instead of vanishing or poking through. The vertex
+// cull keeps anything TOUCHING the slab (box support radius along the normal);
+// demoted splats keep the centroid test (sub-pixel, and a splat can't clip).
+//
+// Positions are IJK-exact (§2.5): center = uGridOrigin + uGridRot · (aIjk · uGridSize),
+// with uGridOrigin the frame-local centroid of block (0,0,0). uGridRot is the
+// lattice ROTATION (columns = the unit U/V/W directions; identity for an
+// axis-aligned model): one orientation per chunk, so a rotated model draws as
+// true oriented boxes — the ray-box test runs in the block's own frame.
+
+
+const VERT$gl_blocks = `#version 300 es
+precision highp float;
+layout(location=0) in vec3 aIjk;        // uint16 raw (integer lattice)
+layout(location=1) in float aChan;      // uint16 normalized (per-chunk range)
+layout(location=2) in float aCat;       // uint8 raw
+layout(location=3) in uint aRec;        // uint32 record index (the join key)
+layout(location=4) in uint aDim;        // uint8 size code → uDimPalette (sub-blocked)
+uniform mat4 uViewProj;
+uniform vec3 uEye, uRight, uUp;
+uniform vec3 uGridOrigin, uGridSize;
+uniform mat3 uGridRot;                  // lattice rotation (identity = axis-aligned)
+uniform sampler2D uDimPalette;          // Nx1 RGBA32F: per-code half-dims (box radius)
+uniform float uSubBlock;                // 1 = variable-size boxes (read aDim → palette)
+uniform float uPerspScale;              // persp: px/world at distance 1; ortho: px/world flat
+uniform float uOrtho;                   // 1 = orthographic (skip the /dist)
+uniform float uDemotePx, uPointPx;
+uniform int uColorMode;                 // 0 elevation | 1 grade | 2 category | 3 solid
+uniform vec2 uZRange;
+uniform vec2 uChanChunk;                // this chunk's [min, span] (dequantize aChan)
+uniform vec2 uChanDoc;                  // document [min, span] (ramp normalization)
+uniform sampler2D uRamp;
+uniform sampler2D uPalette;
+uniform sampler2D uMask;                // filter bitmask by record index (8192-wide)
+uniform float uFilterOn, uIsolate;
+uniform sampler2D uSel;
+uniform float uSelOn;
+uniform sampler2D uCatVis;              // 256x1 per-class visibility
+uniform float uCatVisOn;
+uniform sampler2D uRule;                // rule-code byte by record index (8192-wide)
+uniform float uRuleOn;                  // rule mode: the code replaces the category
+uniform sampler2D uChanTex;             // OPT-IN: raw f32 VALUE by record index (8192-wide rows) —
+uniform float uChanTexOn;               // replaces aChan; how a never-materialized grade gets drawn
+uniform float uForceSplat;              // 1 = whole chunk demoted (cheap far-field path)
+uniform float uFixedSplat;              // 1 = points view: fixed-px splats regardless of block size
+uniform uint uPicked;                   // picked RECORD (0xFFFFFFFF = none)
+uniform uint uPickedLayer;              // …and the layer it belongs to
+uniform uint uLayer;                    // this draw's layer (per-draw, not per-element)                   // record index to highlight (0xFFFFFFFF = none)
+uniform uvec2 uRepaint;                 // repaint pass: draw ONLY these two records (both 0xFFFFFFFF = off)
+uniform vec4 uSecPlane;                 // section plane: xyz = unit normal, w = offset (frame-local)
+uniform vec2 uSecCfg;                   // x: 0 = off, 1 = slab; y: slab half-thickness
+flat out vec3 vCenter;
+flat out vec3 vHalf;
+flat out vec4 vColor;
+flat out float vMode;                   // 0 = impostor, 1 = splat
+flat out float vCull;
+flat out float vPxR;                    // projected radius (edge-line fade near demotion)
+out vec2 vCorner;
+out vec3 vWorldPos;
+void main() {
+  vec3 center = uGridOrigin + uGridRot * (aIjk * uGridSize);
+  vec3 half_ = uSubBlock > 0.5 ? texelFetch(uDimPalette, ivec2(int(aDim), 0), 0).rgb : uGridSize * 0.5;
+  float r = length(half_);
+  float dist = max(distance(uEye, center), 1e-3);
+  float distEff = uOrtho > 0.5 ? 1.0 : dist;              // ortho: size is distance-free
+  float pxR = r * uPerspScale / distEff;
+  float demoted = max(max(pxR < uDemotePx ? 1.0 : 0.0, uForceSplat), uFixedSplat);
+  // filter mask: dim (default) or cull (isolate)
+  float m = 1.0;
+  if (uFilterOn > 0.5) {
+    int rec = int(aRec);
+    m = texelFetch(uMask, ivec2(rec & 8191, rec >> 13), 0).r > 0.5 ? 1.0 : 0.0;
+  }
+  // section cull: keep any box that TOUCHES the slab (support radius of the box
+  // along the plane normal) — the fragment shader then clips the ray interval
+  // EXACTLY, so straddling blocks show their true cut instead of vanishing.
+  // Demoted splats can't clip, so they keep the centroid test (sub-pixel there).
+  float secSupp = demoted > 0.5 ? 0.0 : dot(half_, abs(transpose(uGridRot) * uSecPlane.xyz));   // the normal in the box's frame
+  float secCull = (uSecCfg.x > 0.5 && abs(dot(center, uSecPlane.xyz) - uSecPlane.w) > uSecCfg.y + secSupp) ? 1.0 : 0.0;
+  vCull = max((uIsolate > 0.5 && m < 0.5) ? 1.0 : 0.0, secCull);
+  float cls = aCat;
+  if (uRuleOn > 0.5) {
+    int rr = int(aRec);
+    cls = floor(texelFetch(uRule, ivec2(rr & 8191, rr >> 13), 0).r * 255.0 + 0.5);
+  }
+  if (uCatVisOn > 0.5 && texelFetch(uCatVis, ivec2(int(cls) & 255, 0), 0).r < 0.5) vCull = 1.0;
+  float quadR = uFixedSplat > 0.5
+    ? uPointPx * 0.5 * distEff / uPerspScale
+    : mix(r, max(uPointPx * 0.5, pxR) * distEff / uPerspScale, demoted);
+  vec2 corner = vec2(float(gl_VertexID & 1), float(gl_VertexID >> 1)) * 2.0 - 1.0;
+  vec3 wp = center + (uRight * corner.x + uUp * corner.y) * quadR;
+  gl_Position = uViewProj * vec4(wp, 1.0);
+  vCenter = center; vHalf = half_; vMode = demoted; vCorner = corner; vWorldPos = wp; vPxR = pxR;
+  if (uColorMode == 0) {
+    float t = clamp((center.z - uZRange.x) / max(uZRange.y, 1e-6), 0.0, 1.0);
+    vColor = texture(uRamp, vec2(t, 0.5));
+  } else if (uColorMode == 1) {
+    int cr = int(aRec);
+    float v = uChanTexOn > 0.5
+      ? texelFetch(uChanTex, ivec2(cr & 8191, cr >> 13), 0).r
+      : uChanChunk.x + aChan * uChanChunk.y;
+    float t = clamp((v - uChanDoc.x) / max(uChanDoc.y, 1e-6), 0.0, 1.0);
+    vColor = texture(uRamp, vec2(t, 0.5));
+  } else if (uColorMode == 2) {
+    vColor = texture(uPalette, vec2((cls + 0.5) / 256.0, 0.5));
+  } else {
+    vColor = vec4(0.62, 0.63, 0.66, 1.0);
+  }
+  if (uSelOn > 0.5) {
+    int rs = int(aRec);
+    if (texelFetch(uSel, ivec2(rs & 8191, rs >> 13), 0).r > 0.5) vColor = vec4(mix(vColor.rgb, vec3(1.0, 0.85, 0.3), 0.55), vColor.a);
+  }
+  if (uFilterOn > 0.5 && m < 0.5) vColor = vec4(vColor.rgb * 0.3, vColor.a);   // context mode: dim non-matching (still legible)
+  if (aRec == uPicked && uLayer == uPickedLayer) vColor = vec4(mix(vColor.rgb, vec3(1.0, 0.15, 0.7), 0.85) + 0.1, vColor.a);   // picked: hot magenta — the hue viridis doesn't have
+  if ((uRepaint.x != 0xFFFFFFFFu || uRepaint.y != 0xFFFFFFFFu) && aRec != uRepaint.x && aRec != uRepaint.y) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);   // repaint pass: everything else clips out
+}`;
+
+// 4×4-Bayer screen-door opacity (same as gl-mesh): drops a fraction of pixels by a
+// stable dither → "see through" the model WITHOUT alpha blending, so real depth
+// writes + occlusion stay correct and no back-to-front sort is needed.
+const SCREENDOOR$gl_blocks = `
+uniform float uOpacity;
+const float _BAYER[16] = float[16](0.0,8.0,2.0,10.0,12.0,4.0,14.0,6.0,3.0,11.0,1.0,9.0,15.0,7.0,13.0,5.0);
+bool _screendoor() { if (uOpacity >= 0.999) return false; int bi = (int(gl_FragCoord.x) & 3) + ((int(gl_FragCoord.y) & 3) << 2); return uOpacity < (_BAYER[bi] + 0.5) / 16.0; }`;
+
+const FRAG$gl_blocks = `#version 300 es
+precision highp float;
+flat in vec3 vCenter;
+flat in vec3 vHalf;
+flat in vec4 vColor;
+flat in float vMode;
+flat in float vCull;
+flat in float vPxR;
+in vec2 vCorner;
+in vec3 vWorldPos;
+uniform vec3 uEye;
+uniform vec3 uFwd;                      // view direction (ortho rays are parallel)
+uniform float uOrthoRay;                // 1 = ortho: origin per fragment, direction = uFwd
+uniform float uBackoff;                 // how far behind the quad the ortho ray starts
+uniform vec3 uLightDir;
+uniform mat4 uViewProj;
+uniform vec4 uSecPlane;
+uniform vec2 uSecCfg;
+uniform float uEdges;                   // 1 = draw block edge lines (View toggle)
+uniform mat3 uGridRot;                  // lattice rotation — the box test runs in its frame
+out vec4 outColor;
+${SCREENDOOR$gl_blocks}
+void main() {
+  if (vCull > 0.5) discard;             // isolate mode: filtered-out block
+  if (_screendoor()) discard;           // per-layer opacity (screen-door)
+  if (vMode > 0.5) {                    // demoted splat: circular mask, rasterizer depth
+    if (dot(vCorner, vCorner) > 1.0) discard;
+    gl_FragDepth = gl_FragCoord.z;
+    outColor = vColor;
+    return;
+  }
+  // ray-AABB slab test in frame-local space (perspective: from the eye;
+  // orthographic: parallel rays -- origin backed off along the view direction)
+  vec3 ro = uOrthoRay > 0.5 ? vWorldPos - uFwd * uBackoff : uEye;
+  vec3 rd = uOrthoRay > 0.5 ? uFwd : normalize(vWorldPos - uEye);
+  // the box test in the BLOCK's frame (a rotation: t along the ray is unchanged)
+  mat3 toBox = transpose(uGridRot);
+  vec3 roL = toBox * (ro - vCenter), rdL = toBox * rd;
+  vec3 inv = 1.0 / rdL;                 // IEEE inf on axis-parallel rays is fine here
+  vec3 t0 = (-vHalf - roL) * inv;
+  vec3 t1 = (vHalf - roL) * inv;
+  vec3 tmin3 = min(t0, t1), tmax3 = max(t0, t1);
+  float tin = max(max(tmin3.x, tmin3.y), tmin3.z);
+  float tout = min(min(tmax3.x, tmax3.y), tmax3.z);
+  if (tin > tout || tout < 0.0) discard;
+  // face normal = the slab that produced the BOX entry (chosen pre-clip), back in world space
+  vec3 n = vec3(0.0);
+  if (tin == tmin3.x) n = vec3(-sign(rdL.x), 0.0, 0.0);
+  else if (tin == tmin3.y) n = vec3(0.0, -sign(rdL.y), 0.0);
+  else n = vec3(0.0, 0.0, -sign(rdL.z));
+  n = uGridRot * n;
+  // TRUE SECTION: intersect the ray-box interval with the ray-slab interval.
+  // When the slab plane replaces the box entry, the visible surface is the CUT
+  // INTERIOR — flat, plane normal, slightly darkened — so a thin section reads
+  // as a continuous painted wall instead of a ragged centroid subset.
+  float cutFace = 0.0;
+  if (uSecCfg.x > 0.5) {
+    float den = dot(rd, uSecPlane.xyz);
+    float dc = dot(ro, uSecPlane.xyz) - uSecPlane.w;
+    if (abs(den) < 1e-9) { if (abs(dc) > uSecCfg.y) discard; }
+    else {
+      float ta = (-uSecCfg.y - dc) / den, tb = (uSecCfg.y - dc) / den;
+      float sIn = min(ta, tb), sOut = max(ta, tb);
+      if (sIn > tin) { tin = sIn; cutFace = -sign(den); }
+      tout = min(tout, sOut);
+      if (tin > tout || tout < 0.0) discard;
+    }
+  }
+  float t = tin > 0.0 ? tin : tout;     // inside the box → exit face
+  bool onCut = cutFace != 0.0 && t == tin;
+  if (onCut) n = uSecPlane.xyz * cutFace;
+  vec3 p = ro + rd * t;
+  vec4 clip = uViewProj * vec4(p, 1.0);
+  gl_FragDepth = clamp(clip.z / clip.w * 0.5 + 0.5, 0.0, 1.0);
+  float shade = (0.55 + 0.45 * max(dot(n, uLightDir), 0.0)) * (onCut ? 0.85 : 1.0);
+  // BLOCK EDGES (toggle): the hit point in box-local coords — on a face, one
+  // axis sits at ±1 and the SECOND-largest → 1 marks an edge; on a cut face
+  // (interior) the LARGEST → 1 outlines the cut polygon (block boundaries on
+  // the section wall). fwidth gives a ~screen-constant line; fade the effect
+  // out as the block shrinks toward demotion so the far field stays clean.
+  if (uEdges > 0.5) {
+    vec3 a2 = abs(toBox * (p - vCenter)) / vHalf;
+    float m1 = max(a2.x, max(a2.y, a2.z));
+    float m2 = max(min(a2.x, a2.y), min(max(a2.x, a2.y), a2.z));
+    float e = onCut ? m1 : m2;
+    float dpx = (1.0 - e) / max(fwidth(e), 1e-6);          // distance to the edge in pixels
+    float edge = 1.0 - clamp(dpx * 0.7 - 0.3, 0.0, 1.0);   // ~1.5 px, soft falloff
+    edge *= clamp((vPxR - 5.0) / 8.0, 0.0, 1.0);           // fade below ~13 px projected radius
+    shade *= 1.0 - 0.4 * edge;
+  }
+  outColor = vec4(vColor.rgb * shade, vColor.a);
+}`;
+
+// Far-field fragment: splat only, NO gl_FragDepth anywhere → early-z stays
+// enabled for these draws — the perf lever for distant chunks (§2.3 mitigation).
+const FRAG_CHEAP$gl_blocks = `#version 300 es
+precision highp float;
+flat in vec3 vCenter;
+flat in vec3 vHalf;
+flat in vec4 vColor;
+flat in float vMode;
+flat in float vCull;
+in vec2 vCorner;
+in vec3 vWorldPos;
+uniform vec3 uEye;
+uniform vec3 uLightDir;
+uniform mat4 uViewProj;
+out vec4 outColor;
+${SCREENDOOR$gl_blocks}
+void main() {
+  if (vCull > 0.5) discard;
+  if (_screendoor()) discard;
+  if (dot(vCorner, vCorner) > 1.0) discard;
+  outColor = vColor;
+}`;
+
+// Golden-angle hue walk → visually distinct category colors (code → color).
+function categoryPalettePixels(n = 256) {
+  const out = new Uint8Array(n * 4);
+  for (let i = 0; i < n; i++) {
+    const h = (i * 137.508) % 360, s = 0.55, l = 0.58;
+    const c = (1 - Math.abs(2 * l - 1)) * s, x = c * (1 - Math.abs(((h / 60) % 2) - 1)), m = l - c / 2;
+    const [r, g, b] = h < 60 ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x] : h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x];
+    out[i * 4] = Math.round((r + m) * 255); out[i * 4 + 1] = Math.round((g + m) * 255); out[i * 4 + 2] = Math.round((b + m) * 255); out[i * 4 + 3] = 255;
+  }
+  return out;
+}
+
+function createBlocksPipeline(gl) {
+  const mkProg = (frag) => {
+    const prog = makeProgram(gl, VERT$gl_blocks, frag);
+    const U = (n) => gl.getUniformLocation(prog, n);
+    return { prog, uni: {
+      viewProj: U('uViewProj'), eye: U('uEye'), right: U('uRight'), up: U('uUp'),
+      gridOrigin: U('uGridOrigin'), gridSize: U('uGridSize'), gridRot: U('uGridRot'),
+      dimPalette: U('uDimPalette'), subBlock: U('uSubBlock'), opacity: U('uOpacity'),
+      perspScale: U('uPerspScale'), demotePx: U('uDemotePx'), pointPx: U('uPointPx'),
+      colorMode: U('uColorMode'), zRange: U('uZRange'), chanChunk: U('uChanChunk'), chanDoc: U('uChanDoc'),
+      ramp: U('uRamp'), palette: U('uPalette'), lightDir: U('uLightDir'),
+      mask: U('uMask'), filterOn: U('uFilterOn'), isolate: U('uIsolate'), forceSplat: U('uForceSplat'), fixedSplat: U('uFixedSplat'), picked: U('uPicked'), pickedLayer: U('uPickedLayer'), layer: U('uLayer'), repaint: U('uRepaint'),
+      catVis: U('uCatVis'), catVisOn: U('uCatVisOn'), sel: U('uSel'), selOn: U('uSelOn'),
+      rule: U('uRule'), ruleOn: U('uRuleOn'),
+      chanTex: U('uChanTex'), chanTexOn: U('uChanTexOn'),
+      secPlane: U('uSecPlane'), secCfg: U('uSecCfg'), edges: U('uEdges'),
+      ortho: U('uOrtho'), fwd: U('uFwd'), orthoRay: U('uOrthoRay'), backoff: U('uBackoff'),
+    } };
+  };
+  const full = mkProg(FRAG$gl_blocks), cheap = mkProg(FRAG_CHEAP$gl_blocks);
+  let active = full;
+
+  // Upload one BlockChunk → buffers + a VAO whose instance pointers get re-aimed
+  // per slice. CPU arrays are free to die after this returns.
+  function upload(chunk) {
+    const vao = gl.createVertexArray();
+    gl.bindVertexArray(vao);
+    const mkBuf = (data) => { const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b); gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW); return b; };
+    const bIjk = mkBuf(chunk.ijk), bChan = mkBuf(chunk.chan), bCat = mkBuf(chunk.cat);
+    const bRec = mkBuf(chunk.recIdx);                      // filter-mask lookup + pick pass
+    const sub = !!(chunk.dim && chunk.dimPalette);
+    const bDim = sub ? mkBuf(chunk.dim) : null;            // per-block u8 size code
+    gl.bindVertexArray(null);
+    // sub-blocked: a small Nx1 RGBA32F palette of half-dims (box radii). NEAREST
+    // sampling of a float texture is core WebGL2 (only float RENDER needs an ext).
+    let dimTex = null;
+    if (sub) {
+      const pal = chunk.dimPalette, data = new Float32Array(pal.length * 4);
+      for (let i = 0; i < pal.length; i++) { data[i * 4] = pal[i][0]; data[i * 4 + 1] = pal[i][1]; data[i * 4 + 2] = pal[i][2]; }
+      dimTex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, dimTex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, pal.length, 1, 0, gl.RGBA, gl.FLOAT, data);
+      for (const p of [gl.TEXTURE_MIN_FILTER, gl.TEXTURE_MAG_FILTER]) gl.texParameteri(gl.TEXTURE_2D, p, gl.NEAREST);
+      for (const p of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T]) gl.texParameteri(gl.TEXTURE_2D, p, gl.CLAMP_TO_EDGE);
+    }
+    return {
+      kind: 'blocks', vao, buffers: sub ? [bIjk, bChan, bCat, bRec, bDim] : [bIjk, bChan, bCat, bRec],
+      bIjk, bChan, bCat, bRec, bDim, dimTex, dimPalette: sub ? chunk.dimPalette : null,
+      count: chunk.count, bboxLocal: chunk.bboxLocal, cursor: 0,
+      grid: chunk.grid, chanRange: chunk.chanRange,
+    };
+  }
+
+  // Aim the instance attributes at element `first` and draw k instances.
+  // useCheap: the whole chunk projects below the demotion threshold, so the
+  // no-gl_FragDepth program (early-z enabled) draws it as forced splats.
+  function drawSlice(c, first, k, useCheap = false) {
+    const pp = useCheap ? cheap : full;
+    if (pp !== active) { gl.useProgram(pp.prog); active = pp; }
+    const uni = active.uni;
+    gl.uniform1f(uni.forceSplat, useCheap ? 1 : 0);
+    gl.bindVertexArray(c.vao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, c.bIjk);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 3, gl.UNSIGNED_SHORT, false, 0, first * 6);
+    gl.vertexAttribDivisor(0, 1);
+    gl.bindBuffer(gl.ARRAY_BUFFER, c.bChan);
+    gl.enableVertexAttribArray(1);
+    gl.vertexAttribPointer(1, 1, gl.UNSIGNED_SHORT, true, 0, first * 2);
+    gl.vertexAttribDivisor(1, 1);
+    gl.bindBuffer(gl.ARRAY_BUFFER, c.bCat);
+    gl.enableVertexAttribArray(2);
+    gl.vertexAttribPointer(2, 1, gl.UNSIGNED_BYTE, false, 0, first);
+    gl.vertexAttribDivisor(2, 1);
+    gl.bindBuffer(gl.ARRAY_BUFFER, c.bRec);
+    gl.enableVertexAttribArray(3);
+    gl.vertexAttribIPointer(3, 1, gl.UNSIGNED_INT, 0, first * 4);
+    gl.vertexAttribDivisor(3, 1);
+    if (c.dimTex) {                                         // sub-blocked: per-block size code + palette
+      gl.bindBuffer(gl.ARRAY_BUFFER, c.bDim);
+      gl.enableVertexAttribArray(4);
+      gl.vertexAttribIPointer(4, 1, gl.UNSIGNED_BYTE, 0, first);
+      gl.vertexAttribDivisor(4, 1);
+      gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, c.dimTex);
+      gl.uniform1f(uni.subBlock, 1);
+    } else {
+      gl.disableVertexAttribArray(4);
+      // A disabled `in uint aDim` reads the generic current value, which defaults to
+      // FLOAT — a type mismatch vs the uint declaration (GL_INVALID_OPERATION at draw).
+      // Give it a valid uint default; aDim is unused when uSubBlock=0, so 0 is a no-op.
+      gl.vertexAttribI4ui(4, 0, 0, 0, 0);
+      gl.uniform1f(uni.subBlock, 0);
+    }
+    gl.uniform3f(uni.gridOrigin, c.grid.originLocal[0], c.grid.originLocal[1], c.grid.originLocal[2]);
+    gl.uniform3f(uni.gridSize, c.grid.size[0], c.grid.size[1], c.grid.size[2]);
+    gl.uniformMatrix3fv(uni.gridRot, false, c.grid.rot || IDENTITY3);
+    const span = c.chanRange[1] - c.chanRange[0];
+    gl.uniform2f(uni.chanChunk, c.chanRange[0], span > 0 ? span : 0);
+    gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, k);
+  }
+
+  // Per-frame program state (called once before the chunk loop) — set on BOTH
+  // programs so drawSlice can switch freely between full and cheap.
+  function begin(cam, { pointPx, colorMode, zRange, chanDoc, ramp, palette, viewportH, maskTex = null, isolate = false, pointsView = false, picked = 0xFFFFFFFF, pickedLayer = 0xFFFFFFFF, layer = 0, section = null, catVisTex = null, selTex = null, ruleTex = null, chanTex = null, opacity = 1, edges = false }) {
+    const s = cam.state;
+    for (const pp of [full, cheap]) {
+      gl.useProgram(pp.prog);
+      const uni = pp.uni;
+      gl.uniformMatrix4fv(uni.viewProj, false, s.viewProj);
+      gl.uniform3f(uni.eye, s.eye[0], s.eye[1], s.eye[2]);
+      const v = s.view;                                    // camera basis = view-matrix rotation rows
+      gl.uniform3f(uni.right, v[0], v[4], v[8]);
+      gl.uniform3f(uni.up, v[1], v[5], v[9]);
+      // headlight, slightly above the view direction
+      let lx = s.eye[0] - s.target[0], ly = s.eye[1] - s.target[1], lz = s.eye[2] - s.target[2];
+      const ll = Math.hypot(lx, ly, lz) || 1;
+      lx = lx / ll + v[1] * 0.4; ly = ly / ll + v[5] * 0.4; lz = lz / ll + v[9] * 0.4;
+      const l2 = Math.hypot(lx, ly, lz) || 1;
+      gl.uniform3f(uni.lightDir, lx / l2, ly / l2, lz / l2);
+      gl.uniform1f(uni.perspScale, s.ortho ? (viewportH / 2) / s.halfH : (viewportH / 2) / Math.tan(s.fovY / 2));
+      gl.uniform1f(uni.ortho, s.ortho ? 1 : 0);
+      gl.uniform1f(uni.orthoRay, s.ortho ? 1 : 0);
+      {
+        const f = [s.target[0] - s.eye[0], s.target[1] - s.eye[1], s.target[2] - s.eye[2]];
+        const fl = Math.hypot(...f) || 1;
+        gl.uniform3f(uni.fwd, f[0] / fl, f[1] / fl, f[2] / fl);
+        gl.uniform1f(uni.backoff, s.radius * 2);
+      }
+      gl.uniform1f(uni.demotePx, 2.0);
+      gl.uniform1f(uni.pointPx, pointPx * backingRatio(gl.canvas));
+      gl.uniform1i(uni.colorMode, colorMode);
+      gl.uniform2f(uni.zRange, zRange[0], zRange[1]);
+      gl.uniform2f(uni.chanDoc, chanDoc[0], chanDoc[1]);
+      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, ramp); gl.uniform1i(uni.ramp, 0);
+      gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, palette); gl.uniform1i(uni.palette, 1);
+      gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, palette); gl.uniform1i(uni.dimPalette, 2);   // unit 2 = per-chunk sub-block half-dims; a complete default so regular draws never sample incomplete
+      gl.uniform1f(uni.subBlock, 0);
+      gl.uniform1f(uni.opacity, Math.max(0.02, Math.min(1, opacity)));   // per-layer screen-door opacity
+      gl.uniform1f(uni.fixedSplat, pointsView ? 1 : 0);
+      gl.uniform1ui(uni.picked, picked >>> 0);
+      gl.uniform1ui(uni.pickedLayer, pickedLayer >>> 0);
+      gl.uniform1ui(uni.layer, layer >>> 0);              // this draw's layer — the id no longer hides in aRec
+      gl.uniform2ui(uni.repaint, 0xFFFFFFFF, 0xFFFFFFFF);
+      gl.uniform4f(uni.secPlane, section ? section.n[0] : 0, section ? section.n[1] : 0, section ? section.n[2] : 1, section ? section.d : 0);
+      gl.uniform2f(uni.secCfg, section ? 1 : 0, section ? section.half : 0);
+      gl.uniform1f(uni.edges, edges ? 1 : 0);
+      gl.uniform1f(uni.filterOn, maskTex ? 1 : 0);
+      gl.uniform1f(uni.isolate, isolate ? 1 : 0);
+      if (maskTex) { gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, maskTex); gl.uniform1i(uni.mask, 4); }
+      gl.uniform1f(uni.catVisOn, catVisTex ? 1 : 0);
+      if (catVisTex) { gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, catVisTex); gl.uniform1i(uni.catVis, 5); }
+      gl.uniform1f(uni.selOn, selTex ? 1 : 0);
+      if (selTex) { gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D, selTex); gl.uniform1i(uni.sel, 6); }
+      gl.uniform1f(uni.ruleOn, ruleTex ? 1 : 0);
+      if (ruleTex) { gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, ruleTex); gl.uniform1i(uni.rule, 7); }
+      gl.uniform1f(uni.chanTexOn, chanTex ? 1 : 0);
+      if (chanTex) { gl.activeTexture(gl.TEXTURE8); gl.bindTexture(gl.TEXTURE_2D, chanTex); gl.uniform1i(uni.chanTex, 8); }
+    }
+    active = full;
+    gl.useProgram(full.prog);
+  }
+
+  // The pick-repaint pass (gl.js): both programs get the target pair, then the
+  // lazily-tracked active program is restored so drawSlice's cache stays honest.
+  function setRepaint(a, b) {
+    for (const pp of [full, cheap]) { gl.useProgram(pp.prog); gl.uniform2ui(pp.uni.repaint, a >>> 0, b >>> 0); }
+    if (active) gl.useProgram(active.prog);
+  }
+
+  return { upload, drawSlice, begin, setRepaint };
+}
+
+// ── src/core/camera.js ──
+
+// @gcu/condenser — minimal mat4 math + an orbit camera. Raw WebGL2 needs ~four
+// matrix ops, not a scene graph (dee's camera is Three-coupled — micro-spec §5
+// says borrow the *math*, and the math is textbook, so it lives here).
+// Column-major Float32Array(16), GL convention. All coordinates FRAME-LOCAL —
+// the document frame keeps magnitudes small enough for f32 uniforms.
+
+function mat4Perspective(fovYRad, aspect, near, far) {
+  const f = 1 / Math.tan(fovYRad / 2), nf = 1 / (near - far);
+  const m = new Float32Array(16);
+  m[0] = f / aspect; m[5] = f;
+  m[10] = (far + near) * nf; m[11] = -1;
+  m[14] = 2 * far * near * nf;
+  return m;
+}
+
+function mat4Ortho(halfH, aspect, near, far) {
+  const halfW = halfH * aspect, m = new Float32Array(16);
+  m[0] = 1 / halfW; m[5] = 1 / halfH;
+  m[10] = -2 / (far - near); m[14] = -(far + near) / (far - near);
+  m[15] = 1;
+  return m;
+}
+
+function mat4LookAt(eye, target, up) {
+  let zx = eye[0] - target[0], zy = eye[1] - target[1], zz = eye[2] - target[2];
+  let l = Math.hypot(zx, zy, zz) || 1; zx /= l; zy /= l; zz /= l;
+  let xx = up[1] * zz - up[2] * zy, xy = up[2] * zx - up[0] * zz, xz = up[0] * zy - up[1] * zx;
+  l = Math.hypot(xx, xy, xz) || 1; xx /= l; xy /= l; xz /= l;
+  const yx = zy * xz - zz * xy, yy = zz * xx - zx * xz, yz = zx * xy - zy * xx;
+  const m = new Float32Array(16);
+  m[0] = xx; m[4] = xy; m[8] = xz; m[12] = -(xx * eye[0] + xy * eye[1] + xz * eye[2]);
+  m[1] = yx; m[5] = yy; m[9] = yz; m[13] = -(yx * eye[0] + yy * eye[1] + yz * eye[2]);
+  m[2] = zx; m[6] = zy; m[10] = zz; m[14] = -(zx * eye[0] + zy * eye[1] + zz * eye[2]);
+  m[15] = 1;
+  return m;
+}
+
+function mat4Multiply(a, b) {                       // a·b (both column-major)
+  const m = new Float32Array(16);
+  for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) {
+    m[c * 4 + r] = a[r] * b[c * 4] + a[4 + r] * b[c * 4 + 1] + a[8 + r] * b[c * 4 + 2] + a[12 + r] * b[c * 4 + 3];
+  }
+  return m;
+}
+
+// General 4×4 inverse (cofactor expansion, column-major). Used to unproject
+// (pixel, depth) → world in the deferred re-shade resolve; the viewProj is
+// always invertible for a real camera. Returns null on a singular matrix.
+function mat4Inverse(m) {
+  const inv = new Float32Array(16);
+  inv[0] = m[5] * m[10] * m[15] - m[5] * m[11] * m[14] - m[9] * m[6] * m[15] + m[9] * m[7] * m[14] + m[13] * m[6] * m[11] - m[13] * m[7] * m[10];
+  inv[4] = -m[4] * m[10] * m[15] + m[4] * m[11] * m[14] + m[8] * m[6] * m[15] - m[8] * m[7] * m[14] - m[12] * m[6] * m[11] + m[12] * m[7] * m[10];
+  inv[8] = m[4] * m[9] * m[15] - m[4] * m[11] * m[13] - m[8] * m[5] * m[15] + m[8] * m[7] * m[13] + m[12] * m[5] * m[11] - m[12] * m[7] * m[9];
+  inv[12] = -m[4] * m[9] * m[14] + m[4] * m[10] * m[13] + m[8] * m[5] * m[14] - m[8] * m[6] * m[13] - m[12] * m[5] * m[10] + m[12] * m[6] * m[9];
+  inv[1] = -m[1] * m[10] * m[15] + m[1] * m[11] * m[14] + m[9] * m[2] * m[15] - m[9] * m[3] * m[14] - m[13] * m[2] * m[11] + m[13] * m[3] * m[10];
+  inv[5] = m[0] * m[10] * m[15] - m[0] * m[11] * m[14] - m[8] * m[2] * m[15] + m[8] * m[3] * m[14] + m[12] * m[2] * m[11] - m[12] * m[3] * m[10];
+  inv[9] = -m[0] * m[9] * m[15] + m[0] * m[11] * m[13] + m[8] * m[1] * m[15] - m[8] * m[3] * m[13] - m[12] * m[1] * m[11] + m[12] * m[3] * m[9];
+  inv[13] = m[0] * m[9] * m[14] - m[0] * m[10] * m[13] - m[8] * m[1] * m[14] + m[8] * m[2] * m[13] + m[12] * m[1] * m[10] - m[12] * m[2] * m[9];
+  inv[2] = m[1] * m[6] * m[15] - m[1] * m[7] * m[14] - m[5] * m[2] * m[15] + m[5] * m[3] * m[14] + m[13] * m[2] * m[7] - m[13] * m[3] * m[6];
+  inv[6] = -m[0] * m[6] * m[15] + m[0] * m[7] * m[14] + m[4] * m[2] * m[15] - m[4] * m[3] * m[14] - m[12] * m[2] * m[7] + m[12] * m[3] * m[6];
+  inv[10] = m[0] * m[5] * m[15] - m[0] * m[7] * m[13] - m[4] * m[1] * m[15] + m[4] * m[3] * m[13] + m[12] * m[1] * m[7] - m[12] * m[3] * m[5];
+  inv[14] = -m[0] * m[5] * m[14] + m[0] * m[6] * m[13] + m[4] * m[1] * m[14] - m[4] * m[2] * m[13] - m[12] * m[1] * m[6] + m[12] * m[2] * m[5];
+  inv[3] = -m[1] * m[6] * m[11] + m[1] * m[7] * m[10] + m[5] * m[2] * m[11] - m[5] * m[3] * m[10] - m[9] * m[2] * m[7] + m[9] * m[3] * m[6];
+  inv[7] = m[0] * m[6] * m[11] - m[0] * m[7] * m[10] - m[4] * m[2] * m[11] + m[4] * m[3] * m[10] + m[8] * m[2] * m[7] - m[8] * m[3] * m[6];
+  inv[11] = -m[0] * m[5] * m[11] + m[0] * m[7] * m[9] + m[4] * m[1] * m[11] - m[4] * m[3] * m[9] - m[8] * m[1] * m[7] + m[8] * m[3] * m[5];
+  inv[15] = m[0] * m[5] * m[10] - m[0] * m[6] * m[9] - m[4] * m[1] * m[10] + m[4] * m[2] * m[9] + m[8] * m[1] * m[6] - m[8] * m[2] * m[5];
+  const det = m[0] * inv[0] + m[1] * inv[4] + m[2] * inv[8] + m[3] * inv[12];
+  if (!det) return null;
+  const d = 1 / det;
+  for (let i = 0; i < 16; i++) inv[i] *= d;
+  return inv;
+}
+
+// Frustum planes from a viewProj matrix (Gribb–Hartmann, column-major): six
+// [a,b,c,d] rows — a point is inside when a·x+b·y+c·z+d ≥ 0 for all six.
+function frustumPlanes(m) {
+  const row = (r) => [m[r], m[4 + r], m[8 + r], m[12 + r]];
+  const r0 = row(0), r1 = row(1), r2 = row(2), r3 = row(3);
+  const add = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2], a[3] + b[3]];
+  const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2], a[3] - b[3]];
+  return [add(r3, r0), sub(r3, r0), add(r3, r1), sub(r3, r1), add(r3, r2), sub(r3, r2)];
+}
+
+// Conservative AABB-vs-frustum: positive-vertex test — the box is out only when
+// its most-positive corner for some plane is still behind that plane.
+function aabbInFrustum(planes, b) {                 // b = [minX,minY,minZ,maxX,maxY,maxZ]
+  for (const [a, bb, c, d] of planes) {
+    const px = a > 0 ? b[3] : b[0], py = bb > 0 ? b[4] : b[1], pz = c > 0 ? b[5] : b[2];
+    if (a * px + bb * py + c * pz + d < 0) return false;
+  }
+  return true;
+}
+
+function transformPoint(m, p) {                     // m · [p,1] → perspective divide
+  const x = p[0], y = p[1], z = p[2];
+  const w = m[3] * x + m[7] * y + m[11] * z + m[15] || 1;
+  return [
+    (m[0] * x + m[4] * y + m[8] * z + m[12]) / w,
+    (m[1] * x + m[5] * y + m[9] * z + m[13]) / w,
+    (m[2] * x + m[6] * y + m[10] * z + m[14]) / w,
+  ];
+}
+
+/**
+ * Orbit camera: target + spherical (radius, theta around Z, phi from the XY
+ * plane). Z-up (geology convention). Produces eye/view/proj; near/far adapt to
+ * the orbit radius each update (dee's depth-precision trick).
+ */
+// A camera state that draws geometry at p as the original draws p + o — a layer
+// offset as a change of camera, not of geometry. view/viewProj gain a trailing
+// translation; eye and target move by −o, so every shader that works from
+// (p − eye), the view's rotation columns and viewProj (block/stick raycasts,
+// gl_FragDepth, the headlight) stays exact. Section planes must be shifted the
+// same way by the caller (d − n·o). Under vertical exaggeration the offset's z
+// stretches with everything else, since the z-scale lives inside viewProj.
+function translateState(s, o) {
+  if (!o) return s;
+  const T = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, o[0], o[1], o[2], 1];
+  return {
+    ...s,
+    eye: [s.eye[0] - o[0], s.eye[1] - o[1], s.eye[2] - o[2]],
+    target: [s.target[0] - o[0], s.target[1] - o[1], s.target[2] - o[2]],
+    view: mat4Multiply(s.view, T),
+    viewProj: mat4Multiply(s.viewProj, T),
+  };
+}
+
+function createOrbitCamera({ fovY = 45 * Math.PI / 180 } = {}) {
+  const c = {
+    target: [0, 0, 0], radius: 100, theta: Math.PI / 4, phi: Math.PI / 5, fovY,
+    aspect: 1, near: 0.1, far: 1e6,
+    ortho: false, halfH: 0,                                // ortho: half-height = radius·tan(fovY/2) — toggling keeps apparent size at the target
+    zExag: 1,                                              // vertical exaggeration: a GLOBAL scene z-scale folded into viewProj (all layers stay registered; queries stay in real coords — see update())
+    eye: [0, 0, 0], view: null, proj: null, viewProj: null,
+  };
+  const EPS = 0.01;
+  function update() {
+    c.phi = Math.max(-Math.PI / 2 + EPS, Math.min(Math.PI / 2 - EPS, c.phi));
+    c.radius = Math.max(0.05, c.radius);
+    const cp = Math.cos(c.phi);
+    c.eye = [
+      c.target[0] + c.radius * cp * Math.cos(c.theta),
+      c.target[1] + c.radius * cp * Math.sin(c.theta),
+      c.target[2] + c.radius * Math.sin(c.phi),
+    ];
+    // near at radius/4000: on a km-scale fitted model the old /1000 put the
+    // clip plane METRES in front of the camera — visible slicing when panning
+    // close past geometry. /4000 keeps depth precision under a block size at
+    // the far end of a 24-bit buffer (error ~ z²/(near·2²⁴): ~3 m at z=10 km
+    // with near 2.5 m) while clipping 4× closer.
+    c.near = Math.max(c.radius / 4000, 0.01);
+    c.far = c.radius * 100;
+    c.view = mat4LookAt(c.eye, c.target, [0, 0, 1]);
+    c.halfH = c.radius * Math.tan(c.fovY / 2);
+    c.proj = c.ortho ? mat4Ortho(c.halfH, c.aspect, c.near, c.far) : mat4Perspective(c.fovY, c.aspect, c.near, c.far);
+    c.viewProj = mat4Multiply(c.proj, c.view);
+    // Vertical exaggeration: fold a world-space z-scale into viewProj, pivoted at
+    // the target's z (so the look-at point stays fixed). viewProj·M means every
+    // vertex is z-scaled AT DRAW ONLY — shaders still test real z for section
+    // culling (before viewProj), pick is the ID-buffer (real recIdx), measure
+    // reads source records, and unproject uses inverse(viewProj) which yields real
+    // coords. One matrix, all layers registered, every query honest.
+    if (c.zExag && c.zExag !== 1) {
+      const S = c.zExag, tz = c.target[2];                 // z' = tz + (z-tz)·S  ⇒  column-major z-scale about tz
+      c.viewProj = mat4Multiply(c.viewProj, [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, S, 0, 0, 0, tz * (1 - S), 1]);
+    }
+    return c;
+  }
+  return {
+    get state() { return c; },
+    update,
+    setAspect(a) { c.aspect = a || 1; return update(); },
+    orbit(dTheta, dPhi) { c.theta += dTheta; c.phi += dPhi; return update(); },
+    dolly(f) { c.radius *= f; return update(); },
+    pan(dxPx, dyPx, viewportH) {                           // screen px → world at target depth
+      const s = 2 * c.radius * Math.tan(c.fovY / 2) / (viewportH || 1);
+      const ct = Math.cos(c.theta), st = Math.sin(c.theta), sp = Math.sin(c.phi), cp = Math.cos(c.phi);
+      // camera right = (-st, ct, 0); camera up ≈ (-ct·sp, -st·sp, cp)
+      c.target[0] += (-st) * (-dxPx * s) + (-ct * sp) * (dyPx * s);
+      c.target[1] += (ct) * (-dxPx * s) + (-st * sp) * (dyPx * s);
+      // vertical exaggeration stretches displayed z by zExag, so a real-z move
+      // shows amplified — divide the up-vector's z contribution by zExag so the
+      // grabbed point tracks the cursor 1:1 (M⁻¹ of the up-move; x/y are unscaled).
+      // In plan view cp=0 → no change, as it should be.
+      c.target[2] += cp * (dyPx * s) / (c.zExag || 1);
+      return update();
+    },
+    setOrtho(on) { c.ortho = !!on; return update(); },
+    fit(bbox) {                                            // frame a local-space bbox
+      c.target = [(bbox[0] + bbox[3]) / 2, (bbox[1] + bbox[4]) / 2, (bbox[2] + bbox[5]) / 2];
+      const dx = bbox[3] - bbox[0], dy = bbox[4] - bbox[1], dz = bbox[5] - bbox[2];
+      const d = Math.hypot(dx, dy, dz) || 1;
+      c.radius = (d / 2) / Math.tan(c.fovY / 2) * 1.2;
+      return update();
+    },
+  };
+}
+
+// Wire standard mouse/touch input onto an orbit camera. Returns a detach fn.
+// left-drag orbit · right-drag / shift-drag pan · wheel dolly.
+function attachOrbitInput(canvas, cam, { onChange } = {}) {
+  // pointers tracked by id: one = orbit (or pan with right-button/shift),
+  // two = the touch grammar — pinch dollies, the centroid pans, twist orbits
+  // theta. touch-action:none or the browser eats the gestures first.
+  canvas.style.touchAction = 'none';
+  const pts = new Map();
+  let mode = null, lx = 0, ly = 0;
+  let pinch = null;                                        // { span, cx, cy, angle }
+  const pinchState = () => {
+    const [a, b] = [...pts.values()];
+    return {
+      span: Math.hypot(b.x - a.x, b.y - a.y) || 1,
+      cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2,
+      angle: Math.atan2(b.y - a.y, b.x - a.x),
+    };
+  };
+  const down = (e) => {
+    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    try { canvas.setPointerCapture(e.pointerId); } catch { /* synthetic */ }
+    if (pts.size === 2) { pinch = pinchState(); mode = 'pinch'; return; }
+    if (pts.size > 2) return;                              // third finger: ignore
+    mode = (e.button === 2 || e.shiftKey) ? 'pan' : 'orbit';
+    lx = e.clientX; ly = e.clientY;
+  };
+  const move = (e) => {
+    if (!pts.has(e.pointerId)) return;
+    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (mode === 'pinch' && pts.size >= 2) {
+      const now = pinchState();
+      cam.dolly(pinch.span / now.span > 0 ? pinch.span / now.span : 1);
+      cam.pan(now.cx - pinch.cx, now.cy - pinch.cy, canvas.clientHeight);
+      let dA = now.angle - pinch.angle;
+      if (dA > Math.PI) dA -= 2 * Math.PI;
+      if (dA < -Math.PI) dA += 2 * Math.PI;
+      if (!cam.state.orbitLock) cam.orbit(-dA, 0);         // twist: grab-the-world (locked views don't twist)
+      pinch = now;
+      if (onChange) onChange();
+      return;
+    }
+    if (!mode || mode === 'pinch') return;
+    const dx = e.clientX - lx, dy = e.clientY - ly; lx = e.clientX; ly = e.clientY;
+    // orbitLock (state flag): 2D/section-locked views — drags PAN instead of
+    // orbiting, so a locked plan/section can't be knocked off-plane by a drag
+    if (mode === 'orbit') { if (cam.state.orbitLock) cam.pan(dx, dy, canvas.clientHeight); else cam.orbit(-dx * 0.006, dy * 0.006); }
+    else cam.pan(dx, dy, canvas.clientHeight);
+    if (onChange) onChange();
+  };
+  const up = (e) => {
+    pts.delete(e.pointerId);
+    try { canvas.releasePointerCapture(e.pointerId); } catch { /* gone */ }
+    if (pts.size >= 2) { pinch = pinchState(); return; }   // still pinching with others
+    if (pts.size === 1) {                                  // pinch → single: re-anchor, no jump
+      const rest = [...pts.values()][0];
+      mode = 'orbit'; lx = rest.x; ly = rest.y; pinch = null;
+      return;
+    }
+    mode = null; pinch = null;
+  };
+  const wheel = (e) => { e.preventDefault(); cam.dolly(Math.pow(1.0015, e.deltaY)); if (onChange) onChange(); };
+  const ctx = (e) => e.preventDefault();
+  canvas.addEventListener('pointerdown', down);
+  canvas.addEventListener('pointermove', move);
+  canvas.addEventListener('pointerup', up);
+  canvas.addEventListener('pointercancel', up);
+  canvas.addEventListener('wheel', wheel, { passive: false });
+  canvas.addEventListener('contextmenu', ctx);
+  return () => {
+    canvas.removeEventListener('pointerdown', down);
+    canvas.removeEventListener('pointermove', move);
+    canvas.removeEventListener('pointerup', up);
+    canvas.removeEventListener('pointercancel', up);
+    canvas.removeEventListener('wheel', wheel);
+    canvas.removeEventListener('contextmenu', ctx);
+  };
+}
+
+// ── src/core/section.js ──
+
+// A layer's view of the section — ONE definition for the draw (gl.js) and the
+// pick (gl-pick.js). They were two hand-kept copies; a pick that disagrees with
+// the picture is the bug a geologist meets on exactly the views they work in.
+//
+// sec: { n, d, half, d0?, clip?, traceHalf? } — d0 is the plane, d/half the slab
+// mode (a layer's `sectioned`):
+//   true            follow the section
+//   false           don't cut
+//   'front'/'behind' keep that side only (a half-space is a slab with the far
+//                   face pushed past the data — the global clip's own trick)
+//   { half }        follow with this layer's OWN slab: ± half around the plane,
+//                   whatever the section's slab or half-space
+//   { whole: true } don't cut — the host hides what misses the slab itself
+//                   (micro keeps the drillholes that cross it, whole)
+// offset: a moved layer (setLayerOffset) is cut where it is DRAWN — in its own
+// coordinates the plane sits at d − n·o.
+
+function offsetSection(sec, o) {
+  if (!sec || !o) return sec;
+  const k = sec.n[0] * o[0] + sec.n[1] * o[1] + sec.n[2] * o[2];
+  return sec.d0 !== undefined ? { ...sec, d: sec.d - k, d0: sec.d0 - k } : { ...sec, d: sec.d - k };
+}
+
+function layerSection(sec, mode = true, offset = null) {
+  sec = offsetSection(sec, offset);
+  const m = mode;
+  if (m && typeof m === 'object') {
+    if (!sec || m.whole) return null;
+    if (m.half > 0) return { ...sec, d: sec.d0 !== undefined ? sec.d0 : sec.d, half: m.half, clip: 'slab', traceHalf: undefined };
+    return sec;
+  }
+  if (!sec || m === false) return null;
+  if ((m === 'front' || m === 'behind') && sec.d0 !== undefined) {
+    const H = Math.max(1e5, 8 * (sec.half || 1));
+    return { ...sec, d: m === 'front' ? sec.d0 + H : sec.d0 - H, half: H, clip: m, traceHalf: sec.traceHalf || (sec.half < 9e4 ? sec.half : 1) };
+  }
+  return sec;
+}
+
+// meshes render their section as a TRACE flattened onto the wall — for a
+// half-space the slab half is ~1e5 (it swallows the scene), so the trace band
+// narrows to the TRUE plane ± traceHalf; slab sections already carry the width
+function meshSection(sec, mode = true, offset = null) {
+  const s2 = layerSection(sec, mode, offset);
+  if (!s2 || !(s2.clip === 'front' || s2.clip === 'behind') || s2.d0 === undefined) return s2;
+  return { ...s2, d: s2.d0, half: Math.max(0.01, s2.traceHalf || 1) };
+}
+
+// ── src/core/gl-pick.js ──
+
+// @gcu/condenser — GPU ID-buffer picking. On click, the visible chunks re-render
+// once into an offscreen target with the fragment shaders outputting the RECORD
+// INDEX encoded as RGBA8 instead of a color, scissored to the cursor pixel; one
+// readPixels + decode gives the exact element under the cursor. The SAME analytic
+// geometry that renders decides the pick — the impostor's ray-AABB test and real
+// depth writes resolve which block face is hit, pixel-perfect at any zoom. No CPU
+// spatial index. The record index is THE join key (micro-spec §4): a pick is a
+// row number in the source file.
+
+
+// no encoder: the pick target is RG32UI (R = record, G = layer + face), so the
+// ids go out as integers instead of being smeared across four bytes and
+// reassembled. The layer needs 6 bits and has 32, so the FACE of the hit rides
+// in the spare ones — the fragment shader already solved the ray-box entry to
+// write true depth, and throwing that away meant the CPU had to re-derive it
+// (a second ray-AABB + sub-block dims + slab clip, drifting from what was drawn).
+//
+//   G = (layer & 0xFFFF) | (face << 16)
+//   face: 0=−X 1=+X 2=−Y 3=+Y 4=−Z 5=+Z, 6 = the SECTION CUT wall, 7 = none
+//
+// Naming the face names the PLANE, so the exact hit point is ray ∩ plane — one
+// line on the CPU, and it agrees with the pixel by construction.
+const ENCODE = '';
+const PACK = `
+const uint NO_FACE = 7u;
+uint packId(uint layer, uint face) { return (layer & 0xFFFFu) | (face << 16); }`;
+
+// ── points ──
+const PICK_VERT_PTS = `#version 300 es
+precision highp float;
+layout(location=0) in vec3 aPos;
+layout(location=2) in float aClass;
+layout(location=4) in uint aRec;
+uniform mat4 uViewProj;
+uniform vec3 uBoxMin, uBoxSpan;
+uniform float uPointPx;
+uniform vec4 uSecPlane;
+uniform vec2 uSecCfg;
+uniform sampler2D uMask;
+uniform float uFilterOn, uIsolate;
+uniform sampler2D uCatVis;
+uniform float uCatVisOn;
+uniform sampler2D uRule;
+uniform float uRuleOn;
+flat out uint vRec;
+flat out float vCull;
+void main() {
+  vec3 p = uBoxMin + aPos * uBoxSpan;
+  gl_Position = uViewProj * vec4(p, 1.0);
+  gl_PointSize = uPointPx;
+  vRec = aRec;
+  vCull = (uSecCfg.x > 0.5 && abs(dot(p, uSecPlane.xyz) - uSecPlane.w) > uSecCfg.y) ? 1.0 : 0.0;
+  if (uFilterOn > 0.5 && uIsolate > 0.5) {
+    int rec = int(aRec);
+    if (texelFetch(uMask, ivec2(rec & 8191, rec >> 13), 0).r < 0.5) vCull = 1.0;   // isolated-away isn't pickable
+  }
+  float cls = aClass;
+  if (uRuleOn > 0.5) {
+    int rr = int(aRec);
+    cls = floor(texelFetch(uRule, ivec2(rr & 8191, rr >> 13), 0).r * 255.0 + 0.5);
+  }
+  if (uCatVisOn > 0.5 && texelFetch(uCatVis, ivec2(int(cls) & 255, 0), 0).r < 0.5) vCull = 1.0;
+}`;
+const PICK_FRAG_PTS = `#version 300 es
+precision highp float;
+flat in uint vRec;
+flat in float vCull;
+uniform uint uLayer;                    // the layer is per-DRAW, not per-element
+out uvec4 outId;                        // R = record (full uint32), G = layer | face<<16
+${PACK}
+void main() {
+  if (vCull > 0.5) discard;
+  vec2 d = gl_PointCoord - 0.5;
+  if (dot(d, d) > 0.25) discard;
+  outId = uvec4(vRec, packId(uLayer, NO_FACE), 0u, 0u);   // a splat has no face
+}`;
+
+// ── blocks (geometry identical to gl-blocks; color replaced by the encoded id) ──
+const PICK_VERT_BLK = `#version 300 es
+precision highp float;
+layout(location=0) in vec3 aIjk;
+layout(location=2) in float aCat;
+layout(location=3) in uint aRec;
+layout(location=4) in uint aDim;
+uniform mat4 uViewProj;
+uniform vec3 uEye, uRight, uUp;
+uniform vec3 uGridOrigin, uGridSize;
+uniform mat3 uGridRot;
+uniform sampler2D uDimPalette;
+uniform float uSubBlock;
+uniform float uPerspScale, uDemotePx, uPointPx, uFixedSplat, uOrtho;
+uniform sampler2D uMask;
+uniform float uFilterOn, uIsolate;
+uniform sampler2D uCatVis;
+uniform float uCatVisOn;
+uniform sampler2D uRule;
+uniform float uRuleOn;
+uniform vec4 uSecPlane;
+uniform vec2 uSecCfg;
+flat out vec3 vCenter;
+flat out vec3 vHalf;
+flat out uint vRec;
+flat out float vMode;
+flat out float vCull;
+out vec2 vCorner;
+out vec3 vWorldPos;
+void main() {
+  vec3 center = uGridOrigin + uGridRot * (aIjk * uGridSize);
+  vec3 half_ = uSubBlock > 0.5 ? texelFetch(uDimPalette, ivec2(int(aDim), 0), 0).rgb : uGridSize * 0.5;
+  float r = length(half_);
+  float dist = max(distance(uEye, center), 1e-3);
+  float distEff = uOrtho > 0.5 ? 1.0 : dist;
+  float pxR = r * uPerspScale / distEff;
+  float demoted = max(pxR < uDemotePx ? 1.0 : 0.0, uFixedSplat);
+  float quadR = uFixedSplat > 0.5
+    ? uPointPx * 0.5 * distEff / uPerspScale
+    : mix(r, max(uPointPx * 0.5, pxR) * distEff / uPerspScale, demoted);
+  vec2 corner = vec2(float(gl_VertexID & 1), float(gl_VertexID >> 1)) * 2.0 - 1.0;
+  vec3 wp = center + (uRight * corner.x + uUp * corner.y) * quadR;
+  gl_Position = uViewProj * vec4(wp, 1.0);
+  float m = 1.0;
+  if (uFilterOn > 0.5) {
+    int rec = int(aRec);
+    m = texelFetch(uMask, ivec2(rec & 8191, rec >> 13), 0).r > 0.5 ? 1.0 : 0.0;
+  }
+  // touch-the-slab cull (support radius) — the fragment clips exactly, matching
+  // the visual true-section cut so the cut wall is pickable
+  float secSupp = demoted > 0.5 ? 0.0 : dot(half_, abs(transpose(uGridRot) * uSecPlane.xyz));
+  float secCull = (uSecCfg.x > 0.5 && abs(dot(center, uSecPlane.xyz) - uSecPlane.w) > uSecCfg.y + secSupp) ? 1.0 : 0.0;
+  vCull = max((uIsolate > 0.5 && m < 0.5) ? 1.0 : 0.0, secCull);   // hidden (isolated or sectioned) isn't pickable
+  float cls = aCat;
+  if (uRuleOn > 0.5) {
+    int rr = int(aRec);
+    cls = floor(texelFetch(uRule, ivec2(rr & 8191, rr >> 13), 0).r * 255.0 + 0.5);
+  }
+  if (uCatVisOn > 0.5 && texelFetch(uCatVis, ivec2(int(cls) & 255, 0), 0).r < 0.5) vCull = 1.0;
+  vCenter = center; vHalf = half_; vRec = aRec; vMode = demoted; vCorner = corner; vWorldPos = wp;
+}`;
+const PICK_FRAG_BLK = `#version 300 es
+precision highp float;
+flat in vec3 vCenter;
+flat in vec3 vHalf;
+flat in uint vRec;
+flat in float vMode;
+flat in float vCull;
+in vec2 vCorner;
+in vec3 vWorldPos;
+uniform vec3 uEye;
+uniform vec3 uFwd;
+uniform float uOrthoRay;
+uniform float uBackoff;
+uniform mat4 uViewProj;
+uniform vec4 uSecPlane;
+uniform vec2 uSecCfg;
+uniform uint uLayer;
+uniform mat3 uGridRot;
+out uvec4 outId;
+${PACK}
+void main() {
+  if (vCull > 0.5) discard;
+  if (vMode > 0.5) {
+    if (dot(vCorner, vCorner) > 1.0) discard;
+    gl_FragDepth = gl_FragCoord.z;
+    outId = uvec4(vRec, packId(uLayer, NO_FACE), 0u, 0u);  // demoted to a splat: no box, no face
+    return;
+  }
+  vec3 ro = uOrthoRay > 0.5 ? vWorldPos - uFwd * uBackoff : uEye;
+  vec3 rd = uOrthoRay > 0.5 ? uFwd : normalize(vWorldPos - uEye);
+  // the box test in the block's frame (as gl-blocks): a rotated model's FACE
+  // ids name its LATTICE faces (U/V/W ±), not world ones
+  mat3 toBox = transpose(uGridRot);
+  vec3 roL = toBox * (ro - vCenter), rdL = toBox * rd;
+  vec3 inv = 1.0 / rdL;
+  vec3 t0 = (-vHalf - roL) * inv;
+  vec3 t1 = (vHalf - roL) * inv;
+  vec3 tmin3 = min(t0, t1), tmax3 = max(t0, t1);
+  float tin = max(max(tmin3.x, tmin3.y), tmin3.z);
+  float tout = min(min(tmax3.x, tmax3.y), tmax3.z);
+  if (tin > tout || tout < 0.0) discard;
+  float tinBox = tin;                                    // the box entry, before any slab clip
+  // clip by the section slab — the visible CUT surface is what picks (gl-blocks)
+  if (uSecCfg.x > 0.5) {
+    float den = dot(rd, uSecPlane.xyz);
+    float dc = dot(ro, uSecPlane.xyz) - uSecPlane.w;
+    if (abs(den) < 1e-9) { if (abs(dc) > uSecCfg.y) discard; }
+    else {
+      float ta = (-uSecCfg.y - dc) / den, tb = (uSecCfg.y - dc) / den;
+      tin = max(tin, min(ta, tb));
+      tout = min(tout, max(ta, tb));
+      if (tin > tout || tout < 0.0) discard;
+    }
+  }
+  float t = tin > 0.0 ? tin : tout;
+  vec4 clip = uViewProj * vec4(ro + rd * t, 1.0);
+  gl_FragDepth = clamp(clip.z / clip.w * 0.5 + 0.5, 0.0, 1.0);
+  // WHICH FACE the eye ray entered through: the axis that WON the box entry,
+  // signed by the ray's direction along it (travelling +x → you hit the −X face).
+  // If the slab clip pushed the entry past the box's own, you are looking at the
+  // CUT, not a face. tin ≤ 0 means the eye is inside the block — no face.
+  uint face = NO_FACE;
+  if (tin > 0.0) {
+    if (tin > tinBox + 1e-5) face = 6u;                  // the section cut wall
+    else {
+      uint ax = (tmin3.x >= tmin3.y && tmin3.x >= tmin3.z) ? 0u : ((tmin3.y >= tmin3.z) ? 1u : 2u);
+      float rda = ax == 0u ? rdL.x : (ax == 1u ? rdL.y : rdL.z);
+      face = ax * 2u + (rda > 0.0 ? 0u : 1u);
+    }
+  }
+  outId = uvec4(vRec, packId(uLayer, face), 0u, 0u);
+}`;
+
+// ── sticks (capsule geometry identical to gl-sticks; color = the encoded id) ──
+const PICK_VERT_STK = `#version 300 es
+precision highp float;
+layout(location=0) in vec3 aA;
+layout(location=1) in vec3 aB;
+layout(location=3) in float aCat;
+layout(location=4) in uint aRec;
+uniform mat4 uViewProj;
+uniform vec3 uEye;
+uniform float uRadius, uPerspScale, uDemotePx, uPointPx, uFixedSplat, uOrtho;
+uniform vec3 uFwd;
+uniform sampler2D uMask;
+uniform float uFilterOn, uIsolate;
+uniform sampler2D uCatVis;
+uniform float uCatVisOn;
+uniform sampler2D uRule;
+uniform float uRuleOn;
+uniform vec4 uSecPlane;
+uniform vec2 uSecCfg;
+flat out vec3 vA;
+flat out vec3 vB;
+flat out uint vRec;
+flat out float vMode;
+flat out float vCull;
+out vec2 vCorner;
+out vec3 vWorldPos;
+void main() {
+  vec3 center = (aA + aB) * 0.5;
+  vec3 axis = aB - aA;
+  float len = max(length(axis), 1e-6);
+  vec3 u = axis / len;
+  float dist = max(distance(uEye, center), 1e-3);
+  float distEff = uOrtho > 0.5 ? 1.0 : dist;
+  vec3 viewDir = uOrtho > 0.5 ? uFwd : (center - uEye) / dist;
+  vec3 v = cross(u, viewDir);
+  float vl = length(v);
+  v = vl > 1e-4 ? v / vl : normalize(abs(u.z) < 0.9 ? cross(u, vec3(0.0, 0.0, 1.0)) : cross(u, vec3(1.0, 0.0, 0.0)));
+  float pxR = (len * 0.5 + uRadius) * uPerspScale / distEff;
+  float demoted = max(pxR < uDemotePx ? 1.0 : 0.0, uFixedSplat);
+  float m = 1.0;
+  if (uFilterOn > 0.5) {
+    int rec = int(aRec);
+    m = texelFetch(uMask, ivec2(rec & 8191, rec >> 13), 0).r > 0.5 ? 1.0 : 0.0;
+  }
+  float secSupp = demoted > 0.5 ? 0.0 : (abs(dot(axis, uSecPlane.xyz)) * 0.5 + uRadius);
+  float secCull = (uSecCfg.x > 0.5 && abs(dot(center, uSecPlane.xyz) - uSecPlane.w) > uSecCfg.y + secSupp) ? 1.0 : 0.0;
+  vCull = max((uIsolate > 0.5 && m < 0.5) ? 1.0 : 0.0, secCull);
+  float cls = aCat;
+  if (uRuleOn > 0.5) {
+    int rr = int(aRec);
+    cls = floor(texelFetch(uRule, ivec2(rr & 8191, rr >> 13), 0).r * 255.0 + 0.5);
+  }
+  if (uCatVisOn > 0.5 && texelFetch(uCatVis, ivec2(int(cls) & 255, 0), 0).r < 0.5) vCull = 1.0;
+  vec2 corner = vec2(float(gl_VertexID & 1), float(gl_VertexID >> 1)) * 2.0 - 1.0;
+  vec3 wp;
+  if (demoted > 0.5) {
+    float quadR = max(uPointPx * 0.5, min(pxR, uPointPx * 2.0)) * distEff / uPerspScale;
+    vec3 sv = normalize(cross(viewDir, v));
+    wp = center + (v * corner.x + sv * corner.y) * quadR;
+  } else {
+    wp = center + u * (corner.x * (len * 0.5 + uRadius)) + v * (corner.y * uRadius);
+  }
+  gl_Position = uViewProj * vec4(wp, 1.0);
+  vA = aA; vB = aB; vRec = aRec; vMode = demoted; vCorner = corner; vWorldPos = wp;
+}`;
+const PICK_FRAG_STK = `#version 300 es
+precision highp float;
+flat in vec3 vA;
+flat in vec3 vB;
+flat in uint vRec;
+flat in float vMode;
+flat in float vCull;
+in vec2 vCorner;
+in vec3 vWorldPos;
+uniform vec3 uEye;
+uniform vec3 uFwd;
+uniform float uOrthoRay;
+uniform float uBackoff;
+uniform float uRadius;
+uniform mat4 uViewProj;
+uniform vec4 uSecPlane;
+uniform vec2 uSecCfg;
+uniform uint uLayer;
+out uvec4 outId;
+${PACK}
+void main() {
+  if (vCull > 0.5) discard;
+  if (vMode > 0.5) {
+    if (dot(vCorner, vCorner) > 1.0) discard;
+    gl_FragDepth = gl_FragCoord.z;
+    outId = uvec4(vRec, packId(uLayer, NO_FACE), 0u, 0u);
+    return;
+  }
+  vec3 ro = uOrthoRay > 0.5 ? vWorldPos - uFwd * uBackoff : uEye;
+  vec3 rd = uOrthoRay > 0.5 ? uFwd : normalize(vWorldPos - uEye);
+  vec3 ba = vB - vA;
+  vec3 oa = ro - vA;
+  float baba = dot(ba, ba), bard = dot(ba, rd), baoa = dot(ba, oa);
+  float rdoa = dot(rd, oa), oaoa = dot(oa, oa);
+  float a = baba - bard * bard;
+  float b = baba * rdoa - baoa * bard;
+  float c = baba * oaoa - baoa * baoa - uRadius * uRadius * baba;
+  float h = b * b - a * c;
+  float t = -1.0;
+  if (h >= 0.0) {
+    float tb = (-b - sqrt(h)) / max(a, 1e-9);
+    float y = baoa + tb * bard;
+    if (y > 0.0 && y < baba && tb > 0.0) t = tb;
+  }
+  if (t < 0.0) {
+    for (int i = 0; i < 2; i++) {
+      vec3 capC = i == 0 ? vA : vB;
+      vec3 o2 = ro - capC;
+      float b2 = dot(rd, o2);
+      float c2 = dot(o2, o2) - uRadius * uRadius;
+      float h2 = b2 * b2 - c2;
+      if (h2 >= 0.0) {
+        float t2 = -b2 - sqrt(h2);
+        if (t2 > 0.0 && (t < 0.0 || t2 < t)) t = t2;
+      }
+    }
+  }
+  if (t < 0.0) discard;
+  // section clip (convexity trick, matches gl-sticks): a hit outside the slab is
+  // either the cut cross-section at the face or not pickable at all
+  if (uSecCfg.x > 0.5) {
+    float den = dot(rd, uSecPlane.xyz);
+    float dc = dot(ro, uSecPlane.xyz) - uSecPlane.w;
+    if (abs(dc + t * den) > uSecCfg.y) {
+      if (abs(den) < 1e-9) discard;
+      float sIn = min((-uSecCfg.y - dc) / den, (uSecCfg.y - dc) / den);
+      if (sIn <= t) discard;
+      vec3 q = ro + rd * sIn;
+      vec3 qa = q - vA;
+      float yq = clamp(dot(qa, ba) / baba, 0.0, 1.0);
+      if (length(qa - ba * yq) > uRadius) discard;
+      t = sIn;
+    }
+  }
+  vec4 clip = uViewProj * vec4(ro + rd * t, 1.0);
+  gl_FragDepth = clamp(clip.z / clip.w * 0.5 + 0.5, 0.0, 1.0);
+  outId = uvec4(vRec, packId(uLayer, NO_FACE), 0u, 0u);   // a capsule has no axis-aligned face
+}`;
+
+const NO_LAYER = 0xFFFFFFFF;                                // the layer channel's miss sentinel
+
+// The G channel's contract, in ONE place. Anything that reads the pick buffer —
+// pick(), pickRegion()'s callers, a rubber-band sweep — unpacks through these.
+const layerOfId = (g) => (g >>> 0) & 0xFFFF;
+const faceOfId = (g) => ((g >>> 16) & 7);
+const isMiss = (g) => (g >>> 0) === NO_LAYER;
+const NO_FACE = 7;
+const FACE_CUT = 6;
+// unit normals per face code, and the human name. index 6/7 have no normal.
+const FACE_NORMALS = [[-1, 0, 0], [1, 0, 0], [0, -1, 0], [0, 1, 0], [0, 0, -1], [0, 0, 1], null, null];
+const FACE_NAMES = ['−X (west)', '+X (east)', '−Y (south)', '+Y (north)', '−Z (bottom)', '+Z (top)', 'section cut', '—'];
+const MISS_CLEAR = new Uint32Array([0xFFFFFFFF, 0xFFFFFFFF, 0, 0]);
+
+// ── meshes ──
+// A mesh has NO per-row records: it is a bag of triangles, not rows of a table.
+// So the ID buffer answers only WHICH mesh (record = 0), and the CPU raycasts
+// that mesh's BVH for the triangle + the exact point (winding's raycastBVH).
+// WebGL2 has no gl_PrimitiveID, and un-indexing a mesh purely to carry a
+// per-vertex triangle id would triple its vertex memory — for a click.
+//
+// The geometry and the SECTION behavior mirror gl-mesh exactly (including the
+// trace-over-the-wall depth flatten): you must pick what you see, or the ID
+// buffer is lying.
+const PICK_VERT_MSH = `#version 300 es
+precision highp float;
+layout(location=0) in vec3 aPos;
+uniform mat4 uViewProj;
+uniform vec4 uSecPlane;
+out vec3 vWorldPos;
+out float vSecDist;
+void main() {
+  gl_Position = uViewProj * vec4(aPos, 1.0);
+  vWorldPos = aPos;
+  vSecDist = dot(aPos, uSecPlane.xyz) - uSecPlane.w;
+}`;
+const PICK_FRAG_MSH = `#version 300 es
+precision highp float;
+in vec3 vWorldPos;
+in float vSecDist;
+uniform vec4 uSecPlane;
+uniform vec2 uSecCfg;
+uniform mat4 uViewProj;
+uniform vec3 uEye, uFwd;
+uniform float uOrtho;
+uniform uint uLayer;
+out uvec4 outId;
+${PACK}
+void main() {
+  if (uSecCfg.x > 0.5 && abs(vSecDist) > uSecCfg.y) discard;
+  gl_FragDepth = gl_FragCoord.z;
+  if (uSecCfg.x > 0.5) {                                   // the visual flattens the in-slab trace onto the
+    float dcEye = dot(uEye, uSecPlane.xyz) - uSecPlane.w;  // camera-side wall; the pick must agree or you
+    if (abs(dcEye) > uSecCfg.y) {                          // would see a trace you cannot click
+      float side = sign(dcEye);
+      vec3 q; bool front = false;
+      if (uOrtho > 0.5) {
+        float den = dot(uFwd, uSecPlane.xyz);
+        if (abs(den) > 1e-9) {
+          float t = (vSecDist - side * uSecCfg.y) / den;
+          if (t > 0.0) { q = vWorldPos - uFwd * t; front = true; }
+        }
+      } else {
+        vec3 rdm = vWorldPos - uEye;
+        float den = dot(rdm, uSecPlane.xyz);
+        if (abs(den) > 1e-9) {
+          float tF = (side * uSecCfg.y - dcEye) / den;
+          if (tF > 0.0 && tF < 1.0) { q = uEye + rdm * tF; front = true; }
+        }
+      }
+      if (front) {
+        vec4 clipQ = uViewProj * vec4(q, 1.0);
+        gl_FragDepth = clamp(clipQ.z / clipQ.w * 0.5 + 0.5, 0.0, 1.0) - 3e-5;
+      }
+    }
+  }
+  outId = uvec4(0u, packId(uLayer, NO_FACE), 0u, 0u);      // record 0: the CPU resolves the triangle
+}`;
+
+function createPickPipeline(gl) {
+  const msh = makeProgram(gl, PICK_VERT_MSH, PICK_FRAG_MSH);
+  const uMsh = {
+    viewProj: gl.getUniformLocation(msh, 'uViewProj'), secPlane: gl.getUniformLocation(msh, 'uSecPlane'),
+    secCfg: gl.getUniformLocation(msh, 'uSecCfg'), eye: gl.getUniformLocation(msh, 'uEye'),
+    fwd: gl.getUniformLocation(msh, 'uFwd'), ortho: gl.getUniformLocation(msh, 'uOrtho'),
+    layer: gl.getUniformLocation(msh, 'uLayer'),
+  };
+  const pts = makeProgram(gl, PICK_VERT_PTS, PICK_FRAG_PTS);
+  const blk = makeProgram(gl, PICK_VERT_BLK, PICK_FRAG_BLK);
+  const stk = makeProgram(gl, PICK_VERT_STK, PICK_FRAG_STK);
+  const U = (p, n) => gl.getUniformLocation(p, n);
+  const uPts = { layer: U(pts, 'uLayer'), viewProj: U(pts, 'uViewProj'), boxMin: U(pts, 'uBoxMin'), boxSpan: U(pts, 'uBoxSpan'), pointPx: U(pts, 'uPointPx'), secPlane: U(pts, 'uSecPlane'), secCfg: U(pts, 'uSecCfg'), mask: U(pts, 'uMask'), filterOn: U(pts, 'uFilterOn'), isolate: U(pts, 'uIsolate'), catVis: U(pts, 'uCatVis'), catVisOn: U(pts, 'uCatVisOn'), rule: U(pts, 'uRule'), ruleOn: U(pts, 'uRuleOn') };
+  const uBlk = {
+    layer: U(blk, 'uLayer'),
+    viewProj: U(blk, 'uViewProj'), eye: U(blk, 'uEye'), right: U(blk, 'uRight'), up: U(blk, 'uUp'),
+    gridOrigin: U(blk, 'uGridOrigin'), gridSize: U(blk, 'uGridSize'), gridRot: U(blk, 'uGridRot'),
+    dimPalette: U(blk, 'uDimPalette'), subBlock: U(blk, 'uSubBlock'),
+    perspScale: U(blk, 'uPerspScale'), demotePx: U(blk, 'uDemotePx'), pointPx: U(blk, 'uPointPx'), fixedSplat: U(blk, 'uFixedSplat'),
+    ortho: U(blk, 'uOrtho'), fwd: U(blk, 'uFwd'), orthoRay: U(blk, 'uOrthoRay'), backoff: U(blk, 'uBackoff'),
+    mask: U(blk, 'uMask'), filterOn: U(blk, 'uFilterOn'), isolate: U(blk, 'uIsolate'),
+    catVis: U(blk, 'uCatVis'), catVisOn: U(blk, 'uCatVisOn'), rule: U(blk, 'uRule'), ruleOn: U(blk, 'uRuleOn'),
+    secPlane: U(blk, 'uSecPlane'), secCfg: U(blk, 'uSecCfg'),
+  };
+  const uStk = {
+    layer: U(stk, 'uLayer'),
+    viewProj: U(stk, 'uViewProj'), eye: U(stk, 'uEye'), radius: U(stk, 'uRadius'),
+    perspScale: U(stk, 'uPerspScale'), demotePx: U(stk, 'uDemotePx'), pointPx: U(stk, 'uPointPx'), fixedSplat: U(stk, 'uFixedSplat'),
+    ortho: U(stk, 'uOrtho'), fwd: U(stk, 'uFwd'), orthoRay: U(stk, 'uOrthoRay'), backoff: U(stk, 'uBackoff'),
+    mask: U(stk, 'uMask'), filterOn: U(stk, 'uFilterOn'), isolate: U(stk, 'uIsolate'),
+    catVis: U(stk, 'uCatVis'), catVisOn: U(stk, 'uCatVisOn'), rule: U(stk, 'uRule'), ruleOn: U(stk, 'uRuleOn'),
+    secPlane: U(stk, 'uSecPlane'), secCfg: U(stk, 'uSecCfg'),
+  };
+  let fbo = null, colorTex = null, depthTex = null, w = 0, h = 0;
+
+  function ensure(width, height) {
+    if (fbo && width === w && height === h) return;
+    w = width; h = height;
+    if (fbo) { gl.deleteFramebuffer(fbo); gl.deleteTexture(colorTex); gl.deleteTexture(depthTex); }
+    colorTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, colorTex);
+    // RG32UI: R = record (a full uint32), G = layer. Integer target → the ids are
+    // read back as integers, with no byte packing anywhere.
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG32UI, w, h, 0, gl.RG_INTEGER, gl.UNSIGNED_INT, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    // depth is a TEXTURE (not a renderbuffer): the deferred re-shade resolve
+    // samples it to unproject each pixel's exact hit point (block edge lines)
+    depthTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, depthTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.DEPTH_COMPONENT24, w, h, 0, gl.DEPTH_COMPONENT, gl.UNSIGNED_INT, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    fbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, colorTex, 0);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, depthTex, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  }
+
+  /**
+   * Pick at device pixel (px, py) (GL origin, bottom-left). Draws each chunk's
+   * CURRENT accumulated prefix (you pick what you can see), scissored to the
+   * pixel. Returns the record index, or null.
+   */
+  // the shared ID-buffer pass: scissored to (px,py,w,h), leaves the FBO bound
+  // for the caller's readPixels. pick() reads 1px; pickRegion() reads the block.
+  function renderInto(px, py, w2, h2, chunks, cam, { pointPx, blocksAsPoints = false, layerStates = null, section = null, viewportW, viewportH, noClear = false }) {
+    const stateOf = (id) => (layerStates && layerStates.get(id)) || { maskTex: null, isolate: false };
+    const byLayer = (arr) => {
+      const m = new Map();
+      for (const c of arr) { const id = c._layer || 0; let g = m.get(id); if (!g) m.set(id, g = []); g.push(c); }
+      return m;
+    };
+    // the layer's view of the section — section.js, the SAME function the draw
+    // uses (it was a hand-kept mirror here; a pick must agree with the picture)
+    // ...and drawn with its own camera: the offset folded in as a translation
+    const stateFor = (st) => (st && st.offset ? translateState(cam.state, st.offset) : cam.state);
+    const setSecWith = (u, s) => {
+      gl.uniform4f(u.secPlane, s ? s.n[0] : 0, s ? s.n[1] : 0, s ? s.n[2] : 1, s ? s.d : 0);
+      gl.uniform2f(u.secCfg, s ? 1 : 0, s ? s.half : 0);
+    };
+    const setSec = (u, st) => setSecWith(u, layerSection(section, st ? st.sectioned : true, st && st.offset));
+    const setSecMesh = (u, st) => setSecWith(u, meshSection(section, st ? st.sectioned : true, st && st.offset));
+    // hidden classes aren't pickable (same texture the visual pass culls by)
+    const setCatVis = (u, st) => {
+      const t = st && st.catVisTex;
+      gl.uniform1f(u.catVisOn, t ? 1 : 0);
+      if (t) { gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, t); gl.uniform1i(u.catVis, 5); }
+    };
+    // rule mode: the code substitutes for the class, so hidden RULES cull too
+    const setRule = (u, st) => {
+      const t = st && st.ruleOn && st.ruleTex;
+      gl.uniform1f(u.ruleOn, t ? 1 : 0);
+      if (t) { gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, t); gl.uniform1i(u.rule, 7); }
+    };
+    ensure(viewportW, viewportH);
+    // the FBO's colour attachment is ALSO the id capture the resolve pass
+    // samples (captureViewport hands out colorTex itself), and that pass
+    // leaves it bound on unit 0 — exactly where every sampler this program
+    // never sets defaults to. Render into it while it is bound on a sampled
+    // unit and WebGL drops the draw as a feedback loop (INVALID_OPERATION):
+    // every pick after a re-shade is a miss until something else rebinds unit
+    // 0. Unbind the units these programs touch before drawing; a pick must
+    // not depend on the ambient texture state.
+    for (const u of [0, 2, 4, 5, 7]) { gl.activeTexture(gl.TEXTURE0 + u); gl.bindTexture(gl.TEXTURE_2D, null); }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.viewport(0, 0, w, h);
+    gl.enable(gl.SCISSOR_TEST);
+    gl.scissor(px, py, w2, h2);
+    if (!noClear) {                                        // (a progressive capture's later batches draw over the earlier ones)
+      gl.clearBufferuiv(gl.COLOR, 0, MISS_CLEAR);          // layer = NO_LAYER → "nothing here"
+      gl.clear(gl.DEPTH_BUFFER_BIT);
+    }
+    gl.enable(gl.DEPTH_TEST);
+    const s = cam.state;
+    const dpp = pointPx * backingRatio(gl.canvas);
+    // A chunk writes only inside its bbox's screen footprint (+ a splat's
+    // radius), so a scissored pick draws just the chunks over the region. A
+    // one-pixel pick on a 60M-block model ran the vertex stage for every block
+    // (~0.5 s, the page waiting on readPixels); Morton chunks are tight, so the
+    // few under the cursor are all it needs. A box that crosses the eye plane
+    // can't be projected — it's drawn, conservatively. The full-viewport capture
+    // draws everything.
+    const whole = px <= 0 && py <= 0 && px + w2 >= viewportW && py + h2 >= viewportH;
+    let maxScale = 1;                                      // a layer's glyph size widens what can cover the region
+    if (layerStates) for (const st of layerStates.values ? layerStates.values() : []) if (st && st.pointScale > maxScale) maxScale = st.pointScale;
+    const margin = dpp * maxScale + 2;
+    const covers = (c) => {
+      const b = c.bboxLocal;
+      if (whole || !b || !(b[0] <= b[3])) return true;
+      const m = stateFor(stateOf(c._layer || 0)).viewProj;
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      for (let k = 0; k < 8; k++) {
+        const x = b[k & 1 ? 3 : 0], y = b[k & 2 ? 4 : 1], z = b[k & 4 ? 5 : 2];
+        const cw = m[3] * x + m[7] * y + m[11] * z + m[15];
+        if (!(cw > 1e-9)) return true;
+        const sx = ((m[0] * x + m[4] * y + m[8] * z + m[12]) / cw * 0.5 + 0.5) * viewportW;
+        const sy = ((m[1] * x + m[5] * y + m[9] * z + m[13]) / cw * 0.5 + 0.5) * viewportH;
+        if (sx < x0) x0 = sx; if (sx > x1) x1 = sx; if (sy < y0) y0 = sy; if (sy > y1) y1 = sy;
+      }
+      return !(x1 < px - margin || x0 > px + w2 + margin || y1 < py - margin || y0 > py + h2 + margin);
+    };
+
+    const ptsChunks = chunks.filter((c) => c.kind === 'points' && c.cursor > 0 && covers(c));
+    if (ptsChunks.length) {
+      gl.useProgram(pts);
+      gl.uniformMatrix4fv(uPts.viewProj, false, s.viewProj);
+      gl.uniform1f(uPts.pointPx, dpp);
+      for (const [id, group] of byLayer(ptsChunks)) {
+      const st = stateOf(id);
+      gl.uniformMatrix4fv(uPts.viewProj, false, stateFor(st).viewProj);
+      gl.uniform1ui(uPts.layer, id >>> 0);
+      gl.uniform1f(uPts.pointPx, dpp * ((st && st.pointScale) || 1));
+      setSec(uPts, st);
+      setCatVis(uPts, st);
+      setRule(uPts, st);
+      gl.uniform1f(uPts.filterOn, st.maskTex ? 1 : 0);
+      gl.uniform1f(uPts.isolate, st.isolate ? 1 : 0);
+      if (st.maskTex) { gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, st.maskTex); gl.uniform1i(uPts.mask, 4); }
+      for (const c of group) {
+        gl.bindVertexArray(c.vao);
+        // wire the recIdx buffer as attr 4 (idempotent; the visual program ignores it)
+        gl.bindBuffer(gl.ARRAY_BUFFER, c.buffers[c.buffers.length - 1]);
+        gl.enableVertexAttribArray(4);
+        gl.vertexAttribIPointer(4, 1, gl.UNSIGNED_INT, 0, 0);
+        gl.uniform3f(uPts.boxMin, c.bboxLocal[0], c.bboxLocal[1], c.bboxLocal[2]);
+        gl.uniform3f(uPts.boxSpan, c.bboxLocal[3] - c.bboxLocal[0], c.bboxLocal[4] - c.bboxLocal[1], c.bboxLocal[5] - c.bboxLocal[2]);
+        gl.drawArrays(gl.POINTS, 0, c.cursor);
+      }
+      }
+    }
+
+    const blkChunks = chunks.filter((c) => c.kind === 'blocks' && c.cursor > 0 && covers(c));
+    if (blkChunks.length) {
+      gl.useProgram(blk);
+      // the camera uniforms, per layer (a moved layer has its own)
+      const setBlkCam = (s) => {
+        gl.uniformMatrix4fv(uBlk.viewProj, false, s.viewProj);
+        gl.uniform3f(uBlk.eye, s.eye[0], s.eye[1], s.eye[2]);
+        const v = s.view;
+        gl.uniform3f(uBlk.right, v[0], v[4], v[8]);
+        gl.uniform3f(uBlk.up, v[1], v[5], v[9]);
+        gl.uniform1f(uBlk.perspScale, s.ortho ? (viewportH / 2) / s.halfH : (viewportH / 2) / Math.tan(s.fovY / 2));
+        gl.uniform1f(uBlk.ortho, s.ortho ? 1 : 0);
+        gl.uniform1f(uBlk.orthoRay, s.ortho ? 1 : 0);
+        const f = [s.target[0] - s.eye[0], s.target[1] - s.eye[1], s.target[2] - s.eye[2]];
+        const fl = Math.hypot(...f) || 1;
+        gl.uniform3f(uBlk.fwd, f[0] / fl, f[1] / fl, f[2] / fl);
+        gl.uniform1f(uBlk.backoff, s.radius * 2);
+      };
+      gl.uniform1f(uBlk.demotePx, 2.0);
+      gl.uniform1f(uBlk.pointPx, dpp);
+      gl.uniform1f(uBlk.fixedSplat, blocksAsPoints ? 1 : 0);
+      gl.uniform1i(uBlk.dimPalette, 2);                     // unit 2 = sub-block half-dims (per-chunk below)
+      for (const [id, group] of byLayer(blkChunks)) {
+        gl.uniform1ui(uBlk.layer, id >>> 0);
+      const st = stateOf(id);
+      setBlkCam(stateFor(st));
+      setSec(uBlk, st);
+      setCatVis(uBlk, st);
+      setRule(uBlk, st);
+      gl.uniform1f(uBlk.filterOn, st.maskTex ? 1 : 0);
+      gl.uniform1f(uBlk.isolate, st.isolate ? 1 : 0);
+      if (st.maskTex) { gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, st.maskTex); gl.uniform1i(uBlk.mask, 4); }
+      for (const c of group) {
+        gl.bindVertexArray(c.vao);
+        gl.bindBuffer(gl.ARRAY_BUFFER, c.bIjk);
+        gl.enableVertexAttribArray(0);
+        gl.vertexAttribPointer(0, 3, gl.UNSIGNED_SHORT, false, 0, 0);
+        gl.vertexAttribDivisor(0, 1);
+        gl.bindBuffer(gl.ARRAY_BUFFER, c.bCat);
+        gl.enableVertexAttribArray(2);
+        gl.vertexAttribPointer(2, 1, gl.UNSIGNED_BYTE, false, 0, 0);
+        gl.vertexAttribDivisor(2, 1);
+        gl.bindBuffer(gl.ARRAY_BUFFER, c.bRec);
+        gl.enableVertexAttribArray(3);
+        gl.vertexAttribIPointer(3, 1, gl.UNSIGNED_INT, 0, 0);
+        gl.vertexAttribDivisor(3, 1);
+        if (c.dimTex) {
+          gl.bindBuffer(gl.ARRAY_BUFFER, c.bDim);
+          gl.enableVertexAttribArray(4);
+          gl.vertexAttribIPointer(4, 1, gl.UNSIGNED_BYTE, 0, 0);
+          gl.vertexAttribDivisor(4, 1);
+          gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, c.dimTex);
+          gl.uniform1f(uBlk.subBlock, 1);
+        } else {
+          gl.disableVertexAttribArray(4);
+          gl.vertexAttribI4ui(4, 0, 0, 0, 0);   // uint default for the disabled `in uint aDim` (see gl-blocks.js)
+          gl.uniform1f(uBlk.subBlock, 0);
+        }
+        gl.uniform3f(uBlk.gridOrigin, c.grid.originLocal[0], c.grid.originLocal[1], c.grid.originLocal[2]);
+        gl.uniform3f(uBlk.gridSize, c.grid.size[0], c.grid.size[1], c.grid.size[2]);
+        gl.uniformMatrix3fv(uBlk.gridRot, false, c.grid.rot || IDENTITY3);
+        gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, c.cursor);
+      }
+      }
+    }
+
+    const stkChunks = chunks.filter((c) => c.kind === 'sticks' && c.cursor > 0);
+    if (stkChunks.length) {
+      gl.useProgram(stk);
+      const setStkCam = (s) => {
+        gl.uniformMatrix4fv(uStk.viewProj, false, s.viewProj);
+        gl.uniform3f(uStk.eye, s.eye[0], s.eye[1], s.eye[2]);
+        gl.uniform1f(uStk.perspScale, s.ortho ? (viewportH / 2) / s.halfH : (viewportH / 2) / Math.tan(s.fovY / 2));
+        gl.uniform1f(uStk.ortho, s.ortho ? 1 : 0);
+        gl.uniform1f(uStk.orthoRay, s.ortho ? 1 : 0);
+        const f = [s.target[0] - s.eye[0], s.target[1] - s.eye[1], s.target[2] - s.eye[2]];
+        const fl = Math.hypot(...f) || 1;
+        gl.uniform3f(uStk.fwd, f[0] / fl, f[1] / fl, f[2] / fl);
+        gl.uniform1f(uStk.backoff, s.radius * 2);
+      };
+      gl.uniform1f(uStk.demotePx, 2.0);
+      gl.uniform1f(uStk.pointPx, dpp);
+      gl.uniform1f(uStk.fixedSplat, blocksAsPoints ? 1 : 0);
+      for (const [id, group] of byLayer(stkChunks)) {
+        gl.uniform1ui(uStk.layer, id >>> 0);
+      const st2 = stateOf(id);
+      setStkCam(stateFor(st2));
+      setSec(uStk, st2);
+      setCatVis(uStk, st2);
+      setRule(uStk, st2);
+      gl.uniform1f(uStk.radius, (st2 && st2.stickRadius) || 1);
+      gl.uniform1f(uStk.filterOn, st2.maskTex ? 1 : 0);
+      gl.uniform1f(uStk.isolate, st2.isolate ? 1 : 0);
+      if (st2.maskTex) { gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, st2.maskTex); gl.uniform1i(uStk.mask, 4); }
+      for (const c of group) {
+        gl.bindVertexArray(c.vao);
+        gl.bindBuffer(gl.ARRAY_BUFFER, c.bSeg);
+        gl.enableVertexAttribArray(0);
+        gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 24, 0);
+        gl.vertexAttribDivisor(0, 1);
+        gl.enableVertexAttribArray(1);
+        gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 24, 12);
+        gl.vertexAttribDivisor(1, 1);
+        gl.bindBuffer(gl.ARRAY_BUFFER, c.bCat);
+        gl.enableVertexAttribArray(3);
+        gl.vertexAttribPointer(3, 1, gl.UNSIGNED_BYTE, false, 0, 0);
+        gl.vertexAttribDivisor(3, 1);
+        gl.bindBuffer(gl.ARRAY_BUFFER, c.bRec);
+        gl.enableVertexAttribArray(4);
+        gl.vertexAttribIPointer(4, 1, gl.UNSIGNED_INT, 0, 0);
+        gl.vertexAttribDivisor(4, 1);
+        gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, c.cursor);
+      }
+      }
+    }
+
+    // ── meshes: WHICH mesh, not which triangle (the CPU's job) ──
+    // Policy lives with the app: a layer may declare itself pickable. The default
+    // is OPAQUE-ONLY, and that is deliberate — you make a context surface
+    // see-through precisely so you can work on what is behind it, so a 50%
+    // topography must not steal the click meant for the block under it.
+    const mshChunks = chunks.filter((c) => c.kind === 'mesh' && c.idxCount > 0);
+    if (mshChunks.length) {
+      gl.useProgram(msh);
+      for (const [id, group] of byLayer(mshChunks)) {
+        const st = stateOf(id);
+        const pickable = st.meshPickable != null ? st.meshPickable : (st.meshOpacity == null || st.meshOpacity >= 0.95);
+        if (!pickable) continue;
+        const ms = stateFor(st);
+        gl.uniformMatrix4fv(uMsh.viewProj, false, ms.viewProj);
+        gl.uniform3f(uMsh.eye, ms.eye[0], ms.eye[1], ms.eye[2]);
+        const f = [ms.target[0] - ms.eye[0], ms.target[1] - ms.eye[1], ms.target[2] - ms.eye[2]];
+        const fl = Math.hypot(...f) || 1;
+        gl.uniform3f(uMsh.fwd, f[0] / fl, f[1] / fl, f[2] / fl);
+        gl.uniform1f(uMsh.ortho, ms.ortho ? 1 : 0);
+        gl.uniform1ui(uMsh.layer, id >>> 0);
+        setSecMesh(uMsh, st);                              // the TRACE band, exactly as gl.js's meshSecOf draws it
+        for (const c of group) {
+          gl.bindVertexArray(c.vao);
+          gl.drawElements(gl.TRIANGLES, c.idxCount, gl.UNSIGNED_INT, 0);
+        }
+      }
+    }
+
+    gl.disable(gl.SCISSOR_TEST);
+  }
+
+  // → { layer, rec } or null. Both come straight out of the integer target: no
+  // byte reassembly, and the RECORD may use the full 32-bit range because the
+  // miss sentinel now lives in the LAYER channel.
+  function pick(px, py, chunks, cam, opts) {
+    renderInto(px, py, 1, 1, chunks, cam, opts);
+    const out = new Uint32Array(4);
+    gl.readPixels(px, py, 1, 1, gl.RGBA_INTEGER, gl.UNSIGNED_INT, out);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.bindVertexArray(null);
+    if (out[1] === NO_LAYER) return null;
+    const g = out[1] >>> 0;
+    return { layer: g & 0xFFFF, rec: out[0] >>> 0, face: (g >>> 16) & 7 };
+  }
+
+  // one ID-buffer pass over a RECT (device px, GL bottom-left origin) — the
+  // marquee/lasso read. Same programs, same per-layer gates; returns the raw
+  // RGBA block (rows bottom-up); the caller masks by polygon and decodes.
+  // the marquee/lasso read: a Uint32Array of 4 components per pixel (rows
+  // bottom-up) — [0] = record, [1] = layer | face<<16 (NO_LAYER = nothing there;
+  // unpack with layerOfId/faceOfId, never by reading [1] raw)
+  function pickRegion(px, py, w2, h2, chunks, cam, opts) {
+    renderInto(px, py, w2, h2, chunks, cam, opts);
+    const out = new Uint32Array(w2 * h2 * 4);
+    gl.readPixels(px, py, w2, h2, gl.RGBA_INTEGER, gl.UNSIGNED_INT, out);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.bindVertexArray(null);
+    return out;
+  }
+
+  // deferred re-shade (gl-resolve.js): render the FULL-VIEWPORT id buffer and
+  // hand back the target texture itself — NO readPixels; the resolve pass
+  // samples it on the GPU. The texture stays owned by this pipeline; later
+  // pick()/pickRegion() calls repaint scissored regions of it with the same
+  // camera + geometry, so within one capture generation (camera and structure
+  // frozen — the caller invalidates on any moving frame) the content stays
+  // consistent. Leaves FBO at null; the caller restores its own target.
+  function captureViewport(chunks, cam, opts) {
+    renderInto(0, 0, opts.viewportW, opts.viewportH, chunks, cam, opts);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.bindVertexArray(null);
+    return { tex: colorTex, depth: depthTex, w, h };
+  }
+
+  // the same capture, PROGRESSIVE: beginCapture clears the whole target, each
+  // captureMore draws one batch of chunks over it (depth-tested against what's
+  // there), so the full id buffer of a still frame is built across idle frames
+  // instead of in one long pass. Same result as captureViewport.
+  function beginCapture(viewportW, viewportH) {
+    ensure(viewportW, viewportH);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.viewport(0, 0, w, h);
+    gl.disable(gl.SCISSOR_TEST);
+    gl.clearBufferuiv(gl.COLOR, 0, MISS_CLEAR);
+    gl.clear(gl.DEPTH_BUFFER_BIT);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  }
+  function captureMore(chunks, cam, opts) {
+    renderInto(0, 0, opts.viewportW, opts.viewportH, chunks, cam, { ...opts, noClear: true });
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.bindVertexArray(null);
+    return { tex: colorTex, depth: depthTex, w, h };
+  }
+  // a rect of the CAPTURED buffer (no render) — what pickRegion returns
+  function readCaptured(px, py, w2, h2) {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    const out = new Uint32Array(w2 * h2 * 4);
+    gl.readPixels(px, py, w2, h2, gl.RGBA_INTEGER, gl.UNSIGNED_INT, out);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    return out;
+  }
+
+  return { pick, pickRegion, captureViewport, beginCapture, captureMore, readCaptured, NO_LAYER };
+}
+
+// ── ../dm/src/dm.js ──
+
+// @gcu/dm — Datamine .DM file reader (READ-ONLY). Zero-dependency, browser-native.
+//
+// Provenance / legal: the format is reverse-engineered from two public,
+// independent sources — VMine.com's format description (explicitly NOT from
+// Constellation/Datamine copyright material) and Jeremy Maccelari's BSD-licensed
+// ParaViewGeo `dmfile.h` (1999). The .DM file format is excluded from copyright
+// under the EU Software Directive. Full spec + references: SPEC.md. MIT.
+//
+// Two sub-formats share the .dm extension: Single Precision (SP, 2048-byte pages,
+// Float32, 4-byte words) and Extended Precision (EP, 4096-byte pages, Float64,
+// 8-byte words). Page 1 = Data Definition (fields); pages 2+ = packed records.
+// The last 16 bytes of every page are a legacy security block (skipped). Both
+// variants leave 508 usable words per page.
+
+class DMFormatError extends Error {
+  constructor(msg) { super(msg); this.name = 'DMFormatError'; }
+}
+
+const USABLE_WORDS = 508;      // per page, both SP and EP (16-byte security tail)
+const SENTINEL = 0.9e30;       // |value| above this = a Datamine special (missing/inf/trace)
+
+const toDV = (b) => (b instanceof DataView ? b : new DataView(b.buffer ? b.buffer : b, b.byteOffset || 0, b.byteLength));
+
+// Read N words as text: 4 ASCII chars per word (in EP, the first 4 bytes of each
+// 8-byte word; the rest is padding). Non-printable bytes dropped; result trimmed.
+function readText(dv, off, nWords, ws) {
+  let s = '';
+  for (let w = 0; w < nWords; w++) {
+    const base = off + w * ws;
+    for (let b = 0; b < 4; b++) {
+      if (base + b >= dv.byteLength) break;
+      const ch = dv.getUint8(base + b);
+      if (ch >= 32 && ch < 127) s += String.fromCharCode(ch);
+    }
+  }
+  return s.trim();
+}
+
+// Recover an EP extended field name (>8, up to 24 chars), or null if the entry
+// isn't flagged long. EP-only: SP's 4-byte words have no high half. Leapfrog and
+// other modern exporters hide chars 9–24 in bytes a legacy 8-char reader skips,
+// flagged by ASCII "LONG" in the high half of the type word — so old readers
+// still see a valid 8-char name (the encoding is purely additive). Chars 1–8 =
+// low halves of words 0–1; 9–16 = their high halves; 17–24 = word 5 (low then
+// high). Internal spaces kept; trailing pad stripped. Reverse-engineered from
+// real Leapfrog EP exports (independent byte observation), not from Datamine
+// copyright material. See SPEC §3.2.1.
+function readLongName(dv, o, ws) {
+  if (ws !== 8) return null;                              // EP-only mechanism
+  if (o + ws * 5 + 8 > dv.byteLength) return null;        // truncated buffer → legacy path
+  const flag = o + ws * 2 + 4;                            // high half of the type word
+  const LONG = [0x4C, 0x4F, 0x4E, 0x47];                  // "LONG"
+  for (let b = 0; b < 4; b++) if (dv.getUint8(flag + b) !== LONG[b]) return null;
+  const segs = [o, o + ws, o + 4, o + ws + 4, o + ws * 5, o + ws * 5 + 4];
+  //           low(w0) low(w1) high(w0) high(w1) low(w5)   high(w5)
+  let s = '';
+  for (const base of segs)
+    for (let b = 0; b < 4; b++) {
+      const c = dv.getUint8(base + b);
+      s += (c >= 32 && c < 127) ? String.fromCharCode(c) : ' ';
+    }
+  return s.replace(/\s+$/, '') || null;                   // strip trailing pad, keep internal spaces
+}
+
+const FMTS = [['sp', 'le'], ['sp', 'be'], ['ep', 'le'], ['ep', 'be']];
+const wordSize = (p) => (p === 'ep' ? 8 : 4);
+const pageSize = (p) => (p === 'ep' ? 4096 : 2048);
+const dateOffOf = (p) => (p === 'ep' ? 192 : 96);
+
+/**
+ * Detect { precision: 'sp'|'ep', byteOrder: 'le'|'be' } from the file head
+ * (≥ one page recommended), or null if it isn't a recognizable .dm. There's no
+ * magic number: validate NVAR (1–500, integral) + a printable first field name.
+ */
+function detectDM(bytes) {
+  const dv = toDV(bytes);
+  for (const [precision, byteOrder] of FMTS) {
+    const ws = wordSize(precision), isLE = byteOrder === 'le';
+    const fcOff = dateOffOf(precision) + ws;                         // NVAR position
+    if (fcOff + ws > dv.byteLength) continue;
+    const fc = precision === 'ep' ? dv.getFloat64(fcOff, isLE) : dv.getFloat32(fcOff, isLE);
+    const n = Math.round(fc);
+    if (n < 1 || n > 500 || Math.abs(fc - n) > 0.01) continue;
+    const fieldStart = dateOffOf(precision) + ws * 4;
+    let printable = fieldStart + 4 <= dv.byteLength;
+    for (let b = 0; printable && b < 4; b++) { const c = dv.getUint8(fieldStart + b); if (c < 32 || c >= 127) printable = false; }
+    if (printable) return { precision, byteOrder };
+  }
+  return null;
+}
+
+/**
+ * Parse the Data Definition (page 1) into a header: field schema, record layout,
+ * and counts. `fmt` (from detectDM) is optional — detected if omitted. `bytes`
+ * need only cover the first page.
+ */
+function parseHeader(bytes, fmt) {
+  const dv = toDV(bytes);
+  const f = fmt || detectDM(bytes);
+  if (!f) throw new DMFormatError('not a recognizable .dm file (no SP/EP + endianness matched)');
+  const { precision, byteOrder } = f;
+  const ws = wordSize(precision), ps = pageSize(precision), isLE = byteOrder === 'le';
+  const readNum = precision === 'ep' ? (o) => dv.getFloat64(o, isLE) : (o) => dv.getFloat32(o, isLE);
+
+  const dateOff = dateOffOf(precision);
+  const filename = readText(dv, 0, 2, ws);
+  const description = readText(dv, precision === 'ep' ? 32 : 16, 20, ws);
+  const dateNum = Math.round(readNum(dateOff));
+  const nvar = Math.round(readNum(dateOff + ws));
+  const lastPage = Math.round(readNum(dateOff + ws * 2));
+  const lastRec = Math.round(readNum(dateOff + ws * 3));
+  if (nvar < 1 || nvar > 256) throw new DMFormatError(`NVAR out of range: ${nvar}`);
+
+  // Field-definition entries (28 bytes SP / 56 EP each; alpha >4 chars span
+  // multiple entries sharing a name with incrementing WORDNO).
+  const fieldStart = dateOff + ws * 4, fieldSize = ws * 7;
+  const raw = [];
+  for (let i = 0; i < nvar; i++) {
+    const o = fieldStart + i * fieldSize;
+    if (o + fieldSize > ps) break;                                   // single-page DD (spec §3.2)
+    raw.push({
+      name: readLongName(dv, o, ws) ?? readText(dv, o, 2, ws),   // §3.2.1 EP long names, else legacy 8-char
+      type: (readText(dv, o + ws * 2, 1, ws).charAt(0) || 'N').toUpperCase(),
+      sw: Math.round(readNum(o + ws * 3)),
+      wordno: Math.round(readNum(o + ws * 4)),
+      def: readNum(o + ws * 6),
+    });
+  }
+
+  // Reconstruct logical columns (group entries by name).
+  const map = new Map();
+  for (const e of raw) {
+    if (!map.has(e.name)) map.set(e.name, { name: e.name, type: e.type, entries: [] });
+    map.get(e.name).entries.push(e);
+  }
+  let maxLen = 0;
+  const columns = [];
+  for (const c of map.values()) {
+    const sorted = c.entries.slice().sort((a, b) => a.wordno - b.wordno);
+    const sw = sorted.map((e) => e.sw);
+    for (const p of sw) if (p > maxLen) maxLen = p;
+    const isConstant = sorted[0].sw === 0;
+    let constantValue = null;
+    if (isConstant) {
+      if (c.type === 'A') constantValue = decodeAlphaDefault(sorted, precision, isLE);
+      else { const v = sorted[0].def; constantValue = Math.abs(v) > SENTINEL ? null : v; }
+    }
+    columns.push({ name: c.name, type: c.type, sw, width: c.type === 'A' ? sw.length * 4 : undefined, isConstant, constantValue });
+  }
+
+  const recordsPerPage = maxLen > 0 ? Math.floor(USABLE_WORDS / maxLen) : 0;
+  const recordCount = lastPage > 1 ? (lastPage - 2) * recordsPerPage + lastRec : lastRec;
+
+  return {
+    precision, byteOrder, wordSize: ws, pageSize: ps,
+    filename, description, date: dmDate(dateNum),
+    nvar, lastPage, lastRec, maxLen, recordsPerPage, recordCount,
+    columns,
+    schema: columns.map((c) => ({ name: c.name, type: c.type === 'A' ? 'string' : 'number' })),
+  };
+}
+
+function decodeAlphaDefault(entries, precision, isLE) {
+  let s = '';
+  const buf = new ArrayBuffer(precision === 'ep' ? 8 : 4);
+  const dv = new DataView(buf);
+  for (const e of entries) {
+    if (precision === 'ep') dv.setFloat64(0, e.def, isLE); else dv.setFloat32(0, e.def, isLE);
+    for (let b = 0; b < 4; b++) { const c = dv.getUint8(b); if (c >= 32 && c < 127) s += String.fromCharCode(c); }
+  }
+  return s.trim();
+}
+
+function dmDate(n) {
+  if (!n || n < 10000) return null;                                 // 10000×year + 100×month + day
+  const year = Math.floor(n / 10000), month = Math.floor((n % 10000) / 100), day = n % 100;
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  return new Date(Date.UTC(year, month - 1, day));
+}
+
+/** Byte range of record `i` (0-based) in the file — a contiguous slice (records
+ *  never span a page). Read it and pass to decodeRecord. */
+function recordRange(h, i) {
+  const dataPage = Math.floor(i / h.recordsPerPage) + 2;            // 1-based; page 1 = DD
+  const recInPage = i % h.recordsPerPage;
+  return { offset: (dataPage - 1) * h.pageSize + recInPage * h.maxLen * h.wordSize, length: h.maxLen * h.wordSize };
+}
+
+/** Read ONE field of the record whose words begin at byte `recBase` in `dv`:
+ *  number | null (missing/sentinel) for numeric columns, trimmed string for
+ *  alpha, the header value for constants (no body access). This is the strided
+ *  projection primitive — a caller reads a single COLUMN by striding recBase =
+ *  pageBase + r·maxLen·wordSize across records, decoding only the field it wants
+ *  instead of the whole record. `dv` may span many records (a page run); the
+ *  offsets are relative to recBase. */
+function readField(dv, h, col, recBase) {
+  if (col.isConstant) return col.constantValue;
+  const ws = h.wordSize, isLE = h.byteOrder === 'le';
+  if (col.type === 'A') {
+    let s = '';
+    for (const sw of col.sw) { const b0 = recBase + (sw - 1) * ws; for (let b = 0; b < 4; b++) { if (b0 + b >= dv.byteLength) break; const c = dv.getUint8(b0 + b); if (c >= 32 && c < 127) s += String.fromCharCode(c); } }
+    return s.trim();
+  }
+  const off = recBase + (col.sw[0] - 1) * ws;
+  if (off + ws > dv.byteLength) return null;
+  const v = h.precision === 'ep' ? dv.getFloat64(off, isLE) : dv.getFloat32(off, isLE);
+  return Math.abs(v) > SENTINEL ? null : v;
+}
+
+/** Decode one record's word slice (from recordRange) into positional values:
+ *  number | null (missing/sentinel) for numeric columns, string for alpha. */
+function decodeRecord(bytes, h) {
+  const dv = toDV(bytes);
+  return h.columns.map((col) => readField(dv, h, col, 0));   // record bytes start at 0
+}
+
+/**
+ * Whole-file convenience: detect + parse + record access over an ArrayBuffer /
+ * Uint8Array. For huge files prefer the windowed path (detectDM → parseHeader →
+ * recordRange → decodeRecord over a File you slice).
+ */
+function readDM(buffer) {
+  const u8 = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+  if (u8.byteLength < 2048) throw new DMFormatError('file too small for a .dm page');
+  const fmt = detectDM(u8.subarray(0, Math.min(4096, u8.byteLength)));
+  if (!fmt) throw new DMFormatError('not a recognizable .dm file');
+  const h = parseHeader(u8, fmt);
+  const sliceRec = (i) => { const { offset, length } = recordRange(h, i); return u8.subarray(offset, offset + length); };
+  return {
+    filename: h.filename, description: h.description, date: h.date,
+    precision: h.precision, byteOrder: h.byteOrder, fields: h.schema, recordCount: h.recordCount, header: h,
+    getRecord(i) {
+      if (i < 0 || i >= h.recordCount) return null;
+      const vals = decodeRecord(sliceRec(i), h);
+      const obj = {};
+      h.columns.forEach((c, k) => { obj[c.name] = vals[k]; });
+      return obj;
+    },
+    getColumns() {
+      const n = h.recordCount;
+      const out = {};
+      const numArr = h.precision === 'ep' ? Float64Array : Float32Array;
+      h.columns.forEach((c, k) => {
+        if (c.isConstant) { out[c.name] = c.constantValue; return; }
+        out[c.name] = c.type === 'A' ? new Array(n) : new numArr(n);
+      });
+      for (let i = 0; i < n; i++) {
+        const vals = decodeRecord(sliceRec(i), h);
+        h.columns.forEach((c, k) => {
+          if (c.isConstant) return;
+          if (c.type === 'A') out[c.name][i] = vals[k];
+          else out[c.name][i] = vals[k] == null ? NaN : vals[k];     // missing → NaN in typed arrays
+        });
+      }
+      return out;
+    },
+    * [Symbol.iterator]() { for (let i = 0; i < h.recordCount; i++) yield this.getRecord(i); },
+  };
+}
+
+// ── src/io/dm-provider.js ──
+
+// @gcu/condenser — Datamine .dm block-model provider, over @gcu/dm's windowed
+// reader (micro-spec Addendum A.2). The DD page carries the grid definition as
+// implicit constants (XMORIG/YMORIG/ZMORIG corner origin, XINC/YINC/ZINC block
+// dims, NX/NY/NZ counts), so — unlike CSV — there is NO discovery sweep: grid,
+// bbox, and schema are known from the first page. Centroids come from XC/YC/ZC
+// per-record fields; the centroid of block (0,0,0) is MORIG + INC/2.
+//
+// Record indices are RAW record numbers (rows with missing coordinates are
+// skipped but their numbers are not reused), so recordRange gives O(1) fetch of
+// any picked record. Categories (first alpha column) build their dictionary
+// incrementally during the single streaming sweep (≤255 distinct).
+//
+// v1 scope: regular uniform grids (INC as DD constants). Sub-blocked models
+// (per-record INC) and non-model .dm files are a later milestone.
+
+
+// PROJECTED batches over any .dm — decode only the requested column indices by
+// striding each field's fixed word-offset across records (no whole-record decode,
+// no per-row allocation), ~4 MB page runs at a time, never the whole file. Numeric
+// col → Float64Array (NaN = missing); alpha col → string[] (''=missing); constants
+// come free from the header. Yields { recStart, count, cols } where cols[idx] is the
+// array for column `idx`, RAW record numbering (recStart + k over ALL records).
+// The page RUNS a column read walks: ~4 MB of pages each, with the records they
+// hold. One definition — the generator below and a parallel scan (micro's worker
+// pool) cut the file the same way, so a run is the same unit everywhere (and a
+// sidecar band check asked of a run means the same records).
+function dmPageRuns(h) {
+  const pagesPer = Math.max(1, Math.floor((4 << 20) / h.pageSize));
+  const runs = [];
+  for (let page = 2; page <= h.lastPage; page += pagesPer) {
+    const pEnd = Math.min(page + pagesPer - 1, h.lastPage);
+    let count = 0;
+    for (let pg = page; pg <= pEnd; pg++) count += pg === h.lastPage ? h.lastRec : h.recordsPerPage;
+    runs.push({ page, pEnd, start: (page - 2) * h.recordsPerPage, count });
+  }
+  return runs;
+}
+// ONE run's requested fields, by striding (only those fields are decoded):
+// → { recStart, count, cols: { [colIdx]: Float64Array (blank = NaN) | string[] (blank = '') } }
+async function readDmRun(blob, h, colIdxs, run) {
+  const ids = [...new Set(colIdxs)];
+  const cols = ids.map((i) => h.columns[i]), alpha = cols.map((c) => c.type === 'A');
+  const bytes = new Uint8Array(await blob.slice((run.page - 1) * h.pageSize, run.pEnd * h.pageSize).arrayBuffer());
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const total = run.count;
+  const out = cols.map((c, ci) => (alpha[ci] ? new Array(total) : new Float64Array(total)));
+  let w = 0;
+  for (let pg = run.page; pg <= run.pEnd; pg++) {
+    const nRec = pg === h.lastPage ? h.lastRec : h.recordsPerPage, pageBase = (pg - run.page) * h.pageSize;
+    for (let r = 0; r < nRec; r++) {
+      const recBase = pageBase + r * h.maxLen * h.wordSize;
+      for (let ci = 0; ci < cols.length; ci++) { const v = readField(dv, h, cols[ci], recBase); out[ci][w] = alpha[ci] ? (v == null ? '' : v) : (v == null ? NaN : v); }
+      w++;
+    }
+  }
+  const cobj = {}; ids.forEach((idx, ci) => { cobj[idx] = out[ci]; });
+  return { recStart: run.start, count: total, cols: cobj };
+}
+// opts.shouldRead(recStart, count): PUSHDOWN hook — return false and the whole
+// page-run is skipped BEFORE any I/O (sidecar band stats prove no record in the run
+// can match a filter — parquet's row-group skip, retrofitted onto .dm).
+async function* dmColumnBatches(blob, h, colIdxs, { signal, shouldRead = null } = {}) {
+  for (const run of dmPageRuns(h)) {
+    if (signal && signal.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+    if (shouldRead && !shouldRead(run.start, run.count)) continue;
+    yield await readDmRun(blob, h, colIdxs, run);
+  }
+}
+
+const DEF_NAMES = new Set(['IJK', 'XC', 'YC', 'ZC', 'XINC', 'YINC', 'ZINC', 'XMORIG', 'YMORIG', 'ZMORIG', 'NX', 'NY', 'NZ', 'ANGLE1', 'ANGLE2', 'ANGLE3', 'ROTAXIS1', 'ROTAXIS2', 'ROTAXIS3']);
+
+// `cached` (a sidecar's discovery results: { grid, bbox, subBlocked, dimPalette,
+// categories }) skips the full-file discovery sweep — a 13 GB sub-blocked model
+// reopens straight to streaming. Callers own freshness (name+size match).
+async function openDmModel(blob, { mapping = null, forcePoints = false, onProgress = null, cached = null } = {}) {
+  const head = new Uint8Array(await blob.slice(0, Math.min(8192, blob.size)).arrayBuffer());
+  const fmt = detectDM(head);
+  if (!fmt) throw new Error('dm: not a recognizable .dm file');
+  const h = parseHeader(head, fmt);
+  const names = h.columns.map((c) => c.name);
+  const idx = (n) => names.indexOf(n);
+  const constVal = (n) => { const c = h.columns[idx(n)]; return c && c.isConstant ? c.constantValue : null; };
+
+  // centroid fields: stated by the caller (mapping.x/y/z), else XC/YC/ZC (or X/Y/Z)
+  const xc = mapping && mapping.x != null ? mapping.x : idx('XC') >= 0 ? idx('XC') : idx('X');
+  const yc = mapping && mapping.y != null ? mapping.y : idx('YC') >= 0 ? idx('YC') : idx('Y');
+  const zc = mapping && mapping.z != null ? mapping.z : idx('ZC') >= 0 ? idx('ZC') : idx('Z');
+  if (xc < 0 || yc < 0 || zc < 0) throw new Error('dm: no XC/YC/ZC centroid fields — not a block model export');
+
+  // Decoded-record batches (a cold recipe). Reads ~4 MB page runs sequentially;
+  // yields { recStart, rows } with RAW record numbering (recStart + k, no skips
+  // here). Full decode — every field of every record. For a column-selective op
+  // (a filter, a grade scan, the render stream) prefer columnBatches, which
+  // strides only the fields it needs (≈ 3–30× less work; see bench-formats).
+  async function* recordBatches({ signal } = {}) {
+    const pagesPer = Math.max(1, Math.floor((4 << 20) / h.pageSize));
+    for (let page = 2; page <= h.lastPage; page += pagesPer) {
+      if (signal && signal.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+      const pEnd = Math.min(page + pagesPer - 1, h.lastPage);
+      const bytes = new Uint8Array(await blob.slice((page - 1) * h.pageSize, pEnd * h.pageSize).arrayBuffer());
+      const rows = [];
+      for (let pg = page; pg <= pEnd; pg++) {
+        const nRec = pg === h.lastPage ? h.lastRec : h.recordsPerPage;
+        const base = (pg - page) * h.pageSize;
+        for (let r = 0; r < nRec; r++) {
+          rows.push(decodeRecord(bytes.subarray(base + r * h.maxLen * h.wordSize, base + (r + 1) * h.maxLen * h.wordSize), h));
+        }
+      }
+      yield { recStart: (page - 2) * h.recordsPerPage, rows };
+    }
+  }
+
+  // PROJECTED batches — decode only the requested column indices by striding each
+  // field's fixed word-offset across records (no whole-record decode, no per-row
+  // allocation). Numeric col → Float64Array (NaN = missing); alpha col → string[]
+  // (''=missing); constants come free from the header. Yields { recStart, count,
+  // cols } where cols[idx] is the array for column `idx`. Same RAW numbering as
+  // recordBatches (recStart + k over ALL records, skips resolved by the caller).
+  // opts.shouldRead(recStart, count): PUSHDOWN hook — return false and the whole
+  // page-run is skipped BEFORE any I/O (sidecar band stats prove no record in
+  // the run can match a filter — parquet's row-group skip, retrofitted onto .dm)
+  const columnBatches = (colIdxs, opts) => dmColumnBatches(blob, h, colIdxs, opts);
+
+  // the grid, straight from the DD (corner origin → centroid convention).
+  // A regular model carries the grid as DD constants (XMORIG/XINC/NX…) → no sweep.
+  // A SUB-BLOCKED model has per-record XINC/YINC/ZINC (not constants) → a discovery
+  // sweep finds the fine lattice (pitch = min dim /2) + a size palette, exactly
+  // like the CSV provider → variable-size boxes. Anything else → points (grid:null).
+  const mor = [constVal('XMORIG'), constVal('YMORIG'), constVal('ZMORIG')];
+  const inc = [constVal('XINC'), constVal('YINC'), constVal('ZINC')];
+  const cnt = [constVal('NX'), constVal('NY'), constVal('NZ')];
+  const regular = !forcePoints && mor.every(Number.isFinite) && inc.every((v) => Number.isFinite(v) && v > 0) && cnt.every((v) => Number.isFinite(v) && v >= 1);
+  // per-record dim columns (non-constant XINC/YINC/ZINC) → sub-block candidate
+  const incIdx = { x: idx('XINC'), y: idx('YINC'), z: idx('ZINC') };
+  const perRecDims = !regular && !forcePoints && incIdx.x >= 0 && incIdx.y >= 0 && incIdx.z >= 0
+    && !h.columns[incIdx.x].isConstant && !h.columns[incIdx.y].isConstant && !h.columns[incIdx.z].isConstant;
+  let grid = null, bbox, subBlocked = false, dimPalette = null, dimCode = null;
+  if (cached && cached.bbox && !forcePoints) {
+    // sidecar-cached discovery: trust it wholesale (freshness is the caller's contract)
+    grid = cached.grid || null; bbox = cached.bbox;
+    subBlocked = !!cached.subBlocked;
+    dimPalette = cached.dimPalette || null;
+    if (subBlocked && dimPalette) dimCode = dimCodeFromPalette(dimPalette);
+  } else if (regular) {
+    grid = {
+      x: { origin: mor[0] + inc[0] / 2, pitch: inc[0], count: Math.round(cnt[0]) },
+      y: { origin: mor[1] + inc[1] / 2, pitch: inc[1], count: Math.round(cnt[1]) },
+      z: { origin: mor[2] + inc[2] / 2, pitch: inc[2], count: Math.round(cnt[2]) },
+    };
+    bbox = { min: [mor[0], mor[1], mor[2]], max: [mor[0] + inc[0] * cnt[0], mor[1] + inc[1] * cnt[1], mor[2] + inc[2] * cnt[2]] };
+  } else {
+    const CAP = 300000, dimKeyOf = makeDimKeyer();
+    const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+    const axc = [axisDistinct(CAP), axisDistinct(CAP), axisDistinct(CAP)];   // axis distinct centroids (for the fine lattice)
+    const ax = axc.map((c) => c.set);
+    const minDim = [Infinity, Infinity, Infinity], dimSet = new Set();
+    const sweepCols = perRecDims ? [xc, yc, zc, incIdx.x, incIdx.y, incIdx.z] : [xc, yc, zc];
+    for await (const { recStart, count, cols } of columnBatches(sweepCols)) {
+      if (onProgress) onProgress({ phase: 'discovery', done: recStart + count, total: h.recordCount });
+      const X = cols[xc], Y = cols[yc], Z = cols[zc], DX = perRecDims ? cols[incIdx.x] : null, DY = perRecDims ? cols[incIdx.y] : null, DZ = perRecDims ? cols[incIdx.z] : null;
+      for (let k = 0; k < count; k++) {
+        const xv = X[k], yv = Y[k], zv = Z[k];
+        if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;
+        if (xv < min[0]) min[0] = xv; if (xv > max[0]) max[0] = xv;
+        if (yv < min[1]) min[1] = yv; if (yv > max[1]) max[1] = yv;
+        if (zv < min[2]) min[2] = zv; if (zv > max[2]) max[2] = zv;
+        if (perRecDims) {
+          axc[0].add(xv); axc[1].add(yv); axc[2].add(zv);
+          const dx = DX[k], dy = DY[k], dz = DZ[k];
+          if (dx > 0 && dy > 0 && dz > 0) {
+            if (dx < minDim[0]) minDim[0] = dx; if (dy < minDim[1]) minDim[1] = dy; if (dz < minDim[2]) minDim[2] = dz;
+            if (dimSet.size <= DIM_PALETTE_MAX) dimSet.add(dimKeyOf(dx, dy, dz));
+          }
+        }
+      }
+    }
+    if (!Number.isFinite(min[0])) throw new Error('dm: no finite XC/YC/ZC centroids');
+    bbox = { min, max };
+    // sub-blocked: fine lattice (pitch = minDim/2) + size palette — same rule as CSV
+    const sb = perRecDims ? inferSubBlockLattice(ax, minDim, dimSet, { cap: CAP }) : null;
+    if (sb) { subBlocked = true; dimPalette = sb.dimPalette; dimCode = sb.dimCode; grid = sb.grid; }
+  }
+
+  // channels: every per-record numeric non-definition column; first alpha = category
+  const numericColumns = h.columns
+    .map((c, i) => ({ c, i }))
+    .filter((o) => o.c.type === 'N' && !o.c.isConstant && !DEF_NAMES.has(o.c.name))
+    .map((o) => ({ i: o.i, name: o.c.name }));
+  const chan = mapping && mapping.chan != null ? mapping.chan : (numericColumns[0] ? numericColumns[0].i : null);
+  // category: an explicit mapping.cat wins (any column — numeric domain codes
+  // dict-encode as strings below); default = the first non-constant alpha
+  const catIdx = mapping && mapping.cat != null ? mapping.cat : h.columns.findIndex((c) => c.type === 'A' && !c.isConstant);   // mapping.cat = -1 → stated: none
+  // a sidecar's categories describe the column it was written for — a re-keyed
+  // cat must rebuild its dict during the sweep, not inherit the old column's
+  const cachedCats = cached && cached.categories && (!cached.mapping || cached.mapping.cat == null || cached.mapping.cat === catIdx) ? cached.categories : null;
+  const categories = catIdx >= 0 ? (cachedCats ? [...cachedCats] : []) : null;   // fills incrementally during the sweep (or prefilled from a sidecar)
+  const catCode = catIdx >= 0 ? new Map(categories.map((v, i) => [v, i])) : null;
+
+  // A Datamine ROTATED model carries up to three successive rotations as DD
+  // constants: ANGLEn (degrees) about ROTAXISn (1 = X, 2 = Y, 3 = Z). The
+  // grid above is built in the model's own (unrotated) frame. Converting it to
+  // world needs Datamine's exact convention (order, sign, which frame XC/YC/ZC
+  // are stored in), and no rotated fixture has been checked against it yet —
+  // so the rotation is REPORTED, never silently applied or silently ignored.
+  // header.dmRotation = null, or [{ axis: 'X'|'Y'|'Z'|'?', angle }] in file order.
+  const dmRotation = [];
+  for (const n of [1, 2, 3]) {
+    const a = constVal('ANGLE' + n), ax = constVal('ROTAXIS' + n);
+    if (Number.isFinite(a) && Math.abs(a) > 1e-9) dmRotation.push({ axis: ({ 1: 'X', 2: 'Y', 3: 'Z' })[Math.round(ax)] || '?', angle: a });
+  }
+
+  const header = {
+    kind: 'blockmodel', count: h.recordCount,
+    dmRotation: dmRotation.length ? dmRotation : null,
+    bbox, grid, subBlocked, dimPalette, dimCols: subBlocked ? incIdx : null,
+    columns: names,
+    mapping: { x: xc, y: yc, z: zc, chan, cat: catIdx >= 0 ? catIdx : null },
+    numericColumns, categories,
+    attributes: [...(chan != null ? [names[chan]] : []), ...(catIdx >= 0 ? [names[catIdx]] : [])],
+    dm: h,                                                  // the @gcu/dm header: O(1) record fetch + the filter sweep
+  };
+
+  async function* streamChunks({ chunkPoints = 1 << 18, signal, onProgress } = {}) {
+    const alloc = () => ({
+      x: new Float64Array(chunkPoints), y: new Float64Array(chunkPoints), z: new Float64Array(chunkPoints),
+      chan: new Float64Array(chunkPoints), cat: catCode ? new Uint8Array(chunkPoints) : null,
+      dim: dimCode ? new Uint8Array(chunkPoints) : null,
+      recIdx: new Uint32Array(chunkPoints),
+    });
+    // project ONLY the fields the render needs (coords + grade + category + dims)
+    // — not all N columns. On the real Leapfrog .dm that's ~6 of 14+.
+    const streamCols = [xc, yc, zc];
+    if (chan != null) streamCols.push(chan);
+    if (catIdx >= 0) streamCols.push(catIdx);
+    if (dimCode) streamCols.push(incIdx.x, incIdx.y, incIdx.z);
+    let buf = alloc(), fill = 0, done = 0;
+    const dimKeyOf = makeDimKeyer();
+    for await (const { recStart, count, cols } of columnBatches(streamCols, { signal })) {
+      const X = cols[xc], Y = cols[yc], Z = cols[zc];
+      const CH = chan != null ? cols[chan] : null, CA = catIdx >= 0 ? cols[catIdx] : null;
+      const DX = dimCode ? cols[incIdx.x] : null, DY = dimCode ? cols[incIdx.y] : null, DZ = dimCode ? cols[incIdx.z] : null;
+      for (let k = 0; k < count; k++) {
+        const xv = X[k], yv = Y[k], zv = Z[k];
+        if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;   // skipped, raw number NOT reused
+        buf.x[fill] = xv; buf.y[fill] = yv; buf.z[fill] = zv;
+        buf.chan[fill] = CH ? CH[k] : 0;                   // NaN already when missing
+        if (buf.cat) {
+          const raw = CA[k];                               // '' when missing; a NUMERIC cat column dict-encodes as strings
+          const v = raw == null || raw === '' || (typeof raw === 'number' && !Number.isFinite(raw)) ? '' : String(raw);
+          let code = catCode.get(v);
+          if (code === undefined) {
+            if (catCode.size < 255) { code = catCode.size; catCode.set(v, code); categories.push(v); }
+            else code = 0;
+          }
+          buf.cat[fill] = code;
+        }
+        if (buf.dim) { const c = dimCode.get(dimKeyOf(DX[k], DY[k], DZ[k])); buf.dim[fill] = c === undefined ? 0 : c; }
+        buf.recIdx[fill] = recStart + k;                   // RAW record number — the join key
+        fill++;
+        if (fill === chunkPoints) {
+          yield { count: fill, x: buf.x, y: buf.y, z: buf.z, chan: buf.chan, cat: buf.cat, dim: buf.dim, recIdx: buf.recIdx, recStart: 0 };
+          buf = alloc(); fill = 0;
+        }
+      }
+      done += count;
+      if (onProgress) onProgress(done, h.recordCount);
+    }
+    if (fill) {
+      yield {
+        count: fill, x: buf.x.subarray(0, fill), y: buf.y.subarray(0, fill), z: buf.z.subarray(0, fill),
+        chan: buf.chan.subarray(0, fill), cat: buf.cat ? buf.cat.subarray(0, fill) : null,
+        dim: buf.dim ? buf.dim.subarray(0, fill) : null,
+        recIdx: buf.recIdx.subarray(0, fill), recStart: 0,
+      };
+    }
+  }
+
+  return { header, streamChunks, recordBatches, columnBatches };
+}
+
+// O(1) fetch of one record by RAW record number (the pick → inspector path).
+async function fetchDmRecord(blob, h, rec) {
+  const { offset, length } = recordRange(h, rec);
+  const bytes = new Uint8Array(await blob.slice(offset, offset + length).arrayBuffer());
+  return decodeRecord(bytes, h);                           // positional values, h.columns order
+}
+
+// ── Datamine WIREFRAME (triangulated surface / DTM / solid) ──────────────────
+// A Datamine wireframe is a PAIR of .dm files: a POINTS file (XP/YP/ZP + PID) and
+// a TRIANGLES file (PID1/PID2/PID3 indexing the points by id), by convention named
+// <base>pt.dm / <base>tr.dm. Together they're an indexed mesh — the same
+// { vertices, triangles } shape the OBJ/MSH/PLY providers return, so buildMeshChunk
+// and the whole mesh pipeline take it unchanged.
+
+// Peek a .dm's column names without the block-model requirement (openDmModel throws
+// for non-block-model files). Returns names[] or null if not a recognizable .dm.
+async function peekDmColumns(blob) {
+  const head = new Uint8Array(await blob.slice(0, Math.min(8192, blob.size)).arrayBuffer());
+  const fmt = detectDM(head);
+  if (!fmt) return null;
+  try { return parseHeader(head, fmt).columns.map((c) => c.name); } catch { return null; }
+}
+
+// Classify a .dm by its fields: a wireframe points half, a triangle half, or null.
+function dmWireframeRole(names) {
+  if (!names) return null;
+  const has = (n) => names.some((c) => String(c).toUpperCase() === n);
+  if (has('PID1') && has('PID2') && has('PID3')) return 'triangles';
+  if (has('PID') && has('XP') && has('YP') && has('ZP')) return 'points';
+  return null;
+}
+
+// Join a points file + a triangles file into a mesh. Both halves are read in page
+// runs, striding only the fields the join needs (PID/XP/YP/ZP, PID1-3) — never a
+// whole-file buffer, so a big survey DTM pair opens too; maps PID → 0-based vertex
+// index (gaps ok); drops any triangle whose vertices don't resolve (reports the
+// count). Multiple GROUPs merge into one mesh for v1.
+const dmHeadOf = async (blob) => {
+  const head = new Uint8Array(await blob.slice(0, Math.min(8192, blob.size)).arrayBuffer());
+  return parseHeader(head, detectDM(head) || {});
+};
+const missing = (v) => v == null || v === '' || (typeof v === 'number' && Number.isNaN(v));
+async function openDmWireframe(ptBlob, trBlob) {
+  const ph = await dmHeadOf(ptBlob);
+  const pu = ph.columns.map((c) => c.name.toUpperCase());
+  const xi = pu.indexOf('XP'), yi = pu.indexOf('YP'), zi = pu.indexOf('ZP'), pid = pu.indexOf('PID');
+  if (xi < 0 || yi < 0 || zi < 0 || pid < 0) throw new Error('dm wireframe: the points file needs XP/YP/ZP/PID');
+  const idxOfPid = new Map();
+  const vx = [];
+  const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+  let n = 0;
+  for await (const run of dmColumnBatches(ptBlob, ph, [pid, xi, yi, zi])) {
+    const P = run.cols[pid], X = run.cols[xi], Y = run.cols[yi], Z = run.cols[zi];
+    for (let k = 0; k < run.count; k++) {
+      const id = P[k], x = X[k], y = Y[k], z = Z[k];
+      if (missing(id) || !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+      idxOfPid.set(id, n++); vx.push(x, y, z);
+      if (x < min[0]) min[0] = x; if (x > max[0]) max[0] = x;
+      if (y < min[1]) min[1] = y; if (y > max[1]) max[1] = y;
+      if (z < min[2]) min[2] = z; if (z > max[2]) max[2] = z;
+    }
+  }
+  const th = await dmHeadOf(trBlob);
+  const tu = th.columns.map((c) => c.name.toUpperCase());
+  const a = tu.indexOf('PID1'), b = tu.indexOf('PID2'), c = tu.indexOf('PID3');
+  if (a < 0 || b < 0 || c < 0) throw new Error('dm wireframe: the triangles file needs PID1/PID2/PID3');
+  const tri = [];
+  let dropped = 0;
+  for await (const run of dmColumnBatches(trBlob, th, [a, b, c])) {
+    const A = run.cols[a], B = run.cols[b], C = run.cols[c];
+    for (let k = 0; k < run.count; k++) {
+      const i1 = idxOfPid.get(A[k]), i2 = idxOfPid.get(B[k]), i3 = idxOfPid.get(C[k]);
+      if (i1 == null || i2 == null || i3 == null || i1 === i2 || i2 === i3 || i1 === i3) { dropped++; continue; }
+      tri.push(i1, i2, i3);
+    }
+  }
+  if (!n || !tri.length) throw new Error('dm wireframe: no resolvable triangles');
+  const vertices = Float64Array.from(vx), triangles = Uint32Array.from(tri);
+  return { header: { kind: 'mesh', format: 'dm-wireframe', vertexCount: n, triCount: triangles.length / 3 | 0, bbox: { min, max }, dropped }, vertices, triangles };
+}
+
+// ── ../dxf/src/tokenize.js ──
+
+// DXF group-code pair reader/writer — the bulletproof spine of the parser.
+//
+// A DXF file is a flat stream of (integer code, value) pairs, one per two lines: the
+// group code on one line, its value on the next. The value's TYPE is dictated by the
+// code's numeric range, not by how the value looks — a whole-numbered coordinate is
+// still a double (the same code-driven-type rule as the AutoLISP entity model). The
+// reader is a TOTAL function: malformed input never throws, it resyncs by skipping a
+// bad code line. "Bulletproof" starts here.
+
+// Value kind by group-code range — the fixed DXF code→type table, common ranges.
+function valueKind(code) {
+  if (code >= 10 && code <= 59) return 'num';      // primary doubles (coordinates / reals)
+  if (code >= 60 && code <= 79) return 'int';      // int16 (incl. 62 = ACI colour, 70 = flags)
+  if (code >= 90 && code <= 99) return 'int';      // int32
+  if (code >= 140 && code <= 149) return 'num';    // doubles
+  if (code >= 160 && code <= 179) return 'int';    // int64 / int16
+  if (code >= 210 && code <= 239) return 'num';    // extrusion / OCS doubles
+  if (code >= 270 && code <= 289) return 'int';
+  if (code >= 290 && code <= 299) return 'bool';
+  if (code >= 370 && code <= 389) return 'int';    // lineweight / flags
+  if (code >= 400 && code <= 409) return 'int';
+  if (code === 420 || code === 440) return 'int';  // 24-bit true colour / transparency
+  if (code >= 1010 && code <= 1059) return 'num';  // XDATA doubles (points / reals)
+  if (code >= 1060 && code <= 1071) return 'int';  // XDATA ints
+  return 'str';                                    // 0-9, 100/102/105, 300-369, 430, 1000-1009, names, handles
+}
+
+function coerce(code, raw) {
+  const kind = valueKind(code);
+  if (kind === 'num') { const n = parseFloat(raw); return Number.isNaN(n) ? 0 : n; }
+  if (kind === 'int') { const n = parseInt(raw, 10); return Number.isNaN(n) ? 0 : n; }
+  if (kind === 'bool') return raw.trim() !== '0';
+  return raw;                                       // string: keep verbatim (trailing \r already stripped)
+}
+
+// Parse DXF text into an array of { code, value } pairs. Handles LF and CRLF, blank
+// lines, and a desynced stream (a non-integer where a code is expected → skip one line
+// and retry, rather than throw).
+function parsePairs(text) {
+  const lines = String(text).split('\n');
+  const pairs = [];
+  for (let i = 0; i < lines.length; ) {
+    const head = lines[i].trim();
+    if (head === '') { i++; continue; }
+    const code = Number(head);
+    if (!Number.isInteger(code)) { i++; continue; }               // desync guard
+    const raw = i + 1 < lines.length ? lines[i + 1].replace(/\r$/, '') : '';
+    pairs.push({ code, value: coerce(code, raw) });
+    i += 2;
+  }
+  return pairs;
+}
+
+// Decimal formatting that avoids exponential notation across the coordinate ranges DXF
+// readers expect (UTM magnitudes round-trip via String; only tiny/huge values fall back
+// to a fixed expansion).
+function fmtNum(n) {
+  if (!Number.isFinite(n)) return '0.0';
+  if (n === 0) return '0.0';
+  const s = String(n);
+  return (s.includes('e') || s.includes('E')) ? n.toFixed(12).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '.0') : s;
+}
+
+function fmtValue(code, value) {
+  const kind = valueKind(code);
+  if (kind === 'num') return fmtNum(value);
+  if (kind === 'int') return String(Math.trunc(value));
+  if (kind === 'bool') return value ? '1' : '0';
+  return String(value);
+}
+
+// Serialize { code, value } pairs back to DXF text (CRLF, as is traditional — readers
+// accept LF too, but CRLF is the safe default). Round-trips with parsePairs.
+function serializePairs(pairs) {
+  const out = [];
+  for (const { code, value } of pairs) out.push(String(code), fmtValue(code, value));
+  return out.join('\r\n') + '\r\n';
+}
+
+// Exposed for the reader/entity layer (code-driven type decisions, e.g. XDATA walking).
+
+// ── ../dxf/src/arc.js ──
+
+// Bulge ↔ arc conversions — the heart of the one-curve-type throughline.
+//
+// An arc span is stored as endpoint + bulge: `bulge = tan(θ/4)`, where θ is the signed
+// swept angle (+ = CCW). center / radius / angles are DERIVED here, never stored — a
+// gentle arc has a huge, far-flung center, which would drag the large-coordinate problem
+// (@gcu/frame) back in, and stored endpoints are what let adjacent spans meet watertight
+// (SPEC-curves §1). A straight span is just `bulge = 0`, so lines and arcs are the same
+// primitive. All angles here are RADIANS; the DXF degree boundary converts in read/write.
+
+const TAU = Math.PI * 2;
+
+// Endpoint + bulge → derived { center, radius, startAngle, endAngle, sweep, ccw }.
+// Returns null for a straight (bulge 0) or degenerate (coincident endpoints) span —
+// callers treat those as line segments.
+function arcFromBulge(p0, p1, bulge) {
+  if (!bulge) return null;
+  const dx = p1[0] - p0[0], dy = p1[1] - p0[1];
+  const c = Math.hypot(dx, dy);
+  if (c === 0) return null;
+  const theta = 4 * Math.atan(bulge);              // signed swept angle
+  const half = c / 2;
+  const r = half / Math.abs(Math.sin(theta / 2));
+  const m = half / Math.tan(theta / 2);            // signed offset from chord-mid along left normal
+  const nx = -dy / c, ny = dx / c;                 // unit left normal of p0→p1
+  const cx = p0[0] + dx / 2 + nx * m;
+  const cy = p0[1] + dy / 2 + ny * m;
+  return {
+    center: [cx, cy],
+    radius: r,
+    startAngle: Math.atan2(p0[1] - cy, p0[0] - cx),
+    endAngle: Math.atan2(p1[1] - cy, p1[0] - cx),
+    sweep: theta,
+    ccw: bulge > 0,
+  };
+}
+
+// Center-form arc (a DXF ARC: CCW from start to end, angles in RADIANS) → endpoint +
+// bulge canonical form `{ start, end, bulge }`. The inverse of `arcFromBulge` for a CCW
+// arc — this is how an ARC entity enters the bulge-native model losslessly.
+function bulgeFromArc(center, radius, startAngle, endAngle) {
+  let theta = ((endAngle - startAngle) % TAU + TAU) % TAU;   // normalize CCW sweep into (0, TAU]
+  if (theta === 0) theta = TAU;
+  const [cx, cy] = center;
+  return {
+    start: [cx + radius * Math.cos(startAngle), cy + radius * Math.sin(startAngle)],
+    end: [cx + radius * Math.cos(endAngle), cy + radius * Math.sin(endAngle)],
+    bulge: Math.tan(theta / 4),
+  };
+}
+
+// The point at the middle of an arc span — on the arc, not on the chord (snapping,
+// labels, midpoint object snap). Falls back to the chord midpoint for a straight span.
+function arcMidpoint(p0, p1, bulge) {
+  const a = arcFromBulge(p0, p1, bulge);
+  if (!a) return [(p0[0] + p1[0]) / 2, (p0[1] + p1[1]) / 2];
+  const mid = a.startAngle + a.sweep / 2;
+  return [a.center[0] + a.radius * Math.cos(mid), a.center[1] + a.radius * Math.sin(mid)];
+}
+
+// ── ../dxf/src/color.js ──
+
+// DXF colour resolution — kept UN-FLATTENED (SPEC-dxf §4).
+//
+// An ACI palette index, a BYLAYER / BYBLOCK reference, and a 24-bit true colour are
+// DISTINCT and must not collapse into one RGB triple. Flattening ACI → RGB discards the
+// layer-driven colour scheme mining/geology drawings rely on (the colour IS data). So
+// the model preserves the mode; aciToRgb is a render-time convenience, never canonical.
+
+const BYLAYER = 256, BYBLOCK = 0;
+
+// Resolve raw colour group codes into the typed colour model. `aci` is group 62 (may be
+// null/absent), `trueColor` is group 420 (24-bit packed RGB, may be null). True colour
+// wins when present (that's the DXF precedence). A negative ACI marks a layer turned off.
+function resolveColor({ aci = null, trueColor = null } = {}) {
+  if (trueColor != null) {
+    return { mode: 'rgb', r: (trueColor >> 16) & 0xff, g: (trueColor >> 8) & 0xff, b: trueColor & 0xff };
+  }
+  if (aci == null || aci === BYLAYER) return { mode: 'bylayer' };
+  if (aci === BYBLOCK) return { mode: 'byblock' };
+  if (aci < 0) return { mode: 'aci', index: -aci, off: true };
+  return { mode: 'aci', index: aci };
+}
+
+// Serialize the colour model back to the group-code pairs the writer emits, preserving
+// the distinction (rgb → 420, byblock → 62/0, bylayer → 62/256, aci → 62/index).
+function colorToPairs(color) {
+  if (!color) return [];
+  switch (color.mode) {
+    case 'rgb': return [{ code: 420, value: ((color.r & 0xff) << 16) | ((color.g & 0xff) << 8) | (color.b & 0xff) }];
+    case 'byblock': return [{ code: 62, value: BYBLOCK }];
+    case 'bylayer': return [{ code: 62, value: BYLAYER }];
+    case 'aci': return [{ code: 62, value: color.off ? -color.index : color.index }];
+    default: return [];
+  }
+}
+
+// The FULL ACI ramp. 1–9 are the named colours; 10–249 follow the published
+// derivation (24 hues 15° apart × 5 value levels × {saturated, half-saturated},
+// decade-packed: hue = ((i−10)÷10)·15°, value level = (i−10)%10 >> 1 from
+// [255,204,153,127,76], odd offsets halve the chroma); 250–255 are the gray
+// ramp. Spot-checked against the canonical table (ACI 30 = FF7F00, 11 =
+// FF7F7F, 250 = 333333). Index 7 is "foreground" — white here, a renderer on
+// a light theme may substitute. The model keeps the index; this is the RGB view.
+const ACI_NAMED = {
+  1: [255, 0, 0], 2: [255, 255, 0], 3: [0, 255, 0], 4: [0, 255, 255],
+  5: [0, 0, 255], 6: [255, 0, 255], 7: [255, 255, 255],
+  8: [128, 128, 128], 9: [192, 192, 192],
+};
+const ACI_GRAYS = { 250: 51, 251: 91, 252: 132, 253: 173, 254: 214, 255: 255 };
+const ACI_V = [255, 204, 153, 127, 76];
+
+function hueRgb(h, hi, lo) {
+  const sect = Math.floor(h / 60) % 6, f = h / 60 - Math.floor(h / 60);
+  const up = Math.floor(lo + (hi - lo) * f), dn = Math.floor(hi - (hi - lo) * f);
+  switch (sect) {
+    case 0: return [hi, up, lo];
+    case 1: return [dn, hi, lo];
+    case 2: return [lo, hi, up];
+    case 3: return [lo, dn, hi];
+    case 4: return [up, lo, hi];
+    default: return [hi, lo, dn];
+  }
+}
+
+function aciToRgb(index) {
+  if (ACI_NAMED[index]) return ACI_NAMED[index];
+  if (ACI_GRAYS[index] != null) { const v = ACI_GRAYS[index]; return [v, v, v]; }
+  if (index >= 10 && index <= 249) {
+    const k = index - 10;
+    const hue = ((k / 10) | 0) * 15;
+    const within = k % 10;
+    const hi = ACI_V[within >> 1];
+    const lo = (within & 1) ? Math.floor(hi / 2) : 0;
+    return hueRgb(hue, hi, lo);
+  }
+  return null;
+}
+
+// Resolve a feature's colour model to RGB for rendering: rgb → itself, aci →
+// the ramp, bylayer/byblock → the layer table's colour (byblock loses its
+// insert context after explode — the layer is the honest stand-in).
+function colorToRgb(color, layerName, layers) {
+  if (!color) return null;
+  if (color.mode === 'rgb') return [color.r, color.g, color.b];
+  if (color.mode === 'aci' && !color.off) return aciToRgb(color.index);
+  if (color.mode === 'bylayer' || color.mode === 'byblock') {
+    const lc = layers && layers[layerName] && layers[layerName].color;
+    if (lc && lc.mode === 'aci' && !lc.off && lc.index != null) return aciToRgb(lc.index);
+    if (lc && lc.mode === 'rgb') return [lc.r, lc.g, lc.b];
+  }
+  return null;
+}
+
+// ── ../dxf/src/read.js ──
+
+// @gcu/dxf reader — the Document assembler.
+//
+// Walks a DXF group-code stream into a typed Document: sections → entities → features,
+// with the coordinate-provenance contract front and centre. WORLD coordinates are
+// CANONICAL and never mutated — the reader computes a RECOMMENDED working offset (an
+// @gcu/frame) as metadata and attaches it; consumers derive local coordinates on demand
+// (`toLocalCoords(geom, doc.frame)`). The reader is bulletproof: a malformed entity is
+// punted to a null-geometry feature (its property bag preserved) plus a `warnings[]`
+// entry — never a throw.
+//
+// Geometry is normalised to 3D world coordinates in flat Float64Array buffers, and the
+// curve primitive is the bulge-polyline: LINE, LWPOLYLINE, POLYLINE, and ARC all become
+// `{ kind:'polyline', vertices, bulges, closed }` (ARC = a single bulge span) — the
+// one-curve-type throughline. CIRCLE and POINT stay distinct (a full circle has no
+// endpoints), 3DFACE is a face, INSERT is a block reference resolved by explode().
+
+
+const DEG$read = Math.PI / 180;
+const IMPORTER = '@gcu/dxf@0.1.0';
+
+// $INSUNITS → a units string (the common subset; default metres for a geo stack).
+const INSUNITS = { 1: 'in', 2: 'ft', 4: 'mm', 5: 'cm', 6: 'm', 9: 'mm', 10: 'm', 14: 'dm' };
+
+// ── small helpers ──────────────────────────────────────────────────────────────
+
+// First value for a group code in an entity's pairs (simple entities are last-wins-safe
+// because their codes don't repeat; vertex streams are iterated in order instead).
+function val(pairs, code, dflt) {
+  for (const p of pairs) if (p.code === code) return p.value;
+  return dflt;
+}
+
+const mkFeature = (type, geometry, properties) => ({ type, geometry, properties });
+
+// The shared attribute bag — hoard everything the format carries that means something.
+function readCommon(pairs) {
+  const props = {};
+  let aci = null, trueColor = null, xApp = null, xdata = null, ext = null;
+  for (const { code, value } of pairs) {
+    switch (code) {
+      case 5: props.handle = value; break;
+      case 8: props.layer = value; break;
+      case 6: props.linetype = value; break;
+      case 62: aci = value; break;
+      case 420: trueColor = value; break;
+      case 370: props.lineweight = value; break;
+      case 38: props.elevation = value; break;
+      case 39: props.thickness = value; break;
+      case 210: (ext ??= [0, 0, 1])[0] = value; break;
+      case 220: (ext ??= [0, 0, 1])[1] = value; break;
+      case 230: (ext ??= [0, 0, 1])[2] = value; break;
+      default:
+        if (code === 1001) { xApp = value; (xdata ??= {})[xApp] = []; }
+        else if (code >= 1000 && code <= 1071 && xApp) xdata[xApp].push({ code, value });
+    }
+  }
+  props.color = resolveColor({ aci, trueColor });
+  if (ext) props.extrusion = ext;
+  if (xdata) props.xdata = xdata;
+  return props;
+}
+
+// Pack an array of [x,y,z] points into a flat Float64Array.
+function packPts(pts) {
+  const out = new Float64Array(pts.length * 3);
+  for (let i = 0; i < pts.length; i++) { out[i * 3] = pts[i][0]; out[i * 3 + 1] = pts[i][1]; out[i * 3 + 2] = pts[i][2] || 0; }
+  return out;
+}
+
+// ── per-entity parsers ───────────────────────────────────────────────────────────
+
+function parseLine(rec) {
+  const p = rec.pairs;
+  const v = packPts([[val(p, 10, 0), val(p, 20, 0), val(p, 30, 0)], [val(p, 11, 0), val(p, 21, 0), val(p, 31, 0)]]);
+  return mkFeature('line', { kind: 'polyline', vertices: v, bulges: null, closed: false }, readCommon(p));
+}
+
+function parseLwpolyline(rec) {
+  const p = rec.pairs;
+  const closed = (val(p, 70, 0) & 1) === 1, elev = val(p, 38, 0);
+  const xs = [], ys = [], bs = [];
+  let x = null, y = 0, b = 0, open = false;
+  const flush = () => { if (open) { xs.push(x); ys.push(y); bs.push(b); } x = null; y = 0; b = 0; open = false; };
+  for (const { code, value } of p) {
+    if (code === 10) { flush(); x = value; open = true; }
+    else if (code === 20 && open) y = value;
+    else if (code === 42 && open) b = value;
+  }
+  flush();
+  const vertices = new Float64Array(xs.length * 3);
+  for (let i = 0; i < xs.length; i++) { vertices[i * 3] = xs[i]; vertices[i * 3 + 1] = ys[i]; vertices[i * 3 + 2] = elev; }
+  const bulges = bs.some((v) => v !== 0) ? Float64Array.from(bs) : null;
+  return mkFeature('polyline', { kind: 'polyline', vertices, bulges, closed }, readCommon(p));
+}
+
+// Old-style POLYLINE: a header + a VERTEX stream + SEQEND. Returns the feature and the
+// index just past SEQEND. The 3D mesh tier (v0.2): polyface meshes (flag 64) and
+// polygon meshes (flag 16) become 'mesh' features — the shape mine software exports
+// solids and surfaces in.
+function parsePolyline(rec, recs, i, warnings) {
+  const flags = val(rec.pairs, 70, 0);
+  let j = i + 1;
+  const vrecs = [];
+  while (j < recs.length && recs[j].type === 'VERTEX') { vrecs.push(recs[j].pairs); j++; }
+  if (j < recs.length && recs[j].type === 'SEQEND') j++;
+
+  if (flags & 64) return { feature: parsePolyfaceMesh(rec, vrecs, warnings), next: j };
+  if (flags & 16) return { feature: parsePolygonMesh(rec, vrecs, warnings), next: j };
+
+  const pts = vrecs.map((vp) => [val(vp, 10, 0), val(vp, 20, 0), val(vp, 30, 0)]);
+  const bs = vrecs.map((vp) => val(vp, 42, 0));
+  const vertices = packPts(pts);
+  const bulges = bs.some((v) => v !== 0) ? Float64Array.from(bs) : null;
+  return { feature: mkFeature('polyline', { kind: 'polyline', vertices, bulges, closed: (flags & 1) === 1 }, readCommon(rec.pairs)), next: j };
+}
+
+// Polyface mesh (POLYLINE flag 64): the VERTEX stream carries two record kinds —
+// geometry vertices (vertex flag 64|128) and FACE records (flag 128 alone) whose
+// codes 71–74 are 1-based indices into the geometry vertices (negative = the edge
+// is invisible; only |index| matters here). A 4-index face splits into two triangles.
+function parsePolyfaceMesh(rec, vrecs, warnings) {
+  const pts = [], faces = [];
+  for (const vp of vrecs) {
+    const vf = val(vp, 70, 0);
+    if (vf & 128 && !(vf & 64)) {
+      const idx = [val(vp, 71, 0), val(vp, 72, 0), val(vp, 73, 0), val(vp, 74, 0)].map((v) => Math.abs(v)).filter((v) => v > 0);
+      if (idx.length >= 3) faces.push(idx);
+    } else {
+      pts.push(val(vp, 10, 0), val(vp, 20, 0), val(vp, 30, 0));
+    }
+  }
+  const nV = pts.length / 3;
+  const tris = [];
+  let dropped = 0;
+  for (const f of faces) {
+    if (f.some((ix) => ix > nV)) { dropped++; continue; }  // index past the vertex table
+    tris.push(f[0] - 1, f[1] - 1, f[2] - 1);
+    if (f.length === 4) tris.push(f[0] - 1, f[2] - 1, f[3] - 1);
+  }
+  if (dropped) warnings.push({ handle: val(rec.pairs, 5, null), entity: 'POLYLINE(polyface)', reason: `${dropped} face(s) referenced vertices past the table — dropped` });
+  if (!tris.length) {
+    warnings.push({ handle: val(rec.pairs, 5, null), entity: 'POLYLINE(polyface)', reason: 'no resolvable faces' });
+    return nullFeature(rec);
+  }
+  return mkFeature('mesh', { kind: 'mesh', vertices: Float64Array.from(pts), triangles: Uint32Array.from(tris) }, readCommon(rec.pairs));
+}
+
+// Polygon mesh (POLYLINE flag 16): an M×N vertex grid (codes 71/72 on the header),
+// vertices in row-major M-then-N order; faces are the grid quads, wrapping when the
+// mesh is closed in M (flag 1) and/or N (flag 32).
+function parsePolygonMesh(rec, vrecs, warnings) {
+  const M = val(rec.pairs, 71, 0), N = val(rec.pairs, 72, 0);
+  const flags = val(rec.pairs, 70, 0);
+  const gverts = vrecs.filter((vp) => !(val(vp, 70, 0) & 128) || (val(vp, 70, 0) & 64));
+  if (M < 2 || N < 2 || gverts.length < M * N) {
+    warnings.push({ handle: val(rec.pairs, 5, null), entity: 'POLYLINE(polygon mesh)', reason: `grid ${M}×${N} but ${gverts.length} vertices — skipped` });
+    return nullFeature(rec);
+  }
+  const pts = new Float64Array(M * N * 3);
+  for (let k = 0; k < M * N; k++) {
+    const vp = gverts[k];
+    pts[k * 3] = val(vp, 10, 0); pts[k * 3 + 1] = val(vp, 20, 0); pts[k * 3 + 2] = val(vp, 30, 0);
+  }
+  const closedM = (flags & 1) === 1, closedN = (flags & 32) === 32;
+  const tris = [];
+  const at = (m, n) => m * N + n;
+  for (let m = 0; m < (closedM ? M : M - 1); m++) {
+    for (let n = 0; n < (closedN ? N : N - 1); n++) {
+      const a = at(m, n), b = at((m + 1) % M, n), c = at((m + 1) % M, (n + 1) % N), d = at(m, (n + 1) % N);
+      tris.push(a, b, c, a, c, d);
+    }
+  }
+  return mkFeature('mesh', { kind: 'mesh', vertices: pts, triangles: Uint32Array.from(tris) }, readCommon(rec.pairs));
+}
+
+function parseCircle(rec) {
+  const p = rec.pairs;
+  return mkFeature('circle', { kind: 'circle', center: [val(p, 10, 0), val(p, 20, 0), val(p, 30, 0)], radius: val(p, 40, 0) }, readCommon(p));
+}
+
+// ARC enters the bulge-native model: center-form (CCW, degrees) → endpoint + bulge.
+function parseArc(rec) {
+  const p = rec.pairs;
+  const center = [val(p, 10, 0), val(p, 20, 0), val(p, 30, 0)], radius = val(p, 40, 0), z = center[2];
+  const { start, end, bulge } = bulgeFromArc(center, radius, val(p, 50, 0) * DEG$read, val(p, 51, 0) * DEG$read);
+  const vertices = packPts([[start[0], start[1], z], [end[0], end[1], z]]);
+  return mkFeature('arc', { kind: 'polyline', vertices, bulges: Float64Array.from([bulge]), closed: false }, readCommon(p));
+}
+
+function parsePoint(rec) {
+  const p = rec.pairs;
+  return mkFeature('point', { kind: 'point', position: [val(p, 10, 0), val(p, 20, 0), val(p, 30, 0)] }, readCommon(p));
+}
+
+// TEXT: insertion point (10/20/30), height (40), the string (1), rotation degrees (50).
+// MTEXT and the alignment codes (11/21/72/73) are v0.2 — single-line left-baseline for now.
+function parseText(rec) {
+  const p = rec.pairs;
+  let str = '';
+  for (const { code, value } of p) if (code === 1) str = value;
+  return mkFeature('text', { kind: 'text', position: [val(p, 10, 0), val(p, 20, 0), val(p, 30, 0)], height: val(p, 40, 1), rotation: val(p, 50, 0), value: str }, readCommon(p));
+}
+
+// ATTDEF: an attribute-definition template inside a block — TEXT plus tag (2), prompt (3)
+// and a default value (1). The per-instance value is an ATTRIB on the INSERT (parseInsert).
+function parseAttdef(rec) {
+  const p = rec.pairs;
+  let value = '', tag = '', prompt = '';
+  for (const { code, value: v } of p) { if (code === 1) value = v; else if (code === 2) tag = v; else if (code === 3) prompt = v; }
+  return mkFeature('attdef', { kind: 'attdef', position: [val(p, 10, 0), val(p, 20, 0), val(p, 30, 0)], height: val(p, 40, 1), rotation: val(p, 50, 0), tag, prompt, value }, readCommon(p));
+}
+
+function parse3dface(rec) {
+  const p = rec.pairs;
+  const c = [[val(p, 10, 0), val(p, 20, 0), val(p, 30, 0)], [val(p, 11, 0), val(p, 21, 0), val(p, 31, 0)],
+    [val(p, 12, 0), val(p, 22, 0), val(p, 32, 0)], [val(p, 13, 0), val(p, 23, 0), val(p, 33, 0)]];
+  const tri = c[3][0] === c[2][0] && c[3][1] === c[2][1] && c[3][2] === c[2][2];   // 4th==3rd → triangle
+  return mkFeature('face', { kind: 'face', vertices: packPts(tri ? c.slice(0, 3) : c) }, readCommon(p));
+}
+
+// INSERT: a placed block + (when flag 66=1) an ATTRIB stream folded into the bag. The
+// block geometry is referenced, not exploded — explode() resolves it on demand.
+function parseInsert(rec, recs, i) {
+  const p = rec.pairs;
+  const props = readCommon(p);
+  const geometry = {
+    kind: 'insert', block: val(p, 2, ''),
+    transform: { position: [val(p, 10, 0), val(p, 20, 0), val(p, 30, 0)], scale: [val(p, 41, 1), val(p, 42, 1), val(p, 43, 1)], rotation: val(p, 50, 0) },
+  };
+  let j = i + 1;
+  if (val(p, 66, 0) === 1) {
+    const attribs = [];
+    while (j < recs.length && recs[j].type === 'ATTRIB') {
+      const ap = recs[j].pairs;
+      attribs.push({ tag: val(ap, 2, ''), value: val(ap, 1, ''), position: [val(ap, 10, 0), val(ap, 20, 0), val(ap, 30, 0)] });
+      j++;
+    }
+    if (j < recs.length && recs[j].type === 'SEQEND') j++;
+    if (attribs.length) props.attribs = attribs;
+  }
+  return { feature: mkFeature('insert', geometry, props), next: j };
+}
+
+// An unsupported/unrecognised entity: geometry dropped, property bag (handle/layer/
+// XDATA) preserved so it round-trips as metadata and the gap is a logged decision.
+function nullFeature(rec) {
+  const props = readCommon(rec.pairs);
+  props.dropped = rec.type;
+  return mkFeature(null, null, props);
+}
+
+// ── structure ────────────────────────────────────────────────────────────────────
+
+// Split a flat pair list into entity records at each code-0 boundary.
+function splitRecords(pairs) {
+  const recs = [];
+  let cur = null;
+  for (const p of pairs) {
+    if (p.code === 0) recs.push((cur = { type: p.value, pairs: [] }));
+    else if (cur) cur.pairs.push(p);
+  }
+  return recs;
+}
+
+// Partition into named sections → arrays of entity records (HEADER body is empty here;
+// its variables are read directly via headerVar over the raw pairs).
+function partitionSections(pairs) {
+  const recs = splitRecords(pairs), sections = {};
+  for (let i = 0; i < recs.length; i++) {
+    if (recs[i].type !== 'SECTION') continue;
+    const name = val(recs[i].pairs, 2, '');
+    const body = [];
+    for (i++; i < recs.length && recs[i].type !== 'ENDSEC'; i++) body.push(recs[i]);
+    sections[name] = body;
+  }
+  return sections;
+}
+
+// A header variable: code 9 names it, the next pair carries the value.
+function headerVar(pairs, name) {
+  for (let i = 0; i < pairs.length - 1; i++) if (pairs[i].code === 9 && pairs[i].value === name) return pairs[i + 1].value;
+  return undefined;
+}
+
+function parseLayers(records) {
+  const layers = {};
+  for (const r of records) {
+    if (r.type !== 'LAYER') continue;
+    const name = val(r.pairs, 2, '');
+    layers[name] = { name, color: resolveColor({ aci: val(r.pairs, 62, null) }), linetype: val(r.pairs, 6, undefined) };
+  }
+  return layers;
+}
+
+function parseBlocks(records, warnings) {
+  const blocks = {};
+  for (let i = 0; i < records.length; i++) {
+    if (records[i].type !== 'BLOCK') continue;
+    const name = val(records[i].pairs, 2, '');
+    const base = [val(records[i].pairs, 10, 0), val(records[i].pairs, 20, 0), val(records[i].pairs, 30, 0)];
+    const body = [];
+    for (i++; i < records.length && records[i].type !== 'ENDBLK'; i++) body.push(records[i]);
+    blocks[name] = { name, base, features: assembleEntities(body, warnings) };
+  }
+  return blocks;
+}
+
+// Walk entity records → features, resolving the compound entities (POLYLINE vertex
+// streams, INSERT attribute streams) and isolating per-entity parse errors.
+function assembleEntities(records, warnings) {
+  const features = [];
+  for (let i = 0; i < records.length; i++) {
+    const rec = records[i];
+    try {
+      switch (rec.type) {
+        case 'LINE': features.push(parseLine(rec)); break;
+        case 'LWPOLYLINE': features.push(parseLwpolyline(rec)); break;
+        case 'CIRCLE': features.push(parseCircle(rec)); break;
+        case 'ARC': features.push(parseArc(rec)); break;
+        case 'POINT': features.push(parsePoint(rec)); break;
+        case 'TEXT': features.push(parseText(rec)); break;
+        case 'ATTDEF': features.push(parseAttdef(rec)); break;
+        case '3DFACE': features.push(parse3dface(rec)); break;
+        case 'POLYLINE': { const r = parsePolyline(rec, records, i, warnings); features.push(r.feature); i = r.next - 1; break; }
+        case 'INSERT': { const r = parseInsert(rec, records, i); features.push(r.feature); i = r.next - 1; break; }
+        case 'VERTEX': case 'SEQEND': case 'ATTRIB': break;        // consumed by their parent; stray → skip
+        default:
+          warnings.push({ handle: val(rec.pairs, 5, null), entity: rec.type, reason: 'unsupported entity (metadata kept)' });
+          features.push(nullFeature(rec));
+      }
+    } catch (e) {
+      warnings.push({ handle: val(rec.pairs, 5, null), entity: rec.type, reason: `parse error: ${e.message}` });
+      features.push(nullFeature(rec));
+    }
+  }
+  return features;
+}
+
+// Bounding box over all world geometry — drives the recommended working frame.
+function computeBounds(features) {
+  const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+  const ext = (x, y, z) => {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    if (x < min[0]) min[0] = x; if (x > max[0]) max[0] = x;
+    if (y < min[1]) min[1] = y; if (y > max[1]) max[1] = y;
+    const zz = Number.isFinite(z) ? z : 0;
+    if (zz < min[2]) min[2] = zz; if (zz > max[2]) max[2] = zz;
+  };
+  for (const f of features) {
+    const g = f.geometry;
+    if (!g) continue;
+    if (g.kind === 'polyline' || g.kind === 'face') for (let i = 0; i < g.vertices.length; i += 3) ext(g.vertices[i], g.vertices[i + 1], g.vertices[i + 2]);
+    else if (g.kind === 'circle') { ext(g.center[0] - g.radius, g.center[1] - g.radius, g.center[2]); ext(g.center[0] + g.radius, g.center[1] + g.radius, g.center[2]); }
+    else if (g.kind === 'point' || g.kind === 'text' || g.kind === 'attdef') ext(...g.position);
+    else if (g.kind === 'insert') ext(...g.transform.position);
+  }
+  return min[0] === Infinity ? null : { min, max };
+}
+
+// Read DXF text into a Document. Options: { offsetStrategy:'floor'|'centroid', round,
+// crs, units }. Total function — never throws on malformed input.
+function read(text, opts = {}) {
+  const warnings = [];
+  const pairs = parsePairs(text);
+  const sections = partitionSections(pairs);
+  const insunits = headerVar(pairs, '$INSUNITS');
+  const units = INSUNITS[insunits] ?? opts.units ?? 'm';
+  const layers = parseLayers(sections.TABLES || []);
+  const blocks = parseBlocks(sections.BLOCKS || [], warnings);
+  const features = assembleEntities(sections.ENTITIES || [], warnings);
+  const bounds = computeBounds(features);
+  const strategy = opts.offsetStrategy || 'floor';
+  const frame = bounds
+    ? frameFromBounds(bounds, { strategy, round: opts.round ?? 1, crs: opts.crs ?? null, units })
+    : makeFrame({ crs: opts.crs ?? null, units });
+  const coordinate_provenance = { canonical: 'WCS', bbox_original: bounds, frame, offset_strategy: strategy, importer: IMPORTER };
+  return {
+    header: { acadver: headerVar(pairs, '$ACADVER'), insunits, units, codepage: headerVar(pairs, '$DWGCODEPAGE'), coordinate_provenance },
+    frame, layers, blocks, features, warnings,
+  };
+}
+
+// ── ../dxf/src/explode.js ──
+
+// @gcu/dxf block resolver — the opt-in derived view.
+//
+// The canonical Document keeps blocks compact (a BlockDef + lightweight INSERTs), the
+// spine-principle "small auditable thing". explode() is the DERIVED "give me the legion"
+// view: it composes each INSERT's transform over its block definition to produce flat
+// world geometry, recursing through nested inserts with a cyclic-reference guard. You
+// opt into it; nothing bakes it at import.
+
+const DEG$explode = Math.PI / 180;
+
+// 4×4 affine, row-major. World = Translate(insertion) · RotZ · Scale · Translate(−base).
+const ident = () => [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+
+function matMul(a, b) {
+  const m = new Array(16);
+  for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) { let s = 0; for (let k = 0; k < 4; k++) s += a[r * 4 + k] * b[k * 4 + c]; m[r * 4 + c] = s; }
+  return m;
+}
+
+function apply(m, [x, y, z]) {
+  return [m[0] * x + m[1] * y + m[2] * z + m[3], m[4] * x + m[5] * y + m[6] * z + m[7], m[8] * x + m[9] * y + m[10] * z + m[11]];
+}
+
+function insertMatrix(t, base = [0, 0, 0]) {
+  const c = Math.cos(t.rotation * DEG$explode), s = Math.sin(t.rotation * DEG$explode);
+  const [sx, sy, sz] = t.scale, [px, py, pz] = t.position, [bx, by, bz] = base;
+  const T = [1, 0, 0, px, 0, 1, 0, py, 0, 0, 1, pz, 0, 0, 0, 1];
+  const R = [c, -s, 0, 0, s, c, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+  const S = [sx, 0, 0, 0, 0, sy, 0, 0, 0, 0, sz, 0, 0, 0, 0, 1];
+  const B = [1, 0, 0, -bx, 0, 1, 0, -by, 0, 0, 1, -bz, 0, 0, 0, 1];
+  return matMul(matMul(matMul(T, R), S), B);
+}
+
+const scaleX = (m) => Math.hypot(m[0], m[4], m[8]);   // uniform-scale factor for radius
+
+function transformFeature(f, M) {
+  const g = f.geometry;
+  if (g.kind === 'polyline' || g.kind === 'face') {
+    const v = new Float64Array(g.vertices.length);
+    for (let i = 0; i < v.length; i += 3) { const w = apply(M, [g.vertices[i], g.vertices[i + 1], g.vertices[i + 2]]); v[i] = w[0]; v[i + 1] = w[1]; v[i + 2] = w[2]; }
+    return { ...f, geometry: { ...g, vertices: v } };       // bulges survive: rotation + uniform scale preserve tan(θ/4)
+  }
+  if (g.kind === 'circle') return { ...f, geometry: { ...g, center: apply(M, g.center), radius: g.radius * scaleX(M) } };
+  if (g.kind === 'point') return { ...f, geometry: { ...g, position: apply(M, g.position) } };
+  return f;
+}
+
+function walk(features, blocks, M, stack, warnings, out) {
+  for (const f of features) {
+    const g = f.geometry;
+    if (g && g.kind === 'insert') {
+      const name = g.block;
+      if (stack.includes(name)) { warnings.push({ entity: 'INSERT', reason: `cyclic block reference: ${name}` }); continue; }
+      const blk = blocks[name];
+      if (!blk) { warnings.push({ entity: 'INSERT', reason: `undefined block: ${name}` }); continue; }
+      if (g.transform.scale[0] !== g.transform.scale[1]) warnings.push({ entity: 'INSERT', reason: `non-uniform scale on '${name}' distorts arcs/circles` });
+      walk(blk.features, blocks, matMul(M, insertMatrix(g.transform, blk.base)), [...stack, name], warnings, out);
+    } else if (g) out.push(transformFeature(f, M));
+    else out.push(f);                                        // null-geometry punt passes through
+  }
+}
+
+// Resolve every INSERT into transformed flat geometry. Returns a new Document with no
+// inserts (exploded:true), accumulating any cyclic / undefined-block / non-uniform-scale
+// warnings onto the existing log.
+function explode(doc, _opts = {}) {
+  const warnings = [], out = [];
+  walk(doc.features, doc.blocks || {}, ident(), [], warnings, out);
+  return { ...doc, features: out, exploded: true, warnings: [...(doc.warnings || []), ...warnings] };
+}
+
+// ── ../dxf/src/scene.js ──
+
+// scene — extract VIEWER-shaped geometry from a Document: one merged mesh
+// (3DFACE soup + polyface/polygon meshes), strings (polylines with bulges
+// sampled to chords, lines, arcs, circles), and points — each tagged with its
+// DXF layer. This is the bridge a 3D viewer (micro's condenser engine) builds
+// layers from; the Document itself stays the canonical, lossless model.
+//
+// The per-feature walk (emitSceneFeature) is shared with the STREAMING reader
+// (stream.js), so a file read whole and the same file streamed produce the same
+// strings, chords and colours — one geometry rule, two transports.
+
+// sample one bulge span into chord points (excluding p0, including p1):
+// ~24 chords for a full circle, never fewer than 2 for a visible arc
+function sampleSpan(p0, p1, bulge, z0, z1, out) {
+  const arc = arcFromBulge(p0, p1, bulge);
+  if (!arc) { out.push(p1[0], p1[1], z1); return; }
+  const n = Math.max(2, Math.ceil((Math.abs(arc.sweep) / TAU) * 24));
+  const a0 = arc.startAngle;
+  for (let k = 1; k <= n; k++) {
+    const t = k / n;
+    const a = a0 + arc.sweep * t;
+    out.push(arc.center[0] + arc.radius * Math.cos(a), arc.center[1] + arc.radius * Math.sin(a), z0 + (z1 - z0) * t);
+  }
+}
+
+// a bulge-polyline geometry → its chord points (bulges sampled), or null (< 2 vertices)
+function polylineChords(g) {
+  const v = g.vertices;
+  const nV = v.length / 3;
+  if (nV < 2) return null;
+  if (!g.bulges && !g.closed) return Float64Array.from(v);   // straight & open: the vertices ARE the chords
+  const pts = [v[0], v[1], v[2]];
+  const spans = g.closed ? nV : nV - 1;
+  for (let i = 0; i < spans; i++) {
+    const a = i, b = (i + 1) % nV;
+    const bulge = g.bulges ? g.bulges[a] || 0 : 0;
+    sampleSpan([v[a * 3], v[a * 3 + 1]], [v[b * 3], v[b * 3 + 1]], bulge, v[a * 3 + 2], v[b * 3 + 2], pts);
+  }
+  return Float64Array.from(pts);
+}
+
+const TRI = Uint32Array.of(0, 1, 2), QUAD = Uint32Array.of(0, 1, 2, 0, 2, 3);
+
+/**
+ * Route one exploded feature into a scene sink:
+ *   sink.mesh(layer, rgb, vertices, triangles)   — optional; absent → per-triangle
+ *   sink.tri(layer, rgb, ax, ay, az, bx, by, bz, cx, cy, cz)
+ *   sink.string(layer, rgb, pts)                  — chord points, Float64Array
+ *   sink.point(layer, rgb, x, y, z)
+ * Text / attdef / hatch metadata are not scene geometry → ignored.
+ */
+function emitSceneFeature(f, layers, sink) {
+  const g = f.geometry;
+  if (!g) return;
+  const layer = (f.properties && f.properties.layer) || '0';
+  const rgb = colorToRgb(f.properties && f.properties.color, layer, layers);
+  if (g.kind === 'mesh') {
+    if (sink.mesh) { sink.mesh(layer, rgb, g.vertices, g.triangles); return; }
+    const v = g.vertices, t = g.triangles;
+    for (let i = 0; i + 2 < t.length; i += 3) {
+      const a = t[i] * 3, b = t[i + 1] * 3, c = t[i + 2] * 3;
+      sink.tri(layer, rgb, v[a], v[a + 1], v[a + 2], v[b], v[b + 1], v[b + 2], v[c], v[c + 1], v[c + 2]);
+    }
+  } else if (g.kind === 'face') {
+    const v = g.vertices;
+    const nV = v.length / 3;
+    if (sink.mesh) {                                       // indexed: a quad shares its diagonal's vertices
+      if (nV >= 3) sink.mesh(layer, rgb, v, nV === 4 ? QUAD : TRI);
+      return;
+    }
+    if (nV >= 3) sink.tri(layer, rgb, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8]);
+    if (nV === 4) sink.tri(layer, rgb, v[0], v[1], v[2], v[6], v[7], v[8], v[9], v[10], v[11]);
+  } else if (g.kind === 'polyline') {
+    const pts = polylineChords(g);
+    if (pts) sink.string(layer, rgb, pts);
+  } else if (g.kind === 'circle') {
+    const n = 32, pts = new Float64Array(3 * (n + 1));
+    const z = g.center[2] || 0;
+    for (let k = 0; k <= n; k++) {
+      const a = (k / n) * TAU;
+      pts[3 * k] = g.center[0] + g.radius * Math.cos(a); pts[3 * k + 1] = g.center[1] + g.radius * Math.sin(a); pts[3 * k + 2] = z;
+    }
+    sink.string(layer, rgb, pts);
+  } else if (g.kind === 'point') {
+    sink.point(layer, rgb, g.position[0], g.position[1], g.position[2] || 0);
+  }
+}
+
+// → { mesh: {vertices,triangles}|null, strings: [{layer,pts:Float64Array}],
+//     points: [{layer,x,y,z}], layers: [names], counts, bbox: [min3,max3]|null }
+function extractScene(doc) {
+  const flat = doc.exploded ? doc : explode(doc);
+  const mv = [], mt = [];
+  const strings = [], points = [];
+  const layerSet = new Set();
+  const layerColors = {};                                  // layer name → [r,g,b] | null (first resolved wins)
+  let meshColor;                                           // uniform across every face → the mesh tint; mixed → null
+  const foldLayerColor = (layer, rgb) => {
+    if (!(layer in layerColors) || (layerColors[layer] == null && rgb)) layerColors[layer] = rgb;
+  };
+  const seen = (layer, rgb) => { layerSet.add(layer); foldLayerColor(layer, rgb); };
+  const foldMeshColor = (rgb) => {
+    if (meshColor === undefined) meshColor = rgb;
+    else if (meshColor && (!rgb || meshColor[0] !== rgb[0] || meshColor[1] !== rgb[1] || meshColor[2] !== rgb[2])) meshColor = null;
+  };
+  const sink = {
+    mesh(layer, rgb, vertices, triangles) {
+      const base = mv.length / 3;
+      for (let i = 0; i < vertices.length; i++) mv.push(vertices[i]);
+      for (let i = 0; i < triangles.length; i++) mt.push(base + triangles[i]);
+      seen(layer, rgb); foldMeshColor(rgb);
+    },
+    tri(layer, rgb, ax, ay, az, bx, by, bz, cx, cy, cz) {
+      const base = mv.length / 3;
+      mv.push(ax, ay, az, bx, by, bz, cx, cy, cz);
+      mt.push(base, base + 1, base + 2);
+      seen(layer, rgb); foldMeshColor(rgb);
+    },
+    string(layer, rgb, pts) { strings.push({ layer, color: rgb, pts }); seen(layer, rgb); },
+    point(layer, rgb, x, y, z) { points.push({ layer, color: rgb, x, y, z }); seen(layer, rgb); },
+  };
+  for (const f of flat.features || []) {
+    // layer colours are folded for every geometry-bearing feature, as before
+    if (f.geometry) {
+      const layer = (f.properties && f.properties.layer) || '0';
+      foldLayerColor(layer, colorToRgb(f.properties && f.properties.color, layer, doc.layers));
+    }
+    emitSceneFeature(f, doc.layers, sink);
+  }
+
+  // the shared bbox over everything extracted
+  let bbox = null;
+  const grow = (x, y, z) => {
+    if (!bbox) bbox = [x, y, z, x, y, z];
+    else {
+      if (x < bbox[0]) bbox[0] = x; if (y < bbox[1]) bbox[1] = y; if (z < bbox[2]) bbox[2] = z;
+      if (x > bbox[3]) bbox[3] = x; if (y > bbox[4]) bbox[4] = y; if (z > bbox[5]) bbox[5] = z;
+    }
+  };
+  for (let i = 0; i < mv.length; i += 3) grow(mv[i], mv[i + 1], mv[i + 2]);
+  for (const s of strings) for (let i = 0; i < s.pts.length; i += 3) grow(s.pts[i], s.pts[i + 1], s.pts[i + 2]);
+  for (const p of points) grow(p.x, p.y, p.z);
+
+  return {
+    mesh: mt.length ? { vertices: Float64Array.from(mv), triangles: Uint32Array.from(mt), color: meshColor || null } : null,
+    strings, points,
+    layers: [...layerSet].sort(),
+    layerColors,
+    counts: { triangles: mt.length / 3, strings: strings.length, points: points.length },
+    bbox,
+  };
+}
+
+// ── src/io/dxf-provider.js ──
+
+// DXF — the drafting exchange format mine software round-trips everything
+// through: triangulated surfaces and solids as 3DFACE soup or polyface-mesh
+// POLYLINEs, design strings / contours as 3D polylines, survey pegs as POINTs.
+// @gcu/dxf parses (read + explode + extractScene); this provider shapes the
+// scene into the standard docs:
+//
+//   openDxf(blob, { as }) →
+//     mesh    { header:{kind:'mesh', format:'dxf', …}, vertices, triangles }
+//     strings { header:{kind:'strings', …}, streamChunks, fetchRecord, recordPosition }
+//             — stick-shaped chunks (ax…bz segments), category = the DXF layer
+//     points  { header:{kind:'blockmodel', grid:null, …}, streamChunks, fetchRecord }
+//             — grid:null downgrades to a point cloud at the caller, like any
+//             irregular table
+//
+// `as` ('mesh' | 'strings' | 'points') overrides the dominant-content pick
+// (faces win, then strings, then points). A DXF is parsed resident — like OBJ
+// and MSH, these are design files, not block models.
+
+// past this a DXF cannot be read as ONE string (V8 caps strings near 512 M
+// characters, and the browser fails the read first — Chrome calls that a
+// "permission problem"); openDxfStream (dxf-stream.js) owns those files
+const DXF_RESIDENT_MAX = 480 * 1024 * 1024;
+const tooBig = (blob) => new Error(`dxf: ${(blob.size / 2 ** 30).toFixed(1)} GB is too large to read whole — only the streamed reader opens it (no solid queries / mesh export from it yet)`);
+
+async function peekDxfScene(blob) {
+  if (blob.size > DXF_RESIDENT_MAX) throw tooBig(blob);
+  const scene = extractScene(read(await blob.text()));
+  return scene.counts;
+}
+
+async function openDxf(blob, { as = null } = {}) {
+  if (blob.size > DXF_RESIDENT_MAX) throw tooBig(blob);
+  const doc = read(await blob.text());
+  const scene = extractScene(doc);
+  const kinds = [];
+  if (scene.mesh) kinds.push('mesh');
+  if (scene.strings.length) kinds.push('strings');
+  if (scene.points.length) kinds.push('points');
+  const want = as || kinds[0];
+  if (!want || !kinds.length) throw new Error('dxf: no 3D scene geometry (no faces, polylines or points)');
+  if (as && !kinds.includes(as)) throw new Error(`dxf: no ${as} content — the file carries ${kinds.join(' + ')}`);
+
+  const bbox = scene.bbox
+    ? { min: scene.bbox.slice(0, 3), max: scene.bbox.slice(3) }
+    : { min: [0, 0, 0], max: [1, 1, 1] };
+  // ≤255 layers fit the category byte; a wilder file keeps geometry, loses classes
+  const categories = scene.layers.length && scene.layers.length <= 255 ? scene.layers : null;
+  const catOf = (layer) => (categories ? Math.max(0, categories.indexOf(layer)) : 0);
+  // authored colours: a uniform mesh colour → the tint; per-layer colours →
+  // the category palette (indices track `categories`). Pure white is ACI 7 =
+  // "foreground" — a theme placeholder, not a colour choice — so it does NOT
+  // tint (the viewer's default reads better on any background).
+  const authored = (c) => (c && !(c[0] === 255 && c[1] === 255 && c[2] === 255) ? c : null);
+  const catColors = categories ? categories.map((l) => authored(scene.layerColors[l])) : null;
+  const common = { format: 'dxf', bbox, dxfLayers: scene.layers, dxfCounts: scene.counts, catColors, warnings: doc.warnings };
+
+  if (want === 'mesh') {
+    const { vertices, triangles } = scene.mesh;
+    return {
+      header: {
+        ...common, kind: 'mesh',
+        vertexCount: (vertices.length / 3) | 0, triCount: (triangles.length / 3) | 0,
+        vertexColumns: [],
+        meshColor: authored(scene.mesh.color),             // [r,g,b] 0..255 when every face agrees (foreground-white → null)
+      },
+      vertices, triangles,
+    };
+  }
+
+  if (want === 'strings') {
+    // flatten the polylines into segment arrays once (already resident)
+    let nSeg = 0;
+    for (const s of scene.strings) nSeg += Math.max(0, s.pts.length / 3 - 1);
+    const ax = new Float64Array(nSeg), ay = new Float64Array(nSeg), az = new Float64Array(nSeg);
+    const bx = new Float64Array(nSeg), by = new Float64Array(nSeg), bz = new Float64Array(nSeg);
+    const mx = new Float64Array(nSeg), my = new Float64Array(nSeg), mz = new Float64Array(nSeg);
+    const cat = new Uint8Array(nSeg), ofString = new Uint32Array(nSeg);
+    let w = 0;
+    scene.strings.forEach((s, si) => {
+      const p = s.pts, code = catOf(s.layer);
+      for (let i = 0; i + 5 < p.length; i += 3) {
+        ax[w] = p[i]; ay[w] = p[i + 1]; az[w] = p[i + 2];
+        bx[w] = p[i + 3]; by[w] = p[i + 4]; bz[w] = p[i + 5];
+        mx[w] = (ax[w] + bx[w]) / 2; my[w] = (ay[w] + by[w]) / 2; mz[w] = (az[w] + bz[w]) / 2;
+        cat[w] = code; ofString[w] = si;
+        w++;
+      }
+    });
+    const header = {
+      ...common, kind: 'strings', count: nSeg,
+      columns: ['LAYER', 'STRING'], mapping: { chan: null, cat: 0 },
+      categories: categories ? [...categories] : null,
+      numericColumns: [], chanRange: [0, 0],
+      strings: scene.strings.length,
+    };
+    async function* streamChunks({ chunkPoints = 1 << 16 } = {}) {
+      for (let at = 0; at < nSeg; at += chunkPoints) {
+        const n = Math.min(chunkPoints, nSeg - at);
+        const recIdx = new Uint32Array(n);
+        for (let i = 0; i < n; i++) recIdx[i] = at + i;
+        const sub = (a) => a.subarray(at, at + n);
+        yield {
+          count: n,
+          ax: sub(ax), ay: sub(ay), az: sub(az), bx: sub(bx), by: sub(by), bz: sub(bz),
+          x: sub(mx), y: sub(my), z: sub(mz),
+          chan: new Float64Array(n), cat: sub(cat), recIdx,
+        };
+      }
+    }
+    return {
+      header, streamChunks,
+      fetchRecord: (rec) => [scene.strings[ofString[rec]].layer, ofString[rec]],
+      recordPosition: (rec) => [mx[rec], my[rec], mz[rec]],
+    };
+  }
+
+  // points: blockmodel-shaped with grid:null — the caller's points fallback
+  const n = scene.points.length;
+  const px = new Float64Array(n), py = new Float64Array(n), pz = new Float64Array(n);
+  const pcat = new Uint8Array(n);
+  scene.points.forEach((p, i) => { px[i] = p.x; py[i] = p.y; pz[i] = p.z; pcat[i] = catOf(p.layer); });
+  const header = {
+    ...common, kind: 'blockmodel', count: n, grid: null,
+    columns: ['X', 'Y', 'Z', 'LAYER'], mapping: { x: 0, y: 1, z: 2, chan: null, cat: 3 },
+    categories: categories ? [...categories] : null, numericColumns: [],
+  };
+  async function* streamChunks({ chunkPoints = 1 << 16 } = {}) {
+    for (let at = 0; at < n; at += chunkPoints) {
+      const k = Math.min(chunkPoints, n - at);
+      const recIdx = new Uint32Array(k);
+      for (let i = 0; i < k; i++) recIdx[i] = at + i;
+      yield {
+        count: k,
+        x: px.subarray(at, at + k), y: py.subarray(at, at + k), z: pz.subarray(at, at + k),
+        chan: new Float64Array(k), cat: pcat.subarray(at, at + k), recIdx, recStart: at,
+      };
+    }
+  }
+  return {
+    header, streamChunks,
+    fetchRecord: (rec) => [px[rec], py[rec], pz[rec], scene.points[rec].layer],
+  };
+}
+
+// ── ../dxf/src/write.js ──
+
+// @gcu/dxf writer — Document → R2000 (AC1015) ASCII.
+//
+// The symmetric half of the provenance contract: it restores WORLD coordinates. Features
+// from read() are already world (canonical), so the default writes them verbatim; if a
+// consumer worked in a local frame, pass { fromLocal:true } and the doc's Frame and the
+// writer re-adds the offset via toWorld — the structural fix for the silent-shift bug.
+//
+// Emits the scaffolding strict readers want (HEADER with $ACADVER/$INSUNITS/$HANDSEED,
+// a LTYPE+LAYER TABLES section, unique handles, EOF), round-trips XDATA and blocks, and
+// maps the bulge-native model back out (arc → ARC via arcFromBulge, planar polyline →
+// LWPOLYLINE, non-planar → 3D POLYLINE). Punted (null-geometry) features are not
+// re-emitted — they had no geometry to write. (Subclass 100 markers are a v0.2 hardening.)
+
+
+const DEG$write = Math.PI / 180;
+const UNIT_CODE = { in: 1, ft: 2, mm: 4, cm: 5, m: 6, um: 8, dm: 14 };
+const normDeg = (rad) => ((rad / DEG$write) % 360 + 360) % 360;
+const identity = (p) => p;
+
+function write(doc, opts = {}) {
+  const toW = (opts.fromLocal && doc.frame) ? (p) => toWorld(p, doc.frame) : identity;
+  const out = [];
+  const push = (code, value) => out.push({ code, value });
+
+  // Handle generation: preserve source handles, assign fresh ones (above the max) where absent.
+  let max = 0;
+  const scan = (props) => { const h = props?.handle; if (h) { const n = parseInt(h, 16); if (Number.isFinite(n) && n > max) max = n; } };
+  for (const f of doc.features) scan(f.properties);
+  for (const b of Object.values(doc.blocks || {})) for (const f of b.features) scan(f.properties);
+  let hc = max;
+  const gen = (existing) => existing || (++hc).toString(16).toUpperCase();
+
+  emitHeader();
+  emitTables();
+  emitBlocks();
+  push(0, 'SECTION'); push(2, 'ENTITIES');
+  for (const f of doc.features) emitEntity(f, toW);
+  push(0, 'ENDSEC');
+  push(0, 'EOF');
+  return serializePairs(out);
+
+  // ── emit helpers (hoisted; close over out/push/gen/max) ──────────────────────────
+
+  function emitCommon(props) {
+    push(5, gen(props.handle));
+    push(8, props.layer ?? '0');
+    if (props.linetype) push(6, props.linetype);
+    for (const cp of colorToPairs(props.color || { mode: 'bylayer' })) out.push(cp);
+    if (props.lineweight != null) push(370, props.lineweight);
+  }
+
+  function emitXdata(props) {
+    if (!props.xdata) return;
+    for (const [app, items] of Object.entries(props.xdata)) { push(1001, app); for (const it of items) out.push({ code: it.code, value: it.value }); }
+  }
+
+  function emitHeader() {
+    push(0, 'SECTION'); push(2, 'HEADER');
+    push(9, '$ACADVER'); push(1, doc.header?.acadver || 'AC1015');
+    push(9, '$INSUNITS'); push(70, UNIT_CODE[doc.header?.units || doc.frame?.units || 'm'] ?? 0);
+    push(9, '$HANDSEED'); push(5, (max + 0x10000).toString(16).toUpperCase());
+    push(0, 'ENDSEC');
+  }
+
+  function emitTables() {
+    const names = new Set(['0']);
+    for (const f of doc.features) if (f.properties?.layer) names.add(f.properties.layer);
+    for (const n of Object.keys(doc.layers || {})) names.add(n);
+    push(0, 'SECTION'); push(2, 'TABLES');
+    push(0, 'TABLE'); push(2, 'LTYPE'); push(70, 1);
+    push(0, 'LTYPE'); push(5, gen()); push(2, 'CONTINUOUS'); push(70, 0); push(3, 'Solid line'); push(72, 65); push(73, 0); push(40, 0);
+    push(0, 'ENDTAB');
+    push(0, 'TABLE'); push(2, 'LAYER'); push(70, names.size);
+    for (const n of names) {
+      const ld = doc.layers?.[n];
+      push(0, 'LAYER'); push(5, gen()); push(2, n); push(70, 0);
+      push(62, (ld?.color && ld.color.mode === 'aci') ? ld.color.index : 7);
+      push(6, ld?.linetype || 'CONTINUOUS');
+    }
+    push(0, 'ENDTAB');
+    push(0, 'ENDSEC');
+  }
+
+  function emitBlocks() {
+    push(0, 'SECTION'); push(2, 'BLOCKS');
+    for (const b of Object.values(doc.blocks || {})) {
+      push(0, 'BLOCK'); push(5, gen()); push(8, '0'); push(2, b.name); push(70, 0);
+      push(10, b.base?.[0] || 0); push(20, b.base?.[1] || 0); push(30, b.base?.[2] || 0); push(3, b.name);
+      for (const f of b.features) emitEntity(f, identity);     // block body stays in block-local coords
+      push(0, 'ENDBLK'); push(5, gen());
+    }
+    push(0, 'ENDSEC');
+  }
+
+  function emitEntity(f, tw) {
+    if (!f.geometry) return;                                  // punted nulls aren't re-emitted
+    const g = f.geometry, props = f.properties || {};
+    switch (f.type) {
+      case 'line': {
+        const v = g.vertices, a = tw([v[0], v[1], v[2]]), b = tw([v[3], v[4], v[5]]);
+        push(0, 'LINE'); emitCommon(props);
+        push(10, a[0]); push(20, a[1]); push(30, a[2]); push(11, b[0]); push(21, b[1]); push(31, b[2]);
+        emitXdata(props); break;
+      }
+      case 'polyline': emitPolyline(f, tw); break;
+      case 'arc': {
+        const v = g.vertices, p0 = tw([v[0], v[1], v[2]]), p1 = tw([v[3], v[4], v[5]]), bl = g.bulges ? g.bulges[0] : 0;
+        const a = arcFromBulge([p0[0], p0[1]], [p1[0], p1[1]], bl);
+        let sa = a.startAngle, ea = a.endAngle; if (bl < 0) [sa, ea] = [ea, sa];   // DXF ARC is CCW
+        push(0, 'ARC'); emitCommon(props);
+        push(10, a.center[0]); push(20, a.center[1]); push(30, p0[2]); push(40, a.radius);
+        push(50, normDeg(sa)); push(51, normDeg(ea)); emitXdata(props); break;
+      }
+      case 'circle': {
+        const c = tw(g.center);
+        push(0, 'CIRCLE'); emitCommon(props); push(10, c[0]); push(20, c[1]); push(30, c[2]); push(40, g.radius); emitXdata(props); break;
+      }
+      case 'point': {
+        const p = tw(g.position);
+        push(0, 'POINT'); emitCommon(props); push(10, p[0]); push(20, p[1]); push(30, p[2]); emitXdata(props); break;
+      }
+      case 'text': {
+        const p = tw(g.position);
+        push(0, 'TEXT'); emitCommon(props);
+        push(10, p[0]); push(20, p[1]); push(30, p[2]); push(40, g.height || 1); push(1, g.value || '');
+        if (g.rotation) push(50, g.rotation);
+        emitXdata(props); break;
+      }
+      case 'attdef': {
+        const p = tw(g.position);
+        push(0, 'ATTDEF'); emitCommon(props);
+        push(10, p[0]); push(20, p[1]); push(30, p[2]); push(40, g.height || 1);
+        push(1, g.value || ''); push(2, g.tag || ''); push(3, g.prompt || g.tag || '');
+        if (g.rotation) push(50, g.rotation); push(70, 0);
+        emitXdata(props); break;
+      }
+      case 'face': {
+        const v = g.vertices, n = v.length / 3;
+        push(0, '3DFACE'); emitCommon(props);
+        for (let k = 0; k < 4; k++) { const i = Math.min(k, n - 1) * 3; const w = tw([v[i], v[i + 1], v[i + 2]]); push(10 + k, w[0]); push(20 + k, w[1]); push(30 + k, w[2]); }
+        emitXdata(props); break;
+      }
+      case 'insert': emitInsert(f, tw); break;
+    }
+  }
+
+  function emitPolyline(f, tw) {
+    const g = f.geometry, props = f.properties || {}, v = g.vertices, n = v.length / 3;
+    const z0 = n ? v[2] : 0;
+    let planar = true; for (let i = 0; i < n; i++) if (v[i * 3 + 2] !== z0) { planar = false; break; }
+    if (planar) {
+      push(0, 'LWPOLYLINE'); emitCommon(props); push(90, n); push(70, g.closed ? 1 : 0); if (z0) push(38, z0);
+      for (let i = 0; i < n; i++) { const w = tw([v[i * 3], v[i * 3 + 1], v[i * 3 + 2]]); push(10, w[0]); push(20, w[1]); if (g.bulges && g.bulges[i]) push(42, g.bulges[i]); }
+      emitXdata(props);
+    } else {
+      push(0, 'POLYLINE'); emitCommon(props); push(66, 1); push(70, 8 | (g.closed ? 1 : 0));
+      push(10, 0); push(20, 0); push(30, 0); emitXdata(props);
+      for (let i = 0; i < n; i++) { const w = tw([v[i * 3], v[i * 3 + 1], v[i * 3 + 2]]); push(0, 'VERTEX'); push(5, gen()); push(8, props.layer ?? '0'); push(10, w[0]); push(20, w[1]); push(30, w[2]); push(70, 32); if (g.bulges && g.bulges[i]) push(42, g.bulges[i]); }
+      push(0, 'SEQEND'); push(5, gen());
+    }
+  }
+
+  function emitInsert(f, tw) {
+    const g = f.geometry, props = f.properties || {}, t = g.transform, pos = tw(t.position);
+    const hasAttr = props.attribs?.length;
+    push(0, 'INSERT'); emitCommon(props); if (hasAttr) push(66, 1);
+    push(2, g.block); push(10, pos[0]); push(20, pos[1]); push(30, pos[2]);
+    push(41, t.scale[0]); push(42, t.scale[1]); push(43, t.scale[2]); push(50, t.rotation);
+    emitXdata(props);
+    if (hasAttr) {
+      for (const at of props.attribs) {
+        const ap = tw(at.position || pos);
+        push(0, 'ATTRIB'); push(5, gen()); push(8, props.layer ?? '0');
+        push(10, ap[0]); push(20, ap[1]); push(30, ap[2]); push(40, 1); push(1, at.value); push(2, at.tag); push(70, 0);
+      }
+      push(0, 'SEQEND'); push(5, gen());
+    }
+  }
+}
+
+// ── ../dxf/src/stream.js ──
+
+// @gcu/dxf streaming reader — the scene, read as the bytes go by.
+//
+// read() takes the whole file as ONE string, which caps a DXF at what a JS string
+// can hold (~512 M characters in V8) — and a triangulated topography exported as
+// 3DFACEs blows past that easily (≈300–400 bytes of text per face). This is the
+// push-parser twin: createSceneStream(sink) takes byte chunks in any sizes, splits
+// them into group-code pairs ACROSS chunk boundaries, and walks entities straight
+// into the same scene sink extractScene uses (scene.js emitSceneFeature) — so
+// nothing is held but the entity in flight.
+//
+// The adapter (whoever owns the I/O) feeds it: a Blob's slices, a stream reader, a
+// Node file handle. Pure — no I/O here.
+//
+// Hot entities are FAST-PATHED straight from typed slots, no pair objects: 3DFACE,
+// LINE, POINT, LWPOLYLINE, and POLYLINE with its VERTEX stream (polyface meshes,
+// polygon meshes, 2D/3D polylines — a single polyface can hold millions of
+// vertices, so its vertex table is kept in growable typed arrays). Everything else
+// (ARC, CIRCLE, INSERT + ATTRIB, TEXT, the unsupported) is buffered as ordinary
+// records and handed to the resident reader's own entity parsers + explode(), so
+// the two paths cannot drift on the rare entities. TABLES (layer colours) and
+// BLOCKS (insert targets) are small by nature and parsed resident at ENDSEC.
+//
+// Semantics match read() + extractScene() exactly: the code-driven value types,
+// the desync guard, "first value wins" for a simple entity's codes, the 3DFACE
+// triangle rule (4th corner == 3rd), polyface 1-based |indices|, polygon-mesh
+// wrap flags, bulge sampling. test/dxf.test.mjs runs both paths over one corpus.
+
+
+const INSUNITS_NAMES = { 1: 'in', 2: 'ft', 4: 'mm', 5: 'cm', 6: 'm', 9: 'mm', 10: 'm', 14: 'dm' };
+const MAX_WARNINGS = 1000;                                 // a file of a million MTEXTs reports a count, not a million rows
+const BINARY_SENTINEL = 'AutoCAD Binary DXF';
+
+// value kind per group code, precomputed (0 str · 1 num · 2 int · 3 bool)
+const KIND = new Uint8Array(1072);
+for (let c = 0; c < KIND.length; c++) { const k = valueKind(c); KIND[c] = k === 'num' ? 1 : k === 'int' ? 2 : k === 'bool' ? 3 : 0; }
+const kindOf = (c) => (c >= 0 && c < KIND.length ? KIND[c] : (c >= 1010 && c <= 1059 ? 1 : c >= 1060 && c <= 1071 ? 2 : 0));
+
+const POW10$stream = []; for (let i = 0; i <= 22; i++) POW10$stream.push(Number('1e' + i));
+// bytes → a JS string, one char per byte; short ranges (numbers, names, handles) by a plain loop,
+// which beats both TextDecoder and fromCharCode.apply-over-a-subarray at these lengths
+const latin1 = (b, s, e) => {
+  if (e - s <= 64) { let out = ''; for (let i = s; i < e; i++) out += String.fromCharCode(b[i]); return out; }
+  let out = ''; for (let i = s; i < e; i += 4096) out += String.fromCharCode.apply(null, b.subarray(i, Math.min(e, i + 4096))); return out;
+};
+const MAX_EXACT = 9007199254740992; // 2^53
+
+// parseFloat over a byte range, exactly (Clinger's fast path): when the decimal mantissa is an
+// integer ≤ 2^53 and the power of ten is within 10^±22, both are exact doubles, so one
+// multiplication or division is correctly rounded — the same answer parseFloat gives. Zeros are
+// held pending until a nonzero digit needs them, so trailing zeros never inflate the mantissa;
+// exponents ("1.5E+03") are folded in. Anything outside that falls back to parseFloat on the
+// text. Leading/trailing junk behaves like parseFloat's prefix rule; no digits at all → NaN.
+function parseNumber(b, s, e) {
+  while (s < e && (b[s] === 32 || b[s] === 9)) s++;
+  const s0 = s;
+  let neg = false;
+  if (s < e && (b[s] === 45 || b[s] === 43)) { neg = b[s] === 45; s++; }
+  let mant = 0, digits = 0, exp = 0, pending = 0, seenDot = false, i = s;
+  for (; i < e; i++) {
+    const ch = b[i];
+    if (ch >= 48 && ch <= 57) {
+      digits++;
+      if (seenDot) exp--;
+      if (ch === 48) { if (mant !== 0) pending++; continue; } // leading zeros vanish; others wait
+      if (pending) { if (pending > 22) return parseFloat(latin1(b, s0, e)); mant *= POW10$stream[pending]; pending = 0; }
+      mant = mant * 10 + (ch - 48);
+      if (mant >= MAX_EXACT) return parseFloat(latin1(b, s0, e)); // ≥, not >: 2^53 + 1 would round down to 2^53
+    } else if (ch === 46 && !seenDot) seenDot = true;
+    else if (ch === 101 || ch === 69) {
+      // an exponent only if digits follow (parseFloat's prefix rule: "1e" and "1e+" read as 1)
+      let j = i + 1, eneg = false;
+      if (j < e && (b[j] === 45 || b[j] === 43)) { eneg = b[j] === 45; j++; }
+      if (j >= e || b[j] < 48 || b[j] > 57) break;
+      let ev = 0;
+      for (; j < e && b[j] >= 48 && b[j] <= 57; j++) { ev = ev * 10 + (b[j] - 48); if (ev > 1000) return parseFloat(latin1(b, s0, e)); }
+      exp += eneg ? -ev : ev;
+      i = j;
+      break;
+    } else break;
+  }
+  if (!digits) return NaN;
+  const p = exp + pending;
+  let v;
+  if (mant === 0) v = 0;
+  else if (p === 0) v = mant;
+  else if (p > 0 && p <= 22) v = mant * POW10$stream[p];
+  else if (p < 0 && p >= -22) v = mant / POW10$stream[-p];
+  else return parseFloat(latin1(b, s0, i));
+  return neg ? -v : v;
+}
+
+// growable typed arrays (the polyline vertex table, LWPOLYLINE vertices)
+function grow$stream(Type) {
+  let a = new Type(64), n = 0;
+  return {
+    push(v) { if (n === a.length) { const b = new Type(a.length * 2); b.set(a); a = b; } a[n++] = v; },
+    get length() { return n; }, set length(v) { n = v; },
+    at(i) { return a[i]; }, set(i, v) { a[i] = v; },
+    slice() { return a.slice(0, n); },
+  };
+}
+
+const FAST = new Set(['3DFACE', 'LINE', 'POINT', 'LWPOLYLINE', 'POLYLINE']);
+
+/**
+ * createSceneStream(sink, opts?) → { push(bytes), end() → summary }
+ *   sink: { tri, string, point } (scene.js contract; no `mesh` → triangles arrive
+ *         one by one, the soup shape a streaming consumer wants), optional
+ *         sink.vertex(x, y, z) for each polyline/mesh geometry vertex, plus optional
+ *         sink.header(info) once HEADER closes and sink.layers(table) once TABLES
+ *         closes — early enough to plant a frame / seed categories before geometry.
+ *   summary: { header, layers, warnings, warningsSuppressed, counts:{triangles,
+ *              strings, points}, bytes }
+ * Throws only on a BINARY DXF (a different format, named in the error).
+ */
+function createSceneStream(sink, opts = {}) {
+  const decoder = new TextDecoder('utf-8');
+  const strCache = new Map();                              // code → { b: Uint8Array, s } — layer/type names repeat
+  let carry = null, bytes = 0, started = false;
+  let code = -1;                                           // pending group code (-1 = expecting a code line)
+
+  // ── document state ──
+  const header = { acadver: undefined, insunits: undefined, units: opts.units || 'm', codepage: undefined, extmin: null, extmax: null };
+  let layers = {}, blocks = {};
+  const warnings = []; let suppressed = 0;
+  const warn = (w) => { if (warnings.length < MAX_WARNINGS) warnings.push(w); else suppressed++; };
+  const counts = { triangles: 0, strings: 0, points: 0 };
+  const out = {
+    tri(l, c, ax, ay, az, bx, by, bz, cx, cy, cz) { counts.triangles++; sink.tri(l, c, ax, ay, az, bx, by, bz, cx, cy, cz); },
+    string(l, c, pts) { counts.strings++; sink.string(l, c, pts); },
+    point(l, c, x, y, z) { counts.points++; sink.point(l, c, x, y, z); },
+  };
+
+  // opts.section: start INSIDE a section — for a window cut from the middle of a
+  // file (bbox sampling), resynced to an entity boundary by the caller
+  let section = opts.section || null, wantSectionName = false;
+  let hvar = null;                                         // HEADER: the $VARIABLE being read
+  let rawPairs = null;                                     // TABLES / BLOCKS: the section's pairs, resident
+  // ENTITIES record state
+  let rtype = null;                                        // current record's type
+  let generic = null;                                      // { type, pairs } for a slow-path record
+  const genBuf = [];                                       // buffered slow-path records (INSERT + ATTRIBs stay together)
+  const slot = new Float64Array(1072), has = new Uint8Array(1072), touched = [];
+  let rLayer = '0', rAci = null, rTc = null, rHandle = null;
+  const lw = { x: grow$stream(Float64Array), y: grow$stream(Float64Array), b: grow$stream(Float64Array) };
+  let poly = null;                                         // active POLYLINE: header fields + growable vertex table
+
+  // colour memo: consecutive entities almost always share layer + colour
+  let mLayer = null, mAci = undefined, mTc = undefined, mRgb = null;
+  const rgbOf = (layer, aci, tc) => {
+    if (layer !== mLayer || aci !== mAci || tc !== mTc) { mLayer = layer; mAci = aci; mTc = tc; mRgb = colorToRgb(resolveColor({ aci, trueColor: tc }), layer, layers); }
+    return mRgb;
+  };
+  let lwUsed = false;
+  const resetRecord = () => {
+    for (let i = 0; i < touched.length; i++) has[touched[i]] = 0;
+    touched.length = 0;
+    rLayer = '0'; rAci = null; rTc = null; rHandle = null;
+    if (lwUsed) { lw.x.length = 0; lw.y.length = 0; lw.b.length = 0; lwUsed = false; }
+  };
+  const S = (c, d = 0) => (has[c] ? slot[c] : d);
+
+  // ── slow path: buffered records → the resident parsers → explode → the sink ──
+  function flushGeneric() {
+    if (!genBuf.length) return;
+    const feats = assembleEntities(genBuf.splice(0), { push: warn });
+    const ex = explode({ features: feats, blocks, warnings: [] });
+    for (const w of ex.warnings) warn(w);
+    for (const f of ex.features) emitSceneFeature(f, layers, out);
+  }
+
+  // ── fast-path finalizers ──
+  function endFace() {
+    const rgb = rgbOf(rLayer, rAci, rTc);
+    const x0 = S(10), y0 = S(20), z0 = S(30), x1 = S(11), y1 = S(21), z1 = S(31);
+    const x2 = S(12), y2 = S(22), z2 = S(32), x3 = S(13), y3 = S(23), z3 = S(33);
+    out.tri(rLayer, rgb, x0, y0, z0, x1, y1, z1, x2, y2, z2);
+    if (!(x3 === x2 && y3 === y2 && z3 === z2)) out.tri(rLayer, rgb, x0, y0, z0, x2, y2, z2, x3, y3, z3);
+  }
+  function endLine() {
+    out.string(rLayer, rgbOf(rLayer, rAci, rTc), Float64Array.of(S(10), S(20), S(30), S(11), S(21), S(31)));
+  }
+  function endPoint() { out.point(rLayer, rgbOf(rLayer, rAci, rTc), S(10), S(20), S(30)); }
+  function endLwpolyline() {
+    const n = lw.x.length, elev = S(38);
+    const vertices = new Float64Array(n * 3);
+    let anyBulge = false;
+    for (let i = 0; i < n; i++) { vertices[i * 3] = lw.x.at(i); vertices[i * 3 + 1] = lw.y.at(i); vertices[i * 3 + 2] = elev; if (lw.b.at(i) !== 0) anyBulge = true; }
+    const pts = polylineChords({ vertices, bulges: anyBulge ? lw.b.slice() : null, closed: (S(70) & 1) === 1 });
+    if (pts) out.string(rLayer, rgbOf(rLayer, rAci, rTc), pts);
+  }
+  function beginPoly() {
+    poly = {
+      flags: S(70), M: S(71), N: S(72), layer: rLayer, aci: rAci, tc: rTc, handle: rHandle,
+      x: grow$stream(Float64Array), y: grow$stream(Float64Array), z: grow$stream(Float64Array), b: grow$stream(Float64Array), f: grow$stream(Int32Array),
+      i1: grow$stream(Int32Array), i2: grow$stream(Int32Array), i3: grow$stream(Int32Array), i4: grow$stream(Int32Array),
+    };
+  }
+  function addVertex() {
+    if (sink.vertex) {                                      // optional: every GEOMETRY vertex as it passes (bbox sampling)
+      const vf = S(70);
+      if (!(vf & 128) || (vf & 64)) sink.vertex(S(10), S(20), S(30));
+    }
+    poly.x.push(S(10)); poly.y.push(S(20)); poly.z.push(S(30)); poly.b.push(S(42)); poly.f.push(S(70));
+    poly.i1.push(S(71)); poly.i2.push(S(72)); poly.i3.push(S(73)); poly.i4.push(S(74));
+  }
+  function endPoly() {
+    const p = poly; poly = null;
+    const rgb = rgbOf(p.layer, p.aci, p.tc);
+    const n = p.x.length;
+    if (p.flags & 64) {                                     // polyface mesh
+      const gv = [];                                        // geometry-vertex record indices, in order
+      const faces = [];
+      for (let k = 0; k < n; k++) {
+        const vf = p.f.at(k);
+        if (vf & 128 && !(vf & 64)) {
+          const idx = [p.i1.at(k), p.i2.at(k), p.i3.at(k), p.i4.at(k)].map(Math.abs).filter((v) => v > 0);
+          if (idx.length >= 3) faces.push(idx);
+        } else gv.push(k);
+      }
+      const nV = gv.length;
+      let dropped = 0, tris = 0;
+      const vtx = (ix) => gv[ix - 1];
+      for (const f of faces) {
+        if (f.some((ix) => ix > nV)) { dropped++; continue; }
+        const a = vtx(f[0]), b = vtx(f[1]), c = vtx(f[2]);
+        out.tri(p.layer, rgb, p.x.at(a), p.y.at(a), p.z.at(a), p.x.at(b), p.y.at(b), p.z.at(b), p.x.at(c), p.y.at(c), p.z.at(c));
+        tris++;
+        if (f.length === 4) {
+          const d = vtx(f[3]);
+          out.tri(p.layer, rgb, p.x.at(a), p.y.at(a), p.z.at(a), p.x.at(c), p.y.at(c), p.z.at(c), p.x.at(d), p.y.at(d), p.z.at(d));
+          tris++;
+        }
+      }
+      if (dropped) warn({ handle: p.handle, entity: 'POLYLINE(polyface)', reason: `${dropped} face(s) referenced vertices past the table — dropped` });
+      if (!tris) warn({ handle: p.handle, entity: 'POLYLINE(polyface)', reason: 'no resolvable faces' });
+      return;
+    }
+    if (p.flags & 16) {                                     // polygon mesh: an M×N grid
+      const M = p.M, N = p.N;
+      const gv = [];
+      for (let k = 0; k < n; k++) { const vf = p.f.at(k); if (!(vf & 128) || (vf & 64)) gv.push(k); }
+      if (M < 2 || N < 2 || gv.length < M * N) {
+        warn({ handle: p.handle, entity: 'POLYLINE(polygon mesh)', reason: `grid ${M}×${N} but ${gv.length} vertices — skipped` });
+        return;
+      }
+      const closedM = (p.flags & 1) === 1, closedN = (p.flags & 32) === 32;
+      const at = (m, nn) => gv[m * N + nn];
+      const T = (a, b, c) => out.tri(p.layer, rgb, p.x.at(a), p.y.at(a), p.z.at(a), p.x.at(b), p.y.at(b), p.z.at(b), p.x.at(c), p.y.at(c), p.z.at(c));
+      for (let m = 0; m < (closedM ? M : M - 1); m++) {
+        for (let nn = 0; nn < (closedN ? N : N - 1); nn++) {
+          const a = at(m, nn), b = at((m + 1) % M, nn), c = at((m + 1) % M, (nn + 1) % N), d = at(m, (nn + 1) % N);
+          T(a, b, c); T(a, c, d);
+        }
+      }
+      return;
+    }
+    // a 2D / 3D polyline: every vertex record, in order (read.js's rule)
+    const vertices = new Float64Array(n * 3);
+    let anyBulge = false;
+    for (let k = 0; k < n; k++) { vertices[k * 3] = p.x.at(k); vertices[k * 3 + 1] = p.y.at(k); vertices[k * 3 + 2] = p.z.at(k); if (p.b.at(k) !== 0) anyBulge = true; }
+    const pts = polylineChords({ vertices, bulges: anyBulge ? p.b.slice() : null, closed: (p.flags & 1) === 1 });
+    if (pts) out.string(p.layer, rgb, pts);
+  }
+
+  // close the record in flight (called at every code 0, and at section end)
+  function endRecord() {
+    if (generic) { genBuf.push(generic); generic = null; }
+    else if (rtype === '3DFACE') endFace();
+    else if (rtype === 'LINE') endLine();
+    else if (rtype === 'POINT') endPoint();
+    else if (rtype === 'LWPOLYLINE') endLwpolyline();
+    else if (rtype === 'POLYLINE') beginPoly();
+    else if (rtype === 'VERTEX') addVertex();
+    rtype = null;
+    resetRecord();
+  }
+  function beginRecord(type) {
+    // a polyline closes at its SEQEND — or, defensively, at any record that isn't a VERTEX
+    if (poly && type !== 'VERTEX') endPoly();
+    const fast = FAST.has(type) || (type === 'VERTEX' && poly);
+    if (type === 'SEQEND' && !genBuf.length && !poly) { rtype = null; return; }   // a polyline's SEQEND (already closed above)
+    if (!fast) {
+      // keep INSERT/ATTRIB/SEQEND groups together; otherwise flush in modest batches
+      if (genBuf.length >= 256 && type !== 'ATTRIB' && type !== 'SEQEND' && type !== 'VERTEX') flushGeneric();
+      generic = { type, pairs: [] };
+      rtype = null;
+      return;
+    }
+    if (genBuf.length) flushGeneric();
+    rtype = type;
+  }
+
+  function endSection() {
+    if (section === 'ENTITIES') { endRecord(); if (poly) endPoly(); flushGeneric(); }
+    else if (section === 'TABLES') { layers = parseLayers(splitRecords(rawPairs)); if (sink.layers) sink.layers(layers); }
+    else if (section === 'BLOCKS') { blocks = parseBlocks(splitRecords(rawPairs), { push: warn }); }
+    else if (section === 'HEADER') { if (sink.header) sink.header(headerInfo()); }
+    rawPairs = null; section = null; hvar = null;
+  }
+  const headerInfo = () => ({ ...header, units: INSUNITS_NAMES[header.insunits] ?? header.units });
+
+  // ── one group-code pair ──
+  function pair(c, num, str) {
+    if (c === 0) {
+      if (str === 'SECTION') { if (section) endSection(); wantSectionName = true; return; }
+      if (str === 'ENDSEC') { endSection(); return; }
+      if (str === 'EOF') { if (section) endSection(); return; }
+      if (section === 'ENTITIES') { endRecord(); beginRecord(str); return; }
+      if (rawPairs) rawPairs.push({ code: 0, value: str });
+      return;
+    }
+    if (wantSectionName && c === 2) {
+      wantSectionName = false; section = str;
+      if (section === 'TABLES' || section === 'BLOCKS') rawPairs = [];
+      return;
+    }
+    if (section === 'ENTITIES') {
+      if (generic) { generic.pairs.push({ code: c, value: str !== null ? str : num }); return; }
+      if (!rtype) return;
+      if (c === 8) { rLayer = str; return; }
+      if (c === 62) { if (rAci === null) rAci = num; return; }
+      if (c === 420) { if (rTc === null) rTc = num; return; }
+      if (c === 5) { rHandle = str; return; }
+      if (rtype === 'LWPOLYLINE') {
+        if (c === 10) { lw.x.push(num); lw.y.push(0); lw.b.push(0); lwUsed = true; return; }
+        if (c === 20 && lw.x.length) { lw.y.set(lw.x.length - 1, num); return; }
+        if (c === 42 && lw.x.length) { lw.b.set(lw.x.length - 1, num); return; }
+      }
+      if (str === null && c < 1072 && !has[c]) { has[c] = 1; touched.push(c); slot[c] = num; }
+      return;
+    }
+    if (rawPairs) { rawPairs.push({ code: c, value: str !== null ? str : num }); return; }
+    if (section === 'HEADER') {
+      if (c === 9) { hvar = str; return; }
+      if (hvar === '$EXTMIN' || hvar === '$EXTMAX') {
+        const k = hvar === '$EXTMIN' ? 'extmin' : 'extmax';
+        const ax = c === 10 ? 0 : c === 20 ? 1 : c === 30 ? 2 : -1;
+        if (ax >= 0) (header[k] ??= [0, 0, 0])[ax] = num;
+      } else if (hvar === '$INSUNITS' && c === 70) header.insunits = num;
+      else if (hvar === '$ACADVER' && c === 1) header.acadver = str;
+      else if (hvar === '$DWGCODEPAGE' && c === 3) header.codepage = str;
+    }
+  }
+
+  // a string value, with a small per-code cache: entity types, layer names and subclass markers
+  // repeat endlessly — and code 100 alternates ("AcDbEntity", "AcDbFace" on every entity), so one
+  // entry per code would thrash; four, replaced round-robin, holds them. Short pure-ASCII values
+  // (and every unique handle) decode by a plain loop, not a TextDecoder call per value.
+  function strValue(c, b, s, e) {
+    const len = e - s;
+    let ent = strCache.get(c);
+    if (ent) {
+      for (let k = 0; k < ent.n; k++) {
+        const hb = ent.b[k];
+        if (hb.length !== len) continue;
+        let same = true;
+        for (let i = 0; i < len; i++) if (hb[i] !== b[s + i]) { same = false; break; }
+        if (same) return ent.s[k];
+      }
+    }
+    let ascii = len <= 64;
+    if (ascii) for (let i = s; i < e; i++) if (b[i] >= 128) { ascii = false; break; }
+    const v = ascii ? latin1(b, s, e) : decoder.decode(b.subarray(s, e));
+    // handles (5, 105, 320–369, 390–399, 1005) are unique by design: caching them only churns
+    const handle = c === 5 || c === 105 || c === 1005 || (c >= 320 && c <= 369) || (c >= 390 && c <= 399);
+    if (len <= 256 && !handle) {
+      if (!ent) { ent = { b: [], s: [], n: 0, next: 0 }; strCache.set(c, ent); }
+      const k = ent.n < 4 ? ent.n++ : (ent.next = (ent.next + 1) % 4);
+      ent.b[k] = b.slice(s, e); ent.s[k] = v;
+    }
+    return v;
+  }
+
+  // ── lines → pairs ──
+  function line(b, s, e) {
+    if (e > s && b[e - 1] === 13) e--;                     // CRLF
+    if (code < 0) {
+      // expecting a group code: trimmed integer, else the desync guard skips the line
+      let i = s; while (i < e && (b[i] === 32 || b[i] === 9)) i++;
+      let j = e; while (j > i && (b[j - 1] === 32 || b[j - 1] === 9)) j--;
+      if (i === j) return;                                  // blank line
+      let neg = false, v = 0, k = i;
+      if (b[k] === 45 || b[k] === 43) { neg = b[k] === 45; k++; }
+      if (k === j) return;
+      for (; k < j; k++) { const ch = b[k]; if (ch < 48 || ch > 57) return; v = v * 10 + (ch - 48); }
+      code = neg ? -v : v;
+      return;
+    }
+    const c = code; code = -1;
+    const kind = kindOf(c);
+    if (kind === 0) { pair(c, 0, strValue(c, b, s, e)); return; }
+    if (kind === 3) { let i = s, j = e; while (i < j && b[i] <= 32) i++; while (j > i && b[j - 1] <= 32) j--; pair(c, !(j - i === 1 && b[i] === 48), null); return; }
+    let n = parseNumber(b, s, e);
+    if (Number.isNaN(n)) n = 0;
+    else if (kind === 2) n = Math.trunc(n);
+    pair(c, n, null);
+  }
+
+  // the first bytes: refuse a binary DXF by name, step over a UTF-8 BOM
+  function start(b) {
+    started = true;
+    if (latin1(b, 0, Math.min(b.length, BINARY_SENTINEL.length)) === BINARY_SENTINEL) throw new Error('dxf: this is a BINARY DXF — only ASCII DXF is supported (re-export as ASCII)');
+    return b.length >= 3 && b[0] === 0xef && b[1] === 0xbb && b[2] === 0xbf ? b.subarray(3) : b;
+  }
+  // every complete line of b; the tail (no newline yet) is carried — or, at the end, is the last line
+  // (a plain byte loop, not indexOf: a DXF line averages ~10 bytes, and a native
+  // call per line costs more than scanning it)
+  function feed(b, final) {
+    const n = b.length;
+    let s = 0, i = 0;
+    while (i < n) {
+      if (b[i] === 10) { line(b, s, i); s = i + 1; }
+      i++;
+    }
+    if (s < n) { if (final) line(b, s, n); else carry = b.slice(s); }
+  }
+
+  return {
+    push(chunk) {
+      let b = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
+      bytes += b.length;
+      if (!started) {
+        if (carry) { const m = new Uint8Array(carry.length + b.length); m.set(carry); m.set(b, carry.length); b = m; carry = null; }
+        if (b.length < BINARY_SENTINEL.length + 3) { carry = b; return; }   // too few bytes to tell yet
+        b = start(b);
+      } else if (carry) {
+        // finish the carried partial line from the head of this chunk, without copying the chunk
+        let nl = 0; while (nl < b.length && b[nl] !== 10) nl++;
+        const m = new Uint8Array(carry.length + nl); m.set(carry); m.set(b.subarray(0, nl), carry.length); carry = null;
+        if (nl === b.length) { carry = m; return; }
+        line(m, 0, m.length);
+        b = b.subarray(nl + 1);
+      }
+      feed(b, false);
+    },
+    end() {
+      if (carry) { let b = carry; carry = null; if (!started) b = start(b); feed(b, true); }
+      if (code >= 0) line(new Uint8Array(0), 0, 0);       // a code with no value line → its empty value (parsePairs' rule)
+      if (section) endSection();
+      return { header: headerInfo(), layers, warnings, warningsSuppressed: suppressed, counts, bytes };
+    },
+  };
+}
+
+/**
+ * peekDxf(bytes) — what a HEAD of the file says, without reading the rest: header
+ * variables ($EXTMIN/$EXTMAX/$INSUNITS…) + the entity mix seen so far. For an open
+ * dialog's description of a file too big to read for a preview. A truncated head
+ * is fine (the last entity in flight is simply closed).
+ */
+function peekDxf(bytes) {
+  let lastLayer = null;
+  const layerSet = new Set();
+  const note = (l) => { if (l !== lastLayer) { lastLayer = l; layerSet.add(l); } };
+  const st = createSceneStream({ tri: (l) => note(l), string: (l) => note(l), point: (l) => note(l) });
+  st.push(bytes);
+  const r = st.end();
+  return { header: r.header, counts: r.counts, layers: [...layerSet].sort(), tableLayers: Object.keys(r.layers), bytes: r.bytes };
+}
+
+// ── src/io/dxf-stream.js ──
+
+// DXF, STREAMED — for a file too big to read whole. openDxf (dxf-provider.js) parses
+// resident, which caps a DXF at what one JS string holds (~512 M characters; past
+// that the browser's read fails, Chrome calling it a "permission problem"). A
+// triangulated topography exported as 3DFACEs reaches gigabytes, so this provider
+// walks the Blob in slices through @gcu/dxf's push-parser and hands the geometry
+// out as BATCHES for the streaming builders, holding nothing but the batch in
+// flight plus each kind's small per-record table:
+//
+//   openDxfStream(blob, { as }) → { header, batches(opts), summary }
+//     header  — kind:'dxf-stream', bbox (SAMPLED: head + windows across the file —
+//               it plants the frame and the first camera, nothing quantizes on it),
+//               headerVars, size
+//     batches — async generator of { kind:'mesh', raw } (soup RawChunks — the
+//               createSoupChunkBuilder contract), { kind:'strings', raw } (stick
+//               RawChunks, category = DXF layer), { kind:'points', raw }
+//     summary — filled as the stream runs, final when it ends: counts, per-kind
+//               categories + authored colours, the uniform mesh colour, warnings,
+//               and each kind's record accessors (fetchRecord / recordPosition)
+//
+// One pass yields every kind the file holds; `as` keeps only one (a reinterpret or
+// a project reload asks for exactly the layer it is restoring).
+
+// above this a consumer should stream (below it the resident reader is exact and
+// keeps the full mesh tier: solid queries, mesh export, welded surfaces)
+const DXF_STREAM_BYTES = 256 * 1024 * 1024;
+const SLAB$dxf_stream = 8 << 20;                                       // 8 MB reads
+const HEAD = 16 << 20;                                      // the head peek / first bbox sample
+const WINDOW = 256 << 10, WINDOWS = 24;                     // bbox sampling across the file
+
+// growable typed column (records the strings / points tables keep)
+function column(Type, init = 1 << 16) {
+  let a = new Type(init), n = 0;
+  return {
+    push(v) { if (n === a.length) { const b = new Type(a.length * 2); b.set(a); a = b; } a[n++] = v; },
+    get length() { return n; },
+    at(i) { return a[i]; },
+  };
+}
+
+// the plausible-coordinate guard (the 1e20 "unset" extents some exporters write)
+const plausible = (v) => Number.isFinite(v) && Math.abs(v) < 1e12;
+
+/**
+ * Sampled bounds: the head, then WINDOWS evenly spaced slices, each resynced to an
+ * entity boundary (a "0" code line followed by an entity name) and cut at the last
+ * one (so no number is read truncated). Approximate by design — enough to plant a
+ * frame origin near the data and aim the first camera; the layers' true bboxes come
+ * from the builders as the geometry arrives.
+ */
+async function sampleBounds(blob) {
+  const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+  const grow = (x, y, z) => {
+    if (!plausible(x) || !plausible(y) || !plausible(z)) return;
+    if (x < min[0]) min[0] = x; if (y < min[1]) min[1] = y; if (z < min[2]) min[2] = z;
+    if (x > max[0]) max[0] = x; if (y > max[1]) max[1] = y; if (z > max[2]) max[2] = z;
+  };
+  const sink = {
+    tri(l, c, ax, ay, az, bx, by, bz, cx, cy, cz) { grow(ax, ay, az); grow(bx, by, bz); grow(cx, cy, cz); },
+    string(l, c, p) { for (let i = 0; i + 2 < p.length; i += 3) grow(p[i], p[i + 1], p[i + 2]); },
+    point(l, c, x, y, z) { grow(x, y, z); },
+    vertex(x, y, z) { grow(x, y, z); },                     // a window inside one giant polyface still counts
+  };
+  const POLYFACE_HEAD = new TextEncoder().encode('0\nPOLYLINE\n70\n64\n');
+  const ENTITY_START = /\n[ \t]*0\r?\n(?=[A-Z3])/g;
+  const sampleAt = async (off, len, inEntities) => {
+    const bytes = new Uint8Array(await blob.slice(off, Math.min(blob.size, off + len)).arrayBuffer());
+    let text = '';
+    for (let i = 0; i < bytes.length; i += 8192) text += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
+    const starts = [...text.matchAll(ENTITY_START)].map((m) => m.index + 1);
+    if (starts.length < 2) return;
+    const from = inEntities ? starts[0] : 0, to = starts[starts.length - 1];
+    const st = createSceneStream(sink, inEntities ? { section: 'ENTITIES' } : {});
+    // a window that opens mid-POLYLINE: give its VERTEX run a header to belong to
+    if (inEntities && text.startsWith('VERTEX', from + text.slice(from).indexOf('\n') + 1)) st.push(POLYFACE_HEAD);
+    st.push(bytes.subarray(from, to));
+    st.end();
+  };
+  await sampleAt(0, HEAD, false);                           // the head: real section structure
+  if (blob.size > HEAD) {
+    for (let k = 1; k <= WINDOWS; k++) {
+      const off = Math.floor(((blob.size - WINDOW) * k) / WINDOWS);
+      if (off > HEAD) await sampleAt(off, WINDOW, true);
+    }
+  }
+  return min[0] === Infinity ? null : { min, max };
+}
+
+/** peekDxfHead(blob) — the dialog's description of a file too big to preview whole. */
+async function peekDxfHead(blob, bytes = 8 << 20) {
+  const head = new Uint8Array(await blob.slice(0, Math.min(blob.size, bytes)).arrayBuffer());
+  const p = peekDxf(head);
+  return { ...p, partial: head.length < blob.size, fraction: head.length / (blob.size || 1) };
+}
+
+// the push parser itself, for consumers that want the raw scene stream (e.g. @gcu/wireframe's
+// DXF → .wfr adapter) without a second copy of @gcu/dxf in the bundle
+
+async function openDxfStream(blob, { as = null } = {}) {
+  let bbox = await sampleBounds(blob);
+  let headerVars = null;
+  {
+    const head = new Uint8Array(await blob.slice(0, Math.min(blob.size, 1 << 20)).arrayBuffer());
+    headerVars = peekDxf(head).header;
+    if (!bbox && headerVars.extmin && headerVars.extmax && [...headerVars.extmin, ...headerVars.extmax].every(plausible)) {
+      bbox = { min: headerVars.extmin.slice(), max: headerVars.extmax.slice() };
+    }
+  }
+  if (!bbox) bbox = { min: [0, 0, 0], max: [1, 1, 1] };
+  const header = { kind: 'dxf-stream', format: 'dxf', bbox, size: blob.size, headerVars, sampledBbox: true };
+
+  const want = (k) => !as || as === k;
+  // per-kind category tables (≤ 255 layers fit the category byte; past that a kind
+  // keeps its geometry and drops its classes, like the resident reader)
+  const catTable = () => ({ names: [], colors: [], index: new Map(), overflow: false });
+  const cats = { strings: catTable(), points: catTable() };
+  const catOf = (t, layer, rgb) => {
+    let i = t.index.get(layer);
+    if (i === undefined) {
+      if (t.names.length >= 255) { t.overflow = true; return 0; }
+      i = t.names.length; t.index.set(layer, i); t.names.push(layer); t.colors.push(rgb || null);
+    } else if (!t.colors[i] && rgb) t.colors[i] = rgb;
+    return i;
+  };
+  // records: strings keep (layer, string id) + a midpoint per segment; points keep xyz + layer
+  const o = bbox.min;                                       // midpoints stored f32 local to here (mm at km extents)
+  const seg = { cat: column(Uint8Array), str: column(Uint32Array), mx: column(Float32Array), my: column(Float32Array), mz: column(Float32Array) };
+  const pt = { x: column(Float64Array), y: column(Float64Array), z: column(Float64Array), cat: column(Uint8Array) };
+  let meshColor;                                            // uniform → the tint; mixed → null
+
+  const summary = {
+    done: false, counts: { triangles: 0, strings: 0, segments: 0, points: 0 }, warnings: [], warningsSuppressed: 0,
+    meshColor: null, kinds: [],
+    strings: { categories: null, catColors: null, fetchRecord: (rec) => [cats.strings.names[seg.cat.at(rec)], seg.str.at(rec)], recordPosition: (rec) => [o[0] + seg.mx.at(rec), o[1] + seg.my.at(rec), o[2] + seg.mz.at(rec)] },
+    points: { categories: null, catColors: null, fetchRecord: (rec) => [pt.x.at(rec), pt.y.at(rec), pt.z.at(rec), cats.points.names[pt.cat.at(rec)]] },
+  };
+
+  async function* batches({ batchTris = 1 << 16, batchSegs = 1 << 16, batchPoints = 1 << 16, onProgress, signal } = {}) {
+    const queue = [];
+    const MESH = ['ax', 'ay', 'az', 'bx', 'by', 'bz', 'cx', 'cy', 'cz', 'x', 'y', 'z'];
+    const newMesh = () => { const b = { count: 0 }; for (const c of MESH) b[c] = new Float64Array(batchTris); return b; };
+    const STICK = ['ax', 'ay', 'az', 'bx', 'by', 'bz', 'x', 'y', 'z'];
+    const newStick = () => { const b = { count: 0, cat: new Uint8Array(batchSegs), recIdx: new Uint32Array(batchSegs), chan: new Float64Array(batchSegs) }; for (const c of STICK) b[c] = new Float64Array(batchSegs); return b; };
+    const newPts = () => ({ count: 0, x: new Float64Array(batchPoints), y: new Float64Array(batchPoints), z: new Float64Array(batchPoints), cat: new Uint8Array(batchPoints), recIdx: new Uint32Array(batchPoints), recStart: pt.x.length });
+    const trim = (b, cols) => { const n = b.count; for (const c of cols) b[c] = b[c].subarray(0, n); return b; };
+    let mb = null, sb = null, pb = null;
+    const flushMesh = () => { if (mb && mb.count) queue.push({ kind: 'mesh', raw: trim(mb, MESH) }); mb = null; };
+    const flushSticks = () => { if (sb && sb.count) queue.push({ kind: 'strings', raw: trim(sb, [...STICK, 'cat', 'recIdx', 'chan']) }); sb = null; };
+    const flushPts = () => { if (pb && pb.count) queue.push({ kind: 'points', raw: trim(pb, ['x', 'y', 'z', 'cat', 'recIdx']) }); pb = null; };
+
+    const sink = {
+      tri(layer, rgb, ax, ay, az, bx, by, bz, cx, cy, cz) {
+        if (!want('mesh')) return;
+        if (meshColor === undefined) meshColor = rgb;
+        else if (meshColor && (!rgb || meshColor[0] !== rgb[0] || meshColor[1] !== rgb[1] || meshColor[2] !== rgb[2])) meshColor = null;
+        if (!mb) mb = newMesh();
+        const i = mb.count++;
+        mb.ax[i] = ax; mb.ay[i] = ay; mb.az[i] = az; mb.bx[i] = bx; mb.by[i] = by; mb.bz[i] = bz;
+        mb.cx[i] = cx; mb.cy[i] = cy; mb.cz[i] = cz;
+        mb.x[i] = (ax + bx + cx) / 3; mb.y[i] = (ay + by + cy) / 3; mb.z[i] = (az + bz + cz) / 3;
+        summary.counts.triangles++;
+        if (mb.count === batchTris) flushMesh();
+      },
+      string(layer, rgb, p) {
+        if (!want('strings')) return;
+        const code = catOf(cats.strings, layer, rgb);
+        const sid = summary.counts.strings++;
+        for (let k = 0; k + 5 < p.length; k += 3) {
+          if (!sb) sb = newStick();
+          const i = sb.count++;
+          const rec = seg.cat.length;
+          sb.ax[i] = p[k]; sb.ay[i] = p[k + 1]; sb.az[i] = p[k + 2];
+          sb.bx[i] = p[k + 3]; sb.by[i] = p[k + 4]; sb.bz[i] = p[k + 5];
+          const mx = (p[k] + p[k + 3]) / 2, my = (p[k + 1] + p[k + 4]) / 2, mz = (p[k + 2] + p[k + 5]) / 2;
+          sb.x[i] = mx; sb.y[i] = my; sb.z[i] = mz;
+          sb.cat[i] = code; sb.recIdx[i] = rec;
+          seg.cat.push(code); seg.str.push(sid); seg.mx.push(mx - o[0]); seg.my.push(my - o[1]); seg.mz.push(mz - o[2]);
+          summary.counts.segments++;
+          if (sb.count === batchSegs) flushSticks();
+        }
+      },
+      point(layer, rgb, x, y, z) {
+        if (!want('points')) return;
+        const code = catOf(cats.points, layer, rgb);
+        if (!pb) pb = newPts();
+        const i = pb.count++;
+        pb.x[i] = x; pb.y[i] = y; pb.z[i] = z; pb.cat[i] = code; pb.recIdx[i] = pt.x.length;
+        pt.x.push(x); pt.y.push(y); pt.z.push(z); pt.cat.push(code);
+        summary.counts.points++;
+        if (pb.count === batchPoints) flushPts();
+      },
+    };
+
+    const st = createSceneStream(sink);
+    let at = 0;
+    while (at < blob.size) {
+      if (signal && signal.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+      const end = Math.min(blob.size, at + SLAB$dxf_stream);
+      st.push(new Uint8Array(await blob.slice(at, end).arrayBuffer()));
+      at = end;
+      if (onProgress) onProgress(at, blob.size);
+      while (queue.length) yield queue.shift();
+    }
+    const r = st.end();
+    flushMesh(); flushSticks(); flushPts();
+    while (queue.length) yield queue.shift();
+
+    summary.warnings = r.warnings; summary.warningsSuppressed = r.warningsSuppressed;
+    summary.header = r.header;
+    summary.meshColor = meshColor || null;
+    for (const k of ['strings', 'points']) {
+      const t = cats[k];
+      summary[k].categories = t.overflow || !t.names.length ? null : t.names.slice();
+      summary[k].catColors = summary[k].categories ? t.colors.slice() : null;
+    }
+    summary.kinds = [summary.counts.triangles && 'mesh', summary.counts.segments && 'strings', summary.counts.points && 'points'].filter(Boolean);
+    summary.done = true;
+  }
+
+  return { header, batches, summary };
+}
+
+// ── src/core/gl-resolve.js ──
+
+// @gcu/condenser — DEFERRED RE-SHADE (render-paths spec §2). Once the scene
+// has converged, the pick pipeline's full-viewport (record, layer|face) id
+// buffer is kept as a texture, and COSMETIC changes — ramp, clip, color
+// mode, filter (dim), selection, chanTex values — run ONE fullscreen resolve
+// pass per element layer instead of re-rasterizing the geometry. O(pixels)
+// at any model size: a ramp drag over a 50M-block model recolors at refresh
+// rate instead of restarting the accumulation.
+//
+// Two GPU pieces, no CPU data needed:
+//   bake    — per layer, scatter each element's (z, value, category, rgb) to
+//             its RECORD's texel in an 8192-wide RGBA32F attribute texture
+//             (one point-draw over the layer's chunks; works for streamed
+//             models whose columns were never CPU-resident).
+//   resolve — fullscreen triangle per layer: id → attr texel → the SAME
+//             color math the raster shaders use (parity by construction,
+//             including the raster shaders' per-kind wash order), written
+//             into the EDL color buffer; `discard` leaves background /
+//             mesh / other-layer pixels untouched, and the untouched EDL
+//             depth still shades the presented frame.
+//
+// Blocks' per-face impostor lighting reconstructs from the id buffer's FACE
+// code (gl-pick names the plane the eye ray entered): shade = (0.55 +
+// 0.45·max(n·L,0)) · (cut ? 0.85 : 1) — the exact gl-blocks formula. Splat-
+// demoted pixels (NO_FACE) stay unlit, exactly as rasterized. Out of scope
+// (the caller falls back to re-raster): block EDGE lines (need the intra-face
+// hit position), opacity < 1 (screen-door), catVis / isolate (they CULL
+// geometry, so the id buffer itself goes stale), sticks / soup layers.
+
+
+const TEXW = 8192;
+
+// ── bake shaders: element → its record's texel ──────────────────────────────
+const BAKE_VERT_BLOCKS = `#version 300 es
+precision highp float;
+layout(location=0) in vec3 aIjk;
+layout(location=1) in float aChan;
+layout(location=2) in float aCat;
+layout(location=3) in uint aRec;
+uniform vec3 uGridOrigin, uGridSize;
+uniform mat3 uGridRot;                   // lattice rotation (identity = axis-aligned)
+uniform vec2 uChanChunk;                 // this chunk's [min, span] (dequantize aChan)
+uniform vec2 uTexSize;
+flat out vec4 vAttr;
+void main() {
+  int rec = int(aRec);
+  vec2 px = vec2(float(rec & 8191) + 0.5, float(rec >> 13) + 0.5);
+  gl_Position = vec4(px / uTexSize * 2.0 - 1.0, 0.0, 1.0);
+  gl_PointSize = 1.0;
+  float z = (uGridOrigin + uGridRot * (aIjk * uGridSize)).z;
+  vAttr = vec4(z, uChanChunk.x + aChan * uChanChunk.y, aCat, 0.0);
+}`;
+
+const BAKE_VERT_POINTS = `#version 300 es
+precision highp float;
+layout(location=0) in vec3 aPos;
+layout(location=1) in float aIntensity;
+layout(location=2) in float aClass;
+layout(location=3) in vec3 aRgb;
+layout(location=4) in uint aRec;
+uniform vec3 uBoxMin, uBoxSpan;
+uniform vec2 uTexSize;
+flat out vec4 vAttr;
+void main() {
+  int rec = int(aRec);
+  vec2 px = vec2(float(rec & 8191) + 0.5, float(rec >> 13) + 0.5);
+  gl_Position = vec4(px / uTexSize * 2.0 - 1.0, 0.0, 1.0);
+  gl_PointSize = 1.0;
+  float z = uBoxMin.z + aPos.z * uBoxSpan.z;
+  // rgb packs into one float exactly (24 bits fit f32's 24-bit mantissa)
+  float rgb = floor(aRgb.r * 255.0 + 0.5) + floor(aRgb.g * 255.0 + 0.5) * 256.0 + floor(aRgb.b * 255.0 + 0.5) * 65536.0;
+  vAttr = vec4(z, aIntensity, aClass, rgb);
+}`;
+
+const BAKE_FRAG = `#version 300 es
+precision highp float;
+flat in vec4 vAttr;
+out vec4 outAttr;
+void main() { outAttr = vAttr; }`;
+
+// ── the resolve pass: id → attrs → the raster shaders' color math ──────────
+const RESOLVE_VERT = `#version 300 es
+void main() {
+  vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
+  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}`;
+
+const RESOLVE_FRAG = `#version 300 es
+precision highp float;
+precision highp usampler2D;
+uniform usampler2D uId;                  // RG32UI: R = record, G = layer | face<<16 (NO_LAYER = miss)
+uniform sampler2D uAttr;                 // baked (z, value, cat, rgbPacked) by record
+uniform sampler2D uRamp, uPalette, uMask, uSel, uRule, uChanTex;
+uniform sampler2D uDepth;                // the capture's hit depths (edge-line unproject)
+uniform uint uLayerId, uPicked, uPickedLayer;
+uniform int uKind;                       // 0 = points, 1 = blocks
+uniform int uColorMode;
+uniform vec2 uZRange, uChanDoc;
+uniform float uPaletteN, uIntensityScale;
+uniform float uFilterOn, uSelOn, uRuleOn, uChanTexOn;
+uniform vec3 uLightDir, uCutNormal;
+uniform vec3 uFaceN[6];                  // gl-pick's FACE_NORMALS
+uniform float uEdgesOn, uOrtho, uPerspScale;
+uniform mat4 uInvVP;                     // inverse viewProj: (pixel, depth) → world hit point
+uniform vec2 uViewport;
+uniform vec3 uEyePos, uGridOrigin, uGridSize;   // the blocks layer's lattice (regular grids only)
+out vec4 outColor;
+void main() {
+  ivec2 px = ivec2(gl_FragCoord.xy);
+  uvec2 id = texelFetch(uId, px, 0).rg;
+  if (id.g == 0xFFFFFFFFu) discard;                        // background: untouched
+  uint layer = id.g & 0xFFFFu;
+  if (layer != uLayerId) discard;                          // mesh / other layers: untouched
+  int rec = int(id.r);
+  ivec2 at = ivec2(rec & 8191, rec >> 13);
+  vec4 attr = texelFetch(uAttr, at, 0);
+  float cls = attr.z;
+  if (uRuleOn > 0.5) cls = floor(texelFetch(uRule, at, 0).r * 255.0 + 0.5);
+  vec4 col;
+  if (uColorMode == 0) {                                   // elevation (both kinds)
+    float t = clamp((attr.x - uZRange.x) / max(uZRange.y, 1e-6), 0.0, 1.0);
+    col = texture(uRamp, vec2(t, 0.5));
+  } else if (uColorMode == 1) {
+    if (uKind == 1 || uChanTexOn > 0.5) {                  // blocks' grade, or a value texture (any kind): doc-normalized
+      float v = uChanTexOn > 0.5 ? texelFetch(uChanTex, at, 0).r : attr.y;
+      float t = clamp((v - uChanDoc.x) / max(uChanDoc.y, 1e-6), 0.0, 1.0);
+      col = texture(uRamp, vec2(t, 0.5));
+    } else {                                               // points: intensity
+      float t = clamp(attr.y * uIntensityScale, 0.0, 1.0);
+      col = texture(uRamp, vec2(t, 0.5));
+    }
+  } else if (uColorMode == 2) {                            // category / classification
+    col = texture(uPalette, vec2((cls + 0.5) / uPaletteN, 0.5));
+  } else {
+    if (uKind == 1) col = vec4(0.62, 0.63, 0.66, 1.0);     // blocks: solid
+    else {                                                 // points: rgb (unpack)
+      float p3 = attr.w;
+      float b = floor(p3 / 65536.0); p3 -= b * 65536.0;
+      float g = floor(p3 / 256.0); p3 -= g * 256.0;
+      col = vec4(p3 / 255.0, g / 255.0, b / 255.0, 1.0);
+    }
+  }
+  float m = 1.0;
+  if (uFilterOn > 0.5) m = texelFetch(uMask, at, 0).r > 0.5 ? 1.0 : 0.0;
+  float selHit = uSelOn > 0.5 ? texelFetch(uSel, at, 0).r : 0.0;
+  // wash order matches each kind's raster shader EXACTLY: gl.js points dim
+  // THEN sel-wash; gl-blocks sel-washes THEN dims. Only both-at-once pixels
+  // differ between the orders, but parity is the contract here.
+  if (uKind == 1) {
+    if (selHit > 0.5) col = vec4(mix(col.rgb, vec3(1.0, 0.85, 0.3), 0.55), col.a);
+    if (uFilterOn > 0.5 && m < 0.5) col = vec4(col.rgb * 0.3, col.a);
+  } else {
+    if (uFilterOn > 0.5 && m < 0.5) col = vec4(col.rgb * 0.3, col.a);
+    if (selHit > 0.5) col = vec4(mix(col.rgb, vec3(1.0, 0.85, 0.3), 0.55), col.a);
+  }
+  if (id.r == uPicked && layer == uPickedLayer) col = vec4(mix(col.rgb, vec3(1.0, 0.15, 0.7), 0.85) + 0.1, col.a);
+  float shade = 1.0;
+  if (uKind == 1) {                                        // blocks: per-face impostor lighting
+    uint face = (id.g >> 16) & 7u;
+    if (face < 6u) shade = 0.55 + 0.45 * max(dot(uFaceN[face], uLightDir), 0.0);
+    else if (face == 6u) shade = (0.55 + 0.45 * max(dot(uCutNormal, uLightDir), 0.0)) * 0.85;   // the section cut wall
+    // face 7 (NO_FACE): a demoted splat — unlit, as rasterized (and no edges)
+    // BLOCK EDGE LINES (gl-blocks' exact math): the capture depth gives back
+    // the hit point — unproject it, snap the block center from the face plane
+    // + the regular lattice, and the box-local coords fall out. Sub-blocked
+    // models (per-block half-dims) can't reconstruct the center this way and
+    // fall back to the re-raster before we get here.
+    if (uEdgesOn > 0.5 && face < 7u) {
+      float dz = texelFetch(uDepth, px, 0).r;
+      vec2 xy = (gl_FragCoord.xy / uViewport) * 2.0 - 1.0;
+      vec4 hp = uInvVP * vec4(xy, dz * 2.0 - 1.0, 1.0);
+      vec3 p = hp.xyz / hp.w;
+      vec3 half_ = uGridSize * 0.5;
+      // the pixel ray (also perturbed rays below, for the analytic derivative)
+      vec4 rA = uInvVP * vec4(xy, -1.0, 1.0);
+      vec4 rB = uInvVP * vec4(xy, 1.0, 1.0);
+      vec3 ro = rA.xyz / rA.w, rd = rB.xyz / rB.w - ro;
+      float pv = 0.0; int ax = 0;
+      if (face < 6u) {
+        // depth only PICKS the lattice face plane; the position comes from
+        // re-intersecting the ray with that exact plane (no 24-bit jitter)
+        ax = int(face >> 1);
+        float o0 = uGridOrigin[ax] - half_[ax];
+        pv = o0 + round((p[ax] - o0) / uGridSize[ax]) * uGridSize[ax];
+        if (abs(rd[ax]) > 1e-12) p = ro + rd * ((pv - ro[ax]) / rd[ax]);
+        p[ax] = pv;
+      }
+      vec3 base = face < 6u ? p - uFaceN[face] * half_ : p;   // face pixel: step inward; cut pixel: already interior
+      vec3 center = uGridOrigin + vec3(round((base.x - uGridOrigin.x) / uGridSize.x), round((base.y - uGridOrigin.y) / uGridSize.y), round((base.z - uGridOrigin.z) / uGridSize.z)) * uGridSize;
+      vec3 a2 = abs(p - center) / half_;
+      float m1 = max(a2.x, max(a2.y, a2.z));
+      float m2 = max(min(a2.x, a2.y), min(max(a2.x, a2.y), a2.z));
+      float e = face == 6u ? m1 : m2;
+      // ANALYTIC screen derivative of e: fwidth() cancels at block seams (e is
+      // symmetric across them — …0.8, 1.0 │ 1.0, 0.8…), erasing the lines
+      // exactly where they live; the raster never sees that because each
+      // impostor is its own primitive with helper-invocation derivatives. So
+      // evaluate e at the hardware's own 2×2 QUAD positions — rays through the
+      // quad-aligned pixels, intersected with THIS pixel's plane — and
+      // difference them ourselves. Quad alignment matters: it reproduces the
+      // raster's per-quad-shared derivative, phase and all.
+      float cutD = dot(p, uCutNormal);
+      vec2 qb = floor(gl_FragCoord.xy * 0.5) * 2.0 + 0.5;
+      float eq[3];
+      for (int k = 0; k < 3; k++) {
+        vec2 fxy = k == 0 ? qb : (k == 1 ? qb + vec2(1.0, 0.0) : qb + vec2(0.0, 1.0));
+        vec2 nxy = (fxy / uViewport) * 2.0 - 1.0;
+        vec4 qA = uInvVP * vec4(nxy, -1.0, 1.0);
+        vec4 qB = uInvVP * vec4(nxy, 1.0, 1.0);
+        vec3 qo = qA.xyz / qA.w, qd = qB.xyz / qB.w - qo;
+        vec3 q;
+        if (face < 6u) { float den = qd[ax]; q = abs(den) > 1e-12 ? qo + qd * ((pv - qo[ax]) / den) : p; }
+        else { float den = dot(qd, uCutNormal); q = abs(den) > 1e-9 ? qo + qd * ((cutD - dot(qo, uCutNormal)) / den) : p; }
+        vec3 aq = abs(q - center) / half_;
+        float q1 = max(aq.x, max(aq.y, aq.z));
+        float q2 = max(min(aq.x, aq.y), min(max(aq.x, aq.y), aq.z));
+        eq[k] = face == 6u ? q1 : q2;
+      }
+      float fw = abs(eq[1] - eq[0]) + abs(eq[2] - eq[0]);
+      float dpx = (1.0 - e) / max(fw, 1e-6);
+      float edge = 1.0 - clamp(dpx * 0.7 - 0.3, 0.0, 1.0);
+      float distE = uOrtho > 0.5 ? 1.0 : max(distance(uEyePos, center), 1e-3);
+      float pxR = length(half_) * uPerspScale / distE;
+      edge *= clamp((pxR - 5.0) / 8.0, 0.0, 1.0);          // fade toward demotion, as rasterized
+      shade *= 1.0 - 0.4 * edge;
+    }
+  }
+  outColor = vec4(col.rgb * shade, col.a);
+}`;
+
+function createResolvePipeline(gl) {
+  // the bake target is RGBA32F — color-renderable only with this extension;
+  // absent (rare on WebGL2-era GPUs) the whole feature quietly disables and
+  // every cosmetic change re-rasters, exactly as before.
+  const floatOk = !!gl.getExtension('EXT_color_buffer_float');
+  const bakeBlocks = makeProgram(gl, BAKE_VERT_BLOCKS, BAKE_FRAG);
+  const bakePoints = makeProgram(gl, BAKE_VERT_POINTS, BAKE_FRAG);
+  const resolveProg = makeProgram(gl, RESOLVE_VERT, RESOLVE_FRAG);
+  const U = (p, n) => gl.getUniformLocation(p, n);
+  const uB = { gridOrigin: U(bakeBlocks, 'uGridOrigin'), gridSize: U(bakeBlocks, 'uGridSize'), gridRot: U(bakeBlocks, 'uGridRot'), chanChunk: U(bakeBlocks, 'uChanChunk'), texSize: U(bakeBlocks, 'uTexSize') };
+  const uP = { boxMin: U(bakePoints, 'uBoxMin'), boxSpan: U(bakePoints, 'uBoxSpan'), texSize: U(bakePoints, 'uTexSize') };
+  const uR = {
+    id: U(resolveProg, 'uId'), attr: U(resolveProg, 'uAttr'), ramp: U(resolveProg, 'uRamp'), palette: U(resolveProg, 'uPalette'),
+    mask: U(resolveProg, 'uMask'), sel: U(resolveProg, 'uSel'), rule: U(resolveProg, 'uRule'), chanTex: U(resolveProg, 'uChanTex'),
+    layerId: U(resolveProg, 'uLayerId'), picked: U(resolveProg, 'uPicked'), pickedLayer: U(resolveProg, 'uPickedLayer'),
+    kind: U(resolveProg, 'uKind'), colorMode: U(resolveProg, 'uColorMode'), zRange: U(resolveProg, 'uZRange'), chanDoc: U(resolveProg, 'uChanDoc'),
+    paletteN: U(resolveProg, 'uPaletteN'), intensityScale: U(resolveProg, 'uIntensityScale'),
+    filterOn: U(resolveProg, 'uFilterOn'), selOn: U(resolveProg, 'uSelOn'), ruleOn: U(resolveProg, 'uRuleOn'), chanTexOn: U(resolveProg, 'uChanTexOn'),
+    lightDir: U(resolveProg, 'uLightDir'), cutNormal: U(resolveProg, 'uCutNormal'), faceN: U(resolveProg, 'uFaceN'),
+    depth: U(resolveProg, 'uDepth'), edgesOn: U(resolveProg, 'uEdgesOn'), ortho: U(resolveProg, 'uOrtho'), perspScale: U(resolveProg, 'uPerspScale'),
+    invVP: U(resolveProg, 'uInvVP'), viewport: U(resolveProg, 'uViewport'), eyePos: U(resolveProg, 'uEyePos'),
+    gridOrigin: U(resolveProg, 'uGridOrigin'), gridSize: U(resolveProg, 'uGridSize'),
+  };
+  const IDENT4 = Float32Array.of(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
+  const bakeFbo = gl.createFramebuffer();
+  const bakes = new Map();                                 // layerId → { tex, h }
+  const faceFlat = new Float32Array(18);
+  for (let i = 0; i < 6; i++) { const n = FACE_NORMALS[i]; faceFlat[i * 3] = n[0]; faceFlat[i * 3 + 1] = n[1]; faceFlat[i * 3 + 2] = n[2]; }
+
+  // one bake VAO per blocks chunk: the same buffers the instanced VAO uses, but
+  // re-pointed per-VERTEX (divisor 0) so one gl.POINTS draw scatters every block
+  function blocksBakeVao(c) {
+    c = c._src || c;                                       // a view's proxy shares its source's buffers — and this VAO
+    if (Object.prototype.hasOwnProperty.call(c, '_bakeVao')) return c._bakeVao;
+    const vao = gl.createVertexArray();
+    gl.bindVertexArray(vao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, c.bIjk); gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.UNSIGNED_SHORT, false, 0, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, c.bChan); gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 1, gl.UNSIGNED_SHORT, true, 0, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, c.bCat); gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 1, gl.UNSIGNED_BYTE, false, 0, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, c.bRec); gl.enableVertexAttribArray(3); gl.vertexAttribIPointer(3, 1, gl.UNSIGNED_INT, 0, 0);
+    gl.bindVertexArray(null);
+    c._bakeVao = vao;
+    return vao;
+  }
+
+  return {
+    ok: floatOk,
+    // (re)bake one layer's attribute texture from its resident chunks.
+    // maxRec = 1 + the highest record index the caller has seen for the layer.
+    // Leaves the FBO at null and the viewport at the bake size — the caller
+    // (inside the EDL sceneDraw) restores its own binding + viewport after.
+    bakeLayer(layerId, chunksOfLayer, maxRec) {
+      if (!floatOk || !chunksOfLayer.length || !maxRec) return null;
+      const h = Math.max(1, Math.ceil(maxRec / TEXW));
+      let b = bakes.get(layerId);
+      if (!b || b.h < h) {
+        if (b) { gl.deleteTexture(b.tex); bakes.delete(layerId); }
+        // 16 B a record: past MAX_TEXTURE_SIZE rows, or when the GPU can't find the
+        // memory, there is no bake — null, and the layer re-rasters instead (always
+        // correct, just slower). It used to allocate unchecked and resolve garbage.
+        if (h > gl.getParameter(gl.MAX_TEXTURE_SIZE)) return null;
+        while (gl.getError() !== gl.NO_ERROR) { /* drain stale errors */ }
+        const tex = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, tex);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, TEXW, h, 0, gl.RGBA, gl.FLOAT, null);
+        if (gl.getError() !== gl.NO_ERROR) { gl.deleteTexture(tex); return null; }
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+        b = { tex, h };
+        bakes.set(layerId, b);
+      }
+      gl.bindFramebuffer(gl.FRAMEBUFFER, bakeFbo);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, b.tex, 0);
+      gl.viewport(0, 0, TEXW, b.h);
+      gl.disable(gl.DEPTH_TEST);
+      const kind = chunksOfLayer[0].kind;
+      if (kind === 'blocks') {
+        gl.useProgram(bakeBlocks);
+        gl.uniform2f(uB.texSize, TEXW, b.h);
+        for (const c of chunksOfLayer) {
+          const g = c.grid;
+          gl.uniform3f(uB.gridOrigin, g.originLocal[0], g.originLocal[1], g.originLocal[2]);
+          gl.uniform3f(uB.gridSize, g.size[0], g.size[1], g.size[2]);
+          gl.uniformMatrix3fv(uB.gridRot, false, g.rot || IDENTITY3);
+          const span = c.chanRange[1] - c.chanRange[0];
+          gl.uniform2f(uB.chanChunk, c.chanRange[0], span > 0 ? span : 0);
+          gl.bindVertexArray(blocksBakeVao(c));
+          gl.drawArrays(gl.POINTS, 0, c.count);
+        }
+      } else {
+        gl.useProgram(bakePoints);
+        gl.uniform2f(uP.texSize, TEXW, b.h);
+        for (const c of chunksOfLayer) {
+          const bb = c.bboxLocal;
+          gl.uniform3f(uP.boxMin, bb[0], bb[1], bb[2]);
+          gl.uniform3f(uP.boxSpan, bb[3] - bb[0], bb[4] - bb[1], bb[5] - bb[2]);
+          gl.bindVertexArray(c.vao);                       // per-vertex layout already, locations match
+          gl.drawArrays(gl.POINTS, 0, c.count);
+        }
+      }
+      gl.bindVertexArray(null);
+      gl.enable(gl.DEPTH_TEST);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      return b;
+    },
+    hasBake(layerId) { return bakes.has(layerId); },
+    dropBake(layerId) { const b = bakes.get(layerId); if (b) { gl.deleteTexture(b.tex); bakes.delete(layerId); } },
+    // one fullscreen pass for one layer, into the CURRENTLY BOUND framebuffer
+    // (the EDL color buffer). `u` carries the same per-layer values the raster
+    // path's begin/setup functions computed. Depth stays untouched.
+    resolveLayer(idTex, layerId, u) {
+      const b = bakes.get(layerId);
+      if (!b) return false;
+      gl.useProgram(resolveProg);
+      gl.disable(gl.DEPTH_TEST);
+      gl.depthMask(false);
+      const bind = (unit, loc, tex) => { gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, tex); gl.uniform1i(loc, unit); };
+      bind(0, uR.id, idTex);
+      bind(1, uR.attr, b.tex);
+      bind(2, uR.ramp, u.ramp);
+      bind(3, uR.palette, u.palette);
+      // every float sampler MUST land on a float texture: an unset sampler
+      // uniform defaults to unit 0 — the INTEGER id texture — and that type
+      // mismatch silently kills the whole draw (GL_INVALID_OPERATION). The
+      // ramp parks the unused ones; their On-flags gate actual sampling.
+      bind(4, uR.mask, u.mask || u.ramp);
+      bind(5, uR.sel, u.sel || u.ramp);
+      bind(6, uR.rule, u.rule || u.ramp);
+      bind(7, uR.chanTex, u.chanTex || u.ramp);
+      bind(8, uR.depth, (u.edges && u.depth) || u.ramp);   // depth-as-sampler2D: .r is the depth (compare mode NONE)
+      gl.uniform1f(uR.edgesOn, u.edges && u.depth ? 1 : 0);
+      gl.uniform1f(uR.ortho, u.ortho ? 1 : 0);
+      gl.uniform1f(uR.perspScale, u.perspScale || 1);
+      gl.uniformMatrix4fv(uR.invVP, false, u.invVP || IDENT4);
+      gl.uniform2f(uR.viewport, u.viewportW || 1, u.viewportH || 1);
+      gl.uniform3f(uR.eyePos, u.eye ? u.eye[0] : 0, u.eye ? u.eye[1] : 0, u.eye ? u.eye[2] : 0);
+      gl.uniform3f(uR.gridOrigin, u.grid ? u.grid.originLocal[0] : 0, u.grid ? u.grid.originLocal[1] : 0, u.grid ? u.grid.originLocal[2] : 0);
+      gl.uniform3f(uR.gridSize, u.grid ? u.grid.size[0] : 1, u.grid ? u.grid.size[1] : 1, u.grid ? u.grid.size[2] : 1);
+      gl.uniform1ui(uR.layerId, layerId >>> 0);
+      gl.uniform1ui(uR.picked, u.picked >>> 0);
+      gl.uniform1ui(uR.pickedLayer, u.pickedLayer >>> 0);
+      gl.uniform1i(uR.kind, u.kind === 'blocks' ? 1 : 0);
+      gl.uniform1i(uR.colorMode, u.colorMode | 0);
+      gl.uniform2f(uR.zRange, u.zRange[0], u.zRange[1]);
+      gl.uniform2f(uR.chanDoc, u.chanDoc[0], u.chanDoc[1]);
+      gl.uniform1f(uR.paletteN, u.paletteN);
+      gl.uniform1f(uR.intensityScale, u.intensityScale);
+      gl.uniform1f(uR.filterOn, u.mask ? 1 : 0);
+      gl.uniform1f(uR.selOn, u.sel ? 1 : 0);
+      gl.uniform1f(uR.ruleOn, u.rule ? 1 : 0);
+      gl.uniform1f(uR.chanTexOn, u.chanTex ? 1 : 0);
+      gl.uniform3f(uR.lightDir, u.lightDir[0], u.lightDir[1], u.lightDir[2]);
+      gl.uniform3f(uR.cutNormal, u.cutNormal[0], u.cutNormal[1], u.cutNormal[2]);
+      gl.uniform3fv(uR.faceN, faceFlat);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      gl.depthMask(true);
+      gl.enable(gl.DEPTH_TEST);
+      return true;
+    },
+    clear() { for (const b of bakes.values()) gl.deleteTexture(b.tex); bakes.clear(); },
+  };
+}
+
+// ── src/core/gl.js ──
+
+// @gcu/condenser — the WebGL2 splat renderer. Raw GL, no scene graph: per-chunk
+// VAOs over the quantized buffers (positions stay uint16 on the GPU — denormalized
+// in the vertex shader against per-chunk bbox uniforms), circular point splats,
+// color-by as a mode uniform + LUT texture (switching color source is a uniform/
+// texture swap, never a buffer re-upload — micro-spec §2.2).
+//
+// Prefix-LOD (M1 form): a global per-frame element budget split across visible
+// chunks proportionally; each chunk draws its FIRST k elements — correct as a
+// uniform subsample because chunks.js shuffled them (the §2.1.4 invariant).
+
+
+const VERT$gl = `#version 300 es
+precision highp float;
+layout(location=0) in vec3 aPos;        // uint16 normalized -> 0..1
+layout(location=1) in float aIntensity; // uint16 normalized
+layout(location=2) in float aClass;     // uint8, raw (0..255)
+layout(location=3) in vec3 aRgb;        // uint8 normalized
+layout(location=4) in uint aRec;        // uint32 record index (highlight + mask lookups)
+uniform uint uPicked;                   // picked RECORD (0xFFFFFFFF = none)
+uniform uint uPickedLayer;              // …and the layer it belongs to
+uniform uint uLayer;                    // this draw's layer (per-draw, not per-element)                   // record index to highlight (0xFFFFFFFF = none)
+uniform uvec2 uRepaint;                 // repaint pass: draw ONLY these two records (both 0xFFFFFFFF = off)
+uniform vec4 uSecPlane;                 // section plane: xyz = unit normal, w = offset (frame-local)
+uniform vec2 uSecCfg;                   // x: 0 = off, 1 = slab; y: slab half-thickness
+uniform mat4 uViewProj;
+uniform vec3 uBoxMin, uBoxSpan;
+uniform float uPointPx;
+uniform int uColorMode;                 // 0 elevation | 1 intensity | 2 classification | 3 rgb
+uniform vec2 uZRange;                   // document local z min/span (elevation ramp)
+uniform float uIntensityScale;          // 1 / (p98-ish max, normalized units)
+uniform sampler2D uRamp;                // 256x1 continuous ramp
+uniform sampler2D uPalette;             // classification / category palette
+uniform float uPaletteN;                // its width (32 = LAS classes, 256 = category dict)
+uniform sampler2D uMask;                // filter bitmask by record index (8192-wide)
+uniform float uFilterOn, uIsolate;
+uniform sampler2D uCatVis;              // 256x1 per-class visibility (layer properties)
+uniform float uCatVisOn;
+uniform sampler2D uSel;                 // selection bitmask by record index (8192-wide)
+uniform float uSelOn;
+uniform sampler2D uRule;                // rule-code byte by record index (8192-wide)
+uniform float uRuleOn;                  // rule mode: the code REPLACES the class for palette + eyes
+uniform sampler2D uChanTex;             // OPT-IN: raw f32 VALUE by record (8192-wide) — replaces the
+uniform float uChanTexOn;               // intensity slot in mode 1, normalized over uChanDoc (the
+uniform vec2 uChanDoc;                  // document's range + clip), as gl-blocks does
+out vec4 vColor;
+flat out float vCull;
+void main() {
+  vec3 p = uBoxMin + aPos * uBoxSpan;
+  gl_Position = uViewProj * vec4(p, 1.0);
+  gl_PointSize = uPointPx;
+  vCull = (uSecCfg.x > 0.5 && abs(dot(p, uSecPlane.xyz) - uSecPlane.w) > uSecCfg.y) ? 1.0 : 0.0;
+  float m = 1.0;
+  if (uFilterOn > 0.5) {
+    int rec = int(aRec);
+    m = texelFetch(uMask, ivec2(rec & 8191, rec >> 13), 0).r > 0.5 ? 1.0 : 0.0;
+    if (uIsolate > 0.5 && m < 0.5) vCull = 1.0;
+  }
+  float cls = aClass;
+  if (uRuleOn > 0.5) {
+    int rr = int(aRec);
+    cls = floor(texelFetch(uRule, ivec2(rr & 8191, rr >> 13), 0).r * 255.0 + 0.5);
+  }
+  if (uCatVisOn > 0.5 && texelFetch(uCatVis, ivec2(int(cls) & 255, 0), 0).r < 0.5) vCull = 1.0;
+  float selHit = 0.0;
+  if (uSelOn > 0.5) {
+    int rs = int(aRec);
+    selHit = texelFetch(uSel, ivec2(rs & 8191, rs >> 13), 0).r;
+  }
+  if (uColorMode == 0) {
+    float t = clamp((p.z - uZRange.x) / max(uZRange.y, 1e-6), 0.0, 1.0);
+    vColor = texture(uRamp, vec2(t, 0.5));
+  } else if (uColorMode == 1) {
+    float t;
+    if (uChanTexOn > 0.5) {
+      int rc = int(aRec);
+      float v = texelFetch(uChanTex, ivec2(rc & 8191, rc >> 13), 0).r;
+      t = clamp((v - uChanDoc.x) / max(uChanDoc.y, 1e-6), 0.0, 1.0);
+    } else t = clamp(aIntensity * uIntensityScale, 0.0, 1.0);
+    vColor = texture(uRamp, vec2(t, 0.5));
+  } else if (uColorMode == 2) {
+    vColor = texture(uPalette, vec2((cls + 0.5) / uPaletteN, 0.5));
+  } else {
+    vColor = vec4(aRgb, 1.0);
+  }
+  if (uFilterOn > 0.5 && m < 0.5) vColor = vec4(vColor.rgb * 0.3, vColor.a);   // context mode: dim non-matching
+  if (selHit > 0.5) vColor = vec4(mix(vColor.rgb, vec3(1.0, 0.85, 0.3), 0.55), vColor.a);   // selected: warm gold wash
+  if (aRec == uPicked && uLayer == uPickedLayer) vColor = vec4(mix(vColor.rgb, vec3(1.0, 0.15, 0.7), 0.85) + 0.1, vColor.a);   // picked: hot magenta — the hue viridis doesn't have
+  if ((uRepaint.x != 0xFFFFFFFFu || uRepaint.y != 0xFFFFFFFFu) && aRec != uRepaint.x && aRec != uRepaint.y) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);   // repaint pass: everything else clips out
+}`;
+
+const FRAG$gl = `#version 300 es
+precision highp float;
+in vec4 vColor;
+flat in float vCull;
+out vec4 outColor;
+void main() {
+  if (vCull > 0.5) discard;             // outside the section slab
+  vec2 d = gl_PointCoord - 0.5;
+  if (dot(d, d) > 0.25) discard;        // circular splat
+  outColor = vColor;
+}`;
+
+
+// ── LUTs ──
+// A small viridis-ish ramp (Switchboard-friendly; perceptual enough for v0.1).
+const RAMP_STOPS = [[68, 1, 84], [59, 82, 139], [33, 145, 140], [94, 201, 98], [253, 231, 37]];
+function rampPixels(n = 256, stops = RAMP_STOPS) {
+  const out = new Uint8Array(n * 4);
+  for (let i = 0; i < n; i++) {
+    const t = i / (n - 1) * (stops.length - 1), k = Math.min(stops.length - 2, t | 0), f = t - k;
+    for (let c = 0; c < 3; c++) out[i * 4 + c] = Math.round(stops[k][c] * (1 - f) + stops[k + 1][c] * f);
+    out[i * 4 + 3] = 255;
+  }
+  return out;
+}
+// Standard LAS classification palette (0..18+; index = class code).
+const CLASS_COLORS = {
+  0: [140, 144, 153], 1: [170, 170, 170], 2: [161, 124, 82], 3: [122, 168, 100],
+  4: [90, 150, 70], 5: [60, 130, 60], 6: [200, 105, 84], 7: [220, 80, 80],
+  8: [180, 180, 90], 9: [74, 120, 176], 10: [200, 160, 60], 11: [110, 110, 120],
+  12: [235, 100, 60], 13: [180, 140, 200], 14: [140, 120, 220], 15: [120, 200, 200],
+  16: [200, 200, 120], 17: [160, 90, 160], 18: [230, 150, 150],
+};
+function palettePixels(n = 32) {
+  const out = new Uint8Array(n * 4);
+  for (let i = 0; i < n; i++) {
+    const c = CLASS_COLORS[i] || [200, 60, 200];           // unknown classes scream magenta, quietly
+    out[i * 4] = c[0]; out[i * 4 + 1] = c[1]; out[i * 4 + 2] = c[2]; out[i * 4 + 3] = 255;
+  }
+  return out;
+}
+
+function lutTexture(gl, pixels, n) {
+  const t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, n, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  return t;
+}
+
+// Upload one chunk's buffers → a VAO. CPU copies are the caller's to release —
+// after this returns, the GPU owns the data (§2.1.5 CPU-release). recIdx goes up
+// too (an unattached buffer, wired by the M5 pick pass) so nothing per-element
+// has to stay resident in JS.
+function uploadChunk(gl, chunk) {
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+  const buf = (data, loc, size, type, normalized) => {
+    const b = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, b);
+    gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(loc);
+    gl.vertexAttribPointer(loc, size, type, normalized, 0, 0);
+    return b;
+  };
+  const buffers = [
+    buf(chunk.pos, 0, 3, gl.UNSIGNED_SHORT, true),
+    buf(chunk.intensity, 1, 1, gl.UNSIGNED_SHORT, true),
+    buf(chunk.classification, 2, 1, gl.UNSIGNED_BYTE, false),
+  ];
+  if (chunk.rgb) buffers.push(buf(chunk.rgb, 3, 3, gl.UNSIGNED_BYTE, true));
+  else { gl.disableVertexAttribArray(3); gl.vertexAttrib3f(3, 0.7, 0.7, 0.7); }
+  const recBuf = gl.createBuffer();                        // highlight + pick lookups, GPU-resident
+  gl.bindBuffer(gl.ARRAY_BUFFER, recBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, chunk.recIdx, gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(4);
+  gl.vertexAttribIPointer(4, 1, gl.UNSIGNED_INT, 0, 0);
+  buffers.push(recBuf);
+  gl.bindVertexArray(null);
+  return { kind: 'points', vao, buffers, count: chunk.count, bboxLocal: chunk.bboxLocal, cursor: 0 };
+}
+
+/**
+ * createRenderer(canvas) — owns the GL context, program, LUTs, and the chunk
+ * list; draw(cam, opts) renders one frame (into the current framebuffer — the
+ * EDL pass wraps it). Chunks arrive via addChunk() as the stream lands.
+ *
+ * M2 state machine (§2.2): each frame classifies as MOVING (camera/viewport/
+ * uniform changed since last frame) or STILL.
+ *   moving → clear + draw a per-chunk PREFIX: k_i = budget · w_i/Σw where w_i is
+ *   the chunk's projected screen weight ((radius/dist)², floored so the coarse
+ *   global prefix never disappears), front-to-back over the frustum-culled set.
+ *   still  → no clear; draw the NEXT SLICE of each unfinished visible chunk
+ *   (progressive accumulation into the persistent FBO) until converged.
+ * New chunks stream INTO the accumulation (no clear — they just draw behind).
+ * All of it is correct because chunk prefixes are uniform subsamples (§2.1.4).
+ */
+function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRatio = Infinity } = {}) {
+  // preserveDrawingBuffer: the viewport is also the screenshot-export surface
+  // (micro-spec §6) and readPixels-after-frame is how the smoke verifies renders;
+  // the cost is one buffer copy per composite — negligible next to the splat pass.
+  const gl = canvas.getContext('webgl2', { antialias: false, alpha: false, preserveDrawingBuffer: true });
+  if (!gl) throw new Error('condenser: WebGL2 unavailable');
+  const prog = makeProgram(gl, VERT$gl, FRAG$gl);
+  const U = (n) => gl.getUniformLocation(prog, n);
+  const uni = {
+    viewProj: U('uViewProj'), boxMin: U('uBoxMin'), boxSpan: U('uBoxSpan'),
+    pointPx: U('uPointPx'), colorMode: U('uColorMode'), zRange: U('uZRange'),
+    intensityScale: U('uIntensityScale'), ramp: U('uRamp'), palette: U('uPalette'), picked: U('uPicked'), pickedLayer: U('uPickedLayer'), layer: U('uLayer'), repaint: U('uRepaint'),
+    secPlane: U('uSecPlane'), secCfg: U('uSecCfg'),
+    mask: U('uMask'), filterOn: U('uFilterOn'), isolate: U('uIsolate'), paletteN: U('uPaletteN'),
+    catVis: U('uCatVis'), catVisOn: U('uCatVisOn'),
+    sel: U('uSel'), selOn: U('uSelOn'),
+    rule: U('uRule'), ruleOn: U('uRuleOn'),
+    chanTex: U('uChanTex'), chanTexOn: U('uChanTexOn'), chanDoc: U('uChanDoc'),
+  };
+  const ramp = lutTexture(gl, rampPixels(), 256);
+  const palette = lutTexture(gl, palettePixels(), 32);   // LAS classification (points)
+  let catPalette = null;                                  // category palette (blocks), lazy
+  let blocksPipe = null;                                  // impostor pipeline, lazy
+  let sticksPipe = null;                                  // capsule pipeline, lazy
+  let meshPipe = null;                                    // context-mesh pipeline, lazy
+  let soupPipe = null;                                    // streaming-mesh (soup) pipeline, lazy
+  let pickPipe = null;                                    // ID-buffer pick pipeline, lazy
+  let resolvePipe = null;                                 // deferred re-shade pipeline, lazy (gl-resolve.js)
+  const chunks = [];
+  let docBbox = null;                                     // scene bbox (fit + the shared elevation ramp)
+  let pickedRec = 0xFFFFFFFF;                             // highlighted RECORD (sentinel = none)
+  let pickedLayer = 0xFFFFFFFF;                           // …and its layer (the pair IS the identity now)
+  const repaintSet = new Set();                           // records to repaint over a converged frame
+  let lastConverged = false;
+  let pickFromCapture = 0;                                // picks answered from the capture (a test seam)
+  // ── layers (micro-layers spec §1): each opened dataset is a layer with its own
+  // visibility, filter mask, compaction set, and color ranges. recIdx is
+  // PARTITIONED — (layerId << 29) | record — so one ID buffer serves all layers
+  // (§3). Single-layer callers never notice: layer 0 shifts by zero and every
+  // API defaults to it. ──
+  const layers = new Map();                               // id → per-layer state
+  // a layer's view of the section (sectioned mode + its draw offset) — section.js,
+  // shared with the pick pipeline so the pick always agrees with the picture
+  const layerSecOf = (ls, sec) => layerSection(sec, ls.sectioned, ls.offset);
+  const meshSecOf = (ls, sec) => meshSection(sec, ls.sectioned, ls.offset);
+  // a layer's DOCUMENT value range: the opt-in value texture's when one is set
+  // (its range IS the document's then), else what the chunks carried. The clip
+  // applies over either.
+  const docRangeOf = (ls) => ls.chanTex && ls.chanTexRange
+    ? [ls.chanTexRange[0], ls.chanTexRange[0] + ls.chanTexRange[1]]
+    : [ls.docChan[0] === Infinity ? 0 : ls.docChan[0], ls.docChan[1]];
+  // → [lo, span]: the ramp's value window in channel mode — the document range,
+  // narrowed by the layer's clip. ONE place for every kind that draws a value.
+  const chanDocOf = (ls, o) => {
+    const dr = docRangeOf(ls), on = o.clip && o.colorMode === 1;
+    const lo = on && o.clip[0] != null ? o.clip[0] : dr[0], hi = on && o.clip[1] != null ? o.clip[1] : dr[1];
+    return [lo, hi > lo ? hi - lo : 1];
+  };
+  function layerOf(id) {
+    let l = layers.get(id);
+    if (!l) {
+      l = { visible: true, set: 'base', maskTex: null, maskH: 0, isolate: false,
+            intensityMax: 1, docChan: [Infinity, -Infinity], catN: 0, stickRadius: 1, sectioned: true,
+            meshTint: [0.62, 0.64, 0.66], meshOpacity: 1, opacity: 1, catVisTex: null, rampTex: null, paletteTex: null, paletteW: 0, selTex: null, selH: 0,
+            ruleTex: null, ruleH: 0, ruleOn: false,
+            chanTex: null, chanTexRange: null, offset: null };
+      layers.set(id, l);
+    }
+    return l;
+  }
+  const activeChunk = (c) => { const l = layers.get(c._layer); return !!l && l.visible && c._set === l.set; };
+  // a chunk's bbox where it is DRAWN (its layer's offset applied) — culling,
+  // depth ordering, LOD weights and the content bbox; the stored bboxLocal stays
+  // the geometry's own (it is also the points dequantize box)
+  const drawnBox = (c, out) => {
+    const l = layers.get(c._layer), o = l && l.offset, b = c.bboxLocal;
+    if (!o) return b;
+    for (let i = 0; i < 3; i++) { out[i] = b[i] + o[i]; out[i + 3] = b[i + 3] + o[i]; }
+    return out;
+  };
+  // the camera a layer is drawn with: its offset folded in as a translation
+  // (camera.js translateState); one object per layer per frame, the shared
+  // camera itself when the layer isn't moved
+  const camFor = (cam, id, memo) => {
+    const l = layers.get(id), o = l && l.offset;
+    if (!o) return cam;
+    let c = memo && memo.get(id);
+    if (!c) { c = { state: translateState(cam.state, o) }; if (memo) memo.set(id, c); }
+    return c;
+  };
+  // ── layer VIEWS: one model drawn as several layers ─────────────────────────
+  // A view draws its SOURCE layer's chunks under its own layer id, so everything
+  // per layer (filter, selection, ramp, palette, value texture, rule codes,
+  // section, offset, opacity, visibility, the pick id) is its own while the GPU
+  // geometry exists once. Each source chunk gets a PROXY per view: an object
+  // whose prototype is the source chunk (vao, buffers, bbox, count, kind… all
+  // read through) with its own layer id and draw progress (cursor, weight,
+  // distance — one chunk can't carry two views' accumulation). A proxy owns no
+  // GPU objects. The link outlives the source's chunks: a host re-streams a
+  // layer by removeLayer(id) + addChunk(…, id), and the views re-proxy the new
+  // chunks as they arrive. Only the BASE set is viewed (compaction is per layer).
+  const viewSrc = new Map();                               // view id → source id
+  const syncViewData = (view) => {                         // what a view reads from the DATA, not its style
+    const s = layers.get(viewSrc.get(view)), v = layerOf(view);
+    v.docChan = s ? [...s.docChan] : [Infinity, -Infinity];
+    v.intensityMax = s ? s.intensityMax : 1;
+    layerMaxRec.set(view, layerMaxRec.get(viewSrc.get(view)) || 0);
+    bakeDirty.add(view);
+  };
+  const addProxy = (c, view) => {
+    const p = Object.create(c);
+    p._src = c; p._layer = view; p._set = 'base'; p.cursor = 0; p._w = 0; p._dist = 0; p.bytes = 0;
+    chunks.push(p);
+    if (c.kind === 'mesh') needClear = true;               // as for the source: a mesh draws into a fresh accumulation
+  };
+  const fanOut = (up, set, layer) => {                     // a new source chunk → one proxy per view
+    if (set !== 'base' || !viewSrc.size) return;
+    for (const [v, s] of viewSrc) if (s === layer) { addProxy(up, v); syncViewData(v); }
+  };
+  const freeChunk = (c) => { if (c._src) return; gl.deleteVertexArray(c.vao); if (c._bakeVao) gl.deleteVertexArray(c._bakeVao); c.buffers.forEach((b) => gl.deleteBuffer(b)); };
+  const byLayer = (arr) => {
+    const m = new Map();
+    for (const c of arr) { let g = m.get(c._layer); if (!g) m.set(c._layer, g = []); g.push(c); }
+    return m;
+  };
+  // accumulation state
+  const lastVP = new Float32Array(16);
+  let lastKey = '', needClear = true, lastVisible = 0;
+  // deferred re-shade state (gl-resolve.js): a COSMETIC change (ramp, clip,
+  // color mode, dim-filter, selection, chanTex values) over a converged frame
+  // resolves per-pixel from the captured id buffer instead of re-rastering.
+  // Dirt is tracked PER LAYER: a ramp drag on the block model must not care
+  // that a drillhole (sticks) layer shares the scene — untouched layers keep
+  // their accumulated pixels, and only a change to an UNRESOLVABLE layer
+  // falls back to the re-raster.
+  const cosmeticDirtyLayers = new Set();                  // layers a cosmetic setter touched
+  const lastCosSig = new Map();                           // layer → view-opts signature last rastered/resolved
+  let idCapture = null;                                   // { tex, depth, w, h, key, complete } — the converged frame's id buffer
+  // what an id buffer depends on besides the geometry: the camera, the point
+  // size, points-vs-boxes, the section, the target size
+  const capKey = (cam, pointPx, blocksAsPoints, sec) =>
+    `${Array.prototype.join.call(cam.state.viewProj, ',')}|${pointPx}|${blocksAsPoints ? 'P' : 'B'}|${sec ? `${sec.n.join(',')}|${sec.d}|${sec.half}` : 'off'}|${canvas.width}x${canvas.height}`;
+  // a pending re-raster (needClear) means what is clickable changed — a class eye,
+  // a rule code under eyes, visibility — but the capture is only thrown away when
+  // the next frame draws; until then it must not answer a pick
+  const capReady = (key) => !globalThis.__noPickCapture && !needClear && !!(idCapture && idCapture.complete && idCapture.key === key && idCapture.w === canvas.width && idCapture.h === canvas.height);
+  // every capture that is thrown away goes through here, so a fence still pending
+  // on it is deleted rather than left to the collector
+  const dropCapture = () => { if (idCapture && idCapture.fence) gl.deleteSync(idCapture.fence); idCapture = null; };
+  const layerMaxRec = new Map();                          // layer → 1 + highest record index seen
+  const bakeDirty = new Set();                            // layers whose attr bake is stale
+  let resolves = 0;                                       // resolve passes run (harness observability)
+  const trackRec = (layer, recIdx) => {
+    let m = layerMaxRec.get(layer) || 0;
+    for (let i = 0; i < recIdx.length; i++) if (recIdx[i] >= m) m = recIdx[i] + 1;
+    layerMaxRec.set(layer, m);
+    bakeDirty.add(layer);
+  };
+
+  const vpChanged = (vp) => {
+    for (let i = 0; i < 16; i++) if (vp[i] !== lastVP[i]) { lastVP.set(vp); return true; }
+    return false;
+  };
+
+  // ── per-record byte textures (filter / selection / rule codes) ──────────────
+  // 8192 records a row, one byte a record. Uploaded in BANDS of 64 rows from one
+  // small reused buffer — it used to allocate (and fill) a full W×H copy on every
+  // call, ~50 MB per brush stroke at 50M records. bits: a 0/1 mask (sent as
+  // 0/255); otherwise the bytes go up as they are. Past the GPU's
+  // MAX_TEXTURE_SIZE rows the texture can't exist: that THROWS, naming the
+  // limit — it used to fail silently and the layer drew as if unfiltered.
+  const REC_W = 8192, BAND = 64;
+  const maxTexRows = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+  let bandBuf = null;
+  function recordTexture(ls, texKey, hKey, data, bits, what) {
+    if (!ArrayBuffer.isView(data)) data = Uint8Array.from(data, (v) => (bits ? (v ? 1 : 0) : v));
+    const n = data.length, H = Math.max(1, Math.ceil(n / REC_W));
+    if (H > maxTexRows) {
+      if (ls[texKey]) { gl.deleteTexture(ls[texKey]); ls[texKey] = null; ls[hKey] = 0; }
+      throw new Error(`${what}: ${n.toLocaleString()} records — more than this GPU can index (${(REC_W * maxTexRows).toLocaleString()}, ${maxTexRows} texture rows of ${REC_W})`);
+    }
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    if (!(ls[texKey] && H === ls[hKey])) {
+      if (ls[texKey]) gl.deleteTexture(ls[texKey]);
+      while (gl.getError() !== gl.NO_ERROR) { /* drain stale errors */ }
+      const tex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texStorage2D(gl.TEXTURE_2D, 1, gl.R8, REC_W, H);
+      if (gl.getError() !== gl.NO_ERROR) { gl.deleteTexture(tex); ls[texKey] = null; ls[hKey] = 0; throw new Error(`${what}: the GPU could not allocate ${REC_W}×${H} (out of video memory?)`); }
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      ls[texKey] = tex; ls[hKey] = H;
+    } else gl.bindTexture(gl.TEXTURE_2D, ls[texKey]);
+    if (!bandBuf) bandBuf = new Uint8Array(REC_W * BAND);
+    for (let r0 = 0; r0 < H; r0 += BAND) {
+      const rows = Math.min(BAND, H - r0), a = r0 * REC_W, b = Math.min(n, a + rows * REC_W);
+      if (!bits && b - a === rows * REC_W) {                  // whole rows of bytes: straight from the caller's array
+        gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, r0, REC_W, rows, gl.RED, gl.UNSIGNED_BYTE, data.subarray(a, b));
+        continue;
+      }
+      const buf = bandBuf.subarray(0, rows * REC_W);
+      if (bits) { for (let i = a; i < b; i++) buf[i - a] = data[i] ? 255 : 0; } else buf.set(data.subarray(a, b));
+      buf.fill(0, b - a);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, r0, REC_W, rows, gl.RED, gl.UNSIGNED_BYTE, buf);
+    }
+  }
+  return {
+    gl,
+    // background clear color (also the figure/screenshot backdrop, since EDL
+    // passes through background pixels untouched). rgba 0-1; a moving frame
+    // re-clears so it takes effect next redraw.
+    setBackground(rgba) { if (rgba && rgba.length >= 3) { background[0] = rgba[0]; background[1] = rgba[1]; background[2] = rgba[2]; background[3] = rgba[3] != null ? rgba[3] : 1; needClear = true; } },
+    get background() { return [background[0], background[1], background[2], background[3]]; },
+    get chunkCount() { return chunks.reduce((s, c) => s + (activeChunk(c) ? 1 : 0), 0); },
+    get elementCount() { return chunks.reduce((s, c) => s + (activeChunk(c) ? c.count : 0), 0); },
+    // ALL resident chunks (hidden layers + inactive sets included — they hold
+    // their buffers), so the number is what the GPU is actually carrying
+    get vramBytes() { return chunks.reduce((s, c) => s + (c.bytes || 0), 0); },
+    layerVramBytes(layer) { return chunks.reduce((s, c) => s + (c._layer === layer ? (c.bytes || 0) : 0), 0); },
+    get accumulated() { return chunks.reduce((s, c) => s + (activeChunk(c) ? c.cursor : 0), 0); },   // elements in the current accumulation
+    get resolveCount() { return resolves; },               // deferred re-shade passes run (harness observability)
+    addChunk(chunk, set = 'base', layer = 0) {
+      if (viewSrc.has(layer)) throw new Error(`renderer: layer ${layer} is a view — it draws its source's chunks, not its own`);
+      const ls = layerOf(layer);
+      dropCapture();                                      // new geometry: the captured id buffer is stale
+      // recIdx stays RAW — the layer rides a per-draw uniform, so there is no
+      // per-element rewrite here any more (and no 3-bit ceiling on layers)
+      // honest VRAM accounting: every typed array in the CPU chunk becomes a
+      // GPU buffer (bboxLocal's 48 B is noise) — summed here, read as vramBytes
+      let cb = 0;
+      for (const k in chunk) { const v = chunk[k]; if (v && v.buffer && v.byteLength) cb += v.byteLength; }
+      if (chunk.kind === 'mesh') {                        // context tier: static, recordless, whole-draw
+        if (!meshPipe) meshPipe = createMeshPipeline(gl);
+        const up = meshPipe.upload(chunk); up._set = set; up._layer = layer; up.bytes = cb;
+        chunks.push(up);
+        needClear = true;                                 // draw it into a fresh accumulation
+        fanOut(up, set, layer);
+        return;
+      }
+      if (chunk.kind === 'soup') {                        // streaming tier: budgeted like points
+        if (!soupPipe) soupPipe = createSoupPipeline(gl);
+        const up = soupPipe.upload(chunk); up._set = set; up._layer = layer; up.bytes = cb;
+        chunks.push(up);                                  // streams INTO the accumulation, no clear
+        fanOut(up, set, layer);
+        return;
+      }
+      if (chunk.kind === 'blocks' || chunk.kind === 'sticks') {
+        if (chunk.kind === 'blocks' && !blocksPipe) blocksPipe = createBlocksPipeline(gl);
+        if (chunk.kind === 'sticks' && !sticksPipe) sticksPipe = createSticksPipeline(gl);
+        const up = (chunk.kind === 'blocks' ? blocksPipe : sticksPipe).upload(chunk);
+        up._set = set; up._layer = layer; up.bytes = cb;
+        chunks.push(up);                                   // GPU owns it now
+        if (chunk.kind === 'blocks' && chunk.recIdx) trackRec(layer, chunk.recIdx);   // re-shade bake bookkeeping
+        if (set === 'base') {                              // compact chunks never tighten the ramp
+          if (chunk.chanRange[0] < ls.docChan[0]) ls.docChan[0] = chunk.chanRange[0];
+          if (chunk.chanRange[1] > ls.docChan[1]) ls.docChan[1] = chunk.chanRange[1];
+        }
+        fanOut(up, set, layer);
+        return;
+      }
+      const up = uploadChunk(gl, chunk); up._set = set; up._layer = layer; up.bytes = cb;
+      chunks.push(up);                                     // GPU owns it now; CPU copy dies with the caller
+      if (chunk.recIdx) trackRec(layer, chunk.recIdx);     // re-shade bake bookkeeping (points)
+      if (set === 'base') {
+        let m = 0; const a = chunk.intensity;
+        for (let i = 0; i < a.length; i++) if (a[i] > m) m = a[i];
+        ls.intensityMax = Math.max(ls.intensityMax, m);
+      }
+      fanOut(up, set, layer);
+    },
+    // Make `view` a VIEW of `source`: it draws source's chunks under its own layer
+    // state (see the note at viewSrc). null unlinks. A view has no chunks of its
+    // own, and a view can't be a source (one level, as the host's tree has it).
+    setLayerViewOf(view, source) {
+      for (let i = chunks.length - 1; i >= 0; i--) if (chunks[i]._src && chunks[i]._layer === view) chunks.splice(i, 1);
+      needClear = true; dropCapture();
+      if (source == null) { viewSrc.delete(view); return; }
+      if (view === source || viewSrc.has(source)) throw new Error('renderer: a view must be of a layer that is not itself a view');
+      if ([...viewSrc.values()].includes(view)) throw new Error(`renderer: layer ${view} has views — it can't become one`);
+      if (chunks.some((c) => c._layer === view)) throw new Error(`renderer: layer ${view} has chunks of its own — a view has none`);
+      viewSrc.set(view, source);
+      for (const c of chunks.slice()) if (c._layer === source && c._set === 'base' && !c._src) addProxy(c, view);
+      syncViewData(view);
+    },
+    layerViewOf(view) { return viewSrc.has(view) ? viewSrc.get(view) : null; },
+    setCategories(n) {                                     // block category palette (golden-angle hues)
+      if (n > 0 && !catPalette) catPalette = lutTexture(gl, categoryPalettePixels(256), 256);
+    },
+    // Filter bitmask by RECORD INDEX within the layer (micro-spec section 4).
+    // mask = Uint8Array (0|1 per source row) or null to clear; isolate: true
+    // discards non-matching, false dims them.
+    setFilter(mask, { isolate = false } = {}, layer = 0) {
+      const ls = layerOf(layer);
+      const culled = isolate || (ls.isolate && !!ls.maskTex);   // isolate CULLS (now or before) → geometry changes
+      ls.isolate = isolate;
+      if (!mask) {
+        if (ls.maskTex) { gl.deleteTexture(ls.maskTex); ls.maskTex = null; }
+      } else {
+        recordTexture(ls, 'maskTex', 'maskH', mask, true, 'filter');
+      }
+      if (culled) needClear = true; else cosmeticDirtyLayers.add(layer);   // dim-mode filter is a re-shade, not a re-raster
+    },
+    setDocBbox(b) { docBbox = b; },
+    // Filter compaction (per layer): 'compact' chunks hold ONLY matching elements
+    // (record ids preserved), so the render budget runs over the matches instead
+    // of shader-discarding the rest. Base chunks stay resident — clearing is instant.
+    setActiveSet(set, layer = 0) { const ls = layerOf(layer); if (set !== ls.set) { ls.set = set; needClear = true; } },
+    get activeSet() { return layerOf(0).set; },            // legacy single-layer read
+    clearCompact(layer = 0) {
+      for (let i = chunks.length - 1; i >= 0; i--) {
+        const c = chunks[i];
+        if (c._layer !== layer || c._set !== 'compact') continue;
+        freeChunk(c);
+        chunks.splice(i, 1);
+      }
+      const ls = layerOf(layer);
+      if (ls.set === 'compact') { ls.set = 'base'; needClear = true; }
+    },
+    // points layers with a CATEGORY dict color class codes through the 256-wide
+    // golden-angle palette instead of the 32-entry LAS classification table
+    setLayerCats(layer, n) { const ls = layerOf(layer); if (ls.catN !== (n || 0)) { ls.catN = n || 0; cosmeticDirtyLayers.add(layer); } },
+    // stick thickness (world meters) — a live per-layer knob
+    setLayerStickRadius(layer, r) { const ls = layerOf(layer); const v = Math.max(0.05, +r || 1); if (ls.stickRadius !== v) { ls.stickRadius = v; needClear = true; } },
+    layerStickRadius(layer) { return layerOf(layer).stickRadius; },
+    // a points layer's size, as a multiple of the global point size (collar glyphs,
+    // sparse samples) — drawn and picked at that size
+    setLayerPointScale(layer, k) { const ls = layerOf(layer); const v = Math.max(0.25, Math.min(16, +k || 1)); if ((ls.pointScale || 1) !== v) { ls.pointScale = v === 1 ? undefined : v; needClear = true; } },
+    layerPointScale(layer) { return layerOf(layer).pointScale || 1; },
+    layerChanRange(layer) { const ls = layers.get(layer); return ls && (ls.chanTex && ls.chanTexRange || ls.docChan[0] !== Infinity) ? docRangeOf(ls) : null; },
+    // per-layer section participation: an exempt layer draws (and picks) whole
+    // while the others are slabbed — e.g. topo kept for context during sectioning
+    setLayerSectioned(layer, mode) { const ls = layerOf(layer); const v = mode === undefined ? true : mode; if (ls.sectioned !== v) { ls.sectioned = v; needClear = true; } },
+    layerSectioned(layer) { const m = layerOf(layer).sectioned; return m === undefined ? true : m; },
+    
+    // context-mesh style: tint [r,g,b] 0..1 + opacity 0..1 (Bayer screen-door)
+    setLayerMeshStyle(layer, { tint, opacity } = {}) {
+      const ls = layerOf(layer);
+      if (tint) ls.meshTint = tint;
+      if (opacity != null) ls.meshOpacity = Math.max(0.02, Math.min(1, +opacity));
+      needClear = true;
+    },
+    layerMeshStyle(layer) { const ls = layerOf(layer); return { tint: ls.meshTint, opacity: ls.meshOpacity }; },
+    // context-mesh per-vertex colours, live: rgb is Float32Array(3·vertexCount) for the
+    // layer's (single) context chunk, or null to return to the tint; [lo, hi) is the
+    // vertex range that changed. Painting sets on an outcrop rides this.
+    setLayerMeshColors(layer, rgb, lo, hi) {
+      let hit = false;
+      for (const c of chunks) {
+        if (c._layer !== layer || c.kind !== 'mesh') continue;
+        meshPipe.setColor(c, rgb, lo, hi);
+        hit = true;
+      }
+      if (hit) needClear = true;
+      return hit;
+    },
+    // per-layer opacity for blocks (box impostors) + sticks (drillholes) — applied
+    // as a screen-door dither in their shaders (see-through, no alpha-blend ordering).
+    // Is this mesh layer PICKABLE? null = the default (opaque meshes pick, see-through
+    // ones don't — you made it see-through to work on what is behind it). The app
+    // overrides per layer: micro turns the ACTIVE mesh on, so selecting a surface in
+    // the tree is what makes it clickable.
+    setLayerPickable(layer, v) { layerOf(layer).meshPickable = v == null ? null : !!v; },
+    layerPickable(layer) { const v = layerOf(layer).meshPickable; return v === undefined ? null : v; },
+    setLayerOpacity(layer, opacity) { const ls = layerOf(layer); const v = Math.max(0.02, Math.min(1, +opacity)); ls.opacity = v; ls.meshOpacity = v; needClear = true; },   // ONE knob: mesh-family layers read meshOpacity
+    // block-edge override: null = follow the draw-level blockEdges flag, true/false = force
+    setLayerEdges(layer, v) { const ls = layerOf(layer); const nv = v == null ? null : !!v; if (ls.edges !== nv) { ls.edges = nv; needClear = true; } },
+    layerEdges(layer) { const v = layerOf(layer).edges; return v === undefined ? null : v; },
+    layerOpacity(layer) { return layerOf(layer).opacity; },
+    // per-layer SELECTION bitmask (spec §15): same texture shape as the filter
+    // mask; selected elements get a warm tint in every element program
+    setLayerSelection(layer, mask) {
+      const ls = layerOf(layer);
+      if (!mask) {
+        if (ls.selTex) { gl.deleteTexture(ls.selTex); ls.selTex = null; ls.selH = 0; }
+      } else {
+        recordTexture(ls, 'selTex', 'selH', mask, true, 'selection');
+      }
+      cosmeticDirtyLayers.add(layer);                                // a wash, not a cull — re-shade path
+    },
+    // per-layer RULE CODES (spec §10.4): one byte per record — which styling
+    // rule claimed it (0 = none/else, 1..255 = rule order). Same texture shape
+    // as the filter mask, but the byte is a VALUE, not a bit: in rule mode it
+    // substitutes for the class code, so the palette, the per-class eyes, and
+    // pick culling all compose without new machinery.
+    setLayerRuleCodes(layer, codes) {
+      const ls = layerOf(layer);
+      if (!codes) {
+        if (ls.ruleTex) { gl.deleteTexture(ls.ruleTex); ls.ruleTex = null; ls.ruleH = 0; }
+      } else {
+        recordTexture(ls, 'ruleTex', 'ruleH', codes, false, 'rule codes');
+      }
+      // rule codes recolor (cosmetic) — but when class EYES are active they
+      // also re-CULL through catVis, which the captured id buffer can't follow
+      if (ls.ruleOn && ls.catVisTex) needClear = true; else cosmeticDirtyLayers.add(layer);
+    },
+    // rule mode on/off per layer — kept separate from the codes so switching
+    // categorized ⇄ rule-based is a flag flip, no re-upload
+    setLayerRuleMode(layer, on) {
+      const ls = layerOf(layer);
+      if (ls.ruleOn !== !!on) {
+        ls.ruleOn = !!on;
+        if (ls.catVisTex) needClear = true; else cosmeticDirtyLayers.add(layer);   // eyes re-index on the flip
+      }
+    },
+    // per-layer CATEGORY palette (legend colors/groups baked app-side).
+    // pixels = Uint8Array(width*4) RGBA (width 256 for dict layers, 32 for LAS
+    // classification — it must match what uPaletteN samples), null = built-ins.
+    setLayerPalette(layer, pixels, width = 256) {
+      const ls = layerOf(layer);
+      if (!pixels) {
+        if (ls.paletteTex) { gl.deleteTexture(ls.paletteTex); ls.paletteTex = null; ls.paletteW = 0; }
+      } else if (!ls.paletteTex || ls.paletteW !== width) {
+        if (ls.paletteTex) gl.deleteTexture(ls.paletteTex);
+        ls.paletteTex = lutTexture(gl, pixels, width);
+        ls.paletteW = width;
+      } else {
+        gl.bindTexture(gl.TEXTURE_2D, ls.paletteTex);
+        gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+      }
+      cosmeticDirtyLayers.add(layer);
+    },
+    // per-layer color ramp LUT (layer properties: presets + baked breakpoints).
+    // pixels = Uint8Array(256*4) RGBA, or null to fall back to the built-in ramp.
+    // OPT-IN: drive block color from an R32F VALUE texture (one texel per record,
+    // 8192-wide rows) instead of the baked aChan buffer. `range` = [lo, hi] for the
+    // ramp normalization — a computed texture has no docChan of its own. Pass a
+    // null texture to fall back to aChan. The caller OWNS the texture (create,
+    // render into, delete); the renderer only samples it.
+    setLayerChanTex(layer, tex, range = null) {
+      const ls = layerOf(layer);
+      ls.chanTex = tex || null;
+      ls.chanTexRange = (tex && range) ? [range[0], Math.max(1e-9, range[1] - range[0])] : null;
+      cosmeticDirtyLayers.add(layer);
+    },
+    setLayerRamp(layer, pixels) {
+      const ls = layerOf(layer);
+      if (!pixels) {
+        if (ls.rampTex) { gl.deleteTexture(ls.rampTex); ls.rampTex = null; }
+      } else if (!ls.rampTex) {
+        ls.rampTex = lutTexture(gl, pixels, 256);
+      } else {
+        gl.bindTexture(gl.TEXTURE_2D, ls.rampTex);
+        gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 256, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+      }
+      cosmeticDirtyLayers.add(layer);
+    },
+    // per-CLASS visibility (layer properties): vis = Uint8Array(256) of 0|1, or
+    // null to clear. GPU-side — the class code already rides every element as
+    // an attribute, so eyes are a texture update: no sweeps, any element count.
+    // Composes with the filter mask (both are cull paths); hidden classes
+    // don't pick either (gl-pick reads the same texture).
+    setLayerCatVisibility(layer, vis) {
+      const ls = layerOf(layer);
+      if (!vis) {
+        if (ls.catVisTex) { gl.deleteTexture(ls.catVisTex); ls.catVisTex = null; }
+      } else {
+        const px = new Uint8Array(256);
+        for (let i = 0; i < 256; i++) px[i] = vis[i] ? 255 : 0;
+        if (!ls.catVisTex) {
+          ls.catVisTex = gl.createTexture();
+          gl.bindTexture(gl.TEXTURE_2D, ls.catVisTex);
+          gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, 256, 1, 0, gl.RED, gl.UNSIGNED_BYTE, px);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+        } else {
+          gl.bindTexture(gl.TEXTURE_2D, ls.catVisTex);
+          gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 256, 1, gl.RED, gl.UNSIGNED_BYTE, px);
+        }
+      }
+      needClear = true;
+    },
+    setLayerVisible(layer, on) {
+      const ls = layerOf(layer);
+      if (ls.visible !== !!on) { ls.visible = !!on; needClear = true; }
+    },
+    // Translate a layer at DRAW time: [dx, dy, dz] in frame-local units (the
+    // frame's units — metres for a metric CRS); [0,0,0] or null clears it. No
+    // re-upload, no chunk rebuild: the offset is folded into the camera the
+    // layer is drawn and picked with, so every pipeline (points, blocks, sticks,
+    // meshes, soups), the section (it cuts the displaced geometry), culling, the
+    // deferred re-shade and the ID buffer agree. DISPLAY ONLY: records keep
+    // their true coordinates, elevation colouring reads the true z, and pick()
+    // returns record identities, so nothing the host reads back is displaced.
+    setLayerOffset(layer, o) {
+      const ls = layerOf(layer);
+      const v = o && (o[0] || o[1] || o[2]) ? [+o[0] || 0, +o[1] || 0, +o[2] || 0] : null;
+      const cur = ls.offset;
+      if (!v && !cur) return;
+      if (v && cur && v[0] === cur[0] && v[1] === cur[1] && v[2] === cur[2]) return;
+      ls.offset = v;
+      needClear = true;                                    // moves pixels: re-raster (and drop the id capture)
+    },
+    layerOffset(layer) { const ls = layers.get(layer); return ls && ls.offset ? [...ls.offset] : [0, 0, 0]; },
+    // the frame-local bbox of what is drawn — every visible layer's chunks with
+    // their offsets applied (sticks padded by their radius) — for fit-to-view on
+    // an exploded scene. null when nothing is visible.
+    contentBbox({ layers: only = null } = {}) {
+      const out = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+      const tmp = new Float64Array(6);
+      for (const c of chunks) {
+        if (!activeChunk(c) || (only && !only.includes(c._layer))) continue;
+        const b = drawnBox(c, tmp);
+        const r = c.kind === 'sticks' ? layerOf(c._layer).stickRadius : 0;
+        for (let i = 0; i < 3; i++) { out[i] = Math.min(out[i], b[i] - r); out[i + 3] = Math.max(out[i + 3], b[i + 3] + r); }
+      }
+      return out[0] === Infinity ? null : Float64Array.from(out);
+    },
+    removeLayer(layer) {
+      for (let i = chunks.length - 1; i >= 0; i--) {
+        const c = chunks[i];
+        // its own chunks, or (a source going) its views' proxies of them
+        if (c._layer !== layer && !(c._src && c._src._layer === layer)) continue;
+        freeChunk(c);                                      // a proxy frees nothing
+        chunks.splice(i, 1);
+      }
+      viewSrc.delete(layer);                               // a view going: its link goes with it
+      // a source going: its views keep their link and state (a re-stream re-adds
+      // chunks under the same id and they re-proxy), but no longer its data
+      for (const [v, s] of viewSrc) if (s === layer) { const vs = layers.get(v); if (vs) { vs.docChan = [Infinity, -Infinity]; vs.intensityMax = 1; } layerMaxRec.set(v, 0); }
+      const ls = layers.get(layer);
+      if (ls && ls.maskTex) gl.deleteTexture(ls.maskTex);
+      if (ls && ls.catVisTex) gl.deleteTexture(ls.catVisTex);
+      if (ls && ls.rampTex) gl.deleteTexture(ls.rampTex);
+      if (ls && ls.paletteTex) gl.deleteTexture(ls.paletteTex);
+      if (ls && ls.selTex) gl.deleteTexture(ls.selTex);
+      if (ls && ls.ruleTex) gl.deleteTexture(ls.ruleTex);
+      layers.delete(layer);
+      if (resolvePipe) resolvePipe.dropBake(layer);
+      layerMaxRec.delete(layer); bakeDirty.delete(layer);
+      lastCosSig.delete(layer); cosmeticDirtyLayers.delete(layer);
+      needClear = true;
+    },
+    layerElementCount(layer) {
+      const ls = layers.get(layer);
+      if (!ls) return 0;
+      return chunks.reduce((s, c) => s + (c._layer === layer && c._set === ls.set ? c.count : 0), 0);
+    },
+    invalidate() { needClear = true; },
+    // Pick/unpick over a CONVERGED frame repaints just the affected elements
+    // (a depth-LEQUAL pass where everything else clips out) instead of
+    // restarting the accumulation — same total vertex work, none of the
+    // de-densify blink. Mid-accumulation falls back to the clear.
+    // { layer, rec } — or null for "nothing picked". The pair IS the identity:
+    // record 5 of layer 2 and record 5 of layer 3 are different elements.
+    setPicked(pick) {
+      const next = pick == null ? 0xFFFFFFFF : (pick.rec >>> 0);
+      const nextL = pick == null ? 0xFFFFFFFF : (pick.layer >>> 0);
+      if (next === pickedRec && nextL === pickedLayer) return;
+      const prev = pickedRec;
+      pickedRec = next; pickedLayer = nextL;
+      if (lastConverged && !needClear) {
+        if (prev !== 0xFFFFFFFF) repaintSet.add(prev);
+        if (next !== 0xFFFFFFFF) repaintSet.add(next);
+        if (repaintSet.size > 2) { repaintSet.clear(); needClear = true; }   // rapid multi-pick: one redraw is cheaper
+      } else needClear = true;
+    },
+    // GPU pick at CSS coordinates → PARTITIONED record id | null. Draws each
+    // visible layer's accumulated prefix into a scissored offscreen target with
+    // the record id as the color (gl-pick.js) — you pick exactly what you see.
+    // marquee/lasso support (spec §15): render the ID buffer once over a CSS
+    // rect and hand back the raw pixels — the app polygon-masks and decodes.
+    pickRegion(cssRect, cam, { pointPx = 2.5, blocksAsPoints = false, section = null } = {}) {
+      if (!chunks.length) return null;
+      if (!pickPipe) pickPipe = createPickPipeline(gl);
+      const dpr = backingRatio(canvas);
+      const x = Math.max(0, Math.round(cssRect.x * dpr));
+      const yTop = Math.round(cssRect.y * dpr);
+      const w = Math.min(canvas.width - x, Math.round(cssRect.w * dpr));
+      const h = Math.min(canvas.height, Math.round(cssRect.h * dpr));
+      const y = Math.max(0, canvas.height - yTop - h);
+      if (w <= 0 || h <= 0) return null;
+      const sec = section && section.on ? section : null, key = capKey(cam, pointPx, blocksAsPoints, sec);
+      if (capReady(key)) { pickFromCapture++; return { data: pickPipe.readCaptured(x, y, w, h), w, h, dpr }; }
+      if (idCapture && idCapture.key !== key) dropCapture();   // the scissored pass below draws into the same target
+      const data = pickPipe.pickRegion(x, y, w, h, chunks.filter(activeChunk), cam, {
+        pointPx, blocksAsPoints, layerStates: layers, section: sec,
+        viewportW: canvas.width, viewportH: canvas.height,
+      });
+      return { data, w, h, dpr };                          // rows bottom-up (GL), NO_HIT = 0xFFFFFFFF
+    },
+    // IDLE WORK: build the converged frame's id buffer a batch of chunks per call
+    // (the app calls it each idle frame until it says done). With it complete, a
+    // pick or a marquee just READS it: a click on a 60M-block model no longer
+    // runs the vertex stage over every block while the page waits. Any change —
+    // the camera, the geometry, a re-raster — throws the capture away and the
+    // next idle frames rebuild it. → true when there is nothing (more) to do.
+    idleCapture(cam, { pointPx = 2.5, blocksAsPoints = false, section = null, budget = 3_000_000 } = {}) {
+      if (!chunks.length || !lastConverged || needClear) return true;
+      if (!pickPipe) pickPipe = createPickPipeline(gl);
+      const sec = section && section.on ? section : null, key = capKey(cam, pointPx, blocksAsPoints, sec);
+      if (idCapture && idCapture.complete && idCapture.key === key && idCapture.w === canvas.width && idCapture.h === canvas.height) {   // complete — done once the GPU has caught up with it
+        if (!idCapture.fence) return true;
+        const st = gl.getSyncParameter(idCapture.fence, gl.SYNC_STATUS);
+        if (st !== gl.SIGNALED) return false;
+        gl.deleteSync(idCapture.fence); idCapture.fence = null; return true;
+      }
+      if (!idCapture || idCapture.key !== key || idCapture.w !== canvas.width || idCapture.h !== canvas.height) {
+        dropCapture();
+        idCapture = { key, complete: false, list: chunks.filter(activeChunk), next: 0, tex: null, depth: null, w: canvas.width, h: canvas.height };
+        pickPipe.beginCapture(canvas.width, canvas.height);
+      }
+      const batch = []; let n = 0;
+      while (idCapture.next < idCapture.list.length && (n < budget || !batch.length)) { const c = idCapture.list[idCapture.next++]; batch.push(c); n += c.count || 0; }
+      const prevFbo = gl.getParameter(gl.FRAMEBUFFER_BINDING);
+      const r = pickPipe.captureMore(batch, cam, { pointPx, blocksAsPoints, layerStates: layers, section: sec, viewportW: canvas.width, viewportH: canvas.height });
+      gl.bindFramebuffer(gl.FRAMEBUFFER, prevFbo);
+      gl.viewport(0, 0, canvas.width, canvas.height);
+      if (idCapture.next >= idCapture.list.length) Object.assign(idCapture, { complete: true, tex: r.tex, depth: r.depth, list: null, fence: gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0) });
+      return false;                                        // the next call waits for the fence
+    },
+    get captureReady() { return !needClear && !!(idCapture && idCapture.complete && !idCapture.fence); },
+    get picksFromCapture() { return pickFromCapture; },
+    pick(cssX, cssY, cam, { pointPx = 2.5, blocksAsPoints = false, section = null } = {}) {
+      if (!chunks.length) return null;
+      if (!pickPipe) pickPipe = createPickPipeline(gl);
+      const dpr = backingRatio(canvas);
+      const px = Math.round(cssX * dpr), py = Math.round(canvas.height - cssY * dpr - 1);
+      if (px < 0 || py < 0 || px >= canvas.width || py >= canvas.height) return null;
+      const sec = section && section.on ? section : null, key = capKey(cam, pointPx, blocksAsPoints, sec);
+      if (capReady(key)) {                                 // the still frame's id buffer is complete: read it, no render
+        pickFromCapture++;
+        const o = pickPipe.readCaptured(px, py, 1, 1);
+        if (o[1] === pickPipe.NO_LAYER) return null;
+        const g = o[1] >>> 0;
+        return { layer: g & 0xFFFF, rec: o[0] >>> 0, face: (g >>> 16) & 7 };
+      }
+      if (idCapture && idCapture.key !== key) dropCapture();
+      return pickPipe.pick(px, py, chunks.filter(activeChunk), cam, {
+        pointPx, blocksAsPoints, layerStates: layers, section: sec,
+        viewportW: canvas.width, viewportH: canvas.height,
+      });
+    },
+    clearChunks() {
+      for (const c of chunks) freeChunk(c);
+      chunks.length = 0; needClear = true;
+      for (const ls of layers.values()) { if (ls.maskTex) gl.deleteTexture(ls.maskTex); if (ls.catVisTex) gl.deleteTexture(ls.catVisTex); if (ls.rampTex) gl.deleteTexture(ls.rampTex); if (ls.paletteTex) gl.deleteTexture(ls.paletteTex); if (ls.selTex) gl.deleteTexture(ls.selTex); if (ls.ruleTex) gl.deleteTexture(ls.ruleTex); }
+      layers.clear(); viewSrc.clear();
+      if (resolvePipe) resolvePipe.clear();
+      layerMaxRec.clear(); bakeDirty.clear(); dropCapture();
+      lastCosSig.clear(); cosmeticDirtyLayers.clear();
+    },
+    // cap the backing ratio (Infinity = the device's own). A phone at DPR 2.8 fills
+    // ~2× the pixels of DPR 2 for no visible gain; the next resize() applies it.
+    setMaxPixelRatio(r) { maxPixelRatio = r > 0 ? r : Infinity; },
+    get maxPixelRatio() { return maxPixelRatio; },
+    resize() {
+      const dpr = Math.min(window.devicePixelRatio || 1, maxPixelRatio);   // the cap — every other site reads the ratio back from the canvas
+      const w = Math.max(1, Math.round(canvas.clientWidth * dpr)), h = Math.max(1, Math.round(canvas.clientHeight * dpr));
+      if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; needClear = true; }
+      return [w, h];
+    },
+    // Draw one frame into the CURRENT framebuffer (the EDL pass owns the target).
+    // opts.layerOpts = { [id]: { colorMode, clip } } overrides the global color
+    // opts per layer (absent → the globals, so single-layer callers are unchanged).
+    // Returns { drawn, converged, visible }.
+    draw(cam, { budget = 3_000_000, pointPx = 2.5, colorMode = 0, blocksAsPoints = false, blockEdges = false, section = null, clip = null, layerOpts = null } = {}) {
+      const vp = cam.state.viewProj;
+      const camMemo = new Map();
+      const camOf = (id) => camFor(cam, id, camMemo);      // a moved layer's camera (setLayerOffset)
+      const sec = section && section.on ? section : null;
+      const secKey = sec ? `${sec.n.join(',')}|${sec.d}|${sec.half}` : 'off';
+      // the old single draw key, SPLIT: structural changes re-raster; cosmetic
+      // ones (color mode, clip, per-layer view opts — plus whatever the
+      // cosmetic setters touched) can deferred-re-shade over the converged frame
+      const structKey = `${pointPx}|${blocksAsPoints ? 'P' : 'B'}${blockEdges ? 'E' : ''}|${secKey}|${canvas.width}x${canvas.height}`;
+      let moving = vpChanged(vp) || structKey !== lastKey || needClear;
+
+      const db = docBbox || Float64Array.of(0, 0, 0, 1, 1, 1);
+      // per-layer view opts (color mode + clip); the globals when not overridden
+      const lopt = (id) => (layerOpts && layerOpts[id]) || { colorMode, clip };
+      // elevation ramp = the SCENE z range (layers share vertical space) + clip
+      const zRangeOf = (o) => {
+        const zLo = o.clip && o.clip[0] != null && o.colorMode === 0 ? o.clip[0] : db[2];
+        const zHi = o.clip && o.clip[1] != null && o.colorMode === 0 ? o.clip[1] : db[5];
+        return [zLo, Math.max(zHi - zLo, 1e-6)];
+      };
+
+      // per-layer cosmetic DIRT: explicit setter dirt + drift in the view opts
+      // this layer's raster consumed (color mode + clip, global or per-layer).
+      // Hidden layers can't change pixels; meshes ignore color opts entirely
+      // (their cosmetics go through setLayerMeshStyle → needClear).
+      const sigOf = (id) => { const o = lopt(id); return `${o.colorMode}|${o.clip ? `${o.clip[0]}~${o.clip[1]}` : 'a'}`; };
+      const kindBy = new Map(), subBy = new Set(), rotBy = new Set();
+      for (const c of chunks) if (activeChunk(c)) {
+        if (!kindBy.has(c._layer)) kindBy.set(c._layer, c.kind);
+        if (c.dimPalette) subBy.add(c._layer);             // sub-blocked: variable half-dims
+        if (c.grid && c.grid.rot) rotBy.add(c._layer);     // rotated lattice: face ids are lattice faces
+      }
+      const dirty = new Set(cosmeticDirtyLayers);
+      for (const id of kindBy.keys()) if (lastCosSig.get(id) !== sigOf(id)) dirty.add(id);
+      for (const id of [...dirty]) { const k = kindBy.get(id); if (!k || k === 'mesh') dirty.delete(id); }
+
+      // ── DEFERRED RE-SHADE (gl-resolve.js): cosmetic changes over a CONVERGED
+      // frame become one fullscreen resolve pass per DIRTY layer — O(pixels) at
+      // any model size. Untouched layers (a drillhole sticks layer while the
+      // block ramp drags) keep their accumulated pixels; only a change to a
+      // layer the id buffer can't express (sticks/soup recolor, culling,
+      // opacity, edges) falls through to the re-raster. ──
+      if (!moving && dirty.size && lastConverged) {
+        if (!resolvePipe) resolvePipe = createResolvePipeline(gl);
+        resolveOk: if (resolvePipe.ok) {
+          let bail = false;
+          const groups = new Map();
+          for (const id of dirty) {
+            const ls = layerOf(id), k = kindBy.get(id);
+            if (k !== 'points' && k !== 'blocks') { bail = true; break; }   // a sticks/soup recolor must re-raster
+            if (ls.opacity < 0.999) { bail = true; break; }   // screen-door holes aren't in the id buffer
+            // edge lines RESOLVE for regular grids (the capture depth unprojects
+            // the hit point, the lattice snaps the center); sub-blocked models
+            // have per-block half-dims the depth alone can't recover
+            if (k === 'blocks' && (ls.edges != null ? ls.edges : blockEdges) && subBy.has(id)) { bail = true; break; }
+            // a ROTATED model's face ids name lattice faces and its centers don't
+            // snap to world axes — the resolve's world-axis shading would lie
+            if (rotBy.has(id)) { bail = true; break; }
+            groups.set(id, []);
+            // NOTE: isolate filters and class eyes (catVis) are FINE here even
+            // though they cull — changing them goes through needClear, so at
+            // this point they are unchanged since the capture and the id
+            // buffer already reflects the culled geometry.
+          }
+          if (bail || !groups.size) break resolveOk;
+          const act = chunks.filter(activeChunk);
+          for (const c of act) { const g = groups.get(c._layer); if (g) g.push(c); }
+          // capture the id buffer LAZILY — ids don't depend on cosmetics, so the
+          // pre-change converged geometry still yields the correct capture; a
+          // still scene that never gets a cosmetic poke never pays for one
+          if (!pickPipe) pickPipe = createPickPipeline(gl);
+          const prevFbo = gl.getParameter(gl.FRAMEBUFFER_BINDING);
+          const ck = capKey(cam, pointPx, blocksAsPoints, sec);
+          if (!capReady(ck)) {
+            dropCapture();
+            idCapture = { ...pickPipe.captureViewport(act, cam, {
+              pointPx, blocksAsPoints, layerStates: layers,
+              section: sec, viewportW: canvas.width, viewportH: canvas.height,
+            }), key: ck, complete: true };
+          }
+          for (const [id, group] of groups) {              // (re)bake stale attr textures
+            if (!resolvePipe.hasBake(id) || bakeDirty.has(id)) {
+              resolvePipe.bakeLayer(id, group, layerMaxRec.get(id) || 0);
+              bakeDirty.delete(id);
+            }
+          }
+          gl.bindFramebuffer(gl.FRAMEBUFFER, prevFbo);     // back to the EDL target
+          gl.viewport(0, 0, canvas.width, canvas.height);
+          // a layer whose bake couldn't exist (past MAX_TEXTURE_SIZE, out of video
+          // memory) has nothing to resolve from: the frame re-rasters instead
+          for (const id of groups.keys()) if (!resolvePipe.hasBake(id)) break resolveOk;
+          for (const [id, group] of groups) {
+            // the layer's own camera: an offset layer unprojects into ITS
+            // coordinates, so the lattice snap and the cut-wall side stay exact
+            const s = camOf(id).state, v = s.view;
+            // headlight — the exact formula blocksPipe.begin computes
+            let lx = s.eye[0] - s.target[0], ly = s.eye[1] - s.target[1], lz = s.eye[2] - s.target[2];
+            const ll = Math.hypot(lx, ly, lz) || 1;
+            lx = lx / ll + v[1] * 0.4; ly = ly / ll + v[5] * 0.4; lz = lz / ll + v[9] * 0.4;
+            const l2 = Math.hypot(lx, ly, lz) || 1;
+            const lightDir = [lx / l2, ly / l2, lz / l2];
+            const invVP = mat4Inverse(s.viewProj);         // edge-line unproject
+            const perspScale = s.ortho ? (canvas.height / 2) / s.halfH : (canvas.height / 2) / Math.tan(s.fovY / 2);
+            const ls = layerOf(id), o = lopt(id), zr = zRangeOf(o);
+            let u;
+            if (group[0].kind === 'blocks') {
+              // the cut wall faces the viewer: the section normal signed toward the eye
+              const lsec = layerSecOf(ls, sec);
+              let cutN = [0, 0, 1];
+              if (lsec) {
+                const sgn = Math.sign(s.eye[0] * lsec.n[0] + s.eye[1] * lsec.n[1] + s.eye[2] * lsec.n[2] - lsec.d) || 1;
+                cutN = [lsec.n[0] * sgn, lsec.n[1] * sgn, lsec.n[2] * sgn];
+              }
+              u = {
+                kind: 'blocks', colorMode: o.colorMode, zRange: zr,
+                chanDoc: chanDocOf(ls, o),
+                paletteN: 256, intensityScale: 1,
+                ramp: ls.rampTex || ramp, palette: ls.paletteTex || catPalette || palette,
+                mask: ls.maskTex, sel: ls.selTex, rule: ls.ruleOn ? ls.ruleTex : null, chanTex: ls.chanTex,
+                picked: pickedRec, pickedLayer, lightDir, cutNormal: cutN,
+                edges: ls.edges != null ? ls.edges : blockEdges, depth: idCapture.depth,
+                invVP, viewportW: canvas.width, viewportH: canvas.height,
+                eye: [s.eye[0], s.eye[1], s.eye[2]], ortho: s.ortho, perspScale,
+                grid: group[0].grid,
+              };
+            } else {
+              u = {
+                kind: 'points', colorMode: o.colorMode, zRange: zr, chanDoc: chanDocOf(ls, o),
+                paletteN: ls.paletteTex ? ls.paletteW : (ls.catN || 32),
+                intensityScale: 65535 / (ls.intensityMax || 1),
+                ramp: ls.rampTex || ramp, palette: ls.paletteTex || (ls.catN && catPalette ? catPalette : palette),
+                mask: ls.maskTex, sel: ls.selTex, rule: ls.ruleOn ? ls.ruleTex : null, chanTex: ls.chanTex,
+                picked: pickedRec, pickedLayer, lightDir: [0, 0, 1], cutNormal: [0, 0, 1],
+              };
+            }
+            resolvePipe.resolveLayer(idCapture.tex, id, u);
+          }
+          resolves++;
+          for (const id of kindBy.keys()) lastCosSig.set(id, sigOf(id));
+          cosmeticDirtyLayers.clear();
+          // repaintSet stays: a pending pick highlight on a NON-resolved layer
+          // is repainted by the next still frame's repaint pass
+          return { drawn: 0, converged: true, visible: lastVisible, resolved: true };
+        }
+      }
+      if (dirty.size) moving = true;                       // no resolve → a cosmetic change re-rasters
+      lastKey = structKey; needClear = false;
+      for (const id of kindBy.keys()) lastCosSig.set(id, sigOf(id));
+      cosmeticDirtyLayers.clear();
+      if (moving) { repaintSet.clear(); dropCapture(); }   // full redraw covers pending repaint; the capture is stale
+
+      // frustum-cull + front-to-back over chunk bboxes (tight, thanks to Morton)
+      const planes = frustumPlanes(vp);
+      const eye = cam.state.eye;
+      const visible = [];
+      const padBox = new Float64Array(6), movedBox = new Float64Array(6);
+      for (const c of chunks) {
+        if (!activeChunk(c)) continue;
+        const b = drawnBox(c, movedBox);                   // where it's drawn (layer offset applied)
+        let cullBox = b;
+        if (c.kind === 'sticks') {
+          const r = layerOf(c._layer).stickRadius;
+          for (let i = 0; i < 3; i++) { padBox[i] = b[i] - r; padBox[i + 3] = b[i + 3] + r; }
+          cullBox = padBox;
+        }
+        if (!aabbInFrustum(planes, cullBox)) { if (moving) c.cursor = 0; continue; }
+        const cx = (b[0] + b[3]) / 2 - eye[0], cy = (b[1] + b[4]) / 2 - eye[1], cz = (b[2] + b[5]) / 2 - eye[2];
+        const dist = Math.max(Math.hypot(cx, cy, cz), cam.state.near);
+        const r = Math.hypot(b[3] - b[0], b[4] - b[1], b[5] - b[2]) / 2 || 1;
+        c._dist = dist;
+        c._w = Math.min(1, (r / dist) * (r / dist));       // projected-area weight
+        visible.push(c);
+      }
+      visible.sort((a, b) => a._dist - b._dist);           // front-to-back
+      lastVisible = visible.length;
+      const sumW = visible.reduce((s, c) => s + c._w, 0) || 1;
+
+      gl.enable(gl.DEPTH_TEST);
+      if (moving) {
+        gl.clearColor(background[0], background[1], background[2], background[3]);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+        for (const c of visible) c.cursor = 0;
+      }
+
+      // this frame's allotment per chunk: budget share by projected weight, floored
+      // so distant chunks keep a sparse presence (coarse prefix always on)
+      const allot = (c) => {
+        const share = Math.max(Math.min(c.count, 1000), Math.floor(budget * (c._w / sumW)));
+        const first = moving ? 0 : c.cursor;
+        return [first, Math.min(c.count - first, share)];
+      };
+      let drawn = 0, converged = true;
+      // pending pick repaint: one extra full-geometry pass at depth LEQUAL —
+      // lands exactly on the element's already-accumulated pixels
+      const rp = !moving && repaintSet.size
+        ? [...repaintSet, 0xFFFFFFFF, 0xFFFFFFFF].slice(0, 2).map((v) => v >>> 0) : null;
+
+      // context meshes first: static occluders drawn WHOLE on clear frames (or
+      // when freshly streamed in) — early-z then rejects points behind them.
+      // On still frames their cursor == count, so accumulation skips them.
+      const msh = visible.filter((c) => c.kind === 'mesh');
+      if (msh.length) {
+        for (const [id, group] of byLayer(msh)) {
+          if (!group.some((c) => moving || c.cursor === 0)) continue;
+          const ls = layerOf(id);
+          meshPipe.begin(camOf(id), { tint: ls.meshTint, opacity: ls.meshOpacity, section: meshSecOf(ls, sec),
+            vcolor: group.some((c) => c.hasColor), vnormal: group.some((c) => c.hasNormal) });   // heightfield drape + smooth normals
+          for (const c of group) {
+            if (!(moving || c.cursor === 0)) continue;
+            meshPipe.draw(c);
+            c.cursor = c.count;
+            drawn += c.count;
+          }
+        }
+        gl.bindVertexArray(null);
+      }
+
+      // streaming-tier meshes: budgeted prefixes like points (the shuffle makes
+      // any prefix a uniform subsample of the soup), drawn before points so the
+      // surface occludes early
+      const soup = visible.filter((c) => c.kind === 'soup');
+      if (soup.length) {
+        for (const [id, group] of byLayer(soup)) {
+          const ls = layerOf(id);
+          soupPipe.begin(camOf(id), { tint: ls.meshTint, opacity: ls.meshOpacity, section: meshSecOf(ls, sec) });
+          for (const c of group) {
+            const [first, k] = allot(c);
+            if (k > 0) {
+              soupPipe.drawSlice(c, first, k);
+              drawn += k; c.cursor = first + k;
+            }
+            if (c.cursor < c.count) converged = false;
+          }
+        }
+        gl.bindVertexArray(null);
+      }
+
+      const pts = visible.filter((c) => c.kind === 'points');
+      if (pts.length) {
+        const ptsGroups = byLayer(pts);
+        gl.useProgram(prog);
+        gl.uniformMatrix4fv(uni.viewProj, false, vp);
+        gl.uniform1f(uni.pointPx, pointPx * backingRatio(canvas));
+        gl.uniform1ui(uni.picked, pickedRec);
+        gl.uniform1ui(uni.pickedLayer, pickedLayer);
+        gl.uniform2ui(uni.repaint, 0xFFFFFFFF, 0xFFFFFFFF);
+        gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, ramp); gl.uniform1i(uni.ramp, 0);
+        gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, palette); gl.uniform1i(uni.palette, 1);
+        // per-layer uniforms + slices (front-to-back preserved within each group)
+        const setupPtsLayer = (id) => {
+          const ls = layerOf(id), o = lopt(id), zr = zRangeOf(o);
+          gl.uniform1ui(uni.layer, id >>> 0);
+          gl.uniform1f(uni.pointPx, pointPx * backingRatio(canvas) * (ls.pointScale || 1));   // a per-layer glyph size
+          gl.uniformMatrix4fv(uni.viewProj, false, camOf(id).state.viewProj);   // a moved layer's camera
+          const lsec = layerSecOf(ls, sec);
+          gl.uniform4f(uni.secPlane, lsec ? lsec.n[0] : 0, lsec ? lsec.n[1] : 0, lsec ? lsec.n[2] : 1, lsec ? lsec.d : 0);
+          gl.uniform2f(uni.secCfg, lsec ? 1 : 0, lsec ? lsec.half : 0);
+          gl.uniform1i(uni.colorMode, o.colorMode);
+          gl.uniform2f(uni.zRange, zr[0], zr[1]);
+          gl.uniform1f(uni.intensityScale, 65535 / (ls.intensityMax || 1));
+          gl.uniform1f(uni.paletteN, ls.paletteTex ? ls.paletteW : (ls.catN || 32));
+          gl.activeTexture(gl.TEXTURE1);
+          gl.bindTexture(gl.TEXTURE_2D, ls.paletteTex || (ls.catN && catPalette ? catPalette : palette));
+          gl.uniform1i(uni.palette, 1);
+          gl.uniform1f(uni.filterOn, ls.maskTex ? 1 : 0);
+          gl.uniform1f(uni.isolate, ls.isolate ? 1 : 0);
+          if (ls.maskTex) { gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, ls.maskTex); gl.uniform1i(uni.mask, 4); }
+          gl.uniform1f(uni.catVisOn, ls.catVisTex ? 1 : 0);
+          if (ls.catVisTex) { gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, ls.catVisTex); gl.uniform1i(uni.catVis, 5); }
+          gl.uniform1f(uni.selOn, ls.selTex ? 1 : 0);
+          if (ls.selTex) { gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D, ls.selTex); gl.uniform1i(uni.sel, 6); }
+          gl.uniform1f(uni.ruleOn, ls.ruleOn && ls.ruleTex ? 1 : 0);
+          if (ls.ruleOn && ls.ruleTex) { gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, ls.ruleTex); gl.uniform1i(uni.rule, 7); }
+          gl.uniform1f(uni.chanTexOn, ls.chanTex ? 1 : 0);
+          if (ls.chanTex) {
+            gl.activeTexture(gl.TEXTURE8); gl.bindTexture(gl.TEXTURE_2D, ls.chanTex); gl.uniform1i(uni.chanTex, 8);
+            const cd = chanDocOf(ls, o); gl.uniform2f(uni.chanDoc, cd[0], cd[1]);
+          }
+          gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, ls.rampTex || ramp); gl.uniform1i(uni.ramp, 0);
+        };
+        for (const [id, group] of ptsGroups) {
+          setupPtsLayer(id);
+          for (const c of group) {
+            const [first, k] = allot(c);
+            if (k > 0) {
+              gl.uniform3f(uni.boxMin, c.bboxLocal[0], c.bboxLocal[1], c.bboxLocal[2]);
+              gl.uniform3f(uni.boxSpan, c.bboxLocal[3] - c.bboxLocal[0], c.bboxLocal[4] - c.bboxLocal[1], c.bboxLocal[5] - c.bboxLocal[2]);
+              gl.bindVertexArray(c.vao);
+              gl.drawArrays(gl.POINTS, first, k);
+              drawn += k; c.cursor = first + k;
+            }
+            if (c.cursor < c.count) converged = false;
+          }
+        }
+        if (rp) {
+          gl.depthFunc(gl.LEQUAL);
+          gl.uniform2ui(uni.repaint, rp[0], rp[1]);
+          for (const [id, group] of ptsGroups) {
+            setupPtsLayer(id);
+            for (const c of group) {
+              gl.uniform3f(uni.boxMin, c.bboxLocal[0], c.bboxLocal[1], c.bboxLocal[2]);
+              gl.uniform3f(uni.boxSpan, c.bboxLocal[3] - c.bboxLocal[0], c.bboxLocal[4] - c.bboxLocal[1], c.bboxLocal[5] - c.bboxLocal[2]);
+              gl.bindVertexArray(c.vao);
+              gl.drawArrays(gl.POINTS, 0, c.count);
+            }
+          }
+          gl.uniform2ui(uni.repaint, 0xFFFFFFFF, 0xFFFFFFFF);
+          gl.depthFunc(gl.LESS);
+        }
+      }
+
+      const blks = visible.filter((c) => c.kind === 'blocks');
+      if (blks.length) {
+        const blkGroups = byLayer(blks);
+        const perspScale = (canvas.height / 2) / Math.tan(cam.state.fovY / 2);
+        const cheapOf = (c) => {
+          // the whole chunk below the demotion threshold → the cheap program
+          // (no gl_FragDepth → early-z stays on): the far-field perf lever
+          const b = c.bboxLocal;
+          const bboxR = Math.hypot(b[3] - b[0], b[4] - b[1], b[5] - b[2]) / 2;
+          // sub-blocked: fine grid.size is the min pitch — use the largest box radius
+          const rBlock = c.dimPalette
+            ? Math.max(...c.dimPalette.map((h) => Math.hypot(h[0], h[1], h[2])))
+            : Math.hypot(c.grid.size[0], c.grid.size[1], c.grid.size[2]) / 2;
+          const distNear = Math.max(cam.state.near, c._dist - bboxR);
+          return blocksAsPoints || rBlock * perspScale / distNear < 2.0;
+        };
+        const beginLayer = (id) => {
+          const ls = layerOf(id), o = lopt(id);
+          blocksPipe.begin(camOf(id), {
+            pointPx, colorMode: o.colorMode, zRange: zRangeOf(o),
+            chanDoc: chanDocOf(ls, o),
+            ramp: ls.rampTex || ramp, palette: ls.paletteTex || catPalette || palette, viewportH: canvas.height,
+            maskTex: ls.maskTex, isolate: ls.isolate, pointsView: blocksAsPoints, picked: pickedRec, pickedLayer, layer: id,
+            section: layerSecOf(ls, sec),
+            catVisTex: ls.catVisTex, selTex: ls.selTex, ruleTex: ls.ruleOn ? ls.ruleTex : null,
+            chanTex: ls.chanTex,
+            opacity: ls.opacity, edges: ls.edges != null ? ls.edges : blockEdges,   // per-layer override, else the View toggle
+          });
+        };
+        for (const [id, group] of blkGroups) {
+          beginLayer(id);
+          for (const c of group) {
+            const [first, k] = allot(c);
+            if (k > 0) {
+              blocksPipe.drawSlice(c, first, k, cheapOf(c));
+              drawn += k; c.cursor = first + k;
+            }
+            if (c.cursor < c.count) converged = false;
+          }
+        }
+        if (rp) {
+          gl.depthFunc(gl.LEQUAL);
+          for (const [id, group] of blkGroups) {
+            beginLayer(id);                                // begin resets uRepaint — set it after, per layer
+            blocksPipe.setRepaint(rp[0], rp[1]);
+            for (const c of group) blocksPipe.drawSlice(c, 0, c.count, cheapOf(c));
+          }
+          blocksPipe.setRepaint(0xFFFFFFFF, 0xFFFFFFFF);
+          gl.depthFunc(gl.LESS);
+        }
+      }
+      const stks = visible.filter((c) => c.kind === 'sticks');
+      if (stks.length) {
+        const stkGroups = byLayer(stks);
+        const perspScale2 = cam.state.ortho ? (canvas.height / 2) / cam.state.halfH : (canvas.height / 2) / Math.tan(cam.state.fovY / 2);
+        const cheapOf2 = (c) => {
+          // whole chunk under the demotion threshold → the no-fragdepth program
+          const ls = layerOf(c._layer);
+          const b = c.bboxLocal;
+          const bboxR = Math.hypot(b[3] - b[0], b[4] - b[1], b[5] - b[2]) / 2;
+          const distNear = Math.max(cam.state.near, c._dist - bboxR);
+          // a generous per-chunk proxy: the layer radius at the chunk's nearest point
+          return blocksAsPoints || (ls.stickRadius * 4) * perspScale2 / (cam.state.ortho ? 1 : distNear) < 2.0;
+        };
+        const beginStkLayer = (id) => {
+          const ls = layerOf(id), o = lopt(id);
+          sticksPipe.begin(camOf(id), {
+            pointPx, colorMode: o.colorMode, zRange: zRangeOf(o),
+            chanDoc: chanDocOf(ls, o),
+            ramp: ls.rampTex || ramp, palette: ls.paletteTex || catPalette || palette, viewportH: canvas.height,
+            maskTex: ls.maskTex, isolate: ls.isolate, pointsView: blocksAsPoints, picked: pickedRec, pickedLayer, layer: id,
+            section: layerSecOf(ls, sec),
+            radius: ls.stickRadius, catVisTex: ls.catVisTex, selTex: ls.selTex, ruleTex: ls.ruleOn ? ls.ruleTex : null,
+            chanTex: ls.chanTex,
+            opacity: ls.opacity,
+          });
+        };
+        for (const [id, group] of stkGroups) {
+          beginStkLayer(id);
+          for (const c of group) {
+            const [first, k] = allot(c);
+            if (k > 0) {
+              sticksPipe.drawSlice(c, first, k, cheapOf2(c));
+              drawn += k; c.cursor = first + k;
+            }
+            if (c.cursor < c.count) converged = false;
+          }
+        }
+        if (rp) {
+          gl.depthFunc(gl.LEQUAL);
+          for (const [id, group] of stkGroups) {
+            beginStkLayer(id);
+            sticksPipe.setRepaint(rp[0], rp[1]);
+            for (const c of group) sticksPipe.drawSlice(c, 0, c.count, cheapOf2(c));
+          }
+          sticksPipe.setRepaint(0xFFFFFFFF, 0xFFFFFFFF);
+          gl.depthFunc(gl.LESS);
+        }
+      }
+      if (rp) repaintSet.clear();
+      lastConverged = converged;
+      gl.bindVertexArray(null);
+      return { drawn, converged, visible: lastVisible };
+    },
+  };
+}
+
+// ── src/core/edl.js ──
+
+// @gcu/condenser — Eye-Dome Lighting post-pass (Boucheny 2009 / Ribes & Boucheny).
+// The scene renders into an offscreen framebuffer (color + depth texture); a
+// fullscreen pass compares each pixel's log-linear depth against its neighbors
+// and darkens where neighbors are closer — unlit points read as a surface.
+// Mandatory in M1 (micro-spec §2.2): without it a point cloud reads as noise.
+
+
+const QUAD_VERT = `#version 300 es
+precision highp float;
+out vec2 vUv;
+void main() {                          // fullscreen triangle, no buffers
+  vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
+  vUv = p;
+  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}`;
+
+const EDL_FRAG = `#version 300 es
+precision highp float;
+in vec2 vUv;
+uniform sampler2D uColor;
+uniform sampler2D uDepth;
+uniform vec2 uTexel;                   // 1/size
+uniform vec2 uNearFar;
+uniform float uOrtho;                  // 1 = orthographic (depth is already linear)
+uniform float uStrength;               // 0 = off-look, ~1 default
+uniform float uRadius;                 // sample radius in pixels
+out vec4 outColor;
+
+float linDepth(float d) {              // depth buffer -> linear eye-space z
+  float n = uNearFar.x, f = uNearFar.y;
+  if (uOrtho > 0.5) return n + d * (f - n);
+  return (2.0 * n * f) / (f + n - (d * 2.0 - 1.0) * (f - n));
+}
+void main() {
+  vec4 col = texture(uColor, vUv);
+  float d = texture(uDepth, vUv).r;
+  if (d >= 1.0) { outColor = col; return; }              // background: untouched
+  float zc = log2(max(linDepth(d), 1e-6));
+  float ob = 0.0;
+  const vec2 DIRS[8] = vec2[8](vec2(1.,0.), vec2(-1.,0.), vec2(0.,1.), vec2(0.,-1.),
+                               vec2(.7,.7), vec2(-.7,.7), vec2(.7,-.7), vec2(-.7,-.7));
+  for (int i = 0; i < 8; i++) {
+    float dn = texture(uDepth, vUv + DIRS[i] * uTexel * uRadius).r;
+    float zn = dn >= 1.0 ? zc + 4.0 : log2(max(linDepth(dn), 1e-6));   // background neighbor = far
+    ob += max(0.0, zc - zn);
+  }
+  float shade = exp(-uStrength * 60.0 * ob / 8.0);
+  outColor = vec4(col.rgb * shade, col.a);
+}`;
+
+function createEdl(gl) {
+  const prog = makeProgram(gl, QUAD_VERT, EDL_FRAG);
+  const U = (n) => gl.getUniformLocation(prog, n);
+  const uni = { color: U('uColor'), depth: U('uDepth'), texel: U('uTexel'), nearFar: U('uNearFar'), ortho: U('uOrtho'), strength: U('uStrength'), radius: U('uRadius') };
+  let fbo = null, colorTex = null, depthTex = null, w = 0, h = 0;
+
+  function ensure(width, height) {
+    if (width === w && height === h && fbo) return;
+    w = width; h = height;
+    if (fbo) { gl.deleteFramebuffer(fbo); gl.deleteTexture(colorTex); gl.deleteTexture(depthTex); }
+    const tex = (ifmt, fmt, type) => {
+      const t = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, t);
+      gl.texImage2D(gl.TEXTURE_2D, 0, ifmt, w, h, 0, fmt, type, null);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      return t;
+    };
+    colorTex = tex(gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE);
+    depthTex = tex(gl.DEPTH_COMPONENT24, gl.DEPTH_COMPONENT, gl.UNSIGNED_INT);
+    fbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, colorTex, 0);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, depthTex, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  }
+
+  return {
+    // Render `sceneDraw()` through the EDL pipeline onto the default framebuffer.
+    // ALWAYS goes via the FBO — progressive accumulation (§2.2) needs a persistent
+    // depth buffer, which the default framebuffer doesn't guarantee; EDL-disabled
+    // is strength 0 (exp(0) ≡ passthrough), so there's exactly one path.
+    render(width, height, cam, sceneDraw, { enabled = true, strength = 1.0, radius = 1.4 } = {}) {
+      ensure(width, height);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+      gl.viewport(0, 0, w, h);
+      const result = sceneDraw();                          // the splat pass, into the FBO (may draw 0 when converged)
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.viewport(0, 0, width, height);
+      gl.disable(gl.DEPTH_TEST);
+      gl.useProgram(prog);
+      gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, colorTex); gl.uniform1i(uni.color, 2);
+      gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, depthTex); gl.uniform1i(uni.depth, 3);
+      gl.uniform2f(uni.texel, 1 / w, 1 / h);
+      gl.uniform2f(uni.nearFar, cam.state.near, cam.state.far);
+      gl.uniform1f(uni.ortho, cam.state.ortho ? 1 : 0);
+      gl.uniform1f(uni.strength, enabled ? strength : 0);
+      gl.uniform1f(uni.radius, radius);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      gl.enable(gl.DEPTH_TEST);
+      return result;
+    },
+  };
+}
+
+// ── src/main.js ──
+
+// @gcu/condenser — streaming no-preprocess renderer for massive spatial elements.
+// The engine under micro (the scope over lamina's slide). Curated public surface.
+//
+// Three layers (see core.js for the engine-only entry):
+//   core/ — chunk builders + GL pipelines + camera + EDL + Morton. Zero I/O.
+//   io/   — file providers (LAS, PLY, delimited/dm block models, drillholes, meshes).
+//   grid/ — lattice inference + the join/resample/reconcile engine.
+// @gcu/dxf's writer — micro exports traces as 3D polylines
+// mesh export (micro): the ARANZ writer rides the already-inlined @gcu/msh
+
+// ── ../../drillhole/src/desurvey.js ──
+
+// @gcu/drillhole — desurvey: collar + survey stations → the 3D hole trace, and a
+// method-consistent position at any down-hole depth.
+//
+// Conventions (D1): azimuth = degrees clockwise from north; dip = MINING convention,
+// positive DOWN (normalizeSurveys flips neg-down files; detectDipConvention infers
+// from the median); depths/lengths in any consistent unit (metres in practice).
+// World frame: x = east, y = north, z = up.
+//
+// Reverse-vendored from BMA (A7 Phase 0, Arthur 2026-06-11) — developed there in the
+// concat-source style, always intended to live here. BMA + dee re-vendor from here now.
+
+// Unit tangent from azimuth/dip (mining pos-down): x east, y north, z up.
+function dhTangent$desurvey(azDeg, dipDeg) {
+  let az = azDeg * Math.PI / 180, dip = dipDeg * Math.PI / 180;
+  let c = Math.cos(dip);
+  return [Math.sin(az) * c, Math.cos(az) * c, -Math.sin(dip)];
+}
+
+// 'pos-down' (mining: +60 = 60° below horizontal) vs 'neg-down' (signed math: -60 =
+// below). Inferred from the median dip — exploration holes point down, so the sign of
+// the bulk tells the convention.
+function dhDetectDipConvention$desurvey(surveys) {
+  let dips = [];
+  for (let i = 0; i < surveys.length; i++) {
+    let d = surveys[i].dip;
+    if (typeof d === 'number' && isFinite(d) && d !== 0) dips.push(d);
+  }
+  if (dips.length === 0) return 'pos-down';
+  dips.sort(function(a, b) { return a - b; });
+  let med = dips[Math.floor(dips.length / 2)];
+  return med < 0 ? 'neg-down' : 'pos-down';
+}
+
+// Sort, dedupe (last wins), normalize dip to pos-down, synthesize a station at depth 0
+// when the list starts deeper (copies the first attitude). Returns { stations:
+// [{depth, az, dip}], dupCount, badCount }.
+function dhNormalizeSurveys$desurvey(rawSurveys, dipConvention) {
+  let flip = dipConvention === 'neg-down' ? -1 : 1;
+  let clean = [], badCount = 0;
+  for (let i = 0; i < rawSurveys.length; i++) {
+    let s = rawSurveys[i];
+    let depth = s.depth, az = s.az, dip = s.dip * flip;
+    if (!isFinite(depth) || depth < 0 || !isFinite(az) || !isFinite(dip) || Math.abs(dip) > 90.000001) {
+      badCount++;
+      continue;
+    }
+    clean.push({ depth: depth, az: az, dip: dip });
+  }
+  clean.sort(function(a, b) { return a.depth - b.depth; });
+  let stations = [], dupCount = 0;
+  for (let j = 0; j < clean.length; j++) {
+    if (stations.length && Math.abs(stations[stations.length - 1].depth - clean[j].depth) < 1e-9) {
+      stations[stations.length - 1] = clean[j]; // last wins
+      dupCount++;
+    } else {
+      stations.push(clean[j]);
+    }
+  }
+  if (stations.length && stations[0].depth > 1e-9) {
+    stations.unshift({ depth: 0, az: stations[0].az, dip: stations[0].dip });
+  }
+  return { stations: stations, dupCount: dupCount, badCount: badCount };
+}
+
+// Desurvey one hole. Methods:
+// - 'minimumCurvature' (default): circular-arc model, RF = (2/θ)·tan(θ/2)
+// - 'balancedTangential': the same without RF — averages the two end tangents per
+//   segment (matches legacy desurveys from several packages)
+// - 'tangential': straight segments along the LOWER station's attitude (sparse/legacy
+//   surveys; matches dee's simple-tangential seed)
+// collar = [x, y, z]; stations from dhNormalizeSurveys (pos-down). Returns { method,
+// depths, px, py, pz, tx, ty, tz, dogleg, dls } — tangents + method ride along so
+// dhPositionAt interpolates consistently. `dogleg[k]` is the angular change (degrees)
+// between stations k−1 and k; `dls[k]` is the dogleg SEVERITY in °/30 length-units (the
+// metric drilling-QC convention — multiply by ⅓ for °/10 m, or recompute from `dogleg`
+// for °/100 ft). Both are geometry of the survey attitudes — independent of `method` —
+// so they're the same whichever desurvey you pick. dogleg[0] = dls[0] = 0.
+function dhDesurveyHole$desurvey(collar, stations, method) {
+  method = method || 'minimumCurvature';
+  let n = stations.length;
+  let out = {
+    method: method,
+    depths: new Float64Array(n),
+    px: new Float64Array(n), py: new Float64Array(n), pz: new Float64Array(n),
+    tx: new Float64Array(n), ty: new Float64Array(n), tz: new Float64Array(n),
+    dogleg: new Float64Array(n), dls: new Float64Array(n),
+  };
+  for (let i = 0; i < n; i++) {
+    out.depths[i] = stations[i].depth;
+    let t = dhTangent$desurvey(stations[i].az, stations[i].dip);
+    out.tx[i] = t[0]; out.ty[i] = t[1]; out.tz[i] = t[2];
+  }
+  out.px[0] = collar[0]; out.py[0] = collar[1]; out.pz[0] = collar[2];
+
+  for (let k = 1; k < n; k++) {
+    let dl = out.depths[k] - out.depths[k - 1];
+    // dogleg angle between the two station tangents — drives both the min-curvature RF
+    // and the QC severity, and is the same for every method (it's the survey geometry).
+    let dot = out.tx[k - 1] * out.tx[k] + out.ty[k - 1] * out.ty[k] + out.tz[k - 1] * out.tz[k];
+    let doglegRad = Math.acos(Math.max(-1, Math.min(1, dot)));
+    out.dogleg[k] = doglegRad * 180 / Math.PI;
+    out.dls[k] = dl > 1e-12 ? out.dogleg[k] / dl * 30 : 0;
+    if (method === 'tangential') {
+      out.px[k] = out.px[k - 1] + dl * out.tx[k];
+      out.py[k] = out.py[k - 1] + dl * out.ty[k];
+      out.pz[k] = out.pz[k - 1] + dl * out.tz[k];
+    } else {
+      let rf = 1; // balanced tangential
+      // minimum curvature: RF = (2/θ)·tan(θ/2)
+      if (method !== 'balancedTangential') rf = doglegRad > 1e-6 ? (2 / doglegRad) * Math.tan(doglegRad / 2) : 1;
+      out.px[k] = out.px[k - 1] + 0.5 * dl * (out.tx[k - 1] + out.tx[k]) * rf;
+      out.py[k] = out.py[k - 1] + 0.5 * dl * (out.ty[k - 1] + out.ty[k]) * rf;
+      out.pz[k] = out.pz[k - 1] + 0.5 * dl * (out.tz[k - 1] + out.tz[k]) * rf;
+    }
+  }
+  return out;
+}
+
+// Position at an arbitrary down-hole depth, consistent with the hole's desurvey method
+// (depths between stations land on the SAME path the stations were placed on):
+// - minimumCurvature: arc-correct (D2) — the closed-form integral of the slerp of the
+//   end tangents: p(s) = p1 + L/(θ·sinθ)·[(cos(θ−φ) − cosθ)·d1 + (1 − cosφ)·d2],
+//   φ = θ·s/L (at s = L this reduces to the RF endpoint formula; the harness pins
+//   mid-segment points to an analytic circle at 1e-14)
+// - tangential: straight along the lower station's attitude (how the segment was built)
+// - balancedTangential: linear along the segment chord
+// Beyond the last station: straight extrapolation along the last tangent (standard
+// practice — intervals routinely outrun the survey).
+function dhPositionAt$desurvey(hole, depth) {
+  let d = hole.depths, n = d.length;
+  if (n === 0) return null;
+  if (depth <= d[0]) {
+    let s0 = depth - d[0]; // above collar station (negative) — straight
+    return [hole.px[0] + s0 * hole.tx[0], hole.py[0] + s0 * hole.ty[0], hole.pz[0] + s0 * hole.tz[0]];
+  }
+  if (depth >= d[n - 1]) {
+    let sE = depth - d[n - 1];
+    return [hole.px[n - 1] + sE * hole.tx[n - 1], hole.py[n - 1] + sE * hole.ty[n - 1], hole.pz[n - 1] + sE * hole.tz[n - 1]];
+  }
+  // binary search: segment [lo, lo+1] with d[lo] <= depth < d[lo+1]
+  let lo = 0, hi = n - 1;
+  while (hi - lo > 1) {
+    let mid = (lo + hi) >> 1;
+    if (d[mid] <= depth) lo = mid; else hi = mid;
+  }
+  let L = d[lo + 1] - d[lo], s = depth - d[lo];
+  if (L < 1e-12) return [hole.px[lo], hole.py[lo], hole.pz[lo]];
+
+  if (hole.method === 'tangential') {
+    return [
+      hole.px[lo] + s * hole.tx[lo + 1],
+      hole.py[lo] + s * hole.ty[lo + 1],
+      hole.pz[lo] + s * hole.tz[lo + 1],
+    ];
+  }
+  if (hole.method === 'balancedTangential') {
+    let t = s / L;
+    return [
+      hole.px[lo] + t * (hole.px[lo + 1] - hole.px[lo]),
+      hole.py[lo] + t * (hole.py[lo + 1] - hole.py[lo]),
+      hole.pz[lo] + t * (hole.pz[lo + 1] - hole.pz[lo]),
+    ];
+  }
+
+  let d1 = [hole.tx[lo], hole.ty[lo], hole.tz[lo]];
+  let d2 = [hole.tx[lo + 1], hole.ty[lo + 1], hole.tz[lo + 1]];
+  let dot = d1[0] * d2[0] + d1[1] * d2[1] + d1[2] * d2[2];
+  let theta = Math.acos(Math.max(-1, Math.min(1, dot)));
+  if (theta < 1e-9) {
+    return [hole.px[lo] + s * d1[0], hole.py[lo] + s * d1[1], hole.pz[lo] + s * d1[2]];
+  }
+  let phi = theta * s / L;
+  let kk = L / (theta * Math.sin(theta));
+  let a = (Math.cos(theta - phi) - Math.cos(theta)) * kk;
+  let b = (1 - Math.cos(phi)) * kk;
+  return [
+    hole.px[lo] + a * d1[0] + b * d2[0],
+    hole.py[lo] + a * d1[1] + b * d2[1],
+    hole.pz[lo] + a * d1[2] + b * d2[2],
+  ];
+}
+
+// ── ../../drillhole/src/validate.js ──
+
+// @gcu/drillhole — validate: join + check the three tables. Nothing is silently
+// dropped; every exclusion lands in the report with a count and a BHID list.
+//
+// The collar+survey join (dhJoinHoles) and per-hole station normalization
+// (dhNormalizeHoleStations) are factored out so the point-sample locator
+// (dhDesurveySamples) reuses the exact same hole-building — one join, two consumers.
+
+
+// Build the per-hole structure from collars + surveys (NOT normalized yet — callers
+// normalize only the holes that pass their own gate, so a skipped hole doesn't accrue
+// advisory counts). Returns { holes: bhid→{bhid,collar,eoh,rawSurveys}, order: [] }.
+function dhJoinHoles$validate(tables, dipConvention, hit) {
+  let holes = {}, order = [];
+  for (let ci = 0; ci < (tables.collars || []).length; ci++) {
+    let c0 = tables.collars[ci];
+    let bid = String(c0.bhid).trim();
+    if (!bid) { hit('bad-collar', 'Collar rows with missing BHID or non-numeric coordinates', null); continue; }
+    if (!isFinite(c0.x) || !isFinite(c0.y) || !isFinite(c0.z)) {
+      hit('bad-collar', 'Collar rows with missing BHID or non-numeric coordinates', bid);
+      continue;
+    }
+    if (holes[bid]) { hit('dup-collar', 'Duplicate collar BHIDs (first kept)', bid); continue; }
+    holes[bid] = { bhid: bid, collar: [c0.x, c0.y, c0.z], eoh: isFinite(c0.eoh) ? c0.eoh : null, rawSurveys: [] };
+    order.push(bid);
+  }
+  for (let si = 0; si < (tables.surveys || []).length; si++) {
+    let s0 = tables.surveys[si];
+    let sb = String(s0.bhid).trim();
+    let h = holes[sb];
+    if (!h) { hit('orphan-survey', 'Survey rows whose BHID has no collar (excluded)', sb); continue; }
+    h.rawSurveys.push({ depth: s0.depth, az: s0.az, dip: s0.dip });
+  }
+  return { holes: holes, order: order };
+}
+
+// Normalize one hole's raw surveys → hole.stations (pos-down, sorted, deduped, depth-0
+// synthesized), with the no-usable-survey straight-down fallback and the survey-side
+// past-EOH advisory. Counts ride into `hit`. Mutates + returns the hole.
+function dhNormalizeHoleStations$validate(hole, dipConvention, hit) {
+  let norm = dhNormalizeSurveys$desurvey(hole.rawSurveys, dipConvention);
+  if (norm.badCount) for (let bi = 0; bi < norm.badCount; bi++) hit('bad-survey', 'Survey rows with non-numeric depth/azimuth or |dip| > 90 (excluded)', hole.bhid);
+  if (norm.dupCount) for (let di = 0; di < norm.dupCount; di++) hit('dup-survey-depth', 'Duplicate survey depths in a hole (last kept)', hole.bhid);
+  if (norm.stations.length === 0) {
+    hit('collar-no-survey', 'Holes with no usable survey (desurveyed straight down)', hole.bhid);
+    norm.stations = [{ depth: 0, az: 0, dip: 90 }];
+  }
+  hole.stations = norm.stations;
+  if (hole.eoh != null && norm.stations[norm.stations.length - 1].depth > hole.eoh + 1e-9) {
+    hit('past-eoh', 'Survey or interval depths past the collar EOH (kept — EOH is advisory)', hole.bhid);
+  }
+  return hole;
+}
+
+// tables = {
+//   collars:  [{ bhid, x, y, z, eoh }],            // eoh optional/null
+//   surveys:  [{ bhid, depth, az, dip }],          // dip raw (per file)
+//   intervals: { bhid: [], from: [], to: [],
+//                cols: [{ name, type: 'num'|'cat', values: [] }] }
+// }
+// opts = { dipConvention: 'auto'|'pos-down'|'neg-down', method }
+function dhValidate$validate(tables, opts) {
+  opts = opts || {};
+  let checks = {};
+  function hit(id, label, bhid) {
+    let c = checks[id];
+    if (!c) { c = checks[id] = { id: id, label: label, count: 0, bhids: [] }; }
+    c.count++;
+    if (bhid != null && c.bhids.indexOf(bhid) < 0 && c.bhids.length < 200) c.bhids.push(bhid);
+  }
+
+  let dipConvention = opts.dipConvention || 'auto';
+  if (dipConvention === 'auto') dipConvention = dhDetectDipConvention$desurvey(tables.surveys || []);
+
+  let joined = dhJoinHoles$validate(tables, dipConvention, hit);
+  let holes = joined.holes, order = joined.order;
+  for (let oi = 0; oi < order.length; oi++) holes[order[oi]].iv = [];
+
+  // intervals
+  let iv = tables.intervals || { bhid: [], from: [], to: [], cols: [] };
+  let nIv = iv.bhid.length;
+  for (let ii = 0; ii < nIv; ii++) {
+    let ib = String(iv.bhid[ii]).trim();
+    let h2 = holes[ib];
+    if (!h2) { hit('orphan-interval', 'Interval rows whose BHID has no collar (excluded)', ib); continue; }
+    let f = iv.from[ii], t = iv.to[ii];
+    if (!isFinite(f) || !isFinite(t) || f < 0 || t <= f) {
+      hit('bad-interval', 'Interval rows with FROM ≥ TO, negative or non-numeric depths (excluded)', ib);
+      continue;
+    }
+    h2.iv.push(ii);
+  }
+
+  // per-hole structure (normalize only the holes that have intervals)
+  let ready = [];
+  for (let oi = 0; oi < order.length; oi++) {
+    let hh = holes[order[oi]];
+    if (hh.iv.length === 0) { hit('collar-no-intervals', 'Collars with no interval rows (hole skipped)', hh.bhid); continue; }
+
+    dhNormalizeHoleStations$validate(hh, dipConvention, hit);
+
+    // interval-side past-EOH advisory (kept, counted)
+    if (hh.eoh != null) {
+      for (let ei = 0; ei < hh.iv.length; ei++) {
+        if (iv.to[hh.iv[ei]] > hh.eoh + 1e-9) {
+          hit('past-eoh', 'Survey or interval depths past the collar EOH (kept — EOH is advisory)', hh.bhid);
+          break;
+        }
+      }
+    }
+
+    // overlap flag (composited as-is; SUPPORT double-counts — flagged per hole)
+    let idx = hh.iv.slice().sort(function(a, b) { return iv.from[a] - iv.from[b]; });
+    for (let vi = 1; vi < idx.length; vi++) {
+      if (iv.from[idx[vi]] < iv.to[idx[vi - 1]] - 1e-9) {
+        hit('overlap', 'Holes with overlapping intervals (composited as-is; SUPPORT double-counts)', hh.bhid);
+        break;
+      }
+    }
+    hh.iv = idx;
+    ready.push(hh);
+  }
+
+  return { holes: ready, checks: checks, dipConvention: dipConvention, intervals: iv };
+}
+
+// ── ../../drillhole/src/samples.js ──
+
+// @gcu/drillhole — point-sample locator. Some data is point-support, not intervals:
+// single-depth assays (handheld XRF, density readings) or already-composited samples
+// re-imported. Compositing (length-weighting into windows) doesn't apply — you just
+// want each sample placed in 3D on the desurveyed trace. This is that path; it reuses
+// the same collar+survey join + station normalization as dhValidate.
+
+
+// tables = { collars, surveys, samples: { bhid:[], depth:[], cols:[{name,type,values}] } }
+// opts   = { dipConvention, method }
+// Returns { header: ['BHID','X','Y','Z','DEPTH', ...cols], rows, report } — one located
+// row per valid sample (sorted down-hole within each hole), with the same non-silent
+// consistency report style as the interval pipeline.
+function dhDesurveySamples$samples(tables, opts) {
+  opts = opts || {};
+  let checks = {};
+  function hit(id, label, bhid) {
+    let c = checks[id];
+    if (!c) { c = checks[id] = { id: id, label: label, count: 0, bhids: [] }; }
+    c.count++;
+    if (bhid != null && c.bhids.indexOf(bhid) < 0 && c.bhids.length < 200) c.bhids.push(bhid);
+  }
+
+  let dipConvention = opts.dipConvention || 'auto';
+  if (dipConvention === 'auto') dipConvention = dhDetectDipConvention$desurvey(tables.surveys || []);
+
+  let joined = dhJoinHoles$validate(tables, dipConvention, hit);
+  let holes = joined.holes, order = joined.order;
+  for (let oi = 0; oi < order.length; oi++) holes[order[oi]].smp = [];
+
+  // samples → per-hole index lists
+  let smp = tables.samples || { bhid: [], depth: [], cols: [] };
+  let cols = smp.cols || [];
+  let nS = smp.bhid.length;
+  for (let ii = 0; ii < nS; ii++) {
+    let bid = String(smp.bhid[ii]).trim();
+    let h = holes[bid];
+    if (!h) { hit('orphan-sample', 'Sample rows whose BHID has no collar (excluded)', bid); continue; }
+    let d = smp.depth[ii];
+    if (!isFinite(d) || d < 0) { hit('bad-sample', 'Sample rows with negative or non-numeric depth (excluded)', bid); continue; }
+    h.smp.push(ii);
+  }
+
+  let header = ['BHID', 'X', 'Y', 'Z', 'DEPTH'];
+  for (let hc = 0; hc < cols.length; hc++) header.push(cols[hc].name);
+  let rows = [];
+  let nHoles = 0;
+
+  for (let oi = 0; oi < order.length; oi++) {
+    let hh = holes[order[oi]];
+    if (hh.smp.length === 0) { hit('collar-no-samples', 'Collars with no sample rows (hole skipped)', hh.bhid); continue; }
+    dhNormalizeHoleStations$validate(hh, dipConvention, hit);
+    let path = dhDesurveyHole$desurvey(hh.collar, hh.stations, opts.method);
+    nHoles++;
+
+    // EOH advisory (kept, counted)
+    if (hh.eoh != null) {
+      for (let ei = 0; ei < hh.smp.length; ei++) {
+        if (smp.depth[hh.smp[ei]] > hh.eoh + 1e-9) {
+          hit('past-eoh', 'Sample depths past the collar EOH (kept — EOH is advisory)', hh.bhid);
+          break;
+        }
+      }
+    }
+
+    let idx = hh.smp.slice().sort(function(a, b) { return smp.depth[a] - smp.depth[b]; });
+    for (let k = 0; k < idx.length; k++) {
+      let ii = idx[k], d = smp.depth[ii];
+      let pos = dhPositionAt$desurvey(path, d);
+      let row = [hh.bhid, pos[0], pos[1], pos[2], d];
+      for (let c = 0; c < cols.length; c++) row.push(cols[c].values[ii]);
+      rows.push(row);
+    }
+  }
+
+  let checkList = [];
+  for (let k in checks) checkList.push(checks[k]);
+  return { header: header, rows: rows, report: { checks: checkList, nHoles: nHoles, nSamples: rows.length, dipConvention: dipConvention } };
+}
+
+// ── src/parquet-blocks.js ──
+
+// via='files' Parquet block models — micro's openParquetBlocks ported onto the
+// widget's RemoteBlob. The blob is sliced by range for every read (footer, then
+// row group by row group), so a multi-GB file costs no residency anywhere: not
+// in the kernel, not in the page. A micro-written file is SELF-DESCRIBING (the
+// `micro:model` kv carries grid + bbox + categories), so opening micro's own
+// optimized store skips discovery entirely — the loop closes.
+
+// @gcu/parquet rides EMBEDDED AS SOURCE and is imported once via a blob URL on
+// first use: it is a vendored minified rollup bundle whose ALIASED exports
+// (`export{e as parquetInfoAsync}`) @gcu/build's source merge cannot rewire.
+// Still self-contained — nothing is fetched at runtime. The marker below is
+// substituted by build.js with the bundle's JSON-stringified source.
+const PQ_SRC = "const e=[\"BOOLEAN\",\"INT32\",\"INT64\",\"INT96\",\"FLOAT\",\"DOUBLE\",\"BYTE_ARRAY\",\"FIXED_LEN_BYTE_ARRAY\"],t=[\"PLAIN\",\"GROUP_VAR_INT\",\"PLAIN_DICTIONARY\",\"RLE\",\"BIT_PACKED\",\"DELTA_BINARY_PACKED\",\"DELTA_LENGTH_BYTE_ARRAY\",\"DELTA_BYTE_ARRAY\",\"RLE_DICTIONARY\",\"BYTE_STREAM_SPLIT\"],n=[\"REQUIRED\",\"OPTIONAL\",\"REPEATED\"],r=[\"UTF8\",\"MAP\",\"MAP_KEY_VALUE\",\"LIST\",\"ENUM\",\"DECIMAL\",\"DATE\",\"TIME_MILLIS\",\"TIME_MICROS\",\"TIMESTAMP_MILLIS\",\"TIMESTAMP_MICROS\",\"UINT_8\",\"UINT_16\",\"UINT_32\",\"UINT_64\",\"INT_8\",\"INT_16\",\"INT_32\",\"INT_64\",\"JSON\",\"BSON\",\"INTERVAL\"],i=[\"UNCOMPRESSED\",\"SNAPPY\",\"GZIP\",\"LZO\",\"BROTLI\",\"LZ4\",\"ZSTD\",\"LZ4_RAW\"],o=[\"DATA_PAGE\",\"INDEX_PAGE\",\"DICTIONARY_PAGE\",\"DATA_PAGE_V2\"],f=[\"SPHERICAL\",\"VINCENTY\",\"THOMAS\",\"ANDOYER\",\"KARNEY\"];function a(e){const t=s(e);if(1===t.type)return{type:\"Point\",coordinates:l(e,t)};if(2===t.type)return{type:\"LineString\",coordinates:u(e,t)};if(3===t.type)return{type:\"Polygon\",coordinates:c(e,t)};if(4===t.type){const n=[];for(let r=0;r<t.count;r++)n.push(l(e,s(e)));return{type:\"MultiPoint\",coordinates:n}}if(5===t.type){const n=[];for(let r=0;r<t.count;r++)n.push(u(e,s(e)));return{type:\"MultiLineString\",coordinates:n}}if(6===t.type){const n=[];for(let r=0;r<t.count;r++)n.push(c(e,s(e)));return{type:\"MultiPolygon\",coordinates:n}}if(7===t.type){const n=[];for(let r=0;r<t.count;r++)n.push(a(e));return{type:\"GeometryCollection\",geometries:n}}throw new Error(`Unsupported geometry type: ${t.type}`)}function s(e){const{view:t}=e,n=1===t.getUint8(e.offset++),r=t.getUint32(e.offset,n);e.offset+=4;const i=r%1e3,o=Math.floor(r/1e3);let f=0;i>1&&i<=7&&(f=t.getUint32(e.offset,n),e.offset+=4);let a=2;return o&&a++,3===o&&a++,{littleEndian:n,type:i,dim:a,count:f}}function l(e,t){const n=[];for(let r=0;r<t.dim;r++){const r=e.view.getFloat64(e.offset,t.littleEndian);e.offset+=8,n.push(r)}return n}function u(e,t){const n=[];for(let r=0;r<t.count;r++)n.push(l(e,t));return n}function c(e,t){const{view:n}=e,r=[];for(let i=0;i<t.count;i++){const i=n.getUint32(e.offset,t.littleEndian);e.offset+=4,r.push(u(e,{...t,count:i}))}return r}const d=new TextDecoder,p={timestampFromMilliseconds:e=>new Date(Number(e)),timestampFromMicroseconds:e=>new Date(Number(e/1000n)),timestampFromNanoseconds:e=>new Date(Number(e/1000000n)),dateFromDays:e=>new Date(864e5*e),stringFromBytes:e=>e&&d.decode(e),jsonFromBytes:e=>e&&JSON.parse(d.decode(e)),geometryFromBytes:e=>e&&a({view:new DataView(e.buffer,e.byteOffset,e.byteLength),offset:0}),geographyFromBytes:e=>e&&a({view:new DataView(e.buffer,e.byteOffset,e.byteLength),offset:0}),uuidFromBytes(e){if(!e)return;const t=Array.from(e,e=>e.toString(16).padStart(2,\"0\")).join(\"\");return t.slice(0,8)+\"-\"+t.slice(8,12)+\"-\"+t.slice(12,16)+\"-\"+t.slice(16,20)+\"-\"+t.slice(20,32)}};function _(e,t,n,r){if(t&&n.endsWith(\"_DICTIONARY\")){let n=e;e instanceof Uint8Array&&!(t instanceof Uint8Array)&&(n=new t.constructor(e.length));for(let r=0;r<e.length;r++)n[r]=t[e[r]];return n}return y(e,r)}function y(e,t){const{element:n,parsers:r,utf8:i=!0,schemaPath:o}=t,{type:f,converted_type:a,logical_type:s}=n,l=\"REQUIRED\"!==n.repetition_type,u=o?.some(e=>\"VARIANT\"===e.element.logical_type?.type);if(u&&\"BYTE_ARRAY\"===f&&\"UTF8\"!==a&&\"STRING\"!==s?.type)return e;if(\"DECIMAL\"===a){const t=10**-(n.scale||0),r=new Array(e.length);for(let n=0;n<r.length;n++)e[n]instanceof Uint8Array?r[n]=h(e[n])*t:r[n]=Number(e[n])*t;return r}if(!a&&\"INT96\"===f)return Array.from(e).map(e=>{return r.timestampFromNanoseconds(86400000000000n*(((t=e)>>64n)-2440588n)+(0xffffffffffffffffn&t));var t});if(\"DATE\"===a)return Array.from(e).map(e=>r.dateFromDays(e));if(\"TIMESTAMP_MILLIS\"===a)return Array.from(e).map(e=>r.timestampFromMilliseconds(e));if(\"TIMESTAMP_MICROS\"===a)return Array.from(e).map(e=>r.timestampFromMicroseconds(e));if(\"JSON\"===a)return e.map(e=>r.jsonFromBytes(e));if(\"BSON\"===a)throw new Error(\"parquet bson not supported\");if(\"INTERVAL\"===a)throw new Error(\"parquet interval not supported\");if(\"GEOMETRY\"===s?.type)return e.map(e=>r.geometryFromBytes(e));if(\"GEOGRAPHY\"===s?.type)return e.map(e=>r.geographyFromBytes(e));if(\"UUID\"===s?.type)return e.map(e=>r.uuidFromBytes(e));if(\"UTF8\"===a||\"STRING\"===s?.type||i&&\"BYTE_ARRAY\"===f)return e.map(e=>r.stringFromBytes(e));if(\"UINT_64\"===a||\"INTEGER\"===s?.type&&64===s.bitWidth&&!s.isSigned){if(e instanceof BigInt64Array)return new BigUint64Array(e.buffer,e.byteOffset,e.length);const t=l?new Array(e.length):new BigUint64Array(e.length);for(let n=0;n<t.length;n++)t[n]=e[n];return t}if(\"UINT_32\"===a||\"INTEGER\"===s?.type&&32===s.bitWidth&&!s.isSigned){if(e instanceof Int32Array)return new Uint32Array(e.buffer,e.byteOffset,e.length);const t=l?new Array(e.length):new Uint32Array(e.length);for(let n=0;n<t.length;n++)t[n]=e[n]<0?4294967296+e[n]:e[n];return t}if(\"FLOAT16\"===s?.type)return Array.from(e).map(m);if(\"TIMESTAMP\"===s?.type){const{unit:t}=s;let n=r.timestampFromMilliseconds;\"MICROS\"===t&&(n=r.timestampFromMicroseconds),\"NANOS\"===t&&(n=r.timestampFromNanoseconds);const i=new Array(e.length);for(let t=0;t<i.length;t++)i[t]=n(e[t]);return i}return e}function h(e){if(!e.length)return 0;let t=0n;for(const n of e)t=256n*t+BigInt(n);const n=8*e.length;return t>=2n**BigInt(n-1)&&(t-=2n**BigInt(n)),Number(t)}function m(e){if(!e)return;const t=e[1]<<8|e[0],n=t>>15?-1:1,r=t>>10&31,i=1023&t;return 0===r?n*2**-14*(i/1024):31===r?i?NaN:n*(1/0):n*2**(r-15)*(1+i/1024)}function g(e,t,n){const r=e[t],i=[];let o=1;if(r.num_children)for(;i.length<r.num_children;){const r=e[t+o],f=g(e,t+o,[...n,r.name]);o+=f.count,i.push(f)}return{count:o,element:r,children:i,path:n}}function w(e,t){let n=g(e,0,[]);const r=[n];for(const e of t){const i=n.children.find(t=>t.element.name===e);if(!i)throw new Error(`parquet schema element not found: ${t}`);r.push(i),n=i}return r}function A(e){const t=[];return function e(n){if(n.children.length)for(const t of n.children)e(t);else t.push(n.path.join(\".\"))}(e),t}function E(e){let t=0;for(const{element:n}of e)\"REPEATED\"===n.repetition_type&&t++;return t}function v(e){let t=0;for(const{element:n}of e.slice(1))\"REQUIRED\"!==n.repetition_type&&t++;return t}function I(e){if(2!==e.length)return!1;const[,t]=e;return\"REPEATED\"!==t.element.repetition_type&&!t.children.length}function b(e){const t={};let n=0;for(;e.offset<e.view.byteLength;){const r=e.view.getUint8(e.offset++),i=15&r;if(0===i)break;const o=r>>4;n=o?n+o:U(e),t[`field_${n}`]=T(e,i)}return t}function T(e,t){switch(t){case 1:return!0;case 2:return!1;case 3:return e.view.getInt8(e.offset++);case 4:case 5:return U(e);case 6:return L(e);case 7:{const t=e.view.getFloat64(e.offset,!0);return e.offset+=8,t}case 8:{const t=N(e),n=new Uint8Array(e.view.buffer,e.view.byteOffset+e.offset,t);return e.offset+=t,n}case 9:{const t=e.view.getUint8(e.offset++),n=15&t;let r=t>>4;15===r&&(r=N(e));const i=1===n||2===n,o=new Array(r);for(let t=0;t<r;t++)o[t]=i?1===T(e,3):T(e,n);return o}case 12:return b(e);default:throw new Error(`thrift unhandled type: ${t}`)}}function N(e){let t=0,n=0;for(;;){const r=e.view.getUint8(e.offset++);if(t|=(127&r)<<n,!(128&r))return t;n+=7}}function U(e){const t=N(e);return t>>>1^-(1&t)}function L(e){const t=function(e){let t=0n,n=0n;for(;;){const r=e.view.getUint8(e.offset++);if(t|=BigInt(127&r)<<n,!(128&r))return t;n+=7n}}(e);return t>>1n^-(1n&t)}const O=new TextDecoder;function B(e){return e&&O.decode(e)}async function R(e,{parsers:t,initialFetchSize:n=524288,geoparquet:r=!0}={}){if(!(e&&e.byteLength>=0))throw new Error(\"parquet expected AsyncBuffer\");const i=Math.max(0,e.byteLength-n),o=await e.slice(i,e.byteLength),f=new DataView(o);if(827474256!==f.getUint32(o.byteLength-4,!0))throw new Error(\"parquet file invalid (footer != PAR1)\");const a=f.getUint32(o.byteLength-8,!0);if(a>e.byteLength-8)throw new Error(`parquet metadata length ${a} exceeds available buffer ${e.byteLength-8}`);if(a+8>n){const n=e.byteLength-a-8,f=await e.slice(n,i),s=new ArrayBuffer(a+8),l=new Uint8Array(s);return l.set(new Uint8Array(f)),l.set(new Uint8Array(o),i-n),D(s,{parsers:t,geoparquet:r})}return D(o,{parsers:t,geoparquet:r})}function D(f,{parsers:a,geoparquet:s=!0}={}){if(!(f instanceof ArrayBuffer))throw new Error(\"parquet expected ArrayBuffer\");const l=new DataView(f);if(a={...p,...a},l.byteLength<8)throw new Error(\"parquet file is too short\");if(827474256!==l.getUint32(l.byteLength-4,!0))throw new Error(\"parquet file invalid (footer != PAR1)\");const u=l.byteLength-8,c=l.getUint32(u,!0);if(c>l.byteLength-8)throw new Error(`parquet metadata length ${c} exceeds available buffer ${l.byteLength-8}`);const d=b({view:l,offset:u-c}),_=d.field_1,y=d.field_2.map(t=>({type:e[t.field_1],type_length:t.field_2,repetition_type:n[t.field_3],name:B(t.field_4),num_children:t.field_5,converted_type:r[t.field_6],scale:t.field_7,precision:t.field_8,field_id:t.field_9,logical_type:S(t.field_10)})),h=y.filter(e=>e.type),m=d.field_3,g=d.field_4.map(n=>({columns:n.field_1.map((n,r)=>({file_path:B(n.field_1),file_offset:n.field_2,meta_data:n.field_3&&{type:e[n.field_3.field_1],encodings:n.field_3.field_2?.map(e=>t[e]),path_in_schema:n.field_3.field_3.map(B),codec:i[n.field_3.field_4],num_values:n.field_3.field_5,total_uncompressed_size:n.field_3.field_6,total_compressed_size:n.field_3.field_7,key_value_metadata:n.field_3.field_8?.map(e=>({key:B(e.field_1),value:B(e.field_2)})),data_page_offset:n.field_3.field_9,index_page_offset:n.field_3.field_10,dictionary_page_offset:n.field_3.field_11,statistics:P(n.field_3.field_12,h[r],a),encoding_stats:n.field_3.field_13?.map(e=>({page_type:o[e.field_1],encoding:t[e.field_2],count:e.field_3})),bloom_filter_offset:n.field_3.field_14,bloom_filter_length:n.field_3.field_15,size_statistics:n.field_3.field_16&&{unencoded_byte_array_data_bytes:n.field_3.field_16.field_1,repetition_level_histogram:n.field_3.field_16.field_2,definition_level_histogram:n.field_3.field_16.field_3},geospatial_statistics:n.field_3.field_17&&{bbox:n.field_3.field_17.field_1&&{xmin:n.field_3.field_17.field_1.field_1,xmax:n.field_3.field_17.field_1.field_2,ymin:n.field_3.field_17.field_1.field_3,ymax:n.field_3.field_17.field_1.field_4,zmin:n.field_3.field_17.field_1.field_5,zmax:n.field_3.field_17.field_1.field_6,mmin:n.field_3.field_17.field_1.field_7,mmax:n.field_3.field_17.field_1.field_8},geospatial_types:n.field_3.field_17.field_2}},offset_index_offset:n.field_4,offset_index_length:n.field_5,column_index_offset:n.field_6,column_index_length:n.field_7,crypto_metadata:n.field_8,encrypted_column_metadata:n.field_9})),total_byte_size:n.field_2,num_rows:n.field_3,sorting_columns:n.field_4?.map(e=>({column_idx:e.field_1,descending:e.field_2,nulls_first:e.field_3})),file_offset:n.field_5,total_compressed_size:n.field_6,ordinal:n.field_7})),w=d.field_5?.map(e=>({key:B(e.field_1),value:B(e.field_2)})),A=B(d.field_6);return s&&function(e,t){const n=new Map,r=t?.find(({key:e})=>\"geo\"===e)?.value,i=(r&&JSON.parse(r)?.columns)??{};for(const[e,t]of Object.entries(i)){if(\"WKB\"!==t.encoding)continue;const r=\"spherical\"===t.edges?\"GEOGRAPHY\":\"GEOMETRY\",i=t.crs?.id??t.crs?.ids?.[0],o=i?`${i.authority}:${i.code.toString()}`:void 0;n.set(e,{type:r,crs:o})}for(let t=1;t<e.length;t++){const{logical_type:r,name:i,num_children:o,type:f}=e[t];o?t+=o:\"BYTE_ARRAY\"!==f||r||(e[t].logical_type=n.get(i))}}(y,w),{version:_,schema:y,num_rows:m,row_groups:g,key_value_metadata:w,created_by:A,metadata_length:c}}function M({schema:e}){return w(e,[])[0]}function S(e){return e?.field_1?{type:\"STRING\"}:e?.field_2?{type:\"MAP\"}:e?.field_3?{type:\"LIST\"}:e?.field_4?{type:\"ENUM\"}:e?.field_5?{type:\"DECIMAL\",scale:e.field_5.field_1,precision:e.field_5.field_2}:e?.field_6?{type:\"DATE\"}:e?.field_7?{type:\"TIME\",isAdjustedToUTC:e.field_7.field_1,unit:x(e.field_7.field_2)}:e?.field_8?{type:\"TIMESTAMP\",isAdjustedToUTC:e.field_8.field_1,unit:x(e.field_8.field_2)}:e?.field_10?{type:\"INTEGER\",bitWidth:e.field_10.field_1,isSigned:e.field_10.field_2}:e?.field_11?{type:\"NULL\"}:e?.field_12?{type:\"JSON\"}:e?.field_13?{type:\"BSON\"}:e?.field_14?{type:\"UUID\"}:e?.field_15?{type:\"FLOAT16\"}:e?.field_16?{type:\"VARIANT\",specification_version:e.field_16.field_1}:e?.field_17?{type:\"GEOMETRY\",crs:B(e.field_17.field_1)}:e?.field_18?{type:\"GEOGRAPHY\",crs:B(e.field_18.field_1),algorithm:f[e.field_18.field_2]}:e}function x(e){if(e.field_1)return\"MILLIS\";if(e.field_2)return\"MICROS\";if(e.field_3)return\"NANOS\";throw new Error(\"parquet time unit required\")}function P(e,t,n){return e&&{max:Y(e.field_1,t,n),min:Y(e.field_2,t,n),null_count:e.field_3,distinct_count:e.field_4,max_value:Y(e.field_5,t,n),min_value:Y(e.field_6,t,n),is_max_value_exact:e.field_7,is_min_value_exact:e.field_8}}function Y(e,t,n){const{type:r,converted_type:i,logical_type:o}=t;if(void 0===e)return e;if(\"BOOLEAN\"===r)return 1===e[0];if(\"BYTE_ARRAY\"===r)return n.stringFromBytes(e);const f=new DataView(e.buffer,e.byteOffset,e.byteLength);return\"FLOAT\"===r&&4===f.byteLength?f.getFloat32(0,!0):\"DOUBLE\"===r&&8===f.byteLength?f.getFloat64(0,!0):\"INT32\"===r&&\"DATE\"===i?n.dateFromDays(f.getInt32(0,!0)):\"INT64\"===r&&\"TIMESTAMP_MILLIS\"===i?n.timestampFromMilliseconds(f.getBigInt64(0,!0)):\"INT64\"===r&&\"TIMESTAMP_MICROS\"===i?n.timestampFromMicroseconds(f.getBigInt64(0,!0)):\"INT64\"===r&&\"TIMESTAMP\"===o?.type&&\"NANOS\"===o?.unit?n.timestampFromNanoseconds(f.getBigInt64(0,!0)):\"INT64\"===r&&\"TIMESTAMP\"===o?.type&&\"MICROS\"===o?.unit?n.timestampFromMicroseconds(f.getBigInt64(0,!0)):\"INT64\"===r&&\"TIMESTAMP\"===o?.type?n.timestampFromMilliseconds(f.getBigInt64(0,!0)):\"INT32\"===r&&4===f.byteLength?f.getInt32(0,!0):\"INT64\"===r&&8===f.byteLength?f.getBigInt64(0,!0):\"DECIMAL\"===i?h(e)*10**-(t.scale||0):\"FLOAT16\"===o?.type?m(e):\"UUID\"===o?.type?n.uuidFromBytes(e):e}function F(e){const t=b(e);return{page_locations:t.field_1.map(e=>({offset:e.field_1,compressed_page_size:e.field_2,first_row_index:e.field_3})),unencoded_byte_array_data_bytes:t.field_2}}const $=0xffffffffffffffffn,k=0x9e3779b185ebca87n,C=0xc2b2ae3d27d4eb4fn,G=0x165667b19e3779f9n,q=0x85ebca77c2b2ae63n,j=0x27d4eb2f165667c5n;function V(e,t){return(e<<t|e>>64n-t)&$}function z(e,t){return(e=V(e=e+t*C&$,31n))*k&$}function X(e,t){return(e^=z(0n,t))*k+q&$}function Z(e,t=0n){const n=new DataView(e.buffer,e.byteOffset,e.byteLength),r=e.byteLength;let i,o=0;if(r>=32){let e=t+k+C&$,f=t+C&$,a=t,s=t-k&$;for(;o+32<=r;)e=z(e,n.getBigUint64(o,!0)),o+=8,f=z(f,n.getBigUint64(o,!0)),o+=8,a=z(a,n.getBigUint64(o,!0)),o+=8,s=z(s,n.getBigUint64(o,!0)),o+=8;i=V(e,1n)+V(f,7n)+V(a,12n)+V(s,18n)&$,i=X(i,e),i=X(i,f),i=X(i,a),i=X(i,s)}else i=t+j&$;for(i=i+BigInt(r)&$;o+8<=r;)i^=z(0n,n.getBigUint64(o,!0)),i=V(i,27n)*k+q&$,o+=8;for(o+4<=r&&(i^=BigInt(n.getUint32(o,!0))*k&$,i=V(i,23n)*C+G&$,o+=4);o<r;)i^=BigInt(n.getUint8(o))*j&$,i=V(i,11n)*k&$,o+=1;return i^=i>>33n,i=i*C&$,i^=i>>29n,i=i*G&$,i^=i>>32n,i}const H=new TextEncoder,J=new Uint32Array([1203114875,1150766481,2284105051,2729912477,1884591559,770785867,2667333959,1550580529]);function Q(e,t){const n=function(e,t){return Number((e>>32n)*BigInt(t)>>32n)}(t,e.length>>3)<<3,r=function(e){const t=new Uint32Array(8),n=0|Number(0xffffffffn&e);for(let e=0;e<8;e++)t[e]=1<<(Math.imul(n,J[e])>>>27);return t}(t);for(let t=0;t<8;t++)if(0===(e[n+t]&r[t]))return!1;return!0}function W(e){const t=b(e),n=t.field_1;if(\"number\"!=typeof n||n<=0||n%32!=0)return;if(!t.field_2?.field_1)return;if(!t.field_3?.field_1)return;if(!t.field_4?.field_1)return;const{view:r,offset:i}=e;if(i+n>r.byteLength)throw new Error(`parquet bloom filter truncated: need ${n} bytes, have ${r.byteLength-i}`);const o=new Uint32Array(n>>2);for(let e=0;e<o.length;e++)o[e]=r.getUint32(i+4*e,!0);return e.offset=i+n,{numBytes:n,blocks:o}}function K(e,t){if(null==e)return;const{type:n,converted_type:r,logical_type:i}=t;if(\"BOOLEAN\"===n){if(\"boolean\"!=typeof e)return;return Z(new Uint8Array([e?1:0]))}if(\"FLOAT\"===n){if(\"number\"!=typeof e)return;const t=new ArrayBuffer(4);return new DataView(t).setFloat32(0,e,!0),Z(new Uint8Array(t))}if(\"DOUBLE\"===n){if(\"number\"!=typeof e)return;const t=new ArrayBuffer(8);return new DataView(t).setFloat64(0,e,!0),Z(new Uint8Array(t))}if(\"INT32\"===n){if(\"DATE\"===r||\"DECIMAL\"===r||\"TIME_MILLIS\"===r)return;if(\"DATE\"===i?.type||\"TIME\"===i?.type||\"DECIMAL\"===i?.type)return;if(\"number\"!=typeof e||!Number.isInteger(e))return;const t=new ArrayBuffer(4);return new DataView(t).setInt32(0,0|e,!0),Z(new Uint8Array(t))}if(\"INT64\"===n){if(\"TIMESTAMP_MILLIS\"===r||\"TIMESTAMP_MICROS\"===r)return;if(\"TIME_MICROS\"===r||\"DECIMAL\"===r)return;if(\"TIMESTAMP\"===i?.type||\"TIME\"===i?.type||\"DECIMAL\"===i?.type)return;let t;if(\"bigint\"==typeof e)t=e;else{if(\"number\"!=typeof e||!Number.isSafeInteger(e))return;t=BigInt(e)}const n=new ArrayBuffer(8);return new DataView(n).setBigUint64(0,BigInt.asUintN(64,t),!0),Z(new Uint8Array(n))}if(\"BYTE_ARRAY\"===n){if(\"JSON\"===r||\"BSON\"===r||\"DECIMAL\"===r)return;if(\"JSON\"===i?.type||\"BSON\"===i?.type||\"VARIANT\"===i?.type)return;if(\"GEOMETRY\"===i?.type||\"GEOGRAPHY\"===i?.type)return;return\"string\"==typeof e?Z(H.encode(e)):e instanceof Uint8Array?Z(e):void 0}if(\"FIXED_LEN_BYTE_ARRAY\"===n){if(\"DECIMAL\"===r||\"INTERVAL\"===r)return;if(\"DECIMAL\"===i?.type||\"UUID\"===i?.type||\"FLOAT16\"===i?.type)return;if(\"GEOMETRY\"===i?.type||\"GEOGRAPHY\"===i?.type)return;return e instanceof Uint8Array?Z(e):void 0}}function ee(e){const t=new Set;return te(e,t),t}function te(e,t){if(e)if(\"$and\"in e&&Array.isArray(e.$and))for(const n of e.$and)te(n,t);else if(\"$or\"in e&&Array.isArray(e.$or))for(const n of e.$or)te(n,t);else if(!(\"$nor\"in e))for(const[n,r]of Object.entries(e))n.startsWith(\"$\")||(\"object\"!=typeof r||null===r||Array.isArray(r)||\"$eq\"in r||\"$in\"in r)&&t.add(n)}function ne(e){if(void 0===e)return null;if(\"bigint\"==typeof e)return Number(e);if(Object.is(e,-0))return 0;if(Array.isArray(e))return e.map(ne);if(e instanceof Uint8Array)return Array.from(e);if(e instanceof Date)return e.toISOString();if(e instanceof Object){const t={};for(const n of Object.keys(e))void 0!==e[n]&&(t[n]=ne(e[n]));return t}return e}function re(e,t){for(let n=0;n<t.length;n+=1e4)e.push(...t.slice(n,n+1e4))}function ie(e,t,n=!0){if(n?e===t:e==t)return!0;if(!e||!t||\"object\"!=typeof e||\"object\"!=typeof t)return!1;if(e instanceof Uint8Array&&t instanceof Uint8Array){if(e.length!==t.length)return!1;for(let n=0;n<e.length;n++)if(e[n]!==t[n])return!1;return!0}if(Array.isArray(e)&&Array.isArray(t)){if(e.length!==t.length)return!1;for(let r=0;r<e.length;r++)if(!ie(e[r],t[r],n))return!1;return!0}const r=Object.keys(e);if(r.length!==Object.keys(t).length)return!1;for(const i of r)if(!ie(e[i],t[i],n))return!1;return!0}function oe(e){if(!e)return[];if(1===e.length)return e[0];const t=[];for(const n of e)re(t,n);return t}function fe(e){if(!e)return[];const t=[];return\"$and\"in e&&Array.isArray(e.$and)?t.push(...e.$and.flatMap(fe)):\"$or\"in e&&Array.isArray(e.$or)?t.push(...e.$or.flatMap(fe)):\"$nor\"in e&&Array.isArray(e.$nor)?t.push(...e.$nor.flatMap(fe)):t.push(...Object.keys(e).map(e=>e.split(\".\")[0])),[...new Set(t)]}function ae(e,t,n=!0){return\"$and\"in t&&Array.isArray(t.$and)?t.$and.every(t=>ae(e,t,n)):\"$or\"in t&&Array.isArray(t.$or)?t.$or.some(t=>ae(e,t,n)):\"$nor\"in t&&Array.isArray(t.$nor)?!t.$nor.some(t=>ae(e,t,n)):Object.entries(t).every(([t,r])=>{const i=function(e,t){let n=e;for(const e of t.split(\".\"))n=n?.[e];return n}(e,t);return\"object\"!=typeof r||null===r||Array.isArray(r)?ie(i,r,n):Object.entries(r||{}).every(([e,r])=>\"$gt\"===e?i>r:\"$gte\"===e?i>=r:\"$lt\"===e?i<r:\"$lte\"===e?i<=r:\"$eq\"===e?ie(i,r,n):\"$ne\"===e?!ie(i,r,n):\"$in\"===e?Array.isArray(r)&&r.includes(i):\"$nin\"===e?Array.isArray(r)&&!r.includes(i):\"$not\"!==e||!ae({[t]:i},{[t]:r},n))})}function se({rowGroup:e,physicalColumns:t,filter:n,strict:r=!0,bloomFilters:i,schemaElements:o}){if(!n)return!1;if(\"$and\"in n&&Array.isArray(n.$and))return n.$and.some(n=>se({rowGroup:e,physicalColumns:t,filter:n,strict:r,bloomFilters:i,schemaElements:o}));if(\"$or\"in n&&Array.isArray(n.$or))return n.$or.every(n=>se({rowGroup:e,physicalColumns:t,filter:n,strict:r,bloomFilters:i,schemaElements:o}));if(\"$nor\"in n&&Array.isArray(n.$nor))return!1;for(const[f,a]of Object.entries(n)){const n=t.indexOf(f);if(-1===n)continue;const s=e.columns[n].meta_data?.statistics,{min:l,max:u,min_value:c,max_value:d}=s||{},p=void 0!==c?c:l,_=void 0!==d?d:u,y=void 0!==p&&void 0!==_,h=i?.[f],m=o?.[f];for(const[e,t]of Object.entries(a||{})){if(y){if(\"$gt\"===e&&_<=t)return!0;if(\"$gte\"===e&&_<t)return!0;if(\"$lt\"===e&&p>=t)return!0;if(\"$lte\"===e&&p>t)return!0;if(\"$eq\"===e&&(t<p||t>_))return!0;if(\"$ne\"===e&&ie(p,_,r)&&ie(p,t,r))return!0;if(\"$in\"===e&&Array.isArray(t)&&t.every(e=>e<p||e>_))return!0;if(\"$nin\"===e&&Array.isArray(t)&&ie(p,_,r)&&t.includes(p))return!0}if(h&&m){if(\"$eq\"===e){const e=K(t,m);if(void 0!==e&&!Q(h.blocks,e))return!0}if(\"$in\"===e&&Array.isArray(t)&&t.length>0){let e=!0;for(const n of t){const t=K(n,m);if(void 0===t||Q(h.blocks,t)){e=!1;break}}if(e)return!0}}}}return!1}const le=new TextDecoder,ue=new WeakMap;function ce(e,t=p){if(Array.isArray(e))return e.map(e=>ce(e,t));if(\"object\"!=typeof e)return e;if(\"metadata\"in e){const n=function(e){let t=ue.get(e.buffer);t||(t=new Map,ue.set(e.buffer,t));const n=`${e.byteOffset}:${e.byteLength}`,r=t.get(n);if(r)return r;const i=pe(e),o=i.view.getUint8(i.offset++),f=15&o;if(1!==f)throw new Error(`parquet unsupported variant metadata version: ${f}`);const a=1==(o>>4&1),s=1+(o>>6&3),l=_e(i,s),u=new Array(l+1);for(let e=0;e<u.length;e++)u[e]=_e(i,s);const c=i.offset,d=new Array(l);for(let t=0;t<l;t++){const n=u[t],r=u[t+1],i=new Uint8Array(e.buffer,e.byteOffset+c+n,r-n);d[t]=le.decode(i)}const p={dictionary:d,sorted:a};return t.set(n,p),p}(e.metadata),r=e.typed_value&&de(e.typed_value,n,t),i=e.value&&ye(pe(e.value),n,t);return r&&i?{...i,...r}:r??i}return e}function de(e,t,n){if(e instanceof Date)return e;if(e&&\"object\"==typeof e&&!Array.isArray(e)&&!(e instanceof Uint8Array)){if(\"typed_value\"in e&&null!==e.typed_value&&void 0!==e.typed_value)return de(e.typed_value,t,n);if(\"value\"in e&&e.value instanceof Uint8Array)return ye(pe(e.value),t,n);if(\"typed_value\"in e||\"value\"in e)return null;const r={};for(const[i,o]of Object.entries(e))t.dictionary.includes(i)&&(r[i]=de(o,t,n));return r}return e instanceof Uint8Array?ye(pe(e),t,n):Array.isArray(e)?e.map(e=>de(e,t,n)):e}function pe(e){return{view:new DataView(e.buffer,e.byteOffset,e.byteLength),offset:0}}function _e(e,t){let n=0;for(let r=0;r<t;r++)n|=e.view.getUint8(e.offset+r)<<8*r;return e.offset+=t,n}function ye(e,t,n){const r=e.view.getUint8(e.offset++),i=3&r,o=r>>2;if(0===i)return function(e,t,n){switch(t){case 0:return null;case 1:return!0;case 2:return!1;case 3:{const t=e.view.getInt8(e.offset);return e.offset+=1,t}case 4:{const t=e.view.getInt16(e.offset,!0);return e.offset+=2,t}case 5:{const t=e.view.getInt32(e.offset,!0);return e.offset+=4,t}case 6:{const t=e.view.getBigInt64(e.offset,!0);return e.offset+=8,t}case 7:{const t=e.view.getFloat64(e.offset,!0);return e.offset+=8,t}case 8:return he(e,4);case 9:return he(e,8);case 10:return he(e,16);case 11:{const t=e.view.getInt32(e.offset,!0);return e.offset+=4,n.dateFromDays(t)}case 12:case 13:{const t=e.view.getBigInt64(e.offset,!0);return e.offset+=8,n.timestampFromMicroseconds(t)}case 14:{const t=e.view.getFloat32(e.offset,!0);return e.offset+=4,t}case 15:return me(e);case 16:{const t=me(e);return le.decode(t)}case 17:{const t=e.view.getBigInt64(e.offset,!0);return e.offset+=8,t}case 18:case 19:{const t=e.view.getBigInt64(e.offset,!0);return e.offset+=8,n.timestampFromNanoseconds(t)}case 20:{const t=new Uint8Array(e.view.buffer,e.view.byteOffset+e.offset,16);e.offset+=16;const n=Array.from(t,e=>e.toString(16).padStart(2,\"0\")).join(\"\");return`${n.slice(0,8)}-${n.slice(8,12)}-${n.slice(12,16)}-${n.slice(16,20)}-${n.slice(20)}`}default:throw new Error(`parquet unsupported variant primitive type: ${t}`)}}(e,o,n);if(2===i)return function(e,t,n,r){const i=1+(3&t),o=1+(t>>2&3),f=t>>4&1?_e(e,4):e.view.getUint8(e.offset++),a=new Array(f);for(let t=0;t<f;t++)a[t]=_e(e,o);const s=new Array(f+1);for(let t=0;t<s.length;t++)s[t]=_e(e,i);const l={};for(let t=0;t<f;t++){const i=n.dictionary[a[t]],o={view:e.view,offset:e.offset+s[t]};l[i]=ye(o,n,r)}return e.offset+=s[s.length-1],l}(e,o,t,n);if(3===i)return function(e,t,n,r){const i=(3&t)+1,o=_e(e,t>>2&1?4:1),f=new Array(o+1);for(let t=0;t<f.length;t++)f[t]=_e(e,i);const a=e.offset,s=new Array(o);for(let t=0;t<o;t++){const i={view:e.view,offset:a+f[t]};s[t]=ye(i,n,r)}return e.offset=a+f[f.length-1],s}(e,o,t,n);const f=new Uint8Array(e.view.buffer,e.view.byteOffset+e.offset,o);return e.offset+=o,le.decode(f)}function he(e,t){const n=e.view.getUint8(e.offset);let r;if(e.offset+=1,4===t)r=BigInt(e.view.getInt32(e.offset,!0)),e.offset+=4;else if(8===t)r=e.view.getBigInt64(e.offset,!0),e.offset+=8;else{const t=e.view.getBigUint64(e.offset,!0);r=e.view.getBigInt64(e.offset+8,!0)<<64n|t,e.offset+=16}return Number(r)*10**-n}function me(e){const t=e.view.getUint32(e.offset,!0);e.offset+=4;const n=new Uint8Array(e.view.buffer,e.view.byteOffset+e.offset,t);return e.offset+=t,n}function ge(e,t,n,r,i){const o=v(i);if(!t?.length&&!n.length){if(!o||!r.length)return r;t=new Array(r.length).fill(o)}const f=t?.length||n.length,a=i.map(({element:e})=>e.repetition_type);let s=0;const l=[e];let u=e,c=0,d=0,p=0;if(n[0])for(;c<a.length-2&&p<n[0];)c++,\"REQUIRED\"!==a[c]&&(u=u.at(-1),l.push(u),d++),\"REPEATED\"===a[c]&&p++;for(let e=0;e<f;e++){const i=t?.length?t[e]:o,f=n[e];for(;c&&(f<p||\"REPEATED\"!==a[c]);)\"REQUIRED\"!==a[c]&&(l.pop(),d--),\"REPEATED\"===a[c]&&p--,c--;for(u=l.at(-1);(c<a.length-2||\"REPEATED\"===a[c+1])&&(d<i||\"REQUIRED\"===a[c+1]);){if(c++,\"REQUIRED\"!==a[c]){const e=[];u.push(e),u=e,l.push(e),d++}\"REPEATED\"===a[c]&&p++}i===o?u.push(r[s++]):c===a.length-2?u.push(null):u.push([])}if(!e.length)for(let e=0;e<o;e++){const e=[];u.push(e),u=e}return e}function we(e,t,n,r=0){const i=t.path.join(\".\"),o=\"OPTIONAL\"===t.element.repetition_type,f=o?r+1:r;if(function(e){if(!e)return!1;if(\"LIST\"!==e.element.converted_type)return!1;if(e.children.length>1)return!1;const t=e.children[0];return!(t.children.length>1)&&\"REPEATED\"===t.element.repetition_type}(t)){let a=t.children[0],s=f;1===a.children.length&&(a=a.children[0],s++),we(e,a,n,s);const l=a.path.join(\".\"),u=e.get(l);if(!u)throw new Error(\"parquet list column missing values\");return o&&Ae(u,r),e.set(i,u),void e.delete(l)}if(function(e){if(!e)return!1;if(\"MAP\"!==e.element.converted_type)return!1;if(e.children.length>1)return!1;const t=e.children[0];if(2!==t.children.length)return!1;if(\"REPEATED\"!==t.element.repetition_type)return!1;const n=t.children.find(e=>\"key\"===e.element.name);if(\"REPEATED\"===n?.element.repetition_type)return!1;const r=t.children.find(e=>\"value\"===e.element.name);return\"REPEATED\"!==r?.element.repetition_type}(t)){const a=t.children[0].element.name;we(e,t.children[0].children[0],n,f+1),we(e,t.children[0].children[1],n,f+1);const s=e.get(`${i}.${a}.key`),l=e.get(`${i}.${a}.value`);if(!s)throw new Error(\"parquet map column missing keys\");if(!l)throw new Error(\"parquet map column missing values\");if(s.length!==l.length)throw new Error(\"parquet map column key/value length mismatch\");const u=Ee(s,l,f);return o&&Ae(u,r),e.delete(`${i}.${a}.key`),e.delete(`${i}.${a}.value`),void e.set(i,u)}if(t.children.length){const f=\"REQUIRED\"===t.element.repetition_type?r:r+1,a={};for(const r of t.children){we(e,r,n,f);const t=e.get(r.path.join(\".\"));if(!t)throw new Error(\"parquet struct missing child data\");a[r.element.name]=t}for(const n of t.children)e.delete(n.path.join(\".\"));let s=ve(a,f);\"VARIANT\"===t.element.logical_type?.type&&(s=ce(s,n)),o&&Ae(s,r),e.set(i,s)}}function Ae(e,t){for(let n=0;n<e.length;n++)t?Ae(e[n],t-1):e[n]=e[n][0]}function Ee(e,t,n){const r=[];for(let i=0;i<e.length;i++)if(n)r.push(Ee(e[i],t[i],n-1));else if(e[i]){const n={};for(let r=0;r<e[i].length;r++){const o=t[i][r];n[e[i][r]]=void 0===o?null:o}r.push(n)}else r.push(void 0);return r}function ve(e,t){const n=Object.keys(e),r=e[n[0]]?.length,i=[];for(let o=0;o<r;o++){const f={};for(const t of n){if(e[t].length!==r)throw new Error(\"parquet struct parsing error\");f[t]=e[t][o]}t?i.push(ve(f,t-1)):i.push(f)}return i}function Ie(e,t,n){const r=n instanceof Int32Array,i=N(e),o=N(e);N(e);let f=L(e),a=0;n[a++]=r?Number(f):f;const s=i/o;for(;a<t;){const i=L(e),l=new Uint8Array(o);for(let t=0;t<o;t++)l[t]=e.view.getUint8(e.offset++);for(let u=0;u<o&&a<t;u++){const o=BigInt(l[u]);if(o){let l=0n,u=s;const c=(1n<<o)-1n;for(;u&&a<t;){let t=BigInt(e.view.getUint8(e.offset))>>l&c;for(l+=o;l>=8;)l-=8n,e.offset++,l&&(t|=BigInt(e.view.getUint8(e.offset))<<o-l&c);f+=i+t,n[a++]=r?Number(f):f,u--}u&&(e.offset+=Math.ceil((u*Number(o)+Number(l))/8))}else for(let e=0;e<s&&a<t;e++)f+=i,n[a++]=r?Number(f):f}}}function be(e,t,n){const r=new Int32Array(t);Ie(e,t,r);for(let i=0;i<t;i++)n[i]=new Uint8Array(e.view.buffer,e.view.byteOffset+e.offset,r[i]),e.offset+=r[i]}function Te(e,t,n,r){void 0===r&&(r=e.view.getUint32(e.offset,!0),e.offset+=4);const i=e.offset;let o=0;for(;o<n.length;){const r=N(e);if(1&r)o=Ue(e,r,t,n,o);else{const i=r>>>1;Ne(e,i,t,n,o),o+=i}}e.offset=i+r}function Ne(e,t,n,r,i){const o=n+7>>3;let f=0;for(let t=0;t<o;t++)f|=e.view.getUint8(e.offset++)<<(t<<3);for(let e=0;e<t;e++)r[i+e]=f}function Ue(e,t,n,r,i){let o=t>>1<<3;const f=(1<<n)-1;let a=0;if(e.offset<e.view.byteLength)a=e.view.getUint8(e.offset++);else if(f)throw new Error(`parquet bitpack offset ${e.offset} out of range`);let s=8,l=0;for(;o;)l>8?(l-=8,s-=8,a>>>=8):s-l<n?(a|=e.view.getUint8(e.offset)<<s,e.offset++,s+=8):(i<r.length&&(r[i++]=a>>l&f),o--,l+=n);return i}function Le(e,t,n,r){const i=function(e,t){switch(e){case\"INT32\":case\"FLOAT\":return 4;case\"INT64\":case\"DOUBLE\":return 8;case\"FIXED_LEN_BYTE_ARRAY\":if(!t)throw new Error(\"parquet byteWidth missing type_length\");return t;default:throw new Error(`parquet unsupported type: ${e}`)}}(n,r),o=new Uint8Array(t*i);for(let n=0;n<i;n++)for(let r=0;r<t;r++)o[r*i+n]=e.view.getUint8(e.offset++);if(\"FLOAT\"===n)return new Float32Array(o.buffer);if(\"DOUBLE\"===n)return new Float64Array(o.buffer);if(\"INT32\"===n)return new Int32Array(o.buffer);if(\"INT64\"===n)return new BigInt64Array(o.buffer);if(\"FIXED_LEN_BYTE_ARRAY\"===n){const e=new Array(t);for(let n=0;n<t;n++)e[n]=o.subarray(n*i,(n+1)*i);return e}throw new Error(`parquet byte_stream_split unsupported type: ${n}`)}function Oe(e,t,n,r){if(0===n)return[];if(\"BOOLEAN\"===t)return function(e,t){const n=new Array(t);for(let r=0;r<t;r++){const t=e.offset+(r/8|0),i=r%8,o=e.view.getUint8(t);n[r]=!!(o&1<<i)}return e.offset+=Math.ceil(t/8),n}(e,n);if(\"INT32\"===t)return function(e,t){const n=(e.view.byteOffset+e.offset)%4?new Int32Array(Be(e.view.buffer,e.view.byteOffset+e.offset,4*t)):new Int32Array(e.view.buffer,e.view.byteOffset+e.offset,t);return e.offset+=4*t,n}(e,n);if(\"INT64\"===t)return function(e,t){const n=(e.view.byteOffset+e.offset)%8?new BigInt64Array(Be(e.view.buffer,e.view.byteOffset+e.offset,8*t)):new BigInt64Array(e.view.buffer,e.view.byteOffset+e.offset,t);return e.offset+=8*t,n}(e,n);if(\"INT96\"===t)return function(e,t){const n=new Array(t);for(let r=0;r<t;r++){const t=e.view.getBigInt64(e.offset+12*r,!0),i=e.view.getInt32(e.offset+12*r+8,!0);n[r]=BigInt(i)<<64n|t}return e.offset+=12*t,n}(e,n);if(\"FLOAT\"===t)return function(e,t){const n=(e.view.byteOffset+e.offset)%4?new Float32Array(Be(e.view.buffer,e.view.byteOffset+e.offset,4*t)):new Float32Array(e.view.buffer,e.view.byteOffset+e.offset,t);return e.offset+=4*t,n}(e,n);if(\"DOUBLE\"===t)return function(e,t){const n=(e.view.byteOffset+e.offset)%8?new Float64Array(Be(e.view.buffer,e.view.byteOffset+e.offset,8*t)):new Float64Array(e.view.buffer,e.view.byteOffset+e.offset,t);return e.offset+=8*t,n}(e,n);if(\"BYTE_ARRAY\"===t)return function(e,t){const n=new Array(t);for(let r=0;r<t;r++){const t=e.view.getUint32(e.offset,!0);e.offset+=4,n[r]=new Uint8Array(e.view.buffer,e.view.byteOffset+e.offset,t),e.offset+=t}return n}(e,n);if(\"FIXED_LEN_BYTE_ARRAY\"===t){if(!r)throw new Error(\"parquet missing fixed length\");return function(e,t,n){const r=new Array(t);for(let i=0;i<t;i++)r[i]=new Uint8Array(e.view.buffer,e.view.byteOffset+e.offset,n),e.offset+=n;return r}(e,n,r)}throw new Error(`parquet unhandled type: ${t}`)}function Be(e,t,n){const r=new ArrayBuffer(n);return new Uint8Array(r).set(new Uint8Array(e,t,n)),r}const Re=[0,255,65535,16777215,4294967295];function De(e,t,n,r,i){for(let o=0;o<i;o++)n[r+o]=e[t+o]}function Me(e,t){const n=e.byteLength,r=t.byteLength;let i=0,o=0;for(;i<n;){const t=e[i];if(i++,t<128)break}if(r&&i>=n)throw new Error(\"invalid snappy length header\");for(;i<n;){const r=e[i];let f=0;if(i++,i>=n)throw new Error(\"missing eof marker\");if(3&r){let a=0;switch(3&r){case 1:f=4+(r>>>2&7),a=e[i]+(r>>>5<<8),i++;break;case 2:if(n<=i+1)throw new Error(\"snappy error end of input\");f=(r>>>2)+1,a=e[i]+(e[i+1]<<8),i+=2;break;case 3:if(n<=i+3)throw new Error(\"snappy error end of input\");f=(r>>>2)+1,a=e[i]+(e[i+1]<<8)+(e[i+2]<<16)+(e[i+3]<<24),i+=4}if(0===a||isNaN(a))throw new Error(`invalid offset ${a} pos ${i} inputLength ${n}`);if(a>o)throw new Error(\"cannot copy from before start of buffer\");De(t,o-a,t,o,f),o+=f}else{let f=(r>>>2)+1;if(f>60){if(i+3>=n)throw new Error(\"snappy error literal pos + 3 >= inputLength\");const t=f-60;f=e[i]+(e[i+1]<<8)+(e[i+2]<<16)+(e[i+3]<<24),f=1+(f&Re[t]),i+=t}if(i+f>n)throw new Error(\"snappy error literal exceeds input length\");De(e,i,t,o,f),i+=f,o+=f}}if(o!==r)throw new Error(\"premature end of input\")}function Se(e,t,n,r){let i;const o=r?.[n];if(\"UNCOMPRESSED\"===n)i=e;else if(o)i=o(e,t);else{if(\"SNAPPY\"!==n)throw new Error(`parquet unsupported compression codec: ${n}`);i=new Uint8Array(t),Me(e,i)}if(i?.length!==t)throw new Error(`parquet decompressed page length ${i?.length} does not match header ${t}`);return i}function xe(e){return 32-Math.clz32(e)}function Pe(e,{groupStart:t,selectStart:n,selectEnd:r},i,o){const{pathInSchema:f,schemaPath:a}=i,s=I(a),l=[];let u,c,d=0,p=0;const _=o&&(()=>{c&&o({pathInSchema:f,columnData:c,rowStart:t+d-c.length,rowEnd:t+d})});for(;(s?d<r:e.offset<e.view.byteLength-1)&&!(e.offset>=e.view.byteLength-1);){const t=Fe(e);if(\"DICTIONARY_PAGE\"===t.type){const{data:n}=Ye(e,t,i,u,void 0,0);n&&(u=y(n,i))}else{const r=c?.length||0,o=Ye(e,t,i,u,c,n-d);o.skipped?(l.length||(p+=o.skipped),d+=o.skipped):o.data&&c===o.data?d+=o.data.length-r:o.data&&o.data.length&&(_?.(),l.push(o.data),d+=o.data.length,c=o.data)}}return _?.(),{data:l,skipped:p}}function Ye(e,t,n,r,i,o){const{type:f,element:a,schemaPath:s,codec:l,compressors:u}=n,c=new Uint8Array(e.view.buffer,e.view.byteOffset+e.offset,t.compressed_page_size);if(e.offset+=t.compressed_page_size,\"DATA_PAGE\"===t.type){const e=t.data_page_header;if(!e)throw new Error(\"parquet data page header is undefined\");if(o>e.num_values&&I(s))return{skipped:e.num_values};const f=Se(c,Number(t.uncompressed_page_size),l,u),{definitionLevels:a,repetitionLevels:d,dataPage:p}=function(e,t,{type:n,element:r,schemaPath:i}){const o=new DataView(e.buffer,e.byteOffset,e.byteLength),f={view:o,offset:0};let a;const s=function(e,t,n){if(n.length>1){const r=E(n);if(r){const n=new Array(t.num_values);return Te(e,xe(r),n),n}}return[]}(f,t,i),{definitionLevels:l,numNulls:u}=function(e,t,n){const r=v(n);if(!r)return{definitionLevels:[],numNulls:0};const i=new Array(t.num_values);Te(e,xe(r),i);let o=t.num_values;for(const e of i)e===r&&o--;return 0===o&&(i.length=0),{definitionLevels:i,numNulls:o}}(f,t,i),c=t.num_values-u;if(\"PLAIN\"===t.encoding)a=Oe(f,n,c,r.type_length);else if(\"PLAIN_DICTIONARY\"===t.encoding||\"RLE_DICTIONARY\"===t.encoding||\"RLE\"===t.encoding){const e=\"BOOLEAN\"===n?1:o.getUint8(f.offset++);e?(a=new Array(c),\"BOOLEAN\"===n?(Te(f,e,a),a=a.map(e=>!!e)):Te(f,e,a,o.byteLength-f.offset)):a=new Uint8Array(c)}else if(\"BYTE_STREAM_SPLIT\"===t.encoding)a=Le(f,c,n,r.type_length);else if(\"DELTA_BINARY_PACKED\"===t.encoding)a=\"INT32\"===n?new Int32Array(c):new BigInt64Array(c),Ie(f,c,a);else{if(\"DELTA_LENGTH_BYTE_ARRAY\"!==t.encoding)throw new Error(`parquet unsupported encoding: ${t.encoding}`);a=new Array(c),be(f,c,a)}return{definitionLevels:l,repetitionLevels:s,dataPage:a}}(f,e,n),y=_(p,r,e.encoding,n);return{skipped:0,data:ge(Array.isArray(i)?i:[],a,d,y,s)}}if(\"DATA_PAGE_V2\"===t.type){const e=t.data_page_header_v2;if(!e)throw new Error(\"parquet data page header v2 is undefined\");if(o>e.num_rows)return{skipped:e.num_values};const{definitionLevels:f,repetitionLevels:a,dataPage:l}=function(e,t,n){const r={view:new DataView(e.buffer,e.byteOffset,e.byteLength),offset:0},{type:i,element:o,schemaPath:f,codec:a,compressors:s}=n,l=t.data_page_header_v2;if(!l)throw new Error(\"parquet data page header v2 is undefined\");const u=function(e,t,n){const r=E(n);if(!r)return[];const i=new Array(t.num_values);return Te(e,xe(r),i,t.repetition_levels_byte_length),i}(r,l,f);r.offset=l.repetition_levels_byte_length;const c=function(e,t,n){const r=v(n);if(r){const n=new Array(t.num_values);return Te(e,xe(r),n,t.definition_levels_byte_length),n}}(r,l,f),d=t.uncompressed_page_size-l.definition_levels_byte_length-l.repetition_levels_byte_length;let p=e.subarray(r.offset);!1!==l.is_compressed&&(p=Se(p,d,a,s));const _=new DataView(p.buffer,p.byteOffset,p.byteLength),y={view:_,offset:0};let h;const m=l.num_values-l.num_nulls;if(\"PLAIN\"===l.encoding)h=Oe(y,i,m,o.type_length);else if(\"RLE\"===l.encoding)h=new Array(m),Te(y,1,h),h=h.map(e=>!!e);else if(\"PLAIN_DICTIONARY\"===l.encoding||\"RLE_DICTIONARY\"===l.encoding){const e=_.getUint8(y.offset++);h=new Array(m),Te(y,e,h,d-1)}else if(\"DELTA_BINARY_PACKED\"===l.encoding)h=\"INT32\"===i?new Int32Array(m):new BigInt64Array(m),Ie(y,m,h);else if(\"DELTA_LENGTH_BYTE_ARRAY\"===l.encoding)h=new Array(m),be(y,m,h);else if(\"DELTA_BYTE_ARRAY\"===l.encoding)h=new Array(m),function(e,t,n){const r=new Int32Array(t);Ie(e,t,r);const i=new Int32Array(t);Ie(e,t,i);for(let o=0;o<t;o++){const t=new Uint8Array(e.view.buffer,e.view.byteOffset+e.offset,i[o]);r[o]?(n[o]=new Uint8Array(r[o]+i[o]),n[o].set(n[o-1].subarray(0,r[o])),n[o].set(t,r[o])):n[o]=t,e.offset+=i[o]}}(y,m,h);else{if(\"BYTE_STREAM_SPLIT\"!==l.encoding)throw new Error(`parquet unsupported encoding: ${l.encoding}`);h=Le(y,m,i,o.type_length)}return{definitionLevels:c,repetitionLevels:u,dataPage:h}}(c,t,n),u=_(l,r,e.encoding,n);return{skipped:0,data:ge(Array.isArray(i)?i:[],f,a,u,s)}}if(\"DICTIONARY_PAGE\"===t.type){const e=t.dictionary_page_header;if(!e)throw new Error(\"parquet dictionary page header is undefined\");const n=Se(c,Number(t.uncompressed_page_size),l,u);return{skipped:0,data:Oe({view:new DataView(n.buffer,n.byteOffset,n.byteLength),offset:0},f,e.num_values,a.type_length)}}throw new Error(`parquet unsupported page type: ${t.type}`)}function Fe(e){const n=b(e);return{type:o[n.field_1],uncompressed_page_size:n.field_2,compressed_page_size:n.field_3,crc:n.field_4,data_page_header:n.field_5&&{num_values:n.field_5.field_1,encoding:t[n.field_5.field_2],definition_level_encoding:t[n.field_5.field_3],repetition_level_encoding:t[n.field_5.field_4],statistics:n.field_5.field_5&&{max:n.field_5.field_5.field_1,min:n.field_5.field_5.field_2,null_count:n.field_5.field_5.field_3,distinct_count:n.field_5.field_5.field_4,max_value:n.field_5.field_5.field_5,min_value:n.field_5.field_5.field_6}},index_page_header:n.field_6,dictionary_page_header:n.field_7&&{num_values:n.field_7.field_1,encoding:t[n.field_7.field_2],is_sorted:n.field_7.field_3},data_page_header_v2:n.field_8&&{num_values:n.field_8.field_1,num_nulls:n.field_8.field_2,num_rows:n.field_8.field_3,encoding:t[n.field_8.field_4],definition_levels_byte_length:n.field_8.field_5,repetition_levels_byte_length:n.field_8.field_6,is_compressed:void 0===n.field_8.field_7||n.field_8.field_7,statistics:n.field_8.field_8}}}async function $e({asyncColumns:e},t,n,r,i){const o=await Promise.all(e.map(e=>e.data.then(({skipped:e,data:t})=>({skipped:e,data:oe(t)})))),f=n-t;if(\"object\"===i){const n=Array(f);for(let r=0;r<f;r++){const i={};for(let n=0;n<e.length;n++){const{data:f,skipped:a}=o[n];i[e[n].pathInSchema[0]]=f[t+r-a]}n[r]=i}return n}const a=e.map(e=>e.pathInSchema[0]).filter(e=>!r||r.includes(e)),s=r??a,l=s.map(t=>e.findIndex(e=>e.pathInSchema[0]===t)),u=Array(f);for(let n=0;n<f;n++){const r=Array(e.length);for(let e=0;e<s.length;e++){const i=l[e];if(i<0)throw new Error(`parquet column not found: ${s[e]}`);const{data:f,skipped:a}=o[i];r[e]=f[t+n-a]}u[n]=r}return u}async function ke(e){e.metadata??=await R(e.file,e);const{rowStart:t=0,rowEnd:n,columns:r,onChunk:i,onComplete:o,rowFormat:f,filter:a,filterStrict:s=!0}=e;if(a&&\"object\"!==f)throw new Error('parquet filter requires rowFormat: \"object\"');const l=fe(a);if(l.length){const t=M(e.metadata).children.map(e=>e.element.name),n=l.filter(e=>!t.includes(e));if(n.length)throw new Error(`parquet filter columns not found: ${n.join(\", \")}`)}let u=r,c=!1;if(r&&a){const e=l.filter(e=>!r.includes(e));e.length&&(u=[...r,...e],c=!0)}let d=u!==r?{...e,columns:u}:e;d=await async function(e){if(!e.useBloomFilters)return e;if(!e.filter||!e.metadata)return e;const t=M(e.metadata),n={};for(const e of t.children)n[e.element.name]=e.element;const r=await async function({file:e,metadata:t,filter:n,filterStrict:r=!0}){const i=t.row_groups.map(()=>({})),o=ee(n);if(0===o.size)return i;const f=A(M(t)),a=[];return t.row_groups.forEach((t,s)=>{if(!se({rowGroup:t,physicalColumns:f,filter:n,strict:r}))for(const n of o){const r=f.indexOf(n);if(-1===r)continue;const o=t.columns[r]?.meta_data;if(!o?.bloom_filter_offset||!o.bloom_filter_length)continue;const l=Number(o.bloom_filter_offset),u=l+o.bloom_filter_length;a.push((async()=>{const t=await e.slice(l,u),r=W({view:new DataView(t),offset:0});r&&(i[s][n]=r)})())}}),a.length&&await Promise.all(a),i}({file:e.file,metadata:e.metadata,filter:e.filter,filterStrict:e.filterStrict});return{...e,bloomFiltersByGroup:r,schemaElements:n}}(d);const _=function(e){if(!e.metadata)throw new Error(\"parquet requires metadata\");const t=function({metadata:e,rowStart:t=0,rowEnd:n=1/0,columns:r,filter:i,filterStrict:o=!0,useOffsetIndex:f=!1,bloomFiltersByGroup:a,schemaElements:s}){if(!e)throw new Error(\"parquetPlan requires metadata\");const l=[],u=[],c=[],d=A(M(e));let p=0,_=0;for(const y of e.row_groups){const e=Number(y.num_rows),h=p+e,m=a?.[_];if(e>0&&h>t&&p<n&&!se({rowGroup:y,physicalColumns:d,filter:i,strict:o,bloomFilters:m,schemaElements:s})){const i=[];for(const e of y.columns){const o=e.meta_data;if(e.file_path)throw new Error(\"parquet file_path not supported\");if(!o)throw new Error(\"parquet column metadata is undefined\");if(!r||r.includes(o.path_in_schema[0])){const r=o.dictionary_page_offset||o.data_page_offset,a=Number(r),s=Number(r+o.total_compressed_size);if(f&&e.offset_index_offset&&e.offset_index_length&&(t>p||n<h)){const t=Number(e.offset_index_offset);i.push({columnMetadata:o,offsetIndex:{startByte:t,endByte:t+e.offset_index_length},range:{startByte:a,endByte:s}})}else i.push({columnMetadata:o,range:{startByte:a,endByte:s}})}}const o=Math.max(t-p,0),a=Math.min(n-p,e);let s;l.push({chunks:i,rowGroup:y,groupStart:p,groupRows:e,selectStart:o,selectEnd:a});for(const e of i)if(\"offsetIndex\"in e)c.push(e.offsetIndex);else{const{range:t}=e;r?u.push(t):s&&t.endByte-s.startByte<=2097152?s.endByte=t.endByte:(s&&u.push(s),s={...t})}s&&u.push(s)}p=h,_++}return isFinite(n)||(n=p),u.push(...c),{metadata:e,rowStart:t,rowEnd:n,columns:r,fetches:u,groups:l}}(e);return e.file=function(e,{fetches:t}){const n=t.map(({startByte:t,endByte:n})=>e.slice(t,n));return{byteLength:e.byteLength,slice(r,i=e.byteLength){const o=t.findIndex(({startByte:e,endByte:t})=>e<=r&&i<=t);if(o<0)return e.slice(r,i);if(t[o].startByte!==r||t[o].endByte!==i){const e=r-t[o].startByte,f=i-t[o].startByte;return n[o]instanceof Promise?n[o].then(t=>t.slice(e,f)):n[o].slice(e,f)}return n[o]}}}(e.file,t),t.groups.map(n=>function(e,{metadata:t},n){const r=[];for(const i of n.chunks){const{data_page_offset:o,dictionary_page_offset:f,path_in_schema:a}=i.columnMetadata,s=w(t.schema,a),l={pathInSchema:a,element:s[s.length-1].element,schemaPath:s,parsers:{...p,...e.parsers},...e,...i.columnMetadata};let{startByte:u,endByte:c}=i.range;\"offsetIndex\"in i?r.push({pathInSchema:a,data:Promise.resolve(e.file.slice(i.offsetIndex.startByte,i.offsetIndex.endByte)).then(async t=>{const{selectStart:r,selectEnd:i}=n,a=F({view:new DataView(t),offset:0}).page_locations;let s=-1;const d=f||o<a[0].offset;for(let e=0;e<a.length;e++){const t=a[e],o=Number(t.first_row_index),f=e+1<a.length?Number(a[e+1].first_row_index):n.groupRows;s<0&&!d&&f>r&&(u=Number(t.offset),s=o),o<i&&(c=Number(t.offset)+t.compressed_page_size)}s<0&&(s=0);const p=await e.file.slice(u,c),_={view:new DataView(p),offset:0},y=s?{...n,groupStart:n.groupStart+s,selectStart:n.selectStart-s,selectEnd:n.selectEnd-s}:n,{data:h,skipped:m}=Pe(_,y,l,e.onPage);return{data:h,skipped:s+m}})}):r.push({pathInSchema:a,data:Promise.resolve(e.file.slice(u,c)).then(t=>Pe({view:new DataView(t),offset:0},n,l,e.onPage))})}return{groupStart:n.groupStart,groupRows:n.groupRows,asyncColumns:r}}(e,t,n))}(d);if(!o&&!i)return void await Ce(_);const y=M(e.metadata),h=_.map(t=>function(e,t,n){const{asyncColumns:r}=e;n={...p,...n};const i=[];for(const e of t.children)if(e.children.length){const t=r.filter(t=>t.pathInSchema[0]===e.element.name);if(!t.length)continue;i.push({pathInSchema:e.path,data:(async()=>{const r=await Promise.all(t.map(e=>e.data)),i=new Map;let o=1/0;for(let e=0;e<t.length;e++){const n=oe(r[e].data);i.set(t[e].pathInSchema.join(\".\"),n),o=Math.min(o,n.length)}for(const[e,t]of i)t.length>o&&i.set(e,t.slice(0,o));we(i,e,n);const f=i.get(e.element.name);if(!f)throw new Error(\"parquet column data not assembled\");return{data:[f],skipped:0}})()})}else{const t=r.find(t=>t.pathInSchema[0]===e.element.name);t&&i.push(t)}return{...e,asyncColumns:i}}(t,y,e.parsers));if(i)for(const e of h)for(const t of e.asyncColumns)t.data.then(({data:n,skipped:r})=>{let o=e.groupStart+r;for(const e of n)i({columnName:t.pathInSchema[0],columnData:e,rowStart:o,rowEnd:o+e.length}),o+=e.length},()=>{});if(o){await Ce(h);const e=[];for(const i of h){const o=Math.max(t-i.groupStart,0),d=Math.min((n??1/0)-i.groupStart,i.groupRows),p=\"object\"===f?await $e(i,o,d,u,\"object\"):await $e(i,o,d,r,\"array\");if(a){for(const t of p)if(ae(t,a,s)){if(c&&r)for(const e of l)r.includes(e)||delete t[e];e.push(t)}}else re(e,p)}o(e)}else await Ce(h)}async function Ce(e){const t=e.flatMap(e=>e.asyncColumns.map(e=>e.data)),n=(await Promise.allSettled(t)).find(e=>\"rejected\"===e.status);if(n)throw n.reason}function Ge(e){return new Promise((t,n)=>{ke({...e,rowFormat:\"object\",onComplete:t}).catch(n)})}function qe(e=1024){return this.buffer=new ArrayBuffer(e),this.view=new DataView(this.buffer),this.offset=0,this.index=0,this}function je(e,t,n){const r=e[t],i=[];let o=1;if(r.num_children)for(;i.length<r.num_children;){const r=e[t+o],f=je(e,t+o,[...n,r.name]);o+=f.count,i.push(f)}return{count:o,element:r,children:i,path:n}}function Ve(e,t){let n=je(e,0,[]);const r=[n];for(const e of t){const i=n.children.find(t=>t.element.name===e);if(!i)throw new Error(`parquet schema element not found: ${t}`);r.push(i),n=i}return r}function ze(e){if(!e)return!1;if(\"LIST\"!==e.element.converted_type)return!1;if(e.children.length>1)return!1;const t=e.children[0];return!(t.children.length>1)&&\"REPEATED\"===t.element.repetition_type}function Xe(e){if(!e)return!1;if(\"MAP\"!==e.element.converted_type)return!1;if(e.children.length>1)return!1;const t=e.children[0];if(2!==t.children.length)return!1;if(\"REPEATED\"!==t.element.repetition_type)return!1;const n=t.children.find(e=>\"key\"===e.element.name);if(\"REPEATED\"===n?.element.repetition_type)return!1;const r=t.children.find(e=>\"value\"===e.element.name);return\"REPEATED\"!==r?.element.repetition_type}qe.prototype.ensure=function(e){if(this.index+e>this.buffer.byteLength){const t=Math.max(2*this.buffer.byteLength,this.index+e),n=new ArrayBuffer(t);new Uint8Array(n).set(new Uint8Array(this.buffer)),this.buffer=n,this.view=new DataView(this.buffer)}},qe.prototype.finish=function(){},qe.prototype.getBuffer=function(){return this.buffer.slice(0,this.index)},qe.prototype.getBytes=function(){return new Uint8Array(this.buffer,0,this.index)},qe.prototype.appendUint8=function(e){this.ensure(this.index+1),this.view.setUint8(this.index,e),this.offset++,this.index++},qe.prototype.appendUint32=function(e){this.ensure(this.index+4),this.view.setUint32(this.index,e,!0),this.offset+=4,this.index+=4},qe.prototype.appendInt32=function(e){this.ensure(this.index+4),this.view.setInt32(this.index,e,!0),this.offset+=4,this.index+=4},qe.prototype.appendInt64=function(e){this.ensure(this.index+8),this.view.setBigInt64(this.index,BigInt(e),!0),this.offset+=8,this.index+=8},qe.prototype.appendFloat32=function(e){this.ensure(this.index+8),this.view.setFloat32(this.index,e,!0),this.offset+=4,this.index+=4},qe.prototype.appendFloat64=function(e){this.ensure(this.index+8),this.view.setFloat64(this.index,e,!0),this.offset+=8,this.index+=8},qe.prototype.appendBuffer=function(e){this.appendBytes(new Uint8Array(e))},qe.prototype.appendBytes=function(e){this.ensure(this.index+e.length),new Uint8Array(this.buffer,this.index,e.length).set(e),this.offset+=e.length,this.index+=e.length},qe.prototype.appendVarInt=function(e){for(;;){if(!(-128&e))return void this.appendUint8(e);this.appendUint8(127&e|128),e>>>=7}},qe.prototype.appendVarBigInt=function(e){for(;;){if(0n==(-128n&e))return void this.appendUint8(Number(e));this.appendUint8(Number(0x7fn&e|0x80n)),e>>=7n}},qe.prototype.appendZigZag=function(e){\"number\"==typeof e?this.appendVarInt(e<<1^e>>31):this.appendVarBigInt(e<<1n^e>>63n)};const Ze=0xffffffffffffffffn,He=0x9e3779b185ebca87n,Je=0xc2b2ae3d27d4eb4fn,Qe=0x165667b19e3779f9n,We=0x85ebca77c2b2ae63n,Ke=0x27d4eb2f165667c5n;function et(e,t){return(e<<t|e>>64n-t)&Ze}function tt(e,t){return(e=et(e=e+t*Je&Ze,31n))*He&Ze}function nt(e,t){return(e^=tt(0n,t))*He+We&Ze}function rt(e,t=0n){const n=new DataView(e.buffer,e.byteOffset,e.byteLength),r=e.byteLength;let i,o=0;if(r>=32){let e=t+He+Je&Ze,f=t+Je&Ze,a=t,s=t-He&Ze;for(;o+32<=r;)e=tt(e,n.getBigUint64(o,!0)),o+=8,f=tt(f,n.getBigUint64(o,!0)),o+=8,a=tt(a,n.getBigUint64(o,!0)),o+=8,s=tt(s,n.getBigUint64(o,!0)),o+=8;i=et(e,1n)+et(f,7n)+et(a,12n)+et(s,18n)&Ze,i=nt(i,e),i=nt(i,f),i=nt(i,a),i=nt(i,s)}else i=t+Ke&Ze;for(i=i+BigInt(r)&Ze;o+8<=r;)i^=tt(0n,n.getBigUint64(o,!0)),i=et(i,27n)*He+We&Ze,o+=8;for(o+4<=r&&(i^=BigInt(n.getUint32(o,!0))*He&Ze,i=et(i,23n)*Je+Qe&Ze,o+=4);o<r;)i^=BigInt(n.getUint8(o))*Ke&Ze,i=et(i,11n)*He&Ze,o+=1;return i^=i>>33n,i=i*Je&Ze,i^=i>>29n,i=i*Qe&Ze,i^=i>>32n,i}const it=new TextEncoder;function ot(e,t){ft(e,12,t)}function ft(e,t,n){if(1!==t&&2!==t)if(3===t&&\"number\"==typeof n)e.appendUint8(n);else if(5===t&&\"number\"==typeof n)e.appendZigZag(n);else if(6===t&&\"bigint\"==typeof n)e.appendZigZag(n);else if(7===t&&\"number\"==typeof n)e.appendFloat64(n);else if(8===t&&\"string\"==typeof n){const t=(new TextEncoder).encode(n);e.appendVarInt(t.length),e.appendBytes(t)}else if(8===t&&n instanceof Uint8Array)e.appendVarInt(n.byteLength),e.appendBytes(n);else if(9===t&&Array.isArray(n)){const t=function(e){let t=0;for(const n of e){let e=at(n);if(1===e&&(e=2),t||(t=e),7===t&&5===e&&(e=7),5===t&&7===e&&(t=7),e!==t)throw new Error(`thrift invalid type for list element: ${n} (expected type ${t})`)}return t??3}(n);if(n.length>14?(e.appendUint8(240|t),e.appendVarInt(n.length)):e.appendUint8(n.length<<4|t),2===t)for(const t of n)e.appendUint8(t?1:0);else for(const r of n)ft(e,t,r)}else{if(12!==t||\"object\"!=typeof n)throw new Error(`thrift invalid type ${t} for value ${n}`);{let t=0;for(const[r,i]of Object.entries(n)){if(void 0===i)continue;const n=parseInt(r.replace(/^field_/,\"\"),10);if(Number.isNaN(n))throw new Error(`thrift invalid field name: ${r}. Expected \"field_###\"`);const o=at(i),f=n-t;if(f<=0)throw new Error(`thrift non-monotonic field id: fid=${n}, lastFid=${t}`);f>15?(e.appendUint8(o),e.appendZigZag(n)):e.appendUint8(f<<4|o),ft(e,o,i),t=n}e.appendUint8(0)}}}function at(e){if(!0===e)return 1;if(!1===e)return 2;if(Number.isInteger(e))return 5;if(\"number\"==typeof e)return 7;if(\"bigint\"==typeof e)return 6;if(\"string\"==typeof e)return 8;if(e instanceof Uint8Array)return 8;if(Array.isArray(e))return 9;if(e&&\"object\"==typeof e)return 12;throw new Error(`Cannot determine thrift compact type for: ${e}`)}const st=new Uint32Array([1203114875,1150766481,2284105051,2729912477,1884591559,770785867,2667333959,1550580529]);function lt(e,t){const n=function(e,t){return Number((e>>32n)*BigInt(t)>>32n)}(t,e.length>>3)<<3,r=function(e){const t=new Uint32Array(8),n=0|Number(0xffffffffn&e);for(let e=0;e<8;e++)t[e]=1<<(Math.imul(n,st[e])>>>27);return t}(t);for(let t=0;t<8;t++)e[n+t]|=r[t]}class ut{constructor(e,{fpp:t=.01,maxBytes:n=1048576}={}){this.element=e,this.fpp=t,this.maxBytes=n,this.hashes=new Set,this.skipped=0}insert(e){if(null==e)return;const t=function(e,t){if(null==e)return;const{type:n,converted_type:r,logical_type:i}=t;if(\"BOOLEAN\"===n){if(\"boolean\"!=typeof e)return;return rt(new Uint8Array([e?1:0]))}if(\"FLOAT\"===n){if(\"number\"!=typeof e)return;const t=new ArrayBuffer(4);return new DataView(t).setFloat32(0,e,!0),rt(new Uint8Array(t))}if(\"DOUBLE\"===n){if(\"number\"!=typeof e)return;const t=new ArrayBuffer(8);return new DataView(t).setFloat64(0,e,!0),rt(new Uint8Array(t))}if(\"INT32\"===n){if(\"DATE\"===r||\"DECIMAL\"===r||\"TIME_MILLIS\"===r)return;if(\"DATE\"===i?.type||\"TIME\"===i?.type||\"DECIMAL\"===i?.type)return;if(\"number\"!=typeof e||!Number.isInteger(e))return;const t=new ArrayBuffer(4);return new DataView(t).setInt32(0,0|e,!0),rt(new Uint8Array(t))}if(\"INT64\"===n){if(\"TIMESTAMP_MILLIS\"===r||\"TIMESTAMP_MICROS\"===r)return;if(\"TIME_MICROS\"===r||\"DECIMAL\"===r)return;if(\"TIMESTAMP\"===i?.type||\"TIME\"===i?.type||\"DECIMAL\"===i?.type)return;let t;if(\"bigint\"==typeof e)t=e;else{if(\"number\"!=typeof e||!Number.isSafeInteger(e))return;t=BigInt(e)}const n=new ArrayBuffer(8);return new DataView(n).setBigUint64(0,BigInt.asUintN(64,t),!0),rt(new Uint8Array(n))}if(\"BYTE_ARRAY\"===n){if(\"JSON\"===r||\"BSON\"===r||\"DECIMAL\"===r)return;if(\"JSON\"===i?.type||\"BSON\"===i?.type||\"VARIANT\"===i?.type)return;if(\"GEOMETRY\"===i?.type||\"GEOGRAPHY\"===i?.type)return;return\"string\"==typeof e?rt(it.encode(e)):e instanceof Uint8Array?rt(e):void 0}if(\"FIXED_LEN_BYTE_ARRAY\"===n){if(\"DECIMAL\"===r||\"INTERVAL\"===r)return;if(\"DECIMAL\"===i?.type||\"UUID\"===i?.type||\"FLOAT16\"===i?.type)return;if(\"GEOMETRY\"===i?.type||\"GEOGRAPHY\"===i?.type)return;return e instanceof Uint8Array?rt(e):void 0}}(e,this.element);void 0!==t?this.hashes.add(t):this.skipped++}finalize(){if(this.skipped>0||0===this.hashes.size)return;const e=function(e,t){if(!(t>0&&t<1))throw new Error(`bloom filter fpp must be in (0, 1), got ${t}`);if(!(e>=0))throw new Error(`bloom filter ndv must be >= 0, got ${e}`);const n=-8*e/Math.log(1-t**(1/8));let r=Math.ceil(n);(!isFinite(r)||r>1073741824)&&(r=1073741824),r=256*Math.ceil(r/256);let i=r>>3;return i<32&&(i=32),i<1024&&(i=function(e){let t=1;for(;t<e;)t<<=1;return t}(i)),i}(this.hashes.size,this.fpp);if(e>this.maxBytes)return;const t=new Uint32Array(e>>2);for(const e of this.hashes)lt(t,e);return t}}function ct(e,t){if(t.length%8!=0)throw new Error(`bloom filter block count must be a multiple of 8 uint32 words, got ${t.length}`);ot(e,{field_1:t.byteLength,field_2:{field_1:{}},field_3:{field_1:{}},field_4:{field_1:{}}});for(let n=0;n<t.length;n++)e.appendUint32(t[n])}const dt=[\"BOOLEAN\",\"INT32\",\"INT64\",\"INT96\",\"FLOAT\",\"DOUBLE\",\"BYTE_ARRAY\",\"FIXED_LEN_BYTE_ARRAY\"],pt=[\"PLAIN\",\"GROUP_VAR_INT\",\"PLAIN_DICTIONARY\",\"RLE\",\"BIT_PACKED\",\"DELTA_BINARY_PACKED\",\"DELTA_LENGTH_BYTE_ARRAY\",\"DELTA_BYTE_ARRAY\",\"RLE_DICTIONARY\",\"BYTE_STREAM_SPLIT\"],_t=[\"REQUIRED\",\"OPTIONAL\",\"REPEATED\"],yt=[\"UTF8\",\"MAP\",\"MAP_KEY_VALUE\",\"LIST\",\"ENUM\",\"DECIMAL\",\"DATE\",\"TIME_MILLIS\",\"TIME_MICROS\",\"TIMESTAMP_MILLIS\",\"TIMESTAMP_MICROS\",\"UINT_8\",\"UINT_16\",\"UINT_32\",\"UINT_64\",\"INT_8\",\"INT_16\",\"INT_32\",\"INT_64\",\"JSON\",\"BSON\",\"INTERVAL\"],ht=[\"UNCOMPRESSED\",\"SNAPPY\",\"GZIP\",\"LZO\",\"BROTLI\",\"LZ4\",\"ZSTD\",\"LZ4_RAW\"],mt=[\"DATA_PAGE\",\"INDEX_PAGE\",\"DICTIONARY_PAGE\",\"DATA_PAGE_V2\"],gt=[\"UNORDERED\",\"ASCENDING\",\"DESCENDING\"],wt=[\"SPHERICAL\",\"VINCENTY\",\"THOMAS\",\"ANDOYER\",\"KARNEY\"];function At(e,t){const n=t.length;if(0===n)return e.appendVarInt(128),e.appendVarInt(4),e.appendVarInt(0),void e.appendVarInt(0);if(\"number\"!=typeof t[0]&&\"bigint\"!=typeof t[0])throw new Error(\"deltaBinaryPack only supports number or bigint arrays\");e.appendVarInt(128),e.appendVarInt(4),e.appendVarInt(n),e.appendZigZag(t[0]);let r=1;for(;r<n;){const i=Math.min(r+128,n),o=i-r,f=new BigInt64Array(o);let a=BigInt(t[r])-BigInt(t[r-1]);f[0]=a;for(let e=1;e<o;e++){const n=BigInt(t[r+e])-BigInt(t[r+e-1]);f[e]=n,n<a&&(a=n)}e.appendZigZag(a);const s=new Uint8Array(4);for(let e=0;e<4;e++){const t=32*e,n=Math.min(t+32,o);let r=0n;for(let e=t;e<n;e++){const t=f[e]-a;t>r&&(r=t)}s[e]=Et(r)}e.appendBytes(s);for(let t=0;t<4;t++){const n=s[t];if(0===n)continue;const r=32*t,i=Math.min(r+32,o);let l=0n,u=0;for(let t=0;t<32;t++)for(l|=(r+t<i?f[r+t]-a:0n)<<BigInt(u),u+=n;u>=8;)e.appendUint8(Number(0xffn&l)),l>>=8n,u-=8}r=i}}function Et(e){if(0n===e)return 0;let t=0;for(;e>0n;)t++,e>>=1n;return t}function vt(e,t,n){const r=e.offset;let i=0,o=0,f=0;for(;f<t.length;){let r=1;const a=t[f];for(;f+r<t.length&&t[f+r]===a;)r++;r>=8?(i&&(bt(e,t,o,i,n),i=0),It(e,a,r,n),f+=r):(0===i&&(o=f),i++,f+=8)}return i&&bt(e,t,o,i,n),e.offset-r}function It(e,t,n,r){e.appendVarInt(n<<1);const i=r+7>>3;for(let n=0;n<i;n++)e.appendUint8(t>>(n<<3)&255)}function bt(e,t,n,r,i){if(e.appendVarInt(r<<1|1),0===i)return;const o=(1<<i)-1;let f=0,a=0;const s=8*r;for(let r=0;r<s;r++){const s=n+r;for(f|=(s<t.length?t[s]&o:0)<<a,a+=i;a>=8;)e.appendUint8(255&f),f>>>=8,a-=8}a>0&&e.appendUint8(255&f)}function Tt(e,t,n,r){if(\"BOOLEAN\"===n)!function(e,t){let n=0;for(let r=0;r<t.length;r++){const i=t[r];if(\"boolean\"!=typeof i)throw new Error(\"parquet expected boolean value, got \"+i);const o=r%8;i&&(n|=1<<o),7===o&&(e.appendUint8(n),n=0)}t.length%8&&e.appendUint8(n)}(e,t);else if(\"INT32\"===n)!function(e,t){for(const n of t){if(!Number.isSafeInteger(n))throw new Error(\"parquet expected integer value, got \"+n);if(n<-2147483648||n>2147483647)throw new Error(\"parquet expected int32 value, got \"+n);e.appendInt32(n)}}(e,t);else if(\"INT64\"===n)!function(e,t){for(const n of t){if(\"bigint\"!=typeof n)throw new Error(\"parquet expected bigint value, got \"+n);e.appendInt64(n)}}(e,t);else if(\"FLOAT\"===n)!function(e,t){for(const n of t){if(\"number\"!=typeof n)throw new Error(\"parquet expected number value, got \"+n);e.appendFloat32(n)}}(e,t);else if(\"DOUBLE\"===n)!function(e,t){for(const n of t){if(\"number\"!=typeof n)throw new Error(\"parquet expected number value, got \"+n);e.appendFloat64(n)}}(e,t);else if(\"BYTE_ARRAY\"===n)!function(e,t){for(const n of t){let t=n;if(\"string\"==typeof t&&(t=(new TextEncoder).encode(n)),!(t instanceof Uint8Array))throw new Error(\"parquet expected Uint8Array value, got \"+typeof t);e.appendUint32(t.length),e.appendBytes(t)}}(e,t);else{if(\"FIXED_LEN_BYTE_ARRAY\"!==n)throw new Error(`parquet unsupported type: ${n}`);if(!r)throw new Error(\"parquet FIXED_LEN_BYTE_ARRAY expected type_length\");!function(e,t,n){for(const r of t){if(!(r instanceof Uint8Array))throw new Error(\"parquet expected Uint8Array value, got \"+typeof r);if(r.length!==n)throw new Error(`parquet expected Uint8Array of length ${n}`);e.appendBytes(r)}}(e,t,r)}}const Nt=new TextEncoder,Ut=-(2n**63n),Lt=2n**63n-1n,Ot=new Uint8Array([0]),Bt=new Set([\"value\",\"typed_value\"]),Rt=new Map,Dt=Ct([]);function Mt(e,t,n){if(n?.required)for(let t=0;t<e.length;t++)if(void 0===e[t])throw new Error(`required variant column ${n.name} has undefined value at index ${t}`);const r=t&&$t(t);if(r){const t=new Map;return e.map(e=>{if(void 0===e)return null;const n=new Set;kt(e,n);const{metadata:i,keyIndex:o}=function(e,t){if(0===e.size)return{metadata:Dt,keyIndex:Rt};const n=[...e].sort(),r=n.join(\"\\0\"),i=t.get(r);if(i)return i;const o=Ct(n),f=new Map;for(let e=0;e<n.length;e++)f.set(n[e],e);const a={metadata:o,keyIndex:f};return t.set(r,a),a}(n,t);return{metadata:i,...St(e,r,o,!0)}})}const i=function(e){const t=new Set;return kt(e,t),[...t].sort()}(e),o=Ct(i),f=new Map;for(let e=0;e<i.length;e++)f.set(i[e],e);return e.map(e=>void 0===e?null:{metadata:o,value:Gt(e,f)})}function St(e,t,n,r){if(null==e)return{value:Ot,typed_value:null};if(Array.isArray(t)){if(!Array.isArray(e))return{value:Gt(e,n),typed_value:null};const r=t[0];return{value:null,typed_value:e.map(e=>St(e,r,n,!1))}}if(\"object\"==typeof t){if(\"object\"!=typeof e||Array.isArray(e)||e instanceof Date||e instanceof Uint8Array)return{value:Gt(e,n),typed_value:null};const i={};let o=!1;for(const n of Object.keys(e))n in t||void 0===e[n]||(i[n]=e[n],o=!0);if(o&&!r)return{value:Gt(e,n),typed_value:null};const f=Object.keys(t);if(f.some(t=>(!Object.prototype.hasOwnProperty.call(e,t)||void 0===e[t])&&n.has(t)))return{value:Gt(e,n),typed_value:null};const a={};for(const r of f)Object.prototype.hasOwnProperty.call(e,r)&&void 0!==e[r]&&(a[r]=St(e[r],t[r],n,!1));return{value:o?Gt(i,n):null,typed_value:a}}return function(e,t){if(null==e)return!1;switch(t){case\"BOOLEAN\":return\"boolean\"==typeof e;case\"INT32\":return\"number\"==typeof e&&Number.isInteger(e)&&e>=-2147483648&&e<=2147483647;case\"INT64\":return\"bigint\"==typeof e&&e>=Ut&&e<=Lt;case\"FLOAT\":case\"DOUBLE\":return\"number\"==typeof e;case\"STRING\":return\"string\"==typeof e;case\"TIMESTAMP\":return e instanceof Date;default:return!1}}(e,t)?{value:null,typed_value:e}:{value:Gt(e,n),typed_value:null}}function xt(e){const t=Yt(e,0);if(void 0===t||\"object\"!=typeof t)return;const n=$t(t);return void 0===n||Pt(n)>256?void 0:n}function Pt(e){if(Array.isArray(e))return e.length?Pt(e[0]):0;if(e&&\"object\"==typeof e){let t=0;for(const n of Object.keys(e))t+=Pt(e[n]);return t}return 1}function Yt(e,t){const n=[];for(const t of e)null!=t&&n.push(t);if(!n.length)return;if(n.some(Ft)){if(t>=3)return;const e=new Map;for(const t of n)if(Ft(t))for(const[n,r]of Object.entries(t)){if(void 0===r)continue;const t=e.get(n);t?t.push(r):e.set(n,[r])}const r={};for(const[n,i]of e){const e=Yt(i,t+1);void 0!==e&&(r[n]=e)}return Object.keys(r).length>0?r:void 0}if(n.every(Array.isArray)){if(t>=3)return;const e=[];for(const t of n)for(const n of t)e.push(n);const r=Yt(e,t+1);return void 0===r?void 0:[r]}let r;for(const e of n){if(Array.isArray(e))return;const t=e instanceof Date?\"date\":typeof e;if(void 0===r)r=t;else if(r!==t)return}return r?function(e){switch(e){case\"boolean\":return\"BOOLEAN\";case\"string\":return\"STRING\";case\"number\":return\"DOUBLE\";case\"bigint\":return\"INT64\";case\"date\":return\"TIMESTAMP\";default:return}}(r):void 0}function Ft(e){return!(\"object\"!=typeof e||null===e||Array.isArray(e)||e instanceof Date||e instanceof Uint8Array)}function $t(e){if(Array.isArray(e)){const t=e.length?$t(e[0]):void 0;return void 0===t?void 0:[t]}if(\"object\"==typeof e){const t={};for(const[n,r]of Object.entries(e)){if(Bt.has(n))continue;const e=$t(r);void 0!==e&&(t[n]=e)}return Object.keys(t).length>0?t:void 0}return e}function kt(e,t){if(null!=e)if(Array.isArray(e))for(const n of e)kt(n,t);else if(!(e instanceof Date||e instanceof Uint8Array)&&\"object\"==typeof e)for(const n of Object.keys(e))t.add(n),kt(e[n],t)}function Ct(e){const t=e.length,n=new Array(t);let r=0;for(let i=0;i<t;i++){const t=Nt.encode(e[i]);n[i]=t,r+=t.length}const i=jt(r),o=17|i-1<<6,f=new Uint8Array(1+i+(t+1)*i+r);let a=0;f[a++]=o;for(let e=0;e<i;e++)f[a++]=t>>8*e&255;let s=0;for(let e=0;e<t;e++){for(let e=0;e<i;e++)f[a++]=s>>8*e&255;s+=n[e].length}for(let e=0;e<i;e++)f[a++]=s>>8*e&255;for(let e=0;e<t;e++)f.set(n[e],a),a+=n[e].length;return f}function Gt(e,t){const n=new qe(8);return qt(e,n,t),n.getBytes()}function qt(e,t,n){if(null!=e)if(!0!==e)if(!1!==e){if(\"bigint\"==typeof e){if(e<Ut||e>Lt)throw new RangeError(`variant bigint out of int64 range: ${e}`);return t.appendUint8(24),void t.appendInt64(e)}if(\"number\"==typeof e){if(Number.isInteger(e)){if(e>=-128&&e<=127)return t.appendUint8(12),void t.appendUint8(255&e);if(e>=-32768&&e<=32767)return t.appendUint8(16),void Vt(t,e,2);if(e>=-2147483648&&e<=2147483647)return t.appendUint8(20),void t.appendInt32(e)}return t.appendUint8(28),void t.appendFloat64(e)}if(\"string\"==typeof e){const n=Nt.encode(e);return void(n.length<=63?(t.appendUint8(n.length<<2|1),t.appendBytes(n)):(t.appendUint8(64),t.appendUint32(n.length),t.appendBytes(n)))}if(e instanceof Date)return t.appendUint8(52),void t.appendInt64(1000n*BigInt(e.getTime()));if(e instanceof Uint8Array)return t.appendUint8(60),t.appendUint32(e.length),void t.appendBytes(e);if(Array.isArray(e))!function(e,t,n){const r=e.length,i=new qe(8),o=new Array(r+1);o[0]=0;for(let t=0;t<r;t++)qt(e[t],i,n),o[t+1]=i.index;const f=jt(o[r]),a=r>255?1:0;t.appendUint8((f-1|a<<2)<<2|3),a?t.appendUint32(r):t.appendUint8(r);for(const e of o)Vt(t,e,f);t.appendBytes(i.getBytes())}(e,t,n);else{if(\"object\"!=typeof e)throw new Error(`variant cannot encode value: ${e}`);!function(e,t,n){const r=Object.keys(e).filter(t=>void 0!==e[t]).map(e=>{const t=n.get(e);if(void 0===t)throw new Error(`variant key not in dictionary: ${e}`);return{id:t,key:e}});r.sort((e,t)=>e.id-t.id);const i=r.length,o=jt(i>0?r[i-1].id:0),f=new qe(8),a=new Array(i+1);a[0]=0;for(let t=0;t<i;t++)qt(e[r[t].key],f,n),a[t+1]=f.index;const s=jt(a[i]),l=i>255?1:0;t.appendUint8((s-1|o-1<<2|l<<4)<<2|2),l?t.appendUint32(i):t.appendUint8(i);for(const{id:e}of r)Vt(t,e,o);for(const e of a)Vt(t,e,s);t.appendBytes(f.getBytes())}(e,t,n)}}else t.appendUint8(8);else t.appendUint8(4);else t.appendUint8(0)}function jt(e){return e<=255?1:e<=65535?2:e<=16777215?3:4}function Vt(e,t,n){for(let r=0;r<n;r++)e.appendUint8(t>>8*r&255)}function zt({columnData:e,schemaOverrides:t}){const n=[{name:\"root\",num_children:e.length}];for(const{name:r,data:i,type:o,nullable:f,shredding:a}of e)if(t?.[r]){const e=t[r];if(o||void 0!==f)throw new Error(`cannot provide both type and schema override for column ${r}`);if(e.name!==r)throw new Error(`schema override for column ${r} must have matching name, got ${e.name}`);if(\"FIXED_LEN_BYTE_ARRAY\"===e.type&&!e.type_length)throw new Error(\"schema override for FIXED_LEN_BYTE_ARRAY must include type_length\");if(e.num_children)throw new Error(\"schema override does not support nested types\");n.push(e)}else if(\"VARIANT\"===o){const e=!1===f?\"REQUIRED\":\"OPTIONAL\",t=a&&!0!==a?$t(a):void 0;t?n.push({name:r,repetition_type:e,num_children:3,logical_type:{type:\"VARIANT\"}},{name:\"metadata\",type:\"BYTE_ARRAY\",repetition_type:\"REQUIRED\"},{name:\"value\",type:\"BYTE_ARRAY\",repetition_type:\"OPTIONAL\"},...Xt(t)):n.push({name:r,repetition_type:e,num_children:2,logical_type:{type:\"VARIANT\"}},{name:\"metadata\",type:\"BYTE_ARRAY\",repetition_type:\"REQUIRED\"},{name:\"value\",type:\"BYTE_ARRAY\",repetition_type:\"OPTIONAL\"})}else o?n.push(Ht(r,o,f)):n.push(Jt(r,i.slice(0,1e3)));return n}function Xt(e){if(Array.isArray(e))return[{name:\"typed_value\",repetition_type:\"OPTIONAL\",converted_type:\"LIST\",num_children:1},{name:\"list\",repetition_type:\"REPEATED\",num_children:1},{name:\"element\",repetition_type:\"REQUIRED\",num_children:2},{name:\"value\",type:\"BYTE_ARRAY\",repetition_type:\"OPTIONAL\"},...Xt(e[0])];if(\"object\"==typeof e){const t=Object.keys(e),n=[{name:\"typed_value\",repetition_type:\"OPTIONAL\",num_children:t.length}];for(const r of t)n.push({name:r,repetition_type:\"OPTIONAL\",num_children:2},{name:\"value\",type:\"BYTE_ARRAY\",repetition_type:\"OPTIONAL\"},...Xt(e[r]));return n}return[Zt(e)]}function Zt(e){switch(e){case\"STRING\":return{name:\"typed_value\",type:\"BYTE_ARRAY\",converted_type:\"UTF8\",repetition_type:\"OPTIONAL\"};case\"INT32\":return{name:\"typed_value\",type:\"INT32\",repetition_type:\"OPTIONAL\"};case\"INT64\":return{name:\"typed_value\",type:\"INT64\",repetition_type:\"OPTIONAL\"};case\"DOUBLE\":return{name:\"typed_value\",type:\"DOUBLE\",repetition_type:\"OPTIONAL\"};case\"FLOAT\":return{name:\"typed_value\",type:\"FLOAT\",repetition_type:\"OPTIONAL\"};case\"BOOLEAN\":return{name:\"typed_value\",type:\"BOOLEAN\",repetition_type:\"OPTIONAL\"};case\"TIMESTAMP\":return{name:\"typed_value\",type:\"INT64\",converted_type:\"TIMESTAMP_MICROS\",repetition_type:\"OPTIONAL\"};default:throw new Error(`unsupported shredded field type: ${e}`)}}function Ht(e,t,n){const r=!1===n?\"REQUIRED\":\"OPTIONAL\";return\"STRING\"===t?{name:e,type:\"BYTE_ARRAY\",converted_type:\"UTF8\",repetition_type:r}:\"JSON\"===t?{name:e,type:\"BYTE_ARRAY\",converted_type:\"JSON\",repetition_type:r}:\"TIMESTAMP\"===t?{name:e,type:\"INT64\",converted_type:\"TIMESTAMP_MILLIS\",repetition_type:r}:\"UUID\"===t?{name:e,type:\"FIXED_LEN_BYTE_ARRAY\",type_length:16,logical_type:{type:\"UUID\"},repetition_type:r}:\"FLOAT16\"===t?{name:e,type:\"FIXED_LEN_BYTE_ARRAY\",type_length:2,logical_type:{type:\"FLOAT16\"},repetition_type:r}:\"GEOMETRY\"===t?{name:e,type:\"BYTE_ARRAY\",logical_type:{type:\"GEOMETRY\"},repetition_type:r}:\"GEOGRAPHY\"===t?{name:e,type:\"BYTE_ARRAY\",logical_type:{type:\"GEOGRAPHY\"},repetition_type:r}:{name:e,type:t,repetition_type:r}}function Jt(e,t){let n,r,i=\"REQUIRED\";if(t instanceof Int32Array)return{name:e,type:\"INT32\",repetition_type:i};if(t instanceof BigInt64Array)return{name:e,type:\"INT64\",repetition_type:i};if(t instanceof Float32Array)return{name:e,type:\"FLOAT\",repetition_type:i};if(t instanceof Float64Array)return{name:e,type:\"DOUBLE\",repetition_type:i};for(const e of t)if(null==e)i=\"OPTIONAL\";else{let t,i;if(\"boolean\"==typeof e)t=\"BOOLEAN\";else if(\"bigint\"==typeof e)t=\"INT64\";else if(Number.isInteger(e))t=\"INT32\";else if(\"number\"==typeof e)t=\"DOUBLE\";else if(e instanceof Uint8Array)t=\"BYTE_ARRAY\";else if(\"string\"==typeof e)t=\"BYTE_ARRAY\",i=\"UTF8\";else if(e instanceof Date)t=\"INT64\",i=\"TIMESTAMP_MILLIS\";else{if(\"object\"!=typeof e)throw new Error(`cannot determine parquet type for: ${e}`);t=\"BYTE_ARRAY\",i=\"JSON\"}if(void 0===n)n=t,r=i;else if(\"INT32\"===n&&\"DOUBLE\"===t)n=\"DOUBLE\";else if(\"DOUBLE\"===n&&\"INT32\"===t)t=\"DOUBLE\";else if(n!==t||r!==i)throw new Error(`parquet cannot write mixed types: ${r??n} and ${i??t}`)}return n||(n=\"BYTE_ARRAY\",i=\"OPTIONAL\"),{name:e,type:n,repetition_type:i,converted_type:r}}function Qt(e){if(Array.isArray(e)&&e.every(e=>\"number\"==typeof e))return e;throw new Error(\"Expected number array for BYTE_STREAM_SPLIT encoding\")}function Wt({writer:e,column:t,encoding:n,pageData:r}){const{columnName:i,element:o,codec:f,compressors:a}=t,{type:s,type_length:l,repetition_type:u}=o;if(!s)throw new Error(`column ${i} cannot determine type`);if(\"REPEATED\"===u)throw new Error(`column ${i} repeated types not supported`);const c=new qe,{definition_levels_byte_length:d,repetition_levels_byte_length:p,num_nulls:_,num_values:y,num_rows:h}=function(e,t,n){const{schemaPath:r}=t,{values:i,definitionLevels:o,repetitionLevels:f,maxDefinitionLevel:a}=n,s=o.length||i.length;let l=0,u=0;if(f.length)for(let e=0;e<f.length;e++)0===f[e]&&u++;else u=i.length;if(o.length)for(let e=0;e<o.length;e++)o[e]<a&&l++;const c=function(e){let t=0;for(const n of e)\"REPEATED\"===n.repetition_type&&t++;return t}(r);let d=0;c&&(d=vt(e,f,Math.ceil(Math.log2(c+1))));let p=0;return a&&(p=vt(e,o,Math.ceil(Math.log2(a+1)))),{definition_levels_byte_length:p,repetition_levels_byte_length:d,num_values:s,num_nulls:l,num_rows:u}}(c,t,r),m=_?r.values.filter(e=>null!=e):r.values,g=new qe;if(\"PLAIN\"===n)Tt(g,m,s,l);else if(\"RLE\"===n){if(\"BOOLEAN\"!==s)throw new Error(\"RLE encoding only supported for BOOLEAN type\");const e=new qe;vt(e,m,1),g.appendUint32(e.offset),g.appendBytes(e.getBytes())}else if(\"PLAIN_DICTIONARY\"===n||\"RLE_DICTIONARY\"===n){let e=0;for(const t of m)t>e&&(e=t);const t=Math.ceil(Math.log2(e+1));g.appendUint8(t),vt(g,m,t)}else if(\"DELTA_BINARY_PACKED\"===n){if(\"INT32\"!==s&&\"INT64\"!==s)throw new Error(\"DELTA_BINARY_PACKED encoding only supported for INT32 and INT64 types\");At(g,m)}else if(\"DELTA_LENGTH_BYTE_ARRAY\"===n){if(\"BYTE_ARRAY\"!==s)throw new Error(\"DELTA_LENGTH_BYTE_ARRAY encoding only supported for BYTE_ARRAY type\");!function(e,t){const n=new Int32Array(t.length);for(let e=0;e<t.length;e++){const r=t[e];if(!(r instanceof Uint8Array))throw new Error(\"deltaLengthByteArray expects Uint8Array values\");n[e]=r.length}At(e,n);for(const n of t)e.appendBytes(n)}(g,m)}else if(\"DELTA_BYTE_ARRAY\"===n){if(\"BYTE_ARRAY\"!==s)throw new Error(\"DELTA_BYTE_ARRAY encoding only supported for BYTE_ARRAY type\");!function(e,t){if(0===t.length)return At(e,[]),void At(e,[]);const n=new Int32Array(t.length),r=new Int32Array(t.length),i=new Array(t.length);if(!(t[0]instanceof Uint8Array))throw new Error(\"deltaByteArray expects Uint8Array values\");n[0]=0,r[0]=t[0].length,i[0]=t[0];for(let e=1;e<t.length;e++){const o=t[e-1],f=t[e];if(!(f instanceof Uint8Array))throw new Error(\"deltaByteArray expects Uint8Array values\");let a=0;const s=Math.min(o.length,f.length);for(;a<s&&o[a]===f[a];)a++;n[e]=a,r[e]=f.length-a,i[e]=f.subarray(a)}At(e,n),At(e,r);for(const t of i)e.appendBytes(t)}(g,m)}else{if(\"BYTE_STREAM_SPLIT\"!==n)throw new Error(`parquet unsupported encoding: ${n}`);!function(e,t,n,r){const i=t.length;let o,f;if(\"FLOAT\"===n){const e=t instanceof Float32Array?t:new Float32Array(Qt(t));o=new Uint8Array(e.buffer,e.byteOffset,e.byteLength),f=4}else if(\"DOUBLE\"===n){const e=t instanceof Float64Array?t:new Float64Array(Qt(t));o=new Uint8Array(e.buffer,e.byteOffset,e.byteLength),f=8}else if(\"INT32\"===n){const e=t instanceof Int32Array?t:new Int32Array(Qt(t));o=new Uint8Array(e.buffer,e.byteOffset,e.byteLength),f=4}else if(\"INT64\"===n){const e=function(e){if(e instanceof BigInt64Array)return e;if(Array.isArray(e)&&e.every(e=>\"bigint\"==typeof e))return new BigInt64Array(e);throw new Error(\"Expected bigint array for BYTE_STREAM_SPLIT encoding\")}(t);o=new Uint8Array(e.buffer,e.byteOffset,e.byteLength),f=8}else{if(\"FIXED_LEN_BYTE_ARRAY\"!==n)throw new Error(`parquet byte_stream_split unsupported type: ${n}`);if(!r)throw new Error(\"parquet byte_stream_split missing type_length\");f=r,o=new Uint8Array(i*f);for(let e=0;e<i;e++)o.set(t[e],e*f)}for(let t=0;t<f;t++)for(let n=0;n<i;n++)e.appendUint8(o[n*f+t])}(g,m,s,l)}const w=g.getBytes(),A=a[f]?.(w)??w;Kt(e,{type:\"DATA_PAGE_V2\",uncompressed_page_size:c.offset+g.offset,compressed_page_size:c.offset+A.length,data_page_header_v2:{num_values:y,num_nulls:_,num_rows:h,encoding:n,definition_levels_byte_length:d,repetition_levels_byte_length:p,is_compressed:!!f}}),e.appendBytes(c.getBytes()),e.appendBytes(A)}function Kt(e,t){ot(e,{field_1:mt.indexOf(t.type),field_2:t.uncompressed_page_size,field_3:t.compressed_page_size,field_4:t.crc,field_5:t.data_page_header&&{field_1:t.data_page_header.num_values,field_2:pt.indexOf(t.data_page_header.encoding),field_3:pt.indexOf(t.data_page_header.definition_level_encoding),field_4:pt.indexOf(t.data_page_header.repetition_level_encoding)},field_7:t.dictionary_page_header&&{field_1:t.dictionary_page_header.num_values,field_2:pt.indexOf(t.dictionary_page_header.encoding)},field_8:t.data_page_header_v2&&{field_1:t.data_page_header_v2.num_values,field_2:t.data_page_header_v2.num_nulls,field_3:t.data_page_header_v2.num_rows,field_4:pt.indexOf(t.data_page_header_v2.encoding),field_5:t.data_page_header_v2.definition_levels_byte_length,field_6:t.data_page_header_v2.repetition_levels_byte_length,field_7:!!t.data_page_header_v2.is_compressed&&void 0}})}function en(e,t,n){if(null==e)return 0;if(\"BOOLEAN\"===t)return.125;if(\"INT32\"===t||\"FLOAT\"===t)return 4;if(\"INT64\"===t||\"DOUBLE\"===t)return 8;if(\"INT96\"===t)return 12;if(\"FIXED_LEN_BYTE_ARRAY\"===t)return n??0;if(\"BYTE_ARRAY\"===t){if(e instanceof Uint8Array)return e.byteLength;if(\"string\"==typeof e)return e.length}return 0}function tn(e){let t=2166136261;for(let n=0;n<e.length;n++)t^=e[n],t=Math.imul(t,16777619);return t>>>0}function nn(e,t){if(e.length!==t.length)return!1;for(let n=0;n<e.length;n++)if(e[n]!==t[n])return!1;return!0}function rn(e,t){if(\"GeometryCollection\"===t.type){for(const n of t.geometries||[])e=rn(e,n);return e}return on(e,t.coordinates)}function on(e,t){if(\"number\"==typeof t[0])return e=fn(e,\"xmin\",\"xmax\",t[0]),e=fn(e,\"ymin\",\"ymax\",t[1]),t.length>2&&(e=fn(e,\"zmin\",\"zmax\",t[2])),t.length>3&&(e=fn(e,\"mmin\",\"mmax\",t[3])),e;for(const n of t)e=on(e,n);return e}function fn(e,t,n,r){if(void 0===r||!Number.isFinite(r))return e;e||(e={});const i=e[t],o=e[n];return(void 0===i||r<i)&&(e[t]=r),(void 0===o||r>o)&&(e[n]=r),e}function an(e){const t=sn[e.type];if(void 0===t)throw new Error(`unknown geometry type: ${e.type}`);const n=ln(e);if(2===n)return t;if(3===n)return t+1e3;if(4===n)return t+3e3;throw new Error(`unsupported geometry dimensions: ${n}`)}const sn={Point:1,LineString:2,Polygon:3,MultiPoint:4,MultiLineString:5,MultiPolygon:6,GeometryCollection:7};function ln(e){if(\"GeometryCollection\"===e.type){let t=0;for(const n of e.geometries||[])t=Math.max(t,ln(n));return t||2}return un(e.coordinates)}function un(e){if(!e.length)return 2;if(\"number\"==typeof e[0])return e.length;let t=0;for(const n of e)t=Math.max(t,un(n));return t||2}function cn(e){if(void 0===e)return null;if(\"bigint\"==typeof e)return Number(e);if(Object.is(e,-0))return 0;if(Array.isArray(e))return e.map(cn);if(e instanceof Uint8Array)return Array.from(e);if(e instanceof Date)return e.toISOString();if(e instanceof Object){const t={};for(const n of Object.keys(e))void 0!==e[n]&&(t[n]=cn(e[n]));return t}return e}function dn(e){const t=new qe;return pn(t,e),t.getBytes()}function pn(e,t){if(\"object\"!=typeof t)throw new Error(\"geometry values must be GeoJSON geometries\");const n=function(e){if(\"Point\"===e)return 1;if(\"LineString\"===e)return 2;if(\"Polygon\"===e)return 3;if(\"MultiPoint\"===e)return 4;if(\"MultiLineString\"===e)return 5;if(\"MultiPolygon\"===e)return 6;if(\"GeometryCollection\"===e)return 7;throw new Error(`unknown geometry type: ${e}`)}(t.type),r=hn(t);let i=0;if(3===r)i=1;else if(4===r)i=3;else if(r>4)throw new Error(`unsupported geometry dimensions: ${r}`);if(e.appendUint8(1),e.appendUint32(n+1e3*i),\"Point\"===t.type)_n(e,t.coordinates,r);else if(\"LineString\"===t.type)yn(e,t.coordinates,r);else if(\"Polygon\"===t.type){e.appendUint32(t.coordinates.length);for(const n of t.coordinates)yn(e,n,r)}else if(\"MultiPoint\"===t.type){e.appendUint32(t.coordinates.length);for(const n of t.coordinates)pn(e,{type:\"Point\",coordinates:n})}else if(\"MultiLineString\"===t.type){e.appendUint32(t.coordinates.length);for(const n of t.coordinates)pn(e,{type:\"LineString\",coordinates:n})}else if(\"MultiPolygon\"===t.type){e.appendUint32(t.coordinates.length);for(const n of t.coordinates)pn(e,{type:\"Polygon\",coordinates:n})}else{if(\"GeometryCollection\"!==t.type)throw new Error(\"unsupported geometry type\");e.appendUint32(t.geometries.length);for(const n of t.geometries)pn(e,n)}}function _n(e,t,n){if(t.length<n)throw new Error(\"geometry position dimensions mismatch\");for(let r=0;r<n;r++)e.appendFloat64(t[r])}function yn(e,t,n){e.appendUint32(t.length);for(const r of t)_n(e,r,n)}function hn(e){if(\"GeometryCollection\"===e.type){let t=0;for(const n of e.geometries)t=Math.max(t,hn(n));return t||2}return mn(e.coordinates)}function mn(e){if(!Array.isArray(e))return 2;if(!e.length)return 2;if(\"number\"==typeof e[0])return e.length;let t=0;for(const n of e)t=Math.max(t,mn(n));return t||2}const gn=864e5;function wn(e,t){const{type:n,converted_type:r,logical_type:i}=e;if(\"DECIMAL\"===r){const n=10**(e.scale||0);return t.map(t=>{if(null==t)return t;if(\"number\"!=typeof t)throw new Error(\"DECIMAL must be a number\");return In(e,BigInt(Math.round(t*n)))})}if(\"DATE\"===r)return Array.from(t).map(e=>e instanceof Date?Math.floor(e.getTime()/gn):e);if(\"TIMESTAMP_MILLIS\"===r)return Array.from(t).map(e=>null==e?e:e instanceof Date?BigInt(e.getTime()):BigInt(e));if(\"TIMESTAMP_MICROS\"===r)return Array.from(t).map(e=>null==e?e:e instanceof Date?BigInt(1e3*e.getTime()):BigInt(e));if(\"JSON\"===r){if(!Array.isArray(t))throw new Error(\"JSON must be an array\");const e=new TextEncoder;return t.map(t=>void 0===t?void 0:e.encode(JSON.stringify(cn(t))))}if(\"UTF8\"===r){if(!Array.isArray(t))throw new Error(\"strings must be an array\");const e=new TextEncoder;return t.map(t=>\"string\"==typeof t?e.encode(t):t)}if(\"UINT_32\"===r||\"INTEGER\"===i?.type&&32===i.bitWidth&&!i.isSigned)return t instanceof Uint32Array?t:t instanceof Int32Array?new Uint32Array(t.buffer,t.byteOffset,t.length):Array.from(t).map(e=>{if(null==e)return e;if(!Number.isSafeInteger(e))throw new Error(\"expected integer value, got \"+e);if(e<0||e>4294967295)throw new Error(\"expected uint32 value, got \"+e);return e>2147483647?e-4294967296:e});if(\"FLOAT16\"===i?.type){if(\"FIXED_LEN_BYTE_ARRAY\"!==n)throw new Error(\"FLOAT16 must be FIXED_LEN_BYTE_ARRAY type\");if(2!==e.type_length)throw new Error(\"FLOAT16 expected type_length to be 2 bytes\");return Array.from(t).map(bn)}if(\"UUID\"===i?.type){if(!Array.isArray(t))throw new Error(\"UUID must be an array\");if(\"FIXED_LEN_BYTE_ARRAY\"!==n)throw new Error(\"UUID must be FIXED_LEN_BYTE_ARRAY type\");if(16!==e.type_length)throw new Error(\"UUID expected type_length to be 16 bytes\");return t.map(An)}if(\"TIMESTAMP\"===i?.type)return Array.from(t).map(e=>{if(null==e)return e;if(e instanceof Date){const t=BigInt(e.getTime());return\"NANOS\"===i.unit?1000000n*t:\"MICROS\"===i.unit?1000n*t:t}return BigInt(e)});if(\"GEOMETRY\"===i?.type||\"GEOGRAPHY\"===i?.type){if(!Array.isArray(t))throw new Error(\"geometry must be an array\");return t.map(e=>null==e?e:dn(e))}return t}function An(e){if(null!=e){if(e instanceof Uint8Array)return e;if(\"string\"==typeof e){if(!/^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$/i.test(e))throw new Error(\"UUID must be a valid UUID string\");e=e.replace(/-/g,\"\").toLowerCase();const t=new Uint8Array(16);for(let n=0;n<16;n++)t[n]=parseInt(e.slice(2*n,2*n+2),16);return t}throw new Error(\"UUID must be a string or Uint8Array\")}}function En(e,t){if(null==e)return;const{type:n}=t;return(\"BYTE_ARRAY\"!==n&&\"FIXED_LEN_BYTE_ARRAY\"!==n||\"UUID\"===t.logical_type?.type||!((e instanceof Uint8Array?e:(new TextEncoder).encode(e.toString())).length>16))&&void 0}function vn(e,t,n){if(null==e)return;const{type:r,converted_type:i}=t;if(\"BOOLEAN\"===r)return new Uint8Array([e?1:0]);if(\"UUID\"===t.logical_type?.type&&(\"string\"==typeof e||e instanceof Uint8Array))return An(e);if(\"DECIMAL\"===i){if(\"number\"!=typeof e)throw new Error(\"DECIMAL must be a number\");const n=10**(t.scale||0),r=In(t,BigInt(Math.round(e*n)));if(r instanceof Uint8Array)return r;if(\"number\"==typeof r){const e=new ArrayBuffer(4);return new DataView(e).setFloat32(0,r,!0),new Uint8Array(e)}if(\"bigint\"==typeof r){const e=new ArrayBuffer(8);return new DataView(e).setBigInt64(0,r,!0),new Uint8Array(e)}}if(\"BYTE_ARRAY\"===r||\"FIXED_LEN_BYTE_ARRAY\"===r)return function(e,t){if(e.length<=16)return e;const n=e.slice(0,16);if(!t)return n;let r=n.length-1;for(;r>=0&&255===n[r];)r--;if(r<0)return;const i=n.slice(0,r+1);return i[r]+=1,i}(e instanceof Uint8Array?e:(new TextEncoder).encode(e.toString()),n);if(\"FLOAT\"===r&&\"number\"==typeof e){const t=new ArrayBuffer(4);return new DataView(t).setFloat32(0,e,!0),new Uint8Array(t)}if(\"DOUBLE\"===r&&\"number\"==typeof e){const t=new ArrayBuffer(8);return new DataView(t).setFloat64(0,e,!0),new Uint8Array(t)}if(\"INT32\"===r&&\"number\"==typeof e){const t=new ArrayBuffer(4);return new DataView(t).setInt32(0,e,!0),new Uint8Array(t)}if(\"INT64\"===r&&\"bigint\"==typeof e){const t=new ArrayBuffer(8);return new DataView(t).setBigInt64(0,e,!0),new Uint8Array(t)}if(\"INT32\"===r&&\"DATE\"===i&&e instanceof Date){const t=new ArrayBuffer(4);return new DataView(t).setInt32(0,Math.floor(e.getTime()/gn),!0),new Uint8Array(t)}if(\"INT64\"===r&&\"TIMESTAMP_MILLIS\"===i&&e instanceof Date){const t=new ArrayBuffer(8);return new DataView(t).setBigInt64(0,BigInt(e.getTime()),!0),new Uint8Array(t)}if(\"INT64\"===r&&\"TIMESTAMP_MICROS\"===i&&e instanceof Date){const t=new ArrayBuffer(8);return new DataView(t).setBigInt64(0,BigInt(1e3*e.getTime()),!0),new Uint8Array(t)}if(\"INT64\"===r&&\"TIMESTAMP\"===t.logical_type?.type&&e instanceof Date){const n=BigInt(e.getTime()),{unit:r}=t.logical_type;let i=n;\"NANOS\"===r?i=1000000n*n:\"MICROS\"===r&&(i=1000n*n);const o=new ArrayBuffer(8);return new DataView(o).setBigInt64(0,i,!0),new Uint8Array(o)}throw new Error(`unsupported type for statistics: ${r} with value ${e}`)}function In({type:e,type_length:t},n){if(\"INT32\"===e)return Number(n);if(\"INT64\"===e)return n;if(\"FIXED_LEN_BYTE_ARRAY\"===e&&!t)throw new Error(\"fixed length byte array type_length is required\");if(!t&&!n)return new Uint8Array;const r=[];for(;;){const e=Number(0xffn&n);if(r.unshift(e),n>>=8n,t){if(r.length>=t)break}else{const t=128&e;if(!t&&0n===n||t&&-1n===n)break}}return new Uint8Array(r)}function bn(e){if(null==e)return;if(\"number\"!=typeof e)throw new Error(\"parquet float16 expected number value\");if(Number.isNaN(e))return new Uint8Array([0,126]);const t=e<0||Object.is(e,-0)?1:0,n=Math.abs(e);if(!isFinite(n))return new Uint8Array([0,t<<7|124]);if(0===n)return new Uint8Array([0,t<<7]);const r=new ArrayBuffer(4);new Float32Array(r)[0]=n;const i=new Uint32Array(r)[0];let o=i>>>23&255,f=8388607&i;if(o-=127,o<-14){f=(8388608|f)>>-14-o+13,1&f&&(f+=1);const e=t<<15|f;return new Uint8Array([255&e,e>>8])}if(o>15)return new Uint8Array([0,t<<7|124]);let a=o+15;if(f+=4096,8388608&f&&(f=0,31===++a))return new Uint8Array([0,t<<7|124]);const s=t<<15|a<<10|f>>13;return new Uint8Array([255&s,s>>8])}function Tn({writer:e,column:t,pageData:n}){const{columnName:r,element:i,schemaPath:o,stats:f,pageSize:a,encoding:s}=t,{type:l,type_length:u}=i;if(!l)throw new Error(`column ${r} cannot determine type`);const{values:c,definitionLevels:d,repetitionLevels:p,maxDefinitionLevel:_}=n,y=e.offset,h=[],m=\"GEOMETRY\"===i?.logical_type?.type||\"GEOGRAPHY\"===i?.logical_type?.type,g=f?Nn(c):void 0,w=f&&m?function(e){const t=new Set;let n,r;for(const r of e)if(null!=r){if(\"object\"!=typeof r)throw new Error(\"geospatial column expects GeoJSON geometries\");n=rn(n,r),t.add(an(r))}const{xmin:i,ymin:o,xmax:f,ymax:a}=n??{};if(void 0!==i&&void 0!==o&&void 0!==f&&void 0!==a&&(r={...n,xmin:i,ymin:o,xmax:f,ymax:a}),t.size||r)return{bbox:r,geospatial_types:t.size?Array.from(t).sort((e,t)=>e-t):[]}}(c):void 0;let A,E;if(t.bloomFilter){const e=\"object\"==typeof t.bloomFilter?t.bloomFilter:void 0,n=new ut(i,e);for(const e of c)n.insert(e);A=n.finalize()}const{dictionary:v,indexes:I}=function(e,t,n,r,i){if(r&&\"RLE_DICTIONARY\"!==r)return{};if(\"BOOLEAN\"===t)return{};const o=e.slice(0,1e3),f=new Set;for(const e of o)f.add(e instanceof Uint8Array?tn(e):e);if(0===f.size||f.size/o.length>.5)return{};const a=[],s=new Array(e.length),l=new Map,u=new Map;let c=0;for(let r=0;r<e.length;r++){const o=e[r];if(null==o)continue;let f;if(o instanceof Uint8Array){const e=tn(o),t=u.get(e);if(t)for(const e of t)if(nn(a[e],o)){f=e;break}if(void 0===f){if(c+=o.byteLength,i&&c>i)return{};f=a.length,a.push(o),t?t.push(f):u.set(e,[f])}}else if(f=l.get(o),void 0===f){if(c+=en(o,t,n),i&&c>i)return{};f=a.length,a.push(o),l.set(o,f)}s[r]=f}return{dictionary:a,indexes:s}}(c,l,u,s,a);let b,T,N=l;v&&I?(T=I,N=\"INT32\",b=\"RLE_DICTIONARY\",E=BigInt(e.offset),function(e,t,n){const{element:r,codec:i,compressors:o}=t,{type:f,type_length:a}=r;if(!f)throw new Error(`column ${t.columnName} cannot determine type`);const s=new qe;Tt(s,n,f,a);const l=s.getBytes(),u=o[i]?.(l)??l;Kt(e,{type:\"DICTIONARY_PAGE\",uncompressed_page_size:l.byteLength,compressed_page_size:u.byteLength,dictionary_page_header:{num_values:n.length,encoding:\"PLAIN\"}}),e.appendBytes(u)}(e,t,wn(i,v))):(T=wn(i,c),b=s??(\"BOOLEAN\"===l&&c.length>16?\"RLE\":\"PLAIN\")),h.push(b);const U=function(e,t,n,r){if(!r)return[{start:0,end:e.length}];const i=[];let o=0,f=0;for(let a=0;a<e.length;a++){const s=en(e[a],t,n);f+=s,f>=r&&a>o&&(i.push({start:o,end:a}),o=a,f=s)}return o<e.length&&i.push({start:o,end:e.length}),i}(T,N,u,a),L=t.columnIndex&&U.length>1?{null_pages:[],min_values:[],max_values:[],boundary_order:\"UNORDERED\",null_counts:[]}:void 0,O=t.offsetIndex&&U.length>1?{page_locations:[]}:void 0,B=BigInt(e.offset);let R,D,M,S=0n,x=0,P=!0,Y=!0;for(const{start:n,end:r}of U){const o=e.offset;if(Wt({writer:e,column:t,encoding:b,pageData:{values:T.slice(n,r),definitionLevels:d.slice(n,r),repetitionLevels:p.slice(n,r),maxDefinitionLevel:_}}),L){const e=c.slice(n,r),{min_value:t,max_value:o,null_count:f=0n}=Nn(e);L.null_pages.push(f===BigInt(r-n)),L.min_values.push(vn(t,i,!1)??new Uint8Array),L.max_values.push(vn(o,i,!0)??new Uint8Array),L.null_counts?.push(f),void 0!==R&&void 0!==t&&(R>t&&(P=!1),R<t&&(Y=!1)),void 0!==D&&void 0!==o&&(D>o&&(P=!1),D<o&&(Y=!1)),R=t,D=o}if(O){if(p.length)for(let e=x+1;e<=n;e++)0===p[e]&&S++;else S=BigInt(n);O.page_locations.push({offset:BigInt(o),compressed_page_size:e.offset-o,first_row_index:S})}x=n}return L&&(P?L.boundary_order=\"ASCENDING\":Y&&(L.boundary_order=\"DESCENDING\")),f&&(M=[],void 0!==E&&M.push({page_type:\"DICTIONARY_PAGE\",encoding:\"PLAIN\",count:1}),M.push({page_type:\"DATA_PAGE_V2\",encoding:b,count:U.length})),{chunk:{meta_data:{type:l,encodings:h,path_in_schema:o.slice(1).map(e=>e.name),codec:t.codec??\"UNCOMPRESSED\",num_values:BigInt(c.length),total_compressed_size:BigInt(e.offset-y),total_uncompressed_size:BigInt(e.offset-y),data_page_offset:B,dictionary_page_offset:E,statistics:g,encoding_stats:M,geospatial_statistics:w},file_offset:BigInt(y)},columnIndex:L,offsetIndex:O,bloomFilter:A}}function Nn(e){let t,n,r=0n;for(const i of e)null!=i?\"object\"!=typeof i&&(\"number\"==typeof i&&Number.isNaN(i)||((void 0===t||i<t)&&(t=i),(void 0===n||i>n)&&(n=i))):r++;return 0===t&&(t=-0),0===n&&(n=0),{min_value:t,max_value:n,null_count:r}}function Un(e,t){const n=e.map(e=>e.element);if(e.length<2)throw new Error(\"parquet schema path must include column\");const r=[],i=[],o=function(e){let t=0;for(const{element:n}of e.slice(1))\"REQUIRED\"!==n.repetition_type&&t++;return t}(e);if(2===e.length&&0===o)return{values:t,definitionLevels:r,repetitionLevels:i,maxDefinitionLevel:o};if(2===e.length&&1===o){const e=new Array(t.length);for(let n=0;n<t.length;n++)e[n]=null===t[n]||void 0===t[n]?0:1;return{values:t,definitionLevels:e,repetitionLevels:i,maxDefinitionLevel:o}}const f=new Array(e.length);let a=0;for(let t=0;t<e.length;t++)f[t]=a,\"REPEATED\"===n[t].repetition_type&&a++;const s=[];for(const e of t)l(1,e,0,0,!1);return{values:s,definitionLevels:r,repetitionLevels:i,maxDefinitionLevel:o};function l(t,o,a,c,d){const p=n[t],_=p.repetition_type||\"REQUIRED\";if(t===e.length-1){if(null==o){if(\"REQUIRED\"===_&&!d)throw new Error(\"parquet required value is undefined\");r.push(a)}else r.push(\"REQUIRED\"===_?a:a+1);return i.push(c),void s.push(o)}if(\"REPEATED\"===_){if(null==o){if(!d)throw new Error(\"parquet required value is undefined\");return void l(t+1,void 0,a,c,!0)}if(!Array.isArray(o))throw new Error(`parquet repeated field ${p.name} must be an array`);if(!o.length)return void l(t+1,void 0,a,c,!0);const r=Xe(e[t-1]),i=n[t+1];for(let e=0;e<o.length;e++){let n=o[e];r&&n&&\"object\"==typeof n&&i&&(n=n[i.name]),l(t+1,n,a+1,0===e?c:f[t]+1,!1)}return}if(\"OPTIONAL\"!==_)if(null==o){if(!d)throw new Error(\"parquet required value is undefined\");l(t+1,void 0,a,c,!0)}else l(t+1,u(t,o),a,c,!1);else if(null==o)l(t+1,void 0,a,c,!0);else{const n=u(t,o),r=null==n,i=ze(e[t])||Xe(e[t]);l(t+1,n,p.num_children&&!p.type&&!i||!r?a+1:a,c,r)}}function u(t,r){if(null==r)return;const i=n[t+1];if(i){if(ze(e[t]))return r;if(Xe(e[t]))return function(e,t){if(e instanceof Map)return Array.from(e.entries(),([e,t])=>({key:e,value:t}));if(Array.isArray(e))return e.map(e=>{if(e&&\"object\"==typeof e&&\"key\"in e&&\"value\"in e)return e;if(Array.isArray(e)&&2===e.length)return{key:e[0],value:e[1]};throw new Error(\"parquet map entry must provide key and value\")});if(\"object\"==typeof e)return Object.entries(e).map(([e,t])=>({key:e,value:t}));throw new Error(`parquet map field ${t.name} must be Map, array, or object`)}(r,n[t]);if(\"object\"==typeof r&&!Array.isArray(r))return r[i.name];throw new Error(`parquet expected struct, got ${r}`)}}}function Ln(e,t,n){if(!n||n.min_values.length<=1)return;const r=e.offset;ot(e,{field_1:n.null_pages,field_2:n.min_values,field_3:n.max_values,field_4:gt.indexOf(n.boundary_order),field_5:n.null_counts}),t.column_index_offset=BigInt(r),t.column_index_length=e.offset-r}function On(e,t,n){if(!n||n.page_locations.length<=1)return;const r=e.offset;ot(e,{field_1:n.page_locations.map(e=>({field_1:e.offset,field_2:e.compressed_page_size,field_3:e.first_row_index}))}),t.offset_index_offset=BigInt(r),t.offset_index_length=e.offset-r}function Bn(e,t){const n=Ve(e,t);return n[n.length-1].element}function Rn(e){if(e)return\"STRING\"===e.type?{field_1:{}}:\"MAP\"===e.type?{field_2:{}}:\"LIST\"===e.type?{field_3:{}}:\"ENUM\"===e.type?{field_4:{}}:\"DECIMAL\"===e.type?{field_5:{field_1:e.scale,field_2:e.precision}}:\"DATE\"===e.type?{field_6:{}}:\"TIME\"===e.type?{field_7:{field_1:e.isAdjustedToUTC,field_2:Dn(e.unit)}}:\"TIMESTAMP\"===e.type?{field_8:{field_1:e.isAdjustedToUTC,field_2:Dn(e.unit)}}:\"INTEGER\"===e.type?{field_10:{field_1:e.bitWidth,field_2:e.isSigned}}:\"NULL\"===e.type?{field_11:{}}:\"JSON\"===e.type?{field_12:{}}:\"BSON\"===e.type?{field_13:{}}:\"UUID\"===e.type?{field_14:{}}:\"FLOAT16\"===e.type?{field_15:{}}:\"VARIANT\"===e.type?{field_16:{}}:\"GEOMETRY\"===e.type?{field_17:{field_1:e.crs}}:\"GEOGRAPHY\"===e.type?{field_18:{field_1:e.crs,field_2:e.algorithm&&wt.indexOf(e.algorithm)}}:void 0}function Dn(e){return\"NANOS\"===e?{field_3:{}}:\"MICROS\"===e?{field_2:{}}:{field_1:{}}}const Mn=new Array(15);function Sn(e){const t=new qe;t.appendVarInt(e.length);let n=0;for(;n<e.length;){const r=Math.min(e.length-n,65536);Cn(t,e,n,r),n+=r}return t.getBytes()}function xn(e,t){return 506832829*e>>>t}function Pn(e,t){return e[t]+(e[t+1]<<8)+(e[t+2]<<16)+(e[t+3]<<24)}function Yn(e,t,n){return e[t]===e[n]&&e[t+1]===e[n+1]&&e[t+2]===e[n+2]&&e[t+3]===e[n+3]}function Fn(e,t,n,r){r<=60?e.appendUint8(r-1<<2):r<256?(e.appendUint8(240),e.appendUint8(r-1)):(e.appendUint8(244),e.appendUint8(r-1&255),e.appendUint8(r-1>>>8)),e.appendBytes(t.subarray(n,n+r))}function $n(e,t,n){n<12&&t<2048?(e.appendUint8(1+(n-4<<2)+(t>>>8<<5)),e.appendUint8(255&t)):(e.appendUint8(2+(n-1<<2)),e.appendUint8(255&t),e.appendUint8(t>>>8))}function kn(e,t,n){for(;n>=68;)$n(e,t,64),n-=64;n>64&&($n(e,t,60),n-=60),$n(e,t,n)}function Cn(e,t,n,r){let i=1;for(;1<<i<=r&&i<=14;)i++;i--;const o=32-i;Mn[i]??=new Uint16Array(1<<i);const f=Mn[i];f.fill(0);const a=n+r;let s;const l=n;let u,c,d,p,_,y,h,m,g,w,A,E=n,v=!0;if(r>=15)for(s=a-15,c=xn(Pn(t,++n),o);v;){_=32,d=n;do{if(u=c,y=_>>>5,_++,d=(n=d)+y,n>s){v=!1;break}c=xn(Pn(t,d),o),p=l+f[u],f[u]=n-l}while(!Yn(t,n,p));if(!v)break;Fn(e,t,E,n-E);do{for(h=n,m=4;n+m<a&&t[n+m]===t[p+m];)m++;if(n+=m,g=h-p,kn(e,g,m),E=n,n>=s){v=!1;break}w=xn(Pn(t,n-1),o),f[w]=n-1-l,A=xn(Pn(t,n),o),p=l+f[A],f[A]=n-l}while(Yn(t,n,p));if(!v)break;c=xn(Pn(t,++n),o)}E<a&&Fn(e,t,E,a-E)}function Gn({writer:e,schema:t,codec:n=\"SNAPPY\",compressors:r,statistics:i=!0,kvMetadata:o}){this.writer=e,this.schema=t,this.codec=n,this.compressors={SNAPPY:Sn,...r},this.statistics=i,this.kvMetadata=o,this.row_groups=[],this.num_rows=0n,this.pendingIndexes=[],this.writer.appendUint32(827474256)}function qn(e,t){return Array.isArray(e)?e[Math.min(t,e.length-1)]:e}function jn({columnDataRows:e,rowGroupSize:t}){if(Array.isArray(t)&&!t.length)throw new Error(\"rowGroupSize array cannot be empty\");const n=[];let r=0,i=0;for(;i<e;){const o=qn(t,r);n.push({groupStartIndex:i,groupSize:Math.min(o,e-i)}),i+=o,r++}return n}function Vn(e){const t=[];return function e(n){const r=n[n.length-1];if(r.children.length)for(const t of r.children)e([...n,t]);else t.push(n)}(e),t}function zn(e){const t=new qe;return function({writer:e,columnData:t,schema:n,codec:r=\"SNAPPY\",compressors:i,statistics:o=!0,rowGroupSize:f=[1e3,1e5],kvMetadata:a,pageSize:s=1048576}){if(t=t.map(e=>{if(!0===e.shredding&&\"VARIANT\"===e.type){const t=xt(Array.from(e.data));return t?{...e,shredding:t}:{...e,shredding:void 0}}if(void 0!==e.shredding&&!0!==e.shredding&&\"VARIANT\"===e.type){const t=$t(e.shredding);return t?{...e,shredding:t}:{...e,shredding:void 0}}return e}),n){if(t.some(({type:e})=>e))throw new Error(\"cannot provide both schema and columnData type\")}else n=zt({columnData:t});const l=new Gn({writer:e,schema:n,codec:r,compressors:i,statistics:o,kvMetadata:a}),u=l.write({columnData:t,rowGroupSize:f,pageSize:s});u?u.then(()=>l.finish()):l.finish()}({...e,writer:t}),t.getBuffer()}Gn.prototype.write=function({columnData:e,rowGroupSize:t=[1e3,1e5],pageSize:n=1048576}){const r=e[0]?.data?.length||0;let i;for(const{groupStartIndex:o,groupSize:f}of jn({columnDataRows:r,rowGroupSize:t})){const t=()=>{const t=this.writer.offset,i=[];for(let t=0;t<e.length;t++){const{name:a,data:s,encoding:l,codec:u=this.codec,columnIndex:c=!1,offsetIndex:d=!0,shredding:p,bloomFilter:_}=e[t];if(c&&!d)throw new Error(\"parquet ColumnIndex cannot be present without OffsetIndex\");if(s.length!==r)throw new Error(\"parquet columns must have the same length\");const y=s.slice(o,o+f),h=Ve(this.schema,[a]),m=Vn(h),g=h.at(-1)?.element,w=p&&!0!==p?p:void 0,A=\"VARIANT\"===g?.logical_type?.type,E=\"REQUIRED\"===g?.repetition_type,v=A?Mt(Array.from(y),w,{name:a,required:E}):y;for(const e of m){const t=e.map(e=>e.element),r={columnName:t.slice(1).map(e=>e.name).join(\".\"),element:t[t.length-1],schemaPath:t,codec:u,compressors:this.compressors,stats:this.statistics,pageSize:n,columnIndex:c,offsetIndex:d,encoding:l,bloomFilter:_},o=Un(e,v),f=Tn({writer:this.writer,column:r,pageData:o});i.push(f.chunk),this.pendingIndexes.push(f)}}return this.num_rows+=BigInt(f),this.row_groups.push({columns:i,total_byte_size:BigInt(this.writer.offset-t),num_rows:BigInt(f)}),this.writer.flush?.()};if(i)i=i.then(t);else{const e=t();e&&(i=Promise.resolve(e))}}return i},Gn.prototype.finish=function(){!function(e,t){for(const{chunk:n,columnIndex:r}of t)Ln(e,n,r);for(const{chunk:n,offsetIndex:r}of t)On(e,n,r)}(this.writer,this.pendingIndexes),function(e,t){for(const{chunk:n,bloomFilter:r}of t){if(!r||!n.meta_data)continue;const t=e.offset;ct(e,r),n.meta_data.bloom_filter_offset=BigInt(t),n.meta_data.bloom_filter_length=e.offset-t}}(this.writer,this.pendingIndexes);const e={version:2,created_by:\"hyparquet\",schema:this.schema,num_rows:this.num_rows,row_groups:this.row_groups,metadata_length:0,key_value_metadata:this.kvMetadata};return delete e.metadata_length,function(e,t){const n={field_1:t.version,field_2:t.schema.map(e=>({field_1:e.type&&dt.indexOf(e.type),field_2:e.type_length,field_3:e.repetition_type&&_t.indexOf(e.repetition_type),field_4:e.name,field_5:e.num_children,field_6:e.converted_type&&yt.indexOf(e.converted_type),field_7:e.scale,field_8:e.precision,field_9:e.field_id,field_10:Rn(e.logical_type)})),field_3:t.num_rows,field_4:t.row_groups.map(e=>({field_1:e.columns.map(e=>{return{field_1:e.file_path,field_2:e.file_offset,field_3:e.meta_data&&{field_1:dt.indexOf(e.meta_data.type),field_2:e.meta_data.encodings.map(e=>pt.indexOf(e)),field_3:e.meta_data.path_in_schema,field_4:ht.indexOf(e.meta_data.codec),field_5:e.meta_data.num_values,field_6:e.meta_data.total_uncompressed_size,field_7:e.meta_data.total_compressed_size,field_8:e.meta_data.key_value_metadata&&e.meta_data.key_value_metadata.map(e=>({field_1:e.key,field_2:e.value})),field_9:e.meta_data.data_page_offset,field_10:e.meta_data.index_page_offset,field_11:e.meta_data.dictionary_page_offset,field_12:e.meta_data.statistics&&(n=e.meta_data.statistics,r=Bn(t.schema,e.meta_data.path_in_schema),{field_1:vn(n.max,r,!0),field_2:vn(n.min,r,!1),field_3:n.null_count,field_4:n.distinct_count,field_5:vn(n.max_value,r,!0),field_6:vn(n.min_value,r,!1),field_7:n.is_max_value_exact??En(n.max_value??n.max,r),field_8:n.is_min_value_exact??En(n.min_value??n.min,r)}),field_13:e.meta_data.encoding_stats&&e.meta_data.encoding_stats.map(e=>({field_1:mt.indexOf(e.page_type),field_2:pt.indexOf(e.encoding),field_3:e.count})),field_14:e.meta_data.bloom_filter_offset,field_15:e.meta_data.bloom_filter_length,field_16:e.meta_data.size_statistics&&{field_1:e.meta_data.size_statistics.unencoded_byte_array_data_bytes,field_2:e.meta_data.size_statistics.repetition_level_histogram,field_3:e.meta_data.size_statistics.definition_level_histogram},field_17:e.meta_data.geospatial_statistics&&{field_1:e.meta_data.geospatial_statistics.bbox&&{field_1:e.meta_data.geospatial_statistics.bbox.xmin,field_2:e.meta_data.geospatial_statistics.bbox.xmax,field_3:e.meta_data.geospatial_statistics.bbox.ymin,field_4:e.meta_data.geospatial_statistics.bbox.ymax,field_5:e.meta_data.geospatial_statistics.bbox.zmin,field_6:e.meta_data.geospatial_statistics.bbox.zmax,field_7:e.meta_data.geospatial_statistics.bbox.mmin,field_8:e.meta_data.geospatial_statistics.bbox.mmax},field_2:e.meta_data.geospatial_statistics.geospatial_types}},field_4:e.offset_index_offset,field_5:e.offset_index_length,field_6:e.column_index_offset,field_7:e.column_index_length,field_9:e.encrypted_column_metadata};var n,r}),field_2:e.total_byte_size,field_3:e.num_rows,field_4:e.sorting_columns&&e.sorting_columns.map(e=>({field_1:e.column_idx,field_2:e.descending,field_3:e.nulls_first})),field_5:e.file_offset,field_6:e.total_compressed_size})),field_5:t.key_value_metadata&&t.key_value_metadata.map(e=>({field_1:e.key,field_2:e.value})),field_6:t.created_by},r=e.offset;ot(e,n);const i=e.offset-r;e.appendUint32(i)}(this.writer,e),this.writer.appendUint32(827474256),this.writer.finish()};var Xn=Uint8Array,Zn=Uint16Array,Hn=Int32Array,Jn=new Xn([0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,0,0,0,0]),Qn=new Xn([0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13,0,0]),Wn=new Xn([16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15]),Kn=function(e,t){for(var n=new Zn(31),r=0;r<31;++r)n[r]=t+=1<<e[r-1];var i=new Hn(n[30]);for(r=1;r<30;++r)for(var o=n[r];o<n[r+1];++o)i[o]=o-n[r]<<5|r;return{b:n,r:i}},er=Kn(Jn,2),tr=er.b,nr=er.r;tr[28]=258,nr[258]=28;for(var rr=Kn(Qn,0),ir=rr.b,or=rr.r,fr=new Zn(32768),ar=0;ar<32768;++ar){var sr=(43690&ar)>>1|(21845&ar)<<1;sr=(61680&(sr=(52428&sr)>>2|(13107&sr)<<2))>>4|(3855&sr)<<4,fr[ar]=((65280&sr)>>8|(255&sr)<<8)>>1}var lr=function(e,t,n){for(var r=e.length,i=0,o=new Zn(t);i<r;++i)e[i]&&++o[e[i]-1];var f,a=new Zn(t);for(i=1;i<t;++i)a[i]=a[i-1]+o[i-1]<<1;if(n){f=new Zn(1<<t);var s=15-t;for(i=0;i<r;++i)if(e[i])for(var l=i<<4|e[i],u=t-e[i],c=a[e[i]-1]++<<u,d=c|(1<<u)-1;c<=d;++c)f[fr[c]>>s]=l}else for(f=new Zn(r),i=0;i<r;++i)e[i]&&(f[i]=fr[a[e[i]-1]++]>>15-e[i]);return f},ur=new Xn(288);for(ar=0;ar<144;++ar)ur[ar]=8;for(ar=144;ar<256;++ar)ur[ar]=9;for(ar=256;ar<280;++ar)ur[ar]=7;for(ar=280;ar<288;++ar)ur[ar]=8;var cr=new Xn(32);for(ar=0;ar<32;++ar)cr[ar]=5;var dr=lr(ur,9,0),pr=lr(ur,9,1),_r=lr(cr,5,0),yr=lr(cr,5,1),hr=function(e){for(var t=e[0],n=1;n<e.length;++n)e[n]>t&&(t=e[n]);return t},mr=function(e,t,n){var r=t/8|0;return(e[r]|e[r+1]<<8)>>(7&t)&n},gr=function(e,t){var n=t/8|0;return(e[n]|e[n+1]<<8|e[n+2]<<16)>>(7&t)},wr=function(e){return(e+7)/8|0},Ar=function(e,t,n){return(null==n||n>e.length)&&(n=e.length),new Xn(e.subarray(t,n))},Er=[\"unexpected EOF\",\"invalid block type\",\"invalid length/literal\",\"invalid distance\",\"stream finished\",\"no stream handler\",,\"no callback\",\"invalid UTF-8 data\",\"extra field too long\",\"date not in range 1980-2099\",\"filename too long\",\"stream finishing\",\"invalid zip data\"],vr=function(e,t,n){var r=new Error(t||Er[e]);if(r.code=e,Error.captureStackTrace&&Error.captureStackTrace(r,vr),!n)throw r;return r},Ir=function(e,t,n){n<<=7&t;var r=t/8|0;e[r]|=n,e[r+1]|=n>>8},br=function(e,t,n){n<<=7&t;var r=t/8|0;e[r]|=n,e[r+1]|=n>>8,e[r+2]|=n>>16},Tr=function(e,t){for(var n=[],r=0;r<e.length;++r)e[r]&&n.push({s:r,f:e[r]});var i=n.length,o=n.slice();if(!i)return{t:Dr,l:0};if(1==i){var f=new Xn(n[0].s+1);return f[n[0].s]=1,{t:f,l:1}}n.sort(function(e,t){return e.f-t.f}),n.push({s:-1,f:25001});var a=n[0],s=n[1],l=0,u=1,c=2;for(n[0]={s:-1,f:a.f+s.f,l:a,r:s};u!=i-1;)a=n[n[l].f<n[c].f?l++:c++],s=n[l!=u&&n[l].f<n[c].f?l++:c++],n[u++]={s:-1,f:a.f+s.f,l:a,r:s};var d=o[0].s;for(r=1;r<i;++r)o[r].s>d&&(d=o[r].s);var p=new Zn(d+1),_=Nr(n[u-1],p,0);if(_>t){r=0;var y=0,h=_-t,m=1<<h;for(o.sort(function(e,t){return p[t.s]-p[e.s]||e.f-t.f});r<i;++r){var g=o[r].s;if(!(p[g]>t))break;y+=m-(1<<_-p[g]),p[g]=t}for(y>>=h;y>0;){var w=o[r].s;p[w]<t?y-=1<<t-p[w]++-1:++r}for(;r>=0&&y;--r){var A=o[r].s;p[A]==t&&(--p[A],++y)}_=t}return{t:new Xn(p),l:_}},Nr=function(e,t,n){return-1==e.s?Math.max(Nr(e.l,t,n+1),Nr(e.r,t,n+1)):t[e.s]=n},Ur=function(e){for(var t=e.length;t&&!e[--t];);for(var n=new Zn(++t),r=0,i=e[0],o=1,f=function(e){n[r++]=e},a=1;a<=t;++a)if(e[a]==i&&a!=t)++o;else{if(!i&&o>2){for(;o>138;o-=138)f(32754);o>2&&(f(o>10?o-11<<5|28690:o-3<<5|12305),o=0)}else if(o>3){for(f(i),--o;o>6;o-=6)f(8304);o>2&&(f(o-3<<5|8208),o=0)}for(;o--;)f(i);o=1,i=e[a]}return{c:n.subarray(0,r),n:t}},Lr=function(e,t){for(var n=0,r=0;r<t.length;++r)n+=e[r]*t[r];return n},Or=function(e,t,n){var r=n.length,i=wr(t+2);e[i]=255&r,e[i+1]=r>>8,e[i+2]=255^e[i],e[i+3]=255^e[i+1];for(var o=0;o<r;++o)e[i+o+4]=n[o];return 8*(i+4+r)},Br=function(e,t,n,r,i,o,f,a,s,l,u){Ir(t,u++,n),++i[256];for(var c=Tr(i,15),d=c.t,p=c.l,_=Tr(o,15),y=_.t,h=_.l,m=Ur(d),g=m.c,w=m.n,A=Ur(y),E=A.c,v=A.n,I=new Zn(19),b=0;b<g.length;++b)++I[31&g[b]];for(b=0;b<E.length;++b)++I[31&E[b]];for(var T=Tr(I,7),N=T.t,U=T.l,L=19;L>4&&!N[Wn[L-1]];--L);var O,B,R,D,M=l+5<<3,S=Lr(i,ur)+Lr(o,cr)+f,x=Lr(i,d)+Lr(o,y)+f+14+3*L+Lr(I,N)+2*I[16]+3*I[17]+7*I[18];if(s>=0&&M<=S&&M<=x)return Or(t,u,e.subarray(s,s+l));if(Ir(t,u,1+(x<S)),u+=2,x<S){O=lr(d,p,0),B=d,R=lr(y,h,0),D=y;var P=lr(N,U,0);for(Ir(t,u,w-257),Ir(t,u+5,v-1),Ir(t,u+10,L-4),u+=14,b=0;b<L;++b)Ir(t,u+3*b,N[Wn[b]]);u+=3*L;for(var Y=[g,E],F=0;F<2;++F){var $=Y[F];for(b=0;b<$.length;++b){var k=31&$[b];Ir(t,u,P[k]),u+=N[k],k>15&&(Ir(t,u,$[b]>>5&127),u+=$[b]>>12)}}}else O=dr,B=ur,R=_r,D=cr;for(b=0;b<a;++b){var C=r[b];if(C>255){br(t,u,O[257+(k=C>>18&31)]),u+=B[k+257],k>7&&(Ir(t,u,C>>23&31),u+=Jn[k]);var G=31&C;br(t,u,R[G]),u+=D[G],G>3&&(br(t,u,C>>5&8191),u+=Qn[G])}else br(t,u,O[C]),u+=B[C]}return br(t,u,O[256]),u+B[256]},Rr=new Hn([65540,131080,131088,131104,262176,1048704,1048832,2114560,2117632]),Dr=new Xn(0),Mr=function(){for(var e=new Int32Array(256),t=0;t<256;++t){for(var n=t,r=9;--r;)n=(1&n&&-306674912)^n>>>1;e[t]=n}return e}(),Sr=function(e,t,n){for(;n;++t)e[t]=n,n>>>=8};function xr(e,t){t||(t={});var n=function(){var e=-1;return{p:function(t){for(var n=e,r=0;r<t.length;++r)n=Mr[255&n^t[r]]^n>>>8;e=n},d:function(){return~e}}}(),r=e.length;n.p(e);var i,o=function(e,t,n,r,i){if(!i&&(i={l:1},t.dictionary)){var o=t.dictionary.subarray(-32768),f=new Xn(o.length+e.length);f.set(o),f.set(e,o.length),e=f,i.w=o.length}return function(e,t,n,r,i,o){var f=o.z||e.length,a=new Xn(r+f+5*(1+Math.ceil(f/7e3))+i),s=a.subarray(r,a.length-i),l=o.l,u=7&(o.r||0);if(t){u&&(s[0]=o.r>>3);for(var c=Rr[t-1],d=c>>13,p=8191&c,_=(1<<n)-1,y=o.p||new Zn(32768),h=o.h||new Zn(_+1),m=Math.ceil(n/3),g=2*m,w=function(t){return(e[t]^e[t+1]<<m^e[t+2]<<g)&_},A=new Hn(25e3),E=new Zn(288),v=new Zn(32),I=0,b=0,T=o.i||0,N=0,U=o.w||0,L=0;T+2<f;++T){var O=w(T),B=32767&T,R=h[O];if(y[B]=R,h[O]=B,U<=T){var D=f-T;if((I>7e3||N>24576)&&(D>423||!l)){u=Br(e,s,0,A,E,v,b,N,L,T-L,u),N=I=b=0,L=T;for(var M=0;M<286;++M)E[M]=0;for(M=0;M<30;++M)v[M]=0}var S=2,x=0,P=p,Y=B-R&32767;if(D>2&&O==w(T-Y))for(var F=Math.min(d,D)-1,$=Math.min(32767,T),k=Math.min(258,D);Y<=$&&--P&&B!=R;){if(e[T+S]==e[T+S-Y]){for(var C=0;C<k&&e[T+C]==e[T+C-Y];++C);if(C>S){if(S=C,x=Y,C>F)break;var G=Math.min(Y,C-2),q=0;for(M=0;M<G;++M){var j=T-Y+M&32767,V=j-y[j]&32767;V>q&&(q=V,R=j)}}}Y+=(B=R)-(R=y[B])&32767}if(x){A[N++]=268435456|nr[S]<<18|or[x];var z=31&nr[S],X=31&or[x];b+=Jn[z]+Qn[X],++E[257+z],++v[X],U=T+S,++I}else A[N++]=e[T],++E[e[T]]}}for(T=Math.max(T,U);T<f;++T)A[N++]=e[T],++E[e[T]];u=Br(e,s,l,A,E,v,b,N,L,T-L,u),l||(o.r=7&u|s[u/8|0]<<3,u-=7,o.h=h,o.p=y,o.i=T,o.w=U)}else{for(T=o.w||0;T<f+l;T+=65535){var Z=T+65535;Z>=f&&(s[u/8|0]=l,Z=f),u=Or(s,u+1,e.subarray(T,Z))}o.i=f}return Ar(a,0,r+wr(u)+i)}(e,null==t.level?6:t.level,null==t.mem?i.l?Math.ceil(1.5*Math.max(8,Math.min(13,Math.log(e.length)))):20:12+t.mem,n,r,i)}(e,t,10+((i=t).filename?i.filename.length+1:0),8),f=o.length;return function(e,t){var n=t.filename;if(e[0]=31,e[1]=139,e[2]=8,e[8]=t.level<2?4:9==t.level?2:0,e[9]=3,0!=t.mtime&&Sr(e,4,Math.floor(new Date(t.mtime||Date.now())/1e3)),n){e[3]=8;for(var r=0;r<=n.length;++r)e[r+10]=n.charCodeAt(r)}}(o,t),Sr(o,f-8,n.d()),Sr(o,f-4,r),o}var Pr=\"undefined\"!=typeof TextDecoder&&new TextDecoder;try{Pr.decode(Dr,{stream:!0})}catch(e){}var Yr=ArrayBuffer,Fr=Uint8Array,$r=Uint16Array,kr=Int16Array,Cr=Int32Array,Gr=function(e,t,n){if(Fr.prototype.slice)return Fr.prototype.slice.call(e,t,n);(null==t||t<0)&&(t=0),(null==n||n>e.length)&&(n=e.length);var r=new Fr(n-t);return r.set(e.subarray(t,n)),r},qr=function(e,t,n,r){if(Fr.prototype.fill)return Fr.prototype.fill.call(e,t,n,r);for((null==n||n<0)&&(n=0),(null==r||r>e.length)&&(r=e.length);n<r;++n)e[n]=t;return e},jr=function(e,t,n,r){if(Fr.prototype.copyWithin)return Fr.prototype.copyWithin.call(e,t,n,r);for((null==n||n<0)&&(n=0),(null==r||r>e.length)&&(r=e.length);n<r;)e[t++]=e[n++]},Vr=[\"invalid zstd data\",\"window size too large (>2046MB)\",\"invalid block type\",\"FSE accuracy too high\",\"match distance too far back\",\"unexpected EOF\"],zr=function(e,t,n){var r=new Error(t||Vr[e]);if(r.code=e,Error.captureStackTrace&&Error.captureStackTrace(r,zr),!n)throw r;return r},Xr=function(e,t,n){for(var r=0,i=0;r<n;++r)i|=e[t++]<<(r<<3);return i},Zr=function(e,t){var n,r=e[0]|e[1]<<8|e[2]<<16;if(3126568==r&&253==e[3]){var i=e[4],o=i>>5&1,f=i>>2&1,a=3&i,s=i>>6;8&i&&zr(0);var l=6-o,u=3==a?4:a,c=Xr(e,l,u),d=s?1<<s:o,p=Xr(e,l+=u,d)+(1==s&&256),_=p;if(!o){var y=1<<10+(e[5]>>3);_=y+(y>>3)*(7&e[5])}_>2145386496&&zr(1);var h=new Fr((1==t?p||_:t?0:_)+12);return h[0]=1,h[4]=4,h[8]=8,{b:l+d,y:0,l:0,d:c,w:t&&1!=t?t:h.subarray(12),e:_,o:new Cr(h.buffer,0,3),u:p,c:f,m:Math.min(131072,_)}}if(25481893==(r>>4|e[3]<<20))return(((n=e)[4]|n[5]<<8|n[6]<<16|n[7]<<24)>>>0)+8;zr(0)},Hr=function(e){for(var t=0;1<<t<=e;++t);return t-1},Jr=function(e,t,n){var r=4+(t<<3),i=5+(15&e[t]);i>n&&zr(3);for(var o=1<<i,f=o,a=-1,s=-1,l=-1,u=o,c=new Yr(512+(o<<2)),d=new kr(c,0,256),p=new $r(c,0,256),_=new $r(c,512,o),y=512+(o<<1),h=new Fr(c,y,o),m=new Fr(c,y+o);a<255&&f>0;){var g=Hr(f+1),w=r>>3,A=(1<<g+1)-1,E=(e[w]|e[w+1]<<8|e[w+2]<<16)>>(7&r)&A,v=(1<<g)-1,I=A-f-1,b=E&v;if(b<I?(r+=g,E=b):(r+=g+1,E>v&&(E-=I)),d[++a]=--E,-1==E?(f+=E,h[--u]=a):f-=E,!E)do{var T=r>>3;s=(e[T]|e[T+1]<<8)>>(7&r)&3,r+=2,a+=s}while(3==s)}(a>255||f)&&zr(0);for(var N=0,U=(o>>1)+(o>>3)+3,L=o-1,O=0;O<=a;++O){var B=d[O];if(B<1)p[O]=-B;else for(l=0;l<B;++l){h[N]=O;do{N=N+U&L}while(N>=u)}}for(N&&zr(0),l=0;l<o;++l){var R=p[h[l]]++,D=m[l]=i-Hr(R);_[l]=(R<<D)-o}return[r+7>>3,{b:i,s:h,n:m,t:_}]},Qr=Jr(new Fr([81,16,99,140,49,198,24,99,12,33,196,24,99,102,102,134,70,146,4]),0,6)[1],Wr=Jr(new Fr([33,20,196,24,99,140,33,132,16,66,8,33,132,16,66,8,33,68,68,68,68,68,68,68,68,36,9]),0,6)[1],Kr=Jr(new Fr([32,132,16,66,102,70,68,68,68,68,36,73,2]),0,5)[1],ei=function(e,t){for(var n=e.length,r=new Cr(n),i=0;i<n;++i)r[i]=t,t+=1<<e[i];return r},ti=new Fr(new Cr([0,0,0,0,16843009,50528770,134678020,202050057,269422093]).buffer,0,36),ni=ei(ti,0),ri=new Fr(new Cr([0,0,0,0,0,0,0,0,16843009,50528770,117769220,185207048,252579084,16]).buffer,0,53),ii=ei(ri,3),oi=function(e,t,n){var r=e.length,i=t.length,o=e[r-1],f=(1<<n.b)-1,a=-n.b;o||zr(0);for(var s=0,l=n.b,u=(r<<3)-8+Hr(o)-l,c=-1;u>a&&c<i;){var d=u>>3;s=(s<<l|(e[d]|e[d+1]<<8|e[d+2]<<16)>>(7&u))&f,t[++c]=n.s[s],u-=l=n.n[s]}u==a&&c+1==i||zr(0)},fi=function(e,t,n){var r=6,i=t.length+3>>2,o=i<<1,f=i+o;oi(e.subarray(r,r+=e[0]|e[1]<<8),t.subarray(0,i),n),oi(e.subarray(r,r+=e[2]|e[3]<<8),t.subarray(i,o),n),oi(e.subarray(r,r+=e[4]|e[5]<<8),t.subarray(o,f),n),oi(e.subarray(r),t.subarray(f),n)},ai=function(e,t,n){var r,i=t.b,o=e[i],f=o>>1&3;t.l=1&o;var a=o>>3|e[i+1]<<5|e[i+2]<<13,s=(i+=3)+a;if(1==f){if(i>=e.length)return;return t.b=i+1,n?(qr(n,e[i],t.y,t.y+=a),n):qr(new Fr(a),e[i])}if(!(s>e.length)){if(0==f)return t.b=s,n?(n.set(e.subarray(i,s),t.y),t.y+=a,n):Gr(e,i,s);if(2==f){var l=e[i],u=3&l,c=l>>2&3,d=l>>4,p=0,_=0;u<2?1&c?d|=e[++i]<<4|(2&c&&e[++i]<<12):d=l>>3:(_=c,c<2?(d|=(63&e[++i])<<4,p=e[i]>>6|e[++i]<<2):2==c?(d|=e[++i]<<4|(3&e[++i])<<12,p=e[i]>>2|e[++i]<<6):(d|=e[++i]<<4|(63&e[++i])<<12,p=e[i]>>6|e[++i]<<2|e[++i]<<10)),++i;var y=n?n.subarray(t.y,t.y+t.m):new Fr(t.m),h=y.length-d;if(0==u)y.set(e.subarray(i,i+=d),h);else if(1==u)qr(y,e[i++],h);else{var m=t.h;if(2==u){var g=function(e,t){var n=0,r=-1,i=new Fr(292),o=e[t],f=i.subarray(0,256),a=i.subarray(256,268),s=new $r(i.buffer,268);if(o<128){var l=Jr(e,t+1,6),u=l[0],c=l[1],d=u<<3,p=e[t+=o];p||zr(0);for(var _=0,y=0,h=c.b,m=h,g=(++t<<3)-8+Hr(p);!((g-=h)<d);){var w=g>>3;if(_+=(e[w]|e[w+1]<<8)>>(7&g)&(1<<h)-1,f[++r]=c.s[_],(g-=m)<d)break;y+=(e[w=g>>3]|e[w+1]<<8)>>(7&g)&(1<<m)-1,f[++r]=c.s[y],h=c.n[_],_=c.t[_],m=c.n[y],y=c.t[y]}++r>255&&zr(0)}else{for(r=o-127;n<r;n+=2){var A=e[++t];f[n]=A>>4,f[n+1]=15&A}++t}var E=0;for(n=0;n<r;++n)(T=f[n])>11&&zr(0),E+=T&&1<<T-1;var v=Hr(E)+1,I=1<<v,b=I-E;for(b&b-1&&zr(0),f[r++]=Hr(b)+1,n=0;n<r;++n){var T=f[n];++a[f[n]=T&&v+1-T]}var N=new Fr(I<<1),U=N.subarray(0,I),L=N.subarray(I);for(s[v]=0,n=v;n>0;--n){var O=s[n];qr(L,n,O,s[n-1]=O+a[n]*(1<<v-n))}for(s[0]!=I&&zr(0),n=0;n<r;++n){var B=f[n];if(B){var R=s[B];qr(U,n,R,s[B]=R+(1<<v-B))}}return[t,{n:L,b:v,s:U}]}(e,i);p+=i-(i=g[0]),t.h=m=g[1]}else m||zr(0);(_?fi:oi)(e.subarray(i,i+=p),y.subarray(h),m)}var w=e[i++];if(w){255==w?w=32512+(e[i++]|e[i++]<<8):w>127&&(w=w-128<<8|e[i++]);var A=e[i++];3&A&&zr(0);for(var E=[Wr,Kr,Qr],v=2;v>-1;--v){var I=A>>2+(v<<1)&3;if(1==I){var b=new Fr([0,0,e[i++]]);E[v]={s:b.subarray(2,3),n:b.subarray(0,1),t:new $r(b.buffer,0,1),b:0}}else 2==I?(i=(r=Jr(e,i,9-(1&v)))[0],E[v]=r[1]):3==I&&(t.t||zr(0),E[v]=t.t[v])}var T=t.t=E,N=T[0],U=T[1],L=T[2],O=e[s-1];O||zr(0);var B=(s<<3)-8+Hr(O)-L.b,R=B>>3,D=0,M=(e[R]|e[R+1]<<8)>>(7&B)&(1<<L.b)-1,S=(e[R=(B-=U.b)>>3]|e[R+1]<<8)>>(7&B)&(1<<U.b)-1,x=(e[R=(B-=N.b)>>3]|e[R+1]<<8)>>(7&B)&(1<<N.b)-1;for(++w;--w;){var P=L.s[M],Y=L.n[M],F=N.s[x],$=N.n[x],k=U.s[S],C=U.n[S],G=1<<k,q=G+((e[R=(B-=k)>>3]|e[R+1]<<8|e[R+2]<<16|e[R+3]<<24)>>>(7&B)&G-1);R=(B-=ri[F])>>3;var j=ii[F]+((e[R]|e[R+1]<<8|e[R+2]<<16)>>(7&B)&(1<<ri[F])-1);R=(B-=ti[P])>>3;var V=ni[P]+((e[R]|e[R+1]<<8|e[R+2]<<16)>>(7&B)&(1<<ti[P])-1);if(R=(B-=Y)>>3,M=L.t[M]+((e[R]|e[R+1]<<8)>>(7&B)&(1<<Y)-1),R=(B-=$)>>3,x=N.t[x]+((e[R]|e[R+1]<<8)>>(7&B)&(1<<$)-1),R=(B-=C)>>3,S=U.t[S]+((e[R]|e[R+1]<<8)>>(7&B)&(1<<C)-1),q>3)t.o[2]=t.o[1],t.o[1]=t.o[0],t.o[0]=q-=3;else{var z=q-(0!=V);z?(q=3==z?t.o[0]-1:t.o[z],z>1&&(t.o[2]=t.o[1]),t.o[1]=t.o[0],t.o[0]=q):q=t.o[0]}for(v=0;v<V;++v)y[D+v]=y[h+v];h+=V;var X=(D+=V)-q;if(X<0){var Z=-X,H=t.e+X;for(Z>j&&(Z=j),v=0;v<Z;++v)y[D+v]=t.w[H+v];D+=Z,j-=Z,X=0}for(v=0;v<j;++v)y[D+v]=y[X+v];D+=j}if(D!=h)for(;h<y.length;)y[D++]=y[h++];else D=y.length;n?t.y+=D:y=Gr(y,0,D)}else if(n){if(t.y+=d,h)for(v=0;v<d;++v)y[v]=y[h+v]}else h&&(y=Gr(y,h));return t.b=s,y}zr(2)}};const si={GZIP:e=>{return o=function(e){31==e[0]&&139==e[1]&&8==e[2]||vr(6,\"invalid gzip data\");var t=e[3],n=10;4&t&&(n+=2+(e[10]|e[11]<<8));for(var r=(t>>3&1)+(t>>4&1);r>0;r-=!e[n++]);return n+(2&t)}(t=e),o+8>t.length&&vr(6,\"invalid gzip data\"),function(e,t,n,r){var i=e.length;if(!i||t.f&&!t.l)return n||new Xn(0);var o=!n,f=o||2!=t.i,a=t.i;o&&(n=new Xn(3*i));var s=function(e){var t=n.length;if(e>t){var r=new Xn(Math.max(2*t,e));r.set(n),n=r}},l=t.f||0,u=t.p||0,c=t.b||0,d=t.l,p=t.d,_=t.m,y=t.n,h=8*i;do{if(!d){l=mr(e,u,1);var m=mr(e,u+1,3);if(u+=3,!m){var g=e[(O=wr(u)+4)-4]|e[O-3]<<8,w=O+g;if(w>i){a&&vr(0);break}f&&s(c+g),n.set(e.subarray(O,w),c),t.b=c+=g,t.p=u=8*w,t.f=l;continue}if(1==m)d=pr,p=yr,_=9,y=5;else if(2==m){var A=mr(e,u,31)+257,E=mr(e,u+10,15)+4,v=A+mr(e,u+5,31)+1;u+=14;for(var I=new Xn(v),b=new Xn(19),T=0;T<E;++T)b[Wn[T]]=mr(e,u+3*T,7);u+=3*E;var N=hr(b),U=(1<<N)-1,L=lr(b,N,1);for(T=0;T<v;){var O,B=L[mr(e,u,U)];if(u+=15&B,(O=B>>4)<16)I[T++]=O;else{var R=0,D=0;for(16==O?(D=3+mr(e,u,3),u+=2,R=I[T-1]):17==O?(D=3+mr(e,u,7),u+=3):18==O&&(D=11+mr(e,u,127),u+=7);D--;)I[T++]=R}}var M=I.subarray(0,A),S=I.subarray(A);_=hr(M),y=hr(S),d=lr(M,_,1),p=lr(S,y,1)}else vr(1);if(u>h){a&&vr(0);break}}f&&s(c+131072);for(var x=(1<<_)-1,P=(1<<y)-1,Y=u;;Y=u){var F=(R=d[gr(e,u)&x])>>4;if((u+=15&R)>h){a&&vr(0);break}if(R||vr(2),F<256)n[c++]=F;else{if(256==F){Y=u,d=null;break}var $=F-254;if(F>264){var k=Jn[T=F-257];$=mr(e,u,(1<<k)-1)+tr[T],u+=k}var C=p[gr(e,u)&P],G=C>>4;if(C||vr(3),u+=15&C,S=ir[G],G>3&&(k=Qn[G],S+=gr(e,u)&(1<<k)-1,u+=k),u>h){a&&vr(0);break}f&&s(c+131072);var q=c+$;if(c<S){var j=0-S,V=Math.min(S,q);for(j+c<0&&vr(3);c<V;++c)n[c]=r[j+c]}for(;c<q;++c)n[c]=n[c-S]}}t.l=d,t.p=Y,t.b=c,t.f=l,d&&(l=1,t.m=_,t.d=p,t.n=y)}while(!l);return c!=n.length&&o?Ar(n,0,c):n.subarray(0,c)}(t.subarray(o,-8),{i:2},new Xn((i=(r=t).length,(r[i-4]|r[i-3]<<8|r[i-2]<<16|r[i-1]<<24)>>>0)),n);var t,n,r,i,o},ZSTD:e=>function(e,t){for(var n=[],r=+!t,i=0,o=0;e.length;){var f=Zr(e,r||t);if(\"object\"==typeof f){for(r?(t=null,f.w.length==f.u&&(n.push(t=f.w),o+=f.u)):(n.push(t),f.e=0);!f.l;){var a=ai(e,f,t);a||zr(5),t?f.e=f.y:(n.push(a),o+=a.length,jr(f.w,0,a.length),f.w.set(a,f.w.length-a.length))}i=f.b+4*f.c}else i=f;e=e.subarray(i)}return function(e,t){if(1==e.length)return e[0];for(var n=new Fr(t),r=0,i=0;r<e.length;++r){var o=e[r];n.set(o,i),i+=o.length}return n}(n,o)}(e)},li={GZIP:e=>xr(e)};function ui(e){return di(D(e instanceof Uint8Array?e.buffer.slice(e.byteOffset,e.byteOffset+e.byteLength):e))}async function ci(e){return di(await R(Oi(e)))}function di(e){const t=e.row_groups&&e.row_groups[0],n=e=>(e.meta_data&&e.meta_data.path_in_schema||[]).join(\".\"),r=yi(e),i=(t&&t.columns||[]).map(e=>({name:n(e),type:e.meta_data&&e.meta_data.type,codec:e.meta_data&&e.meta_data.codec,...r.has(n(e))?{wide:!0}:{}})),o=(e.row_groups||[]).map(e=>({rowCount:Number(e.num_rows),columns:(e.columns||[]).reduce((e,t)=>{const i=t.meta_data,o=i&&i.statistics||{},f=r.has(n(t));return e[n(t)]={min:hi(o.min_value,f),max:hi(o.max_value,f),nulls:null!=o.null_count?Number(o.null_count):void 0},e},{})}));return{rowCount:Number(e.num_rows),columns:i,rowGroups:o,codec:i[0]&&i[0].codec,meta:e}}const pi=BigInt(Number.MAX_SAFE_INTEGER),_i=new WeakMap;function yi(e){if(!e||\"object\"!=typeof e)return new Set;let t=_i.get(e);if(t)return t;t=new Set;for(const n of e.row_groups||[])for(const e of n.columns||[]){const n=e.meta_data;if(!n||\"INT64\"!==n.type)continue;const r=n.statistics||{};for(const e of[r.min_value,r.max_value])\"bigint\"==typeof e&&(e>pi||e<-pi)&&t.add((n.path_in_schema||[]).join(\".\"))}return _i.set(e,t),t}function hi(e,t){return\"bigint\"!=typeof e?e:!t&&e<=pi&&e>=-pi?Number(e):e.toString()}function mi(e,t){for(let n=0;n<e.length;n++)\"bigint\"==typeof e[n]&&(e[n]=hi(e[n],t));return e}function gi(e,t){for(const n in e)\"bigint\"==typeof e[n]&&(e[n]=hi(e[n],t.has(n)));return e}function wi(e){const t=M(e),n=yi(e);return t.children.map(e=>{const t=e.element,r=t.type||null,i=t.converted_type||null,o=t.logical_type&&t.logical_type.type||null,f=!(!e.children||!e.children.length)||\"REPEATED\"===t.repetition_type;let a;return a=f?\"nested\":\"DECIMAL\"===i||\"DECIMAL\"===o||\"FLOAT16\"===o?\"number\":\"DATE\"===i||\"DATE\"===o||\"TIMESTAMP_MILLIS\"===i||\"TIMESTAMP_MICROS\"===i||\"TIMESTAMP\"===o||\"INT96\"===r?\"date\":\"BOOLEAN\"===r?\"boolean\":\"INT32\"===r||\"INT64\"===r||\"FLOAT\"===r||\"DOUBLE\"===r?\"INT64\"===r&&n.has(t.name)?\"string\":\"number\":\"FIXED_LEN_BYTE_ARRAY\"===r&&\"UUID\"!==o?\"bytes\":\"string\",{name:t.name,kind:a,physical:r,logical:o||i,nested:f,...n.has(t.name)?{wide:!0}:{}}})}async function Ai(e,t={}){const{int64:n,...r}=t,i=Oi(e),o=await Ge({file:i,compressors:si,...r});if(\"bigint\"===n)return o;const f=yi(r.metadata||await R(i));for(const e of o)gi(e,f);return o}async function Ei(e,t={}){const{int64:n,...r}=t,i=Oi(e);let o=null;if(await ke({file:i,compressors:si,rowFormat:\"object\",...r,onComplete:e=>{o=e}}),o&&\"bigint\"!==n){const e=yi(r.metadata||await R(i));for(const t of o)gi(t,e)}return o}async function vi(e,t,n={}){const r=ui(e),i=yi(r.meta),o=t||r.columns.map(e=>e.name),f={};for(const t of o){const o=[];await ke({file:Oi(e),metadata:r.meta,compressors:si,columns:[t],onComplete:e=>{for(const t of e)o.push(t[0])}}),f[t]=\"bigint\"===n.int64?o:mi(o,i.has(t))}return f}async function Ii(e,t,n,r,i,o={}){const f=Oi(e);i||\"bigint\"===o.int64||(i=await R(f));const a=yi(i);n=n||0,null==r&&(r=Number((i||await R(f)).num_rows));const s=new Map(t.map(e=>[e,[]]));await ke({file:f,compressors:si,metadata:i,columns:t,rowStart:n,rowEnd:r,onChunk:({columnName:e,columnData:t,rowStart:n,rowEnd:r})=>{const i=s.get(e);i&&i.push({s:n,e:r,d:t})}});const l={};for(const e of t){const t=new Array(Math.max(0,r-n)).fill(null);for(const{s:i,e:o,d:f}of s.get(e)){const e=Math.max(i,n),a=Math.min(o,r);for(let r=e;r<a;r++)t[r-n]=f[r-i]}l[e]=\"bigint\"===o.int64?t:mi(t,a.has(e))}return l}async function bi(e,{rowStart:t=0,rowEnd:n,columns:r,metadata:i,int64:o}={}){const f=Oi(e);i||(i=await R(f));let a=[];if(await ke({file:f,compressors:si,metadata:i,columns:r,rowStart:t,rowEnd:n,rowFormat:\"array\",onComplete:e=>{a=e}}),\"bigint\"===o)return a;const s=yi(i),l=(r||M(i).children.map(e=>e.element.name)).map(e=>s.has(e));for(const e of a)for(let t=0;t<e.length;t++)\"bigint\"==typeof e[t]&&(e[t]=hi(e[t],l[t]));return a}async function*Ti(e,t,n,r,i={}){const o=n||(await ci(e)).rowGroups;let f=0;for(const n of o){const o=n.rowCount;yield{start:f,count:o,cols:await Ii(e,t,f,f+o,r,i)},f+=o}}async function Ni(e,t,n,r={}){return(await Ai(e,{rowStart:t,rowEnd:t+1,metadata:n,...r}))[0]||null}function Ui({schema:e=null,columnTypes:t=null,codec:n=\"SNAPPY\",kvMetadata:r}={}){const i=[],o=new qe;o.flush=function(){this.index&&(i.push(this.getBuffer()),this.index=0)};let f=null,a=e;const s=e=>{for(const t of e)if(null!=t)return\"number\"==typeof t?\"DOUBLE\":\"boolean\"==typeof t?\"BOOLEAN\":\"bigint\"==typeof t?\"INT64\":\"STRING\";return\"STRING\"};return{write(e){if(!f){if(!a){const n=e.map(e=>({...e,type:t&&t[e.name]||e.type||s(e.data)}));a=zt({columnData:n})}f=new Gn({writer:o,schema:a,codec:n,compressors:li,statistics:!0,kvMetadata:r})}f.write({columnData:e,rowGroupSize:e[0]&&e[0].data.length||1})},finish(){if(!f)throw new Error(\"parquet blob writer: nothing written\");return f.finish(),o.flush(),new Blob(i,{type:\"application/vnd.apache.parquet\"})}}}function Li({columnData:e,rowGroupSize:t=65536,codec:n=\"SNAPPY\",kvMetadata:r}={}){const i=e.map(e=>{if(e.type)return e;const t=e.data;for(let n=0;n<t.length;n++){const r=t[n];if(\"number\"==typeof r&&Number.isFinite(r)&&!Number.isInteger(r))return{...e,type:\"DOUBLE\"}}return e});return zn({columnData:i,rowGroupSize:t,codec:n,compressors:li,statistics:!0,kvMetadata:r})}function Oi(e){if(e&&\"function\"==typeof e.slice&&\"number\"==typeof e.byteLength&&!(e instanceof Uint8Array))return e;if(\"undefined\"!=typeof Blob&&e instanceof Blob)return{byteLength:e.size,slice:async(t,n)=>e.slice(t,null==n?e.size:n).arrayBuffer()};const t=e instanceof Uint8Array?e.buffer.slice(e.byteOffset,e.byteOffset+e.byteLength):e;return{byteLength:t.byteLength,slice:async(e,n)=>t.slice(e,n)}}export{Ui as createParquetBlobWriter,wi as parquetFields,ui as parquetInfo,ci as parquetInfoAsync,D as parquetMetadata,R as parquetMetadataAsync,ke as parquetRead,Ge as parquetReadObjects,M as parquetSchema,zn as parquetWriteBuffer,si as readCompressors,Ai as readParquet,vi as readParquetColumnMap,Ei as readParquetColumns,Ii as readParquetRange,Ni as readParquetRow,bi as readParquetRows,zt as schemaFromColumnData,Me as snappyUncompress,Ti as streamParquetColumns,ne as toJson,li as writeCompressors,Li as writeParquet};\n";
+let _pq = null;
+async function pqMod() {
+  if (!_pq) {
+    const url = URL.createObjectURL(new Blob([PQ_SRC], { type: 'text/javascript' }));
+    // a controlled dynamic-import site (the bundler forbids the literal form;
+    // a strict no-eval CSP lands in buildFileLayer's catch with an honest hud)
+    const dynImport = new Function('u', 'return import(u)');
+    try { _pq = await dynImport(url); } finally { URL.revokeObjectURL(url); }
+  }
+  return _pq;
+}
+
+const _pqNum = (t) => /INT|FLOAT|DOUBLE|DECIMAL/.test(t || '');
+
+async function openParquetBlocks(blob, { map = null } = {}) {
+  const { parquetInfoAsync, streamParquetColumns } = await pqMod();
+  // hyparquet wants an AsyncBuffer; RemoteBlob speaks Blob (size/slice) — one
+  // wrapper and every read below range-reads through it
+  const buf = { byteLength: blob.size, slice: (s, e) => blob.slice(s, e == null ? blob.size : e).arrayBuffer() };
+  const info = await parquetInfoAsync(buf);
+  const names = info.columns.map((c) => c.name);
+  const typeOf = {};
+  info.columns.forEach((c) => { typeOf[c.name] = c.type; });
+  if (names.length < 3) throw new Error('parquet: need at least 3 columns (X, Y, Z)');
+  // column roles: the caller's NAMES (via='files' map) override the auto-sniff
+  const mapping = mapColumns(names) || { x: 0, y: 1, z: 2, chan: names.length > 3 ? 3 : null, cat: null };
+  if (map) {
+    const idx = (nm) => (nm == null ? -1 : names.indexOf(nm));
+    for (const [k, mk] of [['x', 'x'], ['y', 'y'], ['z', 'z'], ['chan', 'value'], ['cat', 'category']]) {
+      const i = idx(map[mk]);
+      if (i >= 0) mapping[k] = i;
+    }
+  }
+  if (mapping.x == null || mapping.y == null || mapping.z == null) throw new Error('parquet: could not identify X/Y/Z centroid columns');
+  if (mapping.chan != null && !_pqNum(typeOf[names[mapping.chan]])) mapping.chan = null;
+  if (mapping.cat == null) {
+    for (let i = 0; i < names.length; i++) {
+      if (i === mapping.x || i === mapping.y || i === mapping.z || i === mapping.chan) continue;
+      if (!_pqNum(typeOf[names[i]])) { mapping.cat = i; break; }
+    }
+  }
+  const xN = names[mapping.x], yN = names[mapping.y], zN = names[mapping.z];
+  const chanN = mapping.chan != null ? names[mapping.chan] : null;
+  const catN = mapping.cat != null ? names[mapping.cat] : null;
+  const N = info.rowCount;
+  if (!N) throw new Error('parquet: empty table');
+
+  // micro-written files describe themselves — kv `micro:model` = grid + bbox +
+  // categories, so no discovery sweep at all
+  let kvModel = null;
+  try {
+    const e = (info.meta.key_value_metadata || []).find((x) => x.key === 'micro:model');
+    if (e) kvModel = JSON.parse(e.value);
+  } catch { /* a foreign file */ }
+  let grid = null, categories = null, min, max;
+  if (kvModel && kvModel.bbox) {
+    grid = kvModel.grid || null;
+    categories = kvModel.categories || null;
+    min = [...kvModel.bbox.min]; max = [...kvModel.bbox.max];
+  } else {
+    // discovery: ONE streamed pass over coords (+ cat) — a row group resident
+    // at a time, nothing retained
+    const CAP = 100000, r10 = (v) => Number(v.toPrecision(10));
+    min = [Infinity, Infinity, Infinity]; max = [-Infinity, -Infinity, -Infinity];
+    const ax = [new Set(), new Set(), new Set()];
+    const catSet = catN ? new Set() : null;
+    const discCols = catN ? [xN, yN, zN, catN] : [xN, yN, zN];
+    for await (const { count, cols } of streamParquetColumns(buf, discCols, info.rowGroups, info.meta)) {
+      const X = cols[xN], Y = cols[yN], Z = cols[zN], C = catN ? cols[catN] : null;
+      for (let i = 0; i < count; i++) {
+        const xv = +X[i], yv = +Y[i], zv = +Z[i];
+        if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;
+        if (xv < min[0]) min[0] = xv; if (xv > max[0]) max[0] = xv;
+        if (yv < min[1]) min[1] = yv; if (yv > max[1]) max[1] = yv;
+        if (zv < min[2]) min[2] = zv; if (zv > max[2]) max[2] = zv;
+        if (ax[0].size < CAP) ax[0].add(r10(xv));
+        if (ax[1].size < CAP) ax[1].add(r10(yv));
+        if (ax[2].size < CAP) ax[2].add(r10(zv));
+        if (catSet && catSet.size <= 256) { const v = C[i]; if (v != null && v !== '') catSet.add(String(v)); }
+      }
+    }
+    const axes = ax.map((set) => (set.size < CAP ? inferAxis([...set].sort((a, b) => a - b)) : null));
+    grid = axes.every(Boolean) ? { x: axes[0], y: axes[1], z: axes[2] } : null;
+    categories = catSet && catSet.size > 0 && catSet.size <= 255 ? [...catSet].sort() : null;
+  }
+  const catCode = categories ? new Map(categories.map((v, i) => [v, i])) : null;
+  const header = { kind: 'blockmodel', count: N, bbox: { min, max }, grid, columns: names, mapping, categories, parquet: true };
+
+  async function* streamChunks() {
+    const cnames = [xN, yN, zN, ...(chanN ? [chanN] : []), ...(catN ? [catN] : [])];
+    for await (const { start, count, cols } of streamParquetColumns(buf, cnames, info.rowGroups, info.meta)) {
+      const X = cols[xN], Y = cols[yN], Z = cols[zN], CH = chanN ? cols[chanN] : null, CA = catN ? cols[catN] : null;
+      const x = new Float64Array(count), y = new Float64Array(count), z = new Float64Array(count), chan = new Float64Array(count);
+      const cat = catCode ? new Uint8Array(count) : null, recIdx = new Uint32Array(count);
+      for (let i = 0; i < count; i++) {
+        x[i] = +X[i]; y[i] = +Y[i]; z[i] = +Z[i];
+        chan[i] = CH ? +CH[i] : 0;
+        if (cat) cat[i] = catCode.get(String(CA[i] ?? '')) ?? 0;
+        recIdx[i] = start + i;
+      }
+      yield { count, x, y, z, chan, cat, recIdx, recStart: start };
+    }
+  }
+  return { header, streamChunks };
+}
+
+// ── src/toolbar.js ──
+
+// @gcu/condenser anywidget — the in-view toolbar.
+//
+// Scope rule: a notebook widget must not become micro. What earns a button is
+// what is AWKWARD OR IMPOSSIBLE from Python — mouse-driven geometry (the knife),
+// things you need while looking (the pick readout, the legend), and the camera
+// moves you would otherwise fiddle with by hand. Everything a line of Python
+// does well (ramps, clips, thresholds) stays in Python.
+//
+// Nothing here is decorative: no external CSS, no icon font, inline SVG only,
+// and every control round-trips through the model traits so the notebook sees
+// what you did — toggling a layer here really does set `w["topo"].visible`.
+
+const ICON = {
+  fit: 'M2 5V2h3M12 5V2H9M2 9v3h3M12 9v3H9',
+  view: 'M1 7s2.2-3.9 6-3.9S13 7 13 7s-2.2 3.9-6 3.9S1 7 1 7z M7 8.7a1.7 1.7 0 1 0 0-3.4 1.7 1.7 0 0 0 0 3.4z',
+  ortho: 'M2.5 3.5h9v7h-9z M2.5 3.5 5 1.5h9v7l-2.5 2',
+  pick: 'M3 1.5 11 7l-3.4.7L9 11.8l-1.6.7-1.4-4L3 11z',
+  knife: 'M1.5 12.5 8 6l4.5-4.5L11 7l-6 6z M8 6l3 3',
+  rect: 'M2 2.5h3M9 2.5h3M11.5 5v3M11.5 9v0M2 11.5h3M9 11.5h3M2.5 5v3M2.5 9v.5',
+  lasso: 'M7 2c3 0 5.5 1.7 5.5 3.9S10 9.8 7 9.8 1.5 8.1 1.5 5.9 4 2 7 2z M4.6 9.3c-.5 1.2-.2 2.4.9 3',
+  measure: 'M1.5 8.5 8.5 1.5l4 4-7 7z M4 6l1.5 1.5M6.5 3.5 8 5',
+  through: 'M2.5 4h5v6h-5z M7.5 7h4M9.5 5.2 11.8 7 9.5 8.8',
+  layers: 'M7 1.5 12.5 4.6 7 7.7 1.5 4.6z M1.5 7.4 7 10.5l5.5-3.1M1.5 10.2 7 13.3l5.5-3.1',
+  camera: 'M1.5 4.5h2.5l1-1.5h4l1 1.5h2.5v7h-11z M7 9.8a2.2 2.2 0 1 0 0-4.4 2.2 2.2 0 0 0 0 4.4z',
+  close: 'M3.5 3.5l7 7M10.5 3.5l-7 7',
+};
+
+const svg = (d) => `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor"
+  stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="${d}"/></svg>`;
+
+const CSS = `
+.cdt { position:absolute; left:6px; top:6px; display:flex; gap:2px; z-index:4;
+  background:rgba(22,22,22,.86); border:1px solid #333; border-radius:4px; padding:2px;
+  font:11px ui-monospace,Menlo,Consolas,monospace; backdrop-filter:blur(3px); }
+.cdt button { all:unset; box-sizing:border-box; width:24px; height:22px; display:grid; place-items:center;
+  color:#b9b9b9; border-radius:3px; cursor:pointer; }
+.cdt button:hover { background:#2e2e2e; color:#e8e8e8; }
+.cdt button[aria-pressed="true"] { background:#c8781f; color:#141414; }
+.cdt .sep { width:1px; background:#3a3a3a; margin:2px 1px; }
+.cdpop { position:absolute; left:6px; top:34px; z-index:5; min-width:172px; max-height:220px; overflow:auto;
+  background:rgba(22,22,22,.96); border:1px solid #3a3a3a; border-radius:4px; padding:5px 6px;
+  font:11px ui-monospace,Menlo,Consolas,monospace; color:#cfcfcf; backdrop-filter:blur(3px); }
+.cdpop h4 { margin:0 0 5px; font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:#8a8a8a; font-weight:600; }
+.cdpop label { display:flex; align-items:center; gap:6px; padding:2px 0; cursor:pointer; }
+.cdpop label:hover { color:#fff; }
+.cdpop input[type=checkbox] { accent-color:#c8781f; margin:0; }
+.cdpop .k { color:#7d7d7d; }
+.cdpop .row { display:flex; justify-content:space-between; gap:8px; padding:1px 0; }
+.cdpop button.opt { all:unset; display:block; padding:3px 5px; border-radius:3px; cursor:pointer; color:#cfcfcf; }
+.cdpop button.opt:hover { background:#2e2e2e; color:#fff; }
+.cdsec { position:absolute; left:6px; bottom:26px; z-index:4; display:flex; align-items:center; gap:6px;
+  background:rgba(22,22,22,.88); border:1px solid #333; border-radius:4px; padding:3px 7px;
+  font:11px ui-monospace,Menlo,Consolas,monospace; color:#c4c4c4; backdrop-filter:blur(3px);
+  user-select:none; }
+/* FIXED width. The readout is the only elastic thing in this bar, and it sits
+   BEFORE the slider — letting it resize as the number changes (N 300 -> N -28.03)
+   walks the slider out from under the cursor mid-drag. Monospace + a fixed ch
+   box keeps the thumb exactly where the hand left it. */
+.cdsec .lbl { flex:0 0 12ch; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  font-variant-numeric:tabular-nums; }
+.cdsec input[type=range] { flex:0 0 130px; width:130px; accent-color:#c8781f; }
+.cdsec button { all:unset; cursor:pointer; color:#8a8a8a; padding:0 2px; }
+.cdsec button:hover { color:#e0705a; }
+.cdpick { position:absolute; right:6px; top:6px; z-index:4; max-width:210px;
+  background:rgba(22,22,22,.9); border:1px solid #333; border-radius:4px; padding:5px 7px;
+  font:11px ui-monospace,Menlo,Consolas,monospace; color:#d2d2d2; backdrop-filter:blur(3px); }
+.cdpick .t { color:#c8781f; margin-bottom:2px; }
+.cdpick .row { display:flex; justify-content:space-between; gap:10px; }
+.cdpick .k { color:#7d7d7d; }
+.cdleg { position:absolute; right:6px; bottom:6px; z-index:3; display:flex; align-items:center; gap:5px;
+  font:10px ui-monospace,Menlo,Consolas,monospace; color:#a8a8a8; text-shadow:0 1px 2px #000; }
+.cdleg canvas { display:block; width:96px; height:8px; border:1px solid #444; border-radius:1px; }
+.cdlegramp { display:flex; align-items:center; gap:5px; }
+.cdlegname { color:#c8781f; margin-right:2px; max-width:110px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.cdcats { display:flex; flex-direction:column; gap:1px; max-height:170px; overflow:auto;
+  background:rgba(22,22,22,.85); border:1px solid #333; border-radius:4px; padding:4px 6px; }
+.cdcat { display:flex; align-items:center; gap:5px; cursor:pointer; padding:1px 2px; border-radius:2px; white-space:nowrap; }
+.cdcat:hover { background:#ffffff14; }
+.cdcat .sw { width:9px; height:9px; border:1px solid #555; border-radius:1px; flex:none; }
+.cdcat.off { opacity:.45; }
+.cdcat.off span:last-child { text-decoration:line-through; }
+.cdknife { position:absolute; inset:0; z-index:2; pointer-events:none; }
+`;
+
+const fmt = (v) => {
+  if (v == null || !Number.isFinite(v)) return '—';
+  const a = Math.abs(v);
+  return a >= 1e5 || (a < 0.01 && a > 0) ? v.toExponential(2) : String(Math.round(v * 100) / 100);
+};
+
+/**
+ * createToolbar(host, api) — api is the widget's own surface:
+ *   layers()      → [{ name, kind, visible, hasValue, range, ramp }]
+ *   setStyle(i,p) → patch a layer's style (round-trips to Python)
+ *   fit(), setView(name), toggleOrtho() → bool, isOrtho()
+ *   getSection() / setSection(s) / sectionRange() → [lo, hi] along the normal
+ *   knife(x1,y1,x2,y2) → set a section from a screen-space drag
+ *   selectRect / selectLasso → region selection (rows go back to Python)
+ *   measure → two-click distance / bearing / plunge
+ *   snapshot()
+ *   onToolChange(tool)
+ */
+function createToolbar(host, api) {
+  const style = document.createElement('style');
+  style.textContent = CSS;
+  host.appendChild(style);
+
+  const bar = document.createElement('div');
+  bar.className = 'cdt';
+  host.appendChild(bar);
+
+  let pop = null, tool = 'orbit';
+  const closePop = () => { if (pop) { pop.remove(); pop = null; } };
+  const mkPop = () => { closePop(); pop = document.createElement('div'); pop.className = 'cdpop'; host.appendChild(pop); return pop; };
+
+  const btn = (icon, title, onClick, toggles) => {
+    const b = document.createElement('button');
+    b.innerHTML = svg(ICON[icon]);
+    b.title = title;
+    if (toggles) b.setAttribute('aria-pressed', 'false');
+    b.onclick = (e) => { e.stopPropagation(); onClick(b); };
+    bar.appendChild(b);
+    return b;
+  };
+  const sep = () => { const s = document.createElement('div'); s.className = 'sep'; bar.appendChild(s); };
+
+  // ── camera ──
+  btn('fit', 'Fit the view to the data', () => { closePop(); api.fit(); });
+
+  const viewBtn = btn('view', 'Standard views', () => {
+    if (pop && pop.dataset.k === 'view') return closePop();
+    const p = mkPop(); p.dataset.k = 'view';
+    p.innerHTML = '<h4>view</h4>';
+    for (const [k, label] of [['plan', 'Plan (down)'], ['north', 'Looking north'], ['east', 'Looking east'], ['iso', 'Isometric']]) {
+      const b = document.createElement('button');
+      b.className = 'opt'; b.textContent = label;
+      b.onclick = () => { api.setView(k); closePop(); };
+      p.appendChild(b);
+    }
+    const r = viewBtn.getBoundingClientRect(), h = host.getBoundingClientRect();
+    p.style.left = `${r.left - h.left}px`;
+  });
+
+  const orthoBtn = btn('ortho', 'Parallel projection (for sections)', (b) => {
+    closePop();
+    const on = api.toggleOrtho();
+    b.setAttribute('aria-pressed', String(on));
+  }, true);
+
+  sep();
+
+  // ── tools ──
+  const TOOLS = {};
+  const setTool = (t) => {
+    tool = tool === t ? 'orbit' : t;
+    for (const [k, b] of Object.entries(TOOLS)) b.setAttribute('aria-pressed', String(tool === k));
+    api.onToolChange(tool);
+  };
+  const pickBtn = btn('pick', 'Pick: click an element to inspect it', () => { closePop(); setTool('pick'); }, true);
+  const rectBtn = btn('rect', 'Rectangle select: drag a box (shift adds)', () => { closePop(); setTool('rect'); }, true);
+  const lassoBtn = btn('lasso', 'Lasso select: draw around elements (shift adds)', () => { closePop(); setTool('lasso'); }, true);
+  const throughBtn = btn('through', 'Select through: catch everything in the swept volume, not just the visible surface', (b) => {
+    closePop();
+    const on = api.toggleThrough();
+    b.setAttribute('aria-pressed', String(on));
+  }, true);
+  const measureBtn = btn('measure', 'Measure: click two elements for distance, bearing and plunge', () => { closePop(); setTool('measure'); }, true);
+  const knifeBtn = btn('knife', 'Knife: drag a line to cut a section along it', () => { closePop(); setTool('knife'); }, true);
+  pickBtn.setAttribute('aria-pressed', 'true');            // picking is the default posture
+  tool = 'pick';
+
+  Object.assign(TOOLS, { pick: pickBtn, rect: rectBtn, lasso: lassoBtn, measure: measureBtn, knife: knifeBtn });
+
+  sep();
+
+  // ── layers ──
+  const layersBtn = btn('layers', 'Layers', () => {
+    if (pop && pop.dataset.k === 'layers') return closePop();
+    const p = mkPop(); p.dataset.k = 'layers';
+    p.innerHTML = '<h4>layers</h4>';
+    api.layers().forEach((L, i) => {
+      const lab = document.createElement('label');
+      const cb = document.createElement('input');
+      cb.type = 'checkbox'; cb.checked = L.visible !== false;
+      cb.onchange = () => api.setStyle(i, { visible: cb.checked });
+      const nm = document.createElement('span');
+      nm.textContent = L.name;
+      const kd = document.createElement('span');
+      kd.className = 'k'; kd.style.marginLeft = 'auto';
+      kd.textContent = L.kind === 'drillholes' ? 'holes' : L.kind;
+      lab.append(cb, nm, kd);
+      p.appendChild(lab);
+    });
+    const r = layersBtn.getBoundingClientRect(), h = host.getBoundingClientRect();
+    p.style.left = `${Math.max(4, r.left - h.left - 60)}px`;
+  });
+
+  btn('camera', 'Save a PNG of the view', () => { closePop(); api.snapshot(); });
+
+  host.addEventListener('pointerdown', (e) => { if (pop && !pop.contains(e.target) && !bar.contains(e.target)) closePop(); }, true);
+
+  // ── the section bar (only while a section exists) ──
+  const secBar = document.createElement('div');
+  secBar.className = 'cdsec';
+  secBar.style.display = 'none';
+  const secLabel = document.createElement('span');
+  secLabel.className = 'lbl';
+  const slider = document.createElement('input');
+  slider.type = 'range'; slider.min = '0'; slider.max = '1000'; slider.value = '500';
+  const thick = document.createElement('input');
+  thick.type = 'number'; thick.min = '0.1'; thick.step = '1';
+  thick.style.cssText = 'width:48px;background:#232323;color:#ccc;border:1px solid #3a3a3a;border-radius:2px;font:inherit;padding:1px 3px;';
+  const clearBtn = document.createElement('button');
+  clearBtn.innerHTML = svg(ICON.close); clearBtn.title = 'Clear the section';
+  secBar.append(secLabel, slider, thick, clearBtn);
+  host.appendChild(secBar);
+
+  let range = [0, 1];
+  slider.oninput = () => {
+    const s = api.getSection(); if (!s) return;
+    const t = +slider.value / 1000;
+    api.setSection({ ...s, position: range[0] + t * (range[1] - range[0]) });
+  };
+  thick.onchange = () => {
+    const s = api.getSection(); if (!s) return;
+    api.setSection({ ...s, thickness: Math.max(0.1, +thick.value || 10) });
+  };
+  clearBtn.onclick = () => api.setSection(null);
+
+  // ── the pick readout ──
+  const pickBox = document.createElement('div');
+  pickBox.className = 'cdpick';
+  pickBox.style.display = 'none';
+  host.appendChild(pickBox);
+
+  // ── the color legend (a ramp, or a category swatch list with eye toggles) ──
+  const leg = document.createElement('div');
+  leg.className = 'cdleg';
+  leg.style.display = 'none';
+  const legLo = document.createElement('span'), legHi = document.createElement('span');
+  const legTitle = document.createElement('span');
+  legTitle.className = 'cdlegname';
+  const legCv = document.createElement('canvas'); legCv.width = 96; legCv.height = 8;
+  const legRamp = document.createElement('div');
+  legRamp.className = 'cdlegramp';
+  legRamp.append(legTitle, legLo, legCv, legHi);
+  const legCats = document.createElement('div');
+  legCats.className = 'cdcats';
+  leg.append(legRamp, legCats);
+  host.appendChild(leg);
+
+  // ── the knife rubber band ──
+  const NS = 'http://www.w3.org/2000/svg';
+  const bandEl = document.createElementNS(NS, 'svg');
+  bandEl.setAttribute('class', 'cdknife');
+  bandEl.setAttribute('width', '100%');                    // an SVG with no size
+  bandEl.setAttribute('height', '100%');                   // gets a 300x150 box and CLIPS the line
+  const line = document.createElementNS(NS, 'line');
+  const rect = document.createElementNS(NS, 'rect');
+  const poly = document.createElementNS(NS, 'polyline');
+  const meas = document.createElementNS(NS, 'line');
+  for (const el of [line, rect, poly, meas]) {
+    el.setAttribute('stroke', '#c8781f');
+    el.setAttribute('stroke-width', '1.6');
+    el.setAttribute('fill', 'none');
+  }
+  line.setAttribute('stroke-dasharray', '6 4');
+  rect.setAttribute('stroke-dasharray', '5 3');
+  meas.setAttribute('stroke', '#e8e8e8');
+  meas.setAttribute('stroke-dasharray', '4 3');
+  const capA = document.createElementNS(NS, 'circle');
+  const capB = document.createElementNS(NS, 'circle');
+  for (const c of [capA, capB]) { c.setAttribute('r', '3'); c.setAttribute('fill', '#c8781f'); }
+  bandEl.append(rect, poly, line, meas, capA, capB);
+  const hideAll = () => { for (const el of [line, rect, poly, meas, capA, capB]) el.setAttribute('visibility', 'hidden'); };
+  hideAll();
+  bandEl.style.display = 'none';
+  host.appendChild(bandEl);
+
+  return {
+    get tool() { return tool; },
+    // one band, four shapes: 'line' (knife) · 'rect' · 'poly' (lasso) ·
+    // 'measure'. Passing nothing clears it.
+    setBand(kind, a, b) {
+      hideAll();
+      if (!kind) { bandEl.style.display = 'none'; return; }
+      bandEl.style.display = '';
+      if (kind === 'rect') {
+        rect.setAttribute('x', Math.min(a[0], b[0])); rect.setAttribute('y', Math.min(a[1], b[1]));
+        rect.setAttribute('width', Math.abs(b[0] - a[0])); rect.setAttribute('height', Math.abs(b[1] - a[1]));
+        rect.setAttribute('visibility', 'visible');
+        return;
+      }
+      if (kind === 'poly') {
+        poly.setAttribute('points', a.map((p) => `${p[0]},${p[1]}`).join(' '));
+        poly.setAttribute('visibility', 'visible');
+        return;
+      }
+      const el = kind === 'measure' ? meas : line;
+      el.setAttribute('x1', a[0]); el.setAttribute('y1', a[1]);
+      el.setAttribute('x2', b[0]); el.setAttribute('y2', b[1]);
+      el.setAttribute('visibility', 'visible');
+      for (const [c, p] of [[capA, a], [capB, b]]) {
+        c.setAttribute('cx', p[0]); c.setAttribute('cy', p[1]);
+        c.setAttribute('fill', kind === 'measure' ? '#e8e8e8' : '#c8781f');
+        c.setAttribute('visibility', 'visible');
+      }
+    },
+    clearTool() {
+      tool = 'pick';
+      for (const [k, b] of Object.entries(TOOLS)) b.setAttribute('aria-pressed', String(k === 'pick'));
+      api.onToolChange(tool);
+    },
+    // pick info → the readout (null hides it)
+    showPick(info) {
+      if (!info) { pickBox.style.display = 'none'; return; }
+      const rows = info.rows.map(([k, v]) => `<div class="row"><span class="k">${k}</span><span>${v}</span></div>`).join('');
+      pickBox.innerHTML = `<div class="t">${info.title}</div>${rows}`;
+      pickBox.style.display = '';
+    },
+    // section state → the scrub bar
+    syncSection(sec, extent) {
+      if (!sec) { secBar.style.display = 'none'; return; }
+      range = extent || [0, 1];
+      secBar.style.display = '';
+      const axis = sec.axis ? sec.axis.toUpperCase() : 'N';
+      secLabel.textContent = `${axis} ${fmt(sec.position)}`;
+      const span = range[1] - range[0] || 1;
+      slider.value = String(Math.round(((sec.position - range[0]) / span) * 1000));
+      if (document.activeElement !== thick) thick.value = String(sec.thickness);
+    },
+    // the ramp + range of the first value-colored visible layer
+    syncLegend(info) {
+      if (!info) { leg.style.display = 'none'; return; }
+      leg.style.display = '';
+      if (info.cats) {                                     // categorical: swatch rows, click = class eye
+        legRamp.style.display = 'none';
+        legCats.style.display = '';
+        legCats.textContent = '';
+        for (const c of info.cats) {
+          const row = document.createElement('div');
+          row.className = 'cdcat' + (c.hidden ? ' off' : '');
+          row.title = c.hidden ? 'show' : 'hide';
+          const sw = document.createElement('span');
+          sw.className = 'sw';
+          sw.style.background = `rgb(${c.rgb[0]},${c.rgb[1]},${c.rgb[2]})`;
+          const lb = document.createElement('span');
+          lb.textContent = c.label;
+          row.append(sw, lb);
+          row.onclick = () => { if (info.onToggle) info.onToggle(c.label); };
+          legCats.appendChild(row);
+        }
+        return;
+      }
+      legCats.style.display = 'none';
+      legRamp.style.display = '';
+      legTitle.textContent = info.label || '';
+      legTitle.style.display = info.label ? '' : 'none';
+      legLo.textContent = fmt(info.range[0]);
+      legHi.textContent = fmt(info.range[1]);
+      const g = legCv.getContext('2d');
+      const img = g.createImageData(96, 1);
+      for (let i = 0; i < 96; i++) {
+        const t = Math.min(255, Math.round((i / 95) * 255));
+        img.data[i * 4] = info.pixels[t * 4];
+        img.data[i * 4 + 1] = info.pixels[t * 4 + 1];
+        img.data[i * 4 + 2] = info.pixels[t * 4 + 2];
+        img.data[i * 4 + 3] = 255;
+      }
+      g.putImageData(img, 0, 0);
+      g.drawImage(legCv, 0, 0, 96, 1, 0, 0, 96, 8);
+    },
+    syncOrtho(on) { orthoBtn.setAttribute('aria-pressed', String(!!on)); },
+    syncThrough(on) { throughBtn.setAttribute('aria-pressed', String(!!on)); },
+    destroy() { closePop(); [style, bar, secBar, pickBox, leg, bandEl].forEach((n) => n.remove()); },
+  };
+}
+
+// ── src/view.js ──
+
+// @gcu/condenser — the VIEW: a complete viewer (layers, sections, picking,
+// selection, measure, toolbar, legend, figure chrome) over any element. Glue
+// only: it decodes the packed columnar payload, feeds each layer through the
+// engine's chunk builders, and drives one progressive render loop per view.
+// All the rendering intelligence (Morton order, prefix LOD, box impostors,
+// capsule impostors, EDL, true sections, the ID-buffer pick) is
+// @gcu/condenser/core, unchanged — the SAME engine micro ships, so a notebook,
+// a page and the desktop tool agree by construction. Drillholes desurvey
+// through @gcu/drillhole, also the same code, so a hole lands in the same
+// place in all of them.
+//
+// mountView(el, store) → cleanup. Everything the view shows and everything it
+// reports goes through `store`, a small observable state:
+//
+//   store.get(key)             the current value
+//   store.set(key, value)      change it (the view's own reports: selection,
+//                              measurement, camera, _styles round-trips …)
+//   store.save_changes()       publish what set() changed (a no-op for a page)
+//   store.on(ev, fn) / off     'change:<key>' → fn(); 'msg:custom' → fn(content, buffers)
+//   store.send(content)        a message to whoever drives the view
+//
+// That is anywidget's model API, on purpose: in Jupyter the model IS the store
+// (anywidget/src/widget.js passes it straight through), and the keys are the
+// widget's trait names — so the Python API, the JS API (./api.js) and this
+// view share ONE vocabulary. ./store.js is the plain-JS store for a page.
+// `_payload` is one atomic Bytes blob holding EVERY layer against ONE shared
+// frame; `_styles` is a per-layer style dict.
+
+
+// ── ramp presets. rampPixels' default is the viridis-ish walk; these are the
+// few a geologist reaches for. Kept here (not in the engine) because they are
+// a PRESENTATION choice — micro has its own richer set in its own UI. ──
+const RAMPS = {
+  viridis: null,                                           // the engine default
+  magma: [[0, 0, 4], [80, 18, 123], [182, 54, 121], [252, 137, 97], [252, 253, 191]],
+  turbo: [[48, 18, 59], [28, 156, 220], [96, 252, 100], [249, 190, 60], [122, 4, 3]],
+  grays: [[20, 20, 20], [90, 90, 90], [150, 150, 150], [205, 205, 205], [250, 250, 250]],
+  spectral: [[94, 79, 162], [102, 194, 165], [255, 255, 191], [253, 174, 97], [158, 1, 66]],
+  fire: [[10, 5, 40], [120, 20, 90], [220, 80, 40], [250, 180, 50], [255, 250, 200]],
+};
+RAMPS.greys = RAMPS.grays;    // matplotlib spells it 'Greys'; don't punish the muscle memory
+
+const TYPES$view = { f64: Float64Array, f32: Float32Array, u32: Uint32Array, u16: Uint16Array, u8: Uint8Array };
+
+// ── the wire format (mirrors gcu_condenser/__init__.py's _pack) ──
+//   'CDNS' | u32 version | u32 headerLen | header JSON (utf-8) | pad | body
+// Column offsets are RELATIVE TO THE BODY START, which both sides derive as
+// (12 + headerLen) rounded up to 8 — self-describing without the offsets
+// depending on the header's own length. ONE blob keeps a data change ATOMIC.
+function decodePayload(raw) {
+  if (!raw) return null;
+  // the JS API (./api.js) builds the decoded form directly: typed arrays are used where
+  // they are, never copied into a blob. Layers are shallow-cloned because the view
+  // stashes its own state on them (_pos, _seg, …).
+  if (typeof raw === 'object' && !ArrayBuffer.isView(raw) && !(raw instanceof ArrayBuffer) && Array.isArray(raw.layers)) {
+    return { frame: raw.frame, frame_auto: !!raw.frame_auto, layers: raw.layers.map((L) => ({ ...L, cols: { ...L.cols } })) };
+  }
+  const buf = raw instanceof ArrayBuffer ? raw : (raw.buffer || raw);
+  const base = raw.byteOffset || 0;
+  const len = raw.byteLength != null ? raw.byteLength : (buf ? buf.byteLength : 0);
+  if (!buf || len < 12) return null;
+  const dv = new DataView(buf, base, len);
+  if (String.fromCharCode(dv.getUint8(0), dv.getUint8(1), dv.getUint8(2), dv.getUint8(3)) !== 'CDNS') return null;
+  const headerLen = dv.getUint32(8, true);
+  const head = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, base + 12, headerLen)));
+  const bodyStart = (12 + headerLen + 7) & ~7;
+  const all = {};
+  for (const [name, c] of Object.entries(head.cols || {})) {
+    const T = TYPES$view[c.type];
+    if (T) all[name] = new T(buf, base + bodyStart + c.off, c.len);
+  }
+  const layers = (head.layers || []).map((L) => {
+    const cols = {};
+    for (const [name, key] of Object.entries(L.cols || {})) if (all[key]) cols[name] = all[key];
+    return { ...L, cols };
+  });
+  return { frame: head.frame, frame_auto: !!head.frame_auto, layers };
+}
+
+// ── via='files': a Blob-shaped window onto jupyter-server's /files/ endpoint,
+// which serves byte ranges on the session cookie — so the engine's own file
+// providers (CSV/.dm/LAS/PLY, the same code micro ships) read straight from
+// the notebook's folder with ZERO kernel involvement. Only the Blob surface
+// the io layer actually touches is implemented: size/slice/arrayBuffer/text/
+// stream. A server that ignores Range (plain static hosting) still works —
+// the 200 fallback skips to the window.
+class RemoteBlob {
+  constructor(url, start, end) { this.url = url; this._start = start; this._end = end; }
+  get size() { return this._end - this._start; }
+  slice(a = 0, b = this.size) {
+    const n = this.size;
+    const s = Math.min(n, Math.max(0, a < 0 ? n + a : a));
+    const e = Math.min(n, Math.max(s, b < 0 ? n + b : b));
+    return new RemoteBlob(this.url, this._start + s, this._start + e);
+  }
+  async arrayBuffer() {
+    if (this.size <= 0) return new ArrayBuffer(0);
+    const res = await fetch(this.url, { headers: { Range: `bytes=${this._start}-${this._end - 1}` } });
+    if (!res.ok) throw new Error(`files: HTTP ${res.status}`);
+    const buf = await res.arrayBuffer();
+    if (res.status === 206) return buf;
+    return buf.slice(this._start, this._end);              // Range ignored → cut the window out
+  }
+  async text() { return new TextDecoder().decode(await this.arrayBuffer()); }
+  stream() {
+    const { url, _start, _end } = this;
+    let reader = null, skip = 0, left = _end - _start;
+    return new ReadableStream({
+      async start() {
+        const res = await fetch(url, { headers: { Range: `bytes=${_start}-${_end - 1}` } });
+        if (!res.ok || !res.body) throw new Error(`files: HTTP ${res.status}`);
+        if (res.status !== 206) skip = _start;             // Range ignored → skip up to the window
+        reader = res.body.getReader();
+      },
+      async pull(ctrl) {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done || left <= 0) { ctrl.close(); return; }
+          let v = value;
+          if (skip > 0) {
+            if (v.length <= skip) { skip -= v.length; continue; }
+            v = v.subarray(skip); skip = 0;
+          }
+          if (v.length > left) v = v.subarray(0, left);
+          left -= v.length;
+          ctrl.enqueue(v);
+          return;
+        }
+      },
+      cancel() { if (reader) reader.cancel().catch(() => {}); },
+    });
+  }
+}
+
+// probe the /files/ candidates (and a hub-style base prefix derived from the
+// page URL) until one answers a byte range; null when none does
+async function resolveFilesBlob(file) {
+  const prefixes = ['/files/'];
+  const m = (typeof document !== 'undefined' ? document.location.pathname : '').match(/^(.+?)\/(lab|notebooks|voila|tree)\b/);
+  if (m && m[1]) prefixes.push(`${m[1]}/files/`);
+  for (const cand of file.candidates || []) {
+    for (const pre of prefixes) {
+      const url = pre + cand.split('/').map(encodeURIComponent).join('/');
+      try {
+        const res = await fetch(url, { headers: { Range: 'bytes=0-0' } });
+        if (!res.ok) continue;
+        let size = file.size || 0;
+        const cr = res.headers.get('Content-Range');
+        if (cr) { const mm = cr.match(/\/(\d+)\s*$/); if (mm) size = +mm[1]; }
+        else if (res.status === 200) {
+          const cl = +res.headers.get('Content-Length') || 0;
+          if (cl > 1) size = cl;                           // the server sent the whole file
+        }
+        if (size > 0) return new RemoteBlob(url, 0, size);
+      } catch { /* next candidate */ }
+    }
+  }
+  return null;
+}
+
+// which engine color mode a `color` choice means, per element kind. The engine
+// numbers differ by pipeline (points: 1 = intensity, blocks/sticks: 1 = grade),
+// so the widget speaks names and translates here.
+function modeOf(color, kind, cols) {
+  if (color === 'value' && (cols.value || cols.value_u16)) return 1;
+  if (color === 'category' && cols.cat) return 2;
+  if (color === 'rgb' && cols.rgb && kind === 'points') return 3;
+  if (color === 'flat') return kind === 'points' ? 0 : 3;  // blocks/sticks: 3 = solid
+  return 0;                                                // 'z' (elevation)
+}
+
+// the section trait → the engine's frame-local plane. `position` is a WORLD
+// coordinate along the normal (that is what a geologist types), so the frame
+// origin comes off it here.
+function normalOf(sec) {
+  let n = sec.normal;
+  if (!n) {
+    const ax = sec.axis;
+    if (!ax) return null;
+    n = ax === 'x' ? [1, 0, 0] : ax === 'y' ? [0, 1, 0] : [0, 0, 1];
+  }
+  const L = Math.hypot(n[0], n[1], n[2]) || 1;
+  return [n[0] / L, n[1] / L, n[2] / L];
+}
+function sectionOf(sec, origin) {
+  if (!sec) return null;
+  const n = normalOf(sec);
+  if (!n) return null;
+  const d = (+sec.position || 0) - (n[0] * origin[0] + n[1] * origin[1] + n[2] * origin[2]);
+  const half = Math.max(0.01, (+sec.thickness || 10) / 2);
+  return { on: true, n, d, half, d0: d, clip: 'slab', traceHalf: half };
+}
+
+// ── drillholes: three tables → desurveyed capsule segments ──
+// The interval FROM and TO depths are located as two point-samples on the
+// desurveyed trace (arc-correct via positionAt), then paired back into a
+// segment keyed by source row — the same construction condenser's own file
+// provider uses, so notebook and micro place a hole identically.
+function drillholeSegments(head, cols) {
+  const nC = cols.c_bhid.length, nS = cols.s_bhid.length, n = cols.i_bhid.length;
+  const collars = new Array(nC);
+  for (let i = 0; i < nC; i++) {
+    collars[i] = { bhid: String(cols.c_bhid[i]), x: cols.c_x[i], y: cols.c_y[i], z: cols.c_z[i] };
+    if (cols.c_eoh) collars[i].eoh = cols.c_eoh[i];
+  }
+  const surveys = new Array(nS);
+  for (let i = 0; i < nS; i++) surveys[i] = { bhid: String(cols.s_bhid[i]), depth: cols.s_depth[i], az: cols.s_az[i], dip: cols.s_dip[i] };
+
+  const bhid = new Array(2 * n), depth = new Float64Array(2 * n);
+  const rowIdx = new Float64Array(2 * n), endIdx = new Float64Array(2 * n);
+  for (let i = 0; i < n; i++) {
+    const hb = String(cols.i_bhid[i]);
+    bhid[2 * i] = hb; bhid[2 * i + 1] = hb;
+    depth[2 * i] = cols.i_from[i]; depth[2 * i + 1] = cols.i_to[i];
+    rowIdx[2 * i] = i; rowIdx[2 * i + 1] = i;
+    endIdx[2 * i] = 0; endIdx[2 * i + 1] = 1;
+  }
+  const ds = dhDesurveySamples$samples(
+    { collars, surveys, samples: { bhid, depth, cols: [{ name: '__row', values: rowIdx }, { name: '__end', values: endIdx }] } },
+    { method: head.method || 'minimumCurvature', dipConvention: head.dip_convention || 'auto' },
+  );
+
+  const endA = new Map(), endB = new Map();                // src row → [x,y,z]
+  for (const row of ds.rows) (row[6] | 0) === 0 ? endA.set(row[5] | 0, [row[1], row[2], row[3]]) : endB.set(row[5] | 0, [row[1], row[2], row[3]]);
+  const placed = [];
+  for (const src of endA.keys()) if (endB.has(src)) placed.push(src);
+  placed.sort((a, b) => a - b);
+  const k = placed.length;
+  const out = {
+    count: k,
+    ax: new Float64Array(k), ay: new Float64Array(k), az: new Float64Array(k),
+    bx: new Float64Array(k), by: new Float64Array(k), bz: new Float64Array(k),
+    x: new Float64Array(k), y: new Float64Array(k), z: new Float64Array(k),
+    chan: new Float64Array(k), cat: cols.cat ? new Uint8Array(k) : null,
+    recIdx: new Uint32Array(k),
+  };
+  for (let i = 0; i < k; i++) {
+    const s = placed[i], A = endA.get(s), B = endB.get(s);
+    out.ax[i] = A[0]; out.ay[i] = A[1]; out.az[i] = A[2];
+    out.bx[i] = B[0]; out.by[i] = B[1]; out.bz[i] = B[2];
+    out.x[i] = (A[0] + B[0]) / 2; out.y[i] = (A[1] + B[1]) / 2; out.z[i] = (A[2] + B[2]) / 2;
+    out.chan[i] = cols.value && Number.isFinite(cols.value[s]) ? cols.value[s] : 0;
+    if (out.cat) out.cat[i] = cols.cat[s];
+    out.recIdx[i] = s;                                     // the INTERVAL row — the pick's join key
+  }
+  return out;
+}
+
+const fmtN = (v) => {
+  if (v == null || !Number.isFinite(v)) return '—';
+  const a = Math.abs(v);
+  return a >= 1e5 || (a < 0.01 && a > 0) ? v.toExponential(2) : String(Math.round(v * 100) / 100);
+};
+
+// ── the WORKER half: this same bundle, booted as a module worker (from
+// import.meta.url, so nothing extra ships). Chunk building — Morton keys,
+// radix sort, quantize, shuffle — runs here while streaming, so a multi-
+// million-row cd.open never stutters the notebook; the GPU upload stays with
+// the page. The main side mirrors every push into resident columns first, so
+// a worker failure just rebuilds inline from those — the fallback is free. ──
+if (typeof document === 'undefined' && typeof self !== 'undefined' && typeof self.postMessage === 'function') {
+  let wb = null;
+  const ship = (c) => {
+    const transfers = new Set();
+    for (const k in c) { const v = c[k]; if (v && ArrayBuffer.isView(v)) transfers.add(v.buffer); }
+    self.postMessage({ chunk: c }, [...transfers]);
+  };
+  self.onmessage = (e) => {
+    const m = e.data;
+    try {
+      if (m.init) {
+        const frame = { origin: m.init.frameOrigin, crs: null, units: 'm' };
+        wb = m.init.kind === 'blocks'
+          ? createBlockChunkBuilder({
+            frame, chunkSize: 1 << 18, seed: 1,
+            grid: makeBlockGrid(m.init.axes.map(([origin, pitch, count]) => ({ origin, pitch, count })), frame),
+            dimPalette: m.init.dimPalette || null,
+            onChunk: ship,
+          })
+          : createChunkBuilder({ frame, chunkSize: 1 << 19, seed: 1, onChunk: ship });
+      } else if (m.push) {
+        wb.push(m.push);
+        wb.flush();                                        // progressive at message granularity
+      } else if (m.eof) {
+        const doc = wb.flush();
+        self.postMessage({ done: {
+          count: doc.count, bboxLocal: [...doc.bboxLocal],
+          chanRange: doc.chanRange ? [...doc.chanRange] : null,
+        } });
+      }
+    } catch (err) {
+      self.postMessage({ err: String((err && err.message) || err) });
+    }
+  };
+}
+
+function mountView(el, store) {
+  const host = document.createElement('div');
+  host.style.cssText = 'position:relative;width:100%;background:#121212;border-radius:3px;overflow:hidden;';
+  // right-drag PANS, so JupyterLab's own context menu must stay out of the way.
+  // This attribute is the supported hook: JupyterLab's handler does
+  // `el.closest('[data-jp-suppress-context-menu]')` and stands down if it hits.
+  host.setAttribute('data-jp-suppress-context-menu', 'true');
+  host.addEventListener('contextmenu', (e) => e.preventDefault());
+  const canvas = document.createElement('canvas');
+  canvas.style.cssText = 'display:block;width:100%;height:100%;';
+  host.appendChild(canvas);
+  // figure chrome + hole labels: a 2D overlay redrawn with every frame and
+  // COMPOSITED into snapshots (DOM chrome would be lost by toDataURL)
+  const deco = document.createElement('canvas');
+  deco.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:1;';
+  host.appendChild(deco);
+  const hud = document.createElement('div');
+  hud.className = 'cdhud';
+  hud.style.cssText = 'position:absolute;left:6px;bottom:5px;font:11px ui-monospace,Menlo,Consolas,monospace;color:#8b8b8b;pointer-events:none;text-shadow:0 1px 2px #000;z-index:1;';
+  host.appendChild(hud);
+  el.appendChild(host);
+
+  let renderer = null, edl = null, cam = null, detach = null, raf = 0, ro = null, tb = null;
+  let payload = null, disposed = false, needFit = false, converged = false;
+  let docBbox = null;
+  let streams = null, streamEpoch = '';                    // cd.open(): layer → stream state, this view's epoch
+  let fileQueue = Promise.resolve();                       // via='files' layers build sequentially (frame adoption)
+  let fileMsg = null;                                      // a files-mode failure, pinned on the hud
+  let userCam = false;                                     // the user framed a shot — auto-fit must not steal it
+  const kinds = [];
+
+  try {
+    renderer = createRenderer(canvas, { background: [0.07, 0.07, 0.07, 1] });
+    edl = createEdl(renderer.gl);
+    cam = createOrbitCamera();
+  } catch (e) {                                            // no WebGL2 (headless CI, locked-down VM)
+    host.style.height = '80px';
+    hud.style.cssText += 'position:static;padding:10px;color:#d07a5c;';
+    hud.textContent = `condenser: ${e.message}`;
+    return () => { el.innerHTML = ''; };
+  }
+
+  // events for a page: what was picked, hovered, measured, selected — with the data the
+  // view has at that moment. A page's store implements notify(); anywidget's model has
+  // no such method, so in Jupyter this is a no-op (the traits carry what Python needs).
+  const notify = (type, data) => { if (typeof store.notify === 'function') store.notify(type, data); };
+  const styles = () => store.get('_styles') || [];
+  const styleAt = (i) => styles()[i] || {};
+  const viewOpts = () => {                                 // point size / points-view are VIEW-wide in the engine
+    let pointPx = 2.5, asPoints = false;
+    for (const s of styles()) if (s.visible !== false) { pointPx = Math.max(pointPx, s.point_size || 0); asPoints = asPoints || !!s.as_points; }
+    return { pointPx, asPoints };
+  };
+
+  // ── the decorations overlay: hole labels + north arrow + scale bar. Redrawn
+  // with every frame (2D, cheap) and COMPOSITED into snapshots. Coordinates
+  // are frame-local, projected through the camera's viewProj — which already
+  // carries the z-exaggeration, so labels track the stretched display. ──
+  const drawOverlay = (w, h, dpr) => {
+    if (deco.width !== w || deco.height !== h) { deco.width = w; deco.height = h; }
+    const g = deco.getContext('2d');
+    g.clearRect(0, 0, w, h);
+    if (!payload) return;
+    const W = w / dpr, H = h / dpr;
+    g.save();
+    g.scale(dpr, dpr);
+    const vp = cam.state.viewProj;
+    const proj = (X, Y, Z) => {
+      const cw = vp[3] * X + vp[7] * Y + vp[11] * Z + vp[15];
+      if (cw <= 1e-9) return null;
+      return [((vp[0] * X + vp[4] * Y + vp[8] * Z + vp[12]) / cw * 0.5 + 0.5) * W,
+        (0.5 - (vp[1] * X + vp[5] * Y + vp[9] * Z + vp[13]) / cw * 0.5) * H];
+    };
+    const o = payload.frame;
+    const halo = (text, x, y) => {
+      g.strokeStyle = 'rgba(0,0,0,.75)'; g.lineWidth = 3; g.lineJoin = 'round';
+      g.strokeText(text, x, y);
+      g.fillText(text, x, y);
+    };
+
+    // hole labels (labels=True on a drillhole layer): BHIDs at the collars
+    g.font = '10px ui-monospace,Menlo,Consolas,monospace';
+    g.textAlign = 'center'; g.textBaseline = 'bottom';
+    g.fillStyle = '#e4e4e4';
+    styles().forEach((s, i) => {
+      const L = payload.layers[i];
+      if (!L || L.kind !== 'drillholes' || !s.labels || s.visible === false || !L._collars) return;
+      let drawn2 = 0;
+      for (const c of L._collars) {
+        if (drawn2 >= 400) break;                          // a 10k-hole campaign is a texture, not labels
+        const p = proj(c.x - o[0], c.y - o[1], c.z - o[2]);
+        if (!p || p[0] < -20 || p[0] > W + 20 || p[1] < -10 || p[1] > H + 10) continue;
+        halo(c.name, p[0], p[1] - 4);
+        g.fillRect(p[0] - 1, p[1] - 2, 2, 2);              // the collar tick
+        drawn2++;
+      }
+    });
+
+    if (store.get('decorations') === false) { g.restore(); return; }
+    // scale at the CAMERA TARGET depth: unproject a 100-px screen step on the
+    // plane through the target, z divided back by zExag → REAL meters
+    const t = cam.state.target;
+    const inv = mat4Inverse(vp);
+    const tp = proj(t[0], t[1], t[2]);
+    if (inv && tp) {
+      const cwT = vp[3] * t[0] + vp[7] * t[1] + vp[11] * t[2] + vp[15];
+      const ndcZ = (vp[2] * t[0] + vp[6] * t[1] + vp[10] * t[2] + vp[14]) / cwT;
+      const un = (sx, sy) => {
+        const nx = (sx / W) * 2 - 1, ny = 1 - (sy / H) * 2;
+        const x = inv[0] * nx + inv[4] * ny + inv[8] * ndcZ + inv[12];
+        const y = inv[1] * nx + inv[5] * ny + inv[9] * ndcZ + inv[13];
+        const z = inv[2] * nx + inv[6] * ny + inv[10] * ndcZ + inv[14];
+        const w2 = inv[3] * nx + inv[7] * ny + inv[11] * ndcZ + inv[15];
+        return [x / w2, y / w2, z / w2];
+      };
+      const p1 = un(tp[0], tp[1]), p2 = un(tp[0] + 100, tp[1]);
+      const ze = cam.state.zExag || 1;
+      const m100 = Math.hypot(p2[0] - p1[0], p2[1] - p1[1], (p2[2] - p1[2]) / ze);
+      if (m100 > 1e-9 && Number.isFinite(m100)) {
+        const pxPerM = 100 / m100;
+        let len = Math.pow(10, Math.floor(Math.log10(120 / pxPerM)));
+        for (const k of [5, 2, 1]) if (len * k * pxPerM <= 160) { len *= k; break; }
+        const px = len * pxPerM;
+        const label = len >= 1000 ? `${len / 1000} km` : `${len} m`;
+        const bx0 = W / 2 - px / 2, by0 = H - 14;
+        for (const [col, lw] of [['rgba(0,0,0,.7)', 4], ['#d8d8d8', 1.6]]) {
+          g.strokeStyle = col; g.lineWidth = lw; g.lineCap = 'butt';
+          g.beginPath();
+          g.moveTo(bx0, by0); g.lineTo(bx0 + px, by0);
+          g.moveTo(bx0, by0 - 4); g.lineTo(bx0, by0 + 4);
+          g.moveTo(bx0 + px, by0 - 4); g.lineTo(bx0 + px, by0 + 4);
+          g.stroke();
+        }
+        g.fillStyle = '#cfcfcf';
+        halo(label, W / 2, by0 - 5);
+
+        // north arrow, left of the bar — world +Y projected at the target.
+        // Looking ALONG north the projection collapses: fade it rather than spin
+        const np = proj(t[0], t[1] + m100, t[2]);
+        if (np) {
+          const dxn = np[0] - tp[0], dyn = np[1] - tp[1];
+          const ln = Math.hypot(dxn, dyn);
+          const alpha = Math.max(0, Math.min(1, ln / 40));
+          if (alpha > 0.05) {
+            const ang = Math.atan2(dyn, dxn);
+            const cxN = bx0 - 30, cyN = by0 - 6;
+            g.globalAlpha = alpha;
+            g.save();
+            g.translate(cxN, cyN); g.rotate(ang);
+            g.beginPath();
+            g.moveTo(11, 0); g.lineTo(-6, 4.5); g.lineTo(-3, 0); g.lineTo(-6, -4.5); g.closePath();
+            g.fillStyle = '#d8d8d8'; g.strokeStyle = 'rgba(0,0,0,.7)'; g.lineWidth = 2;
+            g.stroke(); g.fill();
+            g.restore();
+            g.fillStyle = '#d8d8d8';
+            halo('N', cxN + Math.cos(ang) * 19, cyN + Math.sin(ang) * 19 + 4);
+            g.globalAlpha = 1;
+          }
+        }
+      }
+    }
+    g.restore();
+  };
+
+  const draw = () => {
+    raf = 0;
+    if (disposed) return;
+    const dpr = window.devicePixelRatio || 1;
+    const w = Math.max(1, Math.round(canvas.clientWidth * dpr));
+    const h = Math.max(1, Math.round(canvas.clientHeight * dpr));
+    if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; renderer.invalidate(); }
+    cam.setAspect(w / h);
+    if (needFit && docBbox) { cam.fit(docBbox); needFit = false; }
+
+    const layerOpts = {};
+    styles().forEach((s, i) => {
+      const cols = payload && payload.layers[i] ? payload.layers[i].cols : {};
+      layerOpts[i] = { colorMode: modeOf(s.color, kinds[i], cols), clip: s.clip && s.clip.length === 2 ? s.clip : null };
+    });
+    const vo = viewOpts();
+    const opts = {
+      budget: store.get('budget') || 3_000_000,
+      pointPx: vo.pointPx, blocksAsPoints: vo.asPoints, blockEdges: false,
+      section: sectionOf(store.get('section'), (payload && payload.frame) || [0, 0, 0]),
+      clip: null, layerOpts,
+    };
+    const r = edl.render(w, h, cam, () => renderer.draw(cam, opts),
+      { enabled: store.get('edl') !== false, strength: store.get('edl_strength') != null ? store.get('edl_strength') : 1.0 });
+    converged = r.converged;
+    if (payload) {
+      const tot = renderer.elementCount, acc = renderer.accumulated;
+      const n = payload.layers.length;
+      const what = n === 1
+        ? (kinds[0] === 'blocks' ? 'blocks' : kinds[0] === 'drillholes' ? 'intervals'
+          : kinds[0] === 'mesh' || kinds[0] === 'surface' ? 'triangles' : 'points')
+        : `elements · ${n} layers`;
+      hud.textContent = fileMsg || (converged ? `${tot.toLocaleString()} ${what}` : `${tot.toLocaleString()} · ${Math.round((100 * acc) / (tot || 1))}%`);
+    }
+    drawOverlay(w, h, dpr);
+    pushCamera();                                          // debounced by value — idle frames are free
+    if (!converged) schedule();
+  };
+  const schedule = () => { if (!raf && !disposed) raf = requestAnimationFrame(draw); };
+  const invalidate = () => { renderer.invalidate(); schedule(); };
+
+  // ── load: payload → chunk builders → GPU, one engine layer per data layer ──
+  const load = () => {
+    renderer.clearChunks();
+    payload = null; docBbox = null; kinds.length = 0;
+    if (streams) for (const k in streams) { const stw = streams[k] && streams[k].worker; if (stw) try { stw.terminate(); } catch { /* gone */ } }
+    streams = null; streamEpoch = Math.random().toString(36).slice(2);
+    fileQueue = Promise.resolve(); fileMsg = null;
+    const p = decodePayload(store.get('_payload'));
+    if (!p || !p.layers.length) { hud.textContent = 'no data'; if (tb) { tb.showPick(null); tb.syncLegend(null); } schedule(); return; }
+    payload = p;
+    const bb = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+
+    p.layers.forEach((L, i) => {
+      kinds[i] = L.kind;
+      const lb = buildLayer(L, i);
+      if (lb) {
+        for (let a = 0; a < 3; a++) {
+          if (lb[a] < bb[a]) bb[a] = lb[a];
+          if (lb[a + 3] > bb[a + 3]) bb[a + 3] = lb[a + 3];
+        }
+      }
+    });
+
+    if (Number.isFinite(bb[0])) {                          // files-only views have no bbox YET
+      docBbox = Float64Array.from(bb);
+      renderer.setDocBbox(docBbox);
+      if (!userCam) needFit = true;                        // never steal a framed shot on a data change
+    }
+    applyStyles();
+    if (tb) { tb.showPick(null); syncChrome(); }
+    invalidate();
+    if (streams) store.send({ type: 'ready', epoch: streamEpoch });
+  };
+
+  // merge a layer's local bbox as it becomes known (files-mode discovery)
+  const mergeBbox = (lb) => {
+    if (!docBbox) docBbox = Float64Array.of(Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity);
+    for (let a = 0; a < 3; a++) {
+      if (lb[a] < docBbox[a]) docBbox[a] = lb[a];
+      if (lb[a + 3] > docBbox[a + 3]) docBbox[a + 3] = lb[a + 3];
+    }
+    if (Number.isFinite(docBbox[0])) {
+      renderer.setDocBbox(docBbox);
+      if (!userCam) needFit = true;
+    }
+  };
+
+  // ── via='files': discover + stream a file BROWSER-SIDE through the engine's
+  // providers — the kernel never reads a byte. Sequential across layers: the
+  // FIRST discovery may set the shared frame (payload.frame_auto). ──
+  // the shared epilogue: a files layer finished discovering/streaming — frame
+  // bookkeeping was done by the caller; here the styles, chrome, and the
+  // kernel's view of what the browser found.
+  const finishFileLayer = (L, i, doc) => {
+    if (doc && doc.bboxLocal && Number.isFinite(doc.bboxLocal[0])) mergeBbox(doc.bboxLocal);
+    applyStyles();
+    if (tb) syncChrome();
+    invalidate();
+    try {                                                  // the kernel learns what the browser found
+      const info = { ...(store.get('_file_info') || {}) };
+      info[i] = { count: L.count, value_range: L.value_range || null,
+        cat_labels: L.cat_labels || null, cat_n: L.cat_n || null };
+      store.set('_file_info', info);
+      store.save_changes();
+    } catch { /* a detached test model */ }
+  };
+  const adoptFrame = (header) => {                         // a files-only view takes the first real frame
+    if (payload.frame_auto) {
+      payload.frame = documentFrame(header).origin;
+      payload.frame_auto = false;
+    }
+    const frame = { origin: payload.frame, crs: null, units: 'm' };
+    if (header.bbox && Number.isFinite(header.bbox.min[0])) {
+      mergeBbox(Float64Array.of(
+        header.bbox.min[0] - frame.origin[0], header.bbox.min[1] - frame.origin[1], header.bbox.min[2] - frame.origin[2],
+        header.bbox.max[0] - frame.origin[0], header.bbox.max[1] - frame.origin[1], header.bbox.max[2] - frame.origin[2]));
+    }
+    return frame;
+  };
+
+  const buildFileLayer = async (L, i) => {
+    const epoch = streamEpoch;
+    try {
+      // drillholes: THREE files (collar / survey / intervals) → desurveyed
+      // capsules, the provider's own column sniff + optional value/category names
+      if (L.file.drillholes) {
+        const fd = L.file.drillholes;
+        const [cb, sb, ib] = await Promise.all([resolveFilesBlob(fd.collar), resolveFilesBlob(fd.survey), resolveFilesBlob(fd.intervals)]);
+        if (epoch !== streamEpoch || disposed) return;
+        if (!cb || !sb || !ib) {
+          fileMsg = `${L.file.name}: /files unreachable — jupyter-server serves it; elsewhere stream via the kernel`;
+          schedule();
+          return;
+        }
+        const opts = { method: fd.method || 'minimumCurvature', dipConvention: fd.dip_convention || 'auto' };
+        const fm0 = L.file.map || null;
+        if (fm0 && (fm0.value || fm0.category)) {          // value/category BY NAME → interval column indices
+          const tIv = await readDelimited(ib.slice(0, Math.min(65536, ib.size)));
+          const idx = (nm) => tIv.columns.findIndex((h2) => h2.trim() === nm);
+          if (fm0.value) { const k2 = idx(fm0.value); if (k2 >= 0) opts.chan = k2; }
+          if (fm0.category) { const k2 = idx(fm0.category); if (k2 >= 0) opts.cat = k2; }
+        }
+        const { header, streamChunks, recordPosition } = await openDrillholes({ collar: cb, survey: sb, intervals: ib }, opts);
+        if (epoch !== streamEpoch || disposed) return;
+        const frame = adoptFrame(header);
+        kinds[i] = 'drillholes';
+        const b = createStickChunkBuilder({ frame, chunkSize: 1 << 16, seed: 1, onChunk: (c) => renderer.addChunk(c, 'base', i) });
+        for await (const rc of streamChunks()) {
+          if (epoch !== streamEpoch || disposed) return;
+          b.push(rc);
+        }
+        const doc = b.flush();
+        if (header.categories) { L.cat_labels = header.categories; L.cat_n = header.categories.length; renderer.setCategories(L.cat_n); }
+        L.count = header.count;
+        if (header.chanRange && Number.isFinite(header.chanRange[0])) L.value_range = header.chanRange;
+        L._posAt = (r) => recordPosition(r);               // measure / readout off the desurveyed midpoints
+        finishFileLayer(L, i, doc);
+        return;
+      }
+
+      const blob = await resolveFilesBlob(L.file);
+      if (epoch !== streamEpoch || disposed) return;
+      if (!blob) {
+        fileMsg = `${L.file.name}: /files unreachable — jupyter-server serves it; elsewhere stream via the kernel`;
+        schedule();
+        return;
+      }
+      const ext2 = (L.file.name.match(/\.([a-z0-9]+)$/i) || [0, ''])[1].toLowerCase();
+      const fm = L.file.map || null;
+      let opened;
+      if (ext2 === 'parquet' || ext2 === 'pq') {
+        opened = await openParquetBlocks(blob, { map: fm });
+      } else if (ext2 === 'dm') {
+        let mapping = null;
+        if (fm && (fm.value || fm.category)) {             // .dm maps chan/cat by field name
+          const names = await peekDmColumns(blob);
+          if (names) {
+            mapping = {};
+            if (fm.value) { const k2 = names.indexOf(fm.value); if (k2 >= 0) mapping.chan = k2; }
+            if (fm.category) { const k2 = names.indexOf(fm.category); if (k2 >= 0) mapping.cat = k2; }
+          }
+        }
+        opened = await openDmModel(blob, { mapping });
+      } else if (ext2 === 'las') {
+        opened = await openLas(blob);
+      } else if (ext2 === 'ply') {
+        opened = await openPly(blob);
+      } else {
+        let mapping = null;
+        if (fm) {                                          // delimited: names → sniffed column indices
+          const sniff = sniffDelimited(await blob.slice(0, Math.min(65536, blob.size)).text());
+          if (sniff.header) {
+            const idx = (nm) => (nm == null ? -1 : sniff.header.findIndex((h2) => h2.trim() === nm));
+            mapping = { ...(mapColumns(sniff.header) || {}) };
+            for (const [k2, mk] of [['x', 'x'], ['y', 'y'], ['z', 'z'], ['chan', 'value'], ['cat', 'category']]) {
+              const k3 = idx(fm[mk]);
+              if (k3 >= 0) mapping[k2] = k3;
+            }
+            if (!(mapping.x >= 0 && mapping.y >= 0 && mapping.z >= 0)) mapping = null;
+          }
+        }
+        opened = await openBlockModel(blob, { mapping });
+      }
+      if (epoch !== streamEpoch || disposed) return;
+      const { header, streamChunks } = opened;
+      const isBlocks = !!header.grid;
+      if (!isBlocks && !(ext2 === 'las' || ext2 === 'ply')) {
+        fileMsg = `${L.file.name}: not a regular block lattice — open resident, or as points via the kernel`;
+        schedule();
+        return;
+      }
+      const frame = adoptFrame(header);
+      let b;
+      if (isBlocks) {
+        kinds[i] = 'blocks';
+        const grid = makeBlockGrid([header.grid.x, header.grid.y, header.grid.z], frame);
+        b = createBlockChunkBuilder({
+          frame, grid, chunkSize: 1 << 18, seed: 1,
+          dimPalette: header.dimPalette || null,
+          onChunk: (c) => renderer.addChunk(c, 'base', i),
+        });
+        if (header.categories) {
+          L.cat_labels = header.categories;
+          L.cat_n = header.categories.length;
+          renderer.setCategories(L.cat_n);
+        }
+      } else {
+        kinds[i] = 'points';
+        b = createChunkBuilder({ frame, chunkSize: 1 << 19, seed: 1, onChunk: (c) => renderer.addChunk(c, 'base', i) });
+        L.cols.value_u16 = L.cols.value_u16 || new Uint16Array(0);   // 'value' → the intensity channel
+      }
+      let got = 0;
+      for await (const rc of streamChunks({ chunkPoints: 1 << 18 })) {
+        if (epoch !== streamEpoch || disposed) return;
+        b.push(rc);
+        b.flush();                                         // progressive, chunk by chunk
+        got += rc.count;
+        invalidate();
+      }
+      const doc = b.flush();
+      L.count = header.count || got;
+      if (isBlocks && doc && Number.isFinite(doc.chanRange[0])) L.value_range = [doc.chanRange[0], doc.chanRange[1]];
+      finishFileLayer(L, i, doc);
+    } catch (e) {
+      fileMsg = `${L.file.name}: ${e.message}`;
+      schedule();
+    }
+  };
+
+  // the ACTIVE value channel: a layer may ship several (value=["FE","SIO2"]);
+  // the style's `value` names the live one, and switching re-aliases
+  // L.cols.value / value_u16 / value_range so EVERY reader (the GPU build,
+  // threshold, pick readout, legend) sees the chosen channel.
+  const resolveChannel = (L, s) => {
+    const names = L.value_channels || [];
+    if (!names.length) return;
+    if (!L._chans) {
+      L._chans = names.map((nm, k) => ({
+        name: nm,
+        value: L.cols[k === 0 ? 'value' : 'value' + k],
+        u16: L.cols[k === 0 ? 'value_u16' : 'value_u16_' + k],
+        range: (L.value_ranges || [L.value_range])[k] || L.value_range,
+      }));
+    }
+    let k = s && s.value ? L._chans.findIndex((c) => c.name === s.value) : 0;
+    if (k < 0) k = 0;
+    const c = L._chans[k];
+    L.cols.value = c.value;
+    if (c.u16) L.cols.value_u16 = c.u16;
+    L.value_range = c.range;
+    L._active = c.name;
+  };
+
+  // one layer → engine chunks. Shared by load() and rebuildLayer() (a channel
+  // switch rebuilds just its own layer from the already-resident columns).
+  // Returns the layer's local bbox (null while a streamed layer has no rows).
+  const buildLayer = (L, i) => {
+    if (L.file) {                                          // via='files': async browser-side read
+      fileQueue = fileQueue.then(() => buildFileLayer(L, i));
+      return null;
+    }
+    const frame = { origin: payload.frame, crs: null, units: 'm' };
+    const cols = L.cols;
+    resolveChannel(L, styleAt(i));
+    let doc = null;
+    if (L.kind === 'blocks') {
+        const grid = makeBlockGrid(L.axes.map(([origin, pitch, count]) => ({ origin, pitch, count })), frame);
+        const b = createBlockChunkBuilder({
+          frame, grid, chunkSize: 1 << 18, seed: 1,
+          dimPalette: L.dim_palette || null,               // sub-blocked: per-code half-dims
+          onChunk: (c) => renderer.addChunk(c, 'base', i),
+        });
+        if (L.streamed) {
+          // cd.open(): header-only in the payload — rows arrive as wire-v3
+          // chunks over custom messages, pushed into this SAME builder with a
+          // running recStart (progressive render for free). JS keeps only
+          // ijk + value + cat (~11 B/block); positions reconstruct lazily.
+          const n = L.count;
+          const st = {
+            b, got: 0, done: false, kind: 'blocks',
+            i: new Uint16Array(n), j: new Uint16Array(n), k: new Uint16Array(n),
+            dim: L.dim_palette ? new Uint8Array(n) : null,
+            value: L.value_range ? new Float32Array(n) : null,
+            cat: L.cat_n ? new Uint8Array(n) : null,
+          };
+          (streams = streams || {})[i] = st;
+          if (st.value) L.cols.value = st.value;           // threshold/legend read these
+          if (st.cat) L.cols.cat = st.cat;
+          const [[x0, xp], [y0, yp], [z0, zp]] = L.axes;
+          L._posAt = (r) => [x0 + st.i[r] * xp, y0 + st.j[r] * yp, z0 + st.k[r] * zp];
+          L._ijk = { st, x0, xp, y0, yp, z0, zp };
+          st.worker = spawnStreamWorker(L, i, st, {
+            kind: 'blocks', frameOrigin: [...frame.origin], axes: L.axes, dimPalette: L.dim_palette || null,
+          });
+          if (L.cat_n) renderer.setCategories(L.cat_n);
+          if (L.bbox) {                                    // header bbox (world) seeds the fit before rows land
+            doc = { bboxLocal: Float64Array.from(L.bbox.map((v, a) => v - frame.origin[a % 3])) };
+          }
+        } else {
+          let bx = cols.x, by = cols.y, bz = cols.z;
+          if (L.pos === 'ijk') {
+            // wire v3: u16 lattice indices → exact f64 coords (origin + index·pitch,
+            // computed here in f64 — quantization without loss). Stashed as _pos so
+            // the pick readout / measure / select-through read reconstructed coords.
+            const [[x0, xp], [y0, yp], [z0, zp]] = L.axes;
+            const n = L.count, I = cols.i, J = cols.j, K = cols.k;
+            bx = new Float64Array(n); by = new Float64Array(n); bz = new Float64Array(n);
+            for (let q = 0; q < n; q++) { bx[q] = x0 + I[q] * xp; by[q] = y0 + J[q] * yp; bz[q] = z0 + K[q] * zp; }
+            L._pos = { x: bx, y: by, z: bz };
+          }
+          b.push({ count: L.count, x: bx, y: by, z: bz, chan: cols.value || null, cat: cols.cat || null, dim: cols.dim || null, recStart: 0 });
+          doc = b.flush();
+          if (L.cat_n) renderer.setCategories(L.cat_n);
+        }
+      } else if (L.kind === 'surface') {
+        // a regular 2D grid → shaded relief (smooth normals, nodata holes),
+        // colored by its own elevation or by the drape grid through the layer
+        // ramp + clip. Rebuilt by rebuildLayer when ramp/clip/color change —
+        // a DEM-sized mesh rebuilds in milliseconds.
+        const grid = {
+          nx: L.nx, ny: L.ny, data: cols.grid,
+          x0: L.x0, y0: L.y0, dx: L.dx, dy: L.dy,
+          nodata: L.nodata == null ? null : L.nodata,
+        };
+        const stride = L.stride || Math.max(1, Math.ceil(Math.sqrt((L.nx * L.ny * 2) / 2_000_000)));
+        const m = buildHeightfieldMesh(grid, { stride, frame, flatZ: L.flat_z != null ? L.flat_z : null });
+        if (m) {
+          const s = styleAt(i);
+          const hex = String(s.color || '').replace('#', '');
+          if (hex.length !== 6) {                          // 'value': ramp the drape (or the elevation itself)
+            let vals = m.values;
+            if (L.drape && cols.drape) {
+              // mirrors buildHeightfieldMesh's vertex walk (same stride, same
+              // DEM-nodata skip) to sample the drape at each kept vertex
+              const nd = grid.nodata;
+              const bad = (v) => Number.isNaN(v) || (nd != null && (nd >= 1.7e38 ? v >= 1.7014e38 : v === nd));
+              const cN = Math.floor((L.nx - 1) / stride) + 1, rN = Math.floor((L.ny - 1) / stride) + 1;
+              const dv = [];
+              for (let r = 0; r < rN; r++) {
+                for (let c2 = 0; c2 < cN; c2++) {
+                  const gr = Math.min(L.ny - 1, r * stride), gc = Math.min(L.nx - 1, c2 * stride);
+                  if (bad(cols.grid[gr * L.nx + gc])) continue;
+                  dv.push(cols.drape[gr * L.nx + gc]);
+                }
+              }
+              vals = Float32Array.from(dv);
+            }
+            const range = (s.clip && s.clip.length === 2) ? s.clip : (L.value_range || [0, 1]);
+            const px = rampPixels(256, RAMPS[s.ramp || 'viridis'] || undefined);
+            const span = range[1] - range[0] || 1;
+            const color = new Float32Array(vals.length * 3);
+            for (let q = 0; q < vals.length; q++) {
+              const t = Math.max(0, Math.min(255, Math.round(((vals[q] - range[0]) / span) * 255)));
+              color[q * 3] = px[t * 4] / 255; color[q * 3 + 1] = px[t * 4 + 1] / 255; color[q * 3 + 2] = px[t * 4 + 2] / 255;
+            }
+            m.color = color;
+          }
+          L._surfKey = `${s.color}|${s.ramp}|${s.clip}`;   // rebuild trigger (see applyStyles)
+          doc = m;
+          renderer.addChunk(m, 'base', i);
+        }
+      } else if (L.kind === 'mesh') {
+        // context tier: scenery, recordless, drawn whole. Vertices arrive f32
+        // about the mesh's own center — add the f64 origin back, then
+        // buildMeshChunk rebases to the SHARED frame (so meshes co-register
+        // with the data layers and mine-grid coordinates stay exact).
+        const [ox, oy, oz] = L.pos_origin || [0, 0, 0];
+        const vertices = new Float64Array(cols.verts.length);
+        for (let q = 0; q < cols.verts.length; q += 3) {
+          vertices[q] = ox + cols.verts[q]; vertices[q + 1] = oy + cols.verts[q + 1]; vertices[q + 2] = oz + cols.verts[q + 2];
+        }
+        doc = buildMeshChunk({ vertices, triangles: cols.tris, frame });
+        renderer.addChunk(doc, 'base', i);
+      } else if (L.kind === 'drillholes') {
+        if (!L._collars) {                                 // labels: BHID + world collar position
+          const names = L.hole_names || [];
+          L._collars = [];
+          for (let q = 0; q < cols.c_bhid.length; q++) {
+            const code = cols.c_bhid[q];
+            L._collars.push({ name: names[code] != null ? names[code] : `#${code}`, x: cols.c_x[q], y: cols.c_y[q], z: cols.c_z[q] });
+          }
+        }
+        // the desurvey is GEOMETRY — cache it; a value-channel switch only
+        // needs the chan column re-read from the active channel by record
+        let seg = L._seg;
+        if (!seg) {
+          seg = L._seg = drillholeSegments(L, cols);
+        } else if (cols.value) {
+          for (let q = 0; q < seg.count; q++) {
+            const s2 = seg.recIdx[q];
+            seg.chan[q] = Number.isFinite(cols.value[s2]) ? cols.value[s2] : 0;
+          }
+        }
+        // the desurvey computes these, so stash the interval midpoints by ROW:
+        // measure and the readout need a position for a drillhole pick too
+        L._pos = { x: new Float64Array(L.count), y: new Float64Array(L.count), z: new Float64Array(L.count) };
+        for (let q = 0; q < seg.count; q++) {
+          const r = seg.recIdx[q];
+          L._pos.x[r] = seg.x[q]; L._pos.y[r] = seg.y[q]; L._pos.z[r] = seg.z[q];
+        }
+        const b = createStickChunkBuilder({ frame, chunkSize: 1 << 16, seed: 1, onChunk: (c) => renderer.addChunk(c, 'base', i) });
+        b.push({ count: seg.count, ax: seg.ax, ay: seg.ay, az: seg.az, bx: seg.bx, by: seg.by, bz: seg.bz,
+          x: seg.x, y: seg.y, z: seg.z, chan: seg.chan, cat: seg.cat, recIdx: seg.recIdx });
+        doc = b.flush();
+        if (L.cat_n) renderer.setCategories(L.cat_n);
+      } else if (L.streamed) {
+        // cd.open(kind='points'): f32 local positions stay RESIDENT (~17 B/pt —
+        // a cloud has no lattice to reconstruct from), value/cat beside them;
+        // the u16 intensity each chunk needs is quantized here from the
+        // header's value_range.
+        const b = createChunkBuilder({ frame, chunkSize: 1 << 19, seed: 1, onChunk: (c) => renderer.addChunk(c, 'base', i) });
+        const n = L.count;
+        const st = {
+          b, got: 0, done: false, kind: 'points',
+          x: new Float32Array(n), y: new Float32Array(n), z: new Float32Array(n),
+          value: L.value_range ? new Float32Array(n) : null,
+          cat: L.cat_n ? new Uint8Array(n) : null,
+        };
+        (streams = streams || {})[i] = st;
+        if (st.value) L.cols.value = st.value;
+        if (st.cat) L.cols.cat = st.cat;
+        const [ox, oy, oz] = L.pos_origin || [0, 0, 0];
+        L._posAt = (r) => [ox + st.x[r], oy + st.y[r], oz + st.z[r]];
+        L._pstream = { st, ox, oy, oz };
+        st.worker = spawnStreamWorker(L, i, st, { kind: 'points', frameOrigin: [...frame.origin] });
+        if (L.cat_n) renderer.setLayerCats(i, L.cat_n);
+        if (L.bbox) doc = { bboxLocal: Float64Array.from(L.bbox.map((v, a) => v - frame.origin[a % 3])) };
+      } else {
+        const b = createChunkBuilder({ frame, chunkSize: 1 << 19, seed: 1, onChunk: (c) => renderer.addChunk(c, 'base', i) });
+        let px = cols.x, py = cols.y, pz = cols.z;
+        if (L.pos_origin) {
+          // wire v3: f32 positions about the layer's bbox center — add the f64
+          // origin back BEFORE the engine sees a coordinate (the float32 wall
+          // never applies). Stashed as _pos for readout / measure / select-through.
+          const [ox, oy, oz] = L.pos_origin;
+          const n = L.count;
+          px = new Float64Array(n); py = new Float64Array(n); pz = new Float64Array(n);
+          for (let q = 0; q < n; q++) { px[q] = ox + cols.x[q]; py[q] = oy + cols.y[q]; pz[q] = oz + cols.z[q]; }
+          L._pos = { x: px, y: py, z: pz };
+        }
+        b.push({
+          count: L.count, x: px, y: py, z: pz,
+          intensity: cols.value_u16 || new Uint16Array(L.count),
+          classification: cols.cat || new Uint8Array(L.count),
+          rgb: cols.rgb || null, recStart: 0,
+        });
+        doc = b.flush();
+        if (L.cat_n) renderer.setLayerCats(i, L.cat_n);
+      }
+      return doc && doc.bboxLocal ? doc.bboxLocal : null;
+  };
+
+  // a value-channel switch rebuilds ONE layer's chunks from the resident
+  // columns — no re-send from the kernel, the camera stays put
+  const rebuildLayer = (i) => {
+    const L = payload && payload.layers[i];
+    if (!L || L.streamed || L.file) return;                // streamed/files layers carry one channel
+    renderer.removeLayer(i);
+    buildLayer(L, i);
+    invalidate();
+  };
+
+  const quantIntensity = (vals, range, n) => {             // points color from u16 intensity
+    const out = new Uint16Array(n);
+    if (!vals || !range) return out;
+    const [lo, hi] = range;
+    const span = hi - lo || 1;
+    for (let q = 0; q < n; q++) {
+      const v = vals[q];
+      out[q] = Number.isFinite(v) ? Math.max(0, Math.min(65535, Math.round(((v - lo) / span) * 65535))) : 0;
+    }
+    return out;
+  };
+
+  // ── the stream worker: chunk building off the main thread. The resident
+  // columns are ALWAYS written first, so a worker failure at any point just
+  // rebuilds inline from them — behavior-identical, only slower. ──
+  const streamWorkerFail = (L, i, st, wk) => {
+    try { wk.terminate(); } catch { /* gone */ }
+    if (st.worker !== wk) return;
+    st.worker = null;                                      // later chunks go inline
+    renderer.removeLayer(i);
+    const n = st.got;
+    if (n) {
+      if (st.kind === 'points') {
+        const { ox, oy, oz } = L._pstream;
+        const x = new Float64Array(n), y = new Float64Array(n), z = new Float64Array(n);
+        for (let q = 0; q < n; q++) { x[q] = ox + st.x[q]; y[q] = oy + st.y[q]; z[q] = oz + st.z[q]; }
+        st.b.push({ count: n, x, y, z, intensity: quantIntensity(st.value, L.value_range, n),
+          classification: st.cat ? st.cat.subarray(0, n) : new Uint8Array(n), rgb: null, recStart: 0 });
+      } else {
+        const { x0, xp, y0, yp, z0, zp } = L._ijk;
+        const x = new Float64Array(n), y = new Float64Array(n), z = new Float64Array(n);
+        for (let q = 0; q < n; q++) { x[q] = x0 + st.i[q] * xp; y[q] = y0 + st.j[q] * yp; z[q] = z0 + st.k[q] * zp; }
+        st.b.push({ count: n, x, y, z, chan: st.value ? st.value.subarray(0, n) : new Float32Array(n),
+          cat: st.cat ? st.cat.subarray(0, n) : null, dim: st.dim ? st.dim.subarray(0, n) : null, recStart: 0 });
+      }
+      st.b.flush();
+    }
+    invalidate();
+  };
+  const spawnStreamWorker = (L, i, st, init) => {
+    try {
+      // workers: false — a page whose CSP allows no workers says so, and nothing is attempted
+      // (an attempt would still log a CSP violation before the inline fallback takes over)
+      if (store.get('workers') === false || typeof Worker === 'undefined' || !import.meta.url) return null;
+      const wk = new Worker(import.meta.url, { type: 'module' });
+      wk.onmessage = (e) => {
+        const m = e.data;
+        if (disposed || !streams || streams[i] !== st) { try { wk.terminate(); } catch { /* gone */ } return; }
+        if (m.chunk) {
+          renderer.addChunk(m.chunk, 'base', i);
+          invalidate();
+        } else if (m.done) {
+          if (m.done.bboxLocal && Number.isFinite(m.done.bboxLocal[0])) mergeBbox(Float64Array.from(m.done.bboxLocal));
+          applyStyles();
+          if (tb) syncChrome();
+          invalidate();
+          try { wk.terminate(); } catch { /* gone */ }
+        } else if (m.err) {
+          streamWorkerFail(L, i, st, wk);
+        }
+      };
+      wk.onerror = () => streamWorkerFail(L, i, st, wk);
+      wk.postMessage({ init });
+      console.log('gcu.condenser: worker chunk builder engaged');
+      return wk;
+    } catch { return null; }                               // file://, odd CSP — inline is identical
+  };
+
+  // ── streamed chunks (cd.open): epoch-guarded wire-v3 batches into the open
+  // builder — each push lands a chunk on the GPU, so the model renders as it
+  // arrives, exactly like the engine streaming a file in micro. ──
+  const asTyped = (b, T, n) => {
+    if (!b) return null;
+    const buf = ArrayBuffer.isView(b) ? b.buffer : b;
+    const off = ArrayBuffer.isView(b) ? b.byteOffset : 0;
+    if (off % T.BYTES_PER_ELEMENT === 0) return new T(buf, off, n);
+    return new T(new Uint8Array(buf, off, n * T.BYTES_PER_ELEMENT).slice().buffer);
+  };
+  const onCustom = (content, buffers) => {
+    if (disposed || !content || !streams || !payload) return;
+    if (content.epoch !== streamEpoch) return;             // a stale stream another view requested
+    const li = content.layer, st = streams[li];
+    const L = payload.layers[li];
+    if (!st || !L || st.done) return;
+    if (content.type === 'chunk') {
+      const names = content.cols || [];
+      const cap = st.kind === 'points' ? st.x.length : st.i.length;
+      const take = Math.min(content.rows >>> 0, cap - st.got);
+      if (take <= 0) return;
+      const TA = st.kind === 'points'
+        ? { x: Float32Array, y: Float32Array, z: Float32Array, value: Float32Array, cat: Uint8Array }
+        : { i: Uint16Array, j: Uint16Array, k: Uint16Array, dim: Uint8Array, value: Float32Array, cat: Uint8Array };
+      const got = {};
+      names.forEach((nm, bi) => { if (TA[nm]) got[nm] = asTyped(buffers[bi], TA[nm], take); });
+      if (st.value && got.value) st.value.set(got.value.subarray(0, take), st.got);
+      if (st.cat && got.cat) st.cat.set(got.cat.subarray(0, take), st.got);
+      let raw;                                             // the builder push, worker or inline
+      if (st.kind === 'points') {
+        if (!got.x || !got.y || !got.z) return;
+        st.x.set(got.x.subarray(0, take), st.got);
+        st.y.set(got.y.subarray(0, take), st.got);
+        st.z.set(got.z.subarray(0, take), st.got);
+        const { ox, oy, oz } = L._pstream;
+        const px2 = new Float64Array(take), py2 = new Float64Array(take), pz2 = new Float64Array(take);
+        for (let q = 0; q < take; q++) { px2[q] = ox + got.x[q]; py2[q] = oy + got.y[q]; pz2[q] = oz + got.z[q]; }
+        // the points pipeline colors from u16 intensity: quantize this batch
+        // against the header's value range (fixed, so chunks agree)
+        raw = { count: take, x: px2, y: py2, z: pz2,
+          intensity: got.value ? quantIntensity(got.value, L.value_range, take) : new Uint16Array(take),
+          classification: got.cat ? got.cat.slice(0, take) : new Uint8Array(take),
+          rgb: null, recStart: st.got };
+      } else {
+        if (!got.i || !got.j || !got.k) return;
+        st.i.set(got.i.subarray(0, take), st.got);
+        st.j.set(got.j.subarray(0, take), st.got);
+        st.k.set(got.k.subarray(0, take), st.got);
+        if (st.dim && got.dim) st.dim.set(got.dim.subarray(0, take), st.got);
+        const { x0, xp, y0, yp, z0, zp } = L._ijk;
+        const bx = new Float64Array(take), by = new Float64Array(take), bz = new Float64Array(take);
+        for (let q = 0; q < take; q++) {
+          bx[q] = x0 + got.i[q] * xp; by[q] = y0 + got.j[q] * yp; bz[q] = z0 + got.k[q] * zp;
+        }
+        raw = { count: take, x: bx, y: by, z: bz,
+          chan: got.value ? got.value.slice(0, take) : new Float32Array(take),   // the builder concats chan unconditionally
+          cat: got.cat ? got.cat.slice(0, take) : null,
+          dim: got.dim ? got.dim.slice(0, take) : null, recStart: st.got };
+      }
+      st.got += take;
+      if (st.worker) {
+        // Morton/quantize OFF the main thread; raw's arrays are fresh copies,
+        // so they transfer — zero main-thread sort work per message
+        const t2 = new Set();
+        for (const k2 in raw) { const v = raw[k2]; if (v && ArrayBuffer.isView(v)) t2.add(v.buffer); }
+        st.worker.postMessage({ push: raw }, [...t2]);
+      } else {
+        st.b.push(raw);
+        st.b.flush();                                      // emit NOW — progressive at message granularity
+        invalidate();                                      // new chunks restart the accumulation
+      }
+    } else if (content.type === 'eof') {
+      st.done = true;
+      if (st.worker) {
+        st.worker.postMessage({ eof: true });              // its 'done' finishes bbox/styles/chrome
+        return;
+      }
+      const doc = st.b.flush();
+      if (doc && doc.bboxLocal && docBbox) {
+        for (let a = 0; a < 3; a++) {
+          if (doc.bboxLocal[a] < docBbox[a]) docBbox[a] = doc.bboxLocal[a];
+          if (doc.bboxLocal[a + 3] > docBbox[a + 3]) docBbox[a + 3] = doc.bboxLocal[a + 3];
+        }
+        renderer.setDocBbox(docBbox);
+      }
+      applyStyles();                                       // threshold masks now see the full column
+      if (tb) syncChrome();                                // legend over the final values
+      invalidate();
+    }
+  };
+
+  // ── styles: everything the engine keeps per LAYER ──
+  const applyStyles = () => {
+    if (!payload) return;
+    styles().forEach((s, i) => {                           // chunk-rebuilding changes first
+      const L = payload.layers[i];
+      if (!L) return;
+      if (L.kind === 'surface') {                          // surface color bakes into vertices
+        if (L._surfKey != null && L._surfKey !== `${s.color}|${s.ramp}|${s.clip}`) rebuildLayer(i);
+        return;
+      }
+      if (!L.value_channels || L.value_channels.length < 2) return;
+      const want = s.value && L.value_channels.includes(s.value) ? s.value : L.value_channels[0];
+      if (L._active && want !== L._active) rebuildLayer(i);   // value-channel switch
+    });
+    styles().forEach((s, i) => {
+      const L = payload.layers[i];
+      if (!L) return;
+      renderer.setLayerVisible(i, s.visible !== false);
+      renderer.setLayerOpacity(i, s.opacity == null ? 1 : s.opacity);
+      renderer.setLayerSectioned(i, s.sectioned === undefined ? true : s.sectioned);
+      const stops = RAMPS[s.ramp || 'viridis'];
+      renderer.setLayerRamp(i, stops ? rampPixels(256, stops) : null);
+      if (L.kind === 'blocks') renderer.setLayerEdges(i, !!s.block_edges);
+      if (L.kind === 'drillholes') renderer.setLayerStickRadius(i, s.radius || 1.5);
+      if (L.kind === 'mesh' || L.kind === 'surface') {
+        const hx = String(s.color || '').replace('#', '');  // mesh/surface hex color is a TINT, not a mode
+        if (hx.length === 6) {
+          const v2 = parseInt(hx, 16);
+          renderer.setLayerMeshStyle(i, { tint: [((v2 >> 16) & 255) / 255, ((v2 >> 8) & 255) / 255, (v2 & 255) / 255] });
+        }
+      }
+      // per-class eyes: GPU-side cull by category code; composes with the
+      // threshold mask, and hidden classes don't pick either
+      const hid = s.categories_hidden;
+      if (L.cat_labels && hid && hid.length) {
+        const vis = new Uint8Array(256).fill(1);
+        for (const lb of hid) { const k = L.cat_labels.indexOf(lb); if (k >= 0) vis[k] = 0; }
+        renderer.setLayerCatVisibility(i, vis);
+      } else {
+        renderer.setLayerCatVisibility(i, null);
+      }
+      const v = L.cols.value, t = s.threshold;
+      if (v && t && t.length === 2) {
+        const mask = new Uint8Array(v.length);
+        for (let q = 0; q < v.length; q++) mask[q] = (v[q] >= t[0] && v[q] <= t[1]) ? 1 : 0;
+        renderer.setFilter(mask, { isolate: s.filter_mode !== 'dim' }, i);
+      } else {
+        renderer.setFilter(null, {}, i);
+      }
+    });
+    schedule();
+  };
+
+  const applyBackground = () => {
+    const hex = String(store.get('background') || '#121212').replace('#', '');
+    if (hex.length !== 6) return;
+    const v = parseInt(hex, 16);
+    renderer.setBackground([((v >> 16) & 255) / 255, ((v >> 8) & 255) / 255, (v & 255) / 255, 1]);
+    schedule();
+  };
+  const applyHeight = () => { host.style.height = `${store.get('height') || 460}px`; invalidate(); };
+  const applyZExag = () => {                               // display-only: queries stay in real coords
+    cam.state.zExag = Math.max(0.1, +store.get('z_exaggeration') || 1);
+    cam.update();
+    invalidate();
+  };
+
+  // ── the camera as PYTHON STATE, in geologist terms. azimuth = bearing of the
+  // VIEW direction (from north, clockwise); plunge positive downward; target in
+  // WORLD coordinates. Orbit math: eye = target + r·[cosφcosθ, cosφsinθ, sinφ],
+  // so the view's horizontal direction is (−cosθ, −sinθ) and plunge = φ. ──
+  const camToDict = () => {
+    const c = cam.state, o = (payload && payload.frame) || [0, 0, 0];
+    const az = (Math.atan2(-Math.cos(c.theta), -Math.sin(c.theta)) * 180 / Math.PI + 360) % 360;
+    const r2 = (v) => Math.round(v * 100) / 100;
+    return {
+      azimuth: r2(az), plunge: r2(c.phi * 180 / Math.PI), distance: r2(c.radius),
+      target: [r2(c.target[0] + o[0]), r2(c.target[1] + o[1]), r2(c.target[2] + o[2])],
+      ortho: !!c.ortho,
+    };
+  };
+  let camLast = '';
+  const pushCamera = () => {                               // called from draw(): debounce-by-value
+    if (disposed) return;
+    const j = JSON.stringify(camToDict());
+    if (j === camLast) return;
+    camLast = j;
+    try { store.set('camera', JSON.parse(j)); store.save_changes(); } catch { /* detached */ }
+  };
+  const applyCamera = () => {
+    const v = store.get('camera') || {};
+    if (!Object.keys(v).length) return;
+    const cur = camToDict();
+    if (['azimuth', 'plunge', 'distance', 'ortho'].every((k) => v[k] == null || JSON.stringify(v[k]) === JSON.stringify(cur[k]))
+      && (v.target == null || JSON.stringify(v.target) === JSON.stringify(cur.target))) return;   // our own echo
+    const c = cam.state;
+    if (v.azimuth != null) { const az = (+v.azimuth) * Math.PI / 180; c.theta = Math.atan2(-Math.cos(az), -Math.sin(az)); }
+    if (v.plunge != null) c.phi = Math.max(-Math.PI / 2 + 0.011, Math.min(Math.PI / 2 - 0.011, (+v.plunge) * Math.PI / 180));
+    if (v.distance != null) c.radius = Math.max(0.05, +v.distance);
+    if (v.target) {
+      const o = (payload && payload.frame) || [0, 0, 0];
+      c.target = [v.target[0] - o[0], v.target[1] - o[1], v.target[2] - o[2]];
+    }
+    if (v.ortho != null) { cam.setOrtho(!!v.ortho); if (tb) tb.syncOrtho(!!v.ortho); }
+    cam.update();
+    userCam = true;                                        // a SET camera is sacred
+    needFit = false;
+    invalidate();
+  };
+
+  // ── the section's world extent along its normal, for the scrub slider ──
+  const sectionExtent = (sec) => {
+    if (!payload || !docBbox) return [0, 1];
+    const n = normalOf(sec) || [0, 1, 0], o = payload.frame;
+    let lo = Infinity, hi = -Infinity;
+    for (let c = 0; c < 8; c++) {
+      const p = [docBbox[(c & 1) ? 3 : 0], docBbox[(c & 2) ? 4 : 1], docBbox[(c & 4) ? 5 : 2]];
+      const d = (p[0] + o[0]) * n[0] + (p[1] + o[1]) * n[1] + (p[2] + o[2]) * n[2];
+      if (d < lo) lo = d;
+      if (d > hi) hi = d;
+    }
+    return [lo, hi];
+  };
+
+  // the legend follows the first VISIBLE layer colored by value (a ramp) or by
+  // category (a swatch list whose rows toggle that class's visibility)
+  const CAT_PX = categoryPalettePixels(256);               // the SAME palette the shaders sample
+  const toggleCat = (li, label) => {
+    const next = styles().map((s, k) => {
+      if (k !== li) return s;
+      const hid = new Set(s.categories_hidden || []);
+      if (hid.has(label)) hid.delete(label); else hid.add(label);
+      return { ...s, categories_hidden: [...hid] };
+    });
+    store.set('_styles', next);                            // round-trips to the Python Layer
+    store.save_changes();
+    applyStyles();
+    syncChrome();
+  };
+  const legendInfo = () => {
+    const st = styles();
+    for (let i = 0; i < st.length; i++) {
+      const s = st[i], L = payload && payload.layers[i];
+      if (!L || s.visible === false) continue;
+      if (s.color === 'value') {
+        const range = (s.clip && s.clip.length === 2) ? s.clip : (L.value_range || null);
+        if (!range) continue;
+        const stops = RAMPS[s.ramp || 'viridis'];
+        // the ramp needs a NAME — with channel switching, "0.2 — 34" alone is ambiguous
+        const label = (L._active && L._active !== 'value') ? L._active : (s.name || null);
+        return { range, pixels: rampPixels(256, stops || undefined), label };
+      }
+      if (s.color === 'category' && L.cat_labels && L.cat_labels.length) {
+        const hid = new Set(s.categories_hidden || []);
+        return {
+          cats: L.cat_labels.map((lb, k) => ({
+            label: lb, rgb: [CAT_PX[k * 4], CAT_PX[k * 4 + 1], CAT_PX[k * 4 + 2]], hidden: hid.has(lb),
+          })),
+          onToggle: (lb) => toggleCat(i, lb),
+        };
+      }
+    }
+    return null;
+  };
+
+  const syncChrome = () => {
+    if (!tb) return;
+    const sec = store.get('section');
+    tb.syncSection(sec, sec ? sectionExtent(sec) : null);
+    tb.syncLegend(legendInfo());
+    tb.syncOrtho(cam.state.ortho);
+  };
+
+  // camera presets — ONE implementation, shared by the toolbar and w.look()
+  const setView = (k) => {
+    const c = cam.state;
+    if (k === 'plan') { c.theta = -Math.PI / 2; c.phi = Math.PI / 2 - 0.001; }
+    else if (k === 'north') { c.theta = -Math.PI / 2; c.phi = 0; }
+    else if (k === 'south') { c.theta = Math.PI / 2; c.phi = 0; }
+    else if (k === 'east') { c.theta = Math.PI; c.phi = 0; }
+    else if (k === 'west') { c.theta = 0; c.phi = 0; }
+    else { c.theta = Math.PI / 4; c.phi = Math.PI / 5; }
+    cam.update();
+    userCam = true;                                        // a chosen view is a framed shot
+    needFit = true; invalidate();
+  };
+
+  // the stored camera state. Applied on CHANGE *and* at load: a widget
+  // displayed a second time (any cell whose value is the Viewer) builds a fresh
+  // view, and it must not come up pointing somewhere else than its sibling.
+  const applyView = () => {
+    const v = store.get('_view') || {};
+    if (v.name) setView(v.name);
+    if (v.ortho != null) { cam.setOrtho(!!v.ortho); if (tb) tb.syncOrtho(!!v.ortho); }
+    invalidate();
+  };
+
+  // GL + the decorations overlay composited — labels/scale bar/north arrow
+  // belong in the figure. Shared by the toolbar button and w.snapshot().
+  const compositeBlob = () => new Promise((res, rej) => {
+    const tmp = document.createElement('canvas');
+    tmp.width = canvas.width; tmp.height = canvas.height;
+    const g2 = tmp.getContext('2d');
+    g2.drawImage(canvas, 0, 0);                            // preserveDrawingBuffer keeps this valid
+    if (deco.width) g2.drawImage(deco, 0, 0, tmp.width, tmp.height);
+    tmp.toBlob((b) => (b ? res(b) : rej(new Error('toBlob failed'))), 'image/png');
+  });
+
+  // ── the toolbar ──
+  const buildToolbar = () => {
+    if (tb) { tb.destroy(); tb = null; }
+    if (store.get('toolbar') === false) return;
+    tb = createToolbar(host, {
+      layers: () => (payload ? payload.layers.map((L, i) => ({ name: styleAt(i).name || L.kind, kind: L.kind, visible: styleAt(i).visible !== false })) : []),
+      setStyle: (i, patch) => {
+        const next = styles().map((s, k) => (k === i ? { ...s, ...patch } : s));
+        store.set('_styles', next);                        // syncs back to the Python Layer
+        store.save_changes();
+        applyStyles();
+        syncChrome();
+      },
+      fit: () => { needFit = true; invalidate(); },
+      setView,
+      toggleOrtho: () => { const on = !cam.state.ortho; cam.setOrtho(on); invalidate(); return on; },
+      isOrtho: () => cam.state.ortho,
+      getSection: () => store.get('section'),
+      setSection: (s) => { store.set('section', s); store.save_changes(); syncChrome(); invalidate(); },
+      snapshot: () => {
+        schedule();
+        requestAnimationFrame(async () => {
+          try {
+            const b = await compositeBlob();
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(b);
+            a.download = 'condenser.png';
+            a.click();
+            setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+          } catch (e) { hud.textContent = `snapshot failed: ${e.message}`; }
+        });
+      },
+      onToolChange: (t) => {
+        tb.setBand(null);
+        measA = null;
+        canvas.style.cursor = (t === 'knife' || t === 'rect' || t === 'lasso' || t === 'measure') ? 'crosshair' : '';
+      },
+      clearSelection: () => { selected.clear(); pushSelection(); if (tb) tb.showPick(null); },
+      toggleThrough: () => {
+        const on = !store.get('select_through');
+        store.set('select_through', on);
+        store.save_changes();
+        return on;
+      },
+    });
+    syncChrome();
+  };
+
+  // ── pointer: pick / knife (the toolbar decides which) ──
+  const relXY = (e) => { const r = canvas.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+
+  // unproject a screen point onto the horizontal plane through the camera target
+  const groundAt = (sx, sy) => {
+    const w = canvas.clientWidth || 1, h = canvas.clientHeight || 1;
+    const inv = mat4Inverse(cam.state.viewProj);
+    if (!inv) return null;
+    const nx = (sx / w) * 2 - 1, ny = 1 - (sy / h) * 2;
+    const un = (z) => {
+      const x = inv[0] * nx + inv[4] * ny + inv[8] * z + inv[12];
+      const y = inv[1] * nx + inv[5] * ny + inv[9] * z + inv[13];
+      const zz = inv[2] * nx + inv[6] * ny + inv[10] * z + inv[14];
+      const ww = inv[3] * nx + inv[7] * ny + inv[11] * z + inv[15];
+      return [x / ww, y / ww, zz / ww];
+    };
+    const a = un(-1), b = un(1);
+    const dz = b[2] - a[2];
+    const tz = cam.state.target[2];
+    if (Math.abs(dz) < 1e-9) return [a[0], a[1], tz];
+    const t = (tz - a[2]) / dz;
+    return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, tz];
+  };
+
+  const doKnife = (a, b) => {
+    const p1 = groundAt(a[0], a[1]), p2 = groundAt(b[0], b[1]);
+    if (!p1 || !p2) return;
+    const dx = p2[0] - p1[0], dy = p2[1] - p1[1];
+    const len = Math.hypot(dx, dy);
+    if (len < 1e-6) return;
+    const n = [-dy / len, dx / len, 0];                    // horizontal perpendicular to the drag
+    const o = payload ? payload.frame : [0, 0, 0];
+    const position = (p1[0] + o[0]) * n[0] + (p1[1] + o[1]) * n[1] + (p1[2] + o[2]) * n[2];
+    const cur = store.get('section') || {};
+    store.set('section', { normal: n, position, thickness: cur.thickness || 20 });
+    store.save_changes();
+    syncChrome();
+    invalidate();
+  };
+
+  const pickInfo = (hit) => {
+    if (!hit || !payload) return null;
+    const L = payload.layers[hit.layer];
+    if (!L) return null;
+    const c = L.cols, r = hit.rec;
+    const name = styleAt(hit.layer).name || L.kind;
+    const rows = [];
+    if (L.kind === 'drillholes') {
+      const names = L.hole_names || [];
+      const code = c.i_bhid ? c.i_bhid[r] : null;
+      rows.push(['hole', code != null && names[code] != null ? names[code] : `#${code}`]);
+      if (c.i_from) rows.push(['from–to', `${fmtN(c.i_from[r])} – ${fmtN(c.i_to[r])}`]);
+    } else {
+      const pc = L._pos || c;                              // wire v3 reconstructs into _pos
+      const p3 = L._posAt ? L._posAt(r) : (pc.x ? [pc.x[r], pc.y[r], pc.z[r]] : null);
+      if (p3) rows.push(['x y z', `${fmtN(p3[0])} ${fmtN(p3[1])} ${fmtN(p3[2])}`]);
+    }
+    if (c.value) rows.push([L._active && L._active !== 'value' ? L._active : 'value', fmtN(c.value[r])]);
+    if (c.cat && L.cat_labels) rows.push(['category', L.cat_labels[c.cat[r]] ?? String(c.cat[r])]);
+    rows.push(['row', String(r)]);
+    return { title: name, rows };
+  };
+
+  // a pick as data (the page events): layer, its name, the ROW in the table it came
+  // from, the world position, the active value channel and the category label
+  const pickDetail = (hit) => {
+    if (!hit || !payload) return null;
+    const L = payload.layers[hit.layer];
+    if (!L) return null;
+    const c = L.cols, r = hit.rec;
+    const p = posOf(hit.layer, r);
+    const out = { layer: hit.layer, name: styleAt(hit.layer).name || L.kind, index: r,
+      x: p ? p[0] : null, y: p ? p[1] : null, z: p ? p[2] : null,
+      value: c.value ? c.value[r] : null, channel: c.value ? (L._active || (L.value_channels && L.value_channels[0]) || 'value') : null,
+      category: c.cat && L.cat_labels ? (L.cat_labels[c.cat[r]] ?? null) : null };
+    if (L.kind === 'drillholes') {
+      const code = c.i_bhid ? c.i_bhid[r] : null;
+      out.hole = code != null && L.hole_names && L.hole_names[code] != null ? L.hole_names[code] : code;
+      if (c.i_from) { out.from = c.i_from[r]; out.to = c.i_to[r]; }
+    }
+    return out;
+  };
+
+  // a record's WORLD position (blocks/points carry their columns; drillholes
+  // get theirs from the desurvey stash above)
+  const posOf = (li, rec) => {
+    const L = payload && payload.layers[li];
+    if (!L) return null;
+    if (L._posAt) return L._posAt(rec);                    // streamed: lattice reconstruction
+    const c = L._pos || L.cols;
+    if (!c || !c.x) return null;
+    return [c.x[rec], c.y[rec], c.z[rec]];
+  };
+
+  const pointInPoly = (x, y, poly) => {
+    let inside = false;
+    for (let a = 0, b = poly.length - 1; a < poly.length; b = a++) {
+      const xa = poly[a][0], ya = poly[a][1], xb = poly[b][0], yb = poly[b][1];
+      if ((ya > y) !== (yb > y) && x < ((xb - xa) * (y - ya)) / (yb - ya) + xa) inside = !inside;
+    }
+    return inside;
+  };
+
+  // ── region selection. The ID buffer already answers "which record is at this
+  // pixel" for the whole viewport, so a marquee is: render the region's ids,
+  // keep the pixels inside the shape, and collect the records. Which means what
+  // you select is exactly what you can SEE — occluded elements are not caught,
+  // the same contract as a click. ──
+  const selected = new Map();                              // layer → Set(row)
+  const packSelection = () => {
+    let n = 0, total = 0;
+    for (const set of selected.values()) if (set.size) { n++; total += set.size; }
+    const buf = new ArrayBuffer(4 + n * 8 + total * 4);
+    const dv = new DataView(buf);
+    dv.setUint32(0, n, true);
+    let off = 4;
+    for (const [li, set] of selected) {
+      if (!set.size) continue;
+      dv.setUint32(off, li, true); dv.setUint32(off + 4, set.size, true);
+      off += 8;
+      for (const r of set) { dv.setUint32(off, r, true); off += 4; }
+    }
+    return buf;
+  };
+  const pushSelection = () => {
+    styles().forEach((_s, i) => {
+      const L = payload && payload.layers[i];
+      const set = selected.get(i);
+      if (!L) return;
+      if (!set || !set.size) { renderer.setLayerSelection(i, null); return; }
+      const mask = new Uint8Array(L.count);
+      for (const r of set) if (r < mask.length) mask[r] = 1;
+      renderer.setLayerSelection(i, mask);
+    });
+    store.set('_sel_rows', new DataView(packSelection()));
+    store.save_changes();
+    const out = [];
+    for (const [li, set] of selected) if (set && set.size) out.push({ layer: li, name: styleAt(li).name || '', rows: Uint32Array.from(set).sort() });
+    notify('select', out);
+    schedule();
+  };
+  // ── SELECT THROUGH: the swept volume, not the visible surface.
+  //
+  // The ID buffer only ever names the FRONT-MOST element per pixel, so a
+  // surface selection cannot reach what is behind. Through-mode projects every
+  // record to the screen and tests the shape instead — the same construction
+  // micro's selectVolume uses, minus the streaming, because the widget already
+  // holds the columns.
+  //
+  // It defeats OCCLUSION, which is the point — but not display state: a hidden
+  // layer, an isolate-filtered element or a block outside the section slab is
+  // not merely hidden behind something, it is not being shown, so the tube does
+  // not take it. (micro's version tests only layer visibility; this is the
+  // stricter reading and the one that matches what you can see.)
+  const selectThrough = (rectCss, polyCss, additive) => {
+    const vp = cam.state.viewProj, o = payload.frame;
+    const W = canvas.clientWidth || 1, H = canvas.clientHeight || 1;
+    const secAll = sectionOf(store.get('section'), o);
+    if (!additive) selected.clear();
+    styles().forEach((sty, li) => {
+      const L = payload.layers[li];
+      if (!L || sty.visible === false) return;
+      const A = L._ijk || null;                            // streamed blocks: lattice accessor, only rows that arrived
+      const P = L._pstream || null;                        // streamed points: resident local f32 + origin
+      const c = L._pos || L.cols;
+      if (!A && !P && (!c || !c.x)) return;
+      const val = L.cols.value, th = sty.threshold;
+      const iso = !!(val && th && th.length === 2 && sty.filter_mode !== 'dim');
+      const sec = sty.sectioned === false ? null : secAll;
+      let set = selected.get(li);
+      if (!set) selected.set(li, set = new Set());
+      const n = A ? A.st.got : P ? P.st.got : Math.min(L.count, c.x.length);
+      for (let r = 0; r < n; r++) {
+        if (iso && !(val[r] >= th[0] && val[r] <= th[1])) continue;
+        let X, Y, Z;
+        if (A) { X = A.x0 + A.st.i[r] * A.xp - o[0]; Y = A.y0 + A.st.j[r] * A.yp - o[1]; Z = A.z0 + A.st.k[r] * A.zp - o[2]; }
+        else if (P) { X = P.ox + P.st.x[r] - o[0]; Y = P.oy + P.st.y[r] - o[1]; Z = P.oz + P.st.z[r] - o[2]; }
+        else { X = c.x[r] - o[0]; Y = c.y[r] - o[1]; Z = c.z[r] - o[2]; }
+        if (sec && Math.abs(X * sec.n[0] + Y * sec.n[1] + Z * sec.n[2] - sec.d) > sec.half) continue;
+        const cw = vp[3] * X + vp[7] * Y + vp[11] * Z + vp[15];
+        if (cw <= 1e-9) continue;                          // behind the eye
+        const px = ((vp[0] * X + vp[4] * Y + vp[8] * Z + vp[12]) / cw * 0.5 + 0.5) * W;
+        if (px < rectCss.x || px > rectCss.x + rectCss.w) continue;
+        const py = (0.5 - (vp[1] * X + vp[5] * Y + vp[9] * Z + vp[13]) / cw * 0.5) * H;
+        if (py < rectCss.y || py > rectCss.y + rectCss.h) continue;
+        if (polyCss && !pointInPoly(px, py, polyCss)) continue;
+        set.add(r);
+      }
+    });
+    pushSelection();
+    reportSelection();
+  };
+
+  const reportSelection = () => {
+    if (!tb) return;
+    const counts = [...selected.entries()].filter(([, v]) => v.size)
+      .map(([li, v]) => [styleAt(li).name || `layer ${li}`, v.size.toLocaleString()]);
+    tb.showPick(counts.length ? { title: store.get('select_through') ? 'selected (through)' : 'selected', rows: counts } : null);
+  };
+
+  const selectRegion = (rectCss, polyCss, additive) => {
+    if (!payload) return;
+    if (store.get('select_through')) return selectThrough(rectCss, polyCss, additive);
+    const vo = viewOpts();
+    const reg = renderer.pickRegion(rectCss, cam, {
+      pointPx: vo.pointPx, blocksAsPoints: vo.asPoints,
+      section: sectionOf(store.get('section'), payload.frame),
+    });
+    if (!additive) selected.clear();
+    if (reg && reg.data) {
+      const { data, w: rw, h: rh, dpr } = reg;
+      for (let row = 0; row < rh; row++) {
+        for (let col = 0; col < rw; col++) {
+          const i = (row * rw + col) * 4;
+          const g = data[i + 1] >>> 0;
+          if (g === 0xFFFFFFFF) continue;                  // nothing at this pixel
+          if (polyCss) {                                   // lasso: rows are BOTTOM-UP
+            const cx = rectCss.x + col / dpr;
+            const cy = rectCss.y + (rh - 1 - row) / dpr;
+            if (!pointInPoly(cx, cy, polyCss)) continue;
+          }
+          const li = g & 0xFFFF;
+          let set = selected.get(li);
+          if (!set) selected.set(li, set = new Set());
+          set.add(data[i] >>> 0);
+        }
+      }
+    }
+    pushSelection();
+    reportSelection();
+  };
+
+  // ── measure: two picks, then distance + bearing + plunge (the numbers a
+  // geologist actually wants off two points) ──
+  let measA = null;
+  const doMeasure = (hit, xy) => {
+    if (!hit) return;
+    const p = posOf(hit.layer, hit.rec);
+    if (!p) return;
+    if (!measA) { measA = { p, xy }; if (tb) { tb.setBand('measure', xy, xy); tb.showPick({ title: 'measure', rows: [['from', `${fmtN(p[0])} ${fmtN(p[1])} ${fmtN(p[2])}`], ['', 'click a second element']] }); } return; }
+    const a = measA.p, b = p;
+    const dx = b[0] - a[0], dy = b[1] - a[1], dz = b[2] - a[2];
+    const dist = Math.hypot(dx, dy, dz);
+    const horiz = Math.hypot(dx, dy);
+    const bearing = (Math.atan2(dx, dy) * 180 / Math.PI + 360) % 360;   // from north, clockwise
+    const plunge = -Math.atan2(dz, horiz) * 180 / Math.PI;              // + is downward
+    store.set('measurement', {
+      from: [a[0], a[1], a[2]], to: [b[0], b[1], b[2]],
+      distance: dist, dx, dy, dz, bearing, plunge,
+    });
+    store.save_changes();
+    notify('measure', store.get('measurement'));
+    if (tb) {
+      tb.setBand('measure', measA.xy, xy);
+      tb.showPick({ title: 'measure', rows: [
+        ['distance', fmtN(dist)], ['dx dy dz', `${fmtN(dx)} ${fmtN(dy)} ${fmtN(dz)}`],
+        ['bearing', `${fmtN(bearing)}\u00b0`], ['plunge', `${fmtN(plunge)}\u00b0`],
+      ] });
+    }
+    measA = null;
+  };
+
+  let down = null, dragging = false, lasso = null;
+  const DRAG_TOOLS = { knife: 'line', rect: 'rect', lasso: 'poly' };
+  const onDown = (e) => {
+    const t = tb ? tb.tool : 'pick';
+    down = { xy: relXY(e), t, shift: e.shiftKey };
+    if (DRAG_TOOLS[t]) {
+      dragging = true;
+      lasso = t === 'lasso' ? [relXY(e)] : null;
+      e.stopPropagation(); e.preventDefault();
+    }
+  };
+  const onMove = (e) => {
+    if (!dragging || !down) return;
+    e.stopPropagation();
+    const xy = relXY(e);
+    const kind = DRAG_TOOLS[down.t];
+    if (kind === 'poly') {
+      const last = lasso[lasso.length - 1];
+      if (Math.hypot(xy[0] - last[0], xy[1] - last[1]) > 3) lasso.push(xy);
+      if (tb) tb.setBand('poly', lasso);
+    } else if (tb) tb.setBand(kind, down.xy, xy);
+  };
+  const onUp = (e) => {
+    if (!down) return;
+    const xy = relXY(e);
+    const moved = Math.hypot(xy[0] - down.xy[0], xy[1] - down.xy[1]);
+    if (dragging) {
+      e.stopPropagation();
+      dragging = false;
+      const t0 = down.t, add = down.shift, a = down.xy, path = lasso;
+      lasso = null; down = null;
+      if (tb) tb.setBand(null);
+      if (t0 === 'lasso') {
+        // a lasso ENDS WHERE IT STARTED, so start-to-end displacement is ~0 for
+        // every real loop — the twitch test has to be the path's EXTENT.
+        if (!path || path.length < 3) return;
+        const xsL = path.map((q) => q[0]), ysL = path.map((q) => q[1]);
+        const x0 = Math.min(...xsL), y0 = Math.min(...ysL);
+        const bw = Math.max(...xsL) - x0, bh = Math.max(...ysL) - y0;
+        if (Math.max(bw, bh) < 8) return;
+        selectRegion({ x: x0, y: y0, w: bw, h: bh }, path, add);
+        return;
+      }
+      if (moved <= 8) return;                              // a twitch is not a gesture
+      if (t0 === 'knife') { doKnife(a, xy); if (tb) tb.clearTool(); return; }
+      if (t0 === 'rect') {
+        selectRegion({ x: Math.min(a[0], xy[0]), y: Math.min(a[1], xy[1]), w: Math.abs(xy[0] - a[0]), h: Math.abs(xy[1] - a[1]) }, null, add);
+      }
+      return;
+    }
+    const t = down.t;
+    down = null;
+    if ((t !== 'pick' && t !== 'measure') || moved > 4 || !payload) return;   // a drag is navigation
+    const vo = viewOpts();
+    const hit = renderer.pick(xy[0], xy[1], cam, {
+      pointPx: vo.pointPx, blocksAsPoints: vo.asPoints,
+      section: sectionOf(store.get('section'), payload.frame),
+    });
+    if (t === 'measure') { doMeasure(hit, xy); schedule(); return; }
+    renderer.setPicked(hit || null);
+    store.set('selection', hit ? { layer: hit.layer, name: styleAt(hit.layer).name || '', row: hit.rec } : {});
+    store.save_changes();
+    notify('pick', pickDetail(hit));
+    if (tb) tb.showPick(pickInfo(hit));
+    schedule();
+  };
+  // hover readout (opt-in): the pick box follows the cursor — inspection
+  // without clicking. Throttled; only under the plain pick tool.
+  let hoverAt = 0;
+  const onHover = (e) => {
+    if (!store.get('hover') || !payload || dragging || down) return;
+    if (tb && tb.tool !== 'pick') return;
+    const now = performance.now();
+    if (now - hoverAt < 90) return;
+    hoverAt = now;
+    const [hx, hy] = relXY(e);
+    const vo = viewOpts();
+    const hit = renderer.pick(hx, hy, cam, {
+      pointPx: vo.pointPx, blocksAsPoints: vo.asPoints,
+      section: sectionOf(store.get('section'), payload.frame),
+    });
+    if (tb) tb.showPick(hit ? pickInfo(hit) : null);
+    notify('hover', pickDetail(hit));
+  };
+  const onHoverLeave = () => { if (!store.get('hover')) return; if (tb) tb.showPick(null); notify('hover', null); };
+  canvas.addEventListener('pointermove', onHover);
+  canvas.addEventListener('pointerleave', onHoverLeave);
+
+  // capture on the HOST so the knife can pre-empt the orbit handlers bound to
+  // the canvas (capture runs parent → target)
+  host.addEventListener('pointerdown', onDown, true);
+  host.addEventListener('pointermove', onMove, true);
+  host.addEventListener('pointerup', onUp, true);
+
+  detach = attachOrbitInput(canvas, cam, { onChange: () => { userCam = true; schedule(); if (tb) tb.syncOrtho(cam.state.ortho); } });
+
+  const subs = [
+    ['change:_payload', load],
+    ['change:_styles', () => { applyStyles(); syncChrome(); invalidate(); }],
+    ['change:section', () => { syncChrome(); invalidate(); }],
+    ['change:background', applyBackground],
+    ['change:height', applyHeight],
+    ['change:z_exaggeration', applyZExag],
+    ['change:decorations', invalidate],
+    ['change:toolbar', buildToolbar],
+    ['change:edl', invalidate], ['change:edl_strength', invalidate], ['change:budget', invalidate],
+    ['change:_fit', () => { needFit = true; invalidate(); }],
+    ['change:_clear_sel', () => { selected.clear(); pushSelection(); if (tb) tb.showPick(null); }],
+    ['change:select_through', () => { if (tb) tb.syncThrough(store.get('select_through')); }],
+    ['change:_view', applyView],
+    ['change:camera', applyCamera],
+    ['change:hover', () => { if (!store.get('hover') && tb) tb.showPick(null); }],
+    ['change:_snapshot_req', () => {                       // w.snapshot(): PNG bytes back to the kernel
+      schedule();
+      requestAnimationFrame(async () => {
+        try {
+          const b = await compositeBlob();
+          store.set('snapshot_png', new DataView(await b.arrayBuffer()));
+          store.save_changes();
+        } catch { /* headless contexts without toBlob */ }
+      });
+    }],
+    ['msg:custom', onCustom],
+  ];
+  for (const [ev, fn] of subs) store.on(ev, fn);
+
+  ro = new ResizeObserver(() => invalidate());
+  ro.observe(host);
+  applyHeight();
+  applyBackground();
+  applyZExag();                                            // a re-displayed widget must match its stored state
+  buildToolbar();
+  if (tb) tb.syncThrough(store.get('select_through'));
+  load();
+  applyView();                                             // match any camera state already on the widget
+  applyCamera();                                           // a stored numeric camera wins over the preset
+
+  return () => {
+    disposed = true;
+    if (streams) for (const k in streams) { const stw = streams[k] && streams[k].worker; if (stw) try { stw.terminate(); } catch { /* gone */ } }
+    if (raf) cancelAnimationFrame(raf);
+    if (ro) ro.disconnect();
+    if (detach) detach();
+    if (tb) tb.destroy();
+    host.removeEventListener('pointerdown', onDown, true);
+    host.removeEventListener('pointermove', onMove, true);
+    host.removeEventListener('pointerup', onUp, true);
+    canvas.removeEventListener('pointermove', onHover);
+    canvas.removeEventListener('pointerleave', onHoverLeave);
+    for (const [ev, fn] of subs) store.off(ev, fn);
+    try { renderer.clearChunks(); } catch { /* context already gone */ }
+    const lose = renderer.gl.getExtension('WEBGL_lose_context');
+    if (lose) lose.loseContext();
+    el.innerHTML = '';
+  };
+}
+
+// ── src/store.js ──
+
+// The view's state, for a page — the same contract anywidget's model gives the view in
+// Jupyter, so view.js runs unchanged on either (see its header).
+//
+//   const store = createStore({ height: 520, _styles: [...] });
+//   store.get(key) · store.set(key, value) · store.save_changes()
+//   store.on('change:<key>', fn) · store.on('msg:custom', fn) · store.off(ev, fn)
+//   store.send(content, buffers)    the view → its host: delivered to on('send', fn)
+//   store.emit(content, buffers)    the host → the view: delivered to on('msg:custom', fn)
+//
+// Semantics copied from anywidget's model (Backbone), because the view relies on them:
+//   - set() fires 'change:<key>' synchronously — the view hears its own writes
+//   - setting a value EQUAL to the current one fires nothing; equality is deep for plain
+//     data (objects, arrays, typed arrays), identity for anything else. The view writes
+//     back fresh `_styles` arrays; an identity check would echo forever.
+//   - save_changes() publishes to the kernel in Jupyter; a page has no kernel, so here it
+//     only notifies on('save', fn) — a host persisting state() can listen there.
+
+function _same(a, b) {
+  if (a === b) return true;
+  if (a == null || b == null || typeof a !== 'object' || typeof b !== 'object') return Number.isNaN(a) && Number.isNaN(b);
+  if (ArrayBuffer.isView(a) || ArrayBuffer.isView(b)) {
+    if (!ArrayBuffer.isView(a) || !ArrayBuffer.isView(b) || a.constructor !== b.constructor || a.byteLength !== b.byteLength) return false;
+    if (a instanceof DataView) return a.buffer === b.buffer && a.byteOffset === b.byteOffset;   // payloads: identity
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+    return true;
+  }
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  if (Array.isArray(a)) {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (!_same(a[i], b[i])) return false;
+    return true;
+  }
+  if (Object.getPrototypeOf(a) !== Object.prototype || Object.getPrototypeOf(b) !== Object.prototype) return false;
+  const ka = Object.keys(a), kb = Object.keys(b);
+  if (ka.length !== kb.length) return false;
+  for (const k of ka) if (!Object.prototype.hasOwnProperty.call(b, k) || !_same(a[k], b[k])) return false;
+  return true;
+}
+
+function createStore(initial = {}) {
+  const state = { ...initial };
+  const subs = new Map();                                  // event → Set(fn)
+  const fire = (ev, ...args) => {
+    const set = subs.get(ev);
+    if (!set) return;
+    for (const fn of Array.from(set)) {
+      try { fn(...args); } catch (e) { if (typeof console !== 'undefined') console.error(`condenser view: a '${ev}' handler threw`, e); }
+    }
+  };
+  return {
+    get(key) { return state[key]; },
+    set(key, value) {
+      if (_same(state[key], value)) return;
+      state[key] = value;
+      fire('change:' + key, value);
+      fire('change', key, value);
+    },
+    save_changes() { fire('save'); },
+    on(ev, fn) { if (!subs.has(ev)) subs.set(ev, new Set()); subs.get(ev).add(fn); },
+    off(ev, fn) { const s = subs.get(ev); if (s) s.delete(fn); },
+    send(content, buffers) { fire('send', content, buffers || []); },
+    emit(content, buffers) { fire('msg:custom', content, buffers || []); },
+    // every key and value, for a host that saves the view (step 2's state() reads this)
+    snapshot() { return { ...state }; },
+  };
+}
+
+// ── src/api.js ──
+
+// @gcu/condenser/view — the viewer for any browser page: the twin of the Python
+// `gcu.condenser`. SAME functions, SAME option names (snake_case included), SAME
+// defaults, so one document teaches both:
+//
+//   import { view, blocks, points, drillholes } from '@gcu/condenser/view';
+//
+//   const v = view(el, [
+//     blocks({ x: X, y: Y, z: Z, value: FE }, { name: 'model', threshold: [28, 99], ramp: 'viridis' }),
+//     drillholes(collar, survey, assay, { value: 'AU', labels: true }),
+//     points({ x: tx, y: ty, z: tz }, { name: 'topo', sectioned: false }),
+//   ], { section: { axis: 'z', position: 485, thickness: 10 }, height: 520 });
+//
+//   v.on('pick', (p) => …);                      // { layer, name, index, x, y, z, value, … }
+//   v.layer('model').set({ threshold: [30, 99] });
+//   v.cut('z', 470, 10);  v.look('plan');  v.fit();
+//   const png = await v.snapshot();              // a Blob, the figure chrome composited
+//
+// The data arrive as columns: typed arrays (used where they are, never copied when they
+// are already the wire type), plain arrays, or a table — any object whose columns are
+// reachable as t[name], t.get(name) or t.getChild(name) (an Arrow table). The packing
+// below is a line-by-line port of gcu/condenser/__init__.py (_value_and_cat, the lattice
+// inference, the wire v3 encodings), checked against it by test/condenser-view-api.test.mjs.
+//
+// No network, no WASM, no workers required (the streaming path uses one when it can, and
+// falls back inline), no eval — it runs inside a strict sandbox.
+
+
+const U16MAX = 65535;
+
+// ── options: the Python traits, with their defaults ─────────────────────────────────────
+const STYLE_DEFAULTS = {
+  name: '', visible: true, color: 'z', value: '', ramp: 'viridis', clip: [], threshold: [],
+  filter_mode: 'isolate', opacity: 1.0, point_size: 2.5, as_points: false, block_edges: false,
+  radius: 1.5, labels: false, categories_hidden: [], sectioned: true,
+};
+const VIEW_DEFAULTS = {
+  section: null, background: '#121212', height: 460, toolbar: true, edl: true, edl_strength: 1.0,
+  z_exaggeration: 1.0, decorations: true, camera: {}, hover: false, select_through: false, budget: 3_000_000,
+  // JS only: false when the page's CSP allows no workers (streams then build inline)
+  workers: true,
+};
+// the column-mapping options each constructor takes besides the style
+const COLUMN_OPTS = {
+  points: ['x', 'y', 'z', 'value', 'category', 'rgb'],
+  blocks: ['x', 'y', 'z', 'value', 'category', 'size'],
+  drillholes: ['bhid', 'x', 'y', 'z', 'eoh', 'depth', 'az', 'dip', 'frm', 'from', 'to', 'value', 'category', 'method', 'dip_convention'],
+  mesh: [],
+  surface: ['origin', 'pitch', 'drape', 'nodata', 'flat_z', 'stride', 'nx', 'ny'],
+};
+
+const _warned = new Set();
+function _lev(a, b) {
+  const d = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    let p = d[0]; d[0] = i;
+    for (let j = 1; j <= b.length; j++) { const t = d[j]; d[j] = Math.min(d[j] + 1, d[j - 1] + 1, p + (a[i - 1] === b[j - 1] ? 0 : 1)); p = t; }
+  }
+  return d[b.length];
+}
+// an option nobody reads warns once, with the nearest real name — nothing is silently ignored
+function _checkKeys(where, opts, known) {
+  for (const k of Object.keys(opts || {})) {
+    if (known.includes(k)) continue;
+    const key = `${where}.${k}`;
+    if (_warned.has(key)) continue;
+    _warned.add(key);
+    let best = null, bd = 3;
+    for (const n of known) { const d = _lev(k.toLowerCase(), n.toLowerCase()); if (d < bd) { bd = d; best = n; } }
+    if (typeof console !== 'undefined') console.warn(`condenser: ${where} has no option '${k}'${best ? `, did you mean '${best}'?` : ''}`);
+  }
+}
+
+// ── column plumbing ─────────────────────────────────────────────────────────────────────
+const isArrayLike = (v) => v != null && typeof v !== 'string' && (Array.isArray(v) || ArrayBuffer.isView(v) || typeof v.length === 'number');
+
+function _lookup(src, name) {
+  if (src == null) return undefined;
+  if (typeof src.getChild === 'function') { const c = src.getChild(name); if (c) return typeof c.toArray === 'function' ? c.toArray() : c; }
+  if (typeof src.get === 'function' && !(src instanceof Map && !src.has(name))) { const c = src.get(name); if (c !== undefined) return c; }
+  return src[name];
+}
+
+// a column: an array, or a column NAME when `src` is a table (the Python _col)
+function _col(src, spec, what, n) {
+  if (spec == null) return null;
+  let a = spec;
+  if (typeof spec === 'string') {
+    if (src == null) throw new TypeError(`condenser: ${what}=${JSON.stringify(spec)} is a column name, but no table was given`);
+    a = _lookup(src, spec);
+    if (a == null) throw new Error(`condenser: no column ${JSON.stringify(spec)} in the table`);
+  }
+  if (!isArrayLike(a)) throw new TypeError(`condenser: ${what} must be a column (an array) or a column name`);
+  if (n != null && a.length !== n) throw new Error(`condenser: ${what} has ${a.length} values, expected ${n}`);
+  return a;
+}
+
+function _f64(a) {
+  if (a instanceof Float64Array) return a;
+  const out = new Float64Array(a.length);
+  for (let i = 0; i < a.length; i++) { const v = a[i]; out[i] = v == null ? NaN : +v; }
+  return out;
+}
+
+function _range(f) {
+  let lo = Infinity, hi = -Infinity;
+  for (let i = 0; i < f.length; i++) { const v = f[i]; if (v < lo) lo = v; if (v > hi) hi = v; }
+  if (lo === -Infinity || hi === Infinity) {
+    lo = Infinity; hi = -Infinity;
+    for (let i = 0; i < f.length; i++) { const v = f[i]; if (v - v !== 0) continue; if (v < lo) lo = v; if (v > hi) hi = v; }
+  }
+  return lo <= hi ? [lo, hi] : null;
+}
+
+// numpy.unique order: numbers numerically, anything else as strings
+function _sortedLabels(set) {
+  const vals = Array.from(set);
+  const allNum = vals.every((v) => typeof v === 'number');
+  return allNum ? vals.sort((a, b) => a - b) : vals.map(String).sort();
+}
+
+// any categorical column → (u8 codes, labels). >256 distinct folds the tail into '(other)'
+function _codes(values) {
+  const n = values.length;
+  const seen = new Set();
+  for (let i = 0; i < n; i++) seen.add(values[i]);
+  let labels = _sortedLabels(seen);
+  const index = new Map(labels.map((l, k) => [l, k]));
+  const codes = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    const v = values[i];
+    let k = index.get(typeof labels[0] === 'string' ? String(v) : v);
+    codes[i] = Math.min(k, 255);
+  }
+  if (labels.length > 256) labels = [...labels.slice(0, 255), '(other)'];
+  return { codes, labels: labels.map(String) };
+}
+
+// shared BHID factorization across the three drillhole tables (u32 codes join like names)
+function _ids(...cols) {
+  const seen = new Set();
+  for (const c of cols) for (let i = 0; i < c.length; i++) seen.add(String(c[i]));
+  const labels = Array.from(seen).sort();
+  const index = new Map(labels.map((l, k) => [l, k]));
+  return { codes: cols.map((c) => { const o = new Uint32Array(c.length); for (let i = 0; i < c.length; i++) o[i] = index.get(String(c[i])); return o; }), labels };
+}
+
+// ── lattices ────────────────────────────────────────────────────────────────────────────
+function _uniqueSorted(v) {
+  const f = new Float64Array(v.length);
+  let m = 0;
+  for (let i = 0; i < v.length; i++) { const x = v[i]; if (x - x === 0) f[m++] = x; }
+  const s = f.subarray(0, m).sort();
+  let u = 0;
+  for (let i = 0; i < m; i++) if (i === 0 || s[i] !== s[i - 1]) s[u++] = s[i];
+  return s.subarray(0, u);
+}
+
+// a regular lattice (origin, pitch, count) from centroids — the Python _axis_from_centroids
+function _axisFromCentroids(v, name) {
+  const u = _uniqueSorted(v);
+  if (!u.length) throw new Error(`condenser: axis ${name} has no finite values`);
+  if (u.length === 1) return [u[0], 1.0, 1];
+  let pitch = Infinity;
+  for (let i = 1; i < u.length; i++) pitch = Math.min(pitch, u[i] - u[i - 1]);
+  if (!(pitch > 0)) throw new Error(`condenser: axis ${name} has a zero pitch`);
+  const count = Math.round((u[u.length - 1] - u[0]) / pitch) + 1;
+  for (let i = 0; i < u.length; i++) {
+    const off = (u[i] - u[0]) / pitch;
+    if (Math.abs(off - Math.round(off)) > 1e-3) {
+      throw new Error(`condenser: ${name} centroids are not on a regular lattice. Pass size: [dx, dy, dz] if this is a sub-blocked model, or use points(...) to view the centroids.`);
+    }
+  }
+  if (count > U16MAX) throw new Error(`condenser: axis ${name} needs ${count} cells (max ${U16MAX})`);
+  return [u[0], pitch, count];
+}
+
+// the lattice of a SUB-BLOCKED axis: the finest block's pitch, or half of it
+function _axisSubblocked(v, size, name) {
+  let lo = Infinity, hi = -Infinity, fine = Infinity;
+  for (let i = 0; i < v.length; i++) {
+    const x = v[i];
+    if (x - x !== 0) continue;
+    if (x < lo) lo = x;
+    if (x > hi) hi = x;
+    if (size[i] < fine) fine = size[i];
+  }
+  if (!(fine > 0) || fine === Infinity) throw new Error(`condenser: axis ${name} has a non-positive block size`);
+  for (const pitch of [fine, fine / 2]) {
+    let ok = true;
+    for (let i = 0; i < v.length && ok; i++) {
+      const x = v[i];
+      if (x - x !== 0) continue;
+      const off = (x - lo) / pitch;
+      if (Math.abs(off - Math.round(off)) >= 1e-3) ok = false;
+    }
+    if (ok) {
+      const count = Math.round((hi - lo) / pitch) + 1;
+      if (count > U16MAX) throw new Error(`condenser: sub-blocked axis ${name} needs ${count} fine cells (max ${U16MAX}). Use points(...) for this model.`);
+      return [lo, pitch, count];
+    }
+  }
+  throw new Error(`condenser: sub-blocked axis ${name} is not on a common fine lattice (the sub-division is not a whole multiple). Use points(...).`);
+}
+
+// ── value channels + category (the Python _value_and_cat) ───────────────────────────────
+function _valueAndCat(src, value, category, n, cols, extra, kind) {
+  let chans = [];
+  if (value == null) chans = [];
+  else if (typeof value === 'string') chans = [[value, _col(src, value, 'value', n)]];
+  else if (Array.isArray(value) && value.length && value.every((v) => typeof v === 'string')) chans = value.map((v) => [v, _col(src, v, `value ${v}`, n)]);
+  else if (!isArrayLike(value) && typeof value === 'object') chans = Object.entries(value).map(([k, v]) => [String(k), _col(src, v, `value ${k}`, n)]);
+  else chans = [['value', _col(src, value, 'value', n)]];
+  const names = [], ranges = [];
+  chans.forEach(([nm, val], k) => {
+    const vf = _f64(val);
+    const r = _range(vf) || [0, 1];
+    names.push(nm); ranges.push(r);
+    // wire v3: values ride f32 (the f64 range stays in the header)
+    cols[k === 0 ? 'value' : `value${k}`] = val instanceof Float32Array ? val : Float32Array.from(vf);
+    if (kind === 'points') {
+      // the points pipeline colors from a u16 intensity channel: hi lands on 65535
+      const span = r[1] > r[0] ? r[1] - r[0] : 1;
+      const q = new Uint16Array(n);
+      for (let i = 0; i < n; i++) { const v = vf[i]; q[i] = v - v === 0 ? Math.round(Math.max(0, Math.min(1, (v - r[0]) / span)) * 65535) : 0; }
+      cols[k === 0 ? 'value_u16' : `value_u16_${k}`] = q;
+    }
+  });
+  if (names.length) { extra.value_range = ranges[0]; extra.value_channels = names; extra.value_ranges = ranges; }
+  let labels = [];
+  const cat = _col(src, category, 'category', n);
+  if (cat != null) {
+    const c = _codes(cat);
+    cols.cat = c.codes; labels = c.labels;
+    extra.cat_n = labels.length; extra.cat_labels = labels;
+  }
+  return { names, labels };
+}
+
+// split one options object into the column mapping and the style
+function _split(kind, opts) {
+  const o = opts || {};
+  const colKeys = COLUMN_OPTS[kind];
+  _checkKeys(`${kind}()`, o, [...colKeys, ...Object.keys(STYLE_DEFAULTS)]);
+  const map = {}, style = {};
+  for (const [k, v] of Object.entries(o)) (colKeys.includes(k) ? map : style)[k] = v;
+  return { map, style };
+}
+
+// the first argument: a table, or (as in Python) the columns object itself
+function _defaults(src, map, names) {
+  for (const n of names) if (map[n] === undefined && src && _lookup(src, n) != null) map[n] = n;
+}
+
+// ── layers ──────────────────────────────────────────────────────────────────────────────
+class Layer {
+  constructor(kind, cols, extra, categories, style) {
+    this.kind = kind;
+    this.cols = cols;                    // name → typed array (the wire form)
+    this.extra = extra;                  // the per-layer header
+    this.categories = categories || [];
+    this.style = { ...STYLE_DEFAULTS, ...style };
+    this._stream = null;
+  }
+  get count() { return this.extra.count || 0; }
+  get name() { return this.style.name; }
+}
+
+function _finishStyle(style, chanNames, hasCat) {
+  if (style.color === undefined) style.color = chanNames.length ? 'value' : (hasCat ? 'category' : 'z');
+  if (style.value === undefined) style.value = chanNames.length ? chanNames[0] : '';
+  return style;
+}
+
+// points(src, { x, y, z, value, category, rgb, ...style })
+function points(src, opts) {
+  const { map, style } = _split('points', opts);
+  _defaults(src, map, ['x', 'y', 'z', 'value', 'category', 'rgb']);
+  const xa = _col(src, map.x ?? 'x', 'x');
+  const n = xa.length;
+  const xf = _f64(xa), yf = _f64(_col(src, map.y ?? 'y', 'y', n)), zf = _f64(_col(src, map.z ?? 'z', 'z', n));
+  const cols = {};
+  const extra = { count: n };
+  const { names, labels } = _valueAndCat(src, map.value, map.category, n, cols, extra, 'points');
+  if (map.rgb != null) {
+    const a = _col(src, map.rgb, 'rgb');
+    let bytes;
+    if (a.length === n * 3 && typeof a[0] === 'number') bytes = a instanceof Uint8Array ? a : Uint8Array.from(a);
+    else if (a.length === n && isArrayLike(a[0])) { bytes = new Uint8Array(n * 3); for (let i = 0; i < n; i++) bytes.set(a[i], i * 3); }
+    else throw new Error('condenser: rgb must be n × 3 bytes (flat, or one [r, g, b] per point)');
+    cols.rgb = bytes;
+  }
+  const rx = _range(xf), ry = _range(yf), rz = _range(zf);
+  if (!rx || !ry || !rz) throw new Error('condenser: points has no finite coordinates');
+  extra.bbox = [rx[0], ry[0], rz[0], rx[1], ry[1], rz[1]];
+  // wire v3: positions ride f32 about the layer's own bbox center, the f64 origin in the header
+  const ox = (rx[0] + rx[1]) / 2, oy = (ry[0] + ry[1]) / 2, oz = (rz[0] + rz[1]) / 2;
+  const fx = new Float32Array(n), fy = new Float32Array(n), fz = new Float32Array(n);
+  for (let i = 0; i < n; i++) { fx[i] = xf[i] - ox; fy[i] = yf[i] - oy; fz[i] = zf[i] - oz; }
+  cols.x = fx; cols.y = fy; cols.z = fz;
+  extra.pos_origin = [ox, oy, oz];
+  return new Layer('points', cols, extra, labels, _finishStyle(style, names, !!cols.cat));
+}
+
+// blocks(src, { x, y, z, value, category, size: [dx, dy, dz], ...style })
+function blocks(src, opts) {
+  const { map, style } = _split('blocks', opts);
+  _defaults(src, map, ['x', 'y', 'z', 'value', 'category']);
+  const xa = _col(src, map.x ?? 'x', 'x');
+  const n = xa.length;
+  const xf = _f64(xa), yf = _f64(_col(src, map.y ?? 'y', 'y', n)), zf = _f64(_col(src, map.z ?? 'z', 'z', n));
+  const cols = {};
+  const extra = { count: n };
+  const { names, labels } = _valueAndCat(src, map.value, map.category, n, cols, extra, 'blocks');
+  let axes;
+  if (map.size == null) {
+    axes = [_axisFromCentroids(xf, 'x'), _axisFromCentroids(yf, 'y'), _axisFromCentroids(zf, 'z')];
+  } else {
+    if (!Array.isArray(map.size) || map.size.length !== 3) throw new Error('condenser: size must be [dx, dy, dz]');
+    const dims = map.size.map((s, i) => (typeof s === 'number' ? new Float64Array(n).fill(s) : _f64(_col(src, s, `size[${i}]`, n))));
+    axes = [_axisSubblocked(xf, dims[0], 'x'), _axisSubblocked(yf, dims[1], 'y'), _axisSubblocked(zf, dims[2], 'z')];
+    // a palette of HALF-dims keyed by the distinct (dx, dy, dz), numpy.unique(axis=0) order
+    const key = (i) => `${dims[0][i]},${dims[1][i]},${dims[2][i]}`;
+    const trips = new Map();
+    for (let i = 0; i < n; i++) { const k = key(i); if (!trips.has(k)) trips.set(k, [dims[0][i], dims[1][i], dims[2][i]]); }
+    if (trips.size > 256) throw new Error(`condenser: ${trips.size} distinct block sizes (max 256). Round the size columns, or use points(...).`);
+    const uniq = Array.from(trips.values()).sort((a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2]);
+    const code = new Map(uniq.map((t, k) => [t.join(','), k]));
+    const dim = new Uint8Array(n);
+    for (let i = 0; i < n; i++) dim[i] = code.get(key(i));
+    cols.dim = dim;
+    extra.dim_palette = uniq.map((t) => t.map((d) => d / 2));
+    extra.sub_blocked = true;
+  }
+  extra.axes = axes;
+  // wire v3: positions ride as u16 LATTICE INDICES; the axes decode them exactly
+  let allFinite = true;
+  for (let i = 0; i < n && allFinite; i++) if (xf[i] - xf[i] !== 0 || yf[i] - yf[i] !== 0 || zf[i] - zf[i] !== 0) allFinite = false;
+  if (allFinite) {
+    for (const [cn, arr, ax] of [['i', xf, axes[0]], ['j', yf, axes[1]], ['k', zf, axes[2]]]) {
+      const q = new Uint16Array(n);
+      for (let i = 0; i < n; i++) q[i] = Math.round((arr[i] - ax[0]) / ax[1]);
+      cols[cn] = q;
+    }
+    extra.pos = 'ijk';
+  } else { cols.x = xf; cols.y = yf; cols.z = zf; }
+  const rx = _range(xf), ry = _range(yf), rz = _range(zf);
+  const half = axes.map((a) => a[1] / 2);
+  extra.bbox = [rx[0] - half[0], ry[0] - half[1], rz[0] - half[2], rx[1] + half[0], ry[1] + half[1], rz[1] + half[2]];
+  return new Layer('blocks', cols, extra, labels, _finishStyle(style, names, !!cols.cat));
+}
+
+// drillholes(collar, survey, intervals, { bhid, x, y, z, eoh, depth, az, dip, from, to, value, category, method, dip_convention, ...style })
+function drillholes(collar, survey, intervals, opts) {
+  const { map, style } = _split('drillholes', opts);
+  const bhid = map.bhid ?? 'BHID';
+  const cb = _col(collar, bhid, 'collar bhid'), sb = _col(survey, bhid, 'survey bhid'), ib = _col(intervals, bhid, 'interval bhid');
+  const { codes: [cbc, sbc, ibc], labels: holeNames } = _ids(cb, sb, ib);
+  const n = ib.length;
+  const cx = _f64(_col(collar, map.x ?? 'X', 'collar x')), cy = _f64(_col(collar, map.y ?? 'Y', 'collar y')), cz = _f64(_col(collar, map.z ?? 'Z', 'collar z'));
+  const cols = {
+    c_bhid: cbc, c_x: cx, c_y: cy, c_z: cz,
+    s_bhid: sbc,
+    s_depth: _f64(_col(survey, map.depth ?? 'DEPTH', 'survey depth')),
+    s_az: _f64(_col(survey, map.az ?? 'AZ', 'survey az')),
+    s_dip: _f64(_col(survey, map.dip ?? 'DIP', 'survey dip')),
+    i_bhid: ibc,
+    i_from: _f64(_col(intervals, map.from ?? map.frm ?? 'FROM', 'interval from')),
+    i_to: _f64(_col(intervals, map.to ?? 'TO', 'interval to')),
+  };
+  if (map.eoh != null) cols.c_eoh = _f64(_col(collar, map.eoh, 'collar eoh'));
+  const extra = { count: n, method: map.method ?? 'minimumCurvature', dip_convention: map.dip_convention ?? 'auto', holes: holeNames.length };
+  if (holeNames.length <= 5000) extra.hole_names = holeNames;
+  const { names, labels } = _valueAndCat(intervals, map.value, map.category, n, cols, extra, 'blocks');
+  // a generous bbox from collars + total depth; the desurvey in the view gives the exact one
+  let reach = 0;
+  for (let i = 0; i < n; i++) if (cols.i_to[i] > reach) reach = cols.i_to[i];
+  const rx = _range(cx), ry = _range(cy), rz = _range(cz);
+  extra.bbox = [rx[0] - reach, ry[0] - reach, rz[0] - reach, rx[1] + reach, ry[1] + reach, rz[1]];
+  const lay = new Layer('drillholes', cols, extra, labels, _finishStyle(style, names, !!cols.cat));
+  lay.hole_names = holeNames;
+  return lay;
+}
+
+// mesh(vertices, triangles, { color: '#9aa4ab', opacity, ...style }) — context: scenery
+function mesh(vertices, triangles, opts) {
+  const { style } = _split('mesh', opts);
+  const flat = (a, what) => {
+    if (!isArrayLike(a) || !a.length) throw new Error(`condenser: mesh needs ${what}`);
+    if (isArrayLike(a[0])) { const o = new Float64Array(a.length * 3); for (let i = 0; i < a.length; i++) { o[i * 3] = a[i][0]; o[i * 3 + 1] = a[i][1]; o[i * 3 + 2] = a[i][2]; } return o; }
+    return a;
+  };
+  const v = _f64(flat(vertices, 'vertices AND triangles'));
+  const t = flat(triangles, 'vertices AND triangles');
+  const nv = v.length / 3;
+  let tmin = Infinity, tmax = -Infinity;
+  for (let i = 0; i < t.length; i++) { if (t[i] < tmin) tmin = t[i]; if (t[i] > tmax) tmax = t[i]; }
+  if (tmin < 0 || tmax >= nv) throw new Error(`condenser: triangle indices run ${tmin}..${tmax} but there are only ${nv} vertices`);
+  const mins = [Infinity, Infinity, Infinity], maxs = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < v.length; i++) {
+    const a = i % 3, x = v[i];
+    if (x - x !== 0) throw new Error('condenser: mesh found non-finite vertices');
+    if (x < mins[a]) mins[a] = x;
+    if (x > maxs[a]) maxs[a] = x;
+  }
+  const origin = [0, 1, 2].map((a) => (mins[a] + maxs[a]) / 2);
+  const verts = new Float32Array(v.length);
+  for (let i = 0; i < v.length; i++) verts[i] = v[i] - origin[i % 3];
+  const cols = { verts, tris: t instanceof Uint32Array ? t : Uint32Array.from(t) };
+  const extra = { count: t.length / 3, vertex_count: nv, pos_origin: origin, bbox: [...mins, ...maxs] };
+  if (style.color === undefined) style.color = '#9aa4ab';
+  return new Layer('mesh', cols, extra, null, style);
+}
+
+// surface(data, { origin: [x0, y0], pitch, drape, nodata, flat_z, stride, nx, ny, ...style })
+// data: rows (row 0 the NORTHERNMOST), or flat row-major with nx and ny
+function surface(data, opts) {
+  const { map, style } = _split('surface', opts);
+  let g, nx, ny;
+  if (isArrayLike(data) && isArrayLike(data[0])) {
+    ny = data.length; nx = data[0].length; g = new Float32Array(nx * ny);
+    for (let r = 0; r < ny; r++) for (let c = 0; c < nx; c++) g[r * nx + c] = data[r][c] == null ? NaN : data[r][c];
+  } else {
+    nx = map.nx; ny = map.ny;
+    if (!(nx > 0 && ny > 0)) throw new Error('condenser: surface data is flat — give nx and ny, or pass rows');
+    if (data.length !== nx * ny) throw new Error(`condenser: surface data has ${data.length} values, nx × ny is ${nx * ny}`);
+    g = data instanceof Float32Array ? data : Float32Array.from(data, (v) => (v == null ? NaN : v));
+  }
+  const pitch = map.pitch ?? 1.0;
+  const [dx, dy] = Array.isArray(pitch) ? [+pitch[0], +pitch[1]] : [+pitch, +pitch];
+  if (!(dx > 0 && dy > 0)) throw new Error('condenser: surface pitch must be positive');
+  const [x0, y0] = map.origin ?? [0, 0];
+  const nodata = map.nodata;
+  let zlo = Infinity, zhi = -Infinity, valid = 0;
+  for (let i = 0; i < g.length; i++) {
+    const v = g[i];
+    if (v - v !== 0 || (nodata != null && v === Math.fround(nodata))) continue;
+    valid++; if (v < zlo) zlo = v; if (v > zhi) zhi = v;
+  }
+  if (!valid) throw new Error('condenser: the surface grid has no valid values');
+  if (map.flat_z != null) zlo = zhi = +map.flat_z;
+  const cols = { grid: g };
+  const extra = { count: valid, nx, ny, x0: +x0, y0: +y0, dx, dy, bbox: [+x0, y0 - (ny - 1) * dy, zlo, x0 + (nx - 1) * dx, +y0, zhi] };
+  if (nodata != null) extra.nodata = +nodata;
+  if (map.flat_z != null) extra.flat_z = +map.flat_z;
+  if (map.stride != null) extra.stride = Math.max(1, map.stride | 0);
+  let vr = [zlo, zhi];
+  if (map.drape != null) {
+    let d;
+    if (isArrayLike(map.drape[0])) { d = new Float32Array(nx * ny); for (let r = 0; r < ny; r++) for (let c = 0; c < nx; c++) d[r * nx + c] = map.drape[r][c]; }
+    else d = map.drape instanceof Float32Array ? map.drape : Float32Array.from(map.drape);
+    if (d.length !== nx * ny) throw new Error(`condenser: drape has ${d.length} values, the surface grid ${nx * ny}`);
+    cols.drape = d; extra.drape = true;
+    vr = _range(d) || [0, 0];
+  }
+  extra.value_range = vr;
+  if (style.color === undefined) style.color = 'value';
+  return new Layer('surface', cols, extra, null, style);
+}
+
+// ── streams: rows that arrive over time ─────────────────────────────────────────────────
+// The view renders a streamed layer progressively as chunks land, but it needs the SHAPE
+// before the first row: the capacity, the lattice (blocks) or bbox (points), the value
+// range and the category labels — what cd.open's discovery pass reads from a file. A page
+// that has no file declares them:
+//
+//   const m = blocks.stream({ axes: [[x0, dx, nx], [y0, dy, ny], [z0, dz, nz]], capacity: 2e6,
+//                             value_range: [0, 70], categories: ['ox', 'fr'] }, { name: 'model' });
+//   view(el, [m]);  m.append({ x, y, z, value, category });  …  m.end();
+function _streamLayer(kind, decl, opts) {
+  const d = decl || {};
+  _checkKeys(`${kind}.stream()`, d, ['axes', 'bbox', 'capacity', 'value_range', 'categories']);
+  const { style } = _split(kind, opts);
+  const cap = d.capacity | 0;
+  if (!(cap > 0)) throw new Error(`condenser: ${kind}.stream needs a capacity (the most rows that will arrive)`);
+  const extra = { count: cap, streamed: true };
+  if (kind === 'blocks') {
+    if (!Array.isArray(d.axes) || d.axes.length !== 3) throw new Error('condenser: blocks.stream needs axes: [[origin, pitch, count] × 3]');
+    for (const a of d.axes) if (!(a[1] > 0) || !(a[2] >= 1) || a[2] > U16MAX) throw new Error('condenser: each axis is [origin, pitch > 0, 1 ≤ count ≤ 65535]');
+    extra.axes = d.axes.map((a) => [+a[0], +a[1], a[2] | 0]);
+    extra.pos = 'ijk';
+    extra.bbox = [0, 1, 2].map((a) => extra.axes[a][0] - extra.axes[a][1] / 2).concat([0, 1, 2].map((a) => extra.axes[a][0] + (extra.axes[a][2] - 0.5) * extra.axes[a][1]));
+  } else {
+    if (!Array.isArray(d.bbox) || d.bbox.length !== 6) throw new Error('condenser: points.stream needs bbox: [xmin, ymin, zmin, xmax, ymax, zmax]');
+    extra.bbox = d.bbox.map(Number);
+    extra.pos_origin = [0, 1, 2].map((a) => (extra.bbox[a] + extra.bbox[a + 3]) / 2);
+  }
+  if (d.value_range) extra.value_range = [+d.value_range[0], +d.value_range[1]];
+  const labels = d.categories ? d.categories.map(String) : [];
+  if (labels.length > 256) throw new Error('condenser: at most 256 categories in a stream');
+  if (labels.length) { extra.cat_n = labels.length; extra.cat_labels = labels; }
+  const lay = new Layer(kind, {}, extra, labels, _finishStyle(style, d.value_range ? ['value'] : [], !!labels.length));
+  lay._stream = { got: 0, ended: false, catIndex: new Map(labels.map((l, k) => [l, k])) };
+  return lay;
+}
+points.stream = (decl, opts) => _streamLayer('points', decl, opts);
+blocks.stream = (decl, opts) => _streamLayer('blocks', decl, opts);
+
+// one appended batch → the wire v3 chunk the view assembles (the Python _stream_messages)
+function _chunkOf(lay, rows) {
+  const e = lay.extra, st = lay._stream;
+  const xa = _col(rows, 'x', 'x');
+  const n = xa.length;
+  const xf = _f64(xa), yf = _f64(_col(rows, 'y', 'y', n)), zf = _f64(_col(rows, 'z', 'z', n));
+  const names = [], bufs = [];
+  if (lay.kind === 'points') {
+    const o = e.pos_origin;
+    for (const [nm, arr, oo] of [['x', xf, o[0]], ['y', yf, o[1]], ['z', zf, o[2]]]) {
+      const f = new Float32Array(n);
+      for (let i = 0; i < n; i++) f[i] = arr[i] - oo;
+      names.push(nm); bufs.push(f);
+    }
+  } else {
+    for (const [nm, arr, ax] of [['i', xf, e.axes[0]], ['j', yf, e.axes[1]], ['k', zf, e.axes[2]]]) {
+      const q = new Uint16Array(n);
+      for (let i = 0; i < n; i++) {
+        const c = Math.round((arr[i] - ax[0]) / ax[1]);
+        if (!(c >= 0 && c < ax[2])) throw new Error(`condenser: append: a block at ${nm}=${arr[i]} is outside the declared axes`);
+        q[i] = c;
+      }
+      names.push(nm); bufs.push(q);
+    }
+  }
+  const v = _lookup(rows, 'value');
+  if (v != null && e.value_range) { names.push('value'); bufs.push(Float32Array.from(_f64(_col(rows, 'value', 'value', n)))); }
+  const c = _lookup(rows, 'category');
+  if (c != null && e.cat_n) {
+    const cc = _col(rows, 'category', 'category', n), u = new Uint8Array(n);
+    for (let i = 0; i < n; i++) {
+      const k = st.catIndex.get(String(cc[i]));
+      if (k === undefined) throw new Error(`condenser: append: category ${JSON.stringify(cc[i])} was not declared`);
+      u[i] = k;
+    }
+    names.push('cat'); bufs.push(u);
+  }
+  return { n, names, bufs };
+}
+
+// ── the view ────────────────────────────────────────────────────────────────────────────
+function _payload(layers) {
+  const mins = [Infinity, Infinity, Infinity], maxs = [-Infinity, -Infinity, -Infinity];
+  for (const L of layers) {
+    const b = L.extra.bbox;
+    if (!b) continue;
+    for (let a = 0; a < 3; a++) { if (b[a] < mins[a]) mins[a] = b[a]; if (b[a + 3] > maxs[a]) maxs[a] = b[a + 3]; }
+  }
+  const auto = !mins.every(Number.isFinite);
+  const frame = auto ? [0.5, 0.5, 0.5] : mins.map((m, a) => (m + maxs[a]) / 2);
+  return { frame, frame_auto: auto, layers: layers.map((L) => ({ ...L.extra, kind: L.kind, cols: { ...L.cols } })) };
+}
+
+const EVENTS = ['pick', 'hover', 'select', 'measure', 'section', 'camera', 'style'];
+
+// view(el, layers, options) → the handle
+function view(el, layers, opts) {
+  if (!el || typeof el.appendChild !== 'function') throw new TypeError('condenser: view(el, layers, options) — el must be a DOM element');
+  const list = (Array.isArray(layers) ? layers : [layers]).flat().filter(Boolean);
+  for (const L of list) if (!(L instanceof Layer)) throw new TypeError('condenser: view() takes layers made by points / blocks / drillholes / mesh / surface');
+  const o = opts || {};
+  _checkKeys('view()', o, Object.keys(VIEW_DEFAULTS));
+  list.forEach((L, i) => { if (!L.style.name) L.style.name = `${L.kind}-${i + 1}`; });
+
+  const store = createStore({
+    ...VIEW_DEFAULTS, ...o,
+    _payload: _payload(list), _styles: list.map((L) => ({ ...L.style })),
+    _fit: 0, _view: {}, _sel_rows: null, _clear_sel: 0, measurement: {}, selection: {},
+    _snapshot_req: 0, snapshot_png: null, _file_info: {},
+  });
+  const subs = new Map(EVENTS.map((e) => [e, new Set()]));
+  const fire = (ev, data) => { for (const fn of Array.from(subs.get(ev) || [])) { try { fn(data); } catch (e) { console.error(`condenser: a '${ev}' handler threw`, e); } } };
+  store.notify = fire;
+
+  // streams: every load of the view announces itself with an epoch ('ready'), and a
+  // chunk is only taken with that epoch. A load (the first, or after add / remove) starts
+  // each stream from its first row, so every message is kept and replayed on 'ready';
+  // until then appended rows simply wait in the log.
+  let epoch = null;
+  const sentLog = new Map();                                // layer object → [[content, bufs]]
+  store.on('send', (c) => {
+    if (!c || c.type !== 'ready') return;
+    epoch = c.epoch;
+    list.forEach((L, li) => { for (const [m, b] of sentLog.get(L) || []) store.emit({ ...m, epoch, layer: li }, b); });
+  });
+  const sendStream = (L, content, bufs) => {
+    if (!sentLog.has(L)) sentLog.set(L, []);
+    sentLog.get(L).push([content, bufs]);
+    const li = list.indexOf(L);
+    if (li >= 0 && epoch != null) store.emit({ ...content, epoch, layer: li }, bufs);
+  };
+
+  store.on('change:_styles', () => {                       // the toolbar edits styles: mirror them
+    const st = store.get('_styles') || [];
+    list.forEach((L, i) => { if (st[i]) L.style = { ...STYLE_DEFAULTS, ...st[i] }; });
+    fire('style', st);
+  });
+  store.on('change:section', () => fire('section', store.get('section')));
+  store.on('change:camera', () => fire('camera', store.get('camera')));
+
+  const pushStyles = () => store.set('_styles', list.map((L) => ({ ...L.style })));
+  const repack = () => { epoch = null; store.set('_payload', _payload(list)); pushStyles(); };
+  const index = (key) => {
+    if (typeof key === 'number') { if (key >= 0 && key < list.length) return key; }
+    else { const i = list.findIndex((L) => L.style.name === key); if (i >= 0) return i; }
+    throw new Error(`condenser: no layer ${JSON.stringify(key)}`);
+  };
+
+  // per-layer handles (the Python Layer's live traits)
+  const handles = new WeakMap();
+  const handleOf = (L) => {
+    if (handles.has(L)) return handles.get(L);
+    const h = {
+      get name() { return L.style.name; }, get kind() { return L.kind; }, get count() { return L.count; },
+      get categories() { return L.categories.slice(); }, get hole_names() { return L.hole_names; },
+      get(key) { return L.style[key]; },
+      style() { return { ...L.style }; },
+      set(style) {
+        _checkKeys(`layer('${L.style.name}').set()`, style, Object.keys(STYLE_DEFAULTS));
+        L.style = { ...L.style, ...style };
+        pushStyles();
+      },
+      // rows the rectangle / lasso selected on this layer
+      get selected_rows() { return selRows().get(list.indexOf(L)) || new Uint32Array(0); },
+      append(rows) {
+        if (!L._stream) throw new Error(`condenser: layer '${L.style.name}' is not a stream — make it with ${L.kind}.stream({...}) to append rows`);
+        if (L._stream.ended) throw new Error(`condenser: layer '${L.style.name}' has ended`);
+        const { n, names, bufs } = _chunkOf(L, rows);
+        if (L._stream.got + n > L.count) throw new Error(`condenser: append: ${L._stream.got + n} rows exceed the declared capacity ${L.count}`);
+        sendStream(L, { type: 'chunk', seq: L._stream.seq = (L._stream.seq || 0) + 1, rows: n, cols: names }, bufs.map((b) => b.buffer.byteLength === b.byteLength ? b.buffer : b.slice().buffer));
+        L._stream.got += n;
+      },
+      end() {
+        if (!L._stream || L._stream.ended) return;
+        L._stream.ended = true;
+        sendStream(L, { type: 'eof', rows_total: L._stream.got }, []);
+      },
+    };
+    handles.set(L, h);
+    return h;
+  };
+
+  // the packed region selection → layer index → rows
+  const selRows = () => {
+    const out = new Map();
+    const dv = store.get('_sel_rows');
+    if (!dv || dv.byteLength < 4) return out;
+    const n = dv.getUint32(0, true);
+    let at = 4;
+    for (let q = 0; q < n && at + 8 <= dv.byteLength; q++) {
+      const li = dv.getUint32(at, true), count = dv.getUint32(at + 4, true);
+      at += 8;
+      const rows = new Uint32Array(count);
+      for (let r = 0; r < count; r++) rows[r] = dv.getUint32(at + r * 4, true);
+      at += count * 4;
+      out.set(li, rows);
+    }
+    return out;
+  };
+
+  const cleanup = mountView(el, store);
+
+  const handle = {
+    get layers() { return list.map(handleOf); },
+    layer(key) { return handleOf(list[index(key)]); },
+    // view options (height, section, background, z_exaggeration, toolbar, …), or a state()
+    set(options) {
+      const s = options || {};
+      if (s.layers) {
+        for (const [name, st] of Object.entries(s.layers)) { const i = list.findIndex((L) => L.style.name === name); if (i >= 0) list[i].style = { ...list[i].style, ...st }; }
+        pushStyles();
+      }
+      const rest = { ...s }; delete rest.layers;
+      _checkKeys('set()', rest, Object.keys(VIEW_DEFAULTS));
+      for (const [k, v] of Object.entries(rest)) if (k in VIEW_DEFAULTS) store.set(k, v);
+      return handle;
+    },
+    get(key) { return store.get(key); },
+    // look('plan' | 'north' | 'south' | 'east' | 'west' | 'iso', {ortho}) · look({ azimuth, plunge, distance, target, ortho })
+    look(nameOrCam, extra) {
+      if (nameOrCam && typeof nameOrCam === 'object') {
+        _checkKeys('look()', nameOrCam, ['azimuth', 'plunge', 'distance', 'target', 'ortho']);
+        const cam = { ...(store.get('camera') || {}) };
+        for (const k of ['azimuth', 'plunge', 'distance', 'ortho']) if (nameOrCam[k] != null) cam[k] = k === 'ortho' ? !!nameOrCam[k] : +nameOrCam[k];
+        if (nameOrCam.target != null) cam.target = Array.from(nameOrCam.target, Number);
+        cam.n = (cam.n | 0) + 1;
+        store.set('camera', cam);
+      } else {
+        const v = { name: nameOrCam || 'iso', n: ((store.get('_view') || {}).n | 0) + 1 };
+        if (extra && extra.ortho != null) v.ortho = !!extra.ortho;
+        store.set('_view', v);
+      }
+      return handle;
+    },
+    // cut('z', 470, 10) · cut({ normal: [nx, ny, nz], position, thickness }) · cut() clears
+    cut(axisOrSpec, position, thickness = 10) {
+      if (axisOrSpec == null) store.set('section', null);
+      else if (typeof axisOrSpec === 'object') store.set('section', { thickness: 10, position: 0, ...axisOrSpec });
+      else store.set('section', { axis: axisOrSpec, position: +position || 0, thickness: +thickness });
+      return handle;
+    },
+    fit() { store.set('_fit', (store.get('_fit') | 0) + 1); return handle; },
+    clear_selection() { store.set('_clear_sel', (store.get('_clear_sel') | 0) + 1); return handle; },
+    get selection() { return store.get('selection') || {}; },
+    get selected_rows() { const m = selRows(), out = {}; for (const [li, r] of m) if (list[li]) out[list[li].style.name] = r; return out; },
+    get measurement() { return store.get('measurement') || {}; },
+    get camera() { return store.get('camera') || {}; },
+    // the figure as PNG (GL + chrome composited): resolves once the view has drawn it
+    snapshot() {
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => { store.off('change:snapshot_png', got); reject(new Error('condenser: snapshot timed out')); }, 10000);
+        const got = () => {
+          clearTimeout(timer); store.off('change:snapshot_png', got);
+          const dv = store.get('snapshot_png');
+          resolve(new Blob([dv.buffer.slice(dv.byteOffset, dv.byteOffset + dv.byteLength)], { type: 'image/png' }));
+        };
+        store.on('change:snapshot_png', got);
+        store.set('_snapshot_req', (store.get('_snapshot_req') | 0) + 1);
+      });
+    },
+    add(layer) {
+      if (!(layer instanceof Layer)) throw new TypeError('condenser: add() takes a layer');
+      if (!layer.style.name) layer.style.name = `${layer.kind}-${list.length + 1}`;
+      list.push(layer); repack();
+      return handleOf(layer);
+    },
+    remove(key) { const L = list.splice(index(key), 1)[0]; sentLog.delete(L); repack(); return handle; },
+    // everything needed to put the view back as it is: JSON
+    state() {
+      const out = {};
+      for (const k of Object.keys(VIEW_DEFAULTS)) out[k] = store.get(k);
+      out.layers = Object.fromEntries(list.map((L) => [L.style.name, { ...L.style }]));
+      return JSON.parse(JSON.stringify(out));
+    },
+    on(ev, fn) { if (!subs.has(ev)) throw new Error(`condenser: no event '${ev}' (${EVENTS.join(', ')})`); subs.get(ev).add(fn); return handle; },
+    off(ev, fn) { const s = subs.get(ev); if (s) s.delete(fn); return handle; },
+    destroy() { cleanup(); for (const s of subs.values()) s.clear(); },
+    // the store, for hosts that need the raw state (and the tests)
+    _store: store,
+  };
+  return handle;
+}
+
+export {
+  STYLE_DEFAULTS,
+  VIEW_DEFAULTS,
+  Layer,
+  points,
+  blocks,
+  drillholes,
+  mesh,
+  surface,
+  view,
+  createStore,
+  mountView,
+};

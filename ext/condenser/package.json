@@ -5,5 +5,11 @@
   "type": "module",
   "main": "index.js",
   "license": "MIT",
-  "author": "Arthur Endlein Correia (GCU)"
+  "author": "Arthur Endlein Correia (GCU)",
+  "exports": {
+    ".": "./index.js",
+    "./core": "./core.js",
+    "./view": "./view/index.js",
+    "./package.json": "./package.json"
+  }
 }
