@@ -42,6 +42,24 @@ live, recorded and replayed.
 patches]`, the boxplot dict, a ContourSet, mappables) with `.axes`; every other name reads the
 axes, so chaining still works.
 
+**pyplot is matplotlib's (a breaking change).** `plt.plot`, `plt.scatter`, `plt.bar`,
+`plt.hist` and `plt.imshow` draw on the current axes and return what the axes method returns.
+Before, each made a new figure and returned its canvas, so `plt.plot(a); plt.plot(b);
+plt.title('t')` gave two figures and lost the first line. `plt.matshow` still opens a figure
+of its own, as matplotlib's does. `plt.subplot(211)` / `(212)` are two axes of one figure.
+A Python cell is the inline backend: it starts with no current figure, and when it ends the
+figures it opened and didn't show land in its output. `plt.show()` shows them where it is
+called, so a loop of plot-and-show gives a chart per pass, and returns None.
+`plt.flush_figures()` is the end-of-cell step, for a worker or Node host. A JS cell shows only
+what it asks for: `plt.show()` returns the canvas (a `<div>` of canvases for several figures).
+It also starts with no current figure, so re-running a cell draws a fresh figure instead of
+adding lines to the last one. Python's end-of-cell print reads as matplotlib's (`<Axes: >`,
+`<Figure size 640x480 with 1 Axes>`, `(array([…]), array([…]), <BarContainer object of 10
+artists>)`). The bundle now also exports `subplot`, `figure`, `matshow`, `show`,
+`flush_figures`, `close`, `gca` and `gcf`. sadpan follows pandas: `df.plot()` /
+`series.plot()` draw on a new figure (or `ax=`) and return the axes, and
+`scatter_matrix` returns its grid of axes.
+
 **Tests.** `test/plot-charts.test.mjs` (31): the layout, ticks, categories, limits, sharing,
 themes, every mark, numpy's bin counts, matplotlib's boxplot statistics, contours on analytic
 fields, the norms and colorbars, an edge-case matrix (13 chart kinds × empty / one / constant /

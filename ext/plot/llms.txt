@@ -37,7 +37,8 @@ histograms leave NaN out, log axes ignore values ≤ 0. Errors name the argument
 |---|---|
 | `subplots(nrows = 1, ncols = 1, {figsize = [4, 3], dpi = 100, sharex, sharey, theme, facecolor, wspace, hspace, strict})` | → `[fig, ax]` for 1 × 1, `[fig, axes]` otherwise (a 2D array for R × C, with `.flat`); also `.fig` / `.ax` / `.axes`. figsize in inches (× dpi) or pixels if > 50 |
 | `sharex` / `sharey` | `true` · `'all'` · `'row'` · `'col'`: one range (and one set of categories); tick labels only on the outer axes |
-| `figure({figsize, dpi, theme})` | a 1 × 1 figure |
+| `figure({figsize, dpi, theme})` | a 1 × 1 figure, made current (pyplot) |
+| `ax.figure` · `ax.get_figure()` | the figure an axes belongs to |
 | `fig.suptitle(text)` · `fig.colorbar(mappable, {ax, …})` · `fig.set_theme(theme)` | |
 | `fig.show()` | → a `<canvas>` (in Node: records the figure; see `plt.shown()`) |
 | `fig.draw(ctx, {dpr})` · `fig.toDrawList()` · `replay(ctx, list)` · `await fig.toPNG({dpr})` · `fig.savefig(name)` | draw anywhere; a draw list is JSON (`version: 2`) |
@@ -132,12 +133,24 @@ A theme is `@gcu/theme`'s keys (shared with `@gcu/condenser`'s 3D view): `backgr
 `plt.show()`, `plt.savefig()`, `plt.close()`, `plt.style.use()`, `plt.rcParams`, `plt.cm`,
 `plt.colors`.
 
+`plt.plot`, `plt.scatter`, `plt.bar`, `plt.hist`, `plt.imshow` draw on the current axes too,
+opening a figure when there is none, and return what the `ax.` call returns:
+`plt.plot(a); plt.plot(b); plt.title('t')` is one figure with two lines. `plt.matshow` and
+`plt.figure` open a new figure; `plt.subplot(211)`, `plt.subplot(212)` are two axes of one.
+
+When a figure appears:
+
+| where | how |
+|---|---|
+| a Python (adder) cell | Jupyter's inline backend. The cell starts with no current figure; when it ends, the figures it opened and didn't show appear in its output, then close. `plt.show()` shows them where it is called (a loop of plot-and-show gives one per pass) and returns None. `fig.show()` returns the canvas, and that figure isn't shown again at the end. |
+| a JS cell | only what the cell asks for: `display(plt.show())` (one canvas, or a `<div>` of them) or `display(fig.show())`. The cell starts with no current figure, so a re-run draws a fresh one. |
+| a worker or Node host | after each run, `plt.flush_figures()` (IPython's name) shows what's open; `plt.shown()` lists the figures as Figure objects to replay. |
+
 ## Differs from matplotlib
 
 | | matplotlib | plot |
 |---|---|---|
 | keyword arguments | `ax.plot(x, y, lw=2)` | JS: `ax.plot(x, y, { lw: 2 })` (adder: as matplotlib) |
-| `plt.plot`, `plt.scatter`, `plt.bar`, `plt.hist`, `plt.imshow`, `plt.matshow` | draw on the current axes | each makes a new figure and returns its `<canvas>` (use `subplots()` and `ax.…` to put several on one axes) |
 | `imshow(data, nx, ny)` | — | plot's flat form, origin `'lower'`; `imshow(Z)` is matplotlib's |
 | fonts | DejaVu Sans | the theme's monospace stack |
 | contourf | antialiased off | bands overlap bottom-up, so no seams either way |

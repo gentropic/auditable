@@ -27,6 +27,15 @@ function _findPlt() {
   return null;
 }
 
+// pandas' .plot(): it draws on `ax=` when given, else on a new figure (pyplot's current
+// one from then on), and returns the axes. The pandas-only keys don't reach the plot call.
+function _plotTarget(plt, kw) {
+  const opts = { ...kw };
+  for (const k of ['ax', 'kind', 'x', 'y']) delete opts[k];
+  const ax = kw.ax || plt.subplots().ax;
+  return { ax, opts };
+}
+
 // ── html helpers ──
 
 function _escHtml(s) { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
@@ -303,10 +312,10 @@ class DataFrame {
     return new DataFrame(new Table(columns, names));
   }
 
-  // Minimal `.plot()` — proxies to plt when available. Real matplotlib's
+  // Minimal `.plot()` — proxies to plt when available. Real pandas'
   // df.plot has dozens of kwargs (kind, ax, x, y, secondary_y, …); we
-  // cover the common shapes (x=col, y=col, kind='line'|'scatter'|'bar')
-  // and let users drop to plt directly for anything else.
+  // cover the common shapes (x=col, y=col, ax=, kind='line'|'scatter'|'bar'|'hist')
+  // and let users drop to plt directly for anything else. Returns the axes, as pandas.
   plot(opts) {
     const kw = (opts && opts._kw) ? opts : (opts || {});
     const kind = kw.kind || 'line';
@@ -317,28 +326,29 @@ class DataFrame {
 
     const tbl = this._tbl;
     const x = xCol ? tbl.array(xCol) : Array.from({ length: tbl.numRows() }, (_, i) => i);
+    if (kind === 'scatter' && !yCol) throw new Error("df.plot(kind='scatter') requires y=");
+    const { ax, opts: o } = _plotTarget(plt, kw);
 
     if (kind === 'scatter') {
-      if (!yCol) throw new Error("df.plot(kind='scatter') requires y=");
-      return plt.scatter(x, tbl.array(yCol), kw);
+      ax.scatter(x, tbl.array(yCol), o);
+      return ax;
     }
     if (kind === 'bar') {
       const cols = yCol ? (Array.isArray(yCol) ? yCol : [yCol]) : tbl.columnNames().filter(n => n !== xCol);
       // Single bar series only for now — matplotlib's grouped bar is fiddly.
-      return plt.bar(x, tbl.array(cols[0]), kw);
+      ax.bar(x, tbl.array(cols[0]), o);
+      return ax;
     }
     if (kind === 'hist') {
       const cols = yCol ? (Array.isArray(yCol) ? yCol : [yCol]) : tbl.columnNames();
-      return plt.hist(tbl.array(cols[0]), kw);
+      ax.hist(tbl.array(cols[0]), o);
+      return ax;
     }
-    // default: line plot — one column or many
+    // default: line plot — one column or many, each labelled with its name, as pandas
     const cols = yCol ? (Array.isArray(yCol) ? yCol : [yCol]) : tbl.columnNames().filter(n => n !== xCol);
-    if (cols.length === 1) return plt.plot(x, tbl.array(cols[0]), kw);
-    // multiple columns → add each as a separate trace on a shared axes
-    const sub = plt.subplots();
-    const ax = sub.ax || sub[1];
-    for (const c of cols) ax.plot(x, tbl.array(c), { ...kw, label: c });
-    return (sub.fig || sub[0]).show();
+    for (const c of cols) ax.plot(x, tbl.array(c), { ...o, label: o.label ?? c });
+    if (cols.length > 1) ax.legend();
+    return ax;
   }
 
   // methods
@@ -900,10 +910,12 @@ class WrapperSeries extends Series {
       ? this._index.tolist()
       : Array.from({ length: this._values.length }, (_, i) => i);
     const kind = kw.kind || 'line';
-    if (kind === 'bar') return plt.bar(x, this._values, kw);
-    if (kind === 'hist') return plt.hist(this._values, kw);
-    if (kind === 'scatter') return plt.scatter(x, this._values, kw);
-    return plt.plot(x, this._values, kw);
+    const { ax, opts: o } = _plotTarget(plt, kw);
+    if (kind === 'bar') ax.bar(x, this._values, o);
+    else if (kind === 'hist') ax.hist(this._values, o);
+    else if (kind === 'scatter') ax.scatter(x, this._values, o);
+    else ax.plot(x, this._values, o);
+    return ax;
   }
 }
 
@@ -1047,7 +1059,9 @@ const plotting = {
     const fig = sub.fig || sub[0];
     fig._rowLabels = numCols.slice();
     fig._colLabels = numCols.slice();
-    return fig.show();
+    // pandas returns the n×n grid of axes; the figure shows at the end of a Python cell
+    // (plt.show() / fig.show() in a JS one)
+    return axes;
   },
 };
 

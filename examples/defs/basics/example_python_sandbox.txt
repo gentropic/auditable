@@ -73,14 +73,13 @@ df
 import plt
 
 # plt: line plot of a sine wave (natra has np.sin).
-# fig.show() returns the rendered canvas — `fig` alone shows the JSON state.
-# In Jupyter matplotlib, `fig` would auto-render via plt's inline backend;
-# here that's an explicit .show() call.
+# As Jupyter's inline backend: the figure the cell opened appears when the
+# cell ends — no show() needed (plt.show() shows it right where it's called).
 fig, ax = plt.subplots()
 xs = np.linspace(0, 6.28, 100)
 ys = np.sin(xs)
 ax.plot(xs.tolist(), ys.tolist())
-fig.show()
+ax.set_title("sin(x)")
 
 /// adder
 # learn: fit a decision tree on a tiny dataset and predict

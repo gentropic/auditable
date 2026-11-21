@@ -21,7 +21,7 @@ import './contour.js';
 import './mesh.js';
 import './legend.js';
 import './figure.js';
-export { subplots, plot, scatter, imshow, hist, bar, cmap, pltAdder, rcParams, VERSION, colors } from './api.js';
+export { subplots, subplot, figure, plot, scatter, imshow, matshow, hist, bar, show, flush_figures, close, gca, gcf, cmap, pltAdder, rcParams, VERSION, colors } from './api.js';
 export { themeFromCSS } from './style.js';
 export { Normalize, LogNorm, TwoSlopeNorm, CenteredNorm, BoundaryNorm } from './norm.js';
 export { ListedColormap, LinearSegmentedColormap } from './color.js';

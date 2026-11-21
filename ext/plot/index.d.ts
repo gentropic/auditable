@@ -26,6 +26,8 @@ export interface PickHit { axes: Axes; trace: object; traceIndex: number; kind: 
 
 export class Axes {
   view: ViewInfo | null;
+  figure: Figure;
+  get_figure(): Figure | null;
   plot(y: Column, fmt?: string, opts?: LineOpts): Result<[Line2D]>;
   plot(x: Column | Labels, y: Column, fmt?: string | LineOpts, opts?: LineOpts): Result<[Line2D]>;
   scatter(x: Column | Labels, y: Column, opts?: ArtistOpts & MapOpts & { s?: number | Column; c?: Column | Color | Color[]; marker?: string; edgecolors?: Color; linewidths?: number }): Result;
@@ -146,8 +148,21 @@ export const VERSION: string;
 
 /** pyplot: the stateful interface (also what adder's `import matplotlib.pyplot as plt` gets). */
 export const pltAdder: Record<string, any>;
-export function plot(...args: unknown[]): HTMLCanvasElement;
-export function scatter(...args: unknown[]): HTMLCanvasElement;
-export function imshow(...args: unknown[]): HTMLCanvasElement;
-export function bar(...args: unknown[]): HTMLCanvasElement;
-export function hist(x: Column, opts?: object): [number[], number[], HTMLCanvasElement];
+/** pyplot's chart calls: they draw on the current axes (opening a figure when there is none) and return what the `ax.` call returns. */
+export function plot(...args: unknown[]): Result<[Line2D]>;
+export function scatter(...args: unknown[]): Result;
+export function imshow(...args: unknown[]): Result;
+export function matshow(...args: unknown[]): Result;
+export function bar(...args: unknown[]): Result<Bar[], { datavalues: ArrayLike<number> }>;
+export function hist(x: Column | Column[], opts?: object): Result<[ArrayLike<number>, ArrayLike<number>, Result]>;
+/** a new 1 × 1 figure, made current */
+export function figure(opts?: { figsize?: [number, number]; dpi?: number; theme?: string | Partial<Theme> }): Figure;
+/** subplot(211) / subplot(2, 1, 1): an axes of the current figure's grid (a new figure when the grid differs) */
+export function subplot(...args: number[]): Axes;
+/** shows every open figure and closes them: in a Python cell into its output (→ null); elsewhere → the canvas, a <div> of canvases, or (no DOM) the last Figure */
+export function show(): HTMLCanvasElement | HTMLDivElement | Figure | null;
+/** the end of a cell (IPython's inline backend): shows the open figures not yet shown, forgets them all, returns them */
+export function flush_figures(): Figure[];
+export function close(fig?: Figure | 'all'): void;
+export function gca(): Axes;
+export function gcf(): Figure;

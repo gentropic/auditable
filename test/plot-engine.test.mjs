@@ -118,7 +118,7 @@ test('D7: hist counts match numpy.histogram exactly', () => {
 
 test('D7: cumulative, and plt.hist returns the counts it drew', () => {
   const r = plt.hist([1, 2, 2, 3, 3, 3], { bins: 3, cumulative: true });
-  assert.deepEqual(r.counts, [1, 3, 6]);
+  assert.deepEqual(Array.from(r.counts), [1, 3, 6]);
   assert.equal(r[0], r.counts);
   assert.equal(r.edges.length, 4);
 });
@@ -159,8 +159,26 @@ test('D11: plot(y) draws against 0 … n-1, at the axes level and plt level', ()
   ax.plot([1, 2, 3], 'r--');
   assert.equal(ax._traces[1].opts.linestyle, '--');
   assert.ok(ops(fig).filter((o) => o[0] === 'lineTo').length >= 4);
+  plt.close('all');
   plt.plot([3, 1, 2]);
   assert.equal(plt.gca()._traces[0].x.length, 3);
+  // as matplotlib: plt.plot draws on the current axes, and returns [line]
+  const [line] = plt.plot([1, 2, 3], [4, 5, 6]);
+  assert.equal(plt.gca()._traces.length, 2);
+  assert.deepEqual(Array.from(line.get_ydata()), [4, 5, 6]);
+  plt.title('t');
+  assert.equal(plt.gcf().axes[0]._title.text, 't');
+  // subplot(211) and subplot(212) are two axes of one figure
+  plt.close('all');
+  const a = plt.subplot(211); plt.plot([1]);
+  const b = plt.subplot(212); plt.plot([2]);
+  assert.ok(a !== b && a.figure === b.figure && a.figure.axes.length === 2);
+  assert.equal(plt.flush_figures().length, 1);
+  // what a Python cell prints at its end
+  assert.equal(a.__repr__(), '<Axes: >');
+  b.set_xlabel('x');
+  assert.equal(b.__repr__(), "<Axes: xlabel='x'>");
+  assert.match(a.figure.__repr__(), /^<Figure size \d+x\d+ with 2 Axes>$/);
 });
 
 test('D12: one version everywhere', () => {

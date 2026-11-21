@@ -25,6 +25,7 @@ export class Figure {
     this.nrows = nrows || 1;
     this.ncols = ncols || 1;
     const o = opts || {};
+    this._opts = o;                   // plt.subplot() rebuilds an untouched figure as a grid with them
     _checkOpts('subplots', o, o.strict);
     // the palette as it stands now (style.js): this figure keeps it, whatever style.use() does
     // later. A partial {theme} overrides keys of it.
@@ -74,6 +75,7 @@ export class Figure {
       const ax = new Axes(this._theme);
       ax._strict = this._strict;
       ax._dpi = dpi;
+      ax.figure = this;
       this.axes.push(ax);
     }
     this._share('x', o.sharex);
@@ -146,6 +148,7 @@ export class Figure {
   // worker, Node): the figure is recorded for plt.shown() and returned, so the host can
   // draw it (fig.draw / fig.toDrawList / replay).
   show() {
+    this._displayed = true;           // pyplot's end-of-cell display skips a figure already shown
     if (typeof document === 'undefined') { _recordShown(this); return this; }
     const dpr = (typeof window !== 'undefined' ? window.devicePixelRatio : 1) || 1;
     const canvas = document.createElement('canvas');
@@ -156,6 +159,8 @@ export class Figure {
     this.draw(canvas.getContext('2d'), { dpr });
     return canvas;
   }
+
+  __repr__() { return `<Figure size ${Math.round(this.width)}x${Math.round(this.height)} with ${this.axes.length} Axes>`; }
 
   // Draw the whole figure on anything shaped like a CanvasRenderingContext2D.
   draw(ctx, { dpr = 1 } = {}) {

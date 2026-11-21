@@ -11,16 +11,18 @@ const plt = P.pltAdder;
 
 beforeEach(() => plt.close('all'));
 
+// a host running adder does what Jupyter's inline backend does at the end of a cell: it
+// shows the figures the run left open (plt.flush_figures), then reads plt.shown()
 async function py(code) {
   registerModule('plt', plt);
-  try { return await run(code); } finally { unregisterModule('plt'); }
+  try { return await run(code); } finally { plt.flush_figures(); unregisterModule('plt'); }
 }
 
 test('the module object exists without a window and adder can import it', async () => {
   assert.equal(typeof globalThis.window, 'undefined');
   await py('import plt\nplt.plot([1, 2, 3])\nplt.title("t")\nplt.show()');
   const figs = plt.shown();
-  assert.equal(figs.length, 1, 'plot() shows and show() does not add the same figure twice');
+  assert.equal(figs.length, 1, 'show() shows the figure, and the end of the run does not show it again');
   assert.ok(figs[0] instanceof P.Figure);
 });
 
@@ -101,7 +103,13 @@ test('savefig with no DOM records { name, figure }; close and clf forget', async
   plt.close(plt.shown()[0]);
   assert.equal(plt.shown().length, 0);
   assert.equal(plt.saved().length, 0);
+  // as matplotlib: two plt.plot calls are two lines on ONE figure
   await py('import plt\nplt.plot([1])\nplt.plot([2])');
+  assert.equal(plt.shown().length, 1);
+  assert.equal(plt.shown()[0].axes[0]._traces.length, 2);
+  // a plt.show() in the middle shows (and closes) the first; the second line opens another
+  plt.close('all');
+  await py('import plt\nplt.plot([1])\nplt.show()\nplt.plot([2])');
   assert.equal(plt.shown().length, 2);
   await py('import plt\nplt.clf()');
   assert.equal(plt.shown().length, 0);

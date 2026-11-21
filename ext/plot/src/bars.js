@@ -49,7 +49,8 @@ function _bar(ax, orient, pos, size, opts) {
     const r = { x: rects.x0[i], y: rects.y0[i], width: rects.x1[i] - rects.x0[i], height: rects.y1[i] - rects.y0[i] };
     patches.push({ ...r, get_x: () => r.x, get_y: () => r.y, get_width: () => r.width, get_height: () => r.height, get_xy: () => [r.x, r.y] });
   }
-  return _result(ax, patches, { datavalues: S, orientation: orient === 'v' ? 'vertical' : 'horizontal', _trace: trace, patches });
+  return _result(ax, patches, { datavalues: S, orientation: orient === 'v' ? 'vertical' : 'horizontal', _trace: trace, patches,
+    __repr__: () => `<BarContainer object of ${patches.length} artists>` });
 }
 
 // every bar's rectangle in data coordinates (x0 ≤ x1 not guaranteed: a negative height runs down)
@@ -274,8 +275,12 @@ Axes.prototype.hist = function (data, opts) {
   const res = traces.map((t) => _histBars(this, t));
   const n = multi ? res.map((r) => Float64Array.from(r.counts)) : Float64Array.from(res[0].counts);
   const edges = Float64Array.from(res[0].edges);
-  const patches = _result(this, [], { _traces: traces });
-  return _result(this, [n, edges, patches], { n, bins: edges, patches, counts: n, edges });
+  const nBars = (edges.length - 1) * traces.length;
+  const patches = _result(this, [], { _traces: traces, __repr__: () => `<BarContainer object of ${nBars} artists>` });
+  const arr = (a) => `array([${Array.from(a, (v) => (Number.isInteger(v) ? v + '.' : String(v))).join(', ')}])`;
+  // matplotlib returns the tuple (n, bins, patches); at the end of a cell it prints as one
+  const __repr__ = () => `(${multi ? '[' + n.map(arr).join(', ') + ']' : arr(n)}, ${arr(edges)}, ${patches.__repr__()})`;
+  return _result(this, [n, edges, patches], { n, bins: edges, patches, counts: n, edges, __repr__ });
 };
 
 // a histogram trace's bars: its bins, counts and the base each stands on (stacked on the

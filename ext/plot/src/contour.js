@@ -263,7 +263,8 @@ function _contour(ax, fn, filled, args) {
   if (o.colors != null) o.colors = (Array.isArray(o.colors) ? o.colors : [o.colors]).map(_cssColor);
   const trace = { type: filled ? 'contourf' : 'contour', g, levels, extend, map, box: [xlo, xhi, ylo, yhi], opts: o, cmapped: o.colors == null };
   ax._traces.push(trace);
-  return _result(ax, [], { levels: levels.slice(), extend, _trace: trace, filled, cmap: o.cmap, get allsegs() { return _allsegs(trace); } });
+  return _result(ax, [], { levels: levels.slice(), extend, _trace: trace, filled, cmap: o.cmap, get allsegs() { return _allsegs(trace); },
+    __repr__: () => '<matplotlib.contour.QuadContourSet>' });
 }
 function _allsegs(t) {
   const segs = t._cache && t._cache.lines ? t._cache.lines : _lines(t.g, t.levels, t.map);

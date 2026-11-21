@@ -10,18 +10,24 @@ import { rcParams, _noop } from './opts.js';
 // one version string, read by the extension registration below (package.json carries the same)
 export const VERSION = '0.2.0';
 
-// matplotlib stateful interface — plt.xlabel/.ylim/.legend/etc. all
-// operate on a global "current axes". subplots() and the _quick()
-// wrappers update it. Cells running in sequence share the same
-// _currentAx so a stateful sequence like
-//   plt.hist(...)        # creates an axes, becomes current
-//   plt.xlabel('x')      # sets xlabel on that axes
-//   plt.vlines(...)      # adds vertical lines to that axes
-// works the same as matplotlib.
+// matplotlib's pyplot state: the figures pyplot opened (subplots, figure, subplot, or the
+// first plt.plot / plt.title with none current), and a current figure and axes that
+// plt.plot / plt.xlabel / plt.legend … act on. As matplotlib:
+//   plt.plot(a); plt.plot(b); plt.title('t')     # one figure, two lines, a title
+// A cell starts with no current figure (see the cell hooks at the bottom), the way
+// Jupyter's inline backend closes a cell's figures once it has shown them — so a re-run
+// draws a fresh figure instead of adding lines to the last one.
 let _currentFig = null;
 let _currentAx = null;
+const _open = [];                 // figures pyplot opened and hasn't closed, oldest first
+let _cellCtx = null;              // the running Python cell's context, while one runs
 
-function _setCurrent(fig, ax) { _currentFig = fig; _currentAx = ax; return ax; }
+function _setCurrent(fig, ax) {
+  _currentFig = fig; _currentAx = ax;
+  if (fig && !_open.includes(fig)) _open.push(fig);
+  return ax;
+}
+function _forget() { _open.length = 0; _currentFig = null; _currentAx = null; }
 
 export function subplots(nrows, ncols, opts) {
   // Adder kwarg shapes that arrive here:
@@ -76,44 +82,22 @@ export function subplots(nrows, ncols, opts) {
   return Object.assign([fig, axesShape], { fig, axes: axesShape });
 }
 
-// quick one-liners — create figure, add trace, return canvas
-function _quick(fn) {
-  return function (...args) {
-    const { fig, ax } = subplots();
-    fn(ax, ...args);
-    _setCurrent(fig, ax);
-    return fig.show();
-  };
-}
-
+// The chart calls draw on the current axes and return what the axes method returns, as
+// matplotlib's do: [line] (`line, = plt.plot(…)`), a mappable, a BarContainer, and
+// (n, bins, patches) for hist — also readable as .counts / .edges.
 // plot(y), plot(x, y), plot(x, y, fmt, opts) … — Axes.plot sorts the forms out
-export const plot = _quick((ax, ...args) => ax.plot(...args));
+export function plot(...args) { return _ax().plot(...args); }
 // scatter(x, y, opts) and matplotlib's positional scatter(x, y, s, c)
-export const scatter = _quick((ax, ...args) => ax.scatter(...args));
-export const imshow = _quick((ax, data, nx, ny, opts) => ax.imshow(data, nx, ny, opts));
-export const bar = _quick((ax, x, heights, opts) => ax.bar(x, heights, opts));
+export function scatter(...args) { return _ax().scatter(...args); }
+export function imshow(data, nx, ny, opts) { return _ax().imshow(data, nx, ny, opts); }
+export function bar(x, heights, opts) { return _ax().bar(x, heights, opts); }
+export function hist(data, opts) { return _ax().hist(data, opts); }
 export const cmap = getCmap;
-// matplotlib's matshow renders a 2D matrix as an image with no axes
-// inversion — effectively imshow with origin='upper'. We alias for
-// the common df.corr().matshow pattern.
-export const matshow = _quick((ax, data, nx, ny, opts) => ax.imshow(data, nx, ny, opts));
-
-// plt.hist — matplotlib returns (counts, edges, patches). Adder cells
-// destructure as `n, bins, patches = plt.hist(...)` or index as
-// `result = plt.hist(...); n = result[0]`. We return an array-like
-// with both index access and named getters (.counts/.edges/.canvas)
-// so JS-side use is also ergonomic.
-export function hist(data, opts) {
-  const { fig, ax } = subplots();
-  ax.hist(data, opts);
-  // Compute the actual counts + edges that the trace will render with,
-  // so the caller sees real values matching the drawn bars.
-  const trace = ax._traces[ax._traces.length - 1];
-  const { edges, counts } = ax._hist(trace);
-  const canvas = fig.show();
-  return Object.assign([counts, edges, canvas], {
-    counts, edges, canvas,
-  });
+// matplotlib's matshow opens a figure of its own and draws the matrix as an image (the
+// common df.corr() pattern)
+export function matshow(data, nx, ny, opts) {
+  const { ax } = subplots();
+  return ax.imshow(data, nx, ny, opts);
 }
 
 // plt.rc(group, **kwargs) — `plt.rc('font', size=14)` — isn't honoured yet; it warns once
@@ -131,33 +115,54 @@ export const style = {
   use(name) { setStyle(name); },
   available: ['default', 'classic', 'matplotlib', 'dark_background', 'seaborn', 'seaborn-whitegrid', 'ggplot', 'bmh', 'dark', 'light', 'paper'],
 };
-// plt.figure(...) — return a fresh Figure (matplotlib's figure() takes
-// figsize=(w,h) and other kwargs; we accept and ignore unsupported ones).
+// plt.figure(...) — a new figure, and the current one (matplotlib's figure() takes
+// figsize=(w,h) and other kwargs; unsupported ones warn).
 export function figure(opts) {
   const o = (opts && typeof opts === 'object') ? opts : {};
-  return new Figure(1, 1, o);
+  const fig = new Figure(1, 1, o);
+  _setCurrent(fig, fig.axes[0]);
+  return fig;
 }
-// plt.show() — renders the current figure to a canvas and returns it.
-// When `plt.show()` is the last expression of an adder cell, adder's
-// display path picks up the canvas (via nodeType check) and renders.
-// Matplotlib's pyplot also renders implicitly after each cell in
-// %matplotlib inline; for now we require an explicit `plt.show()` as
-// the trailing statement.
+// plt.show() — shows every open figure, then closes them, as matplotlib's inline backend.
+// In a Python cell each lands in the cell's output where show() is called (so a loop of
+// plot-and-show gives one chart per pass) and show() returns None. Elsewhere — a JS
+// cell — it returns the canvas (a <div> of canvases for several figures) for the cell to
+// display. With no DOM, each figure is recorded for plt.shown() and the last is returned.
 export function show() {
-  if (!_currentFig) return null;
-  return _currentFig.show();
+  const figs = _open.length ? _open.slice() : (_currentFig ? [_currentFig] : []);
+  _forget();
+  if (!figs.length) return null;
+  if (_cellCtx) { for (const f of figs) _cellCtx.display(f.show()); return null; }
+  const out = figs.map((f) => f.show());
+  if (out.length === 1 || typeof document === 'undefined') return out[out.length - 1];
+  const div = document.createElement('div');
+  for (const c of out) div.appendChild(c);
+  return div;
 }
-// plt.close(fig?) — close a figure (matplotlib reclaims its handle).
-// We hold no figure registry, so no-op.
+// The end of a cell, as IPython's inline backend (flush_figures): every open figure not
+// already shown is shown, then pyplot forgets them all. The notebook calls it after each
+// Python cell; a worker or Node host running adder calls it after each run, then reads
+// plt.shown(). Returns the figures it showed.
+export function flush_figures() {
+  const figs = _open.filter((f) => !f._displayed);
+  _forget();
+  for (const f of figs) {
+    const out = f.show();
+    if (_cellCtx) _cellCtx.display(out);
+  }
+  return figs;
+}
 // close(fig) forgets one figure, close() the current one, close('all') every one
 export function close(fig) {
   const drop = (f) => {
     const i = _shownFigures.indexOf(f);
     if (i >= 0) _shownFigures.splice(i, 1);
     for (let j = _savedFigures.length - 1; j >= 0; j--) if (_savedFigures[j].figure === f) _savedFigures.splice(j, 1);
+    const k = _open.indexOf(f);
+    if (k >= 0) _open.splice(k, 1);
     if (_currentFig === f) { _currentFig = null; _currentAx = null; }
   };
-  if (fig === 'all') { _shownFigures.length = 0; _savedFigures.length = 0; _currentFig = null; _currentAx = null; return; }
+  if (fig === 'all') { _shownFigures.length = 0; _savedFigures.length = 0; _forget(); return; }
   drop(fig && typeof fig === 'object' && !fig._kw ? fig : _currentFig);
 }
 // The figures shown (or saved) with no DOM, in order, and the savefig calls among them.
@@ -180,9 +185,19 @@ export function subplot(...args) {
     ncols = args[1] || 1;
     index = args[2] || 1;
   }
-  const sub = subplots(nrows, ncols);
-  const ax = (sub.axes && sub.axes.length) ? sub.axes[index - 1] : sub.ax;
-  _setCurrent(sub.fig, ax);
+  // as matplotlib: plt.subplot(211) … plt.subplot(212) are two axes of ONE figure. The
+  // current figure is reused when its grid is this grid; an untouched 1×1 figure (one
+  // plt.figure(figsize=…) made for it) gives way to the grid, keeping its options.
+  let fig = _currentFig;
+  if (!fig || fig.nrows !== nrows || fig.ncols !== ncols) {
+    const blank = fig && fig.nrows * fig.ncols === 1 && !fig.axes[0]._traces.length && !fig.axes[0]._title;
+    const opts = blank ? fig._opts : undefined;
+    if (blank) close(fig);
+    fig = subplots(nrows, ncols, opts).fig;
+  }
+  const ax = fig.axes[index - 1];
+  if (!ax) throw new Error(`subplot: index ${index} is outside a ${nrows}×${ncols} grid`);
+  _setCurrent(fig, ax);
   return ax;
 }
 
@@ -237,7 +252,7 @@ export function text(x, y, s, opts) { _ax().text(x, y, s, opts); }
 export function subplots_adjust(_opts) { _noop('subplots_adjust'); }
 export function tight_layout(_opts) { /* layout is always tight */ }
 export function savefig(filename) { return _currentFig && _currentFig.savefig(filename); }
-export function clf() { _currentFig = null; _currentAx = null; _shownFigures.length = 0; _savedFigures.length = 0; }
+export function clf() { _forget(); _shownFigures.length = 0; _savedFigures.length = 0; }
 export function cla() { _currentAx = null; }
 
 // plt.xticks(ticks, labels) / yticks — custom ticks aren't supported yet; they warn once and
@@ -299,7 +314,7 @@ export function suptitle(text, opts) {
 // with adder (registerModule('plt', pltAdder)); the notebook gets it below.
 export const pltAdder = {
   subplots, subplot, figure, Figure, cmap, cm, plot, scatter, imshow, matshow, hist, bar,
-  rc, rcParams, style, show, close, shown, saved, replay,
+  rc, rcParams, style, show, flush_figures, close, shown, saved, replay,
   gca, gcf, xlabel, ylabel, title, xlim, ylim, xscale, yscale,
   legend, grid, vlines, hlines, axhline, axvline, text,
   subplots_adjust, tight_layout, savefig, clf, cla,
@@ -309,8 +324,28 @@ export const pltAdder = {
   barh, bar_label, errorbar, fill_between, fill_betweenx, step, axhspan, axvspan, annotate,
 };
 
+// The notebook's cells. A Python (adder) cell is matplotlib's inline backend: it starts
+// with no current figure, and when it ends its figures not yet shown land in its output.
+// A JS cell starts with no current figure too, and shows only what it asks to
+// (plt.show(), fig.show()) — a JS cell often builds a figure for another to compose.
+function _installCellHooks() {
+  window._adderCellHooks = window._adderCellHooks || [];
+  window._adderCellHooks.push({
+    before(_scope, cell) { _forget(); _cellCtx = (cell && cell._ctx) || null; return null; },
+    // the cell arrives here too: a cell whose `import plt` loaded this module began before
+    // this hook existed, and its figures still belong in its output
+    after(_state, _defines, _scope, cell) {
+      if (!_cellCtx) _cellCtx = (cell && cell._ctx) || null;
+      try { if (_cellCtx) flush_figures(); else _forget(); } finally { _cellCtx = null; }
+    },
+  });
+  const hooks = window.auditable && window.auditable.hooks;
+  if (hooks && typeof hooks.on === 'function') hooks.on('dag:cell:before-exec', () => { if (!_cellCtx) _forget(); });
+}
+
 // register as auditable extension for adder `import plt`
 if (typeof window !== 'undefined') {
+  _installCellHooks();
   const _plt = pltAdder;
   const register = window.auditable?.registerExtension;
   if (register) {

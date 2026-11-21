@@ -65,6 +65,8 @@ export function _result(ax, items, fields) {
   return new Proxy(target, {
     get(t, k) {
       if (k in t) return t[k];
+      // dunders stay the container's own: a [line] reads as a list, not as its axes
+      if (typeof k === 'string' && k.startsWith('__')) return undefined;
       const v = ax[k];
       return typeof v === 'function' ? v.bind(ax) : v;
     },
@@ -182,7 +184,8 @@ export class Axes {
     if (o.drawstyle && _hooks.drawstyle) _hooks.drawstyle(this, trace);
     this._traces.push(trace);
     // matplotlib returns [Line2D]: `line, = ax.plot(…)` unpacks; the rest reads the axes (chaining)
-    const line = { get_xdata: () => trace.x, get_ydata: () => trace.y, get_color: () => o.color, get_label: () => o.label ?? null, axes: this };
+    const line = { get_xdata: () => trace.x, get_ydata: () => trace.y, get_color: () => o.color, get_label: () => o.label ?? null, axes: this,
+      __repr__: () => `<Line2D ${o.label != null ? JSON.stringify(String(o.label)) : 'unlabeled'}>` };
     return _result(this, [line], {});
   }
 
@@ -222,7 +225,7 @@ export class Axes {
     }
     o.marker = this._checkMarker('scatter', o.marker);
     this._traces.push(trace);
-    return _result(this, [], { _trace: trace });         // a mappable: colorbar(sc) follows it
+    return _result(this, [], { _trace: trace, __repr__: () => '<matplotlib.collections.PathCollection>' });   // a mappable: colorbar(sc) follows it
   }
 
   // matshow — render a 2D matrix as a heatmap. Accepts diverse inputs:
@@ -277,7 +280,7 @@ export class Axes {
     this._traces.push(trace);
     // default to equal aspect for grid data (matches matplotlib)
     if (this._aspect === 'auto') this._aspect = 'equal';
-    return _result(this, [], { _trace: trace, norm: o.norm, cmap: o.cmap });
+    return _result(this, [], { _trace: trace, norm: o.norm, cmap: o.cmap, __repr__: () => '<matplotlib.image.AxesImage>' });
   }
 
   // vlines(x, ymin, ymax) — vertical line segments. x can be scalar or
@@ -315,6 +318,16 @@ export class Axes {
     return this;
   }
 
+  // ax.figure is set by the Figure that made it; matplotlib's repr names what's been set
+  get_figure() { return this.figure || null; }
+  __repr__() {
+    const q = (l) => JSON.stringify(String(l.text)).replace(/^"|"$/g, "'");
+    const parts = [];
+    if (this._title) parts.push(`title={'center': ${q(this._title)}}`);
+    if (this._xlabel) parts.push(`xlabel=${q(this._xlabel)}`);
+    if (this._ylabel) parts.push(`ylabel=${q(this._ylabel)}`);
+    return `<Axes: ${parts.join(', ')}>`;
+  }
   set_title(text, opts) { this._title = { text, opts: _checkOpts('label', opts, this._strict) }; return this; }
   set_xlabel(text, opts) { this._xlabel = { text, opts: _checkOpts('label', opts, this._strict) }; return this; }
   set_ylabel(text, opts) { this._ylabel = { text, opts: _checkOpts('label', opts, this._strict) }; return this; }
@@ -437,6 +450,7 @@ export class Axes {
     t._twinOf = this;
     t._dpi = this._dpi;
     t._xscale = this._xscale;
+    t.figure = this.figure;
     t._xlim = this._xlim;
     this._twin = t;
     return t;
@@ -448,6 +462,7 @@ export class Axes {
     t._twinOf = this;
     t._dpi = this._dpi;
     t._yscale = this._yscale;
+    t.figure = this.figure;
     t._ylim = this._ylim;
     this._twinY = t;
     return t;

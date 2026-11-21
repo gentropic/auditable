@@ -108,7 +108,7 @@ replay(ctx, pltAdder.shown()[0].toDrawList());   // on the page
 
 Marker sizes are matplotlib's: `scatter`'s `s` is the area in points² (default 36), `markersize` the diameter in points (default 6), marker edge widths in points, all at the figure's `dpi`. Line widths and font sizes are still pixels. Text is the theme's monospace stack. The rest is in [API.md](API.md#differs-from-matplotlib); the main ones:
 
-- `plt.plot` / `plt.scatter` / `plt.bar` / `plt.hist` / `plt.imshow` each make a new figure and return its canvas; use `subplots()` and `ax.…` to draw several things on one axes.
+- pyplot is matplotlib's: `plt.plot` and friends draw on the current axes, and a Python cell shows its figures when it ends, like Jupyter's inline backend. A JS cell shows only what it asks for (`display(plt.show())`). See [API.md](API.md#pyplot-plt).
 - `imshow(data, nx, ny)` is plot's flat form (origin `'lower'`); `imshow(Z)` with a 2D array is matplotlib's.
 
 ## Figure layout extras

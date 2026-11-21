@@ -321,7 +321,7 @@ async function _pythonExecute(code, scopeIn, cell) {
     } catch (e) {
       if (typeof window !== 'undefined' && window._adderCellHooks) {
         for (let i = 0; i < window._adderCellHooks.length; i++) {
-          try { window._adderCellHooks[i].after?.(_hookStates[i], {}, scope); } catch {}
+          try { window._adderCellHooks[i].after?.(_hookStates[i], {}, scope, cell); } catch {}
         }
       }
       if (e instanceof AdderError) throw e;
@@ -336,7 +336,7 @@ async function _pythonExecute(code, scopeIn, cell) {
   // run after-cell hooks
   if (typeof window !== 'undefined' && window._adderCellHooks) {
     for (let i = 0; i < window._adderCellHooks.length; i++) {
-      window._adderCellHooks[i].after?.(_hookStates[i], defines, scope);
+      window._adderCellHooks[i].after?.(_hookStates[i], defines, scope, cell);
     }
   }
 
