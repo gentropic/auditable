@@ -55,7 +55,7 @@ const header = '// \u26a0 GENERATED FILE \u2014 DO NOT EDIT. Source: ext/plot/sr
 // the package, so src/ can't be published as an entry. It exports every name src/api.js
 // exports (the pyplot functions: xlabel, title, …), plus the classes and helpers below.
 const EXTRA = ['Figure', 'Axes', 'LinearScale', 'LogScale', 'getCmap', 'replay', 'recordingContext', 'themeFromCSS', 'resolveTheme',
-  'Normalize', 'LogNorm', 'TwoSlopeNorm', 'CenteredNorm', 'BoundaryNorm', 'ListedColormap', 'LinearSegmentedColormap', 'toSVG', 'encodePNG'];
+  'Normalize', 'LogNorm', 'TwoSlopeNorm', 'CenteredNorm', 'BoundaryNorm', 'ListedColormap', 'LinearSegmentedColormap', 'toSVG', 'encodePNG', 'interact', 'link'];
 const apiSrc = fs.readFileSync(path.join(srcDir, 'api.js'), 'utf8');
 const apiNames = [];
 for (const m of apiSrc.matchAll(/^export (?:async )?(?:function|const|let|class) (\w+)/gm)) apiNames.push(m[1]);

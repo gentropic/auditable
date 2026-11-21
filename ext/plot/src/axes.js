@@ -522,6 +522,9 @@ export class Axes {
     const xlim = v.xlim || (r && [r.u0, r.u1]), ylim = v.ylim || (r && [r.v0, r.v1]);
     if (xlim) this.set_xlim(+xlim[0], +xlim[1]);
     if (ylim) this.set_ylim(+ylim[0], +ylim[1]);
+    // a figure under interact() redraws itself (and, the view having come from outside, says
+    // nothing back through onViewChange)
+    if (this.figure && this.figure._requestDraw) this.figure._requestDraw();
     return this;
   }
 
@@ -614,6 +617,7 @@ export class Axes {
     const lastCmapTrace = this._renderTraces(ctx, xScale, yScale, plotX, plotY, plotW, plotH, dpr);
     if (this._twin) this._twin._renderAsTwin(ctx, xScale, plotX, plotY, plotW, plotH, dpr, L.twinYt);
     if (this._twinY) this._twinY._renderAsTwinY(ctx, yScale, plotX, plotY, plotW, plotH, dpr, L.twinXt);
+    if (this._highlight) this._renderHighlight(ctx, xScale, yScale, plot, bgcolor);
 
     if (on) {
       ctx.strokeStyle = frameColor;
@@ -1161,7 +1165,8 @@ export class Axes {
     }
     const spec = { marker: o.marker || 'o', radius, rk, alpha, edge, cacheKey: 'sc' };
     if (trace.cvals) {
-      const norm = this._cmapNorm(trace);
+      // a highlight subset keeps the colour scale of the trace it came from
+      const norm = trace._norm || this._cmapNorm(trace);
       spec.cmap = { name: o.cmap || this._theme.ramp || 'viridis', norm, vmin: norm.vmin, vmax: norm.vmax };
     } else if (trace.colors) spec.list = trace.colors;
     else spec.uniform = o.color;
@@ -1351,6 +1356,64 @@ export class Axes {
     ctx.translate(px, py);
     if (o.rotation) ctx.rotate((-(o.rotation === 'vertical' ? 90 : +o.rotation || 0) * Math.PI) / 180);
     ctx.fillText(String(trace.text), 0, 0);
+    ctx.restore();
+  }
+
+  // ── highlight ─────────────────────────────────────────────────────────────────────────────
+  // ax.highlight(sel, {trace, dim = 0.65}) — show some points and dim the rest: a veil over the
+  // plot, then only the chosen points drawn again on top, in their own colours (a colour-mapped
+  // trace keeps its full range). sel: indices, a boolean mask, or a predicate (i, x, y) → bool;
+  // null clears. Indices and masks are of one scatter — {trace} (what scatter() returned, or
+  // its index among the axes' scatters), the first by default; a predicate runs over every
+  // scatter. A mask is booleans or a Uint8Array as long as the trace; any other array is
+  // indices. A figure under interact() redraws itself; otherwise draw again.
+  highlight(sel, opts) {
+    const o = _plainOpts(opts) ? opts : {};
+    if (sel == null || sel === false) this._highlight = null;
+    else {
+      const scatters = this._traces.filter((t) => t.type === 'scatter');
+      let targets;
+      if (typeof sel === 'function') targets = scatters;
+      else {
+        const t = o.trace && o.trace._trace ? o.trace._trace : typeof o.trace === 'number' ? scatters[o.trace] : scatters[0];
+        if (!t) throw new Error('highlight: the axes has no scatter to highlight');
+        targets = [t];
+      }
+      const subs = [];
+      for (const t of targets) {
+        const n = t.x.length, keep = [];
+        if (typeof sel === 'function') { for (let i = 0; i < n; i++) if (sel(i, t.x[i], t.y[i])) keep.push(i); }
+        // a mask: booleans, or a Uint8Array as long as the trace (indices: any other array)
+        else if (sel.length === n && (typeof sel[0] === 'boolean' || sel instanceof Uint8Array)) {
+          for (let i = 0; i < n; i++) if (sel[i]) keep.push(i);
+        } else for (const i of sel) { const k = +i; if (k >= 0 && k < n && Number.isInteger(k)) keep.push(k); }
+        subs.push({ src: t, keep });
+      }
+      this._highlight = { subs, dim: o.dim != null ? +o.dim : 0.65, built: null };
+    }
+    if (this.figure && this.figure._requestDraw) this.figure._requestDraw();
+    return this;
+  }
+  _renderHighlight(ctx, xScale, yScale, plot, bgcolor) {
+    const h = this._highlight;
+    ctx.save();
+    ctx.beginPath(); ctx.rect(plot.x, plot.y, plot.w, plot.h); ctx.clip();
+    ctx.globalAlpha = h.dim;
+    ctx.fillStyle = bgcolor !== 'none' && bgcolor !== 'transparent' ? bgcolor : this._theme.background;
+    ctx.fillRect(plot.x, plot.y, plot.w, plot.h);
+    ctx.globalAlpha = 1;
+    // the subsets, built once per highlight (a fresh trace each, so their caches are their own)
+    if (!h.built) {
+      h.built = h.subs.map(({ src, keep }) => {
+        const pick = (a) => { const out = new Float64Array(keep.length); for (let j = 0; j < keep.length; j++) out[j] = a[keep[j]]; return out; };
+        const sub = { type: 'scatter', x: pick(src.x), y: pick(src.y), opts: src.opts, _index: Int32Array.from(keep) };
+        if (src.cvals) { sub.cvals = pick(src.cvals); sub._norm = this._cmapNorm(src); }
+        if (src.colors) sub.colors = keep.map((i) => src.colors[i]);
+        if (src.s) sub.s = pick(src.s);
+        return sub;
+      });
+    }
+    for (const sub of h.built) if (sub.x.length) this._renderScatter(ctx, sub, xScale, yScale, plot);
     ctx.restore();
   }
 

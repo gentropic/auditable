@@ -23,6 +23,7 @@ import './legend.js';
 import './geo.js';
 import './png.js';
 export { toSVG } from './svg.js';
+export { interact, link } from './interact.js';
 import './figure.js';
 export { subplots, subplot, figure, plot, scatter, imshow, matshow, hist, bar, show, flush_figures, close, gca, gcf, cmap, pltAdder, rcParams, VERSION, colors, Polygon, Rectangle, Circle, ScalarMappable } from './api.js';
 export { themeFromCSS } from './style.js';
