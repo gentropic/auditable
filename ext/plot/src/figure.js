@@ -11,6 +11,7 @@ import './mesh.js';
 import './legend.js';
 import './geo.js';
 import './dist.js';
+import './positional.js';
 import './axis.js';
 import { _resolve, _font } from './style.js';
 import { _checkOpts, _noop } from './opts.js';

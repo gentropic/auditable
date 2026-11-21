@@ -26,6 +26,7 @@ import './mesh.js';
 import './legend.js';
 import './geo.js';
 import './dist.js';
+import './positional.js';
 import './png.js';
 export { toSVG } from './svg.js';
 export { interact, link } from './interact.js';

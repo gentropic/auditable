@@ -289,6 +289,38 @@ test("legend(loc='best') avoids filled areas too: a fill_between band, a polygon
   assert.equal(corner(c.fig, c.ax, 'span'), 'lower right');            // the only corner with neither the line nor the span
 });
 
+test('the model eval\'s B1: every subplots axes array has its own .flat (1-D too), ravel(), flatten(), shape', () => {
+  const [, col] = P.subplots(2, 1);
+  assert.ok(Array.isArray(col.flat), 'a 1-D array\'s .flat is the axes, not Array.prototype.flat');
+  const [a1, a2] = col.flat ? col.flat : col;                     // the swath pages' idiom
+  assert.ok(a1 && a2 && a1 !== a2);
+  assert.deepEqual(col.shape, [2]);
+  const [, grid] = P.subplots(2, 3);
+  assert.equal(grid.flat.length, 6); assert.equal(grid.ravel().length, 6); assert.equal(grid.flatten()[5], grid[1][2]);
+  assert.deepEqual(grid.shape, [2, 3]);
+  assert.equal(JSON.stringify(col.map(() => 1)), '[1,1]', 'not enumerable');
+});
+
+test("matplotlib's positional arguments are read, not dropped (the eval's B2 and its kin)", () => {
+  const ax = () => fig1().ax;
+  let a = ax(); a.scatter([1, 2], [1, 2], [10, 20], { color: 'r' });              // B2: sizes, then the options
+  assert.deepEqual(Array.from(a._traces[0].s), [10, 20]); assert.equal(a._traces[0].opts.color, '#ff0000');
+  assert.equal(ax().hist([1, 2, 3, 4, 5, 6, 7, 8], 4)[1].length, 5, 'hist(x, bins)');
+  assert.equal(P.close('all') ?? P.hist([1, 2, 3, 4], 2)[1].length, 3, 'plt.hist(x, bins)');
+  a = ax(); a.errorbar([1, 2], [1, 2], [0.5, 0.5]); assert.ok(a._traces.some((t) => t.yerr), 'errorbar(x, y, yerr)');
+  assert.equal(ax().bar([1, 2], [1, 2], 0.5)[0].width, 0.5, 'bar(x, h, width)');
+  assert.equal(ax().hist2d([1, 2, 3], [1, 2, 3], 5)[1].length, 6, 'hist2d(x, y, bins)');
+  assert.ok(ax().hexbin([1, 2, 3], [1, 2, 3], [5, 6, 7])._trace.opts.C, 'hexbin(x, y, C)');
+  a = ax(); a.imshow([[1, 2], [3, 4]], 'magma'); assert.equal(a._traces[0].opts.cmap, 'magma', 'imshow(Z, cmap)');
+  a = ax(); a.imshow([1, 2, 3, 4], 2, 2); assert.equal(a._traces[0].nx, 2, 'the flat form keeps its numbers');
+  a = ax(); a.axhline(1, 0.2, 0.8); assert.equal(a._traces[0].opts.xmin, 0.2, 'axhline(y, xmin, xmax)');
+  a = ax(); a.grid(true, 'minor'); assert.equal(a._gridOpts.which, 'minor', 'grid(b, which)');
+  a = ax(); a.fill_between([1, 2, 3], [1, 2, 3], 0, [true, false, true]); assert.deepEqual(a._traces[0].where, [true, false, true]);
+  // given twice: the name wins, with a word; past the known ones: a word (strict: throws)
+  assert.throws(() => P.subplots(1, 1, { strict: true })[1].bar([1, 2], [1, 2], 0.5, { width: 0.3 }), /given both by position and by name/);
+  assert.throws(() => P.subplots(1, 1, { strict: true })[1].axhline(1, 0.1, 0.2, 0.3), /pass the rest by name/);
+});
+
 test("artists: set_visible / get_visible / remove on what calls return (lines, mappables, geometry, patches)", () => {
   const { fig, ax } = fig1();
   const [l] = ax.plot([1, 2, 3], { label: 'L' });

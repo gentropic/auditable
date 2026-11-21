@@ -55,6 +55,23 @@ E / N in a plan, along / RL in a section.)
 (`OffscreenCanvas` sized by an undefined device-pixel ratio) — found by the interaction test page
 on a 111,727-point brush; the browser smoke now covers it.
 
+**From the model eval** (the mm seat's: 120 pages from API.md alone, Sonnet-class 56/60,
+Haiku-class 49/60, zero console warnings; every plot-side failure was one of two bugs):
+- `subplots` gives every axes array its own `.flat` — a one-row or one-column grid too, where
+  `.flat` was Array.prototype.flat, a function, so numpy's `axes.flat ? axes.flat : axes` took it
+  and destructuring threw (7 swath pages) — plus `ravel()`, `flatten()` and `shape`.
+- matplotlib's positional arguments are read wherever matplotlib takes them: `scatter(x, y, s,
+  {opts})` read the options as `c` (1 page), and an audit found more dropped without a word —
+  `hist(x, 20)` drew 10 bins, `errorbar(x, y, yerr)` no bars, `bar(x, h, 0.5)` 0.8 wide;
+  `hist2d`'s bins, `hexbin`'s C, `imshow(Z, cmap)`, `axhline(y, xmin, xmax)`, the spans,
+  `hlines`/`vlines`, `fill_between`'s where, `annotate`'s xytext, `grid(b, which)`, the
+  violin's. A trailing plain object is always the options; a positional also given by name, or
+  past the known ones, warns. The pyplot functions forward every argument.
+- `themeFromCSS` reads common token names (`--bg-primary`, `--text-primary`, `--border`,
+  `--series-N`, …) after auditable's, merges a `map` over them, and falls back to the page's
+  computed colours: in the eval, 91 of 121 charts stayed dark on a light page because it read
+  only `--au-*`. Its figure surface is transparent (the chart sits on the page).
+
 **Notebooks.** The ipynb importer maps `matplotlib.ticker` and `matplotlib.dates` to
 `plt.ticker` / `plt.dates`, so `import matplotlib.ticker as mticker` runs.
 

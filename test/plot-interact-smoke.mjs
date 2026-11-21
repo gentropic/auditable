@@ -237,6 +237,39 @@ const overlayInk = (u) => page.evaluate((u) => { const c = T[u].overlay, d = c.g
   chk('a large highlight (the raster path) draws', big.ok, JSON.stringify(big));
 }
 
+// ── themeFromCSS on a host's own tokens (the model eval: 91 of 121 charts stayed dark on a
+// light page, because it read only --au-* names) ──
+{
+  const r = await page.evaluate(() => {
+    const mk = (css, style) => { const d = document.createElement('div'); d.setAttribute('style', css + (style || '')); document.body.append(d); return d; };
+    const out = {};
+    // the eval host's names, light
+    const a = mk('--bg-primary:#fafafa; --text-primary:#111111; --border:#cccccc; --series-1:#e41a1c; --series-2:#377eb8; --series-3:#4daf4a;');
+    let t = P.themeFromCSS(a); out.host = { bg: t.background, fg: t.foreground, frame: t.frame, cycle: t.cycle.length, c0: t.cycle[0] };
+    // dark tokens
+    t = P.themeFromCSS(mk('--bg-primary:#101214; --text-primary:#eeeeee;')); out.dark = { bg: t.background, fg: t.foreground };
+    // --au-* first
+    t = P.themeFromCSS(mk('--au-surface:#ffffff; --bg-primary:#000000;')); out.au = t.background;
+    // no tokens at all, a white page: the computed colours decide (walking up past transparent)
+    const wrap = mk('background:#ffffff; color:#222222;'); const inner = document.createElement('div'); wrap.append(inner);
+    t = P.themeFromCSS(inner); out.none = { bg: t.background, fg: t.foreground };
+    // a map for other names, the rest still found
+    t = P.themeFromCSS(mk('--page-bg:#f0f0e8; --text-primary:#333333;'), { background: '--page-bg' }); out.map = { bg: t.background, fg: t.foreground };
+    // a token in a form theme can't read (oklch): the computed background decides light / dark
+    t = P.themeFromCSS(mk('--bg-primary:oklch(98% 0 0); background:#fcfcfc;')); out.oklch = { bg: t.background, panel: t.panel };
+    // a chart dressed by it is light
+    const [f] = P.subplots(1, 1, { figsize: [200, 120], theme: P.themeFromCSS(a) });
+    out.figFace = f.facecolor; out.axFace = f.axes[0].get_facecolor();
+    return out;
+  });
+  const isLight = (c) => { const m = /#([0-9a-f]{6})/i.exec(c || ''); if (m) return parseInt(m[1].slice(0, 2), 16) > 180; const n = /rgb\D*(\d+)/.exec(c || ''); return n ? +n[1] > 180 : false; };
+  chk("themeFromCSS reads a host's own token names (--bg-primary, --text-primary, --border, --series-N)", r.host.bg === '#fafafa' && r.host.fg === '#111111' && r.host.frame === '#cccccc' && r.host.cycle === 3 && r.host.c0 === '#e41a1c', JSON.stringify(r.host));
+  chk('… dark tokens stay dark; --au-* tokens come first', r.dark.bg === '#101214' && r.au === '#ffffff', JSON.stringify({ d: r.dark, au: r.au }));
+  chk('… with no tokens, the page\'s computed colours decide (a light page never gets a dark chart)', isLight(r.none.bg) && /34, 34, 34|#222/.test(r.none.fg), JSON.stringify(r.none));
+  chk('… a map renames some keys and the rest are still found; an unreadable token falls back to the computed background', r.map.bg === '#f0f0e8' && r.map.fg === '#333333' && isLight(r.oklch.panel) && r.oklch.bg.startsWith('oklch'), JSON.stringify({ m: r.map, o: r.oklch }));
+  chk("… and the chart it dresses sits on the page (a transparent figure, the plot area the host's background)", r.figFace === 'transparent' && r.axFace === '#fafafa', JSON.stringify({ f: r.figFace, a: r.axFace }));
+}
+
 // ── pinch (two pointers) ──
 {
   await page.evaluate(() => T.ui.reset());

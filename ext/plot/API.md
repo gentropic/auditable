@@ -3,7 +3,9 @@
 matplotlib for the browser. **If you know matplotlib, write matplotlib**: the same function
 names, positional arguments, defaults and meanings. In JavaScript the keyword arguments are a
 trailing options object with matplotlib's names (`{ linewidth: 2, color: 'C1' }`) and its short
-aliases (`lw`, `c`, `ls`, `ms`, `ec`, `fc`). In adder (Python) cells it is matplotlib verbatim.
+aliases (`lw`, `c`, `ls`, `ms`, `ec`, `fc`). Positional arguments follow matplotlib's order —
+`hist(x, 20)`, `errorbar(x, y, yerr)`, `bar(x, h, 0.5)`, `scatter(x, y, s, c)` — and a trailing
+object is always the options. In adder (Python) cells it is matplotlib verbatim.
 
 Canvas 2D, no WebGL, no WASM, no workers, no network; the same figure gives the same draw list
 in a browser, a worker and Node. Nothing is silently ignored: an option plot doesn't know warns
@@ -213,7 +215,27 @@ A theme is `@gcu/theme`'s keys (shared with `@gcu/condenser`'s 3D view): `backgr
 - `plt.style.use('default')` (and matplotlib's other light styles): white (`paper`);
   `'dark_background'`: the dark theme (the default in auditable); also `'dark'`, `'light'`,
   `'paper'`. It sets the default a figure copies when it is made.
-- `subplots({theme: 'paper'})` · `fig.set_theme({base: 'light', accent: '#c00'})` · `themeFromCSS(el)` (a page's design tokens).
+- `subplots({theme: 'paper'})` · `fig.set_theme({base: 'light', accent: '#c00'})` · `themeFromCSS(el, map?)` (a page's design tokens, below).
+
+- `themeFromCSS(el, map?)` reads CSS custom properties on `el`: for each theme key, the first
+  of its candidate tokens that is set (`CSS_MAP`):
+
+  | key | tokens tried, in order |
+  |---|---|
+  | background | `--au-surface` `--bg-primary` `--background` `--bg` `--color-background` `--color-bg` `--surface` `--bg-color` |
+  | foreground | `--au-fg` `--text-primary` `--foreground` `--fg` `--text` `--color-text` `--text-color` `--color-foreground` |
+  | muted | `--au-fg-soft` `--text-secondary` `--text-muted` `--muted-foreground` `--muted` `--fg-muted` |
+  | grid · frame · panel_border | `--au-border-soft` … · `--au-rule` `--border` … · `--au-border` `--border` … |
+  | panel · accent · selection | `--au-surface-raised` `--bg-secondary` `--card` … · `--au-action` `--accent` `--primary` … · `--au-selected` `--selection` `--ring` … |
+  | font · mono | `--au-font-sans` `--font-sans` `--font-family` · `--au-font-mono` `--font-mono` |
+  | cycle | numbered tokens: `--au-series-1…`, `--series-1…`, `--chart-1…` (the first prefix that has a 1) |
+
+  Other names: pass a map, merged over these — `themeFromCSS(el, { background: '--page-bg',
+  foreground: ['--ink', '--text'] })`. When no background token is set (or it's in a form the
+  theme can't read, e.g. `oklch()`), the element's own computed background and text colour
+  decide, so a light page never gets a dark chart. The figure surface comes out transparent: the
+  chart sits on the page, its plot area the page's background (an export still paints a face). Call
+  it again when the page switches mode.
 - The colour cycle is matplotlib's tab10. Text is the theme's monospace stack, which is what
   keeps a figure's layout identical live, recorded and replayed.
 

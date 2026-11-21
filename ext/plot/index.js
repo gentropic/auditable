@@ -361,11 +361,26 @@ const THEMES = {
 
 // the Switchboard semantic tokens (--au-*) each key reads; a host's own design tokens
 // can be mapped the same way
+// where themeFromCSS looks: per key, the custom properties to try, the first one set winning —
+// auditable's own --au-* tokens first, then the spellings design systems commonly use. A host
+// whose tokens are named otherwise passes a map ({ background: '--page-bg', … }): its keys
+// replace these, the rest stay.
 const CSS_MAP = {
-  background: '--au-surface', foreground: '--au-fg', muted: '--au-fg-soft', grid: '--au-border-soft',
-  frame: '--au-rule', panel: '--au-surface-raised', panel_border: '--au-border', accent: '--au-action',
-  selection: '--au-selected', font: '--au-font-sans', mono: '--au-font-mono',
+  background: ['--au-surface', '--bg-primary', '--background', '--bg', '--color-background', '--color-bg', '--surface', '--bg-color'],
+  foreground: ['--au-fg', '--text-primary', '--foreground', '--fg', '--text', '--color-text', '--text-color', '--color-foreground'],
+  muted: ['--au-fg-soft', '--text-secondary', '--text-muted', '--muted-foreground', '--muted', '--fg-muted'],
+  grid: ['--au-border-soft', '--border-subtle', '--border-soft', '--grid'],
+  frame: ['--au-rule', '--border', '--border-color', '--color-border', '--rule'],
+  panel: ['--au-surface-raised', '--bg-secondary', '--surface-raised', '--card', '--panel', '--popover'],
+  panel_border: ['--au-border', '--border', '--border-color', '--color-border'],
+  accent: ['--au-action', '--accent', '--primary', '--color-accent', '--color-primary'],
+  selection: ['--au-selected', '--selection', '--highlight', '--ring'],
+  font: ['--au-font-sans', '--font-sans', '--font-family', '--font'],
+  mono: ['--au-font-mono', '--font-mono', '--mono'],
+  figure: ['--au-figure'],
 };
+// the categorical cycle from numbered tokens: --series-1, --series-2, … (the first prefix with a 1)
+const CSS_CYCLE = ['--au-series-', '--series-', '--chart-', '--chart-color-', '--color-series-'];
 
 // a name, a partial theme ({ base: 'light', accent: '#c00' }) or nothing → a full theme.
 // Unknown names fall back to dark; `onWarn` hears about it.
@@ -383,18 +398,49 @@ function resolveTheme(t, onWarn) {
 }
 const _copyTheme = (t) => ({ ...t, cycle: t.cycle.slice() });
 
-// read a theme from CSS custom properties on `el` (a host page's tokens, its light or
-// dark mode). Properties that are unset keep the base theme's value; the base is light
-// or dark by the background found.
-function themeFromCSS(el, map = CSS_MAP) {
+// read a theme from CSS custom properties on `el` (a host page's tokens, its light or dark mode):
+// each key from the first of its properties that is set (CSS_MAP, or `map` merged over it — a
+// property name or a list of them per key), the cycle from numbered series tokens. Unset keys
+// keep the base theme's. The base is light or dark by the background found — and when no
+// background property is set, by the element's own computed background (walking up past
+// transparent ones) and text colour, so a light page never gets a dark chart.
+function themeFromCSS(el, map) {
   const cs = typeof getComputedStyle === 'function' && el ? getComputedStyle(el) : null;
   const out = {};
-  if (cs) for (const [k, prop] of Object.entries(map)) {
-    const v = cs.getPropertyValue(prop).trim();
-    if (v) out[k] = v;
+  if (!cs) return resolveTheme(out);
+  const m = { ...CSS_MAP, ...(map || {}) };
+  const read = (p) => cs.getPropertyValue(p).trim();
+  for (const [k, props] of Object.entries(m)) {
+    for (const p of Array.isArray(props) ? props : [props]) { const v = p && read(p); if (v) { out[k] = v; break; } }
   }
-  if (out.background) out.base = isLight(out.background) ? 'light' : 'dark';
+  for (const pre of CSS_CYCLE) {
+    if (!read(pre + '1')) continue;
+    const cyc = [];
+    for (let i = 1; i <= 12; i++) { const v = read(pre + i); if (!v) break; cyc.push(v); }
+    if (cyc.length >= 2) out.cycle = cyc;
+    break;
+  }
+  // the page's own colours: decide light or dark when no token says (or says it in a form
+  // that can't be read, e.g. oklch), and fill background / foreground when no token gave them
+  const pageBg = _computedBackground(el), pageFg = cs.color;
+  if (!out.background && pageBg) out.background = pageBg;
+  if (!out.foreground && pageFg && parseColor(pageFg)) out.foreground = pageFg;
+  const bgForBase = parseColor(out.background) ? out.background : pageBg;
+  if (bgForBase) out.base = isLight(bgForBase) ? 'light' : 'dark';
+  // a chart dressed by the page sits on the page: the figure's surface is the page's own
+  // (transparent) unless a token says otherwise; its plot area takes the background found
+  if (!out.figure) out.figure = 'transparent';
   return resolveTheme(out);
+}
+
+// the first opaque computed background-color from el up to the root
+function _computedBackground(el) {
+  for (let e = el; e && e.nodeType === 1; e = e.parentElement) {
+    const v = getComputedStyle(e).backgroundColor;
+    const m = /^rgba\(\s*[\d.]+[\s,]+[\d.]+[\s,]+[\d.]+[\s,/]+([\d.]+)\s*\)$/.exec(v || '');
+    if (v && v !== 'transparent' && !(m && +m[1] < 0.5)) return v;
+  }
+  return null;
 }
 
 // '#rgb' · '#rrggbb' · 'rgb(a)(…)' → [r, g, b] 0–255 (null if it can't tell)
@@ -6511,6 +6557,83 @@ Axes.prototype.hist2d = function (x, y, opts) {
   return _result(this, [h, ex, ey, image], { h, xedges: ex, yedges: ey, image, _trace: image._trace });
 };
 
+// -- positional.js --
+
+// matplotlib's positional arguments, everywhere. A matplotlib user writes hist(data, 20),
+// errorbar(x, y, yerr), bar(x, h, 0.5), scatter(x, y, sizes, {color}) — arguments plot's methods
+// took only by name, so they were dropped without a word (the model eval found scatter's; an
+// audit found the rest). Each chart method is wrapped here: the arguments after its fixed ones are
+// matched to matplotlib's own order and folded into the options; a trailing plain object is always
+// the options, whatever comes before it; a positional given by name too, or past the known ones,
+// warns (strict: throws). Loaded after the chart modules, so it wraps their methods as defined.
+
+
+
+// [method, fixed arguments, matplotlib's next positionals in order]
+const SIGS = [
+  ['bar', 2, ['width', 'bottom']],
+  ['barh', 2, ['height', 'left']],
+  ['hist', 1, ['bins', 'range', 'density', 'weights', 'cumulative', 'bottom', 'histtype', 'align', 'orientation', 'rwidth', 'log', 'color', 'label', 'stacked']],
+  ['errorbar', 2, ['yerr', 'xerr', 'fmt', 'ecolor', 'elinewidth', 'capsize']],
+  ['scatter', 2, ['s', 'c', 'marker', 'cmap', 'norm', 'vmin', 'vmax', 'alpha', 'linewidths', 'edgecolors']],
+  ['hexbin', 2, ['C', 'gridsize', 'bins', 'xscale', 'yscale', 'extent', 'cmap', 'norm', 'vmin', 'vmax', 'alpha', 'linewidths', 'edgecolors', 'reduce_C_function', 'mincnt', 'marginals']],
+  ['hist2d', 2, ['bins', 'range', 'density', 'weights', 'cmin', 'cmax']],
+  ['violinplot', 1, ['positions', 'vert', 'widths', 'showmeans', 'showextrema', 'showmedians', 'quantiles', 'points', 'bw_method']],
+  // boxplot's positional order shifted across matplotlib versions after `vert`: only the stable head
+  ['boxplot', 1, ['notch', 'sym', 'vert']],
+  ['axhline', 1, ['xmin', 'xmax']],
+  ['axvline', 1, ['ymin', 'ymax']],
+  ['axhspan', 2, ['xmin', 'xmax']],
+  ['axvspan', 2, ['ymin', 'ymax']],
+  ['hlines', 3, ['colors', 'linestyles', 'label']],
+  ['vlines', 3, ['colors', 'linestyles', 'label']],
+  ['fill_between', 2, ['y2', 'where', 'interpolate', 'step']],
+  ['fill_betweenx', 2, ['x2', 'where', 'step']],
+  ['annotate', 2, ['xytext', 'xycoords', 'textcoords', 'arrowprops']],
+  ['grid', 1, ['which', 'axis']],
+];
+
+// the arguments after the fixed ones → one options object
+function _positional(fn, rest, names, strictFlag) {
+  let opts = {};
+  if (rest.length && _plainOpts(rest[rest.length - 1])) { opts = { ...rest[rest.length - 1] }; rest = rest.slice(0, -1); }
+  rest.forEach((v, i) => {
+    if (v === undefined || v === null) return;              // Python's None: the default
+    if (i >= names.length) {
+      _warn(`${fn}.positional.${i}`, `${fn}(): ${rest.length} positional arguments after the first ones, but plot reads ${names.length} (${names.join(', ')}); pass the rest by name`, strictFlag);
+      return;
+    }
+    const k = names[i];
+    if (opts[k] !== undefined) _warn(`${fn}.${k}.twice`, `${fn}(): '${k}' given both by position and by name; the name wins`, strictFlag);
+    else opts[k] = v;
+  });
+  return opts;
+}
+
+for (const [name, fixed, names] of SIGS) {
+  const orig = Axes.prototype[name];
+  if (typeof orig !== 'function') continue;
+  Axes.prototype[name] = function (...args) {
+    // already the method's own shape (fixed arguments, then nothing or the options)
+    if (args.length <= fixed || (args.length === fixed + 1 && (_plainOpts(args[fixed]) || args[fixed] === undefined))) return orig.apply(this, args);
+    const head = args.slice(0, fixed);
+    while (head.length < fixed) head.push(undefined);
+    return orig.call(this, ...head, _positional(name, args.slice(fixed), names, this._strict));
+  };
+}
+
+// imshow: plot's flat form imshow(data, nx, ny, opts) keeps its numbers; otherwise matplotlib's
+// imshow(X, cmap, norm, aspect, interpolation, alpha, vmin, vmax, origin, extent)
+{
+  const orig = Axes.prototype.imshow;
+  const NAMES = ['cmap', 'norm', 'aspect', 'interpolation', 'alpha', 'vmin', 'vmax', 'origin', 'extent'];
+  Axes.prototype.imshow = function (data, ...rest) {
+    if (typeof rest[0] === 'number' && typeof rest[1] === 'number') return orig.call(this, data, ...rest);
+    if (!rest.length || (rest.length === 1 && _plainOpts(rest[0]))) return orig.call(this, data, ...rest);
+    return orig.call(this, data, _positional('imshow', rest, NAMES, this._strict));
+  };
+}
+
 // -- png.js --
 
 // PNG bytes from RGBA, in plain JS: no canvas, no CompressionStream (it is async, and absent in
@@ -7325,6 +7448,7 @@ function link(axes, opts) {
 
 
 
+
 // Figures shown (or saved) where there is no DOM, in order. plt.shown() / plt.saved() read
 // them, plt.close(fig) / plt.close('all') / plt.clf() clear them.
 const _shownFigures = [];
@@ -7713,17 +7837,17 @@ function subplots(nrows, ncols, opts) {
       for (let c = 0; c < nc; c++) row.push(fig.axes[r * nc + c]);
       axesShape.push(row);
     }
-    // matplotlib's ndarray exposes `.flat` for row-major flat iteration
-    // alongside the nested [r][c] view. We mirror that so callers can
-    // do `axes.flat[k]` without manually computing row/col from k.
-    // Non-enumerable so it doesn't show up in JSON / for..of.
-    Object.defineProperty(axesShape, 'flat', {
-      value: fig.axes.slice(),
-      writable: false,
-      enumerable: false,
-      configurable: true,
-    });
   }
+  // numpy's ndarray idioms on the axes array, every shape: `.flat` (row-major), `.ravel()`,
+  // `.flatten()`, `.shape`. On a 1-D array too — there `.flat` would otherwise be
+  // Array.prototype.flat, a FUNCTION: truthy, so `axes.flat ? axes.flat : axes` took it and
+  // destructuring threw (the model eval's swath pages). Non-enumerable: not in JSON or for..of.
+  const flat = fig.axes.slice();
+  const def = (k, value) => Object.defineProperty(axesShape, k, { value, writable: false, enumerable: false, configurable: true });
+  def('flat', flat);
+  def('ravel', () => flat.slice());
+  def('flatten', () => flat.slice());
+  def('shape', nr === 1 || nc === 1 ? [nr * nc] : [nr, nc]);
   return Object.assign([fig, axesShape], { fig, axes: axesShape });
 }
 
@@ -7734,9 +7858,9 @@ function subplots(nrows, ncols, opts) {
 function plot(...args) { return _ax().plot(...args); }
 // scatter(x, y, opts) and matplotlib's positional scatter(x, y, s, c)
 function scatter(...args) { return _ax().scatter(...args); }
-function imshow(data, nx, ny, opts) { return _ax().imshow(data, nx, ny, opts); }
-function bar(x, heights, opts) { return _ax().bar(x, heights, opts); }
-function hist(data, opts) { return _ax().hist(data, opts); }
+function imshow(...args) { return _ax().imshow(...args); }
+function bar(...args) { return _ax().bar(...args); }
+function hist(...args) { return _ax().hist(...args); }
 const cmap = getCmap;
 // matplotlib's matshow opens a figure of its own and draws the matrix as an image (the
 // common df.corr() pattern)
@@ -7888,12 +8012,12 @@ function ylim(lo, hi) { _ax().set_ylim(lo, hi); }
 function xscale(scale) { _ax().set_xscale(scale); }
 function yscale(scale) { _ax().set_yscale(scale); }
 function legend(opts) { _ax().legend(opts); }
-function grid(on, opts) { _ax().grid(on, opts); }
-function vlines(x, ymin, ymax, opts) { _ax().vlines(x, ymin, ymax, opts); }
-function hlines(y, xmin, xmax, opts) { _ax().hlines(y, xmin, xmax, opts); }
-function axhline(y, opts) { _ax().axhline(y, opts); }
-function axvline(x, opts) { _ax().axvline(x, opts); }
-function text(x, y, s, opts) { _ax().text(x, y, s, opts); }
+function grid(...args) { return _ax().grid(...args); }
+function vlines(...args) { return _ax().vlines(...args); }
+function hlines(...args) { return _ax().hlines(...args); }
+function axhline(...args) { return _ax().axhline(...args); }
+function axvline(...args) { return _ax().axvline(...args); }
+function text(...args) { return _ax().text(...args); }
 // subplots_adjust isn't honoured yet (it warns); tight_layout is a true no-op: layout is always tight
 function subplots_adjust(_opts) { _noop('subplots_adjust'); }
 function tight_layout(_opts) { /* layout is always tight */ }
@@ -7916,16 +8040,16 @@ function _pyTicks(axis, ticks, labels, opts) {
 }
 function axis(arg) { return _ax().axis(arg); }
 // the marks, on the current axes (matplotlib's pyplot state)
-function barh(y, width, opts) { return _ax().barh(y, width, opts); }
+function barh(...args) { return _ax().barh(...args); }
 function bar_label(container, labels, opts) { return _ax().bar_label(container, labels, opts); }
-function errorbar(x, y, opts) { return _ax().errorbar(x, y, opts); }
-function fill_between(x, y1, y2, opts) { return _ax().fill_between(x, y1, y2, opts); }
-function fill_betweenx(y, x1, x2, opts) { return _ax().fill_betweenx(y, x1, x2, opts); }
-function step(x, y, fmt, opts) { return _ax().step(x, y, fmt, opts); }
-function axhspan(ymin, ymax, opts) { return _ax().axhspan(ymin, ymax, opts); }
-function axvspan(xmin, xmax, opts) { return _ax().axvspan(xmin, xmax, opts); }
-function annotate(text, xy, opts) { return _ax().annotate(text, xy, opts); }
-function boxplot(x, opts) { return _ax().boxplot(x, opts); }
+function errorbar(...args) { return _ax().errorbar(...args); }
+function fill_between(...args) { return _ax().fill_between(...args); }
+function fill_betweenx(...args) { return _ax().fill_betweenx(...args); }
+function step(...args) { return _ax().step(...args); }
+function axhspan(...args) { return _ax().axhspan(...args); }
+function axvspan(...args) { return _ax().axvspan(...args); }
+function annotate(...args) { return _ax().annotate(...args); }
+function boxplot(...args) { return _ax().boxplot(...args); }
 function contour(...args) { return _ax().contour(...args); }
 function contourf(...args) { return _ax().contourf(...args); }
 function pcolormesh(...args) { return _ax().pcolormesh(...args); }
@@ -7934,9 +8058,9 @@ function fill(...args) { return _ax().fill(...args); }
 function add_geometry(geom, opts) { return _ax().add_geometry(geom, opts); }
 
 // tier 2: distributions, stacks, ticks (dist.js, marks.js, ticker.js)
-function violinplot(dataset, opts) { return _ax().violinplot(dataset, opts); }
-function hexbin(x, y, opts) { return _ax().hexbin(x, y, opts); }
-function hist2d(x, y, opts) { return _ax().hist2d(x, y, opts); }
+function violinplot(...args) { return _ax().violinplot(...args); }
+function hexbin(...args) { return _ax().hexbin(...args); }
+function hist2d(...args) { return _ax().hist2d(...args); }
 function stackplot(x, ...args) { return _ax().stackplot(x, ...args); }
 function minorticks_on() { _ax().minorticks_on(); }
 function minorticks_off() { _ax().minorticks_off(); }

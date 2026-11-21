@@ -71,17 +71,17 @@ export function subplots(nrows, ncols, opts) {
       for (let c = 0; c < nc; c++) row.push(fig.axes[r * nc + c]);
       axesShape.push(row);
     }
-    // matplotlib's ndarray exposes `.flat` for row-major flat iteration
-    // alongside the nested [r][c] view. We mirror that so callers can
-    // do `axes.flat[k]` without manually computing row/col from k.
-    // Non-enumerable so it doesn't show up in JSON / for..of.
-    Object.defineProperty(axesShape, 'flat', {
-      value: fig.axes.slice(),
-      writable: false,
-      enumerable: false,
-      configurable: true,
-    });
   }
+  // numpy's ndarray idioms on the axes array, every shape: `.flat` (row-major), `.ravel()`,
+  // `.flatten()`, `.shape`. On a 1-D array too — there `.flat` would otherwise be
+  // Array.prototype.flat, a FUNCTION: truthy, so `axes.flat ? axes.flat : axes` took it and
+  // destructuring threw (the model eval's swath pages). Non-enumerable: not in JSON or for..of.
+  const flat = fig.axes.slice();
+  const def = (k, value) => Object.defineProperty(axesShape, k, { value, writable: false, enumerable: false, configurable: true });
+  def('flat', flat);
+  def('ravel', () => flat.slice());
+  def('flatten', () => flat.slice());
+  def('shape', nr === 1 || nc === 1 ? [nr * nc] : [nr, nc]);
   return Object.assign([fig, axesShape], { fig, axes: axesShape });
 }
 
@@ -92,9 +92,9 @@ export function subplots(nrows, ncols, opts) {
 export function plot(...args) { return _ax().plot(...args); }
 // scatter(x, y, opts) and matplotlib's positional scatter(x, y, s, c)
 export function scatter(...args) { return _ax().scatter(...args); }
-export function imshow(data, nx, ny, opts) { return _ax().imshow(data, nx, ny, opts); }
-export function bar(x, heights, opts) { return _ax().bar(x, heights, opts); }
-export function hist(data, opts) { return _ax().hist(data, opts); }
+export function imshow(...args) { return _ax().imshow(...args); }
+export function bar(...args) { return _ax().bar(...args); }
+export function hist(...args) { return _ax().hist(...args); }
 export const cmap = getCmap;
 // matplotlib's matshow opens a figure of its own and draws the matrix as an image (the
 // common df.corr() pattern)
@@ -246,12 +246,12 @@ export function ylim(lo, hi) { _ax().set_ylim(lo, hi); }
 export function xscale(scale) { _ax().set_xscale(scale); }
 export function yscale(scale) { _ax().set_yscale(scale); }
 export function legend(opts) { _ax().legend(opts); }
-export function grid(on, opts) { _ax().grid(on, opts); }
-export function vlines(x, ymin, ymax, opts) { _ax().vlines(x, ymin, ymax, opts); }
-export function hlines(y, xmin, xmax, opts) { _ax().hlines(y, xmin, xmax, opts); }
-export function axhline(y, opts) { _ax().axhline(y, opts); }
-export function axvline(x, opts) { _ax().axvline(x, opts); }
-export function text(x, y, s, opts) { _ax().text(x, y, s, opts); }
+export function grid(...args) { return _ax().grid(...args); }
+export function vlines(...args) { return _ax().vlines(...args); }
+export function hlines(...args) { return _ax().hlines(...args); }
+export function axhline(...args) { return _ax().axhline(...args); }
+export function axvline(...args) { return _ax().axvline(...args); }
+export function text(...args) { return _ax().text(...args); }
 // subplots_adjust isn't honoured yet (it warns); tight_layout is a true no-op: layout is always tight
 export function subplots_adjust(_opts) { _noop('subplots_adjust'); }
 export function tight_layout(_opts) { /* layout is always tight */ }
@@ -274,16 +274,16 @@ function _pyTicks(axis, ticks, labels, opts) {
 }
 export function axis(arg) { return _ax().axis(arg); }
 // the marks, on the current axes (matplotlib's pyplot state)
-export function barh(y, width, opts) { return _ax().barh(y, width, opts); }
+export function barh(...args) { return _ax().barh(...args); }
 export function bar_label(container, labels, opts) { return _ax().bar_label(container, labels, opts); }
-export function errorbar(x, y, opts) { return _ax().errorbar(x, y, opts); }
-export function fill_between(x, y1, y2, opts) { return _ax().fill_between(x, y1, y2, opts); }
-export function fill_betweenx(y, x1, x2, opts) { return _ax().fill_betweenx(y, x1, x2, opts); }
-export function step(x, y, fmt, opts) { return _ax().step(x, y, fmt, opts); }
-export function axhspan(ymin, ymax, opts) { return _ax().axhspan(ymin, ymax, opts); }
-export function axvspan(xmin, xmax, opts) { return _ax().axvspan(xmin, xmax, opts); }
-export function annotate(text, xy, opts) { return _ax().annotate(text, xy, opts); }
-export function boxplot(x, opts) { return _ax().boxplot(x, opts); }
+export function errorbar(...args) { return _ax().errorbar(...args); }
+export function fill_between(...args) { return _ax().fill_between(...args); }
+export function fill_betweenx(...args) { return _ax().fill_betweenx(...args); }
+export function step(...args) { return _ax().step(...args); }
+export function axhspan(...args) { return _ax().axhspan(...args); }
+export function axvspan(...args) { return _ax().axvspan(...args); }
+export function annotate(...args) { return _ax().annotate(...args); }
+export function boxplot(...args) { return _ax().boxplot(...args); }
 export function contour(...args) { return _ax().contour(...args); }
 export function contourf(...args) { return _ax().contourf(...args); }
 export function pcolormesh(...args) { return _ax().pcolormesh(...args); }
@@ -292,9 +292,9 @@ export function fill(...args) { return _ax().fill(...args); }
 export function add_geometry(geom, opts) { return _ax().add_geometry(geom, opts); }
 export { Polygon, Rectangle, Circle, ScalarMappable };
 // tier 2: distributions, stacks, ticks (dist.js, marks.js, ticker.js)
-export function violinplot(dataset, opts) { return _ax().violinplot(dataset, opts); }
-export function hexbin(x, y, opts) { return _ax().hexbin(x, y, opts); }
-export function hist2d(x, y, opts) { return _ax().hist2d(x, y, opts); }
+export function violinplot(...args) { return _ax().violinplot(...args); }
+export function hexbin(...args) { return _ax().hexbin(...args); }
+export function hist2d(...args) { return _ax().hist2d(...args); }
 export function stackplot(x, ...args) { return _ax().stackplot(x, ...args); }
 export function minorticks_on() { _ax().minorticks_on(); }
 export function minorticks_off() { _ax().minorticks_off(); }
