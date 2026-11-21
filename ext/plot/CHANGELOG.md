@@ -72,9 +72,12 @@ Haiku-class 49/60, zero console warnings; every plot-side failure was one of two
   computed colours: in the eval, 91 of 121 charts stayed dark on a light page because it read
   only `--au-*`. Its figure surface is transparent (the chart sits on the page).
 
-**`style.use('auto')`** (and `theme: 'auto'`): new figures follow the page — its tokens and colours,
-as `themeFromCSS` reads them — so a light page gets a light chart; dark with no page. The
-default stays dark (Arthur's call: an opt-in, not a changed default).
+**The default theme follows the page** (`'auto'`, Arthur's call after the eval's fix check): with no
+theme given, a new figure reads the page's tokens and colours, as `themeFromCSS` does — a light
+page gets a light chart, an auditable notebook its own light or dark mode; a page that paints
+nothing is the browser's white (dark under a dark `color-scheme`). With no page (a worker, Node)
+it is dark, as before, so draw lists made there are unchanged. `style.use('dark_background')`
+or `'default'` pins a look; `style.use('auto')` / `theme: 'auto'` go back to following.
 
 **Notebooks.** The ipynb importer maps `matplotlib.ticker` and `matplotlib.dates` to
 `plt.ticker` / `plt.dates`, so `import matplotlib.ticker as mticker` runs.

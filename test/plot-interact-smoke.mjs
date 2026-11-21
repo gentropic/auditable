@@ -39,6 +39,7 @@ await page.goto(`http://127.0.0.1:${PORT}/__blank`);
 await page.evaluate(async () => {
   const P = await import('/ext/plot/index.js');
   window.P = P;
+  P.style.use('dark_background');   // the checks below read brightness against the dark theme
   const [fig, ax] = P.subplots(1, 1, { figsize: [480, 340] });
   const n = 400, X = new Float64Array(n), Y = new Float64Array(n);
   for (let i = 0; i < n; i++) { X[i] = (i % 20) * 5; Y[i] = Math.floor(i / 20) * 5; }
@@ -270,29 +271,33 @@ const overlayInk = (u) => page.evaluate((u) => { const c = T[u].overlay, d = c.g
   chk("… and the chart it dresses sits on the page (a transparent figure, the plot area the host's background)", r.figFace === 'transparent' && r.axFace === '#fafafa', JSON.stringify({ f: r.figFace, a: r.axFace }));
 }
 
-// ── style.use('auto'): new figures follow the page (dark stays the default) ──
+// ── the default on a page follows the page ('auto'); style.use picks otherwise ──
 {
-  const r = await page.evaluate(() => {
-    const body = document.body, before = body.getAttribute('style') || '';
-    const face = () => { const [f] = P.subplots(1, 1, { figsize: [200, 120] }); return f.axes[0].get_facecolor(); };
-    const out = { dflt: face() };
-    body.setAttribute('style', before + ';background:#ffffff;color:#222222;--bg-primary:#fbfbfb;');
-    out.dfltOnLight = face();                                // the default is still dark
-    P.style.use('auto');
-    out.autoLight = face();
-    body.setAttribute('style', before + ';background:#101214;color:#eeeeee;');
-    out.autoDark = face();
-    P.style.use('dark_background');
-    body.setAttribute('style', before + ';background:#ffffff;color:#222222;');
-    out.back = face();
-    const [f] = P.subplots(1, 1, { figsize: [200, 120], theme: 'auto' });
-    out.perFigure = f.axes[0].get_facecolor();
-    body.setAttribute('style', before);
-    return out;
-  });
+  // fresh pages, so the default is plot's own, untouched by the figures above
+  const fresh = async (bodyStyle, head = '') => {
+    const p2 = await browser.newPage();
+    await p2.goto(`http://127.0.0.1:${PORT}/__blank`);
+    return p2.evaluate(async ([css, h]) => {
+      if (h) document.head.insertAdjacentHTML('beforeend', h);
+      document.body.setAttribute('style', css);
+      const P = await import('/ext/plot/index.js');
+      const face = () => { const [f] = P.subplots(1, 1, { figsize: [200, 120] }); return { ax: f.axes[0].get_facecolor(), fg: f.axes[0]._theme.foreground, fig: f.facecolor }; };
+      const out = { dflt: face() };
+      P.style.use('dark_background'); out.dark = face();
+      const [f] = P.subplots(1, 1, { figsize: [200, 120], theme: 'auto' }); out.perFigure = f.axes[0].get_facecolor();
+      P.style.use('auto'); out.auto = face();
+      return out;
+    }, [bodyStyle, head]).finally(() => p2.close());
+  };
+  const lightP = await fresh('margin:0;');                                       // a page that sets nothing: the browser's white
+  const tokP = await fresh('margin:0;background:#ffffff;--bg-primary:#fbfbfb;--text-primary:#202020;');
+  const darkP = await fresh('margin:0;background:#101214;color:#eeeeee;');
+  const schemeP = await fresh('margin:0;', '<meta name="color-scheme" content="dark"><style>:root{color-scheme:dark}</style>');
   const light = (c) => { const m = /#([0-9a-f]{6})/i.exec(c || ''); if (m) return parseInt(m[1].slice(0, 2), 16) > 180; const n = /rgb\D*(\d+)/.exec(c || ''); return n ? +n[1] > 180 : false; };
-  chk("style.use('auto'): a light page gets light charts, a dark page dark ones; the default stays dark", !light(r.dflt) && !light(r.dfltOnLight) && r.autoLight === '#fbfbfb' && !light(r.autoDark), JSON.stringify(r));
-  chk("… style.use('dark_background') goes back; theme: 'auto' does it for one figure", !light(r.back) && light(r.perFigure), JSON.stringify({ back: r.back, per: r.perFigure }));
+  chk('the default on a page follows it: a plain page (the browser\'s white) gets a light chart with dark text', light(lightP.dflt.ax) && !light(lightP.dflt.fg) && lightP.dflt.fig === 'transparent', JSON.stringify(lightP.dflt));
+  chk('… a page\'s tokens are read; a dark page gets a dark chart', tokP.dflt.ax === '#fbfbfb' && tokP.dflt.fg === '#202020' && !light(darkP.dflt.ax), JSON.stringify({ tok: tokP.dflt, dark: darkP.dflt }));
+  chk('… style.use(\'dark_background\') forces dark; theme: \'auto\' and style.use(\'auto\') follow the page again', !light(lightP.dark.ax) && light(lightP.perFigure) && light(lightP.auto.ax), JSON.stringify({ d: lightP.dark, p: lightP.perFigure, a: lightP.auto }));
+  chk('… a page declaring a dark color-scheme with nothing painted is read as the reader sees it', !light(schemeP.dflt.ax) && light(schemeP.dflt.fg), JSON.stringify(schemeP.dflt));
 }
 
 // ── pinch (two pointers) ──

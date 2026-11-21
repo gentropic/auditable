@@ -131,13 +131,19 @@ function themeFromCSS(el, map) {
 }
 
 // the first opaque computed background-color from el up to the root
+// … and when nothing up to the root paints one, the browser's own canvas: white, or dark when the
+// page declares a dark color-scheme the reader's system asks for (what the reader actually sees)
 function _computedBackground(el) {
   for (let e = el; e && e.nodeType === 1; e = e.parentElement) {
     const v = getComputedStyle(e).backgroundColor;
     const m = /^rgba\(\s*[\d.]+[\s,]+[\d.]+[\s,]+[\d.]+[\s,/]+([\d.]+)\s*\)$/.exec(v || '');
     if (v && v !== 'transparent' && !(m && +m[1] < 0.5)) return v;
   }
-  return null;
+  if (typeof document === 'undefined' || !document.documentElement) return null;
+  const scheme = getComputedStyle(document.documentElement).colorScheme || '';
+  const sysDark = typeof matchMedia === 'function' && matchMedia('(prefers-color-scheme: dark)').matches;
+  const dark = /\bdark\b/.test(scheme) && (!/\blight\b/.test(scheme) || sysDark);
+  return dark ? 'rgb(18, 18, 18)' : 'rgb(255, 255, 255)';
 }
 
 // '#rgb' · '#rrggbb' · 'rgb(a)(…)' → [r, g, b] 0–255 (null if it can't tell)

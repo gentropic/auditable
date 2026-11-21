@@ -212,14 +212,15 @@ A theme is `@gcu/theme`'s keys (shared with `@gcu/condenser`'s 3D view): `backgr
 `figure`, `foreground`, `muted`, `grid`, `frame`, `panel`, `panel_border`, `accent`,
 `selection`, `halo`, `cycle`, `ramp`, `font`, `mono`, `font_size`.
 
-- `plt.style.use('default')` (and matplotlib's other light styles): white (`paper`);
-  `'dark_background'`: the dark theme (the default in auditable); also `'dark'`, `'light'`,
-  `'paper'`. It sets the default a figure copies when it is made.
-- `plt.style.use('auto')` (or `theme: 'auto'` for one figure): **follow the page** — each new figure reads
-  the page's tokens and colours as `themeFromCSS` does, so a light page gets a light chart and a dark
-  page a dark one. With no page (a worker, Node) it is the dark default. A figure keeps what it
-  read: after the page switches mode, re-make it or `fig.set_theme('auto')`. On a page whose look
-  you don't control, this is the one line to write.
+- **The default follows the page** (`'auto'`): with no theme given, each new figure reads the
+  page's tokens and colours as `themeFromCSS` does — a light page gets a light chart, a dark page
+  a dark one, an auditable notebook its own mode. A page that paints nothing is the browser's
+  white (or dark, under a dark `color-scheme`). With no page (a worker, Node) it is dark. A figure
+  keeps what it read: after the page switches mode, re-make it or `fig.set_theme('auto')`.
+- `plt.style.use('default')` (and matplotlib's other light styles): white (`paper`) whatever the
+  page; `'dark_background'`: the dark theme; also `'dark'`, `'light'`, `'paper'`, and `'auto'` (back
+  to following the page). It sets the default a figure copies when it is made; `theme: …` on one
+  figure does the same for that figure.
 - `subplots({theme: 'paper'})` · `fig.set_theme({base: 'light', accent: '#c00'})` · `themeFromCSS(el, map?)` (a page's design tokens, below).
 
 - `themeFromCSS(el, map?)` reads CSS custom properties on `el`: for each theme key, the first

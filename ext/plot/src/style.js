@@ -12,7 +12,7 @@ import { resolveTheme, themeFromCSS, THEMES, isLight } from '../../theme/src/the
 //   `dark`; @gcu/theme's own names work too.
 // - `subplots({theme})` / `figure({theme})` / `fig.set_theme(t)` give one figure its own:
 //   a name, a partial theme ({base: 'light', accent: '#c00'}), or themeFromCSS(el).
-// - 'auto' — `style.use('auto')`, or `theme: 'auto'` for one figure — follows the PAGE: the
+// - 'auto' — THE DEFAULT ON A PAGE; also `style.use('auto')`, or `theme: 'auto'` — follows the PAGE: the
 //   page's tokens and colours as themeFromCSS reads them, so a light page gets a light chart.
 //   With no DOM (a worker, Node) it is the dark default. Resolved when a figure is made, as any
 //   style: re-make (or fig.set_theme('auto')) after the page switches mode.
@@ -21,7 +21,7 @@ import { resolveTheme, themeFromCSS, THEMES, isLight } from '../../theme/src/the
 //
 // Notebooks loaded from a .ipynb through @gcu/ipynb get an automatic
 // `plt.style.use('default')` after their `import matplotlib.pyplot`, so they render light as
-// their authors saw them in Jupyter. Native auditable cells keep the dark default.
+// their authors saw them in Jupyter. Native auditable cells follow the notebook's own theme ('auto').
 //
 // Text: plot draws every label in the theme's MONOSPACE stack (`mono`), at `font_size`
 // (ticks one px smaller, titles two larger). Monospace is what keeps the draw list the same
@@ -85,6 +85,10 @@ export function setStyle(name) {
   }
 }
 _style._name = 'dark';
+// On a page the default is 'auto' — a chart follows the page it's drawn on (a light page, a light
+// chart; auditable's notebooks in either mode). Off a page (a worker, Node) it stays dark, so a
+// draw list made there is the same in every host.
+if (typeof document !== 'undefined' && typeof getComputedStyle === 'function') { _style._name = 'auto'; _style._auto = true; }
 
 export { themeFromCSS };
 
