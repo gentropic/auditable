@@ -16,7 +16,8 @@
 
 import { Axes, _KINDS, _plainOpts, _result, _grid2d } from './axes.js';
 import { _col, _isArrayLike } from './data.js';
-import { _cssColor, getCmap, _cmapLut } from './color.js';
+import { _cssColor, getCmap, _cmapLut, _colorBytes } from './color.js';
+import { _blit } from './raster.js';
 import { _niceTicks } from './ticks.js';
 import { Normalize, BoundaryNorm, _resolveNorm } from './norm.js';
 import { _warn } from './opts.js';
@@ -53,13 +54,30 @@ function _mapper(X, Y, nx, ny, extent, fn) {
     const x = _col(X), y = _col(Y);
     if (x.length !== nx || y.length !== ny) throw new Error(`plot: ${fn}: X has ${x.length} values and Y ${y.length}, but Z is ${ny} rows × ${nx} columns (X runs along a row, Y down the rows)`);
     const lin = (a, f) => { const i = Math.min(a.length - 2, Math.floor(f)), u = f - i; return a[i] + (a[i + 1] - a[i]) * u; };
-    return (fi, fj) => [lin(x, fi), lin(y, fj)];
+    const m = (fi, fj) => [lin(x, fi), lin(y, fj)];
+    m.inv = [_invLin(x), _invLin(y)];
+    return m;
   }
   if (extent) {
     const [x0, x1, y0, y1] = Array.from(extent, Number);
-    return (fi, fj) => [x0 + (fi / (nx - 1)) * (x1 - x0), y0 + (fj / (ny - 1)) * (y1 - y0)];
+    const m = (fi, fj) => [x0 + (fi / (nx - 1)) * (x1 - x0), y0 + (fj / (ny - 1)) * (y1 - y0)];
+    m.inv = [(v) => ((v - x0) / (x1 - x0)) * (nx - 1), (v) => ((v - y0) / (y1 - y0)) * (ny - 1)];
+    return m;
   }
-  return (fi, fj) => [fi, fj];
+  const m = (fi, fj) => [fi, fj];
+  m.inv = [(v) => v, (v) => v];
+  return m;
+}
+// a monotonic coordinate column → its fractional index at a value (NaN outside)
+function _invLin(a) {
+  const n = a.length, up = a[n - 1] >= a[0];
+  return (v) => {
+    if (up ? v < a[0] || v > a[n - 1] : v > a[0] || v < a[n - 1]) return NaN;
+    let lo = 0, hi = n - 1;
+    while (hi - lo > 1) { const mid = (lo + hi) >> 1; if ((a[mid] <= v) === up) lo = mid; else hi = mid; }
+    const d = a[hi] - a[lo];
+    return lo + (d ? (v - a[lo]) / d : 0);
+  };
 }
 
 // the levels: given, or about n nice ones (matplotlib's default n = 7); for filled bands the
@@ -109,8 +127,11 @@ function _clip(poly, c, sign) {
 }
 
 // filled: per band, the polygons of {z ≥ lower} (∩ {z ≤ top} unless extending past it), in data
-// coordinates: { xy: Float64Array, starts: number[] }
+// coordinates: { xy: Float64Array, starts: number[] }. A cell wholly inside a band region joins
+// a run along its row, and a run is ONE rectangle (on a rectilinear grid; a curvilinear grid
+// keeps its cells' own quads); only cells a level crosses are split into triangles.
 function _bands(g, levels, extend, map) {
+  const { flat: Z, nx, ny } = g;
   const nb = levels.length - 1;
   const lows = [];
   if (extend === 'min' || extend === 'both') lows.push(-Infinity);
@@ -118,21 +139,90 @@ function _bands(g, levels, extend, map) {
   if (extend === 'max' || extend === 'both') lows.push(levels[nb]);
   const top = extend === 'max' || extend === 'both' ? Infinity : levels[nb];
   const acc = lows.map(() => ({ xy: [], starts: [] }));
-  _eachTriangle(g, (i0, j0, z0, i1, j1, z1, i2, j2, z2) => {
-    const lo = Math.min(z0, z1, z2), hi = Math.max(z0, z1, z2);
-    let tri = [i0, j0, z0, i1, j1, z1, i2, j2, z2];
-    if (hi > top) { if (lo > top) return; tri = _clip(tri, top, -1); }
-    for (let k = 0; k < lows.length; k++) {
-      const c = lows[k];
-      if (hi < c) break;                                    // and every higher band too
-      const poly = lo >= c ? tri : _clip(tri, c, 1);
-      if (poly.length < 9) continue;
-      const a = acc[k];
-      a.starts.push(a.xy.length);
-      for (let q = 0; q < poly.length; q += 3) { const p = map(poly[q], poly[q + 1]); a.xy.push(p[0], p[1]); }
+  const rect = !!map.inv;
+  const poly = (k, pts) => {                               // pts: [fi, fj, …] in index space
+    const a = acc[k];
+    a.starts.push(a.xy.length);
+    for (let q = 0; q < pts.length; q += 2) { const p = map(pts[q], pts[q + 1]); a.xy.push(p[0], p[1]); }
+  };
+  const run = new Int32Array(lows.length).fill(-1);
+  const flush = (k, j, iEnd) => {
+    if (run[k] < 0) return;
+    const i0 = run[k];
+    if (rect) poly(k, [i0, j, iEnd, j, iEnd, j + 1, i0, j + 1]);
+    else for (let i = i0; i < iEnd; i++) poly(k, [i, j, i + 1, j, i + 1, j + 1, i, j + 1]);
+    run[k] = -1;
+  };
+  for (let j = 0; j < ny - 1; j++) {
+    for (let i = 0; i < nx - 1; i++) {
+      const a = Z[j * nx + i], b = Z[j * nx + i + 1], c = Z[(j + 1) * nx + i + 1], d = Z[(j + 1) * nx + i];
+      if (a - a !== 0 || b - b !== 0 || c - c !== 0 || d - d !== 0) { for (let k = 0; k < lows.length; k++) flush(k, j, i); continue; }
+      const e = (a + b + c + d) / 4;
+      const lo = Math.min(a, b, c, d), hi = Math.max(a, b, c, d);
+      for (let k = 0; k < lows.length; k++) {
+        const L = lows[k];
+        if (lo >= L && hi <= top) { if (run[k] < 0) run[k] = i; continue; }   // wholly inside: extend the run
+        flush(k, j, i);
+        if (hi < L || lo > top) continue;                   // wholly outside
+        // crossed: its four triangles, clipped
+        const ei = i + 0.5, ej = j + 0.5;
+        for (const tri of [[i, j, a, i + 1, j, b, ei, ej, e], [i + 1, j, b, i + 1, j + 1, c, ei, ej, e], [i + 1, j + 1, c, i, j + 1, d, ei, ej, e], [i, j + 1, d, i, j, a, ei, ej, e]]) {
+          let t3 = tri;
+          const tl = Math.min(t3[2], t3[5], t3[8]), th = Math.max(t3[2], t3[5], t3[8]);
+          if (th < L || tl > top) continue;
+          if (th > top) t3 = _clip(t3, top, -1);
+          if (tl < L) t3 = _clip(t3, L, 1);
+          if (t3.length < 9) continue;
+          const pts = [];
+          for (let q = 0; q < t3.length; q += 3) pts.push(t3[q], t3[q + 1]);
+          poly(k, pts);
+        }
+      }
     }
-  });
+    for (let k = 0; k < lows.length; k++) flush(k, j, nx - 1);
+  }
   return { lows, bands: acc.map((a) => ({ xy: Float64Array.from(a.xy), starts: a.starts })) };
+}
+
+// the raster path, for big rectilinear grids: each device pixel takes the band of the field
+// at its centre — the same four-triangle linear field the lines follow, so they agree — in
+// one image (one blit, one draw-list op). The vector bands stay what SVG export draws.
+const _RASTER_CELLS = 40000;
+function _bandRaster(ax, t, xScale, yScale, rect, colors) {
+  const { flat: Z, nx, ny } = t.g, [ix, iy] = t.map.inv;
+  const dpr = rect.dpr || 1, W = Math.max(1, Math.round(rect.w * dpr)), H = Math.max(1, Math.round(rect.h * dpr));
+  const lows = t._cache.lows, top = t.extend === 'max' || t.extend === 'both' ? Infinity : t.levels[t.levels.length - 1];
+  const bytes = colors.map((cc) => { const b = _colorBytes(cc); return b || [0, 0, 0, 0]; });
+  const fis = new Float64Array(W), fjs = new Float64Array(H);
+  for (let px = 0; px < W; px++) fis[px] = ix(xScale.inverse(rect.x + (px + 0.5) / dpr));
+  for (let py = 0; py < H; py++) fjs[py] = iy(yScale.inverse(rect.y + (py + 0.5) / dpr));
+  const rgba = new Uint8ClampedArray(W * H * 4);
+  for (let py = 0; py < H; py++) {
+    const fj = fjs[py];
+    if (fj !== fj) continue;
+    const j = Math.min(ny - 2, Math.floor(fj)), v = fj - j;
+    for (let px = 0; px < W; px++) {
+      const fi = fis[px];
+      if (fi !== fi) continue;
+      const i = Math.min(nx - 2, Math.floor(fi)), u = fi - i;
+      const a = Z[j * nx + i], b = Z[j * nx + i + 1], c = Z[(j + 1) * nx + i + 1], d = Z[(j + 1) * nx + i];
+      if (a - a !== 0 || b - b !== 0 || c - c !== 0 || d - d !== 0) continue;
+      const e = (a + b + c + d) / 4;
+      // which of the four triangles about the centre, then linear in it
+      let z;
+      if (v <= u && v <= 1 - u) z = a + (b - a) * (u - v) + (e - a) * 2 * v;               // bottom (a, b, e)
+      else if (u >= v && u >= 1 - v) z = b + (c - b) * (v - (1 - u)) + (e - b) * 2 * (1 - u); // right (b, c, e)
+      else if (v >= u && v >= 1 - u) z = d + (c - d) * (u - (1 - v)) + (e - d) * 2 * (1 - v); // top (d, c, e)
+      else z = a + (d - a) * (v - u) + (e - a) * 2 * u;                                       // left (a, d, e)
+      if (z > top) continue;
+      let k = -1;
+      for (let q = lows.length - 1; q >= 0; q--) if (z >= lows[q]) { k = q; break; }
+      if (k < 0) continue;
+      const o = (py * W + px) * 4, cb = bytes[k];
+      rgba[o] = cb[0]; rgba[o + 1] = cb[1]; rgba[o + 2] = cb[2]; rgba[o + 3] = cb[3];
+    }
+  }
+  return { rgba, W, H };
 }
 
 // lines: per level, the segments where the triangles cross it, in data coordinates
@@ -191,6 +281,15 @@ function _colorsOf(ax, t, values) {
     return fn(tt);
   });
 }
+// the lower level of each band region (the extend bands' open ends included)
+function _bandLows(t) {
+  const L = t.levels, lows = [];
+  if (t.extend === 'min' || t.extend === 'both') lows.push(-Infinity);
+  for (let k = 0; k < L.length - 1; k++) lows.push(L[k]);
+  if (t.extend === 'max' || t.extend === 'both') lows.push(L[L.length - 1]);
+  return lows;
+}
+
 // what a band's colour is taken at: its middle (matplotlib's "layers"); an extended band its
 // open end's level
 function _layers(t) {
@@ -214,15 +313,23 @@ const _kind = (filled) => ({
     const lo = Math.min(...inner), hi = Math.max(...inner);
     return _resolveNorm(o.norm, o.vmin, o.vmax, lo, hi === lo ? lo + 1 : hi, lo > 0 ? lo : undefined);
   },
-  render(ax, ctx, t, xScale, yScale) {
+  render(ax, ctx, t, xScale, yScale, rect) {
     const o = t.opts, c = t._cache || (t._cache = {});
     ctx.save();
     ctx.globalAlpha = o.alpha != null ? o.alpha : 1;
     const ax_ = xScale.a, bx = xScale.b, ay = yScale.a, by = yScale.b, xl = xScale.log, yl = yScale.log;
     const px = (v) => (xl ? xScale.transform(v) : ax_ * v + bx), py = (v) => (yl ? yScale.transform(v) : ay * v + by);
     if (filled) {
-      if (!c.bands) c.bands = _bands(t.g, t.levels, t.extend, t.map);
       const colors = _colorsOf(ax, t, _layers(t));
+      if (t.map.inv && (t.g.nx - 1) * (t.g.ny - 1) > _RASTER_CELLS && !t.opts.vector) {
+        if (!c.lows) c.lows = _bandLows(t);
+        const key = `${xScale.a},${xScale.b},${yScale.a},${yScale.b},${rect.w}x${rect.h},${rect.dpr},${colors.join(',')}`;
+        if (!c.raster || c.raster.key !== key) c.raster = { key, ..._bandRaster(ax, t, xScale, yScale, rect, colors) };
+        ctx.restore();
+        _blit(ctx, rect.x, rect.y, rect.w, rect.h, c.raster.W, c.raster.H, c.raster.rgba, c.raster, false);
+        return;
+      }
+      if (!c.bands) c.bands = _bands(t.g, t.levels, t.extend, t.map);
       c.bands.bands.forEach((b, k) => {
         if (!b.starts.length) return;
         ctx.beginPath();

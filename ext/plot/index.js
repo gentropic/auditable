@@ -41,7 +41,7 @@ const _KNOWN = {
   fill_between: [..._ARTIST, 'where', 'step', 'interpolate', 'facecolor', 'edgecolor', 'linewidth', 'linestyle', 'y2'],
   fill_betweenx: [..._ARTIST, 'where', 'step', 'interpolate', 'facecolor', 'edgecolor', 'linewidth', 'linestyle', 'x2'],
   contour: [..._ARTIST, 'levels', 'colors', 'cmap', 'norm', 'vmin', 'vmax', 'linewidths', 'linestyles', 'extend', 'extent', 'origin', 'antialiased'],
-  contourf: [..._ARTIST, 'levels', 'colors', 'cmap', 'norm', 'vmin', 'vmax', 'extend', 'extent', 'origin', 'antialiased', 'hatches'],
+  contourf: [..._ARTIST, 'levels', 'colors', 'cmap', 'norm', 'vmin', 'vmax', 'extend', 'extent', 'origin', 'antialiased', 'hatches', 'vector'],
   pcolormesh: [..._ARTIST, 'cmap', 'norm', 'vmin', 'vmax', 'edgecolor', 'linewidth', 'antialiased', 'rasterized'],
   axhspan: [..._ARTIST, 'xmin', 'xmax', 'facecolor', 'edgecolor', 'linewidth'],
   axvspan: [..._ARTIST, 'ymin', 'ymax', 'facecolor', 'edgecolor', 'linewidth'],
@@ -51,7 +51,7 @@ const _KNOWN = {
   hlines: [..._ARTIST, 'colors', 'linestyle', 'linewidth'],
   vlines: [..._ARTIST, 'colors', 'linestyle', 'linewidth'],
   text: ['color', 'alpha', 'zorder', 'fontsize', 'ha', 'va', 'horizontalalignment', 'verticalalignment', 'transform', 'rotation', 'fontweight'],
-  legend: ['loc'],
+  legend: ['loc', 'bbox_to_anchor', 'ncol', 'ncols', 'title', 'fontsize', 'title_fontsize', 'frameon', 'framealpha', 'labelcolor', 'facecolor', 'edgecolor', 'markerscale', 'borderaxespad', 'handles', 'labels'],
   colorbar: ['label', 'ax', 'ticks', 'extend', 'format'],
   grid: ['color', 'alpha', 'linestyle', 'linewidth', 'which', 'axis'],
   subplots: ['figsize', 'dpi', 'facecolor', 'gap', 'wspace', 'hspace', 'strict', 'theme', 'sharex', 'sharey'],
@@ -65,7 +65,7 @@ const _UNSUPPORTED = {
   barh: { hatch: 'not supported yet', xerr: 'use errorbar() on the bar positions' },
   hist: { hatch: 'not supported yet' },
   text: { bbox: 'not supported yet' },
-  legend: { bbox_to_anchor: 'not supported yet — use loc', ncol: 'not supported yet', title: 'not supported yet', fontsize: 'not supported yet', frameon: 'not supported yet', framealpha: 'not supported yet' },
+  legend: { shadow: 'not supported yet', fancybox: 'not supported yet', mode: 'not supported yet', handlelength: 'not supported yet', columnspacing: 'not supported yet' },
   colorbar: { shrink: 'not supported yet', orientation: 'only vertical colorbars for now', fraction: 'not supported yet', pad: 'not supported yet' },
   subplots: { squeeze: 'not supported yet', constrained_layout: 'layout is always tight', layout: 'layout is always tight' },
 };
@@ -1369,9 +1369,9 @@ void _colorBytes;
 // from memory expects.
 
 
-// plot's own softened single-letter colours (kept from 0.1: changing them would repaint every
-// existing figure); colour NAMES like color='r' get matplotlib's exact ones (color.js)
-const _colorChars = { b: '#4488ff', g: '#44bb44', r: '#ee4444', c: '#44dddd', m: '#dd44dd', y: '#dddd44', k: '#000000', w: '#ffffff' };
+// matplotlib's single-letter colours, exactly (M2: they were a softened palette, a departure a
+// model writing 'r--' from memory wouldn't expect); the same as color='r' (color.js)
+const _colorChars = { b: '#0000ff', g: '#008000', r: '#ff0000', c: '#00bfbf', m: '#bf00bf', y: '#bfbf00', k: '#000000', w: '#ffffff' };
 const _markerChars = new Set(['o', 's', '^', 'v', '<', '>', 'd', 'D', 'p', 'h', '*', '+', 'x', '.']);
 
 function parseFormat(fmt) {
@@ -2446,7 +2446,6 @@ class Axes {
     return t;
   }
 
-  legend(opts) { this._legend = true; this._legendOpts = _checkOpts('legend', _plainOpts(opts) ? opts : {}, this._strict); return this; }
 
   colorbar(mappable, opts) {
     if (mappable && mappable._trace) { opts = { ...(_plainOpts(opts) ? opts : {}) }; opts.mappable = mappable._trace; }
@@ -2643,6 +2642,9 @@ class Axes {
     if (L.twinXt) { top += 6 + L.twinXt.extent + 4; if (this._twinY._xlabel) top += fs + 6; }
     if (L.twinYt) right = Math.max(right, 4 + 6 + L.twinYt.maxW + 6 + (this._twin._ylabel ? fs + 4 : 0));
     if (cb) right = Math.max(right, 10 + 12 + 6 + cb.labelsW + 6 + (this._colorbarOpts.label ? fs + 4 : 0));
+    // a legend anchored outside the axes (bbox_to_anchor) gets room
+    const lo = this._legendOverflow ? this._legendOverflow({ x: L.plotX, y: L.plotY, w: L.plotW, h: L.plotH }) : null;
+    if (lo) { left += lo.left; right += lo.right + (lo.right ? 4 : 0); top += lo.top; bottom += lo.bottom; }
     // x tick labels hang past the ends of the axis: half a flat label, a whole rotated one
     if (on && !this._hideXTicks && !this._xtickLabelsOff && xt.values.length) {
       const k = xt.rot ? Math.cos((xt.rot * Math.PI) / 180) : 0.5;
@@ -3275,72 +3277,6 @@ class Axes {
     if (o.rotation) ctx.rotate((-(o.rotation === 'vertical' ? 90 : +o.rotation || 0) * Math.PI) / 180);
     ctx.fillText(String(trace.text), 0, 0);
     ctx.restore();
-  }
-
-  _renderLegend(ctx, plotX, plotY, plotW, plotH) {
-    const th = this._theme;
-    const entries = [];
-    for (const t of this._traces) {
-      if (!t.opts.label) continue;
-      let color = t.opts.color;
-      if (!color && t.cvals) color = getCmap(t.opts.cmap || 'viridis')(0.5);
-      if (!color && t.colors) color = t.colors[0];
-      const k = _KINDS[t.type], kl = k && k.legend ? k.legend(this, t) : null;
-      entries.push({ label: String(t.opts.label), color: (kl && kl.color) || color || th.cycle[0], type: t.type, marker: t.opts.marker, noLine: _noLine(t.opts.linestyle), patch: kl ? !!kl.patch : !!(k && k.patch), alpha: t.opts.alpha });
-    }
-    if (!entries.length) return;
-
-    ctx.font = _font(th, -1);
-    const lineH = (th.font_size || 11) + 4;
-    const padding = 6;
-    let maxW = 0;
-    for (const e of entries) {
-      const w = _textW(ctx.font, e.label);
-      if (w > maxW) maxW = w;
-    }
-    const boxW = maxW + 24 + padding * 2;
-    const boxH = entries.length * lineH + padding * 2;
-
-    // position: default top-right. matplotlib's numeric codes map to the names; 'best'
-    // (code 0) is upper right until placement that avoids the data lands.
-    const _LOC = ['upper right', 'upper right', 'upper left', 'lower left', 'lower right', 'right', 'center left', 'center right', 'lower center', 'upper center', 'center'];
-    let loc = this._legendOpts.loc ?? 'upper right';
-    if (typeof loc === 'number') loc = _LOC[loc] || 'upper right';
-    loc = String(loc);
-    if (loc === 'best') loc = 'upper right';
-    let lx, ly;
-    if (loc.includes('right')) lx = plotX + plotW - boxW - 6;
-    else if (loc.includes('left')) lx = plotX + 6;
-    else lx = plotX + (plotW - boxW) / 2;
-    if (loc.includes('upper') || loc.includes('top')) ly = plotY + 6;
-    else if (loc.includes('lower') || loc.includes('bottom')) ly = plotY + plotH - boxH - 6;
-    else ly = plotY + (plotH - boxH) / 2;
-
-    ctx.fillStyle = th.panel;
-    ctx.fillRect(lx, ly, boxW, boxH);
-    ctx.strokeStyle = th.panel_border;
-    ctx.lineWidth = 0.5;
-    ctx.strokeRect(lx, ly, boxW, boxH);
-
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'middle';
-    for (let i = 0; i < entries.length; i++) {
-      const e = entries[i];
-      const ey = ly + padding + i * lineH + lineH / 2;
-      ctx.fillStyle = e.color;
-      if (e.type === 'scatter' || (e.type === 'line' && e.marker && e.noLine)) {
-        ctx.beginPath(); _pathMarker(ctx, _markerShape(e.marker || 'o', 3), lx + padding + 7, ey);
-        if (e.marker === '+' || e.marker === 'x') { ctx.strokeStyle = e.color; ctx.lineWidth = 1.5; ctx.stroke(); } else ctx.fill();
-      } else if (e.patch) {
-        ctx.globalAlpha = e.alpha != null ? e.alpha : 1;
-        ctx.fillRect(lx + padding + 2, ey - 4, 10, 8);
-        ctx.globalAlpha = 1;
-      } else {
-        ctx.fillRect(lx + padding, ey - 1, 14, 2);
-      }
-      ctx.fillStyle = this._textColor || th.foreground;
-      ctx.fillText(e.label, lx + padding + 18, ey);
-    }
   }
 
   // ── picking ───────────────────────────────────────────────────────────────────────────────
@@ -4355,6 +4291,7 @@ _KINDS.boxplot = {
 
 
 
+
 // contour(Z) · contour(Z, levels) · contour(X, Y, Z) · contour(X, Y, Z, levels), + opts
 function _args(fn, args) {
   const a = args.slice();
@@ -4386,13 +4323,30 @@ function _mapper(X, Y, nx, ny, extent, fn) {
     const x = _col(X), y = _col(Y);
     if (x.length !== nx || y.length !== ny) throw new Error(`plot: ${fn}: X has ${x.length} values and Y ${y.length}, but Z is ${ny} rows × ${nx} columns (X runs along a row, Y down the rows)`);
     const lin = (a, f) => { const i = Math.min(a.length - 2, Math.floor(f)), u = f - i; return a[i] + (a[i + 1] - a[i]) * u; };
-    return (fi, fj) => [lin(x, fi), lin(y, fj)];
+    const m = (fi, fj) => [lin(x, fi), lin(y, fj)];
+    m.inv = [_invLin(x), _invLin(y)];
+    return m;
   }
   if (extent) {
     const [x0, x1, y0, y1] = Array.from(extent, Number);
-    return (fi, fj) => [x0 + (fi / (nx - 1)) * (x1 - x0), y0 + (fj / (ny - 1)) * (y1 - y0)];
+    const m = (fi, fj) => [x0 + (fi / (nx - 1)) * (x1 - x0), y0 + (fj / (ny - 1)) * (y1 - y0)];
+    m.inv = [(v) => ((v - x0) / (x1 - x0)) * (nx - 1), (v) => ((v - y0) / (y1 - y0)) * (ny - 1)];
+    return m;
   }
-  return (fi, fj) => [fi, fj];
+  const m = (fi, fj) => [fi, fj];
+  m.inv = [(v) => v, (v) => v];
+  return m;
+}
+// a monotonic coordinate column → its fractional index at a value (NaN outside)
+function _invLin(a) {
+  const n = a.length, up = a[n - 1] >= a[0];
+  return (v) => {
+    if (up ? v < a[0] || v > a[n - 1] : v > a[0] || v < a[n - 1]) return NaN;
+    let lo = 0, hi = n - 1;
+    while (hi - lo > 1) { const mid = (lo + hi) >> 1; if ((a[mid] <= v) === up) lo = mid; else hi = mid; }
+    const d = a[hi] - a[lo];
+    return lo + (d ? (v - a[lo]) / d : 0);
+  };
 }
 
 // the levels: given, or about n nice ones (matplotlib's default n = 7); for filled bands the
@@ -4442,8 +4396,11 @@ function _clip(poly, c, sign) {
 }
 
 // filled: per band, the polygons of {z ≥ lower} (∩ {z ≤ top} unless extending past it), in data
-// coordinates: { xy: Float64Array, starts: number[] }
+// coordinates: { xy: Float64Array, starts: number[] }. A cell wholly inside a band region joins
+// a run along its row, and a run is ONE rectangle (on a rectilinear grid; a curvilinear grid
+// keeps its cells' own quads); only cells a level crosses are split into triangles.
 function _bands(g, levels, extend, map) {
+  const { flat: Z, nx, ny } = g;
   const nb = levels.length - 1;
   const lows = [];
   if (extend === 'min' || extend === 'both') lows.push(-Infinity);
@@ -4451,21 +4408,90 @@ function _bands(g, levels, extend, map) {
   if (extend === 'max' || extend === 'both') lows.push(levels[nb]);
   const top = extend === 'max' || extend === 'both' ? Infinity : levels[nb];
   const acc = lows.map(() => ({ xy: [], starts: [] }));
-  _eachTriangle(g, (i0, j0, z0, i1, j1, z1, i2, j2, z2) => {
-    const lo = Math.min(z0, z1, z2), hi = Math.max(z0, z1, z2);
-    let tri = [i0, j0, z0, i1, j1, z1, i2, j2, z2];
-    if (hi > top) { if (lo > top) return; tri = _clip(tri, top, -1); }
-    for (let k = 0; k < lows.length; k++) {
-      const c = lows[k];
-      if (hi < c) break;                                    // and every higher band too
-      const poly = lo >= c ? tri : _clip(tri, c, 1);
-      if (poly.length < 9) continue;
-      const a = acc[k];
-      a.starts.push(a.xy.length);
-      for (let q = 0; q < poly.length; q += 3) { const p = map(poly[q], poly[q + 1]); a.xy.push(p[0], p[1]); }
+  const rect = !!map.inv;
+  const poly = (k, pts) => {                               // pts: [fi, fj, …] in index space
+    const a = acc[k];
+    a.starts.push(a.xy.length);
+    for (let q = 0; q < pts.length; q += 2) { const p = map(pts[q], pts[q + 1]); a.xy.push(p[0], p[1]); }
+  };
+  const run = new Int32Array(lows.length).fill(-1);
+  const flush = (k, j, iEnd) => {
+    if (run[k] < 0) return;
+    const i0 = run[k];
+    if (rect) poly(k, [i0, j, iEnd, j, iEnd, j + 1, i0, j + 1]);
+    else for (let i = i0; i < iEnd; i++) poly(k, [i, j, i + 1, j, i + 1, j + 1, i, j + 1]);
+    run[k] = -1;
+  };
+  for (let j = 0; j < ny - 1; j++) {
+    for (let i = 0; i < nx - 1; i++) {
+      const a = Z[j * nx + i], b = Z[j * nx + i + 1], c = Z[(j + 1) * nx + i + 1], d = Z[(j + 1) * nx + i];
+      if (a - a !== 0 || b - b !== 0 || c - c !== 0 || d - d !== 0) { for (let k = 0; k < lows.length; k++) flush(k, j, i); continue; }
+      const e = (a + b + c + d) / 4;
+      const lo = Math.min(a, b, c, d), hi = Math.max(a, b, c, d);
+      for (let k = 0; k < lows.length; k++) {
+        const L = lows[k];
+        if (lo >= L && hi <= top) { if (run[k] < 0) run[k] = i; continue; }   // wholly inside: extend the run
+        flush(k, j, i);
+        if (hi < L || lo > top) continue;                   // wholly outside
+        // crossed: its four triangles, clipped
+        const ei = i + 0.5, ej = j + 0.5;
+        for (const tri of [[i, j, a, i + 1, j, b, ei, ej, e], [i + 1, j, b, i + 1, j + 1, c, ei, ej, e], [i + 1, j + 1, c, i, j + 1, d, ei, ej, e], [i, j + 1, d, i, j, a, ei, ej, e]]) {
+          let t3 = tri;
+          const tl = Math.min(t3[2], t3[5], t3[8]), th = Math.max(t3[2], t3[5], t3[8]);
+          if (th < L || tl > top) continue;
+          if (th > top) t3 = _clip(t3, top, -1);
+          if (tl < L) t3 = _clip(t3, L, 1);
+          if (t3.length < 9) continue;
+          const pts = [];
+          for (let q = 0; q < t3.length; q += 3) pts.push(t3[q], t3[q + 1]);
+          poly(k, pts);
+        }
+      }
     }
-  });
+    for (let k = 0; k < lows.length; k++) flush(k, j, nx - 1);
+  }
   return { lows, bands: acc.map((a) => ({ xy: Float64Array.from(a.xy), starts: a.starts })) };
+}
+
+// the raster path, for big rectilinear grids: each device pixel takes the band of the field
+// at its centre — the same four-triangle linear field the lines follow, so they agree — in
+// one image (one blit, one draw-list op). The vector bands stay what SVG export draws.
+const _RASTER_CELLS = 40000;
+function _bandRaster(ax, t, xScale, yScale, rect, colors) {
+  const { flat: Z, nx, ny } = t.g, [ix, iy] = t.map.inv;
+  const dpr = rect.dpr || 1, W = Math.max(1, Math.round(rect.w * dpr)), H = Math.max(1, Math.round(rect.h * dpr));
+  const lows = t._cache.lows, top = t.extend === 'max' || t.extend === 'both' ? Infinity : t.levels[t.levels.length - 1];
+  const bytes = colors.map((cc) => { const b = _colorBytes(cc); return b || [0, 0, 0, 0]; });
+  const fis = new Float64Array(W), fjs = new Float64Array(H);
+  for (let px = 0; px < W; px++) fis[px] = ix(xScale.inverse(rect.x + (px + 0.5) / dpr));
+  for (let py = 0; py < H; py++) fjs[py] = iy(yScale.inverse(rect.y + (py + 0.5) / dpr));
+  const rgba = new Uint8ClampedArray(W * H * 4);
+  for (let py = 0; py < H; py++) {
+    const fj = fjs[py];
+    if (fj !== fj) continue;
+    const j = Math.min(ny - 2, Math.floor(fj)), v = fj - j;
+    for (let px = 0; px < W; px++) {
+      const fi = fis[px];
+      if (fi !== fi) continue;
+      const i = Math.min(nx - 2, Math.floor(fi)), u = fi - i;
+      const a = Z[j * nx + i], b = Z[j * nx + i + 1], c = Z[(j + 1) * nx + i + 1], d = Z[(j + 1) * nx + i];
+      if (a - a !== 0 || b - b !== 0 || c - c !== 0 || d - d !== 0) continue;
+      const e = (a + b + c + d) / 4;
+      // which of the four triangles about the centre, then linear in it
+      let z;
+      if (v <= u && v <= 1 - u) z = a + (b - a) * (u - v) + (e - a) * 2 * v;               // bottom (a, b, e)
+      else if (u >= v && u >= 1 - v) z = b + (c - b) * (v - (1 - u)) + (e - b) * 2 * (1 - u); // right (b, c, e)
+      else if (v >= u && v >= 1 - u) z = d + (c - d) * (u - (1 - v)) + (e - d) * 2 * (1 - v); // top (d, c, e)
+      else z = a + (d - a) * (v - u) + (e - a) * 2 * u;                                       // left (a, d, e)
+      if (z > top) continue;
+      let k = -1;
+      for (let q = lows.length - 1; q >= 0; q--) if (z >= lows[q]) { k = q; break; }
+      if (k < 0) continue;
+      const o = (py * W + px) * 4, cb = bytes[k];
+      rgba[o] = cb[0]; rgba[o + 1] = cb[1]; rgba[o + 2] = cb[2]; rgba[o + 3] = cb[3];
+    }
+  }
+  return { rgba, W, H };
 }
 
 // lines: per level, the segments where the triangles cross it, in data coordinates
@@ -4524,6 +4550,15 @@ function _colorsOf(ax, t, values) {
     return fn(tt);
   });
 }
+// the lower level of each band region (the extend bands' open ends included)
+function _bandLows(t) {
+  const L = t.levels, lows = [];
+  if (t.extend === 'min' || t.extend === 'both') lows.push(-Infinity);
+  for (let k = 0; k < L.length - 1; k++) lows.push(L[k]);
+  if (t.extend === 'max' || t.extend === 'both') lows.push(L[L.length - 1]);
+  return lows;
+}
+
 // what a band's colour is taken at: its middle (matplotlib's "layers"); an extended band its
 // open end's level
 function _layers(t) {
@@ -4547,15 +4582,23 @@ const _kind = (filled) => ({
     const lo = Math.min(...inner), hi = Math.max(...inner);
     return _resolveNorm(o.norm, o.vmin, o.vmax, lo, hi === lo ? lo + 1 : hi, lo > 0 ? lo : undefined);
   },
-  render(ax, ctx, t, xScale, yScale) {
+  render(ax, ctx, t, xScale, yScale, rect) {
     const o = t.opts, c = t._cache || (t._cache = {});
     ctx.save();
     ctx.globalAlpha = o.alpha != null ? o.alpha : 1;
     const ax_ = xScale.a, bx = xScale.b, ay = yScale.a, by = yScale.b, xl = xScale.log, yl = yScale.log;
     const px = (v) => (xl ? xScale.transform(v) : ax_ * v + bx), py = (v) => (yl ? yScale.transform(v) : ay * v + by);
     if (filled) {
-      if (!c.bands) c.bands = _bands(t.g, t.levels, t.extend, t.map);
       const colors = _colorsOf(ax, t, _layers(t));
+      if (t.map.inv && (t.g.nx - 1) * (t.g.ny - 1) > _RASTER_CELLS && !t.opts.vector) {
+        if (!c.lows) c.lows = _bandLows(t);
+        const key = `${xScale.a},${xScale.b},${yScale.a},${yScale.b},${rect.w}x${rect.h},${rect.dpr},${colors.join(',')}`;
+        if (!c.raster || c.raster.key !== key) c.raster = { key, ..._bandRaster(ax, t, xScale, yScale, rect, colors) };
+        ctx.restore();
+        _blit(ctx, rect.x, rect.y, rect.w, rect.h, c.raster.W, c.raster.H, c.raster.rgba, c.raster, false);
+        return;
+      }
+      if (!c.bands) c.bands = _bands(t.g, t.levels, t.extend, t.map);
       c.bands.bands.forEach((b, k) => {
         if (!b.starts.length) return;
         ctx.beginPath();
@@ -4729,12 +4772,230 @@ _KINDS.pcolormesh = {
   },
 };
 
+// -- legend.js --
+
+// The legend — matplotlib's.
+//
+//   legend() · legend(labels) · legend(handles, labels) · legend({loc, bbox_to_anchor, ncols,
+//   title, fontsize, frameon, framealpha, labelcolor})
+//
+// An entry is every labelled trace (a label starting with '_' is hidden, as in matplotlib), in
+// the order drawn; legend(labels) labels the drawn traces in order; handles are what the
+// chart calls returned. loc: a name or matplotlib's code; 'best' (the default) takes the slot
+// that covers the least data, matplotlib's way, trying upper right first. bbox_to_anchor
+// (x, y[, w, h]) in axes fractions puts the legend's `loc` corner at that point — outside the
+// axes with (1.01, 1) + 'upper left', and the layout leaves room for it.
+
+
+
+
+
+
+
+
+const _LOCS = ['best', 'upper right', 'upper left', 'lower left', 'lower right', 'right', 'center left', 'center right', 'lower center', 'upper center', 'center'];
+const _SIZES = { 'xx-small': -4, 'x-small': -3, small: -2, medium: 0, large: 2, 'x-large': 4, 'xx-large': 6 };
+
+Axes.prototype.legend = function (a, b, c) {
+  let handles = null, labels = null, opts = {};
+  if (_plainOpts(a) && !Array.isArray(a)) opts = a;
+  else if (Array.isArray(a) && Array.isArray(b)) { handles = a; labels = b; if (_plainOpts(c)) opts = c; }
+  else if (Array.isArray(a) || _isArrayLike(a)) { labels = Array.from(a, String); if (_plainOpts(b)) opts = b; }
+  const o = { ...opts };
+  if (o.handles) { handles = o.handles; delete o.handles; }
+  if (o.labels) { labels = Array.from(o.labels, String); delete o.labels; }
+  const known = ['loc', 'bbox_to_anchor', 'ncol', 'ncols', 'title', 'fontsize', 'title_fontsize', 'frameon', 'framealpha', 'labelcolor', 'facecolor', 'edgecolor', 'markerscale', 'borderaxespad', '_kw'];
+  for (const k of Object.keys(o)) if (!known.includes(k)) _warn('legend.' + k, `legend() has no option '${k}'${['shadow', 'fancybox', 'mode', 'handlelength', 'columnspacing'].includes(k) ? ' (not supported yet)' : ''}`, this._strict);
+  if (o.loc != null && typeof o.loc === 'string' && !_LOCS.includes(o.loc) && !['top', 'bottom', 'left'].includes(o.loc)) _warn('legend.loc.' + o.loc, `legend(): loc '${o.loc}' is not a place; use ${_LOCS.join(', ')}`, this._strict);
+  this._legend = true;
+  this._legendOpts = { ...o, handles, labels };
+  return this;
+};
+
+// the entries: [{label, color, kind: 'line' | 'marker' | 'patch', marker, linestyle, alpha}]
+function _entries(ax) {
+  const th = ax._theme, lo = ax._legendOpts;
+  const entryOf = (t, label) => {
+    let color = t.opts.color;
+    if (!color && t.cvals) color = getCmap(t.opts.cmap || th.ramp || 'viridis')(0.5);
+    if (!color && t.colors) color = t.colors[0];
+    if (!color && t.color) color = t.color;
+    const k = _KINDS[t.type], kl = k && k.legend ? k.legend(ax, t) : null;
+    const patch = kl ? !!kl.patch : !!(k && k.patch);
+    const marker = t.type === 'scatter' || (t.type === 'line' && t.opts.marker && _noLine(t.opts.linestyle));
+    return {
+      label: String(label), color: (kl && kl.color) || color || th.cycle[0],
+      kind: patch ? 'patch' : marker ? 'marker' : 'line',
+      marker: t.opts.marker || 'o', linestyle: t.opts.linestyle, linewidth: t.opts.linewidth,
+      lineMarker: t.type === 'line' && t.opts.marker && !_noLine(t.opts.linestyle) ? t.opts.marker : null,
+      alpha: t.opts.alpha,
+    };
+  };
+  const drawn = ax._traces.filter((t) => t.opts && t.type !== 'text' && t.type !== 'bar_label' && t.type !== 'annotate');
+  if (lo.handles) {
+    return lo.handles.map((h, i) => {
+      const t = h && (h._trace || (h[0] && h[0]._trace)) ? (h._trace || h[0]._trace) : drawn.find((d) => d === h);
+      const label = lo.labels ? lo.labels[i] : t && t.opts.label;
+      return t && label != null ? entryOf(t, label) : null;
+    }).filter(Boolean);
+  }
+  if (lo.labels) return drawn.slice(0, lo.labels.length).map((t, i) => entryOf(t, lo.labels[i]));
+  return drawn.filter((t) => t.opts.label != null && t.opts.label !== '' && !String(t.opts.label).startsWith('_')).map((t) => entryOf(t, t.opts.label));
+}
+
+// its size, laid out in ncols columns (entries fill down each column, matplotlib's order)
+function _box(ax, entries) {
+  const th = ax._theme, lo = ax._legendOpts;
+  const fs = lo.fontsize == null ? (th.font_size || 11) - 1 : typeof lo.fontsize === 'number' ? lo.fontsize : (th.font_size || 11) + (_SIZES[lo.fontsize] ?? 0);
+  const font = `${fs}px ${th.mono}`;
+  const ncols = Math.max(1, (lo.ncols ?? lo.ncol ?? 1) | 0);
+  const rows = Math.ceil(entries.length / ncols);
+  const lineH = fs + 5, pad = 6, swatch = 22;
+  const colW = [];
+  for (let c = 0; c < ncols; c++) {
+    let w = 0;
+    for (let r = 0; r < rows; r++) { const e = entries[c * rows + r]; if (e) w = Math.max(w, _textW(font, e.label)); }
+    colW.push(w + swatch);
+  }
+  const titleFont = lo.title ? `bold ${fs}px ${th.mono}` : null;
+  const titleH = lo.title ? lineH : 0;
+  const w = Math.max(colW.reduce((s, x) => s + x, 0) + (ncols - 1) * 10, lo.title ? _textW(titleFont, lo.title) : 0) + pad * 2;
+  const h = rows * lineH + titleH + pad * 2;
+  return { w, h, rows, ncols, colW, lineH, pad, font, titleFont, titleH, swatch };
+}
+
+// where it goes: anchored (bbox_to_anchor) or in the plot area, at loc ('best': least data)
+function _place(ax, B, plot) {
+  const lo = ax._legendOpts;
+  let loc = lo.loc ?? 'best';
+  if (typeof loc === 'number') loc = _LOCS[loc] || 'best';
+  const at = (name, x0, y0, W, H, inset) => {
+    const right = name.includes('right'), left = name.includes('left'), upper = name.includes('upper'), lower = name.includes('lower');
+    return {
+      x: right ? x0 + W - B.w - inset : left ? x0 + inset : x0 + (W - B.w) / 2,
+      y: upper ? y0 + inset : lower ? y0 + H - B.h - inset : y0 + (H - B.h) / 2,
+    };
+  };
+  if (lo.bbox_to_anchor) {
+    const b = Array.from(lo.bbox_to_anchor, Number);
+    const ax0 = plot.x + b[0] * plot.w, ay0 = plot.y + (1 - b[1]) * plot.h;
+    const name = loc === 'best' ? 'upper left' : loc;
+    if (b.length === 4) return at(name, ax0, plot.y + (1 - b[1] - b[3]) * plot.h, b[2] * plot.w, b[3] * plot.h, 0);
+    // a point: the legend's `loc` corner sits on it
+    const right = name.includes('right'), left = name.includes('left'), upper = name.includes('upper'), lower = name.includes('lower');
+    return { x: right ? ax0 - B.w : left ? ax0 : ax0 - B.w / 2, y: upper ? ay0 : lower ? ay0 - B.h : ay0 - B.h / 2 };
+  }
+  if (loc !== 'best') return at(loc, plot.x, plot.y, plot.w, plot.h, 6);
+  // best: the candidate slot with the fewest data points (and bars) under it; matplotlib's order
+  const pts = _dataPoints(ax);
+  let bestPos = null, bestN = Infinity;
+  for (const name of _LOCS.slice(1)) {
+    const p = at(name, plot.x, plot.y, plot.w, plot.h, 6);
+    let n = 0;
+    for (let i = 0; i < pts.length; i += 2) if (pts[i] >= p.x && pts[i] <= p.x + B.w && pts[i + 1] >= p.y && pts[i + 1] <= p.y + B.h) n++;
+    if (n < bestN) { bestN = n; bestPos = p; if (!n) break; }
+  }
+  return bestPos;
+}
+
+// the drawn data, as pixel points (sampled: at most ~4000 per trace), for loc='best'
+function _dataPoints(ax) {
+  const v = ax.view, out = [];
+  if (!v) return out;
+  const push = (x, y) => { const px = v.xScale.transform(x), py = v.yScale.transform(y); if (px - px === 0 && py - py === 0) out.push(px, py); };
+  for (const t of ax._traces) {
+    if ((t.type === 'line' || t.type === 'scatter' || t.type === 'errorbar') && t.x && t.y) {
+      const n = t.x.length, step = Math.max(1, Math.floor(n / 4000));
+      for (let i = 0; i < n; i += step) {
+        push(t.x[i], t.y[i]);
+        // a line's segments count along their length, not only at the vertices
+        if (t.type === 'line' && i + step < n) for (let k = 1; k < 4; k++) push(t.x[i] + (t.x[i + step] - t.x[i]) * k / 4, t.y[i] + (t.y[i + step] - t.y[i]) * k / 4);
+      }
+    } else if (t._cache && t._cache.rects) {
+      const R = t._cache.rects;
+      for (let i = 0; i < R.x0.length; i++) for (let k = 0; k <= 4; k++) for (let q = 0; q <= 4; q++) push(R.x0[i] + (R.x1[i] - R.x0[i]) * k / 4, R.y0[i] + (R.y1[i] - R.y0[i]) * q / 4);
+    } else if (t._cache && t._cache.hrects) {
+      const R = t._cache.hrects;
+      for (let i = 0; i < R.x0.length; i++) for (let k = 0; k <= 2; k++) for (let q = 0; q <= 4; q++) push(R.x0[i] + (R.x1[i] - R.x0[i]) * k / 2, R.y0[i] + (R.y1[i] - R.y0[i]) * q / 4);
+    }
+  }
+  return out;
+}
+
+// how far an anchored legend reaches past the plot area (the layout makes room)
+Axes.prototype._legendOverflow = function (plot) {
+  if (!this._legend || !this._legendOpts.bbox_to_anchor) return null;
+  const entries = _entries(this);
+  if (!entries.length) return null;
+  const B = _box(this, entries), p = _place(this, B, plot);
+  return {
+    left: Math.max(0, plot.x - p.x), right: Math.max(0, p.x + B.w - (plot.x + plot.w)),
+    top: Math.max(0, plot.y - p.y), bottom: Math.max(0, p.y + B.h - (plot.y + plot.h)),
+  };
+};
+
+Axes.prototype._renderLegend = function (ctx, plotX, plotY, plotW, plotH) {
+  const th = this._theme, lo = this._legendOpts;
+  const entries = _entries(this);
+  if (!entries.length) return;
+  const B = _box(this, entries);
+  const p = _place(this, B, { x: plotX, y: plotY, w: plotW, h: plotH });
+  if (!p) return;
+  const { x: lx, y: ly } = p;
+  ctx.save();
+  if (lo.frameon !== false) {
+    ctx.globalAlpha = lo.framealpha != null ? +lo.framealpha : 1;
+    ctx.fillStyle = _cssColor(lo.facecolor) || th.panel;
+    ctx.fillRect(lx, ly, B.w, B.h);
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = _cssColor(lo.edgecolor) || th.panel_border;
+    ctx.lineWidth = 0.5;
+    ctx.strokeRect(lx, ly, B.w, B.h);
+  }
+  const text = this._textColor || th.foreground;
+  if (lo.title) {
+    ctx.font = B.titleFont; ctx.fillStyle = text; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(lo.title, lx + B.w / 2, ly + B.pad + B.lineH / 2);
+  }
+  ctx.font = B.font;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  let cx = lx + B.pad;
+  for (let c = 0; c < B.ncols; c++) {
+    for (let r = 0; r < B.rows; r++) {
+      const e = entries[c * B.rows + r];
+      if (!e) continue;
+      const ey = ly + B.pad + B.titleH + r * B.lineH + B.lineH / 2;
+      ctx.fillStyle = e.color; ctx.strokeStyle = e.color;
+      if (e.kind === 'marker') {
+        ctx.beginPath(); _pathMarker(ctx, _markerShape(e.marker, 3.5), cx + 8, ey);
+        if (e.marker === '+' || e.marker === 'x' || e.marker === '|' || e.marker === '_') { ctx.lineWidth = 1.5; ctx.stroke(); } else ctx.fill();
+      } else if (e.kind === 'patch') {
+        ctx.globalAlpha = e.alpha != null ? e.alpha : 1;
+        ctx.fillRect(cx + 2, ey - 4, 12, 8);
+        ctx.globalAlpha = 1;
+      } else {
+        ctx.lineWidth = Math.min(4, e.linewidth || 1.5);
+        ctx.setLineDash(dashArray(e.linestyle));
+        ctx.beginPath(); ctx.moveTo(cx, ey); ctx.lineTo(cx + 16, ey); ctx.stroke();
+        ctx.setLineDash([]);
+        if (e.lineMarker) { ctx.beginPath(); _pathMarker(ctx, _markerShape(e.lineMarker, 3), cx + 8, ey); ctx.fill(); }
+      }
+      ctx.fillStyle = lo.labelcolor === 'linecolor' ? e.color : _cssColor(lo.labelcolor) || text;
+      ctx.fillText(e.label, cx + B.swatch, ey);
+    }
+    cx += B.colW[c] + 10;
+  }
+  ctx.restore();
+};
+
 // -- figure.js --
 
 // Figure — canvas management, subplot grid, DPI handling
 
 
 // the chart kinds beyond the core: they add to Axes.prototype, so they load after axes.js
+
 
 
 

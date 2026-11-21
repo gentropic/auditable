@@ -1,5 +1,52 @@
 # @gcu/plot changelog
 
+## 0.3.0 — the charts (M2, unreleased)
+
+The second milestone of `plot-world-class`: the charts models reached for and hand-wrote
+around, a layout measured from its labels, the theme shared with `@gcu/condenser`, and a
+reference written for models ([API.md](API.md), also `llms.txt`; types in `index.d.ts`).
+
+**Charts.** `boxplot` (matplotlib's own statistics — checked against `cbook.boxplot_stats`),
+`contour` / `contourf` (marching triangles about each cell's centre: lines and bands from one
+geometry, saddles by the centre average, bands drawn bottom-up so no seams), `pcolormesh`
+(even meshes as one image, uneven and curvilinear ones by cell), `imshow(Z)` with matplotlib's
+defaults, `errorbar`, `fill_between` / `fill_betweenx`, `step` and `drawstyle`, `axhspan` /
+`axvspan`, `annotate`, `bar_label`, stacked bars (`bottom`), `align`, per-bar widths and
+colours; `hist` with several datasets (side by side or stacked), `histtype`, `orientation`,
+`bottom`, `log`, and numpy 2's bin rules (`'auto'`, `'fd'`, …) to numpy's counts.
+
+**Colour.** `Normalize`, `LogNorm`, `TwoSlopeNorm`, `CenteredNorm`, `BoundaryNorm`,
+`ListedColormap`, `LinearSegmentedColormap.from_list`; one norm per render, drawn by the
+colorbar too. Colorbars follow their mappable, with ticks from the norm, `ticks`, `format`,
+`extend` triangles and class bands. The ColorBrewer and matplotlib colour maps by name, `_r`
+for any; an unknown name warns (it drew viridis silently).
+
+**Axes.** Margins measured from the real tick labels, titles, twin axes, colorbar and an
+outside legend; ticks sized to the axis's pixel length with the decimals the step needs.
+Category axes from strings. `set_xticks(ticks, labels, {rotation})` and friends, `plt.xticks`.
+Inverted and partial limits (`set_ylim(500, 0)`, `set_xlim(left=0)`), `invert_yaxis`,
+`margins` with matplotlib's sticky edges (bars on 0, images tight), `axis(…)`,
+`subplots(sharex, sharey)`, `zorder`. `legend(loc='best')` avoids the data;
+`bbox_to_anchor` outside the axes; `ncols`, `title`, `frameon`, `legend(labels)`,
+`legend(handles, labels)`. Text in axes coordinates, rotated, named sizes; text, annotations
+and bar labels aren't clipped (matplotlib's `clip_on=False`).
+
+**Themes.** `@gcu/theme`'s keys (shared with `@gcu/condenser`'s view): per-figure themes
+(`subplots({theme})`, `fig.set_theme`, `themeFromCSS(el)`), `style.use` the default.
+matplotlib's light styles are `paper` (white); the dark default is Switchboard basalt. The
+cycle and the format-string letters (`'r--'`) are matplotlib's own now. Text is the theme's
+monospace stack, measured at 0.6 em a character everywhere, so a figure lays out identically
+live, recorded and replayed.
+
+**Returns.** Chart calls return matplotlib's containers (`[line]`, a BarContainer, `[n, bins,
+patches]`, the boxplot dict, a ContourSet, mappables) with `.axes`; every other name reads the
+axes, so chaining still works.
+
+**Tests.** `test/plot-charts.test.mjs` (31): the layout, ticks, categories, limits, sharing,
+themes, every mark, numpy's bin counts, matplotlib's boxplot statistics, contours on analytic
+fields, the norms and colorbars, an edge-case matrix (13 chart kinds × empty / one / constant /
+NaN / ±Inf / negative-on-log / 1e9 / 1e-9 / typed arrays) and golden draw lists per chart type.
+
 ## 0.2.0 — the engine (2026-11-20)
 
 The first milestone of `plot-world-class` (a spec from the MineMind seat, whose model-written

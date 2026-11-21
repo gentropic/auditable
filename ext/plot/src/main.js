@@ -19,6 +19,7 @@ import './marks.js';
 import './box.js';
 import './contour.js';
 import './mesh.js';
+import './legend.js';
 import './figure.js';
 export { subplots, plot, scatter, imshow, hist, bar, cmap, pltAdder, rcParams, VERSION, colors } from './api.js';
 export { themeFromCSS } from './style.js';

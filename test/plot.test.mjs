@@ -178,8 +178,8 @@ describe('Colormaps', () => {
 
 describe('parseFormat', () => {
   it('parses color only', () => {
-    assert.equal(parseFormat('r').color, '#ee4444');
-    assert.equal(parseFormat('b').color, '#4488ff');
+    assert.equal(parseFormat('r').color, '#ff0000');
+    assert.equal(parseFormat('b').color, '#0000ff');
   });
 
   it('parses linestyle only', () => {
@@ -198,20 +198,20 @@ describe('parseFormat', () => {
 
   it('parses color + linestyle', () => {
     const f = parseFormat('r--');
-    assert.equal(f.color, '#ee4444');
+    assert.equal(f.color, '#ff0000');
     assert.equal(f.linestyle, '--');
   });
 
   it('parses color + linestyle + marker', () => {
     const f = parseFormat('r--o');
-    assert.equal(f.color, '#ee4444');
+    assert.equal(f.color, '#ff0000');
     assert.equal(f.linestyle, '--');
     assert.equal(f.marker, 'o');
   });
 
   it('parses color + marker (no linestyle): markers only, as matplotlib', () => {
     const f = parseFormat('bo');
-    assert.equal(f.color, '#4488ff');
+    assert.equal(f.color, '#0000ff');
     assert.equal(f.marker, 'o');
     assert.equal(f.linestyle, 'None');
   });
@@ -332,7 +332,7 @@ describe('Axes', () => {
     const ax = new Axes();
     ax.plot([0, 1], [0, 1], 'r--o');
     const opts = ax._traces[0].opts;
-    assert.equal(opts.color, '#ee4444');
+    assert.equal(opts.color, '#ff0000');
     assert.equal(opts.linestyle, '--');
     assert.equal(opts.marker, 'o');
   });

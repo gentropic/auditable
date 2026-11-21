@@ -7,6 +7,7 @@ import './marks.js';
 import './box.js';
 import './contour.js';
 import './mesh.js';
+import './legend.js';
 import { _resolve, _font } from './style.js';
 import { _checkOpts, _noop } from './opts.js';
 import { recordingContext, replay } from './record.js';

@@ -39,11 +39,14 @@ function drawOnce(fig, mode) {
 }
 
 // draw twice on the same figure: the first draw, then the same view again
-function firstAndAgain(fig, mode) {
+// first = the chart call (putting the data on the axes: ingest, counting) + the first draw, as
+// BENCH.md defines it; again = the same view drawn a second time
+function firstAndAgain(fig, mode, ingestMs = 0) {
   const a = drawOnce(fig, mode);
   const b = drawOnce(fig, mode);
-  return { first: a.ms, again: b.ms, ops: a.ops };
+  return { first: ingestMs + a.ms, again: b.ms, ops: a.ops };
 }
+const ingest = (fn) => { const t0 = now(); fn(); return now() - t0; };
 
 export const CASES = {
   async trivial(P, mode) {
@@ -58,44 +61,45 @@ export const CASES = {
     const n = 1e6, x = normals(n, 1), y = normals(n, 2), c = new Float64Array(n);
     for (let i = 0; i < n; i++) c[i] = x[i] * x[i] + y[i] * y[i];
     const { fig, ax } = P.subplots(1, 1, { figsize: [W, H] });
-    ax.scatter(x, y, { c, s: 2.07, cmap: 'viridis' });
-    return firstAndAgain(fig, mode);
+    const t = ingest(() => ax.scatter(x, y, { c, s: 2.07, cmap: 'viridis' }));
+    return firstAndAgain(fig, mode, t);
   },
   async scatter_500k(P, mode) {
     const n = 5e5, x = normals(n, 3), y = normals(n, 4), c = new Float64Array(n);
     for (let i = 0; i < n; i++) c[i] = x[i] - y[i];
     const { fig, ax } = P.subplots(1, 1, { figsize: [W, H] });
-    ax.scatter(x, y, { c, s: 2.07, cmap: 'viridis' });
-    return firstAndAgain(fig, mode);
+    const t = ingest(() => ax.scatter(x, y, { c, s: 2.07, cmap: 'viridis' }));
+    return firstAndAgain(fig, mode, t);
   },
   async line_1M(P, mode) {
     const n = 1e6, x = new Float64Array(n), y = new Float64Array(n), e = normals(n, 5);
     let acc = 0;
     for (let i = 0; i < n; i++) { x[i] = i; acc += e[i]; y[i] = acc; }
     const { fig, ax } = P.subplots(1, 1, { figsize: [W, H] });
-    ax.plot(x, y);
-    return firstAndAgain(fig, mode);
+    const t = ingest(() => ax.plot(x, y));
+    return firstAndAgain(fig, mode, t);
   },
   async hist_10M(P, mode) {
     const data = normals(1e7, 6);
     const { fig, ax } = P.subplots(1, 1, { figsize: [W, H] });
-    ax.hist(data, { bins: 100 });
-    return firstAndAgain(fig, mode);
+    const t = ingest(() => ax.hist(data, { bins: 100 }));
+    return firstAndAgain(fig, mode, t);
   },
   async imshow_2000(P, mode) {
     const nx = 2000, ny = 2000, z = new Float64Array(nx * ny);
     for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) z[j * nx + i] = Math.sin(i / 97) * Math.cos(j / 61) + (i + j) / 4000;
     const { fig, ax } = P.subplots(1, 1, { figsize: [W, H] });
-    ax.imshow(z, nx, ny, { cmap: 'viridis' });
-    return firstAndAgain(fig, mode);
+    const t = ingest(() => ax.imshow(z, nx, ny, { cmap: 'viridis' }));
+    return firstAndAgain(fig, mode, t);
   },
   async contourf_500(P, mode) {
     const n = 500, z = new Float64Array(n * n);
     for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) z[j * n + i] = Math.sin(i / 37) * Math.cos(j / 23);
     const { fig, ax } = P.subplots(1, 1, { figsize: [W, H] });
     if (typeof ax.contourf !== 'function') return { na: 'no contourf' };
-    ax.contourf(z, { levels: 10 });
-    return firstAndAgain(fig, mode);
+    z.shape = [n, n];                                         // a 2D grid, as contourf takes it
+    const t = ingest(() => ax.contourf(z, { levels: 10 }));
+    return firstAndAgain(fig, mode, t);
   },
   async pick_1M(P, mode) {
     if (mode === 'record') return { na: 'canvas only' };

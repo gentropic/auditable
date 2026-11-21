@@ -1,6 +1,8 @@
 # @gcu/plot
 
-Matplotlib-style plotting for the browser. Canvas 2D, zero runtime dependencies, no WebGL, no WASM, no workers, no network: it runs under a `connect-src 'none'` page, in a worker, and in Node (as draw lists). If you know matplotlib, you know the API: `subplots`, `plot`, `scatter`, `imshow`, `hist`, `bar`, …
+Matplotlib-style plotting for the browser. Canvas 2D, zero runtime dependencies, no WebGL, no WASM, no workers, no network: it runs under a `connect-src 'none'` page, in a worker, and in Node (as draw lists). If you know matplotlib, you know the API: `plot`, `scatter`, `bar`, `hist`, `boxplot`, `imshow`, `contour`/`contourf`, `pcolormesh`, `errorbar`, `fill_between`, norms and colorbars, category axes, shared axes, legends that stay out of the data.
+
+**The full reference is [API.md](API.md)** (also `llms.txt`, written for models): every call, its options and defaults, what it returns, how plot differs from matplotlib, and what it doesn't do yet. Types: `index.d.ts`.
 
 Part of [Auditable](https://github.com/gentropic/auditable). Pre-1.0 — APIs may break on minor version bumps.
 
@@ -71,13 +73,23 @@ Mismatched inputs are errors that say what came: `scatter: c has 1,000 values bu
 
 NaN and ±Inf never throw and never reach an axis range. A line breaks at NaN (matplotlib's rule); a NaN colour value draws nothing; NaN image cells are transparent; histograms leave NaN out; a log axis ignores values ≤ 0.
 
+## Charts
+
+- **Lines and points**: `plot` (format strings in any order, `drawstyle`), `step`, `scatter` (sizes in points², colour-mapped or per-point colours, matplotlib's markers), `errorbar`, `fill_between`.
+- **Bars and distributions**: `bar` / `barh` (stacked with `bottom`, `bar_label`), `hist` (several datasets side by side or stacked, `histtype`, numpy's bin rules), `boxplot` (matplotlib's own statistics, checked against `cbook.boxplot_stats`).
+- **Fields**: `imshow` (2D arrays, origin, extent, NaN transparent), `pcolormesh` (uneven or curvilinear meshes), `contour` / `contourf` (marching triangles: lines and bands from one geometry, no seams).
+- **Colour**: `Normalize`, `LogNorm`, `TwoSlopeNorm`, `CenteredNorm`, `BoundaryNorm`, `ListedColormap`; the ColorBrewer and matplotlib colour maps; colorbars that follow their mappable, with ticks, `format`, `extend` and class bands.
+- **Axes**: category axes from strings, `set_xticks(ticks, labels, {rotation})`, inverted and partial limits, `margins` with matplotlib's sticky edges, `axis(…)`, `sharex` / `sharey`, `twinx` / `twiny`, `legend(loc='best')` that avoids the data and `bbox_to_anchor` outside the axes, `annotate`, spans.
+
+The layout is measured from the real labels, ticks are sized to the axis so labels never collide, and nothing a chart call doesn't understand passes silently.
+
 ## Histograms
 
-`hist(x, { bins, range, weights, density, cumulative })` counts exactly as `numpy.histogram` does (checked against numpy's own output: values on edges, non-representable edges, the inclusive last edge). `plt.hist` returns `[counts, edges, canvas]`, matplotlib's order.
+`hist(x, { bins, range, weights, density, cumulative })` counts exactly as `numpy.histogram` does (checked against numpy's own output: values on edges, non-representable edges, the inclusive last edge), and `bins='auto' | 'fd' | 'sturges' | 'sqrt' | 'rice' | 'scott'` give numpy 2's bin counts. `ax.hist` returns `[n, bins, patches]`; `plt.hist` returns `[counts, edges, canvas]`.
 
 ## Themes
 
-`plt.style.use('default')` (light, matplotlib's look) or `'dark_background'` (the default here); an unknown name warns. A figure keeps the palette in force when it was made — matplotlib's rule — so two figures on one page can differ, and a later `style.use` doesn't repaint them. `subplots(..., { theme: { bgcolor, textColor, … } })` overrides keys for one figure.
+A theme is [`@gcu/theme`](../theme)'s keys, shared with `@gcu/condenser`'s 3D view, so one theme dresses a chart and the view beside it. `plt.style.use('default')` (white, matplotlib's look) or `'dark_background'` (the default here), or a theme by name: `'dark'` · `'light'` · `'paper'`; an unknown name warns. A figure keeps the theme in force when it was made — matplotlib's rule. `subplots(..., { theme })`, `fig.set_theme(...)` and `themeFromCSS(el)` (a page's design tokens) dress one figure. The colour cycle is matplotlib's tab10.
 
 ## Without a DOM: figures as data
 
@@ -94,12 +106,10 @@ replay(ctx, pltAdder.shown()[0].toDrawList());   // on the page
 
 ## Where it differs from matplotlib
 
-Marker sizes are matplotlib's: `scatter`'s `s` is the area in points² (default 36), `markersize` the diameter in points (default 6), marker edge widths in points, all at the figure's `dpi`. Line widths and font sizes are still pixels. Otherwise:
+Marker sizes are matplotlib's: `scatter`'s `s` is the area in points² (default 36), `markersize` the diameter in points (default 6), marker edge widths in points, all at the figure's `dpi`. Line widths and font sizes are still pixels. Text is the theme's monospace stack. The rest is in [API.md](API.md#differs-from-matplotlib); the main ones:
 
-- The single-letter colours in a format string (`'r--'`) are plot's softer palette; colour *names* (`color='r'`, `'tab:blue'`, `'C3'`) are matplotlib's.
-- `axhline` / `axvline` default to a neutral grey, not the colour cycle.
-- `imshow(data, nx, ny)` takes the grid flat with its size, origin `'lower'`; for a 2D array use `matshow(Z)` (origin `'upper'`).
-- Not yet: categorical axes, `boxplot`, `contour`, custom ticks, `sharex`/`sharey`, legend outside the axes. Each warns when asked for.
+- `plt.plot` / `plt.scatter` / `plt.bar` / `plt.hist` / `plt.imshow` each make a new figure and return its canvas; use `subplots()` and `ax.…` to draw several things on one axes.
+- `imshow(data, nx, ny)` is plot's flat form (origin `'lower'`); `imshow(Z)` with a 2D array is matplotlib's.
 
 ## Figure layout extras
 

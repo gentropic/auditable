@@ -1,0 +1,87 @@
+{
+  "label": "m2",
+  "entry": "/ext/plot/index.js",
+  "at": "2026-11-21T17:05:55.555Z",
+  "machine": "AMD Ryzen AI 9 HX 370 w/ Radeon 890M · 24 threads · 63 GiB",
+  "chromium": "148.0.7778.96",
+  "results": {
+    "trivial/canvas": {
+      "first": 18.19999998807907,
+      "again": null,
+      "ops": null
+    },
+    "trivial/record": {
+      "first": 12.600000023841858,
+      "again": null,
+      "ops": 178
+    },
+    "scatter_1M/canvas": {
+      "first": 105.79999995231628,
+      "again": 0.8999999761581421,
+      "ops": null
+    },
+    "scatter_1M/record": {
+      "first": 107.19999998807907,
+      "again": 0.3999999761581421,
+      "ops": 184
+    },
+    "scatter_500k/canvas": {
+      "first": 62.89999997615814,
+      "again": 0.8999999761581421,
+      "ops": null
+    },
+    "scatter_500k/record": {
+      "first": 64.20000004768372,
+      "again": 0.5,
+      "ops": 170
+    },
+    "line_1M/canvas": {
+      "first": 31.400000035762787,
+      "again": 7.300000011920929,
+      "ops": null
+    },
+    "line_1M/record": {
+      "first": 23.499999940395355,
+      "again": 13.800000011920929,
+      "ops": 10693
+    },
+    "hist_10M/canvas": {
+      "first": 73.19999998807907,
+      "again": 1,
+      "ops": null
+    },
+    "hist_10M/record": {
+      "first": 62.200000047683716,
+      "again": 0.40000003576278687,
+      "ops": 371
+    },
+    "imshow_2000/canvas": {
+      "first": 51.40000003576279,
+      "again": 1.100000023841858,
+      "ops": null
+    },
+    "imshow_2000/record": {
+      "first": 64,
+      "again": 0.5,
+      "ops": 179
+    },
+    "contourf_500/canvas": {
+      "first": 67.59999996423721,
+      "again": 0.8999999761581421,
+      "ops": null
+    },
+    "contourf_500/record": {
+      "first": 61.90000003576279,
+      "again": 0.30000001192092896,
+      "ops": 166
+    },
+    "pick_1M/canvas": {
+      "first": 11.899999976158142,
+      "again": 0.016,
+      "ops": null
+    },
+    "pick_1M/record": {
+      "note": "n/a: canvas only"
+    }
+  }
+}

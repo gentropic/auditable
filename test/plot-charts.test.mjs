@@ -428,3 +428,109 @@ test("colour maps: ColorBrewer and matplotlib names, '_r' for any, listed maps; 
   getCmap('nope');
   assert.ok(warnings.some((w) => /no colour map 'nope'/.test(w)));
 });
+
+// ── the edge-case matrix and golden draw lists (M2 chunk 4) ──
+// Every chart kind against empty, one point, constant, NaN, ±Inf, negatives on a log axis,
+// 1e9 and 1e-9 magnitudes, and the typed-array kinds: it draws (or refuses with a named
+// 'plot:' error), its limits are finite, and no op carries a non-finite number.
+const CASES = {
+  empty: [], one: [3], constant: [2, 2, 2, 2], nan: [1, NaN, 3, 4], inf: [1, Infinity, -Infinity, 4],
+  negative: [-5, -1, 0, 2], big: [1e9, 1e9 + 5, 1e9 + 9, 1e9 + 2], tiny: [1e-9, 3e-9, 2e-9, 5e-9],
+  f32: Float32Array.of(1, 2, 3, 4), i16: Int16Array.of(-3, 0, 7, 2), u8: Uint8Array.of(0, 128, 255, 3),
+};
+const KINDS = {
+  plot: (ax, v) => ax.plot(v),
+  scatter: (ax, v) => ax.scatter(Array.from(v, (_, i) => i), v, { c: v }),
+  bar: (ax, v) => ax.bar(Array.from(v, (_, i) => i), v),
+  barh: (ax, v) => ax.barh(Array.from(v, (_, i) => i), v),
+  hist: (ax, v) => ax.hist(v),
+  boxplot: (ax, v) => ax.boxplot(v),
+  step: (ax, v) => ax.step(Array.from(v, (_, i) => i), v),
+  fill_between: (ax, v) => ax.fill_between(Array.from(v, (_, i) => i), v),
+  errorbar: (ax, v) => ax.errorbar(Array.from(v, (_, i) => i), v, { yerr: 0.5 }),
+  imshow: (ax, v) => ax.imshow([Array.from(v), Array.from(v)]),
+  pcolormesh: (ax, v) => ax.pcolormesh([Array.from(v), Array.from(v)]),
+  contour: (ax, v) => ax.contour([Array.from(v), Array.from(v).reverse(), Array.from(v)]),
+  contourf: (ax, v) => ax.contourf([Array.from(v), Array.from(v).reverse(), Array.from(v)]),
+};
+test('the edge-case matrix: every chart kind × empty / one / constant / NaN / ±Inf / negative-on-log / 1e9 / 1e-9 / typed arrays', () => {
+  const problems = [];
+  for (const [kind, make] of Object.entries(KINDS)) {
+    for (const [name, v] of Object.entries(CASES)) {
+      for (const log of name === 'negative' ? [false, true] : [false]) {
+        const { fig, ax } = fig1();
+        if (log) ax.set_yscale('log');
+        try { make(ax, v); }
+        catch (e) { if (!/^plot: /.test(e.message)) problems.push(`${kind}/${name}: threw ${e.message}`); continue; }
+        let list;
+        try { list = fig.toDrawList(); } catch (e) { problems.push(`${kind}/${name}${log ? '/log' : ''}: draw threw ${e.message}`); continue; }
+        const lim = [...ax.get_xlim(), ...ax.get_ylim()];
+        if (!lim.every(Number.isFinite)) problems.push(`${kind}/${name}${log ? '/log' : ''}: limits ${lim}`);
+        if (log && !(ax.get_ylim()[0] > 0)) problems.push(`${kind}/${name}/log: the log axis starts at ${ax.get_ylim()[0]}`);
+        for (const op of list.ops) for (const a of op) if (typeof a === 'number' && !Number.isFinite(a)) { problems.push(`${kind}/${name}: op ${op[0]} has ${a}`); break; }
+      }
+    }
+  }
+  assert.deepEqual(problems, []);
+});
+
+// golden draw lists: a fixed figure per chart type, its draw list hashed. A change here means
+// the drawing changed — intended (regenerate: UPDATE_GOLDEN=1 node --test test/plot-charts.test.mjs)
+// or not (a bug).
+const { createHash } = await import('node:crypto');
+const goldenPath = new URL('./fixtures/plot-golden.json', import.meta.url);
+const fsg = await import('node:fs');
+const GOLDEN_FIGS = {
+  line: (ax) => { ax.plot([0, 1, 2, 3], [1, 3, 2, 4], { label: 'a' }); ax.plot([0, 3], [2, 2], '--', { label: 'b' }); ax.legend(); ax.set_title('t'); },
+  scatter: (ax) => { const sc = ax.scatter([1, 2, 3, 4], [4, 1, 3, 2], { c: [0.1, 0.5, 0.7, 1], s: [10, 40, 90, 160] }); ax.colorbar(sc); },
+  bars: (ax) => { const c = ax.bar(['a', 'b', 'c'], [3, 5, 2]); ax.bar(['a', 'b', 'c'], [1, 1, 1], { bottom: [3, 5, 2] }); ax.bar_label(c); },
+  hist: (ax) => ax.hist([[1, 2, 2, 3, 3, 3, 4], [2, 3, 4, 4, 5]], { bins: 5, stacked: true }),
+  box: (ax) => ax.boxplot({ x: [1, 2, 3, 4, 10], y: [2, 3, 3, 4] }),
+  image: (ax) => { const im = ax.imshow([[1, 2, 3], [4, 5, 6]], { cmap: 'RdBu' }); ax.colorbar(im, { extend: 'both' }); },
+  contours: (ax) => { const Z = Array.from({ length: 8 }, (_, j) => Array.from({ length: 8 }, (_, i) => Math.hypot(i - 3.5, j - 3.5))); const cf = ax.contourf(Z, 5); ax.contour(Z, 5, { colors: 'k' }); ax.colorbar(cf); },
+  marks: (ax) => { ax.fill_between([0, 1, 2], [1, 2, 1], 0, { alpha: 0.4 }); ax.errorbar([0, 1, 2], [1, 2, 1], { yerr: 0.2, capsize: 3 }); ax.axhspan(0.5, 0.8); ax.annotate('p', [1, 2], { xytext: [1.5, 2.5], arrowprops: {} }); },
+  axes: (ax) => { ax.plot([1, 10, 100], [5, 50, 500]); ax.set_xscale('log'); ax.invert_yaxis(); ax.set_xticks([1, 10, 100], ['one', 'ten', 'hundred'], { rotation: 30 }); ax.grid(true); },
+};
+test('golden draw lists: one per chart type, the same every run', () => {
+  const got = {};
+  for (const [name, make] of Object.entries(GOLDEN_FIGS)) {
+    const { fig, ax } = fig1({ theme: 'paper' });
+    make(ax);
+    const json = JSON.stringify(fig.toDrawList());
+    got[name] = createHash('sha256').update(json).digest('hex').slice(0, 16);
+    assert.equal(createHash('sha256').update(JSON.stringify(fig.toDrawList())).digest('hex').slice(0, 16), got[name], `${name}: deterministic`);
+  }
+  if (process.env.UPDATE_GOLDEN || !fsg.existsSync(goldenPath)) fsg.writeFileSync(goldenPath, JSON.stringify(got, null, 2) + '\n');
+  assert.deepEqual(got, JSON.parse(fsg.readFileSync(goldenPath, 'utf8')));
+});
+
+test('contourf on a big grid rasterizes: one image op, each pixel in the band of the field at its centre', () => {
+  // a ramp z = x over a 300 × 300 grid (89,401 cells: the raster path)
+  const n = 300, Z = [];
+  for (let j = 0; j < n; j++) Z.push(Array.from({ length: n }, (_, i) => i));
+  const { fig, ax } = fig1({ theme: 'paper' });
+  const levels = [0, 50, 100, 150, 200, 250, 299];
+  ax.contourf(Z, levels, { colors: ['#ff0000', '#00ff00', '#0000ff', '#ffff00', '#00ffff', '#ff00ff'] });
+  const list = fig.toDrawList();
+  const img = list.ops.filter((o) => o[0] === 'image');
+  assert.equal(img.length, 1, 'one image');
+  const [, x, , w, , cols, rows, b64] = img[0];
+  const bytes = Buffer.from(b64, 'base64');
+  const want = [[255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 0], [0, 255, 255], [255, 0, 255]];
+  let bad = 0, checked = 0;
+  const row = Math.floor(rows / 2);
+  for (let px = 0; px < cols; px++) {
+    const xv = ax.view.xScale.inverse(x + ((px + 0.5) * w) / cols);
+    if (xv < 0.5 || xv > n - 1.5) continue;
+    const k = levels.findIndex((L, q) => xv >= L && xv < levels[q + 1]);
+    if (k < 0 || Math.abs(xv - levels[k]) < 0.6 || Math.abs(xv - levels[k + 1]) < 0.6) continue;   // skip pixels on an edge
+    const o = (row * cols + px) * 4;
+    checked++;
+    if (bytes[o] !== want[k][0] || bytes[o + 1] !== want[k][1] || bytes[o + 2] !== want[k][2]) bad++;
+  }
+  assert.ok(checked > 200, `checked ${checked}`);
+  assert.equal(bad, 0);
+  // the vector path draws the same bands on request
+  const v = fig1(); v.ax.contourf(Z, levels, { vector: true });
+  assert.equal(ops(v.fig).filter((o) => o[0] === 'image').length, 0);
+});

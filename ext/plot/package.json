@@ -1,7 +1,7 @@
 {
   "name": "@gcu/plot",
   "version": "0.2.0",
-  "description": "Matplotlib-style plotting for the browser: subplots, plot, scatter, imshow, hist, bar. Canvas-based, zero runtime dependencies.",
+  "description": "matplotlib for the browser: plot, scatter, bar, hist, boxplot, imshow, contour(f), pcolormesh, errorbar, fill_between, norms and colorbars, themes. Canvas 2D, zero runtime dependencies, strict-CSP safe.",
   "type": "module",
   "main": "src/api.js",
   "exports": {
@@ -17,6 +17,9 @@
   "files": [
     "src",
     "index.js",
+    "index.d.ts",
+    "API.md",
+    "llms.txt",
     "README.md",
     "CHANGELOG.md"
   ],
@@ -52,5 +55,6 @@
     "adderExports": [
       "plt"
     ]
-  }
+  },
+  "types": "./index.d.ts"
 }

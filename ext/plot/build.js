@@ -57,3 +57,17 @@ const outPath = path.join(__dirname, 'index.js');
 fs.writeFileSync(outPath, output);
 const size = fs.statSync(outPath).size;
 console.log(`Built ext/plot/index.js (${(size / 1024).toFixed(1)} KB)`);
+
+// API.md's "Unsupported" table comes from the SAME lists the warnings read (src/opts.js), so
+// the docs and the warnings can't drift; llms.txt is API.md, for models.
+const { _UNSUPPORTED, _NOOP_CALLS } = await import('./src/opts.js');
+const rows = [];
+const cell = (s) => String(s).replace(/\|/g, '\\|');                    // a | would split the table row
+for (const [fn, keys] of Object.entries(_UNSUPPORTED)) for (const [k, hint] of Object.entries(keys)) rows.push(`| \`${fn}(…, {${k}})\` | ${cell(hint)} |`);
+for (const [fn, hint] of Object.entries(_NOOP_CALLS)) rows.push(`| \`${fn}()\` | ${cell(hint)} |`);
+const apiPath = path.join(__dirname, 'API.md');
+let api = fs.readFileSync(apiPath, 'utf8');
+api = api.replace(/<!-- unsupported:begin -->[\s\S]*?<!-- unsupported:end -->/, `<!-- unsupported:begin -->\n| | instead |\n|---|---|\n${rows.join('\n')}\n<!-- unsupported:end -->`);
+fs.writeFileSync(apiPath, api);
+fs.writeFileSync(path.join(__dirname, 'llms.txt'), api);
+console.log(`Wrote ext/plot/API.md + llms.txt (${rows.length} unsupported entries, from src/opts.js)`);

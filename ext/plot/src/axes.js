@@ -453,7 +453,6 @@ export class Axes {
     return t;
   }
 
-  legend(opts) { this._legend = true; this._legendOpts = _checkOpts('legend', _plainOpts(opts) ? opts : {}, this._strict); return this; }
 
   colorbar(mappable, opts) {
     if (mappable && mappable._trace) { opts = { ...(_plainOpts(opts) ? opts : {}) }; opts.mappable = mappable._trace; }
@@ -650,6 +649,9 @@ export class Axes {
     if (L.twinXt) { top += 6 + L.twinXt.extent + 4; if (this._twinY._xlabel) top += fs + 6; }
     if (L.twinYt) right = Math.max(right, 4 + 6 + L.twinYt.maxW + 6 + (this._twin._ylabel ? fs + 4 : 0));
     if (cb) right = Math.max(right, 10 + 12 + 6 + cb.labelsW + 6 + (this._colorbarOpts.label ? fs + 4 : 0));
+    // a legend anchored outside the axes (bbox_to_anchor) gets room
+    const lo = this._legendOverflow ? this._legendOverflow({ x: L.plotX, y: L.plotY, w: L.plotW, h: L.plotH }) : null;
+    if (lo) { left += lo.left; right += lo.right + (lo.right ? 4 : 0); top += lo.top; bottom += lo.bottom; }
     // x tick labels hang past the ends of the axis: half a flat label, a whole rotated one
     if (on && !this._hideXTicks && !this._xtickLabelsOff && xt.values.length) {
       const k = xt.rot ? Math.cos((xt.rot * Math.PI) / 180) : 0.5;
@@ -1282,72 +1284,6 @@ export class Axes {
     if (o.rotation) ctx.rotate((-(o.rotation === 'vertical' ? 90 : +o.rotation || 0) * Math.PI) / 180);
     ctx.fillText(String(trace.text), 0, 0);
     ctx.restore();
-  }
-
-  _renderLegend(ctx, plotX, plotY, plotW, plotH) {
-    const th = this._theme;
-    const entries = [];
-    for (const t of this._traces) {
-      if (!t.opts.label) continue;
-      let color = t.opts.color;
-      if (!color && t.cvals) color = getCmap(t.opts.cmap || 'viridis')(0.5);
-      if (!color && t.colors) color = t.colors[0];
-      const k = _KINDS[t.type], kl = k && k.legend ? k.legend(this, t) : null;
-      entries.push({ label: String(t.opts.label), color: (kl && kl.color) || color || th.cycle[0], type: t.type, marker: t.opts.marker, noLine: _noLine(t.opts.linestyle), patch: kl ? !!kl.patch : !!(k && k.patch), alpha: t.opts.alpha });
-    }
-    if (!entries.length) return;
-
-    ctx.font = _font(th, -1);
-    const lineH = (th.font_size || 11) + 4;
-    const padding = 6;
-    let maxW = 0;
-    for (const e of entries) {
-      const w = _textW(ctx.font, e.label);
-      if (w > maxW) maxW = w;
-    }
-    const boxW = maxW + 24 + padding * 2;
-    const boxH = entries.length * lineH + padding * 2;
-
-    // position: default top-right. matplotlib's numeric codes map to the names; 'best'
-    // (code 0) is upper right until placement that avoids the data lands.
-    const _LOC = ['upper right', 'upper right', 'upper left', 'lower left', 'lower right', 'right', 'center left', 'center right', 'lower center', 'upper center', 'center'];
-    let loc = this._legendOpts.loc ?? 'upper right';
-    if (typeof loc === 'number') loc = _LOC[loc] || 'upper right';
-    loc = String(loc);
-    if (loc === 'best') loc = 'upper right';
-    let lx, ly;
-    if (loc.includes('right')) lx = plotX + plotW - boxW - 6;
-    else if (loc.includes('left')) lx = plotX + 6;
-    else lx = plotX + (plotW - boxW) / 2;
-    if (loc.includes('upper') || loc.includes('top')) ly = plotY + 6;
-    else if (loc.includes('lower') || loc.includes('bottom')) ly = plotY + plotH - boxH - 6;
-    else ly = plotY + (plotH - boxH) / 2;
-
-    ctx.fillStyle = th.panel;
-    ctx.fillRect(lx, ly, boxW, boxH);
-    ctx.strokeStyle = th.panel_border;
-    ctx.lineWidth = 0.5;
-    ctx.strokeRect(lx, ly, boxW, boxH);
-
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'middle';
-    for (let i = 0; i < entries.length; i++) {
-      const e = entries[i];
-      const ey = ly + padding + i * lineH + lineH / 2;
-      ctx.fillStyle = e.color;
-      if (e.type === 'scatter' || (e.type === 'line' && e.marker && e.noLine)) {
-        ctx.beginPath(); _pathMarker(ctx, _markerShape(e.marker || 'o', 3), lx + padding + 7, ey);
-        if (e.marker === '+' || e.marker === 'x') { ctx.strokeStyle = e.color; ctx.lineWidth = 1.5; ctx.stroke(); } else ctx.fill();
-      } else if (e.patch) {
-        ctx.globalAlpha = e.alpha != null ? e.alpha : 1;
-        ctx.fillRect(lx + padding + 2, ey - 4, 10, 8);
-        ctx.globalAlpha = 1;
-      } else {
-        ctx.fillRect(lx + padding, ey - 1, 14, 2);
-      }
-      ctx.fillStyle = this._textColor || th.foreground;
-      ctx.fillText(e.label, lx + padding + 18, ey);
-    }
   }
 
   // ── picking ───────────────────────────────────────────────────────────────────────────────

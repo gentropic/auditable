@@ -7,9 +7,9 @@
 
 import { _warn } from './opts.js';
 
-// plot's own softened single-letter colours (kept from 0.1: changing them would repaint every
-// existing figure); colour NAMES like color='r' get matplotlib's exact ones (color.js)
-const _colorChars = { b: '#4488ff', g: '#44bb44', r: '#ee4444', c: '#44dddd', m: '#dd44dd', y: '#dddd44', k: '#000000', w: '#ffffff' };
+// matplotlib's single-letter colours, exactly (M2: they were a softened palette, a departure a
+// model writing 'r--' from memory wouldn't expect); the same as color='r' (color.js)
+const _colorChars = { b: '#0000ff', g: '#008000', r: '#ff0000', c: '#00bfbf', m: '#bf00bf', y: '#bfbf00', k: '#000000', w: '#ffffff' };
 const _markerChars = new Set(['o', 's', '^', 'v', '<', '>', 'd', 'D', 'p', 'h', '*', '+', 'x', '.']);
 
 export function parseFormat(fmt) {

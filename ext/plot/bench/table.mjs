@@ -80,7 +80,17 @@ md += `
   list's one \`image\` op (a table encoder, ~6× faster than \`btoa\`). The canvas path skips it.
 - **line 1M "again"**: on a real canvas the decimated path is cached as a \`Path2D\`; a draw
   list has no Path2D, so recording writes its ~10k vertices each time.
-- **contourf** arrives with the chart types (M2).
+- **contourf 500 × 500** (M2): over 40,000 cells on a rectilinear grid, the bands rasterize —
+  each device pixel takes the band of the same four-triangle field the contour lines follow —
+  into one image (166 ops). Smaller grids, and \`{vector: true}\`, draw polygons: cells inside a
+  band merge into one rectangle per row-run, only crossed cells split into triangles. The first
+  M2 version drew a polygon per triangle per band: 22 million ops, 3 s recorded, over 90 s on a
+  canvas.
+- **What "first" times changed in M2**: the cases now time the chart call itself (ingest,
+  counting) as well as the first draw, as "first" was always defined. In 0.2.0 only the draw
+  was timed, which was the same thing while histograms counted lazily at draw time; M2's
+  \`hist()\` counts at the call (it returns \`[n, bins, patches]\`), and timing only the draw read
+  8 ms. The trivial figure's 13 → 18 ms is the bigger bundle's parse at import.
 `;
 fs.writeFileSync(path.join(here, 'BENCH.md'), md);
 console.log(md);
