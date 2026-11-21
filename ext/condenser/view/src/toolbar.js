@@ -132,7 +132,7 @@ export function createToolbar(host, api) {
     if (pop && pop.dataset.k === 'view') return closePop();
     const p = mkPop(); p.dataset.k = 'view';
     p.innerHTML = '<h4>view</h4>';
-    for (const [k, label] of [['plan', 'Plan (down)'], ['north', 'Looking north'], ['east', 'Looking east'], ['iso', 'Isometric']]) {
+    for (const [k, label] of [['plan', 'Plan (down)'], ['north', 'Looking north'], ['east', 'Looking east'], ['iso', 'Isometric (looking NE)'], ['three-quarter', 'Three-quarter (looking NE)']]) {
       const b = document.createElement('button');
       b.className = 'opt'; b.textContent = label;
       b.onclick = () => { api.setView(k); closePop(); };

@@ -252,7 +252,7 @@ first drag no longer orbits you off plan.
 - `lock_toggle=True` (default): a lock button in the toolbar, and `L` on the
   focused view, free it and lock it back. `False`: no unlock control.
 - `twist=True`: a locked plan view may still turn about the vertical (ctrl-drag).
-- While locked, `w.look('north')` moves the lock, and `w.look('iso')` frees it.
+- While locked, `w.look('north')` moves the lock, and `w.look('three-quarter')` (perspective) frees it.
 
 ### The camera is Python state
 
@@ -295,7 +295,18 @@ w.look("north", ortho=True)                          # …and look ALONG it
 
 A section is only readable when you look **along** it in parallel projection, so
 `look()` is the usual companion — `'plan'`, `'north'`, `'south'`, `'east'`,
-`'west'`, `'iso'`. The toolbar's *views* and *ortho* buttons do the same.
+`'west'`. The toolbar's *views* and *ortho* buttons do the same.
+
+For a figure there are two more families. Names say where you **look**, as `look()`
+does, so `'iso-ne'` looks north-east (CAD would call that "SW Isometric", after
+where the viewer stands):
+
+| name | | |
+|---|---|---|
+| `'iso'` = `'iso-ne'`, `'iso-nw'`, `'iso-se'`, `'iso-sw'` | true isometric: 35.264° down, orthographic | lockable |
+| `'three-quarter'` = `'three-quarter-ne'` (or `'3/4'`, `'3/4-ne'`…), `-nw`, `-se`, `-sw` | 30° down, perspective — the opening shot | not lockable |
+
+A true isometric foreshortens E, N and up alike — until `z_exaggeration` isn't 1.
 
 A layer built with `sectioned=False` stays whole while the rest is cut — the
 usual way you keep topography for context. `'front'` / `'behind'` give you a

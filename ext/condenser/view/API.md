@@ -37,6 +37,7 @@ v.look('plan', { ortho: true });
 | `w["model"].threshold = [30, 99]` | `v.layer('model').set({ threshold: [30, 99] })` |
 | `w.cut("z", 470, thickness=10)` · `w.cut()` | `v.cut('z', 470, 10)` · `v.cut()` |
 | `w.look("plan", ortho=True)` · `w.look(azimuth=135, plunge=30)` | `v.look('plan', { ortho: true })` · `v.look({ azimuth: 135, plunge: 30 })` |
+| `w.look("iso")` · `w.look("3/4-nw")` | `v.look('iso')` · `v.look('3/4-nw')` |
 | `w.fit()` · `w.clear_selection()` | `v.fit()` · `v.clear_selection()` |
 | `w.snapshot()` then `w.snapshot_png` (next cell) | `await v.snapshot()` → a PNG `Blob` |
 | `w.selection` · `w.selected_rows` · `w.measurement` · `w.camera` | `v.selection` · `v.selected_rows` · `v.measurement` · `v.camera` |
@@ -139,6 +140,17 @@ An option nobody reads warns once with the nearest real name:
 | `lock` | the lock, whenever it changes (code, the lock button, `L`): `'free'`, a name, or `{ azimuth, plunge }` |
 | `view` | after every camera change, at most once a frame — see *The view event* |
 
+## Views by name
+
+`look(name)` names where you LOOK: `'north'` looks north, `'iso-ne'` looks north-east (CAD
+calls that "SW Isometric", after where the viewer stands).
+
+| name | | |
+|---|---|---|
+| `'plan'` · `'north'` · `'south'` · `'east'` · `'west'` | straight down (north up), or horizontal | keeps the projection |
+| `'iso'` = `'iso-ne'` · `'iso-nw'` · `'iso-se'` · `'iso-sw'` | true isometric: 35.264° down, orthographic — E, N and up foreshorten alike (until `z_exaggeration` isn't 1) | lockable |
+| `'three-quarter'` = `'three-quarter-ne'` (or `'3/4'`, `'3/4-ne'` …) · `-nw` · `-se` · `-sw` | 30° down, perspective: the figure view, and the opening shot; `look()` alone gives it | not lockable |
+
 ## Orientation lock
 
 A locked view is orthographic, a drag PANS, the wheel and a pinch zoom, and nothing turns it.
@@ -149,11 +161,12 @@ A locked view is orthographic, a drag PANS, the wheel and a pinch zoom, and noth
 | `'plan'` | straight down, north up |
 | `'section'` | along the section's normal, never looking up (a z section is plan, a y section looks north); it follows the section when it is scrubbed, cut or knifed to a new plane. With no section, plan |
 | `'north'` · `'south'` · `'east'` · `'west'` | horizontal, looking that way |
+| `'iso'` = `'iso-ne'` · `'iso-nw'` · `'iso-se'` · `'iso-sw'` | true isometric (35.264° down), looking that way |
 | `{ azimuth, plunge }` | any fixed direction, in degrees (azimuth of the VIEW from north, plunge down) |
 
 - `lock_toggle: true` (default): the toolbar shows a lock button and the `L` key (on the focused view) frees the view and locks it back to the same orientation; on a free view, `L` locks where you are looking. `false`: no unlock control — the button, the views menu and the projection toggle are hidden, and the view stays what the code locked it to.
 - `twist: true`: a locked PLAN view may still turn about the vertical (ctrl-drag, pinch twist) — map rotation. The north arrow follows. Default `false`.
-- While locked, the lock owns the direction: `look('north')` moves the lock to north, `look('iso')` frees it, and `look({ azimuth, plunge })` locks that direction.
+- While locked, the lock owns the direction: `look('north')` moves the lock to north, `look('three-quarter')` (perspective, so not lockable) frees it, and `look({ azimuth, plunge })` locks that direction.
 - `state()` carries the lock.
 
 ## The view event

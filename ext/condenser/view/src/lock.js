@@ -7,15 +7,57 @@
 
 const D = Math.PI / 180;
 
-// [θ, φ] for each named lock. Plan is north-up (θ = −90°), the others look horizontally.
+// a view direction in geologist terms → the camera's [θ, φ]: azimuth of the VIEW from
+// north, clockwise; plunge downward. Names say where you LOOK, as look() does: 'north'
+// looks north, and 'iso-ne' looks north-east (CAD calls that "SW Isometric", after where
+// the viewer stands).
+export const anglesOf = (azimuth, plunge) => {
+  const az = azimuth * D;
+  return [Math.atan2(-Math.cos(az), -Math.sin(az)), plunge * D];
+};
+
+// the true isometric plunge: arctan(1/√2) ≈ 35.264°, where E, N and up foreshorten alike
+export const ISO_PLUNGE = Math.atan(Math.SQRT1_2) / D;
+const QUARTER = { ne: 45, se: 135, sw: 225, nw: 315 };
+
+// [θ, φ] for each named lock. Plan is north-up (θ = −90°); the compass names look
+// horizontally; the isometrics are true ones and, like every lock, orthographic.
 export const LOCK_PRESETS = {
   plan: [-Math.PI / 2, Math.PI / 2],
   north: [-Math.PI / 2, 0],
   south: [Math.PI / 2, 0],
   east: [Math.PI, 0],
   west: [0, 0],
+  iso: anglesOf(45, ISO_PLUNGE),
+  ...Object.fromEntries(Object.entries(QUARTER).map(([k, az]) => [`iso-${k}`, anglesOf(az, ISO_PLUNGE)])),
 };
 export const LOCK_NAMES = ['free', 'section', ...Object.keys(LOCK_PRESETS)];
+
+// the three-quarter view: a perspective figure view, 30° down. The view's opening shot
+// (looking north-east, so north runs up the screen as on a map). Not a lock: a locked
+// view is orthographic, and a three-quarter view is for looking, not for measuring.
+export const THREE_QUARTER_PLUNGE = 30;
+const THREE_QUARTER = {
+  'three-quarter': anglesOf(45, THREE_QUARTER_PLUNGE),
+  ...Object.fromEntries(Object.entries(QUARTER).map(([k, az]) => [`three-quarter-${k}`, anglesOf(az, THREE_QUARTER_PLUNGE)])),
+};
+
+// every name look() takes → { theta, phi, ortho, lockable }. ortho: true (isometrics),
+// false (three-quarter), null (keep the projection you are in). '3/4' spells
+// 'three-quarter'. Unknown → null.
+export const VIEW_NAMES = [...Object.keys(LOCK_PRESETS), ...Object.keys(THREE_QUARTER)];
+export function viewPreset(name) {
+  const k = typeof name === 'string' ? name.replace(/^3\/4/, 'three-quarter') : '';
+  if (LOCK_PRESETS[k]) {
+    const [theta, phi] = LOCK_PRESETS[k];
+    return { name: k, theta, phi, ortho: k.startsWith('iso') ? true : null, lockable: true };
+  }
+  if (THREE_QUARTER[k]) {
+    const [theta, phi] = THREE_QUARTER[k];
+    return { name: k, theta, phi, ortho: false, lockable: false };
+  }
+  return null;
+}
 
 // the lock option → 'free' | 'section' | a preset name | { azimuth, plunge }; null if
 // it is none of those (the caller says so)

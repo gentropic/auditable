@@ -693,7 +693,7 @@ export function view(el, layers, opts) {
       return handle;
     },
     get(key) { return store.get(key); },
-    // look('plan' | 'north' | 'south' | 'east' | 'west' | 'iso', {ortho}) · look({ azimuth, plunge, distance, target, ortho })
+    // look('plan' | 'north' | 'south' | 'east' | 'west' | 'iso[-ne|-nw|-se|-sw]' | 'three-quarter[-…]' | '3/4[-…]', {ortho}) · look({ azimuth, plunge, distance, target, ortho })
     look(nameOrCam, extra) {
       if (nameOrCam && typeof nameOrCam === 'object') {
         _checkKeys('look()', nameOrCam, ['azimuth', 'plunge', 'distance', 'target', 'ortho']);
@@ -703,7 +703,7 @@ export function view(el, layers, opts) {
         cam.n = (cam.n | 0) + 1;
         store.set('camera', cam);
       } else {
-        const v = { name: nameOrCam || 'iso', n: ((store.get('_view') || {}).n | 0) + 1 };
+        const v = { name: nameOrCam || 'three-quarter', n: ((store.get('_view') || {}).n | 0) + 1 };
         if (extra && extra.ortho != null) v.ortho = !!extra.ortho;
         store.set('_view', v);
       }

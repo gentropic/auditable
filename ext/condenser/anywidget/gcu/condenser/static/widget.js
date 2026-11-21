@@ -13001,7 +13001,7 @@ function createToolbar(host, api) {
     if (pop && pop.dataset.k === 'view') return closePop();
     const p = mkPop(); p.dataset.k = 'view';
     p.innerHTML = '<h4>view</h4>';
-    for (const [k, label] of [['plan', 'Plan (down)'], ['north', 'Looking north'], ['east', 'Looking east'], ['iso', 'Isometric']]) {
+    for (const [k, label] of [['plan', 'Plan (down)'], ['north', 'Looking north'], ['east', 'Looking east'], ['iso', 'Isometric (looking NE)'], ['three-quarter', 'Three-quarter (looking NE)']]) {
       const b = document.createElement('button');
       b.className = 'opt'; b.textContent = label;
       b.onclick = () => { api.setView(k); closePop(); };
@@ -13270,15 +13270,57 @@ function createToolbar(host, api) {
 
 const D = Math.PI / 180;
 
-// [θ, φ] for each named lock. Plan is north-up (θ = −90°), the others look horizontally.
+// a view direction in geologist terms → the camera's [θ, φ]: azimuth of the VIEW from
+// north, clockwise; plunge downward. Names say where you LOOK, as look() does: 'north'
+// looks north, and 'iso-ne' looks north-east (CAD calls that "SW Isometric", after where
+// the viewer stands).
+const anglesOf = (azimuth, plunge) => {
+  const az = azimuth * D;
+  return [Math.atan2(-Math.cos(az), -Math.sin(az)), plunge * D];
+};
+
+// the true isometric plunge: arctan(1/√2) ≈ 35.264°, where E, N and up foreshorten alike
+const ISO_PLUNGE = Math.atan(Math.SQRT1_2) / D;
+const QUARTER = { ne: 45, se: 135, sw: 225, nw: 315 };
+
+// [θ, φ] for each named lock. Plan is north-up (θ = −90°); the compass names look
+// horizontally; the isometrics are true ones and, like every lock, orthographic.
 const LOCK_PRESETS = {
   plan: [-Math.PI / 2, Math.PI / 2],
   north: [-Math.PI / 2, 0],
   south: [Math.PI / 2, 0],
   east: [Math.PI, 0],
   west: [0, 0],
+  iso: anglesOf(45, ISO_PLUNGE),
+  ...Object.fromEntries(Object.entries(QUARTER).map(([k, az]) => [`iso-${k}`, anglesOf(az, ISO_PLUNGE)])),
 };
 const LOCK_NAMES = ['free', 'section', ...Object.keys(LOCK_PRESETS)];
+
+// the three-quarter view: a perspective figure view, 30° down. The view's opening shot
+// (looking north-east, so north runs up the screen as on a map). Not a lock: a locked
+// view is orthographic, and a three-quarter view is for looking, not for measuring.
+const THREE_QUARTER_PLUNGE = 30;
+const THREE_QUARTER = {
+  'three-quarter': anglesOf(45, THREE_QUARTER_PLUNGE),
+  ...Object.fromEntries(Object.entries(QUARTER).map(([k, az]) => [`three-quarter-${k}`, anglesOf(az, THREE_QUARTER_PLUNGE)])),
+};
+
+// every name look() takes → { theta, phi, ortho, lockable }. ortho: true (isometrics),
+// false (three-quarter), null (keep the projection you are in). '3/4' spells
+// 'three-quarter'. Unknown → null.
+const VIEW_NAMES = [...Object.keys(LOCK_PRESETS), ...Object.keys(THREE_QUARTER)];
+function viewPreset(name) {
+  const k = typeof name === 'string' ? name.replace(/^3\/4/, 'three-quarter') : '';
+  if (LOCK_PRESETS[k]) {
+    const [theta, phi] = LOCK_PRESETS[k];
+    return { name: k, theta, phi, ortho: k.startsWith('iso') ? true : null, lockable: true };
+  }
+  if (THREE_QUARTER[k]) {
+    const [theta, phi] = THREE_QUARTER[k];
+    return { name: k, theta, phi, ortho: false, lockable: false };
+  }
+  return null;
+}
 
 // the lock option → 'free' | 'section' | a preset name | { azimuth, plunge }; null if
 // it is none of those (the caller says so)
@@ -13719,6 +13761,9 @@ function mountView(el, store) {
     renderer = createRenderer(canvas, { background: [0.07, 0.07, 0.07, 1] });
     edl = createEdl(renderer.gl);
     cam = createOrbitCamera();
+    const home = viewPreset('three-quarter');              // the opening shot: looking north-east, north up the screen
+    cam.state.theta = home.theta; cam.state.phi = home.phi;
+    cam.update();
   } catch (e) {                                            // no WebGL2 (headless CI, locked-down VM)
     host.style.height = '80px';
     hud.style.cssText += 'position:static;padding:10px;color:#d07a5c;';
@@ -14679,12 +14724,13 @@ function mountView(el, store) {
   // camera presets — ONE implementation, shared by the toolbar and w.look()
   const setView = (k) => {
     const c = cam.state;
-    if (k === 'plan') { c.theta = -Math.PI / 2; c.phi = Math.PI / 2 - 0.001; }
-    else if (k === 'north') { c.theta = -Math.PI / 2; c.phi = 0; }
-    else if (k === 'south') { c.theta = Math.PI / 2; c.phi = 0; }
-    else if (k === 'east') { c.theta = Math.PI; c.phi = 0; }
-    else if (k === 'west') { c.theta = 0; c.phi = 0; }
-    else { c.theta = Math.PI / 4; c.phi = Math.PI / 5; }
+    let p = viewPreset(k);
+    if (!p) {
+      console.warn(`condenser: no view '${k}' (${VIEW_NAMES.join(', ')}, or '3/4'); showing three-quarter`);
+      p = viewPreset('three-quarter');
+    }
+    c.theta = p.theta; c.phi = p.phi;                      // the orbit clamp keeps an unlocked plan just off vertical
+    if (p.ortho != null) { cam.setOrtho(p.ortho); if (tb) tb.syncOrtho(p.ortho); }
     cam.update();
     userCam = true;                                        // a chosen view is a framed shot
     needFit = true; invalidate();
@@ -14747,11 +14793,12 @@ function mountView(el, store) {
     tb.syncLock(locked, store.get('lock_toggle') !== false);
     tb.syncOrtho(cam.state.ortho);
   };
-  // a view preset (toolbar or look()): while locked it moves the lock there; iso,
-  // which cannot be locked, frees the view
+  // a view preset (toolbar or look()): while locked it moves the lock there; a
+  // three-quarter view, which cannot be locked (it is perspective), frees the view
   const chooseView = (k) => {
     if (lockOf() !== 'free') {
-      if (LOCK_PRESETS[k]) { setLock(k); userCam = true; needFit = true; invalidate(); return; }
+      const p = viewPreset(k);
+      if (p && p.lockable) { setLock(p.name); userCam = true; needFit = true; invalidate(); return; }
       setLock('free');
     }
     setView(k);

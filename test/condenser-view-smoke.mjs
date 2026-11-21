@@ -189,6 +189,14 @@ const L = await page.evaluate(async () => {
     X.push(500005 + i * 10); Y.push(8200005 + j * 10); Z.push(302.5 + k * 5); FE.push(40 + i + k);
   }
   const model = () => C.blocks({ x: X, y: Y, z: Z, value: FE }, { name: 'model' });
+  // the opening shot: three-quarter, looking north-east, in perspective
+  const host0 = document.getElementById('b');
+  host0.innerHTML = '';
+  const v0 = C.view(host0, [model()], { height: 300 });
+  await settle(900);
+  out.opening = { ...v0.camera };
+  v0.destroy();
+
   const v = C.view(host, [model()], { height: 400, lock: 'plan' });
   const ev = { lock: [], view: [] };
   v.on('lock', (d) => ev.lock.push(d));
@@ -233,6 +241,14 @@ const L = await page.evaluate(async () => {
   v.look({ azimuth: 45, plunge: 20 });
   await settle(500);
   out.lookNum = { lock: ev.lock.at(-1), camera: cam() };
+
+  // the isometrics are lockable presets; a three-quarter view (perspective) frees the lock
+  v.look('iso');
+  await settle(500);
+  out.lookIso = { lock: ev.lock.at(-1), camera: cam() };
+  v.look('3/4-sw');
+  await settle(500);
+  out.look34 = { lock: ev.lock.at(-1), camera: cam() };
 
   // a section lock follows the section, and the axes follow the lock
   v.set({ lock: 'section' });
@@ -294,6 +310,9 @@ chk('L frees the view: projection restored, the rectangle gone, a drag orbits', 
 chk('… and L again locks back to the same orientation', L.relocked.lock === 'plan' && L.relocked.camera.plunge === 90 && L.relocked.camera.ortho === true, JSON.stringify(L.relocked));
 chk("look('north') while locked moves the lock; axes E/RL", L.lookNorth.lock === 'north' && L.lookNorth.camera.plunge === 0 && near(L.lookNorth.camera.azimuth, 0) && L.lookNorth.view.axes.join() === 'E,RL', JSON.stringify(L.lookNorth.camera));
 chk('a numeric look while locked becomes a direction lock', L.lookNum.lock && L.lookNum.lock.azimuth === 45 && L.lookNum.lock.plunge === 20 && near(L.lookNum.camera.azimuth, 45) && near(L.lookNum.camera.plunge, 20), JSON.stringify(L.lookNum));
+chk('the opening shot is three-quarter: looking north-east, 30° down, perspective', L.opening.azimuth === 45 && L.opening.plunge === 30 && L.opening.ortho === false, JSON.stringify(L.opening));
+chk("look('iso') while locked locks a TRUE isometric (35.26° down, looking NE, orthographic)", L.lookIso.lock === 'iso' && L.lookIso.camera.azimuth === 45 && L.lookIso.camera.plunge === 35.26 && L.lookIso.camera.ortho === true, JSON.stringify(L.lookIso));
+chk("look('3/4-sw') frees the lock: perspective, looking south-west, 30° down", L.look34.lock === 'free' && L.look34.camera.azimuth === 225 && L.look34.camera.plunge === 30 && L.look34.camera.ortho === false, JSON.stringify(L.look34));
 chk("lock: 'section' looks along the section and follows it to a new plane", near(L.secY.camera.azimuth, 0) && L.secY.camera.plunge === 0 && L.secY.view.axes.join() === 'E,RL' && near(L.secX.camera.azimuth, 90) && L.secX.view.axes.join() === 'N,RL' && near(L.secX.camera.target[0], 500150, 0.01), JSON.stringify({ y: L.secY.camera, x: L.secX.camera }));
 chk('twist: off, ctrl-drag cannot turn a locked plan; on, it turns it about the vertical only', L.noTwist.after.azimuth === L.noTwist.before.azimuth && L.twist.after.azimuth !== L.twist.before.azimuth && L.twist.after.plunge === 90 && L.twist.lock === 'plan' && L.twist.view.axes.join() === 'u,v', JSON.stringify({ off: [L.noTwist.before.azimuth, L.noTwist.after.azimuth], on: [L.twist.before.azimuth, L.twist.after.azimuth] }));
 chk('lock_toggle: false hides the lock button and the views; L does nothing', !L.fixed.lockShown && !L.fixed.viewsShown && L.fixed.lockEvents === 0 && L.fixed.lock === 'plan', JSON.stringify(L.fixed));

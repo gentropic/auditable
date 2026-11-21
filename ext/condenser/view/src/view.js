@@ -36,7 +36,7 @@ import {
 import { dhDesurveySamples } from '../../../drillhole/src/samples.js';
 import { openParquetBlocks } from './parquet-blocks.js';
 import { createToolbar } from './toolbar.js';
-import { LOCK_PRESETS, LOCK_NAMES, normLock, lockAngles, isVertical, lockHere, viewRect, rectCamera } from './lock.js';
+import { LOCK_NAMES, viewPreset, VIEW_NAMES, normLock, lockAngles, isVertical, lockHere, viewRect, rectCamera } from './lock.js';
 
 // ── ramp presets. rampPixels' default is the viridis-ish walk; these are the
 // few a geologist reaches for. Kept here (not in the engine) because they are
@@ -343,6 +343,9 @@ export function mountView(el, store) {
     renderer = createRenderer(canvas, { background: [0.07, 0.07, 0.07, 1] });
     edl = createEdl(renderer.gl);
     cam = createOrbitCamera();
+    const home = viewPreset('three-quarter');              // the opening shot: looking north-east, north up the screen
+    cam.state.theta = home.theta; cam.state.phi = home.phi;
+    cam.update();
   } catch (e) {                                            // no WebGL2 (headless CI, locked-down VM)
     host.style.height = '80px';
     hud.style.cssText += 'position:static;padding:10px;color:#d07a5c;';
@@ -1303,12 +1306,13 @@ export function mountView(el, store) {
   // camera presets — ONE implementation, shared by the toolbar and w.look()
   const setView = (k) => {
     const c = cam.state;
-    if (k === 'plan') { c.theta = -Math.PI / 2; c.phi = Math.PI / 2 - 0.001; }
-    else if (k === 'north') { c.theta = -Math.PI / 2; c.phi = 0; }
-    else if (k === 'south') { c.theta = Math.PI / 2; c.phi = 0; }
-    else if (k === 'east') { c.theta = Math.PI; c.phi = 0; }
-    else if (k === 'west') { c.theta = 0; c.phi = 0; }
-    else { c.theta = Math.PI / 4; c.phi = Math.PI / 5; }
+    let p = viewPreset(k);
+    if (!p) {
+      console.warn(`condenser: no view '${k}' (${VIEW_NAMES.join(', ')}, or '3/4'); showing three-quarter`);
+      p = viewPreset('three-quarter');
+    }
+    c.theta = p.theta; c.phi = p.phi;                      // the orbit clamp keeps an unlocked plan just off vertical
+    if (p.ortho != null) { cam.setOrtho(p.ortho); if (tb) tb.syncOrtho(p.ortho); }
     cam.update();
     userCam = true;                                        // a chosen view is a framed shot
     needFit = true; invalidate();
@@ -1371,11 +1375,12 @@ export function mountView(el, store) {
     tb.syncLock(locked, store.get('lock_toggle') !== false);
     tb.syncOrtho(cam.state.ortho);
   };
-  // a view preset (toolbar or look()): while locked it moves the lock there; iso,
-  // which cannot be locked, frees the view
+  // a view preset (toolbar or look()): while locked it moves the lock there; a
+  // three-quarter view, which cannot be locked (it is perspective), frees the view
   const chooseView = (k) => {
     if (lockOf() !== 'free') {
-      if (LOCK_PRESETS[k]) { setLock(k); userCam = true; needFit = true; invalidate(); return; }
+      const p = viewPreset(k);
+      if (p && p.lockable) { setLock(p.name); userCam = true; needFit = true; invalidate(); return; }
       setLock('free');
     }
     setView(k);

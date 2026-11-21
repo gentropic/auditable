@@ -275,7 +275,8 @@ class Layer(traitlets.HasTraits):
 
 
 # ── the widget ──────────────────────────────────────────────────────────────
-_LOCKS = ("free", "plan", "section", "north", "south", "east", "west")
+_LOCKS = ("free", "plan", "section", "north", "south", "east", "west",
+          "iso", "iso-ne", "iso-nw", "iso-se", "iso-sw")
 
 
 class Viewer(anywidget.AnyWidget):
@@ -623,7 +624,12 @@ class Viewer(anywidget.AnyWidget):
              target=None, ortho=None):
         """Point the camera.
 
-        By NAME — ``look('plan' | 'north' | 'south' | 'east' | 'west' | 'iso')``
+        By NAME — ``look('plan' | 'north' | 'south' | 'east' | 'west')``, the
+        true isometrics ``'iso'`` (= ``'iso-ne'``), ``'iso-nw'``, ``'iso-se'``,
+        ``'iso-sw'`` (35.264° down, orthographic), or the perspective figure view
+        ``'three-quarter'`` (also ``'3/4'``, with the same ``-ne`` … suffixes; 30°
+        down; the opening shot, and what ``look()`` alone gives). Names say where
+        you LOOK: ``'iso-ne'`` looks north-east (CAD's "SW Isometric").
         — or by NUMBERS: ``look(azimuth=132, plunge=25)`` (degrees; azimuth from
         north clockwise, plunge positive downward), plus ``distance=`` and
         ``target=[x, y, z]`` in world coordinates. Numeric looks merge into
@@ -644,7 +650,7 @@ class Viewer(anywidget.AnyWidget):
                 numeric["ortho"] = bool(ortho)
             self.camera = {**self.camera, **numeric, "n": int(self.camera.get("n", 0)) + 1}
             return
-        v = {"name": view or "iso", "n": int(self._view.get("n", 0)) + 1}
+        v = {"name": view or "three-quarter", "n": int(self._view.get("n", 0)) + 1}
         if ortho is not None:
             v["ortho"] = bool(ortho)
         self._view = v

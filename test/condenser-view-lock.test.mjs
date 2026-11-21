@@ -1,7 +1,7 @@
 // @gcu/condenser/view — the orientation lock and the view rectangle (pure maths).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { normLock, lockAngles, lockHere, viewAxes, viewRect, rectCamera, isVertical, LOCK_PRESETS } from '../ext/condenser/view/src/lock.js';
+import { normLock, lockAngles, lockHere, viewAxes, viewRect, rectCamera, isVertical, LOCK_PRESETS, viewPreset, ISO_PLUNGE } from '../ext/condenser/view/src/lock.js';
 import { createOrbitCamera } from '../ext/condenser/src/core/camera.js';
 
 const close = (a, b, tol = 1e-6, what = '') => assert.ok(Math.abs(a - b) <= tol, `${what} ${a} ≠ ${b}`);
@@ -12,7 +12,7 @@ test('normLock: names, directions, and refusals', () => {
   for (const v of ['plan', 'section', 'north', 'south', 'east', 'west']) assert.equal(normLock(v), v);
   assert.deepEqual(normLock({ azimuth: 370, plunge: 120 }), { azimuth: 10, plunge: 90 });
   assert.deepEqual(normLock({ azimuth: -90, plunge: 30 }), { azimuth: 270, plunge: 30 });
-  for (const v of ['plna', 'iso', { azimuth: 10 }, { azimuth: 'x', plunge: 1 }, 3]) assert.equal(normLock(v), null, JSON.stringify(v));
+  for (const v of ['plna', 'three-quarter', 'iso-n', { azimuth: 10 }, { azimuth: 'x', plunge: 1 }, 3]) assert.equal(normLock(v), null, JSON.stringify(v));
 });
 
 test('lockAngles: the presets, an azimuth/plunge, and the section normal', () => {
@@ -119,4 +119,33 @@ test('rectCamera: framing a rectangle, then reading it back', () => {
     assert.ok(fu >= 1 - 1e-9 && fv >= 1 - 1e-9, `${what} contains`);
     close(Math.min(fu, fv), 1, 1e-6, `${what} tight`);
   }
+});
+
+test('views by name: true isometrics, three-quarter, the look-direction naming', () => {
+  close(ISO_PLUNGE, 35.26438968, 1e-7, 'arctan(1/√2)');
+  // a true isometric: unit E, N and up project to EQUAL lengths on screen, the lines 60° apart
+  for (const name of ['iso', 'iso-ne', 'iso-nw', 'iso-se', 'iso-sw']) {
+    const { c } = locked(name, { target: [0, 0, 0], radius: 100, aspect: 1 });
+    const o = toScreen(c, [0, 0, 0], [0, 0, 0]);
+    const ax = [[1, 0, 0], [0, 1, 0], [0, 0, 1]].map((a) => { const p = toScreen(c, [0, 0, 0], a); return [p[0] - o[0], p[1] - o[1]]; });
+    const len = ax.map(([x, y]) => Math.hypot(x, y));
+    close(len[0], len[1], 1e-6, `${name} |E|=|N|`); close(len[1], len[2], 1e-6, `${name} |N|=|up|`);
+    for (const [i, j] of [[0, 1], [1, 2], [0, 2]]) {
+      const cos = (ax[i][0] * ax[j][0] + ax[i][1] * ax[j][1]) / (len[i] * len[j]);
+      close(Math.abs(cos), 0.5, 1e-6, `${name} 60°/120°`);
+    }
+    assert.equal(normLock(name), name);
+  }
+  // names say where you LOOK: iso-ne looks north-east, so north runs up-and-away on screen
+  const look = (name) => lockHere(...LOCK_PRESETS[name]);
+  assert.deepEqual(look('iso'), { azimuth: 45, plunge: 35.26 });
+  assert.deepEqual(look('iso-sw'), { azimuth: 225, plunge: 35.26 });
+  const tq = viewPreset('three-quarter'), alias = viewPreset('3/4-nw');
+  assert.equal(tq.ortho, false); assert.equal(tq.lockable, false);
+  assert.deepEqual(lockHere(tq.theta, tq.phi), { azimuth: 45, plunge: 30 });
+  assert.equal(alias.name, 'three-quarter-nw');
+  assert.deepEqual(lockHere(alias.theta, alias.phi), { azimuth: 315, plunge: 30 });
+  assert.equal(viewPreset('iso-se').ortho, true);
+  assert.equal(viewPreset('north').ortho, null, 'compass views keep the projection');
+  assert.equal(viewPreset('isometric'), null);
 });
