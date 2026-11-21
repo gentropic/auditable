@@ -477,6 +477,10 @@ function isLight(c) {
 //   `dark`; @gcu/theme's own names work too.
 // - `subplots({theme})` / `figure({theme})` / `fig.set_theme(t)` give one figure its own:
 //   a name, a partial theme ({base: 'light', accent: '#c00'}), or themeFromCSS(el).
+// - 'auto' — `style.use('auto')`, or `theme: 'auto'` for one figure — follows the PAGE: the
+//   page's tokens and colours as themeFromCSS reads them, so a light page gets a light chart.
+//   With no DOM (a worker, Node) it is the dark default. Resolved when a figure is made, as any
+//   style: re-make (or fig.set_theme('auto')) after the page switches mode.
 // - Per-axes overrides (`_bgcolor`, `_textColor`, `_gridColor`, `_frameColor`) still win, for
 //   callers that dress one cell of a grid.
 //
@@ -497,20 +501,29 @@ const _style = resolveTheme('dark');
 // a theme, as a figure takes it: names and partials resolved over the default theme's base.
 // plot 0.2's own keys (bgcolor, textColor, …) are still read, mapped onto the shared ones.
 const _LEGACY = { bgcolor: 'background', textColor: 'foreground', gridColor: 'grid', frameColor: 'frame', figureFacecolor: 'figure', legendBg: 'panel', legendBorder: 'panel_border', refColor: 'muted' };
+// the page's theme ('auto'): its tokens and computed colours, on <body> (custom properties
+// set on :root reach it); dark where there is no page
+function _autoTheme() {
+  if (typeof document === 'undefined' || typeof getComputedStyle !== 'function') return resolveTheme('dark');
+  const el = document.body || document.documentElement;
+  return el ? themeFromCSS(el) : resolveTheme('dark');
+}
 function _resolve(t, strict) {
   if (t == null) return _snapshotStyle();
+  if (typeof t === 'string' && t.toLowerCase() === 'auto') return _autoTheme();
   if (typeof t === 'string') {
     const key = _LIGHT_STYLES.includes(t.toLowerCase()) ? 'paper' : t.toLowerCase() === 'dark_background' ? 'dark' : t;
     return resolveTheme(key, (m) => _warn(`theme.${t}`, `plot: ${m}`, strict));
   }
   const o = {};
   for (const [k, v] of Object.entries(t)) o[_LEGACY[k] || k] = v;
-  if (!o.base && !o.background) o.base = _style._name || 'dark';
+  if (!o.base && !o.background) o.base = _style._auto ? (isLight(_autoTheme().background) ? 'light' : 'dark') : _style._name || 'dark';
   return resolveTheme(o, (m) => _warn(`theme.${m}`, `plot: ${m}`, strict));
 }
 
 // the default theme as it stands now, for a figure being made
 function _snapshotStyle() {
+  if (_style._auto) return _autoTheme();
   return { ..._style, cycle: _style.cycle.slice() };
 }
 
@@ -521,9 +534,15 @@ function setStyle(name) {
   const names = Array.isArray(name) ? name : [name];
   for (const n of names) {
     const key = String(n || '').toLowerCase();
+    if (key === 'auto') {
+      // follow the page: each new figure reads it (the dark values stay for no-DOM hosts)
+      for (const k of Object.keys(_style)) delete _style[k];
+      Object.assign(_style, resolveTheme('dark'), { _name: 'auto', _auto: true });
+      continue;
+    }
     const theme = _LIGHT_STYLES.includes(key) ? 'paper' : key === 'dark_background' ? 'dark' : THEMES[key] ? key : null;
     if (!theme) {
-      _warn('style.' + key, `style.use('${n}') is not a style plot knows; use 'default' (white), 'dark_background', or a theme: ${Object.keys(THEMES).join(', ')}`);
+      _warn('style.' + key, `style.use('${n}') is not a style plot knows; use 'default' (white), 'dark_background', 'auto' (the page's), or a theme: ${Object.keys(THEMES).join(', ')}`);
       continue;
     }
     for (const k of Object.keys(_style)) delete _style[k];
@@ -7882,7 +7901,7 @@ function rc(_group, _opts) { _noop('rc'); }
 // automatically after `import matplotlib.pyplot as plt`.
 const style = {
   use(name) { setStyle(name); },
-  available: ['default', 'classic', 'matplotlib', 'dark_background', 'seaborn', 'seaborn-whitegrid', 'ggplot', 'bmh', 'dark', 'light', 'paper'],
+  available: ['default', 'classic', 'matplotlib', 'dark_background', 'seaborn', 'seaborn-whitegrid', 'ggplot', 'bmh', 'dark', 'light', 'paper', 'auto'],
 };
 // plt.figure(...) — a new figure, and the current one (matplotlib's figure() takes
 // figsize=(w,h) and other kwargs; unsupported ones warn).

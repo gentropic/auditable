@@ -270,6 +270,31 @@ const overlayInk = (u) => page.evaluate((u) => { const c = T[u].overlay, d = c.g
   chk("… and the chart it dresses sits on the page (a transparent figure, the plot area the host's background)", r.figFace === 'transparent' && r.axFace === '#fafafa', JSON.stringify({ f: r.figFace, a: r.axFace }));
 }
 
+// ── style.use('auto'): new figures follow the page (dark stays the default) ──
+{
+  const r = await page.evaluate(() => {
+    const body = document.body, before = body.getAttribute('style') || '';
+    const face = () => { const [f] = P.subplots(1, 1, { figsize: [200, 120] }); return f.axes[0].get_facecolor(); };
+    const out = { dflt: face() };
+    body.setAttribute('style', before + ';background:#ffffff;color:#222222;--bg-primary:#fbfbfb;');
+    out.dfltOnLight = face();                                // the default is still dark
+    P.style.use('auto');
+    out.autoLight = face();
+    body.setAttribute('style', before + ';background:#101214;color:#eeeeee;');
+    out.autoDark = face();
+    P.style.use('dark_background');
+    body.setAttribute('style', before + ';background:#ffffff;color:#222222;');
+    out.back = face();
+    const [f] = P.subplots(1, 1, { figsize: [200, 120], theme: 'auto' });
+    out.perFigure = f.axes[0].get_facecolor();
+    body.setAttribute('style', before);
+    return out;
+  });
+  const light = (c) => { const m = /#([0-9a-f]{6})/i.exec(c || ''); if (m) return parseInt(m[1].slice(0, 2), 16) > 180; const n = /rgb\D*(\d+)/.exec(c || ''); return n ? +n[1] > 180 : false; };
+  chk("style.use('auto'): a light page gets light charts, a dark page dark ones; the default stays dark", !light(r.dflt) && !light(r.dfltOnLight) && r.autoLight === '#fbfbfb' && !light(r.autoDark), JSON.stringify(r));
+  chk("… style.use('dark_background') goes back; theme: 'auto' does it for one figure", !light(r.back) && light(r.perFigure), JSON.stringify({ back: r.back, per: r.perFigure }));
+}
+
 // ── pinch (two pointers) ──
 {
   await page.evaluate(() => T.ui.reset());

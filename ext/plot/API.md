@@ -215,6 +215,11 @@ A theme is `@gcu/theme`'s keys (shared with `@gcu/condenser`'s 3D view): `backgr
 - `plt.style.use('default')` (and matplotlib's other light styles): white (`paper`);
   `'dark_background'`: the dark theme (the default in auditable); also `'dark'`, `'light'`,
   `'paper'`. It sets the default a figure copies when it is made.
+- `plt.style.use('auto')` (or `theme: 'auto'` for one figure): **follow the page** — each new figure reads
+  the page's tokens and colours as `themeFromCSS` does, so a light page gets a light chart and a dark
+  page a dark one. With no page (a worker, Node) it is the dark default. A figure keeps what it
+  read: after the page switches mode, re-make it or `fig.set_theme('auto')`. On a page whose look
+  you don't control, this is the one line to write.
 - `subplots({theme: 'paper'})` · `fig.set_theme({base: 'light', accent: '#c00'})` · `themeFromCSS(el, map?)` (a page's design tokens, below).
 
 - `themeFromCSS(el, map?)` reads CSS custom properties on `el`: for each theme key, the first

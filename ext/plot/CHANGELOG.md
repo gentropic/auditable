@@ -72,6 +72,10 @@ Haiku-class 49/60, zero console warnings; every plot-side failure was one of two
   computed colours: in the eval, 91 of 121 charts stayed dark on a light page because it read
   only `--au-*`. Its figure surface is transparent (the chart sits on the page).
 
+**`style.use('auto')`** (and `theme: 'auto'`): new figures follow the page — its tokens and colours,
+as `themeFromCSS` reads them — so a light page gets a light chart; dark with no page. The
+default stays dark (Arthur's call: an opt-in, not a changed default).
+
 **Notebooks.** The ipynb importer maps `matplotlib.ticker` and `matplotlib.dates` to
 `plt.ticker` / `plt.dates`, so `import matplotlib.ticker as mticker` runs.
 

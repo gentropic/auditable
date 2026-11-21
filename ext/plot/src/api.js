@@ -116,7 +116,7 @@ export { rcParams };
 // automatically after `import matplotlib.pyplot as plt`.
 export const style = {
   use(name) { setStyle(name); },
-  available: ['default', 'classic', 'matplotlib', 'dark_background', 'seaborn', 'seaborn-whitegrid', 'ggplot', 'bmh', 'dark', 'light', 'paper'],
+  available: ['default', 'classic', 'matplotlib', 'dark_background', 'seaborn', 'seaborn-whitegrid', 'ggplot', 'bmh', 'dark', 'light', 'paper', 'auto'],
 };
 // plt.figure(...) — a new figure, and the current one (matplotlib's figure() takes
 // figsize=(w,h) and other kwargs; unsupported ones warn).

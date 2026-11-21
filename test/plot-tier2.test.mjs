@@ -321,6 +321,18 @@ test("matplotlib's positional arguments are read, not dropped (the eval's B2 and
   assert.throws(() => P.subplots(1, 1, { strict: true })[1].axhline(1, 0.1, 0.2, 0.3), /pass the rest by name/);
 });
 
+test("style.use('auto') with no page (Node, a worker) is the dark default, without a warning", () => {
+  const ws = []; const ow = console.warn; console.warn = (...a) => ws.push(a.join(' '));
+  try {
+    P.style.use('auto');
+    const { fig } = fig1();
+    assert.equal(fig.axes[0]._theme.background, P.resolveTheme('dark').background);
+    assert.ok(P.pltAdder.style.available.includes('auto'));
+    assert.equal(fig1({ theme: 'auto' }).fig.axes[0]._theme.background, P.resolveTheme('dark').background);
+    assert.deepEqual(ws, []);
+  } finally { P.style.use('dark_background'); console.warn = ow; }
+});
+
 test("artists: set_visible / get_visible / remove on what calls return (lines, mappables, geometry, patches)", () => {
   const { fig, ax } = fig1();
   const [l] = ax.plot([1, 2, 3], { label: 'L' });
