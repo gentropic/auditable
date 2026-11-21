@@ -1,3 +1,4 @@
+import { _warn } from './opts.js';
 // Colormaps — perceptual maps interpolate anchor stops sampled from the
 // reference palettes (the retired polynomial fits went badly wrong at the
 // ends: viridis(1) came out green, coolwarm(1) white).
@@ -85,18 +86,100 @@ const _cmaps = {
   gray_r: (t) => _cmaps.gray(1 - t),
 };
 
+// The ColorBrewer and matplotlib maps people name: diverging, sequential, qualitative.
+// Hex anchors interpolate evenly (ColorBrewer's 9- and 11-class schemes); the qualitative ones
+// are listed (one colour per equal bucket).
+const _hex = (h) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+const _hexes = (s) => s.split(' ').map(_hex);
+Object.assign(_cmaps, {
+  RdBu: _lerpCmap(_hexes('#67001f #b2182b #d6604d #f4a582 #fddbc7 #f7f7f7 #d1e5f0 #92c5de #4393c3 #2166ac #053061')),
+  RdYlBu: _lerpCmap(_hexes('#a50026 #d73027 #f46d43 #fdae61 #fee090 #ffffbf #e0f3f8 #abd9e9 #74add1 #4575b4 #313695')),
+  RdYlGn: _lerpCmap(_hexes('#a50026 #d73027 #f46d43 #fdae61 #fee08b #ffffbf #d9ef8b #a6d96a #66bd63 #1a9850 #006837')),
+  Spectral: _lerpCmap(_hexes('#9e0142 #d53e4f #f46d43 #fdae61 #fee08b #ffffbf #e6f598 #abdda4 #66c2a5 #3288bd #5e4fa2')),
+  PiYG: _lerpCmap(_hexes('#8e0152 #c51b7d #de77ae #f1b6da #fde0ef #f7f7f7 #e6f5d0 #b8e186 #7fbc41 #4d9221 #276419')),
+  BrBG: _lerpCmap(_hexes('#543005 #8c510a #bf812d #dfc27d #f6e8c3 #f5f5f5 #c7eae5 #80cdc1 #35978f #01665e #003c30')),
+  Blues: _lerpCmap(_hexes('#f7fbff #deebf7 #c6dbef #9ecae1 #6baed6 #4292c6 #2171b5 #08519c #08306b')),
+  Reds: _lerpCmap(_hexes('#fff5f0 #fee0d2 #fcbba1 #fc9272 #fb6a4a #ef3b2c #cb181d #a50f15 #67000d')),
+  Greens: _lerpCmap(_hexes('#f7fcf5 #e5f5e0 #c7e9c0 #a1d99b #74c476 #41ab5d #238b45 #006d2c #00441b')),
+  Oranges: _lerpCmap(_hexes('#fff5eb #fee6ce #fdd0a2 #fdae6b #fd8d3c #f16913 #d94801 #a63603 #7f2704')),
+  Purples: _lerpCmap(_hexes('#fcfbfd #efedf5 #dadaeb #bcbddc #9e9ac8 #807dba #6a51a3 #54278f #3f007d')),
+  YlOrRd: _lerpCmap(_hexes('#ffffcc #ffeda0 #fed976 #feb24c #fd8d3c #fc4e2a #e31a1c #bd0026 #800026')),
+  YlOrBr: _lerpCmap(_hexes('#ffffe5 #fff7bc #fee391 #fec44f #fe9929 #ec7014 #cc4c02 #993404 #662506')),
+  YlGnBu: _lerpCmap(_hexes('#ffffd9 #edf8b1 #c7e9b4 #7fcdbb #41b6c4 #1d91c0 #225ea8 #253494 #081d58')),
+  YlGn: _lerpCmap(_hexes('#ffffe5 #f7fcb9 #d9f0a3 #addd8e #78c679 #41ab5d #238443 #006837 #004529')),
+  bwr: _lerpCmap([[0, 0, 255], [255, 255, 255], [255, 0, 0]]),
+  seismic: _lerpCmap([[0, 0, 77], [0, 0, 255], [255, 255, 255], [255, 0, 0], [128, 0, 0]]),
+  // matplotlib's terrain: its segment anchors at 0, .15, .25, .5, .75, 1 (sampled evenly in fifths
+  // would bend it; _segCmap keeps the anchors where matplotlib puts them)
+  terrain: _segCmap([[0, 51, 51, 153], [0.15, 0, 153, 255], [0.25, 0, 204, 102], [0.5, 255, 255, 153], [0.75, 128, 92, 84], [1, 255, 255, 255]]),
+});
+const _QUAL = {
+  tab10: '#1f77b4 #ff7f0e #2ca02c #d62728 #9467bd #8c564b #e377c2 #7f7f7f #bcbd22 #17becf',
+  tab20: '#1f77b4 #aec7e8 #ff7f0e #ffbb78 #2ca02c #98df8a #d62728 #ff9896 #9467bd #c5b0d5 #8c564b #c49c94 #e377c2 #f7b6d2 #7f7f7f #c7c7c7 #bcbd22 #dbdb8d #17becf #9edae5',
+  Set1: '#e41a1c #377eb8 #4daf4a #984ea3 #ff7f00 #ffff33 #a65628 #f781bf #999999',
+  Set2: '#66c2a5 #fc8d62 #8da0cb #e78ac3 #a6d854 #ffd92f #e5c494 #b3b3b3',
+  Set3: '#8dd3c7 #ffffb3 #bebada #fb8072 #80b1d3 #fdb462 #b3de69 #fccde5 #d9d9d9 #bc80bd #ccebc5 #ffed6f',
+  Paired: '#a6cee3 #1f78b4 #b2df8a #33a02c #fb9a99 #e31a1c #fdbf6f #ff7f00 #cab2d6 #6a3d9a #ffff99 #b15928',
+  Dark2: '#1b9e77 #d95f02 #7570b3 #e7298a #66a61e #e6ab02 #a6761d #666666',
+};
+for (const [k, v] of Object.entries(_QUAL)) _cmaps[k] = _listed(v.split(' '));
+
+// a listed map (matplotlib's ListedColormap): [0, 1] splits into N equal buckets
+function _listed(colors) {
+  const n = colors.length;
+  const f = (t) => (t !== t ? _NO_COLOR : colors[Math.max(0, Math.min(n - 1, Math.floor(Math.max(0, Math.min(1, t)) * n)))]);
+  f._listed = colors;
+  f.N = n;
+  return f;
+}
+// matplotlib's segment maps: [t, r, g, b] anchors at their own positions
+function _segCmap(anchors) {
+  return (t) => {
+    if (t !== t) return _NO_COLOR;
+    t = Math.max(0, Math.min(1, t));
+    let k = 0;
+    while (k < anchors.length - 2 && t > anchors[k + 1][0]) k++;
+    const a = anchors[k], b = anchors[k + 1], f = (t - a[0]) / (b[0] - a[0] || 1);
+    return `rgb(${[1, 2, 3].map((i) => Math.round(a[i] + (b[i] - a[i]) * f)).join(',')})`;
+  };
+}
+
+// every map name plot knows, '_r' reversals included
+export const CMAP_NAMES = () => Object.keys(_cmaps).flatMap((k) => (k.endsWith('_r') ? [k] : [k, `${k}_r`]));
+
+
+// a name, a function (t ∈ [0, 1] → colour), a list of colours (a listed map), or a
+// ListedColormap / colormap object. An unknown name warns and draws viridis.
 export function getCmap(name) {
   if (typeof name === 'function') return name;
-  // an array of colors is a categorical map (matplotlib's ListedColormap):
-  // [0,1) splits into equal buckets, one color each
-  if (Array.isArray(name)) {
-    const n = name.length;
-    const f = (t) => (t !== t ? _NO_COLOR : name[Math.max(0, Math.min(n - 1, Math.floor(Math.max(0, Math.min(1, t)) * n)))]);
-    f._listed = name;
-    return f;
-  }
-  return _cmaps[name] || _cmaps.viridis;
+  if (Array.isArray(name)) return _listed(name);
+  if (name && typeof name === 'object' && typeof name._fn === 'function') return name._fn;
+  if (name == null) return _cmaps.viridis;
+  if (_cmaps[name]) return _cmaps[name];
+  const m = /^(.*)_r$/.exec(name);
+  if (m && _cmaps[m[1]]) { const base = _cmaps[m[1]]; const r = (t) => base(1 - t); if (base._listed) { r._listed = base._listed.slice().reverse(); r.N = base.N; } _cmaps[name] = r; return r; }
+  _warn('cmap.' + name, `no colour map '${name}'; using viridis. Known: ${Object.keys(_cmaps).filter((k) => !k.endsWith('_r')).join(', ')} (and each with _r)`);
+  return _cmaps.viridis;
 }
+
+// matplotlib.colors.ListedColormap(colors, name?): a map of N listed colours, for discrete
+// classes; with BoundaryNorm, one colour per class
+export class ListedColormap {
+  constructor(colors, name = 'from_list') {
+    this.colors = Array.from(colors, (c) => _cssColor(c));
+    this.name = name;
+    this.N = this.colors.length;
+    this._fn = _listed(this.colors);
+  }
+  reversed() { return new ListedColormap(this.colors.slice().reverse(), this.name + '_r'); }
+}
+// LinearSegmentedColormap.from_list(name, colors): an even ramp through the colours
+export const LinearSegmentedColormap = {
+  from_list(name, colors) {
+    const stops = colors.map((c) => { const b = _colorBytes(_cssColor(Array.isArray(c) ? c[1] : c)); return b ? [b[0], b[1], b[2]] : [0, 0, 0]; });
+    return { name, N: 256, _fn: _lerpCmap(stops) };
+  },
+};
 
 export function cmapRgb(name, t) {
   return getCmap(name)(t);

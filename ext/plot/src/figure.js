@@ -4,6 +4,9 @@ import { Axes } from './axes.js';
 // the chart kinds beyond the core: they add to Axes.prototype, so they load after axes.js
 import './bars.js';
 import './marks.js';
+import './box.js';
+import './contour.js';
+import './mesh.js';
 import { _resolve, _font } from './style.js';
 import { _checkOpts, _noop } from './opts.js';
 import { recordingContext, replay } from './record.js';
@@ -108,6 +111,14 @@ export class Figure {
       if (axis === 'x' && mode !== 'row' && r < this.nrows - 1) ax._xtickLabelsOff = true;
       if (axis === 'y' && mode !== 'col' && c > 0) ax._ytickLabelsOff = true;
     }
+  }
+
+  // fig.colorbar(mappable, {ax}): the bar on the mappable's axes (or ax)
+  colorbar(mappable, opts) {
+    const o = opts && typeof opts === 'object' ? { ...opts } : {};
+    const ax = o.ax || (mappable && mappable.axes) || this.axes[0];
+    delete o.ax;
+    return ax.colorbar(mappable, o);
   }
 
   suptitle(text, opts) {

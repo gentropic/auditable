@@ -18,7 +18,8 @@
 // axis ignores values ≤ 0.
 
 import { LinearScale, LogScale } from './scale.js';
-import { getCmap, renderColorbar, _cmapLut, _colorBytes, _cssColor } from './color.js';
+import { getCmap, _cmapLut, _colorBytes, _cssColor } from './color.js';
+import { _resolveNorm, _indexer, _cbTicks, _cbLabelsW, _drawColorbar, BoundaryNorm } from './norm.js';
 import { parseFormat, dashArray, _noLine } from './format.js';
 import { _style, _snapshotStyle, _font, _textW } from './style.js';
 import { _Categories, _isCategorical, _tickSpec, _drawTicks } from './ticks.js';
@@ -83,6 +84,30 @@ function _project(arr, s, out) {
 
 // matplotlib's named font sizes, as px relative to the theme's base size
 const _FONTSIZES = { 'xx-small': -4, 'x-small': -3, small: -2, medium: 0, large: 2, 'x-large': 4, 'xx-large': 6 };
+
+// a 2D grid → { flat (row-major Float64Array), nx, ny }: nested arrays, a Float64Array with a
+// 2D shape, an ndarray-like { data, shape }, a natra ndarray, a sadpan DataFrame; null if not
+export function _grid2d(data) {
+  if (data && data._tbl && typeof data.to_numpy === 'function') {
+    const a = data.to_numpy();
+    return { ny: a.shape[0], nx: a.shape[1], flat: a.data instanceof Float64Array ? a.data : Float64Array.from([].concat(...a.tolist())) };
+  }
+  if (data instanceof Float64Array && Array.isArray(data.shape) && data.shape.length === 2) return { ny: data.shape[0], nx: data.shape[1], flat: data };
+  if (data && ArrayBuffer.isView(data.data) && Array.isArray(data.shape) && data.shape.length === 2) return { ny: data.shape[0], nx: data.shape[1], flat: data.data instanceof Float64Array ? data.data : Float64Array.from(data.data) };
+  if (data && data._nd && data._arr && data._arr.ndim === 2) {
+    const a = data._arr;
+    return { ny: a.shape[0], nx: a.shape[1], flat: new Float64Array(a.memory.buffer, a.ptr, a.shape[0] * a.shape[1]).slice() };
+  }
+  if (Array.isArray(data) && data.length && _isArrayLike(data[0])) {
+    const ny = data.length, nx = data[0].length, flat = new Float64Array(ny * nx);
+    for (let i = 0; i < ny; i++) {
+      if (data[i].length !== nx) throw new Error(`plot: a 2D array needs rows of one length: row 0 has ${nx}, row ${i} has ${data[i].length}`);
+      for (let j = 0; j < nx; j++) { const v = data[i][j]; flat[i * nx + j] = v == null ? NaN : +v; }
+    }
+    return { ny, nx, flat };
+  }
+  return null;
+}
 
 export class Axes {
   constructor(theme) {
@@ -156,7 +181,9 @@ export class Axes {
     const trace = { type: 'line', x: X, y: Y, opts: o };
     if (o.drawstyle && _hooks.drawstyle) _hooks.drawstyle(this, trace);
     this._traces.push(trace);
-    return this;
+    // matplotlib returns [Line2D]: `line, = ax.plot(…)` unpacks; the rest reads the axes (chaining)
+    const line = { get_xdata: () => trace.x, get_ydata: () => trace.y, get_color: () => o.color, get_label: () => o.label ?? null, axes: this };
+    return _result(this, [line], {});
   }
 
   // scatter(x, y, opts) · scatter(x, y, s, c, opts) — matplotlib's positional s and c too
@@ -195,7 +222,7 @@ export class Axes {
     }
     o.marker = this._checkMarker('scatter', o.marker);
     this._traces.push(trace);
-    return this;
+    return _result(this, [], { _trace: trace });         // a mappable: colorbar(sc) follows it
   }
 
   // matshow — render a 2D matrix as a heatmap. Accepts diverse inputs:
@@ -204,30 +231,9 @@ export class Axes {
   // with shape. Extracts flat data + nx + ny + passes through to imshow.
   matshow(data, opts) {
     const o = _plainOpts(opts) ? { ...opts } : {};
-    let flat, nx, ny;
-    // sadpan DataFrame
-    if (data && data._tbl && typeof data.to_numpy === 'function') {
-      const arr2d = data.to_numpy();
-      ny = arr2d.shape[0];
-      nx = arr2d.shape[1];
-      flat = arr2d.data instanceof Float64Array ? arr2d.data : Float64Array.from([].concat(...arr2d.tolist()));
-    } else if (data instanceof Float64Array && Array.isArray(data.shape) && data.shape.length === 2) {
-      ny = data.shape[0]; nx = data.shape[1]; flat = data;
-    } else if (data && data.data instanceof Float64Array && Array.isArray(data.shape) && data.shape.length === 2) {
-      ny = data.shape[0]; nx = data.shape[1]; flat = data.data;
-    } else if (data && data._nd && data._arr && data._arr.ndim === 2) {
-      const a = data._arr;
-      ny = a.shape[0]; nx = a.shape[1];
-      flat = new Float64Array(a.memory.buffer, a.ptr, ny * nx).slice();
-    } else if (Array.isArray(data) && Array.isArray(data[0])) {
-      ny = data.length;
-      nx = data[0].length;
-      flat = new Float64Array(ny * nx);
-      for (let i = 0; i < ny; i++) for (let j = 0; j < nx; j++) flat[i * nx + j] = data[i][j] == null ? NaN : data[i][j];
-    } else {
-      // Fall back to imshow as-is and let it complain.
-      return this.imshow(data, undefined, undefined, opts);
-    }
+    const g = _grid2d(data);
+    if (!g) return this.imshow(data, undefined, undefined, opts);   // let it complain
+    const { flat, nx, ny } = g;
     // matshow defaults to 'upper' origin (row 0 at top) — opposite of
     // imshow's default. honor unless caller explicitly set otherwise.
     if (!o.origin) o.origin = 'upper';
@@ -237,9 +243,23 @@ export class Axes {
   }
 
   // imshow(data, nx, ny, opts): a flat row-major grid of nx × ny values
+  // imshow(Z, opts): a 2D array (nested arrays, an ndarray, a DataFrame), with matplotlib's
+  // defaults: origin 'upper' (row 0 at the top), each cell centred on its integer index
+  // (extent [-0.5, nx-0.5, ny-0.5, -0.5]), y running down. imshow(data, nx, ny, opts): plot's
+  // flat form, row-major, origin 'lower' and extent [0, nx, 0, ny] unless given.
   imshow(data, nx, ny, opts) {
     if (typeof nx !== 'number' || typeof ny !== 'number') {
-      throw new Error('plot: imshow: give the grid size, imshow(data, nx, ny, opts), with data flat and row-major; for a 2D array use matshow(Z)');
+      const g = _grid2d(data);
+      if (!g) throw new Error('plot: imshow: give a 2D array (nested arrays, an ndarray or a DataFrame), or the flat form imshow(data, nx, ny, opts)');
+      const o = _plainOpts(nx) ? { ...nx } : {};
+      if (o.origin == null) o.origin = 'upper';
+      if (o.extent == null) {
+        o.extent = o.origin === 'upper' ? [-0.5, g.nx - 0.5, g.ny - 0.5, -0.5] : [-0.5, g.nx - 0.5, -0.5, g.ny - 0.5];
+      }
+      const res = this.imshow(g.flat, g.nx, g.ny, o);
+      // an extent running down (y0 > y1, origin 'upper') is an inverted y-axis, as in matplotlib
+      if (o.extent[2] > o.extent[3] && !this._ylim) this._yinv = true;
+      return res;
     }
     const o = this._opts('imshow', opts);
     const D = _col(data);
@@ -253,10 +273,11 @@ export class Axes {
       o.extent = e;
     }
     if (o.aspect != null) this._aspect = o.aspect;
-    this._traces.push({ type: 'imshow', data: D, nx, ny, opts: o });
+    const trace = { type: 'imshow', data: D, nx, ny, opts: o };
+    this._traces.push(trace);
     // default to equal aspect for grid data (matches matplotlib)
     if (this._aspect === 'auto') this._aspect = 'equal';
-    return this;
+    return _result(this, [], { _trace: trace, norm: o.norm, cmap: o.cmap });
   }
 
   // vlines(x, ymin, ymax) — vertical line segments. x can be scalar or
@@ -434,7 +455,16 @@ export class Axes {
 
   legend(opts) { this._legend = true; this._legendOpts = _checkOpts('legend', _plainOpts(opts) ? opts : {}, this._strict); return this; }
 
-  colorbar(opts) { this._colorbar = true; this._colorbarOpts = _checkOpts('colorbar', _plainOpts(opts) ? opts : {}, this._strict); return this; }
+  colorbar(mappable, opts) {
+    if (mappable && mappable._trace) { opts = { ...(_plainOpts(opts) ? opts : {}) }; opts.mappable = mappable._trace; }
+    else if (_plainOpts(mappable)) opts = mappable;
+    const o = _plainOpts(opts) ? { ...opts } : {};
+    const mp = o.mappable; delete o.mappable;
+    this._colorbar = true;
+    this._colorbarOpts = _checkOpts('colorbar', o, this._strict);
+    if (mp) this._colorbarOpts.mappable = mp;
+    return _result(this, [], { _colorbar: true });
+  }
 
   // grid() · grid(False) · grid(True, {alpha}) · grid({alpha}) (adder kwargs arrive as the first arg)
   grid(on, opts) {
@@ -570,12 +600,10 @@ export class Axes {
     // equal-aspect image)
     if (cb && lastCmapTrace) {
       const cbX = rect.x + rect.w - m.right + 10;
-      const { vmin, vmax } = this._cmapRange(lastCmapTrace);
-      if (vmin - vmin === 0 && vmax - vmax === 0) {
-        renderColorbar(ctx, cbX, fullPlotY, 12, fullPlotH, lastCmapTrace.opts.cmap || th.ramp || 'viridis', vmin, vmax, {
-          textColor, font: fTick, label: this._colorbarOpts.label, labelFont: fLab, labelOffset: 12 + 6 + cb.labelsW + 6,
-        });
-      }
+      _drawColorbar(ctx, cbX, fullPlotY, 12, fullPlotH, cb.cmap, cb.norm, cb.ticks, {
+        textColor, frameColor, font: fTick, labelFont: fLab, label: this._colorbarOpts.label, labelsW: cb.labelsW,
+        extend: this._colorbarOpts.extend || cb.extend, bandColors: cb.bandColors, extColors: cb.extColors,
+      });
     }
   }
 
@@ -642,17 +670,23 @@ export class Axes {
   }
 
   // the colorbar's labels, measured: the right margin depends on them
+  // The colorbar: the mappable colorbar() was given, else the last colour-mapped trace; its
+  // norm and colour map, its ticks and how wide their labels are (the right margin needs it).
+  // A kind can describe its own bar (cbar: contourf's bands).
   _colorbarInfo(ctx, fTick) {
-    let tr = null;
-    for (const t of this._traces) if (t.type === 'imshow' || t.cvals || (_KINDS[t.type] && _KINDS[t.type].cmap && t.cmapped !== false)) tr = t;
+    let tr = this._colorbarOpts.mappable && this._traces.includes(this._colorbarOpts.mappable) ? this._colorbarOpts.mappable : null;
+    if (!tr) for (const t of this._traces) if (t.type === 'imshow' || t.cvals || (_KINDS[t.type] && _KINDS[t.type].cmap && t.cmapped !== false)) tr = t;
     if (!tr) return null;
-    const { vmin, vmax } = this._cmapRange(tr);
-    if (!(vmin - vmin === 0 && vmax - vmax === 0)) return null;
-    ctx.font = fTick;
-    const sc = new LinearScale([Math.min(vmin, vmax), Math.max(vmin, vmax)], [0, 1]);
-    let w = 0;
-    for (const v of [vmin, vmax, ...sc.ticks(5)]) w = Math.max(w, _textW(fTick, sc.tickFormat()(v)));
-    return { labelsW: w };
+    const k = _KINDS[tr.type];
+    const own = k && k.cbar ? k.cbar(this, tr) : null;
+    const norm = own ? own.norm : this._cmapNorm(tr);
+    if (!(norm.vmin - norm.vmin === 0 && norm.vmax - norm.vmax === 0)) return null;
+    const h = this.view ? this.view.h : 200;
+    const ticks = _cbTicks(norm, h, own && own.ticks && this._colorbarOpts.ticks == null ? { ...this._colorbarOpts, ticks: own.ticks } : this._colorbarOpts);
+    return {
+      trace: tr, norm, ticks, labelsW: _cbLabelsW(ticks, fTick),
+      cmap: tr.opts.cmap || this._theme.ramp || 'viridis', extend: own ? own.extend : tr.opts.extend, bandColors: own ? own.bandColors : null, extColors: own ? own.extColors : null,
+    };
   }
 
   // ── ranges ────────────────────────────────────────────────────────────────────────────────
@@ -704,16 +738,20 @@ export class Axes {
     return [plo, phi];
   }
 
-  // vmin / vmax of a colour-mapped trace: the options, or the finite data range
-  _cmapRange(trace) {
-    let vmin = trace.opts.vmin, vmax = trace.opts.vmax;
-    if (vmin == null || vmax == null) {
-      const r = trace.type === 'imshow' ? this._imshowRange(trace) : _traceRange(trace, 'c', trace.cvals);
-      if (vmin == null) vmin = r.lo;
-      if (vmax == null) vmax = r.hi;
-    }
-    return { vmin, vmax };
+  // the norm of a colour-mapped trace: its norm option (an instance, 'linear', 'log'), with
+  // vmin / vmax, filled from the trace's finite data range. A kind can give its own range
+  // (crange) and norm (cnorm: contourf's levels).
+  _cmapNorm(trace) {
+    const k = _KINDS[trace.type];
+    if (k && k.cnorm) return k.cnorm(this, trace);
+    const o = trace.opts;
+    const r = trace.type === 'imshow' ? this._imshowRange(trace)
+      : k && k.crange ? k.crange(this, trace)
+        : _traceRange(trace, 'c', trace.cvals, o.norm === 'log' || (o.norm && o.norm.constructor && o.norm.constructor.name === 'LogNorm'));
+    return _resolveNorm(o.norm, o.vmin, o.vmax, r.lo, r.hi, r.minPos);
   }
+  // vmin / vmax of a colour-mapped trace (kept for callers outside plot)
+  _cmapRange(trace) { const n = this._cmapNorm(trace); return { vmin: n.vmin, vmax: n.vmax, norm: n }; }
 
   _imshowRange(trace) {
     const c = trace._cache || (trace._cache = {});
@@ -1053,26 +1091,20 @@ export class Axes {
     }
     const spec = { marker: o.marker || 'o', radius, rk, alpha, edge, cacheKey: 'sc' };
     if (trace.cvals) {
-      const { vmin, vmax } = this._cmapRange(trace);
-      spec.cmap = { name: o.cmap || 'viridis', vmin, vmax };
+      const norm = this._cmapNorm(trace);
+      spec.cmap = { name: o.cmap || this._theme.ramp || 'viridis', norm, vmin: norm.vmin, vmax: norm.vmax };
     } else if (trace.colors) spec.list = trace.colors;
     else spec.uniform = o.color;
     this._drawPoints(ctx, trace, pos, rect, spec);
   }
 
   // colour-map indices for a trace (0–255, -1 for NaN), cached on (cmap, vmin, vmax)
-  _cmapIdx(trace, vmin, vmax) {
+  _cmapIdx(trace, norm) {
     const c = trace._cache || (trace._cache = {});
-    const key = `${vmin}|${vmax}`;
+    const key = norm._key;
     if (c.cidx && c.cidx.key === key) return c.cidx.idx;
-    const v = trace.cvals, n = v.length, idx = new Int16Array(n);
-    const k = vmax !== vmin ? 256 / (vmax - vmin) : 0;
-    for (let i = 0; i < n; i++) {
-      const val = v[i];
-      if (val !== val) { idx[i] = -1; continue; }
-      let q = k ? ((val - vmin) * k) | 0 : 128;
-      idx[i] = q < 0 ? 0 : q > 255 ? 255 : q;
-    }
+    const v = trace.cvals, n = v.length, idx = new Int16Array(n), at = _indexer(norm);
+    for (let i = 0; i < n; i++) idx[i] = at(v[i]);
     c.cidx = { key, idx };
     return idx;
   }
@@ -1102,7 +1134,7 @@ export class Axes {
     if (n > _engine.rasterMin && rasterizable && this._rasterPoints(ctx, trace, pos, rect, spec, { lut, uni, bytes })) return;
 
     // ── vector ──
-    if (spec.cmap) idx = this._cmapIdx(trace, spec.cmap.vmin, spec.cmap.vmax);
+    if (spec.cmap) idx = this._cmapIdx(trace, spec.cmap.norm);
     const alpha = spec.alpha;
     const fillOf = (i) => spec.cmap ? (lut ? null : cmapFn(idx[i] < 0 ? NaN : (idx[i] + 0.5) / 256)) : spec.list ? spec.list[i] : spec.uniform;
     const rOf = (i) => (perPoint ? Math.sqrt(spec.radius[i]) * spec.rk : spec.radius);
@@ -1157,7 +1189,7 @@ export class Axes {
     const W = Math.max(1, Math.round(rect.w * dpr)), H = Math.max(1, Math.round(rect.h * dpr));
     const c = trace._cache || (trace._cache = {});
     const holderKey = 'raster_' + spec.cacheKey;
-    const key = `${pos.key}|${W}x${H}|${dpr}|${spec.cmap ? spec.cmap.vmin + ',' + spec.cmap.vmax + ',' + spec.cmap.name : ''}|${spec.alpha}`;
+    const key = `${pos.key}|${W}x${H}|${dpr}|${spec.cmap ? spec.cmap.norm._key + ',' + spec.cmap.name : ''}|${spec.alpha}`;
     let h = c[holderKey];
     if (!h || h.key !== key) {
       const n = pos.X.length;
@@ -1165,12 +1197,8 @@ export class Axes {
       if (typeof spec.radius === 'number') rad = spec.radius * dpr;
       else { rad = new Float32Array(n); for (let i = 0; i < n; i++) rad[i] = Math.sqrt(spec.radius[i]) * spec.rk * dpr; }
       let colors;
-      if (col.lut) {
-        // the same LUT entry _cmapIdx gives: ((v - vmin) · 256 / (vmax - vmin)), and the
-        // middle entry when vmin = vmax
-        const { vmin, vmax } = spec.cmap;
-        colors = vmax !== vmin ? { lut: col.lut, vals: trace.cvals, vmin, vk: 256 / (vmax - vmin) } : { lut: col.lut, vals: trace.cvals, vmin: vmin - 0.5, vk: 256 };
-      } else colors = col.bytes ? { bytes: col.bytes } : { uniform: col.uni };
+      if (col.lut) colors = { lut: col.lut, idx: this._cmapIdx(trace, spec.cmap.norm) };   // the norm's LUT entries
+      else colors = col.bytes ? { bytes: col.bytes } : { uniform: col.uni };
       const edge = spec.edge ? { bytes: spec.edge.color === 'face' ? 'face' : _colorBytes(spec.edge.color), width: spec.edge.width * dpr } : null;
       const rgba = _rasterPoints(W, H, pos.X, pos.Y, rect.x, rect.y, dpr, rad, spec.marker, colors, spec.alpha, edge);
       h = c[holderKey] = { key, rgba, W, H };
@@ -1185,28 +1213,29 @@ export class Axes {
     const { data, nx, ny, opts } = trace;
     const nodata = opts.nodata;
     const origin = opts.origin || 'lower';
-    const cmapName = opts.cmap || 'viridis';
-    const { vmin, vmax } = this._cmapRange(trace);
+    const cmapName = opts.cmap || this._theme.ramp || 'viridis';
+    const norm = this._cmapNorm(trace);
     const c = trace._cache || (trace._cache = {});
-    const key = `${vmin}|${vmax}|${origin}|${nodata}`;
+    const key = `${norm._key}|${origin}|${nodata}`;
     let img = c.img;
     if (!img || img.key !== key || img.cmap !== cmapName) {
       const rgba = new Uint8ClampedArray(nx * ny * 4);
       const lut = _cmapLut(cmapName), fn = lut ? null : getCmap(cmapName);
-      const vr = vmax - vmin, k = vr ? 256 / vr : 0;
+      const at = _indexer(norm);
       for (let iy = 0; iy < ny; iy++) {
         // image row 0 is the TOP: origin='lower' puts data row ny-1 there
         const row = origin === 'lower' ? ny - 1 - iy : iy;
         for (let ix = 0; ix < nx; ix++) {
           const v = data[iy * nx + ix];
           if (v - v !== 0 || (nodata != null && v === nodata)) continue;   // transparent
+          let q = at(v);
+          if (q < 0) continue;                             // LogNorm of v ≤ 0: no colour
           const o = (row * nx + ix) * 4;
           if (lut) {
-            let q = k ? ((v - vmin) * k) | 0 : 128;
-            q = (q < 0 ? 0 : q > 255 ? 255 : q) * 4;
+            q *= 4;
             rgba[o] = lut[q]; rgba[o + 1] = lut[q + 1]; rgba[o + 2] = lut[q + 2]; rgba[o + 3] = lut[q + 3];
           } else {
-            const b = _colorBytes(fn(vr ? (v - vmin) / vr : 0.5));
+            const b = _colorBytes(fn((q + 0.5) / 256));
             if (b) { rgba[o] = b[0]; rgba[o + 1] = b[1]; rgba[o + 2] = b[2]; rgba[o + 3] = b[3]; }
           }
         }

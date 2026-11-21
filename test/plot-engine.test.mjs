@@ -45,8 +45,8 @@ test('D1 / D13: typed-array c and s are used, and the colorbar follows them', ()
   assert.equal(t.s, s);
   const fills = new Set(ops(fig).filter((o) => o[0] === 'set' && o[1] === 'fillStyle').map((o) => o[2]));
   assert.ok(fills.size > 10, `points colour-mapped (${fills.size} distinct fills)`);
-  // the colorbar draws its labelled ticks: 0.00 … ~0.98
-  assert.ok(ops(fig).some((o) => o[0] === 'fillText' && /^0\.9/.test(o[1])), 'colorbar tick labels');
+  // the colorbar draws its labelled ticks: round values across 0 … 0.98 (M2: nice ticks)
+  assert.ok(ops(fig).filter((o) => o[0] === 'fillText' && /^0\.[2468]$/.test(o[1])).length >= 3, 'colorbar tick labels');
 });
 
 test('D2: 300k values through hist, scatter colour range and colorbar — no RangeError', () => {
@@ -217,7 +217,8 @@ test('errors name the argument, what was expected and what came', () => {
   assert.throws(() => ax.scatter([1, 2], [1, 2], { c: [1, 2, 3] }), /scatter: c has 3 values but x has 2/);
   assert.throws(() => ax.plot([1, 2], [1, 2, 3]), /plot: x has 2 values but y has 3/);
   assert.throws(() => ax.imshow([1, 2, 3], 2, 2), /imshow: data has 3 values but nx × ny is 4/);
-  assert.throws(() => ax.imshow([[1, 2], [3, 4]]), /give the grid size/);
+  assert.throws(() => ax.imshow('not a grid'), /give a 2D array/);
+  assert.throws(() => ax.imshow([[1, 2], [3]]), /rows of one length: row 0 has 2, row 1 has 1/);
 });
 
 // ── non-finite values never throw and never poison ────────────────────────────────────────
@@ -263,8 +264,8 @@ test('an unknown option warns once, with the name it probably meant', () => {
   ax.plot([1, 2], [1, 2], { colour: 'red' });
   assert.equal(warnings.length, 1);
   assert.match(warnings[0], /plot\(\) has no option 'colour', did you mean 'color'\?/);
-  ax.scatter([1], [1], { norm: 'log' });
-  assert.match(warnings[1], /scatter\(\): 'norm' — not supported yet/);
+  ax.bar([1], [1], { hatch: '//' });
+  assert.match(warnings[1], /bar\(\): 'hatch' — not supported yet/);
   ax.plot([1], [1], { lw: 2, ls: '--', c: 'k' });              // aliases are real options
   assert.equal(warnings.length, 2);
 });

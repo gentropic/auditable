@@ -2,7 +2,8 @@
 
 import { Figure, _shownFigures, _savedFigures } from './figure.js';
 import { replay } from './record.js';
-import { getCmap } from './color.js';
+import { getCmap, ListedColormap, LinearSegmentedColormap } from './color.js';
+import { Normalize, LogNorm, TwoSlopeNorm, CenteredNorm, BoundaryNorm } from './norm.js';
 import { setStyle, themeFromCSS } from './style.js';
 import { rcParams, _noop } from './opts.js';
 
@@ -198,6 +199,8 @@ const _CMAP_NAMES = [
   'spring', 'summer', 'autumn', 'winter',
   'viridis_r', 'plasma_r', 'inferno_r', 'magma_r', 'jet_r', 'gray_r',
 ];
+// matplotlib.colors
+export const colors = { Normalize, LogNorm, TwoSlopeNorm, CenteredNorm, BoundaryNorm, ListedColormap, LinearSegmentedColormap };
 export const cm = {};
 for (const n of _CMAP_NAMES) {
   Object.defineProperty(cm, n, {
@@ -261,6 +264,10 @@ export function step(x, y, fmt, opts) { return _ax().step(x, y, fmt, opts); }
 export function axhspan(ymin, ymax, opts) { return _ax().axhspan(ymin, ymax, opts); }
 export function axvspan(xmin, xmax, opts) { return _ax().axvspan(xmin, xmax, opts); }
 export function annotate(text, xy, opts) { return _ax().annotate(text, xy, opts); }
+export function boxplot(x, opts) { return _ax().boxplot(x, opts); }
+export function contour(...args) { return _ax().contour(...args); }
+export function contourf(...args) { return _ax().contourf(...args); }
+export function pcolormesh(...args) { return _ax().pcolormesh(...args); }
 export function margins(x, y) { return _ax().margins(x, y); }
 
 // plt.colorbar(im, ax=None, **kwargs) — attach a colorbar to the axes
@@ -274,15 +281,12 @@ export function margins(x, y) { return _ax().margins(x, y); }
 // Returns the axes (matplotlib returns a Colorbar object, but no
 // caller in the GCU stack uses it as anything other than a side-
 // effect call).
-export function colorbar(im, opts) {
-  // Adder kwargs land in the trailing arg; pull `ax` out.
-  let ax = null;
-  if (opts && typeof opts === 'object' && opts.ax) ax = opts.ax;
-  else if (im && typeof im === 'object' && typeof im.colorbar === 'function') ax = im;
-  else if (im && im.axes && typeof im.axes.colorbar === 'function') ax = im.axes;
-  else ax = _ax();
-  ax.colorbar(opts && typeof opts === 'object' ? opts : {});
-  return ax;
+export function colorbar(mappable, opts) {
+  if (mappable && typeof mappable === 'object' && !mappable._trace && !mappable.axes && !Array.isArray(mappable) && opts == null) { opts = mappable; mappable = null; }
+  const o = opts && typeof opts === 'object' ? opts : {};
+  const ax = o.ax || (mappable && mappable.axes) || (mappable && typeof mappable.colorbar === 'function' ? mappable : null) || _ax();
+  const rest = { ...o }; delete rest.ax;
+  return mappable && mappable._trace ? ax.colorbar(mappable, rest) : ax.colorbar(rest);
 }
 // plt.suptitle — sets the figure-level title above all subplots.
 // Delegates to the current figure's suptitle method.
@@ -300,6 +304,8 @@ export const pltAdder = {
   legend, grid, vlines, hlines, axhline, axvline, text,
   subplots_adjust, tight_layout, savefig, clf, cla,
   xticks, yticks, axis, margins, colorbar, suptitle, themeFromCSS,
+  colors, Normalize, LogNorm, TwoSlopeNorm, CenteredNorm, BoundaryNorm, ListedColormap,
+  boxplot, contour, contourf, pcolormesh,
   barh, bar_label, errorbar, fill_between, fill_betweenx, step, axhspan, axvspan, annotate,
 };
 

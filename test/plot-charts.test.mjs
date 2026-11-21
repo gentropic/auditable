@@ -306,3 +306,125 @@ test('spans, axhline xmin / xmax, annotate', () => {
   assert.ok(texts(fig).includes('here'));
   assert.ok(ax.get_ylim()[0] < 0.01, 'spans do not move the other axis');
 });
+
+// ── colour-mapped charts (M2 chunk 3) ──
+const mplBox = JSON.parse((await import('node:fs')).readFileSync(new URL('./fixtures/plot-mpl-boxplot.json', import.meta.url), 'utf8'));
+const { _boxStats } = await import('../ext/plot/src/box.js');
+
+test("boxplot statistics are matplotlib's own (cbook.boxplot_stats), whis 1.5, 0.5 and [5, 95]", () => {
+  for (const [key, want] of Object.entries(mplBox.stats)) {
+    const [name, w] = key.split('|');
+    const whis = w.startsWith('[') ? JSON.parse(w) : +w;
+    const got = _boxStats(mplBox.data[name], whis);
+    for (const k of ['mean', 'med', 'q1', 'q3', 'iqr', 'whislo', 'whishi', 'cilo', 'cihi']) {
+      assert.ok(Math.abs(got[k] - want[k]) <= 1e-9 * Math.max(1, Math.abs(want[k])), `${key} ${k}: ${got[k]} vs ${want[k]}`);
+    }
+    assert.deepEqual(got.fliers.slice().sort((a, b) => a - b), want.fliers, `${key} fliers`);
+  }
+});
+
+test('boxplot: a list, a mapping (keys label), positions and ticks, horizontal; returns the stats with get_ydata', () => {
+  const { fig, ax } = fig1();
+  const bp = ax.boxplot({ ITA: [1, 2, 3, 4, 100], HEM: [5, 6, 7] });
+  assert.equal(bp.medians.length, 2);
+  assert.equal(bp.medians[0].get_ydata()[0], 3);
+  assert.deepEqual(bp.fliers[0].get_ydata(), [100]);
+  assert.ok(texts(fig).includes('ITA') && texts(fig).includes('HEM'));
+  fig.toDrawList();
+  assert.ok(ax.get_ylim()[1] >= 100, 'fliers in the range');
+  const h = fig1(); const b2 = h.ax.boxplot([[1, 2, 3], [4, 5, 6]], { vert: false, showmeans: true });
+  assert.deepEqual(b2.medians[1].get_xdata(), [5, 5]);
+  h.fig.toDrawList();
+  assert.ok(h.ax.get_xlim()[1] >= 6 && h.ax.get_ylim()[1] >= 2);
+});
+
+test('contour on a cone: every level is a circle of that radius; contourf bands meet the lines', () => {
+  const n = 41, X = [], Y = [], Z = [];
+  for (let i = 0; i < n; i++) X.push(-2 + (4 * i) / (n - 1));
+  for (let j = 0; j < n; j++) { Y.push(-2 + (4 * j) / (n - 1)); Z.push(X.map((x) => Math.hypot(x, Y[j]))); }
+  const { fig, ax } = fig1();
+  const cs = ax.contour(X, Y, Z, [0.5, 1, 1.5]);
+  const segs = cs.allsegs;
+  assert.equal(segs.length, 3);
+  segs.forEach((lev, k) => {
+    assert.ok(lev.length > 20, 'a full ring');
+    for (const s of lev) for (const p of s) assert.ok(Math.abs(Math.hypot(p[0], p[1]) - cs.levels[k]) < 0.01, `on the circle r=${cs.levels[k]}`);
+  });
+  const cf = ax.contourf(X, Y, Z, [0, 1, 2]);
+  assert.deepEqual(cf.levels, [0, 1, 2]);
+  fig.toDrawList();
+  assert.deepEqual(ax.get_xlim(), [-2, 2], 'contours autoscale tight');
+});
+
+test('contour on a saddle: level 0 is the two axes; NaN cells are left out; nice default levels', () => {
+  const n = 21, Z = [];
+  for (let j = 0; j < n; j++) { const y = -1 + (2 * j) / (n - 1); Z.push(Array.from({ length: n }, (_, i) => (-1 + (2 * i) / (n - 1)) * y)); }
+  const { ax } = fig1();
+  const cs = ax.contour(Z, [0], { extent: [-1, 1, -1, 1] });
+  for (const s of cs.allsegs[0]) for (const p of s) assert.ok(Math.abs(p[0]) < 1e-9 || Math.abs(p[1]) < 1e-9, `on an axis: ${p}`);
+  Z[10][10] = NaN;
+  const c2 = fig1().ax.contour(Z, [0.1]);
+  assert.ok(c2.allsegs[0].length > 0);
+  const c3 = fig1().ax.contour(Z);
+  assert.ok(c3.levels.length >= 4 && c3.levels.every((v) => v > -1 && v < 1), `levels inside the data: ${c3.levels}`);
+  const c4 = fig1().ax.contourf(Z);
+  assert.ok(c4.levels[0] <= -1 && c4.levels[c4.levels.length - 1] >= 1, `filled levels cover the data: ${c4.levels}`);
+  assert.throws(() => fig1().ax.contour([1, 2, 3]), /Z must be a 2D array/);
+  assert.throws(() => fig1().ax.contour([0, 1], [0, 1, 2], [[1, 2], [3, 4]]), /X has 2 values and Y 3/);
+});
+
+test('norms: Normalize, LogNorm, TwoSlopeNorm, CenteredNorm, BoundaryNorm', () => {
+  const n = new P.Normalize(0, 10); assert.equal(n.call(5), 0.5);
+  const l = new P.LogNorm(1, 100); assert.equal(l.call(10), 0.5); assert.ok(Number.isNaN(l.call(0)));
+  const t = new P.TwoSlopeNorm(0, -1, 4); assert.equal(t.call(-1), 0); assert.equal(t.call(0), 0.5); assert.equal(t.call(2), 0.75);
+  const c = new P.CenteredNorm(0)._resolved(-2, 5); assert.equal(c.vmin, -5); assert.equal(c.vmax, 5);
+  const b = new P.BoundaryNorm([0, 1, 2, 5], 3);
+  assert.equal(b.call(0.5), 0.5 / 3); assert.equal(b.call(3), 2.5 / 3); assert.equal(b.call(-1), 0.5 / 3, 'below: the first class');
+  assert.equal(P.colors.LogNorm, P.LogNorm);
+});
+
+test('colorbars follow their mappable and norm: log decades, boundaries, extend, ticks, format', () => {
+  const a = fig1(); const sc = a.ax.scatter([1, 2, 3], [1, 2, 3], { c: [1, 10, 1000], norm: 'log' }); a.ax.colorbar(sc);
+  const ta = texts(a.fig); assert.ok(ta.includes('1') && ta.includes('10') && ta.includes('100') && ta.includes('1000'), ta.join(' '));
+  const b = fig1(); const sb = b.ax.scatter([1, 2], [1, 2], { c: [0.2, 3], norm: new P.BoundaryNorm([0, 1, 2, 5], 256) }); b.ax.colorbar(sb, { ticks: [0, 2, 5], format: '%.1f' });
+  const tb = texts(b.fig); assert.ok(tb.includes('0.0') && tb.includes('5.0') && tb.filter((s) => s === '2.0').length >= 2, tb.join(' '));   // 2.0: an axis tick and the bar's
+  const c = fig1(); const im = c.ax.imshow([[1, 2], [3, 4]]); c.fig.colorbar(im, { extend: 'both', label: 'v' });
+  assert.ok(texts(c.fig).includes('v'));
+  assert.ok(ops(c.fig).filter((o) => o[0] === 'closePath').length >= 2, 'two extend triangles');
+});
+
+test("imshow(Z): matplotlib's defaults — origin upper, cells centred on their index, y running down", () => {
+  const { fig, ax } = fig1();
+  ax.imshow([[1, 2, 3], [4, 5, 6]]);
+  fig.toDrawList();
+  assert.deepEqual(ax.get_xlim(), [-0.5, 2.5]);
+  assert.deepEqual(ax.get_ylim(), [1.5, -0.5], 'inverted');
+  const [, top] = ax.toPixel(0, 0), [, bottom] = ax.toPixel(0, 1);
+  assert.ok(top < bottom, 'row 0 at the top');
+  const flat = fig1(); flat.ax.imshow([1, 2, 3, 4], 2, 2); flat.fig.toDrawList();
+  assert.deepEqual(flat.ax.get_ylim(), [0, 2], 'the flat form keeps its own defaults');
+});
+
+test('pcolormesh: an even mesh is one image; uneven edges draw cells; curvilinear corners; shading', () => {
+  const C = [[1, 2], [3, 4]];
+  const a = fig1(); a.ax.pcolormesh([0, 1, 2], [0, 10, 20], C);
+  assert.equal(ops(a.fig).filter((o) => o[0] === 'image').length, 1);
+  const b = fig1(); b.ax.pcolormesh([0, 1, 5], [0, 1, 2], C);
+  assert.equal(ops(b.fig).filter((o) => o[0] === 'image').length, 0);
+  b.fig.toDrawList(); assert.deepEqual(b.ax.get_xlim(), [0, 5]);
+  const c = fig1(); c.ax.pcolormesh([0, 1], [0, 1], C, { shading: 'nearest' }); c.fig.toDrawList();
+  assert.deepEqual(c.ax.get_xlim(), [-0.5, 1.5]);
+  const d = fig1(); d.ax.pcolormesh([[0, 1, 2], [0, 1, 2], [0, 1, 2]], [[0, 0, 0], [1, 1, 1], [2, 2.5, 3]], C); d.fig.toDrawList();
+  assert.ok(d.ax.get_ylim()[1] >= 3);
+  assert.throws(() => fig1().ax.pcolormesh([0, 1, 2, 3], [0, 1], C), /give the 3 and 3 cell edges/);
+});
+
+test("colour maps: ColorBrewer and matplotlib names, '_r' for any, listed maps; an unknown name warns", async () => {
+  const { getCmap } = await import('../ext/plot/src/color.js');
+  assert.equal(getCmap('RdBu')(0), 'rgb(103,0,31)');
+  assert.equal(getCmap('RdBu_r')(0), 'rgb(5,48,97)');
+  assert.equal(getCmap('tab10')(0.05), '#1f77b4');
+  assert.equal(getCmap(new P.ListedColormap(['red', 'blue']))(0.9), '#0000ff');
+  getCmap('nope');
+  assert.ok(warnings.some((w) => /no colour map 'nope'/.test(w)));
+});

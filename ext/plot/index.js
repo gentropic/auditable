@@ -34,22 +34,25 @@ const _ARTIST = ['label', 'alpha', 'zorder', 'color'];
 
 const _KNOWN = {
   plot: [..._ARTIST, 'linestyle', 'linewidth', 'marker', 'markersize', 'markerfacecolor', 'markeredgecolor', 'markeredgewidth', 'fmt', 'drawstyle'],
-  scatter: [..._ARTIST, 'c', 's', 'cmap', 'vmin', 'vmax', 'marker', 'edgecolor', 'linewidth', 'plotnonfinite'],
+  scatter: [..._ARTIST, 'c', 's', 'cmap', 'vmin', 'vmax', 'norm', 'marker', 'edgecolor', 'linewidth', 'plotnonfinite'],
   bar: [..._ARTIST, 'width', 'bottom', 'align', 'edgecolor', 'linewidth', 'tick_label'],
   barh: [..._ARTIST, 'height', 'left', 'align', 'edgecolor', 'linewidth', 'tick_label'],
   hist: [..._ARTIST, 'bins', 'range', 'weights', 'density', 'cumulative', 'edgecolor', 'linewidth', 'histtype', 'orientation', 'stacked', 'log', 'bottom', 'align', 'rwidth', 'linestyle'],
   fill_between: [..._ARTIST, 'where', 'step', 'interpolate', 'facecolor', 'edgecolor', 'linewidth', 'linestyle', 'y2'],
   fill_betweenx: [..._ARTIST, 'where', 'step', 'interpolate', 'facecolor', 'edgecolor', 'linewidth', 'linestyle', 'x2'],
+  contour: [..._ARTIST, 'levels', 'colors', 'cmap', 'norm', 'vmin', 'vmax', 'linewidths', 'linestyles', 'extend', 'extent', 'origin', 'antialiased'],
+  contourf: [..._ARTIST, 'levels', 'colors', 'cmap', 'norm', 'vmin', 'vmax', 'extend', 'extent', 'origin', 'antialiased', 'hatches'],
+  pcolormesh: [..._ARTIST, 'cmap', 'norm', 'vmin', 'vmax', 'edgecolor', 'linewidth', 'antialiased', 'rasterized'],
   axhspan: [..._ARTIST, 'xmin', 'xmax', 'facecolor', 'edgecolor', 'linewidth'],
   axvspan: [..._ARTIST, 'ymin', 'ymax', 'facecolor', 'edgecolor', 'linewidth'],
-  imshow: ['label', 'alpha', 'zorder', 'cmap', 'vmin', 'vmax', 'origin', 'nodata', 'extent', 'interpolation', 'aspect'],
+  imshow: ['label', 'alpha', 'zorder', 'cmap', 'vmin', 'vmax', 'norm', 'origin', 'nodata', 'extent', 'interpolation', 'aspect'],
   axhline: [..._ARTIST, 'linestyle', 'linewidth', 'xmin', 'xmax'],
   axvline: [..._ARTIST, 'linestyle', 'linewidth', 'ymin', 'ymax'],
   hlines: [..._ARTIST, 'colors', 'linestyle', 'linewidth'],
   vlines: [..._ARTIST, 'colors', 'linestyle', 'linewidth'],
   text: ['color', 'alpha', 'zorder', 'fontsize', 'ha', 'va', 'horizontalalignment', 'verticalalignment', 'transform', 'rotation', 'fontweight'],
   legend: ['loc'],
-  colorbar: ['label', 'ax'],
+  colorbar: ['label', 'ax', 'ticks', 'extend', 'format'],
   grid: ['color', 'alpha', 'linestyle', 'linewidth', 'which', 'axis'],
   subplots: ['figsize', 'dpi', 'facecolor', 'gap', 'wspace', 'hspace', 'strict', 'theme', 'sharex', 'sharey'],
   label: ['fontsize', 'color', 'loc', 'pad', 'fontweight'],
@@ -58,14 +61,12 @@ const _KNOWN = {
 // known, not done yet: the hint says what to do instead
 const _UNSUPPORTED = {
   plot: { dashes: "use linestyle ('--', '-.', ':')" },
-  scatter: { norm: 'not supported yet — use vmin / vmax' },
   bar: { hatch: 'not supported yet', yerr: 'use errorbar() on the bar positions', xerr: 'use errorbar() on the bar positions' },
   barh: { hatch: 'not supported yet', xerr: 'use errorbar() on the bar positions' },
   hist: { hatch: 'not supported yet' },
-  imshow: { norm: 'not supported yet — use vmin / vmax' },
   text: { bbox: 'not supported yet' },
   legend: { bbox_to_anchor: 'not supported yet — use loc', ncol: 'not supported yet', title: 'not supported yet', fontsize: 'not supported yet', frameon: 'not supported yet', framealpha: 'not supported yet' },
-  colorbar: { shrink: 'not supported yet', orientation: 'only vertical colorbars for now', ticks: 'not supported yet', extend: 'not supported yet', fraction: 'not supported yet', pad: 'not supported yet' },
+  colorbar: { shrink: 'not supported yet', orientation: 'only vertical colorbars for now', fraction: 'not supported yet', pad: 'not supported yet' },
   subplots: { squeeze: 'not supported yet', constrained_layout: 'layout is always tight', layout: 'layout is always tight' },
 };
 
@@ -899,18 +900,100 @@ const _cmaps = {
   gray_r: (t) => _cmaps.gray(1 - t),
 };
 
+// The ColorBrewer and matplotlib maps people name: diverging, sequential, qualitative.
+// Hex anchors interpolate evenly (ColorBrewer's 9- and 11-class schemes); the qualitative ones
+// are listed (one colour per equal bucket).
+const _hex = (h) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+const _hexes = (s) => s.split(' ').map(_hex);
+Object.assign(_cmaps, {
+  RdBu: _lerpCmap(_hexes('#67001f #b2182b #d6604d #f4a582 #fddbc7 #f7f7f7 #d1e5f0 #92c5de #4393c3 #2166ac #053061')),
+  RdYlBu: _lerpCmap(_hexes('#a50026 #d73027 #f46d43 #fdae61 #fee090 #ffffbf #e0f3f8 #abd9e9 #74add1 #4575b4 #313695')),
+  RdYlGn: _lerpCmap(_hexes('#a50026 #d73027 #f46d43 #fdae61 #fee08b #ffffbf #d9ef8b #a6d96a #66bd63 #1a9850 #006837')),
+  Spectral: _lerpCmap(_hexes('#9e0142 #d53e4f #f46d43 #fdae61 #fee08b #ffffbf #e6f598 #abdda4 #66c2a5 #3288bd #5e4fa2')),
+  PiYG: _lerpCmap(_hexes('#8e0152 #c51b7d #de77ae #f1b6da #fde0ef #f7f7f7 #e6f5d0 #b8e186 #7fbc41 #4d9221 #276419')),
+  BrBG: _lerpCmap(_hexes('#543005 #8c510a #bf812d #dfc27d #f6e8c3 #f5f5f5 #c7eae5 #80cdc1 #35978f #01665e #003c30')),
+  Blues: _lerpCmap(_hexes('#f7fbff #deebf7 #c6dbef #9ecae1 #6baed6 #4292c6 #2171b5 #08519c #08306b')),
+  Reds: _lerpCmap(_hexes('#fff5f0 #fee0d2 #fcbba1 #fc9272 #fb6a4a #ef3b2c #cb181d #a50f15 #67000d')),
+  Greens: _lerpCmap(_hexes('#f7fcf5 #e5f5e0 #c7e9c0 #a1d99b #74c476 #41ab5d #238b45 #006d2c #00441b')),
+  Oranges: _lerpCmap(_hexes('#fff5eb #fee6ce #fdd0a2 #fdae6b #fd8d3c #f16913 #d94801 #a63603 #7f2704')),
+  Purples: _lerpCmap(_hexes('#fcfbfd #efedf5 #dadaeb #bcbddc #9e9ac8 #807dba #6a51a3 #54278f #3f007d')),
+  YlOrRd: _lerpCmap(_hexes('#ffffcc #ffeda0 #fed976 #feb24c #fd8d3c #fc4e2a #e31a1c #bd0026 #800026')),
+  YlOrBr: _lerpCmap(_hexes('#ffffe5 #fff7bc #fee391 #fec44f #fe9929 #ec7014 #cc4c02 #993404 #662506')),
+  YlGnBu: _lerpCmap(_hexes('#ffffd9 #edf8b1 #c7e9b4 #7fcdbb #41b6c4 #1d91c0 #225ea8 #253494 #081d58')),
+  YlGn: _lerpCmap(_hexes('#ffffe5 #f7fcb9 #d9f0a3 #addd8e #78c679 #41ab5d #238443 #006837 #004529')),
+  bwr: _lerpCmap([[0, 0, 255], [255, 255, 255], [255, 0, 0]]),
+  seismic: _lerpCmap([[0, 0, 77], [0, 0, 255], [255, 255, 255], [255, 0, 0], [128, 0, 0]]),
+  // matplotlib's terrain: its segment anchors at 0, .15, .25, .5, .75, 1 (sampled evenly in fifths
+  // would bend it; _segCmap keeps the anchors where matplotlib puts them)
+  terrain: _segCmap([[0, 51, 51, 153], [0.15, 0, 153, 255], [0.25, 0, 204, 102], [0.5, 255, 255, 153], [0.75, 128, 92, 84], [1, 255, 255, 255]]),
+});
+const _QUAL = {
+  tab10: '#1f77b4 #ff7f0e #2ca02c #d62728 #9467bd #8c564b #e377c2 #7f7f7f #bcbd22 #17becf',
+  tab20: '#1f77b4 #aec7e8 #ff7f0e #ffbb78 #2ca02c #98df8a #d62728 #ff9896 #9467bd #c5b0d5 #8c564b #c49c94 #e377c2 #f7b6d2 #7f7f7f #c7c7c7 #bcbd22 #dbdb8d #17becf #9edae5',
+  Set1: '#e41a1c #377eb8 #4daf4a #984ea3 #ff7f00 #ffff33 #a65628 #f781bf #999999',
+  Set2: '#66c2a5 #fc8d62 #8da0cb #e78ac3 #a6d854 #ffd92f #e5c494 #b3b3b3',
+  Set3: '#8dd3c7 #ffffb3 #bebada #fb8072 #80b1d3 #fdb462 #b3de69 #fccde5 #d9d9d9 #bc80bd #ccebc5 #ffed6f',
+  Paired: '#a6cee3 #1f78b4 #b2df8a #33a02c #fb9a99 #e31a1c #fdbf6f #ff7f00 #cab2d6 #6a3d9a #ffff99 #b15928',
+  Dark2: '#1b9e77 #d95f02 #7570b3 #e7298a #66a61e #e6ab02 #a6761d #666666',
+};
+for (const [k, v] of Object.entries(_QUAL)) _cmaps[k] = _listed(v.split(' '));
+
+// a listed map (matplotlib's ListedColormap): [0, 1] splits into N equal buckets
+function _listed(colors) {
+  const n = colors.length;
+  const f = (t) => (t !== t ? _NO_COLOR : colors[Math.max(0, Math.min(n - 1, Math.floor(Math.max(0, Math.min(1, t)) * n)))]);
+  f._listed = colors;
+  f.N = n;
+  return f;
+}
+// matplotlib's segment maps: [t, r, g, b] anchors at their own positions
+function _segCmap(anchors) {
+  return (t) => {
+    if (t !== t) return _NO_COLOR;
+    t = Math.max(0, Math.min(1, t));
+    let k = 0;
+    while (k < anchors.length - 2 && t > anchors[k + 1][0]) k++;
+    const a = anchors[k], b = anchors[k + 1], f = (t - a[0]) / (b[0] - a[0] || 1);
+    return `rgb(${[1, 2, 3].map((i) => Math.round(a[i] + (b[i] - a[i]) * f)).join(',')})`;
+  };
+}
+
+// every map name plot knows, '_r' reversals included
+const CMAP_NAMES = () => Object.keys(_cmaps).flatMap((k) => (k.endsWith('_r') ? [k] : [k, `${k}_r`]));
+
+
+// a name, a function (t ∈ [0, 1] → colour), a list of colours (a listed map), or a
+// ListedColormap / colormap object. An unknown name warns and draws viridis.
 function getCmap(name) {
   if (typeof name === 'function') return name;
-  // an array of colors is a categorical map (matplotlib's ListedColormap):
-  // [0,1) splits into equal buckets, one color each
-  if (Array.isArray(name)) {
-    const n = name.length;
-    const f = (t) => (t !== t ? _NO_COLOR : name[Math.max(0, Math.min(n - 1, Math.floor(Math.max(0, Math.min(1, t)) * n)))]);
-    f._listed = name;
-    return f;
-  }
-  return _cmaps[name] || _cmaps.viridis;
+  if (Array.isArray(name)) return _listed(name);
+  if (name && typeof name === 'object' && typeof name._fn === 'function') return name._fn;
+  if (name == null) return _cmaps.viridis;
+  if (_cmaps[name]) return _cmaps[name];
+  const m = /^(.*)_r$/.exec(name);
+  if (m && _cmaps[m[1]]) { const base = _cmaps[m[1]]; const r = (t) => base(1 - t); if (base._listed) { r._listed = base._listed.slice().reverse(); r.N = base.N; } _cmaps[name] = r; return r; }
+  _warn('cmap.' + name, `no colour map '${name}'; using viridis. Known: ${Object.keys(_cmaps).filter((k) => !k.endsWith('_r')).join(', ')} (and each with _r)`);
+  return _cmaps.viridis;
 }
+
+// matplotlib.colors.ListedColormap(colors, name?): a map of N listed colours, for discrete
+// classes; with BoundaryNorm, one colour per class
+class ListedColormap {
+  constructor(colors, name = 'from_list') {
+    this.colors = Array.from(colors, (c) => _cssColor(c));
+    this.name = name;
+    this.N = this.colors.length;
+    this._fn = _listed(this.colors);
+  }
+  reversed() { return new ListedColormap(this.colors.slice().reverse(), this.name + '_r'); }
+}
+// LinearSegmentedColormap.from_list(name, colors): an even ramp through the colours
+const LinearSegmentedColormap = {
+  from_list(name, colors) {
+    const stops = colors.map((c) => { const b = _colorBytes(_cssColor(Array.isArray(c) ? c[1] : c)); return b ? [b[0], b[1], b[2]] : [0, 0, 0]; });
+    return { name, N: 256, _fn: _lerpCmap(stops) };
+  },
+};
 
 function cmapRgb(name, t) {
   return getCmap(name)(t);
@@ -1036,6 +1119,245 @@ function renderColorbar(ctx, x, y, w, h, cmap, vmin, vmax, opts) {
     ctx.restore();
   }
 }
+
+// -- norm.js --
+
+// Colour normalisation (matplotlib.colors' norms) and the colorbar.
+//
+// A norm maps a data value to t ∈ [0, 1] along the colour map: Normalize (linear), LogNorm,
+// TwoSlopeNorm (diverging about a centre), CenteredNorm, BoundaryNorm (discrete classes).
+// Every colour-mapped trace — scatter, imshow, pcolormesh, contour(f) — resolves ONE norm per
+// render (its vmin / vmax filled from the data where not given), and the colorbar draws that
+// same norm, so the bar can't disagree with the plot.
+
+
+
+
+const _log10 = Math.log10;
+
+class Normalize {
+  constructor(vmin = null, vmax = null, clip = false) {
+    if (vmin && typeof vmin === 'object') ({ vmin = null, vmax = null, clip = false } = vmin);
+    this.vmin = vmin; this.vmax = vmax; this.clip = clip;
+  }
+  // data → t (outside [0, 1] when the value is; NaN: no colour)
+  call(v) { const d = this.vmax - this.vmin; return d ? (v - this.vmin) / d : 0.5; }
+  inverse(t) { return this.vmin + t * (this.vmax - this.vmin); }
+  get scaled() { return this.vmin != null && this.vmax != null; }
+  // a copy with the missing ends filled (the data's range); norms given by the caller are
+  // never changed, so one norm can serve several figures
+  _resolved(lo, hi) { const n = Object.create(Object.getPrototypeOf(this)); Object.assign(n, this); if (n.vmin == null) n.vmin = lo; if (n.vmax == null) n.vmax = hi; return n; }
+  get _key() { return `${this.constructor.name}|${this.vmin}|${this.vmax}`; }
+  _ticks(n) { const t = _niceTicks(Math.min(this.vmin, this.vmax), Math.max(this.vmin, this.vmax), n); return { values: Array.from(t), labels: _fmtStep(Array.from(t), t.step || 1) }; }
+}
+
+class LogNorm extends Normalize {
+  call(v) {
+    if (!(v > 0)) return NaN;
+    const a = _log10(this.vmin), b = _log10(this.vmax);
+    return b - a ? (_log10(v) - a) / (b - a) : 0.5;
+  }
+  inverse(t) { const a = _log10(this.vmin), b = _log10(this.vmax); return Math.pow(10, a + t * (b - a)); }
+  _ticks() {
+    const lo = Math.ceil(_log10(this.vmin) - 1e-9), hi = Math.floor(_log10(this.vmax) + 1e-9);
+    const values = [];
+    for (let e = lo; e <= hi; e++) values.push(Math.pow(10, e));
+    if (values.length < 2) for (const m of [2, 5]) for (let e = lo - 1; e <= hi; e++) { const v = m * Math.pow(10, e); if (v >= this.vmin && v <= this.vmax) values.push(v); }
+    values.sort((a, b) => a - b);
+    return { values, labels: values.map((v) => { const e = Math.round(_log10(v)); return Math.abs(Math.pow(10, e) - v) < v * 1e-9 && (e < -3 || e > 4) ? `1e${e}` : String(+v.toPrecision(6)); }) };
+  }
+}
+
+// diverging about vcenter: each side spans half the map
+class TwoSlopeNorm extends Normalize {
+  constructor(vcenter, vmin = null, vmax = null) {
+    if (vcenter && typeof vcenter === 'object') ({ vcenter, vmin = null, vmax = null } = vcenter);
+    super(vmin, vmax);
+    this.vcenter = +vcenter;
+  }
+  call(v) {
+    const c = this.vcenter;
+    if (v < c) return c - this.vmin ? 0.5 * (v - this.vmin) / (c - this.vmin) : 0.5;
+    return this.vmax - c ? 0.5 + 0.5 * (v - c) / (this.vmax - c) : 0.5;
+  }
+  inverse(t) { const c = this.vcenter; return t < 0.5 ? this.vmin + (t / 0.5) * (c - this.vmin) : c + ((t - 0.5) / 0.5) * (this.vmax - c); }
+  _resolved(lo, hi) { const n = super._resolved(Math.min(lo, this.vcenter), Math.max(hi, this.vcenter)); return n; }
+  get _key() { return `TwoSlope|${this.vmin}|${this.vcenter}|${this.vmax}`; }
+}
+
+// symmetric about vcenter: halfrange from the data's furthest value unless given
+class CenteredNorm extends Normalize {
+  constructor(vcenter = 0, halfrange = null) {
+    if (vcenter && typeof vcenter === 'object') ({ vcenter = 0, halfrange = null } = vcenter);
+    super(); this.vcenter = +vcenter; this.halfrange = halfrange;
+  }
+  _resolved(lo, hi) {
+    const n = Object.create(CenteredNorm.prototype); Object.assign(n, this);
+    const h = this.halfrange != null ? +this.halfrange : Math.max(Math.abs(lo - this.vcenter), Math.abs(hi - this.vcenter)) || 1;
+    n.vmin = this.vcenter - h; n.vmax = this.vcenter + h;
+    return n;
+  }
+}
+
+// discrete classes: the value's bin among `boundaries` picks one of `ncolors` colours spread
+// along the map (ncolors = the listed map's N for one colour per class)
+class BoundaryNorm extends Normalize {
+  constructor(boundaries, ncolors = 256, clip = false) {
+    if (boundaries && !Array.isArray(boundaries) && !ArrayBuffer.isView(boundaries) && typeof boundaries === 'object') ({ boundaries, ncolors = 256, clip = false } = boundaries);
+    const b = Array.from(boundaries, Number);
+    if (b.length < 2) throw new Error('plot: BoundaryNorm needs at least two boundaries');
+    super(b[0], b[b.length - 1], clip);
+    this.boundaries = b; this.ncolors = ncolors;
+  }
+  // the class index of a value: 0 … nb-1; below / above the boundaries take the end classes
+  _bin(v) {
+    const b = this.boundaries, nb = b.length - 1;
+    if (v < b[0]) return -1;
+    if (v >= b[nb]) return v === b[nb] ? nb - 1 : nb;
+    let lo = 0, hi = nb - 1;
+    while (lo < hi) { const m = (lo + hi + 1) >> 1; if (b[m] <= v) lo = m; else hi = m - 1; }
+    return lo;
+  }
+  call(v) {
+    if (v !== v) return NaN;
+    const nb = this.boundaries.length - 1;
+    const i = Math.max(0, Math.min(nb - 1, this._bin(v)));
+    const idx = nb > 1 ? Math.round((i * (this.ncolors - 1)) / (nb - 1)) : (this.ncolors - 1) / 2;
+    return (idx + 0.5) / this.ncolors;
+  }
+  inverse(t) { return this.boundaries[0] + t * (this.boundaries[this.boundaries.length - 1] - this.boundaries[0]); }
+  _resolved() { return this; }
+  get _key() { return `Boundary|${this.boundaries.join(',')}|${this.ncolors}`; }
+  _ticks() { const v = this.boundaries.slice(); let step = Infinity; for (let i = 1; i < v.length; i++) step = Math.min(step, Math.abs(v[i] - v[i - 1])); return { values: v, labels: _fmtStep(v, step) }; }
+}
+
+// a norm option (an instance, 'linear', 'log') with vmin / vmax and the data's range → the norm
+// this render uses
+function _resolveNorm(norm, vmin, vmax, lo, hi, minPos) {
+  if (norm === 'log') norm = new LogNorm();
+  else if (norm === 'linear' || norm == null) norm = new Normalize();
+  else if (typeof norm === 'string') throw new Error(`plot: norm '${norm}' is not supported; use a Normalize, LogNorm, TwoSlopeNorm, CenteredNorm or BoundaryNorm, or 'linear' / 'log'`);
+  const n = norm._resolved(norm instanceof LogNorm ? (minPos ?? lo) : lo, hi);
+  if (vmin != null && !(norm instanceof BoundaryNorm)) n.vmin = +vmin;
+  if (vmax != null && !(norm instanceof BoundaryNorm)) n.vmax = +vmax;
+  if (n.vmin === n.vmax && !(n instanceof BoundaryNorm)) { n.vmin -= 0.5; n.vmax += 0.5; }
+  return n;
+}
+
+// value → LUT index 0–255, -1 for no colour; the linear case inlined (the hot loops call this
+// for every point or cell)
+function _indexer(norm) {
+  if (norm.constructor === Normalize) {
+    const lo = norm.vmin, k = norm.vmax !== norm.vmin ? 256 / (norm.vmax - norm.vmin) : 0;
+    return (v) => { if (v !== v) return -1; const q = k ? ((v - lo) * k) | 0 : 128; return q < 0 ? 0 : q > 255 ? 255 : q; };
+  }
+  return (v) => { if (v !== v) return -1; const t = norm.call(v); if (t !== t) return -1; const q = (t * 256) | 0; return q < 0 ? 0 : q > 255 ? 255 : q; };
+}
+
+// ── the colorbar ──
+// the ticks a colorbar of height h draws: given ticks, or the norm's own
+function _cbTicks(norm, h, opts) {
+  let ticks;
+  if (opts.ticks != null) {
+    const v = Array.from(opts.ticks, Number);
+    let step = Infinity; for (let i = 1; i < v.length; i++) step = Math.min(step, Math.abs(v[i] - v[i - 1]));
+    ticks = { values: v, labels: _fmtStep(v, step === Infinity ? 1 : step) };
+  } else ticks = norm._ticks(Math.max(2, Math.floor(h / 32) + 1));
+  if (opts.format) {
+    const f = opts.format;
+    ticks.labels = ticks.values.map((v) => (typeof f === 'function' ? String(f(v)) : _cbFmt(f, v)));
+  }
+  return ticks;
+}
+function _cbFmt(f, v) {
+  const m = /%[-+ 0#]*\d*(?:\.(\d+))?([dfgeE%])/.exec(f);
+  if (m) {
+    const p = m[1] == null ? null : +m[1];
+    const s = m[2] === 'd' ? String(Math.round(v)) : m[2] === 'f' ? v.toFixed(p ?? 6) : m[2] === 'e' || m[2] === 'E' ? v.toExponential(p ?? 6) : m[2] === '%' ? (v * 100).toFixed(p ?? 0) + '%' : String(+v.toPrecision(p || 6));
+    return f.replace(m[0], s);
+  }
+  const b = /\{(?:[^:}]*):?(,?)(?:\.(\d+))?([fgde%]?)\}/.exec(f);
+  if (b) {
+    const p = b[2] == null ? null : +b[2];
+    let s = b[3] === 'f' ? v.toFixed(p ?? 6) : b[3] === 'e' ? v.toExponential(p ?? 6) : b[3] === 'd' ? String(Math.round(v)) : b[3] === '%' ? (v * 100).toFixed(p ?? 0) + '%' : String(+v.toPrecision(p || 6));
+    if (b[1]) { const [i, d] = s.split('.'); s = i.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + (d != null ? '.' + d : ''); }
+    return f.replace(b[0], s);
+  }
+  return String(v);
+}
+function _cbLabelsW(ticks, font) { return ticks.labels.reduce((m, s) => Math.max(m, _textW(font, s)), 0); }
+
+// draw a vertical colorbar in [x, y, w, h]: the map through the norm (bands for BoundaryNorm
+// and listed maps), extend triangles at the ends, ticks and labels on the right, the label
+// rotated beyond them
+function _drawColorbar(ctx, x, y, w, h, cmap, norm, ticks, opts) {
+  const fn = getCmap(cmap), lut = _cmapLut(cmap);
+  const colorAt = (t) => {
+    if (lut) { const q = Math.max(0, Math.min(255, (t * 256) | 0)) * 4; return `rgb(${lut[q]},${lut[q + 1]},${lut[q + 2]})`; }
+    return fn(t);
+  };
+  const ext = opts.extend || 'neither';
+  const tri = Math.min(w * 1.2, h * 0.06);
+  const top = ext === 'max' || ext === 'both' ? tri : 0, bot = ext === 'min' || ext === 'both' ? tri : 0;
+  const by = y + top, bh = h - top - bot;
+  // where a value sits along the bar: discrete classes stand evenly (matplotlib's 'uniform')
+  const discrete = norm instanceof BoundaryNorm;
+  const posOf = (v) => {
+    if (discrete) {
+      const b = norm.boundaries, nb = b.length - 1;
+      let i = 0; while (i < nb - 1 && v > b[i + 1]) i++;
+      const f = (v - b[i]) / (b[i + 1] - b[i] || 1);
+      return by + bh * (1 - (i + Math.max(0, Math.min(1, f))) / nb);
+    }
+    const t = norm.call(v);
+    return by + bh * (1 - t);
+  };
+  if (discrete) {
+    const b = norm.boundaries, nb = b.length - 1;
+    for (let i = 0; i < nb; i++) {
+      ctx.fillStyle = opts.bandColors ? opts.bandColors[i] : colorAt(norm.call((b[i] + b[i + 1]) / 2));
+      const y0 = by + bh * (1 - (i + 1) / nb);
+      ctx.fillRect(x, y0, w, bh / nb + 0.5);
+    }
+  } else {
+    const n = Math.max(1, Math.floor(bh));
+    for (let i = 0; i < n; i++) {
+      ctx.fillStyle = colorAt(1 - (i + 0.5) / n);
+      ctx.fillRect(x, by + (i * bh) / n, w, bh / n + 0.6);
+    }
+  }
+  // the ends beyond the norm: matplotlib's extend arrows, in the end colours
+  if (top) { ctx.fillStyle = opts.extColors ? opts.extColors[1] : colorAt(1); ctx.beginPath(); ctx.moveTo(x, by); ctx.lineTo(x + w / 2, y); ctx.lineTo(x + w, by); ctx.closePath(); ctx.fill(); }
+  if (bot) { ctx.fillStyle = opts.extColors ? opts.extColors[0] : colorAt(0); ctx.beginPath(); ctx.moveTo(x, by + bh); ctx.lineTo(x + w / 2, y + h); ctx.lineTo(x + w, by + bh); ctx.closePath(); ctx.fill(); }
+  ctx.strokeStyle = opts.frameColor; ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(x, by); if (top) ctx.lineTo(x + w / 2, y); ctx.lineTo(x + w, by);
+  ctx.lineTo(x + w, by + bh); if (bot) ctx.lineTo(x + w / 2, y + h); ctx.lineTo(x, by + bh); ctx.closePath();
+  ctx.stroke();
+  // ticks
+  ctx.fillStyle = opts.textColor; ctx.font = opts.font;
+  ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+  ctx.strokeStyle = opts.frameColor;
+  const lo = Math.min(norm.vmin, norm.vmax), hi = Math.max(norm.vmin, norm.vmax);
+  for (let i = 0; i < ticks.values.length; i++) {
+    const v = ticks.values[i];
+    if (!(v >= lo - Math.abs(hi - lo) * 1e-9 && v <= hi + Math.abs(hi - lo) * 1e-9)) continue;
+    const py = posOf(v);
+    if (py - py !== 0) continue;
+    ctx.beginPath(); ctx.moveTo(x + w, py); ctx.lineTo(x + w + 3, py); ctx.stroke();
+    ctx.fillText(ticks.labels[i], x + w + 5, py);
+  }
+  if (opts.label) {
+    ctx.save();
+    ctx.font = opts.labelFont || opts.font;
+    ctx.translate(x + w + 5 + opts.labelsW + 6, y + h / 2);
+    ctx.rotate(-Math.PI / 2);                              // reads bottom to top, like a ylabel
+    ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    ctx.fillText(opts.label, 0, 0);
+    ctx.restore();
+  }
+}
+void _colorBytes;
 
 // -- format.js --
 
@@ -1487,8 +1809,8 @@ function _paint(b32, W, H, sp, base, cx, cy, interior, pr, pg, pb, a) {
 //               ((X - ox) · k, (Y - oy) · k), k being the device pixel ratio
 //   rad         radius in device px: a number, or a per-point Float32Array
 //   colors      { uniform: [r,g,b,a] }
-//               | { lut: Uint8ClampedArray (256 × 4), vals, vmin, vk }   colour-mapped: entry
-//                 ((v - vmin) · vk) clamped to 0–255; a NaN value draws nothing
+//               | { lut: Uint8ClampedArray (256 × 4), idx: Int16Array }   colour-mapped: the
+//                 LUT entry per point, from the trace's norm (-1: no colour, draws nothing)
 //               | { bytes: Uint8ClampedArray (n × 4) }
 //   alpha       0–1, applied on top of each colour's own alpha
 //   edge        null | { bytes: [r,g,b,a] | 'face', width (device px) }
@@ -1496,7 +1818,7 @@ function _rasterPoints(W, H, X, Y, ox, oy, k, rad, marker, colors, alpha, edge) 
   const buf = new Uint8Array(W * H * 4);              // premultiplied while drawing
   const b32 = new Uint32Array(buf.buffer);
   const n = X.length;
-  const uni = colors.uniform, lut = colors.lut, vals = colors.vals, vmin = colors.vmin, vk = colors.vk, bytes = colors.bytes;
+  const uni = colors.uniform, lut = colors.lut, idx = colors.idx, bytes = colors.bytes;
   const ew = edge ? edge.width : 0;
   const perPointR = typeof rad !== 'number';
   // a fixed radius: its 16 phase stamps, and their cells as pixel offsets for the inlined
@@ -1511,10 +1833,9 @@ function _rasterPoints(W, H, X, Y, ox, oy, k, rad, marker, colors, alpha, edge) 
     let r, g, b, a;
     if (uni) { r = uni[0]; g = uni[1]; b = uni[2]; a = uni[3]; }
     else if (lut) {
-      const v = vals[p];
-      if (v !== v) continue;
-      let q = ((v - vmin) * vk) | 0;
-      q = (q < 0 ? 0 : q > 255 ? 255 : q) << 2;
+      let q = idx[p];
+      if (q < 0) continue;
+      q <<= 2;
       r = lut[q]; g = lut[q + 1]; b = lut[q + 2]; a = lut[q + 3];
     } else { const q = p << 2; r = bytes[q]; g = bytes[q + 1]; b = bytes[q + 2]; a = bytes[q + 3]; }
     if (A !== 255) { const t = a * A + 128; a = (t + (t >> 8)) >> 8; }
@@ -1700,6 +2021,7 @@ function _queryGrid(g, qx, qy, radius) {
 
 
 
+
 // The fast-path thresholds (measured: bench/BENCH.md). Scatters with more than rasterMin points
 // rasterize; lines with more than 4 vertices per device pixel decimate. Tests turn them off
 // to compare the fast paths against the plain ones.
@@ -1755,6 +2077,30 @@ function _project(arr, s, out) {
 
 // matplotlib's named font sizes, as px relative to the theme's base size
 const _FONTSIZES = { 'xx-small': -4, 'x-small': -3, small: -2, medium: 0, large: 2, 'x-large': 4, 'xx-large': 6 };
+
+// a 2D grid → { flat (row-major Float64Array), nx, ny }: nested arrays, a Float64Array with a
+// 2D shape, an ndarray-like { data, shape }, a natra ndarray, a sadpan DataFrame; null if not
+function _grid2d(data) {
+  if (data && data._tbl && typeof data.to_numpy === 'function') {
+    const a = data.to_numpy();
+    return { ny: a.shape[0], nx: a.shape[1], flat: a.data instanceof Float64Array ? a.data : Float64Array.from([].concat(...a.tolist())) };
+  }
+  if (data instanceof Float64Array && Array.isArray(data.shape) && data.shape.length === 2) return { ny: data.shape[0], nx: data.shape[1], flat: data };
+  if (data && ArrayBuffer.isView(data.data) && Array.isArray(data.shape) && data.shape.length === 2) return { ny: data.shape[0], nx: data.shape[1], flat: data.data instanceof Float64Array ? data.data : Float64Array.from(data.data) };
+  if (data && data._nd && data._arr && data._arr.ndim === 2) {
+    const a = data._arr;
+    return { ny: a.shape[0], nx: a.shape[1], flat: new Float64Array(a.memory.buffer, a.ptr, a.shape[0] * a.shape[1]).slice() };
+  }
+  if (Array.isArray(data) && data.length && _isArrayLike(data[0])) {
+    const ny = data.length, nx = data[0].length, flat = new Float64Array(ny * nx);
+    for (let i = 0; i < ny; i++) {
+      if (data[i].length !== nx) throw new Error(`plot: a 2D array needs rows of one length: row 0 has ${nx}, row ${i} has ${data[i].length}`);
+      for (let j = 0; j < nx; j++) { const v = data[i][j]; flat[i * nx + j] = v == null ? NaN : +v; }
+    }
+    return { ny, nx, flat };
+  }
+  return null;
+}
 
 class Axes {
   constructor(theme) {
@@ -1828,7 +2174,9 @@ class Axes {
     const trace = { type: 'line', x: X, y: Y, opts: o };
     if (o.drawstyle && _hooks.drawstyle) _hooks.drawstyle(this, trace);
     this._traces.push(trace);
-    return this;
+    // matplotlib returns [Line2D]: `line, = ax.plot(…)` unpacks; the rest reads the axes (chaining)
+    const line = { get_xdata: () => trace.x, get_ydata: () => trace.y, get_color: () => o.color, get_label: () => o.label ?? null, axes: this };
+    return _result(this, [line], {});
   }
 
   // scatter(x, y, opts) · scatter(x, y, s, c, opts) — matplotlib's positional s and c too
@@ -1867,7 +2215,7 @@ class Axes {
     }
     o.marker = this._checkMarker('scatter', o.marker);
     this._traces.push(trace);
-    return this;
+    return _result(this, [], { _trace: trace });         // a mappable: colorbar(sc) follows it
   }
 
   // matshow — render a 2D matrix as a heatmap. Accepts diverse inputs:
@@ -1876,30 +2224,9 @@ class Axes {
   // with shape. Extracts flat data + nx + ny + passes through to imshow.
   matshow(data, opts) {
     const o = _plainOpts(opts) ? { ...opts } : {};
-    let flat, nx, ny;
-    // sadpan DataFrame
-    if (data && data._tbl && typeof data.to_numpy === 'function') {
-      const arr2d = data.to_numpy();
-      ny = arr2d.shape[0];
-      nx = arr2d.shape[1];
-      flat = arr2d.data instanceof Float64Array ? arr2d.data : Float64Array.from([].concat(...arr2d.tolist()));
-    } else if (data instanceof Float64Array && Array.isArray(data.shape) && data.shape.length === 2) {
-      ny = data.shape[0]; nx = data.shape[1]; flat = data;
-    } else if (data && data.data instanceof Float64Array && Array.isArray(data.shape) && data.shape.length === 2) {
-      ny = data.shape[0]; nx = data.shape[1]; flat = data.data;
-    } else if (data && data._nd && data._arr && data._arr.ndim === 2) {
-      const a = data._arr;
-      ny = a.shape[0]; nx = a.shape[1];
-      flat = new Float64Array(a.memory.buffer, a.ptr, ny * nx).slice();
-    } else if (Array.isArray(data) && Array.isArray(data[0])) {
-      ny = data.length;
-      nx = data[0].length;
-      flat = new Float64Array(ny * nx);
-      for (let i = 0; i < ny; i++) for (let j = 0; j < nx; j++) flat[i * nx + j] = data[i][j] == null ? NaN : data[i][j];
-    } else {
-      // Fall back to imshow as-is and let it complain.
-      return this.imshow(data, undefined, undefined, opts);
-    }
+    const g = _grid2d(data);
+    if (!g) return this.imshow(data, undefined, undefined, opts);   // let it complain
+    const { flat, nx, ny } = g;
     // matshow defaults to 'upper' origin (row 0 at top) — opposite of
     // imshow's default. honor unless caller explicitly set otherwise.
     if (!o.origin) o.origin = 'upper';
@@ -1909,9 +2236,23 @@ class Axes {
   }
 
   // imshow(data, nx, ny, opts): a flat row-major grid of nx × ny values
+  // imshow(Z, opts): a 2D array (nested arrays, an ndarray, a DataFrame), with matplotlib's
+  // defaults: origin 'upper' (row 0 at the top), each cell centred on its integer index
+  // (extent [-0.5, nx-0.5, ny-0.5, -0.5]), y running down. imshow(data, nx, ny, opts): plot's
+  // flat form, row-major, origin 'lower' and extent [0, nx, 0, ny] unless given.
   imshow(data, nx, ny, opts) {
     if (typeof nx !== 'number' || typeof ny !== 'number') {
-      throw new Error('plot: imshow: give the grid size, imshow(data, nx, ny, opts), with data flat and row-major; for a 2D array use matshow(Z)');
+      const g = _grid2d(data);
+      if (!g) throw new Error('plot: imshow: give a 2D array (nested arrays, an ndarray or a DataFrame), or the flat form imshow(data, nx, ny, opts)');
+      const o = _plainOpts(nx) ? { ...nx } : {};
+      if (o.origin == null) o.origin = 'upper';
+      if (o.extent == null) {
+        o.extent = o.origin === 'upper' ? [-0.5, g.nx - 0.5, g.ny - 0.5, -0.5] : [-0.5, g.nx - 0.5, -0.5, g.ny - 0.5];
+      }
+      const res = this.imshow(g.flat, g.nx, g.ny, o);
+      // an extent running down (y0 > y1, origin 'upper') is an inverted y-axis, as in matplotlib
+      if (o.extent[2] > o.extent[3] && !this._ylim) this._yinv = true;
+      return res;
     }
     const o = this._opts('imshow', opts);
     const D = _col(data);
@@ -1925,10 +2266,11 @@ class Axes {
       o.extent = e;
     }
     if (o.aspect != null) this._aspect = o.aspect;
-    this._traces.push({ type: 'imshow', data: D, nx, ny, opts: o });
+    const trace = { type: 'imshow', data: D, nx, ny, opts: o };
+    this._traces.push(trace);
     // default to equal aspect for grid data (matches matplotlib)
     if (this._aspect === 'auto') this._aspect = 'equal';
-    return this;
+    return _result(this, [], { _trace: trace, norm: o.norm, cmap: o.cmap });
   }
 
   // vlines(x, ymin, ymax) — vertical line segments. x can be scalar or
@@ -2106,7 +2448,16 @@ class Axes {
 
   legend(opts) { this._legend = true; this._legendOpts = _checkOpts('legend', _plainOpts(opts) ? opts : {}, this._strict); return this; }
 
-  colorbar(opts) { this._colorbar = true; this._colorbarOpts = _checkOpts('colorbar', _plainOpts(opts) ? opts : {}, this._strict); return this; }
+  colorbar(mappable, opts) {
+    if (mappable && mappable._trace) { opts = { ...(_plainOpts(opts) ? opts : {}) }; opts.mappable = mappable._trace; }
+    else if (_plainOpts(mappable)) opts = mappable;
+    const o = _plainOpts(opts) ? { ...opts } : {};
+    const mp = o.mappable; delete o.mappable;
+    this._colorbar = true;
+    this._colorbarOpts = _checkOpts('colorbar', o, this._strict);
+    if (mp) this._colorbarOpts.mappable = mp;
+    return _result(this, [], { _colorbar: true });
+  }
 
   // grid() · grid(False) · grid(True, {alpha}) · grid({alpha}) (adder kwargs arrive as the first arg)
   grid(on, opts) {
@@ -2242,12 +2593,10 @@ class Axes {
     // equal-aspect image)
     if (cb && lastCmapTrace) {
       const cbX = rect.x + rect.w - m.right + 10;
-      const { vmin, vmax } = this._cmapRange(lastCmapTrace);
-      if (vmin - vmin === 0 && vmax - vmax === 0) {
-        renderColorbar(ctx, cbX, fullPlotY, 12, fullPlotH, lastCmapTrace.opts.cmap || th.ramp || 'viridis', vmin, vmax, {
-          textColor, font: fTick, label: this._colorbarOpts.label, labelFont: fLab, labelOffset: 12 + 6 + cb.labelsW + 6,
-        });
-      }
+      _drawColorbar(ctx, cbX, fullPlotY, 12, fullPlotH, cb.cmap, cb.norm, cb.ticks, {
+        textColor, frameColor, font: fTick, labelFont: fLab, label: this._colorbarOpts.label, labelsW: cb.labelsW,
+        extend: this._colorbarOpts.extend || cb.extend, bandColors: cb.bandColors, extColors: cb.extColors,
+      });
     }
   }
 
@@ -2314,17 +2663,23 @@ class Axes {
   }
 
   // the colorbar's labels, measured: the right margin depends on them
+  // The colorbar: the mappable colorbar() was given, else the last colour-mapped trace; its
+  // norm and colour map, its ticks and how wide their labels are (the right margin needs it).
+  // A kind can describe its own bar (cbar: contourf's bands).
   _colorbarInfo(ctx, fTick) {
-    let tr = null;
-    for (const t of this._traces) if (t.type === 'imshow' || t.cvals || (_KINDS[t.type] && _KINDS[t.type].cmap && t.cmapped !== false)) tr = t;
+    let tr = this._colorbarOpts.mappable && this._traces.includes(this._colorbarOpts.mappable) ? this._colorbarOpts.mappable : null;
+    if (!tr) for (const t of this._traces) if (t.type === 'imshow' || t.cvals || (_KINDS[t.type] && _KINDS[t.type].cmap && t.cmapped !== false)) tr = t;
     if (!tr) return null;
-    const { vmin, vmax } = this._cmapRange(tr);
-    if (!(vmin - vmin === 0 && vmax - vmax === 0)) return null;
-    ctx.font = fTick;
-    const sc = new LinearScale([Math.min(vmin, vmax), Math.max(vmin, vmax)], [0, 1]);
-    let w = 0;
-    for (const v of [vmin, vmax, ...sc.ticks(5)]) w = Math.max(w, _textW(fTick, sc.tickFormat()(v)));
-    return { labelsW: w };
+    const k = _KINDS[tr.type];
+    const own = k && k.cbar ? k.cbar(this, tr) : null;
+    const norm = own ? own.norm : this._cmapNorm(tr);
+    if (!(norm.vmin - norm.vmin === 0 && norm.vmax - norm.vmax === 0)) return null;
+    const h = this.view ? this.view.h : 200;
+    const ticks = _cbTicks(norm, h, own && own.ticks && this._colorbarOpts.ticks == null ? { ...this._colorbarOpts, ticks: own.ticks } : this._colorbarOpts);
+    return {
+      trace: tr, norm, ticks, labelsW: _cbLabelsW(ticks, fTick),
+      cmap: tr.opts.cmap || this._theme.ramp || 'viridis', extend: own ? own.extend : tr.opts.extend, bandColors: own ? own.bandColors : null, extColors: own ? own.extColors : null,
+    };
   }
 
   // ── ranges ────────────────────────────────────────────────────────────────────────────────
@@ -2376,16 +2731,20 @@ class Axes {
     return [plo, phi];
   }
 
-  // vmin / vmax of a colour-mapped trace: the options, or the finite data range
-  _cmapRange(trace) {
-    let vmin = trace.opts.vmin, vmax = trace.opts.vmax;
-    if (vmin == null || vmax == null) {
-      const r = trace.type === 'imshow' ? this._imshowRange(trace) : _traceRange(trace, 'c', trace.cvals);
-      if (vmin == null) vmin = r.lo;
-      if (vmax == null) vmax = r.hi;
-    }
-    return { vmin, vmax };
+  // the norm of a colour-mapped trace: its norm option (an instance, 'linear', 'log'), with
+  // vmin / vmax, filled from the trace's finite data range. A kind can give its own range
+  // (crange) and norm (cnorm: contourf's levels).
+  _cmapNorm(trace) {
+    const k = _KINDS[trace.type];
+    if (k && k.cnorm) return k.cnorm(this, trace);
+    const o = trace.opts;
+    const r = trace.type === 'imshow' ? this._imshowRange(trace)
+      : k && k.crange ? k.crange(this, trace)
+        : _traceRange(trace, 'c', trace.cvals, o.norm === 'log' || (o.norm && o.norm.constructor && o.norm.constructor.name === 'LogNorm'));
+    return _resolveNorm(o.norm, o.vmin, o.vmax, r.lo, r.hi, r.minPos);
   }
+  // vmin / vmax of a colour-mapped trace (kept for callers outside plot)
+  _cmapRange(trace) { const n = this._cmapNorm(trace); return { vmin: n.vmin, vmax: n.vmax, norm: n }; }
 
   _imshowRange(trace) {
     const c = trace._cache || (trace._cache = {});
@@ -2725,26 +3084,20 @@ class Axes {
     }
     const spec = { marker: o.marker || 'o', radius, rk, alpha, edge, cacheKey: 'sc' };
     if (trace.cvals) {
-      const { vmin, vmax } = this._cmapRange(trace);
-      spec.cmap = { name: o.cmap || 'viridis', vmin, vmax };
+      const norm = this._cmapNorm(trace);
+      spec.cmap = { name: o.cmap || this._theme.ramp || 'viridis', norm, vmin: norm.vmin, vmax: norm.vmax };
     } else if (trace.colors) spec.list = trace.colors;
     else spec.uniform = o.color;
     this._drawPoints(ctx, trace, pos, rect, spec);
   }
 
   // colour-map indices for a trace (0–255, -1 for NaN), cached on (cmap, vmin, vmax)
-  _cmapIdx(trace, vmin, vmax) {
+  _cmapIdx(trace, norm) {
     const c = trace._cache || (trace._cache = {});
-    const key = `${vmin}|${vmax}`;
+    const key = norm._key;
     if (c.cidx && c.cidx.key === key) return c.cidx.idx;
-    const v = trace.cvals, n = v.length, idx = new Int16Array(n);
-    const k = vmax !== vmin ? 256 / (vmax - vmin) : 0;
-    for (let i = 0; i < n; i++) {
-      const val = v[i];
-      if (val !== val) { idx[i] = -1; continue; }
-      let q = k ? ((val - vmin) * k) | 0 : 128;
-      idx[i] = q < 0 ? 0 : q > 255 ? 255 : q;
-    }
+    const v = trace.cvals, n = v.length, idx = new Int16Array(n), at = _indexer(norm);
+    for (let i = 0; i < n; i++) idx[i] = at(v[i]);
     c.cidx = { key, idx };
     return idx;
   }
@@ -2774,7 +3127,7 @@ class Axes {
     if (n > _engine.rasterMin && rasterizable && this._rasterPoints(ctx, trace, pos, rect, spec, { lut, uni, bytes })) return;
 
     // ── vector ──
-    if (spec.cmap) idx = this._cmapIdx(trace, spec.cmap.vmin, spec.cmap.vmax);
+    if (spec.cmap) idx = this._cmapIdx(trace, spec.cmap.norm);
     const alpha = spec.alpha;
     const fillOf = (i) => spec.cmap ? (lut ? null : cmapFn(idx[i] < 0 ? NaN : (idx[i] + 0.5) / 256)) : spec.list ? spec.list[i] : spec.uniform;
     const rOf = (i) => (perPoint ? Math.sqrt(spec.radius[i]) * spec.rk : spec.radius);
@@ -2829,7 +3182,7 @@ class Axes {
     const W = Math.max(1, Math.round(rect.w * dpr)), H = Math.max(1, Math.round(rect.h * dpr));
     const c = trace._cache || (trace._cache = {});
     const holderKey = 'raster_' + spec.cacheKey;
-    const key = `${pos.key}|${W}x${H}|${dpr}|${spec.cmap ? spec.cmap.vmin + ',' + spec.cmap.vmax + ',' + spec.cmap.name : ''}|${spec.alpha}`;
+    const key = `${pos.key}|${W}x${H}|${dpr}|${spec.cmap ? spec.cmap.norm._key + ',' + spec.cmap.name : ''}|${spec.alpha}`;
     let h = c[holderKey];
     if (!h || h.key !== key) {
       const n = pos.X.length;
@@ -2837,12 +3190,8 @@ class Axes {
       if (typeof spec.radius === 'number') rad = spec.radius * dpr;
       else { rad = new Float32Array(n); for (let i = 0; i < n; i++) rad[i] = Math.sqrt(spec.radius[i]) * spec.rk * dpr; }
       let colors;
-      if (col.lut) {
-        // the same LUT entry _cmapIdx gives: ((v - vmin) · 256 / (vmax - vmin)), and the
-        // middle entry when vmin = vmax
-        const { vmin, vmax } = spec.cmap;
-        colors = vmax !== vmin ? { lut: col.lut, vals: trace.cvals, vmin, vk: 256 / (vmax - vmin) } : { lut: col.lut, vals: trace.cvals, vmin: vmin - 0.5, vk: 256 };
-      } else colors = col.bytes ? { bytes: col.bytes } : { uniform: col.uni };
+      if (col.lut) colors = { lut: col.lut, idx: this._cmapIdx(trace, spec.cmap.norm) };   // the norm's LUT entries
+      else colors = col.bytes ? { bytes: col.bytes } : { uniform: col.uni };
       const edge = spec.edge ? { bytes: spec.edge.color === 'face' ? 'face' : _colorBytes(spec.edge.color), width: spec.edge.width * dpr } : null;
       const rgba = _rasterPoints(W, H, pos.X, pos.Y, rect.x, rect.y, dpr, rad, spec.marker, colors, spec.alpha, edge);
       h = c[holderKey] = { key, rgba, W, H };
@@ -2857,28 +3206,29 @@ class Axes {
     const { data, nx, ny, opts } = trace;
     const nodata = opts.nodata;
     const origin = opts.origin || 'lower';
-    const cmapName = opts.cmap || 'viridis';
-    const { vmin, vmax } = this._cmapRange(trace);
+    const cmapName = opts.cmap || this._theme.ramp || 'viridis';
+    const norm = this._cmapNorm(trace);
     const c = trace._cache || (trace._cache = {});
-    const key = `${vmin}|${vmax}|${origin}|${nodata}`;
+    const key = `${norm._key}|${origin}|${nodata}`;
     let img = c.img;
     if (!img || img.key !== key || img.cmap !== cmapName) {
       const rgba = new Uint8ClampedArray(nx * ny * 4);
       const lut = _cmapLut(cmapName), fn = lut ? null : getCmap(cmapName);
-      const vr = vmax - vmin, k = vr ? 256 / vr : 0;
+      const at = _indexer(norm);
       for (let iy = 0; iy < ny; iy++) {
         // image row 0 is the TOP: origin='lower' puts data row ny-1 there
         const row = origin === 'lower' ? ny - 1 - iy : iy;
         for (let ix = 0; ix < nx; ix++) {
           const v = data[iy * nx + ix];
           if (v - v !== 0 || (nodata != null && v === nodata)) continue;   // transparent
+          let q = at(v);
+          if (q < 0) continue;                             // LogNorm of v ≤ 0: no colour
           const o = (row * nx + ix) * 4;
           if (lut) {
-            let q = k ? ((v - vmin) * k) | 0 : 128;
-            q = (q < 0 ? 0 : q > 255 ? 255 : q) * 4;
+            q *= 4;
             rgba[o] = lut[q]; rgba[o + 1] = lut[q + 1]; rgba[o + 2] = lut[q + 2]; rgba[o + 3] = lut[q + 3];
           } else {
-            const b = _colorBytes(fn(vr ? (v - vmin) / vr : 0.5));
+            const b = _colorBytes(fn((q + 0.5) / 256));
             if (b) { rgba[o] = b[0]; rgba[o + 1] = b[1]; rgba[o + 2] = b[2]; rgba[o + 3] = b[3]; }
           }
         }
@@ -3803,12 +4153,591 @@ Axes.prototype._renderVline = function (ctx, trace, xScale, yScale, plotY, plotH
 _hooks.drawstyle = _applyDrawstyle;
 void parseFormat;
 
+// -- box.js --
+
+// boxplot — matplotlib's, statistic for statistic.
+//
+// The statistics are matplotlib's cbook.boxplot_stats: quartiles by linear interpolation
+// (numpy's default percentile method), whiskers at the furthest datum within whis × IQR of the
+// box (Tukey; whis = [p_lo, p_hi] gives percentiles instead), fliers beyond them, NaN left out.
+// boxplot returns them, so a caller can print the medians it drew: { medians, boxes, whiskers,
+// caps, fliers, means, stats } — each artist list with matplotlib's get_ydata / get_xdata.
+
+
+
+
+
+
+// the linear-interpolation percentile of sorted values (numpy's default)
+function _pct(sorted, p) {
+  const n = sorted.length;
+  if (!n) return NaN;
+  const k = (n - 1) * p, f = Math.floor(k), c = Math.min(n - 1, f + 1);
+  return sorted[f] + (sorted[c] - sorted[f]) * (k - f);
+}
+
+function _boxStats(data, whis = 1.5, label = null) {
+  const v = [];
+  for (let i = 0; i < data.length; i++) { const x = +data[i]; if (x - x === 0) v.push(x); }
+  v.sort((a, b) => a - b);
+  const n = v.length;
+  if (!n) return { mean: NaN, med: NaN, q1: NaN, q3: NaN, iqr: NaN, whislo: NaN, whishi: NaN, cilo: NaN, cihi: NaN, fliers: [], label, n: 0 };
+  let mean = 0;
+  for (const x of v) mean += x;
+  mean /= n;
+  const q1 = _pct(v, 0.25), med = _pct(v, 0.5), q3 = _pct(v, 0.75), iqr = q3 - q1;
+  let lo, hi;
+  if (Array.isArray(whis)) { lo = _pct(v, whis[0] / 100); hi = _pct(v, whis[1] / 100); }
+  else if (whis === 'range') { lo = v[0]; hi = v[n - 1]; }
+  else { lo = q1 - whis * iqr; hi = q3 + whis * iqr; }
+  // the whiskers end at data: the lowest value ≥ lo, the highest ≤ hi (matplotlib clips them
+  // to the box when nothing qualifies)
+  let whislo = q1, whishi = q3;
+  for (const x of v) if (x >= lo) { whislo = Math.min(x, q1); break; }
+  for (let i = n - 1; i >= 0; i--) if (v[i] <= hi) { whishi = Math.max(v[i], q3); break; }
+  const fliers = v.filter((x) => x < whislo || x > whishi);
+  const ci = 1.57 * iqr / Math.sqrt(n);
+  return { mean, med, q1, q3, iqr, whislo, whishi, cilo: med - ci, cihi: med + ci, fliers, label, n };
+}
+
+// x: one array, a list of arrays, or a mapping { label: array }
+function _datasets(x) {
+  if (x && typeof x === 'object' && !_isArrayLike(x) && !Array.isArray(x)) {
+    if (typeof x.to_numpy === 'function' && x.columns) {        // a DataFrame: one box per column
+      const cols = Array.from(x.columns);
+      return { sets: cols.map((c) => _col(x.get ? x.get(c) : x[c])), labels: cols.map(String) };
+    }
+    const keys = Object.keys(x).filter((k) => k !== '_kw');
+    return { sets: keys.map((k) => _col(x[k])), labels: keys };
+  }
+  if (Array.isArray(x) && x.length && _isArrayLike(x[0])) return { sets: x.map((d) => _col(d)), labels: null };
+  return { sets: [_col(x)], labels: null };
+}
+
+const _lineObj = (xs, ys) => ({ get_xdata: () => xs.slice(), get_ydata: () => ys.slice(), xdata: xs, ydata: ys });
+
+Axes.prototype.boxplot = function (x, opts) {
+  const o = _plainOpts(opts) ? { ...opts } : {};
+  const known = ['whis', 'labels', 'tick_labels', 'vert', 'orientation', 'showfliers', 'showmeans', 'meanline', 'widths', 'positions', 'patch_artist', 'boxprops', 'medianprops', 'whiskerprops', 'capprops', 'flierprops', 'meanprops', 'manage_ticks', 'showcaps', 'showbox', 'zorder', 'notch', 'sym', 'bootstrap', 'usermedians', 'conf_intervals', 'autorange', 'capwidths', '_kw'];
+  for (const k of Object.keys(o)) if (!known.includes(k)) _warn('boxplot.' + k, `boxplot() has no option '${k}'`, this._strict);
+  for (const k of ['notch', 'bootstrap', 'usermedians', 'conf_intervals']) if (o[k]) _warn('boxplot.' + k, `boxplot(): '${k}' is not supported yet`, this._strict);
+  const { sets, labels: keyLabels } = _datasets(x);
+  const n = sets.length;
+  const labels = o.tick_labels || o.labels || keyLabels;
+  const horiz = o.vert === false || o.orientation === 'horizontal';
+  const positions = o.positions ? Array.from(o.positions, Number) : sets.map((_, i) => i + 1);
+  const span = positions.length > 1 ? Math.max(...positions) - Math.min(...positions) : 1;
+  const wdef = Math.min(0.5, Math.max(0.15, 0.15 * span));
+  const widths = o.widths == null ? positions.map(() => wdef) : _isArrayLike(o.widths) ? Array.from(o.widths, Number) : positions.map(() => +o.widths);
+  const whis = o.whis == null ? 1.5 : o.whis;
+  const stats = sets.map((d, i) => _boxStats(d, whis, labels ? String(labels[i]) : null));
+  const trace = {
+    type: 'boxplot', stats, positions, widths, horiz,
+    showfliers: o.showfliers !== false, showmeans: !!o.showmeans, meanline: !!o.meanline,
+    showcaps: o.showcaps !== false, showbox: o.showbox !== false, patch: !!o.patch_artist,
+    props: { box: o.boxprops || {}, median: o.medianprops || {}, whisker: o.whiskerprops || {}, cap: o.capprops || {}, flier: o.flierprops || {}, mean: o.meanprops || {} },
+    colors: { box: null, fill: this._theme.cycle[0], median: this._theme.cycle[1], mean: this._theme.cycle[2] },
+    opts: { zorder: o.zorder, label: undefined },
+  };
+  this._traces.push(trace);
+  // ticks at the positions, labelled (matplotlib's manage_ticks)
+  if (o.manage_ticks !== false) this[horiz ? 'set_yticks' : 'set_xticks'](positions, labels ? labels.map(String) : positions.map((p) => String(p)));
+  // matplotlib's artists, as data
+  const P = (a, b) => (horiz ? [b, a] : [a, b]);
+  const medians = [], boxes = [], whiskers = [], caps = [], fliers = [], means = [];
+  stats.forEach((s, i) => {
+    const p = positions[i], w = widths[i];
+    const m = P([p - w / 2, p + w / 2], [s.med, s.med]); medians.push(_lineObj(m[0], m[1]));
+    const b = P([p - w / 2, p + w / 2, p + w / 2, p - w / 2, p - w / 2], [s.q1, s.q1, s.q3, s.q3, s.q1]); boxes.push(_lineObj(b[0], b[1]));
+    const w1 = P([p, p], [s.q1, s.whislo]), w2 = P([p, p], [s.q3, s.whishi]); whiskers.push(_lineObj(w1[0], w1[1]), _lineObj(w2[0], w2[1]));
+    const c1 = P([p - w / 4, p + w / 4], [s.whislo, s.whislo]), c2 = P([p - w / 4, p + w / 4], [s.whishi, s.whishi]); caps.push(_lineObj(c1[0], c1[1]), _lineObj(c2[0], c2[1]));
+    const f = P(s.fliers.map(() => p), s.fliers); fliers.push(_lineObj(f[0], f[1]));
+    const mn = P([p], [s.mean]); means.push(_lineObj(mn[0], mn[1]));
+  });
+  const out = { medians, boxes, whiskers, caps, fliers, means, stats };
+  return _result(this, [], out);
+};
+
+_KINDS.boxplot = {
+  z: 2, patch: true,
+  extent(ax, t, axis, log, take) {
+    const along = t.horiz ? axis === 'y' : axis === 'x';
+    t.stats.forEach((s, i) => {
+      if (along) { take(t.positions[i] - t.widths[i] / 2); take(t.positions[i] + t.widths[i] / 2); }
+      else { take(s.whislo); take(s.whishi); if (t.showfliers) for (const f of s.fliers) take(f); if (t.showmeans) take(s.mean); }
+    });
+  },
+  render(ax, ctx, t, xScale, yScale) {
+    const th = ax._theme, fg = ax._textColor || th.foreground;
+    const pr = t.props;
+    const col = (p, dflt) => _cssColor(p.color) || dflt;
+    const lw = (p, d = 1) => (p.linewidth ?? p.lw ?? d);
+    const P = (a, v) => (t.horiz ? [xScale.transform(v), yScale.transform(a)] : [xScale.transform(a), yScale.transform(v)]);
+    const seg = (a0, v0, a1, v1) => { const p = P(a0, v0), q = P(a1, v1); ctx.moveTo(p[0], p[1]); ctx.lineTo(q[0], q[1]); };
+    ctx.save();
+    t.stats.forEach((s, i) => {
+      if (!s.n) return;
+      const p = t.positions[i], w = t.widths[i];
+      // the box: filled with patch_artist (matplotlib: C0), else an outline
+      if (t.showbox) {
+        const a = P(p - w / 2, s.q1), b = P(p + w / 2, s.q3);
+        const x = Math.min(a[0], b[0]), y = Math.min(a[1], b[1]), W = Math.abs(b[0] - a[0]), H = Math.abs(b[1] - a[1]);
+        if (t.patch) { ctx.fillStyle = _cssColor(pr.box.facecolor) || t.colors.fill; ctx.fillRect(x, y, W, H); }
+        ctx.strokeStyle = col(pr.box, _cssColor(pr.box.edgecolor) || fg); ctx.lineWidth = lw(pr.box);
+        ctx.strokeRect(x, y, W, H);
+      }
+      // whiskers and caps
+      ctx.strokeStyle = col(pr.whisker, fg); ctx.lineWidth = lw(pr.whisker);
+      ctx.beginPath(); seg(p, s.q1, p, s.whislo); seg(p, s.q3, p, s.whishi); ctx.stroke();
+      if (t.showcaps) {
+        ctx.strokeStyle = col(pr.cap, fg); ctx.lineWidth = lw(pr.cap);
+        ctx.beginPath(); seg(p - w / 4, s.whislo, p + w / 4, s.whislo); seg(p - w / 4, s.whishi, p + w / 4, s.whishi); ctx.stroke();
+      }
+      // the median (matplotlib: C1, the orange line)
+      ctx.strokeStyle = col(pr.median, t.colors.median); ctx.lineWidth = lw(pr.median, 1.5);
+      ctx.beginPath(); seg(p - w / 2, s.med, p + w / 2, s.med); ctx.stroke();
+      // fliers: open circles
+      if (t.showfliers && s.fliers.length) {
+        const m = pr.flier.marker && _MARKERS.includes(pr.flier.marker) ? pr.flier.marker : 'o';
+        const r = ((pr.flier.markersize ?? 6) * ax._dpi) / 144;
+        ctx.strokeStyle = _cssColor(pr.flier.markeredgecolor) || fg; ctx.lineWidth = 1;
+        const fc = _cssColor(pr.flier.markerfacecolor);
+        for (const f of s.fliers) {
+          const q = P(p, f);
+          ctx.beginPath(); _pathMarker(ctx, _markerShape(m, r), q[0], q[1]);
+          if (fc && fc !== 'none') { ctx.fillStyle = fc; ctx.fill(); }
+          ctx.stroke();
+        }
+      }
+      // the mean: a triangle (matplotlib: C2), or a dashed line with meanline
+      if (t.showmeans) {
+        const mc = _cssColor(pr.mean.markerfacecolor || pr.mean.color) || t.colors.mean;
+        if (t.meanline) { ctx.strokeStyle = mc; ctx.setLineDash([4, 3]); ctx.beginPath(); seg(p - w / 2, s.mean, p + w / 2, s.mean); ctx.stroke(); ctx.setLineDash([]); }
+        else { const q = P(p, s.mean); ctx.fillStyle = mc; ctx.beginPath(); _pathMarker(ctx, _markerShape(pr.mean.marker || '^', ((pr.mean.markersize ?? 6) * ax._dpi) / 144), q[0], q[1]); ctx.fill(); }
+      }
+    });
+    ctx.restore();
+  },
+  pick(ax, t, px, py) {
+    const v = ax.view;
+    for (let i = 0; i < t.positions.length; i++) {
+      const p = t.positions[i], w = t.widths[i];
+      const a = t.horiz ? v.yScale.transform(p - w / 2) : v.xScale.transform(p - w / 2), b = t.horiz ? v.yScale.transform(p + w / 2) : v.xScale.transform(p + w / 2);
+      const q = t.horiz ? py : px;
+      if (q >= Math.min(a, b) && q <= Math.max(a, b)) { const s = t.stats[i]; return { kind: 'box', index: i, x: t.horiz ? s.med : p, y: t.horiz ? p : s.med, value: s.med, stats: s }; }
+    }
+    return null;
+  },
+};
+
+// -- contour.js --
+
+// contour / contourf — lines and filled bands of a 2D field.
+//
+// HOW. Each grid cell is split into four triangles around its centre, the centre's value the
+// mean of the four corners. Within a triangle the field is linear, so a level crosses it in one
+// straight segment and a band is a convex clip of it: the lines and the fills come from the
+// same geometry and meet exactly. The centre point resolves a saddle cell by the cell-centre
+// average (the spec's rule) — the two diagonal pairs join on the side the mean is on. A cell
+// with a NaN corner is left out.
+//
+// Filled bands are drawn bottom up as superlevel sets: band k is everything ≥ its lower
+// level, painted over the band below. A point ends up in the colour of the highest level it
+// reaches, and neighbouring bands overlap instead of meeting edge to edge, so no hairline of
+// background shows between them.
+//
+// The geometry is in data coordinates and cached on the trace; a render only projects it.
+
+
+
+
+
+
+
+
+// contour(Z) · contour(Z, levels) · contour(X, Y, Z) · contour(X, Y, Z, levels), + opts
+function _args(fn, args) {
+  const a = args.slice();
+  let opts = {};
+  if (a.length && _plainOpts(a[a.length - 1]) && !_grid2d(a[a.length - 1])) opts = { ...a.pop() };
+  let X = null, Y = null, Z, levels = opts.levels;
+  if (a.length >= 3) { [X, Y, Z] = a; if (a.length > 3) levels = a[3]; }
+  else { Z = a[0]; if (a.length > 1) levels = a[1]; }
+  const g = _grid2d(Z);
+  if (!g) throw new Error(`plot: ${fn}: Z must be a 2D array (nested arrays, an ndarray or a DataFrame)`);
+  if (g.nx < 2 || g.ny < 2) throw new Error(`plot: ${fn}: Z must be at least 2 × 2, not ${g.ny} × ${g.nx}`);
+  return { X, Y, g, levels, opts };
+}
+
+// a grid index (fi along a row, fj down the rows) → data x, y: from 1D or 2D X / Y, an extent,
+// or the indices themselves (matplotlib's contour(Z))
+function _mapper(X, Y, nx, ny, extent, fn) {
+  if (X != null && Y != null) {
+    const gx = _grid2d(X), gy = _grid2d(Y);
+    if (gx && gy) {
+      if (gx.nx !== nx || gx.ny !== ny || gy.nx !== nx || gy.ny !== ny) throw new Error(`plot: ${fn}: X and Y must be ${ny} × ${nx} like Z`);
+      const bil = (f, fi, fj) => {
+        const i = Math.min(nx - 2, Math.floor(fi)), j = Math.min(ny - 2, Math.floor(fj)), u = fi - i, v = fj - j;
+        const a = f[j * nx + i], b = f[j * nx + i + 1], c = f[(j + 1) * nx + i], d = f[(j + 1) * nx + i + 1];
+        return a * (1 - u) * (1 - v) + b * u * (1 - v) + c * (1 - u) * v + d * u * v;
+      };
+      return (fi, fj) => [bil(gx.flat, fi, fj), bil(gy.flat, fi, fj)];
+    }
+    const x = _col(X), y = _col(Y);
+    if (x.length !== nx || y.length !== ny) throw new Error(`plot: ${fn}: X has ${x.length} values and Y ${y.length}, but Z is ${ny} rows × ${nx} columns (X runs along a row, Y down the rows)`);
+    const lin = (a, f) => { const i = Math.min(a.length - 2, Math.floor(f)), u = f - i; return a[i] + (a[i + 1] - a[i]) * u; };
+    return (fi, fj) => [lin(x, fi), lin(y, fj)];
+  }
+  if (extent) {
+    const [x0, x1, y0, y1] = Array.from(extent, Number);
+    return (fi, fj) => [x0 + (fi / (nx - 1)) * (x1 - x0), y0 + (fj / (ny - 1)) * (y1 - y0)];
+  }
+  return (fi, fj) => [fi, fj];
+}
+
+// the levels: given, or about n nice ones (matplotlib's default n = 7); for filled bands the
+// outer levels reach past the data so every value is in a band
+function _levels(levels, zlo, zhi, filled) {
+  if (_isArrayLike(levels)) return Array.from(levels, Number).sort((a, b) => a - b);
+  const n = levels == null ? 7 : Math.max(1, levels | 0);
+  if (!(zhi > zlo)) return filled ? [zlo - 0.5, zlo + 0.5] : [zlo];
+  const t = _niceTicks(zlo, zhi, n + 2), step = t.step || (zhi - zlo) / n;   // MaxNLocator(n + 1): n + 1 bins
+  const lv = Array.from(t);
+  if (!filled) return lv.filter((v) => v > zlo && v < zhi).length ? lv.filter((v) => v > zlo && v < zhi) : lv;
+  if (lv[0] > zlo + step * 1e-9) lv.unshift(+(lv[0] - step).toPrecision(12));
+  if (lv[lv.length - 1] < zhi - step * 1e-9) lv.push(+(lv[lv.length - 1] + step).toPrecision(12));
+  return lv;
+}
+
+// the four triangles of every cell: each as three (fi, fj, z) vertices, through `visit`
+function _eachTriangle(g, visit) {
+  const { flat: Z, nx, ny } = g;
+  for (let j = 0; j < ny - 1; j++) {
+    for (let i = 0; i < nx - 1; i++) {
+      const a = Z[j * nx + i], b = Z[j * nx + i + 1], c = Z[(j + 1) * nx + i + 1], d = Z[(j + 1) * nx + i];
+      if (a - a !== 0 || b - b !== 0 || c - c !== 0 || d - d !== 0) continue;
+      const e = (a + b + c + d) / 4, ei = i + 0.5, ej = j + 0.5;
+      visit(i, j, a, i + 1, j, b, ei, ej, e);
+      visit(i + 1, j, b, i + 1, j + 1, c, ei, ej, e);
+      visit(i + 1, j + 1, c, i, j + 1, d, ei, ej, e);
+      visit(i, j + 1, d, i, j, a, ei, ej, e);
+    }
+  }
+}
+
+// clip a polygon [fi, fj, z, …] to z ≥ c (sign 1) or z ≤ c (sign -1): Sutherland–Hodgman
+function _clip(poly, c, sign) {
+  const out = [], n = poly.length / 3;
+  for (let k = 0; k < n; k++) {
+    const i0 = k * 3, i1 = ((k + 1) % n) * 3;
+    const z0 = poly[i0 + 2], z1 = poly[i1 + 2];
+    const in0 = sign > 0 ? z0 >= c : z0 <= c, in1 = sign > 0 ? z1 >= c : z1 <= c;
+    if (in0) out.push(poly[i0], poly[i0 + 1], z0);
+    if (in0 !== in1) {
+      const t = (c - z0) / (z1 - z0);
+      out.push(poly[i0] + (poly[i1] - poly[i0]) * t, poly[i0 + 1] + (poly[i1 + 1] - poly[i0 + 1]) * t, c);
+    }
+  }
+  return out;
+}
+
+// filled: per band, the polygons of {z ≥ lower} (∩ {z ≤ top} unless extending past it), in data
+// coordinates: { xy: Float64Array, starts: number[] }
+function _bands(g, levels, extend, map) {
+  const nb = levels.length - 1;
+  const lows = [];
+  if (extend === 'min' || extend === 'both') lows.push(-Infinity);
+  for (let k = 0; k < nb; k++) lows.push(levels[k]);
+  if (extend === 'max' || extend === 'both') lows.push(levels[nb]);
+  const top = extend === 'max' || extend === 'both' ? Infinity : levels[nb];
+  const acc = lows.map(() => ({ xy: [], starts: [] }));
+  _eachTriangle(g, (i0, j0, z0, i1, j1, z1, i2, j2, z2) => {
+    const lo = Math.min(z0, z1, z2), hi = Math.max(z0, z1, z2);
+    let tri = [i0, j0, z0, i1, j1, z1, i2, j2, z2];
+    if (hi > top) { if (lo > top) return; tri = _clip(tri, top, -1); }
+    for (let k = 0; k < lows.length; k++) {
+      const c = lows[k];
+      if (hi < c) break;                                    // and every higher band too
+      const poly = lo >= c ? tri : _clip(tri, c, 1);
+      if (poly.length < 9) continue;
+      const a = acc[k];
+      a.starts.push(a.xy.length);
+      for (let q = 0; q < poly.length; q += 3) { const p = map(poly[q], poly[q + 1]); a.xy.push(p[0], p[1]); }
+    }
+  });
+  return { lows, bands: acc.map((a) => ({ xy: Float64Array.from(a.xy), starts: a.starts })) };
+}
+
+// lines: per level, the segments where the triangles cross it, in data coordinates
+function _lines(g, levels, map) {
+  const acc = levels.map(() => []);
+  _eachTriangle(g, (i0, j0, z0, i1, j1, z1, i2, j2, z2) => {
+    const lo = Math.min(z0, z1, z2), hi = Math.max(z0, z1, z2);
+    for (let k = 0; k < levels.length; k++) {
+      const c = levels[k];
+      if (c < lo || c > hi || lo === hi) continue;
+      const P = [i0, j0, z0, i1, j1, z1, i2, j2, z2], pts = [];
+      for (let e = 0; e < 3; e++) {
+        const a = e * 3, b = ((e + 1) % 3) * 3, za = P[a + 2], zb = P[b + 2];
+        if ((za < c) !== (zb < c)) { const t = (c - za) / (zb - za); pts.push(P[a] + (P[b] - P[a]) * t, P[a + 1] + (P[b + 1] - P[a + 1]) * t); }
+      }
+      if (pts.length >= 4) { const p = map(pts[0], pts[1]), q = map(pts[2], pts[3]); acc[k].push(p[0], p[1], q[0], q[1]); }
+    }
+  });
+  return acc.map((s) => Float64Array.from(s));
+}
+
+function _contour(ax, fn, filled, args) {
+  const { X, Y, g, levels: lv, opts } = _args(fn, args);
+  const o = ax._opts(fn, opts);
+  delete o.levels;
+  let zlo = Infinity, zhi = -Infinity;
+  for (let i = 0; i < g.flat.length; i++) { const v = g.flat[i]; if (v - v === 0) { if (v < zlo) zlo = v; if (v > zhi) zhi = v; } }
+  if (!(zlo <= zhi)) { zlo = 0; zhi = 1; }
+  const levels = _levels(lv, zlo, zhi, filled);
+  if (filled && levels.length < 2) throw new Error(`plot: ${fn}: filled contours need at least two levels`);
+  const extend = o.extend || 'neither';
+  if (!['neither', 'min', 'max', 'both'].includes(extend)) _warn(`${fn}.extend.${extend}`, `${fn}(): extend must be 'neither', 'min', 'max' or 'both'`, ax._strict);
+  const map = _mapper(X, Y, g.nx, g.ny, o.extent, fn);
+  // the corners give the trace's extent
+  let xlo = Infinity, xhi = -Infinity, ylo = Infinity, yhi = -Infinity;
+  for (let j = 0; j < g.ny; j += Math.max(1, g.ny - 1)) for (let i = 0; i < g.nx; i++) { const p = map(i, j); xlo = Math.min(xlo, p[0]); xhi = Math.max(xhi, p[0]); ylo = Math.min(ylo, p[1]); yhi = Math.max(yhi, p[1]); }
+  for (let i = 0; i < g.nx; i += Math.max(1, g.nx - 1)) for (let j = 0; j < g.ny; j++) { const p = map(i, j); xlo = Math.min(xlo, p[0]); xhi = Math.max(xhi, p[0]); ylo = Math.min(ylo, p[1]); yhi = Math.max(yhi, p[1]); }
+  if (o.colors != null) o.colors = (Array.isArray(o.colors) ? o.colors : [o.colors]).map(_cssColor);
+  const trace = { type: filled ? 'contourf' : 'contour', g, levels, extend, map, box: [xlo, xhi, ylo, yhi], opts: o, cmapped: o.colors == null };
+  ax._traces.push(trace);
+  return _result(ax, [], { levels: levels.slice(), extend, _trace: trace, filled, cmap: o.cmap, get allsegs() { return _allsegs(trace); } });
+}
+function _allsegs(t) {
+  const segs = t._cache && t._cache.lines ? t._cache.lines : _lines(t.g, t.levels, t.map);
+  return segs.map((s) => { const out = []; for (let i = 0; i < s.length; i += 4) out.push([[s[i], s[i + 1]], [s[i + 2], s[i + 3]]]); return out; });
+}
+
+// a level's (or band's) colour: the colors option (cycled), else the map through the norm
+function _colorsOf(ax, t, values) {
+  const o = t.opts;
+  if (o.colors) return values.map((_, k) => o.colors[k % o.colors.length]);
+  const norm = ax._cmapNorm(t), fn = getCmap(o.cmap || ax._theme.ramp || 'viridis'), lut = _cmapLut(o.cmap || ax._theme.ramp || 'viridis');
+  return values.map((v) => {
+    const tt = norm.call(v);
+    if (lut) { const q = Math.max(0, Math.min(255, (tt * 256) | 0)) * 4; return `rgb(${lut[q]},${lut[q + 1]},${lut[q + 2]})`; }
+    return fn(tt);
+  });
+}
+// what a band's colour is taken at: its middle (matplotlib's "layers"); an extended band its
+// open end's level
+function _layers(t) {
+  const L = t.levels, out = [];
+  if (t.extend === 'min' || t.extend === 'both') out.push(L[0] - (L[1] - L[0]) / 2);
+  for (let k = 0; k < L.length - 1; k++) out.push((L[k] + L[k + 1]) / 2);
+  if (t.extend === 'max' || t.extend === 'both') out.push(L[L.length - 1] + (L[L.length - 1] - L[L.length - 2]) / 2);
+  return out;
+}
+
+const _kind = (filled) => ({
+  z: filled ? 0.5 : 2, cmap: true,
+  extent(ax, t, axis, log, take, stick) {
+    const [a, b] = axis === 'x' ? [t.box[0], t.box[1]] : [t.box[2], t.box[3]];
+    take(a); take(b); stick(a); stick(b);                  // contours autoscale tight, as images do
+  },
+  // the norm: over the levels (lines) or the band middles (fills), unless given
+  cnorm(ax, t) {
+    const o = t.opts, vals = filled ? _layers(t) : t.levels;
+    const inner = filled ? vals.slice(t.extend === 'min' || t.extend === 'both' ? 1 : 0, vals.length - (t.extend === 'max' || t.extend === 'both' ? 1 : 0)) : vals;
+    const lo = Math.min(...inner), hi = Math.max(...inner);
+    return _resolveNorm(o.norm, o.vmin, o.vmax, lo, hi === lo ? lo + 1 : hi, lo > 0 ? lo : undefined);
+  },
+  render(ax, ctx, t, xScale, yScale) {
+    const o = t.opts, c = t._cache || (t._cache = {});
+    ctx.save();
+    ctx.globalAlpha = o.alpha != null ? o.alpha : 1;
+    const ax_ = xScale.a, bx = xScale.b, ay = yScale.a, by = yScale.b, xl = xScale.log, yl = yScale.log;
+    const px = (v) => (xl ? xScale.transform(v) : ax_ * v + bx), py = (v) => (yl ? yScale.transform(v) : ay * v + by);
+    if (filled) {
+      if (!c.bands) c.bands = _bands(t.g, t.levels, t.extend, t.map);
+      const colors = _colorsOf(ax, t, _layers(t));
+      c.bands.bands.forEach((b, k) => {
+        if (!b.starts.length) return;
+        ctx.beginPath();
+        const { xy, starts } = b;
+        for (let s = 0; s < starts.length; s++) {
+          const from = starts[s], to = s + 1 < starts.length ? starts[s + 1] : xy.length;
+          ctx.moveTo(px(xy[from]), py(xy[from + 1]));
+          for (let q = from + 2; q < to; q += 2) ctx.lineTo(px(xy[q]), py(xy[q + 1]));
+          ctx.closePath();
+        }
+        ctx.fillStyle = colors[k];
+        ctx.fill();
+      });
+    } else {
+      if (!c.lines) c.lines = _lines(t.g, t.levels, t.map);
+      const colors = _colorsOf(ax, t, t.levels);
+      const lws = o.linewidths, lss = o.linestyles;
+      const mono = o.colors && o.colors.length === 1;
+      c.lines.forEach((seg, k) => {
+        if (!seg.length) return;
+        ctx.strokeStyle = colors[k];
+        ctx.lineWidth = lws == null ? 1.5 : _isArrayLike(lws) ? +lws[k % lws.length] : +lws;
+        // matplotlib: a single-colour contour draws negative levels dashed
+        const ls = lss != null ? (Array.isArray(lss) ? lss[k % lss.length] : lss) : mono && t.levels[k] < 0 ? '--' : '-';
+        ctx.setLineDash(dashArray(ls));
+        ctx.beginPath();
+        for (let q = 0; q < seg.length; q += 4) { ctx.moveTo(px(seg[q]), py(seg[q + 1])); ctx.lineTo(px(seg[q + 2]), py(seg[q + 3])); }
+        ctx.stroke();
+      });
+      ctx.setLineDash([]);
+    }
+    ctx.restore();
+  },
+  // the colorbar: filled bands as discrete, evenly spaced blocks with the levels as ticks
+  // (matplotlib's colorbar for contourf); lines as a continuous bar ticked at the levels
+  cbar(ax, t) {
+    if (!filled) return { norm: ax._cmapNorm(t), extend: t.extend, ticks: t.levels.slice() };
+    const L = t.levels.slice();
+    const colors = _colorsOf(ax, t, _layers(t));
+    const inner = colors.slice(t.extend === 'min' || t.extend === 'both' ? 1 : 0, colors.length - (t.extend === 'max' || t.extend === 'both' ? 1 : 0));
+    return { norm: new BoundaryNorm(L, 256), bandColors: inner, extend: t.extend, extColors: [colors[0], colors[colors.length - 1]] };
+  },
+  legend(ax, t) { return { patch: filled, color: _colorsOf(ax, t, filled ? _layers(t) : t.levels)[0] }; },
+});
+_KINDS.contourf = _kind(true);
+_KINDS.contour = _kind(false);
+
+Axes.prototype.contour = function (...args) { return _contour(this, 'contour', false, args); };
+Axes.prototype.contourf = function (...args) { return _contour(this, 'contourf', true, args); };
+void Normalize;
+
+// -- mesh.js --
+
+// pcolormesh([X, Y,] C) — a colour-mapped grid on any rectilinear or curvilinear mesh.
+//
+// shading 'flat': X / Y are the cell EDGES (nx+1, ny+1, or (ny+1) × (nx+1) for a curvilinear
+// mesh); 'nearest': they are the cell CENTRES (nx, ny) and the edges sit halfway between;
+// 'auto' (the default) picks by their length, as matplotlib does. C[row][col] is the cell
+// between Y[row] and Y[row+1], X[col] and X[col+1].
+//
+// A mesh with evenly spaced edges is an image: it goes through imshow's raster (one RGBA
+// buffer, one blit, one draw-list op). Uneven or curvilinear meshes draw cell by cell.
+
+
+
+
+
+
+const _even = (e) => { const d = e[1] - e[0]; for (let i = 2; i < e.length; i++) if (Math.abs(e[i] - e[i - 1] - d) > Math.abs(d) * 1e-9) return false; return true; };
+// centres → edges halfway between, the ends extended by half a step
+function _edgesOf(c) {
+  const n = c.length, e = new Float64Array(n + 1);
+  if (n === 1) { e[0] = c[0] - 0.5; e[1] = c[0] + 0.5; return e; }
+  for (let i = 1; i < n; i++) e[i] = (c[i - 1] + c[i]) / 2;
+  e[0] = c[0] - (c[1] - c[0]) / 2; e[n] = c[n - 1] + (c[n - 1] - c[n - 2]) / 2;
+  return e;
+}
+
+Axes.prototype.pcolormesh = function (...args) {
+  const a = args.slice();
+  let o = {};
+  if (a.length && _plainOpts(a[a.length - 1]) && !_grid2d(a[a.length - 1])) o = { ...a.pop() };
+  let X = null, Y = null, C;
+  if (a.length >= 3) [X, Y, C] = a; else [C] = a;
+  const g = _grid2d(C);
+  if (!g) throw new Error('plot: pcolormesh: C must be a 2D array (nested arrays, an ndarray or a DataFrame)');
+  const { nx, ny } = g;
+  let flat = g.flat;
+  const shading = o.shading || 'auto';
+  if (shading === 'gouraud') _warn('pcolormesh.gouraud', "pcolormesh(): shading 'gouraud' is not supported; drawing 'nearest'", this._strict);
+  delete o.shading;
+  const oo = this._opts('pcolormesh', o);
+  const gx = X != null ? _grid2d(X) : null, gy = Y != null ? _grid2d(Y) : null;
+  if (gx && gy) {
+    // curvilinear: corner grids (ny+1) × (nx+1)
+    if (gx.nx !== nx + 1 || gx.ny !== ny + 1 || gy.nx !== nx + 1 || gy.ny !== ny + 1) throw new Error(`plot: pcolormesh: a curvilinear mesh needs X and Y of (${ny + 1}) × (${nx + 1}) corners for C of ${ny} × ${nx}`);
+    const tr = { type: 'pcolormesh', C: flat, nx, ny, cx: gx.flat, cy: gy.flat, opts: oo };
+    this._traces.push(tr);
+    return _result(this, [], { _trace: tr });
+  }
+  let ex, ey;
+  if (X == null) { ex = Float64Array.from({ length: nx + 1 }, (_, i) => i); ey = Float64Array.from({ length: ny + 1 }, (_, i) => i); }
+  else {
+    const x = _col(X), y = _col(Y);
+    const centres = shading === 'nearest' || shading === 'gouraud' || (shading === 'auto' && x.length === nx && y.length === ny);
+    if (centres) {
+      if (x.length !== nx || y.length !== ny) throw new Error(`plot: pcolormesh: shading 'nearest' takes X of ${nx} and Y of ${ny} centres, not ${x.length} and ${y.length}`);
+      ex = _edgesOf(x); ey = _edgesOf(y);
+    } else {
+      if (x.length !== nx + 1 || y.length !== ny + 1) throw new Error(`plot: pcolormesh: X has ${x.length} and Y ${y.length} values; give the ${nx + 1} and ${ny + 1} cell edges (shading 'flat') or the ${nx} and ${ny} centres (shading 'nearest') for C of ${ny} × ${nx}`);
+      ex = x; ey = y;
+    }
+  }
+  // descending edges: flip C so the edges run up (the image path wants them ascending)
+  if (ex[0] > ex[ex.length - 1]) { ex = Float64Array.from(ex).reverse(); const f = new Float64Array(flat.length); for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) f[j * nx + i] = flat[j * nx + (nx - 1 - i)]; flat = f; }
+  if (ey[0] > ey[ey.length - 1]) { ey = Float64Array.from(ey).reverse(); const f = new Float64Array(flat.length); for (let j = 0; j < ny; j++) f.set(flat.subarray((ny - 1 - j) * nx, (ny - j) * nx), j * nx); flat = f; }
+  if (_even(ex) && _even(ey) && !oo.edgecolor) {
+    // an even mesh is an image: row 0 at the bottom edge
+    const tr = { type: 'imshow', data: flat, nx, ny, opts: { ...oo, extent: [ex[0], ex[nx], ey[0], ey[ny]], origin: 'lower' } };
+    this._traces.push(tr);
+    return _result(this, [], { _trace: tr });
+  }
+  const tr = { type: 'pcolormesh', C: flat, nx, ny, ex, ey, opts: oo };
+  this._traces.push(tr);
+  return _result(this, [], { _trace: tr });
+};
+
+_KINDS.pcolormesh = {
+  z: 0, cmap: true, image: false,
+  crange(ax, t) {
+    let lo = Infinity, hi = -Infinity, minPos = Infinity;
+    for (let i = 0; i < t.C.length; i++) { const v = t.C[i]; if (v - v === 0) { if (v < lo) lo = v; if (v > hi) hi = v; if (v > 0 && v < minPos) minPos = v; } }
+    return { lo, hi, minPos: minPos === Infinity ? undefined : minPos };
+  },
+  extent(ax, t, axis, log, take, stick) {
+    if (t.ex) { const e = axis === 'x' ? t.ex : t.ey; take(e[0]); take(e[e.length - 1]); stick(e[0]); stick(e[e.length - 1]); return; }
+    const c = axis === 'x' ? t.cx : t.cy;
+    let lo = Infinity, hi = -Infinity;
+    for (let i = 0; i < c.length; i++) { if (c[i] < lo) lo = c[i]; if (c[i] > hi) hi = c[i]; }
+    take(lo); take(hi); stick(lo); stick(hi);
+  },
+  render(ax, ctx, t, xScale, yScale) {
+    const o = t.opts, norm = ax._cmapNorm(t), at = _indexer(norm);
+    const cm = o.cmap || ax._theme.ramp || 'viridis', lut = _cmapLut(cm), fn = lut ? null : getCmap(cm);
+    const colorOf = (q) => (lut ? `rgb(${lut[q * 4]},${lut[q * 4 + 1]},${lut[q * 4 + 2]})` : fn((q + 0.5) / 256));
+    const ec = o.edgecolor && o.edgecolor !== 'none' ? _cssColor(o.edgecolor) : null;
+    ctx.save();
+    ctx.globalAlpha = o.alpha != null ? o.alpha : 1;
+    const { nx, ny } = t;
+    for (let j = 0; j < ny; j++) {
+      for (let i = 0; i < nx; i++) {
+        const q = at(t.C[j * nx + i]);
+        if (q < 0) continue;
+        ctx.fillStyle = colorOf(q);
+        if (t.ex) {
+          const x0 = xScale.transform(t.ex[i]), x1 = xScale.transform(t.ex[i + 1]), y0 = yScale.transform(t.ey[j]), y1 = yScale.transform(t.ey[j + 1]);
+          const x = Math.min(x0, x1), y = Math.min(y0, y1), w = Math.abs(x1 - x0), h = Math.abs(y1 - y0);
+          ctx.fillRect(x, y, w + (ec ? 0 : 0.5), h + (ec ? 0 : 0.5));   // a half-pixel overlap hides the seams
+          if (ec) { ctx.strokeStyle = ec; ctx.lineWidth = o.linewidth || 0.5; ctx.strokeRect(x, y, w, h); }
+        } else {
+          const W = nx + 1, k = (r, c) => [xScale.transform(t.cx[r * W + c]), yScale.transform(t.cy[r * W + c])];
+          const p = [k(j, i), k(j, i + 1), k(j + 1, i + 1), k(j + 1, i)];
+          ctx.beginPath(); ctx.moveTo(p[0][0], p[0][1]); for (let s = 1; s < 4; s++) ctx.lineTo(p[s][0], p[s][1]); ctx.closePath();
+          ctx.fill();
+          if (ec) { ctx.strokeStyle = ec; ctx.lineWidth = o.linewidth || 0.5; ctx.stroke(); }
+          else { ctx.strokeStyle = ctx.fillStyle; ctx.lineWidth = 0.5; ctx.stroke(); }
+        }
+      }
+    }
+    ctx.restore();
+  },
+};
+
 // -- figure.js --
 
 // Figure — canvas management, subplot grid, DPI handling
 
 
 // the chart kinds beyond the core: they add to Axes.prototype, so they load after axes.js
+
+
+
 
 
 
@@ -3914,6 +4843,14 @@ class Figure {
       if (axis === 'x' && mode !== 'row' && r < this.nrows - 1) ax._xtickLabelsOff = true;
       if (axis === 'y' && mode !== 'col' && c > 0) ax._ytickLabelsOff = true;
     }
+  }
+
+  // fig.colorbar(mappable, {ax}): the bar on the mappable's axes (or ax)
+  colorbar(mappable, opts) {
+    const o = opts && typeof opts === 'object' ? { ...opts } : {};
+    const ax = o.ax || (mappable && mappable.axes) || this.axes[0];
+    delete o.ax;
+    return ax.colorbar(mappable, o);
   }
 
   suptitle(text, opts) {
@@ -4079,6 +5016,7 @@ class Figure {
 // -- api.js --
 
 // Public API — subplots() factory, quick one-liners, plt extension registration
+
 
 
 
@@ -4277,6 +5215,8 @@ const _CMAP_NAMES = [
   'spring', 'summer', 'autumn', 'winter',
   'viridis_r', 'plasma_r', 'inferno_r', 'magma_r', 'jet_r', 'gray_r',
 ];
+// matplotlib.colors
+const colors = { Normalize, LogNorm, TwoSlopeNorm, CenteredNorm, BoundaryNorm, ListedColormap, LinearSegmentedColormap };
 const cm = {};
 for (const n of _CMAP_NAMES) {
   Object.defineProperty(cm, n, {
@@ -4340,6 +5280,10 @@ function step(x, y, fmt, opts) { return _ax().step(x, y, fmt, opts); }
 function axhspan(ymin, ymax, opts) { return _ax().axhspan(ymin, ymax, opts); }
 function axvspan(xmin, xmax, opts) { return _ax().axvspan(xmin, xmax, opts); }
 function annotate(text, xy, opts) { return _ax().annotate(text, xy, opts); }
+function boxplot(x, opts) { return _ax().boxplot(x, opts); }
+function contour(...args) { return _ax().contour(...args); }
+function contourf(...args) { return _ax().contourf(...args); }
+function pcolormesh(...args) { return _ax().pcolormesh(...args); }
 function margins(x, y) { return _ax().margins(x, y); }
 
 // plt.colorbar(im, ax=None, **kwargs) — attach a colorbar to the axes
@@ -4353,15 +5297,12 @@ function margins(x, y) { return _ax().margins(x, y); }
 // Returns the axes (matplotlib returns a Colorbar object, but no
 // caller in the GCU stack uses it as anything other than a side-
 // effect call).
-function colorbar(im, opts) {
-  // Adder kwargs land in the trailing arg; pull `ax` out.
-  let ax = null;
-  if (opts && typeof opts === 'object' && opts.ax) ax = opts.ax;
-  else if (im && typeof im === 'object' && typeof im.colorbar === 'function') ax = im;
-  else if (im && im.axes && typeof im.axes.colorbar === 'function') ax = im.axes;
-  else ax = _ax();
-  ax.colorbar(opts && typeof opts === 'object' ? opts : {});
-  return ax;
+function colorbar(mappable, opts) {
+  if (mappable && typeof mappable === 'object' && !mappable._trace && !mappable.axes && !Array.isArray(mappable) && opts == null) { opts = mappable; mappable = null; }
+  const o = opts && typeof opts === 'object' ? opts : {};
+  const ax = o.ax || (mappable && mappable.axes) || (mappable && typeof mappable.colorbar === 'function' ? mappable : null) || _ax();
+  const rest = { ...o }; delete rest.ax;
+  return mappable && mappable._trace ? ax.colorbar(mappable, rest) : ax.colorbar(rest);
 }
 // plt.suptitle — sets the figure-level title above all subplots.
 // Delegates to the current figure's suptitle method.
@@ -4379,6 +5320,8 @@ const pltAdder = {
   legend, grid, vlines, hlines, axhline, axvline, text,
   subplots_adjust, tight_layout, savefig, clf, cla,
   xticks, yticks, axis, margins, colorbar, suptitle, themeFromCSS,
+  colors, Normalize, LogNorm, TwoSlopeNorm, CenteredNorm, BoundaryNorm, ListedColormap,
+  boxplot, contour, contourf, pcolormesh,
   barh, bar_label, errorbar, fill_between, fill_betweenx, step, axhspan, axvspan, annotate,
 };
 
@@ -4403,4 +5346,4 @@ if (typeof window !== 'undefined') {
   }
 }
 
-export { subplots, plot, scatter, imshow, hist, bar, cmap, Figure, Axes, LinearScale, LogScale, getCmap, pltAdder, replay, recordingContext, rcParams, VERSION, themeFromCSS, resolveTheme };
+export { subplots, plot, scatter, imshow, hist, bar, cmap, Figure, Axes, LinearScale, LogScale, getCmap, pltAdder, replay, recordingContext, rcParams, VERSION, themeFromCSS, resolveTheme, Normalize, LogNorm, TwoSlopeNorm, CenteredNorm, BoundaryNorm, ListedColormap, LinearSegmentedColormap, colors };

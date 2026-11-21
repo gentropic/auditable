@@ -223,8 +223,8 @@ function _paint(b32, W, H, sp, base, cx, cy, interior, pr, pg, pb, a) {
 //               ((X - ox) · k, (Y - oy) · k), k being the device pixel ratio
 //   rad         radius in device px: a number, or a per-point Float32Array
 //   colors      { uniform: [r,g,b,a] }
-//               | { lut: Uint8ClampedArray (256 × 4), vals, vmin, vk }   colour-mapped: entry
-//                 ((v - vmin) · vk) clamped to 0–255; a NaN value draws nothing
+//               | { lut: Uint8ClampedArray (256 × 4), idx: Int16Array }   colour-mapped: the
+//                 LUT entry per point, from the trace's norm (-1: no colour, draws nothing)
 //               | { bytes: Uint8ClampedArray (n × 4) }
 //   alpha       0–1, applied on top of each colour's own alpha
 //   edge        null | { bytes: [r,g,b,a] | 'face', width (device px) }
@@ -232,7 +232,7 @@ export function _rasterPoints(W, H, X, Y, ox, oy, k, rad, marker, colors, alpha,
   const buf = new Uint8Array(W * H * 4);              // premultiplied while drawing
   const b32 = new Uint32Array(buf.buffer);
   const n = X.length;
-  const uni = colors.uniform, lut = colors.lut, vals = colors.vals, vmin = colors.vmin, vk = colors.vk, bytes = colors.bytes;
+  const uni = colors.uniform, lut = colors.lut, idx = colors.idx, bytes = colors.bytes;
   const ew = edge ? edge.width : 0;
   const perPointR = typeof rad !== 'number';
   // a fixed radius: its 16 phase stamps, and their cells as pixel offsets for the inlined
@@ -247,10 +247,9 @@ export function _rasterPoints(W, H, X, Y, ox, oy, k, rad, marker, colors, alpha,
     let r, g, b, a;
     if (uni) { r = uni[0]; g = uni[1]; b = uni[2]; a = uni[3]; }
     else if (lut) {
-      const v = vals[p];
-      if (v !== v) continue;
-      let q = ((v - vmin) * vk) | 0;
-      q = (q < 0 ? 0 : q > 255 ? 255 : q) << 2;
+      let q = idx[p];
+      if (q < 0) continue;
+      q <<= 2;
       r = lut[q]; g = lut[q + 1]; b = lut[q + 2]; a = lut[q + 3];
     } else { const q = p << 2; r = bytes[q]; g = bytes[q + 1]; b = bytes[q + 2]; a = bytes[q + 3]; }
     if (A !== 255) { const t = a * A + 128; a = (t + (t >> 8)) >> 8; }
