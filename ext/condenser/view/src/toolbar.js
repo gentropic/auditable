@@ -23,6 +23,7 @@ const ICON = {
   layers: 'M7 1.5 12.5 4.6 7 7.7 1.5 4.6z M1.5 7.4 7 10.5l5.5-3.1M1.5 10.2 7 13.3l5.5-3.1',
   camera: 'M1.5 4.5h2.5l1-1.5h4l1 1.5h2.5v7h-11z M7 9.8a2.2 2.2 0 1 0 0-4.4 2.2 2.2 0 0 0 0 4.4z',
   close: 'M3.5 3.5l7 7M10.5 3.5l-7 7',
+  lock: 'M3.5 6.5h7v6h-7z M5 6.5V4.6a2 2 0 0 1 4 0v1.9',
 };
 
 const svg = (d) => `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor"
@@ -146,6 +147,11 @@ export function createToolbar(host, api) {
     const on = api.toggleOrtho();
     b.setAttribute('aria-pressed', String(on));
   }, true);
+
+  // the orientation lock: pressed = locked (orthographic, drag pans). Hidden when the
+  // page locked the view for good (lock_toggle: false) — and so are the views and the
+  // projection, which would turn it.
+  const lockBtn = btn('lock', 'Lock the orientation (L): drag pans, nothing turns', () => { closePop(); api.toggleLock(); }, true);
 
   sep();
 
@@ -371,6 +377,14 @@ export function createToolbar(host, api) {
       g.drawImage(legCv, 0, 0, 96, 1, 0, 0, 96, 8);
     },
     syncOrtho(on) { orthoBtn.setAttribute('aria-pressed', String(!!on)); },
+    syncLock(locked, canToggle) {
+      lockBtn.setAttribute('aria-pressed', String(!!locked));
+      lockBtn.style.display = canToggle ? '' : 'none';
+      const fixed = locked && !canToggle;
+      viewBtn.style.display = orthoBtn.style.display = fixed ? 'none' : '';
+      orthoBtn.style.opacity = locked ? '.45' : '';
+      orthoBtn.title = locked ? 'Parallel projection (a locked view always is)' : 'Parallel projection (for sections)';
+    },
     syncThrough(on) { throughBtn.setAttribute('aria-pressed', String(!!on)); },
     destroy() { closePop(); [style, bar, secBar, pickBox, leg, bandEl].forEach((n) => n.remove()); },
   };

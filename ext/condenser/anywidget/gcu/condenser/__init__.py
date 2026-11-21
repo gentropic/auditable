@@ -275,6 +275,9 @@ class Layer(traitlets.HasTraits):
 
 
 # ── the widget ──────────────────────────────────────────────────────────────
+_LOCKS = ("free", "plan", "section", "north", "south", "east", "west")
+
+
 class Viewer(anywidget.AnyWidget):
     """The 3D view. Build it with :func:`view` (or display a Layer directly)."""
 
@@ -324,6 +327,33 @@ class Viewer(anywidget.AnyWidget):
     budget = traitlets.Int(3_000_000).tag(sync=True)
     #: the last pick: {'layer': i, 'name': str, 'row': int} — {} for none
     selection = traitlets.Dict(default_value={}).tag(sync=True)
+    #: the orientation lock. ``'free'`` orbits; ``'plan'`` looks straight down;
+    #: ``'section'`` looks along the section's normal and follows it as it is
+    #: scrubbed or knifed; ``'north'`` / ``'south'`` / ``'east'`` / ``'west'``;
+    #: or ``{'azimuth': °, 'plunge': °}``. A locked view is orthographic, a drag
+    #: pans, the wheel and a pinch zoom, and nothing turns it.
+    lock = traitlets.Union([traitlets.Unicode(), traitlets.Dict()], default_value="free", allow_none=True).tag(sync=True)
+    #: True: the toolbar's lock button and the ``L`` key unlock and lock back.
+    #: False: no unlock control -- the view is what the code locked it to.
+    lock_toggle = traitlets.Bool(True).tag(sync=True)
+    #: a locked PLAN view may turn about the vertical (ctrl-drag, pinch twist)
+    twist = traitlets.Bool(False).tag(sync=True)
+
+    @traitlets.validate("lock")
+    def _valid_lock(self, proposal):
+        v = proposal["value"]
+        if v in (None, "", False):
+            return "free"
+        if isinstance(v, str) and v in _LOCKS:
+            return v
+        if isinstance(v, dict) and set(v) == {"azimuth", "plunge"}:
+            return {"azimuth": float(v["azimuth"]) % 360.0,
+                    "plunge": max(-90.0, min(90.0, float(v["plunge"])))}
+        raise traitlets.TraitError(
+            f"gcu-condenser: lock {v!r} -- use one of {', '.join(map(repr, _LOCKS))} "
+            "or {'azimuth': deg, 'plunge': deg}"
+        )
+
     #: via='files' layers: what the BROWSER discovered (count, value_range,
     #: categories per layer index) — mirrored onto the Layer objects
     _file_info = traitlets.Dict(default_value={}).tag(sync=True)
@@ -520,7 +550,8 @@ class Viewer(anywidget.AnyWidget):
         Viewer.__init__(clone, layers,
                         section=self.section, background=self.background, height=self.height,
                         toolbar=self.toolbar, edl=self.edl, edl_strength=self.edl_strength,
-                        budget=self.budget, select_through=self.select_through)
+                        budget=self.budget, select_through=self.select_through,
+                        lock=self.lock, lock_toggle=self.lock_toggle, twist=self.twist)
         clone._payload = self._payload                     # same bytes, no re-pack
         clone._view = dict(self._view)
         return clone

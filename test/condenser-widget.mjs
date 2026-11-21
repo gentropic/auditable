@@ -912,7 +912,7 @@ chk(`sectioned=False exempts a layer (exempt ${r.sectionLit.toLocaleString()} px
   r.sectionAllLit < r.sectionLit);
 chk(`pick returns layer + row (${JSON.stringify(r.selection)})`,
   r.selection && Number.isInteger(r.selection.row) && r.selection.row >= 0 && typeof r.selection.name === 'string' && r.selection.name.length > 0);
-chk(`toolbar renders (${r.tbButtons} buttons) with the color legend`, r.tbButtons === 11 && r.legendShown);
+chk(`toolbar renders (${r.tbButtons} buttons) with the color legend`, r.tbButtons === 12 && r.legendShown);
 chk(`rectangle select returns rows in the packed wire format (${r.rectTotal.toLocaleString()} rows over ${Object.keys(r.rectSel).length} layer(s))`,
   r.rectTotal > 0 && Object.keys(r.rectSel).length >= 1 && r.rectCursor === 'crosshair');
 chk(`select THROUGH catches the volume behind the surface (${r.throughTotal.toLocaleString()} vs ${r.rectTotal.toLocaleString()} rows on the same box)`,

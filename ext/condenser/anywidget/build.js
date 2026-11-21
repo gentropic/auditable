@@ -17,7 +17,7 @@ const r = await bundle({
   entry: 'src/widget.js',
   outFile: OUT,
   // the view (../view/src — shared with pages) and the engine ride inline
-  inline: ['../view/src/view.js', '../view/src/toolbar.js', '../view/src/parquet-blocks.js', '../index.js', '../../drillhole/src/samples.js', '../../drillhole/src/desurvey.js', '../../drillhole/src/validate.js'],
+  inline: ['../view/src/view.js', '../view/src/toolbar.js', '../view/src/lock.js','../view/src/parquet-blocks.js', '../index.js', '../../drillhole/src/samples.js', '../../drillhole/src/desurvey.js', '../../drillhole/src/validate.js'],
   sourcemap: false,
   meta: false,
 });

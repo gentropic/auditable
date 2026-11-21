@@ -240,6 +240,20 @@ real coordinates), `hover` (the pick readout follows the cursor), `selection`,
 `selected_rows`, `measurement`, `w.fit()`, `w.clear_selection()`, `w.copy()`,
 `w["name"]`, `w.add(layer)`.
 
+### Locking the orientation
+
+`cd.view(..., lock='plan')` (or `w.lock = ...`) pins the direction. A locked view is
+orthographic, a drag pans, the wheel and a pinch zoom, and nothing turns it — the
+first drag no longer orbits you off plan.
+
+- `lock`: `'free'` (default) · `'plan'` · `'section'` (looks along the section, and
+  follows it when it is scrubbed or knifed) · `'north'` · `'south'` · `'east'` ·
+  `'west'` · `{'azimuth': 30, 'plunge': 0}`.
+- `lock_toggle=True` (default): a lock button in the toolbar, and `L` on the
+  focused view, free it and lock it back. `False`: no unlock control.
+- `twist=True`: a locked plan view may still turn about the vertical (ctrl-drag).
+- While locked, `w.look('north')` moves the lock, and `w.look('iso')` frees it.
+
 ### The camera is Python state
 
 `w.camera` reads back in geologist terms — `{'azimuth': ° from north clockwise,

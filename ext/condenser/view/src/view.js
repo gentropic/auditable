@@ -36,6 +36,7 @@ import {
 import { dhDesurveySamples } from '../../../drillhole/src/samples.js';
 import { openParquetBlocks } from './parquet-blocks.js';
 import { createToolbar } from './toolbar.js';
+import { LOCK_PRESETS, LOCK_NAMES, normLock, lockAngles, isVertical, lockHere, viewRect, rectCamera } from './lock.js';
 
 // ── ramp presets. rampPixels' default is the viridis-ish walk; these are the
 // few a geologist reaches for. Kept here (not in the engine) because they are
@@ -313,7 +314,10 @@ export function mountView(el, store) {
   host.setAttribute('data-jp-suppress-context-menu', 'true');
   host.addEventListener('contextmenu', (e) => e.preventDefault());
   const canvas = document.createElement('canvas');
-  canvas.style.cssText = 'display:block;width:100%;height:100%;';
+  canvas.style.cssText = 'display:block;width:100%;height:100%;outline:none;';
+  canvas.tabIndex = 0;                                     // focusable: the keyboard (L locks) works on a focused view
+  // JupyterLab: keys typed into the view are the view's, not command-mode shortcuts
+  host.setAttribute('data-lm-suppress-shortcuts', 'true');
   host.appendChild(canvas);
   // figure chrome + hole labels: a 2D overlay redrawn with every frame and
   // COMPOSITED into snapshots (DOM chrome would be lost by toDataURL)
@@ -504,6 +508,7 @@ export function mountView(el, store) {
     }
     drawOverlay(w, h, dpr);
     pushCamera();                                          // debounced by value — idle frames are free
+    pushView();
     if (!converged) schedule();
   };
   const schedule = () => { if (!raf && !disposed) raf = requestAnimationFrame(draw); };
@@ -1213,7 +1218,18 @@ export function mountView(el, store) {
       const o = (payload && payload.frame) || [0, 0, 0];
       c.target = [v.target[0] - o[0], v.target[1] - o[1], v.target[2] - o[2]];
     }
-    if (v.ortho != null) { cam.setOrtho(!!v.ortho); if (tb) tb.syncOrtho(!!v.ortho); }
+    if (v.ortho != null && !c.orbitLock) { cam.setOrtho(!!v.ortho); if (tb) tb.syncOrtho(!!v.ortho); }
+    // while locked the LOCK owns the direction: a plan view that may twist takes the
+    // azimuth, and any other new direction becomes the new lock
+    const lk = lockOf();
+    if (lk !== 'free') {                                   // compare what was ASKED: the orbit clamp moved phi
+      const [lt, lp] = lockAngles(lk, sectionNormal());
+      const lockAz = (Math.atan2(-Math.cos(lt), -Math.sin(lt)) * 180 / Math.PI + 360) % 360, lockPl = lp * 180 / Math.PI;
+      const azOff = v.azimuth != null && Math.abs(((+v.azimuth - lockAz) % 360 + 540) % 360 - 180) > 0.02;
+      const plOff = v.plunge != null && Math.abs(+v.plunge - lockPl) > 0.02;
+      if (plOff || (azOff && !c.twist)) setLock(normLock({ azimuth: v.azimuth != null ? +v.azimuth : lockAz, plunge: v.plunge != null ? +v.plunge : lockPl }));
+      else applyLock(true);                                // the exact direction back; a twistable plan keeps its azimuth
+    }
     cam.update();
     userCam = true;                                        // a SET camera is sacred
     needFit = false;
@@ -1281,6 +1297,7 @@ export function mountView(el, store) {
     tb.syncSection(sec, sec ? sectionExtent(sec) : null);
     tb.syncLegend(legendInfo());
     tb.syncOrtho(cam.state.ortho);
+    tb.syncLock(cam.state.orbitLock, store.get('lock_toggle') !== false);
   };
 
   // camera presets — ONE implementation, shared by the toolbar and w.look()
@@ -1297,13 +1314,111 @@ export function mountView(el, store) {
     needFit = true; invalidate();
   };
 
+  // ── the orientation lock: a locked view is orthographic, a drag pans, a wheel or pinch
+  // zooms, and nothing turns it (bar a plan view's twist, when allowed). The `lock` option
+  // is the truth; `L` and the toolbar button set it to 'free' and back again. ──
+  let lockedOrtho = null;                                  // the projection from before the lock, put back after
+  let lastLock = null;                                     // the lock `L` returns to
+  let lockWarned = '';
+  const lockOf = () => {
+    const raw = store.get('lock');
+    const lk = normLock(raw);
+    if (lk) return lk;
+    const j = JSON.stringify(raw);
+    if (j !== lockWarned) { lockWarned = j; console.warn(`condenser: lock ${j} is not one of ${LOCK_NAMES.join(', ')} or {azimuth, plunge}; the view is free`); }
+    return 'free';
+  };
+  const sectionNormal = () => { const s = store.get('section'); return s ? normalOf(s) : null; };
+  const setLock = (v) => { store.set('lock', v); store.save_changes(); };
+  // follow = the section moved, or the twist option changed: keep a twisted plan's azimuth
+  const applyLock = (follow) => {
+    const lk = lockOf(), c = cam.state;
+    if (lk === 'free') {
+      if (c.orbitLock) {
+        c.orbitLock = false; c.twist = false; c.phiEps = 0.01;
+        cam.setOrtho(lockedOrtho != null ? lockedOrtho : c.ortho);
+        lockedOrtho = null;
+      }
+    } else {
+      const [theta, phi] = lockAngles(lk, sectionNormal());
+      if (!c.orbitLock) lockedOrtho = c.ortho;
+      const canTwist = !!store.get('twist') && isVertical(phi);
+      const keepAz = follow && canTwist && c.orbitLock && c.twist;
+      c.orbitLock = true; c.twist = canTwist; c.phiEps = 0;
+      if (!keepAz) c.theta = theta;
+      c.phi = phi;
+      const sec = lk === 'section' && store.get('section');
+      if (sec) {                                           // the target onto the plane: the scale bar and rectangle read there
+        const n = normalOf(sec), o = (payload && payload.frame) || [0, 0, 0];
+        const d = (+sec.position || 0) - (n[0] * (c.target[0] + o[0]) + n[1] * (c.target[1] + o[1]) + n[2] * (c.target[2] + o[2]));
+        c.target = [c.target[0] + d * n[0], c.target[1] + d * n[1], c.target[2] + d * n[2]];
+      }
+      cam.setOrtho(true);
+    }
+    cam.update();
+    syncLockChrome();
+    invalidate();
+  };
+  const toggleLock = () => {
+    if (store.get('lock_toggle') === false) return;
+    const lk = lockOf();
+    if (lk !== 'free') { lastLock = lk; setLock('free'); }
+    else setLock(lastLock || lockHere(cam.state.theta, cam.state.phi));
+  };
+  const syncLockChrome = () => {
+    if (!tb) return;
+    const locked = cam.state.orbitLock;
+    tb.syncLock(locked, store.get('lock_toggle') !== false);
+    tb.syncOrtho(cam.state.ortho);
+  };
+  // a view preset (toolbar or look()): while locked it moves the lock there; iso,
+  // which cannot be locked, frees the view
+  const chooseView = (k) => {
+    if (lockOf() !== 'free') {
+      if (LOCK_PRESETS[k]) { setLock(k); userCam = true; needFit = true; invalidate(); return; }
+      setLock('free');
+    }
+    setView(k);
+  };
+  // v.set({ view: { rect } }): frame a world rectangle in a locked orthographic view
+  const applyRect = () => {
+    const req = store.get('_rect');
+    if (!req || !req.rect) return;
+    const c = cam.state;
+    if (!c.orbitLock || !c.ortho) { console.warn('condenser: set({view: {rect}}) needs a locked view (lock: plan, section, …)'); return; }
+    const w = canvas.clientWidth || 1, h = canvas.clientHeight || 1;
+    cam.setAspect(w / h);
+    const next = rectCamera(c, (payload && payload.frame) || [0, 0, 0], req.rect);
+    c.target = next.target; c.radius = next.radius;
+    cam.update();
+    userCam = true; needFit = false;
+    invalidate();
+  };
+  // the `view` event: the camera, the lock, and in a locked orthographic view the world
+  // rectangle the canvas shows and the pixel box it covers. Sent from draw(), by value.
+  let viewLast = '';
+  const pushView = () => {
+    if (typeof store.notify !== 'function') return;        // Jupyter: no events, no work
+    const c = cam.state;
+    const out = { camera: { ...camToDict(), z_exaggeration: c.zExag || 1 }, lock: lockOf() };
+    if (c.orbitLock && c.ortho) {
+      Object.assign(out, viewRect(c, (payload && payload.frame) || [0, 0, 0]));
+      const cr = canvas.getBoundingClientRect(), er = el.getBoundingClientRect();
+      out.px = { x: cr.left - er.left, y: cr.top - er.top, w: cr.width, h: cr.height };
+    }
+    const j = JSON.stringify(out);
+    if (j === viewLast) return;
+    viewLast = j;
+    notify('view', out);
+  };
+
   // the stored camera state. Applied on CHANGE *and* at load: a widget
   // displayed a second time (any cell whose value is the Viewer) builds a fresh
   // view, and it must not come up pointing somewhere else than its sibling.
   const applyView = () => {
     const v = store.get('_view') || {};
-    if (v.name) setView(v.name);
-    if (v.ortho != null) { cam.setOrtho(!!v.ortho); if (tb) tb.syncOrtho(!!v.ortho); }
+    if (v.name) chooseView(v.name);
+    if (v.ortho != null && !cam.state.orbitLock) { cam.setOrtho(!!v.ortho); if (tb) tb.syncOrtho(!!v.ortho); }
     invalidate();
   };
 
@@ -1332,8 +1447,9 @@ export function mountView(el, store) {
         syncChrome();
       },
       fit: () => { needFit = true; invalidate(); },
-      setView,
-      toggleOrtho: () => { const on = !cam.state.ortho; cam.setOrtho(on); invalidate(); return on; },
+      setView: chooseView,
+      toggleOrtho: () => { if (cam.state.orbitLock) return true; const on = !cam.state.ortho; cam.setOrtho(on); invalidate(); return on; },
+      toggleLock,
       isOrtho: () => cam.state.ortho,
       getSection: () => store.get('section'),
       setSection: (s) => { store.set('section', s); store.save_changes(); syncChrome(); invalidate(); },
@@ -1722,12 +1838,24 @@ export function mountView(el, store) {
   host.addEventListener('pointermove', onMove, true);
   host.addEventListener('pointerup', onUp, true);
 
+  const onKey = (e) => {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.key === 'l' || e.key === 'L') { e.preventDefault(); e.stopPropagation(); toggleLock(); }
+  };
+  const onFocusDown = () => { try { canvas.focus({ preventScroll: true }); } catch { /* old engines */ } };
+  canvas.addEventListener('keydown', onKey);
+  canvas.addEventListener('pointerdown', onFocusDown);
+
   detach = attachOrbitInput(canvas, cam, { onChange: () => { userCam = true; schedule(); if (tb) tb.syncOrtho(cam.state.ortho); } });
 
   const subs = [
     ['change:_payload', load],
     ['change:_styles', () => { applyStyles(); syncChrome(); invalidate(); }],
-    ['change:section', () => { syncChrome(); invalidate(); }],
+    ['change:section', () => { if (lockOf() === 'section') applyLock(true); syncChrome(); invalidate(); }],
+    ['change:lock', () => applyLock(false)],
+    ['change:twist', () => applyLock(true)],
+    ['change:lock_toggle', syncLockChrome],
+    ['change:_rect', applyRect],
     ['change:background', applyBackground],
     ['change:height', applyHeight],
     ['change:z_exaggeration', applyZExag],
@@ -1764,6 +1892,7 @@ export function mountView(el, store) {
   load();
   applyView();                                             // match any camera state already on the widget
   applyCamera();                                           // a stored numeric camera wins over the preset
+  applyLock(false);                                        // and a lock wins over both
 
   return () => {
     disposed = true;
@@ -1777,6 +1906,8 @@ export function mountView(el, store) {
     host.removeEventListener('pointerup', onUp, true);
     canvas.removeEventListener('pointermove', onHover);
     canvas.removeEventListener('pointerleave', onHoverLeave);
+    canvas.removeEventListener('keydown', onKey);
+    canvas.removeEventListener('pointerdown', onFocusDown);
     for (const [ev, fn] of subs) store.off(ev, fn);
     try { renderer.clearChunks(); } catch { /* context already gone */ }
     const lose = renderer.gl.getExtension('WEBGL_lose_context');

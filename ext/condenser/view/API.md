@@ -15,9 +15,10 @@ const v = view(document.getElementById('map'), [
   blocks({ x: X, y: Y, z: Z, value: FE }, { name: 'model', threshold: [28, 99], ramp: 'viridis' }),
   drillholes(collar, survey, assay, { value: 'AU', labels: true }),
   points({ x: tx, y: ty, z: tz }, { name: 'topo', sectioned: false }),
-], { section: { axis: 'z', position: 485, thickness: 10 }, height: 520 });
+], { lock: 'plan', section: { axis: 'z', position: 485, thickness: 10 }, height: 520 });
 
 v.on('pick', (p) => console.log(p.name, p.index, p.value));
+v.on('view', (r) => console.log(r.axes, r.rect));     // the world rectangle on screen
 v.layer('model').set({ threshold: [30, 99] });
 v.cut('z', 470, 10);
 v.look('plan', { ortho: true });
@@ -41,7 +42,8 @@ v.look('plan', { ortho: true });
 | `w.selection` · `w.selected_rows` · `w.measurement` · `w.camera` | `v.selection` · `v.selected_rows` · `v.measurement` · `v.camera` |
 | `w.add(layer)` · `w.remove("name")` | `v.add(layer)` · `v.remove('name')` |
 | `w.z_exaggeration = 3` | `v.set({ z_exaggeration: 3 })` |
-| (no Python equivalent) | `v.on(event, fn)` · `v.off` · `v.state()` · `v.set(state)` · `v.destroy()` · `blocks.stream` / `points.stream` + `append` |
+| `w.lock = 'plan'` · `w.lock = {'azimuth': 30, 'plunge': 0}` | `v.set({ lock: 'plan' })` · `v.set({ lock: { azimuth: 30, plunge: 0 } })` |
+| (no Python equivalent) | `v.on(event, fn)` · `v.off` · `v.state()` · `v.set(state)` · `v.set({ view: { rect } })` · `v.destroy()` · `blocks.stream` / `points.stream` + `append` |
 
 ## Columns
 
@@ -113,7 +115,8 @@ A 2D grid as shaded relief, row 0 the NORTHERNMOST. `grid` as rows, or flat with
 `section` (`{axis, position, thickness}` or `{normal: [x, y, z], position, thickness}`;
 `null` = off) · `height` (460) · `background` (`'#121212'`) · `toolbar` (true) · `edl` (true) ·
 `edl_strength` (1) · `z_exaggeration` (1) · `decorations` (true: north arrow + scale bar) ·
-`camera` (`{azimuth, plunge, distance, target, ortho}`) · `hover` (false) · `select_through`
+`camera` (`{azimuth, plunge, distance, target, ortho}`) · `lock` (`'free'`) · `lock_toggle` (true) ·
+`twist` (false) — see *Orientation lock* · `hover` (false) · `select_through`
 (false) · `budget` (3,000,000 elements per frame) · `workers` (true; JS only — `false` when
 the page's CSP allows no workers).
 
@@ -133,6 +136,60 @@ An option nobody reads warns once with the nearest real name:
 | `section` | the section, whenever it changes (code, scrub bar or knife) |
 | `camera` | the camera, when it is set |
 | `style` | every layer's style, after a toolbar edit or `layer().set()` |
+| `lock` | the lock, whenever it changes (code, the lock button, `L`): `'free'`, a name, or `{ azimuth, plunge }` |
+| `view` | after every camera change, at most once a frame — see *The view event* |
+
+## Orientation lock
+
+A locked view is orthographic, a drag PANS, the wheel and a pinch zoom, and nothing turns it.
+
+| `lock` | |
+|---|---|
+| `'free'` | orbit as usual (the default) |
+| `'plan'` | straight down, north up |
+| `'section'` | along the section's normal, never looking up (a z section is plan, a y section looks north); it follows the section when it is scrubbed, cut or knifed to a new plane. With no section, plan |
+| `'north'` · `'south'` · `'east'` · `'west'` | horizontal, looking that way |
+| `{ azimuth, plunge }` | any fixed direction, in degrees (azimuth of the VIEW from north, plunge down) |
+
+- `lock_toggle: true` (default): the toolbar shows a lock button and the `L` key (on the focused view) frees the view and locks it back to the same orientation; on a free view, `L` locks where you are looking. `false`: no unlock control — the button, the views menu and the projection toggle are hidden, and the view stays what the code locked it to.
+- `twist: true`: a locked PLAN view may still turn about the vertical (ctrl-drag, pinch twist) — map rotation. The north arrow follows. Default `false`.
+- While locked, the lock owns the direction: `look('north')` moves the lock to north, `look('iso')` frees it, and `look({ azimuth, plunge })` locks that direction.
+- `state()` carries the lock.
+
+## The view event
+
+`v.on('view', fn)` fires after every camera change (coalesced to one per frame, and only when something changed):
+
+```js
+{ camera: { azimuth, plunge, distance, target, ortho, z_exaggeration }, lock,
+  // in a locked view only:
+  rect: { u0, u1, v0, v1 }, axes: ['E', 'N'], basis: { u: [1, 0, 0], v: [0, 1, 0] },
+  px: { x, y, w, h } }
+```
+
+`rect` is the world extent the canvas shows: `u0` at its LEFT edge, `u1` at the right, `v0` at
+the bottom, `v1` at the top. `px` is the pixel box it covers, relative to the element you passed
+to `view()`. The axes are named for the world coordinate they measure:
+
+| view | `axes` |
+|---|---|
+| plan, north up | `['E', 'N']` |
+| looking north or south | `['E', 'RL']` — looking south E runs right to left, so `u0 > u1` |
+| looking east or west | `['N', 'RL']` |
+| any other horizontal look | `['along', 'RL']` — along = p·`basis.u` |
+| a twisted plan | `['u', 'v']` |
+| an oblique look | `['along', 'v']` |
+
+RL is real elevation: vertical exaggeration is already taken out. `basis` gives the unit
+vectors, so any coordinate is p·`basis.u` and p·`basis.v`. This is what overlaid axes or a
+linked 2D chart needs, and it works the other way too:
+
+```js
+v.set({ view: { rect: { u0: 500100, u1: 500400, v0: 8200050, v1: 8200250 } } });
+```
+
+frames that rectangle in a locked view — centred, the whole of it shown, the canvas keeping
+its aspect.
 
 ## State
 
@@ -159,6 +216,6 @@ view reloads and every appended row is replayed.
 
 ## Not yet
 
-The orientation lock, the `view` event with the view rectangle, the chrome plugin
-contract, themes, per-layer legends in snapshots and the keyboard arrive in the next
-steps of `condenser-view-api`.
+The chrome plugin contract, themes, per-layer legends in snapshots, the cursor readout and
+the rest of the keyboard arrive in the next steps of `condenser-view-api`; axes in locked
+views after that.

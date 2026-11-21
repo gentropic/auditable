@@ -2435,10 +2435,13 @@ function createOrbitCamera({ fovY = 45 * Math.PI / 180 } = {}) {
     aspect: 1, near: 0.1, far: 1e6,
     ortho: false, halfH: 0,                                // ortho: half-height = radius·tan(fovY/2) — toggling keeps apparent size at the target
     zExag: 1,                                              // vertical exaggeration: a GLOBAL scene z-scale folded into viewProj (all layers stay registered; queries stay in real coords — see update())
+    phiEps: 0.01,                                          // how close to straight up/down an ORBIT may go; a locked plan view sets 0 (exact)
+    orbitLock: false,                                      // locked views: a drag pans, a pinch doesn't twist (unless twist)
+    twist: false,                                          // with orbitLock: ctrl-drag / pinch-twist may still turn about the vertical
     eye: [0, 0, 0], view: null, proj: null, viewProj: null,
   };
-  const EPS = 0.01;
   function update() {
+    const EPS = c.phiEps == null ? 0.01 : c.phiEps;
     c.phi = Math.max(-Math.PI / 2 + EPS, Math.min(Math.PI / 2 - EPS, c.phi));
     c.radius = Math.max(0.05, c.radius);
     const cp = Math.cos(c.phi);
@@ -2454,7 +2457,11 @@ function createOrbitCamera({ fovY = 45 * Math.PI / 180 } = {}) {
     // with near 2.5 m) while clipping 4× closer.
     c.near = Math.max(c.radius / 4000, 0.01);
     c.far = c.radius * 100;
-    c.view = mat4LookAt(c.eye, c.target, [0, 0, 1]);
+    // the camera's own up — z-up projected off the view direction. The same matrix as
+    // lookAt(…, [0,0,1]) everywhere that one is defined, and still defined looking
+    // STRAIGHT down, where z-up is parallel to the view (an exact plan view).
+    const sp = Math.sin(c.phi), ct = Math.cos(c.theta), st = Math.sin(c.theta);
+    c.view = mat4LookAt(c.eye, c.target, [-ct * sp, -st * sp, cp]);
     c.halfH = c.radius * Math.tan(c.fovY / 2);
     c.proj = c.ortho ? mat4Ortho(c.halfH, c.aspect, c.near, c.far) : mat4Perspective(c.fovY, c.aspect, c.near, c.far);
     c.viewProj = mat4Multiply(c.proj, c.view);
@@ -2523,7 +2530,7 @@ function attachOrbitInput(canvas, cam, { onChange } = {}) {
     try { canvas.setPointerCapture(e.pointerId); } catch { /* synthetic */ }
     if (pts.size === 2) { pinch = pinchState(); mode = 'pinch'; return; }
     if (pts.size > 2) return;                              // third finger: ignore
-    mode = (e.button === 2 || e.shiftKey) ? 'pan' : 'orbit';
+    mode = (e.button === 2 || e.shiftKey) ? 'pan' : (e.ctrlKey && cam.state.orbitLock && cam.state.twist) ? 'twist' : 'orbit';
     lx = e.clientX; ly = e.clientY;
   };
   const move = (e) => {
@@ -2536,7 +2543,7 @@ function attachOrbitInput(canvas, cam, { onChange } = {}) {
       let dA = now.angle - pinch.angle;
       if (dA > Math.PI) dA -= 2 * Math.PI;
       if (dA < -Math.PI) dA += 2 * Math.PI;
-      if (!cam.state.orbitLock) cam.orbit(-dA, 0);         // twist: grab-the-world (locked views don't twist)
+      if (!cam.state.orbitLock || cam.state.twist) cam.orbit(-dA, 0);   // twist: grab-the-world (locked views only with twist)
       pinch = now;
       if (onChange) onChange();
       return;
@@ -2546,6 +2553,7 @@ function attachOrbitInput(canvas, cam, { onChange } = {}) {
     // orbitLock (state flag): 2D/section-locked views — drags PAN instead of
     // orbiting, so a locked plan/section can't be knocked off-plane by a drag
     if (mode === 'orbit') { if (cam.state.orbitLock) cam.pan(dx, dy, canvas.clientHeight); else cam.orbit(-dx * 0.006, dy * 0.006); }
+    else if (mode === 'twist') cam.orbit(-dx * 0.006, 0);  // a locked view's map rotation: azimuth only
     else cam.pan(dx, dy, canvas.clientHeight);
     if (onChange) onChange();
   };

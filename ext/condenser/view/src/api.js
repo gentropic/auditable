@@ -26,6 +26,7 @@
 
 import { mountView } from './view.js';
 import { createStore } from './store.js';
+import { normLock, LOCK_NAMES } from './lock.js';
 
 const U16MAX = 65535;
 
@@ -38,6 +39,8 @@ export const STYLE_DEFAULTS = {
 export const VIEW_DEFAULTS = {
   section: null, background: '#121212', height: 460, toolbar: true, edl: true, edl_strength: 1.0,
   z_exaggeration: 1.0, decorations: true, camera: {}, hover: false, select_through: false, budget: 3_000_000,
+  // the orientation lock: 'free' · 'plan' · 'section' · 'north' · 'south' · 'east' · 'west' · {azimuth, plunge}
+  lock: 'free', lock_toggle: true, twist: false,
   // JS only: false when the page's CSP allows no workers (streams then build inline)
   workers: true,
 };
@@ -550,7 +553,12 @@ function _payload(layers) {
   return { frame, frame_auto: auto, layers: layers.map((L) => ({ ...L.extra, kind: L.kind, cols: { ...L.cols } })) };
 }
 
-const EVENTS = ['pick', 'hover', 'select', 'measure', 'section', 'camera', 'style'];
+const EVENTS = ['pick', 'hover', 'select', 'measure', 'section', 'camera', 'style', 'lock', 'view'];
+
+function _checkLock(where, v) {
+  if (normLock(v)) return;
+  throw new TypeError(`condenser: ${where}: lock ${JSON.stringify(v)} — use ${LOCK_NAMES.map((n) => `'${n}'`).join(', ')} or { azimuth, plunge }`);
+}
 
 // view(el, layers, options) → the handle
 export function view(el, layers, opts) {
@@ -559,13 +567,14 @@ export function view(el, layers, opts) {
   for (const L of list) if (!(L instanceof Layer)) throw new TypeError('condenser: view() takes layers made by points / blocks / drillholes / mesh / surface');
   const o = opts || {};
   _checkKeys('view()', o, Object.keys(VIEW_DEFAULTS));
+  if ('lock' in o) _checkLock('view()', o.lock);
   list.forEach((L, i) => { if (!L.style.name) L.style.name = `${L.kind}-${i + 1}`; });
 
   const store = createStore({
     ...VIEW_DEFAULTS, ...o,
     _payload: _payload(list), _styles: list.map((L) => ({ ...L.style })),
     _fit: 0, _view: {}, _sel_rows: null, _clear_sel: 0, measurement: {}, selection: {},
-    _snapshot_req: 0, snapshot_png: null, _file_info: {},
+    _snapshot_req: 0, snapshot_png: null, _file_info: {}, _rect: null,
   });
   const subs = new Map(EVENTS.map((e) => [e, new Set()]));
   const fire = (ev, data) => { for (const fn of Array.from(subs.get(ev) || [])) { try { fn(data); } catch (e) { console.error(`condenser: a '${ev}' handler threw`, e); } } };
@@ -596,6 +605,7 @@ export function view(el, layers, opts) {
   });
   store.on('change:section', () => fire('section', store.get('section')));
   store.on('change:camera', () => fire('camera', store.get('camera')));
+  store.on('change:lock', () => fire('lock', normLock(store.get('lock')) || 'free'));
 
   const pushStyles = () => store.set('_styles', list.map((L) => ({ ...L.style })));
   const repack = () => { epoch = null; store.set('_payload', _payload(list)); pushStyles(); };
@@ -670,7 +680,15 @@ export function view(el, layers, opts) {
         pushStyles();
       }
       const rest = { ...s }; delete rest.layers;
+      // { view: { rect: { u0, u1, v0, v1 } } }: frame that world rectangle (a locked view)
+      if (rest.view) {
+        const r = rest.view.rect;
+        if (!r || !['u0', 'u1', 'v0', 'v1'].every((k) => Number.isFinite(+r[k]))) throw new TypeError('condenser: set({view: {rect: {u0, u1, v0, v1}}}) — four numbers, world coordinates along the screen axes');
+        store.set('_rect', { rect: { u0: +r.u0, u1: +r.u1, v0: +r.v0, v1: +r.v1 }, n: ((store.get('_rect') || {}).n | 0) + 1 });
+        delete rest.view;
+      }
       _checkKeys('set()', rest, Object.keys(VIEW_DEFAULTS));
+      if ('lock' in rest) _checkLock('set()', rest.lock);
       for (const [k, v] of Object.entries(rest)) if (k in VIEW_DEFAULTS) store.set(k, v);
       return handle;
     },

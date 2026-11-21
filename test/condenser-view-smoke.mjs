@@ -177,6 +177,129 @@ const r = await page.evaluate(async () => {
   return out;
 });
 
+// ── the orientation lock and the `view` event (condenser-view-api step 3) ──
+const L = await page.evaluate(async () => {
+  const C = await import('/ext/condenser/view/index.js');
+  const out = {};
+  const settle = (ms = 500) => new Promise((res) => setTimeout(res, ms));
+  const host = document.getElementById('a');
+  host.innerHTML = '';
+  const X = [], Y = [], Z = [], FE = [];
+  for (let i = 0; i < 30; i++) for (let j = 0; j < 20; j++) for (let k = 0; k < 10; k++) {
+    X.push(500005 + i * 10); Y.push(8200005 + j * 10); Z.push(302.5 + k * 5); FE.push(40 + i + k);
+  }
+  const model = () => C.blocks({ x: X, y: Y, z: Z, value: FE }, { name: 'model' });
+  const v = C.view(host, [model()], { height: 400, lock: 'plan' });
+  const ev = { lock: [], view: [] };
+  v.on('lock', (d) => ev.lock.push(d));
+  v.on('view', (d) => ev.view.push(d));
+  await settle(1200);
+  const cv = host.querySelector('canvas'), rc = cv.getBoundingClientRect();
+  const lockBtn = () => [...host.querySelectorAll('.cdt button')].find((b) => (b.title || '').startsWith('Lock'));
+  const viewBtn = () => [...host.querySelectorAll('.cdt button')].find((b) => (b.title || '').startsWith('Standard'));
+  const drag = async (dx, dy, opts = {}) => {
+    const x0 = rc.left + rc.width * 0.5, y0 = rc.top + rc.height * 0.5;
+    cv.dispatchEvent(new PointerEvent('pointerdown', { clientX: x0, clientY: y0, bubbles: true, ...opts }));
+    for (let s = 1; s <= 4; s++) cv.dispatchEvent(new PointerEvent('pointermove', { clientX: x0 + dx * s / 4, clientY: y0 + dy * s / 4, bubbles: true, ...opts }));
+    cv.dispatchEvent(new PointerEvent('pointerup', { clientX: x0 + dx, clientY: y0 + dy, bubbles: true, ...opts }));
+    await settle(400);
+  };
+  const key = async (k) => { cv.focus(); cv.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true })); await settle(400); };
+  const cam = () => ({ ...v.camera });
+
+  out.plan = { camera: cam(), pressed: lockBtn().getAttribute('aria-pressed'), view: ev.view.at(-1) };
+  const before = cam();
+  await drag(80, 40);
+  out.dragLocked = { before, after: cam() };
+
+  // set({ view: { rect } }) frames a world rectangle; the next `view` event reads it back
+  v.set({ view: { rect: { u0: 500050, u1: 500150, v0: 8200050, v1: 8200150 } } });
+  await settle(500);
+  out.rectSet = ev.view.at(-1);
+
+  // L frees the view (and the projection goes back), a drag orbits; L again locks back
+  await key('l');
+  out.freed = { lock: ev.lock.at(-1), camera: cam(), pressed: lockBtn().getAttribute('aria-pressed'), rect: 'rect' in ev.view.at(-1) };
+  const fb = cam();
+  await drag(80, 0);
+  out.dragFree = { before: fb, after: cam() };
+  await key('L');
+  out.relocked = { lock: ev.lock.at(-1), camera: cam() };
+
+  // look('north') while locked moves the lock; a numeric look makes a direction lock
+  v.look('north');
+  await settle(500);
+  out.lookNorth = { lock: ev.lock.at(-1), camera: cam(), view: ev.view.at(-1) };
+  v.look({ azimuth: 45, plunge: 20 });
+  await settle(500);
+  out.lookNum = { lock: ev.lock.at(-1), camera: cam() };
+
+  // a section lock follows the section, and the axes follow the lock
+  v.set({ lock: 'section' });
+  v.cut('y', 8200100, 10);
+  await settle(500);
+  out.secY = { camera: cam(), view: ev.view.at(-1) };
+  v.cut({ normal: [1, 0, 0], position: 500150, thickness: 10 });
+  await settle(500);
+  out.secX = { camera: cam(), view: ev.view.at(-1) };
+  v.cut();
+
+  // twist: a locked plan turns about the vertical with ctrl-drag only when allowed
+  v.set({ lock: 'plan', twist: false });
+  await settle(400);
+  const t0 = cam();
+  await drag(90, 0, { ctrlKey: true });
+  out.noTwist = { before: t0, after: cam() };
+  v.set({ twist: true });
+  await settle(300);
+  const t1 = cam();
+  await drag(90, 0, { ctrlKey: true });
+  out.twist = { before: t1, after: cam(), view: ev.view.at(-1), lock: v.get('lock') };
+  v.set({ twist: false });
+
+  // lock_toggle: false — no unlock control, and L does nothing
+  v.set({ lock_toggle: false });
+  await settle(300);
+  const nLock = ev.lock.length;
+  await key('l');
+  out.fixed = { lockShown: lockBtn().style.display !== 'none', viewsShown: viewBtn().style.display !== 'none', lockEvents: ev.lock.length - nLock, lock: v.get('lock') };
+
+  // state() carries the lock to another view
+  const st = v.state();
+  const host2 = document.getElementById('b');
+  host2.innerHTML = '';
+  const v2 = C.view(host2, [model()], { height: 300 });
+  v2.set(st);
+  await settle(900);
+  out.restored = { lock: v2.get('lock'), toggle: v2.get('lock_toggle'), camera: { ...v2.camera } };
+  v2.destroy();
+
+  out.bad = [];
+  try { C.view(document.createElement('div'), [model()], { lock: 'plna' }); } catch (e) { out.bad.push(e.message); }
+  try { v.set({ lock: { azimuth: 3 } }); } catch (e) { out.bad.push(e.message); }
+  try { v.set({ view: { rect: { u0: 1 } } }); } catch (e) { out.bad.push(e.message); }
+  v.destroy();
+  return out;
+});
+
+const near = (a, b, t = 0.05) => Math.abs(a - b) <= t;
+const pv = L.plan.view;
+chk("lock: 'plan' looks straight down, orthographic, the lock button pressed", L.plan.camera.plunge === 90 && L.plan.camera.ortho === true && L.plan.pressed === 'true', JSON.stringify(L.plan.camera));
+chk("the 'view' event carries the world rectangle along E/N and the pixel box", pv && pv.lock === 'plan' && pv.axes.join() === 'E,N' && pv.rect.u0 < 500155 && pv.rect.u1 > 500155 && pv.rect.v0 < 8200105 && pv.rect.v1 > 8200105 && pv.px.w > 100 && near((pv.rect.u1 - pv.rect.u0) / (pv.rect.v1 - pv.rect.v0), pv.px.w / pv.px.h, 0.01), JSON.stringify(pv && { rect: pv.rect, px: pv.px }));
+const dl = L.dragLocked;
+chk('a drag in a locked view pans: the target moves, the direction does not', dl.after.plunge === 90 && dl.after.azimuth === dl.before.azimuth && (dl.after.target[0] !== dl.before.target[0] || dl.after.target[1] !== dl.before.target[1]), `${dl.before.target} → ${dl.after.target}`);
+const rs = L.rectSet && L.rectSet.rect;
+chk('set({view: {rect}}) frames that rectangle (centred, the whole of it, one side tight)', rs && near((rs.u0 + rs.u1) / 2, 500100, 0.5) && near((rs.v0 + rs.v1) / 2, 8200100, 0.5) && rs.u1 - rs.u0 >= 99.9 && rs.v1 - rs.v0 >= 99.9 && Math.min(rs.u1 - rs.u0, rs.v1 - rs.v0) < 100.5, JSON.stringify(rs));
+chk('L frees the view: projection restored, the rectangle gone, a drag orbits', L.freed.lock === 'free' && L.freed.camera.ortho === false && L.freed.pressed === 'false' && !L.freed.rect && (L.dragFree.after.azimuth !== L.dragFree.before.azimuth), JSON.stringify({ f: L.freed.camera, d: L.dragFree.after.azimuth }));
+chk('… and L again locks back to the same orientation', L.relocked.lock === 'plan' && L.relocked.camera.plunge === 90 && L.relocked.camera.ortho === true, JSON.stringify(L.relocked));
+chk("look('north') while locked moves the lock; axes E/RL", L.lookNorth.lock === 'north' && L.lookNorth.camera.plunge === 0 && near(L.lookNorth.camera.azimuth, 0) && L.lookNorth.view.axes.join() === 'E,RL', JSON.stringify(L.lookNorth.camera));
+chk('a numeric look while locked becomes a direction lock', L.lookNum.lock && L.lookNum.lock.azimuth === 45 && L.lookNum.lock.plunge === 20 && near(L.lookNum.camera.azimuth, 45) && near(L.lookNum.camera.plunge, 20), JSON.stringify(L.lookNum));
+chk("lock: 'section' looks along the section and follows it to a new plane", near(L.secY.camera.azimuth, 0) && L.secY.camera.plunge === 0 && L.secY.view.axes.join() === 'E,RL' && near(L.secX.camera.azimuth, 90) && L.secX.view.axes.join() === 'N,RL' && near(L.secX.camera.target[0], 500150, 0.01), JSON.stringify({ y: L.secY.camera, x: L.secX.camera }));
+chk('twist: off, ctrl-drag cannot turn a locked plan; on, it turns it about the vertical only', L.noTwist.after.azimuth === L.noTwist.before.azimuth && L.twist.after.azimuth !== L.twist.before.azimuth && L.twist.after.plunge === 90 && L.twist.lock === 'plan' && L.twist.view.axes.join() === 'u,v', JSON.stringify({ off: [L.noTwist.before.azimuth, L.noTwist.after.azimuth], on: [L.twist.before.azimuth, L.twist.after.azimuth] }));
+chk('lock_toggle: false hides the lock button and the views; L does nothing', !L.fixed.lockShown && !L.fixed.viewsShown && L.fixed.lockEvents === 0 && L.fixed.lock === 'plan', JSON.stringify(L.fixed));
+chk('state() carries the lock to another view', L.restored.lock === 'plan' && L.restored.toggle === false && L.restored.camera.plunge === 90 && L.restored.camera.ortho === true, JSON.stringify(L.restored));
+chk('a bad lock or rectangle says so', L.bad.length === 3 && /lock "plna"/.test(L.bad[0]) && /azimuth, plunge/.test(L.bad[1]) && /four numbers/.test(L.bad[2]), L.bad.join(' | '));
+
 chk('the view draws layers built from plain columns', r.inkFirst > 20000, `${r.inkFirst} lit px; ${r.layers.join(' · ')}`);
 chk("a click fires 'pick' with the row, the world position and the value", !!r.pick && r.pick.name === 'model' && r.pick.index >= 0 && Number.isFinite(r.pick.x) && r.pick.x > 500000 && Number.isFinite(r.pick.value) && ['ITA', 'HEM'].includes(r.pick.category), JSON.stringify(r.pick));
 chk('… and the selection reads the same row', r.pick && r.selection.row === r.pick.index && r.selection.name === 'model');
