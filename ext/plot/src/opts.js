@@ -55,10 +55,15 @@ export const _KNOWN = {
   add_geometry: [..._ARTIST, 'facecolor', 'edgecolor', 'linewidth', 'linestyle', 'marker', 's'],
   scalebar: ['units', 'length', 'loc', 'color', 'label'],
   north_arrow: ['loc', 'rotation', 'size', 'color'],
+  hexbin: ['label', 'alpha', 'zorder', 'C', 'gridsize', 'bins', 'xscale', 'yscale', 'extent', 'cmap', 'norm', 'vmin', 'vmax', 'linewidths', 'edgecolors', 'reduce_C_function', 'mincnt'],
+  hist2d: ['label', 'alpha', 'zorder', 'bins', 'range', 'density', 'weights', 'cmin', 'cmax', 'cmap', 'norm', 'vmin', 'vmax'],
+  stackplot: ['labels', 'colors', 'baseline', 'alpha', 'zorder', 'edgecolor', 'linewidth'],
 };
 
 // known, not done yet: the hint says what to do instead
 export const _UNSUPPORTED = {
+  hexbin: { marginals: 'not supported yet; draw hist() on twin axes' },
+  stackplot: { hatch: 'not supported yet' },
   plot: { dashes: "use linestyle ('--', '-.', ':')" },
   bar: { hatch: 'not supported yet', yerr: 'use errorbar() on the bar positions', xerr: 'use errorbar() on the bar positions' },
   barh: { hatch: 'not supported yet', xerr: 'use errorbar() on the bar positions' },

@@ -9,6 +9,9 @@
 
 
 import { _textW } from './style.js';
+import { _dateTicks, strftime, AutoMinorLocator } from './ticker.js';
+import { _niceTicks, _fmtStep } from './nice.js';
+export { _niceTicks, _fmtStep };
 
 // a category axis: labels in first-appearance order, each at the integer position 0, 1, 2 …
 export class _Categories {
@@ -39,37 +42,11 @@ export function _isCategorical(arr) {
   return false;
 }
 
-// at most `count` round ticks inside [lo, hi], as many as fit: the smallest step of 1, 2, 2.5
-// or 5 × a power of ten that gives no more than `count` (and at least two while the range
-// allows) — matplotlib's MaxNLocator idea
-export function _niceTicks(lo, hi, count) {
-  const span = hi - lo;
-  if (!(span > 0) || !Number.isFinite(span)) return [lo];
-  const n = (step) => Math.floor(hi / step + 1e-9) - Math.ceil(lo / step - 1e-9) + 1;
-  const e0 = Math.floor(Math.log10(span)) - 3;
-  let step = null;
-  for (let e = e0; e <= e0 + 5 && step == null; e++) {
-    for (const m of [1, 2, 2.5, 5]) {
-      const s = m * Math.pow(10, e);
-      if (n(s) <= Math.max(2, count)) { step = s; break; }
-    }
-  }
-  if (step == null) step = Math.pow(10, e0 + 6);
-  const a = Math.ceil(lo / step - 1e-9), b = Math.floor(hi / step + 1e-9);
-  const out = [];
-  for (let k = a; k <= b && out.length < 200; k++) out.push(+(k * step).toPrecision(12));
-  out.step = step;
-  return out;
-}
-
-// labels for ticks with this step: just the decimals the step needs; plain digits up to 1e9
-// (a northing reads 8200100, as matplotlib prints it), exponents past that or below 1e-4
-export function _fmtStep(values, step) {
-  const big = values.reduce((m, v) => Math.max(m, Math.abs(v)), 0);
-  if (big >= 1e9 || (big > 0 && big < 1e-4)) return values.map((v) => (v === 0 ? '0' : v.toExponential(Math.max(0, Math.min(3, Math.round(-Math.log10(step / big)))))));
-  let dec = 0;
-  while (dec < 10 && Math.abs(step * Math.pow(10, dec) - Math.round(step * Math.pow(10, dec))) > 1e-6 * Math.max(1, step * Math.pow(10, dec))) dec++;
-  return values.map((v) => { const s = v.toFixed(dec); return s === '-0' || /^-0\.0*$/.test(s) ? s.slice(1) : s; });
+// does this column hold Dates (a date axis)
+export function _isDateCol(arr) {
+  if (!arr || typeof arr === 'string' || ArrayBuffer.isView(arr)) return false;
+  for (let i = 0; i < arr.length; i++) { const v = arr[i]; if (v == null) continue; return v instanceof Date; }
+  return false;
 }
 
 // numbers as a scale formats them: a common precision for the set
@@ -93,9 +70,15 @@ export function _tickSpec(ax, axis, scale, len, ctx, font, fontPx) {
   let values, labels, rot = 0, fixedRot = false, thin = 1;
 
   if (custom && custom.rotation != null) { rot = custom.rotation === 'vertical' ? 90 : +custom.rotation || 0; fixedRot = true; }
+  // the axis's ticker (axis.js): a locator and formatter set on ax.xaxis / ax.yaxis, minor ticks
+  const tk = ax._ticker ? ax._ticker(axis) : null;
+  const date = (axis === 'x' ? ax._xdate : ax._ydate) && !scale.log;
+  const fmtCtx = (vals) => ({ step: vals.step || (vals.length > 1 ? Math.abs(vals[1] - vals[0]) : hi - lo), values: vals, range: hi - lo, date });
+  const formatted = (vals, F) => { const c = fmtCtx(vals); return vals.map((v, i) => F.format(v, i, c)); };
   if (custom && custom.values) {
     values = Array.from(custom.values, Number);
-    labels = custom.labels ? values.map((_, i) => (custom.labels[i] != null ? String(custom.labels[i]) : '')) : _fmtTicks(scale, values);
+    labels = custom.labels ? values.map((_, i) => (custom.labels[i] != null ? String(custom.labels[i]) : ''))
+      : tk && tk.majorF ? formatted(values, tk.majorF) : date ? _dateLabels(values) : _fmtTicks(scale, values);
   } else if (cats && cats.list.length) {
     values = cats.list.map((_, i) => i);
     labels = cats.list.slice();
@@ -103,9 +86,18 @@ export function _tickSpec(ax, axis, scale, len, ctx, font, fontPx) {
     const per = axis === 'x' ? 55 : 32;
     let count = Math.max(2, Math.min(12, Math.floor(len / per) + 1));
     for (;;) {
-      values = scale.log ? scale.ticks() : _niceTicks(lo, hi, count);
-      labels = scale.log ? _fmtTicks(scale, values) : _fmtStep(values, values.step || (hi - lo));
-      if (axis === 'y' || count <= 2 || scale.log) break;
+      if (tk && tk.majorL) {
+        values = tk.majorL.tick_values(lo, hi, { count, log: !!scale.log });
+        labels = date ? _dateLabels(values) : scale.log ? _fmtTicks(scale, values) : _fmtStep(values, values.step || (values.length > 1 ? Math.abs(values[1] - values[0]) : hi - lo));
+      } else if (date) {
+        ({ values, labels } = _dateTicks(lo, hi, count));
+      } else {
+        values = scale.log ? scale.ticks() : _niceTicks(lo, hi, count);
+        labels = scale.log ? _fmtTicks(scale, values) : _fmtStep(values, values.step || (hi - lo));
+      }
+      if (tk && tk.majorF) labels = formatted(values, tk.majorF);
+      // a locator says where the ticks go: no thinning
+      if (axis === 'y' || count <= 2 || scale.log || (tk && tk.majorL)) break;
       // x: shrink the count until neighbouring labels clear each other by 8 px
       const px = values.map((v) => scale.transform(v));
       let ok = true;
@@ -140,28 +132,62 @@ export function _tickSpec(ax, axis, scale, len, ctx, font, fontPx) {
   const extent = axis === 'x'
     ? (rot ? maxW * Math.abs(Math.sin(r)) + fontPx * Math.abs(Math.cos(r)) : fontPx)
     : maxW;
-  return { values, labels, rot, extent, maxW, widths };
+  // minor ticks: a minor locator, or minorticks_on() (AutoMinorLocator), between the majors;
+  // unlabelled unless a minor formatter says otherwise
+  let minor = null, minorLabels = null;
+  if (tk && (tk.minorL || tk.minorOn) && !(cats && cats.list.length)) {
+    const L = tk.minorL || new AutoMinorLocator();
+    const majors = new Set(values.map((v) => +v.toPrecision(10)));
+    minor = L.tick_values(lo, hi, { majors: values, log: !!scale.log }).filter((v) => inside(v) && !majors.has(+v.toPrecision(10)));
+    if (tk.minorF) minorLabels = formatted(minor, tk.minorF);
+  }
+  const params = ax._tickParams ? ax._tickParams[axis] || null : null;
+  return { values, labels, rot, extent, maxW, widths, minor, minorLabels, params };
+}
+
+// labels for date ticks a locator placed: the format their spacing reads in
+function _dateLabels(values) {
+  if (!values.length) return [];
+  const d = values.length > 1 ? Math.abs(values[1] - values[0]) : 864e5;
+  const fmt = d >= 360 * 864e5 ? '%Y' : d >= 28 * 864e5 ? '%Y-%m' : d >= 864e5 ? '%Y-%m-%d' : d >= 6e4 ? '%H:%M' : d >= 1e3 ? '%H:%M:%S' : '%H:%M:%S.%f';
+  return values.map((t) => strftime(t, fmt));
 }
 
 // draw one axis's ticks and labels. side: 'bottom' | 'top' | 'left' | 'right'
+// tick_params: { major: {length, direction, width, color}, minor: {…} } per axis; length in px
+// (4 major, 2 minor), direction 'out' (default) | 'in' | 'inout'
 export function _drawTicks(ctx, spec, scale, side, plot, color, tickColor, font) {
   ctx.font = font;
   ctx.fillStyle = color;
-  ctx.strokeStyle = tickColor;
-  ctx.lineWidth = 1;
   const { values, labels, rot } = spec;
+  const P = spec.params || {}, maj = P.major || {}, mnr = P.minor || {};
+  // one tick mark at p: out of the frame, into it, or across it
+  const mark = (p, len, dir) => {
+    const a = dir === 'in' ? 0 : len, b = dir === 'out' || !dir ? 0 : len;   // outward, inward
+    ctx.beginPath();
+    if (side === 'bottom') { ctx.moveTo(p, plot.y + plot.h - b); ctx.lineTo(p, plot.y + plot.h + a); }
+    else if (side === 'top') { ctx.moveTo(p, plot.y + b); ctx.lineTo(p, plot.y - a); }
+    else if (side === 'left') { ctx.moveTo(plot.x - a, p); ctx.lineTo(plot.x + b, p); }
+    else { ctx.moveTo(plot.x + plot.w + a, p); ctx.lineTo(plot.x + plot.w - b, p); }
+    ctx.stroke();
+  };
+  if (spec.minor && spec.minor.length) {
+    ctx.strokeStyle = mnr.color || tickColor;
+    ctx.lineWidth = mnr.width != null ? mnr.width : 0.8;
+    const len = mnr.length != null ? mnr.length : 2;
+    for (const v of spec.minor) { const p = scale.transform(v); if (p - p === 0) mark(p, len, mnr.direction); }
+  }
+  ctx.strokeStyle = maj.color || tickColor;
+  ctx.lineWidth = maj.width != null ? maj.width : 1;
+  const len = maj.length != null ? maj.length : 4;
+  const gap = 2 + (maj.direction === 'in' ? 0 : len);   // labels clear the mark
   for (let i = 0; i < values.length; i++) {
     const p = scale.transform(values[i]);
-    ctx.beginPath();
-    if (side === 'bottom') { ctx.moveTo(p, plot.y + plot.h); ctx.lineTo(p, plot.y + plot.h + 4); }
-    else if (side === 'top') { ctx.moveTo(p, plot.y); ctx.lineTo(p, plot.y - 4); }
-    else if (side === 'left') { ctx.moveTo(plot.x - 4, p); ctx.lineTo(plot.x, p); }
-    else { ctx.moveTo(plot.x + plot.w, p); ctx.lineTo(plot.x + plot.w + 4, p); }
-    ctx.stroke();
+    mark(p, len, maj.direction);
     const s = labels[i];
     if (!s) continue;
     if (side === 'bottom' || side === 'top') {
-      const y = side === 'bottom' ? plot.y + plot.h + 6 : plot.y - 6;
+      const y = side === 'bottom' ? plot.y + plot.h + gap : plot.y - gap;
       if (rot) {                                       // rotated: the label's END sits under the tick
         ctx.save();
         ctx.translate(p, y);
@@ -178,7 +204,7 @@ export function _drawTicks(ctx, spec, scale, side, plot, color, tickColor, font)
     } else {
       ctx.textAlign = side === 'left' ? 'right' : 'left';
       ctx.textBaseline = 'middle';
-      ctx.fillText(s, side === 'left' ? plot.x - 6 : plot.x + plot.w + 6, p);
+      ctx.fillText(s, side === 'left' ? plot.x - gap : plot.x + plot.w + gap, p);
     }
   }
 }

@@ -6,7 +6,7 @@
 // render (its vmin / vmax filled from the data where not given), and the colorbar draws that
 // same norm, so the bar can't disagree with the plot.
 
-import { _niceTicks, _fmtStep } from './ticks.js';
+import { _niceTicks, _fmtStep } from './nice.js';
 import { getCmap, _cmapLut, _colorBytes } from './color.js';
 import { _textW } from './style.js';
 

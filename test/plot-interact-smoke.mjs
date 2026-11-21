@@ -225,6 +225,16 @@ const overlayInk = (u) => page.evaluate((u) => { const c = T[u].overlay, d = c.g
   const lum = (p) => p[0] + p[1] + p[2];
   chk('the chosen points stay bright, the rest dim', lum(px2.kept) > lum(px2.dimmed) + 30, JSON.stringify(px2));
   await page.evaluate(() => T.ax.highlight(null));
+  // a highlight big enough for the raster path (it crashed there once: no dpr in its rect)
+  const big = await page.evaluate(async () => {
+    const [f, a] = P.subplots(1, 1, { figsize: [300, 200] });
+    const n = 60000, X = new Float64Array(n), Y = new Float64Array(n);
+    for (let i = 0; i < n; i++) { X[i] = (i * 7919) % 1000; Y[i] = (i * 104729) % 1000; }
+    a.scatter(X, Y, { s: 2 });
+    a.highlight((i, x) => x < 600);
+    try { const c = f.show(); return { ok: c.width > 0 }; } catch (e) { return { ok: false, err: e.message }; }
+  });
+  chk('a large highlight (the raster path) draws', big.ok, JSON.stringify(big));
 }
 
 // ── pinch (two pointers) ──

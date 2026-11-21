@@ -166,6 +166,12 @@ export function interact(fig, canvas, opts) {
     const cats = axis === 'x' ? ax._xcats : ax._ycats;
     if (cats && Number.isInteger(val) && cats.list[val] != null) return cats.list[val];
     const v = ax.view, s = axis === 'x' ? v.xScale : v.yScale;
+    // a date axis: the date, to what one pixel resolves (UTC, as its ticks)
+    if (axis === 'x' ? ax._xdate : ax._ydate) {
+      const per = Math.abs(s.domain[1] - s.domain[0]) / (axis === 'x' ? v.w : v.h);
+      const iso = new Date(val).toISOString();
+      return per >= 864e5 ? iso.slice(0, 10) : per >= 6e4 ? `${iso.slice(0, 10)} ${iso.slice(11, 16)}` : per >= 1e3 ? `${iso.slice(0, 10)} ${iso.slice(11, 19)}` : iso.slice(11, 23);
+    }
     let str;
     if (s.log) str = Number(val).toPrecision(4);
     else {

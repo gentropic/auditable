@@ -246,7 +246,7 @@ test('bar_label formats: %-style, {}-style, functions', async () => {
   const { _fmtValue } = await import('../ext/plot/src/bars.js');
   assert.equal(_fmtValue(null, 2.5), '2.5');
   assert.equal(_fmtValue('%.2f', 2.5), '2.50');
-  assert.equal(_fmtValue('%d t', 2.6), '3 t');
+  assert.equal(_fmtValue('%d t', 2.6), '2 t');                  // Python's %d truncates: '%d' % 2.6 is '2'
   assert.equal(_fmtValue('{:,.0f}', 1234567.8), '1,234,568');
   assert.equal(_fmtValue('{:.1%}', 0.256), '25.6%');
   assert.equal(_fmtValue((v) => `~${v}`, 3), '~3');
@@ -452,6 +452,11 @@ const KINDS = {
   pcolormesh: (ax, v) => ax.pcolormesh([Array.from(v), Array.from(v)]),
   contour: (ax, v) => ax.contour([Array.from(v), Array.from(v).reverse(), Array.from(v)]),
   contourf: (ax, v) => ax.contourf([Array.from(v), Array.from(v).reverse(), Array.from(v)]),
+  // tier 2 (M4)
+  violinplot: (ax, v) => ax.violinplot([v]),
+  hexbin: (ax, v) => ax.hexbin(Array.from(v, (_, i) => i), v, { gridsize: 6 }),
+  hist2d: (ax, v) => ax.hist2d(Array.from(v, (_, i) => i), v, { bins: 4 }),
+  stackplot: (ax, v) => ax.stackplot(Array.from(v, (_, i) => i), v, v),
 };
 test('the edge-case matrix: every chart kind × empty / one / constant / NaN / ±Inf / negative-on-log / 1e9 / 1e-9 / typed arrays', () => {
   const problems = [];
@@ -490,6 +495,10 @@ const GOLDEN_FIGS = {
   contours: (ax) => { const Z = Array.from({ length: 8 }, (_, j) => Array.from({ length: 8 }, (_, i) => Math.hypot(i - 3.5, j - 3.5))); const cf = ax.contourf(Z, 5); ax.contour(Z, 5, { colors: 'k' }); ax.colorbar(cf); },
   marks: (ax) => { ax.fill_between([0, 1, 2], [1, 2, 1], 0, { alpha: 0.4 }); ax.errorbar([0, 1, 2], [1, 2, 1], { yerr: 0.2, capsize: 3 }); ax.axhspan(0.5, 0.8); ax.annotate('p', [1, 2], { xytext: [1.5, 2.5], arrowprops: {} }); },
   axes: (ax) => { ax.plot([1, 10, 100], [5, 50, 500]); ax.set_xscale('log'); ax.invert_yaxis(); ax.set_xticks([1, 10, 100], ['one', 'ten', 'hundred'], { rotation: 30 }); ax.grid(true); },
+  // tier 2 (M4)
+  tier2: (ax) => { ax.violinplot([[1, 2, 2, 3, 3, 3, 4, 5], [2, 4, 4, 5, 6]], { showmedians: true }); ax.stackplot([0, 1, 2], [1, 2, 1], [1, 1, 2], { alpha: 0.4 }); },
+  dists: (ax) => { const x = Array.from({ length: 60 }, (_, i) => Math.sin(i * 1.7) * 3), y = x.map((v, i) => v * 0.5 + Math.cos(i * 2.3)); ax.hexbin(x, y, { gridsize: 6 }); },
+  ticks: (ax) => { ax.plot([new Date(Date.UTC(2026, 0, 1)), new Date(Date.UTC(2026, 6, 1))], [0, 0.5]); ax.yaxis.set_major_formatter('{x:.0%}'); ax.minorticks_on(); ax.grid(true, { which: 'both' }); },
 };
 test('golden draw lists: one per chart type, the same every run', () => {
   const got = {};

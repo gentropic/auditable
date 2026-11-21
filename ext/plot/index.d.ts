@@ -22,6 +22,54 @@ export interface Bar { x: number; y: number; width: number; height: number; get_
 export interface BoxStats { mean: number; med: number; q1: number; q3: number; iqr: number; whislo: number; whishi: number; cilo: number; cihi: number; fliers: number[]; label: string | null; n: number }
 
 export interface ColorbarOpts { label?: string; ticks?: Column; format?: string | ((v: number) => string); extend?: 'neither' | 'min' | 'max' | 'both' }
+export interface ViolinParts {
+  bodies: { set_facecolor(c: Color): unknown; set_edgecolor(c: Color): unknown; set_alpha(a: number): unknown; set_linewidth(w: number): unknown; get_facecolor(): string }[];
+  cmins?: LineCollection; cmaxes?: LineCollection; cbars?: LineCollection; cmeans?: LineCollection; cmedians?: LineCollection; cquantiles?: LineCollection;
+  stats: { mean: number; median: number; min: number; max: number; coords: number[]; vals: number[] }[];
+}
+export interface LineCollection { set_color(c: Color): unknown; set_linewidth(w: number): unknown; set_linestyle(s: string): unknown }
+/** a formatter: format(value, pos, ctx) → the tick label */
+export interface FormatterLike { format(v: number, pos?: number, ctx?: { step: number; values: number[]; range: number; date: boolean }): string }
+export interface LocatorLike { tick_values(vmin: number, vmax: number, ctx?: { count?: number; log?: boolean; majors?: number[] }): number[] }
+/** ax.xaxis / ax.yaxis */
+export interface Axis {
+  axes: Axes; axis_name: 'x' | 'y';
+  set_major_formatter(f: FormatterLike | string | ((x: number, pos: number) => string) | null): this;
+  set_minor_formatter(f: FormatterLike | string | ((x: number, pos: number) => string) | null): this;
+  set_major_locator(l: LocatorLike | number[] | null): this;
+  set_minor_locator(l: LocatorLike | number[] | null): this;
+  get_major_formatter(): FormatterLike | null; get_minor_formatter(): FormatterLike | null;
+  get_major_locator(): LocatorLike | null; get_minor_locator(): LocatorLike | null;
+  axis_date(tz?: string): this;
+  set_label_text(s: string, opts?: object): Axes; get_label_text(): string;
+  set_ticks(ticks: Column, labels?: Labels, opts?: { rotation?: number }): Axes;
+  get_ticklocs(): number[]; get_ticklabels(): string[];
+}
+export const ticker: {
+  Formatter: new () => FormatterLike; ScalarFormatter: new () => FormatterLike; NullFormatter: new () => FormatterLike;
+  FuncFormatter: new (func: (x: number, pos: number) => string) => FormatterLike;
+  StrMethodFormatter: new (fmt: string) => FormatterLike; FormatStrFormatter: new (fmt: string) => FormatterLike;
+  FixedFormatter: new (labels: Labels) => FormatterLike;
+  PercentFormatter: new (xmax?: number, decimals?: number | null, symbol?: string) => FormatterLike;
+  EngFormatter: new (unit?: string, places?: number | null, sep?: string) => FormatterLike;
+  Locator: new () => LocatorLike; NullLocator: new () => LocatorLike; FixedLocator: new (locs: Column) => LocatorLike;
+  MultipleLocator: new (base?: number, offset?: number) => LocatorLike;
+  MaxNLocator: new (nbins?: number | 'auto', opts?: { integer?: boolean }) => LocatorLike;
+  AutoMinorLocator: new (n?: number | null) => LocatorLike; LogLocator: new (base?: number) => LocatorLike;
+};
+/** dates are ms since 1970 UTC (Date.getTime()); ticks and labels in UTC */
+export const dates: {
+  DateFormatter: new (fmt: string, tz?: string) => FormatterLike;
+  AutoDateLocator: new (opts?: { maxticks?: number }) => LocatorLike;
+  YearLocator: new (base?: number) => LocatorLike;
+  MonthLocator: new (bymonth?: unknown, bymonthday?: number, interval?: number) => LocatorLike;
+  DayLocator: new (bymonthday?: unknown, interval?: number) => LocatorLike;
+  HourLocator: new (byhour?: unknown, interval?: number) => LocatorLike;
+  MinuteLocator: new (byminute?: unknown, interval?: number) => LocatorLike;
+  date2num(d: Date | string | number | (Date | string | number)[]): number | number[];
+  num2date(n: number | number[]): Date | Date[];
+  strftime(ms: number, fmt: string): string;
+};
 export type Corner = 'lower right' | 'lower left' | 'upper right' | 'upper left';
 export interface ViewRect { u0: number; u1: number; v0: number; v1: number }
 export interface PatchOpts extends ArtistOpts { facecolor?: Color | 'none'; edgecolor?: Color | 'none'; linewidth?: number; linestyle?: string; fill?: boolean; closed?: boolean }
@@ -101,6 +149,18 @@ export class Axes {
   scalebar(opts?: { units?: string; length?: number; loc?: Corner; color?: Color; label?: string }): this;
   north_arrow(opts?: { loc?: Corner; rotation?: number; size?: number; color?: Color }): this;
   // axes as chrome over another renderer
+  // tier 2 (M4)
+  violinplot(dataset: Column | Column[] | Record<string, Column>, opts?: { positions?: Column; vert?: boolean; widths?: number | Column; showmeans?: boolean; showextrema?: boolean; showmedians?: boolean; quantiles?: Column | Column[]; points?: number; bw_method?: 'scott' | 'silverman' | number | ((v: number[]) => number); side?: 'both' | 'low' | 'high' }): Result<[], ViolinParts>;
+  hexbin(x: Column, y: Column, opts?: MapOpts & ArtistOpts & { C?: Column; gridsize?: number | [number, number]; extent?: [number, number, number, number]; mincnt?: number; reduce_C_function?: (v: number[]) => number; bins?: 'log' | null; edgecolors?: Color | 'face' | 'none'; linewidths?: number }): Result<[], { get_array(): Float64Array; get_offsets(): [number, number][] }>;
+  hist2d(x: Column | Labels, y: Column | Labels, opts?: MapOpts & ArtistOpts & { bins?: number | Column | [number | Column, number | Column]; range?: [[number, number], [number, number]]; density?: boolean; weights?: Column; cmin?: number; cmax?: number }): Result<[Float64Array[], Float64Array, Float64Array, Result]>;
+  stackplot(x: Column | Labels, ...ys: (Column | Column[] | (ArtistOpts & { labels?: string[]; colors?: Color[]; baseline?: 'zero' | 'sym' | 'wiggle' | 'weighted_wiggle' }))[]): Result[];
+  readonly xaxis: Axis;
+  readonly yaxis: Axis;
+  minorticks_on(): this;
+  minorticks_off(): this;
+  xaxis_date(tz?: string): this;
+  yaxis_date(tz?: string): this;
+  tick_params(opts: { axis?: 'x' | 'y' | 'both'; which?: 'major' | 'minor' | 'both'; length?: number; width?: number; direction?: 'out' | 'in' | 'inout'; color?: Color; labelrotation?: number }): this;
   set_facecolor(c: Color | 'none'): this;
   get_facecolor(): string;
   /** the limits another renderer's camera shows; also condenser's view rect */
@@ -229,6 +289,13 @@ export function close(fig?: Figure | 'all'): void;
 export function gca(): Axes;
 export function gcf(): Figure;
 export function fill(...args: (Column | string | PatchOpts)[]): (Patch & { _trace: object })[];
+export function violinplot(dataset: Column | Column[] | Record<string, Column>, opts?: object): Result<[], ViolinParts>;
+export function hexbin(x: Column, y: Column, opts?: object): Result;
+export function hist2d(x: Column, y: Column, opts?: object): Result<[Float64Array[], Float64Array, Float64Array, Result]>;
+export function stackplot(x: Column, ...ys: (Column | Column[] | object)[]): Result[];
+export function minorticks_on(): void;
+export function minorticks_off(): void;
+export function tick_params(opts: object): void;
 export function add_geometry(geojson: object, opts?: PatchOpts): Result;
 // the rest of pyplot's stateful calls act on the current axes as ax.<name> does
 export function xlabel(text: string, opts?: object): void;

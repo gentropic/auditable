@@ -56,7 +56,7 @@ function _entries(ax) {
       alpha: t.opts.alpha,
     };
   };
-  const drawn = ax._traces.filter((t) => t.opts && t.type !== 'text' && t.type !== 'bar_label' && t.type !== 'annotate');
+  const drawn = ax._traces.filter((t) => t.opts && !t.hidden && t.type !== 'text' && t.type !== 'bar_label' && t.type !== 'annotate');
   if (lo.handles) {
     return lo.handles.map((h, i) => {
       const t = h && (h._trace || (h[0] && h[0]._trace)) ? (h._trace || h[0]._trace) : drawn.find((d) => d === h);

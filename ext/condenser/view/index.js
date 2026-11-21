@@ -13881,10 +13881,15 @@ const _KNOWN = {
   add_geometry: [..._ARTIST, 'facecolor', 'edgecolor', 'linewidth', 'linestyle', 'marker', 's'],
   scalebar: ['units', 'length', 'loc', 'color', 'label'],
   north_arrow: ['loc', 'rotation', 'size', 'color'],
+  hexbin: ['label', 'alpha', 'zorder', 'C', 'gridsize', 'bins', 'xscale', 'yscale', 'extent', 'cmap', 'norm', 'vmin', 'vmax', 'linewidths', 'edgecolors', 'reduce_C_function', 'mincnt'],
+  hist2d: ['label', 'alpha', 'zorder', 'bins', 'range', 'density', 'weights', 'cmin', 'cmax', 'cmap', 'norm', 'vmin', 'vmax'],
+  stackplot: ['labels', 'colors', 'baseline', 'alpha', 'zorder', 'edgecolor', 'linewidth'],
 };
 
 // known, not done yet: the hint says what to do instead
 const _UNSUPPORTED = {
+  hexbin: { marginals: 'not supported yet; draw hist() on twin axes' },
+  stackplot: { hatch: 'not supported yet' },
   plot: { dashes: "use linestyle ('--', '-.', ':')" },
   bar: { hatch: 'not supported yet', yerr: 'use errorbar() on the bar positions', xerr: 'use errorbar() on the bar positions' },
   barh: { hatch: 'not supported yet', xerr: 'use errorbar() on the bar positions' },
@@ -14291,6 +14296,43 @@ function renderColorbar(ctx, x, y, w, h, cmap, vmin, vmax, opts) {
   }
 }
 
+// ── ../../plot/src/nice.js ──
+
+// Round tick values and their labels — the leaf both ticks.js and ticker.js stand on (no imports).
+
+// at most `count` round ticks inside [lo, hi], as many as fit: the smallest step of 1, 2, 2.5
+// or 5 × a power of ten that gives no more than `count` (and at least two while the range
+// allows) — matplotlib's MaxNLocator idea
+function _niceTicks(lo, hi, count) {
+  const span = hi - lo;
+  if (!(span > 0) || !Number.isFinite(span)) return [lo];
+  const n = (step) => Math.floor(hi / step + 1e-9) - Math.ceil(lo / step - 1e-9) + 1;
+  const e0 = Math.floor(Math.log10(span)) - 3;
+  let step = null;
+  for (let e = e0; e <= e0 + 5 && step == null; e++) {
+    for (const m of [1, 2, 2.5, 5]) {
+      const s = m * Math.pow(10, e);
+      if (n(s) <= Math.max(2, count)) { step = s; break; }
+    }
+  }
+  if (step == null) step = Math.pow(10, e0 + 6);
+  const a = Math.ceil(lo / step - 1e-9), b = Math.floor(hi / step + 1e-9);
+  const out = [];
+  for (let k = a; k <= b && out.length < 200; k++) out.push(+(k * step).toPrecision(12));
+  out.step = step;
+  return out;
+}
+
+// labels for ticks with this step: just the decimals the step needs; plain digits up to 1e9
+// (a northing reads 8200100, as matplotlib prints it), exponents past that or below 1e-4
+function _fmtStep(values, step) {
+  const big = values.reduce((m, v) => Math.max(m, Math.abs(v)), 0);
+  if (big >= 1e9 || (big > 0 && big < 1e-4)) return values.map((v) => (v === 0 ? '0' : v.toExponential(Math.max(0, Math.min(3, Math.round(-Math.log10(step / big)))))));
+  let dec = 0;
+  while (dec < 10 && Math.abs(step * Math.pow(10, dec) - Math.round(step * Math.pow(10, dec))) > 1e-6 * Math.max(1, step * Math.pow(10, dec))) dec++;
+  return values.map((v) => { const s = v.toFixed(dec); return s === '-0' || /^-0\.0*$/.test(s) ? s.slice(1) : s; });
+}
+
 // ── ../../theme/src/theme.js ──
 
 // @gcu/theme — one theme vocabulary for GCU figures. @gcu/condenser's view and @gcu/plot
@@ -14484,192 +14526,6 @@ const _textW = (font, s) => {
   const m = /(\d+(?:\.\d+)?)px/.exec(font || '');
   return String(s).length * 0.6 * (m ? +m[1] : 10);
 };
-
-// ── ../../plot/src/ticks.js ──
-
-// Ticks and their labels, sized to the axis's PIXEL length and measured, so labels never overlap and margins can be measured from them.
-//
-// An axis's ticks come from, in order:
-//   1. set_xticks(values, labels?, {rotation}) — exactly those (a label list may be shorter);
-//   2. a category axis (strings given as x or y) — one tick per category, labelled;
-//   3. the scale — at most one tick per 55 px on x, per 32 px on y, as many round ones as fit.
-// Labels that would collide are fixed: numeric ticks get fewer; categories rotate 45°, and
-// if they still collide only every k-th is labelled (the ticks stay).
-
-
-
-// a category axis: labels in first-appearance order, each at the integer position 0, 1, 2 …
-class _Categories {
-  constructor() { this.list = []; this.index = new Map(); }
-  // an array of labels (strings or numbers-as-labels) → their positions
-  positions(arr) {
-    const out = new Float64Array(arr.length);
-    for (let i = 0; i < arr.length; i++) {
-      const v = arr[i];
-      if (v == null || (typeof v === 'number' && v !== v)) { out[i] = NaN; continue; }
-      const key = String(v);
-      let k = this.index.get(key);
-      if (k === undefined) { k = this.list.length; this.list.push(key); this.index.set(key, k); }
-      out[i] = k;
-    }
-    return out;
-  }
-}
-
-// does this column hold labels rather than numbers (matplotlib: strings make a category axis)
-function _isCategorical(arr) {
-  if (!arr || typeof arr === 'string' || ArrayBuffer.isView(arr)) return false;
-  for (let i = 0; i < arr.length; i++) {
-    const v = arr[i];
-    if (v == null) continue;
-    return typeof v === 'string';
-  }
-  return false;
-}
-
-// at most `count` round ticks inside [lo, hi], as many as fit: the smallest step of 1, 2, 2.5
-// or 5 × a power of ten that gives no more than `count` (and at least two while the range
-// allows) — matplotlib's MaxNLocator idea
-function _niceTicks(lo, hi, count) {
-  const span = hi - lo;
-  if (!(span > 0) || !Number.isFinite(span)) return [lo];
-  const n = (step) => Math.floor(hi / step + 1e-9) - Math.ceil(lo / step - 1e-9) + 1;
-  const e0 = Math.floor(Math.log10(span)) - 3;
-  let step = null;
-  for (let e = e0; e <= e0 + 5 && step == null; e++) {
-    for (const m of [1, 2, 2.5, 5]) {
-      const s = m * Math.pow(10, e);
-      if (n(s) <= Math.max(2, count)) { step = s; break; }
-    }
-  }
-  if (step == null) step = Math.pow(10, e0 + 6);
-  const a = Math.ceil(lo / step - 1e-9), b = Math.floor(hi / step + 1e-9);
-  const out = [];
-  for (let k = a; k <= b && out.length < 200; k++) out.push(+(k * step).toPrecision(12));
-  out.step = step;
-  return out;
-}
-
-// labels for ticks with this step: just the decimals the step needs; plain digits up to 1e9
-// (a northing reads 8200100, as matplotlib prints it), exponents past that or below 1e-4
-function _fmtStep(values, step) {
-  const big = values.reduce((m, v) => Math.max(m, Math.abs(v)), 0);
-  if (big >= 1e9 || (big > 0 && big < 1e-4)) return values.map((v) => (v === 0 ? '0' : v.toExponential(Math.max(0, Math.min(3, Math.round(-Math.log10(step / big)))))));
-  let dec = 0;
-  while (dec < 10 && Math.abs(step * Math.pow(10, dec) - Math.round(step * Math.pow(10, dec))) > 1e-6 * Math.max(1, step * Math.pow(10, dec))) dec++;
-  return values.map((v) => { const s = v.toFixed(dec); return s === '-0' || /^-0\.0*$/.test(s) ? s.slice(1) : s; });
-}
-
-// numbers as a scale formats them: a common precision for the set
-function _fmtTicks(scale, values) {
-  if (!scale.log && values.length > 1) return _fmtStep(values, Math.abs(values[1] - values[0]));
-  const f = scale.tickFormat();
-  return values.map((v) => f(v));
-}
-
-// the ticks of one axis: { values, labels, rot (degrees), extent (px the labels take
-// perpendicular to the axis), along (the widest label along the axis) }
-// `ax`: the Axes; `axis`: 'x' | 'y'; `scale`; `len`: the axis length in px; `ctx` to measure
-function _tickSpec(ax, axis, scale, len, ctx, font, fontPx) {
-  const custom = axis === 'x' ? ax._xticks : ax._yticks;
-  const cats = axis === 'x' ? ax._xcats : ax._ycats;
-  ctx.font = font;
-  const W = (s) => _textW(font, s);
-  const [d0, d1] = scale.domain;
-  const lo = Math.min(d0, d1), hi = Math.max(d0, d1);
-  const inside = (v) => v >= lo - Math.abs(hi - lo) * 1e-9 && v <= hi + Math.abs(hi - lo) * 1e-9;
-  let values, labels, rot = 0, fixedRot = false, thin = 1;
-
-  if (custom && custom.rotation != null) { rot = custom.rotation === 'vertical' ? 90 : +custom.rotation || 0; fixedRot = true; }
-  if (custom && custom.values) {
-    values = Array.from(custom.values, Number);
-    labels = custom.labels ? values.map((_, i) => (custom.labels[i] != null ? String(custom.labels[i]) : '')) : _fmtTicks(scale, values);
-  } else if (cats && cats.list.length) {
-    values = cats.list.map((_, i) => i);
-    labels = cats.list.slice();
-  } else {
-    const per = axis === 'x' ? 55 : 32;
-    let count = Math.max(2, Math.min(12, Math.floor(len / per) + 1));
-    for (;;) {
-      values = scale.log ? scale.ticks() : _niceTicks(lo, hi, count);
-      labels = scale.log ? _fmtTicks(scale, values) : _fmtStep(values, values.step || (hi - lo));
-      if (axis === 'y' || count <= 2 || scale.log) break;
-      // x: shrink the count until neighbouring labels clear each other by 8 px
-      const px = values.map((v) => scale.transform(v));
-      let ok = true;
-      for (let i = 1; i < values.length; i++) {
-        if (Math.abs(px[i] - px[i - 1]) < (W(labels[i]) + W(labels[i - 1])) / 2 + 8) { ok = false; break; }
-      }
-      if (ok) break;
-      count--;
-    }
-  }
-  const keep = values.map((v) => v - v === 0 && inside(v));
-  values = values.filter((_, i) => keep[i]);
-  labels = labels.filter((_, i) => keep[i]);
-  const widths = labels.map(W);
-  const maxW = widths.length ? Math.max(...widths) : 0;
-
-  if (axis === 'x' && !fixedRot && values.length > 1) {
-    // labels that collide flat: rotate 45° (only for labels, e.g. categories — numbers were
-    // thinned above); if they still collide, label every k-th
-    const px = values.map((v) => scale.transform(v));
-    let minGap = Infinity;
-    for (let i = 1; i < px.length; i++) minGap = Math.min(minGap, Math.abs(px[i] - px[i - 1]));
-    if (minGap < maxW + 6) {
-      rot = 45;
-      const need = fontPx * 1.15;                      // rotated 45°, neighbours clear by their height / sin
-      if (minGap * Math.SQRT1_2 < need) thin = Math.ceil(need / (minGap * Math.SQRT1_2));
-    }
-  }
-  if (thin > 1) labels = labels.map((l, i) => (i % thin === 0 ? l : ''));
-
-  const r = (rot * Math.PI) / 180;
-  const extent = axis === 'x'
-    ? (rot ? maxW * Math.abs(Math.sin(r)) + fontPx * Math.abs(Math.cos(r)) : fontPx)
-    : maxW;
-  return { values, labels, rot, extent, maxW, widths };
-}
-
-// draw one axis's ticks and labels. side: 'bottom' | 'top' | 'left' | 'right'
-function _drawTicks(ctx, spec, scale, side, plot, color, tickColor, font) {
-  ctx.font = font;
-  ctx.fillStyle = color;
-  ctx.strokeStyle = tickColor;
-  ctx.lineWidth = 1;
-  const { values, labels, rot } = spec;
-  for (let i = 0; i < values.length; i++) {
-    const p = scale.transform(values[i]);
-    ctx.beginPath();
-    if (side === 'bottom') { ctx.moveTo(p, plot.y + plot.h); ctx.lineTo(p, plot.y + plot.h + 4); }
-    else if (side === 'top') { ctx.moveTo(p, plot.y); ctx.lineTo(p, plot.y - 4); }
-    else if (side === 'left') { ctx.moveTo(plot.x - 4, p); ctx.lineTo(plot.x, p); }
-    else { ctx.moveTo(plot.x + plot.w, p); ctx.lineTo(plot.x + plot.w + 4, p); }
-    ctx.stroke();
-    const s = labels[i];
-    if (!s) continue;
-    if (side === 'bottom' || side === 'top') {
-      const y = side === 'bottom' ? plot.y + plot.h + 6 : plot.y - 6;
-      if (rot) {                                       // rotated: the label's END sits under the tick
-        ctx.save();
-        ctx.translate(p, y);
-        ctx.rotate((side === 'bottom' ? -1 : 1) * rot * Math.PI / 180);
-        ctx.textAlign = 'right';
-        ctx.textBaseline = side === 'bottom' ? 'top' : 'bottom';
-        ctx.fillText(s, 0, 0);
-        ctx.restore();
-      } else {
-        ctx.textAlign = 'center';
-        ctx.textBaseline = side === 'bottom' ? 'top' : 'bottom';
-        ctx.fillText(s, p, y);
-      }
-    } else {
-      ctx.textAlign = side === 'left' ? 'right' : 'left';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(s, side === 'left' ? plot.x - 6 : plot.x + plot.w + 6, p);
-    }
-  }
-}
 
 // ── ../../plot/src/norm.js ──
 
@@ -14955,6 +14811,672 @@ function dashArray(linestyle) {
 // no line at all: matplotlib's 'None' / 'none' / '' / ' '
 function _noLine(linestyle) {
   return linestyle === 'None' || linestyle === 'none' || linestyle === '' || linestyle === ' ';
+}
+
+// ── ../../plot/src/pyfmt.js ──
+
+// Python's number formatting, the parts a matplotlib user writes: str.format templates
+// ('{x:,.0f}', '{:.1%}', '{x} m', '{pos}') and %-formatting ('%.2f', '%d', '%5.1e'). Tick
+// formatters (StrMethodFormatter, FormatStrFormatter, a plain string to set_major_formatter)
+// and bar_label read them. Deterministic: no locale, the same text in every host.
+//
+// The format spec: [[fill]align][sign][#][0][width][grouping][.precision][type]
+//   align < > ^ =  ·  sign + - space  ·  grouping , or _  ·  type d i n f F e E g G % s x X o b c
+//   no type: a float prints as Python's repr would (1.0, 2.5, 1e-05)
+
+// Python's repr of a float, near enough: integers keep '.0'; exponents have two digits
+function _pyRepr(v) {
+  if (typeof v !== 'number') return String(v);
+  if (v !== v) return 'nan';
+  if (v === Infinity) return 'inf';
+  if (v === -Infinity) return '-inf';
+  if (Number.isInteger(v) && Math.abs(v) < 1e16) return v.toFixed(1);
+  const a = Math.abs(v);
+  if (a >= 1e16 || a < 1e-4) return _expo(v.toExponential().replace(/\.?0+e/, 'e'));
+  return String(v);
+}
+// toFixed as Python rounds: an EXACT binary tie goes to the even digit ('{:.0f}' of 1234.5 is
+// '1234'); everything else is already the nearest (2.675 is 2.67499… in binary, in both)
+// The tie is tested on the double's EXACT value (mantissa × 2^e, in BigInt): a × 10^p
+// computed in floating point can land on .5 when the true value doesn't (2.675 × 100).
+const _dv = new DataView(new ArrayBuffer(8));
+function _fixed(a, p) {
+  if (!(a >= 0) || a === Infinity || p > 20) return a.toFixed(Math.min(p, 100));
+  // past 1e21 toFixed writes an exponent; Python writes the digits (a double that big is an integer)
+  if (a >= 1e21) return BigInt(a).toString() + (p ? '.' + '0'.repeat(p) : '');
+  _dv.setFloat64(0, a);
+  const hi = _dv.getUint32(0), lo = _dv.getUint32(4);
+  const be = (hi >>> 20) & 0x7ff;
+  if (be === 0) return a.toFixed(p);                       // zero and subnormals: no ties there
+  const mant = (BigInt(hi & 0xfffff) << 32n | BigInt(lo)) | (1n << 52n);
+  const shift = be - 1075 + 1 + p;                         // 2 × a × 10^p = mant × 5^p × 2^shift
+  let n = mant * 5n ** BigInt(p);
+  if (shift >= 0) n <<= BigInt(shift);
+  else { const d = 1n << BigInt(-shift); if (n % d !== 0n) return a.toFixed(p); n /= d; }
+  if (n % 2n === 0n) return a.toFixed(p);                  // an integer number of half-units, even: no tie
+  const q = (n - 1n) / 2n, m = q % 2n === 0n ? q : q + 1n; // the tie: to the even neighbour
+  const s = m.toString().padStart(p + 1, '0');
+  return p ? `${s.slice(0, -p)}.${s.slice(-p)}` : s;
+}
+// JS writes e+6; Python e+06
+const _expo = (s) => s.replace(/e([+-])(\d)$/, 'e$10$2');
+
+function _group(intPart, sep) {
+  return intPart.replace(/\B(?=(\d{3})+(?!\d))/g, sep);
+}
+
+// one value through one spec (the part after ':' in '{x:...}')
+function _formatSpec(v, spec) {
+  const m = /^(?:(.)?([<>=^]))?([+\- ])?(#)?(0)?(\d+)?([,_])?(?:\.(\d+))?([bcdeEfFgGnosxX%])?$/.exec(spec || '');
+  if (!m) throw new Error(`plot: '${spec}' is not a format spec plot knows (the Python subset: [[fill]align][sign][#][0][width][,][.precision][type])`);
+  let [, fill, align, sign, alt, zero, width, grouping, prec, type] = m;
+  prec = prec == null ? null : +prec;
+  width = width == null ? 0 : +width;
+  if (zero && !align) { fill = '0'; align = '='; }
+  if (typeof v !== 'number') {
+    let s = String(v);
+    if (prec != null) s = s.slice(0, prec);
+    return _pad(s, '', width, fill || ' ', align || '<');
+  }
+  const neg = v < 0 || Object.is(v, -0);
+  const a = Math.abs(v);
+  let body;
+  if (a !== a) body = 'nan';
+  else if (a === Infinity) body = 'inf';
+  else switch (type) {
+    case 'd': case 'i': case 'n': body = String(Math.round(a)); break;
+    case 'f': case 'F': body = _fixed(a, prec ?? 6); break;
+    case 'e': case 'E': body = _expo(a.toExponential(prec ?? 6)); break;
+    case '%': body = _fixed(a * 100, prec ?? 6) + '%'; break;
+    case 'g': case 'G': body = _gfmt(a, prec ?? 6, !!alt); break;
+    case 'x': case 'X': body = Math.round(a).toString(16); break;
+    case 'o': body = Math.round(a).toString(8); break;
+    case 'b': body = Math.round(a).toString(2); break;
+    case 'c': body = String.fromCharCode(Math.round(a)); break;
+    case 's': body = _pyRepr(a); break;
+    default: body = prec != null ? _gfmt(a, prec, false, true) : _pyRepr(a);
+  }
+  if (type === 'E' || type === 'G' || type === 'F' || type === 'X') body = body.toUpperCase();
+  if (grouping && /^\d/.test(body)) {
+    const i = body.search(/[.e%]/);
+    const ip = i < 0 ? body : body.slice(0, i), rest = i < 0 ? '' : body.slice(i);
+    body = _group(ip, grouping) + rest;
+  }
+  const sgn = neg && body !== 'nan' ? '-' : sign === '+' ? '+' : sign === ' ' ? ' ' : '';
+  return _pad(body, sgn, width, fill || ' ', align || '>');
+}
+
+// Python's 'g': p significant digits, fixed or exponent by the exponent, zeros stripped;
+// noType: the empty type with a precision (like g, but keeps at least one decimal)
+function _gfmt(a, p, alt, noType) {
+  if (p === 0) p = 1;
+  if (a === 0) return alt ? (0).toFixed(p - 1) : noType ? '0.0' : '0';
+  const exp = Math.floor(Math.log10(a));
+  let s;
+  if (exp >= -4 && exp < p) {
+    s = _fixed(a, Math.max(0, p - 1 - exp));
+    // rounding can carry into a new digit (9.99 → 10.0): toFixed handles it; strip zeros
+    if (!alt && s.includes('.')) s = s.replace(/\.?0+$/, '');
+    if (noType && !s.includes('.')) s += '.0';
+  } else {
+    s = a.toExponential(p - 1);
+    if (!alt) s = s.replace(/\.?0+e/, 'e');
+    s = _expo(s);
+  }
+  return s;
+}
+
+function _pad(body, sgn, width, fill, align) {
+  const n = body.length + sgn.length;
+  if (n >= width) return sgn + body;
+  const k = width - n;
+  if (align === '=') return sgn + fill.repeat(k) + body;
+  if (align === '<') return sgn + body + fill.repeat(k);
+  if (align === '^') { const l = Math.floor(k / 2); return fill.repeat(l) + sgn + body + fill.repeat(k - l); }
+  return fill.repeat(k) + sgn + body;
+}
+
+// a str.format template: '{x:,.0f} m', '{:.1%}', '{0}', '{pos}'. `named` gives the fields
+// ({x, pos}); bare and numbered fields take `args` in order.
+function pyFormat(template, named, ...args) {
+  let auto = 0;
+  return String(template).replace(/\{\{|\}\}|\{([^{}:!]*)(?:![rsa])?(?::([^{}]*))?\}/g, (whole, field, spec) => {
+    if (whole === '{{') return '{';
+    if (whole === '}}') return '}';
+    let v;
+    if (field === '' || field == null) v = args.length ? args[auto++] : named && named.x;
+    else if (/^\d+$/.test(field)) v = args.length ? args[+field] : named && named.x;
+    else if (named && field in named) v = named[field];
+    else throw new Error(`plot: '{${field}}' has nothing to fill it (the fields are ${named ? Object.keys(named).map((k) => `{${k}}`).join(', ') : 'positional'})`);
+    // pos is matplotlib's tick index, an int: it prints as one
+    if (field === 'pos' && Number.isInteger(v) && !spec) return String(v);
+    return spec ? _formatSpec(v, spec) : (typeof v === 'number' ? _pyRepr(v) : String(v));
+  });
+}
+
+// %-formatting: '%.2f', '%d', '%5.1e', '%s', '%%' — one value
+function pctFormat(fmt, v) {
+  return String(fmt).replace(/%([-+ 0#]*)(\d+)?(?:\.(\d+))?([diouxXeEfFgGcrs%])/g, (whole, flags, width, prec, type) => {
+    if (type === '%') return '%';
+    let align = flags.includes('-') ? '<' : '>';
+    let spec = '';
+    if (flags.includes('0') && !flags.includes('-')) spec += '0';
+    if (width) spec += width;
+    if (prec != null) spec += '.' + prec;
+    const t = type === 'i' || type === 'u' ? 'd' : type === 'r' || type === 's' ? 's' : type;
+    spec += t;
+    const sign = flags.includes('+') ? '+' : flags.includes(' ') ? ' ' : '';
+    // %s is str(v): Python's repr of a float ('%s' % 1.0 is '1.0')
+    if (t === 's') return _formatSpec(typeof v === 'number' ? _pyRepr(v) : v, (align === '<' ? '<' : '') + (width || ''));
+    // %d truncates toward zero ('%d' % 2.7 is '2'), unlike {:d}, which refuses a float
+    const val = t === 'd' && typeof v === 'number' && Number.isFinite(v) ? Math.trunc(v) : v;
+    return _formatSpec(val, (align === '<' ? '<' : '') + sign + spec);
+  });
+}
+
+// ── ../../plot/src/ticker.js ──
+
+// matplotlib.ticker and matplotlib.dates, the parts people reach for (spec tier 2):
+//
+//   ax.xaxis.set_major_formatter('{x:,.0f} m')             // a str → StrMethodFormatter
+//   ax.xaxis.set_major_formatter((x, pos) => …)            // a function → FuncFormatter
+//   ax.yaxis.set_major_formatter(new ticker.PercentFormatter(1))
+//   ax.xaxis.set_major_locator(new ticker.MultipleLocator(50))
+//   ax.minorticks_on() · ax.xaxis.set_minor_locator(new ticker.AutoMinorLocator(4))
+//   ax.plot(dates, y)                                       // Date objects: a date axis
+//   ax.xaxis.set_major_formatter(new dates.DateFormatter('%b %Y'))
+//
+// Locators give tick values for a range: tick_values(vmin, vmax, ctx). Formatters give each
+// tick its label: format(value, pos, ctx), ctx = { step, values, range }. Both live on the axes'
+// Axis objects (ax.xaxis, ax.yaxis); shared axes (subplots(sharex)) share them, as matplotlib's do.
+//
+// Dates are milliseconds since 1970-01-01 UTC — JavaScript's own number for a Date
+// (matplotlib counts days; plot counts what Date.getTime() returns). Calendar ticks and labels
+// are computed in UTC, so a figure is the same in every host whatever its time zone.
+
+
+// ── formatters ──
+class Formatter { format(v) { return String(v); } }
+class ScalarFormatter extends Formatter {
+  format(v, pos, ctx) { return _fmtStep([v], (ctx && ctx.step) || Math.abs(v) || 1)[0]; }
+}
+class NullFormatter extends Formatter { format() { return ''; } }
+class FuncFormatter extends Formatter {
+  constructor(func) { super(); if (typeof func !== 'function') throw new TypeError('FuncFormatter(func): func(x, pos) → str'); this.func = func; }
+  format(v, pos) { const s = this.func(v, pos); return s == null ? '' : String(s); }
+}
+class StrMethodFormatter extends Formatter {
+  constructor(fmt) { super(); this.fmt = String(fmt); }
+  format(v, pos) { return pyFormat(this.fmt, { x: v, pos }); }
+}
+class FormatStrFormatter extends Formatter {
+  constructor(fmt) { super(); this.fmt = String(fmt); }
+  format(v) { return pctFormat(this.fmt, v); }
+}
+class FixedFormatter extends Formatter {
+  constructor(seq) { super(); this.seq = Array.from(seq, String); }
+  format(v, pos) { return pos != null && pos < this.seq.length ? this.seq[pos] : ''; }
+}
+// PercentFormatter(xmax = 100, decimals = null, symbol = '%'): xmax is 100 % (1 for fractions).
+// decimals null: as many as the view's range needs (matplotlib's rule)
+class PercentFormatter extends Formatter {
+  constructor(xmax = 100, decimals = null, symbol = '%') {
+    super();
+    if (xmax && typeof xmax === 'object' && !Array.isArray(xmax)) ({ xmax = 100, decimals = null, symbol = '%' } = xmax);
+    this.xmax = +xmax; this.decimals = decimals; this.symbol = symbol == null ? '' : String(symbol);
+  }
+  format(v, pos, ctx) {
+    const pct = (v / this.xmax) * 100;
+    let d = this.decimals;
+    if (d == null) {
+      const r = ctx && ctx.range ? (ctx.range / this.xmax) * 100 : 0;
+      d = r <= 0 ? 0 : Math.max(0, Math.min(5, Math.ceil(2 - Math.log10(2 * r))));
+    }
+    return _formatSpec(pct, `.${d}f`) + this.symbol;
+  }
+}
+// EngFormatter(unit = '', places = null): SI prefixes, 12.3 k
+const _SI = { '-24': 'y', '-21': 'z', '-18': 'a', '-15': 'f', '-12': 'p', '-9': 'n', '-6': 'µ', '-3': 'm', 0: '', 3: 'k', 6: 'M', 9: 'G', 12: 'T', 15: 'P', 18: 'E', 21: 'Z', 24: 'Y' };
+class EngFormatter extends Formatter {
+  constructor(unit = '', places = null, sep = ' ') {
+    super();
+    if (unit && typeof unit === 'object') ({ unit = '', places = null, sep = ' ' } = unit);
+    this.unit = unit; this.places = places; this.sep = sep;
+  }
+  format(v) {
+    if (v === 0) return `0${this.unit ? this.sep + this.unit : ''}`;
+    let e = Math.floor(Math.log10(Math.abs(v)) / 3) * 3;
+    e = Math.max(-24, Math.min(24, e));
+    const m = v / Math.pow(10, e);
+    const s = this.places == null ? String(+m.toPrecision(6)) : _formatSpec(m, `.${this.places}f`);
+    const suf = _SI[e] + this.unit;
+    return suf ? `${s}${this.sep}${suf}` : s;
+  }
+}
+
+// ── locators ──
+class Locator { tick_values(lo, hi) { return _niceTicks(lo, hi, 6); } }
+class NullLocator extends Locator { tick_values() { return []; } }
+class FixedLocator extends Locator {
+  constructor(locs) { super(); this.locs = Array.from(locs, Number); }
+  tick_values(lo, hi) { return this.locs.filter((v) => v >= lo && v <= hi); }
+}
+// every multiple of base (+ offset) in the view
+class MultipleLocator extends Locator {
+  constructor(base = 1, offset = 0) { super(); this.base = +base; this.offset = +offset; if (!(this.base > 0)) throw new RangeError('MultipleLocator(base): base > 0'); }
+  tick_values(lo, hi) {
+    const b = this.base, o = this.offset;
+    const a = Math.ceil((lo - o) / b - 1e-9), z = Math.floor((hi - o) / b + 1e-9);
+    if (z - a > 2000) return _niceTicks(lo, hi, 10);    // a base far too fine for the view
+    const out = [];
+    for (let k = a; k <= z; k++) out.push(+(k * b + o).toPrecision(12));
+    out.step = b;
+    return out;
+  }
+}
+// MaxNLocator(nbins = 'auto' | n, {integer, steps}): at most nbins intervals of a round step
+class MaxNLocator extends Locator {
+  constructor(nbins = 'auto', opts) {
+    super();
+    if (nbins && typeof nbins === 'object') { opts = nbins; nbins = opts.nbins ?? 'auto'; }
+    const o = opts || {};
+    this.nbins = nbins; this.integer = !!o.integer;
+  }
+  tick_values(lo, hi, ctx) {
+    const n = this.nbins === 'auto' ? (ctx && ctx.count) || 9 : +this.nbins + 1;
+    let t = _niceTicks(lo, hi, n);
+    if (this.integer && t.step < 1) {
+      const out = []; for (let k = Math.ceil(lo); k <= Math.floor(hi); k++) out.push(k);
+      out.step = 1;
+      t = out.length > n ? new MultipleLocator(Math.ceil((hi - lo) / Math.max(1, n - 1))).tick_values(lo, hi) : out;
+    }
+    return t;
+  }
+}
+// AutoMinorLocator(n): n intervals between majors (5 for a step of 1, 2.5 or 5 × 10^k, else 4)
+class AutoMinorLocator extends Locator {
+  constructor(n = null) { super(); this.n = n; }
+  tick_values(lo, hi, ctx) {
+    const majors = (ctx && ctx.majors) || [];
+    if (ctx && ctx.log) return _logMinors(lo, hi);
+    if (majors.length < 2) return [];
+    const step = Math.abs(majors[1] - majors[0]);
+    let n = this.n;
+    if (n == null) { const m = step / Math.pow(10, Math.floor(Math.log10(step))); n = [1, 2.5, 5, 10].some((q) => Math.abs(m - q) < 1e-9) ? 5 : 4; }
+    const d = step / n, out = [];
+    const first = Math.min(...majors);
+    const a = Math.ceil((lo - first) / d - 1e-9), z = Math.floor((hi - first) / d + 1e-9);
+    if (z - a > 4000) return [];
+    for (let k = a; k <= z; k++) { if (((k % n) + n) % n === 0) continue; out.push(+(first + k * d).toPrecision(12)); }
+    return out;
+  }
+}
+// a log axis's minor ticks: 2 … 9 × each decade
+function _logMinors(lo, hi) {
+  const out = [];
+  if (!(lo > 0) || !(hi > lo)) return out;
+  for (let e = Math.floor(Math.log10(lo)); e <= Math.ceil(Math.log10(hi)) && out.length < 2000; e++) {
+    for (let m = 2; m <= 9; m++) { const v = m * Math.pow(10, e); if (v >= lo && v <= hi) out.push(+v.toPrecision(12)); }
+  }
+  return out;
+}
+// LogLocator(base = 10): the decades
+class LogLocator extends Locator {
+  constructor(base = 10) { super(); this.base = +base; }
+  tick_values(lo, hi) {
+    const b = this.base, out = [];
+    if (!(lo > 0)) lo = hi / 1e6;
+    for (let e = Math.ceil(Math.log(lo) / Math.log(b) - 1e-9); Math.pow(b, e) <= hi * (1 + 1e-9) && out.length < 400; e++) out.push(+Math.pow(b, e).toPrecision(12));
+    return out;
+  }
+}
+
+// ── dates ──
+const SEC = 1000, MIN = 60 * SEC, HOUR = 60 * MIN, DAY = 24 * HOUR;
+const _MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const _MONTH = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const _DAYN = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const _DAYNAME = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const p2 = (n) => String(n).padStart(2, '0');
+
+// strftime, the usual codes, in UTC: %Y %y %m %d %e %H %I %M %S %f %p %b %B %a %A %j %%
+function strftime(ms, fmt) {
+  const d = new Date(ms);
+  if (!(ms - ms === 0)) return '';
+  return String(fmt).replace(/%([YymdeHIMSfpbBaAj%])/g, (_, c) => {
+    switch (c) {
+      case 'Y': return String(d.getUTCFullYear());
+      case 'y': return p2(d.getUTCFullYear() % 100);
+      case 'm': return p2(d.getUTCMonth() + 1);
+      case 'd': return p2(d.getUTCDate());
+      case 'e': return String(d.getUTCDate()).padStart(2, ' ');
+      case 'H': return p2(d.getUTCHours());
+      case 'I': return p2(((d.getUTCHours() + 11) % 12) + 1);
+      case 'M': return p2(d.getUTCMinutes());
+      case 'S': return p2(d.getUTCSeconds());
+      case 'f': return String(Math.round(((ms % SEC) + SEC) % SEC * 1000)).padStart(6, '0');
+      case 'p': return d.getUTCHours() < 12 ? 'AM' : 'PM';
+      case 'b': return _MON[d.getUTCMonth()];
+      case 'B': return _MONTH[d.getUTCMonth()];
+      case 'a': return _DAYN[d.getUTCDay()];
+      case 'A': return _DAYNAME[d.getUTCDay()];
+      case 'j': return String(Math.floor((ms - Date.UTC(d.getUTCFullYear(), 0, 1)) / DAY) + 1).padStart(3, '0');
+      default: return '%';
+    }
+  });
+}
+
+// the calendar steps a date axis chooses from, finest first: [unit, step, typical ms]
+const _DATE_STEPS = [
+  ...[1, 2, 5, 10, 15, 30].map((s) => ['second', s, s * SEC]),
+  ...[1, 2, 5, 10, 15, 30].map((s) => ['minute', s, s * MIN]),
+  ...[1, 2, 3, 6, 12].map((s) => ['hour', s, s * HOUR]),
+  ...[1, 2, 7, 14].map((s) => ['day', s, s * DAY]),
+  ...[1, 2, 3, 6].map((s) => ['month', s, s * 30.44 * DAY]),
+  ...[1, 2, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000].map((s) => ['year', s, s * 365.25 * DAY]),
+];
+// ticks for one calendar step (UTC): seconds to hours on multiples since the epoch's midnight;
+// days on the month's days 1, 1 + step, … (7 → 1, 8, 15, 22, 29); months on Jan + k·step;
+// years on multiples of step
+function _dateTicksAt(unit, step, lo, hi) {
+  const out = [];
+  if (unit === 'second' || unit === 'minute' || unit === 'hour') {
+    const st = step * (unit === 'second' ? SEC : unit === 'minute' ? MIN : HOUR);
+    for (let t = Math.ceil(lo / st) * st; t <= hi && out.length < 5000; t += st) out.push(t);
+  } else if (unit === 'day') {
+    const d0 = new Date(lo);
+    let y = d0.getUTCFullYear(), m = d0.getUTCMonth();
+    while (out.length < 5000) {
+      const dim = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+      for (let d = 1; d <= dim; d += step) { const t = Date.UTC(y, m, d); if (t > hi) return out; if (t >= lo) out.push(t); }
+      if (++m === 12) { m = 0; y++; }
+      if (Date.UTC(y, m, 1) > hi) break;
+    }
+  } else if (unit === 'month') {
+    const d0 = new Date(lo);
+    let y = d0.getUTCFullYear(), m = d0.getUTCMonth() - (d0.getUTCMonth() % step);
+    for (let t = Date.UTC(y, m, 1); t <= hi && out.length < 5000; t = Date.UTC(y, m, 1)) { if (t >= lo) out.push(t); m += step; if (m >= 12) { y += Math.floor(m / 12); m %= 12; } }
+  } else {
+    const y0 = new Date(lo).getUTCFullYear();
+    for (let y = Math.ceil(y0 / step) * step; out.length < 5000; y += step) { const t = Date.UTC(y, 0, 1); if (t > hi) break; if (t >= lo) out.push(t); }
+  }
+  return out;
+}
+// the label format each unit reads in (matplotlib's AutoDateFormatter scale)
+const _DATE_FMT = { year: '%Y', month: '%Y-%m', day: '%Y-%m-%d', hour: '%H:%M', minute: '%H:%M', second: '%H:%M:%S', ms: '%H:%M:%S.%f' };
+// at most `count` calendar ticks in [lo, hi]: { values, labels, unit }
+function _dateTicks(lo, hi, count) {
+  const span = hi - lo;
+  for (const [unit, step, approx] of _DATE_STEPS) {
+    if (span / approx > count + 1) continue;
+    const values = _dateTicksAt(unit, step, lo, hi);
+    if (values.length > count && !(unit === 'year' && step === 1000)) continue;
+    if (values.length < 2 && unit !== _DATE_STEPS[0][0]) continue;
+    const fmt = _DATE_FMT[unit];
+    // hours and minutes across days: midnight says which day
+    const labels = values.map((t) => ((unit === 'hour' || unit === 'minute') && t % DAY === 0 ? strftime(t, '%Y-%m-%d') : strftime(t, fmt)));
+    values.step = approx;
+    return { values, labels, unit };
+  }
+  // under a second: plain milliseconds, round steps
+  const values = _niceTicks(lo, hi, count);
+  return { values, labels: values.map((t) => strftime(t, _DATE_FMT.ms).replace(/0{3}$/, '')), unit: 'ms' };
+}
+
+class DateFormatter extends Formatter {
+  constructor(fmt, tz) { super(); this.fmt = String(fmt); if (tz != null && tz !== 'UTC') this._tzWarn = true; }
+  format(v) { return strftime(v, this.fmt); }
+}
+// the automatic calendar locator (what a date axis uses with no locator set)
+class AutoDateLocator extends Locator {
+  constructor(opts) { super(); const o = opts || {}; this.maxticks = o.maxticks || null; }
+  tick_values(lo, hi, ctx) { return _dateTicks(lo, hi, this.maxticks || (ctx && ctx.count) || 7).values; }
+}
+class _CalLocator extends Locator {
+  constructor(unit, interval) { super(); this.unit = unit; this.interval = Math.max(1, Math.round(+interval || 1)); }
+  tick_values(lo, hi) { return _dateTicksAt(this.unit, this.interval, lo, hi); }
+}
+class YearLocator extends _CalLocator { constructor(base = 1) { super('year', base); } }
+class MonthLocator extends _CalLocator { constructor(bymonth = null, bymonthday = 1, interval = 1) { super('month', typeof bymonth === 'object' && bymonth && !Array.isArray(bymonth) ? bymonth.interval || 1 : interval); } }
+class DayLocator extends _CalLocator { constructor(bymonthday = null, interval = 1) { super('day', typeof bymonthday === 'object' && bymonthday && !Array.isArray(bymonthday) ? bymonthday.interval || 1 : interval); } }
+class HourLocator extends _CalLocator { constructor(byhour = null, interval = 1) { super('hour', typeof byhour === 'object' && byhour && !Array.isArray(byhour) ? byhour.interval || 1 : interval); } }
+class MinuteLocator extends _CalLocator { constructor(byminute = null, interval = 1) { super('minute', typeof byminute === 'object' && byminute && !Array.isArray(byminute) ? byminute.interval || 1 : interval); } }
+
+// a Date, an ISO string, or ms → ms; date2num / num2date in plot's units (ms, UTC)
+const _toMs = (v) => (v instanceof Date ? v.getTime() : typeof v === 'string' ? Date.parse(v) : +v);
+function date2num(d) { return Array.isArray(d) || ArrayBuffer.isView(d) ? Array.from(d, _toMs) : _toMs(d); }
+function num2date(n) { return Array.isArray(n) || ArrayBuffer.isView(n) ? Array.from(n, (v) => new Date(v)) : new Date(n); }
+
+// the namespaces, as matplotlib's modules (plt.ticker, plt.dates)
+const ticker = {
+  Formatter, ScalarFormatter, NullFormatter, FuncFormatter, StrMethodFormatter, FormatStrFormatter, FixedFormatter, PercentFormatter, EngFormatter,
+  Locator, NullLocator, FixedLocator, MultipleLocator, MaxNLocator, AutoMinorLocator, LogLocator,
+};
+const dates = {
+  DateFormatter, AutoDateLocator, YearLocator, MonthLocator, DayLocator, HourLocator, MinuteLocator, date2num, num2date, strftime,
+};
+
+// what set_major_formatter takes: a Formatter, a function (x, pos), or a str (a {}-template)
+function _asFormatter(f, strictFlag) {
+  if (f instanceof Formatter) return f;
+  if (typeof f === 'function') return new FuncFormatter(f);
+  if (typeof f === 'string') return new StrMethodFormatter(f);
+  if (f && typeof f.format === 'function') return f;
+  throw new TypeError('set_major_formatter: give a Formatter, a function (x, pos) → str, or a format string like "{x:,.0f}"');
+}
+function _asLocator(l) {
+  if (l instanceof Locator || (l && typeof l.tick_values === 'function')) return l;
+  if (Array.isArray(l) || ArrayBuffer.isView(l)) return new FixedLocator(l);
+  throw new TypeError('set_major_locator: give a Locator (MultipleLocator(5), MaxNLocator(6), FixedLocator([...]), …)');
+}
+
+// ── ../../plot/src/ticks.js ──
+
+// Ticks and their labels, sized to the axis's PIXEL length and measured, so labels never overlap and margins can be measured from them.
+//
+// An axis's ticks come from, in order:
+//   1. set_xticks(values, labels?, {rotation}) — exactly those (a label list may be shorter);
+//   2. a category axis (strings given as x or y) — one tick per category, labelled;
+//   3. the scale — at most one tick per 55 px on x, per 32 px on y, as many round ones as fit.
+// Labels that would collide are fixed: numeric ticks get fewer; categories rotate 45°, and
+// if they still collide only every k-th is labelled (the ticks stay).
+
+
+
+// a category axis: labels in first-appearance order, each at the integer position 0, 1, 2 …
+class _Categories {
+  constructor() { this.list = []; this.index = new Map(); }
+  // an array of labels (strings or numbers-as-labels) → their positions
+  positions(arr) {
+    const out = new Float64Array(arr.length);
+    for (let i = 0; i < arr.length; i++) {
+      const v = arr[i];
+      if (v == null || (typeof v === 'number' && v !== v)) { out[i] = NaN; continue; }
+      const key = String(v);
+      let k = this.index.get(key);
+      if (k === undefined) { k = this.list.length; this.list.push(key); this.index.set(key, k); }
+      out[i] = k;
+    }
+    return out;
+  }
+}
+
+// does this column hold labels rather than numbers (matplotlib: strings make a category axis)
+function _isCategorical(arr) {
+  if (!arr || typeof arr === 'string' || ArrayBuffer.isView(arr)) return false;
+  for (let i = 0; i < arr.length; i++) {
+    const v = arr[i];
+    if (v == null) continue;
+    return typeof v === 'string';
+  }
+  return false;
+}
+
+// does this column hold Dates (a date axis)
+function _isDateCol(arr) {
+  if (!arr || typeof arr === 'string' || ArrayBuffer.isView(arr)) return false;
+  for (let i = 0; i < arr.length; i++) { const v = arr[i]; if (v == null) continue; return v instanceof Date; }
+  return false;
+}
+
+// numbers as a scale formats them: a common precision for the set
+function _fmtTicks(scale, values) {
+  if (!scale.log && values.length > 1) return _fmtStep(values, Math.abs(values[1] - values[0]));
+  const f = scale.tickFormat();
+  return values.map((v) => f(v));
+}
+
+// the ticks of one axis: { values, labels, rot (degrees), extent (px the labels take
+// perpendicular to the axis), along (the widest label along the axis) }
+// `ax`: the Axes; `axis`: 'x' | 'y'; `scale`; `len`: the axis length in px; `ctx` to measure
+function _tickSpec(ax, axis, scale, len, ctx, font, fontPx) {
+  const custom = axis === 'x' ? ax._xticks : ax._yticks;
+  const cats = axis === 'x' ? ax._xcats : ax._ycats;
+  ctx.font = font;
+  const W = (s) => _textW(font, s);
+  const [d0, d1] = scale.domain;
+  const lo = Math.min(d0, d1), hi = Math.max(d0, d1);
+  const inside = (v) => v >= lo - Math.abs(hi - lo) * 1e-9 && v <= hi + Math.abs(hi - lo) * 1e-9;
+  let values, labels, rot = 0, fixedRot = false, thin = 1;
+
+  if (custom && custom.rotation != null) { rot = custom.rotation === 'vertical' ? 90 : +custom.rotation || 0; fixedRot = true; }
+  // the axis's ticker (axis.js): a locator and formatter set on ax.xaxis / ax.yaxis, minor ticks
+  const tk = ax._ticker ? ax._ticker(axis) : null;
+  const date = (axis === 'x' ? ax._xdate : ax._ydate) && !scale.log;
+  const fmtCtx = (vals) => ({ step: vals.step || (vals.length > 1 ? Math.abs(vals[1] - vals[0]) : hi - lo), values: vals, range: hi - lo, date });
+  const formatted = (vals, F) => { const c = fmtCtx(vals); return vals.map((v, i) => F.format(v, i, c)); };
+  if (custom && custom.values) {
+    values = Array.from(custom.values, Number);
+    labels = custom.labels ? values.map((_, i) => (custom.labels[i] != null ? String(custom.labels[i]) : ''))
+      : tk && tk.majorF ? formatted(values, tk.majorF) : date ? _dateLabels(values) : _fmtTicks(scale, values);
+  } else if (cats && cats.list.length) {
+    values = cats.list.map((_, i) => i);
+    labels = cats.list.slice();
+  } else {
+    const per = axis === 'x' ? 55 : 32;
+    let count = Math.max(2, Math.min(12, Math.floor(len / per) + 1));
+    for (;;) {
+      if (tk && tk.majorL) {
+        values = tk.majorL.tick_values(lo, hi, { count, log: !!scale.log });
+        labels = date ? _dateLabels(values) : scale.log ? _fmtTicks(scale, values) : _fmtStep(values, values.step || (values.length > 1 ? Math.abs(values[1] - values[0]) : hi - lo));
+      } else if (date) {
+        ({ values, labels } = _dateTicks(lo, hi, count));
+      } else {
+        values = scale.log ? scale.ticks() : _niceTicks(lo, hi, count);
+        labels = scale.log ? _fmtTicks(scale, values) : _fmtStep(values, values.step || (hi - lo));
+      }
+      if (tk && tk.majorF) labels = formatted(values, tk.majorF);
+      // a locator says where the ticks go: no thinning
+      if (axis === 'y' || count <= 2 || scale.log || (tk && tk.majorL)) break;
+      // x: shrink the count until neighbouring labels clear each other by 8 px
+      const px = values.map((v) => scale.transform(v));
+      let ok = true;
+      for (let i = 1; i < values.length; i++) {
+        if (Math.abs(px[i] - px[i - 1]) < (W(labels[i]) + W(labels[i - 1])) / 2 + 8) { ok = false; break; }
+      }
+      if (ok) break;
+      count--;
+    }
+  }
+  const keep = values.map((v) => v - v === 0 && inside(v));
+  values = values.filter((_, i) => keep[i]);
+  labels = labels.filter((_, i) => keep[i]);
+  const widths = labels.map(W);
+  const maxW = widths.length ? Math.max(...widths) : 0;
+
+  if (axis === 'x' && !fixedRot && values.length > 1) {
+    // labels that collide flat: rotate 45° (only for labels, e.g. categories — numbers were
+    // thinned above); if they still collide, label every k-th
+    const px = values.map((v) => scale.transform(v));
+    let minGap = Infinity;
+    for (let i = 1; i < px.length; i++) minGap = Math.min(minGap, Math.abs(px[i] - px[i - 1]));
+    if (minGap < maxW + 6) {
+      rot = 45;
+      const need = fontPx * 1.15;                      // rotated 45°, neighbours clear by their height / sin
+      if (minGap * Math.SQRT1_2 < need) thin = Math.ceil(need / (minGap * Math.SQRT1_2));
+    }
+  }
+  if (thin > 1) labels = labels.map((l, i) => (i % thin === 0 ? l : ''));
+
+  const r = (rot * Math.PI) / 180;
+  const extent = axis === 'x'
+    ? (rot ? maxW * Math.abs(Math.sin(r)) + fontPx * Math.abs(Math.cos(r)) : fontPx)
+    : maxW;
+  // minor ticks: a minor locator, or minorticks_on() (AutoMinorLocator), between the majors;
+  // unlabelled unless a minor formatter says otherwise
+  let minor = null, minorLabels = null;
+  if (tk && (tk.minorL || tk.minorOn) && !(cats && cats.list.length)) {
+    const L = tk.minorL || new AutoMinorLocator();
+    const majors = new Set(values.map((v) => +v.toPrecision(10)));
+    minor = L.tick_values(lo, hi, { majors: values, log: !!scale.log }).filter((v) => inside(v) && !majors.has(+v.toPrecision(10)));
+    if (tk.minorF) minorLabels = formatted(minor, tk.minorF);
+  }
+  const params = ax._tickParams ? ax._tickParams[axis] || null : null;
+  return { values, labels, rot, extent, maxW, widths, minor, minorLabels, params };
+}
+
+// labels for date ticks a locator placed: the format their spacing reads in
+function _dateLabels(values) {
+  if (!values.length) return [];
+  const d = values.length > 1 ? Math.abs(values[1] - values[0]) : 864e5;
+  const fmt = d >= 360 * 864e5 ? '%Y' : d >= 28 * 864e5 ? '%Y-%m' : d >= 864e5 ? '%Y-%m-%d' : d >= 6e4 ? '%H:%M' : d >= 1e3 ? '%H:%M:%S' : '%H:%M:%S.%f';
+  return values.map((t) => strftime(t, fmt));
+}
+
+// draw one axis's ticks and labels. side: 'bottom' | 'top' | 'left' | 'right'
+// tick_params: { major: {length, direction, width, color}, minor: {…} } per axis; length in px
+// (4 major, 2 minor), direction 'out' (default) | 'in' | 'inout'
+function _drawTicks(ctx, spec, scale, side, plot, color, tickColor, font) {
+  ctx.font = font;
+  ctx.fillStyle = color;
+  const { values, labels, rot } = spec;
+  const P = spec.params || {}, maj = P.major || {}, mnr = P.minor || {};
+  // one tick mark at p: out of the frame, into it, or across it
+  const mark = (p, len, dir) => {
+    const a = dir === 'in' ? 0 : len, b = dir === 'out' || !dir ? 0 : len;   // outward, inward
+    ctx.beginPath();
+    if (side === 'bottom') { ctx.moveTo(p, plot.y + plot.h - b); ctx.lineTo(p, plot.y + plot.h + a); }
+    else if (side === 'top') { ctx.moveTo(p, plot.y + b); ctx.lineTo(p, plot.y - a); }
+    else if (side === 'left') { ctx.moveTo(plot.x - a, p); ctx.lineTo(plot.x + b, p); }
+    else { ctx.moveTo(plot.x + plot.w + a, p); ctx.lineTo(plot.x + plot.w - b, p); }
+    ctx.stroke();
+  };
+  if (spec.minor && spec.minor.length) {
+    ctx.strokeStyle = mnr.color || tickColor;
+    ctx.lineWidth = mnr.width != null ? mnr.width : 0.8;
+    const len = mnr.length != null ? mnr.length : 2;
+    for (const v of spec.minor) { const p = scale.transform(v); if (p - p === 0) mark(p, len, mnr.direction); }
+  }
+  ctx.strokeStyle = maj.color || tickColor;
+  ctx.lineWidth = maj.width != null ? maj.width : 1;
+  const len = maj.length != null ? maj.length : 4;
+  const gap = 2 + (maj.direction === 'in' ? 0 : len);   // labels clear the mark
+  for (let i = 0; i < values.length; i++) {
+    const p = scale.transform(values[i]);
+    mark(p, len, maj.direction);
+    const s = labels[i];
+    if (!s) continue;
+    if (side === 'bottom' || side === 'top') {
+      const y = side === 'bottom' ? plot.y + plot.h + gap : plot.y - gap;
+      if (rot) {                                       // rotated: the label's END sits under the tick
+        ctx.save();
+        ctx.translate(p, y);
+        ctx.rotate((side === 'bottom' ? -1 : 1) * rot * Math.PI / 180);
+        ctx.textAlign = 'right';
+        ctx.textBaseline = side === 'bottom' ? 'top' : 'bottom';
+        ctx.fillText(s, 0, 0);
+        ctx.restore();
+      } else {
+        ctx.textAlign = 'center';
+        ctx.textBaseline = side === 'bottom' ? 'top' : 'bottom';
+        ctx.fillText(s, p, y);
+      }
+    } else {
+      ctx.textAlign = side === 'left' ? 'right' : 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(s, side === 'left' ? plot.x - gap : plot.x + plot.w + gap, p);
+    }
+  }
 }
 
 // ── ../../plot/src/record.js ──
@@ -15748,8 +16270,24 @@ class ScalarMappable {
   __repr__() { return '<matplotlib.cm.ScalarMappable>'; }
 }
 
+// matplotlib's Artist.set_visible / get_visible / remove, for the traces a call made. Hidden
+// traces don't draw, pick or appear in the legend; removed ones are gone. A figure under
+// interact() redraws by itself.
+function _artistOps(ax, tracesOf) {
+  const redraw = () => { if (ax.figure && ax.figure._requestDraw) ax.figure._requestDraw(); };
+  return {
+    set_visible(v) { for (const t of tracesOf()) t.hidden = !v; redraw(); return this; },
+    get_visible() { return tracesOf().some((t) => !t.hidden); },
+    remove() { const gone = new Set(tracesOf()); ax._traces = ax._traces.filter((t) => !gone.has(t)); redraw(); },
+  };
+}
+
 function _result(ax, items, fields) {
-  const target = Object.assign(items, fields, { axes: ax });
+  const f = fields || {};
+  const tracesOf = () => (f._trace ? [f._trace] : f._traces ? f._traces : Array.from(items).filter((i) => i && i._trace).map((i) => i._trace));
+  const ops = _artistOps(ax, tracesOf);
+  for (const k of Object.keys(ops)) if (!(k in f)) f[k] = ops[k];
+  const target = Object.assign(items, f, { axes: ax });
   return new Proxy(target, {
     get(t, k) {
       if (k in t) return t[k];
@@ -15872,7 +16410,7 @@ class Axes {
     if (o.drawstyle && _hooks.drawstyle) _hooks.drawstyle(this, trace);
     this._traces.push(trace);
     // matplotlib returns [Line2D]: `line, = ax.plot(…)` unpacks; the rest reads the axes (chaining)
-    const line = { get_xdata: () => trace.x, get_ydata: () => trace.y, get_color: () => o.color, get_label: () => o.label ?? null, axes: this,
+    const line = { get_xdata: () => trace.x, get_ydata: () => trace.y, get_color: () => o.color, get_label: () => o.label ?? null, axes: this, _trace: trace, ..._artistOps(this, () => [trace]),
       __repr__: () => `<Line2D ${o.label != null ? JSON.stringify(String(o.label)) : 'unlabeled'}>` };
     return _result(this, [line], {});
   }
@@ -15999,6 +16537,8 @@ class Axes {
   }
 
   text(x, y, text, opts) {
+    if (x instanceof Date) x = x.getTime();                // on a date axis
+    if (y instanceof Date) y = y.getTime();
     const o = this._opts('text', opts);
     if (o.horizontalalignment && !o.ha) o.ha = o.horizontalalignment;
     if (o.verticalalignment && !o.va) o.va = o.verticalalignment;
@@ -16025,6 +16565,10 @@ class Axes {
   set_xlim(lo, hi) { this._setLim('x', lo, hi, 'left', 'right', 'xmin', 'xmax'); return this; }
   set_ylim(lo, hi) { this._setLim('y', lo, hi, 'bottom', 'top', 'ymin', 'ymax'); return this; }
   _setLim(axis, lo, hi, kLo, kHi, kMin, kMax) {
+    // Dates (a date axis) first: a Date would otherwise pass for an options object
+    if (lo instanceof Date || hi instanceof Date) for (const a of this._group(axis)) a[axis === 'x' ? '_xdate' : '_ydate'] = true;
+    if (lo instanceof Date) lo = lo.getTime();
+    if (hi instanceof Date) hi = hi.getTime();
     if (_plainOpts(lo)) { const o = lo; lo = o[kLo] !== undefined ? o[kLo] : o[kMin]; hi = o[kHi] !== undefined ? o[kHi] : o[kMax]; }
     else if (_isArrayLike(lo) && hi === undefined) { hi = lo[1]; lo = lo[0]; }
     const key = axis === 'x' ? '_xlim' : '_ylim';
@@ -16099,20 +16643,37 @@ class Axes {
     return { values: [], labels: [] };
   }
   // tick_params(axis, {labelrotation}) — the part of it that sets what plot draws
+  // tick_params({axis = 'both', which = 'major' | 'minor' | 'both', length, width, direction
+  // ('out' | 'in' | 'inout'), color, labelrotation})
   tick_params(opts) {
     const o = _plainOpts(opts) ? opts : {};
-    const which = o.axis || 'both';
-    if (o.labelrotation != null) for (const a of (which === 'both' ? ['x', 'y'] : [which])) {
+    const axes = (o.axis || 'both') === 'both' ? ['x', 'y'] : [o.axis];
+    const whiches = (o.which || 'major') === 'both' ? ['major', 'minor'] : [o.which || 'major'];
+    if (o.labelrotation != null) for (const a of axes) {
       const key = a === 'x' ? '_xticks' : '_yticks';
       this[key] = { ...(this[key] || { values: null, labels: null }), rotation: o.labelrotation };
     }
-    for (const k of Object.keys(o)) if (k !== 'axis' && k !== 'labelrotation' && k !== '_kw') _warn('tick_params.' + k, `tick_params(): '${k}' is not supported yet (only axis and labelrotation)`, this._strict);
+    if (o.direction != null && !['in', 'out', 'inout'].includes(o.direction)) _warn('tick_params.direction.' + o.direction, `tick_params(): direction must be 'in', 'out' or 'inout'`, this._strict);
+    const set = {};
+    for (const k of ['length', 'width', 'direction', 'color']) if (o[k] != null) set[k] = k === 'color' ? _cssColor(o[k]) : o[k];
+    if (Object.keys(set).length) {
+      const tp = this._tickParams || (this._tickParams = {});
+      for (const a of axes) { tp[a] = tp[a] || {}; for (const w of whiches) tp[a][w] = { ...(tp[a][w] || {}), ...set }; }
+    }
+    for (const k of Object.keys(o)) if (!['axis', 'which', 'labelrotation', 'length', 'width', 'direction', 'color', '_kw'].includes(k)) _warn('tick_params.' + k, `tick_params(): '${k}' is not supported yet (axis, which, length, width, direction, color, labelrotation)`, this._strict);
     return this;
   }
   // every axes that shares this one's `axis` (subplots(sharex / sharey)), this one included
   _group(axis) { return this._shared[axis] || [this]; }
   // a column for `axis`: numbers, or labels that make (or extend) that axis's categories
   _axisCol(axis, arr) {
+    // Date objects make a date axis (ticker.js): their numbers are ms since 1970 UTC
+    if (_isDateCol(arr)) {
+      for (const a of this._group(axis)) a[axis === 'x' ? '_xdate' : '_ydate'] = true;
+      const out = new Float64Array(arr.length);
+      for (let i = 0; i < arr.length; i++) { const v = arr[i]; out[i] = v instanceof Date ? v.getTime() : v == null ? NaN : +v; }
+      return out;
+    }
     if (!_isCategorical(arr)) return _col$data(arr);
     const key = axis === 'x' ? '_xcats' : '_ycats';
     if (!this[key]) {
@@ -16269,14 +16830,22 @@ class Axes {
       ctx.lineWidth = g.linewidth || 0.5;
       ctx.globalAlpha = g.alpha != null ? g.alpha : 0.8;
       ctx.setLineDash(dashArray(g.linestyle));
-      const which = g.axis || 'both';
-      if (which !== 'y') for (const v of xt.values) {
-        const px = xScale.transform(v);
-        ctx.beginPath(); ctx.moveTo(px, plotY); ctx.lineTo(px, plotY + plotH); ctx.stroke();
-      }
-      if (which !== 'x') for (const v of yt.values) {
-        const py = yScale.transform(v);
-        ctx.beginPath(); ctx.moveTo(plotX, py); ctx.lineTo(plotX + plotW, py); ctx.stroke();
+      const which = g.axis || 'both', level = g.which || 'major';
+      const lines = (xs, ys) => {
+        if (which !== 'y') for (const v of xs) {
+          const px = xScale.transform(v);
+          ctx.beginPath(); ctx.moveTo(px, plotY); ctx.lineTo(px, plotY + plotH); ctx.stroke();
+        }
+        if (which !== 'x') for (const v of ys) {
+          const py = yScale.transform(v);
+          ctx.beginPath(); ctx.moveTo(plotX, py); ctx.lineTo(plotX + plotW, py); ctx.stroke();
+        }
+      };
+      if (level !== 'minor') lines(xt.values, yt.values);
+      // the minor grid (where there are minor ticks: minorticks_on() or a minor locator), fainter
+      if (level !== 'major' && (xt.minor || yt.minor)) {
+        ctx.globalAlpha = (g.alpha != null ? g.alpha : 0.8) * 0.5;
+        lines(xt.minor || [], yt.minor || []);
       }
       ctx.setLineDash([]);
       ctx.globalAlpha = 1;
@@ -16286,7 +16855,7 @@ class Axes {
     const lastCmapTrace = this._renderTraces(ctx, xScale, yScale, plotX, plotY, plotW, plotH, dpr);
     if (this._twin) this._twin._renderAsTwin(ctx, xScale, plotX, plotY, plotW, plotH, dpr, L.twinYt);
     if (this._twinY) this._twinY._renderAsTwinY(ctx, yScale, plotX, plotY, plotW, plotH, dpr, L.twinXt);
-    if (this._highlight) this._renderHighlight(ctx, xScale, yScale, plot, bgcolor);
+    if (this._highlight) this._renderHighlight(ctx, xScale, yScale, { ...plot, dpr }, bgcolor);   // the trace renderers' rect carries dpr (the raster path sizes by it)
 
     if (on) {
       ctx.strokeStyle = frameColor;
@@ -16528,6 +17097,7 @@ class Axes {
     // for text): they draw after the clipped pass, still in zorder
     const free = (t) => t.type === 'text' || (_KINDS[t.type] && _KINDS[t.type].noclip);
     const draw = (trace) => {
+      if (trace.hidden) return;                          // set_visible(false)
       switch (trace.type) {
         case 'imshow': this._renderImshow(ctx, trace, xScale, yScale, rect); lastCmapTrace = trace; break;
         case 'line': this._renderLine(ctx, trace, xScale, yScale, rect); break;
@@ -17099,6 +17669,7 @@ class Axes {
     for (const ax of owners) {
       const v = ax.view;
       ax._traces.forEach((t, ti) => {
+        if (t.hidden) return;
         const isMarker = t.type === 'scatter' || (t.type === 'line' && t.opts.marker);
         if (t.type !== 'scatter' && t.type !== 'line') return;
         const pos = ax._positions(t, v.xScale, v.yScale);
@@ -17126,7 +17697,7 @@ class Axes {
       if (px < v.x || px > v.x + v.w || py < v.y || py > v.y + v.h) continue;
       for (let ti = ax._traces.length - 1; ti >= 0; ti--) {
         const t = ax._traces[ti], k = _KINDS[t.type];
-        if (!k || !k.pick) continue;
+        if (!k || !k.pick || t.hidden) continue;
         const hit = k.pick(ax, t, px, py);
         if (hit) return { axes: ax, trace: t, traceIndex: ti, c: null, s: null, label: t.opts.label ?? null, ...hit };
       }
@@ -17136,7 +17707,7 @@ class Axes {
       const v = ax.view;
       for (let ti = ax._traces.length - 1; ti >= 0; ti--) {
         const t = ax._traces[ti];
-        if (t.type !== 'imshow') continue;
+        if (t.type !== 'imshow' || t.hidden) continue;
         const e = ax._imshowExtent(t);
         const xv = v.xScale.inverse(px), yv = v.yScale.inverse(py);
         const fx = (xv - e[0]) / (e[1] - e[0]), fy = (yv - e[2]) / (e[3] - e[2]);
@@ -17589,7 +18160,9 @@ function _bar(ax, orient, pos, size, opts) {
   const P = ax._axisCol(orient === 'v' ? 'x' : 'y', pos), S = _col$data(size);
   if (P.length !== S.length) throw _lenErr(fn, orient === 'v' ? 'x' : 'y', P.length, orient === 'v' ? 'height' : 'width', S.length);
   const thickKey = orient === 'v' ? 'width' : 'height', baseKey = orient === 'v' ? 'bottom' : 'left';
-  const thick = o[thickKey] == null ? 0.8 : _isArrayLike(o[thickKey]) ? _col$data(o[thickKey]) : +o[thickKey];
+  // on a date axis matplotlib's 0.8 is 0.8 of a DAY (its dates count days; plot's count ms)
+  const onDates = orient === 'v' ? ax._xdate : ax._ydate;
+  const thick = o[thickKey] == null ? (onDates ? 0.8 * 864e5 : 0.8) : _isArrayLike(o[thickKey]) ? _col$data(o[thickKey]) : +o[thickKey];
   const base = o[baseKey] == null ? null : _isArrayLike(o[baseKey]) ? _col$data(o[baseKey]) : +o[baseKey];
   if (o.align != null && o.align !== 'center' && o.align !== 'edge') _warn(`${fn}.align.${o.align}`, `${fn}(): align must be 'center' or 'edge', not '${o.align}'`, ax._strict);
   if (Array.isArray(o.color)) o.color = o.color.map(_cssColor);
@@ -17689,26 +18262,14 @@ Axes.prototype.barh = function (y, width, opts) { return _bar(this, 'h', y, widt
 
 // ── bar_label(container, labels?, {fmt, padding, label_type, color, fontsize, rotation}) ──
 // fmt: '%g' (default), any %-format, a '{:.1f}' format, or a function
+// a bar label's text: fmt a callable, a {}-style template ('{:.1f}', '{x:,.0f} t') or %-style
+// ('%.1f', '%g', the default) — Python's own rules (pyfmt.js)
 function _fmtValue(fmt, v) {
   if (typeof fmt === 'function') return String(fmt(v));
   if (fmt == null) fmt = '%g';
   const f = String(fmt);
-  let m = /^(.*?)\{(?:[^:}]*):?(,?)(?:\.(\d+))?([fgedn%]?)\}(.*)$/.exec(f);
-  if (m) return m[1] + _numFmt(v, m[4] || 'g', m[3] == null ? null : +m[3], !!m[2]) + m[5];
-  m = /^(.*?)%[-+ 0#]*\d*(?:\.(\d+))?([dfgeis%])(.*)$/.exec(f);
-  if (m) return m[1] + (m[3] === 's' ? String(v) : _numFmt(v, m[3] === 'i' ? 'd' : m[3], m[2] == null ? null : +m[2], false)) + m[4];
-  return f;
-}
-function _numFmt(v, type, prec, comma) {
-  if (!(v - v === 0)) return String(v);
-  let s;
-  if (type === 'd') s = Math.round(v).toString();
-  else if (type === 'f') s = v.toFixed(prec ?? 6);
-  else if (type === 'e') s = v.toExponential(prec ?? 6).replace(/e([+-])(\d)$/, 'e$10$2');
-  else if (type === '%') s = (v * 100).toFixed(prec ?? 6) + '%';
-  else { s = String(+v.toPrecision(prec || 6)); }
-  if (comma) { const [i, d] = s.split('.'); s = i.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + (d != null ? '.' + d : ''); }
-  return s;
+  if (f.includes('{')) return pyFormat(f, { x: v }, v);
+  return f.includes('%') ? pctFormat(f, v) : f;
 }
 
 Axes.prototype.bar_label = function (container, labels, opts) {
@@ -18262,6 +18823,55 @@ Axes.prototype._renderVline = function (ctx, trace, xScale, yScale, plotY, plotH
 };
 _hooks.drawstyle = _applyDrawstyle;
 void parseFormat;
+
+// ── stackplot(x, y1, y2, … | ys, {labels, colors, baseline = 'zero' | 'sym' | 'wiggle' |
+// 'weighted_wiggle', alpha, edgecolor, linewidth}) — layers stacked from a baseline, each a
+// fill_between from the one below; matplotlib's baselines exactly. Returns the layers. ──
+Axes.prototype.stackplot = function (x, ...args) {
+  let opts = null;
+  if (args.length && _plainOpts(args[args.length - 1])) opts = args.pop();
+  const o = this._opts('stackplot', opts);
+  // one 2D argument (a list of series) or several 1D ones
+  const series = args.length === 1 && _isArrayLike(args[0]) && args[0].length && _isArrayLike(args[0][0]) ? Array.from(args[0]) : args;
+  const X = this._axisCol('x', x), n = X.length, m = series.length;
+  if (!m) throw new TypeError('stackplot(x, y1, y2, …): give at least one series');
+  const Y = series.map((s, k) => { const c = _col$data(s); if (c.length !== n) throw _lenErr('stackplot', `y${k + 1}`, c.length, 'x', n); return c; });
+  // the running sum, then the baseline under it
+  const stack = Y.map(() => new Float64Array(n));
+  for (let j = 0; j < n; j++) { let s = 0; for (let k = 0; k < m; k++) { s += Y[k][j]; stack[k][j] = s; } }
+  const first = new Float64Array(n);
+  const base = o.baseline || 'zero';
+  if (base === 'sym') for (let j = 0; j < n; j++) first[j] = -stack[m - 1][j] / 2;
+  else if (base === 'wiggle') {
+    for (let j = 0; j < n; j++) { let s = 0; for (let k = 0; k < m; k++) s += Y[k][j] * (m - 0.5 - k); first[j] = -s / m; }
+  } else if (base === 'weighted_wiggle') {
+    let center = 0;
+    for (let j = 0; j < n; j++) {
+      const total = stack[m - 1][j], inv = total > 0 ? 1 / total : 0;
+      let c = 0;
+      for (let k = 0; k < m; k++) {
+        const inc = j === 0 ? Y[k][0] : Y[k][j] - Y[k][j - 1];
+        const below = total - stack[k][j] + 0.5 * Y[k][j];
+        const up = j === 0 ? 0.5 : below * inv;
+        c += (up - 0.5) * inc;
+      }
+      center += c;
+      first[j] = center - 0.5 * total;
+    }
+  } else if (base !== 'zero') _warn('stackplot.baseline.' + base, `stackplot(): baseline must be 'zero', 'sym', 'wiggle' or 'weighted_wiggle'`, this._strict);
+  for (let k = 0; k < m; k++) for (let j = 0; j < n; j++) stack[k][j] += first[j];
+  const labels = o.labels ? Array.from(o.labels) : [];
+  const colors = o.colors ? Array.from(o.colors) : null;
+  const out = [];
+  for (let k = 0; k < m; k++) {
+    const fo = {};
+    if (labels[k] != null) fo.label = labels[k];
+    if (colors) fo.color = colors[k % colors.length];
+    for (const key of ['alpha', 'zorder', 'edgecolor', 'linewidth']) if (o[key] != null) fo[key] = o[key];
+    out.push(this.fill_between(X, k === 0 ? first : stack[k - 1], stack[k], fo));
+  }
+  return out;
+};
 
 // ── ../../plot/src/box.js ──
 
@@ -18985,7 +19595,7 @@ function _entries(ax) {
       alpha: t.opts.alpha,
     };
   };
-  const drawn = ax._traces.filter((t) => t.opts && t.type !== 'text' && t.type !== 'bar_label' && t.type !== 'annotate');
+  const drawn = ax._traces.filter((t) => t.opts && !t.hidden && t.type !== 'text' && t.type !== 'bar_label' && t.type !== 'annotate');
   if (lo.handles) {
     return lo.handles.map((h, i) => {
       const t = h && (h._trace || (h[0] && h[0]._trace)) ? (h._trace || h[0]._trace) : drawn.find((d) => d === h);
@@ -19259,7 +19869,7 @@ Axes.prototype.fill = function (...args) {
 
 function _patchHandle(ax, tr) {
   return {
-    _trace: tr, axes: ax,
+    _trace: tr, axes: ax, ..._artistOps(ax, () => [tr]),
     get_facecolor: () => tr.opts.facecolor, get_edgecolor: () => tr.opts.edgecolor || 'none',
     get_label: () => tr.opts.label ?? null,
     get_xy: () => { const [xs, ys] = tr.parts[0].rings[0]; return Array.from(xs, (x, i) => [x, ys[i]]); },
@@ -19279,6 +19889,10 @@ class Polygon {
     this.axes = null;
   }
   get_xy() { const [xs, ys] = this._rings[0]; return Array.from(xs, (x, i) => [x, ys[i]]); }
+  // once added (add_patch): hide, show or take it off its axes
+  set_visible(v) { if (this.axes) _artistOps(this.axes, () => (this._trace ? [this._trace] : [])).set_visible(v); return this; }
+  get_visible() { return !(this._trace && this._trace.hidden); }
+  remove() { if (this.axes) _artistOps(this.axes, () => (this._trace ? [this._trace] : [])).remove(); this.axes = null; }
   __repr__() { return `<matplotlib.patches.${this.constructor.name}>`; }
 }
 class Rectangle extends Polygon {
@@ -19453,6 +20067,400 @@ _KINDS.north_arrow = {
     ctx.restore();
   },
 };
+
+// ── ../../plot/src/dist.js ──
+
+// Distributions, tier 2: violinplot, hexbin, hist2d — matplotlib's algorithms.
+//
+// - violinplot: a Gaussian KDE per dataset (bandwidth by Scott's rule, n^-1/5 × the sample
+//   std, as matplotlib's mlab.GaussianKDE; 'silverman', a number or a function too), evaluated
+//   at `points` values from the data's min to its max, scaled so the widest point is
+//   widths / 2 each side. Extrema, medians, means and quantiles as lines across, half the width.
+// - hexbin: matplotlib's lattice exactly — two offset rectangular lattices, each point to the
+//   nearer centre (the 3:1 metric), so counts match matplotlib's for the same gridsize and
+//   extent. With no C every hexagon of the extent is drawn, empty ones at the bottom of the
+//   colour map (bins='log' leaves them clear); with C, reduce_C_function (mean) of the values
+//   in each.
+// - hist2d: numpy's histogram2d (even bins, the last edge inclusive), drawn as a pcolormesh;
+//   returns [h, xedges, yedges, image], h[i][j] the count of x bin i and y bin j.
+
+
+// ── violinplot ──
+const _finiteSorted = (d) => { const v = []; for (let i = 0; i < d.length; i++) { const x = +d[i]; if (x - x === 0) v.push(x); } return v.sort((a, b) => a - b); };
+function _vpct(v, p) { const n = v.length; if (!n) return NaN; const k = (n - 1) * p, f = Math.floor(k), c = Math.min(n - 1, f + 1); return v[f] + (v[c] - v[f]) * (k - f); }
+
+// the KDE of sorted values at `points` coordinates between min and max
+function _violinStats(v, points, bw) {
+  const n = v.length;
+  const out = { coords: [], vals: [], mean: NaN, median: NaN, min: NaN, max: NaN, n };
+  if (!n) return out;
+  let mean = 0; for (const x of v) mean += x; mean /= n;
+  let ss = 0; for (const x of v) ss += (x - mean) * (x - mean);
+  const std = n > 1 ? Math.sqrt(ss / (n - 1)) : 0;
+  Object.assign(out, { mean, median: _vpct(v, 0.5), min: v[0], max: v[n - 1] });
+  const factor = typeof bw === 'function' ? bw(v) : typeof bw === 'number' ? bw
+    : bw === 'silverman' ? Math.pow((n * 3) / 4, -0.2) : Math.pow(n, -0.2);
+  const h = factor * std;
+  if (!(h > 0)) return out;                                 // constant data: lines only
+  const norm = 1 / (n * h * Math.sqrt(2 * Math.PI));
+  for (let k = 0; k < points; k++) {
+    const c = points > 1 ? v[0] + ((v[n - 1] - v[0]) * k) / (points - 1) : v[0];
+    let s = 0;
+    for (let i = 0; i < n; i++) { const z = (c - v[i]) / h; if (z > -8 && z < 8) s += Math.exp(-0.5 * z * z); }
+    out.coords.push(c); out.vals.push(s * norm);
+  }
+  return out;
+}
+
+Axes.prototype.violinplot = function (dataset, opts) {
+  if (_plainOpts(dataset) && opts == null && dataset.dataset != null) { opts = dataset; dataset = opts.dataset; }
+  const o = _plainOpts(opts) ? { ...opts } : {};
+  const known = ['positions', 'vert', 'orientation', 'widths', 'showmeans', 'showextrema', 'showmedians', 'quantiles', 'points', 'bw_method', 'side', 'zorder', '_kw'];
+  for (const k of Object.keys(o)) if (!known.includes(k)) _warn('violinplot.' + k, `violinplot() has no option '${k}'`, this._strict);
+  const { sets, labels } = _datasets(dataset);
+  const horiz = o.vert === false || o.orientation === 'horizontal';
+  const positions = o.positions ? Array.from(o.positions, Number) : sets.map((_, i) => i + 1);
+  if (positions.length !== sets.length) throw _lenErr('violinplot', 'positions', positions.length, 'dataset', sets.length);
+  const widths = o.widths == null ? positions.map(() => 0.5) : _isArrayLike(o.widths) ? Array.from(o.widths, Number) : positions.map(() => +o.widths);
+  const points = o.points || 100;
+  const qs = o.quantiles ? (Array.isArray(o.quantiles[0]) || ArrayBuffer.isView(o.quantiles[0]) ? o.quantiles.map((q) => Array.from(q, Number)) : sets.map(() => Array.from(o.quantiles, Number))) : null;
+  const sorted = sets.map(_finiteSorted);
+  const stats = sorted.map((v) => _violinStats(v, points, o.bw_method));
+  const color = this._nextColor();
+  const trace = {
+    type: 'violin', stats, positions, widths, horiz, qs, sorted, side: o.side || 'both',
+    show: { means: !!o.showmeans, extrema: o.showextrema !== false, medians: !!o.showmedians },
+    body: stats.map(() => ({ facecolor: color, edgecolor: null, alpha: 0.3 })),
+    lines: { cmeans: { color }, cmins: { color }, cmaxes: { color }, cbars: { color }, cmedians: { color }, cquantiles: { color } },
+    opts: { zorder: o.zorder, label: undefined, color },
+  };
+  this._traces.push(trace);
+  if (labels) this[horiz ? 'set_yticks' : 'set_xticks'](positions, labels);
+  // matplotlib's returns: bodies you restyle (set_facecolor / set_edgecolor / set_alpha), the
+  // line collections (set_color / set_linewidth)
+  const body = (i) => ({
+    set_facecolor(c) { trace.body[i].facecolor = _cssColor(c); return this; },
+    set_edgecolor(c) { trace.body[i].edgecolor = c === 'none' ? null : _cssColor(c); return this; },
+    set_alpha(a) { trace.body[i].alpha = a == null ? 1 : +a; return this; },
+    set_linewidth(w) { trace.body[i].linewidth = +w; return this; },
+    get_facecolor: () => trace.body[i].facecolor,
+  });
+  const coll = (k) => ({
+    set_color(c) { trace.lines[k].color = _cssColor(c); return this; },
+    set_linewidth(w) { trace.lines[k].linewidth = +w; return this; },
+    set_linestyle(s) { trace.lines[k].linestyle = s; return this; },
+  });
+  const out = { bodies: stats.map((_, i) => body(i)), stats: stats.map((s) => ({ mean: s.mean, median: s.median, min: s.min, max: s.max, coords: s.coords, vals: s.vals })) };
+  if (trace.show.extrema) { out.cmins = coll('cmins'); out.cmaxes = coll('cmaxes'); out.cbars = coll('cbars'); }
+  if (trace.show.means) out.cmeans = coll('cmeans');
+  if (trace.show.medians) out.cmedians = coll('cmedians');
+  if (qs) out.cquantiles = coll('cquantiles');
+  return _result(this, [], out);
+};
+
+_KINDS.violin = {
+  z: 2, patch: true,
+  extent(ax, t, axis, log, take) {
+    const along = t.horiz ? axis === 'y' : axis === 'x';
+    t.stats.forEach((s, i) => {
+      if (along) { take(t.positions[i] - t.widths[i] / 2); take(t.positions[i] + t.widths[i] / 2); }
+      else { take(s.min); take(s.max); }
+    });
+  },
+  render(ax, ctx, t, xScale, yScale) {
+    const P = (a, v) => (t.horiz ? [xScale.transform(v), yScale.transform(a)] : [xScale.transform(a), yScale.transform(v)]);
+    ctx.save();
+    t.stats.forEach((s, i) => {
+      const p = t.positions[i], w = t.widths[i], b = t.body[i];
+      if (s.vals.length) {
+        let vmax = 0; for (const v of s.vals) if (v > vmax) vmax = v;
+        const k = (0.5 * w) / vmax, n = s.coords.length;
+        const right = t.side !== 'low', left = t.side !== 'high';
+        ctx.beginPath();
+        for (let j = 0; j < n; j++) { const q = P(p + (right ? s.vals[j] * k : 0), s.coords[j]); if (j) ctx.lineTo(q[0], q[1]); else ctx.moveTo(q[0], q[1]); }
+        for (let j = n - 1; j >= 0; j--) { const q = P(p - (left ? s.vals[j] * k : 0), s.coords[j]); ctx.lineTo(q[0], q[1]); }
+        ctx.closePath();
+        ctx.globalAlpha = b.alpha;
+        ctx.fillStyle = b.facecolor; ctx.fill();
+        ctx.globalAlpha = 1;
+        if (b.edgecolor) { ctx.strokeStyle = b.edgecolor; ctx.lineWidth = b.linewidth || 1; ctx.stroke(); }
+      }
+      // the lines across: half the width, matplotlib's
+      const seg = (key, v, half = w / 4) => {
+        const L = t.lines[key], a = P(p - half, v), c = P(p + half, v);
+        if (!(a[0] - a[0] === 0 && a[1] - a[1] === 0)) return;
+        ctx.strokeStyle = L.color; ctx.lineWidth = L.linewidth || 1;
+        ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(c[0], c[1]); ctx.stroke();
+      };
+      if (t.show.extrema && s.n) {
+        seg('cmins', s.min); seg('cmaxes', s.max);
+        const L = t.lines.cbars, a = P(p, s.min), c = P(p, s.max);
+        ctx.strokeStyle = L.color; ctx.lineWidth = L.linewidth || 1;
+        ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(c[0], c[1]); ctx.stroke();
+      }
+      if (t.show.medians && s.n) seg('cmedians', s.median);
+      if (t.show.means && s.n) seg('cmeans', s.mean);
+      if (t.qs && t.qs[i]) for (const q of t.qs[i]) seg('cquantiles', _vpct(t.sorted[i], q), w / 8);
+    });
+    ctx.restore();
+  },
+  legend(ax, t) { return { patch: true, color: t.body[0] && t.body[0].facecolor }; },
+  pick(ax, t, px, py) {
+    const v = ax.view;
+    for (let i = 0; i < t.positions.length; i++) {
+      const p = t.positions[i], w = t.widths[i];
+      const a = (t.horiz ? v.yScale : v.xScale).transform(p - w / 2), b = (t.horiz ? v.yScale : v.xScale).transform(p + w / 2);
+      const q = t.horiz ? py : px;
+      if (q >= Math.min(a, b) && q <= Math.max(a, b)) { const s = t.stats[i]; return { kind: 'violin', index: i, x: t.horiz ? s.median : p, y: t.horiz ? p : s.median, value: s.median }; }
+    }
+    return null;
+  },
+};
+
+// ── hexbin ──
+// matplotlib's mtransforms.nonsingular: a zero-width range opens by 10 %
+function _nonsingular(lo, hi) {
+  if (!(hi - lo > 1e-12 * Math.max(Math.abs(lo), Math.abs(hi), 1e-300))) {
+    if (lo === 0 && hi === 0) return [-0.1, 0.1];
+    return [lo - 0.1 * Math.abs(lo), hi + 0.1 * Math.abs(hi)];
+  }
+  return [lo, hi];
+}
+
+Axes.prototype.hexbin = function (x, y, opts) {
+  const o = _plainOpts(opts) ? { ...opts } : {};
+  _checkOpts('hexbin', o, this._strict);
+  const X = _col$data(x), Y = _col$data(y), n = X.length;
+  if (Y.length !== n) throw _lenErr('hexbin', 'y', Y.length, 'x', n);
+  const C = o.C != null ? _col$data(o.C) : null;
+  if (C && C.length !== n) throw _lenErr('hexbin', 'C', C.length, 'x', n);
+  const gs = o.gridsize == null ? 100 : o.gridsize;
+  const [nx, ny] = _isArrayLike(gs) ? [Math.max(1, Math.round(gs[0])), Math.max(1, Math.round(gs[1]))] : [Math.max(1, Math.round(gs)), Math.max(1, Math.floor(gs / Math.sqrt(3)))];
+  let xmin, xmax, ymin, ymax;
+  if (o.extent) [xmin, xmax, ymin, ymax] = Array.from(o.extent, Number);
+  else {
+    xmin = Infinity; xmax = -Infinity; ymin = Infinity; ymax = -Infinity;
+    for (let i = 0; i < n; i++) { const a = X[i], b = Y[i]; if (a - a !== 0 || b - b !== 0) continue; if (a < xmin) xmin = a; if (a > xmax) xmax = a; if (b < ymin) ymin = b; if (b > ymax) ymax = b; }
+    if (xmin > xmax) { xmin = 0; xmax = 1; ymin = 0; ymax = 1; }
+    [xmin, xmax] = _nonsingular(xmin, xmax); [ymin, ymax] = _nonsingular(ymin, ymax);
+  }
+  const pad = 1e-9 * (xmax - xmin);
+  xmin -= pad; xmax += pad;
+  const sx = (xmax - xmin) / nx, sy = (ymax - ymin) / ny;
+  const nx1 = nx + 1, ny1 = ny + 1, n1 = nx1 * ny1, n2 = nx * ny;
+  const count = new Float64Array(n1 + n2);
+  const reduce = typeof o.reduce_C_function === 'function' ? o.reduce_C_function : null;
+  const sum = C ? new Float64Array(n1 + n2) : null;
+  const lists = C && reduce ? Array.from({ length: n1 + n2 }, () => []) : null;
+  for (let i = 0; i < n; i++) {
+    const a = X[i], b = Y[i];
+    if (a - a !== 0 || b - b !== 0) continue;
+    if (C && C[i] - C[i] !== 0) continue;
+    const ix = (a - xmin) / sx, iy = (b - ymin) / sy;
+    const ix1 = Math.round(ix), iy1 = Math.round(iy), ix2 = Math.floor(ix), iy2 = Math.floor(iy);
+    // numpy rounds halves to even; Math.round rounds them up — on exact halves only
+    const r1 = (v, r) => (Math.abs(v - Math.trunc(v)) === 0.5 ? 2 * Math.round(v / 2) : r);
+    const jx1 = r1(ix, ix1), jy1 = r1(iy, iy1);
+    const d1 = (ix - jx1) ** 2 + 3 * (iy - jy1) ** 2, d2 = (ix - ix2 - 0.5) ** 2 + 3 * (iy - iy2 - 0.5) ** 2;
+    let k = -1;
+    if (d1 < d2) { if (jx1 >= 0 && jx1 < nx1 && jy1 >= 0 && jy1 < ny1) k = jx1 * ny1 + jy1; }
+    else if (ix2 >= 0 && ix2 < nx && iy2 >= 0 && iy2 < ny) k = n1 + ix2 * ny + iy2;
+    if (k < 0) continue;
+    count[k]++;
+    if (sum) sum[k] += C[i];
+    if (lists) lists[k].push(C[i]);
+  }
+  const accum = new Float64Array(n1 + n2);
+  const mincnt = o.mincnt == null ? (C ? 1 : null) : +o.mincnt;
+  for (let k = 0; k < n1 + n2; k++) {
+    if (mincnt != null && count[k] < mincnt) { accum[k] = NaN; continue; }
+    accum[k] = !C ? count[k] : lists ? reduce(lists[k]) : count[k] ? sum[k] / count[k] : NaN;
+  }
+  const cx = new Float64Array(n1 + n2), cy = new Float64Array(n1 + n2);
+  for (let i = 0; i < nx1; i++) for (let j = 0; j < ny1; j++) { const k = i * ny1 + j; cx[k] = xmin + i * sx; cy[k] = ymin + j * sy; }
+  for (let i = 0; i < nx; i++) for (let j = 0; j < ny; j++) { const k = n1 + i * ny + j; cx[k] = xmin + (i + 0.5) * sx; cy[k] = ymin + (j + 0.5) * sy; }
+  if (o.bins === 'log' && o.norm == null) o.norm = 'log';
+  else if (o.bins != null && o.bins !== 'log') _warn('hexbin.bins', "hexbin(): bins='log' or None (a count or edges isn't supported yet; use norm=BoundaryNorm(...))", this._strict);
+  if (o.xscale === 'log' || o.yscale === 'log') _warn('hexbin.xscale', 'hexbin(): log-scaled bins are not supported yet', this._strict);
+  const tr = { type: 'hexbin', cx, cy, accum, sx, sy, ext: [xmin, xmax, ymin, ymax], counts: count, opts: o, cmapped: true };
+  this._traces.push(tr);
+  const out = _result(this, [], { _trace: tr, get_array: () => accum.filter((v) => v === v), get_offsets: () => Array.from(cx, (v, k) => [v, cy[k]]).filter((_, k) => accum[k] === accum[k]), __repr__: () => '<matplotlib.collections.PolyCollection>' });
+  return out;
+};
+
+// the six corners of a hexagon of the lattice, in units of (sx, sy) — matplotlib's
+const _HEX = [[0.5, -0.5 / 3], [0.5, 0.5 / 3], [0, 1 / 3], [-0.5, 0.5 / 3], [-0.5, -0.5 / 3], [0, -1 / 3]];
+
+_KINDS.hexbin = {
+  z: 0, cmap: true,
+  crange(ax, t) {
+    let lo = Infinity, hi = -Infinity, minPos = Infinity;
+    for (const v of t.accum) if (v - v === 0) { if (v < lo) lo = v; if (v > hi) hi = v; if (v > 0 && v < minPos) minPos = v; }
+    return { lo, hi, minPos: minPos === Infinity ? undefined : minPos };
+  },
+  // matplotlib autoscales a hexbin tight to its hexagons
+  extent(ax, t, axis, log, take, stick) {
+    const [x0, x1, y0, y1] = t.ext;
+    const a = axis === 'x' ? x0 - t.sx / 2 : y0 - t.sy / 3, b = axis === 'x' ? x1 + t.sx / 2 : y1 + t.sy / 3;
+    take(a); take(b); stick(a); stick(b);
+  },
+  render(ax, ctx, t, xScale, yScale) {
+    const o = t.opts, norm = ax._cmapNorm(t), at = _indexer(norm);
+    const cm = o.cmap || ax._theme.ramp || 'viridis', lut = _cmapLut(cm), fn = lut ? null : getCmap(cm);
+    const colorOf = (q) => (lut ? `rgb(${lut[q * 4]},${lut[q * 4 + 1]},${lut[q * 4 + 2]})` : fn((q + 0.5) / 256));
+    // one path per colour: at most 256 fills, however many hexagons
+    const buckets = new Map();
+    const linear = !xScale.log && !yScale.log;
+    const off = _HEX.map(([u, v]) => [u * t.sx * xScale.a, v * t.sy * yScale.a]);
+    for (let k = 0; k < t.accum.length; k++) {
+      const q = at(t.accum[k]);
+      if (q < 0) continue;
+      let list = buckets.get(q);
+      if (!list) buckets.set(q, (list = []));
+      list.push(k);
+    }
+    ctx.save();
+    ctx.globalAlpha = o.alpha != null ? o.alpha : 1;
+    const ec = o.edgecolors != null && o.edgecolors !== 'face' ? (o.edgecolors === 'none' ? null : _cssColor(o.edgecolors)) : 'face';
+    for (const q of [...buckets.keys()].sort((a, b) => a - b)) {
+      ctx.beginPath();
+      for (const k of buckets.get(q)) {
+        if (linear) {
+          const X = xScale.transform(t.cx[k]), Y = yScale.transform(t.cy[k]);
+          ctx.moveTo(X + off[0][0], Y + off[0][1]);
+          for (let s = 1; s < 6; s++) ctx.lineTo(X + off[s][0], Y + off[s][1]);
+        } else {
+          for (let s = 0; s < 6; s++) {
+            const X = xScale.transform(t.cx[k] + _HEX[s][0] * t.sx), Y = yScale.transform(t.cy[k] + _HEX[s][1] * t.sy);
+            if (s) ctx.lineTo(X, Y); else ctx.moveTo(X, Y);
+          }
+        }
+        ctx.closePath();
+      }
+      const c = colorOf(q);
+      ctx.fillStyle = c; ctx.fill();
+      // matplotlib's edgecolors='face': a hairline of the fill closes the seams
+      if (ec === 'face') { ctx.strokeStyle = c; ctx.lineWidth = o.linewidths != null ? +o.linewidths : 0.5; ctx.stroke(); }
+      else if (ec) { ctx.strokeStyle = ec; ctx.lineWidth = o.linewidths != null ? +o.linewidths : 0.5; ctx.stroke(); }
+    }
+    ctx.restore();
+  },
+  // the hexagon under the pointer: its centre, count and value
+  pick(ax, t, px, py) {
+    const v = ax.view, X = v.xScale.inverse(px), Y = v.yScale.inverse(py);
+    let best = -1, bd = Infinity;
+    const [x0, , y0] = t.ext, ix = (X - x0) / t.sx, iy = (Y - y0) / t.sy;
+    for (let k = 0; k < t.accum.length; k++) {
+      const dx = (t.cx[k] - x0) / t.sx - ix;
+      if (Math.abs(dx) > 1) continue;
+      const dy = (t.cy[k] - y0) / t.sy - iy, d = dx * dx + 3 * dy * dy;
+      if (d < bd) { bd = d; best = k; }
+    }
+    if (best < 0 || bd > 1 || !(t.accum[best] === t.accum[best])) return null;
+    return { kind: 'hexbin', index: best, x: t.cx[best], y: t.cy[best], value: t.accum[best], count: t.counts[best] };
+  },
+};
+
+// ── hist2d ──
+function _edges(data, bins, range, name) {
+  if (_isArrayLike(bins)) { const e = Float64Array.from(bins, Number); if (e.length < 2) throw new Error(`hist2d: ${name} edges need at least 2 values`); return e; }
+  let lo, hi;
+  if (range) [lo, hi] = range.map(Number);
+  else { lo = Infinity; hi = -Infinity; for (const v of data) if (v - v === 0) { if (v < lo) lo = v; if (v > hi) hi = v; } }
+  if (!(lo <= hi)) { lo = 0; hi = 1; }
+  if (lo === hi) { lo -= 0.5; hi += 0.5; }
+  const nb = Math.max(1, Math.round(+bins || 10)), e = new Float64Array(nb + 1);
+  for (let i = 0; i <= nb; i++) e[i] = lo + ((hi - lo) * i) / nb;
+  return e;
+}
+const _binOf = (e, v) => {
+  const n = e.length - 1;
+  if (!(v >= e[0] && v <= e[n])) return -1;
+  if (v === e[n]) return n - 1;                             // the last edge is inclusive (numpy)
+  let lo = 0, hi = n;
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (v >= e[m]) lo = m; else hi = m; }
+  return lo;
+};
+
+Axes.prototype.hist2d = function (x, y, opts) {
+  const o = _plainOpts(opts) ? { ...opts } : {};
+  _checkOpts('hist2d', o, this._strict);
+  const X = this._axisCol('x', x), Y = this._axisCol('y', y), n = X.length;
+  if (Y.length !== n) throw _lenErr('hist2d', 'y', Y.length, 'x', n);
+  const W = o.weights != null ? _col$data(o.weights) : null;
+  if (W && W.length !== n) throw _lenErr('hist2d', 'weights', W.length, 'x', n);
+  // bins: n · [nx, ny] · edges · [xedges, yedges] — numpy's rule: a length-2 sequence is one
+  // per axis, anything else is for both
+  const B = o.bins == null ? 10 : o.bins;
+  const [bx, by] = _isArrayLike(B) && B.length === 2 ? [B[0], B[1]] : [B, B];
+  const rx = o.range ? o.range[0] : null, ry = o.range ? o.range[1] : null;
+  const ex = _edges(X, bx, rx, 'x'), ey = _edges(Y, by, ry, 'y');
+  const nxb = ex.length - 1, nyb = ey.length - 1;
+  const h = Array.from({ length: nxb }, () => new Float64Array(nyb));
+  let total = 0;
+  for (let i = 0; i < n; i++) {
+    const a = _binOf(ex, X[i]), b = _binOf(ey, Y[i]);
+    if (a < 0 || b < 0) continue;
+    const w = W ? W[i] : 1;
+    if (!(w - w === 0)) continue;
+    h[a][b] += w; total += w;
+  }
+  if (o.density && total > 0) for (let a = 0; a < nxb; a++) for (let b = 0; b < nyb; b++) h[a][b] /= total * (ex[a + 1] - ex[a]) * (ey[b + 1] - ey[b]);
+  // the image: h transposed (rows are y), cmin / cmax masked
+  const C = new Float64Array(nxb * nyb);
+  for (let b = 0; b < nyb; b++) for (let a = 0; a < nxb; a++) {
+    const v = h[a][b];
+    C[b * nxb + a] = (o.cmin != null && v < o.cmin) || (o.cmax != null && v > o.cmax) ? NaN : v;
+  }
+  const pm = {};
+  for (const k of ['cmap', 'norm', 'vmin', 'vmax', 'alpha', 'label', 'zorder']) if (o[k] !== undefined) pm[k] = o[k];
+  const C2 = Array.from({ length: nyb }, (_, b) => C.subarray(b * nxb, (b + 1) * nxb));
+  const image = this.pcolormesh(ex, ey, C2, pm);
+  return _result(this, [h, ex, ey, image], { h, xedges: ex, yedges: ey, image, _trace: image._trace });
+};
+
+// ── ../../plot/src/axis.js ──
+
+// ax.xaxis / ax.yaxis — matplotlib's Axis objects, as far as a chart's code reaches for them:
+// the tick formatters and locators (major and minor), a date axis, the axis label. They hold
+// their settings on the axes they belong to, for every axes sharing that axis.
+
+
+class Axis {
+  constructor(ax, name) { this.axes = ax; this.axis_name = name; }
+  _set(k, v) {
+    for (const a of this.axes._group(this.axis_name)) a._ticker(this.axis_name)[k] = v;
+    return this;
+  }
+  set_major_formatter(f) { return this._set('majorF', f == null ? null : _asFormatter(f)); }
+  set_minor_formatter(f) { return this._set('minorF', f == null ? null : _asFormatter(f)); }
+  set_major_locator(l) { return this._set('majorL', l == null ? null : _asLocator(l)); }
+  set_minor_locator(l) { return this._set('minorL', l == null ? null : _asLocator(l)); }
+  get_major_formatter() { return this.axes._ticker(this.axis_name).majorF; }
+  get_minor_formatter() { return this.axes._ticker(this.axis_name).minorF; }
+  get_major_locator() { return this.axes._ticker(this.axis_name).majorL; }
+  get_minor_locator() { return this.axes._ticker(this.axis_name).minorL; }
+  // the axis holds dates: numbers on it are ms since 1970 UTC (Date objects say so by themselves)
+  axis_date(_tz) { for (const a of this.axes._group(this.axis_name)) a[this.axis_name === 'x' ? '_xdate' : '_ydate'] = true; return this; }
+  set_label_text(s, opts) { return this.axes[this.axis_name === 'x' ? 'set_xlabel' : 'set_ylabel'](s, opts); }
+  get_label_text() { const l = this.axes[this.axis_name === 'x' ? '_xlabel' : '_ylabel']; return l ? l.text : ''; }
+  set_ticks(ticks, labels, opts) { return this.axes[this.axis_name === 'x' ? 'set_xticks' : 'set_yticks'](ticks, labels, opts); }
+  get_ticklocs() { return this.axes[this.axis_name === 'x' ? 'get_xticks' : 'get_yticks'](); }
+  get_ticklabels() { return this.axes[this.axis_name === 'x' ? 'get_xticklabels' : 'get_yticklabels'](); }
+  __repr__() { return `<${this.axis_name.toUpperCase()}Axis>`; }
+}
+
+Axes.prototype._ticker = function (axis) {
+  const k = axis === 'x' ? '_tkx' : '_tky';
+  return this[k] || (this[k] = { majorF: null, minorF: null, majorL: null, minorL: null, minorOn: false });
+};
+Object.defineProperty(Axes.prototype, 'xaxis', { get() { return this._xaxisObj || (this._xaxisObj = new Axis(this, 'x')); }, configurable: true });
+Object.defineProperty(Axes.prototype, 'yaxis', { get() { return this._yaxisObj || (this._yaxisObj = new Axis(this, 'y')); }, configurable: true });
+Axes.prototype.xaxis_date = function (tz) { this.xaxis.axis_date(tz); return this; };
+Axes.prototype.yaxis_date = function (tz) { this.yaxis.axis_date(tz); return this; };
+// minor ticks between the majors (AutoMinorLocator), on both axes
+Axes.prototype.minorticks_on = function () { for (const a of ['x', 'y']) for (const g of this._group(a)) g._ticker(a).minorOn = true; return this; };
+Axes.prototype.minorticks_off = function () { for (const a of ['x', 'y']) for (const g of this._group(a)) { const t = g._ticker(a); t.minorOn = false; t.minorL = null; } return this; };
 
 // ── ../../plot/src/figure.js ──
 

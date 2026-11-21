@@ -87,6 +87,14 @@ The layout is measured from the real labels, ticks are sized to the axis so labe
 
 `hist(x, { bins, range, weights, density, cumulative })` counts exactly as `numpy.histogram` does (checked against numpy's own output: values on edges, non-representable edges, the inclusive last edge), and `bins='auto' | 'fd' | 'sturges' | 'sqrt' | 'rice' | 'scott'` give numpy 2's bin counts. `ax.hist` and `plt.hist` return `[n, bins, patches]`.
 
+## Ticks, dates and the tier-2 charts
+
+`ax.xaxis.set_major_formatter('{x:,.0f} m')` (Python's own format rules, checked against
+CPython), a function, or matplotlib's ticker classes (`plt.ticker.PercentFormatter`, `MultipleLocator`, …);
+`ax.minorticks_on()`; Date objects make a date axis with calendar ticks (`plt.dates.DateFormatter('%b %Y')`).
+`violinplot`, `hexbin`, `hist2d` and `stackplot` follow matplotlib's algorithms, and their numbers
+are checked against matplotlib's own.
+
 ## Plan views
 
 Maps in projected or local coordinates, with no basemap: `ax.add_geometry(geojson)` takes a GeoJSON Geometry, Feature or FeatureCollection (polygons with holes, lines, points — `@gcu/wkt` output drops in), and a pick inside a polygon returns its feature's properties. matplotlib's `fill` and `Polygon` / `Rectangle` / `Circle` patches work too. `ax.scalebar({units: 'm'})` and `ax.north_arrow()` add the map furniture; `imshow(Z, {extent})` puts a georeferenced grid in place; `set_aspect('equal')` holds through zoom and pan.

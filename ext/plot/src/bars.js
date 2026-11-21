@@ -8,6 +8,7 @@
 // dataset passed, as matplotlib does; several datasets draw side by side, or stacked.
 
 import { Axes, _KINDS, _plainOpts, _lenErr, _result } from './axes.js';
+import { pyFormat, pctFormat } from './pyfmt.js';
 import { _col, _isArrayLike, _traceRange } from './data.js';
 import { _cssColor } from './color.js';
 import { _warn } from './opts.js';
@@ -28,7 +29,9 @@ function _bar(ax, orient, pos, size, opts) {
   const P = ax._axisCol(orient === 'v' ? 'x' : 'y', pos), S = _col(size);
   if (P.length !== S.length) throw _lenErr(fn, orient === 'v' ? 'x' : 'y', P.length, orient === 'v' ? 'height' : 'width', S.length);
   const thickKey = orient === 'v' ? 'width' : 'height', baseKey = orient === 'v' ? 'bottom' : 'left';
-  const thick = o[thickKey] == null ? 0.8 : _isArrayLike(o[thickKey]) ? _col(o[thickKey]) : +o[thickKey];
+  // on a date axis matplotlib's 0.8 is 0.8 of a DAY (its dates count days; plot's count ms)
+  const onDates = orient === 'v' ? ax._xdate : ax._ydate;
+  const thick = o[thickKey] == null ? (onDates ? 0.8 * 864e5 : 0.8) : _isArrayLike(o[thickKey]) ? _col(o[thickKey]) : +o[thickKey];
   const base = o[baseKey] == null ? null : _isArrayLike(o[baseKey]) ? _col(o[baseKey]) : +o[baseKey];
   if (o.align != null && o.align !== 'center' && o.align !== 'edge') _warn(`${fn}.align.${o.align}`, `${fn}(): align must be 'center' or 'edge', not '${o.align}'`, ax._strict);
   if (Array.isArray(o.color)) o.color = o.color.map(_cssColor);
@@ -128,26 +131,14 @@ Axes.prototype.barh = function (y, width, opts) { return _bar(this, 'h', y, widt
 
 // ── bar_label(container, labels?, {fmt, padding, label_type, color, fontsize, rotation}) ──
 // fmt: '%g' (default), any %-format, a '{:.1f}' format, or a function
+// a bar label's text: fmt a callable, a {}-style template ('{:.1f}', '{x:,.0f} t') or %-style
+// ('%.1f', '%g', the default) — Python's own rules (pyfmt.js)
 export function _fmtValue(fmt, v) {
   if (typeof fmt === 'function') return String(fmt(v));
   if (fmt == null) fmt = '%g';
   const f = String(fmt);
-  let m = /^(.*?)\{(?:[^:}]*):?(,?)(?:\.(\d+))?([fgedn%]?)\}(.*)$/.exec(f);
-  if (m) return m[1] + _numFmt(v, m[4] || 'g', m[3] == null ? null : +m[3], !!m[2]) + m[5];
-  m = /^(.*?)%[-+ 0#]*\d*(?:\.(\d+))?([dfgeis%])(.*)$/.exec(f);
-  if (m) return m[1] + (m[3] === 's' ? String(v) : _numFmt(v, m[3] === 'i' ? 'd' : m[3], m[2] == null ? null : +m[2], false)) + m[4];
-  return f;
-}
-function _numFmt(v, type, prec, comma) {
-  if (!(v - v === 0)) return String(v);
-  let s;
-  if (type === 'd') s = Math.round(v).toString();
-  else if (type === 'f') s = v.toFixed(prec ?? 6);
-  else if (type === 'e') s = v.toExponential(prec ?? 6).replace(/e([+-])(\d)$/, 'e$10$2');
-  else if (type === '%') s = (v * 100).toFixed(prec ?? 6) + '%';
-  else { s = String(+v.toPrecision(prec || 6)); }
-  if (comma) { const [i, d] = s.split('.'); s = i.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + (d != null ? '.' + d : ''); }
-  return s;
+  if (f.includes('{')) return pyFormat(f, { x: v }, v);
+  return f.includes('%') ? pctFormat(f, v) : f;
 }
 
 Axes.prototype.bar_label = function (container, labels, opts) {

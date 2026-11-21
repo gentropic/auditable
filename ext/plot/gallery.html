@@ -16,11 +16,11 @@
   .err { color: #e44; white-space: pre-wrap; }
 </style>
 <body>
-<section class="dark"><h2>@gcu/plot · dark · 16 examples from API.md — hover, wheel, drag, shift-drag, double-click</h2><div class="grid" id="dark"></div></section>
+<section class="dark"><h2>@gcu/plot · dark · 21 examples from API.md — hover, wheel, drag, shift-drag, double-click</h2><div class="grid" id="dark"></div></section>
 <section class="paper"><h2>paper (plt.style.use('default'))</h2><div class="grid" id="paper"></div></section>
 <script type="module">
 import * as P from './index.js';
-const { VERSION, subplots, plot, scatter, imshow, bar, hist, cmap, matshow, rc, style, figure, show, flush_figures, close, shown, saved, subplot, colors, cm, gca, gcf, xlabel, ylabel, title, xlim, ylim, xscale, yscale, legend, grid, vlines, hlines, axhline, axvline, text, subplots_adjust, tight_layout, savefig, clf, cla, xticks, yticks, axis, barh, bar_label, errorbar, fill_between, fill_betweenx, step, axhspan, axvspan, annotate, boxplot, contour, contourf, pcolormesh, fill, add_geometry, margins, colorbar, suptitle, pltAdder, rcParams, Polygon, Rectangle, Circle, ScalarMappable, Figure, Axes, LinearScale, LogScale, getCmap, replay, recordingContext, themeFromCSS, resolveTheme, Normalize, LogNorm, TwoSlopeNorm, CenteredNorm, BoundaryNorm, ListedColormap, LinearSegmentedColormap, toSVG, encodePNG, interact, link } = P;
+const { VERSION, subplots, plot, scatter, imshow, bar, hist, cmap, matshow, rc, style, figure, show, flush_figures, close, shown, saved, subplot, colors, cm, gca, gcf, xlabel, ylabel, title, xlim, ylim, xscale, yscale, legend, grid, vlines, hlines, axhline, axvline, text, subplots_adjust, tight_layout, savefig, clf, cla, xticks, yticks, axis, barh, bar_label, errorbar, fill_between, fill_betweenx, step, axhspan, axvspan, annotate, boxplot, contour, contourf, pcolormesh, fill, add_geometry, violinplot, hexbin, hist2d, stackplot, minorticks_on, minorticks_off, tick_params, margins, colorbar, suptitle, pltAdder, rcParams, Polygon, Rectangle, Circle, ScalarMappable, ticker, dates, Figure, Axes, LinearScale, LogScale, getCmap, replay, recordingContext, themeFromCSS, resolveTheme, Normalize, LogNorm, TwoSlopeNorm, CenteredNorm, BoundaryNorm, ListedColormap, LinearSegmentedColormap, toSVG, encodePNG, interact, link } = P;
 const EXAMPLES = [
   ['plot', () => {
     const x = Array.from({ length: 100 }, (_, i) => i / 10);
@@ -159,6 +159,49 @@ const EXAMPLES = [
     ax.scatter(x, y, { c: x, s: 6, cmap: 'plasma' });
     ax.highlight((i, px, py) => px * px + py * py < 300);
     ax.set_aspect('equal'); ax.set_title('highlight');
+    return fig;
+  }],
+  ['violin', () => {
+    const u = (k) => (((Math.sin(k * 12.9898) * 43758.5453) % 1) + 1) % 1;
+    const sets = [0, 1, 2].map((j) => Array.from({ length: 300 }, (_, i) => 20 + 6 * j + 8 * (u(i + 1e3 * j) + u(i + 7e3 + 1e3 * j) - 1)));
+    const [fig, ax] = subplots(1, 1, { figsize: [5, 3.2] });
+    const parts = ax.violinplot(sets, { showmedians: true });
+    parts.bodies[2].set_facecolor('C3');
+    ax.set_xticks([1, 2, 3], ['oxide', 'transition', 'fresh']); ax.set_ylabel('Fe (%)'); ax.set_title('violinplot');
+    return fig;
+  }],
+  ['hexbin', () => {
+    const u = (k) => (((Math.sin(k * 12.9898) * 43758.5453) % 1) + 1) % 1;
+    const x = [], y = [];
+    for (let i = 0; i < 20000; i++) { const a = u(i) + u(i + 3e4) + u(i + 6e4) - 1.5; x.push(a); y.push(0.6 * a + 0.4 * (u(i + 9e4) + u(i + 12e4) - 1)); }
+    const [fig, ax] = subplots(1, 1, { figsize: [5, 3.6] });
+    const hb = ax.hexbin(x, y, { gridsize: 30, cmap: 'inferno', bins: 'log' });
+    fig.colorbar(hb, { ax, label: 'count' }); ax.set_title('hexbin');
+    return fig;
+  }],
+  ['hist2d', () => {
+    const u = (k) => (((Math.sin(k * 12.9898) * 43758.5453) % 1) + 1) % 1;
+    const x = Array.from({ length: 5000 }, (_, i) => u(i) + u(i + 1e4)), y = x.map((v, i) => v + u(i + 2e4) - 0.5);
+    const [fig, ax] = subplots(1, 1, { figsize: [5, 3.4] });
+    const [h, xe, ye, im] = ax.hist2d(x, y, { bins: 24, cmap: 'viridis' });
+    fig.colorbar(im, { ax }); ax.set_title('hist2d');
+    return fig;
+  }],
+  ['stackplot', () => {
+    const yr = [2019, 2020, 2021, 2022, 2023, 2024, 2025];
+    const [fig, ax] = subplots(1, 1, { figsize: [5, 3.2] });
+    ax.stackplot(yr, [3, 4, 4.5, 5, 6, 6.2, 7], [1, 1.5, 2, 2.2, 2, 2.8, 3], [0.5, 0.6, 1, 1.4, 1.8, 2, 2.6], { labels: ['ore', 'low grade', 'waste'], alpha: 0.85 });
+    ax.legend({ loc: 'upper left' }); ax.set_ylabel('Mt'); ax.set_title('stackplot');
+    return fig;
+  }],
+  ['dates', () => {
+    const day = 864e5, t0 = Date.UTC(2026, 0, 1);
+    const d = Array.from({ length: 200 }, (_, i) => new Date(t0 + i * day));
+    const [fig, ax] = subplots(1, 1, { figsize: [5, 3.2] });
+    ax.plot(d, d.map((_, i) => 0.6 + 0.25 * Math.sin(i / 18) + 0.05 * Math.sin(i * 1.3)));
+    ax.yaxis.set_major_formatter(new ticker.PercentFormatter(1));
+    ax.minorticks_on(); ax.grid(true, { which: 'both' });
+    ax.set_title('a date axis, percent ticks, minor grid');
     return fig;
   }],
 ];

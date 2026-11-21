@@ -7,6 +7,7 @@ import { Normalize, LogNorm, TwoSlopeNorm, CenteredNorm, BoundaryNorm } from './
 import { setStyle, themeFromCSS } from './style.js';
 import { ScalarMappable } from './axes.js';
 import { Polygon, Rectangle, Circle } from './geo.js';
+import { ticker, dates } from './ticker.js';
 import { rcParams, _noop } from './opts.js';
 
 // one version string, read by the extension registration below (package.json carries the same)
@@ -290,6 +291,16 @@ export function pcolormesh(...args) { return _ax().pcolormesh(...args); }
 export function fill(...args) { return _ax().fill(...args); }
 export function add_geometry(geom, opts) { return _ax().add_geometry(geom, opts); }
 export { Polygon, Rectangle, Circle, ScalarMappable };
+// tier 2: distributions, stacks, ticks (dist.js, marks.js, ticker.js)
+export function violinplot(dataset, opts) { return _ax().violinplot(dataset, opts); }
+export function hexbin(x, y, opts) { return _ax().hexbin(x, y, opts); }
+export function hist2d(x, y, opts) { return _ax().hist2d(x, y, opts); }
+export function stackplot(x, ...args) { return _ax().stackplot(x, ...args); }
+export function minorticks_on() { _ax().minorticks_on(); }
+export function minorticks_off() { _ax().minorticks_off(); }
+export function tick_params(opts) { _ax().tick_params(opts); }
+// matplotlib.ticker and matplotlib.dates, as plt.ticker / plt.dates
+export { ticker, dates };
 export function margins(x, y) { return _ax().margins(x, y); }
 
 // plt.colorbar(im, ax=None, **kwargs) — attach a colorbar to the axes
@@ -328,6 +339,7 @@ export const pltAdder = {
   xticks, yticks, axis, margins, colorbar, suptitle, themeFromCSS,
   colors, Normalize, LogNorm, TwoSlopeNorm, CenteredNorm, BoundaryNorm, ListedColormap,
   boxplot, contour, contourf, pcolormesh, fill, add_geometry, Polygon, Rectangle, Circle, ScalarMappable,
+  violinplot, hexbin, hist2d, stackplot, minorticks_on, minorticks_off, tick_params, ticker, dates,
   barh, bar_label, errorbar, fill_between, fill_betweenx, step, axhspan, axvspan, annotate,
 };
 

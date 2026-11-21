@@ -18,7 +18,7 @@ import { Axes, _KINDS, _plainOpts, _result, _grid2d } from './axes.js';
 import { _col, _isArrayLike } from './data.js';
 import { _cssColor, getCmap, _cmapLut, _colorBytes } from './color.js';
 import { _blit } from './raster.js';
-import { _niceTicks } from './ticks.js';
+import { _niceTicks } from './nice.js';
 import { Normalize, BoundaryNorm, _resolveNorm } from './norm.js';
 import { _warn } from './opts.js';
 import { dashArray } from './format.js';

@@ -332,3 +332,52 @@ Axes.prototype._renderVline = function (ctx, trace, xScale, yScale, plotY, plotH
 };
 _hooks.drawstyle = _applyDrawstyle;
 void parseFormat;
+
+// ── stackplot(x, y1, y2, … | ys, {labels, colors, baseline = 'zero' | 'sym' | 'wiggle' |
+// 'weighted_wiggle', alpha, edgecolor, linewidth}) — layers stacked from a baseline, each a
+// fill_between from the one below; matplotlib's baselines exactly. Returns the layers. ──
+Axes.prototype.stackplot = function (x, ...args) {
+  let opts = null;
+  if (args.length && _plainOpts(args[args.length - 1])) opts = args.pop();
+  const o = this._opts('stackplot', opts);
+  // one 2D argument (a list of series) or several 1D ones
+  const series = args.length === 1 && _isArrayLike(args[0]) && args[0].length && _isArrayLike(args[0][0]) ? Array.from(args[0]) : args;
+  const X = this._axisCol('x', x), n = X.length, m = series.length;
+  if (!m) throw new TypeError('stackplot(x, y1, y2, …): give at least one series');
+  const Y = series.map((s, k) => { const c = _col(s); if (c.length !== n) throw _lenErr('stackplot', `y${k + 1}`, c.length, 'x', n); return c; });
+  // the running sum, then the baseline under it
+  const stack = Y.map(() => new Float64Array(n));
+  for (let j = 0; j < n; j++) { let s = 0; for (let k = 0; k < m; k++) { s += Y[k][j]; stack[k][j] = s; } }
+  const first = new Float64Array(n);
+  const base = o.baseline || 'zero';
+  if (base === 'sym') for (let j = 0; j < n; j++) first[j] = -stack[m - 1][j] / 2;
+  else if (base === 'wiggle') {
+    for (let j = 0; j < n; j++) { let s = 0; for (let k = 0; k < m; k++) s += Y[k][j] * (m - 0.5 - k); first[j] = -s / m; }
+  } else if (base === 'weighted_wiggle') {
+    let center = 0;
+    for (let j = 0; j < n; j++) {
+      const total = stack[m - 1][j], inv = total > 0 ? 1 / total : 0;
+      let c = 0;
+      for (let k = 0; k < m; k++) {
+        const inc = j === 0 ? Y[k][0] : Y[k][j] - Y[k][j - 1];
+        const below = total - stack[k][j] + 0.5 * Y[k][j];
+        const up = j === 0 ? 0.5 : below * inv;
+        c += (up - 0.5) * inc;
+      }
+      center += c;
+      first[j] = center - 0.5 * total;
+    }
+  } else if (base !== 'zero') _warn('stackplot.baseline.' + base, `stackplot(): baseline must be 'zero', 'sym', 'wiggle' or 'weighted_wiggle'`, this._strict);
+  for (let k = 0; k < m; k++) for (let j = 0; j < n; j++) stack[k][j] += first[j];
+  const labels = o.labels ? Array.from(o.labels) : [];
+  const colors = o.colors ? Array.from(o.colors) : null;
+  const out = [];
+  for (let k = 0; k < m; k++) {
+    const fo = {};
+    if (labels[k] != null) fo.label = labels[k];
+    if (colors) fo.color = colors[k % colors.length];
+    for (const key of ['alpha', 'zorder', 'edgecolor', 'linewidth']) if (o[key] != null) fo[key] = o[key];
+    out.push(this.fill_between(X, k === 0 ? first : stack[k - 1], stack[k], fo));
+  }
+  return out;
+};

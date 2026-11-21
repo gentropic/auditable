@@ -17,7 +17,7 @@ const r = await bundle({
   entry: 'src/widget.js',
   outFile: OUT,
   // the view (../view/src — shared with pages) and the engine ride inline
-  inline: ['../view/src/view.js', '../view/src/toolbar.js', '../view/src/lock.js', '../view/src/chrome.js', '../view/src/decor.js', '../view/src/axes.js', '../../plot/src/figure.js', '../../plot/src/ticks.js', '../view/src/parquet-blocks.js', '../../theme/src/theme.js', '../../plot/src/scale.js','../index.js', '../../drillhole/src/samples.js', '../../drillhole/src/desurvey.js', '../../drillhole/src/validate.js'],
+  inline: ['../view/src/view.js', '../view/src/toolbar.js', '../view/src/lock.js', '../view/src/chrome.js', '../view/src/decor.js', '../view/src/axes.js', '../../plot/src/figure.js', '../../plot/src/nice.js', '../../plot/src/ticks.js', '../view/src/parquet-blocks.js', '../../theme/src/theme.js', '../../plot/src/scale.js','../index.js', '../../drillhole/src/samples.js', '../../drillhole/src/desurvey.js', '../../drillhole/src/validate.js'],
   sourcemap: false,
   meta: false,
 });

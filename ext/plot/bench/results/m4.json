@@ -1,0 +1,87 @@
+{
+  "label": "m4",
+  "entry": "/ext/plot/index.js",
+  "at": "2026-11-21T19:53:00.028Z",
+  "machine": "AMD Ryzen AI 9 HX 370 w/ Radeon 890M · 24 threads · 63 GiB",
+  "chromium": "148.0.7778.96",
+  "results": {
+    "trivial/canvas": {
+      "first": 23.600000023841858,
+      "again": null,
+      "ops": null
+    },
+    "trivial/record": {
+      "first": 16,
+      "again": null,
+      "ops": 178
+    },
+    "scatter_1M/canvas": {
+      "first": 105.60000002384186,
+      "again": 1,
+      "ops": null
+    },
+    "scatter_1M/record": {
+      "first": 105.30000001192093,
+      "again": 0.30000001192092896,
+      "ops": 184
+    },
+    "scatter_500k/canvas": {
+      "first": 63.999999940395355,
+      "again": 0.8999999761581421,
+      "ops": null
+    },
+    "scatter_500k/record": {
+      "first": 63.799999952316284,
+      "again": 0.40000003576278687,
+      "ops": 170
+    },
+    "line_1M/canvas": {
+      "first": 32.30000001192093,
+      "again": 7.900000035762787,
+      "ops": null
+    },
+    "line_1M/record": {
+      "first": 25.599999964237213,
+      "again": 13.100000023841858,
+      "ops": 10693
+    },
+    "hist_10M/canvas": {
+      "first": 68.69999998807907,
+      "again": 1.199999988079071,
+      "ops": null
+    },
+    "hist_10M/record": {
+      "first": 65.89999997615814,
+      "again": 0.699999988079071,
+      "ops": 371
+    },
+    "imshow_2000/canvas": {
+      "first": 51.10000002384186,
+      "again": 1.199999988079071,
+      "ops": null
+    },
+    "imshow_2000/record": {
+      "first": 67.5,
+      "again": 0.8999999761581421,
+      "ops": 179
+    },
+    "contourf_500/canvas": {
+      "first": 70.5,
+      "again": 0.800000011920929,
+      "ops": null
+    },
+    "contourf_500/record": {
+      "first": 65.5,
+      "again": 0.30000001192092896,
+      "ops": 166
+    },
+    "pick_1M/canvas": {
+      "first": 11.399999976158142,
+      "again": 0.027800000011920928,
+      "ops": null
+    },
+    "pick_1M/record": {
+      "note": "n/a: canvas only"
+    }
+  }
+}

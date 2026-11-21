@@ -1,5 +1,59 @@
 # @gcu/plot changelog
 
+## 0.5.0 — tier 2 (M4, unreleased)
+
+The fourth milestone of `plot-world-class`: the tier-2 list — tick formatters and locators,
+minor ticks, a date axis, violinplot, hexbin, hist2d, stackplot. The numbers are checked
+against matplotlib 3.11.2's own and the formatting against CPython's.
+
+**Ticks.** `ax.xaxis` / `ax.yaxis` (matplotlib's Axis objects): `set_major_formatter` (a format
+string, a function `(x, pos)`, or a formatter), `set_minor_formatter`, `set_major_locator`,
+`set_minor_locator`. `plt.ticker` = `matplotlib.ticker`: `StrMethodFormatter`,
+`FormatStrFormatter`, `FuncFormatter`, `PercentFormatter` (matplotlib's automatic decimals),
+`EngFormatter`, `FixedFormatter`, `NullFormatter`, `ScalarFormatter`; `MultipleLocator`,
+`MaxNLocator`, `FixedLocator`, `AutoMinorLocator` (matplotlib's 4-or-5 rule, 2.5 included),
+`LogLocator`, `NullLocator`. `minorticks_on/off`, `grid(which='minor' | 'both')`, and
+`tick_params` with `which`, `length`, `width`, `direction` and `color`.
+
+**Python's formatting** (`src/pyfmt.js`): the format-spec mini-language, `{}` templates and
+`%`-style, matching CPython on 56 cases — including an exact binary tie rounding to even
+(`'{:.0f}'` of 1234.5 is `'1234'`, of 2.675 to two places `'2.67'`, decided on the double's
+exact value) and `%d` truncating. bar_label's `fmt` reads it too: `'%d'` of 2.6 is now `'2'`
+(it rounded to `'3'` before, which isn't Python).
+
+**Dates.** Date objects as x or y make a date axis: calendar ticks (seconds to millennia; days
+on the month's 1st, 8th, 15th …; months from January) and labels by their spacing; at
+midnight an hourly axis says which day. `ax.xaxis_date()` for epoch ms. `plt.dates` =
+`matplotlib.dates`: `DateFormatter` (strftime in UTC), `AutoDateLocator`, `Year/Month/Day/Hour/
+MinuteLocator`, `date2num`, `num2date`. Dates are ms (JavaScript's), not matplotlib's days,
+and UTC, so every host draws the same; bars on a date axis default to 0.8 of a day. The
+interaction readout prints dates.
+
+**Charts.** `violinplot` (matplotlib's KDE: Scott's or Silverman's rule; the returned bodies and
+line collections restyle the drawing, as matplotlib's do), `hexbin` (matplotlib's lattice — the
+same hexagons and counts, with `C` and `reduce_C_function`, `mincnt`, `extent`, `bins='log'`;
+one fill per colour), `hist2d` (numpy's histogram2d, drawn as a pcolormesh; returns
+`[h, xedges, yedges, image]`), `stackplot` (the `zero`, `sym`, `wiggle` and `weighted_wiggle`
+baselines).
+
+**Artists.** What a call returns (lines, mappables, containers, patches, geometry) has
+matplotlib's `set_visible`, `get_visible` and `remove` — a hidden artist doesn't draw, pick or
+show in the legend. (Items laid over a condenser view need it: they're in the axes' coordinates,
+E / N in a plan, along / RL in a section.)
+
+**Fixed.** `ax.highlight` on a selection big enough for the raster path crashed
+(`OffscreenCanvas` sized by an undefined device-pixel ratio) — found by the interaction test page
+on a 111,727-point brush; the browser smoke now covers it.
+
+**Notebooks.** The ipynb importer maps `matplotlib.ticker` and `matplotlib.dates` to
+`plt.ticker` / `plt.dates`, so `import matplotlib.ticker as mticker` runs.
+
+**Tests.** `test/plot-tier2.test.mjs` (11): CPython's formatting; matplotlib's PercentFormatter,
+EngFormatter and AutoMinorLocator; hexbin's hexagons and counts on five settings, the violin
+KDE, numpy's histogram2d, the four stackplot baselines — all against matplotlib's output
+(`test/fixtures/plot-mpl-tier2.py`); dates, minor ticks, tick params. The edge-case matrix and
+the goldens gain the four charts and a date / minor-tick axes.
+
 ## 0.4.0 — interaction and export (M3, unreleased)
 
 The third milestone of `plot-world-class`: interaction, plan views, axes drawn around another

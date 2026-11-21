@@ -15,7 +15,7 @@
 //   the box's outline toward the viewer, so a 3D snapshot carries its coordinates.
 
 import { Figure } from '../../../plot/src/figure.js';
-import { _niceTicks, _fmtStep } from '../../../plot/src/ticks.js';
+import { _niceTicks, _fmtStep } from '../../../plot/src/nice.js';
 
 const fontOf = (th, k = 1, bold = false) => `${bold ? '600 ' : ''}${Math.round(th.font_size * k)}px ${th.mono}`;
 function halo(g, th, text, x, y) {

@@ -45,7 +45,7 @@ export function _boxStats(data, whis = 1.5, label = null) {
 }
 
 // x: one array, a list of arrays, or a mapping { label: array }
-function _datasets(x) {
+export function _datasets(x) {
   if (x && typeof x === 'object' && !_isArrayLike(x) && !Array.isArray(x)) {
     if (typeof x.to_numpy === 'function' && x.columns) {        // a DataFrame: one box per column
       const cols = Array.from(x.columns);

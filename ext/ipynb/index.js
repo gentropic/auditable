@@ -48,6 +48,11 @@ const SUBSTITUTIONS = {
   // becomes `import plt as plt` (effectively `import plt`), giving the
   // user the same `plt.plot(...)` handle they'd write in Jupyter.
   'matplotlib.pyplot': 'plt',
+  // its tick formatters / locators and dates live on the same module object (plt.ticker,
+  // plt.dates): `import matplotlib.ticker as mticker`, `from matplotlib.dates import
+  // DateFormatter` resolve through adder's dotted imports
+  'matplotlib.ticker': 'plt.ticker',
+  'matplotlib.dates': 'plt.dates',
 };
 
 // Rewrite all import lines in a Python source string. Returns the

@@ -320,18 +320,24 @@ In a locked orthographic view (plan, a section, any locked direction) the `axes`
 the view rectangle every frame, so the frame, ticks, labels and theme are plot's own — the same
 tick engine as a chart beside the view. A world point lands on the same pixel in the axes and in
 the scene; with `z_exaggeration` the RL axis still reads real RL. The plot margins become an
-opaque frame band, and the corner and edge pieces move inside it (the toolbar keeps the top
-left, so give a plot legend another corner). `grid: true` draws grid lines.
+opaque frame band, and the corner and edge pieces move inside it (the corners keep the chrome:
+toolbar top left, north arrow top right, legend bottom right, status and triad bottom left — a plot
+legend reads best at 'upper center'). `grid: true` draws grid lines.
 
 `v.axes` is that plot Axes, for your own items in world coordinates; they draw in locked
 views, over the scene and under the frame:
 
 ```js
 v.set({ lock: 'plan' });
-v.axes.add_geometry(licence, { facecolor: 'none', edgecolor: 'C1', linewidth: 2, label: 'licence' });
-v.axes.scatter(collarE, collarN, { marker: '^', s: 80, color: 'C3', label: 'collars' });
-v.axes.legend({ loc: 'lower left' });
+const licence = v.axes.add_geometry(lic, { facecolor: 'none', edgecolor: 'C1', linewidth: 2, label: 'licence' });
+const collars = v.axes.scatter(collarE, collarN, { marker: '^', s: 80, color: 'C3', label: 'collars' });
+v.axes.legend({ loc: 'upper center' });   // the corners belong to the chrome
+// they're E / N items: show them in the plan only (a section's axes are along / RL)
+v.on('view', (vi) => { const plan = vi.axes && vi.axes.join() === 'E,N'; licence.set_visible(plan); collars.set_visible(plan); });
 ```
+
+The items are in the axes' coordinates, which mean E / N in a plan and along / RL in a section:
+show each in its view (`set_visible`, or `remove()` and add again).
 
 In free 3D, `chrome: { box: true }` puts ticked axes on the data's bounding box instead: E and
 N along the bottom edges nearer the bottom of the screen, RL up the leftmost vertical edge, with

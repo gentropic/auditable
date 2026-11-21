@@ -22,7 +22,7 @@ import { getCmap, _cmapLut, _colorBytes, _cssColor } from './color.js';
 import { _resolveNorm, _indexer, _cbTicks, _cbLabelsW, _drawColorbar, BoundaryNorm } from './norm.js';
 import { parseFormat, dashArray, _noLine } from './format.js';
 import { _style, _snapshotStyle, _font, _textW } from './style.js';
-import { _Categories, _isCategorical, _tickSpec, _drawTicks } from './ticks.js';
+import { _Categories, _isCategorical, _isDateCol, _tickSpec, _drawTicks } from './ticks.js';
 import { isRecordingContext } from './record.js';
 import { _col, _isArrayLike, _isNumericCol, _traceRange, _isMonotonic, _arange, _fmtCount } from './data.js';
 import { _checkOpts, _resolveAliases, _warn, _noop } from './opts.js';
@@ -79,8 +79,24 @@ export class ScalarMappable {
   __repr__() { return '<matplotlib.cm.ScalarMappable>'; }
 }
 
+// matplotlib's Artist.set_visible / get_visible / remove, for the traces a call made. Hidden
+// traces don't draw, pick or appear in the legend; removed ones are gone. A figure under
+// interact() redraws by itself.
+export function _artistOps(ax, tracesOf) {
+  const redraw = () => { if (ax.figure && ax.figure._requestDraw) ax.figure._requestDraw(); };
+  return {
+    set_visible(v) { for (const t of tracesOf()) t.hidden = !v; redraw(); return this; },
+    get_visible() { return tracesOf().some((t) => !t.hidden); },
+    remove() { const gone = new Set(tracesOf()); ax._traces = ax._traces.filter((t) => !gone.has(t)); redraw(); },
+  };
+}
+
 export function _result(ax, items, fields) {
-  const target = Object.assign(items, fields, { axes: ax });
+  const f = fields || {};
+  const tracesOf = () => (f._trace ? [f._trace] : f._traces ? f._traces : Array.from(items).filter((i) => i && i._trace).map((i) => i._trace));
+  const ops = _artistOps(ax, tracesOf);
+  for (const k of Object.keys(ops)) if (!(k in f)) f[k] = ops[k];
+  const target = Object.assign(items, f, { axes: ax });
   return new Proxy(target, {
     get(t, k) {
       if (k in t) return t[k];
@@ -203,7 +219,7 @@ export class Axes {
     if (o.drawstyle && _hooks.drawstyle) _hooks.drawstyle(this, trace);
     this._traces.push(trace);
     // matplotlib returns [Line2D]: `line, = ax.plot(…)` unpacks; the rest reads the axes (chaining)
-    const line = { get_xdata: () => trace.x, get_ydata: () => trace.y, get_color: () => o.color, get_label: () => o.label ?? null, axes: this,
+    const line = { get_xdata: () => trace.x, get_ydata: () => trace.y, get_color: () => o.color, get_label: () => o.label ?? null, axes: this, _trace: trace, ..._artistOps(this, () => [trace]),
       __repr__: () => `<Line2D ${o.label != null ? JSON.stringify(String(o.label)) : 'unlabeled'}>` };
     return _result(this, [line], {});
   }
@@ -330,6 +346,8 @@ export class Axes {
   }
 
   text(x, y, text, opts) {
+    if (x instanceof Date) x = x.getTime();                // on a date axis
+    if (y instanceof Date) y = y.getTime();
     const o = this._opts('text', opts);
     if (o.horizontalalignment && !o.ha) o.ha = o.horizontalalignment;
     if (o.verticalalignment && !o.va) o.va = o.verticalalignment;
@@ -356,6 +374,10 @@ export class Axes {
   set_xlim(lo, hi) { this._setLim('x', lo, hi, 'left', 'right', 'xmin', 'xmax'); return this; }
   set_ylim(lo, hi) { this._setLim('y', lo, hi, 'bottom', 'top', 'ymin', 'ymax'); return this; }
   _setLim(axis, lo, hi, kLo, kHi, kMin, kMax) {
+    // Dates (a date axis) first: a Date would otherwise pass for an options object
+    if (lo instanceof Date || hi instanceof Date) for (const a of this._group(axis)) a[axis === 'x' ? '_xdate' : '_ydate'] = true;
+    if (lo instanceof Date) lo = lo.getTime();
+    if (hi instanceof Date) hi = hi.getTime();
     if (_plainOpts(lo)) { const o = lo; lo = o[kLo] !== undefined ? o[kLo] : o[kMin]; hi = o[kHi] !== undefined ? o[kHi] : o[kMax]; }
     else if (_isArrayLike(lo) && hi === undefined) { hi = lo[1]; lo = lo[0]; }
     const key = axis === 'x' ? '_xlim' : '_ylim';
@@ -430,20 +452,37 @@ export class Axes {
     return { values: [], labels: [] };
   }
   // tick_params(axis, {labelrotation}) — the part of it that sets what plot draws
+  // tick_params({axis = 'both', which = 'major' | 'minor' | 'both', length, width, direction
+  // ('out' | 'in' | 'inout'), color, labelrotation})
   tick_params(opts) {
     const o = _plainOpts(opts) ? opts : {};
-    const which = o.axis || 'both';
-    if (o.labelrotation != null) for (const a of (which === 'both' ? ['x', 'y'] : [which])) {
+    const axes = (o.axis || 'both') === 'both' ? ['x', 'y'] : [o.axis];
+    const whiches = (o.which || 'major') === 'both' ? ['major', 'minor'] : [o.which || 'major'];
+    if (o.labelrotation != null) for (const a of axes) {
       const key = a === 'x' ? '_xticks' : '_yticks';
       this[key] = { ...(this[key] || { values: null, labels: null }), rotation: o.labelrotation };
     }
-    for (const k of Object.keys(o)) if (k !== 'axis' && k !== 'labelrotation' && k !== '_kw') _warn('tick_params.' + k, `tick_params(): '${k}' is not supported yet (only axis and labelrotation)`, this._strict);
+    if (o.direction != null && !['in', 'out', 'inout'].includes(o.direction)) _warn('tick_params.direction.' + o.direction, `tick_params(): direction must be 'in', 'out' or 'inout'`, this._strict);
+    const set = {};
+    for (const k of ['length', 'width', 'direction', 'color']) if (o[k] != null) set[k] = k === 'color' ? _cssColor(o[k]) : o[k];
+    if (Object.keys(set).length) {
+      const tp = this._tickParams || (this._tickParams = {});
+      for (const a of axes) { tp[a] = tp[a] || {}; for (const w of whiches) tp[a][w] = { ...(tp[a][w] || {}), ...set }; }
+    }
+    for (const k of Object.keys(o)) if (!['axis', 'which', 'labelrotation', 'length', 'width', 'direction', 'color', '_kw'].includes(k)) _warn('tick_params.' + k, `tick_params(): '${k}' is not supported yet (axis, which, length, width, direction, color, labelrotation)`, this._strict);
     return this;
   }
   // every axes that shares this one's `axis` (subplots(sharex / sharey)), this one included
   _group(axis) { return this._shared[axis] || [this]; }
   // a column for `axis`: numbers, or labels that make (or extend) that axis's categories
   _axisCol(axis, arr) {
+    // Date objects make a date axis (ticker.js): their numbers are ms since 1970 UTC
+    if (_isDateCol(arr)) {
+      for (const a of this._group(axis)) a[axis === 'x' ? '_xdate' : '_ydate'] = true;
+      const out = new Float64Array(arr.length);
+      for (let i = 0; i < arr.length; i++) { const v = arr[i]; out[i] = v instanceof Date ? v.getTime() : v == null ? NaN : +v; }
+      return out;
+    }
     if (!_isCategorical(arr)) return _col(arr);
     const key = axis === 'x' ? '_xcats' : '_ycats';
     if (!this[key]) {
@@ -600,14 +639,22 @@ export class Axes {
       ctx.lineWidth = g.linewidth || 0.5;
       ctx.globalAlpha = g.alpha != null ? g.alpha : 0.8;
       ctx.setLineDash(dashArray(g.linestyle));
-      const which = g.axis || 'both';
-      if (which !== 'y') for (const v of xt.values) {
-        const px = xScale.transform(v);
-        ctx.beginPath(); ctx.moveTo(px, plotY); ctx.lineTo(px, plotY + plotH); ctx.stroke();
-      }
-      if (which !== 'x') for (const v of yt.values) {
-        const py = yScale.transform(v);
-        ctx.beginPath(); ctx.moveTo(plotX, py); ctx.lineTo(plotX + plotW, py); ctx.stroke();
+      const which = g.axis || 'both', level = g.which || 'major';
+      const lines = (xs, ys) => {
+        if (which !== 'y') for (const v of xs) {
+          const px = xScale.transform(v);
+          ctx.beginPath(); ctx.moveTo(px, plotY); ctx.lineTo(px, plotY + plotH); ctx.stroke();
+        }
+        if (which !== 'x') for (const v of ys) {
+          const py = yScale.transform(v);
+          ctx.beginPath(); ctx.moveTo(plotX, py); ctx.lineTo(plotX + plotW, py); ctx.stroke();
+        }
+      };
+      if (level !== 'minor') lines(xt.values, yt.values);
+      // the minor grid (where there are minor ticks: minorticks_on() or a minor locator), fainter
+      if (level !== 'major' && (xt.minor || yt.minor)) {
+        ctx.globalAlpha = (g.alpha != null ? g.alpha : 0.8) * 0.5;
+        lines(xt.minor || [], yt.minor || []);
       }
       ctx.setLineDash([]);
       ctx.globalAlpha = 1;
@@ -617,7 +664,7 @@ export class Axes {
     const lastCmapTrace = this._renderTraces(ctx, xScale, yScale, plotX, plotY, plotW, plotH, dpr);
     if (this._twin) this._twin._renderAsTwin(ctx, xScale, plotX, plotY, plotW, plotH, dpr, L.twinYt);
     if (this._twinY) this._twinY._renderAsTwinY(ctx, yScale, plotX, plotY, plotW, plotH, dpr, L.twinXt);
-    if (this._highlight) this._renderHighlight(ctx, xScale, yScale, plot, bgcolor);
+    if (this._highlight) this._renderHighlight(ctx, xScale, yScale, { ...plot, dpr }, bgcolor);   // the trace renderers' rect carries dpr (the raster path sizes by it)
 
     if (on) {
       ctx.strokeStyle = frameColor;
@@ -859,6 +906,7 @@ export class Axes {
     // for text): they draw after the clipped pass, still in zorder
     const free = (t) => t.type === 'text' || (_KINDS[t.type] && _KINDS[t.type].noclip);
     const draw = (trace) => {
+      if (trace.hidden) return;                          // set_visible(false)
       switch (trace.type) {
         case 'imshow': this._renderImshow(ctx, trace, xScale, yScale, rect); lastCmapTrace = trace; break;
         case 'line': this._renderLine(ctx, trace, xScale, yScale, rect); break;
@@ -1430,6 +1478,7 @@ export class Axes {
     for (const ax of owners) {
       const v = ax.view;
       ax._traces.forEach((t, ti) => {
+        if (t.hidden) return;
         const isMarker = t.type === 'scatter' || (t.type === 'line' && t.opts.marker);
         if (t.type !== 'scatter' && t.type !== 'line') return;
         const pos = ax._positions(t, v.xScale, v.yScale);
@@ -1457,7 +1506,7 @@ export class Axes {
       if (px < v.x || px > v.x + v.w || py < v.y || py > v.y + v.h) continue;
       for (let ti = ax._traces.length - 1; ti >= 0; ti--) {
         const t = ax._traces[ti], k = _KINDS[t.type];
-        if (!k || !k.pick) continue;
+        if (!k || !k.pick || t.hidden) continue;
         const hit = k.pick(ax, t, px, py);
         if (hit) return { axes: ax, trace: t, traceIndex: ti, c: null, s: null, label: t.opts.label ?? null, ...hit };
       }
@@ -1467,7 +1516,7 @@ export class Axes {
       const v = ax.view;
       for (let ti = ax._traces.length - 1; ti >= 0; ti--) {
         const t = ax._traces[ti];
-        if (t.type !== 'imshow') continue;
+        if (t.type !== 'imshow' || t.hidden) continue;
         const e = ax._imshowExtent(t);
         const xv = v.xScale.inverse(px), yv = v.yScale.inverse(py);
         const fx = (xv - e[0]) / (e[1] - e[0]), fy = (yv - e[2]) / (e[3] - e[2]);

@@ -5,7 +5,7 @@
 // Each is a trace kind (axes.js _KINDS), so the autoscale, the legend, picking and the draw
 // list treat it like any other mark.
 
-import { Axes, _KINDS, _plainOpts, _result } from './axes.js';
+import { Axes, _KINDS, _plainOpts, _result, _artistOps } from './axes.js';
 import { _col, _isArrayLike } from './data.js';
 import { _cssColor } from './color.js';
 import { dashArray, parseFormat } from './format.js';
@@ -118,7 +118,7 @@ Axes.prototype.fill = function (...args) {
 
 function _patchHandle(ax, tr) {
   return {
-    _trace: tr, axes: ax,
+    _trace: tr, axes: ax, ..._artistOps(ax, () => [tr]),
     get_facecolor: () => tr.opts.facecolor, get_edgecolor: () => tr.opts.edgecolor || 'none',
     get_label: () => tr.opts.label ?? null,
     get_xy: () => { const [xs, ys] = tr.parts[0].rings[0]; return Array.from(xs, (x, i) => [x, ys[i]]); },
@@ -138,6 +138,10 @@ export class Polygon {
     this.axes = null;
   }
   get_xy() { const [xs, ys] = this._rings[0]; return Array.from(xs, (x, i) => [x, ys[i]]); }
+  // once added (add_patch): hide, show or take it off its axes
+  set_visible(v) { if (this.axes) _artistOps(this.axes, () => (this._trace ? [this._trace] : [])).set_visible(v); return this; }
+  get_visible() { return !(this._trace && this._trace.hidden); }
+  remove() { if (this.axes) _artistOps(this.axes, () => (this._trace ? [this._trace] : [])).remove(); this.axes = null; }
   __repr__() { return `<matplotlib.patches.${this.constructor.name}>`; }
 }
 export class Rectangle extends Polygon {

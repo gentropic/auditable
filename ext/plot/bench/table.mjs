@@ -96,6 +96,10 @@ md += `
   from 270 to 338 KB raw (SVG export, the PNG encoder, interaction), and its parse is most of
   that time. A host that wants less imports less: \`@gcu/plot/svg\` and \`@gcu/plot/interact\` are
   their own entries.
+- **M4** changes no draw path either (the tick code gained a branch for locators, dates and
+  minor ticks, taken only when they're set). The trivial figure, import included, is 24 ms
+  against 20: the bundle is 393 KB raw now (the ticker, Python formatting, the tier-2 charts),
+  parsed at import. Everything else is within this machine's noise of M3.
 `;
 fs.writeFileSync(path.join(here, 'BENCH.md'), md);
 console.log(md);

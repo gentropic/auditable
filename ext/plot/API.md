@@ -52,7 +52,8 @@ histograms leave NaN out, log axes ignore values ≤ 0. Errors name the argument
 Every chart takes `label`, `alpha`, `zorder` and `color` as well as what is listed. The ones
 that colour-map (`scatter` with `c`, `imshow`, `pcolormesh`, `contour(f)`) take `cmap`, `norm`,
 `vmin`, `vmax`, and return a **mappable** for `colorbar(…)`. Results chain to the axes:
-`ax.bar(…).set_title(…)` works.
+`ax.bar(…).set_title(…)` works. What a call returns (and each line, patch or bar container in it) has matplotlib's
+`set_visible(bool)`, `get_visible()` and `remove()`: a hidden artist doesn't draw, pick or show in the legend.
 
 | call | returns |
 |---|---|
@@ -74,6 +75,10 @@ that colour-map (`scatter` with `c`, `imshow`, `pcolormesh`, `contour(f)`) take 
 | `axhspan(y0, y1, {xmin, xmax})` · `axvspan(x0, x1, {ymin, ymax})` | a band across the axes |
 | `text(x, y, s, {transform: 'axes', ha, va, fontsize, rotation, fontweight})` | `transform: 'axes'` = matplotlib's `ax.transAxes` (0–1 from the lower left) |
 | `annotate(text, xy, {xytext, xycoords, textcoords, arrowprops: {arrowstyle: '->'}})` | coords: `'data'`, `'axes fraction'`, `'offset points'` |
+| `violinplot(dataset, {positions, vert, widths = 0.5, showmeans, showextrema = true, showmedians, quantiles, points = 100, bw_method = 'scott', side})` | `{bodies, cmins, cmaxes, cbars, cmeans, cmedians, cquantiles, stats}`: matplotlib's KDE (Scott: n^-1/5 × std); restyle with `bodies[i].set_facecolor` / `set_alpha`, `cbars.set_color` |
+| `hexbin(x, y, {C, gridsize = 100 \| [nx, ny], extent, mincnt, reduce_C_function, bins: 'log', cmap, norm})` | a mappable: matplotlib's lattice and counts exactly; with no `C` every hexagon of the extent is drawn (empty ones at the bottom of the map; `bins: 'log'` clears them) |
+| `hist2d(x, y, {bins = 10 \| [nx, ny] \| edges, range, density, weights, cmin, cmax, cmap, norm})` | `[h, xedges, yedges, image]`: numpy's histogram2d, `h[i][j]` x bin i, y bin j; drawn as a pcolormesh |
+| `stackplot(x, y1, y2, … \| ys, {labels, colors, baseline = 'zero' \| 'sym' \| 'wiggle' \| 'weighted_wiggle'})` | the layers (fill_between each); matplotlib's baselines |
 
 Strings as `x` (bar, scatter, plot, boxplot positions) or `y` (barh) make a **category axis**,
 in first-appearance order; long labels rotate rather than collide.
@@ -98,6 +103,23 @@ in first-appearance order; long labels rotate rather than collide.
 
 Ticks are sized to the axis (no overlapping labels), labels carry the decimals the step needs,
 and the margins are measured from the real tick labels, titles and colorbar.
+
+## Ticks, formatters and dates
+
+| | |
+|---|---|
+| `ax.xaxis.set_major_formatter(f)` · `set_minor_formatter` · `ax.yaxis…` | `f`: a format string (`'{x:,.0f} m'`, `'{x:.0%}'`), a function `(x, pos) → str`, or a formatter below |
+| `ticker.StrMethodFormatter(fmt)` · `FormatStrFormatter('%.1f')` · `FuncFormatter(fn)` · `PercentFormatter(xmax = 100, decimals)` · `EngFormatter(unit)` · `FixedFormatter(labels)` · `NullFormatter()` · `ScalarFormatter()` | `plt.ticker` = `matplotlib.ticker` |
+| `ax.xaxis.set_major_locator(l)` · `set_minor_locator` | `ticker.MultipleLocator(base)` · `MaxNLocator(nbins, {integer})` · `FixedLocator(locs)` · `AutoMinorLocator(n)` · `LogLocator()` · `NullLocator()` |
+| `ax.minorticks_on()` · `minorticks_off()` | minor ticks between the majors (5 for a step of 1, 2.5 or 5 × 10ⁿ, else 4, as matplotlib); `grid(true, {which: 'minor' \| 'both'})` |
+| `tick_params({axis, which, length, width, direction: 'out' \| 'in' \| 'inout', color, labelrotation})` | |
+| Date objects as x or y | a date axis: calendar ticks (years, months, days, hours …) and labels by spacing (`2026`, `2026-03`, `2026-03-14`, `14:30`) |
+| `ax.xaxis_date()` | epoch milliseconds on x are dates |
+| `dates.DateFormatter('%b %Y')` · `AutoDateLocator()` · `YearLocator(n)` · `MonthLocator(…, {interval})` · `DayLocator` · `HourLocator` · `MinuteLocator` · `date2num` · `num2date` · `strftime(ms, fmt)` | `plt.dates` = `matplotlib.dates`; strftime codes `%Y %y %m %d %e %H %I %M %S %f %p %b %B %a %A %j` |
+
+Format strings are Python's, checked against CPython: `[[fill]align][sign][#][0][width][,|_][.precision][type]`
+with types `d f e g % s x o b` (an exact binary tie rounds to even, as Python), in `{}` templates
+(`{x}`, `{pos}`, `{:.2f}`) and `%`-style (`%.2f`, `%d` truncating). bar_label's `fmt` reads them too.
 
 ## Colour
 
@@ -360,10 +382,55 @@ ax.highlight((i, px, py) => px * px + py * py < 300);
 ax.set_aspect('equal'); ax.set_title('highlight');
 ```
 
+```js example violin
+const u = (k) => (((Math.sin(k * 12.9898) * 43758.5453) % 1) + 1) % 1;
+const sets = [0, 1, 2].map((j) => Array.from({ length: 300 }, (_, i) => 20 + 6 * j + 8 * (u(i + 1e3 * j) + u(i + 7e3 + 1e3 * j) - 1)));
+const [fig, ax] = subplots(1, 1, { figsize: [5, 3.2] });
+const parts = ax.violinplot(sets, { showmedians: true });
+parts.bodies[2].set_facecolor('C3');
+ax.set_xticks([1, 2, 3], ['oxide', 'transition', 'fresh']); ax.set_ylabel('Fe (%)'); ax.set_title('violinplot');
+```
+
+```js example hexbin
+const u = (k) => (((Math.sin(k * 12.9898) * 43758.5453) % 1) + 1) % 1;
+const x = [], y = [];
+for (let i = 0; i < 20000; i++) { const a = u(i) + u(i + 3e4) + u(i + 6e4) - 1.5; x.push(a); y.push(0.6 * a + 0.4 * (u(i + 9e4) + u(i + 12e4) - 1)); }
+const [fig, ax] = subplots(1, 1, { figsize: [5, 3.6] });
+const hb = ax.hexbin(x, y, { gridsize: 30, cmap: 'inferno', bins: 'log' });
+fig.colorbar(hb, { ax, label: 'count' }); ax.set_title('hexbin');
+```
+
+```js example hist2d
+const u = (k) => (((Math.sin(k * 12.9898) * 43758.5453) % 1) + 1) % 1;
+const x = Array.from({ length: 5000 }, (_, i) => u(i) + u(i + 1e4)), y = x.map((v, i) => v + u(i + 2e4) - 0.5);
+const [fig, ax] = subplots(1, 1, { figsize: [5, 3.4] });
+const [h, xe, ye, im] = ax.hist2d(x, y, { bins: 24, cmap: 'viridis' });
+fig.colorbar(im, { ax }); ax.set_title('hist2d');
+```
+
+```js example stackplot
+const yr = [2019, 2020, 2021, 2022, 2023, 2024, 2025];
+const [fig, ax] = subplots(1, 1, { figsize: [5, 3.2] });
+ax.stackplot(yr, [3, 4, 4.5, 5, 6, 6.2, 7], [1, 1.5, 2, 2.2, 2, 2.8, 3], [0.5, 0.6, 1, 1.4, 1.8, 2, 2.6], { labels: ['ore', 'low grade', 'waste'], alpha: 0.85 });
+ax.legend({ loc: 'upper left' }); ax.set_ylabel('Mt'); ax.set_title('stackplot');
+```
+
+```js example dates
+const day = 864e5, t0 = Date.UTC(2026, 0, 1);
+const d = Array.from({ length: 200 }, (_, i) => new Date(t0 + i * day));
+const [fig, ax] = subplots(1, 1, { figsize: [5, 3.2] });
+ax.plot(d, d.map((_, i) => 0.6 + 0.25 * Math.sin(i / 18) + 0.05 * Math.sin(i * 1.3)));
+ax.yaxis.set_major_formatter(new ticker.PercentFormatter(1));
+ax.minorticks_on(); ax.grid(true, { which: 'both' });
+ax.set_title('a date axis, percent ticks, minor grid');
+```
+
 ## Differs from matplotlib
 
 | | matplotlib | plot |
 |---|---|---|
+| date numbers | days since 1970 | milliseconds since 1970 (`Date.getTime()`), so bar widths on a date axis default to 0.8 × a day; ticks and labels in UTC, so every host draws the same |
+| minus sign | U+2212 (−) in tick labels | ASCII hyphen-minus |
 | keyword arguments | `ax.plot(x, y, lw=2)` | JS: `ax.plot(x, y, { lw: 2 })` (adder: as matplotlib) |
 | `imshow(data, nx, ny)` | — | plot's flat form, origin `'lower'`; `imshow(Z)` is matplotlib's |
 | fonts | DejaVu Sans | the theme's monospace stack |
@@ -377,6 +444,8 @@ What plot knows of but doesn't do yet; each one warns when used, with what to do
 <!-- unsupported:begin -->
 | | instead |
 |---|---|
+| `hexbin(…, {marginals})` | not supported yet; draw hist() on twin axes |
+| `stackplot(…, {hatch})` | not supported yet |
 | `plot(…, {dashes})` | use linestyle ('--', '-.', ':') |
 | `bar(…, {hatch})` | not supported yet |
 | `bar(…, {yerr})` | use errorbar() on the bar positions |
