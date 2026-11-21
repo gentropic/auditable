@@ -51,7 +51,17 @@ const header = '// \u26a0 GENERATED FILE \u2014 DO NOT EDIT. Source: ext/plot/sr
   + '// @gcu/plot \u2014 Canvas 2D plotting library for Auditable\n'
   + '// Line, scatter, bar, histogram, imshow. GCU dark theme.\n';
 
-const output = header + '\n' + chunks.join('\n\n') + '\n\nexport { subplots, subplot, figure, plot, scatter, imshow, matshow, hist, bar, show, flush_figures, close, gca, gcf, cmap, Figure, Axes, LinearScale, LogScale, getCmap, pltAdder, replay, recordingContext, rcParams, VERSION, themeFromCSS, resolveTheme, Normalize, LogNorm, TwoSlopeNorm, CenteredNorm, BoundaryNorm, ListedColormap, LinearSegmentedColormap, colors, Polygon, Rectangle, Circle, ScalarMappable };\n';
+// The bundle is the package's entry ('@gcu/plot'): the source imports @gcu/theme from outside
+// the package, so src/ can't be published as an entry. It exports every name src/api.js
+// exports (the pyplot functions: xlabel, title, …), plus the classes and helpers below.
+const EXTRA = ['Figure', 'Axes', 'LinearScale', 'LogScale', 'getCmap', 'replay', 'recordingContext', 'themeFromCSS', 'resolveTheme',
+  'Normalize', 'LogNorm', 'TwoSlopeNorm', 'CenteredNorm', 'BoundaryNorm', 'ListedColormap', 'LinearSegmentedColormap', 'toSVG', 'encodePNG'];
+const apiSrc = fs.readFileSync(path.join(srcDir, 'api.js'), 'utf8');
+const apiNames = [];
+for (const m of apiSrc.matchAll(/^export (?:async )?(?:function|const|let|class) (\w+)/gm)) apiNames.push(m[1]);
+for (const m of apiSrc.matchAll(/^export \{([^}]*)\};?[ \t]*$/gm)) for (const n of m[1].split(',')) { const k = n.trim().split(/\s+as\s+/).pop(); if (k) apiNames.push(k); }
+const exportNames = [...new Set([...apiNames, ...EXTRA])];
+const output = header + '\n' + chunks.join('\n\n') + '\n\nexport { ' + exportNames.join(', ') + ' };\n';
 
 const outPath = path.join(__dirname, 'index.js');
 fs.writeFileSync(outPath, output);

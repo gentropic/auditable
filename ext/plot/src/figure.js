@@ -1,6 +1,7 @@
 // Figure — canvas management, subplot grid, DPI handling
 
-import { Axes } from './axes.js';
+import { Axes, _plainOpts } from './axes.js';
+import { toSVG } from './svg.js';
 // the chart kinds beyond the core: they add to Axes.prototype, so they load after axes.js
 import './bars.js';
 import './marks.js';
@@ -275,19 +276,54 @@ export class Figure {
     return new Uint8Array(await blob.arrayBuffer());
   }
 
-  // In the notebook: download a PNG. With no DOM: record { name, figure } for plt.saved()
-  // (and the figure for plt.shown()) so the host can offer the file.
-  savefig(filename) {
-    const name = (typeof filename === 'string' && filename) || 'figure.png';
+  // The figure as an SVG string, from its draw list (svg.js): the same in every host.
+  // The theme's figure surface may be 'transparent' (the dark default, so a figure blends into
+  // the page it sits on); a FILE has no page, so an export paints the theme's background
+  // under it unless the face was set (fig.set_facecolor('none') stays transparent) or
+  // {facecolor} is given.
+  toSVG(opts) {
+    const o = _plainOpts(opts) ? { ...opts } : {};
+    if (o.facecolor === undefined) o.facecolor = this._exportFace();
+    return toSVG(this.toDrawList(), o);
+  }
+  _exportFace() {
+    if (this._facecolor) return null;           // set by the caller: the draw list paints it (or not)
+    return this.facecolor === 'transparent' || this.facecolor === 'none' ? this._theme.background : null;
+  }
+
+  // savefig('x.png') · savefig('x.svg') · savefig(name, {format: 'svg' | 'png'}). In the
+  // notebook: a download. With no DOM: record { name, format, figure } for plt.saved() (and
+  // the figure for plt.shown()) so the host can offer the file (figure.toSVG() / toPNG()).
+  savefig(filename, opts) {
+    if (_plainOpts(filename)) { opts = filename; filename = opts.fname; }
+    const o = _plainOpts(opts) ? opts : {};
+    let name = (typeof filename === 'string' && filename) || '';
+    const ext = /\.([a-z0-9]+)$/i.exec(name);
+    const format = String(o.format || (ext ? ext[1] : 'png')).toLowerCase();
+    if (format !== 'png' && format !== 'svg') throw new Error(`savefig: format '${format}' is not supported; use 'png' or 'svg'`);
+    if (!name) name = `figure.${format}`;
     if (typeof document === 'undefined') {
-      _savedFigures.push({ name, figure: this });
+      _savedFigures.push({ name, format, figure: this });
       _recordShown(this);
       return this;
     }
-    const canvas = this.show();
     const link = document.createElement('a');
     link.download = name;
-    link.href = canvas.toDataURL('image/png');
-    link.click();
+    if (format === 'svg') {
+      const url = URL.createObjectURL(new Blob([this.toSVG()], { type: 'image/svg+xml' }));
+      link.href = url;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+    } else {
+      const canvas = this.show(), face = this._exportFace();
+      if (face) {
+        // the face goes under what's drawn
+        const g = canvas.getContext('2d');
+        g.save(); g.setTransform(1, 0, 0, 1, 0, 0); g.globalCompositeOperation = 'destination-over';
+        g.fillStyle = face; g.fillRect(0, 0, canvas.width, canvas.height); g.restore();
+      }
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+    }
   }
 }

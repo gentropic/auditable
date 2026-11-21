@@ -5384,9 +5384,383 @@ _KINDS.north_arrow = {
   },
 };
 
+// -- png.js --
+
+// PNG bytes from RGBA, in plain JS: no canvas, no CompressionStream (it is async, and absent in
+// some hosts), no dependency. toSVG embeds a draw list's `image` ops with it, so an SVG of a
+// raster is built the same in a worker, in Node, and on the page — byte for byte.
+//
+// Deflate here is one fixed-Huffman block over an LZ77 pass (3-byte hash heads, a chain capped
+// at 16 links): a third of a good zlib's speed and a few percent larger, and deterministic. Each
+// row takes the PNG filter (none, Sub or Up) with the smallest sum of absolute bytes, the usual
+// heuristic; colour-mapped rasters repeat a lot, so Up is often all zeros.
+
+let _CRC = null;
+function _crc32(bytes, start, end) {
+  if (!_CRC) {
+    _CRC = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; _CRC[n] = c >>> 0; }
+  }
+  let c = 0xffffffff;
+  for (let i = start; i < end; i++) c = _CRC[(c ^ bytes[i]) & 255] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+// ── deflate, fixed Huffman ──
+const _LBASE = [3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258];
+const _LEXTRA = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0];
+const _DBASE = [1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577];
+const _DEXTRA = [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13];
+let _LIT = null, _LITLEN = null, _DIST = null, _LCODE = null;
+function _rev(v, n) { let r = 0; for (let i = 0; i < n; i++) { r = (r << 1) | (v & 1); v >>= 1; } return r; }
+function _tables() {
+  _LIT = new Uint16Array(288); _LITLEN = new Uint8Array(288);
+  for (let i = 0; i < 288; i++) {
+    let code, len;
+    if (i < 144) { code = 0x30 + i; len = 8; } else if (i < 256) { code = 0x190 + i - 144; len = 9; } else if (i < 280) { code = i - 256; len = 7; } else { code = 0xc0 + i - 280; len = 8; }
+    _LIT[i] = _rev(code, len); _LITLEN[i] = len;
+  }
+  _DIST = new Uint8Array(30);
+  for (let i = 0; i < 30; i++) _DIST[i] = _rev(i, 5);
+  _LCODE = new Uint8Array(259);                       // match length → its code index (0–28)
+  for (let c = 0; c < 29; c++) for (let l = _LBASE[c]; l < (c === 28 ? 259 : _LBASE[c + 1]); l++) _LCODE[l] = c;
+  _LCODE[258] = 28;
+}
+function _distCode(d) { let lo = 0, hi = 29; while (lo < hi) { const m = (lo + hi + 1) >> 1; if (_DBASE[m] <= d) lo = m; else hi = m - 1; } return lo; }
+
+function _deflate(data) {
+  if (!_LIT) _tables();
+  const n = data.length;
+  let out = new Uint8Array(Math.max(64, (n >> 1) + 64)), o = 0, bits = 0, nb = 0;
+  const put = (v, len) => {
+    bits |= v << nb; nb += len;
+    while (nb >= 8) {
+      if (o >= out.length) { const g = new Uint8Array(out.length * 2); g.set(out); out = g; }
+      out[o++] = bits & 255; bits >>>= 8; nb -= 8;
+    }
+  };
+  const lit = (c) => put(_LIT[c], _LITLEN[c]);
+  put(1, 1); put(1, 2);                                // BFINAL, BTYPE = fixed Huffman
+  const HBITS = 15, HSIZE = 1 << HBITS, WIN = 32768, MAXCHAIN = 16;
+  const head = new Int32Array(HSIZE).fill(-1), prev = new Int32Array(WIN);
+  const hash = (i) => (((data[i] << 10) ^ (data[i + 1] << 5) ^ data[i + 2]) & (HSIZE - 1));
+  let i = 0;
+  while (i < n) {
+    let best = 0, dist = 0;
+    if (i + 2 < n) {
+      const h = hash(i);
+      let j = head[h], chain = 0;
+      const limit = Math.min(258, n - i);
+      while (j >= 0 && i - j <= WIN && chain++ < MAXCHAIN) {
+        if (data[j + best] === data[i + best]) {
+          let l = 0;
+          while (l < limit && data[j + l] === data[i + l]) l++;
+          if (l > best) { best = l; dist = i - j; if (l === limit) break; }
+        }
+        j = prev[j & (WIN - 1)];
+      }
+      prev[i & (WIN - 1)] = head[h]; head[h] = i;
+    }
+    if (best >= 3) {
+      const c = _LCODE[best];
+      lit(257 + c);
+      if (_LEXTRA[c]) put(best - _LBASE[c], _LEXTRA[c]);
+      const dc = _distCode(dist);
+      put(_DIST[dc], 5);
+      if (_DEXTRA[dc]) put(dist - _DBASE[dc], _DEXTRA[dc]);
+      // index the bytes the match covered, so later matches can start inside it
+      for (let k = 1; k < best; k++) { const p = i + k; if (p + 2 < n) { const h = hash(p); prev[p & (WIN - 1)] = head[h]; head[h] = p; } }
+      i += best;
+    } else { lit(data[i]); i++; }
+  }
+  lit(256);
+  if (nb) put(0, 8 - nb);
+  return out.subarray(0, o);
+}
+
+function _zlib(data) {
+  const d = _deflate(data);
+  let a = 1, b = 0;
+  for (let i = 0; i < data.length; i++) { a = (a + data[i]) % 65521; b = (b + a) % 65521; }
+  const out = new Uint8Array(d.length + 6);
+  out[0] = 0x78; out[1] = 0x01;
+  out.set(d, 2);
+  const ad = ((b << 16) | a) >>> 0;
+  out[d.length + 2] = ad >>> 24; out[d.length + 3] = (ad >>> 16) & 255; out[d.length + 4] = (ad >>> 8) & 255; out[d.length + 5] = ad & 255;
+  return out;
+}
+
+// RGBA (w × h × 4 bytes) → PNG bytes
+function encodePNG(rgba, w, h) {
+  const stride = w * 4, raw = new Uint8Array((stride + 1) * h);
+  const cand = [new Uint8Array(stride), new Uint8Array(stride), new Uint8Array(stride)];
+  for (let y = 0; y < h; y++) {
+    const r = y * stride;
+    let bestF = 0, bestS = Infinity;
+    for (let f = 0; f < 3; f++) {
+      const c = cand[f]; let s = 0;
+      for (let x = 0; x < stride; x++) {
+        const v = rgba[r + x], left = x >= 4 ? rgba[r + x - 4] : 0, up = y ? rgba[r - stride + x] : 0;
+        const q = (f === 0 ? v : f === 1 ? v - left : v - up) & 255;
+        c[x] = q; s += q < 128 ? q : 256 - q;
+      }
+      if (s < bestS) { bestS = s; bestF = f; }
+    }
+    raw[y * (stride + 1)] = bestF;
+    raw.set(cand[bestF], y * (stride + 1) + 1);
+  }
+  const idat = _zlib(raw);
+  const chunks = [['IHDR', _ihdr(w, h)], ['IDAT', idat], ['IEND', new Uint8Array(0)]];
+  let len = 8; for (const [, d] of chunks) len += 12 + d.length;
+  const out = new Uint8Array(len);
+  out.set([137, 80, 78, 71, 13, 10, 26, 10], 0);
+  let o = 8;
+  for (const [type, d] of chunks) {
+    const n = d.length;
+    out[o] = n >>> 24; out[o + 1] = (n >>> 16) & 255; out[o + 2] = (n >>> 8) & 255; out[o + 3] = n & 255;
+    for (let k = 0; k < 4; k++) out[o + 4 + k] = type.charCodeAt(k);
+    out.set(d, o + 8);
+    const c = _crc32(out, o + 4, o + 8 + n);
+    out[o + 8 + n] = c >>> 24; out[o + 9 + n] = (c >>> 16) & 255; out[o + 10 + n] = (c >>> 8) & 255; out[o + 11 + n] = c & 255;
+    o += 12 + n;
+  }
+  return out;
+}
+function _ihdr(w, h) {
+  const d = new Uint8Array(13);
+  d[0] = w >>> 24; d[1] = (w >>> 16) & 255; d[2] = (w >>> 8) & 255; d[3] = w & 255;
+  d[4] = h >>> 24; d[5] = (h >>> 16) & 255; d[6] = (h >>> 8) & 255; d[7] = h & 255;
+  d[8] = 8; d[9] = 6;                                  // 8-bit RGBA; compression, filter, interlace 0
+  return d;
+}
+
+// -- svg.js --
+
+// SVG from a draw list (spec §10). `toSVG(list)` walks the ops fig.toDrawList() makes and writes
+// what a canvas would have painted: paths as `d` strings, text as <text> in the theme's font,
+// the raster op as an embedded PNG, clipping as <clipPath>. It reads only the list, so it is the
+// same in every host, and the same list always gives the same SVG, byte for byte.
+//
+// The canvas transform is applied to coordinates as they are added (as a canvas does), so the
+// output has no nested transforms except on text and images. plot only ever translates,
+// rotates and scales uniformly; arcs assume that (a skewed arc would come out circular).
+//
+// Big scatters are rasters in the list (one `image` op), and stay rasters in the SVG: an honest
+// picture of a million points, small, not a million <circle>s.
+
+
+
+const _svgNum = (v) => { const s = (Math.round(v * 100) / 100).toString(); return s === '-0' ? '0' : s; };
+const _svgEsc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+// a paint: [colour, opacity] — rgba() split, so every SVG reader gets it
+function _svgPaint(c) {
+  if (c == null || c === 'none' || c === 'transparent') return ['none', 0];
+  const b = parseColorBytes(String(c).replace(/\s+/g, ''));
+  if (!b) return [String(c), 1];
+  const hex = '#' + [b[0], b[1], b[2]].map((v) => Math.round(v).toString(16).padStart(2, '0')).join('');
+  return [hex, b[3] / 255];
+}
+
+const _SVG_ANCHOR = { center: 'middle', right: 'end', end: 'end', left: 'start', start: 'start' };
+const _SVG_BASELINE = { top: 'text-before-edge', hanging: 'hanging', middle: 'central', bottom: 'text-after-edge', ideographic: 'ideographic', alphabetic: 'alphabetic' };
+
+function _svgFont(f) {
+  const m = /^\s*(?:(italic|oblique)\s+)?(?:(normal|bold|bolder|lighter|[1-9]00)\s+)?(\d+(?:\.\d+)?)px\s+(.+)$/.exec(f || '');
+  if (!m) return { size: 10, family: 'sans-serif', weight: null, style: null };
+  return { style: m[1] || null, weight: m[2] && m[2] !== 'normal' ? m[2] : null, size: +m[3], family: m[4].trim() };
+}
+
+function _b64bytes(b64) {
+  if (typeof atob === 'function') { const s = atob(b64), o = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) o[i] = s.charCodeAt(i); return o; }
+  return Uint8Array.from(Buffer.from(b64, 'base64'));
+}
+function _bytesB64(bytes) {
+  if (typeof btoa === 'function') { let s = ''; for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)); return btoa(s); }
+  return Buffer.from(bytes).toString('base64');
+}
+
+function toSVG(list, opts) {
+  const o = opts || {};
+  if (!list || !Array.isArray(list.ops)) throw new TypeError('toSVG: expected a draw list (fig.toDrawList())');
+  const W = list.width, H = list.height;
+  const DEF = { fillStyle: '#000000', strokeStyle: '#000000', lineWidth: 1, font: '10px sans-serif', textAlign: 'start', textBaseline: 'alphabetic', globalAlpha: 1, lineCap: 'butt', lineJoin: 'miter', lineDashOffset: 0 };
+  let st = { ...DEF, m: [1, 0, 0, 1, 0, 0], dash: [], clip: null };
+  const stack = [];
+  const defs = [], body = [];
+  let clipN = 0, group = null;
+  let path = [], cur = null, start = null;
+
+  const T = (x, y) => { const m = st.m; return [m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]]; };
+  const scaleOf = () => Math.sqrt(Math.abs(st.m[0] * st.m[3] - st.m[1] * st.m[2]));
+  const mul = (a, b) => [a[0] * b[0] + a[2] * b[1], a[1] * b[0] + a[3] * b[1], a[0] * b[2] + a[2] * b[3], a[1] * b[2] + a[3] * b[3], a[0] * b[4] + a[2] * b[5] + a[4], a[1] * b[4] + a[3] * b[5] + a[5]];
+  const pt = (p) => `${_svgNum(p[0])} ${_svgNum(p[1])}`;
+  const emit = (el) => {
+    // consecutive elements under one clip share a group
+    if (group !== st.clip) { if (group) body.push('</g>'); group = st.clip; if (group) body.push(`<g clip-path="url(#${group})">`); }
+    body.push(el);
+  };
+  const alpha = (a) => (a < 1 ? ` opacity="${_svgNum(a * 1000) / 1000}"` : '');
+  const d = () => path.join('');
+
+  const arc = (x, y, r, a0, a1, ccw) => {
+    const TAU = 2 * Math.PI;
+    let sweep = ccw ? a0 - a1 : a1 - a0;
+    const full = sweep >= TAU - 1e-9 || sweep <= -TAU + 1e-9;
+    if (!full) { sweep %= TAU; if (sweep < 0) sweep += TAU; }
+    const at = (a) => T(x + r * Math.cos(a), y + r * Math.sin(a));
+    const S = at(a0);
+    // a canvas joins the arc to the current point; already there (a marker's moveTo), no join
+    if (!cur) { path.push(`M${pt(S)}`); start = S; }
+    else if (_svgNum(cur[0]) !== _svgNum(S[0]) || _svgNum(cur[1]) !== _svgNum(S[1])) path.push(`L${pt(S)}`);
+    const R = _svgNum(r * scaleOf());
+    let flag = ccw ? 0 : 1;
+    if (st.m[0] * st.m[3] - st.m[1] * st.m[2] < 0) flag = 1 - flag;
+    const dir = ccw ? -1 : 1;
+    if (full) {
+      const M = at(a0 + dir * Math.PI);
+      path.push(`A${R} ${R} 0 0 ${flag} ${pt(M)}A${R} ${R} 0 0 ${flag} ${pt(S)}`);
+      cur = S;
+    } else {
+      const E = at(a0 + dir * sweep);
+      path.push(`A${R} ${R} 0 ${sweep > Math.PI ? 1 : 0} ${flag} ${pt(E)}`);
+      cur = E;
+    }
+  };
+
+  for (const op of list.ops) {
+    const [name, ...a] = op;
+    switch (name) {
+      case 'set': st[a[0]] = a[1]; break;
+      case 'save': stack.push({ ...st, m: st.m.slice(), dash: st.dash.slice() }); break;
+      case 'restore': if (stack.length) st = stack.pop(); break;
+      case 'setLineDash': st.dash = Array.from(a[0] || []); break;
+      case 'translate': st.m = mul(st.m, [1, 0, 0, 1, a[0], a[1]]); break;
+      case 'scale': st.m = mul(st.m, [a[0], 0, 0, a[1], 0, 0]); break;
+      case 'rotate': { const c = Math.cos(a[0]), s = Math.sin(a[0]); st.m = mul(st.m, [c, s, -s, c, 0, 0]); break; }
+      case 'transform': st.m = mul(st.m, a); break;
+      case 'setTransform': st.m = a.length === 6 ? a.slice() : [1, 0, 0, 1, 0, 0]; break;
+      case 'resetTransform': st.m = [1, 0, 0, 1, 0, 0]; break;
+      case 'beginPath': path = []; cur = start = null; break;
+      case 'moveTo': { const p = T(a[0], a[1]); path.push(`M${pt(p)}`); cur = start = p; break; }
+      case 'lineTo': { const p = T(a[0], a[1]); path.push(cur ? `L${pt(p)}` : `M${pt(p)}`); if (!cur) start = p; cur = p; break; }
+      case 'closePath': if (cur) { path.push('Z'); cur = start; } break;
+      case 'rect': {
+        const [x, y, w, h] = a, P = [T(x, y), T(x + w, y), T(x + w, y + h), T(x, y + h)];
+        path.push(`M${pt(P[0])}L${pt(P[1])}L${pt(P[2])}L${pt(P[3])}Z`); cur = start = P[0]; break;
+      }
+      case 'arc': arc(a[0], a[1], a[2], a[3], a[4], !!a[5]); break;
+      case 'ellipse': {
+        // sampled: plot draws no ellipse today; a polyline keeps any that come exact enough
+        const [x, y, rx, ry, rot, a0, a1, ccw] = a, N = 64;
+        let sw = ccw ? a0 - a1 : a1 - a0; if (sw < 0) sw += 2 * Math.PI;
+        for (let k = 0; k <= N; k++) {
+          const t = a0 + (ccw ? -1 : 1) * (sw * k) / N, ex = rx * Math.cos(t), ey = ry * Math.sin(t);
+          const p = T(x + ex * Math.cos(rot) - ey * Math.sin(rot), y + ex * Math.sin(rot) + ey * Math.cos(rot));
+          path.push(cur ? `L${pt(p)}` : `M${pt(p)}`); if (!cur) start = p; cur = p;
+        }
+        break;
+      }
+      case 'quadraticCurveTo': { const c = T(a[0], a[1]), p = T(a[2], a[3]); path.push(`Q${pt(c)} ${pt(p)}`); cur = p; break; }
+      case 'bezierCurveTo': { const c1 = T(a[0], a[1]), c2 = T(a[2], a[3]), p = T(a[4], a[5]); path.push(`C${pt(c1)} ${pt(c2)} ${pt(p)}`); cur = p; break; }
+      case 'arcTo': { const p = T(a[2], a[3]); path.push(cur ? `L${pt(p)}` : `M${pt(p)}`); cur = p; break; }
+      case 'fill': {
+        if (!path.length) break;
+        const [c, op_] = _svgPaint(st.fillStyle);
+        if (c === 'none') break;
+        const rule = a[0] === 'evenodd' ? ' fill-rule="evenodd"' : '';
+        emit(`<path d="${d()}" fill="${c}"${rule}${alpha(op_ * st.globalAlpha)}/>`);
+        break;
+      }
+      case 'stroke': {
+        if (!path.length) break;
+        const el = _svgStroke(`<path d="${d()}" fill="none"`, st, scaleOf());
+        if (el) emit(el);
+        break;
+      }
+      case 'fillRect': case 'strokeRect': {
+        const [x, y, w, h] = a, m = st.m;
+        const fill = name === 'fillRect';
+        const [c, op_] = _svgPaint(fill ? st.fillStyle : st.strokeStyle);
+        if (c === 'none' || !(w && h)) break;
+        let geom;
+        if (m[1] === 0 && m[2] === 0) {
+          const p = T(x, y), q = T(x + w, y + h);
+          geom = `<rect x="${_svgNum(Math.min(p[0], q[0]))}" y="${_svgNum(Math.min(p[1], q[1]))}" width="${_svgNum(Math.abs(q[0] - p[0]))}" height="${_svgNum(Math.abs(q[1] - p[1]))}"`;
+        } else {
+          const P = [T(x, y), T(x + w, y), T(x + w, y + h), T(x, y + h)];
+          geom = `<path d="M${pt(P[0])}L${pt(P[1])}L${pt(P[2])}L${pt(P[3])}Z"`;
+        }
+        if (fill) emit(`${geom} fill="${c}"${alpha(op_ * st.globalAlpha)}/>`);
+        else { const el = _svgStroke(`${geom} fill="none"`, st, scaleOf()); if (el) emit(el); }
+        break;
+      }
+      case 'clearRect': break;   // nothing under an SVG to clear; the figure paints its own face
+      case 'clip': {
+        if (!path.length) break;
+        const id = `${o.idPrefix || 'p'}c${++clipN}`;
+        const nest = st.clip ? ` clip-path="url(#${st.clip})"` : '';
+        defs.push(`<clipPath id="${id}"${nest}><path d="${d()}"${a[0] === 'evenodd' ? ' clip-rule="evenodd"' : ''}/></clipPath>`);
+        st.clip = id;
+        break;
+      }
+      case 'fillText': case 'strokeText': {
+        const [s, x, y] = a;
+        if (s == null || s === '') break;
+        const f = _svgFont(st.font), p = T(x, y), k = scaleOf();
+        const ang = Math.atan2(st.m[1], st.m[0]) * 180 / Math.PI;
+        const fill = name === 'fillText';
+        const [c, op_] = _svgPaint(fill ? st.fillStyle : st.strokeStyle);
+        if (c === 'none') break;
+        let el = `<text x="${_svgNum(p[0])}" y="${_svgNum(p[1])}" font-family="${_svgEsc(f.family.replace(/"/g, "'"))}" font-size="${_svgNum(f.size * k)}"`;
+        if (f.weight) el += ` font-weight="${f.weight}"`;
+        if (f.style) el += ` font-style="${f.style}"`;
+        const an = _SVG_ANCHOR[st.textAlign] || 'start';
+        if (an !== 'start') el += ` text-anchor="${an}"`;
+        const bl = _SVG_BASELINE[st.textBaseline] || 'alphabetic';
+        if (bl !== 'alphabetic') el += ` dominant-baseline="${bl}"`;
+        if (Math.abs(ang) > 1e-6) el += ` transform="rotate(${_svgNum(ang)} ${_svgNum(p[0])} ${_svgNum(p[1])})"`;
+        if (fill) el += ` fill="${c}"${alpha(op_ * st.globalAlpha)}`;
+        else el += ` fill="none" stroke="${c}" stroke-width="${_svgNum(st.lineWidth * k)}" stroke-linejoin="round"${alpha(op_ * st.globalAlpha)}`;
+        emit(`${el}>${_svgEsc(s)}</text>`);
+        break;
+      }
+      case 'image': {
+        const [x, y, w, h, cols, rows, b64] = a;
+        const png = encodePNG(_b64bytes(b64), cols, rows);
+        const m = st.m, ident = m[0] === 1 && m[1] === 0 && m[2] === 0 && m[3] === 1 && m[4] === 0 && m[5] === 0;
+        const tf = ident ? '' : ` transform="matrix(${m.map(_svgNum).join(' ')})"`;
+        emit(`<image x="${_svgNum(x)}" y="${_svgNum(y)}" width="${_svgNum(w)}" height="${_svgNum(h)}" preserveAspectRatio="none" style="image-rendering:pixelated"${tf}${alpha(st.globalAlpha)} href="data:image/png;base64,${_bytesB64(png)}"/>`);
+        break;
+      }
+      default: throw new Error(`toSVG: unknown op '${name}'`);
+    }
+  }
+  if (group) body.push('</g>');
+  const head = `<svg xmlns="http://www.w3.org/2000/svg" width="${_svgNum(W)}" height="${_svgNum(H)}" viewBox="0 0 ${_svgNum(W)} ${_svgNum(H)}">`;
+  // an export's face, under everything (Figure.toSVG passes the theme's background when the
+  // figure has none of its own)
+  const [fc, fo] = _svgPaint(o.facecolor);
+  const face = fc !== 'none' ? `<rect width="${_svgNum(W)}" height="${_svgNum(H)}" fill="${fc}"${fo < 1 ? ` opacity="${_svgNum(fo * 1000) / 1000}"` : ''}/>\n` : '';
+  return `${head}\n${defs.length ? `<defs>${defs.join('')}</defs>\n` : ''}${face}${body.join('\n')}\n</svg>\n`;
+}
+
+function _svgStroke(open, st, k) {
+  const [c, op_] = _svgPaint(st.strokeStyle);
+  if (c === 'none') return '';
+  let el = `${open} stroke="${c}" stroke-width="${_svgNum(st.lineWidth * k)}"`;
+  if (st.lineCap !== 'butt') el += ` stroke-linecap="${st.lineCap}"`;
+  if (st.lineJoin !== 'miter') el += ` stroke-linejoin="${st.lineJoin}"`;
+  if (st.dash.length) el += ` stroke-dasharray="${st.dash.map((v) => _svgNum(v * k)).join(' ')}"`;
+  if (st.dash.length && st.lineDashOffset) el += ` stroke-dashoffset="${_svgNum(st.lineDashOffset * k)}"`;
+  if (op_ * st.globalAlpha < 1) el += ` opacity="${_svgNum(op_ * st.globalAlpha * 1000) / 1000}"`;
+  return el + '/>';
+}
+
 // -- figure.js --
 
 // Figure — canvas management, subplot grid, DPI handling
+
 
 
 // the chart kinds beyond the core: they add to Axes.prototype, so they load after axes.js
@@ -5662,20 +6036,55 @@ class Figure {
     return new Uint8Array(await blob.arrayBuffer());
   }
 
-  // In the notebook: download a PNG. With no DOM: record { name, figure } for plt.saved()
-  // (and the figure for plt.shown()) so the host can offer the file.
-  savefig(filename) {
-    const name = (typeof filename === 'string' && filename) || 'figure.png';
+  // The figure as an SVG string, from its draw list (svg.js): the same in every host.
+  // The theme's figure surface may be 'transparent' (the dark default, so a figure blends into
+  // the page it sits on); a FILE has no page, so an export paints the theme's background
+  // under it unless the face was set (fig.set_facecolor('none') stays transparent) or
+  // {facecolor} is given.
+  toSVG(opts) {
+    const o = _plainOpts(opts) ? { ...opts } : {};
+    if (o.facecolor === undefined) o.facecolor = this._exportFace();
+    return toSVG(this.toDrawList(), o);
+  }
+  _exportFace() {
+    if (this._facecolor) return null;           // set by the caller: the draw list paints it (or not)
+    return this.facecolor === 'transparent' || this.facecolor === 'none' ? this._theme.background : null;
+  }
+
+  // savefig('x.png') · savefig('x.svg') · savefig(name, {format: 'svg' | 'png'}). In the
+  // notebook: a download. With no DOM: record { name, format, figure } for plt.saved() (and
+  // the figure for plt.shown()) so the host can offer the file (figure.toSVG() / toPNG()).
+  savefig(filename, opts) {
+    if (_plainOpts(filename)) { opts = filename; filename = opts.fname; }
+    const o = _plainOpts(opts) ? opts : {};
+    let name = (typeof filename === 'string' && filename) || '';
+    const ext = /\.([a-z0-9]+)$/i.exec(name);
+    const format = String(o.format || (ext ? ext[1] : 'png')).toLowerCase();
+    if (format !== 'png' && format !== 'svg') throw new Error(`savefig: format '${format}' is not supported; use 'png' or 'svg'`);
+    if (!name) name = `figure.${format}`;
     if (typeof document === 'undefined') {
-      _savedFigures.push({ name, figure: this });
+      _savedFigures.push({ name, format, figure: this });
       _recordShown(this);
       return this;
     }
-    const canvas = this.show();
     const link = document.createElement('a');
     link.download = name;
-    link.href = canvas.toDataURL('image/png');
-    link.click();
+    if (format === 'svg') {
+      const url = URL.createObjectURL(new Blob([this.toSVG()], { type: 'image/svg+xml' }));
+      link.href = url;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+    } else {
+      const canvas = this.show(), face = this._exportFace();
+      if (face) {
+        // the face goes under what's drawn
+        const g = canvas.getContext('2d');
+        g.save(); g.setTransform(1, 0, 0, 1, 0, 0); g.globalCompositeOperation = 'destination-over';
+        g.fillStyle = face; g.fillRect(0, 0, canvas.width, canvas.height); g.restore();
+      }
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+    }
   }
 }
 
@@ -6054,4 +6463,4 @@ if (typeof window !== 'undefined') {
   }
 }
 
-export { subplots, subplot, figure, plot, scatter, imshow, matshow, hist, bar, show, flush_figures, close, gca, gcf, cmap, Figure, Axes, LinearScale, LogScale, getCmap, pltAdder, replay, recordingContext, rcParams, VERSION, themeFromCSS, resolveTheme, Normalize, LogNorm, TwoSlopeNorm, CenteredNorm, BoundaryNorm, ListedColormap, LinearSegmentedColormap, colors, Polygon, Rectangle, Circle, ScalarMappable };
+export { VERSION, subplots, plot, scatter, imshow, bar, hist, cmap, matshow, rc, style, figure, show, flush_figures, close, shown, saved, subplot, colors, cm, gca, gcf, xlabel, ylabel, title, xlim, ylim, xscale, yscale, legend, grid, vlines, hlines, axhline, axvline, text, subplots_adjust, tight_layout, savefig, clf, cla, xticks, yticks, axis, barh, bar_label, errorbar, fill_between, fill_betweenx, step, axhspan, axvspan, annotate, boxplot, contour, contourf, pcolormesh, fill, add_geometry, margins, colorbar, suptitle, pltAdder, rcParams, Polygon, Rectangle, Circle, ScalarMappable, Figure, Axes, LinearScale, LogScale, getCmap, replay, recordingContext, themeFromCSS, resolveTheme, Normalize, LogNorm, TwoSlopeNorm, CenteredNorm, BoundaryNorm, ListedColormap, LinearSegmentedColormap, toSVG, encodePNG };
