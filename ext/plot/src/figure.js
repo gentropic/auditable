@@ -8,6 +8,7 @@ import './box.js';
 import './contour.js';
 import './mesh.js';
 import './legend.js';
+import './geo.js';
 import { _resolve, _font } from './style.js';
 import { _checkOpts, _noop } from './opts.js';
 import { recordingContext, replay } from './record.js';
@@ -85,6 +86,10 @@ export class Figure {
   // the figure's face: facecolor if given, else the theme's figure surface
   get facecolor() { return this._facecolor || this._theme.figure; }
   set facecolor(c) { this._facecolor = c; }
+  // fig.set_facecolor('none') with ax.set_facecolor('none'): only the chrome is drawn, so the
+  // figure can sit over another renderer's canvas (§9a)
+  set_facecolor(c) { this._facecolor = c; return this; }
+  get_facecolor() { return this.facecolor; }
 
   // fig.set_theme(t): a name ('dark' · 'light' · 'paper'), a partial theme, themeFromCSS(el)
   set_theme(t) {
@@ -167,7 +172,7 @@ export class Figure {
     if (dpr !== 1) ctx.scale(dpr, dpr);
 
     // background
-    if (this.facecolor !== 'transparent') {
+    if (this.facecolor !== 'transparent' && this.facecolor !== 'none') {
       ctx.fillStyle = this.facecolor;
       ctx.fillRect(0, 0, this.width, this.height);
     }

@@ -46,10 +46,15 @@ export const _KNOWN = {
   vlines: [..._ARTIST, 'colors', 'linestyle', 'linewidth'],
   text: ['color', 'alpha', 'zorder', 'fontsize', 'ha', 'va', 'horizontalalignment', 'verticalalignment', 'transform', 'rotation', 'fontweight'],
   legend: ['loc', 'bbox_to_anchor', 'ncol', 'ncols', 'title', 'fontsize', 'title_fontsize', 'frameon', 'framealpha', 'labelcolor', 'facecolor', 'edgecolor', 'markerscale', 'borderaxespad', 'handles', 'labels'],
-  colorbar: ['label', 'ax', 'ticks', 'extend', 'format'],
+  colorbar: ['label', 'ax', 'ticks', 'extend', 'format', 'cmap', 'norm', 'vmin', 'vmax'],
   grid: ['color', 'alpha', 'linestyle', 'linewidth', 'which', 'axis'],
   subplots: ['figsize', 'dpi', 'facecolor', 'gap', 'wspace', 'hspace', 'strict', 'theme', 'sharex', 'sharey'],
   label: ['fontsize', 'color', 'loc', 'pad', 'fontweight'],
+  fill: [..._ARTIST, 'facecolor', 'edgecolor', 'linewidth', 'linestyle', 'fill', 'closed'],
+  add_patch: [..._ARTIST, 'facecolor', 'edgecolor', 'linewidth', 'linestyle', 'fill', 'closed'],
+  add_geometry: [..._ARTIST, 'facecolor', 'edgecolor', 'linewidth', 'linestyle', 'marker', 's'],
+  scalebar: ['units', 'length', 'loc', 'color', 'label'],
+  north_arrow: ['loc', 'rotation', 'size', 'color'],
 };
 
 // known, not done yet: the hint says what to do instead

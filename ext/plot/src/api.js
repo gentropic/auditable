@@ -5,6 +5,8 @@ import { replay } from './record.js';
 import { getCmap, ListedColormap, LinearSegmentedColormap } from './color.js';
 import { Normalize, LogNorm, TwoSlopeNorm, CenteredNorm, BoundaryNorm } from './norm.js';
 import { setStyle, themeFromCSS } from './style.js';
+import { ScalarMappable } from './axes.js';
+import { Polygon, Rectangle, Circle } from './geo.js';
 import { rcParams, _noop } from './opts.js';
 
 // one version string, read by the extension registration below (package.json carries the same)
@@ -224,6 +226,7 @@ for (const n of _CMAP_NAMES) {
   });
 }
 cm.get_cmap = getCmap;
+cm.ScalarMappable = ScalarMappable;
 
 // matplotlib stateful interface — module-level helpers that delegate to
 // the current axes. Each lazily creates an axes if none exists yet, so
@@ -283,6 +286,10 @@ export function boxplot(x, opts) { return _ax().boxplot(x, opts); }
 export function contour(...args) { return _ax().contour(...args); }
 export function contourf(...args) { return _ax().contourf(...args); }
 export function pcolormesh(...args) { return _ax().pcolormesh(...args); }
+// plan views: polygons, GeoJSON, the map furniture (geo.js)
+export function fill(...args) { return _ax().fill(...args); }
+export function add_geometry(geom, opts) { return _ax().add_geometry(geom, opts); }
+export { Polygon, Rectangle, Circle, ScalarMappable };
 export function margins(x, y) { return _ax().margins(x, y); }
 
 // plt.colorbar(im, ax=None, **kwargs) — attach a colorbar to the axes
@@ -320,7 +327,7 @@ export const pltAdder = {
   subplots_adjust, tight_layout, savefig, clf, cla,
   xticks, yticks, axis, margins, colorbar, suptitle, themeFromCSS,
   colors, Normalize, LogNorm, TwoSlopeNorm, CenteredNorm, BoundaryNorm, ListedColormap,
-  boxplot, contour, contourf, pcolormesh,
+  boxplot, contour, contourf, pcolormesh, fill, add_geometry, Polygon, Rectangle, Circle, ScalarMappable,
   barh, bar_label, errorbar, fill_between, fill_betweenx, step, axhspan, axvspan, annotate,
 };
 

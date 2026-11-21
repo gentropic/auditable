@@ -60,6 +60,25 @@ export function _lenErr(fn, a, na, b, nb) {
 // What a chart call returns: matplotlib's container — an array (bar's rectangles; hist's
 // [n, bins, patches]; errorbar's [line, caps, bars]) with its own fields and .axes — through
 // which every other name reads the axes, so ax.bar(…).set_title(…) still chains.
+// matplotlib.cm.ScalarMappable({cmap, norm}) — a colour scale with no data of plot's behind it:
+// fig.colorbar(sm, {ax}) draws its bar (the legend of a picture another renderer draws).
+// vmin / vmax are the short form of norm=Normalize(vmin, vmax); set_clim moves them.
+export class ScalarMappable {
+  constructor(opts) {
+    const o = opts && typeof opts === 'object' ? opts : {};
+    this._scalar = true;
+    this.cmap = o.cmap ?? null;
+    this.norm = o.norm ?? null;
+    this.vmin = o.vmin ?? null;
+    this.vmax = o.vmax ?? null;
+  }
+  set_clim(vmin, vmax) { if (Array.isArray(vmin)) [vmin, vmax] = vmin; this.vmin = vmin; this.vmax = vmax; return this; }
+  set_cmap(c) { this.cmap = c; return this; }
+  set_norm(n) { this.norm = n; return this; }
+  set_array(_a) { return this; }               // matplotlib's idiom sm.set_array([]): nothing to hold
+  __repr__() { return '<matplotlib.cm.ScalarMappable>'; }
+}
+
 export function _result(ax, items, fields) {
   const target = Object.assign(items, fields, { axes: ax });
   return new Proxy(target, {
@@ -469,15 +488,41 @@ export class Axes {
   }
 
 
+  // colorbar(mappable, {label, ticks, extend, format}). The mappable is what a colour-mapped
+  // call returned, or a ScalarMappable({cmap, norm}) — matplotlib's bar with nothing of plot's
+  // behind it. colorbar({cmap, vmin, vmax, norm}) is the short form of the same: the bar for a
+  // picture another renderer draws (axes as chrome, §9a).
   colorbar(mappable, opts) {
-    if (mappable && mappable._trace) { opts = { ...(_plainOpts(opts) ? opts : {}) }; opts.mappable = mappable._trace; }
+    if (mappable && (mappable._trace || mappable._scalar)) { opts = { ...(_plainOpts(opts) ? opts : {}) }; opts[mappable._scalar ? '_scalar' : 'mappable'] = mappable._scalar ? mappable : mappable._trace; }
     else if (_plainOpts(mappable)) opts = mappable;
     const o = _plainOpts(opts) ? { ...opts } : {};
     const mp = o.mappable; delete o.mappable;
+    let sm = o._scalar || null; delete o._scalar;
     this._colorbar = true;
-    this._colorbarOpts = _checkOpts('colorbar', o, this._strict);
+    _checkOpts('colorbar', o, this._strict);
+    if (!sm && !mp && (o.cmap != null || o.norm != null || o.vmin != null || o.vmax != null)) sm = new ScalarMappable({ cmap: o.cmap, norm: o.norm, vmin: o.vmin, vmax: o.vmax });
+    for (const k of ['cmap', 'norm', 'vmin', 'vmax']) delete o[k];
+    this._colorbarOpts = o;
     if (mp) this._colorbarOpts.mappable = mp;
+    if (sm) this._colorbarOpts.scalar = sm;
     return _result(this, [], { _colorbar: true });
+  }
+
+  // ── axes as chrome over another renderer (§9a) ──
+  // set_facecolor('none'): no face, so a canvas under the figure shows through the plot rect
+  set_facecolor(c) { this._bgcolor = c === 'none' || c === 'transparent' ? 'none' : _cssColor(c); return this; }
+  get_facecolor() { return this._bgcolor || this._theme.background; }
+  // set_view({xlim, ylim}) — the limits another renderer's camera shows; also takes
+  // condenser's view rect, {rect: {u0, u1, v0, v1}} or the rect itself. Draw the figure after
+  // it; at equal aspect the drawn limits may be wider than asked (matplotlib's datalim):
+  // read get_xlim() / get_ylim() and ax.view {x, y, w, h} to fit the other camera to the plot.
+  set_view(v) {
+    if (!v || typeof v !== 'object') throw new TypeError('set_view: expected {xlim, ylim} or a view rect {u0, u1, v0, v1}');
+    const r = v.rect || (v.u0 != null ? v : null);
+    const xlim = v.xlim || (r && [r.u0, r.u1]), ylim = v.ylim || (r && [r.v0, r.v1]);
+    if (xlim) this.set_xlim(+xlim[0], +xlim[1]);
+    if (ylim) this.set_ylim(+ylim[0], +ylim[1]);
+    return this;
   }
 
   // grid() · grid(False) · grid(True, {alpha}) · grid({alpha}) (adder kwargs arrive as the first arg)
@@ -612,7 +657,7 @@ export class Axes {
 
     // colorbar — pinned right of the plot, full pre-aspect height (it doesn't shrink with an
     // equal-aspect image)
-    if (cb && lastCmapTrace) {
+    if (cb && (lastCmapTrace || cb.scalar)) {
       const cbX = rect.x + rect.w - m.right + 10;
       _drawColorbar(ctx, cbX, fullPlotY, 12, fullPlotH, cb.cmap, cb.norm, cb.ticks, {
         textColor, frameColor, font: fTick, labelFont: fLab, label: this._colorbarOpts.label, labelsW: cb.labelsW,
@@ -691,6 +736,14 @@ export class Axes {
   // norm and colour map, its ticks and how wide their labels are (the right margin needs it).
   // A kind can describe its own bar (cbar: contourf's bands).
   _colorbarInfo(ctx, fTick) {
+    const sm = this._colorbarOpts.scalar;
+    if (sm) {
+      // no data behind the bar: an unset end of the scale reads 0 … 1
+      const norm = _resolveNorm(sm.norm, sm.vmin, sm.vmax, 0, 1, 1e-3);
+      if (!(norm.vmin - norm.vmin === 0 && norm.vmax - norm.vmax === 0)) return null;
+      const ticks = _cbTicks(norm, this.view ? this.view.h : 200, this._colorbarOpts);
+      return { trace: null, scalar: true, norm, ticks, labelsW: _cbLabelsW(ticks, fTick), cmap: sm.cmap || this._theme.ramp || 'viridis', extend: null, bandColors: null, extColors: null };
+    }
     let tr = this._colorbarOpts.mappable && this._traces.includes(this._colorbarOpts.mappable) ? this._colorbarOpts.mappable : null;
     if (!tr) for (const t of this._traces) if (t.type === 'imshow' || t.cvals || (_KINDS[t.type] && _KINDS[t.type].cmap && t.cmapped !== false)) tr = t;
     if (!tr) return null;
