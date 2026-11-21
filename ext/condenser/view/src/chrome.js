@@ -18,7 +18,8 @@
 //   v.chrome.remove('legend');        // or replace: add with the same id
 //
 // Slots: the four corners, 'top' and 'bottom' (centred), and 'overlay' — the whole
-// canvas, for drawing anchored to the scene (labels). A slot stacks its plugins by
+// canvas, for drawing anchored to the scene (labels). A frame drawn around the picture
+// (the plot axes of a locked view) moves the slots inside it (api.setInsets). A slot stacks its plugins by
 // `order`, from its edge inward, so nothing overlaps and everything reflows on resize.
 // Whatever a plugin DRAWS is in snapshots; its DOM is not.
 
@@ -27,12 +28,12 @@ export const SLOTS = ['top-left', 'top', 'top-right', 'bottom-left', 'bottom', '
 const CSS = `
 .cdslot { position:absolute; display:flex; flex-direction:column; gap:6px; pointer-events:none; z-index:4; max-width:calc(100% - 12px); }
 .cdslot > * { pointer-events:auto; }
-.cdslot.top-left { left:6px; top:6px; align-items:flex-start; }
-.cdslot.top-right { right:6px; top:6px; align-items:flex-end; }
-.cdslot.top { left:50%; top:6px; transform:translateX(-50%); align-items:center; }
-.cdslot.bottom-left { left:6px; bottom:6px; flex-direction:column-reverse; align-items:flex-start; }
-.cdslot.bottom-right { right:6px; bottom:6px; flex-direction:column-reverse; align-items:flex-end; }
-.cdslot.bottom { left:50%; bottom:6px; transform:translateX(-50%); flex-direction:column-reverse; align-items:center; }
+.cdslot.top-left { left:calc(6px + var(--cd-in-l, 0px)); top:calc(6px + var(--cd-in-t, 0px)); align-items:flex-start; }
+.cdslot.top-right { right:calc(6px + var(--cd-in-r, 0px)); top:calc(6px + var(--cd-in-t, 0px)); align-items:flex-end; }
+.cdslot.top { left:calc(var(--cd-in-l, 0px) + (100% - var(--cd-in-l, 0px) - var(--cd-in-r, 0px)) / 2); top:calc(6px + var(--cd-in-t, 0px)); transform:translateX(-50%); align-items:center; }
+.cdslot.bottom-left { left:calc(6px + var(--cd-in-l, 0px)); bottom:calc(6px + var(--cd-in-b, 0px)); flex-direction:column-reverse; align-items:flex-start; }
+.cdslot.bottom-right { right:calc(6px + var(--cd-in-r, 0px)); bottom:calc(6px + var(--cd-in-b, 0px)); flex-direction:column-reverse; align-items:flex-end; }
+.cdslot.bottom { left:calc(var(--cd-in-l, 0px) + (100% - var(--cd-in-l, 0px) - var(--cd-in-r, 0px)) / 2); bottom:calc(6px + var(--cd-in-b, 0px)); transform:translateX(-50%); flex-direction:column-reverse; align-items:center; }
 .cdplug { display:flex; flex-direction:column; gap:6px; }
 .cdslot.top-right .cdplug, .cdslot.bottom-right .cdplug { align-items:flex-end; }
 .cdslot.top .cdplug, .cdslot.bottom .cdplug { align-items:center; }

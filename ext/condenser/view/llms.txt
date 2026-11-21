@@ -121,7 +121,7 @@ A 2D grid as shaded relief, row 0 the NORTHERNMOST. `grid` as rows, or flat with
 `null` = off) · `height` (460) · `background` (`''`: the theme's) · `theme` (`'dark'`) ·
 `chrome` (`{}`) — see *Theme* and *Chrome* · `toolbar` (true) · `edl` (true) ·
 `edl_strength` (1) · `z_exaggeration` (1) · `decorations` (true: scale bar, north arrow,
-exaggeration notice) ·
+exaggeration notice, triad) · `grid` (false: grid lines across a locked view's axes) ·
 `camera` (`{azimuth, plunge, distance, target, ortho}`) · `lock` (`'free'`) · `lock_toggle` (true) ·
 `twist` (false) — see *Orientation lock* · `hover` (false) · `select_through`
 (false) · `budget` (3,000,000 elements per frame) · `workers` (true; JS only — `false` when
@@ -231,6 +231,7 @@ Everything over the scene is a plugin, the built-ins included, each with its swi
 
 | switch | where | |
 |---|---|---|
+| `axes` | around the picture | a locked orthographic view's coordinates: `@gcu/plot` axes (E / N, along / RL) laid over the canvas, its margins a frame band the other pieces move inside (drawn). On |
 | `toolbar` | top left | the tools |
 | `pick` | top right | the pick readout |
 | `north` | top right | the north arrow (drawn) |
@@ -241,9 +242,11 @@ Everything over the scene is a plugin, the built-ins included, each with its swi
 | `readout` | bottom left | E / N / RL under the cursor in a locked view; the picked element's coordinates otherwise |
 | `status` | bottom left | the element count and loading progress |
 | `labels` | over the scene | drillhole BHIDs (`labels: true` on the layer) (drawn) |
+| `triad` | bottom left | E, N and Z as the camera sees them; activate one for the view from that side, the centre for the three-quarter view (drawn) |
+| `box` | over the scene | in free 3D, ticks and labels along three edges of the data's bounding box (drawn). **Off** unless switched on |
 
 `chrome: { legend: false, readout: false }` turns pieces off; an unset switch follows `toolbar`
-(toolbar, pick, section) or `decorations` (scalebar, north, exaggeration). Whatever is
+(toolbar, pick, section) or `decorations` (scalebar, north, exaggeration, triad). Whatever is
 **drawn** is in snapshots; the DOM pieces (toolbar, readouts, section bar) are not.
 
 ### Your own
@@ -310,7 +313,30 @@ m.end();
 the capacity, each with a message saying which. A stream survives `add` / `remove`: the
 view reloads and every appended row is replayed.
 
+## Axes around a locked view
+
+In a locked orthographic view (plan, a section, any locked direction) the `axes` chrome lays a
+`@gcu/plot` figure over the canvas in plot's axes-as-chrome mode: no face, the limits set from
+the view rectangle every frame, so the frame, ticks, labels and theme are plot's own — the same
+tick engine as a chart beside the view. A world point lands on the same pixel in the axes and in
+the scene; with `z_exaggeration` the RL axis still reads real RL. The plot margins become an
+opaque frame band, and the corner and edge pieces move inside it (the toolbar keeps the top
+left, so give a plot legend another corner). `grid: true` draws grid lines.
+
+`v.axes` is that plot Axes, for your own items in world coordinates; they draw in locked
+views, over the scene and under the frame:
+
+```js
+v.set({ lock: 'plan' });
+v.axes.add_geometry(licence, { facecolor: 'none', edgecolor: 'C1', linewidth: 2, label: 'licence' });
+v.axes.scatter(collarE, collarN, { marker: '^', s: 80, color: 'C3', label: 'collars' });
+v.axes.legend({ loc: 'lower left' });
+```
+
+In free 3D, `chrome: { box: true }` puts ticked axes on the data's bounding box instead: E and
+N along the bottom edges nearer the bottom of the screen, RL up the leftmost vertical edge, with
+plot's ticks — so a 3D snapshot carries its coordinates.
+
 ## Not yet
 
-Axes in locked views (easting / northing, along-section / RL, with `@gcu/plot`'s ticks), the
-3D orientation triad and box axes: the next step of `condenser-view-api`.
+A date or tick-formatter on the view's axes (plot M4's formatters will reach them through `v.axes`).

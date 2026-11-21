@@ -263,6 +263,16 @@ assert int(hc.sum()) == fe.size
 dml = cd.open(srcb, x="XC", y="YC", z="ZC", value="FE")    # the .dm source feeds cd.open directly
 assert dml.count == 700 and [a[1] for a in dml._extra["axes"]] == [10.0, 10.0, 5.0]
 
+# step 5: the axes / triad / box switches, the grid trait, and copy() keeping it
+w5 = cd.view(model, lock="plan", grid=True, chrome={"axes": True, "triad": False, "box": True})
+assert w5.grid is True and w5.chrome == {"axes": True, "triad": False, "box": True}
+assert w5.copy().grid is True
+try:
+    cd.view(model, chrome={"axis": True})
+    raise SystemExit("chrome={'axis'} should be refused")
+except Exception as e:
+    assert "axes" in str(e) and "triad" in str(e) and "box" in str(e), str(e)
+
 print(json.dumps({
   "bytes": len(w._payload), "layers": [l.name for l in w.layers],
   "blocks": model.count, "intervals": holes.count, "points": topo.count,

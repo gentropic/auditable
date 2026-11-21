@@ -47,6 +47,8 @@ export const VIEW_DEFAULTS = {
   lock: 'free', lock_toggle: true, twist: false,
   // the theme ('dark' · 'light' · 'paper' · 'css' · a partial theme) and the chrome switches
   theme: 'dark', chrome: {},
+  // grid lines across a locked view's axes
+  grid: false,
   // JS only: false when the page's CSP allows no workers (streams then build inline)
   workers: true,
 };
@@ -69,7 +71,7 @@ function _lev(a, b) {
   return d[b.length];
 }
 // the built-in chrome, by the switch that names it in `chrome: {…}`
-export const CHROME_KEYS = ['toolbar', 'section', 'pick', 'status', 'readout', 'legend', 'scalebar', 'north', 'exaggeration', 'labels'];
+export const CHROME_KEYS = ['axes', 'toolbar', 'section', 'pick', 'status', 'readout', 'legend', 'scalebar', 'north', 'exaggeration', 'labels', 'triad', 'box'];
 
 // an option nobody reads warns once, with the nearest real name — nothing is silently ignored
 function _checkKeys(where, opts, known) {
@@ -767,6 +769,10 @@ export function view(el, layers, opts) {
     // the chrome: plugins over the scene — add({id, slot, mount | measure + draw, …}),
     // remove(id), has(id), list(). See API.md, "Chrome plugins".
     chrome: cleanup.chrome || { add() { return null; }, remove() { return false; }, has: () => false, list: () => [] },
+    // the @gcu/plot Axes drawn around a locked view: add plot items in world coordinates
+    // (v.axes.scatter(e, n), v.axes.add_geometry(licence), v.axes.contour(…)); they draw in
+    // locked orthographic views, over the scene and under the frame
+    get axes() { return cleanup.axes ? cleanup.axes() : null; },
     _store: store,
   };
   return handle;

@@ -248,8 +248,14 @@ real coordinates), `hover` (the pick readout follows the cursor), `selection`,
   clip and the threshold marked; or the classes — click hides one, shift-click shows only it.
 - Per layer: `units='%'`, `colors={'ITA': '#c0392b'}` (or a list in class order),
   `category_order=['BIF', 'QTZ']`, `legend_counts='all'` (or `'selection'`).
-- `chrome={'legend': False, 'readout': False, …}` turns pieces off one at a time: toolbar,
-  section, pick, status, readout, legend, scalebar, north, exaggeration, labels.
+- `chrome={'legend': False, 'readout': False, …}` turns pieces off one at a time: axes,
+  toolbar, section, pick, status, readout, legend, scalebar, north, exaggeration, labels, triad,
+  box.
+- **Coordinates in the picture.** A locked view (`lock='plan'`, a section, …) carries
+  @gcu/plot axes around the canvas — easting / northing, or along-section / RL in real RL
+  even with `z_exaggeration` — and `grid=True` adds grid lines. A free 3D view has an
+  orientation **triad** (click E, N or Z for the view from that side) and, with
+  `chrome={'box': True}`, ticked axes on the data's bounding box.
 - Keyboard on the focused view: `L` lock · arrows pan · `+`/`-` zoom · `P` `N` `E` `I` views · `Esc`.
 
 ### Locking the orientation

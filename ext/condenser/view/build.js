@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Bundle the condenser VIEW for pages — @gcu/condenser/view → ext/condenser/view/index.js.
 // The same viewer the Jupyter widget runs (src/view.js), behind the JS API (src/api.js).
-// The engine (../index.js) and @gcu/drillhole ride inline, so the bundle is one
+// The engine (../index.js), @gcu/drillhole and @gcu/plot (the axes around locked views)
+// ride inline, so the bundle is one
 // self-contained ES module: nothing fetched at runtime, no eval, no WASM.
 //   node ext/condenser/view/build.js        (after node ext/condenser/build.js)
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -16,7 +17,7 @@ await bundle({
   at: import.meta.url,
   entry: 'src/api.js',
   outFile: OUT,
-  inline: ['../index.js', '../../theme/src/theme.js', '../../plot/src/scale.js', '../../drillhole/src/samples.js', '../../drillhole/src/desurvey.js', '../../drillhole/src/validate.js'],
+  inline: ['../index.js', '../../theme/src/theme.js', '../../plot/src/scale.js', '../../plot/src/figure.js', '../../plot/src/ticks.js', '../../drillhole/src/samples.js', '../../drillhole/src/desurvey.js', '../../drillhole/src/validate.js'],
   sourcemap: false,
   meta: false,
 });

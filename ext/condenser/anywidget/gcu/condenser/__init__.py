@@ -292,7 +292,7 @@ class Layer(traitlets.HasTraits):
 
 
 # ── the widget ──────────────────────────────────────────────────────────────
-_CHROME = ("toolbar", "section", "pick", "status", "readout", "legend", "scalebar", "north", "exaggeration", "labels")
+_CHROME = ("axes", "toolbar", "section", "pick", "status", "readout", "legend", "scalebar", "north", "exaggeration", "labels", "triad", "box")
 _LOCKS = ("free", "plan", "section", "north", "south", "east", "west",
           "iso", "iso-ne", "iso-nw", "iso-se", "iso-sw")
 
@@ -324,9 +324,10 @@ class Viewer(anywidget.AnyWidget):
     #: or a partial theme dict ({'base': 'light', 'accent': '#c00'}). The keys are
     #: @gcu/theme's, shared with @gcu/plot.
     theme = traitlets.Union([traitlets.Unicode(), traitlets.Dict()], default_value="dark").tag(sync=True)
-    #: each piece of chrome on or off: {'toolbar', 'section', 'pick', 'status',
-    #: 'readout', 'legend', 'scalebar', 'north', 'exaggeration', 'labels'}. Unset
-    #: keys follow `toolbar` and `decorations`.
+    #: each piece of chrome on or off: {'axes', 'toolbar', 'section', 'pick', 'status',
+    #: 'readout', 'legend', 'scalebar', 'north', 'exaggeration', 'labels', 'triad', 'box'}.
+    #: 'axes' (coordinates around a locked view) and 'triad' are on, 'box' (axes on the
+    #: bounding box in free 3D) is off; unset keys follow `toolbar` and `decorations`.
     chrome = traitlets.Dict(default_value={}).tag(sync=True)
 
     @traitlets.validate("chrome")
@@ -374,6 +375,8 @@ class Viewer(anywidget.AnyWidget):
     lock_toggle = traitlets.Bool(True).tag(sync=True)
     #: a locked PLAN view may turn about the vertical (ctrl-drag, pinch twist)
     twist = traitlets.Bool(False).tag(sync=True)
+    #: grid lines across a locked view's axes
+    grid = traitlets.Bool(False).tag(sync=True)
 
     @traitlets.validate("lock")
     def _valid_lock(self, proposal):
@@ -587,7 +590,7 @@ class Viewer(anywidget.AnyWidget):
                         section=self.section, background=self.background, height=self.height,
                         toolbar=self.toolbar, edl=self.edl, edl_strength=self.edl_strength,
                         budget=self.budget, select_through=self.select_through,
-                        lock=self.lock, lock_toggle=self.lock_toggle, twist=self.twist,
+                        lock=self.lock, lock_toggle=self.lock_toggle, twist=self.twist, grid=self.grid,
                         theme=self.theme, chrome=dict(self.chrome), z_exaggeration=self.z_exaggeration,
                         decorations=self.decorations)
         clone._payload = self._payload                     # same bytes, no re-pack

@@ -486,6 +486,107 @@ chk('a stream draws more as rows are appended', r.streamInk[1] > r.streamInk[0] 
 chk('append refuses rows off the declared lattice and undeclared categories', r.streamErrors.length === 2 && /outside the declared axes/.test(r.streamErrors[0]) && /was not declared/.test(r.streamErrors[1]), r.streamErrors.join(' | '));
 chk('a stream survives a reload (add): its rows are replayed', r.streamAfterReload > r.streamInk[3] * 0.8, `${r.streamAfterReload} vs ${r.streamInk[3]}`);
 chk('unknown events and appending to a plain layer say so', /no event 'nope'/.test(r.badEvent) && /is not a stream/.test(r.notStream));
+// ── step 5: plot axes around locked views, the triad, the box axes ──
+const S5 = await page.evaluate(async () => {
+  const C = await import('/ext/condenser/view/index.js');
+  const out = {};
+  const settle = (ms = 500) => new Promise((res) => setTimeout(res, ms));
+  const host = document.getElementById('a');
+  host.innerHTML = '';
+  const X = [], Y = [], Z = [], FE = [];
+  for (let i = 0; i < 30; i++) for (let j = 0; j < 20; j++) for (let k = 0; k < 10; k++) {
+    X.push(500005 + i * 10); Y.push(8200005 + j * 10); Z.push(302.5 + k * 5); FE.push(40 + i + k);
+  }
+  const v = C.view(host, [C.blocks({ x: X, y: Y, z: Z, value: FE }, { name: 'model' })], { height: 420, lock: 'plan' });
+  await settle(900);
+  const api = v.chrome.api, ax = v.axes;
+  const deco = [...host.querySelectorAll('canvas')].find((c) => c.style.zIndex === '1');
+  const ink = () => { const g = deco.getContext('2d'), d = g.getImageData(0, 0, deco.width, deco.height).data; let n = 0; for (let i = 3; i < d.length; i += 16) if (d[i] > 40) n++; return n; };
+  const pxAt = (x, y) => { const dpr = deco.width / deco.clientWidth; return Array.from(deco.getContext('2d').getImageData(Math.round(x * dpr), Math.round(y * dpr), 1, 1).data); };
+  // the axes' pixels ARE the scene's: a world point lands where the 3D view draws it
+  const err = (pts, fn) => Math.max(...pts.map(([x, y, z]) => { const a = api.project(x, y, z), b = fn(x, y, z); return Math.hypot(a[0] - b[0], a[1] - b[1]); }));
+  out.plan = {
+    has: !!ax && typeof ax.scatter === 'function', same: v.axes === ax,
+    err: err([[500005, 8200005, 330], [500295, 8200195, 330], [500150, 8200100, 330]], (x, y) => ax.toPixel(x, y)),
+    labels: [ax._xlabel && ax._xlabel.text, ax._ylabel && ax._ylabel.text],
+    xticks: ax.get_xticklabels(), yticks: ax.get_yticklabels(),
+    insets: ['t', 'l', 'r', 'b'].map((s) => parseFloat(api.host.style.getPropertyValue(`--cd-in-${s}`)) || 0),
+    corner: pxAt(2, deco.clientHeight - 2),
+    describe: (host.querySelector('[aria-label^="axes:"]') || {}).getAttribute ? null : null,
+  };
+  // a host's plot item, in world coordinates: a red square on a collar
+  ax.scatter([500150], [8200100], { marker: 's', s: 200, color: '#ff0000' });
+  v.chrome.api.invalidate();
+  await settle(300);
+  const [cx, cy] = api.project(500150, 8200100, 330);
+  out.item = pxAt(cx, cy);
+  // grid lines
+  v.set({ grid: true });
+  await settle(300);
+  out.grid = ax._grid;
+  // a north-looking section, with the z stretched: RL real on the axis, still on the scene's pixels
+  v.set({ z_exaggeration: 2 });
+  v.look('north');
+  await settle(600);
+  const t = api.target;
+  out.section = {
+    axes: v.chrome.api.viewInfo().axes, labels: [ax._xlabel.text, ax._ylabel.text],
+    err: err([[500005, t[1], 302.5], [500295, t[1], 347.5], [500150, t[1], 320]], (x, y, z) => ax.toPixel(x, z)),
+    ylim: ax.get_ylim(),
+  };
+  // free 3D: no plot axes, insets back to 0; the triad; the box axes on request
+  v.set({ lock: 'free', z_exaggeration: 1 });
+  v.look('three-quarter');
+  await settle(600);
+  out.free = { insets: ['t', 'l', 'r', 'b'].map((s) => parseFloat(api.host.style.getPropertyValue(`--cd-in-${s}`)) || 0), ids: v.chrome.list().map((p) => p.id) };
+  const inkNoBox = ink();
+  v.set({ chrome: { box: true } });
+  await settle(500);
+  out.box = { without: inkNoBox, with: ink() };
+  // the triad: click the E tip → the view from the east (looking west); the centre → three-quarter
+  const ph = host.querySelector('.cdplug[data-id="triad"] .cdph');
+  const { r, up } = api.basis();
+  const tip = (e) => [32 + (e[0] * r[0] + e[1] * r[1] + e[2] * r[2]) * 22, 32 - (e[0] * up[0] + e[1] * up[1] + e[2] * up[2]) * 22];
+  const click = (x, y) => { const b = ph.getBoundingClientRect(); ph.dispatchEvent(new MouseEvent('click', { clientX: b.left + x, clientY: b.top + y, bubbles: true })); };
+  click(...tip([1, 0, 0]));
+  await settle(500);
+  out.triadE = { ...v.camera };
+  click(...tip([0, 0, 1]).map((q, i) => (i === 1 ? q - 0.5 : q)));
+  await settle(500);
+  out.triadZ = { lock: v.get('lock'), cam: { ...v.camera } };
+  v.set({ lock: 'free' });
+  await settle(300);
+  click(32, 32);
+  await settle(500);
+  out.triadC = { ...v.camera };
+  out.triadLabel = ph.getAttribute('aria-label');
+  // switches: axes: false in a locked view draws no frame
+  v.set({ lock: 'plan', chrome: { axes: false } });
+  await settle(500);
+  out.noAxes = { ids: v.chrome.list().map((p) => p.id), insets: parseFloat(api.host.style.getPropertyValue('--cd-in-l')) || 0 };
+  v.destroy();
+  // a blocks layer with no value column (it crashed the load: the builder was handed chan: null)
+  try {
+    const w = C.view(host, [C.blocks({ x: X.slice(0, 600), y: Y.slice(0, 600), z: Z.slice(0, 600) }, { name: 'plain' })], { height: 300 });
+    await settle(600);
+    out.plain = { ok: true, count: w.layers ? w.layers.length : null };
+    w.destroy();
+  } catch (e) { out.plain = { ok: false, err: String(e) }; }
+  return out;
+});
+const s5p = S5.plan;
+chk('step 5: a locked plan carries plot axes (v.axes, the same Axes every time), E and N', s5p.has && s5p.same && s5p.labels.join() === 'E,N' && s5p.xticks.length >= 3 && s5p.yticks.length >= 3, JSON.stringify({ l: s5p.labels, x: s5p.xticks, y: s5p.yticks }));
+chk('… and its coordinates are the scene\'s: a world point lands on the same pixel (≤ 1 px)', s5p.err <= 1, `${s5p.err.toFixed(3)} px`);
+chk('… the slots move inside the frame, whose band is opaque', s5p.insets[1] > 30 && s5p.insets[3] > 15 && s5p.corner[3] > 200, JSON.stringify({ ins: s5p.insets, corner: s5p.corner }));
+chk("a host's plot item draws in world coordinates over the plan", S5.item[0] > 200 && S5.item[1] < 60 && S5.item[2] < 60, JSON.stringify(S5.item));
+chk('grid: true draws grid lines across the axes', S5.grid === true);
+chk('a section (look north, z × 2): axes E / RL in real RL, still on the scene\'s pixels', S5.section.axes.join() === 'E,RL' && S5.section.labels.join() === 'E,RL' && S5.section.err <= 1 && S5.section.ylim[0] < 302.5 && S5.section.ylim[1] > 347.5, JSON.stringify({ ...S5.section, err: S5.section.err.toFixed(3) }));
+chk('free 3D: no frame (insets 0), the triad on', S5.free.insets.every((q) => q === 0) && S5.free.ids.includes('triad'), JSON.stringify(S5.free));
+chk('box: true puts ticked axes on the bounding box', S5.box.with > S5.box.without + 200, JSON.stringify(S5.box));
+chk('the triad: E shows the view from the east (looking west), Z the plan, the centre the three-quarter view', Math.abs(S5.triadE.azimuth - 270) < 1 && Math.abs(S5.triadE.plunge) < 1 && S5.triadZ.cam.plunge > 89 && S5.triadC.plunge > 10 && S5.triadC.plunge < 60 && /orientation/.test(S5.triadLabel || ''), JSON.stringify({ e: S5.triadE, z: S5.triadZ, c: S5.triadC }));
+chk('chrome: {axes: false} drops the frame from a locked view', !S5.noAxes.ids.includes('axes') && S5.noAxes.insets === 0, JSON.stringify(S5.noAxes));
+chk('a blocks layer with no value column loads', S5.plain.ok, JSON.stringify(S5.plain));
+
 chk('no page errors under a strict CSP', errs.length === 0, errs.join(' | '));
 
 await browser.close();

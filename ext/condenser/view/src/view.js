@@ -38,8 +38,9 @@ import { openParquetBlocks } from './parquet-blocks.js';
 import { createToolbar } from './toolbar.js';
 import { createChrome } from './chrome.js';
 import { scaleBar, exaggeration, northArrow, holeLabels, legends, readout } from './decor.js';
+import { planAxes, triad, boxAxes } from './axes.js';
 import { resolveTheme, themeFromCSS, parseColor } from '../../../theme/src/theme.js';
-import { LOCK_NAMES, viewPreset, VIEW_NAMES, normLock, lockAngles, isVertical, lockHere, viewRect, rectCamera } from './lock.js';
+import { LOCK_NAMES, viewPreset, VIEW_NAMES, normLock, lockAngles, isVertical, lockHere, viewRect, rectCamera, screenBasis } from './lock.js';
 
 // ── ramp presets. rampPixels' default is the viridis-ish walk; these are the
 // few a geologist reaches for. Kept here (not in the engine) because they are
@@ -718,7 +719,7 @@ export function mountView(el, store) {
             for (let q = 0; q < n; q++) { bx[q] = x0 + I[q] * xp; by[q] = y0 + J[q] * yp; bz[q] = z0 + K[q] * zp; }
             L._pos = { x: bx, y: by, z: bz };
           }
-          b.push({ count: L.count, x: bx, y: by, z: bz, chan: cols.value || null, cat: cols.cat || null, dim: cols.dim || null, recStart: 0 });
+          b.push({ count: L.count, x: bx, y: by, z: bz, chan: cols.value || new Float32Array(L.count), cat: cols.cat || null, dim: cols.dim || null, recStart: 0 });
           doc = b.flush();
           if (L.cat_n) renderer.setCategories(L.cat_n);
         }
@@ -1553,7 +1554,26 @@ export function mountView(el, store) {
     off: (ev, fn) => { const b = bus.get(ev); if (b) b.delete(fn); },
     emit: (ev, data) => notify(ev, data),
     invalidate: () => schedule(),
+    // where the slots sit: a frame around the picture (the plot axes) moves them inside it
+    setInsets(m) {
+      const k = m ? `${Math.round(m.top)}|${Math.round(m.left)}|${Math.round(m.right)}|${Math.round(m.bottom)}` : '';
+      if (k === insetKey) return;
+      insetKey = k;
+      for (const [side, v] of [['t', m && m.top], ['l', m && m.left], ['r', m && m.right], ['b', m && m.bottom]]) host.style.setProperty(`--cd-in-${side}`, `${Math.round(v || 0)}px`);
+    },
+    // the screen's right and up, as world directions
+    basis: () => screenBasis(cam.state.theta, cam.state.phi),
+    // the data's bounding box in world coordinates: [x0, y0, z0, x1, y1, z1]
+    get bbox() {
+      if (!docBbox || !Number.isFinite(docBbox[0])) return null;
+      const o = frameO();
+      return [docBbox[0] + o[0], docBbox[1] + o[1], docBbox[2] + o[2], docBbox[3] + o[0], docBbox[4] + o[1], docBbox[5] + o[2]];
+    },
+    look: (name) => { chooseView(name); pushView(); },
   };
+  let insetKey = '';
+  // the plot axes of locked views: one per view, so v.axes is the same object all along
+  const plotAxes = planAxes();
   // the built-ins, by the switch that names them in `chrome: {…}`
   const domPlugin = (id, slot, order, elOf) => ({
     id, slot, order,
@@ -1561,21 +1581,25 @@ export function mountView(el, store) {
     unmount() { const n = elOf(); if (n) n.remove(); },
   });
   const BUILTINS = {
+    // first: its frame and the slot insets come before anything placed or drawn over them
+    axes: () => plotAxes,
     toolbar: () => domPlugin('toolbar', 'top-left', 0, () => tb.els.bar),
     section: () => domPlugin('section', 'bottom-left', 10, () => tb.els.secBar),
     pick: () => domPlugin('pick', 'top-right', 10, () => tb.els.pickBox),
     status: () => domPlugin('status', 'bottom-left', 0, () => hud),
     readout, legend: legends, scalebar: scaleBar, north: northArrow, exaggeration, labels: holeLabels,
+    triad, box: boxAxes,
   };
   const builtinIds = new Set();
   // which built-ins: `chrome` says, per element; the older all-or-nothing switches set
   // the defaults (toolbar: false → no toolbar, section bar or pick box; decorations:
-  // false → no scale bar, north arrow or exaggeration notice)
+  // false → no scale bar, north arrow, exaggeration notice or triad)
   const chromeWants = () => {
     const c = store.get('chrome') || {}, bar = store.get('toolbar') !== false, deco = store.get('decorations') !== false;
     const want = {};
     for (const k of Object.keys(BUILTINS)) {
-      const dflt = ['toolbar', 'section', 'pick'].includes(k) ? bar : ['scalebar', 'north', 'exaggeration'].includes(k) ? deco : true;
+      // the box axes are opt-in (they draw over the scene); the rest are on unless switched off
+      const dflt = ['toolbar', 'section', 'pick'].includes(k) ? bar : ['scalebar', 'north', 'exaggeration', 'triad'].includes(k) ? deco : k !== 'box';
       want[k] = c[k] === undefined ? dflt : !!c[k];
     }
     return want;
@@ -1996,6 +2020,7 @@ export function mountView(el, store) {
     ['change:decorations', applyChrome],
     ['change:toolbar', applyChrome],
     ['change:chrome', applyChrome],
+    ['change:grid', () => invalidate()],
     ['change:theme', applyTheme],
     ['change:edl', invalidate], ['change:edl_strength', invalidate], ['change:budget', invalidate],
     ['change:_fit', () => { needFit = true; invalidate(); }],
@@ -2061,5 +2086,7 @@ export function mountView(el, store) {
     list: () => (chrome ? chrome.list() : []),
     get api() { return chromeApi; },
   };
+  // v.axes: the plot Axes over locked views, for a host's own items in world coordinates
+  teardown.axes = () => plotAxes.axes(chromeApi);
   return teardown;
 }
