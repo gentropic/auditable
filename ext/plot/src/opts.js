@@ -27,14 +27,18 @@ export const _ALIASES = {
 const _ARTIST = ['label', 'alpha', 'zorder', 'color'];
 
 export const _KNOWN = {
-  plot: [..._ARTIST, 'linestyle', 'linewidth', 'marker', 'markersize', 'markerfacecolor', 'markeredgecolor', 'markeredgewidth', 'fmt'],
+  plot: [..._ARTIST, 'linestyle', 'linewidth', 'marker', 'markersize', 'markerfacecolor', 'markeredgecolor', 'markeredgewidth', 'fmt', 'drawstyle'],
   scatter: [..._ARTIST, 'c', 's', 'cmap', 'vmin', 'vmax', 'marker', 'edgecolor', 'linewidth', 'plotnonfinite'],
-  bar: [..._ARTIST, 'width', 'edgecolor', 'linewidth'],
-  barh: [..._ARTIST, 'height', 'edgecolor', 'linewidth'],
-  hist: [..._ARTIST, 'bins', 'range', 'weights', 'density', 'cumulative', 'edgecolor', 'linewidth'],
+  bar: [..._ARTIST, 'width', 'bottom', 'align', 'edgecolor', 'linewidth', 'tick_label'],
+  barh: [..._ARTIST, 'height', 'left', 'align', 'edgecolor', 'linewidth', 'tick_label'],
+  hist: [..._ARTIST, 'bins', 'range', 'weights', 'density', 'cumulative', 'edgecolor', 'linewidth', 'histtype', 'orientation', 'stacked', 'log', 'bottom', 'align', 'rwidth', 'linestyle'],
+  fill_between: [..._ARTIST, 'where', 'step', 'interpolate', 'facecolor', 'edgecolor', 'linewidth', 'linestyle', 'y2'],
+  fill_betweenx: [..._ARTIST, 'where', 'step', 'interpolate', 'facecolor', 'edgecolor', 'linewidth', 'linestyle', 'x2'],
+  axhspan: [..._ARTIST, 'xmin', 'xmax', 'facecolor', 'edgecolor', 'linewidth'],
+  axvspan: [..._ARTIST, 'ymin', 'ymax', 'facecolor', 'edgecolor', 'linewidth'],
   imshow: ['label', 'alpha', 'zorder', 'cmap', 'vmin', 'vmax', 'origin', 'nodata', 'extent', 'interpolation', 'aspect'],
-  axhline: [..._ARTIST, 'linestyle', 'linewidth'],
-  axvline: [..._ARTIST, 'linestyle', 'linewidth'],
+  axhline: [..._ARTIST, 'linestyle', 'linewidth', 'xmin', 'xmax'],
+  axvline: [..._ARTIST, 'linestyle', 'linewidth', 'ymin', 'ymax'],
   hlines: [..._ARTIST, 'colors', 'linestyle', 'linewidth'],
   vlines: [..._ARTIST, 'colors', 'linestyle', 'linewidth'],
   text: ['color', 'alpha', 'zorder', 'fontsize', 'ha', 'va', 'horizontalalignment', 'verticalalignment', 'transform', 'rotation', 'fontweight'],
@@ -47,14 +51,12 @@ export const _KNOWN = {
 
 // known, not done yet: the hint says what to do instead
 export const _UNSUPPORTED = {
-  plot: { drawstyle: "not supported yet — use step() when it lands, or repeat the points", dashes: "use linestyle ('--', '-.', ':')" },
+  plot: { dashes: "use linestyle ('--', '-.', ':')" },
   scatter: { norm: 'not supported yet — use vmin / vmax' },
-  bar: { bottom: 'stacked bars are not supported yet', align: "bars are centred on x (align='center')", tick_label: 'not supported yet' },
-  barh: { left: 'stacked bars are not supported yet', align: "bars are centred on y (align='center')" },
-  hist: { histtype: "only histtype='bar' for now", orientation: 'only vertical histograms for now', stacked: 'not supported yet', log: "use ax.set_yscale('log')", bottom: 'not supported yet', align: 'not supported yet', rwidth: 'not supported yet' },
+  bar: { hatch: 'not supported yet', yerr: 'use errorbar() on the bar positions', xerr: 'use errorbar() on the bar positions' },
+  barh: { hatch: 'not supported yet', xerr: 'use errorbar() on the bar positions' },
+  hist: { hatch: 'not supported yet' },
   imshow: { norm: 'not supported yet — use vmin / vmax' },
-  axhline: { xmin: 'not supported yet — use hlines(y, x0, x1)', xmax: 'not supported yet — use hlines(y, x0, x1)' },
-  axvline: { ymin: 'not supported yet — use vlines(x, y0, y1)', ymax: 'not supported yet — use vlines(x, y0, y1)' },
   text: { bbox: 'not supported yet' },
   legend: { bbox_to_anchor: 'not supported yet — use loc', ncol: 'not supported yet', title: 'not supported yet', fontsize: 'not supported yet', frameon: 'not supported yet', framealpha: 'not supported yet' },
   colorbar: { shrink: 'not supported yet', orientation: 'only vertical colorbars for now', ticks: 'not supported yet', extend: 'not supported yet', fraction: 'not supported yet', pad: 'not supported yet' },

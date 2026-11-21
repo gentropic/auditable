@@ -251,6 +251,16 @@ function _pyTicks(axis, ticks, labels, opts) {
   return [ax[axis === 'x' ? 'get_xticks' : 'get_yticks'](), ax[axis === 'x' ? 'get_xticklabels' : 'get_yticklabels']()];
 }
 export function axis(arg) { return _ax().axis(arg); }
+// the marks, on the current axes (matplotlib's pyplot state)
+export function barh(y, width, opts) { return _ax().barh(y, width, opts); }
+export function bar_label(container, labels, opts) { return _ax().bar_label(container, labels, opts); }
+export function errorbar(x, y, opts) { return _ax().errorbar(x, y, opts); }
+export function fill_between(x, y1, y2, opts) { return _ax().fill_between(x, y1, y2, opts); }
+export function fill_betweenx(y, x1, x2, opts) { return _ax().fill_betweenx(y, x1, x2, opts); }
+export function step(x, y, fmt, opts) { return _ax().step(x, y, fmt, opts); }
+export function axhspan(ymin, ymax, opts) { return _ax().axhspan(ymin, ymax, opts); }
+export function axvspan(xmin, xmax, opts) { return _ax().axvspan(xmin, xmax, opts); }
+export function annotate(text, xy, opts) { return _ax().annotate(text, xy, opts); }
 export function margins(x, y) { return _ax().margins(x, y); }
 
 // plt.colorbar(im, ax=None, **kwargs) — attach a colorbar to the axes
@@ -290,6 +300,7 @@ export const pltAdder = {
   legend, grid, vlines, hlines, axhline, axvline, text,
   subplots_adjust, tight_layout, savefig, clf, cla,
   xticks, yticks, axis, margins, colorbar, suptitle, themeFromCSS,
+  barh, bar_label, errorbar, fill_between, fill_betweenx, step, axhspan, axvspan, annotate,
 };
 
 // register as auditable extension for adder `import plt`

@@ -33,14 +33,18 @@ const _ALIASES = {
 const _ARTIST = ['label', 'alpha', 'zorder', 'color'];
 
 const _KNOWN = {
-  plot: [..._ARTIST, 'linestyle', 'linewidth', 'marker', 'markersize', 'markerfacecolor', 'markeredgecolor', 'markeredgewidth', 'fmt'],
+  plot: [..._ARTIST, 'linestyle', 'linewidth', 'marker', 'markersize', 'markerfacecolor', 'markeredgecolor', 'markeredgewidth', 'fmt', 'drawstyle'],
   scatter: [..._ARTIST, 'c', 's', 'cmap', 'vmin', 'vmax', 'marker', 'edgecolor', 'linewidth', 'plotnonfinite'],
-  bar: [..._ARTIST, 'width', 'edgecolor', 'linewidth'],
-  barh: [..._ARTIST, 'height', 'edgecolor', 'linewidth'],
-  hist: [..._ARTIST, 'bins', 'range', 'weights', 'density', 'cumulative', 'edgecolor', 'linewidth'],
+  bar: [..._ARTIST, 'width', 'bottom', 'align', 'edgecolor', 'linewidth', 'tick_label'],
+  barh: [..._ARTIST, 'height', 'left', 'align', 'edgecolor', 'linewidth', 'tick_label'],
+  hist: [..._ARTIST, 'bins', 'range', 'weights', 'density', 'cumulative', 'edgecolor', 'linewidth', 'histtype', 'orientation', 'stacked', 'log', 'bottom', 'align', 'rwidth', 'linestyle'],
+  fill_between: [..._ARTIST, 'where', 'step', 'interpolate', 'facecolor', 'edgecolor', 'linewidth', 'linestyle', 'y2'],
+  fill_betweenx: [..._ARTIST, 'where', 'step', 'interpolate', 'facecolor', 'edgecolor', 'linewidth', 'linestyle', 'x2'],
+  axhspan: [..._ARTIST, 'xmin', 'xmax', 'facecolor', 'edgecolor', 'linewidth'],
+  axvspan: [..._ARTIST, 'ymin', 'ymax', 'facecolor', 'edgecolor', 'linewidth'],
   imshow: ['label', 'alpha', 'zorder', 'cmap', 'vmin', 'vmax', 'origin', 'nodata', 'extent', 'interpolation', 'aspect'],
-  axhline: [..._ARTIST, 'linestyle', 'linewidth'],
-  axvline: [..._ARTIST, 'linestyle', 'linewidth'],
+  axhline: [..._ARTIST, 'linestyle', 'linewidth', 'xmin', 'xmax'],
+  axvline: [..._ARTIST, 'linestyle', 'linewidth', 'ymin', 'ymax'],
   hlines: [..._ARTIST, 'colors', 'linestyle', 'linewidth'],
   vlines: [..._ARTIST, 'colors', 'linestyle', 'linewidth'],
   text: ['color', 'alpha', 'zorder', 'fontsize', 'ha', 'va', 'horizontalalignment', 'verticalalignment', 'transform', 'rotation', 'fontweight'],
@@ -53,14 +57,12 @@ const _KNOWN = {
 
 // known, not done yet: the hint says what to do instead
 const _UNSUPPORTED = {
-  plot: { drawstyle: "not supported yet — use step() when it lands, or repeat the points", dashes: "use linestyle ('--', '-.', ':')" },
+  plot: { dashes: "use linestyle ('--', '-.', ':')" },
   scatter: { norm: 'not supported yet — use vmin / vmax' },
-  bar: { bottom: 'stacked bars are not supported yet', align: "bars are centred on x (align='center')", tick_label: 'not supported yet' },
-  barh: { left: 'stacked bars are not supported yet', align: "bars are centred on y (align='center')" },
-  hist: { histtype: "only histtype='bar' for now", orientation: 'only vertical histograms for now', stacked: 'not supported yet', log: "use ax.set_yscale('log')", bottom: 'not supported yet', align: 'not supported yet', rwidth: 'not supported yet' },
+  bar: { hatch: 'not supported yet', yerr: 'use errorbar() on the bar positions', xerr: 'use errorbar() on the bar positions' },
+  barh: { hatch: 'not supported yet', xerr: 'use errorbar() on the bar positions' },
+  hist: { hatch: 'not supported yet' },
   imshow: { norm: 'not supported yet — use vmin / vmax' },
-  axhline: { xmin: 'not supported yet — use hlines(y, x0, x1)', xmax: 'not supported yet — use hlines(y, x0, x1)' },
-  axvline: { ymin: 'not supported yet — use vlines(x, y0, y1)', ymax: 'not supported yet — use vlines(x, y0, y1)' },
   text: { bbox: 'not supported yet' },
   legend: { bbox_to_anchor: 'not supported yet — use loc', ncol: 'not supported yet', title: 'not supported yet', fontsize: 'not supported yet', frameon: 'not supported yet', framealpha: 'not supported yet' },
   colorbar: { shrink: 'not supported yet', orientation: 'only vertical colorbars for now', ticks: 'not supported yet', extend: 'not supported yet', fraction: 'not supported yet', pad: 'not supported yet' },
@@ -629,7 +631,7 @@ class LogScale {
 // An axis's ticks come from, in order:
 //   1. set_xticks(values, labels?, {rotation}) — exactly those (a label list may be shorter);
 //   2. a category axis (strings given as x or y) — one tick per category, labelled;
-//   3. the scale — about one tick per 70 px on x, per 38 px on y.
+//   3. the scale — at most one tick per 55 px on x, per 32 px on y, as many round ones as fit.
 // Labels that would collide are fixed: numeric ticks get fewer; categories rotate 45°, and
 // if they still collide only every k-th is labelled (the ticks stay).
 
@@ -1710,6 +1712,8 @@ const _M4_SUB = 4;          // M4 columns per device pixel (see _pathM4)
 // legend(ax, trace) → a legend entry }. take(v) widens the range; stick(v) is a sticky edge
 // that the margins stop at (matplotlib's sticky_edges: bars at 0, images at their extent).
 const _KINDS = {};
+// ingress hooks the later modules fill (marks.js: plot's drawstyle)
+const _hooks = {};
 
 // matplotlib's default zorders: images 0, patches and collections 1, lines 2, text 3. Traces
 // draw in zorder, ties in the order they were added.
@@ -1722,6 +1726,20 @@ function _plainOpts(o) {
 
 function _lenErr(fn, a, na, b, nb) {
   return new Error(`plot: ${fn}: ${a} has ${_fmtCount(na)} values but ${b} has ${_fmtCount(nb)}`);
+}
+
+// What a chart call returns: matplotlib's container — an array (bar's rectangles; hist's
+// [n, bins, patches]; errorbar's [line, caps, bars]) with its own fields and .axes — through
+// which every other name reads the axes, so ax.bar(…).set_title(…) still chains.
+function _result(ax, items, fields) {
+  const target = Object.assign(items, fields, { axes: ax });
+  return new Proxy(target, {
+    get(t, k) {
+      if (k in t) return t[k];
+      const v = ax[k];
+      return typeof v === 'function' ? v.bind(ax) : v;
+    },
+  });
 }
 
 // fold a column through a scale into pixel positions (NaN for anything not drawable)
@@ -1807,7 +1825,9 @@ class Axes {
     const Y = this._axisCol('y', y);
     const X = x === undefined ? _arange(Y.length) : this._axisCol('x', x);
     if (X.length !== Y.length) throw _lenErr('plot', 'x', X.length, 'y', Y.length);
-    this._traces.push({ type: 'line', x: X, y: Y, opts: o });
+    const trace = { type: 'line', x: X, y: Y, opts: o };
+    if (o.drawstyle && _hooks.drawstyle) _hooks.drawstyle(this, trace);
+    this._traces.push(trace);
     return this;
   }
 
@@ -1847,49 +1867,6 @@ class Axes {
     }
     o.marker = this._checkMarker('scatter', o.marker);
     this._traces.push(trace);
-    return this;
-  }
-
-  bar(x, heights, opts) {
-    const o = this._opts('bar', opts);
-    if (!o.color) o.color = this._nextColor();
-    const X = this._axisCol('x', x), H = _col(heights);
-    if (X.length !== H.length) throw _lenErr('bar', 'x', X.length, 'height', H.length);
-    if (Array.isArray(o.color)) o.color = o.color.map(_cssColor);
-    this._traces.push({ type: 'bar', x: X, heights: H, opts: o });
-    return this;
-  }
-
-  barh(y, widths, opts) {
-    const o = this._opts('barh', opts);
-    if (!o.color) o.color = this._nextColor();
-    const Yc = this._axisCol('y', y), W = _col(widths);
-    if (Yc.length !== W.length) throw _lenErr('barh', 'y', Yc.length, 'width', W.length);
-    if (Array.isArray(o.color)) o.color = o.color.map(_cssColor);
-    this._traces.push({ type: 'barh', y: Yc, widths: W, opts: o });
-    return this;
-  }
-
-  hist(data, opts) {
-    const o = this._opts('hist', opts);
-    if (!o.color) o.color = this._nextColor();
-    // several datasets (a list of arrays) aren't drawn side by side yet: say so, draw the first
-    if (Array.isArray(data) && data.length && _isArrayLike(data[0])) {
-      _warn('hist.multi', 'hist(): several datasets are not supported yet; drawing the first', this._strict);
-      data = data[0];
-    }
-    const D = _col(data);
-    if (o.bins != null && typeof o.bins !== 'number') {
-      if (typeof o.bins === 'string') {
-        _warn('hist.bins.' + o.bins, `hist(): bins='${o.bins}' is not supported yet; using 10 bins`, this._strict);
-        o.bins = 10;
-      } else o.bins = _col(o.bins);
-    }
-    if (o.weights != null) {
-      o.weights = _col(o.weights);
-      if (o.weights.length !== D.length) throw _lenErr('hist', 'weights', o.weights.length, 'x', D.length);
-    }
-    this._traces.push({ type: 'hist', data: D, opts: o });
     return this;
   }
 
@@ -1951,20 +1928,6 @@ class Axes {
     this._traces.push({ type: 'imshow', data: D, nx, ny, opts: o });
     // default to equal aspect for grid data (matches matplotlib)
     if (this._aspect === 'auto') this._aspect = 'equal';
-    return this;
-  }
-
-  axhline(y, opts) {
-    const o = this._opts('axhline', opts);
-    if (o.linewidth == null) o.linewidth = 1;
-    this._traces.push({ type: 'hline', y, opts: o });
-    return this;
-  }
-
-  axvline(x, opts) {
-    const o = this._opts('axvline', opts);
-    if (o.linewidth == null) o.linewidth = 1;
-    this._traces.push({ type: 'vline', x, opts: o });
     return this;
   }
 
@@ -2452,15 +2415,14 @@ class Axes {
     let lastCmapTrace = null;
     const order = this._traces.map((t, i) => [t.opts && t.opts.zorder != null ? +t.opts.zorder : (_ZORDER[t.type] ?? (_KINDS[t.type] ? _KINDS[t.type].z ?? 1 : 1)), i]);
     order.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-    for (const [, ti] of order) {
-      const trace = this._traces[ti];
+    // text, annotations and bar labels aren't clipped to the axes (matplotlib: clip_on=False
+    // for text): they draw after the clipped pass, still in zorder
+    const free = (t) => t.type === 'text' || (_KINDS[t.type] && _KINDS[t.type].noclip);
+    const draw = (trace) => {
       switch (trace.type) {
         case 'imshow': this._renderImshow(ctx, trace, xScale, yScale, rect); lastCmapTrace = trace; break;
         case 'line': this._renderLine(ctx, trace, xScale, yScale, rect); break;
         case 'scatter': this._renderScatter(ctx, trace, xScale, yScale, rect); if (trace.cvals) lastCmapTrace = trace; break;
-        case 'bar': this._renderBar(ctx, trace, xScale, yScale); break;
-        case 'barh': this._renderBarh(ctx, trace, xScale, yScale); break;
-        case 'hist': this._renderHist(ctx, trace, xScale, yScale); break;
         case 'hline': this._renderHline(ctx, trace, xScale, yScale, plotX, plotW); break;
         case 'vline': this._renderVline(ctx, trace, xScale, yScale, plotY, plotH); break;
         case 'text': this._renderText(ctx, trace, xScale, yScale, rect); break;
@@ -2469,8 +2431,10 @@ class Axes {
           if (k) { k.render(this, ctx, trace, xScale, yScale, rect); if (k.cmap && trace.cmapped !== false) lastCmapTrace = trace; }
         }
       }
-    }
+    };
+    for (const [, ti] of order) if (!free(this._traces[ti])) draw(this._traces[ti]);
     ctx.restore();
+    for (const [, ti] of order) if (free(this._traces[ti])) draw(this._traces[ti]);
     return lastCmapTrace;
   }
 
@@ -2540,32 +2504,6 @@ class Axes {
         case 'scatter':
           takeRange(_traceRange(trace, axis, axis === 'x' ? trace.x : trace.y, log));
           break;
-        case 'bar': {
-          if (axis === 'x') {
-            const r = _traceRange(trace, 'x', trace.x), w = typeof trace.opts.width === 'number' ? trace.opts.width : 0.8;
-            if (r.n) { take(r.lo - w / 2); take(r.hi + w / 2); }
-          } else {
-            if (!log) { take(0); stick(0); }
-            takeRange(_traceRange(trace, 'h', trace.heights, log));
-          }
-          break;
-        }
-        case 'barh': {
-          if (axis === 'y') {
-            const r = _traceRange(trace, 'y', trace.y), h = typeof trace.opts.height === 'number' ? trace.opts.height : 0.8;
-            if (r.n) { take(r.lo - h / 2); take(r.hi + h / 2); }
-          } else {
-            if (!log) { take(0); stick(0); }
-            takeRange(_traceRange(trace, 'w', trace.widths, log));
-          }
-          break;
-        }
-        case 'hist': {
-          const { edges, counts } = this._hist(trace);
-          if (axis === 'x') { take(edges[0]); take(edges[edges.length - 1]); }
-          else { if (!log) { take(0); stick(0); } for (const c of counts) take(c); }
-          break;
-        }
         case 'imshow': {
           const e = this._imshowExtent(trace);
           const [a, b] = axis === 'x' ? [e[0], e[1]] : [e[2], e[3]];
@@ -2912,73 +2850,6 @@ class Axes {
     return _blit(ctx, rect.x, rect.y, rect.w, rect.h, h.W, h.H, h.rgba, h, false);
   }
 
-  _renderBar(ctx, trace, xScale, yScale) {
-    const { x, heights, opts } = trace;
-    const alpha = opts.alpha != null ? opts.alpha : 1;
-    ctx.globalAlpha = alpha;
-    const py0 = yScale.transform(0);
-    for (let i = 0; i < x.length; i++) {
-      const bw = _isArrayLike(opts.width) ? opts.width[i] : (opts.width || 0.8);
-      const xv = x[i], hv = heights[i];
-      if (xv - xv !== 0 || hv - hv !== 0) continue;
-      const px = xScale.transform(xv - bw / 2);
-      const pw = xScale.transform(xv + bw / 2) - px;
-      const py = yScale.transform(hv);
-      ctx.fillStyle = Array.isArray(opts.color) ? opts.color[i % opts.color.length] : opts.color;
-      ctx.fillRect(px, py, pw, py0 - py);
-      if (opts.edgecolor) {
-        ctx.strokeStyle = _cssColor(opts.edgecolor);
-        ctx.lineWidth = opts.linewidth || 1;
-        ctx.strokeRect(px, py, pw, py0 - py);
-      }
-    }
-    ctx.globalAlpha = 1;
-  }
-
-  _renderBarh(ctx, trace, xScale, yScale) {
-    const { y, widths, opts } = trace;
-    const alpha = opts.alpha != null ? opts.alpha : 1;
-    ctx.globalAlpha = alpha;
-    const px0 = xScale.transform(0);
-    for (let i = 0; i < y.length; i++) {
-      const bh = _isArrayLike(opts.height) ? opts.height[i] : (opts.height || 0.8);
-      const yv = y[i], wv = widths[i];
-      if (yv - yv !== 0 || wv - wv !== 0) continue;
-      const py = yScale.transform(yv + bh / 2);
-      const ph = yScale.transform(yv - bh / 2) - py;
-      const px = xScale.transform(wv);
-      ctx.fillStyle = Array.isArray(opts.color) ? opts.color[i % opts.color.length] : opts.color;
-      ctx.fillRect(px0, py, px - px0, ph);
-      if (opts.edgecolor) {
-        ctx.strokeStyle = _cssColor(opts.edgecolor);
-        ctx.lineWidth = opts.linewidth || 1;
-        ctx.strokeRect(px0, py, px - px0, ph);
-      }
-    }
-    ctx.globalAlpha = 1;
-  }
-
-  _renderHist(ctx, trace, xScale, yScale) {
-    const { edges, counts } = this._hist(trace);
-    const alpha = trace.opts.alpha != null ? trace.opts.alpha : 0.8;
-    ctx.fillStyle = trace.opts.color;
-    ctx.globalAlpha = alpha;
-    const py0 = yScale.transform(yScale.log ? yScale.domain[0] : 0);
-    for (let i = 0; i < counts.length; i++) {
-      if (!(counts[i] > 0) && yScale.log) continue;
-      const px0 = xScale.transform(edges[i]);
-      const px1 = xScale.transform(edges[i + 1]);
-      const py = yScale.transform(counts[i]);
-      ctx.fillRect(px0, py, px1 - px0, py0 - py);
-      if (trace.opts.edgecolor) {
-        ctx.strokeStyle = _cssColor(trace.opts.edgecolor);
-        ctx.lineWidth = trace.opts.linewidth || 1;
-        ctx.strokeRect(px0, py, px1 - px0, py0 - py);
-      }
-    }
-    ctx.globalAlpha = 1;
-  }
-
   // An image is ONE RGBA buffer (built with the colour map's LUT, cached on the trace until
   // vmin / vmax / cmap / origin change), blitted into its extent: one drawImage live, one
   // 'image' op recorded. NaN and nodata cells are transparent.
@@ -3036,30 +2907,6 @@ class Axes {
     }
   }
 
-  _renderHline(ctx, trace, xScale, yScale, plotX, plotW) {
-    const py = yScale.transform(trace.y);
-    if (py - py !== 0) return;
-    ctx.globalAlpha = trace.opts.alpha != null ? trace.opts.alpha : 1;
-    ctx.strokeStyle = trace.opts.color || this._theme.muted;
-    ctx.lineWidth = trace.opts.linewidth || 1;
-    ctx.setLineDash(dashArray(trace.opts.linestyle));
-    ctx.beginPath(); ctx.moveTo(plotX, py); ctx.lineTo(plotX + plotW, py); ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.globalAlpha = 1;
-  }
-
-  _renderVline(ctx, trace, xScale, yScale, plotY, plotH) {
-    const px = xScale.transform(trace.x);
-    if (px - px !== 0) return;
-    ctx.globalAlpha = trace.opts.alpha != null ? trace.opts.alpha : 1;
-    ctx.strokeStyle = trace.opts.color || this._theme.muted;
-    ctx.lineWidth = trace.opts.linewidth || 1;
-    ctx.setLineDash(dashArray(trace.opts.linestyle));
-    ctx.beginPath(); ctx.moveTo(px, plotY); ctx.lineTo(px, plotY + plotH); ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.globalAlpha = 1;
-  }
-
   // text(x, y, s): x, y in data coordinates, or with {transform: 'axes'} (matplotlib's
   // ax.transAxes) as fractions of the axes, 0–1 from the lower left
   _renderText(ctx, trace, xScale, yScale, rect) {
@@ -3088,7 +2935,8 @@ class Axes {
       let color = t.opts.color;
       if (!color && t.cvals) color = getCmap(t.opts.cmap || 'viridis')(0.5);
       if (!color && t.colors) color = t.colors[0];
-      entries.push({ label: String(t.opts.label), color: color || th.cycle[0], type: t.type, marker: t.opts.marker, noLine: _noLine(t.opts.linestyle) });
+      const k = _KINDS[t.type], kl = k && k.legend ? k.legend(this, t) : null;
+      entries.push({ label: String(t.opts.label), color: (kl && kl.color) || color || th.cycle[0], type: t.type, marker: t.opts.marker, noLine: _noLine(t.opts.linestyle), patch: kl ? !!kl.patch : !!(k && k.patch), alpha: t.opts.alpha });
     }
     if (!entries.length) return;
 
@@ -3133,6 +2981,10 @@ class Axes {
       if (e.type === 'scatter' || (e.type === 'line' && e.marker && e.noLine)) {
         ctx.beginPath(); _pathMarker(ctx, _markerShape(e.marker || 'o', 3), lx + padding + 7, ey);
         if (e.marker === '+' || e.marker === 'x') { ctx.strokeStyle = e.color; ctx.lineWidth = 1.5; ctx.stroke(); } else ctx.fill();
+      } else if (e.patch) {
+        ctx.globalAlpha = e.alpha != null ? e.alpha : 1;
+        ctx.fillRect(lx + padding + 2, ey - 4, 10, 8);
+        ctx.globalAlpha = 1;
       } else {
         ctx.fillRect(lx + padding, ey - 1, 14, 2);
       }
@@ -3175,31 +3027,15 @@ class Axes {
         label: t.opts.label ?? null,
       };
     }
-    // bars and histogram bins, by column (the last drawn wins: it is on top)
+    // bars, histogram bins and other registered kinds that pick (the last drawn wins: on top)
     for (const ax of owners.slice().reverse()) {
       const v = ax.view;
       if (px < v.x || px > v.x + v.w || py < v.y || py > v.y + v.h) continue;
       for (let ti = ax._traces.length - 1; ti >= 0; ti--) {
-        const t = ax._traces[ti];
-        if (t.type === 'bar') {
-          for (let i = t.x.length - 1; i >= 0; i--) {
-            const bw = _isArrayLike(t.opts.width) ? t.opts.width[i] : (t.opts.width || 0.8);
-            const a = v.xScale.transform(t.x[i] - bw / 2), b = v.xScale.transform(t.x[i] + bw / 2);
-            if (px >= Math.min(a, b) && px <= Math.max(a, b)) return { axes: ax, trace: t, traceIndex: ti, kind: 'bar', index: i, x: t.x[i], y: t.heights[i], c: null, s: null, label: t.opts.label ?? null };
-          }
-        } else if (t.type === 'barh') {
-          for (let i = t.y.length - 1; i >= 0; i--) {
-            const bh = _isArrayLike(t.opts.height) ? t.opts.height[i] : (t.opts.height || 0.8);
-            const a = v.yScale.transform(t.y[i] - bh / 2), b = v.yScale.transform(t.y[i] + bh / 2);
-            if (py >= Math.min(a, b) && py <= Math.max(a, b)) return { axes: ax, trace: t, traceIndex: ti, kind: 'bar', index: i, x: t.widths[i], y: t.y[i], c: null, s: null, label: t.opts.label ?? null };
-          }
-        } else if (t.type === 'hist') {
-          const { edges, counts } = ax._hist(t);
-          const xv = v.xScale.inverse(px);
-          for (let i = 0; i < counts.length; i++) {
-            if (xv >= edges[i] && xv <= edges[i + 1]) return { axes: ax, trace: t, traceIndex: ti, kind: 'bin', index: i, x: (edges[i] + edges[i + 1]) / 2, y: counts[i], edges: [edges[i], edges[i + 1]], c: null, s: null, label: t.opts.label ?? null };
-          }
-        }
+        const t = ax._traces[ti], k = _KINDS[t.type];
+        if (!k || !k.pick) continue;
+        const hit = k.pick(ax, t, px, py);
+        if (hit) return { axes: ax, trace: t, traceIndex: ti, c: null, s: null, label: t.opts.label ?? null, ...hit };
       }
     }
     // image cells
@@ -3262,9 +3098,717 @@ function _logBounds(lo, hi) {
   return [l, h];
 }
 
+// -- bars.js --
+
+// Bars and histograms: bar, barh, hist, bar_label.
+//
+// A bar trace keeps the columns as given (x + heights for bar, y + widths for barh) plus the
+// base each bar stands on (bottom / left) and its thickness, and answers one question for the
+// renderer, the autoscale and the picker alike: its rectangles in data coordinates.
+//
+// Histograms (numpy's counting, data.js / axes.js _hist) share one set of bins across every
+// dataset passed, as matplotlib does; several datasets draw side by side, or stacked.
+
+
+
+
+
+
+
+const _num = (v, i) => (_isArrayLike(v) ? +v[i] : +v);
+const _pick = (v, i) => (Array.isArray(v) ? v[i % v.length] : v);
+
+// ── bar / barh ──
+// bar(x, height, {width = 0.8, bottom = 0, align = 'center' | 'edge', color, edgecolor,
+// linewidth, tick_label, label}) → a BarContainer: an array of the bars (each with
+// get_x / get_y / get_width / get_height), .datavalues, .axes. Anything else read off it is
+// the axes', so ax.bar(…).set_title(…) still chains.
+function _bar(ax, orient, pos, size, opts) {
+  const fn = orient === 'v' ? 'bar' : 'barh';
+  const o = ax._opts(fn, opts);
+  const P = ax._axisCol(orient === 'v' ? 'x' : 'y', pos), S = _col(size);
+  if (P.length !== S.length) throw _lenErr(fn, orient === 'v' ? 'x' : 'y', P.length, orient === 'v' ? 'height' : 'width', S.length);
+  const thickKey = orient === 'v' ? 'width' : 'height', baseKey = orient === 'v' ? 'bottom' : 'left';
+  const thick = o[thickKey] == null ? 0.8 : _isArrayLike(o[thickKey]) ? _col(o[thickKey]) : +o[thickKey];
+  const base = o[baseKey] == null ? null : _isArrayLike(o[baseKey]) ? _col(o[baseKey]) : +o[baseKey];
+  if (o.align != null && o.align !== 'center' && o.align !== 'edge') _warn(`${fn}.align.${o.align}`, `${fn}(): align must be 'center' or 'edge', not '${o.align}'`, ax._strict);
+  if (Array.isArray(o.color)) o.color = o.color.map(_cssColor);
+  else if (!o.color) o.color = ax._nextColor();
+  if (Array.isArray(o.edgecolor)) o.edgecolor = o.edgecolor.map(_cssColor);
+  else if (o.edgecolor) o.edgecolor = _cssColor(o.edgecolor);
+  const trace = orient === 'v' ? { type: 'bar', x: P, heights: S, opts: o } : { type: 'barh', y: P, widths: S, opts: o };
+  trace.orient = orient; trace.thick = thick; trace.base = base;
+  ax._traces.push(trace);
+  // tick_label: labels at the bars' positions
+  if (o.tick_label != null) {
+    const labels = Array.isArray(o.tick_label) ? o.tick_label : Array.from(P, () => o.tick_label);
+    ax[orient === 'v' ? 'set_xticks' : 'set_yticks'](Array.from(P), labels);
+  }
+  const rects = _barRects(trace);
+  const patches = [];
+  for (let i = 0; i < P.length; i++) {
+    const r = { x: rects.x0[i], y: rects.y0[i], width: rects.x1[i] - rects.x0[i], height: rects.y1[i] - rects.y0[i] };
+    patches.push({ ...r, get_x: () => r.x, get_y: () => r.y, get_width: () => r.width, get_height: () => r.height, get_xy: () => [r.x, r.y] });
+  }
+  return _result(ax, patches, { datavalues: S, orientation: orient === 'v' ? 'vertical' : 'horizontal', _trace: trace, patches });
+}
+
+// every bar's rectangle in data coordinates (x0 ≤ x1 not guaranteed: a negative height runs down)
+function _barRects(t) {
+  const c = t._cache || (t._cache = {});
+  if (c.rects) return c.rects;
+  const v = t.orient === 'v', P = v ? t.x : t.y, S = v ? t.heights : t.widths, n = P.length;
+  const edge = t.opts.align === 'edge';
+  const a0 = new Float64Array(n), a1 = new Float64Array(n), b0 = new Float64Array(n), b1 = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    const w = _num(t.thick, i), base = t.base == null ? 0 : _num(t.base, i);
+    a0[i] = edge ? P[i] : P[i] - w / 2; a1[i] = edge ? P[i] + w : P[i] + w / 2;
+    b0[i] = base; b1[i] = base + S[i];
+  }
+  return (c.rects = v ? { x0: a0, x1: a1, y0: b0, y1: b1 } : { x0: b0, x1: b1, y0: a0, y1: a1 });
+}
+
+function _drawRects(ax, ctx, R, xScale, yScale, colorOf, opts, alpha) {
+  ctx.globalAlpha = alpha;
+  const lw = opts.linewidth;
+  for (let i = 0; i < R.x0.length; i++) {
+    const X0 = xScale.transform(R.x0[i]), X1 = xScale.transform(R.x1[i]);
+    const Y0 = yScale.transform(yScale.log && !(R.y0[i] > 0) ? yScale.domain[0] : R.y0[i]);
+    const Y1 = yScale.transform(R.y1[i]);
+    if (X0 - X0 !== 0 || X1 - X1 !== 0 || Y0 - Y0 !== 0 || Y1 - Y1 !== 0) continue;
+    const x = Math.min(X0, X1), y = Math.min(Y0, Y1), w = Math.abs(X1 - X0), h = Math.abs(Y1 - Y0);
+    const fc = colorOf(i);
+    if (fc && fc !== 'none') { ctx.fillStyle = fc; ctx.fillRect(x, y, w, h); }
+    const ec = _pick(opts.edgecolor, i);
+    if (ec && ec !== 'none') { ctx.strokeStyle = ec; ctx.lineWidth = lw == null ? 1 : _pick(lw, i); ctx.strokeRect(x, y, w, h); }
+  }
+  ctx.globalAlpha = 1;
+}
+
+// the bar (or bin) under a pixel: vertical bars by column, horizontal by row (the whole
+// column / row, above or beside the bar too — the bar is the column's subject)
+function _pickRects(ax, t, R, px, py, kind) {
+  const v = ax.view, vert = t.orient !== 'h';
+  for (let i = R.x0.length - 1; i >= 0; i--) {
+    const a = vert ? v.xScale.transform(R.x0[i]) : v.yScale.transform(R.y0[i]);
+    const b = vert ? v.xScale.transform(R.x1[i]) : v.yScale.transform(R.y1[i]);
+    const p = vert ? px : py;
+    if (p >= Math.min(a, b) && p <= Math.max(a, b)) return i;
+  }
+  void kind;
+  return -1;
+}
+
+const _barKind = {
+  z: 1, patch: true,
+  extent(ax, t, axis, log, take, stick) {
+    const R = _barRects(t);
+    const along = t.orient === 'v' ? axis === 'x' : axis === 'y';
+    const [A, B] = axis === 'x' ? [R.x0, R.x1] : [R.y0, R.y1];
+    for (let i = 0; i < A.length; i++) { take(A[i]); take(B[i]); }
+    if (!along && t.base == null && !log) stick(0);
+  },
+  render(ax, ctx, t, xScale, yScale) {
+    const o = t.opts;
+    _drawRects(ax, ctx, _barRects(t), xScale, yScale, (i) => _pick(o.color, i), o, o.alpha != null ? o.alpha : 1);
+  },
+  pick(ax, t, px, py) {
+    const i = _pickRects(ax, t, _barRects(t), px, py);
+    if (i < 0) return null;
+    return t.orient === 'v'
+      ? { kind: 'bar', index: i, x: t.x[i], y: t.heights[i] }
+      : { kind: 'bar', index: i, x: t.widths[i], y: t.y[i] };
+  },
+};
+_KINDS.bar = _barKind;
+_KINDS.barh = _barKind;
+
+Axes.prototype.bar = function (x, height, opts) { return _bar(this, 'v', x, height, opts); };
+Axes.prototype.barh = function (y, width, opts) { return _bar(this, 'h', y, width, opts); };
+
+// ── bar_label(container, labels?, {fmt, padding, label_type, color, fontsize, rotation}) ──
+// fmt: '%g' (default), any %-format, a '{:.1f}' format, or a function
+function _fmtValue(fmt, v) {
+  if (typeof fmt === 'function') return String(fmt(v));
+  if (fmt == null) fmt = '%g';
+  const f = String(fmt);
+  let m = /^(.*?)\{(?:[^:}]*):?(,?)(?:\.(\d+))?([fgedn%]?)\}(.*)$/.exec(f);
+  if (m) return m[1] + _numFmt(v, m[4] || 'g', m[3] == null ? null : +m[3], !!m[2]) + m[5];
+  m = /^(.*?)%[-+ 0#]*\d*(?:\.(\d+))?([dfgeis%])(.*)$/.exec(f);
+  if (m) return m[1] + (m[3] === 's' ? String(v) : _numFmt(v, m[3] === 'i' ? 'd' : m[3], m[2] == null ? null : +m[2], false)) + m[4];
+  return f;
+}
+function _numFmt(v, type, prec, comma) {
+  if (!(v - v === 0)) return String(v);
+  let s;
+  if (type === 'd') s = Math.round(v).toString();
+  else if (type === 'f') s = v.toFixed(prec ?? 6);
+  else if (type === 'e') s = v.toExponential(prec ?? 6).replace(/e([+-])(\d)$/, 'e$10$2');
+  else if (type === '%') s = (v * 100).toFixed(prec ?? 6) + '%';
+  else { s = String(+v.toPrecision(prec || 6)); }
+  if (comma) { const [i, d] = s.split('.'); s = i.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + (d != null ? '.' + d : ''); }
+  return s;
+}
+
+Axes.prototype.bar_label = function (container, labels, opts) {
+  if (_plainOpts(labels)) { opts = labels; labels = opts.labels; }
+  const t = container && container._trace;
+  if (!t || (t.type !== 'bar' && t.type !== 'barh')) throw new TypeError('plot: bar_label(container): give it what bar() or barh() returned');
+  const o = _plainOpts(opts) ? { ...opts } : {};
+  this._traces.push({ type: 'bar_label', of: t, labels: labels != null ? Array.from(labels) : null, opts: o });
+  return _result(this, [], {});
+};
+_KINDS.bar_label = {
+  z: 3, noclip: true,
+  render(ax, ctx, tr, xScale, yScale) {
+    const t = tr.of, o = tr.opts, R = _barRects(t), th = ax._theme;
+    const S = t.orient === 'v' ? t.heights : t.widths;
+    const pad = ((o.padding || 0) * ax._dpi) / 72 + 2;
+    ctx.save();
+    ctx.fillStyle = _cssColor(o.color) || ax._textColor || th.foreground;
+    ctx.font = o.fontsize != null ? `${o.fontsize}px ${th.mono}` : _font(th, -1);
+    for (let i = 0; i < S.length; i++) {
+      if (!(S[i] - S[i] === 0)) continue;
+      const s = tr.labels ? (tr.labels[i] == null ? '' : String(tr.labels[i])) : _fmtValue(o.fmt, S[i]);
+      if (!s) continue;
+      const cx = (xScale.transform(R.x0[i]) + xScale.transform(R.x1[i])) / 2, cy = (yScale.transform(R.y0[i]) + yScale.transform(R.y1[i])) / 2;
+      let x = cx, y = cy;
+      const center = o.label_type === 'center';
+      if (t.orient === 'v') {
+        ctx.textAlign = 'center';
+        if (center) ctx.textBaseline = 'middle';
+        else {
+          const end = yScale.transform(R.y1[i]), up = yScale.transform(R.y1[i]) <= yScale.transform(R.y0[i]);
+          y = up ? end - pad : end + pad; ctx.textBaseline = up ? 'bottom' : 'top';
+        }
+      } else {
+        ctx.textBaseline = 'middle';
+        if (center) ctx.textAlign = 'center';
+        else {
+          const end = xScale.transform(R.x1[i]), right = end >= xScale.transform(R.x0[i]);
+          x = right ? end + pad : end - pad; ctx.textAlign = right ? 'left' : 'right';
+        }
+      }
+      ctx.fillText(s, x, y);
+    }
+    ctx.restore();
+  },
+};
+
+// ── hist ──
+// numpy's bin rules for bins='auto' and its named estimators
+function _binCount(rule, data, lo, hi) {
+  const v = [];
+  for (let i = 0; i < data.length; i++) { const x = data[i]; if (x >= lo && x <= hi) v.push(x); }
+  const n = v.length;
+  if (n < 2 || !(hi > lo)) return 1;
+  const range = hi - lo;
+  // every rule is a bin WIDTH, turned into a count as numpy does: ceil(range / width)
+  const count = (w) => (w > 0 ? Math.max(1, Math.ceil(range / w)) : 1);
+  const iqr = () => {
+    v.sort((a, b) => a - b);
+    const q = (p) => { const k = (n - 1) * p, f = Math.floor(k); return v[f] + (v[Math.min(n - 1, f + 1)] - v[f]) * (k - f); };
+    return q(0.75) - q(0.25);
+  };
+  const sd = () => { let m = 0; for (const x of v) m += x; m /= n; let s = 0; for (const x of v) s += (x - m) * (x - m); return Math.sqrt(s / n); };
+  const sturges = range / (Math.log2(n) + 1), sqrt = range / Math.sqrt(n);
+  const fd = () => 2 * iqr() / Math.cbrt(n);
+  switch (rule) {
+    case 'sturges': return count(sturges);
+    case 'sqrt': return count(sqrt);
+    case 'rice': return count(range / (2 * Math.cbrt(n)));
+    case 'scott': return count(Math.cbrt(24 * Math.sqrt(Math.PI) / n) * sd());
+    case 'fd': return count(fd());
+    // numpy ≥ 2: the narrower of Sturges and a relaxed Freedman–Diaconis (never under half
+    // the sqrt rule's width, so a small IQR can't explode the bin count)
+    case 'auto': return count(Math.min(Math.max(fd(), sqrt / 2), sturges));
+    default: return null;
+  }
+}
+
+// hist(x, {bins = 10 | 'auto' | … | edges, range, weights, density, cumulative, histtype =
+// 'bar' | 'barstacked' | 'step' | 'stepfilled', orientation, bottom, log, stacked, rwidth,
+// align, color, label, …}) → [n, bins, patches] (and the axes' methods, for chaining). x may be
+// one array or a list of arrays: one set of bins for all, side by side or stacked.
+Axes.prototype.hist = function (data, opts) {
+  const o = this._opts('hist', opts);
+  const multi = Array.isArray(data) && data.length > 0 && _isArrayLike(data[0]);
+  const sets = multi ? data.map((d) => _col(d)) : [_col(data)];
+  const W = o.weights == null ? null : multi ? o.weights.map((w) => (w == null ? null : _col(w))) : [_col(o.weights)];
+  if (W) W.forEach((w, k) => { if (w && w.length !== sets[k].length) throw _lenErr('hist', 'weights', w.length, 'x', sets[k].length); });
+  const histtype = o.histtype || 'bar';
+  if (!['bar', 'barstacked', 'step', 'stepfilled'].includes(histtype)) _warn(`hist.histtype.${histtype}`, `hist(): histtype must be 'bar', 'barstacked', 'step' or 'stepfilled', not '${histtype}'`, this._strict);
+  const stacked = !!o.stacked || histtype === 'barstacked';
+  const horiz = o.orientation === 'horizontal';
+  // one set of bins for every dataset
+  let lo, hi, bins = o.bins == null ? 10 : o.bins;
+  if (_isArrayLike(bins) && typeof bins !== 'string') bins = _col(bins);
+  else {
+    if (o.range) { lo = +o.range[0]; hi = +o.range[1]; }
+    else {
+      lo = Infinity; hi = -Infinity;
+      sets.forEach((d) => { const r = _traceRange({ _cache: {} }, 'd', d); if (r.n) { lo = Math.min(lo, r.lo); hi = Math.max(hi, r.hi); } });
+      if (!(lo <= hi)) { lo = 0; hi = 1; }
+    }
+    if (typeof bins === 'string') {
+      let all = sets[0];
+      if (sets.length > 1) { all = new Float64Array(sets.reduce((s, d) => s + d.length, 0)); let at = 0; for (const d of sets) { all.set(d, at); at += d.length; } }
+      const nb = _binCount(bins, all, lo, hi);
+      if (nb == null) { _warn('hist.bins.' + bins, `hist(): bins='${bins}' is not a rule plot knows (auto, fd, sturges, sqrt, rice, scott); using 10`, this._strict); bins = 10; }
+      else bins = nb;
+    }
+  }
+  if (o.log) this[horiz ? '_xscale' : '_yscale'] = 'log';
+  const colors = Array.isArray(o.color) ? o.color.map(_cssColor) : null;
+  const labels = Array.isArray(o.label) ? o.label : null;
+  const traces = [];
+  sets.forEach((D, k) => {
+    const to = { ...o, bins, histtype, weights: W ? W[k] : undefined };
+    if (lo != null) to.range = [lo, hi];
+    to.color = colors ? colors[k % colors.length] : k === 0 && o.color && !colors ? o.color : this._nextColor();
+    to.label = labels ? labels[k] : k === 0 ? o.label : undefined;
+    delete to.stacked;
+    const t = { type: 'hist', data: D, opts: to, slot: { k, n: sets.length, stacked, horiz }, below: stacked && k > 0 ? traces[k - 1] : null };
+    traces.push(t);
+    this._traces.push(t);
+  });
+  const res = traces.map((t) => _histBars(this, t));
+  const n = multi ? res.map((r) => Float64Array.from(r.counts)) : Float64Array.from(res[0].counts);
+  const edges = Float64Array.from(res[0].edges);
+  const patches = _result(this, [], { _traces: traces });
+  return _result(this, [n, edges, patches], { n, bins: edges, patches, counts: n, edges });
+};
+
+// a histogram trace's bars: its bins, counts and the base each stands on (stacked on the
+// dataset below, or on bottom)
+function _histBars(ax, t) {
+  const c = t._cache || (t._cache = {});
+  if (c.bars) return c.bars;
+  const { edges, counts } = ax._hist(t);
+  const nb = counts.length, base = new Float64Array(nb);
+  if (t.below) { const b = _histBars(ax, t.below); for (let i = 0; i < nb; i++) base[i] = b.base[i] + b.counts[i]; }
+  else if (t.opts.bottom != null) for (let i = 0; i < nb; i++) base[i] = _num(t.opts.bottom, i);
+  return (c.bars = { edges, counts, base });
+}
+
+// the rectangles a 'bar' histogram draws: side by side for several unstacked datasets
+function _histRects(ax, t) {
+  const c = t._cache || (t._cache = {});
+  if (c.hrects) return c.hrects;
+  const { edges, counts, base } = _histBars(ax, t);
+  const { k, n, stacked, horiz } = t.slot;
+  const nb = counts.length;
+  const total = t.opts.rwidth != null ? +t.opts.rwidth : (n > 1 && !stacked ? 0.8 : 1);
+  const each = stacked ? total : total / n;
+  const off = stacked ? (1 - total) / 2 : (1 - total) / 2 + k * each;
+  const shift = t.opts.align === 'left' ? -0.5 : t.opts.align === 'right' ? 0.5 : 0;
+  const a0 = new Float64Array(nb), a1 = new Float64Array(nb), b0 = new Float64Array(nb), b1 = new Float64Array(nb);
+  for (let i = 0; i < nb; i++) {
+    const w = edges[i + 1] - edges[i], e = edges[i] + shift * w;
+    a0[i] = e + off * w; a1[i] = e + (off + each) * w;
+    b0[i] = base[i]; b1[i] = base[i] + counts[i];
+  }
+  return (c.hrects = horiz ? { x0: b0, x1: b1, y0: a0, y1: a1 } : { x0: a0, x1: a1, y0: b0, y1: b1 });
+}
+
+_KINDS.hist = {
+  z: 1, patch: true,
+  extent(ax, t, axis, log, take, stick) {
+    const { edges, counts, base } = _histBars(ax, t);
+    const horiz = t.slot.horiz;
+    const binsAxis = horiz ? axis === 'y' : axis === 'x';
+    if (binsAxis) {
+      const sh = t.opts.align === 'left' ? -0.5 : t.opts.align === 'right' ? 0.5 : 0;
+      take(edges[0] + sh * (edges[1] - edges[0])); take(edges[edges.length - 1] + sh * (edges[edges.length - 1] - edges[edges.length - 2] || 0));
+    } else {
+      for (let i = 0; i < counts.length; i++) { take(base[i] + counts[i]); if (!log) take(base[i]); }
+      if (!log && !t.below && t.opts.bottom == null) stick(0);
+    }
+  },
+  render(ax, ctx, t, xScale, yScale) {
+    const o = t.opts, ht = o.histtype;
+    if (ht === 'bar' || ht === 'barstacked' || !ht) {
+      _drawRects(ax, ctx, _histRects(ax, t), xScale, yScale, () => o.color, o, o.alpha != null ? o.alpha : 1);
+      return;
+    }
+    // step / stepfilled: the outline of the bins, from the base along the tops and back
+    const { edges, counts, base } = _histBars(ax, t), horiz = t.slot.horiz, nb = counts.length;
+    const P = (along, value) => (horiz ? [xScale.transform(value), yScale.transform(along)] : [xScale.transform(along), yScale.transform(value)]);
+    const floor = (v) => ((horiz ? xScale : yScale).log && !(v > 0) ? (horiz ? xScale : yScale).domain[0] : v);
+    ctx.save();
+    ctx.globalAlpha = o.alpha != null ? o.alpha : 1;
+    ctx.beginPath();
+    let [x, y] = P(edges[0], floor(base[0]));
+    ctx.moveTo(x, y);
+    for (let i = 0; i < nb; i++) {
+      [x, y] = P(edges[i], base[i] + counts[i]); ctx.lineTo(x, y);
+      [x, y] = P(edges[i + 1], base[i] + counts[i]); ctx.lineTo(x, y);
+    }
+    [x, y] = P(edges[nb], floor(base[nb - 1])); ctx.lineTo(x, y);
+    if (ht === 'stepfilled') {
+      for (let i = nb - 1; i >= 0; i--) { [x, y] = P(edges[i + 1], floor(base[i])); ctx.lineTo(x, y); [x, y] = P(edges[i], floor(base[i])); ctx.lineTo(x, y); }
+      ctx.closePath();
+      ctx.fillStyle = o.color; ctx.fill();
+      if (o.edgecolor) { ctx.strokeStyle = _cssColor(o.edgecolor); ctx.lineWidth = o.linewidth || 1; ctx.stroke(); }
+    } else {
+      ctx.strokeStyle = o.edgecolor ? _cssColor(o.edgecolor) : o.color;
+      ctx.lineWidth = o.linewidth || 1.5;
+      ctx.setLineDash(dashArray(o.linestyle));
+      ctx.stroke();
+    }
+    ctx.restore();
+  },
+  pick(ax, t, px, py) {
+    const R = _histRects(ax, t), i = _pickRects(ax, { orient: t.slot.horiz ? 'h' : 'v' }, R, px, py);
+    if (i < 0) return null;
+    const { edges, counts } = _histBars(ax, t);
+    return { kind: 'bin', index: i, x: (edges[i] + edges[i + 1]) / 2, y: counts[i], edges: [edges[i], edges[i + 1]] };
+  },
+  legend(ax, t) { return { patch: t.opts.histtype !== 'step', color: t.opts.color }; },
+};
+
+// -- marks.js --
+
+// The common marks: fill_between / fill_betweenx, step (and plot's drawstyle), errorbar,
+// axhspan / axvspan, annotate, and axhline / axvline's axes-fraction ends. Each registers a
+// trace kind (axes.js _KINDS) for its autoscale and its drawing, so axes.js stays the core.
+
+
+
+
+
+
+
+// ── fill_between(x, y1, y2 = 0, {where, step, interpolate, color | facecolor, edgecolor,
+// linewidth, alpha, label}) — the band between two curves; fill_betweenx(y, x1, x2 = 0) is
+// the same turned on its side. NaN or a false `where` splits the band into pieces. ──
+function _fillBetween(ax, fn, horiz, t, a, b, opts) {
+  const o = ax._opts(fn, opts);
+  const T = ax._axisCol(horiz ? 'y' : 'x', t), n = T.length;
+  const col = (v, name) => {
+    if (v == null) return new Float64Array(n);
+    if (!_isArrayLike(v)) return new Float64Array(n).fill(+v);
+    const c = _col(v);
+    if (c.length !== n) throw _lenErr(fn, name, c.length, horiz ? 'y' : 'x', n);
+    return c;
+  };
+  const A = col(a, horiz ? 'x1' : 'y1'), B = col(b, horiz ? 'x2' : 'y2');
+  let where = null;
+  if (o.where != null) { where = Array.from(o.where, Boolean); if (where.length !== n) throw _lenErr(fn, 'where', where.length, horiz ? 'y' : 'x', n); }
+  if (o.facecolor) o.color = _cssColor(o.facecolor);
+  if (!o.color) o.color = ax._nextColor();
+  if (o.step != null && !['pre', 'post', 'mid'].includes(o.step)) _warn(`${fn}.step.${o.step}`, `${fn}(): step must be 'pre', 'post' or 'mid'`, ax._strict);
+  const trace = { type: 'fill_between', t: T, a: A, b: B, where, horiz, opts: o };
+  ax._traces.push(trace);
+  return _result(ax, [], { _trace: trace });
+}
+Axes.prototype.fill_between = function (x, y1, y2, opts) {
+  if (_plainOpts(y2)) { opts = y2; y2 = opts.y2; }
+  return _fillBetween(this, 'fill_between', false, x, y1, y2 == null ? 0 : y2, opts);
+};
+Axes.prototype.fill_betweenx = function (y, x1, x2, opts) {
+  if (_plainOpts(x2)) { opts = x2; x2 = opts.x2; }
+  return _fillBetween(this, 'fill_betweenx', true, y, x1, x2 == null ? 0 : x2, opts);
+};
+
+// the vertices of a stepped curve (matplotlib's drawstyle steps-pre / -post / -mid)
+function _stepped(T, V, where) {
+  const n = T.length;
+  if (n < 2) return [Float64Array.from(T), Float64Array.from(V)];
+  if (where === 'mid') {
+    const t = new Float64Array(2 * n), v = new Float64Array(2 * n);
+    for (let i = 0; i < n; i++) {
+      const l = i === 0 ? T[0] : (T[i - 1] + T[i]) / 2, r = i === n - 1 ? T[n - 1] : (T[i] + T[i + 1]) / 2;
+      t[2 * i] = l; t[2 * i + 1] = r; v[2 * i] = V[i]; v[2 * i + 1] = V[i];
+    }
+    return [t, v];
+  }
+  const t = new Float64Array(2 * n - 1), v = new Float64Array(2 * n - 1);
+  t[0] = T[0]; v[0] = V[0];
+  for (let i = 1; i < n; i++) {
+    // pre: jump at the start of each interval (x[i-1] → x[i] at y[i]); post: at its end
+    t[2 * i - 1] = where === 'post' ? T[i] : T[i - 1]; v[2 * i - 1] = where === 'post' ? V[i - 1] : V[i];
+    t[2 * i] = T[i]; v[2 * i] = V[i];
+  }
+  return [t, v];
+}
+
+_KINDS.fill_between = {
+  z: 1, patch: true,
+  extent(ax, tr, axis, log, take) {
+    const own = tr.horiz ? axis === 'y' : axis === 'x';
+    const r = own ? [_traceRange(tr, 't', tr.t, log)] : [_traceRange(tr, 'a', tr.a, log), _traceRange(tr, 'b', tr.b, log)];
+    for (const q of r) if (q.n) { take(log ? q.minPos : q.lo); take(q.hi); }
+  },
+  render(ax, ctx, tr, xScale, yScale) {
+    const o = tr.opts, n = tr.t.length;
+    const P = (t, v) => (tr.horiz ? [xScale.transform(v), yScale.transform(t)] : [xScale.transform(t), yScale.transform(v)]);
+    ctx.save();
+    ctx.globalAlpha = o.alpha != null ? o.alpha : 1;
+    ctx.fillStyle = o.color;
+    ctx.beginPath();
+    // each run of drawable points (finite, `where` true) is one closed piece
+    let i = 0;
+    while (i < n) {
+      const ok = (k) => (!tr.where || tr.where[k]) && tr.t[k] - tr.t[k] === 0 && tr.a[k] - tr.a[k] === 0 && tr.b[k] - tr.b[k] === 0;
+      if (!ok(i)) { i++; continue; }
+      let j = i;
+      while (j + 1 < n && ok(j + 1)) j++;
+      let T = tr.t.subarray(i, j + 1), A = tr.a.subarray(i, j + 1), B = tr.b.subarray(i, j + 1);
+      if (o.step) { const s1 = _stepped(T, A, o.step), s2 = _stepped(T, B, o.step); T = s1[0]; A = s1[1]; B = s2[1]; }
+      let [x, y] = P(T[0], A[0]);
+      ctx.moveTo(x, y);
+      for (let k = 1; k < T.length; k++) { [x, y] = P(T[k], A[k]); ctx.lineTo(x, y); }
+      for (let k = T.length - 1; k >= 0; k--) { [x, y] = P(T[k], B[k]); ctx.lineTo(x, y); }
+      ctx.closePath();
+      i = j + 1;
+    }
+    ctx.fill();
+    if (o.edgecolor && o.edgecolor !== 'none') { ctx.strokeStyle = _cssColor(o.edgecolor); ctx.lineWidth = o.linewidth || 1; ctx.stroke(); }
+    ctx.restore();
+  },
+};
+
+// ── step(x, y, fmt?, {where = 'pre'}) — and plot(…, {drawstyle: 'steps-post'}) ──
+Axes.prototype.step = function (x, y, fmtOrOpts, opts) {
+  if (!_isArrayLike(y)) { opts = fmtOrOpts; fmtOrOpts = y; y = x; x = undefined; }
+  let fmt = typeof fmtOrOpts === 'string' ? fmtOrOpts : null;
+  if (_plainOpts(fmtOrOpts)) opts = fmtOrOpts;
+  const o = _plainOpts(opts) ? { ...opts } : {};
+  const where = o.where || 'pre';
+  delete o.where;
+  if (!['pre', 'post', 'mid'].includes(where)) _warn('step.where.' + where, `step(): where must be 'pre', 'post' or 'mid', not '${where}'`, this._strict);
+  o.drawstyle = `steps-${where}`;
+  return fmt ? this.plot(x === undefined ? _col(y).map((_, i) => i) : x, y, fmt, o) : this.plot(x === undefined ? _col(y).map((_, i) => i) : x, y, o);
+};
+// plot's drawstyle: the line's vertices are replaced by the stepped ones at ingress
+function _applyDrawstyle(ax, trace) {
+  const ds = trace.opts.drawstyle;
+  if (!ds || ds === 'default') { delete trace.opts.drawstyle; return; }
+  const m = /^steps(?:-(pre|post|mid))?$/.exec(ds);
+  if (!m) { _warn('plot.drawstyle.' + ds, `plot(): drawstyle '${ds}' is not supported; use 'default', 'steps-pre', 'steps-mid' or 'steps-post'`, ax._strict); delete trace.opts.drawstyle; return; }
+  const [t, v] = _stepped(trace.x, trace.y, m[1] || 'pre');
+  trace.x = t; trace.y = v;
+}
+
+// ── errorbar(x, y, {yerr, xerr, fmt = '', ecolor, elinewidth, capsize = 0, capthick,
+// barsabove, label, …line options}) → [line, caps, bars] with .lines. yerr / xerr: a number,
+// one per point, or [lower, upper] (two arrays, or two numbers). ──
+function _errCols(v, n, name) {
+  if (v == null) return null;
+  if (!_isArrayLike(v)) { const c = new Float64Array(n).fill(Math.abs(+v)); return [c, c]; }
+  if (v.length === 2 && (_isArrayLike(v[0]) || _isArrayLike(v[1])) && n !== 2) {
+    const lo = _isArrayLike(v[0]) ? _col(v[0]) : new Float64Array(n).fill(+v[0]);
+    const hi = _isArrayLike(v[1]) ? _col(v[1]) : new Float64Array(n).fill(+v[1]);
+    if (lo.length !== n || hi.length !== n) throw new Error(`plot: errorbar: ${name} as [lower, upper] needs ${n} values in each`);
+    return [lo, hi];
+  }
+  if (v.length === 2 && _isArrayLike(v[0]) && n === 2) return [_col(v[0]), _col(v[1])];
+  const c = _col(v);
+  if (c.length !== n) throw _lenErr('errorbar', name, c.length, 'x', n);
+  return [c, c];
+}
+Axes.prototype.errorbar = function (x, y, opts) {
+  const o0 = _plainOpts(opts) ? { ...opts } : {};
+  const X = this._axisCol('x', x), Y = this._axisCol('y', y), n = X.length;
+  if (Y.length !== n) throw _lenErr('errorbar', 'x', n, 'y', Y.length);
+  const yerr = _errCols(o0.yerr, n, 'yerr'), xerr = _errCols(o0.xerr, n, 'xerr');
+  const fmt = o0.fmt == null ? '' : o0.fmt;
+  const errOpts = { ecolor: o0.ecolor, elinewidth: o0.elinewidth, capsize: o0.capsize ?? 0, capthick: o0.capthick, barsabove: o0.barsabove, alpha: o0.alpha };
+  for (const k of ['yerr', 'xerr', 'fmt', 'ecolor', 'elinewidth', 'capsize', 'capthick', 'barsabove', 'errorevery', 'lolims', 'uplims', 'xlolims', 'xuplims']) delete o0[k];
+  // the data line (or markers): an ordinary plot trace, so it legends and picks as one;
+  // fmt 'none' draws no line, only the bars
+  let line = null;
+  if (fmt !== 'none') {
+    if (fmt) this.plot(X, Y, fmt, o0); else this.plot(X, Y, o0);
+    line = this._traces[this._traces.length - 1];
+  }
+  const color = _cssColor(errOpts.ecolor) || (line ? line.opts.color : _cssColor(o0.color) || this._nextColor());
+  const tr = { type: 'errorbar', x: X, y: Y, yerr, xerr, color, opts: { ...errOpts, zorder: o0.zorder } };
+  this._traces.push(tr);
+  return _result(this, [line, [], []], { lines: [line, [], []], _trace: tr });
+};
+_KINDS.errorbar = {
+  z: 2,
+  extent(ax, tr, axis, log, take) {
+    const P = axis === 'x' ? tr.x : tr.y, E = axis === 'x' ? tr.xerr : tr.yerr;
+    for (let i = 0; i < P.length; i++) { const v = P[i]; take(E ? v - E[0][i] : v); take(E ? v + E[1][i] : v); }
+  },
+  render(ax, ctx, tr, xScale, yScale) {
+    const o = tr.opts;
+    const cap = ((o.capsize || 0) * ax._dpi) / 72 / 2;       // capsize is the cap's full length in points
+    ctx.save();
+    ctx.globalAlpha = o.alpha != null ? o.alpha : 1;
+    ctx.strokeStyle = tr.color;
+    ctx.lineWidth = o.elinewidth != null ? (o.elinewidth * ax._dpi) / 72 : 1.5 * ax._dpi / 72;
+    ctx.beginPath();
+    for (let i = 0; i < tr.x.length; i++) {
+      const xv = tr.x[i], yv = tr.y[i];
+      if (xv - xv !== 0 || yv - yv !== 0) continue;
+      const px = xScale.transform(xv), py = yScale.transform(yv);
+      if (tr.yerr) {
+        const a = yScale.transform(yv - tr.yerr[0][i]), b = yScale.transform(yv + tr.yerr[1][i]);
+        if (a - a === 0 && b - b === 0) {
+          ctx.moveTo(px, a); ctx.lineTo(px, b);
+          if (cap) { ctx.moveTo(px - cap, a); ctx.lineTo(px + cap, a); ctx.moveTo(px - cap, b); ctx.lineTo(px + cap, b); }
+        }
+      }
+      if (tr.xerr) {
+        const a = xScale.transform(xv - tr.xerr[0][i]), b = xScale.transform(xv + tr.xerr[1][i]);
+        if (a - a === 0 && b - b === 0) {
+          ctx.moveTo(a, py); ctx.lineTo(b, py);
+          if (cap) { ctx.moveTo(a, py - cap); ctx.lineTo(a, py + cap); ctx.moveTo(b, py - cap); ctx.lineTo(b, py + cap); }
+        }
+      }
+    }
+    ctx.stroke();
+    ctx.restore();
+  },
+};
+
+// ── axhspan(ymin, ymax, {xmin = 0, xmax = 1}) / axvspan(xmin, xmax, {ymin = 0, ymax = 1}):
+// a band across the axes, its other extent a fraction of the axes ──
+function _span(ax, fn, horiz, lo, hi, opts) {
+  const o = ax._opts(fn, opts);
+  if (o.facecolor) o.color = _cssColor(o.facecolor);
+  if (!o.color) o.color = ax._theme.cycle[0];
+  const tr = { type: 'span', horiz, lo: +lo, hi: +hi, f0: horiz ? (o.xmin ?? 0) : (o.ymin ?? 0), f1: horiz ? (o.xmax ?? 1) : (o.ymax ?? 1), opts: o };
+  ax._traces.push(tr);
+  return _result(ax, [], { _trace: tr });
+}
+Axes.prototype.axhspan = function (ymin, ymax, opts) { return _span(this, 'axhspan', true, ymin, ymax, opts); };
+Axes.prototype.axvspan = function (xmin, xmax, opts) { return _span(this, 'axvspan', false, xmin, xmax, opts); };
+_KINDS.span = {
+  z: 1, patch: true,
+  extent(ax, tr, axis, log, take) { if (tr.horiz ? axis === 'y' : axis === 'x') { take(tr.lo); take(tr.hi); } },
+  render(ax, ctx, tr, xScale, yScale, rect) {
+    const o = tr.opts;
+    ctx.save();
+    ctx.globalAlpha = o.alpha != null ? o.alpha : 1;
+    ctx.fillStyle = o.color;
+    let x0, x1, y0, y1;
+    if (tr.horiz) { y0 = yScale.transform(tr.lo); y1 = yScale.transform(tr.hi); x0 = rect.x + tr.f0 * rect.w; x1 = rect.x + tr.f1 * rect.w; }
+    else { x0 = xScale.transform(tr.lo); x1 = xScale.transform(tr.hi); y0 = rect.y + (1 - tr.f0) * rect.h; y1 = rect.y + (1 - tr.f1) * rect.h; }
+    if ([x0, x1, y0, y1].every((v) => v - v === 0)) {
+      ctx.fillRect(Math.min(x0, x1), Math.min(y0, y1), Math.abs(x1 - x0), Math.abs(y1 - y0));
+      if (o.edgecolor && o.edgecolor !== 'none') { ctx.strokeStyle = _cssColor(o.edgecolor); ctx.lineWidth = o.linewidth || 1; ctx.strokeRect(Math.min(x0, x1), Math.min(y0, y1), Math.abs(x1 - x0), Math.abs(y1 - y0)); }
+    }
+    ctx.restore();
+  },
+};
+
+// ── annotate(text, xy, {xytext, xycoords = 'data', textcoords, arrowprops, ha, va, fontsize,
+// color}) — xycoords / textcoords: 'data', 'axes fraction', 'offset points' (textcoords);
+// arrowprops {arrowstyle: '->' | '-|>' | '-' | '<-' | '<->', color, lw, shrink} ──
+Axes.prototype.annotate = function (text, xy, opts) {
+  if (_plainOpts(xy) && opts == null) { opts = xy; xy = opts.xy; }
+  const o = _plainOpts(opts) ? { ...opts } : {};
+  for (const k of Object.keys(o)) {
+    if (!['xytext', 'xycoords', 'textcoords', 'arrowprops', 'ha', 'va', 'horizontalalignment', 'verticalalignment', 'fontsize', 'color', 'alpha', 'zorder', 'fontweight', 'rotation', '_kw'].includes(k)) _warn('annotate.' + k, `annotate(): '${k}' is not supported`, this._strict);
+  }
+  const tr = { type: 'annotate', text: String(text), xy: Array.from(xy, Number), opts: o };
+  this._traces.push(tr);
+  return _result(this, [], { _trace: tr });
+};
+_KINDS.annotate = {
+  z: 3, noclip: true,
+  render(ax, ctx, tr, xScale, yScale, rect) {
+    const o = tr.opts, th = ax._theme;
+    const at = (p, coords) => {
+      if (coords === 'axes fraction') return [rect.x + p[0] * rect.w, rect.y + (1 - p[1]) * rect.h];
+      if (coords === 'figure pixels') return [p[0], p[1]];
+      return [xScale.transform(p[0]), yScale.transform(p[1])];
+    };
+    const P = at(tr.xy, o.xycoords || 'data');
+    let T = P;
+    if (o.xytext) {
+      const tc = o.textcoords || o.xycoords || 'data';
+      if (tc === 'offset points' || tc === 'offset pixels') {
+        const k = tc === 'offset points' ? ax._dpi / 72 : 1;
+        T = [P[0] + o.xytext[0] * k, P[1] - o.xytext[1] * k];
+      } else T = at(o.xytext, tc);
+    }
+    if (![...P, ...T].every((v) => v - v === 0)) return;
+    const color = _cssColor(o.color) || ax._textColor || th.foreground;
+    ctx.save();
+    if (o.arrowprops && o.xytext) {
+      const ap = o.arrowprops, style = ap.arrowstyle || '-|>';
+      ctx.strokeStyle = _cssColor(ap.color || ap.facecolor) || color;
+      ctx.fillStyle = ctx.strokeStyle;
+      ctx.lineWidth = ap.lw ?? ap.linewidth ?? 1;
+      const dx = P[0] - T[0], dy = P[1] - T[1], L = Math.hypot(dx, dy);
+      if (L > 1) {
+        const ux = dx / L, uy = dy / L, s0 = 8, s1 = ap.shrink != null ? ap.shrink * L : 2;
+        const a = [T[0] + ux * s0, T[1] + uy * s0], b = [P[0] - ux * s1, P[1] - uy * s1];
+        ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+        const head = (q, dir) => {
+          const hx = q[0], hy = q[1], h = 8, w = 3.5, bx = hx - dir[0] * h, by = hy - dir[1] * h;
+          ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(bx - dir[1] * w, by + dir[0] * w); ctx.lineTo(bx + dir[1] * w, by - dir[0] * w); ctx.closePath();
+          if (style.includes('|>')) ctx.fill();
+          else { ctx.beginPath(); ctx.moveTo(bx - dir[1] * w, by + dir[0] * w); ctx.lineTo(hx, hy); ctx.lineTo(bx + dir[1] * w, by - dir[0] * w); ctx.stroke(); }
+        };
+        if (style.endsWith('>')) head(b, [ux, uy]);
+        if (style.startsWith('<')) head(a, [-ux, -uy]);
+      }
+    }
+    ctx.fillStyle = color;
+    ctx.globalAlpha = o.alpha != null ? o.alpha : 1;
+    ctx.font = o.fontsize != null && typeof o.fontsize === 'number' ? `${o.fontweight === 'bold' ? 'bold ' : ''}${o.fontsize}px ${th.mono}` : _font(th, 0, o.fontweight === 'bold');
+    const ha = o.ha || o.horizontalalignment, va = o.va || o.verticalalignment;
+    ctx.textAlign = { center: 'center', left: 'left', right: 'right' }[ha] || (o.xytext ? 'center' : 'left');
+    ctx.textBaseline = { center: 'middle', top: 'top', bottom: 'bottom', baseline: 'alphabetic' }[va] || (o.xytext ? 'middle' : 'alphabetic');
+    ctx.fillText(tr.text, T[0], T[1]);
+    ctx.restore();
+  },
+};
+
+// ── axhline / axvline with xmin / xmax (ymin / ymax): their extent across the axes, as a
+// fraction of it ──
+Axes.prototype.axhline = function (y, opts) {
+  const o = this._opts('axhline', opts);
+  if (o.linewidth == null) o.linewidth = 1;
+  this._traces.push({ type: 'hline', y: y == null ? 0 : +y, opts: o });
+  return _result(this, [], {});
+};
+Axes.prototype.axvline = function (x, opts) {
+  const o = this._opts('axvline', opts);
+  if (o.linewidth == null) o.linewidth = 1;
+  this._traces.push({ type: 'vline', x: x == null ? 0 : +x, opts: o });
+  return _result(this, [], {});
+};
+Axes.prototype._renderHline = function (ctx, trace, xScale, yScale, plotX, plotW) {
+  const py = yScale.transform(trace.y);
+  if (py - py !== 0) return;
+  const o = trace.opts, f0 = o.xmin ?? 0, f1 = o.xmax ?? 1;
+  ctx.globalAlpha = o.alpha != null ? o.alpha : 1;
+  ctx.strokeStyle = o.color || this._theme.muted;
+  ctx.lineWidth = o.linewidth || 1;
+  ctx.setLineDash(dashArray(o.linestyle));
+  ctx.beginPath(); ctx.moveTo(plotX + f0 * plotW, py); ctx.lineTo(plotX + f1 * plotW, py); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.globalAlpha = 1;
+};
+Axes.prototype._renderVline = function (ctx, trace, xScale, yScale, plotY, plotH) {
+  const px = xScale.transform(trace.x);
+  if (px - px !== 0) return;
+  const o = trace.opts, f0 = o.ymin ?? 0, f1 = o.ymax ?? 1;
+  ctx.globalAlpha = o.alpha != null ? o.alpha : 1;
+  ctx.strokeStyle = o.color || this._theme.muted;
+  ctx.lineWidth = o.linewidth || 1;
+  ctx.setLineDash(dashArray(o.linestyle));
+  ctx.beginPath(); ctx.moveTo(px, plotY + (1 - f0) * plotH); ctx.lineTo(px, plotY + (1 - f1) * plotH); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.globalAlpha = 1;
+};
+_hooks.drawstyle = _applyDrawstyle;
+void parseFormat;
+
 // -- figure.js --
 
 // Figure — canvas management, subplot grid, DPI handling
+
+
+// the chart kinds beyond the core: they add to Axes.prototype, so they load after axes.js
 
 
 
@@ -3786,6 +4330,16 @@ function _pyTicks(axis, ticks, labels, opts) {
   return [ax[axis === 'x' ? 'get_xticks' : 'get_yticks'](), ax[axis === 'x' ? 'get_xticklabels' : 'get_yticklabels']()];
 }
 function axis(arg) { return _ax().axis(arg); }
+// the marks, on the current axes (matplotlib's pyplot state)
+function barh(y, width, opts) { return _ax().barh(y, width, opts); }
+function bar_label(container, labels, opts) { return _ax().bar_label(container, labels, opts); }
+function errorbar(x, y, opts) { return _ax().errorbar(x, y, opts); }
+function fill_between(x, y1, y2, opts) { return _ax().fill_between(x, y1, y2, opts); }
+function fill_betweenx(y, x1, x2, opts) { return _ax().fill_betweenx(y, x1, x2, opts); }
+function step(x, y, fmt, opts) { return _ax().step(x, y, fmt, opts); }
+function axhspan(ymin, ymax, opts) { return _ax().axhspan(ymin, ymax, opts); }
+function axvspan(xmin, xmax, opts) { return _ax().axvspan(xmin, xmax, opts); }
+function annotate(text, xy, opts) { return _ax().annotate(text, xy, opts); }
 function margins(x, y) { return _ax().margins(x, y); }
 
 // plt.colorbar(im, ax=None, **kwargs) — attach a colorbar to the axes
@@ -3825,6 +4379,7 @@ const pltAdder = {
   legend, grid, vlines, hlines, axhline, axvline, text,
   subplots_adjust, tight_layout, savefig, clf, cla,
   xticks, yticks, axis, margins, colorbar, suptitle, themeFromCSS,
+  barh, bar_label, errorbar, fill_between, fill_betweenx, step, axhspan, axvspan, annotate,
 };
 
 // register as auditable extension for adder `import plt`

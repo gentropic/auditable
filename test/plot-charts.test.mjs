@@ -183,3 +183,126 @@ test('themes: one figure, its own theme; set_theme re-dresses; themeFromCSS; leg
   const d = fig1().fig.toDrawList();
   assert.equal(d.version, 2);
 });
+
+// ── the marks (M2 chunk 2) ──
+const numpyBins = JSON.parse((await import('node:fs')).readFileSync(new URL('./fixtures/plot-numpy-bins.json', import.meta.url), 'utf8'));
+
+test("hist bins: numpy's rules (auto, fd, sturges, sqrt, rice, scott) give numpy's bin counts", () => {
+  for (const [name, d] of Object.entries(numpyBins.data)) {
+    for (const [rule, want] of Object.entries(numpyBins.bins[name])) {
+      const { ax } = fig1();
+      const [, edges] = ax.hist(d, { bins: rule });
+      assert.equal(edges.length - 1, want, `${name} / ${rule}`);
+    }
+  }
+});
+
+test('hist: one set of bins for several datasets; side by side, stacked, step, horizontal; returns [n, bins, patches]', () => {
+  const a = [1, 2, 2, 3, 3, 3, 9], b = [5, 6, 6, 7];
+  const { fig, ax } = fig1();
+  const [n, bins] = ax.hist([a, b], { bins: 4 });
+  assert.equal(n.length, 2); assert.deepEqual(Array.from(bins), [1, 3, 5, 7, 9]);
+  assert.deepEqual(Array.from(n[0]), [3, 3, 0, 1]); assert.deepEqual(Array.from(n[1]), [0, 0, 3, 1]);
+  fig.toDrawList();
+  const r0 = ax._traces[0]._cache.hrects, r1 = ax._traces[1]._cache.hrects;
+  assert.ok(Math.abs((r0.x1[0] - r0.x0[0]) - 0.8) < 1e-9 && r1.x0[0] >= r0.x1[0] - 1e-9, 'side by side, 0.8 of the bin shared');
+  const s = fig1();
+  s.ax.hist([a, b], { bins: 4, stacked: true });
+  s.fig.toDrawList();
+  assert.equal(s.ax._traces[1]._cache.bars.base[1], 3, 'the second stands on the first');
+  assert.equal(s.ax.get_ylim()[0], 0);
+  const h = fig1(); h.ax.hist(a, { bins: 4, orientation: 'horizontal' }); h.fig.toDrawList();
+  assert.ok(h.ax.get_ylim()[0] <= 1 && h.ax.get_ylim()[1] >= 9 && h.ax.get_xlim()[0] === 0, 'bins along y, counts along x from 0');
+  const st = fig1(); st.ax.hist(a, { bins: 4, histtype: 'step' });
+  const br = fig1(); br.ax.hist(a, { bins: 4 });
+  const rects = (f) => ops(f).filter((o) => o[0] === 'fillRect').length;
+  assert.equal(rects(br.fig) - rects(st.fig), 4, 'bar draws one rect per bin; step draws none');
+  const lg = fig1(); lg.ax.hist(a, { bins: 4, log: true }); assert.equal(lg.ax._yscale, 'log');
+  const res = fig1().ax.hist(a, { bins: 4 });
+  assert.equal(typeof res.set_title, 'function', 'chains to the axes');
+});
+
+test('bar: bottom stacks, align edge, per-bar widths and colours, a container with datavalues; bar_label', () => {
+  const { fig, ax } = fig1();
+  const c1 = ax.bar(['a', 'b'], [3, 4], { label: 'ore' });
+  const c2 = ax.bar(['a', 'b'], [1, 2], { bottom: [3, 4], color: ['#ff0000', '#00ff00'] });
+  assert.deepEqual(Array.from(c2.datavalues), [1, 2]);
+  assert.equal(c2.length, 2); assert.equal(c2[1].get_y(), 4); assert.equal(c2[1].get_height(), 2);
+  ax.bar_label(c2, { fmt: '%.1f' });
+  ax.bar_label(c1, ['x', 'y'], { label_type: 'center' });
+  const t = texts(fig);
+  for (const s of ['1.0', '2.0', 'x', 'y']) assert.ok(t.includes(s), s);
+  fig.toDrawList();
+  assert.ok(ax.get_ylim()[1] >= 6, 'the stacked top counts');
+  const e = fig1(); e.ax.bar([0, 1], [1, 1], { width: [0.5, 1], align: 'edge' }); e.fig.toDrawList();
+  assert.ok(e.ax.get_xlim()[1] >= 2 && e.ax.get_xlim()[0] <= 0);
+  const h = fig1(); const ch = h.ax.barh(['p', 'q'], [2, -1], { left: 1 });
+  assert.equal(ch[1].get_x(), 1); assert.equal(ch[1].get_width(), -1);
+  assert.throws(() => ax.bar_label({}), /what bar\(\) or barh\(\) returned/);
+  assert.equal(typeof c1.set_title, 'function');
+});
+
+test('bar_label formats: %-style, {}-style, functions', async () => {
+  const { _fmtValue } = await import('../ext/plot/src/bars.js');
+  assert.equal(_fmtValue(null, 2.5), '2.5');
+  assert.equal(_fmtValue('%.2f', 2.5), '2.50');
+  assert.equal(_fmtValue('%d t', 2.6), '3 t');
+  assert.equal(_fmtValue('{:,.0f}', 1234567.8), '1,234,568');
+  assert.equal(_fmtValue('{:.1%}', 0.256), '25.6%');
+  assert.equal(_fmtValue((v) => `~${v}`, 3), '~3');
+});
+
+test('fill_between: NaN and where split the band; step; fill_betweenx', () => {
+  const { fig, ax } = fig1();
+  ax.fill_between([0, 1, 2, 3, 4, 5], [1, 2, NaN, 2, 1, 1], 0);
+  ax.fill_between([0, 1, 2, 3], [1, 1, 1, 1], [0, 0, 0, 0], { where: [true, true, false, true] });
+  const o = ops(fig);
+  assert.ok(o.filter((x) => x[0] === 'closePath').length >= 3, 'two pieces, then the where piece');
+  fig.toDrawList();
+  assert.equal(ax.get_ylim()[0] <= 0, true);
+  const s = fig1(); s.ax.fill_between([0, 1, 2], [1, 2, 3], 0, { step: 'post' });
+  assert.ok(ops(s.fig).filter((x) => x[0] === 'lineTo').length >= 8, 'stepped vertices');
+  const h = fig1(); h.ax.fill_betweenx([0, 10], [1, 2], 5); h.fig.toDrawList();
+  assert.ok(h.ax.get_xlim()[1] >= 5 && h.ax.get_ylim()[1] >= 10);
+  assert.throws(() => fig1().ax.fill_between([0, 1], [1, 2, 3]), /y1 has 3 values but x has 2/);
+});
+
+test('step and drawstyle: pre, post, mid vertices', () => {
+  const { ax } = fig1();
+  ax.step([0, 1, 2], [1, 2, 3]);
+  assert.deepEqual(Array.from(ax._traces[0].x), [0, 0, 1, 1, 2]);
+  assert.deepEqual(Array.from(ax._traces[0].y), [1, 2, 2, 3, 3]);
+  ax.step([0, 1, 2], [1, 2, 3], { where: 'post' });
+  assert.deepEqual(Array.from(ax._traces[1].x), [0, 1, 1, 2, 2]);
+  assert.deepEqual(Array.from(ax._traces[1].y), [1, 1, 2, 2, 3]);
+  ax.plot([0, 2], [1, 3], { drawstyle: 'steps-mid' });
+  assert.deepEqual(Array.from(ax._traces[2].x), [0, 1, 1, 2]);
+  assert.equal(warnings.length, 0, warnings.join('\n'));
+});
+
+test('errorbar: symmetric and [lower, upper] errors widen the range; fmt none draws only bars; caps', () => {
+  const { fig, ax } = fig1();
+  const eb = ax.errorbar([1, 2, 3], [5, 6, 7], { yerr: [[1, 1, 1], [3, 3, 3]], capsize: 4, fmt: 'o' });
+  fig.toDrawList();
+  assert.ok(ax.get_ylim()[0] < 4.01 && ax.get_ylim()[1] > 9.99);
+  assert.ok(eb.lines[0] && eb.lines[0].opts.marker === 'o');
+  const b = fig1(); b.ax.errorbar([1, 2], [1, 2], { yerr: 0.5, xerr: 0.25, fmt: 'none' });
+  assert.equal(b.ax._traces.length, 1, 'no data line');
+  assert.ok(ops(b.fig).filter((x) => x[0] === 'moveTo').length >= 4);
+});
+
+test('spans, axhline xmin / xmax, annotate', () => {
+  const { fig, ax } = fig1();
+  ax.plot([0, 10], [0, 10]);
+  ax.axhspan(2, 4, { alpha: 0.3 });
+  ax.axvspan(6, 8, { ymin: 0.5 });
+  ax.axhline(5, { xmin: 0.25, xmax: 0.75 });
+  ax.annotate('here', [5, 5], { xytext: [20, 20], textcoords: 'offset points', arrowprops: { arrowstyle: '->' } });
+  const o = ops(fig);
+  fig.toDrawList();
+  const v = ax.view, [, y5] = ax.toPixel(0, 5);
+  const seg = o.filter((x) => x[0] === 'moveTo' && Math.abs(x[2] - y5) < 1e-6);
+  assert.ok(seg.some((x) => Math.abs(x[1] - (v.x + 0.25 * v.w)) < 1e-6), 'axhline starts a quarter in');
+  assert.ok(texts(fig).includes('here'));
+  assert.ok(ax.get_ylim()[0] < 0.01, 'spans do not move the other axis');
+});

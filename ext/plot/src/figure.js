@@ -1,6 +1,9 @@
 // Figure — canvas management, subplot grid, DPI handling
 
 import { Axes } from './axes.js';
+// the chart kinds beyond the core: they add to Axes.prototype, so they load after axes.js
+import './bars.js';
+import './marks.js';
 import { _resolve, _font } from './style.js';
 import { _checkOpts, _noop } from './opts.js';
 import { recordingContext, replay } from './record.js';

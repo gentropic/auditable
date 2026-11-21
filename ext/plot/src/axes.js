@@ -40,18 +40,34 @@ const _M4_SUB = 4;          // M4 columns per device pixel (see _pathM4)
 // legend(ax, trace) → a legend entry }. take(v) widens the range; stick(v) is a sticky edge
 // that the margins stop at (matplotlib's sticky_edges: bars at 0, images at their extent).
 export const _KINDS = {};
+// ingress hooks the later modules fill (marks.js: plot's drawstyle)
+export const _hooks = {};
 
 // matplotlib's default zorders: images 0, patches and collections 1, lines 2, text 3. Traces
 // draw in zorder, ties in the order they were added.
 const _ZORDER = { imshow: 0, bar: 1, barh: 1, hist: 1, scatter: 1, line: 2, hline: 2, vline: 2, text: 3 };
 
-function _plainOpts(o) {
+export function _plainOpts(o) {
   // an options object, as opposed to a column or a format string
   return o != null && typeof o === 'object' && !_isArrayLike(o);
 }
 
-function _lenErr(fn, a, na, b, nb) {
+export function _lenErr(fn, a, na, b, nb) {
   return new Error(`plot: ${fn}: ${a} has ${_fmtCount(na)} values but ${b} has ${_fmtCount(nb)}`);
+}
+
+// What a chart call returns: matplotlib's container — an array (bar's rectangles; hist's
+// [n, bins, patches]; errorbar's [line, caps, bars]) with its own fields and .axes — through
+// which every other name reads the axes, so ax.bar(…).set_title(…) still chains.
+export function _result(ax, items, fields) {
+  const target = Object.assign(items, fields, { axes: ax });
+  return new Proxy(target, {
+    get(t, k) {
+      if (k in t) return t[k];
+      const v = ax[k];
+      return typeof v === 'function' ? v.bind(ax) : v;
+    },
+  });
 }
 
 // fold a column through a scale into pixel positions (NaN for anything not drawable)
@@ -137,7 +153,9 @@ export class Axes {
     const Y = this._axisCol('y', y);
     const X = x === undefined ? _arange(Y.length) : this._axisCol('x', x);
     if (X.length !== Y.length) throw _lenErr('plot', 'x', X.length, 'y', Y.length);
-    this._traces.push({ type: 'line', x: X, y: Y, opts: o });
+    const trace = { type: 'line', x: X, y: Y, opts: o };
+    if (o.drawstyle && _hooks.drawstyle) _hooks.drawstyle(this, trace);
+    this._traces.push(trace);
     return this;
   }
 
@@ -177,49 +195,6 @@ export class Axes {
     }
     o.marker = this._checkMarker('scatter', o.marker);
     this._traces.push(trace);
-    return this;
-  }
-
-  bar(x, heights, opts) {
-    const o = this._opts('bar', opts);
-    if (!o.color) o.color = this._nextColor();
-    const X = this._axisCol('x', x), H = _col(heights);
-    if (X.length !== H.length) throw _lenErr('bar', 'x', X.length, 'height', H.length);
-    if (Array.isArray(o.color)) o.color = o.color.map(_cssColor);
-    this._traces.push({ type: 'bar', x: X, heights: H, opts: o });
-    return this;
-  }
-
-  barh(y, widths, opts) {
-    const o = this._opts('barh', opts);
-    if (!o.color) o.color = this._nextColor();
-    const Yc = this._axisCol('y', y), W = _col(widths);
-    if (Yc.length !== W.length) throw _lenErr('barh', 'y', Yc.length, 'width', W.length);
-    if (Array.isArray(o.color)) o.color = o.color.map(_cssColor);
-    this._traces.push({ type: 'barh', y: Yc, widths: W, opts: o });
-    return this;
-  }
-
-  hist(data, opts) {
-    const o = this._opts('hist', opts);
-    if (!o.color) o.color = this._nextColor();
-    // several datasets (a list of arrays) aren't drawn side by side yet: say so, draw the first
-    if (Array.isArray(data) && data.length && _isArrayLike(data[0])) {
-      _warn('hist.multi', 'hist(): several datasets are not supported yet; drawing the first', this._strict);
-      data = data[0];
-    }
-    const D = _col(data);
-    if (o.bins != null && typeof o.bins !== 'number') {
-      if (typeof o.bins === 'string') {
-        _warn('hist.bins.' + o.bins, `hist(): bins='${o.bins}' is not supported yet; using 10 bins`, this._strict);
-        o.bins = 10;
-      } else o.bins = _col(o.bins);
-    }
-    if (o.weights != null) {
-      o.weights = _col(o.weights);
-      if (o.weights.length !== D.length) throw _lenErr('hist', 'weights', o.weights.length, 'x', D.length);
-    }
-    this._traces.push({ type: 'hist', data: D, opts: o });
     return this;
   }
 
@@ -281,20 +256,6 @@ export class Axes {
     this._traces.push({ type: 'imshow', data: D, nx, ny, opts: o });
     // default to equal aspect for grid data (matches matplotlib)
     if (this._aspect === 'auto') this._aspect = 'equal';
-    return this;
-  }
-
-  axhline(y, opts) {
-    const o = this._opts('axhline', opts);
-    if (o.linewidth == null) o.linewidth = 1;
-    this._traces.push({ type: 'hline', y, opts: o });
-    return this;
-  }
-
-  axvline(x, opts) {
-    const o = this._opts('axvline', opts);
-    if (o.linewidth == null) o.linewidth = 1;
-    this._traces.push({ type: 'vline', x, opts: o });
     return this;
   }
 
@@ -782,15 +743,14 @@ export class Axes {
     let lastCmapTrace = null;
     const order = this._traces.map((t, i) => [t.opts && t.opts.zorder != null ? +t.opts.zorder : (_ZORDER[t.type] ?? (_KINDS[t.type] ? _KINDS[t.type].z ?? 1 : 1)), i]);
     order.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-    for (const [, ti] of order) {
-      const trace = this._traces[ti];
+    // text, annotations and bar labels aren't clipped to the axes (matplotlib: clip_on=False
+    // for text): they draw after the clipped pass, still in zorder
+    const free = (t) => t.type === 'text' || (_KINDS[t.type] && _KINDS[t.type].noclip);
+    const draw = (trace) => {
       switch (trace.type) {
         case 'imshow': this._renderImshow(ctx, trace, xScale, yScale, rect); lastCmapTrace = trace; break;
         case 'line': this._renderLine(ctx, trace, xScale, yScale, rect); break;
         case 'scatter': this._renderScatter(ctx, trace, xScale, yScale, rect); if (trace.cvals) lastCmapTrace = trace; break;
-        case 'bar': this._renderBar(ctx, trace, xScale, yScale); break;
-        case 'barh': this._renderBarh(ctx, trace, xScale, yScale); break;
-        case 'hist': this._renderHist(ctx, trace, xScale, yScale); break;
         case 'hline': this._renderHline(ctx, trace, xScale, yScale, plotX, plotW); break;
         case 'vline': this._renderVline(ctx, trace, xScale, yScale, plotY, plotH); break;
         case 'text': this._renderText(ctx, trace, xScale, yScale, rect); break;
@@ -799,8 +759,10 @@ export class Axes {
           if (k) { k.render(this, ctx, trace, xScale, yScale, rect); if (k.cmap && trace.cmapped !== false) lastCmapTrace = trace; }
         }
       }
-    }
+    };
+    for (const [, ti] of order) if (!free(this._traces[ti])) draw(this._traces[ti]);
     ctx.restore();
+    for (const [, ti] of order) if (free(this._traces[ti])) draw(this._traces[ti]);
     return lastCmapTrace;
   }
 
@@ -870,32 +832,6 @@ export class Axes {
         case 'scatter':
           takeRange(_traceRange(trace, axis, axis === 'x' ? trace.x : trace.y, log));
           break;
-        case 'bar': {
-          if (axis === 'x') {
-            const r = _traceRange(trace, 'x', trace.x), w = typeof trace.opts.width === 'number' ? trace.opts.width : 0.8;
-            if (r.n) { take(r.lo - w / 2); take(r.hi + w / 2); }
-          } else {
-            if (!log) { take(0); stick(0); }
-            takeRange(_traceRange(trace, 'h', trace.heights, log));
-          }
-          break;
-        }
-        case 'barh': {
-          if (axis === 'y') {
-            const r = _traceRange(trace, 'y', trace.y), h = typeof trace.opts.height === 'number' ? trace.opts.height : 0.8;
-            if (r.n) { take(r.lo - h / 2); take(r.hi + h / 2); }
-          } else {
-            if (!log) { take(0); stick(0); }
-            takeRange(_traceRange(trace, 'w', trace.widths, log));
-          }
-          break;
-        }
-        case 'hist': {
-          const { edges, counts } = this._hist(trace);
-          if (axis === 'x') { take(edges[0]); take(edges[edges.length - 1]); }
-          else { if (!log) { take(0); stick(0); } for (const c of counts) take(c); }
-          break;
-        }
         case 'imshow': {
           const e = this._imshowExtent(trace);
           const [a, b] = axis === 'x' ? [e[0], e[1]] : [e[2], e[3]];
@@ -1242,73 +1178,6 @@ export class Axes {
     return _blit(ctx, rect.x, rect.y, rect.w, rect.h, h.W, h.H, h.rgba, h, false);
   }
 
-  _renderBar(ctx, trace, xScale, yScale) {
-    const { x, heights, opts } = trace;
-    const alpha = opts.alpha != null ? opts.alpha : 1;
-    ctx.globalAlpha = alpha;
-    const py0 = yScale.transform(0);
-    for (let i = 0; i < x.length; i++) {
-      const bw = _isArrayLike(opts.width) ? opts.width[i] : (opts.width || 0.8);
-      const xv = x[i], hv = heights[i];
-      if (xv - xv !== 0 || hv - hv !== 0) continue;
-      const px = xScale.transform(xv - bw / 2);
-      const pw = xScale.transform(xv + bw / 2) - px;
-      const py = yScale.transform(hv);
-      ctx.fillStyle = Array.isArray(opts.color) ? opts.color[i % opts.color.length] : opts.color;
-      ctx.fillRect(px, py, pw, py0 - py);
-      if (opts.edgecolor) {
-        ctx.strokeStyle = _cssColor(opts.edgecolor);
-        ctx.lineWidth = opts.linewidth || 1;
-        ctx.strokeRect(px, py, pw, py0 - py);
-      }
-    }
-    ctx.globalAlpha = 1;
-  }
-
-  _renderBarh(ctx, trace, xScale, yScale) {
-    const { y, widths, opts } = trace;
-    const alpha = opts.alpha != null ? opts.alpha : 1;
-    ctx.globalAlpha = alpha;
-    const px0 = xScale.transform(0);
-    for (let i = 0; i < y.length; i++) {
-      const bh = _isArrayLike(opts.height) ? opts.height[i] : (opts.height || 0.8);
-      const yv = y[i], wv = widths[i];
-      if (yv - yv !== 0 || wv - wv !== 0) continue;
-      const py = yScale.transform(yv + bh / 2);
-      const ph = yScale.transform(yv - bh / 2) - py;
-      const px = xScale.transform(wv);
-      ctx.fillStyle = Array.isArray(opts.color) ? opts.color[i % opts.color.length] : opts.color;
-      ctx.fillRect(px0, py, px - px0, ph);
-      if (opts.edgecolor) {
-        ctx.strokeStyle = _cssColor(opts.edgecolor);
-        ctx.lineWidth = opts.linewidth || 1;
-        ctx.strokeRect(px0, py, px - px0, ph);
-      }
-    }
-    ctx.globalAlpha = 1;
-  }
-
-  _renderHist(ctx, trace, xScale, yScale) {
-    const { edges, counts } = this._hist(trace);
-    const alpha = trace.opts.alpha != null ? trace.opts.alpha : 0.8;
-    ctx.fillStyle = trace.opts.color;
-    ctx.globalAlpha = alpha;
-    const py0 = yScale.transform(yScale.log ? yScale.domain[0] : 0);
-    for (let i = 0; i < counts.length; i++) {
-      if (!(counts[i] > 0) && yScale.log) continue;
-      const px0 = xScale.transform(edges[i]);
-      const px1 = xScale.transform(edges[i + 1]);
-      const py = yScale.transform(counts[i]);
-      ctx.fillRect(px0, py, px1 - px0, py0 - py);
-      if (trace.opts.edgecolor) {
-        ctx.strokeStyle = _cssColor(trace.opts.edgecolor);
-        ctx.lineWidth = trace.opts.linewidth || 1;
-        ctx.strokeRect(px0, py, px1 - px0, py0 - py);
-      }
-    }
-    ctx.globalAlpha = 1;
-  }
-
   // An image is ONE RGBA buffer (built with the colour map's LUT, cached on the trace until
   // vmin / vmax / cmap / origin change), blitted into its extent: one drawImage live, one
   // 'image' op recorded. NaN and nodata cells are transparent.
@@ -1366,30 +1235,6 @@ export class Axes {
     }
   }
 
-  _renderHline(ctx, trace, xScale, yScale, plotX, plotW) {
-    const py = yScale.transform(trace.y);
-    if (py - py !== 0) return;
-    ctx.globalAlpha = trace.opts.alpha != null ? trace.opts.alpha : 1;
-    ctx.strokeStyle = trace.opts.color || this._theme.muted;
-    ctx.lineWidth = trace.opts.linewidth || 1;
-    ctx.setLineDash(dashArray(trace.opts.linestyle));
-    ctx.beginPath(); ctx.moveTo(plotX, py); ctx.lineTo(plotX + plotW, py); ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.globalAlpha = 1;
-  }
-
-  _renderVline(ctx, trace, xScale, yScale, plotY, plotH) {
-    const px = xScale.transform(trace.x);
-    if (px - px !== 0) return;
-    ctx.globalAlpha = trace.opts.alpha != null ? trace.opts.alpha : 1;
-    ctx.strokeStyle = trace.opts.color || this._theme.muted;
-    ctx.lineWidth = trace.opts.linewidth || 1;
-    ctx.setLineDash(dashArray(trace.opts.linestyle));
-    ctx.beginPath(); ctx.moveTo(px, plotY); ctx.lineTo(px, plotY + plotH); ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.globalAlpha = 1;
-  }
-
   // text(x, y, s): x, y in data coordinates, or with {transform: 'axes'} (matplotlib's
   // ax.transAxes) as fractions of the axes, 0–1 from the lower left
   _renderText(ctx, trace, xScale, yScale, rect) {
@@ -1418,7 +1263,8 @@ export class Axes {
       let color = t.opts.color;
       if (!color && t.cvals) color = getCmap(t.opts.cmap || 'viridis')(0.5);
       if (!color && t.colors) color = t.colors[0];
-      entries.push({ label: String(t.opts.label), color: color || th.cycle[0], type: t.type, marker: t.opts.marker, noLine: _noLine(t.opts.linestyle) });
+      const k = _KINDS[t.type], kl = k && k.legend ? k.legend(this, t) : null;
+      entries.push({ label: String(t.opts.label), color: (kl && kl.color) || color || th.cycle[0], type: t.type, marker: t.opts.marker, noLine: _noLine(t.opts.linestyle), patch: kl ? !!kl.patch : !!(k && k.patch), alpha: t.opts.alpha });
     }
     if (!entries.length) return;
 
@@ -1463,6 +1309,10 @@ export class Axes {
       if (e.type === 'scatter' || (e.type === 'line' && e.marker && e.noLine)) {
         ctx.beginPath(); _pathMarker(ctx, _markerShape(e.marker || 'o', 3), lx + padding + 7, ey);
         if (e.marker === '+' || e.marker === 'x') { ctx.strokeStyle = e.color; ctx.lineWidth = 1.5; ctx.stroke(); } else ctx.fill();
+      } else if (e.patch) {
+        ctx.globalAlpha = e.alpha != null ? e.alpha : 1;
+        ctx.fillRect(lx + padding + 2, ey - 4, 10, 8);
+        ctx.globalAlpha = 1;
       } else {
         ctx.fillRect(lx + padding, ey - 1, 14, 2);
       }
@@ -1505,31 +1355,15 @@ export class Axes {
         label: t.opts.label ?? null,
       };
     }
-    // bars and histogram bins, by column (the last drawn wins: it is on top)
+    // bars, histogram bins and other registered kinds that pick (the last drawn wins: on top)
     for (const ax of owners.slice().reverse()) {
       const v = ax.view;
       if (px < v.x || px > v.x + v.w || py < v.y || py > v.y + v.h) continue;
       for (let ti = ax._traces.length - 1; ti >= 0; ti--) {
-        const t = ax._traces[ti];
-        if (t.type === 'bar') {
-          for (let i = t.x.length - 1; i >= 0; i--) {
-            const bw = _isArrayLike(t.opts.width) ? t.opts.width[i] : (t.opts.width || 0.8);
-            const a = v.xScale.transform(t.x[i] - bw / 2), b = v.xScale.transform(t.x[i] + bw / 2);
-            if (px >= Math.min(a, b) && px <= Math.max(a, b)) return { axes: ax, trace: t, traceIndex: ti, kind: 'bar', index: i, x: t.x[i], y: t.heights[i], c: null, s: null, label: t.opts.label ?? null };
-          }
-        } else if (t.type === 'barh') {
-          for (let i = t.y.length - 1; i >= 0; i--) {
-            const bh = _isArrayLike(t.opts.height) ? t.opts.height[i] : (t.opts.height || 0.8);
-            const a = v.yScale.transform(t.y[i] - bh / 2), b = v.yScale.transform(t.y[i] + bh / 2);
-            if (py >= Math.min(a, b) && py <= Math.max(a, b)) return { axes: ax, trace: t, traceIndex: ti, kind: 'bar', index: i, x: t.widths[i], y: t.y[i], c: null, s: null, label: t.opts.label ?? null };
-          }
-        } else if (t.type === 'hist') {
-          const { edges, counts } = ax._hist(t);
-          const xv = v.xScale.inverse(px);
-          for (let i = 0; i < counts.length; i++) {
-            if (xv >= edges[i] && xv <= edges[i + 1]) return { axes: ax, trace: t, traceIndex: ti, kind: 'bin', index: i, x: (edges[i] + edges[i + 1]) / 2, y: counts[i], edges: [edges[i], edges[i + 1]], c: null, s: null, label: t.opts.label ?? null };
-          }
-        }
+        const t = ax._traces[ti], k = _KINDS[t.type];
+        if (!k || !k.pick) continue;
+        const hit = k.pick(ax, t, px, py);
+        if (hit) return { axes: ax, trace: t, traceIndex: ti, c: null, s: null, label: t.opts.label ?? null, ...hit };
       }
     }
     // image cells

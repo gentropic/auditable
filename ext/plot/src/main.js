@@ -13,6 +13,8 @@ export { replay, recordingContext } from './record.js';
 import './raster.js';
 import './pick.js';
 import './axes.js';
+import './bars.js';
+import './marks.js';
 import './figure.js';
 export { subplots, plot, scatter, imshow, hist, bar, cmap, pltAdder, rcParams, VERSION } from './api.js';
 export { themeFromCSS } from './style.js';
