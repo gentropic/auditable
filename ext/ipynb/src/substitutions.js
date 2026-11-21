@@ -48,6 +48,12 @@ export const SUBSTITUTIONS = {
   // DateFormatter` resolve through adder's dotted imports
   'matplotlib.ticker': 'plt.ticker',
   'matplotlib.dates': 'plt.dates',
+  // the top-level module (`import matplotlib as mpl`: mpl.rcParams, mpl.rc_context, mpl.colors,
+  // mpl.cm, mpl.style, mpl.patches, mpl.use) and its other submodules by prefix
+  // (`matplotlib.colors` → plt.matplotlib.colors); pyplot, ticker and dates keep their own rows
+  'matplotlib': 'plt.matplotlib',
+  // `from cycler import cycler` — what rcParams['axes.prop_cycle'] takes
+  'cycler': 'plt.cycler',
 };
 
 // Rewrite all import lines in a Python source string. Returns the
@@ -162,7 +168,7 @@ export function rewriteImportLine(line) {
 // prefix in the table) or null if no substitution applies. So:
 //   substitutePackage('matplotlib.pyplot')  → 'plot'    (exact key)
 //   substitutePackage('numpy.linalg')       → 'natra.linalg'  (numpy → natra, .linalg kept)
-//   substitutePackage('matplotlib')         → null     (no entry, no prefix matches)
+//   substitutePackage('matplotlib')         → 'plt.matplotlib'
 function substitutePackage(pkg) {
   if (pkg in SUBSTITUTIONS) return SUBSTITUTIONS[pkg];
   // Try progressively shorter prefixes.

@@ -15,11 +15,11 @@ import { _isArrayLike } from './data.js';
 import { getCmap, _cssColor } from './color.js';
 import { _noLine, dashArray } from './format.js';
 import { _markerShape, _pathMarker } from './raster.js';
-import { _font, _textW } from './style.js';
+import { _font, _textW, _sizePx } from './style.js';
+import { _rcv } from './rc.js';
 import { _warn } from './opts.js';
 
 const _LOCS = ['best', 'upper right', 'upper left', 'lower left', 'lower right', 'right', 'center left', 'center right', 'lower center', 'upper center', 'center'];
-const _SIZES = { 'xx-small': -4, 'x-small': -3, small: -2, medium: 0, large: 2, 'x-large': 4, 'xx-large': 6 };
 
 Axes.prototype.legend = function (a, b, c) {
   let handles = null, labels = null, opts = {};
@@ -27,6 +27,12 @@ Axes.prototype.legend = function (a, b, c) {
   else if (Array.isArray(a) && Array.isArray(b)) { handles = a; labels = b; if (_plainOpts(c)) opts = c; }
   else if (Array.isArray(a) || _isArrayLike(a)) { labels = Array.from(a, String); if (_plainOpts(b)) opts = b; }
   const o = { ...opts };
+  // rcParams legend.*, read as the legend is made, where the call didn't say
+  if (o.loc == null && _rcv('legend.loc') !== 'best') o.loc = _rcv('legend.loc');
+  if (o.frameon == null && _rcv('legend.frameon') === false) o.frameon = false;
+  if (o.framealpha == null && _rcv('legend.framealpha') !== 1) o.framealpha = _rcv('legend.framealpha');
+  if (o.fontsize == null && _rcv('legend.fontsize') != null) o.fontsize = _rcv('legend.fontsize');
+  if (o.title_fontsize == null && _rcv('legend.title_fontsize') != null) o.title_fontsize = _rcv('legend.title_fontsize');
   if (o.handles) { handles = o.handles; delete o.handles; }
   if (o.labels) { labels = Array.from(o.labels, String); delete o.labels; }
   const known = ['loc', 'bbox_to_anchor', 'ncol', 'ncols', 'title', 'fontsize', 'title_fontsize', 'frameon', 'framealpha', 'labelcolor', 'facecolor', 'edgecolor', 'markerscale', 'borderaxespad', '_kw'];
@@ -71,7 +77,9 @@ function _entries(ax) {
 // its size, laid out in ncols columns (entries fill down each column, matplotlib's order)
 function _box(ax, entries) {
   const th = ax._theme, lo = ax._legendOpts;
-  const fs = lo.fontsize == null ? (th.font_size || 11) - 1 : typeof lo.fontsize === 'number' ? lo.fontsize : (th.font_size || 11) + (_SIZES[lo.fontsize] ?? 0);
+  const base = th.font_size || 11;
+  const fs = _sizePx(lo.fontsize, base, base - 1);
+  const tfs = _sizePx(lo.title_fontsize, base, fs);
   const font = `${fs}px ${th.mono}`;
   const ncols = Math.max(1, (lo.ncols ?? lo.ncol ?? 1) | 0);
   const rows = Math.ceil(entries.length / ncols);
@@ -82,8 +90,8 @@ function _box(ax, entries) {
     for (let r = 0; r < rows; r++) { const e = entries[c * rows + r]; if (e) w = Math.max(w, _textW(font, e.label)); }
     colW.push(w + swatch);
   }
-  const titleFont = lo.title ? `bold ${fs}px ${th.mono}` : null;
-  const titleH = lo.title ? lineH : 0;
+  const titleFont = lo.title ? `bold ${tfs}px ${th.mono}` : null;
+  const titleH = lo.title ? tfs + 5 : 0;
   const w = Math.max(colW.reduce((s, x) => s + x, 0) + (ncols - 1) * 10, lo.title ? _textW(titleFont, lo.title) : 0) + pad * 2;
   const h = rows * lineH + titleH + pad * 2;
   return { w, h, rows, ncols, colW, lineH, pad, font, titleFont, titleH, swatch };
@@ -228,7 +236,7 @@ Axes.prototype._renderLegend = function (ctx, plotX, plotY, plotW, plotH) {
   const text = this._textColor || th.foreground;
   if (lo.title) {
     ctx.font = B.titleFont; ctx.fillStyle = text; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText(lo.title, lx + B.w / 2, ly + B.pad + B.lineH / 2);
+    ctx.fillText(lo.title, lx + B.w / 2, ly + B.pad + B.titleH / 2);
   }
   ctx.font = B.font;
   ctx.textAlign = 'left';

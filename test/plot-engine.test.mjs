@@ -289,10 +289,10 @@ test('an unknown option warns once, with the name it probably meant', () => {
 });
 
 test('the silent no-ops of 0.1.1 now say so; tight_layout stays quiet by design', () => {
-  plt.rc('font'); plt.subplots_adjust({ wspace: 0.3 });
+  plt.subplots_adjust({ wspace: 0.3 });
   plt.gca().set_zorder(3);
   plt.tight_layout();
-  assert.equal(warnings.length, 3, warnings.join('\n'));
+  assert.equal(warnings.length, 2, warnings.join('\n'));
   assert.ok(warnings.every((w) => /does nothing yet/.test(w)));
 });
 

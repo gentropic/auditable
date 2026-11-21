@@ -89,11 +89,12 @@ in first-appearance order; long labels rotate rather than collide.
 
 | call | |
 |---|---|
-| `set_title` · `set_xlabel` · `set_ylabel` | |
+| `set_title(s, {fontsize, fontweight, color, loc, pad})` · `set_xlabel(s, {…, loc, labelpad})` · `set_ylabel` | each over rcParams `axes.title*` / `axes.label*`; `loc` `'left'` / `'right'` (ylabel `'bottom'` / `'top'`) |
+| `ax.spines.top` · `ax.spines['right']` · `ax.spines[['top', 'right']]` · `.set_visible` `.set_color` `.set_linewidth` `.set_linestyle` | matplotlib's; on the frame (no `set_position`) |
 | `set_xlim(left, right)` · `set_xlim([l, r])` · `set_xlim({left: 0})` | a missing end keeps its value; `null` = from the data; left > right inverts |
 | `get_xlim()` · `invert_xaxis()` · `invert_yaxis()` · `xaxis_inverted()` | |
 | `set_xscale('linear' \| 'log')` · `set_yscale` | |
-| `set_xticks(ticks, [labels], {rotation})` · `set_xticklabels(labels, {rotation})` · `get_xticks()` · `tick_params({axis, labelrotation})` | `set_xticks([])`: none |
+| `set_xticks(ticks, [labels], {rotation})` · `set_xticklabels(labels, {rotation})` · `get_xticks()` · `tick_params({axis, which, length, width, direction, color, colors, labelsize, labelcolor, labelrotation})` | `set_xticks([])`: none |
 | `margins(m)` · `margins(x, y)` | 0.05 by default; bars and histograms stand on 0, images and contours fit tight |
 | `axis('off' \| 'on' \| 'equal' \| 'scaled' \| 'image' \| 'tight' \| [x0, x1, y0, y1])` · `set_aspect('equal')` | returns the limits |
 | `grid(true, {color, linestyle, linewidth, alpha, axis})` | at the ticks |
@@ -245,6 +246,46 @@ A theme is `@gcu/theme`'s keys (shared with `@gcu/condenser`'s 3D view): `backgr
 - The colour cycle is matplotlib's tab10. Text is the theme's monospace stack, which is what
   keeps a figure's layout identical live, recorded and replayed.
 
+## rcParams
+
+matplotlib's `plt.rcParams`, `plt.rc(group, **kw)` (aliases `lw` `ls` `c` `fc` `ec` `mew`),
+`plt.rcdefaults()`, `plt.rc_context({...})` (a `with` block in Python; in JS
+`rc_context({...}, fn)` runs `fn` inside, or `.enter()` / `.exit()`), `plt.style.context(name)`, and
+`cycler(color=[…])` for `axes.prop_cycle`. `rcParams.update()` takes a dict.
+
+A key is read **when a thing is made**, as in matplotlib: the theme keys by each new figure, the
+axes keys by each new axes, the line / hist / image / legend keys by each new one. Changing a key
+re-dresses nothing already drawn. A call's own option always wins (`ax.plot(…, {lw: 1})`). A
+named `style.use(…)` puts the theme keys back to that style's; `style.use({…})` sets rcParams.
+A bad value warns and leaves the key as it was; a key plot doesn't read is stored and warned
+about once. Defaults are plot's own (`figure.figsize` is `[4, 3]`); a theme key left unset reads
+as the theme's value.
+
+| keys | read by |
+|---|---|
+| `axes.facecolor` `figure.facecolor` `axes.edgecolor` `text.color` `grid.color` `axes.prop_cycle` `image.cmap` `font.size` `font.family` `font.monospace` `legend.facecolor` `legend.edgecolor` | each new figure's theme (over the style; an explicit `theme:` wins) |
+| `figure.figsize` (inches) `figure.dpi` `figure.titlesize` `figure.titleweight` | each new figure; the suptitle |
+| `axes.grid` `axes.grid.which` `axes.grid.axis` `grid.linestyle` `grid.linewidth` `grid.alpha` | each new axes (`ax.grid(True, {…})` keeps what it doesn't set) |
+| `axes.spines.left` `.right` `.top` `.bottom` `axes.linewidth` | each new axes' frame |
+| `axes.xmargin` `axes.ymargin` | each new axes |
+| `axes.titlesize` `axes.titleweight` `axes.titlelocation` `axes.titlepad` `axes.titlecolor` `axes.labelsize` `axes.labelweight` `axes.labelcolor` `axes.labelpad` | each new axes' title and axis labels (pads in px) |
+| `xtick.labelsize` `xtick.color` `xtick.labelcolor` `xtick.direction` `xtick.major.size` `xtick.minor.size` `xtick.major.width` `xtick.minor.width` `xtick.minor.visible` (and `ytick.*`) | each new axes' ticks |
+| `lines.linewidth` `lines.linestyle` `lines.marker` `lines.markersize` · `scatter.marker` · `hist.bins` · `errorbar.capsize` · `image.origin` `image.interpolation` | each new line, scatter, hist, errorbar, image |
+| `legend.loc` `legend.fontsize` `legend.title_fontsize` `legend.frameon` `legend.framealpha` | each new legend |
+| `axes.unicode_minus` · `gcu.strict` | every draw (U+2212 minus) · every warning (strict: throws) |
+
+Font sizes are px or matplotlib's names (`'small'`, `'large'`, `'x-large'`, …, relative to
+`font.size`). Chart text is always monospace (what keeps layout the same live, recorded and
+replayed): `font.monospace`, or a monospace `font.family`, picks the face; a proportional family
+warns. `axes.prop_cycle` cycles colours (other cycled properties warn).
+
+```python
+plt.rcParams.update({'axes.spines.top': False, 'axes.spines.right': False, 'axes.grid': True,
+                     'grid.alpha': 0.3, 'axes.titlesize': 'large', 'axes.titleweight': 'bold'})
+with plt.rc_context({'lines.linewidth': 3}):
+    fig, ax = plt.subplots()
+```
+
 ## pyplot (`plt`)
 
 `plt.subplots`, `plt.figure`, `plt.gca`, `plt.gcf`, `plt.xlabel`, `ylabel`, `title`, `xlim`,
@@ -253,8 +294,10 @@ A theme is `@gcu/theme`'s keys (shared with `@gcu/condenser`'s 3D view): `backgr
 `vlines`, `axhspan`, `axvspan`, `fill_between`, `fill_betweenx`, `step`, `errorbar`, `barh`,
 `bar_label`, `boxplot`, `contour`, `contourf`, `pcolormesh`, `fill`, `add_geometry` act on the
 current axes; `plt.show()`, `plt.flush_figures()`, `plt.savefig()`, `plt.close()`,
-`plt.style.use()`, `plt.rcParams`, `plt.cm` (with `plt.cm.ScalarMappable`), `plt.colors`,
-`plt.Polygon`, `plt.Rectangle`, `plt.Circle`.
+`plt.style.use()`, `plt.style.context()`, `plt.rcParams`, `plt.rc`, `plt.rcdefaults`, `plt.rc_context`,
+`plt.cycler`, `plt.cm` (with `plt.cm.ScalarMappable`), `plt.colors`, `plt.Polygon`, `plt.Rectangle`,
+`plt.Circle`. An .ipynb's `import matplotlib as mpl` (`mpl.rcParams`, `mpl.rc_context`, `mpl.colors`,
+`mpl.cm`, `mpl.patches`, `mpl.use`) and `from cycler import cycler` resolve to the same.
 
 `plt.plot`, `plt.scatter`, `plt.bar`, `plt.hist`, `plt.imshow` draw on the current axes too,
 opening a figure when there is none, and return what the `ax.` call returns:
@@ -466,6 +509,8 @@ ax.set_title('a date axis, percent ticks, minor grid');
 | fonts | DejaVu Sans | the theme's monospace stack |
 | contourf | antialiased off | bands overlap bottom-up, so no seams either way |
 | `tight_layout()` | rearranges | layout is always measured; the call does nothing, by design |
+| rcParams defaults | `figure.figsize` 6.4 × 4.8, `font.size` 10, white | plot's own: 4 × 3, the theme's size and colours; ~70 keys read, the rest stored with a warning |
+| `axes.titlepad` · `axes.labelpad` | points | px |
 
 ## Unsupported
 
@@ -496,7 +541,6 @@ What plot knows of but doesn't do yet; each one warns when used, with what to do
 | `subplots(…, {squeeze})` | not supported yet |
 | `subplots(…, {constrained_layout})` | layout is always tight |
 | `subplots(…, {layout})` | layout is always tight |
-| `rc()` | plt.rc is not supported yet; use plt.style.use('default' \| 'dark_background') |
 | `set_zorder()` | axes are drawn in creation order |
 | `subplots_adjust()` | not supported yet; use subplots(..., {gap}) for the space between axes |
 <!-- unsupported:end -->

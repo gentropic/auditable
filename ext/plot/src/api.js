@@ -9,6 +9,7 @@ import { ScalarMappable } from './axes.js';
 import { Polygon, Rectangle, Circle } from './geo.js';
 import { ticker, dates } from './ticker.js';
 import { rcParams, _noop } from './opts.js';
+import { rc, rcdefaults, rc_context, cycler, _context, _rcDefaults } from './rc.js';
 
 // one version string, read by the extension registration below (package.json carries the same)
 export const VERSION = '0.2.0';
@@ -103,12 +104,10 @@ export function matshow(data, nx, ny, opts) {
   return ax.imshow(data, nx, ny, opts);
 }
 
-// plt.rc(group, **kwargs) — `plt.rc('font', size=14)` — isn't honoured yet; it warns once
-// (and a notebook carries on to its real plotting calls).
-export function rc(_group, _opts) { _noop('rc'); }
-// plt.rcParams — a dict-like bag (opts.js). Only 'gcu.strict' is read today: true turns every
-// "nothing is silently ignored" warning into an error.
-export { rcParams };
+// plt.rcParams (matplotlib's: the keys plot reads are in rc.js, and API.md), plt.rc(group,
+// **kw), rcdefaults(), rc_context({…}) (a with-block, or a function to run inside), cycler.
+// rcParams['gcu.strict'] = True turns every "nothing is silently ignored" warning into an error.
+export { rcParams, rc, rcdefaults, rc_context, cycler };
 // plt.style.use(name) — switches the shared palette. Auditable-native
 // default is dark; `plt.style.use('default')` (or 'classic' / a few
 // common matplotlib-style names) flips to a light palette. Notebooks
@@ -116,6 +115,9 @@ export { rcParams };
 // automatically after `import matplotlib.pyplot as plt`.
 export const style = {
   use(name) { setStyle(name); },
+  // style.context(name | {rcParams}) — a with-block (or a function to run) in that style; the
+  // style and rcParams are put back after
+  context(name, fn) { return _context(() => setStyle(name), fn); },
   available: ['default', 'classic', 'matplotlib', 'dark_background', 'seaborn', 'seaborn-whitegrid', 'ggplot', 'bmh', 'dark', 'light', 'paper', 'auto'],
 };
 // plt.figure(...) — a new figure, and the current one (matplotlib's figure() takes
@@ -341,7 +343,19 @@ export const pltAdder = {
   boxplot, contour, contourf, pcolormesh, fill, add_geometry, Polygon, Rectangle, Circle, ScalarMappable,
   violinplot, hexbin, hist2d, stackplot, minorticks_on, minorticks_off, tick_params, ticker, dates,
   barh, bar_label, errorbar, fill_between, fill_betweenx, step, axhspan, axvspan, annotate,
+  rcdefaults, rc_context, cycler,
 };
+// `import matplotlib as mpl` (an .ipynb's, through @gcu/ipynb): matplotlib's top-level names
+// that plot has — rcParams and friends, the style, colour maps, colours, ticker, dates.
+// mpl.use(backend) is a no-op (the notebook is the backend).
+pltAdder.matplotlib = {
+  rcParams, rc, rcdefaults, rc_context, style, cm, colors, ticker, dates, cycler,
+  patches: { Rectangle, Polygon, Circle },
+  use() {}, get_backend: () => 'module://gcu.plot', __version__: '3.9.0',
+  rcParamsDefault: null,
+};
+Object.defineProperty(pltAdder.matplotlib, 'rcParamsDefault', { get: () => _rcDefaults(), enumerable: true });
+pltAdder.cycler = cycler;
 
 // The notebook's cells. A Python (adder) cell is matplotlib's inline backend: it starts
 // with no current figure, and when it ends its figures not yet shown land in its output.

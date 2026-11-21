@@ -109,9 +109,11 @@ export class Axes {
   text(x: number, y: number, s: string, opts?: { transform?: 'axes' | 'data'; ha?: string; va?: string; fontsize?: number | string; rotation?: number | 'vertical'; fontweight?: 'bold' | 'normal'; color?: Color; alpha?: number; zorder?: number }): this;
   annotate(text: string, xy: [number, number], opts?: { xytext?: [number, number]; xycoords?: 'data' | 'axes fraction'; textcoords?: 'data' | 'axes fraction' | 'offset points' | 'offset pixels'; arrowprops?: { arrowstyle?: string; color?: Color; lw?: number; shrink?: number }; ha?: string; va?: string; fontsize?: number; color?: Color }): Result;
 
-  set_title(text: string, opts?: object): this;
-  set_xlabel(text: string, opts?: object): this;
-  set_ylabel(text: string, opts?: object): this;
+  set_title(text: string, opts?: TextLook & { loc?: 'left' | 'center' | 'right' }): this;
+  set_xlabel(text: string, opts?: TextLook & { loc?: 'left' | 'center' | 'right'; labelpad?: number }): this;
+  set_ylabel(text: string, opts?: TextLook & { loc?: 'bottom' | 'center' | 'top'; labelpad?: number }): this;
+  /** matplotlib's spines: ax.spines.top · ax.spines['right'] · ax.spines[['top', 'right']] (a group) */
+  readonly spines: Spines;
   set_xlim(left?: number | null | [number, number] | { left?: number; right?: number }, right?: number | null): this;
   set_ylim(bottom?: number | null | [number, number] | { bottom?: number; top?: number }, top?: number | null): this;
   get_xlim(): [number, number];
@@ -160,7 +162,7 @@ export class Axes {
   minorticks_off(): this;
   xaxis_date(tz?: string): this;
   yaxis_date(tz?: string): this;
-  tick_params(opts: { axis?: 'x' | 'y' | 'both'; which?: 'major' | 'minor' | 'both'; length?: number; width?: number; direction?: 'out' | 'in' | 'inout'; color?: Color; labelrotation?: number }): this;
+  tick_params(opts: { axis?: 'x' | 'y' | 'both'; which?: 'major' | 'minor' | 'both'; length?: number; width?: number; direction?: 'out' | 'in' | 'inout'; color?: Color; colors?: Color; labelsize?: FontSize; labelcolor?: Color; labelrotation?: number }): this;
   set_facecolor(c: Color | 'none'): this;
   get_facecolor(): string;
   /** the limits another renderer's camera shows; also condenser's view rect */
@@ -265,7 +267,39 @@ export function getCmap(name: Cmap): (t: number) => string;
 export const cmap: typeof getCmap;
 export function replay(ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D, list: DrawList | unknown[][]): void;
 export function recordingContext(width: number, height: number): CanvasRenderingContext2D & { ops: unknown[][] };
-export const rcParams: Record<string, unknown> & { update(o: Record<string, unknown>): void };
+/** a font size: px, or one of matplotlib's names (relative to font.size) */
+export type FontSize = number | 'xx-small' | 'x-small' | 'small' | 'medium' | 'large' | 'x-large' | 'xx-large' | 'larger' | 'smaller';
+/** a title's or axis label's look (each overrides rcParams axes.title* / axes.label*) */
+export interface TextLook { fontsize?: FontSize; fontweight?: 'normal' | 'bold' | number; color?: Color; pad?: number }
+export interface Spine {
+  set_visible(b: boolean): this; get_visible(): boolean;
+  set_color(c: Color): this; set_edgecolor(c: Color): this; get_edgecolor(): string;
+  set_linewidth(w: number): this; get_linewidth(): number; set_linestyle(ls: string): this;
+}
+export interface SpineGroup { set_visible(b: boolean): SpineGroup; set_color(c: Color): SpineGroup; set_linewidth(w: number): SpineGroup; set_linestyle(ls: string): SpineGroup }
+export interface Spines {
+  readonly left: Spine; readonly right: Spine; readonly top: Spine; readonly bottom: Spine;
+  [group: string]: Spine | SpineGroup | unknown;
+  keys(): string[]; values(): Spine[]; items(): [string, Spine][];
+}
+/** matplotlib's rcParams — the keys plot reads are listed in API.md ("rcParams"); a key is read
+ *  when a figure, axes or artist is made. Setting a bad value warns and leaves the key. */
+export const rcParams: Record<string, unknown> & {
+  update(o: Record<string, unknown> | Map<string, unknown>): void;
+  keys(): string[]; get(k: string, dflt?: unknown): unknown; copy(): Record<string, unknown>; find_all(pattern: string): Record<string, unknown>;
+};
+/** plt.rc('lines', {linewidth: 2}) — sets rcParams['<group>.<name>'] (aliases lw, ls, c, fc, ec, mew) */
+export function rc(group: string | string[], kwargs: Record<string, unknown>): void;
+/** every rcParams key back to plot's defaults, and the style back to the page's default */
+export function rcdefaults(): void;
+export interface RcContext { enter(): RcContext; exit(): false; run<T>(fn: () => T): T }
+/** rcParams for a block: rc_context({...}, fn) runs fn inside (a Promise is waited for), or
+ *  rc_context({...}) → a context (enter / exit; Python's with-statement) */
+export function rc_context<T>(rc: Record<string, unknown> | Map<string, unknown>, fn: () => T): T;
+export function rc_context(rc?: Record<string, unknown> | Map<string, unknown>): RcContext;
+/** what rcParams['axes.prop_cycle'] takes: cycler({color: [...]}) · cycler('color', [...]) */
+export function cycler(props: Record<string, unknown[]>): { color: Color[] | null; by_key(): Record<string, unknown[]> };
+export function cycler(name: string, values: unknown[]): { color: Color[] | null; by_key(): Record<string, unknown[]> };
 export const VERSION: string;
 
 /** pyplot: the stateful interface (also what adder's `import matplotlib.pyplot as plt` gets). */
@@ -307,7 +341,14 @@ export function legend(opts?: object): void;
 export function grid(on?: boolean | object, opts?: object): void;
 export function savefig(name?: string, opts?: { format?: 'png' | 'svg' }): unknown;
 export function colorbar(mappable?: Result | ScalarMappable | object, opts?: object): Result;
-export const style: { use(name: string): void; available: string[] };
+export const style: {
+  /** a style name ('default', 'dark_background', 'auto', …) or a dict of rcParams */
+  use(name: string | string[] | Record<string, unknown>): void;
+  /** a style for a block: context(name, fn) runs fn; context(name) → a context (Python's with) */
+  context<T>(name: string | Record<string, unknown>, fn: () => T): T;
+  context(name: string | Record<string, unknown>): RcContext;
+  available: string[];
+};
 export const cm: Record<string, (t: number) => string> & { get_cmap: typeof getCmap; ScalarMappable: typeof ScalarMappable };
 export function shown(): Figure[];
 export function saved(): { name: string; format: 'png' | 'svg'; figure: Figure }[];

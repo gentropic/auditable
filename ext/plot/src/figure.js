@@ -13,7 +13,8 @@ import './geo.js';
 import './dist.js';
 import './positional.js';
 import './axis.js';
-import { _resolve, _font } from './style.js';
+import { _resolve, _font, _sizePx, _isBold, _fontAt } from './style.js';
+import { _rcv } from './rc.js';
 import { _checkOpts, _noop } from './opts.js';
 import { recordingContext, replay } from './record.js';
 
@@ -46,8 +47,8 @@ export class Figure {
     // Heuristic: if both dims are ≤ 50, assume inches and scale by
     // dpi. If either is > 50, assume already-pixels (back-compat with
     // JS-side callers that pass pixel values directly).
-    const rawSize = o.figsize || [4, 3];
-    const dpi = o.dpi || 100;
+    const rawSize = o.figsize || _rcv('figure.figsize') || [4, 3];   // rcParams figure.figsize (inches) / figure.dpi
+    const dpi = o.dpi || _rcv('figure.dpi') || 100;
     // points → pixels (marker sizes are in points, as matplotlib's: 1 pt = dpi / 72 px)
     this.dpi = dpi;
     const inchesShape = rawSize[0] <= 50 && rawSize[1] <= 50;
@@ -87,6 +88,12 @@ export class Figure {
     this._share('y', o.sharey);
   }
 
+  // the suptitle's font: its own fontsize / fontweight, then rcParams figure.title*, else three px over font.size
+  _suptitleFont() {
+    const th = this._theme, fs = th.font_size || 11, o = (this._suptitle && this._suptitle.opts) || {};
+    const px = _sizePx(o.fontsize, fs, _sizePx(_rcv('figure.titlesize'), fs, fs + 3));
+    return _fontAt(th, px, _isBold(o.fontweight ?? _rcv('figure.titleweight')));
+  }
   // the figure's face: facecolor if given, else the theme's figure surface
   get facecolor() { return this._facecolor || this._theme.figure; }
   set facecolor(c) { this._facecolor = c; }
@@ -182,11 +189,11 @@ export class Figure {
     }
 
     // suptitle space
-    const supH = this._suptitle ? 24 : 0;
+    const supH = this._suptitle ? +/([\d.]+)px/.exec(this._suptitleFont())[1] + 10 : 0;   // 24 at the default size
 
     if (this._suptitle) {
       ctx.fillStyle = this._theme.foreground;
-      ctx.font = _font(this._theme, 3);
+      ctx.font = this._suptitleFont();
       ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
       ctx.fillText(this._suptitle.text, this.width / 2, 4);

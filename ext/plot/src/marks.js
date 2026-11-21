@@ -5,6 +5,7 @@
 import { Axes, _KINDS, _hooks, _plainOpts, _lenErr, _result } from './axes.js';
 import { _col, _isArrayLike, _traceRange } from './data.js';
 import { _cssColor } from './color.js';
+import { _rcv } from './rc.js';
 import { parseFormat, dashArray } from './format.js';
 import { _warn } from './opts.js';
 import { _font } from './style.js';
@@ -144,7 +145,7 @@ Axes.prototype.errorbar = function (x, y, opts) {
   if (Y.length !== n) throw _lenErr('errorbar', 'x', n, 'y', Y.length);
   const yerr = _errCols(o0.yerr, n, 'yerr'), xerr = _errCols(o0.xerr, n, 'xerr');
   const fmt = o0.fmt == null ? '' : o0.fmt;
-  const errOpts = { ecolor: o0.ecolor, elinewidth: o0.elinewidth, capsize: o0.capsize ?? 0, capthick: o0.capthick, barsabove: o0.barsabove, alpha: o0.alpha };
+  const errOpts = { ecolor: o0.ecolor, elinewidth: o0.elinewidth, capsize: o0.capsize ?? _rcv('errorbar.capsize') ?? 0, capthick: o0.capthick, barsabove: o0.barsabove, alpha: o0.alpha };
   for (const k of ['yerr', 'xerr', 'fmt', 'ecolor', 'elinewidth', 'capsize', 'capthick', 'barsabove', 'errorevery', 'lolims', 'uplims', 'xlolims', 'xuplims']) delete o0[k];
   // the data line (or markers): an ordinary plot trace, so it legends and picks as one;
   // fmt 'none' draws no line, only the bars

@@ -12,6 +12,7 @@ import { pyFormat, pctFormat } from './pyfmt.js';
 import { _col, _isArrayLike, _traceRange } from './data.js';
 import { _cssColor } from './color.js';
 import { _warn } from './opts.js';
+import { _rcv } from './rc.js';
 import { _font } from './style.js';
 import { dashArray } from './format.js';
 
@@ -232,7 +233,7 @@ Axes.prototype.hist = function (data, opts) {
   const stacked = !!o.stacked || histtype === 'barstacked';
   const horiz = o.orientation === 'horizontal';
   // one set of bins for every dataset
-  let lo, hi, bins = o.bins == null ? 10 : o.bins;
+  let lo, hi, bins = o.bins == null ? _rcv('hist.bins') ?? 10 : o.bins;   // rcParams['hist.bins']
   if (_isArrayLike(bins) && typeof bins !== 'string') bins = _col(bins);
   else {
     if (o.range) { lo = +o.range[0]; hi = +o.range[1]; }

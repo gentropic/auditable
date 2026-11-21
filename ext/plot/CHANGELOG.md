@@ -55,6 +55,22 @@ E / N in a plan, along / RL in a section.)
 (`OffscreenCanvas` sized by an undefined device-pixel ratio) — found by the interaction test page
 on a 111,727-point brush; the browser smoke now covers it.
 
+**rcParams, for real.** `plt.rcParams` was a bag only `gcu.strict` read and `plt.rc` a no-op; now
+~70 of matplotlib's keys are read, each at matplotlib's moment (when a figure, axes or artist is
+made): the theme colours / font / cycle, figure size and dpi, grid, spines, margins, title /
+label / tick looks, line, marker, hist, errorbar, image and legend defaults. `plt.rc(group,
+**kw)` with matplotlib's aliases, `rcdefaults()`, `rc_context()` (a `with` block, or a function),
+`style.context()`, `style.use({…})`, `cycler()`. Values are checked (a bad one warns and leaves
+the key); unknown keys warn once. `rcParams.update()` takes a Python dict — before, adder's
+dict (a Map) was silently ignored. An .ipynb's `import matplotlib as mpl` and `from cycler import
+cycler` now resolve.
+- `ax.spines` (matplotlib's: `ax.spines[['top', 'right']].set_visible(False)`, colours, widths).
+- `set_title` / `set_xlabel` / `set_ylabel` options were accepted and ignored — `fontsize`,
+  `fontweight`, `color`, `loc`, `pad` now take effect (and the layout makes room); so do
+  `legend(title_fontsize)` and `suptitle(fontsize, fontweight)`.
+- `tick_params` adds `labelsize`, `labelcolor`, `colors`; each axis has its own tick-label font.
+- Named font sizes are matplotlib's factors of `font.size` (they were fixed px offsets in legends).
+
 **From the model eval** (the mm seat's: 120 pages from API.md alone, Sonnet-class 56/60,
 Haiku-class 49/60, zero console warnings; every plot-side failure was one of two bugs):
 - `subplots` gives every axes array its own `.flat` — a one-row or one-column grid too, where

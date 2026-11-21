@@ -82,16 +82,43 @@ const _UNSUPPORTED = {
 
 // The calls that do nothing yet, by name → what to do instead
 const _NOOP_CALLS = {
-  rc: "plt.rc is not supported yet; use plt.style.use('default' | 'dark_background')",
   set_zorder: 'axes are drawn in creation order',
   subplots_adjust: 'not supported yet; use subplots(..., {gap}) for the space between axes',
 };
 
-// plt.rcParams lives here so the strict flag can be read without an import cycle
-const rcParams = { 'axes.unicode_minus': true };   // matplotlib's: tick labels use U+2212
-Object.defineProperty(rcParams, 'update', {
-  value(obj) { if (obj && typeof obj === 'object') for (const k of Object.keys(obj)) if (k !== '_kw') rcParams[k] = obj[k]; },
-  enumerable: false,
+// plt.rcParams lives here so the strict flag can be read without an import cycle. It is a
+// Proxy over a plain store: rc.js gives it matplotlib's keys, defaults and checks through
+// _rcHooks (set: validate and store; get: a theme-backed key left unset reads the theme's).
+const _rcStore = { 'axes.unicode_minus': true };   // matplotlib's: tick labels use U+2212
+const _rcHooks = { set: null, get: null };
+// the entries of a JS object, a Python dict (adder's PyDict is a Map) or kwargs
+function _pairs(obj) {
+  if (obj instanceof Map) return Array.from(obj.entries());
+  if (obj && typeof obj === 'object') return Object.entries(obj).filter(([k]) => k !== '_kw');
+  return [];
+}
+const _rcMethod = (name, fn) => Object.defineProperty(_rcStore, name, { value: fn, enumerable: false, writable: true });
+_rcMethod('update', (obj) => { for (const [k, v] of _pairs(obj)) rcParams[k] = v; });
+_rcMethod('keys', () => Object.keys(_rcStore));
+_rcMethod('values', () => Object.keys(_rcStore).map((k) => rcParams[k]));
+_rcMethod('items', () => Object.keys(_rcStore).map((k) => [k, rcParams[k]]));
+_rcMethod('get', (k, d = null) => (k in _rcStore ? rcParams[k] : d));
+_rcMethod('copy', () => Object.fromEntries(Object.keys(_rcStore).map((k) => [k, rcParams[k]])));
+_rcMethod('find_all', (pattern) => { const re = new RegExp(pattern); return Object.fromEntries(Object.keys(_rcStore).filter((k) => re.test(k)).map((k) => [k, rcParams[k]])); });
+_rcMethod('__getitem__', (k) => rcParams[k]);
+_rcMethod('__setitem__', (k, v) => { rcParams[k] = v; });
+_rcMethod('__contains__', (k) => k in _rcStore);
+_rcMethod('__len__', () => Object.keys(_rcStore).length);
+_rcMethod('__iter__', () => Object.keys(_rcStore)[Symbol.iterator]());
+const rcParams = new Proxy(_rcStore, {
+  get(t, k) {
+    if (typeof k !== 'string' || typeof t[k] === 'function') return t[k];
+    return _rcHooks.get ? _rcHooks.get(k, t[k]) : t[k];
+  },
+  set(t, k, v) {
+    if (typeof k === 'string' && _rcHooks.set) _rcHooks.set(k, v); else t[k] = v;
+    return true;
+  },
 });
 
 const _warned = new Set();
@@ -527,11 +554,49 @@ function _resolve(t, strict) {
   return resolveTheme(o, (m) => _warn(`theme.${m}`, `plot: ${m}`, strict));
 }
 
-// the default theme as it stands now, for a figure being made
-function _snapshotStyle() {
-  if (_style._auto) return _autoTheme();
-  return { ..._style, cycle: _style.cycle.slice() };
+// the rcParams keys that are theme keys: set, they dress every figure made after (over the
+// style — matplotlib's order: a style sets rcParams, a later rcParams assignment wins), and a
+// style.use() puts them back to the style's. Unset (null), the theme's value stands.
+const THEME_RC = {
+  'axes.facecolor': 'background', 'figure.facecolor': 'figure', 'axes.edgecolor': 'frame',
+  'text.color': 'foreground', 'grid.color': 'grid', 'axes.prop_cycle': 'cycle', 'image.cmap': 'ramp',
+  'font.size': 'font_size', 'font.monospace': 'mono', 'legend.facecolor': 'panel', 'legend.edgecolor': 'panel_border',
+};
+function _rcOverlay(th) {
+  for (const [k, tk] of Object.entries(THEME_RC)) {
+    const v = _rcStore[k];
+    if (v == null) continue;
+    if (tk === 'cycle') th.cycle = v.slice();
+    else if (tk === 'mono') th.mono = _familyStack(v, th.mono);
+    else th[tk] = v;
+  }
+  // font.family: a monospace face goes at the front of the mono stack (the face plot draws in);
+  // a proportional family dresses the sans stack (condenser's chrome) only
+  const fam = _rcStore['font.family'];
+  if (fam != null) {
+    const names = [].concat(fam).map(String);
+    if (names.some(_isMonoName)) th.mono = _familyStack(names.filter((n) => n !== 'monospace'), th.mono);
+    else th.font = _familyStack(names, th.font);
+  }
+  return th;
 }
+const _GENERIC = ['monospace', 'sans-serif', 'serif', 'cursive', 'fantasy', 'system-ui'];
+const _isMonoName = (n) => /mono|courier|consolas|menlo|code|typewriter|fixed/i.test(n);
+// font names in front of a CSS stack (quoted unless a generic family)
+function _familyStack(names, stack) {
+  const front = [].concat(names).map(String).filter(Boolean).map((n) => (_GENERIC.includes(n) || /^['"]/.test(n) ? n : `'${n}'`));
+  return front.length ? `${front.join(', ')}, ${stack}` : stack;
+}
+
+// the default theme as it stands now, for a figure being made (rcParams over the style)
+function _snapshotStyle() {
+  if (_style._auto) return _rcOverlay(_autoTheme());
+  return _rcOverlay({ ..._style, cycle: _style.cycle.slice() });
+}
+
+// the style as it stands (rc_context / style.context put it back after)
+function _styleSnapshot() { return { ..._style, cycle: _style.cycle.slice() }; }
+function _styleRestore(s) { for (const k of Object.keys(_style)) delete _style[k]; Object.assign(_style, s); }
 
 // matplotlib's style.use: a name or a list of names. The light matplotlib styles are the
 // white `paper` theme, 'dark_background' is `dark`, and dark / light / paper are taken as
@@ -539,6 +604,11 @@ function _snapshotStyle() {
 function setStyle(name) {
   const names = Array.isArray(name) ? name : [name];
   for (const n of names) {
+    // a dict of rcParams (matplotlib's style.use({...})): applied as rcParams
+    if (n instanceof Map || (n && typeof n === 'object')) { rcParams.update(n); continue; }
+    // a named style puts the theme-backed rcParams back to it
+    for (const k of Object.keys(THEME_RC)) _rcStore[k] = null;
+    _rcStore['font.family'] = null;
     const key = String(n || '').toLowerCase();
     if (key === 'auto') {
       // follow the page: each new figure reads it (the dark values stay for no-DOM hosts)
@@ -560,7 +630,22 @@ _style._name = 'dark';
 // chart; auditable's notebooks in either mode). Off a page (a worker, Node) it stays dark, so a
 // draw list made there is the same in every host.
 if (typeof document !== 'undefined' && typeof getComputedStyle === 'function') { _style._name = 'auto'; _style._auto = true; }
+// the style a fresh page starts with (rcdefaults() goes back to it)
+const _DEFAULT_STYLE = _style._name;
 
+
+// matplotlib's named font sizes, as factors of font.size
+const _SIZE_FACTORS = { 'xx-small': 0.579, 'x-small': 0.694, small: 0.833, medium: 1, large: 1.2, 'x-large': 1.44, 'xx-large': 1.728, larger: 1.2, smaller: 0.833 };
+// a fontsize (px, a name, or null = dflt) → px
+function _sizePx(v, fs, dflt) {
+  if (v == null) return dflt;
+  if (typeof v === 'number') return v > 0 ? v : dflt;
+  if (_SIZE_FACTORS[v]) return Math.round(fs * _SIZE_FACTORS[v] * 10) / 10;
+  const n = +v;
+  return n > 0 ? n : dflt;
+}
+const _isBold = (w) => ['bold', 'heavy', 'black', 'semibold', 'demibold', 'demi', 'extra bold', 'ultrabold'].includes(w) || +w >= 600;
+const _fontAt = (th, px, bold = false) => `${bold ? 'bold ' : ''}${px}px ${th.mono}`;
 
 // fonts: the theme's monospace stack at a size relative to font_size
 const _font = (th, d = 0, bold = false) => `${bold ? 'bold ' : ''}${(th.font_size || 11) + d}px ${th.mono}`;
@@ -897,7 +982,7 @@ function _tickSpec(ax, axis, scale, len, ctx, font, fontPx) {
     if (tk.minorF) minorLabels = formatted(minor, tk.minorF);
   }
   const params = ax._tickParams ? ax._tickParams[axis] || null : null;
-  return { values, labels, rot, extent, maxW, widths, minor, minorLabels, params };
+  return { values, labels, rot, extent, maxW, widths, minor, minorLabels, params, font };
 }
 
 // labels for date ticks a locator placed: the format their spacing reads in
@@ -912,10 +997,10 @@ function _dateLabels(values) {
 // tick_params: { major: {length, direction, width, color}, minor: {…} } per axis; length in px
 // (4 major, 2 minor), direction 'out' (default) | 'in' | 'inout'
 function _drawTicks(ctx, spec, scale, side, plot, color, tickColor, font) {
-  ctx.font = font;
-  ctx.fillStyle = color;
+  ctx.font = spec.font || font;                    // the axis's own (tick_params labelsize / rcParams)
   const { values, labels, rot } = spec;
   const P = spec.params || {}, maj = P.major || {}, mnr = P.minor || {};
+  ctx.fillStyle = maj.labelcolor || color;
   // one tick mark at p: out of the frame, into it, or across it
   const mark = (p, len, dir) => {
     const a = dir === 'in' ? 0 : len, b = dir === 'out' || !dir ? 0 : len;   // outward, inward
@@ -2539,6 +2624,263 @@ function _blit(ctx, x, y, w, h, cols, rows, rgba, holder, smooth = false) {
   return true;
 }
 
+// -- rc.js --
+
+// matplotlib's rcParams: the keys plot reads, their defaults and their checks, and the calls
+// around them — plt.rc(group, **kw), rcdefaults(), rc_context(rc) (a with-block, or a function
+// to run), cycler(color=[…]).
+//
+// When a key is read is matplotlib's rule: at creation. The theme keys (THEME_RC in style.js)
+// dress each figure as it is made; the axes keys (grid, spines, margins, title and label looks,
+// ticks) are read by each new axes; the line, marker, hist, image and legend keys by each new
+// line, scatter, hist, image or legend. Changing a key re-dresses nothing already made.
+//
+// Defaults are plot's own, and say so: rcParams['figure.figsize'] is [4, 3] (inches at dpi
+// 100), not matplotlib's [6.4, 4.8]. A theme key left unset (null in the store) reads as the
+// theme's value. A key plot doesn't read is stored and warned about once; a value a key can't
+// take warns and leaves the key as it was (matplotlib raises; plot's rule is to warn).
+
+
+
+
+
+const SIZES = ['xx-small', 'x-small', 'small', 'medium', 'large', 'x-large', 'xx-large', 'larger', 'smaller'];
+const LINESTYLES = ['-', '--', '-.', ':', 'solid', 'dashed', 'dashdot', 'dotted', 'None', 'none', ''];
+const BIN_RULES = ['auto', 'fd', 'sturges', 'sqrt', 'rice', 'scott', 'doane', 'stone'];
+const WEIGHTS = ['normal', 'bold', 'light', 'medium', 'semibold', 'heavy', 'ultralight', 'black', 'regular', 'book', 'demibold', 'demi', 'roman', 'extra bold', 'ultrabold'];
+
+// key → [default, check]. check: a kind name or a list of allowed strings.
+// null default = "plot's own": for a theme key, the theme's value; for a size, plot's size.
+const RC = {
+  'gcu.strict': [false, 'bool'],
+  'axes.unicode_minus': [true, 'bool'],
+  // the theme (read as each figure is made)
+  'axes.facecolor': [null, 'color'], 'figure.facecolor': [null, 'color'], 'axes.edgecolor': [null, 'color'],
+  'text.color': [null, 'color'], 'grid.color': [null, 'color'], 'axes.prop_cycle': [null, 'cycle'],
+  'image.cmap': [null, 'cmap'], 'font.size': [null, 'pos'], 'font.family': [null, 'family'], 'font.monospace': [null, 'family'],
+  'legend.facecolor': [null, 'color'], 'legend.edgecolor': [null, 'color'],
+  // the figure
+  'figure.figsize': [[4, 3], 'pair'], 'figure.dpi': [100, 'pos'],
+  'figure.titlesize': [null, 'size'], 'figure.titleweight': ['normal', 'weight'],
+  // each axes, as it is made
+  'axes.grid': [false, 'bool'], 'axes.grid.which': ['major', ['major', 'minor', 'both']], 'axes.grid.axis': ['both', ['both', 'x', 'y']],
+  'grid.linestyle': ['-', 'linestyle'], 'grid.linewidth': [0.5, 'num'], 'grid.alpha': [0.8, 'num'],
+  'axes.spines.left': [true, 'bool'], 'axes.spines.right': [true, 'bool'], 'axes.spines.top': [true, 'bool'], 'axes.spines.bottom': [true, 'bool'],
+  'axes.linewidth': [1, 'num'],
+  'axes.xmargin': [0.05, 'num'], 'axes.ymargin': [0.05, 'num'],
+  'axes.titlesize': [null, 'size'], 'axes.titleweight': ['normal', 'weight'], 'axes.titlelocation': ['center', ['left', 'center', 'right']],
+  'axes.titlepad': [6, 'num'], 'axes.titlecolor': ['auto', 'color'],
+  'axes.labelsize': [null, 'size'], 'axes.labelweight': ['normal', 'weight'], 'axes.labelcolor': [null, 'color'], 'axes.labelpad': [6, 'num'],
+  'xtick.labelsize': [null, 'size'], 'ytick.labelsize': [null, 'size'],
+  'xtick.color': [null, 'color'], 'ytick.color': [null, 'color'], 'xtick.labelcolor': ['inherit', 'color'], 'ytick.labelcolor': ['inherit', 'color'],
+  'xtick.direction': ['out', ['in', 'out', 'inout']], 'ytick.direction': ['out', ['in', 'out', 'inout']],
+  'xtick.major.size': [4, 'pos'], 'ytick.major.size': [4, 'pos'], 'xtick.minor.size': [2, 'pos'], 'ytick.minor.size': [2, 'pos'],
+  'xtick.major.width': [1, 'pos'], 'ytick.major.width': [1, 'pos'], 'xtick.minor.width': [0.8, 'pos'], 'ytick.minor.width': [0.8, 'pos'],
+  'xtick.minor.visible': [false, 'bool'], 'ytick.minor.visible': [false, 'bool'],
+  // each line, scatter, hist, errorbar, image, legend, as it is made
+  'lines.linewidth': [1.5, 'pos'], 'lines.linestyle': ['-', 'linestyle'], 'lines.marker': ['None', 'marker'], 'lines.markersize': [6, 'pos'],
+  'scatter.marker': ['o', 'marker'], 'hist.bins': [10, 'bins'], 'errorbar.capsize': [0, 'num'],
+  'image.interpolation': ['antialiased', ['nearest', 'none', 'bilinear', 'antialiased']], 'image.origin': ['upper', ['upper', 'lower']],
+  'legend.loc': ['best', 'loc'], 'legend.fontsize': [null, 'size'], 'legend.title_fontsize': [null, 'size'],
+  'legend.frameon': [true, 'bool'], 'legend.framealpha': [1, 'num'],
+};
+
+// matplotlib's plt.rc aliases
+const RC_ALIASES = { lw: 'linewidth', ls: 'linestyle', c: 'color', fc: 'facecolor', ec: 'edgecolor', mew: 'markeredgewidth', aa: 'antialiased' };
+
+const BAD = Symbol('bad');
+const _rcNum = (v) => (typeof v === 'number' ? v : typeof v === 'string' && v.trim() !== '' && !isNaN(+v) ? +v : NaN);
+function _check(kind, v) {
+  if (Array.isArray(kind)) return kind.includes(v) ? v : BAD;
+  switch (kind) {
+    case 'bool':
+      if (typeof v === 'boolean') return v;
+      if (v === 1 || v === 0) return !!v;
+      if (typeof v === 'string') { const s = v.toLowerCase(); if (['true', 'yes', 'on', 't', 'y', '1'].includes(s)) return true; if (['false', 'no', 'off', 'f', 'n', '0'].includes(s)) return false; }
+      return BAD;
+    case 'num': { const n = _rcNum(v); return n - n === 0 ? n : BAD; }
+    case 'pos': { const n = _rcNum(v); return n > 0 ? n : BAD; }
+    case 'size': { if (SIZES.includes(v)) return v; const n = _rcNum(v); return n > 0 ? n : BAD; }
+    case 'weight': { if (WEIGHTS.includes(v)) return v; const n = _rcNum(v); return n >= 100 && n <= 1000 ? n : BAD; }
+    case 'color':
+      if (typeof v === 'string' && v.trim()) return v.trim();
+      if ((Array.isArray(v) || ArrayBuffer.isView(v)) && (v.length === 3 || v.length === 4)) return Array.from(v);
+      return BAD;
+    case 'cycle': {
+      const cols = v && v._cycler ? v.color : Array.isArray(v) ? v : v instanceof Map ? v.get('color') : v && typeof v === 'object' ? v.color : null;
+      if (v && (v._cycler || (typeof v === 'object' && !Array.isArray(v)))) {
+        const others = (v._cycler ? Object.keys(v._props) : _pairs(v).map(([k]) => k)).filter((k) => k !== 'color');
+        if (others.length) _warn('rc.prop_cycle.' + others.join(), `rcParams['axes.prop_cycle']: plot cycles colours only so far; ${others.join(', ')} not cycled`);
+      }
+      return Array.isArray(cols) && cols.length && cols.every((c) => typeof c === 'string' || Array.isArray(c)) ? cols.slice() : BAD;
+    }
+    case 'cmap': try { return getCmap(v) ? v : BAD; } catch { return BAD; }
+    case 'family': {
+      const a = [].concat(v);
+      return a.length && a.every((s) => typeof s === 'string' && s.trim()) ? (Array.isArray(v) ? a.slice() : v) : BAD;
+    }
+    case 'pair': {
+      const a = v && typeof v !== 'string' ? Array.from(v, _rcNum) : [];
+      return a.length === 2 && a.every((n) => n > 0) ? a : BAD;
+    }
+    case 'linestyle': return LINESTYLES.includes(v) ? v : BAD;
+    case 'marker': return v === 'None' || v === 'none' || v === '' || v == null ? 'None' : _MARKERS.includes(v) ? v : BAD;
+    case 'bins': { if (BIN_RULES.includes(v)) return v; const n = _rcNum(v); return Number.isInteger(n) && n > 0 ? n : BAD; }
+    case 'loc': return typeof v === 'string' || Number.isInteger(v) ? v : BAD;
+  }
+  return v;
+}
+const _HINT = {
+  bool: 'True or False', num: 'a number', size: `a size in px or one of ${SIZES.slice(0, 7).join(', ')}`, weight: "'normal', 'bold' or 100–1000",
+  pos: 'a positive number', color: 'a colour', cycle: "a list of colours or cycler(color=[…])", cmap: 'a colour-map name', family: 'a font name or a list of them',
+  pair: '[width, height] in inches', linestyle: LINESTYLES.slice(0, 8).join(' '), marker: `None or one of ${_MARKERS.join(' ')}`,
+  bins: `a positive integer or one of ${BIN_RULES.join(', ')}`, loc: 'a place name',
+};
+const _repr = (v) => { try { return typeof v === 'string' ? `'${v}'` : JSON.stringify(v) ?? String(v); } catch { return String(v); } };
+
+function _setRc(k, v) {
+  const spec = RC[k];
+  if (!spec) {
+    _rcStore[k] = v;
+    _warn('rc.' + k, `rcParams['${k}']: plot doesn't read this key (it reads ${Object.keys(RC).length}; API.md lists them); stored, no effect`);
+    return;
+  }
+  // None (null) puts a "plot's own" key back to plot's own
+  if (v == null && spec[0] === null) { _rcStore[k] = null; return; }
+  const r = _check(spec[1], v);
+  if (r === BAD) {
+    const hint = Array.isArray(spec[1]) ? spec[1].map(_repr).join(', ') : _HINT[spec[1]];
+    _warn(`rc.${k}.${_repr(v)}`, `rcParams['${k}'] = ${_repr(v)}: it takes ${hint}; left as it was`);
+    return;
+  }
+  _rcStore[k] = r;
+  if (k === 'font.family' && ![].concat(r).some(_isMonoName)) {
+    _warn('rc.font.family', `rcParams['font.family'] = ${_repr(r)}: plot draws its text in a monospace face, so a figure lays out the same live, recorded and replayed; a proportional family isn't used for chart text (set font.monospace to choose the face)`);
+  }
+}
+function _getRc(k, v) {
+  // a theme key left unset reads as the theme's value now
+  if (v == null && THEME_RC[k]) { const th = _style._auto ? _autoTheme() : _style; const tv = th[THEME_RC[k]]; return Array.isArray(tv) ? tv.slice() : tv; }
+  return v;
+}
+
+// the store starts at the defaults
+function _fillDefaults() {
+  for (const k of Object.keys(_rcStore)) delete _rcStore[k];
+  for (const [k, [d]] of Object.entries(RC)) _rcStore[k] = Array.isArray(d) ? d.slice() : d;
+}
+_fillDefaults();
+_rcHooks.set = _setRc;
+_rcHooks.get = _getRc;
+
+// plt.rc('lines', linewidth=2) · rc(['xtick', 'ytick'], {labelsize: 9}) · rc('axes', {titlesize: 'x-large'})
+function rc(group, kwargs) {
+  const groups = Array.isArray(group) ? group : [group];
+  const kw = _pairs(kwargs);
+  if (typeof group !== 'string' && !Array.isArray(group)) throw new Error(`plot: rc(group, {…}): group is a name like 'lines' or 'axes' (or a list of them)`);
+  for (const g of groups) for (const [name, v] of kw) rcParams[`${g}.${RC_ALIASES[name] || name}`] = v;
+}
+
+// every key back to plot's default, and the style back to the one a fresh page starts with
+function rcdefaults() {
+  _fillDefaults();
+  setStyle(_DEFAULT_STYLE === 'auto' ? 'auto' : _DEFAULT_STYLE);
+}
+
+// a snapshot of rcParams and the style, and a way back to it
+function _snapshot() { return { rc: { ..._rcStore }, style: _styleSnapshot() }; }
+function _restore(s) {
+  for (const k of Object.keys(_rcStore)) delete _rcStore[k];
+  Object.assign(_rcStore, s.rc);
+  _styleRestore(s.style);
+}
+
+// a context that applies `apply` on entry and puts rcParams and the style back on exit:
+// Python's `with plt.rc_context({...}):`, JS's ctx.enter() / ctx.exit(), or run(fn) around a
+// function (a Promise it returns is waited for before the restore)
+function _context(apply, fn) {
+  let saved = null;
+  const enter = () => { saved = _snapshot(); apply(); return ctx; };
+  const exit = () => { if (saved) { _restore(saved); saved = null; } return false; };
+  const run = (f) => {
+    enter();
+    let out;
+    try { out = f(); } catch (e) { exit(); throw e; }
+    if (out && typeof out.then === 'function') return out.finally(exit);
+    exit();
+    return out;
+  };
+  const ctx = { enter, exit, run, __enter__: enter, __exit__: exit, __repr__: () => '<rc_context>' };
+  return typeof fn === 'function' ? run(fn) : ctx;
+}
+
+// rc_context(rc?, fn?) — matplotlib's: `with plt.rc_context({'lines.linewidth': 3}):`. Also
+// rc_context({rc, fname}) as keywords. With a function: runs it inside, returns its result.
+function rc_context(rcOrKw, fn) {
+  let src = rcOrKw;
+  if (src && !(src instanceof Map) && typeof src === 'object' && src._kw && 'rc' in src) src = src.rc;
+  if (typeof src === 'function') { fn = src; src = null; }
+  if (src && typeof src === 'object' && !(src instanceof Map) && 'fname' in src && !('rc' in src)) _warn('rc_context.fname', 'rc_context(fname=…): plot reads no matplotlibrc files; pass the keys as a dict');
+  return _context(() => { if (src) rcParams.update(src); }, fn);
+}
+
+// cycler(color=[…]) · cycler('color', […]) — what axes.prop_cycle takes. plot cycles colours.
+function cycler(a, b) {
+  const props = {};
+  if (typeof a === 'string') props[a] = Array.from(b || []);
+  else for (const [k, v] of _pairs(a)) props[k] = Array.from(v);
+  const n = Math.max(0, ...Object.values(props).map((v) => v.length));
+  const c = {
+    _cycler: true, _props: props, color: props.color || null, keys: Object.keys(props),
+    by_key: () => ({ ...props }),
+    __len__: () => n,
+    __repr__: () => `cycler(${Object.entries(props).map(([k, v]) => `${_repr(k)}, ${_repr(v)}`).join(') + cycler(')})`,
+  };
+  return c;
+}
+cycler.cycler = cycler;   // `from cycler import cycler` (the module and the function share the name)
+
+// the rc an axes reads as it is made: grid, spines, margins, title / label / tick looks
+function _rcAxes(ax) {
+  const r = _rcStore;
+  ax._grid = !!r['axes.grid'];
+  ax._gridRc = { which: r['axes.grid.which'], axis: r['axes.grid.axis'], linestyle: r['grid.linestyle'], linewidth: r['grid.linewidth'], alpha: r['grid.alpha'] };
+  ax._gridOpts = { ...ax._gridRc };
+  ax._xmargin = r['axes.xmargin'];
+  ax._ymargin = r['axes.ymargin'];
+  ax._spines = {};
+  for (const s of ['left', 'right', 'top', 'bottom']) ax._spines[s] = { visible: r['axes.spines.' + s] !== false, color: null, linewidth: r['axes.linewidth'], linestyle: null };
+  ax._rc = {
+    titleSize: r['axes.titlesize'], titleWeight: r['axes.titleweight'], titleLoc: r['axes.titlelocation'], titlePad: r['axes.titlepad'],
+    titleColor: r['axes.titlecolor'] === 'auto' ? null : r['axes.titlecolor'],
+    labelSize: r['axes.labelsize'], labelWeight: r['axes.labelweight'], labelColor: r['axes.labelcolor'], labelPad: r['axes.labelpad'],
+    tickSize: { x: r['xtick.labelsize'], y: r['ytick.labelsize'] },
+  };
+  // tick marks: only what differs from plot's defaults goes into tick_params' store
+  const tp = {};
+  for (const a of ['x', 'y']) {
+    const col = r[a + 'tick.color'], lab = r[a + 'tick.labelcolor'];
+    for (const w of ['major', 'minor']) {
+      const p = {};
+      if (r[`${a}tick.direction`] !== 'out') p.direction = r[`${a}tick.direction`];
+      if (r[`${a}tick.${w}.size`] !== RC[`${a}tick.${w}.size`][0]) p.length = r[`${a}tick.${w}.size`];
+      if (r[`${a}tick.${w}.width`] !== RC[`${a}tick.${w}.width`][0]) p.width = r[`${a}tick.${w}.width`];
+      if (col != null) p.color = col;
+      if (w === 'major' && lab != null && lab !== 'inherit') p.labelcolor = lab;
+      else if (w === 'major' && col != null) p.labelcolor = col;
+      if (Object.keys(p).length) { tp[a] = tp[a] || {}; tp[a][w] = p; }
+    }
+    if (r[a + 'tick.minor.visible']) ax._ticker(a).minorOn = true;
+  }
+  if (Object.keys(tp).length) ax._tickParams = tp;
+}
+
+// matplotlib's rcParamsDefault: plot's defaults, as a plain dict
+function _rcDefaults() { return Object.fromEntries(Object.entries(RC).map(([k, [d]]) => [k, Array.isArray(d) ? d.slice() : d])); }
+
+// a read of one key's raw value (plot's code uses it at creation)
+const _rcv = (k) => _rcStore[k];
+
 // -- pick.js --
 
 // Picking — "what is under the pointer?" in under a millisecond at a million points.
@@ -2613,6 +2955,7 @@ function _queryGrid(g, qx, qy, radius) {
 // NOTHING NON-FINITE POISONS ANYTHING. NaN and ±Inf never reach a range; a line breaks at a
 // NaN (matplotlib's rule); a NaN colour value draws nothing; NaN cells are transparent; a log
 // axis ignores values ≤ 0.
+
 
 
 
@@ -2772,6 +3115,7 @@ class Axes {
     this._axisOn = true;         // axis('off') hides the frame, ticks and axis labels
     this._shared = { x: null, y: null };   // subplots(sharex / sharey): every axes sharing that axis
     this.view = null;            // set by a render: { x, y, w, h, xScale, yScale }
+    _rcAxes(this);               // rcParams read as an axes is made: grid, spines, margins, text and tick looks
   }
 
   _nextColor() {
@@ -2807,6 +3151,11 @@ class Axes {
     if (o.fmt) { fmt = o.fmt; delete o.fmt; }
     if (fmt) { const f = parseFormat(fmt); for (const k in f) if (o[k] === undefined) o[k] = k === 'color' ? _cssColor(f[k]) : f[k]; }
     if (!o.color) o.color = this._nextColor();
+    // rcParams lines.*, where neither the options nor the format string said
+    if (o.linewidth == null && _rcv('lines.linewidth') !== 1.5) o.linewidth = _rcv('lines.linewidth');
+    if (o.linestyle == null && _rcv('lines.linestyle') !== '-') o.linestyle = _rcv('lines.linestyle');
+    if (o.marker == null && _rcv('lines.marker') !== 'None') o.marker = _rcv('lines.marker');
+    if (o.markersize == null && _rcv('lines.markersize') !== 6) o.markersize = _rcv('lines.markersize');
     o.marker = this._checkMarker('plot', o.marker);
     const Y = this._axisCol('y', y);
     const X = x === undefined ? _arange(Y.length) : this._axisCol('x', x);
@@ -2886,7 +3235,8 @@ class Axes {
       const g = _grid2d(data);
       if (!g) throw new Error('plot: imshow: give a 2D array (nested arrays, an ndarray or a DataFrame), or the flat form imshow(data, nx, ny, opts)');
       const o = _plainOpts(nx) ? { ...nx } : {};
-      if (o.origin == null) o.origin = 'upper';
+      if (o.origin == null) o.origin = _rcv('image.origin') || 'upper';   // rcParams['image.origin']
+      if (o.interpolation == null && _rcv('image.interpolation') !== 'antialiased') o.interpolation = _rcv('image.interpolation');
       if (o.extent == null) {
         o.extent = o.origin === 'upper' ? [-0.5, g.nx - 0.5, g.ny - 0.5, -0.5] : [-0.5, g.nx - 0.5, -0.5, g.ny - 0.5];
       }
@@ -2964,6 +3314,45 @@ class Axes {
   set_title(text, opts) { this._title = { text, opts: _checkOpts('label', opts, this._strict) }; return this; }
   set_xlabel(text, opts) { this._xlabel = { text, opts: _checkOpts('label', opts, this._strict) }; return this; }
   set_ylabel(text, opts) { this._ylabel = { text, opts: _checkOpts('label', opts, this._strict) }; return this; }
+  // a title's or axis label's look: its own options, then rcParams, then plot's defaults
+  _textLook(which, textColor) {
+    const th = this._theme, fs = th.font_size || 11, r = this._rc || {}, item = this['_' + which];
+    const o = (item && item.opts) || {}, title = which === 'title';
+    const px = _sizePx(o.fontsize, fs, _sizePx(title ? r.titleSize : r.labelSize, fs, title ? fs + 2 : fs));
+    const bold = _isBold(o.fontweight ?? (title ? r.titleWeight : r.labelWeight));
+    const color = (o.color != null ? _cssColor(o.color) : null) || (title ? r.titleColor : r.labelColor) || textColor;
+    const loc = o.loc ?? (title ? r.titleLoc || 'center' : 'center');
+    const pad = o.pad ?? o.labelpad ?? (title ? r.titlePad ?? 6 : r.labelPad ?? 6);
+    return { px, font: _fontAt(th, px, bold), color, loc, pad: +pad };
+  }
+  // the frame's four sides (matplotlib's spines): one rect when they all match, as before
+  _drawSpines(ctx, plot, frameColor) {
+    const S = this._spines;
+    const sides = ['left', 'right', 'top', 'bottom'];
+    const look = (s) => ({ on: S[s].visible, c: S[s].color ? _cssColor(S[s].color) : frameColor, w: S[s].linewidth ?? 1, ls: S[s].linestyle });
+    const L = sides.map(look);
+    if (L.every((l) => l.on && l.c === L[0].c && l.w === L[0].w && !l.ls)) {
+      ctx.strokeStyle = L[0].c; ctx.lineWidth = L[0].w;
+      ctx.strokeRect(plot.x, plot.y, plot.w, plot.h);
+      return;
+    }
+    const x0 = plot.x, x1 = plot.x + plot.w, y0 = plot.y, y1 = plot.y + plot.h;
+    const seg = { left: [x0, y0, x0, y1], right: [x1, y0, x1, y1], top: [x0, y0, x1, y0], bottom: [x0, y1, x1, y1] };
+    sides.forEach((s, i) => {
+      const l = L[i];
+      if (!l.on) return;
+      ctx.strokeStyle = l.c; ctx.lineWidth = l.w; ctx.setLineDash(dashArray(l.ls));
+      ctx.beginPath(); ctx.moveTo(seg[s][0], seg[s][1]); ctx.lineTo(seg[s][2], seg[s][3]); ctx.stroke();
+    });
+    ctx.setLineDash([]);
+  }
+  // the tick-label font of one axis: tick_params(labelsize) over rcParams xtick/ytick.labelsize, else one px under font.size
+  _tickFont(axis) {
+    const th = this._theme, fs = th.font_size || 11;
+    const tp = this._tickParams && this._tickParams[axis] && this._tickParams[axis].major;
+    const px = _sizePx(tp && tp.labelsize, fs, _sizePx(this._rc && this._rc.tickSize[axis], fs, fs - 1));
+    return { font: _fontAt(th, px), px };
+  }
   // set_xlim(left, right) · set_xlim([left, right]) · set_xlim({left: 0}) (keyword, as adder
   // passes it). A missing end keeps what it was (matplotlib: set_xlim(left=0)); null means
   // "from the data". left > right is an inverted axis. Shared axes (subplots(sharex)) all move.
@@ -3060,12 +3449,13 @@ class Axes {
     }
     if (o.direction != null && !['in', 'out', 'inout'].includes(o.direction)) _warn('tick_params.direction.' + o.direction, `tick_params(): direction must be 'in', 'out' or 'inout'`, this._strict);
     const set = {};
-    for (const k of ['length', 'width', 'direction', 'color']) if (o[k] != null) set[k] = k === 'color' ? _cssColor(o[k]) : o[k];
+    for (const k of ['length', 'width', 'direction', 'color', 'labelsize', 'labelcolor']) if (o[k] != null) set[k] = k === 'color' || k === 'labelcolor' ? _cssColor(o[k]) : o[k];
+    if (o.colors != null) { set.color = _cssColor(o.colors); set.labelcolor = set.color; }
     if (Object.keys(set).length) {
       const tp = this._tickParams || (this._tickParams = {});
       for (const a of axes) { tp[a] = tp[a] || {}; for (const w of whiches) tp[a][w] = { ...(tp[a][w] || {}), ...set }; }
     }
-    for (const k of Object.keys(o)) if (!['axis', 'which', 'labelrotation', 'length', 'width', 'direction', 'color', '_kw'].includes(k)) _warn('tick_params.' + k, `tick_params(): '${k}' is not supported yet (axis, which, length, width, direction, color, labelrotation)`, this._strict);
+    for (const k of Object.keys(o)) if (!['axis', 'which', 'labelrotation', 'length', 'width', 'direction', 'color', 'colors', 'labelsize', 'labelcolor', '_kw'].includes(k)) _warn('tick_params.' + k, `tick_params(): '${k}' is not supported yet (axis, which, length, width, direction, color, colors, labelsize, labelcolor, labelrotation)`, this._strict);
     return this;
   }
   // every axes that shares this one's `axis` (subplots(sharex / sharey)), this one included
@@ -3169,7 +3559,7 @@ class Axes {
     this._grid = on !== false;
     if (opts) {
       const o = { ...opts }; delete o.visible; delete o.b;
-      this._gridOpts = _resolveAliases(_checkOpts('grid', o, this._strict));
+      this._gridOpts = { ...(this._gridRc || {}), ..._resolveAliases(_checkOpts('grid', o, this._strict)) };
     }
     return this;
   }
@@ -3199,7 +3589,9 @@ class Axes {
     const gridColor = this._gridColor || th.grid;
     const frameColor = this._frameColor || th.frame;
     const fs = th.font_size || 11;
-    const fTick = _font(th, -1), fLab = _font(th, 0), fTitle = _font(th, 2);
+    const fTick = _font(th, -1), fLab = _font(th, 0);
+    const tickF = { x: this._tickFont('x'), y: this._tickFont('y') };
+    const look = { title: this._title ? this._textLook('title', textColor) : null, xlabel: this._xlabel ? this._textLook('xlabel', textColor) : null, ylabel: this._ylabel ? this._textLook('ylabel', textColor) : null };
     const xLog = this._xscale === 'log', yLog = this._yscale === 'log';
     const XR = this._axisRange('x', xLog), YR = this._axisRange('y', yLog);
     const cb = this._colorbar ? this._colorbarInfo(ctx, fTick) : null;
@@ -3209,9 +3601,9 @@ class Axes {
       : { left: 42, right: cb ? 70 : 12, top: this._title ? 24 : 8, bottom: 26 };
     let L = null;
     for (let pass = 0; pass < 3; pass++) {
-      L = this._layout(ctx, rect, m, XR, YR, xLog, yLog, fTick, fs);
+      L = this._layout(ctx, rect, m, XR, YR, xLog, yLog, tickF, fs);
       if (!L || this._margins) break;
-      const next = this._measure(rect, L, cb, fs);
+      const next = this._measure(rect, L, cb, fs, look);
       if (Math.abs(next.left - m.left) < 1 && Math.abs(next.right - m.right) < 1 && Math.abs(next.top - m.top) < 1 && Math.abs(next.bottom - m.bottom) < 1) break;
       m = next;
     }
@@ -3263,38 +3655,39 @@ class Axes {
     if (this._highlight) this._renderHighlight(ctx, xScale, yScale, { ...plot, dpr }, bgcolor);   // the trace renderers' rect carries dpr (the raster path sizes by it)
 
     if (on) {
-      ctx.strokeStyle = frameColor;
-      ctx.lineWidth = 1;
-      ctx.strokeRect(plotX, plotY, plotW, plotH);
-      if (!this._hideXTicks) _drawTicks(ctx, this._xtickLabelsOff ? { ...xt, labels: xt.labels.map(() => '') } : xt, xScale, 'bottom', plot, textColor, frameColor, fTick);
-      if (!this._hideYTicks) _drawTicks(ctx, this._ytickLabelsOff ? { ...yt, labels: yt.labels.map(() => '') } : yt, yScale, 'left', plot, textColor, frameColor, fTick);
+      this._drawSpines(ctx, plot, frameColor);
+      if (!this._hideXTicks) _drawTicks(ctx, this._xtickLabelsOff ? { ...xt, labels: xt.labels.map(() => '') } : xt, xScale, 'bottom', plot, textColor, frameColor, tickF.x.font);
+      if (!this._hideYTicks) _drawTicks(ctx, this._ytickLabelsOff ? { ...yt, labels: yt.labels.map(() => '') } : yt, yScale, 'left', plot, textColor, frameColor, tickF.y.font);
     }
 
     // title (above a top twin axis, when there is one)
     if (this._title) {
-      ctx.fillStyle = textColor;
-      ctx.font = fTitle;
-      ctx.textAlign = 'center';
+      const t = look.title;
+      ctx.fillStyle = t.color;
+      ctx.font = t.font;
+      ctx.textAlign = t.loc === 'left' ? 'left' : t.loc === 'right' ? 'right' : 'center';
       ctx.textBaseline = 'bottom';
       const above = L.twinXt ? 6 + L.twinXt.extent + 4 + (this._twinY._xlabel ? fs + 6 : 0) : 0;
-      ctx.fillText(this._title.text, plotX + plotW / 2, plotY - 6 - above);
+      ctx.fillText(this._title.text, t.loc === 'left' ? plotX : t.loc === 'right' ? plotX + plotW : plotX + plotW / 2, plotY - t.pad - above);
     }
     if (on && this._xlabel) {
-      ctx.fillStyle = textColor;
-      ctx.font = fLab;
-      ctx.textAlign = 'center';
+      const t = look.xlabel;
+      ctx.fillStyle = t.color;
+      ctx.font = t.font;
+      ctx.textAlign = t.loc === 'left' ? 'left' : t.loc === 'right' ? 'right' : 'center';
       ctx.textBaseline = 'top';
-      const below = this._hideXTicks ? 4 : 6 + xt.extent + 6;
-      ctx.fillText(this._xlabel.text, plotX + plotW / 2, plotY + plotH + below);
+      const below = this._hideXTicks ? 4 : 6 + xt.extent + t.pad;
+      ctx.fillText(this._xlabel.text, t.loc === 'left' ? plotX : t.loc === 'right' ? plotX + plotW : plotX + plotW / 2, plotY + plotH + below);
     }
     if (on && this._ylabel) {
+      const t = look.ylabel;
       ctx.save();
-      ctx.fillStyle = textColor;
-      ctx.font = fLab;
-      const left = this._hideYTicks ? 4 : 4 + 6 + yt.maxW + 6;
-      ctx.translate(plotX - left, plotY + plotH / 2);
+      ctx.fillStyle = t.color;
+      ctx.font = t.font;
+      const left = this._hideYTicks ? 4 : 4 + 6 + yt.maxW + t.pad;
+      ctx.translate(plotX - left, t.loc === 'bottom' ? plotY + plotH : t.loc === 'top' ? plotY : plotY + plotH / 2);
       ctx.rotate(-Math.PI / 2);
-      ctx.textAlign = 'center';
+      ctx.textAlign = t.loc === 'bottom' ? 'left' : t.loc === 'top' ? 'right' : 'center';
       ctx.textBaseline = 'bottom';
       ctx.fillText(this._ylabel.text, 0, 0);
       ctx.restore();
@@ -3314,7 +3707,7 @@ class Axes {
   }
 
   // the plot rect for margins m, the scales (equal aspect applied), and the ticks for that size
-  _layout(ctx, rect, m, XR, YR, xLog, yLog, fTick, fs) {
+  _layout(ctx, rect, m, XR, YR, xLog, yLog, tickF, fs) {
     let plotX = rect.x + m.left, plotY = rect.y + m.top;
     let plotW = rect.x + rect.w - m.right - plotX, plotH = rect.y + rect.h - m.bottom - plotY;
     if (plotW <= 1 || plotH <= 1) return null;
@@ -3336,23 +3729,24 @@ class Axes {
     }
     const xScale = this._scaleOf(xlo, xhi, XR.inv, plotX, plotX + plotW, xLog);
     const yScale = this._scaleOf(ylo, yhi, YR.inv, plotY + plotH, plotY, yLog);
-    const xt = _tickSpec(this, 'x', xScale, plotW, ctx, fTick, fs - 1);
-    const yt = _tickSpec(this, 'y', yScale, plotH, ctx, fTick, fs - 1);
+    const xt = _tickSpec(this, 'x', xScale, plotW, ctx, tickF.x.font, tickF.x.px);
+    const yt = _tickSpec(this, 'y', yScale, plotH, ctx, tickF.y.font, tickF.y.px);
     let twinYt = null, twinXt = null;
-    if (this._twin) { const ys = this._twin._ownScale('y', plotY + plotH, plotY); if (ys) twinYt = _tickSpec(this._twin, 'y', ys, plotH, ctx, fTick, fs - 1); }
-    if (this._twinY) { const xs = this._twinY._ownScale('x', plotX, plotX + plotW); if (xs) twinXt = _tickSpec(this._twinY, 'x', xs, plotW, ctx, fTick, fs - 1); }
+    if (this._twin) { const ys = this._twin._ownScale('y', plotY + plotH, plotY); if (ys) twinYt = _tickSpec(this._twin, 'y', ys, plotH, ctx, tickF.y.font, tickF.y.px); }
+    if (this._twinY) { const xs = this._twinY._ownScale('x', plotX, plotX + plotW); if (xs) twinXt = _tickSpec(this._twinY, 'x', xs, plotW, ctx, tickF.x.font, tickF.x.px); }
     return { plotX, plotY, plotW, plotH, fullPlotY, fullPlotH, xScale, yScale, xt, yt, twinYt, twinXt, xinv: XR.inv, yinv: YR.inv };
   }
 
   // the margins this layout's labels need
-  _measure(rect, L, cb, fs) {
+  _measure(rect, L, cb, fs, look) {
     const on = this._axisOn, xt = L.xt, yt = L.yt;
+    const lk = look || {};
     let left = 6, right = 10, top = 8, bottom = 6;
     if (on && !this._hideYTicks) left = 4 + 6 + (this._ytickLabelsOff ? 0 : yt.maxW) + 6;
-    if (on && this._ylabel) left += fs + 4;
+    if (on && this._ylabel) left += (lk.ylabel ? lk.ylabel.px + lk.ylabel.pad - 6 : fs) + 4;
     if (on && !this._hideXTicks) bottom = 6 + (this._xtickLabelsOff ? 0 : xt.extent) + 4;
-    if (on && this._xlabel) bottom += fs + 8;
-    if (this._title) top += fs + 2 + 6;
+    if (on && this._xlabel) bottom += (lk.xlabel ? lk.xlabel.px + lk.xlabel.pad - 6 : fs) + 8;
+    if (this._title) top += (lk.title ? lk.title.px - 2 + lk.title.pad : fs + 6) + 2;   // (its size less a descender: the room a default title always had)
     if (L.twinXt) { top += 6 + L.twinXt.extent + 4; if (this._twinY._xlabel) top += fs + 6; }
     if (L.twinYt) right = Math.max(right, 4 + 6 + L.twinYt.maxW + 6 + (this._twin._ylabel ? fs + 4 : 0));
     if (cb) right = Math.max(right, 10 + 12 + 6 + cb.labelsW + 6 + (this._colorbarOpts.label ? fs + 4 : 0));
@@ -3807,7 +4201,7 @@ class Axes {
       // edge width in points (matplotlib's); 0.5 px when not given
       edge = { color: o.edgecolor === 'face' ? 'face' : _cssColor(o.edgecolor), width: o.linewidth != null ? (o.linewidth * this._dpi) / 72 : 0.5 };
     }
-    const spec = { marker: o.marker || 'o', radius, rk, alpha, edge, cacheKey: 'sc' };
+    const spec = { marker: o.marker || _rcv('scatter.marker') || 'o', radius, rk, alpha, edge, cacheKey: 'sc' };
     if (trace.cvals) {
       // a highlight subset keeps the colour scale of the trace it came from
       const norm = trace._norm || this._cmapNorm(trace);
@@ -4167,6 +4561,64 @@ function _logBounds(lo, hi) {
   return [l, h];
 }
 
+// ax.spines — matplotlib's: one Spine per side (left, right, top, bottom). A list of names (or
+// 'top,right') gives a group whose setters apply to each.
+class Spine {
+  constructor(ax, side) { this._ax = ax; this.side = side; }
+  get _s() { return this._ax._spines[this.side]; }
+  set_visible(b) { this._s.visible = !!b; return this; }
+  get_visible() { return this._s.visible; }
+  set_color(c) { this._s.color = c; return this; }
+  set_edgecolor(c) { return this.set_color(c); }
+  get_edgecolor() { return this._s.color || this._ax._frameColor || this._ax._theme.frame; }
+  set_linewidth(w) { this._s.linewidth = +w; return this; }
+  set_lw(w) { return this.set_linewidth(w); }
+  get_linewidth() { return this._s.linewidth; }
+  set_linestyle(ls) { this._s.linestyle = ls; return this; }
+  set_ls(ls) { return this.set_linestyle(ls); }
+  set_alpha() { _warn('spine.set_alpha', 'spine.set_alpha(): not supported yet; give the colour an alpha instead', this._ax._strict); return this; }
+  set_position(p) { _warn('spine.set_position', `spine.set_position(${JSON.stringify(p)}): plot draws spines on the frame only; not supported yet`, this._ax._strict); return this; }
+  set_bounds() { _warn('spine.set_bounds', 'spine.set_bounds(): not supported yet', this._ax._strict); return this; }
+  set(opts) { for (const [k, v] of Object.entries(opts || {})) if (k !== '_kw' && typeof this['set_' + k] === 'function') this['set_' + k](v); return this; }
+  __repr__() { return `<Spine ${this.side}>`; }
+}
+const _SIDES = ['left', 'right', 'top', 'bottom'];
+function _spineGroup(ax, names) {
+  const list = names.map((n) => ax.spines[n]);
+  const g = { _list: list, __repr__: () => `<SpinesProxy ${names.join(', ')}>` };
+  for (const m of ['set_visible', 'set_color', 'set_edgecolor', 'set_linewidth', 'set_lw', 'set_linestyle', 'set_ls', 'set_alpha', 'set_position', 'set_bounds', 'set']) g[m] = (...a) => { for (const sp of list) sp[m](...a); return g; };
+  return g;
+}
+Object.defineProperty(Axes.prototype, 'spines', {
+  configurable: true,
+  get() {
+    if (this._spinesObj) return this._spinesObj;
+    const ax = this;
+    const own = {};
+    for (const side of _SIDES) own[side] = new Spine(ax, side);
+    const methods = {
+      keys: () => _SIDES.slice(), values: () => _SIDES.map((k) => own[k]), items: () => _SIDES.map((k) => [k, own[k]]),
+      __iter__: () => _SIDES[Symbol.iterator](), __len__: () => 4, __contains__: (k) => _SIDES.includes(k),
+      __getitem__: (k) => resolve(k), __repr__: () => '<Spines left, right, top, bottom>',
+    };
+    const resolve = (k) => {
+      if (Array.isArray(k)) return _spineGroup(ax, k.map(String));
+      if (typeof k === 'string' && k.includes(',')) return _spineGroup(ax, k.split(',').map((x) => x.trim()));
+      if (own[k]) return own[k];
+      throw new Error(`plot: no spine '${k}' (left, right, top, bottom)`);
+    };
+    this._spinesObj = new Proxy(own, {
+      get(t, k) {
+        if (typeof k !== 'string') return t[k];
+        if (k in methods) return methods[k];
+        if (own[k] || k.includes(',')) return resolve(k);
+        return undefined;
+      },
+    });
+    return this._spinesObj;
+  },
+});
+
 // -- axis.js --
 
 // ax.xaxis / ax.yaxis — matplotlib's Axis objects, as far as a chart's code reaches for them:
@@ -4221,6 +4673,7 @@ Axes.prototype.minorticks_off = function () { for (const a of ['x', 'y']) for (c
 //
 // Histograms (numpy's counting, data.js / axes.js _hist) share one set of bins across every
 // dataset passed, as matplotlib does; several datasets draw side by side, or stacked.
+
 
 
 
@@ -4446,7 +4899,7 @@ Axes.prototype.hist = function (data, opts) {
   const stacked = !!o.stacked || histtype === 'barstacked';
   const horiz = o.orientation === 'horizontal';
   // one set of bins for every dataset
-  let lo, hi, bins = o.bins == null ? 10 : o.bins;
+  let lo, hi, bins = o.bins == null ? _rcv('hist.bins') ?? 10 : o.bins;   // rcParams['hist.bins']
   if (_isArrayLike(bins) && typeof bins !== 'string') bins = _col(bins);
   else {
     if (o.range) { lo = +o.range[0]; hi = +o.range[1]; }
@@ -4581,6 +5034,7 @@ _KINDS.hist = {
 // The common marks: fill_between / fill_betweenx, step (and plot's drawstyle), errorbar,
 // axhspan / axvspan, annotate, and axhline / axvline's axes-fraction ends. Each registers a
 // trace kind (axes.js _KINDS) for its autoscale and its drawing, so axes.js stays the core.
+
 
 
 
@@ -4723,7 +5177,7 @@ Axes.prototype.errorbar = function (x, y, opts) {
   if (Y.length !== n) throw _lenErr('errorbar', 'x', n, 'y', Y.length);
   const yerr = _errCols(o0.yerr, n, 'yerr'), xerr = _errCols(o0.xerr, n, 'xerr');
   const fmt = o0.fmt == null ? '' : o0.fmt;
-  const errOpts = { ecolor: o0.ecolor, elinewidth: o0.elinewidth, capsize: o0.capsize ?? 0, capthick: o0.capthick, barsabove: o0.barsabove, alpha: o0.alpha };
+  const errOpts = { ecolor: o0.ecolor, elinewidth: o0.elinewidth, capsize: o0.capsize ?? _rcv('errorbar.capsize') ?? 0, capthick: o0.capthick, barsabove: o0.barsabove, alpha: o0.alpha };
   for (const k of ['yerr', 'xerr', 'fmt', 'ecolor', 'elinewidth', 'capsize', 'capthick', 'barsabove', 'errorevery', 'lolims', 'uplims', 'xlolims', 'xuplims']) delete o0[k];
   // the data line (or markers): an ordinary plot trace, so it legends and picks as one;
   // fmt 'none' draws no line, only the bars
@@ -5666,8 +6120,8 @@ _KINDS.pcolormesh = {
 
 
 
+
 const _LOCS = ['best', 'upper right', 'upper left', 'lower left', 'lower right', 'right', 'center left', 'center right', 'lower center', 'upper center', 'center'];
-const _SIZES = { 'xx-small': -4, 'x-small': -3, small: -2, medium: 0, large: 2, 'x-large': 4, 'xx-large': 6 };
 
 Axes.prototype.legend = function (a, b, c) {
   let handles = null, labels = null, opts = {};
@@ -5675,6 +6129,12 @@ Axes.prototype.legend = function (a, b, c) {
   else if (Array.isArray(a) && Array.isArray(b)) { handles = a; labels = b; if (_plainOpts(c)) opts = c; }
   else if (Array.isArray(a) || _isArrayLike(a)) { labels = Array.from(a, String); if (_plainOpts(b)) opts = b; }
   const o = { ...opts };
+  // rcParams legend.*, read as the legend is made, where the call didn't say
+  if (o.loc == null && _rcv('legend.loc') !== 'best') o.loc = _rcv('legend.loc');
+  if (o.frameon == null && _rcv('legend.frameon') === false) o.frameon = false;
+  if (o.framealpha == null && _rcv('legend.framealpha') !== 1) o.framealpha = _rcv('legend.framealpha');
+  if (o.fontsize == null && _rcv('legend.fontsize') != null) o.fontsize = _rcv('legend.fontsize');
+  if (o.title_fontsize == null && _rcv('legend.title_fontsize') != null) o.title_fontsize = _rcv('legend.title_fontsize');
   if (o.handles) { handles = o.handles; delete o.handles; }
   if (o.labels) { labels = Array.from(o.labels, String); delete o.labels; }
   const known = ['loc', 'bbox_to_anchor', 'ncol', 'ncols', 'title', 'fontsize', 'title_fontsize', 'frameon', 'framealpha', 'labelcolor', 'facecolor', 'edgecolor', 'markerscale', 'borderaxespad', '_kw'];
@@ -5719,7 +6179,9 @@ function _entries(ax) {
 // its size, laid out in ncols columns (entries fill down each column, matplotlib's order)
 function _box(ax, entries) {
   const th = ax._theme, lo = ax._legendOpts;
-  const fs = lo.fontsize == null ? (th.font_size || 11) - 1 : typeof lo.fontsize === 'number' ? lo.fontsize : (th.font_size || 11) + (_SIZES[lo.fontsize] ?? 0);
+  const base = th.font_size || 11;
+  const fs = _sizePx(lo.fontsize, base, base - 1);
+  const tfs = _sizePx(lo.title_fontsize, base, fs);
   const font = `${fs}px ${th.mono}`;
   const ncols = Math.max(1, (lo.ncols ?? lo.ncol ?? 1) | 0);
   const rows = Math.ceil(entries.length / ncols);
@@ -5730,8 +6192,8 @@ function _box(ax, entries) {
     for (let r = 0; r < rows; r++) { const e = entries[c * rows + r]; if (e) w = Math.max(w, _textW(font, e.label)); }
     colW.push(w + swatch);
   }
-  const titleFont = lo.title ? `bold ${fs}px ${th.mono}` : null;
-  const titleH = lo.title ? lineH : 0;
+  const titleFont = lo.title ? `bold ${tfs}px ${th.mono}` : null;
+  const titleH = lo.title ? tfs + 5 : 0;
   const w = Math.max(colW.reduce((s, x) => s + x, 0) + (ncols - 1) * 10, lo.title ? _textW(titleFont, lo.title) : 0) + pad * 2;
   const h = rows * lineH + titleH + pad * 2;
   return { w, h, rows, ncols, colW, lineH, pad, font, titleFont, titleH, swatch };
@@ -5876,7 +6338,7 @@ Axes.prototype._renderLegend = function (ctx, plotX, plotY, plotW, plotH) {
   const text = this._textColor || th.foreground;
   if (lo.title) {
     ctx.font = B.titleFont; ctx.fillStyle = text; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText(lo.title, lx + B.w / 2, ly + B.pad + B.lineH / 2);
+    ctx.fillText(lo.title, lx + B.w / 2, ly + B.pad + B.titleH / 2);
   }
   ctx.font = B.font;
   ctx.textAlign = 'left';
@@ -7478,6 +7940,7 @@ function link(axes, opts) {
 
 
 
+
 // Figures shown (or saved) where there is no DOM, in order. plt.shown() / plt.saved() read
 // them, plt.close(fig) / plt.close('all') / plt.clf() clear them.
 const _shownFigures = [];
@@ -7507,8 +7970,8 @@ class Figure {
     // Heuristic: if both dims are ≤ 50, assume inches and scale by
     // dpi. If either is > 50, assume already-pixels (back-compat with
     // JS-side callers that pass pixel values directly).
-    const rawSize = o.figsize || [4, 3];
-    const dpi = o.dpi || 100;
+    const rawSize = o.figsize || _rcv('figure.figsize') || [4, 3];   // rcParams figure.figsize (inches) / figure.dpi
+    const dpi = o.dpi || _rcv('figure.dpi') || 100;
     // points → pixels (marker sizes are in points, as matplotlib's: 1 pt = dpi / 72 px)
     this.dpi = dpi;
     const inchesShape = rawSize[0] <= 50 && rawSize[1] <= 50;
@@ -7548,6 +8011,12 @@ class Figure {
     this._share('y', o.sharey);
   }
 
+  // the suptitle's font: its own fontsize / fontweight, then rcParams figure.title*, else three px over font.size
+  _suptitleFont() {
+    const th = this._theme, fs = th.font_size || 11, o = (this._suptitle && this._suptitle.opts) || {};
+    const px = _sizePx(o.fontsize, fs, _sizePx(_rcv('figure.titlesize'), fs, fs + 3));
+    return _fontAt(th, px, _isBold(o.fontweight ?? _rcv('figure.titleweight')));
+  }
   // the figure's face: facecolor if given, else the theme's figure surface
   get facecolor() { return this._facecolor || this._theme.figure; }
   set facecolor(c) { this._facecolor = c; }
@@ -7643,11 +8112,11 @@ class Figure {
     }
 
     // suptitle space
-    const supH = this._suptitle ? 24 : 0;
+    const supH = this._suptitle ? +/([\d.]+)px/.exec(this._suptitleFont())[1] + 10 : 0;   // 24 at the default size
 
     if (this._suptitle) {
       ctx.fillStyle = this._theme.foreground;
-      ctx.font = _font(this._theme, 3);
+      ctx.font = this._suptitleFont();
       ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
       ctx.fillText(this._suptitle.text, this.width / 2, 4);
@@ -7805,6 +8274,7 @@ class Figure {
 
 
 
+
 // one version string, read by the extension registration below (package.json carries the same)
 const VERSION = '0.2.0';
 
@@ -7898,11 +8368,9 @@ function matshow(data, nx, ny, opts) {
   return ax.imshow(data, nx, ny, opts);
 }
 
-// plt.rc(group, **kwargs) — `plt.rc('font', size=14)` — isn't honoured yet; it warns once
-// (and a notebook carries on to its real plotting calls).
-function rc(_group, _opts) { _noop('rc'); }
-// plt.rcParams — a dict-like bag (opts.js). Only 'gcu.strict' is read today: true turns every
-// "nothing is silently ignored" warning into an error.
+// plt.rcParams (matplotlib's: the keys plot reads are in rc.js, and API.md), plt.rc(group,
+// **kw), rcdefaults(), rc_context({…}) (a with-block, or a function to run inside), cycler.
+// rcParams['gcu.strict'] = True turns every "nothing is silently ignored" warning into an error.
 
 // plt.style.use(name) — switches the shared palette. Auditable-native
 // default is dark; `plt.style.use('default')` (or 'classic' / a few
@@ -7911,6 +8379,9 @@ function rc(_group, _opts) { _noop('rc'); }
 // automatically after `import matplotlib.pyplot as plt`.
 const style = {
   use(name) { setStyle(name); },
+  // style.context(name | {rcParams}) — a with-block (or a function to run) in that style; the
+  // style and rcParams are put back after
+  context(name, fn) { return _context(() => setStyle(name), fn); },
   available: ['default', 'classic', 'matplotlib', 'dark_background', 'seaborn', 'seaborn-whitegrid', 'ggplot', 'bmh', 'dark', 'light', 'paper', 'auto'],
 };
 // plt.figure(...) — a new figure, and the current one (matplotlib's figure() takes
@@ -8136,7 +8607,19 @@ const pltAdder = {
   boxplot, contour, contourf, pcolormesh, fill, add_geometry, Polygon, Rectangle, Circle, ScalarMappable,
   violinplot, hexbin, hist2d, stackplot, minorticks_on, minorticks_off, tick_params, ticker, dates,
   barh, bar_label, errorbar, fill_between, fill_betweenx, step, axhspan, axvspan, annotate,
+  rcdefaults, rc_context, cycler,
 };
+// `import matplotlib as mpl` (an .ipynb's, through @gcu/ipynb): matplotlib's top-level names
+// that plot has — rcParams and friends, the style, colour maps, colours, ticker, dates.
+// mpl.use(backend) is a no-op (the notebook is the backend).
+pltAdder.matplotlib = {
+  rcParams, rc, rcdefaults, rc_context, style, cm, colors, ticker, dates, cycler,
+  patches: { Rectangle, Polygon, Circle },
+  use() {}, get_backend: () => 'module://gcu.plot', __version__: '3.9.0',
+  rcParamsDefault: null,
+};
+Object.defineProperty(pltAdder.matplotlib, 'rcParamsDefault', { get: () => _rcDefaults(), enumerable: true });
+pltAdder.cycler = cycler;
 
 // The notebook's cells. A Python (adder) cell is matplotlib's inline backend: it starts
 // with no current figure, and when it ends its figures not yet shown land in its output.
@@ -8179,4 +8662,4 @@ if (typeof window !== 'undefined') {
   }
 }
 
-export { VERSION, subplots, plot, scatter, imshow, bar, hist, cmap, matshow, rc, style, figure, show, flush_figures, close, shown, saved, subplot, colors, cm, gca, gcf, xlabel, ylabel, title, xlim, ylim, xscale, yscale, legend, grid, vlines, hlines, axhline, axvline, text, subplots_adjust, tight_layout, savefig, clf, cla, xticks, yticks, axis, barh, bar_label, errorbar, fill_between, fill_betweenx, step, axhspan, axvspan, annotate, boxplot, contour, contourf, pcolormesh, fill, add_geometry, violinplot, hexbin, hist2d, stackplot, minorticks_on, minorticks_off, tick_params, margins, colorbar, suptitle, pltAdder, rcParams, Polygon, Rectangle, Circle, ScalarMappable, ticker, dates, Figure, Axes, LinearScale, LogScale, getCmap, replay, recordingContext, themeFromCSS, resolveTheme, Normalize, LogNorm, TwoSlopeNorm, CenteredNorm, BoundaryNorm, ListedColormap, LinearSegmentedColormap, toSVG, encodePNG, interact, link };
+export { VERSION, subplots, plot, scatter, imshow, bar, hist, cmap, matshow, style, figure, show, flush_figures, close, shown, saved, subplot, colors, cm, gca, gcf, xlabel, ylabel, title, xlim, ylim, xscale, yscale, legend, grid, vlines, hlines, axhline, axvline, text, subplots_adjust, tight_layout, savefig, clf, cla, xticks, yticks, axis, barh, bar_label, errorbar, fill_between, fill_betweenx, step, axhspan, axvspan, annotate, boxplot, contour, contourf, pcolormesh, fill, add_geometry, violinplot, hexbin, hist2d, stackplot, minorticks_on, minorticks_off, tick_params, margins, colorbar, suptitle, pltAdder, rcParams, rc, rcdefaults, rc_context, cycler, Polygon, Rectangle, Circle, ScalarMappable, ticker, dates, Figure, Axes, LinearScale, LogScale, getCmap, replay, recordingContext, themeFromCSS, resolveTheme, Normalize, LogNorm, TwoSlopeNorm, CenteredNorm, BoundaryNorm, ListedColormap, LinearSegmentedColormap, toSVG, encodePNG, interact, link };

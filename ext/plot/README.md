@@ -123,7 +123,7 @@ Hover shows a readout, crosshair and ring on an overlay canvas (the figure isn't
 
 ## Themes
 
-A theme is [`@gcu/theme`](../theme)'s keys, shared with `@gcu/condenser`'s 3D view, so one theme dresses a chart and the view beside it. By default a chart follows the page it is drawn on (`'auto'`: the page's tokens and colours; dark with no page). `plt.style.use('default')` (white, matplotlib's look) or `'dark_background'` pins a look, or a theme by name: `'dark'` · `'light'` · `'paper'`; an unknown name warns. A figure keeps the theme in force when it was made — matplotlib's rule. `subplots(..., { theme })`, `fig.set_theme(...)` and `themeFromCSS(el)` (a page's design tokens) dress one figure. The colour cycle is matplotlib's tab10.
+A theme is [`@gcu/theme`](../theme)'s keys, shared with `@gcu/condenser`'s 3D view, so one theme dresses a chart and the view beside it. matplotlib's `rcParams` (≈70 keys: spines, grid, title and tick looks, line and legend defaults, the theme colours), `plt.rc`, `rc_context` and `style.context` work as in matplotlib — read when a figure, axes or artist is made. By default a chart follows the page it is drawn on (`'auto'`: the page's tokens and colours; dark with no page). `plt.style.use('default')` (white, matplotlib's look) or `'dark_background'` pins a look, or a theme by name: `'dark'` · `'light'` · `'paper'`; an unknown name warns. A figure keeps the theme in force when it was made — matplotlib's rule. `subplots(..., { theme })`, `fig.set_theme(...)` and `themeFromCSS(el)` (a page's design tokens) dress one figure. The colour cycle is matplotlib's tab10.
 
 ## Without a DOM: figures as data
 

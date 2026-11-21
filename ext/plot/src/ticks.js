@@ -142,7 +142,7 @@ export function _tickSpec(ax, axis, scale, len, ctx, font, fontPx) {
     if (tk.minorF) minorLabels = formatted(minor, tk.minorF);
   }
   const params = ax._tickParams ? ax._tickParams[axis] || null : null;
-  return { values, labels, rot, extent, maxW, widths, minor, minorLabels, params };
+  return { values, labels, rot, extent, maxW, widths, minor, minorLabels, params, font };
 }
 
 // labels for date ticks a locator placed: the format their spacing reads in
@@ -157,10 +157,10 @@ function _dateLabels(values) {
 // tick_params: { major: {length, direction, width, color}, minor: {…} } per axis; length in px
 // (4 major, 2 minor), direction 'out' (default) | 'in' | 'inout'
 export function _drawTicks(ctx, spec, scale, side, plot, color, tickColor, font) {
-  ctx.font = font;
-  ctx.fillStyle = color;
+  ctx.font = spec.font || font;                    // the axis's own (tick_params labelsize / rcParams)
   const { values, labels, rot } = spec;
   const P = spec.params || {}, maj = P.major || {}, mnr = P.minor || {};
+  ctx.fillStyle = maj.labelcolor || color;
   // one tick mark at p: out of the frame, into it, or across it
   const mark = (p, len, dir) => {
     const a = dir === 'in' ? 0 : len, b = dir === 'out' || !dir ? 0 : len;   // outward, inward

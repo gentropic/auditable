@@ -76,16 +76,43 @@ export const _UNSUPPORTED = {
 
 // The calls that do nothing yet, by name → what to do instead
 export const _NOOP_CALLS = {
-  rc: "plt.rc is not supported yet; use plt.style.use('default' | 'dark_background')",
   set_zorder: 'axes are drawn in creation order',
   subplots_adjust: 'not supported yet; use subplots(..., {gap}) for the space between axes',
 };
 
-// plt.rcParams lives here so the strict flag can be read without an import cycle
-export const rcParams = { 'axes.unicode_minus': true };   // matplotlib's: tick labels use U+2212
-Object.defineProperty(rcParams, 'update', {
-  value(obj) { if (obj && typeof obj === 'object') for (const k of Object.keys(obj)) if (k !== '_kw') rcParams[k] = obj[k]; },
-  enumerable: false,
+// plt.rcParams lives here so the strict flag can be read without an import cycle. It is a
+// Proxy over a plain store: rc.js gives it matplotlib's keys, defaults and checks through
+// _rcHooks (set: validate and store; get: a theme-backed key left unset reads the theme's).
+export const _rcStore = { 'axes.unicode_minus': true };   // matplotlib's: tick labels use U+2212
+export const _rcHooks = { set: null, get: null };
+// the entries of a JS object, a Python dict (adder's PyDict is a Map) or kwargs
+export function _pairs(obj) {
+  if (obj instanceof Map) return Array.from(obj.entries());
+  if (obj && typeof obj === 'object') return Object.entries(obj).filter(([k]) => k !== '_kw');
+  return [];
+}
+const _rcMethod = (name, fn) => Object.defineProperty(_rcStore, name, { value: fn, enumerable: false, writable: true });
+_rcMethod('update', (obj) => { for (const [k, v] of _pairs(obj)) rcParams[k] = v; });
+_rcMethod('keys', () => Object.keys(_rcStore));
+_rcMethod('values', () => Object.keys(_rcStore).map((k) => rcParams[k]));
+_rcMethod('items', () => Object.keys(_rcStore).map((k) => [k, rcParams[k]]));
+_rcMethod('get', (k, d = null) => (k in _rcStore ? rcParams[k] : d));
+_rcMethod('copy', () => Object.fromEntries(Object.keys(_rcStore).map((k) => [k, rcParams[k]])));
+_rcMethod('find_all', (pattern) => { const re = new RegExp(pattern); return Object.fromEntries(Object.keys(_rcStore).filter((k) => re.test(k)).map((k) => [k, rcParams[k]])); });
+_rcMethod('__getitem__', (k) => rcParams[k]);
+_rcMethod('__setitem__', (k, v) => { rcParams[k] = v; });
+_rcMethod('__contains__', (k) => k in _rcStore);
+_rcMethod('__len__', () => Object.keys(_rcStore).length);
+_rcMethod('__iter__', () => Object.keys(_rcStore)[Symbol.iterator]());
+export const rcParams = new Proxy(_rcStore, {
+  get(t, k) {
+    if (typeof k !== 'string' || typeof t[k] === 'function') return t[k];
+    return _rcHooks.get ? _rcHooks.get(k, t[k]) : t[k];
+  },
+  set(t, k, v) {
+    if (typeof k === 'string' && _rcHooks.set) _rcHooks.set(k, v); else t[k] = v;
+    return true;
+  },
 });
 
 const _warned = new Set();
