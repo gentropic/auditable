@@ -3,7 +3,7 @@
 import { Figure, _shownFigures, _savedFigures } from './figure.js';
 import { replay } from './record.js';
 import { getCmap } from './color.js';
-import { setStyle } from './style.js';
+import { setStyle, themeFromCSS } from './style.js';
 import { rcParams, _noop } from './opts.js';
 
 // one version string, read by the extension registration below (package.json carries the same)
@@ -128,8 +128,7 @@ export { rcParams };
 // automatically after `import matplotlib.pyplot as plt`.
 export const style = {
   use(name) { setStyle(name); },
-  available: ['default', 'classic', 'matplotlib', 'dark_background',
-              'seaborn', 'seaborn-whitegrid', 'ggplot', 'bmh'],
+  available: ['default', 'classic', 'matplotlib', 'dark_background', 'seaborn', 'seaborn-whitegrid', 'ggplot', 'bmh', 'dark', 'light', 'paper'],
 };
 // plt.figure(...) — return a fresh Figure (matplotlib's figure() takes
 // figsize=(w,h) and other kwargs; we accept and ignore unsupported ones).
@@ -240,8 +239,19 @@ export function cla() { _currentAx = null; }
 
 // plt.xticks(ticks, labels) / yticks — custom ticks aren't supported yet; they warn once and
 // the axes keep their automatic ticks.
-export function xticks(_ticks, _labels) { _noop('xticks'); }
-export function yticks(_ticks, _labels) { _noop('yticks'); }
+// plt.xticks(ticks?, labels?, {rotation}) — sets them; with no ticks, returns [locs, labels]
+export function xticks(ticks, labels, opts) { return _pyTicks('x', ticks, labels, opts); }
+export function yticks(ticks, labels, opts) { return _pyTicks('y', ticks, labels, opts); }
+function _pyTicks(axis, ticks, labels, opts) {
+  const ax = _ax();
+  if (ticks && typeof ticks === 'object' && !Array.isArray(ticks) && !ArrayBuffer.isView(ticks)) { opts = ticks; ticks = opts.ticks; labels = opts.labels; }
+  if (labels && typeof labels === 'object' && !Array.isArray(labels) && !ArrayBuffer.isView(labels)) { opts = labels; labels = opts.labels; }
+  if (ticks != null) ax[axis === 'x' ? 'set_xticks' : 'set_yticks'](ticks, labels, opts);
+  else if (opts && opts.rotation != null) ax.tick_params({ axis, labelrotation: opts.rotation });
+  return [ax[axis === 'x' ? 'get_xticks' : 'get_yticks'](), ax[axis === 'x' ? 'get_xticklabels' : 'get_yticklabels']()];
+}
+export function axis(arg) { return _ax().axis(arg); }
+export function margins(x, y) { return _ax().margins(x, y); }
 
 // plt.colorbar(im, ax=None, **kwargs) — attach a colorbar to the axes
 // that holds `im`. matplotlib's `im` is an AxesImage; since our
@@ -279,7 +289,7 @@ export const pltAdder = {
   gca, gcf, xlabel, ylabel, title, xlim, ylim, xscale, yscale,
   legend, grid, vlines, hlines, axhline, axvline, text,
   subplots_adjust, tight_layout, savefig, clf, cla,
-  xticks, yticks, colorbar, suptitle,
+  xticks, yticks, axis, margins, colorbar, suptitle, themeFromCSS,
 };
 
 // register as auditable extension for adder `import plt`

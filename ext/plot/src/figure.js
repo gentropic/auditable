@@ -1,7 +1,7 @@
 // Figure — canvas management, subplot grid, DPI handling
 
 import { Axes } from './axes.js';
-import { _snapshotStyle } from './style.js';
+import { _resolve, _font } from './style.js';
 import { _checkOpts, _noop } from './opts.js';
 import { recordingContext, replay } from './record.js';
 
@@ -21,8 +21,10 @@ export class Figure {
     _checkOpts('subplots', o, o.strict);
     // the palette as it stands now (style.js): this figure keeps it, whatever style.use() does
     // later. A partial {theme} overrides keys of it.
-    this._theme = { ..._snapshotStyle(), ...(o.theme && typeof o.theme === 'object' ? o.theme : {}) };
     this._strict = !!o.strict;
+    // the figure's own theme: the default (style.use) unless one is given — a name, a partial
+    // theme, themeFromCSS(el). Its axes all read this one object, so set_theme re-dresses them.
+    this._theme = _resolve(o.theme, this._strict);
     // matplotlib's figsize is in INCHES; the canvas pixel size is
     // figsize * dpi. Default dpi 100. Notebooks like Pyrcz's pass
     // figsize=(7, 7) expecting a 700×700 canvas — without this scale
@@ -42,7 +44,7 @@ export class Figure {
     // overridden. Dark palette uses 'transparent' (notebook bg shows
     // through); light palette uses an opaque off-white card so dark
     // tick text contrasts even on a dark notebook bg.
-    this.facecolor = o.facecolor || this._theme.figureFacecolor;
+    this._facecolor = o.facecolor || null;
     this._suptitle = null;
     // Inter-subplot gap in pixels. Callers that want a tight grid
     // (e.g. sadpan's scatter_matrix on a small figure) pass `gap` (or
@@ -66,6 +68,42 @@ export class Figure {
       ax._strict = this._strict;
       ax._dpi = dpi;
       this.axes.push(ax);
+    }
+    this._share('x', o.sharex);
+    this._share('y', o.sharey);
+  }
+
+  // the figure's face: facecolor if given, else the theme's figure surface
+  get facecolor() { return this._facecolor || this._theme.figure; }
+  set facecolor(c) { this._facecolor = c; }
+
+  // fig.set_theme(t): a name ('dark' · 'light' · 'paper'), a partial theme, themeFromCSS(el)
+  set_theme(t) {
+    const next = _resolve(t, this._strict);
+    for (const k of Object.keys(this._theme)) delete this._theme[k];
+    Object.assign(this._theme, next);
+    return this;
+  }
+
+  // subplots(sharex / sharey): true | 'all' | 'row' | 'col'. Shared axes have one range (one
+  // set_xlim moves all; the autoscale covers all their data) and one set of categories; as in
+  // matplotlib, only the outer axes label their ticks.
+  _share(axis, how) {
+    if (!how || how === 'none') return;
+    const mode = how === true ? 'all' : how;
+    if (!['all', 'row', 'col'].includes(mode)) throw new TypeError(`subplots: share${axis} must be true, 'all', 'row' or 'col', not ${JSON.stringify(how)}`);
+    const at = (r, c) => this.axes[r * this.ncols + c];
+    const groups = [];
+    if (mode === 'all') groups.push(this.axes.slice());
+    else if (mode === 'row') for (let r = 0; r < this.nrows; r++) groups.push(Array.from({ length: this.ncols }, (_, c) => at(r, c)));
+    else for (let c = 0; c < this.ncols; c++) groups.push(Array.from({ length: this.nrows }, (_, r) => at(r, c)));
+    for (const g of groups) for (const ax of g) ax._shared[axis] = g;
+    // tick labels only on the outer axes: x on the bottom row (columns share it), y on the
+    // first column (rows share it)
+    for (let r = 0; r < this.nrows; r++) for (let c = 0; c < this.ncols; c++) {
+      const ax = at(r, c);
+      if (axis === 'x' && mode !== 'row' && r < this.nrows - 1) ax._xtickLabelsOff = true;
+      if (axis === 'y' && mode !== 'col' && c > 0) ax._ytickLabelsOff = true;
     }
   }
 
@@ -118,8 +156,8 @@ export class Figure {
     const supH = this._suptitle ? 24 : 0;
 
     if (this._suptitle) {
-      ctx.fillStyle = this._theme.textColor;
-      ctx.font = '14px monospace';
+      ctx.fillStyle = this._theme.foreground;
+      ctx.font = _font(this._theme, 3);
       ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
       ctx.fillText(this._suptitle.text, this.width / 2, 4);
@@ -161,8 +199,8 @@ export class Figure {
     // centered horizontally under each column.
     if (this._rowLabels) {
       ctx.save();
-      ctx.fillStyle = this._theme.textColor;
-      ctx.font = '11px monospace';
+      ctx.fillStyle = this._theme.foreground;
+      ctx.font = _font(this._theme, 0);
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       for (let r = 0; r < this.nrows; r++) {
@@ -178,8 +216,8 @@ export class Figure {
       ctx.restore();
     }
     if (this._colLabels) {
-      ctx.fillStyle = this._theme.textColor;
-      ctx.font = '11px monospace';
+      ctx.fillStyle = this._theme.foreground;
+      ctx.font = _font(this._theme, 0);
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       for (let c = 0; c < this.ncols; c++) {
@@ -198,7 +236,9 @@ export class Figure {
   toDrawList() {
     const rec = recordingContext(this.width, this.height);
     this.draw(rec);
-    return { width: this.width, height: this.height, facecolor: this.facecolor, ops: rec.ops };
+    // version 2: themed text (the theme's mono stack), measured layout. The ops are unchanged
+    // in kind — a draw list only ever gains ops.
+    return { version: 2, width: this.width, height: this.height, facecolor: this.facecolor, ops: rec.ops };
   }
 
   // PNG bytes through OffscreenCanvas (workers in current browsers); rejects where there is none.

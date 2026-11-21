@@ -15,7 +15,8 @@ themeFromCSS(document.documentElement);        // the host page's design tokens
 
 | key | |
 |---|---|
-| `background` | the figure's or scene's background |
+| `background` | the plot area's, or the 3D scene's, background |
+| `figure` | the surface around a chart's plot areas (charts only; the dark theme's is transparent) |
 | `foreground` | primary text and marks |
 | `muted` | secondary text: tick labels, captions, units |
 | `grid` | grid lines |
@@ -34,7 +35,7 @@ themeFromCSS(document.documentElement);        // the host page's design tokens
 - `light`: Switchboard's equipment gray;
 - `paper`: white, for printed figures.
 
-The categorical `cycle` is Tableau 10 in all three.
+The categorical `cycle` is matplotlib's default (tab10, its C0–C9) in all three.
 
 ## From CSS
 

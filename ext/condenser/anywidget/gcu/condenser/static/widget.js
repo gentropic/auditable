@@ -13828,7 +13828,8 @@ function readout() {
 //
 // A theme is a plain object. The keys:
 //
-//   background    the figure's / scene's background
+//   background    the plot area's / the 3D scene's background
+//   figure        the surface around a chart's plot areas (a figure's face); charts only
 //   foreground    primary text and marks
 //   muted         secondary text: tick labels, captions, units
 //   grid          grid lines
@@ -13850,25 +13851,26 @@ function readout() {
 const MONO = "'Space Mono', 'JetBrains Mono', Consolas, ui-monospace, Menlo, monospace";
 const SANS = "'Barlow', system-ui, -apple-system, 'Segoe UI', sans-serif";
 
-// Tableau 10: ten well-separated categorical colours, readable on dark and light
-const CYCLE = ['#4E79A7', '#F28E2B', '#E15759', '#76B7B2', '#59A14F', '#EDC948', '#B07AA1', '#FF9DA7', '#9C755F', '#BAB0AC'];
+// matplotlib's default cycle (tab10, its C0–C9): what a chart written from matplotlib
+// memory expects its first line, bar or class to be
+const CYCLE = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf'];
 
-const THEME_KEYS = ['background', 'foreground', 'muted', 'grid', 'frame', 'panel', 'panel_border',
+const THEME_KEYS = ['background', 'figure', 'foreground', 'muted', 'grid', 'frame', 'panel', 'panel_border',
   'accent', 'selection', 'halo', 'cycle', 'ramp', 'font', 'mono', 'font_size'];
 
 const THEMES = {
   dark: {
-    background: '#15171A', foreground: '#DDDCDA', muted: '#9E9C98', grid: '#2F3338', frame: '#83817E',
+    background: '#15171A', figure: 'transparent', foreground: '#DDDCDA', muted: '#9E9C98', grid: '#2F3338', frame: '#83817E',
     panel: 'rgba(29,32,36,0.88)', panel_border: '#2F3338', accent: '#FB9044', selection: '#EC9FFF',
     halo: 'rgba(0,0,0,0.75)', cycle: CYCLE, ramp: 'viridis', font: SANS, mono: MONO, font_size: 11,
   },
   light: {
-    background: '#E4E3E1', foreground: '#232322', muted: '#504F4C', grid: '#C6C4C1', frame: '#5A5856',
+    background: '#E4E3E1', figure: '#E4E3E1', foreground: '#232322', muted: '#504F4C', grid: '#C6C4C1', frame: '#5A5856',
     panel: 'rgba(237,236,235,0.92)', panel_border: '#B3B1AD', accent: '#8B3F00', selection: '#793A8D',
     halo: 'rgba(255,255,255,0.8)', cycle: CYCLE, ramp: 'viridis', font: SANS, mono: MONO, font_size: 11,
   },
   paper: {
-    background: '#FFFFFF', foreground: '#1A1A1A', muted: '#555555', grid: '#DDDDDD', frame: '#333333',
+    background: '#FFFFFF', figure: '#FFFFFF', foreground: '#1A1A1A', muted: '#555555', grid: '#DDDDDD', frame: '#333333',
     panel: 'rgba(255,255,255,0.92)', panel_border: '#BBBBBB', accent: '#8B3F00', selection: '#793A8D',
     halo: 'rgba(255,255,255,0.85)', cycle: CYCLE, ramp: 'viridis', font: SANS, mono: MONO, font_size: 11,
   },
@@ -13885,18 +13887,18 @@ const CSS_MAP = {
 // a name, a partial theme ({ base: 'light', accent: '#c00' }) or nothing → a full theme.
 // Unknown names fall back to dark; `onWarn` hears about it.
 function resolveTheme(t, onWarn) {
-  if (t == null || t === '') return copy(THEMES.dark);
+  if (t == null || t === '') return _copyTheme(THEMES.dark);
   if (typeof t === 'string') {
-    if (THEMES[t]) return copy(THEMES[t]);
+    if (THEMES[t]) return _copyTheme(THEMES[t]);
     if (onWarn) onWarn(`no theme '${t}' (${Object.keys(THEMES).join(', ')}); using dark`);
-    return copy(THEMES.dark);
+    return _copyTheme(THEMES.dark);
   }
   const base = resolveTheme(t.base || (t.background && isLight(t.background) ? 'light' : 'dark'), onWarn);
   for (const k of THEME_KEYS) if (t[k] != null && t[k] !== '') base[k] = k === 'cycle' ? Array.from(t[k]) : t[k];
   if (onWarn) for (const k of Object.keys(t)) if (k !== 'base' && !THEME_KEYS.includes(k)) onWarn(`a theme has no key '${k}'`);
   return base;
 }
-const copy = (t) => ({ ...t, cycle: t.cycle.slice() });
+const _copyTheme = (t) => ({ ...t, cycle: t.cycle.slice() });
 
 // read a theme from CSS custom properties on `el` (a host page's tokens, its light or
 // dark mode). Properties that are unset keep the base theme's value; the base is light

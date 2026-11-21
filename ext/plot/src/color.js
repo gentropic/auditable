@@ -190,7 +190,7 @@ export function renderColorbar(ctx, x, y, w, h, cmap, vmin, vmax, opts) {
     ctx.fillRect(x, y + i, w, Math.ceil(h / n) + 1);
   }
   // tick labels
-  const textColor = opts?.textColor || '#ccc';
+  const textColor = opts?.textColor || 'currentColor';
   ctx.fillStyle = textColor;
   ctx.font = opts?.font || '10px monospace';
   ctx.textAlign = 'left';
@@ -213,7 +213,8 @@ export function renderColorbar(ctx, x, y, w, h, cmap, vmin, vmax, opts) {
   // label
   if (opts?.label) {
     ctx.save();
-    ctx.translate(x + w + 40, y + h / 2);
+    if (opts.labelFont) ctx.font = opts.labelFont;
+    ctx.translate(x + (opts.labelOffset ?? w + 40), y + h / 2);
     ctx.rotate(-Math.PI / 2);
     ctx.textAlign = 'center';
     ctx.textBaseline = 'bottom';

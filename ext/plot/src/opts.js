@@ -37,11 +37,11 @@ export const _KNOWN = {
   axvline: [..._ARTIST, 'linestyle', 'linewidth'],
   hlines: [..._ARTIST, 'colors', 'linestyle', 'linewidth'],
   vlines: [..._ARTIST, 'colors', 'linestyle', 'linewidth'],
-  text: ['color', 'alpha', 'zorder', 'fontsize', 'ha', 'va', 'horizontalalignment', 'verticalalignment'],
+  text: ['color', 'alpha', 'zorder', 'fontsize', 'ha', 'va', 'horizontalalignment', 'verticalalignment', 'transform', 'rotation', 'fontweight'],
   legend: ['loc'],
   colorbar: ['label', 'ax'],
   grid: ['color', 'alpha', 'linestyle', 'linewidth', 'which', 'axis'],
-  subplots: ['figsize', 'dpi', 'facecolor', 'gap', 'wspace', 'hspace', 'strict', 'theme'],
+  subplots: ['figsize', 'dpi', 'facecolor', 'gap', 'wspace', 'hspace', 'strict', 'theme', 'sharex', 'sharey'],
   label: ['fontsize', 'color', 'loc', 'pad', 'fontweight'],
 };
 
@@ -55,20 +55,14 @@ export const _UNSUPPORTED = {
   imshow: { norm: 'not supported yet — use vmin / vmax' },
   axhline: { xmin: 'not supported yet — use hlines(y, x0, x1)', xmax: 'not supported yet — use hlines(y, x0, x1)' },
   axvline: { ymin: 'not supported yet — use vlines(x, y0, y1)', ymax: 'not supported yet — use vlines(x, y0, y1)' },
-  text: { transform: 'axes-relative text is not supported yet; give data coordinates', rotation: 'not supported yet', fontweight: 'not supported yet', bbox: 'not supported yet' },
+  text: { bbox: 'not supported yet' },
   legend: { bbox_to_anchor: 'not supported yet — use loc', ncol: 'not supported yet', title: 'not supported yet', fontsize: 'not supported yet', frameon: 'not supported yet', framealpha: 'not supported yet' },
   colorbar: { shrink: 'not supported yet', orientation: 'only vertical colorbars for now', ticks: 'not supported yet', extend: 'not supported yet', fraction: 'not supported yet', pad: 'not supported yet' },
-  subplots: { sharex: 'not supported yet — set the same xlim on each axes', sharey: 'not supported yet — set the same ylim on each axes', squeeze: 'not supported yet', constrained_layout: 'layout is always tight', layout: 'layout is always tight' },
+  subplots: { squeeze: 'not supported yet', constrained_layout: 'layout is always tight', layout: 'layout is always tight' },
 };
 
 // The calls that do nothing yet, by name → what to do instead
 export const _NOOP_CALLS = {
-  xticks: 'custom ticks are not supported yet; ticks are chosen automatically',
-  yticks: 'custom ticks are not supported yet; ticks are chosen automatically',
-  set_xticks: 'custom ticks are not supported yet; ticks are chosen automatically',
-  set_yticks: 'custom ticks are not supported yet; ticks are chosen automatically',
-  set_xticklabels: 'custom tick labels are not supported yet',
-  set_yticklabels: 'custom tick labels are not supported yet',
   rc: "plt.rc is not supported yet; use plt.style.use('default' | 'dark_background')",
   set_zorder: 'axes are drawn in creation order',
   subplots_adjust: 'not supported yet; use subplots(..., {gap}) for the space between axes',

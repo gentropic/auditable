@@ -15,8 +15,9 @@ const mainSrc = fs.readFileSync(mainPath, 'utf8');
 // Extract module paths from main.js (imports and re-exports)
 const importPaths = [];
 for (const line of mainSrc.split('\n')) {
-  const m = line.match(/^(?:import|export)\s+.*['"]\.\/(.+?)['"];?\s*(?:\/\/.*)?$/);
-  if (m) importPaths.push(m[1]);
+  // './x.js' in src/, or '../../theme/src/theme.js' — a shared package's source, concatenated in
+  const m = line.match(/^(?:import|export)\s+.*['"](\.\.?\/.+?)['"];?\s*(?:\/\/.*)?$/);
+  if (m && !importPaths.includes(m[1])) importPaths.push(m[1]);   // a re-export names a file already in
 }
 
 const chunks = [];
@@ -50,7 +51,7 @@ const header = '// \u26a0 GENERATED FILE \u2014 DO NOT EDIT. Source: ext/plot/sr
   + '// @gcu/plot \u2014 Canvas 2D plotting library for Auditable\n'
   + '// Line, scatter, bar, histogram, imshow. GCU dark theme.\n';
 
-const output = header + '\n' + chunks.join('\n\n') + '\n\nexport { subplots, plot, scatter, imshow, hist, bar, cmap, Figure, Axes, LinearScale, LogScale, getCmap, pltAdder, replay, recordingContext, rcParams, VERSION };\n';
+const output = header + '\n' + chunks.join('\n\n') + '\n\nexport { subplots, plot, scatter, imshow, hist, bar, cmap, Figure, Axes, LinearScale, LogScale, getCmap, pltAdder, replay, recordingContext, rcParams, VERSION, themeFromCSS, resolveTheme };\n';
 
 const outPath = path.join(__dirname, 'index.js');
 fs.writeFileSync(outPath, output);

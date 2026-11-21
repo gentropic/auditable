@@ -681,28 +681,28 @@ describe('style palette', () => {
   it('starts dark (auditable-native)', () => {
     // Reset in case earlier tests mutated. Default is dark.
     setStyle('dark_background');
-    assert.equal(_style.bgcolor, '#1a1a1a');
-    assert.equal(_style.textColor, '#ccc');
+    assert.equal(_style.background, '#15171A');          // @gcu/theme's dark (basalt)
+    assert.equal(_style.foreground, '#DDDCDA');
   });
 
   it("style.use('default') switches to a light palette", () => {
     setStyle('default');
-    assert.equal(_style.bgcolor, '#ffffff');
-    assert.equal(_style.textColor, '#333333');
+    assert.equal(_style.background, '#FFFFFF');          // matplotlib's light styles are the paper theme
+    assert.equal(_style.foreground, '#1A1A1A');
     // restore for following tests
     setStyle('dark_background');
   });
 
   it("style.use('classic') is treated as light", () => {
     setStyle('classic');
-    assert.equal(_style.bgcolor, '#ffffff');
+    assert.equal(_style.background, '#FFFFFF');
     setStyle('dark_background');
   });
 
   it('unknown style names leave the palette alone', () => {
     setStyle('default');
     setStyle('some-unknown-style');
-    assert.equal(_style.bgcolor, '#ffffff'); // unchanged
+    assert.equal(_style.background, '#FFFFFF'); // unchanged
     setStyle('dark_background');
   });
 
@@ -729,7 +729,7 @@ describe('style palette', () => {
       },
     };
     ax._render(ctx, { x: 0, y: 0, w: 100, h: 100 });
-    assert.equal(bgFill, '#ffffff'); // light palette
+    assert.equal(bgFill, '#FFFFFF'); // light palette
     setStyle('dark_background');
   });
 });

@@ -43,11 +43,11 @@ const _KNOWN = {
   axvline: [..._ARTIST, 'linestyle', 'linewidth'],
   hlines: [..._ARTIST, 'colors', 'linestyle', 'linewidth'],
   vlines: [..._ARTIST, 'colors', 'linestyle', 'linewidth'],
-  text: ['color', 'alpha', 'zorder', 'fontsize', 'ha', 'va', 'horizontalalignment', 'verticalalignment'],
+  text: ['color', 'alpha', 'zorder', 'fontsize', 'ha', 'va', 'horizontalalignment', 'verticalalignment', 'transform', 'rotation', 'fontweight'],
   legend: ['loc'],
   colorbar: ['label', 'ax'],
   grid: ['color', 'alpha', 'linestyle', 'linewidth', 'which', 'axis'],
-  subplots: ['figsize', 'dpi', 'facecolor', 'gap', 'wspace', 'hspace', 'strict', 'theme'],
+  subplots: ['figsize', 'dpi', 'facecolor', 'gap', 'wspace', 'hspace', 'strict', 'theme', 'sharex', 'sharey'],
   label: ['fontsize', 'color', 'loc', 'pad', 'fontweight'],
 };
 
@@ -61,20 +61,14 @@ const _UNSUPPORTED = {
   imshow: { norm: 'not supported yet — use vmin / vmax' },
   axhline: { xmin: 'not supported yet — use hlines(y, x0, x1)', xmax: 'not supported yet — use hlines(y, x0, x1)' },
   axvline: { ymin: 'not supported yet — use vlines(x, y0, y1)', ymax: 'not supported yet — use vlines(x, y0, y1)' },
-  text: { transform: 'axes-relative text is not supported yet; give data coordinates', rotation: 'not supported yet', fontweight: 'not supported yet', bbox: 'not supported yet' },
+  text: { bbox: 'not supported yet' },
   legend: { bbox_to_anchor: 'not supported yet — use loc', ncol: 'not supported yet', title: 'not supported yet', fontsize: 'not supported yet', frameon: 'not supported yet', framealpha: 'not supported yet' },
   colorbar: { shrink: 'not supported yet', orientation: 'only vertical colorbars for now', ticks: 'not supported yet', extend: 'not supported yet', fraction: 'not supported yet', pad: 'not supported yet' },
-  subplots: { sharex: 'not supported yet — set the same xlim on each axes', sharey: 'not supported yet — set the same ylim on each axes', squeeze: 'not supported yet', constrained_layout: 'layout is always tight', layout: 'layout is always tight' },
+  subplots: { squeeze: 'not supported yet', constrained_layout: 'layout is always tight', layout: 'layout is always tight' },
 };
 
 // The calls that do nothing yet, by name → what to do instead
 const _NOOP_CALLS = {
-  xticks: 'custom ticks are not supported yet; ticks are chosen automatically',
-  yticks: 'custom ticks are not supported yet; ticks are chosen automatically',
-  set_xticks: 'custom ticks are not supported yet; ticks are chosen automatically',
-  set_yticks: 'custom ticks are not supported yet; ticks are chosen automatically',
-  set_xticklabels: 'custom tick labels are not supported yet',
-  set_yticklabels: 'custom tick labels are not supported yet',
   rc: "plt.rc is not supported yet; use plt.style.use('default' | 'dark_background')",
   set_zorder: 'axes are drawn in creation order',
   subplots_adjust: 'not supported yet; use subplots(..., {gap}) for the space between axes',
@@ -297,97 +291,199 @@ function _fmtCount(n) {
   return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 
+// -- theme.js --
+
+// @gcu/theme — one theme vocabulary for GCU figures. @gcu/condenser's view and @gcu/plot
+// read the same keys, so one theme dresses a chart and the 3D view beside it.
+//
+// A theme is a plain object. The keys:
+//
+//   background    the plot area's / the 3D scene's background
+//   figure        the surface around a chart's plot areas (a figure's face); charts only
+//   foreground    primary text and marks
+//   muted         secondary text: tick labels, captions, units
+//   grid          grid lines
+//   frame         axis lines, bar outlines, legend swatch borders
+//   panel         the fill behind floating chrome (legends, readouts, toolbars)
+//   panel_border  its border
+//   accent        the action colour: a pressed button, a cut line, a highlight
+//   selection     what is selected
+//   halo          the outline that keeps text readable over a busy scene
+//   cycle         the categorical colours, in order
+//   ramp          the default colour map's name
+//   font          the sans stack (titles, labels)
+//   mono          the monospace stack (numbers, readouts)
+//   font_size     the base size in CSS px
+//
+// The dark theme is Switchboard's basalt, the light one its equipment gray; paper is
+// white, for printed figures. Colours are CSS colour strings.
+
+const MONO = "'Space Mono', 'JetBrains Mono', Consolas, ui-monospace, Menlo, monospace";
+const SANS = "'Barlow', system-ui, -apple-system, 'Segoe UI', sans-serif";
+
+// matplotlib's default cycle (tab10, its C0–C9): what a chart written from matplotlib
+// memory expects its first line, bar or class to be
+const CYCLE = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf'];
+
+const THEME_KEYS = ['background', 'figure', 'foreground', 'muted', 'grid', 'frame', 'panel', 'panel_border',
+  'accent', 'selection', 'halo', 'cycle', 'ramp', 'font', 'mono', 'font_size'];
+
+const THEMES = {
+  dark: {
+    background: '#15171A', figure: 'transparent', foreground: '#DDDCDA', muted: '#9E9C98', grid: '#2F3338', frame: '#83817E',
+    panel: 'rgba(29,32,36,0.88)', panel_border: '#2F3338', accent: '#FB9044', selection: '#EC9FFF',
+    halo: 'rgba(0,0,0,0.75)', cycle: CYCLE, ramp: 'viridis', font: SANS, mono: MONO, font_size: 11,
+  },
+  light: {
+    background: '#E4E3E1', figure: '#E4E3E1', foreground: '#232322', muted: '#504F4C', grid: '#C6C4C1', frame: '#5A5856',
+    panel: 'rgba(237,236,235,0.92)', panel_border: '#B3B1AD', accent: '#8B3F00', selection: '#793A8D',
+    halo: 'rgba(255,255,255,0.8)', cycle: CYCLE, ramp: 'viridis', font: SANS, mono: MONO, font_size: 11,
+  },
+  paper: {
+    background: '#FFFFFF', figure: '#FFFFFF', foreground: '#1A1A1A', muted: '#555555', grid: '#DDDDDD', frame: '#333333',
+    panel: 'rgba(255,255,255,0.92)', panel_border: '#BBBBBB', accent: '#8B3F00', selection: '#793A8D',
+    halo: 'rgba(255,255,255,0.85)', cycle: CYCLE, ramp: 'viridis', font: SANS, mono: MONO, font_size: 11,
+  },
+};
+
+// the Switchboard semantic tokens (--au-*) each key reads; a host's own design tokens
+// can be mapped the same way
+const CSS_MAP = {
+  background: '--au-surface', foreground: '--au-fg', muted: '--au-fg-soft', grid: '--au-border-soft',
+  frame: '--au-rule', panel: '--au-surface-raised', panel_border: '--au-border', accent: '--au-action',
+  selection: '--au-selected', font: '--au-font-sans', mono: '--au-font-mono',
+};
+
+// a name, a partial theme ({ base: 'light', accent: '#c00' }) or nothing → a full theme.
+// Unknown names fall back to dark; `onWarn` hears about it.
+function resolveTheme(t, onWarn) {
+  if (t == null || t === '') return _copyTheme(THEMES.dark);
+  if (typeof t === 'string') {
+    if (THEMES[t]) return _copyTheme(THEMES[t]);
+    if (onWarn) onWarn(`no theme '${t}' (${Object.keys(THEMES).join(', ')}); using dark`);
+    return _copyTheme(THEMES.dark);
+  }
+  const base = resolveTheme(t.base || (t.background && isLight(t.background) ? 'light' : 'dark'), onWarn);
+  for (const k of THEME_KEYS) if (t[k] != null && t[k] !== '') base[k] = k === 'cycle' ? Array.from(t[k]) : t[k];
+  if (onWarn) for (const k of Object.keys(t)) if (k !== 'base' && !THEME_KEYS.includes(k)) onWarn(`a theme has no key '${k}'`);
+  return base;
+}
+const _copyTheme = (t) => ({ ...t, cycle: t.cycle.slice() });
+
+// read a theme from CSS custom properties on `el` (a host page's tokens, its light or
+// dark mode). Properties that are unset keep the base theme's value; the base is light
+// or dark by the background found.
+function themeFromCSS(el, map = CSS_MAP) {
+  const cs = typeof getComputedStyle === 'function' && el ? getComputedStyle(el) : null;
+  const out = {};
+  if (cs) for (const [k, prop] of Object.entries(map)) {
+    const v = cs.getPropertyValue(prop).trim();
+    if (v) out[k] = v;
+  }
+  if (out.background) out.base = isLight(out.background) ? 'light' : 'dark';
+  return resolveTheme(out);
+}
+
+// '#rgb' · '#rrggbb' · 'rgb(a)(…)' → [r, g, b] 0–255 (null if it can't tell)
+function parseColor(c) {
+  if (typeof c !== 'string') return null;
+  const s = c.trim();
+  let m = /^#([0-9a-f]{3})$/i.exec(s);
+  if (m) return [...m[1]].map((h) => parseInt(h + h, 16));
+  m = /^#([0-9a-f]{6})([0-9a-f]{2})?$/i.exec(s);
+  if (m) return [0, 2, 4].map((k) => parseInt(m[1].slice(k, k + 2), 16));
+  m = /^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)/i.exec(s);
+  if (m) return [+m[1], +m[2], +m[3]].map((v) => Math.max(0, Math.min(255, Math.round(v))));
+  return null;
+}
+
+// relative luminance above the midpoint: a light theme
+function isLight(c) {
+  const rgb = parseColor(c);
+  if (!rgb) return false;
+  const lin = rgb.map((v) => { v /= 255; return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; });
+  return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2] > 0.18;
+}
+
 // -- style.js --
 
-// Style palette — auditable-native dark by default. Mutated in place
-// by `plt.style.use(name)` so all subsequent renders pick up the new
-// palette. Per-Axes overrides (`_bgcolor`, `_textColor`, `_gridColor`,
-// `_frameColor`) still win; this just changes the fallback colors used
-// when an Axes doesn't override.
+// The theme. plot speaks @gcu/theme's keys (background, figure, foreground, muted, grid,
+// frame, panel, panel_border, accent, selection, halo, cycle, ramp, font, mono, font_size),
+// the same ones @gcu/condenser's 3D view reads, so one theme dresses a chart and the view
+// beside it. No colour is hard-coded outside a theme.
+//
+// - `plt.style.use(name)` sets the DEFAULT theme, which a figure copies when it is made
+//   (matplotlib's rule: a style applies to what is created after it). matplotlib's light
+//   styles ('default', 'classic', …) are the white `paper` theme; 'dark_background' is
+//   `dark`; @gcu/theme's own names work too.
+// - `subplots({theme})` / `figure({theme})` / `fig.set_theme(t)` give one figure its own:
+//   a name, a partial theme ({base: 'light', accent: '#c00'}), or themeFromCSS(el).
+// - Per-axes overrides (`_bgcolor`, `_textColor`, `_gridColor`, `_frameColor`) still win, for
+//   callers that dress one cell of a grid.
 //
 // Notebooks loaded from a .ipynb through @gcu/ipynb get an automatic
-// `plt.style.use('default')` injected right after their
-// `import matplotlib.pyplot` line, so they render with matplotlib's
-// light defaults (matching what their authors saw in Jupyter). Native
-// auditable cells keep the dark default unless they call style.use
-// themselves.
-
+// `plt.style.use('default')` after their `import matplotlib.pyplot`, so they render light as
+// their authors saw them in Jupyter. Native auditable cells keep the dark default.
 //
-// A FIGURE takes a copy of the palette when it is made (matplotlib's own rule: a style
-// applies to what is created after it), so two figures on one page can wear different
-// palettes, and a style.use() later doesn't repaint a figure already made.
+// Text: plot draws every label in the theme's MONOSPACE stack (`mono`), at `font_size`
+// (ticks one px smaller, titles two larger). Monospace is what keeps the draw list the same
+// on every host: the recording context measures text as 0.6 em per character, which is
+// right for any monospace face and wrong for a proportional one.
 
-// the default colour cycle, each new trace takes the next one
-const _CYCLE = ['#c89b3c', '#5ba3b5', '#e07050', '#7a8b99', '#b5854b', '#5bb58b'];
+const _LIGHT_STYLES = ['default', 'classic', 'matplotlib', 'seaborn', 'seaborn-whitegrid', 'seaborn-v0_8', 'seaborn-v0_8-whitegrid', 'ggplot', 'bmh', 'fast', 'grayscale'];
 
-const _style = {
-  bgcolor: '#1a1a1a',
-  textColor: '#ccc',
-  gridColor: '#333',
-  frameColor: '#666',
-  // figure-level background. Transparent on dark so the notebook's
-  // dark bg shows through; an opaque off-white on the light palette so
-  // dark text on the figure surface contrasts properly even when the
-  // surrounding notebook is dark.
-  figureFacecolor: 'transparent',
-  // legend background (rgba for semi-transparent overlay)
-  legendBg: 'rgba(30,30,30,0.85)',
-  legendBorder: '#555',
-  // axhline / axvline default — a neutral reference line, readable on the palette
-  refColor: '#888',
-  cycle: _CYCLE,
-};
+// the default theme a new figure copies (style.use changes it)
+const _style = resolveTheme('dark');
 
-const _DARK = {
-  bgcolor: '#1a1a1a',
-  textColor: '#ccc',
-  gridColor: '#333',
-  frameColor: '#666',
-  figureFacecolor: 'transparent',
-  legendBg: 'rgba(30,30,30,0.85)',
-  legendBorder: '#555',
-  refColor: '#888',
-  cycle: _CYCLE,
-};
+// a theme, as a figure takes it: names and partials resolved over the default theme's base.
+// plot 0.2's own keys (bgcolor, textColor, …) are still read, mapped onto the shared ones.
+const _LEGACY = { bgcolor: 'background', textColor: 'foreground', gridColor: 'grid', frameColor: 'frame', figureFacecolor: 'figure', legendBg: 'panel', legendBorder: 'panel_border', refColor: 'muted' };
+function _resolve(t, strict) {
+  if (t == null) return _snapshotStyle();
+  if (typeof t === 'string') {
+    const key = _LIGHT_STYLES.includes(t.toLowerCase()) ? 'paper' : t.toLowerCase() === 'dark_background' ? 'dark' : t;
+    return resolveTheme(key, (m) => _warn(`theme.${t}`, `plot: ${m}`, strict));
+  }
+  const o = {};
+  for (const [k, v] of Object.entries(t)) o[_LEGACY[k] || k] = v;
+  if (!o.base && !o.background) o.base = _style._name || 'dark';
+  return resolveTheme(o, (m) => _warn(`theme.${m}`, `plot: ${m}`, strict));
+}
 
-const _LIGHT = {
-  bgcolor: '#ffffff',
-  textColor: '#333333',
-  gridColor: '#cccccc',
-  frameColor: '#666666',
-  // matplotlib's default figure facecolor is white; the surrounding
-  // notebook bg is dark, so we make the figure an opaque card.
-  figureFacecolor: '#fafafa',
-  legendBg: 'rgba(255,255,255,0.9)',
-  legendBorder: '#999999',
-  refColor: '#666666',
-  cycle: _CYCLE,
-};
-
-// the palette as it stands now, for a figure being made
+// the default theme as it stands now, for a figure being made
 function _snapshotStyle() {
   return { ..._style, cycle: _style.cycle.slice() };
 }
 
-// matplotlib's style.use accepts a name (or list of names). We honor a
-// small set: 'default' / 'classic' / 'matplotlib' → light palette;
-// 'dark_background' → dark palette. Any other name warns and changes nothing.
+// matplotlib's style.use: a name or a list of names. The light matplotlib styles are the
+// white `paper` theme, 'dark_background' is `dark`, and dark / light / paper are taken as
+// they are. Anything else warns and changes nothing.
 function setStyle(name) {
   const names = Array.isArray(name) ? name : [name];
   for (const n of names) {
     const key = String(n || '').toLowerCase();
-    if (key === 'default' || key === 'classic' || key === 'matplotlib' ||
-        key === 'seaborn' || key === 'seaborn-whitegrid' ||
-        key === 'ggplot' || key === 'bmh') {
-      Object.assign(_style, _LIGHT);
-    } else if (key === 'dark_background') {
-      Object.assign(_style, _DARK);
-    } else {
-      // unknown style names leave the palette alone — and say so
-      _warn('style.' + key, `style.use('${n}') is not a style plot knows; use 'default' (light) or 'dark_background'`);
+    const theme = _LIGHT_STYLES.includes(key) ? 'paper' : key === 'dark_background' ? 'dark' : THEMES[key] ? key : null;
+    if (!theme) {
+      _warn('style.' + key, `style.use('${n}') is not a style plot knows; use 'default' (white), 'dark_background', or a theme: ${Object.keys(THEMES).join(', ')}`);
+      continue;
     }
+    for (const k of Object.keys(_style)) delete _style[k];
+    Object.assign(_style, resolveTheme(theme), { _name: theme });
   }
 }
+_style._name = 'dark';
+
+
+// fonts: the theme's monospace stack at a size relative to font_size
+const _font = (th, d = 0, bold = false) => `${bold ? 'bold ' : ''}${(th.font_size || 11) + d}px ${th.mono}`;
+
+// A text's width for LAYOUT: 0.6 em per character, what every monospace face advances (and
+// what the recording context answers), so a figure lays out identically live, recorded, in
+// a worker or in Node — and a draw list replays onto exactly the pixels the live draw made.
+const _textW = (font, s) => {
+  const m = /(\d+(?:\.\d+)?)px/.exec(font || '');
+  return String(s).length * 0.6 * (m ? +m[1] : 10);
+};
 
 // -- scale.js --
 
@@ -523,6 +619,192 @@ class LogScale {
       }
       return v.toExponential(1);
     };
+  }
+}
+
+// -- ticks.js --
+
+// Ticks and their labels, sized to the axis's PIXEL length and measured, so labels never overlap and margins can be measured from them.
+//
+// An axis's ticks come from, in order:
+//   1. set_xticks(values, labels?, {rotation}) — exactly those (a label list may be shorter);
+//   2. a category axis (strings given as x or y) — one tick per category, labelled;
+//   3. the scale — about one tick per 70 px on x, per 38 px on y.
+// Labels that would collide are fixed: numeric ticks get fewer; categories rotate 45°, and
+// if they still collide only every k-th is labelled (the ticks stay).
+
+
+
+// a category axis: labels in first-appearance order, each at the integer position 0, 1, 2 …
+class _Categories {
+  constructor() { this.list = []; this.index = new Map(); }
+  // an array of labels (strings or numbers-as-labels) → their positions
+  positions(arr) {
+    const out = new Float64Array(arr.length);
+    for (let i = 0; i < arr.length; i++) {
+      const v = arr[i];
+      if (v == null || (typeof v === 'number' && v !== v)) { out[i] = NaN; continue; }
+      const key = String(v);
+      let k = this.index.get(key);
+      if (k === undefined) { k = this.list.length; this.list.push(key); this.index.set(key, k); }
+      out[i] = k;
+    }
+    return out;
+  }
+}
+
+// does this column hold labels rather than numbers (matplotlib: strings make a category axis)
+function _isCategorical(arr) {
+  if (!arr || typeof arr === 'string' || ArrayBuffer.isView(arr)) return false;
+  for (let i = 0; i < arr.length; i++) {
+    const v = arr[i];
+    if (v == null) continue;
+    return typeof v === 'string';
+  }
+  return false;
+}
+
+// at most `count` round ticks inside [lo, hi], as many as fit: the smallest step of 1, 2, 2.5
+// or 5 × a power of ten that gives no more than `count` (and at least two while the range
+// allows) — matplotlib's MaxNLocator idea
+function _niceTicks(lo, hi, count) {
+  const span = hi - lo;
+  if (!(span > 0) || !Number.isFinite(span)) return [lo];
+  const n = (step) => Math.floor(hi / step + 1e-9) - Math.ceil(lo / step - 1e-9) + 1;
+  const e0 = Math.floor(Math.log10(span)) - 3;
+  let step = null;
+  for (let e = e0; e <= e0 + 5 && step == null; e++) {
+    for (const m of [1, 2, 2.5, 5]) {
+      const s = m * Math.pow(10, e);
+      if (n(s) <= Math.max(2, count)) { step = s; break; }
+    }
+  }
+  if (step == null) step = Math.pow(10, e0 + 6);
+  const a = Math.ceil(lo / step - 1e-9), b = Math.floor(hi / step + 1e-9);
+  const out = [];
+  for (let k = a; k <= b && out.length < 200; k++) out.push(+(k * step).toPrecision(12));
+  out.step = step;
+  return out;
+}
+
+// labels for ticks with this step: just the decimals the step needs; plain digits up to 1e9
+// (a northing reads 8200100, as matplotlib prints it), exponents past that or below 1e-4
+function _fmtStep(values, step) {
+  const big = values.reduce((m, v) => Math.max(m, Math.abs(v)), 0);
+  if (big >= 1e9 || (big > 0 && big < 1e-4)) return values.map((v) => (v === 0 ? '0' : v.toExponential(Math.max(0, Math.min(3, Math.round(-Math.log10(step / big)))))));
+  let dec = 0;
+  while (dec < 10 && Math.abs(step * Math.pow(10, dec) - Math.round(step * Math.pow(10, dec))) > 1e-6 * Math.max(1, step * Math.pow(10, dec))) dec++;
+  return values.map((v) => { const s = v.toFixed(dec); return s === '-0' || /^-0\.0*$/.test(s) ? s.slice(1) : s; });
+}
+
+// numbers as a scale formats them: a common precision for the set
+function _fmtTicks(scale, values) {
+  if (!scale.log && values.length > 1) return _fmtStep(values, Math.abs(values[1] - values[0]));
+  const f = scale.tickFormat();
+  return values.map((v) => f(v));
+}
+
+// the ticks of one axis: { values, labels, rot (degrees), extent (px the labels take
+// perpendicular to the axis), along (the widest label along the axis) }
+// `ax`: the Axes; `axis`: 'x' | 'y'; `scale`; `len`: the axis length in px; `ctx` to measure
+function _tickSpec(ax, axis, scale, len, ctx, font, fontPx) {
+  const custom = axis === 'x' ? ax._xticks : ax._yticks;
+  const cats = axis === 'x' ? ax._xcats : ax._ycats;
+  ctx.font = font;
+  const W = (s) => _textW(font, s);
+  const [d0, d1] = scale.domain;
+  const lo = Math.min(d0, d1), hi = Math.max(d0, d1);
+  const inside = (v) => v >= lo - Math.abs(hi - lo) * 1e-9 && v <= hi + Math.abs(hi - lo) * 1e-9;
+  let values, labels, rot = 0, fixedRot = false, thin = 1;
+
+  if (custom && custom.rotation != null) { rot = custom.rotation === 'vertical' ? 90 : +custom.rotation || 0; fixedRot = true; }
+  if (custom && custom.values) {
+    values = Array.from(custom.values, Number);
+    labels = custom.labels ? values.map((_, i) => (custom.labels[i] != null ? String(custom.labels[i]) : '')) : _fmtTicks(scale, values);
+  } else if (cats && cats.list.length) {
+    values = cats.list.map((_, i) => i);
+    labels = cats.list.slice();
+  } else {
+    const per = axis === 'x' ? 55 : 32;
+    let count = Math.max(2, Math.min(12, Math.floor(len / per) + 1));
+    for (;;) {
+      values = scale.log ? scale.ticks() : _niceTicks(lo, hi, count);
+      labels = scale.log ? _fmtTicks(scale, values) : _fmtStep(values, values.step || (hi - lo));
+      if (axis === 'y' || count <= 2 || scale.log) break;
+      // x: shrink the count until neighbouring labels clear each other by 8 px
+      const px = values.map((v) => scale.transform(v));
+      let ok = true;
+      for (let i = 1; i < values.length; i++) {
+        if (Math.abs(px[i] - px[i - 1]) < (W(labels[i]) + W(labels[i - 1])) / 2 + 8) { ok = false; break; }
+      }
+      if (ok) break;
+      count--;
+    }
+  }
+  const keep = values.map((v) => v - v === 0 && inside(v));
+  values = values.filter((_, i) => keep[i]);
+  labels = labels.filter((_, i) => keep[i]);
+  const widths = labels.map(W);
+  const maxW = widths.length ? Math.max(...widths) : 0;
+
+  if (axis === 'x' && !fixedRot && values.length > 1) {
+    // labels that collide flat: rotate 45° (only for labels, e.g. categories — numbers were
+    // thinned above); if they still collide, label every k-th
+    const px = values.map((v) => scale.transform(v));
+    let minGap = Infinity;
+    for (let i = 1; i < px.length; i++) minGap = Math.min(minGap, Math.abs(px[i] - px[i - 1]));
+    if (minGap < maxW + 6) {
+      rot = 45;
+      const need = fontPx * 1.15;                      // rotated 45°, neighbours clear by their height / sin
+      if (minGap * Math.SQRT1_2 < need) thin = Math.ceil(need / (minGap * Math.SQRT1_2));
+    }
+  }
+  if (thin > 1) labels = labels.map((l, i) => (i % thin === 0 ? l : ''));
+
+  const r = (rot * Math.PI) / 180;
+  const extent = axis === 'x'
+    ? (rot ? maxW * Math.abs(Math.sin(r)) + fontPx * Math.abs(Math.cos(r)) : fontPx)
+    : maxW;
+  return { values, labels, rot, extent, maxW, widths };
+}
+
+// draw one axis's ticks and labels. side: 'bottom' | 'top' | 'left' | 'right'
+function _drawTicks(ctx, spec, scale, side, plot, color, tickColor, font) {
+  ctx.font = font;
+  ctx.fillStyle = color;
+  ctx.strokeStyle = tickColor;
+  ctx.lineWidth = 1;
+  const { values, labels, rot } = spec;
+  for (let i = 0; i < values.length; i++) {
+    const p = scale.transform(values[i]);
+    ctx.beginPath();
+    if (side === 'bottom') { ctx.moveTo(p, plot.y + plot.h); ctx.lineTo(p, plot.y + plot.h + 4); }
+    else if (side === 'top') { ctx.moveTo(p, plot.y); ctx.lineTo(p, plot.y - 4); }
+    else if (side === 'left') { ctx.moveTo(plot.x - 4, p); ctx.lineTo(plot.x, p); }
+    else { ctx.moveTo(plot.x + plot.w, p); ctx.lineTo(plot.x + plot.w + 4, p); }
+    ctx.stroke();
+    const s = labels[i];
+    if (!s) continue;
+    if (side === 'bottom' || side === 'top') {
+      const y = side === 'bottom' ? plot.y + plot.h + 6 : plot.y - 6;
+      if (rot) {                                       // rotated: the label's END sits under the tick
+        ctx.save();
+        ctx.translate(p, y);
+        ctx.rotate((side === 'bottom' ? -1 : 1) * rot * Math.PI / 180);
+        ctx.textAlign = 'right';
+        ctx.textBaseline = side === 'bottom' ? 'top' : 'bottom';
+        ctx.fillText(s, 0, 0);
+        ctx.restore();
+      } else {
+        ctx.textAlign = 'center';
+        ctx.textBaseline = side === 'bottom' ? 'top' : 'bottom';
+        ctx.fillText(s, p, y);
+      }
+    } else {
+      ctx.textAlign = side === 'left' ? 'right' : 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(s, side === 'left' ? plot.x - 6 : plot.x + plot.w + 6, p);
+    }
   }
 }
 
@@ -720,7 +1002,7 @@ function renderColorbar(ctx, x, y, w, h, cmap, vmin, vmax, opts) {
     ctx.fillRect(x, y + i, w, Math.ceil(h / n) + 1);
   }
   // tick labels
-  const textColor = opts?.textColor || '#ccc';
+  const textColor = opts?.textColor || 'currentColor';
   ctx.fillStyle = textColor;
   ctx.font = opts?.font || '10px monospace';
   ctx.textAlign = 'left';
@@ -743,7 +1025,8 @@ function renderColorbar(ctx, x, y, w, h, cmap, vmin, vmax, opts) {
   // label
   if (opts?.label) {
     ctx.save();
-    ctx.translate(x + w + 40, y + h / 2);
+    if (opts.labelFont) ctx.font = opts.labelFont;
+    ctx.translate(x + (opts.labelOffset ?? w + 40), y + h / 2);
     ctx.rotate(-Math.PI / 2);
     ctx.textAlign = 'center';
     ctx.textBaseline = 'bottom';
@@ -1414,11 +1697,23 @@ function _queryGrid(g, qx, qy, radius) {
 
 
 
+
 // The fast-path thresholds (measured: bench/BENCH.md). Scatters with more than rasterMin points
 // rasterize; lines with more than 4 vertices per device pixel decimate. Tests turn them off
 // to compare the fast paths against the plain ones.
 const _engine = { rasterMin: 4000, m4: true, batch: true };
 const _M4_SUB = 4;          // M4 columns per device pixel (see _pathM4)
+
+// Trace kinds beyond the core ones register here (marks.js, box.js, contour.js, …), so each
+// lives in its own module: { extent(ax, trace, axis, log, take, stick), render(ax, ctx, trace,
+// xScale, yScale, rect), z (the default zorder), cmap (it colour-maps: a colorbar follows it),
+// legend(ax, trace) → a legend entry }. take(v) widens the range; stick(v) is a sticky edge
+// that the margins stop at (matplotlib's sticky_edges: bars at 0, images at their extent).
+const _KINDS = {};
+
+// matplotlib's default zorders: images 0, patches and collections 1, lines 2, text 3. Traces
+// draw in zorder, ties in the order they were added.
+const _ZORDER = { imshow: 0, bar: 1, barh: 1, hist: 1, scatter: 1, line: 2, hline: 2, vline: 2, text: 3 };
 
 function _plainOpts(o) {
   // an options object, as opposed to a column or a format string
@@ -1440,6 +1735,9 @@ function _project(arr, s, out) {
   return out;
 }
 
+// matplotlib's named font sizes, as px relative to the theme's base size
+const _FONTSIZES = { 'xx-small': -4, 'x-small': -3, small: -2, medium: 0, large: 2, 'x-large': 4, 'xx-large': 6 };
+
 class Axes {
   constructor(theme) {
     this._theme = theme || _snapshotStyle();
@@ -1459,6 +1757,16 @@ class Axes {
     this._colorIdx = 0;
     this._strict = false;
     this._dpi = 100;             // the figure's, for sizes given in points (markers)
+    this._xticks = null;         // set_xticks: { values, labels, rotation }
+    this._yticks = null;
+    this._xcats = null;          // a category axis (strings as x): _Categories
+    this._ycats = null;
+    this._xinv = false;          // invert_xaxis()
+    this._yinv = false;
+    this._xmargin = 0.05;        // ax.margins(): the share of the data range added each side
+    this._ymargin = 0.05;
+    this._axisOn = true;         // axis('off') hides the frame, ticks and axis labels
+    this._shared = { x: null, y: null };   // subplots(sharex / sharey): every axes sharing that axis
     this.view = null;            // set by a render: { x, y, w, h, xScale, yScale }
   }
 
@@ -1496,8 +1804,8 @@ class Axes {
     if (fmt) { const f = parseFormat(fmt); for (const k in f) if (o[k] === undefined) o[k] = k === 'color' ? _cssColor(f[k]) : f[k]; }
     if (!o.color) o.color = this._nextColor();
     o.marker = this._checkMarker('plot', o.marker);
-    const Y = _col(y);
-    const X = x === undefined ? _arange(Y.length) : _col(x);
+    const Y = this._axisCol('y', y);
+    const X = x === undefined ? _arange(Y.length) : this._axisCol('x', x);
     if (X.length !== Y.length) throw _lenErr('plot', 'x', X.length, 'y', Y.length);
     this._traces.push({ type: 'line', x: X, y: Y, opts: o });
     return this;
@@ -1512,7 +1820,7 @@ class Axes {
       if (sOrOpts != null) o.s = sOrOpts;
       if (c != null) o.c = c;
     }
-    const X = _col(x), Y = _col(y), n = X.length;
+    const X = this._axisCol('x', x), Y = this._axisCol('y', y), n = X.length;
     if (Y.length !== n) throw _lenErr('scatter', 'x', n, 'y', Y.length);
     const trace = { type: 'scatter', x: X, y: Y, opts: o, cvals: null, colors: null, s: null };
     // c: a colour, numbers to colour-map, or one colour per point
@@ -1545,8 +1853,7 @@ class Axes {
   bar(x, heights, opts) {
     const o = this._opts('bar', opts);
     if (!o.color) o.color = this._nextColor();
-    const X = _col(x), H = _col(heights);
-    if (!_isNumericCol(X)) _warn('bar.categories', 'bar(): category labels on x are not supported yet; give numeric positions', this._strict);
+    const X = this._axisCol('x', x), H = _col(heights);
     if (X.length !== H.length) throw _lenErr('bar', 'x', X.length, 'height', H.length);
     if (Array.isArray(o.color)) o.color = o.color.map(_cssColor);
     this._traces.push({ type: 'bar', x: X, heights: H, opts: o });
@@ -1556,8 +1863,7 @@ class Axes {
   barh(y, widths, opts) {
     const o = this._opts('barh', opts);
     if (!o.color) o.color = this._nextColor();
-    const Yc = _col(y), W = _col(widths);
-    if (!_isNumericCol(Yc)) _warn('barh.categories', 'barh(): category labels on y are not supported yet; give numeric positions', this._strict);
+    const Yc = this._axisCol('y', y), W = _col(widths);
     if (Yc.length !== W.length) throw _lenErr('barh', 'y', Yc.length, 'width', W.length);
     if (Array.isArray(o.color)) o.color = o.color.map(_cssColor);
     this._traces.push({ type: 'barh', y: Yc, widths: W, opts: o });
@@ -1693,7 +1999,6 @@ class Axes {
     const o = this._opts('text', opts);
     if (o.horizontalalignment && !o.ha) o.ha = o.horizontalalignment;
     if (o.verticalalignment && !o.va) o.va = o.verticalalignment;
-    if (o.fontsize == null) o.fontsize = 11;
     this._traces.push({ type: 'text', x, y, text, opts: o });
     return this;
   }
@@ -1701,27 +2006,114 @@ class Axes {
   set_title(text, opts) { this._title = { text, opts: _checkOpts('label', opts, this._strict) }; return this; }
   set_xlabel(text, opts) { this._xlabel = { text, opts: _checkOpts('label', opts, this._strict) }; return this; }
   set_ylabel(text, opts) { this._ylabel = { text, opts: _checkOpts('label', opts, this._strict) }; return this; }
-  set_xlim(lo, hi) {
-    // matplotlib's set_xlim accepts either set_xlim(lo, hi) or set_xlim([lo, hi]).
-    if (_isArrayLike(lo) && hi === undefined) { hi = lo[1]; lo = lo[0]; }
-    this._xlim = [lo, hi]; return this;
+  // set_xlim(left, right) · set_xlim([left, right]) · set_xlim({left: 0}) (keyword, as adder
+  // passes it). A missing end keeps what it was (matplotlib: set_xlim(left=0)); null means
+  // "from the data". left > right is an inverted axis. Shared axes (subplots(sharex)) all move.
+  set_xlim(lo, hi) { this._setLim('x', lo, hi, 'left', 'right', 'xmin', 'xmax'); return this; }
+  set_ylim(lo, hi) { this._setLim('y', lo, hi, 'bottom', 'top', 'ymin', 'ymax'); return this; }
+  _setLim(axis, lo, hi, kLo, kHi, kMin, kMax) {
+    if (_plainOpts(lo)) { const o = lo; lo = o[kLo] !== undefined ? o[kLo] : o[kMin]; hi = o[kHi] !== undefined ? o[kHi] : o[kMax]; }
+    else if (_isArrayLike(lo) && hi === undefined) { hi = lo[1]; lo = lo[0]; }
+    const key = axis === 'x' ? '_xlim' : '_ylim';
+    const cur = this[key] || [null, null];
+    const lim = [lo === undefined ? cur[0] : lo, hi === undefined ? cur[1] : hi];
+    for (const ax of this._group(axis)) { ax[key] = lim.slice(); ax[axis === 'x' ? '_xinv' : '_yinv'] = false; }
   }
-  set_ylim(lo, hi) {
-    if (_isArrayLike(lo) && hi === undefined) { hi = lo[1]; lo = lo[0]; }
-    this._ylim = [lo, hi]; return this;
+  // the limits as drawn (inverted axes give [high, low], as matplotlib does)
+  get_xlim() { return this._getLim('x'); }
+  get_ylim() { return this._getLim('y'); }
+  _getLim(axis) {
+    const v = this.view;
+    if (v) { const d = (axis === 'x' ? v.xScale : v.yScale).domain; return (axis === 'x' ? v.xinv : v.yinv) ? [d[1], d[0]] : d.slice(); }
+    const R = this._axisRange(axis, (axis === 'x' ? this._xscale : this._yscale) === 'log');
+    return R.inv ? [R.hi, R.lo] : [R.lo, R.hi];
   }
-  get_xlim() { return this.view ? this.view.xScale.domain.slice() : this._xlim ? this._xlim.slice() : this._dataExtent('x'); }
-  get_ylim() { return this.view ? this.view.yScale.domain.slice() : this._ylim ? this._ylim.slice() : this._dataExtent('y'); }
+  invert_xaxis() { for (const ax of this._group('x')) ax._xinv = !ax._xinv; return this; }
+  invert_yaxis() { for (const ax of this._group('y')) ax._yinv = !ax._yinv; return this; }
+  xaxis_inverted() { const l = this.get_xlim(); return l[0] > l[1]; }
+  yaxis_inverted() { const l = this.get_ylim(); return l[0] > l[1]; }
+  // margins(m) · margins(x, y) · margins({x, y}) · margins() → [x, y]
+  margins(x, y) {
+    if (x === undefined) return [this._xmargin, this._ymargin];
+    if (_plainOpts(x)) { y = x.y; x = x.x; }
+    else if (y === undefined) y = x;
+    if (x != null) this._xmargin = +x;
+    if (y != null) this._ymargin = +y;
+    return this;
+  }
+  // axis('off' | 'on' | 'equal' | 'scaled' | 'image' | 'tight' | [x0, x1, y0, y1]) → the limits
+  axis(arg) {
+    if (arg != null && _plainOpts(arg)) { const o = arg; arg = o.option ?? null; if (o.xmin != null || o.xmax != null) this.set_xlim(o.xmin, o.xmax); if (o.ymin != null || o.ymax != null) this.set_ylim(o.ymin, o.ymax); }
+    if (_isArrayLike(arg) && arg.length === 4) { this.set_xlim(arg[0], arg[1]); this.set_ylim(arg[2], arg[3]); }
+    else if (arg === false || arg === 'off') this._axisOn = false;
+    else if (arg === true || arg === 'on') this._axisOn = true;
+    else if (arg === 'equal' || arg === 'scaled' || arg === 'square') this._aspect = 'equal';
+    else if (arg === 'image') { this._aspect = 'equal'; this._xmargin = this._ymargin = 0; }
+    else if (arg === 'tight') { this._xmargin = this._ymargin = 0; }
+    else if (arg === 'auto' || arg === 'normal') this._aspect = 'auto';
+    else if (arg != null) _warn('axis.' + arg, `axis('${arg}') is not supported; use 'off', 'on', 'equal', 'scaled', 'image', 'tight', 'auto' or [x0, x1, y0, y1]`, this._strict);
+    return [...this.get_xlim(), ...this.get_ylim()];
+  }
+  // set_xticks(ticks, labels?, {rotation}) — exactly these ticks; [] for none. Labels may also
+  // come later from set_xticklabels.
+  set_xticks(ticks, labels, opts) { this._setTicks('x', ticks, labels, opts); return this; }
+  set_yticks(ticks, labels, opts) { this._setTicks('y', ticks, labels, opts); return this; }
+  set_xticklabels(labels, opts) { this._setTickLabels('x', labels, opts); return this; }
+  set_yticklabels(labels, opts) { this._setTickLabels('y', labels, opts); return this; }
+  get_xticks() { return this._ticksNow('x').values.slice(); }
+  get_yticks() { return this._ticksNow('y').values.slice(); }
+  get_xticklabels() { return this._ticksNow('x').labels.slice(); }
+  get_yticklabels() { return this._ticksNow('y').labels.slice(); }
+  _setTicks(axis, ticks, labels, opts) {
+    if (_plainOpts(labels)) { opts = labels; labels = opts.labels; }
+    const o = _plainOpts(opts) ? opts : {};
+    const t = { values: Array.from(ticks == null ? [] : _isArrayLike(ticks) ? ticks : [ticks], Number), labels: labels != null ? Array.from(labels, (l) => (l == null ? '' : String(l))) : null, rotation: o.rotation ?? null };
+    this[axis === 'x' ? '_xticks' : '_yticks'] = t;
+  }
+  _setTickLabels(axis, labels, opts) {
+    const o = _plainOpts(opts) ? opts : {};
+    const key = axis === 'x' ? '_xticks' : '_yticks';
+    const cur = this[key] || { values: this._ticksNow(axis).values.slice(), rotation: null };
+    this[key] = { values: cur.values, labels: Array.from(labels || [], (l) => (l == null ? '' : String(l))), rotation: o.rotation ?? cur.rotation };
+  }
+  // the ticks as the last render chose them (or as set)
+  _ticksNow(axis) {
+    const set = axis === 'x' ? this._xticks : this._yticks;
+    if (set && set.labels) return set;
+    const spec = axis === 'x' ? this._lastXt : this._lastYt;
+    if (spec) return spec;
+    if (set) return { values: set.values, labels: set.values.map(String) };
+    return { values: [], labels: [] };
+  }
+  // tick_params(axis, {labelrotation}) — the part of it that sets what plot draws
+  tick_params(opts) {
+    const o = _plainOpts(opts) ? opts : {};
+    const which = o.axis || 'both';
+    if (o.labelrotation != null) for (const a of (which === 'both' ? ['x', 'y'] : [which])) {
+      const key = a === 'x' ? '_xticks' : '_yticks';
+      this[key] = { ...(this[key] || { values: null, labels: null }), rotation: o.labelrotation };
+    }
+    for (const k of Object.keys(o)) if (k !== 'axis' && k !== 'labelrotation' && k !== '_kw') _warn('tick_params.' + k, `tick_params(): '${k}' is not supported yet (only axis and labelrotation)`, this._strict);
+    return this;
+  }
+  // every axes that shares this one's `axis` (subplots(sharex / sharey)), this one included
+  _group(axis) { return this._shared[axis] || [this]; }
+  // a column for `axis`: numbers, or labels that make (or extend) that axis's categories
+  _axisCol(axis, arr) {
+    if (!_isCategorical(arr)) return _col(arr);
+    const key = axis === 'x' ? '_xcats' : '_ycats';
+    if (!this[key]) {
+      const cats = new _Categories();
+      for (const ax of this._group(axis)) if (!ax[key]) ax[key] = cats;
+    }
+    return this[key].positions(arr);
+  }
   set_xscale(scale) { this._checkScale(scale); this._xscale = scale; return this; }
   set_yscale(scale) { this._checkScale(scale); this._yscale = scale; return this; }
   _checkScale(scale) {
     if (scale !== 'linear' && scale !== 'log') _warn('scale.' + scale, `set_xscale/set_yscale('${scale}') is not supported; use 'linear' or 'log'`, this._strict);
   }
   set_zorder(_n) { _noop('set_zorder', this._strict); return this; }
-  set_xticks(_t, _l) { _noop('set_xticks', this._strict); return this; }
-  set_yticks(_t, _l) { _noop('set_yticks', this._strict); return this; }
-  set_xticklabels(_l) { _noop('set_xticklabels', this._strict); return this; }
-  set_yticklabels(_l) { _noop('set_yticklabels', this._strict); return this; }
   set_aspect(aspect) { this._aspect = aspect; return this; }
 
   // twinx() — a sister axes that shares this one's x-scale, has its own y-scale, and renders
@@ -1776,121 +2168,61 @@ class Axes {
 
   // --- rendering ---
 
+  // One pass lays the axes out with estimated margins and chooses the ticks for that size;
+  // the next measures the real tick labels, titles and axis labels and lays it out again
+  // (until the margins settle, at most three passes). Callers that need a grid of cells to
+  // line up pass _margins = { left, right, top, bottom } and skip the measuring.
   _render(ctx, rect, env) {
     const dpr = (env && env.dpr) || 1;
     const th = this._theme;
-    // Color theme — defaults come from this figure's palette. Per-Axes overrides (`_bgcolor`,
-    // `_textColor`, `_gridColor`, `_frameColor`) still win for callers that want a specific
-    // cell to render with custom colors.
-    const bgcolor   = this._bgcolor   || th.bgcolor;
-    const textColor = this._textColor || th.textColor;
-    const gridColor = this._gridColor || th.gridColor;
-    const frameColor = this._frameColor || th.frameColor;
-    const font = '11px monospace';
-    const smallFont = '10px monospace';
-
-    // compute margins (smaller when tick labels are hidden — caller
-    // sets _hideXTicks / _hideYTicks for compact grids like
-    // scatter_matrix where inner subplots don't show ticks). Callers
-    // that want all subplots in a grid to share a uniform plot area
-    // (so cells line up regardless of which one carries the label)
-    // pass `_margins = { left, right, top, bottom }` and bypass the
-    // label/tick-driven computation.
-    let ml, mr, mt, mb;
-    if (this._margins) {
-      ml = this._margins.left   ?? 42;
-      mr = this._margins.right  ?? 12;
-      mt = this._margins.top    ?? 8;
-      mb = this._margins.bottom ?? 26;
-    } else {
-      ml = this._hideYTicks ? 6 : (this._ylabel ? 55 : 42);
-      mr = this._colorbar ? 70 : 12;
-      // Right-side twin axis needs space for its tick labels (+ optional ylabel).
-      if (this._twin) mr = Math.max(mr, this._twin._ylabel ? 55 : 42);
-      mt = this._title ? 24 : 8;
-      // A top twin axis (twiny) needs its tick labels (+ optional xlabel) above the frame.
-      if (this._twinY) mt += 16 + (this._twinY._xlabel ? 16 : 0);
-      mb = this._hideXTicks ? 6 : (this._xlabel ? 38 : 26);
-    }
-
-    let plotX = rect.x + ml;
-    let plotY = rect.y + mt;
-    let plotW = rect.x + rect.w - mr - plotX;
-    let plotH = rect.y + rect.h - mb - plotY;
-    if (plotW <= 0 || plotH <= 0) return;
-
-    // Save the pre-aspect plot rect so colorbars and other "use the
-    // full reserved height" annotations don't shrink along with the
-    // shrunken plot area below.
-    const fullPlotY = plotY;
-    const fullPlotH = plotH;
-
-    // compute data ranges (a twin that shares an axis widens it: matplotlib autoscales a
-    // shared axis over both axes' data)
+    // per-Axes overrides (_bgcolor, _textColor, _gridColor, _frameColor) still win
+    const bgcolor = this._bgcolor || th.background;
+    const textColor = this._textColor || th.foreground;
+    const gridColor = this._gridColor || th.grid;
+    const frameColor = this._frameColor || th.frame;
+    const fs = th.font_size || 11;
+    const fTick = _font(th, -1), fLab = _font(th, 0), fTitle = _font(th, 2);
     const xLog = this._xscale === 'log', yLog = this._yscale === 'log';
-    let [xlo, xhi] = this._xlim ? this._limits(this._xlim, 'x', xLog) : this._sharedExtent('x', xLog);
-    let [ylo, yhi] = this._ylim ? this._limits(this._ylim, 'y', yLog) : this._sharedExtent('y', yLog);
-    if (xlo === xhi) { xlo -= 0.5; xhi += 0.5; }
-    if (ylo === yhi) { ylo -= 0.5; yhi += 0.5; }
+    const XR = this._axisRange('x', xLog), YR = this._axisRange('y', yLog);
+    const cb = this._colorbar ? this._colorbarInfo(ctx, fTick) : null;
 
-    // aspect ratio adjustment.
-    // - For an imshow-dominated axes (matshow, correlation matrix, etc.)
-    //   "equal" means the cells should be square — we SHRINK the plot
-    //   rect to match data aspect, leaving figure bg around it. The old
-    //   behavior (expand data range) painted bg-color stripes through
-    //   the data area, which looks wrong for matrix plots.
-    // - For scatter/line with aspect='equal', expanding the data range
-    //   matches matplotlib's behavior (more breathing room around data).
-    if (this._aspect === 'equal' && !xLog && !yLog) {
-      const dataW = xhi - xlo;
-      const dataH = yhi - ylo;
-      const scaleX = plotW / dataW;
-      const scaleY = plotH / dataH;
-      const hasImshow = this._traces.some(t => t.type === 'imshow');
-      if (hasImshow) {
-        const scale = Math.min(scaleX, scaleY);
-        const newW = dataW * scale;
-        const newH = dataH * scale;
-        plotX += (plotW - newW) / 2;
-        plotY += (plotH - newH) / 2;
-        plotW = newW;
-        plotH = newH;
-      } else if (scaleX < scaleY) {
-        const center = (ylo + yhi) / 2;
-        const half = (plotH / scaleX) / 2;
-        ylo = center - half;
-        yhi = center + half;
-      } else {
-        const center = (xlo + xhi) / 2;
-        const half = (plotW / scaleY) / 2;
-        xlo = center - half;
-        xhi = center + half;
-      }
+    let m = this._margins
+      ? { left: this._margins.left ?? 42, right: this._margins.right ?? 12, top: this._margins.top ?? 8, bottom: this._margins.bottom ?? 26 }
+      : { left: 42, right: cb ? 70 : 12, top: this._title ? 24 : 8, bottom: 26 };
+    let L = null;
+    for (let pass = 0; pass < 3; pass++) {
+      L = this._layout(ctx, rect, m, XR, YR, xLog, yLog, fTick, fs);
+      if (!L || this._margins) break;
+      const next = this._measure(rect, L, cb, fs);
+      if (Math.abs(next.left - m.left) < 1 && Math.abs(next.right - m.right) < 1 && Math.abs(next.top - m.top) < 1 && Math.abs(next.bottom - m.bottom) < 1) break;
+      m = next;
     }
-
-    const xScale = xLog ? new LogScale(_logBounds(xlo, xhi), [plotX, plotX + plotW]) : new LinearScale([xlo, xhi], [plotX, plotX + plotW]);
-    const yScale = yLog ? new LogScale(_logBounds(ylo, yhi), [plotY + plotH, plotY]) : new LinearScale([ylo, yhi], [plotY + plotH, plotY]); // y flipped
-    this.view = { x: plotX, y: plotY, w: plotW, h: plotH, xScale, yScale, dpr };
+    if (!L) return;
+    const { plotX, plotY, plotW, plotH, fullPlotY, fullPlotH, xScale, yScale, xt, yt } = L;
+    const plot = { x: plotX, y: plotY, w: plotW, h: plotH };
+    this._lastXt = xt; this._lastYt = yt;
+    this.view = { x: plotX, y: plotY, w: plotW, h: plotH, xScale, yScale, dpr, xinv: L.xinv, yinv: L.yinv };
+    const on = this._axisOn;
 
     // axes background
-    if (bgcolor !== 'none' && bgcolor !== 'transparent') {
+    if (on && bgcolor !== 'none' && bgcolor !== 'transparent') {
       ctx.fillStyle = bgcolor;
       ctx.fillRect(plotX, plotY, plotW, plotH);
     }
 
-    // grid
-    if (this._grid) {
+    // grid, at the ticks
+    if (this._grid && on) {
       const g = this._gridOpts;
       ctx.strokeStyle = _cssColor(g.color) || gridColor;
       ctx.lineWidth = g.linewidth || 0.5;
       ctx.globalAlpha = g.alpha != null ? g.alpha : 0.8;
       ctx.setLineDash(dashArray(g.linestyle));
       const which = g.axis || 'both';
-      if (which !== 'y') for (const v of xScale.ticks()) {
+      if (which !== 'y') for (const v of xt.values) {
         const px = xScale.transform(v);
         ctx.beginPath(); ctx.moveTo(px, plotY); ctx.lineTo(px, plotY + plotH); ctx.stroke();
       }
-      if (which !== 'x') for (const v of yScale.ticks()) {
+      if (which !== 'x') for (const v of yt.values) {
         const py = yScale.transform(v);
         ctx.beginPath(); ctx.moveTo(plotX, py); ctx.lineTo(plotX + plotW, py); ctx.stroke();
       }
@@ -1898,71 +2230,42 @@ class Axes {
       ctx.globalAlpha = 1;
     }
 
-    // render own traces (clipped to plot area)
+    // own traces (clipped to the plot area), then the twins' (with their own axis)
     const lastCmapTrace = this._renderTraces(ctx, xScale, yScale, plotX, plotY, plotW, plotH, dpr);
+    if (this._twin) this._twin._renderAsTwin(ctx, xScale, plotX, plotY, plotW, plotH, dpr, L.twinYt);
+    if (this._twinY) this._twinY._renderAsTwinY(ctx, yScale, plotX, plotY, plotW, plotH, dpr, L.twinXt);
 
-    // render twin overlays (own traces + their own axis), if present
-    if (this._twin) this._twin._renderAsTwin(ctx, xScale, plotX, plotY, plotW, plotH, dpr);
-    if (this._twinY) this._twinY._renderAsTwinY(ctx, yScale, plotX, plotY, plotW, plotH, dpr);
-
-    // axes frame
-    ctx.strokeStyle = frameColor;
-    ctx.lineWidth = 1;
-    ctx.strokeRect(plotX, plotY, plotW, plotH);
-
-    // ticks and labels
-    ctx.fillStyle = textColor;
-    ctx.font = smallFont;
-    const xTicks = xScale.ticks();
-    const yTicks = yScale.ticks();
-    const xFmt = xScale.tickFormat();
-    const yFmt = yScale.tickFormat();
-
-    if (!this._hideXTicks) {
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'top';
-      for (const v of xTicks) {
-        const px = xScale.transform(v);
-        ctx.beginPath(); ctx.moveTo(px, plotY + plotH); ctx.lineTo(px, plotY + plotH + 4); ctx.strokeStyle = frameColor; ctx.stroke();
-        ctx.fillText(xFmt(v), px, plotY + plotH + 5);
-      }
-    }
-
-    if (!this._hideYTicks) {
-      ctx.textAlign = 'right';
-      ctx.textBaseline = 'middle';
-      for (const v of yTicks) {
-        const py = yScale.transform(v);
-        ctx.beginPath(); ctx.moveTo(plotX - 4, py); ctx.lineTo(plotX, py); ctx.strokeStyle = frameColor; ctx.stroke();
-        ctx.fillText(yFmt(v), plotX - 6, py);
-      }
+    if (on) {
+      ctx.strokeStyle = frameColor;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(plotX, plotY, plotW, plotH);
+      if (!this._hideXTicks) _drawTicks(ctx, this._xtickLabelsOff ? { ...xt, labels: xt.labels.map(() => '') } : xt, xScale, 'bottom', plot, textColor, frameColor, fTick);
+      if (!this._hideYTicks) _drawTicks(ctx, this._ytickLabelsOff ? { ...yt, labels: yt.labels.map(() => '') } : yt, yScale, 'left', plot, textColor, frameColor, fTick);
     }
 
     // title (above a top twin axis, when there is one)
     if (this._title) {
       ctx.fillStyle = textColor;
-      ctx.font = '13px monospace';
+      ctx.font = fTitle;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'bottom';
-      const above = this._twinY ? 16 + (this._twinY._xlabel ? 16 : 0) : 0;
-      ctx.fillText(this._title.text, plotX + plotW / 2, plotY - 4 - above);
+      const above = L.twinXt ? 6 + L.twinXt.extent + 4 + (this._twinY._xlabel ? fs + 6 : 0) : 0;
+      ctx.fillText(this._title.text, plotX + plotW / 2, plotY - 6 - above);
     }
-
-    // xlabel
-    if (this._xlabel) {
+    if (on && this._xlabel) {
       ctx.fillStyle = textColor;
-      ctx.font = font;
+      ctx.font = fLab;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
-      ctx.fillText(this._xlabel.text, plotX + plotW / 2, plotY + plotH + 22);
+      const below = this._hideXTicks ? 4 : 6 + xt.extent + 6;
+      ctx.fillText(this._xlabel.text, plotX + plotW / 2, plotY + plotH + below);
     }
-
-    // ylabel
-    if (this._ylabel) {
+    if (on && this._ylabel) {
       ctx.save();
       ctx.fillStyle = textColor;
-      ctx.font = font;
-      ctx.translate(rect.x + 14, plotY + plotH / 2);
+      ctx.font = fLab;
+      const left = this._hideYTicks ? 4 : 4 + 6 + yt.maxW + 6;
+      ctx.translate(plotX - left, plotY + plotH / 2);
       ctx.rotate(-Math.PI / 2);
       ctx.textAlign = 'center';
       ctx.textBaseline = 'bottom';
@@ -1970,45 +2273,144 @@ class Axes {
       ctx.restore();
     }
 
-    // legend
-    if (this._legend) {
-      this._renderLegend(ctx, plotX, plotY, plotW, plotH);
-    }
+    if (this._legend) this._renderLegend(ctx, plotX, plotY, plotW, plotH);
 
-    // colorbar — pinned to the right edge of the cell rect (so it
-    // stays on the figure's right side even when the plot rect itself
-    // shrinks for aspect='equal'+imshow) and uses the full pre-aspect
-    // plot height (so it doesn't shrink with the data area).
-    if (this._colorbar && lastCmapTrace) {
-      const cbW = 12;
-      const cbX = rect.x + rect.w - mr + 10;
+    // colorbar — pinned right of the plot, full pre-aspect height (it doesn't shrink with an
+    // equal-aspect image)
+    if (cb && lastCmapTrace) {
+      const cbX = rect.x + rect.w - m.right + 10;
       const { vmin, vmax } = this._cmapRange(lastCmapTrace);
       if (vmin - vmin === 0 && vmax - vmax === 0) {
-        renderColorbar(ctx, cbX, fullPlotY, cbW, fullPlotH, lastCmapTrace.opts.cmap || 'viridis', vmin, vmax, {
-          textColor, font: smallFont, label: this._colorbarOpts.label,
+        renderColorbar(ctx, cbX, fullPlotY, 12, fullPlotH, lastCmapTrace.opts.cmap || th.ramp || 'viridis', vmin, vmax, {
+          textColor, font: fTick, label: this._colorbarOpts.label, labelFont: fLab, labelOffset: 12 + 6 + cb.labelsW + 6,
         });
       }
     }
+  }
+
+  // the plot rect for margins m, the scales (equal aspect applied), and the ticks for that size
+  _layout(ctx, rect, m, XR, YR, xLog, yLog, fTick, fs) {
+    let plotX = rect.x + m.left, plotY = rect.y + m.top;
+    let plotW = rect.x + rect.w - m.right - plotX, plotH = rect.y + rect.h - m.bottom - plotY;
+    if (plotW <= 1 || plotH <= 1) return null;
+    const fullPlotY = plotY, fullPlotH = plotH;
+    let { lo: xlo, hi: xhi } = XR, { lo: ylo, hi: yhi } = YR;
+    // equal aspect: an image-led axes (matshow, a raster map) SHRINKS the plot rect so cells are
+    // square; anything else WIDENS the data range, as matplotlib's adjustable='datalim' does
+    if (this._aspect === 'equal' && !xLog && !yLog) {
+      const dataW = xhi - xlo, dataH = yhi - ylo;
+      const sx = plotW / dataW, sy = plotH / dataH;
+      if (this._traces.some((t) => t.type === 'imshow' || (_KINDS[t.type] && _KINDS[t.type].image))) {
+        const k = Math.min(sx, sy), nw = dataW * k, nh = dataH * k;
+        plotX += (plotW - nw) / 2; plotY += (plotH - nh) / 2; plotW = nw; plotH = nh;
+      } else if (sx < sy) {
+        const c = (ylo + yhi) / 2, half = plotH / sx / 2; ylo = c - half; yhi = c + half;
+      } else {
+        const c = (xlo + xhi) / 2, half = plotW / sy / 2; xlo = c - half; xhi = c + half;
+      }
+    }
+    const xScale = this._scaleOf(xlo, xhi, XR.inv, plotX, plotX + plotW, xLog);
+    const yScale = this._scaleOf(ylo, yhi, YR.inv, plotY + plotH, plotY, yLog);
+    const xt = _tickSpec(this, 'x', xScale, plotW, ctx, fTick, fs - 1);
+    const yt = _tickSpec(this, 'y', yScale, plotH, ctx, fTick, fs - 1);
+    let twinYt = null, twinXt = null;
+    if (this._twin) { const ys = this._twin._ownScale('y', plotY + plotH, plotY); if (ys) twinYt = _tickSpec(this._twin, 'y', ys, plotH, ctx, fTick, fs - 1); }
+    if (this._twinY) { const xs = this._twinY._ownScale('x', plotX, plotX + plotW); if (xs) twinXt = _tickSpec(this._twinY, 'x', xs, plotW, ctx, fTick, fs - 1); }
+    return { plotX, plotY, plotW, plotH, fullPlotY, fullPlotH, xScale, yScale, xt, yt, twinYt, twinXt, xinv: XR.inv, yinv: YR.inv };
+  }
+
+  // the margins this layout's labels need
+  _measure(rect, L, cb, fs) {
+    const on = this._axisOn, xt = L.xt, yt = L.yt;
+    let left = 6, right = 10, top = 8, bottom = 6;
+    if (on && !this._hideYTicks) left = 4 + 6 + (this._ytickLabelsOff ? 0 : yt.maxW) + 6;
+    if (on && this._ylabel) left += fs + 4;
+    if (on && !this._hideXTicks) bottom = 6 + (this._xtickLabelsOff ? 0 : xt.extent) + 4;
+    if (on && this._xlabel) bottom += fs + 8;
+    if (this._title) top += fs + 2 + 6;
+    if (L.twinXt) { top += 6 + L.twinXt.extent + 4; if (this._twinY._xlabel) top += fs + 6; }
+    if (L.twinYt) right = Math.max(right, 4 + 6 + L.twinYt.maxW + 6 + (this._twin._ylabel ? fs + 4 : 0));
+    if (cb) right = Math.max(right, 10 + 12 + 6 + cb.labelsW + 6 + (this._colorbarOpts.label ? fs + 4 : 0));
+    // x tick labels hang past the ends of the axis: half a flat label, a whole rotated one
+    if (on && !this._hideXTicks && !this._xtickLabelsOff && xt.values.length) {
+      const k = xt.rot ? Math.cos((xt.rot * Math.PI) / 180) : 0.5;
+      for (let i = 0; i < xt.values.length; i++) {
+        if (!xt.labels[i]) continue;
+        const p = L.xScale.transform(xt.values[i]);
+        const a = p - xt.widths[i] * k, b = xt.rot ? p : p + xt.widths[i] * k;
+        if (a < rect.x + 2) left += rect.x + 2 - a;
+        if (b > rect.x + rect.w - 2) right += b - (rect.x + rect.w - 2);
+      }
+    }
+    return { left, right, top, bottom };
+  }
+
+  _scaleOf(lo, hi, inv, r0, r1, log) {
+    const range = inv ? [r1, r0] : [r0, r1];
+    return log ? new LogScale(_logBounds(lo, hi), range) : new LinearScale([lo, hi], range);
+  }
+
+  // the colorbar's labels, measured: the right margin depends on them
+  _colorbarInfo(ctx, fTick) {
+    let tr = null;
+    for (const t of this._traces) if (t.type === 'imshow' || t.cvals || (_KINDS[t.type] && _KINDS[t.type].cmap && t.cmapped !== false)) tr = t;
+    if (!tr) return null;
+    const { vmin, vmax } = this._cmapRange(tr);
+    if (!(vmin - vmin === 0 && vmax - vmax === 0)) return null;
+    ctx.font = fTick;
+    const sc = new LinearScale([Math.min(vmin, vmax), Math.max(vmin, vmax)], [0, 1]);
+    let w = 0;
+    for (const v of [vmin, vmax, ...sc.ticks(5)]) w = Math.max(w, _textW(fTick, sc.tickFormat()(v)));
+    return { labelsW: w };
+  }
+
+  // ── ranges ────────────────────────────────────────────────────────────────────────────────
+  // The drawn range of one axis: { lo, hi (lo < hi), inv }. Explicit limits (null ends from
+  // the data), else the data's extent widened by the margins. inv: left > right as given, or
+  // flipped by invert_xaxis().
+  _axisRange(axis, log) {
+    const lim = axis === 'x' ? this._xlim : this._ylim;
+    let [a, b] = lim ? this._limits(lim, axis, log) : this._autoExtent(axis, log);
+    let inv = a > b;
+    if (axis === 'x' ? this._xinv : this._yinv) inv = !inv;
+    let lo = Math.min(a, b), hi = Math.max(a, b);
+    if (lo - lo !== 0 || hi - hi !== 0) { lo = log ? 1 : 0; hi = log ? 10 : 1; }
+    if (lo === hi) { if (log) { lo /= 10; hi *= 10; } else { lo -= 0.5; hi += 0.5; } }
+    return { lo, hi, inv };
   }
 
   // explicit limits, with a None (null) end filled from the data
   _limits(lim, axis, log) {
     let [lo, hi] = lim;
     if (lo == null || hi == null) {
-      const [dlo, dhi] = this._sharedExtent(axis, log);
-      if (lo == null) lo = dlo;
-      if (hi == null) hi = dhi;
+      const [dlo, dhi] = this._autoExtent(axis, log);
+      if (lo == null) lo = hi != null && hi < dlo ? dhi : dlo;
+      if (hi == null) hi = lo != null && lo > dhi ? dlo : dhi;
     }
     return [lo, hi];
   }
 
-  // this axes' extent along `axis`, widened by a twin that shares that axis
-  _sharedExtent(axis, log) {
-    const shareTwin = axis === 'x' ? this._twin : this._twinY;
-    if (!shareTwin || !shareTwin._traces.length) return this._dataExtent(axis, log);
-    if (!this._traces.length) return shareTwin._dataExtent(axis, log);
-    const a = this._dataExtent(axis, log), b = shareTwin._dataExtent(axis, log);
-    return [Math.min(a[0], b[0]), Math.max(a[1], b[1])];
+  // the data extent along `axis` of every axes sharing it (subplots sharing, a twin), widened
+  // by the margins — except where a sticky edge stops it (bars at 0, an image's extent)
+  _autoExtent(axis, log) {
+    const members = new Set(this._group(axis));
+    const twin = axis === 'x' ? this._twin : this._twinY;
+    if (twin) members.add(twin);
+    let lo = Infinity, hi = -Infinity;
+    const sticky = [];
+    for (const ax of members) {
+      const r = ax._rawExtent(axis, log);
+      if (r.lo < lo) lo = r.lo;
+      if (r.hi > hi) hi = r.hi;
+      for (const v of r.sticky) sticky.push(v);
+    }
+    if (!(lo <= hi)) return log ? [1, 10] : [0, 1];
+    const m = axis === 'x' ? this._xmargin : this._ymargin;
+    let plo, phi;
+    if (log) { const f = Math.pow(hi / lo, m); plo = lo / f; phi = hi * f; }
+    else { const pad = (hi - lo) * m; plo = lo - pad; phi = hi + pad; }
+    for (const v of sticky) { if (v <= lo && v > plo) plo = v; if (v >= hi && v < phi) phi = v; }
+    return [plo, phi];
   }
 
   // vmin / vmax of a colour-mapped trace: the options, or the finite data range
@@ -2048,7 +2450,10 @@ class Axes {
     ctx.clip();
     const rect = { x: plotX, y: plotY, w: plotW, h: plotH, dpr };
     let lastCmapTrace = null;
-    for (const trace of this._traces) {
+    const order = this._traces.map((t, i) => [t.opts && t.opts.zorder != null ? +t.opts.zorder : (_ZORDER[t.type] ?? (_KINDS[t.type] ? _KINDS[t.type].z ?? 1 : 1)), i]);
+    order.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    for (const [, ti] of order) {
+      const trace = this._traces[ti];
       switch (trace.type) {
         case 'imshow': this._renderImshow(ctx, trace, xScale, yScale, rect); lastCmapTrace = trace; break;
         case 'line': this._renderLine(ctx, trace, xScale, yScale, rect); break;
@@ -2058,7 +2463,11 @@ class Axes {
         case 'hist': this._renderHist(ctx, trace, xScale, yScale); break;
         case 'hline': this._renderHline(ctx, trace, xScale, yScale, plotX, plotW); break;
         case 'vline': this._renderVline(ctx, trace, xScale, yScale, plotY, plotH); break;
-        case 'text': this._renderText(ctx, trace, xScale, yScale); break;
+        case 'text': this._renderText(ctx, trace, xScale, yScale, rect); break;
+        default: {
+          const k = _KINDS[trace.type];
+          if (k) { k.render(this, ctx, trace, xScale, yScale, rect); if (k.cmap && trace.cmapped !== false) lastCmapTrace = trace; }
+        }
       }
     }
     ctx.restore();
@@ -2069,44 +2478,27 @@ class Axes {
   _ownScale(axis, r0, r1) {
     const log = (axis === 'x' ? this._xscale : this._yscale) === 'log';
     const lim = axis === 'x' ? this._xlim : this._ylim;
-    let [lo, hi] = lim ? this._limits(lim, axis, log) : this._dataExtent(axis, log);
-    if (lo - lo !== 0 || hi - hi !== 0) return null;
-    if (lo === hi) { lo -= 0.5; hi += 0.5; }
-    return log ? new LogScale(_logBounds(lo, hi), [r0, r1]) : new LinearScale([lo, hi], [r0, r1]);
+    if (!lim && !this._traces.length) return null;
+    const R = this._axisRange(axis, log);
+    return this._scaleOf(R.lo, R.hi, R.inv, r0, r1, log);
   }
 
   // Render as a twinx overlay — shares the parent's xScale, uses own y-scale, draws the
   // y-axis ticks/label on the right edge of the rect. Title/xlabel/legend belong to parent.
-  _renderAsTwin(ctx, parentXScale, plotX, plotY, plotW, plotH, dpr = 1) {
+  _renderAsTwin(ctx, parentXScale, plotX, plotY, plotW, plotH, dpr = 1, spec) {
     const yScale = this._ownScale('y', plotY + plotH, plotY);
     if (!yScale) return;
     this.view = { x: plotX, y: plotY, w: plotW, h: plotH, xScale: parentXScale, yScale, dpr };
     this._renderTraces(ctx, parentXScale, yScale, plotX, plotY, plotW, plotH, dpr);
-
-    // Right-edge y-axis: ticks + tick labels, drawn outside the plot rect.
-    const tc = this._textColor || this._theme.textColor;
-    ctx.fillStyle = tc;
-    ctx.font = '10px monospace';
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'middle';
-    const yFmt = yScale.tickFormat();
-    for (const v of yScale.ticks()) {
-      const py = yScale.transform(v);
-      ctx.strokeStyle = this._frameColor || this._theme.frameColor;
-      ctx.beginPath();
-      ctx.moveTo(plotX + plotW, py);
-      ctx.lineTo(plotX + plotW + 4, py);
-      ctx.stroke();
-      ctx.fillText(yFmt(v), plotX + plotW + 6, py);
-    }
-
-    // Right ylabel — rotated +90° (mirror of left ylabel's -90°)
-    // so the text reads bottom-to-top on the right edge.
+    const th = this._theme, tc = this._textColor || th.foreground, fc = this._frameColor || th.frame;
+    const plot = { x: plotX, y: plotY, w: plotW, h: plotH };
+    if (spec) _drawTicks(ctx, spec, yScale, 'right', plot, tc, fc, _font(th, -1));
+    // the right ylabel, rotated +90° so it reads top to bottom (matplotlib's right axis)
     if (this._ylabel) {
       ctx.save();
       ctx.fillStyle = tc;
-      ctx.font = '11px monospace';
-      ctx.translate(plotX + plotW + 38, plotY + plotH / 2);
+      ctx.font = _font(th, 0);
+      ctx.translate(plotX + plotW + 4 + 6 + (spec ? spec.maxW : 0) + 6, plotY + plotH / 2);
       ctx.rotate(Math.PI / 2);
       ctx.textAlign = 'center';
       ctx.textBaseline = 'bottom';
@@ -2115,39 +2507,32 @@ class Axes {
     }
   }
 
-  // Render as a twiny overlay — shares the parent's yScale, uses own x-scale, draws the
-  // x-axis ticks/label along the TOP edge.
-  _renderAsTwinY(ctx, parentYScale, plotX, plotY, plotW, plotH, dpr = 1) {
+  // a twiny overlay: shares the parent's y, its own x along the TOP edge
+  _renderAsTwinY(ctx, parentYScale, plotX, plotY, plotW, plotH, dpr = 1, spec) {
     const xScale = this._ownScale('x', plotX, plotX + plotW);
     if (!xScale) return;
     this.view = { x: plotX, y: plotY, w: plotW, h: plotH, xScale, yScale: parentYScale, dpr };
     this._renderTraces(ctx, xScale, parentYScale, plotX, plotY, plotW, plotH, dpr);
-    const tc = this._textColor || this._theme.textColor;
-    ctx.fillStyle = tc;
-    ctx.font = '10px monospace';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'bottom';
-    const xFmt = xScale.tickFormat();
-    for (const v of xScale.ticks()) {
-      const px = xScale.transform(v);
-      ctx.strokeStyle = this._frameColor || this._theme.frameColor;
-      ctx.beginPath(); ctx.moveTo(px, plotY); ctx.lineTo(px, plotY - 4); ctx.stroke();
-      ctx.fillText(xFmt(v), px, plotY - 5);
-    }
+    const th = this._theme, tc = this._textColor || th.foreground, fc = this._frameColor || th.frame;
+    const plot = { x: plotX, y: plotY, w: plotW, h: plotH };
+    if (spec) _drawTicks(ctx, spec, xScale, 'top', plot, tc, fc, _font(th, -1));
     if (this._xlabel) {
       ctx.fillStyle = tc;
-      ctx.font = '11px monospace';
+      ctx.font = _font(th, 0);
       ctx.textAlign = 'center';
       ctx.textBaseline = 'bottom';
-      ctx.fillText(this._xlabel.text, plotX + plotW / 2, plotY - 18);
+      ctx.fillText(this._xlabel.text, plotX + plotW / 2, plotY - 6 - (spec ? spec.extent : 0) - 6);
     }
   }
 
-  // [lo, hi] of everything this axes draws along `axis`, padded 5% (not for images).
-  // `log`: the axis is logarithmic, so only positive values count.
-  _dataExtent(axis, log = false) {
+  // { lo, hi, sticky } of everything this axes draws along `axis` (no margins). `log`: only
+  // positive values count. sticky: edges the margins must not cross (bars and histograms at
+  // 0, images at their extent). Kept: _dataExtent, the padded range (callers outside plot).
+  _rawExtent(axis, log = false) {
     let lo = Infinity, hi = -Infinity;
+    const sticky = [];
     const take = (v) => { if (v - v === 0 && (!log || v > 0)) { if (v < lo) lo = v; if (v > hi) hi = v; } };
+    const stick = (v) => { if (v - v === 0 && (!log || v > 0)) sticky.push(v); };
     const takeRange = (r) => { if (!r.n) return; take(log ? r.minPos : r.lo); take(r.hi); };
     for (const trace of this._traces) {
       switch (trace.type) {
@@ -2160,7 +2545,7 @@ class Axes {
             const r = _traceRange(trace, 'x', trace.x), w = typeof trace.opts.width === 'number' ? trace.opts.width : 0.8;
             if (r.n) { take(r.lo - w / 2); take(r.hi + w / 2); }
           } else {
-            if (!log) take(0);
+            if (!log) { take(0); stick(0); }
             takeRange(_traceRange(trace, 'h', trace.heights, log));
           }
           break;
@@ -2170,7 +2555,7 @@ class Axes {
             const r = _traceRange(trace, 'y', trace.y), h = typeof trace.opts.height === 'number' ? trace.opts.height : 0.8;
             if (r.n) { take(r.lo - h / 2); take(r.hi + h / 2); }
           } else {
-            if (!log) take(0);
+            if (!log) { take(0); stick(0); }
             takeRange(_traceRange(trace, 'w', trace.widths, log));
           }
           break;
@@ -2178,28 +2563,24 @@ class Axes {
         case 'hist': {
           const { edges, counts } = this._hist(trace);
           if (axis === 'x') { take(edges[0]); take(edges[edges.length - 1]); }
-          else { if (!log) take(0); for (const c of counts) take(c); }
+          else { if (!log) { take(0); stick(0); } for (const c of counts) take(c); }
           break;
         }
         case 'imshow': {
           const e = this._imshowExtent(trace);
-          if (axis === 'x') { take(e[0]); take(e[1]); } else { take(e[2]); take(e[3]); }
+          const [a, b] = axis === 'x' ? [e[0], e[1]] : [e[2], e[3]];
+          take(a); take(b); stick(a); stick(b);
           break;
         }
         case 'hline': if (axis === 'y') take(trace.y); break;
         case 'vline': if (axis === 'x') take(trace.x); break;
-        case 'text': take(axis === 'x' ? trace.x : trace.y); break;
+        case 'text': if (!trace.opts.transform) take(axis === 'x' ? trace.x : trace.y); break;
+        default: { const k = _KINDS[trace.type]; if (k && k.extent) k.extent(this, trace, axis, log, take, stick); }
       }
     }
-    if (!(lo <= hi)) return log ? [1, 10] : [0, 1];
-    // add padding for non-imshow
-    const hasImshow = this._traces.some(t => t.type === 'imshow');
-    if (!hasImshow && lo !== hi) {
-      if (log) { const f = Math.pow(hi / lo, 0.05); lo /= f; hi *= f; }
-      else { const pad = (hi - lo) * 0.05; lo -= pad; hi += pad; }
-    }
-    return [lo, hi];
+    return { lo, hi, sticky };
   }
+  _dataExtent(axis, log = false) { return this._autoExtent(axis, log); }
 
   _imshowExtent(trace) {
     return trace.opts.extent || [0, trace.nx, 0, trace.ny];
@@ -2659,7 +3040,7 @@ class Axes {
     const py = yScale.transform(trace.y);
     if (py - py !== 0) return;
     ctx.globalAlpha = trace.opts.alpha != null ? trace.opts.alpha : 1;
-    ctx.strokeStyle = trace.opts.color || this._theme.refColor;
+    ctx.strokeStyle = trace.opts.color || this._theme.muted;
     ctx.lineWidth = trace.opts.linewidth || 1;
     ctx.setLineDash(dashArray(trace.opts.linestyle));
     ctx.beginPath(); ctx.moveTo(plotX, py); ctx.lineTo(plotX + plotW, py); ctx.stroke();
@@ -2671,7 +3052,7 @@ class Axes {
     const px = xScale.transform(trace.x);
     if (px - px !== 0) return;
     ctx.globalAlpha = trace.opts.alpha != null ? trace.opts.alpha : 1;
-    ctx.strokeStyle = trace.opts.color || this._theme.refColor;
+    ctx.strokeStyle = trace.opts.color || this._theme.muted;
     ctx.lineWidth = trace.opts.linewidth || 1;
     ctx.setLineDash(dashArray(trace.opts.linestyle));
     ctx.beginPath(); ctx.moveTo(px, plotY); ctx.lineTo(px, plotY + plotH); ctx.stroke();
@@ -2679,17 +3060,24 @@ class Axes {
     ctx.globalAlpha = 1;
   }
 
-  _renderText(ctx, trace, xScale, yScale) {
-    const px = xScale.transform(trace.x);
-    const py = yScale.transform(trace.y);
+  // text(x, y, s): x, y in data coordinates, or with {transform: 'axes'} (matplotlib's
+  // ax.transAxes) as fractions of the axes, 0–1 from the lower left
+  _renderText(ctx, trace, xScale, yScale, rect) {
+    const o = trace.opts, axes = o.transform === 'axes' || o.transform === 'transAxes';
+    const px = axes ? rect.x + trace.x * rect.w : xScale.transform(trace.x);
+    const py = axes ? rect.y + (1 - trace.y) * rect.h : yScale.transform(trace.y);
     if (px - px !== 0 || py - py !== 0) return;
-    ctx.globalAlpha = trace.opts.alpha != null ? trace.opts.alpha : 1;
-    ctx.fillStyle = trace.opts.color || this._textColor || this._theme.textColor;
-    ctx.font = `${trace.opts.fontsize || 11}px monospace`;
-    ctx.textAlign = trace.opts.ha || 'left';
-    ctx.textBaseline = { center: 'middle', baseline: 'alphabetic' }[trace.opts.va] || trace.opts.va || 'bottom';
-    ctx.fillText(trace.text, px, py);
-    ctx.globalAlpha = 1;
+    ctx.save();
+    ctx.globalAlpha = o.alpha != null ? o.alpha : 1;
+    ctx.fillStyle = o.color || this._textColor || this._theme.foreground;
+    const fsz = o.fontsize != null ? (typeof o.fontsize === 'number' ? o.fontsize : _FONTSIZES[o.fontsize] ?? 0) : null;
+    ctx.font = `${o.fontweight === 'bold' ? 'bold ' : ''}${fsz != null ? (typeof o.fontsize === 'number' ? fsz : (this._theme.font_size || 11) + fsz) : (this._theme.font_size || 11)}px ${this._theme.mono}`;
+    ctx.textAlign = { center: 'center', left: 'left', right: 'right' }[o.ha] || 'left';
+    ctx.textBaseline = { center: 'middle', baseline: 'alphabetic', top: 'top', bottom: 'bottom' }[o.va] || 'alphabetic';
+    ctx.translate(px, py);
+    if (o.rotation) ctx.rotate((-(o.rotation === 'vertical' ? 90 : +o.rotation || 0) * Math.PI) / 180);
+    ctx.fillText(String(trace.text), 0, 0);
+    ctx.restore();
   }
 
   _renderLegend(ctx, plotX, plotY, plotW, plotH) {
@@ -2704,12 +3092,12 @@ class Axes {
     }
     if (!entries.length) return;
 
-    ctx.font = '10px monospace';
-    const lineH = 14;
+    ctx.font = _font(th, -1);
+    const lineH = (th.font_size || 11) + 4;
     const padding = 6;
     let maxW = 0;
     for (const e of entries) {
-      const w = ctx.measureText(e.label).width;
+      const w = _textW(ctx.font, e.label);
       if (w > maxW) maxW = w;
     }
     const boxW = maxW + 24 + padding * 2;
@@ -2730,9 +3118,9 @@ class Axes {
     else if (loc.includes('lower') || loc.includes('bottom')) ly = plotY + plotH - boxH - 6;
     else ly = plotY + (plotH - boxH) / 2;
 
-    ctx.fillStyle = th.legendBg;
+    ctx.fillStyle = th.panel;
     ctx.fillRect(lx, ly, boxW, boxH);
-    ctx.strokeStyle = th.legendBorder;
+    ctx.strokeStyle = th.panel_border;
     ctx.lineWidth = 0.5;
     ctx.strokeRect(lx, ly, boxW, boxH);
 
@@ -2748,7 +3136,7 @@ class Axes {
       } else {
         ctx.fillRect(lx + padding, ey - 1, 14, 2);
       }
-      ctx.fillStyle = this._textColor || th.textColor;
+      ctx.fillStyle = this._textColor || th.foreground;
       ctx.fillText(e.label, lx + padding + 18, ey);
     }
   }
@@ -2898,8 +3286,10 @@ class Figure {
     _checkOpts('subplots', o, o.strict);
     // the palette as it stands now (style.js): this figure keeps it, whatever style.use() does
     // later. A partial {theme} overrides keys of it.
-    this._theme = { ..._snapshotStyle(), ...(o.theme && typeof o.theme === 'object' ? o.theme : {}) };
     this._strict = !!o.strict;
+    // the figure's own theme: the default (style.use) unless one is given — a name, a partial
+    // theme, themeFromCSS(el). Its axes all read this one object, so set_theme re-dresses them.
+    this._theme = _resolve(o.theme, this._strict);
     // matplotlib's figsize is in INCHES; the canvas pixel size is
     // figsize * dpi. Default dpi 100. Notebooks like Pyrcz's pass
     // figsize=(7, 7) expecting a 700×700 canvas — without this scale
@@ -2919,7 +3309,7 @@ class Figure {
     // overridden. Dark palette uses 'transparent' (notebook bg shows
     // through); light palette uses an opaque off-white card so dark
     // tick text contrasts even on a dark notebook bg.
-    this.facecolor = o.facecolor || this._theme.figureFacecolor;
+    this._facecolor = o.facecolor || null;
     this._suptitle = null;
     // Inter-subplot gap in pixels. Callers that want a tight grid
     // (e.g. sadpan's scatter_matrix on a small figure) pass `gap` (or
@@ -2943,6 +3333,42 @@ class Figure {
       ax._strict = this._strict;
       ax._dpi = dpi;
       this.axes.push(ax);
+    }
+    this._share('x', o.sharex);
+    this._share('y', o.sharey);
+  }
+
+  // the figure's face: facecolor if given, else the theme's figure surface
+  get facecolor() { return this._facecolor || this._theme.figure; }
+  set facecolor(c) { this._facecolor = c; }
+
+  // fig.set_theme(t): a name ('dark' · 'light' · 'paper'), a partial theme, themeFromCSS(el)
+  set_theme(t) {
+    const next = _resolve(t, this._strict);
+    for (const k of Object.keys(this._theme)) delete this._theme[k];
+    Object.assign(this._theme, next);
+    return this;
+  }
+
+  // subplots(sharex / sharey): true | 'all' | 'row' | 'col'. Shared axes have one range (one
+  // set_xlim moves all; the autoscale covers all their data) and one set of categories; as in
+  // matplotlib, only the outer axes label their ticks.
+  _share(axis, how) {
+    if (!how || how === 'none') return;
+    const mode = how === true ? 'all' : how;
+    if (!['all', 'row', 'col'].includes(mode)) throw new TypeError(`subplots: share${axis} must be true, 'all', 'row' or 'col', not ${JSON.stringify(how)}`);
+    const at = (r, c) => this.axes[r * this.ncols + c];
+    const groups = [];
+    if (mode === 'all') groups.push(this.axes.slice());
+    else if (mode === 'row') for (let r = 0; r < this.nrows; r++) groups.push(Array.from({ length: this.ncols }, (_, c) => at(r, c)));
+    else for (let c = 0; c < this.ncols; c++) groups.push(Array.from({ length: this.nrows }, (_, r) => at(r, c)));
+    for (const g of groups) for (const ax of g) ax._shared[axis] = g;
+    // tick labels only on the outer axes: x on the bottom row (columns share it), y on the
+    // first column (rows share it)
+    for (let r = 0; r < this.nrows; r++) for (let c = 0; c < this.ncols; c++) {
+      const ax = at(r, c);
+      if (axis === 'x' && mode !== 'row' && r < this.nrows - 1) ax._xtickLabelsOff = true;
+      if (axis === 'y' && mode !== 'col' && c > 0) ax._ytickLabelsOff = true;
     }
   }
 
@@ -2995,8 +3421,8 @@ class Figure {
     const supH = this._suptitle ? 24 : 0;
 
     if (this._suptitle) {
-      ctx.fillStyle = this._theme.textColor;
-      ctx.font = '14px monospace';
+      ctx.fillStyle = this._theme.foreground;
+      ctx.font = _font(this._theme, 3);
       ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
       ctx.fillText(this._suptitle.text, this.width / 2, 4);
@@ -3038,8 +3464,8 @@ class Figure {
     // centered horizontally under each column.
     if (this._rowLabels) {
       ctx.save();
-      ctx.fillStyle = this._theme.textColor;
-      ctx.font = '11px monospace';
+      ctx.fillStyle = this._theme.foreground;
+      ctx.font = _font(this._theme, 0);
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       for (let r = 0; r < this.nrows; r++) {
@@ -3055,8 +3481,8 @@ class Figure {
       ctx.restore();
     }
     if (this._colLabels) {
-      ctx.fillStyle = this._theme.textColor;
-      ctx.font = '11px monospace';
+      ctx.fillStyle = this._theme.foreground;
+      ctx.font = _font(this._theme, 0);
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       for (let c = 0; c < this.ncols; c++) {
@@ -3075,7 +3501,9 @@ class Figure {
   toDrawList() {
     const rec = recordingContext(this.width, this.height);
     this.draw(rec);
-    return { width: this.width, height: this.height, facecolor: this.facecolor, ops: rec.ops };
+    // version 2: themed text (the theme's mono stack), measured layout. The ops are unchanged
+    // in kind — a draw list only ever gains ops.
+    return { version: 2, width: this.width, height: this.height, facecolor: this.facecolor, ops: rec.ops };
   }
 
   // PNG bytes through OffscreenCanvas (workers in current browsers); rejects where there is none.
@@ -3235,8 +3663,7 @@ function rc(_group, _opts) { _noop('rc'); }
 // automatically after `import matplotlib.pyplot as plt`.
 const style = {
   use(name) { setStyle(name); },
-  available: ['default', 'classic', 'matplotlib', 'dark_background',
-              'seaborn', 'seaborn-whitegrid', 'ggplot', 'bmh'],
+  available: ['default', 'classic', 'matplotlib', 'dark_background', 'seaborn', 'seaborn-whitegrid', 'ggplot', 'bmh', 'dark', 'light', 'paper'],
 };
 // plt.figure(...) — return a fresh Figure (matplotlib's figure() takes
 // figsize=(w,h) and other kwargs; we accept and ignore unsupported ones).
@@ -3347,8 +3774,19 @@ function cla() { _currentAx = null; }
 
 // plt.xticks(ticks, labels) / yticks — custom ticks aren't supported yet; they warn once and
 // the axes keep their automatic ticks.
-function xticks(_ticks, _labels) { _noop('xticks'); }
-function yticks(_ticks, _labels) { _noop('yticks'); }
+// plt.xticks(ticks?, labels?, {rotation}) — sets them; with no ticks, returns [locs, labels]
+function xticks(ticks, labels, opts) { return _pyTicks('x', ticks, labels, opts); }
+function yticks(ticks, labels, opts) { return _pyTicks('y', ticks, labels, opts); }
+function _pyTicks(axis, ticks, labels, opts) {
+  const ax = _ax();
+  if (ticks && typeof ticks === 'object' && !Array.isArray(ticks) && !ArrayBuffer.isView(ticks)) { opts = ticks; ticks = opts.ticks; labels = opts.labels; }
+  if (labels && typeof labels === 'object' && !Array.isArray(labels) && !ArrayBuffer.isView(labels)) { opts = labels; labels = opts.labels; }
+  if (ticks != null) ax[axis === 'x' ? 'set_xticks' : 'set_yticks'](ticks, labels, opts);
+  else if (opts && opts.rotation != null) ax.tick_params({ axis, labelrotation: opts.rotation });
+  return [ax[axis === 'x' ? 'get_xticks' : 'get_yticks'](), ax[axis === 'x' ? 'get_xticklabels' : 'get_yticklabels']()];
+}
+function axis(arg) { return _ax().axis(arg); }
+function margins(x, y) { return _ax().margins(x, y); }
 
 // plt.colorbar(im, ax=None, **kwargs) — attach a colorbar to the axes
 // that holds `im`. matplotlib's `im` is an AxesImage; since our
@@ -3386,7 +3824,7 @@ const pltAdder = {
   gca, gcf, xlabel, ylabel, title, xlim, ylim, xscale, yscale,
   legend, grid, vlines, hlines, axhline, axvline, text,
   subplots_adjust, tight_layout, savefig, clf, cla,
-  xticks, yticks, colorbar, suptitle,
+  xticks, yticks, axis, margins, colorbar, suptitle, themeFromCSS,
 };
 
 // register as auditable extension for adder `import plt`
@@ -3410,4 +3848,4 @@ if (typeof window !== 'undefined') {
   }
 }
 
-export { subplots, plot, scatter, imshow, hist, bar, cmap, Figure, Axes, LinearScale, LogScale, getCmap, pltAdder, replay, recordingContext, rcParams, VERSION };
+export { subplots, plot, scatter, imshow, hist, bar, cmap, Figure, Axes, LinearScale, LogScale, getCmap, pltAdder, replay, recordingContext, rcParams, VERSION, themeFromCSS, resolveTheme };

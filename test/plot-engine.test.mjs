@@ -145,11 +145,11 @@ test('D9 / D10: each figure keeps its own palette; text and reference lines foll
   plt.style.use('dark_background');                       // after: neither figure changes
   for (const f of [dark, light]) { f.ax.text(0.5, 0.5, 'hi'); f.ax.axhline(0.5); f.ax.plot([0, 1], [0, 1]); }
   const style = (f, name) => ops(f.fig).filter((o) => o[0] === 'set' && o[1] === name).map((o) => o[2]);
-  assert.ok(style(dark, 'fillStyle').includes('#ccc'), 'dark text');
-  assert.ok(style(light, 'fillStyle').includes('#333333'), 'light text');
-  assert.ok(!style(light, 'fillStyle').includes('#ccc'), 'no dark-palette text on the light figure');
-  assert.ok(style(light, 'strokeStyle').includes('#666666'), 'light reference line');
-  assert.equal(light.fig.facecolor, '#fafafa');
+  assert.ok(style(dark, 'fillStyle').includes('#DDDCDA'), 'dark text (basalt foreground)');
+  assert.ok(style(light, 'fillStyle').includes('#1A1A1A'), 'light text (paper foreground)');
+  assert.ok(!style(light, 'fillStyle').includes('#DDDCDA'), 'no dark-theme text on the light figure');
+  assert.ok(style(light, 'strokeStyle').includes('#555555'), 'light reference line (muted)');
+  assert.equal(light.fig.facecolor, '#FFFFFF');
 });
 
 test('D11: plot(y) draws against 0 … n-1, at the axes level and plt level', () => {
@@ -270,10 +270,10 @@ test('an unknown option warns once, with the name it probably meant', () => {
 });
 
 test('the silent no-ops of 0.1.1 now say so; tight_layout stays quiet by design', () => {
-  plt.xticks([1, 2]); plt.yticks([1]); plt.rc('font'); plt.subplots_adjust({ wspace: 0.3 });
+  plt.rc('font'); plt.subplots_adjust({ wspace: 0.3 });
   plt.gca().set_zorder(3);
   plt.tight_layout();
-  assert.equal(warnings.length, 5, warnings.join('\n'));
+  assert.equal(warnings.length, 3, warnings.join('\n'));
   assert.ok(warnings.every((w) => /does nothing yet/.test(w)));
 });
 
@@ -309,7 +309,7 @@ test('after a draw: ax.view, toPixel / toData round-trip, fig.axesAt', () => {
 test('pick: nearest marker, then line vertices, then bars by column, then image cells', () => {
   const { fig, ax } = fig1();
   ax.plot([0, 5, 10], [0, 5, 10], { label: 'line' });
-  ax.scatter([5.2], [5.2], { label: 'pts', c: [0.7] });
+  ax.scatter([5.1], [5.1], { label: 'pts', c: [0.7] });
   fig.toDrawList();
   const [px, py] = ax.toPixel(5, 5);
   const p = ax.pick(px, py);
