@@ -5,9 +5,18 @@
   "type": "module",
   "main": "index.js",
   "exports": {
-    ".": "./index.js",
-    "./svg": "./src/svg.js",
-    "./interact": "./src/interact.js",
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    },
+    "./svg": {
+      "types": "./svg.d.ts",
+      "default": "./src/svg.js"
+    },
+    "./interact": {
+      "types": "./interact.d.ts",
+      "default": "./src/interact.js"
+    },
     "./axes": "./index.js",
     "./figure": "./index.js",
     "./color": "./src/color.js",
@@ -23,7 +32,9 @@
     "API.md",
     "llms.txt",
     "README.md",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "svg.d.ts",
+    "interact.d.ts"
   ],
   "scripts": {
     "build": "node build.js"

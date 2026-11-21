@@ -1,0 +1,87 @@
+{
+  "label": "m3",
+  "entry": "/ext/plot/index.js",
+  "at": "2026-11-21T19:04:45.039Z",
+  "machine": "AMD Ryzen AI 9 HX 370 w/ Radeon 890M · 24 threads · 63 GiB",
+  "chromium": "148.0.7778.96",
+  "results": {
+    "trivial/canvas": {
+      "first": 20.299999952316284,
+      "again": null,
+      "ops": null
+    },
+    "trivial/record": {
+      "first": 13.899999976158142,
+      "again": null,
+      "ops": 178
+    },
+    "scatter_1M/canvas": {
+      "first": 103.00000005960464,
+      "again": 0.800000011920929,
+      "ops": null
+    },
+    "scatter_1M/record": {
+      "first": 111.20000004768372,
+      "again": 0.3999999761581421,
+      "ops": 184
+    },
+    "scatter_500k/canvas": {
+      "first": 60.89999997615814,
+      "again": 0.9000000357627869,
+      "ops": null
+    },
+    "scatter_500k/record": {
+      "first": 63.89999997615814,
+      "again": 0.30000001192092896,
+      "ops": 170
+    },
+    "line_1M/canvas": {
+      "first": 32.1000000834465,
+      "again": 7.400000035762787,
+      "ops": null
+    },
+    "line_1M/record": {
+      "first": 24.099999964237213,
+      "again": 13,
+      "ops": 10693
+    },
+    "hist_10M/canvas": {
+      "first": 69.30000001192093,
+      "again": 0.8999999761581421,
+      "ops": null
+    },
+    "hist_10M/record": {
+      "first": 70.60000002384186,
+      "again": 0.7000000476837158,
+      "ops": 371
+    },
+    "imshow_2000/canvas": {
+      "first": 50.80000001192093,
+      "again": 1.199999988079071,
+      "ops": null
+    },
+    "imshow_2000/record": {
+      "first": 64.69999998807907,
+      "again": 0.3999999761581421,
+      "ops": 179
+    },
+    "contourf_500/canvas": {
+      "first": 64,
+      "again": 0.800000011920929,
+      "ops": null
+    },
+    "contourf_500/record": {
+      "first": 61.999999940395355,
+      "again": 0.3999999761581421,
+      "ops": 166
+    },
+    "pick_1M/canvas": {
+      "first": 12.399999976158142,
+      "again": 0.0195,
+      "ops": null
+    },
+    "pick_1M/record": {
+      "note": "n/a: canvas only"
+    }
+  }
+}

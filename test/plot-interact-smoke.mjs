@@ -262,6 +262,32 @@ const overlayInk = (u) => page.evaluate((u) => { const c = T[u].overlay, d = c.g
 
 chk('no page errors', errs.length === 0, errs.slice(0, 3).join(' | '));
 await page.screenshot({ path: path.join(root, 'experiments', 'plot-interact.png') }).catch(() => {});
+
+// ── the gallery: every API.md example, dark and paper, under interact(), with no error and no
+// warning (a warning would mean the docs show an option plot ignores) ──
+{
+  const g = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+  const gerrs = [], warns = [];
+  g.on('pageerror', (e) => gerrs.push(String(e)));
+  g.on('console', (m) => { if (m.type() === 'error') gerrs.push(m.text()); if (m.type() === 'warning') warns.push(m.text()); });
+  await g.goto(`http://127.0.0.1:${PORT}/ext/plot/gallery.html`);
+  await g.waitForFunction(() => window.__galleryDone > 0, null, { timeout: 30000 });
+  const r = await g.evaluate(() => ({
+    n: window.__galleryDone,
+    figs: document.querySelectorAll('figure').length,
+    canvases: document.querySelectorAll('figure canvas:not([style*="pointer-events"])').length,
+    errs: document.querySelectorAll('.err').length,
+    inked: [...document.querySelectorAll('figure canvas:not([style*="pointer-events"])')].filter((c) => {
+      const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; let k = 0;
+      for (let i = 3; i < d.length; i += 64) if (d[i]) k++;
+      return k > 50;
+    }).length,
+  }));
+  chk('gallery: every API.md example draws, dark and paper', r.figs === 2 * r.n && r.canvases === 2 * r.n && r.inked === 2 * r.n && r.errs === 0, JSON.stringify(r));
+  chk('gallery: no errors, no warnings', gerrs.length === 0 && warns.length === 0, [...gerrs, ...warns].slice(0, 4).join(' | '));
+  await g.screenshot({ path: path.join(root, 'experiments', 'plot-gallery.png'), fullPage: true }).catch(() => {});
+  await g.close();
+}
 await browser.close(); server.close();
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exitCode = fail ? 1 : 0;

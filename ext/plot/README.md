@@ -1,6 +1,6 @@
 # @gcu/plot
 
-Matplotlib-style plotting for the browser. Canvas 2D, zero runtime dependencies, no WebGL, no WASM, no workers, no network: it runs under a `connect-src 'none'` page, in a worker, and in Node (as draw lists). If you know matplotlib, you know the API: `plot`, `scatter`, `bar`, `hist`, `boxplot`, `imshow`, `contour`/`contourf`, `pcolormesh`, `errorbar`, `fill_between`, norms and colorbars, category axes, shared axes, legends that stay out of the data.
+Matplotlib-style plotting for the browser. Canvas 2D, zero runtime dependencies, no WebGL, no WASM, no workers, no network: it runs under a `connect-src 'none'` page, in a worker, and in Node (as draw lists). If you know matplotlib, you know the API: `plot`, `scatter`, `bar`, `hist`, `boxplot`, `imshow`, `contour`/`contourf`, `pcolormesh`, `errorbar`, `fill_between`, norms and colorbars, category axes, shared axes, legends that stay out of the data — plus plan views (GeoJSON, scale bar, north arrow), axes drawn around another renderer's picture, SVG export, and opt-in interaction (hover, zoom, pan, brush, linked views).
 
 **The full reference is [API.md](API.md)** (also `llms.txt`, written for models): every call, its options and defaults, what it returns, how plot differs from matplotlib, and what it doesn't do yet. Types: `index.d.ts`.
 
@@ -85,7 +85,33 @@ The layout is measured from the real labels, ticks are sized to the axis so labe
 
 ## Histograms
 
-`hist(x, { bins, range, weights, density, cumulative })` counts exactly as `numpy.histogram` does (checked against numpy's own output: values on edges, non-representable edges, the inclusive last edge), and `bins='auto' | 'fd' | 'sturges' | 'sqrt' | 'rice' | 'scott'` give numpy 2's bin counts. `ax.hist` returns `[n, bins, patches]`; `plt.hist` returns `[counts, edges, canvas]`.
+`hist(x, { bins, range, weights, density, cumulative })` counts exactly as `numpy.histogram` does (checked against numpy's own output: values on edges, non-representable edges, the inclusive last edge), and `bins='auto' | 'fd' | 'sturges' | 'sqrt' | 'rice' | 'scott'` give numpy 2's bin counts. `ax.hist` and `plt.hist` return `[n, bins, patches]`.
+
+## Plan views
+
+Maps in projected or local coordinates, with no basemap: `ax.add_geometry(geojson)` takes a GeoJSON Geometry, Feature or FeatureCollection (polygons with holes, lines, points — `@gcu/wkt` output drops in), and a pick inside a polygon returns its feature's properties. matplotlib's `fill` and `Polygon` / `Rectangle` / `Circle` patches work too. `ax.scalebar({units: 'm'})` and `ax.north_arrow()` add the map furniture; `imshow(Z, {extent})` puts a georeferenced grid in place; `set_aspect('equal')` holds through zoom and pan.
+
+## Axes around someone else's picture
+
+plot can draw only the frame, ticks, labels, legend and colorbar around a picture another renderer makes — a `@gcu/condenser` plan or section, a map, a stereonet: `fig.set_facecolor('none')`, `ax.set_facecolor('none')`, `ax.set_view({xlim, ylim})` (or condenser's view rect) from the other camera, and a colorbar with nothing behind it (`ScalarMappable`, or `colorbar({cmap, vmin, vmax})`). `ax.view` says where to put the other canvas. Under `interact()` the sync goes both ways without echoing.
+
+## Interaction
+
+```js
+import { interact } from '@gcu/plot';      // or '@gcu/plot/interact'
+const ui = interact(fig, { units: 'm', onBrush: ({ x, y }) => filter(x, y) });
+document.body.append(ui.element);
+```
+
+Hover shows a readout, crosshair and ring on an overlay canvas (the figure isn't redrawn); the wheel zooms about the cursor, drag pans, double-click resets — exactly, on log and inverted axes too; shift-drag brushes; the keyboard pans, zooms and resets; two fingers pinch. `link([ax1, ax2])` ties views across figures, and `ax.highlight(predicate)` dims all but the chosen points.
+
+## Export
+
+`fig.toSVG()` (or `toSVG(drawList)` from `@gcu/plot/svg`, for a list made in a worker) writes the figure as SVG from its draw list: paths, text in the theme's font, clip paths, and rasters as embedded PNG (a million-point scatter stays one image — honest and small). `savefig('map.svg')` / `savefig('map.png')`. The same figure gives the same SVG, byte for byte.
+
+## Gallery
+
+[`gallery.html`](gallery.html) draws every example in API.md, in the dark theme and in paper, each under `interact()`. It is generated from API.md by the build, so the two can't drift; open it from a local server.
 
 ## Themes
 
@@ -93,7 +119,7 @@ A theme is [`@gcu/theme`](../theme)'s keys, shared with `@gcu/condenser`'s 3D vi
 
 ## Without a DOM: figures as data
 
-With no `document`, `show()` records the figure and returns it; `savefig(name)` records `{ name, figure }` for `plt.saved()`.
+With no `document`, `show()` records the figure and returns it; `savefig(name)` records `{ name, format, figure }` for `plt.saved()`; a host running Python calls `plt.flush_figures()` after each run, as Jupyter's inline backend does.
 
 `fig.toDrawList()` is the figure as plain JSON: `{ width, height, facecolor, ops }`, the ordered 2D-context calls as `[op, ...args]`, property assignments as `['set', name, value]`, a raster as one `['image', x, y, w, h, cols, rows, rgbaBase64]`. The same figure gives the same list in every host. `replay(ctx, list)` draws it; `fig.draw(ctx, { dpr })` draws straight onto any 2D context; `fig.toPNG()` gives PNG bytes where `OffscreenCanvas` exists.
 

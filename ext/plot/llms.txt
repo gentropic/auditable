@@ -41,7 +41,10 @@ histograms leave NaN out, log axes ignore values ≤ 0. Errors name the argument
 | `ax.figure` · `ax.get_figure()` | the figure an axes belongs to |
 | `fig.suptitle(text)` · `fig.colorbar(mappable, {ax, …})` · `fig.set_theme(theme)` | |
 | `fig.show()` | → a `<canvas>` (in Node: records the figure; see `plt.shown()`) |
-| `fig.draw(ctx, {dpr})` · `fig.toDrawList()` · `replay(ctx, list)` · `await fig.toPNG({dpr})` · `fig.savefig(name)` | draw anywhere; a draw list is JSON (`version: 2`) |
+| `fig.draw(ctx, {dpr})` · `fig.toDrawList()` · `replay(ctx, list)` · `await fig.toPNG({dpr})` | draw anywhere; a draw list is JSON (`version: 2`) |
+| `fig.toSVG({facecolor})` · `toSVG(drawList)` | an SVG string (see [Export](#export)) |
+| `fig.savefig('x.png' \| 'x.svg')` · `savefig(name, {format})` | a download; with no DOM, `{name, format, figure}` in `plt.saved()` |
+| `fig.set_facecolor(c)` · `ax.set_facecolor(c)` | `'none'`: nothing painted, for axes over another picture |
 | `fig.axesAt(px, py)` | the axes under a pixel |
 
 ## Charts
@@ -90,7 +93,8 @@ in first-appearance order; long labels rotate rather than collide.
 | `legend()` · `legend(labels)` · `legend(handles, labels)` · `{loc = 'best', bbox_to_anchor, ncols, title, fontsize, frameon, framealpha}` | `'best'` avoids the data; `{bbox_to_anchor: [1.01, 1], loc: 'upper left'}` puts it outside, and the layout makes room |
 | `colorbar([mappable], {label, ticks, format, extend})` | follows the mappable (else the last colour-mapped chart) and its norm; `extend` arrows; class bands for a BoundaryNorm or contourf |
 | `twinx()` · `twiny()` | a second y (x) axis |
-| `pick(px, py, {radius = 8})` · `toPixel(x, y)` · `toData(px, py)` · `ax.view` | after a draw: what is under a pixel |
+| `pick(px, py, {radius = 8})` · `toPixel(x, y)` · `toData(px, py)` · `ax.view` | after a draw: what is under a pixel. `pick` → `{axes, trace, kind, index, x, y, c, s, label, value}`; markers win over line vertices, then bars and bins, polygons (`properties`), image cells (`value`) |
+| `highlight(indices \| mask \| predicate, {trace, dim = 0.65})` · `highlight(null)` | dims everything but the chosen points of a scatter (a predicate `(i, x, y) → bool` runs over every scatter) |
 
 Ticks are sized to the axis (no overlapping labels), labels carry the decimals the step needs,
 and the margins are measured from the real tick labels, titles and colorbar.
@@ -109,6 +113,71 @@ YlOrRd YlOrBr YlGnBu YlGn bwr seismic terrain tab10 tab20 Set1 Set2 Set3 Paired 
 | `colors.TwoSlopeNorm(vcenter, vmin, vmax)` · `colors.CenteredNorm(vcenter, halfrange)` | diverging about a centre |
 | `colors.BoundaryNorm(boundaries, ncolors)` | discrete classes; with `ListedColormap(colors)` (ncolors = its N), one colour per class |
 | `colors.ListedColormap(colors)` · `colors.LinearSegmentedColormap.from_list(name, colors)` | |
+| `new ScalarMappable({cmap, norm, vmin, vmax})` (`plt.cm.ScalarMappable`) · `colorbar({cmap, vmin, vmax, norm})` | a colour scale with nothing of plot's behind it: its colorbar alone |
+
+## Plan views
+
+Maps in projected or local coordinates, no basemap. Use `set_aspect('equal')`; it survives
+zoom and pan.
+
+| call | |
+|---|---|
+| `add_geometry(geojson, {facecolor, edgecolor, linewidth, linestyle, alpha, label, color, marker, s})` | a GeoJSON Geometry, Feature or FeatureCollection, `[x, y]` in data units. Polygons (holes too, either winding) fill even-odd; a pick inside one returns its `properties` |
+| `fill(x, y, [fmt], …, {facecolor, edgecolor, closed})` | matplotlib's filled polygon(s) → `[Polygon]` |
+| `add_patch(new Polygon(xy, {closed, fill}))` · `Rectangle([x, y], w, h, {angle})` · `Circle([x, y], r)` | matplotlib.patches (also `plt.Polygon` …) |
+| `scalebar({units = 'm', length, loc = 'lower right', color, label})` | the x axis's scale: a nice length about a fifth of the view; metres read as km from 1,000 |
+| `north_arrow({loc = 'upper right', rotation = 0, size = 28, color})` | north is +y (flipped on an inverted y); `rotation` (° clockwise) for a grid that isn't north-up |
+| `imshow(Z, {extent: [x0, x1, y0, y1]})` | a georeferenced grid lands in place |
+
+## Axes as chrome over another renderer
+
+plot draws the frame, ticks, labels, legend and colorbar around a picture it doesn't draw (a
+3D view's plan or section, a map, a stereonet): a transparent face, the other camera's
+limits, the plot rect to fit the other canvas to.
+
+```js
+fig.set_facecolor('none'); ax.set_facecolor('none');
+ax.set_aspect('equal');
+ax.set_view({ xlim: [e0, e1], ylim: [n0, n1] });   // or condenser's view rect {u0, u1, v0, v1}
+ax.colorbar(new ScalarMappable({ cmap: 'magma', norm: new colors.Normalize(0, 3.5) }), { label: 'Cu (%)' });
+fig.draw(ctx);                     // then: ax.view {x, y, w, h} is where the picture goes, and
+const [x0, x1] = ax.get_xlim();    // get_xlim / get_ylim what it must show (equal aspect may widen one)
+```
+
+Under `interact()`, `ax.set_view()` redraws by itself and fires no `onViewChange`; the user's own
+zoom and pan fire it. That's the two-way sync, with no echo.
+
+## Export
+
+| | |
+|---|---|
+| `fig.toSVG({facecolor})` | from the draw list: paths, `<text>` in the theme's font, clip paths, and rasters (imshow, big scatters) as embedded PNG. Same figure, same bytes |
+| `toSVG(fig.toDrawList())` · `import { toSVG } from '@gcu/plot/svg'` | the same from a list made elsewhere (a worker, Node) |
+| `encodePNG(rgba, w, h)` | PNG bytes in plain JS (no canvas) |
+
+A large scatter stays one embedded raster in the SVG, which is honest and small. The dark theme's
+figure surface is transparent (a chart blends into the page); a file has no page, so an export
+paints the theme's background under it unless the face was set (`set_facecolor('none')` stays
+clear) or `{facecolor}` is given.
+
+## Interaction (`@gcu/plot/interact`)
+
+```js
+import { interact, link } from '@gcu/plot';          // or '@gcu/plot/interact'
+const ui = interact(fig, { units: 'm', onBrush: ({ axes, x, y }) => filter(x, y) });
+document.body.append(ui.element);                    // the canvas, with its overlay
+```
+
+| | |
+|---|---|
+| `interact(fig, [canvas], {readout, crosshair, units, format, extra, brush, radius, label, onBrush, onClick, onViewChange, onHover})` | → `{element, canvas, on, off, reset, redraw, setSelection, selection, destroy}` |
+| hover | readout, crosshair and ring on an overlay (the figure isn't redrawn). `format(pick)` → lines replaces the readout; `extra(trace, index)` adds lines; `units: 'm'` or `{x, y}` |
+| wheel · drag · double-click | zoom about the cursor (shift: x only, alt: y only) · pan · reset. Log and inverted axes too; equal aspect is kept |
+| shift-drag (or drag with `brush: 'x' \| 'y' \| 'xy'`) | a brush: `onBrush({axes, x: [lo, hi], y})`; a click clears it |
+| `onClick(pick)` · `onViewChange({axes, xlim, ylim})` · `ui.on('brush' \| 'click' \| 'view' \| 'hover', fn)` | |
+| keys | focusable, aria-labelled: arrows pan, `+` / `-` zoom, `0` resets, `Esc` clears |
+| touch | pointer events; two fingers pinch-zoom and pan |
+| `link([ax1, ax2], {x = true, y = true})` | one view for several axes, across figures; returns an unlink function |
 
 ## Themes
 
@@ -129,9 +198,10 @@ A theme is `@gcu/theme`'s keys (shared with `@gcu/condenser`'s 3D view): `backgr
 `ylim`, `xscale`, `yscale`, `xticks(ticks, labels, {rotation})`, `yticks`, `axis`, `margins`,
 `legend`, `grid`, `colorbar`, `suptitle`, `text`, `annotate`, `axhline`, `axvline`, `hlines`,
 `vlines`, `axhspan`, `axvspan`, `fill_between`, `fill_betweenx`, `step`, `errorbar`, `barh`,
-`bar_label`, `boxplot`, `contour`, `contourf`, `pcolormesh` act on the current axes;
-`plt.show()`, `plt.savefig()`, `plt.close()`, `plt.style.use()`, `plt.rcParams`, `plt.cm`,
-`plt.colors`.
+`bar_label`, `boxplot`, `contour`, `contourf`, `pcolormesh`, `fill`, `add_geometry` act on the
+current axes; `plt.show()`, `plt.flush_figures()`, `plt.savefig()`, `plt.close()`,
+`plt.style.use()`, `plt.rcParams`, `plt.cm` (with `plt.cm.ScalarMappable`), `plt.colors`,
+`plt.Polygon`, `plt.Rectangle`, `plt.Circle`.
 
 `plt.plot`, `plt.scatter`, `plt.bar`, `plt.hist`, `plt.imshow` draw on the current axes too,
 opening a figure when there is none, and return what the `ax.` call returns:
@@ -145,6 +215,150 @@ When a figure appears:
 | a Python (adder) cell | Jupyter's inline backend. The cell starts with no current figure; when it ends, the figures it opened and didn't show appear in its output, then close. `plt.show()` shows them where it is called (a loop of plot-and-show gives one per pass) and returns None. `fig.show()` returns the canvas, and that figure isn't shown again at the end. |
 | a JS cell | only what the cell asks for: `display(plt.show())` (one canvas, or a `<div>` of them) or `display(fig.show())`. The cell starts with no current figure, so a re-run draws a fresh one. |
 | a worker or Node host | after each run, `plt.flush_figures()` (IPython's name) shows what's open; `plt.shown()` lists the figures as Figure objects to replay. |
+
+## Examples
+
+One per chart type. Each builds `fig` from `@gcu/plot`'s names; `gallery.html` draws them all,
+in the dark theme and in paper, each under `interact()` (it is generated from these blocks).
+
+```js example plot
+const x = Array.from({ length: 100 }, (_, i) => i / 10);
+const [fig, ax] = subplots(1, 1, { figsize: [5, 3.2] });
+ax.plot(x, x.map(Math.sin), { label: 'sin' });
+ax.plot(x, x.map(Math.cos), '--', { label: 'cos' });
+ax.set_xlabel('t (s)'); ax.set_title('plot'); ax.legend();
+```
+
+```js example scatter
+const x = [], y = [], r = [];
+for (let i = 1; i < 400; i++) { const a = i * 2.39996, d = Math.sqrt(i) / 2; x.push(d * Math.cos(a)); y.push(d * Math.sin(a)); r.push(d); }
+const [fig, ax] = subplots(1, 1, { figsize: [5, 3.6] });
+const sc = ax.scatter(x, y, { c: r, s: 16, cmap: 'viridis' });
+fig.colorbar(sc, { ax, label: 'radius' });
+ax.set_aspect('equal'); ax.set_title('scatter');
+```
+
+```js example bar
+const [fig, ax] = subplots(1, 1, { figsize: [5, 3.2] });
+const bars = ax.bar(['oxide', 'transition', 'fresh'], [12.4, 30.1, 57.5], { color: ['C1', 'C2', 'C0'] });
+ax.bar_label(bars, { fmt: '%.1f Mt' });
+ax.set_ylabel('tonnes (Mt)'); ax.set_title('bar');
+```
+
+```js example hist
+const u = (k) => (((Math.sin(k * 12.9898) * 43758.5453) % 1) + 1) % 1;   // a deterministic uniform
+const a = [], b = [];
+for (let i = 0; i < 3000; i++) { a.push(u(i) + u(i + 1e4) + u(i + 2e4)); b.push(1 + u(i + 3e4) + u(i + 4e4)); }
+const [fig, ax] = subplots(1, 1, { figsize: [5, 3.2] });
+ax.hist([a, b], { bins: 30, histtype: 'stepfilled', alpha: 0.6 });
+ax.legend(['A', 'B']); ax.set_title('hist');
+```
+
+```js example boxplot
+const u = (k) => (((Math.sin(k * 12.9898) * 43758.5453) % 1) + 1) % 1;
+const groups = { oxide: [], transition: [], fresh: [] };
+Object.keys(groups).forEach((k, j) => { for (let i = 0; i < 200; i++) groups[k].push(30 + 8 * j + 12 * (u(i + 1e3 * j) + u(i + 5e3 + 1e3 * j) - 1)); });
+const [fig, ax] = subplots(1, 1, { figsize: [5, 3.2] });
+ax.boxplot(groups, { showmeans: true });
+ax.set_ylabel('Fe (%)'); ax.set_title('boxplot');
+```
+
+```js example imshow
+const Z = Array.from({ length: 60 }, (_, j) => Array.from({ length: 80 }, (_, i) => Math.sin(i / 9) * Math.cos(j / 7)));
+const [fig, ax] = subplots(1, 1, { figsize: [5, 3.4] });
+const im = ax.imshow(Z, { cmap: 'RdBu_r', extent: [0, 800, 0, 600], origin: 'lower' });
+fig.colorbar(im, { ax }); ax.set_title('imshow');
+```
+
+```js example contourf
+const Z = Array.from({ length: 50 }, (_, j) => Array.from({ length: 70 }, (_, i) => Math.sin(i / 8) * Math.cos(j / 6) + j / 60));
+const [fig, ax] = subplots(1, 1, { figsize: [5, 3.4] });
+const cs = ax.contourf(Z, 12, { cmap: 'terrain' });
+ax.contour(Z, 12, { colors: 'k', linewidths: 0.5 });
+fig.colorbar(cs, { ax }); ax.set_title('contourf + contour');
+```
+
+```js example pcolormesh
+const xe = [0, 1, 2, 4, 7, 11, 16], ye = [0, 2, 3, 6, 10];
+const C = ye.slice(1).map((_, j) => xe.slice(1).map((_, i) => i * j + i));
+const [fig, ax] = subplots(1, 1, { figsize: [5, 3.2] });
+const m = ax.pcolormesh(xe, ye, C, { cmap: 'magma', edgecolors: 'w' });
+fig.colorbar(m, { ax }); ax.set_title('pcolormesh');
+```
+
+```js example errorbar
+const x = [1, 2, 3, 4, 5, 6], y = [2.1, 2.9, 3.4, 4.8, 5.1, 6.3], e = [0.3, 0.4, 0.2, 0.6, 0.4, 0.5];
+const [fig, ax] = subplots(1, 1, { figsize: [5, 3.2] });
+ax.fill_between(x, y.map((v, i) => v - 2 * e[i]), y.map((v, i) => v + 2 * e[i]), { alpha: 0.2, label: '±2σ' });
+ax.errorbar(x, y, { yerr: e, fmt: 'o', capsize: 3, label: 'assays' });
+ax.legend(); ax.set_title('errorbar, fill_between');
+```
+
+```js example marks
+const x = [0, 1, 2, 3, 4, 5, 6, 7], y = [1, 3, 2, 5, 4, 6, 5, 7];
+const [fig, ax] = subplots(1, 1, { figsize: [5, 3.2] });
+ax.step(x, y, { where: 'mid', label: 'step' });
+ax.axvspan(2.5, 4.5, { alpha: 0.15, color: 'C3' });
+ax.axhline(4, { ls: ':', color: 'C7' });
+ax.annotate('peak', [7, 7], { xytext: [4.6, 6.6], arrowprops: { arrowstyle: '->' } });
+ax.set_title('step, spans, annotate');
+```
+
+```js example log
+const t = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000];
+const [fig, ax] = subplots(1, 1, { figsize: [5, 3.2] });
+ax.plot(t, t.map((v) => 3 * v ** 0.6), 'o-', { label: 'γ(h)' });
+ax.set_xscale('log'); ax.set_yscale('log');
+const ax2 = ax.twinx();
+ax2.plot(t, t.map((v) => 100 / (1 + v / 50)), 'C1--');
+ax.set_xlabel('lag (m)'); ax.set_title('log axes, twinx');
+```
+
+```js example downhole
+const d = Array.from({ length: 120 }, (_, i) => i), g = d.map((v) => 30 + 20 * Math.sin(v / 9) + 8 * Math.sin(v / 2.3));
+const [fig, ax] = subplots(1, 1, { figsize: [3, 4.2] });
+ax.axhspan(40, 70, { color: 'C1', alpha: 0.2 });
+ax.plot(g, d);
+ax.invert_yaxis(); ax.set_xlabel('Fe (%)'); ax.set_ylabel('depth (m)'); ax.set_title('downhole');
+```
+
+```js example plan
+const ring = (x0, y0, x1, y1) => [[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]];
+const lease = { type: 'Feature', properties: { name: 'EL 1234' }, geometry: { type: 'Polygon', coordinates: [ring(500000, 7000000, 503000, 7002200), ring(501200, 7000800, 501900, 7001400)] } };
+const ex = [], ny = [];
+for (let i = 0; i < 7; i++) for (let j = 0; j < 5; j++) { ex.push(500300 + i * 400); ny.push(7000250 + j * 420); }
+const [fig, ax] = subplots(1, 1, { figsize: [5, 4] });
+ax.add_geometry(lease, { facecolor: 'C2', edgecolor: 'C2', alpha: 0.35, label: 'licence' });
+ax.scatter(ex, ny, { marker: 's', s: 14, color: 'C3', label: 'collars' });
+ax.set_aspect('equal'); ax.scalebar(); ax.north_arrow();
+ax.set_xlabel('E'); ax.set_ylabel('N'); ax.legend({ loc: 'upper left' }); ax.set_title('plan view');
+```
+
+```js example chrome
+// the frame around a picture another renderer draws (here: none, so the page shows through)
+const [fig, ax] = subplots(1, 1, { figsize: [5, 3.6] });
+fig.set_facecolor('none'); ax.set_facecolor('none');
+ax.set_aspect('equal');
+ax.set_view({ xlim: [500000, 501000], ylim: [7000000, 7000700] });
+ax.colorbar(new ScalarMappable({ cmap: 'magma', norm: new colors.Normalize(0, 3.5) }), { label: 'Cu (%)' });
+ax.set_xlabel('E'); ax.set_ylabel('N'); ax.set_title('axes as chrome');
+```
+
+```js example shared
+const x = Array.from({ length: 80 }, (_, i) => i / 8);
+const [fig, axs] = subplots(2, 2, { figsize: [6, 4.2], sharex: true, sharey: true });
+axs.flat.forEach((a, k) => { a.plot(x, x.map((v) => Math.sin(v * (k + 1) / 2)), `C${k}`); a.set_title(`f = ${(k + 1) / 2}`); });
+fig.suptitle('subplots(sharex, sharey)');
+```
+
+```js example highlight
+const x = [], y = [];
+for (let i = 0; i < 2000; i++) { x.push(Math.cos(i * 2.39996) * Math.sqrt(i)); y.push(Math.sin(i * 2.39996) * Math.sqrt(i)); }
+const [fig, ax] = subplots(1, 1, { figsize: [4, 3.6] });
+ax.scatter(x, y, { c: x, s: 6, cmap: 'plasma' });
+ax.highlight((i, px, py) => px * px + py * py < 300);
+ax.set_aspect('equal'); ax.set_title('highlight');
+```
 
 ## Differs from matplotlib
 

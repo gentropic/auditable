@@ -91,6 +91,11 @@ md += `
   was timed, which was the same thing while histograms counted lazily at draw time; M2's
   \`hist()\` counts at the call (it returns \`[n, bins, patches]\`), and timing only the draw read
   8 ms. The trivial figure's 13 → 18 ms is the bigger bundle's parse at import.
+- **M3** changes no draw path; the cases above sit within the machine's noise of M2. The
+  trivial figure, import included, is 20 ms against a 20 ms target: the everything-bundle grew
+  from 270 to 338 KB raw (SVG export, the PNG encoder, interaction), and its parse is most of
+  that time. A host that wants less imports less: \`@gcu/plot/svg\` and \`@gcu/plot/interact\` are
+  their own entries.
 `;
 fs.writeFileSync(path.join(here, 'BENCH.md'), md);
 console.log(md);

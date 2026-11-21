@@ -1,5 +1,65 @@
 # @gcu/plot changelog
 
+## 0.4.0 — interaction and export (M3, unreleased)
+
+The third milestone of `plot-world-class`: interaction, plan views, axes drawn around another
+renderer's picture, SVG export, and a gallery generated from the docs.
+
+**Interaction (`@gcu/plot/interact`).** `interact(fig, [canvas], opts)`: hover readout,
+crosshair and ring on an overlay canvas (a pointer move never redraws the figure), with units
+and as many decimals as a pixel resolves; wheel zoom about the cursor (shift: x, alt: y), drag
+pan, double-click reset — done in pixel space through the axes' own scales, so log and
+inverted axes zoom and pan exactly and equal aspect holds; shift-drag brushes (`onBrush`), a
+click clears and picks (`onClick`); `onViewChange`; keyboard (arrows, `+` `-`, `0`, `Esc`) with
+focus and an aria-label; pinch on touch. `link(axes, {x, y})` ties views across figures.
+`ax.highlight(indices | mask | predicate)` dims all but the chosen points (in the draw list
+too).
+
+**Plan views.** `ax.add_geometry(geojson)` (polygons with holes even-odd, lines, points; a pick
+returns a feature's properties), `ax.fill`, matplotlib's `Polygon` / `Rectangle` / `Circle` and
+`add_patch`, `ax.scalebar({units})`, `ax.north_arrow()`.
+
+**Axes as chrome (§9a).** `set_facecolor('none')` on figure and axes, `ax.set_view({xlim,
+ylim})` or condenser's view rect (under `interact()` it redraws and fires no `onViewChange`, so
+two views follow each other without echo), `ScalarMappable` and `colorbar({cmap, vmin, vmax,
+norm})` for a bar with nothing of plot's behind it.
+
+**Export.** `fig.toSVG()` / `toSVG(drawList)` (also `@gcu/plot/svg`): paths, text in the
+theme's font, nested clip paths, rasters as embedded PNG; deterministic. `savefig('x.svg')`.
+`encodePNG(rgba, w, h)`, a plain-JS PNG encoder (fixed-Huffman deflate). An export paints the
+theme's background under the dark theme's transparent figure surface; `'none'` stays clear.
+
+**pyplot is matplotlib's (a breaking change, between M2 and M3).** `plt.plot`, `plt.scatter`,
+`plt.bar`, `plt.hist` and `plt.imshow` draw on the current axes and return what the axes method
+returns. Before, each made a new figure and returned its canvas, so `plt.plot(a); plt.plot(b);
+plt.title('t')` gave two figures and lost the first line. `plt.matshow` still opens a figure
+of its own, as matplotlib's does. `plt.subplot(211)` / `(212)` are two axes of one figure.
+A Python cell is the inline backend: it starts with no current figure, and when it ends the
+figures it opened and didn't show land in its output. `plt.show()` shows them where it is
+called, so a loop of plot-and-show gives a chart per pass, and returns None.
+`plt.flush_figures()` is the end-of-cell step, for a worker or Node host. A JS cell shows only
+what it asks for: `plt.show()` returns the canvas (a `<div>` of canvases for several figures).
+It also starts with no current figure, so re-running a cell draws a fresh figure instead of
+adding lines to the last one. Python's end-of-cell print reads as matplotlib's (`<Axes: >`,
+`<Figure size 640x480 with 1 Axes>`, `(array([…]), array([…]), <BarContainer object of 10
+artists>)`). sadpan follows pandas: `df.plot()` / `series.plot()` draw on a new figure (or
+`ax=`) and return the axes; `scatter_matrix` returns its grid of axes.
+
+**Packaging.** The package's entry is the bundle (`"."` and `main` → `index.js`): since M2 the
+source imports `@gcu/theme` from outside the package, so `src/api.js` could not be an entry
+once published. The bundle exports every name `src/api.js` does (derived at build), and
+`./axes` / `./figure` map to it; `./svg` and `./interact` are source entries with their own
+types. Checked by packing, installing into a scratch project and importing every entry, in
+Node and in a strict TypeScript consumer. `subplots()`'s types now follow the grid's shape
+(an Axes, Axes[], or Axes[][] with `.flat`) instead of one union.
+
+**Docs and tests.** API.md gains Plan views, Axes as chrome, Export, Interaction, and an
+Examples section (one per chart type); `gallery.html` is generated from those examples and
+draws each in dark and paper under `interact()`. `test/plot-m3.test.mjs` (Node: plan views,
+chrome, the colorbar without data, PNG round trips through zlib, SVG determinism / escaping /
+clipping / faces, savefig formats); `test/plot-interact-smoke.mjs` (Chromium, real input
+events: 35 checks, the gallery included).
+
 ## 0.3.0 — the charts (M2, unreleased)
 
 The second milestone of `plot-world-class`: the charts models reached for and hand-wrote
@@ -41,24 +101,6 @@ live, recorded and replayed.
 **Returns.** Chart calls return matplotlib's containers (`[line]`, a BarContainer, `[n, bins,
 patches]`, the boxplot dict, a ContourSet, mappables) with `.axes`; every other name reads the
 axes, so chaining still works.
-
-**pyplot is matplotlib's (a breaking change).** `plt.plot`, `plt.scatter`, `plt.bar`,
-`plt.hist` and `plt.imshow` draw on the current axes and return what the axes method returns.
-Before, each made a new figure and returned its canvas, so `plt.plot(a); plt.plot(b);
-plt.title('t')` gave two figures and lost the first line. `plt.matshow` still opens a figure
-of its own, as matplotlib's does. `plt.subplot(211)` / `(212)` are two axes of one figure.
-A Python cell is the inline backend: it starts with no current figure, and when it ends the
-figures it opened and didn't show land in its output. `plt.show()` shows them where it is
-called, so a loop of plot-and-show gives a chart per pass, and returns None.
-`plt.flush_figures()` is the end-of-cell step, for a worker or Node host. A JS cell shows only
-what it asks for: `plt.show()` returns the canvas (a `<div>` of canvases for several figures).
-It also starts with no current figure, so re-running a cell draws a fresh figure instead of
-adding lines to the last one. Python's end-of-cell print reads as matplotlib's (`<Axes: >`,
-`<Figure size 640x480 with 1 Axes>`, `(array([…]), array([…]), <BarContainer object of 10
-artists>)`). The bundle now also exports `subplot`, `figure`, `matshow`, `show`,
-`flush_figures`, `close`, `gca` and `gcf`. sadpan follows pandas: `df.plot()` /
-`series.plot()` draw on a new figure (or `ax=`) and return the axes, and
-`scatter_matrix` returns its grid of axes.
 
 **Tests.** `test/plot-charts.test.mjs` (31): the layout, ticks, categories, limits, sharing,
 themes, every mark, numpy's bin counts, matplotlib's boxplot statistics, contours on analytic
