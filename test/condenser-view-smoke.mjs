@@ -298,6 +298,158 @@ const L = await page.evaluate(async () => {
   return out;
 });
 
+// ── the chrome (condenser-view-api step 4): plugins, theme, legends, keyboard ──
+const K = await page.evaluate(async () => {
+  const C = await import('/ext/condenser/view/index.js');
+  const out = {};
+  const settle = (ms = 500) => new Promise((res) => setTimeout(res, ms));
+  const host = document.getElementById('a');
+  host.innerHTML = '';
+  const X = [], Y = [], Z = [], FE = [], ROCK = [];
+  for (let i = 0; i < 30; i++) for (let j = 0; j < 20; j++) for (let k = 0; k < 10; k++) {
+    X.push(500005 + i * 10); Y.push(8200005 + j * 10); Z.push(302.5 + k * 5); FE.push(40 + i + k);
+    ROCK.push(['ITA', 'HEM', 'QTZ', 'BIF'][(i + j + k) % 4]);
+  }
+  const v = C.view(host, [C.blocks({ x: X, y: Y, z: Z, value: FE, category: ROCK }, {
+    name: 'lith', color: 'category', colors: { ITA: '#ff0000' }, category_order: ['BIF', 'QTZ'], legend_counts: 'all',
+  })], { height: 400 });
+  await settle(1500);
+  const cv = host.querySelector('canvas'), rc = cv.getBoundingClientRect();
+  const gl = cv.getContext('webgl2');
+  const px = () => { const a = new Uint8Array(cv.width * cv.height * 4); gl.readPixels(0, 0, cv.width, cv.height, gl.RGBA, gl.UNSIGNED_BYTE, a); return a; };
+  const count = (a, f) => { let n = 0; for (let i = 0; i < a.length; i += 4) if (f(a[i], a[i + 1], a[i + 2])) n++; return n; };
+  const isRed = (r, g, b) => r > 120 && g < 25 && b < 25, isGreen = (r, g, b) => g > 120 && r < 25 && b < 25;   // pure channels: the theme's own red (Tableau's) has green in it
+  const corner = () => { const a = new Uint8Array(4); gl.readPixels(1, 1, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, a); return Array.from(a.slice(0, 3)); };
+  const legend = () => host.querySelector('[data-id="legend"] .cdph');
+  const legText = () => (legend() ? legend().getAttribute('aria-label') || '' : '');
+  const legClick = (k, shift = false) => {
+    const r = legend().getBoundingClientRect();
+    legend().dispatchEvent(new MouseEvent('click', { clientX: r.left + 20, clientY: r.top + 7 + 14 + 15 * k + 7, bubbles: true, shiftKey: shift }));
+  };
+
+  // theme: basalt by default; 'light'; 'css' from the page's tokens
+  out.bgDark = corner();
+  out.legend0 = legText();
+  out.red0 = count(px(), isRed);
+  v.set({ theme: 'light' });
+  await settle();
+  out.bgLight = corner();
+  out.accentLight = host.firstElementChild.style.getPropertyValue('--cd-accent');
+  document.body.style.setProperty('--au-surface', '#fafafa');
+  document.body.style.setProperty('--au-action', '#123456');
+  v.set({ theme: 'css' });
+  await settle();
+  out.bgCss = corner();
+  out.accentCss = host.firstElementChild.style.getPropertyValue('--cd-accent');
+  v.set({ theme: 'dark' });
+
+  // a class colour reaches the shaders, and changes live
+  v.layer('lith').set({ colors: { ITA: '#00ff00' } });
+  await settle(800);
+  const a2 = px();
+  out.recolor = { red: count(a2, isRed), green: count(a2, isGreen) };
+
+  // the legend: rows are eyes; shift-click isolates, and again shows all
+  legClick(0);                                             // BIF (first, by category_order)
+  await settle();
+  out.hidOne = v.layer('lith').get('categories_hidden');
+  legClick(0);
+  legClick(1, true);                                       // isolate QTZ
+  await settle();
+  out.isolated = v.layer('lith').get('categories_hidden');
+  out.legendIsolated = legText();
+  legClick(1, true);
+  await settle();
+  out.allBack = v.layer('lith').get('categories_hidden');
+
+  // legend_counts: 'selection' counts the selected rows per class
+  v.layer('lith').set({ legend_counts: 'selection' });
+  [...host.querySelectorAll('.cdt button')].find((b) => b.title.startsWith('Rectangle')).click();
+  const hd = host.firstElementChild, at = (fx, fy) => [rc.left + rc.width * fx, rc.top + rc.height * fy];
+  const [ax, ay] = at(0.35, 0.35), [bx, by] = at(0.65, 0.65);
+  hd.dispatchEvent(new PointerEvent('pointerdown', { clientX: ax, clientY: ay, bubbles: true }));
+  hd.dispatchEvent(new PointerEvent('pointermove', { clientX: bx, clientY: by, bubbles: true }));
+  hd.dispatchEvent(new PointerEvent('pointerup', { clientX: bx, clientY: by, bubbles: true }));
+  await settle(700);
+  out.selCounts = (legText().match(/\d+/g) || []).map(Number);
+  out.selRows = (v.selected_rows.lith || []).length;
+  v.clear_selection();
+  [...host.querySelectorAll('.cdt button')].find((b) => b.title.startsWith('Pick')).click();
+  v.layer('lith').set({ legend_counts: 'all' });
+
+  // a page's own plugin: DOM in a slot, and a drawing that reaches the snapshot
+  v.chrome.add({
+    id: 'stats', slot: 'top-right', order: 5,
+    mount(el, api) { el.textContent = `layers: ${api.layers().length}`; el.className = 'my-stats'; },
+    measure: () => ({ w: 40, h: 40 }),
+    draw(g) { g.fillStyle = '#ff00ff'; g.fillRect(0, 0, 40, 40); },
+  });
+  await settle();
+  const magenta = async (blob) => {
+    const bmp = await createImageBitmap(blob), c2 = document.createElement('canvas');
+    c2.width = bmp.width; c2.height = bmp.height;
+    const g2 = c2.getContext('2d'); g2.drawImage(bmp, 0, 0);
+    const d = g2.getImageData(0, 0, c2.width, c2.height).data;
+    return count(d, (r, g, b) => r > 240 && g < 20 && b > 240);
+  };
+  out.pluginDom = (host.querySelector('.cdslot.top-right .my-stats') || {}).textContent || '';
+  out.pluginInSnapshot = await magenta(await v.snapshot());
+  out.ids = v.chrome.list().map((p) => p.id);
+  v.chrome.remove('stats');
+  v.chrome.remove('legend');
+  await settle();
+  out.afterRemove = { stats: !!host.querySelector('.my-stats'), legend: !!legend(), magenta: await magenta(await v.snapshot()) };
+
+  // the switches
+  v.set({ chrome: { scalebar: false, north: false, legend: true } });
+  await settle();
+  out.switched = v.chrome.list().map((p) => p.id);
+  v.set({ toolbar: false });
+  await settle();
+  out.noToolbar = { ids: v.chrome.list().map((p) => p.id), bar: !!host.querySelector('.cdt') };
+  v.set({ toolbar: true, chrome: {} });
+  await settle();
+
+  // the keyboard
+  cv.focus();
+  const key = async (k, o = {}) => { cv.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, ...o })); await settle(300); };
+  const c0 = { ...v.camera };
+  await key('ArrowRight');
+  const c1 = { ...v.camera };
+  await key('+');
+  const c2 = { ...v.camera };
+  await key('p');
+  const c3 = { ...v.camera };
+  [...host.querySelectorAll('.cdt button')].find((b) => b.title.startsWith('Rectangle')).click();
+  await key('Escape');
+  out.keys = {
+    panned: c1.target[0] !== c0.target[0] || c1.target[1] !== c0.target[1], zoomed: c2.distance < c1.distance,
+    plan: c3.plunge > 89, escaped: [...host.querySelectorAll('.cdt button')].find((b) => b.title.startsWith('Pick')).getAttribute('aria-pressed'),
+  };
+  out.aria = cv.getAttribute('aria-label');
+
+  // the readout: E and N under the cursor in a locked plan view
+  v.set({ lock: 'plan' });
+  await settle();
+  cv.dispatchEvent(new PointerEvent('pointermove', { clientX: rc.left + rc.width / 2, clientY: rc.top + rc.height / 2, bubbles: true }));
+  await settle(200);
+  out.readout = (host.querySelector('.cdread') || {}).textContent || '';
+  out.viewNow = v.camera;
+  v.destroy();
+  return out;
+});
+const ok3 = (c, rgb, tol = 6) => c.every((x, i) => Math.abs(x - rgb[i]) <= tol);
+chk('theme: dark is basalt; light and css (the page\'s tokens) re-dress the scene and the chrome', ok3(K.bgDark, [21, 23, 26]) && ok3(K.bgLight, [228, 227, 225]) && K.accentLight === '#8B3F00' && ok3(K.bgCss, [250, 250, 250]) && K.accentCss === '#123456', JSON.stringify({ d: K.bgDark, l: K.bgLight, c: K.bgCss, a: [K.accentLight, K.accentCss] }));
+chk('colors: a class colour reaches the shaders, and a change recolours live', K.red0 > 500 && K.recolor.red < K.red0 * 0.05 && K.recolor.green > 500, JSON.stringify({ red0: K.red0, ...K.recolor }));
+chk('the legend lists the classes in category_order, with counts', /^lith: BIF 1500, QTZ 1500, HEM 1500, ITA 1500$/.test(K.legend0), K.legend0);
+chk('a legend click hides a class; shift-click isolates one, and again shows all', JSON.stringify(K.hidOne) === '["BIF"]' && JSON.stringify([...K.isolated].sort()) === '["BIF","HEM","ITA"]' && /QTZ 1500/.test(K.legendIsolated) && /BIF \(hidden\)/.test(K.legendIsolated) && K.allBack.length === 0, JSON.stringify({ one: K.hidOne, iso: K.isolated, back: K.allBack }));
+chk("legend_counts: 'selection' counts the selected rows per class", K.selRows > 0 && K.selCounts.length === 4 && K.selCounts.reduce((a, b) => a + b, 0) === K.selRows, JSON.stringify({ counts: K.selCounts, rows: K.selRows }));
+chk("a page's plugin: DOM in its slot, its drawing in the snapshot; remove() takes it (and a built-in) away", K.pluginDom === 'layers: 1' && K.pluginInSnapshot > 1000 && K.ids.includes('stats') && !K.afterRemove.stats && !K.afterRemove.legend && K.afterRemove.magenta === 0, JSON.stringify({ dom: K.pluginDom, snap: K.pluginInSnapshot, after: K.afterRemove }));
+chk('chrome switches add and drop the built-ins; toolbar: false drops the toolbar, section bar and pick box', !K.switched.includes('scalebar') && !K.switched.includes('north') && K.switched.includes('legend') && !K.noToolbar.ids.includes('toolbar') && !K.noToolbar.ids.includes('section') && !K.noToolbar.bar, JSON.stringify({ s: K.switched, t: K.noToolbar.ids }));
+chk('keyboard: arrows pan, + zooms, P goes to plan, Esc ends a tool', K.keys.panned && K.keys.zoomed && K.keys.plan && K.keys.escaped === 'true', JSON.stringify(K.keys));
+chk('the canvas has an accessible summary of what it shows', /3D view of lith \(blocks\)\. Looking \d+° from north, \d+° down/.test(K.aria || ''), K.aria);
+chk('the readout gives E and N under the cursor in a locked plan view', /^E 5001\d\d\.\d\s+N 82001\d\d\.\d$/.test(K.readout.trim()), JSON.stringify(K.readout));
+
 const near = (a, b, t = 0.05) => Math.abs(a - b) <= t;
 const pv = L.plan.view;
 chk("lock: 'plan' looks straight down, orthographic, the lock button pressed", L.plan.camera.plunge === 90 && L.plan.camera.ortho === true && L.plan.pressed === 'true', JSON.stringify(L.plan.camera));

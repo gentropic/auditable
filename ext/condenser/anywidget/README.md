@@ -240,6 +240,18 @@ real coordinates), `hover` (the pick readout follows the cursor), `selection`,
 `selected_rows`, `measurement`, `w.fit()`, `w.clear_selection()`, `w.copy()`,
 `w["name"]`, `w.add(layer)`.
 
+### Theme, legends and chrome
+
+- `theme`: `'dark'` (default), `'light'`, `'paper'` (white, for print), or a partial dict
+  (`{'base': 'light', 'accent': '#c0392b'}`) — @gcu/theme's keys, shared with @gcu/plot.
+- One **legend per coloured layer**, drawn into snapshots: a ramp with ticks, `units`, the
+  clip and the threshold marked; or the classes — click hides one, shift-click shows only it.
+- Per layer: `units='%'`, `colors={'ITA': '#c0392b'}` (or a list in class order),
+  `category_order=['BIF', 'QTZ']`, `legend_counts='all'` (or `'selection'`).
+- `chrome={'legend': False, 'readout': False, …}` turns pieces off one at a time: toolbar,
+  section, pick, status, readout, legend, scalebar, north, exaggeration, labels.
+- Keyboard on the focused view: `L` lock · arrows pan · `+`/`-` zoom · `P` `N` `E` `I` views · `Esc`.
+
 ### Locking the orientation
 
 `cd.view(..., lock='plan')` (or `w.lock = ...`) pins the direction. A locked view is

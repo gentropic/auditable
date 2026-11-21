@@ -411,7 +411,8 @@ const r = await page.evaluate(async (port) => {
   const host = el.querySelector('div');
   out.tbButtons = host.querySelectorAll('.cdt button').length;
   const toolBtn = (p) => [...host.querySelectorAll('.cdt button')].find((b) => (b.title || '').startsWith(p));
-  out.legendShown = !!host.querySelector('.cdleg') && host.querySelector('.cdleg').style.display !== 'none';
+  const legPh = host.querySelector('[data-id="legend"] .cdph');
+  out.legendShown = !!legPh && legPh.style.display !== 'none' && legPh.offsetHeight > 20;
 
   // layers popover → toggling a checkbox must reach _styles (and so Python)
   const layersBtn = [...host.querySelectorAll('.cdt button')].find((b) => (b.title || '').startsWith('Layers'));
@@ -603,9 +604,11 @@ const r = await page.evaluate(async (port) => {
   patch(1, { labels: true }); await settle();
   out.decoLabels = decoInk();                              // + 6 BHIDs
   patch(1, { labels: false });
+  model.set('chrome', { legend: false }); await settle();
+  out.decoNoLegend = decoInk();                            // the legend is drawn too (so it is in snapshots)
   model.set('decorations', false); await settle();
   out.decoOff = decoInk();
-  model.set('decorations', true); await settle();
+  model.set('decorations', true); model.set('chrome', {}); await settle();
 
   // ── hover readout (opt-in): point, don't click ──
   model.set('hover', true);
@@ -843,12 +846,18 @@ const r = await page.evaluate(async (port) => {
     out.aLit = base6.n; out.aSig = base6.sig;
     out.aHud = (el.querySelector('.cdhud') || {}).textContent;
 
-    out.legName0 = (host6.querySelector('.cdlegname') || {}).textContent || '';
+    const legText = () => ((host6.querySelector('[data-id="legend"] .cdph') || { getAttribute: () => '' }).getAttribute('aria-label') || '');
+    // a click on the drawn legend's k-th class row (one legend block: 7 px pad, 14 px title, 15 px rows)
+    const legClick = (k) => {
+      const ph = host6.querySelector('[data-id="legend"] .cdph'), rr = ph.getBoundingClientRect();
+      ph.dispatchEvent(new MouseEvent('click', { clientX: rr.left + 20, clientY: rr.top + 7 + 14 + 15 * k + 7, bubbles: true }));
+    };
+    out.legName0 = legText();
     // channel switch: FE → SIO2 recolors with NO re-send, pick names the channel
     patch6(0, { value: 'SIO2' });
     await settle();
     out.chanSig = lit().sig;
-    out.legNameSwitched = (host6.querySelector('.cdlegname') || {}).textContent || '';
+    out.legNameSwitched = legText();
     patch6(1, { visible: false });                         // the DEM covers the model from above — pick the BLOCKS
     await settle();
     let sel6 = {};
@@ -868,13 +877,13 @@ const r = await page.evaluate(async (port) => {
     // the legend becomes a swatch list whose rows are EYES
     patch6(0, { color: 'category' });
     await settle();
-    out.catRows = [...host6.querySelectorAll('.cdcat')].map((n2) => n2.textContent);
+    out.catRows = (legText().split(': ')[1] || '').split(', ');
     out.catLit = lit().n;
-    host6.querySelectorAll('.cdcat')[0].click();           // hide OX
+    legClick(0);                                           // hide OX
     await settle();
     out.catHidLit = lit().n;
     out.catHidden = (m6._get('_styles')[0] || {}).categories_hidden;
-    host6.querySelectorAll('.cdcat')[0].click();           // rows re-rendered — re-query, un-hide
+    legClick(0);                                           // un-hide
     await settle();
     out.catRestoredLit = lit().n;
     patch6(0, { color: 'value' });
@@ -1010,13 +1019,14 @@ chk(`a set camera applies and normalizes (az ${r.camApplied && r.camApplied.azim
 chk(`a payload reload does NOT steal the framed shot (plunge ${r.camAfterReload && r.camAfterReload.plunge} still ≈55)`,
   r.camAfterReload && Math.abs(r.camAfterReload.plunge - 55) < 1.5);
 chk(`the ramp legend is NAMED and follows the channel switch ("${r.legName0}" → "${r.legNameSwitched}")`,
-  r.legName0 === 'FE' && r.legNameSwitched === 'SIO2');
+  / · FE:/.test(r.legName0) && / · SIO2:/.test(r.legNameSwitched));
 chk(`w.snapshot() returns PNG bytes to the kernel (${(r.snapBytes / 1024).toFixed(0)} KB, magic ${JSON.stringify(r.snapMagic)})`,
   r.snapBytes > 20000 && r.snapMagic && r.snapMagic[0] === 137 && r.snapMagic[1] === 80);
 
 // ── figure chrome + hole labels (the composited overlay) ──
 chk(`figure chrome draws (scale bar + north arrow: ${r.decoBase} ink px) and decorations=False clears it (${r.decoOff})`,
-  r.decoBase > 100 && r.decoOff < r.decoBase * 0.2);
+  r.decoBase > 100 && r.decoNoLegend < r.decoBase && r.decoOff < r.decoNoLegend * 0.2);
+chk(`chrome: {legend: false} takes the drawn legend out (${r.decoBase} → ${r.decoNoLegend} ink px)`, r.decoNoLegend < r.decoBase - 300);
 chk(`labels=True writes the BHIDs at the collars (+${r.decoLabels - r.decoBase} ink px)`,
   r.decoLabels > r.decoBase + 150);
 

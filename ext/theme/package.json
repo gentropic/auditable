@@ -1,0 +1,31 @@
+{
+  "name": "@gcu/theme",
+  "version": "0.1.0",
+  "description": "One theme vocabulary for GCU figures: the keys (background, foreground, muted, grid, frame, panel, accent, cycle, fonts, …), dark/light/paper themes from the Switchboard palette, and themeFromCSS to take a host page's design tokens. Shared by @gcu/condenser's view and @gcu/plot, so one theme dresses a chart and the 3D view beside it. Zero dependencies.",
+  "type": "module",
+  "main": "./src/theme.js",
+  "exports": {
+    ".": "./src/theme.js",
+    "./bundled": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "index.js"
+  ],
+  "scripts": {
+    "build": "node build.js"
+  },
+  "keywords": ["theme", "design-tokens", "charts", "3d", "dark-mode", "auditable", "gcu"],
+  "license": "MIT",
+  "author": "Arthur Endlein Correia",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gentropic/auditable.git",
+    "directory": "ext/theme"
+  },
+  "homepage": "https://github.com/gentropic/auditable/tree/main/ext/theme",
+  "bugs": {
+    "url": "https://github.com/gentropic/auditable/issues"
+  }
+}

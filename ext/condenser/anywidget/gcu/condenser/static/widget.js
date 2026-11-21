@@ -12898,57 +12898,47 @@ const ICON = {
 const svg = (d) => `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor"
   stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="${d}"/></svg>`;
 
-const CSS = `
-.cdt { position:absolute; left:6px; top:6px; display:flex; gap:2px; z-index:4;
-  background:rgba(22,22,22,.86); border:1px solid #333; border-radius:4px; padding:2px;
-  font:11px ui-monospace,Menlo,Consolas,monospace; backdrop-filter:blur(3px); }
+// colours and fonts come from the theme, as CSS variables the view sets on its host
+const CSS$toolbar = `
+.cdt { display:flex; gap:2px; background:var(--cd-panel); border:1px solid var(--cd-border); border-radius:4px; padding:2px;
+  font:var(--cd-fs) var(--cd-mono); backdrop-filter:blur(3px); }
 .cdt button { all:unset; box-sizing:border-box; width:24px; height:22px; display:grid; place-items:center;
-  color:#b9b9b9; border-radius:3px; cursor:pointer; }
-.cdt button:hover { background:#2e2e2e; color:#e8e8e8; }
-.cdt button[aria-pressed="true"] { background:#c8781f; color:#141414; }
-.cdt .sep { width:1px; background:#3a3a3a; margin:2px 1px; }
+  color:var(--cd-muted); border-radius:3px; cursor:pointer; }
+.cdt button:hover { background:var(--cd-hover); color:var(--cd-fg); }
+.cdt button:focus-visible { outline:2px solid var(--cd-accent); outline-offset:1px; }
+.cdt button[aria-pressed="true"] { background:var(--cd-accent); color:var(--cd-on-accent); }
+.cdt .sep { width:1px; background:var(--cd-border); margin:2px 1px; }
 .cdpop { position:absolute; left:6px; top:34px; z-index:5; min-width:172px; max-height:220px; overflow:auto;
-  background:rgba(22,22,22,.96); border:1px solid #3a3a3a; border-radius:4px; padding:5px 6px;
-  font:11px ui-monospace,Menlo,Consolas,monospace; color:#cfcfcf; backdrop-filter:blur(3px); }
-.cdpop h4 { margin:0 0 5px; font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:#8a8a8a; font-weight:600; }
+  background:var(--cd-panel); border:1px solid var(--cd-border); border-radius:4px; padding:5px 6px;
+  font:var(--cd-fs) var(--cd-mono); color:var(--cd-fg); backdrop-filter:blur(6px); }
+.cdpop h4 { margin:0 0 5px; font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:var(--cd-muted); font-weight:600; }
 .cdpop label { display:flex; align-items:center; gap:6px; padding:2px 0; cursor:pointer; }
-.cdpop label:hover { color:#fff; }
-.cdpop input[type=checkbox] { accent-color:#c8781f; margin:0; }
-.cdpop .k { color:#7d7d7d; }
+.cdpop input[type=checkbox] { accent-color:var(--cd-accent); margin:0; }
+.cdpop .k { color:var(--cd-muted); }
 .cdpop .row { display:flex; justify-content:space-between; gap:8px; padding:1px 0; }
-.cdpop button.opt { all:unset; display:block; padding:3px 5px; border-radius:3px; cursor:pointer; color:#cfcfcf; }
-.cdpop button.opt:hover { background:#2e2e2e; color:#fff; }
-.cdsec { position:absolute; left:6px; bottom:26px; z-index:4; display:flex; align-items:center; gap:6px;
-  background:rgba(22,22,22,.88); border:1px solid #333; border-radius:4px; padding:3px 7px;
-  font:11px ui-monospace,Menlo,Consolas,monospace; color:#c4c4c4; backdrop-filter:blur(3px);
-  user-select:none; }
+.cdpop button.opt { all:unset; display:block; padding:3px 5px; border-radius:3px; cursor:pointer; color:var(--cd-fg); }
+.cdpop button.opt:hover { background:var(--cd-hover); }
+.cdsec { display:flex; align-items:center; gap:6px;
+  background:var(--cd-panel); border:1px solid var(--cd-border); border-radius:4px; padding:3px 7px;
+  font:var(--cd-fs) var(--cd-mono); color:var(--cd-fg); backdrop-filter:blur(3px); user-select:none; }
 /* FIXED width. The readout is the only elastic thing in this bar, and it sits
    BEFORE the slider — letting it resize as the number changes (N 300 -> N -28.03)
    walks the slider out from under the cursor mid-drag. Monospace + a fixed ch
    box keeps the thumb exactly where the hand left it. */
 .cdsec .lbl { flex:0 0 12ch; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
   font-variant-numeric:tabular-nums; }
-.cdsec input[type=range] { flex:0 0 130px; width:130px; accent-color:#c8781f; }
-.cdsec button { all:unset; cursor:pointer; color:#8a8a8a; padding:0 2px; }
-.cdsec button:hover { color:#e0705a; }
-.cdpick { position:absolute; right:6px; top:6px; z-index:4; max-width:210px;
-  background:rgba(22,22,22,.9); border:1px solid #333; border-radius:4px; padding:5px 7px;
-  font:11px ui-monospace,Menlo,Consolas,monospace; color:#d2d2d2; backdrop-filter:blur(3px); }
-.cdpick .t { color:#c8781f; margin-bottom:2px; }
+.cdsec input[type=range] { flex:0 0 130px; width:130px; accent-color:var(--cd-accent); }
+.cdsec input[type=number] { width:48px; background:var(--cd-bg); color:var(--cd-fg); border:1px solid var(--cd-border);
+  border-radius:2px; font:inherit; padding:1px 3px; }
+.cdsec button { all:unset; cursor:pointer; color:var(--cd-muted); padding:0 2px; }
+.cdsec button:hover { color:var(--cd-accent); }
+.cdpick, .cdread { max-width:230px; background:var(--cd-panel); border:1px solid var(--cd-border); border-radius:4px; padding:5px 7px;
+  font:var(--cd-fs) var(--cd-mono); color:var(--cd-fg); backdrop-filter:blur(3px); }
+.cdread { padding:2px 7px; white-space:pre; font-variant-numeric:tabular-nums; max-width:none; }
+.cdpick .t { color:var(--cd-accent); margin-bottom:2px; }
 .cdpick .row { display:flex; justify-content:space-between; gap:10px; }
-.cdpick .k { color:#7d7d7d; }
-.cdleg { position:absolute; right:6px; bottom:6px; z-index:3; display:flex; align-items:center; gap:5px;
-  font:10px ui-monospace,Menlo,Consolas,monospace; color:#a8a8a8; text-shadow:0 1px 2px #000; }
-.cdleg canvas { display:block; width:96px; height:8px; border:1px solid #444; border-radius:1px; }
-.cdlegramp { display:flex; align-items:center; gap:5px; }
-.cdlegname { color:#c8781f; margin-right:2px; max-width:110px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.cdcats { display:flex; flex-direction:column; gap:1px; max-height:170px; overflow:auto;
-  background:rgba(22,22,22,.85); border:1px solid #333; border-radius:4px; padding:4px 6px; }
-.cdcat { display:flex; align-items:center; gap:5px; cursor:pointer; padding:1px 2px; border-radius:2px; white-space:nowrap; }
-.cdcat:hover { background:#ffffff14; }
-.cdcat .sw { width:9px; height:9px; border:1px solid #555; border-radius:1px; flex:none; }
-.cdcat.off { opacity:.45; }
-.cdcat.off span:last-child { text-decoration:line-through; }
+.cdpick .k { color:var(--cd-muted); }
+.cdstatus { font:var(--cd-fs) var(--cd-mono); color:var(--cd-muted); text-shadow:0 1px 2px var(--cd-halo); pointer-events:none; }
 .cdknife { position:absolute; inset:0; z-index:2; pointer-events:none; }
 `;
 
@@ -12972,12 +12962,13 @@ const fmt = (v) => {
  */
 function createToolbar(host, api) {
   const style = document.createElement('style');
-  style.textContent = CSS;
+  style.textContent = CSS$toolbar;
   host.appendChild(style);
 
-  const bar = document.createElement('div');
+  const bar = document.createElement('div');            // placed by the view's chrome slots, like secBar and pickBox
   bar.className = 'cdt';
-  host.appendChild(bar);
+  bar.setAttribute('role', 'toolbar');
+  bar.setAttribute('aria-label', '3D view tools');
 
   let pop = null, tool = 'orbit';
   const closePop = () => { if (pop) { pop.remove(); pop = null; } };
@@ -12987,6 +12978,7 @@ function createToolbar(host, api) {
     const b = document.createElement('button');
     b.innerHTML = svg(ICON[icon]);
     b.title = title;
+    b.setAttribute('aria-label', title);
     if (toggles) b.setAttribute('aria-pressed', 'false');
     b.onclick = (e) => { e.stopPropagation(); onClick(b); };
     bar.appendChild(b);
@@ -13084,11 +13076,11 @@ function createToolbar(host, api) {
   slider.type = 'range'; slider.min = '0'; slider.max = '1000'; slider.value = '500';
   const thick = document.createElement('input');
   thick.type = 'number'; thick.min = '0.1'; thick.step = '1';
-  thick.style.cssText = 'width:48px;background:#232323;color:#ccc;border:1px solid #3a3a3a;border-radius:2px;font:inherit;padding:1px 3px;';
+  thick.title = 'Section thickness';
+  slider.setAttribute('aria-label', 'Section position');
   const clearBtn = document.createElement('button');
   clearBtn.innerHTML = svg(ICON.close); clearBtn.title = 'Clear the section';
   secBar.append(secLabel, slider, thick, clearBtn);
-  host.appendChild(secBar);
 
   let range = [0, 1];
   slider.oninput = () => {
@@ -13106,23 +13098,6 @@ function createToolbar(host, api) {
   const pickBox = document.createElement('div');
   pickBox.className = 'cdpick';
   pickBox.style.display = 'none';
-  host.appendChild(pickBox);
-
-  // ── the color legend (a ramp, or a category swatch list with eye toggles) ──
-  const leg = document.createElement('div');
-  leg.className = 'cdleg';
-  leg.style.display = 'none';
-  const legLo = document.createElement('span'), legHi = document.createElement('span');
-  const legTitle = document.createElement('span');
-  legTitle.className = 'cdlegname';
-  const legCv = document.createElement('canvas'); legCv.width = 96; legCv.height = 8;
-  const legRamp = document.createElement('div');
-  legRamp.className = 'cdlegramp';
-  legRamp.append(legTitle, legLo, legCv, legHi);
-  const legCats = document.createElement('div');
-  legCats.className = 'cdcats';
-  leg.append(legRamp, legCats);
-  host.appendChild(leg);
 
   // ── the knife rubber band ──
   const NS = 'http://www.w3.org/2000/svg';
@@ -13135,17 +13110,17 @@ function createToolbar(host, api) {
   const poly = document.createElementNS(NS, 'polyline');
   const meas = document.createElementNS(NS, 'line');
   for (const el of [line, rect, poly, meas]) {
-    el.setAttribute('stroke', '#c8781f');
+    el.setAttribute('stroke', 'var(--cd-accent)');
     el.setAttribute('stroke-width', '1.6');
     el.setAttribute('fill', 'none');
   }
   line.setAttribute('stroke-dasharray', '6 4');
   rect.setAttribute('stroke-dasharray', '5 3');
-  meas.setAttribute('stroke', '#e8e8e8');
+  meas.setAttribute('stroke', 'var(--cd-fg)');
   meas.setAttribute('stroke-dasharray', '4 3');
   const capA = document.createElementNS(NS, 'circle');
   const capB = document.createElementNS(NS, 'circle');
-  for (const c of [capA, capB]) { c.setAttribute('r', '3'); c.setAttribute('fill', '#c8781f'); }
+  for (const c of [capA, capB]) { c.setAttribute('r', '3'); c.setAttribute('fill', 'var(--cd-accent)'); }
   bandEl.append(rect, poly, line, meas, capA, capB);
   const hideAll = () => { for (const el of [line, rect, poly, meas, capA, capB]) el.setAttribute('visibility', 'hidden'); };
   hideAll();
@@ -13153,6 +13128,8 @@ function createToolbar(host, api) {
   host.appendChild(bandEl);
 
   return {
+    // the elements the view's chrome plugins place: 'toolbar', 'section', 'pick'
+    els: { bar, secBar, pickBox },
     get tool() { return tool; },
     // one band, four shapes: 'line' (knife) · 'rect' · 'poly' (lasso) ·
     // 'measure'. Passing nothing clears it.
@@ -13177,7 +13154,7 @@ function createToolbar(host, api) {
       el.setAttribute('visibility', 'visible');
       for (const [c, p] of [[capA, a], [capB, b]]) {
         c.setAttribute('cx', p[0]); c.setAttribute('cy', p[1]);
-        c.setAttribute('fill', kind === 'measure' ? '#e8e8e8' : '#c8781f');
+        c.setAttribute('fill', kind === 'measure' ? 'var(--cd-fg)' : 'var(--cd-accent)');
         c.setAttribute('visibility', 'visible');
       }
     },
@@ -13204,47 +13181,6 @@ function createToolbar(host, api) {
       slider.value = String(Math.round(((sec.position - range[0]) / span) * 1000));
       if (document.activeElement !== thick) thick.value = String(sec.thickness);
     },
-    // the ramp + range of the first value-colored visible layer
-    syncLegend(info) {
-      if (!info) { leg.style.display = 'none'; return; }
-      leg.style.display = '';
-      if (info.cats) {                                     // categorical: swatch rows, click = class eye
-        legRamp.style.display = 'none';
-        legCats.style.display = '';
-        legCats.textContent = '';
-        for (const c of info.cats) {
-          const row = document.createElement('div');
-          row.className = 'cdcat' + (c.hidden ? ' off' : '');
-          row.title = c.hidden ? 'show' : 'hide';
-          const sw = document.createElement('span');
-          sw.className = 'sw';
-          sw.style.background = `rgb(${c.rgb[0]},${c.rgb[1]},${c.rgb[2]})`;
-          const lb = document.createElement('span');
-          lb.textContent = c.label;
-          row.append(sw, lb);
-          row.onclick = () => { if (info.onToggle) info.onToggle(c.label); };
-          legCats.appendChild(row);
-        }
-        return;
-      }
-      legCats.style.display = 'none';
-      legRamp.style.display = '';
-      legTitle.textContent = info.label || '';
-      legTitle.style.display = info.label ? '' : 'none';
-      legLo.textContent = fmt(info.range[0]);
-      legHi.textContent = fmt(info.range[1]);
-      const g = legCv.getContext('2d');
-      const img = g.createImageData(96, 1);
-      for (let i = 0; i < 96; i++) {
-        const t = Math.min(255, Math.round((i / 95) * 255));
-        img.data[i * 4] = info.pixels[t * 4];
-        img.data[i * 4 + 1] = info.pixels[t * 4 + 1];
-        img.data[i * 4 + 2] = info.pixels[t * 4 + 2];
-        img.data[i * 4 + 3] = 255;
-      }
-      g.putImageData(img, 0, 0);
-      g.drawImage(legCv, 0, 0, 96, 1, 0, 0, 96, 8);
-    },
     syncOrtho(on) { orthoBtn.setAttribute('aria-pressed', String(!!on)); },
     syncLock(locked, canToggle) {
       lockBtn.setAttribute('aria-pressed', String(!!locked));
@@ -13255,8 +13191,746 @@ function createToolbar(host, api) {
       orthoBtn.title = locked ? 'Parallel projection (a locked view always is)' : 'Parallel projection (for sections)';
     },
     syncThrough(on) { throughBtn.setAttribute('aria-pressed', String(!!on)); },
-    destroy() { closePop(); [style, bar, secBar, pickBox, leg, bandEl].forEach((n) => n.remove()); },
+    closePop,
+    destroy() { closePop(); [style, bar, secBar, pickBox, bandEl].forEach((n) => n.remove()); },
   };
+}
+
+// ── ../view/src/chrome.js ──
+
+// @gcu/condenser view — the chrome as plugins.
+//
+// Everything drawn or placed over the 3D scene is a plugin: the toolbar, the section
+// bar, the readouts, the legends, the scale bar, the north arrow, the hole labels. A
+// host page adds its own, removes or replaces the built-ins, without forking the view:
+//
+//   v.chrome.add({
+//     id: 'sel-stats', slot: 'top-right', order: 10,
+//     mount(el, api) { … },          // DOM: controls, panels (never in a snapshot)
+//     measure(api) → { w, h },       // canvas: the size to reserve in the slot …
+//     draw(g, api, box) { … },       // … and the drawing, in CSS px from the box's corner
+//     click(x, y, e, api) { … },     // a click on the drawing, box-local
+//     cursor(x, y, api) → 'pointer', // the cursor over it
+//     describe(api) → 'text',        // the drawing as words, for assistive tech (its aria-label)
+//     update(changed, api) { … },    // something changed: { view, state, selection, theme, pick, … }
+//     unmount() { … },
+//   });
+//   v.chrome.remove('legend');        // or replace: add with the same id
+//
+// Slots: the four corners, 'top' and 'bottom' (centred), and 'overlay' — the whole
+// canvas, for drawing anchored to the scene (labels). A slot stacks its plugins by
+// `order`, from its edge inward, so nothing overlaps and everything reflows on resize.
+// Whatever a plugin DRAWS is in snapshots; its DOM is not.
+
+const SLOTS = ['top-left', 'top', 'top-right', 'bottom-left', 'bottom', 'bottom-right', 'overlay'];
+
+const CSS$chrome = `
+.cdslot { position:absolute; display:flex; flex-direction:column; gap:6px; pointer-events:none; z-index:4; max-width:calc(100% - 12px); }
+.cdslot > * { pointer-events:auto; }
+.cdslot.top-left { left:6px; top:6px; align-items:flex-start; }
+.cdslot.top-right { right:6px; top:6px; align-items:flex-end; }
+.cdslot.top { left:50%; top:6px; transform:translateX(-50%); align-items:center; }
+.cdslot.bottom-left { left:6px; bottom:6px; flex-direction:column-reverse; align-items:flex-start; }
+.cdslot.bottom-right { right:6px; bottom:6px; flex-direction:column-reverse; align-items:flex-end; }
+.cdslot.bottom { left:50%; bottom:6px; transform:translateX(-50%); flex-direction:column-reverse; align-items:center; }
+.cdplug { display:flex; flex-direction:column; gap:6px; }
+.cdslot.top-right .cdplug, .cdslot.bottom-right .cdplug { align-items:flex-end; }
+.cdslot.top .cdplug, .cdslot.bottom .cdplug { align-items:center; }
+.cdplug:empty, .cdplug.off { display:none; }
+.cdph { flex:none; }
+`;
+
+function createChrome(host, api) {
+  const style = document.createElement('style');
+  style.textContent = CSS$chrome;
+  host.appendChild(style);
+  const slots = {};
+  for (const s of SLOTS) {
+    if (s === 'overlay') continue;
+    const d = document.createElement('div');
+    d.className = `cdslot ${s}`;
+    host.appendChild(d);
+    slots[s] = d;
+  }
+  const items = new Map();                                 // id → { def, wrap, ph, box, size }
+
+  const check = (def) => {
+    if (!def || typeof def !== 'object') throw new TypeError('condenser: chrome.add() takes a plugin object');
+    if (!def.id || typeof def.id !== 'string') throw new TypeError('condenser: a chrome plugin needs an id');
+    const slot = def.slot || 'overlay';
+    if (!SLOTS.includes(slot)) throw new TypeError(`condenser: chrome plugin '${def.id}': no slot '${slot}' (${SLOTS.join(', ')})`);
+    if (!def.mount && !def.draw) throw new TypeError(`condenser: chrome plugin '${def.id}' has neither mount() nor draw()`);
+    if (def.draw && slot !== 'overlay' && !def.measure) throw new TypeError(`condenser: chrome plugin '${def.id}' draws in a slot, so it needs measure()`);
+    return slot;
+  };
+
+  function add(def) {
+    const slot = check(def);
+    if (items.has(def.id)) remove(def.id);
+    const it = { def, slot, wrap: null, ph: null, box: null, size: null };
+    if (slot !== 'overlay') {
+      const wrap = document.createElement('div');
+      wrap.className = 'cdplug';
+      wrap.dataset.id = def.id;
+      const order = def.order || 0;
+      wrap.dataset.order = String(order);
+      const parent = slots[slot];
+      const next = [...parent.children].find((c) => +c.dataset.order > order);
+      parent.insertBefore(wrap, next || null);
+      it.wrap = wrap;
+      if (def.draw) {                                      // the space a drawing takes, and its clicks
+        const ph = document.createElement('div');
+        ph.className = 'cdph';
+        ph.style.display = 'none';
+        const local = (e) => { const r = ph.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+        ph.addEventListener('pointerdown', (e) => e.stopPropagation());
+        ph.addEventListener('click', (e) => { if (def.click) { const [x, y] = local(e); def.click(x, y, e, api); } });
+        ph.addEventListener('pointermove', (e) => { const [x, y] = local(e); ph.style.cursor = (def.cursor && def.cursor(x, y, api)) || ''; });
+        wrap.appendChild(ph);
+        it.ph = ph;
+      }
+    }
+    items.set(def.id, it);
+    if (def.mount) {
+      const at = it.wrap || host;
+      const el = it.ph ? (() => { const d = document.createElement('div'); at.insertBefore(d, it.ph); return d; })() : at;
+      def.mount(el, api);
+    }
+    if (def.update) def.update({ all: true }, api);
+    api.invalidate();
+    return def.id;
+  }
+
+  function remove(id) {
+    const it = items.get(id);
+    if (!it) return false;
+    items.delete(id);
+    try { if (it.def.unmount) it.def.unmount(); } catch (e) { console.error(`condenser: chrome plugin '${id}' unmount threw`, e); }
+    if (it.wrap) it.wrap.remove();
+    api.invalidate();
+    return true;
+  }
+
+  // every frame, after the scene: size the drawn plugins' places, let the slots lay them
+  // out, then draw each into its box. g is in CSS px.
+  function draw(g, W, H) {
+    const drawn = [];
+    for (const it of items.values()) {
+      const d = it.def;
+      if (!d.draw) continue;
+      if (it.slot === 'overlay') { drawn.push([it, { x: 0, y: 0, w: W, h: H }]); continue; }
+      let sz = null;
+      try { sz = d.measure(api); } catch (e) { console.error(`condenser: chrome plugin '${d.id}' measure threw`, e); }
+      const show = !!(sz && sz.w > 0 && sz.h > 0);
+      const key = show ? `${Math.ceil(sz.w)}x${Math.ceil(sz.h)}` : '';
+      if (key !== it.size) {
+        it.size = key;
+        it.ph.style.display = show ? '' : 'none';
+        if (show) { it.ph.style.width = `${Math.ceil(sz.w)}px`; it.ph.style.height = `${Math.ceil(sz.h)}px`; }
+      }
+      if (show) drawn.push([it, null, sz]);
+    }
+    const hr = host.getBoundingClientRect();
+    for (const [it, fixed, sz] of drawn) {
+      let box = fixed;
+      if (!box) {
+        const r = it.ph.getBoundingClientRect();
+        box = { x: r.left - hr.left, y: r.top - hr.top, w: sz.w, h: sz.h };
+      }
+      it.box = box;
+      g.save();
+      if (!fixed) g.translate(box.x, box.y);
+      try { it.def.draw(g, api, box); } catch (e) { console.error(`condenser: chrome plugin '${it.def.id}' draw threw`, e); }
+      g.restore();
+      // a drawing is an image to assistive tech: describe() is its text
+      if (it.ph && it.def.describe) {
+        let d = '';
+        try { d = String(it.def.describe(api) || ''); } catch { /* no description this frame */ }
+        if (d !== it.desc) { it.desc = d; it.ph.setAttribute('role', 'img'); it.ph.setAttribute('aria-label', d); }
+      }
+    }
+  }
+
+  function update(changed) {
+    for (const it of items.values()) {
+      if (!it.def.update) continue;
+      try { it.def.update(changed, api); } catch (e) { console.error(`condenser: chrome plugin '${it.def.id}' update threw`, e); }
+    }
+  }
+
+  function destroy() {
+    for (const id of [...items.keys()]) remove(id);
+    style.remove();
+    for (const s of Object.values(slots)) s.remove();
+  }
+
+  return {
+    add, remove, draw, update, destroy,
+    has: (id) => items.has(id),
+    list: () => [...items.values()].map((it) => ({ id: it.def.id, slot: it.slot, order: it.def.order || 0 })),
+    slot: (name) => slots[name],
+  };
+}
+
+// ── ../../plot/src/scale.js ──
+
+// Linear scale with Heckbert nice-number tick generation
+
+function _niceNum(range, round) {
+  const exp = Math.floor(Math.log10(range));
+  const frac = range / Math.pow(10, exp);
+  let nice;
+  if (round) {
+    if (frac < 1.5) nice = 1;
+    else if (frac < 3) nice = 2;
+    else if (frac < 7) nice = 5;
+    else nice = 10;
+  } else {
+    if (frac <= 1) nice = 1;
+    else if (frac <= 2) nice = 2;
+    else if (frac <= 5) nice = 5;
+    else nice = 10;
+  }
+  return nice * Math.pow(10, exp);
+}
+
+// Hot loops don't call transform() per point: every scale also carries its fold, px = a·v + b
+// (on log10(v) for a log scale; `log` says which), worked out once per render.
+class LinearScale {
+  constructor(domain, range) {
+    this.domain = domain;
+    this.range = range;
+    this.log = false;
+    const dr = domain[1] - domain[0];
+    this.a = dr === 0 ? 0 : (range[1] - range[0]) / dr;
+    this.b = dr === 0 ? (range[0] + range[1]) / 2 : range[0] - domain[0] * this.a;
+  }
+
+  transform(v) {
+    const [d0, d1] = this.domain;
+    const [r0, r1] = this.range;
+    const dr = d1 - d0;
+    if (dr === 0) return (r0 + r1) / 2;
+    return r0 + (v - d0) / dr * (r1 - r0);
+  }
+
+  inverse(px) {
+    const [d0, d1] = this.domain;
+    const [r0, r1] = this.range;
+    const rr = r1 - r0;
+    if (rr === 0) return (d0 + d1) / 2;
+    return d0 + (px - r0) / rr * (d1 - d0);
+  }
+
+  ticks(count) {
+    if (count == null) count = 5;
+    const [lo, hi] = this.domain;
+    const range = _niceNum(hi - lo, false);
+    const step = _niceNum(range / (count - 1), true);
+    const start = Math.ceil(lo / step) * step;
+    const end = Math.floor(hi / step) * step;
+    const ticks = [];
+    // safety: ensure finite loop
+    if (step <= 0 || !isFinite(start) || !isFinite(end)) return [lo, hi];
+    for (let v = start; v <= end + step * 0.5; v += step) {
+      ticks.push(+v.toPrecision(12));
+    }
+    return ticks;
+  }
+
+  tickFormat() {
+    const [lo, hi] = this.domain;
+    const range = Math.abs(hi - lo);
+    if (range === 0) return (v) => String(v);
+    const mag = Math.log10(Math.max(Math.abs(lo), Math.abs(hi), 1e-30));
+    if (mag > 6 || mag < -3) return (v) => v.toExponential(1);
+    const dec = Math.max(0, -Math.floor(Math.log10(range)) + 1);
+    return (v) => v.toFixed(Math.min(dec, 6));
+  }
+}
+
+// Log10 scale — matplotlib's `set_xscale('log')` equivalent. Domain
+// must be strictly positive; callers should clamp lo before passing.
+// Ticks are integer powers of 10 within the domain.
+class LogScale {
+  constructor(domain, range) {
+    // Clamp lo to a tiny positive value if non-positive (defensive).
+    const [d0, d1] = domain;
+    this.domain = [d0 > 0 ? d0 : 1e-300, d1 > 0 ? d1 : 1];
+    this.range = range;
+    this.log = true;
+    const l0 = Math.log10(this.domain[0]), dl = Math.log10(this.domain[1]) - l0;
+    this.a = dl === 0 ? 0 : (range[1] - range[0]) / dl;
+    this.b = dl === 0 ? (range[0] + range[1]) / 2 : range[0] - l0 * this.a;
+  }
+
+  transform(v) {
+    const [d0, d1] = this.domain;
+    const [r0, r1] = this.range;
+    if (v <= 0) return r0;
+    const l0 = Math.log10(d0);
+    const l1 = Math.log10(d1);
+    const dr = l1 - l0;
+    if (dr === 0) return (r0 + r1) / 2;
+    return r0 + (Math.log10(v) - l0) / dr * (r1 - r0);
+  }
+
+  inverse(px) {
+    const [d0, d1] = this.domain;
+    const [r0, r1] = this.range;
+    const rr = r1 - r0;
+    const l0 = Math.log10(d0);
+    const l1 = Math.log10(d1);
+    if (rr === 0) return Math.pow(10, (l0 + l1) / 2);
+    return Math.pow(10, l0 + (px - r0) / rr * (l1 - l0));
+  }
+
+  ticks() {
+    const [lo, hi] = this.domain;
+    const loE = Math.ceil(Math.log10(lo));
+    const hiE = Math.floor(Math.log10(hi));
+    const ticks = [];
+    // Limit decade-count so degenerate domains don't blow up.
+    if (hiE - loE > 30) return [lo, hi];
+    for (let e = loE; e <= hiE; e++) ticks.push(Math.pow(10, e));
+    return ticks;
+  }
+
+  tickFormat() {
+    return (v) => {
+      const e = Math.round(Math.log10(v));
+      // Pretty-print integer powers as 10^N.
+      if (Math.abs(Math.pow(10, e) - v) / v < 1e-6) {
+        if (e >= -3 && e <= 4) return Math.pow(10, e).toString();
+        return '10^' + e;
+      }
+      return v.toExponential(1);
+    };
+  }
+}
+
+// ── ../view/src/decor.js ──
+
+// @gcu/condenser view — the built-in chrome that is DRAWN (so it is in snapshots): the
+// legends, the scale bar, the north arrow, the exaggeration notice, the hole labels; and
+// the cursor readout, which is DOM. Each is a chrome plugin (see chrome.js) built only on
+// the plugin api, so a host's own plugins can do anything these do.
+
+// one tick engine for the stack
+
+const meas = (() => { let g = null; return () => g || (g = document.createElement('canvas').getContext('2d')); })();
+const fontOf = (th, k = 1, bold = false) => `${bold ? '600 ' : ''}${Math.round(th.font_size * k)}px ${th.mono}`;
+const textW = (font, s) => { const g = meas(); g.font = font; return g.measureText(s).width; };
+
+function halo(g, th, text, x, y) {
+  g.strokeStyle = th.halo; g.lineWidth = 3; g.lineJoin = 'round';
+  g.strokeText(text, x, y);
+  g.fillText(text, x, y);
+}
+
+function panel(g, th, x, y, w, h) {
+  const r = 4;
+  g.beginPath();
+  g.moveTo(x + r, y); g.arcTo(x + w, y, x + w, y + h, r); g.arcTo(x + w, y + h, x, y + h, r);
+  g.arcTo(x, y + h, x, y, r); g.arcTo(x, y, x + w, y, r); g.closePath();
+  g.fillStyle = th.panel; g.fill();
+  g.strokeStyle = th.panel_border; g.lineWidth = 1; g.stroke();
+}
+
+// a number for a tick: as many decimals as the step needs
+const tickFmt = (v, step) => {
+  if (Math.abs(v) >= 1e6 || (Math.abs(v) < 1e-3 && v !== 0)) return v.toExponential(1);
+  const d = Math.max(0, Math.min(6, -Math.floor(Math.log10(step || 1) + 1e-9)));
+  return v.toFixed(d);
+};
+const coordFmt = (v) => (Number.isFinite(v) ? (Math.abs(v) >= 1e5 ? v.toFixed(1) : String(Math.round(v * 100) / 100)) : '—');
+
+// ── the scale bar: a round length at the camera target's depth, in real metres ──
+function scaleBar() {
+  let s = null;
+  const compute = (api) => {
+    const t = api.target, a = api.project(t[0], t[1], t[2]);
+    if (!a) return null;
+    const p1 = api.unproject(a[0], a[1]), p2 = api.unproject(a[0] + 100, a[1]);
+    if (!p1 || !p2) return null;
+    const m100 = Math.hypot(p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2]);   // unproject gives real z
+    if (!(m100 > 1e-9) || !Number.isFinite(m100)) return null;
+    const pxPerM = 100 / m100;
+    let len = Math.pow(10, Math.floor(Math.log10(120 / pxPerM)));
+    for (const k of [5, 2, 1]) if (len * k * pxPerM <= 160) { len *= k; break; }
+    return { px: len * pxPerM, label: len >= 1000 ? `${len / 1000} km` : `${len} m`, m100 };
+  };
+  return {
+    id: 'scalebar', slot: 'bottom', order: 0,
+    measure(api) { s = compute(api); return s ? { w: s.px + 8, h: 24 } : null; },
+    draw(g, api, box) {
+      if (!s) return;
+      const th = api.theme, x0 = (box.w - s.px) / 2, y = box.h - 6;
+      for (const [col, lw] of [[th.halo, 4], [th.foreground, 1.6]]) {
+        g.strokeStyle = col; g.lineWidth = lw; g.lineCap = 'butt';
+        g.beginPath();
+        g.moveTo(x0, y); g.lineTo(x0 + s.px, y);
+        g.moveTo(x0, y - 4); g.lineTo(x0, y + 4);
+        g.moveTo(x0 + s.px, y - 4); g.lineTo(x0 + s.px, y + 4);
+        g.stroke();
+      }
+      g.font = fontOf(th, 0.95); g.textAlign = 'center'; g.textBaseline = 'alphabetic'; g.fillStyle = th.foreground;
+      halo(g, th, s.label, box.w / 2, y - 6);
+    },
+  };
+}
+
+// ── vertical exaggeration: the scale bar is horizontal, so say when z is stretched ──
+function exaggeration() {
+  let text = '';
+  return {
+    id: 'exaggeration', slot: 'bottom', order: 1,
+    measure(api) {
+      const z = api.zExag;
+      text = z && Math.abs(z - 1) > 1e-6 ? `vertical exaggeration ×${Math.round(z * 100) / 100}` : '';
+      return text ? { w: textW(fontOf(api.theme, 0.95), text) + 8, h: 14 } : null;
+    },
+    draw(g, api, box) {
+      const th = api.theme;
+      g.font = fontOf(th, 0.95); g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillStyle = th.accent;
+      halo(g, th, text, box.w / 2, box.h / 2);
+    },
+  };
+}
+
+// ── the north arrow: world +N projected at the target; fades when you look along north ──
+function northArrow() {
+  let ang = 0, alpha = 0;
+  return {
+    id: 'north', slot: 'top-right', order: 0,
+    measure(api) {
+      const t = api.target, a = api.project(t[0], t[1], t[2]);
+      const s = a && api.unproject(a[0] + 60, a[1]), p0 = a && api.unproject(a[0], a[1]);
+      if (!a || !s || !p0) return null;
+      const step = Math.hypot(s[0] - p0[0], s[1] - p0[1], s[2] - p0[2]) || 1;
+      const b = api.project(t[0], t[1] + step, t[2]);
+      if (!b) return null;
+      const dx = b[0] - a[0], dy = b[1] - a[1];
+      alpha = Math.max(0, Math.min(1, Math.hypot(dx, dy) / 24));
+      ang = Math.atan2(dy, dx);
+      return alpha > 0.05 ? { w: 40, h: 40 } : null;
+    },
+    draw(g, api, box) {
+      const th = api.theme, cx = box.w / 2, cy = box.h / 2;
+      g.globalAlpha = alpha;
+      g.save();
+      g.translate(cx, cy); g.rotate(ang);
+      g.beginPath();
+      g.moveTo(10, 0); g.lineTo(-7, 5); g.lineTo(-4, 0); g.lineTo(-7, -5); g.closePath();
+      g.fillStyle = th.foreground; g.strokeStyle = th.halo; g.lineWidth = 2;
+      g.stroke(); g.fill();
+      g.restore();
+      g.font = fontOf(th, 1, true); g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillStyle = th.foreground;
+      halo(g, th, 'N', cx + Math.cos(ang) * 15, cy + Math.sin(ang) * 15);
+      g.globalAlpha = 1;
+    },
+  };
+}
+
+// ── hole labels (labels: true on a drillhole layer): the BHID at each collar ──
+function holeLabels() {
+  return {
+    id: 'labels', slot: 'overlay',
+    draw(g, api, box) {
+      const th = api.theme;
+      g.font = fontOf(th, 0.92); g.textAlign = 'center'; g.textBaseline = 'bottom'; g.fillStyle = th.foreground;
+      for (const L of api.layers()) {
+        if (L.kind !== 'drillholes' || !L.labels || !L.visible || !L.collars) continue;
+        let n = 0;
+        for (const c of L.collars) {
+          if (n >= 400) break;                                 // a 10k-hole campaign is a texture, not labels
+          const p = api.project(c.x, c.y, c.z);
+          if (!p || p[0] < -20 || p[0] > box.w + 20 || p[1] < -10 || p[1] > box.h + 10) continue;
+          halo(g, th, c.name, p[0], p[1] - 4);
+          g.fillRect(p[0] - 1, p[1] - 2, 2, 2);                // the collar tick
+          n++;
+        }
+      }
+    },
+  };
+}
+
+// ── the legends: one per coloured layer, stacked; drawn, so they are in snapshots ──
+const PAD = 7, BAR_W = 150, BAR_H = 9, ROW = 15, SW = 10, MAX_ROWS = 12, GAP = 6;
+function legends() {
+  let blocks = [], hits = [];
+  const layout = (api) => {
+    const th = api.theme, fTitle = fontOf(th, 1, true), fRow = fontOf(th, 1), fSmall = fontOf(th, 0.9);
+    blocks = [];
+    let y = 0, W = 0;
+    for (const e of api.legend()) {
+      const title = e.channel && e.channel !== e.title ? `${e.title} · ${e.channel}` : e.title;
+      const units = e.units ? ` (${e.units})` : '';
+      let w = textW(fTitle, title) + textW(fSmall, units), h;
+      if (e.kind === 'ramp') { w = Math.max(w, BAR_W); h = 14 + BAR_H + 3 + 13; }
+      else {
+        const shown = e.classes.slice(0, MAX_ROWS);
+        const cw = e.classes.some((c) => c.count != null) ? Math.max(...shown.map((c) => textW(fSmall, String(c.count ?? '')))) + 10 : 0;
+        for (const c of shown) w = Math.max(w, SW + 6 + textW(fRow, c.label) + cw);
+        h = 14 + shown.length * ROW + (e.classes.length > MAX_ROWS ? ROW : 0);
+        e._cw = cw;
+      }
+      w = Math.ceil(w + 2 * PAD); h = Math.ceil(h + 2 * PAD);
+      blocks.push({ e, title, units, y, w, h });
+      y += h + GAP; W = Math.max(W, w);
+    }
+    for (const b of blocks) b.x = W - b.w;                 // right-aligned in the slot
+    return blocks.length ? { w: W, h: y - GAP } : null;
+  };
+  return {
+    id: 'legend', slot: 'bottom-right', order: 0,
+    measure: layout,
+    draw(g, api) {
+      const th = api.theme;
+      hits = [];
+      for (const b of blocks) {
+        const { e } = b, x = b.x + PAD;
+        let y = b.y + PAD;
+        panel(g, th, b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1);
+        g.textBaseline = 'top'; g.textAlign = 'left';
+        g.font = fontOf(th, 1, true); g.fillStyle = th.foreground;
+        g.fillText(b.title, x, y);
+        if (b.units) { const tw = g.measureText(b.title).width; g.font = fontOf(th, 0.9); g.fillStyle = th.muted; g.fillText(b.units, x + tw, y + 1); }
+        y += 14;
+        if (e.kind === 'ramp') drawRamp(g, th, e, x, y, b.w - 2 * PAD);
+        else {
+          const shown = e.classes.slice(0, MAX_ROWS);
+          for (const c of shown) {
+            const ry = y + 2;
+            g.fillStyle = `rgb(${c.rgb[0]},${c.rgb[1]},${c.rgb[2]})`;
+            if (!c.hidden) g.fillRect(x, ry, SW, SW);
+            g.strokeStyle = th.frame; g.lineWidth = 1; g.strokeRect(x + 0.5, ry + 0.5, SW - 1, SW - 1);
+            g.font = fontOf(th, 1); g.fillStyle = c.hidden ? th.muted : th.foreground; g.textBaseline = 'top';
+            g.fillText(c.label, x + SW + 6, ry - 1);
+            if (c.hidden) { const tw = g.measureText(c.label).width; g.fillRect(x + SW + 6, ry + 5, tw, 1); }
+            if (c.count != null) { g.font = fontOf(th, 0.9); g.fillStyle = th.muted; g.textAlign = 'right'; g.fillText(String(c.count), b.x + b.w - PAD, ry); g.textAlign = 'left'; }
+            hits.push({ x: b.x, y, w: b.w, h: ROW, layer: e.layer, label: c.label });
+            y += ROW;
+          }
+          if (e.classes.length > MAX_ROWS) {
+            g.font = fontOf(th, 0.9); g.fillStyle = th.muted;
+            g.fillText(`and ${e.classes.length - MAX_ROWS} more`, x, y + 1);
+          }
+        }
+      }
+    },
+    describe() {
+      return blocks.map(({ e, title, units }) => (e.kind === 'ramp'
+        ? `${title}${units}: ${coordFmt(e.range[0])} to ${coordFmt(e.range[1])}${e.threshold ? `, threshold ${coordFmt(e.threshold[0])} to ${coordFmt(e.threshold[1])}` : ''}`
+        : `${title}${units}: ${e.classes.map((c) => `${c.label}${c.hidden ? ' (hidden)' : ''}${c.count != null ? ` ${c.count}` : ''}`).join(', ')}`)).join('; ');
+    },
+    cursor(x, y) { return hits.some((h) => x >= h.x && x < h.x + h.w && y >= h.y && y < h.y + h.h) ? 'pointer' : ''; },
+    click(x, y, ev, api) {
+      const h = hits.find((r) => x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h);
+      if (!h) return;
+      if (ev.shiftKey) api.isolateClass(h.layer, h.label); else api.toggleClass(h.layer, h.label);
+    },
+  };
+}
+
+// a ramp over the data range: colours clamp at the clip, the threshold dims what it cuts
+function drawRamp(g, th, e, x0, y0, W) {
+  let [lo, hi] = e.range;
+  if (!(hi > lo)) hi = lo + 1;
+  const [c0, c1] = e.clip || e.range;
+  const span = (c1 - c0) || 1, px = e.pixels;
+  for (let i = 0; i < W; i++) {
+    const v = lo + ((i + 0.5) / W) * (hi - lo);
+    const k = Math.round(Math.max(0, Math.min(1, (v - c0) / span)) * 255) * 4;
+    g.fillStyle = `rgb(${px[k]},${px[k + 1]},${px[k + 2]})`;
+    g.fillRect(x0 + i, y0, 1, BAR_H);
+  }
+  const at = (v) => x0 + ((v - lo) / (hi - lo)) * W;
+  if (e.threshold) {                                       // dim what the threshold cuts, bracket what it keeps
+    const a = Math.max(x0, Math.min(x0 + W, at(e.threshold[0]))), b = Math.max(x0, Math.min(x0 + W, at(e.threshold[1])));
+    g.fillStyle = th.panel; g.globalAlpha = e.dim ? 0.55 : 0.85;
+    g.fillRect(x0, y0, a - x0, BAR_H); g.fillRect(b, y0, x0 + W - b, BAR_H);
+    g.globalAlpha = 1;
+    g.strokeStyle = th.foreground; g.lineWidth = 1.5;
+    g.beginPath();
+    g.moveTo(a + 2, y0 - 2); g.lineTo(a, y0 - 2); g.lineTo(a, y0 + BAR_H + 2); g.lineTo(a + 2, y0 + BAR_H + 2);
+    g.moveTo(b - 2, y0 - 2); g.lineTo(b, y0 - 2); g.lineTo(b, y0 + BAR_H + 2); g.lineTo(b - 2, y0 + BAR_H + 2);
+    g.stroke();
+  }
+  g.strokeStyle = th.frame; g.lineWidth = 1; g.strokeRect(x0 + 0.5, y0 + 0.5, W - 1, BAR_H - 1);
+  if (e.clip) {                                            // the clip ends: small marks above the bar
+    g.fillStyle = th.muted;
+    for (const v of e.clip) {
+      if (v <= lo || v >= hi) continue;
+      const cx = at(v);
+      g.beginPath(); g.moveTo(cx - 3, y0 - 4); g.lineTo(cx + 3, y0 - 4); g.lineTo(cx, y0); g.closePath(); g.fill();
+    }
+  }
+  const sc = new LinearScale([lo, hi], [x0, x0 + W]);
+  const ticks = sc.ticks(5), step = ticks.length > 1 ? ticks[1] - ticks[0] : hi - lo;
+  g.font = fontOf(th, 0.9); g.fillStyle = th.muted; g.textBaseline = 'top';
+  let right = -Infinity;
+  for (const v of ticks) {
+    const tx = sc.transform(v), label = tickFmt(v, step), tw = g.measureText(label).width;
+    let lx = Math.max(x0, Math.min(x0 + W - tw, tx - tw / 2));
+    if (lx < right + 4) continue;                          // no overlapping labels
+    g.fillRect(Math.round(tx) - 0.5, y0 + BAR_H, 1, 3);
+    g.textAlign = 'left';
+    g.fillText(label, lx, y0 + BAR_H + 4);
+    right = lx + tw;
+  }
+}
+
+// ── the cursor readout: E/N/RL under the cursor in a locked view; the picked element's
+// coordinates in free 3D. DOM — a readout is for looking, not for the figure ──
+function readout() {
+  let el = null, at = null, lastPick = null;
+  const show = (api) => {
+    if (!el) return;
+    const v = api.viewInfo();
+    let txt = '';
+    if (v.rect && at) {
+      const { rect, axes } = v, w = v.px.w || 1, h = v.px.h || 1;
+      const u = rect.u0 + (at[0] / w) * (rect.u1 - rect.u0), vv = rect.v1 - (at[1] / h) * (rect.v1 - rect.v0);
+      txt = `${axes[0]} ${coordFmt(u)}   ${axes[1]} ${coordFmt(vv)}`;
+    } else if (!v.rect && lastPick) {
+      txt = `E ${coordFmt(lastPick.x)}   N ${coordFmt(lastPick.y)}   RL ${coordFmt(lastPick.z)}`;
+    }
+    el.textContent = txt;
+    el.style.display = txt ? '' : 'none';
+  };
+  let onMove = null, onLeave = null, cv = null;
+  return {
+    id: 'readout', slot: 'bottom-left', order: 20,
+    mount(host, api) {
+      el = document.createElement('div');
+      el.className = 'cdread';
+      el.style.display = 'none';
+      host.appendChild(el);
+      cv = api.canvas;
+      onMove = (e) => { const r = cv.getBoundingClientRect(); at = [e.clientX - r.left, e.clientY - r.top]; show(api); };
+      onLeave = () => { at = null; show(api); };
+      cv.addEventListener('pointermove', onMove);
+      cv.addEventListener('pointerleave', onLeave);
+    },
+    update(changed, api) {
+      if ('pick' in changed) lastPick = changed.pick;
+      if ('view' in changed || 'pick' in changed) show(api);
+    },
+    unmount() { if (cv) { cv.removeEventListener('pointermove', onMove); cv.removeEventListener('pointerleave', onLeave); } el = null; },
+  };
+}
+
+// ── ../../theme/src/theme.js ──
+
+// @gcu/theme — one theme vocabulary for GCU figures. @gcu/condenser's view and @gcu/plot
+// read the same keys, so one theme dresses a chart and the 3D view beside it.
+//
+// A theme is a plain object. The keys:
+//
+//   background    the figure's / scene's background
+//   foreground    primary text and marks
+//   muted         secondary text: tick labels, captions, units
+//   grid          grid lines
+//   frame         axis lines, bar outlines, legend swatch borders
+//   panel         the fill behind floating chrome (legends, readouts, toolbars)
+//   panel_border  its border
+//   accent        the action colour: a pressed button, a cut line, a highlight
+//   selection     what is selected
+//   halo          the outline that keeps text readable over a busy scene
+//   cycle         the categorical colours, in order
+//   ramp          the default colour map's name
+//   font          the sans stack (titles, labels)
+//   mono          the monospace stack (numbers, readouts)
+//   font_size     the base size in CSS px
+//
+// The dark theme is Switchboard's basalt, the light one its equipment gray; paper is
+// white, for printed figures. Colours are CSS colour strings.
+
+const MONO = "'Space Mono', 'JetBrains Mono', Consolas, ui-monospace, Menlo, monospace";
+const SANS = "'Barlow', system-ui, -apple-system, 'Segoe UI', sans-serif";
+
+// Tableau 10: ten well-separated categorical colours, readable on dark and light
+const CYCLE = ['#4E79A7', '#F28E2B', '#E15759', '#76B7B2', '#59A14F', '#EDC948', '#B07AA1', '#FF9DA7', '#9C755F', '#BAB0AC'];
+
+const THEME_KEYS = ['background', 'foreground', 'muted', 'grid', 'frame', 'panel', 'panel_border',
+  'accent', 'selection', 'halo', 'cycle', 'ramp', 'font', 'mono', 'font_size'];
+
+const THEMES = {
+  dark: {
+    background: '#15171A', foreground: '#DDDCDA', muted: '#9E9C98', grid: '#2F3338', frame: '#83817E',
+    panel: 'rgba(29,32,36,0.88)', panel_border: '#2F3338', accent: '#FB9044', selection: '#EC9FFF',
+    halo: 'rgba(0,0,0,0.75)', cycle: CYCLE, ramp: 'viridis', font: SANS, mono: MONO, font_size: 11,
+  },
+  light: {
+    background: '#E4E3E1', foreground: '#232322', muted: '#504F4C', grid: '#C6C4C1', frame: '#5A5856',
+    panel: 'rgba(237,236,235,0.92)', panel_border: '#B3B1AD', accent: '#8B3F00', selection: '#793A8D',
+    halo: 'rgba(255,255,255,0.8)', cycle: CYCLE, ramp: 'viridis', font: SANS, mono: MONO, font_size: 11,
+  },
+  paper: {
+    background: '#FFFFFF', foreground: '#1A1A1A', muted: '#555555', grid: '#DDDDDD', frame: '#333333',
+    panel: 'rgba(255,255,255,0.92)', panel_border: '#BBBBBB', accent: '#8B3F00', selection: '#793A8D',
+    halo: 'rgba(255,255,255,0.85)', cycle: CYCLE, ramp: 'viridis', font: SANS, mono: MONO, font_size: 11,
+  },
+};
+
+// the Switchboard semantic tokens (--au-*) each key reads; a host's own design tokens
+// can be mapped the same way
+const CSS_MAP = {
+  background: '--au-surface', foreground: '--au-fg', muted: '--au-fg-soft', grid: '--au-border-soft',
+  frame: '--au-rule', panel: '--au-surface-raised', panel_border: '--au-border', accent: '--au-action',
+  selection: '--au-selected', font: '--au-font-sans', mono: '--au-font-mono',
+};
+
+// a name, a partial theme ({ base: 'light', accent: '#c00' }) or nothing → a full theme.
+// Unknown names fall back to dark; `onWarn` hears about it.
+function resolveTheme(t, onWarn) {
+  if (t == null || t === '') return copy(THEMES.dark);
+  if (typeof t === 'string') {
+    if (THEMES[t]) return copy(THEMES[t]);
+    if (onWarn) onWarn(`no theme '${t}' (${Object.keys(THEMES).join(', ')}); using dark`);
+    return copy(THEMES.dark);
+  }
+  const base = resolveTheme(t.base || (t.background && isLight(t.background) ? 'light' : 'dark'), onWarn);
+  for (const k of THEME_KEYS) if (t[k] != null && t[k] !== '') base[k] = k === 'cycle' ? Array.from(t[k]) : t[k];
+  if (onWarn) for (const k of Object.keys(t)) if (k !== 'base' && !THEME_KEYS.includes(k)) onWarn(`a theme has no key '${k}'`);
+  return base;
+}
+const copy = (t) => ({ ...t, cycle: t.cycle.slice() });
+
+// read a theme from CSS custom properties on `el` (a host page's tokens, its light or
+// dark mode). Properties that are unset keep the base theme's value; the base is light
+// or dark by the background found.
+function themeFromCSS(el, map = CSS_MAP) {
+  const cs = typeof getComputedStyle === 'function' && el ? getComputedStyle(el) : null;
+  const out = {};
+  if (cs) for (const [k, prop] of Object.entries(map)) {
+    const v = cs.getPropertyValue(prop).trim();
+    if (v) out[k] = v;
+  }
+  if (out.background) out.base = isLight(out.background) ? 'light' : 'dark';
+  return resolveTheme(out);
+}
+
+// '#rgb' · '#rrggbb' · 'rgb(a)(…)' → [r, g, b] 0–255 (null if it can't tell)
+function parseColor(c) {
+  if (typeof c !== 'string') return null;
+  const s = c.trim();
+  let m = /^#([0-9a-f]{3})$/i.exec(s);
+  if (m) return [...m[1]].map((h) => parseInt(h + h, 16));
+  m = /^#([0-9a-f]{6})([0-9a-f]{2})?$/i.exec(s);
+  if (m) return [0, 2, 4].map((k) => parseInt(m[1].slice(k, k + 2), 16));
+  m = /^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)/i.exec(s);
+  if (m) return [+m[1], +m[2], +m[3]].map((v) => Math.max(0, Math.min(255, Math.round(v))));
+  return null;
+}
+
+// relative luminance above the midpoint: a light theme
+function isLight(c) {
+  const rgb = parseColor(c);
+  if (!rgb) return false;
+  const lin = rgb.map((v) => { v /= 255; return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; });
+  return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2] > 0.18;
 }
 
 // ── ../view/src/lock.js ──
@@ -13725,7 +14399,7 @@ if (typeof document === 'undefined' && typeof self !== 'undefined' && typeof sel
 
 function mountView(el, store) {
   const host = document.createElement('div');
-  host.style.cssText = 'position:relative;width:100%;background:#121212;border-radius:3px;overflow:hidden;';
+  host.style.cssText = 'position:relative;width:100%;background:#15171A;border-radius:3px;overflow:hidden;';
   // right-drag PANS, so JupyterLab's own context menu must stay out of the way.
   // This attribute is the supported hook: JupyterLab's handler does
   // `el.closest('[data-jp-suppress-context-menu]')` and stands down if it hits.
@@ -13743,12 +14417,13 @@ function mountView(el, store) {
   deco.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:1;';
   host.appendChild(deco);
   const hud = document.createElement('div');
-  hud.className = 'cdhud';
-  hud.style.cssText = 'position:absolute;left:6px;bottom:5px;font:11px ui-monospace,Menlo,Consolas,monospace;color:#8b8b8b;pointer-events:none;text-shadow:0 1px 2px #000;z-index:1;';
+  hud.className = 'cdhud cdstatus';
   host.appendChild(hud);
   el.appendChild(host);
 
   let renderer = null, edl = null, cam = null, detach = null, raf = 0, ro = null, tb = null;
+  let chrome = null, theme = resolveTheme('dark');         // the plugins over the scene, and what dresses them
+  const bus = new Map();                                   // chrome plugins' on(): event → Set(fn)
   let payload = null, disposed = false, needFit = false, converged = false;
   let docBbox = null;
   let streams = null, streamEpoch = '';                    // cd.open(): layer → stream state, this view's epoch
@@ -13774,7 +14449,11 @@ function mountView(el, store) {
   // events for a page: what was picked, hovered, measured, selected — with the data the
   // view has at that moment. A page's store implements notify(); anywidget's model has
   // no such method, so in Jupyter this is a no-op (the traits carry what Python needs).
-  const notify = (type, data) => { if (typeof store.notify === 'function') store.notify(type, data); };
+  const notify = (type, data) => {
+    if (typeof store.notify === 'function') store.notify(type, data);
+    for (const fn of Array.from(bus.get(type) || [])) { try { fn(data); } catch (e) { console.error(`condenser: a chrome '${type}' handler threw`, e); } }
+    if (chrome) { chrome.update({ [type]: data }); schedule(); }
+  };
   const styles = () => store.get('_styles') || [];
   const styleAt = (i) => styles()[i] || {};
   const viewOpts = () => {                                 // point size / points-view are VIEW-wide in the engine
@@ -13783,113 +14462,16 @@ function mountView(el, store) {
     return { pointPx, asPoints };
   };
 
-  // ── the decorations overlay: hole labels + north arrow + scale bar. Redrawn
-  // with every frame (2D, cheap) and COMPOSITED into snapshots. Coordinates
-  // are frame-local, projected through the camera's viewProj — which already
-  // carries the z-exaggeration, so labels track the stretched display. ──
+  // ── the overlay: every chrome plugin that DRAWS (legends, scale bar, north arrow, hole
+  // labels, a host's own) — redrawn each frame and composited into snapshots ──
   const drawOverlay = (w, h, dpr) => {
     if (deco.width !== w || deco.height !== h) { deco.width = w; deco.height = h; }
     const g = deco.getContext('2d');
     g.clearRect(0, 0, w, h);
-    if (!payload) return;
-    const W = w / dpr, H = h / dpr;
+    if (!payload || !chrome) return;
     g.save();
     g.scale(dpr, dpr);
-    const vp = cam.state.viewProj;
-    const proj = (X, Y, Z) => {
-      const cw = vp[3] * X + vp[7] * Y + vp[11] * Z + vp[15];
-      if (cw <= 1e-9) return null;
-      return [((vp[0] * X + vp[4] * Y + vp[8] * Z + vp[12]) / cw * 0.5 + 0.5) * W,
-        (0.5 - (vp[1] * X + vp[5] * Y + vp[9] * Z + vp[13]) / cw * 0.5) * H];
-    };
-    const o = payload.frame;
-    const halo = (text, x, y) => {
-      g.strokeStyle = 'rgba(0,0,0,.75)'; g.lineWidth = 3; g.lineJoin = 'round';
-      g.strokeText(text, x, y);
-      g.fillText(text, x, y);
-    };
-
-    // hole labels (labels=True on a drillhole layer): BHIDs at the collars
-    g.font = '10px ui-monospace,Menlo,Consolas,monospace';
-    g.textAlign = 'center'; g.textBaseline = 'bottom';
-    g.fillStyle = '#e4e4e4';
-    styles().forEach((s, i) => {
-      const L = payload.layers[i];
-      if (!L || L.kind !== 'drillholes' || !s.labels || s.visible === false || !L._collars) return;
-      let drawn2 = 0;
-      for (const c of L._collars) {
-        if (drawn2 >= 400) break;                          // a 10k-hole campaign is a texture, not labels
-        const p = proj(c.x - o[0], c.y - o[1], c.z - o[2]);
-        if (!p || p[0] < -20 || p[0] > W + 20 || p[1] < -10 || p[1] > H + 10) continue;
-        halo(c.name, p[0], p[1] - 4);
-        g.fillRect(p[0] - 1, p[1] - 2, 2, 2);              // the collar tick
-        drawn2++;
-      }
-    });
-
-    if (store.get('decorations') === false) { g.restore(); return; }
-    // scale at the CAMERA TARGET depth: unproject a 100-px screen step on the
-    // plane through the target, z divided back by zExag → REAL meters
-    const t = cam.state.target;
-    const inv = mat4Inverse(vp);
-    const tp = proj(t[0], t[1], t[2]);
-    if (inv && tp) {
-      const cwT = vp[3] * t[0] + vp[7] * t[1] + vp[11] * t[2] + vp[15];
-      const ndcZ = (vp[2] * t[0] + vp[6] * t[1] + vp[10] * t[2] + vp[14]) / cwT;
-      const un = (sx, sy) => {
-        const nx = (sx / W) * 2 - 1, ny = 1 - (sy / H) * 2;
-        const x = inv[0] * nx + inv[4] * ny + inv[8] * ndcZ + inv[12];
-        const y = inv[1] * nx + inv[5] * ny + inv[9] * ndcZ + inv[13];
-        const z = inv[2] * nx + inv[6] * ny + inv[10] * ndcZ + inv[14];
-        const w2 = inv[3] * nx + inv[7] * ny + inv[11] * ndcZ + inv[15];
-        return [x / w2, y / w2, z / w2];
-      };
-      const p1 = un(tp[0], tp[1]), p2 = un(tp[0] + 100, tp[1]);
-      const ze = cam.state.zExag || 1;
-      const m100 = Math.hypot(p2[0] - p1[0], p2[1] - p1[1], (p2[2] - p1[2]) / ze);
-      if (m100 > 1e-9 && Number.isFinite(m100)) {
-        const pxPerM = 100 / m100;
-        let len = Math.pow(10, Math.floor(Math.log10(120 / pxPerM)));
-        for (const k of [5, 2, 1]) if (len * k * pxPerM <= 160) { len *= k; break; }
-        const px = len * pxPerM;
-        const label = len >= 1000 ? `${len / 1000} km` : `${len} m`;
-        const bx0 = W / 2 - px / 2, by0 = H - 14;
-        for (const [col, lw] of [['rgba(0,0,0,.7)', 4], ['#d8d8d8', 1.6]]) {
-          g.strokeStyle = col; g.lineWidth = lw; g.lineCap = 'butt';
-          g.beginPath();
-          g.moveTo(bx0, by0); g.lineTo(bx0 + px, by0);
-          g.moveTo(bx0, by0 - 4); g.lineTo(bx0, by0 + 4);
-          g.moveTo(bx0 + px, by0 - 4); g.lineTo(bx0 + px, by0 + 4);
-          g.stroke();
-        }
-        g.fillStyle = '#cfcfcf';
-        halo(label, W / 2, by0 - 5);
-
-        // north arrow, left of the bar — world +Y projected at the target.
-        // Looking ALONG north the projection collapses: fade it rather than spin
-        const np = proj(t[0], t[1] + m100, t[2]);
-        if (np) {
-          const dxn = np[0] - tp[0], dyn = np[1] - tp[1];
-          const ln = Math.hypot(dxn, dyn);
-          const alpha = Math.max(0, Math.min(1, ln / 40));
-          if (alpha > 0.05) {
-            const ang = Math.atan2(dyn, dxn);
-            const cxN = bx0 - 30, cyN = by0 - 6;
-            g.globalAlpha = alpha;
-            g.save();
-            g.translate(cxN, cyN); g.rotate(ang);
-            g.beginPath();
-            g.moveTo(11, 0); g.lineTo(-6, 4.5); g.lineTo(-3, 0); g.lineTo(-6, -4.5); g.closePath();
-            g.fillStyle = '#d8d8d8'; g.strokeStyle = 'rgba(0,0,0,.7)'; g.lineWidth = 2;
-            g.stroke(); g.fill();
-            g.restore();
-            g.fillStyle = '#d8d8d8';
-            halo('N', cxN + Math.cos(ang) * 19, cyN + Math.sin(ang) * 19 + 4);
-            g.globalAlpha = 1;
-          }
-        }
-      }
-    }
+    chrome.draw(g, w / dpr, h / dpr);
     g.restore();
   };
 
@@ -13943,7 +14525,7 @@ function mountView(el, store) {
     streams = null; streamEpoch = Math.random().toString(36).slice(2);
     fileQueue = Promise.resolve(); fileMsg = null;
     const p = decodePayload(store.get('_payload'));
-    if (!p || !p.layers.length) { hud.textContent = 'no data'; if (tb) { tb.showPick(null); tb.syncLegend(null); } schedule(); return; }
+    if (!p || !p.layers.length) { hud.textContent = 'no data'; if (tb) tb.showPick(null); schedule(); return; }
     payload = p;
     const bb = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
 
@@ -14567,6 +15149,7 @@ function mountView(el, store) {
           renderer.setLayerMeshStyle(i, { tint: [((v2 >> 16) & 255) / 255, ((v2 >> 8) & 255) / 255, (v2 & 255) / 255] });
         }
       }
+      if (L.cat_labels && L.cat_labels.length) renderer.setLayerPalette(i, classPalette(L, s), 256);
       // per-class eyes: GPU-side cull by category code; composes with the
       // threshold mask, and hidden classes don't pick either
       const hid = s.categories_hidden;
@@ -14590,11 +15173,29 @@ function mountView(el, store) {
   };
 
   const applyBackground = () => {
-    const hex = String(store.get('background') || '#121212').replace('#', '');
-    if (hex.length !== 6) return;
-    const v = parseInt(hex, 16);
-    renderer.setBackground([((v >> 16) & 255) / 255, ((v >> 8) & 255) / 255, (v & 255) / 255, 1]);
+    const bg = store.get('background') || theme.background;
+    const rgb = parseColor(String(bg));
+    if (!rgb) return;
+    host.style.background = String(bg);
+    renderer.setBackground([rgb[0] / 255, rgb[1] / 255, rgb[2] / 255, 1]);
     schedule();
+  };
+  // the theme: a name ('dark' · 'light' · 'paper'), 'css' (this page's design tokens), or
+  // a partial theme object. The DOM chrome reads it as CSS variables; drawn chrome reads it
+  // from the plugin api; categories take its cycle.
+  const applyTheme = () => {
+    const t = store.get('theme');
+    theme = t === 'css' ? themeFromCSS(el) : resolveTheme(t, (m) => console.warn(`condenser: ${m}`));
+    const set = (k, v) => host.style.setProperty(k, String(v));
+    set('--cd-bg', theme.background); set('--cd-fg', theme.foreground); set('--cd-muted', theme.muted);
+    set('--cd-panel', theme.panel); set('--cd-border', theme.panel_border); set('--cd-accent', theme.accent);
+    set('--cd-on-accent', theme.background); set('--cd-hover', theme.grid); set('--cd-halo', theme.halo);
+    set('--cd-mono', theme.mono); set('--cd-fs', `${theme.font_size}px`);
+    host.style.color = theme.foreground;
+    applyBackground();
+    applyStyles();
+    if (chrome) chrome.update({ theme });
+    invalidate();
   };
   const applyHeight = () => { host.style.height = `${store.get('height') || 460}px`; invalidate(); };
   const applyZExag = () => {                               // display-only: queries stay in real coords
@@ -14671,52 +15272,121 @@ function mountView(el, store) {
     return [lo, hi];
   };
 
-  // the legend follows the first VISIBLE layer colored by value (a ramp) or by
-  // category (a swatch list whose rows toggle that class's visibility)
-  const CAT_PX = categoryPalettePixels(256);               // the SAME palette the shaders sample
-  const toggleCat = (li, label) => {
-    const next = styles().map((s, k) => {
-      if (k !== li) return s;
-      const hid = new Set(s.categories_hidden || []);
-      if (hid.has(label)) hid.delete(label); else hid.add(label);
-      return { ...s, categories_hidden: [...hid] };
-    });
+  // ── categories: colours, order, counts, eyes ──
+  const CAT_PX = categoryPalettePixels(256);               // past the theme's cycle: the golden-angle palette
+  const setCatsHidden = (li, hidden) => {
+    const next = styles().map((s, k) => (k === li ? { ...s, categories_hidden: hidden } : s));
     store.set('_styles', next);                            // round-trips to the Python Layer
     store.save_changes();
     applyStyles();
     syncChrome();
   };
-  const legendInfo = () => {
-    const st = styles();
-    for (let i = 0; i < st.length; i++) {
-      const s = st[i], L = payload && payload.layers[i];
-      if (!L || s.visible === false) continue;
-      if (s.color === 'value') {
-        const range = (s.clip && s.clip.length === 2) ? s.clip : (L.value_range || null);
-        if (!range) continue;
-        const stops = RAMPS[s.ramp || 'viridis'];
-        // the ramp needs a NAME — with channel switching, "0.2 — 34" alone is ambiguous
-        const label = (L._active && L._active !== 'value') ? L._active : (s.name || null);
-        return { range, pixels: rampPixels(256, stops || undefined), label };
-      }
-      if (s.color === 'category' && L.cat_labels && L.cat_labels.length) {
-        const hid = new Set(s.categories_hidden || []);
-        return {
-          cats: L.cat_labels.map((lb, k) => ({
-            label: lb, rgb: [CAT_PX[k * 4], CAT_PX[k * 4 + 1], CAT_PX[k * 4 + 2]], hidden: hid.has(lb),
-          })),
-          onToggle: (lb) => toggleCat(i, lb),
-        };
-      }
+  const toggleCat = (li, label) => {
+    const hid = new Set(styleAt(li).categories_hidden || []);
+    if (hid.has(label)) hid.delete(label); else hid.add(label);
+    setCatsHidden(li, [...hid]);
+  };
+  // shift-click: show only this class; again (when it is already alone) shows them all
+  const isolateCat = (li, label) => {
+    const L = payload && payload.layers[li];
+    if (!L || !L.cat_labels) return;
+    const hid = new Set(styleAt(li).categories_hidden || []);
+    const alone = !hid.has(label) && L.cat_labels.every((lb) => lb === label || hid.has(lb));
+    setCatsHidden(li, alone ? [] : L.cat_labels.filter((lb) => lb !== label));
+  };
+  // the classes in display order: category_order first, the rest as they came
+  const classOrder = (L, s) => {
+    const ord = (s.category_order || []).filter((lb) => L.cat_labels.includes(lb));
+    for (const lb of L.cat_labels) if (!ord.includes(lb)) ord.push(lb);
+    return ord;
+  };
+  // code → [r, g, b]: the layer's colors (by label, or a list in class order), then the
+  // theme's cycle by class order, then the golden-angle palette
+  const classRGB = (L, s) => {
+    const ord = classOrder(L, s), cols = s.colors, out = [];
+    L.cat_labels.forEach((lb, code) => {
+      const k = ord.indexOf(lb);
+      let c = null;
+      if (Array.isArray(cols)) { if (cols[k] != null) c = parseColor(String(cols[k])); }
+      else if (cols && typeof cols === 'object' && cols[lb] != null) c = parseColor(String(cols[lb]));
+      if (!c && theme.cycle[k] != null) c = parseColor(theme.cycle[k]);
+      out[code] = c || [CAT_PX[code * 4], CAT_PX[code * 4 + 1], CAT_PX[code * 4 + 2]];
+    });
+    return out;
+  };
+  const classPalette = (L, s) => {
+    const rgb = classRGB(L, s), px = new Uint8Array(256 * 4);
+    for (let k = 0; k < 256; k++) {
+      const c = rgb[k] || [CAT_PX[k * 4], CAT_PX[k * 4 + 1], CAT_PX[k * 4 + 2]];
+      px[k * 4] = c[0]; px[k * 4 + 1] = c[1]; px[k * 4 + 2] = c[2]; px[k * 4 + 3] = 255;
     }
-    return null;
+    return px;
+  };
+  // rows per class code: every row (cached per layer), or the selected ones
+  let selVersion = 0;
+  const classCounts = (li, L, which) => {
+    const codes = L.cols && L.cols.cat;
+    if (!codes || codes.length !== L.count) return null;
+    const n = L.cat_labels.length;
+    if (which === 'selection') {
+      const set = selected.get(li);
+      if (L._selCounts && L._selCounts.v === selVersion) return L._selCounts.c;
+      const c = new Array(n).fill(0);
+      if (set) for (const r of set) if (codes[r] < n) c[codes[r]]++;
+      L._selCounts = { v: selVersion, c };
+      return c;
+    }
+    if (!L._allCounts || L._allCounts.length !== n) {
+      const c = new Array(n).fill(0);
+      for (let r = 0; r < codes.length; r++) if (codes[r] < n) c[codes[r]]++;
+      L._allCounts = c;
+    }
+    return L._allCounts;
+  };
+  const catInfo = (li) => {
+    const L = payload.layers[li], s = styleAt(li);
+    const rgb = classRGB(L, s), hid = new Set(s.categories_hidden || []);
+    const counts = s.legend_counts ? classCounts(li, L, s.legend_counts === 'selection' ? 'selection' : 'all') : null;
+    return classOrder(L, s).map((lb) => {
+      const code = L.cat_labels.indexOf(lb);
+      return { label: lb, rgb: rgb[code], hidden: hid.has(lb), count: counts ? counts[code] : null };
+    });
+  };
+  const rampCache = new Map();
+  const rampOf = (name) => {
+    if (!rampCache.has(name)) rampCache.set(name, rampPixels(256, RAMPS[name] || undefined));
+    return rampCache.get(name);
+  };
+  // one legend per visible coloured layer: a ramp over the data range, or the classes
+  const legendEntries = () => {
+    if (!payload) return [];
+    const out = [];
+    styles().forEach((s, i) => {
+      const L = payload.layers[i];
+      if (!L || s.visible === false) return;
+      if (s.color === 'value') {
+        const clip = s.clip && s.clip.length === 2 ? s.clip : null;
+        const range = L.value_range || clip;
+        if (!range) return;
+        out.push({
+          kind: 'ramp', layer: i, title: s.name || L.kind,
+          channel: L._active && L._active !== 'value' ? L._active : null, units: s.units || '',
+          range, clip, threshold: s.threshold && s.threshold.length === 2 ? s.threshold : null,
+          dim: s.filter_mode === 'dim', pixels: rampOf(s.ramp || 'viridis'),
+        });
+      } else if (s.color === 'category' && L.cat_labels && L.cat_labels.length) {
+        out.push({ kind: 'cat', layer: i, title: s.name || L.kind, channel: null, units: s.units || '', classes: catInfo(i) });
+      }
+    });
+    return out;
   };
 
   const syncChrome = () => {
     if (!tb) return;
     const sec = store.get('section');
     tb.syncSection(sec, sec ? sectionExtent(sec) : null);
-    tb.syncLegend(legendInfo());
+    if (chrome) chrome.update({ state: true });
+    schedule();
     tb.syncOrtho(cam.state.ortho);
     tb.syncLock(cam.state.orbitLock, store.get('lock_toggle') !== false);
   };
@@ -14820,8 +15490,7 @@ function mountView(el, store) {
   // the `view` event: the camera, the lock, and in a locked orthographic view the world
   // rectangle the canvas shows and the pixel box it covers. Sent from draw(), by value.
   let viewLast = '';
-  const pushView = () => {
-    if (typeof store.notify !== 'function') return;        // Jupyter: no events, no work
+  const viewInfo = () => {
     const c = cam.state;
     const out = { camera: { ...camToDict(), z_exaggeration: c.zExag || 1 }, lock: lockOf() };
     if (c.orbitLock && c.ortho) {
@@ -14829,10 +15498,24 @@ function mountView(el, store) {
       const cr = canvas.getBoundingClientRect(), er = el.getBoundingClientRect();
       out.px = { x: cr.left - er.left, y: cr.top - er.top, w: cr.width, h: cr.height };
     }
+    return out;
+  };
+  const pushView = () => {
+    const out = viewInfo();
     const j = JSON.stringify(out);
     if (j === viewLast) return;
     viewLast = j;
     notify('view', out);
+    ariaSync(out);
+  };
+  // the canvas's accessible name: what is shown, from where, locked or not
+  let ariaLast = '';
+  const ariaSync = (v) => {
+    const names = payload ? payload.layers.map((L, i) => `${styleAt(i).name || L.kind} (${L.kind})`).join(', ') : 'no data';
+    const c = (v || viewInfo()).camera, lk = lockOf();
+    const how = lk === 'free' ? '' : ` Locked: ${typeof lk === 'string' ? lk : `azimuth ${lk.azimuth}°, plunge ${lk.plunge}°`}.`;
+    const a = `3D view of ${names}. Looking ${Math.round(c.azimuth)}° from north, ${Math.round(c.plunge)}° down${c.ortho ? ', orthographic' : ''}.${how}`;
+    if (a !== ariaLast) { ariaLast = a; canvas.setAttribute('aria-label', a); }
   };
 
   // the stored camera state. Applied on CHANGE *and* at load: a widget
@@ -14858,8 +15541,7 @@ function mountView(el, store) {
 
   // ── the toolbar ──
   const buildToolbar = () => {
-    if (tb) { tb.destroy(); tb = null; }
-    if (store.get('toolbar') === false) return;
+    if (tb) return;
     tb = createToolbar(host, {
       layers: () => (payload ? payload.layers.map((L, i) => ({ name: styleAt(i).name || L.kind, kind: L.kind, visible: styleAt(i).visible !== false })) : []),
       setStyle: (i, patch) => {
@@ -14902,6 +15584,99 @@ function mountView(el, store) {
         return on;
       },
     });
+    syncChrome();
+  };
+
+  // ── the chrome: plugins over the scene (chrome.js), and the api every plugin gets ──
+  const frameO = () => (payload && payload.frame) || [0, 0, 0];
+  // world → CSS px on the canvas (null behind the camera)
+  const projectW = (x, y, z) => {
+    const o = frameO(), vp = cam.state.viewProj, X = x - o[0], Y = y - o[1], Z = z - o[2];
+    const cw = vp[3] * X + vp[7] * Y + vp[11] * Z + vp[15];
+    if (cw <= 1e-9) return null;
+    const W = canvas.clientWidth || 1, H = canvas.clientHeight || 1;
+    return [((vp[0] * X + vp[4] * Y + vp[8] * Z + vp[12]) / cw * 0.5 + 0.5) * W,
+      (0.5 - (vp[1] * X + vp[5] * Y + vp[9] * Z + vp[13]) / cw * 0.5) * H];
+  };
+  // CSS px → the world point there, on the screen-parallel plane through the camera
+  // target; real coordinates (the exaggeration is taken out)
+  const unprojectW = (sx, sy) => {
+    const vp = cam.state.viewProj, inv = mat4Inverse(vp), t = cam.state.target, o = frameO();
+    if (!inv) return null;
+    const cwT = vp[3] * t[0] + vp[7] * t[1] + vp[11] * t[2] + vp[15];
+    const nz = (vp[2] * t[0] + vp[6] * t[1] + vp[10] * t[2] + vp[14]) / cwT;
+    const nx = (sx / (canvas.clientWidth || 1)) * 2 - 1, ny = 1 - (sy / (canvas.clientHeight || 1)) * 2;
+    const w = inv[3] * nx + inv[7] * ny + inv[11] * nz + inv[15];
+    return [(inv[0] * nx + inv[4] * ny + inv[8] * nz + inv[12]) / w + o[0],
+      (inv[1] * nx + inv[5] * ny + inv[9] * nz + inv[13]) / w + o[1],
+      (inv[2] * nx + inv[6] * ny + inv[10] * nz + inv[14]) / w + o[2]];
+  };
+  const layersInfo = () => (payload ? payload.layers.map((L, i) => {
+    const s = styleAt(i);
+    return {
+      index: i, name: s.name || L.kind, kind: L.kind, count: L.count, visible: s.visible !== false,
+      color: s.color, ramp: s.ramp || 'viridis', value_range: L.value_range || null, channel: L._active || null,
+      clip: s.clip && s.clip.length === 2 ? s.clip : null, threshold: s.threshold && s.threshold.length === 2 ? s.threshold : null,
+      units: s.units || '', labels: !!s.labels, categories: L.cat_labels && L.cat_labels.length ? catInfo(i) : null,
+      selected: (selected.get(i) || { size: 0 }).size, collars: L._collars || null,
+    };
+  }) : []);
+  const chromeApi = {
+    get theme() { return theme; },
+    get canvas() { return canvas; },
+    get host() { return host; },
+    get target() { const t = cam.state.target, o = frameO(); return [t[0] + o[0], t[1] + o[1], t[2] + o[2]]; },
+    get zExag() { return cam.state.zExag || 1; },
+    get camera() { return camToDict(); },
+    get size() { return { w: canvas.clientWidth, h: canvas.clientHeight }; },
+    project: projectW,
+    unproject: unprojectW,
+    viewInfo,
+    layers: layersInfo,
+    legend: legendEntries,
+    toggleClass: toggleCat,
+    isolateClass: isolateCat,
+    get: (k) => store.get(k),
+    set: (k, v) => { store.set(k, v); store.save_changes(); },
+    on: (ev, fn) => { if (!bus.has(ev)) bus.set(ev, new Set()); bus.get(ev).add(fn); },
+    off: (ev, fn) => { const b = bus.get(ev); if (b) b.delete(fn); },
+    emit: (ev, data) => notify(ev, data),
+    invalidate: () => schedule(),
+  };
+  // the built-ins, by the switch that names them in `chrome: {…}`
+  const domPlugin = (id, slot, order, elOf) => ({
+    id, slot, order,
+    mount(box) { box.appendChild(elOf()); },
+    unmount() { const n = elOf(); if (n) n.remove(); },
+  });
+  const BUILTINS = {
+    toolbar: () => domPlugin('toolbar', 'top-left', 0, () => tb.els.bar),
+    section: () => domPlugin('section', 'bottom-left', 10, () => tb.els.secBar),
+    pick: () => domPlugin('pick', 'top-right', 10, () => tb.els.pickBox),
+    status: () => domPlugin('status', 'bottom-left', 0, () => hud),
+    readout, legend: legends, scalebar: scaleBar, north: northArrow, exaggeration, labels: holeLabels,
+  };
+  const builtinIds = new Set();
+  // which built-ins: `chrome` says, per element; the older all-or-nothing switches set
+  // the defaults (toolbar: false → no toolbar, section bar or pick box; decorations:
+  // false → no scale bar, north arrow or exaggeration notice)
+  const chromeWants = () => {
+    const c = store.get('chrome') || {}, bar = store.get('toolbar') !== false, deco = store.get('decorations') !== false;
+    const want = {};
+    for (const k of Object.keys(BUILTINS)) {
+      const dflt = ['toolbar', 'section', 'pick'].includes(k) ? bar : ['scalebar', 'north', 'exaggeration'].includes(k) ? deco : true;
+      want[k] = c[k] === undefined ? dflt : !!c[k];
+    }
+    return want;
+  };
+  const applyChrome = () => {
+    if (!chrome || !tb) return;
+    const want = chromeWants();
+    for (const [k, make] of Object.entries(BUILTINS)) {
+      const have = builtinIds.has(k) && chrome.has(k);
+      if (want[k] && !have) { chrome.add(make()); builtinIds.add(k); }
+      else if (!want[k] && have) { chrome.remove(k); builtinIds.delete(k); }
+    }
     syncChrome();
   };
 
@@ -15030,6 +15805,7 @@ function mountView(el, store) {
     return buf;
   };
   const pushSelection = () => {
+    selVersion++;
     styles().forEach((_s, i) => {
       const L = payload && payload.layers[i];
       const set = selected.get(i);
@@ -15170,6 +15946,7 @@ function mountView(el, store) {
   let down = null, dragging = false, lasso = null;
   const DRAG_TOOLS = { knife: 'line', rect: 'rect', lasso: 'poly' };
   const onDown = (e) => {
+    if (e.target && e.target.closest && e.target.closest('.cdslot, .cdpop')) return;   // the chrome's own presses (buttons, legends)
     const t = tb ? tb.tool : 'pick';
     down = { xy: relXY(e), t, shift: e.shiftKey };
     if (DRAG_TOOLS[t]) {
@@ -15261,9 +16038,32 @@ function mountView(el, store) {
   host.addEventListener('pointermove', onMove, true);
   host.addEventListener('pointerup', onUp, true);
 
+  // the keyboard, on the focused view: L locks · arrows pan (shift: further) · + / − zoom ·
+  // P N E I the plan / north / east / isometric views · Esc ends a tool, then clears the selection
+  const KEY_VIEWS = { p: 'plan', n: 'north', e: 'east', i: 'iso' };
   const onKey = (e) => {
     if (e.ctrlKey || e.metaKey || e.altKey) return;
-    if (e.key === 'l' || e.key === 'L') { e.preventDefault(); e.stopPropagation(); toggleLock(); }
+    const k = e.key, step = e.shiftKey ? 160 : 40, h = canvas.clientHeight;
+    let used = true, moved = false;
+    if (k === 'l' || k === 'L') toggleLock();
+    else if (k === 'ArrowLeft') { cam.pan(step, 0, h); moved = true; }
+    else if (k === 'ArrowRight') { cam.pan(-step, 0, h); moved = true; }
+    else if (k === 'ArrowUp') { cam.pan(0, step, h); moved = true; }
+    else if (k === 'ArrowDown') { cam.pan(0, -step, h); moved = true; }
+    else if (k === '+' || k === '=') { cam.dolly(1 / 1.25); moved = true; }
+    else if (k === '-' || k === '_') { cam.dolly(1.25); moved = true; }
+    else if (KEY_VIEWS[k.toLowerCase()] && k.length === 1) {
+      if (cam.state.orbitLock && store.get('lock_toggle') === false) used = false;   // a fixed view stays put
+      else chooseView(KEY_VIEWS[k.toLowerCase()]);
+    } else if (k === 'Escape') {
+      if (tb) tb.closePop();
+      if (tb && tb.tool !== 'pick') tb.clearTool();
+      else { selected.clear(); pushSelection(); if (tb) tb.showPick(null); }
+    } else used = false;
+    if (!used) return;
+    e.preventDefault(); e.stopPropagation();
+    if (moved) { userCam = true; needFit = false; }
+    schedule();
   };
   const onFocusDown = () => { try { canvas.focus({ preventScroll: true }); } catch { /* old engines */ } };
   canvas.addEventListener('keydown', onKey);
@@ -15282,8 +16082,10 @@ function mountView(el, store) {
     ['change:background', applyBackground],
     ['change:height', applyHeight],
     ['change:z_exaggeration', applyZExag],
-    ['change:decorations', invalidate],
-    ['change:toolbar', buildToolbar],
+    ['change:decorations', applyChrome],
+    ['change:toolbar', applyChrome],
+    ['change:chrome', applyChrome],
+    ['change:theme', applyTheme],
     ['change:edl', invalidate], ['change:edl_strength', invalidate], ['change:budget', invalidate],
     ['change:_fit', () => { needFit = true; invalidate(); }],
     ['change:_clear_sel', () => { selected.clear(); pushSelection(); if (tb) tb.showPick(null); }],
@@ -15308,17 +16110,20 @@ function mountView(el, store) {
   ro = new ResizeObserver(() => invalidate());
   ro.observe(host);
   applyHeight();
-  applyBackground();
   applyZExag();                                            // a re-displayed widget must match its stored state
   buildToolbar();
+  chrome = createChrome(host, chromeApi);
+  applyTheme();                                            // the theme, then the background it implies
+  applyChrome();
   if (tb) tb.syncThrough(store.get('select_through'));
   load();
   applyView();                                             // match any camera state already on the widget
   applyCamera();                                           // a stored numeric camera wins over the preset
   applyLock(false);                                        // and a lock wins over both
 
-  return () => {
+  const teardown = () => {
     disposed = true;
+    if (chrome) { chrome.destroy(); chrome = null; }
     if (streams) for (const k in streams) { const stw = streams[k] && streams[k].worker; if (stw) try { stw.terminate(); } catch { /* gone */ } }
     if (raf) cancelAnimationFrame(raf);
     if (ro) ro.disconnect();
@@ -15337,6 +16142,15 @@ function mountView(el, store) {
     if (lose) lose.loseContext();
     el.innerHTML = '';
   };
+  // v.chrome: add, remove or replace plugins (a built-in replaced by id stops being a built-in)
+  teardown.chrome = {
+    add(def) { builtinIds.delete(def && def.id); return chrome.add(def); },
+    remove(id) { builtinIds.delete(id); return chrome.remove(id); },
+    has: (id) => !!chrome && chrome.has(id),
+    list: () => (chrome ? chrome.list() : []),
+    get api() { return chromeApi; },
+  };
+  return teardown;
 }
 
 // ── src/widget.js ──

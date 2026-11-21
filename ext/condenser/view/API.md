@@ -110,12 +110,18 @@ A 2D grid as shaded relief, row 0 the NORTHERNMOST. `grid` as rows, or flat with
 | `labels` | `false` | drillholes: the BHID at each collar |
 | `categories_hidden` | `[]` | category labels to hide |
 | `sectioned` | `true` | `false` keeps the layer whole under a section; `'front'` · `'behind'` |
+| `units` | `''` | shown after the layer's name in its legend: `'%'`, `'g/t'` |
+| `colors` | `null` | class colours: `{ ITA: '#c0392b' }`, or a list in class order. Classes without one take the theme's `cycle` |
+| `category_order` | `[]` | these classes first — in the legend, and for a colour list; the rest follow |
+| `legend_counts` | `false` | rows per class in the legend: `'all'`, or the `'selection'` |
 
 ## View options
 
 `section` (`{axis, position, thickness}` or `{normal: [x, y, z], position, thickness}`;
-`null` = off) · `height` (460) · `background` (`'#121212'`) · `toolbar` (true) · `edl` (true) ·
-`edl_strength` (1) · `z_exaggeration` (1) · `decorations` (true: north arrow + scale bar) ·
+`null` = off) · `height` (460) · `background` (`''`: the theme's) · `theme` (`'dark'`) ·
+`chrome` (`{}`) — see *Theme* and *Chrome* · `toolbar` (true) · `edl` (true) ·
+`edl_strength` (1) · `z_exaggeration` (1) · `decorations` (true: scale bar, north arrow,
+exaggeration notice) ·
 `camera` (`{azimuth, plunge, distance, target, ortho}`) · `lock` (`'free'`) · `lock_toggle` (true) ·
 `twist` (false) — see *Orientation lock* · `hover` (false) · `select_through`
 (false) · `budget` (3,000,000 elements per frame) · `workers` (true; JS only — `false` when
@@ -204,6 +210,83 @@ v.set({ view: { rect: { u0: 500100, u1: 500400, v0: 8200050, v1: 8200250 } } });
 frames that rectangle in a locked view — centred, the whole of it shown, the canvas keeping
 its aspect.
 
+## Theme
+
+`theme` dresses the scene and every piece of chrome: `'dark'` (Switchboard basalt, the default),
+`'light'`, `'paper'` (white, for print), `'css'` (this page's design tokens: `--au-surface`,
+`--au-fg`, `--au-action`, … — set it again when the page switches mode), or a partial theme:
+
+```js
+v.set({ theme: { base: 'light', accent: '#c0392b', font_size: 12 } });
+```
+
+The keys are `@gcu/theme`'s — `background`, `foreground`, `muted`, `grid`, `frame`, `panel`,
+`panel_border`, `accent`, `selection`, `halo`, `cycle`, `ramp`, `font`, `mono`, `font_size` —
+shared with `@gcu/plot`, so one theme dresses a chart and the 3D view beside it. A category
+with no colour of its own takes the next colour of `cycle`.
+
+## Chrome
+
+Everything over the scene is a plugin, the built-ins included, each with its switch:
+
+| switch | where | |
+|---|---|---|
+| `toolbar` | top left | the tools |
+| `pick` | top right | the pick readout |
+| `north` | top right | the north arrow (drawn) |
+| `legend` | bottom right | one per coloured layer (drawn): a ramp with ticks, units, the clip (marks) and the threshold (what it cuts is dimmed); or the classes, a click hiding one, shift-click showing only it (again: all), "and N more" past twelve |
+| `scalebar` | bottom | a round length at the camera target (drawn) |
+| `exaggeration` | bottom | "vertical exaggeration ×3" when it isn't 1 (drawn) |
+| `section` | bottom left | the section's scrub bar |
+| `readout` | bottom left | E / N / RL under the cursor in a locked view; the picked element's coordinates otherwise |
+| `status` | bottom left | the element count and loading progress |
+| `labels` | over the scene | drillhole BHIDs (`labels: true` on the layer) (drawn) |
+
+`chrome: { legend: false, readout: false }` turns pieces off; an unset switch follows `toolbar`
+(toolbar, pick, section) or `decorations` (scalebar, north, exaggeration). Whatever is
+**drawn** is in snapshots; the DOM pieces (toolbar, readouts, section bar) are not.
+
+### Your own
+
+```js
+v.chrome.add({
+  id: 'sel-stats', slot: 'top-right', order: 20,
+  mount(el, api) { … },          // DOM in the slot: controls, panels — never in a snapshot
+  measure(api) { return { w: 120, h: 40 }; },   // a drawing: the space it takes in the slot …
+  draw(g, api, box) { … },       // … and the drawing, a 2D context in CSS px from the box's corner
+  click(x, y, e, api) { … },     // a click on the drawing, box-local
+  cursor(x, y, api) { return 'pointer'; },
+  describe(api) { return 'text'; },          // the drawing as words (its aria-label)
+  update(changed, api) { … },    // { view | pick | select | section | style | lock | theme | state: … }
+  unmount() { … },
+});
+v.chrome.remove('legend');        // a built-in too; add() with a built-in's id replaces it
+v.chrome.list();                  // [{ id, slot, order }]
+```
+
+Slots: `'top-left'`, `'top'`, `'top-right'`, `'bottom-left'`, `'bottom'`, `'bottom-right'` — each
+stacks its plugins by `order` from its edge inward, so nothing overlaps and everything reflows —
+and `'overlay'`, the whole canvas, for drawing anchored to the scene. The `api`:
+
+| | |
+|---|---|
+| `project(x, y, z)` · `unproject(px, py)` | world ↔ CSS px on the canvas (unproject lands on the screen-parallel plane through the camera target, in real z) |
+| `viewInfo()` | the `view` event's object: camera, lock, and in a locked view the rectangle |
+| `layers()` | per layer: name, kind, count, visible, colour mode, ramp, value range, clip, threshold, units, categories (label, colour, hidden, count), selected rows |
+| `legend()` | what the built-in legend draws |
+| `toggleClass(layer, label)` · `isolateClass(layer, label)` | the legend's clicks |
+| `theme` · `target` · `zExag` · `camera` · `size` · `canvas` · `host` | |
+| `get(key)` · `set(key, value)` | the view's options |
+| `on(event, fn)` · `off` · `emit(event, data)` | the view's events |
+| `invalidate()` | draw again |
+
+## Keyboard
+
+On the focused view (click it, or tab to it): `L` locks · arrows pan (shift: further) · `+` / `−`
+zoom · `P` `N` `E` `I` plan, north, east, isometric · `Esc` ends a tool, then clears the
+selection. The canvas's `aria-label` says what it shows and from where; a drawn legend's says
+what it lists.
+
 ## State
 
 `v.state()` is JSON: the view options and every layer's style. `v.set(state)` puts them
@@ -229,6 +312,5 @@ view reloads and every appended row is replayed.
 
 ## Not yet
 
-The chrome plugin contract, themes, per-layer legends in snapshots, the cursor readout and
-the rest of the keyboard arrive in the next steps of `condenser-view-api`; axes in locked
-views after that.
+Axes in locked views (easting / northing, along-section / RL, with `@gcu/plot`'s ticks), the
+3D orientation triad and box axes: the next step of `condenser-view-api`.

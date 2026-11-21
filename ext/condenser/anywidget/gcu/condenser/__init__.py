@@ -228,6 +228,23 @@ class Layer(traitlets.HasTraits):
     categories_hidden = traitlets.List(traitlets.Unicode(), default_value=[]).tag(style=True)
     #: True | False (exempt — keep it whole while others are cut) | 'front' | 'behind'
     sectioned = traitlets.Any(True).tag(style=True)
+    #: the legend: units after the layer's name (e.g. '%', 'g/t')
+    units = traitlets.Unicode("").tag(style=True)
+    #: class colours: {label: '#hex'} or a list in class order. A lithology keeps
+    #: its colour across views (and across @gcu/plot charts reading the same option)
+    colors = traitlets.Union([traitlets.Dict(), traitlets.List()], default_value=None, allow_none=True).tag(style=True)
+    #: the class order: these labels first (legend order, and the order a colour
+    #: list applies in); the rest follow as they came
+    category_order = traitlets.List(traitlets.Unicode(), default_value=[]).tag(style=True)
+    #: counts per class in the legend: False, 'all' rows, or the 'selection'
+    legend_counts = traitlets.Any(False).tag(style=True)
+
+    @traitlets.validate("legend_counts")
+    def _valid_counts(self, proposal):
+        v = proposal["value"]
+        if v in (False, None, "all", "selection"):
+            return v or False
+        raise traitlets.TraitError(f"gcu-condenser: legend_counts {v!r} -- use False, 'all' or 'selection'")
     #: the row index of the last pick on THIS layer, or -1
     selected = traitlets.Int(-1)
 
@@ -275,6 +292,7 @@ class Layer(traitlets.HasTraits):
 
 
 # ── the widget ──────────────────────────────────────────────────────────────
+_CHROME = ("toolbar", "section", "pick", "status", "readout", "legend", "scalebar", "north", "exaggeration", "labels")
 _LOCKS = ("free", "plan", "section", "north", "south", "east", "west",
           "iso", "iso-ne", "iso-nw", "iso-se", "iso-sw")
 
@@ -300,7 +318,24 @@ class Viewer(anywidget.AnyWidget):
     #: {'axis': 'x'|'y'|'z', 'position': v, 'thickness': t} or
     #: {'normal': [x,y,z], 'position': v, 'thickness': t}; {} or None = off
     section = traitlets.Dict(allow_none=True, default_value=None).tag(sync=True)
-    background = traitlets.Unicode("#121212").tag(sync=True)
+    #: the scene's background; '' takes the theme's
+    background = traitlets.Unicode("").tag(sync=True)
+    #: the theme: 'dark' (Switchboard basalt), 'light', 'paper' (white, for print),
+    #: or a partial theme dict ({'base': 'light', 'accent': '#c00'}). The keys are
+    #: @gcu/theme's, shared with @gcu/plot.
+    theme = traitlets.Union([traitlets.Unicode(), traitlets.Dict()], default_value="dark").tag(sync=True)
+    #: each piece of chrome on or off: {'toolbar', 'section', 'pick', 'status',
+    #: 'readout', 'legend', 'scalebar', 'north', 'exaggeration', 'labels'}. Unset
+    #: keys follow `toolbar` and `decorations`.
+    chrome = traitlets.Dict(default_value={}).tag(sync=True)
+
+    @traitlets.validate("chrome")
+    def _valid_chrome(self, proposal):
+        v = proposal["value"] or {}
+        bad = [k for k in v if k not in _CHROME]
+        if bad:
+            raise traitlets.TraitError(f"gcu-condenser: chrome has no {', '.join(map(repr, bad))} -- the pieces are {', '.join(_CHROME)}")
+        return {k: bool(x) for k, x in v.items()}
     height = traitlets.Int(460).tag(sync=True)
     #: the in-view toolbar (pick · knife · layers · views · snapshot). Turn it
     #: off for a clean figure.
@@ -552,7 +587,9 @@ class Viewer(anywidget.AnyWidget):
                         section=self.section, background=self.background, height=self.height,
                         toolbar=self.toolbar, edl=self.edl, edl_strength=self.edl_strength,
                         budget=self.budget, select_through=self.select_through,
-                        lock=self.lock, lock_toggle=self.lock_toggle, twist=self.twist)
+                        lock=self.lock, lock_toggle=self.lock_toggle, twist=self.twist,
+                        theme=self.theme, chrome=dict(self.chrome), z_exaggeration=self.z_exaggeration,
+                        decorations=self.decorations)
         clone._payload = self._payload                     # same bytes, no re-pack
         clone._view = dict(self._view)
         return clone

@@ -35,12 +35,18 @@ export const STYLE_DEFAULTS = {
   name: '', visible: true, color: 'z', value: '', ramp: 'viridis', clip: [], threshold: [],
   filter_mode: 'isolate', opacity: 1.0, point_size: 2.5, as_points: false, block_edges: false,
   radius: 1.5, labels: false, categories_hidden: [], sectioned: true,
+  // the legend and the class colours: units after the title; colours per class ({label: colour}
+  // or a list in class order); the class order; counts per class ('all' rows or the 'selection')
+  units: '', colors: null, category_order: [], legend_counts: false,
 };
 export const VIEW_DEFAULTS = {
-  section: null, background: '#121212', height: 460, toolbar: true, edl: true, edl_strength: 1.0,
+  // background: '' takes the theme's
+  section: null, background: '', height: 460, toolbar: true, edl: true, edl_strength: 1.0,
   z_exaggeration: 1.0, decorations: true, camera: {}, hover: false, select_through: false, budget: 3_000_000,
   // the orientation lock: 'free' · 'plan' · 'section' · 'north' · 'south' · 'east' · 'west' · {azimuth, plunge}
   lock: 'free', lock_toggle: true, twist: false,
+  // the theme ('dark' · 'light' · 'paper' · 'css' · a partial theme) and the chrome switches
+  theme: 'dark', chrome: {},
   // JS only: false when the page's CSP allows no workers (streams then build inline)
   workers: true,
 };
@@ -62,6 +68,9 @@ function _lev(a, b) {
   }
   return d[b.length];
 }
+// the built-in chrome, by the switch that names it in `chrome: {…}`
+export const CHROME_KEYS = ['toolbar', 'section', 'pick', 'status', 'readout', 'legend', 'scalebar', 'north', 'exaggeration', 'labels'];
+
 // an option nobody reads warns once, with the nearest real name — nothing is silently ignored
 function _checkKeys(where, opts, known) {
   for (const k of Object.keys(opts || {})) {
@@ -567,6 +576,7 @@ export function view(el, layers, opts) {
   for (const L of list) if (!(L instanceof Layer)) throw new TypeError('condenser: view() takes layers made by points / blocks / drillholes / mesh / surface');
   const o = opts || {};
   _checkKeys('view()', o, Object.keys(VIEW_DEFAULTS));
+  if (o.chrome) _checkKeys('view({chrome})', o.chrome, CHROME_KEYS);
   if ('lock' in o) _checkLock('view()', o.lock);
   list.forEach((L, i) => { if (!L.style.name) L.style.name = `${L.kind}-${i + 1}`; });
 
@@ -689,6 +699,7 @@ export function view(el, layers, opts) {
       }
       _checkKeys('set()', rest, Object.keys(VIEW_DEFAULTS));
       if ('lock' in rest) _checkLock('set()', rest.lock);
+      if (rest.chrome) _checkKeys('set({chrome})', rest.chrome, CHROME_KEYS);
       for (const [k, v] of Object.entries(rest)) if (k in VIEW_DEFAULTS) store.set(k, v);
       return handle;
     },
@@ -753,6 +764,9 @@ export function view(el, layers, opts) {
     off(ev, fn) { const s = subs.get(ev); if (s) s.delete(fn); return handle; },
     destroy() { cleanup(); for (const s of subs.values()) s.clear(); },
     // the store, for hosts that need the raw state (and the tests)
+    // the chrome: plugins over the scene — add({id, slot, mount | measure + draw, …}),
+    // remove(id), has(id), list(). See API.md, "Chrome plugins".
+    chrome: cleanup.chrome || { add() { return null; }, remove() { return false; }, has: () => false, list: () => [] },
     _store: store,
   };
   return handle;

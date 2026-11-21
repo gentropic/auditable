@@ -36,6 +36,9 @@ import {
 import { dhDesurveySamples } from '../../../drillhole/src/samples.js';
 import { openParquetBlocks } from './parquet-blocks.js';
 import { createToolbar } from './toolbar.js';
+import { createChrome } from './chrome.js';
+import { scaleBar, exaggeration, northArrow, holeLabels, legends, readout } from './decor.js';
+import { resolveTheme, themeFromCSS, parseColor } from '../../../theme/src/theme.js';
 import { LOCK_NAMES, viewPreset, VIEW_NAMES, normLock, lockAngles, isVertical, lockHere, viewRect, rectCamera } from './lock.js';
 
 // ── ramp presets. rampPixels' default is the viridis-ish walk; these are the
@@ -307,7 +310,7 @@ if (typeof document === 'undefined' && typeof self !== 'undefined' && typeof sel
 
 export function mountView(el, store) {
   const host = document.createElement('div');
-  host.style.cssText = 'position:relative;width:100%;background:#121212;border-radius:3px;overflow:hidden;';
+  host.style.cssText = 'position:relative;width:100%;background:#15171A;border-radius:3px;overflow:hidden;';
   // right-drag PANS, so JupyterLab's own context menu must stay out of the way.
   // This attribute is the supported hook: JupyterLab's handler does
   // `el.closest('[data-jp-suppress-context-menu]')` and stands down if it hits.
@@ -325,12 +328,13 @@ export function mountView(el, store) {
   deco.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:1;';
   host.appendChild(deco);
   const hud = document.createElement('div');
-  hud.className = 'cdhud';
-  hud.style.cssText = 'position:absolute;left:6px;bottom:5px;font:11px ui-monospace,Menlo,Consolas,monospace;color:#8b8b8b;pointer-events:none;text-shadow:0 1px 2px #000;z-index:1;';
+  hud.className = 'cdhud cdstatus';
   host.appendChild(hud);
   el.appendChild(host);
 
   let renderer = null, edl = null, cam = null, detach = null, raf = 0, ro = null, tb = null;
+  let chrome = null, theme = resolveTheme('dark');         // the plugins over the scene, and what dresses them
+  const bus = new Map();                                   // chrome plugins' on(): event → Set(fn)
   let payload = null, disposed = false, needFit = false, converged = false;
   let docBbox = null;
   let streams = null, streamEpoch = '';                    // cd.open(): layer → stream state, this view's epoch
@@ -356,7 +360,11 @@ export function mountView(el, store) {
   // events for a page: what was picked, hovered, measured, selected — with the data the
   // view has at that moment. A page's store implements notify(); anywidget's model has
   // no such method, so in Jupyter this is a no-op (the traits carry what Python needs).
-  const notify = (type, data) => { if (typeof store.notify === 'function') store.notify(type, data); };
+  const notify = (type, data) => {
+    if (typeof store.notify === 'function') store.notify(type, data);
+    for (const fn of Array.from(bus.get(type) || [])) { try { fn(data); } catch (e) { console.error(`condenser: a chrome '${type}' handler threw`, e); } }
+    if (chrome) { chrome.update({ [type]: data }); schedule(); }
+  };
   const styles = () => store.get('_styles') || [];
   const styleAt = (i) => styles()[i] || {};
   const viewOpts = () => {                                 // point size / points-view are VIEW-wide in the engine
@@ -365,113 +373,16 @@ export function mountView(el, store) {
     return { pointPx, asPoints };
   };
 
-  // ── the decorations overlay: hole labels + north arrow + scale bar. Redrawn
-  // with every frame (2D, cheap) and COMPOSITED into snapshots. Coordinates
-  // are frame-local, projected through the camera's viewProj — which already
-  // carries the z-exaggeration, so labels track the stretched display. ──
+  // ── the overlay: every chrome plugin that DRAWS (legends, scale bar, north arrow, hole
+  // labels, a host's own) — redrawn each frame and composited into snapshots ──
   const drawOverlay = (w, h, dpr) => {
     if (deco.width !== w || deco.height !== h) { deco.width = w; deco.height = h; }
     const g = deco.getContext('2d');
     g.clearRect(0, 0, w, h);
-    if (!payload) return;
-    const W = w / dpr, H = h / dpr;
+    if (!payload || !chrome) return;
     g.save();
     g.scale(dpr, dpr);
-    const vp = cam.state.viewProj;
-    const proj = (X, Y, Z) => {
-      const cw = vp[3] * X + vp[7] * Y + vp[11] * Z + vp[15];
-      if (cw <= 1e-9) return null;
-      return [((vp[0] * X + vp[4] * Y + vp[8] * Z + vp[12]) / cw * 0.5 + 0.5) * W,
-        (0.5 - (vp[1] * X + vp[5] * Y + vp[9] * Z + vp[13]) / cw * 0.5) * H];
-    };
-    const o = payload.frame;
-    const halo = (text, x, y) => {
-      g.strokeStyle = 'rgba(0,0,0,.75)'; g.lineWidth = 3; g.lineJoin = 'round';
-      g.strokeText(text, x, y);
-      g.fillText(text, x, y);
-    };
-
-    // hole labels (labels=True on a drillhole layer): BHIDs at the collars
-    g.font = '10px ui-monospace,Menlo,Consolas,monospace';
-    g.textAlign = 'center'; g.textBaseline = 'bottom';
-    g.fillStyle = '#e4e4e4';
-    styles().forEach((s, i) => {
-      const L = payload.layers[i];
-      if (!L || L.kind !== 'drillholes' || !s.labels || s.visible === false || !L._collars) return;
-      let drawn2 = 0;
-      for (const c of L._collars) {
-        if (drawn2 >= 400) break;                          // a 10k-hole campaign is a texture, not labels
-        const p = proj(c.x - o[0], c.y - o[1], c.z - o[2]);
-        if (!p || p[0] < -20 || p[0] > W + 20 || p[1] < -10 || p[1] > H + 10) continue;
-        halo(c.name, p[0], p[1] - 4);
-        g.fillRect(p[0] - 1, p[1] - 2, 2, 2);              // the collar tick
-        drawn2++;
-      }
-    });
-
-    if (store.get('decorations') === false) { g.restore(); return; }
-    // scale at the CAMERA TARGET depth: unproject a 100-px screen step on the
-    // plane through the target, z divided back by zExag → REAL meters
-    const t = cam.state.target;
-    const inv = mat4Inverse(vp);
-    const tp = proj(t[0], t[1], t[2]);
-    if (inv && tp) {
-      const cwT = vp[3] * t[0] + vp[7] * t[1] + vp[11] * t[2] + vp[15];
-      const ndcZ = (vp[2] * t[0] + vp[6] * t[1] + vp[10] * t[2] + vp[14]) / cwT;
-      const un = (sx, sy) => {
-        const nx = (sx / W) * 2 - 1, ny = 1 - (sy / H) * 2;
-        const x = inv[0] * nx + inv[4] * ny + inv[8] * ndcZ + inv[12];
-        const y = inv[1] * nx + inv[5] * ny + inv[9] * ndcZ + inv[13];
-        const z = inv[2] * nx + inv[6] * ny + inv[10] * ndcZ + inv[14];
-        const w2 = inv[3] * nx + inv[7] * ny + inv[11] * ndcZ + inv[15];
-        return [x / w2, y / w2, z / w2];
-      };
-      const p1 = un(tp[0], tp[1]), p2 = un(tp[0] + 100, tp[1]);
-      const ze = cam.state.zExag || 1;
-      const m100 = Math.hypot(p2[0] - p1[0], p2[1] - p1[1], (p2[2] - p1[2]) / ze);
-      if (m100 > 1e-9 && Number.isFinite(m100)) {
-        const pxPerM = 100 / m100;
-        let len = Math.pow(10, Math.floor(Math.log10(120 / pxPerM)));
-        for (const k of [5, 2, 1]) if (len * k * pxPerM <= 160) { len *= k; break; }
-        const px = len * pxPerM;
-        const label = len >= 1000 ? `${len / 1000} km` : `${len} m`;
-        const bx0 = W / 2 - px / 2, by0 = H - 14;
-        for (const [col, lw] of [['rgba(0,0,0,.7)', 4], ['#d8d8d8', 1.6]]) {
-          g.strokeStyle = col; g.lineWidth = lw; g.lineCap = 'butt';
-          g.beginPath();
-          g.moveTo(bx0, by0); g.lineTo(bx0 + px, by0);
-          g.moveTo(bx0, by0 - 4); g.lineTo(bx0, by0 + 4);
-          g.moveTo(bx0 + px, by0 - 4); g.lineTo(bx0 + px, by0 + 4);
-          g.stroke();
-        }
-        g.fillStyle = '#cfcfcf';
-        halo(label, W / 2, by0 - 5);
-
-        // north arrow, left of the bar — world +Y projected at the target.
-        // Looking ALONG north the projection collapses: fade it rather than spin
-        const np = proj(t[0], t[1] + m100, t[2]);
-        if (np) {
-          const dxn = np[0] - tp[0], dyn = np[1] - tp[1];
-          const ln = Math.hypot(dxn, dyn);
-          const alpha = Math.max(0, Math.min(1, ln / 40));
-          if (alpha > 0.05) {
-            const ang = Math.atan2(dyn, dxn);
-            const cxN = bx0 - 30, cyN = by0 - 6;
-            g.globalAlpha = alpha;
-            g.save();
-            g.translate(cxN, cyN); g.rotate(ang);
-            g.beginPath();
-            g.moveTo(11, 0); g.lineTo(-6, 4.5); g.lineTo(-3, 0); g.lineTo(-6, -4.5); g.closePath();
-            g.fillStyle = '#d8d8d8'; g.strokeStyle = 'rgba(0,0,0,.7)'; g.lineWidth = 2;
-            g.stroke(); g.fill();
-            g.restore();
-            g.fillStyle = '#d8d8d8';
-            halo('N', cxN + Math.cos(ang) * 19, cyN + Math.sin(ang) * 19 + 4);
-            g.globalAlpha = 1;
-          }
-        }
-      }
-    }
+    chrome.draw(g, w / dpr, h / dpr);
     g.restore();
   };
 
@@ -525,7 +436,7 @@ export function mountView(el, store) {
     streams = null; streamEpoch = Math.random().toString(36).slice(2);
     fileQueue = Promise.resolve(); fileMsg = null;
     const p = decodePayload(store.get('_payload'));
-    if (!p || !p.layers.length) { hud.textContent = 'no data'; if (tb) { tb.showPick(null); tb.syncLegend(null); } schedule(); return; }
+    if (!p || !p.layers.length) { hud.textContent = 'no data'; if (tb) tb.showPick(null); schedule(); return; }
     payload = p;
     const bb = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
 
@@ -1149,6 +1060,7 @@ export function mountView(el, store) {
           renderer.setLayerMeshStyle(i, { tint: [((v2 >> 16) & 255) / 255, ((v2 >> 8) & 255) / 255, (v2 & 255) / 255] });
         }
       }
+      if (L.cat_labels && L.cat_labels.length) renderer.setLayerPalette(i, classPalette(L, s), 256);
       // per-class eyes: GPU-side cull by category code; composes with the
       // threshold mask, and hidden classes don't pick either
       const hid = s.categories_hidden;
@@ -1172,11 +1084,29 @@ export function mountView(el, store) {
   };
 
   const applyBackground = () => {
-    const hex = String(store.get('background') || '#121212').replace('#', '');
-    if (hex.length !== 6) return;
-    const v = parseInt(hex, 16);
-    renderer.setBackground([((v >> 16) & 255) / 255, ((v >> 8) & 255) / 255, (v & 255) / 255, 1]);
+    const bg = store.get('background') || theme.background;
+    const rgb = parseColor(String(bg));
+    if (!rgb) return;
+    host.style.background = String(bg);
+    renderer.setBackground([rgb[0] / 255, rgb[1] / 255, rgb[2] / 255, 1]);
     schedule();
+  };
+  // the theme: a name ('dark' · 'light' · 'paper'), 'css' (this page's design tokens), or
+  // a partial theme object. The DOM chrome reads it as CSS variables; drawn chrome reads it
+  // from the plugin api; categories take its cycle.
+  const applyTheme = () => {
+    const t = store.get('theme');
+    theme = t === 'css' ? themeFromCSS(el) : resolveTheme(t, (m) => console.warn(`condenser: ${m}`));
+    const set = (k, v) => host.style.setProperty(k, String(v));
+    set('--cd-bg', theme.background); set('--cd-fg', theme.foreground); set('--cd-muted', theme.muted);
+    set('--cd-panel', theme.panel); set('--cd-border', theme.panel_border); set('--cd-accent', theme.accent);
+    set('--cd-on-accent', theme.background); set('--cd-hover', theme.grid); set('--cd-halo', theme.halo);
+    set('--cd-mono', theme.mono); set('--cd-fs', `${theme.font_size}px`);
+    host.style.color = theme.foreground;
+    applyBackground();
+    applyStyles();
+    if (chrome) chrome.update({ theme });
+    invalidate();
   };
   const applyHeight = () => { host.style.height = `${store.get('height') || 460}px`; invalidate(); };
   const applyZExag = () => {                               // display-only: queries stay in real coords
@@ -1253,52 +1183,121 @@ export function mountView(el, store) {
     return [lo, hi];
   };
 
-  // the legend follows the first VISIBLE layer colored by value (a ramp) or by
-  // category (a swatch list whose rows toggle that class's visibility)
-  const CAT_PX = categoryPalettePixels(256);               // the SAME palette the shaders sample
-  const toggleCat = (li, label) => {
-    const next = styles().map((s, k) => {
-      if (k !== li) return s;
-      const hid = new Set(s.categories_hidden || []);
-      if (hid.has(label)) hid.delete(label); else hid.add(label);
-      return { ...s, categories_hidden: [...hid] };
-    });
+  // ── categories: colours, order, counts, eyes ──
+  const CAT_PX = categoryPalettePixels(256);               // past the theme's cycle: the golden-angle palette
+  const setCatsHidden = (li, hidden) => {
+    const next = styles().map((s, k) => (k === li ? { ...s, categories_hidden: hidden } : s));
     store.set('_styles', next);                            // round-trips to the Python Layer
     store.save_changes();
     applyStyles();
     syncChrome();
   };
-  const legendInfo = () => {
-    const st = styles();
-    for (let i = 0; i < st.length; i++) {
-      const s = st[i], L = payload && payload.layers[i];
-      if (!L || s.visible === false) continue;
-      if (s.color === 'value') {
-        const range = (s.clip && s.clip.length === 2) ? s.clip : (L.value_range || null);
-        if (!range) continue;
-        const stops = RAMPS[s.ramp || 'viridis'];
-        // the ramp needs a NAME — with channel switching, "0.2 — 34" alone is ambiguous
-        const label = (L._active && L._active !== 'value') ? L._active : (s.name || null);
-        return { range, pixels: rampPixels(256, stops || undefined), label };
-      }
-      if (s.color === 'category' && L.cat_labels && L.cat_labels.length) {
-        const hid = new Set(s.categories_hidden || []);
-        return {
-          cats: L.cat_labels.map((lb, k) => ({
-            label: lb, rgb: [CAT_PX[k * 4], CAT_PX[k * 4 + 1], CAT_PX[k * 4 + 2]], hidden: hid.has(lb),
-          })),
-          onToggle: (lb) => toggleCat(i, lb),
-        };
-      }
+  const toggleCat = (li, label) => {
+    const hid = new Set(styleAt(li).categories_hidden || []);
+    if (hid.has(label)) hid.delete(label); else hid.add(label);
+    setCatsHidden(li, [...hid]);
+  };
+  // shift-click: show only this class; again (when it is already alone) shows them all
+  const isolateCat = (li, label) => {
+    const L = payload && payload.layers[li];
+    if (!L || !L.cat_labels) return;
+    const hid = new Set(styleAt(li).categories_hidden || []);
+    const alone = !hid.has(label) && L.cat_labels.every((lb) => lb === label || hid.has(lb));
+    setCatsHidden(li, alone ? [] : L.cat_labels.filter((lb) => lb !== label));
+  };
+  // the classes in display order: category_order first, the rest as they came
+  const classOrder = (L, s) => {
+    const ord = (s.category_order || []).filter((lb) => L.cat_labels.includes(lb));
+    for (const lb of L.cat_labels) if (!ord.includes(lb)) ord.push(lb);
+    return ord;
+  };
+  // code → [r, g, b]: the layer's colors (by label, or a list in class order), then the
+  // theme's cycle by class order, then the golden-angle palette
+  const classRGB = (L, s) => {
+    const ord = classOrder(L, s), cols = s.colors, out = [];
+    L.cat_labels.forEach((lb, code) => {
+      const k = ord.indexOf(lb);
+      let c = null;
+      if (Array.isArray(cols)) { if (cols[k] != null) c = parseColor(String(cols[k])); }
+      else if (cols && typeof cols === 'object' && cols[lb] != null) c = parseColor(String(cols[lb]));
+      if (!c && theme.cycle[k] != null) c = parseColor(theme.cycle[k]);
+      out[code] = c || [CAT_PX[code * 4], CAT_PX[code * 4 + 1], CAT_PX[code * 4 + 2]];
+    });
+    return out;
+  };
+  const classPalette = (L, s) => {
+    const rgb = classRGB(L, s), px = new Uint8Array(256 * 4);
+    for (let k = 0; k < 256; k++) {
+      const c = rgb[k] || [CAT_PX[k * 4], CAT_PX[k * 4 + 1], CAT_PX[k * 4 + 2]];
+      px[k * 4] = c[0]; px[k * 4 + 1] = c[1]; px[k * 4 + 2] = c[2]; px[k * 4 + 3] = 255;
     }
-    return null;
+    return px;
+  };
+  // rows per class code: every row (cached per layer), or the selected ones
+  let selVersion = 0;
+  const classCounts = (li, L, which) => {
+    const codes = L.cols && L.cols.cat;
+    if (!codes || codes.length !== L.count) return null;
+    const n = L.cat_labels.length;
+    if (which === 'selection') {
+      const set = selected.get(li);
+      if (L._selCounts && L._selCounts.v === selVersion) return L._selCounts.c;
+      const c = new Array(n).fill(0);
+      if (set) for (const r of set) if (codes[r] < n) c[codes[r]]++;
+      L._selCounts = { v: selVersion, c };
+      return c;
+    }
+    if (!L._allCounts || L._allCounts.length !== n) {
+      const c = new Array(n).fill(0);
+      for (let r = 0; r < codes.length; r++) if (codes[r] < n) c[codes[r]]++;
+      L._allCounts = c;
+    }
+    return L._allCounts;
+  };
+  const catInfo = (li) => {
+    const L = payload.layers[li], s = styleAt(li);
+    const rgb = classRGB(L, s), hid = new Set(s.categories_hidden || []);
+    const counts = s.legend_counts ? classCounts(li, L, s.legend_counts === 'selection' ? 'selection' : 'all') : null;
+    return classOrder(L, s).map((lb) => {
+      const code = L.cat_labels.indexOf(lb);
+      return { label: lb, rgb: rgb[code], hidden: hid.has(lb), count: counts ? counts[code] : null };
+    });
+  };
+  const rampCache = new Map();
+  const rampOf = (name) => {
+    if (!rampCache.has(name)) rampCache.set(name, rampPixels(256, RAMPS[name] || undefined));
+    return rampCache.get(name);
+  };
+  // one legend per visible coloured layer: a ramp over the data range, or the classes
+  const legendEntries = () => {
+    if (!payload) return [];
+    const out = [];
+    styles().forEach((s, i) => {
+      const L = payload.layers[i];
+      if (!L || s.visible === false) return;
+      if (s.color === 'value') {
+        const clip = s.clip && s.clip.length === 2 ? s.clip : null;
+        const range = L.value_range || clip;
+        if (!range) return;
+        out.push({
+          kind: 'ramp', layer: i, title: s.name || L.kind,
+          channel: L._active && L._active !== 'value' ? L._active : null, units: s.units || '',
+          range, clip, threshold: s.threshold && s.threshold.length === 2 ? s.threshold : null,
+          dim: s.filter_mode === 'dim', pixels: rampOf(s.ramp || 'viridis'),
+        });
+      } else if (s.color === 'category' && L.cat_labels && L.cat_labels.length) {
+        out.push({ kind: 'cat', layer: i, title: s.name || L.kind, channel: null, units: s.units || '', classes: catInfo(i) });
+      }
+    });
+    return out;
   };
 
   const syncChrome = () => {
     if (!tb) return;
     const sec = store.get('section');
     tb.syncSection(sec, sec ? sectionExtent(sec) : null);
-    tb.syncLegend(legendInfo());
+    if (chrome) chrome.update({ state: true });
+    schedule();
     tb.syncOrtho(cam.state.ortho);
     tb.syncLock(cam.state.orbitLock, store.get('lock_toggle') !== false);
   };
@@ -1402,8 +1401,7 @@ export function mountView(el, store) {
   // the `view` event: the camera, the lock, and in a locked orthographic view the world
   // rectangle the canvas shows and the pixel box it covers. Sent from draw(), by value.
   let viewLast = '';
-  const pushView = () => {
-    if (typeof store.notify !== 'function') return;        // Jupyter: no events, no work
+  const viewInfo = () => {
     const c = cam.state;
     const out = { camera: { ...camToDict(), z_exaggeration: c.zExag || 1 }, lock: lockOf() };
     if (c.orbitLock && c.ortho) {
@@ -1411,10 +1409,24 @@ export function mountView(el, store) {
       const cr = canvas.getBoundingClientRect(), er = el.getBoundingClientRect();
       out.px = { x: cr.left - er.left, y: cr.top - er.top, w: cr.width, h: cr.height };
     }
+    return out;
+  };
+  const pushView = () => {
+    const out = viewInfo();
     const j = JSON.stringify(out);
     if (j === viewLast) return;
     viewLast = j;
     notify('view', out);
+    ariaSync(out);
+  };
+  // the canvas's accessible name: what is shown, from where, locked or not
+  let ariaLast = '';
+  const ariaSync = (v) => {
+    const names = payload ? payload.layers.map((L, i) => `${styleAt(i).name || L.kind} (${L.kind})`).join(', ') : 'no data';
+    const c = (v || viewInfo()).camera, lk = lockOf();
+    const how = lk === 'free' ? '' : ` Locked: ${typeof lk === 'string' ? lk : `azimuth ${lk.azimuth}°, plunge ${lk.plunge}°`}.`;
+    const a = `3D view of ${names}. Looking ${Math.round(c.azimuth)}° from north, ${Math.round(c.plunge)}° down${c.ortho ? ', orthographic' : ''}.${how}`;
+    if (a !== ariaLast) { ariaLast = a; canvas.setAttribute('aria-label', a); }
   };
 
   // the stored camera state. Applied on CHANGE *and* at load: a widget
@@ -1440,8 +1452,7 @@ export function mountView(el, store) {
 
   // ── the toolbar ──
   const buildToolbar = () => {
-    if (tb) { tb.destroy(); tb = null; }
-    if (store.get('toolbar') === false) return;
+    if (tb) return;
     tb = createToolbar(host, {
       layers: () => (payload ? payload.layers.map((L, i) => ({ name: styleAt(i).name || L.kind, kind: L.kind, visible: styleAt(i).visible !== false })) : []),
       setStyle: (i, patch) => {
@@ -1484,6 +1495,99 @@ export function mountView(el, store) {
         return on;
       },
     });
+    syncChrome();
+  };
+
+  // ── the chrome: plugins over the scene (chrome.js), and the api every plugin gets ──
+  const frameO = () => (payload && payload.frame) || [0, 0, 0];
+  // world → CSS px on the canvas (null behind the camera)
+  const projectW = (x, y, z) => {
+    const o = frameO(), vp = cam.state.viewProj, X = x - o[0], Y = y - o[1], Z = z - o[2];
+    const cw = vp[3] * X + vp[7] * Y + vp[11] * Z + vp[15];
+    if (cw <= 1e-9) return null;
+    const W = canvas.clientWidth || 1, H = canvas.clientHeight || 1;
+    return [((vp[0] * X + vp[4] * Y + vp[8] * Z + vp[12]) / cw * 0.5 + 0.5) * W,
+      (0.5 - (vp[1] * X + vp[5] * Y + vp[9] * Z + vp[13]) / cw * 0.5) * H];
+  };
+  // CSS px → the world point there, on the screen-parallel plane through the camera
+  // target; real coordinates (the exaggeration is taken out)
+  const unprojectW = (sx, sy) => {
+    const vp = cam.state.viewProj, inv = mat4Inverse(vp), t = cam.state.target, o = frameO();
+    if (!inv) return null;
+    const cwT = vp[3] * t[0] + vp[7] * t[1] + vp[11] * t[2] + vp[15];
+    const nz = (vp[2] * t[0] + vp[6] * t[1] + vp[10] * t[2] + vp[14]) / cwT;
+    const nx = (sx / (canvas.clientWidth || 1)) * 2 - 1, ny = 1 - (sy / (canvas.clientHeight || 1)) * 2;
+    const w = inv[3] * nx + inv[7] * ny + inv[11] * nz + inv[15];
+    return [(inv[0] * nx + inv[4] * ny + inv[8] * nz + inv[12]) / w + o[0],
+      (inv[1] * nx + inv[5] * ny + inv[9] * nz + inv[13]) / w + o[1],
+      (inv[2] * nx + inv[6] * ny + inv[10] * nz + inv[14]) / w + o[2]];
+  };
+  const layersInfo = () => (payload ? payload.layers.map((L, i) => {
+    const s = styleAt(i);
+    return {
+      index: i, name: s.name || L.kind, kind: L.kind, count: L.count, visible: s.visible !== false,
+      color: s.color, ramp: s.ramp || 'viridis', value_range: L.value_range || null, channel: L._active || null,
+      clip: s.clip && s.clip.length === 2 ? s.clip : null, threshold: s.threshold && s.threshold.length === 2 ? s.threshold : null,
+      units: s.units || '', labels: !!s.labels, categories: L.cat_labels && L.cat_labels.length ? catInfo(i) : null,
+      selected: (selected.get(i) || { size: 0 }).size, collars: L._collars || null,
+    };
+  }) : []);
+  const chromeApi = {
+    get theme() { return theme; },
+    get canvas() { return canvas; },
+    get host() { return host; },
+    get target() { const t = cam.state.target, o = frameO(); return [t[0] + o[0], t[1] + o[1], t[2] + o[2]]; },
+    get zExag() { return cam.state.zExag || 1; },
+    get camera() { return camToDict(); },
+    get size() { return { w: canvas.clientWidth, h: canvas.clientHeight }; },
+    project: projectW,
+    unproject: unprojectW,
+    viewInfo,
+    layers: layersInfo,
+    legend: legendEntries,
+    toggleClass: toggleCat,
+    isolateClass: isolateCat,
+    get: (k) => store.get(k),
+    set: (k, v) => { store.set(k, v); store.save_changes(); },
+    on: (ev, fn) => { if (!bus.has(ev)) bus.set(ev, new Set()); bus.get(ev).add(fn); },
+    off: (ev, fn) => { const b = bus.get(ev); if (b) b.delete(fn); },
+    emit: (ev, data) => notify(ev, data),
+    invalidate: () => schedule(),
+  };
+  // the built-ins, by the switch that names them in `chrome: {…}`
+  const domPlugin = (id, slot, order, elOf) => ({
+    id, slot, order,
+    mount(box) { box.appendChild(elOf()); },
+    unmount() { const n = elOf(); if (n) n.remove(); },
+  });
+  const BUILTINS = {
+    toolbar: () => domPlugin('toolbar', 'top-left', 0, () => tb.els.bar),
+    section: () => domPlugin('section', 'bottom-left', 10, () => tb.els.secBar),
+    pick: () => domPlugin('pick', 'top-right', 10, () => tb.els.pickBox),
+    status: () => domPlugin('status', 'bottom-left', 0, () => hud),
+    readout, legend: legends, scalebar: scaleBar, north: northArrow, exaggeration, labels: holeLabels,
+  };
+  const builtinIds = new Set();
+  // which built-ins: `chrome` says, per element; the older all-or-nothing switches set
+  // the defaults (toolbar: false → no toolbar, section bar or pick box; decorations:
+  // false → no scale bar, north arrow or exaggeration notice)
+  const chromeWants = () => {
+    const c = store.get('chrome') || {}, bar = store.get('toolbar') !== false, deco = store.get('decorations') !== false;
+    const want = {};
+    for (const k of Object.keys(BUILTINS)) {
+      const dflt = ['toolbar', 'section', 'pick'].includes(k) ? bar : ['scalebar', 'north', 'exaggeration'].includes(k) ? deco : true;
+      want[k] = c[k] === undefined ? dflt : !!c[k];
+    }
+    return want;
+  };
+  const applyChrome = () => {
+    if (!chrome || !tb) return;
+    const want = chromeWants();
+    for (const [k, make] of Object.entries(BUILTINS)) {
+      const have = builtinIds.has(k) && chrome.has(k);
+      if (want[k] && !have) { chrome.add(make()); builtinIds.add(k); }
+      else if (!want[k] && have) { chrome.remove(k); builtinIds.delete(k); }
+    }
     syncChrome();
   };
 
@@ -1612,6 +1716,7 @@ export function mountView(el, store) {
     return buf;
   };
   const pushSelection = () => {
+    selVersion++;
     styles().forEach((_s, i) => {
       const L = payload && payload.layers[i];
       const set = selected.get(i);
@@ -1752,6 +1857,7 @@ export function mountView(el, store) {
   let down = null, dragging = false, lasso = null;
   const DRAG_TOOLS = { knife: 'line', rect: 'rect', lasso: 'poly' };
   const onDown = (e) => {
+    if (e.target && e.target.closest && e.target.closest('.cdslot, .cdpop')) return;   // the chrome's own presses (buttons, legends)
     const t = tb ? tb.tool : 'pick';
     down = { xy: relXY(e), t, shift: e.shiftKey };
     if (DRAG_TOOLS[t]) {
@@ -1843,9 +1949,32 @@ export function mountView(el, store) {
   host.addEventListener('pointermove', onMove, true);
   host.addEventListener('pointerup', onUp, true);
 
+  // the keyboard, on the focused view: L locks · arrows pan (shift: further) · + / − zoom ·
+  // P N E I the plan / north / east / isometric views · Esc ends a tool, then clears the selection
+  const KEY_VIEWS = { p: 'plan', n: 'north', e: 'east', i: 'iso' };
   const onKey = (e) => {
     if (e.ctrlKey || e.metaKey || e.altKey) return;
-    if (e.key === 'l' || e.key === 'L') { e.preventDefault(); e.stopPropagation(); toggleLock(); }
+    const k = e.key, step = e.shiftKey ? 160 : 40, h = canvas.clientHeight;
+    let used = true, moved = false;
+    if (k === 'l' || k === 'L') toggleLock();
+    else if (k === 'ArrowLeft') { cam.pan(step, 0, h); moved = true; }
+    else if (k === 'ArrowRight') { cam.pan(-step, 0, h); moved = true; }
+    else if (k === 'ArrowUp') { cam.pan(0, step, h); moved = true; }
+    else if (k === 'ArrowDown') { cam.pan(0, -step, h); moved = true; }
+    else if (k === '+' || k === '=') { cam.dolly(1 / 1.25); moved = true; }
+    else if (k === '-' || k === '_') { cam.dolly(1.25); moved = true; }
+    else if (KEY_VIEWS[k.toLowerCase()] && k.length === 1) {
+      if (cam.state.orbitLock && store.get('lock_toggle') === false) used = false;   // a fixed view stays put
+      else chooseView(KEY_VIEWS[k.toLowerCase()]);
+    } else if (k === 'Escape') {
+      if (tb) tb.closePop();
+      if (tb && tb.tool !== 'pick') tb.clearTool();
+      else { selected.clear(); pushSelection(); if (tb) tb.showPick(null); }
+    } else used = false;
+    if (!used) return;
+    e.preventDefault(); e.stopPropagation();
+    if (moved) { userCam = true; needFit = false; }
+    schedule();
   };
   const onFocusDown = () => { try { canvas.focus({ preventScroll: true }); } catch { /* old engines */ } };
   canvas.addEventListener('keydown', onKey);
@@ -1864,8 +1993,10 @@ export function mountView(el, store) {
     ['change:background', applyBackground],
     ['change:height', applyHeight],
     ['change:z_exaggeration', applyZExag],
-    ['change:decorations', invalidate],
-    ['change:toolbar', buildToolbar],
+    ['change:decorations', applyChrome],
+    ['change:toolbar', applyChrome],
+    ['change:chrome', applyChrome],
+    ['change:theme', applyTheme],
     ['change:edl', invalidate], ['change:edl_strength', invalidate], ['change:budget', invalidate],
     ['change:_fit', () => { needFit = true; invalidate(); }],
     ['change:_clear_sel', () => { selected.clear(); pushSelection(); if (tb) tb.showPick(null); }],
@@ -1890,17 +2021,20 @@ export function mountView(el, store) {
   ro = new ResizeObserver(() => invalidate());
   ro.observe(host);
   applyHeight();
-  applyBackground();
   applyZExag();                                            // a re-displayed widget must match its stored state
   buildToolbar();
+  chrome = createChrome(host, chromeApi);
+  applyTheme();                                            // the theme, then the background it implies
+  applyChrome();
   if (tb) tb.syncThrough(store.get('select_through'));
   load();
   applyView();                                             // match any camera state already on the widget
   applyCamera();                                           // a stored numeric camera wins over the preset
   applyLock(false);                                        // and a lock wins over both
 
-  return () => {
+  const teardown = () => {
     disposed = true;
+    if (chrome) { chrome.destroy(); chrome = null; }
     if (streams) for (const k in streams) { const stw = streams[k] && streams[k].worker; if (stw) try { stw.terminate(); } catch { /* gone */ } }
     if (raf) cancelAnimationFrame(raf);
     if (ro) ro.disconnect();
@@ -1919,4 +2053,13 @@ export function mountView(el, store) {
     if (lose) lose.loseContext();
     el.innerHTML = '';
   };
+  // v.chrome: add, remove or replace plugins (a built-in replaced by id stops being a built-in)
+  teardown.chrome = {
+    add(def) { builtinIds.delete(def && def.id); return chrome.add(def); },
+    remove(id) { builtinIds.delete(id); return chrome.remove(id); },
+    has: (id) => !!chrome && chrome.has(id),
+    list: () => (chrome ? chrome.list() : []),
+    get api() { return chromeApi; },
+  };
+  return teardown;
 }

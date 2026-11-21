@@ -16,7 +16,7 @@ await bundle({
   at: import.meta.url,
   entry: 'src/api.js',
   outFile: OUT,
-  inline: ['../index.js', '../../drillhole/src/samples.js', '../../drillhole/src/desurvey.js', '../../drillhole/src/validate.js'],
+  inline: ['../index.js', '../../theme/src/theme.js', '../../plot/src/scale.js', '../../drillhole/src/samples.js', '../../drillhole/src/desurvey.js', '../../drillhole/src/validate.js'],
   sourcemap: false,
   meta: false,
 });

@@ -29,57 +29,47 @@ const ICON = {
 const svg = (d) => `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor"
   stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="${d}"/></svg>`;
 
+// colours and fonts come from the theme, as CSS variables the view sets on its host
 const CSS = `
-.cdt { position:absolute; left:6px; top:6px; display:flex; gap:2px; z-index:4;
-  background:rgba(22,22,22,.86); border:1px solid #333; border-radius:4px; padding:2px;
-  font:11px ui-monospace,Menlo,Consolas,monospace; backdrop-filter:blur(3px); }
+.cdt { display:flex; gap:2px; background:var(--cd-panel); border:1px solid var(--cd-border); border-radius:4px; padding:2px;
+  font:var(--cd-fs) var(--cd-mono); backdrop-filter:blur(3px); }
 .cdt button { all:unset; box-sizing:border-box; width:24px; height:22px; display:grid; place-items:center;
-  color:#b9b9b9; border-radius:3px; cursor:pointer; }
-.cdt button:hover { background:#2e2e2e; color:#e8e8e8; }
-.cdt button[aria-pressed="true"] { background:#c8781f; color:#141414; }
-.cdt .sep { width:1px; background:#3a3a3a; margin:2px 1px; }
+  color:var(--cd-muted); border-radius:3px; cursor:pointer; }
+.cdt button:hover { background:var(--cd-hover); color:var(--cd-fg); }
+.cdt button:focus-visible { outline:2px solid var(--cd-accent); outline-offset:1px; }
+.cdt button[aria-pressed="true"] { background:var(--cd-accent); color:var(--cd-on-accent); }
+.cdt .sep { width:1px; background:var(--cd-border); margin:2px 1px; }
 .cdpop { position:absolute; left:6px; top:34px; z-index:5; min-width:172px; max-height:220px; overflow:auto;
-  background:rgba(22,22,22,.96); border:1px solid #3a3a3a; border-radius:4px; padding:5px 6px;
-  font:11px ui-monospace,Menlo,Consolas,monospace; color:#cfcfcf; backdrop-filter:blur(3px); }
-.cdpop h4 { margin:0 0 5px; font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:#8a8a8a; font-weight:600; }
+  background:var(--cd-panel); border:1px solid var(--cd-border); border-radius:4px; padding:5px 6px;
+  font:var(--cd-fs) var(--cd-mono); color:var(--cd-fg); backdrop-filter:blur(6px); }
+.cdpop h4 { margin:0 0 5px; font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:var(--cd-muted); font-weight:600; }
 .cdpop label { display:flex; align-items:center; gap:6px; padding:2px 0; cursor:pointer; }
-.cdpop label:hover { color:#fff; }
-.cdpop input[type=checkbox] { accent-color:#c8781f; margin:0; }
-.cdpop .k { color:#7d7d7d; }
+.cdpop input[type=checkbox] { accent-color:var(--cd-accent); margin:0; }
+.cdpop .k { color:var(--cd-muted); }
 .cdpop .row { display:flex; justify-content:space-between; gap:8px; padding:1px 0; }
-.cdpop button.opt { all:unset; display:block; padding:3px 5px; border-radius:3px; cursor:pointer; color:#cfcfcf; }
-.cdpop button.opt:hover { background:#2e2e2e; color:#fff; }
-.cdsec { position:absolute; left:6px; bottom:26px; z-index:4; display:flex; align-items:center; gap:6px;
-  background:rgba(22,22,22,.88); border:1px solid #333; border-radius:4px; padding:3px 7px;
-  font:11px ui-monospace,Menlo,Consolas,monospace; color:#c4c4c4; backdrop-filter:blur(3px);
-  user-select:none; }
+.cdpop button.opt { all:unset; display:block; padding:3px 5px; border-radius:3px; cursor:pointer; color:var(--cd-fg); }
+.cdpop button.opt:hover { background:var(--cd-hover); }
+.cdsec { display:flex; align-items:center; gap:6px;
+  background:var(--cd-panel); border:1px solid var(--cd-border); border-radius:4px; padding:3px 7px;
+  font:var(--cd-fs) var(--cd-mono); color:var(--cd-fg); backdrop-filter:blur(3px); user-select:none; }
 /* FIXED width. The readout is the only elastic thing in this bar, and it sits
    BEFORE the slider — letting it resize as the number changes (N 300 -> N -28.03)
    walks the slider out from under the cursor mid-drag. Monospace + a fixed ch
    box keeps the thumb exactly where the hand left it. */
 .cdsec .lbl { flex:0 0 12ch; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
   font-variant-numeric:tabular-nums; }
-.cdsec input[type=range] { flex:0 0 130px; width:130px; accent-color:#c8781f; }
-.cdsec button { all:unset; cursor:pointer; color:#8a8a8a; padding:0 2px; }
-.cdsec button:hover { color:#e0705a; }
-.cdpick { position:absolute; right:6px; top:6px; z-index:4; max-width:210px;
-  background:rgba(22,22,22,.9); border:1px solid #333; border-radius:4px; padding:5px 7px;
-  font:11px ui-monospace,Menlo,Consolas,monospace; color:#d2d2d2; backdrop-filter:blur(3px); }
-.cdpick .t { color:#c8781f; margin-bottom:2px; }
+.cdsec input[type=range] { flex:0 0 130px; width:130px; accent-color:var(--cd-accent); }
+.cdsec input[type=number] { width:48px; background:var(--cd-bg); color:var(--cd-fg); border:1px solid var(--cd-border);
+  border-radius:2px; font:inherit; padding:1px 3px; }
+.cdsec button { all:unset; cursor:pointer; color:var(--cd-muted); padding:0 2px; }
+.cdsec button:hover { color:var(--cd-accent); }
+.cdpick, .cdread { max-width:230px; background:var(--cd-panel); border:1px solid var(--cd-border); border-radius:4px; padding:5px 7px;
+  font:var(--cd-fs) var(--cd-mono); color:var(--cd-fg); backdrop-filter:blur(3px); }
+.cdread { padding:2px 7px; white-space:pre; font-variant-numeric:tabular-nums; max-width:none; }
+.cdpick .t { color:var(--cd-accent); margin-bottom:2px; }
 .cdpick .row { display:flex; justify-content:space-between; gap:10px; }
-.cdpick .k { color:#7d7d7d; }
-.cdleg { position:absolute; right:6px; bottom:6px; z-index:3; display:flex; align-items:center; gap:5px;
-  font:10px ui-monospace,Menlo,Consolas,monospace; color:#a8a8a8; text-shadow:0 1px 2px #000; }
-.cdleg canvas { display:block; width:96px; height:8px; border:1px solid #444; border-radius:1px; }
-.cdlegramp { display:flex; align-items:center; gap:5px; }
-.cdlegname { color:#c8781f; margin-right:2px; max-width:110px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.cdcats { display:flex; flex-direction:column; gap:1px; max-height:170px; overflow:auto;
-  background:rgba(22,22,22,.85); border:1px solid #333; border-radius:4px; padding:4px 6px; }
-.cdcat { display:flex; align-items:center; gap:5px; cursor:pointer; padding:1px 2px; border-radius:2px; white-space:nowrap; }
-.cdcat:hover { background:#ffffff14; }
-.cdcat .sw { width:9px; height:9px; border:1px solid #555; border-radius:1px; flex:none; }
-.cdcat.off { opacity:.45; }
-.cdcat.off span:last-child { text-decoration:line-through; }
+.cdpick .k { color:var(--cd-muted); }
+.cdstatus { font:var(--cd-fs) var(--cd-mono); color:var(--cd-muted); text-shadow:0 1px 2px var(--cd-halo); pointer-events:none; }
 .cdknife { position:absolute; inset:0; z-index:2; pointer-events:none; }
 `;
 
@@ -106,9 +96,10 @@ export function createToolbar(host, api) {
   style.textContent = CSS;
   host.appendChild(style);
 
-  const bar = document.createElement('div');
+  const bar = document.createElement('div');            // placed by the view's chrome slots, like secBar and pickBox
   bar.className = 'cdt';
-  host.appendChild(bar);
+  bar.setAttribute('role', 'toolbar');
+  bar.setAttribute('aria-label', '3D view tools');
 
   let pop = null, tool = 'orbit';
   const closePop = () => { if (pop) { pop.remove(); pop = null; } };
@@ -118,6 +109,7 @@ export function createToolbar(host, api) {
     const b = document.createElement('button');
     b.innerHTML = svg(ICON[icon]);
     b.title = title;
+    b.setAttribute('aria-label', title);
     if (toggles) b.setAttribute('aria-pressed', 'false');
     b.onclick = (e) => { e.stopPropagation(); onClick(b); };
     bar.appendChild(b);
@@ -215,11 +207,11 @@ export function createToolbar(host, api) {
   slider.type = 'range'; slider.min = '0'; slider.max = '1000'; slider.value = '500';
   const thick = document.createElement('input');
   thick.type = 'number'; thick.min = '0.1'; thick.step = '1';
-  thick.style.cssText = 'width:48px;background:#232323;color:#ccc;border:1px solid #3a3a3a;border-radius:2px;font:inherit;padding:1px 3px;';
+  thick.title = 'Section thickness';
+  slider.setAttribute('aria-label', 'Section position');
   const clearBtn = document.createElement('button');
   clearBtn.innerHTML = svg(ICON.close); clearBtn.title = 'Clear the section';
   secBar.append(secLabel, slider, thick, clearBtn);
-  host.appendChild(secBar);
 
   let range = [0, 1];
   slider.oninput = () => {
@@ -237,23 +229,6 @@ export function createToolbar(host, api) {
   const pickBox = document.createElement('div');
   pickBox.className = 'cdpick';
   pickBox.style.display = 'none';
-  host.appendChild(pickBox);
-
-  // ── the color legend (a ramp, or a category swatch list with eye toggles) ──
-  const leg = document.createElement('div');
-  leg.className = 'cdleg';
-  leg.style.display = 'none';
-  const legLo = document.createElement('span'), legHi = document.createElement('span');
-  const legTitle = document.createElement('span');
-  legTitle.className = 'cdlegname';
-  const legCv = document.createElement('canvas'); legCv.width = 96; legCv.height = 8;
-  const legRamp = document.createElement('div');
-  legRamp.className = 'cdlegramp';
-  legRamp.append(legTitle, legLo, legCv, legHi);
-  const legCats = document.createElement('div');
-  legCats.className = 'cdcats';
-  leg.append(legRamp, legCats);
-  host.appendChild(leg);
 
   // ── the knife rubber band ──
   const NS = 'http://www.w3.org/2000/svg';
@@ -266,17 +241,17 @@ export function createToolbar(host, api) {
   const poly = document.createElementNS(NS, 'polyline');
   const meas = document.createElementNS(NS, 'line');
   for (const el of [line, rect, poly, meas]) {
-    el.setAttribute('stroke', '#c8781f');
+    el.setAttribute('stroke', 'var(--cd-accent)');
     el.setAttribute('stroke-width', '1.6');
     el.setAttribute('fill', 'none');
   }
   line.setAttribute('stroke-dasharray', '6 4');
   rect.setAttribute('stroke-dasharray', '5 3');
-  meas.setAttribute('stroke', '#e8e8e8');
+  meas.setAttribute('stroke', 'var(--cd-fg)');
   meas.setAttribute('stroke-dasharray', '4 3');
   const capA = document.createElementNS(NS, 'circle');
   const capB = document.createElementNS(NS, 'circle');
-  for (const c of [capA, capB]) { c.setAttribute('r', '3'); c.setAttribute('fill', '#c8781f'); }
+  for (const c of [capA, capB]) { c.setAttribute('r', '3'); c.setAttribute('fill', 'var(--cd-accent)'); }
   bandEl.append(rect, poly, line, meas, capA, capB);
   const hideAll = () => { for (const el of [line, rect, poly, meas, capA, capB]) el.setAttribute('visibility', 'hidden'); };
   hideAll();
@@ -284,6 +259,8 @@ export function createToolbar(host, api) {
   host.appendChild(bandEl);
 
   return {
+    // the elements the view's chrome plugins place: 'toolbar', 'section', 'pick'
+    els: { bar, secBar, pickBox },
     get tool() { return tool; },
     // one band, four shapes: 'line' (knife) · 'rect' · 'poly' (lasso) ·
     // 'measure'. Passing nothing clears it.
@@ -308,7 +285,7 @@ export function createToolbar(host, api) {
       el.setAttribute('visibility', 'visible');
       for (const [c, p] of [[capA, a], [capB, b]]) {
         c.setAttribute('cx', p[0]); c.setAttribute('cy', p[1]);
-        c.setAttribute('fill', kind === 'measure' ? '#e8e8e8' : '#c8781f');
+        c.setAttribute('fill', kind === 'measure' ? 'var(--cd-fg)' : 'var(--cd-accent)');
         c.setAttribute('visibility', 'visible');
       }
     },
@@ -335,47 +312,6 @@ export function createToolbar(host, api) {
       slider.value = String(Math.round(((sec.position - range[0]) / span) * 1000));
       if (document.activeElement !== thick) thick.value = String(sec.thickness);
     },
-    // the ramp + range of the first value-colored visible layer
-    syncLegend(info) {
-      if (!info) { leg.style.display = 'none'; return; }
-      leg.style.display = '';
-      if (info.cats) {                                     // categorical: swatch rows, click = class eye
-        legRamp.style.display = 'none';
-        legCats.style.display = '';
-        legCats.textContent = '';
-        for (const c of info.cats) {
-          const row = document.createElement('div');
-          row.className = 'cdcat' + (c.hidden ? ' off' : '');
-          row.title = c.hidden ? 'show' : 'hide';
-          const sw = document.createElement('span');
-          sw.className = 'sw';
-          sw.style.background = `rgb(${c.rgb[0]},${c.rgb[1]},${c.rgb[2]})`;
-          const lb = document.createElement('span');
-          lb.textContent = c.label;
-          row.append(sw, lb);
-          row.onclick = () => { if (info.onToggle) info.onToggle(c.label); };
-          legCats.appendChild(row);
-        }
-        return;
-      }
-      legCats.style.display = 'none';
-      legRamp.style.display = '';
-      legTitle.textContent = info.label || '';
-      legTitle.style.display = info.label ? '' : 'none';
-      legLo.textContent = fmt(info.range[0]);
-      legHi.textContent = fmt(info.range[1]);
-      const g = legCv.getContext('2d');
-      const img = g.createImageData(96, 1);
-      for (let i = 0; i < 96; i++) {
-        const t = Math.min(255, Math.round((i / 95) * 255));
-        img.data[i * 4] = info.pixels[t * 4];
-        img.data[i * 4 + 1] = info.pixels[t * 4 + 1];
-        img.data[i * 4 + 2] = info.pixels[t * 4 + 2];
-        img.data[i * 4 + 3] = 255;
-      }
-      g.putImageData(img, 0, 0);
-      g.drawImage(legCv, 0, 0, 96, 1, 0, 0, 96, 8);
-    },
     syncOrtho(on) { orthoBtn.setAttribute('aria-pressed', String(!!on)); },
     syncLock(locked, canToggle) {
       lockBtn.setAttribute('aria-pressed', String(!!locked));
@@ -386,6 +322,7 @@ export function createToolbar(host, api) {
       orthoBtn.title = locked ? 'Parallel projection (a locked view always is)' : 'Parallel projection (for sections)';
     },
     syncThrough(on) { throughBtn.setAttribute('aria-pressed', String(!!on)); },
-    destroy() { closePop(); [style, bar, secBar, pickBox, leg, bandEl].forEach((n) => n.remove()); },
+    closePop,
+    destroy() { closePop(); [style, bar, secBar, pickBox, bandEl].forEach((n) => n.remove()); },
   };
 }
