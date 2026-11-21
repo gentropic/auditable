@@ -565,6 +565,17 @@ const S5 = await page.evaluate(async () => {
   await settle(500);
   out.noAxes = { ids: v.chrome.list().map((p) => p.id), insets: parseFloat(api.host.style.getPropertyValue('--cd-in-l')) || 0 };
   v.destroy();
+  // a narrow section: the centre slot (scale bar, exaggeration notice) lifts above the corners
+  {
+    const nb = document.createElement('div'); nb.style.width = '360px'; document.body.append(nb);
+    const w = C.view(nb, [C.blocks({ x: X, y: Y, z: Z, value: FE }, { name: 'Fe', units: '%' })], { height: 360, lock: 'north', z_exaggeration: 3 });
+    await settle(900);
+    const host2 = w.chrome.api.host, sl = (k) => host2.querySelector(`.cdslot.${k}`).getBoundingClientRect();
+    const b = sl('bottom'), l = sl('bottom-left'), r = sl('bottom-right');
+    const hit = (p, q) => q.width && q.height && p.left < q.right - 1 && p.right > q.left + 1 && p.top < q.bottom - 1 && p.bottom > q.top + 1;
+    out.narrow = { bottomW: Math.round(b.width), overlapsLeft: !!hit(b, l), overlapsRight: !!hit(b, r), lift: host2.style.getPropertyValue('--cd-lift-b') };
+    w.destroy(); nb.remove();
+  }
   // a blocks layer with no value column (it crashed the load: the builder was handed chan: null)
   try {
     const w = C.view(host, [C.blocks({ x: X.slice(0, 600), y: Y.slice(0, 600), z: Z.slice(0, 600) }, { name: 'plain' })], { height: 300 });
@@ -586,6 +597,7 @@ chk('box: true puts ticked axes on the bounding box', S5.box.with > S5.box.witho
 chk('the triad: E shows the view from the east (looking west), Z the plan, the centre the three-quarter view', Math.abs(S5.triadE.azimuth - 270) < 1 && Math.abs(S5.triadE.plunge) < 1 && S5.triadZ.cam.plunge > 89 && S5.triadC.plunge > 10 && S5.triadC.plunge < 60 && /orientation/.test(S5.triadLabel || ''), JSON.stringify({ e: S5.triadE, z: S5.triadZ, c: S5.triadC }));
 chk('chrome: {axes: false} drops the frame from a locked view', !S5.noAxes.ids.includes('axes') && S5.noAxes.insets === 0, JSON.stringify(S5.noAxes));
 chk('a blocks layer with no value column loads', S5.plain.ok, JSON.stringify(S5.plain));
+chk('a narrow section: the scale bar and exaggeration notice lift clear of the corner stacks', S5.narrow.bottomW > 0 && !S5.narrow.overlapsLeft && !S5.narrow.overlapsRight, JSON.stringify(S5.narrow));
 
 chk('no page errors under a strict CSP', errs.length === 0, errs.join(' | '));
 

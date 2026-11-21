@@ -121,6 +121,27 @@ w = cd.view(model, holes, topo, height=460)
 open(r"${T}/multi.bin", "wb").write(w._payload)
 open(r"${T}/styles.json", "w").write(json.dumps(w._styles))
 
+# w.axes: plot items over locked views, from Python -- numpy in, anything with
+# __geo_interface__ for geometry, each item in its view ('plan' by default)
+class _Licence:
+    __geo_interface__ = {"type": "Polygon", "coordinates": [[[10, 10], [150, 10], [150, 150], [10, 150], [10, 10]]]}
+w.axes.scatter(np.array(cx), np.array(cy), marker="s", s=300, color="#ff0000", label="collars")
+w.axes.add_geometry(_Licence(), facecolor="none", edgecolor="#ff8800", linewidth=2, label="licence")
+w.axes.text(80, 80, "centre")
+w.axes.scatter([80.0], [100.0], on=("E", "RL"), marker="s", s=400, color="#00ff00", label="in the section")
+w.axes.legend(loc="upper center")
+assert len(w.overlay) == 5 and w.overlay[0]["x"][0] == 40.0 and w.overlay[3]["on"] == ["E", "RL"], w.overlay
+assert w.overlay[1]["geometry"]["type"] == "Polygon"
+open(r"${T}/overlay.json", "w").write(json.dumps(w.overlay))
+assert w.copy().overlay == w.overlay
+try:
+    w.axes.scatter([1], [2], on="sideways")
+    raise SystemExit("on='sideways' should be refused")
+except ValueError as e:
+    assert "plan" in str(e), str(e)
+w.axes.clear()
+assert w.overlay == []
+
 # STREAMED (cd.open): a callable batch source — no pyarrow needed. The payload
 # carries only the header; the rows are dumped as the exact (content, buffers)
 # messages _stream_messages would send, for the browser half to replay.
@@ -620,6 +641,26 @@ const r = await page.evaluate(async (port) => {
   out.decoOff = decoInk();
   model.set('decorations', true); model.set('chrome', {}); await settle();
 
+  // ── w.axes from Python: the overlay draws in its view, and only there ──
+  const overlay = await (await fetch(`http://127.0.0.1:${port}/tmp/overlay.json`)).json();
+  const hues = () => {
+    const dc = el.querySelectorAll('canvas')[1], d = dc.getContext('2d').getImageData(0, 0, dc.width, dc.height).data;
+    let red = 0, green = 0;
+    for (let q = 0; q < d.length; q += 4) {
+      if (d[q + 3] < 200) continue;
+      if (d[q] > 220 && d[q + 1] < 40 && d[q + 2] < 40) red++;
+      if (d[q + 1] > 220 && d[q] < 40 && d[q + 2] < 40) green++;
+    }
+    return { red, green };
+  };
+  model.set('overlay', overlay); model.set('lock', 'plan'); await settle(); await settle();
+  out.overlayPlan = hues();
+  model.set('lock', 'north'); await settle(); await settle();
+  out.overlaySection = hues();
+  model.set('overlay', []); await settle();
+  out.overlayCleared = hues();
+  model.set('lock', 'free'); await settle();
+
   // ── hover readout (opt-in): point, don't click ──
   model.set('hover', true);
   const cvH = document.querySelector('#host canvas');
@@ -1037,6 +1078,8 @@ chk(`w.snapshot() returns PNG bytes to the kernel (${(r.snapBytes / 1024).toFixe
 chk(`figure chrome draws (scale bar + north arrow: ${r.decoBase} ink px) and decorations=False clears it (${r.decoOff})`,
   r.decoBase > 100 && r.decoNoLegend < r.decoBase && r.decoOff < r.decoNoLegend * 0.2);
 chk(`chrome: {legend: false} takes the drawn legend out (${r.decoBase} → ${r.decoNoLegend} ink px)`, r.decoNoLegend < r.decoBase - 300);
+chk(`w.axes from Python: the plan's collars draw in the plan (${r.overlayPlan.red} red px, ${r.overlayPlan.green} green), the section's item in the section (${r.overlaySection.green} green, ${r.overlaySection.red} red), clear() takes them away`,
+  r.overlayPlan.red > 500 && r.overlayPlan.green === 0 && r.overlaySection.green > 300 && r.overlaySection.red === 0 && r.overlayCleared.red === 0 && r.overlayCleared.green === 0);
 chk(`labels=True writes the BHIDs at the collars (+${r.decoLabels - r.decoBase} ink px)`,
   r.decoLabels > r.decoBase + 150);
 

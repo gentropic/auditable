@@ -121,7 +121,7 @@ A 2D grid as shaded relief, row 0 the NORTHERNMOST. `grid` as rows, or flat with
 `null` = off) · `height` (460) · `background` (`''`: the theme's) · `theme` (`'dark'`) ·
 `chrome` (`{}`) — see *Theme* and *Chrome* · `toolbar` (true) · `edl` (true) ·
 `edl_strength` (1) · `z_exaggeration` (1) · `decorations` (true: scale bar, north arrow,
-exaggeration notice, triad) · `grid` (false: grid lines across a locked view's axes) ·
+exaggeration notice, triad) · `grid` (false: grid lines across a locked view's axes) · `overlay` (`[]`: plot items over locked views — see *Axes around a locked view*) ·
 `camera` (`{azimuth, plunge, distance, target, ortho}`) · `lock` (`'free'`) · `lock_toggle` (true) ·
 `twist` (false) — see *Orientation lock* · `hover` (false) · `select_through`
 (false) · `budget` (3,000,000 elements per frame) · `workers` (true; JS only — `false` when
@@ -338,6 +338,22 @@ v.on('view', (vi) => { const plan = vi.axes && vi.axes.join() === 'E,N'; licence
 
 The items are in the axes' coordinates, which mean E / N in a plan and along / RL in a section:
 show each in its view (`set_visible`, or `remove()` and add again).
+
+Or declare them as data — the `overlay` option, which is what the Python widget's `w.axes` syncs —
+and the view keeps each in its view for you:
+
+```js
+v.set({ overlay: [
+  { kind: 'geometry', geometry: lic, facecolor: 'none', edgecolor: 'C1', linewidth: 2, label: 'licence' },
+  { kind: 'scatter', x: collarE, y: collarN, marker: '^', s: 80, color: 'C3', label: 'collars' },   // on: 'plan' (the default)
+  { kind: 'plot', x: [e0, e1], y: [rl, rl], fmt: '--', on: ['E', 'RL'], label: 'pit floor' },     // a section looking north
+  { kind: 'legend', loc: 'upper center' },
+] });
+```
+
+`kind`: `scatter` · `plot` (`fmt`) · `fill` · `text` (`text`) · `geometry` (GeoJSON) · `legend`; the rest of
+an item is plot's keywords. `on`: `'plan'` (E / N) · an axis pair as the `view` event names them
+(`['E', 'RL']`, `['N', 'RL']`, `['along', 'RL']`) · `'any'`. Setting `overlay` replaces the items.
 
 In free 3D, `chrome: { box: true }` puts ticked axes on the data's bounding box instead: E and
 N along the bottom edges nearer the bottom of the screen, RL up the leftmost vertical edge, with

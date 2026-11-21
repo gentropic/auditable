@@ -121,8 +121,11 @@ function _pad(body, sgn, width, fill, align) {
 
 // a str.format template: '{x:,.0f} m', '{:.1%}', '{0}', '{pos}'. `named` gives the fields
 // ({x, pos}); bare and numbered fields take `args` in order.
-export function pyFormat(template, named, ...args) {
+export function pyFormat(template, named, ...args) { return _pyFormatWith(template, named, args, null); }
+// the same, each formatted field passed through hook (StrMethodFormatter's unicode minus)
+export function _pyFormatWith(template, named, args, hook) {
   let auto = 0;
+  const h = hook || ((s) => s);
   return String(template).replace(/\{\{|\}\}|\{([^{}:!]*)(?:![rsa])?(?::([^{}]*))?\}/g, (whole, field, spec) => {
     if (whole === '{{') return '{';
     if (whole === '}}') return '}';
@@ -133,7 +136,7 @@ export function pyFormat(template, named, ...args) {
     else throw new Error(`plot: '{${field}}' has nothing to fill it (the fields are ${named ? Object.keys(named).map((k) => `{${k}}`).join(', ') : 'positional'})`);
     // pos is matplotlib's tick index, an int: it prints as one
     if (field === 'pos' && Number.isInteger(v) && !spec) return String(v);
-    return spec ? _formatSpec(v, spec) : (typeof v === 'number' ? _pyRepr(v) : String(v));
+    return h(spec ? _formatSpec(v, spec) : (typeof v === 'number' ? _pyRepr(v) : String(v)));
   });
 }
 

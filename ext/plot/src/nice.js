@@ -1,4 +1,10 @@
-// Round tick values and their labels — the leaf both ticks.js and ticker.js stand on (no imports).
+// Round tick values and their labels — the leaf both ticks.js and ticker.js stand on.
+
+import { rcParams } from './opts.js';
+
+// matplotlib's Formatter.fix_minus: a tick label's hyphens become the minus sign U+2212, unless
+// rcParams['axes.unicode_minus'] is false
+export function _minus(s) { return rcParams['axes.unicode_minus'] === false ? String(s) : String(s).replace(/-/g, '\u2212'); }
 
 // at most `count` round ticks inside [lo, hi], as many as fit: the smallest step of 1, 2, 2.5
 // or 5 × a power of ten that gives no more than `count` (and at least two while the range

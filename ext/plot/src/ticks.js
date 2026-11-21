@@ -10,7 +10,7 @@
 
 import { _textW } from './style.js';
 import { _dateTicks, strftime, AutoMinorLocator } from './ticker.js';
-import { _niceTicks, _fmtStep } from './nice.js';
+import { _niceTicks, _fmtStep, _minus } from './nice.js';
 export { _niceTicks, _fmtStep };
 
 // a category axis: labels in first-appearance order, each at the integer position 0, 1, 2 …
@@ -78,7 +78,7 @@ export function _tickSpec(ax, axis, scale, len, ctx, font, fontPx) {
   if (custom && custom.values) {
     values = Array.from(custom.values, Number);
     labels = custom.labels ? values.map((_, i) => (custom.labels[i] != null ? String(custom.labels[i]) : ''))
-      : tk && tk.majorF ? formatted(values, tk.majorF) : date ? _dateLabels(values) : _fmtTicks(scale, values);
+      : tk && tk.majorF ? formatted(values, tk.majorF) : date ? _dateLabels(values) : _fmtTicks(scale, values).map(_minus);
   } else if (cats && cats.list.length) {
     values = cats.list.map((_, i) => i);
     labels = cats.list.slice();
@@ -88,12 +88,12 @@ export function _tickSpec(ax, axis, scale, len, ctx, font, fontPx) {
     for (;;) {
       if (tk && tk.majorL) {
         values = tk.majorL.tick_values(lo, hi, { count, log: !!scale.log });
-        labels = date ? _dateLabels(values) : scale.log ? _fmtTicks(scale, values) : _fmtStep(values, values.step || (values.length > 1 ? Math.abs(values[1] - values[0]) : hi - lo));
+        labels = date ? _dateLabels(values) : (scale.log ? _fmtTicks(scale, values) : _fmtStep(values, values.step || (values.length > 1 ? Math.abs(values[1] - values[0]) : hi - lo))).map(_minus);
       } else if (date) {
         ({ values, labels } = _dateTicks(lo, hi, count));
       } else {
         values = scale.log ? scale.ticks() : _niceTicks(lo, hi, count);
-        labels = scale.log ? _fmtTicks(scale, values) : _fmtStep(values, values.step || (hi - lo));
+        labels = (scale.log ? _fmtTicks(scale, values) : _fmtStep(values, values.step || (hi - lo))).map(_minus);
       }
       if (tk && tk.majorF) labels = formatted(values, tk.majorF);
       // a locator says where the ticks go: no thinning

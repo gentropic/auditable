@@ -37,7 +37,7 @@ test('formatters on an axis: a str, a function, the ticker classes; PercentForma
   assert.ok(texts(fig).includes('10.0'));
   ax.xaxis.set_major_formatter(new P.ticker.NullFormatter());
   assert.ok(!texts(fig).some((s) => /^\d+(\.\d+)?$/.test(s) && +s > 1));
-  // matplotlib's automatic decimals, and its engineering notation (its minus is U+2212; ours ASCII)
+  // matplotlib's automatic decimals, and its engineering notation
   for (const c of MPL.percent) {
     const g = fig1();
     g.ax.set_ylim(...c.lim);
@@ -46,7 +46,7 @@ test('formatters on an axis: a str, a function, the ticker classes; PercentForma
     assert.deepEqual(c.vals.map((v, i) => f.format(v, i, { range })), c.labels, JSON.stringify(c));
   }
   const ef = new P.ticker.EngFormatter('Hz');
-  assert.deepEqual(MPL.eng.vals.map((v) => ef.format(v)), MPL.eng.labels.map((s) => s.replace('−', '-')));
+  assert.deepEqual(MPL.eng.vals.map((v) => ef.format(v)), MPL.eng.labels);                  // matplotlib's minus, U+2212, exactly
   assert.throws(() => ax.xaxis.set_major_formatter(42), /a Formatter, a function/);
 });
 
@@ -234,6 +234,59 @@ test("stackplot: each layer between matplotlib's lines, every baseline; labels r
   ax.stackplot(S.x, S.ys, { labels: ['ore', 'waste', 'low grade'], colors: ['C1', 'C7', 'C2'] });
   ax.legend();
   assert.ok(['ore', 'waste', 'low grade'].every((s) => texts(fig).includes(s)));
+});
+
+test("the minus sign is matplotlib's U+2212 where matplotlib uses it, and rcParams['axes.unicode_minus'] turns it off", () => {
+  const { fig, ax } = fig1();
+  ax.plot([-3, 3], [-2, 2]);
+  assert.ok(texts(fig).includes('−2') && !texts(fig).includes('-2'), texts(fig).join(' '));
+  // a {} template: the minus inside each field, its literal text left alone; %-style and
+  // functions print what they're given (matplotlib's FormatStrFormatter / FuncFormatter)
+  ax.xaxis.set_major_formatter('{x:.0f} m-ish');
+  assert.ok(texts(fig).includes('−2 m-ish'), texts(fig).join(' '));
+  ax.xaxis.set_major_formatter(new P.ticker.FormatStrFormatter('%.0f'));
+  assert.ok(texts(fig).includes('-2'));
+  ax.xaxis.set_major_formatter((x) => `${x}`);
+  assert.ok(texts(fig).includes('-2'));
+  // a colorbar's labels too; format= is matplotlib's (a {} string, a %-string)
+  const g = fig1();
+  const im = g.ax.imshow([[-1, 0], [1, 2]]);
+  const cb = g.fig.colorbar(im, { ax: g.ax });
+  assert.ok(texts(g.fig).includes('−1.0') || texts(g.fig).includes('−1'), texts(g.fig).join(' '));
+  g.ax.colorbar(im, { format: '%.1f t' });
+  assert.ok(texts(g.fig).includes('-1.0 t'));
+  g.ax.colorbar(im, { format: '{x:.2f}' });
+  assert.ok(texts(g.fig).includes('−1.00'));
+  void cb;
+  P.rcParams['axes.unicode_minus'] = false;
+  try { assert.ok(texts(fig1().fig).length >= 0 && texts((() => { const h = fig1(); h.ax.plot([-3, 3]); return h.fig; })()).includes('-2')); }
+  finally { P.rcParams['axes.unicode_minus'] = true; }
+});
+
+test("legend(loc='best') avoids filled areas too: a fill_between band, a polygon, a span", () => {
+  const corner = (fig, ax, label) => {
+    const op = fig.toDrawList().ops.find((o) => o[0] === 'fillText' && o[1] === label);
+    const v = ax.view;
+    return `${op[3] < v.y + v.h / 2 ? 'upper' : 'lower'} ${op[2] < v.x + v.w / 2 ? 'left' : 'right'}`;
+  };
+  // the gallery's errorbar case: the band fills the lower right and the middle
+  const x = [1, 2, 3, 4, 5, 6], y = [2.1, 2.9, 3.4, 4.8, 5.1, 6.3], e = [0.3, 0.4, 0.2, 0.6, 0.4, 0.5];
+  const a = fig1();
+  a.ax.fill_between(x, y.map((v, i) => v - 2 * e[i]), y.map((v, i) => v + 2 * e[i]), { label: 'band' });
+  a.ax.legend();
+  assert.equal(corner(a.fig, a.ax, 'band'), 'upper left');
+  // a polygon filling the upper half
+  const b = fig1();
+  b.ax.fill([0, 10, 10, 0], [5, 5, 10, 10], { label: 'poly' });
+  b.ax.plot([0, 10], [0, 10], { alpha: 0 });
+  b.ax.legend();
+  assert.ok(corner(b.fig, b.ax, 'poly').startsWith('lower'), corner(b.fig, b.ax, 'poly'));
+  // a span down the left
+  const c = fig1();
+  c.ax.plot([0, 10], [0, 10], 'w', { label: 'line' });
+  c.ax.axvspan(0, 4, { label: 'span' });
+  c.ax.legend();
+  assert.equal(corner(c.fig, c.ax, 'span'), 'lower right');            // the only corner with neither the line nor the span
 });
 
 test("artists: set_visible / get_visible / remove on what calls return (lines, mappables, geometry, patches)", () => {

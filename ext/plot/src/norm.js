@@ -6,7 +6,8 @@
 // render (its vmin / vmax filled from the data where not given), and the colorbar draws that
 // same norm, so the bar can't disagree with the plot.
 
-import { _niceTicks, _fmtStep } from './nice.js';
+import { _niceTicks, _fmtStep, _minus } from './nice.js';
+import { StrMethodFormatter, FormatStrFormatter } from './ticker.js';
 import { getCmap, _cmapLut, _colorBytes } from './color.js';
 import { _textW } from './style.js';
 
@@ -142,25 +143,12 @@ export function _cbTicks(norm, h, opts) {
   } else ticks = norm._ticks(Math.max(2, Math.floor(h / 32) + 1));
   if (opts.format) {
     const f = opts.format;
-    ticks.labels = ticks.values.map((v) => (typeof f === 'function' ? String(f(v)) : _cbFmt(f, v)));
-  }
+    const F = typeof f === 'function' ? { format: (v, i) => String(f(v, i)) } : f && typeof f.format === 'function' ? f
+      : String(f).includes('{') ? new StrMethodFormatter(f) : new FormatStrFormatter(f);
+    const ctx = { step: ticks.values.length > 1 ? Math.abs(ticks.values[1] - ticks.values[0]) : 1, values: ticks.values, range: Math.abs(norm.vmax - norm.vmin), date: false };
+    ticks.labels = ticks.values.map((v, i) => F.format(v, i, ctx));
+  } else ticks.labels = ticks.labels.map(_minus);
   return ticks;
-}
-function _cbFmt(f, v) {
-  const m = /%[-+ 0#]*\d*(?:\.(\d+))?([dfgeE%])/.exec(f);
-  if (m) {
-    const p = m[1] == null ? null : +m[1];
-    const s = m[2] === 'd' ? String(Math.round(v)) : m[2] === 'f' ? v.toFixed(p ?? 6) : m[2] === 'e' || m[2] === 'E' ? v.toExponential(p ?? 6) : m[2] === '%' ? (v * 100).toFixed(p ?? 0) + '%' : String(+v.toPrecision(p || 6));
-    return f.replace(m[0], s);
-  }
-  const b = /\{(?:[^:}]*):?(,?)(?:\.(\d+))?([fgde%]?)\}/.exec(f);
-  if (b) {
-    const p = b[2] == null ? null : +b[2];
-    let s = b[3] === 'f' ? v.toFixed(p ?? 6) : b[3] === 'e' ? v.toExponential(p ?? 6) : b[3] === 'd' ? String(Math.round(v)) : b[3] === '%' ? (v * 100).toFixed(p ?? 0) + '%' : String(+v.toPrecision(p || 6));
-    if (b[1]) { const [i, d] = s.split('.'); s = i.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + (d != null ? '.' + d : ''); }
-    return f.replace(b[0], s);
-  }
-  return String(v);
 }
 export function _cbLabelsW(ticks, font) { return ticks.labels.reduce((m, s) => Math.max(m, _textW(font, s)), 0); }
 

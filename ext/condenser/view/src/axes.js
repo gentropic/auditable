@@ -15,7 +15,7 @@
 //   the box's outline toward the viewer, so a 3D snapshot carries its coordinates.
 
 import { Figure } from '../../../plot/src/figure.js';
-import { _niceTicks, _fmtStep } from '../../../plot/src/nice.js';
+import { _niceTicks, _fmtStep, _minus } from '../../../plot/src/nice.js';
 
 const fontOf = (th, k = 1, bold = false) => `${bold ? '600 ' : ''}${Math.round(th.font_size * k)}px ${th.mono}`;
 function halo(g, th, text, x, y) {
@@ -206,7 +206,7 @@ export function boxAxes() {
         // plot's tick engine (the axes of a locked view use the same): a tick per ~55 px
         const ticks = _niceTicks(e.lo, e.hi, Math.max(2, Math.min(8, Math.floor(len / 55))));
         const step = ticks.length > 1 ? Math.abs(ticks[1] - ticks[0]) : (e.hi - e.lo);
-        const labels = _fmtStep(ticks, step);
+        const labels = _fmtStep(ticks, step).map(_minus);
         g.textAlign = Math.abs(nx) < 0.3 ? 'center' : nx > 0 ? 'left' : 'right';
         g.textBaseline = Math.abs(ny) < 0.3 ? 'middle' : ny > 0 ? 'top' : 'bottom';
         g.fillStyle = th.foreground;

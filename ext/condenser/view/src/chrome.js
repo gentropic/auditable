@@ -30,10 +30,10 @@ const CSS = `
 .cdslot > * { pointer-events:auto; }
 .cdslot.top-left { left:calc(6px + var(--cd-in-l, 0px)); top:calc(6px + var(--cd-in-t, 0px)); align-items:flex-start; }
 .cdslot.top-right { right:calc(6px + var(--cd-in-r, 0px)); top:calc(6px + var(--cd-in-t, 0px)); align-items:flex-end; }
-.cdslot.top { left:calc(var(--cd-in-l, 0px) + (100% - var(--cd-in-l, 0px) - var(--cd-in-r, 0px)) / 2); top:calc(6px + var(--cd-in-t, 0px)); transform:translateX(-50%); align-items:center; }
+.cdslot.top { left:calc(var(--cd-in-l, 0px) + (100% - var(--cd-in-l, 0px) - var(--cd-in-r, 0px)) / 2); top:calc(6px + var(--cd-in-t, 0px) + var(--cd-lift-t, 0px)); transform:translateX(-50%); align-items:center; }
 .cdslot.bottom-left { left:calc(6px + var(--cd-in-l, 0px)); bottom:calc(6px + var(--cd-in-b, 0px)); flex-direction:column-reverse; align-items:flex-start; }
 .cdslot.bottom-right { right:calc(6px + var(--cd-in-r, 0px)); bottom:calc(6px + var(--cd-in-b, 0px)); flex-direction:column-reverse; align-items:flex-end; }
-.cdslot.bottom { left:calc(var(--cd-in-l, 0px) + (100% - var(--cd-in-l, 0px) - var(--cd-in-r, 0px)) / 2); bottom:calc(6px + var(--cd-in-b, 0px)); transform:translateX(-50%); flex-direction:column-reverse; align-items:center; }
+.cdslot.bottom { left:calc(var(--cd-in-l, 0px) + (100% - var(--cd-in-l, 0px) - var(--cd-in-r, 0px)) / 2); bottom:calc(6px + var(--cd-in-b, 0px) + var(--cd-lift-b, 0px)); transform:translateX(-50%); flex-direction:column-reverse; align-items:center; }
 .cdplug { display:flex; flex-direction:column; gap:6px; }
 .cdslot.top-right .cdplug, .cdslot.bottom-right .cdplug { align-items:flex-end; }
 .cdslot.top .cdplug, .cdslot.bottom .cdplug { align-items:center; }
@@ -131,6 +131,20 @@ export function createChrome(host, api) {
       }
       if (show) drawn.push([it, null, sz]);
     }
+    // the centre slots (scale bar, exaggeration notice) sit between the corners; on a narrow
+    // view they'd run under a corner's stack (the legend, the status), so they lift above it
+    const lift = (centre, corners, v) => {
+      const c = slots[centre].getBoundingClientRect();
+      let up = 0;
+      if (c.width) for (const k of corners) {
+        const q = slots[k].getBoundingClientRect();
+        if (q.width && q.height && c.left < q.right - 1 && c.right > q.left + 1) up = Math.max(up, q.height + 6);
+      }
+      const val = `${Math.round(up)}px`;
+      if (host.style.getPropertyValue(v) !== val) host.style.setProperty(v, val);
+    };
+    lift('bottom', ['bottom-left', 'bottom-right'], '--cd-lift-b');
+    lift('top', ['top-left', 'top-right'], '--cd-lift-t');
     const hr = host.getBoundingClientRect();
     for (const [it, fixed, sz] of drawn) {
       let box = fixed;

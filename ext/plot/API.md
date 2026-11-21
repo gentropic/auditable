@@ -120,6 +120,9 @@ and the margins are measured from the real tick labels, titles and colorbar.
 Format strings are Python's, checked against CPython: `[[fill]align][sign][#][0][width][,|_][.precision][type]`
 with types `d f e g % s x o b` (an exact binary tie rounds to even, as Python), in `{}` templates
 (`{x}`, `{pos}`, `{:.2f}`) and `%`-style (`%.2f`, `%d` truncating). bar_label's `fmt` reads them too.
+Tick labels use matplotlib's minus sign, U+2212 (−), where matplotlib does: the default labels, a `{}`
+template's fields, PercentFormatter, EngFormatter, colorbars; `%`-style and functions print what they
+make. `rcParams['axes.unicode_minus'] = false` gives the ASCII hyphen everywhere.
 
 ## Colour
 
@@ -430,7 +433,6 @@ ax.set_title('a date axis, percent ticks, minor grid');
 | | matplotlib | plot |
 |---|---|---|
 | date numbers | days since 1970 | milliseconds since 1970 (`Date.getTime()`), so bar widths on a date axis default to 0.8 × a day; ticks and labels in UTC, so every host draws the same |
-| minus sign | U+2212 (−) in tick labels | ASCII hyphen-minus |
 | keyword arguments | `ax.plot(x, y, lw=2)` | JS: `ax.plot(x, y, { lw: 2 })` (adder: as matplotlib) |
 | `imshow(data, nx, ny)` | — | plot's flat form, origin `'lower'`; `imshow(Z)` is matplotlib's |
 | fonts | DejaVu Sans | the theme's monospace stack |

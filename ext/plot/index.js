@@ -88,7 +88,7 @@ const _NOOP_CALLS = {
 };
 
 // plt.rcParams lives here so the strict flag can be read without an import cycle
-const rcParams = {};
+const rcParams = { 'axes.unicode_minus': true };   // matplotlib's: tick labels use U+2212
 Object.defineProperty(rcParams, 'update', {
   value(obj) { if (obj && typeof obj === 'object') for (const k of Object.keys(obj)) if (k !== '_kw') rcParams[k] = obj[k]; },
   enumerable: false,
@@ -637,7 +637,12 @@ class LogScale {
 
 // -- nice.js --
 
-// Round tick values and their labels — the leaf both ticks.js and ticker.js stand on (no imports).
+// Round tick values and their labels — the leaf both ticks.js and ticker.js stand on.
+
+
+// matplotlib's Formatter.fix_minus: a tick label's hyphens become the minus sign U+2212, unless
+// rcParams['axes.unicode_minus'] is false
+function _minus(s) { return rcParams['axes.unicode_minus'] === false ? String(s) : String(s).replace(/-/g, '\u2212'); }
 
 // at most `count` round ticks inside [lo, hi], as many as fit: the smallest step of 1, 2, 2.5
 // or 5 × a power of ten that gives no more than `count` (and at least two while the range
@@ -753,7 +758,7 @@ function _tickSpec(ax, axis, scale, len, ctx, font, fontPx) {
   if (custom && custom.values) {
     values = Array.from(custom.values, Number);
     labels = custom.labels ? values.map((_, i) => (custom.labels[i] != null ? String(custom.labels[i]) : ''))
-      : tk && tk.majorF ? formatted(values, tk.majorF) : date ? _dateLabels(values) : _fmtTicks(scale, values);
+      : tk && tk.majorF ? formatted(values, tk.majorF) : date ? _dateLabels(values) : _fmtTicks(scale, values).map(_minus);
   } else if (cats && cats.list.length) {
     values = cats.list.map((_, i) => i);
     labels = cats.list.slice();
@@ -763,12 +768,12 @@ function _tickSpec(ax, axis, scale, len, ctx, font, fontPx) {
     for (;;) {
       if (tk && tk.majorL) {
         values = tk.majorL.tick_values(lo, hi, { count, log: !!scale.log });
-        labels = date ? _dateLabels(values) : scale.log ? _fmtTicks(scale, values) : _fmtStep(values, values.step || (values.length > 1 ? Math.abs(values[1] - values[0]) : hi - lo));
+        labels = date ? _dateLabels(values) : (scale.log ? _fmtTicks(scale, values) : _fmtStep(values, values.step || (values.length > 1 ? Math.abs(values[1] - values[0]) : hi - lo))).map(_minus);
       } else if (date) {
         ({ values, labels } = _dateTicks(lo, hi, count));
       } else {
         values = scale.log ? scale.ticks() : _niceTicks(lo, hi, count);
-        labels = scale.log ? _fmtTicks(scale, values) : _fmtStep(values, values.step || (hi - lo));
+        labels = (scale.log ? _fmtTicks(scale, values) : _fmtStep(values, values.step || (hi - lo))).map(_minus);
       }
       if (tk && tk.majorF) labels = formatted(values, tk.majorF);
       // a locator says where the ticks go: no thinning
@@ -1206,6 +1211,7 @@ function renderColorbar(ctx, x, y, w, h, cmap, vmin, vmax, opts) {
 
 
 
+
 const _log10 = Math.log10;
 
 class Normalize {
@@ -1338,25 +1344,12 @@ function _cbTicks(norm, h, opts) {
   } else ticks = norm._ticks(Math.max(2, Math.floor(h / 32) + 1));
   if (opts.format) {
     const f = opts.format;
-    ticks.labels = ticks.values.map((v) => (typeof f === 'function' ? String(f(v)) : _cbFmt(f, v)));
-  }
+    const F = typeof f === 'function' ? { format: (v, i) => String(f(v, i)) } : f && typeof f.format === 'function' ? f
+      : String(f).includes('{') ? new StrMethodFormatter(f) : new FormatStrFormatter(f);
+    const ctx = { step: ticks.values.length > 1 ? Math.abs(ticks.values[1] - ticks.values[0]) : 1, values: ticks.values, range: Math.abs(norm.vmax - norm.vmin), date: false };
+    ticks.labels = ticks.values.map((v, i) => F.format(v, i, ctx));
+  } else ticks.labels = ticks.labels.map(_minus);
   return ticks;
-}
-function _cbFmt(f, v) {
-  const m = /%[-+ 0#]*\d*(?:\.(\d+))?([dfgeE%])/.exec(f);
-  if (m) {
-    const p = m[1] == null ? null : +m[1];
-    const s = m[2] === 'd' ? String(Math.round(v)) : m[2] === 'f' ? v.toFixed(p ?? 6) : m[2] === 'e' || m[2] === 'E' ? v.toExponential(p ?? 6) : m[2] === '%' ? (v * 100).toFixed(p ?? 0) + '%' : String(+v.toPrecision(p || 6));
-    return f.replace(m[0], s);
-  }
-  const b = /\{(?:[^:}]*):?(,?)(?:\.(\d+))?([fgde%]?)\}/.exec(f);
-  if (b) {
-    const p = b[2] == null ? null : +b[2];
-    let s = b[3] === 'f' ? v.toFixed(p ?? 6) : b[3] === 'e' ? v.toExponential(p ?? 6) : b[3] === 'd' ? String(Math.round(v)) : b[3] === '%' ? (v * 100).toFixed(p ?? 0) + '%' : String(+v.toPrecision(p || 6));
-    if (b[1]) { const [i, d] = s.split('.'); s = i.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + (d != null ? '.' + d : ''); }
-    return f.replace(b[0], s);
-  }
-  return String(v);
 }
 function _cbLabelsW(ticks, font) { return ticks.labels.reduce((m, s) => Math.max(m, _textW(font, s)), 0); }
 
@@ -1606,8 +1599,11 @@ function _pad(body, sgn, width, fill, align) {
 
 // a str.format template: '{x:,.0f} m', '{:.1%}', '{0}', '{pos}'. `named` gives the fields
 // ({x, pos}); bare and numbered fields take `args` in order.
-function pyFormat(template, named, ...args) {
+function pyFormat(template, named, ...args) { return _pyFormatWith(template, named, args, null); }
+// the same, each formatted field passed through hook (StrMethodFormatter's unicode minus)
+function _pyFormatWith(template, named, args, hook) {
   let auto = 0;
+  const h = hook || ((s) => s);
   return String(template).replace(/\{\{|\}\}|\{([^{}:!]*)(?:![rsa])?(?::([^{}]*))?\}/g, (whole, field, spec) => {
     if (whole === '{{') return '{';
     if (whole === '}}') return '}';
@@ -1618,7 +1614,7 @@ function pyFormat(template, named, ...args) {
     else throw new Error(`plot: '{${field}}' has nothing to fill it (the fields are ${named ? Object.keys(named).map((k) => `{${k}}`).join(', ') : 'positional'})`);
     // pos is matplotlib's tick index, an int: it prints as one
     if (field === 'pos' && Number.isInteger(v) && !spec) return String(v);
-    return spec ? _formatSpec(v, spec) : (typeof v === 'number' ? _pyRepr(v) : String(v));
+    return h(spec ? _formatSpec(v, spec) : (typeof v === 'number' ? _pyRepr(v) : String(v)));
   });
 }
 
@@ -1667,7 +1663,7 @@ function pctFormat(fmt, v) {
 // ── formatters ──
 class Formatter { format(v) { return String(v); } }
 class ScalarFormatter extends Formatter {
-  format(v, pos, ctx) { return _fmtStep([v], (ctx && ctx.step) || Math.abs(v) || 1)[0]; }
+  format(v, pos, ctx) { return _minus(_fmtStep([v], (ctx && ctx.step) || Math.abs(v) || 1)[0]); }
 }
 class NullFormatter extends Formatter { format() { return ''; } }
 class FuncFormatter extends Formatter {
@@ -1676,7 +1672,8 @@ class FuncFormatter extends Formatter {
 }
 class StrMethodFormatter extends Formatter {
   constructor(fmt) { super(); this.fmt = String(fmt); }
-  format(v, pos) { return pyFormat(this.fmt, { x: v, pos }); }
+  // the minus sign in each field, as matplotlib's (its literal text is left alone)
+  format(v, pos) { return _pyFormatWith(this.fmt, { x: v, pos }, [], _minus); }
 }
 class FormatStrFormatter extends Formatter {
   constructor(fmt) { super(); this.fmt = String(fmt); }
@@ -1701,7 +1698,7 @@ class PercentFormatter extends Formatter {
       const r = ctx && ctx.range ? (ctx.range / this.xmax) * 100 : 0;
       d = r <= 0 ? 0 : Math.max(0, Math.min(5, Math.ceil(2 - Math.log10(2 * r))));
     }
-    return _formatSpec(pct, `.${d}f`) + this.symbol;
+    return _minus(_formatSpec(pct, `.${d}f`) + this.symbol);
   }
 }
 // EngFormatter(unit = '', places = null): SI prefixes, 12.3 k
@@ -1713,13 +1710,13 @@ class EngFormatter extends Formatter {
     this.unit = unit; this.places = places; this.sep = sep;
   }
   format(v) {
-    if (v === 0) return `0${this.unit ? this.sep + this.unit : ''}`;
+    if (v === 0) return `0${this.unit ? this.sep + this.unit : ''}`;   // (no minus to fix)
     let e = Math.floor(Math.log10(Math.abs(v)) / 3) * 3;
     e = Math.max(-24, Math.min(24, e));
     const m = v / Math.pow(10, e);
     const s = this.places == null ? String(+m.toPrecision(6)) : _formatSpec(m, `.${this.places}f`);
     const suf = _SI[e] + this.unit;
-    return suf ? `${s}${this.sep}${suf}` : s;
+    return _minus(suf ? `${s}${this.sep}${suf}` : s);
   }
 }
 
@@ -5718,9 +5715,57 @@ function _dataPoints(ax) {
     } else if (t._cache && t._cache.hrects) {
       const R = t._cache.hrects;
       for (let i = 0; i < R.x0.length; i++) for (let k = 0; k <= 2; k++) for (let q = 0; q <= 4; q++) push(R.x0[i] + (R.x1[i] - R.x0[i]) * k / 2, R.y0[i] + (R.y1[i] - R.y0[i]) * q / 4);
+    } else if (t.type === 'fill_between' && t.t) {
+      // a band covers its area, not only its edges: points across it at each sampled step
+      const n = t.t.length, step = Math.max(1, Math.floor(n / 400));
+      for (let i = 0; i < n; i += step) {
+        if (t.where && !t.where[i]) continue;
+        // across the band every ~10 px (a legend box is a few rows tall: coarser sampling misses it)
+        const pa = t.horiz ? v.xScale.transform(t.a[i]) : v.yScale.transform(t.a[i]), pb = t.horiz ? v.xScale.transform(t.b[i]) : v.yScale.transform(t.b[i]);
+        const K = Math.min(60, Math.max(2, Math.ceil(Math.abs(pb - pa) / 10)));
+        for (let k = 0; k <= K; k++) { const q = t.a[i] + (t.b[i] - t.a[i]) * k / K; if (t.horiz) push(q, t.t[i]); else push(t.t[i], q); }
+      }
+    } else if (t.type === 'span') {
+      // across the axes between its fractions: a grid over its rectangle, in pixels
+      const x0 = t.horiz ? v.x + t.f0 * v.w : v.xScale.transform(t.lo), x1 = t.horiz ? v.x + t.f1 * v.w : v.xScale.transform(t.hi);
+      const y0 = t.horiz ? v.yScale.transform(t.lo) : v.y + (1 - t.f0) * v.h, y1 = t.horiz ? v.yScale.transform(t.hi) : v.y + (1 - t.f1) * v.h;
+      const KX = Math.min(80, Math.max(2, Math.ceil(Math.abs(x1 - x0) / 10))), KY = Math.min(80, Math.max(2, Math.ceil(Math.abs(y1 - y0) / 10)));
+      for (let k = 0; k <= KX; k++) for (let q = 0; q <= KY; q++) { const px = x0 + (x1 - x0) * k / KX, py = y0 + (y1 - y0) * q / KY; if (px - px === 0 && py - py === 0) out.push(px, py); }
+    } else if (t.type === 'polygon' && t.parts && t.opts.facecolor !== 'none') {
+      // a filled polygon: a grid over each part's box, kept where it falls inside (even-odd)
+      for (const part of t.parts) {
+        let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+        for (const [xs, ys] of part.rings) for (let i = 0; i < xs.length; i++) { if (xs[i] < x0) x0 = xs[i]; if (xs[i] > x1) x1 = xs[i]; if (ys[i] < y0) y0 = ys[i]; if (ys[i] > y1) y1 = ys[i]; }
+        // every ~10 px over its box (at most 80 a side)
+        const KX = Math.min(80, Math.max(2, Math.ceil(Math.abs(v.xScale.transform(x1) - v.xScale.transform(x0)) / 10)));
+        const KY = Math.min(80, Math.max(2, Math.ceil(Math.abs(v.yScale.transform(y1) - v.yScale.transform(y0)) / 10)));
+        for (let k = 0; k <= KX; k++) for (let q = 0; q <= KY; q++) {
+          const x = x0 + (x1 - x0) * k / KX, y = y0 + (y1 - y0) * q / KY;
+          if (_insideRings(part.rings, x, y)) push(x, y);
+        }
+      }
+    } else if (t.type === 'violin' && t.stats) {
+      // each body, across its width at its sampled heights
+      t.stats.forEach((s, i) => {
+        if (!s.vals.length) return;
+        let vmax = 0; for (const q of s.vals) if (q > vmax) vmax = q;
+        const kw = (0.5 * t.widths[i]) / vmax, p = t.positions[i];
+        for (let j = 0; j < s.coords.length; j += 5) for (let k = -2; k <= 2; k++) { const a = p + (s.vals[j] * kw * k) / 2; if (t.horiz) push(s.coords[j], a); else push(a, s.coords[j]); }
+      });
     }
   }
   return out;
+}
+
+// even-odd: is (x, y) inside these rings
+function _insideRings(rings, x, y) {
+  let inside = false;
+  for (const [xs, ys] of rings) {
+    for (let i = 0, j = xs.length - 1; i < xs.length; j = i++) {
+      if ((ys[i] > y) !== (ys[j] > y) && x < ((xs[j] - xs[i]) * (y - ys[i])) / (ys[j] - ys[i]) + xs[i]) inside = !inside;
+    }
+  }
+  return inside;
 }
 
 // how far an anchored legend reaches past the plot area (the layout makes room)

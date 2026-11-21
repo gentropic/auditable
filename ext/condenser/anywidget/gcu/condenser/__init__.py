@@ -377,6 +377,20 @@ class Viewer(anywidget.AnyWidget):
     twist = traitlets.Bool(False).tag(sync=True)
     #: grid lines across a locked view's axes
     grid = traitlets.Bool(False).tag(sync=True)
+    #: plot items over locked views, as data -- what `w.axes` builds. Each is a dict:
+    #: {'kind': 'scatter' | 'plot' | 'fill' | 'text' | 'geometry' | 'legend', 'x', 'y', ...,
+    #: 'on': 'plan' | [axis, axis] | 'any'}. Prefer w.axes.scatter(...) & co.
+    overlay = traitlets.List(traitlets.Dict(), default_value=[]).tag(sync=True)
+
+    @property
+    def axes(self) -> "OverlayAxes":
+        """The @gcu/plot axes drawn around a LOCKED view, for your own items in world
+        coordinates: `w.axes.scatter(collar_e, collar_n, marker='^', label='collars')`,
+        `w.axes.add_geometry(licence)`, `w.axes.legend()`. matplotlib's names and keywords.
+        Each item belongs to one view -- `on='plan'` (E / N, the default) or an axis pair
+        such as `on=('E', 'RL')` for a section looking north -- and shows only there, since
+        the axes mean E / N in a plan and along / RL in a section."""
+        return OverlayAxes(self)
 
     @traitlets.validate("lock")
     def _valid_lock(self, proposal):
@@ -590,7 +604,7 @@ class Viewer(anywidget.AnyWidget):
                         section=self.section, background=self.background, height=self.height,
                         toolbar=self.toolbar, edl=self.edl, edl_strength=self.edl_strength,
                         budget=self.budget, select_through=self.select_through,
-                        lock=self.lock, lock_toggle=self.lock_toggle, twist=self.twist, grid=self.grid,
+                        lock=self.lock, lock_toggle=self.lock_toggle, twist=self.twist, grid=self.grid, overlay=list(self.overlay),
                         theme=self.theme, chrome=dict(self.chrome), z_exaggeration=self.z_exaggeration,
                         decorations=self.decorations)
         clone._payload = self._payload                     # same bytes, no re-pack
@@ -723,6 +737,97 @@ def view(*layers, **kwargs) -> Viewer:
     for l in layers:
         flat.extend(l if isinstance(l, (list, tuple)) else [l])
     return Viewer(flat, **kwargs)
+
+
+# ── the overlay: plot items over locked views ─────────────────────────────────
+def _plain(v):
+    """numpy / pandas / lists -> JSON-safe lists (NaN -> None)."""
+    if v is None or isinstance(v, (str, bool)):
+        return v
+    if hasattr(v, "to_numpy"):
+        v = v.to_numpy()
+    if isinstance(v, np.ndarray):
+        if v.dtype.kind in "fc":
+            return [None if not np.isfinite(x) else float(x) for x in v.ravel().tolist()] if v.ndim == 1 else [_plain(r) for r in v]
+        return v.tolist()
+    if isinstance(v, (list, tuple)):
+        return [_plain(x) for x in v]
+    if isinstance(v, (np.floating, float)):
+        return None if not np.isfinite(v) else float(v)
+    if isinstance(v, np.integer):
+        return int(v)
+    if isinstance(v, dict):
+        return {str(k): _plain(x) for k, x in v.items()}
+    return v
+
+
+def _on(on):
+    if on is None or on == "plan":
+        return "plan"
+    if on == "any":
+        return "any"
+    if isinstance(on, (list, tuple)) and len(on) == 2 and all(isinstance(a, str) for a in on):
+        return list(on)
+    raise ValueError(f"gcu-condenser: on={on!r} -- use 'plan', 'any', or the view's axis pair, e.g. ('E', 'RL') for a section looking north")
+
+
+class OverlayAxes:
+    """`w.axes`: plot items over a locked view (see Viewer.axes). Every call adds an item
+    to `w.overlay` and draws at once; `clear()` takes them all away."""
+
+    def __init__(self, viewer: "Viewer"):
+        self._v = viewer
+
+    def _add(self, spec: dict) -> "OverlayAxes":
+        self._v.overlay = list(self._v.overlay) + [spec]
+        return self
+
+    @staticmethod
+    def _style(kw: dict) -> dict:
+        out = {}
+        for k, val in kw.items():
+            out[k] = _plain(val)
+        return out
+
+    def scatter(self, x, y, *, on="plan", **kw):
+        """Points: matplotlib's scatter keywords (s, c/color, marker, alpha, label, ...)."""
+        return self._add({"kind": "scatter", "x": _plain(x), "y": _plain(y), "on": _on(on), **self._style(kw)})
+
+    def plot(self, x, y, fmt=None, *, on="plan", **kw):
+        """Lines: plot(x, y, 'r--', linewidth=2, label=...)."""
+        spec = {"kind": "plot", "x": _plain(x), "y": _plain(y), "on": _on(on), **self._style(kw)}
+        if fmt:
+            spec["fmt"] = fmt
+        return self._add(spec)
+
+    def fill(self, x, y, *, on="plan", **kw):
+        """A filled polygon: fill(x, y, facecolor=..., edgecolor=..., alpha=...)."""
+        return self._add({"kind": "fill", "x": _plain(x), "y": _plain(y), "on": _on(on), **self._style(kw)})
+
+    def text(self, x, y, s, *, on="plan", **kw):
+        """A label at a world point: text(x, y, 'DH-001', fontsize=..., color=...)."""
+        return self._add({"kind": "text", "x": float(x), "y": float(y), "text": str(s), "on": _on(on), **self._style(kw)})
+
+    def add_geometry(self, geom, *, on="plan", **kw):
+        """GeoJSON-shaped geometry -- a dict, or anything with __geo_interface__ (shapely,
+        a geopandas GeoDataFrame / GeoSeries): polygons with holes, lines, points."""
+        if hasattr(geom, "__geo_interface__"):
+            geom = geom.__geo_interface__
+        if not isinstance(geom, dict) or "type" not in geom:
+            raise TypeError("gcu-condenser: add_geometry takes GeoJSON (a dict with 'type') or an object with __geo_interface__")
+        return self._add({"kind": "geometry", "geometry": _plain(geom), "on": _on(on), **self._style(kw)})
+
+    def legend(self, **kw):
+        """The legend of the items shown (loc='upper center' reads best: the corners are the view's)."""
+        return self._add({"kind": "legend", **self._style(kw)})
+
+    def clear(self) -> "OverlayAxes":
+        """Take every item away."""
+        self._v.overlay = []
+        return self
+
+    def __repr__(self):
+        return f"<condenser overlay axes: {len(self._v.overlay)} item(s)>"
 
 
 # ── constructors ────────────────────────────────────────────────────────────

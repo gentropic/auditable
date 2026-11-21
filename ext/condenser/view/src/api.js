@@ -49,6 +49,9 @@ export const VIEW_DEFAULTS = {
   theme: 'dark', chrome: {},
   // grid lines across a locked view's axes
   grid: false,
+  // plot items over locked views, as data: [{kind: 'scatter' | 'plot' | 'fill' | 'text' |
+  // 'geometry' | 'legend', x, y, …style, on: 'plan' | [axis, axis] | 'any'}] (see API.md)
+  overlay: [],
   // JS only: false when the page's CSP allows no workers (streams then build inline)
   workers: true,
 };

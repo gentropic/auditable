@@ -82,7 +82,7 @@ export const _NOOP_CALLS = {
 };
 
 // plt.rcParams lives here so the strict flag can be read without an import cycle
-export const rcParams = {};
+export const rcParams = { 'axes.unicode_minus': true };   // matplotlib's: tick labels use U+2212
 Object.defineProperty(rcParams, 'update', {
   value(obj) { if (obj && typeof obj === 'object') for (const k of Object.keys(obj)) if (k !== '_kw') rcParams[k] = obj[k]; },
   enumerable: false,

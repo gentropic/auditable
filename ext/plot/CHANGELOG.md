@@ -36,6 +36,16 @@ one fill per colour), `hist2d` (numpy's histogram2d, drawn as a pcolormesh; retu
 `[h, xedges, yedges, image]`), `stackplot` (the `zero`, `sym`, `wiggle` and `weighted_wiggle`
 baselines).
 
+**matplotlib's minus sign.** Tick labels use U+2212 (−) where matplotlib's formatters do: the default
+labels, each field of a `{}` template, PercentFormatter, EngFormatter, colorbars (`%`-style and
+functions print what they're given, as matplotlib's FormatStrFormatter / FuncFormatter).
+`rcParams['axes.unicode_minus'] = False` turns it off. A colorbar's `format=` reads as matplotlib's
+(a `{}` string, a `%` string, a function or a Formatter); its own ad-hoc formatter is gone.
+
+**`legend(loc='best')` avoids filled areas** — fill_between bands, filled polygons, spans, violin
+bodies — sampled every ~10 px; before, it counted only line vertices, points and bars, and put
+the legend on a band.
+
 **Artists.** What a call returns (lines, mappables, containers, patches, geometry) has
 matplotlib's `set_visible`, `get_visible` and `remove` — a hidden artist doesn't draw, pick or
 show in the legend. (Items laid over a condenser view need it: they're in the axes' coordinates,

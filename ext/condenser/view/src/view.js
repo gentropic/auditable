@@ -1414,6 +1414,7 @@ export function mountView(el, store) {
   };
   const pushView = () => {
     const out = viewInfo();
+    overlayVisibility(out);
     const j = JSON.stringify(out);
     if (j === viewLast) return;
     viewLast = j;
@@ -1574,6 +1575,45 @@ export function mountView(el, store) {
   let insetKey = '';
   // the plot axes of locked views: one per view, so v.axes is the same object all along
   const plotAxes = planAxes();
+  // the overlay: plot items declared as data (the `overlay` option — what the Python widget
+  // syncs), drawn on those axes. Each item says which view it belongs to (`on`: 'plan' = E / N,
+  // an axis pair like ['E', 'RL'], or 'any'): its coordinates mean E / N in a plan, along / RL
+  // in a section, so it shows only where its axes are the view's.
+  let overlayItems = [];                                    // [{ traces, on }]
+  const ON = { plan: ['E', 'N'] };
+  const applyOverlay = () => {
+    const specs = store.get('overlay') || [];
+    if (!overlayItems.length && !specs.length) return;
+    const ax = plotAxes.axes(chromeApi);
+    for (const it of overlayItems) { const gone = new Set(it.traces); ax._traces = ax._traces.filter((t) => !gone.has(t)); }
+    overlayItems = [];
+    if (ax._fromOverlay) { ax._legend = false; ax._fromOverlay = false; }
+    for (const s of specs) {
+      if (!s || typeof s !== 'object') continue;
+      const { kind, x, y, on, geometry, text, ...opts } = s;
+      const before = ax._traces.length;
+      try {
+        if (kind === 'scatter') ax.scatter(x, y, opts);
+        else if (kind === 'plot') ax.plot(x, y, opts.fmt || '-', (({ fmt, ...o }) => o)(opts));
+        else if (kind === 'fill') ax.fill(x, y, opts);
+        else if (kind === 'text') ax.text(x, y, String(text ?? ''), opts);
+        else if (kind === 'geometry') ax.add_geometry(geometry, opts);
+        else if (kind === 'legend') { ax.legend(opts); ax._fromOverlay = true; continue; }
+        else { console.warn(`condenser: overlay item kind '${kind}' — use scatter, plot, fill, text, geometry or legend`); continue; }
+      } catch (e) { console.warn('condenser: an overlay item was refused —', e.message); continue; }
+      overlayItems.push({ traces: ax._traces.slice(before), on: on === 'any' ? 'any' : ON[on] || (Array.isArray(on) && on.length === 2 ? on.map(String) : ON.plan) });
+    }
+    overlayVisibility();
+    invalidate();
+  };
+  const overlayVisibility = (vi) => {
+    if (!overlayItems.length) return;
+    const axes = (vi || viewInfo()).axes;
+    for (const it of overlayItems) {
+      const show = it.on === 'any' || (!!axes && axes[0] === it.on[0] && axes[1] === it.on[1]);
+      for (const t of it.traces) t.hidden = !show;
+    }
+  };
   // the built-ins, by the switch that names them in `chrome: {…}`
   const domPlugin = (id, slot, order, elOf) => ({
     id, slot, order,
@@ -2021,6 +2061,7 @@ export function mountView(el, store) {
     ['change:toolbar', applyChrome],
     ['change:chrome', applyChrome],
     ['change:grid', () => invalidate()],
+    ['change:overlay', () => applyOverlay()],
     ['change:theme', applyTheme],
     ['change:edl', invalidate], ['change:edl_strength', invalidate], ['change:budget', invalidate],
     ['change:_fit', () => { needFit = true; invalidate(); }],
@@ -2056,6 +2097,7 @@ export function mountView(el, store) {
   applyView();                                             // match any camera state already on the widget
   applyCamera();                                           // a stored numeric camera wins over the preset
   applyLock(false);                                        // and a lock wins over both
+  applyOverlay();                                          // the declared plot items over locked views
 
   const teardown = () => {
     disposed = true;

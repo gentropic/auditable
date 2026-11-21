@@ -142,9 +142,57 @@ function _dataPoints(ax) {
     } else if (t._cache && t._cache.hrects) {
       const R = t._cache.hrects;
       for (let i = 0; i < R.x0.length; i++) for (let k = 0; k <= 2; k++) for (let q = 0; q <= 4; q++) push(R.x0[i] + (R.x1[i] - R.x0[i]) * k / 2, R.y0[i] + (R.y1[i] - R.y0[i]) * q / 4);
+    } else if (t.type === 'fill_between' && t.t) {
+      // a band covers its area, not only its edges: points across it at each sampled step
+      const n = t.t.length, step = Math.max(1, Math.floor(n / 400));
+      for (let i = 0; i < n; i += step) {
+        if (t.where && !t.where[i]) continue;
+        // across the band every ~10 px (a legend box is a few rows tall: coarser sampling misses it)
+        const pa = t.horiz ? v.xScale.transform(t.a[i]) : v.yScale.transform(t.a[i]), pb = t.horiz ? v.xScale.transform(t.b[i]) : v.yScale.transform(t.b[i]);
+        const K = Math.min(60, Math.max(2, Math.ceil(Math.abs(pb - pa) / 10)));
+        for (let k = 0; k <= K; k++) { const q = t.a[i] + (t.b[i] - t.a[i]) * k / K; if (t.horiz) push(q, t.t[i]); else push(t.t[i], q); }
+      }
+    } else if (t.type === 'span') {
+      // across the axes between its fractions: a grid over its rectangle, in pixels
+      const x0 = t.horiz ? v.x + t.f0 * v.w : v.xScale.transform(t.lo), x1 = t.horiz ? v.x + t.f1 * v.w : v.xScale.transform(t.hi);
+      const y0 = t.horiz ? v.yScale.transform(t.lo) : v.y + (1 - t.f0) * v.h, y1 = t.horiz ? v.yScale.transform(t.hi) : v.y + (1 - t.f1) * v.h;
+      const KX = Math.min(80, Math.max(2, Math.ceil(Math.abs(x1 - x0) / 10))), KY = Math.min(80, Math.max(2, Math.ceil(Math.abs(y1 - y0) / 10)));
+      for (let k = 0; k <= KX; k++) for (let q = 0; q <= KY; q++) { const px = x0 + (x1 - x0) * k / KX, py = y0 + (y1 - y0) * q / KY; if (px - px === 0 && py - py === 0) out.push(px, py); }
+    } else if (t.type === 'polygon' && t.parts && t.opts.facecolor !== 'none') {
+      // a filled polygon: a grid over each part's box, kept where it falls inside (even-odd)
+      for (const part of t.parts) {
+        let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+        for (const [xs, ys] of part.rings) for (let i = 0; i < xs.length; i++) { if (xs[i] < x0) x0 = xs[i]; if (xs[i] > x1) x1 = xs[i]; if (ys[i] < y0) y0 = ys[i]; if (ys[i] > y1) y1 = ys[i]; }
+        // every ~10 px over its box (at most 80 a side)
+        const KX = Math.min(80, Math.max(2, Math.ceil(Math.abs(v.xScale.transform(x1) - v.xScale.transform(x0)) / 10)));
+        const KY = Math.min(80, Math.max(2, Math.ceil(Math.abs(v.yScale.transform(y1) - v.yScale.transform(y0)) / 10)));
+        for (let k = 0; k <= KX; k++) for (let q = 0; q <= KY; q++) {
+          const x = x0 + (x1 - x0) * k / KX, y = y0 + (y1 - y0) * q / KY;
+          if (_insideRings(part.rings, x, y)) push(x, y);
+        }
+      }
+    } else if (t.type === 'violin' && t.stats) {
+      // each body, across its width at its sampled heights
+      t.stats.forEach((s, i) => {
+        if (!s.vals.length) return;
+        let vmax = 0; for (const q of s.vals) if (q > vmax) vmax = q;
+        const kw = (0.5 * t.widths[i]) / vmax, p = t.positions[i];
+        for (let j = 0; j < s.coords.length; j += 5) for (let k = -2; k <= 2; k++) { const a = p + (s.vals[j] * kw * k) / 2; if (t.horiz) push(s.coords[j], a); else push(a, s.coords[j]); }
+      });
     }
   }
   return out;
+}
+
+// even-odd: is (x, y) inside these rings
+function _insideRings(rings, x, y) {
+  let inside = false;
+  for (const [xs, ys] of rings) {
+    for (let i = 0, j = xs.length - 1; i < xs.length; j = i++) {
+      if ((ys[i] > y) !== (ys[j] > y) && x < ((xs[j] - xs[i]) * (y - ys[i])) / (ys[j] - ys[i]) + xs[i]) inside = !inside;
+    }
+  }
+  return inside;
 }
 
 // how far an anchored legend reaches past the plot area (the layout makes room)

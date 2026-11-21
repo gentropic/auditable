@@ -256,6 +256,21 @@ real coordinates), `hover` (the pick readout follows the cursor), `selection`,
   even with `z_exaggeration` — and `grid=True` adds grid lines. A free 3D view has an
   orientation **triad** (click E, N or Z for the view from that side) and, with
   `chrome={'box': True}`, ticked axes on the data's bounding box.
+- **Your own items over a locked view: `w.axes`**, with matplotlib's names and keywords —
+
+  ```python
+  w = cd.view(model, lock='plan')
+  w.axes.add_geometry(licence)                    # GeoJSON, or shapely / geopandas (__geo_interface__)
+  w.axes.scatter(collars.E, collars.N, marker='^', s=80, color='C3', label='collars')
+  w.axes.text(500150, 7000100, 'DH-001')
+  w.axes.plot(e, rl, '--', on=('E', 'RL'), label='pit floor')   # belongs to the section looking north
+  w.axes.legend(loc='upper center')
+  w.axes.clear()
+  ```
+
+  Each item shows only in its view — `on='plan'` (E / N, the default), or the section's axis
+  pair — because the axes mean E / N in a plan and along / RL in a section. It all syncs
+  as one trait, `w.overlay`, so a copy or a saved notebook keeps it.
 - Keyboard on the focused view: `L` lock · arrows pan · `+`/`-` zoom · `P` `N` `E` `I` views · `Esc`.
 
 ### Locking the orientation

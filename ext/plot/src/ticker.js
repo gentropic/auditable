@@ -16,13 +16,13 @@
 // (matplotlib counts days; plot counts what Date.getTime() returns). Calendar ticks and labels
 // are computed in UTC, so a figure is the same in every host whatever its time zone.
 
-import { pyFormat, pctFormat, _formatSpec } from './pyfmt.js';
-import { _niceTicks, _fmtStep } from './nice.js';
+import { pyFormat, pctFormat, _formatSpec, _pyFormatWith } from './pyfmt.js';
+import { _niceTicks, _fmtStep, _minus } from './nice.js';
 
 // ── formatters ──
 export class Formatter { format(v) { return String(v); } }
 export class ScalarFormatter extends Formatter {
-  format(v, pos, ctx) { return _fmtStep([v], (ctx && ctx.step) || Math.abs(v) || 1)[0]; }
+  format(v, pos, ctx) { return _minus(_fmtStep([v], (ctx && ctx.step) || Math.abs(v) || 1)[0]); }
 }
 export class NullFormatter extends Formatter { format() { return ''; } }
 export class FuncFormatter extends Formatter {
@@ -31,7 +31,8 @@ export class FuncFormatter extends Formatter {
 }
 export class StrMethodFormatter extends Formatter {
   constructor(fmt) { super(); this.fmt = String(fmt); }
-  format(v, pos) { return pyFormat(this.fmt, { x: v, pos }); }
+  // the minus sign in each field, as matplotlib's (its literal text is left alone)
+  format(v, pos) { return _pyFormatWith(this.fmt, { x: v, pos }, [], _minus); }
 }
 export class FormatStrFormatter extends Formatter {
   constructor(fmt) { super(); this.fmt = String(fmt); }
@@ -56,7 +57,7 @@ export class PercentFormatter extends Formatter {
       const r = ctx && ctx.range ? (ctx.range / this.xmax) * 100 : 0;
       d = r <= 0 ? 0 : Math.max(0, Math.min(5, Math.ceil(2 - Math.log10(2 * r))));
     }
-    return _formatSpec(pct, `.${d}f`) + this.symbol;
+    return _minus(_formatSpec(pct, `.${d}f`) + this.symbol);
   }
 }
 // EngFormatter(unit = '', places = null): SI prefixes, 12.3 k
@@ -68,13 +69,13 @@ export class EngFormatter extends Formatter {
     this.unit = unit; this.places = places; this.sep = sep;
   }
   format(v) {
-    if (v === 0) return `0${this.unit ? this.sep + this.unit : ''}`;
+    if (v === 0) return `0${this.unit ? this.sep + this.unit : ''}`;   // (no minus to fix)
     let e = Math.floor(Math.log10(Math.abs(v)) / 3) * 3;
     e = Math.max(-24, Math.min(24, e));
     const m = v / Math.pow(10, e);
     const s = this.places == null ? String(+m.toPrecision(6)) : _formatSpec(m, `.${this.places}f`);
     const suf = _SI[e] + this.unit;
-    return suf ? `${s}${this.sep}${suf}` : s;
+    return _minus(suf ? `${s}${this.sep}${suf}` : s);
   }
 }
 
