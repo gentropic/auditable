@@ -1,0 +1,42 @@
+{
+  "name": "@gcu/compo",
+  "version": "0.1.0",
+  "description": "A figure / page composer: a page (A5–A2, Letter, custom mm; portrait or landscape) with frames placed freely on it — renders, plots, legends, scale bars, north arrows, captions with fields — drawn by one path onto a canvas, a PNG or a vector PDF (@gcu/pdf). A host-agnostic DOM editor (move, resize, snap, align, distribute, undo). Plain-JSON documents.",
+  "type": "module",
+  "main": "./src/main.js",
+  "exports": {
+    ".": "./src/main.js",
+    "./bundled": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "index.js",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "node build.js"
+  },
+  "keywords": [
+    "figure",
+    "page",
+    "layout",
+    "composer",
+    "atlas",
+    "pdf",
+    "map-layout",
+    "auditable",
+    "gcu"
+  ],
+  "license": "MIT",
+  "author": "Arthur Endlein Correia",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gentropic/auditable.git",
+    "directory": "ext/compo"
+  },
+  "homepage": "https://github.com/gentropic/auditable/tree/main/ext/compo",
+  "bugs": {
+    "url": "https://github.com/gentropic/auditable/issues"
+  }
+}

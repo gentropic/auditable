@@ -1071,7 +1071,7 @@ class PdfPage {
 }
 
 class PdfDocument {
-  // { title, author, subject, keywords, creator, created (Date — for reproducible output),
+  // { title, author, subject, keywords, creator, created (Date or ISO string — for reproducible output),
   //   compress (default true), onWarn(msg), strict (warnings throw) }
   constructor(opts = {}) {
     this.opts = { compress: true, ...opts };
@@ -1176,7 +1176,7 @@ class PdfDocument {
     const o = this.opts, info = [];
     for (const [k, v] of [['Title', o.title], ['Author', o.author], ['Subject', o.subject], ['Keywords', o.keywords], ['Creator', o.creator]]) if (v) info.push(`/${k} ${textString(v)}`);
     info.push(`/Producer ${textString('@gcu/pdf')}`);
-    info.push(`/CreationDate (${pdfDate(o.created instanceof Date ? o.created : new Date())})`);
+    info.push(`/CreationDate (${pdfDate(o.created instanceof Date ? o.created : o.created ? new Date(o.created) : new Date())})`);
     const infoId = add({ dict: `<< ${info.join(' ')} >>` });
 
     // the file: header, objects, xref, trailer
