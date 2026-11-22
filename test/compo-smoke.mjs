@@ -207,7 +207,7 @@ await page.evaluate(() => { C.removeFrames(ed.getDoc(), ['A', 'K']); ed.select([
 {
   await page.evaluate(() => { C.addFrame(ed.getDoc(), { id: 'FP', kind: 'text', box: [150, 120, 40, 8], content: { md: 'made ' } }); ed.select(['FP']); ed.render(); });
   const opts = await page.evaluate(() => [...document.querySelectorAll('.compo-fields option')].map((o) => o.value).filter(Boolean));
-  chk(`the field picker lists compo's fields (${opts.length}: ${opts.join(' ')})`, ['fig', 'page', 'pages', 'date', 'time', 'title', 'ref', 'scale'].every((n) => opts.includes(n)));
+  chk(`the field picker lists compo's fields (${opts.length}: ${opts.join(' ')})`, ['fig', 'page', 'pages', 'date', 'time', 'title', 'scale'].every((n) => opts.includes(n)));
   await page.evaluate(() => { const ta = document.querySelector('.compo-side textarea'); ta.focus(); ta.selectionStart = ta.selectionEnd = ta.value.length; });
   await page.locator('.compo-fields').selectOption('date');
   chk('picking a field inserts it at the caret', await page.evaluate(() => C.frameById(ed.getDoc(), 'FP').content.md) === 'made {date}');
@@ -262,7 +262,21 @@ chk('rulers show by default', await page.evaluate(() => [...document.querySelect
   await page.locator('.compo-it[data-item="G"] .nm').dblclick();
   await page.locator('.compo-it[data-item="G"] .nm input').fill('callout');
   await page.locator('.compo-it[data-item="G"] .nm input').press('Enter');
-  chk('double-click renames (the list shows the name)', await page.evaluate(() => C.frameById(ed.getDoc(), 'G').name === 'callout' && document.querySelector('.compo-it[data-item="G"] .nm').textContent === 'callout'));
+  chk('double-click renames the id (the list shows it)', await page.evaluate(() => !C.frameById(ed.getDoc(), 'G') && !!C.frameById(ed.getDoc(), 'callout') && document.querySelector('.compo-it[data-item="callout"] .nm .id').textContent === 'callout'));
+  // … and the inspector's id field renames it back, rewriting a reference on the way
+  await page.evaluate(() => { C.addFrame(ed.getDoc(), { id: 'REF', kind: 'text', box: [150, 140, 40, 8], content: { md: 'at {scale@callout}' } }); ed.select(['callout']); ed.render(); });
+  await page.locator('.compo-side input.compo-id').fill('G');
+  await page.locator('.compo-side input.compo-id').press('Enter');
+  chk('the inspector renames, and references follow ({scale@callout} → {scale@G})', await page.evaluate(() => !!C.frameById(ed.getDoc(), 'G') && C.frameById(ed.getDoc(), 'REF').content.md === 'at {scale@G}' && JSON.stringify(ed.selected().map((f) => f.id)) === '["G"]'));
+  await page.locator('.compo-side input.compo-id').fill('REF');
+  await page.locator('.compo-side input.compo-id').press('Enter');
+  chk('a taken id is refused (said why), the old one kept', await page.evaluate(() => !!C.frameById(ed.getDoc(), 'G') && /already/.test(document.querySelector('.compo-bar .status').textContent)));
+  // refers to: a caption shows "nearest → <the view>", can be fixed to a frame, and draws a link line to it
+  await page.evaluate(() => { ed.select(['REF']); ed.render(); });
+  const rs = await page.evaluate(() => { const s = [...document.querySelectorAll('.compo-side select')].find((x) => /nearest/.test(x.options[0].textContent)); return s && { first: s.options[0].textContent, opts: [...s.options].map((o) => o.value) }; });
+  chk(`refers to: nearest names the view it picked (${rs && rs.first})`, rs && /^nearest → /.test(rs.first) && rs.opts.length >= 2);
+  chk('the selected caption draws a link to that view, outlined', await page.evaluate(() => !!document.querySelector('.compo-link') && document.querySelectorAll('.compo-fr.ref').length === 1));
+  await page.evaluate(() => { C.removeFrames(ed.getDoc(), ['REF']); ed.select([]); ed.render(); });
   // drag G (front) below the last row → to the back
   const last = await page.evaluate(() => ed.getDoc().frames[0].id);
   const src = page.locator('.compo-it[data-item="G"]'), dst = page.locator(`.compo-it[data-item="${last}"]`);

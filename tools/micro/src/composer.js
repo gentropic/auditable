@@ -23,7 +23,7 @@ import { setSectionWorld, sectionWorld } from './section.js';
 import { rendererDocBbox, layerShown } from './layers.js';
 import { attrRowCountOf, layerBlob } from './records.js';
 import { sourceHash, sourceHashSync } from './identity.js';
-import { createDocument, parseDocument, serializeDocument, mountEditor, exportPDF, exportPNG, frameById, pageDims, tableFromTsv, refFrame } from '../../../ext/compo/index.js';
+import { createDocument, parseDocument, serializeDocument, mountEditor, exportPDF, exportPNG, frameById, pageDims, tableFromTsv, subjectFrame } from '../../../ext/compo/index.js';
 const $ = (s) => document.querySelector(s);
 
 // the app's side (setComposerHooks): renderViewCanvas(pxW, pxH) → a canvas rendered to convergence
@@ -73,7 +73,7 @@ function viewFacts() {
 }
 // the slower facts, once a view frame has rendered: each layer's content hash, and the statistics
 // its captions ask for ({mean:AU} …), over the records the view showed (its filters)
-const STAT_RE = /\{(mean|median|min|max|std|n):([^{}]+?)(?::[,_]?(?:\.\d{1,2})?[f%e]?)?\}/g;
+const STAT_RE = /\{(mean|median|min|max|std|n):([^{}@]+?)(?::[,_]?(?:\.\d{1,2})?[f%e]?)?(?:@([\w.-]+))?\}/g;
 const isView = (f) => !!(f.source && f.source.kind === 'view');
 async function completeFacts(doc, f) {
   const fx = f.content && f.content.meta && f.content.meta.facts; if (!fx) return;
@@ -81,10 +81,11 @@ async function completeFacts(doc, f) {
   const want = new Set();
   for (const t of doc.frames) {
     if (t.kind !== 'text' || !t.content || !t.content.md) continue;
-    const md = String(t.content.md); STAT_RE.lastIndex = 0;
-    if (!STAT_RE.test(md) || refFrame(doc, t, null, isView) !== f) continue;
-    STAT_RE.lastIndex = 0; let m;
-    while ((m = STAT_RE.exec(md))) want.add(m[2].trim());
+    const md = String(t.content.md); STAT_RE.lastIndex = 0; let m;
+    while ((m = STAT_RE.exec(md))) {               // the view this statistic is about: its @id, the caption's refers-to, the nearest
+      const about = subjectFrame({ doc, at: m[3] || null }, t, isView);
+      if (about === f) want.add(m[2].trim());
+    }
   }
   if (!want.size || !HK.statsScan) return;
   fx.stats = {};
@@ -151,7 +152,7 @@ export function addViewFrame(ed, { box = null, border = true } = {}) {   // box:
   const r = S.cv.getBoundingClientRect(), aspect = r.width / Math.max(1, r.height);
   let w = Math.min(W - m[1] - m[3], 0.72 * (W - m[1] - m[3])), h = w / aspect;
   const hMax = H - m[0] - m[2] - 18; if (h > hMax) { h = hMax; w = h * aspect; }
-  const f = ed.addFrame({ kind: 'image', box: box || [m[3], m[0], +w.toFixed(1), +h.toFixed(1)], content: { photo: true }, style: { border } });
+  const f = ed.addFrame({ kind: 'image', box: box || [m[3], m[0], +w.toFixed(1), +h.toFixed(1)], content: { photo: true }, source: { app: 'micro', kind: 'view' }, style: { border } });
   ed.update(f.id, (fr) => viewFrameContent(fr));
   afterFacts(ed, f.id);
   $('#meta').textContent = 'composer: the 3D view went into a frame — resize it freely; "Update from the 3D view" re-captures it';
@@ -311,11 +312,11 @@ function envFor(extra = {}) {
     },
   };
 }
-// ── micro's fields. View fields take a frame's name ({section:plan}); layer fields a layer's
-// name ({count:blocks}); statistics a column, optionally layer:column ({mean:AU}, {mean:holes:AU}).
-// Without one: the nearest 3D-view frame, and all the layers it shows. ──
-const viewOf = (frame, env, a) => refFrame(env.doc, frame, a || null, isView);
-const factsOf = (frame, env, a) => { const v = viewOf(frame, env, a); return v && v.content && v.content.meta && v.content.meta.facts; };
+// ── micro's fields, each about ONE view frame: the field's @id ({section@plan}), else the caption's
+// "refers to", else the nearest view. Layer fields take a layer's name ({count:blocks}); statistics a
+// column, optionally layer:column ({mean:AU}, {mean:holes:AU}). ──
+const viewOf = (frame, env) => subjectFrame(env, frame, isView);
+const factsOf = (frame, env) => { const v = viewOf(frame, env); return v && v.content && v.content.meta && v.content.meta.facts; };
 const groupSp = (n) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
 const coord = (v, th) => {
   if (Math.abs(v) >= 1000) return groupSp(Math.round(v)).replace(/^-/, '−');
@@ -337,10 +338,10 @@ const layersOf = (fx, a) => (fx ? fx.layers.filter((l) => !a || l.name === a) : 
 const deg3 = (v) => String(Math.round(((v % 360) + 360) % 360) % 360).padStart(3, '0') + '°';
 const sum = (ls, k) => ls.reduce((s, l) => s + l[k], 0);
 const MICRO_FIELDS = {
-  section: (a, f, env) => { const fx = factsOf(f, env, a); return fx ? sectionText(fx.section) : null; },
-  look: (a, f, env) => { const fx = factsOf(f, env, a); return fx && fx.camera ? deg3(fx.camera.look) : null; },
-  elevation: (a, f, env) => { const fx = factsOf(f, env, a); return fx && fx.camera ? Math.round(fx.camera.elevation) + '°' : null; },
-  layers: (a, f, env) => { const fx = factsOf(f, env, a); return fx ? fx.layers.map((l) => l.name).join(', ') || 'no layers' : null; },
+  section: (a, f, env) => { const fx = factsOf(f, env); return fx ? sectionText(fx.section) : null; },
+  look: (a, f, env) => { const fx = factsOf(f, env); return fx && fx.camera ? deg3(fx.camera.look) : null; },
+  elevation: (a, f, env) => { const fx = factsOf(f, env); return fx && fx.camera ? Math.round(fx.camera.elevation) + '°' : null; },
+  layers: (a, f, env) => { const fx = factsOf(f, env); return fx ? fx.layers.map((l) => l.name).join(', ') || 'no layers' : null; },
   count: (a, f, env) => { const ls = layersOf(factsOf(f, env), a); return ls.length ? sum(ls, 'shown') : null; },
   total: (a, f, env) => { const ls = layersOf(factsOf(f, env), a); return ls.length ? sum(ls, 'total') : null; },
   filter: (a, f, env) => {

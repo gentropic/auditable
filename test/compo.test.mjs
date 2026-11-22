@@ -249,20 +249,42 @@ test('fields: the grammar, number + date formats, {ref}, {scale}, host fields, u
   assert.equal(formatNumber(3.14159265), '3.14159');
   assert.equal(formatDate(new Date(2026, 0, 5, 7, 3, 9), 'D MMMM YYYY, HH:mm:ss'), '5 January 2026, 07:03:09');
   const doc = createDocument({ title: 'Pit A' });
-  addFrame(doc, { id: 'v', name: 'plan', kind: 'image', box: [10, 10, 100, 80], content: { width: 1000, height: 800, meta: { ortho: true, worldPerPx: 0.25 } } });
+  addFrame(doc, { id: 'plan', kind: 'image', box: [10, 10, 100, 80], content: { width: 1000, height: 800, meta: { ortho: true, worldPerPx: 0.25 } } });
   addFrame(doc, { id: 'p', kind: 'image', box: [150, 10, 100, 80], content: { width: 1000, height: 800, meta: { ortho: false } } });
-  const cap = addFrame(doc, { id: 'c', name: 'plancap', kind: 'text', box: [10, 92, 100, 8], content: { md: 'Figure {fig}' } });
+  const cap = addFrame(doc, { id: 'plancap', kind: 'text', box: [10, 92, 100, 8], content: { md: 'Figure {fig}' } });
   const cap2 = addFrame(doc, { id: 'c2', kind: 'text', box: [150, 92, 100, 8], content: { md: 'Figure {fig}' } });
   const env = { doc, figOf: (f) => [cap, cap2].indexOf(f) + 1, now: new Date(2026, 10, 22), title: 'Pit A', evalField: (e, v) => (e === 'x * 2' ? 2 * v.x : v[e]), vars: { x: 1234.5 } };
   const R = (s, fr = cap) => resolveFields(s, env, fr);
   assert.equal(R('{date} · {date:DD/MM/YYYY} · {title}'), '2026-11-22 · 22/11/2026 · Pit A');
   assert.equal(R('{scale}'), '1 : 2 500');                         // the nearest view: 0.25 m/px at 10 px/mm
   assert.equal(R('{scale}', cap2), 'no scale (perspective)');      // nearest to cap2 is the perspective view
-  assert.equal(R('{scale:plan}', cap2), '1 : 2 500');              // … unless one is named
-  assert.equal(R('see Figure {ref:plancap}, and {ref:plan}', cap2), 'see Figure 1, and 1');   // a view → its nearest {fig} caption
+  assert.equal(R('{scale@plan}', cap2), '1 : 2 500');              // … unless one is named (@id)
+  cap2.content.of = 'plan'; assert.equal(R('{scale}', cap2), '1 : 2 500'); delete cap2.content.of;   // … or the caption refers to it
+  assert.equal(R('{scale@nope}', cap2), '⟨no frame “nope”⟩');
+  assert.equal(R('see Figure {fig@plancap}, and {fig@plan}', cap2), 'see Figure 1, and 1');   // a view → its nearest {fig} caption
   assert.equal(R('${x * 2:,.1f} | ${x}'), '2,469.0 | 1234.5');
   assert.equal(R('{fig:,} {nope} {} {a b} {page}/{pages}'), '1 {nope} {} {a b} 1/1');
   registerField('answer', (a) => (a ? a.length : 42), 'test');
   assert.equal(R('{answer} {answer:abcd} {answer:,}'), '42 4 42');
   assert.equal(resolveFields('{answer}', { ...env, fields: { answer: () => 'host' } }, cap), 'host');   // env.fields win
+});
+
+test('ids: auto <prefix>-n, renaming rewrites references, old names and {ref:} migrate', async () => {
+  const { renameFrame, newId } = await import('../ext/compo/src/main.js');
+  const doc = createDocument();
+  const v = addFrame(doc, { kind: 'image', source: { kind: 'view' }, content: { meta: { ortho: true } } });
+  const t = addFrame(doc, { kind: 'text', content: { md: 'at {scale@view-1} · {fig@view-1}', of: 'view-1' } });
+  const sb = addFrame(doc, { kind: 'scalebar', content: { of: 'view-1' } });
+  assert.deepEqual([v.id, t.id, sb.id, newId(doc, 'view')], ['view-1', 'text-1', 'scale-1', 'view-2']);
+  assert.equal(renameFrame(doc, 'view-1', 'plan'), null);
+  assert.equal(t.content.md, 'at {scale@plan} · {fig@plan}');
+  assert.equal(t.content.of, 'plan'); assert.equal(sb.content.of, 'plan');
+  assert.match(renameFrame(doc, 'plan', 'text-1'), /already/);
+  assert.match(renameFrame(doc, 'plan', 'has space'), /no spaces/);
+  const old = { format: 'compo', version: 1, title: '', page: { size: 'A4' }, frames: [
+    { id: 'image-1x', name: 'plan view', kind: 'image', box: [0, 0, 10, 10], content: {} },
+    { id: 'text-2y', kind: 'text', box: [0, 0, 10, 10], content: { md: 'see {ref:plan view} at {scale:plan view}' } }] };
+  const d2 = parseDocument(JSON.stringify(old));
+  assert.equal(d2.frames[0].id, 'plan-view'); assert.equal(d2.frames[0].name, undefined);
+  assert.equal(d2.frames[1].content.md, 'see {fig@plan-view} at {scale@plan-view}');
 });

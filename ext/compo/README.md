@@ -38,6 +38,16 @@ const bytes = await exportPDF(ed.getDoc(), { env: { evalField: (expr, vars) => v
 - `parseDocument` checks the document; `serializeDocument` writes it.
 - Unknown kinds are kept, and draw as an error box until a host registers them.
 
+**Ids.** A frame's `id` is its one handle.
+- It is generated as `<prefix>-<n>`: `view-1`, `text-2`, `scale-1`, `legend-1`, `table-1`, `chart-1`, `image-1`, `plot-1` (`idPrefix(frame)`, `newId(doc, prefix)`).
+- It is a short token: letters, digits, `-`, `_` and `.` (`ID_RE`, `sanitizeId`).
+- `renameFrame(doc, from, to)` renames it and rewrites every reference: other frames' `content.of`, and `@id` in their fields. It returns null, or the reason it refused (a taken id, a space).
+- Older documents migrate on `parseDocument`: a frame's display `name` becomes its id when it can, and `{ref:x}` / `{scale:x}` become `{fig@x}` / `{scale@x}`.
+
+**Refers to.** A caption, scale bar or north arrow is ABOUT one other frame:
+- its `content.of` when set;
+- else the nearest frame that fits (one with `content.meta`, i.e. a view).
+
 ## Kinds
 
 | kind | content |
@@ -57,18 +67,19 @@ const bytes = await exportPDF(ed.getDoc(), { env: { evalField: (expr, vars) => v
 Live text, filled in each time the page is drawn: text frames, and legend and table titles and notes.
 
 - `{name}`, `{name:arg}`, and a number format last: `{name:arg:,.2f}`, or `{count:,}` with no argument.
+- `@id` at the very end makes the field about that frame: `{scale@plan}`, `{mean:AU:.2f@plan}`. Without it, the field is about the frame its text frame refers to (see [Ids](#the-document)).
 - `${expr}` and `${expr:,.0f}`: an expression the host evaluates, `env.evalField(expr, env.vars, frame, env)`.
 - An unknown `{word}` stays as written, so ordinary braces survive.
 
 | field | gives |
 |---|---|
 | `{fig}` | the figure number: captions are counted in page order, and on across an atlas |
+| `{fig@id}` | another caption's figure number; for a view, the number of the caption nearest it |
 | `{page}` `{pages}` | the page number and count |
 | `{date}` `{date:DD/MM/YYYY}` | today; tokens `YYYY YY MMMM MMM MM M DD D HH mm ss` |
 | `{time}` `{time:HH:mm:ss}` | the time |
 | `{title}` | the document's title |
-| `{ref:name}` | the figure number of the caption named `name`. If `name` is a view, the number of the caption nearest it |
-| `{scale}` `{scale:name}` | `1 : 2 500`, the nearest view frame's scale (from `content.meta`), or the named frame's. A perspective view has none |
+| `{scale}` | `1 : 2 500`: the scale of the view the caption is about (from `content.meta`). A perspective view has none |
 
 **Number formats** follow Python:
 - `,` or `_` groups thousands with a comma or a space;
@@ -82,7 +93,7 @@ With no format, a number shows six significant figures, but the integer part is 
 - `env.fields = { name: fn }` adds fields for one render, and wins over a registered field of the same name.
 - `env.fieldHelp = [{ name, help }]` lists the host's fields in the editor's picker.
 
-`refFrame(doc, frame, arg, test)` resolves "the frame a field means": the frame NAMED by `arg` (by name or id), else the nearest frame that passes `test`. So a caption under a view refers to that view.
+`subjectFrame(env, frame, test)` is the one rule a host field uses to find its frame: the field's `@id` (`env.at`), else the frame's `content.of`, else the nearest frame that passes `test`. `refFrame(doc, frame, id, test)` is its lookup: by id, or the nearest.
 
 Also exported: `formatNumber`, `formatDate`, `fieldList`.
 
@@ -115,12 +126,12 @@ Also exported: `formatNumber`, `formatDate`, `fieldList`.
 - **Grid:** 1, 2, 5 or 10 mm, drawn faintly and snapped to (moving and resizing); `page.grid = { size, show, snap }`.
 - **Item list:** every frame, front first, above the inspector.
   - Each row has an eye (a hidden frame is neither drawn, picked nor printed) and a lock.
-  - A click selects; a member row selects just that member, to edit inside a group. Double-click renames (`frame.name`).
+  - Each row shows the id, then a description. A click selects; a member row selects just that member, to edit inside a group. Double-click renames the id.
   - Drag a row to restack. A group is a folder row over its members and moves as a block. A member dragged out of its block leaves the group; another frame dropped on a group lands beside the block, never inside it. Grouping gathers the members together in the stack.
   - A kind can name its frames for the list with `describe(frame)`.
 - **Keys:** arrows nudge 0.5 mm, ⇧ + arrow 5 mm. ⌘D duplicates, Delete removes, ⌘Z / ⌘⇧Z undo and redo, ⌘A selects all.
 - **Toolbar:** page setup and the arranging buttons. A status line says when something was refused.
-- **Inspector:** the selected frame's box in mm, its border, its lock, and its kind's own fields. A multiple selection shows its units and one lock box for all of them. A text frame has an **insert field…** picker: compo's fields and the host's, each with its help as a tooltip. A pick inserts at the caret as one undo step.
+- **Inspector:** the selected frame's id (renaming it updates every reference), its "refers to" for a caption / scale bar / north arrow (**nearest → view-1**, saying which it picked, or a fixed frame; the frame it refers to is outlined and linked on the page), its box in mm, its border, its lock, and its kind's own fields. A multiple selection shows its units and one lock box for all of them. A text frame has an **insert field…** picker: compo's fields and the host's, each with its help as a tooltip. A pick inserts at the caret as one undo step.
 - **Context menu:** the host's items, then Duplicate, Group / Ungroup, Same size, the four z-order steps, Lock / Unlock and Delete.
 - **Host hooks:** a host adds toolbar buttons, items in the frame context menu, and inspector rows. Its `update(id, fn)` changes a frame as one undo step.
 - **Theming:** the editor's colours read `--compo-*`, then the host's `--text` / `--border` / `--accent` / `--bg-btn`.

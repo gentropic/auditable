@@ -14,7 +14,7 @@ export function registerKind(kind, impl) { KINDS.set(kind, impl); }
 export const kindOf = (k) => KINDS.get(k) || null;
 
 // ── fields live in fields.js; resolveFields is re-exported from here for the kinds' sake ──
-import { resolveFields, registerField, refFrame } from './fields.js';
+import { resolveFields, registerField, subjectFrame } from './fields.js';
 export { resolveFields };
 
 // ── text: paragraphs (blank-line or newline separated), **bold** runs, word wrap to the box ──
@@ -189,23 +189,25 @@ export function frameWorldPerMm(t) {
   const k = fit === 'cover' ? Math.max(b[2] / iw, b[3] / ih) : Math.min(b[2] / iw, b[3] / ih);   // mm per pixel
   return +m.worldPerPx / k;
 }
-// {scale} — the representative fraction of a view frame (the nearest one that states a scale, or
-// the one named: {scale:plan}). A perspective view has none, and says so.
+// {scale} — the representative fraction of a view frame (the field's @id, the caption's "refers
+// to", else the nearest frame that states a scale). A perspective view has none, and says so.
 const hasScaleMeta = (f) => !!(f.content && f.content.meta && (f.content.meta.worldPerPx > 0 || f.content.meta.worldPerMm > 0 || 'worldPerPx' in f.content.meta || 'ortho' in f.content.meta));
 const UNIT_MM = { m: 1000, km: 1e6, ft: 304.8, mm: 1, cm: 10 };
 registerField('scale', (a, frame, env) => {
-  const t = refFrame(env.doc, frame, a, hasScaleMeta);
-  if (!t) return a ? `⟨no frame “${a}”⟩` : '—';
+  const t = subjectFrame(env, frame, hasScaleMeta);
+  if (!t) return '—';
   const wpm = frameWorldPerMm(t);
   if (!(wpm > 0)) return 'no scale (perspective)';
   const n = wpm * (UNIT_MM[(t.content.meta.units || 'm')] || 1000);
   const r = +n.toPrecision(n >= 1000 ? 3 : 2);
   return '1 : ' + String(Math.round(r)).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
-}, 'the scale of the nearest view: 1 : 2 500 (orthographic views only); {scale:frame name}');
+}, 'the scale of the view: 1 : 2 500 (orthographic views only) · {scale@plan}');
+// a scale bar / north arrow: its own numbers, or the view it refers to (content.of), else the nearest view
 const metaOf = (frame, doc) => {
   const c = frame.content || {};
-  if (c.of && doc) {
-    const t = doc.frames.find((f) => f.id === c.of);
+  const own = c.worldPerMm != null || c.north !== undefined;
+  if (doc && (c.of || !own)) {
+    const t = subjectFrame({ doc }, frame, hasScaleMeta);
     if (t && t.content && t.content.meta) return { ...t.content.meta, worldPerMm: frameWorldPerMm(t) };
     if (t) return {};
   }

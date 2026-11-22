@@ -37,6 +37,7 @@ export function parseDocument(src) {
   for (const f of d.frames) {
     if (!f || typeof f.id !== 'string' || typeof f.kind !== 'string' || !Array.isArray(f.box) || f.box.length !== 4) throw new Error(`compo: a frame needs an id, a kind and a box [x, y, w, h] (${JSON.stringify(f && f.id)})`);
   }
+  migrate(d);
   return d;
 }
 // JSON for saving: frames' runtime-only fields (a decoded bitmap) are dropped
@@ -44,12 +45,55 @@ export function serializeDocument(doc) {
   return JSON.stringify(doc, (k, v) => (k.startsWith('_') ? undefined : v), 1);
 }
 
-let _seq = 0;
-export function newId(doc, kind) {
+// ── IDS: every frame's ONE handle. Auto-made as <prefix>-<n> (view-1, text-2, scale-1), editable,
+// a short token (letters, digits, - _ .) so a field can name it: {scale@plan}. Renaming rewrites
+// every reference to it (content.of, @id in fields). ──
+export const ID_RE = /^[A-Za-z0-9_][\w.-]*$/;
+export const sanitizeId = (s) => String(s == null ? '' : s).trim().replace(/\s+/g, '-').replace(/[^\w.-]/g, '').replace(/^[.-]+/, '');
+const PREFIX = { image: 'image', text: 'text', legend: 'legend', scalebar: 'scale', north: 'north', table: 'table', drawlist: 'chart' };
+export const idPrefix = (frame) => (frame && frame.source && frame.source.kind === 'view' ? 'view' : (frame && frame.source && frame.source.kind === 'plot') ? 'plot' : PREFIX[frame && frame.kind] || (frame && frame.kind) || 'frame');
+export function newId(doc, prefix) {
   const used = new Set((doc.frames || []).map((f) => f.id));
-  let id;
-  do id = `${kind}-${(++_seq).toString(36)}`; while (used.has(id));
-  return id;
+  let n = 1;
+  while (used.has(`${prefix}-${n}`)) n++;
+  return `${prefix}-${n}`;
+}
+// every string in a frame that can carry fields: a text's md, a legend's / table's title and note
+const FIELD_KEYS = ['md', 'title', 'note'];
+const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+function rewriteRefs(doc, from, to) {
+  const at = new RegExp(`@${escRe(from)}(?=\\})`, 'g');
+  for (const f of doc.frames) {
+    const c = f.content; if (!c) continue;
+    if (c.of === from) c.of = to;
+    for (const k of FIELD_KEYS) if (typeof c[k] === 'string') c[k] = c[k].replace(at, '@' + to);
+  }
+}
+// rename a frame → null, or the reason it can't be
+export function renameFrame(doc, from, to) {
+  const f = doc.frames.find((x) => x.id === from);
+  if (!f) return `no frame “${from}”`;
+  if (to === from) return null;
+  if (!ID_RE.test(to)) return `“${to}” — an id is letters, digits, - _ and . (no spaces)`;
+  if (doc.frames.some((x) => x.id === to)) return `another frame is already “${to}”`;
+  f.id = to;
+  rewriteRefs(doc, from, to);
+  return null;
+}
+// older documents: a display `name` becomes the id (when it can), and {ref:x} becomes {fig@x}
+function migrate(d) {
+  for (const f of d.frames) {
+    const c = f.content;
+    if (c) for (const k of FIELD_KEYS) if (typeof c[k] === 'string') c[k] = c[k].replace(/\{ref:([^{}:@]+)\}/g, (_, x) => `{fig@${x.trim()}}`).replace(/\{scale:([^{}:@]+)\}/g, (_, x) => `{scale@${x.trim()}}`);
+  }
+  for (const f of d.frames) {
+    if (f.name == null) continue;
+    const want = sanitizeId(f.name);
+    const named = d.frames.filter((x) => x !== f);
+    // a reference written to the old name follows it to the id
+    if (want && ID_RE.test(want) && !named.some((x) => x.id === want)) { const old = f.id; f.id = want; rewriteRefs(d, old, want); if (f.name !== want) rewriteRefs(d, f.name, want); }
+    delete f.name;
+  }
 }
 
 // add a frame: { kind, box?, content, source?, style? } → the frame (placed in the margins, or
@@ -57,7 +101,7 @@ export function newId(doc, kind) {
 export function addFrame(doc, frame) {
   const [W, H] = pageDims(doc.page), m = doc.page.margins || [0, 0, 0, 0];
   const box = frame.box || [m[3] + 10, m[0] + 10, Math.min(120, W - m[1] - m[3] - 20), Math.min(80, H - m[0] - m[2] - 20)];
-  const f = { id: frame.id || newId(doc, frame.kind), kind: frame.kind, box: box.map(Number), content: frame.content || {}, ...(frame.source ? { source: frame.source } : {}), ...(frame.style ? { style: frame.style } : {}), ...(frame.name ? { name: String(frame.name) } : {}), ...(frame.group ? { group: frame.group } : {}), ...(frame.locked ? { locked: true } : {}), ...(frame.hidden ? { hidden: true } : {}), produced: frame.produced || new Date().toISOString() };
+  const f = { id: frame.id || (frame.name && ID_RE.test(sanitizeId(frame.name)) && !doc.frames.some((x) => x.id === sanitizeId(frame.name)) ? sanitizeId(frame.name) : newId(doc, idPrefix(frame))), kind: frame.kind, box: box.map(Number), content: frame.content || {}, ...(frame.source ? { source: frame.source } : {}), ...(frame.style ? { style: frame.style } : {}), ...(frame.group ? { group: frame.group } : {}), ...(frame.locked ? { locked: true } : {}), ...(frame.hidden ? { hidden: true } : {}), produced: frame.produced || new Date().toISOString() };
   doc.frames.push(f);
   return f;
 }

@@ -12,10 +12,10 @@
 // mountEditor(el, doc, { env, onChange(doc), toolbar: [{ label, title, run(editor) }],
 //   frameMenu(frame, editor) → [{ label, run }], inspector(frame, panelEl, editor) }) → editor
 
-import { PAPER, pageDims, addFrame, frameById, removeFrames, bringToFront, sendToBack, bringForward, sendBackward, alignFrames, distributeFrames, matchSize, groupFrames, ungroupFrames, expandGroups, unitsOf, boundsOf, moveInStack, snapBox, snapResize, serializeDocument } from './model.js';
+import { renameFrame, sanitizeId, PAPER, pageDims, addFrame, frameById, removeFrames, bringToFront, sendToBack, bringForward, sendBackward, alignFrames, distributeFrames, matchSize, groupFrames, ungroupFrames, expandGroups, unitsOf, boundsOf, moveInStack, snapBox, snapResize, serializeDocument } from './model.js';
 import { renderPage, ensureImages } from './render.js';
 import { kindOf } from './kinds.js';
-import { fieldList } from './fields.js';
+import { fieldList, subjectFrame, refFrame } from './fields.js';
 
 const CSS = `
 .compo-root { display: flex; flex-direction: column; height: 100%; min-height: 0; font: 12px/1.35 var(--compo-font, system-ui, sans-serif); color: var(--compo-fg, var(--text, #ddd)); outline: none; }
@@ -46,6 +46,11 @@ const CSS = `
 .compo-fr.locked::after { content: 'locked'; position: absolute; right: 1px; top: 1px; font: 9px/1 system-ui, sans-serif; padding: 1px 3px; background: rgba(40,40,40,0.75); color: #fff; border-radius: 2px; pointer-events: none; }
 .compo-grp { position: absolute; border: 1px dashed #3c82e6; pointer-events: none; box-sizing: border-box; }
 .compo-marq { position: absolute; border: 1px solid #3c82e6; background: rgba(60,130,230,0.12); pointer-events: none; }
+.compo-link { position: absolute; height: 0; border-top: 1px dashed #3c82e6; transform-origin: 0 0; pointer-events: none; z-index: 2; }
+.compo-fr.ref { outline: 1px dashed #3c82e6; outline-offset: 2px; }
+.compo-it .nm .ds { color: var(--compo-dim, var(--dim, #9a9a9a)); margin-left: 6px; font-weight: normal; }
+.compo-side input.compo-id { width: 120px; font-family: var(--compo-mono, monospace); }
+.compo-side input.compo-id.bad { outline: 1px solid #c33; }
 .compo-gap { position: absolute; background: #e6339a; pointer-events: none; }
 .compo-gap-l { position: absolute; font: 10px/1 system-ui, sans-serif; color: #fff; background: #e6339a; padding: 1px 3px; border-radius: 2px; transform: translate(-50%, -50%); pointer-events: none; white-space: nowrap; }
 .compo-bar .status { color: var(--compo-dim, var(--dim, #9a9a9a)); font-size: 11px; margin-left: 4px; }
@@ -79,6 +84,9 @@ let _css = false;
 function injectCss() { if (_css || typeof document === 'undefined') return; _css = true; const s = document.createElement('style'); s.textContent = CSS; document.head.appendChild(s); }
 const h = (tag, props = {}, ...kids) => { const e = document.createElement(tag); for (const [k, v] of Object.entries(props)) { if (k === 'style') e.style.cssText = v; else if (k.startsWith('on')) e[k] = v; else if (k in e) e[k] = v; else e.setAttribute(k, v); } for (const c of kids) e.append(c); return e; };
 
+// frames that refer to another (captions, scale bars, north arrows) and frames that can be referred to (views: they state a scale)
+const canRefer = (f) => f.kind === 'text' || f.kind === 'scalebar' || f.kind === 'north';
+const isReferable = (f) => !!(f.content && f.content.meta);
 export function mountEditor(el, doc, opts = {}) {
   injectCss();
   let D = doc, zoom = 3, sel = [];
@@ -201,6 +209,16 @@ export function mountEditor(el, doc, opts = {}) {
         }
       }
     }
+    if (sel.length === 1) {
+      const f = frameById(D, sel[0]), t = f && canRefer(f) ? subjectFrame({ doc: D }, f, isReferable) : null;
+      if (t && !t.hidden) {
+        const od = [...overlay.querySelectorAll(".compo-fr")].find((x) => x.dataset.id === t.id); if (od) od.classList.add("ref");
+        const ax = (f.box[0] + f.box[2] / 2) * zoom, ay = (f.box[1] + f.box[3] / 2) * zoom, bx = (t.box[0] + t.box[2] / 2) * zoom, by = (t.box[1] + t.box[3] / 2) * zoom;
+        const ln = h('div', { className: 'compo-link' });
+        ln.style.cssText = `left:${ax}px;top:${ay}px;width:${Math.hypot(bx - ax, by - ay)}px;transform:rotate(${Math.atan2(by - ay, bx - ax)}rad)`;
+        overlay.append(ln);
+      }
+    }
     const gd = D.page.guides || {};
     for (const ax of ['x', 'y']) (gd[ax] || []).forEach((v, i) => {
       const gl = h('div', { className: `compo-gl ${ax}`, title: 'drag to move · drag off the page to remove' });
@@ -276,6 +294,22 @@ export function mountEditor(el, doc, opts = {}) {
     const f = frameById(D, sel[0]); if (!f) return;
     const kind = kindOf(f.kind);
     insp.append(h('div', { textContent: `${(kind && kind.label) || f.kind}`, style: 'font-weight:bold' }));
+    // the id: the frame's one handle (fields say {scale@plan}); renaming rewrites every reference
+    const idIn = h('input', { className: 'compo-id', value: f.id, spellcheck: false, title: 'the frame’s id — fields refer to it as @id; renaming updates every reference' });
+    idIn.oninput = () => { const v = sanitizeId(idIn.value); idIn.classList.toggle('bad', !v || (v !== f.id && D.frames.some((x) => x.id === v))); };
+    idIn.onchange = () => { if (!doRename(f, idIn.value)) idIn.value = f.id; };
+    idIn.onkeydown = (e) => { e.stopPropagation(); if (e.key === 'Enter') idIn.blur(); };
+    insp.append(h('div', { className: 'row' }, h('span', { textContent: 'id' }), idIn));
+    if (canRefer(f)) {
+      // refers to: the nearest view (the default — it says which), or a fixed one
+      const near = refFrame(D, f, null, isReferable), cands = D.frames.filter((x) => x !== f && isReferable(x));
+      const rs = h('select', { title: 'the frame this one is about: its fields ({scale} {section} …), or the view a scale bar / north arrow measures' },
+        h('option', { value: '', textContent: near ? `nearest → ${near.id}` : 'nearest (none yet)' }),
+        ...cands.map((x) => h('option', { value: x.id, textContent: x.id })));
+      rs.value = (f.content && f.content.of) || '';
+      rs.onchange = () => commit(() => { f.content = { ...(f.content || {}) }; if (rs.value) f.content.of = rs.value; else delete f.content.of; });
+      insp.append(h('div', { className: 'row' }, h('span', { textContent: 'refers to' }), rs));
+    }
     const num = (label, i) => {
       const inp = h('input', { type: 'number', step: 0.5, value: +f.box[i].toFixed(1) });
       inp.onchange = () => commit(() => { const v = +inp.value; if (Number.isFinite(v)) f.box[i] = i >= 2 ? Math.max(2, v) : v; });
@@ -475,8 +509,16 @@ export function mountEditor(el, doc, opts = {}) {
     one(rulerTop, true, W); one(rulerLeft, false, H);
   }
   // ── the item list: every frame, front first; groups as folders ──
+  // a rename → true; refused (and said why) → false
+  function doRename(f, raw) {
+    const v = sanitizeId(raw), old = f.id;
+    if (v === old) return true;
+    const probe = { frames: D.frames.map((x) => ({ id: x.id })) }, why = renameFrame(probe, old, v);
+    if (why) { say(why); return false; }
+    commit(() => { renameFrame(D, old, v); sel = sel.map((id) => (id === old ? v : id)); });
+    return true;
+  }
   function frameLabel(f) {
-    if (f.name) return f.name;
     const k = kindOf(f.kind), c = f.content || {}, src = f.source || {};
     if (k && k.describe) { try { const d = k.describe(f); if (d) return d; } catch { /* fall through */ } }
     if (f.kind === 'text') { const t = String(c.md || '').replace(/\*\*/g, '').replace(/\s+/g, ' ').trim(); return t ? `text · ${t.length > 30 ? t.slice(0, 30) + '…' : t}` : (f.style && f.style.background ? 'rule' : 'text (empty)'); }
@@ -512,7 +554,7 @@ export function mountEditor(el, doc, opts = {}) {
     row.dataset.item = f ? f.id : 'g:' + group;
     const eye = h('button', { textContent: hidden ? '◌' : '◉', title: hidden ? 'show' : 'hide (not drawn, not printed)', onclick: (e) => { e.stopPropagation(); commit(() => { for (const x of fs2) { if (hidden) delete x.hidden; else x.hidden = true; } }); } });
     const lk = h('button', { textContent: locked ? '🔒' : '🔓', title: locked ? 'unlock' : 'lock', style: locked ? '' : 'opacity:0.35', onclick: (e) => { e.stopPropagation(); commit(() => { for (const x of fs2) { if (locked) delete x.locked; else x.locked = true; } }); } });
-    const nm = h('span', { className: 'nm', textContent: group ? `group · ${members.length}` : frameLabel(f) });
+    const nm = h('span', { className: 'nm' }, ...(group ? [`group · ${members.length}`] : [h('b', { className: 'id', textContent: f.id }), h('span', { className: 'ds', textContent: frameLabel(f) })]));
     row.append(eye, lk, nm);
     row.onclick = (e) => {
       if (e.shiftKey) sel = isSel ? sel.filter((id) => !ids.includes(id)) : sel.concat(ids.filter((id) => !sel.includes(id)));
@@ -522,9 +564,9 @@ export function mountEditor(el, doc, opts = {}) {
     nm.ondblclick = (e) => {
       if (!f) return;
       e.stopPropagation();
-      const inp = h('input', { value: f.name || '' }); inp.placeholder = frameLabel({ ...f, name: undefined });
+      const inp = h('input', { value: f.id, spellcheck: false }); inp.title = 'the id (letters, digits, - _ .)';
       nm.replaceChildren(inp); inp.focus(); inp.select();
-      const done = (keep) => { if (!inp.isConnected) return; const v = inp.value.trim(); if (keep && v !== (f.name || '')) commit(() => { if (v) f.name = v; else delete f.name; }); else render(); };
+      const done = (keep) => { if (!inp.isConnected) return; const v = inp.value.trim(); if (!(keep && v && v !== f.id && doRename(f, v))) render(); };
       inp.onkeydown = (ev) => { ev.stopPropagation(); if (ev.key === 'Enter') done(true); if (ev.key === 'Escape') done(false); };
       inp.onblur = () => done(true);
     };

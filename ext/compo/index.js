@@ -42,6 +42,7 @@ function parseDocument(src) {
   for (const f of d.frames) {
     if (!f || typeof f.id !== 'string' || typeof f.kind !== 'string' || !Array.isArray(f.box) || f.box.length !== 4) throw new Error(`compo: a frame needs an id, a kind and a box [x, y, w, h] (${JSON.stringify(f && f.id)})`);
   }
+  migrate(d);
   return d;
 }
 // JSON for saving: frames' runtime-only fields (a decoded bitmap) are dropped
@@ -49,12 +50,55 @@ function serializeDocument(doc) {
   return JSON.stringify(doc, (k, v) => (k.startsWith('_') ? undefined : v), 1);
 }
 
-let _seq = 0;
-function newId(doc, kind) {
+// ── IDS: every frame's ONE handle. Auto-made as <prefix>-<n> (view-1, text-2, scale-1), editable,
+// a short token (letters, digits, - _ .) so a field can name it: {scale@plan}. Renaming rewrites
+// every reference to it (content.of, @id in fields). ──
+const ID_RE = /^[A-Za-z0-9_][\w.-]*$/;
+const sanitizeId = (s) => String(s == null ? '' : s).trim().replace(/\s+/g, '-').replace(/[^\w.-]/g, '').replace(/^[.-]+/, '');
+const PREFIX = { image: 'image', text: 'text', legend: 'legend', scalebar: 'scale', north: 'north', table: 'table', drawlist: 'chart' };
+const idPrefix = (frame) => (frame && frame.source && frame.source.kind === 'view' ? 'view' : (frame && frame.source && frame.source.kind === 'plot') ? 'plot' : PREFIX[frame && frame.kind] || (frame && frame.kind) || 'frame');
+function newId(doc, prefix) {
   const used = new Set((doc.frames || []).map((f) => f.id));
-  let id;
-  do id = `${kind}-${(++_seq).toString(36)}`; while (used.has(id));
-  return id;
+  let n = 1;
+  while (used.has(`${prefix}-${n}`)) n++;
+  return `${prefix}-${n}`;
+}
+// every string in a frame that can carry fields: a text's md, a legend's / table's title and note
+const FIELD_KEYS = ['md', 'title', 'note'];
+const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+function rewriteRefs(doc, from, to) {
+  const at = new RegExp(`@${escRe(from)}(?=\\})`, 'g');
+  for (const f of doc.frames) {
+    const c = f.content; if (!c) continue;
+    if (c.of === from) c.of = to;
+    for (const k of FIELD_KEYS) if (typeof c[k] === 'string') c[k] = c[k].replace(at, '@' + to);
+  }
+}
+// rename a frame → null, or the reason it can't be
+function renameFrame(doc, from, to) {
+  const f = doc.frames.find((x) => x.id === from);
+  if (!f) return `no frame “${from}”`;
+  if (to === from) return null;
+  if (!ID_RE.test(to)) return `“${to}” — an id is letters, digits, - _ and . (no spaces)`;
+  if (doc.frames.some((x) => x.id === to)) return `another frame is already “${to}”`;
+  f.id = to;
+  rewriteRefs(doc, from, to);
+  return null;
+}
+// older documents: a display `name` becomes the id (when it can), and {ref:x} becomes {fig@x}
+function migrate(d) {
+  for (const f of d.frames) {
+    const c = f.content;
+    if (c) for (const k of FIELD_KEYS) if (typeof c[k] === 'string') c[k] = c[k].replace(/\{ref:([^{}:@]+)\}/g, (_, x) => `{fig@${x.trim()}}`).replace(/\{scale:([^{}:@]+)\}/g, (_, x) => `{scale@${x.trim()}}`);
+  }
+  for (const f of d.frames) {
+    if (f.name == null) continue;
+    const want = sanitizeId(f.name);
+    const named = d.frames.filter((x) => x !== f);
+    // a reference written to the old name follows it to the id
+    if (want && ID_RE.test(want) && !named.some((x) => x.id === want)) { const old = f.id; f.id = want; rewriteRefs(d, old, want); if (f.name !== want) rewriteRefs(d, f.name, want); }
+    delete f.name;
+  }
 }
 
 // add a frame: { kind, box?, content, source?, style? } → the frame (placed in the margins, or
@@ -62,7 +106,7 @@ function newId(doc, kind) {
 function addFrame(doc, frame) {
   const [W, H] = pageDims(doc.page), m = doc.page.margins || [0, 0, 0, 0];
   const box = frame.box || [m[3] + 10, m[0] + 10, Math.min(120, W - m[1] - m[3] - 20), Math.min(80, H - m[0] - m[2] - 20)];
-  const f = { id: frame.id || newId(doc, frame.kind), kind: frame.kind, box: box.map(Number), content: frame.content || {}, ...(frame.source ? { source: frame.source } : {}), ...(frame.style ? { style: frame.style } : {}), ...(frame.name ? { name: String(frame.name) } : {}), ...(frame.group ? { group: frame.group } : {}), ...(frame.locked ? { locked: true } : {}), ...(frame.hidden ? { hidden: true } : {}), produced: frame.produced || new Date().toISOString() };
+  const f = { id: frame.id || (frame.name && ID_RE.test(sanitizeId(frame.name)) && !doc.frames.some((x) => x.id === sanitizeId(frame.name)) ? sanitizeId(frame.name) : newId(doc, idPrefix(frame))), kind: frame.kind, box: box.map(Number), content: frame.content || {}, ...(frame.source ? { source: frame.source } : {}), ...(frame.style ? { style: frame.style } : {}), ...(frame.group ? { group: frame.group } : {}), ...(frame.locked ? { locked: true } : {}), ...(frame.hidden ? { hidden: true } : {}), produced: frame.produced || new Date().toISOString() };
   doc.frames.push(f);
   return f;
 }
@@ -288,13 +332,15 @@ function snapResize(doc, box, [hx, hy], { ignore = [], tol = 1.5, onlyX = false 
 //   {name}           a field
 //   {name:arg}       a field with an argument (a format, a frame's name, a column …)
 //   {name:arg:,.2f}  … and a number format at the end
+//   {name@id}        … about the frame with that id ({scale@plan}); without one, the frame's
+//                    "refers to" (content.of), else the nearest frame that fits
 //   ${expr}          an expression the HOST evaluates (env.evalField), e.g. an atlas row's values
 //   ${expr:,.0f}     … formatted
 //
 // Number formats (Python's, the useful part): `,` or `_` groups thousands (comma / space), `.N`
 // the decimals, then `f` fixed, `%` percent, `e` exponent. `,` alone groups an integer.
 //
-// Fields are a registry: compo registers fig/page/pages/date/time/title/ref (and scale, in
+// Fields are a registry: compo registers fig/page/pages/date/time/title (and scale, in
 // kinds.js); a host adds its own with registerField or per page with env.fields. An unknown
 // `{word}` is left exactly as written, so ordinary braces in text survive.
 
@@ -344,15 +390,16 @@ function formatDate(d, fmt) {
 }
 const nowOf = (env) => (env.now instanceof Date ? env.now : env.now ? new Date(env.now) : new Date());
 
-// ── the frame a field refers to: one NAMED in the argument (its name or id), else the nearest
-// frame that passes the test (the caption under a view means that view) ──
-function refFrame(doc, frame, arg, test = () => true) {
+// ── the frame a field is ABOUT ──
+// refFrame(doc, frame, id, test): the frame with that id, else the nearest one passing the test
+// (the gap between the boxes, then their centres: the caption under a view means that view).
+function refFrame(doc, frame, id, test = () => true) {
   if (!doc) return null;
   const frames = doc.frames.filter((f) => !f.hidden && f !== frame);
-  if (arg) return frames.find((f) => f.name === arg) || frames.find((f) => f.id === arg) || null;
+  if (id) return frames.find((f) => f.id === id) || null;
   const cand = frames.filter(test);
   if (!frame || cand.length <= 1) return cand[0] || null;
-  const gap = (a, b) => {                                  // the gap between two boxes (0 if they touch), then centre distance
+  const gap = (a, b) => {
     const dx = Math.max(0, a[0] - (b[0] + b[2]), b[0] - (a[0] + a[2])), dy = Math.max(0, a[1] - (b[1] + b[3]), b[1] - (a[1] + a[3]));
     const cx = a[0] + a[2] / 2 - (b[0] + b[2] / 2), cy = a[1] + a[3] / 2 - (b[1] + b[3] / 2);
     return Math.hypot(dx, dy) * 1e3 + Math.hypot(cx, cy);
@@ -361,25 +408,34 @@ function refFrame(doc, frame, arg, test = () => true) {
   for (const f of cand) { const d = gap(frame.box, f.box); if (d < bd) { bd = d; best = f; } }
   return best;
 }
+// subjectFrame(env, frame, test) — in order: the field's own @id, the frame's "refers to"
+// (content.of), the nearest frame passing the test. The one rule every frame-reading field uses.
+function subjectFrame(env, frame, test = () => true) {
+  const doc = env.doc; if (!doc) return null;
+  if (env.at) return doc.frames.find((f) => f.id === env.at) || null;
+  const of = frame && frame.content && frame.content.of;
+  if (of) return doc.frames.find((f) => f.id === of) || null;
+  return refFrame(doc, frame, null, test);
+}
 const saysFig = (f) => f.kind === 'text' && /\{fig\}/.test((f.content && f.content.md) || '');
 
 // ── the built-ins ──
-registerField('fig', (a, frame, env) => (env.figOf ? env.figOf(frame) : 1), 'the figure number (counted in page order, on across an atlas)');
+registerField('fig', (a, frame, env) => {
+  if (!env.figOf) return 1;
+  if (!env.at) return env.figOf(frame);
+  // {fig@x}: x's figure number — x a caption, or (a view) the caption nearest it
+  const t = env.doc && env.doc.frames.find((f) => f.id === env.at);
+  const cap = t && (saysFig(t) ? t : refFrame(env.doc, t, null, saysFig));
+  return cap ? env.figOf(cap) : `⟨“${env.at}” has no {fig} caption⟩`;
+}, 'the figure number (counted in page order, on across an atlas); {fig@plan} = another caption’s or view’s');
 registerField('page', (a, f, env) => env.page ?? 1, 'the page number');
 registerField('pages', (a, f, env) => env.pages ?? 1, 'the page count');
 registerField('date', (a, f, env) => (a ? formatDate(nowOf(env), a) : env.date || formatDate(nowOf(env), 'YYYY-MM-DD')), 'today: {date} · {date:DD/MM/YYYY} · {date:D MMMM YYYY}');
 registerField('time', (a, f, env) => formatDate(nowOf(env), a || 'HH:mm'), 'the time: {time} · {time:HH:mm:ss}');
 registerField('title', (a, f, env) => env.title || '', "the figure's title");
-registerField('ref', (a, frame, env) => {
-  // the figure number of the caption NAMED a (or, if a names a view, of the caption nearest it)
-  if (!a || !env.doc || !env.figOf) return null;
-  const t = refFrame(env.doc, null, a);
-  if (!t) return `⟨no frame “${a}”⟩`;
-  const cap = saysFig(t) ? t : refFrame(env.doc, t, null, saysFig);
-  return cap ? env.figOf(cap) : `⟨“${a}” has no {fig} caption⟩`;
-}, 'another caption’s figure number: see Figure {ref:plan}');
 
-const FIELD_RE = /\{([A-Za-z][\w-]*)(?::([^{}]*))?\}/g;
+// {name}  {name:arg}  {name:arg:spec}  … and @id last: {scale@plan}, {mean:AU:.2f@plan}
+const FIELD_RE = /\{([A-Za-z][\w-]*)(?::([^{}@]*))?(?:@([\w.-]+))?\}/g;
 function resolveFields(src, env = {}, frame = null) {
   let s = String(src == null ? '' : src);
   // ${expr} and ${expr:spec} — the host's expressions
@@ -390,13 +446,13 @@ function resolveFields(src, env = {}, frame = null) {
     if (!env.evalField) return `⟨${expr.trim()}⟩`;
     try { const v = env.evalField(expr.trim(), env.vars || {}, frame, env); return v == null ? '' : asText(v, spec); } catch (e) { return `⟨${expr.trim()}: ${e.message}⟩`; }
   });
-  // {name} {name:arg} {name:arg:spec}
-  return s.replace(FIELD_RE, (whole, name, arg) => {
+  return s.replace(FIELD_RE, (whole, name, arg, at) => {
     const f = (env.fields && env.fields[name]) ? { fn: env.fields[name] } : FIELDS.get(name);
     if (!f) return whole;
+    if (at && env.doc && !env.doc.frames.some((x) => x.id === at)) return `⟨no frame “${at}”⟩`;
     let a = arg == null ? '' : arg, spec = '';
     if (isFormatSpec(a)) { spec = a; a = ''; } else { const k = a.lastIndexOf(':'); if (k >= 0 && isFormatSpec(a.slice(k + 1))) { spec = a.slice(k + 1); a = a.slice(0, k); } }
-    try { return asText(f.fn(a.trim(), frame, env), spec); } catch (e) { return `⟨${name}: ${e.message}⟩`; }
+    try { return asText(f.fn(a.trim(), frame, at ? { ...env, at } : env), spec); } catch (e) { return `⟨${name}: ${e.message}⟩`; }
   });
 }
 
@@ -591,23 +647,25 @@ function frameWorldPerMm(t) {
   const k = fit === 'cover' ? Math.max(b[2] / iw, b[3] / ih) : Math.min(b[2] / iw, b[3] / ih);   // mm per pixel
   return +m.worldPerPx / k;
 }
-// {scale} — the representative fraction of a view frame (the nearest one that states a scale, or
-// the one named: {scale:plan}). A perspective view has none, and says so.
+// {scale} — the representative fraction of a view frame (the field's @id, the caption's "refers
+// to", else the nearest frame that states a scale). A perspective view has none, and says so.
 const hasScaleMeta = (f) => !!(f.content && f.content.meta && (f.content.meta.worldPerPx > 0 || f.content.meta.worldPerMm > 0 || 'worldPerPx' in f.content.meta || 'ortho' in f.content.meta));
 const UNIT_MM = { m: 1000, km: 1e6, ft: 304.8, mm: 1, cm: 10 };
 registerField('scale', (a, frame, env) => {
-  const t = refFrame(env.doc, frame, a, hasScaleMeta);
-  if (!t) return a ? `⟨no frame “${a}”⟩` : '—';
+  const t = subjectFrame(env, frame, hasScaleMeta);
+  if (!t) return '—';
   const wpm = frameWorldPerMm(t);
   if (!(wpm > 0)) return 'no scale (perspective)';
   const n = wpm * (UNIT_MM[(t.content.meta.units || 'm')] || 1000);
   const r = +n.toPrecision(n >= 1000 ? 3 : 2);
   return '1 : ' + String(Math.round(r)).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
-}, 'the scale of the nearest view: 1 : 2 500 (orthographic views only); {scale:frame name}');
+}, 'the scale of the view: 1 : 2 500 (orthographic views only) · {scale@plan}');
+// a scale bar / north arrow: its own numbers, or the view it refers to (content.of), else the nearest view
 const metaOf = (frame, doc) => {
   const c = frame.content || {};
-  if (c.of && doc) {
-    const t = doc.frames.find((f) => f.id === c.of);
+  const own = c.worldPerMm != null || c.north !== undefined;
+  if (doc && (c.of || !own)) {
+    const t = subjectFrame({ doc }, frame, hasScaleMeta);
     if (t && t.content && t.content.meta) return { ...t.content.meta, worldPerMm: frameWorldPerMm(t) };
     if (t) return {};
   }
@@ -1577,6 +1635,11 @@ const CSS = `
 .compo-fr.locked::after { content: 'locked'; position: absolute; right: 1px; top: 1px; font: 9px/1 system-ui, sans-serif; padding: 1px 3px; background: rgba(40,40,40,0.75); color: #fff; border-radius: 2px; pointer-events: none; }
 .compo-grp { position: absolute; border: 1px dashed #3c82e6; pointer-events: none; box-sizing: border-box; }
 .compo-marq { position: absolute; border: 1px solid #3c82e6; background: rgba(60,130,230,0.12); pointer-events: none; }
+.compo-link { position: absolute; height: 0; border-top: 1px dashed #3c82e6; transform-origin: 0 0; pointer-events: none; z-index: 2; }
+.compo-fr.ref { outline: 1px dashed #3c82e6; outline-offset: 2px; }
+.compo-it .nm .ds { color: var(--compo-dim, var(--dim, #9a9a9a)); margin-left: 6px; font-weight: normal; }
+.compo-side input.compo-id { width: 120px; font-family: var(--compo-mono, monospace); }
+.compo-side input.compo-id.bad { outline: 1px solid #c33; }
 .compo-gap { position: absolute; background: #e6339a; pointer-events: none; }
 .compo-gap-l { position: absolute; font: 10px/1 system-ui, sans-serif; color: #fff; background: #e6339a; padding: 1px 3px; border-radius: 2px; transform: translate(-50%, -50%); pointer-events: none; white-space: nowrap; }
 .compo-bar .status { color: var(--compo-dim, var(--dim, #9a9a9a)); font-size: 11px; margin-left: 4px; }
@@ -1610,6 +1673,9 @@ let _css = false;
 function injectCss() { if (_css || typeof document === 'undefined') return; _css = true; const s = document.createElement('style'); s.textContent = CSS; document.head.appendChild(s); }
 const h = (tag, props = {}, ...kids) => { const e = document.createElement(tag); for (const [k, v] of Object.entries(props)) { if (k === 'style') e.style.cssText = v; else if (k.startsWith('on')) e[k] = v; else if (k in e) e[k] = v; else e.setAttribute(k, v); } for (const c of kids) e.append(c); return e; };
 
+// frames that refer to another (captions, scale bars, north arrows) and frames that can be referred to (views: they state a scale)
+const canRefer = (f) => f.kind === 'text' || f.kind === 'scalebar' || f.kind === 'north';
+const isReferable = (f) => !!(f.content && f.content.meta);
 function mountEditor(el, doc, opts = {}) {
   injectCss();
   let D = doc, zoom = 3, sel = [];
@@ -1732,6 +1798,16 @@ function mountEditor(el, doc, opts = {}) {
         }
       }
     }
+    if (sel.length === 1) {
+      const f = frameById(D, sel[0]), t = f && canRefer(f) ? subjectFrame({ doc: D }, f, isReferable) : null;
+      if (t && !t.hidden) {
+        const od = [...overlay.querySelectorAll(".compo-fr")].find((x) => x.dataset.id === t.id); if (od) od.classList.add("ref");
+        const ax = (f.box[0] + f.box[2] / 2) * zoom, ay = (f.box[1] + f.box[3] / 2) * zoom, bx = (t.box[0] + t.box[2] / 2) * zoom, by = (t.box[1] + t.box[3] / 2) * zoom;
+        const ln = h('div', { className: 'compo-link' });
+        ln.style.cssText = `left:${ax}px;top:${ay}px;width:${Math.hypot(bx - ax, by - ay)}px;transform:rotate(${Math.atan2(by - ay, bx - ax)}rad)`;
+        overlay.append(ln);
+      }
+    }
     const gd = D.page.guides || {};
     for (const ax of ['x', 'y']) (gd[ax] || []).forEach((v, i) => {
       const gl = h('div', { className: `compo-gl ${ax}`, title: 'drag to move · drag off the page to remove' });
@@ -1807,6 +1883,22 @@ function mountEditor(el, doc, opts = {}) {
     const f = frameById(D, sel[0]); if (!f) return;
     const kind = kindOf(f.kind);
     insp.append(h('div', { textContent: `${(kind && kind.label) || f.kind}`, style: 'font-weight:bold' }));
+    // the id: the frame's one handle (fields say {scale@plan}); renaming rewrites every reference
+    const idIn = h('input', { className: 'compo-id', value: f.id, spellcheck: false, title: 'the frame’s id — fields refer to it as @id; renaming updates every reference' });
+    idIn.oninput = () => { const v = sanitizeId(idIn.value); idIn.classList.toggle('bad', !v || (v !== f.id && D.frames.some((x) => x.id === v))); };
+    idIn.onchange = () => { if (!doRename(f, idIn.value)) idIn.value = f.id; };
+    idIn.onkeydown = (e) => { e.stopPropagation(); if (e.key === 'Enter') idIn.blur(); };
+    insp.append(h('div', { className: 'row' }, h('span', { textContent: 'id' }), idIn));
+    if (canRefer(f)) {
+      // refers to: the nearest view (the default — it says which), or a fixed one
+      const near = refFrame(D, f, null, isReferable), cands = D.frames.filter((x) => x !== f && isReferable(x));
+      const rs = h('select', { title: 'the frame this one is about: its fields ({scale} {section} …), or the view a scale bar / north arrow measures' },
+        h('option', { value: '', textContent: near ? `nearest → ${near.id}` : 'nearest (none yet)' }),
+        ...cands.map((x) => h('option', { value: x.id, textContent: x.id })));
+      rs.value = (f.content && f.content.of) || '';
+      rs.onchange = () => commit(() => { f.content = { ...(f.content || {}) }; if (rs.value) f.content.of = rs.value; else delete f.content.of; });
+      insp.append(h('div', { className: 'row' }, h('span', { textContent: 'refers to' }), rs));
+    }
     const num = (label, i) => {
       const inp = h('input', { type: 'number', step: 0.5, value: +f.box[i].toFixed(1) });
       inp.onchange = () => commit(() => { const v = +inp.value; if (Number.isFinite(v)) f.box[i] = i >= 2 ? Math.max(2, v) : v; });
@@ -2006,8 +2098,16 @@ function mountEditor(el, doc, opts = {}) {
     one(rulerTop, true, W); one(rulerLeft, false, H);
   }
   // ── the item list: every frame, front first; groups as folders ──
+  // a rename → true; refused (and said why) → false
+  function doRename(f, raw) {
+    const v = sanitizeId(raw), old = f.id;
+    if (v === old) return true;
+    const probe = { frames: D.frames.map((x) => ({ id: x.id })) }, why = renameFrame(probe, old, v);
+    if (why) { say(why); return false; }
+    commit(() => { renameFrame(D, old, v); sel = sel.map((id) => (id === old ? v : id)); });
+    return true;
+  }
   function frameLabel(f) {
-    if (f.name) return f.name;
     const k = kindOf(f.kind), c = f.content || {}, src = f.source || {};
     if (k && k.describe) { try { const d = k.describe(f); if (d) return d; } catch { /* fall through */ } }
     if (f.kind === 'text') { const t = String(c.md || '').replace(/\*\*/g, '').replace(/\s+/g, ' ').trim(); return t ? `text · ${t.length > 30 ? t.slice(0, 30) + '…' : t}` : (f.style && f.style.background ? 'rule' : 'text (empty)'); }
@@ -2043,7 +2143,7 @@ function mountEditor(el, doc, opts = {}) {
     row.dataset.item = f ? f.id : 'g:' + group;
     const eye = h('button', { textContent: hidden ? '◌' : '◉', title: hidden ? 'show' : 'hide (not drawn, not printed)', onclick: (e) => { e.stopPropagation(); commit(() => { for (const x of fs2) { if (hidden) delete x.hidden; else x.hidden = true; } }); } });
     const lk = h('button', { textContent: locked ? '🔒' : '🔓', title: locked ? 'unlock' : 'lock', style: locked ? '' : 'opacity:0.35', onclick: (e) => { e.stopPropagation(); commit(() => { for (const x of fs2) { if (locked) delete x.locked; else x.locked = true; } }); } });
-    const nm = h('span', { className: 'nm', textContent: group ? `group · ${members.length}` : frameLabel(f) });
+    const nm = h('span', { className: 'nm' }, ...(group ? [`group · ${members.length}`] : [h('b', { className: 'id', textContent: f.id }), h('span', { className: 'ds', textContent: frameLabel(f) })]));
     row.append(eye, lk, nm);
     row.onclick = (e) => {
       if (e.shiftKey) sel = isSel ? sel.filter((id) => !ids.includes(id)) : sel.concat(ids.filter((id) => !sel.includes(id)));
@@ -2053,9 +2153,9 @@ function mountEditor(el, doc, opts = {}) {
     nm.ondblclick = (e) => {
       if (!f) return;
       e.stopPropagation();
-      const inp = h('input', { value: f.name || '' }); inp.placeholder = frameLabel({ ...f, name: undefined });
+      const inp = h('input', { value: f.id, spellcheck: false }); inp.title = 'the id (letters, digits, - _ .)';
       nm.replaceChildren(inp); inp.focus(); inp.select();
-      const done = (keep) => { if (!inp.isConnected) return; const v = inp.value.trim(); if (keep && v !== (f.name || '')) commit(() => { if (v) f.name = v; else delete f.name; }); else render(); };
+      const done = (keep) => { if (!inp.isConnected) return; const v = inp.value.trim(); if (!(keep && v && v !== f.id && doRename(f, v))) render(); };
       inp.onkeydown = (ev) => { ev.stopPropagation(); if (ev.key === 'Enter') done(true); if (ev.key === 'Escape') done(false); };
       inp.onblur = () => done(true);
     };
@@ -2200,6 +2300,10 @@ export {
   newId,
   addFrame,
   frameById,
+  renameFrame,
+  sanitizeId,
+  ID_RE,
+  idPrefix,
   removeFrames,
   bringToFront,
   sendToBack,
@@ -2234,6 +2338,7 @@ export {
   formatNumber,
   formatDate,
   refFrame,
+  subjectFrame,
   isFormatSpec,
   renderPage,
   ensureImages,

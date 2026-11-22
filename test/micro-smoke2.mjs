@@ -6388,9 +6388,10 @@ if (take()) {
     await new Promise((res) => setTimeout(res, 200));
     const ed = M_.openComposer('fields');
     const f = M_.addViewFrame(ed);
+    out.viewId = f.id;
     const below = f.box[1] + f.box[3] + 2;
     ed.addFrame({ kind: 'text', name: 'cap', box: [f.box[0], below, 120, 6], content: { md: 'Figure {fig}' } });
-    const lines = ['S {section}', 'C {count:,}', 'T {total}', 'M {mean:FE:.2f}', 'X {max:FE}', 'F {filter}', 'P ${count / total:.1%}', 'L {look}', 'K {scale}', 'D {date:YYYY}', 'H {sha}', 'R {ref:cap}', 'V {micro}', 'U {unknown}'];
+    const lines = ['S {section}', 'C {count:,}', 'T {total}', 'M {mean:FE:.2f}', 'X {max:FE}', 'F {filter}', 'P ${count / total:.1%}', 'L {look}', 'K {scale}', 'D {date:YYYY}', 'H {sha}', 'R {fig@cap}', 'A {count:,@view-1}', 'B {mean:FE:.1f@view-1}', 'V {micro}', 'U {unknown}'];
     ed.addFrame({ kind: 'text', box: [f.box[0], below + 7, 160, 70], content: { md: lines.join('\n'), size: 8 } });
     const bytes = await M_.figurePdfBytes(M_.currentFigure(), 72, { compress: false });
     const s = new TextDecoder('latin1').decode(bytes);
@@ -6403,9 +6404,10 @@ if (take()) {
   const want = {
     S: (v) => /^20 RL /.test(v), C: (v) => v === '1,520', T: (v) => v === '2400', M: (v) => v === '60.00', X: (v) => v === '78', F: (v) => v === 'FE > 40',
     P: (v) => v === '63.3%', L: (v) => /^000/.test(v), K: (v) => /^1 : \d/.test(v), D: (v) => v === String(new Date().getFullYear()),
-    H: (v) => /^[0-9a-f]{8}$/.test(v), R: (v) => v === '1', V: (v) => v.length > 0, U: (v) => v === '{unknown}',
+    H: (v) => /^[0-9a-f]{8}$/.test(v), R: (v) => v === '1', A: (v) => v === '1,520', B: (v) => v === '60.0', V: (v) => v.length > 0, U: (v) => v === '{unknown}',
   };
   const bad = Object.keys(want).filter((k) => !want[k](get(k)));
+  chk(`FIELDS: a view frame's id is view-1 (${r.viewId})`, r.viewId === 'view-1');
   chk(`FIELDS: every caption field resolves in the PDF (${Object.keys(want).map((k) => `${k}=${get(k)}`).join(' · ')})${bad.length ? ' BAD: ' + bad : ''}`, !bad.length);
   await p.close();
 }
