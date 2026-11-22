@@ -3,7 +3,7 @@
 // any parameterization configured, not run) and the asks-first inputs dialog a routine
 // shows before it runs. The routine engine and the run tracker are src/recipes.js.
 import { layerTableHeader } from './records.js';
-import { routineEachRows, RECIPE_TOOLS, jsToYamlNode, yamlToJs, routineSubst, expandRoutine, routineLoadParams, routineLineInfo, runRecipe, routineStepOp, runRoutine, recipeSlug, recipeYaml } from './recipes.js';
+import { routineEachRows, RECIPE_TOOLS, jsToYamlNode, yamlToJs, routineSubst, expandRoutine, routineLoadParams, routineLineInfo, runRecipe, routineStepOp, runRoutine, recipeSlug, recipeYaml, inputsProblems } from './recipes.js';
 import { floatWin } from './windows.js';
 import { S, activeLayer } from './state.js';
 import { emit as yamlEmit, parse as yamlParse } from '../../../ext/yaml/index.js';
@@ -453,6 +453,8 @@ export function openInputsDialog(r) {
     const values = {};
     for (const [nm, f] of fields) values[nm] = f._itype === 'number' && f.value !== '' && Number.isFinite(+f.value) ? +f.value : f.value;
     r._lastInputs = values;                                  // session memory — the next Run… starts here
+    const req = inputsProblems(r, values);                    // a layer input's required columns, before anything runs
+    if (req.length) { let m = win.body.querySelector('.rw-prevline.fail'); if (!m) { m = document.createElement('div'); m.className = 'rw-prevline fail'; bar.before(m); } m.textContent = req.join(' · '); return; }
     win.close();
     runRecipe({ ...r, inputs: undefined, _inputs: values, params: routineSubst(JSON.parse(JSON.stringify(r.params)), values) }, true);   // _inputs: the run record keeps the answers
   };

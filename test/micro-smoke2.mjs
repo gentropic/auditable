@@ -7505,6 +7505,66 @@ if (take()) {
   await p.close();
 }
 
+// ── §117: WAYS IN (routines v2 step 5) — Check all recipes lists every file's problems (a misspelled
+//     setting names the real one) and rewrites old-form routine steps under `with:` — after which an
+//     inline stats step's own filter finally applies; a recipe written from scratch in the generated
+//     form saves only what its tool accepts; a layer input's `requires:` refuses a model that lacks
+//     the columns before anything runs. ──
+if (take()) {
+  const p = await mkPage('sm2ways');
+  await p.evaluate(async () => { try { await (await navigator.storage.getDirectory()).removeEntry('sm2ways', { recursive: true }); } catch { } });
+  await p.evaluate(async () => {
+    const rows = ['XC,YC,ZC,FE,DOM']; for (let k = 0; k < 4; k++) for (let j = 0; j < 8; j++) for (let i = 0; i < 10; i++) rows.push([5 + i * 10, 5 + j * 10, 5 + k * 10, (40 + i).toFixed(1), i < 5 ? 'hem' : 'itb'].join(','));
+    await window._micro.openBlob(new File([rows.join('\n') + '\n'], 'm.csv'), 'm.csv', 'replace');
+  });
+  await p.waitForFunction(() => window._micro.layers()[0] && window._micro.layers()[0].docs.blockDoc, null, { timeout: 20000 });
+  await saveProject(p);
+  const r = await p.evaluate(async () => {
+    const M_ = window._micro, out = {}, wait = (ms) => new Promise((res) => setTimeout(res, ms));
+    const list = M_._recipesList(); list.length = 0;
+    list.push({ name: 'typo gt', tool: 'gt', file: 'recipes/typo-gt.yaml', params: { series: [{ layer: 'm.csv', col: 'FE' }], cutofs: [40] } });
+    list.push({ name: 'old style', tool: 'routine', file: 'recipes/old-style.yaml', params: { steps: [{ tool: 'stats', layer: 'm.csv', cols: ['FE'], filter: 'DOM = "hem"', as: 'st' }] } });
+    // A. check all: the typo named, the old-form step flagged; rewrite → with:, written back
+    const c1 = await M_.checkAllRecipes();
+    out.c1 = c1.map((x) => ({ name: x.name, problems: x.problems, oldForm: x.oldForm }));
+    const c2 = await M_.checkAllRecipes({ rewrite: true });
+    const st0 = list.find((x) => x.name === 'old style').params.steps[0];
+    out.rewritten = { rewritten: c2.find((x) => x.name === 'old style').rewritten, step: st0 };
+    const fileText = await (await (await (await M_.project().dir.getDirectoryHandle('recipes')).getFileHandle('old-style.yaml')).getFile()).text();
+    out.fileHasWith = /with:/.test(fileText) && /filter:/.test(fileText);
+    const res = await window.micro.runRoutine('old style');
+    const runDir = res.record && res.record.dir; let tsv = '';
+    try { let d = M_.project().dir; for (const s of runDir.split('/')) d = await d.getDirectoryHandle(s); tsv = await (await (await d.getFileHandle('st.tsv')).getFile()).text(); } catch { }
+    out.filtered = (tsv.split('\n')[1] || '').split('\t')[1];
+    // B. the form: a grade-tonnage recipe from scratch
+    const win = M_.openRecipeForm('gt');
+    const q = (sel) => win.el.querySelector(sel);
+    const rows = [...win.el.querySelectorAll('.rf-row')];
+    const byKey = (k) => rows.find((r2) => r2.firstChild && r2.firstChild.textContent.replace(' *', '') === k);
+    q('.rf-top input').value = 'from scratch';
+    byKey('layer').querySelector('select').value = 'm.csv';
+    const ser = byKey('series'); ser.querySelector('input[list]').value = 'FE';
+    byKey('cutoffs').querySelector('input').value = '40, 45, 48';
+    out.formParams = win.collect();
+    [...win.el.querySelectorAll('button')].find((b) => b.textContent === 'Save recipe').click();
+    await wait(400);
+    out.saved = !!list.find((x) => x.name === 'from scratch' && x.tool === 'gt');
+    out.savedRuns = (await window.micro.runTool('gt', list.find((x) => x.name === 'from scratch').params)).table.rows.length;
+    // C. requires: a layer input whose model lacks a column
+    list.push({ name: 'needs', tool: 'routine', inputs: [{ name: 'model', type: 'layer', requires: ['FE', 'CU'] }], params: { steps: [{ tool: 'stats', with: { layer: '$model', cols: ['FE'] }, as: 's' }] } });
+    try { await window.micro.runRoutine('needs', { inputs: { model: 'm.csv' } }); } catch (e) { out.requires = e.message; }
+    return out;
+  });
+  chk(`WAYS IN: check all recipes names the misspelled setting and flags the old-form step (${JSON.stringify(r.c1)})`,
+    /no setting “cutofs” — did you mean “cutoffs”/.test(r.c1.find((x) => x.name === 'typo gt').problems.join()) && r.c1.find((x) => x.name === 'old style').oldForm === 1);
+  chk(`WAYS IN: rewrite moves the settings under with: and writes the file (${JSON.stringify(r.rewritten)}, file ${r.fileHasWith}); the stats filter now applies (n ${r.filtered} of 320)`,
+    r.rewritten.rewritten && r.rewritten.step.with && r.rewritten.step.with.filter === 'DOM = "hem"' && r.rewritten.step.as === 'st' && !('filter' in r.rewritten.step) && r.fileHasWith && r.filtered === '160');
+  chk(`WAYS IN: the from-scratch form makes a recipe its tool accepts (${JSON.stringify(r.formParams)}; saved ${r.saved}; runs: ${r.savedRuns} rows)`,
+    r.saved && r.formParams.layer === 'm.csv' && JSON.stringify(r.formParams.cutoffs) === '[40,45,48]' && r.formParams.series[0].col === 'FE' && r.savedRuns === 3);
+  chk(`WAYS IN: a layer input's requires: refuses a model without the columns, before anything runs (“${r.requires}”)`, /has no column “CU”/.test(r.requires || ''));
+  await p.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

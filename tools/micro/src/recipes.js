@@ -29,6 +29,7 @@ import { openValidation } from './validation.js';
 import { checkParams, runTool, tableTSV, toolDef } from './tools.js';
 import { newRunRecord, writeRecord, outputEntry, localDate, findBaseline, recordTable } from './runrecord.js';
 import { openRunsWindow, acceptRunAsk } from './runs-ui.js';
+import { openRecipeForm } from './recipe-form.js';
 import { evalScalarCheck, evalEveryCheck, compareTables, parseTSV, flatValues } from './checks.js';
 export { localDate };
 const $ = (s) => document.querySelector(s);
@@ -679,6 +680,22 @@ export async function runRoutine(r, opts = {}) {
   done('ok', {}, rec);
 }
 
+// a layer input may say what the layer must carry — inputs: [{ name: model, type: layer, requires: [AU, DENS] }] —
+// checked before the run (a routine meant for another model fails here, naming the missing columns,
+// not halfway through). → problems
+export function inputsProblems(r, values) {
+  const out = [];
+  for (const inp of (r && r.inputs) || []) {
+    if ((inp.type || 'text') !== 'layer' || !Array.isArray(inp.requires) || !inp.requires.length) continue;
+    const v = values[inp.name], L = S.layers.find((x) => x.name === v || (x.label || x.name) === v);
+    if (!L) { out.push(`input “${inp.name}”: layer “${v}” isn't loaded`); continue; }
+    const h = layerTableHeader(L), have = h ? schemaExt(L, h).map((c) => c.name.toLowerCase()) : [];
+    const miss = inp.requires.filter((c) => !have.includes(String(c).toLowerCase()));
+    if (miss.length) out.push(`input “${inp.name}”: ${L.label || L.name} has no column ${miss.map((c) => `“${c}”`).join(', ')}`);
+  }
+  return out;
+}
+
 // ── for a HOST (window.micro): routines by name, inputs given up front (a host can't answer a dialog) ──
 export function routineForHost(name, inputs = {}) {
   const r = S.recipes.find((x) => x.name === name && x.tool === 'routine');
@@ -690,6 +707,8 @@ export function routineForHost(name, inputs = {}) {
     if (v === undefined || v === '') throw new Error(`routine “${name}” needs input “${inp.name}”${inp.type ? ` (${inp.type})` : ''}`);
     values[inp.name] = v;
   }
+  const req = inputsProblems(r, values);
+  if (req.length) throw new Error(`routine “${name}”: ${req.join('; ')}`);
   const extra = Object.keys(inputs).filter((k) => !want.some((i) => i.name === k));
   if (extra.length) throw new Error(`routine “${name}” has no input ${extra.map((k) => `“${k}”`).join(', ')}${want.length ? ` (inputs: ${want.map((i) => i.name).join(', ')})` : ''}`);
   return want.length ? { ...r, inputs: undefined, _inputs: values, params: routineSubst(JSON.parse(JSON.stringify(r.params)), values) } : r;
@@ -716,6 +735,70 @@ export function runRoutineHost(name, inputs, onStep) {
     addEventListener('micro:routine-step', step); addEventListener('micro:routine-done', fin);
     runRoutine(r, { token });
   });
+}
+
+// ── CHECK ALL RECIPES: every file in recipes/, checked the way it will run — a registered tool's
+// settings against its list (an unknown one names the nearest real one), a routine through its
+// expansion and pre-flight. Routine steps in the old form (settings mixed into the step, where a
+// tool's own `filter:` was taken for a step keyword and dropped) are flagged; `rewrite` moves their
+// settings under `with:` and writes the file back. ──
+function oldFormSteps(steps, out = []) {
+  for (const st of steps || []) {
+    if (!st || typeof st !== 'object') continue;
+    if (st.each !== undefined && Array.isArray(st.steps)) { oldFormSteps(st.steps, out); continue; }
+    if (!(st.tool || st.recipe)) continue;
+    const loose = Object.keys(st).filter((k) => !['recipe', 'tool', 'as', 'emit', 'with'].includes(k));
+    if (loose.length) out.push({ st, loose });
+  }
+  return out;
+}
+export async function checkAllRecipes({ rewrite = false } = {}) {
+  const out = [];
+  for (const r of S.recipes) {
+    const item = { name: r.name, file: r.file || null, tool: r.tool, problems: [], oldForm: 0, rewritten: false };
+    try {
+      if (r.tool === 'routine') {
+        const old = oldFormSteps(r.params && r.params.steps);
+        item.oldForm = old.length;
+        if (rewrite && old.length) {
+          for (const { st, loose } of old) { st.with = { ...(st.with || {}) }; for (const k of loose) { st.with[k] = st[k]; delete st[k]; } }
+          if (r.file) { const fh = await resolveFileHandle(S.project.dir, r.file, { create: true }); const w = await fh.createWritable(); await w.write(recipeYaml(r)); await w.close(); item.rewritten = true; }
+          item.oldForm = 0;
+        }
+        const steps = await expandRoutine(r.params || {});
+        const pf = await routinePreflight(r, steps);
+        item.problems.push(...pf.problems.filter((p) => !/^load these layers first/.test(p)));   // a routine for other data isn't wrong
+        if (pf.problems.some((p) => /^load these layers first/.test(p))) item.note = 'some layers aren’t loaded — their columns weren’t checked';
+      } else if (toolDef(r.tool)) {
+        item.problems.push(...checkParams(r.tool, r.params).errors);
+      } else item.note = 'not checked — this tool has no settings list yet';
+    } catch (e) { item.problems.push(e.message); }
+    out.push(item);
+  }
+  return out;
+}
+export async function openCheckAllRecipes() {
+  const win = floatWin({ title: 'check all recipes', sub: 'checking…', x: 140, y: 100, w: 560, h: 380 });
+  win.el.dataset.checkRecipes = '1';
+  const render = (items) => {
+    win.body.textContent = '';
+    const bad = items.filter((x) => x.problems.length), old = items.filter((x) => x.oldForm);
+    win.sub.textContent = items.length ? `${items.length} recipe${items.length === 1 ? '' : 's'} · ${bad.length ? `${bad.length} with problems` : 'no problems'}${old.length ? ` · ${old.length} in the old step form` : ''}` : 'no recipes in this project';
+    for (const x of items) {
+      const row = document.createElement('div'); row.className = 'rw-prevline' + (x.problems.length ? ' fail' : x.oldForm || x.note ? ' warn' : '');
+      row.textContent = `${x.problems.length ? '✗' : '✓'} ${x.name} · ${RECIPE_TOOLS[x.tool] || x.tool}${x.oldForm ? ` — ${x.oldForm} step${x.oldForm === 1 ? '' : 's'} in the old form (settings outside with:)` : ''}${x.rewritten ? ' — rewritten' : ''}${x.note ? ` — ${x.note}` : ''}`;
+      win.body.append(row);
+      for (const p of x.problems) { const l = document.createElement('div'); l.className = 'rw-prevline fail'; l.textContent = `      ${p}`; win.body.append(l); }
+    }
+    if (old.length) {
+      const b = document.createElement('button'); b.className = 'awin-btn'; b.textContent = 'Rewrite old steps into with:'; b.style.marginTop = '8px';
+      b.title = 'moves each step’s settings under with: and writes the file back (the step keywords stay)';
+      b.onclick = async () => { b.disabled = true; render(await checkAllRecipes({ rewrite: true })); };
+      win.body.append(b);
+    }
+  };
+  render(await checkAllRecipes());
+  return win;
 }
 
 // plain JS ⇄ @gcu/yaml AST (the emitter is AST-only; nulls are simply omitted)
@@ -746,6 +829,11 @@ export async function saveRecipe(tool, params, suggestedName) {
   if (!S.project) { $('#meta').textContent = 'recipes: open or save a project first (a recipe is a file in recipes/)'; return null; }
   const name = ((await microPrompt('recipe name', suggestedName || '')) || '').trim();
   if (!name) return null;
+  return writeRecipe(name, tool, params);
+}
+// a recipe file, named (the from-scratch form has its own name field; saveRecipe asks for one)
+export async function writeRecipe(name, tool, params) {
+  if (!S.project) { $('#meta').textContent = 'recipes: open or save a project first (a recipe is a file in recipes/)'; return null; }
   const existing = S.recipes.find((x) => x.name === name);
   const r = { name, tool, params: JSON.parse(JSON.stringify(params)), inputs: existing ? existing.inputs : undefined, file: existing ? existing.file : 'recipes/' + recipeSlug(name) + '.yaml' };   // re-saving a window's config keeps hand-authored inputs
   try {
@@ -845,7 +933,8 @@ export function runRecipe(r, andRun = true) {
 export function recipesMenuItems() {
   if (!S.project) return [{ label: 'open a project folder first', action: () => {} }];
   if (!S.recipes.length) return [
-    { label: 'none yet — “save as recipe…” in a grade-tonnage or swath window', action: () => {} },
+    { label: 'none yet — “save as recipe…” in an analysis window, or:', action: () => {} },
+    { label: 'New recipe…', action: () => openRecipeForm() },
     { label: 'New routine…', action: () => openRoutineWindow(null) },
   ];
   return [...S.recipes.map((r) => ({
@@ -856,6 +945,6 @@ export function recipesMenuItems() {
       { label: 'Rename…', action: () => renameRecipe(r) },
       { label: 'Delete', action: () => deleteRecipe(r) },
     ],
-  })), { label: 'New routine…', action: () => openRoutineWindow(null) }, { label: 'Runs…', action: () => openRunsWindow() }];
+  })), { label: 'New recipe…', action: () => openRecipeForm() }, { label: 'New routine…', action: () => openRoutineWindow(null) }, { label: 'Runs…', action: () => openRunsWindow() }, { label: 'Check all recipes…', action: () => openCheckAllRecipes() }];
 }
 
