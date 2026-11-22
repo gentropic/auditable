@@ -6834,6 +6834,37 @@ if (take()) {
   await p.close();
 }
 
+// ── §106: NO SEAM ON A BLOCK FACE — an orthographic plan centred exactly on a block boundary, at an
+//     odd width, puts a pixel's ray right on the face between two blocks. The ray used to come from
+//     the interpolated quad position (a few cm off), so both blocks missed it: a one-pixel column of
+//     background down the middle of a print-resolution render. Each pixel's ray is now unprojected
+//     from its own screen position. ──
+if (take()) {
+  const p = await mkPage('sm2seam');
+  const r = await p.evaluate(async () => {
+    const M_ = window._micro, W = window.micro;
+    const rows = ['XC,YC,ZC,AU']; for (let k = 0; k < 4; k++) for (let j = 0; j < 32; j++) for (let i = 0; i < 44; i++) rows.push(`${512005 + i * 10},${7604005 + j * 10},${525 + k * 10},${(0.1 + 0.01 * i).toFixed(3)}`);
+    const id = await M_.openBlob(new File([rows.join('\n') + '\n'], 'seam.csv'), 'seam.csv', 'replace');
+    const L = M_.layers().find((x) => x.id === id);
+    await M_.setLayerColorSel(L, 'solid'); M_.setBg('#ffffff');
+    await W.setView({ look: 0, elevation: 90, ortho: true }); W.fit();
+    await new Promise((res) => setTimeout(res, 300));
+    const out = { target: M_.cam.state.target.slice() };
+    for (const w of [661, 663, 921]) {
+      const h = Math.round(w * 0.66), cv = M_.renderViewCanvas(w, h), d = cv.getContext('2d').getImageData(0, 0, w, h).data, y = Math.round(h / 2);
+      let gaps = 0, inModel = 0;
+      for (let x = 2; x < w - 2; x++) {
+        const lum = (xx) => { const o = (y * w + xx) * 4; return d[o] + d[o + 1] + d[o + 2]; };
+        if (lum(x - 2) < 700 && lum(x + 2) < 700) { inModel++; if (lum(x) > 740) gaps++; }   // background between two model pixels
+      }
+      out[w] = { gaps, inModel };
+    }
+    return out;
+  });
+  chk(`NO SEAM: a plan centred on a block face (target ${JSON.stringify(r.target)}) has no background column inside the model at odd widths (${JSON.stringify([r[661], r[663], r[921]])})`, [661, 663, 921].every((w) => r[w].inModel > 100 && r[w].gaps === 0));
+  await p.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

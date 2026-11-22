@@ -10,7 +10,7 @@
 import { backingRatio } from './ratio.js';
 import { chanDequant } from './chan.js';
 import { makeProgram, IDENTITY3 } from './gl-util.js';
-import { translateState } from './camera.js';
+import { translateState, mat4Inverse } from './camera.js';
 import { layerSection, meshSection } from './section.js';
 
 // no encoder: the pick target is RG32UI (R = record, G = layer + face), so the
@@ -188,6 +188,8 @@ uniform vec3 uEye;
 uniform vec3 uFwd;
 uniform float uOrthoRay;
 uniform float uBackoff;
+uniform mat4 uInvVP;                    // inverse view-projection: a pixel → its ray (exact)
+uniform vec4 uVp;                       // the viewport (x, y, w, h); w = 0: the interpolated fallback
 uniform mat4 uViewProj;
 uniform vec4 uSecPlane;
 uniform vec2 uSecCfg;
@@ -203,15 +205,29 @@ void main() {
     outId = uvec4(vRec, packId(uLayer, NO_FACE), 0u, 0u);  // demoted to a splat: no box, no face
     return;
   }
-  vec3 ro = uOrthoRay > 0.5 ? vWorldPos - uFwd * uBackoff : uEye;
-  vec3 rd = uOrthoRay > 0.5 ? uFwd : normalize(vWorldPos - uEye);
+  // the ray through THIS pixel, from its own screen position (exact) — not from the interpolated
+  // quad position, which the rasterizer only carries to a few cm: a ray on the face between two
+  // blocks then missed both (a one-pixel gap down the middle of an odd-width plan)
+  vec3 ro, rd;
+  if (uVp.z > 0.5) {
+    vec2 ndc = ((gl_FragCoord.xy - uVp.xy) / uVp.zw) * 2.0 - 1.0;
+    vec4 pa = uInvVP * vec4(ndc, -1.0, 1.0), pb = uInvVP * vec4(ndc, 1.0, 1.0);
+    ro = pa.xyz / pa.w; rd = normalize(pb.xyz / pb.w - ro);
+  } else {
+    ro = uOrthoRay > 0.5 ? vWorldPos - uFwd * uBackoff : uEye;
+    rd = uOrthoRay > 0.5 ? uFwd : normalize(vWorldPos - uEye);
+  }
   // the box test in the block's frame (as gl-blocks): a rotated model's FACE
   // ids name its LATTICE faces (U/V/W ±), not world ones
   mat3 toBox = transpose(uGridRot);
   vec3 roL = toBox * (ro - vCenter), rdL = toBox * rd;
-  vec3 inv = 1.0 / rdL;
-  vec3 t0 = (-vHalf - roL) * inv;
-  vec3 t1 = (vHalf - roL) * inv;
+  // an axis-parallel ray EXACTLY on a box face made (0) * inf = NaN and both neighbours discarded it
+  // (a one-pixel gap down the middle of an odd-width plan): keep each direction component finite
+  vec3 rdS = vec3(abs(rdL.x) < 1e-12 ? 1e-12 : rdL.x, abs(rdL.y) < 1e-12 ? 1e-12 : rdL.y, abs(rdL.z) < 1e-12 ? 1e-12 : rdL.z);
+  vec3 inv = 1.0 / rdS;
+  vec3 hB = vHalf * 1.0001;              // a hair of overlap: a ray on the face between two blocks hits one of them, never neither
+  vec3 t0 = (-hB - roL) * inv;
+  vec3 t1 = (hB - roL) * inv;
   vec3 tmin3 = min(t0, t1), tmax3 = max(t0, t1);
   float tin = max(max(tmin3.x, tmin3.y), tmin3.z);
   float tout = min(min(tmax3.x, tmax3.y), tmax3.z);
@@ -503,7 +519,7 @@ export function createPickPipeline(gl) {
   const uPts = { layer: U(pts, 'uLayer'), viewProj: U(pts, 'uViewProj'), boxMin: U(pts, 'uBoxMin'), boxSpan: U(pts, 'uBoxSpan'), pointPx: U(pts, 'uPointPx'), secPlane: U(pts, 'uSecPlane'), secCfg: U(pts, 'uSecCfg'), mask: U(pts, 'uMask'), filterOn: U(pts, 'uFilterOn'), isolate: U(pts, 'uIsolate'), catVis: U(pts, 'uCatVis'), catVisOn: U(pts, 'uCatVisOn'), rule: U(pts, 'uRule'), ruleOn: U(pts, 'uRuleOn'), valCullOn: U(pts, 'uValCullOn'), colorMode: U(pts, 'uColorMode'), zRange: U(pts, 'uZRange'), chanChunk: U(pts, 'uChanChunk'), chanDoc: U(pts, 'uChanDoc'), chanTexOn: U(pts, 'uChanTexOn'), noDataOn: U(pts, 'uNoDataOn'), intensityScale: U(pts, 'uIntensityScale'), noData: U(pts, 'uNoData'), chanTex: U(pts, 'uChanTex'), ramp: U(pts, 'uRamp') };
   const uBlk = {
     layer: U(blk, 'uLayer'),
-    viewProj: U(blk, 'uViewProj'), eye: U(blk, 'uEye'), right: U(blk, 'uRight'), up: U(blk, 'uUp'),
+    viewProj: U(blk, 'uViewProj'), invVP: U(blk, 'uInvVP'), vp: U(blk, 'uVp'), eye: U(blk, 'uEye'), right: U(blk, 'uRight'), up: U(blk, 'uUp'),
     gridOrigin: U(blk, 'uGridOrigin'), gridSize: U(blk, 'uGridSize'), gridRot: U(blk, 'uGridRot'),
     dimPalette: U(blk, 'uDimPalette'), subBlock: U(blk, 'uSubBlock'),
     perspScale: U(blk, 'uPerspScale'), demotePx: U(blk, 'uDemotePx'), pointPx: U(blk, 'uPointPx'), fixedSplat: U(blk, 'uFixedSplat'),
@@ -687,6 +703,7 @@ export function createPickPipeline(gl) {
       // the camera uniforms, per layer (a moved layer has its own)
       const setBlkCam = (s) => {
         gl.uniformMatrix4fv(uBlk.viewProj, false, s.viewProj);
+        { const inv = mat4Inverse(s.viewProj), vp = gl.getParameter(gl.VIEWPORT); if (inv) { gl.uniformMatrix4fv(uBlk.invVP, false, inv); gl.uniform4f(uBlk.vp, vp[0], vp[1], vp[2], vp[3]); } else gl.uniform4f(uBlk.vp, 0, 0, 0, 0); }
         gl.uniform3f(uBlk.eye, s.eye[0], s.eye[1], s.eye[2]);
         const v = s.view;
         gl.uniform3f(uBlk.right, v[0], v[4], v[8]);

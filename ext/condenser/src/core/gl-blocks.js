@@ -31,6 +31,7 @@
 import { backingRatio } from './ratio.js';
 import { chanDequant } from './chan.js';
 import { makeProgram, IDENTITY3 } from './gl-util.js';
+import { mat4Inverse } from './camera.js';
 
 const VERT = `#version 300 es
 precision highp float;
@@ -169,7 +170,9 @@ in vec3 vWorldPos;
 uniform vec3 uEye;
 uniform vec3 uFwd;                      // view direction (ortho rays are parallel)
 uniform float uOrthoRay;                // 1 = ortho: origin per fragment, direction = uFwd
-uniform float uBackoff;                 // how far behind the quad the ortho ray starts
+uniform float uBackoff;
+uniform mat4 uInvVP;                    // inverse view-projection: a pixel → its ray (exact)
+uniform vec4 uVp;                       // the viewport (x, y, w, h); w = 0: the interpolated fallback                 // how far behind the quad the ortho ray starts
 uniform vec3 uLightDir;
 uniform mat4 uViewProj;
 uniform vec4 uSecPlane;
@@ -189,14 +192,28 @@ void main() {
   }
   // ray-AABB slab test in frame-local space (perspective: from the eye;
   // orthographic: parallel rays -- origin backed off along the view direction)
-  vec3 ro = uOrthoRay > 0.5 ? vWorldPos - uFwd * uBackoff : uEye;
-  vec3 rd = uOrthoRay > 0.5 ? uFwd : normalize(vWorldPos - uEye);
+  // the ray through THIS pixel, from its own screen position (exact) — not from the interpolated
+  // quad position, which the rasterizer only carries to a few cm: a ray on the face between two
+  // blocks then missed both (a one-pixel gap down the middle of an odd-width plan)
+  vec3 ro, rd;
+  if (uVp.z > 0.5) {
+    vec2 ndc = ((gl_FragCoord.xy - uVp.xy) / uVp.zw) * 2.0 - 1.0;
+    vec4 pa = uInvVP * vec4(ndc, -1.0, 1.0), pb = uInvVP * vec4(ndc, 1.0, 1.0);
+    ro = pa.xyz / pa.w; rd = normalize(pb.xyz / pb.w - ro);
+  } else {
+    ro = uOrthoRay > 0.5 ? vWorldPos - uFwd * uBackoff : uEye;
+    rd = uOrthoRay > 0.5 ? uFwd : normalize(vWorldPos - uEye);
+  }
   // the box test in the BLOCK's frame (a rotation: t along the ray is unchanged)
   mat3 toBox = transpose(uGridRot);
   vec3 roL = toBox * (ro - vCenter), rdL = toBox * rd;
-  vec3 inv = 1.0 / rdL;                 // IEEE inf on axis-parallel rays is fine here
-  vec3 t0 = (-vHalf - roL) * inv;
-  vec3 t1 = (vHalf - roL) * inv;
+  // an axis-parallel ray EXACTLY on a box face made (0) * inf = NaN and both neighbours discarded it
+  // (a one-pixel gap down the middle of an odd-width plan): keep each direction component finite
+  vec3 rdS = vec3(abs(rdL.x) < 1e-12 ? 1e-12 : rdL.x, abs(rdL.y) < 1e-12 ? 1e-12 : rdL.y, abs(rdL.z) < 1e-12 ? 1e-12 : rdL.z);
+  vec3 inv = 1.0 / rdS;
+  vec3 hB = vHalf * 1.0001;              // a hair of overlap: a ray on the face between two blocks hits one of them, never neither
+  vec3 t0 = (-hB - roL) * inv;
+  vec3 t1 = (hB - roL) * inv;
   vec3 tmin3 = min(t0, t1), tmax3 = max(t0, t1);
   float tin = max(max(tmin3.x, tmin3.y), tmin3.z);
   float tout = min(min(tmax3.x, tmax3.y), tmax3.z);
@@ -300,7 +317,7 @@ export function createBlocksPipeline(gl) {
       rule: U('uRule'), ruleOn: U('uRuleOn'),
       chanTex: U('uChanTex'), chanTexOn: U('uChanTexOn'),
       secPlane: U('uSecPlane'), secCfg: U('uSecCfg'), edges: U('uEdges'),
-      ortho: U('uOrtho'), fwd: U('uFwd'), orthoRay: U('uOrthoRay'), backoff: U('uBackoff'),
+      ortho: U('uOrtho'), fwd: U('uFwd'), orthoRay: U('uOrthoRay'), backoff: U('uBackoff'), invVP: U('uInvVP'), vp: U('uVp'),
     } };
   };
   const full = mkProg(FRAG), cheap = mkProg(FRAG_CHEAP);
@@ -393,6 +410,7 @@ export function createBlocksPipeline(gl) {
       gl.useProgram(pp.prog);
       const uni = pp.uni;
       gl.uniformMatrix4fv(uni.viewProj, false, s.viewProj);
+      { const inv = mat4Inverse(s.viewProj), vp = gl.getParameter(gl.VIEWPORT); if (inv) { gl.uniformMatrix4fv(uni.invVP, false, inv); gl.uniform4f(uni.vp, vp[0], vp[1], vp[2], vp[3]); } else gl.uniform4f(uni.vp, 0, 0, 0, 0); }
       gl.uniform3f(uni.eye, s.eye[0], s.eye[1], s.eye[2]);
       const v = s.view;                                    // camera basis = view-matrix rotation rows
       gl.uniform3f(uni.right, v[0], v[4], v[8]);

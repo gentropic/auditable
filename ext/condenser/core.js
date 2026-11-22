@@ -1883,465 +1883,6 @@ function createSoupPipeline(gl) {
   return { upload, begin, drawSlice };
 }
 
-// ── src/core/gl-blocks.js ──
-
-// @gcu/condenser — box impostors for block models (micro-spec §2.3).
-// One screen-aligned quad per block (instanced TRIANGLE_STRIP — no point-sprite
-// size cap): the vertex shader expands a camera-basis billboard sized to the
-// block's bounding sphere; the fragment shader ray-intersects the block's ACTUAL
-// AABB analytically (slab test), discards on miss, writes correct gl_FragDepth
-// and the face normal on hit → pixel-perfect cube silhouettes and correct
-// inter-block occlusion at one quad per block. Face-normal flat shading; EDL
-// does the rest on top.
-//
-// LOD demotion: a block whose projected radius falls below ~2 px renders as a
-// plain circular splat (no ray test) — near field looks like blocks, far field
-// looks like the dense cloud it visually is (§2.3).
-//
-// WebGL2 has no baseInstance, so accumulation slices [first, first+k) work by
-// re-pointing the instance attributes at byte offsets before each draw — the
-// chunk's VAO records the new pointers (cheap: 3 pointer calls per chunk-draw).
-//
-// TRUE SECTIONS: the section slab clips the ray-box interval analytically in the
-// fragment shader (a couple of dots + interval min/max on top of the existing
-// slab test) — a block straddling the plane shows its CUT INTERIOR (flat, plane
-// normal, slightly darkened) instead of vanishing or poking through. The vertex
-// cull keeps anything TOUCHING the slab (box support radius along the normal);
-// demoted splats keep the centroid test (sub-pixel, and a splat can't clip).
-//
-// Positions are IJK-exact (§2.5): center = uGridOrigin + uGridRot · (aIjk · uGridSize),
-// with uGridOrigin the frame-local centroid of block (0,0,0). uGridRot is the
-// lattice ROTATION (columns = the unit U/V/W directions; identity for an
-// axis-aligned model): one orientation per chunk, so a rotated model draws as
-// true oriented boxes — the ray-box test runs in the block's own frame.
-
-
-const VERT$gl_blocks = `#version 300 es
-precision highp float;
-layout(location=0) in vec3 aIjk;        // uint16 raw (integer lattice)
-layout(location=1) in float aChan;      // uint16 normalized (per-chunk range)
-layout(location=2) in float aCat;       // uint8 raw
-layout(location=3) in uint aRec;        // uint32 record index (the join key)
-layout(location=4) in uint aDim;        // uint8 size code → uDimPalette (sub-blocked)
-uniform mat4 uViewProj;
-uniform vec3 uEye, uRight, uUp;
-uniform vec3 uGridOrigin, uGridSize;
-uniform mat3 uGridRot;                  // lattice rotation (identity = axis-aligned)
-uniform sampler2D uDimPalette;          // Nx1 RGBA32F: per-code half-dims (box radius)
-uniform float uSubBlock;                // 1 = variable-size boxes (read aDim → palette)
-uniform float uPerspScale;              // persp: px/world at distance 1; ortho: px/world flat
-uniform float uOrtho;                   // 1 = orthographic (skip the /dist)
-uniform float uDemotePx, uPointPx;
-uniform int uColorMode;                 // 0 elevation | 1 grade | 2 category | 3 solid
-uniform vec2 uZRange;
-uniform vec2 uChanChunk;                // this chunk's [min, span] (dequantize aChan)
-uniform vec2 uChanDoc;                  // document [min, span] (ramp normalization)
-uniform sampler2D uRamp;
-uniform vec4 uNoData;                   // blank values (chan.js code 0 / the value texture's BLANK): rgb + a (a < 0.5 = hidden)
-uniform float uNoDataOn;                // off: a blank clamps to the lowest colour, the old picture
-uniform sampler2D uPalette;
-uniform sampler2D uMask;                // filter bitmask by record index (8192-wide)
-uniform float uFilterOn, uIsolate;
-uniform sampler2D uSel;
-uniform float uSelOn;
-uniform sampler2D uCatVis;              // 256x1 per-class visibility
-uniform float uCatVisOn;
-uniform sampler2D uRule;                // rule-code byte by record index (8192-wide)
-uniform float uRuleOn;                  // rule mode: the code replaces the category
-uniform sampler2D uChanTex;             // OPT-IN: raw f32 VALUE by record index (8192-wide rows) —
-uniform float uChanTexOn;               // replaces aChan; how a never-materialized grade gets drawn
-uniform float uForceSplat;              // 1 = whole chunk demoted (cheap far-field path)
-uniform float uFixedSplat;              // 1 = points view: fixed-px splats regardless of block size
-uniform uint uPicked;                   // picked RECORD (0xFFFFFFFF = none)
-uniform uint uPickedLayer;              // …and the layer it belongs to
-uniform uint uLayer;                    // this draw's layer (per-draw, not per-element)                   // record index to highlight (0xFFFFFFFF = none)
-uniform uvec2 uRepaint;                 // repaint pass: draw ONLY these two records (both 0xFFFFFFFF = off)
-uniform vec4 uSecPlane;                 // section plane: xyz = unit normal, w = offset (frame-local)
-uniform vec2 uSecCfg;                   // x: 0 = off, 1 = slab; y: slab half-thickness
-flat out vec3 vCenter;
-flat out vec3 vHalf;
-flat out vec4 vColor;
-flat out float vMode;                   // 0 = impostor, 1 = splat
-flat out float vCull;
-flat out float vPxR;                    // projected radius (edge-line fade near demotion)
-out vec2 vCorner;
-out vec3 vWorldPos;
-void main() {
-  vec3 center = uGridOrigin + uGridRot * (aIjk * uGridSize);
-  vec3 half_ = uSubBlock > 0.5 ? texelFetch(uDimPalette, ivec2(int(aDim), 0), 0).rgb : uGridSize * 0.5;
-  float r = length(half_);
-  float dist = max(distance(uEye, center), 1e-3);
-  float distEff = uOrtho > 0.5 ? 1.0 : dist;              // ortho: size is distance-free
-  float pxR = r * uPerspScale / distEff;
-  float demoted = max(max(pxR < uDemotePx ? 1.0 : 0.0, uForceSplat), uFixedSplat);
-  // filter mask: dim (default) or cull (isolate)
-  float m = 1.0;
-  if (uFilterOn > 0.5) {
-    int rec = int(aRec);
-    m = texelFetch(uMask, ivec2(rec & 8191, rec >> 13), 0).r > 0.5 ? 1.0 : 0.0;
-  }
-  // section cull: keep any box that TOUCHES the slab (support radius of the box
-  // along the plane normal) — the fragment shader then clips the ray interval
-  // EXACTLY, so straddling blocks show their true cut instead of vanishing.
-  // Demoted splats can't clip, so they keep the centroid test (sub-pixel there).
-  float secSupp = demoted > 0.5 ? 0.0 : dot(half_, abs(transpose(uGridRot) * uSecPlane.xyz));   // the normal in the box's frame
-  float secCull = (uSecCfg.x > 0.5 && abs(dot(center, uSecPlane.xyz) - uSecPlane.w) > uSecCfg.y + secSupp * 0.99) ? 1.0 : 0.0;   // 0.99: a box that only TOUCHES the slab (a face on its boundary — the level below a one-block slab) is out, not drawn as a zero-thick face
-  vCull = max((uIsolate > 0.5 && m < 0.5) ? 1.0 : 0.0, secCull);
-  float cls = aCat;
-  if (uRuleOn > 0.5) {
-    int rr = int(aRec);
-    cls = floor(texelFetch(uRule, ivec2(rr & 8191, rr >> 13), 0).r * 255.0 + 0.5);
-  }
-  if (uCatVisOn > 0.5 && texelFetch(uCatVis, ivec2(int(cls) & 255, 0), 0).r < 0.5) vCull = 1.0;
-  float quadR = uFixedSplat > 0.5
-    ? uPointPx * 0.5 * distEff / uPerspScale
-    : mix(r, max(uPointPx * 0.5, pxR) * distEff / uPerspScale, demoted);
-  vec2 corner = vec2(float(gl_VertexID & 1), float(gl_VertexID >> 1)) * 2.0 - 1.0;
-  vec3 wp = center + (uRight * corner.x + uUp * corner.y) * quadR;
-  gl_Position = uViewProj * vec4(wp, 1.0);
-  vCenter = center; vHalf = half_; vMode = demoted; vCorner = corner; vWorldPos = wp; vPxR = pxR;
-  if (uColorMode == 0) {
-    float t = clamp((center.z - uZRange.x) / max(uZRange.y, 1e-6), 0.0, 1.0);
-    vColor = texture(uRamp, vec2(t, 0.5));
-    if (vColor.a < 0.5) vCull = 1.0;                      // a hidden class: the ramp texel's alpha is 0
-  } else if (uColorMode == 1) {
-    int cr = int(aRec);
-    float v = uChanTexOn > 0.5
-      ? texelFetch(uChanTex, ivec2(cr & 8191, cr >> 13), 0).r
-      : uChanChunk.x + aChan * uChanChunk.y;
-    bool blank = uChanTexOn > 0.5 ? v < -1.0e37 : aChan < 0.5 / 65535.0;
-    if (blank && uNoDataOn > 0.5) {
-      vColor = vec4(uNoData.rgb, 1.0);
-      if (uNoData.a < 0.5) vCull = 1.0;
-    } else {
-      float t = clamp((v - uChanDoc.x) / max(uChanDoc.y, 1e-6), 0.0, 1.0);
-      vColor = texture(uRamp, vec2(t, 0.5));
-      if (vColor.a < 0.5) vCull = 1.0;
-    }
-  } else if (uColorMode == 2) {
-    vColor = texture(uPalette, vec2((cls + 0.5) / 256.0, 0.5));
-  } else {
-    vColor = vec4(0.62, 0.63, 0.66, 1.0);
-  }
-  if (uSelOn > 0.5) {
-    int rs = int(aRec);
-    if (texelFetch(uSel, ivec2(rs & 8191, rs >> 13), 0).r > 0.5) vColor = vec4(mix(vColor.rgb, vec3(1.0, 0.85, 0.3), 0.55), vColor.a);
-  }
-  if (uFilterOn > 0.5 && m < 0.5) vColor = vec4(vColor.rgb * 0.3, vColor.a);   // context mode: dim non-matching (still legible)
-  if (aRec == uPicked && uLayer == uPickedLayer) vColor = vec4(mix(vColor.rgb, vec3(1.0, 0.15, 0.7), 0.85) + 0.1, vColor.a);   // picked: hot magenta — the hue viridis doesn't have
-  if ((uRepaint.x != 0xFFFFFFFFu || uRepaint.y != 0xFFFFFFFFu) && aRec != uRepaint.x && aRec != uRepaint.y) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);   // repaint pass: everything else clips out
-}`;
-
-// 4×4-Bayer screen-door opacity (same as gl-mesh): drops a fraction of pixels by a
-// stable dither → "see through" the model WITHOUT alpha blending, so real depth
-// writes + occlusion stay correct and no back-to-front sort is needed.
-const SCREENDOOR$gl_blocks = `
-uniform float uOpacity;
-const float _BAYER[16] = float[16](0.0,8.0,2.0,10.0,12.0,4.0,14.0,6.0,3.0,11.0,1.0,9.0,15.0,7.0,13.0,5.0);
-bool _screendoor() { if (uOpacity >= 0.999) return false; int bi = (int(gl_FragCoord.x) & 3) + ((int(gl_FragCoord.y) & 3) << 2); return uOpacity < (_BAYER[bi] + 0.5) / 16.0; }`;
-
-const FRAG$gl_blocks = `#version 300 es
-precision highp float;
-flat in vec3 vCenter;
-flat in vec3 vHalf;
-flat in vec4 vColor;
-flat in float vMode;
-flat in float vCull;
-flat in float vPxR;
-in vec2 vCorner;
-in vec3 vWorldPos;
-uniform vec3 uEye;
-uniform vec3 uFwd;                      // view direction (ortho rays are parallel)
-uniform float uOrthoRay;                // 1 = ortho: origin per fragment, direction = uFwd
-uniform float uBackoff;                 // how far behind the quad the ortho ray starts
-uniform vec3 uLightDir;
-uniform mat4 uViewProj;
-uniform vec4 uSecPlane;
-uniform vec2 uSecCfg;
-uniform float uEdges;                   // 1 = draw block edge lines (View toggle)
-uniform mat3 uGridRot;                  // lattice rotation — the box test runs in its frame
-out vec4 outColor;
-${SCREENDOOR$gl_blocks}
-void main() {
-  if (vCull > 0.5) discard;             // isolate mode: filtered-out block
-  if (_screendoor()) discard;           // per-layer opacity (screen-door)
-  if (vMode > 0.5) {                    // demoted splat: circular mask, rasterizer depth
-    if (dot(vCorner, vCorner) > 1.0) discard;
-    gl_FragDepth = gl_FragCoord.z;
-    outColor = vColor;
-    return;
-  }
-  // ray-AABB slab test in frame-local space (perspective: from the eye;
-  // orthographic: parallel rays -- origin backed off along the view direction)
-  vec3 ro = uOrthoRay > 0.5 ? vWorldPos - uFwd * uBackoff : uEye;
-  vec3 rd = uOrthoRay > 0.5 ? uFwd : normalize(vWorldPos - uEye);
-  // the box test in the BLOCK's frame (a rotation: t along the ray is unchanged)
-  mat3 toBox = transpose(uGridRot);
-  vec3 roL = toBox * (ro - vCenter), rdL = toBox * rd;
-  vec3 inv = 1.0 / rdL;                 // IEEE inf on axis-parallel rays is fine here
-  vec3 t0 = (-vHalf - roL) * inv;
-  vec3 t1 = (vHalf - roL) * inv;
-  vec3 tmin3 = min(t0, t1), tmax3 = max(t0, t1);
-  float tin = max(max(tmin3.x, tmin3.y), tmin3.z);
-  float tout = min(min(tmax3.x, tmax3.y), tmax3.z);
-  if (tin > tout || tout < 0.0) discard;
-  // face normal = the slab that produced the BOX entry (chosen pre-clip), back in world space
-  vec3 n = vec3(0.0);
-  if (tin == tmin3.x) n = vec3(-sign(rdL.x), 0.0, 0.0);
-  else if (tin == tmin3.y) n = vec3(0.0, -sign(rdL.y), 0.0);
-  else n = vec3(0.0, 0.0, -sign(rdL.z));
-  n = uGridRot * n;
-  // TRUE SECTION: intersect the ray-box interval with the ray-slab interval.
-  // When the slab plane replaces the box entry, the visible surface is the CUT
-  // INTERIOR — flat, plane normal, slightly darkened — so a thin section reads
-  // as a continuous painted wall instead of a ragged centroid subset.
-  float cutFace = 0.0;
-  if (uSecCfg.x > 0.5) {
-    float den = dot(rd, uSecPlane.xyz);
-    float dc = dot(ro, uSecPlane.xyz) - uSecPlane.w;
-    if (abs(den) < 1e-9) { if (abs(dc) > uSecCfg.y) discard; }
-    else {
-      float ta = (-uSecCfg.y - dc) / den, tb = (uSecCfg.y - dc) / den;
-      float sIn = min(ta, tb), sOut = max(ta, tb);
-      if (sIn > tin) { tin = sIn; cutFace = -sign(den); }
-      tout = min(tout, sOut);
-      if (tin > tout || tout < 0.0) discard;
-    }
-  }
-  float t = tin > 0.0 ? tin : tout;     // inside the box → exit face
-  bool onCut = cutFace != 0.0 && t == tin;
-  if (onCut) n = uSecPlane.xyz * cutFace;
-  vec3 p = ro + rd * t;
-  vec4 clip = uViewProj * vec4(p, 1.0);
-  gl_FragDepth = clamp(clip.z / clip.w * 0.5 + 0.5, 0.0, 1.0);
-  float shade = (0.55 + 0.45 * max(dot(n, uLightDir), 0.0)) * (onCut ? 0.85 : 1.0);
-  // BLOCK EDGES (toggle): the hit point in box-local coords — on a face, one
-  // axis sits at ±1 and the SECOND-largest → 1 marks an edge; on a cut face
-  // (interior) the LARGEST → 1 outlines the cut polygon (block boundaries on
-  // the section wall). fwidth gives a ~screen-constant line; fade the effect
-  // out as the block shrinks toward demotion so the far field stays clean.
-  if (uEdges > 0.5) {
-    vec3 a2 = abs(toBox * (p - vCenter)) / vHalf;
-    float m1 = max(a2.x, max(a2.y, a2.z));
-    float m2 = max(min(a2.x, a2.y), min(max(a2.x, a2.y), a2.z));
-    float e = onCut ? m1 : m2;
-    float dpx = (1.0 - e) / max(fwidth(e), 1e-6);          // distance to the edge in pixels
-    float edge = 1.0 - clamp(dpx * 0.7 - 0.3, 0.0, 1.0);   // ~1.5 px, soft falloff
-    edge *= clamp((vPxR - 5.0) / 8.0, 0.0, 1.0);           // fade below ~13 px projected radius
-    shade *= 1.0 - 0.4 * edge;
-  }
-  outColor = vec4(vColor.rgb * shade, vColor.a);
-}`;
-
-// Far-field fragment: splat only, NO gl_FragDepth anywhere → early-z stays
-// enabled for these draws — the perf lever for distant chunks (§2.3 mitigation).
-const FRAG_CHEAP$gl_blocks = `#version 300 es
-precision highp float;
-flat in vec3 vCenter;
-flat in vec3 vHalf;
-flat in vec4 vColor;
-flat in float vMode;
-flat in float vCull;
-in vec2 vCorner;
-in vec3 vWorldPos;
-uniform vec3 uEye;
-uniform vec3 uLightDir;
-uniform mat4 uViewProj;
-out vec4 outColor;
-${SCREENDOOR$gl_blocks}
-void main() {
-  if (vCull > 0.5) discard;
-  if (_screendoor()) discard;
-  if (dot(vCorner, vCorner) > 1.0) discard;
-  outColor = vColor;
-}`;
-
-// Golden-angle hue walk → visually distinct category colors (code → color).
-function categoryPalettePixels(n = 256) {
-  const out = new Uint8Array(n * 4);
-  for (let i = 0; i < n; i++) {
-    const h = (i * 137.508) % 360, s = 0.55, l = 0.58;
-    const c = (1 - Math.abs(2 * l - 1)) * s, x = c * (1 - Math.abs(((h / 60) % 2) - 1)), m = l - c / 2;
-    const [r, g, b] = h < 60 ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x] : h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x];
-    out[i * 4] = Math.round((r + m) * 255); out[i * 4 + 1] = Math.round((g + m) * 255); out[i * 4 + 2] = Math.round((b + m) * 255); out[i * 4 + 3] = 255;
-  }
-  return out;
-}
-
-function createBlocksPipeline(gl) {
-  const mkProg = (frag) => {
-    const prog = makeProgram(gl, VERT$gl_blocks, frag);
-    const U = (n) => gl.getUniformLocation(prog, n);
-    return { prog, uni: {
-      viewProj: U('uViewProj'), eye: U('uEye'), right: U('uRight'), up: U('uUp'),
-      gridOrigin: U('uGridOrigin'), gridSize: U('uGridSize'), gridRot: U('uGridRot'),
-      dimPalette: U('uDimPalette'), subBlock: U('uSubBlock'), opacity: U('uOpacity'),
-      perspScale: U('uPerspScale'), demotePx: U('uDemotePx'), pointPx: U('uPointPx'),
-      colorMode: U('uColorMode'), zRange: U('uZRange'), chanChunk: U('uChanChunk'), chanDoc: U('uChanDoc'), noData: U('uNoData'), noDataOn: U('uNoDataOn'),
-      ramp: U('uRamp'), palette: U('uPalette'), lightDir: U('uLightDir'),
-      mask: U('uMask'), filterOn: U('uFilterOn'), isolate: U('uIsolate'), forceSplat: U('uForceSplat'), fixedSplat: U('uFixedSplat'), picked: U('uPicked'), pickedLayer: U('uPickedLayer'), layer: U('uLayer'), repaint: U('uRepaint'),
-      catVis: U('uCatVis'), catVisOn: U('uCatVisOn'), sel: U('uSel'), selOn: U('uSelOn'),
-      rule: U('uRule'), ruleOn: U('uRuleOn'),
-      chanTex: U('uChanTex'), chanTexOn: U('uChanTexOn'),
-      secPlane: U('uSecPlane'), secCfg: U('uSecCfg'), edges: U('uEdges'),
-      ortho: U('uOrtho'), fwd: U('uFwd'), orthoRay: U('uOrthoRay'), backoff: U('uBackoff'),
-    } };
-  };
-  const full = mkProg(FRAG$gl_blocks), cheap = mkProg(FRAG_CHEAP$gl_blocks);
-  let active = full;
-
-  // Upload one BlockChunk → buffers + a VAO whose instance pointers get re-aimed
-  // per slice. CPU arrays are free to die after this returns.
-  function upload(chunk) {
-    const vao = gl.createVertexArray();
-    gl.bindVertexArray(vao);
-    const mkBuf = (data) => { const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b); gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW); return b; };
-    const bIjk = mkBuf(chunk.ijk), bChan = mkBuf(chunk.chan), bCat = mkBuf(chunk.cat);
-    const bRec = mkBuf(chunk.recIdx);                      // filter-mask lookup + pick pass
-    const sub = !!(chunk.dim && chunk.dimPalette);
-    const bDim = sub ? mkBuf(chunk.dim) : null;            // per-block u8 size code
-    gl.bindVertexArray(null);
-    // sub-blocked: a small Nx1 RGBA32F palette of half-dims (box radii). NEAREST
-    // sampling of a float texture is core WebGL2 (only float RENDER needs an ext).
-    let dimTex = null;
-    if (sub) {
-      const pal = chunk.dimPalette, data = new Float32Array(pal.length * 4);
-      for (let i = 0; i < pal.length; i++) { data[i * 4] = pal[i][0]; data[i * 4 + 1] = pal[i][1]; data[i * 4 + 2] = pal[i][2]; }
-      dimTex = gl.createTexture();
-      gl.bindTexture(gl.TEXTURE_2D, dimTex);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, pal.length, 1, 0, gl.RGBA, gl.FLOAT, data);
-      for (const p of [gl.TEXTURE_MIN_FILTER, gl.TEXTURE_MAG_FILTER]) gl.texParameteri(gl.TEXTURE_2D, p, gl.NEAREST);
-      for (const p of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T]) gl.texParameteri(gl.TEXTURE_2D, p, gl.CLAMP_TO_EDGE);
-    }
-    return {
-      kind: 'blocks', vao, buffers: sub ? [bIjk, bChan, bCat, bRec, bDim] : [bIjk, bChan, bCat, bRec],
-      bIjk, bChan, bCat, bRec, bDim, dimTex, dimPalette: sub ? chunk.dimPalette : null,
-      count: chunk.count, bboxLocal: chunk.bboxLocal, cursor: 0,
-      grid: chunk.grid, chanRange: chunk.chanRange,
-    };
-  }
-
-  // Aim the instance attributes at element `first` and draw k instances.
-  // useCheap: the whole chunk projects below the demotion threshold, so the
-  // no-gl_FragDepth program (early-z enabled) draws it as forced splats.
-  function drawSlice(c, first, k, useCheap = false) {
-    const pp = useCheap ? cheap : full;
-    if (pp !== active) { gl.useProgram(pp.prog); active = pp; }
-    const uni = active.uni;
-    gl.uniform1f(uni.forceSplat, useCheap ? 1 : 0);
-    gl.bindVertexArray(c.vao);
-    gl.bindBuffer(gl.ARRAY_BUFFER, c.bIjk);
-    gl.enableVertexAttribArray(0);
-    gl.vertexAttribPointer(0, 3, gl.UNSIGNED_SHORT, false, 0, first * 6);
-    gl.vertexAttribDivisor(0, 1);
-    gl.bindBuffer(gl.ARRAY_BUFFER, c.bChan);
-    gl.enableVertexAttribArray(1);
-    gl.vertexAttribPointer(1, 1, gl.UNSIGNED_SHORT, true, 0, first * 2);
-    gl.vertexAttribDivisor(1, 1);
-    gl.bindBuffer(gl.ARRAY_BUFFER, c.bCat);
-    gl.enableVertexAttribArray(2);
-    gl.vertexAttribPointer(2, 1, gl.UNSIGNED_BYTE, false, 0, first);
-    gl.vertexAttribDivisor(2, 1);
-    gl.bindBuffer(gl.ARRAY_BUFFER, c.bRec);
-    gl.enableVertexAttribArray(3);
-    gl.vertexAttribIPointer(3, 1, gl.UNSIGNED_INT, 0, first * 4);
-    gl.vertexAttribDivisor(3, 1);
-    if (c.dimTex) {                                         // sub-blocked: per-block size code + palette
-      gl.bindBuffer(gl.ARRAY_BUFFER, c.bDim);
-      gl.enableVertexAttribArray(4);
-      gl.vertexAttribIPointer(4, 1, gl.UNSIGNED_BYTE, 0, first);
-      gl.vertexAttribDivisor(4, 1);
-      gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, c.dimTex);
-      gl.uniform1f(uni.subBlock, 1);
-    } else {
-      gl.disableVertexAttribArray(4);
-      // A disabled `in uint aDim` reads the generic current value, which defaults to
-      // FLOAT — a type mismatch vs the uint declaration (GL_INVALID_OPERATION at draw).
-      // Give it a valid uint default; aDim is unused when uSubBlock=0, so 0 is a no-op.
-      gl.vertexAttribI4ui(4, 0, 0, 0, 0);
-      gl.uniform1f(uni.subBlock, 0);
-    }
-    gl.uniform3f(uni.gridOrigin, c.grid.originLocal[0], c.grid.originLocal[1], c.grid.originLocal[2]);
-    gl.uniform3f(uni.gridSize, c.grid.size[0], c.grid.size[1], c.grid.size[2]);
-    gl.uniformMatrix3fv(uni.gridRot, false, c.grid.rot || IDENTITY3);
-    const dq = chanDequant(c.chanRange);
-    gl.uniform2f(uni.chanChunk, dq[0], dq[1]);
-    gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, k);
-  }
-
-  // Per-frame program state (called once before the chunk loop) — set on BOTH
-  // programs so drawSlice can switch freely between full and cheap.
-  function begin(cam, { pointPx, colorMode, zRange, chanDoc, ramp, palette, viewportH, maskTex = null, isolate = false, pointsView = false, picked = 0xFFFFFFFF, pickedLayer = 0xFFFFFFFF, layer = 0, section = null, catVisTex = null, selTex = null, ruleTex = null, chanTex = null, opacity = 1, edges = false, noData = null }) {
-    const s = cam.state;
-    for (const pp of [full, cheap]) {
-      gl.useProgram(pp.prog);
-      const uni = pp.uni;
-      gl.uniformMatrix4fv(uni.viewProj, false, s.viewProj);
-      gl.uniform3f(uni.eye, s.eye[0], s.eye[1], s.eye[2]);
-      const v = s.view;                                    // camera basis = view-matrix rotation rows
-      gl.uniform3f(uni.right, v[0], v[4], v[8]);
-      gl.uniform3f(uni.up, v[1], v[5], v[9]);
-      // headlight, slightly above the view direction
-      let lx = s.eye[0] - s.target[0], ly = s.eye[1] - s.target[1], lz = s.eye[2] - s.target[2];
-      const ll = Math.hypot(lx, ly, lz) || 1;
-      lx = lx / ll + v[1] * 0.4; ly = ly / ll + v[5] * 0.4; lz = lz / ll + v[9] * 0.4;
-      const l2 = Math.hypot(lx, ly, lz) || 1;
-      gl.uniform3f(uni.lightDir, lx / l2, ly / l2, lz / l2);
-      gl.uniform1f(uni.perspScale, s.ortho ? (viewportH / 2) / s.halfH : (viewportH / 2) / Math.tan(s.fovY / 2));
-      gl.uniform1f(uni.ortho, s.ortho ? 1 : 0);
-      gl.uniform1f(uni.orthoRay, s.ortho ? 1 : 0);
-      {
-        const f = [s.target[0] - s.eye[0], s.target[1] - s.eye[1], s.target[2] - s.eye[2]];
-        const fl = Math.hypot(...f) || 1;
-        gl.uniform3f(uni.fwd, f[0] / fl, f[1] / fl, f[2] / fl);
-        gl.uniform1f(uni.backoff, s.radius * 2);
-      }
-      gl.uniform1f(uni.demotePx, 2.0);
-      gl.uniform1f(uni.pointPx, pointPx * backingRatio(gl.canvas));
-      gl.uniform1i(uni.colorMode, colorMode);
-      gl.uniform2f(uni.zRange, zRange[0], zRange[1]);
-      gl.uniform2f(uni.chanDoc, chanDoc[0], chanDoc[1]);
-      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, ramp); gl.uniform1i(uni.ramp, 0);
-      gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, palette); gl.uniform1i(uni.palette, 1);
-      gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, palette); gl.uniform1i(uni.dimPalette, 2);   // unit 2 = per-chunk sub-block half-dims; a complete default so regular draws never sample incomplete
-      gl.uniform1f(uni.subBlock, 0);
-      gl.uniform1f(uni.opacity, Math.max(0.02, Math.min(1, opacity)));   // per-layer screen-door opacity
-      gl.uniform1f(uni.fixedSplat, pointsView ? 1 : 0);
-      gl.uniform1ui(uni.picked, picked >>> 0);
-      gl.uniform1ui(uni.pickedLayer, pickedLayer >>> 0);
-      gl.uniform1ui(uni.layer, layer >>> 0);              // this draw's layer — the id no longer hides in aRec
-      gl.uniform2ui(uni.repaint, 0xFFFFFFFF, 0xFFFFFFFF);
-      gl.uniform4f(uni.secPlane, section ? section.n[0] : 0, section ? section.n[1] : 0, section ? section.n[2] : 1, section ? section.d : 0);
-      gl.uniform2f(uni.secCfg, section ? 1 : 0, section ? section.half : 0);
-      gl.uniform1f(uni.edges, edges ? 1 : 0);
-      gl.uniform1f(uni.filterOn, maskTex ? 1 : 0);
-      gl.uniform1f(uni.isolate, isolate ? 1 : 0);
-      if (maskTex) { gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, maskTex); gl.uniform1i(uni.mask, 4); }
-      gl.uniform1f(uni.catVisOn, catVisTex ? 1 : 0);
-      if (catVisTex) { gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, catVisTex); gl.uniform1i(uni.catVis, 5); }
-      gl.uniform1f(uni.selOn, selTex ? 1 : 0);
-      if (selTex) { gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D, selTex); gl.uniform1i(uni.sel, 6); }
-      gl.uniform1f(uni.ruleOn, ruleTex ? 1 : 0);
-      if (ruleTex) { gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, ruleTex); gl.uniform1i(uni.rule, 7); }
-      gl.uniform1f(uni.chanTexOn, chanTex ? 1 : 0);
-      gl.uniform1f(uni.noDataOn, noData ? 1 : 0);
-      if (noData) gl.uniform4f(uni.noData, noData[0], noData[1], noData[2], noData[3]);
-      if (chanTex) { gl.activeTexture(gl.TEXTURE8); gl.bindTexture(gl.TEXTURE_2D, chanTex); gl.uniform1i(uni.chanTex, 8); }
-    }
-    active = full;
-    gl.useProgram(full.prog);
-  }
-
-  // The pick-repaint pass (gl.js): both programs get the target pair, then the
-  // lazily-tracked active program is restored so drawSlice's cache stays honest.
-  function setRepaint(a, b) {
-    for (const pp of [full, cheap]) { gl.useProgram(pp.prog); gl.uniform2ui(pp.uni.repaint, a >>> 0, b >>> 0); }
-    if (active) gl.useProgram(active.prog);
-  }
-
-  return { upload, drawSlice, begin, setRepaint };
-}
-
 // ── src/core/camera.js ──
 
 // @gcu/condenser — minimal mat4 math + an orbit camera. Raw WebGL2 needs ~four
@@ -2628,6 +2169,482 @@ function attachOrbitInput(canvas, cam, { onChange } = {}) {
   };
 }
 
+// ── src/core/gl-blocks.js ──
+
+// @gcu/condenser — box impostors for block models (micro-spec §2.3).
+// One screen-aligned quad per block (instanced TRIANGLE_STRIP — no point-sprite
+// size cap): the vertex shader expands a camera-basis billboard sized to the
+// block's bounding sphere; the fragment shader ray-intersects the block's ACTUAL
+// AABB analytically (slab test), discards on miss, writes correct gl_FragDepth
+// and the face normal on hit → pixel-perfect cube silhouettes and correct
+// inter-block occlusion at one quad per block. Face-normal flat shading; EDL
+// does the rest on top.
+//
+// LOD demotion: a block whose projected radius falls below ~2 px renders as a
+// plain circular splat (no ray test) — near field looks like blocks, far field
+// looks like the dense cloud it visually is (§2.3).
+//
+// WebGL2 has no baseInstance, so accumulation slices [first, first+k) work by
+// re-pointing the instance attributes at byte offsets before each draw — the
+// chunk's VAO records the new pointers (cheap: 3 pointer calls per chunk-draw).
+//
+// TRUE SECTIONS: the section slab clips the ray-box interval analytically in the
+// fragment shader (a couple of dots + interval min/max on top of the existing
+// slab test) — a block straddling the plane shows its CUT INTERIOR (flat, plane
+// normal, slightly darkened) instead of vanishing or poking through. The vertex
+// cull keeps anything TOUCHING the slab (box support radius along the normal);
+// demoted splats keep the centroid test (sub-pixel, and a splat can't clip).
+//
+// Positions are IJK-exact (§2.5): center = uGridOrigin + uGridRot · (aIjk · uGridSize),
+// with uGridOrigin the frame-local centroid of block (0,0,0). uGridRot is the
+// lattice ROTATION (columns = the unit U/V/W directions; identity for an
+// axis-aligned model): one orientation per chunk, so a rotated model draws as
+// true oriented boxes — the ray-box test runs in the block's own frame.
+
+
+const VERT$gl_blocks = `#version 300 es
+precision highp float;
+layout(location=0) in vec3 aIjk;        // uint16 raw (integer lattice)
+layout(location=1) in float aChan;      // uint16 normalized (per-chunk range)
+layout(location=2) in float aCat;       // uint8 raw
+layout(location=3) in uint aRec;        // uint32 record index (the join key)
+layout(location=4) in uint aDim;        // uint8 size code → uDimPalette (sub-blocked)
+uniform mat4 uViewProj;
+uniform vec3 uEye, uRight, uUp;
+uniform vec3 uGridOrigin, uGridSize;
+uniform mat3 uGridRot;                  // lattice rotation (identity = axis-aligned)
+uniform sampler2D uDimPalette;          // Nx1 RGBA32F: per-code half-dims (box radius)
+uniform float uSubBlock;                // 1 = variable-size boxes (read aDim → palette)
+uniform float uPerspScale;              // persp: px/world at distance 1; ortho: px/world flat
+uniform float uOrtho;                   // 1 = orthographic (skip the /dist)
+uniform float uDemotePx, uPointPx;
+uniform int uColorMode;                 // 0 elevation | 1 grade | 2 category | 3 solid
+uniform vec2 uZRange;
+uniform vec2 uChanChunk;                // this chunk's [min, span] (dequantize aChan)
+uniform vec2 uChanDoc;                  // document [min, span] (ramp normalization)
+uniform sampler2D uRamp;
+uniform vec4 uNoData;                   // blank values (chan.js code 0 / the value texture's BLANK): rgb + a (a < 0.5 = hidden)
+uniform float uNoDataOn;                // off: a blank clamps to the lowest colour, the old picture
+uniform sampler2D uPalette;
+uniform sampler2D uMask;                // filter bitmask by record index (8192-wide)
+uniform float uFilterOn, uIsolate;
+uniform sampler2D uSel;
+uniform float uSelOn;
+uniform sampler2D uCatVis;              // 256x1 per-class visibility
+uniform float uCatVisOn;
+uniform sampler2D uRule;                // rule-code byte by record index (8192-wide)
+uniform float uRuleOn;                  // rule mode: the code replaces the category
+uniform sampler2D uChanTex;             // OPT-IN: raw f32 VALUE by record index (8192-wide rows) —
+uniform float uChanTexOn;               // replaces aChan; how a never-materialized grade gets drawn
+uniform float uForceSplat;              // 1 = whole chunk demoted (cheap far-field path)
+uniform float uFixedSplat;              // 1 = points view: fixed-px splats regardless of block size
+uniform uint uPicked;                   // picked RECORD (0xFFFFFFFF = none)
+uniform uint uPickedLayer;              // …and the layer it belongs to
+uniform uint uLayer;                    // this draw's layer (per-draw, not per-element)                   // record index to highlight (0xFFFFFFFF = none)
+uniform uvec2 uRepaint;                 // repaint pass: draw ONLY these two records (both 0xFFFFFFFF = off)
+uniform vec4 uSecPlane;                 // section plane: xyz = unit normal, w = offset (frame-local)
+uniform vec2 uSecCfg;                   // x: 0 = off, 1 = slab; y: slab half-thickness
+flat out vec3 vCenter;
+flat out vec3 vHalf;
+flat out vec4 vColor;
+flat out float vMode;                   // 0 = impostor, 1 = splat
+flat out float vCull;
+flat out float vPxR;                    // projected radius (edge-line fade near demotion)
+out vec2 vCorner;
+out vec3 vWorldPos;
+void main() {
+  vec3 center = uGridOrigin + uGridRot * (aIjk * uGridSize);
+  vec3 half_ = uSubBlock > 0.5 ? texelFetch(uDimPalette, ivec2(int(aDim), 0), 0).rgb : uGridSize * 0.5;
+  float r = length(half_);
+  float dist = max(distance(uEye, center), 1e-3);
+  float distEff = uOrtho > 0.5 ? 1.0 : dist;              // ortho: size is distance-free
+  float pxR = r * uPerspScale / distEff;
+  float demoted = max(max(pxR < uDemotePx ? 1.0 : 0.0, uForceSplat), uFixedSplat);
+  // filter mask: dim (default) or cull (isolate)
+  float m = 1.0;
+  if (uFilterOn > 0.5) {
+    int rec = int(aRec);
+    m = texelFetch(uMask, ivec2(rec & 8191, rec >> 13), 0).r > 0.5 ? 1.0 : 0.0;
+  }
+  // section cull: keep any box that TOUCHES the slab (support radius of the box
+  // along the plane normal) — the fragment shader then clips the ray interval
+  // EXACTLY, so straddling blocks show their true cut instead of vanishing.
+  // Demoted splats can't clip, so they keep the centroid test (sub-pixel there).
+  float secSupp = demoted > 0.5 ? 0.0 : dot(half_, abs(transpose(uGridRot) * uSecPlane.xyz));   // the normal in the box's frame
+  float secCull = (uSecCfg.x > 0.5 && abs(dot(center, uSecPlane.xyz) - uSecPlane.w) > uSecCfg.y + secSupp * 0.99) ? 1.0 : 0.0;   // 0.99: a box that only TOUCHES the slab (a face on its boundary — the level below a one-block slab) is out, not drawn as a zero-thick face
+  vCull = max((uIsolate > 0.5 && m < 0.5) ? 1.0 : 0.0, secCull);
+  float cls = aCat;
+  if (uRuleOn > 0.5) {
+    int rr = int(aRec);
+    cls = floor(texelFetch(uRule, ivec2(rr & 8191, rr >> 13), 0).r * 255.0 + 0.5);
+  }
+  if (uCatVisOn > 0.5 && texelFetch(uCatVis, ivec2(int(cls) & 255, 0), 0).r < 0.5) vCull = 1.0;
+  float quadR = uFixedSplat > 0.5
+    ? uPointPx * 0.5 * distEff / uPerspScale
+    : mix(r, max(uPointPx * 0.5, pxR) * distEff / uPerspScale, demoted);
+  vec2 corner = vec2(float(gl_VertexID & 1), float(gl_VertexID >> 1)) * 2.0 - 1.0;
+  vec3 wp = center + (uRight * corner.x + uUp * corner.y) * quadR;
+  gl_Position = uViewProj * vec4(wp, 1.0);
+  vCenter = center; vHalf = half_; vMode = demoted; vCorner = corner; vWorldPos = wp; vPxR = pxR;
+  if (uColorMode == 0) {
+    float t = clamp((center.z - uZRange.x) / max(uZRange.y, 1e-6), 0.0, 1.0);
+    vColor = texture(uRamp, vec2(t, 0.5));
+    if (vColor.a < 0.5) vCull = 1.0;                      // a hidden class: the ramp texel's alpha is 0
+  } else if (uColorMode == 1) {
+    int cr = int(aRec);
+    float v = uChanTexOn > 0.5
+      ? texelFetch(uChanTex, ivec2(cr & 8191, cr >> 13), 0).r
+      : uChanChunk.x + aChan * uChanChunk.y;
+    bool blank = uChanTexOn > 0.5 ? v < -1.0e37 : aChan < 0.5 / 65535.0;
+    if (blank && uNoDataOn > 0.5) {
+      vColor = vec4(uNoData.rgb, 1.0);
+      if (uNoData.a < 0.5) vCull = 1.0;
+    } else {
+      float t = clamp((v - uChanDoc.x) / max(uChanDoc.y, 1e-6), 0.0, 1.0);
+      vColor = texture(uRamp, vec2(t, 0.5));
+      if (vColor.a < 0.5) vCull = 1.0;
+    }
+  } else if (uColorMode == 2) {
+    vColor = texture(uPalette, vec2((cls + 0.5) / 256.0, 0.5));
+  } else {
+    vColor = vec4(0.62, 0.63, 0.66, 1.0);
+  }
+  if (uSelOn > 0.5) {
+    int rs = int(aRec);
+    if (texelFetch(uSel, ivec2(rs & 8191, rs >> 13), 0).r > 0.5) vColor = vec4(mix(vColor.rgb, vec3(1.0, 0.85, 0.3), 0.55), vColor.a);
+  }
+  if (uFilterOn > 0.5 && m < 0.5) vColor = vec4(vColor.rgb * 0.3, vColor.a);   // context mode: dim non-matching (still legible)
+  if (aRec == uPicked && uLayer == uPickedLayer) vColor = vec4(mix(vColor.rgb, vec3(1.0, 0.15, 0.7), 0.85) + 0.1, vColor.a);   // picked: hot magenta — the hue viridis doesn't have
+  if ((uRepaint.x != 0xFFFFFFFFu || uRepaint.y != 0xFFFFFFFFu) && aRec != uRepaint.x && aRec != uRepaint.y) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);   // repaint pass: everything else clips out
+}`;
+
+// 4×4-Bayer screen-door opacity (same as gl-mesh): drops a fraction of pixels by a
+// stable dither → "see through" the model WITHOUT alpha blending, so real depth
+// writes + occlusion stay correct and no back-to-front sort is needed.
+const SCREENDOOR$gl_blocks = `
+uniform float uOpacity;
+const float _BAYER[16] = float[16](0.0,8.0,2.0,10.0,12.0,4.0,14.0,6.0,3.0,11.0,1.0,9.0,15.0,7.0,13.0,5.0);
+bool _screendoor() { if (uOpacity >= 0.999) return false; int bi = (int(gl_FragCoord.x) & 3) + ((int(gl_FragCoord.y) & 3) << 2); return uOpacity < (_BAYER[bi] + 0.5) / 16.0; }`;
+
+const FRAG$gl_blocks = `#version 300 es
+precision highp float;
+flat in vec3 vCenter;
+flat in vec3 vHalf;
+flat in vec4 vColor;
+flat in float vMode;
+flat in float vCull;
+flat in float vPxR;
+in vec2 vCorner;
+in vec3 vWorldPos;
+uniform vec3 uEye;
+uniform vec3 uFwd;                      // view direction (ortho rays are parallel)
+uniform float uOrthoRay;                // 1 = ortho: origin per fragment, direction = uFwd
+uniform float uBackoff;
+uniform mat4 uInvVP;                    // inverse view-projection: a pixel → its ray (exact)
+uniform vec4 uVp;                       // the viewport (x, y, w, h); w = 0: the interpolated fallback                 // how far behind the quad the ortho ray starts
+uniform vec3 uLightDir;
+uniform mat4 uViewProj;
+uniform vec4 uSecPlane;
+uniform vec2 uSecCfg;
+uniform float uEdges;                   // 1 = draw block edge lines (View toggle)
+uniform mat3 uGridRot;                  // lattice rotation — the box test runs in its frame
+out vec4 outColor;
+${SCREENDOOR$gl_blocks}
+void main() {
+  if (vCull > 0.5) discard;             // isolate mode: filtered-out block
+  if (_screendoor()) discard;           // per-layer opacity (screen-door)
+  if (vMode > 0.5) {                    // demoted splat: circular mask, rasterizer depth
+    if (dot(vCorner, vCorner) > 1.0) discard;
+    gl_FragDepth = gl_FragCoord.z;
+    outColor = vColor;
+    return;
+  }
+  // ray-AABB slab test in frame-local space (perspective: from the eye;
+  // orthographic: parallel rays -- origin backed off along the view direction)
+  // the ray through THIS pixel, from its own screen position (exact) — not from the interpolated
+  // quad position, which the rasterizer only carries to a few cm: a ray on the face between two
+  // blocks then missed both (a one-pixel gap down the middle of an odd-width plan)
+  vec3 ro, rd;
+  if (uVp.z > 0.5) {
+    vec2 ndc = ((gl_FragCoord.xy - uVp.xy) / uVp.zw) * 2.0 - 1.0;
+    vec4 pa = uInvVP * vec4(ndc, -1.0, 1.0), pb = uInvVP * vec4(ndc, 1.0, 1.0);
+    ro = pa.xyz / pa.w; rd = normalize(pb.xyz / pb.w - ro);
+  } else {
+    ro = uOrthoRay > 0.5 ? vWorldPos - uFwd * uBackoff : uEye;
+    rd = uOrthoRay > 0.5 ? uFwd : normalize(vWorldPos - uEye);
+  }
+  // the box test in the BLOCK's frame (a rotation: t along the ray is unchanged)
+  mat3 toBox = transpose(uGridRot);
+  vec3 roL = toBox * (ro - vCenter), rdL = toBox * rd;
+  // an axis-parallel ray EXACTLY on a box face made (0) * inf = NaN and both neighbours discarded it
+  // (a one-pixel gap down the middle of an odd-width plan): keep each direction component finite
+  vec3 rdS = vec3(abs(rdL.x) < 1e-12 ? 1e-12 : rdL.x, abs(rdL.y) < 1e-12 ? 1e-12 : rdL.y, abs(rdL.z) < 1e-12 ? 1e-12 : rdL.z);
+  vec3 inv = 1.0 / rdS;
+  vec3 hB = vHalf * 1.0001;              // a hair of overlap: a ray on the face between two blocks hits one of them, never neither
+  vec3 t0 = (-hB - roL) * inv;
+  vec3 t1 = (hB - roL) * inv;
+  vec3 tmin3 = min(t0, t1), tmax3 = max(t0, t1);
+  float tin = max(max(tmin3.x, tmin3.y), tmin3.z);
+  float tout = min(min(tmax3.x, tmax3.y), tmax3.z);
+  if (tin > tout || tout < 0.0) discard;
+  // face normal = the slab that produced the BOX entry (chosen pre-clip), back in world space
+  vec3 n = vec3(0.0);
+  if (tin == tmin3.x) n = vec3(-sign(rdL.x), 0.0, 0.0);
+  else if (tin == tmin3.y) n = vec3(0.0, -sign(rdL.y), 0.0);
+  else n = vec3(0.0, 0.0, -sign(rdL.z));
+  n = uGridRot * n;
+  // TRUE SECTION: intersect the ray-box interval with the ray-slab interval.
+  // When the slab plane replaces the box entry, the visible surface is the CUT
+  // INTERIOR — flat, plane normal, slightly darkened — so a thin section reads
+  // as a continuous painted wall instead of a ragged centroid subset.
+  float cutFace = 0.0;
+  if (uSecCfg.x > 0.5) {
+    float den = dot(rd, uSecPlane.xyz);
+    float dc = dot(ro, uSecPlane.xyz) - uSecPlane.w;
+    if (abs(den) < 1e-9) { if (abs(dc) > uSecCfg.y) discard; }
+    else {
+      float ta = (-uSecCfg.y - dc) / den, tb = (uSecCfg.y - dc) / den;
+      float sIn = min(ta, tb), sOut = max(ta, tb);
+      if (sIn > tin) { tin = sIn; cutFace = -sign(den); }
+      tout = min(tout, sOut);
+      if (tin > tout || tout < 0.0) discard;
+    }
+  }
+  float t = tin > 0.0 ? tin : tout;     // inside the box → exit face
+  bool onCut = cutFace != 0.0 && t == tin;
+  if (onCut) n = uSecPlane.xyz * cutFace;
+  vec3 p = ro + rd * t;
+  vec4 clip = uViewProj * vec4(p, 1.0);
+  gl_FragDepth = clamp(clip.z / clip.w * 0.5 + 0.5, 0.0, 1.0);
+  float shade = (0.55 + 0.45 * max(dot(n, uLightDir), 0.0)) * (onCut ? 0.85 : 1.0);
+  // BLOCK EDGES (toggle): the hit point in box-local coords — on a face, one
+  // axis sits at ±1 and the SECOND-largest → 1 marks an edge; on a cut face
+  // (interior) the LARGEST → 1 outlines the cut polygon (block boundaries on
+  // the section wall). fwidth gives a ~screen-constant line; fade the effect
+  // out as the block shrinks toward demotion so the far field stays clean.
+  if (uEdges > 0.5) {
+    vec3 a2 = abs(toBox * (p - vCenter)) / vHalf;
+    float m1 = max(a2.x, max(a2.y, a2.z));
+    float m2 = max(min(a2.x, a2.y), min(max(a2.x, a2.y), a2.z));
+    float e = onCut ? m1 : m2;
+    float dpx = (1.0 - e) / max(fwidth(e), 1e-6);          // distance to the edge in pixels
+    float edge = 1.0 - clamp(dpx * 0.7 - 0.3, 0.0, 1.0);   // ~1.5 px, soft falloff
+    edge *= clamp((vPxR - 5.0) / 8.0, 0.0, 1.0);           // fade below ~13 px projected radius
+    shade *= 1.0 - 0.4 * edge;
+  }
+  outColor = vec4(vColor.rgb * shade, vColor.a);
+}`;
+
+// Far-field fragment: splat only, NO gl_FragDepth anywhere → early-z stays
+// enabled for these draws — the perf lever for distant chunks (§2.3 mitigation).
+const FRAG_CHEAP$gl_blocks = `#version 300 es
+precision highp float;
+flat in vec3 vCenter;
+flat in vec3 vHalf;
+flat in vec4 vColor;
+flat in float vMode;
+flat in float vCull;
+in vec2 vCorner;
+in vec3 vWorldPos;
+uniform vec3 uEye;
+uniform vec3 uLightDir;
+uniform mat4 uViewProj;
+out vec4 outColor;
+${SCREENDOOR$gl_blocks}
+void main() {
+  if (vCull > 0.5) discard;
+  if (_screendoor()) discard;
+  if (dot(vCorner, vCorner) > 1.0) discard;
+  outColor = vColor;
+}`;
+
+// Golden-angle hue walk → visually distinct category colors (code → color).
+function categoryPalettePixels(n = 256) {
+  const out = new Uint8Array(n * 4);
+  for (let i = 0; i < n; i++) {
+    const h = (i * 137.508) % 360, s = 0.55, l = 0.58;
+    const c = (1 - Math.abs(2 * l - 1)) * s, x = c * (1 - Math.abs(((h / 60) % 2) - 1)), m = l - c / 2;
+    const [r, g, b] = h < 60 ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x] : h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x];
+    out[i * 4] = Math.round((r + m) * 255); out[i * 4 + 1] = Math.round((g + m) * 255); out[i * 4 + 2] = Math.round((b + m) * 255); out[i * 4 + 3] = 255;
+  }
+  return out;
+}
+
+function createBlocksPipeline(gl) {
+  const mkProg = (frag) => {
+    const prog = makeProgram(gl, VERT$gl_blocks, frag);
+    const U = (n) => gl.getUniformLocation(prog, n);
+    return { prog, uni: {
+      viewProj: U('uViewProj'), eye: U('uEye'), right: U('uRight'), up: U('uUp'),
+      gridOrigin: U('uGridOrigin'), gridSize: U('uGridSize'), gridRot: U('uGridRot'),
+      dimPalette: U('uDimPalette'), subBlock: U('uSubBlock'), opacity: U('uOpacity'),
+      perspScale: U('uPerspScale'), demotePx: U('uDemotePx'), pointPx: U('uPointPx'),
+      colorMode: U('uColorMode'), zRange: U('uZRange'), chanChunk: U('uChanChunk'), chanDoc: U('uChanDoc'), noData: U('uNoData'), noDataOn: U('uNoDataOn'),
+      ramp: U('uRamp'), palette: U('uPalette'), lightDir: U('uLightDir'),
+      mask: U('uMask'), filterOn: U('uFilterOn'), isolate: U('uIsolate'), forceSplat: U('uForceSplat'), fixedSplat: U('uFixedSplat'), picked: U('uPicked'), pickedLayer: U('uPickedLayer'), layer: U('uLayer'), repaint: U('uRepaint'),
+      catVis: U('uCatVis'), catVisOn: U('uCatVisOn'), sel: U('uSel'), selOn: U('uSelOn'),
+      rule: U('uRule'), ruleOn: U('uRuleOn'),
+      chanTex: U('uChanTex'), chanTexOn: U('uChanTexOn'),
+      secPlane: U('uSecPlane'), secCfg: U('uSecCfg'), edges: U('uEdges'),
+      ortho: U('uOrtho'), fwd: U('uFwd'), orthoRay: U('uOrthoRay'), backoff: U('uBackoff'), invVP: U('uInvVP'), vp: U('uVp'),
+    } };
+  };
+  const full = mkProg(FRAG$gl_blocks), cheap = mkProg(FRAG_CHEAP$gl_blocks);
+  let active = full;
+
+  // Upload one BlockChunk → buffers + a VAO whose instance pointers get re-aimed
+  // per slice. CPU arrays are free to die after this returns.
+  function upload(chunk) {
+    const vao = gl.createVertexArray();
+    gl.bindVertexArray(vao);
+    const mkBuf = (data) => { const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b); gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW); return b; };
+    const bIjk = mkBuf(chunk.ijk), bChan = mkBuf(chunk.chan), bCat = mkBuf(chunk.cat);
+    const bRec = mkBuf(chunk.recIdx);                      // filter-mask lookup + pick pass
+    const sub = !!(chunk.dim && chunk.dimPalette);
+    const bDim = sub ? mkBuf(chunk.dim) : null;            // per-block u8 size code
+    gl.bindVertexArray(null);
+    // sub-blocked: a small Nx1 RGBA32F palette of half-dims (box radii). NEAREST
+    // sampling of a float texture is core WebGL2 (only float RENDER needs an ext).
+    let dimTex = null;
+    if (sub) {
+      const pal = chunk.dimPalette, data = new Float32Array(pal.length * 4);
+      for (let i = 0; i < pal.length; i++) { data[i * 4] = pal[i][0]; data[i * 4 + 1] = pal[i][1]; data[i * 4 + 2] = pal[i][2]; }
+      dimTex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, dimTex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, pal.length, 1, 0, gl.RGBA, gl.FLOAT, data);
+      for (const p of [gl.TEXTURE_MIN_FILTER, gl.TEXTURE_MAG_FILTER]) gl.texParameteri(gl.TEXTURE_2D, p, gl.NEAREST);
+      for (const p of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T]) gl.texParameteri(gl.TEXTURE_2D, p, gl.CLAMP_TO_EDGE);
+    }
+    return {
+      kind: 'blocks', vao, buffers: sub ? [bIjk, bChan, bCat, bRec, bDim] : [bIjk, bChan, bCat, bRec],
+      bIjk, bChan, bCat, bRec, bDim, dimTex, dimPalette: sub ? chunk.dimPalette : null,
+      count: chunk.count, bboxLocal: chunk.bboxLocal, cursor: 0,
+      grid: chunk.grid, chanRange: chunk.chanRange,
+    };
+  }
+
+  // Aim the instance attributes at element `first` and draw k instances.
+  // useCheap: the whole chunk projects below the demotion threshold, so the
+  // no-gl_FragDepth program (early-z enabled) draws it as forced splats.
+  function drawSlice(c, first, k, useCheap = false) {
+    const pp = useCheap ? cheap : full;
+    if (pp !== active) { gl.useProgram(pp.prog); active = pp; }
+    const uni = active.uni;
+    gl.uniform1f(uni.forceSplat, useCheap ? 1 : 0);
+    gl.bindVertexArray(c.vao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, c.bIjk);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 3, gl.UNSIGNED_SHORT, false, 0, first * 6);
+    gl.vertexAttribDivisor(0, 1);
+    gl.bindBuffer(gl.ARRAY_BUFFER, c.bChan);
+    gl.enableVertexAttribArray(1);
+    gl.vertexAttribPointer(1, 1, gl.UNSIGNED_SHORT, true, 0, first * 2);
+    gl.vertexAttribDivisor(1, 1);
+    gl.bindBuffer(gl.ARRAY_BUFFER, c.bCat);
+    gl.enableVertexAttribArray(2);
+    gl.vertexAttribPointer(2, 1, gl.UNSIGNED_BYTE, false, 0, first);
+    gl.vertexAttribDivisor(2, 1);
+    gl.bindBuffer(gl.ARRAY_BUFFER, c.bRec);
+    gl.enableVertexAttribArray(3);
+    gl.vertexAttribIPointer(3, 1, gl.UNSIGNED_INT, 0, first * 4);
+    gl.vertexAttribDivisor(3, 1);
+    if (c.dimTex) {                                         // sub-blocked: per-block size code + palette
+      gl.bindBuffer(gl.ARRAY_BUFFER, c.bDim);
+      gl.enableVertexAttribArray(4);
+      gl.vertexAttribIPointer(4, 1, gl.UNSIGNED_BYTE, 0, first);
+      gl.vertexAttribDivisor(4, 1);
+      gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, c.dimTex);
+      gl.uniform1f(uni.subBlock, 1);
+    } else {
+      gl.disableVertexAttribArray(4);
+      // A disabled `in uint aDim` reads the generic current value, which defaults to
+      // FLOAT — a type mismatch vs the uint declaration (GL_INVALID_OPERATION at draw).
+      // Give it a valid uint default; aDim is unused when uSubBlock=0, so 0 is a no-op.
+      gl.vertexAttribI4ui(4, 0, 0, 0, 0);
+      gl.uniform1f(uni.subBlock, 0);
+    }
+    gl.uniform3f(uni.gridOrigin, c.grid.originLocal[0], c.grid.originLocal[1], c.grid.originLocal[2]);
+    gl.uniform3f(uni.gridSize, c.grid.size[0], c.grid.size[1], c.grid.size[2]);
+    gl.uniformMatrix3fv(uni.gridRot, false, c.grid.rot || IDENTITY3);
+    const dq = chanDequant(c.chanRange);
+    gl.uniform2f(uni.chanChunk, dq[0], dq[1]);
+    gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, k);
+  }
+
+  // Per-frame program state (called once before the chunk loop) — set on BOTH
+  // programs so drawSlice can switch freely between full and cheap.
+  function begin(cam, { pointPx, colorMode, zRange, chanDoc, ramp, palette, viewportH, maskTex = null, isolate = false, pointsView = false, picked = 0xFFFFFFFF, pickedLayer = 0xFFFFFFFF, layer = 0, section = null, catVisTex = null, selTex = null, ruleTex = null, chanTex = null, opacity = 1, edges = false, noData = null }) {
+    const s = cam.state;
+    for (const pp of [full, cheap]) {
+      gl.useProgram(pp.prog);
+      const uni = pp.uni;
+      gl.uniformMatrix4fv(uni.viewProj, false, s.viewProj);
+      { const inv = mat4Inverse(s.viewProj), vp = gl.getParameter(gl.VIEWPORT); if (inv) { gl.uniformMatrix4fv(uni.invVP, false, inv); gl.uniform4f(uni.vp, vp[0], vp[1], vp[2], vp[3]); } else gl.uniform4f(uni.vp, 0, 0, 0, 0); }
+      gl.uniform3f(uni.eye, s.eye[0], s.eye[1], s.eye[2]);
+      const v = s.view;                                    // camera basis = view-matrix rotation rows
+      gl.uniform3f(uni.right, v[0], v[4], v[8]);
+      gl.uniform3f(uni.up, v[1], v[5], v[9]);
+      // headlight, slightly above the view direction
+      let lx = s.eye[0] - s.target[0], ly = s.eye[1] - s.target[1], lz = s.eye[2] - s.target[2];
+      const ll = Math.hypot(lx, ly, lz) || 1;
+      lx = lx / ll + v[1] * 0.4; ly = ly / ll + v[5] * 0.4; lz = lz / ll + v[9] * 0.4;
+      const l2 = Math.hypot(lx, ly, lz) || 1;
+      gl.uniform3f(uni.lightDir, lx / l2, ly / l2, lz / l2);
+      gl.uniform1f(uni.perspScale, s.ortho ? (viewportH / 2) / s.halfH : (viewportH / 2) / Math.tan(s.fovY / 2));
+      gl.uniform1f(uni.ortho, s.ortho ? 1 : 0);
+      gl.uniform1f(uni.orthoRay, s.ortho ? 1 : 0);
+      {
+        const f = [s.target[0] - s.eye[0], s.target[1] - s.eye[1], s.target[2] - s.eye[2]];
+        const fl = Math.hypot(...f) || 1;
+        gl.uniform3f(uni.fwd, f[0] / fl, f[1] / fl, f[2] / fl);
+        gl.uniform1f(uni.backoff, s.radius * 2);
+      }
+      gl.uniform1f(uni.demotePx, 2.0);
+      gl.uniform1f(uni.pointPx, pointPx * backingRatio(gl.canvas));
+      gl.uniform1i(uni.colorMode, colorMode);
+      gl.uniform2f(uni.zRange, zRange[0], zRange[1]);
+      gl.uniform2f(uni.chanDoc, chanDoc[0], chanDoc[1]);
+      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, ramp); gl.uniform1i(uni.ramp, 0);
+      gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, palette); gl.uniform1i(uni.palette, 1);
+      gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, palette); gl.uniform1i(uni.dimPalette, 2);   // unit 2 = per-chunk sub-block half-dims; a complete default so regular draws never sample incomplete
+      gl.uniform1f(uni.subBlock, 0);
+      gl.uniform1f(uni.opacity, Math.max(0.02, Math.min(1, opacity)));   // per-layer screen-door opacity
+      gl.uniform1f(uni.fixedSplat, pointsView ? 1 : 0);
+      gl.uniform1ui(uni.picked, picked >>> 0);
+      gl.uniform1ui(uni.pickedLayer, pickedLayer >>> 0);
+      gl.uniform1ui(uni.layer, layer >>> 0);              // this draw's layer — the id no longer hides in aRec
+      gl.uniform2ui(uni.repaint, 0xFFFFFFFF, 0xFFFFFFFF);
+      gl.uniform4f(uni.secPlane, section ? section.n[0] : 0, section ? section.n[1] : 0, section ? section.n[2] : 1, section ? section.d : 0);
+      gl.uniform2f(uni.secCfg, section ? 1 : 0, section ? section.half : 0);
+      gl.uniform1f(uni.edges, edges ? 1 : 0);
+      gl.uniform1f(uni.filterOn, maskTex ? 1 : 0);
+      gl.uniform1f(uni.isolate, isolate ? 1 : 0);
+      if (maskTex) { gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, maskTex); gl.uniform1i(uni.mask, 4); }
+      gl.uniform1f(uni.catVisOn, catVisTex ? 1 : 0);
+      if (catVisTex) { gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, catVisTex); gl.uniform1i(uni.catVis, 5); }
+      gl.uniform1f(uni.selOn, selTex ? 1 : 0);
+      if (selTex) { gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D, selTex); gl.uniform1i(uni.sel, 6); }
+      gl.uniform1f(uni.ruleOn, ruleTex ? 1 : 0);
+      if (ruleTex) { gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, ruleTex); gl.uniform1i(uni.rule, 7); }
+      gl.uniform1f(uni.chanTexOn, chanTex ? 1 : 0);
+      gl.uniform1f(uni.noDataOn, noData ? 1 : 0);
+      if (noData) gl.uniform4f(uni.noData, noData[0], noData[1], noData[2], noData[3]);
+      if (chanTex) { gl.activeTexture(gl.TEXTURE8); gl.bindTexture(gl.TEXTURE_2D, chanTex); gl.uniform1i(uni.chanTex, 8); }
+    }
+    active = full;
+    gl.useProgram(full.prog);
+  }
+
+  // The pick-repaint pass (gl.js): both programs get the target pair, then the
+  // lazily-tracked active program is restored so drawSlice's cache stays honest.
+  function setRepaint(a, b) {
+    for (const pp of [full, cheap]) { gl.useProgram(pp.prog); gl.uniform2ui(pp.uni.repaint, a >>> 0, b >>> 0); }
+    if (active) gl.useProgram(active.prog);
+  }
+
+  return { upload, drawSlice, begin, setRepaint };
+}
+
 // ── src/core/section.js ──
 
 // A layer's view of the section — ONE definition for the draw (gl.js) and the
@@ -2865,6 +2882,8 @@ uniform vec3 uEye;
 uniform vec3 uFwd;
 uniform float uOrthoRay;
 uniform float uBackoff;
+uniform mat4 uInvVP;                    // inverse view-projection: a pixel → its ray (exact)
+uniform vec4 uVp;                       // the viewport (x, y, w, h); w = 0: the interpolated fallback
 uniform mat4 uViewProj;
 uniform vec4 uSecPlane;
 uniform vec2 uSecCfg;
@@ -2880,15 +2899,29 @@ void main() {
     outId = uvec4(vRec, packId(uLayer, NO_FACE), 0u, 0u);  // demoted to a splat: no box, no face
     return;
   }
-  vec3 ro = uOrthoRay > 0.5 ? vWorldPos - uFwd * uBackoff : uEye;
-  vec3 rd = uOrthoRay > 0.5 ? uFwd : normalize(vWorldPos - uEye);
+  // the ray through THIS pixel, from its own screen position (exact) — not from the interpolated
+  // quad position, which the rasterizer only carries to a few cm: a ray on the face between two
+  // blocks then missed both (a one-pixel gap down the middle of an odd-width plan)
+  vec3 ro, rd;
+  if (uVp.z > 0.5) {
+    vec2 ndc = ((gl_FragCoord.xy - uVp.xy) / uVp.zw) * 2.0 - 1.0;
+    vec4 pa = uInvVP * vec4(ndc, -1.0, 1.0), pb = uInvVP * vec4(ndc, 1.0, 1.0);
+    ro = pa.xyz / pa.w; rd = normalize(pb.xyz / pb.w - ro);
+  } else {
+    ro = uOrthoRay > 0.5 ? vWorldPos - uFwd * uBackoff : uEye;
+    rd = uOrthoRay > 0.5 ? uFwd : normalize(vWorldPos - uEye);
+  }
   // the box test in the block's frame (as gl-blocks): a rotated model's FACE
   // ids name its LATTICE faces (U/V/W ±), not world ones
   mat3 toBox = transpose(uGridRot);
   vec3 roL = toBox * (ro - vCenter), rdL = toBox * rd;
-  vec3 inv = 1.0 / rdL;
-  vec3 t0 = (-vHalf - roL) * inv;
-  vec3 t1 = (vHalf - roL) * inv;
+  // an axis-parallel ray EXACTLY on a box face made (0) * inf = NaN and both neighbours discarded it
+  // (a one-pixel gap down the middle of an odd-width plan): keep each direction component finite
+  vec3 rdS = vec3(abs(rdL.x) < 1e-12 ? 1e-12 : rdL.x, abs(rdL.y) < 1e-12 ? 1e-12 : rdL.y, abs(rdL.z) < 1e-12 ? 1e-12 : rdL.z);
+  vec3 inv = 1.0 / rdS;
+  vec3 hB = vHalf * 1.0001;              // a hair of overlap: a ray on the face between two blocks hits one of them, never neither
+  vec3 t0 = (-hB - roL) * inv;
+  vec3 t1 = (hB - roL) * inv;
   vec3 tmin3 = min(t0, t1), tmax3 = max(t0, t1);
   float tin = max(max(tmin3.x, tmin3.y), tmin3.z);
   float tout = min(min(tmax3.x, tmax3.y), tmax3.z);
@@ -3180,7 +3213,7 @@ function createPickPipeline(gl) {
   const uPts = { layer: U(pts, 'uLayer'), viewProj: U(pts, 'uViewProj'), boxMin: U(pts, 'uBoxMin'), boxSpan: U(pts, 'uBoxSpan'), pointPx: U(pts, 'uPointPx'), secPlane: U(pts, 'uSecPlane'), secCfg: U(pts, 'uSecCfg'), mask: U(pts, 'uMask'), filterOn: U(pts, 'uFilterOn'), isolate: U(pts, 'uIsolate'), catVis: U(pts, 'uCatVis'), catVisOn: U(pts, 'uCatVisOn'), rule: U(pts, 'uRule'), ruleOn: U(pts, 'uRuleOn'), valCullOn: U(pts, 'uValCullOn'), colorMode: U(pts, 'uColorMode'), zRange: U(pts, 'uZRange'), chanChunk: U(pts, 'uChanChunk'), chanDoc: U(pts, 'uChanDoc'), chanTexOn: U(pts, 'uChanTexOn'), noDataOn: U(pts, 'uNoDataOn'), intensityScale: U(pts, 'uIntensityScale'), noData: U(pts, 'uNoData'), chanTex: U(pts, 'uChanTex'), ramp: U(pts, 'uRamp') };
   const uBlk = {
     layer: U(blk, 'uLayer'),
-    viewProj: U(blk, 'uViewProj'), eye: U(blk, 'uEye'), right: U(blk, 'uRight'), up: U(blk, 'uUp'),
+    viewProj: U(blk, 'uViewProj'), invVP: U(blk, 'uInvVP'), vp: U(blk, 'uVp'), eye: U(blk, 'uEye'), right: U(blk, 'uRight'), up: U(blk, 'uUp'),
     gridOrigin: U(blk, 'uGridOrigin'), gridSize: U(blk, 'uGridSize'), gridRot: U(blk, 'uGridRot'),
     dimPalette: U(blk, 'uDimPalette'), subBlock: U(blk, 'uSubBlock'),
     perspScale: U(blk, 'uPerspScale'), demotePx: U(blk, 'uDemotePx'), pointPx: U(blk, 'uPointPx'), fixedSplat: U(blk, 'uFixedSplat'),
@@ -3364,6 +3397,7 @@ function createPickPipeline(gl) {
       // the camera uniforms, per layer (a moved layer has its own)
       const setBlkCam = (s) => {
         gl.uniformMatrix4fv(uBlk.viewProj, false, s.viewProj);
+        { const inv = mat4Inverse(s.viewProj), vp = gl.getParameter(gl.VIEWPORT); if (inv) { gl.uniformMatrix4fv(uBlk.invVP, false, inv); gl.uniform4f(uBlk.vp, vp[0], vp[1], vp[2], vp[3]); } else gl.uniform4f(uBlk.vp, 0, 0, 0, 0); }
         gl.uniform3f(uBlk.eye, s.eye[0], s.eye[1], s.eye[2]);
         const v = s.view;
         gl.uniform3f(uBlk.right, v[0], v[4], v[8]);
