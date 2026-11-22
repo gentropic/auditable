@@ -54,7 +54,8 @@ column NAME looked up in the table — `t[name]`, `t.get(name)` or `t.getChild(n
 Arrow table). With a columns object you don't have to name anything: `x`, `y`, `z`,
 `value`, `category` are picked up by name.
 
-`value` may be one column, or several — a list of names or `{ name: array }` — and the
+`value` may be one column, or several — a list of names, a list of arrays, or `{ name: array }`,
+given in the options or in the columns object itself — and the
 active one switches with `layer.set({ value: 'SIO2' })`, no re-send. `category` is any
 column of labels (≤ 256 distinct; more fold into `(other)`).
 
@@ -118,7 +119,7 @@ A 2D grid as shaded relief, row 0 the NORTHERNMOST. `grid` as rows, or flat with
 ## View options
 
 `section` (`{axis, position, thickness}` or `{normal: [x, y, z], position, thickness}`;
-`null` = off) · `height` (460) · `background` (`''`: the theme's) · `theme` (`'dark'`) ·
+`null` = off) · `height` (460) · `background` (`''`: the theme's) · `theme` (`'auto'`: follows the page) ·
 `chrome` (`{}`) — see *Theme* and *Chrome* · `toolbar` (true) · `edl` (true) ·
 `edl_strength` (1) · `z_exaggeration` (1) · `decorations` (true: scale bar, north arrow,
 exaggeration notice, triad) · `grid` (false: grid lines across a locked view's axes) · `overlay` (`[]`: plot items over locked views — see *Axes around a locked view*) ·
@@ -212,9 +213,16 @@ its aspect.
 
 ## Theme
 
-`theme` dresses the scene and every piece of chrome: `'dark'` (Switchboard basalt, the default),
-`'light'`, `'paper'` (white, for print), `'css'` (this page's design tokens: `--au-surface`,
-`--au-fg`, `--au-action`, … — set it again when the page switches mode), or a partial theme:
+`theme` dresses the scene and every piece of chrome:
+- `'auto'` (the default) follows the page. It reads the page's design tokens, and reads them again when the page switches mode: a colour-scheme change, or a `class` / `style` / `data-theme` change on `<html>` or `<body>`. The tokens are `@gcu/theme`'s list:
+  - `--au-surface`, `--bg-primary`, `--background`, … for the background;
+  - `--au-fg`, `--text-primary`, … for the text;
+  - `--series-N` for the cycle.
+
+  A page that sets none reads as what the reader sees: white, or dark under a dark colour scheme.
+- `'css'`: the same. Setting it (or `'auto'`) again always reads the page again.
+- `'dark'` (Switchboard basalt), `'light'` and `'paper'` (white, for print): fixed looks.
+- a partial theme:
 
 ```js
 v.set({ theme: { base: 'light', accent: '#c0392b', font_size: 12 } });

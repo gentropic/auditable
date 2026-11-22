@@ -6605,7 +6605,7 @@ void main() {
   // EXACTLY, so straddling blocks show their true cut instead of vanishing.
   // Demoted splats can't clip, so they keep the centroid test (sub-pixel there).
   float secSupp = demoted > 0.5 ? 0.0 : dot(half_, abs(transpose(uGridRot) * uSecPlane.xyz));   // the normal in the box's frame
-  float secCull = (uSecCfg.x > 0.5 && abs(dot(center, uSecPlane.xyz) - uSecPlane.w) > uSecCfg.y + secSupp) ? 1.0 : 0.0;
+  float secCull = (uSecCfg.x > 0.5 && abs(dot(center, uSecPlane.xyz) - uSecPlane.w) > uSecCfg.y + secSupp * 0.99) ? 1.0 : 0.0;   // 0.99: a box that only TOUCHES the slab (a face on its boundary — the level below a one-block slab) is out, not drawn as a zero-thick face
   vCull = max((uIsolate > 0.5 && m < 0.5) ? 1.0 : 0.0, secCull);
   float cls = aCat;
   if (uRuleOn > 0.5) {
@@ -7452,7 +7452,7 @@ void main() {
   // touch-the-slab cull (support radius) — the fragment clips exactly, matching
   // the visual true-section cut so the cut wall is pickable
   float secSupp = demoted > 0.5 ? 0.0 : dot(half_, abs(transpose(uGridRot) * uSecPlane.xyz));
-  float secCull = (uSecCfg.x > 0.5 && abs(dot(center, uSecPlane.xyz) - uSecPlane.w) > uSecCfg.y + secSupp) ? 1.0 : 0.0;
+  float secCull = (uSecCfg.x > 0.5 && abs(dot(center, uSecPlane.xyz) - uSecPlane.w) > uSecCfg.y + secSupp * 0.99) ? 1.0 : 0.0;   // 0.99: a box that only TOUCHES the slab (a face on its boundary — the level below a one-block slab) is out, not drawn as a zero-thick face
   vCull = max((uIsolate > 0.5 && m < 0.5) ? 1.0 : 0.0, secCull);   // hidden (isolated or sectioned) isn't pickable
   float cls = aCat;
   if (uRuleOn > 0.5) {
@@ -7597,7 +7597,7 @@ void main() {
     m = texelFetch(uMask, ivec2(rec & 8191, rec >> 13), 0).r > 0.5 ? 1.0 : 0.0;
   }
   float secSupp = demoted > 0.5 ? 0.0 : (abs(dot(axis, uSecPlane.xyz)) * 0.5 + uRadius);
-  float secCull = (uSecCfg.x > 0.5 && abs(dot(center, uSecPlane.xyz) - uSecPlane.w) > uSecCfg.y + secSupp) ? 1.0 : 0.0;
+  float secCull = (uSecCfg.x > 0.5 && abs(dot(center, uSecPlane.xyz) - uSecPlane.w) > uSecCfg.y + secSupp * 0.99) ? 1.0 : 0.0;   // 0.99: a box that only TOUCHES the slab (a face on its boundary — the level below a one-block slab) is out, not drawn as a zero-thick face
   vCull = max((uIsolate > 0.5 && m < 0.5) ? 1.0 : 0.0, secCull);
   float cls = aCat;
   if (uRuleOn > 0.5) {
@@ -21881,7 +21881,7 @@ class PdfPage {
 }
 
 class PdfDocument {
-  // { title, author, subject, keywords, creator, created (Date — for reproducible output),
+  // { title, author, subject, keywords, creator, created (Date or ISO string — for reproducible output),
   //   compress (default true), onWarn(msg), strict (warnings throw) }
   constructor(opts = {}) {
     this.opts = { compress: true, ...opts };
@@ -21891,6 +21891,15 @@ class PdfDocument {
     this._gsKeys = [];
     this._imgs = [];                                       // { name, w, h, rgb, alpha, jpeg, smooth }
     this._imgCache = new WeakMap();
+    this._files = [];                                      // attachments: { name, bytes, mime, description, relationship }
+  }
+  // attach a file to the document (PDF 2.0 / PDF/A-3 style: an embedded file, listed in the
+  // catalog's EmbeddedFiles and /AF). data: a string (UTF-8) or bytes. relationship: Source,
+  // Data, Alternative, Supplement or Unspecified (default Source — what the page was made from).
+  attach(name, data, { mime = 'application/octet-stream', description = '', relationship = 'Source' } = {}) {
+    const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data instanceof Uint8Array ? data : new Uint8Array(data);
+    this._files.push({ name: String(name), bytes, mime, description, relationship });
+    return this;
   }
   // addPage() → A4 portrait · addPage('A3', 'landscape') · addPage([w, h]) in mm · addPage({ width, height }) in points
   addPage(size = 'A4', orientation = null, { units = 'pt' } = {}) {
@@ -21982,11 +21991,22 @@ class PdfDocument {
       pageIds.push(add({ dict: `<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 ${num(p.width)} ${num(p.height)}] /Resources << ${res.join(' ')} >> /Contents ${cid} 0 R >>` }));
     }
     objs[pagesId - 1] = { dict: `<< /Type /Pages /Kids [${pageIds.map((i) => `${i} 0 R`).join(' ')}] /Count ${pageIds.length} >>` };
-    objs[catalogId - 1] = { dict: `<< /Type /Catalog /Pages ${pagesId} 0 R >>` };
+    // attachments: an EmbeddedFile stream + a file spec each; the catalog lists them (sorted by name)
+    const fileSpecs = [];
+    for (const f of this._files) {
+      const mimeName = f.mime.replace(/[^\w.+-]/g, (c) => '#' + c.charCodeAt(0).toString(16).padStart(2, '0'));
+      const st = await stream(`<< /Type /EmbeddedFile /Subtype /${mimeName} /Params << /Size ${f.bytes.length} >>`, f.bytes);
+      const eid = add({ dict: st.dict + ' >>', bytes: st.bytes });
+      const sid = add({ dict: `<< /Type /Filespec /F ${textString(f.name)} /UF ${textString(f.name)}${f.description ? ` /Desc ${textString(f.description)}` : ''} /EF << /F ${eid} 0 R /UF ${eid} 0 R >> /AFRelationship /${f.relationship} >>` });
+      fileSpecs.push({ name: f.name, id: sid });
+    }
+    fileSpecs.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    const names = fileSpecs.length ? ` /Names << /EmbeddedFiles << /Names [${fileSpecs.map((f) => `${textString(f.name)} ${f.id} 0 R`).join(' ')}] >> >> /AF [${fileSpecs.map((f) => `${f.id} 0 R`).join(' ')}]` : '';
+    objs[catalogId - 1] = { dict: `<< /Type /Catalog /Pages ${pagesId} 0 R${names} >>` };
     const o = this.opts, info = [];
     for (const [k, v] of [['Title', o.title], ['Author', o.author], ['Subject', o.subject], ['Keywords', o.keywords], ['Creator', o.creator]]) if (v) info.push(`/${k} ${textString(v)}`);
     info.push(`/Producer ${textString('@gcu/pdf')}`);
-    info.push(`/CreationDate (${pdfDate(o.created instanceof Date ? o.created : new Date())})`);
+    info.push(`/CreationDate (${pdfDate(o.created instanceof Date ? o.created : o.created ? new Date(o.created) : new Date())})`);
     const infoId = add({ dict: `<< ${info.join(' ')} >>` });
 
     // the file: header, objects, xref, trailer
@@ -22026,6 +22046,39 @@ function pixelsOf(src) {
     const cv = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(w, h) : Object.assign(document.createElement('canvas'), { width: w, height: h });
     const g = cv.getContext('2d'); g.drawImage(src, 0, 0); return g.getImageData(0, 0, w, h);
   } catch { return null; }
+}
+
+// ── reading attachments back: enough of a PDF reader for files that keep their objects in the
+// open (this writer's, and most simple PDFs; not object streams or encrypted files). Returns
+// [{ name, bytes, mime, description }]. ──
+async function readAttachments(pdfBytes) {
+  const u8 = pdfBytes instanceof Uint8Array ? pdfBytes : new Uint8Array(pdfBytes);
+  let text = ''; for (let i = 0; i < u8.length; i += 65536) text += String.fromCharCode.apply(null, u8.subarray(i, i + 65536));
+  const objAt = new Map();                                 // object number → offset of "n 0 obj" (the last one wins: incremental updates)
+  for (const m of text.matchAll(/(?:^|[\r\n\s])(\d+)\s+0\s+obj\b/g)) objAt.set(+m[1], m.index + m[0].length);
+  const dictOf = (n) => { const at = objAt.get(n); if (at == null) return null; const end = text.indexOf('endobj', at); return text.slice(at, end < 0 ? undefined : end); };
+  const strOf = (src) => {                                  // a literal (…) or hex <…> string → JS string
+    if (!src) return '';
+    if (src[0] === '<') { const hex = src.slice(1, -1).replace(/\s/g, ''); const b = []; for (let i = 0; i < hex.length; i += 2) b.push(parseInt(hex.slice(i, i + 2), 16)); if (b[0] === 0xfe && b[1] === 0xff) { let s2 = ''; for (let i = 2; i + 1 < b.length; i += 2) s2 += String.fromCharCode((b[i] << 8) | b[i + 1]); return s2; } return String.fromCharCode(...b); }
+    return src.slice(1, -1).replace(/\\([nrtbf()\\]|[0-7]{1,3})/g, (_, c) => ({ n: '\n', r: '\r', t: '\t', b: '\b', f: '\f' })[c] || (/^[0-7]/.test(c) ? String.fromCharCode(parseInt(c, 8)) : c));
+  };
+  const STR = '(\\((?:\\\\.|[^\\\\)])*\\)|<[0-9A-Fa-f\\s]*>)';
+  const out = [];
+  for (const [n] of objAt) {
+    const d = dictOf(n); if (!d || !/\/Type\s*\/Filespec/.test(d)) continue;
+    const name = strOf((new RegExp('/UF\\s*' + STR).exec(d) || new RegExp('/F\\s*' + STR).exec(d) || [])[1]);
+    const desc = strOf((new RegExp('/Desc\\s*' + STR).exec(d) || [])[1]);
+    const ef = /\/EF\s*<<[^>]*?\/F\s+(\d+)\s+0\s+R/.exec(d); if (!ef) continue;
+    const sd = dictOf(+ef[1]); if (!sd) continue;
+    const at = objAt.get(+ef[1]), sIdx = text.indexOf('stream', at);
+    const len = +(/\/Length\s+(\d+)/.exec(sd) || [])[1];
+    let start = sIdx + 6; if (text[start] === '\r') start++; if (text[start] === '\n') start++;
+    let bytes = u8.slice(start, start + len);
+    if (/\/Filter\s*\/FlateDecode/.test(sd)) bytes = new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate'))).arrayBuffer());
+    const mime = ((/\/Subtype\s*\/([^\s/>]+)/.exec(sd) || [])[1] || '').replace(/#([0-9a-fA-F]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
+    out.push({ name, bytes, mime, description: desc });
+  }
+  return out;
 }
 
 // ── ../../pdf/src/main.js ──
@@ -23161,6 +23214,26 @@ function mountView(el, store) {
     g.restore();
   };
 
+  // a LOCKED orthographic view fits what it shows: the model's box projected on the screen axes
+  // (a 3D bounding sphere leaves a plan or section zoomed far out). The slab's normal is the
+  // view direction, so the box's projection is also the extent inside any section slab.
+  const fitLocked = () => {
+    const c = cam.state;
+    if (!c.orbitLock || !c.ortho || !docBbox || !(docBbox[3] >= docBbox[0])) return false;
+    const o = (payload && payload.frame) || [0, 0, 0], { u, v } = viewAxes(c.theta, c.phi);
+    let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
+    for (let k = 0; k < 8; k++) {
+      const p = [(k & 1 ? docBbox[3] : docBbox[0]) + o[0], (k & 2 ? docBbox[4] : docBbox[1]) + o[1], (k & 4 ? docBbox[5] : docBbox[2]) + o[2]];
+      const a = p[0] * u[0] + p[1] * u[1] + p[2] * u[2], b = p[0] * v[0] + p[1] * v[1] + p[2] * v[2];
+      if (a < u0) u0 = a; if (a > u1) u1 = a; if (b < v0) v0 = b; if (b > v1) v1 = b;
+    }
+    const mu = (u1 - u0) * 0.04 || 1, mv = (v1 - v0) * 0.04 || 1;
+    const next = rectCamera(c, o, { u0: u0 - mu, u1: u1 + mu, v0: v0 - mv, v1: v1 + mv });
+    c.target = next.target; c.radius = next.radius;
+    cam.update();
+    return true;
+  };
+
   const draw = () => {
     raf = 0;
     if (disposed) return;
@@ -23169,7 +23242,7 @@ function mountView(el, store) {
     const h = Math.max(1, Math.round(canvas.clientHeight * dpr));
     if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; renderer.invalidate(); }
     cam.setAspect(w / h);
-    if (needFit && docBbox) { cam.fit(docBbox); needFit = false; }
+    if (needFit && docBbox) { if (!fitLocked()) cam.fit(docBbox); needFit = false; }
 
     const layerOpts = {};
     styles().forEach((s, i) => {
@@ -23927,7 +24000,7 @@ function mountView(el, store) {
   // from the plugin api; categories take its cycle.
   const applyTheme = () => {
     const t = store.get('theme');
-    theme = t === 'css' ? themeFromCSS(el) : resolveTheme(t, (m) => console.warn(`condenser: ${m}`));
+    theme = t === 'css' || t === 'auto' || t == null ? themeFromCSS(el) : resolveTheme(t, (m) => console.warn(`condenser: ${m}`));
     const set = (k, v) => host.style.setProperty(k, String(v));
     set('--cd-bg', theme.background); set('--cd-fg', theme.foreground); set('--cd-muted', theme.muted);
     set('--cd-panel', theme.panel); set('--cd-border', theme.panel_border); set('--cd-accent', theme.accent);
@@ -24893,6 +24966,7 @@ function mountView(el, store) {
     ['change:grid', () => invalidate()],
     ['change:overlay', () => applyOverlay()],
     ['change:theme', applyTheme],
+    ['change:_theme_n', applyTheme],                        // 'css' / 'auto' set again: read the page again
     ['change:edl', invalidate], ['change:edl_strength', invalidate], ['change:budget', invalidate],
     ['change:_fit', () => { needFit = true; invalidate(); }],
     ['change:_clear_sel', () => { selected.clear(); pushSelection(); if (tb) tb.showPick(null); }],
@@ -24929,8 +25003,21 @@ function mountView(el, store) {
   applyLock(false);                                        // and a lock wins over both
   applyOverlay();                                          // the declared plot items over locked views
 
+  // 'auto' / 'css' FOLLOW the page: a colour-scheme change, or a mode switch on <html> / <body>
+  // (class, style, data-theme), reads the tokens again — no host code needed
+  const followsPage = () => { const t = store.get('theme'); return t === 'css' || t === 'auto' || t == null; };
+  let _themeRaf = 0;
+  const reTheme = () => { if (!followsPage() || _themeRaf) return; _themeRaf = requestAnimationFrame(() => { _themeRaf = 0; if (!disposed) applyTheme(); }); };
+  const mq = typeof matchMedia === 'function' ? matchMedia('(prefers-color-scheme: dark)') : null;
+  if (mq && mq.addEventListener) mq.addEventListener('change', reTheme);
+  const mo = typeof MutationObserver === 'function' ? new MutationObserver(reTheme) : null;
+  if (mo) for (const n of [document.documentElement, document.body]) if (n) mo.observe(n, { attributes: true, attributeFilter: ['class', 'style', 'data-theme', 'data-mode', 'data-color-scheme'] });
+
   const teardown = () => {
     disposed = true;
+    if (mq && mq.removeEventListener) mq.removeEventListener('change', reTheme);
+    if (mo) mo.disconnect();
+    if (_themeRaf) cancelAnimationFrame(_themeRaf);
     if (chrome) { chrome.destroy(); chrome = null; }
     if (streams) for (const k in streams) { const stw = streams[k] && streams[k].worker; if (stw) try { stw.terminate(); } catch { /* gone */ } }
     if (raf) cancelAnimationFrame(raf);

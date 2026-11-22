@@ -40,7 +40,7 @@ import { createChrome } from './chrome.js';
 import { scaleBar, exaggeration, northArrow, holeLabels, legends, readout } from './decor.js';
 import { planAxes, triad, boxAxes } from './axes.js';
 import { resolveTheme, themeFromCSS, parseColor } from '../../../theme/src/theme.js';
-import { LOCK_NAMES, viewPreset, VIEW_NAMES, normLock, lockAngles, isVertical, lockHere, viewRect, rectCamera, screenBasis } from './lock.js';
+import { LOCK_NAMES, viewPreset, VIEW_NAMES, normLock, lockAngles, isVertical, lockHere, viewRect, rectCamera, screenBasis, viewAxes } from './lock.js';
 
 // ── ramp presets. rampPixels' default is the viridis-ish walk; these are the
 // few a geologist reaches for. Kept here (not in the engine) because they are
@@ -388,6 +388,26 @@ export function mountView(el, store) {
     g.restore();
   };
 
+  // a LOCKED orthographic view fits what it shows: the model's box projected on the screen axes
+  // (a 3D bounding sphere leaves a plan or section zoomed far out). The slab's normal is the
+  // view direction, so the box's projection is also the extent inside any section slab.
+  const fitLocked = () => {
+    const c = cam.state;
+    if (!c.orbitLock || !c.ortho || !docBbox || !(docBbox[3] >= docBbox[0])) return false;
+    const o = (payload && payload.frame) || [0, 0, 0], { u, v } = viewAxes(c.theta, c.phi);
+    let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
+    for (let k = 0; k < 8; k++) {
+      const p = [(k & 1 ? docBbox[3] : docBbox[0]) + o[0], (k & 2 ? docBbox[4] : docBbox[1]) + o[1], (k & 4 ? docBbox[5] : docBbox[2]) + o[2]];
+      const a = p[0] * u[0] + p[1] * u[1] + p[2] * u[2], b = p[0] * v[0] + p[1] * v[1] + p[2] * v[2];
+      if (a < u0) u0 = a; if (a > u1) u1 = a; if (b < v0) v0 = b; if (b > v1) v1 = b;
+    }
+    const mu = (u1 - u0) * 0.04 || 1, mv = (v1 - v0) * 0.04 || 1;
+    const next = rectCamera(c, o, { u0: u0 - mu, u1: u1 + mu, v0: v0 - mv, v1: v1 + mv });
+    c.target = next.target; c.radius = next.radius;
+    cam.update();
+    return true;
+  };
+
   const draw = () => {
     raf = 0;
     if (disposed) return;
@@ -396,7 +416,7 @@ export function mountView(el, store) {
     const h = Math.max(1, Math.round(canvas.clientHeight * dpr));
     if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; renderer.invalidate(); }
     cam.setAspect(w / h);
-    if (needFit && docBbox) { cam.fit(docBbox); needFit = false; }
+    if (needFit && docBbox) { if (!fitLocked()) cam.fit(docBbox); needFit = false; }
 
     const layerOpts = {};
     styles().forEach((s, i) => {
@@ -1154,7 +1174,7 @@ export function mountView(el, store) {
   // from the plugin api; categories take its cycle.
   const applyTheme = () => {
     const t = store.get('theme');
-    theme = t === 'css' ? themeFromCSS(el) : resolveTheme(t, (m) => console.warn(`condenser: ${m}`));
+    theme = t === 'css' || t === 'auto' || t == null ? themeFromCSS(el) : resolveTheme(t, (m) => console.warn(`condenser: ${m}`));
     const set = (k, v) => host.style.setProperty(k, String(v));
     set('--cd-bg', theme.background); set('--cd-fg', theme.foreground); set('--cd-muted', theme.muted);
     set('--cd-panel', theme.panel); set('--cd-border', theme.panel_border); set('--cd-accent', theme.accent);
@@ -2120,6 +2140,7 @@ export function mountView(el, store) {
     ['change:grid', () => invalidate()],
     ['change:overlay', () => applyOverlay()],
     ['change:theme', applyTheme],
+    ['change:_theme_n', applyTheme],                        // 'css' / 'auto' set again: read the page again
     ['change:edl', invalidate], ['change:edl_strength', invalidate], ['change:budget', invalidate],
     ['change:_fit', () => { needFit = true; invalidate(); }],
     ['change:_clear_sel', () => { selected.clear(); pushSelection(); if (tb) tb.showPick(null); }],
@@ -2156,8 +2177,21 @@ export function mountView(el, store) {
   applyLock(false);                                        // and a lock wins over both
   applyOverlay();                                          // the declared plot items over locked views
 
+  // 'auto' / 'css' FOLLOW the page: a colour-scheme change, or a mode switch on <html> / <body>
+  // (class, style, data-theme), reads the tokens again — no host code needed
+  const followsPage = () => { const t = store.get('theme'); return t === 'css' || t === 'auto' || t == null; };
+  let _themeRaf = 0;
+  const reTheme = () => { if (!followsPage() || _themeRaf) return; _themeRaf = requestAnimationFrame(() => { _themeRaf = 0; if (!disposed) applyTheme(); }); };
+  const mq = typeof matchMedia === 'function' ? matchMedia('(prefers-color-scheme: dark)') : null;
+  if (mq && mq.addEventListener) mq.addEventListener('change', reTheme);
+  const mo = typeof MutationObserver === 'function' ? new MutationObserver(reTheme) : null;
+  if (mo) for (const n of [document.documentElement, document.body]) if (n) mo.observe(n, { attributes: true, attributeFilter: ['class', 'style', 'data-theme', 'data-mode', 'data-color-scheme'] });
+
   const teardown = () => {
     disposed = true;
+    if (mq && mq.removeEventListener) mq.removeEventListener('change', reTheme);
+    if (mo) mo.disconnect();
+    if (_themeRaf) cancelAnimationFrame(_themeRaf);
     if (chrome) { chrome.destroy(); chrome = null; }
     if (streams) for (const k in streams) { const stw = streams[k] && streams[k].worker; if (stw) try { stw.terminate(); } catch { /* gone */ } }
     if (raf) cancelAnimationFrame(raf);

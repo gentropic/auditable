@@ -68,7 +68,7 @@ const r = await page.evaluate(async () => {
     C.points({ x: tx, y: ty, z: tz }, { name: 'topo', sectioned: false }),
     C.drillholes(collar, survey, assay, { value: 'AU', name: 'holes', labels: true }),
     C.mesh([[500000, 8200000, 300], [500300, 8200000, 300], [500000, 8200200, 300]], [[0, 1, 2]], { name: 'floor', opacity: 0.5 }),
-  ], { height: 420 });
+  ], { theme: 'dark', height: 420 });
   const events = { pick: [], hover: [], select: [], measure: [], section: [], style: [], camera: [] };
   for (const e of Object.keys(events)) v.on(e, (d) => events[e].push(d));
   await settle(1500);
@@ -142,7 +142,7 @@ const r = await page.evaluate(async () => {
   const v2 = C.view(host2, [
     C.blocks({ x: X, y: Y, z: Z, value: FE, category: ROCK }, { name: 'model' }),
     C.points({ x: tx, y: ty, z: tz }, { name: 'topo' }),
-  ]);
+  ], { theme: 'dark' });
   v2.set(st);
   out.restored = { section: v2.get('section'), topo: v2.layer('topo').style() };
   v2.destroy();
@@ -152,7 +152,7 @@ const r = await page.evaluate(async () => {
   v.destroy();
   const hs = document.getElementById('b');
   const m = C.blocks.stream({ axes: [[0, 10, 40], [0, 10, 40], [0, 5, 20]], capacity: 32000, value_range: [0, 1], categories: ['a', 'b'] }, { name: 'stream' });
-  const vs = C.view(hs, [m], { height: 360, workers: false });   // this page's CSP has no worker-src for scripts
+  const vs = C.view(hs, [m], { theme: 'dark', height: 360, workers: false });   // this page's CSP has no worker-src for scripts
   const sh = vs.layer('stream');
   await settle(800);
   const inkS = [ink(hs)];
@@ -192,12 +192,12 @@ const L = await page.evaluate(async () => {
   // the opening shot: three-quarter, looking north-east, in perspective
   const host0 = document.getElementById('b');
   host0.innerHTML = '';
-  const v0 = C.view(host0, [model()], { height: 300 });
+  const v0 = C.view(host0, [model()], { theme: 'dark', height: 300 });
   await settle(900);
   out.opening = { ...v0.camera };
   v0.destroy();
 
-  const v = C.view(host, [model()], { height: 400, lock: 'plan' });
+  const v = C.view(host, [model()], { theme: 'dark', height: 400, lock: 'plan' });
   const ev = { lock: [], view: [] };
   v.on('lock', (d) => ev.lock.push(d));
   v.on('view', (d) => ev.view.push(d));
@@ -284,7 +284,7 @@ const L = await page.evaluate(async () => {
   const st = v.state();
   const host2 = document.getElementById('b');
   host2.innerHTML = '';
-  const v2 = C.view(host2, [model()], { height: 300 });
+  const v2 = C.view(host2, [model()], { theme: 'dark', height: 300 });
   v2.set(st);
   await settle(900);
   out.restored = { lock: v2.get('lock'), toggle: v2.get('lock_toggle'), camera: { ...v2.camera } };
@@ -312,7 +312,7 @@ const K = await page.evaluate(async () => {
   }
   const v = C.view(host, [C.blocks({ x: X, y: Y, z: Z, value: FE, category: ROCK }, {
     name: 'lith', color: 'category', colors: { ITA: '#ff0000' }, category_order: ['BIF', 'QTZ'], legend_counts: 'all',
-  })], { height: 400 });
+  })], { theme: 'dark', height: 400 });
   await settle(1500);
   const cv = host.querySelector('canvas'), rc = cv.getBoundingClientRect();
   const gl = cv.getContext('webgl2');
@@ -341,6 +341,18 @@ const K = await page.evaluate(async () => {
   await settle();
   out.bgCss = corner();
   out.accentCss = host.firstElementChild.style.getPropertyValue('--cd-accent');
+  // C4: 'css' set AGAIN after the page's tokens change reads them again (the store used to drop it)
+  document.body.style.setProperty('--au-surface', '#f0f0f0');
+  v.set({ theme: 'css' });
+  await settle();
+  out.bgCss2 = corner();
+  // 'auto' follows the page on its own: a style change on <body> re-reads, no set() needed
+  v.set({ theme: 'auto' });
+  await settle();
+  document.body.style.setProperty('--au-surface', '#e0e0e0');
+  await settle();
+  out.bgAuto = corner();
+  document.body.style.removeProperty('--au-surface'); document.body.style.removeProperty('--au-action');
   v.set({ theme: 'dark' });
 
   // a class colour reaches the shaders, and changes live
@@ -439,6 +451,7 @@ const K = await page.evaluate(async () => {
   return out;
 });
 const ok3 = (c, rgb, tol = 6) => c.every((x, i) => Math.abs(x - rgb[i]) <= tol);
+chk(`theme: 'css' set again re-reads the page (${K.bgCss2}); 'auto' follows a page switch by itself (${K.bgAuto})`, ok3(K.bgCss2, [240, 240, 240]) && ok3(K.bgAuto, [224, 224, 224]));
 chk('theme: dark is basalt; light and css (the page\'s tokens) re-dress the scene and the chrome', ok3(K.bgDark, [21, 23, 26]) && ok3(K.bgLight, [228, 227, 225]) && K.accentLight === '#8B3F00' && ok3(K.bgCss, [250, 250, 250]) && K.accentCss === '#123456', JSON.stringify({ d: K.bgDark, l: K.bgLight, c: K.bgCss, a: [K.accentLight, K.accentCss] }));
 chk('colors: a class colour reaches the shaders, and a change recolours live', K.red0 > 500 && K.recolor.red < K.red0 * 0.05 && K.recolor.green > 500, JSON.stringify({ red0: K.red0, ...K.recolor }));
 chk('the legend lists the classes in category_order, with counts', /^lith: BIF 1500, QTZ 1500, HEM 1500, ITA 1500$/.test(K.legend0), K.legend0);
@@ -453,6 +466,7 @@ chk('the readout gives E and N under the cursor in a locked plan view', /^E 5001
 const near = (a, b, t = 0.05) => Math.abs(a - b) <= t;
 const pv = L.plan.view;
 chk("lock: 'plan' looks straight down, orthographic, the lock button pressed", L.plan.camera.plunge === 90 && L.plan.camera.ortho === true && L.plan.pressed === 'true', JSON.stringify(L.plan.camera));
+chk(`a locked plan opens on the model, not its bounding sphere (${pv && pv.rect && [Math.round(pv.rect.u1 - pv.rect.u0), Math.round(pv.rect.v1 - pv.rect.v0)]} m for 300 × 200)`, pv && pv.rect && pv.rect.u0 <= 500000 && pv.rect.u1 >= 500300 && pv.rect.v0 <= 8200000 && pv.rect.v1 >= 8200200 && (pv.rect.v1 - pv.rect.v0) < 240);
 chk("the 'view' event carries the world rectangle along E/N and the pixel box", pv && pv.lock === 'plan' && pv.axes.join() === 'E,N' && pv.rect.u0 < 500155 && pv.rect.u1 > 500155 && pv.rect.v0 < 8200105 && pv.rect.v1 > 8200105 && pv.px.w > 100 && near((pv.rect.u1 - pv.rect.u0) / (pv.rect.v1 - pv.rect.v0), pv.px.w / pv.px.h, 0.01), JSON.stringify(pv && { rect: pv.rect, px: pv.px }));
 const dl = L.dragLocked;
 chk('a drag in a locked view pans: the target moves, the direction does not', dl.after.plunge === 90 && dl.after.azimuth === dl.before.azimuth && (dl.after.target[0] !== dl.before.target[0] || dl.after.target[1] !== dl.before.target[1]), `${dl.before.target} → ${dl.after.target}`);
@@ -497,7 +511,7 @@ const S5 = await page.evaluate(async () => {
   for (let i = 0; i < 30; i++) for (let j = 0; j < 20; j++) for (let k = 0; k < 10; k++) {
     X.push(500005 + i * 10); Y.push(8200005 + j * 10); Z.push(302.5 + k * 5); FE.push(40 + i + k);
   }
-  const v = C.view(host, [C.blocks({ x: X, y: Y, z: Z, value: FE }, { name: 'model' })], { height: 420, lock: 'plan' });
+  const v = C.view(host, [C.blocks({ x: X, y: Y, z: Z, value: FE }, { name: 'model' })], { theme: 'dark', height: 420, lock: 'plan' });
   await settle(900);
   const api = v.chrome.api, ax = v.axes;
   const deco = [...host.querySelectorAll('canvas')].find((c) => c.style.zIndex === '1');
@@ -568,7 +582,7 @@ const S5 = await page.evaluate(async () => {
   // a narrow section: the centre slot (scale bar, exaggeration notice) lifts above the corners
   {
     const nb = document.createElement('div'); nb.style.width = '360px'; document.body.append(nb);
-    const w = C.view(nb, [C.blocks({ x: X, y: Y, z: Z, value: FE }, { name: 'Fe', units: '%' })], { height: 360, lock: 'north', z_exaggeration: 3 });
+    const w = C.view(nb, [C.blocks({ x: X, y: Y, z: Z, value: FE }, { name: 'Fe', units: '%' })], { theme: 'dark', height: 360, lock: 'north', z_exaggeration: 3 });
     await settle(900);
     const host2 = w.chrome.api.host, sl = (k) => host2.querySelector(`.cdslot.${k}`).getBoundingClientRect();
     const b = sl('bottom'), l = sl('bottom-left'), r = sl('bottom-right');
@@ -578,11 +592,32 @@ const S5 = await page.evaluate(async () => {
   }
   // a blocks layer with no value column (it crashed the load: the builder was handed chan: null)
   try {
-    const w = C.view(host, [C.blocks({ x: X.slice(0, 600), y: Y.slice(0, 600), z: Z.slice(0, 600) }, { name: 'plain' })], { height: 300 });
+    const w = C.view(host, [C.blocks({ x: X.slice(0, 600), y: Y.slice(0, 600), z: Z.slice(0, 600) }, { name: 'plain' })], { theme: 'dark', height: 300 });
     await settle(600);
     out.plain = { ok: true, count: w.layers ? w.layers.length : null };
     w.destroy();
   } catch (e) { out.plain = { ok: false, err: String(e) }; }
+  // C3: a slab exactly one block thick shows that level only — the levels above and below only
+  // TOUCH it (a face on its boundary) and are not drawn. The middle level is missing on the right.
+  {
+    const SX = [], SY = [], SZ = [], SV = [];
+    for (let i = 0; i < 20; i++) for (let j = 0; j < 10; j++) for (let k = 0; k < 3; k++) {
+      if (k === 1 && i >= 10) continue;
+      SX.push(500005 + i * 10); SY.push(8200005 + j * 10); SZ.push(305 + k * 10); SV.push(1 + k);
+    }
+    const w = C.view(host, [C.blocks({ x: SX, y: SY, z: SZ, value: SV }, { name: 'slab' })], { theme: 'dark', height: 300, lock: 'plan', section: { axis: 'z', position: 315, thickness: 10 }, toolbar: false });
+    await settle(1200);
+    const cv = host.querySelector('canvas'), gl = cv.getContext('webgl2');
+    const a = new Uint8Array(cv.width * cv.height * 4); gl.readPixels(0, 0, cv.width, cv.height, gl.RGBA, gl.UNSIGNED_BYTE, a);
+    const bg = [a[4 * (cv.width + 1)], a[4 * (cv.width + 1) + 1], a[4 * (cv.width + 1) + 2]];
+    let left = 0, right = 0;
+    for (let y = 0; y < cv.height; y++) for (let x = 0; x < cv.width; x++) {
+      const o = 4 * (y * cv.width + x);
+      if (Math.abs(a[o] - bg[0]) + Math.abs(a[o + 1] - bg[1]) + Math.abs(a[o + 2] - bg[2]) > 30) { if (x < cv.width / 2 - 4) left++; else if (x > cv.width / 2 + 4) right++; }
+    }
+    out.slab = { left, right };
+    w.destroy();
+  }
   return out;
 });
 const s5p = S5.plan;
@@ -597,6 +632,7 @@ chk('box: true puts ticked axes on the bounding box', S5.box.with > S5.box.witho
 chk('the triad: E shows the view from the east (looking west), Z the plan, the centre the three-quarter view', Math.abs(S5.triadE.azimuth - 270) < 1 && Math.abs(S5.triadE.plunge) < 1 && S5.triadZ.cam.plunge > 89 && S5.triadC.plunge > 10 && S5.triadC.plunge < 60 && /orientation/.test(S5.triadLabel || ''), JSON.stringify({ e: S5.triadE, z: S5.triadZ, c: S5.triadC }));
 chk('chrome: {axes: false} drops the frame from a locked view', !S5.noAxes.ids.includes('axes') && S5.noAxes.insets === 0, JSON.stringify(S5.noAxes));
 chk('a blocks layer with no value column loads', S5.plain.ok, JSON.stringify(S5.plain));
+chk(`a one-block slab shows its level only: nothing where that level is missing (${S5.slab.right} px vs ${S5.slab.left} where it exists)`, S5.slab.left > 1000 && S5.slab.right < S5.slab.left * 0.02);
 chk('a narrow section: the scale bar and exaggeration notice lift clear of the corner stacks', S5.narrow.bottomW > 0 && !S5.narrow.overlapsLeft && !S5.narrow.overlapsRight, JSON.stringify(S5.narrow));
 
 chk('no page errors under a strict CSP', errs.length === 0, errs.join(' | '));

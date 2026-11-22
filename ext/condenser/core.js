@@ -1985,7 +1985,7 @@ void main() {
   // EXACTLY, so straddling blocks show their true cut instead of vanishing.
   // Demoted splats can't clip, so they keep the centroid test (sub-pixel there).
   float secSupp = demoted > 0.5 ? 0.0 : dot(half_, abs(transpose(uGridRot) * uSecPlane.xyz));   // the normal in the box's frame
-  float secCull = (uSecCfg.x > 0.5 && abs(dot(center, uSecPlane.xyz) - uSecPlane.w) > uSecCfg.y + secSupp) ? 1.0 : 0.0;
+  float secCull = (uSecCfg.x > 0.5 && abs(dot(center, uSecPlane.xyz) - uSecPlane.w) > uSecCfg.y + secSupp * 0.99) ? 1.0 : 0.0;   // 0.99: a box that only TOUCHES the slab (a face on its boundary — the level below a one-block slab) is out, not drawn as a zero-thick face
   vCull = max((uIsolate > 0.5 && m < 0.5) ? 1.0 : 0.0, secCull);
   float cls = aCat;
   if (uRuleOn > 0.5) {
@@ -2832,7 +2832,7 @@ void main() {
   // touch-the-slab cull (support radius) — the fragment clips exactly, matching
   // the visual true-section cut so the cut wall is pickable
   float secSupp = demoted > 0.5 ? 0.0 : dot(half_, abs(transpose(uGridRot) * uSecPlane.xyz));
-  float secCull = (uSecCfg.x > 0.5 && abs(dot(center, uSecPlane.xyz) - uSecPlane.w) > uSecCfg.y + secSupp) ? 1.0 : 0.0;
+  float secCull = (uSecCfg.x > 0.5 && abs(dot(center, uSecPlane.xyz) - uSecPlane.w) > uSecCfg.y + secSupp * 0.99) ? 1.0 : 0.0;   // 0.99: a box that only TOUCHES the slab (a face on its boundary — the level below a one-block slab) is out, not drawn as a zero-thick face
   vCull = max((uIsolate > 0.5 && m < 0.5) ? 1.0 : 0.0, secCull);   // hidden (isolated or sectioned) isn't pickable
   float cls = aCat;
   if (uRuleOn > 0.5) {
@@ -2977,7 +2977,7 @@ void main() {
     m = texelFetch(uMask, ivec2(rec & 8191, rec >> 13), 0).r > 0.5 ? 1.0 : 0.0;
   }
   float secSupp = demoted > 0.5 ? 0.0 : (abs(dot(axis, uSecPlane.xyz)) * 0.5 + uRadius);
-  float secCull = (uSecCfg.x > 0.5 && abs(dot(center, uSecPlane.xyz) - uSecPlane.w) > uSecCfg.y + secSupp) ? 1.0 : 0.0;
+  float secCull = (uSecCfg.x > 0.5 && abs(dot(center, uSecPlane.xyz) - uSecPlane.w) > uSecCfg.y + secSupp * 0.99) ? 1.0 : 0.0;   // 0.99: a box that only TOUCHES the slab (a face on its boundary — the level below a one-block slab) is out, not drawn as a zero-thick face
   vCull = max((uIsolate > 0.5 && m < 0.5) ? 1.0 : 0.0, secCull);
   float cls = aCat;
   if (uRuleOn > 0.5) {

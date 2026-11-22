@@ -45,8 +45,8 @@ export const VIEW_DEFAULTS = {
   z_exaggeration: 1.0, decorations: true, camera: {}, hover: false, select_through: false, budget: 3_000_000,
   // the orientation lock: 'free' · 'plan' · 'section' · 'north' · 'south' · 'east' · 'west' · {azimuth, plunge}
   lock: 'free', lock_toggle: true, twist: false,
-  // the theme ('dark' · 'light' · 'paper' · 'css' · a partial theme) and the chrome switches
-  theme: 'dark', chrome: {},
+  // the theme ('auto' follows the page · 'dark' · 'light' · 'paper' · 'css' · a partial theme) and the chrome switches
+  theme: 'auto', chrome: {},
   // grid lines across a locked view's axes
   grid: false,
   // plot items over locked views, as data: [{kind: 'scatter' | 'plot' | 'fill' | 'text' |
@@ -228,6 +228,7 @@ function _valueAndCat(src, value, category, n, cols, extra, kind) {
   else if (typeof value === 'string') chans = [[value, _col(src, value, 'value', n)]];
   else if (Array.isArray(value) && value.length && value.every((v) => typeof v === 'string')) chans = value.map((v) => [v, _col(src, v, `value ${v}`, n)]);
   else if (!isArrayLike(value) && typeof value === 'object') chans = Object.entries(value).map(([k, v]) => [String(k), _col(src, v, `value ${k}`, n)]);
+  else if (Array.isArray(value) && value.length && value.every(isArrayLike)) chans = value.map((v, k) => [k ? `value${k + 1}` : 'value', _col(src, v, `value ${k + 1}`, n)]);
   else chans = [['value', _col(src, value, 'value', n)]];
   const names = [], ranges = [];
   chans.forEach(([nm, val], k) => {
@@ -267,8 +268,15 @@ function _split(kind, opts) {
 
 // the first argument: a table, or (as in Python) the columns object itself
 function _defaults(src, map, names) {
-  for (const n of names) if (map[n] === undefined && src && _lookup(src, n) != null) map[n] = n;
+  for (const n of names) {
+    if (map[n] !== undefined || !src) continue;
+    const v = _lookup(src, n); if (v == null) continue;
+    // value given IN the columns object as a mapping or a list of columns: take it as it is (not as a name)
+    map[n] = n === 'value' && _isMultiValue(v) ? v : n;
+  }
 }
+// several value columns: { name: array } or [array, array, …]
+const _isMultiValue = (v) => (!isArrayLike(v) && typeof v === 'object') || (Array.isArray(v) && v.length > 0 && v.every(isArrayLike));
 
 // ── layers ──────────────────────────────────────────────────────────────────────────────
 export class Layer {
@@ -706,6 +714,7 @@ export function view(el, layers, opts) {
       if ('lock' in rest) _checkLock('set()', rest.lock);
       if (rest.chrome) _checkKeys('set({chrome})', rest.chrome, CHROME_KEYS);
       for (const [k, v] of Object.entries(rest)) if (k in VIEW_DEFAULTS) store.set(k, v);
+      if (rest.theme === 'css' || rest.theme === 'auto') store.set('_theme_n', (store.get('_theme_n') | 0) + 1);   // set again = read the page again
       return handle;
     },
     get(key) { return store.get(key); },

@@ -110,3 +110,15 @@ test('streams: a declared shape, append checks the lattice, the categories and t
   assert.throws(() => API.points.stream({ capacity: 3 }), /needs bbox/);
   assert.throws(() => API.points.stream({ bbox: [0, 0, 0, 1, 1, 1] }), /needs a capacity/);
 });
+
+test('value as a mapping or a list of columns, given in the columns object itself (the model eval C1)', () => {
+  const x = [1, 2, 3], y = [1, 2, 3], z = [1, 2, 3], fe = [5, 6, 7], cu = [1, 1, 2];
+  const a = API.points({ x, y, z, value: { Fe: fe, Cu: cu } });
+  assert.equal(a.style.value, 'Fe');
+  assert.deepEqual(Array.from(a.cols.value), fe); assert.deepEqual(Array.from(a.cols.value1), cu);
+  const b = API.blocks({ x, y, z, value: { Fe: fe } });
+  assert.equal(b.style.value, 'Fe');
+  const c = API.points({ x, y, z, value: [fe, cu] });
+  assert.deepEqual(Array.from(c.cols.value1), cu);
+  assert.deepEqual(Array.from(API.points({ x, y, z, value: fe }).cols.value), fe);   // one plain column, as before
+});
