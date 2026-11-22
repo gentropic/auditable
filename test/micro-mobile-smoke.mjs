@@ -760,12 +760,19 @@ async function modeSwitch(url, tag) {
   await p.waitForFunction(() => window._micro.layers().length >= 7 && document.querySelector('.fwin.sheet'), null, { timeout: 120000 });
   await p.evaluate(() => { const L = window._micro.layers().find((l) => l.kind === 'blocks'); window._micro.openStats(L); });
   await p.waitForTimeout(500);
-  await p.setViewportSize({ width: 1280, height: 800 }); await p.waitForTimeout(500);
+  // settle on the STATE, not a clock: under a parallel battery the resize lands late. A wait that
+  // times out falls through to the same measurement, so a real regression still fails below.
+  const settle = (fn) => p.waitForFunction(fn, null, { timeout: 10000 }).catch(() => {});
+  await p.setViewportSize({ width: 1280, height: 800 });
+  await settle(() => !document.body.classList.contains('mobile') && !document.querySelector('.fwin.sheet'));
+  await p.waitForTimeout(200);
   const desk = await p.evaluate(() => ({ mobile: document.body.classList.contains('mobile'),
     wins: [...document.querySelectorAll('.fwin')].filter((w) => w.style.display !== 'none').map((w) => { const r = w.getBoundingClientRect(); return { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), sheet: w.classList.contains('sheet') }; }) }));
   const homes = await p.evaluate(() => ['secMode', 'secPos', 'secDipDir', 'secDip', 'secPlaneW', 'secFollowW', 'sec2DW'].filter((id) => document.getElementById(id).closest('#secStrip, #secExtra')));
   chk(`[${tag}] → desktop: the section controls went home (${homes.length ? 'still on the phone: ' + homes.join(', ') : 'all'})`, homes.length === 0);
-  await p.setViewportSize({ width: 384, height: 787 }); await p.waitForTimeout(500);
+  await p.setViewportSize({ width: 384, height: 787 });
+  await settle(() => document.body.classList.contains('mobile') && [...document.querySelectorAll('.fwin')].every((w) => w.classList.contains('sheet')));
+  await p.waitForTimeout(200);
   const phone = await p.evaluate(() => ({ mobile: document.body.classList.contains('mobile'),
     visible: [...document.querySelectorAll('.fwin')].filter((w) => w.style.display !== 'none').length, sheets: document.querySelectorAll('.fwin.sheet').length, n: document.querySelectorAll('.fwin').length }));
   const placed = desk.wins.length > 0 && desk.wins.every((w) => !w.sheet && w.x > 0 && w.y >= 28 && w.w >= 300 && w.w < 1280);
