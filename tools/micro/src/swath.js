@@ -431,6 +431,7 @@ export function openSwath(L, ropts) {
     runBtn = document.createElement('button'); runBtn.className = 'sw-run'; runBtn.textContent = 'Run'; runBtn.onclick = run;
     const rcpBtn = document.createElement('button'); rcpBtn.className = 'sw-add rcp'; rcpBtn.textContent = 'save as recipe…'; rcpBtn.title = 'save this setup as a named, re-runnable YAML file in the project (Tools → Recipes)';
     rcpBtn.onclick = () => saveRecipe('swath', cfgOf(), `${(L.label || L.name).replace(/\.[^.]+$/, '')} swath`);
+    win.el._recipe = () => ({ tool: 'swath', name: `${(L.label || L.name).replace(/\.[^.]+$/, '')} swath`, params: cfgOf() });   // ⇥ figure keeps this: a chart that re-runs
     const resRow = plotExportBtns(cv, () => `swath-${(zebraL().label || zebraL().name).replace(/\.[^.]+$/, '')}-${(st.scan ? st.scan.dirNames : swathDirNames(st))[st.axis].split(' ')[0].replace(/[^\w-]/g, '')}.png`, tableTSV, 'swaths');
     staleEl = document.createElement('div'); staleEl.className = 'sw-stale'; staleEl.textContent = st.scan && st.stale ? '↻ config changed — Run to update' : '';
     progEl = document.createElement('div'); progEl.className = 'sw-prog';

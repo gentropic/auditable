@@ -295,6 +295,7 @@ export function openStats(L, ropts) {
     runBtn = document.createElement('button'); runBtn.className = 'sw-run'; runBtn.textContent = 'Run'; runBtn.onclick = run;
     const rcpBtn = document.createElement('button'); rcpBtn.className = 'sw-add rcp'; rcpBtn.textContent = 'save as recipe…'; rcpBtn.title = 'save this setup as a named, re-runnable YAML file in the project (Tools → Recipes)';
     rcpBtn.onclick = () => saveRecipe('stats', cfgOf(), `${(L.label || L.name).replace(/\.[^.]+$/, '')} stats`);
+    win.el._recipe = () => ({ tool: 'stats', name: `${(L.label || L.name).replace(/\.[^.]+$/, '')} stats`, params: cfgOf() });   // ⇥ figure keeps this: a chart that re-runs
     const resRow = plotExportBtns(null, () => `stats-${(L.label || L.name).replace(/\.[^.]+$/, '')}.png`, tableTSV, 'stats');
     staleEl = document.createElement('div'); staleEl.className = 'sw-stale'; staleEl.textContent = st.scan && st.stale ? '↻ config changed — Run to update' : '';
     progEl = document.createElement('div'); progEl.className = 'sw-prog';

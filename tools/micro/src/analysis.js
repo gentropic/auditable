@@ -127,3 +127,53 @@ export function computeSampleSwath(samples, weights, dir, bandWidth, offset) {
   }
   return [...bands.keys()].sort((a, b) => a - b).map((bi) => { const e = bands.get(bi); return { center: offset + (bi + 0.5) * bandWidth, mean: e.sw > 0 ? e.swg / e.sw : NaN, count: e.n }; });
 }
+
+// ── the RESOURCE TABLE: tonnes, grade and metal above each cutoff, by up to two categories
+// (domain × class) — the table a resource statement is. Tonnes = volume × density, the volume
+// per record (sub-blocked aware), the density a column or a constant (a declared unit → t/m³).
+// Metal = tonnes × grade × metalFactor (e.g. 1/31.1035 for g/t → oz, 1/100 for % → t).
+// p: { grade, cutoffs: [..], density: { col? | const?, unit? }, groupBy: [col, col?],
+//   metalFactor = 1, mask } → { columns, rows } (rows: cutoff, groups…, tonnes, grade, metal;
+//   a "total" row after each cutoff's groups when there are groups)
+export async function computeResourceTable(L, p, onProgress) {
+  const groupBy = (p.groupBy || []).filter(Boolean).slice(0, 2), cutoffs = (p.cutoffs || [0]).map(Number).filter(Number.isFinite).sort((a, b) => a - b);
+  if (!p.grade) throw new Error('resource table: which grade column?');
+  if (!cutoffs.length) throw new Error('resource table: at least one cutoff');
+  const dens = p.density || {};
+  await ensureStoredValues(L, new Set([p.grade, dens.col, ...groupBy].filter(Boolean).map((x) => String(x).toLowerCase())));
+  const h = layerTableHeader(L), schema = schemaExt(L, h), at = (nm) => schema.findIndex((c) => c.name === nm || c.name.toLowerCase() === String(nm).toLowerCase());
+  const gi = at(p.grade); if (gi < 0) throw new Error(`resource table: no column “${p.grade}” on ${L.label || L.name}`);
+  const di = dens.col ? at(dens.col) : -1; if (dens.col && di < 0) throw new Error(`resource table: no density column “${dens.col}”`);
+  const ki = groupBy.map((c) => { const i = at(c); if (i < 0) throw new Error(`resource table: no column “${c}”`); return i; });
+  const dScale = dens.unit ? unitConvert(1, dens.unit, 't/m3') : 1, dConst = dens.const != null && Number.isFinite(+dens.const) ? +dens.const : 1;
+  const vc = volumeContextOf(L), mask = p.mask || null, mf = Number.isFinite(+p.metalFactor) && +p.metalFactor > 0 ? +p.metalFactor : 1;
+  const acc = new Map();                                    // "cutoff|g1|g2" → { t, tg }
+  let rc = 0;
+  for await (const { f, rec } of layerRecords(L)) {
+    rc++;
+    if ((rc & 0xffff) === 0) { if (onProgress) onProgress(rc); await new Promise((r) => setTimeout(r)); }
+    if (mask && !(rec < mask.length && mask[rec])) continue;
+    const g = numOf(f[gi]); if (!Number.isFinite(g)) continue;
+    const t = volumeAt(vc, f) * (di >= 0 ? (+f[di] || 0) : dConst) * dScale;
+    if (!(t > 0)) continue;
+    const key = ki.map((i) => { const v = f[i]; return v == null || v === '' ? '—' : String(v); }).join('|');
+    for (const c of cutoffs) {
+      if (g < c) break;
+      const k = c + '|' + key; let a = acc.get(k); if (!a) acc.set(k, (a = { t: 0, tg: 0 }));
+      a.t += t; a.tg += t * g;
+    }
+  }
+  if (onProgress) onProgress(rc);
+  const columns = ['cutoff', ...groupBy, 'tonnes', 'grade', 'metal'], rows = [];
+  for (const c of cutoffs) {
+    const keys = [...acc.keys()].filter((k) => k.startsWith(c + '|')).map((k) => k.slice(String(c).length + 1)).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    let T = 0, TG = 0;
+    for (const k of keys) {
+      const a = acc.get(c + '|' + k); T += a.t; TG += a.tg;
+      rows.push([c, ...(groupBy.length ? k.split('|') : []), a.t, a.tg / a.t, (a.tg * mf)]);
+    }
+    if (groupBy.length && keys.length > 1) rows.push([c, 'total', ...groupBy.slice(1).map(() => ''), T, T > 0 ? TG / T : NaN, TG * mf]);
+    if (!keys.length) rows.push([c, ...groupBy.map(() => '—'), 0, NaN, 0]);
+  }
+  return { columns, rows, records: rc };
+}

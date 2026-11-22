@@ -253,6 +253,7 @@ export function openGradeTonnage(L, ropts) {
     runBtn = document.createElement('button'); runBtn.className = 'sw-run'; runBtn.textContent = 'Run'; runBtn.onclick = run;
     const rcpBtn = document.createElement('button'); rcpBtn.className = 'sw-add rcp'; rcpBtn.textContent = 'save as recipe…'; rcpBtn.title = 'save this setup as a named, re-runnable YAML file in the project (Tools → Recipes)';
     rcpBtn.onclick = () => saveRecipe('gt', cfgOf(), `${(L.label || L.name).replace(/\.[^.]+$/, '')} grade-tonnage`);
+    win.el._recipe = () => ({ tool: 'gt', name: `${(L.label || L.name).replace(/\.[^.]+$/, '')} grade-tonnage`, params: cfgOf() });   // ⇥ figure keeps this: a chart that re-runs
     const resRow = plotExportBtns(cv, () => `gt-${(L.label || L.name).replace(/\.[^.]+$/, '')}.png`, tableTSV, 'grade-tonnage');
     staleEl = document.createElement('div'); staleEl.className = 'sw-stale'; staleEl.textContent = st.scan && st.stale ? '↻ config changed — Run to update' : '';
     progEl = document.createElement('div'); progEl.className = 'sw-prog';

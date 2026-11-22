@@ -21,7 +21,8 @@ import { microPrompt, microConfirm } from './prompts.js';
 import { resolveFileHandle, removeFileAt } from './paths.js';
 import { setSectionWorld, sectionWorld } from './section.js';
 import { rendererDocBbox, layerShown } from './layers.js';
-import { attrRowCountOf, layerBlob } from './records.js';
+import { attrRowCountOf, layerBlob, layerTableHeader, schemaExt } from './records.js';
+import { computeResourceTable, numericColsOf } from './analysis.js';
 import { sourceHash, sourceHashSync } from './identity.js';
 import { createDocument, parseDocument, serializeDocument, mountEditor, exportPDF, exportPNG, frameById, pageDims, tableFromTsv, subjectFrame, figureFromPdf, registerKind, replayDrawList } from '../../../ext/compo/index.js';
 import { chartFigure } from './analysis-ui.js';
@@ -205,8 +206,8 @@ function addMarker(ed, kind) {
 // (or Refresh all figures) renders it again. ──
 const _hashing = new WeakSet();
 export function staleOf(f) {
-  if (!isView(f)) return null;
-  const fx = f.content && f.content.meta && f.content.meta.facts; if (!fx) return null;
+  const fx = isView(f) ? f.content && f.content.meta && f.content.meta.facts : f.source && f.source.facts;   // a view's render, or a chart / table's run
+  if (!fx || !fx.layers) return null;
   const missing = [], changed = [];
   for (const l of fx.layers) {
     const L = S.layers.find((x) => (x.label || x.name) === l.name);
@@ -216,7 +217,7 @@ export function staleOf(f) {
     if (!cur) { if (!_hashing.has(blob)) { _hashing.add(blob); sourceHash(blob).then(() => { if (_ed) _ed.render(); }, () => {}); } continue; }
     if (cur !== l.sha) changed.push({ l, cur });
   }
-  if (changed.length) return { text: 'older data', title: changed.map(({ l, cur }) => `${l.name}: rendered from ${l.file} ${l.sha.slice(0, 8)}, the layer is now ${cur.slice(0, 8)}`).join('\n') + '\n↻ views renders it again' };
+  if (changed.length) return { text: 'older data', title: changed.map(({ l, cur }) => `${l.name}: rendered from ${l.file} ${l.sha.slice(0, 8)}, the layer is now ${cur.slice(0, 8)}`).join('\n') + '\n↻ refresh makes it again' };
   if (missing.length) return { text: 'data not loaded', title: missing.map((l) => `${l.name} (${l.file}${l.sha ? ' ' + l.sha.slice(0, 8) : ''}) isn't loaded`).join('\n') };
   return null;
 }
@@ -225,7 +226,8 @@ export function staleOf(f) {
 export async function refreshViews(fig = _fig) {
   if (!fig) return 0;
   const views = fig.doc.frames.filter((f) => isView(f) && f.source.scene);
-  if (!views.length) return 0;
+  const nData = await refreshData(fig);
+  if (!views.length) { if (nData) { persist(fig); if (_ed && _fig === fig) _ed.setDoc(fig.doc); $('#meta').textContent = `composer: “${fig.name}” — ${nData} chart / table frame${nData === 1 ? '' : 's'} made again`; } return nData; }
   const mine = captureScene('__composer');
   try {
     for (const f of views) {
@@ -237,9 +239,125 @@ export async function refreshViews(fig = _fig) {
   } finally { await applyScene(mine); requestRender(); }
   persist(fig);
   if (_ed && _fig === fig) { _ed.setDoc(fig.doc); }
-  $('#meta').textContent = `composer: “${fig.name}” — ${views.length} view${views.length === 1 ? '' : 's'} rendered again`;
-  return views.length;
+  $('#meta').textContent = `composer: “${fig.name}” — ${views.length} view${views.length === 1 ? '' : 's'} rendered again${nData ? `, ${nData} chart / table frame${nData === 1 ? '' : 's'} made again` : ''}`;
+  return views.length + nData;
 }
+// ── DATA FRAMES: a chart / table that came from an analysis window keeps its recipe, and a
+// resource table its parameters; ↻ refresh makes them again with the data as it is now, and
+// each records the content hash of the layers it read (the same "older data" badge as a view) ──
+const recipeLayers = (r) => {
+  const p = (r && r.params) || {}, out = [];
+  for (const s of p.series || []) if (s && s.layer) out.push(s.layer);
+  if (p.layer) out.push(p.layer);
+  return [...new Set(out)];
+};
+async function stampFacts(f, names) {
+  const layers = [];
+  for (const nm of names) {
+    const L = S.layers.find((x) => x.name === nm || (x.label || x.name) === nm);
+    if (!L) { layers.push({ name: nm, file: nm, sha: null }); continue; }
+    const blob = layerBlob(L);
+    layers.push({ name: L.label || L.name, file: (blob && blob.name) || L.name, sha: blob ? await sourceHash(blob) : null });
+  }
+  f.source = { ...f.source, facts: { layers, at: new Date().toISOString() } };
+}
+const _until = async (fn, ms) => { const t0 = Date.now(); for (;;) { const v = fn(); if (v) return v; if (Date.now() - t0 > ms) return null; await new Promise((r) => setTimeout(r, 120)); } };
+// run a window's recipe headlessly → { spec, tsv } (the routine runner's way: open, wait, read, close)
+async function rerunRecipe(recipe) {
+  for (const nm of recipeLayers(recipe)) if (!S.layers.some((x) => x.name === nm)) throw new Error(`layer “${nm}” isn't loaded`);
+  if (!HK.runRecipe) throw new Error('recipes are not available');
+  const before = new Set(document.querySelectorAll('.fwin'));
+  HK.runRecipe({ tool: recipe.tool, name: recipe.name || recipe.tool, params: JSON.parse(JSON.stringify(recipe.params || {})) }, true);
+  const el = await _until(() => [...document.querySelectorAll('.fwin')].find((x) => !before.has(x) && x._tableTSV && x._tableTSV()), 600000);
+  if (!el) throw new Error('the analysis did not finish');
+  const cv = el.querySelector('canvas');
+  const spec = cv && cv._chartSpec ? JSON.parse(JSON.stringify(cv._chartSpec)) : null, tsv = el._tableTSV();
+  const close = el.querySelector('.fwin-head button:last-child'); if (close) close.click();
+  return { spec, tsv };
+}
+export async function refreshData(fig = _fig) {
+  if (!fig) return 0;
+  let n = 0;
+  const runs = new Map();                                   // one run per recipe: a chart and its table share it
+  for (const f of fig.doc.frames) {
+    const src = f.source || {};
+    try {
+      if (src.recipe) {
+        const key = JSON.stringify(src.recipe);
+        if (!runs.has(key)) runs.set(key, await rerunRecipe(src.recipe));
+        const r = runs.get(key);
+        if (f.kind === 'chart' && r.spec) { f.content = { ...f.content, spec: r.spec }; f._list = null; }
+        else if (f.kind === 'table' && r.tsv) { const c = tableFromTsv(r.tsv, f.content.title || ''); if (c) f.content = { ...f.content, columns: c.columns, rows: c.rows }; }
+        await stampFacts(f, recipeLayers(src.recipe)); f.produced = new Date().toISOString(); n++;
+      } else if (src.kind === 'resource' && src.params) {
+        f.content = { ...f.content, ...(await resourceContent(src.params)) };
+        await stampFacts(f, [src.params.layer]); f.produced = new Date().toISOString(); n++;
+      }
+    } catch (e) { $('#meta').textContent = `composer: ${f.id} not made again — ${e.message}`; }
+  }
+  return n;
+}
+
+// ── the RESOURCE TABLE frame ──
+const sig = (v, k = 4) => (Number.isFinite(v) ? +v.toPrecision(k) : '');
+async function resourceContent(p) {
+  const L = S.layers.find((x) => x.name === p.layer || (x.label || x.name) === p.layer);
+  if (!L) throw new Error(`layer “${p.layer}” isn't loaded`);
+  const mask = p.scope === 'filter' && L.filterExpr ? L._filterMask : null;
+  const r = await computeResourceTable(L, { ...p, mask });
+  const metal = p.metalUnit ? `metal (${p.metalUnit})` : 'metal';
+  const columns = r.columns.map((c) => (c === 'tonnes' ? 't' : c === 'grade' ? (p.gradeUnit ? `${p.grade} (${p.gradeUnit})` : p.grade) : c === 'metal' ? metal : c));
+  const rows = r.rows.map((row) => row.map((v, i) => (r.columns[i] === 'tonnes' ? Math.round(v) : r.columns[i] === 'grade' ? sig(v, 4) : r.columns[i] === 'metal' ? (Math.abs(v) >= 1000 ? Math.round(v) : sig(v, 4)) : v)));
+  const d = p.density || {};
+  const dens = d.col ? `density ${d.col}${d.unit ? ` (${d.unit})` : ''}` : `density ${d.const != null ? d.const : 1}${d.unit ? ` ${d.unit}` : ' t/m³'}`;
+  return { columns, rows, title: p.title || `${L.label || L.name} — resources`, note: `${dens}${p.scope === 'filter' && L.filterExpr ? ` · filter ${L.filterExpr}` : ''} · ${r.records.toLocaleString('en-US')} records` };
+}
+export async function addResourceFrame(p) {
+  const ed = openComposer();
+  const doc = ed.getDoc(), m = doc.page.margins || [12, 12, 12, 12];
+  const content = await resourceContent(p);
+  const rows = Math.min(content.rows.length, 30), w = Math.min(160, 20 + 18 * content.columns.length), h = +(9 + 4.2 * (rows + 2.5)).toFixed(1);
+  const f = ed.addFrame({ kind: 'table', box: [m[3] + 8, m[0] + 8, w, h], content, source: { app: 'micro', kind: 'resource', name: content.title, params: p } });
+  await stampFacts(f, [p.layer]); ed.render();
+  $('#meta').textContent = `composer: a resource table (${content.rows.length} rows) went into “${_fig.name}” — ↻ refresh makes it again`;
+  return f;
+}
+function openResourceDialog() {
+  const cands = S.layers.filter((L) => layerTableHeader(L) && numericColsOf(L).length);
+  if (!cands.length) { $('#meta').textContent = 'composer: a resource table needs a block model with a grade column'; return; }
+  const w = floatWin({ title: 'resource table', sub: 'tonnes · grade · metal above cutoffs', x: 140, y: 120, w: 420, h: 400 });
+  w.el.classList.add('cmp-resource');
+  const body = w.body; body.style.cssText += 'display:grid;grid-template-columns:110px 1fr;gap:6px 8px;align-items:center;padding:10px';
+  const sel = (opts, val) => { const s = document.createElement('select'); for (const o of opts) { const e = document.createElement('option'); e.value = o; e.textContent = o || '—'; s.append(e); } if (val != null) s.value = val; return s; };
+  const inp = (v, title) => { const i = document.createElement('input'); i.value = v; i.title = title || ''; i.onkeydown = (e) => e.stopPropagation(); return i; };
+  const row = (label, el) => { const l = document.createElement('span'); l.textContent = label; body.append(l, el); return el; };
+  const lay = row('model', sel(cands.map((L) => L.name), cands[0].name));
+  const grade = row('grade', sel([])), cut = row('cutoffs', inp('0, 0.5, 1', 'comma-separated, in the grade\'s units'));
+  const gunit = row('grade unit', inp('', 'shown in the header, e.g. g/t, %'));
+  const dcol = row('density', sel([])), dconst = row('… or constant', inp('2.7', 'used when no density column is chosen')), dunit = row('density unit', sel(['t/m3', 'kg/m3', 'g/cm3', 'lb/ft3'], 't/m3'));
+  const g1 = row('group by', sel([])), g2 = row('… then by', sel([]));
+  const mf = row('metal factor', inp('1', 'metal = tonnes × grade × this (g/t → oz: 0.0321507; % → t: 0.01)')), munit = row('metal unit', inp('', 'e.g. oz, t'));
+  const scope = row('records', sel(['all', 'filter'], 'all'));
+  const fill = () => {
+    const L = S.layers.find((x) => x.name === lay.value), h = layerTableHeader(L), all = schemaExt(L, h).map((c) => c.name), nums = numericColsOf(L);
+    const put = (s, opts, pick) => { s.replaceChildren(...opts.map((o) => { const e = document.createElement('option'); e.value = o; e.textContent = o || '—'; return e; })); if (pick != null) s.value = pick; };
+    put(grade, nums, nums.find((c) => /^(au|cu|fe|ag|zn|pb|ni|grade)/i.test(c)) || nums[0]);
+    put(dcol, ['', ...nums], nums.find((c) => /^(dens|sg|rho|density)/i.test(c)) || '');
+    put(g1, ['', ...all], all.find((c) => /^(dom|domain|zone|lith|lithology|rock|rocktype|geol|unit)\b|domain/i.test(c)) || ''); put(g2, ['', ...all], all.find((c) => /^(class|cat|rescat|rescla|jorc)\b|class|categ/i.test(c)) || '');
+  };
+  lay.onchange = fill; fill();
+  const go = document.createElement('button'); go.className = 'awin-btn btn-p'; go.textContent = 'Add';
+  const msg = document.createElement('span'); msg.className = 'hint';
+  body.append(msg, go);
+  go.onclick = async () => {
+    const p = { layer: lay.value, grade: grade.value, gradeUnit: gunit.value.trim() || undefined, cutoffs: cut.value.split(/[,;\s]+/).map(Number).filter(Number.isFinite),
+      density: dcol.value ? { col: dcol.value, unit: dunit.value } : { const: +dconst.value || 1, unit: dunit.value }, groupBy: [g1.value, g2.value].filter(Boolean),
+      metalFactor: +mf.value || 1, metalUnit: munit.value.trim() || undefined, scope: scope.value };
+    go.disabled = true; msg.textContent = 'computing…';
+    try { await addResourceFrame(p); w.close(); } catch (e) { msg.textContent = e.message; go.disabled = false; }
+  };
+}
+
 export async function refreshAllFigures() {
   let n = 0;
   for (const fig of S.figures) n += await refreshViews(fig);
@@ -376,7 +494,7 @@ export function openComposer(name) {
   const dpiSel = document.createElement('select'); dpiSel.title = 'export resolution for the 3D views and the PNG';
   for (const d of [150, 300, 600]) { const o = document.createElement('option'); o.value = d; o.textContent = d + ' dpi'; dpiSel.append(o); }
   dpiSel.value = '300';
-  top.append(btn('↻ views', 'render every 3D view on this figure again from its scene, with the data as it is now', () => refreshViews(_fig)));
+  top.append(btn('↻ refresh', 'make this figure again with the data as it is now: every 3D view from its scene, every chart and table from its analysis, every resource table', () => refreshViews(_fig)));
   top.append(btn('atlas…', 'a routine that renders this figure once per section level into one PDF (Tools → Recipes)', () => makeAtlasRoutine(_fig)));
   top.append(sp, dpiSel, btn('⤓ pdf', 'export the page as a vector PDF (the 3D views re-rendered at the dpi)', () => exportFigurePdf(+dpiSel.value), 'awin-btn btn-p'), btn('⤓ png', 'export the page as a PNG at the dpi', () => exportFigurePng(+dpiSel.value)));
   const host = document.createElement('div'); host.style.cssText = 'flex:1;min-height:0';
@@ -390,6 +508,7 @@ export function openComposer(name) {
       { label: '+ legend', title: 'a legend for each layer shown in the view frame', run: (e) => addLegendFrames(e) },
       { label: '+ scale', title: 'a scale bar for the view frame (orthographic views have a scale)', run: (e) => addMarker(e, 'scalebar') },
       { label: '+ north', title: 'a north arrow for the view frame', run: (e) => addMarker(e, 'north') },
+      { label: '+ resource', title: 'a resource table: tonnes, grade and metal above cutoffs, by domain × class — made again on ↻ refresh', run: () => openResourceDialog() },
     ],
     frameMenu: (f, e) => frameMenu(f, e),
     frameBadge: (f) => staleOf(f),
@@ -676,10 +795,11 @@ registerKind('chart', {
     ctx.restore();
   },
 });
-export function addChartFrame(spec, name) {
+export function addChartFrame(spec, name, recipe = null) {
   const ed = openComposer();
   const doc = ed.getDoc(), m = doc.page.margins || [12, 12, 12, 12];
-  const f = ed.addFrame({ kind: 'chart', box: [m[3] + 8, m[0] + 8, 120, 72], content: { spec }, source: { app: 'micro', kind: 'plot', name } });
+  const f = ed.addFrame({ kind: 'chart', box: [m[3] + 8, m[0] + 8, 120, 72], content: { spec }, source: { app: 'micro', kind: 'plot', name, ...(recipe ? { recipe } : {}) } });
+  if (recipe) stampFacts(f, recipeLayers(recipe)).then(() => { if (_ed) _ed.render(); });
   $('#meta').textContent = `composer: ${name} went into “${_fig.name}” as a chart (vector; it re-flows when resized)`;
   return f;
 }
@@ -694,20 +814,21 @@ export function addCanvasFrame(canvas, name) {
   return f;
 }
 // an analysis window's table (its ⧉ table TSV) → a table frame, beside the plot when both came
-export function addTableFrame(tsv, name, near = null) {
+export function addTableFrame(tsv, name, near = null, recipe = null) {
   const c = tableFromTsv(tsv, ''); if (!c) return null;
   const ed = openComposer();
   const doc = ed.getDoc(), m = doc.page.margins || [12, 12, 12, 12];
   const rows = Math.min(c.rows.length, 30), w = Math.min(120, 14 + 16 * c.columns.length), h = +(5 + 4.2 * (rows + 1.5)).toFixed(1);
   const box = near ? [near.box[0] + near.box[2] + 6, near.box[1], w, h] : [m[3] + 8, m[0] + 8, w, h];
-  const f = ed.addFrame({ kind: 'table', box, content: c, source: { app: 'micro', kind: 'table', name } });
+  const f = ed.addFrame({ kind: 'table', box, content: c, source: { app: 'micro', kind: 'table', name, ...(recipe ? { recipe } : {}) } });
+  if (recipe) stampFacts(f, recipeLayers(recipe)).then(() => { if (_ed) _ed.render(); });
   $('#meta').textContent = `composer: the ${name} table (${c.rows.length} rows) went into “${_fig.name}”`;
   return f;
 }
 addEventListener('micro:to-composer', (e) => {
   const d = e.detail || {};
-  const p = d.spec ? addChartFrame(d.spec, d.name || 'chart') : d.canvas ? addCanvasFrame(d.canvas, d.name || 'plot') : null;
-  if (d.tsv) addTableFrame(d.tsv, d.name || 'table', p);
+  const p = d.spec ? addChartFrame(d.spec, d.name || 'chart', d.recipe) : d.canvas ? addCanvasFrame(d.canvas, d.name || 'plot') : null;
+  if (d.tsv) addTableFrame(d.tsv, d.name || 'table', p, d.recipe);
 });
 
 // ── the project: figures/ *.compo.json in, any not yet written out ──

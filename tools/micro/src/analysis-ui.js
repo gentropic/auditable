@@ -224,7 +224,7 @@ export function plotExportBtns(cv, nameFn, tableFn, group) {
     fig.onclick = () => {
       const tsv = tableFn && tableFn();
       if (!cv && !tsv) { $('#meta').textContent = 'run it first — there is no table yet'; return; }
-      dispatchEvent(new CustomEvent('micro:to-composer', { detail: { canvas: cv, spec: cv && cv._chartSpec ? JSON.parse(JSON.stringify(cv._chartSpec)) : null, tsv: tsv || null, name: nameFn().replace(/\.png$/i, '') } }));
+      dispatchEvent(new CustomEvent('micro:to-composer', { detail: { canvas: cv, spec: cv && cv._chartSpec ? JSON.parse(JSON.stringify(cv._chartSpec)) : null, recipe: (() => { const h = (cv || wrap).closest('.fwin'); try { return h && h._recipe ? JSON.parse(JSON.stringify(h._recipe())) : null; } catch { return null; } })(), tsv: tsv || null, name: nameFn().replace(/\.png$/i, '') } }));
     };
     wrap.append(fig);
   }

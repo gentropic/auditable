@@ -6574,6 +6574,61 @@ if (take()) {
   await p.close();
 }
 
+// ── §101: DATA FRAMES THAT RE-RUN — ⇥ figure keeps the window's recipe; a new estimate makes the
+//     chart and its table "older data"; ↻ refresh re-runs the analysis and both follow. A resource
+//     table (tonnes · grade · metal above cutoffs, by domain) is computed from the model and made
+//     again on refresh. Numbers checked by hand: 10 m blocks (1000 m³) at density 2.5. ──
+if (take()) {
+  const p = await mkPage('sm2rerun');
+  const r = await p.evaluate(async () => {
+    const M_ = window._micro, out = {};
+    const csv = (dk) => { const rows = ['XC,YC,ZC,AU,DOM']; for (let k = 0; k < 4; k++) for (let j = 0; j < 20; j++) for (let i = 0; i < 30; i++) rows.push(`${5 + i * 10},${5 + j * 10},${5 + k * 10},${(0.2 + 0.05 * i + 0.1 * k + dk).toFixed(3)},${i < 15 ? 'A' : 'B'}`); return new File([rows.join('\n') + '\n'], 'rs.csv'); };
+    const until = async (fn, ms = 20000) => { const t0 = performance.now(); while (performance.now() - t0 < ms) { const v = fn(); if (v) return v; await new Promise((res) => setTimeout(res, 60)); } return fn(); };
+    let id = await M_.openBlob(csv(0), 'rs.csv', 'replace');
+    let L = M_.layers().find((x) => x.id === id);
+    const ed = M_.openComposer('rerun');
+    // the resource table
+    const rf = await M_.addResourceFrame({ layer: 'rs.csv', grade: 'AU', cutoffs: [0, 0.5], density: { const: 2.5, unit: 't/m3' }, groupBy: ['DOM'], metalFactor: 1 });
+    out.res = rf.content.rows.map((row) => row.join(' '));
+    // GT → ⇥ figure: a chart + its table, with the recipe
+    M_.openGradeTonnage(L);
+    const gw = () => [...document.querySelectorAll('.fwin')].find((el) => el.querySelector('.fwin-head .t').textContent.startsWith('grade-tonnage'));
+    gw().querySelector('.sw-run').click();
+    await until(() => gw()._gtSpec);
+    [...gw().querySelectorAll('.awin-btn')].find((b) => b.textContent === '⇥ figure').click();
+    gw().querySelector('.fwin-head button:last-child').click();
+    const doc = () => M_.currentFigure().doc;
+    const chart = () => doc().frames.find((f) => f.kind === 'chart'), table = () => doc().frames.find((f) => f.kind === 'table' && f.source.kind === 'table');
+    out.recipe = !!(chart() && chart().source.recipe && table() && table().source.recipe);
+    await until(() => chart().source.facts && chart().source.facts.layers[0].sha);
+    out.fresh = M_.staleOf(chart());
+    const row0 = table().content.rows[0].join(' ');
+    out.gmax0 = Math.max(...chart().content.spec.series[0].data.map((d) => d[0]));
+    // a new estimate (every grade +0.3), same file name
+    id = await M_.openBlob(csv(0.3), 'rs.csv', 'replace');
+    out.stale = { chart: (await until(() => M_.staleOf(chart())) || {}).text, table: (M_.staleOf(table()) || {}).text, res: (M_.staleOf(doc().frames.find((f) => f.source && f.source.kind === 'resource')) || {}).text };
+    await M_.refreshViews(M_.currentFigure());
+    out.after = { chart: M_.staleOf(chart()), table: M_.staleOf(table()), gmax: Math.max(...chart().content.spec.series[0].data.map((d) => d[0])), rowChanged: table().content.rows[0].join(' ') !== row0 };
+    out.resAfter = doc().frames.find((f) => f.source && f.source.kind === 'resource').content.rows.map((row) => row.join(' '));
+    out.windowsLeft = [...document.querySelectorAll('.fwin')].filter((el) => /grade-tonnage/.test(el.querySelector('.fwin-head .t').textContent)).length;
+    // the form: its defaults guess the grade (AU) and the domain (DOM); Add makes the frame
+    [...document.querySelectorAll('.compo-bar button')].find((b) => b.textContent === '+ resource').click();
+    const dlg = document.querySelector('.cmp-resource');
+    const sels = [...dlg.querySelectorAll('select')].map((x) => x.value);
+    [...dlg.querySelectorAll('button')].find((b) => b.textContent === 'Add').click();
+    await until(() => doc().frames.filter((f) => f.source && f.source.kind === 'resource').length === 2);
+    out.form = { sels, made: doc().frames.filter((f) => f.source && f.source.kind === 'resource').length, closed: !document.querySelector('.cmp-resource') };
+    return out;
+  });
+  chk(`RERUN: the resource table by domain (${JSON.stringify(r.res)})`, JSON.stringify(r.res) === JSON.stringify(['0 A 3000000 0.7 2100000', '0 B 3000000 1.45 4350000', '0 total 6000000 1.075 6450000', '0.5 A 2400000 0.7854 1885000', '0.5 B 3000000 1.45 4350000', '0.5 total 5400000 1.155 6235000']));
+  chk(`RERUN: ⇥ figure keeps the recipe on the chart and its table (${r.recipe}); fresh, no badge (${JSON.stringify(r.fresh)})`, r.recipe && r.fresh === null);
+  chk(`RERUN: a new estimate makes them "older data" (${JSON.stringify(r.stale)})`, r.stale.chart === 'older data' && r.stale.table === 'older data' && r.stale.res === 'older data');
+  chk(`RERUN: ↻ refresh re-runs the analysis — no badges (${JSON.stringify([r.after.chart, r.after.table])}), the chart's cutoffs move up with the grades (${r.gmax0} → ${r.after.gmax}), the table follows (${r.after.rowChanged}), no window left open (${r.windowsLeft})`, r.after.chart === null && r.after.table === null && r.after.gmax > r.gmax0 && r.after.rowChanged && r.windowsLeft === 0);
+  chk(`RERUN: the + resource form guesses AU and DOM, and Add makes a frame (${JSON.stringify(r.form)})`, r.form && r.form.sels.includes('AU') && r.form.sels.includes('DOM') && r.form.made === 2 && r.form.closed);
+  chk(`RERUN: the resource table is made again (${JSON.stringify(r.resAfter)})`, r.resAfter[0] === '0 A 3000000 1 3000000');
+  await p.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);
