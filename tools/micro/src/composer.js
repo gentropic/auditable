@@ -494,17 +494,19 @@ function viewInspector(f, el) {
     el.append(head);
     if (!cands.length) { const n = document.createElement('div'); n.className = 'hint'; n.textContent = 'no view on the page is cut by a non-plan section'; el.append(n); }
     for (const c of cands) {
-      const lab = document.createElement('label'); lab.className = 'row cmp-keyfor';
+      const lab = document.createElement('label'); lab.className = 'cmp-keyfor';   // in the inspector's value column
+      lab.style.cssText = 'display:flex;gap:6px;align-items:center;margin-left:72px;min-height:22px';
       const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = on.has(c.id); cb.dataset.id = c.id;
       const sec = c.content.meta.facts.section;
       cb.onchange = () => _ed.update(f.id, (fr) => { const s2 = new Set([].concat(fr.source.keyFor || [])); if (cb.checked) s2.add(c.id); else s2.delete(c.id); fr.source = { ...fr.source, keyFor: [...s2] }; });
-      lab.append(cb, document.createTextNode(` ${c.id} — ${sectionText(sec)}`)); el.append(lab);
+      cb.style.margin = '0'; lab.append(cb, document.createTextNode(`${c.id} — ${sectionText(sec)}`)); el.append(lab);
     }
   }
   const m = f.content.meta || {}, wpm = m.worldPerPx > 0 ? (m.worldPerPx * (f.content.height || 1)) / f.box[3] : 0;
   const now = wpm > 0 ? Math.round(wpm * 1000) : null;
-  const inp = document.createElement('input'); inp.type = 'number'; inp.min = 1; inp.step = 'any'; inp.style.width = '80px';
-  inp.className = 'cmp-scale'; inp.value = f.content.scaleLock || ''; inp.placeholder = now ? String(now) : 'perspective';
+  const inp = document.createElement('input'); inp.type = 'number'; inp.min = 1; inp.step = 'any';
+  inp.className = 'cmp-scale'; inp.value = f.content.scaleLock || ''; inp.placeholder = now ? String(now) : '—';
+  if (!now && !f.content.scaleLock) inp.disabled = true;   // a perspective view has no scale to lock
   inp.title = 'lock the scale: 1 : this many (orthographic views) — the frame then shows more or less when resized, never at another scale; empty = free';
   inp.onkeydown = (e) => e.stopPropagation();
   inp.onchange = async () => {
@@ -512,11 +514,13 @@ function viewInspector(f, el) {
     _ed.update(f.id, (fr) => { if (v > 0) fr.content.scaleLock = v; else delete fr.content.scaleLock; });
     const fr = frameById(_ed.getDoc(), f.id); await rerender(fr, PREVIEW_PX_PER_MM); _ed.render();
   };
-  const row = document.createElement('div'); row.className = 'row';
-  const lab = document.createElement('span'); lab.textContent = 'scale 1:';
-  const hint = document.createElement('span'); hint.className = 'hint'; hint.style.marginLeft = '4px';
+  const row = document.createElement('div'); row.className = 'row';   // the editor's grid: a label, then one value cell
+  const lab = document.createElement('span'); lab.textContent = 'scale';
+  const ctl = document.createElement('span'); ctl.className = 'ctl';
+  const one = document.createElement('span'); one.className = 'hint'; one.textContent = '1 :';
+  const hint = document.createElement('span'); hint.className = 'hint';
   hint.textContent = f.content.scaleLock ? 'locked' : m.ortho ? 'free' : 'perspective';
-  row.append(lab, inp, hint); el.append(row);
+  ctl.append(one, inp, hint); row.append(lab, ctl); el.append(row);
 }
 // ── double-click a view frame: work it in the 3D view, at the frame's shape; Done re-captures it ──
 let _editing = null;
@@ -816,10 +820,11 @@ export function openComposer(name) {
   _win = floatWin({ title: 'composer', sub: fig.name, x: 70, y: 70, w: Math.min(1180, innerWidth - 40), h: Math.min(820, innerHeight - 100), onClose: () => { if (_fig) persist(_fig); _ed = null; _win = null; } });
   _win.el.classList.add('composer-win');
   const body = _win.body; body.style.cssText += 'display:flex;flex-direction:column;padding:0;overflow:hidden';
-  const top = document.createElement('div'); top.className = 'cmp-top';
-  top.style.cssText = 'display:flex;gap:5px;align-items:center;padding:4px 6px;border-bottom:1px solid var(--border);flex-wrap:wrap';
+  const top = document.createElement('div'); top.className = 'compo-bar cmp-top';   // the editor bar's look: one toolbar language
+  top.style.font = '12px/1.35 var(--compo-font, system-ui, sans-serif)';
+  const sep = () => { const s = document.createElement('span'); s.className = 'sep'; return s; };
   const pick = document.createElement('select'); pick.title = 'figure';
-  const btn = (t, title, fn, cls = 'awin-btn') => { const b = document.createElement('button'); b.className = cls; b.textContent = t; b.title = title; b.onclick = fn; return b; };
+  const btn = (t, title, fn, cls = '') => { const b = document.createElement('button'); b.className = cls; b.textContent = t; b.title = title; b.onclick = fn; return b; };
   const fromSel = document.createElement('select'); fromSel.title = 'what a new figure starts from: blank, or a template'; fromSel.className = 'cmp-from';
   const tplBtn = btn('☆ template', 'make this figure a template — new figures can start from it (its frames, page and properties)', () => { _fig.doc.template = !_fig.doc.template; if (!_fig.doc.template) delete _fig.doc.template; persist(_fig); fill(); });
   const fill = () => {
@@ -848,17 +853,17 @@ export function openComposer(name) {
   const dpiSel = document.createElement('select'); dpiSel.title = 'export resolution for the 3D views and the PNG';
   for (const d of [150, 300, 600]) { const o = document.createElement('option'); o.value = d; o.textContent = d + ' dpi'; dpiSel.append(o); }
   dpiSel.value = '300';
-  const embLab = document.createElement('label'); embLab.className = 'cmp-embed'; embLab.style.cssText = 'display:flex;align-items:center;gap:3px;font-size:11px';
+  const embLab = document.createElement('label'); embLab.className = 'cmp-embed'; embLab.style.cssText = 'display:flex;align-items:center;gap:4px;margin-right:4px';
   embLab.title = 'the PDF carries this figure (its scenes, layer and file names, coordinates, recipes) so micro can open it again as an editable figure.\nUntick for a deliverable that should hold only the page.';
   const embBox = document.createElement('input'); embBox.type = 'checkbox';
   embBox.onchange = () => { if (embBox.checked) delete _fig.doc.embedSource; else _fig.doc.embedSource = false; persist(_fig); };
   embLab.append(embBox, document.createTextNode('embed figure'));
   _win._syncEmbed = () => { embBox.checked = !(_fig && _fig.doc.embedSource === false); };
-  top.append(btn('↻ refresh', 'make this figure again with the data as it is now: every 3D view from its scene, every chart and table from its analysis, every resource table', () => refreshViews(_fig)));
+  top.append(sep(), btn('↻ refresh', 'make this figure again with the data as it is now: every 3D view from its scene, every chart and table from its analysis, every resource table', () => refreshViews(_fig)));
   top.append(btn('⇄ other data…', 'make this figure with other data: each layer it used → a layer loaded now, missing columns swapped, the views moved with the data — then everything made again', () => openRetargetDialog(_fig)));
   top.append(tplBtn, btn('properties…', 'the figure\'s drawing number and revision, and the project\'s house properties — {prop:key} in captions and the title block', () => openPropsDialog()));
-  top.append(btn('atlas…', 'a routine that renders this figure once per section level into one PDF (Tools → Recipes)', () => makeAtlasRoutine(_fig)));
-  top.append(sp, embLab, dpiSel, btn('⤓ pdf', 'export the page as a vector PDF (the 3D views re-rendered at the dpi)', () => exportFigurePdf(+dpiSel.value), 'awin-btn btn-p'), btn('⤓ png', 'export the page as a PNG at the dpi', () => exportFigurePng(+dpiSel.value)));
+  top.append(sep(), btn('atlas…', 'a routine that renders this figure once per section level into one PDF (Tools → Recipes)', () => makeAtlasRoutine(_fig)));
+  top.append(sp, embLab, dpiSel, btn('⤓ pdf', 'export the page as a vector PDF (the 3D views re-rendered at the dpi)', () => exportFigurePdf(+dpiSel.value), 'btn-p'), btn('⤓ png', 'export the page as a PNG at the dpi', () => exportFigurePng(+dpiSel.value)));
   const host = document.createElement('div'); host.style.cssText = 'flex:1;min-height:0';
   body.append(top, host);
   _win._fill = fill;

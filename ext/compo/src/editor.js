@@ -39,9 +39,22 @@ const CSS = `
 .compo-guide { position: absolute; background: #e6339a; pointer-events: none; }
 .compo-margin { position: absolute; border: 1px dashed rgba(60, 130, 230, 0.35); pointer-events: none; }
 .compo-side { width: 230px; overflow: auto; padding: 8px; border-left: 1px solid var(--compo-border, var(--border, #3a3d42)); display: flex; flex-direction: column; gap: 6px; }
-.compo-side .row { display: flex; gap: 4px; align-items: center; }
-.compo-side .row > span:first-child { width: 58px; color: var(--compo-dim, var(--dim, #9a9a9a)); }
-.compo-side input[type=number] { width: 54px; }
+/* the inspector is ONE grid: a label column, and a value cell whose controls fill it — every row
+   lines up whatever its controls are (one select, an x/y pair, a checkbox, three numbers) */
+.compo-side .row { display: grid; grid-template-columns: 64px minmax(0, 1fr); column-gap: 8px; align-items: center; min-height: 24px; }
+.compo-side .row > span:first-child { color: var(--compo-dim, var(--dim, #9a9a9a)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.compo-side .ctl { display: flex; gap: 6px; align-items: center; min-width: 0; }
+.compo-side .ctl > input:not([type=checkbox]), .compo-side .ctl > select { flex: 1 1 0; min-width: 0; width: auto; }
+.compo-side .ctl > input[type=checkbox] { margin: 0; }
+.compo-side .ctl > .hint { flex: none; }
+.compo-side .ctl.stack { flex-direction: column; align-items: stretch; gap: 3px; }
+.compo-side .ctl.stack > .pair { flex: none; }
+.compo-side .row:has(.stack) { align-items: start; }
+.compo-side .row:has(.stack) > span:first-child { line-height: 22px; }
+.compo-side .pair { flex: 1 1 0; display: flex; gap: 4px; align-items: center; min-width: 0; }
+.compo-side .pair > i { font-style: normal; color: var(--compo-dim, var(--dim, #9a9a9a)); width: 8px; text-align: center; }
+.compo-side .pair > input { flex: 1 1 0; min-width: 0; width: auto; }
+.compo-side .row input:not([type=checkbox]), .compo-side .row select { box-sizing: border-box; height: 22px; }
 .compo-side textarea { width: 100%; box-sizing: border-box; min-height: 90px; resize: vertical; font-family: var(--compo-mono, monospace); }
 .compo-side .hint { color: var(--compo-dim, var(--dim, #9a9a9a)); font-size: 11px; }
 .compo-fr.locked::after { content: 'locked'; position: absolute; right: 1px; top: 1px; font: 9px/1 system-ui, sans-serif; padding: 1px 3px; background: rgba(40,40,40,0.75); color: #fff; border-radius: 2px; pointer-events: none; }
@@ -52,7 +65,7 @@ const CSS = `
 .compo-link { position: absolute; height: 0; border-top: 1px dashed #3c82e6; transform-origin: 0 0; pointer-events: none; z-index: 2; }
 .compo-fr.ref { outline: 1px dashed #3c82e6; outline-offset: 2px; }
 .compo-it .nm .ds { color: var(--compo-dim, var(--dim, #9a9a9a)); margin-left: 6px; font-weight: normal; }
-.compo-side input.compo-id { width: 120px; font-family: var(--compo-mono, monospace); }
+.compo-side input.compo-id { font-family: var(--compo-mono, monospace); }
 .compo-side input.compo-id.bad { outline: 1px solid #c33; }
 .compo-gap { position: absolute; background: #e6339a; pointer-events: none; }
 .compo-gap-l { position: absolute; font: 10px/1 system-ui, sans-serif; color: #fff; background: #e6339a; padding: 1px 3px; border-radius: 2px; transform: translate(-50%, -50%); pointer-events: none; white-space: nowrap; }
@@ -293,7 +306,7 @@ export function mountEditor(el, doc, opts = {}) {
         const lk = h('input', { type: 'checkbox', checked: locked === sel.length });
         lk.indeterminate = locked > 0 && locked < sel.length;
         lk.onchange = () => commit(() => { for (const id of sel) frameById(D, id).locked = lk.checked; });
-        insp.append(h('label', { className: 'row' }, h('span', { textContent: 'locked' }), lk));
+        insp.append(h('label', { className: 'row' }, h('span', { textContent: 'locked' }), h('span', { className: 'ctl' }, lk)));
       } else insp.append(h('div', { className: 'hint', textContent: 'click a frame to edit it · drag to move (snaps to edges, centres and equal gaps; ⌥ off) · drag on the empty page to box-select · handles resize · arrows nudge (⇧ ×10) · ⌘G group · ⌘Z undo' }));
       return;
     }
@@ -305,7 +318,7 @@ export function mountEditor(el, doc, opts = {}) {
     idIn.oninput = () => { const v = sanitizeId(idIn.value); idIn.classList.toggle('bad', !v || (v !== f.id && D.frames.some((x) => x.id === v))); };
     idIn.onchange = () => { if (!doRename(f, idIn.value)) idIn.value = f.id; };
     idIn.onkeydown = (e) => { e.stopPropagation(); if (e.key === 'Enter') idIn.blur(); };
-    insp.append(h('div', { className: 'row' }, h('span', { textContent: 'id' }), idIn));
+    insp.append(h('div', { className: 'row' }, h('span', { textContent: 'id' }), h('span', { className: 'ctl' }, idIn)));
     if (canRefer(f)) {
       // refers to: the nearest view (the default — it says which), or a fixed one
       const near = refFrame(D, f, null, isReferable), cands = D.frames.filter((x) => x !== f && isReferable(x));
@@ -314,21 +327,21 @@ export function mountEditor(el, doc, opts = {}) {
         ...cands.map((x) => h('option', { value: x.id, textContent: x.id })));
       rs.value = (f.content && f.content.of) || '';
       rs.onchange = () => commit(() => { f.content = { ...(f.content || {}) }; if (rs.value) f.content.of = rs.value; else delete f.content.of; });
-      insp.append(h('div', { className: 'row' }, h('span', { textContent: 'refers to' }), rs));
+      insp.append(h('div', { className: 'row' }, h('span', { textContent: 'refers to' }), h('span', { className: 'ctl' }, rs)));
     }
     const num = (label, i) => {
       const inp = h('input', { type: 'number', step: 0.5, value: +f.box[i].toFixed(1) });
       inp.onchange = () => commit(() => { const v = +inp.value; if (Number.isFinite(v)) f.box[i] = i >= 2 ? Math.max(2, v) : v; });
-      return h('span', { style: 'display:inline-flex;gap:2px;align-items:center' }, label, inp);
+      return h('span', { className: 'pair' }, h('i', { textContent: label }), inp);
     };
-    insp.append(h('div', { className: 'row' }, h('span', { textContent: 'position' }), num('x', 0), num('y', 1)));
-    insp.append(h('div', { className: 'row' }, h('span', { textContent: 'size' }), num('w', 2), num('h', 3)));
+    insp.append(h('div', { className: 'row' }, h('span', { textContent: 'position' }), h('span', { className: 'ctl' }, num('x', 0), num('y', 1))));
+    insp.append(h('div', { className: 'row' }, h('span', { textContent: 'size' }), h('span', { className: 'ctl' }, num('w', 2), num('h', 3))));
     const bd = h('input', { type: 'checkbox', checked: !!(f.style && f.style.border) });
     bd.onchange = () => commit(() => { f.style = { ...(f.style || {}), border: bd.checked }; });
-    insp.append(h('label', { className: 'row' }, h('span', { textContent: 'border' }), bd));
+    insp.append(h('label', { className: 'row' }, h('span', { textContent: 'border' }), h('span', { className: 'ctl' }, bd)));
     const lk = h('input', { type: 'checkbox', checked: !!f.locked });
     lk.onchange = () => commit(() => { f.locked = lk.checked; });
-    insp.append(h('label', { className: 'row', title: 'a locked frame won’t move, resize or delete' }, h('span', { textContent: 'locked' }), lk));
+    insp.append(h('label', { className: 'row', title: 'a locked frame won’t move, resize or delete' }, h('span', { textContent: 'locked' }), h('span', { className: 'ctl' }, lk)));
     if (f.group) insp.append(h('div', { className: 'hint', textContent: `in a group of ${D.frames.filter((x) => x.group === f.group).length} — ⌘⇧G ungroups` }));
     if (f.kind === 'text') {
       const ta = h('textarea', { value: f.content.md || '', spellcheck: true });
@@ -353,8 +366,8 @@ export function mountEditor(el, doc, opts = {}) {
         commit(() => { f.content.md = ta.value.slice(0, a) + tok + ta.value.slice(b); });
         requestAnimationFrame(() => { const t2 = side.querySelector('textarea'); if (t2) { t2.focus(); t2.selectionStart = t2.selectionEnd = a + tok.length; } });
       };
-      insp.append(ta, h('div', { className: 'row' }, h('span', { textContent: 'size (pt)' }), size, align), h('label', { className: 'row' }, h('span', { textContent: 'monospace' }), mono),
-        h('div', { className: 'row' }, h('span', { textContent: 'fields' }), fsel),
+      insp.append(ta, h('div', { className: 'row' }, h('span', { textContent: 'size (pt)' }), h('span', { className: 'ctl' }, size, align)), h('label', { className: 'row' }, h('span', { textContent: 'monospace' }), h('span', { className: 'ctl' }, mono)),
+        h('div', { className: 'row' }, h('span', { textContent: 'fields' }), h('span', { className: 'ctl' }, fsel)),
         h('div', { className: 'hint', textContent: '**bold** · {name} or {name:arg} · a number format at the end, {count:,} · ${expr:,.2f}' }));
       api._focusText = () => ta.focus();
     }
@@ -362,25 +375,25 @@ export function mountEditor(el, doc, opts = {}) {
       const fit = h('select', {}, ...['contain', 'cover', 'fill'].map((v) => h('option', { value: v, textContent: v })));
       fit.value = f.content.fit || 'contain';
       fit.onchange = () => commit(() => { f.content.fit = fit.value; });
-      insp.append(h('div', { className: 'row' }, h('span', { textContent: 'fit' }), fit));
+      insp.append(h('div', { className: 'row' }, h('span', { textContent: 'fit' }), h('span', { className: 'ctl' }, fit)));
       if (hasProj(f)) {                                     // a view of 3D space: coordinates on its border
         const tk = h('select', { className: 'compo-ticks', title: 'coordinate ticks on the border (orthographic views), or a grid across' }, ...['off', 'ticks', 'grid'].map((v) => h('option', { value: v, textContent: v })));
         tk.value = f.content.ticks || 'off';
         tk.onchange = () => commit(() => { if (tk.value === 'off') delete f.content.ticks; else f.content.ticks = tk.value; });
-        insp.append(h('div', { className: 'row' }, h('span', { textContent: 'coords' }), tk));
+        insp.append(h('div', { className: 'row' }, h('span', { textContent: 'coords' }), h('span', { className: 'ctl' }, tk)));
       }
     }
     if (f.kind === 'label') {
       const tx = h('textarea', { value: f.content.text || '', style: 'min-height:40px' });
       tx.onchange = () => commit(() => { f.content.text = tx.value; });
       const at = f.content.at || [0, 0, 0];
-      const xyz = ['x', 'y', 'z'].map((k, i) => { const inp = h('input', { type: 'number', step: 'any', value: +(+at[i]).toFixed(3), style: 'width:62px', title: `the point, world ${k}` }); inp.onchange = () => commit(() => { const a = (f.content.at || [0, 0, 0]).slice(); a[i] = +inp.value || 0; f.content.at = a; }); return inp; });
-      insp.append(tx, h('div', { className: 'row' }, h('span', { textContent: 'points at' }), ...xyz), h('div', { className: 'hint', textContent: 'the leader follows this world point in the view it refers to' }));
+      const xyz = ['x', 'y', 'z'].map((k, i) => { const inp = h('input', { type: 'number', step: 'any', value: +(+at[i]).toFixed(3), title: `the point, world ${k}` }); inp.onchange = () => commit(() => { const a = (f.content.at || [0, 0, 0]).slice(); a[i] = +inp.value || 0; f.content.at = a; }); return h('span', { className: 'pair' }, h('i', { textContent: k }), inp); });   // world coordinates are long: one per line
+      insp.append(tx, h('div', { className: 'row' }, h('span', { textContent: 'points at' }), h('span', { className: 'ctl stack' }, ...xyz)), h('div', { className: 'hint', textContent: 'the leader follows this world point in the view it refers to' }));
     }
     if (f.kind === 'legend') {
       const t = h('input', { value: f.content.title || '' });
       t.onchange = () => commit(() => { f.content.title = t.value; });
-      insp.append(h('div', { className: 'row' }, h('span', { textContent: 'title' }), t));
+      insp.append(h('div', { className: 'row' }, h('span', { textContent: 'title' }), h('span', { className: 'ctl' }, t)));
     }
     if (opts.inspector) opts.inspector(f, insp, api);
     if (f.produced) insp.append(h('div', { className: 'hint', textContent: `produced ${String(f.produced).replace('T', ' ').slice(0, 16)}` }));

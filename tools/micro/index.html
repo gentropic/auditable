@@ -1846,6 +1846,12 @@ $('#mFile').onclick = () => {
       { label: 'Block model — 2M', action: () => $('#sampleBlocks').onclick() },
     ] },
     { sep: true },
+    { label: 'Composer…', action: () => openComposer() },
+    ...(S.figures.length ? [{ label: 'Figures', submenu: () => [
+      ...S.figures.map((f) => ({ label: f.name + (f.doc.template ? '  ★' : ''), action: () => openComposer(f.name) })),
+      { sep: true },
+      { label: 'Refresh all figures', action: () => refreshAllFigures() },
+    ] }] : []),
     { label: 'Save viewport PNG', action: () => $('#btnShot').click() },
   );
   menuAt($('#mFile'), items);
@@ -1897,7 +1903,6 @@ $('#mView').onclick = () => menuAt($('#mView'), [
   } },
   { label: 'Decorations & figure…', action: () => openDecoPanel() },
   { label: 'Turntable video…', action: () => openTurntable() },
-  { label: 'Composer…', action: () => openComposer() },
   { label: 'Section series…', action: () => openSectionSeries() },
   { label: 'Theme', submenu: () => [...THEME_PREFS().map(([v, lab]) => ({ label: (_themePref === v ? '✓ ' : '') + lab, action: () => (v === 'custom-new' ? openThemeEditor() : setTheme(v)) })), ...(customTheme() ? [{ sep: true }, { label: 'Edit custom theme…', action: () => openThemeEditor() }] : [])] },
   { label: 'Windows…', action: () => windowsMenu($('#mView')) },
