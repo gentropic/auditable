@@ -23,7 +23,8 @@ import { setSectionWorld, sectionWorld } from './section.js';
 import { rendererDocBbox, layerShown } from './layers.js';
 import { attrRowCountOf, layerBlob } from './records.js';
 import { sourceHash, sourceHashSync } from './identity.js';
-import { createDocument, parseDocument, serializeDocument, mountEditor, exportPDF, exportPNG, frameById, pageDims, tableFromTsv, subjectFrame, figureFromPdf } from '../../../ext/compo/index.js';
+import { createDocument, parseDocument, serializeDocument, mountEditor, exportPDF, exportPNG, frameById, pageDims, tableFromTsv, subjectFrame, figureFromPdf, registerKind, replayDrawList } from '../../../ext/compo/index.js';
+import { chartFigure } from './analysis-ui.js';
 const $ = (s) => document.querySelector(s);
 
 // the app's side (setComposerHooks): renderViewCanvas(pxW, pxH) → a canvas rendered to convergence
@@ -655,6 +656,33 @@ export async function makeAtlasRoutine(fig = _fig, { save = true } = {}) {
 }
 
 // an analysis window's plot → an image frame on the current figure (micro:to-composer)
+// ── a CHART frame: an analysis window's chart as its spec, laid out by @gcu/plot at the frame's
+// own size each time it draws (resize it and the chart re-flows — text stays its size) and
+// written into the PDF as vectors. The spec is plain data, saved with the figure. ──
+const PX_PER_MM = 96 / 25.4;
+registerKind('chart', {
+  label: 'chart',
+  describe: (f) => `chart · ${(f.source && f.source.name) || (f.content && f.content.spec && f.content.spec.title) || ''}`,
+  draw(ctx, box, frame) {
+    const spec = frame.content && frame.content.spec; if (!spec) return;
+    const W = box[2] * PX_PER_MM, H = box[3] * PX_PER_MM, key = `${W.toFixed(1)}x${H.toFixed(1)}`;
+    if (!frame._list || frame._listKey !== key || frame._listSpec !== spec) {
+      const { fig } = chartFigure(spec, { width: W, height: H, theme: 'paper', fontSize: +frame.content.fontSize || 10 });
+      fig.set_facecolor('none');
+      frame._list = fig.toDrawList(); frame._listKey = key; frame._listSpec = spec;
+    }
+    ctx.save(); ctx.translate(box[0], box[1]); ctx.scale(1 / PX_PER_MM, 1 / PX_PER_MM);
+    replayDrawList(ctx, frame._list);
+    ctx.restore();
+  },
+});
+export function addChartFrame(spec, name) {
+  const ed = openComposer();
+  const doc = ed.getDoc(), m = doc.page.margins || [12, 12, 12, 12];
+  const f = ed.addFrame({ kind: 'chart', box: [m[3] + 8, m[0] + 8, 120, 72], content: { spec }, source: { app: 'micro', kind: 'plot', name } });
+  $('#meta').textContent = `composer: ${name} went into “${_fig.name}” as a chart (vector; it re-flows when resized)`;
+  return f;
+}
 export function addCanvasFrame(canvas, name) {
   const ed = openComposer();
   const doc = ed.getDoc(), m = doc.page.margins || [12, 12, 12, 12];
@@ -678,7 +706,7 @@ export function addTableFrame(tsv, name, near = null) {
 }
 addEventListener('micro:to-composer', (e) => {
   const d = e.detail || {};
-  const p = d.canvas ? addCanvasFrame(d.canvas, d.name || 'plot') : null;
+  const p = d.spec ? addChartFrame(d.spec, d.name || 'chart') : d.canvas ? addCanvasFrame(d.canvas, d.name || 'plot') : null;
   if (d.tsv) addTableFrame(d.tsv, d.name || 'table', p);
 });
 

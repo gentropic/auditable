@@ -6529,6 +6529,51 @@ if (take()) {
   await p.close();
 }
 
+// ── §100: CHARTS ON @gcu/plot — the analysis windows draw through @gcu/plot (chartFigure), and
+//     ⇥ figure sends the chart's SPEC: a 'chart' frame that re-flows at its own size and prints as
+//     vectors (text in the PDF, no image for it). ──
+if (take()) {
+  const p = await mkPage('sm2chart');
+  if (process.env.SM2_DUMP) await p.evaluate(() => { window.__dumpFig = true; });
+  const r = await p.evaluate(async () => {
+    const M_ = window._micro, out = {};
+    const rows = ['XC,YC,ZC,AU']; for (let k = 0; k < 4; k++) for (let j = 0; j < 20; j++) for (let i = 0; i < 30; i++) rows.push(`${5 + i * 10},${5 + j * 10},${5 + k * 10},${(0.2 + 0.05 * i + 0.1 * k).toFixed(3)}`);
+    const id = await M_.openBlob(new File([rows.join('\n') + '\n'], 'ch.csv'), 'ch.csv', 'replace');
+    const L = M_.layers().find((x) => x.id === id);
+    M_.openGradeTonnage(L);
+    const w = () => [...document.querySelectorAll('.fwin')].find((el) => el.querySelector('.fwin-head .t').textContent.startsWith('grade-tonnage'));
+    w().querySelector('.sw-run').click();
+    const until = async (fn, ms = 15000) => { const t0 = performance.now(); while (performance.now() - t0 < ms) { const v = fn(); if (v) return v; await new Promise((res) => setTimeout(res, 50)); } return fn(); };
+    await until(() => w()._gtSpec);
+    await new Promise((res) => setTimeout(res, 200));
+    const cv = w().querySelector('canvas');
+    out.spec = !!cv._chartSpec && cv._chartSpec.series.length;
+    // the window's chart is drawn: ink on the canvas
+    const g = cv.getContext('2d'), d = g.getImageData(0, 0, cv.width, cv.height).data; let ink = 0; for (let i = 3; i < d.length; i += 4) if (d[i] > 0) ink++;
+    out.ink = ink / (d.length / 4);
+    if (window.__dumpFig) out.winPng = cv.toDataURL('image/png');
+    // ⇥ figure → a chart frame
+    const ed = M_.openComposer('charts');
+    [...w().querySelectorAll('.awin-btn')].find((b) => b.textContent === '⇥ figure').click();
+    const fr = ed.getDoc().frames.find((f) => f.kind === 'chart');
+    out.frame = fr && { series: fr.content.spec.series.length, name: fr.source.name };
+    ed.render();
+    const k1 = fr._listKey;
+    ed.update(fr.id, (x) => { x.box[2] *= 1.5; }); ed.render();
+    out.reflow = fr._listKey !== k1 || ed.getDoc().frames.find((f) => f.id === fr.id)._listKey !== k1;
+    const bytes = await M_.figurePdfBytes(M_.currentFigure(), 72, { compress: false });
+    const s = new TextDecoder('latin1').decode(bytes);
+    out.pdf = { images: (s.match(/\/Subtype \/Image/g) || []).length, cutoff: /\(cutoff[^)]*\) Tj/.test(s), texts: (s.match(/\) Tj/g) || []).length };
+    if (window.__dumpFig) { const C = await import('/ext/compo/index.js'); const png = await C.exportPNG(M_.currentFigure().doc, { dpi: 150 }); out.png = await new Promise((res) => { const f2 = new FileReader(); f2.onload = () => res(f2.result); f2.readAsDataURL(png); }); }
+    return out;
+  });
+  if (r.png) { const fs = await import('node:fs'); fs.writeFileSync(process.env.SM2_DUMP, Buffer.from(r.png.split(',')[1], 'base64')); fs.writeFileSync(process.env.SM2_DUMP.replace(/\.png$/, '-win.png'), Buffer.from(r.winPng.split(',')[1], 'base64')); }
+  chk(`CHARTS: the GT window draws through @gcu/plot (spec of ${r.spec} series, ${(r.ink * 100).toFixed(0)}% inked)`, r.spec >= 1 && r.ink > 0.02);
+  chk(`CHARTS: ⇥ figure makes a chart frame from the spec (${JSON.stringify(r.frame)}), which re-flows when resized (${r.reflow})`, r.frame && r.frame.series === r.spec && r.reflow);
+  chk(`CHARTS: the PDF has the chart as vectors — no image, its labels as text (${JSON.stringify(r.pdf)})`, r.pdf.images === 0 && r.pdf.cutoff && r.pdf.texts > 10);
+  await p.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

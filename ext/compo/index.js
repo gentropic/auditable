@@ -914,10 +914,13 @@ registerKind('north', {
 // the box's width (down to 4.5 pt); rows that don't fit say how many were left out.
 // content: { title, columns: [..], rows: [[..]], size (pt), zebra, align: ['l'|'r'|'c', …], note }
 const NUMERIC = /^[-+−]?(\d[\d,  ]*)?(\.\d+)?([eE][-+]?\d+)?\s*%?$/;
+// a cell as shown: a number's float noise (1.0823529411764705, 2559000.0000000005) at six significant
+// figures — the integer part never rounded away — everything else as written
+const cellText = (v) => (v == null ? '' : typeof v === 'number' ? formatNumber(v) : /^[-+]?\d*\.\d{7,}(?:e[-+]?\d+)?$/i.test(String(v).trim()) ? formatNumber(+v) : String(v));
 registerKind('table', {
   label: 'table',
   draw(ctx, box, frame, env) {
-    const c = frame.content || {}, cols = (c.columns || []).map(String), rows = (c.rows || []).map((r) => (r || []).map((v) => (v == null ? '' : String(v))));
+    const c = frame.content || {}, cols = (c.columns || []).map(String), rows = (c.rows || []).map((r) => (r || []).map(cellText));
     if (!cols.length) return;
     const pad = 1.1, avail = box[2] - 0.5;
     const isNum = cols.map((_, j) => (c.align && c.align[j]) ? c.align[j] === 'r' : rows.length > 0 && rows.every((r) => r[j] === '' || NUMERIC.test(r[j].trim())));

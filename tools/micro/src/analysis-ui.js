@@ -5,7 +5,8 @@
 // grade-tonnage, swath, stats, validation — build on this. Carved from index.html
 // (phase 3).
 import { convert as unitConvert } from '../../../ext/units/index.js';
-import { tok } from './theme.js';
+import { tok, resolvedTheme } from './theme.js';
+import { subplots } from '../../../ext/plot/index.js';
 import { parse } from '../../../ext/expr/index.js';
 import { zoneKeeper } from './colscan.js';
 import { S, layerById } from './state.js';
@@ -24,57 +25,83 @@ const $ = (s) => document.querySelector(s);
 // GCU accent palette for overlaid series (blue=info, orange=action, green, violet)
 export const SERIES_COLORS = ['#5b7fa6', '#c8722e', '#5c8a5a', '#8a6fae', '#b0563a'];
 
-// a compact canvas chart: line + bar series over one x-axis and up to two y-axes.
+// a chart spec → a @gcu/plot figure: line + bar series over one x-axis and up to two y-axes.
 // spec: { series:[{name,color,axis:'left'|'right',kind:'line'|'bar',data:[[x,y]]}],
-//   xLabel, leftLabel, rightLabel, xRange?, title? }
+//   xLabel, leftLabel, rightLabel, xRange?, leftRange?, rightRange?, title? }
+// The ranges are the old canvas chart's exactly (x tight to the data, y from 0 when the data is
+// positive, a manual bound overriding its own end), so on-screen hit-testing keeps its numbers.
+// The same figure draws the window's canvas and — as a vector draw list — the composer's frame.
+export function chartRanges(spec) {
+  const mrg = (auto, man) => { const r = man ? [man[0] != null ? man[0] : auto[0], man[1] != null ? man[1] : auto[1]] : auto.slice(); if (r[0] === r[1]) r[1] = r[0] + 1; return r; };
+  const allX = spec.series.flatMap((s) => s.data.map((d) => d[0])).filter(Number.isFinite);
+  if (!allX.length) return null;
+  let xlo = Infinity, xhi = -Infinity; for (const x of allX) { if (x < xlo) xlo = x; if (x > xhi) xhi = x; }
+  const yrOf = (axis) => {
+    let lo = Infinity, hi = -Infinity;
+    for (const s of spec.series) if ((s.axis === 'right') === (axis === 'right')) for (const d of s.data) { const y = d[1]; if (Number.isFinite(y)) { if (y < lo) lo = y; if (y > hi) hi = y; } }
+    if (lo === Infinity) return [0, 1];
+    if (lo > 0) lo = 0; if (lo === hi) hi = lo + 1;
+    return [lo, hi];
+  };
+  return { xr: mrg([xlo, xhi], spec.xRange), lr: mrg(yrOf('left'), spec.leftRange), rr: mrg(yrOf('right'), spec.rightRange) };
+}
+export function chartFigure(spec, { width = 400, height = 240, theme = 'paper', fontSize = 10 } = {}) {
+  const [fig, ax] = subplots(1, 1, { figsize: [Math.max(60, width), Math.max(60, height)], dpi: 100, theme });
+  const R = chartRanges(spec);
+  const hasRight = spec.series.some((s) => s.axis === 'right');
+  const ax2 = hasRight ? ax.twinx() : null;
+  const handles = [], labels = [];
+  const nx = Math.max(1, ...spec.series.map((s) => s.data.length));
+  for (const s of spec.series) {
+    const a = s.axis === 'right' ? ax2 : ax, xs = s.data.map((d) => d[0]), ys = s.data.map((d) => (Number.isFinite(d[1]) ? d[1] : NaN));
+    let h;
+    if (s.kind === 'bar') {
+      const span = R ? R.xr[1] - R.xr[0] : 1, w = (span / nx) * 0.7;
+      h = a.bar(xs, ys.map((y) => (Number.isFinite(y) ? y : 0)), { width: w, color: s.color, alpha: 0.22, label: s.name });
+    } else {
+      // a right-axis line sharing its colour with a left one (GT: one model's tonnage and grade) is dashed
+      const twin = s.axis === 'right' && spec.series.some((o) => o !== s && o.axis !== 'right' && o.color === s.color);
+      h = a.plot(xs, ys, { color: s.color, linewidth: 1.6, linestyle: s.dash || twin ? '--' : '-', label: s.name });
+    }
+    handles.push(Array.isArray(h) ? h[0] : h); labels.push(s.name);
+  }
+  if (R) {
+    ax.set_xlim(R.xr[0], R.xr[1]); ax.set_ylim(R.lr[0], R.lr[1]);
+    if (ax2) ax2.set_ylim(R.rr[0], R.rr[1]);
+  }
+  ax.grid(true, { alpha: 0.35 });
+  // 2,000,000 — not 2000000 (nor Python's 2e+06): thousands grouped, small values to six figures
+  const tickFmt = (x) => (Math.abs(x) >= 1000 ? Math.round(x).toLocaleString('en-US') : String(+(+x).toPrecision(6))).replace(/^-/, '−');
+  for (const a of [ax, ax2]) if (a) a.yaxis.set_major_formatter(tickFmt);
+  ax.xaxis.set_major_formatter(tickFmt);
+  if (spec.xLabel) ax.set_xlabel(spec.xLabel, { fontsize: fontSize });
+  if (spec.leftLabel) ax.set_ylabel(spec.leftLabel, { fontsize: fontSize });
+  if (ax2 && spec.rightLabel) ax2.set_ylabel(spec.rightLabel, { fontsize: fontSize });
+  if (spec.title) ax.set_title(spec.title, { fontsize: fontSize + 1 });
+  if (spec.series.length > 1) ax.legend(handles, labels, { loc: 'best', fontsize: fontSize - 1, frameon: false });
+  return { fig, ax, ax2, ranges: R };
+}
+// the window's chart: the figure above, drawn on the window's canvas in micro's own colours.
+// Returns the plot → data mapping { px0, px1, py0, py1, xr, lr, rr } for hit-testing (swath hover).
 export function plotChart(cv, spec) {
   const dpr = Math.min(2, window.devicePixelRatio || 1);
   const W = cv.clientWidth || 400, CH = cv.clientHeight || 240;
   cv.width = W * dpr; cv.height = CH * dpr;
-  const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, CH);
-  const ink = tok('--text-hi'), dim = tok('--dim'), grid = 'rgba(140,145,150,0.2)';
-  const hasRight = spec.series.some((s) => s.axis === 'right');
-  const _lMax = Math.max(0, ...spec.series.filter((s2) => s2.axis !== 'right').flatMap((s2) => s2.data.map((d) => Math.abs(d[1] || 0)).filter(Number.isFinite)));
-  const mL = Math.max(52, Math.round(_lMax).toLocaleString().length * 6.6 + 14), mR = hasRight ? 50 : 12, mT = 14 + (spec.series.length > 1 ? 12 : 0), mB = 30;
-  const px0 = mL, px1 = W - mR, py0 = CH - mB, py1 = mT;
-  const allX = spec.series.flatMap((s) => s.data.map((d) => d[0]));
-  if (!allX.length) {
-    g.fillStyle = dim; g.font = '12px monospace'; g.textAlign = 'center';
+  const g = cv.getContext('2d'); g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, cv.width, cv.height);
+  cv._chartSpec = spec;                                     // ⇥ figure sends the spec, not the pixels: a vector chart on the page
+  if (!chartRanges(spec)) {
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.fillStyle = tok('--dim'); g.font = '12px monospace'; g.textAlign = 'center';
     g.fillText(spec.placeholder || 'no data', W / 2, CH / 2);   // "scanning…" while the sweep runs — not "no data"
     return null;
   }
-  // manual range overrides merge PER BOUND ([lo, hi], null = auto) so "just pin the max" works
-  const mrg = (auto, man) => { const r = man ? [man[0] != null ? man[0] : auto[0], man[1] != null ? man[1] : auto[1]] : auto.slice(); if (r[0] === r[1]) r[1] = r[0] + 1; return r; };
-  const xr = mrg([Math.min(...allX), Math.max(...allX)], spec.xRange);
-  const yrOf = (axis) => { const ys = spec.series.filter((s) => s.axis === axis).flatMap((s) => s.data.map((d) => d[1])).filter(Number.isFinite); if (!ys.length) return [0, 1]; let lo = Math.min(...ys), hi = Math.max(...ys); if (lo > 0) lo = 0; if (lo === hi) hi = lo + 1; return [lo, hi]; };
-  const lr = mrg(yrOf('left'), spec.leftRange), rr = mrg(yrOf('right'), spec.rightRange);
-  const sx = (x) => px0 + (px1 - px0) * (x - xr[0]) / (xr[1] - xr[0]);
-  const syL = (y) => py0 + (py1 - py0) * (y - lr[0]) / (lr[1] - lr[0]);
-  const syR = (y) => py0 + (py1 - py0) * (y - rr[0]) / (rr[1] - rr[0]);
-  const ticks = (lo, hi, n = 4) => { const step = niceStep((hi - lo) / n) || 1; const out = []; for (let v = Math.ceil(lo / step) * step; v <= hi + step * 1e-6; v += step) out.push(v); return out; };
-  g.font = '10px monospace'; g.lineWidth = 1;
-  g.strokeStyle = grid; g.textAlign = 'center'; g.fillStyle = dim;
-  for (const tx of ticks(xr[0], xr[1])) { const X = sx(tx); g.beginPath(); g.moveTo(X, py0); g.lineTo(X, py1); g.stroke(); g.fillText(fmtStat(tx), X, py0 + 12); }
-  g.textAlign = 'right';
-  for (const ty of ticks(lr[0], lr[1])) { const Y = syL(ty); g.strokeStyle = grid; g.beginPath(); g.moveTo(px0, Y); g.lineTo(px1, Y); g.stroke(); g.fillStyle = dim; g.fillText(fmtStat(ty), px0 - 4, Y + 3); }
-  if (hasRight) { g.textAlign = 'left'; g.fillStyle = dim; for (const ty of ticks(rr[0], rr[1])) g.fillText(fmtStat(ty), px1 + 4, syR(ty) + 3); }
-  g.save(); g.beginPath(); g.rect(px0, py1, px1 - px0, py0 - py1); g.clip();   // manual ranges may window the data
-  for (const s of spec.series) {
-    const sy = s.axis === 'right' ? syR : syL; g.strokeStyle = s.color; g.fillStyle = s.color; g.lineWidth = 1.6;
-    if (s.kind === 'bar') { const bw = Math.max(1, (px1 - px0) / Math.max(1, s.data.length) * 0.7); g.globalAlpha = 0.22; for (const [x, y] of s.data) { if (!Number.isFinite(y)) continue; const X = sx(x), Y = sy(y); g.fillRect(X - bw / 2, Y, bw, py0 - Y); } g.globalAlpha = 1; }
-    else { g.beginPath(); let started = false; for (const [x, y] of s.data) { if (!Number.isFinite(y)) { started = false; continue; } const X = sx(x), Y = sy(y); if (!started) { g.moveTo(X, Y); started = true; } else g.lineTo(X, Y); } g.stroke(); }
-  }
-  g.restore();
-  g.fillStyle = dim; g.textAlign = 'center'; g.font = '10px monospace';
-  if (spec.xLabel) g.fillText(spec.xLabel, (px0 + px1) / 2, CH - 4);
-  const rot = (txt, x, dir) => { g.save(); g.translate(x, (py0 + py1) / 2); g.rotate(dir * Math.PI / 2); g.fillText(txt, 0, 0); g.restore(); };
-  if (spec.leftLabel) rot(spec.leftLabel, 10, -1);
-  if (spec.rightLabel && hasRight) rot(spec.rightLabel, W - 8, 1);
-  // legend
-  let lx = px0 + 2; g.textAlign = 'left';
-  for (const s of spec.series) { g.fillStyle = s.color; g.fillRect(lx, 4, 9, 3); g.fillStyle = ink; g.fillText(s.name, lx + 12, 8); lx += 16 + g.measureText(s.name).width + 8; }
-  // the plot→data mapping, so callers can hit-test the canvas (swath hover)
-  return { px0, px1, py0, py1, xr, lr, rr };
+  const theme = { base: resolvedTheme() === 'light' ? 'light' : 'dark', foreground: tok('--text-hi'), muted: tok('--dim'), frame: tok('--dim'), grid: 'rgba(140,145,150,0.35)', font_size: 10 };
+  const { fig, ax, ax2, ranges } = chartFigure(spec, { width: W, height: CH, theme });
+  fig.set_facecolor('none'); ax.set_facecolor('none');
+  fig.draw(g, { dpr });
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);                     // callers draw their own marks on top, in CSS px
+  const v = ax.view;
+  return { px0: v.x, px1: v.x + v.w, py0: v.y + v.h, py1: v.y, xr: ax.get_xlim(), lr: ax.get_ylim(), rr: ax2 ? ax2.get_ylim() : ranges.rr };
 }
 
 // reconcile columns come as ref_<g>/this_<g>; detect the pairs for auto-series
@@ -197,7 +224,7 @@ export function plotExportBtns(cv, nameFn, tableFn, group) {
     fig.onclick = () => {
       const tsv = tableFn && tableFn();
       if (!cv && !tsv) { $('#meta').textContent = 'run it first — there is no table yet'; return; }
-      dispatchEvent(new CustomEvent('micro:to-composer', { detail: { canvas: cv, tsv: tsv || null, name: nameFn().replace(/\.png$/i, '') } }));
+      dispatchEvent(new CustomEvent('micro:to-composer', { detail: { canvas: cv, spec: cv && cv._chartSpec ? JSON.parse(JSON.stringify(cv._chartSpec)) : null, tsv: tsv || null, name: nameFn().replace(/\.png$/i, '') } }));
     };
     wrap.append(fig);
   }
