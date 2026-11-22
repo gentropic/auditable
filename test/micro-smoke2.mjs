@@ -6620,12 +6620,12 @@ if (take()) {
     out.form = { sels, made: doc().frames.filter((f) => f.source && f.source.kind === 'resource').length, closed: !document.querySelector('.cmp-resource') };
     return out;
   });
-  chk(`RERUN: the resource table by domain (${JSON.stringify(r.res)})`, JSON.stringify(r.res) === JSON.stringify(['0 A 3000000 0.7 2100000', '0 B 3000000 1.45 4350000', '0 total 6000000 1.075 6450000', '0.5 A 2400000 0.7854 1885000', '0.5 B 3000000 1.45 4350000', '0.5 total 5400000 1.155 6235000']));
+  chk(`RERUN: the resource table by domain (${JSON.stringify(r.res)})`, JSON.stringify(r.res) === JSON.stringify(['0 A 3 000 000 0.7 2 100 000', '0 B 3 000 000 1.45 4 350 000', '0 total 6 000 000 1.075 6 450 000', '0.5 A 2 400 000 0.7854 1 885 000', '0.5 B 3 000 000 1.45 4 350 000', '0.5 total 5 400 000 1.155 6 235 000']));
   chk(`RERUN: ⇥ figure keeps the recipe on the chart and its table (${r.recipe}); fresh, no badge (${JSON.stringify(r.fresh)})`, r.recipe && r.fresh === null);
   chk(`RERUN: a new estimate makes them "older data" (${JSON.stringify(r.stale)})`, r.stale.chart === 'older data' && r.stale.table === 'older data' && r.stale.res === 'older data');
   chk(`RERUN: ↻ refresh re-runs the analysis — no badges (${JSON.stringify([r.after.chart, r.after.table])}), the chart's cutoffs move up with the grades (${r.gmax0} → ${r.after.gmax}), the table follows (${r.after.rowChanged}), no window left open (${r.windowsLeft})`, r.after.chart === null && r.after.table === null && r.after.gmax > r.gmax0 && r.after.rowChanged && r.windowsLeft === 0);
   chk(`RERUN: the + resource form guesses AU and DOM, and Add makes a frame (${JSON.stringify(r.form)})`, r.form && r.form.sels.includes('AU') && r.form.sels.includes('DOM') && r.form.made === 2 && r.form.closed);
-  chk(`RERUN: the resource table is made again (${JSON.stringify(r.resAfter)})`, r.resAfter[0] === '0 A 3000000 1 3000000');
+  chk(`RERUN: the resource table is made again (${JSON.stringify(r.resAfter)})`, r.resAfter[0] === '0 A 3 000 000 1 3 000 000');
   await p.close();
 }
 
@@ -6780,7 +6780,7 @@ if (take()) {
     return out;
   });
   if (r.png) { const fs = await import('node:fs'); fs.writeFileSync(process.env.SM2_DUMP, Buffer.from(r.png.split(',')[1], 'base64')); }
-  chk(`VECTOR: the plan at z 15 cuts 600 blocks; colour by CU (one value per row) merges them into 20 cells (${JSON.stringify(r.vec)})`, r.vec && r.vec.blocks === 600 && r.vec.cells === 20 && r.vec.colours === 20 && JSON.stringify(r.vec.first) === '[0,0,300,10]' && !r.vec.overlay);
+  chk(`VECTOR: the plan at z 15 cuts 600 blocks; colour by CU (one value per row) merges them into 20 cells (${JSON.stringify(r.vec)})`, r.vec && r.vec.blocks === 600 && r.vec.cells === 20 && r.vec.colours === 20 && r.vec.first.length === 4 && r.vec.first[2] - r.vec.first[0] === 300 && r.vec.first[3] - r.vec.first[1] === 10 && !r.vec.overlay);
   chk(`VECTOR: the PDF holds the section as vectors — no image (${JSON.stringify(r.pdf)})`, r.pdf.images === 0);
   chk(`VECTOR: the filter applies (CU > 0.5 → ${r.filtered} cells)`, r.filtered === 11);
   chk(`VECTOR: other layers ride on top as a transparent render (overlay ${r.overlay}, ${r.clearFrac != null ? (r.clearFrac * 100).toFixed(0) : '–'}% clear; ${JSON.stringify(r.pdf2)})`, r.overlay && r.clearFrac > 0.5 && r.clearFrac < 0.999 && r.pdf2.images >= 1);

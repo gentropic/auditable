@@ -84,6 +84,16 @@ export async function sectionCells(L, sec, { max = 150000 } = {}) {
     if (n && colors[n - 1] === r[4] && rects[n * 4 - 3] === r[1] && rects[n * 4 - 1] === r[3] && Math.abs(rects[n * 4 - 2] - r[0]) < 1e-6) { rects[n * 4 - 2] = r[2]; continue; }
     rects.push(r[0], r[1], r[2], r[3]); colors.push(r[4]);
   }
+  // then stack identical runs from row to row (same u0, u1, colour, the rows touching): a uniform
+  // area becomes one rectangle — fewer cells, and no seam between rows
+  { const ord = colors.map((_, i) => i).sort((a, b) => rects[a * 4] - rects[b * 4] || rects[a * 4 + 2] - rects[b * 4 + 2] || colors[a] - colors[b] || rects[a * 4 + 1] - rects[b * 4 + 1]);
+    const R2 = [], C2 = [];
+    for (const i of ord) {
+      const n = C2.length;
+      if (n && C2[n - 1] === colors[i] && R2[n * 4 - 4] === rects[i * 4] && R2[n * 4 - 2] === rects[i * 4 + 2] && Math.abs(R2[n * 4 - 1] - rects[i * 4 + 1]) < 1e-6) { R2[n * 4 - 1] = rects[i * 4 + 3]; continue; }
+      R2.push(rects[i * 4], rects[i * 4 + 1], rects[i * 4 + 2], rects[i * 4 + 3]); C2.push(colors[i]);
+    }
+    rects.length = 0; colors.length = 0; rects.push(...R2); colors.push(...C2); }
   if (colors.length > max) throw new Error(`${colors.length.toLocaleString()} cells on this section — too many for vectors; keep it raster`);
   return { rects, colors, palette, blocks, merged: colors.length };
 }

@@ -312,7 +312,8 @@ async function resourceContent(p) {
   const r = await computeResourceTable(L, { ...p, mask });
   const metal = p.metalUnit ? `metal (${p.metalUnit})` : 'metal';
   const columns = r.columns.map((c) => (c === 'tonnes' ? 't' : c === 'grade' ? (p.gradeUnit ? `${p.grade} (${p.gradeUnit})` : p.grade) : c === 'metal' ? metal : c));
-  const rows = r.rows.map((row) => row.map((v, i) => (r.columns[i] === 'tonnes' ? Math.round(v) : r.columns[i] === 'grade' ? sig(v, 4) : r.columns[i] === 'metal' ? (Math.abs(v) >= 1000 ? Math.round(v) : sig(v, 4)) : v)));
+  const grp = (v) => (Number.isFinite(v) ? Math.round(v).toLocaleString('en-US').replace(/,/g, ' ') : '');   // 2 343 000
+  const rows = r.rows.map((row) => row.map((v, i) => (r.columns[i] === 'tonnes' ? grp(v) : r.columns[i] === 'grade' ? sig(v, 4) : r.columns[i] === 'metal' ? (Math.abs(v) >= 1000 ? grp(v) : sig(v, 4)) : v)));
   const d = p.density || {};
   const dens = d.col ? `density ${d.col}${d.unit ? ` (${d.unit})` : ''}` : `density ${d.const != null ? d.const : 1}${d.unit ? ` ${d.unit}` : ' t/m³'}`;
   return { columns, rows, title: p.title || `${L.label || L.name} — resources`, note: `${dens}${p.scope === 'filter' && L.filterExpr ? ` · filter ${L.filterExpr}` : ''} · ${r.records.toLocaleString('en-US')} records` };

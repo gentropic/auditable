@@ -609,8 +609,13 @@ function drawTicks(ctx, frame, mode = 'ticks') {
     const txt = `${fmtCoord(t.value, t.step)} ${t.axis}`, inward = { top: [0, 1], bottom: [0, -1], left: [1, 0], right: [-1, 0] }[t.edge];
     ctx.beginPath(); ctx.moveTo(t.x, t.y); ctx.lineTo(t.x + inward[0] * tl, t.y + inward[1] * tl); ctx.stroke();
     const w = ctx.measureText(txt).width, hh = size * 25.4 / 72;
+    // a label near a corner slides along its edge to stay inside the picture (not clipped)
+    const ir = imageRect(frame), bx = frame.box, ex0 = Math.max(ir[0], bx[0]), ey0 = Math.max(ir[1], bx[1]), ex1 = Math.min(ir[0] + ir[2], bx[0] + bx[2]), ey1 = Math.min(ir[1] + ir[3], bx[1] + bx[3]);
+    const clampTo = (v, a, b) => (a > b ? (a + b) / 2 : Math.max(a, Math.min(b, v)));
+    const side = t.edge === 'left' || t.edge === 'right';
+    const lx = side ? t.x : clampTo(t.x, ex0 + w / 2 + 0.6, ex1 - w / 2 - 0.6), ly = side ? clampTo(t.y, ey0 + w / 2 + 0.6, ey1 - w / 2 - 0.6) : t.y;
     ctx.save();
-    ctx.translate(t.x + inward[0] * (tl + 0.4), t.y + inward[1] * (tl + 0.4));
+    ctx.translate(lx + inward[0] * (tl + 0.4), ly + inward[1] * (tl + 0.4));
     if (t.edge === 'left' || t.edge === 'right') ctx.rotate(-Math.PI / 2);
     // the label sits inward of its tick, centred on it, on a light backing. Rotated −90° on the
     // side edges (reading upward), local +y points into the picture on the left edge, out of it
@@ -698,7 +703,7 @@ function drawVector(ctx, frame, x, y, w, h) {
       const a = page(R[i * 4], R[i * 4 + 1]), b = page(R[i * 4 + 2], R[i * 4 + 3]);
       if (!a || !b) continue;
       const x0 = Math.min(a.x, b.x), y0 = Math.min(a.y, b.y), x1 = Math.max(a.x, b.x), y1 = Math.max(a.y, b.y);
-      ctx.fillStyle = P[C[i]]; ctx.strokeStyle = P[C[i]]; ctx.lineWidth = 0.04;   // a hairline of the same colour closes the seams viewers anti-alias between cells
+      ctx.fillStyle = P[C[i]]; ctx.strokeStyle = P[C[i]]; ctx.lineWidth = 0.12;   // a hairline of the same colour closes the seams viewers anti-alias between cells
       ctx.beginPath(); ctx.rect(x0, y0, x1 - x0, y1 - y0); ctx.fill(); ctx.stroke();
     }
   }
