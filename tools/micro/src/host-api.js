@@ -282,7 +282,9 @@ export function createHostApi(d) {
     // numbers its window and a routine step give
     runTool: verb(async (name, params = {}) => {
       const res = await d.runTool(name, params);
-      return JSON.parse(JSON.stringify({ table: res.table, values: res.values, resolved: res.resolved, warnings: res.warnings }, (k, v) => (typeof v === 'number' && !Number.isFinite(v) ? null : v)));
+      const out = JSON.parse(JSON.stringify({ table: res.table || null, values: res.values, resolved: res.resolved, warnings: res.warnings }, (k, v) => (typeof v === 'number' && !Number.isFinite(v) ? null : v)));
+      if (res.file) out.file = { name: res.file.name, blob: res.file.blob };   // a file tool (export): the Blob itself
+      return out;
     }),
     routines: () => S.recipes.filter((x) => x.tool === 'routine').map((x) => ({ name: x.name, file: x.file || null, inputs: (x.inputs || []).map((i) => ({ ...i })) })),
     // the dry run: { steps: [line…], problems: [..] } — nothing runs, nothing is written

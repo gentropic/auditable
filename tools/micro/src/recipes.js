@@ -41,7 +41,7 @@ const $ = (s) => document.querySelector(s);
 // Files are the interface: comment them, copy them between projects, drop one
 // in and Scan folder picks it up. Series reference layers BY NAME; a missing
 // primary gets a one-question remap — that prompt IS the parameter binding. ──
-export const RECIPE_TOOLS = { gt: 'grade-tonnage', swath: 'swath', stats: 'stats', xy: 'scatter / Q-Q', figure: 'figure', compo: 'composer page', calccols: 'calc columns', solid: 'by solid / surface', validation: 'validation', resource: 'resource table', routine: 'routine' };
+export const RECIPE_TOOLS = { gt: 'grade-tonnage', swath: 'swath', stats: 'stats', xy: 'scatter / Q-Q', figure: 'figure', compo: 'composer page', calccols: 'calc columns', solid: 'by solid / surface', validation: 'validation', resource: 'resource table', export: 'export', routine: 'routine' };
 
 export const recipeSlug = (name) => (String(name).toLowerCase().replace(/[^\w.-]+/g, '-').replace(/^-+|-+$/g, '') || 'recipe');
 
@@ -290,7 +290,8 @@ export async function expandRoutine(params) {
 // the preview both read this, so "what will this overwrite?" has ONE answer.
 export function routineTargets(tool, params, slug, P) {
   const t = { reports: [], columns: [], figures: [] };
-  if (toolDef(tool) || tool === 'xy') t.reports.push(routineOutPath(P, slug));   // every registered tool writes its table
+  if (toolDef(tool) && toolDef(tool).writesFile) t.reports.push(`${routineOutDir(P)}/${toolDef(tool).writesFile(params || {})}`);   // a file (export)
+  else if (toolDef(tool) || tool === 'xy') t.reports.push(routineOutPath(P, slug));   // every other registered tool writes its table
   else if (tool === 'calccols') {
     const layer = params.layer;
     for (const c of params.cols || []) if (c && c.name) t.columns.push({ layer, name: c.name, kind: 'ƒ' });
@@ -596,14 +597,25 @@ export async function runRoutine(r, opts = {}) {
     try {
       if (toolDef(tool)) {                                   // a registered tool: scan + shape, no window
         const res = await runTool(tool, merged.params, { routine: true, progress: (n, N) => { $('#meta').textContent = `routine “${r.name}” — step ${n0}/${steps.length}: ${st._slug}… ${N ? Math.round((100 * n) / N) + '%' : ''}`; } });
-        const tsv = tableTSV(res.table);
-        const fh = await resolveFileHandle(S.project.dir, outPath(st._slug), { create: true });
-        const w = await fh.createWritable(); await w.write(tsv); await w.close();
-        wrote++;
-        Object.assign(entry, { params: res.resolved, values: res.values, units: res.table.units, key: res.table.key, warnings: res.warnings });
+        Object.assign(entry, { params: res.resolved, values: res.values, warnings: res.warnings });
+        let tsv = null;
+        if (res.table) {                                     // a table → the step's machine TSV
+          tsv = tableTSV(res.table);
+          const fh = await resolveFileHandle(S.project.dir, outPath(st._slug), { create: true });
+          const w = await fh.createWritable(); await w.write(tsv); await w.close();
+          wrote++;
+          Object.assign(entry, { units: res.table.units, key: res.table.key });
+          entry.outputs.push(await outputEntry(outPath(st._slug), tsv));
+        }
+        if (res.file) {                                      // a file (export) → into the run's folder, hashed
+          const fpath = `${outDir}/${res.file.name}`;
+          const fh = await resolveFileHandle(S.project.dir, fpath, { create: true });
+          const w = await fh.createWritable(); await w.write(res.file.blob); await w.close();
+          wrote++;
+          entry.outputs.push(await outputEntry(fpath));
+        }
         keep(st, { values: res.values, table: res.table });
-        entry.outputs.push(await outputEntry(outPath(st._slug), tsv));
-        const emit = st.emit || (merged.params && merged.params.emit);
+        const emit = tsv && (st.emit || (merged.params && merged.params.emit));
         if (emit) await resultToLayer(typeof emit === 'object' && emit.layer ? String(emit.layer) : `${r.name}/${st._slug}`, tsv);
         if (res.warnings.length) stepNote = res.warnings.join('; ');
       } else if (tool === 'xy') {                            // not on the contract yet: through its window

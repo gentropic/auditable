@@ -13,7 +13,8 @@
 // is the params with every automatic value pinned (cutoffs chosen from the data, …), so a re-run,
 // a run record and a comparison all see the same numbers.
 import { S, layerById } from './state.js';
-import { layerTableHeader, schemaExt } from './records.js';
+import { layerTableHeader, schemaExt, layerRecords, attrRowCountOf } from './records.js';
+import { runExport, exportColumnsOf } from './export.js';
 import { numericColsOf, computeResourceTable } from './analysis.js';
 import { validationRun } from './validation.js';
 import { gradeUnitFactor, niceStep, scopeMask, scopeMissing } from './analysis-ui.js';
@@ -21,7 +22,7 @@ import { gtCuts } from './scanner.js';
 import { scanGTSeries, gtRows } from './gt.js';
 import { statsScan } from './stats.js';
 import { scanSwath, swathRows } from './swath.js';
-import { validate } from '../../../ext/expr/index.js';
+import { validate, compileBool } from '../../../ext/expr/index.js';
 
 export const TOOLS = new Map();
 export function registerTool(name, def) { TOOLS.set(name, { name, ...def }); }
@@ -332,5 +333,55 @@ registerTool('resource', {
       table: { columns: r.columns, key: ['cutoff', ...g], rows, units: { tonnes: 't' } },
       values: {}, resolved: { ...p }, warnings: [],
     };
+  },
+});
+
+// ── export: a layer (or the records a filter keeps) as a CSV or Parquet FILE ────────────────────
+// The one tool whose output is a file, not a table: the routine runner writes it into the run's
+// folder and hashes it. values: rows, bytes.
+const extOf = (fmt) => (fmt === 'parquet' ? 'parquet' : 'csv');
+registerTool('export', {
+  label: 'export',
+  writesFile: (p) => p.out || `${String(p.layer || 'export').replace(/\.[^.]+$/, '')}.${extOf(p.format)}`,
+  params: {
+    layer: { type: 'layer', required: true },
+    format: { type: 'enum', values: ['csv', 'parquet'], default: 'csv' },
+    columns: { type: 'any', doc: 'the columns to write, by name (default: all, derived ones included)' },
+    filter: { type: 'expr', default: '', doc: 'only the records this keeps' },
+    out: { type: 'string', doc: 'the file name (default: the layer’s, with the format’s extension)' },
+    delim: { type: 'enum', values: [',', ';', 'tab'], default: ',' },
+    decimalComma: { type: 'bool', default: false },
+    codec: { type: 'enum', values: ['SNAPPY', 'GZIP', 'UNCOMPRESSED'], default: 'SNAPPY' },
+    spatialSort: { type: 'bool', default: false, doc: 'Parquet: Morton-sorted, so the file is its own spatial index' },
+    scope: { type: 'enum', values: ['all', 'matches', 'selection'], default: 'all', routine: ['all'], why: 'the filter box and the selection aren’t saved with the routine — use filter' },
+  },
+  outputs: { key: [] },
+  check(p, errs) { if (p.columns != null && (!Array.isArray(p.columns) || p.columns.some((c) => typeof c !== 'string'))) errs.push('columns: a list of column names'); },
+  async scan(p, ctx) {
+    const L = layerNamed(p.layer), cols = exportColumnsOf(L) || [];
+    let colIdx = null;
+    if (p.columns) {
+      const miss = p.columns.filter((c) => !cols.some((x) => x.name === c));
+      if (miss.length) throw new Error(`export: no column ${miss.map((c) => `“${c}”`).join(', ')} on ${L.label || L.name}`);
+      colIdx = p.columns.map((c) => cols.findIndex((x) => x.name === c));
+    }
+    let mask = null;
+    if (p.filter && String(p.filter).trim()) {              // the records the filter keeps — counted the way the renderer numbers them
+      const h = layerTableHeader(L), schema = schemaExt(L, h);
+      const v = validate(String(p.filter), schema); if (!v.ok) throw new Error(`export filter “${p.filter}”: ${(v.errors[0] && v.errors[0].message) || 'invalid'}`);
+      const fn = compileBool(String(p.filter), schema, { decimal: '.' });
+      mask = new Uint8Array(attrRowCountOf(L) || 0);
+      for await (const { f, rec } of layerRecords(L)) if (rec < mask.length && fn(f)) mask[rec] = 1;
+    } else if (p.scope !== 'all') {
+      mask = p.scope === 'matches' ? L._filterMask : L._selMask;
+      if (!mask) throw new Error(`export: no ${p.scope === 'matches' ? 'filter' : 'selection'} on ${L.label || L.name}`);
+    }
+    const name = toolDef('export').writesFile(p);
+    const r = await runExport(L, { format: p.format, colIdx, delim: p.delim, decimalComma: p.decimalComma, codec: p.codec, spatialSort: p.spatialSort, filename: name, download: false, mask, returnBlob: true, signal: ctx.signal });
+    if (!r || r === -1 || !r.blob) throw new Error('export: nothing was written');
+    return { ...r, name };
+  },
+  shape(r, p) {
+    return { table: null, file: { name: r.name, blob: r.blob }, values: { rows: r.written, bytes: r.blob.size }, resolved: { ...p, out: r.name }, warnings: [] };
   },
 });

@@ -55,14 +55,15 @@ export async function runExport(L, opts = {}) {
   const bc = busyCancel();
   try { return await runExportInner(L, { ...opts, signal: opts.signal || bc.signal }); } finally { bc.done(); }
 }
-async function runExportInner(L, { scope = 'all', colIdx = null, delim = ',', decimalComma = false, filename = 'export.csv', download = true, format = 'csv', codec = 'SNAPPY', spatialSort = false, qualified = false, signal = null } = {}) {
+async function runExportInner(L, { scope = 'all', colIdx = null, delim = ',', decimalComma = false, filename = 'export.csv', download = true, format = 'csv', codec = 'SNAPPY', spatialSort = false, qualified = false, signal = null, mask: maskIn = null, returnBlob = false } = {}) {
   const h = layerTableHeader(L); if (!h) return -1;
   await ensureStoredValues(L, null);                       // exports read every column
   const cols = exportColumnsOf(L);
   if (!colIdx) colIdx = cols.map((_, i) => i);
   const epoch = ++_exportEpoch;
-  const mask = scope === 'matches' ? L._filterMask : scope === 'selection' ? L._selMask : null;
-  if (scope !== 'all' && !mask) { $('#meta').textContent = `export: no ${scope === 'matches' ? 'filter' : 'selection'} on this layer`; return -1; }
+  // maskIn: the records to write, given (the export tool's filter expression); else the scope's
+  const mask = maskIn || (scope === 'matches' ? L._filterMask : scope === 'selection' ? L._selMask : null);
+  if (!maskIn && scope !== 'all' && !mask) { $('#meta').textContent = `export: no ${scope === 'matches' ? 'filter' : 'selection'} on this layer`; return -1; }
   const sep = delim === 'tab' ? '\t' : delim;
   const needQuote = new RegExp('["\\r\\n' + (sep === '\t' ? '\\t' : '\\' + sep) + ']');
   const esc = (s) => (needQuote.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s);
@@ -166,7 +167,7 @@ async function runExportInner(L, { scope = 'all', colIdx = null, delim = ',', de
   window._lastExport = blob;                               // the smoke reads content here
   $('#meta').textContent = `exported ${written.toLocaleString()} rows → ${filename} (${fmtSize(blob.size)})`;
   if (download) deliverBlob(blob, filename);
-  return written;
+  return returnBlob ? { written, blob } : written;
 }
 
 // materialize a block model as a Morton-sorted spatial-Parquet layer — the

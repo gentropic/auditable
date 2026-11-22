@@ -7565,6 +7565,46 @@ if (take()) {
   await p.close();
 }
 
+// ── §118: EXPORT as a tool — a routine writes the records a filter keeps, chosen columns, as CSV or
+//     Parquet into the run's folder (hashed in the record); its row count is a value a check reads;
+//     a host gets the file as a Blob; an unknown column is refused. ──
+if (take()) {
+  const p = await mkPage('sm2export');
+  await p.evaluate(async () => { try { await (await navigator.storage.getDirectory()).removeEntry('sm2export', { recursive: true }); } catch { } });
+  await p.evaluate(async () => {
+    const rows = ['XC,YC,ZC,FE,DOM']; for (let k = 0; k < 4; k++) for (let j = 0; j < 8; j++) for (let i = 0; i < 10; i++) rows.push([5 + i * 10, 5 + j * 10, 5 + k * 10, (40 + i).toFixed(1), i < 5 ? 'hem' : 'itb'].join(','));
+    await window._micro.openBlob(new File([rows.join('\n') + '\n'], 'm.csv'), 'm.csv', 'replace');
+  });
+  await p.waitForFunction(() => window._micro.layers()[0] && window._micro.layers()[0].docs.blockDoc, null, { timeout: 20000 });
+  await saveProject(p);
+  const r = await p.evaluate(async () => {
+    const M_ = window._micro, m = window.micro, out = {};
+    M_._recipesList().push({ name: 'ship', tool: 'routine', params: { steps: [
+      { tool: 'export', with: { layer: 'm.csv', filter: 'DOM = "hem"', columns: ['XC', 'YC', 'ZC', 'FE'], out: 'hem.csv' }, as: 'ex' },
+      { tool: 'export', with: { layer: 'm.csv', format: 'parquet', spatialSort: true }, as: 'pq' },
+      { check: 'ex.rows = 160 and pq.rows = 320', say: 'the right number of records went out' },
+    ] } });
+    const res = await m.runRoutine('ship');
+    out.status = res.status; out.err = res.error || null;
+    const rec = res.record, dir = rec && rec.dir;
+    let d = M_.project().dir; for (const s of (dir || '').split('/')) if (s) d = await d.getDirectoryHandle(s);
+    const csv = await (await (await d.getFileHandle('hem.csv')).getFile()).text();
+    const pq = await (await d.getFileHandle('m.parquet')).getFile();
+    out.csv = { header: csv.split(/\r?\n/)[0], lines: csv.trim().split(/\r?\n/).length - 1 };   // the CSV writer ends lines with CRLF
+    out.pqBytes = pq.size;
+    out.outs = rec.steps.filter((s) => s.tool === 'export').map((s) => ({ path: s.outputs[0].path, sha: !!s.outputs[0].sha256, rows: s.values.rows }));
+    out.check = rec.steps.find((s) => s.kind === 'check').status;
+    const t = await m.runTool('export', { layer: 'm.csv', filter: 'FE >= 48' });
+    out.host = { name: t.file && t.file.name, isBlob: t.file && t.file.blob instanceof Blob, rows: t.values.rows };
+    try { await m.runTool('export', { layer: 'm.csv', columns: ['FE', 'CU'] }); } catch (e) { out.bad = e.message; }
+    return out;
+  });
+  chk(`EXPORT: a routine exports into the run's folder — the filtered CSV (${JSON.stringify(r.csv)}), a spatial Parquet (${r.pqBytes} B) — each hashed in the record (${JSON.stringify(r.outs)}); a check reads the row counts (${r.check})`,
+    r.status === 'ok' && r.csv.header === 'XC,YC,ZC,FE' && r.csv.lines === 160 && r.pqBytes > 1000 && r.outs.length === 2 && r.outs.every((o) => o.sha) && /\/hem\.csv$/.test(r.outs[0].path) && /\/m\.parquet$/.test(r.outs[1].path) && r.check === 'pass');
+  chk(`EXPORT: a host gets the file as a Blob (${JSON.stringify(r.host)}); an unknown column is refused (“${r.bad}”)`, r.host.isBlob && r.host.name === 'm.csv' && r.host.rows === 64 && /no column “CU”/.test(r.bad || ''));
+  await p.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);
