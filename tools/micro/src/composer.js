@@ -24,7 +24,7 @@ import { rendererDocBbox, layerShown } from './layers.js';
 import { attrRowCountOf, layerBlob, layerTableHeader, schemaExt } from './records.js';
 import { computeResourceTable, numericColsOf } from './analysis.js';
 import { sourceHash, sourceHashSync } from './identity.js';
-import { createDocument, parseDocument, serializeDocument, mountEditor, exportPDF, exportPNG, frameById, pageDims, tableFromTsv, removeFrames, groupFrames, subjectFrame, figureFromPdf, registerKind, replayDrawList } from '../../../ext/compo/index.js';
+import { createDocument, parseDocument, serializeDocument, mountEditor, exportPDF, exportPNG, frameById, pageDims, tableFromTsv, removeFrames, groupFrames, subjectFrame, refFrame, figureFromPdf, registerKind, replayDrawList } from '../../../ext/compo/index.js';
 import { chartFigure } from './analysis-ui.js';
 import { colorChoices, colorSelFor } from './color.js';
 import { SEC_AXES, sectionCells } from './vsection.js';
@@ -389,6 +389,19 @@ export async function openFigurePdf(blob, name) {
 // ── a view frame's own inspector rows: its scale (shown, and lockable) ──
 function viewInspector(f, el) {
   if (!isView(f) || !_ed) return;
+  if (f.source && f.source.keyFor) {                        // a key plan: which views' sections it shows
+    const on = new Set([].concat(f.source.keyFor)), cands = keyable(_ed.getDoc(), f);
+    const head = document.createElement('div'); head.className = 'hint'; head.textContent = 'shows the sections of:';
+    el.append(head);
+    if (!cands.length) { const n = document.createElement('div'); n.className = 'hint'; n.textContent = 'no view on the page is cut by a non-plan section'; el.append(n); }
+    for (const c of cands) {
+      const lab = document.createElement('label'); lab.className = 'row cmp-keyfor';
+      const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = on.has(c.id); cb.dataset.id = c.id;
+      const sec = c.content.meta.facts.section;
+      cb.onchange = () => _ed.update(f.id, (fr) => { const s2 = new Set([].concat(fr.source.keyFor || [])); if (cb.checked) s2.add(c.id); else s2.delete(c.id); fr.source = { ...fr.source, keyFor: [...s2] }; });
+      lab.append(cb, document.createTextNode(` ${c.id} — ${sectionText(sec)}`)); el.append(lab);
+    }
+  }
   const m = f.content.meta || {}, wpm = m.worldPerPx > 0 ? (m.worldPerPx * (f.content.height || 1)) / f.box[3] : 0;
   const now = wpm > 0 ? Math.round(wpm * 1000) : null;
   const inp = document.createElement('input'); inp.type = 'number'; inp.min = 1; inp.step = 'any'; inp.style.width = '80px';
@@ -441,19 +454,26 @@ export const viewEditState = () => _editing;
 // ── KEY PLAN: a whole-model plan that wears the section of the view it keys (source.keyFor): the
 // trace and the slab of that view's section as it was rendered — so on every atlas page the line
 // moves with the page. The plan itself is a view frame (its own scene: north up, no section). ──
+const KEY_COLORS = ['#c0392b', '#1f6fb4', '#2e8b57', '#8e44ad', '#d35400', '#16a085'];
+const saysFig = (f) => f.kind === 'text' && /\{fig\}/.test((f.content && f.content.md) || '');
 function overlaysFor(frame, env) {
   const kf = frame.source && frame.source.keyFor; if (!kf || !env.doc) return null;
   const out = [];
-  for (const id of [].concat(kf)) {
+  [].concat(kf).forEach((id, k) => {
     const t = env.doc.frames.find((x) => x.id === id), fx = t && t.content && t.content.meta && t.content.meta.facts;
-    const sec = fx && fx.section; if (!sec || !sec.normal) continue;
-    out.push({ type: 'plane', normal: sec.normal, position: sec.position, thickness: sec.thickness || 0, label: sectionText(sec) });
-  }
+    const sec = fx && fx.section; if (!sec || !sec.normal) return;
+    const cap = env.figOf ? refFrame(env.doc, t, null, saysFig) : null;
+    out.push({ type: 'plane', normal: sec.normal, position: sec.position, thickness: sec.thickness || 0, color: KEY_COLORS[k % KEY_COLORS.length], label: (cap ? `Fig ${env.figOf(cap)} · ` : '') + sectionText(sec) });
+  });
   return out;
 }
+// the views a key plan can show: those whose section is not a plan (a vertical or a dipping cut)
+const keyable = (doc, self) => doc.frames.filter((x) => isView(x) && x !== self && !(x.source && x.source.keyFor) && (() => { const s = x.content && x.content.meta && x.content.meta.facts && x.content.meta.facts.section; return s && s.mode !== 'plan'; })());
 export async function addKeyPlan(ed, target = null) {
   const doc = ed.getDoc(), sel = ed.selected().find(isView);
-  target = target || sel || doc.frames.find(isView);
+  // one view (the one asked for, or selected) — else every view on the page cut by a non-plan section
+  const keys = target ? [target] : sel ? [sel] : keyable(doc, null);
+  target = keys[0] || doc.frames.find(isView);
   if (!target) { $('#meta').textContent = 'composer: a key plan keys a 3D-view frame — add one first'; return null; }
   const bb = rendererDocBbox(); if (!bb || !(bb[3] > bb[0])) { $('#meta').textContent = 'composer: nothing loaded to plan'; return null; }
   const [W, H] = pageDims(doc.page), m = doc.page.margins || [10, 10, 10, 10];
@@ -467,7 +487,7 @@ export async function addKeyPlan(ed, target = null) {
     const o = S.frame ? S.frame.origin : [0, 0, 0], st = S.cam.state;
     const halfH = Math.max(dy / 2, dx / 2 / (w / h)) * 1.06;
     HK.setCameraWorld({ look: 0, elevation: 90, ortho: true, target: [(bb[0] + bb[3]) / 2 + o[0], (bb[1] + bb[4]) / 2 + o[1], (bb[2] + bb[5]) / 2 + o[2]], distance: halfH / Math.tan(st.fovY / 2) });
-    f = ed.addFrame({ kind: 'image', box, content: { photo: true }, source: { app: 'micro', kind: 'view', keyFor: target.id }, style: { border: true } });
+    f = ed.addFrame({ kind: 'image', box, content: { photo: true }, source: { app: 'micro', kind: 'view', keyFor: (keys.length ? keys : [target]).map((x) => x.id) }, style: { border: true } });
     ed.update(f.id, (fr) => viewFrameContent(fr));
     afterFacts(ed, f.id);
   } finally { await applyScene(mine); }

@@ -6689,7 +6689,7 @@ if (take()) {
     out.key = { keyFor: kp.source.keyFor, proj: C.hasProj(kp), wasSection: kp.content.meta.facts.section };
     // the trace on the key plan, through the env's overlays (the target's section as rendered)
     const env = () => ({ doc: ed.getDoc() });
-    const traceOf = (doc, kf) => { const t = doc.frames.find((x) => x.id === kf.source.keyFor); const s = t.content.meta.facts.section; return C.planeTrace(kf, { normal: s.normal, position: s.position, thickness: s.thickness }); };
+    const traceOf = (doc, kf) => { const t = doc.frames.find((x) => x.id === [].concat(kf.source.keyFor)[0]); const s = t.content.meta.facts.section; return C.planeTrace(kf, { normal: s.normal, position: s.position, thickness: s.thickness }); };
     out.trace = traceOf(ed.getDoc(), kp);
     // an atlas: two pages, the section at y = 55 and y = 155 — the key plan's line moves
     const pages = [];
@@ -6698,6 +6698,25 @@ if (take()) {
     out.pageTraces = pages.map((d) => { const k = d.frames.find((x) => x.source && x.source.keyFor); const t = traceOf(d, k); return t && t.line ? +((t.line[0][1] + t.line[1][1]) / 2).toFixed(2) : null; });
     const bytes = await C.exportPDF(pages, { compress: false, env: M_.composerEnv() });
     out.pdfOk = bytes.length > 1000;
+    // a second section view (N–S) — a key plan made with nothing selected shows BOTH, each in its own colour, labelled with its figure
+    await window.micro.setView({ look: 90, elevation: 0, ortho: true });
+    await window.micro.setSection({ axis: 'x', position: 155, thickness: 10 });
+    await new Promise((res) => setTimeout(res, 200));
+    const f2 = M_.addViewFrame(ed, { box: [12, 110, 120, 60] });
+    ed.addFrame({ kind: 'text', box: [12, 104, 180, 5], content: { md: 'Figure {fig}.', size: 7 } });
+    ed.addFrame({ kind: 'text', box: [12, 171, 120, 5], content: { md: 'Figure {fig}.', size: 7 } });
+    await new Promise((res) => setTimeout(res, 600));
+    ed.select([]);
+    const kp2 = await M_.addKeyPlan(ed);
+    const envK = { ...M_.composerEnv(), doc: ed.getDoc(), figOf: (cap) => ed.getDoc().frames.filter((x) => x.kind === 'text' && /\{fig\}/.test(x.content.md)).indexOf(cap) + 1 };
+    const ovs = M_.composerEnv().overlaysFor(ed.getDoc().frames.find((x) => x.id === kp2.id), envK) || [];
+    out.both = { keyFor: kp2.source.keyFor, labels: ovs.map((o) => o.label), colours: new Set(ovs.map((o) => o.color)).size };
+    // the inspector: untick one → it leaves the key plan
+    ed.select([kp2.id]); ed.render();
+    const cb = [...document.querySelectorAll('.compo-side .cmp-keyfor input')].find((i) => i.dataset.id === f2.id);
+    out.boxes = document.querySelectorAll('.compo-side .cmp-keyfor input').length;
+    cb.checked = false; cb.dispatchEvent(new Event('change'));
+    out.after = ed.getDoc().frames.find((x) => x.id === kp2.id).source.keyFor;
     // small multiples over colour: AU, CU in place of the view
     const g = ed.getDoc().frames.find((x) => x.id === f.id);
     const made = await M_.smallMultiples(ed, g, { vary: 'colour', values: ['AU', 'CU'], cols: 2 });
@@ -6714,9 +6733,10 @@ if (take()) {
     return out;
   });
   if (r.png) { const fs = await import('node:fs'); fs.writeFileSync(process.env.SM2_DUMP, Buffer.from(r.png.split(',')[1], 'base64')); }
-  chk(`KEY PLAN: it keys the view (${r.key.keyFor}), has its projection (${r.key.proj}), and was itself rendered with no section (${JSON.stringify(r.key.wasSection)})`, r.key.keyFor === 'view-1' && r.key.proj && r.key.wasSection === null);
+  chk(`KEY PLAN: it keys the view (${r.key.keyFor}), has its projection (${r.key.proj}), and was itself rendered with no section (${JSON.stringify(r.key.wasSection)})`, JSON.stringify(r.key.keyFor) === '["view-1"]' && r.key.proj && r.key.wasSection === null);
   chk(`KEY PLAN: the keyed section shows as a line with its slab (${JSON.stringify(r.trace && { line: r.trace.line, faces: r.trace.faces.length })})`, r.trace && r.trace.line && r.trace.faces.length === 2 && Math.abs(r.trace.line[0][1] - r.trace.line[1][1]) < 0.01);
   chk(`KEY PLAN: on each atlas page the line moves with the page's section (${JSON.stringify(r.pageTraces)} mm down the plan, y 55 → 155: north is up)`, r.pageTraces.every(Number.isFinite) && r.pageTraces[0] > r.pageTraces[1] && r.pdfOk && r.keyWhole.every((s) => s === null));
+  chk(`KEY PLAN: with nothing selected it shows every sectioned view — two lines, two colours, labelled by figure (${JSON.stringify(r.both)}); the inspector lists them (${r.boxes}) and unticking one removes it (${JSON.stringify(r.after)})`, r.both.keyFor.length === 2 && r.both.colours === 2 && r.both.labels.every((l) => /^Fig \d · /.test(l)) && r.boxes === 2 && r.after.length === 1);
   chk(`MULTIPLES: colour by AU / CU side by side, captioned, a group, in place of the view (${JSON.stringify(r.mult)})`, r.mult.n === 2 && JSON.stringify(r.mult.caps) === '["AU","CU"]' && r.mult.sels[0] !== r.mult.sels[1] && r.mult.gone && r.mult.group && r.mult.side);
   chk(`MULTIPLES: over section levels — each view cut where asked (${JSON.stringify(r.levels)}), its caption a field reading its own section (${JSON.stringify(r.levelCaps)})`, JSON.stringify(r.levels) === '[15,25]' && /^15 RL/.test(r.levelCaps[0]) && /^25 RL/.test(r.levelCaps[1]));
   await p.close();
