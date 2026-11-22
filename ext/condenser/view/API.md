@@ -41,7 +41,7 @@ v.look('plan', { ortho: true });
 | `w.fit()` · `w.clear_selection()` | `v.fit()` · `v.clear_selection()` |
 | `w.snapshot()` then `w.snapshot_png` (next cell) | `await v.snapshot()` → a PNG `Blob` |
 | `w.selection` · `w.selected_rows` · `w.measurement` · `w.camera` | `v.selection` · `v.selected_rows` · `v.measurement` · `v.camera` |
-| `w.add(layer)` · `w.remove("name")` | `v.add(layer)` · `v.remove('name')` |
+| `w.add(layer)` · `w.remove("name")` | `v.add(layer)` · `v.remove('name')` (a name that isn't there: nothing happens) |
 | `w.z_exaggeration = 3` | `v.set({ z_exaggeration: 3 })` |
 | `w.lock = 'plan'` · `w.lock = {'azimuth': 30, 'plunge': 0}` | `v.set({ lock: 'plan' })` · `v.set({ lock: { azimuth: 30, plunge: 0 } })` |
 | (no Python equivalent) | `v.on(event, fn)` · `v.off` · `v.state()` · `v.set(state)` · `v.set({ view: { rect } })` · `v.destroy()` · `blocks.stream` / `points.stream` + `append` |
@@ -110,7 +110,7 @@ A 2D grid as shaded relief, row 0 the NORTHERNMOST. `grid` as rows, or flat with
 | `radius` | `1.5` | drillhole capsule radius, world units |
 | `labels` | `false` | drillholes: the BHID at each collar |
 | `categories_hidden` | `[]` | category labels to hide |
-| `sectioned` | `true` | `false` keeps the layer whole under a section; `'front'` · `'behind'` |
+| `sectioned` | `true` | `true`: cut to the section slab · `false`: whole, ignoring the section · `'front'` / `'behind'`: a HALF-SPACE clip, keeping only the side of the plane the normal points to (or the other). It is a clip, not a draw order: it does not put a layer on top of another |
 | `units` | `''` | shown after the layer's name in its legend: `'%'`, `'g/t'` |
 | `colors` | `null` | class colours: `{ ITA: '#c0392b' }`, or a list in class order. Classes without one take the theme's `cycle` |
 | `category_order` | `[]` | these classes first — in the legend, and for a colour list; the rest follow |

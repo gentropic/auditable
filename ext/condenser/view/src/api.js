@@ -766,7 +766,12 @@ export function view(el, layers, opts) {
       list.push(layer); repack();
       return handleOf(layer);
     },
-    remove(key) { const L = list.splice(index(key), 1)[0]; sentLog.delete(L); repack(); return handle; },
+    // removing a layer that isn't there is a no-op (remove-then-add updates the same way every time)
+    remove(key) {
+      const i = typeof key === 'number' ? (key >= 0 && key < list.length ? key : -1) : list.findIndex((L) => L.style.name === key);
+      if (i < 0) return handle;
+      const L = list.splice(i, 1)[0]; sentLog.delete(L); repack(); return handle;
+    },
     // everything needed to put the view back as it is: JSON
     state() {
       const out = {};

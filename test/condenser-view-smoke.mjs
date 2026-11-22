@@ -595,6 +595,7 @@ const S5 = await page.evaluate(async () => {
     const w = C.view(host, [C.blocks({ x: X.slice(0, 600), y: Y.slice(0, 600), z: Z.slice(0, 600) }, { name: 'plain' })], { theme: 'dark', height: 300 });
     await settle(600);
     out.plain = { ok: true, count: w.layers ? w.layers.length : null };
+    try { w.remove('no-such-layer'); w.remove(99); out.removeMissing = true; } catch (e) { out.removeMissing = String(e); }
     w.destroy();
   } catch (e) { out.plain = { ok: false, err: String(e) }; }
   // C3: a slab exactly one block thick shows that level only — the levels above and below only
@@ -632,6 +633,7 @@ chk('box: true puts ticked axes on the bounding box', S5.box.with > S5.box.witho
 chk('the triad: E shows the view from the east (looking west), Z the plan, the centre the three-quarter view', Math.abs(S5.triadE.azimuth - 270) < 1 && Math.abs(S5.triadE.plunge) < 1 && S5.triadZ.cam.plunge > 89 && S5.triadC.plunge > 10 && S5.triadC.plunge < 60 && /orientation/.test(S5.triadLabel || ''), JSON.stringify({ e: S5.triadE, z: S5.triadZ, c: S5.triadC }));
 chk('chrome: {axes: false} drops the frame from a locked view', !S5.noAxes.ids.includes('axes') && S5.noAxes.insets === 0, JSON.stringify(S5.noAxes));
 chk('a blocks layer with no value column loads', S5.plain.ok, JSON.stringify(S5.plain));
+chk(`removing a layer that isn't there is a no-op (${S5.removeMissing})`, S5.removeMissing === true);
 chk(`a one-block slab shows its level only: nothing where that level is missing (${S5.slab.right} px vs ${S5.slab.left} where it exists)`, S5.slab.left > 1000 && S5.slab.right < S5.slab.left * 0.02);
 chk('a narrow section: the scale bar and exaggeration notice lift clear of the corner stacks', S5.narrow.bottomW > 0 && !S5.narrow.overlapsLeft && !S5.narrow.overlapsRight, JSON.stringify(S5.narrow));
 
