@@ -6722,6 +6722,72 @@ if (take()) {
   await p.close();
 }
 
+// ── §104: VECTOR SECTIONS — a plan section through a block model as vector cells: every block the
+//     plane cuts, its rectangle in its legend colour, same-colour runs merged; the filter applies;
+//     the PDF holds the section as vectors (no image); other layers ride on top as a transparent
+//     render; a view not looking square-on along the section is refused, saying why. ──
+if (take()) {
+  const p = await mkPage('sm2vsec');
+  if (process.env.SM2_DUMP) await p.evaluate(() => { window.__dumpFig = true; });
+  const r = await p.evaluate(async () => {
+    const M_ = window._micro, out = {};
+    const rows = ['XC,YC,ZC,AU,CU']; for (let k = 0; k < 4; k++) for (let j = 0; j < 20; j++) for (let i = 0; i < 30; i++) rows.push(`${5 + i * 10},${5 + j * 10},${5 + k * 10},${(0.2 + 0.05 * i).toFixed(3)},${(0.1 + 0.05 * j).toFixed(3)}`);
+    const id = await M_.openBlob(new File([rows.join('\n') + '\n'], 'vs.csv'), 'vs.csv', 'replace');
+    const L = M_.layers().find((x) => x.id === id);
+    await M_.setLayerColorSel(L, `chan:${M_.layerTableHeader(L).columns.indexOf('CU')}`);
+    await window.micro.setView({ look: 0, elevation: 90, ortho: true });
+    await window.micro.setSection({ axis: 'z', position: 15, thickness: 10 });
+    await new Promise((res) => setTimeout(res, 200));
+    const C = await import('/ext/compo/index.js');
+    const ed = M_.openComposer('vsec');
+    const f = M_.addViewFrame(ed, { box: [12, 12, 180, 120] });
+    const menu = () => M_.composerFrameMenu ? M_.composerFrameMenu(ed.getDoc().frames.find((x) => x.id === f.id), ed) : null;
+    const toggle = async () => { const it = menu().find((m) => /^Vector section/.test(m.label)); await it.run(); };
+    await toggle();
+    const vf = () => ed.getDoc().frames.find((x) => x.id === f.id);
+    const V = vf().content.vector, Ly = V && V.layers[0];
+    out.vec = Ly && { cells: Ly.colors.length, blocks: Ly.blocks, colours: Ly.palette.length, first: Ly.rects.slice(0, 4), overlay: !!V.overlay, err: vf().content.vectorError };
+    let bytes = await M_.figurePdfBytes(M_.currentFigure(), 72, { compress: false });
+    out.pdf = { images: (new TextDecoder('latin1').decode(bytes).match(/\/Subtype \/Image/g) || []).length };
+    // the filter applies: CU > 0.5 keeps rows 9…19 → 11 cells
+    document.querySelector('#filter').value = 'CU > 0.5'; await M_.applyBlockFilter('CU > 0.5');
+    menu().find((m) => m.label === 'Update from the 3D view').run();   // the frame re-captured WITH the filter (a refresh would re-apply its own scene)
+    await new Promise((res) => setTimeout(res, 1200));
+    out.filtered = vf().content.vector && vf().content.vector.layers[0].colors.length;
+    if (window.__dumpFig) { const png = await C.exportPNG(M_.currentFigure().doc, { dpi: 150, env: M_.composerEnv() }); out.png = await new Promise((res) => { const f2 = new FileReader(); f2.onload = () => res(f2.result); f2.readAsDataURL(png); }); }
+    await M_.applyBlockFilter(''); document.querySelector('#filter').value = '';
+    // another layer (points inside the slab): it rides on top, a transparent render
+    { const pts = []; for (let i = 0; i < 400; i++) pts.push(`${20 + (i % 20) * 13} ${20 + Math.floor(i / 20) * 8} 15`); await M_.openBlob(new File([pts.join('\n') + '\n'], 'pts.xyz'), 'pts.xyz', 'add'); }
+    await new Promise((res) => setTimeout(res, 300));
+    ed.update(f.id, () => {});
+    const it = menu().find((m) => m.label === 'Update from the 3D view'); it.run();
+    await new Promise((res) => setTimeout(res, 1500));
+    const V2 = vf().content.vector;
+    out.overlay = !!(V2 && V2.overlay);
+    if (V2 && V2.overlay) {
+      const im = new Image(); im.src = V2.overlay; await im.decode();
+      const cv = document.createElement('canvas'); cv.width = im.width; cv.height = im.height; const g = cv.getContext('2d'); g.drawImage(im, 0, 0);
+      const d = g.getImageData(0, 0, cv.width, cv.height).data; let clear = 0; for (let i = 3; i < d.length; i += 4) if (d[i] === 0) clear++;
+      out.clearFrac = clear / (d.length / 4);
+    }
+    bytes = await M_.figurePdfBytes(M_.currentFigure(), 72, { compress: false });
+    out.pdf2 = { images: (new TextDecoder('latin1').decode(bytes).match(/\/Subtype \/Image/g) || []).length };
+    // a perspective view: refused, saying why
+    await window.micro.setView({ look: 30, elevation: 40, ortho: false });
+    menu().find((m) => m.label === 'Update from the 3D view').run();
+    await new Promise((res) => setTimeout(res, 800));
+    out.refused = vf().content.vectorError || null;
+    return out;
+  });
+  if (r.png) { const fs = await import('node:fs'); fs.writeFileSync(process.env.SM2_DUMP, Buffer.from(r.png.split(',')[1], 'base64')); }
+  chk(`VECTOR: the plan at z 15 cuts 600 blocks; colour by CU (one value per row) merges them into 20 cells (${JSON.stringify(r.vec)})`, r.vec && r.vec.blocks === 600 && r.vec.cells === 20 && r.vec.colours === 20 && JSON.stringify(r.vec.first) === '[0,0,300,10]' && !r.vec.overlay);
+  chk(`VECTOR: the PDF holds the section as vectors — no image (${JSON.stringify(r.pdf)})`, r.pdf.images === 0);
+  chk(`VECTOR: the filter applies (CU > 0.5 → ${r.filtered} cells)`, r.filtered === 11);
+  chk(`VECTOR: other layers ride on top as a transparent render (overlay ${r.overlay}, ${r.clearFrac != null ? (r.clearFrac * 100).toFixed(0) : '–'}% clear; ${JSON.stringify(r.pdf2)})`, r.overlay && r.clearFrac > 0.5 && r.clearFrac < 0.999 && r.pdf2.images >= 1);
+  chk(`VECTOR: a perspective view is refused, saying why (“${r.refused}”)`, /orthographic|square-on/.test(r.refused || ''));
+  await p.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

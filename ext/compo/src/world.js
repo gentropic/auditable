@@ -203,3 +203,30 @@ export function drawOverlays(ctx, frame, list) {
     ctx.restore();
   }
 }
+
+// ── a VECTOR picture of a section: content.vector = { background, layers: [{ type: 'cells', axis:
+// { w, u, v } (world axis indices), position (the plane, on axis w), rects: [u0, v0, u1, v1, …],
+// colors: [palette index…], palette }], overlay?: an image src (the other layers, transparent) }.
+// Each cell is the rectangle a block makes on the section plane; its corners go through the frame's
+// projection like any world point, so ticks, overlays and labels land on it as on the raster. ──
+export function drawVector(ctx, frame, x, y, w, h) {
+  const V = frame.content.vector;
+  ctx.save();
+  ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip();
+  if (V.background) { ctx.fillStyle = V.background; ctx.fillRect(x, y, w, h); }
+  for (const Ly of V.layers || []) {
+    if (Ly.type !== 'cells') continue;
+    const ax = Ly.axis, R = Ly.rects, C = Ly.colors, P = Ly.palette, pt = [0, 0, 0];
+    pt[ax.w] = +Ly.position;
+    const page = (u, v) => { pt[ax.u] = u; pt[ax.v] = v; return worldToPage(frame, pt); };
+    for (let i = 0; i < C.length; i++) {
+      const a = page(R[i * 4], R[i * 4 + 1]), b = page(R[i * 4 + 2], R[i * 4 + 3]);
+      if (!a || !b) continue;
+      const x0 = Math.min(a.x, b.x), y0 = Math.min(a.y, b.y), x1 = Math.max(a.x, b.x), y1 = Math.max(a.y, b.y);
+      ctx.fillStyle = P[C[i]]; ctx.strokeStyle = P[C[i]]; ctx.lineWidth = 0.04;   // a hairline of the same colour closes the seams viewers anti-alias between cells
+      ctx.beginPath(); ctx.rect(x0, y0, x1 - x0, y1 - y0); ctx.fill(); ctx.stroke();
+    }
+  }
+  if (frame._vimg) ctx.drawImage(frame._vimg, x, y, w, h);
+  ctx.restore();
+}

@@ -27,6 +27,8 @@ import { sourceHash, sourceHashSync } from './identity.js';
 import { createDocument, parseDocument, serializeDocument, mountEditor, exportPDF, exportPNG, frameById, pageDims, tableFromTsv, removeFrames, groupFrames, subjectFrame, figureFromPdf, registerKind, replayDrawList } from '../../../ext/compo/index.js';
 import { chartFigure } from './analysis-ui.js';
 import { colorChoices, colorSelFor } from './color.js';
+import { SEC_AXES, sectionCells } from './vsection.js';
+import { gridAxesOf } from './grid-ops.js';
 import { xyFigure } from './xyplot.js';
 const $ = (s) => document.querySelector(s);
 
@@ -83,6 +85,7 @@ const isView = (f) => !!(f.source && f.source.kind === 'view');
 async function completeFacts(doc, f) {
   const fx = f.content && f.content.meta && f.content.meta.facts; if (!fx) return;
   for (const l of fx.layers) if (l._blob && !l.sha) { try { l.sha = await sourceHash(l._blob); } catch { /* unreadable: no hash */ } }
+  if (f.content.vectorOn) { try { await buildVector(f); } catch (e) { f.content.vector = null; f.content.vectorError = e.message; } }
   const want = new Set();
   for (const t of doc.frames) {
     if (t.kind !== 'text' || !t.content || !t.content.md) continue;
@@ -539,6 +542,45 @@ function openMultiplesDialog(ed, f) {
   };
 }
 
+// ── VECTOR SECTIONS: with content.vectorOn, a view frame's blocks are drawn as vector cells (the
+// section plane through each block model the view shows), the view's other layers as a transparent
+// render on top. Rebuilt with every render of the frame (preview, refresh, export, atlas page) —
+// called while the frame's scene is on. ──
+function vectorWhyNot(fx) {
+  const sec = fx && fx.section, cam = fx && fx.camera;
+  if (!sec || !SEC_AXES[sec.mode]) return 'a vector section needs an axis section on the view — plan, N–S or E–W';
+  if (!cam || !cam.ortho) return 'a vector section needs an orthographic view';
+  const lk = ((cam.look % 360) + 360) % 360, el = cam.elevation, near = (a, b) => Math.abs(((a - b + 540) % 360) - 180) < 5;
+  const along = sec.mode === 'plan' ? el > 85 : Math.abs(el) < 5 && (sec.mode === 'ns' ? (near(lk, 90) || near(lk, 270)) : (near(lk, 0) || near(lk, 180)));
+  return along ? null : 'a vector section is seen square-on: look along the section (plan from above, a N–S section from the east or west, an E–W one from the north or south)';
+}
+async function buildVector(f) {
+  const fx = f.content.meta && f.content.meta.facts, why = vectorWhyNot(fx);
+  if (why) throw new Error(why);
+  const sec = fx.section, ax = SEC_AXES[sec.mode];
+  const shown = S.layers.filter((L) => fx.layers.some((l) => l.name === (L.label || L.name)));
+  const blocks = shown.filter((L) => gridAxesOf(L)), others = shown.filter((L) => !gridAxesOf(L));
+  if (!blocks.length) throw new Error('a vector section draws block models — this view shows none');
+  const layers = [];
+  for (const L of blocks) { const c = await sectionCells(L, sec); layers.push({ type: 'cells', layer: L.label || L.name, axis: ax, position: sec.position, rects: c.rects.map((v) => +v.toFixed(4)), colors: c.colors, palette: c.palette, blocks: c.blocks }); }
+  let overlay = null;
+  if (others.length) {                                      // the rest of the view, without the blocks, on a transparent background
+    for (const L of blocks) S.renderer.setLayerVisible(L.id, false);
+    // the renderer's last pass writes an opaque background, so the overlay is drawn on a KEY colour
+    // (magenta, which no ramp uses) and the key is cut out — near-key edge pixels too
+    S.renderer.setBackground([1, 0, 1, 1]);
+    try {
+      const [w, h] = pxFor(f, PREVIEW_PX_PER_MM * 2), cv = HK.renderViewCanvas(w, h), g = cv.getContext('2d'), im = g.getImageData(0, 0, w, h), d = im.data;
+      for (let i = 0; i < d.length; i += 4) if (d[i] > 200 && d[i + 2] > 200 && d[i + 1] < 60 && Math.abs(d[i] - d[i + 2]) < 40) d[i + 3] = 0;
+      g.putImageData(im, 0, 0); overlay = cv.toDataURL('image/png');
+    }
+    finally { applyBg(); for (const L of blocks) S.renderer.setLayerVisible(L.id, L.visible !== false); }
+  }
+  f.content.vector = { background: f.source.bg || _bgColor, layers, overlay };
+  f._vimg = null;
+  delete f.content.vectorError;
+}
+
 // ── the window ──
 let _win = null, _ed = null, _fig = null, _saveT = 0;
 export function composerOpen() { return !!(_win && document.body.contains(_win.el)); }
@@ -635,12 +677,18 @@ function showFigure(fig) {
   if (_ed) _ed.setDoc(fig.doc);
   if (_win) { _win.sub.textContent = fig.name; if (_win._fill) _win._fill(); }
 }
+export const composerFrameMenu = (f, ed) => frameMenu(f, ed);   // the view frame's menu items — hosts and tests
 function frameMenu(f, ed) {
   if (f.source && f.source.kind === 'view') return [
     { label: 'Update from the 3D view', run: () => { ed.update(f.id, (fr) => viewFrameContent(fr)); afterFacts(ed, f.id); } },
     { label: 'Refresh fields (statistics)', run: async () => { await withScene(f.source.scene, () => completeFacts(ed.getDoc(), f)); ed.render(); } },
     { label: 'Show in the 3D view', run: () => applyScene(f.source.scene) },
     { label: 'Re-render at this size', run: async () => { await rerender(f, PREVIEW_PX_PER_MM); ed.update(f.id, () => {}); } },
+    { label: f.content.vectorOn ? 'Vector section: off (raster)' : 'Vector section (blocks as vectors)', run: async () => {
+      const on = !f.content.vectorOn;
+      ed.update(f.id, (fr) => { if (on) fr.content.vectorOn = true; else { delete fr.content.vectorOn; delete fr.content.vector; delete fr.content.vectorError; } });
+      if (on) { const fr = frameById(ed.getDoc(), f.id); await withScene(fr.source.scene, () => completeFacts(ed.getDoc(), fr)); ed.render(); $('#meta').textContent = fr.content.vectorError ? `composer: no vector section — ${fr.content.vectorError}` : `composer: ${f.id} is a vector section (${fr.content.vector.layers.map((l) => `${l.layer}: ${l.colors.length} cells from ${l.blocks} blocks`).join(' · ')})`; }
+    } },
     { label: 'Small multiples…', run: () => openMultiplesDialog(ed, f) },
     { label: 'Key plan for this view', run: () => addKeyPlan(ed, f) },
   ];

@@ -46,6 +46,10 @@ export async function ensureImages(doc) {
       } else f._img = await createImageBitmap(await (await fetch(f.content.src)).blob());   // a worker
     } catch { f.content.missing = 'image not readable'; }
   }));
+  // a vector section's overlay (the other layers, a transparent render)
+  await Promise.all(doc.frames.filter((f) => f.kind === 'image' && !f._vimg && f.content && f.content.vector && f.content.vector.overlay).map(async (f) => {
+    try { const im = new Image(); im.src = f.content.vector.overlay; await im.decode(); f._vimg = typeof createImageBitmap !== 'undefined' ? await createImageBitmap(im) : im; } catch { /* drawn without it */ }
+  }));
 }
 
 const newCanvas = (w, h) => (typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(w, h) : Object.assign(document.createElement('canvas'), { width: w, height: h }));

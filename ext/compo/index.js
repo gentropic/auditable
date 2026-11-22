@@ -672,6 +672,33 @@ function drawOverlays(ctx, frame, list) {
   }
 }
 
+// ── a VECTOR picture of a section: content.vector = { background, layers: [{ type: 'cells', axis:
+// { w, u, v } (world axis indices), position (the plane, on axis w), rects: [u0, v0, u1, v1, …],
+// colors: [palette index…], palette }], overlay?: an image src (the other layers, transparent) }.
+// Each cell is the rectangle a block makes on the section plane; its corners go through the frame's
+// projection like any world point, so ticks, overlays and labels land on it as on the raster. ──
+function drawVector(ctx, frame, x, y, w, h) {
+  const V = frame.content.vector;
+  ctx.save();
+  ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip();
+  if (V.background) { ctx.fillStyle = V.background; ctx.fillRect(x, y, w, h); }
+  for (const Ly of V.layers || []) {
+    if (Ly.type !== 'cells') continue;
+    const ax = Ly.axis, R = Ly.rects, C = Ly.colors, P = Ly.palette, pt = [0, 0, 0];
+    pt[ax.w] = +Ly.position;
+    const page = (u, v) => { pt[ax.u] = u; pt[ax.v] = v; return worldToPage(frame, pt); };
+    for (let i = 0; i < C.length; i++) {
+      const a = page(R[i * 4], R[i * 4 + 1]), b = page(R[i * 4 + 2], R[i * 4 + 3]);
+      if (!a || !b) continue;
+      const x0 = Math.min(a.x, b.x), y0 = Math.min(a.y, b.y), x1 = Math.max(a.x, b.x), y1 = Math.max(a.y, b.y);
+      ctx.fillStyle = P[C[i]]; ctx.strokeStyle = P[C[i]]; ctx.lineWidth = 0.04;   // a hairline of the same colour closes the seams viewers anti-alias between cells
+      ctx.beginPath(); ctx.rect(x0, y0, x1 - x0, y1 - y0); ctx.fill(); ctx.stroke();
+    }
+  }
+  if (frame._vimg) ctx.drawImage(frame._vimg, x, y, w, h);
+  ctx.restore();
+}
+
 // ── src/kinds.js ──
 
 // Frame KINDS — each a small adapter that draws finished content into its box. The context is in
@@ -762,8 +789,11 @@ registerKind('image', {
     const x = box[0] + (box[2] - w) / 2, y = box[1] + (box[3] - h) / 2;
     ctx.imageSmoothingEnabled = c.smooth !== false;
     // a PDF page takes JPEG bytes as they are (a photo-like 3D render: a fraction of the size)
-    const src = ctx.acceptsImageData && frame._jpeg ? frame._jpeg : img;
-    ctx.drawImage(src, x, y, w, h);
+    if (c.vector && c.vectorOn !== false && hasProj(frame)) drawVector(ctx, frame, x, y, w, h);   // a vector section: cells, then the other layers' transparent render
+    else {
+      const src = ctx.acceptsImageData && frame._jpeg ? frame._jpeg : img;
+      ctx.drawImage(src, x, y, w, h);
+    }
     // a picture of 3D space (meta.proj) may wear its coordinates: ticks on the border, or a grid
     if (c.ticks && c.ticks !== 'off' && hasProj(frame)) drawTicks(ctx, frame, c.ticks);
     // world overlays: its own (content.overlays) and the host's (env.overlaysFor — a key plan's section)
@@ -1863,6 +1893,10 @@ async function ensureImages(doc) {
       } else f._img = await createImageBitmap(await (await fetch(f.content.src)).blob());   // a worker
     } catch { f.content.missing = 'image not readable'; }
   }));
+  // a vector section's overlay (the other layers, a transparent render)
+  await Promise.all(doc.frames.filter((f) => f.kind === 'image' && !f._vimg && f.content && f.content.vector && f.content.vector.overlay).map(async (f) => {
+    try { const im = new Image(); im.src = f.content.vector.overlay; await im.decode(); f._vimg = typeof createImageBitmap !== 'undefined' ? await createImageBitmap(im) : im; } catch { /* drawn without it */ }
+  }));
 }
 
 const newCanvas = (w, h) => (typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(w, h) : Object.assign(document.createElement('canvas'), { width: w, height: h }));
@@ -2723,6 +2757,7 @@ export {
   fmtCoord,
   planeTrace,
   drawOverlays,
+  drawVector,
   renderPage,
   ensureImages,
   exportPDF,

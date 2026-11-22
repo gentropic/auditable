@@ -12,7 +12,7 @@ export const kindOf = (k) => KINDS.get(k) || null;
 
 // ── fields live in fields.js; resolveFields is re-exported from here for the kinds' sake ──
 import { resolveFields, registerField, subjectFrame, formatNumber } from './fields.js';
-import { hasProj, worldToPage, drawTicks, imageRect, drawOverlays } from './world.js';
+import { hasProj, worldToPage, drawTicks, imageRect, drawOverlays, drawVector } from './world.js';
 export { resolveFields };
 
 // ── text: paragraphs (blank-line or newline separated), **bold** runs, word wrap to the box ──
@@ -91,8 +91,11 @@ registerKind('image', {
     const x = box[0] + (box[2] - w) / 2, y = box[1] + (box[3] - h) / 2;
     ctx.imageSmoothingEnabled = c.smooth !== false;
     // a PDF page takes JPEG bytes as they are (a photo-like 3D render: a fraction of the size)
-    const src = ctx.acceptsImageData && frame._jpeg ? frame._jpeg : img;
-    ctx.drawImage(src, x, y, w, h);
+    if (c.vector && c.vectorOn !== false && hasProj(frame)) drawVector(ctx, frame, x, y, w, h);   // a vector section: cells, then the other layers' transparent render
+    else {
+      const src = ctx.acceptsImageData && frame._jpeg ? frame._jpeg : img;
+      ctx.drawImage(src, x, y, w, h);
+    }
     // a picture of 3D space (meta.proj) may wear its coordinates: ticks on the border, or a grid
     if (c.ticks && c.ticks !== 'off' && hasProj(frame)) drawTicks(ctx, frame, c.ticks);
     // world overlays: its own (content.overlays) and the host's (env.overlaysFor — a key plan's section)
