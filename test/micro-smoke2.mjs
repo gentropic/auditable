@@ -1046,17 +1046,16 @@ if (take()) {
   await saveProject(pr);
   const rt = await pr.evaluate(async () => {
     window._micro._recipesList().push({ name: 'gt std', tool: 'gt', params: { layer: 'm.csv', series: [{ layer: 'm.csv', col: 'FE' }], cutoffs: [30, 40, 50, 60] } });
-    await window._micro.runRoutine({ name: 'month', tool: 'routine', params: {
+    await window._micro.runRoutine({ name: 'month', tool: 'routine', params: { output: { dir: 'monthly' },
       steps: [{ each: { grade: ['FE'] }, steps: [{ recipe: 'gt std', series: [{ layer: 'm.csv', col: '$grade' }] }] }],
     } });
     const meta1 = document.querySelector('#meta').textContent;
-    await window._micro.runRoutine({ name: 'month', tool: 'routine', params: {
+    await window._micro.runRoutine({ name: 'month', tool: 'routine', params: { output: { dir: 'monthly' },
       steps: [{ guard: 'no-overwrites' }, { each: { grade: ['FE'] }, steps: [{ recipe: 'gt std', series: [{ layer: 'm.csv', col: '$grade' }] }] }],
     } });
     const meta2 = document.querySelector('#meta').textContent;
     const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2routine');
-    const day = new Date().toISOString().slice(0, 10);
-    const rep = await (await dir.getDirectoryHandle('reports')).getDirectoryHandle(day);
+    const rep = await dir.getDirectoryHandle('monthly');
     const names = []; for await (const k of rep.keys()) names.push(k);
     return { meta1, meta2, names };
   });
@@ -1126,9 +1125,8 @@ if (take()) {
     } });
     const meta = document.querySelector('#meta').textContent;
     const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2routine');
-    const day = new Date().toISOString().slice(0, 10);
-    const rep = await (await dir.getDirectoryHandle('reports')).getDirectoryHandle(day);
-    const names = []; for await (const k of rep.keys()) names.push(k);
+    let rep = null; for await (const [k, h] of (await dir.getDirectoryHandle('runs')).entries()) if (k.endsWith(' scratch')) rep = h;
+    const names = []; for await (const k of rep.keys()) if (k !== 'run.json') names.push(k);
     window._micro._recipesList().push({ name: 'ask-routine', tool: 'routine', file: 'recipes/ar.yaml',
       inputs: [{ name: 'g2', type: 'column' }],
       params: { steps: [{ tool: 'gt', series: [{ layer: 'm.csv', col: '$g2' }], cutoffs: [30, 40, 50] }] } });
@@ -7136,7 +7134,8 @@ if (take()) {
     out.pages = (pdf.match(/\/Type\s*\/Page(?!s)/g) || []).length;
     out.png = await read('figs/f.png').then((f) => f.size, () => 0);
     const { localDate } = await import('/tools/micro/src/recipes.js');
-    out.report = await read(`reports/${localDate()}/xy_sel.tsv`).then((f) => f.size, () => 0);
+    { let rd = null; for await (const [k, h] of (await dir.getDirectoryHandle('runs')).entries()) if (k.startsWith(localDate()) && k.endsWith(' fix')) rd = k;
+      out.report = rd ? await read(`runs/${rd}/xy_sel.tsv`).then((f) => f.size, () => 0) : 0; }
     document.querySelectorAll('.fwin').forEach((w) => w.remove());
     // B. an invalid calc column fails the step, naming it
     M_.runRoutine({ name: 'badcalc', tool: 'routine', params: { steps: [{ tool: 'calccols', layer: 'm.csv', cols: [{ name: 'BAD', expr: 'FE +* 2' }] }] } });
@@ -7323,6 +7322,77 @@ if (take()) {
     /1 step run/.test(r.r) && rRows[0] === 'cutoff\tDOM\ttonnes\tgrade\tmetal' && rRows.length === 1 + 3 && !rRows.some((l) => /\ttotal\t/.test(l)));
   chk(`TOOLS: a routine states the validation band width (“${r.noBand.slice(0, 110)}”); a misspelled resource setting names the real one (“${r.typo.slice(0, 120)}”)`,
     /bandW: a routine must state it/.test(r.noBand) && /no setting “cutoff” — did you mean “cutoffs”/.test(r.typo));
+  await p.close();
+}
+
+// ── §114: THE RUN RECORD (routines v2 step 3) — a run leaves runs/<local date> <hhmm> <routine>/ with
+//     run.json beside its reports: the routine's hash, the micro build, every layer's files with
+//     their SHA-256 (checked here against WebCrypto's), every step's settings with the automatic
+//     values pinned, its outputs with their SHA-256, its values; a failed run's record says so, and
+//     Retry continues the SAME record with the event logged; a second run gets its own folder. ──
+if (take()) {
+  const p = await mkPage('sm2rec');
+  await p.evaluate(async () => { try { await (await navigator.storage.getDirectory()).removeEntry('sm2rec', { recursive: true }); } catch { } });
+  await p.evaluate(async () => {
+    const rows = ['XC,YC,ZC,FE']; for (let k = 0; k < 3; k++) for (let j = 0; j < 6; j++) for (let i = 0; i < 6; i++) rows.push(`${5 + i * 10},${5 + j * 10},${5 + k * 10},${(40 + i + j).toFixed(1)}`);
+    await window._micro.openBlob(new File([rows.join('\n') + '\n'], 'm.csv'), 'm.csv', 'replace');
+  });
+  await p.waitForFunction(() => window._micro.layers()[0] && window._micro.layers()[0].docs.blockDoc, null, { timeout: 20000 });
+  await saveProject(p);
+  const r = await p.evaluate(async () => {
+    const M_ = window._micro, out = {}, wait = (ms) => new Promise((res) => setTimeout(res, ms));
+    const waitMeta = async (re, ms = 60000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { const t = document.querySelector('#meta').textContent; if (re.test(t)) return t; await wait(150); } return document.querySelector('#meta').textContent; };
+    const dir = M_.project().dir, L = M_.layers()[0];
+    const runDirs = async () => { const o = []; try { for await (const [k] of (await dir.getDirectoryHandle('runs')).entries()) o.push(k); } catch { } return o.sort(); };
+    const readText = async (path) => { let d = dir; const parts = path.split('/'); for (const s of parts.slice(0, -1)) d = await d.getDirectoryHandle(s); return (await (await d.getFileHandle(parts[parts.length - 1])).getFile()).text(); };
+    const hex = async (buf) => [...new Uint8Array(await crypto.subtle.digest('SHA-256', buf))].map((b) => b.toString(16).padStart(2, '0')).join('');
+    const steps = [
+      { tool: 'gt', with: { layer: 'm.csv', series: [{ col: 'FE' }], cutoffs: [40, 45, 50] }, as: 'gt' },
+      { tool: 'stats', with: { layer: 'm.csv', cols: ['FE'] }, as: 'st' },
+    ];
+    document.querySelector('#meta').textContent = '';
+    M_.runRoutine({ name: 'month end', tool: 'routine', params: { steps } });
+    out.meta = await waitMeta(/routine “month end” (— \d+ steps? run|STOPPED)/);
+    const d1 = (await runDirs()).find((k) => k.endsWith(' month-end'));
+    out.dir = d1;
+    const rec = JSON.parse(await readText(`runs/${d1}/run.json`));
+    const report = await readText(`runs/${d1}/gt.tsv`);
+    const srcBlob = M_.layers()[0].docs.blockDoc.blob;
+    out.rec = { v: rec.v, status: rec.status, micro: rec.micro, routineHash: !!rec.routine.sha256, finished: !!rec.finished,
+      layer: rec.layers[0] && { name: rec.layers[0].name, size: rec.layers[0].files[0].size, sha: rec.layers[0].files[0].sha256 },
+      steps: rec.steps.map((s) => ({ step: s.step, tool: s.tool, status: s.status, cutoffs: s.params && s.params.cutoffs, out: s.outputs.map((o) => o.path), key: s.key })),
+      outSha: rec.steps[0].outputs[0].sha256 };
+    out.srcSha = await hex(await srcBlob.arrayBuffer());
+    out.repSha = await hex(new TextEncoder().encode(report));
+    // a second run in the same minute: its own folder
+    document.querySelector('#meta').textContent = '';
+    M_.runRoutine({ name: 'month end', tool: 'routine', params: { steps } });
+    await waitMeta(/routine “month end” (— \d+ steps? run|STOPPED)/);
+    out.dirs = (await runDirs()).filter((k) => k.includes('month-end'));
+    // a failing run (xy on a selection there is none of), then Retry once there is one
+    document.querySelector('#meta').textContent = '';
+    M_.runRoutine({ name: 'flaky', tool: 'routine', params: { steps: [{ tool: 'xy', layer: 'm.csv', mode: 'scatter', x: 'FE', y: 'FE', scope: 'selection', as: 'xy' }] } });
+    await waitMeta(/STOPPED/);
+    const fd = (await runDirs()).find((k) => k.endsWith(' flaky'));
+    out.failed = JSON.parse(await readText(`runs/${fd}/run.json`)).status;
+    document.querySelectorAll('.fwin:not([data-routine-run])').forEach((w) => w.remove());
+    await window.micro.select(L.id, [0, 1, 2, 3]);
+    document.querySelector('#meta').textContent = '';
+    [...document.querySelectorAll('.fwin[data-routine-run] button')].find((b) => b.textContent === 'Retry step').click();
+    await waitMeta(/routine “flaky” — \d+ steps? run/);
+    const fr = JSON.parse(await readText(`runs/${fd}/run.json`));
+    out.retry = { status: fr.status, events: fr.events.map((e) => e.kind), step: fr.steps[0].status, sameDir: (await runDirs()).filter((k) => k.endsWith(' flaky')).length };
+    return out;
+  });
+  chk(`RUN RECORD: runs/${r.dir}/run.json — status ${r.rec.status}, build ${r.rec.micro}, the routine hashed (${r.rec.routineHash}), finished (${r.rec.finished})`,
+    /^\d{4}-\d\d-\d\d \d{4} month-end$/.test(r.dir || '') && r.rec.v === 1 && r.rec.status === 'ok' && r.rec.micro && r.rec.routineHash && r.rec.finished);
+  chk(`RUN RECORD: the layer's file SHA-256 is WebCrypto's (${(r.rec.layer && r.rec.layer.sha || '').slice(0, 12)}… = ${r.srcSha.slice(0, 12)}…)`, r.rec.layer && r.rec.layer.sha === r.srcSha && r.rec.layer.size > 0);
+  chk(`RUN RECORD: each step with its settings pinned, its outputs and their SHA-256 (${JSON.stringify(r.rec.steps)})`,
+    r.rec.steps.length === 2 && r.rec.steps.every((s) => s.status === 'ok') && JSON.stringify(r.rec.steps[0].cutoffs) === '[40,45,50]'
+    && r.rec.steps[0].out[0] === `runs/${r.dir}/gt.tsv` && JSON.stringify(r.rec.steps[0].key) === '["series","cutoff"]' && r.rec.outSha === r.repSha);
+  chk(`RUN RECORD: a second run gets its own folder (${r.dirs.join(' · ')})`, r.dirs.length === 2 && new Set(r.dirs).size === 2 && (r.dirs[1] === r.dirs[0] + '-2' || r.dirs[0].slice(0, 15) !== r.dirs[1].slice(0, 15)));   // the same minute → -2; a minute later → its own stamp
+  chk(`RUN RECORD: a failed run's record says so (${r.failed}); Retry continues the SAME record (${JSON.stringify(r.retry)})`,
+    r.failed === 'failed' && r.retry.status === 'ok' && r.retry.events.join() === 'start,retry' && r.retry.step === 'ok' && r.retry.sameDir === 1);
   await p.close();
 }
 

@@ -27,6 +27,8 @@ import { openInputsDialog, openRoutineWindow } from './routine-ui.js';
 import { compoPage, writePages, addResourceFrame } from './composer.js';
 import { openValidation } from './validation.js';
 import { checkParams, runTool, tableTSV, toolDef } from './tools.js';
+import { newRunRecord, writeRecord, outputEntry, localDate } from './runrecord.js';
+export { localDate };
 const $ = (s) => document.querySelector(s);
 
 // ── RECIPES: named, re-runnable analysis setups as YAML FILES in the project
@@ -292,9 +294,9 @@ export function routineTargets(tool, params, slug, P) {
   return t;
 }
 
-// the LOCAL date: an evening run in Brazil (UTC−3) belongs to today, not to UTC's tomorrow
-export const localDate = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-export const routineOutDir = (P) => (P.output && P.output.dir) || `reports/${localDate()}`;
+// a run's reports go into its own folder (runs/<local date> <hhmm> <routine>/, src/runrecord.js) —
+// output.dir sends them elsewhere. Before a run exists (Preview) the path says so.
+export const routineOutDir = (P) => (P.output && P.output.dir) || P._runDir || 'runs/(this run)';
 
 export const routineOutPath = (P, slug) => `${routineOutDir(P)}/${(P.output && P.output.prefix) || ''}${slug}${(P.output && P.output.suffix) || ''}.tsv`;
 
@@ -452,9 +454,20 @@ export async function runRoutine(r, opts = {}) {
       }
     }
     if (dup.length) { $('#meta').textContent = `routine: two steps would write the same report — ${[...new Set(dup)].join(', ')} (give each its own \`as:\`)`; return; } }
+  // the RUN RECORD (src/runrecord.js): a new run gets its own folder; a resume, retry or skip
+  // continues the same record and logs the event
+  let rec = opts.record || null;
+  if (!rec) {
+    const names = [...new Set(steps.filter((st) => !st.guard).flatMap((st) => routineLayerNames({ params: routineStepOp(st).params })).filter(Boolean))];
+    try { rec = await newRunRecord(r, steps, names, (m) => { $('#meta').textContent = `routine “${r.name}” — ${m}`; }); }
+    catch (e) { $('#meta').textContent = `routine: the run record could not start — ${e.message}`; return; }
+  } else rec.events.push({ at: new Date().toISOString(), kind: opts.event || 'resume', step: (opts.from || 0) + 1 });
+  if (opts.event === 'skip' && rec.steps[(opts.from || 1) - 1]) rec.steps[(opts.from || 1) - 1].status = 'skipped';
+  const PR = { ...P, _runDir: rec.dir };
+  const saveRec = () => writeRecord(rec).catch((e) => { $('#meta').textContent = `routine: the run record could not be written — ${e.message}`; });
   // output routing
-  const outDir = routineOutDir(P);
-  const outPath = (slug) => routineOutPath(P, slug);
+  const outDir = routineOutDir(PR);
+  const outPath = (slug) => routineOutPath(PR, slug);
   // the opt-in GUARD: stop before ANYTHING runs if a write target exists
   const guardAt = opts.from ? -1 : steps.findIndex((st) => st.guard === 'no-overwrites');   // a resume has already written some of them
   if (guardAt >= 0) {
@@ -463,7 +476,7 @@ export async function runRoutine(r, opts = {}) {
       const rc2 = st.recipe ? byName.get(st.recipe) : null;
       const gTool = rc2 ? rc2.tool : st.tool;
       const gParams = routineStepOp(st).params;
-      const t = routineTargets(gTool, gParams, st._slug, P);
+      const t = routineTargets(gTool, gParams, st._slug, PR);
       for (const rep of t.reports) {
         const exists = await resolveFileHandle(S.project.dir, rep).then(() => true, () => false);
         if (exists) { $('#meta').textContent = `routine: guard stopped — ${rep} already exists`; return; }
@@ -477,7 +490,8 @@ export async function runRoutine(r, opts = {}) {
   // `from` resumes a stopped run: the earlier steps are shown as already done,
   // so the record stays honest about what this run did and did not do.
   const from = Math.max(0, Math.min(opts.from || 0, steps.length - 1));
-  const tracker = openRoutineTracker(r.name, steps, P);
+  const tracker = openRoutineTracker(r.name, steps, PR);
+  rec.status = 'running'; await saveRec();
   for (let k = 0; k < from; k++) tracker.state(k, 'skip');
   let n = 0, wrote = 0;
   const books = opts.books || new Map(), bookLines = [];                // book path → { docs, dpi } — written when the routine finishes
@@ -486,8 +500,9 @@ export async function runRoutine(r, opts = {}) {
     if (idx < from) continue;                              // already run (or deliberately skipped)
     if (tracker.cancelled()) {
       if (wrote) markProjectDirty();
+      rec.status = 'cancelled'; rec.finished = new Date().toISOString(); await saveRec();
       tracker.done(`cancelled — ${idx} of ${steps.length} steps done, ${wrote} report${wrote === 1 ? '' : 's'} → ${outDir}/`,
-        idx < steps.length ? [['Resume', () => runRoutine(r, { from: idx, steps, books }), 'carry on from where you stopped it']] : []);
+        idx < steps.length ? [['Resume', () => runRoutine(r, { from: idx, steps, books, record: rec, event: 'resume' }), 'carry on from where you stopped it']] : []);
       $('#meta').textContent = `routine “${r.name}” cancelled after ${idx} step${idx === 1 ? '' : 's'}`;
       return;
     }
@@ -495,6 +510,7 @@ export async function runRoutine(r, opts = {}) {
     const merged = routineStepOp(st);
     const tool = merged.tool, n0 = n;
     let stepNote = '';
+    const t0 = Date.now(), entry = rec.steps[idx] = { n: idx + 1, step: st._slug, tool, status: 'running', started: new Date().toISOString(), params: merged.params, outputs: [] };
     tracker.state(idx, 'run');
     $('#meta').textContent = `routine “${r.name}” — step ${n}/${steps.length}: ${st._slug}…`;
     try {
@@ -504,6 +520,8 @@ export async function runRoutine(r, opts = {}) {
         const fh = await resolveFileHandle(S.project.dir, outPath(st._slug), { create: true });
         const w = await fh.createWritable(); await w.write(tsv); await w.close();
         wrote++;
+        Object.assign(entry, { params: res.resolved, values: res.values, units: res.table.units, key: res.table.key, warnings: res.warnings });
+        entry.outputs.push(await outputEntry(outPath(st._slug), tsv));
         const emit = st.emit || (merged.params && merged.params.emit);
         if (emit) await resultToLayer(typeof emit === 'object' && emit.layer ? String(emit.layer) : `${r.name}/${st._slug}`, tsv);
         if (res.warnings.length) stepNote = res.warnings.join('; ');
@@ -525,6 +543,7 @@ export async function runRoutine(r, opts = {}) {
         const fh = await resolveFileHandle(S.project.dir, outPath(st._slug), { create: true });
         const w = await fh.createWritable(); await w.write(tsv); await w.close();
         wrote++;
+        entry.outputs.push(await outputEntry(outPath(st._slug), tsv));
         const emit = st.emit || (merged.params && merged.params.emit);
         if (emit) {                                        // keep the result as a table layer too
           const path = typeof emit === 'object' && emit.layer ? String(emit.layer) : `${r.name}/${st._slug}`;
@@ -533,40 +552,47 @@ export async function runRoutine(r, opts = {}) {
         el.querySelector('.fwin-head button:last-child').click();   // tidy: close the step's window
       } else if (tool === 'solid') {
         await runSolidRecipe(merged.params);              // long-running (winding/peel) — awaited, not settled
+        entry.columns = routineTargets('solid', merged.params, st._slug, PR).columns;
       } else if (tool === 'compo') {                         // one composer page: into its book, or its own file
         const pp = merged.params || {};
         const page = await compoPage(pp, routineEval);
         if (pp.book) { const b = books.get(String(pp.book)) || { docs: [], dpi: +pp.dpi || 300 }; b.docs.push(page); books.set(String(pp.book), b); }
-        if (pp.out) { await writePages(String(pp.out), [page], { dpi: +pp.dpi || 300 }); wrote++; }
+        if (pp.out) { await writePages(String(pp.out), [page], { dpi: +pp.dpi || 300 }); wrote++; entry.outputs.push(await outputEntry(String(pp.out))); }
+        if (pp.book) entry.book = String(pp.book);
         if (!pp.book && !pp.out) throw new Error('a composer page needs `book:` (one PDF for the run) or `out:` (a .pdf / .png of its own)');
       } else if (tool === 'calccols') {                      // synchronous: applied, or the step fails naming the bad ones
         const pp = merged.params || {}, Lc = S.layers.find((x) => x.name === pp.layer);
         if (!Lc) throw new Error(`layer “${pp.layer}” isn't loaded`);
         const { bad } = applyCalcCols(Lc, pp.cols);
         if (bad.length) throw new Error(`invalid expression for ${bad.join(', ')}`);
+        entry.columns = (pp.cols || []).map((c) => ({ layer: pp.layer, name: c.name, expr: c.expr }));
       } else if (tool === 'figure') {                        // awaited: the PNG is written (out:) before the next step
-        await runFigureRecipe(merged.params || {});
+        const fr = await runFigureRecipe(merged.params || {});
+        if (fr && fr.out) entry.outputs.push(await outputEntry(fr.out));
       } else throw new Error(`unsupported tool in a routine: ${tool}`);
       tracker.state(idx, 'ok', stepNote);                 // a warning rides on the ✓ line
+      Object.assign(entry, { status: 'ok', ms: Date.now() - t0 }); await saveRec();
     } catch (e) {
       tracker.state(idx, 'fail', e.message);
+      Object.assign(entry, { status: 'failed', ms: Date.now() - t0, error: e.message }); rec.status = 'failed'; await saveRec();
       tracker.done(`stopped at step ${n} — the step's window is left open`, [
-        ['Retry step', () => runRoutine(r, { from: idx, steps, books }), 'run this step again, then carry on'],
-        ['Skip & continue', () => runRoutine(r, { from: idx + 1, steps, books }), 'leave this step undone and run the rest'],
+        ['Retry step', () => runRoutine(r, { from: idx, steps, books, record: rec, event: 'retry' }), 'run this step again, then carry on'],
+        ['Skip & continue', () => runRoutine(r, { from: idx + 1, steps, books, record: rec, event: 'skip' }), 'leave this step undone and run the rest'],
       ]);
       $('#meta').textContent = `routine “${r.name}” STOPPED at step ${n} (${st._slug}) — ${e.message}`;
       return;
     }
   }
   for (const [path, b] of books) {                          // the atlases: every page this run made, one PDF each
-    try { $('#meta').textContent = `routine “${r.name}” — writing ${path} (${b.docs.length} page${b.docs.length === 1 ? '' : 's'})…`; await writePages(path, b.docs, { dpi: b.dpi }); bookLines.push(`${path} (${b.docs.length} page${b.docs.length === 1 ? "" : "s"})`); }
+    try { $('#meta').textContent = `routine “${r.name}” — writing ${path} (${b.docs.length} page${b.docs.length === 1 ? '' : 's'})…`; await writePages(path, b.docs, { dpi: b.dpi }); (rec.books = rec.books || []).push({ pages: b.docs.length, ...(await outputEntry(path)) }); bookLines.push(`${path} (${b.docs.length} page${b.docs.length === 1 ? "" : "s"})`); }
     catch (e) { tracker.done(`the pages ran but ${path} could not be written — ${e.message}`); $('#meta').textContent = `routine “${r.name}”: ${path} failed — ${e.message}`; return; }
   }
+  rec.status = 'ok'; rec.finished = new Date().toISOString(); await saveRec();
   markProjectDirty();
   // say what THIS run did — a resume must not claim the steps it skipped
   const ran = n - from;
   const line = `${ran} step${ran === 1 ? "" : "s"} run${from ? ` (${from} skipped)` : ""}${wrote || !bookLines.length ? `, ${wrote} report${wrote === 1 ? "" : "s"} → ${outDir}/` : ""}${bookLines.length ? `, ${bookLines.join(", ")}` : ""}`;
-  tracker.done(line);
+  tracker.done(`${line} · record ${rec.dir}/run.json`);
   $('#meta').textContent = `routine “${r.name}” — ${line}`;
 }
 
