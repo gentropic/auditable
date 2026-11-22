@@ -25,6 +25,7 @@ import { applyCalcCols, layerHasColumn } from './calc.js';
 import { resultToLayer } from './analysis-ui.js';
 import { openInputsDialog, openRoutineWindow } from './routine-ui.js';
 import { compoPage, writePages } from './composer.js';
+import { checkParams, runTool, tableTSV, toolDef } from './tools.js';
 const $ = (s) => document.querySelector(s);
 
 // ── RECIPES: named, re-runnable analysis setups as YAML FILES in the project
@@ -304,7 +305,7 @@ export function routineLineInfo(st, i, P) {
   const rc = st.recipe ? S.recipes.find((x) => x.name === st.recipe) : null;
   const tool = st.recipe ? rc && rc.tool : st.tool;
   const label = st.recipe || (st.tool ? `${RECIPE_TOOLS[st.tool]} (inline)` : '(pick a recipe)');
-  const params = rc ? { ...rc.params, ...st } : st;
+  const params = routineStepOp(st).params;
   const t = tool ? routineTargets(tool, params, st._slug, P) : { reports: [], columns: [], figures: [] };
   // every step says what it WRITES — a report path, a column, a figure, or nothing
   const wrote = [
@@ -320,10 +321,15 @@ export function routineLineInfo(st, i, P) {
 
 // merge an expanded step into the op runRecipe takes (recipe params ⊕ overrides,
 // or the inline step's own params)
+export const STEP_KEYS = ['recipe', 'tool', 'as', '_slug', 'each', 'steps', 'params', 'guard', 'filter', 'emit', 'with'];
 export function routineStepOp(st) {
   const rc = st.recipe ? S.recipes.find((x) => x.name === st.recipe) : null;
-  const extras = Object.fromEntries(Object.entries(st).filter(([k]) => !['recipe', 'tool', 'as', '_slug', 'each', 'steps', 'params', 'guard', 'filter', 'emit'].includes(k)));
-  return { name: rc ? rc.name : st._slug, tool: rc ? rc.tool : st.tool, params: rc ? { ...rc.params, ...extras } : extras };
+  // settings belong under `with:` — a step's own keywords (as, emit, filter on an each, …) can then
+  // never swallow a tool setting of the same name (an inline step's `filter:` was silently dropped).
+  // The older form, settings mixed into the step, still merges, minus the keywords.
+  const extras = Object.fromEntries(Object.entries(st).filter(([k]) => !STEP_KEYS.includes(k)));
+  const own = st.with && typeof st.with === 'object' ? st.with : {};
+  return { name: rc ? rc.name : st._slug, tool: rc ? rc.tool : st.tool, params: { ...(rc ? rc.params : {}), ...extras, ...own } };
 }
 
 // the run tracker: the expanded list with live per-step state (· ▶ ✓ ✗),
@@ -355,7 +361,7 @@ export function openRoutineTracker(rname, steps, P) {
       const L2 = lines[i]; if (!L2) return;
       L2.ic.textContent = st2 === 'run' ? '▶' : st2 === 'ok' ? '✓' : st2 === 'fail' ? '✗' : st2 === 'skip' ? '–' : '·';
       L2.ic.className = 'rw-state ' + st2;
-      if (msg) { const m = document.createElement('div'); m.className = 'rw-prevline fail'; m.textContent = '     ' + msg; L2.row.after(m); }
+      if (msg) { const m = document.createElement('div'); m.className = 'rw-prevline ' + (st2 === 'ok' ? 'warn' : 'fail'); m.textContent = '     ' + msg; L2.row.after(m); }
       win.sub.textContent = `step ${Math.min(i + 1, steps.length)}/${steps.length}`;
       if (L2.row.scrollIntoView) L2.row.scrollIntoView({ block: 'nearest' });
     },
@@ -398,9 +404,21 @@ export async function runRoutine(r, opts = {}) {
   for (const st of steps) {
     if (st.guard) continue;
     const rc = st.recipe ? byName.get(st.recipe) : null;
-    for (const nm of routineLayerNames({ params: rc ? { ...rc.params, ...st } : st })) if (nm && !loaded.has(nm)) missingL.add(nm);
+    for (const nm of routineLayerNames({ params: routineStepOp(st).params })) if (nm && !loaded.has(nm)) missingL.add(nm);
   }
   if (missingL.size) { $('#meta').textContent = `routine: load these layers first — ${[...missingL].join(', ')} (routines run without prompts)`; return; }
+  // pre-flight 0: the settings of every step whose tool is registered (src/tools.js), checked the
+  // way a routine needs them — an unknown setting names the nearest real one, cutoffs and band
+  // widths are stated, the scope is all. Every problem at once, before anything runs.
+  { const probs = [];
+    steps.forEach((st, i) => {
+      if (st.guard) return;
+      const op = routineStepOp(st);
+      if (!toolDef(op.tool)) return;
+      const { errors } = checkParams(op.tool, op.params, { routine: true });
+      for (const e of errors) probs.push(`step ${i + 1} (${st._slug}): ${e}`);
+    });
+    if (probs.length) { $('#meta').textContent = `routine: ${probs.slice(0, 4).join(' · ')}${probs.length > 4 ? ` · +${probs.length - 4} more` : ''}`; return; } }
   // pre-flight 3: a referenced column must still resolve on its layer's schema.
   // A renamed/removed column would otherwise compile to a blank that reads 0 and
   // a routine would write a plausible-looking zero-grade report marked ✓.
@@ -408,7 +426,7 @@ export async function runRoutine(r, opts = {}) {
   for (const st of steps) {
     if (st.guard) continue;
     const rc = st.recipe ? byName.get(st.recipe) : null;
-    const pr = rc ? { ...rc.params, ...st } : st;
+    const pr = routineStepOp(st).params;
     const cols = [];
     for (const ser of pr.series || []) if (ser.col) cols.push({ layer: ser.layer || pr.layer, col: ser.col });
     if (pr.col) cols.push({ layer: pr.layer, col: pr.col });
@@ -426,7 +444,7 @@ export async function runRoutine(r, opts = {}) {
     for (const st of steps) {
       if (st.guard) continue;
       const rc = st.recipe ? byName.get(st.recipe) : null;
-      for (const rep of routineTargets(rc ? rc.tool : st.tool, rc ? { ...rc.params, ...st } : st, st._slug, P).reports) {
+      for (const rep of routineTargets(rc ? rc.tool : st.tool, routineStepOp(st).params, st._slug, P).reports) {
         if (seen.has(rep)) dup.push(rep); else seen.set(rep, true);
       }
     }
@@ -441,7 +459,7 @@ export async function runRoutine(r, opts = {}) {
       if (st.guard) continue;
       const rc2 = st.recipe ? byName.get(st.recipe) : null;
       const gTool = rc2 ? rc2.tool : st.tool;
-      const gParams = rc2 ? { ...rc2.params, ...st } : st;
+      const gParams = routineStepOp(st).params;
       const t = routineTargets(gTool, gParams, st._slug, P);
       for (const rep of t.reports) {
         const exists = await resolveFileHandle(S.project.dir, rep).then(() => true, () => false);
@@ -472,11 +490,21 @@ export async function runRoutine(r, opts = {}) {
     }
     if (st.guard) { tracker.state(idx, 'ok'); continue; }
     const merged = routineStepOp(st);
-    const tool = merged.tool;
+    const tool = merged.tool, n0 = n;
+    let stepNote = '';
     tracker.state(idx, 'run');
     $('#meta').textContent = `routine “${r.name}” — step ${n}/${steps.length}: ${st._slug}…`;
     try {
-      if (['gt', 'swath', 'stats', 'xy'].includes(tool)) {
+      if (toolDef(tool)) {                                   // a registered tool: scan + shape, no window
+        const res = await runTool(tool, merged.params, { routine: true, progress: (n, N) => { $('#meta').textContent = `routine “${r.name}” — step ${n0}/${steps.length}: ${st._slug}… ${N ? Math.round((100 * n) / N) + '%' : ''}`; } });
+        const tsv = tableTSV(res.table);
+        const fh = await resolveFileHandle(S.project.dir, outPath(st._slug), { create: true });
+        const w = await fh.createWritable(); await w.write(tsv); await w.close();
+        wrote++;
+        const emit = st.emit || (merged.params && merged.params.emit);
+        if (emit) await resultToLayer(typeof emit === 'object' && emit.layer ? String(emit.layer) : `${r.name}/${st._slug}`, tsv);
+        if (res.warnings.length) stepNote = res.warnings.join('; ');
+      } else if (tool === 'xy') {                            // not on the contract yet: through its window
         const before = new Set([...document.querySelectorAll('.fwin')]);
         runRecipe(merged, true);
         const el = await new Promise((res, rej) => {
@@ -516,7 +544,7 @@ export async function runRoutine(r, opts = {}) {
       } else if (tool === 'figure') {                        // awaited: the PNG is written (out:) before the next step
         await runFigureRecipe(merged.params || {});
       } else throw new Error(`unsupported tool in a routine: ${tool}`);
-      tracker.state(idx, 'ok');
+      tracker.state(idx, 'ok', stepNote);                 // a warning rides on the ✓ line
     } catch (e) {
       tracker.state(idx, 'fail', e.message);
       tracker.done(`stopped at step ${n} — the step's window is left open`, [

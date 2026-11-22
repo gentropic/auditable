@@ -143,6 +143,20 @@ export function binSwath(scan, di, bandWidth, offset) {
   return { keys: [...allB].sort((a, b) => a - b), out };
 }
 
+// the swath TABLE for direction `di`: one row per band × series (band-major), from binSwath. The
+// window's copied table (wide) and the swath tool's report (tidy) both read these rows.
+export function swathRows(scan, di, bandWidth, offset, gradeUnit) {
+  const b = binSwath(scan, di, bandWidth, offset);
+  const multi = scan.series.length > 1;
+  const names = b.out.map((o) => { const Lx = layerById(o.se.s.layerId); return multi ? `${(Lx ? (Lx.label || Lx.name) : '').replace(/\.[^.]*$/, '')}·${o.se.s.col}` : o.se.s.col; });
+  const rows = [];
+  for (const B of b.keys) b.out.forEach((o, k) => {
+    const f = gradeUnitFactor(o.se.s.unit, gradeUnit), e = o.bands.get(B);
+    rows.push({ series: names[k], direction: scan.dirNames[di], center: offset + (B + 0.5) * bandWidth, count: e ? e.n : 0, weight: e ? e.sw : 0, mean: e && e.sw > 0 ? (e.swg / e.sw) * f : NaN });
+  });
+  return { rows, names };
+}
+
 export const _swathWins = new Map();
 
 export function openSwath(L, ropts) {
@@ -336,16 +350,12 @@ export function openSwath(L, ropts) {
     const b = binSwath(st.scan, di, bw, off);
     if (!b.keys.length) return null;
     const gl = st.gradeUnit === 'pct' ? '%' : st.gradeUnit;
-    const multi = st.series.length > 1;
-    const names = b.out.map((o) => { const Lx = layerById(o.se.s.layerId); return multi ? `${(Lx ? (Lx.label || Lx.name) : '').replace(/\.[^.]*$/, '')}·${o.se.s.col}` : o.se.s.col; });
+    const { rows, names } = swathRows(st.scan, di, bw, off, st.gradeUnit);   // the same rows the tool reports
     const head = [`center along ${st.scan.dirNames[di]}`, 'count', 'weight', ...names.map((nm) => `${nm} mean${gl ? ` (${gl})` : ''}`)];
-    const prim = b.out[0];
-    const lines = [head.join('\t')];
-    for (const B of b.keys) {
-      const e0 = prim.bands.get(B);
-      const row = [off + (B + 0.5) * bw, e0 ? e0.n : 0, e0 ? e0.sw : 0];
-      for (const o of b.out) { const f = gradeUnitFactor(o.se.s.unit, st.gradeUnit); const e = o.bands.get(B); row.push(e && e.sw > 0 ? (e.swg / e.sw) * f : ''); }
-      lines.push(row.join('\t'));
+    const lines = [head.join('\t')], ns = names.length;
+    for (let i = 0; i < rows.length; i += ns) {                // wide: the first series' count / weight, every series' mean
+      const r0 = rows[i];
+      lines.push([r0.center, r0.count, r0.weight, ...rows.slice(i, i + ns).map((r) => (Number.isFinite(r.mean) ? r.mean : ''))].join('\t'));
     }
     return lines.join('\n');
   };

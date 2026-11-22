@@ -26,6 +26,92 @@ export const _gtWins = new Map();
 // blank = count/volume) + an optional row filter. One streamed scan per Run
 // caches each series' grade-descending cumulative curve (Σw / Σwg), so cutoff
 // count, plot unit, and manual ranges are LIVE afterwards — no re-scan. ──
+// one streamed pass per series: compile grade / weight / filter, collect
+// (g, w), sort grade-descending → cumulative Σw / Σwg (then drop the raw pairs)
+export async function scanGTSeries(st, onProgress, signal) {   // st: { series: [{ layerId, col, unit, weight, filter }], densUnit, scope }
+  const dScale = unitConvert(1, st.densUnit, 't/m3');
+  const series = st.series.map((s) => {
+    const Lx = layerById(s.layerId); if (!Lx) return null;
+    const h = layerTableHeader(Lx); if (!h) return null;
+    const schema = schemaExt(Lx, h);
+    // a valid but UNKNOWN column name compiles to a BLANK closure (() => null),
+    // and +null === 0 is finite — so a renamed/removed column silently produced
+    // a flat grade-0 curve at full tonnage. Refuse a bare missing name loudly;
+    // a real expression stays free-form.
+    if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(String(s.col).trim())) {
+      const _v = validate(String(s.col).trim(), schema);
+      if (!_v.ok) throw new Error(`series column "${s.col}": ${(_v.errors[0] && _v.errors[0].message) || 'unknown column'} — pick another, or reopen the layer that has it`);
+    }
+    let gradeFn; try { gradeFn = compileValue(quoteIdent(s.col), schema, { decimal: '.' }); } catch { return null; }   // a NAME as an expression → quote (spaces/hyphens)
+    let weightFn = null, filterFn = null;
+    if (s.weight && s.weight.trim()) { try { weightFn = compileValue(s.weight, schema, { decimal: '.' }); } catch { throw new Error(`series weight "${s.weight}": invalid`); } }
+    if (s.filter && s.filter.trim()) { try { filterFn = compileBool(s.filter, schema, { decimal: '.' }); } catch { throw new Error(`series filter "${s.filter}": invalid`); } }
+    return Object.assign(gtAccumulator(), { s, L: Lx, vc: volumeContextOf(Lx), gradeFn, weightFn, filterFn, weighted: !!weightFn });
+  }).filter(Boolean);
+  // a Parquet layer's series are scanned COLUMNAR and in parallel (src/colscan.js):
+  // one pass per layer for all of its series, only the columns they need, a row
+  // group per worker. Everything else keeps the row path below.
+  const colL = [...new Set(series.filter((se) => canScanColumnar(se.L)).map((se) => se.L))];
+  let total = 0, where = '';
+  const N = colL.reduce((t, Lx) => t + (attrRowCountOf(Lx) || 0), 0) + series.filter((se) => !colL.includes(se.L)).reduce((t, se) => t + (attrRowCountOf(se.L) || 0), 0);
+  for (const Lx of colL) {
+    const ses = series.filter((se) => se.L === Lx), vc = ses[0].vc, h = layerTableHeader(Lx);
+    const dims = vc.dc ? [h.columns[vc.dc.x], h.columns[vc.dc.y], h.columns[vc.dc.z]] : null;
+    const params = { series: ses.map((se) => ({ grade: quoteIdent(se.s.col), weight: (se.s.weight || '').trim() || null, filter: (se.s.filter || '').trim() || null })), dScale, vol: { base: vc.base, dims } };
+    const base = total;
+    const { parts } = await scanColumnar(Lx, { kernel: 'gt', params, exprs: params.series.flatMap((x) => [x.grade, x.weight, x.filter]), extraCols: dims || [], mask: scopeMask(st, Lx), signal,
+      keepZone: seriesZoneKeep(Lx, params.series.map((x) => x.filter), scopeMask(st, Lx)),
+      onProgress: (d, n, w) => { total = base + d; where = w; if (onProgress) onProgress(total, N, w); } });
+    ses.forEach((se, k) => {
+      const acc = gtMerge(parts.map((p2) => p2 && p2[k]));
+      Object.assign(se, { e: acc.e, keys: acc.keys, cw: acc.cw, cwg: acc.cwg, n: acc.n, gmin: acc.gmin, gmax: acc.gmax, bins: null, pend: null });
+    });
+  }
+  for (const se of series) {
+    if (colL.includes(se.L)) continue;
+    const Lx = se.L, mask = scopeMask(st, Lx);
+    // layerRecords owns the record number — the raw rec++ this replaces was the
+    // mis-numbering bug (a delimited source's bad-coordinate rows were counted
+    // though the renderer never numbered them, shifting every later record's
+    // selection membership and derived-column reads). The fix landed first in
+    // computeGT, which turned out to be DEAD CODE — this closure is what the
+    // GT window actually runs.
+    for await (const { f: row, rec: rr } of layerRecords(Lx)) {
+      {
+        total++; if ((total & 0xffff) === 0) { checkAbort(signal); if (onProgress) onProgress(total, N, 'on this page'); await new Promise((r) => setTimeout(r)); }
+        if (mask && !(rr < mask.length && mask[rr])) continue;
+        if (se.filterFn && !se.filterFn(row)) continue;
+        const g = numOf(se.gradeFn(row)); if (!Number.isFinite(g)) continue;   // a blank grade is unestimated, not 0
+        const w = (se.weightFn ? (+se.weightFn(row) || 0) * dScale : 1) * volumeAt(se.vc, row);
+        if (!(w > 0)) continue;
+        se.add(g, w);
+      }
+    }
+    if (onProgress) onProgress(total, N, 'on this page');
+    se.finish();
+    where = where || 'on this page';
+  }
+  return { series, where };
+}
+
+// the grade-tonnage TABLE, one row per cutoff × series (cutoffs in the display grade unit): the
+// window's copied table and the grade-tonnage tool's report both read these rows — one shaping
+// path. amount = tonnes when a density applies, else volume (m³); metal = amount × grade, in
+// tonnes of metal when the grade unit is declared.
+export function gtRows(scan, cuts, gradeUnit) {
+  const weighted = scan.series.some((se) => se.weighted);
+  const mScale = gradeUnit ? unitConvert(1, gradeUnit, 'fraction') : 1;
+  const multi = scan.series.length > 1;
+  const names = scan.series.map((se) => { const Lx = layerById(se.s.layerId); return multi ? `${(Lx ? (Lx.label || Lx.name) : '').replace(/\.[^.]*$/, '')}·${se.s.col}` : se.s.col; });
+  const rows = [];
+  for (const c of cuts) scan.series.forEach((se, k) => {
+    const f = gradeUnitFactor(se.s.unit, gradeUnit);
+    const [t, tg] = gtAbove(se, c / f), g = t > 0 ? (tg / t) * f : NaN;
+    rows.push({ series: names[k], cutoff: c, amount: t, grade: g, metal: Number.isFinite(g) ? t * g * mScale : NaN });
+  });
+  return { rows, names, weighted };
+}
+
 export function openGradeTonnage(L, ropts) {
   if (!L || !gridAxesOf(L)) { $('#meta').textContent = 'grade-tonnage: needs a regular block model'; return; }
   const ex = _gtWins.get(L.id); if (ex) { if (!ropts) { focusWindow(ex.win.el); return; } ex.win.close(); }   // a recipe replaces the open window
@@ -96,73 +182,7 @@ export function openGradeTonnage(L, ropts) {
   win.el._onResized = () => { if (win._spec) plotChart(cv, win._spec); };
   let staleEl, progEl, runBtn;
   const markStale = () => { st.stale = true; if (staleEl) staleEl.textContent = st.scan ? '↻ config changed — Run to update' : ''; };
-  // one streamed pass per series: compile grade / weight / filter, collect
-  // (g, w), sort grade-descending → cumulative Σw / Σwg (then drop the raw pairs)
-  const scanGT = async (onProgress, signal) => {
-    const dScale = unitConvert(1, st.densUnit, 't/m3');
-    const series = st.series.map((s) => {
-      const Lx = layerById(s.layerId); if (!Lx) return null;
-      const h = layerTableHeader(Lx); if (!h) return null;
-      const schema = schemaExt(Lx, h);
-      // a valid but UNKNOWN column name compiles to a BLANK closure (() => null),
-      // and +null === 0 is finite — so a renamed/removed column silently produced
-      // a flat grade-0 curve at full tonnage. Refuse a bare missing name loudly;
-      // a real expression stays free-form.
-      if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(String(s.col).trim())) {
-        const _v = validate(String(s.col).trim(), schema);
-        if (!_v.ok) throw new Error(`series column "${s.col}": ${(_v.errors[0] && _v.errors[0].message) || 'unknown column'} — pick another, or reopen the layer that has it`);
-      }
-      let gradeFn; try { gradeFn = compileValue(quoteIdent(s.col), schema, { decimal: '.' }); } catch { return null; }   // a NAME as an expression → quote (spaces/hyphens)
-      let weightFn = null, filterFn = null;
-      if (s.weight && s.weight.trim()) { try { weightFn = compileValue(s.weight, schema, { decimal: '.' }); } catch { throw new Error(`series weight "${s.weight}": invalid`); } }
-      if (s.filter && s.filter.trim()) { try { filterFn = compileBool(s.filter, schema, { decimal: '.' }); } catch { throw new Error(`series filter "${s.filter}": invalid`); } }
-      return Object.assign(gtAccumulator(), { s, L: Lx, vc: volumeContextOf(Lx), gradeFn, weightFn, filterFn, weighted: !!weightFn });
-    }).filter(Boolean);
-    // a Parquet layer's series are scanned COLUMNAR and in parallel (src/colscan.js):
-    // one pass per layer for all of its series, only the columns they need, a row
-    // group per worker. Everything else keeps the row path below.
-    const colL = [...new Set(series.filter((se) => canScanColumnar(se.L)).map((se) => se.L))];
-    let total = 0, where = '';
-    const N = colL.reduce((t, Lx) => t + (attrRowCountOf(Lx) || 0), 0) + series.filter((se) => !colL.includes(se.L)).reduce((t, se) => t + (attrRowCountOf(se.L) || 0), 0);
-    for (const Lx of colL) {
-      const ses = series.filter((se) => se.L === Lx), vc = ses[0].vc, h = layerTableHeader(Lx);
-      const dims = vc.dc ? [h.columns[vc.dc.x], h.columns[vc.dc.y], h.columns[vc.dc.z]] : null;
-      const params = { series: ses.map((se) => ({ grade: quoteIdent(se.s.col), weight: (se.s.weight || '').trim() || null, filter: (se.s.filter || '').trim() || null })), dScale, vol: { base: vc.base, dims } };
-      const base = total;
-      const { parts } = await scanColumnar(Lx, { kernel: 'gt', params, exprs: params.series.flatMap((x) => [x.grade, x.weight, x.filter]), extraCols: dims || [], mask: scopeMask(st, Lx), signal,
-        keepZone: seriesZoneKeep(Lx, params.series.map((x) => x.filter), scopeMask(st, Lx)),
-        onProgress: (d, n, w) => { total = base + d; where = w; if (onProgress) onProgress(total, N, w); } });
-      ses.forEach((se, k) => {
-        const acc = gtMerge(parts.map((p2) => p2 && p2[k]));
-        Object.assign(se, { e: acc.e, keys: acc.keys, cw: acc.cw, cwg: acc.cwg, n: acc.n, gmin: acc.gmin, gmax: acc.gmax, bins: null, pend: null });
-      });
-    }
-    for (const se of series) {
-      if (colL.includes(se.L)) continue;
-      const Lx = se.L, mask = scopeMask(st, Lx);
-      // layerRecords owns the record number — the raw rec++ this replaces was the
-      // mis-numbering bug (a delimited source's bad-coordinate rows were counted
-      // though the renderer never numbered them, shifting every later record's
-      // selection membership and derived-column reads). The fix landed first in
-      // computeGT, which turned out to be DEAD CODE — this closure is what the
-      // GT window actually runs.
-      for await (const { f: row, rec: rr } of layerRecords(Lx)) {
-        {
-          total++; if ((total & 0xffff) === 0) { checkAbort(signal); if (onProgress) onProgress(total, N, 'on this page'); await new Promise((r) => setTimeout(r)); }
-          if (mask && !(rr < mask.length && mask[rr])) continue;
-          if (se.filterFn && !se.filterFn(row)) continue;
-          const g = numOf(se.gradeFn(row)); if (!Number.isFinite(g)) continue;   // a blank grade is unestimated, not 0
-          const w = (se.weightFn ? (+se.weightFn(row) || 0) * dScale : 1) * volumeAt(se.vc, row);
-          if (!(w > 0)) continue;
-          se.add(g, w);
-        }
-      }
-      if (onProgress) onProgress(total, N, 'on this page');
-      se.finish();
-      where = where || 'on this page';
-    }
-    return { series, where };
-  };
+  const scanGT = (onProgress, signal) => scanGTSeries(st, onProgress, signal);
   const run = async () => {
     if (st.running) return;
     if (st.scope !== 'all' && !st.series.some((s) => { const Lx = layerById(s.layerId); return Lx && scopeMask(st, Lx); })) {
@@ -183,21 +203,16 @@ export function openGradeTonnage(L, ropts) {
     const weighted = st.scan.series.some((se) => se.weighted);
     const cuts = gtCuts(st.scan.series, st.nCut, (se) => gradeUnitFactor(se.s.unit, st.gradeUnit));
     if (!cuts) return null;
-    const gl = guLabel(), mScale = st.gradeUnit ? unitConvert(1, st.gradeUnit, 'fraction') : 1, tU = weighted ? 't' : 'm³';
-    const multi = st.scan.series.length > 1;
-    const names = st.scan.series.map((se) => { const Lx = layerById(se.s.layerId); return multi ? `${(Lx ? (Lx.label || Lx.name) : '').replace(/\.[^.]*$/, '')}·${se.s.col}` : se.s.col; });
+    const gl = guLabel(), tU = weighted ? 't' : 'm³';
+    const { rows, names } = gtRows(st.scan, cuts, st.gradeUnit);   // the same rows the tool reports
     const head = [`cutoff${gl ? ` (${gl})` : ''}`];
     names.forEach((nm) => head.push(`${nm} ${tU} ≥`, `${nm} grade${gl ? ` (${gl})` : ''}`, st.gradeUnit ? `${nm} metal (t)` : `${nm} grade·${tU}`));
-    const lines = [head.join('\t')];
-    for (const c of cuts) {
+    const lines = [head.join('\t')], ns = names.length;
+    cuts.forEach((c, ci) => {
       const row = [c];
-      for (const se of st.scan.series) {
-        const f = gradeUnitFactor(se.s.unit, st.gradeUnit);
-        const [t, tg] = gtAbove(se, c / f), g = t > 0 ? (tg / t) * f : NaN;
-        row.push(t, Number.isFinite(g) ? g : '', Number.isFinite(g) ? t * g * mScale : '');
-      }
+      for (let k = 0; k < ns; k++) { const r = rows[ci * ns + k]; row.push(r.amount, Number.isFinite(r.grade) ? r.grade : '', Number.isFinite(r.grade) ? r.metal : ''); }
       lines.push(row.join('\t'));
-    }
+    });
     return lines.join('\n');
   };
   const seriesRow = (s, i) => {

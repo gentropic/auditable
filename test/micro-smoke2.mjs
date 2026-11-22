@@ -1045,7 +1045,7 @@ if (take()) {
   await pr.evaluate(() => { window._micro.layers()[0].storage = 'project'; });
   await saveProject(pr);
   const rt = await pr.evaluate(async () => {
-    window._micro._recipesList().push({ name: 'gt std', tool: 'gt', params: { layer: 'm.csv', series: [{ layer: 'm.csv', col: 'FE' }], nCut: 6 } });
+    window._micro._recipesList().push({ name: 'gt std', tool: 'gt', params: { layer: 'm.csv', series: [{ layer: 'm.csv', col: 'FE' }], cutoffs: [30, 40, 50, 60] } });
     await window._micro.runRoutine({ name: 'month', tool: 'routine', params: {
       steps: [{ each: { grade: ['FE'] }, steps: [{ recipe: 'gt std', series: [{ layer: 'm.csv', col: '$grade' }] }] }],
     } });
@@ -1122,7 +1122,7 @@ if (take()) {
   // nothing pre-recorded) + a routine's own inputs: gate the run
   const inl = await pr.evaluate(async () => {
     await window._micro.runRoutine({ name: 'scratch', tool: 'routine', params: {
-      steps: [{ each: [{ g: 'FE' }], steps: [{ tool: 'gt', series: [{ layer: 'm.csv', col: '$g' }], nCut: 4, as: 'inline' }] }],
+      steps: [{ each: [{ g: 'FE' }], steps: [{ tool: 'gt', series: [{ layer: 'm.csv', col: '$g' }], cutoffs: [30, 40, 50], as: 'inline' }] }],
     } });
     const meta = document.querySelector('#meta').textContent;
     const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2routine');
@@ -1131,7 +1131,7 @@ if (take()) {
     const names = []; for await (const k of rep.keys()) names.push(k);
     window._micro._recipesList().push({ name: 'ask-routine', tool: 'routine', file: 'recipes/ar.yaml',
       inputs: [{ name: 'g2', type: 'column' }],
-      params: { steps: [{ tool: 'gt', series: [{ layer: 'm.csv', col: '$g2' }] }] } });
+      params: { steps: [{ tool: 'gt', series: [{ layer: 'm.csv', col: '$g2' }], cutoffs: [30, 40, 50] }] } });
     window._micro.runRecipe(window._micro._recipesList().find((x) => x.name === 'ask-routine'), true);
     const dlg = !!document.querySelector('.fwin[data-inputs-dialog]');
     document.querySelectorAll('.fwin').forEach((x) => x.remove());
@@ -1145,14 +1145,14 @@ if (take()) {
   const trk = await pr.evaluate(async () => {
     document.querySelectorAll('.fwin').forEach((w) => w.remove());
     await window._micro.runRoutine({ name: 'trk', tool: 'routine', params: { output: { prefix: 'k-' }, steps: [
-      { each: [{ g: 'FE' }], steps: [{ tool: 'gt', series: [{ layer: 'm.csv', col: '$g' }], nCut: 4 }] },
+      { each: [{ g: 'FE' }], steps: [{ tool: 'gt', series: [{ layer: 'm.csv', col: '$g' }], cutoffs: [30, 40, 50] }] },
     ] } });
     const el = document.querySelector('.fwin[data-routine-run]');
     const oks = el ? el.querySelectorAll('.rw-state.ok').length : 0;
     const summary = el ? [...el.querySelectorAll('.lbl')].map((x) => x.textContent).join(' ') : '';
     document.querySelectorAll('.fwin').forEach((w) => w.remove());
     window._micro.openRoutineWindow({ name: 'trk', tool: 'routine', file: 'recipes/trk.yaml', params: { steps: [
-      { each: [{ g: 'FE' }, { g: 'SG' }], steps: [{ tool: 'gt', series: [{ layer: 'm.csv', col: '$g' }] }] },
+      { each: [{ g: 'FE' }, { g: 'SG' }], steps: [{ tool: 'gt', series: [{ layer: 'm.csv', col: '$g' }], cutoffs: [30, 40, 50] }] },
     ] } });
     const ed = document.querySelector('.fwin[data-routine]');
     [...ed.querySelectorAll('button')].find((x) => x.textContent === 'Preview').click();
@@ -1415,7 +1415,7 @@ if (take()) {
     g3.tKind === 'table' && g3.tRows === 2);
   const r3 = await p3.evaluate(async () => {
     window._micro._recipesList().length = 0;
-    window._micro._recipesList().push({ name: 'gt std', tool: 'gt', params: { layer: 'm.csv', series: [{ layer: 'm.csv', col: 'FE' }], nCut: 4 } });
+    window._micro._recipesList().push({ name: 'gt std', tool: 'gt', params: { layer: 'm.csv', series: [{ layer: 'm.csv', col: 'FE' }], cutoffs: [45, 50, 55] } });
     await window._micro.runRoutine({ name: 'resumed', tool: 'routine', params: { output: { prefix: 'z-' }, steps: [
       { each: [{ g: 'FE', run: 1 }, { g: 'FE', run: 2 }], steps: [{ recipe: 'gt std', series: [{ layer: 'm.csv', col: '$g' }] }] },
     ] } }, { from: 1 });
@@ -7120,13 +7120,13 @@ if (take()) {
     const t0 = Date.now();
     M_.runRoutine({ name: 'fix', tool: 'routine', params: { steps: [
       { tool: 'compo', figure: 'F', book: 'atlas/b.pdf', dpi: 72 },
-      { tool: 'gt', layer: 'm.csv', series: [{ layer: 'm.csv', col: 'FE' }], scope: 'selection', nCut: 4, as: 'gt_sel' },
+      { tool: 'xy', layer: 'm.csv', mode: 'scatter', x: 'FE', y: 'FE', scope: 'selection', as: 'xy_sel' },
       { tool: 'figure', out: 'figs/f.png' },
       { tool: 'compo', figure: 'F', book: 'atlas/b.pdf', dpi: 72 },
     ] } });
     out.stopMeta = await waitMeta(/STOPPED/, 60000); out.stopMs = Date.now() - t0;
     out.stopIcons = [...(document.querySelector('.fwin[data-routine-run]') || document.createElement('div')).querySelectorAll('.rw-state')].map((x) => x.textContent).join('');
-    document.querySelectorAll('.fwin:not([data-routine-run])').forEach((w) => { const c = w.querySelector('.fwin-head button:last-child'); if (c && !w.dataset.routineRun && /grade-tonnage/.test(w.textContent)) c.click(); });
+    document.querySelectorAll('.fwin:not([data-routine-run])').forEach((w) => { const c = w.querySelector('.fwin-head button:last-child'); if (c && !w.dataset.routineRun && /scatter/.test(w.textContent)) c.click(); });
     await window.micro.select(id, [0, 1, 2, 3, 4, 5]);
     const rb = [...document.querySelectorAll('.fwin[data-routine-run] button')].find((b) => b.textContent === 'Retry step'); if (!rb) return out; rb.click();
     out.doneMeta = await waitMeta(/routine “fix” — \d+ steps? run/, 90000);
@@ -7136,7 +7136,7 @@ if (take()) {
     out.pages = (pdf.match(/\/Type\s*\/Page(?!s)/g) || []).length;
     out.png = await read('figs/f.png').then((f) => f.size, () => 0);
     const { localDate } = await import('/tools/micro/src/recipes.js');
-    out.report = await read(`reports/${localDate()}/gt_sel.tsv`).then((f) => f.size, () => 0);
+    out.report = await read(`reports/${localDate()}/xy_sel.tsv`).then((f) => f.size, () => 0);
     document.querySelectorAll('.fwin').forEach((w) => w.remove());
     // B. an invalid calc column fails the step, naming it
     M_.runRoutine({ name: 'badcalc', tool: 'routine', params: { steps: [{ tool: 'calccols', layer: 'm.csv', cols: [{ name: 'BAD', expr: 'FE +* 2' }] }] } });
@@ -7193,7 +7193,7 @@ if (take()) {
     const M_ = window._micro, wait = (ms) => new Promise((res) => setTimeout(res, ms));
     const waitMeta = async (re, ms = 90000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { const t = document.querySelector('#meta').textContent; if (re.test(t)) return t; await wait(150); } return document.querySelector('#meta').textContent; };
     M_.runRoutine({ name: 'pin', tool: 'routine', params: { output: { dir: 'pins' }, steps: [
-      { tool: 'gt', layer: 'pin.csv', series: [{ layer: 'pin.csv', col: 'FE', weight: 'DENS' }], nCut: 4, as: 'gt' },   // automatic cutoffs (from the data's range): today's behaviour
+      { tool: 'gt', layer: 'pin.csv', series: [{ layer: 'pin.csv', col: 'FE', weight: 'DENS' }], cutoffs: [15, 30, 45, 60, 75], as: 'gt' },   // a routine states its cutoffs: the ones the window chose automatically
       { tool: 'stats', layer: 'pin.csv', cols: ['FE', 'SIO2'], groupBy: 'DOM', weight: 'DENS', as: 'stats' },
       { tool: 'swath', layer: 'pin.csv', series: [{ layer: 'pin.csv', col: 'FE' }], mode: 'axes', bandW: [20, 20, 10], off: [0, 0, 0], as: 'swath' },
     ] } });
@@ -7202,7 +7202,9 @@ if (take()) {
     const read = async (n) => { try { return await (await (await pins.getFileHandle(n)).getFile()).text(); } catch { return null; } };   // pins null → every read null
     return { meta, gt: await read('gt.tsv'), stats: await read('stats.tsv'), swath: await read('swath.tsv') };
   });
-  // numbers only, in reading order — the TSV's layout may change (machine tables), its numbers may not
+  // numbers only, in reading order — the TSV's layout may change (machine tables), its numbers may not.
+  // swath reports every direction now (tidy rows: series, direction, …): the pin is the first one's
+  const firstDir = (t) => { const L = (t || '').split('\n'), h = (L[0] || '').split('\t'), di = h.indexOf('direction'); if (di < 0) return t; const d0 = (L[1] || '').split('\t')[di]; return [L[0], ...L.slice(1).filter((l) => l.split('\t')[di] === d0)].join('\n'); };
   const nums = (t) => (t || '').split('\n').slice(1).map((l) => l.split('\t').map((c) => c.trim()).filter((c) => c !== '' && Number.isFinite(+c)).map((c) => +(+c).toPrecision(8))).filter((a) => a.length);
   if (process.env.SM2_PIN_PRINT) console.log(JSON.stringify({ meta: r.meta, gt: r.gt, stats: r.stats, swath: r.swath }, null, 1));
   // pinned 2026-11-22 from the window path (gt: tonnes-weighted by DENS, automatic cutoffs; stats:
@@ -7213,7 +7215,62 @@ if (take()) {
     swath: [[10, 64, 64000, 38.8125], [30, 64, 64000, 45.0625], [50, 64, 64000, 51], [70, 64, 64000, 56.9375], [90, 64, 64000, 63.1875]],
   };
   chk(`PARITY: the routine ran all three (“${r.meta.slice(0, 100)}”)`, /3 steps run/.test(r.meta) && r.gt && r.stats && r.swath);
-  if (PIN) for (const k of ['gt', 'stats', 'swath']) chk(`PARITY: ${k} reproduces its pinned numbers`, JSON.stringify(nums(r[k])) === JSON.stringify(PIN[k]));
+  if (PIN) for (const k of ['gt', 'stats', 'swath']) chk(`PARITY: ${k} reproduces its pinned numbers`, JSON.stringify(nums(k === 'swath' ? firstDir(r[k]) : r[k])) === JSON.stringify(PIN[k]));
+  await p.close();
+}
+
+// ── §112: THE TOOL CONTRACT (routines v2 step 2) — a routine's gt / stats / swath steps run without a
+//     window: the user's open window stays open and its saved setup untouched; reports are machine
+//     tables; settings are checked before anything runs (an unknown one names the nearest real one;
+//     a routine states its cutoffs and band widths and runs on scope all); settings under `with:`
+//     keep a stats `filter:` (the old step form dropped it as a step keyword); a cutoff between two
+//     grade steps is SAID on the step's line. ──
+if (take()) {
+  const p = await mkPage('sm2tools');
+  await p.evaluate(async () => { try { await (await navigator.storage.getDirectory()).removeEntry('sm2tools', { recursive: true }); } catch { } });
+  await p.evaluate(async () => {
+    const rows = ['XC,YC,ZC,FE,DENS,DOM'];
+    for (let k = 0; k < 4; k++) for (let j = 0; j < 8; j++) for (let i = 0; i < 10; i++) rows.push([5 + i * 10, 5 + j * 10, 5 + k * 10, (30 + 3 * i + 2 * j).toFixed(2), '2.5', i < 5 ? 'hem' : 'itb'].join(','));
+    await window._micro.openBlob(new File([rows.join('\n') + '\n'], 'm.csv'), 'm.csv', 'replace');
+  });
+  await p.waitForFunction(() => window._micro.layers()[0] && window._micro.layers()[0].docs.blockDoc, null, { timeout: 20000 });
+  await saveProject(p);
+  const r = await p.evaluate(async () => {
+    const M_ = window._micro, out = {}, wait = (ms) => new Promise((res) => setTimeout(res, ms));
+    const waitMeta = async (re, ms = 60000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { const t = document.querySelector('#meta').textContent; if (re.test(t)) return t; await wait(150); } return document.querySelector('#meta').textContent; };
+    const L = M_.layers()[0], dir = M_.project().dir;
+    const read = async (path) => { let d = dir; const parts = path.split('/'); try { for (const s of parts.slice(0, -1)) d = await d.getDirectoryHandle(s); return (await (await d.getFileHandle(parts[parts.length - 1])).getFile()).text(); } catch { return null; } };
+    const run = async (name, steps) => { document.querySelector('#meta').textContent = ''; M_.runRoutine({ name, tool: 'routine', params: { output: { dir: 'out' }, steps } }); return waitMeta(new RegExp(`routine( “${name}”)?.*(— \\d+ steps? run|STOPPED|cancelled|must state|no setting|allows)`), 60000); };
+    // A. the user's GT window, configured; a routine's gt step must not touch it
+    M_.openGradeTonnage(L, { cfg: { series: [{ layer: 'm.csv', col: 'FE' }], nCut: 7 }, run: false }); await wait(200);
+    const before = JSON.stringify(L.analysis && L.analysis.gt), winsBefore = document.querySelectorAll('.fwin').length;
+    let opened = 0; const mo = new MutationObserver((ms) => { for (const m of ms) for (const n of m.addedNodes) if (n.classList && n.classList.contains('fwin') && !n.dataset.routineRun) opened++; }); mo.observe(document.body, { childList: true, subtree: true });
+    out.a = await run('quiet', [{ tool: 'gt', with: { layer: 'm.csv', series: [{ col: 'FE', weight: 'DENS' }], cutoffs: [30, 40, 50] }, as: 'gt' }]);
+    mo.disconnect();
+    out.aWin = { opened, stillOpen: [...document.querySelectorAll('.fwin')].some((w) => /grade-tonnage/.test(w.textContent)), sameCfg: JSON.stringify(L.analysis && L.analysis.gt) === before, winsBefore };
+    out.aTsv = await read('out/gt.tsv');
+    document.querySelectorAll('.fwin').forEach((w) => w.remove());
+    // B. an unknown setting: refused before anything runs, naming the nearest real one
+    out.b = await run('typo', [{ tool: 'gt', with: { layer: 'm.csv', series: [{ col: 'FE' }], cutofs: [30, 40] }, as: 'g2' }]);
+    out.bRan = !!document.querySelector('.fwin[data-routine-run]');
+    // C. automatic cutoffs and a selection scope: a routine refuses both
+    out.c = await run('auto', [{ tool: 'gt', with: { layer: 'm.csv', series: [{ col: 'FE' }], nCut: 5, scope: 'selection' }, as: 'g3' }]);
+    // D. `with:` keeps the stats filter — hem only (160 of 320)
+    out.d = await run('withf', [{ tool: 'stats', with: { layer: 'm.csv', cols: ['FE'], filter: 'DOM = "hem"' }, as: 'st' }]);
+    out.dTsv = await read('out/st.tsv');
+    document.querySelectorAll('.fwin').forEach((w) => w.remove());
+    // E. a cutoff between grade steps is said on the step's line (still ✓)
+    out.e = await run('offstep', [{ tool: 'gt', with: { layer: 'm.csv', series: [{ col: 'FE' }], cutoffs: [30, 40.0001] }, as: 'g4' }]);
+    out.eNote = [...document.querySelectorAll('.fwin[data-routine-run] .rw-prevline.warn')].map((x) => x.textContent.trim()).join(' | ');
+    return out;
+  });
+  chk(`TOOLS: a routine's gt step opens no window (${JSON.stringify(r.aWin)}) and writes a machine table (“${(r.aTsv || '').split('\n')[0]}”)`,
+    /1 step run/.test(r.a) && r.aWin.opened === 0 && r.aWin.stillOpen && r.aWin.sameCfg && /^series\tcutoff\ttonnes\tgrade\tmetal/.test(r.aTsv || ''));
+  chk(`TOOLS: an unknown setting is refused before anything runs, naming the real one (“${r.b.slice(0, 140)}”)`, /no setting “cutofs” — did you mean “cutoffs”/.test(r.b) && !r.bRan);
+  chk(`TOOLS: a routine states its cutoffs and runs on scope all (“${r.c.slice(0, 200)}”)`, /cutoffs: a routine must state it/.test(r.c) && /scope: a routine allows "all"/.test(r.c));
+  const dRow = (r.dTsv || '').split('\n')[1] || '';
+  chk(`TOOLS: settings under with: keep the stats filter (${dRow.split('\t').slice(0, 3).join(' · ')})`, /1 step run/.test(r.d) && dRow.split('\t')[1] === '160');
+  chk(`TOOLS: a cutoff between grade steps is said on the step's line (“${r.eNote}”)`, /1 step run/.test(r.e) && /40\.0001 not on the/.test(r.eNote));
   await p.close();
 }
 
