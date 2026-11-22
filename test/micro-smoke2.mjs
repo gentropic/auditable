@@ -6906,7 +6906,7 @@ if (take()) {
   const p = await mkPage('sm2retarget');
   const r = await p.evaluate(async () => {
     const M_ = window._micro, out = {};
-    const mk = (hdr, row, dx) => { const rows = [hdr]; for (let j = 0; j < 10; j++) for (let i = 0; i < 12; i++) rows.push(row(512005 + dx + i * 10, 7604005 + j * 10, 525, (0.2 + 0.05 * i).toFixed(2), (0.1 + 0.02 * j).toFixed(2), i < 6 ? 'west' : 'east')); return rows.join('\n') + '\n'; };
+    const mk = (hdr, row, dx, s = 10) => { const rows = [hdr]; for (let j = 0; j < 10; j++) for (let i = 0; i < 12; i++) rows.push(row(512005 + dx + i * s, 7604005 + j * s, 525, (0.2 + 0.05 * i).toFixed(2), (0.1 + 0.02 * j).toFixed(2), i < 6 ? 'west' : 'east')); return rows.join('\n') + '\n'; };
     const idA = await M_.openBlob(new File([mk('XC,YC,ZC,AU,CU,DOM', (x, y, z, au, cu, d) => [x, y, z, au, cu, d].join(','), 0)], 'pitA.csv'), 'pitA.csv', 'replace');
     const A = M_.layers().find((x) => x.id === idA);
     await M_.setLayerColorSel(A, M_.colorSelFor(A, 'CU'));
@@ -6915,6 +6915,8 @@ if (take()) {
     const vf = M_.addViewFrame(ed);
     await M_.addResourceFrame({ layer: 'pitA.csv', grade: 'AU', cutoffs: [0, 0.4], density: { const: 2.7, unit: 't/m3' }, groupBy: ['DOM'], metalFactor: 1, scope: 'all' });
     ed.addFrame({ kind: 'text', box: [20, 150, 80, 8], content: { md: 'mean AU {mean:pitA.csv:AU}' } });
+    ed.addFrame({ kind: 'text', box: [20, 160, 80, 8], content: { md: `domains {n:DOM@${vf.id}}` } });   // names no layer: its view's
+    out.refs = (await import('/tools/micro/src/retarget.js')).figureRefs(M_.currentFigure().doc).map((r) => ({ name: r.name, where: [...r.where], cols: [...r.cols] }));
     const fig = M_.currentFigure(), camA = fig.doc.frames.find((f) => f.id === vf.id).source.scene.camera.target.slice();
     out.sceneColor = fig.doc.frames.find((f) => f.id === vf.id).source.scene.layers[0].color;
     // the other pit: shifted 5 km east, CU before AU, DOM → ZONE
@@ -6935,10 +6937,24 @@ if (take()) {
     // the scene puts B's colour on by NAME: CU is column 3 in B, it was 4 in A
     await M_.applyScene(v2.source.scene);
     out.selB = B.colorSel; out.wantB = M_.colorSelFor(B, 'CU');
+    out.cap2 = figure.doc.frames.find((f) => f.kind === 'text' && /domains/.test(f.content.md)).content.md;
     const orig = fig.doc.frames.find((f) => f.id === vf.id).source.scene.layers[0];
     out.orig = { layer: orig.name, figs: M_.figures().map((f) => f.name) };
+    // 'scale': pit C is laid out at twice the spacing — the camera keeps its place RELATIVE to the data
+    await M_.openBlob(new File([mk('XC,YC,ZC,AU,CU,DOM', (x, y, z, au, cu, d) => [x, y, z, au, cu, d].join(','), -3000, 20)], 'pitC.csv'), 'pitC.csv', 'add');
+    const sA = fig.doc.frames.find((f) => f.id === vf.id).source.scene, ob = sA.layers[0].box, camR = sA.camera.radius, camT = sA.camera.target.slice();
+    const { figure: f3 } = await M_.retargetFigure(fig, { layers: { 'pitA.csv': 'pitC.csv' }, columns: {}, placement: 'scale' });
+    const s3 = f3.doc.frames.find((f) => f.source && f.source.kind === 'view').source.scene, nb = s3.layers[0].box;
+    const c = (b) => [0, 1, 2].map((i) => (b[0][i] + b[1][i]) / 2), d = (b) => Math.hypot(...[0, 1, 2].map((i) => b[1][i] - b[0][i]));
+    const k = d(nb) / d(ob), want = camT.map((v, i) => c(nb)[i] + (v - c(ob)[i]) * k);
+    out.scale = { k: +k.toFixed(3), radius: +(s3.camera.radius / camR).toFixed(3), off: +Math.max(...want.map((v, i) => Math.abs(v - s3.camera.target[i]))).toFixed(6), layer: s3.layers[0].name };
     return out;
   });
+  const capRef = r.refs.find((x) => x.name === 'pitA.csv');
+  chk(`OTHER DATA: a statistic naming no layer counts as its view's layer's (${JSON.stringify(r.refs)}) and follows that layer's rename ("${r.cap2}")`,
+    capRef && capRef.where.includes('caption') && capRef.cols.includes('DOM') && r.cap2 === `domains {n:ZONE@${/@([\w.-]+)\}/.exec(r.cap2)[1]}}`);
+  chk(`OTHER DATA: 'scale' — the view onto a model laid out twice as wide scales with it (${JSON.stringify(r.scale)})`,
+    r.scale.layer === 'pitC.csv' && r.scale.k > 1.5 && Math.abs(r.scale.radius - r.scale.k) < 1e-3 && r.scale.off < 1e-3);
   chk(`OTHER DATA: a scene keeps its colour by NAME (${r.sceneColor}; A was ${r.selA}); the view of the unloaded pit says "${r.before}"; the dialog guesses the loaded layer (${JSON.stringify(r.dialog)})`,
     r.sceneColor === 'CU' && r.before === 'data not loaded' && r.dialog.layer === 'pitB.csv' && r.dialog.missing.includes('DOM'));
   chk(`OTHER DATA: the figure made with pit B (${JSON.stringify(r.after)}; ${JSON.stringify(r.report)})`,

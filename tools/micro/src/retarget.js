@@ -11,8 +11,24 @@ const MODE_WORDS = new Set(['elev', 'elevation', 'intensity', 'classification', 
 // the statistic fields' grammar (composer's STAT_RE): {fn:[layer:]col[:fmt][@id]}
 const STAT_RE = /\{(mean|median|min|max|std|n):([^{}@]+?)((?::[,_]?(?:\.\d{1,2})?[f%e]?)?(?:@[\w.-]+)?)\}/g;
 
+import { subjectFrame } from '../../../ext/compo/index.js';
+
 const isView = (f) => !!(f.source && f.source.kind === 'view');
 const factsOf = (f) => (isView(f) ? f.content && f.content.meta && f.content.meta.facts : f.source && f.source.facts) || null;
+
+// a statistic that names no layer ({mean:AU}) is about its subject view (its @id, the caption's
+// refers-to, else the nearest view) and was answered by the first shown layer there having the
+// column — the view's facts record which. That layer is the one whose column it uses.
+function statLayer(doc, text, key, tail) {
+  const at = (/@([\w.-]+)$/.exec(tail || '') || [])[1] || null;
+  const v = subjectFrame({ doc, at }, text, isView);
+  if (!v || !isView(v) || !v.source.scene) return null;
+  const shown = (v.source.scene.layers || []).filter((sl) => sl.visible);
+  const fx = factsOf(v), got = fx && fx.stats && fx.stats[key];
+  const by = got && got.layer && shown.find((sl) => sl.name === got.layer || sl.label === got.layer);
+  return (by || shown[0] || {}).name || null;
+}
+function eachStat(md, fn) { STAT_RE.lastIndex = 0; let m; while ((m = STAT_RE.exec(String(md)))) fn(m); }
 
 // walk a recipe's params: every layer it names, and the columns under each
 function walkParams(p, top, visit) {
@@ -68,11 +84,11 @@ export function figureRefs(doc) {
     }
     if (s.stereonet && s.stereonet.layer) use(s.stereonet.layer, 'stereonet');
     if (f.kind === 'text' && f.content && f.content.md) {
-      STAT_RE.lastIndex = 0; let m;
-      while ((m = STAT_RE.exec(String(f.content.md)))) {
-        const k = m[2].lastIndexOf(':');
-        if (k >= 0) { const r = use(m[2].slice(0, k).trim(), 'caption'); if (r) r.cols.add(m[2].slice(k + 1).trim()); }
-      }
+      eachStat(f.content.md, (m) => {
+        const key = m[2].trim(), k = key.lastIndexOf(':');
+        const lay = k >= 0 ? key.slice(0, k).trim() : statLayer(doc, f, key, m[3]);
+        const r = use(lay, 'caption'); if (r) r.cols.add(k >= 0 ? key.slice(k + 1).trim() : key);
+      });
     }
   }
   return [...by.values()];
@@ -95,7 +111,11 @@ export function retargetDoc(doc, plan, target) {
   const newOf = (old) => (L[old] ? target(L[old]) : null);
   const col = (old, c) => { const m = C[old]; return m && m[c] ? m[c] : c; };
   const rep = { views: 0, charts: 0, tables: 0, stereonets: 0, legends: 0, captions: 0, moved: 0 };
-  const capCols = Object.assign({}, ...Object.values(C));     // a layer-less caption stat: any rename applies
+  // a layer-less caption stat follows its answering layer's renames — worked out BEFORE the views
+  // below take their new names
+  const statOf = new Map();
+  for (const f of doc.frames) if (f.kind === 'text' && f.content && f.content.md)
+    eachStat(f.content.md, (m) => { const key = m[2].trim(); if (key.indexOf(':') < 0) statOf.set(f.id + '\u0000' + m[0], statLayer(doc, f, key, m[3])); });
   for (const f of doc.frames) {
     const s = f.source || {};
     if (isView(f) && s.scene) {
@@ -151,7 +171,7 @@ export function retargetDoc(doc, plan, target) {
     if (f.kind === 'text' && f.content && f.content.md) {
       const md = String(f.content.md).replace(STAT_RE, (all, fn, key, tail) => {
         const k = key.lastIndexOf(':');
-        if (k < 0) return `{${fn}:${capCols[key.trim()] || key}${tail}}`;
+        if (k < 0) { const lay = statOf.get(f.id + '\u0000' + all); return lay ? `{${fn}:${col(lay, key.trim())}${tail}}` : all; }
         const lay = key.slice(0, k).trim(), c = key.slice(k + 1).trim(), t = newOf(lay);
         return t ? `{${fn}:${t.label || t.name}:${col(lay, c)}${tail}}` : all;
       });
