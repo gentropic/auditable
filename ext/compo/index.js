@@ -442,6 +442,13 @@ registerField('pages', (a, f, env) => env.pages ?? 1, 'the page count');
 registerField('date', (a, f, env) => (a ? formatDate(nowOf(env), a) : env.date || formatDate(nowOf(env), 'YYYY-MM-DD')), 'today: {date} · {date:DD/MM/YYYY} · {date:D MMMM YYYY}');
 registerField('time', (a, f, env) => formatDate(nowOf(env), a || 'HH:mm'), 'the time: {time} · {time:HH:mm:ss}');
 registerField('title', (a, f, env) => env.title || '', "the figure's title");
+// {prop:key} — a property: the document's own (doc.props — a drawing number, a revision) over the
+// host's (env.props — a house style's company, client, project …)
+registerField('prop', (a, f, env) => {
+  if (!a) return '⟨which property? {prop:client}⟩';
+  const own = env.doc && env.doc.props && env.doc.props[a], house = env.props && env.props[a];
+  return own != null && own !== '' ? own : house != null && house !== '' ? house : '—';
+}, "a property — the figure's own (drawing, revision) over the project's (company, client, project, prepared, checked): {prop:client}");
 
 // {name}  {name:arg}  {name:arg:spec}  … and @id last: {scale@plan}, {mean:AU:.2f@plan}
 const FIELD_RE = /\{([A-Za-z][\w-]*)(?::([^{}@]*))?(?:@([\w.-]+))?\}/g;

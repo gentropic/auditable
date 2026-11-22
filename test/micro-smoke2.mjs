@@ -6788,6 +6788,52 @@ if (take()) {
   await p.close();
 }
 
+// ── §105: HOUSE STYLE — the project's properties (company, client, …) and a figure's own (drawing,
+//     revision) feed {prop:key}; + title block lays them out bottom-right; a figure marked as a
+//     template starts a new one (its frames and properties, the drawing number cleared); the house
+//     style saves with the project (figures/house.json) and comes back. ──
+if (take()) {
+  let p = await mkPage('sm2house');
+  const r = await p.evaluate(async () => {
+    const M_ = window._micro, out = {};
+    const rows = ['XC,YC,ZC,AU']; for (let i = 0; i < 40; i++) rows.push(`${5 + (i % 8) * 10},${5 + Math.floor(i / 8) * 10},5,${i / 10}`);
+    await M_.openBlob(new File([rows.join('\n') + '\n'], 'h.csv'), 'h.csv', 'replace');
+    const C = await import('/ext/compo/index.js');
+    const ed = M_.openComposer('house A');
+    M_.setHouseProps({ company: 'GCU Mining', client: 'ACME', project: 'Pit A', prepared: 'AE', checked: 'JS' });
+    M_.currentFigure().doc.props = { drawing: 'D-101', revision: 'B' };
+    const ids = M_.addTitleBlock(ed);
+    const env = { ...M_.composerEnv(), doc: ed.getDoc(), title: 'house A' };
+    out.rows = ids.map((id) => C.resolveFields(ed.getDoc().frames.find((x) => x.id === id).content.md, env, ed.getDoc().frames.find((x) => x.id === id)).replace(/\*\*/g, ''));
+    out.grouped = new Set(ids.map((id) => ed.getDoc().frames.find((x) => x.id === id).group)).size === 1;
+    // a template, and a new figure from it
+    [...document.querySelectorAll('.cmp-top button')].find((b) => /template/.test(b.textContent)).click();
+    out.marked = !!M_.currentFigure().doc.template;
+    const sel = document.querySelector('.cmp-top select.cmp-from'); sel.value = 'house A';
+    return { ...out, needNew: true };
+  });
+  // the "new" button asks a name in micro's own prompt: answer it
+  await p.locator('.cmp-top button', { hasText: /^new$/ }).click();
+  await p.locator('#pmInput').fill('house B');
+  await p.keyboard.press('Enter');
+  await p.waitForFunction(() => window._micro.currentFigure().name === 'house B', null, { timeout: 5000 }).catch(() => {});
+  const r2 = await p.evaluate(async () => {
+    const M_ = window._micro, f = M_.currentFigure();
+    return { name: f.name, frames: f.doc.frames.length, template: !!f.doc.template, props: f.doc.props };
+  });
+  await saveProject(p);
+  await p.close();
+  p = await mkPage('sm2house');
+  await p.evaluate(async () => { const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2house'); await window._micro.openProjectDir(dir); });
+  await p.waitForFunction(() => window._micro.layers().length, null, { timeout: 60000 });
+  const back = await p.evaluate(() => ({ house: window._micro.house().props, figs: window._micro.figures().map((f) => f.name + (f.doc.template ? '★' : '')) }));
+  chk(`HOUSE: the title block reads the figure's and the project's properties (${JSON.stringify(r.rows)}), a group (${r.grouped})`,
+    r.rows[0] === 'GCU Mining' && r.rows[1] === 'Pit A · ACME' && r.rows[2] === 'house A' && /^drawing D-101 · rev B · \d{4}-\d\d-\d\d$/.test(r.rows[3]) && r.rows[4] === 'prepared AE · checked JS' && /^scale .* · page 1 of 1$/.test(r.rows[5]) && r.grouped);
+  chk(`HOUSE: a template starts a new figure — its frames, its properties, the drawing number cleared (${JSON.stringify(r2)})`, r.marked && r2.name === 'house B' && r2.frames === 6 && !r2.template && r2.props && r2.props.drawing === undefined);
+  chk(`HOUSE: the house style saves with the project and comes back (${JSON.stringify(back)})`, back.house.company === 'GCU Mining' && back.house.client === 'ACME' && back.figs.includes('house A★') && back.figs.includes('house B'));
+  await p.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

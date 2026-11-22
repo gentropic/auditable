@@ -581,14 +581,92 @@ async function buildVector(f) {
   delete f.content.vectorError;
 }
 
+// ── HOUSE STYLE: the project's shared properties (company, client, project, prepared, checked,
+// disclaimer) in figures/house.json; a figure's own (drawing, revision) in its doc.props. {prop:key}
+// reads the figure's over the house's. Any figure can be a TEMPLATE (doc.template): "new" can start
+// from one — its frames, its page, its properties (drawing and revision cleared). ──
+export const HOUSE_KEYS = [['company', 'company'], ['client', 'client'], ['project', 'project'], ['prepared', 'prepared by'], ['checked', 'checked by'], ['disclaimer', 'disclaimer']];
+export const FIGURE_KEYS = [['drawing', 'drawing no.'], ['revision', 'revision']];
+const HOUSE_FILE = 'figures/house.json';
+function persistHouse() {
+  if (!S.project) return Promise.resolve();
+  const dir = S.project.dir, body = JSON.stringify({ format: 'micro-house', version: 1, props: S.house.props }, null, 1) + '\n';
+  return queued(async () => { try { const fh = await resolveFileHandle(dir, HOUSE_FILE, { create: true }); const w = await fh.createWritable(); await w.write(body); await w.close(); } catch (e) { $('#meta').textContent = `house style not saved — ${e.message}`; } });
+}
+export function setHouseProps(props) { S.house = { ...(S.house || {}), props: { ...props } }; persistHouse(); if (_ed) _ed.render(); }
+function openPropsDialog() {
+  if (!_fig) return;
+  const w = floatWin({ title: 'properties', sub: _fig.name, x: 160, y: 120, w: 420, h: 420 });
+  w.el.classList.add('cmp-props');
+  const body = w.body; body.style.cssText += 'display:grid;grid-template-columns:110px 1fr;gap:6px 8px;align-items:center;padding:10px';
+  const head = (t) => { const h = document.createElement('div'); h.textContent = t; h.style.cssText = 'grid-column:1/3;font-weight:bold;margin-top:4px'; body.append(h); };
+  const inputs = {};
+  const row = (key, label, val, scope) => { const l = document.createElement('span'); l.textContent = label; const i = document.createElement('input'); i.value = val || ''; i.dataset.key = key; i.dataset.scope = scope; i.onkeydown = (e) => e.stopPropagation(); body.append(l, i); inputs[scope + ':' + key] = i; };
+  head('this figure');
+  for (const [k, lab] of FIGURE_KEYS) row(k, lab, (_fig.doc.props || {})[k], 'fig');
+  head('the project (every figure)');
+  const hp = (S.house && S.house.props) || {};
+  for (const [k, lab] of HOUSE_KEYS) row(k, lab, hp[k], 'house');
+  for (const k of Object.keys(hp)) if (!HOUSE_KEYS.some(([h]) => h === k)) row(k, k, hp[k], 'house');
+  const hint = document.createElement('div'); hint.className = 'hint'; hint.style.gridColumn = '1/3';
+  hint.textContent = 'captions and the title block read these as {prop:key} — {prop:client}, {prop:drawing}';
+  const save = document.createElement('button'); save.className = 'awin-btn btn-p'; save.textContent = 'Save';
+  body.append(hint, document.createElement('span'), save);
+  save.onclick = () => {
+    const fp = { ...(_fig.doc.props || {}) }, h2 = { ...hp };
+    for (const i of Object.values(inputs)) { const v = i.value.trim(), tgt = i.dataset.scope === 'fig' ? fp : h2; if (v) tgt[i.dataset.key] = v; else delete tgt[i.dataset.key]; }
+    _fig.doc.props = fp; setHouseProps(h2); persist(_fig); _ed.render();
+    w.close();
+  };
+}
+// the title block: a stack of bordered rows, bottom-right, all fields — a group
+export function addTitleBlock(ed) {
+  const doc = ed.getDoc(), [W, H] = pageDims(doc.page), m = doc.page.margins || [10, 10, 10, 10];
+  const rows = [
+    ['**{prop:company}**', 9, 7], ['{prop:project} · {prop:client}', 7, 5.5], ['**{title}**', 8, 6.5],
+    ['drawing {prop:drawing} · rev {prop:revision} · {date}', 6.5, 5], ['prepared {prop:prepared} · checked {prop:checked}', 6.5, 5], ['scale {scale} · page {page} of {pages}', 6.5, 5],
+  ];
+  const w = 95, hTot = rows.reduce((s, r) => s + r[2], 0);
+  let y = H - m[2] - hTot; const x = W - m[1] - w, ids = [];
+  for (const [md, size, h] of rows) {
+    const f = ed.addFrame({ kind: 'text', box: [x, +y.toFixed(2), w, h], content: { md, size, pad: 1 }, style: { border: true, borderWidth: 0.2 } });
+    ids.push(f.id); y += h;
+  }
+  ed.update(ids[0], () => groupFrames(ed.getDoc(), ids));
+  ed.select(ids); ed.render();
+  $('#meta').textContent = 'composer: a title block — its fields read the figure\'s and the project\'s properties (properties…)';
+  return ids;
+}
+// an image from a file — a logo, a photo, a sketch
+export function addImageFromFile(ed) {
+  const inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'image/*';
+  inp.onchange = async () => {
+    const file = inp.files && inp.files[0]; if (!file) return;
+    const src = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file); });
+    await addImageSrc(ed, src, file.name);
+  };
+  inp.click();
+}
+export async function addImageSrc(ed, src, name = 'image') {
+  const im = new Image(); im.src = src; await im.decode();
+  const doc = ed.getDoc(), m = doc.page.margins || [10, 10, 10, 10], w = 35, h = +(w * im.height / Math.max(1, im.width)).toFixed(1);
+  const f = ed.addFrame({ kind: 'image', box: [m[3] + 4, m[0] + 4, w, h], content: { src, width: im.width, height: im.height, fit: 'contain' }, source: { app: 'micro', kind: 'image', name } });
+  f._img = typeof createImageBitmap !== 'undefined' ? await createImageBitmap(im) : im; ed.render();
+  return f;
+}
+
 // ── the window ──
 let _win = null, _ed = null, _fig = null, _saveT = 0;
 export function composerOpen() { return !!(_win && document.body.contains(_win.el)); }
 export function composerEditor() { return _ed; }
 export function currentFigure() { return _fig; }
 
-function newFigure(name) {
-  const doc = createDocument({ title: name, page: { size: 'A4', orientation: 'landscape', margins: [12, 12, 12, 12] } });
+function newFigure(name, from = null) {
+  let doc;
+  if (from) {                                               // from a template: its frames, page and properties; a drawing of its own
+    doc = parseDocument(serializeDocument(from.doc)); doc.title = name; delete doc.template;
+    doc.props = { ...(from.doc.props || {}) }; delete doc.props.drawing; delete doc.props.revision;
+  } else doc = createDocument({ title: name, page: { size: 'A4', orientation: 'landscape', margins: [12, 12, 12, 12] } });
   const fig = { name, doc, file: 'figures/' + slug(name) + '.compo.json' };
   S.figures.push(fig); S.figures.sort((a, b) => a.name.localeCompare(b.name));
   return fig;
@@ -622,10 +700,17 @@ export function openComposer(name) {
   top.style.cssText = 'display:flex;gap:5px;align-items:center;padding:4px 6px;border-bottom:1px solid var(--border);flex-wrap:wrap';
   const pick = document.createElement('select'); pick.title = 'figure';
   const btn = (t, title, fn, cls = 'awin-btn') => { const b = document.createElement('button'); b.className = cls; b.textContent = t; b.title = title; b.onclick = fn; return b; };
-  const fill = () => { pick.replaceChildren(...S.figures.map((f) => { const o = document.createElement('option'); o.value = f.name; o.textContent = f.name; return o; })); pick.value = _fig ? _fig.name : ''; };
+  const fromSel = document.createElement('select'); fromSel.title = 'what a new figure starts from: blank, or a template'; fromSel.className = 'cmp-from';
+  const tplBtn = btn('☆ template', 'make this figure a template — new figures can start from it (its frames, page and properties)', () => { _fig.doc.template = !_fig.doc.template; if (!_fig.doc.template) delete _fig.doc.template; persist(_fig); fill(); });
+  const fill = () => {
+    pick.replaceChildren(...S.figures.map((f) => { const o = document.createElement('option'); o.value = f.name; o.textContent = f.name + (f.doc.template ? ' ★' : ''); return o; })); pick.value = _fig ? _fig.name : '';
+    const keep = fromSel.value; fromSel.replaceChildren(...[['', 'blank'], ...S.figures.filter((f) => f.doc.template).map((f) => [f.name, 'from ' + f.name])].map(([v, t]) => { const o = document.createElement('option'); o.value = v; o.textContent = t; return o; })); fromSel.value = [...fromSel.options].some((o) => o.value === keep) ? keep : '';
+    tplBtn.textContent = _fig && _fig.doc.template ? '★ template' : '☆ template';
+  };
   pick.onchange = () => showFigure(S.figures.find((f) => f.name === pick.value));
   top.append(pick,
-    btn('new', 'a new figure', async () => { const n = ((await microPrompt('figure name', `figure ${S.figures.length + 1}`)) || '').trim(); if (!n) return; showFigure(S.figures.find((f) => f.name === n) || newFigure(n)); fill(); }),
+    btn('new', 'a new figure — from the template chosen beside it, if any', async () => { const n = ((await microPrompt('figure name', `figure ${S.figures.length + 1}`)) || '').trim(); if (!n) return; const tpl = S.figures.find((f) => f.name === fromSel.value && f.doc.template) || null; showFigure(S.figures.find((f) => f.name === n) || newFigure(n, tpl)); fill(); }),
+    fromSel,
     btn('rename', 'rename this figure', async () => {
       const n = ((await microPrompt('rename figure', _fig.name)) || '').trim(); if (!n || n === _fig.name) return;
       if (S.figures.some((f) => f.name === n)) { $('#meta').textContent = `a figure “${n}” exists`; return; }
@@ -644,6 +729,7 @@ export function openComposer(name) {
   for (const d of [150, 300, 600]) { const o = document.createElement('option'); o.value = d; o.textContent = d + ' dpi'; dpiSel.append(o); }
   dpiSel.value = '300';
   top.append(btn('↻ refresh', 'make this figure again with the data as it is now: every 3D view from its scene, every chart and table from its analysis, every resource table', () => refreshViews(_fig)));
+  top.append(tplBtn, btn('properties…', 'the figure\'s drawing number and revision, and the project\'s house properties — {prop:key} in captions and the title block', () => openPropsDialog()));
   top.append(btn('atlas…', 'a routine that renders this figure once per section level into one PDF (Tools → Recipes)', () => makeAtlasRoutine(_fig)));
   top.append(sp, dpiSel, btn('⤓ pdf', 'export the page as a vector PDF (the 3D views re-rendered at the dpi)', () => exportFigurePdf(+dpiSel.value), 'awin-btn btn-p'), btn('⤓ png', 'export the page as a PNG at the dpi', () => exportFigurePng(+dpiSel.value)));
   const host = document.createElement('div'); host.style.cssText = 'flex:1;min-height:0';
@@ -657,6 +743,8 @@ export function openComposer(name) {
       { label: '+ legend', title: 'a legend for each layer shown in the view frame', run: (e) => addLegendFrames(e) },
       { label: '+ scale', title: 'a scale bar for the view frame (orthographic views have a scale)', run: (e) => addMarker(e, 'scalebar') },
       { label: '+ north', title: 'a north arrow for the view frame', run: (e) => addMarker(e, 'north') },
+      { label: '+ title block', title: 'a title block, bottom-right: company, project, client, title, drawing, revision, date, prepared / checked, scale, page — fields from properties…', run: (e) => addTitleBlock(e) },
+      { label: '+ image', title: 'an image from a file — a logo, a photo, a sketch', run: (e) => addImageFromFile(e) },
       { label: '+ key plan', title: 'a whole-model plan that shows where the selected view’s section is — page by page in an atlas', run: (e) => addKeyPlan(e) },
       { label: '+ resource', title: 'a resource table: tonnes, grade and metal above cutoffs, by domain × class — made again on ↻ refresh', run: () => openResourceDialog() },
     ],
@@ -706,6 +794,7 @@ function envFor(extra = {}) {
   return {
     ...extra,
     fields: MICRO_FIELDS, fieldHelp: MICRO_FIELD_HELP, overlaysFor,
+    get props() { return (S.house && S.house.props) || {}; },
     // ${expr}: the atlas row's values (vars), then the nearest view's numbers (count, total,
     // section, look, elevation, page, pages), in the routine's expression language
     evalField: (expr, vars, frame, env) => {
@@ -1010,6 +1099,8 @@ export async function loadFigures(dir) {
     }
   } catch { /* no figures/ folder */ }
   S.figures.sort((a, b) => a.name.localeCompare(b.name));
+  S.house = { props: {} };
+  try { const fh = await resolveFileHandle(dir, HOUSE_FILE); const j = JSON.parse(await (await fh.getFile()).text()); if (j && j.props && typeof j.props === 'object') S.house = { props: j.props }; } catch { /* no house style yet */ }
   if (composerOpen()) { _fig = null; showFigure(S.figures[0] || newFigure('figure 1')); }
 }
 export async function flushFigures(dir) {
@@ -1019,6 +1110,7 @@ export async function flushFigures(dir) {
     if (!fig.file) fig.file = 'figures/' + slug(fig.name) + '.compo.json';
     await queued(() => writeFigure(dir, fig).catch((e) => { failed.push(`${fig.file} (${e.message})`); }));
   }
+  if (S.house && Object.keys(S.house.props || {}).length) await persistHouse();
   if (failed.length) console.warn('micro: figures not saved —', failed.join('; '));
   return failed;
 }

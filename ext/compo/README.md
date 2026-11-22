@@ -89,6 +89,7 @@ Live text, filled in each time the page is drawn: text frames, and legend and ta
 | `{date}` `{date:DD/MM/YYYY}` | today; tokens `YYYY YY MMMM MMM MM M DD D HH mm ss` |
 | `{time}` `{time:HH:mm:ss}` | the time |
 | `{title}` | the document's title |
+| `{prop:key}` | a property: the document's own (`doc.props`, e.g. a drawing number) over the host's (`env.props`, a house style) — `—` when neither has it |
 | `{scale}` | `1 : 2 500`: the scale of the view the caption is about (from `content.meta`). A perspective view has none |
 
 **Number formats** follow Python:
