@@ -42,7 +42,7 @@ const bytes = await exportPDF(ed.getDoc(), { env: { evalField: (expr, vars) => v
 
 | kind | content |
 |---|---|
-| `text` | `md` (`**bold**`, newlines), `size` (pt), `align`, `mono`, `color`, `pad`. Fields: `{fig}` `{page}` `{pages}` `{date}` `{title}`, and `${expr}`, which the host evaluates (`env.evalField(expr, env.vars, frame)`) |
+| `text` | `md` (`**bold**`, newlines), `size` (pt), `align`, `mono`, `color`, `pad`. Takes [fields](#fields) |
 | `image` | `src` (a data/blob URL, decoded by `ensureImages`) or a host-set `frame._img`. Also `fit` (`contain`/`cover`/`fill`), `smooth`, `meta`. `photo: true` → JPEG in a PDF |
 | `drawlist` | `list`, a [@gcu/plot](../plot) `fig.toDrawList()`, replayed as vectors |
 | `legend` | `title`, then either `entries: [{color, label}]` or `kind: 'ramp'` with `stops`, `hiLabel`/`loLabel`, optional `tail` |
@@ -51,6 +51,40 @@ const bytes = await exportPDF(ed.getDoc(), { env: { evalField: (expr, vars) => v
 | `north` | `north` (degrees clockwise from page-up; `null` = the view looks along north), or `of` as above |
 
 `registerKind(name, { label, draw(ctx, box, frame, env) })` adds one. The context is in **mm**, y down.
+
+## Fields
+
+Live text, filled in each time the page is drawn: text frames, and legend and table titles and notes.
+
+- `{name}`, `{name:arg}`, and a number format last: `{name:arg:,.2f}`, or `{count:,}` with no argument.
+- `${expr}` and `${expr:,.0f}`: an expression the host evaluates, `env.evalField(expr, env.vars, frame, env)`.
+- An unknown `{word}` stays as written, so ordinary braces survive.
+
+| field | gives |
+|---|---|
+| `{fig}` | the figure number: captions are counted in page order, and on across an atlas |
+| `{page}` `{pages}` | the page number and count |
+| `{date}` `{date:DD/MM/YYYY}` | today; tokens `YYYY YY MMMM MMM MM M DD D HH mm ss` |
+| `{time}` `{time:HH:mm:ss}` | the time |
+| `{title}` | the document's title |
+| `{ref:name}` | the figure number of the caption named `name`. If `name` is a view, the number of the caption nearest it |
+| `{scale}` `{scale:name}` | `1 : 2 500`, the nearest view frame's scale (from `content.meta`), or the named frame's. A perspective view has none |
+
+**Number formats** follow Python:
+- `,` or `_` groups thousands with a comma or a space;
+- `.N` sets the decimals;
+- then `f` (fixed), `%` (percent) or `e` (exponent).
+
+With no format, a number shows six significant figures, but the integer part is never rounded away (so a northing stays whole).
+
+**Host fields:**
+- `registerField(name, fn(arg, frame, env), help)` adds a field for every document.
+- `env.fields = { name: fn }` adds fields for one render, and wins over a registered field of the same name.
+- `env.fieldHelp = [{ name, help }]` lists the host's fields in the editor's picker.
+
+`refFrame(doc, frame, arg, test)` resolves "the frame a field means": the frame NAMED by `arg` (by name or id), else the nearest frame that passes `test`. So a caption under a view refers to that view.
+
+Also exported: `formatNumber`, `formatDate`, `fieldList`.
 
 ## Export
 
@@ -86,7 +120,7 @@ const bytes = await exportPDF(ed.getDoc(), { env: { evalField: (expr, vars) => v
   - A kind can name its frames for the list with `describe(frame)`.
 - **Keys:** arrows nudge 0.5 mm, ⇧ + arrow 5 mm. ⌘D duplicates, Delete removes, ⌘Z / ⌘⇧Z undo and redo, ⌘A selects all.
 - **Toolbar:** page setup and the arranging buttons. A status line says when something was refused.
-- **Inspector:** the selected frame's box in mm, its border, its lock, and its kind's own fields. A multiple selection shows its units and one lock box for all of them.
+- **Inspector:** the selected frame's box in mm, its border, its lock, and its kind's own fields. A multiple selection shows its units and one lock box for all of them. A text frame has an **insert field…** picker: compo's fields and the host's, each with its help as a tooltip. A pick inserts at the caret as one undo step.
 - **Context menu:** the host's items, then Duplicate, Group / Ungroup, Same size, the four z-order steps, Lock / Unlock and Delete.
 - **Host hooks:** a host adds toolbar buttons, items in the frame context menu, and inspector rows. Its `update(id, fn)` changes a frame as one undo step.
 - **Theming:** the editor's colours read `--compo-*`, then the host's `--text` / `--border` / `--accent` / `--bg-btn`.

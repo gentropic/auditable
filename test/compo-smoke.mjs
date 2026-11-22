@@ -203,6 +203,19 @@ chk('⌘[ sends one step back', await page.evaluate(() => ed.getDoc().frames.map
 await page.evaluate(() => { C.removeFrames(ed.getDoc(), ['A', 'K']); ed.select([]); });
 
 
+// ── the text inspector's field picker: inserts {name} at the caret, one undo step ──
+{
+  await page.evaluate(() => { C.addFrame(ed.getDoc(), { id: 'FP', kind: 'text', box: [150, 120, 40, 8], content: { md: 'made ' } }); ed.select(['FP']); ed.render(); });
+  const opts = await page.evaluate(() => [...document.querySelectorAll('.compo-fields option')].map((o) => o.value).filter(Boolean));
+  chk(`the field picker lists compo's fields (${opts.length}: ${opts.join(' ')})`, ['fig', 'page', 'pages', 'date', 'time', 'title', 'ref', 'scale'].every((n) => opts.includes(n)));
+  await page.evaluate(() => { const ta = document.querySelector('.compo-side textarea'); ta.focus(); ta.selectionStart = ta.selectionEnd = ta.value.length; });
+  await page.locator('.compo-fields').selectOption('date');
+  chk('picking a field inserts it at the caret', await page.evaluate(() => C.frameById(ed.getDoc(), 'FP').content.md) === 'made {date}');
+  await page.evaluate(() => { ed.undo(); });
+  chk('… as one undo step', await page.evaluate(() => C.frameById(ed.getDoc(), 'FP').content.md) === 'made ');
+  await page.evaluate(() => { C.removeFrames(ed.getDoc(), ['FP']); ed.select([]); ed.render(); });
+}
+
 // ── rulers, guides, grid, the item list ──
 chk('rulers show by default', await page.evaluate(() => [...document.querySelectorAll('.compo-ruler')].every((c) => c.style.display !== 'none' && c.width > 0)));
 {

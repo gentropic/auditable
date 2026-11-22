@@ -1217,7 +1217,7 @@ import { raiseWindow, relayoutWindows, nextZ, _sheetDrag, _isMobile } from './sr
 import { resultToLayer } from './src/analysis-ui.js';
 import { openGradeTonnage } from './src/gt.js';
 import { openSwath, applySwathZebra } from './src/swath.js';
-import { openStats } from './src/stats.js';
+import { openStats, statsScan } from './src/stats.js';
 import { openCrosstab, _xtabWins, parseCutoffs } from './src/xtab.js';
 import { openXyPlot, _xyWins } from './src/xyplot.js';
 import { openMeshQa, _meshQaWins } from './src/meshqa.js';
@@ -2053,7 +2053,7 @@ document.querySelectorAll('[data-sample]').forEach((a) => a.onclick = () => open
 // src/deco.js reaches back into the app through these
 setDecoHooks({ renderFigureCanvas, openTurntable });
 setTurntableHooks({ renderFigureCanvas });
-setComposerHooks({ renderViewCanvas, setCameraWorld, saveRecipe, openRoutineWindow });
+setComposerHooks({ renderViewCanvas, setCameraWorld, saveRecipe, openRoutineWindow, cameraWorld, statsScan, evalField: routineEval });
 setSeriesHooks({ renderFigureCanvas });
 
 applyBg();                                                 // restore the saved background at boot

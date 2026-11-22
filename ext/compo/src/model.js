@@ -57,7 +57,7 @@ export function newId(doc, kind) {
 export function addFrame(doc, frame) {
   const [W, H] = pageDims(doc.page), m = doc.page.margins || [0, 0, 0, 0];
   const box = frame.box || [m[3] + 10, m[0] + 10, Math.min(120, W - m[1] - m[3] - 20), Math.min(80, H - m[0] - m[2] - 20)];
-  const f = { id: frame.id || newId(doc, frame.kind), kind: frame.kind, box: box.map(Number), content: frame.content || {}, ...(frame.source ? { source: frame.source } : {}), ...(frame.style ? { style: frame.style } : {}), produced: frame.produced || new Date().toISOString() };
+  const f = { id: frame.id || newId(doc, frame.kind), kind: frame.kind, box: box.map(Number), content: frame.content || {}, ...(frame.source ? { source: frame.source } : {}), ...(frame.style ? { style: frame.style } : {}), ...(frame.name ? { name: String(frame.name) } : {}), ...(frame.group ? { group: frame.group } : {}), ...(frame.locked ? { locked: true } : {}), ...(frame.hidden ? { hidden: true } : {}), produced: frame.produced || new Date().toISOString() };
   doc.frames.push(f);
   return f;
 }

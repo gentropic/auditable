@@ -62,7 +62,7 @@ function newId(doc, kind) {
 function addFrame(doc, frame) {
   const [W, H] = pageDims(doc.page), m = doc.page.margins || [0, 0, 0, 0];
   const box = frame.box || [m[3] + 10, m[0] + 10, Math.min(120, W - m[1] - m[3] - 20), Math.min(80, H - m[0] - m[2] - 20)];
-  const f = { id: frame.id || newId(doc, frame.kind), kind: frame.kind, box: box.map(Number), content: frame.content || {}, ...(frame.source ? { source: frame.source } : {}), ...(frame.style ? { style: frame.style } : {}), produced: frame.produced || new Date().toISOString() };
+  const f = { id: frame.id || newId(doc, frame.kind), kind: frame.kind, box: box.map(Number), content: frame.content || {}, ...(frame.source ? { source: frame.source } : {}), ...(frame.style ? { style: frame.style } : {}), ...(frame.name ? { name: String(frame.name) } : {}), ...(frame.group ? { group: frame.group } : {}), ...(frame.locked ? { locked: true } : {}), ...(frame.hidden ? { hidden: true } : {}), produced: frame.produced || new Date().toISOString() };
   doc.frames.push(f);
   return f;
 }
@@ -280,6 +280,126 @@ function snapResize(doc, box, [hx, hy], { ignore = [], tol = 1.5, onlyX = false 
   return { box: out, guides };
 }
 
+// ── src/fields.js ──
+
+// FIELDS — the live bits of text on a page. A caption says `{fig}`, `{page}`, `{date:DD/MM/YYYY}`,
+// `{scale}`; the page fills them in when it is drawn, so a reprint is always current.
+//
+//   {name}           a field
+//   {name:arg}       a field with an argument (a format, a frame's name, a column …)
+//   {name:arg:,.2f}  … and a number format at the end
+//   ${expr}          an expression the HOST evaluates (env.evalField), e.g. an atlas row's values
+//   ${expr:,.0f}     … formatted
+//
+// Number formats (Python's, the useful part): `,` or `_` groups thousands (comma / space), `.N`
+// the decimals, then `f` fixed, `%` percent, `e` exponent. `,` alone groups an integer.
+//
+// Fields are a registry: compo registers fig/page/pages/date/time/title/ref (and scale, in
+// kinds.js); a host adds its own with registerField or per page with env.fields. An unknown
+// `{word}` is left exactly as written, so ordinary braces in text survive.
+
+const FIELDS = new Map();
+// fn(arg, frame, env) → a string, a number (formatted), or null/undefined (→ '—')
+function registerField(name, fn, help = '') { FIELDS.set(name, { fn, help }); }
+function fieldList(env = {}) {
+  const out = [...FIELDS].map(([name, f]) => ({ name, help: f.help }));
+  for (const h of env.fieldHelp || []) if (!out.some((o) => o.name === h.name)) out.push(h);
+  return out;
+}
+
+// ── number formats ──
+const SPEC_RE = /^([,_])?(?:\.(\d{1,2}))?([f%e])?$/;
+const isFormatSpec = (s) => !!s && SPEC_RE.test(s);
+// no format: six significant figures, but never rounding away the integer part (a UTM northing)
+const plain = (x) => (Number.isInteger(x) ? String(x) : Math.abs(x) >= 1e6 ? String(Math.round(x)) : String(+x.toPrecision(6))).replace(/^-/, '−');
+const group = (intStr, sep) => intStr.replace(/\B(?=(\d{3})+(?!\d))/g, sep);
+function formatNumber(x, spec = '') {
+  if (typeof x !== 'number') return x == null ? '' : String(x);
+  if (!Number.isFinite(x)) return Number.isNaN(x) ? '—' : x > 0 ? '∞' : '−∞';
+  const m = SPEC_RE.exec(spec || '');
+  if (!m || !spec) return plain(x);
+  const [, sep, dec, type] = m;
+  let v = x, suffix = '';
+  if (type === '%') { v = x * 100; suffix = '%'; }
+  let s;
+  if (type === 'e') s = v.toExponential(dec != null ? +dec : 3);
+  else if (dec != null) s = v.toFixed(+dec);
+  else if (type === 'f' || type === '%') s = v.toFixed(type === '%' ? 0 : 6);
+  else s = plain(v).replace('−', '-');
+  if (sep && type !== 'e') {
+    const neg = s[0] === '-', body = neg ? s.slice(1) : s, [ip, fp] = body.split('.');
+    s = (neg ? '-' : '') + group(ip, sep === ',' ? ',' : ' ') + (fp != null ? '.' + fp : '');
+  }
+  return s.replace(/^-/, '−') + suffix;
+}
+// a value as text: numbers through the format, the rest as they are
+const asText = (v, spec) => (v == null ? '—' : typeof v === 'number' ? formatNumber(v, spec) : String(v));
+
+// ── dates: YYYY YY MMMM MMM MM M DD D HH mm ss ──
+const MON = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const p2 = (n) => String(n).padStart(2, '0');
+function formatDate(d, fmt) {
+  const t = { YYYY: d.getFullYear(), YY: p2(d.getFullYear() % 100), MMMM: MON[d.getMonth()], MMM: MON[d.getMonth()].slice(0, 3), MM: p2(d.getMonth() + 1), M: d.getMonth() + 1, DD: p2(d.getDate()), D: d.getDate(), HH: p2(d.getHours()), mm: p2(d.getMinutes()), ss: p2(d.getSeconds()) };
+  return String(fmt).replace(/YYYY|YY|MMMM|MMM|MM|M|DD|D|HH|mm|ss/g, (k) => String(t[k]));
+}
+const nowOf = (env) => (env.now instanceof Date ? env.now : env.now ? new Date(env.now) : new Date());
+
+// ── the frame a field refers to: one NAMED in the argument (its name or id), else the nearest
+// frame that passes the test (the caption under a view means that view) ──
+function refFrame(doc, frame, arg, test = () => true) {
+  if (!doc) return null;
+  const frames = doc.frames.filter((f) => !f.hidden && f !== frame);
+  if (arg) return frames.find((f) => f.name === arg) || frames.find((f) => f.id === arg) || null;
+  const cand = frames.filter(test);
+  if (!frame || cand.length <= 1) return cand[0] || null;
+  const gap = (a, b) => {                                  // the gap between two boxes (0 if they touch), then centre distance
+    const dx = Math.max(0, a[0] - (b[0] + b[2]), b[0] - (a[0] + a[2])), dy = Math.max(0, a[1] - (b[1] + b[3]), b[1] - (a[1] + a[3]));
+    const cx = a[0] + a[2] / 2 - (b[0] + b[2] / 2), cy = a[1] + a[3] / 2 - (b[1] + b[3] / 2);
+    return Math.hypot(dx, dy) * 1e3 + Math.hypot(cx, cy);
+  };
+  let best = null, bd = Infinity;
+  for (const f of cand) { const d = gap(frame.box, f.box); if (d < bd) { bd = d; best = f; } }
+  return best;
+}
+const saysFig = (f) => f.kind === 'text' && /\{fig\}/.test((f.content && f.content.md) || '');
+
+// ── the built-ins ──
+registerField('fig', (a, frame, env) => (env.figOf ? env.figOf(frame) : 1), 'the figure number (counted in page order, on across an atlas)');
+registerField('page', (a, f, env) => env.page ?? 1, 'the page number');
+registerField('pages', (a, f, env) => env.pages ?? 1, 'the page count');
+registerField('date', (a, f, env) => (a ? formatDate(nowOf(env), a) : env.date || formatDate(nowOf(env), 'YYYY-MM-DD')), 'today: {date} · {date:DD/MM/YYYY} · {date:D MMMM YYYY}');
+registerField('time', (a, f, env) => formatDate(nowOf(env), a || 'HH:mm'), 'the time: {time} · {time:HH:mm:ss}');
+registerField('title', (a, f, env) => env.title || '', "the figure's title");
+registerField('ref', (a, frame, env) => {
+  // the figure number of the caption NAMED a (or, if a names a view, of the caption nearest it)
+  if (!a || !env.doc || !env.figOf) return null;
+  const t = refFrame(env.doc, null, a);
+  if (!t) return `⟨no frame “${a}”⟩`;
+  const cap = saysFig(t) ? t : refFrame(env.doc, t, null, saysFig);
+  return cap ? env.figOf(cap) : `⟨“${a}” has no {fig} caption⟩`;
+}, 'another caption’s figure number: see Figure {ref:plan}');
+
+const FIELD_RE = /\{([A-Za-z][\w-]*)(?::([^{}]*))?\}/g;
+function resolveFields(src, env = {}, frame = null) {
+  let s = String(src == null ? '' : src);
+  // ${expr} and ${expr:spec} — the host's expressions
+  s = s.replace(/\$\{([^}]*)\}/g, (_, raw) => {
+    let expr = raw, spec = '';
+    const k = raw.lastIndexOf(':');
+    if (k >= 0 && isFormatSpec(raw.slice(k + 1).trim())) { expr = raw.slice(0, k); spec = raw.slice(k + 1).trim(); }
+    if (!env.evalField) return `⟨${expr.trim()}⟩`;
+    try { const v = env.evalField(expr.trim(), env.vars || {}, frame, env); return v == null ? '' : asText(v, spec); } catch (e) { return `⟨${expr.trim()}: ${e.message}⟩`; }
+  });
+  // {name} {name:arg} {name:arg:spec}
+  return s.replace(FIELD_RE, (whole, name, arg) => {
+    const f = (env.fields && env.fields[name]) ? { fn: env.fields[name] } : FIELDS.get(name);
+    if (!f) return whole;
+    let a = arg == null ? '' : arg, spec = '';
+    if (isFormatSpec(a)) { spec = a; a = ''; } else { const k = a.lastIndexOf(':'); if (k >= 0 && isFormatSpec(a.slice(k + 1))) { spec = a.slice(k + 1); a = a.slice(0, k); } }
+    try { return asText(f.fn(a.trim(), frame, env), spec); } catch (e) { return `⟨${name}: ${e.message}⟩`; }
+  });
+}
+
 // ── src/kinds.js ──
 
 // Frame KINDS — each a small adapter that draws finished content into its box. The context is in
@@ -297,16 +417,7 @@ const KINDS = new Map();
 function registerKind(kind, impl) { KINDS.set(kind, impl); }
 const kindOf = (k) => KINDS.get(k) || null;
 
-// ── fields: {fig} {page} {pages} {date} {title} and ${expr} (the host evaluates) ──
-function resolveFields(src, env = {}, frame = null) {
-  let s = String(src == null ? '' : src);
-  s = s.replace(/\$\{([^}]*)\}/g, (_, expr) => {
-    if (!env.evalField) return `⟨${expr}⟩`;
-    try { const v = env.evalField(expr.trim(), env.vars || {}, frame); return v == null ? '' : String(v); } catch (e) { return `⟨${expr}: ${e.message}⟩`; }
-  });
-  const builtins = { page: env.page ?? 1, pages: env.pages ?? 1, date: env.date || new Date().toISOString().slice(0, 10), title: env.title || '' };
-  return s.replace(/\{(fig|page|pages|date|title)\}/g, (_, k) => (k === 'fig' ? String(env.figOf ? env.figOf(frame) : 1) : String(builtins[k])));
-}
+// ── fields live in fields.js; resolveFields is re-exported from here for the kinds' sake ──
 
 // ── text: paragraphs (blank-line or newline separated), **bold** runs, word wrap to the box ──
 function runsOf(line) {
@@ -428,12 +539,13 @@ registerKind('drawlist', {
 // ── legend: classes (swatch + label) or a ramp (bar + ends), with a title ──
 registerKind('legend', {
   label: 'legend',
-  draw(ctx, box, frame) {
+  draw(ctx, box, frame, env) {
     const c = frame.content || {};
+    const title = c.title ? resolveFields(c.title, env, frame) : '';
     const size = +c.size || 8, row = size * PT * 1.55, sw = size * PT * 1.1;
     let y = box[1] + 0.5;
     ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.fillStyle = INK;
-    if (c.title) { ctx.font = fontMm(size + 1, { bold: true }); ctx.fillText(c.title, box[0] + 0.5, y); y += row * 1.1; }
+    if (title) { ctx.font = fontMm(size + 1, { bold: true }); ctx.fillText(title, box[0] + 0.5, y); y += row * 1.1; }
     ctx.font = fontMm(size);
     if (c.kind === 'ramp' && Array.isArray(c.stops) && c.stops.length) {
       const bh = Math.max(10, box[1] + box[3] - y - (c.tail ? row : 0) - 1), bw = sw * 1.2;
@@ -479,6 +591,19 @@ function frameWorldPerMm(t) {
   const k = fit === 'cover' ? Math.max(b[2] / iw, b[3] / ih) : Math.min(b[2] / iw, b[3] / ih);   // mm per pixel
   return +m.worldPerPx / k;
 }
+// {scale} — the representative fraction of a view frame (the nearest one that states a scale, or
+// the one named: {scale:plan}). A perspective view has none, and says so.
+const hasScaleMeta = (f) => !!(f.content && f.content.meta && (f.content.meta.worldPerPx > 0 || f.content.meta.worldPerMm > 0 || 'worldPerPx' in f.content.meta || 'ortho' in f.content.meta));
+const UNIT_MM = { m: 1000, km: 1e6, ft: 304.8, mm: 1, cm: 10 };
+registerField('scale', (a, frame, env) => {
+  const t = refFrame(env.doc, frame, a, hasScaleMeta);
+  if (!t) return a ? `⟨no frame “${a}”⟩` : '—';
+  const wpm = frameWorldPerMm(t);
+  if (!(wpm > 0)) return 'no scale (perspective)';
+  const n = wpm * (UNIT_MM[(t.content.meta.units || 'm')] || 1000);
+  const r = +n.toPrecision(n >= 1000 ? 3 : 2);
+  return '1 : ' + String(Math.round(r)).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+}, 'the scale of the nearest view: 1 : 2 500 (orthographic views only); {scale:frame name}');
 const metaOf = (frame, doc) => {
   const c = frame.content || {};
   if (c.of && doc) {
@@ -532,7 +657,7 @@ registerKind('north', {
 const NUMERIC = /^[-+−]?(\d[\d,  ]*)?(\.\d+)?([eE][-+]?\d+)?\s*%?$/;
 registerKind('table', {
   label: 'table',
-  draw(ctx, box, frame) {
+  draw(ctx, box, frame, env) {
     const c = frame.content || {}, cols = (c.columns || []).map(String), rows = (c.rows || []).map((r) => (r || []).map((v) => (v == null ? '' : String(v))));
     if (!cols.length) return;
     const pad = 1.1, avail = box[2] - 0.5;
@@ -552,7 +677,8 @@ registerKind('table', {
     const lh = size * PT * 1.55;
     let y = box[1] + 0.3;
     ctx.textBaseline = 'middle';
-    if (c.title) { ctx.fillStyle = INK; ctx.font = fontMm(size + 1, { bold: true }); ctx.textAlign = 'left'; ctx.fillText(c.title, box[0], y + lh * 0.5); y += lh * 1.15; }
+    const title = c.title ? resolveFields(c.title, env, frame) : '', note = c.note ? resolveFields(c.note, env, frame) : '';
+    if (title) { ctx.fillStyle = INK; ctx.font = fontMm(size + 1, { bold: true }); ctx.textAlign = 'left'; ctx.fillText(title, box[0], y + lh * 0.5); y += lh * 1.15; }
     const x0 = box[0], x1 = box[0] + widths.reduce((a, b) => a + b, 0);
     const rule = (yy, w) => { ctx.strokeStyle = INK; ctx.lineWidth = w; ctx.beginPath(); ctx.moveTo(x0, yy); ctx.lineTo(x1, yy); ctx.stroke(); };
     const cells = (vals, yy, bold) => {
@@ -568,7 +694,7 @@ registerKind('table', {
     rule(y, 0.35);
     cells(cols, y, true); y += lh;
     rule(y, 0.18);
-    const bottom = box[1] + box[3] - (c.note ? lh : 0) - 0.5;
+    const bottom = box[1] + box[3] - (note ? lh : 0) - 0.5;
     const fit = Math.max(0, Math.floor((bottom - y) / lh));
     const shown = rows.length > fit ? Math.max(0, fit - 1) : rows.length;
     for (let i = 0; i < shown; i++) {
@@ -577,7 +703,7 @@ registerKind('table', {
     }
     if (shown < rows.length) { ctx.fillStyle = '#666'; ctx.font = fontMm(size); ctx.textAlign = 'left'; ctx.fillText(`… ${rows.length - shown} more row${rows.length - shown === 1 ? '' : 's'}`, x0 + pad, y + lh / 2); y += lh; }
     rule(y, 0.35);
-    if (c.note) { ctx.fillStyle = '#555'; ctx.font = fontMm(size - 0.5); ctx.textAlign = 'left'; ctx.fillText(c.note, x0, y + lh * 0.55); }
+    if (note) { ctx.fillStyle = '#555'; ctx.font = fontMm(size - 0.5); ctx.textAlign = 'left'; ctx.fillText(note, x0, y + lh * 0.55); }
   },
 });
 // a TSV (an analysis window's ⧉ table) → table content
@@ -1708,8 +1834,19 @@ function mountEditor(el, doc, opts = {}) {
       align.onchange = () => commit(() => { f.content.align = align.value; });
       const mono = h('input', { type: 'checkbox', checked: !!f.content.mono });
       mono.onchange = () => commit(() => { f.content.mono = mono.checked; });
+      // insert a field at the caret (compo's own and the host's, each with its help as the tooltip)
+      const fl = fieldList(opts.env || {});
+      const fsel = h('select', { title: 'insert a field at the caret', className: 'compo-fields' }, h('option', { value: '', textContent: 'insert field…' }),
+        ...fl.map((x) => h('option', { value: x.name, textContent: '{' + x.name + '}', title: x.help || '' })));
+      fsel.onchange = () => {
+        const nm = fsel.value; fsel.value = ''; if (!nm) return;
+        const tok = '{' + nm + '}', a = ta.selectionStart ?? ta.value.length, b = ta.selectionEnd ?? a;
+        commit(() => { f.content.md = ta.value.slice(0, a) + tok + ta.value.slice(b); });
+        requestAnimationFrame(() => { const t2 = side.querySelector('textarea'); if (t2) { t2.focus(); t2.selectionStart = t2.selectionEnd = a + tok.length; } });
+      };
       insp.append(ta, h('div', { className: 'row' }, h('span', { textContent: 'size (pt)' }), size, align), h('label', { className: 'row' }, h('span', { textContent: 'monospace' }), mono),
-        h('div', { className: 'hint', textContent: '**bold** · fields {fig} {page} {pages} {date} {title} · ${expr} from the host' }));
+        h('div', { className: 'row' }, h('span', { textContent: 'fields' }), fsel),
+        h('div', { className: 'hint', textContent: '**bold** · {name} or {name:arg} · a number format at the end, {count:,} · ${expr:,.2f}' }));
       api._focusText = () => ta.focus();
     }
     if (f.kind === 'image') {
@@ -2092,6 +2229,12 @@ export {
   niceBelow,
   frameWorldPerMm,
   tableFromTsv,
+  registerField,
+  fieldList,
+  formatNumber,
+  formatDate,
+  refFrame,
+  isFormatSpec,
   renderPage,
   ensureImages,
   exportPDF,

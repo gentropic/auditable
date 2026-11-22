@@ -6369,6 +6369,47 @@ if (take()) {
   await p.close();
 }
 
+// ── §97: FIELDS — a caption's live text. compo's own ({date:…} {ref:…} {scale} and number
+//     formats) and micro's, read from what the nearest 3D-view frame showed when it rendered:
+//     {section} {look} {count} {total} {filter} {sha} {micro}, the statistics over its shown
+//     records ({mean:FE}, computed at render), and ${…} arithmetic over count / total. Read back
+//     from the exported PDF's text. ──
+if (take()) {
+  const p = await mkPage('sm2fields');
+  const r = await p.evaluate(async () => {
+    const M_ = window._micro, out = {};
+    const rows = ['XC,YC,ZC,FE'];
+    for (let k = 0; k < 4; k++) for (let j = 0; j < 20; j++) for (let i = 0; i < 30; i++) rows.push(`${5 + i * 10},${5 + j * 10},${5 + k * 10},${(20 + i * 2).toFixed(1)}`);
+    const id = await M_.openBlob(new File([rows.join('\n') + '\n'], 'fld.csv'), 'fld.csv', 'replace');
+    M_.setActiveLayer(id);
+    document.querySelector('#filter').value = 'FE > 40'; await M_.applyBlockFilter('FE > 40');
+    await window.micro.setView({ look: 0, elevation: 90, ortho: true });
+    await window.micro.setSection({ axis: 'z', position: 20, thickness: 10 });
+    await new Promise((res) => setTimeout(res, 200));
+    const ed = M_.openComposer('fields');
+    const f = M_.addViewFrame(ed);
+    const below = f.box[1] + f.box[3] + 2;
+    ed.addFrame({ kind: 'text', name: 'cap', box: [f.box[0], below, 120, 6], content: { md: 'Figure {fig}' } });
+    const lines = ['S {section}', 'C {count:,}', 'T {total}', 'M {mean:FE:.2f}', 'X {max:FE}', 'F {filter}', 'P ${count / total:.1%}', 'L {look}', 'K {scale}', 'D {date:YYYY}', 'H {sha}', 'R {ref:cap}', 'V {micro}', 'U {unknown}'];
+    ed.addFrame({ kind: 'text', box: [f.box[0], below + 7, 160, 70], content: { md: lines.join('\n'), size: 8 } });
+    const bytes = await M_.figurePdfBytes(M_.currentFigure(), 72, { compress: false });
+    const s = new TextDecoder('latin1').decode(bytes);
+    out.strs = [...s.matchAll(/\(((?:\\.|[^\\)])*)\) Tj/g)].map((m) => m[1]);
+    out.build = window._micro.build || null;
+    await window.micro.setSection(null); await M_.applyBlockFilter('');
+    return out;
+  });
+  const get = (k) => (r.strs.find((x) => x.startsWith(k + ' ')) || '').slice(k.length + 1);
+  const want = {
+    S: (v) => /^20 RL /.test(v), C: (v) => v === '1,520', T: (v) => v === '2400', M: (v) => v === '60.00', X: (v) => v === '78', F: (v) => v === 'FE > 40',
+    P: (v) => v === '63.3%', L: (v) => /^000/.test(v), K: (v) => /^1 : \d/.test(v), D: (v) => v === String(new Date().getFullYear()),
+    H: (v) => /^[0-9a-f]{8}$/.test(v), R: (v) => v === '1', V: (v) => v.length > 0, U: (v) => v === '{unknown}',
+  };
+  const bad = Object.keys(want).filter((k) => !want[k](get(k)));
+  chk(`FIELDS: every caption field resolves in the PDF (${Object.keys(want).map((k) => `${k}=${get(k)}`).join(' · ')})${bad.length ? ' BAD: ' + bad : ''}`, !bad.length);
+  await p.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

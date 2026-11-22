@@ -13,16 +13,9 @@ const KINDS = new Map();
 export function registerKind(kind, impl) { KINDS.set(kind, impl); }
 export const kindOf = (k) => KINDS.get(k) || null;
 
-// ── fields: {fig} {page} {pages} {date} {title} and ${expr} (the host evaluates) ──
-export function resolveFields(src, env = {}, frame = null) {
-  let s = String(src == null ? '' : src);
-  s = s.replace(/\$\{([^}]*)\}/g, (_, expr) => {
-    if (!env.evalField) return `⟨${expr}⟩`;
-    try { const v = env.evalField(expr.trim(), env.vars || {}, frame); return v == null ? '' : String(v); } catch (e) { return `⟨${expr}: ${e.message}⟩`; }
-  });
-  const builtins = { page: env.page ?? 1, pages: env.pages ?? 1, date: env.date || new Date().toISOString().slice(0, 10), title: env.title || '' };
-  return s.replace(/\{(fig|page|pages|date|title)\}/g, (_, k) => (k === 'fig' ? String(env.figOf ? env.figOf(frame) : 1) : String(builtins[k])));
-}
+// ── fields live in fields.js; resolveFields is re-exported from here for the kinds' sake ──
+import { resolveFields, registerField, refFrame } from './fields.js';
+export { resolveFields };
 
 // ── text: paragraphs (blank-line or newline separated), **bold** runs, word wrap to the box ──
 function runsOf(line) {
@@ -144,12 +137,13 @@ registerKind('drawlist', {
 // ── legend: classes (swatch + label) or a ramp (bar + ends), with a title ──
 registerKind('legend', {
   label: 'legend',
-  draw(ctx, box, frame) {
+  draw(ctx, box, frame, env) {
     const c = frame.content || {};
+    const title = c.title ? resolveFields(c.title, env, frame) : '';
     const size = +c.size || 8, row = size * PT * 1.55, sw = size * PT * 1.1;
     let y = box[1] + 0.5;
     ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.fillStyle = INK;
-    if (c.title) { ctx.font = fontMm(size + 1, { bold: true }); ctx.fillText(c.title, box[0] + 0.5, y); y += row * 1.1; }
+    if (title) { ctx.font = fontMm(size + 1, { bold: true }); ctx.fillText(title, box[0] + 0.5, y); y += row * 1.1; }
     ctx.font = fontMm(size);
     if (c.kind === 'ramp' && Array.isArray(c.stops) && c.stops.length) {
       const bh = Math.max(10, box[1] + box[3] - y - (c.tail ? row : 0) - 1), bw = sw * 1.2;
@@ -195,6 +189,19 @@ export function frameWorldPerMm(t) {
   const k = fit === 'cover' ? Math.max(b[2] / iw, b[3] / ih) : Math.min(b[2] / iw, b[3] / ih);   // mm per pixel
   return +m.worldPerPx / k;
 }
+// {scale} — the representative fraction of a view frame (the nearest one that states a scale, or
+// the one named: {scale:plan}). A perspective view has none, and says so.
+const hasScaleMeta = (f) => !!(f.content && f.content.meta && (f.content.meta.worldPerPx > 0 || f.content.meta.worldPerMm > 0 || 'worldPerPx' in f.content.meta || 'ortho' in f.content.meta));
+const UNIT_MM = { m: 1000, km: 1e6, ft: 304.8, mm: 1, cm: 10 };
+registerField('scale', (a, frame, env) => {
+  const t = refFrame(env.doc, frame, a, hasScaleMeta);
+  if (!t) return a ? `⟨no frame “${a}”⟩` : '—';
+  const wpm = frameWorldPerMm(t);
+  if (!(wpm > 0)) return 'no scale (perspective)';
+  const n = wpm * (UNIT_MM[(t.content.meta.units || 'm')] || 1000);
+  const r = +n.toPrecision(n >= 1000 ? 3 : 2);
+  return '1 : ' + String(Math.round(r)).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+}, 'the scale of the nearest view: 1 : 2 500 (orthographic views only); {scale:frame name}');
 const metaOf = (frame, doc) => {
   const c = frame.content || {};
   if (c.of && doc) {
@@ -248,7 +255,7 @@ registerKind('north', {
 const NUMERIC = /^[-+−]?(\d[\d,  ]*)?(\.\d+)?([eE][-+]?\d+)?\s*%?$/;
 registerKind('table', {
   label: 'table',
-  draw(ctx, box, frame) {
+  draw(ctx, box, frame, env) {
     const c = frame.content || {}, cols = (c.columns || []).map(String), rows = (c.rows || []).map((r) => (r || []).map((v) => (v == null ? '' : String(v))));
     if (!cols.length) return;
     const pad = 1.1, avail = box[2] - 0.5;
@@ -268,7 +275,8 @@ registerKind('table', {
     const lh = size * PT * 1.55;
     let y = box[1] + 0.3;
     ctx.textBaseline = 'middle';
-    if (c.title) { ctx.fillStyle = INK; ctx.font = fontMm(size + 1, { bold: true }); ctx.textAlign = 'left'; ctx.fillText(c.title, box[0], y + lh * 0.5); y += lh * 1.15; }
+    const title = c.title ? resolveFields(c.title, env, frame) : '', note = c.note ? resolveFields(c.note, env, frame) : '';
+    if (title) { ctx.fillStyle = INK; ctx.font = fontMm(size + 1, { bold: true }); ctx.textAlign = 'left'; ctx.fillText(title, box[0], y + lh * 0.5); y += lh * 1.15; }
     const x0 = box[0], x1 = box[0] + widths.reduce((a, b) => a + b, 0);
     const rule = (yy, w) => { ctx.strokeStyle = INK; ctx.lineWidth = w; ctx.beginPath(); ctx.moveTo(x0, yy); ctx.lineTo(x1, yy); ctx.stroke(); };
     const cells = (vals, yy, bold) => {
@@ -284,7 +292,7 @@ registerKind('table', {
     rule(y, 0.35);
     cells(cols, y, true); y += lh;
     rule(y, 0.18);
-    const bottom = box[1] + box[3] - (c.note ? lh : 0) - 0.5;
+    const bottom = box[1] + box[3] - (note ? lh : 0) - 0.5;
     const fit = Math.max(0, Math.floor((bottom - y) / lh));
     const shown = rows.length > fit ? Math.max(0, fit - 1) : rows.length;
     for (let i = 0; i < shown; i++) {
@@ -293,7 +301,7 @@ registerKind('table', {
     }
     if (shown < rows.length) { ctx.fillStyle = '#666'; ctx.font = fontMm(size); ctx.textAlign = 'left'; ctx.fillText(`… ${rows.length - shown} more row${rows.length - shown === 1 ? '' : 's'}`, x0 + pad, y + lh / 2); y += lh; }
     rule(y, 0.35);
-    if (c.note) { ctx.fillStyle = '#555'; ctx.font = fontMm(size - 0.5); ctx.textAlign = 'left'; ctx.fillText(c.note, x0, y + lh * 0.55); }
+    if (note) { ctx.fillStyle = '#555'; ctx.font = fontMm(size - 0.5); ctx.textAlign = 'left'; ctx.fillText(note, x0, y + lh * 0.55); }
   },
 });
 // a TSV (an analysis window's ⧉ table) → table content

@@ -15,6 +15,7 @@
 import { PAPER, pageDims, addFrame, frameById, removeFrames, bringToFront, sendToBack, bringForward, sendBackward, alignFrames, distributeFrames, matchSize, groupFrames, ungroupFrames, expandGroups, unitsOf, boundsOf, moveInStack, snapBox, snapResize, serializeDocument } from './model.js';
 import { renderPage, ensureImages } from './render.js';
 import { kindOf } from './kinds.js';
+import { fieldList } from './fields.js';
 
 const CSS = `
 .compo-root { display: flex; flex-direction: column; height: 100%; min-height: 0; font: 12px/1.35 var(--compo-font, system-ui, sans-serif); color: var(--compo-fg, var(--text, #ddd)); outline: none; }
@@ -302,8 +303,19 @@ export function mountEditor(el, doc, opts = {}) {
       align.onchange = () => commit(() => { f.content.align = align.value; });
       const mono = h('input', { type: 'checkbox', checked: !!f.content.mono });
       mono.onchange = () => commit(() => { f.content.mono = mono.checked; });
+      // insert a field at the caret (compo's own and the host's, each with its help as the tooltip)
+      const fl = fieldList(opts.env || {});
+      const fsel = h('select', { title: 'insert a field at the caret', className: 'compo-fields' }, h('option', { value: '', textContent: 'insert field…' }),
+        ...fl.map((x) => h('option', { value: x.name, textContent: '{' + x.name + '}', title: x.help || '' })));
+      fsel.onchange = () => {
+        const nm = fsel.value; fsel.value = ''; if (!nm) return;
+        const tok = '{' + nm + '}', a = ta.selectionStart ?? ta.value.length, b = ta.selectionEnd ?? a;
+        commit(() => { f.content.md = ta.value.slice(0, a) + tok + ta.value.slice(b); });
+        requestAnimationFrame(() => { const t2 = side.querySelector('textarea'); if (t2) { t2.focus(); t2.selectionStart = t2.selectionEnd = a + tok.length; } });
+      };
       insp.append(ta, h('div', { className: 'row' }, h('span', { textContent: 'size (pt)' }), size, align), h('label', { className: 'row' }, h('span', { textContent: 'monospace' }), mono),
-        h('div', { className: 'hint', textContent: '**bold** · fields {fig} {page} {pages} {date} {title} · ${expr} from the host' }));
+        h('div', { className: 'row' }, h('span', { textContent: 'fields' }), fsel),
+        h('div', { className: 'hint', textContent: '**bold** · {name} or {name:arg} · a number format at the end, {count:,} · ${expr:,.2f}' }));
       api._focusText = () => ta.focus();
     }
     if (f.kind === 'image') {

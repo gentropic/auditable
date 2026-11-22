@@ -238,3 +238,31 @@ test('grid + guides snap; grouping gathers a group in the stack; restacking keep
   gatherGroup(d2, 'nonesuch');
 });
 const C_frame = (d, id) => d.frames.find((f) => f.id === id);
+
+test('fields: the grammar, number + date formats, {ref}, {scale}, host fields, unknown braces kept', async () => {
+  const { formatNumber, formatDate, registerField } = await import('../ext/compo/src/main.js');
+  assert.equal(formatNumber(1234567.891, ',.0f'), '1,234,568');
+  assert.equal(formatNumber(1234567.891, '_.2f'), '1 234 567.89');
+  assert.equal(formatNumber(0.4567, '.1%'), '45.7%');
+  assert.equal(formatNumber(-1234.5, ',.1f'), '−1,234.5');
+  assert.equal(formatNumber(7604125.3), '7604125');                // no format: never rounds the integer part away
+  assert.equal(formatNumber(3.14159265), '3.14159');
+  assert.equal(formatDate(new Date(2026, 0, 5, 7, 3, 9), 'D MMMM YYYY, HH:mm:ss'), '5 January 2026, 07:03:09');
+  const doc = createDocument({ title: 'Pit A' });
+  addFrame(doc, { id: 'v', name: 'plan', kind: 'image', box: [10, 10, 100, 80], content: { width: 1000, height: 800, meta: { ortho: true, worldPerPx: 0.25 } } });
+  addFrame(doc, { id: 'p', kind: 'image', box: [150, 10, 100, 80], content: { width: 1000, height: 800, meta: { ortho: false } } });
+  const cap = addFrame(doc, { id: 'c', name: 'plancap', kind: 'text', box: [10, 92, 100, 8], content: { md: 'Figure {fig}' } });
+  const cap2 = addFrame(doc, { id: 'c2', kind: 'text', box: [150, 92, 100, 8], content: { md: 'Figure {fig}' } });
+  const env = { doc, figOf: (f) => [cap, cap2].indexOf(f) + 1, now: new Date(2026, 10, 22), title: 'Pit A', evalField: (e, v) => (e === 'x * 2' ? 2 * v.x : v[e]), vars: { x: 1234.5 } };
+  const R = (s, fr = cap) => resolveFields(s, env, fr);
+  assert.equal(R('{date} · {date:DD/MM/YYYY} · {title}'), '2026-11-22 · 22/11/2026 · Pit A');
+  assert.equal(R('{scale}'), '1 : 2 500');                         // the nearest view: 0.25 m/px at 10 px/mm
+  assert.equal(R('{scale}', cap2), 'no scale (perspective)');      // nearest to cap2 is the perspective view
+  assert.equal(R('{scale:plan}', cap2), '1 : 2 500');              // … unless one is named
+  assert.equal(R('see Figure {ref:plancap}, and {ref:plan}', cap2), 'see Figure 1, and 1');   // a view → its nearest {fig} caption
+  assert.equal(R('${x * 2:,.1f} | ${x}'), '2,469.0 | 1234.5');
+  assert.equal(R('{fig:,} {nope} {} {a b} {page}/{pages}'), '1 {nope} {} {a b} 1/1');
+  registerField('answer', (a) => (a ? a.length : 42), 'test');
+  assert.equal(R('{answer} {answer:abcd} {answer:,}'), '42 4 42');
+  assert.equal(resolveFields('{answer}', { ...env, fields: { answer: () => 'host' } }, cap), 'host');   // env.fields win
+});

@@ -19,9 +19,11 @@ import { captureScene, applyScene } from './views.js';
 import { legendSpec, legendDefaultTitle, _bgColor, applyBg } from './deco.js';
 import { microPrompt, microConfirm } from './prompts.js';
 import { resolveFileHandle, removeFileAt } from './paths.js';
-import { setSectionWorld } from './section.js';
-import { rendererDocBbox } from './layers.js';
-import { createDocument, parseDocument, serializeDocument, mountEditor, exportPDF, exportPNG, frameById, pageDims, tableFromTsv } from '../../../ext/compo/index.js';
+import { setSectionWorld, sectionWorld } from './section.js';
+import { rendererDocBbox, layerShown } from './layers.js';
+import { attrRowCountOf, layerBlob } from './records.js';
+import { sourceHash, sourceHashSync } from './identity.js';
+import { createDocument, parseDocument, serializeDocument, mountEditor, exportPDF, exportPNG, frameById, pageDims, tableFromTsv, refFrame } from '../../../ext/compo/index.js';
 const $ = (s) => document.querySelector(s);
 
 // the app's side (setComposerHooks): renderViewCanvas(pxW, pxH) → a canvas rendered to convergence
@@ -44,8 +46,63 @@ function viewMeta(pxH) {
   // an orthographic view has ONE scale: its visible height (2·halfH, world units) over the image's
   // pixels. A perspective view has none — the scale bar says so rather than guess.
   if (st.ortho && st.halfH > 0) meta.worldPerPx = (2 * st.halfH) / pxH;
+  meta.facts = viewFacts();
   return meta;
 }
+// ── FACTS: what a view showed when it was rendered — the camera, the section, each shown layer
+// with its file, content hash, filter and record counts. A caption's fields read these, so a
+// caption describes the IMAGE (its scene), not whatever the 3D view shows now. ──
+function viewFacts() {
+  const c = HK.cameraWorld ? HK.cameraWorld() : null;
+  let sec = null; try { sec = sectionWorld(); } catch { /* nothing loaded */ }
+  const layers = [];
+  for (const L of S.layers) {
+    if (!layerShown(L.id)) continue;
+    const total = attrRowCountOf(L) || 0, m = L._filterMask;
+    let shown = total;
+    if (m && L.filterExpr) { shown = 0; for (let i = 0; i < m.length; i++) if (m[i]) shown++; }
+    const blob = layerBlob(L), l = { name: L.label || L.name, file: (blob && blob.name) || L.name, sha: blob ? sourceHashSync(blob) : null, filter: L.filterExpr || '', shown, total };
+    Object.defineProperty(l, '_blob', { value: blob, enumerable: false });   // for completeFacts' hash; never saved
+    layers.push(l);
+  }
+  return {
+    camera: c ? { look: +c.look.toFixed(1), elevation: +c.elevation.toFixed(1), ortho: !!c.ortho, zExag: c.zExag } : null,
+    section: sec ? { mode: sec.mode, axis: sec.axis, normal: sec.normal.map((v) => +v.toFixed(6)), position: sec.position, thickness: sec.thickness, clip: sec.clip, dipDir: sec.dipDir, dip: sec.dip } : null,
+    layers, at: new Date().toISOString(),
+  };
+}
+// the slower facts, once a view frame has rendered: each layer's content hash, and the statistics
+// its captions ask for ({mean:AU} …), over the records the view showed (its filters)
+const STAT_RE = /\{(mean|median|min|max|std|n):([^{}]+?)(?::[,_]?(?:\.\d{1,2})?[f%e]?)?\}/g;
+const isView = (f) => !!(f.source && f.source.kind === 'view');
+async function completeFacts(doc, f) {
+  const fx = f.content && f.content.meta && f.content.meta.facts; if (!fx) return;
+  for (const l of fx.layers) if (l._blob && !l.sha) { try { l.sha = await sourceHash(l._blob); } catch { /* unreadable: no hash */ } }
+  const want = new Set();
+  for (const t of doc.frames) {
+    if (t.kind !== 'text' || !t.content || !t.content.md) continue;
+    const md = String(t.content.md); STAT_RE.lastIndex = 0;
+    if (!STAT_RE.test(md) || refFrame(doc, t, null, isView) !== f) continue;
+    STAT_RE.lastIndex = 0; let m;
+    while ((m = STAT_RE.exec(md))) want.add(m[2].trim());
+  }
+  if (!want.size || !HK.statsScan) return;
+  fx.stats = {};
+  for (const key of want) {
+    const k = key.lastIndexOf(':'), lname = k >= 0 ? key.slice(0, k).trim() : null, col = k >= 0 ? key.slice(k + 1).trim() : key;
+    const cands = S.layers.filter((L) => fx.layers.some((l) => l.name === (L.label || L.name)) && (!lname || (L.label || L.name) === lname));
+    let got = null;
+    for (const L of cands) {
+      try {
+        const r = await HK.statsScan(L, { cols: [col] }, L.filterExpr ? L._filterMask : null);
+        const row = r.rows.find((x) => x.group === '' || x.group == null) || r.rows[0];
+        if (row) { got = { layer: L.label || L.name, n: row.n, mean: row.mean, median: row.q50, min: row.min, max: row.max, std: row.std }; break; }
+      } catch { /* not this layer's column */ }
+    }
+    fx.stats[key] = got || { error: `no shown layer has a column “${col}”` };
+  }
+}
+
 const pxFor = (f, pxPerMm) => {
   let w = Math.round(f.box[2] * pxPerMm), h = Math.round(f.box[3] * pxPerMm);
   const k = Math.min(1, MAX_PX / Math.max(w, h)); w = Math.max(16, Math.round(w * k)); h = Math.max(16, Math.round(h * k));
@@ -78,6 +135,10 @@ function storeImage(f, canvas, meta) {
 }
 
 // ── frames micro makes ──
+function afterFacts(ed, id) {
+  const fr = frameById(ed.getDoc(), id);
+  if (fr) completeFacts(ed.getDoc(), fr).then(() => { if (_ed === ed) ed.render(); }, () => {});
+}
 function viewFrameContent(f) {
   const scene = captureScene(f.source && f.source.name || 'view');
   f.source = { app: 'micro', kind: 'view', scene, bg: _bgColor };
@@ -92,6 +153,7 @@ export function addViewFrame(ed, { box = null, border = true } = {}) {   // box:
   const hMax = H - m[0] - m[2] - 18; if (h > hMax) { h = hMax; w = h * aspect; }
   const f = ed.addFrame({ kind: 'image', box: box || [m[3], m[0], +w.toFixed(1), +h.toFixed(1)], content: { photo: true }, style: { border } });
   ed.update(f.id, (fr) => viewFrameContent(fr));
+  afterFacts(ed, f.id);
   $('#meta').textContent = 'composer: the 3D view went into a frame — resize it freely; "Update from the 3D view" re-captures it';
   return f;
 }
@@ -221,7 +283,8 @@ function showFigure(fig) {
 }
 function frameMenu(f, ed) {
   if (f.source && f.source.kind === 'view') return [
-    { label: 'Update from the 3D view', run: () => ed.update(f.id, (fr) => viewFrameContent(fr)) },
+    { label: 'Update from the 3D view', run: () => { ed.update(f.id, (fr) => viewFrameContent(fr)); afterFacts(ed, f.id); } },
+    { label: 'Refresh fields (statistics)', run: async () => { await withScene(f.source.scene, () => completeFacts(ed.getDoc(), f)); ed.render(); } },
     { label: 'Show in the 3D view', run: () => applyScene(f.source.scene) },
     { label: 'Re-render at this size', run: async () => { await rerender(f, PREVIEW_PX_PER_MM); ed.update(f.id, () => {}); } },
   ];
@@ -229,7 +292,7 @@ function frameMenu(f, ed) {
   return [];
 }
 async function rerender(f, pxPerMm) {
-  await withScene(f.source.scene, () => { const r = renderInto(f, pxPerMm, f.source.bg); storeImageQuiet(f, r.canvas, r.meta); });
+  await withScene(f.source.scene, async () => { const r = renderInto(f, pxPerMm, f.source.bg); storeImageQuiet(f, r.canvas, r.meta); await completeFacts(_ed ? _ed.getDoc() : { frames: [f] }, f); });
 }
 // at export: the hi-res render replaces the bitmap, but the stored preview stays small
 function storeImageQuiet(f, canvas, meta) { f._img = canvas; f._jpeg = null; f.content = { ...f.content, width: canvas.width, height: canvas.height, meta }; }
@@ -237,9 +300,98 @@ function storeImageQuiet(f, canvas, meta) { f._img = canvas; f._jpeg = null; f.c
 function envFor(extra = {}) {
   return {
     ...extra,
-    // ${expr} in a caption: the atlas's row values (vars), else empty — micro fields come later
-    evalField: (expr, vars) => (vars && Object.prototype.hasOwnProperty.call(vars, expr) ? vars[expr] : (HK.evalField ? HK.evalField(expr, vars) : `⟨${expr}⟩`)),
+    fields: MICRO_FIELDS, fieldHelp: MICRO_FIELD_HELP,
+    // ${expr}: the atlas row's values (vars), then the nearest view's numbers (count, total,
+    // section, look, elevation, page, pages), in the routine's expression language
+    evalField: (expr, vars, frame, env) => {
+      if (vars && Object.prototype.hasOwnProperty.call(vars, expr)) return vars[expr];
+      const scope = { ...scopeOf(frame, env || {}), ...(vars || {}) };
+      if (Object.prototype.hasOwnProperty.call(scope, expr)) return scope[expr];
+      return HK.evalField ? HK.evalField(expr, scope) : `⟨${expr}⟩`;
+    },
   };
+}
+// ── micro's fields. View fields take a frame's name ({section:plan}); layer fields a layer's
+// name ({count:blocks}); statistics a column, optionally layer:column ({mean:AU}, {mean:holes:AU}).
+// Without one: the nearest 3D-view frame, and all the layers it shows. ──
+const viewOf = (frame, env, a) => refFrame(env.doc, frame, a || null, isView);
+const factsOf = (frame, env, a) => { const v = viewOf(frame, env, a); return v && v.content && v.content.meta && v.content.meta.facts; };
+const groupSp = (n) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+const coord = (v, th) => {
+  if (Math.abs(v) >= 1000) return groupSp(Math.round(v)).replace(/^-/, '−');
+  const dec = th && th < 1 ? 2 : Math.abs(v) < 10 ? 2 : 1;
+  return String(+v.toFixed(dec)).replace(/^-/, '−');
+};
+function sectionText(sec) {
+  if (!sec) return 'no section';
+  const th = sec.thickness, band = th ? ` ± ${+(th / 2).toPrecision(3)}` : sec.clip === 'front' ? ' and above' : sec.clip === 'behind' ? ' and below' : '';
+  if (sec.mode === 'plan') return `${coord(sec.position, th)} RL${band}`;
+  if (sec.mode === 'ns') return `${coord(sec.position, th)} E${band}`;
+  if (sec.mode === 'ew') return `${coord(sec.position, th)} N${band}`;
+  const n = sec.normal || [0, 0, 1];
+  const dipDir = sec.dipDir != null ? sec.dipDir : ((Math.atan2(-n[0], -n[1]) * 180) / Math.PI + 360) % 360;
+  const dip = sec.dip != null ? sec.dip : (Math.acos(Math.min(1, Math.abs(n[2]))) * 180) / Math.PI;
+  return `a plane dipping ${Math.round(dip)}° toward ${String(Math.round(dipDir) % 360).padStart(3, '0')}°${band}`;
+}
+const layersOf = (fx, a) => (fx ? fx.layers.filter((l) => !a || l.name === a) : []);
+const deg3 = (v) => String(Math.round(((v % 360) + 360) % 360) % 360).padStart(3, '0') + '°';
+const sum = (ls, k) => ls.reduce((s, l) => s + l[k], 0);
+const MICRO_FIELDS = {
+  section: (a, f, env) => { const fx = factsOf(f, env, a); return fx ? sectionText(fx.section) : null; },
+  look: (a, f, env) => { const fx = factsOf(f, env, a); return fx && fx.camera ? deg3(fx.camera.look) : null; },
+  elevation: (a, f, env) => { const fx = factsOf(f, env, a); return fx && fx.camera ? Math.round(fx.camera.elevation) + '°' : null; },
+  layers: (a, f, env) => { const fx = factsOf(f, env, a); return fx ? fx.layers.map((l) => l.name).join(', ') || 'no layers' : null; },
+  count: (a, f, env) => { const ls = layersOf(factsOf(f, env), a); return ls.length ? sum(ls, 'shown') : null; },
+  total: (a, f, env) => { const ls = layersOf(factsOf(f, env), a); return ls.length ? sum(ls, 'total') : null; },
+  filter: (a, f, env) => {
+    const ls = layersOf(factsOf(f, env), a); if (!ls.length) return null;
+    const fl = ls.filter((l) => l.filter);
+    return fl.length ? fl.map((l) => (ls.length > 1 ? `${l.name}: ${l.filter}` : l.filter)).join('; ') : 'no filter';
+  },
+  source: (a, f, env) => { const ls = layersOf(factsOf(f, env), a); return ls.length ? [...new Set(ls.map((l) => l.file))].join(', ') : null; },
+  sha: (a, f, env) => {
+    const ls = layersOf(factsOf(f, env), a); if (!ls.length) return null;
+    const h = (l) => (l.sha ? String(l.sha).replace(/^[^:]*:/, '').slice(0, 8) : '…');
+    return ls.length === 1 ? h(ls[0]) : ls.map((l) => `${l.file} ${h(l)}`).join(', ');
+  },
+  project: () => (S.project && S.project.name) || 'no project',
+  micro: () => S.build || 'dev',
+};
+for (const k of ['mean', 'median', 'min', 'max', 'std', 'n']) MICRO_FIELDS[k] = (a, f, env) => {
+  if (!a) return `⟨which column? {${k}:AU}⟩`;
+  const fx = factsOf(f, env); if (!fx) return null;
+  const st = fx.stats && fx.stats[a];
+  if (!st) return '…';                                       // not computed yet (the view frame's menu: Refresh fields)
+  return st.error ? `⟨${st.error}⟩` : st[k];
+};
+const MICRO_FIELD_HELP = [
+  { name: 'section', help: 'the section the nearest view shows: 630 RL ± 5 · 7 604 125 N' },
+  { name: 'look', help: 'the bearing the view looks toward: 045°' },
+  { name: 'elevation', help: 'how far above the horizon the eye sits: 30° (90° = plan)' },
+  { name: 'layers', help: 'the layers the view shows' },
+  { name: 'count', help: 'records shown, after filters: {count:,} · {count:layer}' },
+  { name: 'total', help: 'records in the shown layers, before filters' },
+  { name: 'filter', help: 'the filter(s) the view used' },
+  { name: 'source', help: 'the files the shown layers read' },
+  { name: 'sha', help: 'a short content hash of each source file' },
+  { name: 'project', help: 'the project folder' },
+  { name: 'micro', help: 'the micro build that made the page' },
+  { name: 'mean', help: 'a column’s mean over the shown records: {mean:AU:.2f} · {mean:layer:AU}' },
+  { name: 'median', help: 'a column’s median: {median:AU}' },
+  { name: 'min', help: 'a column’s minimum: {min:AU}' },
+  { name: 'max', help: 'a column’s maximum: {max:AU}' },
+  { name: 'std', help: 'a column’s standard deviation: {std:AU}' },
+  { name: 'n', help: 'how many shown records have a value: {n:AU}' },
+];
+// the ${…} scope: the nearest view's numbers
+function scopeOf(frame, env) {
+  const out = { page: env.page ?? 1, pages: env.pages ?? 1 };
+  const fx = env.doc ? factsOf(frame, env) : null;
+  if (!fx) return out;
+  out.count = sum(fx.layers, 'shown'); out.total = sum(fx.layers, 'total');
+  if (fx.camera) { out.look = fx.camera.look; out.elevation = fx.camera.elevation; }
+  if (fx.section) out.section = fx.section.position;
+  return out;
 }
 // export: every view frame re-rendered at the print dpi with its own scene (the user's view restored after)
 function prepareFor(dpi) {
@@ -252,6 +404,7 @@ function prepareFor(dpi) {
         await applyScene(f.source.scene);
         const r = renderInto(f, dpi / 25.4, f.source.bg);
         storeImageQuiet(f, r.canvas, r.meta);
+        await completeFacts(doc, f);
       }
     } finally { await applyScene(mine); requestRender(); }
   };
@@ -329,6 +482,7 @@ export async function compoPage(params, evalField) {
       const r = renderInto(f, dpi / 25.4, f.source.bg);
       storeImageQuiet(f, r.canvas, r.meta);
       f.content.photo = true;
+      await completeFacts(doc, f);
       // this page's legends read the layers while the page's scene is on
       for (const lf of doc.frames) {
         if (!(lf.source && lf.source.kind === 'legend')) continue;
