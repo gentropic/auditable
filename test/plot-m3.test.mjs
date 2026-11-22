@@ -205,6 +205,23 @@ test('savefig: the format from the name or {format}; with no DOM the host gets {
   fig.savefig('map', { format: 'png' });
   fig.savefig({ fname: 'x.SVG' });
   assert.deepEqual(P.pltAdder.saved().map((s) => [s.name, s.format]), [['map.svg', 'svg'], ['map', 'png'], ['x.SVG', 'svg']]);
-  assert.throws(() => fig.savefig('a.pdf'), /'pdf' is not supported; use 'png' or 'svg'/);
+  fig.savefig('a.pdf');
+  assert.equal(P.pltAdder.saved().at(-1).format, 'pdf', 'pdf is a format now (@gcu/pdf)');
+  assert.throws(() => fig.savefig('a.eps'), /'eps' is not supported; use 'png', 'svg' or 'pdf'/);
+  P.close('all');
+});
+
+test('toPDF: a one-page vector PDF sized from pixels and dpi, text as text, rasters embedded, reproducible', async () => {
+  const [fig, ax] = P.subplots(1, 1, { figsize: [6.4, 4.8] });   // inches → 640 × 480 px at dpi 100
+  ax.plot([0, 1, 2], [0, 1, 4], { label: 'x²' }); ax.imshow([[1, 2], [3, 4]], { extent: [0, 1, 0, 1] }); ax.set_title('Grade −5'); ax.legend();
+  const a = await fig.toPDF({ created: new Date(0) }), b = await fig.toPDF({ created: new Date(0) });
+  const s = Buffer.from(a).toString('latin1');
+  assert.ok(s.startsWith('%PDF-1.7'));
+  assert.ok(s.includes('/MediaBox [0 0 460.8 345.6]'), '640 × 480 px at dpi 100 = 6.4 × 4.8 in = 460.8 × 345.6 pt');
+  assert.ok(s.includes('/BaseFont /Courier'), "plot's monospace text → Courier");
+  assert.ok(s.includes('/Subtype /Image'), 'the imshow raster is an image');
+  assert.deepEqual(a, b, 'the same figure, the same bytes');
+  const plain = Buffer.from(await fig.toPDF({ created: new Date(0), compress: false })).toString('latin1');
+  assert.ok(plain.includes('(Grade -5) Tj'), 'the title is text; the minus written as a hyphen');
   P.close('all');
 });

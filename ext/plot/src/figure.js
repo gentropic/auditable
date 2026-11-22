@@ -15,7 +15,8 @@ import './positional.js';
 import './axis.js';
 import { _resolve, _font, _sizePx, _isBold, _fontAt } from './style.js';
 import { _rcv } from './rc.js';
-import { _checkOpts, _noop } from './opts.js';
+import { _checkOpts, _noop, _warn } from './opts.js';
+import { PdfDocument } from '../../pdf/src/main.js';
 import { recordingContext, replay } from './record.js';
 
 // Figures shown (or saved) where there is no DOM, in order. plt.shown() / plt.saved() read
@@ -301,16 +302,36 @@ export class Figure {
     return this.facecolor === 'transparent' || this.facecolor === 'none' ? this._theme.background : null;
   }
 
-  // savefig('x.png') · savefig('x.svg') · savefig(name, {format: 'svg' | 'png'}). In the
+  // the figure as a one-page VECTOR PDF (@gcu/pdf) → Promise<Uint8Array>: its draw list replayed
+  // onto a page sized from the figure's pixels and dpi (640 × 480 px at dpi 100 = 6.4 × 4.8 in, as
+  // matplotlib's), text as text in Courier — exactly the 0.6 em advance plot lays labels out with —
+  // and rasters (imshow, a large scatter) embedded at their own resolution.
+  // opts: { title, facecolor, created (a Date, for reproducible bytes), compress }
+  async toPDF(opts = {}) {
+    const o = _plainOpts(opts) ? opts : {};
+    const k = 72 / (this.dpi || 100);
+    const doc = new PdfDocument({
+      title: o.title || (this._suptitle && this._suptitle.text) || undefined, creator: '@gcu/plot',
+      created: o.created, compress: o.compress, onWarn: (m) => _warn('pdf:' + m, `plot: PDF — ${m}`, this._strict),
+    });
+    const ctx = doc.addPage({ width: this.width * k, height: this.height * k }).getContext('2d');
+    ctx.scale(k, k);
+    const face = o.facecolor !== undefined ? o.facecolor : this._exportFace();
+    if (face && face !== 'none' && face !== 'transparent') { ctx.fillStyle = face; ctx.fillRect(0, 0, this.width, this.height); }
+    replay(ctx, this.toDrawList());
+    return doc.save();
+  }
+
+  // savefig('x.png') · savefig('x.svg') · savefig('x.pdf') · savefig(name, {format}). In the
   // notebook: a download. With no DOM: record { name, format, figure } for plt.saved() (and
-  // the figure for plt.shown()) so the host can offer the file (figure.toSVG() / toPNG()).
+  // the figure for plt.shown()) so the host can offer the file (toSVG() / toPNG() / toPDF()).
   savefig(filename, opts) {
     if (_plainOpts(filename)) { opts = filename; filename = opts.fname; }
     const o = _plainOpts(opts) ? opts : {};
     let name = (typeof filename === 'string' && filename) || '';
     const ext = /\.([a-z0-9]+)$/i.exec(name);
     const format = String(o.format || (ext ? ext[1] : 'png')).toLowerCase();
-    if (format !== 'png' && format !== 'svg') throw new Error(`savefig: format '${format}' is not supported; use 'png' or 'svg'`);
+    if (format !== 'png' && format !== 'svg' && format !== 'pdf') throw new Error(`savefig: format '${format}' is not supported; use 'png', 'svg' or 'pdf'`);
     if (!name) name = `figure.${format}`;
     if (typeof document === 'undefined') {
       _savedFigures.push({ name, format, figure: this });
@@ -319,6 +340,15 @@ export class Figure {
     }
     const link = document.createElement('a');
     link.download = name;
+    if (format === 'pdf') {
+      // async (deflate): the download follows when the bytes are ready
+      this.toPDF(o).then((bytes) => {
+        const url = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
+        link.href = url; link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 0);
+      });
+      return this;
+    }
     if (format === 'svg') {
       const url = URL.createObjectURL(new Blob([this.toSVG()], { type: 'image/svg+xml' }));
       link.href = url;

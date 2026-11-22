@@ -4,6 +4,11 @@
 import './opts.js';
 import './data.js';
 import '../../theme/src/theme.js';   // @gcu/theme: the keys shared with @gcu/condenser's view
+import '../../pdf/src/color.js';     // @gcu/pdf: savefig('x.pdf') / fig.toPDF() — concatenated in, like the theme
+import '../../pdf/src/sizes.js';
+import '../../pdf/src/fonts.js';
+import '../../pdf/src/context.js';
+import '../../pdf/src/document.js';
 import './style.js';
 import './scale.js';
 import './nice.js';

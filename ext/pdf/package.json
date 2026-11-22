@@ -1,0 +1,32 @@
+{
+  "name": "@gcu/pdf",
+  "version": "0.1.0",
+  "description": "A small PDF writer (zero dependencies, no WASM) with a CanvasRenderingContext2D-compatible drawing context: code that draws on a canvas draws a vector PDF page — paths as PDF paths, text in the standard fonts, images as image XObjects at their own resolution. Multi-page documents, transparency, clipping, dashes, deflate via the platform's CompressionStream. For figures, report pages and atlases from GCU tools.",
+  "type": "module",
+  "main": "./src/main.js",
+  "exports": {
+    ".": "./src/main.js",
+    "./bundled": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "index.js",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "node build.js"
+  },
+  "keywords": ["pdf", "pdf-writer", "canvas", "vector", "figure", "report", "zero-dependency", "no-wasm", "auditable", "gcu"],
+  "license": "MIT",
+  "author": "Arthur Endlein Correia",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gentropic/auditable.git",
+    "directory": "ext/pdf"
+  },
+  "homepage": "https://github.com/gentropic/auditable/tree/main/ext/pdf",
+  "bugs": {
+    "url": "https://github.com/gentropic/auditable/issues"
+  }
+}

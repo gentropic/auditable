@@ -45,7 +45,7 @@ histograms leave NaN out, log axes ignore values ≤ 0. Errors name the argument
 | `fig.show()` | → a `<canvas>` (in Node: records the figure; see `plt.shown()`) |
 | `fig.draw(ctx, {dpr})` · `fig.toDrawList()` · `replay(ctx, list)` · `await fig.toPNG({dpr})` | draw anywhere; a draw list is JSON (`version: 2`) |
 | `fig.toSVG({facecolor})` · `toSVG(drawList)` | an SVG string (see [Export](#export)) |
-| `fig.savefig('x.png' \| 'x.svg')` · `savefig(name, {format})` | a download; with no DOM, `{name, format, figure}` in `plt.saved()` |
+| `fig.savefig('x.png' \| 'x.svg' \| 'x.pdf')` · `savefig(name, {format})` | a download; with no DOM, `{name, format, figure}` in `plt.saved()` |
 | `fig.set_facecolor(c)` · `ax.set_facecolor(c)` | `'none'`: nothing painted, for axes over another picture |
 | `fig.axesAt(px, py)` | the axes under a pixel |
 
@@ -182,6 +182,7 @@ zoom and pan fire it. That's the two-way sync, with no echo.
 | `fig.toSVG({facecolor})` | from the draw list: paths, `<text>` in the theme's font, clip paths, and rasters (imshow, big scatters) as embedded PNG. Same figure, same bytes |
 | `toSVG(fig.toDrawList())` · `import { toSVG } from '@gcu/plot/svg'` | the same from a list made elsewhere (a worker, Node) |
 | `encodePNG(rgba, w, h)` | PNG bytes in plain JS (no canvas) |
+| `await fig.toPDF({title, facecolor, created})` · `savefig('x.pdf')` | a one-page VECTOR PDF (@gcu/pdf): paths, text as text (Courier — the 0.6 em advance plot lays labels out with), rasters embedded at their resolution; 640 × 480 px at dpi 100 = 6.4 × 4.8 in. `replay(pdfCtx, list)` draws any draw list onto a @gcu/pdf page |
 
 A large scatter stays one embedded raster in the SVG, which is honest and small. The dark theme's
 figure surface is transparent (a chart blends into the page); a file has no page, so an export

@@ -55,6 +55,13 @@ E / N in a plan, along / RL in a section.)
 (`OffscreenCanvas` sized by an undefined device-pixel ratio) — found by the interaction test page
 on a 111,727-point brush; the browser smoke now covers it.
 
+**PDF.** `fig.toPDF()` and `savefig('x.pdf')` (and plt.savefig): a one-page vector PDF through
+the new @gcu/pdf (concatenated in, ~40 KB) — paths as paths, text as text in Courier (plot's
+label advance, so layout holds), rasters at their own resolution, sized from the figure's pixels
+and dpi. `replay()` draws a draw list onto any context that takes ImageData directly (a @gcu/pdf
+page), so a list made in a worker or Node becomes a PDF too. With no DOM, savefig records
+`format: 'pdf'` for the host (toPDF()).
+
 **rcParams, for real.** `plt.rcParams` was a bag only `gcu.strict` read and `plt.rc` a no-op; now
 ~70 of matplotlib's keys are read, each at matplotlib's moment (when a figure, axes or artist is
 made): the theme colours / font / cycle, figure size and dpi, grid, spines, margins, title /

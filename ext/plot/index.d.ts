@@ -189,6 +189,8 @@ export class Figure {
   savefig(name?: string, opts?: { format?: 'png' | 'svg' }): unknown;
   /** an SVG string from the draw list; an export paints the theme background under a transparent figure unless facecolor is given */
   toSVG(opts?: { facecolor?: Color | null }): string;
+  /** a one-page vector PDF (@gcu/pdf); `created` makes the bytes reproducible */
+  toPDF(opts?: { title?: string; facecolor?: Color | null; created?: Date; compress?: boolean }): Promise<Uint8Array>;
   set_facecolor(c: Color | 'none'): this;
   get_facecolor(): string;
   axesAt(px: number, py: number): Axes | null;

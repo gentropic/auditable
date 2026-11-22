@@ -93,10 +93,19 @@ export function replay(ctx, list) {
   for (const op of ops) {
     const [name, ...args] = op;
     if (name === 'set') { ctx[args[0]] = args[1]; continue; }
-    if (name === 'image') { _replayImage(ctx, ...args); continue; }
+    if (name === 'image') { (ctx.acceptsImageData ? _replayPixels : _replayImage)(ctx, ...args); continue; }
     if (!_METHODS.has(name)) throw new Error(`replay: unknown op '${name}'`);
     ctx[name](...args);
   }
+}
+
+// a context that takes pixels directly (@gcu/pdf's): the raster at its own resolution, unsmoothed
+function _replayPixels(ctx, x, y, w, h, cols, rows, b64) {
+  const bytes = _fromBase64(b64);
+  const smooth = ctx.imageSmoothingEnabled;
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage({ width: cols, height: rows, data: new Uint8ClampedArray(bytes.buffer, bytes.byteOffset, bytes.length) }, x, y, w, h);
+  ctx.imageSmoothingEnabled = smooth;
 }
 
 function _replayImage(ctx, x, y, w, h, cols, rows, b64) {
