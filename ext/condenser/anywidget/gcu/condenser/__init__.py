@@ -39,6 +39,10 @@ __all__ = ["Viewer", "Layer", "view", "points", "blocks", "drillholes", "mesh", 
 
 _STATIC = pathlib.Path(__file__).parent / "static" / "widget.js"
 _U16MAX = 65535
+# chunked upload: a points/blocks layer whose columns pass this many bytes ships header-only
+# and its rows follow as custom messages of about _CHUNK_BYTES each (see Viewer._repack)
+_CHUNK_AUTO = 32 << 20
+_CHUNK_BYTES = 8 << 20
 
 # wire dtype tags -- mirrored by src/widget.js's TYPES table
 _TAG = {
@@ -411,9 +415,12 @@ class Viewer(anywidget.AnyWidget):
     #: categories per layer index) — mirrored onto the Layer objects
     _file_info = traitlets.Dict(default_value={}).tag(sync=True)
 
-    def __init__(self, layers, **kw):
+    def __init__(self, layers, chunked=None, **kw):
         self.layers = list(layers)
         self._syncing = False
+        #: None: chunk a points/blocks layer bigger than 32 MB; True: chunk every one;
+        #: False: never (every row rides the widget state, as a saved notebook keeps it)
+        self._chunked_opt = chunked
         super().__init__(**kw)
         for i, ly in enumerate(self.layers):
             ly._viewer = self
@@ -457,6 +464,9 @@ class Viewer(anywidget.AnyWidget):
         """Yield every streaming (content, buffers) pair — the testable seam:
         the guard drives these through a fake frontend without a kernel."""
         for li, ly in enumerate(self.layers):
+            if li in self._chunked_idx:
+                yield from self._chunk_messages(li, ly, epoch)
+                continue
             st = getattr(ly, "_stream", None)
             if not st:
                 continue
@@ -504,6 +514,37 @@ class Viewer(anywidget.AnyWidget):
                 sent += n
             yield ({"type": "eof", "epoch": epoch, "layer": li, "rows_total": sent}, [])
 
+    def _chunk_layer(self, ly):
+        """Does this layer's data ride custom messages instead of the payload?
+
+        Only resident points and blocks (cd.open layers already stream; a mesh,
+        a surface or a drillhole set is drawn whole). Auto: more than 32 MB of
+        columns -- the size where one message makes the view wait for its last
+        byte (measured in a real JupyterLab: 20M points = 343 MB, ~30 s blank).
+        """
+        if ly._kind not in ("points", "blocks") or getattr(ly, "_stream", None) or ly._extra.get("file"):
+            return False
+        if self._chunked_opt is False or not ly.count:
+            return False
+        if self._chunked_opt is True:
+            return True
+        return sum(a.nbytes for a in ly._cols.values()) > _CHUNK_AUTO
+
+    def _chunk_messages(self, li, ly, epoch):
+        """A chunked layer's rows, sliced from its resident (already encoded)
+        columns -- about 8 MB a message, every column, so the browser ends up
+        holding exactly what a whole payload would have given it."""
+        n = ly.count
+        names = list(ly._cols)
+        per = {c: ly._cols[c].size // n for c in names}
+        row_bytes = sum(ly._cols[c].itemsize * per[c] for c in names) or 1
+        step = max(1, _CHUNK_BYTES // row_bytes)
+        for seq, s0 in enumerate(range(0, n, step)):
+            s1 = min(n, s0 + step)
+            yield ({"type": "chunk", "epoch": epoch, "layer": li, "seq": seq, "rows": s1 - s0, "cols": names},
+                   [ly._cols[c][s0 * per[c]:s1 * per[c]] for c in names])
+        yield ({"type": "eof", "epoch": epoch, "layer": li, "rows_total": n}, [])
+
     def _repack(self):
         """Pack every layer into ONE blob against ONE shared frame.
 
@@ -525,10 +566,21 @@ class Viewer(anywidget.AnyWidget):
         frame = ((mins + maxs) / 2).tolist()
 
         cols, heads = {}, []
+        # per VIEW, not per layer: one Layer can sit in two viewers that chunk differently
+        self._chunked_idx = {i for i, ly in enumerate(self.layers) if self._chunk_layer(ly)}
         for i, ly in enumerate(self.layers):
             head = dict(ly._extra)
             head["kind"] = ly._kind
             head["cols"] = {}
+            if i in self._chunked_idx:
+                # header-only: the rows follow as chunk messages once the view says
+                # 'ready' (the cd.open path); chunk_cols tells it each column's type
+                # and values per row, so it rebuilds the resident layer exactly
+                head["streamed"] = True
+                head["chunked"] = True
+                head["chunk_cols"] = {c: [_TAG[a.dtype], int(a.size // ly.count)] for c, a in ly._cols.items()}
+                heads.append(head)
+                continue
             for cname, arr in ly._cols.items():
                 key = f"L{i}_{cname}"
                 cols[key] = arr
@@ -595,19 +647,25 @@ class Viewer(anywidget.AnyWidget):
         vs section), take a copy: the payload bytes are reused, so this costs a
         widget, not a re-pack.
         """
+        return self._clone(self._chunked_opt)
+
+    def _clone(self, chunked):
         clone = Viewer.__new__(Viewer)
         layers = []
         for ly in self.layers:
             l2 = Layer(ly._kind, ly._cols, ly._extra, ly.categories, **ly._style())
+            if getattr(ly, "_stream", None):
+                l2._stream = ly._stream
             layers.append(l2)
-        Viewer.__init__(clone, layers,
+        Viewer.__init__(clone, layers, chunked=chunked,
                         section=self.section, background=self.background, height=self.height,
                         toolbar=self.toolbar, edl=self.edl, edl_strength=self.edl_strength,
                         budget=self.budget, select_through=self.select_through,
                         lock=self.lock, lock_toggle=self.lock_toggle, twist=self.twist, grid=self.grid, overlay=list(self.overlay),
                         theme=self.theme, chrome=dict(self.chrome), z_exaggeration=self.z_exaggeration,
                         decorations=self.decorations)
-        clone._payload = self._payload                     # same bytes, no re-pack
+        if chunked == self._chunked_opt:
+            clone._payload = self._payload                 # same bytes, no re-pack
         clone._view = dict(self._view)
         return clone
 
@@ -732,7 +790,15 @@ class Viewer(anywidget.AnyWidget):
 
 
 def view(*layers, **kwargs) -> Viewer:
-    """Stack layers into one view (they share a frame, so they co-register)."""
+    """Stack layers into one view (they share a frame, so they co-register).
+
+    ``chunked=None`` (the default) sends a points or blocks layer bigger than 32 MB
+    in ~8 MB pieces: the view draws from the first piece and the cell returns at
+    once. Those rows are not saved widget state (a notebook saved with its widget
+    state keeps the view's settings, not the rows); ``chunked=False`` sends every
+    layer whole, ``chunked=True`` sends every points/blocks layer in pieces.
+    :func:`export_html` embeds every row either way.
+    """
     flat = []
     for l in layers:
         flat.extend(l if isinstance(l, (list, tuple)) else [l])
@@ -907,7 +973,14 @@ def export_html(viewer, path, title="condenser", offline_note=True):
     from ipywidgets.embed import embed_minimal_html
 
     path = pathlib.Path(path)
-    embed_minimal_html(str(path), views=[viewer], drop_defaults=False, title=title)
+    # a chunked layer's rows ride messages, not the widget state: export an
+    # un-chunked copy so every row is embedded (the live view is left alone)
+    whole = viewer._clone(False) if viewer._chunked_idx else viewer
+    try:
+        embed_minimal_html(str(path), views=[whole], drop_defaults=False, title=title)
+    finally:
+        if whole is not viewer:
+            whole.close()
     if offline_note:
         size = path.stat().st_size
         print(f"{path} ({size / 1024 / 1024:.1f} MiB) — self-contained data; "

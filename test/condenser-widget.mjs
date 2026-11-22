@@ -188,6 +188,53 @@ assert ssub._extra["sub_blocked"] and len(ssub._extra["dim_palette"]) == 2
 assert [a[1] for a in ssub._extra["axes"]] == [5.0, 5.0, 5.0], ssub._extra["axes"]
 wsp = cd.view(spts, ssub, height=460)
 dump_stream(wsp, "stream2")
+# a copy of a streamed view streams too (copy() used to drop the stream: never filled)
+assert sum(1 for c, _ in wsp.copy()._stream_messages("E") if c["type"] == "chunk") >= 2
+
+# CHUNKED UPLOAD: a resident layer past _CHUNK_AUTO ships header-only and its OWN columns
+# follow as chunk messages — every column (multi-channel values, the u16s, rgb at 3 a row),
+# reassembling byte-exactly. Tiny pieces here so the replay crosses several.
+import gcu.condenser as _cdm
+_cdm._CHUNK_BYTES = 4096
+cgi, cgj, cgk = np.meshgrid(np.arange(24), np.arange(24), np.arange(8), indexing="ij")
+cbx = cgi.ravel()*10.+5; cby = cgj.ravel()*10.+5; cbz = cgk.ravel()*10.+5
+cfe = cbx/30 + cbz/10
+cblk = cd.blocks({"X": cbx, "Y": cby, "Z": cbz, "FE": cfe, "SIO2": 100 - cfe*2, "DOM": np.where(cby < 120, "OX", "SUL")},
+                 x="X", y="Y", z="Z", value=["FE", "SIO2"], category="DOM", name="cblk")
+rng3 = np.random.default_rng(3); cpn = 4000
+cpx = rng3.random(cpn)*240; cpy = rng3.random(cpn)*240; cpz = 90 + rng3.random(cpn)*20
+cpts = cd.points({"X": cpx, "Y": cpy, "Z": cpz, "A": cpz, "B": cpx}, x="X", y="Y", z="Z", value=["A", "B"],
+                 rgb=(rng3.random((cpn, 3))*255).astype(np.uint8), name="cpts")
+wcw = cd.view(cblk, cpts, height=460, chunked=False)    # the reference: every row in the payload
+wck = cd.view(cblk, cpts, height=460, chunked=True)
+assert wck._chunked_idx == {0, 1} and wcw._chunked_idx == set(), (wck._chunked_idx, wcw._chunked_idx)
+assert list(wcw._stream_messages("E")) == [], "a whole view sends no rows (the decision is per VIEW)"
+def _head(p):
+    n = int(np.frombuffer(p[8:12], np.uint32)[0]); return json.loads(p[12:12 + n])
+hk = _head(wck._payload)
+assert hk["cols"] == {} and all(L["chunked"] and L["streamed"] for L in hk["layers"]), hk
+assert hk["layers"][1]["chunk_cols"]["rgb"] == ["u8", 3] and "value1" in hk["layers"][0]["chunk_cols"], hk["layers"]
+assert len(wck._payload) < 8192 < len(wcw._payload), (len(wck._payload), len(wcw._payload))
+cmsgs = list(wck._stream_messages("E"))
+assert sum(1 for c, _ in cmsgs if c["type"] == "chunk" and c["layer"] == 0) > 2
+for li, ly in enumerate(wck.layers):
+    for nm, arr in ly._cols.items():
+        parts = [b[c["cols"].index(nm)] for c, b in cmsgs if c["type"] == "chunk" and c["layer"] == li]
+        assert np.array_equal(np.concatenate(parts), arr), (li, nm)
+    assert [c for c, _ in cmsgs if c["type"] == "eof" and c["layer"] == li][0]["rows_total"] == ly.count
+# auto: small stays whole; past the threshold it chunks; points/blocks only
+assert cd.view(cblk)._chunked_idx == set()
+_cdm._CHUNK_AUTO = 1000
+assert cd.view(cblk, cpts)._chunked_idx == {0, 1}
+_cdm._CHUNK_AUTO = 32 << 20
+# export_html embeds every row (a whole clone), the live view stays chunked
+assert wck._clone(False)._payload == wcw._payload
+ehtml = cd.export_html(wck, f"{TD}/chunked-export.html", offline_note=False)
+assert ehtml.stat().st_size > len(wcw._payload), ehtml.stat().st_size
+assert _head(wck._payload)["cols"] == {}
+dump_stream(wck, "chunked")
+open(f"{TD}/chunkref.bin", "wb").write(wcw._payload)
+_cdm._CHUNK_BYTES = 8 << 20
 
 # BATCH A: multi-channel values + categories (legend/eyes) + a draped surface
 nxg, nyg = 30, 30
@@ -802,6 +849,46 @@ const r = await page.evaluate(async (port) => {
     d7();
   }
 
+  // ── CHUNKED upload: resident layers sent in pieces draw from the first piece and end
+  // identical to the same layers sent whole; a channel switch afterwards rebuilds from the
+  // assembled columns (the layer is a resident one by then) ──
+  {
+    const get = async (n2) => fetch(`http://127.0.0.1:${port}/tmp/${n2}`);
+    const cPayload = new DataView(await (await get('chunked.bin')).arrayBuffer());
+    const rPayload = new DataView(await (await get('chunkref.bin')).arrayBuffer());
+    const cStyles = await (await get('chunked-styles.json')).json();
+    const cMsgs = await (await get('chunked-msgs.json')).json();
+    const cBufs = await (await get('chunked-bufs.bin')).arrayBuffer();
+    const base = { _styles: cStyles, _fit: 0, section: null, background: '#121212', height: 460, edl: true, edl_strength: 1, budget: 3000000, selection: {} };
+    const mr = makeModel({ ...base, _payload: rPayload });
+    const dr = render({ model: mr, el });
+    await settle(); await settle();
+    out.chRefLit = lit().n;
+    out.chRefHud = (el.querySelector('.cdhud') || {}).textContent;
+    dr();
+    const mc = makeModel({ ...base, _payload: cPayload });
+    const dc = render({ model: mc, el });
+    await settle();
+    out.chHeaderLit = lit().n;
+    const epc = (mc._sent.find((m2) => m2 && m2.type === 'ready') || {}).epoch;
+    out.chReady = !!epc;
+    let offc = 0;
+    const msgsc = cMsgs.map((m2) => ({ content: m2.content, bufs: m2.lens.map((n2) => { const v = new DataView(cBufs, offc, n2); offc += n2; return v; }) }));
+    out.chPieces = msgsc.filter((m2) => m2.content.type === 'chunk').length;
+    mc._deliver({ ...msgsc[0].content, epoch: epc }, msgsc[0].bufs);
+    await settle();
+    out.chFirstLit = lit().n;
+    for (const m2 of msgsc.slice(1)) mc._deliver({ ...m2.content, epoch: epc }, m2.bufs);
+    await settle(); await settle();
+    out.chLit = lit().n;
+    out.chHud = (el.querySelector('.cdhud') || {}).textContent;
+    mc.set('_styles', cStyles.map((x2, k2) => (k2 === 0 ? { ...x2, value: 'SIO2' } : x2)));
+    await settle(); await settle();
+    out.chSwitchLit = lit().n;
+    out.chSwitchLegend = ((el.querySelector('[data-id="legend"] .cdph') || { getAttribute: () => '' }).getAttribute('aria-label') || '');
+    dc();
+  }
+
   // ── via='files': the BROWSER reads the CSV itself over byte ranges ──
   {
     const fPayload = new DataView(await (await fetch(`http://127.0.0.1:${port}/tmp/files.bin`)).arrayBuffer());
@@ -1018,6 +1105,13 @@ chk(`threshold carves the streamed layer's resident values (${r.streamLit.toLoca
   r.streamThrLit > 0 && r.streamThrLit < r.streamLit * 0.8);
 chk(`streamed POINTS + SUB-BLOCKED render together (${meta.s2Points}+${meta.s2Blocks} rows, ${meta.s2Palette} sizes, hud "${r.s2Hud}")`,
   r.s2Lit > 10000 && /3[,.]?704 elements · 2 layers/.test(r.s2Hud || ''));
+chk(`CHUNKED: header-only payload asks for rows (${r.chReady}) and draws nothing yet (${r.chHeaderLit} lit px); ${r.chPieces} pieces`,
+  r.chReady && r.chPieces > 4 && r.chHeaderLit < r.chRefLit * 0.05);
+chk(`CHUNKED: the FIRST piece already draws (${r.chFirstLit} lit px)`, r.chFirstLit > 1000);
+chk(`CHUNKED: after the last piece it matches the same layers sent whole (${r.chLit} vs ${r.chRefLit} lit px; hud "${r.chHud}" vs "${r.chRefHud}")`,
+  Math.abs(r.chLit - r.chRefLit) <= r.chRefLit * 0.02 && r.chHud === r.chRefHud);
+chk(`CHUNKED: a channel switch after the upload rebuilds from the assembled columns (${r.chSwitchLit} lit px, legend "${r.chSwitchLegend.slice(0, 40)}")`,
+  r.chSwitchLit > 1000 && /SIO2/.test(r.chSwitchLegend));
 chk(`through-select sweeps BOTH streamed accessors (${r.s2ThroughRows.toLocaleString()} rows over ${r.s2ThroughLayers} layers)`,
   r.s2ThroughLayers === 2 && r.s2ThroughRows > 100);
 chk(`chunk building ran OFF the main thread (${workerEngaged} stream workers engaged)`, workerEngaged >= 3);

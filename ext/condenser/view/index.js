@@ -11846,7 +11846,10 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
         if (c.grid && c.grid.rot) rotBy.add(c._layer);     // rotated lattice: face ids are lattice faces
       }
       const dirty = new Set(cosmeticDirtyLayers);
-      for (const id of kindBy.keys()) if (lastCosSig.get(id) !== sigOf(id)) dirty.add(id);
+      // a layer with no signature yet was never rasterized: its chunks DRAW (cursor 0, into the
+      // accumulation) — it is not a cosmetic change to re-shade, and treating it as one returned a
+      // converged frame without its first chunk (a streamed layer arriving piece by piece)
+      for (const id of kindBy.keys()) if (lastCosSig.has(id) && lastCosSig.get(id) !== sigOf(id)) dirty.add(id);
       for (const id of [...dirty]) { const k = kindBy.get(id); if (!k || k === 'mesh') dirty.delete(id); }
 
       // ── DEFERRED RE-SHADE (gl-resolve.js): cosmetic changes over a CONVERGED
@@ -22176,6 +22179,7 @@ function mountView(el, store) {
   const bus = new Map();                                   // chrome plugins' on(): event → Set(fn)
   let payload = null, disposed = false, needFit = false, converged = false;
   let docBbox = null;
+  let waitMsg = null;                                      // streamed rows that never came (a saved view, no kernel)
   let streams = null, streamEpoch = '';                    // cd.open(): layer → stream state, this view's epoch
   let fileQueue = Promise.resolve();                       // via='files' layers build sequentially (frame adoption)
   let fileMsg = null;                                      // a files-mode failure, pinned on the hud
@@ -22257,7 +22261,7 @@ function mountView(el, store) {
         ? (kinds[0] === 'blocks' ? 'blocks' : kinds[0] === 'drillholes' ? 'intervals'
           : kinds[0] === 'mesh' || kinds[0] === 'surface' ? 'triangles' : 'points')
         : `elements · ${n} layers`;
-      hud.textContent = fileMsg || (converged ? `${tot.toLocaleString()} ${what}` : `${tot.toLocaleString()} · ${Math.round((100 * acc) / (tot || 1))}%`);
+      hud.textContent = fileMsg || waitMsg || (converged ? `${tot.toLocaleString()} ${what}` : `${tot.toLocaleString()} · ${Math.round((100 * acc) / (tot || 1))}%`);
     }
     drawOverlay(w, h, dpr);
     pushCamera();                                          // debounced by value — idle frames are free
@@ -22272,7 +22276,7 @@ function mountView(el, store) {
     renderer.clearChunks();
     payload = null; docBbox = null; kinds.length = 0;
     if (streams) for (const k in streams) { const stw = streams[k] && streams[k].worker; if (stw) try { stw.terminate(); } catch { /* gone */ } }
-    streams = null; streamEpoch = Math.random().toString(36).slice(2);
+    streams = null; streamEpoch = Math.random().toString(36).slice(2); waitMsg = null;
     fileQueue = Promise.resolve(); fileMsg = null;
     const p = decodePayload(store.get('_payload'));
     if (!p || !p.layers.length) { hud.textContent = 'no data'; if (tb) tb.showPick(null); schedule(); return; }
@@ -22298,7 +22302,16 @@ function mountView(el, store) {
     applyStyles();
     if (tb) { tb.showPick(null); syncChrome(); }
     invalidate();
-    if (streams) store.send({ type: 'ready', epoch: streamEpoch });
+    if (streams) {
+      store.send({ type: 'ready', epoch: streamEpoch });
+      // a view saved with its notebook keeps a streamed layer's settings, not its rows: say so
+      // instead of sitting at 0% (rows arriving later clear it)
+      const ep = streamEpoch;
+      setTimeout(() => {
+        if (disposed || ep !== streamEpoch || !streams) return;
+        if (Object.values(streams).every((st) => st && !st.got && !st.done)) { waitMsg = 'waiting for the kernel to send the rows (re-run the cell)'; schedule(); }
+      }, 8000);
+    }
   };
 
   // merge a layer's local bbox as it becomes known (files-mode discovery)
@@ -22500,6 +22513,30 @@ function mountView(el, store) {
     L._active = c.name;
   };
 
+  // chunked upload (a resident layer too big for one message): every column the kernel holds
+  // arrives in pieces into these arrays — the stream's base arrays (i/j/k, x/y/z, dim, cat)
+  // ARE them, and the value pushed is the ACTIVE channel's, so the legend and colours are right
+  // from the first piece. At eof the layer becomes a resident one (finishChunked).
+  const initChunked = (L, st, i) => {
+    const n = L.count;
+    st.full = {};
+    for (const [nm, [tag, per]] of Object.entries(L.chunk_cols || {})) { const T = TYPES$view[tag]; if (T) st.full[nm] = new T(n * per); }
+    for (const nm of ['i', 'j', 'k', 'x', 'y', 'z', 'dim', 'cat']) if (st[nm] !== undefined && st.full[nm]) st[nm] = st.full[nm];
+    const names = L.value_channels || [];
+    const s = styleAt(i);
+    let k = s && s.value ? names.indexOf(s.value) : 0;
+    if (k < 0) k = 0;
+    st.chanKey = k === 0 ? 'value' : 'value' + k;
+    st.u16Key = k === 0 ? 'value_u16' : 'value_u16_' + k;
+    if (st.full[st.chanKey]) { st.value = st.full[st.chanKey]; L.cols.value = st.value; }
+    if (st.cat) L.cols.cat = st.cat;
+  };
+  const finishChunked = (L, i, st) => {
+    L.cols = { ...st.full };                               // every column, as a whole payload gives them
+    L.streamed = false; L.chunked = false; L._chans = null;
+    resolveChannel(L, styleAt(i));                         // channel switches rebuild from these now
+  };
+
   // one layer → engine chunks. Shared by load() and rebuildLayer() (a channel
   // switch rebuilds just its own layer from the already-resident columns).
   // Returns the layer's local bbox (null while a streamed layer has no rows).
@@ -22527,14 +22564,15 @@ function mountView(el, store) {
           const n = L.count;
           const st = {
             b, got: 0, done: false, kind: 'blocks',
-            i: new Uint16Array(n), j: new Uint16Array(n), k: new Uint16Array(n),
-            dim: L.dim_palette ? new Uint8Array(n) : null,
-            value: L.value_range ? new Float32Array(n) : null,
-            cat: L.cat_n ? new Uint8Array(n) : null,
+            i: L.chunked ? null : new Uint16Array(n), j: L.chunked ? null : new Uint16Array(n), k: L.chunked ? null : new Uint16Array(n),
+            dim: L.dim_palette && !L.chunked ? new Uint8Array(n) : null,
+            value: L.value_range && !L.chunked ? new Float32Array(n) : null,
+            cat: L.cat_n && !L.chunked ? new Uint8Array(n) : null,
           };
           (streams = streams || {})[i] = st;
           if (st.value) L.cols.value = st.value;           // threshold/legend read these
           if (st.cat) L.cols.cat = st.cat;
+          if (L.chunked) initChunked(L, st, i);
           const [[x0, xp], [y0, yp], [z0, zp]] = L.axes;
           L._posAt = (r) => [x0 + st.i[r] * xp, y0 + st.j[r] * yp, z0 + st.k[r] * zp];
           L._ijk = { st, x0, xp, y0, yp, z0, zp };
@@ -22661,13 +22699,14 @@ function mountView(el, store) {
         const n = L.count;
         const st = {
           b, got: 0, done: false, kind: 'points',
-          x: new Float32Array(n), y: new Float32Array(n), z: new Float32Array(n),
-          value: L.value_range ? new Float32Array(n) : null,
-          cat: L.cat_n ? new Uint8Array(n) : null,
+          x: L.chunked ? null : new Float32Array(n), y: L.chunked ? null : new Float32Array(n), z: L.chunked ? null : new Float32Array(n),
+          value: L.value_range && !L.chunked ? new Float32Array(n) : null,
+          cat: L.cat_n && !L.chunked ? new Uint8Array(n) : null,
         };
         (streams = streams || {})[i] = st;
         if (st.value) L.cols.value = st.value;
         if (st.cat) L.cols.cat = st.cat;
+        if (L.chunked) initChunked(L, st, i);
         const [ox, oy, oz] = L.pos_origin || [0, 0, 0];
         L._posAt = (r) => [ox + st.x[r], oy + st.y[r], oz + st.z[r]];
         L._pstream = { st, ox, oy, oz };
@@ -22759,7 +22798,7 @@ function mountView(el, store) {
         if (disposed || !streams || streams[i] !== st) { try { wk.terminate(); } catch { /* gone */ } return; }
         if (m.chunk) {
           renderer.addChunk(m.chunk, 'base', i);
-          invalidate();
+          schedule();                                      // into the accumulation (no clear: see onCustom)
         } else if (m.done) {
           if (m.done.bboxLocal && Number.isFinite(m.done.bboxLocal[0])) mergeBbox(Float64Array.from(m.done.bboxLocal));
           applyStyles();
@@ -22794,38 +22833,57 @@ function mountView(el, store) {
     const L = payload.layers[li];
     if (!st || !L || st.done) return;
     if (content.type === 'chunk') {
+      if (waitMsg) waitMsg = null;
       const names = content.cols || [];
-      const cap = st.kind === 'points' ? st.x.length : st.i.length;
+      const cap = L.count >>> 0;
       const take = Math.min(content.rows >>> 0, cap - st.got);
       if (take <= 0) return;
-      const TA = st.kind === 'points'
-        ? { x: Float32Array, y: Float32Array, z: Float32Array, value: Float32Array, cat: Uint8Array }
-        : { i: Uint16Array, j: Uint16Array, k: Uint16Array, dim: Uint8Array, value: Float32Array, cat: Uint8Array };
       const got = {};
-      names.forEach((nm, bi) => { if (TA[nm]) got[nm] = asTyped(buffers[bi], TA[nm], take); });
-      if (st.value && got.value) st.value.set(got.value.subarray(0, take), st.got);
-      if (st.cat && got.cat) st.cat.set(got.cat.subarray(0, take), st.got);
+      if (L.chunked) {
+        // every column into its place (values per row from chunk_cols: rgb is 3), then
+        // views of this piece for the push — the active channel's values, its u16, rgb
+        names.forEach((nm, bi) => {
+          const spec = L.chunk_cols[nm], dst = st.full[nm];
+          if (!spec || !dst) return;
+          const per = spec[1];
+          dst.set(asTyped(buffers[bi], TYPES$view[spec[0]], take * per).subarray(0, take * per), st.got * per);
+        });
+        const view = (nm, per = 1) => (st.full[nm] ? st.full[nm].subarray(st.got * per, (st.got + take) * per) : null);
+        for (const nm of ['i', 'j', 'k', 'x', 'y', 'z', 'dim', 'cat']) { const a = view(nm); if (a) got[nm] = a; }
+        got.value = view(st.chanKey); got.u16 = view(st.u16Key); got.rgb = view('rgb', 3);
+      } else {
+        const TA = st.kind === 'points'
+          ? { x: Float32Array, y: Float32Array, z: Float32Array, value: Float32Array, cat: Uint8Array }
+          : { i: Uint16Array, j: Uint16Array, k: Uint16Array, dim: Uint8Array, value: Float32Array, cat: Uint8Array };
+        names.forEach((nm, bi) => { if (TA[nm]) got[nm] = asTyped(buffers[bi], TA[nm], take); });
+        if (st.value && got.value) st.value.set(got.value.subarray(0, take), st.got);
+        if (st.cat && got.cat) st.cat.set(got.cat.subarray(0, take), st.got);
+      }
       let raw;                                             // the builder push, worker or inline
       if (st.kind === 'points') {
         if (!got.x || !got.y || !got.z) return;
-        st.x.set(got.x.subarray(0, take), st.got);
-        st.y.set(got.y.subarray(0, take), st.got);
-        st.z.set(got.z.subarray(0, take), st.got);
+        if (!L.chunked) {
+          st.x.set(got.x.subarray(0, take), st.got);
+          st.y.set(got.y.subarray(0, take), st.got);
+          st.z.set(got.z.subarray(0, take), st.got);
+        }
         const { ox, oy, oz } = L._pstream;
         const px2 = new Float64Array(take), py2 = new Float64Array(take), pz2 = new Float64Array(take);
         for (let q = 0; q < take; q++) { px2[q] = ox + got.x[q]; py2[q] = oy + got.y[q]; pz2[q] = oz + got.z[q]; }
         // the points pipeline colors from u16 intensity: quantize this batch
         // against the header's value range (fixed, so chunks agree)
         raw = { count: take, x: px2, y: py2, z: pz2,
-          intensity: got.value ? quantIntensity(got.value, L.value_range, take) : new Uint16Array(take),
+          intensity: got.u16 ? got.u16.slice(0, take) : got.value ? quantIntensity(got.value, L.value_range, take) : new Uint16Array(take),
           classification: got.cat ? got.cat.slice(0, take) : new Uint8Array(take),
-          rgb: null, recStart: st.got };
+          rgb: got.rgb ? got.rgb.slice(0, take * 3) : null, recStart: st.got };   // fresh copies: they transfer
       } else {
         if (!got.i || !got.j || !got.k) return;
-        st.i.set(got.i.subarray(0, take), st.got);
-        st.j.set(got.j.subarray(0, take), st.got);
-        st.k.set(got.k.subarray(0, take), st.got);
-        if (st.dim && got.dim) st.dim.set(got.dim.subarray(0, take), st.got);
+        if (!L.chunked) {
+          st.i.set(got.i.subarray(0, take), st.got);
+          st.j.set(got.j.subarray(0, take), st.got);
+          st.k.set(got.k.subarray(0, take), st.got);
+          if (st.dim && got.dim) st.dim.set(got.dim.subarray(0, take), st.got);
+        }
         const { x0, xp, y0, yp, z0, zp } = L._ijk;
         const bx = new Float64Array(take), by = new Float64Array(take), bz = new Float64Array(take);
         for (let q = 0; q < take; q++) {
@@ -22846,10 +22904,12 @@ function mountView(el, store) {
       } else {
         st.b.push(raw);
         st.b.flush();                                      // emit NOW — progressive at message granularity
-        invalidate();                                      // new chunks restart the accumulation
+        schedule();                                        // new chunks start at cursor 0 and draw INTO the accumulation;
+                                                           // a clear per piece made every piece redraw everything resident
       }
     } else if (content.type === 'eof') {
       st.done = true;
+      if (L.chunked) finishChunked(L, li, st);
       if (st.worker) {
         st.worker.postMessage({ eof: true });              // its 'done' finishes bbox/styles/chrome
         return;

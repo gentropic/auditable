@@ -11842,7 +11842,10 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
         if (c.grid && c.grid.rot) rotBy.add(c._layer);     // rotated lattice: face ids are lattice faces
       }
       const dirty = new Set(cosmeticDirtyLayers);
-      for (const id of kindBy.keys()) if (lastCosSig.get(id) !== sigOf(id)) dirty.add(id);
+      // a layer with no signature yet was never rasterized: its chunks DRAW (cursor 0, into the
+      // accumulation) — it is not a cosmetic change to re-shade, and treating it as one returned a
+      // converged frame without its first chunk (a streamed layer arriving piece by piece)
+      for (const id of kindBy.keys()) if (lastCosSig.has(id) && lastCosSig.get(id) !== sigOf(id)) dirty.add(id);
       for (const id of [...dirty]) { const k = kindBy.get(id); if (!k || k === 'mesh') dirty.delete(id); }
 
       // ── DEFERRED RE-SHADE (gl-resolve.js): cosmetic changes over a CONVERGED

@@ -138,6 +138,27 @@ grid with no DEM). Like a mesh, it is recordless scenery.
 Drillholes desurvey in the browser through **@gcu/drillhole**, the same
 minimum-curvature code micro uses, so a hole lands in the same place in both.
 
+### Big layers arrive in pieces
+
+A points or blocks layer bigger than **32 MB** (about 2M points, 3M blocks) doesn't
+travel as one message. The view gets a header and draws as soon as the first ~8 MB
+piece lands, filling in as the rest arrive; when the last piece is in it is an
+ordinary layer (channel switches, colours, picks, selections all as usual). The
+cell returns at once instead of waiting behind the data. Measured in JupyterLab,
+headless Chromium:
+
+| points | sent whole: blank until | in pieces: first draw | all rows in |
+|---|---|---|---|
+| 5M (86 MB) | 9.5 s | 1.7 s | 8.8 s |
+| 20M (343 MB) | 29.4 s | 3.2 s | 26 s |
+
+`cd.view(..., chunked=False)` sends every layer whole; `chunked=True` sends every
+points/blocks layer in pieces. The one difference: rows that arrive in pieces are
+**not part of the saved widget state**, so a notebook saved with its widget state
+keeps a big layer's settings but not its rows — reopened without a kernel, the view
+says so until the cell runs again. `cd.export_html` embeds every row regardless.
+(Notebooks stop growing by hundreds of MB when saved, which is the other side of it.)
+
 ## Streaming: `cd.open` — never resident, no comm ceiling
 
 ```python
@@ -462,7 +483,10 @@ Jupyter path:
 3. `jupyter nbconvert --to html nb.ipynb`
 
 The widget state (including the widget's own JavaScript) rides in the notebook's
-metadata, so the exported page carries both the code and the data. Verified end
+metadata, so the exported page carries both the code and the data — for layers up to
+32 MB; a bigger layer arrives in pieces that aren't state (see *Big layers arrive in
+pieces*), so pass `chunked=False` to the view you want a notebook export to carry, or
+export that view with `cd.export_html`. Verified end
 to end: a notebook exported this way opens in a browser with no kernel and the
 3D is fully interactive.
 
@@ -476,7 +500,8 @@ cd.export_html(w, "model.html")
 This exists because the stock `embed_minimal_html(...)` **silently produces a
 blank widget**: ipywidgets drops any trait equal to its default, and anywidget's
 `_esm` — the widget's own JavaScript — *is* its default, so the file comes out
-with no code in it and no error. `export_html` pins `drop_defaults=False`.
+with no code in it and no error. `export_html` pins `drop_defaults=False`, and it
+embeds every row of a layer that the live view receives in pieces.
 
 Two things to know either way:
 
@@ -488,10 +513,6 @@ Two things to know either way:
 - Size: the payload is base64 in the state, so budget about **+33%** over the
   figures above.
 
-One thing not verified here: whether JupyterLab's own *Save Widget State* keeps
-`_esm` (it is the same drop-defaults trap). If an export ever comes out blank,
-that is the first thing to check — `grep -c _esm nb.ipynb` on the saved
-notebook should be `1`, not `0`.
 
 ## Honest notes
 
