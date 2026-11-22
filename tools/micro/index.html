@@ -1228,7 +1228,7 @@ import { openSectionSeries, renderSectionSeries, seriesPositions, seriesExtent, 
 import { recoverSession, createMemDir } from './src/gpu-restore.js';
 import { t as tr, bothTongues, setLang, initLang, offerLanguage, translateDom, LANG } from './src/i18n.js';
 import { openGradeShell, gradeShell, readField, contourField, smoothField } from './src/shells.js';
-import { openStructure, openStereonet, importPaintedSets, installStructurePointer, _structWins, planesToTable, structureArmed, removeTrace, tracesToDxf } from './src/structure-ui.js';   // capivaras: joint planes on an outcrop mesh
+import { openStructure, openStereonet, stereonetFigure, importPaintedSets, installStructurePointer, _structWins, planesToTable, structureArmed, removeTrace, tracesToDxf } from './src/structure-ui.js';   // capivaras: joint planes on an outcrop mesh
 import { structureOf, prepareStructure, measurePlanes, traceNetwork } from './src/structure.js';
 import { openValidation } from './src/validation.js';
 import { routineEval, routineFilterRows, routineSubst, routineReadTableFull, routineLoadParams, expandRoutine, routineTargets, openRoutineTracker, runRoutine, saveRecipe, loadRecipes, runRecipe, recipesMenuItems } from './src/recipes.js';
@@ -2055,7 +2055,7 @@ document.querySelectorAll('[data-sample]').forEach((a) => a.onclick = () => open
 setDecoHooks({ renderFigureCanvas, openTurntable });
 setTurntableHooks({ renderFigureCanvas });
 setFigurePdfOpener(openFigurePdf);
-setComposerHooks({ renderViewCanvas, setCameraWorld, saveRecipe, openRoutineWindow, cameraWorld, statsScan, evalField: routineEval, runRecipe });
+setComposerHooks({ renderViewCanvas, setCameraWorld, saveRecipe, openRoutineWindow, cameraWorld, statsScan, evalField: routineEval, runRecipe, stereonetFigure });
 setSeriesHooks({ renderFigureCanvas });
 
 applyBg();                                                 // restore the saved background at boot

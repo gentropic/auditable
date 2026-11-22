@@ -12,6 +12,7 @@ import { layerTableHeader, schemaExt } from './records.js';
 import { emit as yamlEmit, mapEntry as yamlEntry, mapNode as yamlMap, parse as yamlParse, scalar as yamlScalar, seqNode as yamlSeq } from '../../../ext/yaml/index.js';
 import { openGradeTonnage } from './gt.js';
 import { openStats } from './stats.js';
+import { openXyPlot } from './xyplot.js';
 import { openSwath } from './swath.js';
 import { gridAxesOf } from './grid-ops.js';
 import { menuXY } from './menu.js';
@@ -33,7 +34,7 @@ const $ = (s) => document.querySelector(s);
 // Files are the interface: comment them, copy them between projects, drop one
 // in and Scan folder picks it up. Series reference layers BY NAME; a missing
 // primary gets a one-question remap — that prompt IS the parameter binding. ──
-export const RECIPE_TOOLS = { gt: 'grade-tonnage', swath: 'swath', stats: 'stats', figure: 'figure', compo: 'composer page', calccols: 'calc columns', solid: 'by solid / surface', routine: 'routine' };
+export const RECIPE_TOOLS = { gt: 'grade-tonnage', swath: 'swath', stats: 'stats', xy: 'scatter / Q-Q', figure: 'figure', compo: 'composer page', calccols: 'calc columns', solid: 'by solid / surface', routine: 'routine' };
 
 export const recipeSlug = (name) => (String(name).toLowerCase().replace(/[^\w.-]+/g, '-').replace(/^-+|-+$/g, '') || 'recipe');
 
@@ -273,7 +274,7 @@ export async function expandRoutine(params) {
 // the preview both read this, so "what will this overwrite?" has ONE answer.
 export function routineTargets(tool, params, slug, P) {
   const t = { reports: [], columns: [], figures: [] };
-  if (['gt', 'swath', 'stats'].includes(tool)) t.reports.push(routineOutPath(P, slug));
+  if (['gt', 'swath', 'stats', 'xy'].includes(tool)) t.reports.push(routineOutPath(P, slug));
   else if (tool === 'calccols') {
     const layer = params.layer;
     for (const c of params.cols || []) if (c && c.name) t.columns.push({ layer, name: c.name, kind: 'ƒ' });
@@ -311,7 +312,7 @@ export function routineLineInfo(st, i, P) {
   ];
   return {
     text: `${i + 1}. ${label}${wrote.length ? '  ' + wrote.join('  ') : '   (opens only)'}${st.recipe && !rc ? '   ⚠ recipe not found' : ''}`,
-    openable: ['gt', 'swath', 'stats', 'interp'].includes(tool) && !(st.recipe && !rc),
+    openable: ['gt', 'swath', 'stats', 'xy', 'interp'].includes(tool) && !(st.recipe && !rc),
   };
 }
 
@@ -460,7 +461,7 @@ export async function runRoutine(r, opts = {}) {
     tracker.state(idx, 'run');
     $('#meta').textContent = `routine “${r.name}” — step ${n}/${steps.length}: ${st._slug}…`;
     try {
-      if (['gt', 'swath', 'stats'].includes(tool)) {
+      if (['gt', 'swath', 'stats', 'xy'].includes(tool)) {
         const before = new Set([...document.querySelectorAll('.fwin')]);
         runRecipe(merged, true);
         const el = await new Promise((res, rej) => {
@@ -618,12 +619,13 @@ export function runRecipe(r, andRun = true) {
     }
     return r.tool === 'gt' ? openGradeTonnage(Lp, { cfg: r.params, run: andRun })
       : r.tool === 'stats' ? openStats(Lp, { cfg: r.params, run: andRun })
+      : r.tool === 'xy' ? openXyPlot(Lp, { cfg: r.params, run: andRun })
       : openSwath(Lp, { cfg: r.params, run: andRun });
   };
   const wantName = (r.params.series && r.params.series[0] && r.params.series[0].layer) || r.params.layer;
   const L = S.layers.find((x) => x.name === wantName);
   if (L) { open2(L); return; }
-  const cands = S.layers.filter((x) => (r.tool === 'stats' || r.tool === 'calccols' ? !!layerTableHeader(x) : gridAxesOf(x)));
+  const cands = S.layers.filter((x) => (r.tool === 'stats' || r.tool === 'calccols' || r.tool === 'xy' ? !!layerTableHeader(x) : gridAxesOf(x)));
   if (!cands.length) { $('#meta').textContent = `recipe “${r.name}”: wants “${wantName || 'a block model'}” and no suitable layer is loaded`; return; }
   setTimeout(() => menuXY(innerWidth / 2 - 140, innerHeight / 3, [
     ...cands.map((c) => ({ label: `“${r.name}” wants ${wantName} — use ${c.label || c.name}`, action: () => open2(c) })),

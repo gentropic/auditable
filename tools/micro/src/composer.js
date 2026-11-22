@@ -254,6 +254,7 @@ const recipeLayers = (r) => {
   const p = (r && r.params) || {}, out = [];
   for (const s of p.series || []) if (s && s.layer) out.push(s.layer);
   if (p.layer) out.push(p.layer);
+  for (const k of ['a', 'b']) if (p[k] && p[k].layer) out.push(p[k].layer);   // a Q-Q's two sides
   return [...new Set(out)];
 };
 async function stampFacts(f, names) {
@@ -294,6 +295,11 @@ export async function refreshData(fig = _fig) {
         if (f.kind === 'chart' && r.spec) { f.content = { ...f.content, spec: r.spec }; f._list = null; }
         else if (f.kind === 'table' && r.tsv) { const c = tableFromTsv(r.tsv, f.content.title || ''); if (c) f.content = { ...f.content, columns: c.columns, rows: c.rows }; }
         await stampFacts(f, recipeLayers(src.recipe)); f.produced = new Date().toISOString(); n++;
+      } else if (src.stereonet && HK.stereonetFigure) {      // a stereonet: the planes measured again, the net redrawn
+        const L = S.layers.find((x) => x.name === src.stereonet.layer);
+        if (!L) throw new Error(`layer “${src.stereonet.layer}” isn't loaded`);
+        f.content = { ...f.content, list: await HK.stereonetFigure(L) };
+        await stampFacts(f, [src.stereonet.layer]); f.produced = new Date().toISOString(); n++;
       } else if (src.kind === 'resource' && src.params) {
         f.content = { ...f.content, ...(await resourceContent(src.params)) };
         await stampFacts(f, [src.params.layer]); f.produced = new Date().toISOString(); n++;
@@ -1065,11 +1071,12 @@ registerKind('chart', {
   },
 });
 // a draw list (a graphic recorded from any 2D-context drawer — the stereonet) → a vector frame
-export function addDrawlistFrame(list, name) {
+export function addDrawlistFrame(list, name, stereonet = null) {
   const ed = openComposer();
   const doc = ed.getDoc(), m = doc.page.margins || [12, 12, 12, 12];
   const w = 80, h = +(w * list.height / Math.max(1, list.width)).toFixed(1);
-  const f = ed.addFrame({ kind: 'drawlist', box: [m[3] + 8, m[0] + 8, w, h], content: { list }, source: { app: 'micro', kind: 'graphic', name } });
+  const f = ed.addFrame({ kind: 'drawlist', box: [m[3] + 8, m[0] + 8, w, h], content: { list }, source: { app: 'micro', kind: 'graphic', name, ...(stereonet ? { stereonet } : {}) } });
+  if (stereonet) stampFacts(f, [stereonet.layer]).then(() => { if (_ed) _ed.render(); });
   $('#meta').textContent = `composer: ${name} went into “${_fig.name}” (vector)`;
   return f;
 }
@@ -1105,7 +1112,7 @@ export function addTableFrame(tsv, name, near = null, recipe = null) {
 }
 addEventListener('micro:to-composer', (e) => {
   const d = e.detail || {};
-  const p = d.drawlist ? addDrawlistFrame(d.drawlist, d.name || 'graphic') : d.spec ? addChartFrame(d.spec, d.name || 'chart', d.recipe) : d.canvas ? addCanvasFrame(d.canvas, d.name || 'plot') : null;
+  const p = d.drawlist ? addDrawlistFrame(d.drawlist, d.name || 'graphic', d.stereonet || null) : d.spec ? addChartFrame(d.spec, d.name || 'chart', d.recipe) : d.canvas ? addCanvasFrame(d.canvas, d.name || 'plot') : null;
   if (d.tsv) addTableFrame(d.tsv, d.name || 'table', p, d.recipe);
 });
 

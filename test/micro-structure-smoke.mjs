@@ -289,6 +289,16 @@ const planesOf = (p) => p.evaluate(() => { const w = [...document.querySelectorA
   const j3 = moved.find((q) => q.set === 'J3');
   chk(`a lasso on the net selects J1's pole (${s1.sel} selected) and “move → + new set” repaints that plane as J3 (${moved.map((q) => `${q.set} ${q.dip_direction.toFixed(0)}/${q.dip.toFixed(0)}`).join(', ')})`,
     s1.sel === 1 && j3 && Math.abs(j3.dip - 30) < 0.5 && !moved.some((q) => q.set === 'J1') && moved.length === 2);
+
+  // the stereonet frame keeps its layer: ↻ refresh measures the planes again and redraws the net — J3 is on it now
+  const reNet = await p2.evaluate(async () => {
+    const M_ = window._micro, fig = M_.figures().find((f) => f.name === 'net'), fr = fig.doc.frames.find((f) => f.kind === 'drawlist');
+    const had = JSON.stringify(fr.content.list.ops).includes('J3');
+    const n = await M_.refreshData(fig);
+    const fr2 = fig.doc.frames.find((f) => f.kind === 'drawlist');
+    return { source: fr2.source.stereonet, n, had, has: JSON.stringify(fr2.content.list.ops).includes('J3'), stale: M_.staleOf(fr2), open: [...document.querySelectorAll('.fwin')].filter((e) => e._stereo).length };
+  });
+  chk(`a stereonet frame keeps its layer (${JSON.stringify(reNet.source)}); ↻ refresh redraws it from the sets as they are now — J3 before ${reNet.had}, after ${reNet.has}; the window stays as it was (${reNet.open})`, reNet.source && reNet.n === 1 && !reNet.had && reNet.has && reNet.stale === null && reNet.open === 1);
   await p2.keyboard.press('Control+z');
   const back = await p2.waitForFunction(() => { const w = [...document.querySelectorAll('.fwin')].find((e) => e._structure); return w && w._structure.planes.some((q) => q.set === 'J1'); }, null, { timeout: 10000 }).then(() => true, () => false);
   chk(`Ctrl+Z puts the plane back in J1 (${back})`, back);

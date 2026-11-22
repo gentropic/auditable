@@ -6656,11 +6656,23 @@ if (take()) {
     const bytes = await M.figurePdfBytes(M.currentFigure(), 72, { compress: false });
     const t = new TextDecoder('latin1').decode(bytes);
     out.pdf = { log: t.includes('(AU \\(log\\)) Tj') /* the PDF escapes the label's parentheses */, decade: /\(1\) Tj|\(10\) Tj/.test(t) };
+    // it keeps the window's recipe: a new estimate (other values, same file name) makes it 'older data'; ↻ refresh re-runs it
+    out.recipe = fr.source.recipe && fr.source.recipe.tool;
+    const xr0 = fr.content.spec.xr.slice();
+    await new Promise((res) => setTimeout(res, 300));
+    let s2 = 'X,Y,Z,AU,CU\n'; for (let i = 0; i < 2000; i++) s2 += `${5 + (i % 50) * 10},${5 + ((i / 50 | 0) % 40) * 10},5,${(1 + (i % 97)) * 0.5},${(1 + (i % 89)) * 0.2}\n`;
+    await M.openBlob(new File([s2], 'xy2.csv'), 'xy2.csv', 'replace');
+    const vf = () => M.currentFigure().doc.frames.find((f) => f.kind === 'chart');
+    for (let k = 0; k < 40 && !(M.staleOf(vf()) || {}).text; k++) await new Promise((res) => setTimeout(res, 100));
+    out.stale = (M.staleOf(vf()) || {}).text;
+    await M.refreshViews(M.currentFigure());
+    out.after = { badge: M.staleOf(vf()), moved: JSON.stringify(vf().content.spec.xr) !== JSON.stringify(xr0), windows: [...document.querySelectorAll('.fwin')].filter((el) => /scatter/.test(el.querySelector('.fwin-head .t').textContent)).length };
     if (window.__dumpFig) { const C = await import('/ext/compo/index.js'); const png = await C.exportPNG(M.currentFigure().doc, { dpi: 150 }); out.png = await new Promise((res) => { const f2 = new FileReader(); f2.onload = () => res(f2.result); f2.readAsDataURL(png); }); }
     return out;
   });
   if (r.png) { const fs = await import('node:fs'); fs.writeFileSync(process.env.SM2_DUMP, Buffer.from(r.png.split(',')[1], 'base64')); fs.writeFileSync(process.env.SM2_DUMP.replace(/\.png$/, '-win.png'), Buffer.from(r.winPng.split(',')[1], 'base64')); }
   chk(`XY: the scatter window draws through @gcu/plot (${JSON.stringify(r.spec)}, ${(r.ink * 100).toFixed(0)}% inked)`, r.spec && r.spec.type === 'xy' && r.spec.log && r.ink > 0.02);
+  chk(`XY: the frame keeps the window's recipe (${r.recipe}); a new estimate reads "${r.stale}"; ↻ refresh re-runs it — no badge, the axes moved (${JSON.stringify(r.after)})`, r.recipe === 'xy' && r.stale === 'older data' && r.after.badge === null && r.after.moved);
   chk(`XY: ⇥ figure makes an xy chart frame (${r.frame}); the PDF carries its log label and decade ticks as text (${JSON.stringify(r.pdf)})`, r.frame === 'xy' && r.pdf.log && r.pdf.decade);
   await p.close();
 }

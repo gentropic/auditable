@@ -119,6 +119,7 @@ export function openXyPlot(L, ropts) {
     onClose: () => { saveAnalysisCfg(L, 'xy', cfgOf(), win); setAnalysisOpen(L, 'xy', false); _xyWins.delete(L.id); } });
   setAnalysisOpen(L, 'xy', true);
   applyAnalysisGeo(L, 'xy', win);
+  win.el._recipe = () => ({ tool: 'xy', name: `${(L.label || L.name).replace(/\.[^.]+$/, '')} ${st.mode === 'qq' ? 'Q-Q' : 'scatter'}`, params: { layer: L.name, ...cfgOf() } });   // ⇥ figure keeps this: a chart that re-runs
   const body = document.createElement('div'); body.className = 'sw-body'; win.body.append(body);
   const rail = document.createElement('div'); rail.className = 'sw-rail';
   const main = document.createElement('div'); main.className = 'sw-main';

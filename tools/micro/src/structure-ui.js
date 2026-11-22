@@ -753,6 +753,18 @@ function setGhost(hd, r) {
   else { const f = fitRegion(r.st, r.vertices); hd.ghost = f ? { dd: f.dipDirection, dip: f.dip } : null; }
   if (hd.stereo && (prev || hd.ghost)) hd.stereo.render();
 }
+// the stereonet figure of a layer, made again from its painted sets (the composer's ↻ refresh): the
+// planes measured afresh, the net drawn on paper — the window opened for it and closed after if it
+// wasn't open
+export async function stereonetFigure(L) {
+  if (!L || L.kind !== 'mesh') throw new Error('a stereonet needs a mesh layer');
+  await structureAfterEdit(L);
+  const hd = _structWins.get(L.id) || L._structView;
+  if (!hd) throw new Error(`open the structure window for ${L.label || L.name} once`);
+  const was = !!(hd.stereo && hd.stereo.win.el.isConnected);
+  const sn = openStereonet(L); if (!sn) throw new Error('the stereonet could not open');
+  try { return sn.toFigure(); } finally { if (!was) sn.win.close(); }
+}
 export function openStereonet(L) {
   const hd = _structWins.get(L.id) || L._structView;
   if (!hd) { $('#meta').textContent = 'stereonet: open the structure window first'; return null; }
@@ -909,7 +921,7 @@ export function openStereonet(L) {
   }
   const figBtn = document.createElement('button'); figBtn.className = 'awin-btn'; figBtn.textContent = '⇥ figure';
   figBtn.title = 'the net into the composer — vector, on paper, with the set means beneath';
-  figBtn.onclick = () => dispatchEvent(new CustomEvent('micro:to-composer', { detail: { drawlist: toFigure(), name: `stereonet-${(L.label || L.name).replace(/\.[^.]+$/, '')}` } }));
+  figBtn.onclick = () => dispatchEvent(new CustomEvent('micro:to-composer', { detail: { drawlist: toFigure(), stereonet: { layer: L.name }, name: `stereonet-${(L.label || L.name).replace(/\.[^.]+$/, '')}` } }));
   opts.append(figBtn);
   win.el._onResized = () => render();                     // the theme-change repaint (windows.js calls it on resize too)
   hd.stereo = { win, render, sn, toFigure };
