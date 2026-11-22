@@ -189,6 +189,23 @@ figure surface is transparent (a chart blends into the page); a file has no page
 paints the theme's background under it unless the face was set (`set_facecolor('none')` stays
 clear) or `{facecolor}` is given.
 
+### GCU graphics: the 2D-context contract
+
+The GCU libraries agree on one way to make a vector graphic: **draw it into a Canvas 2D context**. Then:
+- plot draws its figures into one;
+- `@gcu/compo`'s frame kinds draw into one;
+- `@gcu/pdf` implements one, so anything drawn this way becomes a PDF page;
+- `@gcu/bearing`'s `Stereonet.draw(ctx)` draws a stereonet into one.
+
+A **draw list** is the recorded form of such a graphic:
+- `recordingContext(w, h)` is a context that records every call; its `.ops`, with `{ version: 2, width, height }`, is a draw list;
+- `replay(ctx, list)` plays it onto any context;
+- `toSVG(list)` turns it into SVG.
+
+So a library that draws into a context gets canvas, PDF, SVG and the composer page with no extra code. A library that has only SVG output should add a context path; bearing's `CanvasBuilder` is the pattern for that.
+
+Rasters inside a graphic (density shading, an image) go into a recording with `rec._image(x, y, w, h, cols, rows, rgba)`. Calling `drawImage` with a canvas cannot be serialized.
+
 ## Interaction (`@gcu/plot/interact`)
 
 ```js

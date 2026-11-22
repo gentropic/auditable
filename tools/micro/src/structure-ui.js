@@ -900,7 +900,7 @@ export function openStereonet(L) {
       render();
       const lh = 14, H = NET + 10 + lh * lastLines.length, rec = recordingContext(NET, H);
       rec.fillStyle = '#ffffff'; rec.fillRect(0, 0, NET, H);
-      if (prefs.orient) { const g = bg.getContext('2d'), im = g.getImageData(0, 0, NET, NET); rec._image(0, 0, NET, NET, NET, NET, im.data); }
+      if (prefs.orient) { const g = bg.getContext('2d'), im = g.getImageData(0, 0, NET, NET); rec.drawRGBA(0, 0, NET, NET, NET, NET, im.data); }
       sn.draw(rec);
       rec.font = '10px ui-monospace, monospace'; rec.textAlign = 'left'; rec.textBaseline = 'middle';
       lastLines.forEach(([c, t], k) => { rec.fillStyle = c; rec.fillText('● ' + t, 8, NET + 6 + lh * (k + 0.5)); });

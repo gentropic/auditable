@@ -1081,6 +1081,15 @@ class PdfDocument {
     this._gsKeys = [];
     this._imgs = [];                                       // { name, w, h, rgb, alpha, jpeg, smooth }
     this._imgCache = new WeakMap();
+    this._files = [];                                      // attachments: { name, bytes, mime, description, relationship }
+  }
+  // attach a file to the document (PDF 2.0 / PDF/A-3 style: an embedded file, listed in the
+  // catalog's EmbeddedFiles and /AF). data: a string (UTF-8) or bytes. relationship: Source,
+  // Data, Alternative, Supplement or Unspecified (default Source — what the page was made from).
+  attach(name, data, { mime = 'application/octet-stream', description = '', relationship = 'Source' } = {}) {
+    const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data instanceof Uint8Array ? data : new Uint8Array(data);
+    this._files.push({ name: String(name), bytes, mime, description, relationship });
+    return this;
   }
   // addPage() → A4 portrait · addPage('A3', 'landscape') · addPage([w, h]) in mm · addPage({ width, height }) in points
   addPage(size = 'A4', orientation = null, { units = 'pt' } = {}) {
@@ -1172,7 +1181,18 @@ class PdfDocument {
       pageIds.push(add({ dict: `<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 ${num(p.width)} ${num(p.height)}] /Resources << ${res.join(' ')} >> /Contents ${cid} 0 R >>` }));
     }
     objs[pagesId - 1] = { dict: `<< /Type /Pages /Kids [${pageIds.map((i) => `${i} 0 R`).join(' ')}] /Count ${pageIds.length} >>` };
-    objs[catalogId - 1] = { dict: `<< /Type /Catalog /Pages ${pagesId} 0 R >>` };
+    // attachments: an EmbeddedFile stream + a file spec each; the catalog lists them (sorted by name)
+    const fileSpecs = [];
+    for (const f of this._files) {
+      const mimeName = f.mime.replace(/[^\w.+-]/g, (c) => '#' + c.charCodeAt(0).toString(16).padStart(2, '0'));
+      const st = await stream(`<< /Type /EmbeddedFile /Subtype /${mimeName} /Params << /Size ${f.bytes.length} >>`, f.bytes);
+      const eid = add({ dict: st.dict + ' >>', bytes: st.bytes });
+      const sid = add({ dict: `<< /Type /Filespec /F ${textString(f.name)} /UF ${textString(f.name)}${f.description ? ` /Desc ${textString(f.description)}` : ''} /EF << /F ${eid} 0 R /UF ${eid} 0 R >> /AFRelationship /${f.relationship} >>` });
+      fileSpecs.push({ name: f.name, id: sid });
+    }
+    fileSpecs.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    const names = fileSpecs.length ? ` /Names << /EmbeddedFiles << /Names [${fileSpecs.map((f) => `${textString(f.name)} ${f.id} 0 R`).join(' ')}] >> >> /AF [${fileSpecs.map((f) => `${f.id} 0 R`).join(' ')}]` : '';
+    objs[catalogId - 1] = { dict: `<< /Type /Catalog /Pages ${pagesId} 0 R${names} >>` };
     const o = this.opts, info = [];
     for (const [k, v] of [['Title', o.title], ['Author', o.author], ['Subject', o.subject], ['Keywords', o.keywords], ['Creator', o.creator]]) if (v) info.push(`/${k} ${textString(v)}`);
     info.push(`/Producer ${textString('@gcu/pdf')}`);
@@ -1216,6 +1236,39 @@ function pixelsOf(src) {
     const cv = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(w, h) : Object.assign(document.createElement('canvas'), { width: w, height: h });
     const g = cv.getContext('2d'); g.drawImage(src, 0, 0); return g.getImageData(0, 0, w, h);
   } catch { return null; }
+}
+
+// ── reading attachments back: enough of a PDF reader for files that keep their objects in the
+// open (this writer's, and most simple PDFs; not object streams or encrypted files). Returns
+// [{ name, bytes, mime, description }]. ──
+async function readAttachments(pdfBytes) {
+  const u8 = pdfBytes instanceof Uint8Array ? pdfBytes : new Uint8Array(pdfBytes);
+  let text = ''; for (let i = 0; i < u8.length; i += 65536) text += String.fromCharCode.apply(null, u8.subarray(i, i + 65536));
+  const objAt = new Map();                                 // object number → offset of "n 0 obj" (the last one wins: incremental updates)
+  for (const m of text.matchAll(/(?:^|[\r\n\s])(\d+)\s+0\s+obj\b/g)) objAt.set(+m[1], m.index + m[0].length);
+  const dictOf = (n) => { const at = objAt.get(n); if (at == null) return null; const end = text.indexOf('endobj', at); return text.slice(at, end < 0 ? undefined : end); };
+  const strOf = (src) => {                                  // a literal (…) or hex <…> string → JS string
+    if (!src) return '';
+    if (src[0] === '<') { const hex = src.slice(1, -1).replace(/\s/g, ''); const b = []; for (let i = 0; i < hex.length; i += 2) b.push(parseInt(hex.slice(i, i + 2), 16)); if (b[0] === 0xfe && b[1] === 0xff) { let s2 = ''; for (let i = 2; i + 1 < b.length; i += 2) s2 += String.fromCharCode((b[i] << 8) | b[i + 1]); return s2; } return String.fromCharCode(...b); }
+    return src.slice(1, -1).replace(/\\([nrtbf()\\]|[0-7]{1,3})/g, (_, c) => ({ n: '\n', r: '\r', t: '\t', b: '\b', f: '\f' })[c] || (/^[0-7]/.test(c) ? String.fromCharCode(parseInt(c, 8)) : c));
+  };
+  const STR = '(\\((?:\\\\.|[^\\\\)])*\\)|<[0-9A-Fa-f\\s]*>)';
+  const out = [];
+  for (const [n] of objAt) {
+    const d = dictOf(n); if (!d || !/\/Type\s*\/Filespec/.test(d)) continue;
+    const name = strOf((new RegExp('/UF\\s*' + STR).exec(d) || new RegExp('/F\\s*' + STR).exec(d) || [])[1]);
+    const desc = strOf((new RegExp('/Desc\\s*' + STR).exec(d) || [])[1]);
+    const ef = /\/EF\s*<<[^>]*?\/F\s+(\d+)\s+0\s+R/.exec(d); if (!ef) continue;
+    const sd = dictOf(+ef[1]); if (!sd) continue;
+    const at = objAt.get(+ef[1]), sIdx = text.indexOf('stream', at);
+    const len = +(/\/Length\s+(\d+)/.exec(sd) || [])[1];
+    let start = sIdx + 6; if (text[start] === '\r') start++; if (text[start] === '\n') start++;
+    let bytes = u8.slice(start, start + len);
+    if (/\/Filter\s*\/FlateDecode/.test(sd)) bytes = new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate'))).arrayBuffer());
+    const mime = ((/\/Subtype\s*\/([^\s/>]+)/.exec(sd) || [])[1] || '').replace(/#([0-9a-fA-F]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
+    out.push({ name, bytes, mime, description: desc });
+  }
+  return out;
 }
 
 // -- style.js --
@@ -2873,6 +2926,9 @@ function recordingContext(width, height) {
     getLineDash() { return dash.slice(); },
     // the raster op (see the header)
     // `holder` (optional) keeps the encoding between draws of the same raster
+    // drawRGBA: a raster INTO the recording — rgba (cols × rows, 8-bit) drawn at x, y, w × h. A
+    // canvas or bitmap passed to drawImage cannot be serialized; this can. (_image: the old name.)
+    drawRGBA(x, y, w, h, cols, rows, rgba) { this._image(x, y, w, h, cols, rows, rgba); },
     _image(x, y, w, h, cols, rows, rgba, holder) {
       if (!_finiteArgs([x, y, w, h])) return;
       let b64;
@@ -9064,9 +9120,11 @@ function subplots(nrows, ncols, opts) {
   //   plt.subplots(figsize=(8,6))             → ({_kw, figsize}) — kwargs in arg 0
   //   plt.subplots(2, 3, figsize=(8,6))       → (2, 3, {_kw, figsize})
   //   plt.subplots(2, 3, sharex=True)         → (2, 3, {_kw, sharex})
-  if (nrows && typeof nrows === 'object' && nrows._kw) {
+  //   subplots({ figsize, theme })            → a plain options object in arg 0 (JS), as matplotlib's kwargs
+  //   subplots(2, { sharex })                 → … or in arg 1
+  if (nrows && typeof nrows === 'object' && !Array.isArray(nrows)) {
     opts = nrows; nrows = undefined; ncols = undefined;
-  } else if (ncols && typeof ncols === 'object' && ncols._kw) {
+  } else if (ncols && typeof ncols === 'object' && !Array.isArray(ncols)) {
     opts = ncols; ncols = undefined;
   }
   const nr = nrows || 1;

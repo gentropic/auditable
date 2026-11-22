@@ -40,9 +40,11 @@ export function subplots(nrows, ncols, opts) {
   //   plt.subplots(figsize=(8,6))             → ({_kw, figsize}) — kwargs in arg 0
   //   plt.subplots(2, 3, figsize=(8,6))       → (2, 3, {_kw, figsize})
   //   plt.subplots(2, 3, sharex=True)         → (2, 3, {_kw, sharex})
-  if (nrows && typeof nrows === 'object' && nrows._kw) {
+  //   subplots({ figsize, theme })            → a plain options object in arg 0 (JS), as matplotlib's kwargs
+  //   subplots(2, { sharex })                 → … or in arg 1
+  if (nrows && typeof nrows === 'object' && !Array.isArray(nrows)) {
     opts = nrows; nrows = undefined; ncols = undefined;
-  } else if (ncols && typeof ncols === 'object' && ncols._kw) {
+  } else if (ncols && typeof ncols === 'object' && !Array.isArray(ncols)) {
     opts = ncols; ncols = undefined;
   }
   const nr = nrows || 1;

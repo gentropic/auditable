@@ -268,7 +268,7 @@ export function link(axes: Axes[], opts?: { x?: boolean; y?: boolean }): () => v
 export function getCmap(name: Cmap): (t: number) => string;
 export const cmap: typeof getCmap;
 export function replay(ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D, list: DrawList | unknown[][]): void;
-export function recordingContext(width: number, height: number): CanvasRenderingContext2D & { ops: unknown[][] };
+export function recordingContext(width: number, height: number): CanvasRenderingContext2D & { ops: unknown[][]; drawRGBA(x: number, y: number, w: number, h: number, cols: number, rows: number, rgba: Uint8Array | Uint8ClampedArray): void };
 /** a font size: px, or one of matplotlib's names (relative to font.size) */
 export type FontSize = number | 'xx-small' | 'x-small' | 'small' | 'medium' | 'large' | 'x-large' | 'xx-large' | 'larger' | 'smaller';
 /** a title's or axis label's look (each overrides rcParams axes.title* / axes.label*) */

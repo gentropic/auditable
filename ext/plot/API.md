@@ -204,7 +204,7 @@ A **draw list** is the recorded form of such a graphic:
 
 So a library that draws into a context gets canvas, PDF, SVG and the composer page with no extra code. A library that has only SVG output should add a context path; bearing's `CanvasBuilder` is the pattern for that.
 
-Rasters inside a graphic (density shading, an image) go into a recording with `rec._image(x, y, w, h, cols, rows, rgba)`. Calling `drawImage` with a canvas cannot be serialized.
+Rasters inside a graphic (density shading, an image) go into a recording with `rec.drawRGBA(x, y, w, h, cols, rows, rgba)` (8-bit RGBA, cols × rows, drawn at x, y, w × h). Calling `drawImage` with a canvas cannot be serialized.
 
 ## Interaction (`@gcu/plot/interact`)
 

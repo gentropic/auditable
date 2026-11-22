@@ -733,3 +733,14 @@ describe('style palette', () => {
     setStyle('dark_background');
   });
 });
+
+it('subplots takes a plain options object in either position; drawRGBA records a raster', async () => {
+  const P = await import('../ext/plot/index.js');
+  const [, ax] = P.subplots({ figsize: [400, 240], dpi: 100, theme: 'paper' });
+  assert.equal(typeof ax.twinx, 'function');                 // one axes, not an array (it read the object as nrows)
+  const [, axes] = P.subplots(2, { figsize: [400, 240] });
+  assert.equal(axes.length, 2);
+  const rec = P.recordingContext(10, 10);
+  rec.drawRGBA(0, 0, 10, 10, 1, 1, new Uint8Array([255, 0, 0, 255]));
+  assert.equal(rec.ops[0][0], 'image');
+});

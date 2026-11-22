@@ -52,6 +52,9 @@ export function recordingContext(width, height) {
     getLineDash() { return dash.slice(); },
     // the raster op (see the header)
     // `holder` (optional) keeps the encoding between draws of the same raster
+    // drawRGBA: a raster INTO the recording — rgba (cols × rows, 8-bit) drawn at x, y, w × h. A
+    // canvas or bitmap passed to drawImage cannot be serialized; this can. (_image: the old name.)
+    drawRGBA(x, y, w, h, cols, rows, rgba) { this._image(x, y, w, h, cols, rows, rgba); },
     _image(x, y, w, h, cols, rows, rgba, holder) {
       if (!_finiteArgs([x, y, w, h])) return;
       let b64;
