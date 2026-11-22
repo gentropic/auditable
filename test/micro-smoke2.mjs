@@ -6987,6 +6987,108 @@ if (take()) {
   await p.close();
 }
 
+// ── §109: VECTOR SECTIONS v2 — any plane, rotated models, drillholes, meshes. An inclined plane
+//     cuts each block into its polygon, and the polygons tile the model's cross-section exactly
+//     (area); a rotated model cut square to its own lattice gives merged rectangles in the lattice's
+//     basis; on an E–W section drillholes are their intervals clipped to the slab and projected, at
+//     the sticks' width, and a closed mesh is one closed cut line; the PDF holds no image. ──
+if (take()) {
+  const p = await mkPage('sm2vsec2');
+  const r = await p.evaluate(async () => {
+    const M_ = window._micro, out = {}, wait = (ms) => new Promise((res) => setTimeout(res, ms));
+    const rows = ['XC,YC,ZC,AU,CU']; for (let k = 0; k < 4; k++) for (let j = 0; j < 20; j++) for (let i = 0; i < 30; i++) rows.push(`${5 + i * 10},${5 + j * 10},${5 + k * 10},${(0.2 + 0.05 * i).toFixed(3)},${(0.1 + 0.05 * j).toFixed(3)}`);
+    const id = await M_.openBlob(new File([rows.join('\n') + '\n'], 'm.csv'), 'm.csv', 'replace');
+    const L = M_.layers().find((x) => x.id === id);
+    await M_.setLayerColorSel(L, M_.colorSelFor(L, 'CU'));
+    const ed = M_.openComposer('vsec2');
+    const f = M_.addViewFrame(ed, { box: [12, 12, 180, 120] });
+    const vf = () => ed.getDoc().frames.find((x) => x.id === f.id);
+    const menu = () => M_.composerFrameMenu(vf(), ed);
+    const vectorOn = async () => { menu().find((m) => m.label === 'Update from the 3D view').run(); await wait(800); await menu().find((m) => /^Vector section/.test(m.label)).run(); };   // the frame takes the view as it now is, then turns vector
+    const area = (Ly) => { let a = 0; for (let i = 0; i < Ly.colors.length; i++) { const s = Ly.starts[i], e = i + 1 < Ly.starts.length ? Ly.starts[i + 1] : Ly.pts.length / 2; for (let k = s; k < e; k++) { const k2 = k + 1 < e ? k + 1 : s; a += Ly.pts[k * 2] * Ly.pts[k2 * 2 + 1] - Ly.pts[k2 * 2] * Ly.pts[k * 2 + 1]; } } return Math.abs(a) / 2; };
+    // A. a vertical plane on the diagonal, x + y = 203, seen square-on
+    await window.micro.setView({ look: 45, elevation: 0, ortho: true });
+    await window.micro.setSection({ normal: [1, 1, 0], position: 203 / Math.SQRT2, thickness: 10 });
+    await wait(300);
+    await vectorOn();
+    { const V = vf().content.vector, Ly = V && V.layers[0];
+      out.incl = Ly ? { type: Ly.type, polys: Ly.colors.length, blocks: Ly.blocks, area: +area(Ly).toFixed(2), u: Ly.plane.u, v: Ly.plane.v } : { err: vf().content.vectorError }; }
+    // …seen from the north instead: refused
+    await window.micro.setView({ look: 0, elevation: 0, ortho: true }); await wait(200);
+    menu().find((m) => m.label === 'Update from the 3D view').run(); await wait(1200);
+    out.offAxis = vf().content.vectorError || null;
+    // B. a rotated model (30°), cut square to its own U axis
+    const c = Math.cos(Math.PI / 6), s = Math.sin(Math.PI / 6), U = [10 * c, 10 * s, 0], Vv = [-10 * s, 10 * c, 0], W = [0, 0, 10], O = [1000, 2000, 100];
+    const E = [], N = [], RL = [], AU = [];
+    for (let k = 0; k < 3; k++) for (let j = 0; j < 6; j++) for (let i = 0; i < 8; i++) { E.push(O[0] + i * U[0] + j * Vv[0]); N.push(O[1] + i * U[1] + j * Vv[1]); RL.push(O[2] + k * 10); AU.push(j); }
+    const rid = await M_.addLayer({ kind: 'blocks', name: 'rot', columns: { E: Float64Array.from(E), N: Float64Array.from(N), RL: Float64Array.from(RL), AU: Float64Array.from(AU) }, roles: { x: 'E', y: 'N', z: 'RL', value: 'AU' }, lattice: { basis: { origin: O, U, V: Vv, W, counts: [8, 6, 3] } } });
+    const RLy = M_.layers().find((x) => x.id === rid);
+    L.visible = false; M_.applyTreeVisibility();
+    await M_.setLayerColorSel(RLy, M_.colorSelFor(RLy, 'AU'));
+    const nU = [c, s, 0];
+    await window.micro.setView({ look: 60, elevation: 0, ortho: true });
+    await window.micro.setSection({ normal: nU, position: nU[0] * O[0] + nU[1] * O[1] + 33, thickness: 10 });
+    await wait(300);
+    menu().find((m) => m.label === 'Update from the 3D view').run(); await wait(1500);
+    { const V = vf().content.vector, Ly = V && V.layers.find((l) => l.layer === 'rot');
+      out.rot = Ly ? { type: Ly.type, cells: Ly.colors.length, blocks: Ly.blocks, plane: !!Ly.plane, w: +(Ly.rects[2] - Ly.rects[0]).toFixed(3), h: +(Ly.rects[3] - Ly.rects[1]).toFixed(3) } : { err: vf().content.vectorError, layers: V && V.layers.map((l) => l.layer) }; }
+    // …and cut obliquely to its lattice (a N–S plane, x = 1010): polygons, tiling the footprint's chord × 30
+    await window.micro.setView({ look: 90, elevation: 0, ortho: true });
+    await window.micro.setSection({ axis: 'x', position: 1010, thickness: 10 });
+    await wait(300);
+    menu().find((m) => m.label === 'Update from the 3D view').run(); await wait(1500);
+    { const V = vf().content.vector, Ly = V && V.layers.find((l) => l.layer === 'rot');
+      // the chord: the footprint parallelogram O' + a·8U + b·6V (a, b ∈ [0, 1]) along x = 1010
+      const Op = [O[0] - U[0] / 2 - Vv[0] / 2, O[1] - U[1] / 2 - Vv[1] / 2]; let lo = Infinity, hi = -Infinity;
+      for (let q = 0; q <= 200000; q++) { const a = q / 200000, b = (Op[0] + 8 * U[0] * a - 1010) / (-6 * Vv[0]); if (b < 0 || b > 1) continue; const y = Op[1] + 8 * U[1] * a + 6 * Vv[1] * b; lo = Math.min(lo, y); hi = Math.max(hi, y); }
+      out.rotOblique = Ly ? { type: Ly.type, polys: Ly.colors.length, area: +area(Ly).toFixed(2), want: +((hi - lo) * 30).toFixed(2) } : { err: vf().content.vectorError }; }
+    RLy.visible = false; L.visible = true; M_.applyTreeVisibility();
+    // C + D. drillholes and a closed mesh on an E–W section at y = 100
+    const did = await M_.addLayer({ kind: 'drillholes', name: 'dh',
+      collar: { columns: { HOLE: ['H1', 'H2'], E: Float64Array.from([150, 100]), N: Float64Array.from([100, 130]), RL: Float64Array.from([40, 40]) }, roles: { bhid: 'HOLE', x: 'E', y: 'N', z: 'RL' } },
+      survey: { columns: { HOLE: ['H1', 'H2'], AT: Float64Array.from([0, 0]), AZI: Float64Array.from([0, 180]), INC: Float64Array.from([90, 45]) }, roles: { bhid: 'HOLE', at: 'AT', az: 'AZI', dip: 'INC' } },
+      intervals: { columns: { HOLE: ['H1', 'H1', 'H1', 'H2'], F: Float64Array.from([0, 10, 20, 0]), T: Float64Array.from([10, 20, 40, 60]), CU: Float64Array.from([0.4, 0.4, 0.9, 1.2]) }, roles: { bhid: 'HOLE', from: 'F', to: 'T' } } });
+    const D = M_.layers().find((x) => x.id === did);
+    await M_.setLayerColorSel(D, M_.colorSelFor(D, 'CU'));
+    const bx = [120, 180], by = [80, 120], bz = [10, 30], vt = [];
+    for (const zz of bz) for (const yy of by) for (const xx of bx) vt.push(xx, yy, zz);
+    const tri = [0, 2, 1, 1, 2, 3, 4, 5, 6, 5, 7, 6, 0, 1, 4, 1, 5, 4, 2, 6, 3, 3, 6, 7, 0, 4, 2, 2, 4, 6, 1, 3, 5, 3, 7, 5];
+    await M_.addLayer({ kind: 'mesh', name: 'box', vertices: Float64Array.from(vt), triangles: Uint32Array.from(tri) });
+    await window.micro.setView({ look: 0, elevation: 0, ortho: true });
+    await window.micro.setSection({ axis: 'y', position: 100, thickness: 10 });
+    await wait(400);
+    menu().find((m) => m.label === 'Update from the 3D view').run(); await wait(2000);
+    { const V = vf().content.vector || { layers: [] };
+      const dl = V.layers.find((l) => l.type === 'lines' && l.intervals != null), ml = V.layers.find((l) => l.type === 'lines' && l.segments != null);
+      const lines = (Ly) => Ly.starts.map((s0, i) => { const e = i + 1 < Ly.starts.length ? Ly.starts[i + 1] : Ly.pts.length / 2, ps = []; for (let k = s0; k < e; k++) ps.push([+Ly.pts[k * 2].toFixed(2), +Ly.pts[k * 2 + 1].toFixed(2)]); return ps; });
+      const toWorld = (Ly, [u, v]) => [0, 1, 2].map((a) => +(Ly.plane.origin[a] + u * Ly.plane.u[a] + v * Ly.plane.v[a]).toFixed(2));
+      out.dh = dl ? { lines: lines(dl).map((ps) => ps.map((q) => toWorld(dl, q))), width: dl.width, radius: window._micro.renderer.layerStickRadius(D.id), colours: dl.palette.length } : { err: vf().content.vectorError, notes: V.notes };
+      out.mesh = ml ? { lines: lines(ml).map((ps) => ps.map((q) => toWorld(ml, q))) } : { notes: V.notes };
+      out.blocksV1 = !!V.layers.find((l) => l.layer === 'm.csv' && l.axis); }
+    const bytes = await M_.figurePdfBytes(M_.currentFigure(), 72, { compress: false });
+    out.images = (new TextDecoder('latin1').decode(bytes).match(/\/Subtype \/Image/g) || []).length;
+    return out;
+  });
+  const want = 200 * Math.SQRT2 * 40;
+  chk(`VECTOR v2: an inclined plane cuts each block into its polygon, and they tile the model's cross-section (area ${r.incl.area} vs ${want.toFixed(2)}; ${JSON.stringify(r.incl)})`,
+    r.incl.type === 'polys' && r.incl.polys === r.incl.blocks && Math.abs(r.incl.area - want) < 0.5 && r.incl.v[2] === 1 && r.incl.u[0] > 0);
+  chk(`VECTOR v2: the inclined section seen from elsewhere is refused (“${r.offAxis}”)`, /square-on/.test(r.offAxis || ''));
+  chk(`VECTOR v2: a rotated model cut square to its lattice → merged rectangles in the lattice's basis (${JSON.stringify(r.rot)})`,
+    r.rot.type === 'cells' && r.rot.plane && r.rot.blocks === 18 && r.rot.cells === 6 && r.rot.w === 10 && r.rot.h === 30);
+  chk(`VECTOR v2: the rotated model cut obliquely → polygons tiling its chord (${JSON.stringify(r.rotOblique)})`,
+    r.rotOblique.type === 'polys' && r.rotOblique.polys > 0 && Math.abs(r.rotOblique.area - r.rotOblique.want) < 0.5);
+  const h1 = r.dh.lines && r.dh.lines.filter((ps) => ps.every((q) => q[0] === 150)), h2 = r.dh.lines && r.dh.lines.find((ps) => ps.every((q) => q[0] === 100));
+  const zs = h2 ? h2.map((q) => q[2]).sort((a, b) => a - b) : [];
+  chk(`VECTOR v2: drillholes — H1 whole in the slab (2 colours → ${h1 && h1.length} lines, z 40 → 0), H2 clipped to the slab and projected (z ${zs.join('…')}), width = the sticks' diameter (${r.dh.width} = 2×${r.dh.radius}) (${JSON.stringify(r.dh).slice(0, 300)})`,
+    h1 && h1.length === 2 && Math.max(...h1.flat().map((q) => q[2])) === 40 && Math.min(...h1.flat().map((q) => q[2])) === 0 && h1.flat().every((q) => q[1] === 100)
+    && zs.length === 2 && Math.abs(zs[0] - 5) < 0.01 && Math.abs(zs[1] - 15) < 0.01 && r.dh.width === 2 * r.dh.radius);
+  const ml = r.mesh.lines || [], loop = ml[0] || [], xs = loop.map((q) => q[0]), zz = loop.map((q) => q[2]);
+  chk(`VECTOR v2: the closed mesh is one closed cut line round x 120…180, z 10…30 on y = 100 (${JSON.stringify(r.mesh).slice(0, 300)})`,
+    ml.length === 1 && loop.length >= 5 && String(loop[0]) === String(loop[loop.length - 1]) && Math.min(...xs) === 120 && Math.max(...xs) === 180 && Math.min(...zz) === 10 && Math.max(...zz) === 30 && loop.every((q) => q[1] === 100));
+  chk(`VECTOR v2: blocks on an axis section keep v1's form (${r.blocksV1}); the PDF holds no image (${r.images})`, r.blocksV1 && r.images === 0);
+  await p.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

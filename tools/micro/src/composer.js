@@ -21,14 +21,14 @@ import { microPrompt, microConfirm } from './prompts.js';
 import { resolveFileHandle, removeFileAt } from './paths.js';
 import { setSectionWorld, sectionWorld } from './section.js';
 import { rendererDocBbox, layerShown } from './layers.js';
-import { attrRowCountOf, layerBlob, layerTableHeader, schemaExt, layerWorldBox } from './records.js';
+import { attrRowCountOf, layerBlob, layerTableHeader, schemaExt, layerWorldBox, meshVertexData } from './records.js';
 import { figureRefs, retargetDoc, guessLayer, guessColumn } from './retarget.js';
 import { computeResourceTable, numericColsOf } from './analysis.js';
 import { sourceHash, sourceHashSync } from './identity.js';
 import { createDocument, parseDocument, serializeDocument, mountEditor, exportPDF, exportPNG, frameById, pageDims, tableFromTsv, removeFrames, groupFrames, subjectFrame, refFrame, figureFromPdf, registerKind, replayDrawList } from '../../../ext/compo/index.js';
 import { chartFigure } from './analysis-ui.js';
 import { colorChoices, colorSelFor } from './color.js';
-import { SEC_AXES, sectionCells } from './vsection.js';
+import { SEC_AXES, sectionCells, sectionShapes, sectionDrillholes, sectionMesh } from './vsection.js';
 import { gridAxesOf } from './grid-ops.js';
 import { xyFigure } from './xyplot.js';
 const $ = (s) => document.querySelector(s);
@@ -670,23 +670,72 @@ function openMultiplesDialog(ed, f) {
 // section plane through each block model the view shows), the view's other layers as a transparent
 // render on top. Rebuilt with every render of the frame (preview, refresh, export, atlas page) —
 // called while the frame's scene is on. ──
-function vectorWhyNot(fx) {
+function vectorWhyNot(fx, proj) {
   const sec = fx && fx.section, cam = fx && fx.camera;
-  if (!sec || !SEC_AXES[sec.mode]) return 'a vector section needs an axis section on the view — plan, N–S or E–W';
+  if (!sec || !Array.isArray(sec.normal)) return 'a vector section needs a section on the view';
   if (!cam || !cam.ortho) return 'a vector section needs an orthographic view';
+  const msg = 'a vector section is seen square-on: look straight at the section plane (a plan from above, a vertical section along its strike)';
+  if (proj && Array.isArray(proj.m) && proj.m.length === 16) {
+    // the world direction the view collapses to a point (column-major: rows 0 and 1 of the 3×3) — in
+    // the exaggerated display space, it must lie along the plane's normal (within 5°)
+    const m = proj.m, r0 = [m[0], m[4], m[8]], r1 = [m[1], m[5], m[9]], e = cam.zExag || 1;
+    const w = [r0[1] * r1[2] - r0[2] * r1[1], r0[2] * r1[0] - r0[0] * r1[2], r0[0] * r1[1] - r0[1] * r1[0]];
+    const wd = [w[0], w[1], w[2] * e], nd = [sec.normal[0], sec.normal[1], sec.normal[2] / e];
+    const c = Math.abs(wd[0] * nd[0] + wd[1] * nd[1] + wd[2] * nd[2]) / ((Math.hypot(...wd) * Math.hypot(...nd)) || 1);
+    return c > Math.cos((5 * Math.PI) / 180) ? null : msg;
+  }
+  if (!SEC_AXES[sec.mode]) return msg;                     // no projection recorded: only the axis cases can be judged
   const lk = ((cam.look % 360) + 360) % 360, el = cam.elevation, near = (a, b) => Math.abs(((a - b + 540) % 360) - 180) < 5;
   const along = sec.mode === 'plan' ? el > 85 : Math.abs(el) < 5 && (sec.mode === 'ns' ? (near(lk, 90) || near(lk, 270)) : (near(lk, 0) || near(lk, 180)));
-  return along ? null : 'a vector section is seen square-on: look along the section (plan from above, a N–S section from the east or west, an E–W one from the north or south)';
+  return along ? null : msg;
 }
+// a layer in a vector section: blocks always; drillholes and meshes when they're cut by the section
+// the ordinary way (or, drillholes, as whole holes crossing it). Anything else stays in the raster
+// overlay, with the reason.
+async function vectorLayer(L, sec, near) {
+  const name = L.label || L.name, mode = S.renderer.layerSectioned(L.id);
+  if (gridAxesOf(L)) {
+    const ga = gridAxesOf(L);
+    if (SEC_AXES[sec.mode] && !ga.rot) {                   // v1's form: compact, and what older figures hold
+      const c = await sectionCells(L, sec);
+      return { type: 'cells', layer: name, axis: SEC_AXES[sec.mode], position: sec.position, rects: c.rects.map((v) => +v.toFixed(4)), colors: c.colors, palette: c.palette, blocks: c.blocks };
+    }
+    const c = await sectionShapes(L, sec, near);
+    if (c.rects) c.rects = c.rects.map((v) => +v.toFixed(4)); if (c.pts) c.pts = c.pts.map((v) => +v.toFixed(4));
+    return { ...c, layer: name };
+  }
+  if (L.dh && L.docs && L.docs.dhDoc) {
+    if (mode === false || mode === 'front' || mode === 'behind') return { skip: `${name}: not cut by the section` };
+    const c = await sectionDrillholes(L, sec, near, { mode, radius: S.renderer.layerStickRadius(L.id) || 1 });
+    c.pts = c.pts.map((v) => +v.toFixed(4));
+    return { ...c, layer: name };
+  }
+  if (L.kind === 'mesh' && L.docs && L.docs.meshDoc) {
+    if (mode === false) return { skip: `${name}: not cut by the section` };
+    const m = await meshVertexData(L);
+    if (!m) return { skip: `${name}: a streamed mesh keeps no triangles to cut` };
+    const c = sectionMesh(L, sec, near, m, { tint: L.tint || '#9ea3a8' });
+    c.pts = c.pts.map((v) => +v.toFixed(4));
+    return { ...c, layer: name };
+  }
+  return { skip: null };                                   // points, grids, …: the raster's
+}
+const vectorSummary = (l) => l.type === 'lines' ? `${l.layer}: ${l.starts.length} lines${l.intervals != null ? ` from ${l.intervals} intervals` : ''}` : `${l.layer}: ${l.colors.length} ${l.type === 'polys' ? 'polygons' : 'cells'} from ${l.blocks} blocks`;
 async function buildVector(f) {
-  const fx = f.content.meta && f.content.meta.facts, why = vectorWhyNot(fx);
+  const fx = f.content.meta && f.content.meta.facts, why = vectorWhyNot(fx, f.content.meta && f.content.meta.proj);
   if (why) throw new Error(why);
-  const sec = fx.section, ax = SEC_AXES[sec.mode];
+  const sec = fx.section;
   const shown = S.layers.filter((L) => fx.layers.some((l) => l.name === (L.label || L.name)));
-  const blocks = shown.filter((L) => gridAxesOf(L)), others = shown.filter((L) => !gridAxesOf(L));
-  if (!blocks.length) throw new Error('a vector section draws block models — this view shows none');
-  const layers = [];
-  for (const L of blocks) { const c = await sectionCells(L, sec); layers.push({ type: 'cells', layer: L.label || L.name, axis: ax, position: sec.position, rects: c.rects.map((v) => +v.toFixed(4)), colors: c.colors, palette: c.palette, blocks: c.blocks }); }
+  if (!shown.some((L) => gridAxesOf(L) || L.dh || L.kind === 'mesh')) throw new Error('a vector section draws block models, drillholes and meshes — this view shows none');
+  // the plane's stored coordinates are kept small: its origin sits near the data
+  const P = f.content.meta.proj, near = P && Array.isArray(P.focus) ? P.focus : [0, 0, 0];
+  const layers = [], vectored = [], notes = [];
+  for (const L of shown) {
+    const r = await vectorLayer(L, sec, near);
+    if (r.skip !== undefined) { if (r.skip) notes.push(r.skip); continue; }
+    layers.push(r); vectored.push(L);
+  }
+  const blocks = vectored, others = shown.filter((L) => !vectored.includes(L));
   let overlay = null;
   if (others.length) {                                      // the rest of the view, without the blocks, on a transparent background
     for (const L of blocks) S.renderer.setLayerVisible(L.id, false);
@@ -700,7 +749,7 @@ async function buildVector(f) {
     }
     finally { applyBg(); for (const L of blocks) S.renderer.setLayerVisible(L.id, L.visible !== false); }
   }
-  f.content.vector = { background: f.source.bg || _bgColor, layers, overlay };
+  f.content.vector = { background: f.source.bg || _bgColor, layers, overlay, ...(notes.length ? { notes } : {}) };
   f._vimg = null;
   delete f.content.vectorError;
 }
@@ -904,10 +953,10 @@ function frameMenu(f, ed) {
     { label: 'Refresh fields (statistics)', run: async () => { await withScene(f.source.scene, () => completeFacts(ed.getDoc(), f)); ed.render(); } },
     { label: 'Show in the 3D view', run: () => applyScene(f.source.scene) },
     { label: 'Re-render at this size', run: async () => { await rerender(f, PREVIEW_PX_PER_MM); ed.update(f.id, () => {}); } },
-    { label: f.content.vectorOn ? 'Vector section: off (raster)' : 'Vector section (blocks as vectors)', run: async () => {
+    { label: f.content.vectorOn ? 'Vector section: off (raster)' : 'Vector section (blocks, drillholes, meshes as vectors)', run: async () => {
       const on = !f.content.vectorOn;
       ed.update(f.id, (fr) => { if (on) fr.content.vectorOn = true; else { delete fr.content.vectorOn; delete fr.content.vector; delete fr.content.vectorError; } });
-      if (on) { const fr = frameById(ed.getDoc(), f.id); await withScene(fr.source.scene, () => completeFacts(ed.getDoc(), fr)); ed.render(); $('#meta').textContent = fr.content.vectorError ? `composer: no vector section — ${fr.content.vectorError}` : `composer: ${f.id} is a vector section (${fr.content.vector.layers.map((l) => `${l.layer}: ${l.colors.length} cells from ${l.blocks} blocks`).join(' · ')})`; }
+      if (on) { const fr = frameById(ed.getDoc(), f.id); await withScene(fr.source.scene, () => completeFacts(ed.getDoc(), fr)); ed.render(); $('#meta').textContent = fr.content.vectorError ? `composer: no vector section — ${fr.content.vectorError}` : `composer: ${f.id} is a vector section (${fr.content.vector.layers.map(vectorSummary).join(' · ')}${fr.content.vector.notes ? ' — raster: ' + fr.content.vector.notes.join('; ') : ''})`; }
     } },
     { label: 'Small multiples…', run: () => openMultiplesDialog(ed, f) },
     { label: 'Key plan for this view', run: () => addKeyPlan(ed, f) },

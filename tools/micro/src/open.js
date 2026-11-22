@@ -193,7 +193,7 @@ export async function openDrillholeLayer(files, opts = {}, mode = 'add', over = 
   try {
     const { header, streamChunks, fetchRecord, recordPosition, holePaths } = await openDrillholes(
       { collar: files.collar, survey: files.survey, intervals: files.intervals }, opts);
-    const dhDoc = { blobs: { ...files }, header, fetchRecord, recordPosition, holePaths, config: { ...opts } };
+    const dhDoc = { blobs: { ...files }, header, streamChunks, fetchRecord, recordPosition, holePaths, config: { ...opts } };   // streamChunks: the placed intervals (vector sections)
     peekCollarCols(dhDoc);                                 // warm the collar-column cache (menu + manifest)
     registerDocs(lid, 'points', { dhDoc });
     qualifyDhDoc(layerById(lid));                          // <0.001 → a number for every interval reader; rawRecord keeps the text

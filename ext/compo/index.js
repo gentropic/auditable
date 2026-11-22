@@ -694,8 +694,32 @@ function drawVector(ctx, frame, x, y, w, h) {
   ctx.save();
   ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip();
   if (V.background) { ctx.fillStyle = V.background; ctx.fillRect(x, y, w, h); }
+  // a layer in a PLANE's coordinates ({ origin, u, v }: a point on the plane, two unit vectors in it)
+  const onPlane = (pl) => (u, v) => worldToPage(frame, [pl.origin[0] + u * pl.u[0] + v * pl.v[0], pl.origin[1] + u * pl.u[1] + v * pl.v[1], pl.origin[2] + u * pl.u[2] + v * pl.v[2]]);
+  const seam = (c) => { ctx.fillStyle = c; ctx.strokeStyle = c; ctx.lineWidth = 0.12; };   // a hairline of the fill closes anti-aliased seams
+  const shape = (ps) => { ctx.beginPath(); ps.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y))); ctx.closePath(); ctx.fill(); ctx.stroke(); };
+  const lines = [];
   for (const Ly of V.layers || []) {
+    if (Ly.type === 'lines') { lines.push(Ly); continue; }
+    if (Ly.type === 'polys') {
+      const page = onPlane(Ly.plane), Pt = Ly.pts, St = Ly.starts, C = Ly.colors;
+      for (let i = 0; i < C.length; i++) {
+        const end = i + 1 < St.length ? St[i + 1] : Pt.length / 2, ps = [];
+        for (let k = St[i]; k < end; k++) { const p = page(Pt[k * 2], Pt[k * 2 + 1]); if (p) ps.push(p); }
+        if (ps.length >= 3) { seam(Ly.palette[C[i]]); shape(ps); }
+      }
+      continue;
+    }
     if (Ly.type !== 'cells') continue;
+    if (Ly.plane) {                                        // rectangles in the plane's (u, v): four corners each
+      const page = onPlane(Ly.plane), R = Ly.rects, C = Ly.colors;
+      for (let i = 0; i < C.length; i++) {
+        const [u0, v0, u1, v1] = [R[i * 4], R[i * 4 + 1], R[i * 4 + 2], R[i * 4 + 3]];
+        const ps = [page(u0, v0), page(u1, v0), page(u1, v1), page(u0, v1)];
+        if (ps.every(Boolean)) { seam(Ly.palette[C[i]]); shape(ps); }
+      }
+      continue;
+    }
     const ax = Ly.axis, R = Ly.rects, C = Ly.colors, P = Ly.palette, pt = [0, 0, 0];
     pt[ax.w] = +Ly.position;
     const page = (u, v) => { pt[ax.u] = u; pt[ax.v] = v; return worldToPage(frame, pt); };
@@ -708,6 +732,22 @@ function drawVector(ctx, frame, x, y, w, h) {
     }
   }
   if (frame._vimg) ctx.drawImage(frame._vimg, x, y, w, h);
+  // line work on top: drillholes (width in world units — the 3D sticks' diameter) and mesh cut
+  // lines (lw, in mm)
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  for (const Ly of lines) {
+    const page = onPlane(Ly.plane), Pt = Ly.pts, St = Ly.starts, C = Ly.colors;
+    let lw = Ly.lw || 0.3;
+    if (Ly.width > 0) { const a = page(0, 0), b = page(Ly.width, 0); if (a && b) lw = Math.max(0.15, Math.hypot(b.x - a.x, b.y - a.y)); }
+    ctx.lineWidth = lw;
+    for (let i = 0; i < C.length; i++) {
+      const end = i + 1 < St.length ? St[i + 1] : Pt.length / 2;
+      ctx.strokeStyle = Ly.palette[C[i]]; ctx.beginPath();
+      let pen = false;
+      for (let k = St[i]; k < end; k++) { const p = page(Pt[k * 2], Pt[k * 2 + 1]); if (!p) { pen = false; continue; } if (pen) ctx.lineTo(p.x, p.y); else { ctx.moveTo(p.x, p.y); pen = true; } }
+      ctx.stroke();
+    }
+  }
   ctx.restore();
 }
 
