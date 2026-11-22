@@ -7274,6 +7274,58 @@ if (take()) {
   await p.close();
 }
 
+// ── §113: VALIDATION and the RESOURCE TABLE as tools — a routine runs both without a window:
+//     validation's numbers are the window's (one function), its bias the model over the declustered
+//     samples; the resource table's machine form leaves out the "total" rows; a routine must state
+//     the validation band width, and a misspelled setting names the real one. ──
+if (take()) {
+  const p = await mkPage('sm2vtools');
+  await p.evaluate(async () => { try { await (await navigator.storage.getDirectory()).removeEntry('sm2vtools', { recursive: true }); } catch { } });
+  await p.evaluate(async () => {
+    const rows = ['XC,YC,ZC,FE,DOM'];
+    for (let k = 0; k < 4; k++) for (let j = 0; j < 8; j++) for (let i = 0; i < 10; i++) rows.push([5 + i * 10, 5 + j * 10, 5 + k * 10, (40 + 2 * i).toFixed(2), i < 5 ? 'hem' : 'itb'].join(','));
+    await window._micro.openBlob(new File([rows.join('\n') + '\n'], 'm.csv'), 'm.csv', 'replace');
+  });
+  await p.waitForFunction(() => window._micro.layers()[0] && window._micro.layers()[0].docs.blockDoc, null, { timeout: 20000 });
+  await saveProject(p);
+  const r = await p.evaluate(async () => {
+    const M_ = window._micro, out = {}, wait = (ms) => new Promise((res) => setTimeout(res, ms));
+    const waitMeta = async (re, ms = 60000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { const t = document.querySelector('#meta').textContent; if (re.test(t)) return t; await wait(150); } return document.querySelector('#meta').textContent; };
+    const dir = M_.project().dir;
+    const read = async (path) => { let d = dir; const parts = path.split('/'); try { for (const s of parts.slice(0, -1)) d = await d.getDirectoryHandle(s); return (await (await d.getFileHandle(parts[parts.length - 1])).getFile()).text(); } catch { return null; } };
+    const run = async (name, steps) => { document.querySelector('#meta').textContent = ''; M_.runRoutine({ name, tool: 'routine', params: { output: { dir: 'out' }, steps } }); return waitMeta(new RegExp(`(— \\d+ steps? run|STOPPED|cancelled|routine: )`), 60000); };
+    // vertical holes on a 20 m grid, FE = the model's value there + 3 (so the model is biased low)
+    const H = [], E = [], N = [], RL = [], hs = [], fs = [], ts = [], fe = [];
+    for (let j = 0; j < 4; j++) for (let i = 0; i < 5; i++) { const id = `H${i}${j}`, x = 5 + i * 20, y = 5 + j * 20; H.push(id); E.push(x); N.push(y); RL.push(40);
+      for (let k = 0; k < 4; k++) { hs.push(id); fs.push(k * 10); ts.push(k * 10 + 10); fe.push(40 + 2 * ((x - 5) / 10) + 3); } }
+    await M_.addLayer({ kind: 'drillholes', name: 'dh',
+      collar: { columns: { HOLE: H, E: Float64Array.from(E), N: Float64Array.from(N), RL: Float64Array.from(RL) }, roles: { bhid: 'HOLE', x: 'E', y: 'N', z: 'RL' } },
+      survey: { columns: { HOLE: H, AT: Float64Array.from(H.map(() => 0)), AZI: Float64Array.from(H.map(() => 0)), INC: Float64Array.from(H.map(() => 90)) }, roles: { bhid: 'HOLE', at: 'AT', az: 'AZI', dip: 'INC' } },
+      intervals: { columns: { HOLE: hs, F: Float64Array.from(fs), T: Float64Array.from(ts), FE: Float64Array.from(fe) }, roles: { bhid: 'HOLE', from: 'F', to: 'T' } } });
+    const D = M_.layers().find((x) => x.dh), dname = D.name;
+    out.v = await run('val', [{ tool: 'validation', with: { model: 'm.csv', samples: dname, modelGrade: 'FE', sampleGrade: 'FE', bandW: 20 }, as: 'val' }]);
+    out.vTsv = await read('out/val.tsv');
+    const T = M_, validationRun = M_.validationRun;   // through the test surface: the built file has no dev modules
+    const tv = await T.runTool('validation', { model: 'm.csv', samples: dname, modelGrade: 'FE', sampleGrade: 'FE', bandW: 20 });
+    const wv = await validationRun({ M: M_.layers()[0], D, mGrade: 'FE', sGrade: 'FE', axis: 0, bandW: 20, off: 0 });
+    out.vals = tv.values; out.same = tv.values.bias_pct === wv.biasPct && tv.values.model_mean === wv.modelMean;
+    out.r = await run('res', [{ tool: 'resource', with: { layer: 'm.csv', grade: 'FE', cutoffs: [0, 50], groupBy: ['DOM'], density: { const: 2.5 } }, as: 'res' }]);
+    out.rTsv = await read('out/res.tsv');
+    out.noBand = await run('noband', [{ tool: 'validation', with: { model: 'm.csv', samples: dname, modelGrade: 'FE', sampleGrade: 'FE' }, as: 'v2' }]);
+    out.typo = await run('rtypo', [{ tool: 'resource', with: { layer: 'm.csv', grade: 'FE', cutoff: [0] }, as: 'r2' }]);
+    return out;
+  });
+  const vRows = (r.vTsv || '').trim().split('\n');
+  chk(`TOOLS: validation runs as a routine step (“${(r.v || '').slice(0, 80)}”; ${vRows[0]}); its numbers are the window's function's (${r.same}); bias ${r.vals && r.vals.bias_pct && r.vals.bias_pct.toFixed(2)}% = model ${r.vals && r.vals.model_mean && r.vals.model_mean.toFixed(2)} / samples ${r.vals && r.vals.samples_declustered && r.vals.samples_declustered.toFixed(2)} − 1`,
+    /1 step run/.test(r.v) && vRows[0] === 'center\tmodel_mean\tmodel_volume\tsample_mean\tsample_count' && r.same && r.vals.bias_pct < 0 && Math.abs(r.vals.bias_pct - (r.vals.model_mean / r.vals.samples_declustered - 1) * 100) < 1e-9 && r.vals.samples === 80);
+  const rRows = (r.rTsv || '').trim().split('\n');
+  chk(`TOOLS: the resource table as a routine step — a machine table without the "total" rows (${rRows.length - 1} rows: ${rRows.map((l) => l.split('\t').slice(0, 2).join('/')).join(' ')})`,
+    /1 step run/.test(r.r) && rRows[0] === 'cutoff\tDOM\ttonnes\tgrade\tmetal' && rRows.length === 1 + 3 && !rRows.some((l) => /\ttotal\t/.test(l)));
+  chk(`TOOLS: a routine states the validation band width (“${r.noBand.slice(0, 110)}”); a misspelled resource setting names the real one (“${r.typo.slice(0, 120)}”)`,
+    /bandW: a routine must state it/.test(r.noBand) && /no setting “cutoff” — did you mean “cutoffs”/.test(r.typo));
+  await p.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

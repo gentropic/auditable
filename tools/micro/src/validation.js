@@ -23,13 +23,43 @@ export const drillholeLayers = () => S.layers.filter((L) => L.dh && L.docs.dhDoc
 // (extractSamples / autoDeclusterSizes / computeSampleSwath live in src/analysis.js)
 export const _valWins = new Map();
 
-export function openValidation(M) {
+// the validation numbers — the window and the validation tool both call this. The samples are
+// declustered (a given cell, or the auto-sweep's minimum-mean cell); the model mean is volume ×
+// grade over the model's swath bands; bias = model / declustered samples − 1, in percent.
+// bandW/off: the swath lattice (default: the window's — about 25 bands from the model's extent,
+// never narrower than a block, starting at the extent's low end).
+export async function validationRun({ M, D, mGrade, sGrade, cell = null, axis = 0, bandW = null, off = null }) {
+  const samples = extractSamples(D, sGrade);
+  if (samples.length < 2) throw new Error(`not enough samples (${samples.length}) with a value in “${sGrade}”`);
+  let weights, cellUsed, declMean, naiveMean;
+  try {
+    if (cell) { const r = declusterCell({ data: samples, cellSize: cell }); weights = r.weights; cellUsed = cell; declMean = r.mean; naiveMean = r.naiveMean; }
+    else { const sw = declusterSweep({ data: samples, sizes: autoDeclusterSizes(samples), pick: 'min' }); weights = sw.best.weights; cellUsed = sw.best.size; declMean = sw.best.mean; naiveMean = sw.naiveMean; }
+  } catch (e) { throw new Error(`decluster: ${e.message}`); }
+  const ga = gridAxesOf(M), dir = [[1, 0, 0], [0, 1, 0], [0, 0, 1]][axis], [lo, hi] = projRange(M, dir);
+  const blockAlong = (Math.abs((ga.x.pitch || 0) * dir[0]) + Math.abs((ga.y.pitch || 0) * dir[1]) + Math.abs((ga.z.pitch || 0) * dir[2])) || 1;
+  const bw = bandW > 0 ? +bandW : Math.max(blockAlong, niceStep((hi - lo) / 25) || 1), o = off != null ? +off : lo;
+  const mres = await computeSwath(M, [mGrade], dir, bw, o, '');
+  let mt = 0, mtg = 0; for (const p of mres.profile) if (Number.isFinite(p.mean[0])) { mt += p.tonnage; mtg += p.tonnage * p.mean[0]; }
+  const modelMean = mt > 0 ? mtg / mt : NaN;
+  const sres = computeSampleSwath(samples, weights, dir, bw, o);
+  const biasPct = declMean > 0 ? (modelMean / declMean - 1) * 100 : NaN;
+  return { samples, weights, cellUsed, declMean, naiveMean, modelMean, biasPct, mres, sres, bandW: bw, off: o, axis };
+}
+
+export function openValidation(M, ropts) {
   if (!M || !gridAxesOf(M)) { $('#meta').textContent = 'validation: needs a regular block model'; return; }
   const dhs = drillholeLayers(); if (!dhs.length) { $('#meta').textContent = 'validation: open a drillhole layer (the samples) first'; return; }
   const ex = _valWins.get(M.id); if (ex) { focusWindow(ex.win.el); return; }
   const mnums = numericColsOf(M); if (!mnums.length) { $('#meta').textContent = 'validation: the model has no numeric column'; return; }
   const D0 = dhs[0], snums = numericColsOf(D0), shared = mnums.find((c) => snums.includes(c));
   const st = { dh: D0.id, mGrade: shared || mnums[0], sGrade: shared || snums[0] || null, cell: null, axis: 0 };
+  const cfg = ropts && ropts.cfg;                           // a validation recipe opens configured
+  if (cfg) {
+    const Dn = cfg.samples && dhs.find((x) => x.name === cfg.samples || (x.label || x.name) === cfg.samples); if (Dn) st.dh = Dn.id;
+    if (cfg.modelGrade) st.mGrade = cfg.modelGrade; if (cfg.sampleGrade) st.sGrade = cfg.sampleGrade;
+    if (cfg.cell) st.cell = +cfg.cell; if (cfg.axis) st.axis = Math.max(0, ['X', 'Y', 'Z'].indexOf(cfg.axis));
+  }
   const win = floatWin({ title: `validate · ${M.label || M.name}`, sub: '', x: 90, y: 90, w: 540, h: 420, onClose: () => _valWins.delete(M.id) });
   win.body.style.cssText += 'display:flex;flex-direction:column;gap:0';
   const cv = document.createElement('canvas'); cv.style.cssText = 'width:100%;flex:1;min-height:80px;display:block';
@@ -39,27 +69,17 @@ export function openValidation(M) {
   const redraw = async () => {
     const D = layerById(st.dh); if (!D || !st.sGrade) { win.sub.textContent = 'pick a sample grade'; return; }
     win.sub.textContent = 'sampling…';
-    const samples = extractSamples(D, st.sGrade);
-    if (samples.length < 2) { win.sub.textContent = 'not enough samples'; readout.textContent = ''; plotChart(cv, { series: [] }); return; }
-    let weights, cellUsed, declMean, naiveMean;
-    try {
-      if (st.cell) { const r = declusterCell({ data: samples, cellSize: st.cell }); weights = r.weights; cellUsed = st.cell; declMean = r.mean; naiveMean = r.naiveMean; }
-      else { const sw = declusterSweep({ data: samples, sizes: autoDeclusterSizes(samples), pick: 'min' }); weights = sw.best.weights; cellUsed = sw.best.size; declMean = sw.best.mean; naiveMean = sw.naiveMean; }
-    } catch (e) { win.sub.textContent = `decluster: ${e.message}`; return; }
-    const ga = gridAxesOf(M), dir = [[1, 0, 0], [0, 1, 0], [0, 0, 1]][st.axis], [lo, hi] = projRange(M, dir);
-    const blockAlong = (Math.abs((ga.x.pitch || 0) * dir[0]) + Math.abs((ga.y.pitch || 0) * dir[1]) + Math.abs((ga.z.pitch || 0) * dir[2])) || 1;
-    const bw = Math.max(blockAlong, niceStep((hi - lo) / 25) || 1), off = lo;
-    const mres = await computeSwath(M, [st.mGrade], dir, bw, off, '');
-    let mt = 0, mtg = 0; for (const p of mres.profile) if (Number.isFinite(p.mean[0])) { mt += p.tonnage; mtg += p.tonnage * p.mean[0]; }
-    const modelMean = mt > 0 ? mtg / mt : NaN;
-    const sres = computeSampleSwath(samples, weights, dir, bw, off);
+    let v;
+    try { v = await validationRun({ M, D, mGrade: st.mGrade, sGrade: st.sGrade, cell: st.cell, axis: st.axis }); }
+    catch (e) { win.sub.textContent = e.message; readout.textContent = ''; plotChart(cv, { series: [] }); return; }
+    const { samples, cellUsed, declMean, naiveMean, modelMean, mres, sres } = v;
     const spec = { xLabel: `distance along ${AXIS_NAMES.axes[st.axis]}`, leftLabel: 'mean grade', rightLabel: 'samples', series: [
       { name: 'samples', color: '#6a6f75', axis: 'right', kind: 'bar', data: sres.map((p) => [p.center, p.count]) },
       { name: `model · ${st.mGrade}`, color: SERIES_COLORS[0], axis: 'left', kind: 'line', data: mres.profile.map((p) => [p.center, p.mean[0]]) },
       { name: `samples · ${st.sGrade}`, color: SERIES_COLORS[1], axis: 'left', kind: 'line', data: sres.map((p) => [p.center, p.mean]) },
     ] };
     plotChart(cv, spec); win._spec = spec;
-    const bias = declMean > 0 ? (modelMean / declMean - 1) * 100 : NaN;
+    const bias = v.biasPct;
     readout.textContent = '';
     const add = (k, v, cls) => { const s = document.createElement('span'); s.className = 'val-stat' + (cls ? ' ' + cls : ''); const b = document.createElement('b'); b.textContent = k; s.append(b, document.createTextNode(' ' + v)); readout.appendChild(s); };
     add('model', fmtStat(modelMean)); add('samples (decl)', fmtStat(declMean)); add('naïve', fmtStat(naiveMean));

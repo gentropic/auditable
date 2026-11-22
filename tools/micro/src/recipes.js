@@ -24,7 +24,8 @@ import { runFigureRecipe } from './deco.js';
 import { applyCalcCols, layerHasColumn } from './calc.js';
 import { resultToLayer } from './analysis-ui.js';
 import { openInputsDialog, openRoutineWindow } from './routine-ui.js';
-import { compoPage, writePages } from './composer.js';
+import { compoPage, writePages, addResourceFrame } from './composer.js';
+import { openValidation } from './validation.js';
 import { checkParams, runTool, tableTSV, toolDef } from './tools.js';
 const $ = (s) => document.querySelector(s);
 
@@ -35,7 +36,7 @@ const $ = (s) => document.querySelector(s);
 // Files are the interface: comment them, copy them between projects, drop one
 // in and Scan folder picks it up. Series reference layers BY NAME; a missing
 // primary gets a one-question remap — that prompt IS the parameter binding. ──
-export const RECIPE_TOOLS = { gt: 'grade-tonnage', swath: 'swath', stats: 'stats', xy: 'scatter / Q-Q', figure: 'figure', compo: 'composer page', calccols: 'calc columns', solid: 'by solid / surface', routine: 'routine' };
+export const RECIPE_TOOLS = { gt: 'grade-tonnage', swath: 'swath', stats: 'stats', xy: 'scatter / Q-Q', figure: 'figure', compo: 'composer page', calccols: 'calc columns', solid: 'by solid / surface', validation: 'validation', resource: 'resource table', routine: 'routine' };
 
 export const recipeSlug = (name) => (String(name).toLowerCase().replace(/[^\w.-]+/g, '-').replace(/^-+|-+$/g, '') || 'recipe');
 
@@ -275,7 +276,7 @@ export async function expandRoutine(params) {
 // the preview both read this, so "what will this overwrite?" has ONE answer.
 export function routineTargets(tool, params, slug, P) {
   const t = { reports: [], columns: [], figures: [] };
-  if (['gt', 'swath', 'stats', 'xy'].includes(tool)) t.reports.push(routineOutPath(P, slug));
+  if (toolDef(tool) || tool === 'xy') t.reports.push(routineOutPath(P, slug));   // every registered tool writes its table
   else if (tool === 'calccols') {
     const layer = params.layer;
     for (const c of params.cols || []) if (c && c.name) t.columns.push({ layer, name: c.name, kind: 'ƒ' });
@@ -384,6 +385,8 @@ export function routineLayerNames(rc) {                           // the layer n
   for (const ser of p2.series || []) if (ser.layer) names.push(ser.layer);
   if (p2.source) names.push(String(p2.source).split(':')[0]);
   if (p2.target) names.push(p2.target);
+  if (p2.model) names.push(p2.model);
+  if (p2.samples) names.push(p2.samples);
   return names;
 }
 
@@ -655,6 +658,14 @@ export function runRecipe(r, andRun = true) {
       } catch (e) { $('#meta').textContent = `composer page: ${e.message}`; }
     })();
     return;
+  }
+  if (r.tool === 'validation') {                           // the window, configured (it runs on open)
+    const M = S.layers.find((x) => x.name === r.params.model || (x.label || x.name) === r.params.model);
+    if (!M) { $('#meta').textContent = `recipe “${r.name}”: layer “${r.params.model}” isn't loaded`; return; }
+    openValidation(M, { cfg: r.params }); return;
+  }
+  if (r.tool === 'resource') {                             // a resource table into the composer
+    addResourceFrame(r.params).catch((e) => { $('#meta').textContent = `recipe “${r.name}”: ${e.message}`; }); return;
   }
   if (r.tool === 'solid') {                                // by-geometry — resolves its own layers
     if (!andRun) { openSolidRecipeConfigured(r.params); return; }

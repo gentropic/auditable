@@ -14,7 +14,8 @@
 // a run record and a comparison all see the same numbers.
 import { S, layerById } from './state.js';
 import { layerTableHeader, schemaExt } from './records.js';
-import { numericColsOf } from './analysis.js';
+import { numericColsOf, computeResourceTable } from './analysis.js';
+import { validationRun } from './validation.js';
 import { gradeUnitFactor, niceStep, scopeMask, scopeMissing } from './analysis-ui.js';
 import { gtCuts } from './scanner.js';
 import { scanGTSeries, gtRows } from './gt.js';
@@ -252,6 +253,78 @@ registerTool('swath', {
     return {
       table: { columns: ['series', 'direction', 'center', 'count', 'weight', 'mean'], key: ['series', 'direction', 'center'], rows, units: { center: 'm', mean: unitLabel(p.gradeUnit) } },
       values: {}, resolved: { ...p, bandW, off }, warnings: [], where: scan.where,
+    };
+  },
+});
+
+// ── validation: the model against its declustered drillhole samples ──────────────────────────────
+// values: model_mean, samples_declustered, samples_naive, bias_pct, samples, cell — what a check
+// reads ("abs($val.bias_pct) < 5"); the table: the model-vs-samples swath along one axis
+registerTool('validation', {
+  label: 'validation',
+  params: {
+    model: { type: 'layer', required: true, doc: 'the block model' },
+    samples: { type: 'layer', required: true, doc: 'the drillhole layer' },
+    modelGrade: { type: 'column', required: true, doc: 'the model’s grade column' },
+    sampleGrade: { type: 'column', required: true, doc: 'the samples’ grade column' },
+    cell: { type: 'number', doc: 'the decluster cell (m); absent = the auto-sweep’s minimum-mean cell' },
+    axis: { type: 'enum', values: ['X', 'Y', 'Z'], default: 'X', doc: 'the swath direction' },
+    bandW: { type: 'number', routine: 'required', why: 'an automatic band width comes from the extent and moves with it', doc: 'the swath band width' },
+    off: { type: 'number', doc: 'the swath band offset (default 0 when bandW is given)' },
+  },
+  outputs: { key: ['center'] },
+  async scan(p) {
+    const M = layerNamed(p.model), D = layerNamed(p.samples);
+    if (!(D.dh && D.docs && D.docs.dhDoc)) throw new Error(`${D.label || D.name} is not a drillhole layer`);
+    columnCheck(M, p.modelGrade, 'model grade'); columnCheck(D, p.sampleGrade, 'sample grade');
+    return validationRun({ M, D, mGrade: p.modelGrade, sGrade: p.sampleGrade, cell: p.cell || null, axis: ['X', 'Y', 'Z'].indexOf(p.axis), bandW: p.bandW || null, off: p.bandW ? (p.off != null ? p.off : 0) : null });
+  },
+  shape(v, p) {
+    const byC = new Map();
+    for (const b of v.mres.profile) byC.set(+b.center.toFixed(9), { center: b.center, mm: b.mean[0], mt: b.tonnage, sm: NaN, sn: 0 });
+    for (const b of v.sres) { const k = +b.center.toFixed(9), e = byC.get(k) || { center: b.center, mm: NaN, mt: 0 }; e.sm = b.mean; e.sn = b.count; byC.set(k, e); }
+    const rows = [...byC.values()].sort((a, b) => a.center - b.center).map((e) => [e.center, e.mm, e.mt, e.sm, e.sn || 0]);
+    return {
+      table: { columns: ['center', 'model_mean', 'model_volume', 'sample_mean', 'sample_count'], key: ['center'], rows, units: { center: 'm', model_volume: 'm3' } },
+      values: { model_mean: v.modelMean, samples_declustered: v.declMean, samples_naive: v.naiveMean, bias_pct: v.biasPct, samples: v.samples.length, cell: v.cellUsed },
+      resolved: { ...p, cell: v.cellUsed, bandW: v.bandW, off: v.off }, warnings: [],
+    };
+  },
+});
+
+// ── the resource table: tonnes, grade, metal above each cutoff, by up to two categories ──────────
+registerTool('resource', {
+  label: 'resource table',
+  params: {
+    layer: { type: 'layer', required: true },
+    grade: { type: 'column', required: true },
+    cutoffs: { type: 'numbers', required: true, doc: 'the cutoffs (a resource statement always states them)' },
+    density: { type: 'any', doc: '{ col } a density column, or { const } a value; unit (t/m3, g/cm3, kg/m3, lb/ft3)' },
+    groupBy: { type: 'any', doc: 'up to two category columns (domain × class)' },
+    metalFactor: { type: 'number', default: 1, doc: 'metal = tonnes × grade × this (1/100 for % → t, 1/31.1035 for g/t → oz)' },
+    scope: { type: 'enum', values: ['all', 'filter'], default: 'all', routine: ['all'], why: 'the layer’s current filter isn’t saved with the routine' },
+    metalUnit: { type: 'string', display: true }, gradeUnit: { type: 'string', display: true }, title: { type: 'string', display: true },
+  },
+  outputs: { key: ['cutoff'] },
+  check(p, errs) {
+    if (p.groupBy != null && (!Array.isArray(p.groupBy) || p.groupBy.length > 2 || p.groupBy.some((g) => typeof g !== 'string'))) errs.push('groupBy: a list of up to two column names');
+    const d = p.density;
+    if (d != null && (typeof d !== 'object' || Array.isArray(d) || Object.keys(d).some((k) => !['col', 'const', 'unit'].includes(k)))) errs.push('density: { col } or { const }, with an optional unit');
+  },
+  async scan(p, ctx) {
+    const L = layerNamed(p.layer);
+    columnCheck(L, p.grade, 'grade');
+    const mask = p.scope === 'filter' && L.filterExpr ? L._filterMask : null;
+    return computeResourceTable(L, { grade: p.grade, cutoffs: p.cutoffs, density: p.density, groupBy: p.groupBy, metalFactor: p.metalFactor, mask }, ctx.progress);
+  },
+  shape(r, p) {
+    const g = (p.groupBy || []).filter(Boolean).slice(0, 2);
+    // the machine table leaves out the "total" rows (presentation, and they'd collide with a real
+    // group called "total") — they're the sum of their cutoff's rows
+    const rows = r.rows.filter((row) => !(g.length && row[1] === 'total' && row.slice(2, 1 + g.length).every((x) => x === '')));
+    return {
+      table: { columns: r.columns, key: ['cutoff', ...g], rows, units: { tonnes: 't' } },
+      values: {}, resolved: { ...p }, warnings: [],
     };
   },
 });
