@@ -6201,6 +6201,103 @@ if (take()) {
   await p.close();
 }
 
+// ── §95: COMPOSER (src/composer.js on @gcu/compo) — a page with frames. A 3D-view frame renders
+//     at ITS size and aspect (not the canvas's), remembers its scene, and states its scale per
+//     image pixel so a scale bar stays true when the frame is resized; legends come from the
+//     layers' own legend specs; "show in view" puts the scene back; the PDF re-renders the view at
+//     the print dpi and gives the user's view back; an analysis plot arrives as an image frame;
+//     figures save as figures/<name>.compo.json and come back with the project. ──
+if (take()) {
+  let p = await mkPage('sm2compo');
+  const r = await p.evaluate(async () => {
+    const M_ = window._micro, out = {};
+    const rows = ['XC,YC,ZC,FE'];
+    for (let k = 0; k < 4; k++) for (let j = 0; j < 20; j++) for (let i = 0; i < 30; i++) rows.push(`${5 + i * 10},${5 + j * 10},${5 + k * 10},${(20 + i * 2).toFixed(1)}`);
+    const id = await M_.openBlob(new File([rows.join('\n') + '\n'], 'cmp.csv'), 'cmp.csv', 'replace');
+    const L = M_.layers().find((x) => x.id === id);
+    M_.setActiveLayer(id);
+    await M_.setLayerColorSel(L, `chan:${M_.layerTableHeader(L).columns.indexOf('FE')}`);
+    await window.micro.setView({ look: 0, elevation: 90, ortho: true });
+    await new Promise((res) => setTimeout(res, 200));
+    const C = await import('/ext/compo/index.js');
+    const ed = M_.openComposer('fig A');
+    const f = M_.addViewFrame(ed);
+    out.box = f.box.slice(); out.px = [f.content.width, f.content.height]; out.meta = f.content.meta;
+    out.srcJpeg = /^data:image\/jpeg/.test(f.content.src || '');
+    // the frame's picture is the model, not a blank: count non-background pixels
+    const g = f._img.getContext('2d'), d = g.getImageData(0, 0, f._img.width, f._img.height).data, bg = [d[0], d[1], d[2]];
+    let diff = 0; for (let i = 0; i < d.length; i += 4) if (Math.abs(d[i] - bg[0]) + Math.abs(d[i + 1] - bg[1]) + Math.abs(d[i + 2] - bg[2]) > 40) diff++;
+    out.inked = diff / (d.length / 4);
+    // legends and a scale bar, tied to the view frame
+    ed.select([f.id]);
+    document.querySelector('.compo-bar button[title^="a legend"]').click();
+    document.querySelector('.compo-bar button[title^="a scale bar"]').click();
+    document.querySelector('.compo-bar button[title^="a north"]').click();
+    const doc = ed.getDoc();
+    const leg = doc.frames.find((x) => x.kind === 'legend'), sb = doc.frames.find((x) => x.kind === 'scalebar'), nth = doc.frames.find((x) => x.kind === 'north');
+    out.legend = leg && { title: leg.content.title, kind: leg.content.kind, stops: (leg.content.stops || []).length, lo: leg.content.loLabel, hi: leg.content.hiLabel };
+    out.sbOf = sb && sb.content.of === f.id; out.northOf = nth && nth.content.of === f.id;
+    // the scale follows the frame: half the width → twice the world per mm
+    const vf = () => ed.getDoc().frames.find((x) => x.id === f.id);
+    out.wpm0 = C.frameWorldPerMm(vf());
+    ed.update(f.id, (fr) => { fr.box[2] /= 2; fr.box[3] /= 2; });
+    out.wpm1 = C.frameWorldPerMm(vf());
+    ed.update(f.id, (fr) => { fr.box[2] *= 2; fr.box[3] *= 2; });
+    // move the camera, then put the frame's scene back
+    await window.micro.setView({ look: 90, elevation: 30, ortho: false });
+    out.lookMoved = Math.round(window.micro.view().look);
+    await M_.applyScene(vf().source.scene);
+    const cw = window.micro.view(); out.lookBack = Math.round(cw.look); out.orthoBack = cw.ortho;
+    // export: the view re-rendered at 150 dpi, the user's view back afterwards
+    await window.micro.setView({ look: 45, elevation: 40, ortho: false });
+    const bytes = await M_.figurePdfBytes(M_.currentFigure(), 150, { compress: false });
+    const s = new TextDecoder('latin1').decode(bytes);
+    out.pdf = { head: s.slice(0, 5), jpeg: s.includes('/DCTDecode'), kb: Math.round(bytes.length / 1024) };
+    const im = /\/Subtype \/Image \/Width (\d+) \/Height (\d+)/.exec(s);
+    out.pdfImg = im ? [+im[1], +im[2]] : null;
+    out.pdfText = ['FE', 'N'].filter((t) => s.includes(`(${t})`));
+    out.lookAfter = Math.round(window.micro.view().look);
+    // an analysis plot → an image frame
+    const pc = document.createElement('canvas'); pc.width = 300; pc.height = 200; pc.getContext('2d').fillRect(0, 0, 300, 200);
+    dispatchEvent(new CustomEvent('micro:to-composer', { detail: { canvas: pc, name: 'gt-cmp' } }));
+    const plotF = ed.getDoc().frames.find((x) => x.source && x.source.kind === 'plot');
+    out.plot = plotF && { png: /^data:image\/png/.test(plotF.content.src), aspect: +(plotF.box[2] / plotF.box[3]).toFixed(2) };
+    out.nFrames = ed.getDoc().frames.length;
+    return out;
+  });
+  const want = [Math.round(r.box[2] * 6), Math.round(r.box[3] * 6)];
+  chk(`COMPOSER: a view frame renders at its own size (${r.px} px for ${r.box[2]}×${r.box[3]} mm at 6 px/mm), inked ${(r.inked * 100).toFixed(0)}%, kept as JPEG`, r.px[0] === want[0] && r.px[1] === want[1] && r.inked > 0.05 && r.srcJpeg);
+  chk(`COMPOSER: a plan ortho view states its scale per pixel + north up (${JSON.stringify(r.meta)})`, r.meta.worldPerPx > 0 && r.meta.ortho && Math.abs(r.meta.north) < 1);
+  chk(`COMPOSER: the legend is the layer's (${JSON.stringify(r.legend)}); scale bar + north refer to the view frame`, r.legend && r.legend.title === 'FE' && r.legend.kind === 'ramp' && r.legend.stops === 32 && r.sbOf && r.northOf);
+  chk(`COMPOSER: the scale follows the frame (${r.wpm0 && r.wpm0.toFixed(3)} → ${r.wpm1 && r.wpm1.toFixed(3)} world/mm at half size)`, r.wpm0 > 0 && Math.abs(r.wpm1 / r.wpm0 - 2) < 1e-6);
+  chk(`COMPOSER: "show in view" puts the frame's camera back (look ${r.lookMoved} → ${r.lookBack}, ortho ${r.orthoBack})`, r.lookMoved === 90 && r.lookBack === 0 && r.orthoBack === true);
+  const wantPdf = [Math.round(r.box[2] * 150 / 25.4), Math.round(r.box[3] * 150 / 25.4)];
+  chk(`COMPOSER: the PDF re-renders the view at 150 dpi (${JSON.stringify(r.pdfImg)} vs ${wantPdf}), JPEG, text (${r.pdfText}), ${r.pdf.kb} KB`, r.pdf.head === '%PDF-' && r.pdf.jpeg && r.pdfImg && r.pdfImg[0] === wantPdf[0] && r.pdfImg[1] === wantPdf[1] && r.pdfText.includes('FE'));
+  chk(`COMPOSER: export gives the user's view back (look ${r.lookAfter})`, r.lookAfter === 45);
+  chk(`COMPOSER: a plot arrives as an image frame (${JSON.stringify(r.plot)})`, r.plot && r.plot.png && r.plot.aspect === 1.5);
+  await saveProject(p);
+  const onDisk = await p.evaluate(async () => {
+    const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2compo');
+    const fh = await (await dir.getDirectoryHandle('figures')).getFileHandle('fig_a.compo.json');
+    const j = JSON.parse(await (await fh.getFile()).text());
+    return { format: j.format, frames: j.frames.length, runtime: j.frames.some((f) => '_img' in f) };
+  });
+  chk(`COMPOSER: figures/fig_a.compo.json (${JSON.stringify(onDisk)})`, onDisk.format === 'compo' && onDisk.frames === r.nFrames && !onDisk.runtime);
+  await p.close();
+  p = await mkPage('sm2compo');
+  await p.evaluate(async () => { const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2compo'); await window._micro.openProjectDir(dir); });
+  await p.waitForFunction(() => window._micro.layers().length, null, { timeout: 60000 });
+  const back = await p.evaluate(async () => {
+    const M_ = window._micro, figs = M_.figures();
+    const ed = M_.openComposer('fig A');
+    await new Promise((res) => setTimeout(res, 300));
+    const v = ed.getDoc().frames.find((x) => x.source && x.source.kind === 'view');
+    return { names: figs.map((f) => f.name), frames: ed.getDoc().frames.length, decoded: !!(v && v._img && v._img.width > 0), overlay: document.querySelectorAll('.compo-fr').length };
+  });
+  chk(`COMPOSER: the figure comes back with the project, its view picture decoded (${JSON.stringify(back)})`, back.names.includes('fig A') && back.frames === r.nFrames && back.decoded && back.overlay === r.nFrames);
+  await p.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

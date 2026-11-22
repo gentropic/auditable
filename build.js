@@ -1768,6 +1768,7 @@ if (target === 'micro') {
     '../../ext/clar/index.js': '#clar',             // @gcu/clar — outcrop structure (capivaras): wand/brush, plane fits, attitudes
     '../../ext/bearing/index.js': '#bearing',       // @gcu/bearing — the stereonet + Fisher statistics (also clar's, by bare name)
     '../../ext/omf1/index.js': '#omf1',             // @gcu/omf1 — Open Mining Format v1 (zero-dep; inflate on the platform)
+    '../../ext/compo/index.js': '#compo',           // @gcu/compo — the composer page (with @gcu/pdf inlined)
     '../../ext/archive/src/zipstream.js': '#zipstream', // @gcu/archive's ranged/streaming Zip64 module alone — project backups
   };
   const libs = [
@@ -1795,6 +1796,7 @@ if (target === 'micro') {
     ['bearing',   'ext/bearing/index.js'],             // @gcu/bearing — attitudes + the eigensolver; clar imports it BY BARE NAME
     ['clar',      'ext/clar/index.js'],                // @gcu/clar — structural analysis on an outcrop mesh (src/structure.js)
     ['omf1',     'ext/omf1/index.js'],                // @gcu/omf1 — .omf v1 projects → layers (src/omf.js)
+    ['compo',     'ext/compo/index.js'],               // @gcu/compo — figure / page composer → PDF (src/composer.js)
     ['zipstream', 'ext/archive/src/zipstream.js'],     // zero-import module: the src file IS the shippable one (no fflate, no WASM)
   ];
   const modules = [];

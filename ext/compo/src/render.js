@@ -35,12 +35,15 @@ function drawError(ctx, b, msg) {
   ctx.fillText(msg, b[0] + 1, b[1] + 1);
 }
 
-// decode every image frame's stored src into frame._img (a host may have set _img already)
+// decode every image frame's stored src into frame._img (a host may have set _img already). An
+// <img> decodes it, not fetch(): a sealed page (CSP connect-src 'none') may still show data: images.
 export async function ensureImages(doc) {
   await Promise.all(doc.frames.filter((f) => f.kind === 'image' && !f._img && f.content && f.content.src).map(async (f) => {
     try {
-      const blob = await (await fetch(f.content.src)).blob();
-      f._img = await createImageBitmap(blob);
+      if (typeof Image !== 'undefined') {
+        const im = new Image(); im.src = f.content.src; await im.decode();
+        f._img = typeof createImageBitmap !== 'undefined' ? await createImageBitmap(im) : im;
+      } else f._img = await createImageBitmap(await (await fetch(f.content.src)).blob());   // a worker
     } catch { f.content.missing = 'image not readable'; }
   }));
 }

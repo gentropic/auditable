@@ -20,6 +20,7 @@ export const S = {
 
   // ── recipes (Tools → Recipes): op-shaped YAML files in recipes/
   recipes: [],                                              // { name, tool, params, file }
+  figures: [],                                              // composer figures (compo documents): { name, doc, file } — figures/<slug>.compo.json
 
   // ── long-lived app objects, assigned once at boot (the app module creates
   // them; modules that need them read them here)

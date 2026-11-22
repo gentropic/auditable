@@ -189,7 +189,9 @@ export function plotExportBtns(cv, nameFn, tableFn, group) {
       try { await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]); $('#meta').textContent = 'plot copied to clipboard'; }
       catch (e) { $('#meta').textContent = `copy failed (${e.message}) — use ⤓ png`; }
     }, 'image/png');
-    wrap.append(save, copy);
+    const fig = document.createElement('button'); fig.className = 'awin-btn'; fig.textContent = '⇥ figure'; fig.title = 'put the plot on the composer page (a figure for print)';
+    fig.onclick = () => dispatchEvent(new CustomEvent('micro:to-composer', { detail: { canvas: cv, name: nameFn().replace(/\.png$/i, '') } }));
+    wrap.append(save, copy, fig);
   }
   if (tableFn) wrap.append(keep);
   if (tableFn) {

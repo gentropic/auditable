@@ -37,6 +37,7 @@ import { renderLayers } from './layers-panel.js';
 import { captureLayerSurface, recolorSurface } from './surfaces.js';
 import { ensureValueTex, valueTexEligible, valueTexWant } from './color.js';
 import { flushViewsScenes, loadViewsScenes } from './views.js';
+import { flushFigures, loadFigures } from './composer.js';
 import { writeGridDisplayCache } from './meshexport.js';
 import { pickDirectory, rehydrateHandle } from './hostio.js';
 import { refilterLayer } from './filter.js';
@@ -476,6 +477,7 @@ async function saveProjectInner() {
         await mw.close();
       } catch { /* sidecars are a cache, never a failure */ }
     }
+    await flushFigures(dir);                                 // figures/ — composer pages
     await flushViewsScenes(dir);                            // bookmarks/ + scenes/ — write any not yet persisted
     const fh = await dir.getFileHandle('project.json', { create: true });
     const w = await fh.createWritable();
@@ -631,6 +633,7 @@ export async function openProjectDir(dir, { pack = null } = {}) {
     const mf = JSON.parse(await (await (await dir.getFileHandle('project.json')).getFile()).text());
     if (mf.app !== 'micro') { $('#meta').textContent = 'not a micro project (project.json says otherwise)'; return; }
     S.project = { dir, name: dir.name, dirty: false, pack };
+    await loadFigures(dir);                                 // figures/ *.compo.json → the composer
     await loadViewsScenes(dir, mf.views);                   // bookmarks/ + scenes/ (legacy mf.views migrated)
     closeAllLayers();
     $('#empty').style.display = 'none';

@@ -46,8 +46,8 @@ const bytes = await exportPDF(ed.getDoc(), { env: { evalField: (expr, vars) => v
 | `image` | `src` (a data/blob URL, decoded by `ensureImages`) or a host-set `frame._img`. Also `fit` (`contain`/`cover`/`fill`), `smooth`, `meta`. `photo: true` → JPEG in a PDF |
 | `drawlist` | `list`, a [@gcu/plot](../plot) `fig.toDrawList()`, replayed as vectors |
 | `legend` | `title`, then either `entries: [{color, label}]` or `kind: 'ramp'` with `stops`, `hiLabel`/`loLabel`, optional `tail` |
-| `scalebar` | `worldPerMm` + `units`, or `of: <frame id>` → that frame's `content.meta` |
-| `north` | `north` (degrees clockwise from page-up), or `of` as above |
+| `scalebar` | `worldPerMm` + `units`, or `of: <frame id>` → that frame's `content.meta`. A view frame states `meta.worldPerPx` (world units per image pixel) so the bar follows the frame's drawn size: resize it and the scale stays true (`frameWorldPerMm(frame)`) |
+| `north` | `north` (degrees clockwise from page-up; `null` = the view looks along north), or `of` as above |
 
 `registerKind(name, { label, draw(ctx, box, frame, env) })` adds one. The context is in **mm**, y down.
 

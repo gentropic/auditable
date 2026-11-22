@@ -154,7 +154,7 @@ registerKind('legend', {
     if (c.kind === 'ramp' && Array.isArray(c.stops) && c.stops.length) {
       const bh = Math.max(10, box[1] + box[3] - y - (c.tail ? row : 0) - 1), bw = sw * 1.2;
       const n = c.stops.length;
-      for (let i = 0; i < n; i++) { ctx.fillStyle = c.stops[n - 1 - i]; ctx.fillRect(box[0] + 0.5, y + (i * bh) / n, bw, bh / n + 0.05); }
+      for (let i = 0; i < n; i++) { ctx.fillStyle = c.stops[n - 1 - i]; ctx.fillRect(box[0] + 0.5, y + (i * bh) / n, bw, (bh / n) * (i < n - 1 ? 1.6 : 1)); }   // each step tucks under the next: no seams
       ctx.strokeStyle = '#555'; ctx.lineWidth = 0.15; ctx.strokeRect(box[0] + 0.5, y, bw, bh);
       ctx.fillStyle = INK; ctx.textBaseline = 'middle';
       ctx.fillText(c.hiLabel ?? String(c.hi ?? ''), box[0] + bw + 1.5, y + size * PT * 0.4);
@@ -182,9 +182,26 @@ export function niceBelow(v) {
   return (f >= 5 ? 5 : f >= 2 ? 2 : 1) * p;
 }
 // the world-per-mm a scale bar measures: its own, or the frame it refers to (content.of)
+// A view frame may state its scale per IMAGE PIXEL (meta.worldPerPx): the mm then follow from how
+// the image is fitted into its box right now, so resizing the frame keeps the bar true.
+export function frameWorldPerMm(t) {
+  const c = t.content || {}, m = c.meta || {};
+  if (+m.worldPerMm > 0) return +m.worldPerMm;
+  if (!(+m.worldPerPx > 0)) return null;
+  const iw = c.width || (t._img && t._img.width), ih = c.height || (t._img && t._img.height);
+  if (!iw || !ih) return null;
+  const fit = c.fit || 'contain', b = t.box;
+  if (fit === 'fill') return null;                         // stretched: no single scale
+  const k = fit === 'cover' ? Math.max(b[2] / iw, b[3] / ih) : Math.min(b[2] / iw, b[3] / ih);   // mm per pixel
+  return +m.worldPerPx / k;
+}
 const metaOf = (frame, doc) => {
   const c = frame.content || {};
-  if (c.of && doc) { const t = doc.frames.find((f) => f.id === c.of); if (t && t.content && t.content.meta) return t.content.meta; }
+  if (c.of && doc) {
+    const t = doc.frames.find((f) => f.id === c.of);
+    if (t && t.content && t.content.meta) return { ...t.content.meta, worldPerMm: frameWorldPerMm(t) };
+    if (t) return {};
+  }
   return c;
 };
 registerKind('scalebar', {
@@ -207,6 +224,11 @@ registerKind('north', {
   label: 'north arrow',
   draw(ctx, box, frame, env) {
     const meta = metaOf(frame, env.doc);
+    if (meta.north === null) {                             // a view looking along north: no arrow to draw
+      ctx.fillStyle = INK; ctx.font = fontMm(7); ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('N · out of the page', box[0] + box[2] / 2, box[1] + box[3] / 2);
+      return;
+    }
     const bearing = Number.isFinite(+meta.north) ? +meta.north : 0;   // degrees clockwise from page-up to north
     const cx = box[0] + box[2] / 2, cy = box[1] + box[3] / 2 + 1.5, r = Math.min(box[2], box[3] - 4) / 2;
     ctx.save(); ctx.translate(cx, cy); ctx.rotate((bearing * Math.PI) / 180);
