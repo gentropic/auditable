@@ -63,11 +63,23 @@ const bytes = await exportPDF(ed.getDoc(), { env: { evalField: (expr, vars) => v
 
 `mountEditor(el, doc, { env, onChange, toolbar, frameMenu, inspector })` returns `{ getDoc, setDoc, selected, select, addFrame, update, render, zoomFit, undo, redo, destroy }`.
 
-- **Selecting and moving:** click to select, ⇧-click to add to the selection. Drag to move; the frame snaps to the margins, the page centre and other frames, with guides shown (⌥ while dragging turns snapping off).
-- **Resizing:** eight handles; ⇧ on a corner keeps the aspect ratio.
+- **Selecting:** click to select, ⇧-click to add to the selection. Drag on the empty page to box-select the frames wholly inside the box.
+- **Moving and snapping:** drag to move. The frame (or the whole selection, as one box) snaps to:
+  - the page edges, the margins and the page centre;
+  - other frames' edges and centres;
+  - **equal spacing** — a gap that already exists between two frames side by side, or centred between two neighbours. The gaps show in mm.
+  - Guides show what it snapped to; ⌥ while dragging turns snapping off.
+- **Resizing:** eight handles. The dragged edges snap the same way; ⇧ on a corner keeps the aspect ratio.
+- **Groups:** ⌘G groups the selection and ⌘⇧G ungroups. A group selects, moves, aligns and distributes as one unit, and its copies form a new group.
+- **Arranging:**
+  - Align (6 ways) and distribute (h / v) work by unit. A **locked** frame is the reference: it counts toward the bounds but stays put.
+  - Match size: same width, height or both as the FIRST selected frame, the key.
+  - Z-order: front, back, and one step forward or back (⌘] / ⌘[, with ⇧ for front / back).
+- **Locks:** a locked frame won't drag, resize, nudge or delete, and wears a badge. Lock it from the inspector or the context menu.
 - **Keys:** arrows nudge 0.5 mm, ⇧ + arrow 5 mm. ⌘D duplicates, Delete removes, ⌘Z / ⌘⇧Z undo and redo, ⌘A selects all.
-- **Toolbar:** align, distribute, z-order and page setup.
-- **Inspector:** the selected frame's box in mm, its border, and its kind's own fields.
+- **Toolbar:** page setup and the arranging buttons. A status line says when something was refused.
+- **Inspector:** the selected frame's box in mm, its border, its lock, and its kind's own fields. A multiple selection shows its units and one lock box for all of them.
+- **Context menu:** the host's items, then Duplicate, Group / Ungroup, Same size, the four z-order steps, Lock / Unlock and Delete.
 - **Host hooks:** a host adds toolbar buttons, items in the frame context menu, and inspector rows. Its `update(id, fn)` changes a frame as one undo step.
 - **Theming:** the editor's colours read `--compo-*`, then the host's `--text` / `--border` / `--accent` / `--bg-btn`.
 

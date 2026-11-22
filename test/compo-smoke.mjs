@@ -114,7 +114,7 @@ await page.locator('.compo-bar select[title="orientation"]').selectOption('portr
 chk('page setup: A3 portrait', await page.evaluate(() => JSON.stringify(C.pageDims(ed.getDoc().page))) === '[297,420]');
 await page.locator('.compo-bar select[title="paper size"]').selectOption('custom');
 await page.locator('.compo-bar input[title="page width (mm)"]').fill('500');
-await page.locator('.compo-bar input[title="page width (mm)"]').dispatchEvent('change');
+await page.locator('.compo-bar input[title="page width (mm)"]').press('Tab');   // a real commit (a synthetic change leaves the native one pending for the blur)
 chk('custom page width', await page.evaluate(() => C.pageDims(ed.getDoc().page)[0]) === 500);
 await page.locator('.compo-bar select[title="paper size"]').selectOption('A4');
 await page.locator('.compo-bar select[title="orientation"]').selectOption('landscape');
@@ -129,6 +129,78 @@ chk('Duplicate adds a frame, offset 5 mm', await page.evaluate(() => { const f =
 await page.keyboard.press('Delete');
 chk('Delete removes the selection', await page.evaluate(() => ed.getDoc().frames.length) === 4);
 chk('onChange fired for edits', await page.evaluate(() => window.changes) > 8);
+
+// ── arranging: box select, groups, equal-gap guides, resize snapping, match size, locks ──
+await page.evaluate(() => {
+  const d = ed.getDoc();
+  C.addFrame(d, { id: 'A', kind: 'text', box: [20, 180, 30, 10], content: { md: 'A' } });
+  C.addFrame(d, { id: 'B', kind: 'text', box: [62, 180, 30, 10], content: { md: 'B' } });   // gap A→B = 12
+  C.addFrame(d, { id: 'K', kind: 'text', box: [150, 180, 20, 10], content: { md: 'K' } });
+  ed.select([]);
+});
+const pagePt = async (xmm, ymm) => { const r = await page.locator('.compo-pagewrap').boundingBox(); return [r.x + xmm * zoom, r.y + ymm * zoom]; };
+// box select: from empty page around A and B (not K)
+let [mx, my] = await pagePt(15, 176); await page.mouse.move(mx, my); await page.mouse.down();
+[mx, my] = await pagePt(97, 193); await page.mouse.move(mx, my, { steps: 4 });
+chk('box select draws a marquee', (await page.locator('.compo-marq').count()) === 1);
+await page.mouse.up();
+chk('box select picks the frames wholly inside', await page.evaluate(() => JSON.stringify(ed.selected().map((f) => f.id).sort())) === '["A","B"]');
+await page.keyboard.press('Control+g');
+chk('⌘G groups them', await page.evaluate(() => { const [a, b] = ['A', 'B'].map((id) => C.frameById(ed.getDoc(), id)); return !!a.group && a.group === b.group; }));
+await page.keyboard.press('Escape');
+// clicking one member selects the group; dragging it moves both
+await (await page.locator('.compo-fr[data-id="B"]')).click({ position: { x: 4, y: 4 } });
+chk('a click on a member selects its group', await page.evaluate(() => ed.selected().length) === 2 && (await page.locator('.compo-grp').count()) === 1);
+let bb2 = await page.locator('.compo-fr[data-id="A"]').boundingBox();
+await page.keyboard.down('Alt');                          // ⌥: no snapping, an exact 6 mm
+await page.mouse.move(bb2.x + 5, bb2.y + 5); await page.mouse.down();
+await page.mouse.move(bb2.x + 5, bb2.y + 5 + 6 * zoom, { steps: 4 }); await page.mouse.up();
+await page.keyboard.up('Alt');
+chk('the group moves as one (both 6 mm down, same gap)', await page.evaluate(() => { const [a, b] = ['A', 'B'].map((id) => C.frameById(ed.getDoc(), id).box); return Math.abs(a[1] - 186) < 0.01 && Math.abs(b[1] - 186) < 0.01 && Math.abs(b[0] - a[0] - 42) < 0.01; }));
+await page.keyboard.press('Control+Shift+g');
+chk('⌘⇧G ungroups', await page.evaluate(() => !C.frameById(ed.getDoc(), 'A').group));
+// equal-gap guides: drag K toward a 12 mm gap right of B (B ends at 92 → K at 104)
+await page.evaluate(() => { C.frameById(ed.getDoc(), 'K').box = [150, 186, 20, 10]; ed.select([]); ed.render(); });
+bb2 = await page.locator('.compo-fr[data-id="K"]').boundingBox();
+await page.mouse.move(bb2.x + 5, bb2.y + 5); await page.mouse.down();
+await page.mouse.move(bb2.x + 5 - 30 * zoom, bb2.y + 5, { steps: 3 });
+await page.mouse.move(bb2.x + 5 - 45.6 * zoom, bb2.y + 5, { steps: 3 });   // 150 − 45.6 = 104.4
+const gapGuides = await page.evaluate(() => [...document.querySelectorAll('.compo-gap-l')].map((e) => e.textContent));
+await page.mouse.up();
+chk(`dragging shows equal-gap guides (${JSON.stringify(gapGuides)}) and snaps to the gap`, gapGuides.length === 2 && gapGuides.every((t) => t === '12') && await page.evaluate(() => C.frameById(ed.getDoc(), 'K').box[0]) === 104);
+// resize snapping: K's bottom edge drags to near A's bottom (185) → snaps
+await page.evaluate(() => { C.frameById(ed.getDoc(), 'K').box = [230, 165, 20, 10]; ed.select(['K']); });
+const hb2 = await page.locator('.compo-h[data-handle="0.5,1"]').boundingBox();
+await page.mouse.move(hb2.x + 4, hb2.y + 4); await page.mouse.down();
+await page.mouse.move(hb2.x + 4, hb2.y + 4 + 24.4 * zoom, { steps: 4 });   // 175 → 199.4 (the bottom margin is at 200)
+const rg = await page.locator('.compo-guide').count();
+await page.mouse.up();
+chk(`resizing snaps the dragged edge (bottom → the margin, 200) with a guide (${rg}): ${await page.evaluate(() => JSON.stringify(C.frameById(ed.getDoc(), 'K').box))}`, await page.evaluate(() => { const b = C.frameById(ed.getDoc(), 'K').box; return Math.abs(b[1] + b[3] - 200) < 1e-6 && b[1] === 165; }) && rg >= 1);
+// match size: K first (the key), then A
+await page.evaluate(() => ed.select(['K', 'A']));
+await page.locator('.compo-bar button[title="same size as the first selected"]').click();
+chk('match size makes A the size of K (the first selected)', await page.evaluate(() => { const k = C.frameById(ed.getDoc(), 'K').box, a = C.frameById(ed.getDoc(), 'A').box; return a[2] === k[2] && a[3] === k[3]; }));
+// locks: a locked frame won't drag or delete, and wears a badge
+await page.evaluate(() => { C.frameById(ed.getDoc(), 'A').locked = true; ed.select([]); ed.render(); });
+chk('a locked frame wears a badge', await page.evaluate(() => getComputedStyle(document.querySelector('.compo-fr[data-id="A"]'), '::after').content.includes('locked')));
+const a0 = await page.evaluate(() => C.frameById(ed.getDoc(), 'A').box.slice());
+bb2 = await page.locator('.compo-fr[data-id="A"]').boundingBox();
+await page.mouse.move(bb2.x + 5, bb2.y + 5); await page.mouse.down(); await page.mouse.move(bb2.x + 5 + 30, bb2.y + 5, { steps: 3 }); await page.mouse.up();
+chk('a locked frame does not drag', await page.evaluate((a0) => JSON.stringify(C.frameById(ed.getDoc(), 'A').box) === JSON.stringify(a0), a0));
+await page.evaluate(() => ed.select(['A', 'B']));
+await page.keyboard.press('Delete');
+chk('Delete keeps the locked frame and says so', await page.evaluate(() => !!C.frameById(ed.getDoc(), 'A') && !C.frameById(ed.getDoc(), 'B')) && /locked/.test(await page.locator('.compo-bar .status').textContent()));
+chk('the inspector has a lock box for the frame', await page.evaluate(() => { const l = [...document.querySelectorAll('.compo-side label')].find((x) => /locked/.test(x.textContent)); return !!(l && l.querySelector('input').checked); }));
+// align with a locked reference: K aligns to A's left, A stays
+await page.evaluate(() => ed.select(['K', 'A']));
+await page.locator('.compo-bar button[title="align left"]').click();
+chk('align treats a locked frame as the reference', await page.evaluate((a0) => { const a = C.frameById(ed.getDoc(), 'A').box, k = C.frameById(ed.getDoc(), 'K').box; return a[0] === a0[0] && k[0] === a0[0]; }, a0));
+// one-step z-order with ⌘] / ⌘[
+await page.evaluate(() => ed.select(['K']));
+const z0 = await page.evaluate(() => ed.getDoc().frames.map((f) => f.id).indexOf('K'));
+await page.keyboard.press('Control+BracketLeft');
+chk('⌘[ sends one step back', await page.evaluate(() => ed.getDoc().frames.map((f) => f.id).indexOf('K')) === z0 - 1);
+await page.evaluate(() => { C.removeFrames(ed.getDoc(), ['A', 'K']); ed.select([]); });
 
 // ── export: PDF (read back by pdf.js) and PNG ──
 const out = await page.evaluate(async () => {

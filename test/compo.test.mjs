@@ -117,3 +117,70 @@ test('a host can register a kind; a throwing kind draws its error in the frame',
   assert.match(s, /test-boom: kaboom/);
   assert.match(s, /0 1 0 rg/);
 });
+
+// ── arranging: groups as units, match size, one-step z-order, equal spacing, resize snapping ──
+import { groupFrames, ungroupFrames, expandGroups, unitsOf, matchSize, bringForward, sendBackward, snapResize } from '../ext/compo/src/main.js';
+
+test('groups: expand, align and distribute as one unit; a locked member pins its unit', () => {
+  const d = createDocument();
+  const a = addFrame(d, { kind: 'text', box: [10, 10, 20, 10] });
+  const b = addFrame(d, { kind: 'text', box: [40, 10, 20, 10] });
+  const c = addFrame(d, { kind: 'text', box: [100, 50, 10, 10] });
+  const g = groupFrames(d, [a.id, b.id]);
+  assert.ok(g); assert.equal(a.group, b.group);
+  assert.deepEqual(expandGroups(d, [a.id]).sort(), [a.id, b.id].sort());
+  assert.equal(unitsOf(d, [a.id, c.id]).length, 2);
+  alignFrames(d, [a.id, c.id], 'right');                  // the group's right edge (60) and c's (110) → 110
+  assert.equal(b.box[0] + b.box[2], 110); assert.equal(a.box[0], 60);   // the group moved whole, keeping its inner gap
+  c.locked = true;
+  alignFrames(d, [a.id, c.id], 'bottom');                // c is the reference: it stays, the group comes down to its bottom (60)
+  assert.equal(c.box[1], 50); assert.equal(a.box[1] + a.box[3], 60); assert.equal(b.box[1], 50);
+  ungroupFrames(d, [a.id]);
+  assert.equal(a.group, undefined); assert.equal(b.group, undefined);
+});
+
+test('match size to the FIRST selected; locked frames keep theirs', () => {
+  const d = createDocument();
+  const a = addFrame(d, { kind: 'text', box: [10, 10, 40, 30] });
+  const b = addFrame(d, { kind: 'text', box: [80, 10, 10, 10] });
+  const c = addFrame(d, { kind: 'text', box: [120, 10, 10, 10] }); c.locked = true;
+  matchSize(d, [a.id, b.id, c.id], 'w');
+  assert.deepEqual(b.box, [80, 10, 40, 10]); assert.deepEqual(c.box, [120, 10, 10, 10]);
+  matchSize(d, [a.id, b.id], 'both');
+  assert.deepEqual(b.box, [80, 10, 40, 30]);
+});
+
+test('one-step z-order', () => {
+  const d = createDocument();
+  const ids = ['a', 'b', 'c', 'd'].map((k) => addFrame(d, { id: k, kind: 'text', box: [0, 0, 5, 5] }).id);
+  bringForward(d, ['b']); assert.deepEqual(d.frames.map((f) => f.id), ['a', 'c', 'b', 'd']);
+  sendBackward(d, ['d']); assert.deepEqual(d.frames.map((f) => f.id), ['a', 'c', 'd', 'b']);
+  bringForward(d, ['b']); assert.deepEqual(d.frames.map((f) => f.id), ['a', 'c', 'd', 'b']);   // already on top
+  assert.equal(ids.length, 4);
+});
+
+test('equal spacing: a gap that exists elsewhere, and centred between two neighbours', () => {
+  const d = createDocument({ page: { size: 'A4', orientation: 'landscape', margins: [0, 0, 0, 0] } });
+  addFrame(d, { id: 'p', kind: 'text', box: [20, 100, 30, 20] });
+  addFrame(d, { id: 'q', kind: 'text', box: [62, 100, 30, 20] });          // the gap p→q is 12
+  // a third frame dragged to the right of q, at a gap of 12.8 → snaps to 12 (x = 104)
+  let s = snapBox(d, [104.8, 100, 30, 20], { ignore: [] });
+  assert.equal(s.box[0], 104);
+  assert.ok(s.guides.gaps.length === 2 && s.guides.gaps.every((g) => Math.abs(g.b - g.a - 12) < 1e-9));
+  // centred between p and a far frame: equal gaps both sides
+  const d2 = createDocument({ page: { size: 'A4', orientation: 'landscape', margins: [0, 0, 0, 0] } });
+  addFrame(d2, { kind: 'text', box: [20, 50, 30, 20] });
+  addFrame(d2, { kind: 'text', box: [170, 50, 30, 20] });
+  s = snapBox(d2, [94.3, 50, 31, 20]);                     // centred x = (50 + 170 − 31) / 2 = 94.5
+  assert.ok(Math.abs(s.box[0] - 94.5) < 1e-9, String(s.box[0]));
+  assert.equal(s.guides.gaps.length, 2);
+});
+
+test('resize snapping: only the dragged edges move', () => {
+  const d = createDocument({ page: { size: 'A4', orientation: 'portrait', margins: [10, 10, 10, 10] } });
+  addFrame(d, { id: 'o', kind: 'text', box: [100, 100, 50, 50] });
+  let s = snapResize(d, [20, 20, 79, 40], [1, 1]);         // right edge 99 → o's left 100; bottom 60 stays
+  assert.deepEqual(s.box, [20, 20, 80, 40]); assert.equal(s.guides.x, 100);
+  s = snapResize(d, [11.2, 30, 40, 40], [0, 0.5]);         // left edge 11.2 → the margin 10, width grows
+  assert.deepEqual(s.box, [10, 30, 41.2, 40]);
+});

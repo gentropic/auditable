@@ -193,6 +193,7 @@ export function openComposer(name) {
       { label: '+ north', title: 'a north arrow for the view frame', run: (e) => addMarker(e, 'north') },
     ],
     frameMenu: (f, e) => frameMenu(f, e),
+    onStatus: (m) => { $('#meta').textContent = 'composer: ' + m; },
   });
   _fig = fig; fill();
   return _ed;
