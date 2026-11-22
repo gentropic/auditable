@@ -7605,6 +7605,54 @@ if (take()) {
   await p.close();
 }
 
+// ── §119: QA as tools — model QA counts a sentinel, drillhole QA an overlapping interval, mesh QA a
+//     watertight box and an open sheet; a routine's checks gate on those counts (a clean mesh passes,
+//     the dirty model stops the run, naming what it read). ──
+if (take()) {
+  const p = await mkPage('sm2qatools');
+  await p.evaluate(async () => { try { await (await navigator.storage.getDirectory()).removeEntry('sm2qatools', { recursive: true }); } catch { } });
+  await p.evaluate(async () => {
+    const rows = ['XC,YC,ZC,FE,DENS']; for (let k = 0; k < 2; k++) for (let j = 0; j < 5; j++) for (let i = 0; i < 6; i++) rows.push([5 + i * 10, 5 + j * 10, 5 + k * 10, i === 2 && j === 2 && k === 0 ? '-99' : (40 + i).toFixed(1), '2.8'].join(','));
+    await window._micro.openBlob(new File([rows.join('\n') + '\n'], 'm.csv'), 'm.csv', 'replace');
+  });
+  await p.waitForFunction(() => window._micro.layers()[0] && window._micro.layers()[0].docs.blockDoc, null, { timeout: 20000 });
+  await saveProject(p);
+  const r = await p.evaluate(async () => {
+    const M_ = window._micro, m = window.micro, out = {};
+    await M_.addLayer({ kind: 'drillholes', name: 'dh',
+      collar: { columns: { HOLE: ['H1'], E: Float64Array.from([20]), N: Float64Array.from([20]), RL: Float64Array.from([30]) }, roles: { bhid: 'HOLE', x: 'E', y: 'N', z: 'RL' } },
+      survey: { columns: { HOLE: ['H1'], AT: Float64Array.from([0]), AZI: Float64Array.from([0]), INC: Float64Array.from([90]) }, roles: { bhid: 'HOLE', at: 'AT', az: 'AZI', dip: 'INC' } },
+      intervals: { columns: { HOLE: ['H1', 'H1'], F: Float64Array.from([0, 8]), T: Float64Array.from([10, 20]), FE: Float64Array.from([40, 50]) }, roles: { bhid: 'HOLE', from: 'F', to: 'T' } } });
+    const D = M_.layers().find((x) => x.dh);
+    const vt = []; for (const zz of [0, 10]) for (const yy of [0, 10]) for (const xx of [0, 10]) vt.push(xx, yy, zz);
+    await M_.addLayer({ kind: 'mesh', name: 'box', vertices: Float64Array.from(vt), triangles: Uint32Array.from([0, 2, 1, 1, 2, 3, 4, 5, 6, 5, 7, 6, 0, 1, 4, 1, 5, 4, 2, 6, 3, 3, 6, 7, 0, 4, 2, 2, 4, 6, 1, 3, 5, 3, 7, 5]) });
+    await M_.addLayer({ kind: 'mesh', name: 'sheet', vertices: Float64Array.from([0, 0, 0, 10, 0, 0, 0, 10, 0, 10, 10, 0]), triangles: Uint32Array.from([0, 1, 2, 1, 3, 2]) });
+    const box = M_.layers().find((x) => x.kind === 'mesh' && /box/.test(x.name)), sheet = M_.layers().find((x) => x.kind === 'mesh' && /sheet/.test(x.name));
+    const mq = await m.runTool('modelqa', { layer: 'm.csv' });
+    out.model = { values: mq.values, checks: mq.table.rows.map((r2) => r2[1]) };
+    const dq = await m.runTool('dhqa', { layer: D.name });
+    out.dh = { values: dq.values, checks: dq.table.rows.map((r2) => r2[1]) };
+    out.box = (await m.runTool('meshqa', { layer: box.name })).values;
+    out.sheet = (await m.runTool('meshqa', { layer: sheet.name })).values;
+    M_._recipesList().push({ name: 'qa gate', tool: 'routine', params: { steps: [
+      { tool: 'meshqa', with: { layer: box.name }, as: 'box' },
+      { check: 'box.watertight = 1 and box.boundary = 0', say: 'the solid is closed' },
+      { tool: 'modelqa', with: { layer: 'm.csv' }, as: 'mq' },
+      { check: 'mq.warnings = 0', say: 'no warnings on the model' },
+    ] } });
+    const res = await m.runRoutine('qa gate');
+    out.gate = { status: res.status, error: res.error, steps: res.record.steps.map((s) => s.status), observed: res.record.steps[3].observed };
+    return out;
+  });
+  chk(`QA TOOLS: model QA counts the sentinel (${JSON.stringify(r.model)})`, r.model.values.warnings >= 1 && r.model.checks.some((c) => /sentinel/.test(c)) && r.model.values.blocks === 60);
+  chk(`QA TOOLS: drillhole QA finds the overlapping interval (${JSON.stringify(r.dh)})`, r.dh.values.findings >= 1 && r.dh.checks.some((c) => /overlap/i.test(c)));
+  chk(`QA TOOLS: mesh QA — the box watertight (${JSON.stringify(r.box)}), the sheet open (${JSON.stringify(r.sheet)})`,
+    r.box.watertight === 1 && r.box.shells === 1 && Math.abs(r.box.volume - 1000) < 1e-6 && r.sheet.watertight === 0 && r.sheet.boundary > 0);
+  chk(`QA TOOLS: a routine gates on the counts — the closed solid passes, the model's warning stops it (${JSON.stringify(r.gate)})`,
+    r.gate.status === 'failed' && r.gate.steps.join() === 'ok,pass,ok,fail' && /no warnings on the model/.test(r.gate.error || '') && r.gate.observed && r.gate.observed['mq.warnings'] >= 1);
+  await p.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

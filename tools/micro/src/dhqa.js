@@ -45,7 +45,7 @@ const ROW_CAP = 2000;                                      // rows drawn at once
 export const _qaWins = new Map();                          // set key → window
 
 // the inputs of one run: the shared collar + survey, every member's interval table
-function inputsOf(members) {
+export function inputsOf(members) {
   const d0 = members[0].docs.dhDoc, maps = (d0.config && d0.config.mappings) || {};
   return {
     files: {

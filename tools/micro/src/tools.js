@@ -15,6 +15,11 @@
 import { S, layerById } from './state.js';
 import { layerTableHeader, schemaExt, layerRecords, attrRowCountOf } from './records.js';
 import { runExport, exportColumnsOf } from './export.js';
+import { modelQa, qaFindings } from './modelqa.js';
+import { inputsOf as dhQaInputs } from './dhqa.js';
+import { drillholeQa } from '../../../ext/condenser/src/main.js';
+import { meshQa } from '../../../ext/geometry/index.js';
+import { meshVertexData } from './records.js';
 import { numericColsOf, computeResourceTable } from './analysis.js';
 import { validationRun } from './validation.js';
 import { gradeUnitFactor, niceStep, scopeMask, scopeMissing } from './analysis-ui.js';
@@ -383,5 +388,85 @@ registerTool('export', {
   },
   shape(r, p) {
     return { table: null, file: { name: r.name, blob: r.blob }, values: { rows: r.written, bytes: r.blob.size }, resolved: { ...p, out: r.name }, warnings: [] };
+  },
+});
+
+// ── QA as tools: their finding COUNTS are values a check can gate on ("mq.errors = 0") ────────────
+const sevCounts = (rows, sevOf, countOf = () => 1) => {
+  const o = { errors: 0, warnings: 0, info: 0 };
+  for (const r of rows) { const s = sevOf(r), n = countOf(r); if (s === 'error') o.errors += n; else if (s === 'warn' || s === 'warning') o.warnings += n; else o.info += n; }
+  return o;
+};
+
+// a block model: lattice (duplicates, off-grid centroids, gaps) and every column (blanks, sentinels,
+// text in numbers, densities outside 1–6 t/m³, outliers). values: errors / warnings / info (record
+// counts over the findings of each severity), findings, blocks
+registerTool('modelqa', {
+  label: 'model QA',
+  params: { layer: { type: 'layer', required: true, doc: 'the block model' } },
+  outputs: { key: ['check', 'column'] },
+  async scan(p, ctx) { return modelQa(layerNamed(p.layer), { signal: ctx.signal, onProgress: ctx.progress || null }); },
+  shape(r, p) {
+    const f = qaFindings(r);
+    return {
+      table: { columns: ['severity', 'check', 'column', 'count', 'note'], key: ['check', 'column'], rows: f.map((x) => [x.sev, x.check, x.column || '', x.count, x.note || '']), units: {} },
+      values: { ...sevCounts(f, (x) => x.sev, (x) => x.count), findings: f.length, blocks: r.N },
+      resolved: { ...p }, warnings: [],
+    };
+  },
+});
+
+// a drillhole set (the layer and every interval table sharing its collar + survey): collars, surveys,
+// doglegs, gaps and overlaps, intervals past the survey. values: errors / warnings / info, findings
+registerTool('dhqa', {
+  label: 'drillhole QA',
+  params: {
+    layer: { type: 'layer', required: true, doc: 'a drillhole layer (its whole set is checked)' },
+    doglegMax: { type: 'number', default: 10, doc: 'degrees per 30 length units' },
+    gapMin: { type: 'number', default: 0.001, doc: 'the shortest gap between intervals that counts' },
+    extrapMax: { type: 'number', default: 30, doc: 'how far an interval may run past the deepest survey station' },
+  },
+  outputs: { key: ['check', 'table', 'row'] },
+  async scan(p) {
+    const L = layerNamed(p.layer);
+    if (!(L.dh && L.docs && L.docs.dhDoc)) throw new Error(`${L.label || L.name} is not a drillhole layer`);
+    const members = S.layers.filter((x) => x.dh && x.docs && x.docs.dhDoc && !x.trace && (x === L || (L._setKey && x._setKey === L._setKey)));
+    const inp = dhQaInputs(members);
+    return drillholeQa(inp.files, { mappings: inp.mappings, dipConvention: inp.dipConvention, doglegMax: p.doglegMax, gapMin: p.gapMin, extrapMax: p.extrapMax });
+  },
+  shape(r, p) {
+    const f = r.findings || [];
+    return {
+      table: { columns: ['severity', 'check', 'table', 'row', 'hole', 'from', 'to', 'detail'], key: ['check', 'table', 'row'],
+        rows: f.map((x) => [x.severity, x.check, x.table || '', x.row == null ? '' : x.row + 1, x.bhid == null ? '' : String(x.bhid), x.from ?? '', x.to ?? '', x.detail || '']), units: {} },
+      values: { ...sevCounts(f, (x) => x.severity), findings: f.length },
+      resolved: { ...p }, warnings: [],
+    };
+  },
+});
+
+// a mesh: watertight, faces one way, its shells and their volumes. values: watertight and consistent
+// (1 / 0), shells, volume, area, triangles, and each topology issue's count
+registerTool('meshqa', {
+  label: 'mesh QA',
+  params: {
+    layer: { type: 'layer', required: true, doc: 'the mesh' },
+    weld: { type: 'bool', default: true, doc: 'weld coincident vertices first (most exports duplicate them)' },
+  },
+  outputs: { key: ['shell'] },
+  async scan(p) {
+    const L = layerNamed(p.layer);
+    if (L.kind !== 'mesh') throw new Error(`${L.label || L.name} is not a mesh`);
+    const m = await meshVertexData(L);
+    if (!m) throw new Error(`${L.label || L.name}: a streamed mesh keeps no triangles to check`);
+    return meshQa(m.vertices, m.triangles, { weld: p.weld });
+  },
+  shape(r, p) {
+    const issues = Object.fromEntries(Object.entries(r.issues || {}).map(([k, v]) => [k, v.count]));
+    return {
+      table: { columns: ['shell', 'triangles', 'closed', 'volume', 'area'], key: ['shell'], rows: r.shells.map((s, i) => [i + 1, s.triangles, s.closed ? 'yes' : 'no', s.volume ?? NaN, s.area]), units: {} },
+      values: { watertight: r.watertight ? 1 : 0, consistent: r.consistent ? 1 : 0, shells: r.shells.length, volume: r.volume ?? NaN, area: r.area, triangles: r.triangles, ...issues },
+      resolved: { ...p }, warnings: [],
+    };
   },
 });
