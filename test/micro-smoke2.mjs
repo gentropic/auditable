@@ -6034,8 +6034,8 @@ if (take()) {
     M_.setActiveLayer(id);
     const h = M_.layerTableHeader(L), fe = `chan:${h.columns.indexOf('FE')}`, sg = `chan:${h.columns.indexOf('SG')}`;
     await M_.setLayerColorSel(L, fe);
-    const ramp = await import('/tools/micro/src/ramp.js'), deco = await import('/tools/micro/src/deco.js');
-    const { undoLast } = await import('/tools/micro/src/undo.js');
+    const ramp = await window._micro.mod('ramp.js'), deco = await window._micro.mod('deco.js');
+    const { undoLast } = await window._micro.mod('undo.js');
     const COLS = ['#3b4cc0', '#7aa5f8', '#c9d7f0', '#f7b89c', '#e8694f', '#b40426'];
     M_.setRampCfg(L, { classed: true, breaks: [20, 40, 55, 60, 65], colors: COLS.slice() });
     const lutAt = (v) => { const [lo, hi] = M_.rampRangeFor(L), px = M_.bakeRampPixels(ramp.rampCfgOf(L), lo, hi), t = Math.round(Math.max(0, Math.min(1, (v - lo) / (hi - lo))) * 255) * 4; return '#' + [px[t], px[t + 1], px[t + 2]].map((x) => x.toString(16).padStart(2, '0')).join(''); };
@@ -6048,7 +6048,7 @@ if (take()) {
     out.legend = { kind: spec && spec.kind, labels: spec && spec.entries.map((e) => e.label), colors: spec && spec.entries.map((e) => e.color) };
     // typed breaks through the pane keep colours with their classes, and undo
     L.clip = ['', '']; document.querySelector('#clipMin').value = ''; document.querySelector('#clipMax').value = '';
-    (await import('/tools/micro/src/props.js')).setPropTab('style');   // an earlier section may have left another tab remembered
+    (await window._micro.mod('props.js')).setPropTab('style');   // an earlier section may have left another tab remembered
     M_.openProps();
     const bIn = [...document.querySelectorAll('#ppBody .pp-row')].find((x) => /breaks/.test(x.textContent)).querySelector('input');
     bIn.value = '20, 40, 54, 60, 65'; bIn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
@@ -6105,9 +6105,9 @@ if (take()) {
     const a = await M_.openBlob(new File([mk('XC,YC,ZC,FE,SG,LITO', (i, j, k) => `${5 + i * 10},${5 + j * 10},${5 + k * 10},${fe(i, j)},${sg(i, j)},${i < 4 ? 'OX' : 'SUL'}`)], 'a.csv'), 'a.csv', 'replace');
     const b = await M_.openBlob(new File([mk('XC,YC,ZC,SG,FE,LITO', (i, j, k) => `${105 + i * 10},${5 + j * 10},${5 + k * 10},${sg(i, j)},${fe(i, j)},${j < 4 ? 'OX' : 'SUL'}`)], 'b.csv'), 'b.csv', 'add');
     const A = M_.layers().find((x) => x.id === a), B = M_.layers().find((x) => x.id === b);
-    const { rampCfgOf } = await import('/tools/micro/src/ramp.js');
-    const { undoLast } = await import('/tools/micro/src/undo.js');
-    const { parseStyle } = await import('/tools/micro/src/style-clip.js');
+    const { rampCfgOf } = await window._micro.mod('ramp.js');
+    const { undoLast } = await window._micro.mod('undo.js');
+    const { parseStyle } = await window._micro.mod('style-clip.js');
     M_.setActiveLayer(a);
     const ha = M_.layerTableHeader(A);
     await M_.setLayerColorSel(A, `chan:${ha.columns.indexOf('FE')}`);
@@ -6165,7 +6165,7 @@ if (take()) {
     M_.setActiveLayer(id);
     const h = M_.layerTableHeader(L), fe = h.columns.indexOf('FE');
     await M_.setLayerColorSel(L, `chan:${fe}`);
-    const ramp = await import('/tools/micro/src/ramp.js'), deco = await import('/tools/micro/src/deco.js'), ct = await import('/tools/micro/src/coltypes.js');
+    const ramp = await window._micro.mod('ramp.js'), deco = await window._micro.mod('deco.js'), ct = await window._micro.mod('coltypes.js');
     out.vs0 = M_.renderer.layerValueState(id);
     out.range0 = M_.renderer.layerChanRange(id);
     // the sentinel means blank: the range loses −99
