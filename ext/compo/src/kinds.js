@@ -12,7 +12,7 @@ export const kindOf = (k) => KINDS.get(k) || null;
 
 // ── fields live in fields.js; resolveFields is re-exported from here for the kinds' sake ──
 import { resolveFields, registerField, subjectFrame, formatNumber } from './fields.js';
-import { hasProj, worldToPage, drawTicks, imageRect } from './world.js';
+import { hasProj, worldToPage, drawTicks, imageRect, drawOverlays } from './world.js';
 export { resolveFields };
 
 // ── text: paragraphs (blank-line or newline separated), **bold** runs, word wrap to the box ──
@@ -71,7 +71,7 @@ registerKind('text', {
 // ── image: a bitmap the host decoded (frame._img) or the stored src; fit contain / cover / fill ──
 registerKind('image', {
   label: 'image',
-  draw(ctx, box, frame) {
+  draw(ctx, box, frame, env = {}) {
     const c = frame.content || {};
     const img = frame._img;
     const iw = c.width || (img && img.width), ih = c.height || (img && img.height);
@@ -95,6 +95,8 @@ registerKind('image', {
     ctx.drawImage(src, x, y, w, h);
     // a picture of 3D space (meta.proj) may wear its coordinates: ticks on the border, or a grid
     if (c.ticks && c.ticks !== 'off' && hasProj(frame)) drawTicks(ctx, frame, c.ticks);
+    // world overlays: its own (content.overlays) and the host's (env.overlaysFor — a key plan's section)
+    if (hasProj(frame)) drawOverlays(ctx, frame, [...(c.overlays || []), ...((env.overlaysFor && env.overlaysFor(frame, env)) || [])]);
   },
 });
 

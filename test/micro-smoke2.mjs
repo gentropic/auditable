@@ -6665,6 +6665,63 @@ if (take()) {
   await p.close();
 }
 
+// ── §103: KEY PLAN + SMALL MULTIPLES — a key plan is a whole-model plan wearing the section trace
+//     of the view it keys, read from that view's render: on each atlas page the line moves with the
+//     page. Small multiples repeat a view over columns or section levels, in a grid over its box,
+//     as a group, each copy a view of its own with a caption that says which. ──
+if (take()) {
+  const p = await mkPage('sm2key');
+  if (process.env.SM2_DUMP) await p.evaluate(() => { window.__dumpFig = true; });
+  const r = await p.evaluate(async () => {
+    const M_ = window._micro, out = {};
+    const rows = ['XC,YC,ZC,AU,CU']; for (let k = 0; k < 4; k++) for (let j = 0; j < 20; j++) for (let i = 0; i < 30; i++) rows.push(`${5 + i * 10},${5 + j * 10},${5 + k * 10},${(0.2 + 0.05 * i).toFixed(3)},${(0.1 + 0.05 * j).toFixed(3)}`);
+    const id = await M_.openBlob(new File([rows.join('\n') + '\n'], 'kp.csv'), 'kp.csv', 'replace');
+    const L = M_.layers().find((x) => x.id === id);
+    await M_.setLayerColorSel(L, `chan:${M_.layerTableHeader(L).columns.indexOf('AU')}`);
+    // the keyed view: an E–W section (north-facing) at y = 105
+    await window.micro.setView({ look: 0, elevation: 0, ortho: true });
+    await window.micro.setSection({ axis: 'y', position: 105, thickness: 10 });
+    await new Promise((res) => setTimeout(res, 200));
+    const C = await import('/ext/compo/index.js');
+    const ed = M_.openComposer('key');
+    const f = M_.addViewFrame(ed, { box: [12, 12, 180, 90] });
+    const kp = await M_.addKeyPlan(ed, f);
+    out.key = { keyFor: kp.source.keyFor, proj: C.hasProj(kp), wasSection: kp.content.meta.facts.section };
+    // the trace on the key plan, through the env's overlays (the target's section as rendered)
+    const env = () => ({ doc: ed.getDoc() });
+    const traceOf = (doc, kf) => { const t = doc.frames.find((x) => x.id === kf.source.keyFor); const s = t.content.meta.facts.section; return C.planeTrace(kf, { normal: s.normal, position: s.position, thickness: s.thickness }); };
+    out.trace = traceOf(ed.getDoc(), kp);
+    // an atlas: two pages, the section at y = 55 and y = 155 — the key plan's line moves
+    const pages = [];
+    for (const y of [55, 155]) pages.push(await M_.compoPage({ figure: 'key', view: { section: { axis: 'y', position: y, thickness: 10 } }, dpi: 72 }));
+    out.keyWhole = pages.map((d) => d.frames.find((x) => x.source && x.source.keyFor).content.meta.facts.section);   // the key plan is NOT cut by the page's section
+    out.pageTraces = pages.map((d) => { const k = d.frames.find((x) => x.source && x.source.keyFor); const t = traceOf(d, k); return t && t.line ? +((t.line[0][1] + t.line[1][1]) / 2).toFixed(2) : null; });
+    const bytes = await C.exportPDF(pages, { compress: false, env: M_.composerEnv() });
+    out.pdfOk = bytes.length > 1000;
+    // small multiples over colour: AU, CU in place of the view
+    const g = ed.getDoc().frames.find((x) => x.id === f.id);
+    const made = await M_.smallMultiples(ed, g, { vary: 'colour', values: ['AU', 'CU'], cols: 2 });
+    const doc = ed.getDoc(), views = made.map((i) => doc.frames.find((x) => x.id === i)).filter((x) => x.kind === 'image'), caps = made.map((i) => doc.frames.find((x) => x.id === i)).filter((x) => x.kind === 'text');
+    out.mult = { n: views.length, caps: caps.map((c) => c.content.md), sels: views.map((v) => v.source.scene.layers[0].colorSel), gone: !doc.frames.some((x) => x.id === f.id), group: new Set(made.map((i) => doc.frames.find((x) => x.id === i).group)).size === 1, side: views[0].box[1] === views[1].box[1] && views[1].box[0] > views[0].box[0] };
+    // over section levels: the captions read the section of their own view
+    const v2 = views[0];
+    const madeS = await M_.smallMultiples(ed, v2, { vary: 'section', values: [15, 25], axis: 'z', thickness: 10 });
+    const docS = ed.getDoc(), vS = madeS.map((i) => docS.frames.find((x) => x.id === i)).filter((x) => x.kind === 'image');
+    out.levels = vS.map((v) => v.content.meta.facts.section && Math.round(v.content.meta.facts.section.position));
+    const envM = { ...M_.composerEnv(), doc: docS };
+    out.levelCaps = madeS.map((i) => docS.frames.find((x) => x.id === i)).filter((x) => x.kind === 'text').map((c) => C.resolveFields(c.content.md, envM, c));
+    if (window.__dumpFig) { const png = await C.exportPNG(pages[1], { dpi: 120, env: M_.composerEnv() }); out.png = await new Promise((res) => { const f2 = new FileReader(); f2.onload = () => res(f2.result); f2.readAsDataURL(png); }); }
+    return out;
+  });
+  if (r.png) { const fs = await import('node:fs'); fs.writeFileSync(process.env.SM2_DUMP, Buffer.from(r.png.split(',')[1], 'base64')); }
+  chk(`KEY PLAN: it keys the view (${r.key.keyFor}), has its projection (${r.key.proj}), and was itself rendered with no section (${JSON.stringify(r.key.wasSection)})`, r.key.keyFor === 'view-1' && r.key.proj && r.key.wasSection === null);
+  chk(`KEY PLAN: the keyed section shows as a line with its slab (${JSON.stringify(r.trace && { line: r.trace.line, faces: r.trace.faces.length })})`, r.trace && r.trace.line && r.trace.faces.length === 2 && Math.abs(r.trace.line[0][1] - r.trace.line[1][1]) < 0.01);
+  chk(`KEY PLAN: on each atlas page the line moves with the page's section (${JSON.stringify(r.pageTraces)} mm down the plan, y 55 → 155: north is up)`, r.pageTraces.every(Number.isFinite) && r.pageTraces[0] > r.pageTraces[1] && r.pdfOk && r.keyWhole.every((s) => s === null));
+  chk(`MULTIPLES: colour by AU / CU side by side, captioned, a group, in place of the view (${JSON.stringify(r.mult)})`, r.mult.n === 2 && JSON.stringify(r.mult.caps) === '["AU","CU"]' && r.mult.sels[0] !== r.mult.sels[1] && r.mult.gone && r.mult.group && r.mult.side);
+  chk(`MULTIPLES: over section levels — each view cut where asked (${JSON.stringify(r.levels)}), its caption a field reading its own section (${JSON.stringify(r.levelCaps)})`, JSON.stringify(r.levels) === '[15,25]' && /^15 RL/.test(r.levelCaps[0]) && /^25 RL/.test(r.levelCaps[1]));
+  await p.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

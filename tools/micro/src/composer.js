@@ -24,8 +24,9 @@ import { rendererDocBbox, layerShown } from './layers.js';
 import { attrRowCountOf, layerBlob, layerTableHeader, schemaExt } from './records.js';
 import { computeResourceTable, numericColsOf } from './analysis.js';
 import { sourceHash, sourceHashSync } from './identity.js';
-import { createDocument, parseDocument, serializeDocument, mountEditor, exportPDF, exportPNG, frameById, pageDims, tableFromTsv, subjectFrame, figureFromPdf, registerKind, replayDrawList } from '../../../ext/compo/index.js';
+import { createDocument, parseDocument, serializeDocument, mountEditor, exportPDF, exportPNG, frameById, pageDims, tableFromTsv, removeFrames, groupFrames, subjectFrame, figureFromPdf, registerKind, replayDrawList } from '../../../ext/compo/index.js';
 import { chartFigure } from './analysis-ui.js';
+import { colorChoices, colorSelFor } from './color.js';
 import { xyFigure } from './xyplot.js';
 const $ = (s) => document.querySelector(s);
 
@@ -49,7 +50,7 @@ function viewMeta(pxH, canvas) {
   // an orthographic view has ONE scale: its visible height (2·halfH, world units) over the image's
   // pixels. A perspective view has none — the scale bar says so rather than guess.
   if (st.ortho && st.halfH > 0) meta.worldPerPx = (2 * st.halfH) / pxH;
-  if (canvas && canvas._viewProj) meta.proj = { m: canvas._viewProj.map((v) => +(+v).toPrecision(9)), origin: S.frame ? S.frame.origin.slice() : [0, 0, 0] };
+  if (canvas && canvas._viewProj) meta.proj = { m: canvas._viewProj.map((v) => +(+v).toPrecision(9)), origin: S.frame ? S.frame.origin.slice() : [0, 0, 0], focus: (() => { const o = S.frame ? S.frame.origin : [0, 0, 0], t = S.cam.state.target; return [t[0] + o[0], t[1] + o[1], t[2] + o[2]]; })() };
   meta.facts = viewFacts();
   return meta;
 }
@@ -151,7 +152,7 @@ function afterFacts(ed, id) {
 }
 function viewFrameContent(f) {
   const scene = captureScene(f.source && f.source.name || 'view');
-  f.source = { app: 'micro', kind: 'view', scene, bg: _bgColor };
+  f.source = { app: 'micro', kind: 'view', scene, bg: _bgColor, ...(f.source && f.source.keyFor ? { keyFor: f.source.keyFor } : {}) };   // a key plan stays one
   const r = renderInto(f, PREVIEW_PX_PER_MM, null);
   storeImage(f, r.canvas, r.meta);
 }
@@ -433,6 +434,111 @@ export function editViewInPlace(f) {
 }
 export const viewEditState = () => _editing;
 
+// ── KEY PLAN: a whole-model plan that wears the section of the view it keys (source.keyFor): the
+// trace and the slab of that view's section as it was rendered — so on every atlas page the line
+// moves with the page. The plan itself is a view frame (its own scene: north up, no section). ──
+function overlaysFor(frame, env) {
+  const kf = frame.source && frame.source.keyFor; if (!kf || !env.doc) return null;
+  const out = [];
+  for (const id of [].concat(kf)) {
+    const t = env.doc.frames.find((x) => x.id === id), fx = t && t.content && t.content.meta && t.content.meta.facts;
+    const sec = fx && fx.section; if (!sec || !sec.normal) continue;
+    out.push({ type: 'plane', normal: sec.normal, position: sec.position, thickness: sec.thickness || 0, label: sectionText(sec) });
+  }
+  return out;
+}
+export async function addKeyPlan(ed, target = null) {
+  const doc = ed.getDoc(), sel = ed.selected().find(isView);
+  target = target || sel || doc.frames.find(isView);
+  if (!target) { $('#meta').textContent = 'composer: a key plan keys a 3D-view frame — add one first'; return null; }
+  const bb = rendererDocBbox(); if (!bb || !(bb[3] > bb[0])) { $('#meta').textContent = 'composer: nothing loaded to plan'; return null; }
+  const [W, H] = pageDims(doc.page), m = doc.page.margins || [10, 10, 10, 10];
+  const dx = bb[3] - bb[0], dy = bb[4] - bb[1], w = 60, h = Math.max(30, Math.min(80, +(w * dy / Math.max(1e-9, dx)).toFixed(1)));
+  const box = [W - m[1] - w, H - m[2] - h, w, h];
+  const mine = captureScene('__composer');
+  let f = null;
+  try {
+    await applyScene(target.source.scene);                 // the same layers and colours as the view it keys …
+    setSectionWorld(null);                                 // … but the whole model, from above, north up
+    const o = S.frame ? S.frame.origin : [0, 0, 0], st = S.cam.state;
+    const halfH = Math.max(dy / 2, dx / 2 / (w / h)) * 1.06;
+    HK.setCameraWorld({ look: 0, elevation: 90, ortho: true, target: [(bb[0] + bb[3]) / 2 + o[0], (bb[1] + bb[4]) / 2 + o[1], (bb[2] + bb[5]) / 2 + o[2]], distance: halfH / Math.tan(st.fovY / 2) });
+    f = ed.addFrame({ kind: 'image', box, content: { photo: true }, source: { app: 'micro', kind: 'view', keyFor: target.id }, style: { border: true } });
+    ed.update(f.id, (fr) => viewFrameContent(fr));
+    afterFacts(ed, f.id);
+  } finally { await applyScene(mine); }
+  $('#meta').textContent = `composer: a key plan for ${target.id} — its section shows on it, page by page in an atlas`;
+  return f;
+}
+
+// ── SMALL MULTIPLES: one view repeated — coloured by each of several columns, cut at several
+// section levels, or under several filters — in a grid over the view's own box, each copy a
+// normal view frame with a caption that says which. They form a group. ──
+export async function smallMultiples(ed, f, { vary, values, cols, axis = 'z', thickness = 10 }) {
+  if (!isView(f) || !values || !values.length) return [];
+  const doc = ed.getDoc(), base = f.source.scene, b = f.box.slice(), n = values.length;
+  const C = Math.max(1, Math.min(n, +cols || Math.ceil(Math.sqrt(n)))), R = Math.ceil(n / C), gap = 3, capH = 5;
+  const cw = (b[2] - gap * (C - 1)) / C, ch = (b[3] - R * capH - gap * (R - 1)) / R;
+  if (!(cw > 8 && ch > 8)) throw new Error('the view frame is too small for that many — make it bigger first');
+  const mainName = (base.layers.find((sl) => sl.visible) || base.layers[0] || {}).name;
+  const L = S.layers.find((x) => (x.label || x.name) === mainName || x.name === mainName);
+  const mine = captureScene('__composer'), made = [];
+  try {
+    for (let k = 0; k < n; k++) {
+      const v = values[k], scene = JSON.parse(JSON.stringify(base));
+      const sl = scene.layers.find((q) => q.name === mainName);
+      if (vary === 'colour' && sl && L) sl.colorSel = colorSelFor(L, v);
+      if (vary === 'filter' && sl) sl.filter = String(v);
+      await applyScene(scene);
+      if (vary === 'section') setSectionWorld({ axis, position: +v, thickness: +thickness || 10 });
+      const r = Math.floor(k / C), c = k % C, x = b[0] + c * (cw + gap), y = b[1] + r * (ch + capH + gap);
+      const vf = ed.addFrame({ kind: 'image', box: [+x.toFixed(2), +y.toFixed(2), +cw.toFixed(2), +ch.toFixed(2)], content: { photo: true }, source: { app: 'micro', kind: 'view' }, style: { border: true } });
+      ed.update(vf.id, (fr) => viewFrameContent(fr));
+      afterFacts(ed, vf.id);
+      const md = vary === 'section' ? '{section}' : String(v);
+      const cap = ed.addFrame({ kind: 'text', box: [+x.toFixed(2), +(y + ch + 0.5).toFixed(2), +cw.toFixed(2), capH - 0.5], content: { md, size: 7, align: 'center', of: vf.id } });
+      made.push(vf.id, cap.id);
+    }
+  } finally { await applyScene(mine); }
+  const d = ed.getDoc();
+  removeFrames(d, [f.id]); groupFrames(d, made);
+  ed.select(made); ed.render(); persistSoon(_fig);
+  $('#meta').textContent = `composer: ${n} small multiples (${vary}) in place of ${f.id} — a group; each is a view of its own`;
+  return made;
+}
+function openMultiplesDialog(ed, f) {
+  const mainName = (f.source.scene.layers.find((sl) => sl.visible) || {}).name;
+  const L = S.layers.find((x) => (x.label || x.name) === mainName || x.name === mainName);
+  const choices = L ? colorChoices(L).filter((c) => !['rules', 'solid', 'elev'].includes(c)) : [];
+  const w = floatWin({ title: 'small multiples', sub: f.id, x: 160, y: 140, w: 420, h: 360 });
+  w.el.classList.add('cmp-multiples');
+  const body = w.body; body.style.cssText += 'display:grid;grid-template-columns:110px 1fr;gap:6px 8px;align-items:center;padding:10px';
+  const row = (label, el) => { const l = document.createElement('span'); l.textContent = label; body.append(l, el); return el; };
+  const mk = (tag, props) => Object.assign(document.createElement(tag), props);
+  const vary = row('vary', mk('select', {}));
+  for (const [v, t] of [['colour', 'colour by a column'], ['section', 'section level'], ['filter', 'filter']]) vary.append(mk('option', { value: v, textContent: t }));
+  const cols = row('columns', mk('div', { style: 'display:flex;flex-wrap:wrap;gap:4px 10px;max-height:110px;overflow:auto' }));
+  for (const c of choices) { const lab = mk('label', {}); lab.append(mk('input', { type: 'checkbox', value: c, checked: choices.indexOf(c) < 4 }), ' ' + c); cols.append(lab); }
+  const vals = row('values', mk('input', { placeholder: 'section: 600, 620, 640 · filter: AU > 1; AU > 2', title: 'section levels (comma-separated), or filters (semicolon-separated)' }));
+  const axis = row('axis', mk('select', {})); for (const a of ['z', 'x', 'y']) axis.append(mk('option', { value: a, textContent: a === 'z' ? 'z (plan)' : a === 'x' ? 'x (N–S)' : 'y (E–W)' }));
+  const thick = row('thickness', mk('input', { type: 'number', value: 10, min: 0.1, step: 'any' }));
+  const per = row('per row', mk('input', { type: 'number', value: '', min: 1, placeholder: 'auto' }));
+  for (const el of [vals, thick, per]) el.onkeydown = (e) => e.stopPropagation();
+  const sync = () => { const v = vary.value; cols.parentElement && (cols.style.opacity = v === 'colour' ? 1 : 0.35); vals.disabled = v === 'colour'; axis.disabled = thick.disabled = v !== 'section'; };
+  vary.onchange = sync; sync();
+  const go = mk('button', { className: 'awin-btn btn-p', textContent: 'Make' }), msg = mk('span', { className: 'hint' });
+  body.append(msg, go);
+  go.onclick = async () => {
+    const v = vary.value;
+    const values = v === 'colour' ? [...cols.querySelectorAll('input:checked')].map((i) => i.value)
+      : v === 'section' ? vals.value.split(/[,\s]+/).map(Number).filter(Number.isFinite) : vals.value.split(';').map((s) => s.trim()).filter(Boolean);
+    if (!values.length) { msg.textContent = 'nothing to repeat over'; return; }
+    go.disabled = true; msg.textContent = 'rendering…';
+    try { await smallMultiples(ed, f, { vary: v, values, cols: +per.value || 0, axis: axis.value, thickness: +thick.value }); w.close(); }
+    catch (e) { msg.textContent = e.message; go.disabled = false; }
+  };
+}
+
 // ── the window ──
 let _win = null, _ed = null, _fig = null, _saveT = 0;
 export function composerOpen() { return !!(_win && document.body.contains(_win.el)); }
@@ -509,6 +615,7 @@ export function openComposer(name) {
       { label: '+ legend', title: 'a legend for each layer shown in the view frame', run: (e) => addLegendFrames(e) },
       { label: '+ scale', title: 'a scale bar for the view frame (orthographic views have a scale)', run: (e) => addMarker(e, 'scalebar') },
       { label: '+ north', title: 'a north arrow for the view frame', run: (e) => addMarker(e, 'north') },
+      { label: '+ key plan', title: 'a whole-model plan that shows where the selected view’s section is — page by page in an atlas', run: (e) => addKeyPlan(e) },
       { label: '+ resource', title: 'a resource table: tonnes, grade and metal above cutoffs, by domain × class — made again on ↻ refresh', run: () => openResourceDialog() },
     ],
     frameMenu: (f, e) => frameMenu(f, e),
@@ -534,6 +641,8 @@ function frameMenu(f, ed) {
     { label: 'Refresh fields (statistics)', run: async () => { await withScene(f.source.scene, () => completeFacts(ed.getDoc(), f)); ed.render(); } },
     { label: 'Show in the 3D view', run: () => applyScene(f.source.scene) },
     { label: 'Re-render at this size', run: async () => { await rerender(f, PREVIEW_PX_PER_MM); ed.update(f.id, () => {}); } },
+    { label: 'Small multiples…', run: () => openMultiplesDialog(ed, f) },
+    { label: 'Key plan for this view', run: () => addKeyPlan(ed, f) },
   ];
   if (f.source && f.source.kind === 'legend') return [{ label: 'Update from the layer', run: () => { const L = S.layers.find((x) => x.name === f.source.layer); const c = L && legendContentFor(L); if (c) ed.update(f.id, (fr) => { fr.content = c; }); else $('#meta').textContent = `composer: layer “${f.source.layer}” has no legend now`; } }];
   return [];
@@ -544,10 +653,11 @@ async function rerender(f, pxPerMm) {
 // at export: the hi-res render replaces the bitmap, but the stored preview stays small
 function storeImageQuiet(f, canvas, meta) { f._img = canvas; f._jpeg = null; f.content = { ...f.content, width: canvas.width, height: canvas.height, meta }; }
 
+export const composerEnv = (extra) => envFor(extra);   // the page env micro draws with (fields, overlays) — for hosts and tests
 function envFor(extra = {}) {
   return {
     ...extra,
-    fields: MICRO_FIELDS, fieldHelp: MICRO_FIELD_HELP,
+    fields: MICRO_FIELDS, fieldHelp: MICRO_FIELD_HELP, overlaysFor,
     // ${expr}: the atlas row's values (vars), then the nearest view's numbers (count, total,
     // section, look, elevation, page, pages), in the routine's expression language
     evalField: (expr, vars, frame, env) => {
@@ -717,15 +827,15 @@ export async function compoPage(params, evalField) {
   const mine = captureScene('__atlas');
   try {
     for (const f of views) {
-      const scene = JSON.parse(JSON.stringify(f.source.scene));
-      if (v.filter != null) for (const sl of scene.layers) {
+      const scene = JSON.parse(JSON.stringify(f.source.scene)), key = !!f.source.keyFor;   // a key plan keeps its own scene: the page's overrides are for the views it keys
+      if (v.filter != null && !key) for (const sl of scene.layers) {
         const fx = typeof v.filter === 'string' ? v.filter : v.filter[sl.name];
         if (fx != null && sl.visible !== false) sl.filter = String(fx);
       }
       await applyScene(scene);
-      if (v.camera) HK.setCameraWorld(v.camera);
-      if (v.section === 'off') setSectionWorld(null);
-      else if (v.section) setSectionWorld(v.section);
+      if (v.camera && !key) HK.setCameraWorld(v.camera);
+      if (!key && v.section === 'off') setSectionWorld(null);
+      else if (!key && v.section) setSectionWorld(v.section);
       const r = renderInto(f, dpi / 25.4, f.source.bg);
       storeImageQuiet(f, r.canvas, r.meta);
       f.content.photo = true;

@@ -469,7 +469,7 @@ function resolveFields(src, env = {}, frame = null) {
 
 // WORLD — an image frame that is a picture of 3D space (a host's render) can say how:
 //
-//   content.meta.proj = { m: [16 numbers, column-major: (world − origin) → clip space], origin: [x, y, z] }
+//   content.meta.proj = { m: [16 numbers, column-major: (world − origin) → clip space], origin: [x, y, z], focus?: [x, y, z] }
 //
 // Then compo knows where any world point lands on the page, and which world coordinate any point
 // of the picture shows. That gives:
@@ -527,9 +527,17 @@ function worldToPage(frame, p) {
   const nx = c[0] / c[3], ny = c[1] / c[3], r = imageRect(frame);
   return { x: r[0] + ((nx + 1) / 2) * r[2], y: r[1] + ((1 - ny) / 2) * r[3], inside: Math.abs(nx) <= 1 && Math.abs(ny) <= 1 };
 }
-// a page point (mm) → the world point it shows, at depth ndcZ (−1 near … 1 far)
-function pageToWorld(frame, x, y, ndcZ = 0) {
+// the depth (NDC z) of the view's FOCUS (proj.focus, a world point — the camera's target): a ray is
+// read there, not at an arbitrary depth (a near-plan view's ray drifts sideways with depth)
+function focusZ(frame) {
+  const P = frame.content.meta.proj, f = P.focus; if (!Array.isArray(f) || f.length !== 3) return 0;
+  const o = P.origin || [0, 0, 0], c = mul4(P.m, [f[0] - o[0], f[1] - o[1], f[2] - o[2], 1]);
+  return c[3] > 1e-12 ? Math.max(-1, Math.min(1, c[2] / c[3])) : 0;
+}
+// a page point (mm) → the world point it shows, at depth ndcZ (−1 near … 1 far; default: the focus's)
+function pageToWorld(frame, x, y, ndcZ) {
   const P = frame.content.meta.proj, o = P.origin || [0, 0, 0], inv = invOf(P); if (!inv) return null;
+  if (ndcZ == null) ndcZ = focusZ(frame);
   const r = imageRect(frame), nx = ((x - r[0]) / r[2]) * 2 - 1, ny = 1 - ((y - r[1]) / r[3]) * 2;
   const v = mul4(inv, [nx, ny, ndcZ, 1]);
   return [v[0] / v[3] + o[0], v[1] / v[3] + o[1], v[2] / v[3] + o[2]];
@@ -609,6 +617,61 @@ function drawTicks(ctx, frame, mode = 'ticks') {
   ctx.restore();
 }
 
+// ── world OVERLAYS on a projected view: { type: 'plane', normal, position, thickness?, color?, label? }
+// draws the plane's TRACE — where n·p = position crosses the picture (at the view's focal depth;
+// exact for a vertical plane on a plan) — solid, with its slab's faces dashed when it has a
+// thickness. A key plan wears the section of the view it keys. ──
+function planeSegment(frame, normal, position) {
+  const r = imageRect(frame), b = frame.box;
+  const x0 = Math.max(r[0], b[0]), y0 = Math.max(r[1], b[1]), x1 = Math.min(r[0] + r[2], b[0] + b[2]), y1 = Math.min(r[1] + r[3], b[1] + b[3]);
+  const g = (x, y) => { const w = pageToWorld(frame, x, y); return w ? normal[0] * w[0] + normal[1] * w[1] + normal[2] * w[2] - position : NaN; };
+  const cs = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]], v = cs.map(([x, y]) => g(x, y)), pts = [];
+  if (v.some((q) => !Number.isFinite(q))) return null;
+  for (let i = 0; i < 4; i++) {
+    const j = (i + 1) % 4, a = v[i], c = v[j];
+    if (a === 0) pts.push(cs[i]);
+    if ((a < 0 && c > 0) || (a > 0 && c < 0)) { const t = a / (a - c); pts.push([cs[i][0] + t * (cs[j][0] - cs[i][0]), cs[i][1] + t * (cs[j][1] - cs[i][1])]); }
+  }
+  return pts.length >= 2 ? [pts[0], pts[pts.length - 1]] : null;
+}
+function planeTrace(frame, ov) {
+  if (!hasProj(frame) || !ov || !Array.isArray(ov.normal)) return null;
+  const n = ov.normal.map(Number), l = Math.hypot(...n); if (!(l > 0)) return null;
+  const u = n.map((q) => q / l), d = +ov.position / l;
+  // a plane facing the viewer (a level on a plan) has no trace — it is the whole picture or none of it
+  const r = imageRect(frame), cx = r[0] + r[2] / 2, cy = r[1] + r[3] / 2, n0 = pageToWorld(frame, cx, cy, -1), n1 = pageToWorld(frame, cx, cy, 1);
+  if (n0 && n1) { const dv = [0, 1, 2].map((i) => n1[i] - n0[i]), dl = Math.hypot(...dv) || 1; if (Math.abs((u[0] * dv[0] + u[1] * dv[1] + u[2] * dv[2]) / dl) > 0.98) return null; }
+  const out = { line: planeSegment(frame, u, d), faces: [] };
+  if (+ov.thickness > 0) for (const s of [-1, 1]) { const f = planeSegment(frame, u, d + (s * +ov.thickness) / 2); if (f) out.faces.push(f); }
+  return out.line || out.faces.length ? out : null;
+}
+function drawOverlays(ctx, frame, list) {
+  for (const ov of list || []) {
+    if (!ov || ov.type !== 'plane') continue;
+    const t = planeTrace(frame, ov); if (!t) continue;
+    const col = ov.color || '#c0392b';
+    ctx.save();
+    ctx.strokeStyle = col;
+    if (t.faces.length) {
+      ctx.lineWidth = 0.18; ctx.setLineDash([0.8, 0.6]);
+      for (const [a, b] of t.faces) { ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke(); }
+      ctx.setLineDash([]);
+    }
+    if (t.line) {
+      const [a, b] = t.line;
+      ctx.lineWidth = 0.45; ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+      if (ov.label) {
+        ctx.font = fontMm(6, { bold: true }); ctx.fillStyle = col; ctx.textBaseline = 'bottom'; ctx.textAlign = 'left';
+        const w = ctx.measureText(String(ov.label)).width, hh = 6 * 25.4 / 72;
+        const p = a[1] < b[1] ? a : b, x = Math.min(p[0] + 0.8, frame.box[0] + frame.box[2] - w - 0.8), y = Math.max(p[1] + hh + 0.8, frame.box[1] + hh + 0.8);
+        ctx.fillStyle = 'rgba(255,255,255,0.85)'; ctx.fillRect(x - 0.4, y - hh - 0.2, w + 0.8, hh + 0.4);
+        ctx.fillStyle = col; ctx.fillText(String(ov.label), x, y);
+      }
+    }
+    ctx.restore();
+  }
+}
+
 // ── src/kinds.js ──
 
 // Frame KINDS — each a small adapter that draws finished content into its box. The context is in
@@ -679,7 +742,7 @@ registerKind('text', {
 // ── image: a bitmap the host decoded (frame._img) or the stored src; fit contain / cover / fill ──
 registerKind('image', {
   label: 'image',
-  draw(ctx, box, frame) {
+  draw(ctx, box, frame, env = {}) {
     const c = frame.content || {};
     const img = frame._img;
     const iw = c.width || (img && img.width), ih = c.height || (img && img.height);
@@ -703,6 +766,8 @@ registerKind('image', {
     ctx.drawImage(src, x, y, w, h);
     // a picture of 3D space (meta.proj) may wear its coordinates: ticks on the border, or a grid
     if (c.ticks && c.ticks !== 'off' && hasProj(frame)) drawTicks(ctx, frame, c.ticks);
+    // world overlays: its own (content.overlays) and the host's (env.overlaysFor — a key plan's section)
+    if (hasProj(frame)) drawOverlays(ctx, frame, [...(c.overlays || []), ...((env.overlaysFor && env.overlaysFor(frame, env)) || [])]);
   },
 });
 
@@ -2656,6 +2721,8 @@ export {
   drawTicks,
   niceStep,
   fmtCoord,
+  planeTrace,
+  drawOverlays,
   renderPage,
   ensureImages,
   exportPDF,

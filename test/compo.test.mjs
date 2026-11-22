@@ -311,3 +311,20 @@ test('world: a projected view maps world ↔ page; ticks name the coordinate eac
   const s = new TextDecoder('latin1').decode(bytes);
   assert.ok(s.includes('(DH-07) Tj') && s.includes('(512 300 E) Tj') && s.includes('(7 604 000 N) Tj'));
 });
+
+test('overlays: a plane trace lands where the plane crosses the picture; read at the focus depth; none facing the viewer', async () => {
+  const C = await import('../ext/compo/src/main.js');
+  const m = [1 / 50, 0, 0, 0, 0, 1 / 40, 0, 0, 0, 0, -1 / 1000, 0, 0, 0, 0, 1];
+  const v = { id: 'k', kind: 'image', box: [10, 10, 100, 80], content: { width: 1000, height: 800, meta: { proj: { m, origin: [512300, 7604000, 600] } } } };
+  const t = C.planeTrace(v, { normal: [1, 0, 0], position: 512310, thickness: 10 });
+  assert.deepEqual(t.line.map((p) => p[0]), [70, 70]);
+  assert.deepEqual(t.faces.map((f) => f[0][0]), [65, 75]);
+  assert.equal(C.planeTrace(v, { normal: [0, 0, 1], position: 600 }), null);           // a level on a plan: no trace
+  // a near-plan view (the camera a hair off vertical): y drifts with depth — read at the focus
+  const tilt = [0.00629, 0, 0, 0, 0, 0.00943, 0.00000156, 0, 0, 0.000189, -0.0000781, 0, 0, 0, -0.98, 1];
+  const k = { id: 'k2', kind: 'image', box: [225, 158, 60, 40], content: { width: 360, height: 240, meta: { proj: { m: tilt, origin: [150, 100, 20] } } } };
+  assert.equal(C.planeTrace(k, { normal: [0, 1, 0], position: 105 }), null);           // read at NDC 0: far off the model, misses
+  k.content.meta.proj.focus = [150, 100, 20];
+  const tk = C.planeTrace(k, { normal: [0, 1, 0], position: 105 });
+  assert.ok(tk && tk.line && tk.line[0][1] > 158 && tk.line[0][1] < 198);
+});
