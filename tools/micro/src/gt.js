@@ -49,7 +49,7 @@ export function openGradeTonnage(L, ropts) {
     if (saved.gradeUnit != null) st.gradeUnit = saved.gradeUnit;
     if (saved.densUnit) st.densUnit = saved.densUnit;
     if (saved.ranges) st.ranges = rangesFromCfg(saved.ranges);
-    const ser = analysisSerRestore(saved.series, L); if (ser) st.series = ser;
+    const ser = analysisSerRestore(saved.series, L); if (ser) { st.series = ser; if (ser.dropped.length) st.droppedNote = `left out (layer not loaded): ${ser.dropped.join(', ')}`; }
   }
   const cfgOf = () => ({ series: analysisSerCfg(st.series), nCut: st.nCut, scope: st.scope, gradeUnit: st.gradeUnit, densUnit: st.densUnit, ranges: rangesForCfg(st.ranges) });
   const persistUnits = () => { L.gtUnits = { ...(L.gtUnits || {}), grade: st.gradeUnit, densUnit: st.densUnit, weight: st.series[0] ? st.series[0].weight : '' }; markProjectDirty(); };
@@ -57,6 +57,7 @@ export function openGradeTonnage(L, ropts) {
   const win = floatWin({ title: `grade-tonnage · ${L.label || L.name}`, sub: saved ? 'restored — Run to compute' : 'configure, then Run', x: Math.max(12, innerWidth - 680), y: 100, w: 640, h: 464,
     onClose: () => { saveAnalysisCfg(L, 'gt', cfgOf(), win); setAnalysisOpen(L, 'gt', false); _gtWins.delete(L.id); } });
   setAnalysisOpen(L, 'gt', true);
+  if (st.droppedNote) win.sub.textContent = st.droppedNote;           // a series left out says so
   applyAnalysisGeo(L, 'gt', win);
   const body = document.createElement('div'); body.className = 'sw-body'; win.body.append(body);
   const rail = document.createElement('div'); rail.className = 'sw-rail';
@@ -68,7 +69,7 @@ export function openGradeTonnage(L, ropts) {
   const plot = () => {
     if (!st.scan || !st.scan.series.length) {
       const busy = /scanning/i.test(win.sub.textContent || '');
-      win.sub.textContent = busy ? win.sub.textContent : (st.stale ? (saved ? 'restored — Run to compute' : 'configure, then Run') : 'no data');
+      win.sub.textContent = busy ? win.sub.textContent : (st.stale ? (st.droppedNote ? st.droppedNote + ' · ' : '') + (saved ? 'restored — Run to compute' : 'configure, then Run') : 'no data');
       plotChart(cv, { series: [], placeholder: busy ? 'scanning…' : (st.stale ? 'press Run' : 'no data') });
       win._spec = null; win.el._gtSpec = null; return;
     }
@@ -165,12 +166,12 @@ export function openGradeTonnage(L, ropts) {
   const run = async () => {
     if (st.running) return;
     if (st.scope !== 'all' && !st.series.some((s) => { const Lx = layerById(s.layerId); return Lx && scopeMask(st, Lx); })) {
-      win.sub.textContent = scopeMissing(st, L) || `no layer carries a ${st.scope} mask`; return;
+      win.el._runFailed = win.sub.textContent = scopeMissing(st, L) || `no layer carries a ${st.scope} mask`; return;
     }
     st.running = true; win.sub.textContent = 'scanning…';
     const rc = runCancellable(runBtn);
     try { st.scan = await scanGT((n, N, w) => { progEl.textContent = scanProgressText(n, N, w); }, rc.signal); }
-    catch (e) { win.sub.textContent = e.name === 'AbortError' ? (st.scan ? 'cancelled — showing the previous result' : 'cancelled') : `grade-tonnage: ${e.message}`; st.running = false; rc.done(); progEl.textContent = ''; return; }
+    catch (e) { win.el._runFailed = e.name === 'AbortError' ? 'cancelled' : e.message; win.sub.textContent = e.name === 'AbortError' ? (st.scan ? 'cancelled — showing the previous result' : 'cancelled') : `grade-tonnage: ${e.message}`; st.running = false; rc.done(); progEl.textContent = ''; return; }
     st.running = false; rc.done(); progEl.textContent = ''; st.stale = false; if (staleEl) staleEl.textContent = '';
     win.el._scanWhere = st.scan.where;                     // where the scan ran (workers / this page) — the smokes read it
     saveAnalysisCfg(L, 'gt', cfgOf(), win);                // a successful Run snapshots the setup into the project

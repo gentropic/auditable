@@ -251,13 +251,18 @@ export function analysisSerCfg(series) {
 }
 
 export function analysisSerRestore(cfgSeries, L) {
-  const out = [];
-  for (const c of cfgSeries || []) {
-    const Lx = S.layers.find((x) => x.name === c.layer) || L;
-    if (!Lx) continue;
+  // a series names its layer; only the FIRST may fall back to the window's layer (the layer the
+  // recipe was re-pointed at). Any other missing layer is left out and named in out.dropped —
+  // silently drawing it from the window's layer gave a plausible chart of the wrong data.
+  const out = [], dropped = [];
+  for (const [i, c] of (cfgSeries || []).entries()) {
+    const Lx = S.layers.find((x) => x.name === c.layer) || (i === 0 || !c.layer ? L : null);
+    if (!Lx) { dropped.push(`${c.col} on ${c.layer}`); continue; }
     out.push({ layerId: Lx.id, col: c.col, unit: c.unit || '', weight: c.weight || '', filter: c.filter || '', color: c.color || SERIES_COLORS[out.length % SERIES_COLORS.length] });
   }
-  return out.length ? out : null;
+  if (!out.length) return null;
+  out.dropped = dropped;
+  return out;
 }
 
 export function saveAnalysisCfg(L, kind, cfg, win) {

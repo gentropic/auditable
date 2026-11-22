@@ -212,7 +212,7 @@ export function openStats(L, ropts) {
   const st = { cols: [nums[0]], groupBy: '', weight: '', scope: 'all', scan: null, stale: true, running: false };
   const saved = (ropts && ropts.cfg) || (L.analysis && L.analysis.stats);
   if (saved) {
-    if (Array.isArray(saved.cols) && saved.cols.length) { const keep = saved.cols.filter((c) => nums.includes(c)); if (keep.length) st.cols = keep; }
+    if (Array.isArray(saved.cols) && saved.cols.length) { const keep = saved.cols.filter((c) => nums.includes(c)); st.missing = saved.cols.filter((c) => !nums.includes(c)); if (keep.length) st.cols = keep; }
     if (saved.groupBy != null) st.groupBy = saved.groupBy;
     if (saved.weight != null) st.weight = saved.weight;
     if (saved.scope) st.scope = saved.scope;
@@ -221,6 +221,9 @@ export function openStats(L, ropts) {
   const win = floatWin({ title: `stats · ${L.label || L.name}`, sub: saved ? 'restored — Run to compute' : 'configure, then Run', x: Math.max(12, innerWidth - 700), y: 110, w: 680, h: 400,
     onClose: () => { saveAnalysisCfg(L, 'stats', cfgOf(), win); setAnalysisOpen(L, 'stats', false); _statsWins.delete(L.id); } });
   setAnalysisOpen(L, 'stats', true);
+  // a column the setup names that this layer doesn't have is SAID, never swapped for another
+  const missingNote = st.missing && st.missing.length ? 'no numeric column ' + st.missing.map((c) => '“' + c + '”').join(', ') + ' on this layer' : '';
+  if (missingNote) win.sub.textContent = missingNote + (st.cols.length ? ' — showing the rest' : '');
   applyAnalysisGeo(L, 'stats', win);
   const body = document.createElement('div'); body.className = 'sw-body'; win.body.append(body);
   const rail = document.createElement('div'); rail.className = 'sw-rail';
@@ -256,11 +259,11 @@ export function openStats(L, ropts) {
   const scanStats = (onProgress, signal) => statsScan(L, st, scopeMask(st, L), onProgress, signal);
   const run = async () => {
     if (st.running) return;
-    if (st.scope !== 'all' && !scopeMask(st, L)) { win.sub.textContent = scopeMissing(st, L) || `no ${st.scope} mask`; return; }
+    if (st.scope !== 'all' && !scopeMask(st, L)) { win.el._runFailed = win.sub.textContent = scopeMissing(st, L) || `no ${st.scope} mask`; return; }
     st.running = true; win.sub.textContent = 'scanning…';
     const rc = runCancellable(runBtn);
     try { st.scan = await scanStats((n, N, w) => { progEl.textContent = scanProgressText(n, N, w); }, rc.signal); }
-    catch (e) { win.sub.textContent = e.name === 'AbortError' ? (st.scan ? 'cancelled — showing the previous result' : 'cancelled') : `stats: ${e.message}`; st.running = false; rc.done(); progEl.textContent = ''; return; }
+    catch (e) { win.el._runFailed = e.name === 'AbortError' ? 'cancelled' : e.message; win.sub.textContent = e.name === 'AbortError' ? (st.scan ? 'cancelled — showing the previous result' : 'cancelled') : `stats: ${e.message}`; st.running = false; rc.done(); progEl.textContent = ''; return; }
     st.running = false; rc.done(); progEl.textContent = ''; st.stale = false; if (staleEl) staleEl.textContent = '';
     win.el._scanWhere = st.scan.where || 'on this page';
     saveAnalysisCfg(L, 'stats', cfgOf(), win);
@@ -303,5 +306,5 @@ export function openStats(L, ropts) {
   }
   _statsWins.set(L.id, { win, redraw: run, st });
   buildRail(); render();
-  if (ropts && ropts.run) run();
+  if (ropts && ropts.run) { if (missingNote) win.el._runFailed = missingNote; else run(); }   // a recipe run refuses rather than computing other columns
 }

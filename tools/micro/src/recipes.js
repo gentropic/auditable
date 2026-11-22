@@ -290,7 +290,9 @@ export function routineTargets(tool, params, slug, P) {
   return t;
 }
 
-export const routineOutDir = (P) => (P.output && P.output.dir) || `reports/${new Date().toISOString().slice(0, 10)}`;
+// the LOCAL date: an evening run in Brazil (UTC−3) belongs to today, not to UTC's tomorrow
+export const localDate = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+export const routineOutDir = (P) => (P.output && P.output.dir) || `reports/${localDate()}`;
 
 export const routineOutPath = (P, slug) => `${routineOutDir(P)}/${(P.output && P.output.prefix) || ''}${slug}${(P.output && P.output.suffix) || ''}.tsv`;
 
@@ -383,7 +385,9 @@ export async function runRoutine(r, opts = {}) {
   if (!S.project || !S.project.dir) { $('#meta').textContent = 'routine: reports/ needs a project — open or save one first'; return; }
   const P = r.params || {};
   let steps;
-  try { steps = await expandRoutine(P); } catch (e) { $('#meta').textContent = `routine: ${e.message}`; return; }
+  // a resume continues THIS run: the same expansion (a params table edited since must not reshuffle
+  // the steps) and the atlas pages already made (the book is written when the routine finishes)
+  try { steps = opts.steps || await expandRoutine(P); } catch (e) { $('#meta').textContent = `routine: ${e.message}`; return; }
   const byName = new Map(S.recipes.map((x) => [x.name, x]));
   // pre-flight 1: every referenced recipe exists
   const missingR = [...new Set(steps.filter((st) => st.recipe && !byName.get(st.recipe)).map((st) => st.recipe))];
@@ -416,6 +420,17 @@ export async function runRoutine(r, opts = {}) {
     }
   }
   if (badCols.length) { $('#meta').textContent = `routine: column${badCols.length > 1 ? 's' : ''} not found — ${[...new Set(badCols)].join(', ')} (renamed or removed?)`; return; }
+  // pre-flight 4: two steps writing the SAME report (two identical each rows, a repeated `as`) — the
+  // second silently overwrote the first
+  { const seen = new Map(), dup = [];
+    for (const st of steps) {
+      if (st.guard) continue;
+      const rc = st.recipe ? byName.get(st.recipe) : null;
+      for (const rep of routineTargets(rc ? rc.tool : st.tool, rc ? { ...rc.params, ...st } : st, st._slug, P).reports) {
+        if (seen.has(rep)) dup.push(rep); else seen.set(rep, true);
+      }
+    }
+    if (dup.length) { $('#meta').textContent = `routine: two steps would write the same report — ${[...new Set(dup)].join(', ')} (give each its own \`as:\`)`; return; } }
   // output routing
   const outDir = routineOutDir(P);
   const outPath = (slug) => routineOutPath(P, slug);
@@ -444,14 +459,14 @@ export async function runRoutine(r, opts = {}) {
   const tracker = openRoutineTracker(r.name, steps, P);
   for (let k = 0; k < from; k++) tracker.state(k, 'skip');
   let n = 0, wrote = 0;
-  const books = new Map(), bookLines = [];                // book path → { docs, dpi } — written when the routine finishes
+  const books = opts.books || new Map(), bookLines = [];                // book path → { docs, dpi } — written when the routine finishes
   for (const st of steps) {
     const idx = n; n++;
     if (idx < from) continue;                              // already run (or deliberately skipped)
     if (tracker.cancelled()) {
       if (wrote) markProjectDirty();
       tracker.done(`cancelled — ${idx} of ${steps.length} steps done, ${wrote} report${wrote === 1 ? '' : 's'} → ${outDir}/`,
-        idx < steps.length ? [['Resume', () => runRoutine(r, { from: idx }), 'carry on from where you stopped it']] : []);
+        idx < steps.length ? [['Resume', () => runRoutine(r, { from: idx, steps, books }), 'carry on from where you stopped it']] : []);
       $('#meta').textContent = `routine “${r.name}” cancelled after ${idx} step${idx === 1 ? '' : 's'}`;
       return;
     }
@@ -467,7 +482,10 @@ export async function runRoutine(r, opts = {}) {
         const el = await new Promise((res, rej) => {
           const t0 = Date.now();
           const iv = setInterval(() => {
-            const w = [...document.querySelectorAll('.fwin')].find((x) => !before.has(x) && x._tableTSV && x._tableTSV());
+            const fresh = [...document.querySelectorAll('.fwin')].filter((x) => !before.has(x));
+            const bad = fresh.find((x) => x._runFailed);          // the window refused or failed: say why, now
+            if (bad) { clearInterval(iv); rej(new Error(bad._runFailed)); return; }
+            const w = fresh.find((x) => x._tableTSV && x._tableTSV());
             if (w) { clearInterval(iv); res(w); }
             else if (Date.now() - t0 > 600000) { clearInterval(iv); rej(new Error('timed out')); }
           }, 400);
@@ -490,16 +508,20 @@ export async function runRoutine(r, opts = {}) {
         if (pp.book) { const b = books.get(String(pp.book)) || { docs: [], dpi: +pp.dpi || 300 }; b.docs.push(page); books.set(String(pp.book), b); }
         if (pp.out) { await writePages(String(pp.out), [page], { dpi: +pp.dpi || 300 }); wrote++; }
         if (!pp.book && !pp.out) throw new Error('a composer page needs `book:` (one PDF for the run) or `out:` (a .pdf / .png of its own)');
-      } else if (tool === 'calccols' || tool === 'figure') {
-        runRecipe(merged, true);
-        await new Promise((r2) => setTimeout(r2, 400));     // engine steps settle; figure runs its own flow
+      } else if (tool === 'calccols') {                      // synchronous: applied, or the step fails naming the bad ones
+        const pp = merged.params || {}, Lc = S.layers.find((x) => x.name === pp.layer);
+        if (!Lc) throw new Error(`layer “${pp.layer}” isn't loaded`);
+        const { bad } = applyCalcCols(Lc, pp.cols);
+        if (bad.length) throw new Error(`invalid expression for ${bad.join(', ')}`);
+      } else if (tool === 'figure') {                        // awaited: the PNG is written (out:) before the next step
+        await runFigureRecipe(merged.params || {});
       } else throw new Error(`unsupported tool in a routine: ${tool}`);
       tracker.state(idx, 'ok');
     } catch (e) {
       tracker.state(idx, 'fail', e.message);
       tracker.done(`stopped at step ${n} — the step's window is left open`, [
-        ['Retry step', () => runRoutine(r, { from: idx }), 'run this step again, then carry on'],
-        ['Skip & continue', () => runRoutine(r, { from: idx + 1 }), 'leave this step undone and run the rest'],
+        ['Retry step', () => runRoutine(r, { from: idx, steps, books }), 'run this step again, then carry on'],
+        ['Skip & continue', () => runRoutine(r, { from: idx + 1, steps, books }), 'leave this step undone and run the rest'],
       ]);
       $('#meta').textContent = `routine “${r.name}” STOPPED at step ${n} (${st._slug}) — ${e.message}`;
       return;
@@ -594,7 +616,7 @@ export async function renameRecipe(r) {
 export function runRecipe(r, andRun = true) {
   if (andRun && Array.isArray(r.inputs) && r.inputs.length) { openInputsDialog(r); return; }   // ask-me-first: the generated dialog runs the substituted copy
   if (r.tool === 'routine') { if (andRun) runRoutine(r); else openRoutineWindow(r); return; }
-  if (r.tool === 'figure') { runFigureRecipe(r.params); return; }   // camera-based — no layer to resolve
+  if (r.tool === 'figure') { runFigureRecipe(r.params).catch((e) => { $('#meta').textContent = `figure recipe: ${e.message}`; }); return; }   // camera-based — no layer to resolve
   if (r.tool === 'compo') {                                // one page, written to its out / book path
     (async () => {
       try {

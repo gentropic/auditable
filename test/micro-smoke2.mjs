@@ -1417,14 +1417,20 @@ if (take()) {
     window._micro._recipesList().length = 0;
     window._micro._recipesList().push({ name: 'gt std', tool: 'gt', params: { layer: 'm.csv', series: [{ layer: 'm.csv', col: 'FE' }], nCut: 4 } });
     await window._micro.runRoutine({ name: 'resumed', tool: 'routine', params: { output: { prefix: 'z-' }, steps: [
-      { each: [{ g: 'FE' }, { g: 'FE' }], steps: [{ recipe: 'gt std', series: [{ layer: 'm.csv', col: '$g' }] }] },
+      { each: [{ g: 'FE', run: 1 }, { g: 'FE', run: 2 }], steps: [{ recipe: 'gt std', series: [{ layer: 'm.csv', col: '$g' }] }] },
     ] } }, { from: 1 });
     const el = document.querySelector('.fwin[data-routine-run]');
     const icons = [...el.querySelectorAll('.rw-state')].map((x) => x.textContent).join('');
     const meta = document.querySelector('#meta').textContent;
     document.querySelectorAll('.fwin').forEach((w) => w.remove());
-    return { icons, meta };
+    // two IDENTICAL rows would write one report twice: refused before anything runs
+    await window._micro.runRoutine({ name: 'twins', tool: 'routine', params: { output: { prefix: 'tw-' }, steps: [
+      { each: [{ g: 'FE' }, { g: 'FE' }], steps: [{ recipe: 'gt std', series: [{ layer: 'm.csv', col: '$g' }] }] },
+    ] } });
+    const twins = document.querySelector('#meta').textContent, twinRan = !!document.querySelector('.fwin[data-routine-run]');
+    return { icons, meta, twins, twinRan };
   });
+  chk(`two identical each rows writing one report are refused up front ("${r3.twins}")`, /same report/.test(r3.twins) && !r3.twinRan);
   chk(`resume from a step: the tracker marks the skipped ones (${r3.icons}) and the summary is honest ("${r3.meta.split('—')[1] || ''}".trim())`,
     r3.icons === '–✓' && /1 step run \(1 skipped\)/.test(r3.meta));
   await p3.close();
@@ -7086,6 +7092,128 @@ if (take()) {
   chk(`VECTOR v2: the closed mesh is one closed cut line round x 120…180, z 10…30 on y = 100 (${JSON.stringify(r.mesh).slice(0, 300)})`,
     ml.length === 1 && loop.length >= 5 && String(loop[0]) === String(loop[loop.length - 1]) && Math.min(...xs) === 120 && Math.max(...xs) === 180 && Math.min(...zz) === 10 && Math.max(...zz) === 30 && loop.every((q) => q[1] === 100));
   chk(`VECTOR v2: blocks on an axis section keep v1's form (${r.blocksV1}); the PDF holds no image (${r.images})`, r.blocksV1 && r.images === 0);
+  await p.close();
+}
+
+// ── §110: ROUTINE FIXES (routines v2 step 1) — a step a window refuses fails AT ONCE with the
+//     window's reason (it waited out a 10-minute timeout); Retry carries on with the same run, and
+//     the atlas keeps the pages made before the stop; a figure step is awaited and writes its
+//     `out`; an invalid calc column, a stats column the layer lacks and a series on a layer that
+//     isn't loaded are SAID, never swapped for something else; reports file under the LOCAL date;
+//     validation's swath weights sub-blocks by their own volume. ──
+if (take()) {
+  const p = await mkPage('sm2fix');
+  await p.evaluate(async () => { try { await (await navigator.storage.getDirectory()).removeEntry('sm2fix', { recursive: true }); } catch { } });
+  await p.evaluate(async () => {
+    const rows = ['XC,YC,ZC,FE']; for (let k = 0; k < 3; k++) for (let j = 0; j < 6; j++) for (let i = 0; i < 6; i++) rows.push(`${5 + i * 10},${5 + j * 10},${5 + k * 10},${(40 + i + j).toFixed(1)}`);
+    await window._micro.openBlob(new File([rows.join('\n') + '\n'], 'm.csv'), 'm.csv', 'replace');
+  });
+  await p.waitForFunction(() => window._micro.layers()[0] && window._micro.layers()[0].docs.blockDoc, null, { timeout: 20000 });
+  await saveProject(p);
+  const r = await p.evaluate(async () => {
+    const M_ = window._micro, out = {}, wait = (ms) => new Promise((res) => setTimeout(res, ms));
+    const waitMeta = async (re, ms = 60000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { const t = document.querySelector('#meta').textContent; if (re.test(t)) return t; await wait(150); } return document.querySelector('#meta').textContent; };
+    const dir = M_.project().dir;
+    const L = M_.layers()[0], id = L.id;
+    const ed = M_.openComposer('F'); M_.addViewFrame(ed); await wait(300);
+    // A. a refused step fails fast; Retry → the same run carries on, the book keeps page 1
+    const t0 = Date.now();
+    M_.runRoutine({ name: 'fix', tool: 'routine', params: { steps: [
+      { tool: 'compo', figure: 'F', book: 'atlas/b.pdf', dpi: 72 },
+      { tool: 'gt', layer: 'm.csv', series: [{ layer: 'm.csv', col: 'FE' }], scope: 'selection', nCut: 4, as: 'gt_sel' },
+      { tool: 'figure', out: 'figs/f.png' },
+      { tool: 'compo', figure: 'F', book: 'atlas/b.pdf', dpi: 72 },
+    ] } });
+    out.stopMeta = await waitMeta(/STOPPED/, 60000); out.stopMs = Date.now() - t0;
+    out.stopIcons = [...(document.querySelector('.fwin[data-routine-run]') || document.createElement('div')).querySelectorAll('.rw-state')].map((x) => x.textContent).join('');
+    document.querySelectorAll('.fwin:not([data-routine-run])').forEach((w) => { const c = w.querySelector('.fwin-head button:last-child'); if (c && !w.dataset.routineRun && /grade-tonnage/.test(w.textContent)) c.click(); });
+    await window.micro.select(id, [0, 1, 2, 3, 4, 5]);
+    const rb = [...document.querySelectorAll('.fwin[data-routine-run] button')].find((b) => b.textContent === 'Retry step'); if (!rb) return out; rb.click();
+    out.doneMeta = await waitMeta(/routine “fix” — \d+ steps? run/, 90000);
+    out.doneIcons = [...(document.querySelector('.fwin[data-routine-run]') || document.createElement('div')).querySelectorAll('.rw-state')].map((x) => x.textContent).join('');
+    const read = async (path) => { let d = dir; const parts = path.split('/'); for (const s of parts.slice(0, -1)) d = await d.getDirectoryHandle(s); return (await d.getFileHandle(parts[parts.length - 1])).getFile(); };
+    const pdf = new TextDecoder('latin1').decode(await (await read('atlas/b.pdf')).arrayBuffer());
+    out.pages = (pdf.match(/\/Type\s*\/Page(?!s)/g) || []).length;
+    out.png = await read('figs/f.png').then((f) => f.size, () => 0);
+    const { localDate } = await import('/tools/micro/src/recipes.js');
+    out.report = await read(`reports/${localDate()}/gt_sel.tsv`).then((f) => f.size, () => 0);
+    document.querySelectorAll('.fwin').forEach((w) => w.remove());
+    // B. an invalid calc column fails the step, naming it
+    M_.runRoutine({ name: 'badcalc', tool: 'routine', params: { steps: [{ tool: 'calccols', layer: 'm.csv', cols: [{ name: 'BAD', expr: 'FE +* 2' }] }] } });
+    out.calc = await waitMeta(/badcalc/, 15000);
+    document.querySelectorAll('.fwin').forEach((w) => w.remove());
+    // C. stats on a column the layer lacks: refused, not computed on another column
+    const t1 = Date.now();
+    M_.runRoutine({ name: 'badstats', tool: 'routine', params: { steps: [{ tool: 'stats', layer: 'm.csv', cols: ['NOPE'] }] } });
+    out.stats = await waitMeta(/badstats.*(STOPPED|steps? run)/, 30000); out.statsMs = Date.now() - t1;
+    document.querySelectorAll('.fwin').forEach((w) => w.remove());
+    // D. a second series on a layer that isn't loaded: left out, and the window says so
+    M_.openGradeTonnage(L, { cfg: { series: [{ layer: 'm.csv', col: 'FE' }, { layer: 'gone.csv', col: 'FE' }], nCut: 4 }, run: false });
+    await wait(200);
+    const gw = [...document.querySelectorAll('.fwin')].find((w) => /grade-tonnage/.test(w.textContent));
+    out.series = gw ? gw.querySelector('.fwin-sub, .sub, [class*=sub]') && gw.textContent.match(/left out[^\n]*?gone\.csv/) ? 'noted' : gw.textContent.slice(0, 200) : 'no window';
+    document.querySelectorAll('.fwin').forEach((w) => w.remove());
+    // E. validation's swath: a 10 m parent (grade 1) and its eight 5 m neighbours (grade 0) and a second parent (grade 0) in one band → 1000 / 3000 by volume (1/10 by count)
+    const X = [5], Y = [5], Z = [5], D = [10], G = [1];
+    for (const dx of [-2.5, 2.5]) for (const dy of [-2.5, 2.5]) for (const dz of [-2.5, 2.5]) { X.push(15 + dx); Y.push(5 + dy); Z.push(5 + dz); D.push(5); G.push(0); }
+    X.push(25, 5, 25); Y.push(5, 15, 15); Z.push(5, 5, 5); D.push(10, 10, 10); G.push(0, 0, 0);
+    const sid = await M_.addLayer({ kind: 'blocks', name: 'subs', columns: { X: Float64Array.from(X), Y: Float64Array.from(Y), Z: Float64Array.from(Z), S: Float64Array.from(D), G: Float64Array.from(G) }, roles: { x: 'X', y: 'Y', z: 'Z' }, sizes: { dx: 'S', dy: 'S', dz: 'S' } });
+    const SL = M_.layers().find((x) => x.id === sid);
+    const sw = await M_.computeSwath(SL, ['G'], [1, 0, 0], 20, 0, '');
+    out.sub = { subBlocked: !!SL.docs.blockDoc.header.subBlocked, band0: sw.profile.find((b) => b.band === 0) };
+    return out;
+  });
+  chk(`ROUTINE FIX: a refused step fails at once with the window's reason (${r.stopMs} ms, “${r.stopMeta.slice(0, 120)}”, ${r.stopIcons})`,
+    /STOPPED at step 2/.test(r.stopMeta) && /selection/.test(r.stopMeta) && r.stopMs < 20000 && r.stopIcons === '✓✗··');
+  chk(`ROUTINE FIX: Retry carries on with the same run — the book keeps the page made before the stop (${r.pages} pages; “${r.doneMeta.slice(0, 120)}”, ${r.doneIcons})`,
+    r.pages === 2 && r.doneIcons === '–✓✓✓');
+  chk(`ROUTINE FIX: the figure step is awaited and writes its out: (figs/f.png ${r.png} B); the report files under the LOCAL date (${r.report} B)`, r.png > 1000 && r.report > 0);
+  chk(`ROUTINE FIX: an invalid calc column fails the step, naming it (“${r.calc.slice(0, 120)}”)`, /STOPPED/.test(r.calc) && /invalid expression for BAD/.test(r.calc));
+  chk(`ROUTINE FIX: stats on a column the layer lacks is refused, not computed on another (“${r.stats.slice(0, 120)}”, ${r.statsMs} ms)`, /STOPPED/.test(r.stats) && /no numeric column “NOPE”/.test(r.stats) && r.statsMs < 20000);
+  chk(`ROUTINE FIX: a series on a layer that isn't loaded is left out and named (${r.series})`, r.series === 'noted');
+  chk(`ROUTINE FIX: validation's swath weights sub-blocks by their own volume (${JSON.stringify(r.sub)})`, r.sub.subBlocked && r.sub.band0 && Math.abs(r.sub.band0.mean[0] - 1 / 3) < 1e-9);
+  await p.close();
+}
+
+// ── §111: PARITY PINS (routines v2 step 1) — grade-tonnage, stats and swath run through a routine on
+//     a fixed model, their numbers pinned. The tool contract (step 2) moves these computations out of
+//     the windows; it must reproduce these exact numbers. ──
+if (take()) {
+  const p = await mkPage('sm2pin');
+  await p.evaluate(async () => { try { await (await navigator.storage.getDirectory()).removeEntry('sm2pin', { recursive: true }); } catch { } });
+  await p.evaluate(async () => {
+    const rows = ['XC,YC,ZC,FE,SIO2,DENS,DOM'];
+    for (let k = 0; k < 4; k++) for (let j = 0; j < 8; j++) for (let i = 0; i < 10; i++)
+      rows.push([5 + i * 10, 5 + j * 10, 5 + k * 10, (30 + 3 * i + 2 * j - k + ((i * 7 + j * 3) % 5)).toFixed(2), (20 - i + ((j * 5) % 4)).toFixed(2), (2.4 + 0.1 * (k % 3)).toFixed(2), i < 5 ? 'hem' : 'itb'].join(','));
+    await window._micro.openBlob(new File([rows.join('\n') + '\n'], 'pin.csv'), 'pin.csv', 'replace');
+  });
+  await p.waitForFunction(() => window._micro.layers()[0] && window._micro.layers()[0].docs.blockDoc, null, { timeout: 20000 });
+  await saveProject(p);
+  const r = await p.evaluate(async () => {
+    const M_ = window._micro, wait = (ms) => new Promise((res) => setTimeout(res, ms));
+    const waitMeta = async (re, ms = 90000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { const t = document.querySelector('#meta').textContent; if (re.test(t)) return t; await wait(150); } return document.querySelector('#meta').textContent; };
+    M_.runRoutine({ name: 'pin', tool: 'routine', params: { output: { dir: 'pins' }, steps: [
+      { tool: 'gt', layer: 'pin.csv', series: [{ layer: 'pin.csv', col: 'FE', weight: 'DENS' }], nCut: 4, as: 'gt' },   // automatic cutoffs (from the data's range): today's behaviour
+      { tool: 'stats', layer: 'pin.csv', cols: ['FE', 'SIO2'], groupBy: 'DOM', weight: 'DENS', as: 'stats' },
+      { tool: 'swath', layer: 'pin.csv', series: [{ layer: 'pin.csv', col: 'FE' }], mode: 'axes', bandW: [20, 20, 10], off: [0, 0, 0], as: 'swath' },
+    ] } });
+    const meta = await waitMeta(/routine “pin” (— \d+ steps? run|STOPPED|cancelled)/);
+    const dir = M_.project().dir, pins = await dir.getDirectoryHandle('pins').catch(() => null);
+    const read = async (n) => { try { return await (await (await pins.getFileHandle(n)).getFile()).text(); } catch { return null; } };   // pins null → every read null
+    return { meta, gt: await read('gt.tsv'), stats: await read('stats.tsv'), swath: await read('swath.tsv') };
+  });
+  // numbers only, in reading order — the TSV's layout may change (machine tables), its numbers may not
+  const nums = (t) => (t || '').split('\n').slice(1).map((l) => l.split('\t').map((c) => c.trim()).filter((c) => c !== '' && Number.isFinite(+c)).map((c) => +(+c).toPrecision(8))).filter((a) => a.length);
+  if (process.env.SM2_PIN_PRINT) console.log(JSON.stringify({ meta: r.meta, gt: r.gt, stats: r.stats, swath: r.swath }, null, 1));
+  // pinned 2026-11-22 from the window path (gt: tonnes-weighted by DENS, automatic cutoffs; stats:
+  // DENS-weighted, by DOM; swath: X only, 20 m bands) — the tool contract must give these numbers
+  const PIN = {
+    gt: [[15, 792000, 50.994949, 40388000], [30, 784500, 51.214659, 40177900], [45, 555900, 56.045692, 31155800], [60, 169800, 64.601885, 10969400], [75, 2400, 75, 180000]],
+    stats: [[160, 43.494949, 6.6120853, 27, 39, 43.5, 48, 60], [160, 19.5, 1.8027756, 16, 18, 19.5, 21, 23], [160, 58.494949, 6.6120853, 42, 54, 58.5, 63, 75], [160, 14.5, 1.8027756, 11, 13, 14.5, 16, 18]],
+    swath: [[10, 64, 64000, 38.8125], [30, 64, 64000, 45.0625], [50, 64, 64000, 51], [70, 64, 64000, 56.9375], [90, 64, 64000, 63.1875]],
+  };
+  chk(`PARITY: the routine ran all three (“${r.meta.slice(0, 100)}”)`, /3 steps run/.test(r.meta) && r.gt && r.stats && r.swath);
+  if (PIN) for (const k of ['gt', 'stats', 'swath']) chk(`PARITY: ${k} reproduces its pinned numbers`, JSON.stringify(nums(r[k])) === JSON.stringify(PIN[k]));
   await p.close();
 }
 

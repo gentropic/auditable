@@ -275,8 +275,9 @@ async function rerunRecipe(recipe) {
   if (!HK.runRecipe) throw new Error('recipes are not available');
   const before = new Set(document.querySelectorAll('.fwin'));
   HK.runRecipe({ tool: recipe.tool, name: recipe.name || recipe.tool, params: JSON.parse(JSON.stringify(recipe.params || {})) }, true);
-  const el = await _until(() => [...document.querySelectorAll('.fwin')].find((x) => !before.has(x) && x._tableTSV && x._tableTSV()), 600000);
+  const el = await _until(() => [...document.querySelectorAll('.fwin')].find((x) => !before.has(x) && (x._runFailed || (x._tableTSV && x._tableTSV()))), 600000);
   if (!el) throw new Error('the analysis did not finish');
+  if (el._runFailed) { const why = el._runFailed; const close = el.querySelector('.fwin-head button:last-child'); if (close) close.click(); throw new Error(why); }
   const cv = el.querySelector('canvas');
   const spec = cv && cv._chartSpec ? JSON.parse(JSON.stringify(cv._chartSpec)) : null, tsv = el._tableTSV();
   const close = el.querySelector('.fwin-head button:last-child'); if (close) close.click();

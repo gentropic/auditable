@@ -47,7 +47,7 @@ export async function computeGT(L, cols, weightCol, nCut, onProgress, selMask) {
   await ensureStoredValues(L, new Set([...cols, wspec.col].filter(Boolean).map((x) => String(x).toLowerCase())));
   const h = layerTableHeader(L), schema = schemaExt(L, h), nameIdx = (nm) => schema.findIndex((c) => c.name === nm);
   const idx = cols.map(nameIdx);                            // via schemaExt → source AND derived (calc/estimated) columns
-  const wi = wspec.col ? nameIdx(wspec.col) : -1, vol = blockVolumeOf(L);
+  const wi = wspec.col ? nameIdx(wspec.col) : -1, vc = volumeContextOf(L);   // per-record volume (sub-blocked)
   const dScale = wspec.unit ? unitConvert(1, wspec.unit, 't/m3') : 1;
   const dConst = wspec.const != null && Number.isFinite(+wspec.const) ? +wspec.const : null;
   const ser = cols.map(() => ({ g: [], w: [] }));
@@ -55,7 +55,7 @@ export async function computeGT(L, cols, weightCol, nCut, onProgress, selMask) {
   for await (const { f, rec: rAt } of layerRecords(L)) {
     rc++;
     if (!selMask || (rAt < selMask.length && selMask[rAt])) {
-      const wt = (wi >= 0 ? (+f[wi] || 0) : dConst != null ? dConst : 1) * dScale * vol;
+      const wt = (wi >= 0 ? (+f[wi] || 0) : dConst != null ? dConst : 1) * dScale * volumeAt(vc, f);
       for (let s = 0; s < idx.length; s++) { const v = numOf(f[idx[s]]); if (Number.isFinite(v)) { ser[s].g.push(v); ser[s].w.push(wt); if (v < gmin) gmin = v; if (v > gmax) gmax = v; } }
     }
     if ((rc & 0xffff) === 0) { if (onProgress) onProgress(rc); await new Promise((r) => setTimeout(r)); }   // yield per 64k, not per batch
@@ -80,7 +80,7 @@ export async function computeSwath(L, cols, dir, bandWidth, offset, weightCol, o
   await ensureStoredValues(L, new Set([...cols, weightCol].filter(Boolean).map((x) => String(x).toLowerCase())));
   const h = layerTableHeader(L), m = h.mapping, schema = schemaExt(L, h), nameIdx = (nm) => schema.findIndex((c) => c.name === nm);
   const idx = cols.map(nameIdx);                            // source AND derived (calc/estimated) columns
-  const wi = weightCol ? nameIdx(weightCol) : -1, vol = blockVolumeOf(L);
+  const wi = weightCol ? nameIdx(weightCol) : -1, vc = volumeContextOf(L);   // per-record volume: a sub-blocked parent block is not one fine cell
   const bands = new Map(); let rc = 0;                     // layerRecords owns the record number now
   for await (const { f, rec: rAt } of layerRecords(L)) {
     {
@@ -90,7 +90,7 @@ export async function computeSwath(L, cols, dir, bandWidth, offset, weightCol, o
       const x = coordNum(f[m.x]), y = coordNum(f[m.y]), z = coordNum(f[m.z]); if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
       const t = x * dir[0] + y * dir[1] + z * dir[2], bi = Math.floor((t - offset) / bandWidth);
       let e = bands.get(bi); if (!e) { e = { w: new Float64Array(cols.length), wg: new Float64Array(cols.length), tw: 0, n: 0 }; bands.set(bi, e); }
-      const wt = (wi >= 0 ? (+f[wi] || 0) : 1) * vol; e.tw += wt; e.n++;
+      const wt = (wi >= 0 ? (+f[wi] || 0) : 1) * volumeAt(vc, f); e.tw += wt; e.n++;
       for (let s = 0; s < idx.length; s++) { const v = numOf(f[idx[s]]); if (Number.isFinite(v)) { e.w[s] += wt; e.wg[s] += wt * v; } }
     }
     if ((rc & 0xffff) === 0) { if (onProgress) onProgress(rc); await new Promise((r) => setTimeout(r)); }   // yield per 64k, not per batch

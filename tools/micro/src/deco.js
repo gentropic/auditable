@@ -15,6 +15,7 @@ import { fmtStat } from './analysis-ui.js';
 import { floatWin, focusWindow } from './windows.js';
 import { saveRecipe } from './recipes.js';
 import { deliverBlob } from './hostio.js';
+import { resolveFileHandle } from './paths.js';
 import { applyCamera, captureCamera } from './camera.js';
 import { applySection, captureSection } from './section.js';
 const $ = (s) => document.querySelector(s);
@@ -439,8 +440,19 @@ export async function runFigureRecipe(params) {
     if (params.cutModes) applyCutModes(params.cutModes);
     drawDecorations(); requestRender();
     $('#meta').textContent = 'figure recipe: rendering…';
-    await new Promise((res) => { const t0 = performance.now(); const t = setInterval(() => { if (/converged/.test($('#stats').textContent) || performance.now() - t0 > 20000) { clearInterval(t); res(); } }, 150); });
-    exportFigure(params.figScale || 1);
+    // the figure renderer converges by itself (no waiting on the status line); `out` writes the PNG
+    // into the project — the routine step's file — and the download stays for an interactive run
+    const cv = HK.renderFigureCanvas(params.figScale || 1);
+    if (params.out && S.project && S.project.dir) {
+      const blob = await new Promise((res, rej) => cv.toBlob((b) => (b ? res(b) : rej(new Error('the figure could not be encoded'))), 'image/png'));
+      const fh = await resolveFileHandle(S.project.dir, String(params.out), { create: true });
+      const w = await fh.createWritable(); await w.write(blob); await w.close();
+      window._lastFigure = blob;
+      $('#meta').textContent = `figure → ${params.out}`;
+      return { out: String(params.out) };
+    }
+    _figureDownload(cv);
+    return { out: null };
   } finally {
     applyCamera(prev.camera); setBg(prevBgPref);
     Object.assign(_deco, prev.deco); saveDeco();

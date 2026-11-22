@@ -202,11 +202,11 @@ export function openXyPlot(L, ropts) {
   };
   const run = async () => {
     if (st.running) return;
-    if (st.mode === 'scatter' && st.scope !== 'all' && !scopeMask(st, L)) { win.sub.textContent = scopeMissing(st, L) || `no ${st.scope} on this layer`; return; }
+    if (st.mode === 'scatter' && st.scope !== 'all' && !scopeMask(st, L)) { win.el._runFailed = win.sub.textContent = scopeMissing(st, L) || `no ${st.scope} on this layer`; return; }
     st.running = true; win.sub.textContent = 'scanning…';
     const rc = runCancellable(runBtn);
     try { st.scan = await (st.mode === 'scatter' ? scanScatter : scanQq)((d, N, w) => { progEl.textContent = scanProgressText(d, N, w); }, rc.signal); }
-    catch (e) { win.sub.textContent = e.name === 'AbortError' ? (st.scan ? 'cancelled — showing the previous result' : 'cancelled') : `${st.mode}: ${e.message}`; st.running = false; rc.done(); progEl.textContent = ''; return; }
+    catch (e) { win.el._runFailed = e.name === 'AbortError' ? 'cancelled' : e.message; win.sub.textContent = e.name === 'AbortError' ? (st.scan ? 'cancelled — showing the previous result' : 'cancelled') : `${st.mode}: ${e.message}`; st.running = false; rc.done(); progEl.textContent = ''; return; }
     st.running = false; rc.done(); progEl.textContent = ''; st.stale = false; if (staleEl) staleEl.textContent = '';
     saveAnalysisCfg(L, 'xy', cfgOf(), win);
     plot();

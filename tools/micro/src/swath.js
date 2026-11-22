@@ -165,13 +165,14 @@ export function openSwath(L, ropts) {
     if (saved.off) st.off = { ...saved.off };
     if (saved.locate != null) st.locate = saved.locate;
     if (saved.ranges) st.ranges = rangesFromCfg(saved.ranges);
-    const ser = analysisSerRestore(saved.series, L); if (ser) st.series = ser;
+    const ser = analysisSerRestore(saved.series, L); if (ser) { st.series = ser; if (ser.dropped.length) st.droppedNote = `left out (layer not loaded): ${ser.dropped.join(', ')}`; }
   }
   const cfgOf = () => ({ series: analysisSerCfg(st.series), mode: st.mode, axis: st.axis, dd: st.dd, dip: st.dip, rake: st.rake, trend: st.trend, plunge: st.plunge,
     bandW: st.bandW, off: st.off, bars: st.bars, scope: st.scope, gradeUnit: st.gradeUnit, locate: st.locate, ranges: rangesForCfg(st.ranges) });
   const win = floatWin({ title: `swath · ${L.label || L.name}`, sub: saved ? 'restored — Run to compute' : 'configure, then Run', x: Math.max(12, innerWidth - 660), y: 120, w: 640, h: 440,
     onClose: () => { saveAnalysisCfg(L, 'swath', cfgOf(), win); setAnalysisOpen(L, 'swath', false); _swathWins.delete(L.id); if (st.zebra) clearSwathZebra(zebraL()); setSwathBand(null); removeEventListener('pointerup', onUp); } });
   setAnalysisOpen(L, 'swath', true);
+  if (st.droppedNote) win.sub.textContent = st.droppedNote;           // a series left out says so
   applyAnalysisGeo(L, 'swath', win);
   const body = document.createElement('div'); body.className = 'sw-body'; win.body.append(body);
   const rail = document.createElement('div'); rail.className = 'sw-rail';
@@ -207,7 +208,7 @@ export function openSwath(L, ropts) {
   // st.stale and wait for Run.
   const plot = () => {
     buildTabs();
-    if (!st.scan) { win.sub.textContent = st.stale ? (saved ? 'restored — Run to compute' : 'configure, then Run') : ''; st._plotSpec = null; renderChart(); return; }
+    if (!st.scan) { win.sub.textContent = st.stale ? (st.droppedNote ? st.droppedNote + ' · ' : '') + (saved ? 'restored — Run to compute' : 'configure, then Run') : ''; st._plotSpec = null; renderChart(); return; }
     const di = st.axis, bw = effWidth(), off = effOffset();
     const b = binSwath(st.scan, di, bw, off);
     if (!b.keys.length) { win.sub.textContent = 'no data in range'; st._plotSpec = null; renderChart(); return; }
@@ -316,12 +317,12 @@ export function openSwath(L, ropts) {
   const run = async () => {
     if (st.running) return;
     if (st.scope !== 'all' && !st.series.some((s) => { const Lx = layerById(s.layerId); return Lx && scopeMask(st, Lx); })) {
-      win.sub.textContent = scopeMissing(st, zebraL()) || `no layer carries a ${st.scope} mask`; return;
+      win.el._runFailed = win.sub.textContent = scopeMissing(st, zebraL()) || `no layer carries a ${st.scope} mask`; return;
     }
     st.running = true; win.sub.textContent = 'scanning…';
     const rc = runCancellable(runBtn);
     try { st.scan = await scanSwath(st, (n, N, w) => { progEl.textContent = scanProgressText(n, N, w); }, rc.signal); }
-    catch (e) { win.sub.textContent = e.name === 'AbortError' ? (st.scan ? 'cancelled — showing the previous result' : 'cancelled') : `swath: ${e.message}`; st.running = false; rc.done(); progEl.textContent = ''; return; }
+    catch (e) { win.el._runFailed = e.name === 'AbortError' ? 'cancelled' : e.message; win.sub.textContent = e.name === 'AbortError' ? (st.scan ? 'cancelled — showing the previous result' : 'cancelled') : `swath: ${e.message}`; st.running = false; rc.done(); progEl.textContent = ''; return; }
     st.running = false; rc.done(); progEl.textContent = ''; st.stale = false; if (staleEl) staleEl.textContent = '';
     if (st.scan) win.el._scanWhere = st.scan.where;
     if (!st.scan) { win.sub.textContent = 'no series to scan'; plotChart(cv, { series: [] }); return; }
