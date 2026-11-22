@@ -92,7 +92,43 @@ export function groupFrames(doc, ids) {
   const used = new Set(doc.frames.map((f) => f.group).filter(Boolean));
   let g; do g = `g${(++_gseq).toString(36)}`; while (used.has(g));
   for (const id of all) frameById(doc, id).group = g;
+  gatherGroup(doc, g);
   return g;
+}
+// a group's frames sit together in the stacking order, where its frontmost member was — so a
+// list of frames can show the group as one folder
+export function gatherGroup(doc, g) {
+  const members = doc.frames.filter((f) => f.group === g);
+  if (members.length < 2) return;
+  const front = doc.frames.lastIndexOf(members[members.length - 1]);
+  const before = doc.frames.slice(0, front + 1).filter((f) => f.group !== g), after = doc.frames.slice(front + 1);
+  doc.frames = [...before, ...members, ...after];
+}
+// a one-member group is no group
+export function pruneGroups(doc) {
+  const n = new Map();
+  for (const f of doc.frames) if (f.group) n.set(f.group, (n.get(f.group) || 0) + 1);
+  for (const f of doc.frames) if (f.group && n.get(f.group) < 2) delete f.group;
+}
+// move frames in the stacking order: ids (a group's members move as a block) go just in front of
+// (above: true) or behind the frame `target`; a frame dropped outside its group's block leaves the
+// group; a block never splits another group (it lands beside that group's block)
+export function moveInStack(doc, ids, target, above) {
+  const moving = doc.frames.filter((f) => ids.includes(f.id));
+  if (!moving.length || ids.includes(target)) return;
+  const rest = doc.frames.filter((f) => !ids.includes(f.id));
+  let t = rest.findIndex((f) => f.id === target);
+  if (t < 0) return;
+  const tg = rest[t].group, mg = new Set(moving.map((f) => f.group));
+  const intoOwn = tg && mg.size === 1 && mg.has(tg) && moving.length < doc.frames.filter((f) => f.group === tg).length;
+  if (tg && !intoOwn) {                                    // land beside the target's whole block
+    const first = rest.findIndex((f) => f.group === tg), last = rest.length - 1 - [...rest].reverse().findIndex((f) => f.group === tg);
+    t = above ? last : first;
+  }
+  const at = above ? t + 1 : t;
+  if (!intoOwn) for (const f of moving) if (f.group && (!tg || f.group !== tg) && moving.length < doc.frames.filter((x) => x.group === f.group).length) delete f.group;
+  doc.frames = [...rest.slice(0, at), ...moving, ...rest.slice(at)];
+  pruneGroups(doc);
 }
 export function ungroupFrames(doc, ids) { for (const id of expandGroups(doc, ids)) delete frameById(doc, id).group; }
 
@@ -162,8 +198,15 @@ function snapLines(doc, skip) {
     xs.push(f.box[0], f.box[0] + f.box[2] / 2, f.box[0] + f.box[2]);
     ys.push(f.box[1], f.box[1] + f.box[3] / 2, f.box[1] + f.box[3]);
   }
+  const gd = doc.page.guides || {};                        // ruler guides (page.guides: { x: [mm], y: [mm] })
+  xs.push(...(gd.x || [])); ys.push(...(gd.y || []));
   return [xs, ys];
 }
+// the grid (page.grid: { size mm, show, snap }): the grid line nearest each edge joins the candidates
+const gridLines = (doc, values) => {
+  const g = doc.page.grid;
+  return g && g.snap && g.size > 0 ? values.map((v) => Math.round(v / g.size) * g.size) : [];
+};
 const nearest = (cands, edges) => {
   let pick = null;
   for (const [off, e] of edges) for (const c of cands) { const d = c - e; if (!pick || Math.abs(d) < Math.abs(pick.d)) pick = { d, line: c, off }; }
@@ -204,13 +247,14 @@ export function snapBox(doc, box, { ignore = [], tol = 1.5 } = {}) {
   const others = doc.frames.filter((f) => !skip.has(f.id) && !f.hidden).map((f) => f.box);
   const out = box.slice(), guides = { x: null, y: null, gaps: [] };
   for (const k of [0, 1]) {
-    const edge = nearest(k ? ys : xs, [[0, box[k]], [0.5, box[k] + box[k + 2] / 2], [1, box[k] + box[k + 2]]]);
+    const edges = [[0, box[k]], [0.5, box[k] + box[k + 2] / 2], [1, box[k] + box[k + 2]]];
+    const edge = nearest((k ? ys : xs).concat(gridLines(doc, [box[k], box[k] + box[k + 2]])), edges);
     const sp = spacingSnap(others, box, k);
     const e = edge && Math.abs(edge.d) <= tol ? edge : null, s = sp && Math.abs(sp.d) <= tol ? sp : null;
     if (s && (!e || Math.abs(s.d) < Math.abs(e.d) - 1e-9)) {
       out[k] += s.d;
       guides.gaps.push(...s.segs);                        // (the new gaps are measured at the snapped place)
-    } else if (e) { out[k] += e.d; guides[k ? 'y' : 'x'] = e.line; }
+    } else if (e) { out[k] = e.line - e.off * box[k + 2]; guides[k ? 'y' : 'x'] = e.line; }   // exactly on the line (no float drift)
   }
   return { box: out, guides };
 }
@@ -221,9 +265,9 @@ export function snapResize(doc, box, [hx, hy], { ignore = [], tol = 1.5, onlyX =
   const one = (k, hk, cands) => {
     if (hk === 0.5) return;
     const edge = hk === 0 ? out[k] : out[k] + out[k + 2];
-    const p = nearest(cands, [[hk, edge]]);
+    const p = nearest(cands.concat(gridLines(doc, [edge])), [[hk, edge]]);
     if (!p || Math.abs(p.d) > tol) return;
-    if (hk === 0) { out[k] += p.d; out[k + 2] -= p.d; } else out[k + 2] += p.d;
+    if (hk === 0) { out[k + 2] += out[k] - p.line; out[k] = p.line; } else out[k + 2] = p.line - out[k];
     guides[k ? 'y' : 'x'] = p.line;
   };
   one(0, hx, xs);

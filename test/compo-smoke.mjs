@@ -202,6 +202,69 @@ await page.keyboard.press('Control+BracketLeft');
 chk('⌘[ sends one step back', await page.evaluate(() => ed.getDoc().frames.map((f) => f.id).indexOf('K')) === z0 - 1);
 await page.evaluate(() => { C.removeFrames(ed.getDoc(), ['A', 'K']); ed.select([]); });
 
+
+// ── rulers, guides, grid, the item list ──
+chk('rulers show by default', await page.evaluate(() => [...document.querySelectorAll('.compo-ruler')].every((c) => c.style.display !== 'none' && c.width > 0)));
+{
+  const rt = await page.locator('.compo-ruler.top').boundingBox();
+  const [, gy] = await pagePt(0, 60);
+  await page.mouse.move(rt.x + 100, rt.y + 8); await page.mouse.down();
+  await page.mouse.move(rt.x + 100, gy, { steps: 5 }); await page.mouse.up();
+  chk('dragging out of the top ruler makes a horizontal guide (60 mm)', await page.evaluate(() => JSON.stringify((ed.getDoc().page.guides || {}).y)) === '[60]' && (await page.locator('.compo-gl.y').count()) === 1);
+  // a frame snaps to the guide
+  await page.evaluate(() => { C.addFrame(ed.getDoc(), { id: 'G', kind: 'text', box: [101.3, 70, 20, 8], content: { md: 'G' } }); ed.select([]); ed.render(); });
+  let gb = await page.locator('.compo-fr[data-id="G"]').boundingBox();
+  await page.mouse.move(gb.x + 4, gb.y + 4); await page.mouse.down();
+  await page.mouse.move(gb.x + 4, gb.y + 4 - 9.2 * zoom, { steps: 4 }); await page.mouse.up();   // top 70 → 60.8
+  chk('a frame snaps to the guide', await page.evaluate(() => C.frameById(ed.getDoc(), 'G').box[1]) === 60);
+  // the guide back onto the ruler removes it
+  const gl = await page.locator('.compo-gl.y').boundingBox();
+  await page.mouse.move(gl.x + 300, gl.y + 3); await page.mouse.down();
+  await page.mouse.move(gl.x + 300, rt.y + 4, { steps: 5 }); await page.mouse.up();
+  chk('dragging the guide back to the ruler removes it', await page.evaluate(() => !ed.getDoc().page.guides));
+  // the grid: shown, and frames snap to it
+  await page.locator('.compo-bar select[title^="grid"]').selectOption('5');
+  chk('grid 5 mm: on the page, drawn', await page.evaluate(() => { const g = ed.getDoc().page.grid; return g && g.size === 5 && g.snap && /gradient/.test(document.querySelector('.compo-overlay').style.backgroundImage); }));
+  gb = await page.locator('.compo-fr[data-id="G"]').boundingBox();
+  await page.mouse.move(gb.x + 4, gb.y + 4); await page.mouse.down();
+  await page.mouse.move(gb.x + 4 + 3.6 * zoom, gb.y + 4, { steps: 4 }); await page.mouse.up();   // 101.3 → 104.9
+  chk(`a frame snaps to the grid (x ${await page.evaluate(() => C.frameById(ed.getDoc(), 'G').box[0])})`, await page.evaluate(() => C.frameById(ed.getDoc(), 'G').box[0]) === 105);
+  await page.locator('.compo-bar select[title^="grid"]').selectOption('0');
+  chk('grid off', await page.evaluate(() => !ed.getDoc().page.grid));
+}
+// the item list
+{
+  const rows = await page.evaluate(() => [...document.querySelectorAll('.compo-it')].map((r) => r.dataset.item));
+  const order = await page.evaluate(() => ed.getDoc().frames.map((f) => f.id).reverse());
+  chk(`the item list is every frame, front first (${rows.length})`, JSON.stringify(rows) === JSON.stringify(order));
+  await page.locator('.compo-it[data-item="G"] .nm').click();
+  chk('a row click selects its frame', await page.evaluate(() => JSON.stringify(ed.selected().map((f) => f.id))) === '["G"]');
+  await page.locator('.compo-it[data-item="G"] button').first().click();
+  chk('the eye hides a frame: not drawn, not picked', await page.evaluate(() => C.frameById(ed.getDoc(), 'G').hidden === true && !document.querySelector('.compo-fr[data-id="G"]')));
+  await page.locator('.compo-it[data-item="G"] button').first().click();
+  chk('… and shows it again', await page.evaluate(() => !C.frameById(ed.getDoc(), 'G').hidden && !!document.querySelector('.compo-fr[data-id="G"]')));
+  await page.locator('.compo-it[data-item="G"] button').nth(1).click();
+  chk('the lock button locks it', await page.evaluate(() => C.frameById(ed.getDoc(), 'G').locked === true));
+  await page.locator('.compo-it[data-item="G"] button').nth(1).click();
+  await page.locator('.compo-it[data-item="G"] .nm').dblclick();
+  await page.locator('.compo-it[data-item="G"] .nm input').fill('callout');
+  await page.locator('.compo-it[data-item="G"] .nm input').press('Enter');
+  chk('double-click renames (the list shows the name)', await page.evaluate(() => C.frameById(ed.getDoc(), 'G').name === 'callout' && document.querySelector('.compo-it[data-item="G"] .nm').textContent === 'callout'));
+  // drag G (front) below the last row → to the back
+  const last = await page.evaluate(() => ed.getDoc().frames[0].id);
+  const src = page.locator('.compo-it[data-item="G"]'), dst = page.locator(`.compo-it[data-item="${last}"]`);
+  const db = await dst.boundingBox();
+  await src.dragTo(dst, { targetPosition: { x: 10, y: db.height - 2 } });
+  chk('dragging a row restacks (G to the back)', await page.evaluate(() => ed.getDoc().frames[0].id) === 'G');
+  // a group shows as a folder; its header selects the group
+  await page.evaluate(() => { const d = ed.getDoc(); C.addFrame(d, { id: 'H1', kind: 'text', box: [150, 80, 10, 6], content: { md: 'h1' } }); C.addFrame(d, { id: 'H2', kind: 'text', box: [165, 80, 10, 6], content: { md: 'h2' } }); C.groupFrames(d, ['H1', 'H2']); ed.select([]); ed.render(); });
+  const g = await page.evaluate(() => C.frameById(ed.getDoc(), 'H1').group);
+  chk('a group is a folder row over its members', await page.evaluate((g) => { const r = [...document.querySelectorAll('.compo-it')]; const i = r.findIndex((x) => x.dataset.item === 'g:' + g); return i >= 0 && r[i + 1].classList.contains('mem') && r[i + 2].classList.contains('mem'); }, g));
+  await page.locator(`.compo-it[data-item="g:${g}"] .nm`).click();
+  chk('the folder row selects the whole group', await page.evaluate(() => JSON.stringify(ed.selected().map((f) => f.id).sort())) === '["H1","H2"]');
+  await page.evaluate(() => { C.removeFrames(ed.getDoc(), ['G', 'H1', 'H2']); ed.select([]); });
+}
+
 // ── export: PDF (read back by pdf.js) and PNG ──
 const out = await page.evaluate(async () => {
   const src = await (await fetch('/ext/pdfjs/index.js')).text();

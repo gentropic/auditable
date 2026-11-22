@@ -204,3 +204,37 @@ test('table: book rules, numbers right-aligned, type shrinks to fit, overflow co
   const sizes = [...s2.matchAll(/\/F\d+ ([\d.]+) Tf/g)].map((m) => +m[1]);
   assert.ok(Math.min(...sizes) < 7.5 * 25.4 / 72 * 0.9, String(sizes));
 });
+
+test('grid + guides snap; grouping gathers a group in the stack; restacking keeps groups whole', async () => {
+  const { moveInStack, gatherGroup } = await import('../ext/compo/src/main.js');
+  const d = createDocument({ page: { size: 'A4', orientation: 'portrait', margins: [0, 0, 0, 0], grid: { size: 5, show: true, snap: true } } });
+  let s = snapBox(d, [31.2, 48.9, 20, 20]);                // grid 5 → 30 / 50 (within the 1.5 mm snap)
+  assert.deepEqual([s.box[0], s.box[1]], [30, 50]);
+  d.page.grid = undefined; d.page.guides = { x: [73.5], y: [] };
+  s = snapBox(d, [72.4, 100, 20, 20]);
+  assert.equal(s.box[0], 73.5); assert.equal(s.guides.x, 73.5);
+  s = snapResize(d, [20, 20, 52.8, 40], [1, 0.5]);         // right edge 72.8 → the guide at 73.5
+  assert.equal(s.box[2], 53.5);
+  // grouping gathers the members where the frontmost was
+  const d2 = createDocument();
+  for (const k of ['a', 'b', 'c', 'd', 'e']) addFrame(d2, { id: k, kind: 'text', box: [0, 0, 5, 5] });
+  groupFrames(d2, ['a', 'd']);
+  assert.deepEqual(d2.frames.map((f) => f.id), ['b', 'c', 'a', 'd', 'e']);
+  // a loose frame dropped onto a group member lands beside the whole block, not inside it
+  moveInStack(d2, ['e'], 'a', false);
+  assert.deepEqual(d2.frames.map((f) => f.id), ['b', 'c', 'e', 'a', 'd']);
+  assert.equal(C_frame(d2, 'e').group, undefined);
+  // a member reordered inside its own block stays in the group
+  moveInStack(d2, ['a'], 'd', true);
+  assert.deepEqual(d2.frames.map((f) => f.id), ['b', 'c', 'e', 'd', 'a']); assert.ok(C_frame(d2, 'a').group);
+  // a member dragged out of its block leaves the group — and a one-member group dissolves
+  moveInStack(d2, ['a'], 'b', false);
+  assert.deepEqual(d2.frames.map((f) => f.id), ['a', 'b', 'c', 'e', 'd']);
+  assert.equal(C_frame(d2, 'a').group, undefined); assert.equal(C_frame(d2, 'd').group, undefined);
+  // a whole group moves as a block
+  groupFrames(d2, ['b', 'c']);
+  moveInStack(d2, ['b', 'c'], 'd', true);
+  assert.deepEqual(d2.frames.map((f) => f.id), ['a', 'e', 'd', 'b', 'c']);
+  gatherGroup(d2, 'nonesuch');
+});
+const C_frame = (d, id) => d.frames.find((f) => f.id === id);

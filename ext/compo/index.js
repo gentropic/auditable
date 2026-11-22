@@ -97,7 +97,43 @@ function groupFrames(doc, ids) {
   const used = new Set(doc.frames.map((f) => f.group).filter(Boolean));
   let g; do g = `g${(++_gseq).toString(36)}`; while (used.has(g));
   for (const id of all) frameById(doc, id).group = g;
+  gatherGroup(doc, g);
   return g;
+}
+// a group's frames sit together in the stacking order, where its frontmost member was — so a
+// list of frames can show the group as one folder
+function gatherGroup(doc, g) {
+  const members = doc.frames.filter((f) => f.group === g);
+  if (members.length < 2) return;
+  const front = doc.frames.lastIndexOf(members[members.length - 1]);
+  const before = doc.frames.slice(0, front + 1).filter((f) => f.group !== g), after = doc.frames.slice(front + 1);
+  doc.frames = [...before, ...members, ...after];
+}
+// a one-member group is no group
+function pruneGroups(doc) {
+  const n = new Map();
+  for (const f of doc.frames) if (f.group) n.set(f.group, (n.get(f.group) || 0) + 1);
+  for (const f of doc.frames) if (f.group && n.get(f.group) < 2) delete f.group;
+}
+// move frames in the stacking order: ids (a group's members move as a block) go just in front of
+// (above: true) or behind the frame `target`; a frame dropped outside its group's block leaves the
+// group; a block never splits another group (it lands beside that group's block)
+function moveInStack(doc, ids, target, above) {
+  const moving = doc.frames.filter((f) => ids.includes(f.id));
+  if (!moving.length || ids.includes(target)) return;
+  const rest = doc.frames.filter((f) => !ids.includes(f.id));
+  let t = rest.findIndex((f) => f.id === target);
+  if (t < 0) return;
+  const tg = rest[t].group, mg = new Set(moving.map((f) => f.group));
+  const intoOwn = tg && mg.size === 1 && mg.has(tg) && moving.length < doc.frames.filter((f) => f.group === tg).length;
+  if (tg && !intoOwn) {                                    // land beside the target's whole block
+    const first = rest.findIndex((f) => f.group === tg), last = rest.length - 1 - [...rest].reverse().findIndex((f) => f.group === tg);
+    t = above ? last : first;
+  }
+  const at = above ? t + 1 : t;
+  if (!intoOwn) for (const f of moving) if (f.group && (!tg || f.group !== tg) && moving.length < doc.frames.filter((x) => x.group === f.group).length) delete f.group;
+  doc.frames = [...rest.slice(0, at), ...moving, ...rest.slice(at)];
+  pruneGroups(doc);
 }
 function ungroupFrames(doc, ids) { for (const id of expandGroups(doc, ids)) delete frameById(doc, id).group; }
 
@@ -167,8 +203,15 @@ function snapLines(doc, skip) {
     xs.push(f.box[0], f.box[0] + f.box[2] / 2, f.box[0] + f.box[2]);
     ys.push(f.box[1], f.box[1] + f.box[3] / 2, f.box[1] + f.box[3]);
   }
+  const gd = doc.page.guides || {};                        // ruler guides (page.guides: { x: [mm], y: [mm] })
+  xs.push(...(gd.x || [])); ys.push(...(gd.y || []));
   return [xs, ys];
 }
+// the grid (page.grid: { size mm, show, snap }): the grid line nearest each edge joins the candidates
+const gridLines = (doc, values) => {
+  const g = doc.page.grid;
+  return g && g.snap && g.size > 0 ? values.map((v) => Math.round(v / g.size) * g.size) : [];
+};
 const nearest = (cands, edges) => {
   let pick = null;
   for (const [off, e] of edges) for (const c of cands) { const d = c - e; if (!pick || Math.abs(d) < Math.abs(pick.d)) pick = { d, line: c, off }; }
@@ -209,13 +252,14 @@ function snapBox(doc, box, { ignore = [], tol = 1.5 } = {}) {
   const others = doc.frames.filter((f) => !skip.has(f.id) && !f.hidden).map((f) => f.box);
   const out = box.slice(), guides = { x: null, y: null, gaps: [] };
   for (const k of [0, 1]) {
-    const edge = nearest(k ? ys : xs, [[0, box[k]], [0.5, box[k] + box[k + 2] / 2], [1, box[k] + box[k + 2]]]);
+    const edges = [[0, box[k]], [0.5, box[k] + box[k + 2] / 2], [1, box[k] + box[k + 2]]];
+    const edge = nearest((k ? ys : xs).concat(gridLines(doc, [box[k], box[k] + box[k + 2]])), edges);
     const sp = spacingSnap(others, box, k);
     const e = edge && Math.abs(edge.d) <= tol ? edge : null, s = sp && Math.abs(sp.d) <= tol ? sp : null;
     if (s && (!e || Math.abs(s.d) < Math.abs(e.d) - 1e-9)) {
       out[k] += s.d;
       guides.gaps.push(...s.segs);                        // (the new gaps are measured at the snapped place)
-    } else if (e) { out[k] += e.d; guides[k ? 'y' : 'x'] = e.line; }
+    } else if (e) { out[k] = e.line - e.off * box[k + 2]; guides[k ? 'y' : 'x'] = e.line; }   // exactly on the line (no float drift)
   }
   return { box: out, guides };
 }
@@ -226,9 +270,9 @@ function snapResize(doc, box, [hx, hy], { ignore = [], tol = 1.5, onlyX = false 
   const one = (k, hk, cands) => {
     if (hk === 0.5) return;
     const edge = hk === 0 ? out[k] : out[k] + out[k + 2];
-    const p = nearest(cands, [[hk, edge]]);
+    const p = nearest(cands.concat(gridLines(doc, [edge])), [[hk, edge]]);
     if (!p || Math.abs(p.d) > tol) return;
-    if (hk === 0) { out[k] += p.d; out[k + 2] -= p.d; } else out[k + 2] += p.d;
+    if (hk === 0) { out[k + 2] += out[k] - p.line; out[k] = p.line; } else out[k + 2] = p.line - out[k];
     guides[k ? 'y' : 'x'] = p.line;
   };
   one(0, hx, xs);
@@ -1369,7 +1413,9 @@ async function exportPNG(doc, opts = {}) {
 // resize · arrows nudge · Delete · ⌘D duplicate · ⌘Z / ⌘⇧Z undo),
 // box select (drag on empty page), groups (⌘G / ⌘⇧G: select and move as one), equal-spacing
 // guides, snapping while resizing, match size, one-step z-order (⌘] / ⌘[), locks (a locked frame
-// won't move, resize or delete), a context menu (host items +
+// won't move, resize or delete), rulers (drag a guide out of one; drag it back to remove it), a
+// grid that snaps, an item list (front first: show / hide, lock, rename, drag to restack, groups as
+// folders), a context menu (host items +
 // built-ins) and an inspector for the selected frame (box in mm, border, the kind's own fields).
 //
 // mountEditor(el, doc, { env, onChange(doc), toolbar: [{ label, title, run(editor) }],
@@ -1408,6 +1454,28 @@ const CSS = `
 .compo-gap { position: absolute; background: #e6339a; pointer-events: none; }
 .compo-gap-l { position: absolute; font: 10px/1 system-ui, sans-serif; color: #fff; background: #e6339a; padding: 1px 3px; border-radius: 2px; transform: translate(-50%, -50%); pointer-events: none; white-space: nowrap; }
 .compo-bar .status { color: var(--compo-dim, var(--dim, #9a9a9a)); font-size: 11px; margin-left: 4px; }
+.compo-scroll { padding-left: 22px; }
+.compo-pagewrap { margin: 30px auto 24px; }
+.compo-ruler { position: absolute; cursor: crosshair; }
+.compo-ruler.top { left: 0; top: -19px; } .compo-ruler.left { top: 0; left: -19px; }
+.compo-gl { position: absolute; z-index: 3; }
+.compo-gl.x { top: 0; height: 100%; width: 7px; margin-left: -3px; cursor: ew-resize; }
+.compo-gl.y { left: 0; width: 100%; height: 7px; margin-top: -3px; cursor: ns-resize; }
+.compo-gl::after { content: ''; position: absolute; background: #12a4c4; }
+.compo-gl.x::after { left: 3px; top: 0; bottom: 0; width: 1px; } .compo-gl.y::after { top: 3px; left: 0; right: 0; height: 1px; }
+.compo-items { display: flex; flex-direction: column; gap: 1px; max-height: 42%; overflow: auto; flex-shrink: 0; padding-bottom: 6px; border-bottom: 1px solid var(--compo-border, var(--border, #3a3d42)); }
+.compo-items .ttl { display: flex; justify-content: space-between; color: var(--compo-dim, var(--dim, #9a9a9a)); font-size: 11px; padding: 0 2px 3px; }
+.compo-it { display: flex; align-items: center; gap: 3px; padding: 2px 3px; border-radius: 3px; user-select: none; }
+.compo-it:hover { background: rgba(127,127,127,0.12); }
+.compo-it.sel { background: rgba(60,130,230,0.3); }
+.compo-it.mem { padding-left: 16px; }
+.compo-it.grp .nm { font-weight: bold; }
+.compo-it.hid .nm { opacity: 0.45; text-decoration: line-through; }
+.compo-side .compo-it button { background: none; border: 0; padding: 0 2px; width: 18px; color: inherit; cursor: pointer; font: inherit; opacity: 0.85; }
+.compo-it .nm { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.compo-it .nm input { width: 100%; box-sizing: border-box; }
+.compo-it.drop-above { box-shadow: inset 0 2px 0 #3c82e6; } .compo-it.drop-below { box-shadow: inset 0 -2px 0 #3c82e6; }
+.compo-insp { display: flex; flex-direction: column; gap: 6px; }
 .compo-menu { position: fixed; z-index: 99999; background: var(--compo-btn, var(--bg-panel, #24272b)); border: 1px solid var(--compo-border, var(--border, #3a3d42)); border-radius: 4px; padding: 3px 0; min-width: 150px; box-shadow: 0 4px 14px rgba(0,0,0,0.4); }
 .compo-menu div { padding: 4px 12px; cursor: pointer; }
 .compo-menu div:hover { background: var(--compo-accent, var(--accent, #fb9044)); color: #111; }
@@ -1428,7 +1496,11 @@ function mountEditor(el, doc, opts = {}) {
   const cv = h('canvas');
   const overlay = h('div', { className: 'compo-overlay' });
   const side = h('div', { className: 'compo-side' });
-  wrap.append(cv, overlay); scroll.append(wrap);
+  const rulerTop = h('canvas', { className: 'compo-ruler top', title: 'drag down for a guide' }), rulerLeft = h('canvas', { className: 'compo-ruler left', title: 'drag right for a guide' });
+  const items = h('div', { className: 'compo-items' }), insp = h('div', { className: 'compo-insp' });
+  side.append(items, insp);
+  let showRulers = true; try { showRulers = localStorage.getItem('compo.rulers') !== 'off'; } catch { /* private */ }
+  wrap.append(cv, overlay, rulerTop, rulerLeft); scroll.append(wrap);
   root.append(bar, h('div', { className: 'compo-main' }, scroll, side));
   el.replaceChildren(root);
 
@@ -1467,6 +1539,10 @@ function mountEditor(el, doc, opts = {}) {
   const zoomSel = h('select', { title: 'zoom' });
   for (const [v, t] of [['fit', 'fit'], ['2', '50%'], ['3', '75%'], ['3.78', '100%'], ['5.67', '150%'], ['7.56', '200%']]) zoomSel.append(h('option', { value: v, textContent: t }));
   zoomSel.onchange = () => { if (zoomSel.value === 'fit') zoomFit(); else { zoom = +zoomSel.value; render(); } };
+  const gridSel = h('select', { title: 'grid — shown and snapped to' });
+  for (const [v, t] of [['0', 'no grid'], ['1', 'grid 1 mm'], ['2', 'grid 2 mm'], ['5', 'grid 5 mm'], ['10', 'grid 10 mm']]) gridSel.append(h('option', { value: v, textContent: t }));
+  gridSel.onchange = () => commit(() => { const v = +gridSel.value; const p = { ...D.page }; if (v) p.grid = { size: v, show: true, snap: true }; else delete p.grid; D.page = p; });
+  const rulersBtn = btn('rulers', 'show / hide the rulers (drag a guide out of a ruler; drag it back to remove it)', () => { showRulers = !showRulers; try { localStorage.setItem('compo.rulers', showRulers ? 'on' : 'off'); } catch { /* private */ } render(); });
   const alignBtns = [['⇤', 'left'], ['⇹', 'hcenter'], ['⇥', 'right'], ['⤒', 'top'], ['⇳', 'vcenter'], ['⤓', 'bottom']].map(([l, how]) => btn(l, `align ${how}`, () => commit(() => alignFrames(D, sel, how))));
   const distBtns = [['↔', 'h'], ['↕', 'v']].map(([l, ax]) => btn(l, ax === 'h' ? 'distribute horizontally' : 'distribute vertically', () => commit(() => distributeFrames(D, sel, ax))));
   const sizeBtns = [['W=', 'w', 'same width as the first selected'], ['H=', 'h', 'same height as the first selected'], ['▣=', 'both', 'same size as the first selected']].map(([l, what, t]) => btn(l, t, () => commit(() => matchSize(D, sel, what))));
@@ -1480,7 +1556,7 @@ function mountEditor(el, doc, opts = {}) {
   const status = h('span', { className: 'status' });
   let _stT = 0;
   const say = (msg) => { status.textContent = msg; clearTimeout(_stT); _stT = setTimeout(() => { status.textContent = ''; }, 4000); if (opts.onStatus) opts.onStatus(msg); };
-  bar.append(sizeSel, oriSel, customSpan, h('span', { className: 'sep' }), zoomSel, h('span', { className: 'sep' }),
+  bar.append(sizeSel, oriSel, customSpan, h('span', { className: 'sep' }), zoomSel, gridSel, rulersBtn, h('span', { className: 'sep' }),
     btn('+ text', 'add a text frame (fields: {fig} {page} {date} ${…})', () => add({ kind: 'text', content: { md: '**Figure {fig}.** caption', size: 9 } })),
     h('span', { className: 'sep' }), ...alignBtns, ...distBtns, ...sizeBtns, h('span', { className: 'sep' }), groupBtn, ungroupBtn, h('span', { className: 'sep' }), frontBtn, fwdBtn, bwdBtn, backBtn, delBtn);
   if (opts.toolbar && opts.toolbar.length) {
@@ -1502,12 +1578,19 @@ function mountEditor(el, doc, opts = {}) {
     g.setTransform(dpr * zoom, 0, 0, dpr * zoom, 0, 0);
     renderPage(D, g, env());
     drawOverlay();
+    drawRulers();
   }
   function drawOverlay(guides) {
     overlay.replaceChildren();
     const m = D.page.margins || [0, 0, 0, 0], [W, H] = pageDims(D.page);
+    const gr = D.page.grid;
+    if (gr && gr.show && gr.size > 0) {
+      overlay.style.backgroundImage = 'linear-gradient(to right, rgba(60,130,230,0.16) 1px, transparent 1px), linear-gradient(to bottom, rgba(60,130,230,0.16) 1px, transparent 1px)';
+      overlay.style.backgroundSize = `${gr.size * zoom}px ${gr.size * zoom}px`;
+    } else overlay.style.backgroundImage = 'none';
     overlay.append(h('div', { className: 'compo-margin', style: `left:${m[3] * zoom}px;top:${m[0] * zoom}px;width:${(W - m[1] - m[3]) * zoom}px;height:${(H - m[0] - m[2]) * zoom}px` }));
     for (const f of D.frames) {
+      if (f.hidden) continue;                              // hidden: not drawn, not picked (the list still has it)
       const b = f.box;
       const d = h('div', { className: 'compo-fr' + (sel.includes(f.id) ? ' sel' : '') + (f.locked ? ' locked' : ''), title: `${(kindOf(f.kind) && kindOf(f.kind).label) || f.kind}` });
       d.style.cssText = `left:${b[0] * zoom}px;top:${b[1] * zoom}px;width:${b[2] * zoom}px;height:${b[3] * zoom}px`;
@@ -1523,6 +1606,12 @@ function mountEditor(el, doc, opts = {}) {
         }
       }
     }
+    const gd = D.page.guides || {};
+    for (const ax of ['x', 'y']) (gd[ax] || []).forEach((v, i) => {
+      const gl = h('div', { className: `compo-gl ${ax}`, title: 'drag to move · drag off the page to remove' });
+      gl.style[ax === 'x' ? 'left' : 'top'] = `${v * zoom}px`; gl.dataset.guide = `${ax}:${i}`;
+      overlay.append(gl);
+    });
     // a selected group: its bounds, dashed
     const seenG = new Set();
     for (const id of sel) {
@@ -1546,6 +1635,8 @@ function mountEditor(el, doc, opts = {}) {
   }
   function syncBar() {
     sizeSel.value = PAPER[D.page.size] ? D.page.size : 'custom';
+    gridSel.value = D.page.grid && D.page.grid.size ? String(D.page.grid.size) : '0';
+    rulersBtn.style.opacity = showRulers ? '1' : '0.55';
     oriSel.value = D.page.orientation || 'portrait'; oriSel.disabled = sizeSel.value === 'custom';
     customSpan.style.display = sizeSel.value === 'custom' ? 'inline-flex' : 'none';
     const [W, H] = pageDims(D.page); wIn.value = +W.toFixed(1); hIn.value = +H.toFixed(1);
@@ -1570,39 +1661,40 @@ function mountEditor(el, doc, opts = {}) {
         const a = document.activeElement;
         if (a && side.contains(a)) a.blur();
         buildSide();
+        if (_keepItems) refreshItemSel(); else buildItems();
       } while (_sideAgain);
     } finally { _inSide = false; }
   }
   function buildSide() {
-    side.replaceChildren();
+    insp.replaceChildren();
     if (sel.length !== 1) {
       if (sel.length) {
         const nu = unitsOf(D, sel).length, locked = sel.filter((id) => frameById(D, id).locked).length;
-        side.append(h('div', { className: 'hint', textContent: `${sel.length} frames${nu < sel.length ? ` in ${nu} unit${nu === 1 ? '' : 's'} (groups move as one)` : ''} — align / distribute / match size from the toolbar; the FIRST selected is the size key` }));
+        insp.append(h('div', { className: 'hint', textContent: `${sel.length} frames${nu < sel.length ? ` in ${nu} unit${nu === 1 ? '' : 's'} (groups move as one)` : ''} — align / distribute / match size from the toolbar; the FIRST selected is the size key` }));
         const lk = h('input', { type: 'checkbox', checked: locked === sel.length });
         lk.indeterminate = locked > 0 && locked < sel.length;
         lk.onchange = () => commit(() => { for (const id of sel) frameById(D, id).locked = lk.checked; });
-        side.append(h('label', { className: 'row' }, h('span', { textContent: 'locked' }), lk));
-      } else side.append(h('div', { className: 'hint', textContent: 'click a frame to edit it · drag to move (snaps to edges, centres and equal gaps; ⌥ off) · drag on the empty page to box-select · handles resize · arrows nudge (⇧ ×10) · ⌘G group · ⌘Z undo' }));
+        insp.append(h('label', { className: 'row' }, h('span', { textContent: 'locked' }), lk));
+      } else insp.append(h('div', { className: 'hint', textContent: 'click a frame to edit it · drag to move (snaps to edges, centres and equal gaps; ⌥ off) · drag on the empty page to box-select · handles resize · arrows nudge (⇧ ×10) · ⌘G group · ⌘Z undo' }));
       return;
     }
     const f = frameById(D, sel[0]); if (!f) return;
     const kind = kindOf(f.kind);
-    side.append(h('div', { textContent: `${(kind && kind.label) || f.kind}`, style: 'font-weight:bold' }));
+    insp.append(h('div', { textContent: `${(kind && kind.label) || f.kind}`, style: 'font-weight:bold' }));
     const num = (label, i) => {
       const inp = h('input', { type: 'number', step: 0.5, value: +f.box[i].toFixed(1) });
       inp.onchange = () => commit(() => { const v = +inp.value; if (Number.isFinite(v)) f.box[i] = i >= 2 ? Math.max(2, v) : v; });
       return h('span', { style: 'display:inline-flex;gap:2px;align-items:center' }, label, inp);
     };
-    side.append(h('div', { className: 'row' }, h('span', { textContent: 'position' }), num('x', 0), num('y', 1)));
-    side.append(h('div', { className: 'row' }, h('span', { textContent: 'size' }), num('w', 2), num('h', 3)));
+    insp.append(h('div', { className: 'row' }, h('span', { textContent: 'position' }), num('x', 0), num('y', 1)));
+    insp.append(h('div', { className: 'row' }, h('span', { textContent: 'size' }), num('w', 2), num('h', 3)));
     const bd = h('input', { type: 'checkbox', checked: !!(f.style && f.style.border) });
     bd.onchange = () => commit(() => { f.style = { ...(f.style || {}), border: bd.checked }; });
-    side.append(h('label', { className: 'row' }, h('span', { textContent: 'border' }), bd));
+    insp.append(h('label', { className: 'row' }, h('span', { textContent: 'border' }), bd));
     const lk = h('input', { type: 'checkbox', checked: !!f.locked });
     lk.onchange = () => commit(() => { f.locked = lk.checked; });
-    side.append(h('label', { className: 'row', title: 'a locked frame won’t move, resize or delete' }, h('span', { textContent: 'locked' }), lk));
-    if (f.group) side.append(h('div', { className: 'hint', textContent: `in a group of ${D.frames.filter((x) => x.group === f.group).length} — ⌘⇧G ungroups` }));
+    insp.append(h('label', { className: 'row', title: 'a locked frame won’t move, resize or delete' }, h('span', { textContent: 'locked' }), lk));
+    if (f.group) insp.append(h('div', { className: 'hint', textContent: `in a group of ${D.frames.filter((x) => x.group === f.group).length} — ⌘⇧G ungroups` }));
     if (f.kind === 'text') {
       const ta = h('textarea', { value: f.content.md || '', spellcheck: true });
       let t0 = null;
@@ -1616,7 +1708,7 @@ function mountEditor(el, doc, opts = {}) {
       align.onchange = () => commit(() => { f.content.align = align.value; });
       const mono = h('input', { type: 'checkbox', checked: !!f.content.mono });
       mono.onchange = () => commit(() => { f.content.mono = mono.checked; });
-      side.append(ta, h('div', { className: 'row' }, h('span', { textContent: 'size (pt)' }), size, align), h('label', { className: 'row' }, h('span', { textContent: 'monospace' }), mono),
+      insp.append(ta, h('div', { className: 'row' }, h('span', { textContent: 'size (pt)' }), size, align), h('label', { className: 'row' }, h('span', { textContent: 'monospace' }), mono),
         h('div', { className: 'hint', textContent: '**bold** · fields {fig} {page} {pages} {date} {title} · ${expr} from the host' }));
       api._focusText = () => ta.focus();
     }
@@ -1624,15 +1716,15 @@ function mountEditor(el, doc, opts = {}) {
       const fit = h('select', {}, ...['contain', 'cover', 'fill'].map((v) => h('option', { value: v, textContent: v })));
       fit.value = f.content.fit || 'contain';
       fit.onchange = () => commit(() => { f.content.fit = fit.value; });
-      side.append(h('div', { className: 'row' }, h('span', { textContent: 'fit' }), fit));
+      insp.append(h('div', { className: 'row' }, h('span', { textContent: 'fit' }), fit));
     }
     if (f.kind === 'legend') {
       const t = h('input', { value: f.content.title || '' });
       t.onchange = () => commit(() => { f.content.title = t.value; });
-      side.append(h('div', { className: 'row' }, h('span', { textContent: 'title' }), t));
+      insp.append(h('div', { className: 'row' }, h('span', { textContent: 'title' }), t));
     }
-    if (opts.inspector) opts.inspector(f, side, api);
-    if (f.produced) side.append(h('div', { className: 'hint', textContent: `produced ${String(f.produced).replace('T', ' ').slice(0, 16)}` }));
+    if (opts.inspector) opts.inspector(f, insp, api);
+    if (f.produced) insp.append(h('div', { className: 'hint', textContent: `produced ${String(f.produced).replace('T', ' ').slice(0, 16)}` }));
   }
 
   // ── pointer: select, move (snapping), resize ──
@@ -1642,6 +1734,7 @@ function mountEditor(el, doc, opts = {}) {
     e.preventDefault();                                    // keep the keyboard on the editor (no mousedown focus shuffle)
     root.focus();
     const t = e.target, id = t.dataset && t.dataset.id;
+    if (t.dataset && t.dataset.guide) { const [ax, i] = t.dataset.guide.split(':'); startGuide(ax, +i, e); return; }
     if (!id) { startMarquee(e); return; }
     const f = frameById(D, id);
     if (t.dataset.handle) return startResize(e, f, t.dataset.handle.split(',').map(Number));
@@ -1710,6 +1803,139 @@ function mountEditor(el, doc, opts = {}) {
     };
     const up = () => { removeEventListener('pointermove', mv); removeEventListener('pointerup', up); hist.push(before); fut.length = 0; changed(); };
     addEventListener('pointermove', mv); addEventListener('pointerup', up);
+  }
+  // ── guides: drag one out of a ruler; drag it to move (½ mm steps, or the grid; ⌥ free); off the
+  // page removes it. page.guides = { x: [mm], y: [mm] } — saved with the figure, never printed ──
+  function startGuide(axis, idx, e) {
+    const before = snap();
+    const gd0 = D.page.guides || {};
+    const gd = { x: (gd0.x || []).slice(), y: (gd0.y || []).slice() };
+    D.page = { ...D.page, guides: gd };
+    if (idx == null) { gd[axis].push(axis === 'x' ? toMm(e)[0] : toMm(e)[1]); idx = gd[axis].length - 1; }
+    const [W, H] = pageDims(D.page), lim = axis === 'x' ? W : H;
+    const mv = (ev) => {
+      const p = toMm(ev); let v = axis === 'x' ? p[0] : p[1];
+      if (!ev.altKey) { const g = D.page.grid; v = g && g.snap && g.size > 0 ? Math.round(v / g.size) * g.size : Math.round(v * 2) / 2; }
+      gd[axis][idx] = v; drawOverlay(); drawRulers();
+    };
+    const up = () => {
+      removeEventListener('pointermove', mv); removeEventListener('pointerup', up);
+      const v = gd[axis][idx], gone = !(v >= 0 && v <= lim);
+      if (gone) gd[axis].splice(idx, 1);
+      if (!gd.x.length && !gd.y.length) { const p = { ...D.page }; delete p.guides; D.page = p; }
+      hist.push(before); fut.length = 0; changed();
+      say(gone ? 'guide removed' : `guide at ${+v.toFixed(1)} mm`);
+    };
+    addEventListener('pointermove', mv); addEventListener('pointerup', up);
+  }
+  for (const [rc, ax] of [[rulerTop, 'y'], [rulerLeft, 'x']]) {
+    rc.addEventListener('pointerdown', (e) => { if (e.button !== 0) return; e.preventDefault(); root.focus(); startGuide(ax, null, e); });
+    rc.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      menu(e.clientX, e.clientY, [{ label: 'Clear guides', run: () => commit(() => { const p = { ...D.page }; delete p.guides; D.page = p; }) }, { label: 'Hide rulers', run: () => rulersBtn.onclick() }]);
+    });
+  }
+  // the rulers: mm from the page's top-left, the selection's extent shaded
+  function drawRulers() {
+    rulerTop.style.display = rulerLeft.style.display = showRulers ? '' : 'none';
+    if (!showRulers) return;
+    const [W, H] = pageDims(D.page), T = 16;
+    const dpr = Math.min(2, (typeof devicePixelRatio !== 'undefined' && devicePixelRatio) || 1);
+    const minor = zoom >= 6 ? 1 : zoom >= 2.5 ? 2 : 5, major = zoom >= 1.6 ? 10 : 50;
+    const fs2 = sel.map((id) => frameById(D, id)).filter((f) => f && !f.hidden), sb = fs2.length ? boundsOf(fs2) : null;
+    const one = (c2, horiz, total) => {
+      const len = total * zoom;
+      c2.width = Math.round((horiz ? len : T) * dpr); c2.height = Math.round((horiz ? T : len) * dpr);
+      c2.style.width = (horiz ? len : T) + 'px'; c2.style.height = (horiz ? T : len) + 'px';
+      const g = c2.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0);
+      g.fillStyle = '#e7e8eb'; g.fillRect(0, 0, horiz ? len : T, horiz ? T : len);
+      if (sb) { const k = horiz ? 0 : 1; g.fillStyle = 'rgba(60,130,230,0.28)'; if (horiz) g.fillRect(sb[0] * zoom, 0, sb[2] * zoom, T); else g.fillRect(0, sb[1] * zoom, T, sb[3] * zoom); }
+      g.strokeStyle = '#6b6f76'; g.fillStyle = '#4a4e55'; g.lineWidth = 1; g.font = '9px system-ui, sans-serif';
+      g.beginPath();
+      for (let mm = 0; mm <= total + 1e-9; mm += minor) {
+        const px = Math.round(mm * zoom) + 0.5, isMaj = mm % major === 0, isMid = mm % 5 === 0;
+        const L = isMaj ? T * 0.6 : isMid ? T * 0.38 : T * 0.22;
+        if (horiz) { g.moveTo(px, T); g.lineTo(px, T - L); } else { g.moveTo(T, px); g.lineTo(T - L, px); }
+        if (isMaj && mm > 0) {
+          if (horiz) g.fillText(String(mm), px + 2, 9);
+          else { g.save(); g.translate(9, px - 2); g.rotate(-Math.PI / 2); g.fillText(String(mm), 0, 0); g.restore(); }
+        }
+      }
+      g.stroke();
+      const gd = D.page.guides || {};                      // the guides, marked on their ruler
+      g.fillStyle = '#12a4c4';
+      for (const v of (horiz ? gd.x : gd.y) || []) { const px = v * zoom; if (horiz) g.fillRect(px - 1, T - 5, 2, 5); else g.fillRect(T - 5, px - 1, 5, 2); }
+    };
+    one(rulerTop, true, W); one(rulerLeft, false, H);
+  }
+  // ── the item list: every frame, front first; groups as folders ──
+  function frameLabel(f) {
+    if (f.name) return f.name;
+    const k = kindOf(f.kind), c = f.content || {}, src = f.source || {};
+    if (k && k.describe) { try { const d = k.describe(f); if (d) return d; } catch { /* fall through */ } }
+    if (f.kind === 'text') { const t = String(c.md || '').replace(/\*\*/g, '').replace(/\s+/g, ' ').trim(); return t ? `text · ${t.length > 30 ? t.slice(0, 30) + '…' : t}` : (f.style && f.style.background ? 'rule' : 'text (empty)'); }
+    if (f.kind === 'image') return src.kind === 'view' ? '3D view' : src.kind === 'plot' ? `plot · ${src.name || ''}` : 'image';
+    if (f.kind === 'legend') return `legend${c.title ? ' · ' + c.title : ''}`;
+    if (f.kind === 'table') return `table${c.title ? ' · ' + c.title : (src.name ? ' · ' + src.name : '')}`;
+    if (f.kind === 'drawlist') return 'chart';
+    return (k && k.label) || f.kind;
+  }
+  let _dragItem = null, _keepItems = false;
+  // a selection change re-marks the rows without rebuilding them (a rebuild between the two clicks
+  // of a double-click would swallow it)
+  function refreshItemSel() {
+    for (const r of items.querySelectorAll('.compo-it')) {
+      const it = r.dataset.item, ids = it.startsWith('g:') ? D.frames.filter((x) => x.group === it.slice(2)).map((x) => x.id) : [it];
+      r.classList.toggle('sel', ids.length > 0 && ids.every((id) => sel.includes(id)));
+    }
+  }
+  function buildItems() {
+    items.replaceChildren();
+    items.append(h('div', { className: 'ttl' }, h('span', { textContent: `frames · ${D.frames.length}` }), h('span', { textContent: 'front ↑' })));
+    let lastG = null;
+    for (const f of [...D.frames].reverse()) {
+      if (f.group && f.group !== lastG) items.append(itemRow(null, f.group, D.frames.filter((x) => x.group === f.group)));
+      lastG = f.group || null;
+      items.append(itemRow(f));
+    }
+  }
+  function itemRow(f, group, members) {
+    const fs2 = f ? [f] : members, ids = fs2.map((x) => x.id);
+    const hidden = fs2.every((x) => x.hidden), locked = fs2.every((x) => x.locked), isSel = ids.every((id) => sel.includes(id));
+    const row = h('div', { className: 'compo-it' + (group ? ' grp' : '') + (f && f.group ? ' mem' : '') + (isSel ? ' sel' : '') + (hidden ? ' hid' : ''), draggable: true });
+    row.dataset.item = f ? f.id : 'g:' + group;
+    const eye = h('button', { textContent: hidden ? '◌' : '◉', title: hidden ? 'show' : 'hide (not drawn, not printed)', onclick: (e) => { e.stopPropagation(); commit(() => { for (const x of fs2) { if (hidden) delete x.hidden; else x.hidden = true; } }); } });
+    const lk = h('button', { textContent: locked ? '🔒' : '🔓', title: locked ? 'unlock' : 'lock', style: locked ? '' : 'opacity:0.35', onclick: (e) => { e.stopPropagation(); commit(() => { for (const x of fs2) { if (locked) delete x.locked; else x.locked = true; } }); } });
+    const nm = h('span', { className: 'nm', textContent: group ? `group · ${members.length}` : frameLabel(f) });
+    row.append(eye, lk, nm);
+    row.onclick = (e) => {
+      if (e.shiftKey) sel = isSel ? sel.filter((id) => !ids.includes(id)) : sel.concat(ids.filter((id) => !sel.includes(id)));
+      else sel = ids.slice();                                // a member row selects just that member (edit inside a group)
+      _keepItems = true; try { render(); } finally { _keepItems = false; } root.focus();
+    };
+    nm.ondblclick = (e) => {
+      if (!f) return;
+      e.stopPropagation();
+      const inp = h('input', { value: f.name || '' }); inp.placeholder = frameLabel({ ...f, name: undefined });
+      nm.replaceChildren(inp); inp.focus(); inp.select();
+      const done = (keep) => { if (!inp.isConnected) return; const v = inp.value.trim(); if (keep && v !== (f.name || '')) commit(() => { if (v) f.name = v; else delete f.name; }); else render(); };
+      inp.onkeydown = (ev) => { ev.stopPropagation(); if (ev.key === 'Enter') done(true); if (ev.key === 'Escape') done(false); };
+      inp.onblur = () => done(true);
+    };
+    row.ondragstart = (e) => { _dragItem = row.dataset.item; e.dataTransfer.setData('text/plain', _dragItem); e.dataTransfer.effectAllowed = 'move'; };
+    row.ondragend = () => { _dragItem = null; };
+    const half = (e) => { const r = row.getBoundingClientRect(); return e.clientY < r.top + r.height / 2; };
+    row.ondragover = (e) => { if (!_dragItem || _dragItem === row.dataset.item) return; e.preventDefault(); const up = half(e); row.classList.toggle('drop-above', up); row.classList.toggle('drop-below', !up); };
+    row.ondragleave = () => row.classList.remove('drop-above', 'drop-below');
+    row.ondrop = (e) => {
+      e.preventDefault(); row.classList.remove('drop-above', 'drop-below');
+      const src = _dragItem; _dragItem = null; if (!src || src === row.dataset.item) return;
+      const mv = src.startsWith('g:') ? D.frames.filter((x) => x.group === src.slice(2)).map((x) => x.id) : [src];
+      const up = half(e);                                  // the list is front-first: above a row = in front of it
+      const target = f ? f.id : (up ? members[members.length - 1].id : members[0].id);
+      commit(() => moveInStack(D, mv, target, up));
+    };
+    return row;
   }
   // box select: drag on the empty page; frames wholly inside are selected (⇧ adds), groups whole
   let _marq = null;
@@ -1850,6 +2076,9 @@ export {
   expandGroups,
   unitsOf,
   boundsOf,
+  gatherGroup,
+  pruneGroups,
+  moveInStack,
   snapBox,
   snapResize,
   SANS,

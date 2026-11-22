@@ -76,7 +76,14 @@ const bytes = await exportPDF(ed.getDoc(), { env: { evalField: (expr, vars) => v
   - Align (6 ways) and distribute (h / v) work by unit. A **locked** frame is the reference: it counts toward the bounds but stays put.
   - Match size: same width, height or both as the FIRST selected frame, the key.
   - Z-order: front, back, and one step forward or back (⌘] / ⌘[, with ⇧ for front / back).
-- **Locks:** a locked frame won't drag, resize, nudge or delete, and wears a badge. Lock it from the inspector or the context menu.
+- **Locks:** a locked frame won't drag, resize, nudge or delete, and wears a badge. Lock it from the inspector, the item list or the context menu.
+- **Rulers and guides:** mm rulers along the page's top and left, with the selection's extent shaded (toggle **rulers**). Drag out of a ruler for a guide: ½ mm steps, or the grid; ⌥ moves it freely. Drag a guide to move it, and back to its ruler to remove it. Right-click a ruler to clear all guides. Guides are snap lines, are saved as `page.guides = { x: [mm], y: [mm] }`, and never print.
+- **Grid:** 1, 2, 5 or 10 mm, drawn faintly and snapped to (moving and resizing); `page.grid = { size, show, snap }`.
+- **Item list:** every frame, front first, above the inspector.
+  - Each row has an eye (a hidden frame is neither drawn, picked nor printed) and a lock.
+  - A click selects; a member row selects just that member, to edit inside a group. Double-click renames (`frame.name`).
+  - Drag a row to restack. A group is a folder row over its members and moves as a block. A member dragged out of its block leaves the group; another frame dropped on a group lands beside the block, never inside it. Grouping gathers the members together in the stack.
+  - A kind can name its frames for the list with `describe(frame)`.
 - **Keys:** arrows nudge 0.5 mm, ⇧ + arrow 5 mm. ⌘D duplicates, Delete removes, ⌘Z / ⌘⇧Z undo and redo, ⌘A selects all.
 - **Toolbar:** page setup and the arranging buttons. A status line says when something was refused.
 - **Inspector:** the selected frame's box in mm, its border, its lock, and its kind's own fields. A multiple selection shows its units and one lock box for all of them.
