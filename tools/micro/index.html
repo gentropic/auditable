@@ -1287,7 +1287,8 @@ import * as _modProps from './src/props.js';
 import * as _modStyleClip from './src/style-clip.js';
 import * as _modUndo from './src/undo.js';
 const _MODS = { 'ramp.js': _modRamp, 'deco.js': _modDeco, 'coltypes.js': _modColtypes, 'props.js': _modProps, 'style-clip.js': _modStyleClip, 'undo.js': _modUndo };
-import { runTool, checkParams } from './src/tools.js';
+import { runTool, checkParams, toolList } from './src/tools.js';
+import { checkRoutineHost, runRoutineHost } from './src/recipes.js';
 import { listRuns, acceptRun, findBaseline } from './src/runrecord.js';
 import { openRunsWindow } from './src/runs-ui.js';
 import { setHouseProps, addTitleBlock, composerFrameMenu, composerEnv, addKeyPlan, smallMultiples, refreshAllFigures, refreshViews, refreshData, addResourceFrame, staleOf, openFigurePdf, openComposer, retargetFigure, openRetargetDialog, setComposerHooks, addViewFrame, addCanvasFrame, addTableFrame, legendContentFor, figurePdfBytes, composerEditor, currentFigure, compoPage, writePages, makeAtlasRoutine } from './src/composer.js';
@@ -3109,6 +3110,7 @@ if (shell.present) {
 // versioned surface a host page builds on; window._micro above stays the smokes'
 // unstable reach into everything. Announced last: micro is up. ──
 const _host = createHostApi({
+  toolList, runTool, checkRoutine: checkRoutineHost, runRoutine: runRoutineHost, listRuns, acceptRun,
   followLayer, addLayer, removeLayer: removeLayerUI, createView, setViewOffset, setActiveLayer, applyBlockFilter, pickRecord,
   openFile: async (src, o) => {
     const f = await ingestSource(src, 'open()\'s file');

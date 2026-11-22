@@ -454,7 +454,7 @@ export function openInputsDialog(r) {
     for (const [nm, f] of fields) values[nm] = f._itype === 'number' && f.value !== '' && Number.isFinite(+f.value) ? +f.value : f.value;
     r._lastInputs = values;                                  // session memory — the next Run… starts here
     win.close();
-    runRecipe({ ...r, inputs: undefined, params: routineSubst(JSON.parse(JSON.stringify(r.params)), values) }, true);
+    runRecipe({ ...r, inputs: undefined, _inputs: values, params: routineSubst(JSON.parse(JSON.stringify(r.params)), values) }, true);   // _inputs: the run record keeps the answers
   };
   bar.appendChild(runB);
   win.body.appendChild(bar);

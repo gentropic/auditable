@@ -101,6 +101,12 @@ export function checkParams(name, params, { routine = false } = {}) {
   return { errors: errs, params: out };
 }
 
+// the tools, as plain data (a host lists them; the from-scratch form and the docs read the same)
+export function toolList() {
+  const plain = (schema) => Object.fromEntries(Object.entries(schema).filter(([, v]) => !v.display).map(([k, v]) => [k, { type: v.type, ...(v.required ? { required: true } : {}), ...(v.default !== undefined ? { default: v.default } : {}), ...(v.values ? { values: v.values.slice() } : {}), ...(v.doc ? { doc: v.doc } : {}), ...(v.routine ? { routine: Array.isArray(v.routine) ? v.routine.slice() : v.routine } : {}), ...(v.item ? { item: plain(v.item) } : {}) }]));
+  return [...TOOLS.values()].map((t) => ({ name: t.name, label: t.label, params: plain(t.params), outputs: { key: (t.outputs && t.outputs.key || []).slice() } }));
+}
+
 // run a tool start to finish — no window. Throws with every problem listed.
 export async function runTool(name, params, ctx = {}) {
   const { errors, params: p } = checkParams(name, params, ctx);

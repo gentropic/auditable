@@ -408,75 +408,78 @@ export function routineLayerNames(rc) {                           // the layer n
   return names;
 }
 
+// every problem a routine would hit, before anything runs (and without running anything): missing
+// recipes and layers, tool settings checked the way a routine needs them, columns a layer lacks, two
+// steps writing one report, and — past a guard — outputs that already exist. A resume skips the
+// guard (it has written some of them by design). → { problems: [..] }
+export async function routinePreflight(r, steps, { resume = false } = {}) {
+  const P = r.params || {}, problems = [];
+  const byName = new Map(S.recipes.map((x) => [x.name, x]));
+  const missingR = [...new Set(steps.filter((st) => st.recipe && !byName.get(st.recipe)).map((st) => st.recipe))];
+  if (missingR.length) problems.push(`missing recipe${missingR.length > 1 ? 's' : ''} — ${missingR.join(', ')}`);
+  const loaded = new Set(S.layers.map((x) => x.name)), missingL = new Set();
+  for (const st of steps) if (!st.guard) for (const nm of routineLayerNames({ params: routineStepOp(st).params })) if (nm && !loaded.has(nm)) missingL.add(nm);
+  if (missingL.size) problems.push(`load these layers first — ${[...missingL].join(', ')} (routines run without prompts)`);
+  // the settings of every registered tool's step (src/tools.js): unknown ones name the nearest real
+  // one, cutoffs and band widths are stated, the scope is all
+  steps.forEach((st, i) => {
+    if (st.guard) return;
+    const op = routineStepOp(st);
+    if (!toolDef(op.tool)) return;
+    for (const e of checkParams(op.tool, op.params, { routine: true }).errors) problems.push(`step ${i + 1} (${st._slug}): ${e}`);
+  });
+  // a referenced column must resolve on its layer (a renamed one would read as a blank → 0)
+  const badCols = [];
+  for (const st of steps) {
+    if (st.guard) continue;
+    const pr = routineStepOp(st).params, cols = [];
+    for (const ser of pr.series || []) if (ser.col) cols.push({ layer: ser.layer || pr.layer, col: ser.col });
+    if (pr.col) cols.push({ layer: pr.layer, col: pr.col });
+    for (const { layer, col } of cols) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(String(col).trim())) continue;
+      const L2 = S.layers.find((x) => x.name === layer); const h2 = L2 && layerTableHeader(L2);
+      if (h2 && !validate(String(col).trim(), schemaExt(L2, h2)).ok) badCols.push(`${col}${layer ? ' on ' + layer : ''}`);
+    }
+  }
+  if (badCols.length) problems.push(`column${badCols.length > 1 ? 's' : ''} not found — ${[...new Set(badCols)].join(', ')} (renamed or removed?)`);
+  // two steps writing the same report
+  { const seen = new Set(), dup = new Set();
+    for (const st of steps) { if (st.guard) continue; const op = routineStepOp(st); for (const rep of routineTargets(op.tool, op.params, st._slug, P).reports) { if (seen.has(rep)) dup.add(rep); else seen.add(rep); } }
+    if (dup.size) problems.push(`two steps would write the same report — ${[...dup].join(', ')} (give each its own \`as:\`)`); }
+  // the opt-in GUARD: an output past it that already exists (a run's own folder is new — reports
+  // collide only in a fixed output.dir; columns always count)
+  const guardAt = resume ? -1 : steps.findIndex((st) => st.guard === 'no-overwrites');
+  if (guardAt >= 0) for (const st of steps.slice(guardAt + 1)) {
+    if (st.guard) continue;
+    const op = routineStepOp(st), t = routineTargets(op.tool, op.params, st._slug, P);
+    if (P.output && P.output.dir) for (const rep of t.reports) if (await resolveFileHandle(S.project.dir, rep).then(() => true, () => false)) problems.push(`guard stopped — ${rep} already exists`);
+    for (const c of t.columns) if (layerHasColumn(c.name, c.layer)) problems.push(`guard stopped — ${c.layer || 'the layer'} already has a column “${c.name}”`);
+  }
+  return { problems };
+}
+
+
 export async function runRoutine(r, opts = {}) {
-  if (!S.project || !S.project.dir) { $('#meta').textContent = 'routine: reports/ needs a project — open or save one first'; return; }
+  // events for a host (window.micro.runRoutine): micro:routine-step per step, micro:routine-done once
+  // at the end, whatever the end — refused, cancelled, failed, ok — with a copy of the record
+  const done = (status, extra = {}, rr = null) => dispatchEvent(new CustomEvent('micro:routine-done', { detail: { routine: r.name, token: opts.token || null, status, record: rr ? JSON.parse(JSON.stringify(rr)) : null, ...extra } }));
+  const stepEvt = (n, step, status) => dispatchEvent(new CustomEvent('micro:routine-step', { detail: { routine: r.name, token: opts.token || null, n, step, status } }));
+  if (!S.project || !S.project.dir) { $('#meta').textContent = 'routine: reports/ needs a project — open or save one first'; done('refused', { problems: ['no project open'] }); return; }
   const P = r.params || {};
   let steps;
   // a resume continues THIS run: the same expansion (a params table edited since must not reshuffle
   // the steps) and the atlas pages already made (the book is written when the routine finishes)
-  try { steps = opts.steps || await expandRoutine(P); } catch (e) { $('#meta').textContent = `routine: ${e.message}`; return; }
+  try { steps = opts.steps || await expandRoutine(P); } catch (e) { $('#meta').textContent = `routine: ${e.message}`; done('refused', { problems: [e.message] }); return; }
   const byName = new Map(S.recipes.map((x) => [x.name, x]));
-  // pre-flight 1: every referenced recipe exists
-  const missingR = [...new Set(steps.filter((st) => st.recipe && !byName.get(st.recipe)).map((st) => st.recipe))];
-  if (missingR.length) { $('#meta').textContent = `routine: missing recipe${missingR.length > 1 ? 's' : ''} — ${missingR.join(', ')}`; return; }
-  // pre-flight 2: every referenced layer is loaded (routines never prompt mid-run)
-  const loaded = new Set(S.layers.map((L) => L.name));
-  const missingL = new Set();
-  for (const st of steps) {
-    if (st.guard) continue;
-    const rc = st.recipe ? byName.get(st.recipe) : null;
-    for (const nm of routineLayerNames({ params: routineStepOp(st).params })) if (nm && !loaded.has(nm)) missingL.add(nm);
-  }
-  if (missingL.size) { $('#meta').textContent = `routine: load these layers first — ${[...missingL].join(', ')} (routines run without prompts)`; return; }
-  // pre-flight 0: the settings of every step whose tool is registered (src/tools.js), checked the
-  // way a routine needs them — an unknown setting names the nearest real one, cutoffs and band
-  // widths are stated, the scope is all. Every problem at once, before anything runs.
-  { const probs = [];
-    steps.forEach((st, i) => {
-      if (st.guard) return;
-      const op = routineStepOp(st);
-      if (!toolDef(op.tool)) return;
-      const { errors } = checkParams(op.tool, op.params, { routine: true });
-      for (const e of errors) probs.push(`step ${i + 1} (${st._slug}): ${e}`);
-    });
-    if (probs.length) { $('#meta').textContent = `routine: ${probs.slice(0, 4).join(' · ')}${probs.length > 4 ? ` · +${probs.length - 4} more` : ''}`; return; } }
-  // pre-flight 3: a referenced column must still resolve on its layer's schema.
-  // A renamed/removed column would otherwise compile to a blank that reads 0 and
-  // a routine would write a plausible-looking zero-grade report marked ✓.
-  const badCols = [];
-  for (const st of steps) {
-    if (st.guard) continue;
-    const rc = st.recipe ? byName.get(st.recipe) : null;
-    const pr = routineStepOp(st).params;
-    const cols = [];
-    for (const ser of pr.series || []) if (ser.col) cols.push({ layer: ser.layer || pr.layer, col: ser.col });
-    if (pr.col) cols.push({ layer: pr.layer, col: pr.col });
-    for (const { layer, col } of cols) {
-      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(String(col).trim())) continue;   // an expression, not a bare name
-      const L2 = S.layers.find((x) => x.name === layer); const h2 = L2 && layerTableHeader(L2);
-      if (!h2) continue;
-      if (!validate(String(col).trim(), schemaExt(L2, h2)).ok) badCols.push(`${col}${layer ? ' on ' + layer : ''}`);
-    }
-  }
-  if (badCols.length) { $('#meta').textContent = `routine: column${badCols.length > 1 ? 's' : ''} not found — ${[...new Set(badCols)].join(', ')} (renamed or removed?)`; return; }
-  // pre-flight 4: two steps writing the SAME report (two identical each rows, a repeated `as`) — the
-  // second silently overwrote the first
-  { const seen = new Map(), dup = [];
-    for (const st of steps) {
-      if (st.guard) continue;
-      const rc = st.recipe ? byName.get(st.recipe) : null;
-      for (const rep of routineTargets(rc ? rc.tool : st.tool, routineStepOp(st).params, st._slug, P).reports) {
-        if (seen.has(rep)) dup.push(rep); else seen.set(rep, true);
-      }
-    }
-    if (dup.length) { $('#meta').textContent = `routine: two steps would write the same report — ${[...new Set(dup)].join(', ')} (give each its own \`as:\`)`; return; } }
+  { const pf = await routinePreflight(r, steps, { resume: !!opts.record });
+    if (pf.problems.length) { $('#meta').textContent = `routine: ${pf.problems.slice(0, 4).join(' · ')}${pf.problems.length > 4 ? ` · +${pf.problems.length - 4} more` : ''}`; done('refused', { problems: pf.problems }); return; } }
   // the RUN RECORD (src/runrecord.js): a new run gets its own folder; a resume, retry or skip
   // continues the same record and logs the event
   let rec = opts.record || null;
   if (!rec) {
     const names = [...new Set(steps.filter((st) => !st.guard).flatMap((st) => routineLayerNames({ params: routineStepOp(st).params })).filter(Boolean))];
     try { rec = await newRunRecord(r, steps, names, (m) => { $('#meta').textContent = `routine “${r.name}” — ${m}`; }); }
-    catch (e) { $('#meta').textContent = `routine: the run record could not start — ${e.message}`; return; }
+    catch (e) { $('#meta').textContent = `routine: the run record could not start — ${e.message}`; done('refused', { problems: [e.message] }); return; }
   } else rec.events.push({ at: new Date().toISOString(), kind: opts.event || 'resume', step: (opts.from || 0) + 1 });
   if (opts.event === 'skip' && rec.steps[(opts.from || 1) - 1]) rec.steps[(opts.from || 1) - 1].status = 'skipped';
   const PR = { ...P, _runDir: rec.dir };
@@ -505,24 +508,6 @@ export async function runRoutine(r, opts = {}) {
   // output routing
   const outDir = routineOutDir(PR);
   const outPath = (slug) => routineOutPath(PR, slug);
-  // the opt-in GUARD: stop before ANYTHING runs if a write target exists
-  const guardAt = opts.from ? -1 : steps.findIndex((st) => st.guard === 'no-overwrites');   // a resume has already written some of them
-  if (guardAt >= 0) {
-    for (const st of steps.slice(guardAt + 1)) {
-      if (st.guard) continue;
-      const rc2 = st.recipe ? byName.get(st.recipe) : null;
-      const gTool = rc2 ? rc2.tool : st.tool;
-      const gParams = routineStepOp(st).params;
-      const t = routineTargets(gTool, gParams, st._slug, PR);
-      for (const rep of t.reports) {
-        const exists = await resolveFileHandle(S.project.dir, rep).then(() => true, () => false);
-        if (exists) { $('#meta').textContent = `routine: guard stopped — ${rep} already exists`; return; }
-      }
-      for (const c of t.columns) {                          // columns count as outputs too
-        if (layerHasColumn(c.name, c.layer)) { $('#meta').textContent = `routine: guard stopped — ${c.layer || 'the layer'} already has a column “${c.name}”`; return; }
-      }
-    }
-  }
   // run — the tracker walks the expanded list live; Cancel stops between steps.
   // `from` resumes a stopped run: the earlier steps are shown as already done,
   // so the record stays honest about what this run did and did not do.
@@ -541,6 +526,7 @@ export async function runRoutine(r, opts = {}) {
       tracker.done(`cancelled — ${idx} of ${steps.length} steps done, ${wrote} report${wrote === 1 ? '' : 's'} → ${outDir}/`,
         idx < steps.length ? [['Resume', () => runRoutine(r, { from: idx, steps, books, record: rec, event: 'resume' }), 'carry on from where you stopped it']] : []);
       $('#meta').textContent = `routine “${r.name}” cancelled after ${idx} step${idx === 1 ? '' : 's'}`;
+      done('cancelled', {}, rec);
       return;
     }
     if (st.guard) { tracker.state(idx, 'ok'); continue; }
@@ -594,8 +580,10 @@ export async function runRoutine(r, opts = {}) {
           ['Skip & continue', () => runRoutine(r, { from: idx + 1, steps, books, record: rec, event: 'skip' }), 'carry on without this check'],
         ]);
         $('#meta').textContent = `routine “${r.name}” STOPPED at step ${n} (${st._slug}) — ${e.message}`;
+        stepEvt(idx + 1, st._slug, 'failed'); done('failed', { error: e.message }, rec);
         return;
       }
+      stepEvt(idx + 1, st._slug, entry.status);
       continue;
     }
     const merged = routineStepOp(st);
@@ -664,6 +652,7 @@ export async function runRoutine(r, opts = {}) {
       } else throw new Error(`unsupported tool in a routine: ${tool}`);
       tracker.state(idx, 'ok', stepNote);                 // a warning rides on the ✓ line
       Object.assign(entry, { status: 'ok', ms: Date.now() - t0 }); await saveRec();
+      stepEvt(idx + 1, st._slug, 'ok');
     } catch (e) {
       tracker.state(idx, 'fail', e.message);
       Object.assign(entry, { status: 'failed', ms: Date.now() - t0, error: e.message }); rec.status = 'failed'; await saveRec();
@@ -672,12 +661,13 @@ export async function runRoutine(r, opts = {}) {
         ['Skip & continue', () => runRoutine(r, { from: idx + 1, steps, books, record: rec, event: 'skip' }), 'leave this step undone and run the rest'],
       ]);
       $('#meta').textContent = `routine “${r.name}” STOPPED at step ${n} (${st._slug}) — ${e.message}`;
+      stepEvt(idx + 1, st._slug, 'failed'); done('failed', { error: e.message }, rec);
       return;
     }
   }
   for (const [path, b] of books) {                          // the atlases: every page this run made, one PDF each
     try { $('#meta').textContent = `routine “${r.name}” — writing ${path} (${b.docs.length} page${b.docs.length === 1 ? '' : 's'})…`; await writePages(path, b.docs, { dpi: b.dpi }); (rec.books = rec.books || []).push({ pages: b.docs.length, ...(await outputEntry(path)) }); bookLines.push(`${path} (${b.docs.length} page${b.docs.length === 1 ? "" : "s"})`); }
-    catch (e) { tracker.done(`the pages ran but ${path} could not be written — ${e.message}`); $('#meta').textContent = `routine “${r.name}”: ${path} failed — ${e.message}`; return; }
+    catch (e) { tracker.done(`the pages ran but ${path} could not be written — ${e.message}`); $('#meta').textContent = `routine “${r.name}”: ${path} failed — ${e.message}`; rec.status = 'failed'; await saveRec(); done('failed', { error: e.message }, rec); return; }
   }
   rec.status = 'ok'; rec.finished = new Date().toISOString(); await saveRec();
   markProjectDirty();
@@ -686,6 +676,46 @@ export async function runRoutine(r, opts = {}) {
   const line = `${ran} step${ran === 1 ? "" : "s"} run${from ? ` (${from} skipped)` : ""}${wrote || !bookLines.length ? `, ${wrote} report${wrote === 1 ? "" : "s"} → ${outDir}/` : ""}${bookLines.length ? `, ${bookLines.join(", ")}` : ""}`;
   tracker.done(`${line} · record ${rec.dir}/run.json`, [['Accept as baseline…', () => acceptRunAsk(rec.dir), 'the run the next runs of this routine compare with', true]]);
   $('#meta').textContent = `routine “${r.name}” — ${line}`;
+  done('ok', {}, rec);
+}
+
+// ── for a HOST (window.micro): routines by name, inputs given up front (a host can't answer a dialog) ──
+export function routineForHost(name, inputs = {}) {
+  const r = S.recipes.find((x) => x.name === name && x.tool === 'routine');
+  if (!r) throw new Error(`no routine “${name}”${S.recipes.some((x) => x.tool === 'routine') ? ` (routines: ${S.recipes.filter((x) => x.tool === 'routine').map((x) => x.name).join(', ')})` : ' — open a project with routines in recipes/'}`);
+  const want = Array.isArray(r.inputs) ? r.inputs : [];
+  const values = {};
+  for (const inp of want) {
+    const v = inputs[inp.name] !== undefined ? inputs[inp.name] : inp.default;
+    if (v === undefined || v === '') throw new Error(`routine “${name}” needs input “${inp.name}”${inp.type ? ` (${inp.type})` : ''}`);
+    values[inp.name] = v;
+  }
+  const extra = Object.keys(inputs).filter((k) => !want.some((i) => i.name === k));
+  if (extra.length) throw new Error(`routine “${name}” has no input ${extra.map((k) => `“${k}”`).join(', ')}${want.length ? ` (inputs: ${want.map((i) => i.name).join(', ')})` : ''}`);
+  return want.length ? { ...r, inputs: undefined, _inputs: values, params: routineSubst(JSON.parse(JSON.stringify(r.params)), values) } : r;
+}
+// the dry run: every step as it would run (and what it writes), every problem — nothing runs
+export async function checkRoutineHost(name, inputs) {
+  const r = routineForHost(name, inputs);
+  const steps = await expandRoutine(r.params || {});
+  const { problems } = await routinePreflight(r, steps);
+  return { routine: name, steps: steps.map((st, i) => routineLineInfo(st, i, r.params || {}).text), problems };
+}
+// run to the end; resolves with { status, record, problems?, error? } — never prompts
+export function runRoutineHost(name, inputs, onStep) {
+  const r = routineForHost(name, inputs);
+  const token = `host-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  return new Promise((resolve) => {
+    const step = (e) => { if (e.detail.token === token && typeof onStep === 'function') { try { onStep({ n: e.detail.n, step: e.detail.step, status: e.detail.status }); } catch { /* the host's */ } } };
+    const fin = (e) => {
+      if (e.detail.token !== token) return;
+      removeEventListener('micro:routine-step', step); removeEventListener('micro:routine-done', fin);
+      const { routine, status, record, problems, error } = e.detail;
+      resolve({ routine, status, record, ...(problems ? { problems } : {}), ...(error ? { error } : {}) });
+    };
+    addEventListener('micro:routine-step', step); addEventListener('micro:routine-done', fin);
+    runRoutine(r, { token });
+  });
 }
 
 // plain JS ⇄ @gcu/yaml AST (the emitter is AST-only; nulls are simply omitted)

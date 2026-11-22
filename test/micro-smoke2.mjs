@@ -7454,6 +7454,57 @@ if (take()) {
   await p.close();
 }
 
+// ── §116: TOOLS and ROUTINES on the HOST API (window.micro, routines v2) — a host lists the tools and
+//     runs one (no window); lists routines, dry-runs one (every step, every problem, nothing written),
+//     runs one to the end with its inputs given up front (a missing input rejects — never a dialog),
+//     hears each step, gets the run record back; lists the runs and accepts one. ──
+if (take()) {
+  const p = await mkPage('sm2hostrt');
+  await p.evaluate(async () => { try { await (await navigator.storage.getDirectory()).removeEntry('sm2hostrt', { recursive: true }); } catch { } });
+  await p.evaluate(async () => {
+    const rows = ['XC,YC,ZC,FE']; for (let k = 0; k < 3; k++) for (let j = 0; j < 6; j++) for (let i = 0; i < 6; i++) rows.push(`${5 + i * 10},${5 + j * 10},${5 + k * 10},${(40 + i + j).toFixed(1)}`);
+    await window._micro.openBlob(new File([rows.join('\n') + '\n'], 'm.csv'), 'm.csv', 'replace');
+  });
+  await p.waitForFunction(() => window._micro.layers()[0] && window._micro.layers()[0].docs.blockDoc, null, { timeout: 20000 });
+  await saveProject(p);
+  const r = await p.evaluate(async () => {
+    const m = window.micro, out = {};
+    const tools = m.tools(); out.tools = tools.map((t) => t.name); out.gtCut = tools.find((t) => t.name === 'gt').params.cutoffs;
+    const before = document.querySelectorAll('.fwin').length;
+    const one = await m.runTool('gt', { layer: 'm.csv', series: [{ col: 'FE' }], cutoffs: [40, 45] });
+    out.one = { cols: one.table.columns, rows: one.table.rows.length, win: document.querySelectorAll('.fwin').length - before };
+    try { await m.runTool('gt', { layer: 'm.csv', series: [{ col: 'FE' }], cutofs: [1] }); } catch (e) { out.oneErr = e.message; }
+    window._micro._recipesList().push({ name: 'monthly', tool: 'routine', inputs: [{ name: 'g', type: 'column' }], params: { steps: [
+      { tool: 'gt', with: { layer: 'm.csv', series: [{ col: '$g' }], cutoffs: [40, 45, 50] }, as: 'gt' },
+      { check: { every: 'volume >= 0', in: 'gt' } },
+    ] } });
+    window._micro._recipesList().push({ name: 'sloppy', tool: 'routine', params: { steps: [{ tool: 'gt', with: { layer: 'm.csv', series: [{ col: 'FE' }] }, as: 'g' }] } });
+    out.routines = m.routines().map((x) => `${x.name}(${x.inputs.map((i) => i.name).join(',')})`);
+    out.dry = await m.checkRoutine('monthly', { inputs: { g: 'FE' } });
+    out.drySloppy = await m.checkRoutine('sloppy');
+    out.dryWrote = await (async () => { try { await (await m.ready, window._micro.project().dir).getDirectoryHandle('runs'); return true; } catch { return false; } })();
+    try { await m.runRoutine('monthly', {}); } catch (e) { out.noInput = e.message; }
+    const steps = [], evs = [];
+    addEventListener('micro:routine-done', (e) => evs.push(e.detail.status));
+    const res = await m.runRoutine('monthly', { inputs: { g: 'FE' }, onStep: (s) => steps.push(`${s.n}:${s.status}`) });
+    out.run = { status: res.status, dir: res.record && res.record.dir, recSteps: res.record && res.record.steps.map((s) => s.status), inputs: res.record && res.record.inputs, steps, evs };
+    const runs = await m.runs(); out.runs = runs.map((x) => `${x.routine}:${x.status}`);
+    out.acc = (await m.acceptRun(runs[0].dir, 'host')).by;
+    out.accRuns = (await m.runs())[0].accepted && (await m.runs())[0].accepted.by;
+    return out;
+  });
+  chk(`HOST: micro.tools() lists the tools with their settings (${r.tools.join(', ')}; gt.cutoffs ${JSON.stringify(r.gtCut)})`,
+    ['gt', 'stats', 'swath', 'validation', 'resource'].every((t) => r.tools.includes(t)) && r.gtCut.type === 'numbers' && r.gtCut.routine === 'required');
+  chk(`HOST: micro.runTool runs one without a window (${JSON.stringify(r.one)}); a misspelled setting rejects naming the real one (“${(r.oneErr || '').slice(0, 90)}”)`,
+    r.one.cols.join() === 'series,cutoff,volume,grade,metal' && r.one.rows === 2 && r.one.win === 0 && /did you mean “cutoffs”/.test(r.oneErr || ''));
+  chk(`HOST: micro.routines() (${r.routines.join(' · ')}); checkRoutine dry-runs — every step, every problem, nothing written (${JSON.stringify(r.dry)} · ${JSON.stringify(r.drySloppy.problems)} · runs/ made: ${r.dryWrote})`,
+    r.routines.includes('monthly(g)') && r.dry.steps.length === 2 && r.dry.problems.length === 0 && /cutoffs: a routine must state it/.test(r.drySloppy.problems.join()) && !r.dryWrote);
+  chk(`HOST: a missing input rejects, never a dialog (“${r.noInput}”); runRoutine runs to the end, hears each step and returns the record (${JSON.stringify(r.run)})`,
+    /needs input “g”/.test(r.noInput || '') && r.run.status === 'ok' && /^runs\//.test(r.run.dir || '') && r.run.recSteps.join() === 'ok,pass' && r.run.inputs && r.run.inputs.g === 'FE' && r.run.steps.join() === '1:ok,2:pass' && r.run.evs.join() === 'ok');
+  chk(`HOST: micro.runs() (${r.runs.join(' · ')}); acceptRun marks the baseline (${r.acc} → ${r.accRuns})`, r.runs[0] === 'monthly:ok' && r.acc === 'host' && r.accRuns === 'host');
+  await p.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

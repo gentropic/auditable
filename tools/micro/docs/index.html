@@ -1033,7 +1033,21 @@ micro:layer-removed    { id }
 micro:layer-replaced   { from, to }
 micro:lattice-rejected { name, reason }
 micro:pick             { layer, rec, face, world, source } | null
-micro:selection        { layer, count }</pre>
+micro:selection        { layer, count }
+micro:routine-step     { routine, token, n, step, status }
+micro:routine-done     { routine, token, status, record, problems?, error? }</pre>
+<p><b>Tools and routines.</b> The analyses a routine runs are available without their windows. Layers are named as a routine names them, by name.</p>
+<pre>micro.tools()                          // [{ name, label, params, outputs }]: gt, stats, swath, validation, resource
+await micro.runTool('gt', { layer: 'model.csv', series: [{ col: 'AU', weight: 'DENS' }], cutoffs: [0.3, 0.5, 1] })
+  // → { table: { columns, rows, key, units }, values, resolved, warnings }
+micro.routines()                       // [{ name, file, inputs }]
+await micro.checkRoutine('month end', { inputs: { grade: 'AU' } })
+  // → { steps: [line…], problems: [..] }: the dry run, nothing runs or is written
+await micro.runRoutine('month end', { inputs: { grade: 'AU' }, onStep: (s) => … })
+  // → { status: 'ok' | 'failed' | 'cancelled' | 'refused', record, problems?, error? }
+await micro.runs()                     // [{ dir, routine, status, started, finished, baseline, accepted }]
+await micro.acceptRun(dir, 'A. Name')  // the baseline the next runs compare with</pre>
+<p>A tool's numbers are the ones its window and a routine step give. An unknown setting is refused, naming the nearest real one. <code>runRoutine</code> never prompts: a routine's inputs are given up front, and a missing one rejects. It resolves when the run ends, however it ends, with a copy of the run record (<code>runs/&lt;date&gt; &lt;time&gt; &lt;routine&gt;/run.json</code>): the SHA-256 of every input file and output, every step's settings, values and checks. A run that stopped at a check resolves as <code>failed</code>.</p>
 <p><b>Ids can change, and the API follows them.</b> Re-reading a drillhole layer (a new colour channel or category, a re-desurvey) or a few other re-reads (Reinterpret as, Reload from disk, a grid band) replaces the layer with a new one, with a new id. <code>micro:layer-replaced</code> says so, the new layer keeps its place in the layer tree, and any API call given the old id acts on the new layer. <code>setColorBy</code> resolves to the id the layer has afterwards.</p>
 <p><b>Groups.</b> A group is a path of names. <code>addLayer({ …, group: 'Model/Domains' })</code> and <code>open(file, { group })</code> file a new layer into it, creating the groups on the way; <code>group(path, ids)</code> moves existing layers. A group exists while it holds layers, so there is no empty group to make. A drillhole layer moves with its whole set.</p>
 <p><b>Embedding.</b> <code>micro.html?embed=1</code> hides the title and the Sealed badge from the first paint; <code>setChrome</code> changes that later. Hiding the badge in an embed is the honest default: Sealed is a claim about micro's own page, and a same-origin host page can read everything micro holds and has a network of its own. Help → <i>Why it's Sealed</i> stays either way.</p>

@@ -274,6 +274,25 @@ export function createHostApi(d) {
     // subset — legend: true (every visible layer) | false | id | [ids]
     decorations: () => d.decorations(),
     setDecorations: verb((o = {}) => d.setDecorations(o, live)),
+
+    // ── tools and routines (routines v2): the analyses, without windows; a routine run to the end,
+    // with its run record. Layers are named as a routine names them (by name). ──
+    tools: () => d.toolList(),
+    // one tool → { table: { columns, rows, key, units }, values, resolved, warnings } — the same
+    // numbers its window and a routine step give
+    runTool: verb(async (name, params = {}) => {
+      const res = await d.runTool(name, params);
+      return JSON.parse(JSON.stringify({ table: res.table, values: res.values, resolved: res.resolved, warnings: res.warnings }, (k, v) => (typeof v === 'number' && !Number.isFinite(v) ? null : v)));
+    }),
+    routines: () => S.recipes.filter((x) => x.tool === 'routine').map((x) => ({ name: x.name, file: x.file || null, inputs: (x.inputs || []).map((i) => ({ ...i })) })),
+    // the dry run: { steps: [line…], problems: [..] } — nothing runs, nothing is written
+    checkRoutine: verb((name, { inputs = {} } = {}) => d.checkRoutine(name, inputs)),
+    // run to the end → { status: 'ok' | 'failed' | 'cancelled' | 'refused', record, problems?, error? };
+    // never prompts (a missing input rejects). onStep({ n, step, status }) as each step ends.
+    runRoutine: verb((name, { inputs = {}, onStep = null } = {}) => d.runRoutine(name, inputs, onStep)),
+    // the project's runs (newest first) and the baseline mark
+    runs: verb(async () => (await d.listRuns()).map((x) => ({ dir: x.dir, routine: x.rec.routine && x.rec.routine.name, status: x.rec.status, started: x.rec.started, finished: x.rec.finished, baseline: x.rec.baseline || null, accepted: x.accepted || null }))),
+    acceptRun: verb((dir, by, note = '') => d.acceptRun(dir, by, note)),
   };
 
   // the app calls this once it is up: the promise resolves, and `micro:ready` fires
