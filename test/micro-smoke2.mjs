@@ -6017,6 +6017,80 @@ if (take()) {
   await p.close();
 }
 
+// ── §92: STYLING — the class model and what reads it (the 2026-11-21 styling review). A class
+//     colour belongs to its INTERVAL over the full break list, so a clip never re-deals the
+//     colours; the figure legend draws what the model draws (classes as swatches, '< 20' ·
+//     '≥ 65', in the classed LUT's colours) and follows the colour mode; typed breaks keep each
+//     colour with its class and undo; the clip travels with the colour-by (FE's 40–65 doesn't
+//     flatten SG); an inverted clip isn't applied. ──
+if (take()) {
+  const p = await mkPage('sm2style');
+  const r = await p.evaluate(async () => {
+    const M_ = window._micro, out = {};
+    const rows = ['XC,YC,ZC,FE,SG,LITO'];
+    for (let k = 0; k < 4; k++) for (let j = 0; j < 10; j++) for (let i = 0; i < 10; i++) rows.push(`${5 + i * 10},${5 + j * 10},${5 + k * 10},${(10 + (i * 10 + j) * 0.55).toFixed(2)},${(2.8 + (i + j) * 0.08).toFixed(2)},${i < 5 ? 'OX' : 'SUL'}`);
+    const id = await M_.openBlob(new File([rows.join('\n') + '\n'], 'st.csv'), 'st.csv', 'replace');
+    const L = M_.layers().find((x) => x.id === id);
+    M_.setActiveLayer(id);
+    const h = M_.layerTableHeader(L), fe = `chan:${h.columns.indexOf('FE')}`, sg = `chan:${h.columns.indexOf('SG')}`;
+    await M_.setLayerColorSel(L, fe);
+    const ramp = await import('/tools/micro/src/ramp.js'), deco = await import('/tools/micro/src/deco.js');
+    const { undoLast } = await import('/tools/micro/src/undo.js');
+    const COLS = ['#3b4cc0', '#7aa5f8', '#c9d7f0', '#f7b89c', '#e8694f', '#b40426'];
+    M_.setRampCfg(L, { classed: true, breaks: [20, 40, 55, 60, 65], colors: COLS.slice() });
+    const lutAt = (v) => { const [lo, hi] = M_.rampRangeFor(L), px = M_.bakeRampPixels(ramp.rampCfgOf(L), lo, hi), t = Math.round(Math.max(0, Math.min(1, (v - lo) / (hi - lo))) * 255) * 4; return '#' + [px[t], px[t + 1], px[t + 2]].map((x) => x.toString(16).padStart(2, '0')).join(''); };
+    out.before = [30, 50, 57, 62].map(lutAt);
+    L.clip = ['40', '66']; document.querySelector('#clipMin').value = '40'; document.querySelector('#clipMax').value = '66';
+    out.withClip = [50, 57, 62].map(lutAt);
+    // the legend: one swatch per class over the FULL list, labelled, in the same colours
+    M_.setLayerLegend(L, true);
+    const spec = deco.legendSpec(L);
+    out.legend = { kind: spec && spec.kind, labels: spec && spec.entries.map((e) => e.label), colors: spec && spec.entries.map((e) => e.color) };
+    // typed breaks through the pane keep colours with their classes, and undo
+    L.clip = ['', '']; document.querySelector('#clipMin').value = ''; document.querySelector('#clipMax').value = '';
+    M_.openProps();
+    const bIn = [...document.querySelectorAll('#ppBody .pp-row')].find((x) => /breaks/.test(x.textContent)).querySelector('input');
+    bIn.value = '20, 40, 54, 60, 65'; bIn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+    out.edited = { breaks: ramp.rampCfgOf(L).breaks.slice(), colors: (ramp.rampCfgOf(L).colors || []).slice() };
+    out.rows = [...document.querySelectorAll('#ppBody .pp-band')].length;
+    await undoLast();
+    out.undone = { breaks: ramp.rampCfgOf(L).breaks.slice(), colors: (ramp.rampCfgOf(L).colors || []).slice() };
+    // the clip travels with the colour-by
+    L.clip = ['40', '65']; document.querySelector('#clipMin').value = '40'; document.querySelector('#clipMax').value = '65';
+    await M_.setLayerColorSel(L, sg);
+    out.sgClip = L.clip.slice();
+    await M_.setLayerColorSel(L, fe);
+    out.feClip = L.clip.slice();
+    // an inverted clip typed in the toolbar isn't applied
+    const mn = document.querySelector('#clipMin'), mx = document.querySelector('#clipMax');
+    mn.value = '65'; mx.value = '40'; mx.dispatchEvent(new Event('input'));
+    out.inverted = { clip: L.clip.slice(), meta: document.querySelector('#meta').textContent };
+    mx.dispatchEvent(new Event('change'));
+    out.swapped = L.clip.slice();
+    // the legend follows the MODE: categories (by label), rules (by rule name)
+    await M_.setLayerColorSel(L, 'cat');
+    const cs = deco.legendSpec(L);
+    out.catLegend = cs && cs.entries.map((e) => e.label);
+    L.rules = { list: [{ name: 'ore', expr: 'FE >= 55', color: '#ff0000' }], elseColor: '#555a5f' };
+    await M_.setLayerColorSel(L, 'rules');
+    const rs = deco.legendSpec(L);
+    out.ruleLegend = rs && rs.entries.map((e) => e.label);
+    return out;
+  });
+  chk(`STYLE: a clip doesn't re-deal class colours (FE 50/57/62: ${r.before.slice(1).join(' ')} → ${r.withClip.join(' ')})`, JSON.stringify(r.before.slice(1)) === JSON.stringify(r.withClip));
+  chk(`STYLE: the legend draws the classes over the full break list (${JSON.stringify(r.legend.labels)})`,
+    r.legend.kind === 'classes' && JSON.stringify(r.legend.labels) === JSON.stringify(['< 20', '20 – 40', '40 – 55', '55 – 60', '60 – 65', '≥ 65']) && r.legend.colors[2] === '#c9d7f0' && r.legend.colors[5] === '#b40426');
+  chk(`STYLE: typed breaks keep each colour with its class (55→54: ${JSON.stringify(r.edited.colors)}, ${r.rows} class rows) and undo restores (${JSON.stringify(r.undone.breaks)})`,
+    JSON.stringify(r.edited.breaks) === JSON.stringify([20, 40, 54, 60, 65]) && JSON.stringify(r.edited.colors) === JSON.stringify(['#3b4cc0', '#7aa5f8', '#c9d7f0', '#f7b89c', '#e8694f', '#b40426']) && r.rows === 6
+    && JSON.stringify(r.undone.breaks) === JSON.stringify([20, 40, 55, 60, 65]));
+  chk(`STYLE: the clip travels with the colour-by (SG ${JSON.stringify(r.sgClip)}, back to FE ${JSON.stringify(r.feClip)})`, JSON.stringify(r.sgClip) === '["",""]' && JSON.stringify(r.feClip) === '["40","65"]');
+  chk(`STYLE: an inverted clip isn't applied (${JSON.stringify(r.inverted.clip)}, “${r.inverted.meta.slice(0, 40)}…”) and swaps on commit (${JSON.stringify(r.swapped)})`,
+    JSON.stringify(r.inverted.clip) === '["40","65"]' && /above max/.test(r.inverted.meta) && JSON.stringify(r.swapped) === '["40","65"]');
+  chk(`STYLE: the legend follows the mode — categories ${JSON.stringify(r.catLegend)}, rules ${JSON.stringify(r.ruleLegend)}`,
+    JSON.stringify(r.catLegend) === '["OX","SUL"]' && JSON.stringify(r.ruleLegend) === '["ore","everything else"]');
+  await p.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

@@ -7,7 +7,7 @@ import { refreshProps } from './props.js';
 import { useAsCategory } from './coltypes.js';
 import { addPaintColorOptions } from './paint.js';
 import { syncRuleMode } from './rules.js';
-import { RAMP_KIND, RAMP_PRESETS, applyRamp, colorSelOf, rampCfgOf, rampRangeFor, setRampCfg } from './ramp.js';
+import { RAMP_KIND, RAMP_PRESETS, applyRamp, colorSelOf, rampCfgOf, rampRangeFor, setRampCfg, swapClipForSel } from './ramp.js';
 import { buildValueTexture } from './valuetex.js';
 import { quoteIdent } from '../../../ext/expr/index.js';
 import { rowsProgress } from './analysis-ui.js';
@@ -158,6 +158,7 @@ export async function setLayerColorBy(L, v) {
     }
     v = 'cat';
   }
+  swapClipForSel(L, L.colorSel, v);                      // the clip travels with the colour-by (src/ramp.js)
   L.colorSel = v;
   const d = L.docs || {};
   let reread = false;
@@ -210,6 +211,7 @@ export async function setLayerColorBy(L, v) {
 
 // the same, for callers that don't wait: a failure goes to the status line
 export function setLayerColorSel(L, v) {
+  swapClipForSel(L, L.colorSel, String(v));               // before the assignment — setLayerColorBy then sees no change
   L.colorSel = v;
   return setLayerColorBy(L, v).catch((e) => { $('#meta').textContent = `color — ${e.message}`; });
 }

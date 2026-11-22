@@ -32,20 +32,65 @@ export function rampSample(stops, t) {
   const k = Math.min(stops.length - 2, x | 0), f = x - k;
   return [0, 1, 2].map((c) => Math.round(stops[k][c] * (1 - f) + stops[k + 1][c] * f));
 }
+// ── the CLASS model (classed ramps): breaks b0 < … < bn make n+1 classes — < b0, b0–b1, …,
+// ≥ bn — over the FULL break list, whatever the data range, the clip or the layer. A class's
+// colour is colors[k] (or the preset sampled at the class's place among ALL classes), so a
+// clip, a narrower layer (drillholes vs the model), a sentinel or a new file never moves a
+// colour to another interval. Every reader — the GPU's LUT, the pane's table, the histogram,
+// the figure legend — goes through these, so they cannot disagree.
+export function classBreaks(cfg) {
+  const b = ((cfg && cfg.breaks) || []).filter(Number.isFinite).slice().sort((a, c) => a - c);
+  return b.filter((v, i) => i === 0 || v > b[i - 1]);
+}
+export function classIndex(breaks, v) { let k = 0; while (k < breaks.length && v >= breaks[k]) k++; return k; }
+const _hex = (rgb) => '#' + rgb.map((v) => v.toString(16).padStart(2, '0')).join('');
+export function classColor(cfg, breaks, k) {
+  const ov = cfg && cfg.colors && cfg.colors[k];
+  if (ov) return ov;
+  return _hex(rampSample(RAMP_PRESETS[(cfg && cfg.preset) || 'viridis'] || RAMP_PRESETS.viridis, (k + 0.5) / (breaks.length + 1)));
+}
+// '< 20' · '20 – 40' · '≥ 65'
+export function classLabel(breaks, k, fmt = String) {
+  if (!breaks.length) return 'all';
+  if (k === 0) return `< ${fmt(breaks[0])}`;
+  if (k === breaks.length) return `≥ ${fmt(breaks[k - 1])}`;
+  return `${fmt(breaks[k - 1])} – ${fmt(breaks[k])}`;
+}
+// a break edit keeps each colour with ITS class: a new class takes the colour of the old one
+// with the same lower bound, else the same upper bound (a split gives both halves the
+// colour; a merge keeps the lower one; moving a break keeps both neighbours'); a wholesale
+// re-classification with the same class count (quantiles, equal) keeps the palette by place
+export function remapClassColors(oldBreaks, oldColors, newBreaks) {
+  if (!oldColors || !oldColors.some(Boolean)) return null;
+  const same = (a, b) => a === b || (Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) <= 1e-9 * Math.max(1, Math.abs(a), Math.abs(b)));
+  const bound = (br, k) => [k === 0 ? -Infinity : br[k - 1], k === br.length ? Infinity : br[k]];
+  const nOld = oldBreaks.length + 1, nNew = newBreaks.length + 1;
+  const out = new Array(nNew).fill(null);
+  let matched = 0;
+  for (let k = 0; k < nNew; k++) {
+    const [lo, hi] = bound(newBreaks, k);
+    let j = -1;
+    for (let q = 0; q < nOld && j < 0; q++) if (same(bound(oldBreaks, q)[0], lo)) j = q;
+    for (let q = 0; q < nOld && j < 0; q++) if (same(bound(oldBreaks, q)[1], hi)) j = q;
+    if (j >= 0) { out[k] = oldColors[j] || null; matched++; }
+  }
+  if (!matched && nOld === nNew) for (let k = 0; k < nNew; k++) out[k] = oldColors[k] || null;
+  return out.some(Boolean) ? out : null;
+}
+
 export function bakeRampPixels(cfg, lo, hi) {
   const px = new Uint8Array(256 * 4);
   const stops = RAMP_PRESETS[cfg.preset] || RAMP_PRESETS.viridis;
   const span = hi > lo ? hi - lo : 1;
-  const breaks = (cfg.breaks || []).filter((v) => Number.isFinite(v) && v > lo && v < hi).sort((a, b) => a - b);
+  const all = classBreaks(cfg);
+  const breaks = all.filter((v) => v > lo && v < hi);      // the STRETCHED ramp bends at the breaks inside the range
   for (let i = 0; i < 256; i++) {
     const t = i / 255;
     let c;
-    if (cfg.classed && breaks.length) {
-      const v = lo + t * span;
-      let k = 0; while (k < breaks.length && v >= breaks[k]) k++;
-      const ov = cfg.colors && cfg.colors[k];
-      if (ov) { const n2 = parseInt(ov.slice(1), 16); c = [(n2 >> 16) & 255, (n2 >> 8) & 255, n2 & 255]; }
-      else c = rampSample(stops, (k + 0.5) / (breaks.length + 1));
+    if (cfg.classed && all.length) {
+      // classes over the FULL break list: colour k is class k's, whatever the range
+      const n2 = parseInt(classColor(cfg, all, classIndex(all, lo + t * span)).slice(1), 16);
+      c = [(n2 >> 16) & 255, (n2 >> 8) & 255, n2 & 255];
     } else if (breaks.length) {
       const v = lo + t * span;
       const edges = [lo, ...breaks, hi];
@@ -101,6 +146,23 @@ export function applyRamp(L, force) {
     S.renderer.setLayerRamp(L.id, bakeRampPixels(cfg, lo, hi));
   }
   requestRender();
+}
+// the clip belongs to the COLOUR-BY, not the layer: FE's 40–65 must not flatten SG (2.8–4.3)
+// into one colour. Switching saves the old selection's clip with its ramp config and brings
+// the new selection's back (none: the data range). L.clip stays the live value every reader
+// already uses; the toolbar boxes follow for the active layer.
+export function swapClipForSel(L, prevSel, nextSel) {
+  if (!L || prevSel === nextSel) return;
+  L.ramps = L.ramps || {};
+  const cur = L.clip || ['', ''];
+  const set = cur[0] !== '' && cur[0] != null || cur[1] !== '' && cur[1] != null;
+  if (prevSel != null) {
+    if (set) (L.ramps[prevSel] || (L.ramps[prevSel] = { preset: 'viridis', classed: false, breaks: [] })).clip = [String(cur[0] ?? ''), String(cur[1] ?? '')];
+    else if (L.ramps[prevSel]) delete L.ramps[prevSel].clip;
+  }
+  const nc = L.ramps[nextSel] && L.ramps[nextSel].clip;
+  L.clip = nc ? nc.slice() : ['', ''];
+  if (L.id === S.activeId) { const a = $('#clipMin'), b = $('#clipMax'); if (a && b) { a.value = L.clip[0]; b.value = L.clip[1]; } }
 }
 export function setRampCfg(L, patch) {
   const cfg = rampCfgOf(L, true);

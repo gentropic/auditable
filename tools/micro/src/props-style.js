@@ -11,7 +11,7 @@ import { S, requestRender, activeLayer } from './state.js';
 import { setMeshTint, convertMeshLayer, applyLayerOpacity } from './layermenu.js';
 import { markProjectDirty } from './project.js';
 import { fmtSize } from './paths.js';
-import { colorSelOf, rampCfgOf, RAMP_PRESETS, setRampCfg, rampRangeFor, bakeRampPixels, applyRamp, rampSample } from './ramp.js';
+import { colorSelOf, rampCfgOf, RAMP_PRESETS, setRampCfg, rampRangeFor, bakeRampPixels, applyRamp, rampSample, classBreaks, classColor, classLabel, remapClassColors } from './ramp.js';
 import { paintColByName, addPaintColorOptions, openPaintPalette } from './paint.js';
 import { useAsCategory } from './coltypes.js';
 import { viewCatName, modelCatName, viewTextColumns, ensureViewCat } from './viewcat.js';
@@ -166,6 +166,12 @@ export function renderStyleTab(body, L) {
       const inp = document.createElement('input'); inp.type = 'number'; inp.style.width = '76px';
       inp.value = $('#' + id).value; inp.placeholder = id === 'clipMin' ? 'min' : 'max';
       inp.oninput = () => { $('#' + id).value = inp.value; $('#' + id).dispatchEvent(new Event('input')); requestRender(); };
+      // committed: repaint in place; the full re-render waits until focus has LEFT the pane — a
+      // rebuild here would destroy the max box the user is tabbing or clicking into
+      inp.onchange = () => {
+        $('#' + id).value = inp.value; $('#' + id).dispatchEvent(new Event('change'));
+        setTimeout(() => { const f = document.activeElement; if (f && f.closest && f.closest('#propPanel')) repaintRamp(); else renderProps(); }, 0);
+      };
       return inp;
     };
     body.appendChild(mkRow('clip', mkClip('clipMin'), mkClip('clipMax')));
@@ -430,6 +436,19 @@ function renderStickRadius(body, L) {
   num.onchange = () => { const v = +num.value; r.value = Math.min(Math.max(v, +r.min), +r.max); apply(v); };
   body.appendChild(mkRow('stick radius (m)', r, num));
 }
+// a break edit: the new list (sorted, deduped), each colour kept with its class
+// (remapClassColors), and one undo step that restores the exact before — on THIS cfg
+// object, so an undo after switching the colour-by still lands on the right column
+function editBreaks(L, next, label) {
+  const c = rampCfgOf(L, true);
+  const before = { breaks: (c.breaks || []).slice(), colors: c.colors ? c.colors.slice() : null };
+  const nb = classBreaks({ breaks: next });
+  const colors = remapClassColors(classBreaks(c), c.colors, nb);
+  setRampCfg(L, { breaks: nb, colors });
+  const after = { breaks: nb.slice(), colors: colors ? colors.slice() : null };
+  const put = (st) => { c.breaks = st.breaks.slice(); c.colors = st.colors ? st.colors.slice() : null; applyRamp(L); markProjectDirty(); refreshProps(); };
+  pushUndo(label, () => put(before), { redo: () => put(after) });
+}
 function renderRampSection(body, L) {
   const cfg = rampCfgOf(L) || { preset: 'viridis', classed: false, breaks: [] };
   const sec = document.createElement('div'); sec.className = 'pp-sec'; sec.textContent = 'ramp';
@@ -475,9 +494,7 @@ function renderRampSection(body, L) {
     bIn.style.cssText = 'flex:1;background:var(--bg-btn);color:var(--text);border:1px solid var(--border);font:inherit;padding:2px 5px;';
     bIn.value = ((cfgNow && cfgNow.breaks) || []).map((v) => fmtStat(v)).join(', ');
     const applyBreaks = () => {
-      const vals = bIn.value.split(/[,;\s]+/).map(parseFloat).filter(Number.isFinite).sort((a, b2) => a - b2);
-      const breaks = vals.filter((v, i) => i === 0 || v > vals[i - 1]);
-      setRampCfg(L, { breaks, colors: null });             // band count changed — custom colors are stale
+      editBreaks(L, bIn.value.split(/[,;\s]+/).map(parseFloat).filter(Number.isFinite), 'edit breaks');   // colours stay with their classes
       renderProps();
     };
     bIn.onkeydown = (e) => { if (e.key === 'Enter') applyBreaks(); };
@@ -547,18 +564,27 @@ function renderRampSection(body, L) {
     c2.breaks.forEach((v, i) => { const d2 = Math.abs(vx(v) - x); if (d2 < bd) { bd = d2; best = i; } });
     return best;
   };
-  let dragging = -1;
+  let dragging = -1, dragBefore = null;
   cvh.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return;
     const x = evX(e);
     const k = nearBreak(x);
-    if (k >= 0) { dragging = k; cvh.setPointerCapture(e.pointerId); }
+    if (k >= 0) {
+      const c0 = rampCfgOf(L, true);
+      c0.breaks = classBreaks(c0);                          // sorted, so a break's neighbours are its indices ± 1
+      dragging = nearBreak(x); dragBefore = c0.breaks.slice();
+      cvh.setPointerCapture(e.pointerId);
+    }
   });
   cvh.addEventListener('pointermove', (e) => {
     const x = evX(e);
     if (dragging >= 0) {
       const c2 = rampCfgOf(L, true);
-      c2.breaks[dragging] = xv(x);
+      // a break can't pass its neighbours: classes keep their order, so their colours stay theirs
+      const eps = span * 1e-4;
+      const lo2 = dragging > 0 ? c2.breaks[dragging - 1] + eps : -Infinity;
+      const hi2 = dragging < c2.breaks.length - 1 ? c2.breaks[dragging + 1] - eps : Infinity;
+      c2.breaks[dragging] = Math.min(hi2, Math.max(lo2, xv(x)));
       draw(); drawPreview();
       // live 3D tracking: with deferred re-shade a mid-drag ramp update is one
       // fullscreen resolve pass, not a re-raster — the model recolours under
@@ -569,18 +595,24 @@ function renderRampSection(body, L) {
       if (_rampRepaint && _rampRepaint.breaksIn) _rampRepaint.breaksIn();
     } else cvh.style.cursor = nearBreak(x) >= 0 ? 'ew-resize' : 'crosshair';
   });
-  cvh.addEventListener('pointerup', () => { if (dragging >= 0) { dragging = -1; setRampCfg(L, {}); renderProps(); } });
-  cvh.addEventListener('dblclick', (e) => {
-    const c2 = rampCfgOf(L, true);
-    c2.breaks.push(xv(evX(e)));
-    c2.breaks.sort((a, b2) => a - b2);
+  cvh.addEventListener('pointerup', () => {
+    if (dragging < 0) return;
+    dragging = -1;
+    const c2 = rampCfgOf(L, true), before = dragBefore, after = c2.breaks.slice();
     setRampCfg(L, {});
+    const put = (b) => { c2.breaks = b.slice(); applyRamp(L); markProjectDirty(); refreshProps(); };
+    if (before) pushUndo('move a break', () => put(before), { redo: () => put(after) });
+    renderProps();
+  });
+  cvh.addEventListener('dblclick', (e) => {               // split the class under the pointer: both halves keep its colour
+    const c2 = rampCfgOf(L, true);
+    editBreaks(L, [...(c2.breaks || []), xv(evX(e))], 'add a break');
     renderProps();                                          // the interval table + breaks input follow the gesture
   });
-  cvh.addEventListener('contextmenu', (e) => {
+  cvh.addEventListener('contextmenu', (e) => {             // merge two classes: the lower one's colour stays
     e.preventDefault();
     const k = nearBreak(evX(e));
-    if (k >= 0) { const c2 = rampCfgOf(L, true); c2.breaks.splice(k, 1); setRampCfg(L, {}); renderProps(); }
+    if (k >= 0) { const c2 = rampCfgOf(L, true); editBreaks(L, c2.breaks.filter((_, i) => i !== k), 'remove a break'); renderProps(); }
   });
   body.appendChild(cvh);
   const hint = document.createElement('div'); hint.className = 'pp-hist-hint';
@@ -619,107 +651,131 @@ function renderRampSection(body, L) {
         const tTotal = tail.reduce((a, c2) => a + c2[1], 0);
         if (tTotal > 0) breaks = collect(tail, tTotal);
       }
-      setRampCfg(L, { breaks, colors: null }); renderProps();
+      editBreaks(L, breaks, 'quantile breaks'); renderProps();   // same class count → the palette stays
     }),
     mkA('equal', () => {
       const n = Math.max(2, Math.min(12, +nIn.value || 5));
       const breaks = [];
       for (let i = 1; i < n; i++) breaks.push(lo + (span * i) / n);
-      setRampCfg(L, { breaks, colors: null }); renderProps();
+      editBreaks(L, breaks, 'equal breaks'); renderProps();
     }),
-    mkA('clear', () => { setRampCfg(L, { breaks: [], colors: null }); renderProps(); }),
+    mkA('clear', () => { editBreaks(L, [], 'clear breaks'); renderProps(); }),
     logL,
   );
   body.appendChild(bulk);
 }
-// the interval table (§10 breakpoints): one row per BAND — swatch (an
-// editable color chip in classed mode: grade shells colored like categories),
-// the upper boundary editable in place, count + share from the scan's
-// centroids. The quick-entry input above stays for typing round numbers.
+// the interval table (§10 breakpoints). CLASSED: one row per class over the FULL break list —
+// '< 20' · '20 – 40' · '≥ 65', an editable colour chip, the upper bound editable in place
+// (any value: a class outside this layer's range keeps its row and colour, count 0), and a
+// count + share from the scan's centroids. STRETCHED (unclassed): one row per band between
+// the range ends and the breaks inside it. The quick-entry input above stays for typing.
 function renderIntervalTable(body, L, lo, hi) {
   const cfg = rampCfgOf(L);
-  const breaks = ((cfg && cfg.breaks) || []).filter((v) => Number.isFinite(v) && v > lo && v < hi).sort((a, b2) => a - b2);
+  if (!cfg) return;
+  const classed = !!cfg.classed;
+  const all = classBreaks(cfg);
+  const breaks = classed ? all : all.filter((v) => v > lo && v < hi);
   if (!breaks.length) return;
-  const stops = RAMP_PRESETS[(cfg && cfg.preset) || 'viridis'] || RAMP_PRESETS.viridis;
+  const stops = RAMP_PRESETS[cfg.preset || 'viridis'] || RAMP_PRESETS.viridis;
   const selv = colorSelOf(L);
   const h = layerTableHeader(L);
   const colName = String(selv).startsWith('chan:') && h ? h.columns[+String(selv).slice(5)] : null;
   const stat = colName && L._colStats && L._colStats[colName];
   const F = stat && stat.centroids ? cdfFromCentroids(stat.centroids, stat.total) : null;
-  const bandCount = (a, b2) => (F ? Math.max(0, F(b2) - F(a)) : null);
-  const edges = [lo, ...breaks, hi];
   const fmtN = (v) => (v >= 1e6 ? (v / 1e6).toFixed(2) + 'M' : v >= 1e5 ? Math.round(v / 1e3) + 'k' : Math.round(v).toLocaleString());
-  const liveRows = [];                                     // per-band element refs for the live drag sync
-  for (let k = 0; k < edges.length - 1; k++) {
+  const hex = (rgb) => '#' + rgb.map((v) => v.toString(16).padStart(2, '0')).join('');
+  // the rows of the current break list: [from, to] per row (±∞ at a class table's ends)
+  const rowsOf = (bks) => (classed
+    ? Array.from({ length: bks.length + 1 }, (_, k) => [k === 0 ? -Infinity : bks[k - 1], k === bks.length ? Infinity : bks[k]])
+    : [lo, ...bks].map((v, k, arr) => [v, k === arr.length - 1 ? hi : arr[k + 1]]));
+  const countOf = (a2, b2) => {
+    if (!F) return null;
+    const fa = a2 === -Infinity ? 0 : F(a2), fb = b2 === Infinity ? stat.total : F(b2 === hi && !classed ? b2 + 1e-9 : b2);
+    return Math.max(0, fb - fa);
+  };
+  const ctText = (n) => (n == null ? '–' : `${fmtN(n)} · ${stat.total ? Math.round((100 * n) / stat.total) : 0}%`);
+  const swOf = (bks, k, rows) => (classed ? classColor(cfg, bks, k)
+    : hex(rampSample(stops, ((rows[k][0] + rows[k][1]) / 2 - lo) / Math.max(hi - lo, 1e-9))));
+  const rows = rowsOf(breaks);
+  const liveRows = [];                                     // per-row element refs for the live drag sync
+  rows.forEach(([from, to], k) => {
     const row = document.createElement('div'); row.className = 'pp-band';
-    const live = { fromS: null, toIn: null, toS: null, sw: null, ct: null };
+    const live = { fromS: null, dash: null, toIn: null, toS: null, sw: null, chip: null, ct: null };
     liveRows.push(live);
-    const midT = cfg.classed ? (k + 0.5) / (edges.length - 1) : ((edges[k] + edges[k + 1]) / 2 - lo) / Math.max(hi - lo, 1e-9);
-    const defHex = '#' + rampSample(stops, midT).map((v) => v.toString(16).padStart(2, '0')).join('');
-    if (cfg.classed) {
+    if (classed) {
       const chip = document.createElement('input'); chip.type = 'color';
-      chip.value = (cfg.colors && cfg.colors[k]) || defHex;
+      chip.value = classColor(cfg, breaks, k);
+      chip.title = `class ${classLabel(breaks, k, fmtStat)}`;
       chip.style.cssText = 'width:16px;height:14px;padding:0;border:1px solid var(--border);background:none;cursor:pointer;';
+      let chipBefore = null;
+      chip.onfocus = () => { const c0 = rampCfgOf(L, true); chipBefore = c0.colors ? c0.colors.slice() : null; };
       chip.oninput = () => {
         const c2 = rampCfgOf(L, true);
         c2.colors = c2.colors || [];
         c2.colors[k] = chip.value;
         setRampCfg(L, {});
       };
+      chip.onchange = () => {                               // one undo step per colour choice
+        const c2 = rampCfgOf(L, true), before = chipBefore, after = c2.colors ? c2.colors.slice() : null;
+        const put = (cl) => { c2.colors = cl ? cl.slice() : null; applyRamp(L); markProjectDirty(); refreshProps(); };
+        pushUndo('class colour', () => put(before), { redo: () => put(after), key: `classcolor:${L.id}:${k}` });
+        chipBefore = after;
+      };
       row.appendChild(chip);
+      live.chip = chip;
     } else {
-      const sw = document.createElement('span'); sw.className = 'sw'; sw.style.background = defHex;
+      const sw = document.createElement('span'); sw.className = 'sw'; sw.style.background = swOf(breaks, k, rows);
       row.appendChild(sw);
       live.sw = sw;
     }
-    const fromS = document.createElement('span'); fromS.className = 'from'; fromS.textContent = fmtStat(edges[k]);
-    const dash = document.createElement('span'); dash.className = 'dash'; dash.textContent = '–';
+    // the bounds: classed '< b0' · 'a – b' · '≥ bn'; stretched 'lo – b' … 'b – hi'
+    const first = classed && k === 0, last = k === rows.length - 1;
+    const fromS = document.createElement('span'); fromS.className = 'from';
+    fromS.textContent = first ? '' : classed && last ? '≥' : fmtStat(from);
+    const dash = document.createElement('span'); dash.className = 'dash'; dash.textContent = first ? '<' : classed && last ? '' : '–';
     row.append(fromS, dash);
-    live.fromS = fromS;
-    if (k < edges.length - 2) {
+    live.fromS = fromS; live.dash = dash;
+    if (!last) {
       const toIn = document.createElement('input'); toIn.type = 'number'; toIn.step = 'any';
-      toIn.value = +edges[k + 1].toFixed(2);
+      toIn.value = +to.toFixed(2);
       toIn.onchange = () => {
         const v = parseFloat(toIn.value);
-        if (!Number.isFinite(v) || v <= lo || v >= hi) { toIn.value = +edges[k + 1].toFixed(2); return; }
-        const c2 = rampCfgOf(L, true);
-        c2.breaks = breaks.map((b3, i) => (i === k ? v : b3)).sort((a, b3) => a - b3).filter((b3, i, arr) => i === 0 || b3 > arr[i - 1]);
-        setRampCfg(L, {});
+        if (!Number.isFinite(v) || (!classed && (v <= lo || v >= hi))) { toIn.value = +to.toFixed(2); return; }
+        editBreaks(L, breaks.map((b3, i) => (i === k ? v : b3)), 'edit a class bound');
         renderProps();
       };
       row.appendChild(toIn);
       live.toIn = toIn;
     } else {
-      const toS = document.createElement('span'); toS.className = 'to-max'; toS.textContent = fmtStat(edges[k + 1]);
+      const toS = document.createElement('span'); toS.className = 'to-max';
+      toS.textContent = classed ? fmtStat(breaks[breaks.length - 1]) : fmtStat(to);
       row.appendChild(toS);
       live.toS = toS;
     }
     const ct = document.createElement('span'); ct.className = 'ct';
-    const n = bandCount(edges[k], k === edges.length - 2 ? edges[k + 1] + 1e-9 : edges[k + 1]);
-    ct.textContent = n == null ? '–' : `${fmtN(n)} · ${stat.total ? Math.round((100 * n) / stat.total) : 0}%`;
+    ct.textContent = ctText(countOf(from, to));
     row.appendChild(ct);
     live.ct = ct;
     body.appendChild(row);
-  }
-  // live drag sync: the histogram drag repatches bounds, swatches, and counts
-  // in place — the FILE-of-record stays cfg.breaks; renderProps still owns any
-  // structural change (a band added/removed mid-gesture just freezes the table
-  // until pointerup)
+  });
+  // live drag sync: the histogram drag repatches bounds, swatches and counts in place — the
+  // file-of-record stays cfg.breaks; renderProps still owns any structural change (a row
+  // added or removed mid-gesture just freezes the table until pointerup)
   if (_rampRepaint) _rampRepaint.bands = () => {
     const c2 = rampCfgOf(L);
-    const bks = ((c2 && c2.breaks) || []).filter((v) => Number.isFinite(v) && v > lo && v < hi).sort((a, b3) => a - b3);
+    const all2 = classBreaks(c2);
+    const bks = classed ? all2 : all2.filter((v) => v > lo && v < hi);
     if (bks.length !== breaks.length) return;
-    const ed = [lo, ...bks, hi];
+    const rs = rowsOf(bks);
     liveRows.forEach((r, k) => {
-      r.fromS.textContent = fmtStat(ed[k]);
-      if (r.toIn && document.activeElement !== r.toIn) r.toIn.value = +ed[k + 1].toFixed(2);
-      if (r.toS) r.toS.textContent = fmtStat(ed[k + 1]);
-      if (r.sw) {
-        const midT = c2 && c2.classed ? (k + 0.5) / (ed.length - 1) : ((ed[k] + ed[k + 1]) / 2 - lo) / Math.max(hi - lo, 1e-9);
-        r.sw.style.background = '#' + rampSample(stops, midT).map((v) => v.toString(16).padStart(2, '0')).join('');
-      }
-      const n2 = bandCount(ed[k], k === ed.length - 2 ? ed[k + 1] + 1e-9 : ed[k + 1]);
-      r.ct.textContent = n2 == null ? '–' : `${fmtN(n2)} · ${stat.total ? Math.round((100 * n2) / stat.total) : 0}%`;
+      const [from, to] = rs[k];
+      const first = classed && k === 0, last = k === rs.length - 1;
+      r.fromS.textContent = first ? '' : classed && last ? '≥' : fmtStat(from);
+      if (r.toIn && document.activeElement !== r.toIn) r.toIn.value = +to.toFixed(2);
+      if (r.toS) r.toS.textContent = classed ? fmtStat(bks[bks.length - 1]) : fmtStat(to);
+      if (r.sw) r.sw.style.background = swOf(bks, k, rs);
+      if (r.chip && document.activeElement !== r.chip) r.chip.value = classColor(c2, bks, k);
+      r.ct.textContent = ctText(countOf(from, to));
     });
   };
 }
@@ -899,3 +955,5 @@ function renderClassList(body, L, info) {
 }
 export let _rampRepaint = null;   // { prev, hist } — the ramp section's live canvases
 export function dropRampRepaint() { _rampRepaint = null; }   // the panel closed: nothing to keep live
+// a clip typed in the pane: the strip, histogram, table and breaks entry repaint in place
+export function repaintRamp() { const r = _rampRepaint; if (!r) return; for (const k of ['prev', 'hist', 'bands', 'breaksIn']) if (r[k]) r[k](); }

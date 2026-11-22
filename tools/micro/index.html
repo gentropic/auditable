@@ -1232,7 +1232,8 @@ import { openValidation } from './src/validation.js';
 import { routineEval, routineFilterRows, routineSubst, routineReadTableFull, routineLoadParams, expandRoutine, routineTargets, openRoutineTracker, runRoutine, saveRecipe, loadRecipes, runRecipe, recipesMenuItems } from './src/recipes.js';
 import { openRoutineWindow, openInputsDialog } from './src/routine-ui.js';
 import { meshSolidOf, setWindingGpu, residentGridForEval, selectByGridSurface, ratioByGridSurface, flagByGridSurface, selectBySolid, ratioBySolid, flagBySolid, assignDomains } from './src/bygeom.js';
-import { _propOpen, openProps, closeProps, propKindLine, renderProps, _autoApply, pushAllStyle, revertStyle, syncPPFooter, setPropTab, setAutoApply } from './src/props.js';
+import { _propOpen, openProps, closeProps, propKindLine, renderProps, refreshProps, _autoApply, pushAllStyle, revertStyle, syncPPFooter, setPropTab, setAutoApply } from './src/props.js';
+import { repaintRamp } from './src/props-style.js';
 import { setColumnQualify, useAsCategory } from './src/coltypes.js';
 import { applyRuleVisibility, syncRuleMode, runRules } from './src/rules.js';
 import { applyCatLegend } from './src/categories.js';
@@ -1589,14 +1590,38 @@ $('#dhCancel').onclick = dhCancel;
 // switching the grade channel = re-stream sweep 2 with a new mapping (windowed ethos)
 $('#colorBy').addEventListener('change', () => {
   const L = activeLayer();
-  if (L) setLayerColorBy(L, $('#colorBy').value).catch((e) => { $('#meta').textContent = `color — ${e.message}`; });
+  // the open properties pane follows a colour-by chosen here (it went stale before)
+  if (L) setLayerColorBy(L, $('#colorBy').value).then(() => refreshProps(), (e) => { $('#meta').textContent = `color — ${e.message}`; });
   else requestRender();
 });
 
-for (const id of ['clipMin', 'clipMax']) $('#' + id).addEventListener('input', () => {
-  const L = activeLayer(); if (L) { L.clip = [$('#clipMin').value, $('#clipMax').value]; const pcR = paintActiveCol(L) || calcDisplayCol(L); if (rampCfgOf(L) || (pcR && pcR.kind === 'ratio')) applyRamp(L, true); }
-  dispatchEvent(new Event('micro:project-dirty'));
-});
+// the clip: an inverted pair isn't applied while it's being typed (the old range holds, the
+// status line says why) and is swapped on commit; the pane follows — fully when the edit came
+// from here, as a repaint when it came from the pane's own boxes (so typing keeps its focus)
+const clipPair = () => [$('#clipMin').value, $('#clipMax').value];
+const clipInverted = ([a, b]) => Number.isFinite(parseFloat(a)) && Number.isFinite(parseFloat(b)) && parseFloat(a) > parseFloat(b);
+for (const id of ['clipMin', 'clipMax']) {
+  $('#' + id).addEventListener('input', () => {
+    const L = activeLayer();
+    if (L) {
+      const p = clipPair();
+      if (clipInverted(p)) { $('#meta').textContent = `clip: min ${p[0]} is above max ${p[1]} — not applied (they swap when you leave the box)`; return; }
+      L.clip = p;
+      const pcR = paintActiveCol(L) || calcDisplayCol(L);
+      if (rampCfgOf(L) || (pcR && pcR.kind === 'ratio')) applyRamp(L, true);
+      requestRender();
+      if (document.activeElement && document.activeElement.closest && document.activeElement.closest('#propPanel')) repaintRamp(); else refreshProps();
+    }
+    dispatchEvent(new Event('micro:project-dirty'));
+  });
+  $('#' + id).addEventListener('change', () => {
+    const L = activeLayer(); const p = clipPair();
+    if (!L || !clipInverted(p)) return;
+    $('#clipMin').value = p[1]; $('#clipMax').value = p[0];
+    $('#meta').textContent = `clip: min and max swapped → ${p[1]} – ${p[0]}`;
+    $('#clipMin').dispatchEvent(new Event('input'));
+  });
+}
 
 attachAutocomplete($('#filter'), filterCtx);
 

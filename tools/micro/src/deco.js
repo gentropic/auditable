@@ -4,8 +4,11 @@
 // figure recipe. The app owns the camera, the render loop and the overlay canvas.
 import { hexToRgb01 } from './color.js';
 import { sceneDefault } from './theme.js';
-import { ensureLegend, layerClassInfo } from './categories.js';
-import { RAMP_PRESETS, colorSelOf, rampCfgOf, rampRangeFor, rampSample } from './ramp.js';
+import { ensureLegend, layerClassInfo, legendCodesOf } from './categories.js';
+import { colorSelOf, rampCfgOf, rampRangeFor, bakeRampPixels, classBreaks, classColor, classLabel } from './ramp.js';
+import { rulesOf, RULE_ELSE } from './rules.js';
+import { paintColByName } from './paint.js';
+import { calcSelOf } from './calc.js';
 import { layerTableHeader } from './records.js';
 import { S, activeLayer, requestRender } from './state.js';
 import { fmtStat } from './analysis-ui.js';
@@ -108,19 +111,73 @@ export function drawTitleDeco(g, W, H) {
   _label(g, _deco.titleText, W / 2, 12);
 }
 
-// legend title shown when the user hasn't overridden it — the coloured attribute
-export function legendDefaultTitle(L) {
-  const sel = colorSelOf(L);
-  if (String(sel).startsWith('chan:')) { const h = layerTableHeader(L); return (h && h.columns[+sel.slice(5)]) || 'value'; }
-  return L.label || L.name || '';
+// ── what a layer's colour MEANS right now — the one description every legend draws (the live
+// overlay and the exported figure), following the colour MODE: a continuous ramp (its baked
+// LUT, so stretched breaks bend it as the model shows, with ≤/≥ ends under a clip), classes
+// (one swatch per class over the full break list — what the model is drawn in), categories
+// (the classes tab's labels and colours, hidden entries left out), rules (each rule's name and
+// colour, then 'everything else'), or a painted column's values. Solid and file RGB: none.
+// The ONE function, so a legend can't disagree with the drawing. ──
+const RAMP_SEL = (sel) => sel.startsWith('chan:') || sel === 'elev' || sel === '0' || sel.startsWith('calc:');
+export function legendSpec(L) {
+  const sel = String(colorSelOf(L));
+  const pc = sel.startsWith('paint:') ? paintColByName(L, sel.slice(6)) : null;
+  if (RAMP_SEL(sel) || (pc && pc.kind === 'ratio')) {
+    const rng = rampRangeFor(L);
+    if (!rng || !Number.isFinite(rng[0]) || !Number.isFinite(rng[1])) return null;
+    const cfg = rampCfgOf(L) || { preset: 'viridis', classed: false, breaks: [] };
+    const all = classBreaks(cfg);
+    if (cfg.classed && all.length) {
+      // high values on top, as the ramp bar reads
+      return { kind: 'classes', highFirst: true, entries: all.concat([null]).map((_, k) => ({ label: classLabel(all, k, fmtStat), color: classColor(cfg, all, k) })) };
+    }
+    const clip = [parseFloat(L.clip && L.clip[0]), parseFloat(L.clip && L.clip[1])];
+    return { kind: 'ramp', lo: rng[0], hi: rng[1], lut: bakeRampPixels(cfg, rng[0], rng[1]),
+      ticks: all.filter((v) => v > rng[0] && v < rng[1]), clipLo: Number.isFinite(clip[0]), clipHi: Number.isFinite(clip[1]) };
+  }
+  if (sel === 'rules') {
+    const hid = L.ruleHidden || new Set();
+    const entries = rulesOf(L).map((r, i) => ({ label: r.name || r.expr || `rule ${i + 1}`, color: r.color || RULE_ELSE, hidden: hid.has(i + 1) }));
+    entries.push({ label: 'everything else', color: (L.rules && L.rules.elseColor) || RULE_ELSE, hidden: hid.has(0) });
+    return { kind: 'classes', entries: entries.filter((e) => !e.hidden) };
+  }
+  if (pc) {                                                // a painted (brush) column: its values and colours
+    const entries = pc.dict.map((d2, c) => (c > 0 && d2 != null ? { label: String(d2), color: pc.colors[c] || RULE_ELSE } : null)).filter(Boolean);
+    return entries.length ? { kind: 'classes', entries } : null;
+  }
+  if (sel === 'cat' || sel.startsWith('catcol:') || sel === '2') {
+    const info = layerClassInfo(L); if (!info) return null;
+    const leg = ensureLegend(L, info); if (!leg || !leg.entries) return null;
+    const hid = L.catHidden || new Set();
+    const entries = leg.entries
+      .filter((e) => { const cs = legendCodesOf(info, e); return !cs.length || !cs.every((c) => hid.has(c)); })
+      .map((e) => ({ label: e.label, color: e.color }));
+    return entries.length ? { kind: 'classes', entries } : null;
+  }
+  return null;
 }
 
-// can this layer show a legend at all? (a continuous ramp with a range, or classes)
-export function legendAvailable(L) {
-  const sel = colorSelOf(L);
-  if (String(sel).startsWith('chan:')) return !!rampRangeFor(L);
-  const info = layerClassInfo(L); if (!info) return false; const leg = ensureLegend(L, info); return !!(leg && leg.entries && leg.entries.length);
+// legend title shown when the user hasn't overridden it — the coloured attribute
+export function legendDefaultTitle(L) {
+  const sel = String(colorSelOf(L));
+  if (sel.startsWith('chan:')) { const h = layerTableHeader(L); return (h && h.columns[+sel.slice(5)]) || 'value'; }
+  if (sel === 'elev' || sel === '0') return 'elevation';
+  if (sel === 'rules') return 'rules';
+  if (sel.startsWith('calc:')) return calcSelOf(L) || 'value';
+  if (sel.startsWith('paint:')) return sel.slice(6);
+  if (sel === 'cat' || sel.startsWith('catcol:') || sel === '2') { const info = layerClassInfo(L); if (info && info.column) return info.column; }
+  return L.label || L.name || '';
 }
+// two legends on one attribute name say whose they are (the model's FE and the holes' FE)
+function legendCaption(L) {
+  if (L.legendTitle && L.legendTitle.trim()) return L.legendTitle.trim();
+  const t = legendDefaultTitle(L);
+  const twin = legendLayers().some((o) => o !== L && !(o.legendTitle && o.legendTitle.trim()) && legendDefaultTitle(o) === t);
+  return twin ? `${t} · ${L.label || L.name || ''}` : t;
+}
+
+// can this layer show a legend at all?
+export function legendAvailable(L) { return !!legendSpec(L); }
 
 export function legendLayers() { return S.layers.filter((L) => L.legend && L.visible && legendAvailable(L)); }
 
@@ -129,26 +186,53 @@ export function anyLegend() { return legendLayers().length > 0; }
 // draw ONE legend for layer L at (bx, by); returns the vertical extent consumed
 // (so multiple legends can stack down the right column). Caption defaults to the
 // coloured attribute name, overridable per-layer via L.legendTitle.
+const LEGEND_MAX = 12;
+// text cut to a width with an ellipsis (legends live in a fixed right-hand column)
+function _fit(g, t, maxW) {
+  if (g.measureText(t).width <= maxW) return t;
+  while (t.length > 1 && g.measureText(t + '…').width > maxW) t = t.slice(0, -1);
+  return t + '…';
+}
 export function drawOneLegend(g, L, bx, by) {
-  const sel = colorSelOf(L), bw = 15;
-  const cap = (L.legendTitle && L.legendTitle.trim()) || legendDefaultTitle(L);
-  if (String(sel).startsWith('chan:')) {
-    const cfg = rampCfgOf(L) || { preset: 'viridis' }, stops = RAMP_PRESETS[cfg.preset] || RAMP_PRESETS.viridis, rng = rampRangeFor(L);
-    if (!rng) return 0; const [lo, hi] = rng, bh = 118;
-    if (cap) { g.font = '11px monospace'; g.textAlign = 'left'; g.textBaseline = 'alphabetic'; _label(g, cap, bx, by - 7); }
-    for (let i = 0; i < bh; i++) { const c = rampSample(stops, 1 - i / bh); g.fillStyle = `rgb(${c[0]},${c[1]},${c[2]})`; g.fillRect(bx, by + i, bw, 1); }
-    g.strokeStyle = 'rgba(0,0,0,0.5)'; g.lineWidth = 1; g.strokeRect(bx, by, bw, bh);
-    g.font = '11px monospace'; g.textAlign = 'left'; g.textBaseline = 'middle';
-    _label(g, fmtStat(hi), bx + bw + 5, by); _label(g, fmtStat((lo + hi) / 2), bx + bw + 5, by + bh / 2); _label(g, fmtStat(lo), bx + bw + 5, by + bh);
-    return bh + 12;
-  } else {
-    const info = layerClassInfo(L); if (!info) return 0; const leg = ensureLegend(L, info); if (!leg || !leg.entries) return 0;
-    let y = by;
-    if (cap) { g.font = '11px monospace'; g.textAlign = 'left'; g.textBaseline = 'alphabetic'; _label(g, cap, bx, y - 7); }
-    g.textBaseline = 'middle';
-    for (const e of leg.entries.slice(0, 12)) { g.fillStyle = e.color; g.fillRect(bx, y - 6, 12, 12); g.strokeStyle = 'rgba(0,0,0,0.5)'; g.lineWidth = 1; g.strokeRect(bx, y - 6, 12, 12); _label(g, String(e.values ? e.values[0] : e.label || ''), bx + 17, y); y += 17; }
-    return (y - by) + 4;
+  const spec = legendSpec(L); if (!spec) return 0;
+  const cap = legendCaption(L), bw = 15;
+  if (cap) {                                               // ellipsized to the legend column, never off the edge
+    g.font = '11px monospace'; g.textAlign = 'left'; g.textBaseline = 'alphabetic';
+    _label(g, _fit(g, cap, 140), bx, by - 7);
   }
+  if (spec.kind === 'ramp') {
+    const { lo, hi, lut } = spec, bh = 118;
+    for (let i = 0; i < bh; i++) {
+      const t = Math.round((1 - i / (bh - 1)) * 255) * 4;
+      g.fillStyle = `rgb(${lut[t]},${lut[t + 1]},${lut[t + 2]})`; g.fillRect(bx, by + i, bw, 1);
+    }
+    g.strokeStyle = 'rgba(0,0,0,0.5)'; g.lineWidth = 1; g.strokeRect(bx, by, bw, bh);
+    const yOf = (v) => by + (1 - (v - lo) / Math.max(hi - lo, 1e-12)) * bh;
+    g.font = '11px monospace'; g.textAlign = 'left'; g.textBaseline = 'middle';
+    // ends: a clipped end says values beyond it share its colour
+    _label(g, (spec.clipHi ? '≥ ' : '') + fmtStat(hi), bx + bw + 5, by);
+    _label(g, (spec.clipLo ? '≤ ' : '') + fmtStat(lo), bx + bw + 5, by + bh);
+    if (spec.ticks.length) {                                // a stretched ramp's breaks, where the colours bend
+      for (const v of spec.ticks) {
+        const y = yOf(v);
+        g.strokeStyle = 'rgba(0,0,0,0.6)'; g.beginPath(); g.moveTo(bx, y); g.lineTo(bx + bw + 3, y); g.stroke();
+        if (y > by + 12 && y < by + bh - 12) _label(g, fmtStat(v), bx + bw + 5, y);
+      }
+    } else _label(g, fmtStat((lo + hi) / 2), bx + bw + 5, by + bh / 2);
+    return bh + 12;
+  }
+  // classes / categories / rules / painted values: one swatch per entry
+  const list = spec.highFirst ? spec.entries.slice().reverse() : spec.entries;
+  let y = by + 6;                                          // the first swatch clears the caption
+  g.textBaseline = 'middle';
+  for (const e of list.slice(0, LEGEND_MAX)) {
+    g.fillStyle = e.color; g.fillRect(bx, y - 6, 12, 12);
+    g.strokeStyle = 'rgba(0,0,0,0.5)'; g.lineWidth = 1; g.strokeRect(bx, y - 6, 12, 12);
+    _label(g, _fit(g, String(e.label), 125), bx + 17, y);
+    y += 17;
+  }
+  if (list.length > LEGEND_MAX) { _label(g, `+${list.length - LEGEND_MAX} more`, bx + 17, y); y += 17; }
+  return (y - by) + 4;
 }
 
 export function drawLegendsDeco(g, W, H) {
