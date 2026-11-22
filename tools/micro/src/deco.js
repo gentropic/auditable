@@ -5,7 +5,7 @@
 import { hexToRgb01 } from './color.js';
 import { sceneDefault } from './theme.js';
 import { ensureLegend, layerClassInfo, legendCodesOf } from './categories.js';
-import { colorSelOf, rampCfgOf, rampRangeFor, bakeRampPixels, classBreaks, classColor, classLabel } from './ramp.js';
+import { colorSelOf, rampCfgOf, rampRangeFor, bakeRampPixels, classBreaks, classColor, classLabel, noDataOf } from './ramp.js';
 import { rulesOf, RULE_ELSE } from './rules.js';
 import { paintColByName } from './paint.js';
 import { calcSelOf } from './calc.js';
@@ -127,12 +127,18 @@ export function legendSpec(L) {
     if (!rng || !Number.isFinite(rng[0]) || !Number.isFinite(rng[1])) return null;
     const cfg = rampCfgOf(L) || { preset: 'viridis', classed: false, breaks: [] };
     const all = classBreaks(cfg);
+    // blanks in this column, shown: a "no data" swatch after the classes / under the bar
+    const nd = noDataOf(L), sv2 = sel, h2 = layerTableHeader(L);
+    const nm = sv2.startsWith('chan:') && h2 ? h2.columns[+sv2.slice(5)] : sv2.startsWith('calc:') ? sv2.slice(5) : sv2.startsWith('paint:') ? sv2.slice(6) : null;
+    const st = nm && L._colStats && L._colStats[nm];
+    const noData = !nd.hide && st && st.nulls > 0 ? { label: 'no data', color: nd.color } : null;
     if (cfg.classed && all.length) {
-      // high values on top, as the ramp bar reads
-      return { kind: 'classes', highFirst: true, entries: all.concat([null]).map((_, k) => ({ label: classLabel(all, k, fmtStat), color: classColor(cfg, all, k) })) };
+      // high values on top, as the ramp bar reads; a hidden class isn't drawn, so it isn't listed
+      const entries = all.concat([null]).map((_, k) => ({ label: classLabel(all, k, fmtStat), color: classColor(cfg, all, k), hidden: !!(cfg.hide && cfg.hide[k]) })).filter((e) => !e.hidden);
+      return { kind: 'classes', highFirst: true, entries, tail: noData };
     }
     const clip = [parseFloat(L.clip && L.clip[0]), parseFloat(L.clip && L.clip[1])];
-    return { kind: 'ramp', lo: rng[0], hi: rng[1], lut: bakeRampPixels(cfg, rng[0], rng[1]),
+    return { kind: 'ramp', tail: noData, lo: rng[0], hi: rng[1], lut: bakeRampPixels(cfg, rng[0], rng[1]),
       ticks: all.filter((v) => v > rng[0] && v < rng[1]), clipLo: Number.isFinite(clip[0]), clipHi: Number.isFinite(clip[1]) };
   }
   if (sel === 'rules') {
@@ -219,10 +225,17 @@ export function drawOneLegend(g, L, bx, by) {
         if (y > by + 12 && y < by + bh - 12) _label(g, fmtStat(v), bx + bw + 5, y);
       }
     } else _label(g, fmtStat((lo + hi) / 2), bx + bw + 5, by + bh / 2);
+    if (spec.tail) {                                         // blanks: their own swatch under the bar
+      const y = by + bh + 14;
+      g.fillStyle = spec.tail.color; g.fillRect(bx, y - 6, 12, 12);
+      g.strokeStyle = 'rgba(0,0,0,0.5)'; g.lineWidth = 1; g.strokeRect(bx, y - 6, 12, 12);
+      g.textBaseline = 'middle'; _label(g, spec.tail.label, bx + 17, y);
+      return bh + 12 + 20;
+    }
     return bh + 12;
   }
   // classes / categories / rules / painted values: one swatch per entry
-  const list = spec.highFirst ? spec.entries.slice().reverse() : spec.entries;
+  const list = (spec.highFirst ? spec.entries.slice().reverse() : spec.entries.slice()).concat(spec.tail ? [spec.tail] : []);
   let y = by + 6;                                          // the first swatch clears the caption
   g.textBaseline = 'middle';
   for (const e of list.slice(0, LEGEND_MAX)) {

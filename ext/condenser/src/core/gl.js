@@ -38,6 +38,8 @@ uniform int uColorMode;                 // 0 elevation | 1 intensity | 2 classif
 uniform vec2 uZRange;                   // document local z min/span (elevation ramp)
 uniform float uIntensityScale;          // 1 / (p98-ish max, normalized units)
 uniform sampler2D uRamp;                // 256x1 continuous ramp
+uniform vec4 uNoData;                   // blank values (chan.js code 0 / the value texture's BLANK): rgb + a (a < 0.5 = hidden)
+uniform float uNoDataOn;                // off: a blank clamps to the lowest colour, the old picture
 uniform sampler2D uPalette;             // classification / category palette
 uniform float uPaletteN;                // its width (32 = LAS classes, 256 = category dict)
 uniform sampler2D uMask;                // filter bitmask by record index (8192-wide)
@@ -78,14 +80,23 @@ void main() {
   if (uColorMode == 0) {
     float t = clamp((p.z - uZRange.x) / max(uZRange.y, 1e-6), 0.0, 1.0);
     vColor = texture(uRamp, vec2(t, 0.5));
+    if (vColor.a < 0.5) vCull = 1.0;                      // a hidden class: the ramp texel's alpha is 0
   } else if (uColorMode == 1) {
     float t;
+    bool blank = false;
     if (uChanTexOn > 0.5) {
       int rc = int(aRec);
       float v = texelFetch(uChanTex, ivec2(rc & 8191, rc >> 13), 0).r;
+      blank = v < -1.0e37;                                 // the value texture's BLANK
       t = clamp((v - uChanDoc.x) / max(uChanDoc.y, 1e-6), 0.0, 1.0);
     } else t = clamp(aIntensity * uIntensityScale, 0.0, 1.0);
-    vColor = texture(uRamp, vec2(t, 0.5));
+    if (blank && uNoDataOn > 0.5) {
+      vColor = vec4(uNoData.rgb, 1.0);
+      if (uNoData.a < 0.5) vCull = 1.0;
+    } else {
+      vColor = texture(uRamp, vec2(t, 0.5));
+      if (vColor.a < 0.5) vCull = 1.0;
+    }
   } else if (uColorMode == 2) {
     vColor = texture(uPalette, vec2((cls + 0.5) / uPaletteN, 0.5));
   } else {
@@ -215,7 +226,7 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
     catVis: U('uCatVis'), catVisOn: U('uCatVisOn'),
     sel: U('uSel'), selOn: U('uSelOn'),
     rule: U('uRule'), ruleOn: U('uRuleOn'),
-    chanTex: U('uChanTex'), chanTexOn: U('uChanTexOn'), chanDoc: U('uChanDoc'),
+    chanTex: U('uChanTex'), chanTexOn: U('uChanTexOn'), chanDoc: U('uChanDoc'), noData: U('uNoData'), noDataOn: U('uNoDataOn'),
   };
   const ramp = lutTexture(gl, rampPixels(), 256);
   const palette = lutTexture(gl, palettePixels(), 32);   // LAS classification (points)
@@ -261,7 +272,7 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
     if (!l) {
       l = { visible: true, set: 'base', maskTex: null, maskH: 0, isolate: false,
             intensityMax: 1, docChan: [Infinity, -Infinity], catN: 0, stickRadius: 1, sectioned: true,
-            meshTint: [0.62, 0.64, 0.66], meshOpacity: 1, opacity: 1, catVisTex: null, rampTex: null, paletteTex: null, paletteW: 0, selTex: null, selH: 0,
+            meshTint: [0.62, 0.64, 0.66], meshOpacity: 1, opacity: 1, catVisTex: null, rampTex: null, rampHides: false, rampAlphaSig: '', noData: null, paletteTex: null, paletteW: 0, selTex: null, selH: 0,
             ruleTex: null, ruleH: 0, ruleOn: false,
             chanTex: null, chanTexRange: null, offset: null };
       layers.set(id, l);
@@ -626,14 +637,35 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
     // ramp normalization — a computed texture has no docChan of its own. Pass a
     // null texture to fall back to aChan. The caller OWNS the texture (create,
     // render into, delete); the renderer only samples it.
+    // what a BLANK value draws as (chan.js): [r, g, b, a] 0..1 — a < 0.5 hides blanks — or null
+    // for the old picture (a blank clamps to the lowest ramp colour). A change in whether blanks
+    // show re-rasters (they cull); a colour change re-shades.
+    setLayerNoData(layer, rgba) {
+      const ls = layerOf(layer);
+      const next = rgba ? [+rgba[0], +rgba[1], +rgba[2], rgba[3] == null ? 1 : +rgba[3]] : null;
+      const prev = ls.noData;
+      if (JSON.stringify(prev) === JSON.stringify(next)) return;
+      ls.noData = next;
+      const shown = (v) => !v || v[3] >= 0.5;
+      if (!prev !== !next || shown(prev) !== shown(next)) { needClear = true; dropCapture(); } else cosmeticDirtyLayers.add(layer);
+    },
+    // what a layer hides or recolours by VALUE (introspection for hosts and tests)
+    layerValueState(layer) { const ls = layers.get(layer); return ls ? { noData: ls.noData ? ls.noData.slice() : null, rampHides: !!ls.rampHides } : null; },
     setLayerChanTex(layer, tex, range = null) {
       const ls = layerOf(layer);
       ls.chanTex = tex || null;
       ls.chanTexRange = (tex && range) ? [range[0], Math.max(1e-9, range[1] - range[0])] : null;
       cosmeticDirtyLayers.add(layer);
     },
-    setLayerRamp(layer, pixels) {
+    // opts.nearest: sample the LUT texel-exact — a CLASSED ramp, whose colours must not blend at
+    // a class boundary into a colour no legend shows (LINEAR suits a continuous ramp)
+    setLayerRamp(layer, pixels, opts = {}) {
       const ls = layerOf(layer);
+      // texels with alpha 0 HIDE their values (a class's eye): a change in WHICH texels hide is
+      // a visibility change — geometry culls, so it re-rasters; a colour change re-shades
+      let sig = '';
+      if (pixels) for (let i = 0; i < 256; i++) if (pixels[i * 4 + 3] < 128) sig += i + ',';
+      if (sig !== ls.rampAlphaSig) { ls.rampAlphaSig = sig; ls.rampHides = !!sig; needClear = true; dropCapture(); }
       if (!pixels) {
         if (ls.rampTex) { gl.deleteTexture(ls.rampTex); ls.rampTex = null; }
       } else if (!ls.rampTex) {
@@ -641,6 +673,11 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
       } else {
         gl.bindTexture(gl.TEXTURE_2D, ls.rampTex);
         gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 256, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+      }
+      if (ls.rampTex) {
+        const f = opts.nearest ? gl.NEAREST : gl.LINEAR;
+        gl.bindTexture(gl.TEXTURE_2D, ls.rampTex);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, f); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, f);
       }
       cosmeticDirtyLayers.add(layer);
     },
@@ -976,7 +1013,7 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
                 chanDoc: chanDocOf(ls, o),
                 paletteN: 256, intensityScale: 1,
                 ramp: ls.rampTex || ramp, palette: ls.paletteTex || catPalette || palette,
-                mask: ls.maskTex, sel: ls.selTex, rule: ls.ruleOn ? ls.ruleTex : null, chanTex: ls.chanTex,
+                mask: ls.maskTex, sel: ls.selTex, rule: ls.ruleOn ? ls.ruleTex : null, chanTex: ls.chanTex, noData: ls.noData,
                 picked: pickedRec, pickedLayer, lightDir, cutNormal: cutN,
                 edges: ls.edges != null ? ls.edges : blockEdges, depth: idCapture.depth,
                 invVP, viewportW: canvas.width, viewportH: canvas.height,
@@ -989,7 +1026,7 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
                 paletteN: ls.paletteTex ? ls.paletteW : (ls.catN || 32),
                 intensityScale: 65535 / (ls.intensityMax || 1),
                 ramp: ls.rampTex || ramp, palette: ls.paletteTex || (ls.catN && catPalette ? catPalette : palette),
-                mask: ls.maskTex, sel: ls.selTex, rule: ls.ruleOn ? ls.ruleTex : null, chanTex: ls.chanTex,
+                mask: ls.maskTex, sel: ls.selTex, rule: ls.ruleOn ? ls.ruleTex : null, chanTex: ls.chanTex, noData: ls.noData,
                 picked: pickedRec, pickedLayer, lightDir: [0, 0, 1], cutNormal: [0, 0, 1],
               };
             }
@@ -1035,6 +1072,11 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
       lastVisible = visible.length;
       const sumW = visible.reduce((s, c) => s + c._w, 0) || 1;
 
+      // what the pick pass needs to cull by VALUE as this frame does (a hidden class, hidden blanks)
+      for (const id of kindBy.keys()) {
+        const ls0 = layerOf(id), o0 = lopt(id);
+        ls0._valPick = { colorMode: o0.colorMode, zRange: zRangeOf(o0), chanDoc: chanDocOf(ls0, o0), intensityScale: 65535 / (ls0.intensityMax || 1) };
+      }
       gl.enable(gl.DEPTH_TEST);
       if (moving) {
         gl.clearColor(background[0], background[1], background[2], background[3]);
@@ -1136,6 +1178,8 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
             gl.activeTexture(gl.TEXTURE8); gl.bindTexture(gl.TEXTURE_2D, ls.chanTex); gl.uniform1i(uni.chanTex, 8);
             const cd = chanDocOf(ls, o); gl.uniform2f(uni.chanDoc, cd[0], cd[1]);
           }
+          gl.uniform1f(uni.noDataOn, ls.noData ? 1 : 0);
+          if (ls.noData) gl.uniform4f(uni.noData, ls.noData[0], ls.noData[1], ls.noData[2], ls.noData[3]);
           gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, ls.rampTex || ramp); gl.uniform1i(uni.ramp, 0);
         };
         for (const [id, group] of ptsGroups) {
@@ -1194,7 +1238,7 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
             maskTex: ls.maskTex, isolate: ls.isolate, pointsView: blocksAsPoints, picked: pickedRec, pickedLayer, layer: id,
             section: layerSecOf(ls, sec),
             catVisTex: ls.catVisTex, selTex: ls.selTex, ruleTex: ls.ruleOn ? ls.ruleTex : null,
-            chanTex: ls.chanTex,
+            chanTex: ls.chanTex, noData: ls.noData,
             opacity: ls.opacity, edges: ls.edges != null ? ls.edges : blockEdges,   // per-layer override, else the View toggle
           });
         };
@@ -1242,7 +1286,7 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
             maskTex: ls.maskTex, isolate: ls.isolate, pointsView: blocksAsPoints, picked: pickedRec, pickedLayer, layer: id,
             section: layerSecOf(ls, sec),
             radius: ls.stickRadius, catVisTex: ls.catVisTex, selTex: ls.selTex, ruleTex: ls.ruleOn ? ls.ruleTex : null,
-            chanTex: ls.chanTex,
+            chanTex: ls.chanTex, noData: ls.noData,
             opacity: ls.opacity,
           });
         };

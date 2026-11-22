@@ -8,6 +8,7 @@
 // knob. Mask / section / picked-glow / repaint identical to blocks.
 
 import { backingRatio } from './ratio.js';
+import { chanDequant } from './chan.js';
 import { makeProgram } from './gl-util.js';
 
 // 4×4-Bayer screen-door opacity (see gl-mesh / gl-blocks): see-through without
@@ -34,6 +35,8 @@ uniform vec2 uZRange;
 uniform vec2 uChanChunk;                // chunk chan min/span (dequantize)
 uniform vec2 uChanDoc;                  // doc chan min/span (ramp)
 uniform sampler2D uRamp;
+uniform vec4 uNoData;                   // blank values (chan.js code 0 / the value texture's BLANK): rgb + a (a < 0.5 = hidden)
+uniform float uNoDataOn;                // off: a blank clamps to the lowest colour, the old picture
 uniform sampler2D uPalette;
 uniform sampler2D uMask;
 uniform float uFilterOn, uIsolate;
@@ -103,12 +106,20 @@ void main() {
   if (uColorMode == 0) {
     float t = clamp((center.z - uZRange.x) / max(uZRange.y, 1e-6), 0.0, 1.0);
     vColor = texture(uRamp, vec2(t, 0.5));
+    if (vColor.a < 0.5) vCull = 1.0;                      // a hidden class: the ramp texel's alpha is 0
   } else if (uColorMode == 1) {
     float cv;
     if (uChanTexOn > 0.5) { int rc = int(aRec); cv = texelFetch(uChanTex, ivec2(rc & 8191, rc >> 13), 0).r; }
     else cv = uChanChunk.x + aChan * uChanChunk.y;
-    float t = clamp((cv - uChanDoc.x) / max(uChanDoc.y, 1e-6), 0.0, 1.0);
-    vColor = texture(uRamp, vec2(t, 0.5));
+    bool blank = uChanTexOn > 0.5 ? cv < -1.0e37 : aChan < 0.5 / 65535.0;
+    if (blank && uNoDataOn > 0.5) {
+      vColor = vec4(uNoData.rgb, 1.0);
+      if (uNoData.a < 0.5) vCull = 1.0;
+    } else {
+      float t = clamp((cv - uChanDoc.x) / max(uChanDoc.y, 1e-6), 0.0, 1.0);
+      vColor = texture(uRamp, vec2(t, 0.5));
+      if (vColor.a < 0.5) vCull = 1.0;
+    }
   } else if (uColorMode == 2) {
     vColor = texture(uPalette, vec2((cls + 0.5) / 256.0, 0.5));
   } else {
@@ -246,7 +257,7 @@ export function createSticksPipeline(gl) {
     return { prog, uni: {
       viewProj: U('uViewProj'), eye: U('uEye'), radius: U('uRadius'), opacity: U('uOpacity'),
       perspScale: U('uPerspScale'), demotePx: U('uDemotePx'), pointPx: U('uPointPx'), fixedSplat: U('uFixedSplat'),
-      colorMode: U('uColorMode'), zRange: U('uZRange'), chanChunk: U('uChanChunk'), chanDoc: U('uChanDoc'),
+      colorMode: U('uColorMode'), zRange: U('uZRange'), chanChunk: U('uChanChunk'), chanDoc: U('uChanDoc'), noData: U('uNoData'), noDataOn: U('uNoDataOn'),
       ramp: U('uRamp'), palette: U('uPalette'), lightDir: U('uLightDir'),
       mask: U('uMask'), filterOn: U('uFilterOn'), isolate: U('uIsolate'), picked: U('uPicked'), pickedLayer: U('uPickedLayer'), layer: U('uLayer'), repaint: U('uRepaint'),
       catVis: U('uCatVis'), catVisOn: U('uCatVisOn'), sel: U('uSel'), selOn: U('uSelOn'),
@@ -297,12 +308,12 @@ export function createSticksPipeline(gl) {
     gl.enableVertexAttribArray(4);
     gl.vertexAttribIPointer(4, 1, gl.UNSIGNED_INT, 0, first * 4);
     gl.vertexAttribDivisor(4, 1);
-    const span = c.chanRange[1] - c.chanRange[0];
-    gl.uniform2f(uni.chanChunk, c.chanRange[0], span > 0 ? span : 0);
+    const dq = chanDequant(c.chanRange);
+    gl.uniform2f(uni.chanChunk, dq[0], dq[1]);
     gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, k);
   }
 
-  function begin(cam, { pointPx, colorMode, zRange, chanDoc, ramp, palette, viewportH, maskTex = null, isolate = false, pointsView = false, picked = 0xFFFFFFFF, pickedLayer = 0xFFFFFFFF, layer = 0, section = null, radius = 1, catVisTex = null, selTex = null, ruleTex = null, chanTex = null, opacity = 1 }) {
+  function begin(cam, { pointPx, colorMode, zRange, chanDoc, ramp, palette, viewportH, maskTex = null, isolate = false, pointsView = false, picked = 0xFFFFFFFF, pickedLayer = 0xFFFFFFFF, layer = 0, section = null, radius = 1, catVisTex = null, selTex = null, ruleTex = null, chanTex = null, opacity = 1, noData = null }) {
     const s = cam.state;
     for (const pp of [full, cheap]) {
       gl.useProgram(pp.prog);
@@ -350,6 +361,8 @@ export function createSticksPipeline(gl) {
       gl.uniform1f(uni.ruleOn, ruleTex ? 1 : 0);
       if (ruleTex) { gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, ruleTex); gl.uniform1i(uni.rule, 7); }
       gl.uniform1f(uni.chanTexOn, chanTex ? 1 : 0);
+      gl.uniform1f(uni.noDataOn, noData ? 1 : 0);
+      if (noData) gl.uniform4f(uni.noData, noData[0], noData[1], noData[2], noData[3]);
       if (chanTex) { gl.activeTexture(gl.TEXTURE8); gl.bindTexture(gl.TEXTURE_2D, chanTex); gl.uniform1i(uni.chanTex, 8); }
     }
     active = full;

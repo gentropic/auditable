@@ -6,6 +6,7 @@
 // workbooks). Here: the dispatcher, LAS and PLY point clouds, drillhole sets, and the
 // helpers every reader shares (registerDocs, streamInto, layerFailed).
 import { S, _fileHandles, activeLayer, layerById, requestRender } from './state.js';
+import { syncNoData } from './ramp.js';
 import { createChunkBuilder, createStickChunkBuilder, mapColumns, openDrillholes, openLas, openPly, sniffDelimited } from '../../../ext/condenser/src/main.js';
 import { openLineage } from './lineage.js';
 import { isWfrName } from './wfr-io.js';
@@ -150,6 +151,7 @@ export function registerDocs(lid, kind, docs = {}) {
   const L = layerById(lid); if (!L) return;
   L.kind = kind;
   L.docs = docs;
+  syncNoData(L);                                          // blanks draw as "no data", not the lowest grade (src/ramp.js)
 }
 
 // PLY path: discovery sweep (no header bbox) → the points pipeline. The

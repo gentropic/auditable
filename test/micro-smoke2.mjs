@@ -6048,6 +6048,7 @@ if (take()) {
     out.legend = { kind: spec && spec.kind, labels: spec && spec.entries.map((e) => e.label), colors: spec && spec.entries.map((e) => e.color) };
     // typed breaks through the pane keep colours with their classes, and undo
     L.clip = ['', '']; document.querySelector('#clipMin').value = ''; document.querySelector('#clipMax').value = '';
+    (await import('/tools/micro/src/props.js')).setPropTab('style');   // an earlier section may have left another tab remembered
     M_.openProps();
     const bIn = [...document.querySelectorAll('#ppBody .pp-row')].find((x) => /breaks/.test(x.textContent)).querySelector('input');
     bIn.value = '20, 40, 54, 60, 65'; bIn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
@@ -6145,6 +6146,58 @@ if (take()) {
   chk(`STYLE PASTE: one undo step restores the layer's own look (colour-by ${r.undoneSel}, classed ${r.undoneCfg})`, r.undoneSel === r.beforeB && !r.undoneCfg);
   chk(`STYLE FILE: a saved style round-trips (${JSON.stringify(r.roundTrip)})`, r.roundTrip.ok && r.roundTrip.sel === r.feB && r.roundTrip.classed);
   chk(`STYLE PASTE: a category legend only lands on a same-named column (“${r.catSkipped.slice(0, 90)}”)`, /classes of DOMAIN/.test(r.catSkipped));
+  await p.close();
+}
+
+// ── §94: NO DATA and CLASS EYES — a blank value has its own colour (the renderer gets micro's
+//     grey on open; the legend lists "no data"; hide culls blanks); a sentinel (−99) is a
+//     number until the column says it means blank (Detection limits & blanks → values that
+//     mean blank), then it leaves the range; a class's eye bakes alpha 0 into the ramp and the
+//     renderer knows the layer hides by value (so the pick pass culls it too). ──
+if (take()) {
+  const p = await mkPage('sm2nodata');
+  const r = await p.evaluate(async () => {
+    const M_ = window._micro, out = {};
+    const rows = ['XC,YC,ZC,FE'];
+    for (let k = 0; k < 3; k++) for (let j = 0; j < 10; j++) for (let i = 0; i < 10; i++) rows.push(`${5 + i * 10},${5 + j * 10},${5 + k * 10},${i === 0 ? '' : i === 1 ? '-99' : (20 + i * 5).toFixed(1)}`);
+    const id = await M_.openBlob(new File([rows.join('\n') + '\n'], 'nd.csv'), 'nd.csv', 'replace');
+    const L = M_.layers().find((x) => x.id === id);
+    M_.setActiveLayer(id);
+    const h = M_.layerTableHeader(L), fe = h.columns.indexOf('FE');
+    await M_.setLayerColorSel(L, `chan:${fe}`);
+    const ramp = await import('/tools/micro/src/ramp.js'), deco = await import('/tools/micro/src/deco.js'), ct = await import('/tools/micro/src/coltypes.js');
+    out.vs0 = M_.renderer.layerValueState(id);
+    out.range0 = M_.renderer.layerChanRange(id);
+    // the sentinel means blank: the range loses −99
+    await ct.setColumnQualify(L, fe, { below: 'half', above: 'limit', negBelow: false, blanks: [-99] });
+    out.range1 = M_.renderer.layerChanRange(M_.layers().find((x) => x.name === 'nd.csv').id);
+    const L2 = M_.layers().find((x) => x.name === 'nd.csv');
+    out.policy = L2.qualify && L2.qualify.FE;
+    // the legend lists "no data" once the scan knows there are blanks
+    await M_.scanColumns(L2, null, { columns: ['FE'] });
+    M_.setRampCfg(L2, { classed: true, breaks: [40, 55], colors: ['#3b4cc0', '#c9d7f0', '#b40426'] });
+    M_.setLayerLegend(L2, true);
+    const sp = deco.legendSpec(L2);
+    out.legend = sp && sp.entries.map((e) => e.label).concat(sp.tail ? [sp.tail.label] : []);
+    out.nulls = L2._colStats && L2._colStats.FE && L2._colStats.FE.nulls;
+    // a class's eye: alpha 0 in the LUT, the renderer knows the layer hides by value
+    const c = ramp.rampCfgOf(L2); c.hide = [true, null, null]; ramp.applyRamp(L2, true);
+    const [lo, hi] = M_.rampRangeFor(L2), px = M_.bakeRampPixels(c, lo, hi);
+    out.alphaLow = px[3]; out.alphaHigh = px[255 * 4 + 3];
+    out.vs1 = M_.renderer.layerValueState(L2.id);
+    out.legendHidden = deco.legendSpec(L2).entries.map((e) => e.label);
+    // hide blanks: the renderer's no-data alpha goes to 0
+    L2.noData = { color: '#555a5f', hide: true }; ramp.syncNoData(L2);
+    out.vs2 = M_.renderer.layerValueState(L2.id);
+    return out;
+  });
+  chk(`NO DATA: a new layer's blanks draw in micro's grey (renderer ${JSON.stringify(r.vs0)})`, r.vs0 && r.vs0.noData && Math.abs(r.vs0.noData[0] - 0x55 / 255) < 1e-6 && r.vs0.noData[3] === 1);
+  chk(`NO DATA: −99 is a number (range ${JSON.stringify(r.range0)}) until the column says it means blank (${JSON.stringify(r.policy)} → ${JSON.stringify(r.range1)})`,
+    r.range0 && r.range0[0] === -99 && r.range1 && r.range1[0] > 0 && JSON.stringify(r.policy.blanks) === '[-99]');
+  chk(`NO DATA: the legend lists the classes and "no data" (${JSON.stringify(r.legend)}, ${r.nulls} blank)`, JSON.stringify(r.legend) === '["< 40","40 – 55","≥ 55","no data"]' && r.nulls >= 60);
+  chk(`CLASS EYE: a hidden class bakes alpha 0 (${r.alphaLow}; top ${r.alphaHigh}), the renderer hides by value (${JSON.stringify(r.vs1)}), the legend leaves it out (${JSON.stringify(r.legendHidden)})`,
+    r.alphaLow === 0 && r.alphaHigh === 255 && r.vs1.rampHides === true && !r.legendHidden.includes('< 40'));
+  chk(`NO DATA: hide → the renderer culls blanks (alpha ${r.vs2.noData[3]})`, r.vs2.noData[3] === 0);
   await p.close();
 }
 

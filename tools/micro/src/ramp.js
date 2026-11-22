@@ -88,10 +88,15 @@ export function bakeRampPixels(cfg, lo, hi) {
   for (let i = 0; i < 256; i++) {
     const t = i / 255;
     let c;
+    let hidden = false;
     if (cfg.classed && all.length) {
-      // classes over the FULL break list: colour k is class k's, whatever the range
-      const n2 = parseInt(classColor(cfg, all, classIndex(all, lo + t * span)).slice(1), 16);
+      // classes over the FULL break list: colour k is class k's, whatever the range. The texel's
+      // class is its SAMPLING centre's ((i + ½)/256 — the GPU reads it NEAREST), so a boundary
+      // is exact to half a texel and never a blend of two classes
+      const k = classIndex(all, lo + ((i + 0.5) / 256) * span);
+      const n2 = parseInt(classColor(cfg, all, k).slice(1), 16);
       c = [(n2 >> 16) & 255, (n2 >> 8) & 255, n2 & 255];
+      hidden = !!(cfg.hide && cfg.hide[k]);               // a class's eye: alpha 0 → the shaders cull it
     } else if (breaks.length) {
       const v = lo + t * span;
       const edges = [lo, ...breaks, hi];
@@ -101,7 +106,7 @@ export function bakeRampPixels(cfg, lo, hi) {
     } else {
       c = rampSample(stops, t);
     }
-    px[i * 4] = c[0]; px[i * 4 + 1] = c[1]; px[i * 4 + 2] = c[2]; px[i * 4 + 3] = 255;
+    px[i * 4] = c[0]; px[i * 4 + 1] = c[1]; px[i * 4 + 2] = c[2]; px[i * 4 + 3] = hidden ? 0 : 255;
   }
   return px;
 }
@@ -157,8 +162,19 @@ export function rampRangeFor(L) {
   const o = S.frame ? S.frame.origin[2] : 0;
   return [Number.isFinite(clip[0]) ? clip[0] : b[2] + o, Number.isFinite(clip[1]) ? clip[1] : b[5] + o];
 }
+// what a BLANK value draws as (condenser chan.js): micro's default is the neutral grey the
+// rules and painted columns use for "nothing", shown — a missing grade must not look like the
+// lowest one. L.noData = { color, hide }; the legend gets a row for it.
+export const NODATA_DEFAULT = '#555a5f';
+export function noDataOf(L) { return Object.assign({ color: NODATA_DEFAULT, hide: false }, (L && L.noData) || {}); }
+export function syncNoData(L) {
+  if (!L || !S.renderer || !S.renderer.setLayerNoData) return;
+  const nd = noDataOf(L), n = parseInt(String(nd.color).slice(1), 16);
+  S.renderer.setLayerNoData(L.id, [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255, nd.hide ? 0 : 1]);
+}
 export function applyRamp(L, force) {
   if (!force) return stageGate(L, () => applyRamp(L, true));
+  syncNoData(L);
   if (L.docs && (L.docs.blockDoc || L.docs.dhDoc || L.docs.lasDoc || L.docs.plyDoc)) ensureValueTex(L).catch((e) => { $('#meta').textContent = `colour — ${e.message}`; });
   const pcR = paintActiveCol(L) || calcDisplayCol(L);
   if (!pcR && calcSelOf(L)) ensureCalcDisplay(L);          // realize lazily; it re-applies on completion
@@ -168,7 +184,7 @@ export function applyRamp(L, force) {
     S.renderer.setLayerRamp(L.id, null);
   } else {
     const [lo, hi] = rampRangeFor(L);
-    S.renderer.setLayerRamp(L.id, bakeRampPixels(cfg, lo, hi));
+    S.renderer.setLayerRamp(L.id, bakeRampPixels(cfg, lo, hi), { nearest: !!(cfg.classed && classBreaks(cfg).length) });
   }
   requestRender();
 }

@@ -124,7 +124,7 @@ export function setAutoApply(on) { _autoApply = !!on; try { localStorage.setItem
 
 export function styleSnap(L) {
   return {
-    colorSel: L.colorSel, clip: L.clip ? L.clip.slice() : null,
+    colorSel: L.colorSel, clip: L.clip ? L.clip.slice() : null, noData: L.noData ? { ...L.noData } : null,
     legendTitle: L.legendTitle, edges: L.edges,
     ramps: L.ramps ? JSON.parse(JSON.stringify(L.ramps)) : null,
     catLegend: L.catLegend ? JSON.parse(JSON.stringify(L.catLegend)) : null,
@@ -162,6 +162,7 @@ export function revertStyle(L) {
 export function restoreStyleSnap(L, s2, { colorBy = false } = {}) {
   L.ramps = s2.ramps ? JSON.parse(JSON.stringify(s2.ramps)) : null;
   if (colorBy) {
+    L.noData = s2.noData ? { ...s2.noData } : null;
     if (s2.clip) L.clip = s2.clip.slice();
     L.legendTitle = s2.legendTitle; L.edges = s2.edges;
   }
@@ -268,7 +269,7 @@ function renderColumnsTab(body, L) {
       menuXY(x, y, [
         { label: (isNum ? '✓ ' : '') + 'Number', action: () => { if (!isNum && !spatial) setColType(L, i, 'number'); } },
         { label: (!isNum ? '✓ ' : '') + 'Text', action: () => { if (isNum && !spatial) setColType(L, i, 'string'); } },
-        ...(isNum && !spatial && rowQualifier(L) ? [{ label: 'Below / above detection', submenu: () => qualifyMenuItems(L, i) }] : []),
+        ...(isNum && !spatial && rowQualifier(L) ? [{ label: 'Detection limits & blanks', submenu: () => qualifyMenuItems(L, i) }] : []),
         ...(spatial ? [] : [
           { sep: true },
           ...(isNum && L.docs.blockDoc ? [{ label: 'Use as color channel', action: () => { const v = `chan:${i}`; if ([...$('#colorBy').options].some((o) => o.value === v)) { $('#colorBy').value = v; $('#colorBy').dispatchEvent(new Event('change')); } } }] : []),

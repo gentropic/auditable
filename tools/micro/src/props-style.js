@@ -11,7 +11,7 @@ import { S, requestRender, activeLayer } from './state.js';
 import { setMeshTint, convertMeshLayer, applyLayerOpacity } from './layermenu.js';
 import { markProjectDirty } from './project.js';
 import { fmtSize } from './paths.js';
-import { colorSelOf, rampCfgOf, RAMP_PRESETS, setRampCfg, rampRangeFor, bakeRampPixels, applyRamp, rampSample, classBreaks, classColor, classLabel, remapClassColors } from './ramp.js';
+import { colorSelOf, rampCfgOf, RAMP_PRESETS, setRampCfg, rampRangeFor, bakeRampPixels, applyRamp, rampSample, classBreaks, classColor, classLabel, remapClassColors, noDataOf, syncNoData } from './ramp.js';
 import { paintColByName, addPaintColorOptions, openPaintPalette } from './paint.js';
 import { useAsCategory } from './coltypes.js';
 import { viewCatName, modelCatName, viewTextColumns, ensureViewCat } from './viewcat.js';
@@ -443,13 +443,42 @@ function renderStickRadius(body, L) {
 // object, so an undo after switching the colour-by still lands on the right column
 function editBreaks(L, next, label) {
   const c = rampCfgOf(L, true);
-  const before = { breaks: (c.breaks || []).slice(), colors: c.colors ? c.colors.slice() : null };
-  const nb = classBreaks({ breaks: next });
-  const colors = remapClassColors(classBreaks(c), c.colors, nb);
-  setRampCfg(L, { breaks: nb, colors });
-  const after = { breaks: nb.slice(), colors: colors ? colors.slice() : null };
-  const put = (st) => { c.breaks = st.breaks.slice(); c.colors = st.colors ? st.colors.slice() : null; applyRamp(L); markProjectDirty(); refreshProps(); };
+  const cp = (a) => (a ? a.slice() : null);
+  const before = { breaks: (c.breaks || []).slice(), colors: cp(c.colors), hide: cp(c.hide) };
+  const nb = classBreaks({ breaks: next }), ob = classBreaks(c);
+  const colors = remapClassColors(ob, c.colors, nb);
+  const hide = remapClassColors(ob, c.hide, nb);            // a class's eye travels with it like its colour
+  setRampCfg(L, { breaks: nb, colors, hide });
+  const after = { breaks: nb.slice(), colors: cp(colors), hide: cp(hide) };
+  const put = (st) => { c.breaks = st.breaks.slice(); c.colors = cp(st.colors); c.hide = cp(st.hide); applyRamp(L); markProjectDirty(); refreshProps(); };
   pushUndo(label, () => put(before), { redo: () => put(after) });
+}
+// blanks (a missing value) draw in their own colour — or hide — rather than as the lowest
+// class; the count comes from the column's scan when there is one
+function renderNoDataRow(body, L) {
+  const nd = noDataOf(L);
+  const chip = document.createElement('input'); chip.type = 'color'; chip.value = nd.color;
+  chip.title = 'the colour blanks (missing values) draw in';
+  chip.style.cssText = 'width:16px;height:14px;padding:0;border:1px solid var(--border);background:none;cursor:pointer;';
+  const set = (patch, label) => {
+    const before = L.noData ? { ...L.noData } : null;
+    L.noData = { ...noDataOf(L), ...patch };
+    const after = { ...L.noData };
+    syncNoData(L); requestRender(); markProjectDirty();
+    const put = (v) => { L.noData = v ? { ...v } : null; syncNoData(L); requestRender(); markProjectDirty(); refreshProps(); };
+    pushUndo(label, () => put(before), { redo: () => put(after), key: `nodata:${L.id}:${Object.keys(patch)[0]}` });
+  };
+  chip.oninput = () => set({ color: chip.value }, 'no-data colour');
+  const lab = document.createElement('label');
+  const hide = document.createElement('input'); hide.type = 'checkbox'; hide.checked = !!nd.hide;
+  hide.onchange = () => { set({ hide: hide.checked }, hide.checked ? 'hide blanks' : 'show blanks'); };
+  lab.append(hide, ' hide');
+  const ct = document.createElement('span'); ct.className = 'pp-val';
+  const sv = String(colorSelOf(L)), h = layerTableHeader(L);
+  const name = sv.startsWith('chan:') && h ? h.columns[+sv.slice(5)] : sv.startsWith('calc:') ? sv.slice(5) : sv.startsWith('paint:') ? sv.slice(6) : null;
+  const stat = name && L._colStats && L._colStats[name];
+  ct.textContent = stat && stat.nulls != null ? `${stat.nulls.toLocaleString()} blank` : '';
+  body.appendChild(mkRow('no data', chip, lab, ct));
 }
 function renderRampSection(body, L) {
   const cfg = rampCfgOf(L) || { preset: 'viridis', classed: false, breaks: [] };
@@ -503,6 +532,7 @@ function renderRampSection(body, L) {
     bIn.onkeydown = (e) => { if (e.key === 'Enter') applyBreaks(); };
     bIn.onblur = () => { if (bIn.value !== ((rampCfgOf(L) || {}).breaks || []).map((v) => fmtStat(v)).join(', ')) applyBreaks(); };
     body.appendChild(mkRow('breaks', bIn));
+    renderNoDataRow(body, L);
     // live drag sync — but never while the user is typing in it
     if (_rampRepaint) _rampRepaint.breaksIn = () => {
       if (document.activeElement === bIn) return;
@@ -544,7 +574,7 @@ function renderRampSection(body, L) {
     for (let b2 = 0; b2 < N; b2++) {
       const hp = bins[b2] ? Math.max(1, Math.round((cvh.height - 14) * barH(bins[b2]))) : 0;
       if (!hp) continue;
-      const ti = Math.min(255, Math.max(0, Math.round(((b2 + 0.5) / N) * 255)));
+      const ti = Math.min(255, Math.max(0, Math.floor(((b2 + 0.5) / N) * 256)));   // the texel the GPU reads for this value
       g2.fillStyle = `rgb(${lut[ti * 4]},${lut[ti * 4 + 1]},${lut[ti * 4 + 2]})`;
       g2.fillRect(b2 * 10, cvh.height - hp, 9, hp);
     }
@@ -703,10 +733,23 @@ function renderIntervalTable(body, L, lo, hi) {
   const rows = rowsOf(breaks);
   const liveRows = [];                                     // per-row element refs for the live drag sync
   rows.forEach(([from, to], k) => {
-    const row = document.createElement('div'); row.className = 'pp-band';
+    const row = document.createElement('div'); row.className = classed ? 'pp-band eyed' : 'pp-band';
     const live = { fromS: null, dash: null, toIn: null, toS: null, sw: null, chip: null, ct: null };
     liveRows.push(live);
     if (classed) {
+      // the class's eye: hidden classes cull (GPU — the ramp texel's alpha), aren't pickable, and
+      // leave the legend; one undo step
+      const eye = document.createElement('input'); eye.type = 'checkbox'; eye.checked = !(cfg.hide && cfg.hide[k]);
+      eye.title = `show class ${classLabel(breaks, k, fmtStat)}`;
+      eye.onchange = () => {
+        const c2 = rampCfgOf(L, true), before = c2.hide ? c2.hide.slice() : null;
+        const h2 = (c2.hide || []).slice(); h2[k] = !eye.checked;
+        const after = h2.some(Boolean) ? h2 : null;
+        setRampCfg(L, { hide: after });
+        const put = (hd) => { c2.hide = hd ? hd.slice() : null; applyRamp(L); markProjectDirty(); refreshProps(); };
+        pushUndo(`${eye.checked ? 'show' : 'hide'} class ${classLabel(breaks, k, fmtStat)}`, () => put(before), { redo: () => put(after) });
+      };
+      row.appendChild(eye);
       const chip = document.createElement('input'); chip.type = 'color';
       chip.value = classColor(cfg, breaks, k);
       chip.title = `class ${classLabel(breaks, k, fmtStat)}`;

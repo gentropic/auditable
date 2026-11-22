@@ -417,6 +417,8 @@
   #bar button svg, #barTools button svg { width: 15px; height: 15px; display: block; }
   .pp-cat .grip { color: var(--dim); cursor: grab; user-select: none; flex: 0 0 auto; font-size: 10px; }
   .pp-band { display: grid; grid-template-columns: 16px minmax(56px, max-content) 8px 72px 1fr; align-items: center; gap: 5px; padding: 3px 2px; border-radius: 2px; }
+  .pp-band.eyed { grid-template-columns: 14px 16px minmax(48px, max-content) 8px 72px 1fr; }   /* a class row: its eye first */
+  .pp-band.eyed input[type="checkbox"] { margin: 0; }
   .pp-band:hover { background: var(--bg-hover); }
   .pp-band .sw { width: 12px; height: 12px; border-radius: 2px; justify-self: center; }
   .pp-band .from { text-align: right; }

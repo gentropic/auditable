@@ -29,6 +29,7 @@
 // true oriented boxes — the ray-box test runs in the block's own frame.
 
 import { backingRatio } from './ratio.js';
+import { chanDequant } from './chan.js';
 import { makeProgram, IDENTITY3 } from './gl-util.js';
 
 const VERT = `#version 300 es
@@ -52,6 +53,8 @@ uniform vec2 uZRange;
 uniform vec2 uChanChunk;                // this chunk's [min, span] (dequantize aChan)
 uniform vec2 uChanDoc;                  // document [min, span] (ramp normalization)
 uniform sampler2D uRamp;
+uniform vec4 uNoData;                   // blank values (chan.js code 0 / the value texture's BLANK): rgb + a (a < 0.5 = hidden)
+uniform float uNoDataOn;                // off: a blank clamps to the lowest colour, the old picture
 uniform sampler2D uPalette;
 uniform sampler2D uMask;                // filter bitmask by record index (8192-wide)
 uniform float uFilterOn, uIsolate;
@@ -116,13 +119,21 @@ void main() {
   if (uColorMode == 0) {
     float t = clamp((center.z - uZRange.x) / max(uZRange.y, 1e-6), 0.0, 1.0);
     vColor = texture(uRamp, vec2(t, 0.5));
+    if (vColor.a < 0.5) vCull = 1.0;                      // a hidden class: the ramp texel's alpha is 0
   } else if (uColorMode == 1) {
     int cr = int(aRec);
     float v = uChanTexOn > 0.5
       ? texelFetch(uChanTex, ivec2(cr & 8191, cr >> 13), 0).r
       : uChanChunk.x + aChan * uChanChunk.y;
-    float t = clamp((v - uChanDoc.x) / max(uChanDoc.y, 1e-6), 0.0, 1.0);
-    vColor = texture(uRamp, vec2(t, 0.5));
+    bool blank = uChanTexOn > 0.5 ? v < -1.0e37 : aChan < 0.5 / 65535.0;
+    if (blank && uNoDataOn > 0.5) {
+      vColor = vec4(uNoData.rgb, 1.0);
+      if (uNoData.a < 0.5) vCull = 1.0;
+    } else {
+      float t = clamp((v - uChanDoc.x) / max(uChanDoc.y, 1e-6), 0.0, 1.0);
+      vColor = texture(uRamp, vec2(t, 0.5));
+      if (vColor.a < 0.5) vCull = 1.0;
+    }
   } else if (uColorMode == 2) {
     vColor = texture(uPalette, vec2((cls + 0.5) / 256.0, 0.5));
   } else {
@@ -282,7 +293,7 @@ export function createBlocksPipeline(gl) {
       gridOrigin: U('uGridOrigin'), gridSize: U('uGridSize'), gridRot: U('uGridRot'),
       dimPalette: U('uDimPalette'), subBlock: U('uSubBlock'), opacity: U('uOpacity'),
       perspScale: U('uPerspScale'), demotePx: U('uDemotePx'), pointPx: U('uPointPx'),
-      colorMode: U('uColorMode'), zRange: U('uZRange'), chanChunk: U('uChanChunk'), chanDoc: U('uChanDoc'),
+      colorMode: U('uColorMode'), zRange: U('uZRange'), chanChunk: U('uChanChunk'), chanDoc: U('uChanDoc'), noData: U('uNoData'), noDataOn: U('uNoDataOn'),
       ramp: U('uRamp'), palette: U('uPalette'), lightDir: U('uLightDir'),
       mask: U('uMask'), filterOn: U('uFilterOn'), isolate: U('uIsolate'), forceSplat: U('uForceSplat'), fixedSplat: U('uFixedSplat'), picked: U('uPicked'), pickedLayer: U('uPickedLayer'), layer: U('uLayer'), repaint: U('uRepaint'),
       catVis: U('uCatVis'), catVisOn: U('uCatVisOn'), sel: U('uSel'), selOn: U('uSelOn'),
@@ -369,14 +380,14 @@ export function createBlocksPipeline(gl) {
     gl.uniform3f(uni.gridOrigin, c.grid.originLocal[0], c.grid.originLocal[1], c.grid.originLocal[2]);
     gl.uniform3f(uni.gridSize, c.grid.size[0], c.grid.size[1], c.grid.size[2]);
     gl.uniformMatrix3fv(uni.gridRot, false, c.grid.rot || IDENTITY3);
-    const span = c.chanRange[1] - c.chanRange[0];
-    gl.uniform2f(uni.chanChunk, c.chanRange[0], span > 0 ? span : 0);
+    const dq = chanDequant(c.chanRange);
+    gl.uniform2f(uni.chanChunk, dq[0], dq[1]);
     gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, k);
   }
 
   // Per-frame program state (called once before the chunk loop) — set on BOTH
   // programs so drawSlice can switch freely between full and cheap.
-  function begin(cam, { pointPx, colorMode, zRange, chanDoc, ramp, palette, viewportH, maskTex = null, isolate = false, pointsView = false, picked = 0xFFFFFFFF, pickedLayer = 0xFFFFFFFF, layer = 0, section = null, catVisTex = null, selTex = null, ruleTex = null, chanTex = null, opacity = 1, edges = false }) {
+  function begin(cam, { pointPx, colorMode, zRange, chanDoc, ramp, palette, viewportH, maskTex = null, isolate = false, pointsView = false, picked = 0xFFFFFFFF, pickedLayer = 0xFFFFFFFF, layer = 0, section = null, catVisTex = null, selTex = null, ruleTex = null, chanTex = null, opacity = 1, edges = false, noData = null }) {
     const s = cam.state;
     for (const pp of [full, cheap]) {
       gl.useProgram(pp.prog);
@@ -429,6 +440,8 @@ export function createBlocksPipeline(gl) {
       gl.uniform1f(uni.ruleOn, ruleTex ? 1 : 0);
       if (ruleTex) { gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, ruleTex); gl.uniform1i(uni.rule, 7); }
       gl.uniform1f(uni.chanTexOn, chanTex ? 1 : 0);
+      gl.uniform1f(uni.noDataOn, noData ? 1 : 0);
+      if (noData) gl.uniform4f(uni.noData, noData[0], noData[1], noData[2], noData[3]);
       if (chanTex) { gl.activeTexture(gl.TEXTURE8); gl.bindTexture(gl.TEXTURE_2D, chanTex); gl.uniform1i(uni.chanTex, 8); }
     }
     active = full;

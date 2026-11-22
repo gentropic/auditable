@@ -127,6 +127,7 @@ function viewEntry(L, indexOf) {
       : undefined,
     holeFilter: (L.dh && L.holeFilter) || undefined,
     ramps: L.ramps && Object.keys(L.ramps).length ? L.ramps : undefined,
+    noData: L.noData || undefined,
     catLegend: L.catLegend || undefined,
     rules: L.rules && L.rules.list && L.rules.list.length ? L.rules : undefined,
     ruleHidden: L.ruleHidden && L.ruleHidden.size ? [...L.ruleHidden] : undefined,
@@ -176,6 +177,7 @@ export function projectManifest() {
       holeFilter: (L.dh && L.holeFilter) || undefined,     // the collars-location predicate (view state)
       // calcCols live in the ELEMENT manifest (spec rule 10) — read here only as legacy
       ramps: L.ramps && Object.keys(L.ramps).length ? L.ramps : undefined,
+      noData: L.noData || undefined,
       catLegend: L.catLegend || undefined,
       rules: L.rules && L.rules.list && L.rules.list.length ? L.rules : undefined,
       ruleHidden: L.ruleHidden && L.ruleHidden.size ? [...L.ruleHidden] : undefined,
@@ -679,6 +681,7 @@ export async function openProjectDir(dir, { pack = null } = {}) {
           if (ls.sectioned != null && ls.sectioned !== true) S.renderer.setLayerSectioned(Ld.id, ls.sectioned);
           if (Array.isArray(ls.offset) && ls.offset.some((v) => +v)) { Ld.offset = ls.offset.map(Number); S.renderer.setLayerOffset(Ld.id, Ld.offset); }
           restoreHiddenCats(Ld, ls.hiddenCats);
+          if (ls.noData) Ld.noData = ls.noData;
           if (ls.ramps) { Ld.ramps = ls.ramps; applyRamp(Ld, true); }
           if (ls.catLegend) { Ld.catLegend = ls.catLegend; applyCatLegend(Ld, true); }
           if (Array.isArray(ls.catChoices)) { Ld.catChoices = ls.catChoices; addPaintColorOptions(Ld); }
@@ -802,7 +805,9 @@ export async function openProjectDir(dir, { pack = null } = {}) {
       if (ls.pointScale) { S.renderer.setLayerPointScale(L.id, ls.pointScale); L.pointScale = ls.pointScale; }
       if (Array.isArray(ls.offset) && ls.offset.some((v) => +v)) { L.offset = ls.offset.map(Number); S.renderer.setLayerOffset(L.id, L.offset); }
       restoreHiddenCats(L, ls.hiddenCats);
+      if (ls.noData) L.noData = ls.noData;
       if (ls.ramps) { L.ramps = ls.ramps; applyRamp(L, true); }
+      else if (ls.noData) applyRamp(L, true);
       if (ls.catLegend) { L.catLegend = ls.catLegend; applyCatLegend(L, true); }
       await restoreStyleExtras(L, ls);
       idAt[i] = L.id;

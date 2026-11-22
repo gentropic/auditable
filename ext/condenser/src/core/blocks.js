@@ -23,6 +23,7 @@
 // }
 
 import { mulberry32, shuffleInPlace, shuffledIndices } from './chunks.js';
+import { chanScale, chanCode } from './chan.js';
 import { mortonKeys, radixSortIndices } from './morton.js';
 
 // Grid from three axes + a frame → the block-chunk grid descriptor. origin here
@@ -74,7 +75,7 @@ export function buildBlockChunk({ x, y, z, chan, cat, recIdx, dim }, grid, frame
   let cMin = Infinity, cMax = -Infinity;
   for (let k = 0; k < n; k++) { const v = chan[perm[k]]; if (Number.isFinite(v)) { if (v < cMin) cMin = v; if (v > cMax) cMax = v; } }
   if (!Number.isFinite(cMin)) { cMin = 0; cMax = 0; }
-  const cScale = cMax > cMin ? 65535 / (cMax - cMin) : 0;
+  const cScale = chanScale(cMin, cMax);                   // code 0 = blank, 1..65535 = min..max (chan.js)
   let minI = 65535, minJ = 65535, minK = 65535, maxI = 0, maxJ = 0, maxK = 0;
   // sub-blocked: track actual box faces (variable half-dims) for the cull bbox
   let fx0 = Infinity, fy0 = Infinity, fz0 = Infinity, fx1 = -Infinity, fy1 = -Infinity, fz1 = -Infinity;
@@ -97,7 +98,7 @@ export function buildBlockChunk({ x, y, z, chan, cat, recIdx, dim }, grid, frame
     if (bj < minJ) minJ = bj; if (bj > maxJ) maxJ = bj;
     if (bk < minK) minK = bk; if (bk > maxK) maxK = bk;
     const cv = chan[i];
-    outChan[k] = Number.isFinite(cv) ? ((cv - cMin) * cScale + 0.5) | 0 : 0;
+    outChan[k] = chanCode(cv, cMin, cScale);
     outCat[k] = cat ? cat[i] : 0;
     outR[k] = recIdx[i];
     if (sub) {

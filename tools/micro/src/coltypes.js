@@ -2,6 +2,7 @@
 // re-read a policy change needs), and making it the layer's category column. The
 // columns tab of the Properties panel offers them (src/props.js).
 import { layerTableHeader, qualifyPolicy } from './records.js';
+import { microPrompt } from './prompts.js';
 import { S, requestRender, layerById } from './state.js';
 import { setColorLabels, ensureValueTex } from './color.js';
 import { markProjectDirty } from './project.js';
@@ -44,14 +45,23 @@ export function qualifyMenuItems(L, i) {
     { label: (p.above === 'blank' ? '✓ ' : '') + '>x → blank', action: () => setColumnQualify(L, i, { ...p, above: 'blank' }) },
     { sep: true },
     { label: (p.negBelow ? '✓ ' : '') + 'Negative = below detection (−0.001 → <0.001)', action: () => setColumnQualify(L, i, { ...p, negBelow: !p.negBelow }) },
+    { sep: true },
+    // a sentinel (−99, −999) is a real number until something says it means "no data"
+    { label: `Values that mean blank…${p.blanks && p.blanks.length ? ` (${p.blanks.join(', ')})` : ''}`, action: async () => {
+      const v = await microPrompt(`values in ${name} that mean "no data" (comma-separated, e.g. -99, -999)`, (p.blanks || []).join(', '));
+      if (v == null) return;
+      const arr = String(v).split(/[,;\s]+/).map(Number).filter(Number.isFinite);
+      setColumnQualify(L, i, { ...p, blanks: arr.length ? arr : null });
+    } },
   ];
 }
 export async function setColumnQualify(L, i, policy) {
   const h = layerTableHeader(L); if (!h) return null;
   const name = h.columns[i];
   const pol = { below: policy.below || 'half', above: policy.above === 'blank' ? 'blank' : 'limit', negBelow: !!policy.negBelow };
+  if (policy.blanks && policy.blanks.length) pol.blanks = [...new Set(policy.blanks.map(Number).filter(Number.isFinite))];
   L.qualify = { ...(L.qualify || {}) };
-  if (pol.below === 'half' && pol.above === 'limit' && !pol.negBelow) delete L.qualify[name];   // the default isn't stored
+  if (pol.below === 'half' && pol.above === 'limit' && !pol.negBelow && !pol.blanks) delete L.qualify[name];   // the default isn't stored
   else L.qualify[name] = pol;
   if (!Object.keys(L.qualify).length) L.qualify = null;
   markProjectDirty();

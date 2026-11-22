@@ -86,7 +86,7 @@ export function captureLayerStyling(L, { clearCats = false } = {}) {
   return {
     // the colour-by as a NAME: 'chan:3' is FE here and may be SG in the next file
     colorSelName: sel0.startsWith('chan:') && h0 ? h0.columns[+sel0.slice(5)] : null,
-    colTypes: L.colTypes, qualify: L.qualify, calcCols: L.calcCols, ramps: L.ramps,
+    colTypes: L.colTypes, qualify: L.qualify, calcCols: L.calcCols, ramps: L.ramps, noData: L.noData,
     catHidden: clearCats ? null : L.catHidden, catLegend: clearCats ? null : L.catLegend,
     rules: L.rules, ruleHidden: L.ruleHidden, paintCols: L.paintCols,
     // a re-desurvey/re-map/re-channel keeps the SAME rows, so these survive too.
@@ -105,7 +105,8 @@ export function applyLayerStyling(L2, keep, { clearCats = false } = {}) {
   if (!L2) return L2;
   L2.colTypes = keep.colTypes; L2.qualify = keep.qualify; applyColTypes(L2);
   L2.calcCols = keep.calcCols;
-  L2.ramps = keep.ramps; if (rampCfgOf(L2)) applyRamp(L2, true);
+  L2.noData = keep.noData;
+  L2.ramps = keep.ramps; applyRamp(L2, true);
   if (clearCats) { L2.catHidden = null; L2.catLegend = null; S.renderer.setLayerCatVisibility(L2.id, null); S.renderer.setLayerPalette(L2.id, null); }
   else {
     if (keep.catHidden && keep.catHidden.size) { L2.catHidden = keep.catHidden; applyCatVisibility(L2, true); }

@@ -7,6 +7,7 @@
 // to ~mm at frame-local magnitudes.
 
 import { mulberry32, shuffledIndices, shuffleInPlace } from './chunks.js';
+import { chanScale, chanCode } from './chan.js';
 import { mortonKeys, radixSortIndices } from './morton.js';
 
 /**
@@ -23,7 +24,7 @@ export function buildStickChunk(raw, frame, rnd, indices = null) {
   let cMin = Infinity, cMax = -Infinity;
   for (let k = 0; k < n; k++) { const v = raw.chan[perm[k]]; if (Number.isFinite(v)) { if (v < cMin) cMin = v; if (v > cMax) cMax = v; } }
   if (!Number.isFinite(cMin)) { cMin = 0; cMax = 0; }
-  const cScale = cMax > cMin ? 65535 / (cMax - cMin) : 0;
+  const cScale = chanScale(cMin, cMax);                   // code 0 = blank, 1..65535 = min..max (chan.js)
   const bb = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
   for (let k = 0; k < n; k++) {
     const i = perm[k];
@@ -36,7 +37,7 @@ export function buildStickChunk(raw, frame, rnd, indices = null) {
       if (B[a] < bb[a]) bb[a] = B[a]; if (B[a] > bb[a + 3]) bb[a + 3] = B[a];
     }
     const cv = raw.chan[i];
-    outChan[k] = Number.isFinite(cv) ? ((cv - cMin) * cScale + 0.5) | 0 : 0;
+    outChan[k] = chanCode(cv, cMin, cScale);
     outCat[k] = raw.cat ? raw.cat[i] : 0;
     outR[k] = raw.recIdx[i];
   }

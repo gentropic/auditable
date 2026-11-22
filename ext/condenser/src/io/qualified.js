@@ -34,11 +34,14 @@ export function classifyQualified(s) {
 }
 
 // a cell → number under a policy (NaN = blank). The fast path is a plain number.
+// policy.blanks: values that MEAN "no data" in this column (a −99 sentinel) — read as blank, so
+// they draw as no data and stay out of statistics, never as the lowest grade
 export function qualifiedNumber(s, policy = QUALIFIED_DEFAULT) {
-  if (typeof s === 'number') return s;
+  if (typeof s === 'number') return policy && policy.blanks && policy.blanks.includes(s) ? NaN : s;
   if (s == null || s === '') return NaN;
   const n = +s;
   if (Number.isFinite(n)) {
+    if (policy && policy.blanks && policy.blanks.includes(n)) return NaN;
     if (n < 0 && policy && policy.negBelow) return belowValue(-n, policy);
     return n;
   }

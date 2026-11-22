@@ -8,6 +8,7 @@
 // row number in the source file.
 
 import { backingRatio } from './ratio.js';
+import { chanDequant } from './chan.js';
 import { makeProgram, IDENTITY3 } from './gl-util.js';
 import { translateState } from './camera.js';
 import { layerSection, meshSection } from './section.js';
@@ -33,6 +34,7 @@ uint packId(uint layer, uint face) { return (layer & 0xFFFFu) | (face << 16); }`
 const PICK_VERT_PTS = `#version 300 es
 precision highp float;
 layout(location=0) in vec3 aPos;
+layout(location=1) in float aIntensity;   // the visual VAO's, unchanged
 layout(location=2) in float aClass;
 layout(location=4) in uint aRec;
 uniform mat4 uViewProj;
@@ -44,6 +46,12 @@ uniform sampler2D uMask;
 uniform float uFilterOn, uIsolate;
 uniform sampler2D uCatVis;
 uniform float uCatVisOn;
+uniform float uValCullOn;               // the layer hides by VALUE — a class's eye, or blanks (gl.js _valPick)
+uniform int uColorMode;
+uniform vec2 uZRange, uChanChunk, uChanDoc;
+uniform float uChanTexOn, uNoDataOn, uIntensityScale;
+uniform vec4 uNoData;
+uniform sampler2D uChanTex, uRamp;
 uniform sampler2D uRule;
 uniform float uRuleOn;
 flat out uint vRec;
@@ -64,6 +72,16 @@ void main() {
     cls = floor(texelFetch(uRule, ivec2(rr & 8191, rr >> 13), 0).r * 255.0 + 0.5);
   }
   if (uCatVisOn > 0.5 && texelFetch(uCatVis, ivec2(int(cls) & 255, 0), 0).r < 0.5) vCull = 1.0;
+  if (uValCullOn > 0.5) {                 // hidden by value isn't pickable: the visual pass's test, exactly
+    float t = -1.0; bool blank = false;
+    if (uColorMode == 0) t = clamp((p.z - uZRange.x) / max(uZRange.y, 1e-6), 0.0, 1.0);
+    else if (uColorMode == 1) {
+      if (uChanTexOn > 0.5) { int rc = int(aRec); float v = texelFetch(uChanTex, ivec2(rc & 8191, rc >> 13), 0).r; blank = v < -1.0e37; t = clamp((v - uChanDoc.x) / max(uChanDoc.y, 1e-6), 0.0, 1.0); }
+      else { t = clamp(aIntensity * uIntensityScale, 0.0, 1.0); }
+    }
+    if (blank && uNoDataOn > 0.5) { if (uNoData.a < 0.5) vCull = 1.0; }
+    else if (t >= 0.0 && texture(uRamp, vec2(t, 0.5)).a < 0.5) vCull = 1.0;
+  }
 }`;
 const PICK_FRAG_PTS = `#version 300 es
 precision highp float;
@@ -83,6 +101,7 @@ void main() {
 const PICK_VERT_BLK = `#version 300 es
 precision highp float;
 layout(location=0) in vec3 aIjk;
+layout(location=1) in float aChan;       // the visual VAO's, unchanged
 layout(location=2) in float aCat;
 layout(location=3) in uint aRec;
 layout(location=4) in uint aDim;
@@ -97,6 +116,12 @@ uniform sampler2D uMask;
 uniform float uFilterOn, uIsolate;
 uniform sampler2D uCatVis;
 uniform float uCatVisOn;
+uniform float uValCullOn;               // the layer hides by VALUE — a class's eye, or blanks (gl.js _valPick)
+uniform int uColorMode;
+uniform vec2 uZRange, uChanChunk, uChanDoc;
+uniform float uChanTexOn, uNoDataOn, uIntensityScale;
+uniform vec4 uNoData;
+uniform sampler2D uChanTex, uRamp;
 uniform sampler2D uRule;
 uniform float uRuleOn;
 uniform vec4 uSecPlane;
@@ -138,6 +163,16 @@ void main() {
     cls = floor(texelFetch(uRule, ivec2(rr & 8191, rr >> 13), 0).r * 255.0 + 0.5);
   }
   if (uCatVisOn > 0.5 && texelFetch(uCatVis, ivec2(int(cls) & 255, 0), 0).r < 0.5) vCull = 1.0;
+  if (uValCullOn > 0.5) {                 // hidden by value isn't pickable: the visual pass's test, exactly
+    float t = -1.0; bool blank = false;
+    if (uColorMode == 0) t = clamp((center.z - uZRange.x) / max(uZRange.y, 1e-6), 0.0, 1.0);
+    else if (uColorMode == 1) {
+      if (uChanTexOn > 0.5) { int rc = int(aRec); float v = texelFetch(uChanTex, ivec2(rc & 8191, rc >> 13), 0).r; blank = v < -1.0e37; t = clamp((v - uChanDoc.x) / max(uChanDoc.y, 1e-6), 0.0, 1.0); }
+      else { float v = uChanChunk.x + aChan * uChanChunk.y; blank = aChan < 0.5 / 65535.0; t = clamp((v - uChanDoc.x) / max(uChanDoc.y, 1e-6), 0.0, 1.0); }
+    }
+    if (blank && uNoDataOn > 0.5) { if (uNoData.a < 0.5) vCull = 1.0; }
+    else if (t >= 0.0 && texture(uRamp, vec2(t, 0.5)).a < 0.5) vCull = 1.0;
+  }
   vCenter = center; vHalf = half_; vRec = aRec; vMode = demoted; vCorner = corner; vWorldPos = wp;
 }`;
 const PICK_FRAG_BLK = `#version 300 es
@@ -218,6 +253,7 @@ const PICK_VERT_STK = `#version 300 es
 precision highp float;
 layout(location=0) in vec3 aA;
 layout(location=1) in vec3 aB;
+layout(location=2) in float aChan;       // the visual VAO's, unchanged
 layout(location=3) in float aCat;
 layout(location=4) in uint aRec;
 uniform mat4 uViewProj;
@@ -228,6 +264,12 @@ uniform sampler2D uMask;
 uniform float uFilterOn, uIsolate;
 uniform sampler2D uCatVis;
 uniform float uCatVisOn;
+uniform float uValCullOn;               // the layer hides by VALUE — a class's eye, or blanks (gl.js _valPick)
+uniform int uColorMode;
+uniform vec2 uZRange, uChanChunk, uChanDoc;
+uniform float uChanTexOn, uNoDataOn, uIntensityScale;
+uniform vec4 uNoData;
+uniform sampler2D uChanTex, uRamp;
 uniform sampler2D uRule;
 uniform float uRuleOn;
 uniform vec4 uSecPlane;
@@ -266,6 +308,16 @@ void main() {
     cls = floor(texelFetch(uRule, ivec2(rr & 8191, rr >> 13), 0).r * 255.0 + 0.5);
   }
   if (uCatVisOn > 0.5 && texelFetch(uCatVis, ivec2(int(cls) & 255, 0), 0).r < 0.5) vCull = 1.0;
+  if (uValCullOn > 0.5) {                 // hidden by value isn't pickable: the visual pass's test, exactly
+    float t = -1.0; bool blank = false;
+    if (uColorMode == 0) t = clamp((center.z - uZRange.x) / max(uZRange.y, 1e-6), 0.0, 1.0);
+    else if (uColorMode == 1) {
+      if (uChanTexOn > 0.5) { int rc = int(aRec); float v = texelFetch(uChanTex, ivec2(rc & 8191, rc >> 13), 0).r; blank = v < -1.0e37; t = clamp((v - uChanDoc.x) / max(uChanDoc.y, 1e-6), 0.0, 1.0); }
+      else { float v = uChanChunk.x + aChan * uChanChunk.y; blank = aChan < 0.5 / 65535.0; t = clamp((v - uChanDoc.x) / max(uChanDoc.y, 1e-6), 0.0, 1.0); }
+    }
+    if (blank && uNoDataOn > 0.5) { if (uNoData.a < 0.5) vCull = 1.0; }
+    else if (t >= 0.0 && texture(uRamp, vec2(t, 0.5)).a < 0.5) vCull = 1.0;
+  }
   vec2 corner = vec2(float(gl_VertexID & 1), float(gl_VertexID >> 1)) * 2.0 - 1.0;
   vec3 wp;
   if (demoted > 0.5) {
@@ -448,7 +500,7 @@ export function createPickPipeline(gl) {
   const blk = makeProgram(gl, PICK_VERT_BLK, PICK_FRAG_BLK);
   const stk = makeProgram(gl, PICK_VERT_STK, PICK_FRAG_STK);
   const U = (p, n) => gl.getUniformLocation(p, n);
-  const uPts = { layer: U(pts, 'uLayer'), viewProj: U(pts, 'uViewProj'), boxMin: U(pts, 'uBoxMin'), boxSpan: U(pts, 'uBoxSpan'), pointPx: U(pts, 'uPointPx'), secPlane: U(pts, 'uSecPlane'), secCfg: U(pts, 'uSecCfg'), mask: U(pts, 'uMask'), filterOn: U(pts, 'uFilterOn'), isolate: U(pts, 'uIsolate'), catVis: U(pts, 'uCatVis'), catVisOn: U(pts, 'uCatVisOn'), rule: U(pts, 'uRule'), ruleOn: U(pts, 'uRuleOn') };
+  const uPts = { layer: U(pts, 'uLayer'), viewProj: U(pts, 'uViewProj'), boxMin: U(pts, 'uBoxMin'), boxSpan: U(pts, 'uBoxSpan'), pointPx: U(pts, 'uPointPx'), secPlane: U(pts, 'uSecPlane'), secCfg: U(pts, 'uSecCfg'), mask: U(pts, 'uMask'), filterOn: U(pts, 'uFilterOn'), isolate: U(pts, 'uIsolate'), catVis: U(pts, 'uCatVis'), catVisOn: U(pts, 'uCatVisOn'), rule: U(pts, 'uRule'), ruleOn: U(pts, 'uRuleOn'), valCullOn: U(pts, 'uValCullOn'), colorMode: U(pts, 'uColorMode'), zRange: U(pts, 'uZRange'), chanChunk: U(pts, 'uChanChunk'), chanDoc: U(pts, 'uChanDoc'), chanTexOn: U(pts, 'uChanTexOn'), noDataOn: U(pts, 'uNoDataOn'), intensityScale: U(pts, 'uIntensityScale'), noData: U(pts, 'uNoData'), chanTex: U(pts, 'uChanTex'), ramp: U(pts, 'uRamp') };
   const uBlk = {
     layer: U(blk, 'uLayer'),
     viewProj: U(blk, 'uViewProj'), eye: U(blk, 'uEye'), right: U(blk, 'uRight'), up: U(blk, 'uUp'),
@@ -458,6 +510,7 @@ export function createPickPipeline(gl) {
     ortho: U(blk, 'uOrtho'), fwd: U(blk, 'uFwd'), orthoRay: U(blk, 'uOrthoRay'), backoff: U(blk, 'uBackoff'),
     mask: U(blk, 'uMask'), filterOn: U(blk, 'uFilterOn'), isolate: U(blk, 'uIsolate'),
     catVis: U(blk, 'uCatVis'), catVisOn: U(blk, 'uCatVisOn'), rule: U(blk, 'uRule'), ruleOn: U(blk, 'uRuleOn'),
+    valCullOn: U(blk, 'uValCullOn'), colorMode: U(blk, 'uColorMode'), zRange: U(blk, 'uZRange'), chanChunk: U(blk, 'uChanChunk'), chanDoc: U(blk, 'uChanDoc'), chanTexOn: U(blk, 'uChanTexOn'), noDataOn: U(blk, 'uNoDataOn'), intensityScale: U(blk, 'uIntensityScale'), noData: U(blk, 'uNoData'), chanTex: U(blk, 'uChanTex'), ramp: U(blk, 'uRamp'),
     secPlane: U(blk, 'uSecPlane'), secCfg: U(blk, 'uSecCfg'),
   };
   const uStk = {
@@ -467,6 +520,7 @@ export function createPickPipeline(gl) {
     ortho: U(stk, 'uOrtho'), fwd: U(stk, 'uFwd'), orthoRay: U(stk, 'uOrthoRay'), backoff: U(stk, 'uBackoff'),
     mask: U(stk, 'uMask'), filterOn: U(stk, 'uFilterOn'), isolate: U(stk, 'uIsolate'),
     catVis: U(stk, 'uCatVis'), catVisOn: U(stk, 'uCatVisOn'), rule: U(stk, 'uRule'), ruleOn: U(stk, 'uRuleOn'),
+    valCullOn: U(stk, 'uValCullOn'), colorMode: U(stk, 'uColorMode'), zRange: U(stk, 'uZRange'), chanChunk: U(stk, 'uChanChunk'), chanDoc: U(stk, 'uChanDoc'), chanTexOn: U(stk, 'uChanTexOn'), noDataOn: U(stk, 'uNoDataOn'), intensityScale: U(stk, 'uIntensityScale'), noData: U(stk, 'uNoData'), chanTex: U(stk, 'uChanTex'), ramp: U(stk, 'uRamp'),
     secPlane: U(stk, 'uSecPlane'), secCfg: U(stk, 'uSecCfg'),
   };
   let fbo = null, colorTex = null, depthTex = null, w = 0, h = 0;
@@ -532,6 +586,23 @@ export function createPickPipeline(gl) {
       gl.uniform1f(u.ruleOn, t ? 1 : 0);
       if (t) { gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, t); gl.uniform1i(u.rule, 7); }
     };
+    // hidden by VALUE isn't pickable: a class's eye (ramp texel alpha 0) or hidden blanks. Only a
+    // layer that hides something pays for the test; the rest skip it (uValCullOn 0)
+    const setVal = (u, st) => {
+      const vp = st && st._valPick;
+      const on = !!(vp && (vp.colorMode === 0 || vp.colorMode === 1) && ((st.rampHides && st.rampTex) || (st.noData && st.noData[3] < 0.5)));
+      gl.uniform1f(u.valCullOn, on ? 1 : 0);
+      if (!on) return;
+      gl.uniform1i(u.colorMode, vp.colorMode);
+      gl.uniform2f(u.zRange, vp.zRange[0], vp.zRange[1]);
+      gl.uniform2f(u.chanDoc, vp.chanDoc[0], vp.chanDoc[1]);
+      gl.uniform1f(u.intensityScale, vp.intensityScale);
+      gl.uniform1f(u.chanTexOn, st.chanTex ? 1 : 0);
+      if (st.chanTex) { gl.activeTexture(gl.TEXTURE8); gl.bindTexture(gl.TEXTURE_2D, st.chanTex); gl.uniform1i(u.chanTex, 8); }
+      gl.activeTexture(gl.TEXTURE9); gl.bindTexture(gl.TEXTURE_2D, st.rampTex || null); gl.uniform1i(u.ramp, 9);
+      gl.uniform1f(u.noDataOn, st.noData ? 1 : 0);
+      if (st.noData) gl.uniform4f(u.noData, st.noData[0], st.noData[1], st.noData[2], st.noData[3]);
+    };
     ensure(viewportW, viewportH);
     // the FBO's colour attachment is ALSO the id capture the resolve pass
     // samples (captureViewport hands out colorTex itself), and that pass
@@ -593,6 +664,7 @@ export function createPickPipeline(gl) {
       setSec(uPts, st);
       setCatVis(uPts, st);
       setRule(uPts, st);
+      setVal(uPts, st);
       gl.uniform1f(uPts.filterOn, st.maskTex ? 1 : 0);
       gl.uniform1f(uPts.isolate, st.isolate ? 1 : 0);
       if (st.maskTex) { gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, st.maskTex); gl.uniform1i(uPts.mask, 4); }
@@ -638,11 +710,13 @@ export function createPickPipeline(gl) {
       setSec(uBlk, st);
       setCatVis(uBlk, st);
       setRule(uBlk, st);
+      setVal(uBlk, st);
       gl.uniform1f(uBlk.filterOn, st.maskTex ? 1 : 0);
       gl.uniform1f(uBlk.isolate, st.isolate ? 1 : 0);
       if (st.maskTex) { gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, st.maskTex); gl.uniform1i(uBlk.mask, 4); }
       for (const c of group) {
         gl.bindVertexArray(c.vao);
+        { const dq = chanDequant(c.chanRange || [0, 0]); gl.uniform2f(uBlk.chanChunk, dq[0], dq[1]); }
         gl.bindBuffer(gl.ARRAY_BUFFER, c.bIjk);
         gl.enableVertexAttribArray(0);
         gl.vertexAttribPointer(0, 3, gl.UNSIGNED_SHORT, false, 0, 0);
@@ -699,12 +773,14 @@ export function createPickPipeline(gl) {
       setSec(uStk, st2);
       setCatVis(uStk, st2);
       setRule(uStk, st2);
+      setVal(uStk, st2);
       gl.uniform1f(uStk.radius, (st2 && st2.stickRadius) || 1);
       gl.uniform1f(uStk.filterOn, st2.maskTex ? 1 : 0);
       gl.uniform1f(uStk.isolate, st2.isolate ? 1 : 0);
       if (st2.maskTex) { gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, st2.maskTex); gl.uniform1i(uStk.mask, 4); }
       for (const c of group) {
         gl.bindVertexArray(c.vao);
+        { const dq = chanDequant(c.chanRange || [0, 0]); gl.uniform2f(uStk.chanChunk, dq[0], dq[1]); }
         gl.bindBuffer(gl.ARRAY_BUFFER, c.bSeg);
         gl.enableVertexAttribArray(0);
         gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 24, 0);

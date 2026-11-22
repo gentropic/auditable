@@ -46,6 +46,7 @@ export function captureStyle(L) {
     catLegend: clone(L.catLegend) || null, catHidden: hidden,
     rules: clone(L.rules) || null, ruleHidden: L.ruleHidden ? [...L.ruleHidden] : [],
     opacity: L.opacity != null ? L.opacity : null, edges: L.edges ?? null, legendTitle: L.legendTitle || null,
+    noData: L.noData ? { ...L.noData } : null,
   };
 }
 
@@ -107,6 +108,7 @@ export async function applyStyle(L, st) {
   if (st.opacity != null && (L.docs.blockDoc || L.dh)) applyLayerOpacity(L, st.opacity);
   if (st.edges !== undefined) { L.edges = st.edges; S.renderer.setLayerEdges(L.id, st.edges); }
   if (st.legendTitle !== undefined) L.legendTitle = st.legendTitle;
+  if (st.noData !== undefined) L.noData = st.noData ? { ...st.noData } : null;
   applyRamp(L, true);
   pushUndo(`paste style onto ${L.label || L.name}`, () => restoreStyleSnap(L, before, { colorBy: true }));
   markProjectDirty(); requestRender(); refreshProps();

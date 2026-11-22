@@ -27,6 +27,7 @@
 // geometry, so the id buffer itself goes stale), sticks / soup layers.
 
 import { makeProgram, IDENTITY3 } from './gl-util.js';
+import { chanDequant } from './chan.js';
 import { FACE_NORMALS } from './gl-pick.js';
 
 const TEXW = 8192;
@@ -49,7 +50,7 @@ void main() {
   gl_Position = vec4(px / uTexSize * 2.0 - 1.0, 0.0, 1.0);
   gl_PointSize = 1.0;
   float z = (uGridOrigin + uGridRot * (aIjk * uGridSize)).z;
-  vAttr = vec4(z, uChanChunk.x + aChan * uChanChunk.y, aCat, 0.0);
+  vAttr = vec4(z, uChanChunk.x + aChan * uChanChunk.y, aCat, aChan < 0.5 / 65535.0 ? 1.0 : 0.0);   // w: a BLANK (chan.js)
 }`;
 
 const BAKE_VERT_POINTS = `#version 300 es
@@ -99,6 +100,8 @@ uniform int uColorMode;
 uniform vec2 uZRange, uChanDoc;
 uniform float uPaletteN, uIntensityScale;
 uniform float uFilterOn, uSelOn, uRuleOn, uChanTexOn;
+uniform vec4 uNoData;                   // blank values (chan.js code 0 / the value texture's BLANK): rgb + a (a < 0.5 = hidden)
+uniform float uNoDataOn;                // off: a blank clamps to the lowest colour, the old picture
 uniform vec3 uLightDir, uCutNormal;
 uniform vec3 uFaceN[6];                  // gl-pick's FACE_NORMALS
 uniform float uEdgesOn, uOrtho, uPerspScale;
@@ -124,8 +127,12 @@ void main() {
   } else if (uColorMode == 1) {
     if (uKind == 1 || uChanTexOn > 0.5) {                  // blocks' grade, or a value texture (any kind): doc-normalized
       float v = uChanTexOn > 0.5 ? texelFetch(uChanTex, at, 0).r : attr.y;
-      float t = clamp((v - uChanDoc.x) / max(uChanDoc.y, 1e-6), 0.0, 1.0);
-      col = texture(uRamp, vec2(t, 0.5));
+      bool blank = uChanTexOn > 0.5 ? v < -1.0e37 : attr.w > 0.5;
+      if (blank && uNoDataOn > 0.5) col = vec4(uNoData.rgb, 1.0);   // (hidden blanks were culled: not in the id buffer)
+      else {
+        float t = clamp((v - uChanDoc.x) / max(uChanDoc.y, 1e-6), 0.0, 1.0);
+        col = texture(uRamp, vec2(t, 0.5));
+      }
     } else {                                               // points: intensity
       float t = clamp(attr.y * uIntensityScale, 0.0, 1.0);
       col = texture(uRamp, vec2(t, 0.5));
@@ -246,7 +253,7 @@ export function createResolvePipeline(gl) {
     layerId: U(resolveProg, 'uLayerId'), picked: U(resolveProg, 'uPicked'), pickedLayer: U(resolveProg, 'uPickedLayer'),
     kind: U(resolveProg, 'uKind'), colorMode: U(resolveProg, 'uColorMode'), zRange: U(resolveProg, 'uZRange'), chanDoc: U(resolveProg, 'uChanDoc'),
     paletteN: U(resolveProg, 'uPaletteN'), intensityScale: U(resolveProg, 'uIntensityScale'),
-    filterOn: U(resolveProg, 'uFilterOn'), selOn: U(resolveProg, 'uSelOn'), ruleOn: U(resolveProg, 'uRuleOn'), chanTexOn: U(resolveProg, 'uChanTexOn'),
+    filterOn: U(resolveProg, 'uFilterOn'), selOn: U(resolveProg, 'uSelOn'), ruleOn: U(resolveProg, 'uRuleOn'), chanTexOn: U(resolveProg, 'uChanTexOn'), noData: U(resolveProg, 'uNoData'), noDataOn: U(resolveProg, 'uNoDataOn'),
     lightDir: U(resolveProg, 'uLightDir'), cutNormal: U(resolveProg, 'uCutNormal'), faceN: U(resolveProg, 'uFaceN'),
     depth: U(resolveProg, 'uDepth'), edgesOn: U(resolveProg, 'uEdgesOn'), ortho: U(resolveProg, 'uOrtho'), perspScale: U(resolveProg, 'uPerspScale'),
     invVP: U(resolveProg, 'uInvVP'), viewport: U(resolveProg, 'uViewport'), eyePos: U(resolveProg, 'uEyePos'),
@@ -313,8 +320,8 @@ export function createResolvePipeline(gl) {
           gl.uniform3f(uB.gridOrigin, g.originLocal[0], g.originLocal[1], g.originLocal[2]);
           gl.uniform3f(uB.gridSize, g.size[0], g.size[1], g.size[2]);
           gl.uniformMatrix3fv(uB.gridRot, false, g.rot || IDENTITY3);
-          const span = c.chanRange[1] - c.chanRange[0];
-          gl.uniform2f(uB.chanChunk, c.chanRange[0], span > 0 ? span : 0);
+          const dq = chanDequant(c.chanRange);
+          gl.uniform2f(uB.chanChunk, dq[0], dq[1]);
           gl.bindVertexArray(blocksBakeVao(c));
           gl.drawArrays(gl.POINTS, 0, c.count);
         }
@@ -380,6 +387,8 @@ export function createResolvePipeline(gl) {
       gl.uniform1f(uR.selOn, u.sel ? 1 : 0);
       gl.uniform1f(uR.ruleOn, u.rule ? 1 : 0);
       gl.uniform1f(uR.chanTexOn, u.chanTex ? 1 : 0);
+      gl.uniform1f(uR.noDataOn, u.noData ? 1 : 0);
+      if (u.noData) gl.uniform4f(uR.noData, u.noData[0], u.noData[1], u.noData[2], u.noData[3]);
       gl.uniform3f(uR.lightDir, u.lightDir[0], u.lightDir[1], u.lightDir[2]);
       gl.uniform3f(uR.cutNormal, u.cutNormal[0], u.cutNormal[1], u.cutNormal[2]);
       gl.uniform3fv(uR.faceN, faceFlat);

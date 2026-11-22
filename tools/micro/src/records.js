@@ -122,7 +122,8 @@ export function rowQualifier(L) {
         const i = cols[k][0], v = out[i];
         if (typeof v !== 'string' || v === '') continue;
         const n = +v;
-        if (n === n && !(n < 0 && cols[k][1].negBelow)) continue;   // a plain number (the common case)
+        const pk = cols[k][1];
+        if (n === n && !(n < 0 && pk.negBelow) && !(pk.blanks && pk.blanks.includes(n))) continue;   // a plain number (the common case)
         const q = qualifiedNumber(v, cols[k][1]);
         if (out === f) out = f.slice();
         out[i] = q === q ? q : '';                          // NaN (a code) → blank

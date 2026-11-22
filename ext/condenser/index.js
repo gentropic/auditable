@@ -829,6 +829,24 @@ function createMortonSorter({ bbox, n = 0, kinds, target = 1 << 20, staging = 64
   };
 }
 
+// ── src/core/chan.js ──
+
+// @gcu/condenser — the per-element VALUE code in a chunk (u16, normalized on the GPU).
+// Code 0 is BLANK (a missing value); 1..65535 span the chunk's [min, max]. The reserved code
+// is what lets a shader tell a missing value from the lowest one — before it, a blank FE drew
+// in the bottom grade class, indistinguishable from real low grade. The builders write it
+// (blocks.js, sticks.js); every reader dequantizes with chanDequant's two numbers as
+// x + aChan·y — code 1 lands on min and 65535 on max, so the shader formula is unchanged —
+// and calls a value blank when aChan < CHAN_BLANK_T. With no-data off, a blank decodes just
+// under min and clamps to the lowest colour: exactly the old picture.
+const CHAN_BLANK_T = 0.5 / 65535;
+function chanScale(lo, hi) { return hi > lo ? 65534 / (hi - lo) : 0; }
+function chanCode(v, lo, scale) { return Number.isFinite(v) ? 1 + (((v - lo) * scale + 0.5) | 0) : 0; }
+function chanDequant(range) {
+  const lo = range[0], span = range[1] - range[0];
+  return span > 0 ? [lo - span / 65534, (span * 65535) / 65534] : [lo, 0];
+}
+
 // ── src/core/blocks.js ──
 
 // @gcu/condenser — block-model chunks: IJK-exact representation (micro-spec §2.5).
@@ -905,7 +923,7 @@ function buildBlockChunk({ x, y, z, chan, cat, recIdx, dim }, grid, frame, rnd, 
   let cMin = Infinity, cMax = -Infinity;
   for (let k = 0; k < n; k++) { const v = chan[perm[k]]; if (Number.isFinite(v)) { if (v < cMin) cMin = v; if (v > cMax) cMax = v; } }
   if (!Number.isFinite(cMin)) { cMin = 0; cMax = 0; }
-  const cScale = cMax > cMin ? 65535 / (cMax - cMin) : 0;
+  const cScale = chanScale(cMin, cMax);                   // code 0 = blank, 1..65535 = min..max (chan.js)
   let minI = 65535, minJ = 65535, minK = 65535, maxI = 0, maxJ = 0, maxK = 0;
   // sub-blocked: track actual box faces (variable half-dims) for the cull bbox
   let fx0 = Infinity, fy0 = Infinity, fz0 = Infinity, fx1 = -Infinity, fy1 = -Infinity, fz1 = -Infinity;
@@ -928,7 +946,7 @@ function buildBlockChunk({ x, y, z, chan, cat, recIdx, dim }, grid, frame, rnd, 
     if (bj < minJ) minJ = bj; if (bj > maxJ) maxJ = bj;
     if (bk < minK) minK = bk; if (bk > maxK) maxK = bk;
     const cv = chan[i];
-    outChan[k] = Number.isFinite(cv) ? ((cv - cMin) * cScale + 0.5) | 0 : 0;
+    outChan[k] = chanCode(cv, cMin, cScale);
     outCat[k] = cat ? cat[i] : 0;
     outR[k] = recIdx[i];
     if (sub) {
@@ -2042,11 +2060,14 @@ function classifyQualified(s) {
 }
 
 // a cell → number under a policy (NaN = blank). The fast path is a plain number.
+// policy.blanks: values that MEAN "no data" in this column (a −99 sentinel) — read as blank, so
+// they draw as no data and stay out of statistics, never as the lowest grade
 function qualifiedNumber(s, policy = QUALIFIED_DEFAULT) {
-  if (typeof s === 'number') return s;
+  if (typeof s === 'number') return policy && policy.blanks && policy.blanks.includes(s) ? NaN : s;
   if (s == null || s === '') return NaN;
   const n = +s;
   if (Number.isFinite(n)) {
+    if (policy && policy.blanks && policy.blanks.includes(n)) return NaN;
     if (n < 0 && policy && policy.negBelow) return belowValue(-n, policy);
     return n;
   }
@@ -4100,7 +4121,7 @@ function buildStickChunk(raw, frame, rnd, indices = null) {
   let cMin = Infinity, cMax = -Infinity;
   for (let k = 0; k < n; k++) { const v = raw.chan[perm[k]]; if (Number.isFinite(v)) { if (v < cMin) cMin = v; if (v > cMax) cMax = v; } }
   if (!Number.isFinite(cMin)) { cMin = 0; cMax = 0; }
-  const cScale = cMax > cMin ? 65535 / (cMax - cMin) : 0;
+  const cScale = chanScale(cMin, cMax);                   // code 0 = blank, 1..65535 = min..max (chan.js)
   const bb = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
   for (let k = 0; k < n; k++) {
     const i = perm[k];
@@ -4113,7 +4134,7 @@ function buildStickChunk(raw, frame, rnd, indices = null) {
       if (B[a] < bb[a]) bb[a] = B[a]; if (B[a] > bb[a + 3]) bb[a + 3] = B[a];
     }
     const cv = raw.chan[i];
-    outChan[k] = Number.isFinite(cv) ? ((cv - cMin) * cScale + 0.5) | 0 : 0;
+    outChan[k] = chanCode(cv, cMin, cScale);
     outCat[k] = raw.cat ? raw.cat[i] : 0;
     outR[k] = raw.recIdx[i];
   }
@@ -4262,6 +4283,8 @@ uniform vec2 uZRange;
 uniform vec2 uChanChunk;                // chunk chan min/span (dequantize)
 uniform vec2 uChanDoc;                  // doc chan min/span (ramp)
 uniform sampler2D uRamp;
+uniform vec4 uNoData;                   // blank values (chan.js code 0 / the value texture's BLANK): rgb + a (a < 0.5 = hidden)
+uniform float uNoDataOn;                // off: a blank clamps to the lowest colour, the old picture
 uniform sampler2D uPalette;
 uniform sampler2D uMask;
 uniform float uFilterOn, uIsolate;
@@ -4331,12 +4354,20 @@ void main() {
   if (uColorMode == 0) {
     float t = clamp((center.z - uZRange.x) / max(uZRange.y, 1e-6), 0.0, 1.0);
     vColor = texture(uRamp, vec2(t, 0.5));
+    if (vColor.a < 0.5) vCull = 1.0;                      // a hidden class: the ramp texel's alpha is 0
   } else if (uColorMode == 1) {
     float cv;
     if (uChanTexOn > 0.5) { int rc = int(aRec); cv = texelFetch(uChanTex, ivec2(rc & 8191, rc >> 13), 0).r; }
     else cv = uChanChunk.x + aChan * uChanChunk.y;
-    float t = clamp((cv - uChanDoc.x) / max(uChanDoc.y, 1e-6), 0.0, 1.0);
-    vColor = texture(uRamp, vec2(t, 0.5));
+    bool blank = uChanTexOn > 0.5 ? cv < -1.0e37 : aChan < 0.5 / 65535.0;
+    if (blank && uNoDataOn > 0.5) {
+      vColor = vec4(uNoData.rgb, 1.0);
+      if (uNoData.a < 0.5) vCull = 1.0;
+    } else {
+      float t = clamp((cv - uChanDoc.x) / max(uChanDoc.y, 1e-6), 0.0, 1.0);
+      vColor = texture(uRamp, vec2(t, 0.5));
+      if (vColor.a < 0.5) vCull = 1.0;
+    }
   } else if (uColorMode == 2) {
     vColor = texture(uPalette, vec2((cls + 0.5) / 256.0, 0.5));
   } else {
@@ -4474,7 +4505,7 @@ function createSticksPipeline(gl) {
     return { prog, uni: {
       viewProj: U('uViewProj'), eye: U('uEye'), radius: U('uRadius'), opacity: U('uOpacity'),
       perspScale: U('uPerspScale'), demotePx: U('uDemotePx'), pointPx: U('uPointPx'), fixedSplat: U('uFixedSplat'),
-      colorMode: U('uColorMode'), zRange: U('uZRange'), chanChunk: U('uChanChunk'), chanDoc: U('uChanDoc'),
+      colorMode: U('uColorMode'), zRange: U('uZRange'), chanChunk: U('uChanChunk'), chanDoc: U('uChanDoc'), noData: U('uNoData'), noDataOn: U('uNoDataOn'),
       ramp: U('uRamp'), palette: U('uPalette'), lightDir: U('uLightDir'),
       mask: U('uMask'), filterOn: U('uFilterOn'), isolate: U('uIsolate'), picked: U('uPicked'), pickedLayer: U('uPickedLayer'), layer: U('uLayer'), repaint: U('uRepaint'),
       catVis: U('uCatVis'), catVisOn: U('uCatVisOn'), sel: U('uSel'), selOn: U('uSelOn'),
@@ -4525,12 +4556,12 @@ function createSticksPipeline(gl) {
     gl.enableVertexAttribArray(4);
     gl.vertexAttribIPointer(4, 1, gl.UNSIGNED_INT, 0, first * 4);
     gl.vertexAttribDivisor(4, 1);
-    const span = c.chanRange[1] - c.chanRange[0];
-    gl.uniform2f(uni.chanChunk, c.chanRange[0], span > 0 ? span : 0);
+    const dq = chanDequant(c.chanRange);
+    gl.uniform2f(uni.chanChunk, dq[0], dq[1]);
     gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, k);
   }
 
-  function begin(cam, { pointPx, colorMode, zRange, chanDoc, ramp, palette, viewportH, maskTex = null, isolate = false, pointsView = false, picked = 0xFFFFFFFF, pickedLayer = 0xFFFFFFFF, layer = 0, section = null, radius = 1, catVisTex = null, selTex = null, ruleTex = null, chanTex = null, opacity = 1 }) {
+  function begin(cam, { pointPx, colorMode, zRange, chanDoc, ramp, palette, viewportH, maskTex = null, isolate = false, pointsView = false, picked = 0xFFFFFFFF, pickedLayer = 0xFFFFFFFF, layer = 0, section = null, radius = 1, catVisTex = null, selTex = null, ruleTex = null, chanTex = null, opacity = 1, noData = null }) {
     const s = cam.state;
     for (const pp of [full, cheap]) {
       gl.useProgram(pp.prog);
@@ -4578,6 +4609,8 @@ function createSticksPipeline(gl) {
       gl.uniform1f(uni.ruleOn, ruleTex ? 1 : 0);
       if (ruleTex) { gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, ruleTex); gl.uniform1i(uni.rule, 7); }
       gl.uniform1f(uni.chanTexOn, chanTex ? 1 : 0);
+      gl.uniform1f(uni.noDataOn, noData ? 1 : 0);
+      if (noData) gl.uniform4f(uni.noData, noData[0], noData[1], noData[2], noData[3]);
       if (chanTex) { gl.activeTexture(gl.TEXTURE8); gl.bindTexture(gl.TEXTURE_2D, chanTex); gl.uniform1i(uni.chanTex, 8); }
     }
     active = full;
@@ -6520,6 +6553,8 @@ uniform vec2 uZRange;
 uniform vec2 uChanChunk;                // this chunk's [min, span] (dequantize aChan)
 uniform vec2 uChanDoc;                  // document [min, span] (ramp normalization)
 uniform sampler2D uRamp;
+uniform vec4 uNoData;                   // blank values (chan.js code 0 / the value texture's BLANK): rgb + a (a < 0.5 = hidden)
+uniform float uNoDataOn;                // off: a blank clamps to the lowest colour, the old picture
 uniform sampler2D uPalette;
 uniform sampler2D uMask;                // filter bitmask by record index (8192-wide)
 uniform float uFilterOn, uIsolate;
@@ -6584,13 +6619,21 @@ void main() {
   if (uColorMode == 0) {
     float t = clamp((center.z - uZRange.x) / max(uZRange.y, 1e-6), 0.0, 1.0);
     vColor = texture(uRamp, vec2(t, 0.5));
+    if (vColor.a < 0.5) vCull = 1.0;                      // a hidden class: the ramp texel's alpha is 0
   } else if (uColorMode == 1) {
     int cr = int(aRec);
     float v = uChanTexOn > 0.5
       ? texelFetch(uChanTex, ivec2(cr & 8191, cr >> 13), 0).r
       : uChanChunk.x + aChan * uChanChunk.y;
-    float t = clamp((v - uChanDoc.x) / max(uChanDoc.y, 1e-6), 0.0, 1.0);
-    vColor = texture(uRamp, vec2(t, 0.5));
+    bool blank = uChanTexOn > 0.5 ? v < -1.0e37 : aChan < 0.5 / 65535.0;
+    if (blank && uNoDataOn > 0.5) {
+      vColor = vec4(uNoData.rgb, 1.0);
+      if (uNoData.a < 0.5) vCull = 1.0;
+    } else {
+      float t = clamp((v - uChanDoc.x) / max(uChanDoc.y, 1e-6), 0.0, 1.0);
+      vColor = texture(uRamp, vec2(t, 0.5));
+      if (vColor.a < 0.5) vCull = 1.0;
+    }
   } else if (uColorMode == 2) {
     vColor = texture(uPalette, vec2((cls + 0.5) / 256.0, 0.5));
   } else {
@@ -6750,7 +6793,7 @@ function createBlocksPipeline(gl) {
       gridOrigin: U('uGridOrigin'), gridSize: U('uGridSize'), gridRot: U('uGridRot'),
       dimPalette: U('uDimPalette'), subBlock: U('uSubBlock'), opacity: U('uOpacity'),
       perspScale: U('uPerspScale'), demotePx: U('uDemotePx'), pointPx: U('uPointPx'),
-      colorMode: U('uColorMode'), zRange: U('uZRange'), chanChunk: U('uChanChunk'), chanDoc: U('uChanDoc'),
+      colorMode: U('uColorMode'), zRange: U('uZRange'), chanChunk: U('uChanChunk'), chanDoc: U('uChanDoc'), noData: U('uNoData'), noDataOn: U('uNoDataOn'),
       ramp: U('uRamp'), palette: U('uPalette'), lightDir: U('uLightDir'),
       mask: U('uMask'), filterOn: U('uFilterOn'), isolate: U('uIsolate'), forceSplat: U('uForceSplat'), fixedSplat: U('uFixedSplat'), picked: U('uPicked'), pickedLayer: U('uPickedLayer'), layer: U('uLayer'), repaint: U('uRepaint'),
       catVis: U('uCatVis'), catVisOn: U('uCatVisOn'), sel: U('uSel'), selOn: U('uSelOn'),
@@ -6837,14 +6880,14 @@ function createBlocksPipeline(gl) {
     gl.uniform3f(uni.gridOrigin, c.grid.originLocal[0], c.grid.originLocal[1], c.grid.originLocal[2]);
     gl.uniform3f(uni.gridSize, c.grid.size[0], c.grid.size[1], c.grid.size[2]);
     gl.uniformMatrix3fv(uni.gridRot, false, c.grid.rot || IDENTITY3);
-    const span = c.chanRange[1] - c.chanRange[0];
-    gl.uniform2f(uni.chanChunk, c.chanRange[0], span > 0 ? span : 0);
+    const dq = chanDequant(c.chanRange);
+    gl.uniform2f(uni.chanChunk, dq[0], dq[1]);
     gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, k);
   }
 
   // Per-frame program state (called once before the chunk loop) — set on BOTH
   // programs so drawSlice can switch freely between full and cheap.
-  function begin(cam, { pointPx, colorMode, zRange, chanDoc, ramp, palette, viewportH, maskTex = null, isolate = false, pointsView = false, picked = 0xFFFFFFFF, pickedLayer = 0xFFFFFFFF, layer = 0, section = null, catVisTex = null, selTex = null, ruleTex = null, chanTex = null, opacity = 1, edges = false }) {
+  function begin(cam, { pointPx, colorMode, zRange, chanDoc, ramp, palette, viewportH, maskTex = null, isolate = false, pointsView = false, picked = 0xFFFFFFFF, pickedLayer = 0xFFFFFFFF, layer = 0, section = null, catVisTex = null, selTex = null, ruleTex = null, chanTex = null, opacity = 1, edges = false, noData = null }) {
     const s = cam.state;
     for (const pp of [full, cheap]) {
       gl.useProgram(pp.prog);
@@ -6897,6 +6940,8 @@ function createBlocksPipeline(gl) {
       gl.uniform1f(uni.ruleOn, ruleTex ? 1 : 0);
       if (ruleTex) { gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, ruleTex); gl.uniform1i(uni.rule, 7); }
       gl.uniform1f(uni.chanTexOn, chanTex ? 1 : 0);
+      gl.uniform1f(uni.noDataOn, noData ? 1 : 0);
+      if (noData) gl.uniform4f(uni.noData, noData[0], noData[1], noData[2], noData[3]);
       if (chanTex) { gl.activeTexture(gl.TEXTURE8); gl.bindTexture(gl.TEXTURE_2D, chanTex); gl.uniform1i(uni.chanTex, 8); }
     }
     active = full;
@@ -7282,6 +7327,7 @@ uint packId(uint layer, uint face) { return (layer & 0xFFFFu) | (face << 16); }`
 const PICK_VERT_PTS = `#version 300 es
 precision highp float;
 layout(location=0) in vec3 aPos;
+layout(location=1) in float aIntensity;   // the visual VAO's, unchanged
 layout(location=2) in float aClass;
 layout(location=4) in uint aRec;
 uniform mat4 uViewProj;
@@ -7293,6 +7339,12 @@ uniform sampler2D uMask;
 uniform float uFilterOn, uIsolate;
 uniform sampler2D uCatVis;
 uniform float uCatVisOn;
+uniform float uValCullOn;               // the layer hides by VALUE — a class's eye, or blanks (gl.js _valPick)
+uniform int uColorMode;
+uniform vec2 uZRange, uChanChunk, uChanDoc;
+uniform float uChanTexOn, uNoDataOn, uIntensityScale;
+uniform vec4 uNoData;
+uniform sampler2D uChanTex, uRamp;
 uniform sampler2D uRule;
 uniform float uRuleOn;
 flat out uint vRec;
@@ -7313,6 +7365,16 @@ void main() {
     cls = floor(texelFetch(uRule, ivec2(rr & 8191, rr >> 13), 0).r * 255.0 + 0.5);
   }
   if (uCatVisOn > 0.5 && texelFetch(uCatVis, ivec2(int(cls) & 255, 0), 0).r < 0.5) vCull = 1.0;
+  if (uValCullOn > 0.5) {                 // hidden by value isn't pickable: the visual pass's test, exactly
+    float t = -1.0; bool blank = false;
+    if (uColorMode == 0) t = clamp((p.z - uZRange.x) / max(uZRange.y, 1e-6), 0.0, 1.0);
+    else if (uColorMode == 1) {
+      if (uChanTexOn > 0.5) { int rc = int(aRec); float v = texelFetch(uChanTex, ivec2(rc & 8191, rc >> 13), 0).r; blank = v < -1.0e37; t = clamp((v - uChanDoc.x) / max(uChanDoc.y, 1e-6), 0.0, 1.0); }
+      else { t = clamp(aIntensity * uIntensityScale, 0.0, 1.0); }
+    }
+    if (blank && uNoDataOn > 0.5) { if (uNoData.a < 0.5) vCull = 1.0; }
+    else if (t >= 0.0 && texture(uRamp, vec2(t, 0.5)).a < 0.5) vCull = 1.0;
+  }
 }`;
 const PICK_FRAG_PTS = `#version 300 es
 precision highp float;
@@ -7332,6 +7394,7 @@ void main() {
 const PICK_VERT_BLK = `#version 300 es
 precision highp float;
 layout(location=0) in vec3 aIjk;
+layout(location=1) in float aChan;       // the visual VAO's, unchanged
 layout(location=2) in float aCat;
 layout(location=3) in uint aRec;
 layout(location=4) in uint aDim;
@@ -7346,6 +7409,12 @@ uniform sampler2D uMask;
 uniform float uFilterOn, uIsolate;
 uniform sampler2D uCatVis;
 uniform float uCatVisOn;
+uniform float uValCullOn;               // the layer hides by VALUE — a class's eye, or blanks (gl.js _valPick)
+uniform int uColorMode;
+uniform vec2 uZRange, uChanChunk, uChanDoc;
+uniform float uChanTexOn, uNoDataOn, uIntensityScale;
+uniform vec4 uNoData;
+uniform sampler2D uChanTex, uRamp;
 uniform sampler2D uRule;
 uniform float uRuleOn;
 uniform vec4 uSecPlane;
@@ -7387,6 +7456,16 @@ void main() {
     cls = floor(texelFetch(uRule, ivec2(rr & 8191, rr >> 13), 0).r * 255.0 + 0.5);
   }
   if (uCatVisOn > 0.5 && texelFetch(uCatVis, ivec2(int(cls) & 255, 0), 0).r < 0.5) vCull = 1.0;
+  if (uValCullOn > 0.5) {                 // hidden by value isn't pickable: the visual pass's test, exactly
+    float t = -1.0; bool blank = false;
+    if (uColorMode == 0) t = clamp((center.z - uZRange.x) / max(uZRange.y, 1e-6), 0.0, 1.0);
+    else if (uColorMode == 1) {
+      if (uChanTexOn > 0.5) { int rc = int(aRec); float v = texelFetch(uChanTex, ivec2(rc & 8191, rc >> 13), 0).r; blank = v < -1.0e37; t = clamp((v - uChanDoc.x) / max(uChanDoc.y, 1e-6), 0.0, 1.0); }
+      else { float v = uChanChunk.x + aChan * uChanChunk.y; blank = aChan < 0.5 / 65535.0; t = clamp((v - uChanDoc.x) / max(uChanDoc.y, 1e-6), 0.0, 1.0); }
+    }
+    if (blank && uNoDataOn > 0.5) { if (uNoData.a < 0.5) vCull = 1.0; }
+    else if (t >= 0.0 && texture(uRamp, vec2(t, 0.5)).a < 0.5) vCull = 1.0;
+  }
   vCenter = center; vHalf = half_; vRec = aRec; vMode = demoted; vCorner = corner; vWorldPos = wp;
 }`;
 const PICK_FRAG_BLK = `#version 300 es
@@ -7467,6 +7546,7 @@ const PICK_VERT_STK = `#version 300 es
 precision highp float;
 layout(location=0) in vec3 aA;
 layout(location=1) in vec3 aB;
+layout(location=2) in float aChan;       // the visual VAO's, unchanged
 layout(location=3) in float aCat;
 layout(location=4) in uint aRec;
 uniform mat4 uViewProj;
@@ -7477,6 +7557,12 @@ uniform sampler2D uMask;
 uniform float uFilterOn, uIsolate;
 uniform sampler2D uCatVis;
 uniform float uCatVisOn;
+uniform float uValCullOn;               // the layer hides by VALUE — a class's eye, or blanks (gl.js _valPick)
+uniform int uColorMode;
+uniform vec2 uZRange, uChanChunk, uChanDoc;
+uniform float uChanTexOn, uNoDataOn, uIntensityScale;
+uniform vec4 uNoData;
+uniform sampler2D uChanTex, uRamp;
 uniform sampler2D uRule;
 uniform float uRuleOn;
 uniform vec4 uSecPlane;
@@ -7515,6 +7601,16 @@ void main() {
     cls = floor(texelFetch(uRule, ivec2(rr & 8191, rr >> 13), 0).r * 255.0 + 0.5);
   }
   if (uCatVisOn > 0.5 && texelFetch(uCatVis, ivec2(int(cls) & 255, 0), 0).r < 0.5) vCull = 1.0;
+  if (uValCullOn > 0.5) {                 // hidden by value isn't pickable: the visual pass's test, exactly
+    float t = -1.0; bool blank = false;
+    if (uColorMode == 0) t = clamp((center.z - uZRange.x) / max(uZRange.y, 1e-6), 0.0, 1.0);
+    else if (uColorMode == 1) {
+      if (uChanTexOn > 0.5) { int rc = int(aRec); float v = texelFetch(uChanTex, ivec2(rc & 8191, rc >> 13), 0).r; blank = v < -1.0e37; t = clamp((v - uChanDoc.x) / max(uChanDoc.y, 1e-6), 0.0, 1.0); }
+      else { float v = uChanChunk.x + aChan * uChanChunk.y; blank = aChan < 0.5 / 65535.0; t = clamp((v - uChanDoc.x) / max(uChanDoc.y, 1e-6), 0.0, 1.0); }
+    }
+    if (blank && uNoDataOn > 0.5) { if (uNoData.a < 0.5) vCull = 1.0; }
+    else if (t >= 0.0 && texture(uRamp, vec2(t, 0.5)).a < 0.5) vCull = 1.0;
+  }
   vec2 corner = vec2(float(gl_VertexID & 1), float(gl_VertexID >> 1)) * 2.0 - 1.0;
   vec3 wp;
   if (demoted > 0.5) {
@@ -7697,7 +7793,7 @@ function createPickPipeline(gl) {
   const blk = makeProgram(gl, PICK_VERT_BLK, PICK_FRAG_BLK);
   const stk = makeProgram(gl, PICK_VERT_STK, PICK_FRAG_STK);
   const U = (p, n) => gl.getUniformLocation(p, n);
-  const uPts = { layer: U(pts, 'uLayer'), viewProj: U(pts, 'uViewProj'), boxMin: U(pts, 'uBoxMin'), boxSpan: U(pts, 'uBoxSpan'), pointPx: U(pts, 'uPointPx'), secPlane: U(pts, 'uSecPlane'), secCfg: U(pts, 'uSecCfg'), mask: U(pts, 'uMask'), filterOn: U(pts, 'uFilterOn'), isolate: U(pts, 'uIsolate'), catVis: U(pts, 'uCatVis'), catVisOn: U(pts, 'uCatVisOn'), rule: U(pts, 'uRule'), ruleOn: U(pts, 'uRuleOn') };
+  const uPts = { layer: U(pts, 'uLayer'), viewProj: U(pts, 'uViewProj'), boxMin: U(pts, 'uBoxMin'), boxSpan: U(pts, 'uBoxSpan'), pointPx: U(pts, 'uPointPx'), secPlane: U(pts, 'uSecPlane'), secCfg: U(pts, 'uSecCfg'), mask: U(pts, 'uMask'), filterOn: U(pts, 'uFilterOn'), isolate: U(pts, 'uIsolate'), catVis: U(pts, 'uCatVis'), catVisOn: U(pts, 'uCatVisOn'), rule: U(pts, 'uRule'), ruleOn: U(pts, 'uRuleOn'), valCullOn: U(pts, 'uValCullOn'), colorMode: U(pts, 'uColorMode'), zRange: U(pts, 'uZRange'), chanChunk: U(pts, 'uChanChunk'), chanDoc: U(pts, 'uChanDoc'), chanTexOn: U(pts, 'uChanTexOn'), noDataOn: U(pts, 'uNoDataOn'), intensityScale: U(pts, 'uIntensityScale'), noData: U(pts, 'uNoData'), chanTex: U(pts, 'uChanTex'), ramp: U(pts, 'uRamp') };
   const uBlk = {
     layer: U(blk, 'uLayer'),
     viewProj: U(blk, 'uViewProj'), eye: U(blk, 'uEye'), right: U(blk, 'uRight'), up: U(blk, 'uUp'),
@@ -7707,6 +7803,7 @@ function createPickPipeline(gl) {
     ortho: U(blk, 'uOrtho'), fwd: U(blk, 'uFwd'), orthoRay: U(blk, 'uOrthoRay'), backoff: U(blk, 'uBackoff'),
     mask: U(blk, 'uMask'), filterOn: U(blk, 'uFilterOn'), isolate: U(blk, 'uIsolate'),
     catVis: U(blk, 'uCatVis'), catVisOn: U(blk, 'uCatVisOn'), rule: U(blk, 'uRule'), ruleOn: U(blk, 'uRuleOn'),
+    valCullOn: U(blk, 'uValCullOn'), colorMode: U(blk, 'uColorMode'), zRange: U(blk, 'uZRange'), chanChunk: U(blk, 'uChanChunk'), chanDoc: U(blk, 'uChanDoc'), chanTexOn: U(blk, 'uChanTexOn'), noDataOn: U(blk, 'uNoDataOn'), intensityScale: U(blk, 'uIntensityScale'), noData: U(blk, 'uNoData'), chanTex: U(blk, 'uChanTex'), ramp: U(blk, 'uRamp'),
     secPlane: U(blk, 'uSecPlane'), secCfg: U(blk, 'uSecCfg'),
   };
   const uStk = {
@@ -7716,6 +7813,7 @@ function createPickPipeline(gl) {
     ortho: U(stk, 'uOrtho'), fwd: U(stk, 'uFwd'), orthoRay: U(stk, 'uOrthoRay'), backoff: U(stk, 'uBackoff'),
     mask: U(stk, 'uMask'), filterOn: U(stk, 'uFilterOn'), isolate: U(stk, 'uIsolate'),
     catVis: U(stk, 'uCatVis'), catVisOn: U(stk, 'uCatVisOn'), rule: U(stk, 'uRule'), ruleOn: U(stk, 'uRuleOn'),
+    valCullOn: U(stk, 'uValCullOn'), colorMode: U(stk, 'uColorMode'), zRange: U(stk, 'uZRange'), chanChunk: U(stk, 'uChanChunk'), chanDoc: U(stk, 'uChanDoc'), chanTexOn: U(stk, 'uChanTexOn'), noDataOn: U(stk, 'uNoDataOn'), intensityScale: U(stk, 'uIntensityScale'), noData: U(stk, 'uNoData'), chanTex: U(stk, 'uChanTex'), ramp: U(stk, 'uRamp'),
     secPlane: U(stk, 'uSecPlane'), secCfg: U(stk, 'uSecCfg'),
   };
   let fbo = null, colorTex = null, depthTex = null, w = 0, h = 0;
@@ -7781,6 +7879,23 @@ function createPickPipeline(gl) {
       gl.uniform1f(u.ruleOn, t ? 1 : 0);
       if (t) { gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, t); gl.uniform1i(u.rule, 7); }
     };
+    // hidden by VALUE isn't pickable: a class's eye (ramp texel alpha 0) or hidden blanks. Only a
+    // layer that hides something pays for the test; the rest skip it (uValCullOn 0)
+    const setVal = (u, st) => {
+      const vp = st && st._valPick;
+      const on = !!(vp && (vp.colorMode === 0 || vp.colorMode === 1) && ((st.rampHides && st.rampTex) || (st.noData && st.noData[3] < 0.5)));
+      gl.uniform1f(u.valCullOn, on ? 1 : 0);
+      if (!on) return;
+      gl.uniform1i(u.colorMode, vp.colorMode);
+      gl.uniform2f(u.zRange, vp.zRange[0], vp.zRange[1]);
+      gl.uniform2f(u.chanDoc, vp.chanDoc[0], vp.chanDoc[1]);
+      gl.uniform1f(u.intensityScale, vp.intensityScale);
+      gl.uniform1f(u.chanTexOn, st.chanTex ? 1 : 0);
+      if (st.chanTex) { gl.activeTexture(gl.TEXTURE8); gl.bindTexture(gl.TEXTURE_2D, st.chanTex); gl.uniform1i(u.chanTex, 8); }
+      gl.activeTexture(gl.TEXTURE9); gl.bindTexture(gl.TEXTURE_2D, st.rampTex || null); gl.uniform1i(u.ramp, 9);
+      gl.uniform1f(u.noDataOn, st.noData ? 1 : 0);
+      if (st.noData) gl.uniform4f(u.noData, st.noData[0], st.noData[1], st.noData[2], st.noData[3]);
+    };
     ensure(viewportW, viewportH);
     // the FBO's colour attachment is ALSO the id capture the resolve pass
     // samples (captureViewport hands out colorTex itself), and that pass
@@ -7842,6 +7957,7 @@ function createPickPipeline(gl) {
       setSec(uPts, st);
       setCatVis(uPts, st);
       setRule(uPts, st);
+      setVal(uPts, st);
       gl.uniform1f(uPts.filterOn, st.maskTex ? 1 : 0);
       gl.uniform1f(uPts.isolate, st.isolate ? 1 : 0);
       if (st.maskTex) { gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, st.maskTex); gl.uniform1i(uPts.mask, 4); }
@@ -7887,11 +8003,13 @@ function createPickPipeline(gl) {
       setSec(uBlk, st);
       setCatVis(uBlk, st);
       setRule(uBlk, st);
+      setVal(uBlk, st);
       gl.uniform1f(uBlk.filterOn, st.maskTex ? 1 : 0);
       gl.uniform1f(uBlk.isolate, st.isolate ? 1 : 0);
       if (st.maskTex) { gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, st.maskTex); gl.uniform1i(uBlk.mask, 4); }
       for (const c of group) {
         gl.bindVertexArray(c.vao);
+        { const dq = chanDequant(c.chanRange || [0, 0]); gl.uniform2f(uBlk.chanChunk, dq[0], dq[1]); }
         gl.bindBuffer(gl.ARRAY_BUFFER, c.bIjk);
         gl.enableVertexAttribArray(0);
         gl.vertexAttribPointer(0, 3, gl.UNSIGNED_SHORT, false, 0, 0);
@@ -7948,12 +8066,14 @@ function createPickPipeline(gl) {
       setSec(uStk, st2);
       setCatVis(uStk, st2);
       setRule(uStk, st2);
+      setVal(uStk, st2);
       gl.uniform1f(uStk.radius, (st2 && st2.stickRadius) || 1);
       gl.uniform1f(uStk.filterOn, st2.maskTex ? 1 : 0);
       gl.uniform1f(uStk.isolate, st2.isolate ? 1 : 0);
       if (st2.maskTex) { gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, st2.maskTex); gl.uniform1i(uStk.mask, 4); }
       for (const c of group) {
         gl.bindVertexArray(c.vao);
+        { const dq = chanDequant(c.chanRange || [0, 0]); gl.uniform2f(uStk.chanChunk, dq[0], dq[1]); }
         gl.bindBuffer(gl.ARRAY_BUFFER, c.bSeg);
         gl.enableVertexAttribArray(0);
         gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 24, 0);
@@ -10618,7 +10738,7 @@ void main() {
   gl_Position = vec4(px / uTexSize * 2.0 - 1.0, 0.0, 1.0);
   gl_PointSize = 1.0;
   float z = (uGridOrigin + uGridRot * (aIjk * uGridSize)).z;
-  vAttr = vec4(z, uChanChunk.x + aChan * uChanChunk.y, aCat, 0.0);
+  vAttr = vec4(z, uChanChunk.x + aChan * uChanChunk.y, aCat, aChan < 0.5 / 65535.0 ? 1.0 : 0.0);   // w: a BLANK (chan.js)
 }`;
 
 const BAKE_VERT_POINTS = `#version 300 es
@@ -10668,6 +10788,8 @@ uniform int uColorMode;
 uniform vec2 uZRange, uChanDoc;
 uniform float uPaletteN, uIntensityScale;
 uniform float uFilterOn, uSelOn, uRuleOn, uChanTexOn;
+uniform vec4 uNoData;                   // blank values (chan.js code 0 / the value texture's BLANK): rgb + a (a < 0.5 = hidden)
+uniform float uNoDataOn;                // off: a blank clamps to the lowest colour, the old picture
 uniform vec3 uLightDir, uCutNormal;
 uniform vec3 uFaceN[6];                  // gl-pick's FACE_NORMALS
 uniform float uEdgesOn, uOrtho, uPerspScale;
@@ -10693,8 +10815,12 @@ void main() {
   } else if (uColorMode == 1) {
     if (uKind == 1 || uChanTexOn > 0.5) {                  // blocks' grade, or a value texture (any kind): doc-normalized
       float v = uChanTexOn > 0.5 ? texelFetch(uChanTex, at, 0).r : attr.y;
-      float t = clamp((v - uChanDoc.x) / max(uChanDoc.y, 1e-6), 0.0, 1.0);
-      col = texture(uRamp, vec2(t, 0.5));
+      bool blank = uChanTexOn > 0.5 ? v < -1.0e37 : attr.w > 0.5;
+      if (blank && uNoDataOn > 0.5) col = vec4(uNoData.rgb, 1.0);   // (hidden blanks were culled: not in the id buffer)
+      else {
+        float t = clamp((v - uChanDoc.x) / max(uChanDoc.y, 1e-6), 0.0, 1.0);
+        col = texture(uRamp, vec2(t, 0.5));
+      }
     } else {                                               // points: intensity
       float t = clamp(attr.y * uIntensityScale, 0.0, 1.0);
       col = texture(uRamp, vec2(t, 0.5));
@@ -10815,7 +10941,7 @@ function createResolvePipeline(gl) {
     layerId: U(resolveProg, 'uLayerId'), picked: U(resolveProg, 'uPicked'), pickedLayer: U(resolveProg, 'uPickedLayer'),
     kind: U(resolveProg, 'uKind'), colorMode: U(resolveProg, 'uColorMode'), zRange: U(resolveProg, 'uZRange'), chanDoc: U(resolveProg, 'uChanDoc'),
     paletteN: U(resolveProg, 'uPaletteN'), intensityScale: U(resolveProg, 'uIntensityScale'),
-    filterOn: U(resolveProg, 'uFilterOn'), selOn: U(resolveProg, 'uSelOn'), ruleOn: U(resolveProg, 'uRuleOn'), chanTexOn: U(resolveProg, 'uChanTexOn'),
+    filterOn: U(resolveProg, 'uFilterOn'), selOn: U(resolveProg, 'uSelOn'), ruleOn: U(resolveProg, 'uRuleOn'), chanTexOn: U(resolveProg, 'uChanTexOn'), noData: U(resolveProg, 'uNoData'), noDataOn: U(resolveProg, 'uNoDataOn'),
     lightDir: U(resolveProg, 'uLightDir'), cutNormal: U(resolveProg, 'uCutNormal'), faceN: U(resolveProg, 'uFaceN'),
     depth: U(resolveProg, 'uDepth'), edgesOn: U(resolveProg, 'uEdgesOn'), ortho: U(resolveProg, 'uOrtho'), perspScale: U(resolveProg, 'uPerspScale'),
     invVP: U(resolveProg, 'uInvVP'), viewport: U(resolveProg, 'uViewport'), eyePos: U(resolveProg, 'uEyePos'),
@@ -10882,8 +11008,8 @@ function createResolvePipeline(gl) {
           gl.uniform3f(uB.gridOrigin, g.originLocal[0], g.originLocal[1], g.originLocal[2]);
           gl.uniform3f(uB.gridSize, g.size[0], g.size[1], g.size[2]);
           gl.uniformMatrix3fv(uB.gridRot, false, g.rot || IDENTITY3);
-          const span = c.chanRange[1] - c.chanRange[0];
-          gl.uniform2f(uB.chanChunk, c.chanRange[0], span > 0 ? span : 0);
+          const dq = chanDequant(c.chanRange);
+          gl.uniform2f(uB.chanChunk, dq[0], dq[1]);
           gl.bindVertexArray(blocksBakeVao(c));
           gl.drawArrays(gl.POINTS, 0, c.count);
         }
@@ -10949,6 +11075,8 @@ function createResolvePipeline(gl) {
       gl.uniform1f(uR.selOn, u.sel ? 1 : 0);
       gl.uniform1f(uR.ruleOn, u.rule ? 1 : 0);
       gl.uniform1f(uR.chanTexOn, u.chanTex ? 1 : 0);
+      gl.uniform1f(uR.noDataOn, u.noData ? 1 : 0);
+      if (u.noData) gl.uniform4f(uR.noData, u.noData[0], u.noData[1], u.noData[2], u.noData[3]);
       gl.uniform3f(uR.lightDir, u.lightDir[0], u.lightDir[1], u.lightDir[2]);
       gl.uniform3f(uR.cutNormal, u.cutNormal[0], u.cutNormal[1], u.cutNormal[2]);
       gl.uniform3fv(uR.faceN, faceFlat);
@@ -10994,6 +11122,8 @@ uniform int uColorMode;                 // 0 elevation | 1 intensity | 2 classif
 uniform vec2 uZRange;                   // document local z min/span (elevation ramp)
 uniform float uIntensityScale;          // 1 / (p98-ish max, normalized units)
 uniform sampler2D uRamp;                // 256x1 continuous ramp
+uniform vec4 uNoData;                   // blank values (chan.js code 0 / the value texture's BLANK): rgb + a (a < 0.5 = hidden)
+uniform float uNoDataOn;                // off: a blank clamps to the lowest colour, the old picture
 uniform sampler2D uPalette;             // classification / category palette
 uniform float uPaletteN;                // its width (32 = LAS classes, 256 = category dict)
 uniform sampler2D uMask;                // filter bitmask by record index (8192-wide)
@@ -11034,14 +11164,23 @@ void main() {
   if (uColorMode == 0) {
     float t = clamp((p.z - uZRange.x) / max(uZRange.y, 1e-6), 0.0, 1.0);
     vColor = texture(uRamp, vec2(t, 0.5));
+    if (vColor.a < 0.5) vCull = 1.0;                      // a hidden class: the ramp texel's alpha is 0
   } else if (uColorMode == 1) {
     float t;
+    bool blank = false;
     if (uChanTexOn > 0.5) {
       int rc = int(aRec);
       float v = texelFetch(uChanTex, ivec2(rc & 8191, rc >> 13), 0).r;
+      blank = v < -1.0e37;                                 // the value texture's BLANK
       t = clamp((v - uChanDoc.x) / max(uChanDoc.y, 1e-6), 0.0, 1.0);
     } else t = clamp(aIntensity * uIntensityScale, 0.0, 1.0);
-    vColor = texture(uRamp, vec2(t, 0.5));
+    if (blank && uNoDataOn > 0.5) {
+      vColor = vec4(uNoData.rgb, 1.0);
+      if (uNoData.a < 0.5) vCull = 1.0;
+    } else {
+      vColor = texture(uRamp, vec2(t, 0.5));
+      if (vColor.a < 0.5) vCull = 1.0;
+    }
   } else if (uColorMode == 2) {
     vColor = texture(uPalette, vec2((cls + 0.5) / uPaletteN, 0.5));
   } else {
@@ -11169,7 +11308,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
     catVis: U('uCatVis'), catVisOn: U('uCatVisOn'),
     sel: U('uSel'), selOn: U('uSelOn'),
     rule: U('uRule'), ruleOn: U('uRuleOn'),
-    chanTex: U('uChanTex'), chanTexOn: U('uChanTexOn'), chanDoc: U('uChanDoc'),
+    chanTex: U('uChanTex'), chanTexOn: U('uChanTexOn'), chanDoc: U('uChanDoc'), noData: U('uNoData'), noDataOn: U('uNoDataOn'),
   };
   const ramp = lutTexture(gl, rampPixels(), 256);
   const palette = lutTexture(gl, palettePixels(), 32);   // LAS classification (points)
@@ -11215,7 +11354,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
     if (!l) {
       l = { visible: true, set: 'base', maskTex: null, maskH: 0, isolate: false,
             intensityMax: 1, docChan: [Infinity, -Infinity], catN: 0, stickRadius: 1, sectioned: true,
-            meshTint: [0.62, 0.64, 0.66], meshOpacity: 1, opacity: 1, catVisTex: null, rampTex: null, paletteTex: null, paletteW: 0, selTex: null, selH: 0,
+            meshTint: [0.62, 0.64, 0.66], meshOpacity: 1, opacity: 1, catVisTex: null, rampTex: null, rampHides: false, rampAlphaSig: '', noData: null, paletteTex: null, paletteW: 0, selTex: null, selH: 0,
             ruleTex: null, ruleH: 0, ruleOn: false,
             chanTex: null, chanTexRange: null, offset: null };
       layers.set(id, l);
@@ -11580,14 +11719,35 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
     // ramp normalization — a computed texture has no docChan of its own. Pass a
     // null texture to fall back to aChan. The caller OWNS the texture (create,
     // render into, delete); the renderer only samples it.
+    // what a BLANK value draws as (chan.js): [r, g, b, a] 0..1 — a < 0.5 hides blanks — or null
+    // for the old picture (a blank clamps to the lowest ramp colour). A change in whether blanks
+    // show re-rasters (they cull); a colour change re-shades.
+    setLayerNoData(layer, rgba) {
+      const ls = layerOf(layer);
+      const next = rgba ? [+rgba[0], +rgba[1], +rgba[2], rgba[3] == null ? 1 : +rgba[3]] : null;
+      const prev = ls.noData;
+      if (JSON.stringify(prev) === JSON.stringify(next)) return;
+      ls.noData = next;
+      const shown = (v) => !v || v[3] >= 0.5;
+      if (!prev !== !next || shown(prev) !== shown(next)) { needClear = true; dropCapture(); } else cosmeticDirtyLayers.add(layer);
+    },
+    // what a layer hides or recolours by VALUE (introspection for hosts and tests)
+    layerValueState(layer) { const ls = layers.get(layer); return ls ? { noData: ls.noData ? ls.noData.slice() : null, rampHides: !!ls.rampHides } : null; },
     setLayerChanTex(layer, tex, range = null) {
       const ls = layerOf(layer);
       ls.chanTex = tex || null;
       ls.chanTexRange = (tex && range) ? [range[0], Math.max(1e-9, range[1] - range[0])] : null;
       cosmeticDirtyLayers.add(layer);
     },
-    setLayerRamp(layer, pixels) {
+    // opts.nearest: sample the LUT texel-exact — a CLASSED ramp, whose colours must not blend at
+    // a class boundary into a colour no legend shows (LINEAR suits a continuous ramp)
+    setLayerRamp(layer, pixels, opts = {}) {
       const ls = layerOf(layer);
+      // texels with alpha 0 HIDE their values (a class's eye): a change in WHICH texels hide is
+      // a visibility change — geometry culls, so it re-rasters; a colour change re-shades
+      let sig = '';
+      if (pixels) for (let i = 0; i < 256; i++) if (pixels[i * 4 + 3] < 128) sig += i + ',';
+      if (sig !== ls.rampAlphaSig) { ls.rampAlphaSig = sig; ls.rampHides = !!sig; needClear = true; dropCapture(); }
       if (!pixels) {
         if (ls.rampTex) { gl.deleteTexture(ls.rampTex); ls.rampTex = null; }
       } else if (!ls.rampTex) {
@@ -11595,6 +11755,11 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
       } else {
         gl.bindTexture(gl.TEXTURE_2D, ls.rampTex);
         gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 256, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+      }
+      if (ls.rampTex) {
+        const f = opts.nearest ? gl.NEAREST : gl.LINEAR;
+        gl.bindTexture(gl.TEXTURE_2D, ls.rampTex);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, f); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, f);
       }
       cosmeticDirtyLayers.add(layer);
     },
@@ -11930,7 +12095,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
                 chanDoc: chanDocOf(ls, o),
                 paletteN: 256, intensityScale: 1,
                 ramp: ls.rampTex || ramp, palette: ls.paletteTex || catPalette || palette,
-                mask: ls.maskTex, sel: ls.selTex, rule: ls.ruleOn ? ls.ruleTex : null, chanTex: ls.chanTex,
+                mask: ls.maskTex, sel: ls.selTex, rule: ls.ruleOn ? ls.ruleTex : null, chanTex: ls.chanTex, noData: ls.noData,
                 picked: pickedRec, pickedLayer, lightDir, cutNormal: cutN,
                 edges: ls.edges != null ? ls.edges : blockEdges, depth: idCapture.depth,
                 invVP, viewportW: canvas.width, viewportH: canvas.height,
@@ -11943,7 +12108,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
                 paletteN: ls.paletteTex ? ls.paletteW : (ls.catN || 32),
                 intensityScale: 65535 / (ls.intensityMax || 1),
                 ramp: ls.rampTex || ramp, palette: ls.paletteTex || (ls.catN && catPalette ? catPalette : palette),
-                mask: ls.maskTex, sel: ls.selTex, rule: ls.ruleOn ? ls.ruleTex : null, chanTex: ls.chanTex,
+                mask: ls.maskTex, sel: ls.selTex, rule: ls.ruleOn ? ls.ruleTex : null, chanTex: ls.chanTex, noData: ls.noData,
                 picked: pickedRec, pickedLayer, lightDir: [0, 0, 1], cutNormal: [0, 0, 1],
               };
             }
@@ -11989,6 +12154,11 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
       lastVisible = visible.length;
       const sumW = visible.reduce((s, c) => s + c._w, 0) || 1;
 
+      // what the pick pass needs to cull by VALUE as this frame does (a hidden class, hidden blanks)
+      for (const id of kindBy.keys()) {
+        const ls0 = layerOf(id), o0 = lopt(id);
+        ls0._valPick = { colorMode: o0.colorMode, zRange: zRangeOf(o0), chanDoc: chanDocOf(ls0, o0), intensityScale: 65535 / (ls0.intensityMax || 1) };
+      }
       gl.enable(gl.DEPTH_TEST);
       if (moving) {
         gl.clearColor(background[0], background[1], background[2], background[3]);
@@ -12090,6 +12260,8 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
             gl.activeTexture(gl.TEXTURE8); gl.bindTexture(gl.TEXTURE_2D, ls.chanTex); gl.uniform1i(uni.chanTex, 8);
             const cd = chanDocOf(ls, o); gl.uniform2f(uni.chanDoc, cd[0], cd[1]);
           }
+          gl.uniform1f(uni.noDataOn, ls.noData ? 1 : 0);
+          if (ls.noData) gl.uniform4f(uni.noData, ls.noData[0], ls.noData[1], ls.noData[2], ls.noData[3]);
           gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, ls.rampTex || ramp); gl.uniform1i(uni.ramp, 0);
         };
         for (const [id, group] of ptsGroups) {
@@ -12148,7 +12320,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
             maskTex: ls.maskTex, isolate: ls.isolate, pointsView: blocksAsPoints, picked: pickedRec, pickedLayer, layer: id,
             section: layerSecOf(ls, sec),
             catVisTex: ls.catVisTex, selTex: ls.selTex, ruleTex: ls.ruleOn ? ls.ruleTex : null,
-            chanTex: ls.chanTex,
+            chanTex: ls.chanTex, noData: ls.noData,
             opacity: ls.opacity, edges: ls.edges != null ? ls.edges : blockEdges,   // per-layer override, else the View toggle
           });
         };
@@ -12196,7 +12368,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
             maskTex: ls.maskTex, isolate: ls.isolate, pointsView: blocksAsPoints, picked: pickedRec, pickedLayer, layer: id,
             section: layerSecOf(ls, sec),
             radius: ls.stickRadius, catVisTex: ls.catVisTex, selTex: ls.selTex, ruleTex: ls.ruleOn ? ls.ruleTex : null,
-            chanTex: ls.chanTex,
+            chanTex: ls.chanTex, noData: ls.noData,
             opacity: ls.opacity,
           });
         };
