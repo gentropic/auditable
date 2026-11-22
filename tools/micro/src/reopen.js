@@ -9,7 +9,7 @@ import { refreshProps } from './props.js';
 import { addPaintColorOptions, paintActiveCol } from './paint.js';
 import { ruleModeOf, runRules, syncRuleMode } from './rules.js';
 import { applyCatLegend, applyCatVisibility } from './categories.js';
-import { applyRamp, rampCfgOf } from './ramp.js';
+import { applyRamp, rampCfgOf, migrateRampKeys } from './ramp.js';
 import { openBlob } from './open.js';
 import { openBlocksBlob, openDmBlob, openParquetBlocks } from './open-blocks.js';
 import { markProjectDirty } from './project.js';
@@ -81,7 +81,11 @@ export function restoreReopenIdentity(L2, keep) {        // call with the fresh 
 // deterministic from saved state, not from a heuristic. reopenDhChan used to skip
 // this → a re-channel silently kept the loader's inferred colTypes.
 export function captureLayerStyling(L, { clearCats = false } = {}) {
+  migrateRampKeys(L);                                      // under the header these keys were saved against
+  const sel0 = String(L.colorSel || ''), h0 = layerTableHeader(L);
   return {
+    // the colour-by as a NAME: 'chan:3' is FE here and may be SG in the next file
+    colorSelName: sel0.startsWith('chan:') && h0 ? h0.columns[+sel0.slice(5)] : null,
     colTypes: L.colTypes, qualify: L.qualify, calcCols: L.calcCols, ramps: L.ramps,
     catHidden: clearCats ? null : L.catHidden, catLegend: clearCats ? null : L.catLegend,
     rules: L.rules, ruleHidden: L.ruleHidden, paintCols: L.paintCols,
@@ -119,7 +123,13 @@ export function applyLayerStyling(L2, keep, { clearCats = false } = {}) {
   if (keep._recHide) L2._recHide = keep._recHide;
   if (keep.catChoices) { L2.catChoices = keep.catChoices; addPaintColorOptions(L2); }
   if (keep.holeFilter) { L2.holeFilter = keep.holeFilter; L2._holeIds = keep._holeIds; L2._holeMask = keep._holeMask; }
-  if (keep.colorSel && [...$('#colorBy').options].some((o) => o.value === keep.colorSel)) { L2.colorSel = keep.colorSel; setLayerColorSel(L2, keep.colorSel); }
+  let sel = keep.colorSel;
+  if (keep.colorSelName != null) {                          // the same COLUMN in the new file (or its own grade column)
+    const h2 = layerTableHeader(L2), i = h2 ? h2.columns.indexOf(keep.colorSelName) : -1;
+    sel = i >= 0 ? `chan:${i}` : h2 && h2.mapping && h2.mapping.chan != null ? `chan:${h2.mapping.chan}` : 'elev';
+    if (i < 0) $('#meta').textContent = `change file: no column “${keep.colorSelName}” in the new file — coloured by ${h2 && h2.mapping && h2.mapping.chan != null ? h2.columns[h2.mapping.chan] : 'elevation'}`;
+  }
+  if (sel && [...$('#colorBy').options].some((o) => o.value === sel)) { L2.colorSel = sel; setLayerColorSel(L2, sel); }
   if (keep.filterExpr) { L2.filterExpr = keep.filterExpr; }        // the sweep is driven by the caller when this layer is active
   return L2;
 }

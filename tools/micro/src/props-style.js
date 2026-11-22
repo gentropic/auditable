@@ -154,14 +154,16 @@ export function renderStyleTab(body, L) {
       const add = (v, t) => { const o = document.createElement('option'); o.value = v; o.textContent = t; colSel.appendChild(o); };
       add('elev', 'elevation');
       for (const c of (h2 && h2.numericColumns) || []) add(`chan:${c.i}`, c.name);
-      for (const pc of (L.paintCols || []).filter((c) => c.kind === 'ratio')) add('paint:' + pc.name, '% ' + pc.name);
+      for (const pc of (L.paintCols || []).filter((c) => c.kind === 'ratio')) add('paint:' + pc.name, (pc.mat ? '' : '% ') + pc.name);   // a materialized column is a column, not a fraction
+      // calculated columns are columns: colour, class and legend by them like any other
+      for (const cc of (L.calcCols || []).filter((c) => (c.ty || 'number') === 'number')) add('calc:' + cc.name, 'ƒ ' + cc.name);
     } else {
       setHTML(colSel, trusted('<option value="0">elevation</option><option value="1">intensity</option>'));
     }
     if ([...colSel.options].some((o) => o.value === selv)) colSel.value = selv;
     colSel.onchange = () => { if (colSel.value.startsWith('paint:')) addPaintColorOptions(L); setSel(colSel.value); };
     body.appendChild(mkRow('column', colSel));
-    if (selPaint && selPaint.kind === 'ratio') body.appendChild(ppNote('fraction-inside column — values are 0–1 (code/255); recompute from Tools → Select by solid…'));
+    if (selPaint && selPaint.kind === 'ratio' && !selPaint.mat) body.appendChild(ppNote('fraction-inside column — values are 0–1 (code/255); recompute from Tools → Select by solid…'));
     const mkClip = (id) => {
       const inp = document.createElement('input'); inp.type = 'number'; inp.style.width = '76px';
       inp.value = $('#' + id).value; inp.placeholder = id === 'clipMin' ? 'min' : 'max';
@@ -479,9 +481,10 @@ function renderRampSection(body, L) {
   const selv = colorSelOf(L);
   const isChan = String(selv).startsWith('chan:');
   const isRatio = String(selv).startsWith('paint:');       // only ratio channels reach here
+  const isCalc = String(selv).startsWith('calc:');         // a calculated column: classes and a histogram like a channel
   const isElev = selv === 'elev' || selv === '0';
-  if (!isChan && !isElev && !isRatio) {
-    body.appendChild(ppNote('breakpoints live on grade channels and elevation'));
+  if (!isChan && !isElev && !isRatio && !isCalc) {
+    body.appendChild(ppNote('breakpoints live on numeric columns and elevation'));
     return;
   }
   const [rLo, rHi] = rampRangeFor(L);
@@ -506,9 +509,9 @@ function renderRampSection(body, L) {
       bIn.value = (((rampCfgOf(L) || {}).breaks) || []).slice().sort((a, b2) => a - b2).map((v) => fmtStat(v)).join(', ');
     };
   }
-  if (!isChan && !isRatio) return;                         // the histogram is scan-fed — channels and ratio columns have stats
+  if (!isChan && !isRatio && !isCalc) return;              // the histogram is scan-fed — channels, ratio and calc columns have stats
   const h = layerTableHeader(L);
-  const colName = isRatio ? String(selv).slice(6) : (h && h.columns[+String(selv).slice(5)]);
+  const colName = isRatio ? String(selv).slice(6) : isCalc ? String(selv).slice(5) : (h && h.columns[+String(selv).slice(5)]);
   const stat = colName && L._colStats && L._colStats[colName];
   if (!stat || stat.kind !== 'num' || !stat.centroids) {
     const btn = document.createElement('button'); btn.className = 'pp-scan';
@@ -679,7 +682,8 @@ function renderIntervalTable(body, L, lo, hi) {
   const stops = RAMP_PRESETS[cfg.preset || 'viridis'] || RAMP_PRESETS.viridis;
   const selv = colorSelOf(L);
   const h = layerTableHeader(L);
-  const colName = String(selv).startsWith('chan:') && h ? h.columns[+String(selv).slice(5)] : null;
+  const sv = String(selv);
+  const colName = sv.startsWith('chan:') && h ? h.columns[+sv.slice(5)] : sv.startsWith('calc:') ? sv.slice(5) : sv.startsWith('paint:') ? sv.slice(6) : null;
   const stat = colName && L._colStats && L._colStats[colName];
   const F = stat && stat.centroids ? cdfFromCentroids(stat.centroids, stat.total) : null;
   const fmtN = (v) => (v >= 1e6 ? (v / 1e6).toFixed(2) + 'M' : v >= 1e5 ? Math.round(v / 1e3) + 'k' : Math.round(v).toLocaleString());

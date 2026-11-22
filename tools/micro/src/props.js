@@ -17,7 +17,7 @@ import { resetJoinForm, renderJoinTab } from './joins.js';
 import { pushUndo } from './undo.js';
 import { menuXY } from './menu.js';
 import { droppedNote, dmRotationText } from './open-blocks.js';
-import { hexToRgb01 } from './color.js';
+import { hexToRgb01, setLayerColorSel } from './color.js';
 import { reopenDh } from './drillholes.js';
 import { markProjectDirty } from './project.js';
 import { openCalcWindow } from './calc.js';
@@ -122,8 +122,10 @@ export let _autoApply = (() => { try { return localStorage.getItem('micro.autoAp
 
 export function setAutoApply(on) { _autoApply = !!on; try { localStorage.setItem('micro.autoApply', on ? 'on' : 'off'); } catch { /* ignore */ } }
 
-function styleSnap(L) {
+export function styleSnap(L) {
   return {
+    colorSel: L.colorSel, clip: L.clip ? L.clip.slice() : null,
+    legendTitle: L.legendTitle, edges: L.edges,
     ramps: L.ramps ? JSON.parse(JSON.stringify(L.ramps)) : null,
     catLegend: L.catLegend ? JSON.parse(JSON.stringify(L.catLegend)) : null,
     catHidden: L.catHidden ? [...L.catHidden] : [],
@@ -154,7 +156,15 @@ export function pushAllStyle(L) {
 
 export function revertStyle(L) {
   const s2 = L._styleSnap; if (!s2) return;
+  restoreStyleSnap(L, s2);
+}
+// back to a snapshot (revert, and undoing a pasted style)
+export function restoreStyleSnap(L, s2, { colorBy = false } = {}) {
   L.ramps = s2.ramps ? JSON.parse(JSON.stringify(s2.ramps)) : null;
+  if (colorBy) {
+    if (s2.clip) L.clip = s2.clip.slice();
+    L.legendTitle = s2.legendTitle; L.edges = s2.edges;
+  }
   L.catLegend = s2.catLegend ? JSON.parse(JSON.stringify(s2.catLegend)) : null;
   L.catHidden = new Set(s2.catHidden);
   L.rules = s2.rules ? JSON.parse(JSON.stringify(s2.rules)) : null;
@@ -164,6 +174,7 @@ export function revertStyle(L) {
   if (s2.opacity != null) L.opacity = s2.opacity;
   if (s2.radius != null && L.docs && L.docs.dhDoc) L.docs.dhDoc.config.radius = s2.radius;
   pushAllStyle(L);
+  if (colorBy && s2.colorSel != null && s2.colorSel !== L.colorSel) setLayerColorSel(L, s2.colorSel).then(() => refreshProps());
   markProjectDirty();
   renderProps();
 }

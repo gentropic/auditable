@@ -21,6 +21,7 @@ import { showFileInfo } from './fileinfo.js';
 import { openLineageWindow } from './lineage-ui.js';
 import { openExportDialog } from './export-dialog.js';
 import { openProps, stageGate } from './props.js';
+import { copyStyle, pasteStyle, saveStyleFile, loadStyleFile } from './style-clip.js';
 import { materializeCalcCol } from './calc.js';
 import { applyHoleFilter, dhSetGroupOf } from './drillholes.js';
 import { peekCollarCols } from './manifest.js';
@@ -189,6 +190,13 @@ export function layerMenu(L, x, y) {
     }] : []),
     { label: isView(L) ? 'Remove view' : 'Remove layer', action: () => confirmRemoveLayer(L.id) },
     { sep: true },
+    // a style travels by NAME (src/style-clip.js): onto another layer, another model, another project
+    { label: 'Style', submenu: () => [
+      { label: 'Copy style', action: () => copyStyle(L) },
+      { label: 'Paste style', action: () => pasteStyle(L) },
+      { label: 'Save style…', action: () => saveStyleFile(L) },
+      { label: 'Load style…', action: () => loadStyleFile(L) },
+    ] },
     { label: 'Properties…', action: () => { setActiveLayer(L.id); openProps(); } },
   ]);
 }

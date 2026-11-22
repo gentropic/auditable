@@ -6091,6 +6091,63 @@ if (take()) {
   await p.close();
 }
 
+// ── §93: STYLE TRAVELS BY NAME — Copy style / Paste style (src/style-clip.js): the model's
+//     FE classes onto a second model whose FE sits in ANOTHER column position, with the
+//     colour-by, the clip and the category legend matched by name; one undo step; a saved
+//     style round-trips; a category legend only lands on a same-named category column. ──
+if (take()) {
+  const p = await mkPage('sm2stylecp');
+  const r = await p.evaluate(async () => {
+    const M_ = window._micro, out = {};
+    const mk = (hdr, row) => { const rows = [hdr]; for (let k = 0; k < 3; k++) for (let j = 0; j < 8; j++) for (let i = 0; i < 8; i++) rows.push(row(i, j, k)); return rows.join('\n') + '\n'; };
+    const fe = (i, j) => (12 + (i * 8 + j) * 0.85).toFixed(2), sg = (i, j) => (2.8 + (i + j) * 0.1).toFixed(2);
+    const a = await M_.openBlob(new File([mk('XC,YC,ZC,FE,SG,LITO', (i, j, k) => `${5 + i * 10},${5 + j * 10},${5 + k * 10},${fe(i, j)},${sg(i, j)},${i < 4 ? 'OX' : 'SUL'}`)], 'a.csv'), 'a.csv', 'replace');
+    const b = await M_.openBlob(new File([mk('XC,YC,ZC,SG,FE,LITO', (i, j, k) => `${105 + i * 10},${5 + j * 10},${5 + k * 10},${sg(i, j)},${fe(i, j)},${j < 4 ? 'OX' : 'SUL'}`)], 'b.csv'), 'b.csv', 'add');
+    const A = M_.layers().find((x) => x.id === a), B = M_.layers().find((x) => x.id === b);
+    const { rampCfgOf } = await import('/tools/micro/src/ramp.js');
+    const { undoLast } = await import('/tools/micro/src/undo.js');
+    const { parseStyle } = await import('/tools/micro/src/style-clip.js');
+    M_.setActiveLayer(a);
+    const ha = M_.layerTableHeader(A);
+    await M_.setLayerColorSel(A, `chan:${ha.columns.indexOf('FE')}`);
+    M_.setRampCfg(A, { classed: true, breaks: [20, 40, 55, 60, 65], colors: ['#3b4cc0', '#7aa5f8', '#c9d7f0', '#f7b89c', '#e8694f', '#b40426'] });
+    A.clip = ['15', '66']; document.querySelector('#clipMin').value = '15'; document.querySelector('#clipMax').value = '66';
+    const st = await M_.copyStyle(A);
+    out.keys = Object.keys(st.ramps);
+    out.json = JSON.stringify(st).length;
+    // paste onto B (FE in column 4)
+    M_.setActiveLayer(b);
+    const hb = M_.layerTableHeader(B);
+    out.beforeB = String(B.colorSel);
+    const res = await M_.pasteStyle(B);
+    out.applied = res && res.applied;
+    out.selB = String(B.colorSel); out.feB = `chan:${hb.columns.indexOf('FE')}`;
+    const cb = rampCfgOf(B);
+    out.cfgB = cb && { classed: cb.classed, breaks: cb.breaks, c2: cb.colors && cb.colors[2] };
+    out.clipB = B.clip.slice();
+    await undoLast();
+    out.undoneSel = String(B.colorSel); out.undoneCfg = !!(rampCfgOf(B) && rampCfgOf(B).classed);
+    // a saved style (the JSON) round-trips through applyStyle
+    const back = parseStyle(JSON.stringify(st));
+    const res2 = await M_.applyStyle(B, back);
+    out.roundTrip = { ok: !!back, sel: String(B.colorSel), classed: !!(rampCfgOf(B) && rampCfgOf(B).classed) };
+    // a category legend: only onto a same-named category column
+    await M_.setLayerColorSel(A, 'cat');
+    const st2 = M_.captureStyle(A);
+    st2.catLegend = { col: 'DOMAIN', entries: [{ label: 'x', values: ['OX'], color: '#ff0000' }], otherColor: '#555a5f' };
+    const res3 = await M_.applyStyle(B, st2);
+    out.catSkipped = res3.skipped.join(' | ');
+    return out;
+  });
+  chk(`STYLE COPY: the style names columns, not positions (${JSON.stringify(r.keys)}, ${r.json} B of JSON)`, r.keys.includes('col:FE') && !r.keys.some((k) => k.startsWith('chan:')));
+  chk(`STYLE PASTE: onto a model with FE in another column — coloured by its FE (${r.selB} = ${r.feB}), the same classes (${JSON.stringify(r.cfgB)}) and clip (${JSON.stringify(r.clipB)}); applied ${JSON.stringify(r.applied)}`,
+    r.selB === r.feB && r.cfgB && r.cfgB.classed && JSON.stringify(r.cfgB.breaks) === '[20,40,55,60,65]' && r.cfgB.c2 === '#c9d7f0' && JSON.stringify(r.clipB) === '["15","66"]');
+  chk(`STYLE PASTE: one undo step restores the layer's own look (colour-by ${r.undoneSel}, classed ${r.undoneCfg})`, r.undoneSel === r.beforeB && !r.undoneCfg);
+  chk(`STYLE FILE: a saved style round-trips (${JSON.stringify(r.roundTrip)})`, r.roundTrip.ok && r.roundTrip.sel === r.feB && r.roundTrip.classed);
+  chk(`STYLE PASTE: a category legend only lands on a same-named column (“${r.catSkipped.slice(0, 90)}”)`, /classes of DOMAIN/.test(r.catSkipped));
+  await p.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

@@ -8,6 +8,7 @@ import { paintActiveCol, applyPaintPalette } from './paint.js';
 import { calcDisplayCol, calcSelOf, ensureCalcDisplay } from './calc.js';
 import { ensureValueTex } from './color.js';
 import { markProjectDirty } from './project.js';
+import { layerTableHeader } from './records.js';
 const $ = (s) => document.querySelector(s);
 
 // ── per-layer color ramps (§10 breakpoints): presets + value BREAKPOINTS,
@@ -105,11 +106,35 @@ export function bakeRampPixels(cfg, lo, hi) {
   return px;
 }
 export const colorSelOf = (L) => (L.id === S.activeId ? $('#colorBy').value : (L.colorSel || 'elev'));
+// a ramp config belongs to a COLUMN, so it is keyed by the column's NAME: 'chan:3' is FE in
+// one file and SG in the next (Change file…), and a pasted style matches columns by name.
+// Other selections (elev, calc:NAME, paint:NAME, a cloud's '0') already name themselves.
+export function rampKey(L, sel) {
+  const s = String(sel);
+  if (!s.startsWith('chan:')) return s;
+  const h = layerTableHeader(L), name = h && h.columns[+s.slice(5)];
+  return name != null ? 'col:' + name : s;
+}
+// configs saved before the re-key ('chan:N') move to their names — ALL at once, under the
+// header they were saved against (a project load, or just before Change file… swaps it)
+export function migrateRampKeys(L) {
+  if (!L || !L.ramps || L._rampsKeyed === L.ramps) return;
+  const h = layerTableHeader(L);
+  if (!h) return;
+  for (const k of Object.keys(L.ramps)) {
+    if (!k.startsWith('chan:')) continue;
+    const name = h.columns[+k.slice(5)];
+    if (name != null && !L.ramps['col:' + name]) L.ramps['col:' + name] = L.ramps[k];
+    if (name != null) delete L.ramps[k];
+  }
+  L._rampsKeyed = L.ramps;
+}
 export function rampCfgOf(L, create = false) {
-  const sel = colorSelOf(L);
+  migrateRampKeys(L);
+  const key = rampKey(L, colorSelOf(L));
   if (!L.ramps) { if (!create) return null; L.ramps = {}; }
-  if (!L.ramps[sel]) { if (!create) return null; L.ramps[sel] = { preset: 'viridis', classed: false, breaks: [] }; }
-  return L.ramps[sel];
+  if (!L.ramps[key]) { if (!create) return null; L.ramps[key] = { preset: 'viridis', classed: false, breaks: [] }; }
+  return L.ramps[key];
 }
 // the value range the SHADER maps to t — mirrors the clip-aware ranges
 export function rampRangeFor(L) {
@@ -153,7 +178,10 @@ export function applyRamp(L, force) {
 // already uses; the toolbar boxes follow for the active layer.
 export function swapClipForSel(L, prevSel, nextSel) {
   if (!L || prevSel === nextSel) return;
+  migrateRampKeys(L);
   L.ramps = L.ramps || {};
+  const pk = prevSel == null ? null : rampKey(L, prevSel), nk = rampKey(L, nextSel);
+  prevSel = pk; nextSel = nk;
   const cur = L.clip || ['', ''];
   const set = cur[0] !== '' && cur[0] != null || cur[1] !== '' && cur[1] != null;
   if (prevSel != null) {
