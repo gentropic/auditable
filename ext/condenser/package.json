@@ -10,6 +10,7 @@
     ".": "./index.js",
     "./core": "./core.js",
     "./view": "./view/index.js",
+    "./view/classic": "./view/index.classic.js",
     "./package.json": "./package.json"
   }
 }

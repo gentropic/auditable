@@ -52,7 +52,8 @@ export const VIEW_DEFAULTS = {
   // plot items over locked views, as data: [{kind: 'scatter' | 'plot' | 'fill' | 'text' |
   // 'geometry' | 'legend', x, y, …style, on: 'plan' | [axis, axis] | 'any'}] (see API.md)
   overlay: [],
-  // JS only: false when the page's CSP allows no workers (streams then build inline)
+  // JS only: false when the page's CSP allows no workers (streams then build inline); a URL
+  // string = this same file served from there (when its own URL can't start a worker)
   workers: true,
 };
 // the column-mapping options each constructor takes besides the style

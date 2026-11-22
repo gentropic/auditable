@@ -272,7 +272,10 @@ const fmtN = (v) => {
 // radix sort, quantize, shuffle — runs here while streaming, so a multi-
 // million-row cd.open never stutters the notebook; the GPU upload stays with
 // the page. The main side mirrors every push into resident columns first, so
-// a worker failure just rebuilds inline from those — the fallback is free. ──
+// a worker failure just rebuilds inline from those — the fallback is free.
+// The classic build (index.classic.js) boots the same half as a CLASSIC worker
+// from its own script URL: the wrap rewrites the type below. ──
+const WORKER_TYPE = 'module';
 if (typeof document === 'undefined' && typeof self !== 'undefined' && typeof self.postMessage === 'function') {
   let wb = null;
   const ship = (c) => {
@@ -970,8 +973,11 @@ export function mountView(el, store) {
     try {
       // workers: false — a page whose CSP allows no workers says so, and nothing is attempted
       // (an attempt would still log a CSP violation before the inline fallback takes over)
-      if (store.get('workers') === false || typeof Worker === 'undefined' || !import.meta.url) return null;
-      const wk = new Worker(import.meta.url, { type: 'module' });
+      // workers: 'url' — this same file served from elsewhere (a bundled or vendored copy whose own
+      // URL a worker can't load); the type follows the build: module here, classic in index.classic.js
+      const wopt = store.get('workers'), wurl = typeof wopt === 'string' && wopt ? wopt : import.meta.url;
+      if (wopt === false || typeof Worker === 'undefined' || !wurl) return null;
+      const wk = new Worker(wurl, { type: WORKER_TYPE });
       wk.onmessage = (e) => {
         const m = e.data;
         if (disposed || !streams || streams[i] !== st) { try { wk.terminate(); } catch { /* gone */ } return; }

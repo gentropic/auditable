@@ -23,11 +23,13 @@
     "./scale": "./src/scale.js",
     "./format": "./src/format.js",
     "./bundled": "./index.js",
+    "./classic": "./index.classic.js",
     "./package.json": "./package.json"
   },
   "files": [
     "src",
     "index.js",
+    "index.classic.js",
     "index.d.ts",
     "API.md",
     "llms.txt",

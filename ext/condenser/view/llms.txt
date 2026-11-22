@@ -6,7 +6,11 @@ functions, the same option names (snake_case included), the same defaults. If yo
 you know the other.
 
 No network, no WASM, no eval, no workers required, no CSS files, nothing fetched at runtime.
-One ES module: `ext/condenser/view/index.js`.
+One ES module: `ext/condenser/view/index.js`. For a page that cannot load a module (a sandboxed
+iframe has origin `null`, and module scripts are always fetched in CORS mode), the same bundle
+is a classic script, `index.classic.js`: `<script src="index.classic.js"></script>`, then
+`const { view, blocks } = gcuCondenser`. Identical exports; its stream worker starts from the
+script's own URL, as a classic worker.
 
 ```js
 import { view, blocks, points, drillholes, mesh, surface } from '@gcu/condenser/view';
@@ -41,7 +45,7 @@ v.look('plan', { ortho: true });
 | `w.fit()` · `w.clear_selection()` | `v.fit()` · `v.clear_selection()` |
 | `w.snapshot()` then `w.snapshot_png` (next cell) | `await v.snapshot()` → a PNG `Blob` |
 | `w.selection` · `w.selected_rows` · `w.measurement` · `w.camera` | `v.selection` · `v.selected_rows` · `v.measurement` · `v.camera` |
-| `w.add(layer)` · `w.remove("name")` | `v.add(layer)` · `v.remove('name')` |
+| `w.add(layer)` · `w.remove("name")` | `v.add(layer)` · `v.remove('name')` (a name that isn't there: nothing happens) |
 | `w.z_exaggeration = 3` | `v.set({ z_exaggeration: 3 })` |
 | `w.lock = 'plan'` · `w.lock = {'azimuth': 30, 'plunge': 0}` | `v.set({ lock: 'plan' })` · `v.set({ lock: { azimuth: 30, plunge: 0 } })` |
 | (no Python equivalent) | `v.on(event, fn)` · `v.off` · `v.state()` · `v.set(state)` · `v.set({ view: { rect } })` · `v.destroy()` · `blocks.stream` / `points.stream` + `append` |
@@ -54,7 +58,8 @@ column NAME looked up in the table — `t[name]`, `t.get(name)` or `t.getChild(n
 Arrow table). With a columns object you don't have to name anything: `x`, `y`, `z`,
 `value`, `category` are picked up by name.
 
-`value` may be one column, or several — a list of names or `{ name: array }` — and the
+`value` may be one column, or several — a list of names, a list of arrays, or `{ name: array }`,
+given in the options or in the columns object itself — and the
 active one switches with `layer.set({ value: 'SIO2' })`, no re-send. `category` is any
 column of labels (≤ 256 distinct; more fold into `(other)`).
 
@@ -109,7 +114,7 @@ A 2D grid as shaded relief, row 0 the NORTHERNMOST. `grid` as rows, or flat with
 | `radius` | `1.5` | drillhole capsule radius, world units |
 | `labels` | `false` | drillholes: the BHID at each collar |
 | `categories_hidden` | `[]` | category labels to hide |
-| `sectioned` | `true` | `false` keeps the layer whole under a section; `'front'` · `'behind'` |
+| `sectioned` | `true` | `true`: cut to the section slab · `false`: whole, ignoring the section · `'front'` / `'behind'`: a HALF-SPACE clip, keeping only the side of the plane the normal points to (or the other). It is a clip, not a draw order: it does not put a layer on top of another |
 | `units` | `''` | shown after the layer's name in its legend: `'%'`, `'g/t'` |
 | `colors` | `null` | class colours: `{ ITA: '#c0392b' }`, or a list in class order. Classes without one take the theme's `cycle` |
 | `category_order` | `[]` | these classes first — in the legend, and for a colour list; the rest follow |
@@ -118,14 +123,15 @@ A 2D grid as shaded relief, row 0 the NORTHERNMOST. `grid` as rows, or flat with
 ## View options
 
 `section` (`{axis, position, thickness}` or `{normal: [x, y, z], position, thickness}`;
-`null` = off) · `height` (460) · `background` (`''`: the theme's) · `theme` (`'dark'`) ·
+`null` = off) · `height` (460) · `background` (`''`: the theme's) · `theme` (`'auto'`: follows the page) ·
 `chrome` (`{}`) — see *Theme* and *Chrome* · `toolbar` (true) · `edl` (true) ·
 `edl_strength` (1) · `z_exaggeration` (1) · `decorations` (true: scale bar, north arrow,
 exaggeration notice, triad) · `grid` (false: grid lines across a locked view's axes) · `overlay` (`[]`: plot items over locked views — see *Axes around a locked view*) ·
 `camera` (`{azimuth, plunge, distance, target, ortho}`) · `lock` (`'free'`) · `lock_toggle` (true) ·
 `twist` (false) — see *Orientation lock* · `hover` (false) · `select_through`
 (false) · `budget` (3,000,000 elements per frame) · `workers` (true; JS only — `false` when
-the page's CSP allows no workers).
+the page's CSP allows no workers; a URL string = this same file served from there, when the
+bundle's own URL can't start a worker, e.g. after a page bundler copied it inline).
 
 An option nobody reads warns once with the nearest real name:
 `condenser: points() has no option 'colour', did you mean 'color'?`.
@@ -212,9 +218,16 @@ its aspect.
 
 ## Theme
 
-`theme` dresses the scene and every piece of chrome: `'dark'` (Switchboard basalt, the default),
-`'light'`, `'paper'` (white, for print), `'css'` (this page's design tokens: `--au-surface`,
-`--au-fg`, `--au-action`, … — set it again when the page switches mode), or a partial theme:
+`theme` dresses the scene and every piece of chrome:
+- `'auto'` (the default) follows the page. It reads the page's design tokens, and reads them again when the page switches mode: a colour-scheme change, or a `class` / `style` / `data-theme` change on `<html>` or `<body>`. The tokens are `@gcu/theme`'s list:
+  - `--au-surface`, `--bg-primary`, `--background`, … for the background;
+  - `--au-fg`, `--text-primary`, … for the text;
+  - `--series-N` for the cycle.
+
+  A page that sets none reads as what the reader sees: white, or dark under a dark colour scheme.
+- `'css'`: the same. Setting it (or `'auto'`) again always reads the page again.
+- `'dark'` (Switchboard basalt), `'light'` and `'paper'` (white, for print): fixed looks.
+- a partial theme:
 
 ```js
 v.set({ theme: { base: 'light', accent: '#c0392b', font_size: 12 } });

@@ -30,6 +30,11 @@ const pqSrc = readFileSync(join(HERE, '../../parquet/index.js'), 'utf8');
 let out = readFileSync(path, 'utf8');
 if (!out.includes('__PARQUET_SRC__')) throw new Error('anywidget build: the __PARQUET_SRC__ marker is gone');
 out = out.replace('__PARQUET_SRC__', () => JSON.stringify(pqSrc));   // fn form: $-sequences in the source stay literal
+// the source reaches its dynamic import through new Function (the bundler forbids the literal
+// form); a no-eval CSP refuses that. After bundling the literal form is safe.
+const DYN = "new Function('u', 'return import(u)')";
+if (out.split(DYN).length !== 2) throw new Error('anywidget build: the parquet dynamic-import site moved');
+out = out.replace(DYN, () => '((u) => import(u))');
 writeFileSync(path, out);
 
 // anywidget loads the module and reads its DEFAULT export; @gcu/build emits

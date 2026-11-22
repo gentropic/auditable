@@ -68,6 +68,13 @@ fs.writeFileSync(outPath, output);
 const size = fs.statSync(outPath).size;
 console.log(`Built ext/plot/index.js (${(size / 1024).toFixed(1)} KB)`);
 
+// the same bundle as a CLASSIC script (<script src>, exports on window.gcuPlot): for pages that
+// cannot load a module — a sandboxed iframe's origin is `null` and module scripts fetch in CORS mode
+const { toClassic } = await import('../classic-wrap.mjs');
+fs.writeFileSync(path.join(__dirname, 'index.classic.js'), toClassic(output, { global: 'gcuPlot',
+  banner: '@gcu/plot — classic-script build of index.js (generated; do not edit).\n<script src="index.classic.js"></script> then: const { subplots, plot } = gcuPlot;' }));
+console.log('Built ext/plot/index.classic.js (window.gcuPlot)');
+
 // API.md's "Unsupported" table comes from the SAME lists the warnings read (src/opts.js), so
 // the docs and the warnings can't drift; llms.txt is API.md, for models.
 const { _UNSUPPORTED, _NOOP_CALLS } = await import('./src/opts.js');

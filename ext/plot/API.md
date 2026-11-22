@@ -20,6 +20,10 @@ ax.set_xlabel('depth (m)'); ax.legend();
 document.body.append(fig.show());                            // show() returns the <canvas>
 ```
 
+A page that cannot load a module (a sandboxed iframe has origin `null`, and module scripts are
+always fetched in CORS mode) uses the classic build, `index.classic.js`: `<script src="index.classic.js"></script>`,
+then `const { subplots } = gcuPlot`. Same exports.
+
 ```python
 import matplotlib.pyplot as plt                               # adder: the same plot, as plt
 fig, ax = plt.subplots(figsize=(6, 4))

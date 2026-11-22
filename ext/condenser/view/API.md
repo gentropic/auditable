@@ -6,7 +6,11 @@ functions, the same option names (snake_case included), the same defaults. If yo
 you know the other.
 
 No network, no WASM, no eval, no workers required, no CSS files, nothing fetched at runtime.
-One ES module: `ext/condenser/view/index.js`.
+One ES module: `ext/condenser/view/index.js`. For a page that cannot load a module (a sandboxed
+iframe has origin `null`, and module scripts are always fetched in CORS mode), the same bundle
+is a classic script, `index.classic.js`: `<script src="index.classic.js"></script>`, then
+`const { view, blocks } = gcuCondenser`. Identical exports; its stream worker starts from the
+script's own URL, as a classic worker.
 
 ```js
 import { view, blocks, points, drillholes, mesh, surface } from '@gcu/condenser/view';
@@ -126,7 +130,8 @@ exaggeration notice, triad) · `grid` (false: grid lines across a locked view's 
 `camera` (`{azimuth, plunge, distance, target, ortho}`) · `lock` (`'free'`) · `lock_toggle` (true) ·
 `twist` (false) — see *Orientation lock* · `hover` (false) · `select_through`
 (false) · `budget` (3,000,000 elements per frame) · `workers` (true; JS only — `false` when
-the page's CSP allows no workers).
+the page's CSP allows no workers; a URL string = this same file served from there, when the
+bundle's own URL can't start a worker, e.g. after a page bundler copied it inline).
 
 An option nobody reads warns once with the nearest real name:
 `condenser: points() has no option 'colour', did you mean 'color'?`.
