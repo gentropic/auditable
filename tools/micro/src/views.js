@@ -9,11 +9,11 @@ import { removeFileAt, resolveFileHandle } from './paths.js';
 import { markProjectDirty, rleDecode, rleEncode } from './project.js';
 import { applyLayerSurface, captureLayerSurface } from './surfaces.js';
 import { applyBlockFilter, syncFilterClear } from './filter.js';
-import { attrRowCountOf } from './records.js';
+import { attrRowCountOf, layerWorldBox } from './records.js';
 import { applyTreeVisibility } from './tree.js';
 import { renderLayers } from './layers-panel.js';
 import { microConfirm, microPrompt } from './prompts.js';
-import { setLayerColorSel } from './color.js';
+import { setLayerColorSel, colorByName, colorSelFor } from './color.js';
 import { setActiveLayer } from './layers.js';
 import { applyCamera, captureCamera } from './camera.js';
 import { applyLayerSelection } from './selection.js';
@@ -97,6 +97,10 @@ export function captureScene(name, withSel) {
     name, camera: captureCamera(), section: captureSection(),
     layers: S.layers.map((L) => {
       const o = { name: L.name, visible: L.visible !== false, colorSel: L.colorSel || '', filter: L.filterExpr || '', ...captureLayerSurface(L) };
+      // the colour by NAME (a column position means another column in a file ordered differently),
+      // and where the layer sits — so a figure made from this scene can follow other data
+      try { const c = colorByName(L); if (c) o.color = c; } catch { /* no colour-by */ }
+      const bx = layerWorldBox(L); if (bx) o.box = bx.map((p) => p.map((v) => +(+v).toFixed(3)));
       if (withSel && L._selMask && L._selCount) o.sel = rleEncode(L._selMask);   // opt-in; selection can be large (RLE'd)
       return o;
     }),
@@ -105,13 +109,17 @@ export function captureScene(name, withSel) {
 
 export async function applyScene(s) {
   applyCamera(s.camera); applySection(s.section);
-  const prevActive = S.activeId;
+  const prevActive = S.activeId, noCol = [];
   for (const sl of (s.layers || [])) {
     let L = S.layers.find((x) => x.name === sl.name) || S.layers.find((x) => (x.label || x.name) === sl.name);
     if (!L) continue;
     L = await applyLayerSurface(L, sl) || L;   // surface/drape/flatZ/faceted/band FIRST (may reopen → fresh L), then vis/color/filter on it
     if (sl.visible != null) { L.visible = !!sl.visible; S.renderer.setLayerVisible(L.id, L.visible); }
-    if (sl.colorSel != null && sl.colorSel !== (L.colorSel || '')) setLayerColorSel(L, sl.colorSel);
+    let want = sl.colorSel;
+    if (sl.color) {                                           // by name first; the stored position only for old scenes
+      try { want = colorSelFor(L, sl.color); } catch { want = null; noCol.push(`${sl.name}: ${sl.color}`); }
+    }
+    if (want != null && want !== (L.colorSel || '')) setLayerColorSel(L, want);
     if (sl.filter != null && (L.filterExpr || '') !== sl.filter) {   // applyBlockFilter sweeps the ACTIVE layer → focus it first
       setActiveLayer(L.id); $('#filter').value = sl.filter; syncFilterClear(); await applyBlockFilter(sl.filter);
     }
@@ -120,7 +128,8 @@ export async function applyScene(s) {
   if (layerById(prevActive)) setActiveLayer(prevActive);
   applyTreeVisibility(); renderLayers(); requestRender();
   const missing = (s.layers || []).filter((sl) => !S.layers.some((x) => x.name === sl.name || (x.label || x.name) === sl.name)).map((sl) => sl.name);
-  $('#meta').textContent = `scene “${s.name}”${missing.length ? ` · ${missing.length} layer${missing.length === 1 ? '' : 's'} not loaded (${missing.slice(0, 3).join(', ')}${missing.length > 3 ? '…' : ''})` : ''}`;
+  $('#meta').textContent = `scene “${s.name}”${missing.length ? ` · ${missing.length} layer${missing.length === 1 ? '' : 's'} not loaded (${missing.slice(0, 3).join(', ')}${missing.length > 3 ? '…' : ''})` : ''}${noCol.length ? ` · no column ${noCol.join(', ')} — colour left as it was` : ''}`;
+  return { missing, noColumn: noCol };
 }
 
 export async function saveSceneAs(withSel) {

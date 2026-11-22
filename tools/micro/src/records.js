@@ -21,6 +21,15 @@ export function layerHeaderOf(L) {
   const d = L.docs || {};
   return (d.blockDoc || d.dhDoc || d.stringsDoc || d.tableDoc || d.meshDoc || d.plyDoc || d.lasDoc || {}).header || null;
 }
+// a layer's extent in WORLD coordinates → [[xmin,ymin,zmin],[xmax,ymax,zmax]] (null when unknown).
+// A scene keeps it per layer so a figure can follow other data placed elsewhere.
+export function layerWorldBox(L) {
+  const h = L && layerHeaderOf(L), b = h && h.bbox;
+  if (b && b.min && b.max) return [Array.from(b.min).slice(0, 3), Array.from(b.max).slice(0, 3)];
+  const g = L && L.docs && L.docs.gridDoc && L.docs.gridDoc.grid;
+  if (g && g.nx) return [[g.x0, g.y0 - (g.ny - 1) * g.dy, 0], [g.x0 + (g.nx - 1) * g.dx, g.y0, 0]];
+  return null;
+}
 export const layerBlob = (L) => { const d = L.docs.blockDoc || L.docs.tableDoc || L.docs.plyDoc || L.docs.lasDoc || L.docs.meshDoc || L.docs.gridDoc || L.docs.stringsDoc; return d && d.blob || null; };
 // the layer's COLUMN TABLE header (the table behind the attribute grid /
 // filter / stats), when it has one

@@ -6897,6 +6897,80 @@ if (take()) {
   await p.close();
 }
 
+// ── §107: USE WITH OTHER DATA — a figure made from one model (a view coloured by CU, a resource
+//     table grouped by DOM, a caption statistic) pointed at ANOTHER: 5 km east, its columns in another
+//     order, DOM called ZONE. The view colours by CU by NAME (not by the old column position), moves
+//     with the data, the resource table groups by ZONE, the caption names the new layer, ↻ refresh
+//     leaves no badge — and the original figure is untouched. ──
+if (take()) {
+  const p = await mkPage('sm2retarget');
+  const r = await p.evaluate(async () => {
+    const M_ = window._micro, out = {};
+    const mk = (hdr, row, dx) => { const rows = [hdr]; for (let j = 0; j < 10; j++) for (let i = 0; i < 12; i++) rows.push(row(512005 + dx + i * 10, 7604005 + j * 10, 525, (0.2 + 0.05 * i).toFixed(2), (0.1 + 0.02 * j).toFixed(2), i < 6 ? 'west' : 'east')); return rows.join('\n') + '\n'; };
+    const idA = await M_.openBlob(new File([mk('XC,YC,ZC,AU,CU,DOM', (x, y, z, au, cu, d) => [x, y, z, au, cu, d].join(','), 0)], 'pitA.csv'), 'pitA.csv', 'replace');
+    const A = M_.layers().find((x) => x.id === idA);
+    await M_.setLayerColorSel(A, M_.colorSelFor(A, 'CU'));
+    out.selA = A.colorSel;
+    const ed = M_.openComposer('pit A report');
+    const vf = M_.addViewFrame(ed);
+    await M_.addResourceFrame({ layer: 'pitA.csv', grade: 'AU', cutoffs: [0, 0.4], density: { const: 2.7, unit: 't/m3' }, groupBy: ['DOM'], metalFactor: 1, scope: 'all' });
+    ed.addFrame({ kind: 'text', box: [20, 150, 80, 8], content: { md: 'mean AU {mean:pitA.csv:AU}' } });
+    const fig = M_.currentFigure(), camA = fig.doc.frames.find((f) => f.id === vf.id).source.scene.camera.target.slice();
+    out.sceneColor = fig.doc.frames.find((f) => f.id === vf.id).source.scene.layers[0].color;
+    // the other pit: shifted 5 km east, CU before AU, DOM → ZONE
+    const idB = await M_.openBlob(new File([mk('XC,YC,ZC,CU,AU,ZONE', (x, y, z, au, cu, d) => [x, y, z, cu, au, d].join(','), 5000)], 'pitB.csv'), 'pitB.csv', 'replace');
+    const B = M_.layers().find((x) => x.id === idB);
+    out.before = (M_.staleOf(fig.doc.frames.find((f) => f.id === vf.id)) || {}).text;
+    // the dialog's first guesses: the one loaded layer, DOM missing
+    const w = M_.openRetargetDialog(fig);
+    const box = w.el.querySelector('.cmp-rt-layer');
+    out.dialog = { layer: box.querySelector('select').value, missing: [...box.querySelectorAll('div > span')].map((s) => s.textContent).filter((t) => t !== '→') };
+    w.close();
+    const { figure, report } = await M_.retargetFigure(fig, { layers: { 'pitA.csv': 'pitB.csv' }, columns: { 'pitA.csv': { DOM: 'ZONE' } }, placement: 'move' });
+    const v2 = figure.doc.frames.find((f) => f.source && f.source.kind === 'view'), sl = v2.source.scene.layers[0];
+    const t2 = figure.doc.frames.find((f) => f.source && f.source.kind === 'resource'), cap = figure.doc.frames.find((f) => f.kind === 'text' && /mean AU/.test(f.content.md));
+    out.report = report;
+    out.after = { name: figure.name, layer: sl.name, color: sl.color, colorSel: sl.colorSel, shift: v2.source.scene.camera.target.map((v, i) => +(v - camA[i]).toFixed(3)),
+      badge: M_.staleOf(v2), tableBadge: M_.staleOf(t2), groupBy: t2.source.params.groupBy, rows: t2.content.rows.length, cols: t2.content.columns, cap: cap.content.md };
+    // the scene puts B's colour on by NAME: CU is column 3 in B, it was 4 in A
+    await M_.applyScene(v2.source.scene);
+    out.selB = B.colorSel; out.wantB = M_.colorSelFor(B, 'CU');
+    const orig = fig.doc.frames.find((f) => f.id === vf.id).source.scene.layers[0];
+    out.orig = { layer: orig.name, figs: M_.figures().map((f) => f.name) };
+    return out;
+  });
+  chk(`OTHER DATA: a scene keeps its colour by NAME (${r.sceneColor}; A was ${r.selA}); the view of the unloaded pit says "${r.before}"; the dialog guesses the loaded layer (${JSON.stringify(r.dialog)})`,
+    r.sceneColor === 'CU' && r.before === 'data not loaded' && r.dialog.layer === 'pitB.csv' && r.dialog.missing.includes('DOM'));
+  chk(`OTHER DATA: the figure made with pit B (${JSON.stringify(r.after)}; ${JSON.stringify(r.report)})`,
+    r.after.layer === 'pitB.csv' && r.after.color === 'CU' && r.after.colorSel === undefined && r.after.shift[0] === 5000 && r.after.shift[1] === 0 && r.after.badge === null && r.after.tableBadge === null
+    && r.after.groupBy[0] === 'ZONE' && r.after.rows > 0 && /pitB\.csv:AU/.test(r.after.cap) && r.report.views === 1 && r.report.tables === 1);
+  chk(`OTHER DATA: the scene colours B by CU by name (${r.selB} = ${r.wantB}, A's was ${r.selA}); the original figure is untouched (${JSON.stringify(r.orig)})`,
+    r.selB === r.wantB && r.selB !== r.selA && r.orig.layer === 'pitA.csv' && r.orig.figs.length === 2);
+  await p.close();
+}
+
+// ── §108: A PDF WITHOUT ITS FIGURE — by default the PDF carries the figure (its scenes name the
+//     files and the coordinates) so micro can open it again; "embed figure" unticked writes only the
+//     page, and the choice is the figure's own (it saves with it). ──
+if (take()) {
+  const p = await mkPage('sm2embed');
+  const r = await p.evaluate(async () => {
+    const M_ = window._micro, rows = ['XC,YC,ZC,AU']; for (let i = 0; i < 40; i++) rows.push(`${5 + (i % 8) * 10},${5 + Math.floor(i / 8) * 10},5,${i / 10}`);
+    await M_.openBlob(new File([rows.join('\n') + '\n'], 'e.csv'), 'e.csv', 'replace');
+    const C = await import('/ext/compo/index.js');
+    const ed = M_.openComposer('embed'); M_.addViewFrame(ed);
+    const fig = M_.currentFigure(), box = document.querySelector('.cmp-embed input');
+    const out = { ticked: box.checked };
+    out.with = !!(await C.figureFromPdf(await M_.figurePdfBytes(fig, 72))).doc;
+    box.click();
+    out.flag = fig.doc.embedSource;
+    out.without = !!(await C.figureFromPdf(await M_.figurePdfBytes(fig, 72))).doc;
+    return out;
+  });
+  chk(`EMBED: the PDF carries the figure by default (${r.with}); unticked it carries none (${r.without}, doc.embedSource ${r.flag})`, r.ticked && r.with && !r.without && r.flag === false);
+  await p.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

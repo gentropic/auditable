@@ -21,7 +21,8 @@ import { microPrompt, microConfirm } from './prompts.js';
 import { resolveFileHandle, removeFileAt } from './paths.js';
 import { setSectionWorld, sectionWorld } from './section.js';
 import { rendererDocBbox, layerShown } from './layers.js';
-import { attrRowCountOf, layerBlob, layerTableHeader, schemaExt } from './records.js';
+import { attrRowCountOf, layerBlob, layerTableHeader, schemaExt, layerWorldBox } from './records.js';
+import { figureRefs, retargetDoc, guessLayer, guessColumn } from './retarget.js';
 import { computeResourceTable, numericColsOf } from './analysis.js';
 import { sourceHash, sourceHashSync } from './identity.js';
 import { createDocument, parseDocument, serializeDocument, mountEditor, exportPDF, exportPNG, frameById, pageDims, tableFromTsv, removeFrames, groupFrames, subjectFrame, refFrame, figureFromPdf, registerKind, replayDrawList } from '../../../ext/compo/index.js';
@@ -388,8 +389,100 @@ export async function openFigurePdf(blob, name) {
   openComposer(nm);
   persist(fig);
   const views = doc.frames.filter(isView), st = views.map(staleOf).filter(Boolean);
-  $('#meta').textContent = `${name}: the figure “${nm}” — ${views.length} view${views.length === 1 ? '' : 's'}${st.length ? `, ${st.length} of them made from data that isn't loaded or has changed (hover the badge)` : views.length ? ', made from the data loaded now' : ''}`;
+  $('#meta').textContent = `${name}: the figure “${nm}” — ${views.length} view${views.length === 1 ? '' : 's'}${st.length ? `, ${st.length} of them made from data that isn't loaded or has changed (hover the badge) — ⇄ other data… points it at what's loaded` : views.length ? ', made from the data loaded now' : ''}`;
   return fig;
+}
+
+// ── USE WITH OTHER DATA: the figure (or a template, or a PDF micro wrote) pointed at the layers
+// loaded now. Each layer it used is matched to a loaded one, each column it used that the new
+// layer lacks is named and can be swapped, the views follow the data (moved with it, or scaled
+// to it), and ↻ refresh makes everything again. See retarget.js. ──
+const layerCols = (L) => { const s = new Set(); try { for (const c of colorChoices(L)) s.add(c); } catch { /* */ } try { const h = layerTableHeader(L); if (h) for (const c of schemaExt(L, h)) s.add(c.name); } catch { /* */ } return s; };
+const candOf = (L) => ({ name: L.name, label: L.label || L.name, cols: layerCols(L), box: (() => { const b = layerWorldBox(L); return b && b.map((p) => p.map((v) => +(+v).toFixed(3))); })() });
+export async function retargetFigure(fig, plan, { asNew = true, name = null } = {}) {
+  let target = fig;
+  if (asNew) {
+    const first = Object.values(plan.layers || {}).find(Boolean), L0 = first && S.layers.find((x) => x.name === first);
+    let nm = name || `${fig.name.replace(/ — .*$/, '')} — ${L0 ? (L0.label || L0.name).replace(/\.[^.]+$/, '') : 'other data'}`;
+    if (S.figures.some((f) => f.name === nm)) { let k = 2; while (S.figures.some((f) => f.name === `${nm} (${k})`)) k++; nm = `${nm} (${k})`; }
+    const doc = parseDocument(serializeDocument(fig.doc)); doc.title = nm; delete doc.template;
+    if (doc.props) { delete doc.props.drawing; delete doc.props.revision; }
+    target = { name: nm, doc, file: 'figures/' + slug(nm) + '.compo.json' };
+    S.figures.push(target); S.figures.sort((a, b) => a.name.localeCompare(b.name));
+  }
+  const report = retargetDoc(target.doc, plan, (nm) => { const L = S.layers.find((x) => x.name === nm); return L ? candOf(L) : null; });
+  if (_ed) { if (_fig === fig || asNew) showFigure(target); if (_win && _win._fill) _win._fill(); }
+  await refreshViews(target);
+  persist(target);
+  return { figure: target, report };
+}
+export function openRetargetDialog(fig = _fig) {
+  if (!fig) return;
+  const refs = figureRefs(fig.doc);
+  if (!refs.length) { $('#meta').textContent = `composer: “${fig.name}” names no data — nothing to point elsewhere`; return; }
+  if (!S.layers.length) { $('#meta').textContent = 'composer: open the other data first, then “use with other data…”'; return; }
+  const cands = S.layers.map(candOf);
+  const w = floatWin({ title: 'use with other data', sub: fig.name, x: 160, y: 110, w: 520, h: Math.min(560, 200 + refs.length * 90) });
+  w.el.classList.add('cmp-retarget');
+  const body = w.body; body.style.cssText += 'display:flex;flex-direction:column;gap:8px;padding:10px;overflow:auto';
+  const hint = document.createElement('div'); hint.className = 'hint';
+  hint.textContent = 'each layer the figure used → a layer loaded now. Columns the new layer lacks are named; pick a replacement or leave them (the frame will say what is missing).';
+  body.append(hint);
+  const mk = (tag, txt, cls) => { const e = document.createElement(tag); if (txt != null) e.textContent = txt; if (cls) e.className = cls; return e; };
+  const selOf = (opts, val) => { const s = document.createElement('select'); for (const [v, t] of opts) { const o = document.createElement('option'); o.value = v; o.textContent = t; s.append(o); } s.value = val; return s; };
+  const rows = [];
+  for (const ref of refs) {
+    const box = mk('div', null, 'cmp-rt-layer'); box.style.cssText = 'border:1px solid var(--border);border-radius:3px;padding:6px 8px;display:flex;flex-direction:column;gap:4px';
+    const head = mk('div'); head.style.cssText = 'display:flex;gap:8px;align-items:center';
+    const nm = mk('b', ref.name); nm.style.cssText = 'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'; nm.title = `used in: ${[...ref.where].join(', ')}`;
+    const sel = selOf([['', '— leave as it is'], ...cands.map((c) => [c.name, c.label])], guessLayer(ref, cands));
+    head.append(nm, mk('span', '→'), sel);
+    const where = mk('div', `${[...ref.where].join(' · ')}${ref.filters.size ? ` · filter ${[...ref.filters].join(' ; ')}` : ''}`, 'hint');
+    const colsEl = mk('div'); colsEl.style.cssText = 'display:grid;grid-template-columns:auto auto 1fr;gap:3px 8px;align-items:center';
+    const colSel = new Map();
+    const fillCols = () => {
+      colsEl.replaceChildren(); colSel.clear();
+      const c = cands.find((x) => x.name === sel.value); if (!c) return;
+      for (const col of [...ref.cols].sort()) {
+        if (c.cols.has(col)) continue;
+        const g = guessColumn(col, c.cols);
+        const s2 = selOf([['', '— missing'], ...[...c.cols].map((x) => [x, x])], g);
+        colSel.set(col, s2);
+        colsEl.append(mk('span', col), mk('span', '→'), s2);
+      }
+      if (!colSel.size && ref.cols.size) colsEl.append(mk('span', `columns ${[...ref.cols].join(', ')} — all there`, 'hint'));
+    };
+    sel.onchange = fillCols; fillCols();
+    box.append(head, where, colsEl); body.append(box);
+    rows.push({ ref, sel, colSel });
+  }
+  const opt = mk('div'); opt.style.cssText = 'display:flex;gap:10px;align-items:center;flex-wrap:wrap';
+  const place = selOf([['move', 'views move with the data'], ['scale', 'views scale to the data']], 'move');
+  place.title = 'move: each view keeps its size and shifts by the difference between the old and new data centres — a view of the north end still frames the north end.\nscale: the same, and also grows or shrinks with the data\'s extent.\nA locked scale stays as it is.';
+  const asNew = mk('input'); asNew.type = 'checkbox'; asNew.checked = true;
+  const lab = mk('label'); lab.append(asNew, document.createTextNode(' as a new figure'));
+  opt.append(place, lab);
+  const msg = mk('span', '', 'hint'), go = mk('button', 'Apply', 'awin-btn btn-p');
+  const foot = mk('div'); foot.style.cssText = 'display:flex;gap:8px;align-items:center;justify-content:flex-end'; foot.append(msg, go);
+  body.append(opt, foot);
+  go.onclick = async () => {
+    const plan = { layers: {}, columns: {}, placement: place.value };
+    for (const r of rows) {
+      if (!r.sel.value) continue;
+      plan.layers[r.ref.name] = r.sel.value;
+      const m = {}; for (const [a, s2] of r.colSel) if (s2.value) m[a] = s2.value;
+      if (Object.keys(m).length) plan.columns[r.ref.name] = m;
+    }
+    if (!Object.keys(plan.layers).length) { msg.textContent = 'match at least one layer'; return; }
+    go.disabled = true; msg.textContent = 'making it again…';
+    try {
+      const { figure, report } = await retargetFigure(fig, plan, { asNew: asNew.checked });
+      w.close();
+      const missing = rows.flatMap((r) => [...r.colSel].filter(([, s2]) => !s2.value).map(([a]) => `${r.ref.name}: ${a}`));
+      $('#meta').textContent = `composer: “${figure.name}” — ${report.views} view${report.views === 1 ? '' : 's'}, ${report.charts + report.tables} chart / table frame${report.charts + report.tables === 1 ? '' : 's'} made with the other data${missing.length ? ` · still missing ${missing.join(', ')}` : ''}`;
+    } catch (e) { msg.textContent = e.message; go.disabled = false; }
+  };
+  return w;
 }
 
 // ── a view frame's own inspector rows: its scale (shown, and lockable) ──
@@ -517,7 +610,7 @@ export async function smallMultiples(ed, f, { vary, values, cols, axis = 'z', th
     for (let k = 0; k < n; k++) {
       const v = values[k], scene = JSON.parse(JSON.stringify(base));
       const sl = scene.layers.find((q) => q.name === mainName);
-      if (vary === 'colour' && sl && L) sl.colorSel = colorSelFor(L, v);
+      if (vary === 'colour' && sl && L) { sl.colorSel = colorSelFor(L, v); sl.color = v; }   // the name is what a scene applies
       if (vary === 'filter' && sl) sl.filter = String(v);
       await applyScene(scene);
       if (vary === 'section') setSectionWorld({ axis, position: +v, thickness: +thickness || 10 });
@@ -755,10 +848,17 @@ export function openComposer(name) {
   const dpiSel = document.createElement('select'); dpiSel.title = 'export resolution for the 3D views and the PNG';
   for (const d of [150, 300, 600]) { const o = document.createElement('option'); o.value = d; o.textContent = d + ' dpi'; dpiSel.append(o); }
   dpiSel.value = '300';
+  const embLab = document.createElement('label'); embLab.className = 'cmp-embed'; embLab.style.cssText = 'display:flex;align-items:center;gap:3px;font-size:11px';
+  embLab.title = 'the PDF carries this figure (its scenes, layer and file names, coordinates, recipes) so micro can open it again as an editable figure.\nUntick for a deliverable that should hold only the page.';
+  const embBox = document.createElement('input'); embBox.type = 'checkbox';
+  embBox.onchange = () => { if (embBox.checked) delete _fig.doc.embedSource; else _fig.doc.embedSource = false; persist(_fig); };
+  embLab.append(embBox, document.createTextNode('embed figure'));
+  _win._syncEmbed = () => { embBox.checked = !(_fig && _fig.doc.embedSource === false); };
   top.append(btn('↻ refresh', 'make this figure again with the data as it is now: every 3D view from its scene, every chart and table from its analysis, every resource table', () => refreshViews(_fig)));
+  top.append(btn('⇄ other data…', 'make this figure with other data: each layer it used → a layer loaded now, missing columns swapped, the views moved with the data — then everything made again', () => openRetargetDialog(_fig)));
   top.append(tplBtn, btn('properties…', 'the figure\'s drawing number and revision, and the project\'s house properties — {prop:key} in captions and the title block', () => openPropsDialog()));
   top.append(btn('atlas…', 'a routine that renders this figure once per section level into one PDF (Tools → Recipes)', () => makeAtlasRoutine(_fig)));
-  top.append(sp, dpiSel, btn('⤓ pdf', 'export the page as a vector PDF (the 3D views re-rendered at the dpi)', () => exportFigurePdf(+dpiSel.value), 'awin-btn btn-p'), btn('⤓ png', 'export the page as a PNG at the dpi', () => exportFigurePng(+dpiSel.value)));
+  top.append(sp, embLab, dpiSel, btn('⤓ pdf', 'export the page as a vector PDF (the 3D views re-rendered at the dpi)', () => exportFigurePdf(+dpiSel.value), 'awin-btn btn-p'), btn('⤓ png', 'export the page as a PNG at the dpi', () => exportFigurePng(+dpiSel.value)));
   const host = document.createElement('div'); host.style.cssText = 'flex:1;min-height:0';
   body.append(top, host);
   _win._fill = fill;
@@ -782,7 +882,7 @@ export function openComposer(name) {
     frameOpen: (f) => { if (!isView(f)) return false; editViewInPlace(f); return true; },
     onStatus: (m) => { $('#meta').textContent = 'composer: ' + m; },
   });
-  _fig = fig; fill();
+  _fig = fig; fill(); _win._syncEmbed();
   return _ed;
 }
 function showFigure(fig) {
@@ -790,7 +890,7 @@ function showFigure(fig) {
   if (_fig && _fig !== fig) persist(_fig);
   _fig = fig;
   if (_ed) _ed.setDoc(fig.doc);
-  if (_win) { _win.sub.textContent = fig.name; if (_win._fill) _win._fill(); }
+  if (_win) { _win.sub.textContent = fig.name; if (_win._fill) _win._fill(); if (_win._syncEmbed) _win._syncEmbed(); }
 }
 export const composerFrameMenu = (f, ed) => frameMenu(f, ed);   // the view frame's menu items — hosts and tests
 function frameMenu(f, ed) {
@@ -931,7 +1031,9 @@ function prepareFor(dpi) {
   };
 }
 export async function figurePdfBytes(fig = _fig, dpi = 300, opts = {}) {
-  return exportPDF(fig.doc, { env: envFor({ prepare: prepareFor(dpi) }), title: fig.name, creator: 'micro', dpi, ...opts });
+  // a figure can opt out of carrying itself: its scenes name the files, the layers, the coordinates —
+  // a deliverable for a client may want only the page (doc.embedSource === false; templates carry it)
+  return exportPDF(fig.doc, { env: envFor({ prepare: prepareFor(dpi) }), title: fig.name, creator: 'micro', dpi, ...(fig.doc.embedSource === false ? { source: false } : {}), ...opts });
 }
 async function exportFigurePdf(dpi) {
   if (!_fig) return;
@@ -1020,7 +1122,7 @@ export async function writePages(path, docs, { dpi = 300 } = {}) {
   if (!S.project || !S.project.dir) throw new Error('composer: writing pages needs a project');
   let blob;
   if (/\.png$/i.test(path)) blob = await exportPNG(docs[0], { dpi, env: envFor() });
-  else blob = new Blob([await exportPDF(docs, { env: envFor(), title: docs[0].title, creator: 'micro', dpi, source: docs[0]._source || false })], { type: 'application/pdf' });
+  else blob = new Blob([await exportPDF(docs, { env: envFor(), title: docs[0].title, creator: 'micro', dpi, source: (docs[0]._source && docs[0]._source.embedSource !== false && docs[0]._source) || false })], { type: 'application/pdf' });
   const fh = await resolveFileHandle(S.project.dir, path, { create: true });
   const w = await fh.createWritable(); await w.write(blob); await w.close();
   return blob.size;
