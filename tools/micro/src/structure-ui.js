@@ -14,6 +14,7 @@ import { resolvedTheme, tok } from './theme.js';
 import { plotExportBtns, fmtStat } from './analysis-ui.js';
 import { prepareStructure, structureOf, structureCost, regionAt, seedOf, fitRegion, toFile, weldedCodes, measurePlanes, tracePlanes, traceTubes, surfacePath, fileOf, setStats, poleOf, orientationColors, orientationRgb, vertexColors, discMesh, QUALITY, traceNetwork, nodeMarkers, snapToTraces, NODE_COLORS } from './structure.js';
 import { Stereonet } from '../../../ext/bearing/index.js';
+import { recordingContext } from '../../../ext/plot/index.js';
 import { detectSets } from '../../../ext/clar/index.js';
 import { buildMeshChunk, writeDxf } from '../../../ext/condenser/src/main.js';
 import { meshVertexData } from './records.js';
@@ -733,16 +734,17 @@ export const structureTool = () => prefs.tool;
 // Hovering the rock with the wand puts its plane on the net as a ghost pole.
 const NET = 300;
 // the net's chrome follows the theme (read at every render, so a theme switch repaints it)
-const netStyle = () => {
-  const light = resolvedTheme() === 'light';
+// the net's look: micro's panel (dark or light) — or PAPER, for a figure (white, dark ink)
+const netStyle = (paper = false) => {
+  const light = paper || resolvedTheme() === 'light', ink = paper ? '#222' : tok('--text');
   return {
-    background: tok('--panel'),
+    background: paper ? '#ffffff' : tok('--panel'),
     primitive: { stroke: light ? '#5f5d5a' : '#8a9099', strokeWidth: 1.2, fill: 'none' },
     grid: { stroke: light ? '#d0cfcc' : '#262626', strokeWidth: 0.5, majorStroke: light ? '#bdbbb7' : '#333', majorStrokeWidth: 0.7 },
     cardinals: { fontSize: 11, fontFamily: 'ui-monospace, monospace', fill: light ? '#4f4e4b' : '#8a9099', offset: 12 },
-    pole: { r: 3, fill: tok('--text'), stroke: 'none' },
-    plane: { stroke: tok('--text'), strokeWidth: 0.8, fill: 'none' },
-    cone: { stroke: tok('--text'), strokeWidth: 1, fill: 'none', strokeDasharray: '3,2' },
+    pole: { r: 3, fill: ink, stroke: 'none' },
+    plane: { stroke: ink, strokeWidth: 0.8, fill: 'none' },
+    cone: { stroke: ink, strokeWidth: 1, fill: 'none', strokeDasharray: '3,2' },
   };
 };
 function setGhost(hd, r) {
@@ -779,10 +781,10 @@ export function openStereonet(L) {
 
   // the orientation wheel under the net, when the rock is coloured that way: the
   // same hue/saturation map, so a colour on the rock reads off the net directly
-  let bgFor = null;
+  let bgFor = null, paper = false, lastLines = [];
   function drawWheel() {
     bg.style.display = prefs.orient ? '' : 'none';
-    { const ns = netStyle(); sn.setStyle({ ...ns, background: prefs.orient ? 'none' : ns.background }); }   // setStyle REPLACES the instance style
+    { const ns = netStyle(paper); sn.setStyle({ ...ns, background: prefs.orient ? 'none' : ns.background }); }   // setStyle REPLACES the instance style
     if (!prefs.orient || bgFor === 'wheel') return;
     const g = bg.getContext('2d'), img = g.createImageData(NET, NET), c = [0, 0, 0];
     for (let y = 0; y < NET; y++) for (let x = 0; x < NET; x++) {
@@ -798,10 +800,10 @@ export function openStereonet(L) {
     const planes = hd.planes || [], col = setColOf(L);
     drawWheel();
     sn.clear(); sn.clearContours();
-    if (prefs.contour && planes.length >= 3) sn.contour(planes.map(poleOf), { stroke: resolvedTheme() === 'light' ? '#7f8a96' : '#5a6470', strokeWidth: 0.7 });
+    if (prefs.contour && planes.length >= 3) sn.contour(planes.map(poleOf), { stroke: paper || resolvedTheme() === 'light' ? '#7f8a96' : '#5a6470', strokeWidth: 0.7 });
     if (prefs.gc) for (const p of planes) sn.plane(p.dip_direction, p.dip, { stroke: colOfCode(p.code), strokeWidth: 0.7 });
     planes.forEach((p, k) => {
-      const sel = (hd.selSet && hd.selSet.has(k)) || k === hd.sel;
+      const sel = !paper && ((hd.selSet && hd.selSet.has(k)) || k === hd.sel);
       sn.pole(p.dip_direction, p.dip, { fill: colOfCode(p.code), r: 2.5 + Math.min(3, Math.log10(Math.max(1, p.n_vertices)) * 0.8), stroke: sel ? tok('--text-hi') : 'none', strokeWidth: sel ? 1.5 : 0 });
     });
     const lines = [];
@@ -814,6 +816,8 @@ export function openStereonet(L) {
       }
       lines.push([code, `${col.dict[code]} · ${m.n} · ${att(m.dip_direction, m.dip)}${m.n > 1 ? ` · κ ${fmtKappa(m.kappa)} · α95 ${m.alpha95.toFixed(1)}°` : ''}`]);
     }
+    lastLines = lines.map(([code, t]) => [colOfCode(code), t]);
+    if (paper) return;                                    // a figure: the net only, no ghost / legend / selection UI
     if (hd.ghost) sn.pole(hd.ghost.dd, hd.ghost.dip, { fill: 'none', stroke: tok('--text-hi'), strokeWidth: 1.5, r: 5, strokeDasharray: '2,2' });
     sn.render();
     if (lasso.parentNode !== el) el.append(lasso);
@@ -887,8 +891,28 @@ export function openStereonet(L) {
     }
     render(); if (hd.render) hd.render();
   });
+  // ⇥ figure: the net on paper, drawn into a recording 2D context (@gcu/plot's) — a draw list the
+  // composer prints as vectors; the orientation wheel (when shown) as an image under it, the set
+  // means and their statistics as text beneath
+  function toFigure() {
+    paper = true; bgFor = null;
+    try {
+      render();
+      const lh = 14, H = NET + 10 + lh * lastLines.length, rec = recordingContext(NET, H);
+      rec.fillStyle = '#ffffff'; rec.fillRect(0, 0, NET, H);
+      if (prefs.orient) { const g = bg.getContext('2d'), im = g.getImageData(0, 0, NET, NET); rec._image(0, 0, NET, NET, NET, NET, im.data); }
+      sn.draw(rec);
+      rec.font = '10px ui-monospace, monospace'; rec.textAlign = 'left'; rec.textBaseline = 'middle';
+      lastLines.forEach(([c, t], k) => { rec.fillStyle = c; rec.fillText('● ' + t, 8, NET + 6 + lh * (k + 0.5)); });
+      return { version: 2, width: NET, height: H, ops: rec.ops };
+    } finally { paper = false; bgFor = null; render(); }
+  }
+  const figBtn = document.createElement('button'); figBtn.className = 'awin-btn'; figBtn.textContent = '⇥ figure';
+  figBtn.title = 'the net into the composer — vector, on paper, with the set means beneath';
+  figBtn.onclick = () => dispatchEvent(new CustomEvent('micro:to-composer', { detail: { drawlist: toFigure(), name: `stereonet-${(L.label || L.name).replace(/\.[^.]+$/, '')}` } }));
+  opts.append(figBtn);
   win.el._onResized = () => render();                     // the theme-change repaint (windows.js calls it on resize too)
-  hd.stereo = { win, render, sn };
+  hd.stereo = { win, render, sn, toFigure };
   render();
   return hd.stereo;
 }

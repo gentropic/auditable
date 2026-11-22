@@ -6629,6 +6629,42 @@ if (take()) {
   await p.close();
 }
 
+// ── §102: SCATTER / Q-Q ON @gcu/plot — the xy window draws through plot (xyFigure): a density, log
+//     axes ticked at the decades, the Q-Q with its 1:1 line; ⇥ figure sends the spec (type 'xy') and
+//     the chart frame prints it as vectors. ──
+if (take()) {
+  const p = await mkPage('sm2xy');
+  if (process.env.SM2_DUMP) await p.evaluate(() => { window.__dumpFig = true; });
+  const r = await p.evaluate(async () => {
+    const M = window._micro, out = {};
+    let s = 'X,Y,Z,AU,CU\n'; let seed = 11; const rnd = () => ((seed = (Math.imul(seed, 1103515245) + 12345) >>> 0) / 2 ** 32);
+    for (let i = 0; i < 20000; i++) { const au = +(Math.exp(rnd() * 3 - 1.5)).toFixed(4); s += `${5 + (i % 50) * 10},${5 + ((i / 50 | 0) % 40) * 10},${5 + (i / 2000 | 0) * 10},${au},${+(0.4 * au + rnd() * 0.5).toFixed(4)}\n`; }
+    const id = await M.openBlob(new File([s], 'xy2.csv'), 'xy2.csv', 'replace');
+    const L = M.layers().find((q) => q.id === id);
+    const h = M.openXyPlot(L);
+    Object.assign(h.st, { x: 'AU', y: 'CU', logX: true, logY: true });
+    await h.run();
+    const cv = h.win.el.querySelector('canvas');
+    out.spec = cv._chartSpec && { type: cv._chartSpec.type, heat: !!cv._chartSpec.heat, log: cv._chartSpec.logX };
+    const g = cv.getContext('2d'), d = g.getImageData(0, 0, cv.width, cv.height).data; let ink = 0; for (let i = 3; i < d.length; i += 4) if (d[i] > 0) ink++;
+    out.ink = ink / (d.length / 4);
+    if (window.__dumpFig) out.winPng = cv.toDataURL('image/png');
+    const ed = M.openComposer('xy');
+    [...h.win.el.querySelectorAll('.awin-btn')].find((b) => b.textContent === '⇥ figure').click();
+    const fr = ed.getDoc().frames.find((f) => f.kind === 'chart');
+    out.frame = fr && fr.content.spec.type;
+    const bytes = await M.figurePdfBytes(M.currentFigure(), 72, { compress: false });
+    const t = new TextDecoder('latin1').decode(bytes);
+    out.pdf = { log: t.includes('(AU \\(log\\)) Tj') /* the PDF escapes the label's parentheses */, decade: /\(1\) Tj|\(10\) Tj/.test(t) };
+    if (window.__dumpFig) { const C = await import('/ext/compo/index.js'); const png = await C.exportPNG(M.currentFigure().doc, { dpi: 150 }); out.png = await new Promise((res) => { const f2 = new FileReader(); f2.onload = () => res(f2.result); f2.readAsDataURL(png); }); }
+    return out;
+  });
+  if (r.png) { const fs = await import('node:fs'); fs.writeFileSync(process.env.SM2_DUMP, Buffer.from(r.png.split(',')[1], 'base64')); fs.writeFileSync(process.env.SM2_DUMP.replace(/\.png$/, '-win.png'), Buffer.from(r.winPng.split(',')[1], 'base64')); }
+  chk(`XY: the scatter window draws through @gcu/plot (${JSON.stringify(r.spec)}, ${(r.ink * 100).toFixed(0)}% inked)`, r.spec && r.spec.type === 'xy' && r.spec.log && r.ink > 0.02);
+  chk(`XY: ⇥ figure makes an xy chart frame (${r.frame}); the PDF carries its log label and decade ticks as text (${JSON.stringify(r.pdf)})`, r.frame === 'xy' && r.pdf.log && r.pdf.decade);
+  await p.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

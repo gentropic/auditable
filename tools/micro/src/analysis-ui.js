@@ -83,6 +83,8 @@ export function chartFigure(spec, { width = 400, height = 240, theme = 'paper', 
 }
 // the window's chart: the figure above, drawn on the window's canvas in micro's own colours.
 // Returns the plot → data mapping { px0, px1, py0, py1, xr, lr, rr } for hit-testing (swath hover).
+// a chart on micro's own panels: its tokens, a transparent face
+export const screenTheme = () => ({ base: resolvedTheme() === 'light' ? 'light' : 'dark', foreground: tok('--text-hi'), muted: tok('--dim'), frame: tok('--dim'), grid: 'rgba(140,145,150,0.35)', font_size: 10 });
 export function plotChart(cv, spec) {
   const dpr = Math.min(2, window.devicePixelRatio || 1);
   const W = cv.clientWidth || 400, CH = cv.clientHeight || 240;
@@ -95,8 +97,7 @@ export function plotChart(cv, spec) {
     g.fillText(spec.placeholder || 'no data', W / 2, CH / 2);   // "scanning…" while the sweep runs — not "no data"
     return null;
   }
-  const theme = { base: resolvedTheme() === 'light' ? 'light' : 'dark', foreground: tok('--text-hi'), muted: tok('--dim'), frame: tok('--dim'), grid: 'rgba(140,145,150,0.35)', font_size: 10 };
-  const { fig, ax, ax2, ranges } = chartFigure(spec, { width: W, height: CH, theme });
+  const { fig, ax, ax2, ranges } = chartFigure(spec, { width: W, height: CH, theme: screenTheme() });
   fig.set_facecolor('none'); ax.set_facecolor('none');
   fig.draw(g, { dpr });
   g.setTransform(dpr, 0, 0, dpr, 0, 0);                     // callers draw their own marks on top, in CSS px

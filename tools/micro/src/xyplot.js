@@ -14,7 +14,8 @@ import { tok, tokAlpha } from './theme.js';
 import { compileBool, compileValue, quoteIdent } from '../../../ext/expr/index.js';
 import { quantileFromCentroids } from '../../../ext/sluice/index.js';
 import { numericColsOf } from './analysis.js';
-import { applyAnalysisGeo, checkAbort, fmtStat, niceStep, plotExportBtns, runCancellable, saveAnalysisCfg, scanProgressText, scopeMask, scopeMissing, setAnalysisOpen } from './analysis-ui.js';
+import { subplots } from '../../../ext/plot/index.js';
+import { screenTheme, applyAnalysisGeo, checkAbort, fmtStat, niceStep, plotExportBtns, runCancellable, saveAnalysisCfg, scanProgressText, scopeMask, scopeMissing, setAnalysisOpen } from './analysis-ui.js';
 import { floatWin, focusWindow } from './windows.js';
 import { canScanColumnar, scanColumnar, zoneKeeper } from './colscan.js';
 import { scatterAccumulator, scatterAdd, scatterMerge, scatterR } from './scanner.js';
@@ -25,66 +26,66 @@ export const _xyWins = new Map();
 const BINS = 160, KEEP = 20000;
 const QQ_P = [0.005, ...Array.from({ length: 99 }, (_, i) => (i + 1) / 100), 0.995];
 
-// ── the plot: axes (linear or log10), then density cells, points or Q-Q marks ──
+// ── the plot: a @gcu/plot figure (xyFigure) — axes in PLOTTED units (log10 on a log axis, its
+// ticks at the decades labelled in real values), then density cells, points or Q-Q marks, and
+// the 1:1 line. The window draws it on its canvas; ⇥ figure sends the spec (type 'xy') and the
+// composer's chart frame lays it out again at its own size, as vectors.
 // spec = { xr, yr (plotted units), logX, logY, xLabel, yLabel, heat: { grid, B } |
-//   points: [x, y, …] | qq: [[x, y]…], line11, color }
+//   points: [x, y, …] | qq: [[x, y, mark]…], line11, color }
+const decadeTicks = (lo, hi) => {
+  const o = [], few = hi - lo < 3;
+  for (let d = Math.floor(lo); d <= Math.ceil(hi); d++) for (const m of few ? [1, 2, 5] : [1]) { const u = d + Math.log10(m); if (u >= lo - 1e-9 && u <= hi + 1e-9) o.push(u); }
+  return o;
+};
+export function xyFigure(spec, { width = 400, height = 300, theme = 'paper', fontSize = 10 } = {}) {
+  const [fig, ax] = subplots(1, 1, { figsize: [Math.max(60, width), Math.max(60, height)], dpi: 100, theme });
+  const { xr, yr } = spec, col = spec.color || '#5b7fa6';
+  const U = (x) => (spec.logX ? (x > 0 ? Math.log10(x) : NaN) : x), V = (y) => (spec.logY ? (y > 0 ? Math.log10(y) : NaN) : y);
+  if (spec.heat) {                                          // log counts, empty cells transparent
+    const { grid: cnt, B } = spec.heat; let mx = 0; for (const c of cnt) if (c > mx) mx = c;
+    const lm = Math.log(1 + mx) || 1, Z = [];
+    for (let j = 0; j < B; j++) { const row = []; for (let i = 0; i < B; i++) { const c = cnt[j * B + i]; row.push(c ? Math.log(1 + c) / lm : NaN); } Z.push(row); }
+    ax.imshow(Z, { extent: [xr[0], xr[1], yr[0], yr[1]], origin: 'lower', cmap: 'viridis', vmin: 0, vmax: 1, aspect: 'auto' });
+  }
+  if (spec.points) {
+    const xs = [], ys = [];
+    for (let k = 0; k < spec.points.length; k += 2) { const x = U(spec.points[k]), y = V(spec.points[k + 1]); if (Number.isFinite(x) && Number.isFinite(y)) { xs.push(x); ys.push(y); } }
+    ax.scatter(xs, ys, { s: 5, c: col, alpha: xs.length > 4000 ? 0.35 : 0.7, linewidths: 0 });
+  }
+  if (spec.line11) {
+    const lo = Math.max(xr[0], yr[0]), hi = Math.min(xr[1], yr[1]);
+    if (hi > lo) ax.plot([lo, hi], [lo, hi], { color: '#c8722e', linewidth: 1, linestyle: '--' });
+  }
+  if (spec.qq) {
+    const xs = [], ys = [], mx = [], my = [];
+    for (const [x, y, mark] of spec.qq) { const u = U(x), v = V(y); if (!Number.isFinite(u) || !Number.isFinite(v)) continue; xs.push(u); ys.push(v); if (mark) { mx.push(u); my.push(v); } }
+    ax.plot(xs, ys, { color: col, linewidth: 1.4 });
+    if (mx.length) ax.scatter(mx, my, { s: 18, c: col, linewidths: 0 });
+  }
+  ax.set_xlim(xr[0], xr[1]); ax.set_ylim(yr[0], yr[1]);
+  ax.grid(true, { alpha: 0.35 });
+  const real = (u) => { const v = 10 ** u; return (Math.abs(v) >= 1000 ? Math.round(v).toLocaleString('en-US') : String(+v.toPrecision(3))); };
+  const lin = (x) => (Math.abs(x) >= 1000 ? Math.round(x).toLocaleString('en-US') : String(+(+x).toPrecision(6))).replace(/^-/, '−');
+  if (spec.logX) { const t = decadeTicks(xr[0], xr[1]); ax.set_xticks(t, t.map(real)); } else ax.xaxis.set_major_formatter(lin);
+  if (spec.logY) { const t = decadeTicks(yr[0], yr[1]); ax.set_yticks(t, t.map(real)); } else ax.yaxis.set_major_formatter(lin);
+  if (spec.xLabel) ax.set_xlabel(spec.xLabel + (spec.logX ? ' (log)' : ''), { fontsize: fontSize });
+  if (spec.yLabel) ax.set_ylabel(spec.yLabel + (spec.logY ? ' (log)' : ''), { fontsize: fontSize });
+  if (spec.title) ax.set_title(spec.title, { fontsize: fontSize + 1 });
+  return { fig, ax };
+}
 export function drawXY(cv, spec) {
   const dpr = Math.min(2, window.devicePixelRatio || 1);
   const W = cv.clientWidth || 400, Hh = cv.clientHeight || 300;
   cv.width = W * dpr; cv.height = Hh * dpr;
-  const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, Hh);
-  const dim = tok('--dim'), grid = 'rgba(140,145,150,0.2)';
-  if (!spec) { g.fillStyle = dim; g.font = '12px monospace'; g.textAlign = 'center'; g.fillText('press Run', W / 2, Hh / 2); return null; }
-  const mL = 56, mR = 14, mT = 12, mB = 32;
-  const px0 = mL, px1 = W - mR, py0 = Hh - mB, py1 = mT;
-  const { xr, yr } = spec;
-  const sx = (u) => px0 + (px1 - px0) * (u - xr[0]) / (xr[1] - xr[0] || 1);
-  const sy = (v) => py0 + (py1 - py0) * (v - yr[0]) / (yr[1] - yr[0] || 1);
-  // ticks: linear by a nice step; log at each decade (and 2, 5 when few decades)
-  const ticks = (lo, hi, log) => {
-    if (!log) { const st = niceStep((hi - lo) / 5) || 1, o = []; for (let v = Math.ceil(lo / st) * st; v <= hi + st * 1e-6; v += st) o.push([v, fmtStat(v)]); return o; }
-    const o = [], few = hi - lo < 3;
-    for (let d = Math.floor(lo); d <= Math.ceil(hi); d++) for (const m of few ? [1, 2, 5] : [1]) { const u = d + Math.log10(m); if (u >= lo - 1e-9 && u <= hi + 1e-9) o.push([u, fmtStat(10 ** u)]); }
-    return o;
-  };
-  g.font = '10px monospace'; g.lineWidth = 1;
-  g.textAlign = 'center';
-  for (const [u, t] of ticks(xr[0], xr[1], spec.logX)) { const X = sx(u); g.strokeStyle = grid; g.beginPath(); g.moveTo(X, py0); g.lineTo(X, py1); g.stroke(); g.fillStyle = dim; g.fillText(t, X, py0 + 12); }
-  g.textAlign = 'right';
-  for (const [v, t] of ticks(yr[0], yr[1], spec.logY)) { const Y = sy(v); g.strokeStyle = grid; g.beginPath(); g.moveTo(px0, Y); g.lineTo(px1, Y); g.stroke(); g.fillStyle = dim; g.fillText(t, px0 - 4, Y + 3); }
-  g.save(); g.beginPath(); g.rect(px0, py1, px1 - px0, py0 - py1); g.clip();
-  if (spec.heat) {
-    const { grid: cnt, B } = spec.heat; let mx = 0; for (const c of cnt) if (c > mx) mx = c;
-    const lm = Math.log(1 + mx) || 1, cw = (px1 - px0) / B, ch = (py0 - py1) / B;
-    for (let j = 0; j < B; j++) for (let i = 0; i < B; i++) {
-      const c = cnt[j * B + i]; if (!c) continue;
-      const t = Math.log(1 + c) / lm;                       // log counts: the sparse tail stays visible
-      g.fillStyle = `hsl(${220 - 180 * t}, 70%, ${28 + 40 * t}%)`;
-      g.fillRect(px0 + i * cw, py0 - (j + 1) * ch, Math.ceil(cw), Math.ceil(ch));
-    }
-  }
-  const U = (x) => (spec.logX ? Math.log10(x) : x), V = (y) => (spec.logY ? Math.log10(y) : y);
-  if (spec.points) {
-    g.fillStyle = spec.color || '#5b7fa6'; g.globalAlpha = spec.points.length > 4000 ? 0.35 : 0.7;
-    for (let k = 0; k < spec.points.length; k += 2) { const x = spec.points[k], y = spec.points[k + 1]; if ((spec.logX && !(x > 0)) || (spec.logY && !(y > 0))) continue; g.fillRect(sx(U(x)) - 1, sy(V(y)) - 1, 2.4, 2.4); }
-    g.globalAlpha = 1;
-  }
-  if (spec.line11) {
-    const lo = Math.max(xr[0], yr[0]), hi = Math.min(xr[1], yr[1]);
-    if (hi > lo) { g.strokeStyle = tokAlpha('--accent', 0.85); g.setLineDash([5, 4]); g.beginPath(); g.moveTo(sx(lo), sy(lo)); g.lineTo(sx(hi), sy(hi)); g.stroke(); g.setLineDash([]); }
-  }
-  if (spec.qq) {
-    g.strokeStyle = spec.color || '#5b7fa6'; g.fillStyle = spec.color || '#5b7fa6'; g.lineWidth = 1.4;
-    g.beginPath(); let on = false;
-    for (const [x, y] of spec.qq) { if ((spec.logX && !(x > 0)) || (spec.logY && !(y > 0))) { on = false; continue; } const X = sx(U(x)), Y = sy(V(y)); if (!on) { g.moveTo(X, Y); on = true; } else g.lineTo(X, Y); }
-    g.stroke();
-    for (const [x, y, mark] of spec.qq) { if (!mark || (spec.logX && !(x > 0)) || (spec.logY && !(y > 0))) continue; g.beginPath(); g.arc(sx(U(x)), sy(V(y)), 3, 0, 2 * Math.PI); g.fill(); }
-  }
-  g.restore();
-  g.fillStyle = dim; g.textAlign = 'center';
-  if (spec.xLabel) g.fillText(spec.xLabel + (spec.logX ? ' (log)' : ''), (px0 + px1) / 2, Hh - 4);
-  if (spec.yLabel) { g.save(); g.translate(11, (py0 + py1) / 2); g.rotate(-Math.PI / 2); g.fillText(spec.yLabel + (spec.logY ? ' (log)' : ''), 0, 0); g.restore(); }
-  return { px0, px1, py0, py1 };
+  const g = cv.getContext('2d'); g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, cv.width, cv.height);
+  cv._chartSpec = spec ? { type: 'xy', ...spec } : null;    // ⇥ figure sends this: a vector chart on the page
+  if (!spec) { g.setTransform(dpr, 0, 0, dpr, 0, 0); g.fillStyle = tok('--dim'); g.font = '12px monospace'; g.textAlign = 'center'; g.fillText('press Run', W / 2, Hh / 2); return null; }
+  const { fig, ax } = xyFigure(spec, { width: W, height: Hh, theme: screenTheme() });
+  fig.set_facecolor('none'); ax.set_facecolor('none');
+  fig.draw(g, { dpr });
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const v = ax.view;
+  return { px0: v.x, px1: v.x + v.w, py0: v.y + v.h, py1: v.y };
 }
 
 // a range in plotted units: [min, max], or for a log axis the smallest positive

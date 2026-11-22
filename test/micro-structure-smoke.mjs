@@ -230,6 +230,7 @@ const planesOf = (p) => p.evaluate(() => { const w = [...document.querySelectorA
   await saveProject(p);
   await p.close();
   const p2 = await mkPage('struct-wand');
+  if (process.env.NET_DUMP) await p2.evaluate(() => { window.__dumpNet = true; });
   await p2.evaluate(async () => { const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('struct-wand'); await window._micro.openProjectDir(dir); });
   await p2.waitForFunction(() => window._micro.layers().some((L) => L.kind === 'mesh' && L.docs.meshDoc && (L.paintCols || []).some((c) => c.name === 'SET')), null, { timeout: 60000 });
   const re = await p2.evaluate(() => { const M = window._micro; const L = M.layers().find((q) => q.kind === 'mesh' && !q.derivedOf); const col = L.paintCols.find((c) => c.name === 'SET'); return { id: L.id, sets: col.dict.filter((d, i) => i && d), j1: col.counts[1], j2: col.counts[2], derived: M.layers().filter((q) => q.derivedOf != null).length, soup: !!L.docs.meshDoc.header.soup }; });
@@ -255,6 +256,25 @@ const planesOf = (p) => p.evaluate(() => { const w = [...document.querySelectorA
   // one dipping 60° toward 270 has its pole plunging 30° toward 090 (east, near the rim)
   chk(`the net plots one pole per plane: J1 (090/30) west of centre, J2 (270/60) east and further out (J1 dx ${w1.dx.toFixed(0)}, J2 dx ${w2.dx.toFixed(0)}; legend ${JSON.stringify(s0.sets)})`,
     s0.poles === 2 && w1.dx < -10 && Math.abs(w1.dy) < 3 && w2.dx > Math.abs(w1.dx) && Math.abs(w2.dy) < 3 && /J1 · 1 · 090\/30/.test(s0.sets[0]) && /J2 · 1 · 270\/60/.test(s0.sets[1]));
+
+
+  // ⇥ figure: the net on paper, recorded through bearing's draw(ctx) into a draw list → a vector composer frame
+  const fig = await p2.evaluate(async (lid) => {
+    const M_ = window._micro, hd = M_.structureWins.get(lid);
+    const list = hd.stereo.toFigure();
+    const ed = M_.openComposer('net');
+    [...hd.stereo.win.el.querySelectorAll('button')].find((b2) => b2.textContent === '⇥ figure').click();
+    const fr = ed.getDoc().frames.find((f) => f.kind === 'drawlist');
+    const bytes = await M_.figurePdfBytes(M_.currentFigure(), 72, { compress: false });
+    const s = new TextDecoder('latin1').decode(bytes);
+    const out = { ops: list.ops.length, w: list.width, h: list.height, frame: !!fr, images: (s.match(/\/Subtype \/Image/g) || []).length, n: /\(N\) Tj/.test(s), j1: /J1 [^)]*090\/30/.test(s), domBack: !!hd.stereo.sn.element().querySelector('circle') };
+    if (window.__dumpNet) { const C = await import('/ext/compo/index.js'); const png = await C.exportPNG(M_.currentFigure().doc, { dpi: 200 }); out.png = await new Promise((res) => { const f2 = new FileReader(); f2.onload = () => res(f2.result); f2.readAsDataURL(png); }); }
+    const cw = document.querySelector('.composer-win'); if (cw) cw.querySelector('.fwin-head button:last-child').click();   // out of the way of the lasso below
+    return out;
+  }, re.id);
+  if (fig.png) { const fs = await import('node:fs'); fs.writeFileSync(process.env.NET_DUMP, Buffer.from(fig.png.split(',')[1], 'base64')); }
+  chk(`⇥ figure: the net as a draw list (${fig.ops} ops, ${fig.w}×${fig.h}) → a vector frame; the PDF has no image, the cardinals and the set means as text (${JSON.stringify({ frame: fig.frame, images: fig.images, n: fig.n, j1: fig.j1 })}); the window's net is back (${fig.domBack})`,
+    fig.ops > 50 && fig.frame && fig.images === 0 && fig.n && fig.j1 && fig.domBack);
 
   // lasso J1's pole on the net → select → move it to a NEW set: the paint follows, one undo step
   const box = await p2.evaluate((lid) => { const hd = window._micro.structureWins.get(lid); const r = hd.stereo.sn.element().getBoundingClientRect(); return [r.left, r.top, r.width]; }, re.id);

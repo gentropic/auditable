@@ -26,6 +26,7 @@ import { computeResourceTable, numericColsOf } from './analysis.js';
 import { sourceHash, sourceHashSync } from './identity.js';
 import { createDocument, parseDocument, serializeDocument, mountEditor, exportPDF, exportPNG, frameById, pageDims, tableFromTsv, subjectFrame, figureFromPdf, registerKind, replayDrawList } from '../../../ext/compo/index.js';
 import { chartFigure } from './analysis-ui.js';
+import { xyFigure } from './xyplot.js';
 const $ = (s) => document.querySelector(s);
 
 // the app's side (setComposerHooks): renderViewCanvas(pxW, pxH) → a canvas rendered to convergence
@@ -786,7 +787,7 @@ registerKind('chart', {
     const spec = frame.content && frame.content.spec; if (!spec) return;
     const W = box[2] * PX_PER_MM, H = box[3] * PX_PER_MM, key = `${W.toFixed(1)}x${H.toFixed(1)}`;
     if (!frame._list || frame._listKey !== key || frame._listSpec !== spec) {
-      const { fig } = chartFigure(spec, { width: W, height: H, theme: 'paper', fontSize: +frame.content.fontSize || 10 });
+      const { fig } = (spec.type === 'xy' ? xyFigure : chartFigure)(spec, { width: W, height: H, theme: 'paper', fontSize: +frame.content.fontSize || 10 });
       fig.set_facecolor('none');
       frame._list = fig.toDrawList(); frame._listKey = key; frame._listSpec = spec;
     }
@@ -795,6 +796,15 @@ registerKind('chart', {
     ctx.restore();
   },
 });
+// a draw list (a graphic recorded from any 2D-context drawer — the stereonet) → a vector frame
+export function addDrawlistFrame(list, name) {
+  const ed = openComposer();
+  const doc = ed.getDoc(), m = doc.page.margins || [12, 12, 12, 12];
+  const w = 80, h = +(w * list.height / Math.max(1, list.width)).toFixed(1);
+  const f = ed.addFrame({ kind: 'drawlist', box: [m[3] + 8, m[0] + 8, w, h], content: { list }, source: { app: 'micro', kind: 'graphic', name } });
+  $('#meta').textContent = `composer: ${name} went into “${_fig.name}” (vector)`;
+  return f;
+}
 export function addChartFrame(spec, name, recipe = null) {
   const ed = openComposer();
   const doc = ed.getDoc(), m = doc.page.margins || [12, 12, 12, 12];
@@ -827,7 +837,7 @@ export function addTableFrame(tsv, name, near = null, recipe = null) {
 }
 addEventListener('micro:to-composer', (e) => {
   const d = e.detail || {};
-  const p = d.spec ? addChartFrame(d.spec, d.name || 'chart', d.recipe) : d.canvas ? addCanvasFrame(d.canvas, d.name || 'plot') : null;
+  const p = d.drawlist ? addDrawlistFrame(d.drawlist, d.name || 'graphic') : d.spec ? addChartFrame(d.spec, d.name || 'chart', d.recipe) : d.canvas ? addCanvasFrame(d.canvas, d.name || 'plot') : null;
   if (d.tsv) addTableFrame(d.tsv, d.name || 'table', p, d.recipe);
 });
 
