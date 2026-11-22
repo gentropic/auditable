@@ -311,6 +311,8 @@ export async function showRecord(hit) {
   // overwrites the record that replaced it. (× and every new pick bump _recSeq.)
   const seq = ++_recSeq;
   const show = (...a) => { if (seq === _recSeq) showRecPanel(...a); };
+  // the picked record's position: what the composer's + label points at next
+  recordPosition(hit).then((p) => { if (p && p.every(Number.isFinite)) S.lastPoint = { at: p.slice(), t: Date.now() }; }, () => {});
   // a pick is a (layer, record) PAIR — resolve THAT layer's own docs, not the
   // active aliases: any visible layer is pickable
   const lid = hit.layer, rec = hit.rec;

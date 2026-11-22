@@ -715,17 +715,32 @@ registerKind('label', {
   draw(ctx, box, frame, env) {
     const c = frame.content || {}, size = +c.size || 7, pad = 0.8;
     const text = resolveFields(c.text != null ? c.text : (c.md || ''), env, frame);
-    let anc = null;
+    let anc = null, off = false;
     if (Array.isArray(c.at) && c.at.length === 3 && env.doc) {
       const v = subjectFrame(env, frame, hasProj);
-      if (v && hasProj(v)) { const p = worldToPage(v, c.at.map(Number)); if (p && p.inside) anc = p; }
+      if (v && hasProj(v)) {
+        const p = worldToPage(v, c.at.map(Number));
+        if (p && p.inside) anc = p;
+        else if (p) {
+          // the point is outside the picture: the leader stops at the picture's edge, toward it, with an arrowhead
+          const r = imageRect(v), cx = box[0] + box[2] / 2, cy = box[1] + box[3] / 2, dx = p.x - cx, dy = p.y - cy;
+          let t = 1;
+          for (const [d, lo, hi, o] of [[dx, r[0], r[0] + r[2], cx], [dy, r[1], r[1] + r[3], cy]]) if (d) { const tt = ((d > 0 ? hi : lo) - o) / d; if (tt > 0) t = Math.min(t, tt); }
+          if (t > 0 && t < 1) { anc = { x: cx + dx * t, y: cy + dy * t }; off = true; }
+        }
+      }
+    }
+    if (off) {
+      const a = Math.atan2(anc.y - (box[1] + box[3] / 2), anc.x - (box[0] + box[2] / 2)), L = 1.6;
+      ctx.fillStyle = c.color || INK; ctx.beginPath();
+      ctx.moveTo(anc.x, anc.y); ctx.lineTo(anc.x - L * Math.cos(a - 0.4), anc.y - L * Math.sin(a - 0.4)); ctx.lineTo(anc.x - L * Math.cos(a + 0.4), anc.y - L * Math.sin(a + 0.4)); ctx.closePath(); ctx.fill();
     }
     if (anc && !(anc.x >= box[0] && anc.x <= box[0] + box[2] && anc.y >= box[1] && anc.y <= box[1] + box[3])) {
       const ex = Math.max(box[0], Math.min(box[0] + box[2], anc.x)), ey = Math.max(box[1], Math.min(box[1] + box[3], anc.y));
       ctx.strokeStyle = c.color || INK; ctx.lineWidth = 0.2;
       ctx.beginPath(); ctx.moveTo(ex, ey); ctx.lineTo(anc.x, anc.y); ctx.stroke();
     }
-    if (anc) { ctx.fillStyle = c.color || INK; ctx.beginPath(); ctx.arc(anc.x, anc.y, 0.55, 0, Math.PI * 2); ctx.fill(); }
+    if (anc && !off) { ctx.fillStyle = c.color || INK; ctx.beginPath(); ctx.arc(anc.x, anc.y, 0.55, 0, Math.PI * 2); ctx.fill(); }
     ctx.save();
     ctx.beginPath(); ctx.rect(box[0], box[1], box[2], box[3]); ctx.clip();
     if (c.backing !== false) { ctx.fillStyle = 'rgba(255,255,255,0.85)'; ctx.fillRect(box[0], box[1], box[2], box[3]); }
@@ -2242,7 +2257,11 @@ function mountEditor(el, doc, opts = {}) {
     if (sel.some((x) => frameById(D, x).locked)) { if (f.locked) say('locked — unlock it to move it'); return; }
     startMove(e);
   });
-  overlay.addEventListener('dblclick', (e) => { const id = e.target.dataset && e.target.dataset.id; if (id && frameById(D, id).kind === 'text' && api._focusText) api._focusText(); });
+  overlay.addEventListener('dblclick', (e) => {
+    const id = e.target.dataset && e.target.dataset.id, f = id && frameById(D, id); if (!f) return;
+    if (opts.frameOpen && opts.frameOpen(f) === true) return;   // the host opens it (micro: edit a view in place)
+    if (f.kind === 'text' && api._focusText) api._focusText();
+  });
   overlay.addEventListener('contextmenu', (e) => {
     const id = e.target.dataset && e.target.dataset.id; if (!id) return;
     e.preventDefault();

@@ -403,7 +403,11 @@ export function mountEditor(el, doc, opts = {}) {
     if (sel.some((x) => frameById(D, x).locked)) { if (f.locked) say('locked — unlock it to move it'); return; }
     startMove(e);
   });
-  overlay.addEventListener('dblclick', (e) => { const id = e.target.dataset && e.target.dataset.id; if (id && frameById(D, id).kind === 'text' && api._focusText) api._focusText(); });
+  overlay.addEventListener('dblclick', (e) => {
+    const id = e.target.dataset && e.target.dataset.id, f = id && frameById(D, id); if (!f) return;
+    if (opts.frameOpen && opts.frameOpen(f) === true) return;   // the host opens it (micro: edit a view in place)
+    if (f.kind === 'text' && api._focusText) api._focusText();
+  });
   overlay.addEventListener('contextmenu', (e) => {
     const id = e.target.dataset && e.target.dataset.id; if (!id) return;
     e.preventDefault();

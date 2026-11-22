@@ -6464,6 +6464,71 @@ if (take()) {
   await p.close();
 }
 
+// ── §99: DRAWING-GRADE VIEWS — a view frame states its projection (meta.proj), so compo knows
+//     where any world point lands: coordinate ticks on its border print as text; a locked scale
+//     holds when the frame is resized; + label pins the picked record; a double-click edits the
+//     view in the 3D view and Done re-captures it. ──
+if (take()) {
+  const p = await mkPage('sm2world');
+  if (process.env.SM2_DUMP) await p.evaluate(() => { window.__dumpFig = true; });
+  const r = await p.evaluate(async () => {
+    const M_ = window._micro, out = {};
+    const rows = ['XC,YC,ZC,FE']; for (let j = 0; j < 20; j++) for (let i = 0; i < 30; i++) rows.push(`${512005 + i * 10},${7604005 + j * 10},605,${(20 + i).toFixed(1)}`);
+    const id = await M_.openBlob(new File([rows.join('\n') + '\n'], 'w.csv'), 'w.csv', 'replace');
+    await window.micro.setView({ look: 0, elevation: 90, ortho: true });
+    await new Promise((res) => setTimeout(res, 200));
+    const C = await import('/ext/compo/index.js');
+    const ed = M_.openComposer('world fig');
+    const f = M_.addViewFrame(ed);
+    const vf = () => ed.getDoc().frames.find((x) => x.id === f.id);
+    out.hasProj = C.hasProj(vf());
+    // the camera target lands at the frame's middle
+    const cw = window.micro.view(), pg = C.worldToPage(vf(), cw.target);
+    out.centre = pg && [+(pg.x - (f.box[0] + f.box[2] / 2)).toFixed(3), +(pg.y - (f.box[1] + f.box[3] / 2)).toFixed(3)];
+    // lock 1 : 1000 → 1 m per paper mm, whatever the frame's size
+    ed.select([f.id]); ed.render();
+    const inp = document.querySelector('.compo-side input.cmp-scale');
+    inp.value = '1000'; inp.dispatchEvent(new Event('change'));
+    const until = async (fn, ms = 8000) => { const t0 = performance.now(); while (performance.now() - t0 < ms) { const v = fn(); if (v) return v; await new Promise((res) => setTimeout(res, 50)); } return fn(); };
+    await until(() => Math.abs(C.frameWorldPerMm(vf()) - 1) < 1e-3);
+    out.wpm = +C.frameWorldPerMm(vf()).toFixed(4);
+    ed.update(f.id, (fr) => { fr.box[2] *= 0.6; fr.box[3] *= 0.6; });
+    await M_.refreshViews(M_.currentFigure());
+    out.wpmResized = +C.frameWorldPerMm(vf()).toFixed(4);
+    // ticks: the PDF carries coordinates
+    ed.update(f.id, (fr) => { fr.content.ticks = 'ticks'; });
+    out.ticks = C.worldTicks(vf()).map((t) => `${t.edge}:${t.axis}`).filter((v, i, a) => a.indexOf(v) === i).sort();
+    const bytes = await M_.figurePdfBytes(M_.currentFigure(), 72, { compress: false });
+    const s = new TextDecoder('latin1').decode(bytes);
+    out.pdfE = [...s.matchAll(/\((\d{3} \d{3}) E\) Tj/g)].length; out.pdfN = [...s.matchAll(/\((\d \d{3} \d{3}) N\) Tj/g)].length;
+    // + label at the picked record (record 0 sits at 512005, 7604005, 605)
+    await M_.showRecord({ layer: id, rec: 0, face: 7 });
+    await new Promise((res) => setTimeout(res, 300));
+    ed.select([f.id]); ed.render();
+    [...document.querySelectorAll('.compo-bar button')].find((b) => b.textContent === '+ label').click();
+    const lb = ed.selected()[0];
+    out.label = lb && { kind: lb.kind, at: lb.content.at, of: lb.content.of, onPage: !!C.worldToPage(vf(), lb.content.at) };
+    // double-click: edit in place, move the camera, Done re-captures
+    const before = JSON.stringify(vf().source.scene.camera);
+    document.querySelector(`.compo-fr[data-id="${f.id}"]`).dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    out.editing = !!document.querySelector('.cmp-editframe') && document.querySelector('.composer-win').style.display === 'none';
+    await window.micro.setView({ look: 0, elevation: 90, ortho: true, distance: window.micro.view().distance * 0.7 });
+    [...document.querySelectorAll('.cmp-editbar button')].find((b) => b.textContent === 'Done').click();
+    await until(() => !document.querySelector('.cmp-editframe'));
+    out.recaptured = JSON.stringify(vf().source.scene.camera) !== before;
+    out.back = await until(() => document.querySelector('.composer-win').style.display === '');
+    if (window.__dumpFig) { const png = await C.exportPNG(M_.currentFigure().doc, { dpi: 150 }); out.png = await new Promise((res) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.readAsDataURL(png); }); }
+    return out;
+  });
+  if (r.png) { const fs = await import('node:fs'); fs.writeFileSync(process.env.SM2_DUMP, Buffer.from(r.png.split(',')[1], 'base64')); }
+  chk(`WORLD: a view frame states its projection; the camera's target lands at its middle (${JSON.stringify(r.centre)})`, r.hasProj && r.centre && Math.abs(r.centre[0]) < 0.5 && Math.abs(r.centre[1]) < 0.5);
+  chk(`WORLD: a locked 1 : 1000 is 1 m per mm (${r.wpm}) and stays so at 60 % size (${r.wpmResized})`, Math.abs(r.wpm - 1) < 2e-3 && Math.abs(r.wpmResized - 1) < 2e-3);
+  chk(`WORLD: ticks name their coordinate (${r.ticks}); the PDF prints them (${r.pdfE} E, ${r.pdfN} N)`, r.ticks.includes('top:E') && r.ticks.includes('left:N') && r.pdfE > 1 && r.pdfN > 1);
+  chk(`WORLD: + label pins the picked record (${JSON.stringify(r.label)})`, r.label && r.label.kind === 'label' && JSON.stringify(r.label.at) === '[512005,7604005,605]' && r.label.of === 'view-1' && r.label.onPage);
+  chk(`WORLD: double-click edits the view in place (${r.editing}); Done re-captures it (${r.recaptured}) and the composer comes back (${r.back})`, r.editing && r.recaptured && r.back);
+  await p.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

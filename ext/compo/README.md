@@ -62,6 +62,14 @@ const bytes = await exportPDF(ed.getDoc(), { env: { evalField: (expr, vars) => v
 
 `registerKind(name, { label, draw(ctx, box, frame, env) })` adds one. The context is in **mm**, y down.
 
+## Views of 3D space
+
+An image frame that is a render can say how it maps world space: `content.meta.proj = { m, origin }`. `m` is the renderer's column-major viewProj at the frame's aspect, applied to (world − origin). Then:
+- `worldToPage(frame, [x, y, z])` → `{ x, y, inside }` in mm, and `pageToWorld(frame, x, y, ndcZ)` the other way;
+- **coordinate ticks:** `content.ticks = 'ticks' | 'grid'` (the inspector's **coords**). Each border names the coordinate it shows: 512 300 E, 7 604 000 N, 600 RL. Ticks are vectors at nice steps, drawn for orthographic views only. `worldTicks(frame)` lists them;
+- **labels** (kind `label`): `content.text` and `content.at = [x, y, z]`. The leader runs from the box to where the point lands in the view it refers to (`content.of`, else the nearest projected view). If the point is outside the picture, the leader stops at the picture's edge with an arrowhead toward it. **+ label** pins the host's `opts.labelPoint(view)`, else the view's middle. A kind with `overflow: true` is not clipped to its box.
+- `opts.frameOpen(f)` → true lets the host handle a double-click (micro edits the view in place).
+
 ## Fields
 
 Live text, filled in each time the page is drawn: text frames, and legend and table titles and notes.

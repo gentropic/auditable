@@ -36,7 +36,7 @@ const slug = (s) => (String(s).replace(/[^\w.-]+/g, '_').replace(/^_+|_+$/g, '')
 const hexRgb01 = (h) => { const m = /^#?([0-9a-f]{6})$/i.exec(h || ''); const n = m ? parseInt(m[1], 16) : 0; return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255]; };
 
 // ── the view: what a frame needs to know about the camera right now ──
-function viewMeta(pxH) {
+function viewMeta(pxH, canvas) {
   const st = S.cam.state, v = st.view;
   const meta = { ortho: !!st.ortho, zExag: st.zExag || 1 };
   if (v) {
@@ -46,6 +46,7 @@ function viewMeta(pxH) {
   // an orthographic view has ONE scale: its visible height (2·halfH, world units) over the image's
   // pixels. A perspective view has none — the scale bar says so rather than guess.
   if (st.ortho && st.halfH > 0) meta.worldPerPx = (2 * st.halfH) / pxH;
+  if (canvas && canvas._viewProj) meta.proj = { m: canvas._viewProj.map((v) => +(+v).toPrecision(9)), origin: S.frame ? S.frame.origin.slice() : [0, 0, 0] };
   meta.facts = viewFacts();
   return meta;
 }
@@ -113,7 +114,12 @@ const pxFor = (f, pxPerMm) => {
 function renderInto(f, pxPerMm, bg) {
   const [w, h] = pxFor(f, pxPerMm);
   if (bg) S.renderer.setBackground(hexRgb01(bg));
-  try { return { canvas: HK.renderViewCanvas(w, h), meta: viewMeta(h) }; } finally { if (bg) applyBg(); }
+  // a LOCKED scale (1 : content.scaleLock, world metres per paper metre): the orthographic view's
+  // height is set from the frame's — resizing the frame changes what it shows, not the scale
+  const st = S.cam.state, lock = +((f.content && f.content.scaleLock) || 0), r0 = st.radius;
+  if (lock > 0 && st.ortho) { st.radius = ((f.box[3] * lock) / 1000 / 2) / Math.tan(st.fovY / 2); S.cam.update(); }
+  try { const canvas = HK.renderViewCanvas(w, h); return { canvas, meta: viewMeta(h, canvas) }; }
+  finally { if (bg) applyBg(); if (st.radius !== r0) { st.radius = r0; S.cam.update(); } }
 }
 // a frame's own scene, put on the 3D view for the duration of fn, then the user's view back
 async function withScene(scene, fn) {
@@ -255,6 +261,58 @@ export async function openFigurePdf(blob, name) {
   return fig;
 }
 
+// ── a view frame's own inspector rows: its scale (shown, and lockable) ──
+function viewInspector(f, el) {
+  if (!isView(f) || !_ed) return;
+  const m = f.content.meta || {}, wpm = m.worldPerPx > 0 ? (m.worldPerPx * (f.content.height || 1)) / f.box[3] : 0;
+  const now = wpm > 0 ? Math.round(wpm * 1000) : null;
+  const inp = document.createElement('input'); inp.type = 'number'; inp.min = 1; inp.step = 'any'; inp.style.width = '80px';
+  inp.className = 'cmp-scale'; inp.value = f.content.scaleLock || ''; inp.placeholder = now ? String(now) : 'perspective';
+  inp.title = 'lock the scale: 1 : this many (orthographic views) — the frame then shows more or less when resized, never at another scale; empty = free';
+  inp.onkeydown = (e) => e.stopPropagation();
+  inp.onchange = async () => {
+    const v = +inp.value;
+    _ed.update(f.id, (fr) => { if (v > 0) fr.content.scaleLock = v; else delete fr.content.scaleLock; });
+    const fr = frameById(_ed.getDoc(), f.id); await rerender(fr, PREVIEW_PX_PER_MM); _ed.render();
+  };
+  const row = document.createElement('div'); row.className = 'row';
+  const lab = document.createElement('span'); lab.textContent = 'scale 1:';
+  const hint = document.createElement('span'); hint.className = 'hint'; hint.style.marginLeft = '4px';
+  hint.textContent = f.content.scaleLock ? 'locked' : m.ortho ? 'free' : 'perspective';
+  row.append(lab, inp, hint); el.append(row);
+}
+// ── double-click a view frame: work it in the 3D view, at the frame's shape; Done re-captures it ──
+let _editing = null;
+export function editViewInPlace(f) {
+  if (_editing || !_ed || !isView(f)) return;
+  const ed = _ed, id = f.id, mine = captureScene('__composer');
+  _editing = { id };
+  applyScene(f.source.scene);
+  const view = S.cv.parentElement, r = view.getBoundingClientRect(), aspect = f.box[2] / f.box[3];
+  const hgt = r.height, wid = Math.min(r.width, hgt * aspect), h2 = wid < hgt * aspect ? wid / aspect : hgt;
+  const frameEl = document.createElement('div'); frameEl.className = 'cmp-editframe';
+  frameEl.style.cssText = `position:absolute;left:${(r.width - wid) / 2}px;top:${(r.height - h2) / 2}px;width:${wid}px;height:${h2}px;box-shadow:0 0 0 9999px rgba(0,0,0,0.42);outline:1px dashed #fff;pointer-events:none;z-index:5`;
+  const bar = document.createElement('div'); bar.className = 'cmp-editbar';
+  bar.style.cssText = 'position:absolute;left:50%;top:8px;transform:translateX(-50%);z-index:6;display:flex;gap:6px;align-items:center;padding:4px 8px;background:var(--bg-panel, #222);border:1px solid var(--border);border-radius:4px';
+  const msg = document.createElement('span'); msg.textContent = `editing ${id} — navigate, section, filter; the frame shows what is inside the box`;
+  const done = document.createElement('button'); done.className = 'awin-btn btn-p'; done.textContent = 'Done';
+  const cancel = document.createElement('button'); cancel.className = 'awin-btn'; cancel.textContent = 'Cancel';
+  bar.append(msg, done, cancel);
+  view.append(frameEl, bar);
+  if (_win) _win.el.style.display = 'none';
+  const finish = async (keep) => {
+    frameEl.remove(); bar.remove(); _editing = null;
+    if (keep && _ed === ed && frameById(ed.getDoc(), id)) { ed.update(id, (fr) => viewFrameContent(fr)); afterFacts(ed, id); }
+    await applyScene(mine);
+    if (_win) _win.el.style.display = '';
+    $('#meta').textContent = keep ? `composer: ${id} re-captured` : 'composer: edit cancelled';
+  };
+  done.onclick = () => finish(true); cancel.onclick = () => finish(false);
+  _editing.finish = finish;
+  $('#meta').textContent = `composer: editing ${id} in the 3D view — Done re-captures it`;
+}
+export const viewEditState = () => _editing;
+
 // ── the window ──
 let _win = null, _ed = null, _fig = null, _saveT = 0;
 export function composerOpen() { return !!(_win && document.body.contains(_win.el)); }
@@ -334,6 +392,9 @@ export function openComposer(name) {
     ],
     frameMenu: (f, e) => frameMenu(f, e),
     frameBadge: (f) => staleOf(f),
+    labelPoint: () => (S.lastPoint && Date.now() - S.lastPoint.t < 10 * 60e3 ? S.lastPoint.at : null),
+    inspector: (f, el) => viewInspector(f, el),
+    frameOpen: (f) => { if (!isView(f)) return false; editViewInPlace(f); return true; },
     onStatus: (m) => { $('#meta').textContent = 'composer: ' + m; },
   });
   _fig = fig; fill();

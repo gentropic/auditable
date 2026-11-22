@@ -1754,6 +1754,7 @@ function renderViewCanvas(pw, ph) {
     do { res = edl.render(pw, ph, cam, () => renderer.draw(cam, opts), edlOpts); guard++; } while (!res.converged && guard < 4000);
     const out = document.createElement('canvas'); out.width = pw; out.height = ph;
     out.getContext('2d').drawImage(cv, 0, 0);
+    out._viewProj = Array.from(cam.state.viewProj);          // at THIS aspect: the composer's frame knows its projection
     return out;
   } finally {
     cv.width = bw; cv.height = bh; cam.setAspect(bw / bh);
