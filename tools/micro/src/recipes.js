@@ -27,7 +27,9 @@ import { openInputsDialog, openRoutineWindow } from './routine-ui.js';
 import { compoPage, writePages, addResourceFrame } from './composer.js';
 import { openValidation } from './validation.js';
 import { checkParams, runTool, tableTSV, toolDef } from './tools.js';
-import { newRunRecord, writeRecord, outputEntry, localDate } from './runrecord.js';
+import { newRunRecord, writeRecord, outputEntry, localDate, findBaseline, recordTable } from './runrecord.js';
+import { openRunsWindow, acceptRunAsk } from './runs-ui.js';
+import { evalScalarCheck, evalEveryCheck, compareTables, parseTSV, flatValues } from './checks.js';
 export { localDate };
 const $ = (s) => document.querySelector(s);
 
@@ -255,6 +257,15 @@ export async function expandSteps(steps, scope, tags, out) {
       }
       continue;
     }
+    if (st.check !== undefined || st.compare !== undefined) {   // judged at run time, over the results so far
+      const sub = { ...st };
+      if (typeof sub.check === 'string') sub.check = routineSubst(sub.check.replace(/\$\{/g, '\u0000'), scope).replace(/\u0000/g, '${');   // $row vars fill in; ${…} is not a macro here
+      if (sub.check && typeof sub.check === 'object') sub.check = { ...sub.check, in: routineSubst(String(sub.check.in || ''), scope) };
+      if (sub.compare) sub.compare = routineSubst(String(sub.compare), scope);
+      const base = recipeSlug(sub.as || (sub.compare ? `${sub.compare}-compare` : 'check'));
+      out.push({ ...sub, _slug: [base, ...tags].join('-') });
+      continue;
+    }
     if (st.recipe || st.tool) {
       const sub = routineSubst(st, scope);
       routineCheckStep(sub);
@@ -262,7 +273,7 @@ export async function expandSteps(steps, scope, tags, out) {
       out.push({ ...sub, _slug: [base, ...tags].join('-') });   // the slug carries every enclosing row
       continue;
     }
-    throw new Error('a step needs `recipe`, `tool`, `each`, `params`, or `guard`');
+    throw new Error('a step needs `recipe`, `tool`, `each`, `params`, `check`, `compare`, or `guard`');
   }
 }
 
@@ -305,6 +316,11 @@ export const routineOutPath = (P, slug) => `${routineOutDir(P)}/${(P.output && P
 // run tracker walks it live, and afterwards it stands as the run's summary.
 export function routineLineInfo(st, i, P) {
   if (st.guard) return { text: `${i + 1}. guard — stop if anything below already exists`, guard: true };
+  if (st.check !== undefined) {
+    const c = st.check, what = typeof c === 'string' ? c : `every row of ${c.in}: ${c.every}${c.against ? ' (against the baseline)' : ''}`;
+    return { text: `${i + 1}. check — ${what}${st.level === 'warn' ? '   (warn)' : ''}${st.say ? `   “${st.say}”` : ''}` };
+  }
+  if (st.compare !== undefined) return { text: `${i + 1}. compare ${st.compare} with the baseline run  →  ${routineOutPath(P, st._slug)}${st.tolerance != null ? `   (tolerance ${st.tolerance})` : ''}` };
   const rc = st.recipe ? S.recipes.find((x) => x.name === st.recipe) : null;
   const tool = st.recipe ? rc && rc.tool : st.tool;
   const label = st.recipe || (st.tool ? `${RECIPE_TOOLS[st.tool]} (inline)` : '(pick a recipe)');
@@ -370,10 +386,10 @@ export function openRoutineTracker(rname, steps, P) {
     },
     done(msg, actions) {
       cancelB.remove(); sum.textContent = msg; win.sub.textContent = '';
-      for (const [label, fn, title] of (actions || [])) {   // e.g. Retry / Resume after a stop
+      for (const [label, fn, title, keep] of (actions || [])) {   // e.g. Retry / Resume after a stop; keep: the tracker stays (Accept)
         const btn = document.createElement('button'); btn.className = 'awin-btn'; btn.textContent = label;
         if (title) btn.title = title;
-        btn.onclick = () => { win.el.remove(); fn(); };
+        btn.onclick = async () => { if (!keep) { win.el.remove(); fn(); return; } btn.disabled = true; const ok = await fn(); if (!ok) btn.disabled = false; else btn.textContent = 'accepted ✓'; };
         bar.insertBefore(btn, sum);
       }
     },
@@ -464,6 +480,27 @@ export async function runRoutine(r, opts = {}) {
   } else rec.events.push({ at: new Date().toISOString(), kind: opts.event || 'resume', step: (opts.from || 0) + 1 });
   if (opts.event === 'skip' && rec.steps[(opts.from || 1) - 1]) rec.steps[(opts.from || 1) - 1].status = 'skipped';
   const PR = { ...P, _runDir: rec.dir };
+  // RESULTS by step name (its `as`, and its full slug inside an each) — what checks read. A resume
+  // rebuilds the earlier steps' from the record. The BASELINE: the run this one is judged against.
+  const results = new Map();
+  const keep = (st, val) => { results.set(st._slug, val); if (st.as) results.set(String(st.as), val); };
+  for (let k = 0; k < (opts.from || 0); k++) {
+    const e = rec.steps[k], st0 = steps[k];
+    if (e && e.status === 'ok' && st0 && !st0.guard && e.values !== undefined) keep(st0, { values: e.values, table: await recordTable(e, parseTSV) });
+  }
+  if (rec.baseline === undefined) {
+    const b = await findBaseline(r.name, rec.dir);
+    rec.baseline = b ? { dir: b.dir, accepted: b.accepted, started: b.rec.started } : null;
+  }
+  let baseRec = null;
+  if (rec.baseline) { try { baseRec = JSON.parse(await (await (await resolveFileHandle(S.project.dir, `${rec.baseline.dir}/run.json`)).getFile()).text()); } catch { baseRec = null; } }
+  const prevEntry = (name) => baseRec && (baseRec.steps.find((e) => e.step === name) || baseRec.steps.find((e) => e.step && e.step.replace(/-.*/, '') === name && e.values));
+  const scalarScope = () => {
+    const o = {};
+    for (const [nm, v] of results) flatValues(nm, v.values, o);
+    if (baseRec) for (const e of baseRec.steps) if (e && e.values) { flatValues(`prev.${e.step}`, e.values, o); }
+    return o;
+  };
   const saveRec = () => writeRecord(rec).catch((e) => { $('#meta').textContent = `routine: the run record could not be written — ${e.message}`; });
   // output routing
   const outDir = routineOutDir(PR);
@@ -507,6 +544,60 @@ export async function runRoutine(r, opts = {}) {
       return;
     }
     if (st.guard) { tracker.state(idx, 'ok'); continue; }
+    if (st.check !== undefined || st.compare !== undefined) {
+      const t0c = Date.now(), level = st.level === 'warn' ? 'warn' : 'stop';
+      const entry = rec.steps[idx] = { n: idx + 1, step: st._slug, kind: st.check !== undefined ? 'check' : 'compare', level, say: st.say || null, status: 'running' };
+      tracker.state(idx, 'run');
+      try {
+        let res;
+        if (st.check !== undefined && typeof st.check === 'string') {
+          entry.expr = st.check;
+          res = evalScalarCheck(st.check, scalarScope());
+        } else if (st.check !== undefined) {
+          const c = st.check, src = results.get(String(c.in));
+          if (!src || !src.table) throw new Error(`check: no table from a step named “${c.in}” before this one`);
+          entry.expr = c.every; entry.in = c.in; entry.against = c.against || null;
+          const prevT = c.against ? (prevEntry(String(c.in)) ? await recordTable(prevEntry(String(c.in)), parseTSV) : null) : undefined;
+          res = evalEveryCheck(String(c.every), src.table, scalarScope(), prevT);
+        } else {
+          const src = results.get(String(st.compare));
+          if (!src || !src.table) throw new Error(`compare: no table from a step named “${st.compare}” before this one`);
+          const pe = prevEntry(String(st.compare)), prevT = pe ? await recordTable(pe, parseTSV) : null;
+          entry.in = st.compare;
+          if (!prevT) res = { status: 'not-evaluated', why: rec.baseline ? 'the baseline run has no such table' : 'no baseline run yet (accept a run, or run once more)' };
+          else {
+            const cmp = compareTables(src.table, prevT), path = outPath(st._slug), tsv = tableTSV(cmp);
+            const fh = await resolveFileHandle(S.project.dir, path, { create: true }); const w = await fh.createWritable(); await w.write(tsv); await w.close(); wrote++;
+            entry.outputs = [await outputEntry(path, tsv)];
+            keep(st, { values: {}, table: cmp });
+            res = { status: 'pass' };
+            if (st.tolerance != null) {                    // every value column's relative change within the tolerance
+              const tol = +st.tolerance, bad = [];
+              cmp.rows.forEach((row) => { if (row[row.length - 1] !== 'both') { bad.push(row.slice(0, cmp.key.length).join(' · ') + ' (one run only)'); return; } cmp.valCols.forEach((c) => { const v = row[cmp.columns.indexOf(`${c}_pct`)]; if (Number.isFinite(v) && Math.abs(v) > tol) bad.push(`${row.slice(0, cmp.key.length).join(' · ')}: ${c} ${(v * 100).toFixed(1)}%`); }); });
+              res = { status: bad.length ? 'fail' : 'pass', failing: bad.slice(0, 20), failingCount: bad.length, tolerance: tol };
+            }
+          }
+        }
+        Object.assign(entry, res, { ms: Date.now() - t0c });
+        const said = st.say ? `“${st.say}” — ` : '';
+        const why = res.status === 'fail' ? `${said}failed${res.failingCount ? ` (${res.failingCount} row${res.failingCount === 1 ? '' : 's'}: ${res.failing.slice(0, 3).join('; ')}${res.failingCount > 3 ? '…' : ''})` : res.observed ? ` (${Object.entries(res.observed).map(([k, v]) => `${k} = ${typeof v === 'number' ? +v.toPrecision(6) : v}`).join(', ')})` : ''}`
+          : res.status === 'not-evaluated' ? `${said}not evaluated — ${res.why || `blank: ${(res.blank || []).slice(0, 3).join('; ')}`}` : '';
+        if (res.status !== 'pass' && level === 'stop') throw new Error(why);
+        entry.status = res.status === 'pass' ? 'pass' : level === 'warn' ? `warn: ${res.status}` : res.status;
+        tracker.state(idx, 'ok', res.status === 'pass' ? '' : why); await saveRec();
+      } catch (e) {
+        tracker.state(idx, 'fail', e.message);
+        if (entry.status === 'running') entry.status = 'failed';
+        Object.assign(entry, { error: e.message, ms: Date.now() - t0c }); rec.status = 'failed'; await saveRec();
+        tracker.done(`stopped at step ${n} — a check`, [
+          ['Retry step', () => runRoutine(r, { from: idx, steps, books, record: rec, event: 'retry' }), 'judge again (after changing something)'],
+          ['Skip & continue', () => runRoutine(r, { from: idx + 1, steps, books, record: rec, event: 'skip' }), 'carry on without this check'],
+        ]);
+        $('#meta').textContent = `routine “${r.name}” STOPPED at step ${n} (${st._slug}) — ${e.message}`;
+        return;
+      }
+      continue;
+    }
     const merged = routineStepOp(st);
     const tool = merged.tool, n0 = n;
     let stepNote = '';
@@ -521,6 +612,7 @@ export async function runRoutine(r, opts = {}) {
         const w = await fh.createWritable(); await w.write(tsv); await w.close();
         wrote++;
         Object.assign(entry, { params: res.resolved, values: res.values, units: res.table.units, key: res.table.key, warnings: res.warnings });
+        keep(st, { values: res.values, table: res.table });
         entry.outputs.push(await outputEntry(outPath(st._slug), tsv));
         const emit = st.emit || (merged.params && merged.params.emit);
         if (emit) await resultToLayer(typeof emit === 'object' && emit.layer ? String(emit.layer) : `${r.name}/${st._slug}`, tsv);
@@ -592,7 +684,7 @@ export async function runRoutine(r, opts = {}) {
   // say what THIS run did — a resume must not claim the steps it skipped
   const ran = n - from;
   const line = `${ran} step${ran === 1 ? "" : "s"} run${from ? ` (${from} skipped)` : ""}${wrote || !bookLines.length ? `, ${wrote} report${wrote === 1 ? "" : "s"} → ${outDir}/` : ""}${bookLines.length ? `, ${bookLines.join(", ")}` : ""}`;
-  tracker.done(`${line} · record ${rec.dir}/run.json`);
+  tracker.done(`${line} · record ${rec.dir}/run.json`, [['Accept as baseline…', () => acceptRunAsk(rec.dir), 'the run the next runs of this routine compare with', true]]);
   $('#meta').textContent = `routine “${r.name}” — ${line}`;
 }
 
@@ -734,6 +826,6 @@ export function recipesMenuItems() {
       { label: 'Rename…', action: () => renameRecipe(r) },
       { label: 'Delete', action: () => deleteRecipe(r) },
     ],
-  })), { label: 'New routine…', action: () => openRoutineWindow(null) }];
+  })), { label: 'New routine…', action: () => openRoutineWindow(null) }, { label: 'Runs…', action: () => openRunsWindow() }];
 }
 

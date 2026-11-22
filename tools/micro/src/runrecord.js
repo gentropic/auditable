@@ -76,3 +76,45 @@ addEventListener('micro:layer-added', (e) => {
   if (!L) return;
   for (const f of layerFiles(L)) if (f.blob) sha256File(f.blob).catch(() => {});
 });
+
+// ── runs, baselines, acceptance ──
+// every run in the project: [{ dir, rec, accepted }] (newest first). A folder without a readable
+// run.json is skipped.
+export async function listRuns() {
+  const out = [];
+  let runs;
+  try { runs = await S.project.dir.getDirectoryHandle('runs'); } catch { return out; }
+  for await (const [name, h] of runs.entries()) {
+    if (h.kind !== 'directory') continue;
+    let rec = null, accepted = null;
+    try { rec = JSON.parse(await (await (await h.getFileHandle('run.json')).getFile()).text()); } catch { continue; }
+    try { accepted = JSON.parse(await (await (await h.getFileHandle('accepted.json')).getFile()).text()); } catch { /* not accepted */ }
+    out.push({ dir: `runs/${name}`, rec, accepted });
+  }
+  return out.sort((a, b) => String(b.rec.started).localeCompare(String(a.rec.started)));
+}
+
+// the run a new run compares against: the latest ACCEPTED run of the same routine, else its latest
+// successful one. null: none yet (checks against it are then "not evaluated").
+export async function findBaseline(routineName, excludeDir) {
+  const runs = (await listRuns()).filter((x) => x.rec.routine && x.rec.routine.name === routineName && x.dir !== excludeDir && x.rec.status === 'ok');
+  const acc = runs.filter((x) => x.accepted).sort((a, b) => String(b.accepted.at).localeCompare(String(a.accepted.at)));
+  const pick = acc[0] || runs[0] || null;
+  return pick ? { dir: pick.dir, rec: pick.rec, accepted: !!pick.accepted } : null;
+}
+
+// accept a run as the baseline: a SIDECAR beside run.json (the record itself stays as written, so
+// it can be signed as it stands). by: a typed name — there are no accounts.
+export async function acceptRun(dir, by, note = '') {
+  const fh = await resolveFileHandle(S.project.dir, `${dir}/accepted.json`, { create: true });
+  const body = { by: String(by || '').trim() || 'unnamed', at: new Date().toISOString(), note: String(note || '') };
+  const w = await fh.createWritable(); await w.write(JSON.stringify(body, null, 1) + '\n'); await w.close();
+  return body;
+}
+
+// a step's table from a record (the machine TSV it wrote, read back with its key)
+export async function recordTable(entry, parse) {
+  const o = entry && entry.outputs && entry.outputs.find((x) => /\.tsv$/i.test(x.path));
+  if (!o) return null;
+  try { return parse(await (await (await resolveFileHandle(S.project.dir, o.path)).getFile()).text(), entry.key); } catch { return null; }
+}

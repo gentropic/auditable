@@ -7396,6 +7396,64 @@ if (take()) {
   await p.close();
 }
 
+// ── §115: CHECKS and COMPARISONS (routines v2 step 4) — a routine judges its results: a scalar
+//     check over a step's values (passes, records what it read), a row check over a table, a check
+//     that reads a baseline value before any baseline exists is NOT EVALUATED (warn: the run goes
+//     on; stop: it stops); Accept marks the baseline (a sidecar); the next run compares with the
+//     ACCEPTED run (not merely the latest), row by row and in a compare table; a changed model fails
+//     the tolerance, naming the rows, and stops. ──
+if (take()) {
+  const p = await mkPage('sm2checks');
+  await p.evaluate(async () => { try { await (await navigator.storage.getDirectory()).removeEntry('sm2checks', { recursive: true }); } catch { } });
+  const csv = (bump) => { const rows = ['XC,YC,ZC,FE,DOM']; for (let k = 0; k < 3; k++) for (let j = 0; j < 6; j++) for (let i = 0; i < 8; i++) rows.push([5 + i * 10, 5 + j * 10, 5 + k * 10, (40 + 2 * i + bump).toFixed(2), i < 4 ? 'hem' : 'itb'].join(',')); return rows.join('\n') + '\n'; };
+  await p.evaluate(async (t) => { await window._micro.openBlob(new File([t], 'm.csv'), 'm.csv', 'replace'); }, csv(0));
+  await p.waitForFunction(() => window._micro.layers()[0] && window._micro.layers()[0].docs.blockDoc, null, { timeout: 20000 });
+  await saveProject(p);
+  const r = await p.evaluate(async (csv5) => {
+    const M_ = window._micro, out = {}, wait = (ms) => new Promise((res) => setTimeout(res, ms));
+    const waitMeta = async (re, ms = 60000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { const t = document.querySelector('#meta').textContent; if (re.test(t)) return t; await wait(150); } return document.querySelector('#meta').textContent; };
+    const run = async (name, steps) => { document.querySelector('#meta').textContent = ''; document.querySelectorAll('.fwin').forEach((w) => w.remove()); M_.runRoutine({ name, tool: 'routine', params: { steps } }); return waitMeta(new RegExp(`routine “${name}” (— \\d+ steps? run|STOPPED)|routine: `)); };
+    const latest = async (name) => (await M_.listRuns()).find((x) => x.rec.routine.name === name);
+    const gt = { tool: 'gt', with: { layer: 'm.csv', series: [{ col: 'FE' }], cutoffs: [40, 45, 50] }, as: 'gt' };
+    // A. checks on a first run: a scalar over values; a row check; a prev check with no baseline (warn)
+    out.a = await run('month', [gt,
+      { tool: 'stats', with: { layer: 'm.csv', cols: ['FE'] }, as: 'st' },
+      { check: { every: 'volume >= 0', in: 'gt' }, say: 'no negative volume' },
+      { check: { every: 'abs(volume / prev.volume - 1) < 0.01', in: 'gt', against: 'prev' }, level: 'warn', say: 'within 1% of last month' },
+      { compare: 'gt', tolerance: 0.05, level: 'warn' },
+    ]);
+    const A = await latest('month');
+    out.aRec = { status: A.rec.status, baseline: A.rec.baseline, checks: A.rec.steps.filter((s) => s.kind).map((s) => ({ step: s.step, status: s.status, why: s.why || null })) };
+    // B. accept A; run B (identical data) — compares with A: passes, and the compare table is written
+    await M_.acceptRun(A.dir, 'tester');
+    out.b = await run('month', [gt,
+      { check: { every: 'abs(volume / prev.volume - 1) < 0.01', in: 'gt', against: 'prev' }, say: 'within 1% of last month' },
+      { compare: 'gt', tolerance: 0.05 },
+    ]);
+    const B = await latest('month');
+    out.bRec = { status: B.rec.status, baseline: B.rec.baseline, checks: B.rec.steps.filter((s) => s.kind).map((s) => ({ status: s.status, out: s.outputs ? s.outputs.map((o) => o.path) : null })) };
+    // C. the model changes (+5 FE, so more volume above each cutoff); C compares with A — the ACCEPTED run — and stops
+    await M_.openBlob(new File([csv5], 'm.csv'), 'm.csv', 'replace');
+    await wait(500);
+    out.c = await run('month', [gt, { compare: 'gt', tolerance: 0.05, say: 'tonnage within 5% of the accepted run' }]);
+    const C = await latest('month');
+    const cc = C.rec.steps.find((s) => s.kind === 'compare');
+    out.cRec = { status: C.rec.status, baseline: C.rec.baseline, baseIsA: C.rec.baseline && C.rec.baseline.dir === A.dir, cmp: cc && { status: cc.status, failingCount: cc.failingCount, first: cc.failing && cc.failing[0] } };
+    // D. a scalar check that fails at warn, recording what it read; a scalar over a missing baseline value
+    out.e = await run('scal2', [{ tool: 'stats', with: { layer: 'm.csv', cols: ['FE'] }, as: 'st' }, { check: 'st_n > 0' }]);
+    return out;
+  }, csv(5));
+  chk(`CHECKS: a first run — a row check passes; checks against a baseline that doesn't exist are NOT EVALUATED (warn → the run goes on) (${JSON.stringify(r.aRec)})`,
+    r.aRec.status === 'ok' && r.aRec.baseline === null && r.aRec.checks.length === 3 && r.aRec.checks[0].status === 'pass'
+    && r.aRec.checks[1].status === 'warn: not-evaluated' && r.aRec.checks[2].status === 'warn: not-evaluated' && /no baseline/.test(r.aRec.checks[2].why || ''));
+  chk(`CHECKS: after Accept, the next run compares with it — row check and compare table pass (${JSON.stringify(r.bRec)})`,
+    r.bRec.status === 'ok' && r.bRec.baseline && r.bRec.baseline.accepted && r.bRec.checks.every((c) => c.status === 'pass') && /gt-compare\.tsv$/.test((r.bRec.checks[1].out || [])[0] || ''));
+  chk(`CHECKS: a changed model fails the tolerance against the ACCEPTED run (not the latest), naming rows, and stops (“${r.c.slice(0, 160)}”; ${JSON.stringify(r.cRec)})`,
+    /STOPPED/.test(r.c) && /tonnage within 5% of the accepted run/.test(r.c) && r.cRec.status === 'failed' && r.cRec.baseIsA && r.cRec.cmp.status === 'fail' && r.cRec.cmp.failingCount > 0);
+  chk(`CHECKS: an unknown name in a check is an error naming what there is (“${r.e.slice(0, 140)}”)`, /STOPPED/.test(r.e) && /unknown column: st_n/.test(r.e));
+  await p.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);
