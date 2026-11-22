@@ -6412,6 +6412,58 @@ if (take()) {
   await p.close();
 }
 
+// ── §98: FIGURES THAT KNOW THEIR DATA — the exported PDF carries its figure (an embedded
+//     .compo.json) and opens again in micro as an editable figure; a view frame recorded each
+//     layer's content hash, so a changed file reads "older data" and a missing one "data not
+//     loaded"; ↻ views renders it again and the badge goes. ──
+if (take()) {
+  const p = await mkPage('sm2stale');
+  const r = await p.evaluate(async () => {
+    const M_ = window._micro, out = {};
+    const csv = (k) => { const rows = ['XC,YC,ZC,FE']; for (let j = 0; j < 20; j++) for (let i = 0; i < 30; i++) rows.push(`${5 + i * 10},${5 + j * 10},5,${(k + i * 2).toFixed(1)}`); return new File([rows.join('\n') + '\n'], 'st.csv'); };
+    const until = async (fn, ms = 8000) => { const t0 = performance.now(); while (performance.now() - t0 < ms) { const v = fn(); if (v) return v; await new Promise((res) => setTimeout(res, 50)); } return fn(); };
+    await M_.openBlob(csv(20), 'st.csv', 'replace');
+    await window.micro.setView({ look: 0, elevation: 90, ortho: true });
+    await new Promise((res) => setTimeout(res, 200));
+    const ed = M_.openComposer('stale fig');
+    const f = M_.addViewFrame(ed);
+    ed.addFrame({ kind: 'text', box: [f.box[0], f.box[1] + f.box[3] + 2, 120, 6], content: { md: 'Figure {fig}. FE mean {mean:FE:.1f}' } });
+    await until(() => f.content.meta.facts.layers[0].sha);
+    out.fresh = M_.staleOf(f);
+    // the PDF carries the figure
+    const bytes = await M_.figurePdfBytes(M_.currentFigure(), 72);
+    const C = await import('/ext/compo/index.js');
+    const back = await C.figureFromPdf(bytes);
+    out.attached = back.doc && { title: back.doc.title, frames: back.doc.frames.length, name: back.name };
+    // a new estimate: same layer name, different bytes → "older data"
+    await M_.openBlob(csv(30), 'st.csv', 'replace');
+    const vf = () => M_.currentFigure().doc.frames.find((x) => x.id === f.id);
+    out.changed = await until(() => { const s = M_.staleOf(vf()); return s && s.text; });
+    out.badgeShown = await until(() => !!document.querySelector('.compo-fr .compo-badge'));
+    // ↻ views renders it again: the badge goes, the caption's statistic follows the new data
+    await M_.refreshViews(M_.currentFigure());
+    out.afterRefresh = M_.staleOf(vf());
+    out.meanAfter = vf().content.meta.facts.stats && vf().content.meta.facts.stats.FE && +vf().content.meta.facts.stats.FE.mean.toFixed(1);
+    // open the (older) PDF: a second figure, its view made from data that has since changed
+    await M_.openBlob(new File([bytes], 'stale_fig.pdf'), 'stale_fig.pdf', 'add');
+    const opened = M_.figures().find((x) => x.name === 'stale fig (2)');
+    out.opened = opened && { frames: opened.doc.frames.length, badge: (M_.staleOf(opened.doc.frames.find((x) => x.source && x.source.kind === 'view')) || {}).text, meta: document.querySelector('#meta').textContent };
+    // with the layer gone: "data not loaded"
+    await M_.openBlob(new File(['XC,YC,ZC,AU\n1,1,1,1\n2,2,2,2\n'], 'other.csv'), 'other.csv', 'replace');
+    out.missing = (M_.staleOf(vf()) || {}).text;
+    out.notPdf = await (async () => { await M_.openBlob(new File(['%PDF-1.4\n%%EOF\n'], 'plain.pdf'), 'plain.pdf', 'add'); return document.querySelector('#meta').textContent; })();
+    return out;
+  });
+  chk(`STALE: a fresh view frame has no badge (${JSON.stringify(r.fresh)})`, r.fresh === null);
+  chk(`STALE: the PDF carries its figure (${JSON.stringify(r.attached)})`, r.attached && r.attached.title === 'stale fig' && r.attached.frames === 2 && /\.compo\.json$/.test(r.attached.name));
+  chk(`STALE: a changed file reads "${r.changed}", and the badge shows on the page`, r.changed === 'older data' && r.badgeShown);
+  chk(`STALE: ↻ views renders it again — no badge (${JSON.stringify(r.afterRefresh)}), the statistic follows (mean ${r.meanAfter})`, r.afterRefresh === null && r.meanAfter === 59);
+  chk(`STALE: the older PDF opens as a figure, its view flagged (${JSON.stringify(r.opened)})`, r.opened && r.opened.frames === 2 && r.opened.badge === 'older data' && /made from data that isn't loaded or has changed/.test(r.opened.meta));
+  chk(`STALE: with the layer gone the view reads "${r.missing}"`, r.missing === 'data not loaded');
+  chk(`STALE: a PDF without a figure says so (“${r.notPdf}”)`, /no compo figure inside/.test(r.notPdf));
+  await p.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

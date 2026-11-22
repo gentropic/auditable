@@ -3,11 +3,8 @@
 // page opened with units:'mm' for PDF — one drawing path for all three. Font sizes are given in
 // points and converted. A host may register more kinds (registerKind).
 
-export const SANS = "'Barlow', 'Helvetica Neue', Helvetica, Arial, sans-serif";
-export const MONO = "'Space Mono', 'JetBrains Mono', Consolas, monospace";
-const PT = 25.4 / 72;                                      // mm per point
-const INK = '#1a1a1a';
-export const fontMm = (pt, { mono = false, bold = false } = {}) => `${bold ? 'bold ' : ''}${(pt * PT).toFixed(3)}px ${mono ? MONO : SANS}`;
+import { SANS, MONO, PT, INK, fontMm } from './type.js';
+export { SANS, MONO, fontMm };
 
 const KINDS = new Map();
 export function registerKind(kind, impl) { KINDS.set(kind, impl); }
@@ -15,6 +12,7 @@ export const kindOf = (k) => KINDS.get(k) || null;
 
 // ── fields live in fields.js; resolveFields is re-exported from here for the kinds' sake ──
 import { resolveFields, registerField, subjectFrame } from './fields.js';
+import { hasProj, worldToPage, drawTicks } from './world.js';
 export { resolveFields };
 
 // ── text: paragraphs (blank-line or newline separated), **bold** runs, word wrap to the box ──
@@ -81,6 +79,7 @@ registerKind('image', {
       ctx.fillStyle = '#e6e6e6'; ctx.fillRect(box[0], box[1], box[2], box[3]);
       ctx.fillStyle = '#888'; ctx.font = fontMm(8); ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillText(c.missing || 'image', box[0] + box[2] / 2, box[1] + box[3] / 2);
+      if (c.ticks && c.ticks !== 'off' && hasProj(frame) && iw && ih) drawTicks(ctx, frame, c.ticks);   // the coordinates are known without the picture
       return;
     }
     const fit = c.fit || 'contain';
@@ -94,6 +93,43 @@ registerKind('image', {
     // a PDF page takes JPEG bytes as they are (a photo-like 3D render: a fraction of the size)
     const src = ctx.acceptsImageData && frame._jpeg ? frame._jpeg : img;
     ctx.drawImage(src, x, y, w, h);
+    // a picture of 3D space (meta.proj) may wear its coordinates: ticks on the border, or a grid
+    if (c.ticks && c.ticks !== 'off' && hasProj(frame)) drawTicks(ctx, frame, c.ticks);
+  },
+});
+
+// ── label: text pinned to a WORLD point. The box holds the text, wherever you put it; a leader runs
+// to where content.at lands in the view it refers to (content.of, else the nearest view with a
+// projection) — so the label follows its point when the view is rendered again. ──
+registerKind('label', {
+  label: 'label',
+  overflow: true,                                          // the leader leaves the box: not clipped to it
+  draw(ctx, box, frame, env) {
+    const c = frame.content || {}, size = +c.size || 7, pad = 0.8;
+    const text = resolveFields(c.text != null ? c.text : (c.md || ''), env, frame);
+    let anc = null;
+    if (Array.isArray(c.at) && c.at.length === 3 && env.doc) {
+      const v = subjectFrame(env, frame, hasProj);
+      if (v && hasProj(v)) { const p = worldToPage(v, c.at.map(Number)); if (p && p.inside) anc = p; }
+    }
+    if (anc && !(anc.x >= box[0] && anc.x <= box[0] + box[2] && anc.y >= box[1] && anc.y <= box[1] + box[3])) {
+      const ex = Math.max(box[0], Math.min(box[0] + box[2], anc.x)), ey = Math.max(box[1], Math.min(box[1] + box[3], anc.y));
+      ctx.strokeStyle = c.color || INK; ctx.lineWidth = 0.2;
+      ctx.beginPath(); ctx.moveTo(ex, ey); ctx.lineTo(anc.x, anc.y); ctx.stroke();
+    }
+    if (anc) { ctx.fillStyle = c.color || INK; ctx.beginPath(); ctx.arc(anc.x, anc.y, 0.55, 0, Math.PI * 2); ctx.fill(); }
+    ctx.save();
+    ctx.beginPath(); ctx.rect(box[0], box[1], box[2], box[3]); ctx.clip();
+    if (c.backing !== false) { ctx.fillStyle = 'rgba(255,255,255,0.85)'; ctx.fillRect(box[0], box[1], box[2], box[3]); }
+    const { lines, lineHeight } = layoutText(ctx, text, box[2] - 2 * pad, { size });
+    ctx.fillStyle = c.color || INK; ctx.textBaseline = 'top'; ctx.textAlign = 'left';
+    let y = box[1] + pad;
+    for (const line of lines) {
+      let x = box[0] + pad;
+      for (const w of line) { ctx.font = fontMm(size, { bold: w.b }); ctx.fillText(w.t, x, y); x += w.w; }
+      y += lineHeight;
+    }
+    ctx.restore();
   },
 });
 

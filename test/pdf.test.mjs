@@ -6,7 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import zlib from 'node:zlib';
-import { PdfDocument, pageSize, PAGE_SIZES, mm, parseFont, textWidth, encodeWinAnsi, parseCssColor } from '../ext/pdf/index.js';
+import { PdfDocument, readAttachments, pageSize, PAGE_SIZES, mm, parseFont, textWidth, encodeWinAnsi, parseCssColor } from '../ext/pdf/index.js';
 
 const latin1 = (u8) => Buffer.from(u8).toString('latin1');
 const FIXED = new Date(Date.UTC(2026, 10, 22, 12, 0, 0));
@@ -183,4 +183,21 @@ test('documents: several pages share one font object; sizes in mm; units:"mm" co
   assert.equal(Math.round(PAGE_SIZES.Letter[0]), 612);
   assert.equal(mm(25.4), 72);
   assert.deepEqual(parseCssColor('#0f08'), { rgb: [0, 1, 0], a: 0x88 / 255 });
+});
+
+test('attachments: embedded files listed in the catalog (EmbeddedFiles + /AF), read back', async () => {
+  for (const compress of [true, false]) {
+    const d = new PdfDocument({ compress, created: '2026-01-01T00:00:00Z' });
+    d.addPage();
+    d.attach('figure.compo.json', JSON.stringify({ t: 'é → (1)' }), { mime: 'application/json', description: 'the figure' });
+    d.attach('(odd) a.txt', new Uint8Array([104, 105]), { mime: 'text/plain', relationship: 'Data' });
+    const bytes = await d.save(), s = new TextDecoder('latin1').decode(bytes);
+    assert.ok(s.includes('/EmbeddedFiles << /Names [(\\(odd\\) a.txt) '), 'listed, sorted by name');
+    assert.match(s, /\(\\\(odd\\\) a\.txt\) \d+ 0 R \(figure\.compo\.json\) \d+ 0 R\]/);
+    assert.match(s, /\/AF \[\d+ 0 R \d+ 0 R\]/);
+    assert.match(s, /\/AFRelationship \/Data/);
+    const at = await readAttachments(bytes);
+    assert.deepEqual(at.map((a) => [a.name, a.mime, a.description, new TextDecoder().decode(a.bytes)]),
+      [['figure.compo.json', 'application/json', 'the figure', '{"t":"é → (1)"}'], ['(odd) a.txt', 'text/plain', '', 'hi']]);
+  }
 });

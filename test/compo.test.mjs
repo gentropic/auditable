@@ -288,3 +288,26 @@ test('ids: auto <prefix>-n, renaming rewrites references, old names and {ref:} m
   assert.equal(d2.frames[0].id, 'plan-view'); assert.equal(d2.frames[0].name, undefined);
   assert.equal(d2.frames[1].content.md, 'see {fig@plan-view} at {scale@plan-view}');
 });
+
+test('world: a projected view maps world ↔ page; ticks name the coordinate each border shows; labels follow their point', async () => {
+  const C = await import('../ext/compo/src/main.js');
+  const m = [1 / 50, 0, 0, 0, 0, 1 / 40, 0, 0, 0, 0, -1 / 1000, 0, 0, 0, 0, 1];        // a plan: 100 × 80 m about the origin
+  const doc = createDocument();
+  const v = addFrame(doc, { id: 'plan', kind: 'image', box: [10, 10, 100, 80], content: { width: 1000, height: 800, ticks: 'ticks', meta: { ortho: true, proj: { m, origin: [512300, 7604000, 600] } } } });
+  assert.deepEqual(C.worldToPage(v, [512300, 7604000, 0]), { x: 60, y: 50, inside: true });
+  assert.deepEqual(C.pageToWorld(v, 110, 10).slice(0, 2), [512350, 7604040]);
+  const t = C.worldTicks(v);
+  assert.ok(t.filter((x) => x.edge === 'top').every((x) => x.axis === 'E') && t.filter((x) => x.edge === 'left').every((x) => x.axis === 'N'));
+  assert.ok(t.some((x) => x.edge === 'top' && x.value === 512300 && Math.abs(x.x - 60) < 1e-9));
+  assert.equal(C.fmtCoord(7604000, 20), '7 604 000');
+  // an N–S section looking east: northing along the bottom, RL up the side
+  const sec = addFrame(doc, { kind: 'image', box: [10, 100, 100, 80], content: { width: 1000, height: 800, meta: { proj: { m: [0, 0, -1 / 1000, 0, 1 / 50, 0, 0, 0, 0, 1 / 40, 0, 0, 0, 0, 0, 1], origin: [512300, 7604000, 600] } } } });
+  const ts = C.worldTicks(sec);
+  assert.ok(ts.filter((x) => x.edge === 'bottom').every((x) => x.axis === 'N') && ts.filter((x) => x.edge === 'left').every((x) => x.axis === 'RL') && ts.length > 0);
+  assert.equal(C.worldTicks({ ...v, content: { ...v.content, meta: { proj: { m: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, -1, -1, 0, 0, -0.2, 0], origin: [0, 0, 0] } } } }).length, 0);   // perspective: none
+  // a label: its leader ends where the point lands — and moves when the view does
+  addFrame(doc, { id: 'lbl', kind: 'label', box: [80, 15, 25, 6], content: { text: 'DH-07', at: [512310, 7604010, 600], of: 'plan' } });
+  const bytes = await exportPDF(doc, { compress: false, source: false });
+  const s = new TextDecoder('latin1').decode(bytes);
+  assert.ok(s.includes('(DH-07) Tj') && s.includes('(512 300 E) Tj') && s.includes('(7 604 000 N) Tj'));
+});

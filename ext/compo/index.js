@@ -324,6 +324,15 @@ function snapResize(doc, box, [hx, hy], { ignore = [], tol = 1.5, onlyX = false 
   return { box: out, guides };
 }
 
+// ── src/type.js ──
+
+// type: the page's fonts, sized in points on a millimetre context (a leaf: kinds and world both use it)
+const SANS = "'Barlow', 'Helvetica Neue', Helvetica, Arial, sans-serif";
+const MONO = "'Space Mono', 'JetBrains Mono', Consolas, monospace";
+const PT = 25.4 / 72;                                      // mm per point
+const INK = '#1a1a1a';
+const fontMm = (pt, { mono = false, bold = false } = {}) => `${bold ? 'bold ' : ''}${(pt * PT).toFixed(3)}px ${mono ? MONO : SANS}`;
+
 // ── src/fields.js ──
 
 // FIELDS — the live bits of text on a page. A caption says `{fig}`, `{page}`, `{date:DD/MM/YYYY}`,
@@ -456,6 +465,150 @@ function resolveFields(src, env = {}, frame = null) {
   });
 }
 
+// ── src/world.js ──
+
+// WORLD — an image frame that is a picture of 3D space (a host's render) can say how:
+//
+//   content.meta.proj = { m: [16 numbers, column-major: (world − origin) → clip space], origin: [x, y, z] }
+//
+// Then compo knows where any world point lands on the page, and which world coordinate any point
+// of the picture shows. That gives:
+// - coordinate ticks (or a grid) on the frame's border, as vectors: "512 300 E", "630 RL";
+// - labels pinned to a world point (a hole, a callout): the leader follows the point when the
+//   view is rendered again.
+// The matrix is the renderer's own viewProj at the frame's aspect, so vertical exaggeration and
+// a perspective camera come along for free (ticks are drawn only for an orthographic view,
+// where a border point has one coordinate).
+
+
+const hasProj = (f) => !!(f && f.content && f.content.meta && f.content.meta.proj && Array.isArray(f.content.meta.proj.m) && f.content.meta.proj.m.length === 16);
+const isOrthoProj = (m) => Math.abs(m[3]) + Math.abs(m[7]) + Math.abs(m[11]) < 1e-9;
+
+// the picture's rect on the page (the image kind's fit), mm
+function imageRect(frame) {
+  const c = frame.content || {}, b = frame.box, img = frame._img;
+  const iw = c.width || (img && img.width), ih = c.height || (img && img.height);
+  if (!iw || !ih || c.fit === 'fill') return [b[0], b[1], b[2], b[3]];
+  const k = c.fit === 'cover' ? Math.max(b[2] / iw, b[3] / ih) : Math.min(b[2] / iw, b[3] / ih);
+  const w = iw * k, h = ih * k;
+  return [b[0] + (b[2] - w) / 2, b[1] + (b[3] - h) / 2, w, h];
+}
+const mul4 = (m, v) => [0, 1, 2, 3].map((r) => m[r] * v[0] + m[4 + r] * v[1] + m[8 + r] * v[2] + m[12 + r] * v[3]);
+function inv4(m) {
+  const a = m, inv = new Array(16);
+  inv[0] = a[5] * a[10] * a[15] - a[5] * a[11] * a[14] - a[9] * a[6] * a[15] + a[9] * a[7] * a[14] + a[13] * a[6] * a[11] - a[13] * a[7] * a[10];
+  inv[4] = -a[4] * a[10] * a[15] + a[4] * a[11] * a[14] + a[8] * a[6] * a[15] - a[8] * a[7] * a[14] - a[12] * a[6] * a[11] + a[12] * a[7] * a[10];
+  inv[8] = a[4] * a[9] * a[15] - a[4] * a[11] * a[13] - a[8] * a[5] * a[15] + a[8] * a[7] * a[13] + a[12] * a[5] * a[11] - a[12] * a[7] * a[9];
+  inv[12] = -a[4] * a[9] * a[14] + a[4] * a[10] * a[13] + a[8] * a[5] * a[14] - a[8] * a[6] * a[13] - a[12] * a[5] * a[10] + a[12] * a[6] * a[9];
+  inv[1] = -a[1] * a[10] * a[15] + a[1] * a[11] * a[14] + a[9] * a[2] * a[15] - a[9] * a[3] * a[14] - a[13] * a[2] * a[11] + a[13] * a[3] * a[10];
+  inv[5] = a[0] * a[10] * a[15] - a[0] * a[11] * a[14] - a[8] * a[2] * a[15] + a[8] * a[3] * a[14] + a[12] * a[2] * a[11] - a[12] * a[3] * a[10];
+  inv[9] = -a[0] * a[9] * a[15] + a[0] * a[11] * a[13] + a[8] * a[1] * a[15] - a[8] * a[3] * a[13] - a[12] * a[1] * a[11] + a[12] * a[3] * a[9];
+  inv[13] = a[0] * a[9] * a[14] - a[0] * a[10] * a[13] - a[8] * a[1] * a[14] + a[8] * a[2] * a[13] + a[12] * a[1] * a[10] - a[12] * a[2] * a[9];
+  inv[2] = a[1] * a[6] * a[15] - a[1] * a[7] * a[14] - a[5] * a[2] * a[15] + a[5] * a[3] * a[14] + a[13] * a[2] * a[7] - a[13] * a[3] * a[6];
+  inv[6] = -a[0] * a[6] * a[15] + a[0] * a[7] * a[14] + a[4] * a[2] * a[15] - a[4] * a[3] * a[14] - a[12] * a[2] * a[7] + a[12] * a[3] * a[6];
+  inv[10] = a[0] * a[5] * a[15] - a[0] * a[7] * a[13] - a[4] * a[1] * a[15] + a[4] * a[3] * a[13] + a[12] * a[1] * a[7] - a[12] * a[3] * a[5];
+  inv[14] = -a[0] * a[5] * a[14] + a[0] * a[6] * a[13] + a[4] * a[1] * a[14] - a[4] * a[2] * a[13] - a[12] * a[1] * a[6] + a[12] * a[2] * a[5];
+  inv[3] = -a[1] * a[6] * a[11] + a[1] * a[7] * a[10] + a[5] * a[2] * a[11] - a[5] * a[3] * a[10] - a[9] * a[2] * a[7] + a[9] * a[3] * a[6];
+  inv[7] = a[0] * a[6] * a[11] - a[0] * a[7] * a[10] - a[4] * a[2] * a[11] + a[4] * a[3] * a[10] + a[8] * a[2] * a[7] - a[8] * a[3] * a[6];
+  inv[11] = -a[0] * a[5] * a[11] + a[0] * a[7] * a[9] + a[4] * a[1] * a[11] - a[4] * a[3] * a[9] - a[8] * a[1] * a[7] + a[8] * a[3] * a[5];
+  inv[15] = a[0] * a[5] * a[10] - a[0] * a[6] * a[9] - a[4] * a[1] * a[10] + a[4] * a[2] * a[9] + a[8] * a[1] * a[6] - a[8] * a[2] * a[5];
+  const det = a[0] * inv[0] + a[1] * inv[4] + a[2] * inv[8] + a[3] * inv[12];
+  if (!det) return null;
+  return inv.map((v) => v / det);
+}
+const _inv = new WeakMap();
+const invOf = (P) => { let i = _inv.get(P); if (!i) { i = inv4(P.m); _inv.set(P, i); } return i; };
+
+// a world point → { x, y } on the page (mm) and whether it is inside the picture; null behind the eye
+function worldToPage(frame, p) {
+  const P = frame.content.meta.proj, o = P.origin || [0, 0, 0];
+  const c = mul4(P.m, [p[0] - o[0], p[1] - o[1], p[2] - o[2], 1]);
+  if (!(c[3] > 1e-12)) return null;
+  const nx = c[0] / c[3], ny = c[1] / c[3], r = imageRect(frame);
+  return { x: r[0] + ((nx + 1) / 2) * r[2], y: r[1] + ((1 - ny) / 2) * r[3], inside: Math.abs(nx) <= 1 && Math.abs(ny) <= 1 };
+}
+// a page point (mm) → the world point it shows, at depth ndcZ (−1 near … 1 far)
+function pageToWorld(frame, x, y, ndcZ = 0) {
+  const P = frame.content.meta.proj, o = P.origin || [0, 0, 0], inv = invOf(P); if (!inv) return null;
+  const r = imageRect(frame), nx = ((x - r[0]) / r[2]) * 2 - 1, ny = 1 - ((y - r[1]) / r[3]) * 2;
+  const v = mul4(inv, [nx, ny, ndcZ, 1]);
+  return [v[0] / v[3] + o[0], v[1] / v[3] + o[1], v[2] / v[3] + o[2]];
+}
+
+// ── coordinate ticks on an orthographic view's border ──
+const AXIS = ['E', 'N', 'RL'];
+const NICE = [1, 2, 2.5, 5, 10];
+function niceStep(raw) {
+  if (!(raw > 0)) return 1;
+  const p = Math.pow(10, Math.floor(Math.log10(raw))), f = raw / p;
+  return NICE.find((n) => n >= f - 1e-9) * p;
+}
+function fmtCoord(v, step) {
+  const dec = step >= 1 ? 0 : Math.min(3, Math.ceil(-Math.log10(step) - 1e-9));
+  const s = Math.abs(v).toFixed(dec), [ip, fp] = s.split('.');
+  return (v < 0 ? '−' : '') + ip.replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + (fp ? '.' + fp : '');
+}
+// the ticks of one view frame: [{ edge, axis, value, x, y }] — what drawTicks draws, for tests and hosts
+function worldTicks(frame, { spacing = 18 } = {}) {
+  if (!hasProj(frame) || !isOrthoProj(frame.content.meta.proj.m)) return [];
+  const r = imageRect(frame), b = frame.box;
+  const x0 = Math.max(r[0], b[0]), y0 = Math.max(r[1], b[1]), x1 = Math.min(r[0] + r[2], b[0] + b[2]), y1 = Math.min(r[1] + r[3], b[1] + b[3]);
+  if (!(x1 > x0 && y1 > y0)) return [];
+  const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2, n0 = pageToWorld(frame, cx, cy, -1), n1 = pageToWorld(frame, cx, cy, 1);
+  if (!n0 || !n1) return [];
+  const dl = Math.hypot(n1[0] - n0[0], n1[1] - n0[1], n1[2] - n0[2]) || 1, dir = [0, 1, 2].map((i) => (n1[i] - n0[i]) / dl);
+  const edges = [['top', [x0, y0], [x1, y0]], ['bottom', [x0, y1], [x1, y1]], ['left', [x0, y0], [x0, y1]], ['right', [x1, y0], [x1, y1]]];
+  const out = [];
+  for (const [edge, a, bb] of edges) {
+    const wa = pageToWorld(frame, a[0], a[1]), wb = pageToWorld(frame, bb[0], bb[1]);
+    const e = [0, 1, 2].map((i) => wb[i] - wa[i]), el = Math.hypot(...e) || 1;
+    // the coordinate this edge shows: constant along the view direction, changing most along the edge
+    let ax = -1, best = 0;
+    for (let i = 0; i < 3; i++) if (Math.abs(dir[i]) < 0.3 && Math.abs(e[i]) / el > 0.5 && Math.abs(e[i]) > best) { best = Math.abs(e[i]); ax = i; }
+    if (ax < 0) continue;
+    const lenMm = Math.hypot(bb[0] - a[0], bb[1] - a[1]), step = niceStep(Math.abs(e[ax]) / Math.max(1.5, lenMm / spacing));
+    const lo = Math.min(wa[ax], wb[ax]), hi = Math.max(wa[ax], wb[ax]);
+    for (let v = Math.ceil(lo / step - 1e-9) * step; v <= hi + 1e-9; v += step) {
+      const t = (v - wa[ax]) / e[ax];
+      if (t < 0.02 || t > 0.98) continue;                  // not in the corners
+      out.push({ edge, axis: AXIS[ax], ai: ax, value: +v.toFixed(9), step, x: a[0] + t * (bb[0] - a[0]), y: a[1] + t * (bb[1] - a[1]) });
+    }
+  }
+  return out;
+}
+function drawTicks(ctx, frame, mode = 'ticks') {
+  const ticks = worldTicks(frame); if (!ticks.length) return;
+  const size = 5.5, tl = 1.6;
+  ctx.save();
+  ctx.lineWidth = 0.18; ctx.strokeStyle = '#1a1a1a';
+  if (mode === 'grid') {                                   // lines across: a value on one edge to the same value on the opposite edge
+    ctx.save(); ctx.strokeStyle = 'rgba(26,26,26,0.35)'; ctx.lineWidth = 0.12;
+    for (const [e1, e2] of [['top', 'bottom'], ['left', 'right']]) for (const t of ticks.filter((x) => x.edge === e1)) {
+      const u = ticks.find((x) => x.edge === e2 && x.axis === t.axis && Math.abs(x.value - t.value) < t.step * 1e-6);
+      if (u) { ctx.beginPath(); ctx.moveTo(t.x, t.y); ctx.lineTo(u.x, u.y); ctx.stroke(); }
+    }
+    ctx.restore();
+  }
+  ctx.font = fontMm(size); ctx.fillStyle = '#1a1a1a';
+  for (const t of ticks) {
+    const txt = `${fmtCoord(t.value, t.step)} ${t.axis}`, inward = { top: [0, 1], bottom: [0, -1], left: [1, 0], right: [-1, 0] }[t.edge];
+    ctx.beginPath(); ctx.moveTo(t.x, t.y); ctx.lineTo(t.x + inward[0] * tl, t.y + inward[1] * tl); ctx.stroke();
+    const w = ctx.measureText(txt).width, hh = size * 25.4 / 72;
+    ctx.save();
+    ctx.translate(t.x + inward[0] * (tl + 0.4), t.y + inward[1] * (tl + 0.4));
+    if (t.edge === 'left' || t.edge === 'right') ctx.rotate(-Math.PI / 2);
+    // the label sits inward of its tick, centred on it, on a light backing. Rotated −90° on the
+    // side edges (reading upward), local +y points into the picture on the left edge, out of it
+    // on the right — so the left and top labels hang below y = 0, the right and bottom ones above.
+    const y0 = t.edge === 'top' || t.edge === 'left' ? 0 : -hh * 1.15;
+    ctx.fillStyle = 'rgba(255,255,255,0.8)'; ctx.fillRect(-w / 2 - 0.4, y0, w + 0.8, hh * 1.15);
+    ctx.fillStyle = '#1a1a1a'; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    ctx.fillText(txt, 0, y0 + 0.1 * hh);
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
 // ── src/kinds.js ──
 
 // Frame KINDS — each a small adapter that draws finished content into its box. The context is in
@@ -463,11 +616,6 @@ function resolveFields(src, env = {}, frame = null) {
 // page opened with units:'mm' for PDF — one drawing path for all three. Font sizes are given in
 // points and converted. A host may register more kinds (registerKind).
 
-const SANS = "'Barlow', 'Helvetica Neue', Helvetica, Arial, sans-serif";
-const MONO = "'Space Mono', 'JetBrains Mono', Consolas, monospace";
-const PT = 25.4 / 72;                                      // mm per point
-const INK = '#1a1a1a';
-const fontMm = (pt, { mono = false, bold = false } = {}) => `${bold ? 'bold ' : ''}${(pt * PT).toFixed(3)}px ${mono ? MONO : SANS}`;
 
 const KINDS = new Map();
 function registerKind(kind, impl) { KINDS.set(kind, impl); }
@@ -539,6 +687,7 @@ registerKind('image', {
       ctx.fillStyle = '#e6e6e6'; ctx.fillRect(box[0], box[1], box[2], box[3]);
       ctx.fillStyle = '#888'; ctx.font = fontMm(8); ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillText(c.missing || 'image', box[0] + box[2] / 2, box[1] + box[3] / 2);
+      if (c.ticks && c.ticks !== 'off' && hasProj(frame) && iw && ih) drawTicks(ctx, frame, c.ticks);   // the coordinates are known without the picture
       return;
     }
     const fit = c.fit || 'contain';
@@ -552,6 +701,43 @@ registerKind('image', {
     // a PDF page takes JPEG bytes as they are (a photo-like 3D render: a fraction of the size)
     const src = ctx.acceptsImageData && frame._jpeg ? frame._jpeg : img;
     ctx.drawImage(src, x, y, w, h);
+    // a picture of 3D space (meta.proj) may wear its coordinates: ticks on the border, or a grid
+    if (c.ticks && c.ticks !== 'off' && hasProj(frame)) drawTicks(ctx, frame, c.ticks);
+  },
+});
+
+// ── label: text pinned to a WORLD point. The box holds the text, wherever you put it; a leader runs
+// to where content.at lands in the view it refers to (content.of, else the nearest view with a
+// projection) — so the label follows its point when the view is rendered again. ──
+registerKind('label', {
+  label: 'label',
+  overflow: true,                                          // the leader leaves the box: not clipped to it
+  draw(ctx, box, frame, env) {
+    const c = frame.content || {}, size = +c.size || 7, pad = 0.8;
+    const text = resolveFields(c.text != null ? c.text : (c.md || ''), env, frame);
+    let anc = null;
+    if (Array.isArray(c.at) && c.at.length === 3 && env.doc) {
+      const v = subjectFrame(env, frame, hasProj);
+      if (v && hasProj(v)) { const p = worldToPage(v, c.at.map(Number)); if (p && p.inside) anc = p; }
+    }
+    if (anc && !(anc.x >= box[0] && anc.x <= box[0] + box[2] && anc.y >= box[1] && anc.y <= box[1] + box[3])) {
+      const ex = Math.max(box[0], Math.min(box[0] + box[2], anc.x)), ey = Math.max(box[1], Math.min(box[1] + box[3], anc.y));
+      ctx.strokeStyle = c.color || INK; ctx.lineWidth = 0.2;
+      ctx.beginPath(); ctx.moveTo(ex, ey); ctx.lineTo(anc.x, anc.y); ctx.stroke();
+    }
+    if (anc) { ctx.fillStyle = c.color || INK; ctx.beginPath(); ctx.arc(anc.x, anc.y, 0.55, 0, Math.PI * 2); ctx.fill(); }
+    ctx.save();
+    ctx.beginPath(); ctx.rect(box[0], box[1], box[2], box[3]); ctx.clip();
+    if (c.backing !== false) { ctx.fillStyle = 'rgba(255,255,255,0.85)'; ctx.fillRect(box[0], box[1], box[2], box[3]); }
+    const { lines, lineHeight } = layoutText(ctx, text, box[2] - 2 * pad, { size });
+    ctx.fillStyle = c.color || INK; ctx.textBaseline = 'top'; ctx.textAlign = 'left';
+    let y = box[1] + pad;
+    for (const line of lines) {
+      let x = box[0] + pad;
+      for (const w of line) { ctx.font = fontMm(size, { bold: w.b }); ctx.fillText(w.t, x, y); x += w.w; }
+      y += lineHeight;
+    }
+    ctx.restore();
   },
 });
 
@@ -1353,6 +1539,15 @@ class PdfDocument {
     this._gsKeys = [];
     this._imgs = [];                                       // { name, w, h, rgb, alpha, jpeg, smooth }
     this._imgCache = new WeakMap();
+    this._files = [];                                      // attachments: { name, bytes, mime, description, relationship }
+  }
+  // attach a file to the document (PDF 2.0 / PDF/A-3 style: an embedded file, listed in the
+  // catalog's EmbeddedFiles and /AF). data: a string (UTF-8) or bytes. relationship: Source,
+  // Data, Alternative, Supplement or Unspecified (default Source — what the page was made from).
+  attach(name, data, { mime = 'application/octet-stream', description = '', relationship = 'Source' } = {}) {
+    const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data instanceof Uint8Array ? data : new Uint8Array(data);
+    this._files.push({ name: String(name), bytes, mime, description, relationship });
+    return this;
   }
   // addPage() → A4 portrait · addPage('A3', 'landscape') · addPage([w, h]) in mm · addPage({ width, height }) in points
   addPage(size = 'A4', orientation = null, { units = 'pt' } = {}) {
@@ -1444,7 +1639,18 @@ class PdfDocument {
       pageIds.push(add({ dict: `<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 ${num(p.width)} ${num(p.height)}] /Resources << ${res.join(' ')} >> /Contents ${cid} 0 R >>` }));
     }
     objs[pagesId - 1] = { dict: `<< /Type /Pages /Kids [${pageIds.map((i) => `${i} 0 R`).join(' ')}] /Count ${pageIds.length} >>` };
-    objs[catalogId - 1] = { dict: `<< /Type /Catalog /Pages ${pagesId} 0 R >>` };
+    // attachments: an EmbeddedFile stream + a file spec each; the catalog lists them (sorted by name)
+    const fileSpecs = [];
+    for (const f of this._files) {
+      const mimeName = f.mime.replace(/[^\w.+-]/g, (c) => '#' + c.charCodeAt(0).toString(16).padStart(2, '0'));
+      const st = await stream(`<< /Type /EmbeddedFile /Subtype /${mimeName} /Params << /Size ${f.bytes.length} >>`, f.bytes);
+      const eid = add({ dict: st.dict + ' >>', bytes: st.bytes });
+      const sid = add({ dict: `<< /Type /Filespec /F ${textString(f.name)} /UF ${textString(f.name)}${f.description ? ` /Desc ${textString(f.description)}` : ''} /EF << /F ${eid} 0 R /UF ${eid} 0 R >> /AFRelationship /${f.relationship} >>` });
+      fileSpecs.push({ name: f.name, id: sid });
+    }
+    fileSpecs.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    const names = fileSpecs.length ? ` /Names << /EmbeddedFiles << /Names [${fileSpecs.map((f) => `${textString(f.name)} ${f.id} 0 R`).join(' ')}] >> >> /AF [${fileSpecs.map((f) => `${f.id} 0 R`).join(' ')}]` : '';
+    objs[catalogId - 1] = { dict: `<< /Type /Catalog /Pages ${pagesId} 0 R${names} >>` };
     const o = this.opts, info = [];
     for (const [k, v] of [['Title', o.title], ['Author', o.author], ['Subject', o.subject], ['Keywords', o.keywords], ['Creator', o.creator]]) if (v) info.push(`/${k} ${textString(v)}`);
     info.push(`/Producer ${textString('@gcu/pdf')}`);
@@ -1490,6 +1696,39 @@ function pixelsOf(src) {
   } catch { return null; }
 }
 
+// ── reading attachments back: enough of a PDF reader for files that keep their objects in the
+// open (this writer's, and most simple PDFs; not object streams or encrypted files). Returns
+// [{ name, bytes, mime, description }]. ──
+async function readAttachments(pdfBytes) {
+  const u8 = pdfBytes instanceof Uint8Array ? pdfBytes : new Uint8Array(pdfBytes);
+  let text = ''; for (let i = 0; i < u8.length; i += 65536) text += String.fromCharCode.apply(null, u8.subarray(i, i + 65536));
+  const objAt = new Map();                                 // object number → offset of "n 0 obj" (the last one wins: incremental updates)
+  for (const m of text.matchAll(/(?:^|[\r\n\s])(\d+)\s+0\s+obj\b/g)) objAt.set(+m[1], m.index + m[0].length);
+  const dictOf = (n) => { const at = objAt.get(n); if (at == null) return null; const end = text.indexOf('endobj', at); return text.slice(at, end < 0 ? undefined : end); };
+  const strOf = (src) => {                                  // a literal (…) or hex <…> string → JS string
+    if (!src) return '';
+    if (src[0] === '<') { const hex = src.slice(1, -1).replace(/\s/g, ''); const b = []; for (let i = 0; i < hex.length; i += 2) b.push(parseInt(hex.slice(i, i + 2), 16)); if (b[0] === 0xfe && b[1] === 0xff) { let s2 = ''; for (let i = 2; i + 1 < b.length; i += 2) s2 += String.fromCharCode((b[i] << 8) | b[i + 1]); return s2; } return String.fromCharCode(...b); }
+    return src.slice(1, -1).replace(/\\([nrtbf()\\]|[0-7]{1,3})/g, (_, c) => ({ n: '\n', r: '\r', t: '\t', b: '\b', f: '\f' })[c] || (/^[0-7]/.test(c) ? String.fromCharCode(parseInt(c, 8)) : c));
+  };
+  const STR = '(\\((?:\\\\.|[^\\\\)])*\\)|<[0-9A-Fa-f\\s]*>)';
+  const out = [];
+  for (const [n] of objAt) {
+    const d = dictOf(n); if (!d || !/\/Type\s*\/Filespec/.test(d)) continue;
+    const name = strOf((new RegExp('/UF\\s*' + STR).exec(d) || new RegExp('/F\\s*' + STR).exec(d) || [])[1]);
+    const desc = strOf((new RegExp('/Desc\\s*' + STR).exec(d) || [])[1]);
+    const ef = /\/EF\s*<<[^>]*?\/F\s+(\d+)\s+0\s+R/.exec(d); if (!ef) continue;
+    const sd = dictOf(+ef[1]); if (!sd) continue;
+    const at = objAt.get(+ef[1]), sIdx = text.indexOf('stream', at);
+    const len = +(/\/Length\s+(\d+)/.exec(sd) || [])[1];
+    let start = sIdx + 6; if (text[start] === '\r') start++; if (text[start] === '\n') start++;
+    let bytes = u8.slice(start, start + len);
+    if (/\/Filter\s*\/FlateDecode/.test(sd)) bytes = new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate'))).arrayBuffer());
+    const mime = ((/\/Subtype\s*\/([^\s/>]+)/.exec(sd) || [])[1] || '').replace(/#([0-9a-fA-F]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
+    out.push({ name, bytes, mime, description: desc });
+  }
+  return out;
+}
+
 // ── ../pdf/src/main.js ──
 
 // @gcu/pdf — a small PDF writer with a canvas-2D context. See README.md.
@@ -1516,7 +1755,7 @@ function renderPage(doc, ctx, env = {}) {
     const kind = kindOf(f.kind), b = f.box, st = f.style || {};
     ctx.save();
     if (st.background) { ctx.fillStyle = st.background; ctx.fillRect(b[0], b[1], b[2], b[3]); }
-    ctx.beginPath(); ctx.rect(b[0], b[1], b[2], b[3]); ctx.clip();
+    if (!(kind && kind.overflow)) { ctx.beginPath(); ctx.rect(b[0], b[1], b[2], b[3]); ctx.clip(); }
     if (kind) {
       try { kind.draw(ctx, b, f, e); } catch (err) { drawError(ctx, b, `${f.kind}: ${err.message}`); }
     } else drawError(ctx, b, `no frame kind “${f.kind}”`);
@@ -1573,7 +1812,19 @@ async function exportPDF(docs, opts = {}) {
     renderPage(doc, ctx, { ...env, page: i + 1, pages: list.length, figStart: figAt });
     figAt += doc.frames.filter((f) => f.kind === 'text' && /\{fig\}/.test((f.content && f.content.md) || '')).length;   // an atlas numbers on across pages
   }
+  // the PDF carries its SOURCE: the compo document (a single page's own, or opts.source), so the
+  // file can be opened again as an editable figure (figureFromPdf). opts.source = false: none.
+  const src = opts.source === false ? null : (opts.source && opts.source !== true) ? opts.source : list.length === 1 ? list[0] : null;
+  if (src) pdf.attach(sourceName(src), serializeDocument(src), { mime: 'application/json', description: 'the compo figure this PDF was made from: open it in compo (or micro) to edit and re-render' });
+  for (const a of opts.attach || []) pdf.attach(a.name, a.data, a);
   return pdf.save();
+}
+const sourceName = (doc) => (String(doc.title || 'figure').replace(/[^\w.-]+/g, '_').replace(/^_+|_+$/g, '') || 'figure') + '.compo.json';
+// a PDF compo wrote → { doc, name, attachments } (doc null when it carries no figure)
+async function figureFromPdf(bytes) {
+  const attachments = await readAttachments(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes));
+  const a = attachments.find((x) => /\.compo\.json$/i.test(x.name));
+  return { doc: a ? parseDocument(new TextDecoder().decode(a.bytes)) : null, name: a ? a.name : null, attachments };
 }
 
 // a page → a PNG Blob at `dpi`
@@ -1635,6 +1886,8 @@ const CSS = `
 .compo-fr.locked::after { content: 'locked'; position: absolute; right: 1px; top: 1px; font: 9px/1 system-ui, sans-serif; padding: 1px 3px; background: rgba(40,40,40,0.75); color: #fff; border-radius: 2px; pointer-events: none; }
 .compo-grp { position: absolute; border: 1px dashed #3c82e6; pointer-events: none; box-sizing: border-box; }
 .compo-marq { position: absolute; border: 1px solid #3c82e6; background: rgba(60,130,230,0.12); pointer-events: none; }
+.compo-badge { position: absolute; left: 1px; top: 1px; font: 9px/1.2 system-ui, sans-serif; padding: 1px 4px; background: #c98a00; color: #111; border-radius: 2px; pointer-events: auto; cursor: help; max-width: calc(100% - 6px); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; z-index: 2; }
+.compo-it .warn { color: #c98a00; margin-left: 4px; cursor: help; }
 .compo-link { position: absolute; height: 0; border-top: 1px dashed #3c82e6; transform-origin: 0 0; pointer-events: none; z-index: 2; }
 .compo-fr.ref { outline: 1px dashed #3c82e6; outline-offset: 2px; }
 .compo-it .nm .ds { color: var(--compo-dim, var(--dim, #9a9a9a)); margin-left: 6px; font-weight: normal; }
@@ -1674,7 +1927,7 @@ function injectCss() { if (_css || typeof document === 'undefined') return; _css
 const h = (tag, props = {}, ...kids) => { const e = document.createElement(tag); for (const [k, v] of Object.entries(props)) { if (k === 'style') e.style.cssText = v; else if (k.startsWith('on')) e[k] = v; else if (k in e) e[k] = v; else e.setAttribute(k, v); } for (const c of kids) e.append(c); return e; };
 
 // frames that refer to another (captions, scale bars, north arrows) and frames that can be referred to (views: they state a scale)
-const canRefer = (f) => f.kind === 'text' || f.kind === 'scalebar' || f.kind === 'north';
+const canRefer = (f) => f.kind === 'text' || f.kind === 'scalebar' || f.kind === 'north' || f.kind === 'label';
 const isReferable = (f) => !!(f.content && f.content.meta);
 function mountEditor(el, doc, opts = {}) {
   injectCss();
@@ -1749,6 +2002,7 @@ function mountEditor(el, doc, opts = {}) {
   let _stT = 0;
   const say = (msg) => { status.textContent = msg; clearTimeout(_stT); _stT = setTimeout(() => { status.textContent = ''; }, 4000); if (opts.onStatus) opts.onStatus(msg); };
   bar.append(sizeSel, oriSel, customSpan, h('span', { className: 'sep' }), zoomSel, gridSel, rulersBtn, h('span', { className: 'sep' }),
+    btn('+ label', 'a label pinned to a world point in a 3D view (the host may supply the point)', () => addLabel()),
     btn('+ text', 'add a text frame (fields: {fig} {page} {date} ${…})', () => add({ kind: 'text', content: { md: '**Figure {fig}.** caption', size: 9 } })),
     h('span', { className: 'sep' }), ...alignBtns, ...distBtns, ...sizeBtns, h('span', { className: 'sep' }), groupBtn, ungroupBtn, h('span', { className: 'sep' }), frontBtn, fwdBtn, bwdBtn, backBtn, delBtn);
   if (opts.toolbar && opts.toolbar.length) {
@@ -1787,6 +2041,8 @@ function mountEditor(el, doc, opts = {}) {
       const d = h('div', { className: 'compo-fr' + (sel.includes(f.id) ? ' sel' : '') + (f.locked ? ' locked' : ''), title: `${(kindOf(f.kind) && kindOf(f.kind).label) || f.kind}` });
       d.style.cssText = `left:${b[0] * zoom}px;top:${b[1] * zoom}px;width:${b[2] * zoom}px;height:${b[3] * zoom}px`;
       d.dataset.id = f.id;
+      const bdg = badgeOf(f);
+      if (bdg) d.append(h('span', { className: 'compo-badge', textContent: bdg.text, title: bdg.title || bdg.text }));
       overlay.append(d);
       if (sel.length === 1 && sel[0] === f.id && !f.locked) {
         for (const [hx, hy] of [[0, 0], [0.5, 0], [1, 0], [1, 0.5], [1, 1], [0.5, 1], [0, 1], [0, 0.5]]) {
@@ -1946,6 +2202,19 @@ function mountEditor(el, doc, opts = {}) {
       fit.value = f.content.fit || 'contain';
       fit.onchange = () => commit(() => { f.content.fit = fit.value; });
       insp.append(h('div', { className: 'row' }, h('span', { textContent: 'fit' }), fit));
+      if (hasProj(f)) {                                     // a view of 3D space: coordinates on its border
+        const tk = h('select', { className: 'compo-ticks', title: 'coordinate ticks on the border (orthographic views), or a grid across' }, ...['off', 'ticks', 'grid'].map((v) => h('option', { value: v, textContent: v })));
+        tk.value = f.content.ticks || 'off';
+        tk.onchange = () => commit(() => { if (tk.value === 'off') delete f.content.ticks; else f.content.ticks = tk.value; });
+        insp.append(h('div', { className: 'row' }, h('span', { textContent: 'coords' }), tk));
+      }
+    }
+    if (f.kind === 'label') {
+      const tx = h('textarea', { value: f.content.text || '', style: 'min-height:40px' });
+      tx.onchange = () => commit(() => { f.content.text = tx.value; });
+      const at = f.content.at || [0, 0, 0];
+      const xyz = ['x', 'y', 'z'].map((k, i) => { const inp = h('input', { type: 'number', step: 'any', value: +(+at[i]).toFixed(3), style: 'width:62px', title: `the point, world ${k}` }); inp.onchange = () => commit(() => { const a = (f.content.at || [0, 0, 0]).slice(); a[i] = +inp.value || 0; f.content.at = a; }); return inp; });
+      insp.append(tx, h('div', { className: 'row' }, h('span', { textContent: 'points at' }), ...xyz), h('div', { className: 'hint', textContent: 'the leader follows this world point in the view it refers to' }));
     }
     if (f.kind === 'legend') {
       const t = h('input', { value: f.content.title || '' });
@@ -2098,6 +2367,21 @@ function mountEditor(el, doc, opts = {}) {
     one(rulerTop, true, W); one(rulerLeft, false, H);
   }
   // ── the item list: every frame, front first; groups as folders ──
+  // a host's badge for a frame: opts.frameBadge(f) → null | 'text' | { text, title }
+  function badgeOf(f) {
+    if (!opts.frameBadge) return null;
+    try { const b = opts.frameBadge(f); return !b ? null : typeof b === 'string' ? { text: b } : b; } catch { return null; }
+  }
+  // a label: at the host's point (opts.labelPoint(view) → [x,y,z]) or the middle of the view, beside it
+  function addLabel() {
+    const sv = sel.length === 1 ? frameById(D, sel[0]) : null;
+    const v = (sv && hasProj(sv)) ? sv : D.frames.find((x) => hasProj(x) && !x.hidden);
+    if (!v) { say('a label points at a 3D view — add one first'); return; }
+    let at = opts.labelPoint ? opts.labelPoint(v) : null;
+    if (!at) at = pageToWorld(v, v.box[0] + v.box[2] / 2, v.box[1] + v.box[3] / 2, 0);
+    const box = [v.box[0] + v.box[2] * 0.62, v.box[1] + v.box[3] * 0.12, 30, 7];
+    add({ kind: 'label', box, content: { text: 'label', at: at.map((n) => +(+n).toFixed(3)), of: v.id } });
+  }
   // a rename → true; refused (and said why) → false
   function doRename(f, raw) {
     const v = sanitizeId(raw), old = f.id;
@@ -2145,6 +2429,7 @@ function mountEditor(el, doc, opts = {}) {
     const lk = h('button', { textContent: locked ? '🔒' : '🔓', title: locked ? 'unlock' : 'lock', style: locked ? '' : 'opacity:0.35', onclick: (e) => { e.stopPropagation(); commit(() => { for (const x of fs2) { if (locked) delete x.locked; else x.locked = true; } }); } });
     const nm = h('span', { className: 'nm' }, ...(group ? [`group · ${members.length}`] : [h('b', { className: 'id', textContent: f.id }), h('span', { className: 'ds', textContent: frameLabel(f) })]));
     row.append(eye, lk, nm);
+    if (f) { const bdg = badgeOf(f); if (bdg) row.append(h('span', { className: 'warn', textContent: '⚠', title: bdg.title || bdg.text })); }
     row.onclick = (e) => {
       if (e.shiftKey) sel = isSel ? sel.filter((id) => !ids.includes(id)) : sel.concat(ids.filter((id) => !sel.includes(id)));
       else sel = ids.slice();                                // a member row selects just that member (edit inside a group)
@@ -2340,9 +2625,19 @@ export {
   refFrame,
   subjectFrame,
   isFormatSpec,
+  hasProj,
+  isOrthoProj,
+  imageRect,
+  worldToPage,
+  pageToWorld,
+  worldTicks,
+  drawTicks,
+  niceStep,
+  fmtCoord,
   renderPage,
   ensureImages,
   exportPDF,
   exportPNG,
+  figureFromPdf,
   mountEditor,
 };

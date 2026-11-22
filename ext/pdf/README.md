@@ -74,10 +74,19 @@ The document options are `{ title, author, subject, keywords, creator, created, 
 
 Fonts, transparency states and images are shared across pages.
 
+## Attachments
+
+`doc.attach(name, data, { mime, description, relationship })` embeds a file in the PDF.
+- `data` is a string (written as UTF-8) or bytes.
+- `relationship` is `Source` (the default: what the pages were made from), `Data`, `Alternative`, `Supplement` or `Unspecified`.
+- The file is listed in the catalog's `EmbeddedFiles` and `/AF`, so PDF readers show it as an attachment.
+
+`readAttachments(bytes)` reads them back as `[{ name, bytes, mime, description }]`. It is a small reader, not a general PDF parser: it handles files whose objects are written out plainly (this writer's output and most simple PDFs), not object streams or encrypted files.
+
 ## Used by
 
 - `@gcu/plot`: `fig.toPDF()` and `savefig('x.pdf')` replay the figure's draw list onto a page.
-- `@gcu/compo`, the GCU page composer (planned), for pages and atlases.
+- `@gcu/compo`, the GCU page composer, for pages and atlases. Each PDF it writes carries its figure as an attachment.
 - micro, for figures and report pages, keeping micro's no-network, no-WASM rules.
 
 ## Tests

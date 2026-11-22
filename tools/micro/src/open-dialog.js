@@ -245,6 +245,9 @@ export const dhGroupName = (collarName) => basename(String(collarName)).replace(
 export async function openFilesDialog(files) {
   const bk = files.filter((f) => isBackupName(f.name));
   if (bk.length) { await openPackFile(bk[0]); files = files.filter((f) => !isBackupName(f.name)); if (!files.length) return; }
+  // a PDF the composer wrote opens as its figure (micro reads no other PDFs) — no dialog
+  for (const f of files.filter((x) => /\.pdf$/i.test(x.name))) await openBlob(f, f.name, 'add');
+  files = files.filter((x) => !/\.pdf$/i.test(x.name)); if (!files.length) return;
   const rows = [];
   for (const f of files) rows.push(await describeFile(f));
   _ofDlg = { rows, dhCfg: {}, mode: S.layers.length ? 'add' : 'replace' };

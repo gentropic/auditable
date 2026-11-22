@@ -23,7 +23,7 @@ import { setSectionWorld, sectionWorld } from './section.js';
 import { rendererDocBbox, layerShown } from './layers.js';
 import { attrRowCountOf, layerBlob } from './records.js';
 import { sourceHash, sourceHashSync } from './identity.js';
-import { createDocument, parseDocument, serializeDocument, mountEditor, exportPDF, exportPNG, frameById, pageDims, tableFromTsv, subjectFrame } from '../../../ext/compo/index.js';
+import { createDocument, parseDocument, serializeDocument, mountEditor, exportPDF, exportPNG, frameById, pageDims, tableFromTsv, subjectFrame, figureFromPdf } from '../../../ext/compo/index.js';
 const $ = (s) => document.querySelector(s);
 
 // the app's side (setComposerHooks): renderViewCanvas(pxW, pxH) → a canvas rendered to convergence
@@ -193,6 +193,68 @@ function addMarker(ed, kind) {
   else ed.addFrame({ kind, box: [b[0] + b[2] - 15, b[1] + 2, 13, 17], content: { of: vf.id }, style: { background: 'rgba(255,255,255,0.85)' } });   // it sits ON the render: a light backing
 }
 
+// ── OUT OF DATE: a view frame recorded each layer's content hash when it rendered. If a layer is
+// now a different file (a new estimate), or isn't loaded, the frame says so — and "↻ views"
+// (or Refresh all figures) renders it again. ──
+const _hashing = new WeakSet();
+export function staleOf(f) {
+  if (!isView(f)) return null;
+  const fx = f.content && f.content.meta && f.content.meta.facts; if (!fx) return null;
+  const missing = [], changed = [];
+  for (const l of fx.layers) {
+    const L = S.layers.find((x) => (x.label || x.name) === l.name);
+    if (!L) { missing.push(l); continue; }
+    const blob = layerBlob(L); if (!blob || !l.sha) continue;
+    const cur = sourceHashSync(blob);
+    if (!cur) { if (!_hashing.has(blob)) { _hashing.add(blob); sourceHash(blob).then(() => { if (_ed) _ed.render(); }, () => {}); } continue; }
+    if (cur !== l.sha) changed.push({ l, cur });
+  }
+  if (changed.length) return { text: 'older data', title: changed.map(({ l, cur }) => `${l.name}: rendered from ${l.file} ${l.sha.slice(0, 8)}, the layer is now ${cur.slice(0, 8)}`).join('\n') + '\n↻ views renders it again' };
+  if (missing.length) return { text: 'data not loaded', title: missing.map((l) => `${l.name} (${l.file}${l.sha ? ' ' + l.sha.slice(0, 8) : ''}) isn't loaded`).join('\n') };
+  return null;
+}
+// render every view frame of a figure again from its own scene (the stored preview too), then
+// its facts; the user's view comes back after
+export async function refreshViews(fig = _fig) {
+  if (!fig) return 0;
+  const views = fig.doc.frames.filter((f) => isView(f) && f.source.scene);
+  if (!views.length) return 0;
+  const mine = captureScene('__composer');
+  try {
+    for (const f of views) {
+      await applyScene(f.source.scene);
+      const r = renderInto(f, PREVIEW_PX_PER_MM, f.source.bg);
+      storeImage(f, r.canvas, r.meta);
+      await completeFacts(fig.doc, f);
+    }
+  } finally { await applyScene(mine); requestRender(); }
+  persist(fig);
+  if (_ed && _fig === fig) { _ed.setDoc(fig.doc); }
+  $('#meta').textContent = `composer: “${fig.name}” — ${views.length} view${views.length === 1 ? '' : 's'} rendered again`;
+  return views.length;
+}
+export async function refreshAllFigures() {
+  let n = 0;
+  for (const fig of S.figures) n += await refreshViews(fig);
+  $('#meta').textContent = `composer: ${S.figures.length} figure${S.figures.length === 1 ? '' : 's'}, ${n} view${n === 1 ? '' : 's'} rendered again`;
+  return n;
+}
+// a PDF the composer wrote carries its figure: open it as one (and say how its data compares)
+export async function openFigurePdf(blob, name) {
+  const { doc } = await figureFromPdf(new Uint8Array(await blob.arrayBuffer()));
+  if (!doc) { $('#meta').textContent = `${name}: no compo figure inside — only PDFs micro's composer wrote carry one`; return null; }
+  let nm = doc.title || name.replace(/\.pdf$/i, '');
+  if (S.figures.some((f) => f.name === nm)) { let k = 2; while (S.figures.some((f) => f.name === `${nm} (${k})`)) k++; nm = `${nm} (${k})`; }
+  doc.title = nm;
+  const fig = { name: nm, doc, file: 'figures/' + slug(nm) + '.compo.json' };
+  S.figures.push(fig); S.figures.sort((a, b) => a.name.localeCompare(b.name));
+  openComposer(nm);
+  persist(fig);
+  const views = doc.frames.filter(isView), st = views.map(staleOf).filter(Boolean);
+  $('#meta').textContent = `${name}: the figure “${nm}” — ${views.length} view${views.length === 1 ? '' : 's'}${st.length ? `, ${st.length} of them made from data that isn't loaded or has changed (hover the badge)` : views.length ? ', made from the data loaded now' : ''}`;
+  return fig;
+}
+
 // ── the window ──
 let _win = null, _ed = null, _fig = null, _saveT = 0;
 export function composerOpen() { return !!(_win && document.body.contains(_win.el)); }
@@ -255,6 +317,7 @@ export function openComposer(name) {
   const dpiSel = document.createElement('select'); dpiSel.title = 'export resolution for the 3D views and the PNG';
   for (const d of [150, 300, 600]) { const o = document.createElement('option'); o.value = d; o.textContent = d + ' dpi'; dpiSel.append(o); }
   dpiSel.value = '300';
+  top.append(btn('↻ views', 'render every 3D view on this figure again from its scene, with the data as it is now', () => refreshViews(_fig)));
   top.append(btn('atlas…', 'a routine that renders this figure once per section level into one PDF (Tools → Recipes)', () => makeAtlasRoutine(_fig)));
   top.append(sp, dpiSel, btn('⤓ pdf', 'export the page as a vector PDF (the 3D views re-rendered at the dpi)', () => exportFigurePdf(+dpiSel.value), 'awin-btn btn-p'), btn('⤓ png', 'export the page as a PNG at the dpi', () => exportFigurePng(+dpiSel.value)));
   const host = document.createElement('div'); host.style.cssText = 'flex:1;min-height:0';
@@ -270,6 +333,7 @@ export function openComposer(name) {
       { label: '+ north', title: 'a north arrow for the view frame', run: (e) => addMarker(e, 'north') },
     ],
     frameMenu: (f, e) => frameMenu(f, e),
+    frameBadge: (f) => staleOf(f),
     onStatus: (m) => { $('#meta').textContent = 'composer: ' + m; },
   });
   _fig = fig; fill();
@@ -454,7 +518,7 @@ export async function compoPage(params, evalField) {
   // the page: a copy of the figure (images carried by reference — they're re-rendered or reused)
   const doc = JSON.parse(serializeDocument(fig.doc));
   for (const f of doc.frames) { const o = frameById(fig.doc, f.id); if (o && o._img) f._img = o._img; }
-  doc._vars = vars;
+  doc._vars = vars; doc._source = fig.doc;                  // _source: the figure itself, which the book's PDF carries
   // captions: ${expr} from this page's values (the {page} / {pages} / {fig} fields stay for export)
   for (const f of doc.frames) {
     if (f.kind !== 'text' || !f.content || !f.content.md) continue;
@@ -500,7 +564,7 @@ export async function writePages(path, docs, { dpi = 300 } = {}) {
   if (!S.project || !S.project.dir) throw new Error('composer: writing pages needs a project');
   let blob;
   if (/\.png$/i.test(path)) blob = await exportPNG(docs[0], { dpi, env: envFor() });
-  else blob = new Blob([await exportPDF(docs, { env: envFor(), title: docs[0].title, creator: 'micro', dpi })], { type: 'application/pdf' });
+  else blob = new Blob([await exportPDF(docs, { env: envFor(), title: docs[0].title, creator: 'micro', dpi, source: docs[0]._source || false })], { type: 'application/pdf' });
   const fh = await resolveFileHandle(S.project.dir, path, { create: true });
   const w = await fh.createWritable(); await w.write(blob); await w.close();
   return blob.size;

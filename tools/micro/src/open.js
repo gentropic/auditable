@@ -55,7 +55,15 @@ async function openBlobs(files, mode = 'replace', at = null) {
   for (const f of singles) await openNext((m, a) => openBlob(f, f.name, m, a));
 }
 
+// a PDF: micro reads only the ones its composer wrote (they carry their figure) — set by the app
+let _figurePdf = null;
+export function setFigurePdfOpener(fn) { _figurePdf = fn; }
 export async function openBlob(blob, name, mode = 'replace', at = null, over = {}) {
+  if (/\.pdf$/i.test(name)) {
+    if (!_figurePdf) return null;
+    try { await _figurePdf(blob, name); } catch (e) { $('#meta').textContent = `${name} — ${e.message}`; if (over.throw) throw e; }
+    return null;
+  }
   if (isBackupName(name)) { await openPackFile(blob); return null; }   // a project pack opens as the project (or unpacks), not as a layer
   // an OMF project is many layers (one per element), each through the host door
   if (/\.omf$/i.test(name)) {

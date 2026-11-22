@@ -2,9 +2,9 @@
 // context — the editor's canvas (scaled to the zoom), a PNG canvas (scaled to the DPI), a @gcu/pdf
 // page (units mm). Each frame is clipped to its box, its background under it and its border over.
 
-import { pageDims } from './model.js';
+import { pageDims, parseDocument, serializeDocument } from './model.js';
 import { kindOf, fontMm } from './kinds.js';
-import { PdfDocument } from '../../pdf/src/main.js';
+import { PdfDocument, readAttachments } from '../../pdf/src/main.js';
 
 // figure numbers: text frames that say {fig}, numbered in page order (back-to-front), from env.figStart
 function figNumbering(doc, env) {
@@ -21,7 +21,7 @@ export function renderPage(doc, ctx, env = {}) {
     const kind = kindOf(f.kind), b = f.box, st = f.style || {};
     ctx.save();
     if (st.background) { ctx.fillStyle = st.background; ctx.fillRect(b[0], b[1], b[2], b[3]); }
-    ctx.beginPath(); ctx.rect(b[0], b[1], b[2], b[3]); ctx.clip();
+    if (!(kind && kind.overflow)) { ctx.beginPath(); ctx.rect(b[0], b[1], b[2], b[3]); ctx.clip(); }
     if (kind) {
       try { kind.draw(ctx, b, f, e); } catch (err) { drawError(ctx, b, `${f.kind}: ${err.message}`); }
     } else drawError(ctx, b, `no frame kind “${f.kind}”`);
@@ -78,7 +78,19 @@ export async function exportPDF(docs, opts = {}) {
     renderPage(doc, ctx, { ...env, page: i + 1, pages: list.length, figStart: figAt });
     figAt += doc.frames.filter((f) => f.kind === 'text' && /\{fig\}/.test((f.content && f.content.md) || '')).length;   // an atlas numbers on across pages
   }
+  // the PDF carries its SOURCE: the compo document (a single page's own, or opts.source), so the
+  // file can be opened again as an editable figure (figureFromPdf). opts.source = false: none.
+  const src = opts.source === false ? null : (opts.source && opts.source !== true) ? opts.source : list.length === 1 ? list[0] : null;
+  if (src) pdf.attach(sourceName(src), serializeDocument(src), { mime: 'application/json', description: 'the compo figure this PDF was made from: open it in compo (or micro) to edit and re-render' });
+  for (const a of opts.attach || []) pdf.attach(a.name, a.data, a);
   return pdf.save();
+}
+const sourceName = (doc) => (String(doc.title || 'figure').replace(/[^\w.-]+/g, '_').replace(/^_+|_+$/g, '') || 'figure') + '.compo.json';
+// a PDF compo wrote → { doc, name, attachments } (doc null when it carries no figure)
+export async function figureFromPdf(bytes) {
+  const attachments = await readAttachments(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes));
+  const a = attachments.find((x) => /\.compo\.json$/i.test(x.name));
+  return { doc: a ? parseDocument(new TextDecoder().decode(a.bytes)) : null, name: a ? a.name : null, attachments };
 }
 
 // a page → a PNG Blob at `dpi`

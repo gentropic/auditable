@@ -99,9 +99,11 @@ Also exported: `formatNumber`, `formatDate`, `fieldList`.
 
 ## Export
 
-- `exportPDF(doc | [docs], { env, title, created, dpi, jpegQuality, compress })` → `Uint8Array`.
+- `exportPDF(doc | [docs], { env, title, created, dpi, jpegQuality, compress, source, attach })` → `Uint8Array`.
   - A list of documents is an **atlas**, one page each, with `{page}`/`{pages}` resolved and `{fig}` numbered on across the pages.
   - `env.prepare(doc, { dpi, page })` runs before each page is drawn, so a host can re-render its frames at print resolution.
+  - **The PDF carries its source.** A one-page export embeds its document as `<title>.compo.json` (a PDF attachment). An atlas embeds `opts.source` when given, e.g. the figure its pages were made from. `source: false` embeds nothing, and `attach: [{ name, data, mime, description }]` adds more files.
+- `figureFromPdf(bytes)` → `{ doc, name, attachments }`: the figure a compo PDF carries (`doc` is null when it carries none), so the PDF opens again as an editable figure.
 - `exportPNG(doc, { dpi, env })` → a PNG `Blob`.
 - `renderPage(doc, ctx, env)` draws onto any 2D context in mm.
 
@@ -133,7 +135,7 @@ Also exported: `formatNumber`, `formatDate`, `fieldList`.
 - **Toolbar:** page setup and the arranging buttons. A status line says when something was refused.
 - **Inspector:** the selected frame's id (renaming it updates every reference), its "refers to" for a caption / scale bar / north arrow (**nearest → view-1**, saying which it picked, or a fixed frame; the frame it refers to is outlined and linked on the page), its box in mm, its border, its lock, and its kind's own fields. A multiple selection shows its units and one lock box for all of them. A text frame has an **insert field…** picker: compo's fields and the host's, each with its help as a tooltip. A pick inserts at the caret as one undo step.
 - **Context menu:** the host's items, then Duplicate, Group / Ungroup, Same size, the four z-order steps, Lock / Unlock and Delete.
-- **Host hooks:** a host adds toolbar buttons, items in the frame context menu, and inspector rows. Its `update(id, fn)` changes a frame as one undo step.
+- **Host hooks:** a host adds toolbar buttons, items in the frame context menu, and inspector rows. `frameBadge(f)` → null, a text, or `{ text, title }` puts a badge on a frame (on the page, and a ⚠ in the item list). micro uses it to mark views made from data that has changed. Its `update(id, fn)` changes a frame as one undo step.
 - **Theming:** the editor's colours read `--compo-*`, then the host's `--text` / `--border` / `--accent` / `--bg-btn`.
 
 ## Tests

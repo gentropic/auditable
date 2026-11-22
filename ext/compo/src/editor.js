@@ -16,6 +16,7 @@ import { renameFrame, sanitizeId, PAPER, pageDims, addFrame, frameById, removeFr
 import { renderPage, ensureImages } from './render.js';
 import { kindOf } from './kinds.js';
 import { fieldList, subjectFrame, refFrame } from './fields.js';
+import { hasProj, pageToWorld } from './world.js';
 
 const CSS = `
 .compo-root { display: flex; flex-direction: column; height: 100%; min-height: 0; font: 12px/1.35 var(--compo-font, system-ui, sans-serif); color: var(--compo-fg, var(--text, #ddd)); outline: none; }
@@ -46,6 +47,8 @@ const CSS = `
 .compo-fr.locked::after { content: 'locked'; position: absolute; right: 1px; top: 1px; font: 9px/1 system-ui, sans-serif; padding: 1px 3px; background: rgba(40,40,40,0.75); color: #fff; border-radius: 2px; pointer-events: none; }
 .compo-grp { position: absolute; border: 1px dashed #3c82e6; pointer-events: none; box-sizing: border-box; }
 .compo-marq { position: absolute; border: 1px solid #3c82e6; background: rgba(60,130,230,0.12); pointer-events: none; }
+.compo-badge { position: absolute; left: 1px; top: 1px; font: 9px/1.2 system-ui, sans-serif; padding: 1px 4px; background: #c98a00; color: #111; border-radius: 2px; pointer-events: auto; cursor: help; max-width: calc(100% - 6px); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; z-index: 2; }
+.compo-it .warn { color: #c98a00; margin-left: 4px; cursor: help; }
 .compo-link { position: absolute; height: 0; border-top: 1px dashed #3c82e6; transform-origin: 0 0; pointer-events: none; z-index: 2; }
 .compo-fr.ref { outline: 1px dashed #3c82e6; outline-offset: 2px; }
 .compo-it .nm .ds { color: var(--compo-dim, var(--dim, #9a9a9a)); margin-left: 6px; font-weight: normal; }
@@ -85,7 +88,7 @@ function injectCss() { if (_css || typeof document === 'undefined') return; _css
 const h = (tag, props = {}, ...kids) => { const e = document.createElement(tag); for (const [k, v] of Object.entries(props)) { if (k === 'style') e.style.cssText = v; else if (k.startsWith('on')) e[k] = v; else if (k in e) e[k] = v; else e.setAttribute(k, v); } for (const c of kids) e.append(c); return e; };
 
 // frames that refer to another (captions, scale bars, north arrows) and frames that can be referred to (views: they state a scale)
-const canRefer = (f) => f.kind === 'text' || f.kind === 'scalebar' || f.kind === 'north';
+const canRefer = (f) => f.kind === 'text' || f.kind === 'scalebar' || f.kind === 'north' || f.kind === 'label';
 const isReferable = (f) => !!(f.content && f.content.meta);
 export function mountEditor(el, doc, opts = {}) {
   injectCss();
@@ -160,6 +163,7 @@ export function mountEditor(el, doc, opts = {}) {
   let _stT = 0;
   const say = (msg) => { status.textContent = msg; clearTimeout(_stT); _stT = setTimeout(() => { status.textContent = ''; }, 4000); if (opts.onStatus) opts.onStatus(msg); };
   bar.append(sizeSel, oriSel, customSpan, h('span', { className: 'sep' }), zoomSel, gridSel, rulersBtn, h('span', { className: 'sep' }),
+    btn('+ label', 'a label pinned to a world point in a 3D view (the host may supply the point)', () => addLabel()),
     btn('+ text', 'add a text frame (fields: {fig} {page} {date} ${…})', () => add({ kind: 'text', content: { md: '**Figure {fig}.** caption', size: 9 } })),
     h('span', { className: 'sep' }), ...alignBtns, ...distBtns, ...sizeBtns, h('span', { className: 'sep' }), groupBtn, ungroupBtn, h('span', { className: 'sep' }), frontBtn, fwdBtn, bwdBtn, backBtn, delBtn);
   if (opts.toolbar && opts.toolbar.length) {
@@ -198,6 +202,8 @@ export function mountEditor(el, doc, opts = {}) {
       const d = h('div', { className: 'compo-fr' + (sel.includes(f.id) ? ' sel' : '') + (f.locked ? ' locked' : ''), title: `${(kindOf(f.kind) && kindOf(f.kind).label) || f.kind}` });
       d.style.cssText = `left:${b[0] * zoom}px;top:${b[1] * zoom}px;width:${b[2] * zoom}px;height:${b[3] * zoom}px`;
       d.dataset.id = f.id;
+      const bdg = badgeOf(f);
+      if (bdg) d.append(h('span', { className: 'compo-badge', textContent: bdg.text, title: bdg.title || bdg.text }));
       overlay.append(d);
       if (sel.length === 1 && sel[0] === f.id && !f.locked) {
         for (const [hx, hy] of [[0, 0], [0.5, 0], [1, 0], [1, 0.5], [1, 1], [0.5, 1], [0, 1], [0, 0.5]]) {
@@ -357,6 +363,19 @@ export function mountEditor(el, doc, opts = {}) {
       fit.value = f.content.fit || 'contain';
       fit.onchange = () => commit(() => { f.content.fit = fit.value; });
       insp.append(h('div', { className: 'row' }, h('span', { textContent: 'fit' }), fit));
+      if (hasProj(f)) {                                     // a view of 3D space: coordinates on its border
+        const tk = h('select', { className: 'compo-ticks', title: 'coordinate ticks on the border (orthographic views), or a grid across' }, ...['off', 'ticks', 'grid'].map((v) => h('option', { value: v, textContent: v })));
+        tk.value = f.content.ticks || 'off';
+        tk.onchange = () => commit(() => { if (tk.value === 'off') delete f.content.ticks; else f.content.ticks = tk.value; });
+        insp.append(h('div', { className: 'row' }, h('span', { textContent: 'coords' }), tk));
+      }
+    }
+    if (f.kind === 'label') {
+      const tx = h('textarea', { value: f.content.text || '', style: 'min-height:40px' });
+      tx.onchange = () => commit(() => { f.content.text = tx.value; });
+      const at = f.content.at || [0, 0, 0];
+      const xyz = ['x', 'y', 'z'].map((k, i) => { const inp = h('input', { type: 'number', step: 'any', value: +(+at[i]).toFixed(3), style: 'width:62px', title: `the point, world ${k}` }); inp.onchange = () => commit(() => { const a = (f.content.at || [0, 0, 0]).slice(); a[i] = +inp.value || 0; f.content.at = a; }); return inp; });
+      insp.append(tx, h('div', { className: 'row' }, h('span', { textContent: 'points at' }), ...xyz), h('div', { className: 'hint', textContent: 'the leader follows this world point in the view it refers to' }));
     }
     if (f.kind === 'legend') {
       const t = h('input', { value: f.content.title || '' });
@@ -509,6 +528,21 @@ export function mountEditor(el, doc, opts = {}) {
     one(rulerTop, true, W); one(rulerLeft, false, H);
   }
   // ── the item list: every frame, front first; groups as folders ──
+  // a host's badge for a frame: opts.frameBadge(f) → null | 'text' | { text, title }
+  function badgeOf(f) {
+    if (!opts.frameBadge) return null;
+    try { const b = opts.frameBadge(f); return !b ? null : typeof b === 'string' ? { text: b } : b; } catch { return null; }
+  }
+  // a label: at the host's point (opts.labelPoint(view) → [x,y,z]) or the middle of the view, beside it
+  function addLabel() {
+    const sv = sel.length === 1 ? frameById(D, sel[0]) : null;
+    const v = (sv && hasProj(sv)) ? sv : D.frames.find((x) => hasProj(x) && !x.hidden);
+    if (!v) { say('a label points at a 3D view — add one first'); return; }
+    let at = opts.labelPoint ? opts.labelPoint(v) : null;
+    if (!at) at = pageToWorld(v, v.box[0] + v.box[2] / 2, v.box[1] + v.box[3] / 2, 0);
+    const box = [v.box[0] + v.box[2] * 0.62, v.box[1] + v.box[3] * 0.12, 30, 7];
+    add({ kind: 'label', box, content: { text: 'label', at: at.map((n) => +(+n).toFixed(3)), of: v.id } });
+  }
   // a rename → true; refused (and said why) → false
   function doRename(f, raw) {
     const v = sanitizeId(raw), old = f.id;
@@ -556,6 +590,7 @@ export function mountEditor(el, doc, opts = {}) {
     const lk = h('button', { textContent: locked ? '🔒' : '🔓', title: locked ? 'unlock' : 'lock', style: locked ? '' : 'opacity:0.35', onclick: (e) => { e.stopPropagation(); commit(() => { for (const x of fs2) { if (locked) delete x.locked; else x.locked = true; } }); } });
     const nm = h('span', { className: 'nm' }, ...(group ? [`group · ${members.length}`] : [h('b', { className: 'id', textContent: f.id }), h('span', { className: 'ds', textContent: frameLabel(f) })]));
     row.append(eye, lk, nm);
+    if (f) { const bdg = badgeOf(f); if (bdg) row.append(h('span', { className: 'warn', textContent: '⚠', title: bdg.title || bdg.text })); }
     row.onclick = (e) => {
       if (e.shiftKey) sel = isSel ? sel.filter((id) => !ids.includes(id)) : sel.concat(ids.filter((id) => !sel.includes(id)));
       else sel = ids.slice();                                // a member row selects just that member (edit inside a group)

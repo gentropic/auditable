@@ -216,6 +216,21 @@ await page.evaluate(() => { C.removeFrames(ed.getDoc(), ['A', 'K']); ed.select([
   await page.evaluate(() => { C.removeFrames(ed.getDoc(), ['FP']); ed.select([]); ed.render(); });
 }
 
+// ── a view of 3D space (meta.proj): coordinate ticks from the inspector; + label pins a world point ──
+{
+  await page.evaluate(() => {
+    const m = [1 / 50, 0, 0, 0, 0, 1 / 40, 0, 0, 0, 0, -1 / 1000, 0, 0, 0, 0, 1];
+    C.addFrame(ed.getDoc(), { id: 'PV', kind: 'image', box: [150, 100, 100, 80], content: { width: 1000, height: 800, meta: { ortho: true, proj: { m, origin: [512300, 7604000, 600] } } } });
+    ed.select(['PV']); ed.render();
+  });
+  await page.locator('.compo-side select.compo-ticks').selectOption('grid');
+  chk('a projected view offers coordinates: grid set from the inspector', await page.evaluate(() => C.frameById(ed.getDoc(), 'PV').content.ticks === 'grid'));
+  await page.locator('.compo-bar button', { hasText: '+ label' }).click();
+  const lb = await page.evaluate(() => { const f = ed.selected()[0]; return f && { kind: f.kind, at: f.content.at, of: f.content.of, inside: C.worldToPage(C.frameById(ed.getDoc(), 'PV'), f.content.at).inside }; });
+  chk(`+ label pins the view's middle and refers to it (${JSON.stringify(lb)})`, lb && lb.kind === 'label' && lb.of === 'PV' && Math.abs(lb.at[0] - 512300) < 1e-6 && Math.abs(lb.at[1] - 7604000) < 1e-6 && lb.inside);
+  await page.evaluate(() => { const L = ed.selected()[0]; C.removeFrames(ed.getDoc(), ['PV', L.id]); ed.select([]); ed.render(); });
+}
+
 // ── rulers, guides, grid, the item list ──
 chk('rulers show by default', await page.evaluate(() => [...document.querySelectorAll('.compo-ruler')].every((c) => c.style.display !== 'none' && c.width > 0)));
 {
@@ -301,7 +316,8 @@ const out = await page.evaluate(async () => {
   const d = ed.getDoc();
   const bytes = await C.exportPDF(d, { title: 'compo smoke' });
   const size = bytes.length, jpeg = new TextDecoder('latin1').decode(bytes).includes('/DCTDecode');
-  const pdf = await lib.getDocument({ data: bytes }).promise;
+  const back = await C.figureFromPdf(bytes);              // first: pdf.js takes (detaches) the buffer it is given
+  const pdf = await lib.getDocument({ data: bytes.slice() }).promise;
   const p = await pdf.getPage(1);
   const vp = p.getViewport({ scale: 1 });
   const text = (await p.getTextContent()).items.map((i) => i.str).join('').replace(/\s+/g, ' ');
@@ -310,10 +326,13 @@ const out = await page.evaluate(async () => {
   await p.render({ canvasContext: cv.getContext('2d'), viewport: vp }).promise;
   const k = 72 / 25.4, f = d.frames[0], g = cv.getContext('2d');
   const at = (u, v) => Array.from(g.getImageData(Math.round((f.box[0] + u * f.box[2]) * k), Math.round((f.box[1] + v * f.box[3]) * k), 1, 1).data);
+  const att = await pdf.getAttachments();                  // pdf.js sees the embedded figure
+  const attName = att ? Object.values(att).map((a) => a.filename).join() : '';
   const png = await C.exportPNG(d, { dpi: 96 });
   const bm = await createImageBitmap(png);
-  return { size, jpeg, pages: pdf.numPages, w: vp.width, h: vp.height, text, centre: at(0.5, 0.5), edge: at(0.5, 0.1), pngW: bm.width, pngH: bm.height, pngType: png.type };
+  return { size, jpeg, pages: pdf.numPages, w: vp.width, h: vp.height, text, centre: at(0.5, 0.5), edge: at(0.5, 0.1), pngW: bm.width, pngH: bm.height, pngType: png.type, attName, backFrames: back.doc && back.doc.frames.length, nFrames: d.frames.length };
 });
+chk(`PDF: carries its figure — pdf.js lists ${out.attName}, figureFromPdf reads ${out.backFrames} frames`, /.compo.json$/.test(out.attName) && out.backFrames === out.nFrames);
 chk('PDF: one A4-landscape page', out.pages === 1 && Math.abs(out.w - 841.89) < 0.1 && Math.abs(out.h - 595.28) < 0.1, `${out.w}×${out.h}`);
 chk('PDF: the photo frame went in as JPEG', out.jpeg, `${(out.size / 1024).toFixed(1)} KB`);
 chk('PDF: the caption is text, fields resolved', /Figure 1\. Edited caption\./.test(out.text), out.text.slice(0, 80));
