@@ -184,3 +184,23 @@ test('resize snapping: only the dragged edges move', () => {
   s = snapResize(d, [11.2, 30, 40, 40], [0, 0.5]);         // left edge 11.2 → the margin 10, width grows
   assert.deepEqual(s.box, [10, 30, 41.2, 40]);
 });
+
+test('table: book rules, numbers right-aligned, type shrinks to fit, overflow counted; TSV in', async () => {
+  const { tableFromTsv } = await import('../ext/compo/src/main.js');
+  const t = tableFromTsv('cutoff\ttonnage\tgrade\n0.5\t12,400\t1.82\n1.0\t8,100\t2.41\n1.5\t4,020\t3.05\n', 'Grade–tonnage');
+  assert.deepEqual(t.columns, ['cutoff', 'tonnage', 'grade']); assert.equal(t.rows.length, 3);
+  const d = createDocument();
+  addFrame(d, { kind: 'table', box: [10, 10, 80, 30], content: t });
+  const many = { columns: ['a', 'b'], rows: Array.from({ length: 50 }, (_, i) => [String(i), 'x']) };
+  addFrame(d, { kind: 'table', box: [100, 10, 40, 30], content: many });
+  const { s } = await pdfText(d);
+  assert.match(s, /\(Grade(.|\\\d{3})tonnage\) Tj/);       // (the en dash is WinAnsi — a byte or an escape)
+  assert.match(s, /\(12,400\) Tj/);
+  assert.match(s, /more rows\) Tj/);                       // 50 rows don't fit 30 mm
+  // a table too wide for its box: the type shrinks (smaller Tf than the 7.5 pt default)
+  const d2 = createDocument();
+  addFrame(d2, { kind: 'table', box: [10, 10, 25, 30], content: { columns: ['a long header', 'another long one'], rows: [['1', '2']] } });
+  const s2 = (await pdfText(d2)).s;
+  const sizes = [...s2.matchAll(/\/F\d+ ([\d.]+) Tf/g)].map((m) => +m[1]);
+  assert.ok(Math.min(...sizes) < 7.5 * 25.4 / 72 * 0.9, String(sizes));
+});

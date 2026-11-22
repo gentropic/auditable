@@ -66,6 +66,7 @@ export async function exportPDF(docs, opts = {}) {
   const list = Array.isArray(docs) ? docs : [docs];
   const env = opts.env || {};
   const pdf = new PdfDocument({ title: opts.title || list[0].title || undefined, creator: opts.creator || '@gcu/compo', created: opts.created, onWarn: opts.onWarn, ...(opts.compress === false ? { compress: false } : {}) });
+  let figAt = env.figStart || 1;
   for (let i = 0; i < list.length; i++) {
     const doc = list[i];
     if (env.prepare) await env.prepare(doc, { dpi: opts.dpi || 300, page: i + 1 });
@@ -74,7 +75,8 @@ export async function exportPDF(docs, opts = {}) {
     for (const f of doc.frames) { f._jpeg = null; if (q > 0 && f.kind === 'image' && f.content && f.content.photo) await jpegFor(f, q); }
     const [W, H] = pageDims(doc.page);
     const ctx = pdf.addPage({ width: (W * 72) / 25.4, height: (H * 72) / 25.4 }).getContext('2d', { units: 'mm' });
-    renderPage(doc, ctx, { ...env, page: i + 1, pages: list.length });
+    renderPage(doc, ctx, { ...env, page: i + 1, pages: list.length, figStart: figAt });
+    figAt += doc.frames.filter((f) => f.kind === 'text' && /\{fig\}/.test((f.content && f.content.md) || '')).length;   // an atlas numbers on across pages
   }
   return pdf.save();
 }

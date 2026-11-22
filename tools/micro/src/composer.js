@@ -19,7 +19,9 @@ import { captureScene, applyScene } from './views.js';
 import { legendSpec, legendDefaultTitle, _bgColor, applyBg } from './deco.js';
 import { microPrompt, microConfirm } from './prompts.js';
 import { resolveFileHandle, removeFileAt } from './paths.js';
-import { createDocument, parseDocument, serializeDocument, mountEditor, exportPDF, exportPNG, frameById, pageDims } from '../../../ext/compo/index.js';
+import { setSectionWorld } from './section.js';
+import { rendererDocBbox } from './layers.js';
+import { createDocument, parseDocument, serializeDocument, mountEditor, exportPDF, exportPNG, frameById, pageDims, tableFromTsv } from '../../../ext/compo/index.js';
 const $ = (s) => document.querySelector(s);
 
 // the app's side (setComposerHooks): renderViewCanvas(pxW, pxH) → a canvas rendered to convergence
@@ -82,13 +84,13 @@ function viewFrameContent(f) {
   const r = renderInto(f, PREVIEW_PX_PER_MM, null);
   storeImage(f, r.canvas, r.meta);
 }
-export function addViewFrame(ed) {
+export function addViewFrame(ed, { box = null, border = true } = {}) {   // box: [x, y, w, h] mm — else sized to the canvas's aspect
   if (!S.layers.length) { $('#meta').textContent = 'composer: open some data first — a view frame renders the 3D view'; return null; }
   const doc = ed.getDoc(), [W, H] = pageDims(doc.page), m = doc.page.margins || [10, 10, 10, 10];
   const r = S.cv.getBoundingClientRect(), aspect = r.width / Math.max(1, r.height);
   let w = Math.min(W - m[1] - m[3], 0.72 * (W - m[1] - m[3])), h = w / aspect;
   const hMax = H - m[0] - m[2] - 18; if (h > hMax) { h = hMax; w = h * aspect; }
-  const f = ed.addFrame({ kind: 'image', box: [m[3], m[0], +w.toFixed(1), +h.toFixed(1)], content: { photo: true }, style: { border: true } });
+  const f = ed.addFrame({ kind: 'image', box: box || [m[3], m[0], +w.toFixed(1), +h.toFixed(1)], content: { photo: true }, style: { border } });
   ed.update(f.id, (fr) => viewFrameContent(fr));
   $('#meta').textContent = 'composer: the 3D view went into a frame — resize it freely; "Update from the 3D view" re-captures it';
   return f;
@@ -140,10 +142,21 @@ function newFigure(name) {
   S.figures.push(fig); S.figures.sort((a, b) => a.name.localeCompare(b.name));
   return fig;
 }
-async function persist(fig) {
-  if (!S.project || !fig || !fig.file) return;
-  try { const fh = await resolveFileHandle(S.project.dir, fig.file, { create: true }); const w = await fh.createWritable(); await w.write(serializeDocument(fig.doc) + '\n'); await w.close(); }
-  catch (e) { $('#meta').textContent = `figure save failed — ${e.message}`; }
+// every figure write goes through ONE queue: a debounced edit-save and the project save's flush
+// never open the same file at once (two writables on one file — the loser fails)
+let _writeQ = Promise.resolve();
+async function writeFigure(dir, fig) {
+  const body = serializeDocument(fig.doc) + '\n';
+  for (let attempt = 0; ; attempt++) {
+    try { const fh = await resolveFileHandle(dir, fig.file, { create: true }); const w = await fh.createWritable(); await w.write(body); await w.close(); return; }
+    catch (e) { if (attempt >= 2) throw e; await new Promise((r) => setTimeout(r, 150 * (attempt + 1))); }
+  }
+}
+const queued = (fn) => (_writeQ = _writeQ.then(fn, fn));
+function persist(fig) {
+  if (!S.project || !fig || !fig.file) return Promise.resolve();
+  const dir = S.project.dir;
+  return queued(() => writeFigure(dir, fig).catch((e) => { $('#meta').textContent = `figure save failed — ${e.message}`; }));
 }
 const persistSoon = (fig) => { clearTimeout(_saveT); _saveT = setTimeout(() => persist(fig), 600); };
 
@@ -179,6 +192,7 @@ export function openComposer(name) {
   const dpiSel = document.createElement('select'); dpiSel.title = 'export resolution for the 3D views and the PNG';
   for (const d of [150, 300, 600]) { const o = document.createElement('option'); o.value = d; o.textContent = d + ' dpi'; dpiSel.append(o); }
   dpiSel.value = '300';
+  top.append(btn('atlas…', 'a routine that renders this figure once per section level into one PDF (Tools → Recipes)', () => makeAtlasRoutine(_fig)));
   top.append(sp, dpiSel, btn('⤓ pdf', 'export the page as a vector PDF (the 3D views re-rendered at the dpi)', () => exportFigurePdf(+dpiSel.value), 'awin-btn btn-p'), btn('⤓ png', 'export the page as a PNG at the dpi', () => exportFigurePng(+dpiSel.value)));
   const host = document.createElement('div'); host.style.cssText = 'flex:1;min-height:0';
   body.append(top, host);
@@ -266,6 +280,100 @@ async function exportFigurePng(dpi) {
   if (_ed) _ed.render();
 }
 
+// ── THE ATLAS: one figure, many pages. A page = the figure with per-page changes applied to its
+// view frames (a section plane, a camera, a filter), its ${…} captions filled from the page's
+// values, its legends re-read from the layers. The `compo` recipe tool renders one page per
+// step; in a routine `each` block that is one page per row, collected into a `book` (one PDF)
+// or written page by page (`out`).
+//
+// params: { figure, view: { section: {axis|normal|dipDir+dip, position|at, thickness, clip} |
+//   'off', camera: {look, elevation, distance, target, ortho, zExag}, filter: "expr" |
+//   { "<layer>": "expr" } }, vars: { name: value }, dpi, out: "atlas/p-$x.png|.pdf",
+//   book: "atlas/x.pdf" }
+// evalField(expr, vars) evaluates a caption's ${expr} (the routine's expression language).
+export async function compoPage(params, evalField) {
+  const P = params || {};
+  const fig = S.figures.find((f) => f.name === P.figure);
+  if (!fig) throw new Error(`composer: no figure “${P.figure}” (${S.figures.length ? 'figures: ' + S.figures.map((f) => f.name).join(', ') : 'make one in View → Composer…'})`);
+  const dpi = Math.max(72, Math.min(600, +P.dpi || 300));
+  const vars = P.vars || {};
+  // the page: a copy of the figure (images carried by reference — they're re-rendered or reused)
+  const doc = JSON.parse(serializeDocument(fig.doc));
+  for (const f of doc.frames) { const o = frameById(fig.doc, f.id); if (o && o._img) f._img = o._img; }
+  doc._vars = vars;
+  // captions: ${expr} from this page's values (the {page} / {pages} / {fig} fields stay for export)
+  for (const f of doc.frames) {
+    if (f.kind !== 'text' || !f.content || !f.content.md) continue;
+    f.content.md = String(f.content.md).replace(/\$\{([^}]*)\}/g, (_, e) => {
+      const k = e.trim();
+      if (Object.prototype.hasOwnProperty.call(vars, k)) return String(vars[k]);
+      try { const v = evalField ? evalField(k, vars) : undefined; return v == null ? '' : typeof v === 'number' ? String(+v.toPrecision(6)) : String(v); }
+      catch (err) { return `⟨${k}: ${err.message}⟩`; }
+    });
+  }
+  const views = doc.frames.filter((f) => f.source && f.source.kind === 'view' && f.source.scene);
+  if (!views.length && !doc.frames.some((f) => f.source && f.source.kind === 'legend')) return doc;
+  const v = P.view || {};
+  const mine = captureScene('__atlas');
+  try {
+    for (const f of views) {
+      const scene = JSON.parse(JSON.stringify(f.source.scene));
+      if (v.filter != null) for (const sl of scene.layers) {
+        const fx = typeof v.filter === 'string' ? v.filter : v.filter[sl.name];
+        if (fx != null && sl.visible !== false) sl.filter = String(fx);
+      }
+      await applyScene(scene);
+      if (v.camera) HK.setCameraWorld(v.camera);
+      if (v.section === 'off') setSectionWorld(null);
+      else if (v.section) setSectionWorld(v.section);
+      const r = renderInto(f, dpi / 25.4, f.source.bg);
+      storeImageQuiet(f, r.canvas, r.meta);
+      f.content.photo = true;
+      // this page's legends read the layers while the page's scene is on
+      for (const lf of doc.frames) {
+        if (!(lf.source && lf.source.kind === 'legend')) continue;
+        const L = S.layers.find((x) => x.name === lf.source.layer);
+        const c = L && legendContentFor(L);
+        if (c) lf.content = { ...c, title: lf.content.title || c.title };
+      }
+    }
+  } finally { await applyScene(mine); requestRender(); $('#meta').textContent = ''; }
+  return doc;
+}
+// write pages: a .pdf (all of them, one per page) or a .png (the first) into the project
+export async function writePages(path, docs, { dpi = 300 } = {}) {
+  if (!S.project || !S.project.dir) throw new Error('composer: writing pages needs a project');
+  let blob;
+  if (/\.png$/i.test(path)) blob = await exportPNG(docs[0], { dpi, env: envFor() });
+  else blob = new Blob([await exportPDF(docs, { env: envFor(), title: docs[0].title, creator: 'micro', dpi })], { type: 'application/pdf' });
+  const fh = await resolveFileHandle(S.project.dir, path, { create: true });
+  const w = await fh.createWritable(); await w.write(blob); await w.close();
+  return blob.size;
+}
+// a starter atlas routine for the current figure: a section stepped through the data, a page per
+// level, the level in the caption, one PDF. Written to recipes/ and opened in the routine editor.
+export async function makeAtlasRoutine(fig = _fig, { save = true } = {}) {
+  if (!fig) return null;
+  const vf = fig.doc.frames.find((f) => f.source && f.source.kind === 'view');
+  if (!vf) { $('#meta').textContent = 'composer: an atlas steps a 3D-view frame — add one first'; return null; }
+  const sec = vf.source.scene.section;
+  const axis = (sec && sec.mode === 'ns') ? 'x' : (sec && sec.mode === 'ew') ? 'y' : 'z';
+  const k = { x: 0, y: 1, z: 2 }[axis], b = rendererDocBbox(), o = S.frame ? S.frame.origin : [0, 0, 0];
+  const lo = b[k] + o[k], hi = b[k + 3] + o[k], n = 6, step = (hi - lo) / n;
+  const levels = Array.from({ length: n }, (_, i) => +(lo + step * (i + 0.5)).toFixed(step < 10 ? 1 : 0));
+  const name = `${fig.name} atlas`;
+  const params = {
+    steps: [{
+      each: { level: levels },
+      steps: [{ tool: 'compo', figure: fig.name, view: { section: { axis, position: '$level', thickness: +(step * 0.8).toPrecision(3), clip: 'slab' } }, vars: { level: '$level' }, book: `atlas/${slug(fig.name)}.pdf`, dpi: 200 }],
+    }],
+  };
+  if (!save) return { name, tool: 'routine', params };
+  const r = await HK.saveRecipe('routine', params, name);
+  if (r) { HK.openRoutineWindow(r); $('#meta').textContent = `composer: “${r.name}” — ${n} ${axis === 'z' ? 'levels' : 'sections'} → atlas/${slug(fig.name)}.pdf; write \${level} in a caption to label each page, then Run`; }
+  return r;
+}
+
 // an analysis window's plot → an image frame on the current figure (micro:to-composer)
 export function addCanvasFrame(canvas, name) {
   const ed = openComposer();
@@ -277,7 +385,22 @@ export function addCanvasFrame(canvas, name) {
   $('#meta').textContent = `composer: ${name} went into “${_fig.name}”`;
   return f;
 }
-addEventListener('micro:to-composer', (e) => { if (e.detail && e.detail.canvas) addCanvasFrame(e.detail.canvas, e.detail.name || 'plot'); });
+// an analysis window's table (its ⧉ table TSV) → a table frame, beside the plot when both came
+export function addTableFrame(tsv, name, near = null) {
+  const c = tableFromTsv(tsv, ''); if (!c) return null;
+  const ed = openComposer();
+  const doc = ed.getDoc(), m = doc.page.margins || [12, 12, 12, 12];
+  const rows = Math.min(c.rows.length, 30), w = Math.min(120, 14 + 16 * c.columns.length), h = +(5 + 4.2 * (rows + 1.5)).toFixed(1);
+  const box = near ? [near.box[0] + near.box[2] + 6, near.box[1], w, h] : [m[3] + 8, m[0] + 8, w, h];
+  const f = ed.addFrame({ kind: 'table', box, content: c, source: { app: 'micro', kind: 'table', name } });
+  $('#meta').textContent = `composer: the ${name} table (${c.rows.length} rows) went into “${_fig.name}”`;
+  return f;
+}
+addEventListener('micro:to-composer', (e) => {
+  const d = e.detail || {};
+  const p = d.canvas ? addCanvasFrame(d.canvas, d.name || 'plot') : null;
+  if (d.tsv) addTableFrame(d.tsv, d.name || 'table', p);
+});
 
 // ── the project: figures/ *.compo.json in, any not yet written out ──
 export async function loadFigures(dir) {
@@ -293,9 +416,13 @@ export async function loadFigures(dir) {
   if (composerOpen()) { _fig = null; showFigure(S.figures[0] || newFigure('figure 1')); }
 }
 export async function flushFigures(dir) {
+  clearTimeout(_saveT);                                    // the save writes the current state: no stale edit-save after it
+  const failed = [];
   for (const fig of S.figures) {
     if (!fig.file) fig.file = 'figures/' + slug(fig.name) + '.compo.json';
-    try { const fh = await resolveFileHandle(dir, fig.file, { create: true }); const w = await fh.createWritable(); await w.write(serializeDocument(fig.doc) + '\n'); await w.close(); } catch { /* best effort */ }
+    await queued(() => writeFigure(dir, fig).catch((e) => { failed.push(`${fig.file} (${e.message})`); }));
   }
+  if (failed.length) console.warn('micro: figures not saved —', failed.join('; '));
+  return failed;
 }
 export { frameById };

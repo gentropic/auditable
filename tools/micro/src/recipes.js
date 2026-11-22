@@ -23,6 +23,7 @@ import { runFigureRecipe } from './deco.js';
 import { applyCalcCols, layerHasColumn } from './calc.js';
 import { resultToLayer } from './analysis-ui.js';
 import { openInputsDialog, openRoutineWindow } from './routine-ui.js';
+import { compoPage, writePages } from './composer.js';
 const $ = (s) => document.querySelector(s);
 
 // ── RECIPES: named, re-runnable analysis setups as YAML FILES in the project
@@ -32,7 +33,7 @@ const $ = (s) => document.querySelector(s);
 // Files are the interface: comment them, copy them between projects, drop one
 // in and Scan folder picks it up. Series reference layers BY NAME; a missing
 // primary gets a one-question remap — that prompt IS the parameter binding. ──
-export const RECIPE_TOOLS = { gt: 'grade-tonnage', swath: 'swath', stats: 'stats', figure: 'figure', calccols: 'calc columns', solid: 'by solid / surface', routine: 'routine' };
+export const RECIPE_TOOLS = { gt: 'grade-tonnage', swath: 'swath', stats: 'stats', figure: 'figure', compo: 'composer page', calccols: 'calc columns', solid: 'by solid / surface', routine: 'routine' };
 
 export const recipeSlug = (name) => (String(name).toLowerCase().replace(/[^\w.-]+/g, '-').replace(/^-+|-+$/g, '') || 'recipe');
 
@@ -278,6 +279,9 @@ export function routineTargets(tool, params, slug, P) {
     for (const c of params.cols || []) if (c && c.name) t.columns.push({ layer, name: c.name, kind: 'ƒ' });
   } else if (tool === 'figure') {
     if (params.out) t.figures.push(String(params.out));
+  } else if (tool === 'compo') {
+    if (params.out) t.figures.push(String(params.out));
+    if (params.book && !t.figures.includes(String(params.book))) t.figures.push(String(params.book));
   } else if (tool === 'solid') {
     if (params.do === 'flag') for (const layer of params.targets || []) t.columns.push({ layer, name: params.column, kind: 'flag' });
     else if (params.do === 'ratio' && params.model) t.columns.push({ layer: params.model, name: params.column, kind: 'fraction' });
@@ -439,6 +443,7 @@ export async function runRoutine(r, opts = {}) {
   const tracker = openRoutineTracker(r.name, steps, P);
   for (let k = 0; k < from; k++) tracker.state(k, 'skip');
   let n = 0, wrote = 0;
+  const books = new Map(), bookLines = [];                // book path → { docs, dpi } — written when the routine finishes
   for (const st of steps) {
     const idx = n; n++;
     if (idx < from) continue;                              // already run (or deliberately skipped)
@@ -478,6 +483,12 @@ export async function runRoutine(r, opts = {}) {
         el.querySelector('.fwin-head button:last-child').click();   // tidy: close the step's window
       } else if (tool === 'solid') {
         await runSolidRecipe(merged.params);              // long-running (winding/peel) — awaited, not settled
+      } else if (tool === 'compo') {                         // one composer page: into its book, or its own file
+        const pp = merged.params || {};
+        const page = await compoPage(pp, routineEval);
+        if (pp.book) { const b = books.get(String(pp.book)) || { docs: [], dpi: +pp.dpi || 300 }; b.docs.push(page); books.set(String(pp.book), b); }
+        if (pp.out) { await writePages(String(pp.out), [page], { dpi: +pp.dpi || 300 }); wrote++; }
+        if (!pp.book && !pp.out) throw new Error('a composer page needs `book:` (one PDF for the run) or `out:` (a .pdf / .png of its own)');
       } else if (tool === 'calccols' || tool === 'figure') {
         runRecipe(merged, true);
         await new Promise((r2) => setTimeout(r2, 400));     // engine steps settle; figure runs its own flow
@@ -493,10 +504,14 @@ export async function runRoutine(r, opts = {}) {
       return;
     }
   }
+  for (const [path, b] of books) {                          // the atlases: every page this run made, one PDF each
+    try { $('#meta').textContent = `routine “${r.name}” — writing ${path} (${b.docs.length} page${b.docs.length === 1 ? '' : 's'})…`; await writePages(path, b.docs, { dpi: b.dpi }); bookLines.push(`${path} (${b.docs.length} page${b.docs.length === 1 ? "" : "s"})`); }
+    catch (e) { tracker.done(`the pages ran but ${path} could not be written — ${e.message}`); $('#meta').textContent = `routine “${r.name}”: ${path} failed — ${e.message}`; return; }
+  }
   markProjectDirty();
   // say what THIS run did — a resume must not claim the steps it skipped
   const ran = n - from;
-  const line = `${ran} step${ran === 1 ? '' : 's'} run${from ? ` (${from} skipped)` : ''}, ${wrote} report${wrote === 1 ? '' : 's'} → ${outDir}/`;
+  const line = `${ran} step${ran === 1 ? "" : "s"} run${from ? ` (${from} skipped)` : ""}${wrote || !bookLines.length ? `, ${wrote} report${wrote === 1 ? "" : "s"} → ${outDir}/` : ""}${bookLines.length ? `, ${bookLines.join(", ")}` : ""}`;
   tracker.done(line);
   $('#meta').textContent = `routine “${r.name}” — ${line}`;
 }
@@ -579,6 +594,17 @@ export function runRecipe(r, andRun = true) {
   if (andRun && Array.isArray(r.inputs) && r.inputs.length) { openInputsDialog(r); return; }   // ask-me-first: the generated dialog runs the substituted copy
   if (r.tool === 'routine') { if (andRun) runRoutine(r); else openRoutineWindow(r); return; }
   if (r.tool === 'figure') { runFigureRecipe(r.params); return; }   // camera-based — no layer to resolve
+  if (r.tool === 'compo') {                                // one page, written to its out / book path
+    (async () => {
+      try {
+        const page = await compoPage(r.params, routineEval);
+        const path = String(r.params.out || r.params.book || `atlas/${recipeSlug(r.params.figure || 'page')}.pdf`);
+        await writePages(path, [page], { dpi: +r.params.dpi || 300 });
+        $('#meta').textContent = `composer page → ${path}`;
+      } catch (e) { $('#meta').textContent = `composer page: ${e.message}`; }
+    })();
+    return;
+  }
   if (r.tool === 'solid') {                                // by-geometry — resolves its own layers
     if (!andRun) { openSolidRecipeConfigured(r.params); return; }
     runSolidRecipe(r.params).catch((e) => { $('#meta').textContent = `recipe “${r.name}”: ${e.message}`; });

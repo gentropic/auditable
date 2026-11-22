@@ -6298,6 +6298,77 @@ if (take()) {
   await p.close();
 }
 
+// ── §96: THE ATLAS — one figure, a page per row. The composer's "atlas…" writes a starter routine:
+//     an each over section levels with a `compo` step (the figure, the section at $level, the
+//     level as a caption value, one `book` PDF). Running it renders each page with ITS section,
+//     fills ${level} per page, numbers {page}/{pages} and {fig} on across the book, re-reads the
+//     legend, writes atlas/<figure>.pdf, and puts the user's view back. An analysis window's
+//     table arrives as a table frame beside its plot. ──
+if (take()) {
+  const p = await mkPage('sm2atlas');
+  await p.evaluate(async () => {
+    const M_ = window._micro, rows = ['XC,YC,ZC,AU'];
+    for (let k = 0; k < 12; k++) for (let j = 0; j < 16; j++) for (let i = 0; i < 20; i++) { const dx = (i - 10) / 5, dy = (j - 8) / 4, dz = (k - 6) / 3; rows.push(`${5 + i * 10},${5 + j * 10},${5 + k * 10},${(3 * Math.exp(-(dx * dx + dy * dy + dz * dz))).toFixed(3)}`); }
+    const id = await M_.openBlob(new File([rows.join('\n') + '\n'], 'atl.csv'), 'atl.csv', 'replace');
+    const L = M_.layers().find((x) => x.id === id);
+    await M_.setLayerColorSel(L, `chan:${M_.layerTableHeader(L).columns.indexOf('AU')}`);
+  });
+  await saveProject(p);
+  const r = await p.evaluate(async () => {
+    const M_ = window._micro, out = {};
+    await window.micro.setView({ look: 0, elevation: 90, ortho: true });
+    const ed = M_.openComposer('levels');
+    const f = M_.addViewFrame(ed);
+    ed.addFrame({ kind: 'text', box: [f.box[0], f.box[1] + f.box[3] + 2, f.box[2], 10], content: { md: '**Figure {fig}.** Level ${level} m — page {page} of {pages}' } });
+    ed.select([f.id]);
+    document.querySelector('.compo-bar button[title^="a legend"]').click();
+    // the starter routine (not saved — run directly)
+    const rt = await M_.makeAtlasRoutine(M_.currentFigure(), { save: false });
+    const step = rt.params.steps[0];
+    out.levels = step.each.level; out.book = step.steps[0].book; out.axis = step.steps[0].view.section.axis;
+    rt.params.steps[0].steps[0].dpi = 96;
+    rt.name = 'levels atlas';
+    await window.micro.setView({ look: 33, elevation: 40, ortho: false });
+    await M_.runRoutine(rt);
+    out.lookAfter = Math.round(window.micro.view().look);
+    out.meta = document.querySelector('#meta').textContent;
+    // read the book back: inflate its streams, collect the text and the images
+    const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2atlas');
+    const parts = out.book.split('/');
+    let h = dir; try { for (const seg of parts.slice(0, -1)) h = await h.getDirectoryHandle(seg); } catch (e) { return { fail: out.meta, tracker: [...document.querySelectorAll('.fwin')].map((w) => w.innerText.slice(0, 400)).join(' | ') }; }
+    const bytes = new Uint8Array(await (await (await h.getFileHandle(parts.at(-1))).getFile()).arrayBuffer());
+    const lat = new TextDecoder('latin1').decode(bytes);
+    out.count = +(/\/Count (\d+)/.exec(lat) || [])[1];
+    out.jpegs = (lat.match(/\/DCTDecode/g) || []).length;
+    const imgLens = [...lat.matchAll(/\/Filter \/DCTDecode[^>]*\/Length (\d+)/g)].map((m) => +m[1]);
+    out.distinctImgs = new Set(imgLens).size;
+    let text = '';
+    for (const m of lat.matchAll(/<<([^]*?)>>\s*stream\r?\n/g)) {
+      if (!/FlateDecode/.test(m[1]) || /Image/.test(m[1])) continue;
+      const len = +(/\/Length (\d+)/.exec(m[1]) || [])[1], at = m.index + m[0].length;
+      try { const ds = new Blob([bytes.slice(at, at + len)]).stream().pipeThrough(new DecompressionStream('deflate')); text += await new Response(ds).text(); } catch { /* not a content stream */ }
+    }
+    out.captions = [...text.matchAll(/\( ?Level ([\d.]+) m (?:\\\d{3}|\S) page (\d+) of (\d+)\) Tj/g)].map((m) => [+m[1], +m[2], +m[3]]);   // (the em dash: a WinAnsi escape)
+    out.figs = [...text.matchAll(/\(Figure (\d+)\.\) Tj/g)].map((m) => +m[1]);
+    out.legend = /\(AU\) Tj/.test(text);
+    // a GT-style table through the same door as an analysis window's ⇥ figure
+    const pc = document.createElement('canvas'); pc.width = 300; pc.height = 200; pc.getContext('2d').fillRect(0, 0, 300, 200);
+    dispatchEvent(new CustomEvent('micro:to-composer', { detail: { canvas: pc, tsv: 'cutoff\ttonnes\tgrade\n0.5\t1200\t1.8\n1.0\t800\t2.4\n', name: 'gt-atl' } }));
+    const fr = ed.getDoc().frames;
+    const tf = fr.find((x) => x.kind === 'table'), pf = fr.find((x) => x.source && x.source.kind === 'plot');
+    out.table = tf && { cols: tf.content.columns, rows: tf.content.rows.length, beside: pf && Math.abs(tf.box[0] - (pf.box[0] + pf.box[2] + 6)) < 1e-9 };
+    return out;
+  });
+  if (r.fail) console.log('ATLAS DEBUG', r.fail, r.tracker);
+  chk(`ATLAS: the starter routine steps ${r.levels.length} ${r.axis}-levels into ${r.book}`, r.levels.length === 6 && r.axis === 'z' && /^atlas\/levels\.pdf$/.test(r.book));
+  chk(`ATLAS: one PDF, a page per level, each a JPEG render (${r.count} pages, ${r.jpegs} images, ${r.distinctImgs} distinct)`, r.count === 6 && r.jpegs === 6 && r.distinctImgs >= 4);
+  chk(`ATLAS: each page's caption carries its level and page number (${JSON.stringify(r.captions)})`, r.captions.length === 6 && r.captions.every((c, i) => Math.abs(c[0] - r.levels[i]) < 1e-6 && c[1] === i + 1 && c[2] === 6));
+  chk(`ATLAS: {fig} numbers on across the book (${JSON.stringify(r.figs)}) and the legend is on every page (${r.legend})`, JSON.stringify(r.figs) === '[1,2,3,4,5,6]' && r.legend);
+  chk(`ATLAS: the user's view comes back after the run (look ${r.lookAfter}; “${r.meta}”)`, r.lookAfter === 33);
+  chk(`ATLAS: an analysis table arrives as a table frame beside its plot (${JSON.stringify(r.table)})`, r.table && r.table.cols.join() === 'cutoff,tonnes,grade' && r.table.rows === 2 && r.table.beside);
+  await p.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

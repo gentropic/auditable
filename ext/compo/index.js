@@ -481,6 +481,69 @@ registerKind('north', {
   },
 });
 
+// ── table: a title, a header row and rows — book style (a rule above and below, a thin one under
+// the header, no vertical lines), numbers right-aligned, light striping. The type shrinks to fit
+// the box's width (down to 4.5 pt); rows that don't fit say how many were left out.
+// content: { title, columns: [..], rows: [[..]], size (pt), zebra, align: ['l'|'r'|'c', …], note }
+const NUMERIC = /^[-+−]?(\d[\d,  ]*)?(\.\d+)?([eE][-+]?\d+)?\s*%?$/;
+registerKind('table', {
+  label: 'table',
+  draw(ctx, box, frame) {
+    const c = frame.content || {}, cols = (c.columns || []).map(String), rows = (c.rows || []).map((r) => (r || []).map((v) => (v == null ? '' : String(v))));
+    if (!cols.length) return;
+    const pad = 1.1, avail = box[2] - 0.5;
+    const isNum = cols.map((_, j) => (c.align && c.align[j]) ? c.align[j] === 'r' : rows.length > 0 && rows.every((r) => r[j] === '' || NUMERIC.test(r[j].trim())));
+    let size = +c.size || 7.5, widths;
+    for (let pass = 0; pass < 8; pass++) {                 // shrink the type until the natural widths fit
+      widths = cols.map((h, j) => {
+        ctx.font = fontMm(size, { bold: true }); let w = ctx.measureText(h).width;
+        ctx.font = fontMm(size);
+        for (const r of rows) w = Math.max(w, ctx.measureText(r[j] || '').width);
+        return w + 2 * pad;
+      });
+      const sum = widths.reduce((a, b) => a + b, 0);
+      if (sum <= avail || size <= 4.5) { const extra = Math.max(0, avail - sum); widths = widths.map((w) => w + extra * (w / sum)); break; }
+      size = Math.max(4.5, size * (avail / sum) * 0.98);
+    }
+    const lh = size * PT * 1.55;
+    let y = box[1] + 0.3;
+    ctx.textBaseline = 'middle';
+    if (c.title) { ctx.fillStyle = INK; ctx.font = fontMm(size + 1, { bold: true }); ctx.textAlign = 'left'; ctx.fillText(c.title, box[0], y + lh * 0.5); y += lh * 1.15; }
+    const x0 = box[0], x1 = box[0] + widths.reduce((a, b) => a + b, 0);
+    const rule = (yy, w) => { ctx.strokeStyle = INK; ctx.lineWidth = w; ctx.beginPath(); ctx.moveTo(x0, yy); ctx.lineTo(x1, yy); ctx.stroke(); };
+    const cells = (vals, yy, bold) => {
+      let x = x0;
+      ctx.font = fontMm(size, { bold }); ctx.fillStyle = INK;
+      vals.forEach((v, j) => {
+        const a = (c.align && c.align[j]) || (isNum[j] ? 'r' : 'l');
+        ctx.textAlign = a === 'r' ? 'right' : a === 'c' ? 'center' : 'left';
+        ctx.fillText(v, a === 'r' ? x + widths[j] - pad : a === 'c' ? x + widths[j] / 2 : x + pad, yy + lh / 2);
+        x += widths[j];
+      });
+    };
+    rule(y, 0.35);
+    cells(cols, y, true); y += lh;
+    rule(y, 0.18);
+    const bottom = box[1] + box[3] - (c.note ? lh : 0) - 0.5;
+    const fit = Math.max(0, Math.floor((bottom - y) / lh));
+    const shown = rows.length > fit ? Math.max(0, fit - 1) : rows.length;
+    for (let i = 0; i < shown; i++) {
+      if (c.zebra !== false && i % 2 === 1) { ctx.fillStyle = 'rgba(0,0,0,0.045)'; ctx.fillRect(x0, y, x1 - x0, lh); }
+      cells(rows[i], y, false); y += lh;
+    }
+    if (shown < rows.length) { ctx.fillStyle = '#666'; ctx.font = fontMm(size); ctx.textAlign = 'left'; ctx.fillText(`… ${rows.length - shown} more row${rows.length - shown === 1 ? '' : 's'}`, x0 + pad, y + lh / 2); y += lh; }
+    rule(y, 0.35);
+    if (c.note) { ctx.fillStyle = '#555'; ctx.font = fontMm(size - 0.5); ctx.textAlign = 'left'; ctx.fillText(c.note, x0, y + lh * 0.55); }
+  },
+});
+// a TSV (an analysis window's ⧉ table) → table content
+function tableFromTsv(tsv, title = '') {
+  const lines = String(tsv || '').replace(/\r/g, '').split('\n').filter((l) => l.trim() !== '');
+  if (!lines.length) return null;
+  const [head, ...body] = lines.map((l) => l.split('\t'));
+  return { title, columns: head, rows: body };
+}
+
 // ── ../pdf/src/color.js ──
 
 // CSS colour strings → [r, g, b] in 0..1 plus an alpha, for the PDF operators (rg / RG and an
@@ -1270,6 +1333,7 @@ async function exportPDF(docs, opts = {}) {
   const list = Array.isArray(docs) ? docs : [docs];
   const env = opts.env || {};
   const pdf = new PdfDocument({ title: opts.title || list[0].title || undefined, creator: opts.creator || '@gcu/compo', created: opts.created, onWarn: opts.onWarn, ...(opts.compress === false ? { compress: false } : {}) });
+  let figAt = env.figStart || 1;
   for (let i = 0; i < list.length; i++) {
     const doc = list[i];
     if (env.prepare) await env.prepare(doc, { dpi: opts.dpi || 300, page: i + 1 });
@@ -1278,7 +1342,8 @@ async function exportPDF(docs, opts = {}) {
     for (const f of doc.frames) { f._jpeg = null; if (q > 0 && f.kind === 'image' && f.content && f.content.photo) await jpegFor(f, q); }
     const [W, H] = pageDims(doc.page);
     const ctx = pdf.addPage({ width: (W * 72) / 25.4, height: (H * 72) / 25.4 }).getContext('2d', { units: 'mm' });
-    renderPage(doc, ctx, { ...env, page: i + 1, pages: list.length });
+    renderPage(doc, ctx, { ...env, page: i + 1, pages: list.length, figStart: figAt });
+    figAt += doc.frames.filter((f) => f.kind === 'text' && /\{fig\}/.test((f.content && f.content.md) || '')).length;   // an atlas numbers on across pages
   }
   return pdf.save();
 }
@@ -1797,6 +1862,7 @@ export {
   replayDrawList,
   niceBelow,
   frameWorldPerMm,
+  tableFromTsv,
   renderPage,
   ensureImages,
   exportPDF,

@@ -47,6 +47,7 @@ const bytes = await exportPDF(ed.getDoc(), { env: { evalField: (expr, vars) => v
 | `drawlist` | `list`, a [@gcu/plot](../plot) `fig.toDrawList()`, replayed as vectors |
 | `legend` | `title`, then either `entries: [{color, label}]` or `kind: 'ramp'` with `stops`, `hiLabel`/`loLabel`, optional `tail` |
 | `scalebar` | `worldPerMm` + `units`, or `of: <frame id>` → that frame's `content.meta`. A view frame states `meta.worldPerPx` (world units per image pixel) so the bar follows the frame's drawn size: resize it and the scale stays true (`frameWorldPerMm(frame)`) |
+| `table` | `columns`, `rows`, `title`, `note`, `size` (pt), `align` (per column `l`/`r`/`c`), `zebra`. Book style: rules above and below, numbers right-aligned, light striping; the type shrinks to fit the width (down to 4.5 pt); rows that don't fit are counted (`… N more rows`). `tableFromTsv(tsv, title)` builds one |
 | `north` | `north` (degrees clockwise from page-up; `null` = the view looks along north), or `of` as above |
 
 `registerKind(name, { label, draw(ctx, box, frame, env) })` adds one. The context is in **mm**, y down.
@@ -54,7 +55,7 @@ const bytes = await exportPDF(ed.getDoc(), { env: { evalField: (expr, vars) => v
 ## Export
 
 - `exportPDF(doc | [docs], { env, title, created, dpi, jpegQuality, compress })` → `Uint8Array`.
-  - A list of documents is an **atlas**, one page each, with `{page}`/`{pages}` resolved.
+  - A list of documents is an **atlas**, one page each, with `{page}`/`{pages}` resolved and `{fig}` numbered on across the pages.
   - `env.prepare(doc, { dpi, page })` runs before each page is drawn, so a host can re-render its frames at print resolution.
 - `exportPNG(doc, { dpi, env })` → a PNG `Blob`.
 - `renderPage(doc, ctx, env)` draws onto any 2D context in mm.
