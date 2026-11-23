@@ -66,6 +66,7 @@ const display = (L) => ({
   colorSel: L.colorSel, clip: [...(L.clip || ['', ''])],
   ramps: L.ramps ? structuredClone(L.ramps) : undefined,
   catLegend: L.catLegend ? structuredClone(L.catLegend) : undefined,
+  calcCats: L.calcCats ? structuredClone(L.calcCats) : undefined,   // a text ƒ's class colours: a view's own, like catLegend
   opacity: L.opacity, edges: L.edges,
 });
 
@@ -86,6 +87,7 @@ export async function createView(model, state = {}, { activate = true, apply = t
   };
   if (base.ramps) V.ramps = base.ramps;
   if (base.catLegend) V.catLegend = base.catLegend;
+  if (base.calcCats) V.calcCats = base.calcCats;
   if (base.opacity != null) V.opacity = base.opacity;
   if (base.edges != null) V.edges = base.edges;
   if (state.catCol) V.catCol = String(state.catCol);       // its own class column (src/viewcat.js)

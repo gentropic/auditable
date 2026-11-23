@@ -8736,3 +8736,20 @@ if (take()) {
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);
+  // the classes travel: copy style onto another model with a ƒ of the same name, and a view of the model
+  const tr = await pr.evaluate(async () => {
+    const M = window._micro, L = M.layers()[0];
+    let t = 'X,Y,Z,FE\n';
+    for (let i = 0; i < 20; i++) for (let j = 0; j < 20; j++) t += `${i * 10},${j * 10},5,${45 + (i % 10)}\n`;
+    const id2 = await M.openBlob(new Blob([t]), 'm2.csv', 'add');
+    const L2 = M.layers().find((x) => x.id === id2);
+    await M.applyCalcCols(L2, [{ name: 'CLS', expr: 'if(FE > 52, "HIGH", if(FE < 47, "VLOW", "LOW"))', ty: 'string' }]);
+    await M.applyStyle(L2, M.captureStyle(L));
+    for (let k = 0; k < 200 && !(L2._calcDisplay && L2._calcDisplay.col && L2._calcDisplay.col.cat); k++) await new Promise((r) => setTimeout(r, 50));
+    const V = await M.createView(L, { name: 'CLS view' }, { activate: false });
+    for (let k = 0; k < 200 && !(M.legendContentFor(V) && M.legendContentFor(V).entries); k++) await new Promise((r) => setTimeout(r, 50));
+    const c = (X, lab) => { const leg = M.legendContentFor(X), e = leg && leg.entries && leg.entries.find((x) => x.label === lab); return e ? e.color : null; };
+    return { sel2: L2.colorSel, hi2: c(L2, 'HIGH'), lo2: c(L2, 'LOW'), selV: V.colorSel, hiV: c(V, 'HIGH'), loV: c(V, 'LOW') };
+  });
+  chk(`a text ƒ's classes travel: pasted style on another model (${tr.sel2}: HIGH ${tr.hi2}, LOW hidden ${tr.lo2}) and a view of the model (${tr.selV}: HIGH ${tr.hiV}, LOW hidden ${tr.loV})`,
+    tr.sel2 === 'calc:CLS' && tr.hi2 === '#ff0000' && tr.lo2 === null && tr.selV === 'calc:CLS' && tr.hiV === '#ff0000' && tr.loV === null);

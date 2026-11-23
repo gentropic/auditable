@@ -44,6 +44,7 @@ export function captureStyle(L) {
     format: STYLE_FORMAT, version: 1, from: L.label || L.name || '',
     colorBy, ramps,
     catLegend: clone(L.catLegend) || null, catHidden: hidden,
+    calcCats: L.calcCats && Object.keys(L.calcCats).length ? clone(L.calcCats) : null,   // text ƒ classes: by column NAME and VALUE, so they carry as they are
     rules: clone(L.rules) || null, ruleHidden: L.ruleHidden ? [...L.ruleHidden] : [],
     opacity: L.opacity != null ? L.opacity : null, edges: L.edges ?? null, legendTitle: L.legendTitle || null,
     noData: L.noData ? { ...L.noData } : null,
@@ -90,6 +91,15 @@ export async function applyStyle(L, st) {
   const cfg = rampCfgOf(L);
   L.clip = cfg && cfg.clip ? cfg.clip.slice() : ['', ''];
   if (L.id === S.activeId) { $('#clipMin').value = L.clip[0]; $('#clipMax').value = L.clip[1]; }
+  // a text ƒ's classes: kept by ƒ name and value, so they apply to any layer with a ƒ of that name
+  if (st.calcCats) {
+    const have = new Set((L.calcCols || []).filter((c) => c.ty === 'string').map((c) => c.name));
+    for (const [nm, cc] of Object.entries(st.calcCats)) {
+      if (!have.has(nm)) { skipped.push(`classes of ƒ ${nm} (no text ƒ column of that name here)`); continue; }
+      (L.calcCats || (L.calcCats = {}))[nm] = clone(cc); applied.push(`classes of ƒ ${nm}`);
+    }
+    if (String(L.colorSel).startsWith('calc:') && have.has(String(L.colorSel).slice(5))) { applyCatLegend(L, true); applyCatVisibility(L, true); }
+  }
   // categories: the legend applies when the category column has the same name
   const info = layerClassInfo(L);
   if (st.catLegend) {

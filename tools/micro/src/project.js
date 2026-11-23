@@ -132,6 +132,7 @@ function viewEntry(L, indexOf) {
     ramps: L.ramps && Object.keys(L.ramps).length ? L.ramps : undefined,
     noData: L.noData || undefined,
     catLegend: L.catLegend || undefined,
+    calcCats: L.calcCats && Object.keys(L.calcCats).length ? L.calcCats : undefined,
     rules: L.rules && L.rules.list && L.rules.list.length ? L.rules : undefined,
     ruleHidden: L.ruleHidden && L.ruleHidden.size ? [...L.ruleHidden] : undefined,
   };
@@ -513,7 +514,7 @@ async function restoreView(ls, i, idAt) {
   let V;
   try {
     V = await createView(M, { name: ls.name, label: ls.label, colorSel: ls.colorSel, catCol: ls.catCol, offset: ls.offset, clip: ls.clip, visible: ls.visible,
-      opacity: ls.opacity, edges: ls.edges, ramps: ls.ramps, catLegend: ls.catLegend }, { activate: false, apply: false });
+      opacity: ls.opacity, edges: ls.edges, ramps: ls.ramps, catLegend: ls.catLegend, calcCats: ls.calcCats }, { activate: false, apply: false });
   } catch (e) { plRow(i, `skipped — ${e.message}`, 'skip'); return; }
   if (ls.holeFilter) { try { await applyHoleFilter(V, ls.holeFilter); } catch { /* collar missing → no mask */ } }
   await refilterLayer(V, ls.filter);

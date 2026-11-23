@@ -308,12 +308,13 @@ export async function evalSolidOnGrid(meshL, L, { mode, resolution = [3, 3, 3], 
       grid.originLocal[2] - dz / 2 + S.frame.origin[2],
     ];
   // the world bbox handed back as the sweep's spatial pushdown: a rotated block reaches
-  // past its centroid by its half-diagonal's world extent, so pad by that
-  let worldBbox = mw.bbox;
-  if (rotated) {
-    const R = lf.R, h = [0, 1, 2].map((a) => Math.abs(R[a]) * dx / 2 + Math.abs(R[3 + a]) * dy / 2 + Math.abs(R[6 + a]) * dz / 2);
-    worldBbox = [mw.bbox[0] - h[0], mw.bbox[1] - h[1], mw.bbox[2] - h[2], mw.bbox[3] + h[0], mw.bbox[4] + h[1], mw.bbox[5] + h[2]];
-  }
+  // past its centroid by its half-diagonal's world extent, so pad by that. An axis-aligned block
+  // reaches past by its half-size: unpadded, a block whose CENTROID lies just outside the solid's
+  // bbox while the block itself overlaps it was skipped (Parquet row groups, the positions filter)
+  // and lost its partial fraction
+  const R = rotated ? lf.R : [1, 0, 0, 0, 1, 0, 0, 0, 1];
+  const h = [0, 1, 2].map((a) => Math.abs(R[a]) * dx / 2 + Math.abs(R[3 + a]) * dy / 2 + Math.abs(R[6 + a]) * dz / 2);
+  const worldBbox = [mw.bbox[0] - h[0], mw.bbox[1] - h[1], mw.bbox[2] - h[2], mw.bbox[3] + h[0], mw.bbox[4] + h[1], mw.bbox[5] + h[2]];
   const [bx0, by0, bz0, bx1, by1, bz1] = m.bbox;
   const clip = (lo, hi, c, d, n) => [
     Math.max(0, Math.min(n - 1, Math.floor((lo - c) / d))),
