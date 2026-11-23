@@ -33,6 +33,7 @@ export const KEYS = [
   { group: 'tools', keys: ['r'], does: 'select by rectangle', bind: ['r'], card: { group: 'tools', label: 'rectangle' } },
   { group: 'tools', keys: ['v'], does: 'select by lasso', bind: ['v'], card: { group: 'tools', label: 'lasso' } },
   { group: 'tools', keys: ['b'], does: 'paint a column', bind: ['b'], card: { group: 'tools', label: 'paint' } },
+  { group: 'tools', keys: ['Shift wheel'], does: 'brush size, while the structure brush is painting', bind: null },
   { group: 'tools', keys: ['Esc'], does: 'put the tool down, cancel, or clear the selection', bind: ['Escape'], card: { group: 'tools', label: 'cancel' } },
   { group: 'tools', keys: ['⇧P'], does: 'layer properties', bind: ['P'], card: { group: 'tools', label: 'properties' } },
   { group: 'layers', keys: ['p'], does: 'layers panel', bind: ['p'], card: { group: 'layers', label: 'panel' } },

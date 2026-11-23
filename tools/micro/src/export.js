@@ -32,7 +32,7 @@ export function exportColumnsOf(L) {
   const h = layerTableHeader(L);
   if (!h) return null;
   const cols = h.columns.map((name, i) => ({ name, num: colIsNumeric(L, h, i), badge: '' }));
-  for (const c of L.paintCols || []) cols.push({ name: c.name, num: c.kind === 'ratio', badge: c.kind === 'ratio' ? '%' : '✎' });   // census order: stored derived before calc (must match extendRow)
+  for (const c of L.paintCols || []) cols.push({ name: c.name, num: c.kind === 'ratio', badge: c.kind === 'ratio' && !c.mat ? '%' : '✎' });   // census order: stored derived before calc (must match extendRow)
   for (const c of L.calcCols || []) cols.push({ name: c.name, num: (c.ty || 'number') === 'number', badge: 'ƒ' });
   return cols;
 }

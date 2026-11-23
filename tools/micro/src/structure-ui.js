@@ -515,7 +515,7 @@ function armHint() {
   const shape = prefs.tool === 'erase' ? (prefs.shape || 'wand') : prefs.tool;
   $('#meta').textContent = prefs.tool === 'erase'
     ? `erase (${shape}) — ${shape === 'wand' ? 'click a painted face' : 'drag over paint'} · Esc stops`
-    : `${shape} → ${set} — ${shape === 'wand' ? 'click a face' : 'drag to paint'} · alt erases · right-drag orbits · Esc stops`;
+    : `${shape} → ${set} — ${shape === 'wand' ? 'click a face' : `drag to paint · ⇧ + wheel sizes the brush (${prefs.radius} m)`} · alt erases · right-drag orbits · Esc stops`;
 }
 export function arm(L) {
   _armed = { L };
@@ -597,8 +597,29 @@ function commit(L, file, erase) {
   return paintApply(L, col, file, erase ? 0 : hd.active);
 }
 const inCanvas = (e) => { const r = $('#cv').getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+let _lastPtr = null, _radAcc = 0;
 export function installStructurePointer(cv) {
+  // ⇧ + wheel sizes the BRUSH while it is armed (proportional per notch, like ⌥ + wheel for the slab:
+  // responsive at any mesh scale). Captured on window so the camera's dolly never sees the notch.
+  // Shift turns a wheel notch into a horizontal scroll on some systems: read whichever delta moved.
+  window.addEventListener('wheel', (e) => {
+    if (!_armed || !e.shiftKey || e.target !== cv) return;
+    const shape = prefs.tool === 'erase' ? (prefs.shape || 'wand') : prefs.tool;
+    if (shape !== 'brush') return;
+    e.preventDefault(); e.stopImmediatePropagation(); e.stopPropagation();
+    _radAcc += e.deltaY || e.deltaX;
+    while (Math.abs(_radAcc) >= 100) {
+      const up = _radAcc < 0;                                // wheel up = a bigger brush
+      prefs.radius = Math.max(0.01, +((prefs.radius || 1) * (up ? 1.15 : 1 / 1.15)).toPrecision(3));
+      _radAcc -= Math.sign(_radAcc) * 100;
+    }
+    savePrefs();
+    const hd = _structWins.get(_armed.L.id); if (hd && hd.render) hd.render();   // the rail's radius box follows
+    $('#meta').textContent = `brush radius ${prefs.radius} m — ⇧ + wheel to change`;
+    if (_lastPtr) cv.dispatchEvent(new PointerEvent('pointermove', { clientX: _lastPtr[0], clientY: _lastPtr[1], bubbles: true }));   // the hover preview at the new size
+  }, { capture: true, passive: false });
   cv.addEventListener('pointermove', (e) => {
+    _lastPtr = [e.clientX, e.clientY];
     if (!_armed) return;
     const L = _armed.L;
     if (_stroke) {                                         // brush drag: grow the stroke

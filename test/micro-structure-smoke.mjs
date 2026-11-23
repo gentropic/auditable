@@ -209,6 +209,15 @@ const planesOf = (p) => p.evaluate(() => { const w = [...document.querySelectorA
     brushed && bp && azd(bp.dip_direction, 270) < 0.5 && Math.abs(bp.dip - 60) < 0.5 && afterBrush.j2 > 10 && afterBrush.j2 < side.j2 && afterBrush.j2before === 0);
   const painted = { j1: afterBrush.j1, j2: afterBrush.j2 };
 
+  // ⇧ + wheel sizes the armed brush (2 notches up: 2 × 1.15² ≈ 2.65) and the camera does NOT dolly
+  const camBefore = await p.evaluate(() => window.micro.view().distance);
+  await p.mouse.move(b0x, b0y); await p.keyboard.down('Shift');
+  for (let k = 0; k < 2; k++) { await p.mouse.wheel(0, -100); await p.waitForTimeout(60); }
+  await p.keyboard.up('Shift'); await p.waitForTimeout(200);
+  const rad = await p.evaluate(() => { const w = [...document.querySelectorAll('.fwin')].find((e) => e._structure); return +[...w.querySelectorAll('.sw-row')].find((r) => /radius/.test(r.textContent)).querySelector('input').value; });
+  const camAfter = await p.evaluate(() => window.micro.view().distance);
+  chk(`⇧ + wheel sizes the brush (2 → ${rad} m) without moving the camera (${camBefore.toFixed(2)} → ${camAfter.toFixed(2)})`, Math.abs(rad - 2.65) < 0.02 && Math.abs(camAfter - camBefore) < 1e-6);
+
   // the table layer: CAPIVARAS's columns + set + the signed normal; replace-on-name
   await p.evaluate((lid) => window._micro.planesToTable(window._micro.layers().find((q) => q.id === lid)), id);
   await p.evaluate((lid) => window._micro.planesToTable(window._micro.layers().find((q) => q.id === lid)), id);

@@ -278,7 +278,7 @@ function appendCalcRows(rows, L, f, h, rec) {
   // census order: base → STORED (paint/materialized) → calc (matches extendRow)
   (L.paintCols || []).forEach((c, k) => {
     const v = ext[h.columns.length + k];
-    rows.push([`${c.kind === 'ratio' ? '%' : '✎'} ${c.name}`, v === '' || v == null ? '—' : (typeof v === 'number' && !Number.isInteger(v) ? +v.toFixed(4) : v)]);
+    rows.push([`${c.kind === 'ratio' && !c.mat ? '%' : '✎'} ${c.name}`, v === '' || v == null ? '—' : (typeof v === 'number' && !Number.isInteger(v) ? +v.toFixed(4) : v)]);
   });
   (L.calcCols || []).forEach((c, k) => {
     const v = ext[h.columns.length + (L.paintCols || []).length + k];
