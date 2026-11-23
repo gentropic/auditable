@@ -32,6 +32,7 @@ const CALLFNS = {
   if: [3, 3], round: [1, 2], int: [1, 1], abs: [1, 1], floor: [1, 1], ceil: [1, 1], mod: [2, 2],
   year: [1, 1], month: [1, 1], day: [1, 1],
   log: [1, 1], log10: [1, 1], exp: [1, 1], sqrt: [1, 1], pow: [2, 2], min: [1, Infinity], max: [1, Infinity], clamp: [3, 3], bin: [2, 3],
+  lerp: [3, 3], remap: [5, 5], interp: [5, Infinity], smoothstep: [3, 3],
   ifnum: [2, 2], coalesce: [1, Infinity], nullif: [2, 2], isnum: [1, 1], isnan: [1, 1], isblank: [1, 1], isfilled: [1, 1],
   upper: [1, 1], lower: [1, 1], trim: [1, 1], len: [1, 1], left: [2, 2], right: [2, 2], substr: [2, 3], replace: [3, 3], concat: [1, Infinity],
 };
@@ -51,6 +52,22 @@ class ExprParseError extends Error {
   constructor(msg) { super('expr parse error: ' + msg); this.name = 'ExprParseError'; }
 }
 function fail(msg) { throw new ExprParseError(msg); }
+// interp(x, x1, y1, x2, y2, …): x then PAIRS, at least two of them. When the knot xs
+// are literal numbers they must be strictly increasing — caught here, at compile
+// time, since an out-of-order literal curve is a typo. Non-literal knots (columns,
+// expressions) are sorted at runtime instead.
+const litNum = (n) => (n && n.t === 'num' ? Number(n.v) : n && n.t === 'neg' && n.e && n.e.t === 'num' ? -Number(n.e.v) : null);
+function checkInterp(args) {
+  if (args.length < 5) fail(`interp() needs x and at least two (xi, yi) pairs, e.g. interp(FE, 20, 2.7, 65, 4.3) — got ${args.length} argument(s)`);
+  if ((args.length - 1) % 2 !== 0) fail(`interp() expects x, then (xi, yi) pairs — got ${args.length - 1} value(s) after x, which is not a whole number of pairs`);
+  let prev = null;
+  for (let j = 1; j < args.length; j += 2) {
+    const xi = litNum(args[j]);
+    if (xi === null || !Number.isFinite(xi)) { prev = null; continue; }
+    if (prev !== null && !(xi > prev)) fail(`interp() knots must be in increasing x — ${xi} follows ${prev}`);
+    prev = xi;
+  }
+}
 
 // ── lexer ──────────────────────────────────────────────────────────────────
 // Bare field refs are case-insensitive idents of [A-Za-z_][A-Za-z0-9_]*, and a
@@ -236,6 +253,7 @@ function parse(src, opts) {
         const args = [];
         if (!op(')')) { args.push(expr()); while (op(',')) { i++; args.push(expr()); } }
         eatOp(')');
+        if (lw === 'interp') checkInterp(args);
         const [lo, hi] = CALLFNS[lw];
         if (args.length < lo || args.length > hi) fail(`${lw}() expects ${lo === hi ? lo : (hi === Infinity ? `${lo}+` : `${lo}–${hi}`)} argument(s), got ${args.length}`);
         return { t: 'call', fn: lw, args, start: t.start, end: toks[i - 1].end };   // full call extent
@@ -419,6 +437,16 @@ const FN = {
   min: (a, N) => { const ns = a.map((v) => N(v)).filter((x) => x !== null); return ns.length ? Math.min(...ns) : null; },
   max: (a, N) => { const ns = a.map((v) => N(v)).filter((x) => x !== null); return ns.length ? Math.max(...ns) : null; },
   clamp: (a, N) => { const x = N(a[0]), lo = N(a[1]), hi = N(a[2]); return (x === null || lo === null || hi === null) ? null : Math.min(Math.max(x, lo), hi); },
+  lerp: (a, N) => { const x = N(a[0]), y = N(a[1]), t = N(a[2]); return (x === null || y === null || t === null) ? null : lerpK(x, y, t); },
+  remap: (a, N) => { const v = a.map((u) => N(u)); return v.some((u) => u === null) ? null : remapK(v[0], v[1], v[2], v[3], v[4]); },
+  smoothstep: (a, N) => { const lo = N(a[0]), hi = N(a[1]), x = N(a[2]); return (lo === null || hi === null || x === null) ? null : smoothK(lo, hi, x); },
+  interp: (a, N) => {                                     // piecewise-linear through (xi, yi) pairs; flat beyond the ends
+    const x = N(a[0]); if (x === null) return null;
+    const k = (a.length - 1) >> 1, xs = new Array(k), ys = new Array(k);
+    for (let j = 0; j < k; j++) { const xi = N(a[1 + 2 * j]), yi = N(a[2 + 2 * j]); if (xi === null || yi === null) return null; xs[j] = xi; ys[j] = yi; }
+    sortKnots(xs, ys);
+    return interpK(x, xs, ys);
+  },
   bin: (a, N) => { const x = N(a[0]), w = N(a[1]); if (x === null || w === null || w <= 0) return null; const o = a.length > 2 ? (N(a[2]) || 0) : 0; return Math.floor((x - o) / w) * w + o; },   // lower edge of x's bin (width w, optional origin)
   year: (a) => datePart(a[0], 1),
   month: (a) => datePart(a[0], 2),
@@ -454,6 +482,39 @@ const FN = {
   },
   concat: (a) => a.map((v) => S(v) ?? '').join('') || null,   // blanks skipped (join-key building); all-blank → blank
 };
+
+// ── interpolation kernels: plain finite numbers in (callers have already turned
+// blanks away), number-or-blank out. Shared by FN (the row paths) and compile-chunk's
+// f64 fast loops, so the columnar engine can't drift from the reference.
+function lerpK(a, b, t) { return fin(a + (b - a) * t); }
+function remapK(x, a1, b1, a2, b2) { return a1 === b1 ? null : fin(a2 + (x - a1) * (b2 - a2) / (b1 - a1)); }
+// GLSL smoothstep: t = clamp((x − a)/(b − a), 0, 1) → 3t² − 2t³. a = b is a STEP
+// (0 below a, 1 at/above) — GLSL leaves it undefined; a step is what it tends to.
+function smoothK(a, b, x) {
+  if (a === b) return x < a ? 0 : 1;
+  let t = (x - a) / (b - a); t = t < 0 ? 0 : t > 1 ? 1 : t;
+  return t * t * (3 - 2 * t);
+}
+// Knots in increasing x (stable — equal xi keep their order). Cheap when already sorted.
+function sortKnots(xs, ys) {
+  let sorted = true;
+  for (let j = 1; j < xs.length; j++) if (xs[j] < xs[j - 1]) { sorted = false; break; }
+  if (sorted) return;
+  const ord = xs.map((_, j) => j).sort((p, q) => xs[p] - xs[q] || p - q);
+  const X = ord.map((j) => xs[j]), Y = ord.map((j) => ys[j]);
+  for (let j = 0; j < xs.length; j++) { xs[j] = X[j]; ys[j] = Y[j]; }
+}
+// xs sorted ascending. Below the first knot → y1, above the last → yN; between, the
+// segment with the LARGEST xk <= x (so a duplicated knot is right-continuous and no
+// segment ever has zero width). x exactly on a knot returns that knot's y exactly.
+function interpK(x, xs, ys) {
+  const last = xs.length - 1;
+  if (x <= xs[0]) return ys[0];
+  if (x >= xs[last]) return ys[last];
+  let lo = 0, hi = last;                                  // invariant: xs[lo] <= x < xs[hi]
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (xs[m] <= x) lo = m; else hi = m; }
+  return fin(ys[lo] + (x - xs[lo]) * (ys[hi] - ys[lo]) / (xs[hi] - xs[lo]));
+}
 
 function datePart(v, g) {
   const m = isBlank(v) ? null : /^(\d{4})-(\d{2})-(\d{2})/.exec(String(v));
@@ -815,6 +876,9 @@ function canMatch(exprOrAst, ranges, opts) {
 // chunks — a returned buffer is only valid until the next call (pipeline contract).
 
 
+// fixed-arity all-numeric functions with an f64 fast loop: name → kernel(...numbers)
+const NUMK = { lerp: lerpK, remap: remapK, smoothstep: smoothK };
+
 const isNumArr = (a) => a instanceof Float64Array;
 const CMP_INV = { '<': '>', '>': '<', '<=': '>=', '>=': '<=', '=': '=', '!=': '!=' };
 
@@ -1040,6 +1104,45 @@ function compileChunk(exprOrAst, columns, opts = {}) {
             return out;
           } };
         }
+        if (NUMK[node.fn]) {                               // FAST: lerp/remap/smoothstep — every arg numeric (scalar or f64 vector)
+          const K = NUMK[node.fn], ks = args.map((p) => (p.s !== undefined ? N(p.s) : undefined));
+          if (ks.some((k) => k === null)) return { s: null };            // a blank literal arg → blank everywhere
+          const vs = args.map((p, j) => (ks[j] === undefined ? numVec(p) : null)), m = args.length, O = f64();   // m is 3 or 5 (arity-checked at parse)
+          return { t: 'num', run: (ctx) => {
+            const n = ctx.n, out = O(n), V = vs.map((v) => (v ? v(ctx) : null));
+            // direct-call loops by arity (apply() + an args array cost ~3× here). A NaN or
+            // ±Inf argument is blank — N() reads both as blank in the row paths; x − x ≠ 0
+            // catches both — and so is the whole result.
+            const A = V[0], B = V[1], C = V[2], a0 = ks[0], b0 = ks[1], c0 = ks[2];
+            if (m === 3) {
+              for (let i = 0; i < n; i++) {
+                const a = A ? A[i] : a0, b = B ? B[i] : b0, c = C ? C[i] : c0;
+                if (a - a !== 0 || b - b !== 0 || c - c !== 0) { out[i] = NaN; continue; }
+                const r = K(a, b, c); out[i] = r === null ? NaN : r;
+              }
+            } else {
+              const D = V[3], E = V[4], d0 = ks[3], e0 = ks[4];
+              for (let i = 0; i < n; i++) {
+                const a = A ? A[i] : a0, b = B ? B[i] : b0, c = C ? C[i] : c0, d = D ? D[i] : d0, e = E ? E[i] : e0;
+                if (a - a !== 0 || b - b !== 0 || c - c !== 0 || d - d !== 0 || e - e !== 0) { out[i] = NaN; continue; }
+                const r = K(a, b, c, d, e); out[i] = r === null ? NaN : r;
+              }
+            }
+            return out;
+          } };
+        }
+        if (node.fn === 'interp' && args.slice(1).every((p) => p.s !== undefined)) {   // FAST: a literal curve over a column
+          const kv = args.slice(1).map((p) => N(p.s));
+          if (kv.some((k) => k === null) || (args[0].s !== undefined && N(args[0].s) === null)) return { s: null };
+          const xs = [], ys = []; for (let j = 0; j < kv.length; j += 2) { xs.push(kv[j]); ys.push(kv[j + 1]); }
+          sortKnots(xs, ys);
+          const a = numVec(args[0]), O = f64();
+          return { t: 'num', run: (ctx) => {
+            const n = ctx.n, out = O(n), X = a(ctx);
+            for (let i = 0; i < n; i++) { const x = X[i]; if (x - x !== 0) { out[i] = NaN; continue; } const r = interpK(x, xs, ys); out[i] = r === null ? NaN : r; }
+            return out;
+          } };
+        }
         const fn = FN[node.fn];                            // generic: shared helpers, per-row over vectors
         return { t: 'raw', run: (ctx) => {
           const n = ctx.n, out = S(ctx.n);
@@ -1096,6 +1199,50 @@ function compileChunkBool(exprOrAst, columns, opts = {}) {
 // shapes people actually type. Returns { from, to, options:[{value,kind,detail}] };
 // the host replaces src[from..to] with a chosen option.value.
 
+
+// Function signatures + one-line docs, surfaced on completion options as
+// { detail: signature, doc } (hosts show detail beside the name, doc as a hint).
+const FNDOC = {
+  if: ['if(cond, then, else)', 'then when cond is true, else otherwise (lazy)'],
+  round: ['round(x[, n])', 'round to n decimals (default 0)'],
+  int: ['int(x)', 'truncate toward zero'],
+  abs: ['abs(x)', 'absolute value'],
+  floor: ['floor(x)', 'round down'],
+  ceil: ['ceil(x)', 'round up'],
+  mod: ['mod(x, y)', 'floored remainder (Excel MOD): mod(-7, 3) = 2'],
+  year: ['year(date)', 'year of an ISO YYYY-MM-DD date'],
+  month: ['month(date)', 'month of an ISO YYYY-MM-DD date'],
+  day: ['day(date)', 'day of an ISO YYYY-MM-DD date'],
+  log: ['log(x)', 'natural logarithm'],
+  log10: ['log10(x)', 'base-10 logarithm'],
+  exp: ['exp(x)', 'e to the x'],
+  sqrt: ['sqrt(x)', 'square root'],
+  pow: ['pow(x, y)', 'x to the y (same as x ^ y)'],
+  min: ['min(a, b, …)', 'smallest non-blank argument'],
+  max: ['max(a, b, …)', 'largest non-blank argument'],
+  clamp: ['clamp(x, lo, hi)', 'x limited to lo…hi'],
+  bin: ['bin(x, w[, origin])', "lower edge of x's bin of width w"],
+  lerp: ['lerp(a, b, t)', 'a + (b − a)·t — t = 0 gives a, 1 gives b (not clamped)'],
+  remap: ['remap(x, a1, b1, a2, b2)', 'x rescaled from a1…b1 onto a2…b2 (not clamped)'],
+  interp: ['interp(x, x1, y1, x2, y2, …)', 'piecewise-linear through (xi, yi) pairs; flat beyond the ends'],
+  smoothstep: ['smoothstep(a, b, x)', 'smooth 0→1 ramp as x goes a→b (3t² − 2t³, clamped)'],
+  ifnum: ['ifnum(x, default)', 'x if numeric, else default'],
+  coalesce: ['coalesce(a, b, …)', 'first non-blank argument'],
+  nullif: ['nullif(x, v)', 'blank when x = v (scrub −99 sentinels)'],
+  isnum: ['isnum(x)', 'true when x is a number'],
+  isnan: ['isnan(x)', 'true when x is present but not a number'],
+  isblank: ['isblank(x)', 'true when x is blank'],
+  isfilled: ['isfilled(x)', 'true when x is not blank'],
+  upper: ['upper(s)', 'upper case'],
+  lower: ['lower(s)', 'lower case'],
+  trim: ['trim(s)', 'strip surrounding spaces'],
+  len: ['len(s)', 'number of characters'],
+  left: ['left(s, n)', 'first n characters'],
+  right: ['right(s, n)', 'last n characters'],
+  substr: ['substr(s, start[, len])', 'substring, 1-based start'],
+  replace: ['replace(s, find, repl)', 'replace every literal find with repl'],
+  concat: ['concat(a, b, …)', 'join as text, skipping blanks'],
+};
 
 const CMP_OPS = ['=', '!=', '<', '>', '<=', '>=', '==', '<>'];
 const VALUE_KW = ['in', 'contains', 'like', 'matches'];
@@ -1182,7 +1329,7 @@ function complete(src, pos, ctx = {}) {
   // default: an operand position → columns + functions (+ leading `not`).
   // Non-plain names emit the backtick escape (quoteIdent — the pandas convention).
   for (const c of columns) if (pre(c.name)) opts.push({ value: quoteIdent(c.name), kind: 'column', detail: c.type });
-  for (const fn of Object.keys(CALLFNS)) if (pre(fn)) opts.push({ value: fn + '(', kind: 'function' });
+  for (const fn of Object.keys(CALLFNS)) if (pre(fn)) { const d = FNDOC[fn]; opts.push(d ? { value: fn + '(', kind: 'function', detail: d[0], doc: d[1] } : { value: fn + '(', kind: 'function' }); }
   if (D.aggregates) for (const fn of Object.keys(AGGREGATES)) if (!CALLFNS[fn] && pre(fn)) opts.push({ value: fn + '(', kind: 'function', detail: 'repeat aggregate' });
   if (pre('not')) opts.push({ value: 'not', kind: 'keyword' });
   return { from, to, options: opts.slice(0, 50) };
@@ -1217,6 +1364,7 @@ export {
   validate,
   canMatch,
   complete,
+  FNDOC,
   isBlank,
   num,
   FN,

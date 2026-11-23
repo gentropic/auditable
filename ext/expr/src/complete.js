@@ -12,6 +12,50 @@
 
 import { tokenize, CALLFNS, AGGREGATES, dialect, quoteIdent } from './parse.js';
 
+// Function signatures + one-line docs, surfaced on completion options as
+// { detail: signature, doc } (hosts show detail beside the name, doc as a hint).
+export const FNDOC = {
+  if: ['if(cond, then, else)', 'then when cond is true, else otherwise (lazy)'],
+  round: ['round(x[, n])', 'round to n decimals (default 0)'],
+  int: ['int(x)', 'truncate toward zero'],
+  abs: ['abs(x)', 'absolute value'],
+  floor: ['floor(x)', 'round down'],
+  ceil: ['ceil(x)', 'round up'],
+  mod: ['mod(x, y)', 'floored remainder (Excel MOD): mod(-7, 3) = 2'],
+  year: ['year(date)', 'year of an ISO YYYY-MM-DD date'],
+  month: ['month(date)', 'month of an ISO YYYY-MM-DD date'],
+  day: ['day(date)', 'day of an ISO YYYY-MM-DD date'],
+  log: ['log(x)', 'natural logarithm'],
+  log10: ['log10(x)', 'base-10 logarithm'],
+  exp: ['exp(x)', 'e to the x'],
+  sqrt: ['sqrt(x)', 'square root'],
+  pow: ['pow(x, y)', 'x to the y (same as x ^ y)'],
+  min: ['min(a, b, …)', 'smallest non-blank argument'],
+  max: ['max(a, b, …)', 'largest non-blank argument'],
+  clamp: ['clamp(x, lo, hi)', 'x limited to lo…hi'],
+  bin: ['bin(x, w[, origin])', "lower edge of x's bin of width w"],
+  lerp: ['lerp(a, b, t)', 'a + (b − a)·t — t = 0 gives a, 1 gives b (not clamped)'],
+  remap: ['remap(x, a1, b1, a2, b2)', 'x rescaled from a1…b1 onto a2…b2 (not clamped)'],
+  interp: ['interp(x, x1, y1, x2, y2, …)', 'piecewise-linear through (xi, yi) pairs; flat beyond the ends'],
+  smoothstep: ['smoothstep(a, b, x)', 'smooth 0→1 ramp as x goes a→b (3t² − 2t³, clamped)'],
+  ifnum: ['ifnum(x, default)', 'x if numeric, else default'],
+  coalesce: ['coalesce(a, b, …)', 'first non-blank argument'],
+  nullif: ['nullif(x, v)', 'blank when x = v (scrub −99 sentinels)'],
+  isnum: ['isnum(x)', 'true when x is a number'],
+  isnan: ['isnan(x)', 'true when x is present but not a number'],
+  isblank: ['isblank(x)', 'true when x is blank'],
+  isfilled: ['isfilled(x)', 'true when x is not blank'],
+  upper: ['upper(s)', 'upper case'],
+  lower: ['lower(s)', 'lower case'],
+  trim: ['trim(s)', 'strip surrounding spaces'],
+  len: ['len(s)', 'number of characters'],
+  left: ['left(s, n)', 'first n characters'],
+  right: ['right(s, n)', 'last n characters'],
+  substr: ['substr(s, start[, len])', 'substring, 1-based start'],
+  replace: ['replace(s, find, repl)', 'replace every literal find with repl'],
+  concat: ['concat(a, b, …)', 'join as text, skipping blanks'],
+};
+
 const CMP_OPS = ['=', '!=', '<', '>', '<=', '>=', '==', '<>'];
 const VALUE_KW = ['in', 'contains', 'like', 'matches'];
 const RESET_KW = ['and', 'or', 'not', 'between'];        // crossing one of these ends "this comparison"
@@ -97,7 +141,7 @@ export function complete(src, pos, ctx = {}) {
   // default: an operand position → columns + functions (+ leading `not`).
   // Non-plain names emit the backtick escape (quoteIdent — the pandas convention).
   for (const c of columns) if (pre(c.name)) opts.push({ value: quoteIdent(c.name), kind: 'column', detail: c.type });
-  for (const fn of Object.keys(CALLFNS)) if (pre(fn)) opts.push({ value: fn + '(', kind: 'function' });
+  for (const fn of Object.keys(CALLFNS)) if (pre(fn)) { const d = FNDOC[fn]; opts.push(d ? { value: fn + '(', kind: 'function', detail: d[0], doc: d[1] } : { value: fn + '(', kind: 'function' }); }
   if (D.aggregates) for (const fn of Object.keys(AGGREGATES)) if (!CALLFNS[fn] && pre(fn)) opts.push({ value: fn + '(', kind: 'function', detail: 'repeat aggregate' });
   if (pre('not')) opts.push({ value: 'not', kind: 'keyword' });
   return { from, to, options: opts.slice(0, 50) };

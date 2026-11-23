@@ -8,5 +8,5 @@ export { evaluate, evalBool, constraintValid } from './eval.js';
 export { compile, compileValue, compileBool } from './compile.js';
 export { compileChunk, compileChunkBool } from './compile-chunk.js';
 export { deps, validate, canMatch } from './analyze.js';
-export { complete } from './complete.js';
+export { complete, FNDOC } from './complete.js';
 export { isBlank, num, FN, aggregate } from './runtime.js';

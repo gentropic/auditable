@@ -537,3 +537,121 @@ test('matches — patterns that can backtrack catastrophically are parse errors'
   assert.equal(validate('s matches "(a+)+$"', ['s']).ok, false);
   assert.equal(evalBool('s like "%a%b%"', { s: 'zzazb' }), true);       // like builds no groups: never rejected
 });
+
+// ── interpolation: lerp / remap / interp / smoothstep ───────────────────────
+test('lerp / remap / smoothstep: values, blanks, degenerate ranges', () => {
+  const E = (s, v) => evaluate(s, v || {});
+  assert.equal(E('lerp(10, 20, 0)'), 10);
+  assert.equal(E('lerp(10, 20, 1)'), 20);
+  assert.equal(E('lerp(10, 20, 0.25)'), 12.5);
+  assert.equal(E('lerp(10, 20, 2)'), 30);                  // t is NOT clamped
+  assert.equal(E('lerp(10, 20, -1)'), 0);
+  assert.equal(E('lerp(A, 20, 0.5)', { A: null }), null);   // blank in → blank out
+  assert.equal(E('lerp(10, 20, T)', { T: 'x' }), null);
+  assert.equal(E('remap(5, 0, 10, 0, 1)'), 0.5);
+  assert.equal(E('remap(15, 0, 10, 0, 1)'), 1.5);           // not clamped
+  assert.equal(E('remap(5, 0, 10, 100, 0)'), 50);           // reversed target range
+  assert.equal(E('remap(5, 10, 0, 0, 1)'), 0.5);            // reversed source range
+  assert.equal(E('remap(5, 3, 3, 0, 1)'), null);            // a1 = b1 → blank
+  assert.equal(E('remap(X, 0, 10, 0, 1)', { X: null }), null);
+  assert.equal(E('clamp(remap(15, 0, 10, 0, 1), 0, 1)'), 1);
+  assert.equal(E('smoothstep(0, 1, 0.5)'), 0.5);
+  assert.equal(E('smoothstep(0, 1, -3)'), 0);
+  assert.equal(E('smoothstep(0, 1, 7)'), 1);
+  assert.equal(E('smoothstep(0, 10, 2.5)'), 0.15625);
+  assert.equal(E('smoothstep(2, 2, 1)'), 0);                // a = b → a step
+  assert.equal(E('smoothstep(2, 2, 2)'), 1);
+  assert.equal(E('smoothstep(0, 1, X)', { X: null }), null);
+});
+
+test('interp: knots, ends, blanks, runtime sort, compile-time validation', () => {
+  const D = 'interp(FE, 20, 2.7, 45, 3.4, 65, 4.3)';     // grade → density
+  const E = (fe) => evaluate(D, { FE: fe });
+  assert.equal(E(20), 2.7);                                 // on a knot → that knot's y exactly
+  assert.equal(E(45), 3.4);
+  assert.equal(E(65), 4.3);
+  assert.equal(E(10), 2.7);                                 // flat below the first knot
+  assert.equal(E(80), 4.3);                                 // flat above the last
+  assert.ok(Math.abs(E(55) - 3.85) < 1e-12);
+  assert.ok(Math.abs(E(32.5) - 3.05) < 1e-12);
+  assert.equal(E(null), null);
+  assert.equal(E('junk'), null);
+  assert.equal(evaluate('interp(5, 0, 0, 10, 100)'), 50);
+  assert.equal(evaluate('interp(5, 0, A, 10, 100)', { A: null }), null);   // ANY blank arg → blank
+  assert.equal(evaluate('interp(-5, -10, 1, 0, 3)'), 2);                     // negative literal knots
+  // non-literal knots in reverse order: sorted at runtime — same curve
+  const rev = { FE: 55, a: 65, b: 45, c: 20 };
+  assert.ok(Math.abs(evaluate('interp(FE, a, 4.3, b, 3.4, c, 2.7)', rev) - 3.85) < 1e-12);
+  assert.equal(evaluate('interp(FE, a, 4.3, b, 3.4, c, 2.7)', { ...rev, FE: 10 }), 2.7);
+  // duplicated knot (non-literal): a step, right-continuous, never a ÷0
+  assert.equal(evaluate('interp(X, 0, 0, K, 1, K, 5, 20, 5)', { X: 10, K: 10 }), 5);
+  assert.equal(evaluate('interp(X, 0, 0, K, 1, K, 5, 20, 5)', { X: 5, K: 10 }), 0.5);
+  // validation
+  assert.throws(() => parse('interp(FE, 65, 4.3, 45, 3.4)'), /increasing/);
+  assert.throws(() => parse('interp(FE, 20, 2.7, 20, 3.4)'), /increasing/);
+  assert.throws(() => parse('interp(FE, 20, 2.7, 45)'), /pairs/);
+  assert.throws(() => parse('interp(FE, 20, 2.7)'), /at least two/);
+  assert.throws(() => parse('remap(1, 2, 3)'), /expects 5/);
+  assert.throws(() => parse('lerp(1, 2)'), /expects 3/);
+  const v = validate('interp(FE, 65, 4.3, 45, 3.4)', ['FE']);
+  assert.equal(v.ok, false); assert.equal(v.errors[0].kind, 'parse'); assert.match(v.errors[0].message, /increasing/);
+  assert.deepEqual(deps('interp(FE, a, 1, b, 2) + remap(X, 0, 1, lo, hi) + lerp(P, Q, R) + smoothstep(0, 1, S)').sort(),
+    ['FE', 'P', 'Q', 'R', 'S', 'X', 'a', 'b', 'hi', 'lo']);
+});
+
+test('interp family: completion offers name + signature + doc', () => {
+  const r = complete('inte', 4, { columns: ['FE'] });
+  const o = r.options.find((x) => x.value === 'interp(');
+  assert.ok(o && o.kind === 'function');
+  assert.equal(o.detail, 'interp(x, x1, y1, x2, y2, …)');
+  assert.match(o.doc, /piecewise-linear/);
+  for (const fn of ['lerp', 'remap', 'smoothstep']) {
+    const c = complete(fn.slice(0, 3), 3, {}).options.find((x) => x.value === fn + '(');
+    assert.ok(c && c.detail.startsWith(fn + '(') && c.doc, fn);
+  }
+});
+
+test('interp family PARITY: evaluate ≡ compile ≡ compileChunk over a row batch', () => {
+  const n = 301;
+  const feT = new Float64Array(n), feJ = new Array(n), k1 = new Array(n), lito = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const blank = i % 17 === 4;
+    feT[i] = blank ? NaN : (i % 90) - 5;                    // spans below/above the ends and lands on knots
+    feJ[i] = blank ? null : String(feT[i]);
+    k1[i] = i % 23 === 7 ? null : 30 + (i % 5);             // a per-row knot (non-literal, sometimes blank)
+    lito[i] = ['OX', 'TR', 'SULF'][i % 3];
+  }
+  feT[10] = Infinity;                                       // ±Inf reads as blank in the row paths
+  feJ[10] = 'Infinity';
+  const columns = ['FE', 'K1', 'LITO'];
+  const exprs = [
+    'interp(FE, 20, 2.7, 45, 3.4, 65, 4.3)',
+    'interp(FE, 65, 4.3, K1, 3.0, 20, 2.7)',                // non-literal knot → runtime sort, generic path
+    'interp(FE, -1, 0, 0, 1)',
+    'lerp(2.7, 4.3, FE / 100)', 'lerp(FE, K1, 0.5)', 'lerp(FE, 10, LITO)',
+    'remap(FE, 20, 65, 0, 1)', 'remap(FE, K1, K1, 0, 1)', 'remap(FE, 0, 100, K1, 1)',
+    'clamp(remap(FE, 20, 65, 0, 1), 0, 1)',
+    'smoothstep(20, 65, FE)', 'smoothstep(K1, K1, FE)', 'smoothstep(0, K1, FE)',
+    'interp(FE, 20, 2.7, 65, 4.3) * 2 > 7', 'if(LITO = "OX", interp(FE, 0, 0, 80, 1), lerp(0, 1, FE / 80))',
+    'lerp(FE, blank, 0.5)', 'interp(FE, 0, blank, 10, 1)',
+  ];
+  for (const fe of [feT, feJ]) {
+    const cols = [fe, k1, lito];
+    for (const e of exprs) {
+      const ast = parse(e), rowFn = compile(ast, columns), chunkFn = compileChunk(ast, columns);
+      for (const m of [n, 50]) {
+        const { t, buf } = chunkFn(cols, m);
+        for (let i = 0; i < m; i++) {
+          const row = [fe[i], k1[i], lito[i]];
+          const tree = evaluate(ast, { FE: fe[i], K1: k1[i], LITO: lito[i] });
+          const want = rowFn(row);
+          const got = t === 'num' ? (buf[i] !== buf[i] ? null : buf[i])
+            : t === 'bool' ? (buf[i] === 2 ? null : buf[i] === 1)
+            : (buf[i] === undefined ? null : buf[i]);
+          assert.deepEqual(want, tree, `compile≠evaluate row ${i} of "${e}"`);
+          assert.deepEqual(got, want, `chunk≠compile row ${i} of "${e}" (typed=${fe === feT}, n=${m})`);
+        }
+      }
+    }
+  }
+});

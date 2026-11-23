@@ -105,12 +105,22 @@ profile's additions; Hopper's stored form definitions depend on those meanings.
 | control | `if(cond, then, else)` — the `blank` literal makes `if(AU = -99, blank, AU)` work |
 | rounding | `round(x[, n])` · `int(x)` (truncates) · `floor(x)` · `ceil(x)` · `abs(x)` · `mod(x, y)` (floored, Excel: `mod(-7,3)=2`) |
 | binning | `bin(x, w[, origin])` · `clamp(x, lo, hi)` |
+| interpolation | `lerp(a, b, t)` · `remap(x, a1, b1, a2, b2)` (blank when a1 = b1) · `interp(x, x1, y1, x2, y2, …)` (piecewise-linear, flat beyond the ends) · `smoothstep(a, b, x)` — none clamp except smoothstep; any blank argument → blank |
 | dates | `year(s)` · `month(s)` · `day(s)` — off an ISO `YYYY-MM-DD` string |
 | math | `log` (ln) · `log10` (the geochem transform) · `exp` · `sqrt` · `pow(x, y)` · `min(…)` · `max(…)` |
 | casts | `ifnum(x, default)` · `coalesce(a, b, …)` — the **only** way a blank becomes a value |
 | sentinels | `nullif(x, v)` — `nullif(AU, -99)` scrubs the −99/−999 missing-value convention to blank |
 | tests | `isnum(x)` · `isnan(x)` (present but non-numeric) · `isblank(x)` · `isfilled(x)` |
 | strings | `upper` · `lower` · `trim` · `len` · `left(s,n)` · `right(s,n)` · `substr(s,start[,len])` (1-based, SQL MID) · `replace(s,find,repl)` (literal, all) · `concat(…)` (skips blanks) |
+
+Interpolation: `interp(FE, 20, 2.7, 45, 3.4, 65, 4.3)` is a grade → density curve
+without an `if()` ladder. It needs x plus at least two `(xi, yi)` pairs (an odd
+count is a parse error). Literal knot xs must be **strictly increasing** — out of
+order is a parse error, since a misordered literal curve is a typo; knots that are
+columns/expressions are sorted at runtime (a duplicated knot is a right-continuous
+step). `remap` and `lerp` don't clamp — wrap `clamp()`. `smoothstep(a, a, x)` is a
+step (0 below a, 1 at or above). The columnar engine runs all four as f64 loops
+(interp when its knots are literal) over the same kernels as the row paths.
 
 String semantics: blank in → blank out (`len(blank)` is blank, not 0); results
 that come out empty fold to blank (`''` ≡ blank in this model); numbers stringify

@@ -20,7 +20,10 @@ import { asAst } from './parse.js';
 import { deps } from './analyze.js';
 import { evaluate } from './eval.js';
 import { indexMap } from './compile.js';
-import { makeNum, isBlank, eq, compare, contains, inSet, matches, makeRegExp, FN } from './runtime.js';
+import { makeNum, isBlank, eq, compare, contains, inSet, matches, makeRegExp, FN, lerpK, remapK, smoothK, sortKnots, interpK } from './runtime.js';
+
+// fixed-arity all-numeric functions with an f64 fast loop: name → kernel(...numbers)
+const NUMK = { lerp: lerpK, remap: remapK, smoothstep: smoothK };
 
 const isNumArr = (a) => a instanceof Float64Array;
 const CMP_INV = { '<': '>', '>': '<', '<=': '>=', '>=': '<=', '=': '=', '!=': '!=' };
@@ -244,6 +247,45 @@ export function compileChunk(exprOrAst, columns, opts = {}) {
               const cv = c.s !== undefined ? c.s === true : (c.t === 'bool' ? C[i] === 1 : bget(c.t, C, i) === true);
               out[i] = cv ? (a.s !== undefined ? a.s : bget(a.t, A, i)) : (b.s !== undefined ? b.s : bget(b.t, B, i));
             }
+            return out;
+          } };
+        }
+        if (NUMK[node.fn]) {                               // FAST: lerp/remap/smoothstep — every arg numeric (scalar or f64 vector)
+          const K = NUMK[node.fn], ks = args.map((p) => (p.s !== undefined ? N(p.s) : undefined));
+          if (ks.some((k) => k === null)) return { s: null };            // a blank literal arg → blank everywhere
+          const vs = args.map((p, j) => (ks[j] === undefined ? numVec(p) : null)), m = args.length, O = f64();   // m is 3 or 5 (arity-checked at parse)
+          return { t: 'num', run: (ctx) => {
+            const n = ctx.n, out = O(n), V = vs.map((v) => (v ? v(ctx) : null));
+            // direct-call loops by arity (apply() + an args array cost ~3× here). A NaN or
+            // ±Inf argument is blank — N() reads both as blank in the row paths; x − x ≠ 0
+            // catches both — and so is the whole result.
+            const A = V[0], B = V[1], C = V[2], a0 = ks[0], b0 = ks[1], c0 = ks[2];
+            if (m === 3) {
+              for (let i = 0; i < n; i++) {
+                const a = A ? A[i] : a0, b = B ? B[i] : b0, c = C ? C[i] : c0;
+                if (a - a !== 0 || b - b !== 0 || c - c !== 0) { out[i] = NaN; continue; }
+                const r = K(a, b, c); out[i] = r === null ? NaN : r;
+              }
+            } else {
+              const D = V[3], E = V[4], d0 = ks[3], e0 = ks[4];
+              for (let i = 0; i < n; i++) {
+                const a = A ? A[i] : a0, b = B ? B[i] : b0, c = C ? C[i] : c0, d = D ? D[i] : d0, e = E ? E[i] : e0;
+                if (a - a !== 0 || b - b !== 0 || c - c !== 0 || d - d !== 0 || e - e !== 0) { out[i] = NaN; continue; }
+                const r = K(a, b, c, d, e); out[i] = r === null ? NaN : r;
+              }
+            }
+            return out;
+          } };
+        }
+        if (node.fn === 'interp' && args.slice(1).every((p) => p.s !== undefined)) {   // FAST: a literal curve over a column
+          const kv = args.slice(1).map((p) => N(p.s));
+          if (kv.some((k) => k === null) || (args[0].s !== undefined && N(args[0].s) === null)) return { s: null };
+          const xs = [], ys = []; for (let j = 0; j < kv.length; j += 2) { xs.push(kv[j]); ys.push(kv[j + 1]); }
+          sortKnots(xs, ys);
+          const a = numVec(args[0]), O = f64();
+          return { t: 'num', run: (ctx) => {
+            const n = ctx.n, out = O(n), X = a(ctx);
+            for (let i = 0; i < n; i++) { const x = X[i]; if (x - x !== 0) { out[i] = NaN; continue; } const r = interpK(x, xs, ys); out[i] = r === null ? NaN : r; }
             return out;
           } };
         }

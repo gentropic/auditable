@@ -27,6 +27,7 @@ export const CALLFNS = {
   if: [3, 3], round: [1, 2], int: [1, 1], abs: [1, 1], floor: [1, 1], ceil: [1, 1], mod: [2, 2],
   year: [1, 1], month: [1, 1], day: [1, 1],
   log: [1, 1], log10: [1, 1], exp: [1, 1], sqrt: [1, 1], pow: [2, 2], min: [1, Infinity], max: [1, Infinity], clamp: [3, 3], bin: [2, 3],
+  lerp: [3, 3], remap: [5, 5], interp: [5, Infinity], smoothstep: [3, 3],
   ifnum: [2, 2], coalesce: [1, Infinity], nullif: [2, 2], isnum: [1, 1], isnan: [1, 1], isblank: [1, 1], isfilled: [1, 1],
   upper: [1, 1], lower: [1, 1], trim: [1, 1], len: [1, 1], left: [2, 2], right: [2, 2], substr: [2, 3], replace: [3, 3], concat: [1, Infinity],
 };
@@ -46,6 +47,22 @@ export class ExprParseError extends Error {
   constructor(msg) { super('expr parse error: ' + msg); this.name = 'ExprParseError'; }
 }
 function fail(msg) { throw new ExprParseError(msg); }
+// interp(x, x1, y1, x2, y2, …): x then PAIRS, at least two of them. When the knot xs
+// are literal numbers they must be strictly increasing — caught here, at compile
+// time, since an out-of-order literal curve is a typo. Non-literal knots (columns,
+// expressions) are sorted at runtime instead.
+const litNum = (n) => (n && n.t === 'num' ? Number(n.v) : n && n.t === 'neg' && n.e && n.e.t === 'num' ? -Number(n.e.v) : null);
+function checkInterp(args) {
+  if (args.length < 5) fail(`interp() needs x and at least two (xi, yi) pairs, e.g. interp(FE, 20, 2.7, 65, 4.3) — got ${args.length} argument(s)`);
+  if ((args.length - 1) % 2 !== 0) fail(`interp() expects x, then (xi, yi) pairs — got ${args.length - 1} value(s) after x, which is not a whole number of pairs`);
+  let prev = null;
+  for (let j = 1; j < args.length; j += 2) {
+    const xi = litNum(args[j]);
+    if (xi === null || !Number.isFinite(xi)) { prev = null; continue; }
+    if (prev !== null && !(xi > prev)) fail(`interp() knots must be in increasing x — ${xi} follows ${prev}`);
+    prev = xi;
+  }
+}
 
 // ── lexer ──────────────────────────────────────────────────────────────────
 // Bare field refs are case-insensitive idents of [A-Za-z_][A-Za-z0-9_]*, and a
@@ -231,6 +248,7 @@ export function parse(src, opts) {
         const args = [];
         if (!op(')')) { args.push(expr()); while (op(',')) { i++; args.push(expr()); } }
         eatOp(')');
+        if (lw === 'interp') checkInterp(args);
         const [lo, hi] = CALLFNS[lw];
         if (args.length < lo || args.length > hi) fail(`${lw}() expects ${lo === hi ? lo : (hi === Infinity ? `${lo}+` : `${lo}–${hi}`)} argument(s), got ${args.length}`);
         return { t: 'call', fn: lw, args, start: t.start, end: toks[i - 1].end };   // full call extent

@@ -63,6 +63,16 @@ export const FN = {
   min: (a, N) => { const ns = a.map((v) => N(v)).filter((x) => x !== null); return ns.length ? Math.min(...ns) : null; },
   max: (a, N) => { const ns = a.map((v) => N(v)).filter((x) => x !== null); return ns.length ? Math.max(...ns) : null; },
   clamp: (a, N) => { const x = N(a[0]), lo = N(a[1]), hi = N(a[2]); return (x === null || lo === null || hi === null) ? null : Math.min(Math.max(x, lo), hi); },
+  lerp: (a, N) => { const x = N(a[0]), y = N(a[1]), t = N(a[2]); return (x === null || y === null || t === null) ? null : lerpK(x, y, t); },
+  remap: (a, N) => { const v = a.map((u) => N(u)); return v.some((u) => u === null) ? null : remapK(v[0], v[1], v[2], v[3], v[4]); },
+  smoothstep: (a, N) => { const lo = N(a[0]), hi = N(a[1]), x = N(a[2]); return (lo === null || hi === null || x === null) ? null : smoothK(lo, hi, x); },
+  interp: (a, N) => {                                     // piecewise-linear through (xi, yi) pairs; flat beyond the ends
+    const x = N(a[0]); if (x === null) return null;
+    const k = (a.length - 1) >> 1, xs = new Array(k), ys = new Array(k);
+    for (let j = 0; j < k; j++) { const xi = N(a[1 + 2 * j]), yi = N(a[2 + 2 * j]); if (xi === null || yi === null) return null; xs[j] = xi; ys[j] = yi; }
+    sortKnots(xs, ys);
+    return interpK(x, xs, ys);
+  },
   bin: (a, N) => { const x = N(a[0]), w = N(a[1]); if (x === null || w === null || w <= 0) return null; const o = a.length > 2 ? (N(a[2]) || 0) : 0; return Math.floor((x - o) / w) * w + o; },   // lower edge of x's bin (width w, optional origin)
   year: (a) => datePart(a[0], 1),
   month: (a) => datePart(a[0], 2),
@@ -98,6 +108,39 @@ export const FN = {
   },
   concat: (a) => a.map((v) => S(v) ?? '').join('') || null,   // blanks skipped (join-key building); all-blank → blank
 };
+
+// ── interpolation kernels: plain finite numbers in (callers have already turned
+// blanks away), number-or-blank out. Shared by FN (the row paths) and compile-chunk's
+// f64 fast loops, so the columnar engine can't drift from the reference.
+export function lerpK(a, b, t) { return fin(a + (b - a) * t); }
+export function remapK(x, a1, b1, a2, b2) { return a1 === b1 ? null : fin(a2 + (x - a1) * (b2 - a2) / (b1 - a1)); }
+// GLSL smoothstep: t = clamp((x − a)/(b − a), 0, 1) → 3t² − 2t³. a = b is a STEP
+// (0 below a, 1 at/above) — GLSL leaves it undefined; a step is what it tends to.
+export function smoothK(a, b, x) {
+  if (a === b) return x < a ? 0 : 1;
+  let t = (x - a) / (b - a); t = t < 0 ? 0 : t > 1 ? 1 : t;
+  return t * t * (3 - 2 * t);
+}
+// Knots in increasing x (stable — equal xi keep their order). Cheap when already sorted.
+export function sortKnots(xs, ys) {
+  let sorted = true;
+  for (let j = 1; j < xs.length; j++) if (xs[j] < xs[j - 1]) { sorted = false; break; }
+  if (sorted) return;
+  const ord = xs.map((_, j) => j).sort((p, q) => xs[p] - xs[q] || p - q);
+  const X = ord.map((j) => xs[j]), Y = ord.map((j) => ys[j]);
+  for (let j = 0; j < xs.length; j++) { xs[j] = X[j]; ys[j] = Y[j]; }
+}
+// xs sorted ascending. Below the first knot → y1, above the last → yN; between, the
+// segment with the LARGEST xk <= x (so a duplicated knot is right-continuous and no
+// segment ever has zero width). x exactly on a knot returns that knot's y exactly.
+export function interpK(x, xs, ys) {
+  const last = xs.length - 1;
+  if (x <= xs[0]) return ys[0];
+  if (x >= xs[last]) return ys[last];
+  let lo = 0, hi = last;                                  // invariant: xs[lo] <= x < xs[hi]
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (xs[m] <= x) lo = m; else hi = m; }
+  return fin(ys[lo] + (x - xs[lo]) * (ys[hi] - ys[lo]) / (xs[hi] - xs[lo]));
+}
 
 function datePart(v, g) {
   const m = isBlank(v) ? null : /^(\d{4})-(\d{2})-(\d{2})/.exec(String(v));
