@@ -36,7 +36,10 @@ let ok = true; const chk = (n, c) => { console.log(`${c ? 'ok ' : 'FAIL'} ${n}`)
 // With no flag every section runs.
 const SHARD = (() => { const a = process.argv.find((x) => x.startsWith('--shard=')); if (!a) return null; const [i, n] = a.slice(8).split('/').map(Number); if (!(n >= 1) || !(i >= 0 && i < n)) throw new Error(`bad ${a}`); return { i, n }; })();
 let _section = 0, _ran = 0;
-const take = () => { const k = _section++; const mine = !SHARD || k % SHARD.n === SHARD.i; if (mine) _ran++; return mine; };
+// --sections=a-b,c: only these section indices (0-based, ranges inclusive) — to bisect a section that
+// fails only after others ran in the same browser (they share one context: storage, workers)
+const ONLY = (() => { const a = process.argv.find((x) => x.startsWith('--sections=')); if (!a) return null; const set = new Set(); for (const part of a.slice(11).split(',')) { const [lo, hi] = part.split('-').map(Number); for (let k = lo; k <= (Number.isFinite(hi) ? hi : lo); k++) set.add(k); } return set; })();
+const take = () => { const k = _section++; const mine = (!SHARD || k % SHARD.n === SHARD.i) && (!ONLY || ONLY.has(k)); if (mine) _ran++; return mine; };
 if (SHARD) console.log(`micro-smoke2 shard ${SHARD.i + 1} of ${SHARD.n}`);
 const mkPage = async (proj) => {
   const p = await ctx.newPage(); p.on('pageerror', (e) => { console.log('PAGEERROR', e.message); ok = false; });
@@ -6399,7 +6402,7 @@ if (take()) {
     ed.addFrame({ kind: 'text', box: [f.box[0], below + 7, 160, 70], content: { md: lines.join('\n'), size: 8 } });
     const bytes = await M_.figurePdfBytes(M_.currentFigure(), 72, { compress: false });
     const s = new TextDecoder('latin1').decode(bytes);
-    out.strs = [...s.matchAll(/\(((?:\\.|[^\\)])*)\) Tj/g)].map((m) => m[1]);
+    out.strs = [...s.matchAll(/Tm \(((?:\\.|[^\\)])*)\) Tj/g)].map((m) => m[1]);
     out.build = window._micro.build || null;
     await window.micro.setSection(null); await M_.applyBlockFilter('');
     return out;
@@ -7942,7 +7945,10 @@ if (take()) {
   const pdfText = async (pg) => pg.evaluate(async () => {
     const M_ = window._micro, bytes = await M_.figurePdfBytes(M_.currentFigure(), 72, { compress: false });
     const s = new TextDecoder('latin1').decode(bytes);
-    return [...s.matchAll(/\(((?:\\.|[^\\)])*)\) Tj/g)].map((m) => m[1]).find((x) => x.startsWith('Q ')) || '';
+    // only text-showing operators (`… Tm (…) Tj`): a bare `(…) Tj` match could START inside a view
+    // frame's image bytes and swallow the caption (it did, on some background colours)
+    const q = [...s.matchAll(/Tm \(((?:\\.|[^\\)])*)\) Tj/g)].map((m) => m[1]).find((x) => x.startsWith('Q ')) || '';
+    return q;
   });
   const r = await p.evaluate(async () => {
     const M_ = window._micro, out = {};

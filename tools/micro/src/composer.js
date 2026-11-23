@@ -108,7 +108,7 @@ async function completeFacts(doc, f) {
   for (const l of fx.layers) {
     const L = S.layers.find((x) => (x.label || x.name) === l.name);
     const cut = L ? sectionCutOf(L, cs) : null;
-    l.cut = !!cut; delete l.inSection;
+    l.cut = !!cut; delete l.inSection; delete l.inSectionError;
     if (cut && scope === 'section') cuts.set(l.name, { l, cut });
   }
   const baseMasks = new Map(S.layers.map((L) => [L, filterMaskOf(L)]));
@@ -121,7 +121,10 @@ async function completeFacts(doc, f) {
   if (cuts.size && countsAbout(doc, f)) {
     for (const [name, { l, cut }] of cuts) {
       try { const r = await sectionRecordMask(cut); masks.set(name, r.mask); l.inSection = r.count; }
-      catch { l.inSection = null; }                // couldn't read the positions: the field says so ('…')
+      catch (e) {                                  // couldn't read the positions: the field says so ('…') — and WHY, on the status line
+        l.inSection = null; l.inSectionError = String((e && e.message) || e);
+        $('#meta').textContent = `composer: couldn't count “${name}” inside the section — ${l.inSectionError}`;
+      }
     }
   }
   const want = new Set();
