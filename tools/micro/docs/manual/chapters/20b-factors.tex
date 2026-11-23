@@ -71,7 +71,7 @@ The \ui{mined volume · periods} selector says how micro knows which blocks were
 
 Below the selector, \ui{domain} is an optional filter on both models in any mode — \code{LITO != "WASTE"} to reconcile the ore domains only, \code{LITO = "HEMATITE"} for one of them.
 
-With volumes, a block counts by the \emph{fraction} of it inside, so a block cut by the pit wall counts in part. The fraction is measured with the same winding test as selecting by a solid (\cref{ch:geometry}), on a grid of sub-samples per block set by \ui{samples}: \ui{1 (centroid)}, \ui{2³ per block} (the default), \ui{3³} or \ui{4³}. More samples cost time — the first run measures every block against every mesh, and on a large model that is minutes, not seconds — but micro keeps the measurement on the mesh layer, so a second \ui{Run} after you add the production table or change the cutoff does not measure again.
+With volumes, a block counts by the \emph{fraction} of it inside, so a block cut by the pit wall counts in part. The fraction is measured with the same winding test as selecting by a solid (\cref{ch:geometry}), on a lattice of probe points in each block. \ui{probes} sets how many along x × y × z, freely and per axis, as in the select-by-solid dialog. The default is 2 × 2 × 2; benches cut by a pit floor want more along z than across (3 × 3 × 2 on 10 × 10 × 5~m blocks), and 1 × 1 × 1 tests only the centroid. More probes cost time — the first run measures every block against every mesh, and on a large model that is minutes, not seconds — but micro keeps the measurement on the mesh layer, so a second \ui{Run} after you add the production table or change the cutoff does not measure again.
 
 \paragraph{Nested.} Pit phases are drawn \emph{nested}: each phase's surface holds the ones before it, and the period is the difference. Tick \ui{nested (pit phases, shells)} — it is on when the window opens — and period $k$ counts the part of volume $k$ that is not in volume $k-1$. Untick it for volumes that do not overlap, such as monthly solids from a survey; then each volume counts in full, and two volumes that overlap would count the overlap twice.
 
@@ -237,6 +237,10 @@ Volumes are a list, one period each, in order:
 \begin{lstlisting}[language=yaml]
     periods: "volumes"
     nested: true
+    probes:
+      - 3
+      - 3
+      - 2
     volumes:
       - name: "2027-Q1"
         mesh: "q1.obj"
@@ -246,7 +250,7 @@ Volumes are a list, one period each, in order:
         side: "above"
 \end{lstlisting}
 
-Note that \code{nested} is off unless you say so, in a routine. Each period's mesh counts among the step's inputs, so a changed surface makes the step run again rather than reuse a cached result (\cref{ch:records}).
+Note that \code{nested} is off unless you say so, in a routine. \code{probes} is a list of three, x, y and z, as for a fraction column (\cref{ch:geometry}); a single number $n$ means $n$ × $n$ × $n$, and leaving it out means 2 × 2 × 2. Each period's mesh counts among the step's inputs, so a changed surface makes the step run again rather than reuse a cached result (\cref{ch:records}).
 
 The machine table is keyed by \col{period} and \col{quantity} (\code{tonnes}, \code{grade}, \code{metal}): \col{model}, \col{gc}, \col{mill}, \col{f1}, \col{f2}, \col{f3} for the period, and \col{c\_model} … \col{c\_f3} to date. The values a check reads are those of the \emph{last} period:
 

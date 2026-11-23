@@ -452,7 +452,7 @@ registerTool('factors', {
     periodCol: { type: 'column', doc: 'periods column: the column naming the period each block was mined in (blank = not mined) — on both models' },
     volumes: { type: 'list', item: { name: { type: 'string', required: true, doc: 'the period’s name (production rows match it)' }, mesh: { type: 'layer', required: true, doc: 'a closed solid or an open pit surface' }, side: { type: 'enum', values: ['inside', 'above', 'below'], default: 'inside', doc: 'inside (a solid) · above (a pit surface: what was mined from it up) · below' } }, doc: 'periods volumes: one mesh per period, in order — blocks counted by the fraction inside' },
     nested: { type: 'bool', default: false, doc: 'periods volumes: each volume holds the ones before it (pit phases, cumulative shells) → period k = volume k minus volume k − 1' },
-    resolution: { type: 'int', default: 2, doc: 'periods volumes: sub-samples per block edge for the fraction inside (1 = centroid, 2 = 8 per block, 3 = 27)' },
+    probes: { type: 'any', default: [2, 2, 2], doc: 'periods volumes: probes per block along x, y, z for the fraction inside — [3, 3, 2] for benches; a single n means n × n × n; [1, 1, 1] tests the centroid' },
     periodFilter: { type: 'expr', doc: 'periods filter: the blocks mined (an expression; its names must exist on both models)' },
     periodName: { type: 'string', default: 'period', doc: 'periods filter / selection: the period’s name' },
     filter: { type: 'expr', default: '', doc: 'an optional domain filter on both models, any period mode (e.g. LITO == "ORE")' },
@@ -478,7 +478,7 @@ registerTool('factors', {
     if (p.periods === 'volumes' && !(Array.isArray(p.volumes) && p.volumes.length)) errs.push('volumes: one { name, mesh, side } per period (periods: volumes)');
     if (p.periods === 'filter' && !p.periodFilter) errs.push('periodFilter: the expression keeping the mined blocks (periods: filter)');
     if (p.production) { if (!p.prodPeriod) errs.push('prodPeriod: the production table’s period column'); if (!p.prodTonnes) errs.push('prodTonnes: its tonnes column'); if (!p.prodGrade && !p.prodMetal) errs.push('prodGrade or prodMetal: the production grade, its metal, or both'); }
-    if (p.resolution != null && !(p.resolution >= 1 && p.resolution <= 6)) errs.push('resolution: 1 … 6');
+    if (p.probes != null) { const r = Array.isArray(p.probes) ? p.probes : [p.probes]; if (!(r.length === 1 || r.length === 3) || r.some((v) => !Number.isInteger(v) || v < 1)) errs.push('probes: per block — [nx, ny, nz] or one n, whole numbers ≥ 1'); }
   },
   async scan(p, ctx) { return scanFactors(factorsStOf(p), ctx.progress, ctx.signal); },
   shape(scan, p) {

@@ -82,9 +82,15 @@ export function metalFactorOf(st) {
 
 // a volume's fraction-inside lookup for one model: the dense winding sweep on the model's lattice
 // (partial blocks), or centroid membership where the lattice can't be swept (rotated)
+// probes per block along x, y, z — the same free per-axis count as select-by-solid's fraction column
+// (benches are anisotropic: 10×10×5 blocks want 3×3×2). A single number n means n×n×n.
+export function probesOf(v) {
+  const a = Array.isArray(v) ? v : (v && typeof v === 'object' ? Object.values(v) : [v, v, v]);
+  return [0, 1, 2].map((k) => Math.max(1, Math.round(+a[k] || +a[0] || 2)));
+}
 async function volumeLookup(L, meshL, side, res, cache) {
   const variant = side === 'above' || side === 'below' ? side : 'solid';
-  const key = `${L.id}|${meshL.id}|${variant}|${res}`;
+  const key = `${L.id}|${meshL.id}|${variant}|${res.join('x')}`;
   if (cache.has(key)) return cache.get(key);
   // kept on the mesh layer across runs (a re-Run after adding the production table doesn't sweep
   // again) — valid while the mesh's parse and the model's doc are the same objects (a reload or a
@@ -92,7 +98,7 @@ async function volumeLookup(L, meshL, side, res, cache) {
   const held = meshL._factorLooks && meshL._factorLooks.get(key);
   if (held && held.mesh === meshL._solidMesh && held.doc === L.docs.blockDoc) { cache.set(key, held.out); return held.out; }
   let fn = null, how = 'fraction';
-  const dense = await evalSolidOnGrid(meshL, L, { mode: 'proportion', resolution: [res, res, res], variant });
+  const dense = await evalSolidOnGrid(meshL, L, { mode: 'proportion', resolution: res, variant });
   if (dense) fn = dense.lookup;
   else {
     const SA = await meshSolidOf(meshL, variant);
@@ -116,7 +122,7 @@ export async function scanFactors(st, onProgress, signal) {
   const cutoff = st.cutoff == null || st.cutoff === '' || st.cutoff === 'none' ? null : +st.cutoff;
   if (cutoff != null && !Number.isFinite(cutoff)) throw new Error('cutoff: a number in the report grade unit, or none');
   const mode = st.periods || 'column';
-  const res = Math.max(1, Math.min(6, Math.round(+st.resolution || 2)));
+  const res = probesOf(st.resolution);
   const warnings = [], info = {}, cache = new Map();
   const onAbort = () => sbCancelActive();
   if (signal) signal.addEventListener('abort', onAbort, { once: true });
@@ -301,7 +307,7 @@ export function factorsCfgOf(st) {
     model: nm(st.model.layerId), grade: st.model.grade, modelUnit: st.model.unit || '', density: st.model.density,
     gc: nm(st.gc.layerId), gcGrade: st.gc.grade, gcUnit: st.gc.unit || '', gcDensity: st.gc.density,
     periods: st.periods, ...(st.periods === 'column' ? { periodCol: st.periodCol } : {}),
-    ...(st.periods === 'volumes' ? { volumes: st.volumes.map((v) => ({ name: v.name, mesh: nm(v.meshId), side: v.side || 'inside' })), nested: !!st.nested, resolution: +st.resolution || 2 } : {}),
+    ...(st.periods === 'volumes' ? { volumes: st.volumes.map((v) => ({ name: v.name, mesh: nm(v.meshId), side: v.side || 'inside' })), nested: !!st.nested, probes: probesOf(st.resolution) } : {}),
     ...(st.periods === 'filter' ? { periodFilter: st.periodFilter } : {}), ...(st.periods === 'filter' || st.periods === 'selection' ? { periodName: st.periodName || 'period' } : {}),
     ...(st.filter ? { filter: st.filter } : {}),
     ...(st.production && st.production.layerId != null ? { production: nm(st.production.layerId), prodPeriod: st.production.period, prodTonnes: st.production.tonnes, ...(st.production.grade ? { prodGrade: st.production.grade } : {}), ...(st.production.metal ? { prodMetal: st.production.metal } : {}), prodUnit: st.production.unit || '' } : {}),
@@ -319,7 +325,7 @@ export function factorsStOf(p, { lenient = false } = {}) {
     gc: { layerId: gcId, grade: p.gcGrade || p.grade, unit: p.gcUnit != null && p.gcUnit !== '' ? p.gcUnit : p.modelUnit || '', density: p.gcDensity != null ? p.gcDensity : p.density },
     periods: p.periods || 'column', periodCol: p.periodCol || '',
     volumes: (p.volumes || []).map((v) => ({ name: v.name, meshId: lay(v.mesh, `period “${v.name}”`), side: v.side || 'inside' })),
-    nested: !!p.nested, resolution: p.resolution || 2, periodFilter: p.periodFilter || '', periodName: p.periodName || 'period', filter: p.filter || '',
+    nested: !!p.nested, resolution: probesOf(p.probes != null ? p.probes : 2), periodFilter: p.periodFilter || '', periodName: p.periodName || 'period', filter: p.filter || '',
     production: p.production ? { layerId: lay(p.production, 'production'), period: p.prodPeriod, tonnes: p.prodTonnes, grade: p.prodGrade || '', metal: p.prodMetal || '', unit: p.prodUnit != null && p.prodUnit !== '' ? p.prodUnit : p.gradeUnit || '' } : null,
     cutoff: p.cutoff == null || p.cutoff === 'none' || p.cutoff === '' ? null : +p.cutoff, gradeUnit: p.gradeUnit || '', metalFactor: p.metalFactor, metalUnit: p.metalUnit || '',
     tolerance: p.tolerance != null ? +p.tolerance : 0.1, show: p.show || 'metal', cumulative: !!p.cumulative,
@@ -345,7 +351,7 @@ export function openFactors(L, ropts) {
   const st = {
     model: mkSide(L, gGuess), gc: mkSide(gcL, numericColsOf(gcL).includes(gGuess) ? gGuess : guessCol(numericColsOf(gcL), GRADE_RE) || numericColsOf(gcL)[0]),
     periods: 'column', periodCol: guessCol(allColsOf(L), /^(period|mined|month|mm|qtr|quarter|year|phase|mine_?per)/i),
-    volumes: meshes.length ? [{ name: 'period 1', meshId: meshes[0].id, side: 'above' }] : [], nested: true, resolution: 2,
+    volumes: meshes.length ? [{ name: 'period 1', meshId: meshes[0].id, side: 'above' }] : [], nested: true, resolution: [2, 2, 2],
     periodFilter: '', periodName: 'period', filter: '',
     production: prods.length ? (() => { const P = prods[prods.length - 1], cs = allColsOf(P); return { layerId: P.id, period: guessCol(cs, /^(period|month|mm|qtr|quarter|date|year|phase)/i) || cs[0] || '', tonnes: guessCol(cs, /^(t|tonnes|tons|tonnage|mass|dry)/i), grade: guessCol(cs, GRADE_RE), metal: guessCol(cs, /^(metal|oz|ounces|contained|recovered)/i), unit: '' }; })() : null,
     cutoff: null, gradeUnit: (L.gtUnits && L.gtUnits.grade) || '', metalFactor: '', metalUnit: '', tolerance: 0.1, show: 'metal', cumulative: false,
@@ -500,7 +506,23 @@ export function openFactors(L, ropts) {
       const nl = document.createElement('label'); nl.className = 'sw-row'; nl.title = 'each volume holds the ones before it (pit phases, cumulative shells): period k = volume k minus volume k − 1';
       const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = !!st.nested; cb.onchange = () => { st.nested = cb.checked; markStale(); };
       nl.append(cb, document.createTextNode(' nested (pit phases, shells)')); pSec.append(nl);
-      pSec.append(row('samples', sel([[1, '1 (centroid)'], [2, '2³ per block'], [3, '3³ per block'], [4, '4³ per block']], st.resolution, (v) => { st.resolution = +v; markStale(); }, 'sub-samples per block for the fraction inside — partial blocks count partially')));
+      {
+        // probes per AXIS, free — as select-by-solid's fraction column (benches want 3×3×2, not a cube)
+        st.resolution = probesOf(st.resolution);
+        const wrap = document.createElement('span'); wrap.className = 'fac-probes';
+        const tally = document.createElement('span'); tally.style.color = 'var(--muted)';
+        const tallyText = () => { const n = st.resolution[0] * st.resolution[1] * st.resolution[2]; return n === 1 ? ' = the centroid' : ` = ${n.toLocaleString()} per block`; };
+        ['x', 'y', 'z'].forEach((ax, k) => {
+          if (k) { const sp = document.createElement('span'); sp.style.color = 'var(--muted)'; sp.textContent = '×'; wrap.append(sp); }
+          const inp = document.createElement('input'); inp.type = 'number'; inp.min = '1'; inp.step = '1'; inp.value = String(st.resolution[k]); inp.style.width = '44px';
+          inp.title = `probes along ${ax}`; inp.dataset.axis = ax;
+          inp.oninput = () => { st.resolution[k] = Math.max(1, Math.round(+inp.value || 1)); tally.textContent = tallyText(); markStale(); };
+          wrap.append(inp);
+        });
+        tally.textContent = tallyText(); wrap.append(tally);
+        wrap.title = 'probes per block along x × y × z for the fraction inside — partial blocks count partially; 1 × 1 × 1 tests the centroid'; wrap.style.display = 'flex'; wrap.style.alignItems = 'center'; wrap.style.gap = '3px';
+        pSec.append(row('probes', wrap));
+      }
     } else {
       if (st.periods === 'filter') pSec.append(row('filter', txt(st.periodFilter, 'e.g. MINED == 1', (v) => { st.periodFilter = v; markStale(); }, 'the blocks mined in this period (@gcu/expr; the names must exist on both models)')));
       pSec.append(row('name', txt(st.periodName, 'period', (v) => { st.periodName = v || 'period'; markStale(); }, 'the period’s name — the production row it is matched with')));

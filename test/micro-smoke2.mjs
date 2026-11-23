@@ -8485,8 +8485,12 @@ if (take()) {
     const m = window._micro, out = {};
     const t1 = await m.runTool('factors', { ...base, periods: 'column', periodCol: 'MM' }, { routine: true });
     out.col = { cols: t1.table.columns.join(','), key: t1.table.key.join(','), rows: t1.table.rows, v: t1.values, warn: t1.warnings };
-    const t2 = await m.runTool('factors', { ...base, periods: 'volumes', volumes: [{ name: 'M1', mesh: 'm1.obj', side: 'inside' }, { name: 'M2', mesh: 'm2.obj', side: 'inside' }], nested: true, resolution: 2 }, { routine: true });
+    const t2 = await m.runTool('factors', { ...base, periods: 'volumes', volumes: [{ name: 'M1', mesh: 'm1.obj', side: 'inside' }, { name: 'M2', mesh: 'm2.obj', side: 'inside' }], nested: true, probes: 2 }, { routine: true });
     out.vol = { rows: t2.table.rows, v: t2.values };
+    // probes are PER AXIS and free (as select-by-solid's fraction column): the M2 cut is a horizontal plane
+    // through the middle of a block level, so z probes see the half and xy probes alone can't
+    const vz = (res) => m.runTool('factors', { ...base, periods: 'volumes', volumes: [{ name: 'M1', mesh: 'm1.obj', side: 'inside' }, { name: 'M2', mesh: 'm2.obj', side: 'inside' }], nested: true, probes: res }, { routine: true }).then((t) => t.table.rows.find((x) => x[0] === 'M2' && x[1] === 'tonnes')[2]);
+    out.probes = { z4: await vz([1, 1, 4]), xy4: await vz([4, 4, 1]), z10: await vz([1, 1, 10]), bad: m.checkParams('factors', { ...base, periods: 'volumes', volumes: [{ name: 'M1', mesh: 'm1.obj' }], probes: [2, 2] }, { routine: true }).errors.join('; ') };
     out.noCut = m.checkParams('factors', { ...base, cutoff: undefined, density: undefined, periods: 'selection' }, { routine: true }).errors.join('; ');
     out.cut = (await m.runTool('factors', { ...base, periods: 'column', periodCol: 'MM', cutoff: 43.5 })).values;   // only M1 (FE 44; grade control 41.8 < 43.5 → nothing)
     return out;
@@ -8506,6 +8510,9 @@ if (take()) {
   chk(`factors (nested solids): M1 ${row(vr, 'M1', 'tonnes')[2]} / ${row(vr, 'M1', 'tonnes')[3]} t; M2 — half of the resource level, all of grade control's — ${row(vr, 'M2', 'tonnes')[2]} / ${row(vr, 'M2', 'tonnes')[3]} t, F1 ${row(vr, 'M2', 'tonnes')[5]} / ${row(vr, 'M2', 'grade')[5]}`,
     near(row(vr, 'M1', 'tonnes')[2], 250000) && near(row(vr, 'M1', 'tonnes')[3], 275000) && near(row(vr, 'M1', 'tonnes')[5], 1.1)
     && near(row(vr, 'M2', 'tonnes')[2], 125000) && near(row(vr, 'M2', 'tonnes')[3], 137500) && near(row(vr, 'M2', 'tonnes')[5], 1.1) && near(row(vr, 'M2', 'grade')[5], 0.95) && near(row(vr, 'M2', 'grade')[2], 43));
+  const pr = r.probes;
+  chk(`factors probes are per axis and uncapped: 1×1×4 sees the half level (${pr.z4} t), 4×4×1 can't (${pr.xy4} t), 1×1×10 is past the old cap of 6 (${pr.z10} t); a 2-item list is refused (“${pr.bad}”)`,
+    near(pr.z4, 125000) && !near(pr.xy4, 125000) && near(pr.z10, 125000) && /probes: per block/.test(pr.bad));
   const blankV = (x) => x == null || Number.isNaN(x);
   chk(`factors: a routine states cutoff and density and can't use the selection (“${r.noCut}”); cutoff 43.5 keeps only M1's resource → F1 tonnes ${r.cut.f1_t} (grade control has none above it), F1 grade and F2 tonnes blank, not ∞ (${r.cut.f1_g}, ${r.cut.f2_t})`,
     /cutoff: a routine must state it/.test(r.noCut) && /density: a routine must state it/.test(r.noCut) && /periods: a routine allows/.test(r.noCut)
