@@ -25,7 +25,7 @@ export default {
   'Export a section series…': 'Exportar uma série de seções…', 'Section series…': 'Série de seções…', 'section series': 'série de seções',
   'Record a turntable video…': 'Gravar vídeo girando…', 'Turntable video…': 'Vídeo girando…', 'turntable': 'vídeo girando',
   'Export mesh…': 'Exportar malha…', 'Export mesh(es)…': 'Exportar malha(s)…', 'export mesh': 'exportar malha',
-  'Export as .wfr…': 'Exportar como .wfr…', 'Export as ESRI ASCII grid…': 'Exportar como grid ESRI ASCII…',
+  'Export as .wfr…': 'Exportar como .wfr…', 'Export grid…': 'Exportar grid…',
   'Convert files to .wfr…': 'Converter arquivos para .wfr…', 'Convert to .wfr…': 'Converter para .wfr…', 'convert to .wfr': 'converter para .wfr',
   'Store meshes in the project as .wfr': 'Guardar malhas no projeto como .wfr',
   'Store as Parquet…': 'Guardar como Parquet…', 'store block models as Parquet': 'guardar modelos de blocos como Parquet',

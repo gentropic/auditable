@@ -1,6 +1,6 @@
 # @gcu/gtiff
 
-A minimal, **WASM-free** GeoTIFF reader. Pure JS; deflate rides the
+A minimal, **WASM-free** GeoTIFF reader (and a float32 writer). Pure JS; deflate rides the
 platform's `DecompressionStream`, so Sealed builds (CSP `connect-src
 'none'`, no WASM) can carry it without breaking their claims.
 
@@ -39,6 +39,19 @@ const grid = await gridFromGTiff(g /*, level */);
 Structural failures throw with plain messages; ignorable oddities land in
 `warnings`.
 
+## What it writes
+
+`writeGeoTiff(grid, opts) → Promise<Uint8Array>` — one band, float32,
+classic little-endian TIFF, strips (~256 KB each) or square tiles,
+compression none or **deflate via the platform's `CompressionStream`**
+(still WASM-free) with optional floating-point predictor 3. Geo:
+ModelPixelScale + ModelTiepoint (PixelIsArea, tiepoint at the NW corner),
+`GDAL_NODATA` (42113, `nan` allowed), ImageDescription, and a
+GeoKeyDirectory **only for a known EPSG code** (`opts.crs = 'EPSG:n'`;
+4000–4999 → geographic, else projected) — a CRS is never invented.
+Classic TIFF caps the file at 4 GB. Not yet: overviews / COG layout,
+multi-band, BigTIFF.
+
 ## Verification
 
 `test/gtiff.test.mjs` encodes its own fixtures (an in-test TIFF writer
@@ -50,8 +63,8 @@ files (int32 + float32 LZW, deflate).
 ## Roadmap
 
 windowed reads (`readWindow` — decode only the tiles a view touches),
-BigTIFF, a writer (mesh→grid rasterize export wants ESRI ASCII first,
-GeoTIFF later). JPEG-in-TIFF (orthophotos) without a JS JPEG decoder:
+BigTIFF, the writer's COG layout (overviews + the ghost header) and
+multi-band output. JPEG-in-TIFF (orthophotos) without a JS JPEG decoder:
 stitch JPEGTables (tag 347) + each tile's bytes into a JFIF blob and let
 the BROWSER decode it (`createImageBitmap`) — the platform already ships
 the codec, same move as deflate-via-DecompressionStream.

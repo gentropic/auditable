@@ -133,7 +133,7 @@ function parseGeo(tags, warnings) {
     }
   }
   const nd = tags.get(42113);                              // GDAL_NODATA (ascii)
-  if (typeof nd === 'string') { const v = parseFloat(nd); if (Number.isFinite(v)) geo.nodata = v; }
+  if (typeof nd === 'string') { const v = parseFloat(nd); if (Number.isFinite(v)) geo.nodata = v; else if (/^\s*[+-]?nan\s*$/i.test(nd)) geo.nodata = NaN; }   // GDAL writes "nan" for float rasters
   return geo;
 }
 

@@ -15,6 +15,7 @@
 import { S, layerById } from './state.js';
 import { layerTableHeader, schemaExt, layerRecords, attrRowCountOf } from './records.js';
 import { runExport, exportColumnsOf } from './export.js';
+import { buildGridExport, gridBandsOf, GRID_EXPORT_FMTS } from './grid-export.js';
 import { modelQa, qaFindings } from './modelqa.js';
 import { scanXtabOf, xtabModel, xtabValue } from './xtab.js';
 import { scanScatterOf, scanQqOf, xySpec, xyTSV, QQ_P, BINS as XY_BINS } from './xyplot.js';
@@ -32,6 +33,7 @@ import { meshQa } from '../../../ext/geometry/index.js';
 import { meshVertexData } from './records.js';
 import { numericColsOf, computeResourceTable, supportMeasure } from './analysis.js';
 import { validationRun } from './validation.js';
+import { scanContact, contactRows, contactValuesOf, contactChartSpec, contactHumanTSV, contactAmountCol } from './contact.js';
 import { gradeUnitFactor, niceStep, scopeMask, scopeMissing, rangesFromCfg } from './analysis-ui.js';
 import { gtCuts } from './scanner.js';
 import { scanGTSeries, gtRows, gtChartSpec, gtHumanTSV } from './gt.js';
@@ -354,6 +356,67 @@ registerTool('validation', {
   },
 });
 
+// ── contact analysis: a value binned by distance to a boundary, both sides ───────────────────────
+// mode downhole: every A→B transition along each hole (a drillhole layer's domain column); mode
+// surface: each record's signed distance to a wireframe (closed: negative inside; open: negative
+// below), samples and blocks as separate series. Sides: the NEGATIVE side is domain A / inside /
+// below. table: series · side · center · mean · metres (downhole) | weight (surface) · count.
+// values (the first series bare, later series suffixed _2, _3 …): step = mean_inside − mean_outside
+// (the `near` bins either side of the contact), ratio, mean_inside, mean_outside, n, n_inside,
+// n_outside, slope_inside / slope_outside (per m of signed distance), mean_all_inside /
+// mean_all_outside; step_ratio_k = series k's step / the first's; downhole: contacts, holes.
+// A hard contact: a large step, flat sides; a soft one: a small step, both slopes the same sign.
+registerTool('contact', {
+  label: 'contact analysis',
+  params: {
+    mode: { type: 'enum', values: ['downhole', 'surface'], default: 'downhole', doc: 'downhole: transitions along each hole · surface: signed distance to a wireframe' },
+    layer: { type: 'layer', doc: 'the layer series without their own layer read' },
+    series: { type: 'list', item: SERIES, required: true, min: 1, doc: 'one curve per series: col, weight (× the support: an interval’s length, a block’s volume), filter' },
+    domain: { type: 'column', doc: 'downhole: the domain column (text) on the drillhole layer' },
+    domA: { type: 'string', doc: 'downhole: domain A — the negative side' },
+    domB: { type: 'string', default: '', doc: 'downhole: domain B — the positive side (blank = any other domain)' },
+    direction: { type: 'enum', values: ['both', 'AtoB', 'BtoA'], default: 'both', doc: 'downhole: both (pooled) · AtoB (A above B down the hole) · BtoA' },
+    minRun: { type: 'number', default: 0, doc: 'downhole: each side’s run at least this long, m (skips slivers)' },
+    maxGap: { type: 'number', doc: 'downhole: the widest unsampled gap a contact or a run may bridge, m (default: binWidth)' },
+    surface: { type: 'layer', doc: 'surface: the mesh layer — a closed solid (negative inside) or an open surface (negative below)' },
+    binWidth: { type: 'number', routine: 'required', why: 'the bins are what a check compares run to run', doc: 'bin width, m (default 2)' },
+    maxDist: { type: 'number', routine: 'required', why: 'the reach decides which records count', doc: 'how far from the contact each side, m (default 10 × binWidth)' },
+    near: { type: 'int', default: 1, doc: 'bins each side that make “just inside / just outside” for step and ratio' },
+    scope: { type: 'enum', values: ['all', 'filtered', 'selection'], default: 'all', routine: ['all'], why: 'a selection isn’t saved with the routine — use a series filter' },
+    ranges: { type: 'any', display: true },
+  },
+  outputs: { key: ['series', 'side', 'center'] },
+  chart: (scan, raw) => contactChartSpec(scan, { ranges: raw.ranges ? rangesFromCfg(raw.ranges) : null }),
+  human: (scan) => contactHumanTSV(scan),
+  check(p, errs) {
+    if (!p.layer && p.series && p.series.some((s) => !s.layer)) errs.push('layer: a series without its own layer needs the tool’s layer');
+    if (p.mode === 'downhole') { if (!p.domain) errs.push('domain: a downhole contact plot needs the domain column'); if (!p.domA) errs.push('domA: the domain whose contacts are tested'); }
+    if (p.mode === 'surface' && !p.surface) errs.push('surface: the mesh layer to measure against');
+    if (p.binWidth != null && !(p.binWidth > 0)) errs.push('binWidth: a positive number of metres');
+    if (p.maxDist != null && !(p.maxDist > 0)) errs.push('maxDist: a positive number of metres');
+  },
+  async scan(p, ctx) {
+    const series = seriesSt(p);
+    scopeCheck(p.scope, series.map((s) => layerById(s.layerId)));
+    const bw = p.binWidth || 2;
+    const st = { mode: p.mode, series, binWidth: bw, maxDist: p.maxDist || 10 * bw, scope: p.scope, domain: p.domain, domA: p.domA, domB: p.domB, direction: p.direction, minRun: p.minRun, maxGap: p.maxGap,
+      surfaceId: p.mode === 'surface' ? layerNamed(p.surface).id : null };
+    return scanContact(st, ctx.progress, ctx.signal);
+  },
+  shape(scan, p) {
+    const amt = contactAmountCol(scan), rows = contactRows(scan);
+    const warnings = [];
+    for (const se of scan.series) {
+      if (scan.mode === 'downhole' && !se.contacts) warnings.push(`${se.L.label || se.L.name}: no ${p.domA} contact${p.domB ? ` with ${p.domB}` : ''} found`);
+      if (scan.mode === 'surface' && !se.counted) warnings.push(`${se.L.label || se.L.name}: nothing within ${scan.maxDist} m of the surface`);
+    }
+    return {
+      table: { columns: ['series', 'side', 'center', 'mean', amt, 'count'], key: ['series', 'side', 'center'], rows: rows.map((r) => [r.series, r.side, r.center, r.mean, r.amount, r.count]), units: { center: 'm', [amt]: scan.mode === 'downhole' ? 'm' : '' } },
+      values: contactValuesOf(scan, p.near || 1), resolved: { ...p, binWidth: scan.bw, maxDist: scan.maxDist }, warnings, where: scan.where,
+    };
+  },
+});
+
 // ── the resource table: tonnes, grade, metal above each cutoff, by up to two categories ──────────
 registerTool('resource', {
   label: 'resource table',
@@ -438,6 +501,45 @@ registerTool('export', {
   },
   shape(r, p) {
     return { table: null, file: { name: r.name, blob: r.blob }, values: { rows: r.written, bytes: r.blob.size }, resolved: { ...p, out: r.name }, warnings: [] };
+  },
+});
+
+// ── gridexport: a grid layer as a FILE, in any of the Export grid… dialog's formats ──────────────
+// The same producer as the dialog (src/grid-export.js buildGridExport): the full-resolution grid of
+// the band, never the display. .flt arrives as one .zip (.flt + .hdr + provenance). values: nodes, bytes.
+const gridExt = (p) => (p.format === 'xyz' ? ({ ',': 'csv', tab: 'txt', ' ': 'xyz' }[p.delim || ','] || 'csv') : (GRID_EXPORT_FMTS.find((f) => f.id === p.format) || GRID_EXPORT_FMTS[0]).ext);
+registerTool('gridexport', {
+  label: 'grid export',
+  writesFile: (p) => p.out || `${String(p.layer || 'grid').replace(/\.[^.]+$/, '')}.${gridExt(p)}`,
+  params: {
+    layer: { type: 'layer', required: true, doc: 'the grid layer' },
+    format: { type: 'enum', values: GRID_EXPORT_FMTS.map((f) => f.id), default: 'asc', doc: 'asc · tif (GeoTIFF float32) · grd7 / grd6 (Surfer binary) · dsaa (Surfer ASCII) · flt (zipped .flt + .hdr) · xyz (nodes)' },
+    band: { type: 'int', doc: '1-based band of a multi-band GeoTIFF (default: the band shown)' },
+    nodata: { type: 'number', doc: 'the value an empty cell is written as (default: the grid’s own, else -9999; Surfer formats always blank with 1.70141e38)' },
+    decimals: { type: 'int', doc: 'text formats: digits after the point (default: float32-exact)' },
+    out: { type: 'string', doc: 'the file name (default: the layer’s, with the format’s extension)' },
+    delim: { type: 'enum', values: [',', 'tab', ' '], default: ',', doc: 'xyz: the delimiter' },
+    header: { type: 'bool', default: true, doc: 'xyz: a header row' },
+    valueName: { type: 'string', default: 'z', doc: 'xyz: the value column’s name' },
+    skipEmpty: { type: 'bool', default: true, doc: 'xyz: leave empty nodes out' },
+    compression: { type: 'enum', values: ['deflate', 'none'], default: 'deflate', doc: 'tif' },
+    predictor: { type: 'bool', default: true, doc: 'tif + deflate: floating-point predictor 3' },
+    tiles: { type: 'bool', default: false, doc: 'tif: 256×256 tiles instead of strips' },
+  },
+  outputs: { key: [] },
+  async scan(p) {
+    const L = layerNamed(p.layer);
+    if (!(L.docs && L.docs.gridDoc)) throw new Error(`${L.label || L.name} is not a grid`);
+    const bands = gridBandsOf(L);
+    if (p.band != null && !(p.band >= 1 && p.band <= bands)) throw new Error(`band: ${L.label || L.name} has ${bands} band${bands === 1 ? '' : 's'}`);
+    return buildGridExport(L, {
+      format: p.format, band: p.band != null ? p.band - 1 : undefined, nodata: p.nodata, decimals: p.decimals == null ? null : p.decimals,
+      name: toolDef('gridexport').writesFile(p), delim: p.delim === 'tab' ? '\t' : p.delim, header: p.header, valueName: p.valueName, skipEmpty: p.skipEmpty,
+      compression: p.compression, predictor: p.predictor ? 3 : 1, layout: p.tiles ? 'tiles' : 'strips',
+    });
+  },
+  shape(r, p) {
+    return { table: null, file: { name: r.name, blob: r.blob }, values: { nodes: r.grid.nx * r.grid.ny, bytes: r.blob.size }, resolved: { ...p, out: r.name }, warnings: r.notes.slice() };
   },
 });
 

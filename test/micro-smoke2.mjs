@@ -8210,6 +8210,169 @@ if (take()) {
   await p.close();
 }
 
+// ═══ grid EXPORT: one dialog, seven formats (src/grid-export.js). A 23×17 .asc with
+//     holes, exported through buildGridExport (the function the dialog's Export button
+//     calls) to every format; the bytes are read back here (micro's own readers,
+//     @gcu/gtiff, the zip) for dimensions, geotransform, values and nodata — and the
+//     .asc / .grd / .tif re-open through micro's open path. Then a 2-band GeoTIFF shown
+//     DECIMATED: the export is the full-resolution grid of the CHOSEN band (the deep
+//     review once found an export writing the display, band 0) ═══
+if (take()) {
+  const pg = await mkPage('sm2gridexport');
+  const { openGridSource, readSurferGrd, readEsriAsc, gridBlankTest } = await import('../tools/micro/src/grid-io.js');
+  const { readGTiff, gridFromGTiff } = await import('../ext/gtiff/index.js');
+  const { openZipRanged, blobSource } = await import('../ext/archive/src/zipstream.js');
+  const NX = 23, NY = 17, X0 = 450005, Y0 = 8100165, CS = 10;
+  const val = (r, c) => 650 + r * 2.5 + c * 0.125 + ((r * c) % 7) / 8;           // exact in float32
+  const hole = (r, c) => (r === 3 && c === 4) || (r === 10 && c >= 18);
+  let asc = `ncols ${NX}\nnrows ${NY}\nxllcorner ${X0 - CS / 2}\nyllcorner ${Y0 - (NY - 1) * CS - CS / 2}\ncellsize ${CS}\nNODATA_value -9999\n`;
+  for (let r = 0; r < NY; r++) { const row = []; for (let c = 0; c < NX; c++) row.push(hole(r, c) ? -9999 : val(r, c)); asc += row.join(' ') + '\n'; }
+  await pg.evaluate((t) => window._micro.openBlob(new Blob([t]), 'topo.asc', 'replace'), asc);
+  await pg.waitForFunction(() => window._micro.layers().some((L) => L.name === 'topo.asc' && L.docs.gridDoc), null, { timeout: 30000 });
+  // the menu + palette name it "Export grid…" and the dialog opens with every format
+  const dlg = await pg.evaluate(() => {
+    const m = window._micro, L = m.layers().find((x) => x.name === 'topo.asc');
+    m.openGridExportDialog(L);
+    const fmts = [...document.querySelectorAll('#geDlgBody select')][0];
+    const out = { show: document.querySelector('#geDlg').classList.contains('show'), fmts: [...fmts.options].map((o) => o.value), cmd: !!m.COMMANDS.find((c) => c.title === 'Export grid…' && c.when({ L })) };
+    document.querySelector('#geNot').click();
+    return out;
+  });
+  chk(`grid export: the dialog opens with every format (${dlg.fmts.join(' ')}) and the palette has “Export grid…”`,
+    dlg.show && ['asc', 'tif', 'grd7', 'grd6', 'dsaa', 'flt', 'xyz'].every((f) => dlg.fmts.includes(f)) && dlg.cmd);
+  const runs = [
+    ['asc', { format: 'asc', nodata: '-32768', decimals: null }],
+    ['tif', { format: 'tif', nodata: '-32768', compression: 'deflate', predictor: 3 }],
+    ['tif-none-tiles', { format: 'tif', nodata: 'nan', compression: 'none', layout: 'tiles' }],
+    ['grd7', { format: 'grd7' }], ['grd6', { format: 'grd6' }], ['dsaa', { format: 'dsaa', decimals: null }],
+    ['flt', { format: 'flt', nodata: '-1e30' }],
+    ['xyz', { format: 'xyz', delim: ',', valueName: 'elev', skipEmpty: true, decimals: null }],
+  ];
+  const got = await pg.evaluate(async (rs) => {
+    const m = window._micro, L = m.layers().find((x) => x.name === 'topo.asc'), out = {};
+    for (const [k, o] of rs) {
+      const r = await m.buildGridExport(L, o);
+      const u8 = new Uint8Array(await r.blob.arrayBuffer());
+      let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+      out[k] = { name: r.name, b64: btoa(s), notes: r.notes, nx: r.grid.nx };
+    }
+    return out;
+  }, runs);
+  const bytesOf = (k) => Buffer.from(got[k].b64, 'base64');
+  const want = (back, nd, name) => {
+    const bad = gridBlankTest(back);
+    let wrong = 0, holesOk = 0;
+    for (let r = 0; r < NY; r++) for (let c = 0; c < NX; c++) {
+      const v = back.data[r * NX + c];
+      if (hole(r, c)) { if (bad(v) && (nd === undefined || Object.is(v, nd) || (Number.isNaN(nd) && Number.isNaN(v)))) holesOk++; else wrong++; }
+      else if (v !== val(r, c)) wrong++;
+    }
+    const geo = back.nx === NX && back.ny === NY && Math.abs(back.x0 - X0) < 1e-6 && Math.abs(back.y0 - Y0) < 1e-6 && back.dx === CS && back.dy === CS;
+    const ok = geo && !wrong && holesOk === 1 + (NX - 18);
+    chk(`grid export ${name}: ${back.nx}×${back.ny}, origin ${back.x0},${back.y0}, cell ${back.dx}×${back.dy}, ${wrong} wrong values, ${holesOk} holes empty`, ok);
+  };
+  const srcGrid = async (src) => { const img = src.images[0], g = src.geo, half = g.pixelIsPoint ? 0 : 0.5; return { nx: img.width, ny: img.height, data: await img.read(), x0: g.origin[0] + half * g.scale[0], y0: g.origin[1] - half * g.scale[1], dx: g.scale[0], dy: g.scale[1], nodata: g.nodata }; };
+  want(await readEsriAsc(new Blob([bytesOf('asc')])), -32768, `.asc (${got.asc.name})`);
+  for (const k of ['tif', 'tif-none-tiles']) {
+    const t = await readGTiff(new Uint8Array(bytesOf(k)));
+    const g = await gridFromGTiff(t);
+    want(g, k === 'tif' ? -32768 : NaN, `GeoTIFF ${k} (${t.images[0].compression === 8 ? 'deflate' : 'none'}${t.images[0].tiled ? ', tiled' : ''}; crs ${t.geo.crs})`);
+    if (k === 'tif') chk(`grid export GeoTIFF: no CRS invented (${t.geo.crs}) and the dialog/notes say so; lineage in the ImageDescription`,
+      t.geo.crs === null && got.tif.notes.some((n) => /no CRS/.test(n)) && /"op":"export\.grid"/.test(bytesOf('tif').toString('latin1')));
+  }
+  want(await readSurferGrd(new Blob([bytesOf('grd7')])), undefined, 'Surfer 7 binary');
+  want(await srcGrid(await openGridSource(new Blob([bytesOf('grd7')]), 'x.grd')), undefined, 'Surfer 7 binary (streamed source)');
+  want(await readSurferGrd(new Blob([bytesOf('grd6')])), undefined, 'Surfer 6 binary');
+  want(await readSurferGrd(new Blob([bytesOf('dsaa')])), undefined, 'Surfer 6 ASCII (DSAA)');
+  {
+    const z = await openZipRanged(blobSource(new Blob([bytesOf('flt')])));
+    const names = z.list().map((e) => e.name).sort();
+    const hdr = new TextDecoder().decode(await z.bytes(z.entries.get('topo.hdr')));
+    const flt = await z.bytes(z.entries.get('topo.flt'));
+    const h = {}; for (const line of hdr.trim().split('\n')) { const [a, b2] = line.trim().split(/\s+/); h[a.toLowerCase()] = b2; }
+    const dv = new DataView(flt.buffer, flt.byteOffset, flt.byteLength), data = new Float32Array(NX * NY);
+    for (let i = 0; i < NX * NY; i++) data[i] = dv.getFloat32(i * 4, true);
+    chk(`grid export .flt: one zip of ${names.join(' + ')}, header LSBFIRST`, names.join(',') === 'topo.flt,topo.hdr,topo.lineage.json' && h.byteorder === 'LSBFIRST' && +h.ncols === NX);
+    want({ nx: +h.ncols, ny: +h.nrows, dx: +h.cellsize, dy: +h.cellsize, data, x0: +h.xllcorner + CS / 2, y0: +h.yllcorner + NY * CS - CS / 2, nodata: Math.fround(+h.nodata_value) }, Math.fround(-1e30), 'ESRI .flt/.hdr');
+  }
+  {
+    const lines = bytesOf('xyz').toString('utf8').trim().split('\n');
+    const m2 = new Map(lines.slice(1).map((l) => { const [x, y, z] = l.split(','); return [`${x},${y}`, +z]; }));
+    let wrong = 0;
+    for (let r = 0; r < NY; r++) for (let c = 0; c < NX; c++) { const k = `${X0 + c * CS},${Y0 - r * CS}`; if (hole(r, c) ? m2.has(k) : m2.get(k) !== val(r, c)) wrong++; }
+    chk(`grid export XYZ/CSV: header “${lines[0]}”, ${lines.length - 1} nodes (empty ones skipped), ${wrong} wrong`, lines[0] === 'x,y,elev' && lines.length - 1 === NX * NY - (1 + NX - 18) && !wrong);
+  }
+  // micro reads its own exports back as grid layers
+  const reopen = await pg.evaluate(async (files) => {
+    const m = window._micro, out = {};
+    for (const [nm, b64] of files) {
+      const s = atob(b64), u8 = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) u8[i] = s.charCodeAt(i);
+      await m.openBlob(new Blob([u8]), nm, 'add');
+      const L = m.layers().find((x) => x.name === nm && x.docs.gridDoc);
+      const g = L && L.docs.gridDoc.grid;
+      out[nm] = g ? { nx: g.nx, ny: g.ny, x0: g.x0, y0: g.y0, v: g.data[5 * g.nx + 6] } : null;
+    }
+    return out;
+  }, [['back.asc', got.asc.b64], ['back7.grd', got.grd7.b64], ['back.tif', got.tif.b64]]);
+  chk(`grid export: micro re-opens its own .asc / Surfer 7 / GeoTIFF (${JSON.stringify(reopen)})`,
+    Object.values(reopen).every((g) => g && g.nx === NX && g.ny === NY && Math.abs(g.x0 - X0) < 1e-6 && Math.abs(g.y0 - Y0) < 1e-6 && g.v === val(5, 6)));
+  // the dialog's own button: GeoTIFF picked, Export clicked → a download of the right bytes
+  const dl = pg.waitForEvent('download', { timeout: 20000 });
+  await pg.evaluate(() => {
+    const m = window._micro, L = m.layers().find((x) => x.name === 'topo.asc');
+    m.openGridExportDialog(L);
+    const fmt = [...document.querySelectorAll('#geDlgBody select')][0];
+    fmt.value = 'tif'; fmt.dispatchEvent(new Event('input'));
+    document.querySelector('#geGo').click();
+  });
+  const d = await dl;
+  const dBytes = await (async () => { const st = await d.createReadStream(); const parts = []; for await (const c of st) parts.push(c); return Buffer.concat(parts); })();
+  const dg = await gridFromGTiff(await readGTiff(new Uint8Array(dBytes)));
+  const meta = await pg.evaluate(() => ({ meta: document.querySelector('#meta').textContent, open: document.querySelector('#geDlg').classList.contains('show') }));
+  chk(`grid export dialog: Export writes ${d.suggestedFilename()} (${dg.nx}×${dg.ny}, nodata ${dg.nodata}), closes, says “${meta.meta}”`,
+    d.suggestedFilename() === 'topo.tif' && dg.nx === NX && dg.ny === NY && dg.data[5 * NX + 6] === val(5, 6) && !meta.open && /^exported topo\.tif \(23×17\)/.test(meta.meta));
+  await pg.close();
+
+  // a 2-band GeoTIFF shown decimated: the export is full resolution, of the chosen band
+  const pb = await mkPage('sm2gridexport2');
+  await pb.evaluate((arr) => { window.__gridDisplayCap = 300; return window._micro.openBlob(new Blob([new Uint8Array(arr)]), 'mb.tif', 'replace'); }, Array.from(twoBandTiff()));
+  await pb.waitForFunction(() => window._micro.layers().length && window._micro.layers()[0].docs.gridDoc, null, { timeout: 30000 });
+  const mb = await pb.evaluate(async () => {
+    const m = window._micro, L = m.layers()[0], gd = L.docs.gridDoc;
+    const r = await m.buildGridExport(L, { format: 'grd7', band: 1 });
+    const back = await m.readSurferGrd(r.blob);
+    const W = 40, H = 32, exp = (row, c) => Math.fround(0.5 + 3 * (c / W) + 2 * (1 - row / H));
+    let wrong = 0; for (let row = 0; row < H; row++) for (let c = 0; c < W; c++) if (back.data[row * W + c] !== exp(row, c)) wrong++;
+    const r0 = await m.buildGridExport(L, { format: 'asc', band: 0, decimals: null });
+    const t0 = await r0.blob.text();
+    return { display: `${gd.grid.nx}×${gd.grid.ny}`, fullRes: gd.fullRes, out: `${back.nx}×${back.ny}`, wrong, band0: /ncols 40\nnrows 32/.test(t0) && +t0.split('\n')[6].split(' ')[0] > 150 };   // band 1 is the ~200–580 elevation; band 2 the 0.5–5.5 gradient
+  });
+  chk(`grid export of a DECIMATED 2-band GeoTIFF (display ${mb.display}): full resolution ${mb.out}, band 2's values (${mb.wrong} wrong), band 1 differs`,
+    mb.fullRes === false && mb.display !== '40×32' && mb.out === '40×32' && mb.wrong === 0 && mb.band0);
+  // the routine tool: the same producer, a file out; a bad band and a misspelt setting are refused
+  const tool = await pb.evaluate(async () => {
+    const m = window._micro;
+    const r = await m.runTool('gridexport', { layer: 'mb.tif', format: 'xyz', band: 2, decimals: 2, skipEmpty: false }, { routine: true });
+    const text = await r.file.blob.text();
+    const bad = await m.runTool('gridexport', { layer: 'mb.tif', band: 3 }).then(() => 'ran', (e) => e.message);
+    const typo = m.checkParams('gridexport', { layer: 'mb.tif', fromat: 'tif' }).errors.join(';');
+    return { name: r.file.name, nodes: r.values.nodes, lines: text.trim().split('\n').length, first: text.split('\n')[1], bad, typo };
+  });
+  chk(`routine tool gridexport: ${tool.name}, ${tool.nodes} nodes, ${tool.lines - 1} rows (first “${tool.first}”); band 3 refused (${tool.bad}); typo named (${tool.typo})`,
+    tool.name === 'mb.csv' && tool.nodes === 1280 && tool.lines === 1281 && /^500012\.5,5999987\.5,2\.5$/.test(tool.first) && /2 bands/.test(tool.bad) && /format/.test(tool.typo));
+  // a layer that knows its EPSG code: the GeoTIFF carries it as GeoKeys, with no note
+  const epsg = await pb.evaluate(async () => {
+    const m = window._micro, L = m.layers()[0];
+    L.docs.gridDoc.grid.crs = 'EPSG:32723';
+    const r = await m.buildGridExport(L, { format: 'tif' });
+    const u8 = new Uint8Array(await r.blob.arrayBuffer()); let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+    return { b64: btoa(s), notes: r.notes };
+  });
+  const et = await readGTiff(new Uint8Array(Buffer.from(epsg.b64, 'base64')));
+  chk(`grid export GeoTIFF of a layer in EPSG:32723 writes GeoKeys (${et.geo.crs}), no CRS note`, et.geo.crs === 'EPSG:32723' && !epsg.notes.some((n) => /CRS/.test(n)));
+  await pb.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

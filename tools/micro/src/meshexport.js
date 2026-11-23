@@ -1,9 +1,8 @@
-// micro — mesh and grid writers: a grid out as ESRI ASCII, meshes out as OBJ / PLY (merged
+// micro — mesh writers (grids export from src/grid-export.js): meshes out as OBJ / PLY (merged
 // when several are chosen), the .wfr convert / export dialog with its step and budget tables,
 // and the Surfer display cache a big DEM reopens from. Every file leaves through
 // deliverBlob (hostio.js).
-import { gridFromGTiff } from '../../../ext/gtiff/index.js';
-import { writeEsriAsc, writeSurferGrd } from './grid-io.js';
+import { writeSurferGrd } from './grid-io.js';
 import { reReadMesh } from './records.js';
 import { writeLFM } from '../../../ext/lfm/lfm.js';
 import { writeMSH } from '../../../ext/condenser/src/main.js';
@@ -17,26 +16,6 @@ import { cacheStamp } from './project.js';
 import { sourceHash } from './identity.js';
 import { deliverBlob } from './hostio.js';
 const $ = (s) => document.querySelector(s);
-
-// export a grid layer as an ESRI ASCII .asc
-export async function exportGridAsc(L) {
-  const gd = L.docs.gridDoc; if (!gd) return;
-  let g = gd.grid;
-  if (gd.source && gd.source.g && !gd.fullRes) {           // display is decimated — export FULL res
-    // was gated on `gd.level`, which is 0 (falsy) for a big single-level TIFF
-    // decimated by step — exactly the common non-COG case, which therefore
-    // exported the coarse display grid while claiming full resolution. And the
-    // reload must decode the SELECTED band, not default to band 0.
-    $('#meta').textContent = `${L.label || L.name} — decoding full resolution for export…`;
-    try { g = await gridFromGTiff(gd.source.g, 0, gd.source.band || 0); } catch { g = gd.grid; }
-  }
-  if (!g) return;
-  if (Math.abs(g.dx - g.dy) > g.dx * 1e-3) $('#meta').textContent = `note: non-square grid exported at cellsize ${g.dx}`;
-  const blob = new Blob([writeEsriAsc(g)], { type: 'text/plain' });
-  const name = (L.label || L.name).replace(/\.[^.]+$/, '') + '.asc';
-  deliverBlob(blob, name);
-  $('#meta').textContent = `exported ${name} (${g.nx}×${g.ny})`;
-}
 
 // ── MESH EXPORT — OBJ / PLY / MSH / LFM ──────────────────────────────────
 // Geometry is re-read from each layer's source blob (reReadMesh → world-coord

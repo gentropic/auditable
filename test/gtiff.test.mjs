@@ -413,3 +413,54 @@ test('Blob input: a strip-per-row raster coalesces into few reads; a window read
   assert.equal(win.data[0], 40000);
   assert.ok(blob.bytes - b2 <= 3 * rowB, `the window pulled ${blob.bytes - b2} bytes (3 rows = ${3 * rowB})`);
 });
+
+// ── the WRITER: writeGeoTiff → readGTiff round trips ────────────────────
+import { writeGeoTiff, epsgModelType } from '../ext/gtiff/src/main.js';
+const wgrid = (nx = 37, ny = 23) => {
+  const data = new Float32Array(nx * ny);
+  for (let r = 0; r < ny; r++) for (let c = 0; c < nx; c++) data[r * nx + c] = 500 + Math.sin(c / 5) * 40 + r * 1.25 + c * 0.001;
+  data[3] = NaN; data[nx * 5 + 7] = -9999;                 // two holes: a NaN and the source's nodata
+  return { nx, ny, data, x0: 512345.5, y0: 7234567.5, dx: 10, dy: 12.5, nodata: -9999 };
+};
+for (const [compression, predictor, layout] of [['none', 1, 'strips'], ['deflate', 1, 'strips'], ['deflate', 3, 'strips'], ['deflate', 3, 'tiles'], ['none', 1, 'tiles']]) {
+  test(`writeGeoTiff round trip: ${compression}${predictor === 3 ? ' + predictor 3' : ''}, ${layout}`, async () => {
+    const g = wgrid(layout === 'tiles' ? 300 : 37, layout === 'tiles' ? 270 : 23);
+    const bytes = await writeGeoTiff(g, { compression, predictor, layout, tileSize: 256, nodata: -32768, crs: 'EPSG:31983', description: '{"op":"export"}', software: 'test' });
+    const t = await readGTiff(bytes);
+    assert.deepStrictEqual(t.warnings, []);
+    const img = t.images[0];
+    assert.strictEqual(img.width, g.nx); assert.strictEqual(img.height, g.ny);
+    assert.strictEqual(img.compression, compression === 'deflate' ? 8 : 1);
+    assert.strictEqual(img.tiled, layout === 'tiles');
+    const back = await gridFromGTiff(t);
+    assert.strictEqual(back.nodata, -32768);
+    assert.strictEqual(back.crs, 'EPSG:31983');
+    assert.strictEqual(back.x0, g.x0); assert.strictEqual(back.y0, g.y0);
+    assert.strictEqual(back.dx, g.dx); assert.strictEqual(back.dy, g.dy);
+    for (let i = 0; i < g.nx * g.ny; i++) {
+      const src = g.data[i], want = Number.isNaN(src) || src === -9999 ? -32768 : src;
+      assert.strictEqual(back.data[i], want, `value ${i}`);
+    }
+  });
+}
+test('writeGeoTiff: ImageDescription, no GeoKeys without an EPSG CRS, NaN nodata', async () => {
+  const g = wgrid();
+  const bytes = await writeGeoTiff(g, { compression: 'none', nodata: NaN, crs: 'local grid', description: 'hello' });
+  assert.strictEqual(bytes.info.geoKeys, false);
+  const t = await readGTiff(bytes);
+  assert.strictEqual(t.geo.crs, null);
+  assert.ok(Number.isNaN(t.geo.nodata));
+  const s = new TextDecoder('latin1').decode(bytes);
+  assert.ok(s.includes('hello\0'));
+  const back = await gridFromGTiff(t);
+  assert.ok(Number.isNaN(back.data[3]) && Number.isNaN(back.data[g.nx * 5 + 7]));
+  assert.strictEqual(back.x0, g.x0);
+});
+test('writeGeoTiff: geographic EPSG codes go in GeographicTypeGeoKey, projected in ProjectedCSTypeGeoKey', async () => {
+  assert.strictEqual(epsgModelType(4326), 'geographic'); assert.strictEqual(epsgModelType(4674), 'geographic');
+  assert.strictEqual(epsgModelType(32723), 'projected'); assert.strictEqual(epsgModelType(4087), 'projected');
+  for (const crs of ['EPSG:4326', 'EPSG:32723']) {
+    const t = await readGTiff(await writeGeoTiff(wgrid(), { compression: 'none', crs }));
+    assert.strictEqual(t.geo.crs, crs);
+  }
+});

@@ -6,7 +6,8 @@ import { createLayerGroup, showNode, treeMoveStep } from './tree.js';
 import { _lpSel, lpSelIds, moveLayerToGroupMenu, renderLayers, secModeLabel, sectionModeItems } from './layers-panel.js';
 import { menuXY } from './menu.js';
 import { openBatchRename, renameActiveLayer } from './rename.js';
-import { exportGridAsc, openMeshExportDialog, writeGridDisplayCache } from './meshexport.js';
+import { openMeshExportDialog, writeGridDisplayCache } from './meshexport.js';
+import { openGridExportDialog } from './grid-export.js';
 import { canChangeFile, canReloadLayer, changeLayerFile, reinterpretMenu, reinterpretOptions, reloadLayerFromDisk } from './reopen.js';
 import { hasRecords, layerTableHeader } from './records.js';
 import { openAttrTable } from './attrtable.js';
@@ -134,7 +135,7 @@ export function layerMenu(L, x, y) {
       { label: 'Flag / ratio by this surface…', action: () => openSolidDialog(L) },
       { label: 'Extend to footprint…', action: () => openSurfaceTools('extend', L) },
       ...(surfaceableLayers().length >= 2 ? [{ label: 'Combine surfaces…', action: () => openSurfaceTools('combine', L) }] : []),
-      { label: 'Export as ESRI ASCII grid…', action: () => exportGridAsc(L) },
+      { label: 'Export grid…', action: () => openGridExportDialog(L) },
       ...(canBuildDisplayCache(L) ? [{ label: 'Build display cache', action: () => buildDisplayCache(L) }] : []),
     ] }] : []),
     ...(L.kind === 'mesh' ? (() => {
