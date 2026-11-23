@@ -13,6 +13,8 @@
 //   --compare=<file>    print % deltas against a saved result, flagging anything outside the noise band
 //   --only=open,orbit,recolour,colourby,gt,swath,stats,solid   a subset of the measures (open always runs)
 //   --orbit=120         frames in the scripted orbit
+//   --no-fullres        skip the second orbit at full residency (budget "all": every element, every frame —
+//                       the per-block draw cost the budget-capped orbit can't see)
 //   --timeout-scale=1   multiply every phase timeout (a slow machine / a huge file)
 //   --headed            show the browser
 //
@@ -37,6 +39,7 @@ const ORBIT_N = Math.max(10, +arg('orbit', 120) | 0);
 const TSCALE = +arg('timeout-scale', 1) || 1;
 const ONLY = new Set(arg('only', 'open,orbit,recolour,colourby,gt,swath,stats,solid').split(','));
 const COMPARE = arg('compare', null);
+const FULLRES = !has('no-fullres');
 const APP = BUILT ? '/micro.html' : '/tools/micro/index.html';
 const isPath = MODEL !== 'demo' && MODEL !== 'regular5m';
 const modelTag = isPath ? path.basename(MODEL).replace(/[^A-Za-z0-9._-]/g, '_') : MODEL;
@@ -204,7 +207,7 @@ async function oneRun(runIdx, modelPath) {
     // ── 2. orbit ──
     if (ONLY.has('orbit')) {
       try {
-        const orb = await withTimeout(page.evaluate(async (N) => {
+        const orb = await withTimeout(page.evaluate(async ({ N, FULL }) => {
           const M = window._micro, B = window.__bench, R = M.renderer;
           document.querySelector('#btnFit').click();
           await B.waitSettled(null, { timeout: 300000 });
@@ -224,8 +227,23 @@ async function oneRun(runIdx, modelPath) {
           await B.waitSettled(null, { timeout: 300000 });
           const synced = await pass(true);                  // gl.finish() after each draw: the frame's GPU cost, not just its submission
           await B.waitSettled(null, { timeout: 300000 });
-          return { plain, synced, budget: +document.querySelector('#budget').value };
-        }, ORBIT_N), 20 * MIN, 'orbit');
+          // full residency: the capped orbit above draws ≤ budget elements per frame on every model, so it can't see
+          // per-block draw cost. Raise the budget to "all" and orbit again — every resident element, every frame.
+          const bsel = document.querySelector('#budget'), prevBudget = bsel.value;
+          let full = null, fullSynced = null;
+          if (FULL) {
+            const tb = performance.now();
+            bsel.value = '100000000'; bsel.dispatchEvent(new Event('input'));
+            await B.waitSettled(tb, { timeout: 600000 });
+            full = await pass(false);
+            await B.waitSettled(null, { timeout: 600000 });
+            fullSynced = await pass(true);
+            const tr = performance.now();
+            bsel.value = prevBudget; bsel.dispatchEvent(new Event('input'));
+            await B.waitSettled(tr, { timeout: 300000 });
+          }
+          return { plain, synced, full, fullSynced, budget: +prevBudget };
+        }, { N: ORBIT_N, FULL: FULLRES }), 40 * MIN, 'orbit');
         res.metrics.orbit_frame_p50_ms = pct(orb.plain.deltas, 50);
         res.metrics.orbit_frame_p95_ms = pct(orb.plain.deltas, 95);
         res.metrics.orbit_draw_cpu_p50_ms = pct(orb.plain.draws, 50);
@@ -233,6 +251,14 @@ async function oneRun(runIdx, modelPath) {
         res.metrics.orbit_gpu_synced_p95_ms = pct(orb.synced.draws, 95);
         res.budget = orb.budget;
         res.orbit = { frames: ORBIT_N, draws: orb.plain.drawCount, drawnPerFrame: Math.round(orb.plain.drawnMean), syncedDraws: orb.synced.drawCount };
+        if (orb.full) {
+          res.metrics.orbit_full_frame_p50_ms = pct(orb.full.deltas, 50);
+          res.metrics.orbit_full_frame_p95_ms = pct(orb.full.deltas, 95);
+          res.metrics.orbit_full_draw_cpu_p50_ms = pct(orb.full.draws, 50);
+          res.metrics.orbit_full_synced_p50_ms = pct(orb.fullSynced.draws, 50);
+          res.metrics.orbit_full_synced_p95_ms = pct(orb.fullSynced.draws, 95);
+          res.orbit.fullDrawnPerFrame = Math.round(orb.full.drawnMean);
+        }
       } catch (e) { res.errors.push(`orbit: ${e.message}`); }
     }
 
@@ -346,6 +372,8 @@ const LABELS = {
   open_resolved_ms: 'open → openBlob resolved', open_drawn_ms: 'open → settled frame',
   orbit_frame_p50_ms: 'orbit frame p50 (rAF)', orbit_frame_p95_ms: 'orbit frame p95 (rAF)', orbit_draw_cpu_p50_ms: 'orbit draw() CPU p50',
   orbit_gpu_synced_p50_ms: 'orbit draw+finish p50', orbit_gpu_synced_p95_ms: 'orbit draw+finish p95',
+  orbit_full_frame_p50_ms: 'full-res orbit frame p50 (rAF)', orbit_full_frame_p95_ms: 'full-res orbit frame p95 (rAF)',
+  orbit_full_draw_cpu_p50_ms: 'full-res orbit draw() CPU p50', orbit_full_synced_p50_ms: 'full-res draw+finish p50', orbit_full_synced_p95_ms: 'full-res draw+finish p95',
   recolour_ramp_ms: 'ramp-range recolour', colourby_switch_ms: 'colour-by switch', colourby_back_ms: 'colour-by switch back',
   gt_ms: 'grade–tonnage', swath_ms: 'swath (one direction)', stats_ms: 'stats', solid_fraction_ms: 'by-solid fraction (res 3)', solid_select_ms: 'select by solid',
   heap_open_peak_mb: 'JS heap peak during open (MB)', heap_after_open_mb: 'JS heap after open, GC (MB)', heap_end_mb: 'JS heap at end, GC (MB)',
@@ -382,7 +410,7 @@ if (first.layer) console.log(`  layer: ${first.layer.kind}${first.layer.grid ? '
 console.log(`\n  ${'measure'.padEnd(34)} ${'median'.padStart(9)} ${'min'.padStart(9)} ${'max'.padStart(9)}  noise`);
 for (const [k, a] of Object.entries(agg)) console.log(`  ${(LABELS[k] || k).padEnd(34)} ${f(a.median).padStart(9)} ${f(a.min).padStart(9)} ${f(a.max).padStart(9)}  ${(a.noise * 100).toFixed(1)}%`);
 const notes = [...new Set(runs.flatMap((r) => r.notes))], errors = [...new Set(runs.flatMap((r) => r.errors))];
-if (first.orbit) console.log(`  orbit: ${first.orbit.frames} frames → ${first.orbit.draws} draws, ~${first.orbit.drawnPerFrame.toLocaleString()} elements drawn per frame (budget ${first.budget})`);
+if (first.orbit) console.log(`  orbit: ${first.orbit.frames} frames → ${first.orbit.draws} draws, ~${first.orbit.drawnPerFrame.toLocaleString()} elements drawn per frame (budget ${first.budget})${first.orbit.fullDrawnPerFrame != null ? `; full-res ~${first.orbit.fullDrawnPerFrame.toLocaleString()}` : ''}`);
 for (const n of notes) console.log(`  note: ${n}`);
 for (const e of errors) console.log(`  ERROR: ${e}`);
 
