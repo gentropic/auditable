@@ -374,6 +374,24 @@ export function sbCfgOf(d) {
 // referenced layer isn't loaded (routines surface it before anything runs).
 export const sbFindLayer = (name) => S.layers.find((x) => x.name === name || x.label === name);
 
+// a recipe's `probes`: absent → 3×3×3 (the default); one number n → n×n×n; three numbers
+// → per axis. Each a whole number ≥ 1. Anything else is an error — it used to become
+// 3×3×3 silently, so a typo ran a different fraction than the one written down.
+export function sbProbesOf(v) {
+  if (v == null || v === '') return [3, 3, 3];
+  const one = (x) => {
+    const n = typeof x === 'string' && x.trim() !== '' ? +x : x;
+    if (typeof n !== 'number' || !Number.isInteger(n) || n < 1) throw new Error(`solid recipe: probes — ${JSON.stringify(x)} is not a whole number ≥ 1`);
+    return n;
+  };
+  if (Array.isArray(v)) {
+    if (v.length !== 3) throw new Error(`solid recipe: probes — one number (n×n×n) or three (x, y, z), not ${v.length}`);
+    return v.map(one);
+  }
+  const n = one(v);
+  return [n, n, n];
+}
+
 export async function sbStateFromParams(p) {
   const geomL = sbFindLayer(String(p.geometry || ''));
   if (!geomL) throw new Error(`solid recipe: geometry layer “${p.geometry || '?'}” is not loaded`);
@@ -389,7 +407,7 @@ export async function sbStateFromParams(p) {
   const d = {
     solid: geomL.id, act, side: p.which || null, combine: p.combine || 'replace',
     method: p.engine === 'peel' ? 'peel' : 'winding',
-    res: Array.isArray(p.probes) && p.probes.length === 3 ? p.probes.map((v) => Math.max(1, +v || 1)) : [3, 3, 3],
+    res: sbProbesOf(p.probes),
     name: p.column || null, flagName: p.column || null, flagLabel: p.value || 'IN',
     targets: new Set(), ratioLid: null, surfB: null,
   };

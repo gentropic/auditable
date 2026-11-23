@@ -180,8 +180,8 @@ export function setWindingGpu(on) {
 // the cached @gcu/winding engine per mesh layer: a Web Worker when the environment
 // allows (WebGPU inside it when present, unless CPU is forced), silent main-thread
 // CPU fallback otherwise (file:// blocks blob workers)
-export async function meshWinding(meshL, variant = 'solid') {
-  const m = await meshVariant(meshL, variant);
+export async function meshWinding(meshL, variant = 'solid', lat = null) {
+  const m = lat ? lat.m : await meshVariant(meshL, variant);
   if (!m) return null;
   if (!meshL._windingEngine) {
     let W = null;
@@ -190,9 +190,11 @@ export async function meshWinding(meshL, variant = 'solid') {
     meshL._windingEngine = W;
     meshL._windingMeshes = new Set();
   }
-  if (!meshL._windingMeshes.has(variant)) {
-    meshL._windingEngine.setMesh(m.vertices, m.triangles, { frame: S.frame, name: variant });
-    meshL._windingMeshes.add(variant);
+  const name = lat ? lat.name : variant;
+  if (!meshL._windingMeshes.has(name)) {
+    // a LATTICE-frame copy (rotated model) is already small numbers about block 0 — no frame
+    meshL._windingEngine.setMesh(m.vertices, m.triangles, lat ? { name } : { frame: S.frame, name });
+    meshL._windingMeshes.add(name);
   }
   return meshL._windingEngine;
 }
@@ -200,8 +202,8 @@ export async function meshWinding(meshL, variant = 'solid') {
 // the cached @gcu/peel engine per mesh layer — the fast depth-peel path for a clean
 // closed solid on a regular grid (one ray per column, exact along z). Honors the same
 // GPU/CPU toggle as winding; silent CPU fallback if the worker/GPU can't start.
-export async function meshPeel(meshL) {
-  const m = await meshVariant(meshL, 'solid');
+export async function meshPeel(meshL, lat = null) {
+  const m = lat ? lat.m : await meshVariant(meshL, 'solid');
   if (!m) return null;
   if (!meshL._peelEngine) {
     let P = null;
@@ -209,11 +211,51 @@ export async function meshPeel(meshL) {
     catch { P = await Peel.create({}); }
     meshL._peelEngine = P; meshL._peelMeshes = new Set();
   }
-  if (!meshL._peelMeshes.has('solid')) {
-    meshL._peelEngine.setMesh(m.vertices, m.triangles, { frame: S.frame, name: 'solid' });
-    meshL._peelMeshes.add('solid');
+  const name = lat ? lat.name : 'solid';
+  if (!meshL._peelMeshes.has(name)) {
+    meshL._peelEngine.setMesh(m.vertices, m.triangles, lat ? { name } : { frame: S.frame, name });
+    meshL._peelMeshes.add(name);
   }
   return meshL._peelEngine;
+}
+
+// ── ROTATED lattices: rotate the SOLID, not the model. A rotated block model is an
+// axis-aligned lattice in its own frame q = Rᵀ·(p − c0), c0 = block 0's centroid
+// (grid/basis.js — the basis the renderer draws with), so the mesh variant is carried
+// into that frame once and the axis-aligned dense engine runs there unchanged: the
+// probes it lays inside each lattice cell ARE the probes of the rotated block. A
+// surface closure is built in WORLD first (its skirt walls are world-vertical) and
+// only then rotated. Cached per (mesh variant, basis); the name carries a generation
+// so an engine never serves a stale copy after the source mesh is rebuilt.
+let _latticeSeq = 0;
+export function latticeFrameOf(grid) {
+  const R = grid.rotD || Array.from(grid.rot);
+  const o = S.frame.origin, g0 = grid.originLocal;
+  // frame-local first, then minus block 0: small numbers meet small numbers
+  const toQ = (x, y, z) => {
+    const ex = (x - o[0]) - g0[0], ey = (y - o[1]) - g0[1], ez = (z - o[2]) - g0[2];
+    return [R[0] * ex + R[1] * ey + R[2] * ez, R[3] * ex + R[4] * ey + R[5] * ez, R[6] * ex + R[7] * ey + R[8] * ez];
+  };
+  return { R, toQ, key: R.map((v) => v.toPrecision(15)).join(',') + '@' + g0.map((v, a) => (v + o[a]).toPrecision(15)).join(',') };
+}
+export function latticeMesh(meshL, m, variant, lf) {
+  const key = `${variant}|${lf.key}`;
+  meshL._latticeMesh = meshL._latticeMesh || new Map();
+  const held = meshL._latticeMesh.get(key);
+  if (held && held.src === m) return held;
+  const V = m.vertices, Q = new Float32Array(V.length);
+  let q0 = Infinity, q1 = Infinity, q2 = Infinity, q3 = -Infinity, q4 = -Infinity, q5 = -Infinity;
+  for (let i = 0; i < V.length; i += 3) {
+    const q = lf.toQ(V[i], V[i + 1], V[i + 2]);
+    Q[i] = q[0]; Q[i + 1] = q[1]; Q[i + 2] = q[2];
+    if (q[0] < q0) q0 = q[0]; if (q[0] > q3) q3 = q[0];
+    if (q[1] < q1) q1 = q[1]; if (q[1] > q4) q4 = q[1];
+    if (q[2] < q2) q2 = q[2]; if (q[2] > q5) q5 = q[2];
+  }
+  // a rotation keeps orientation (det +1), so the signed-volume orientation carries over
+  const out = { src: m, name: `${variant}@lattice${++_latticeSeq}`, m: { vertices: Q, triangles: m.triangles, bbox: [q0, q1, q2, q3, q4, q5], closed: m.closed } };
+  meshL._latticeMesh.set(key, out);
+  return out;
 }
 
 // dense clipped-lattice evaluation for GRID layers: the block model's lattice
@@ -236,18 +278,42 @@ export async function evalSolidOnGrid(meshL, L, { mode, resolution = [3, 3, 3], 
   const doc = L.docs.blockDoc;
   const grid = doc && (doc.grid || (doc.header && doc.header.grid));
   if (!grid || !grid.size || !grid.count) return null;
-  if (grid.rot) return null;                               // a ROTATED lattice: the dense engine samples an axis-aligned one — callers fall back to per-centroid winding
-  const usePeel = method === 'peel';
-  const m = await meshVariant(meshL, usePeel ? 'solid' : variant);   // peel handles closed/open via surfaceType, no skirt closures
-  const eng = usePeel ? await meshPeel(meshL) : await meshWinding(meshL, variant);
-  if (!m || !eng) return null;
+  const rotated = !!grid.rot;
+  // rotated sub-blocks don't exist (detection refuses them): nothing to sweep honestly
+  if (rotated && doc.header && doc.header.subBlocked) return null;
+  let usePeel = method === 'peel';
+  if (usePeel && rotated) {
+    // peel's OPEN-surface answer is "below along its ray"; in the lattice frame the ray
+    // runs along W, which is not world-down on a tilted lattice — winding (through the
+    // world-vertical skirt closure) answers that one. A closed solid peels fine.
+    const sm = await solidOrientedMesh(meshL);
+    if (!sm || !sm.closed) usePeel = false;
+  }
+  const mw = await meshVariant(meshL, usePeel ? 'solid' : variant);   // peel handles closed/open via surfaceType, no skirt closures
+  if (!mw) return null;
+  const lf = rotated ? latticeFrameOf(grid) : null;
+  const lat = rotated ? latticeMesh(meshL, mw, usePeel ? 'peel' : variant, lf) : null;
+  const m = lat ? lat.m : mw;                              // the mesh in the frame the lattice is axis-aligned in
+  const eng = usePeel ? await meshPeel(meshL, lat) : await meshWinding(meshL, variant, lat);
+  if (!eng) return null;
+  const evalFrame = rotated ? undefined : S.frame;
+  const meshName = lat ? lat.name : (usePeel ? 'solid' : variant);
   const [dx, dy, dz] = grid.size;
   const [nx, ny, nz] = grid.count;
-  const corner = [                                         // world MIN corner (originLocal = block-0 CENTER, frame-local)
-    grid.originLocal[0] - dx / 2 + S.frame.origin[0],
-    grid.originLocal[1] - dy / 2 + S.frame.origin[1],
-    grid.originLocal[2] - dz / 2 + S.frame.origin[2],
-  ];
+  const corner = rotated
+    ? [-dx / 2, -dy / 2, -dz / 2]                          // lattice frame: block 0's centroid IS the origin
+    : [                                                    // world MIN corner (originLocal = block-0 CENTER, frame-local)
+      grid.originLocal[0] - dx / 2 + S.frame.origin[0],
+      grid.originLocal[1] - dy / 2 + S.frame.origin[1],
+      grid.originLocal[2] - dz / 2 + S.frame.origin[2],
+    ];
+  // the world bbox handed back as the sweep's spatial pushdown: a rotated block reaches
+  // past its centroid by its half-diagonal's world extent, so pad by that
+  let worldBbox = mw.bbox;
+  if (rotated) {
+    const R = lf.R, h = [0, 1, 2].map((a) => Math.abs(R[a]) * dx / 2 + Math.abs(R[3 + a]) * dy / 2 + Math.abs(R[6 + a]) * dz / 2);
+    worldBbox = [mw.bbox[0] - h[0], mw.bbox[1] - h[1], mw.bbox[2] - h[2], mw.bbox[3] + h[0], mw.bbox[4] + h[1], mw.bbox[5] + h[2]];
+  }
   const [bx0, by0, bz0, bx1, by1, bz1] = m.bbox;
   const clip = (lo, hi, c, d, n) => [
     Math.max(0, Math.min(n - 1, Math.floor((lo - c) / d))),
@@ -287,7 +353,7 @@ export async function evalSolidOnGrid(meshL, L, { mode, resolution = [3, 3, 3], 
       const pres = mode === 'flag' ? [1, 1] : [Math.max(1, resolution[0] | 0), Math.max(1, resolution[1] | 0)];
       const stype = m.closed ? 'closed' : 'open';
       result = await Promise.race([
-        eng.evaluate(bmPeel, { mode, axis: 'z', surfaceType: stype, maxPeels: 32, resolution: pres, frame: S.frame, onProgress: prog2, mesh: 'solid' }),
+        eng.evaluate(bmPeel, { mode, axis: 'z', surfaceType: stype, maxPeels: 32, resolution: pres, frame: evalFrame, onProgress: prog2, mesh: meshName }),
         new Promise((_, rej) => { run.reject = rej; }),
       ]);
       if (result && result.overflow) $('#meta').textContent = `peel: ${result.overflow.toLocaleString()} column(s) exceeded maxPeels — some blocks may be wrong; switch to winding`;
@@ -298,7 +364,7 @@ export async function evalSolidOnGrid(meshL, L, { mode, resolution = [3, 3, 3], 
       }
     } else {
       result = await Promise.race([
-        eng.evaluate(bm, { mode, resolution: res, threshold: 0.5, frame: S.frame, onProgress: prog2, mesh: variant }),
+        eng.evaluate(bm, { mode, resolution: res, threshold: 0.5, frame: evalFrame, onProgress: prog2, mesh: meshName }),
         new Promise((_, rej) => { run.reject = rej; }),
       ]);
     }
@@ -306,8 +372,11 @@ export async function evalSolidOnGrid(meshL, L, { mode, resolution = [3, 3, 3], 
   const values = mode === 'proportion' ? result.proportions : result.flags;
   return {
     engine: (usePeel ? 'peel:' : '') + (eng.hasWorker ? (eng.hasGPU ? 'worker+gpu' : 'worker') : 'cpu'),
-    bbox: m.bbox,                                          // world; the spatial-pushdown filter for the sweep
-    lookup(x, y, z) {
+    bbox: worldBbox,                                       // world; the spatial-pushdown filter for the sweep
+    rotated,
+    lookup(x0, y0, z0) {
+      let x = x0, y = y0, z = z0;
+      if (lf) [x, y, z] = lf.toQ(x0, y0, z0);              // a world record → the lattice frame the sweep ran in
       const ii = Math.round((x - corner[0]) / dx - 0.5);
       const jj = Math.round((y - corner[1]) / dy - 0.5);
       const kk = Math.round((z - corner[2]) / dz - 0.5);
@@ -495,21 +564,75 @@ export function gridClassify(surfA, surfB, mode, hx, hy, hz, rx, ry) {
   };
 }
 
-// a block model on a ROTATED lattice: its boxes aren't axis-aligned, so the
-// axis-box footprint / dense-grid samplers below don't describe them
+// a block model on a ROTATED lattice: its boxes aren't axis-aligned, so the axis-box
+// footprint sampler doesn't describe them (gridClassifyRotated does; the dense solid
+// engine runs in the lattice frame — see latticeMesh)
 export function rotatedModel(L) {
   const doc = L && L.docs && L.docs.blockDoc;
   if (!doc) return false;
   const g = doc.grid, h = doc.header && doc.header.grid;
   return !!((g && g.rot) || (h && h.rot));
 }
+// the probe counts select / flag by surface use: a 2×2 plan footprint (and z analytic) on a
+// block, 2×2×2 on a rotated block, a step at the centroid for points
+export function gridSelectRes(L) {
+  const g = L.docs && L.docs.blockDoc && L.docs.blockDoc.grid;
+  if (g && g.rot && g.size) return [2, 2, 2];
+  return blockHalfExtents(L)[2] > 0 ? [2, 2, 1] : [1, 1, 1];
+}
 export function blockHalfExtents(L) {
   const doc = L.docs.blockDoc;
   const g = doc && (doc.grid || (doc.header && doc.header.grid));
-  // rotated: the box's footprint isn't the axis box of these half-sizes, so
-  // decide by the centroid (as select / flag by solid do on a rotated model)
-  if (rotatedModel(L)) return [0, 0, 0];
+  if (rotatedModel(L)) return [0, 0, 0];                   // not an axis box — rotated callers go through gridClassifyRotated
   return g && g.size ? [g.size[0] / 2, g.size[1] / 2, g.size[2] / 2] : [0, 0, 0];
+}
+
+// a gridded surface against a ROTATED block: the heightfield is NOT rotated with the
+// model (it is world z over world x,y), so the block's PROBES are rotated into world
+// instead — rx×ry×rz cell-centred probes in the lattice frame, each carried by R to a
+// world point and compared with the surface sampled at that point's own x,y. The
+// axis-aligned path integrates z analytically down a vertical column; a tilted block
+// has no vertical column, so z is probed too. 'between' is tested per probe (below A
+// AND above B), exact for crossing surfaces where the column formula is conservative.
+export function gridClassifyRotated(surfA, surfB, mode, R, size, rx, ry, rz) {
+  const np = rx * ry * rz, ox = new Float64Array(np), oy = new Float64Array(np), oz = new Float64Array(np);
+  let p = 0;
+  for (let c = 0; c < rz; c++) for (let b = 0; b < ry; b++) for (let a = 0; a < rx; a++, p++) {
+    const u = size[0] * ((a + 0.5) / rx - 0.5), v = size[1] * ((b + 0.5) / ry - 0.5), w = size[2] * ((c + 0.5) / rz - 0.5);
+    ox[p] = R[0] * u + R[3] * v + R[6] * w; oy[p] = R[1] * u + R[4] * v + R[7] * w; oz[p] = R[2] * u + R[5] * v + R[8] * w;
+  }
+  return (x, y, z) => {
+    let n = 0, ins = 0;
+    for (let q = 0; q < np; q++) {
+      const px = x + ox[q], py = y + oy[q], pz = z + oz[q];
+      const zA = surfA.sampleZ(px, py);
+      if (Number.isNaN(zA)) continue;
+      let hit;
+      if (mode === 'between') {
+        const zB = surfB.sampleZ(px, py);
+        if (Number.isNaN(zB)) continue;
+        hit = pz < zA && !(pz < zB);
+      } else hit = mode === 'below' ? pz < zA : !(pz < zA);
+      n++; if (hit) ins++;
+    }
+    if (!n) return { hit: false, frac: NaN };
+    const frac = ins / n;
+    return { hit: frac >= 0.5, frac };
+  };
+}
+
+// the per-record classifier for one target layer: the rotated probe set on a rotated
+// lattice, the column integral otherwise. res = [rx, ry, rz]; rz is used only on a
+// rotated lattice (a z resolution of 1 there — the axis-aligned default, where z is
+// analytic — becomes max(rx, ry), so the default probes a tilted block in 3D too).
+export function blockGridClassifier(L, surfA, surfB, mode, res) {
+  const g = L.docs && L.docs.blockDoc && L.docs.blockDoc.grid;
+  if (g && g.rot && g.size) {
+    const rz = res[2] > 1 ? res[2] : Math.max(res[0], res[1]);
+    return gridClassifyRotated(surfA, surfB, mode, g.rotD || Array.from(g.rot), g.size, res[0], res[1], rz);
+  }
+  const [hx, hy, hz] = blockHalfExtents(L);
+  return gridClassify(surfA, surfB, mode, hx, hy, hz, res[0], res[1]);
 }
 
 export async function selectByGridSurface(gridL, { mode = 'below', meshB = null, targets = null, combine = 'replace', onProgress = null } = {}) {
@@ -527,9 +650,7 @@ export async function selectByGridSurface(gridL, { mode = 'below', meshB = null,
     if (!n || L.kind === 'mesh' || L.docs.gridDoc) continue;
     if (!L._selMask || L._selMask.length !== n) L._selMask = new Uint8Array(n);
     const m = L._selMask;
-    const [hx, hy, hz] = blockHalfExtents(L);
-    const rr = hz > 0 ? 2 : 1;
-    const cls = gridClassify(surfA, surfB, mode, hx, hy, hz, rr, rr);
+    const cls = blockGridClassifier(L, surfA, surfB, mode, gridSelectRes(L));
     let done = 0;
     $('#meta').textContent = `select by surface: sampling ${L.label || L.name}…`;
     try {
@@ -554,17 +675,15 @@ export async function ratioByGridSurface(gridL, L, { name, res = [2, 2, 1], mode
   const doc = L.docs.blockDoc;
   const grid = doc && (doc.grid || (doc.header && doc.header.grid));
   if (!grid || !grid.size) { $('#meta').textContent = 'ratio by surface: needs a regular block model'; return null; }
-  if (rotatedModel(L)) { $('#meta').textContent = 'ratio by surface: proportions on a ROTATED model are not supported yet — select / flag by surface work (per centroid)'; return null; }
   const bbox4 = targetsXYBbox([L]);
   const surfA = surfaceFromGrid(await residentGridForEval(gridL, bbox4));
   const surfB = mode === 'between' && meshB && meshB.docs.gridDoc ? surfaceFromGrid(await residentGridForEval(meshB, bbox4)) : null;
   if (mode === 'between' && !surfB) { $('#meta').textContent = 'ratio by surface: between needs a second grid'; return null; }
   const resolution = Array.isArray(res) ? res.map((v) => Math.max(1, v | 0)) : [res, res, 1];
-  const [hx, hy, hz] = [grid.size[0] / 2, grid.size[1] / 2, grid.size[2] / 2];
   const epoch = ++_ratioEpoch;
   const col = createPaintCol(L, name, 'ratio'); if (!col) return null;
   const n = attrRowCountOf(L), codes = col.codes;
-  const cls = gridClassify(surfA, surfB, mode, hx, hy, hz, resolution[0], resolution[1]);
+  const cls = blockGridClassifier(L, surfA, surfB, mode, resolution);
   let done = 0, touched = 0;
   try {
     for await (const ch of layerPositions(L)) {
@@ -602,9 +721,7 @@ export async function flagByGridSurface(gridL, targets, { name, label = 'IN', mo
     const col = createPaintCol(L, name); if (!col) continue;
     const code = addPaintValue(L, col, label);
     const n = attrRowCountOf(L), codes = col.codes;
-    const [hx, hy, hz] = blockHalfExtents(L);
-    const rr = hz > 0 ? 2 : 1;
-    const cls = gridClassify(surfA, surfB, mode, hx, hy, hz, rr, rr);
+    const cls = blockGridClassifier(L, surfA, surfB, mode, gridSelectRes(L));
     let done = 0, cnt = 0;
     $('#meta').textContent = `flag by surface: sampling ${L.label || L.name}…`;
     try {
@@ -648,7 +765,7 @@ export async function selectBySolid(meshL, { mode = 'inside', meshB = null, targ
     const prog = (f, label) => { if (onProgress) onProgress((li + f) / Ls.length, `${label} · ${L.label || L.name}`); };
     $('#meta').textContent = `select by solid: sweeping ${L.label || L.name}…`;
     try {
-      // grid layers: the dense engine (worker + clipped lattice) — centroids only
+      // grid layers: the dense engine (worker + clipped lattice; a rotated lattice in its own frame) — centroids only
       const dense = L.docs.blockDoc ? await evalSolidOnGrid(meshL, L, { mode: 'flag', variant, method, onProgress: (f) => prog(f * (between ? 0.4 : 0.8), 'winding') }) : null;
       const denseB = dense && between ? await evalSolidOnGrid(meshB, L, { mode: 'flag', variant: 'above', method, onProgress: (f) => prog(0.4 + f * 0.4, 'winding B') }) : null;
       if (dense && (!between || denseB)) {
@@ -735,7 +852,7 @@ export async function ratioBySolid(meshL, L, { name, res = 3, mode = 'inside', m
       },
     });
   } catch (e) { if (e.message !== 'cancelled') $('#meta').textContent = `ratio by solid: ${e.message}`; return null; }
-  if (!dense || (between && !denseB)) { $('#meta').textContent = (L.docs.blockDoc && L.docs.blockDoc.header.grid && L.docs.blockDoc.header.grid.rot) ? 'ratio by solid: proportions on a ROTATED model aren\'t supported yet — select / flag by solid work (per centroid)' : 'ratio by solid: needs context-tier meshes + a regular model'; return null; }
+  if (!dense || (between && !denseB)) { $('#meta').textContent = 'ratio by solid: needs context-tier meshes + a regular model'; return null; }
   if (epoch !== _ratioEpoch) return null;
   const col = createPaintCol(L, name, 'ratio');
   if (!col) return null;
@@ -868,9 +985,6 @@ export async function assignDomains(solids, L, { name = 'DOMAIN', res = [2, 2, 2
   const doc = L.docs.blockDoc;
   const grid = doc && (doc.grid || (doc.header && doc.header.grid));
   if (!grid || !grid.size) { $('#meta').textContent = 'assign domains: needs a regular block model'; return null; }
-  // the proportion engine samples an axis-aligned lattice (evalSolidOnGrid → null
-  // on a rotated one), so every solid would claim nothing: an empty DOMAIN column
-  if (rotatedModel(L)) { $('#meta').textContent = 'assign domains: not supported on a ROTATED model yet — select / flag by solid work (per centroid)'; return null; }
   const resolution = Array.isArray(res) ? res.map((v) => Math.max(1, v | 0)) : [res, res, res];
   const epoch = ++_ratioEpoch;
   const fields = [];

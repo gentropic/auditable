@@ -8542,6 +8542,105 @@ if (take()) {
   await pg.close();
 }
 
+// ── by geometry on a ROTATED model: rotate the SOLID, not the model. A rotated copy
+//     of an axis-aligned model + solid (both turned by one rotation about one point)
+//     gives the same fraction per record as the unrotated pair — the dense engine runs
+//     in the lattice frame, where the rotated blocks are axis-aligned again. Before,
+//     evalSolidOnGrid returned null on a rotated lattice: the fraction was refused and
+//     flag / select fell back to centroids. Open surfaces (z-axis turn, so "above"
+//     stays world-up) and a GRIDDED surface (not rotated: the probes are, checked
+//     against a brute force built from the declared basis) too. ──
+if (take()) {
+  const pr = await mkPage('sm2rotgeom');
+  const asc = (() => {                                      // a wavy heightfield at block scale: majority ≠ centroid somewhere
+    const nc = 81, nr = 81; let t = `ncols ${nc}\nnrows ${nr}\nxllcorner 850\nyllcorner 1850\ncellsize 5\nNODATA_value -9999\n`;
+    for (let r = 0; r < nr; r++) { const row = []; for (let c = 0; c < nc; c++) { const x = 850 + c * 5, y = 2250 - r * 5; row.push((112 + 7 * Math.sin((x - 1000) / 7) * Math.cos((y - 2000) / 9)).toFixed(4)); } t += row.join(' ') + '\n'; }
+    return t;
+  })();
+  await pr.evaluate((t) => window._micro.openBlob(new Blob([t]), 'wave.asc', 'replace'), asc);
+  await pr.waitForFunction(() => window._micro.layers().some((L) => L.docs.gridDoc), null, { timeout: 30000 });
+  const rg = await pr.evaluate(async () => {
+    const M = window._micro, W = window.micro;
+    const S10 = 10, NX = 8, NY = 6, NZ = 4, O = [1000, 2000, 100], P = [1035, 2025, 115];
+    const mul = (R, v) => [R[0] * v[0] + R[3] * v[1] + R[6] * v[2], R[1] * v[0] + R[4] * v[1] + R[7] * v[2], R[2] * v[0] + R[5] * v[1] + R[8] * v[2]];
+    const rz = (a) => { const c = Math.cos(a), s = Math.sin(a); return [c, s, 0, -s, c, 0, 0, 0, 1]; };   // column-major
+    const rx = (a) => { const c = Math.cos(a), s = Math.sin(a); return [1, 0, 0, 0, c, s, 0, -s, c]; };
+    const mm = (A, B) => { const o = []; for (let j = 0; j < 3; j++) { const col = mul(A, [B[j * 3], B[j * 3 + 1], B[j * 3 + 2]]); o.push(...col); } return o; };
+    const turn = (R, p) => { const q = mul(R, [p[0] - P[0], p[1] - P[1], p[2] - P[2]]); return [q[0] + P[0], q[1] + P[1], q[2] + P[2]]; };
+    const cents = []; for (let k = 0; k < NZ; k++) for (let j = 0; j < NY; j++) for (let i = 0; i < NX; i++) cents.push([O[0] + i * S10, O[1] + j * S10, O[2] + k * S10]);
+    const model = async (name, R) => {
+      const pts = R ? cents.map((c) => turn(R, c)) : cents, col = (a) => Float64Array.from(pts.map((p) => p[a]));
+      const spec = { kind: 'blocks', name, columns: { X: col(0), Y: col(1), Z: col(2), V: Float64Array.from(pts.map((_, r) => r)) }, roles: { x: 'X', y: 'Y', z: 'Z', value: 'V' } };
+      if (R) spec.lattice = { basis: { origin: turn(R, O), U: mul(R, [S10, 0, 0]), V: mul(R, [0, S10, 0]), W: mul(R, [0, 0, S10]), counts: [NX, NY, NZ] } };
+      const id = await W.addLayer(spec);
+      return { L: M.layers().find((l) => l.id === id), pts };
+    };
+    const mesh = async (name, V, T, R) => { const id = await W.addLayer({ kind: 'mesh', name, vertices: Float64Array.from(R ? V.flatMap((p) => turn(R, p)) : V.flat()), triangles: Uint32Array.from(T) }); return M.layers().find((l) => l.id === id); };
+    const codesOf = (col) => Array.from(col ? col.codes : []);
+    const same = (a, b) => a.length === b.length && a.length > 0 && a.every((v, i) => v === b[i]);
+    const out = {};
+    // ── 1. a closed solid, a general 3D turn (W tilted off vertical) ──
+    const Rg = mm(rz(Math.PI / 6), rx(Math.PI / 9));
+    const A = await model('aa', null), B = await model('rot', Rg);
+    out.rot = !!(B.L.docs.blockDoc.grid && B.L.docs.blockDoc.grid.rot) && !(A.L.docs.blockDoc.grid && A.L.docs.blockDoc.grid.rot);
+    const lo = [1012.5, 2007.5, 102.5], hi = [1047.5, 2032.5, 122.5];   // faces between probe planes (offsets 7.5 of a 10 m block)
+    const BV = []; for (let k = 0; k < 8; k++) BV.push([k & 1 ? hi[0] : lo[0], k & 2 ? hi[1] : lo[1], k & 4 ? hi[2] : lo[2]]);
+    const BT = [0, 2, 1, 1, 2, 3, 4, 5, 6, 5, 7, 6, 0, 1, 4, 1, 5, 4, 2, 6, 3, 3, 6, 7, 0, 4, 2, 2, 4, 6, 1, 3, 5, 3, 7, 5];
+    const SA = await mesh('boxA', BV, BT, null), SB = await mesh('boxB', BV, BT, Rg);
+    const fa = codesOf(await M.ratioBySolid(SA, A.L, { name: 'FR', res: 3, mode: 'inside' }));
+    const colB = await M.ratioBySolid(SB, B.L, { name: 'FR', res: 3, mode: 'inside' });
+    const fb = codesOf(colB);
+    out.ratio = { made: !!colB, same: same(fa, fb), partial: fb.filter((c) => c > 0 && c < 255).length, full: fb.filter((c) => c === 255).length, diff: fa.reduce((n, v, i) => n + (v !== fb[i]), 0), meta: document.querySelector('#meta').textContent };
+    await M.flagBySolid(SA, [A.L], { name: 'FL', label: 'IN', mode: 'inside' });
+    await M.flagBySolid(SB, [B.L], { name: 'FL', label: 'IN', mode: 'inside' });
+    const fl = (L) => { const c = M.paintColByName(L, 'FL'), k = c ? c.dict.indexOf('IN') : -1; return c ? Array.from(c.codes, (v) => (v === k ? 1 : 0)) : []; };
+    await M.selectBySolid(SA, { targets: [A.L], mode: 'inside' }); const sa = Array.from(A.L._selMask || []);
+    await M.selectBySolid(SB, { targets: [B.L], mode: 'inside' }); const sb = Array.from(B.L._selMask || []);
+    out.flag = { same: same(fl(A.L), fl(B.L)), n: fl(B.L).reduce((s, v) => s + v, 0), sel: same(sa, sb), nSel: sb.reduce((s, v) => s + v, 0),
+      dense: !(SB._solidBVH && SB._solidBVH.solid) };      // the sparse per-centroid fallback builds this BVH; the dense lattice path never does
+    // ── 2. an open surface, ABOVE — a turn about the vertical (world-up stays up) ──
+    const Rz = rz(0.61);
+    const A2 = await model('aa2', null), B2 = await model('rot2', Rz);
+    const SV = [], ST = [], G = 7;
+    for (let j = 0; j < G; j++) for (let i = 0; i < G; i++) { const x = 900 + i * 45, y = 1900 + j * 45; SV.push([x, y, 111.3 + 0.13 * (x - 1000) - 0.07 * (y - 2000) + 3 * Math.sin(i * 1.7 + j)]); }
+    for (let j = 0; j < G - 1; j++) for (let i = 0; i < G - 1; i++) { const a = j * G + i; ST.push(a, a + 1, a + G, a + 1, a + G + 1, a + G); }
+    const UA = await mesh('sheetA', SV, ST, null), UB = await mesh('sheetB', SV, ST, Rz);
+    const ua = codesOf(await M.ratioBySolid(UA, A2.L, { name: 'UP', res: 3, mode: 'above' }));
+    const ub = codesOf(await M.ratioBySolid(UB, B2.L, { name: 'UP', res: 3, mode: 'above' }));
+    out.surf = { same: same(ua, ub), partial: ub.filter((c) => c > 0 && c < 255).length, diff: ua.reduce((n, v, i) => n + (v !== ub[i]), 0), len: ub.length };
+    // ── 3. a GRIDDED surface on the tilted model: probes rotated into world ──
+    const Gl = M.layers().find((l) => l.docs.gridDoc), surf = M.surfaceFromGrid(Gl.docs.gridDoc.grid);
+    const Ub = mul(Rg, [S10, 0, 0]), Vb = mul(Rg, [0, S10, 0]), Wb = mul(Rg, [0, 0, S10]);
+    const brute = (r, n) => B.pts.map((c) => { let ins = 0, k = 0; for (let w = 0; w < n; w++) for (let v = 0; v < n; v++) for (let u = 0; u < n; u++) { const a = (u + 0.5) / n - 0.5, b2 = (v + 0.5) / n - 0.5, d = (w + 0.5) / n - 0.5; const p = [0, 1, 2].map((ax) => c[ax] + a * Ub[ax] + b2 * Vb[ax] + d * Wb[ax]); const zs = surf.sampleZ(p[0], p[1]); if (Number.isNaN(zs)) continue; k++; if (p[2] < zs) ins++; } return r(ins / k); });
+    const wantFlag = brute((f) => (f >= 0.5 ? 1 : 0), 2), wantRatio = brute((f) => Math.round(255 * f), 3);
+    const centroid = B.pts.map((c) => (c[2] < surf.sampleZ(c[0], c[1]) ? 1 : 0));
+    await M.flagByGridSurface(Gl, [B.L], { name: 'GB', label: 'BELOW', mode: 'below' });
+    const gc = M.paintColByName(B.L, 'GB'), gk = gc ? gc.dict.indexOf('BELOW') : -1, gotFlag = gc ? Array.from(gc.codes, (v) => (v === gk ? 1 : 0)) : [];
+    const gr = codesOf(await M.ratioByGridSurface(Gl, B.L, { name: 'GR', res: [3, 3, 3], mode: 'below' }));
+    await M.selectBySolid(Gl, { targets: [B.L], mode: 'below' }); const gs = Array.from(B.L._selMask || []);
+    out.grid = { flag: same(gotFlag, wantFlag), sel: same(gs, wantFlag), ratio: same(gr, wantRatio), partial: gr.filter((c) => c > 0 && c < 255).length,
+      nFlag: wantFlag.reduce((s, v) => s + v, 0), vsCentroid: wantFlag.reduce((n, v, i) => n + (v !== centroid[i]), 0), n: B.pts.length };
+    // ── the solid recipe's probes: one number n = n×n×n; a malformed value is an error
+    //     (it used to become 3×3×3 silently) ──
+    await M.runSolidRecipe({ geometry: 'boxB', do: 'ratio', model: 'rot', column: 'P2', probes: 2 });
+    const p2 = codesOf(M.paintColByName(B.L, 'P2')), p222 = codesOf(await M.ratioBySolid(SB, B.L, { name: 'P222', res: [2, 2, 2], mode: 'inside' }));
+    const err = async (probes) => { try { await M.runSolidRecipe({ geometry: 'boxB', do: 'ratio', model: 'rot', column: 'PX', probes }); return 'ran'; } catch (e) { return e.message; } };
+    out.probes = { n2: same(p2, p222) && !same(p2, fb), two: await err([2, 2]), word: await err('lots'), zero: await err(0) };
+    return out;
+  });
+  chk(`rotated by-solid: the turned copy is a rotated lattice (${rg.rot}); fraction column made (was refused) — ${rg.ratio.diff} of ${rg.ratio.partial + rg.ratio.full}+ records differ from the axis-aligned pair, ${rg.ratio.partial} partial, ${rg.ratio.full} whole (“${rg.ratio.meta.slice(0, 70)}…”)`,
+    rg.rot && rg.ratio.made && rg.ratio.same && rg.ratio.partial > 20 && rg.ratio.full > 0);
+  chk(`rotated by-solid: flag (${rg.flag.n} IN) and select (${rg.flag.nSel}) match the axis-aligned pair record for record, on the dense lattice path (${rg.flag.dense})`,
+    rg.flag.same && rg.flag.sel && rg.flag.n > 0 && rg.flag.nSel === rg.flag.n && rg.flag.dense);
+  chk(`rotated by-surface: an open sheet, ABOVE, turned about the vertical — ${rg.surf.diff} of ${rg.surf.len} fractions differ, ${rg.surf.partial} partial`,
+    rg.surf.same && rg.surf.partial > 10);
+  chk(`rotated gridded surface: flag (${rg.grid.nFlag} below), select and the 3×3×3 fraction (${rg.grid.partial} partial) = a brute force from the declared basis; the old centroid rule would have called ${rg.grid.vsCentroid} of ${rg.grid.n} blocks differently`,
+    rg.grid.flag && rg.grid.sel && rg.grid.ratio && rg.grid.partial > 10 && rg.grid.nFlag > 0 && rg.grid.vsCentroid > 0);
+  chk(`solid recipe probes: 2 means 2×2×2 (${rg.probes.n2}); [2, 2], "lots" and 0 stop (“${rg.probes.two}” · “${rg.probes.word}” · “${rg.probes.zero}”)`,
+    rg.probes.n2 && /not 2/.test(rg.probes.two) && /not a whole number/.test(rg.probes.word) && /not a whole number/.test(rg.probes.zero));
+  await pr.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

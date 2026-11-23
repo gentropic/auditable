@@ -79,7 +79,7 @@ Two further choices in the dialog concern how the sum is computed, not what it m
 \begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
 setting & meaning & default \\ \midrule
 \ui{compute} & \ui{GPU} evaluates on the graphics card. \ui{CPU} runs the same evaluation in a background worker: slower, but it cannot stall a graphics driver on a very large solid. & \ui{GPU} \\
-\ui{engine} & \ui{winding} is the robust sum described above; it tolerates holes and flipped faces. \ui{peel · fast} casts one ray down each column of blocks and is exact along Z — much faster for a \emph{clean} solid or surface. Meshes only; a grid has its own method. & \ui{winding} \\ \bottomrule
+\ui{engine} & \ui{winding} is the robust sum described above; it tolerates holes and flipped faces. \ui{peel · fast} casts one ray down each column of blocks and is exact along Z — much faster for a \emph{clean} solid or surface. Meshes only; a grid has its own method. On a rotated model the rays run along the model's own vertical axis, so peel is used for a closed solid only, and an open surface is evaluated with \ui{winding}. & \ui{winding} \\ \bottomrule
 \end{tabularx}
 \caption{How the evaluation runs.}\label{tab:geometry-engine}
 \end{table}
@@ -137,7 +137,7 @@ Probes are per axis because blocks are rarely cubes. A 10 × 10 × 5 m bench blo
 The column is numeric, wears a \% badge in the column lists, and is the natural weight for everything downstream. A grade–tonnage series weighted by \code{SG * IN\_ORE\_SHELL} reports the tonnage inside the shell with the edge blocks counted for the part that is in (\cref{ch:gt}).
 
 \begin{note}
-Fractions need a regular block model. A rotated model is refused for now with a message saying so; select and flag still work on it, by centroid.
+Fractions need a regular block model, axis-aligned or rotated. On a rotated model micro turns the geometry, not the model: it carries the solid or surface into the model's own lattice frame, where the rotated blocks line up with the axes again, and probes there. The probes are therefore laid out along the block's own edges, and a rotated copy of a model and its solid gives exactly the fractions the unrotated pair gives. A surface's skirt is dropped straight down (or up) in the world before the turn, so \ui{below} keeps meaning below. Select and flag on a rotated model take the same path, judging each block by its centroid as on any model.
 \end{note}
 
 \begin{tryit}
@@ -182,7 +182,7 @@ A record that lies beyond the surface's footprint — east of where the topograp
 
 \subsection{Gridded surfaces}
 
-A grid is a surface with a regular footprint, and micro uses that. There is no mesh to wind around: for each record it samples the grid's elevation at the record's x and y, bilinearly between the four surrounding nodes, and compares it with the record's z. For a fraction column it compares the surface with the block's vertical extent at each probe position. The dialog says \emph{a bilinear sample, no winding}, and the \ui{engine} row disappears.
+A grid is a surface with a regular footprint, and micro uses that. There is no mesh to wind around: for each record it samples the grid's elevation at the record's x and y, bilinearly between the four surrounding nodes, and compares it with the record's z. For a fraction column it compares the surface with the block's vertical extent at each probe position. A block of a rotated model has no vertical extent to compare, so there the probes fill the block in three dimensions: they are laid out along the block's own edges, and each one is compared with the surface at its own x and y. The grid itself is never turned. A probe count of 1 along z, the default on an axis-aligned model, becomes the larger of the x and y counts on a rotated one, and select and flag use 2 × 2 × 2 probes and a majority. The dialog says \emph{a bilinear sample, no winding}, and the \ui{engine} row disappears.
 
 Two details matter for trust:
 
@@ -225,7 +225,7 @@ The rule is “largest fraction”, not “first in the list” and not “any o
 \end{caution}
 
 \begin{note}
-Assign domains needs a regular, axis-aligned block model. For a rotated model use select or flag by solid, one solid at a time; those work by centroid.
+Assign domains needs a regular block model. A rotated one works as for a fraction column.
 \end{note}
 
 \section{Recipes, and in a routine}\label{sec:geometry-routine}
@@ -268,7 +268,7 @@ setting & meaning & default \\ \midrule
 \code{column} & the column to write (flag, ratio) & as the dialog offers \\
 \code{value} & the value written (flag) & \code{IN} \\
 \code{model} & the block model (ratio) & required for ratio \\
-\code{probes} & probes per axis, a list of three (ratio) & 3, 3, 3 \\
+\code{probes} & probes per axis (ratio): a list of three, or one number \code{n} for n × n × n. Anything else stops the step with an error & 3, 3, 3 \\
 \code{engine} & \code{peel} for the fast engine & winding \\
 \code{forceClosed} & \code{true} to treat a holed mesh as a closed volume & as the layer is \\ \bottomrule
 \end{tabularx}
