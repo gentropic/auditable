@@ -60,6 +60,10 @@ export function syncRuleMode(L) {
     if (L._ruleCodes) S.renderer.setLayerRuleCodes(L.id, L._ruleCodes);   // paint may have borrowed the texture
     else if (rulesOf(L).length && (!L._ruleCodes || L._rulesDirty)) runRules(L, true);
     else S.renderer.setLayerRuleCodes(L.id, null);
+  } else if (pc && pc.cat) {                                // a text ƒ by class: its codes, its class legend + eyes
+    S.renderer.setLayerRuleMode(L.id, true);
+    applyCatLegend(L, true); applyCatVisibility(L, true);
+    S.renderer.setLayerRuleCodes(L.id, pc.codes);
   } else if (pc) {
     S.renderer.setLayerRuleMode(L.id, true);
     applyPaintPalette(L, pc);

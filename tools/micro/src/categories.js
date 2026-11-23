@@ -5,7 +5,8 @@ import { categoryPalettePixels, palettePixels, coordNum } from '../../../ext/con
 import { stageGate } from './props.js';
 import { paintActiveCol, applyPaintPalette, paintBlankVis } from './paint.js';
 import { ruleModeOf, applyRuleVisibility, applyRulePalette } from './rules.js';
-import { calcDisplayCol } from './calc.js';
+import { calcDisplayCol, calcSelOf } from './calc.js';
+import { noDataOf } from './ramp.js';
 import { S, requestRender } from './state.js';
 import { markProjectDirty } from './project.js';
 import { layerHeaderOf, layerRows } from './records.js';
@@ -15,6 +16,16 @@ import { viewCatName, viewCatData, ensureViewCat, VIEW_CAT_MAX } from './viewcat
 const LAS_CLASSES = ['never classified', 'unclassified', 'ground', 'low vegetation', 'medium vegetation', 'high vegetation', 'building', 'low point (noise)', 'reserved', 'water', 'rail', 'road surface', 'reserved', 'wire — guard', 'wire — conductor', 'transmission tower', 'wire connector', 'bridge deck', 'high noise'];
 export function layerClassInfo(L) {
   const d = L.docs || {};
+  const tn = textCalcSel(L);
+  if (tn) {                                                 // a text ƒ column: its live classes (src/calc.js realizes them)
+    const col = calcCatCol(L), px = categoryPalettePixels(256);
+    const names = col ? col.dict : [];
+    return {
+      kind: 'dict', calc: tn, names, codes: names.map((_, i) => i).filter((i) => i > 0),
+      colorAt: (c) => { const k = ((c - 1) & 255) * 4; return `rgb(${px[k]},${px[k + 1]},${px[k + 2]})`; },
+      column: tn, countable: true, pending: !col,
+    };
+  }
   const vc = viewCatName(L);
   if (vc) {                                                 // a view classing by its own column (src/viewcat.js)
     const v = viewCatData(L), px = categoryPalettePixels(256);
@@ -45,9 +56,107 @@ export function layerClassInfo(L) {
   }
   return null;
 }
+// ── a TEXT ƒ column coloured by class. Its legend + hidden classes live per ƒ column in
+// L.calcCats[name] = { legend: {col, entries, otherColor}, hidden: [values], seen: [values] } —
+// keyed by VALUE, never by code, because a re-realization (the expression edited, an input
+// changed) renumbers the classes. Persisted with the project (project.js). ──
+export function textCalcSel(L) {
+  const n = calcSelOf(L);
+  return n && (L.calcCols || []).some((c) => c.name === n && c.ty === 'string') ? n : null;
+}
+export function calcCatCol(L) { const c = calcDisplayCol(L); return c && c.cat ? c : null; }
+function calcStore(L, name, create) {
+  if (!L.calcCats) { if (!create) return null; L.calcCats = {}; }
+  if (!L.calcCats[name]) { if (!create) return null; L.calcCats[name] = { hidden: [] }; }
+  return L.calcCats[name];
+}
+// after each realization: values the legend has never offered join it (next palette colour);
+// entries whose values are all absent now sink to the end — kept, so their colour comes back
+// with them, but not listed (the class list and the legends skip entries with no records)
+export function syncCalcLegend(L, name, dict) {
+  const st = calcStore(L, name, true);
+  if (!st.legend) st.legend = { col: name, entries: [], otherColor: '#555a5f' };
+  const leg = st.legend, px = categoryPalettePixels(256);
+  const seen = new Set((st.seen || []).map(String));
+  for (const e of leg.entries) for (const v of e.values) seen.add(String(v));
+  for (let c = 1; c < dict.length; c++) {
+    const v = dict[c];
+    if (seen.has(v)) continue;
+    const k = (leg.entries.length & 255) * 4;
+    leg.entries.push({ label: v, values: [v], color: rgbCssToHex(`rgb(${px[k]},${px[k + 1]},${px[k + 2]})`) });
+    seen.add(v);
+  }
+  const have = new Set(dict.slice(1));
+  const live = (e) => e.values.some((v) => have.has(String(v)));
+  leg.entries = [...leg.entries.filter(live), ...leg.entries.filter((e) => !live(e))];
+  st.seen = [...seen];
+}
+// the colour each class of `dict` carries in the ƒ column's legend (by code; null = none)
+export function calcClassColors(L, name, dict) {
+  const st = calcStore(L, name), out = dict.map(() => null);
+  if (!st || !st.legend) return out;
+  for (const e of st.legend.entries) for (const v of e.values) { const c = dict.indexOf(String(v)); if (c > 0) out[c] = e.color; }
+  return out;
+}
+// the hidden-class set the class list, the legends and the selection read: the layer's
+// category codes, or — for a text ƒ — a code view over the ƒ column's hidden VALUES
+export function classHidden(L, info) {
+  if (!info || !info.calc) { if (!L.catHidden) L.catHidden = new Set(); return L.catHidden; }
+  const st = calcStore(L, info.calc, true);
+  if (!Array.isArray(st.hidden)) st.hidden = [];
+  const vals = st.hidden, names = info.names;
+  return {
+    has: (c) => c > 0 && names[c] != null && vals.includes(names[c]),
+    add: (c) => { const v = names[c]; if (c > 0 && v != null && !vals.includes(v)) vals.push(v); },
+    delete: (c) => { const k = vals.indexOf(names[c]); if (k >= 0) vals.splice(k, 1); },
+    get size() { let n = 0; for (let c = 1; c < names.length; c++) if (vals.includes(names[c])) n++; return n; },
+    *[Symbol.iterator]() { for (let c = 1; c < names.length; c++) if (vals.includes(names[c])) yield c; },
+  };
+}
+// the legend the user has edited/stored for these classes, or null (defaults are derived)
+export function storedLegend(L, info) {
+  if (info.calc) { const st = calcStore(L, info.calc); return (st && st.legend) || null; }
+  return L.catLegend && L.catLegend.col === info.column ? L.catLegend : null;
+}
+export function resetLegend(L, info) {
+  if (info.calc) {
+    const st = calcStore(L, info.calc);
+    if (st) { delete st.legend; st.seen = []; }
+    const col = calcCatCol(L); if (col) syncCalcLegend(L, info.calc, col.dict);   // back to the default colours, by value
+    applyCatLegend(L, true);
+  } else { L.catLegend = null; S.renderer.setLayerPalette(L.id, null); }
+  markProjectDirty(); requestRender();
+}
+function applyCalcCatVisibility(L, col) {
+  const info = layerClassInfo(L), hid = classHidden(L, info), hideBlank = noDataOf(L).hide;
+  if (!hid.size && !hideBlank) S.renderer.setLayerCatVisibility(L.id, null);
+  else {
+    const v = new Uint8Array(256).fill(1);
+    for (const c of hid) v[c & 255] = 0;
+    if (hideBlank) v[0] = 0;                               // a blank result: the style tab's no-data row
+    S.renderer.setLayerCatVisibility(L.id, v);
+  }
+}
+function applyCalcCatPalette(L) {
+  const info = layerClassInfo(L), leg = legendOf(L, info);
+  const px = new Uint8Array(256 * 4);
+  const put = (c, hex) => {
+    const n = parseInt(String(hex).slice(1), 16);
+    px[c * 4] = (n >> 16) & 255; px[c * 4 + 1] = (n >> 8) & 255; px[c * 4 + 2] = n & 255; px[c * 4 + 3] = 255;
+  };
+  for (let c = 1; c < 256; c++) put(c, leg.otherColor || '#555a5f');
+  put(0, noDataOf(L).color);                               // code 0 = a blank result
+  for (const e of leg.entries) for (const c of legendCodesOf(info, e)) if (c > 0 && c < 256) put(c, e.color);
+  S.renderer.setLayerPalette(L.id, px, 256);
+  requestRender();
+}
 export function applyCatVisibility(L, force) {
   if (!force) return stageGate(L, () => applyCatVisibility(L, true));
   if (ruleModeOf(L)) return applyRuleVisibility(L, true);  // rule mode: the vis texture is indexed by RULE code
+  if (textCalcSel(L)) {                                     // a text ƒ: its own hidden classes (nothing until realized)
+    if (calcCatCol(L)) applyCalcCatVisibility(L);
+    markProjectDirty(); requestRender(); return;
+  }
   if (paintActiveCol(L) || calcDisplayCol(L)) { S.renderer.setLayerCatVisibility(L.id, paintBlankVis(L, paintActiveCol(L) || calcDisplayCol(L))); requestRender(); return; }   // paint mode: no code eyes
   if (!L.catHidden || !L.catHidden.size) S.renderer.setLayerCatVisibility(L.id, null);
   else {
@@ -67,6 +176,11 @@ export function restoreHiddenCats(L, arr) {
 }
 // counts fill in async — the eyes never wait on a sweep
 export async function ensureCatCounts(L, info) {
+  if (info && info.calc) {                                  // the realization counted them
+    const tc = calcCatCol(L); if (!tc) return null;
+    const counts = new Map(); tc.counts.forEach((n, c) => { if (c > 0 && n) counts.set(c, n); });
+    return { counts, total: tc.count };
+  }
   if (viewCatName(L)) { const v = viewCatData(L) || await ensureViewCat(L); return v ? { counts: v.counts, total: v.total } : null; }
   if (L._catCounts || !info.countable) return L._catCounts || null;
   const counts = new Map();
@@ -115,10 +229,16 @@ function defaultLegendEntries(info) {
   return info.codes.map((c) => ({ label: String(info.names[c]) || '(blank)', values: [info.kind === 'las' ? c : String(info.names[c])], color: rgbCssToHex(info.colorAt(c)) }));
 }
 export function legendOf(L, info) {
-  if (L.catLegend && L.catLegend.col === info.column) return L.catLegend;
+  const st = storedLegend(L, info); if (st) return st;
   return { col: info.column, entries: defaultLegendEntries(info), otherColor: '#555a5f' };
 }
 export function ensureLegend(L, info) {
+  if (info.calc) {                                          // a text ƒ: stored per column, by value
+    if (info.pending) return legendOf(L, info);             // nothing realized yet — never store an empty legend
+    const st = calcStore(L, info.calc, true);
+    if (!st.legend) st.legend = legendOf(L, info);
+    return st.legend;
+  }
   if (!L.catLegend || L.catLegend.col !== info.column) L.catLegend = legendOf(L, info);
   return L.catLegend;
 }
@@ -127,6 +247,7 @@ export function applyCatLegend(L, force) {
   if (!force) return stageGate(L, () => applyCatLegend(L, true));
   if (ruleModeOf(L)) return applyRulePalette(L, true);     // rule mode: the palette holds RULE colors
   { const pc = paintActiveCol(L); if (pc) return applyPaintPalette(L, pc); }   // paint mode: painted-value colors
+  if (textCalcSel(L)) { if (calcCatCol(L)) applyCalcCatPalette(L); return; }   // a text ƒ: its class legend
   const info = layerClassInfo(L);
   if (!info) return;
   const leg = L.catLegend && L.catLegend.col === info.column ? L.catLegend : null;

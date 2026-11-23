@@ -1651,7 +1651,10 @@ $('#dhCancel').onclick = dhCancel;
 $('#colorBy').addEventListener('change', () => {
   const L = activeLayer();
   // the open properties pane follows a colour-by chosen here (it went stale before)
-  if (L) setLayerColorBy(L, $('#colorBy').value).then(() => refreshProps(), (e) => { $('#meta').textContent = `color — ${e.message}`; });
+  if (L) setLayerColorBy(L, $('#colorBy').value).then(() => refreshProps(), (e) => {
+    $('#meta').textContent = `color — ${e.message}`;
+    if (L.colorSel != null && [...$('#colorBy').options].some((o) => o.value === String(L.colorSel))) $('#colorBy').value = String(L.colorSel);   // the select shows what IS drawn
+  });
   else requestRender();
 });
 

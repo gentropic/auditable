@@ -182,6 +182,7 @@ export function projectManifest() {
       ramps: L.ramps && Object.keys(L.ramps).length ? L.ramps : undefined,
       noData: L.noData || undefined,
       catLegend: L.catLegend || undefined,
+      calcCats: L.calcCats && Object.keys(L.calcCats).length ? L.calcCats : undefined,   // text ƒ class colours + hidden, by value
       rules: L.rules && L.rules.list && L.rules.list.length ? L.rules : undefined,
       ruleHidden: L.ruleHidden && L.ruleHidden.size ? [...L.ruleHidden] : undefined,
       paintCols: L.paintCols && L.paintCols.some((c) => !c.mat && !isStoredCat(c))   // sidecar columns (matcols + stored categories) persist as Parquet, not RLE
@@ -679,6 +680,7 @@ export async function openProjectDir(dir, { pack = null } = {}) {
           if (ls.qualify) { Ld.qualify = ls.qualify; Ld._qualFn = undefined; _qualifyReopen.push(Ld.id); }
           try { await loadElement(Ld, dir); } catch (e) { (Ld._colsUnread || (Ld._colsUnread = [])).push({ name: 'columns', why: e && e.message || String(e) }); }   // ƒ + matcols BEFORE filter/color (both may reference them); never blocks the load, always reported
           if (ls.calcCols && !(Ld.calcCols || []).length) Ld.calcCols = ls.calcCols;   // legacy projects (no element manifest)
+          if (ls.calcCats) Ld.calcCats = ls.calcCats;      // before the colour: a text ƒ realizes against its stored classes
           addPaintColorOptions(Ld);
           if (ls.holeFilter) { try { await applyHoleFilter(Ld, ls.holeFilter); } catch { /* collar missing → no mask */ } }
           await refilterLayer(Ld, ls.filter);
@@ -788,6 +790,7 @@ export async function openProjectDir(dir, { pack = null } = {}) {
       if (ls.qualify) { L.qualify = ls.qualify; L._qualFn = undefined; _qualifyReopen.push(L.id); }
       try { await loadElement(L, dir); } catch (e) { (L._colsUnread || (L._colsUnread = [])).push({ name: 'columns', why: e && e.message || String(e) }); }   // ƒ + matcols BEFORE filter/color (both may reference them); never blocks the load, always reported
       if (ls.calcCols && !(L.calcCols || []).length) L.calcCols = ls.calcCols;   // legacy projects (no element manifest)
+      if (ls.calcCats) L.calcCats = ls.calcCats;           // before the colour: a text ƒ realizes against its stored classes
       if (Array.isArray(ls.catChoices)) L.catChoices = ls.catChoices;
       addPaintColorOptions(L);
       // color channel first (may re-stream), then filter (sweeps), then the rest

@@ -136,9 +136,36 @@ export function ensureValueTex(L, sel = colorSelOf(L)) {
 // recolour the model and every other view)
 const viewTooBig = (L) => new Error(`“${L.label || L.name}”: too many records for a view's own colour (the GPU's texture limit) — colour the model instead`);
 
+// a colour-by selection this layer can't honour → why, or null. Asked BEFORE anything changes,
+// so a bad selection never leaves the layer saying one column and drawing the previous one.
+export function colorSelProblem(L, v) {
+  v = String(v);
+  const nm = L.label || L.name, h = colorHeaderOf(L);
+  if (v.startsWith('calc:')) return (L.calcCols || []).some((c) => c.name === v.slice(5)) ? null : `“${nm}” has no ƒ column “${v.slice(5)}”`;
+  if (v.startsWith('paint:')) return (L.paintCols || []).some((c) => c.name === v.slice(6)) ? null : `“${nm}” has no stored column “${v.slice(6)}”`;
+  if (v.startsWith('catcol:')) return null;                // resolved (and refused) by name below
+  if (v.startsWith('chan:')) {
+    const i = +v.slice(5);
+    if (!Number.isInteger(i)) return `“${v}” is not a column`;
+    if (h) {
+      const ok = Array.isArray(h.numericColumns) ? h.numericColumns.some((c) => c.i === i) : i >= 0 && i < (h.columns || []).length;
+      return ok ? null : `“${nm}” has no numeric column ${h.columns && h.columns[i] != null ? `“${h.columns[i]}”` : '#' + i}`;
+    }
+    const cd = cloudDocOf(L);
+    if (cd) return cloudColumnsOf(cd.header).some((c) => c.i === i) ? null : `“${nm}” has no column #${i} to colour by`;
+    return null;
+  }
+  if (!h) return null;                                     // clouds, meshes, grids: their own mode words
+  if (v === 'elev' || v === 'solid' || v === 'rules') return null;
+  if (v === 'cat') return (h.categories && h.categories.length) || L.viewOf != null ? null : `“${nm}” has no category column — pick one under Properties → Style → categorized`;
+  return `“${v}” is not something “${nm}” can be coloured by`;
+}
+
 export async function setLayerColorBy(L, v) {
   if (!L) return null;
   v = String(v);
+  { const why = colorSelProblem(L, v); if (why) throw new Error(why); }
+  if (L.colorSel !== v) L._colorSelBefore = L.colorSel;   // where an un-colourable ƒ goes back to (src/calc.js)
   if (v.startsWith('catcol:') && L.viewOf != null) {        // a view classes by its OWN column: codes, no re-read (src/viewcat.js)
     const name = v.slice(7), h = colorHeaderOf(L), i = h ? h.columns.indexOf(name) : -1;
     if (i < 0) throw new Error(`no column “${name}” on “${L.label || L.name}”`);
@@ -211,6 +238,13 @@ export async function setLayerColorBy(L, v) {
 
 // the same, for callers that don't wait: a failure goes to the status line
 export function setLayerColorSel(L, v) {
+  const why = colorSelProblem(L, v);
+  if (why) {                                               // say so — the layer keeps its colour, visibly not the asked one
+    $('#meta').textContent = `color — ${why}`;
+    if (L.id === S.activeId) { const cb = $('#colorBy'); if ([...cb.options].some((o) => o.value === String(L.colorSel))) cb.value = String(L.colorSel); }
+    return Promise.resolve(null);
+  }
+  if (L.colorSel !== String(v)) L._colorSelBefore = L.colorSel;
   swapClipForSel(L, L.colorSel, String(v));               // before the assignment — setLayerColorBy then sees no change
   L.colorSel = v;
   return setLayerColorBy(L, v).catch((e) => { $('#meta').textContent = `color — ${e.message}`; });
@@ -229,7 +263,7 @@ export function colorChoices(L) {
   for (const c of L.catChoices || []) if (!out.includes(c)) out.push(c);
   if (L.viewOf != null) for (const c of viewTextColumns(L)) if (!out.includes(c)) out.push(c);
   for (const p of L.paintCols || []) out.push(p.name);
-  for (const c of L.calcCols || []) if (c.ty !== 'string') out.push(c.name);
+  for (const c of L.calcCols || []) out.push(c.name);       // a text ƒ colours by class
   out.push('rules', 'solid');
   return out;
 }
@@ -265,7 +299,7 @@ export function colorSelFor(L, col) {
       return 'catcol:' + c;                                // another text column: becomes THE category
     }
     if ((L.paintCols || []).some((p) => p.name === c)) return 'paint:' + c;
-    if ((L.calcCols || []).some((p) => p.name === c && p.ty !== 'string')) return 'calc:' + c;
+    if ((L.calcCols || []).some((p) => p.name === c)) return 'calc:' + c;
   }
   const ch = colorChoices(L);
   throw new Error(`color: “${c}” is not something “${L.label || L.name}” can be coloured by${ch.length ? ` (${ch.join(', ')})` : ''}`);

@@ -22,6 +22,7 @@ import { fmtStat } from './analysis-ui.js';
 import { mkLineage } from './lineage.js';
 import { persistElement } from './element-store.js';
 import { renderLayers } from './layers-panel.js';
+import { syncCalcLegend, calcClassColors } from './categories.js';
 const $ = (s) => document.querySelector(s);
 
 // ── ƒ CALCULATIONS window — the calc-column authoring workbench (Leapfrog's
@@ -225,6 +226,8 @@ export function openCalcWindow(L, selIdx) {
       let ty = tySel.value;
       if (ty === 'auto') ty = await inferCalcType(L, expr, h);   // the same rule a routine's calccols uses
       const entry = { name, expr, ty };
+      const was = sel >= 0 && L.calcCols ? L.calcCols[sel] : null;
+      if (was && was.name !== name && L.calcCats && L.calcCats[was.name]) { L.calcCats[name] = L.calcCats[was.name]; delete L.calcCats[was.name]; }   // a renamed ƒ keeps its class colours
       L.calcCols = L.calcCols || [];
       if (sel >= 0) L.calcCols[sel] = entry; else { L.calcCols.push(entry); sel = L.calcCols.length - 1; }
       invalidate();
@@ -350,7 +353,7 @@ function calcDisplayHash(L, name) {
   const seen = new Set(); const parts = [];
   (function walk(nm) {
     const c = by.get(nm); if (!c || seen.has(nm)) return; seen.add(nm);
-    parts.push(c.name + '=' + c.expr);
+    parts.push(c.name + '=' + c.expr + ':' + (c.ty || 'number'));   // a type change re-realizes (number ↔ text)
     let ds = []; try { ds = deps(c.expr); } catch { /* bad expr → no deps */ }
     for (const d of ds) walk(String(d).toLowerCase());
   })(String(name).toLowerCase());
@@ -363,11 +366,12 @@ export function calcDisplayCol(L) {
 }
 export async function ensureCalcDisplay(L) {
   const name = calcSelOf(L); if (!name || calcDisplayCol(L)) return;
-  const cc = (L.calcCols || []).find((c) => c.name === name); if (!cc || cc.ty === 'string') return;
+  const cc = (L.calcCols || []).find((c) => c.name === name); if (!cc) return;
   const hash = calcDisplayHash(L, name);
   if (L._calcDisplayBusy === hash) return;                 // this exact state is already being realized
   L._calcDisplayBusy = hash;
   $('#meta').textContent = `ƒ ${name}: computing for display…`;
+  if (cc.ty === 'string') return ensureTextCalcDisplay(L, name, hash);
   let vals;
   try { vals = await realizeCalc(L, name); }
   catch (e) { L._calcDisplayBusy = null; $('#meta').textContent = `ƒ ${name}: ${e.message}`; return; }
@@ -380,6 +384,64 @@ export async function ensureCalcDisplay(L) {
   L._calcDisplay = { name, hash, col };
   applyRamp(L, true); syncRuleMode(L);
   $('#meta').textContent = `ƒ ${name}: colored — ${nn.toLocaleString()} values, ${fmtStat(mn)} … ${fmtStat(mx)}`;
+}
+// a TEXT ƒ column colours by CLASS, live: the same ephemeral realization, but the values become
+// a dictionary + one u8 code per record — the painted-category shape — and the colours come
+// from the class legend (src/categories.js), stored per ƒ column and keyed by VALUE, so editing
+// the expression re-realizes and every class that survives keeps its colour.
+export const CALC_CAT_MAX = 255;
+async function ensureTextCalcDisplay(L, name, hash) {
+  let r;
+  try { r = await realizeTextCalc(L, name); }
+  catch (e) { L._calcDisplayBusy = null; $('#meta').textContent = `ƒ ${name}: ${e.message}`; return; }
+  L._calcDisplayBusy = null;
+  if (calcSelOf(L) !== name || hash !== calcDisplayHash(L, name)) { ensureCalcDisplay(L); return; }   // went stale mid-scan
+  if (r.over) {
+    // can't be coloured: say so, and go back to what the layer was coloured by — never keep
+    // drawing the previous column under a selection that says ƒ
+    const prev = L._colorSelBefore && L._colorSelBefore !== 'calc:' + name ? L._colorSelBefore : 'elev';
+    await setLayerColorSel(L, prev);
+    if (_propOpen && _propFor === L.id) renderProps();
+    $('#meta').textContent = `ƒ ${name}: more than ${CALC_CAT_MAX} different values — too many classes to color by (keep it for the filter and exports, or group it in the expression)`;
+    return;
+  }
+  const col = { name, cat: true, selKey: 'calc:' + name, dict: r.dict, codes: r.codes, counts: r.counts, count: r.codes.length, nonnull: r.nonnull };
+  L._calcDisplay = { name, hash, col };
+  syncCalcLegend(L, name, r.dict);                         // classes new to this realization join a stored legend
+  applyRamp(L, true); syncRuleMode(L);
+  if (_propOpen && _propFor === L.id) renderProps();
+  const k = r.dict.length - 1;
+  $('#meta').textContent = `ƒ ${name}: colored by class — ${r.nonnull.toLocaleString()} values in ${k} class${k === 1 ? '' : 'es'}`;
+}
+// one pass → { codes (u8 per record, 0 = blank), dict ([''] + the values, sorted so a class's code
+// doesn't depend on which record came first), counts, nonnull } — or { over: true } past 255 values
+export async function realizeTextCalc(L, name) {
+  const h = layerTableHeader(L); if (!h) throw new Error('no column table');
+  try { await ensureStoredValues(L, expandedDeps(L, parse(quoteIdent(name)))); } catch { /* unknown deps → blanks */ }
+  const fn = compileValue(quoteIdent(name), schemaExt(L, h), { decimal: '.' });
+  const n = attrRowCountOf(L) || 0, codes = new Uint8Array(n), seen = [''], at = new Map();
+  let rec = 0;
+  for await (const { f } of layerRecords(L, null)) {      // numbered as the renderer numbers (layerRecords)
+    if (rec >= n) break;
+    let v; try { v = fn(f); } catch { v = null; }
+    const s = v == null ? '' : String(v);
+    if (s !== '') {
+      let c = at.get(s);
+      if (c == null) {
+        if (seen.length > CALC_CAT_MAX) return { over: true, records: n };
+        c = seen.length; seen.push(s); at.set(s, c);
+      }
+      codes[rec] = c;
+    }
+    rec++;
+    if ((rec & 0xFFFF) === 0) await new Promise((res) => setTimeout(res));
+  }
+  const order = seen.slice(1).map((s, i) => [s, i + 1]).sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true }));
+  const remap = new Uint8Array(256), dict = [''];
+  order.forEach(([s, old], k) => { remap[old] = k + 1; dict.push(s); });
+  const counts = new Uint32Array(dict.length);
+  for (let i = 0; i < n; i++) { const c = remap[codes[i]]; codes[i] = c; counts[c]++; }
+  return { codes, dict, counts, records: rec, nonnull: n - counts[0] };
 }
 // freeze a computed calc column into a stored materialized column (same name):
 // evaluate its expression across every record → matColSet, drop the calc col. Bakes
@@ -447,31 +509,17 @@ export async function realizeCalc(L, name) {                      // one pass �
 // a TEXT ƒ column stored: micro keeps text as categories (the painted-column shape — a dictionary
 // and one code per record, up to 255 values), so it stays text: filter, export and colour by class.
 async function materializeTextCalc(L, cc) {
-  const h = layerTableHeader(L), name = cc.name;
-  try { await ensureStoredValues(L, expandedDeps(L, parse(quoteIdent(name)))); } catch { /* unknown deps → blanks */ }
-  const fn = compileValue(quoteIdent(name), schemaExt(L, h), { decimal: '.' });
-  const n = attrRowCountOf(L) || 0, codes = new Uint8Array(n), dict = [''], at = new Map();
-  let rec = 0;
-  for await (const { f } of layerRecords(L, null)) {      // numbered as the renderer numbers (layerRecords)
-    if (rec >= n) break;
-    let v; try { v = fn(f); } catch { v = null; }
-    const s = v == null ? '' : String(v);
-    if (s !== '') {
-      let c = at.get(s);
-      if (c == null) {
-        if (dict.length >= 256) { $('#meta').textContent = `materialize: “${name}” has more than 255 different values — micro stores text as categories; keep it as a ƒ column`; return; }
-        c = dict.length; dict.push(s); at.set(s, c);
-      }
-      codes[rec] = c;
-    }
-    rec++;
-    if ((rec & 0xFFFF) === 0) await new Promise((r) => setTimeout(r));
-  }
+  const name = cc.name;
+  const r = await realizeTextCalc(L, name);
+  if (r.over) { $('#meta').textContent = `materialize: “${name}” has more than ${CALC_CAT_MAX} different values — micro stores text as categories; keep it as a ƒ column`; return; }
+  const { dict, codes } = r, rec = r.records;
   const wasColor = colorSelOf(L) === 'calc:' + name;
+  const colorOf = calcClassColors(L, name, dict);          // the class colours chosen while it was live travel with it
   L.calcCols = (L.calcCols || []).filter((c) => c.name !== name); L._calcFns = null; L._calcDisplay = null;
+  if (L.calcCats) delete L.calcCats[name];
   const col = createPaintCol(L, name);
   if (!col) return;
-  col.dict = dict; col.colors = dict.map((_, i) => (i === 0 ? '#000000' : ruleDefaultColor(i - 1))); col.codes = codes;
+  col.dict = dict; col.colors = dict.map((_, i) => (i === 0 ? '#000000' : colorOf[i] || ruleDefaultColor(i - 1))); col.codes = codes;
   col.lineage = mkLineage('materialize', { from: 'calc', expr: cc.expr, text: true }, [L.lineage].filter(Boolean));
   paintRecount(col);
   if (wasColor) setLayerColorSel(L, 'paint:' + name);

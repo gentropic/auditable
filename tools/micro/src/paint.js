@@ -495,7 +495,7 @@ export function addPaintColorOptions(L) {
       sel.insertBefore(o, solid || null);
     }
   }
-  for (const cc of (L.calcCols || []).filter((c) => c.ty !== 'string')) {   // ƒ numeric calcs color too
+  for (const cc of L.calcCols || []) {                     // ƒ calcs color too: a number by ramp, text by class
     const v = 'calc:' + cc.name;
     if (![...sel.options].some((o) => o.value === v)) {
       const o = document.createElement('option'); o.value = v; o.textContent = 'ƒ ' + cc.name;
@@ -503,7 +503,7 @@ export function addPaintColorOptions(L) {
       sel.insertBefore(o, solid || null);
     }
   }
-  for (const o of [...sel.options]) if (o.value.startsWith('calc:') && !(L.calcCols || []).some((c) => c.ty !== 'string' && 'calc:' + c.name === o.value)) o.remove();
+  for (const o of [...sel.options]) if (o.value.startsWith('calc:') && !(L.calcCols || []).some((c) => 'calc:' + c.name === o.value)) o.remove();
   // other text columns a host offered as categories (addLayer roles.categories):
   // choosing one re-reads the layer with it as THE category (setLayerColorBy)
   const h = colorHeaderOf(L), view = L.viewOf != null;

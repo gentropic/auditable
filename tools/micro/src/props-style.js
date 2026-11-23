@@ -19,7 +19,8 @@ import { setLayerColorBy } from './color.js';
 import { setViewOffset, besideOffset } from './layerviews.js';
 import { setLayerDisplayOffset } from './explode.js';
 import { setHTML, trusted } from './html.js';
-import { layerClassInfo, legendOf, legendCodesOf, ensureLegend, applyCatLegend, applyCatVisibility, rgbCssToHex, ensureCatCounts } from './categories.js';
+import { layerClassInfo, legendOf, legendCodesOf, ensureLegend, applyCatLegend, applyCatVisibility, rgbCssToHex, ensureCatCounts, textCalcSel, classHidden, storedLegend, resetLegend } from './categories.js';
+import { ensureCalcDisplay } from './calc.js';
 import { RULE_ELSE, runRules, applyRuleVisibility, applyRulePalette, ruleModeOf } from './rules.js';
 import { validate } from '../../../ext/expr/index.js';
 import { menuXY } from './menu.js';
@@ -101,8 +102,10 @@ export function renderStyleTab(body, L) {
   const isTable = !!(L.docs.blockDoc || L.docs.dhDoc);
   const selv = colorSelOf(L);
   const selPaint = typeof selv === 'string' && selv.startsWith('paint:') ? paintColByName(L, selv.slice(6)) : null;
+  const textCalc = isTable ? textCalcSel(L) : null;       // a text ƒ colours by class: categorized
+  const textCalcs = isTable ? (L.calcCols || []).filter((c) => c.ty === 'string') : [];
   const mode = isTable
-    ? (selv === 'solid' ? 'solid' : selv === 'cat' ? 'categorized' : selv === 'rules' ? 'rule-based'
+    ? (selv === 'solid' ? 'solid' : selv === 'cat' || textCalc ? 'categorized' : selv === 'rules' ? 'rule-based'
       : selPaint && selPaint.kind !== 'ratio' ? 'painted' : 'continuous')
     : (selv === '2' ? 'categorized' : selv === '3' ? 'rgb' : 'continuous');
   if (mode === 'continuous') L._lastCont = selv;           // return here when leaving solid/categorized
@@ -141,6 +144,7 @@ export function renderStyleTab(body, L) {
     }
     const h2 = layerTableHeader(L);
     if (h2 && h2.categories && h2.categories.length) return setSel('cat');
+    if (textCalcs.length) { addPaintColorOptions(L); return setSel('calc:' + textCalcs[0].name); }   // a text ƒ classes live, no re-read
     const cand = h2 ? h2.columns.findIndex((_, i) => !colIsNumeric(L, h2, i)) : -1;
     if (cand < 0) { $('#meta').textContent = 'categorized: no text column to class by — re-type one under columns'; renderProps(); return; }
     await useAsCategory(L, cand);
@@ -193,13 +197,23 @@ export function renderStyleTab(body, L) {
       const h2 = layerTableHeader(L);
       const colSel = document.createElement('select');
       h2.columns.forEach((c, i) => { const o = document.createElement('option'); o.value = String(i); o.textContent = c; colSel.appendChild(o); });
-      colSel.value = String(h2.mapping.cat != null ? h2.mapping.cat : -1);
-      colSel.title = 'the class column — changing re-reads the file (any column can class: zone codes included)';
-      colSel.onchange = async () => { await useAsCategory(L, +colSel.value); setSel('cat'); };
+      // text ƒ columns class too — live, from their expression (no re-read; they recompute when edited)
+      for (const cc of textCalcs) { const o = document.createElement('option'); o.value = 'calc:' + cc.name; o.textContent = 'ƒ ' + cc.name; colSel.appendChild(o); }
+      colSel.value = textCalc ? 'calc:' + textCalc : String(h2.mapping.cat != null ? h2.mapping.cat : -1);
+      colSel.title = 'the class column — a file column re-reads the file (any column can class: zone codes included); a ƒ column classes live';
+      colSel.onchange = async () => {
+        if (colSel.value.startsWith('calc:')) { addPaintColorOptions(L); return setSel(colSel.value); }
+        const i = +colSel.value;
+        if (h2.categories && h2.mapping.cat === i) return setSel('cat');   // back from a ƒ to the file's own class column
+        await useAsCategory(L, i); setSel('cat');
+      };
       body.appendChild(mkRow('column', colSel));
     }
     const info = layerClassInfo(L);
-    if (info && info.pending) {                             // a view's own column, still being read
+    if (info && info.pending && info.calc) {                // a text ƒ, still being computed (it re-renders this pane)
+      body.appendChild(ppNote(`computing ƒ ${info.calc}…`));
+      ensureCalcDisplay(L);
+    } else if (info && info.pending) {                      // a view's own column, still being read
       body.appendChild(ppNote(`reading ${info.column}…`));
       ensureViewCat(L).then((v) => { if (v) renderProps(); }).catch((e) => { $('#meta').textContent = `classes — ${e.message}`; });
     } else if (info) renderClassList(body, L, info);
@@ -846,7 +860,7 @@ function renderClassList(body, L, info) {
   const sec = document.createElement('div'); sec.className = 'pp-sec';
   sec.textContent = `classes — ${info.column}`;
   body.appendChild(sec);
-  if (!L.catHidden) L.catHidden = new Set();
+  const hidden = classHidden(L, info);                     // the layer's class codes, or a text ƒ's hidden values
   const leg = legendOf(L, info);
   // long class lists (domains, lithologies, string codes) get a search box —
   // same pattern as the record-panel field picker; bulk acts on what's shown
@@ -856,14 +870,14 @@ function renderClassList(body, L, info) {
     searchIn.type = 'text'; searchIn.className = 'pp-catsearch'; searchIn.placeholder = `search ${leg.entries.length} classes…`; searchIn.spellcheck = false;
     body.appendChild(searchIn);
   }
-  const stored = L.catLegend === leg;
+  const stored = storedLegend(L, info) === leg;
   const covered = new Set();
   for (const e of leg.entries) for (const c of legendCodesOf(info, e)) covered.add(c);
   const uncovered = stored ? info.codes.filter((c) => !covered.has(c)) : [];
   const touch = () => { ensureLegend(L, info); applyCatLegend(L); markProjectDirty(); };
   const entryRows = [];                                    // for the drag map
   const rowFor = (e, codes, isOther) => {
-    const row = document.createElement('div'); row.className = 'pp-cat' + (codes.length && codes.every((c) => L.catHidden.has(c)) ? ' off' : '');
+    const row = document.createElement('div'); row.className = 'pp-cat' + (codes.length && codes.every((c) => hidden.has(c)) ? ' off' : '');
     if (!isOther) {
       const grip = document.createElement('span'); grip.className = 'grip'; grip.textContent = '⠿'; grip.title = 'drag to reorder';
       grip.onpointerdown = (ev) => {
@@ -894,9 +908,9 @@ function renderClassList(body, L, info) {
       row.appendChild(grip);
     }
     const eye = document.createElement('input'); eye.type = 'checkbox';
-    eye.checked = !codes.length || codes.some((c) => !L.catHidden.has(c));
+    eye.checked = !codes.length || codes.some((c) => !hidden.has(c));
     eye.onchange = () => {
-      for (const c of codes) { if (eye.checked) L.catHidden.delete(c); else L.catHidden.add(c); }
+      for (const c of codes) { if (eye.checked) hidden.delete(c); else hidden.add(c); }
       row.classList.toggle('off', !eye.checked);
       applyCatVisibility(L);
     };
@@ -955,6 +969,7 @@ function renderClassList(body, L, info) {
   };
   const rows = [];
   for (const e of leg.entries) {
+    if (info.calc && !legendCodesOf(info, e).length) continue;   // a ƒ class absent now: kept (its colour returns with it), not listed
     const r2 = rowFor(e, legendCodesOf(info, e), false);
     rows.push(r2); entryRows.push(r2);
   }
@@ -976,17 +991,17 @@ function renderClassList(body, L, info) {
   const mkA = (label, fn) => { const a = document.createElement('a'); a.textContent = label; a.onclick = fn; return a; };
   const sync = () => {
     for (const r of rows) {
-      r.eye.checked = !r.codes.length || r.codes.some((c) => !L.catHidden.has(c));
+      r.eye.checked = !r.codes.length || r.codes.some((c) => !hidden.has(c));
       r.row.classList.toggle('off', !r.eye.checked);
     }
     applyCatVisibility(L);
   };
   const shownCodes = () => { const out = []; for (const r of shownRows()) out.push(...r.codes); return out.length ? out : info.codes; };
   bulk.append(
-    mkA('all', () => { for (const c of shownCodes()) L.catHidden.delete(c); sync(); }),
-    mkA('none', () => { for (const c of shownCodes()) L.catHidden.add(c); sync(); }),
-    mkA('invert', () => { for (const c of shownCodes()) { if (L.catHidden.has(c)) L.catHidden.delete(c); else L.catHidden.add(c); } sync(); }),
-    ...(stored ? [mkA('reset legend', () => { L.catLegend = null; S.renderer.setLayerPalette(L.id, null); markProjectDirty(); requestRender(); renderProps(); })] : []),
+    mkA('all', () => { for (const c of shownCodes()) hidden.delete(c); sync(); }),
+    mkA('none', () => { for (const c of shownCodes()) hidden.add(c); sync(); }),
+    mkA('invert', () => { for (const c of shownCodes()) { if (hidden.has(c)) hidden.delete(c); else hidden.add(c); } sync(); }),
+    ...(stored ? [mkA('reset legend', () => { resetLegend(L, info); renderProps(); })] : []),
   );
   body.appendChild(bulk);
   body.appendChild(ppNote('right-click an entry: rename · merge into · ungroup · remove — the color chip edits in place'));

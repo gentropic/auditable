@@ -4,7 +4,7 @@
 // figure recipe. The app owns the camera, the render loop and the overlay canvas.
 import { hexToRgb01 } from './color.js';
 import { sceneDefault } from './theme.js';
-import { ensureLegend, layerClassInfo, legendCodesOf } from './categories.js';
+import { ensureLegend, layerClassInfo, legendCodesOf, textCalcSel, classHidden } from './categories.js';
 import { colorSelOf, rampCfgOf, rampRangeFor, bakeRampPixels, classBreaks, classColor, classLabel, noDataOf } from './ramp.js';
 import { rulesOf, RULE_ELSE } from './rules.js';
 import { paintColByName } from './paint.js';
@@ -124,7 +124,8 @@ const RAMP_SEL = (sel) => sel.startsWith('chan:') || sel === 'elev' || sel === '
 export function legendSpec(L) {
   const sel = String(colorSelOf(L));
   const pc = sel.startsWith('paint:') ? paintColByName(L, sel.slice(6)) : null;
-  if (RAMP_SEL(sel) || (pc && pc.kind === 'ratio')) {
+  const textCalc = sel.startsWith('calc:') && textCalcSel(L);   // a text ƒ colours by class, not by ramp
+  if ((RAMP_SEL(sel) && !textCalc) || (pc && pc.kind === 'ratio')) {
     const rng = rampRangeFor(L);
     if (!rng || !Number.isFinite(rng[0]) || !Number.isFinite(rng[1])) return null;
     const cfg = rampCfgOf(L) || { preset: 'viridis', classed: false, breaks: [] };
@@ -153,14 +154,16 @@ export function legendSpec(L) {
     const entries = pc.dict.map((d2, c) => (c > 0 && d2 != null ? { label: String(d2), color: pc.colors[c] || RULE_ELSE } : null)).filter(Boolean);
     return entries.length ? { kind: 'classes', entries } : null;
   }
-  if (sel === 'cat' || sel.startsWith('catcol:') || sel === '2') {
-    const info = layerClassInfo(L); if (!info) return null;
+  if (sel === 'cat' || sel.startsWith('catcol:') || sel === '2' || textCalc) {
+    const info = layerClassInfo(L); if (!info || info.pending) return null;
     const leg = ensureLegend(L, info); if (!leg || !leg.entries) return null;
-    const hid = L.catHidden || new Set();
+    const hid = info.calc ? classHidden(L, info) : L.catHidden || new Set();
     const entries = leg.entries
-      .filter((e) => { const cs = legendCodesOf(info, e); return !cs.length || !cs.every((c) => hid.has(c)); })
+      .filter((e) => { const cs = legendCodesOf(info, e); return info.calc ? cs.length && !cs.every((c) => hid.has(c)) : !cs.length || !cs.every((c) => hid.has(c)); })
       .map((e) => ({ label: e.label, color: e.color }));
-    return entries.length ? { kind: 'classes', entries } : null;
+    // a text ƒ's blank results draw in the no-data colour: listed, unless hidden
+    const nd = noDataOf(L), blanks = info.calc && L._calcDisplay && L._calcDisplay.col && L._calcDisplay.col.counts[0] > 0;
+    return entries.length ? { kind: 'classes', entries, tail: blanks && !nd.hide ? { label: 'no data', color: nd.color } : undefined } : null;
   }
   return null;
 }

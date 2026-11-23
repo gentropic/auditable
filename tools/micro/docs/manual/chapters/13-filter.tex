@@ -279,7 +279,7 @@ if(LITO = "WASTE", "waste",
     if(FE >= 45, "medium grade", "low grade")))
 \end{lstlisting}
 
-Saved as \code{GRADE} with the type on \ui{auto}, it becomes a text column, and \code{GRADE = "high grade"} filters on it. A text \code{ƒ} cannot color the model, though. To see the classes in 3D, return codes (\code{2}, \code{1}, \code{0}) instead and give the codes breaks (\cref{sec:color-classes}), or materialize the text column into a stored category column, which colors by class (\cref{sec:filter-materialize}).
+Saved as \code{GRADE} with the type on \ui{auto}, it becomes a text column, and \code{GRADE = "high grade"} filters on it. It colors the model too, one color per class (\cref{sec:filter-colorby}).
 
 \subsection{The definition as controls}
 Below the editor, the definition is projected as controls — the same contract as the filter drawer.
@@ -305,7 +305,11 @@ A numeric calculated column appears in the \ui{color} dropdown as \code{ƒ NAME}
 
 To color by it, micro computes the column once for display. The status line says \emph{ƒ CLASS: computing for display…} and then the result — \emph{ƒ CLASS: colored — 1,786,620 values, 0 … 2} on the demo. That realization is a cache: it is recomputed when the definition, or anything the definition refers to, changes, and it is never written to disk. The formula is the record.
 
-A text \code{ƒ} is not offered for color. Materialized, it becomes a category column that colors by class (\cref{sec:filter-materialize}).
+A text \code{ƒ} colors by class. Choose it in the \ui{color} dropdown, or in \menu{Properties…>style} under \ui{categorized}, where it is listed as \code{ƒ NAME} after the file's columns. micro computes it once for display, as it does a number, and reports the classes: \code{ORE} defined as \code{if(FE >= 55, "ore", "waste")} gives \emph{ƒ ORE: colored by class — 1,786,620 values in 2 classes} on the demo. The class list is the one every category column gets (\cref{sec:color-categories}): an eye, a color chip and a count per class, with rename, merge and remove on the right-click menu, and the same entries in the legend and the figure composer. A block where the expression is blank draws in the no-data color.
+
+The classes stay live. Edit the expression and the column is recomputed; a class that is still there keeps the color you gave it and stays hidden if you hid it, because micro remembers colors by \emph{value}, not by position. A value that is new gets the next color of the palette. A class that disappears is left out of the list and the legend, and gets its color back if it returns. The colors and the hidden classes are saved with the project.
+
+A text column colors by at most 255 different values. Past that micro says so (\emph{ƒ NAME: more than 255 different values — too many classes to color by}) and the layer goes back to what it was colored by before. The column still filters and exports.
 
 With the constant sliders this closes a loop: define a column, color by it, and tune its numbers while you watch the model.
 
@@ -337,7 +341,7 @@ A\index{materializing} calculated column is computed on demand. Usually that is 
 \ui{materialize → stored} in the Calculations window — or \menu{Materialize calc column} on the layer's right-click menu, which lists each \code{ƒ} as \emph{NAME → stored} — computes the column once and stores the values as a \term{stored column} of the same name, beside the source; the \code{ƒ} definition goes. The status line confirms how many values were stored (\emph{materialized “CLASS” — 1,786,620 values stored}), and the record panel marks the column \code{✎}, its mark for a stored column, number or text alike — the same mark painted columns get. From then on it scans like a source column, and it no longer depends on its inputs.
 
 \begin{note}
-A text \code{ƒ} is stored as a \emph{category} column: a dictionary of its values and one small code per record, the way painted columns are kept, so it stays text to the filter, the styles and the exports. On the demo, \code{ORE} defined as \code{if(FE >= 55, "ore", "waste")} materializes with \emph{materialized “ORE” — 1,786,620 values stored as 2 categories}, and \code{ORE = "ore"} still finds its 38,452 blocks. A category column holds up to 255 different values. Past that micro refuses, with \emph{materialize: “…” has more than 255 different values — micro stores text as categories; keep it as a ƒ column}, and the \code{ƒ} column stays as it was.
+A text \code{ƒ} is stored as a \emph{category} column: a dictionary of its values and one small code per record, the way painted columns are kept, so it stays text to the filter, the styles and the exports. On the demo, \code{ORE} defined as \code{if(FE >= 55, "ore", "waste")} materializes with \emph{materialized “ORE” — 1,786,620 values stored as 2 categories}, and \code{ORE = "ore"} still finds its 38,452 blocks. A category column holds up to 255 different values. Past that micro refuses, with \emph{materialize: “…” has more than 255 different values — micro stores text as categories; keep it as a ƒ column}, and the \code{ƒ} column stays as it was. Class colors you chose while it was a \code{ƒ} carry over to the stored column.
 \end{note}
 
 \begin{figure}[htbp]\centering

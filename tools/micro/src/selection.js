@@ -16,6 +16,7 @@ import { paintRecount } from './columns.js';
 import { ruleModeOf } from './rules.js';
 import { colorSelOf } from './ramp.js';
 import { viewCatData } from './viewcat.js';
+import { textCalcSel, calcCatCol, classHidden, layerClassInfo } from './categories.js';
 import { _isMobile } from './windows.js';
 import { isMiss, layerOfId, layerSection } from '../../../ext/condenser/src/main.js';
 import { layerShown } from './layers.js';
@@ -214,6 +215,10 @@ function throughDrawnTest(L) {
   const mask = isDh ? (L._drawMask || null) : (L._filterMask || null);   // dh: filter AND whole-holes
   let codes = null, hidden = null;                         // codes null → the chunk's own category codes
   if (ruleModeOf(L)) { if (L.ruleHidden && L.ruleHidden.size && L._ruleCodes) { codes = L._ruleCodes; hidden = L.ruleHidden; } }
+  else if (textCalcSel(L)) {                               // a text ƒ by class: its own codes + hidden classes
+    const tc = calcCatCol(L), hid = tc ? classHidden(L, layerClassInfo(L)) : null;
+    if (tc && hid.size) { codes = tc.codes; hidden = hid; }
+  }
   else if (!paintActiveCol(L) && L.catHidden && L.catHidden.size) {
     hidden = L.catHidden;
     const vc = colorSelOf(L) === 'cat' ? viewCatData(L) : null;

@@ -129,6 +129,7 @@ export function styleSnap(L) {
     ramps: L.ramps ? JSON.parse(JSON.stringify(L.ramps)) : null,
     catLegend: L.catLegend ? JSON.parse(JSON.stringify(L.catLegend)) : null,
     catHidden: L.catHidden ? [...L.catHidden] : [],
+    calcCats: L.calcCats ? JSON.parse(JSON.stringify(L.calcCats)) : null,
     rules: L.rules ? JSON.parse(JSON.stringify(L.rules)) : null,
     ruleHidden: L.ruleHidden ? [...L.ruleHidden] : [],
     tint: L.tint, opacity: L.opacity,
@@ -168,6 +169,7 @@ export function restoreStyleSnap(L, s2, { colorBy = false } = {}) {
   }
   L.catLegend = s2.catLegend ? JSON.parse(JSON.stringify(s2.catLegend)) : null;
   L.catHidden = new Set(s2.catHidden);
+  if ('calcCats' in s2) L.calcCats = s2.calcCats ? JSON.parse(JSON.stringify(s2.calcCats)) : null;
   L.rules = s2.rules ? JSON.parse(JSON.stringify(s2.rules)) : null;
   L.ruleHidden = new Set(s2.ruleHidden || []);
   L._rulesDirty = true;                                    // codes may not match the restored list

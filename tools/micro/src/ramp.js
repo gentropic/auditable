@@ -6,6 +6,7 @@ import { stageGate } from './props.js';
 import { _rampRepaint } from './props-style.js';
 import { paintActiveCol, applyPaintPalette, paintBlankVis } from './paint.js';
 import { calcDisplayCol, calcSelOf, ensureCalcDisplay } from './calc.js';
+import { applyCatLegend, applyCatVisibility } from './categories.js';
 import { ensureValueTex } from './color.js';
 import { markProjectDirty } from './project.js';
 import { layerTableHeader } from './records.js';
@@ -175,6 +176,7 @@ export function syncNoData(L) {
   // channel: give it the same colour and hide
   const pc = paintActiveCol(L) || calcDisplayCol(L);
   if (pc && pc.kind === 'ratio' && pc.mat) { applyPaintPalette(L, pc); S.renderer.setLayerCatVisibility(L.id, paintBlankVis(L, pc)); }
+  else if (pc && pc.cat) { applyCatLegend(L, true); applyCatVisibility(L, true); }   // a text ƒ: blanks are its code 0
 }
 export function applyRamp(L, force) {
   if (!force) return stageGate(L, () => applyRamp(L, true));
@@ -183,6 +185,7 @@ export function applyRamp(L, force) {
   const pcR = paintActiveCol(L) || calcDisplayCol(L);
   if (!pcR && calcSelOf(L)) ensureCalcDisplay(L);          // realize lazily; it re-applies on completion
   if (pcR && pcR.kind === 'ratio') { applyPaintPalette(L, pcR); return; }   // ramp+clip bake INTO the palette
+  if (pcR && pcR.cat) { requestRender(); return; }          // a text ƒ by class: no ramp (its legend is the palette)
   const cfg = rampCfgOf(L);
   if (!cfg || (cfg.preset === 'viridis' && !(cfg.breaks && cfg.breaks.length))) {
     S.renderer.setLayerRamp(L.id, null);

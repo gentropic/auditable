@@ -10,7 +10,7 @@ Nothing in this chapter changes your data. A style is display state: it is saved
 \section{Where color lives}\label{sec:color-where}
 Color has two controls, and they show the same state.
 
-The \ui{color} dropdown, on the instrument rail (\cref{sec:start-screen}), is the quick one. It drives the \emph{active} layer — the one highlighted in the layers panel — and lists what that layer can be colored by: elevation, each numeric column, the category column, \ui{rules}, and every derived column, marked by kind: \code{ƒ} when calculated, \code{✎} or \code{\%} when stored (\cref{sec:picking-record}). A calculated column is offered only when it is numeric: a text \code{ƒ} filters and exports, but cannot color (\cref{sec:filter-colorby}). Beside it sit the \ui{min} and \ui{max} boxes that clip the color scale.
+The \ui{color} dropdown, on the instrument rail (\cref{sec:start-screen}), is the quick one. It drives the \emph{active} layer — the one highlighted in the layers panel — and lists what that layer can be colored by: elevation, each numeric column, the category column, \ui{rules}, and every derived column, marked by kind: \code{ƒ} when calculated, \code{✎} or \code{\%} when stored (\cref{sec:picking-record}). A numeric calculated column colors by a ramp; a text \code{ƒ} colors by class (\cref{sec:filter-colorby}). Beside it sit the \ui{min} and \ui{max} boxes that clip the color scale.
 
 \menu{Properties…>style} is the full one. Open it from a layer's right-click menu, from \menu{Data>Layer properties…}, or with \key{⇧P}.\sidekey{⇧P}{properties of the active layer} It asks two things first: a \ui{mode} and a \ui{column}.
 
@@ -162,7 +162,7 @@ On the demo deposit, colored by \col{FE}, in the \ui{style} tab (if you skipped 
 \end{tryit}
 
 \section{Categories and their legend}\label{sec:color-categories}
-\ui{categorized} mode colors by a text column: \col{LITO} in the demo, with HEMATITE, ITABIRITE, CANGA and WASTE. The \ui{column} dropdown picks which column classes the layer; any column can, zone codes stored as numbers included. On a model, changing it re-reads the file once.
+\ui{categorized} mode colors by a text column: \col{LITO} in the demo, with HEMATITE, ITABIRITE, CANGA and WASTE. The \ui{column} dropdown picks which column classes the layer; any column can, zone codes stored as numbers included. On a model, changing it re-reads the file once. A text calculated column is listed there too, as \code{ƒ NAME}: it classes the layer from its expression, without re-reading the file, and keeps doing so as the expression changes (\cref{sec:filter-colorby}).
 
 Below the column is the class list, also reachable as the \ui{classes} tab. Each entry has an eye, a color chip, a name and a count with its share, which micro fills in by reading the layer once. Lists longer than eight entries get a search box, and \ui{all}, \ui{none} and \ui{invert} act on every eye at once.
 
