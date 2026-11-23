@@ -3,11 +3,11 @@
 \textbf{In\index{analysis window} this chapter} you learn the one design behind grade–tonnage, the cross-tab, swath, stats and scatter~/ Q-Q: the rail, \ui{Run}, the three scopes, series, units, the results row — and how the same numbers come out of a routine with no window at all.
 \end{goals}
 
-micro's analysis windows are built on one chassis. Once you can drive grade–tonnage you can drive the swath, and the habits carry to the cross-tab, the stats table and the scatter plot. This chapter is the shared part; \crefrange{ch:gt}{ch:validation} are the particulars of each window, ending with the question the others lead up to: does the model honor its samples? \Cref{ch:contact} asks the same of a domain boundary — is it hard or soft, and does the model keep it that way — in a window built on the same chassis. The rest of the part, \crefrange{ch:joins}{ch:structure}, leaves the windows for the operations that bring layers together and check them: joins, geometry, QA reports and structural measurements.
+micro's analysis windows are built on one chassis. Once you can drive grade–tonnage you can drive the swath, and the habits carry to the cross-tab, the stats table and the scatter plot. This chapter is the shared part; \crefrange{ch:gt}{ch:validation} are the particulars of each window, ending with the question the others lead up to: does the model honor its samples? \Cref{ch:contact} asks the same of a domain boundary — is it hard or soft, and does the model keep it that way — in a window built on the same chassis. The rest of the part, \crefrange{ch:joins}{ch:structure}, leaves the windows for the operations that bring layers together and check them: joins, geometry, QA reports and structural measurements — with one more window among them, the reconciliation factors (\cref{ch:factors}), which follows the joins because it is the step after a reconcile.
 
 Everything here reads the source file. Nothing is sampled, and nothing is held in memory beyond small running sums, so a window behaves the same on the demo deposit as on a 60-million-block model — it only takes longer to \ui{Run}.
 
-\section{Nine windows, one design}\label{sec:analysis-windows}
+\section{Ten windows, one design}\label{sec:analysis-windows}
 Every analysis is on a layer's right-click menu and in the command palette (\key{⌘K}, or \key{Ctrl}+\key{K} on Windows and Linux). The palette lists only what applies to the active layer, so a grade–tonnage entry appears for a block model and not for a mesh.\sidekey{⌘K}{type \code{swath}, \code{stats}, \code{cross}… — only actions that apply to the active layer are listed}
 
 \medskip
@@ -21,13 +21,14 @@ window & opens on & chapter \\ \midrule
 \ui{Contact plot…} & a drillhole layer with a numeric column & \cref{ch:contact} \\
 \ui{Distance to a surface…} & a drillhole layer, or a block model with a block grid & \cref{ch:contact} \\
 \ui{Block vs sample…} & a regular block model; you pick the samples in the window & \cref{ch:validation} \\
-\ui{Validate vs drillholes…} & a block model, with drillholes loaded (palette only) & \cref{ch:validation} \\ \bottomrule
+\ui{Validate vs drillholes…} & a block model, with drillholes loaded (palette only) & \cref{ch:validation} \\
+\ui{Reconciliation factors…} & a block model with a block grid: the resource model & \cref{ch:factors} \\ \bottomrule
 \end{tabularx}
 \medskip
 
 A \emph{block grid} is what a model has when micro reads it as blocks — regular, sub-blocked or rotated alike (\cref{ch:blocks}). A model opened \emph{as points} has none, so it has no block volume to weigh by. Grade–tonnage, the cross-tab and the swath are not offered for it, and a recipe aimed at it is refused in the status line — \emph{swath: needs a regular block model}, where “regular” means “with a block grid”: a sub-blocked or rotated model is accepted. Stats and scatter still work on it, because they need only a table.
 
-The first seven windows share everything this chapter describes. The two validation windows are older and simpler — \ui{Validate vs drillholes…} has no rail and recomputes on every change; \ui{Block vs sample…} has a \ui{Run} button but no scopes — and \cref{ch:validation} describes them on their own terms.
+The first seven windows share everything this chapter describes. The two validation windows are older and simpler — \ui{Validate vs drillholes…} has no rail and recomputes on every change; \ui{Block vs sample…} has a \ui{Run} button but no scopes — and \cref{ch:validation} describes them on their own terms. \ui{Reconciliation factors…} has the rail, \ui{Run}, the ranges, the results row and \ui{save as recipe…}, but no scopes: the mined volume it is given does that job (\cref{ch:factors}).
 
 \shot{analysis-anatomy}{The anatomy every analysis window shares, shown on grade–tonnage: the rail of settings on the left, the result on the right, and under the rail \ui{Run}, \ui{save as recipe…} and the results row.}
 
@@ -195,10 +196,10 @@ Use \ui{⇥ layer} to compare two runs inside micro. Keep this month's swath as 
 \section{Saved with the project, and as recipes}\label{sec:analysis-saved}
 A window's whole setup is snapshotted into the project on every successful \ui{Run} and again when you close it, together with its position and size. A window left open when you save is \emph{pinned}: reopening the project (\cref{ch:projects}) brings it back in place, configured, reading \emph{restored — Run to compute}. This holds for grade–tonnage, swath, stats, the cross-tab and scatter~/ Q-Q.
 
-\ui{save as recipe…}, in the grade–tonnage, swath, stats and contact rails, writes the setup as a small named YAML file in the project. A \term{recipe} is an analysis set up once; you run it again from \menu{Tools>Recipes}, or chain it into a routine. \Cref{ch:recipes} covers recipes in full, including the form that writes a recipe for any tool without opening its window.
+\ui{save as recipe…}, in the grade–tonnage, swath, stats, contact and factors rails, writes the setup as a small named YAML file in the project. A \term{recipe} is an analysis set up once; you run it again from \menu{Tools>Recipes}, or chain it into a routine. \Cref{ch:recipes} covers recipes in full, including the form that writes a recipe for any tool without opening its window.
 
 \section{The same numbers in a routine}\label{sec:analysis-routine}
-Each analysis is registered once as a \term{tool}\index{tool!analysis}: \code{gt}, \code{xtab}, \code{resource}, \code{swath}, \code{stats}, \code{xy}, \code{validation}, \code{pairing} and \code{contact} for the chapters of this part. A routine step names a tool and gives its settings under \code{with:}; \code{as:} names the report it writes.
+Each analysis is registered once as a \term{tool}\index{tool!analysis}: \code{gt}, \code{xtab}, \code{resource}, \code{swath}, \code{stats}, \code{xy}, \code{validation}, \code{pairing}, \code{contact} and \code{factors} for the chapters of this part. A routine step names a tool and gives its settings under \code{with:}; \code{as:} names the report it writes.
 
 \begin{lstlisting}[language=yaml]
 name: "demo curves"

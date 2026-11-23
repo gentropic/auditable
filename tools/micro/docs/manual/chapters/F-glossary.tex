@@ -158,6 +158,10 @@ specific by them.
 \item[expression] A condition or a formula over the columns of one record, in micro's one
   expression language. \cref{app:expr}.
 
+\item[F1, F2, F3] The reconciliation factors: F1 = grade control ÷ resource model, F2 = mill ÷
+  grade control, F3 = mill ÷ resource model = F1 × F2, each for tonnes, grade and metal, inside the
+  volume mined in a period. \cref{ch:factors}.
+
 \item[filter] An expression that decides which records of a layer take part: the rest leave the
   view, the table and every analysis. \cref{ch:filter}.
 
@@ -249,6 +253,10 @@ specific by them.
 
 \item[materialized column] See \emph{stored column}.
 
+\item[mined volume] The blocks mined in a period, as the reconciliation factors count them: named
+  by a period column, inside a solid or above a pit surface (by fraction, nested for pit phases),
+  or kept by a filter. \cref{sec:factors-periods}.
+
 \item[never resident] micro's way of reading large files: in passes, a piece at a time, without
   ever holding the whole file decoded in memory. \cref{ch:micro}.
 
@@ -294,6 +302,10 @@ specific by them.
 
 \item[reconcile] Comparing two models on a common lattice: a map of the difference, and its
   summary. \cref{ch:joins}.
+
+\item[reconciliation factors] The totals of the resource model, grade control and the mill
+  compared inside the mined volume, period by period: F1, F2 and F3. The routine tool is
+  \code{factors}. \cref{ch:factors}.
 
 \item[record] One row of a location: a block, a point, an interval, a mesh vertex. Its number is
   its position in the data. \cref{ch:micro}.

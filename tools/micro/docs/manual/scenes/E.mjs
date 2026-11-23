@@ -288,6 +288,31 @@ export const SCENES = {
     });
     return { clip, after: () => h.ev(() => { const x = document.querySelector('#sbCancel'); if (x) x.click(); }) };
   },
+  // reconciliation factors (ch20b): the try-it's setup — grade control as ƒ columns on the deposit
+  // (FE × 0.96, SG × 1.05), three years by elevation bands, a typed-in mill table — then the window
+  'factors-window': async (h) => {
+    const st = await h.ev(async () => {
+      const m = window._micro, bm = m.layers().find((L) => L.name === 'deposit.csv');
+      const calc0 = (bm.calcCols || []).map((c) => ({ name: c.name, expr: c.expr }));
+      await m.applyCalcCols(bm, [...calc0, { name: 'FE_GC', expr: 'FE * 0.96' }, { name: 'SG_GC', expr: 'SG * 1.05' },
+        { name: 'PERIOD', expr: 'if(ZC > 750, "2027", if(ZC > 700, "2028", if(ZC > 650, "2029", "")))' }]);
+      const mid = await m.openBlob(new File(['YEAR,DRY_T,FE_HEAD\n2027,79964000,50.30\n2028,49664000,39.42\n2029,80580000,51.08\n'], 'mill.csv'), 'mill.csv', 'add');
+      m.setActiveLayer(bm.id);
+      const e = m.openFactors(bm, { cfg: { model: 'deposit.csv', grade: 'FE', modelUnit: 'pct', density: { col: 'SG' }, gc: 'deposit.csv', gcGrade: 'FE_GC', gcUnit: 'pct', gcDensity: { col: 'SG_GC' },
+        periods: 'column', periodCol: 'PERIOD', filter: 'LITO != "WASTE"', production: 'mill.csv', prodPeriod: 'YEAR', prodTonnes: 'DRY_T', prodGrade: 'FE_HEAD', prodUnit: 'pct',
+        cutoff: 'none', gradeUnit: 'pct', tolerance: 0.05, show: 'tonnes', cumulative: false }, run: true });
+      for (let i = 0; i < 600 && !e.st.scan; i++) await new Promise((r) => setTimeout(r, 100));
+      return { calc0, mid };
+    });
+    await place(h, '^factors', 200, 60, 1040, 760);
+    await h.p.waitForTimeout(800);
+    return { el: h.win('^factors'), blankOk: true, after: async () => {
+      await closeAll(h);
+      await removeLayers(h, [st.mid]);
+      await h.ev(async (c0) => { const m = window._micro, bm = m.layers().find((L) => L.name === 'deposit.csv'); await m.applyCalcCols(bm, c0); }, st.calc0);
+    } };
+  },
+
   'joins-reconcile': async (h) => {
     const vis = await h.ev(() => window._micro.layers().map((L) => [L.id, L.visible !== false]));
     // the newer estimate: FE shifted low at the north end, high at the south, about zero on average

@@ -163,7 +163,7 @@ Before you compare it with the cross-tab, know three differences:
 \begin{itemize}
 \item \textbf{Unestimated blocks are left out.} A block with a blank grade is in no row. There is no \emph{no grade} line; the cross-tab is where you check that.
 \item \textbf{Density is a column or a constant}, not an expression. To use \code{SG * PARTIAL}, make it a calculated column first (\cref{ch:filter}) and choose that.
-\item \textbf{Metal uses a factor you state}, not a declared unit: metal = tonnes × grade × \ui{metal factor}. Use 0.01 for a grade in \% and metal in tonnes; 0.0321507 (1 ÷ 31.1035) for g/t and troy ounces. With the factor left at 1, the metal column is the bare product.
+\item \textbf{Metal uses a factor you state}, not a declared unit: metal = tonnes × grade × \ui{metal factor}. Use 0.01 for a grade in \% and metal in tonnes; 0.0321507 (1 ÷ 31.1035) for g/t and troy ounces. With the factor left at 1, the metal column is the bare product. (The reconciliation factors window takes the same factor, or derives it from the grade unit when you leave it blank: \cref{sec:factors-report}.)
 \end{itemize}
 
 A group with no tonnage above a cutoff has no row at that cutoff; if nothing at all grades above it, the cutoff gets one row of zero tonnes with \emph{—} for the groups. When there are groups, and more than one of them appears at a cutoff, a \emph{total} row follows them: total tonnes, the tonnage-weighted grade, total metal.

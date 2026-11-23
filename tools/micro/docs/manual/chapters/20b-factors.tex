@@ -1,0 +1,263 @@
+\chapter{Reconciliation factors}\label{ch:factors}
+\begin{goals}
+\textbf{In\index{reconciliation factors} this chapter} you compare what the resource model promised, what grade control found and what the mill received, period by period, as the factors F1, F2 and F3 for tonnes, grade and metal — and you gate a month-end routine on them.
+\end{goals}
+
+Reconcile (\cref{sec:joins-reconcile}) compares two models block by block and shows \emph{where} they differ. At a month-end close the question is a different one: inside the volume that was actually mined this month, do the totals agree? The long-range model said so many tonnes at such a grade; the grade-control model, drawn from blast holes, said something else; the plant weighed and assayed what it received. The \term{reconciliation factors} are the ratios between those three totals, one set per period.
+
+micro computes them from the models you already have open. The two models need not share a lattice, since only their totals are compared, and the mined volume can come from a column on the blocks, from one solid or pit surface per period, or from a filter. Production is a plain table.
+
+\section{F1, F2 and F3}\label{sec:factors-what}
+Three sources, two steps between them, and one factor for each step and for the whole chain:
+
+\begin{description}
+\item[F1]\index{F1, F2, F3} = grade control ÷ resource model. Did the short-range model find what the long-range one promised?
+\item[F2] = mill ÷ grade control. Did the plant receive what grade control sent it?
+\item[F3] = mill ÷ resource model = F1 × F2. The whole chain: did the plant receive what the resource model promised?
+\end{description}
+
+Each factor is computed three times: for \emph{tonnes}, for \emph{grade} and for \emph{metal}. A factor above 1 means the numerator is larger. An F1 for tonnes of 1.05 says grade control found 5\,\% more ore tonnes in the mined volume than the resource model has there; an F1 for grade of 0.96 says that ore is 4\,\% poorer. F1 metal, their product, says whether the contained metal came out where it was promised. A tonnage factor above 1 with a grade factor below it is the familiar signature of dilution — more material, lower grade — while the reverse points to lost ore or an over-diluted model.
+
+\begin{figure}[htbp]\centering
+\begin{tikzpicture}[font=\sffamily\footnotesize, node distance=17mm,
+  box/.style={draw=rule, fill=tint, rounded corners=1.5pt, inner sep=4pt, text=ink, align=center, text width=24mm},
+  arr/.style={-{Stealth[length=2mm]}, draw=amber, line width=0.7pt}]
+\node[box] (rm) {resource model\\\textcolor{muted}{long range}};
+\node[box, right=of rm] (gc) {grade control\\\textcolor{muted}{short range}};
+\node[box, right=of gc] (ml) {mill\\\textcolor{muted}{production}};
+\draw[arr] (rm) -- node[above, text=amber] {F1} node[below, text=muted, font=\sffamily\scriptsize] {GC ÷ RM} (gc);
+\draw[arr] (gc) -- node[above, text=amber] {F2} node[below, text=muted, font=\sffamily\scriptsize] {mill ÷ GC} (ml);
+\draw[arr] (rm.south) to[out=-25, in=-155] node[below, text=amber] {F3 = F1 × F2 \quad \textcolor{muted}{mill ÷ RM}} (ml.south);
+\end{tikzpicture}
+\caption{The chain of factors. Each arrow divides the total at its head by the total at its tail, inside the same mined volume and period, for tonnes, grade and metal alike.}\label{fig:factors-chain}
+\end{figure}
+
+Metal is tonnes × grade × a \emph{metal factor} — 0.01 for a grade in \%, so that the metal is in tonnes (\cref{sec:factors-report}). It follows that, for each factor, metal = tonnes × grade, and F3 = F1 × F2 for each quantity. micro checks both identities on every run, on the numbers it reports; a deviation would show as a warning that begins \emph{identity check}, and with consistent arithmetic you never see one.
+
+\begin{why}
+A period's grade is never averaged from other grades. Each source's totals are kept as tonnes and metal, and its grade is derived from them, metal ÷ (tonnes × metal factor). Summing periods sums tonnes and metal; the grade to date follows. That is what keeps the identities exact, and what makes a to-date grade a true tonnage-weighted one.
+\end{why}
+
+\section{Opening the window}\label{sec:factors-open}
+Right-click the resource model — the long-range block model — and choose \ui{Reconciliation factors…}. It is also in the command palette (\key{⌘K}; type \code{factors} or \code{f1}). Both are offered only on a block model with a block grid (\cref{ch:blocks}).
+
+The window is built on the chassis of \cref{ch:analysis}: a rail of settings, \ui{Run}, manual ranges, the results row and \ui{save as recipe…}. It has no all~/ filtered~/ selection scopes. Its \ui{mined volume} section does that job, because here the volume \emph{is} the question. It opens reading \emph{configure, then Run}. The rail has five sections: \ui{models}, \ui{mined volume · periods}, \ui{production (mill)}, \ui{report} and \ui{chart}.
+
+\subsection{The two models}\label{sec:factors-models}
+Each of the two boxes, \ui{resource model} and \ui{grade control}, names a block model, its grade column with a declared unit, and a density:
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
+setting & meaning & default \\ \midrule
+layer & a block model. The grade-control box may name the resource model itself (below) & resource: this layer; grade control: a model named like \emph{gc}, \emph{grade control} or \emph{short}, else another model, else this layer \\
+grade & a numeric column, ƒ columns included, and its unit: \ui{\%}, \ui{g/t}, \ui{ppm}, \ui{oz/t} or none & a column named like FE, AU, CU… \\
+density & \ui{ρ column} (a numeric column) or \ui{ρ constant}, in \ui{t/m³}, \ui{kg/m³} or \ui{lb/ft³}; tonnes are block volume × density & a column named like SG or DENSITY, else 2.7 \\ \bottomrule
+\end{tabularx}
+\end{center}
+
+The two models may sit on any lattices — a 10~m resource model against a 5~m grade-control model, regular or sub-blocked — because only totals are compared, never blocks. A sub-blocked model counts each block at its own size, as grade–tonnage does (\cref{ch:gt}).
+
+Grade control can also be \emph{other columns of the same layer}: a model that carries both the long-range estimate and the grade-control one (\col{FE} and \col{FE\_GC}, \col{SG} and \col{SG\_GC}) is read once, not twice. Choose the same layer in both boxes and pick the other columns.
+
+\subsection{The mined volume}\label{sec:factors-periods}
+The \ui{mined volume · periods} selector says how micro knows which blocks were mined in which period:
+
+\begin{description}
+\item[\ui{a period column}] A column on the blocks names the period each block was mined in, and a blank means not mined. It may be a painted column, a column joined from a schedule (\cref{ch:joins}), or a ƒ column (\cref{ch:filter}). It must exist on both models. The default, when the model has a column named like PERIOD, MINED, MONTH, QUARTER or PHASE.
+\item[\ui{a solid / surface per period}] One mesh per period, each with a name: a closed solid counts what is \ui{inside} it; an open surface — a pit surface as surveyed at the end of the period — counts what lies \ui{above} it, or \ui{below}. \ui{+ add period} adds a row; \ui{×} removes one. The periods are reported in the order of the list.
+\item[\ui{a filter (one period)}] An expression that keeps the mined blocks, such as \code{MINED == 1}, and a \ui{name} for the period.
+\item[\ui{the 3D selection (one period)}] Each model's own selection, made in the view (\cref{ch:picking}), and a name. A window only: a selection is not saved with a routine.
+\end{description}
+
+Below the selector, \ui{domain} is an optional filter on both models in any mode — \code{LITO != "WASTE"} to reconcile the ore domains only, \code{LITO = "HEMATITE"} for one of them.
+
+With volumes, a block counts by the \emph{fraction} of it inside, so a block cut by the pit wall counts in part. The fraction is measured with the same winding test as selecting by a solid (\cref{ch:geometry}), on a grid of sub-samples per block set by \ui{samples}: \ui{1 (centroid)}, \ui{2³ per block} (the default), \ui{3³} or \ui{4³}. More samples cost time — the first run measures every block against every mesh, and on a large model that is minutes, not seconds — but micro keeps the measurement on the mesh layer, so a second \ui{Run} after you add the production table or change the cutoff does not measure again.
+
+\paragraph{Nested.} Pit phases are drawn \emph{nested}: each phase's surface holds the ones before it, and the period is the difference. Tick \ui{nested (pit phases, shells)} — it is on when the window opens — and period $k$ counts the part of volume $k$ that is not in volume $k-1$. Untick it for volumes that do not overlap, such as monthly solids from a survey; then each volume counts in full, and two volumes that overlap would count the overlap twice.
+
+\begin{figure}[htbp]\centering
+\begin{tikzpicture}[x=1mm, y=1mm, font=\sffamily\footnotesize]
+\fill[infosoft] (8,40) -- (30,6) -- (80,6) -- (104,40) -- cycle;
+\fill[ambersoft] (18,40) -- (36,15) -- (72,15) -- (92,40) -- cycle;
+\fill[oksoft] (30,40) -- (44,24) -- (64,24) -- (78,40) -- cycle;
+\draw[ok, line width=0.7pt] (30,40) -- (44,24) -- (64,24) -- (78,40);
+\draw[amber, line width=0.7pt] (18,40) -- (36,15) -- (72,15) -- (92,40);
+\draw[info, line width=0.7pt] (8,40) -- (30,6) -- (80,6) -- (104,40);
+\draw[muted, line width=0.6pt] (0,40) -- (112,40);
+\node[text=ok] at (54,32) {period 1};
+\node[text=amber] at (54,19.5) {period 2};
+\node[text=info] at (54,10) {period 3};
+\node[anchor=south, text=ok] at (78,40.6) {surface 1};
+\draw[amber, line width=0.4pt] (92,40) -- (92,45);
+\node[anchor=south, text=amber] at (92,45) {surface 2};
+\node[anchor=south, text=info] at (104,40.6) {surface 3};
+\node[anchor=south west, text=muted] at (0,40.5) {original ground};
+\end{tikzpicture}
+\caption{Nested volumes in section. Each period's pit surface counts what lies above it; with \ui{nested} on, period 2 is what is above surface 2 but not above surface 1, and period 3 the same one phase down. A block cut by a surface counts by the fraction on the mined side.}\label{fig:factors-nested}
+\end{figure}
+
+\begin{caution}
+A rotated model cannot be swept on its lattice, so with volumes each of its blocks counts whole or not at all, by its centroid. The run says so: \emph{a rotated lattice — the volumes count each block by its centroid (in or out), not by its fraction}. A mesh kept in its streamed, display-only form has no triangles to test and is not offered (\cref{sec:meshes-tiers}).
+\end{caution}
+
+\subsection{Production}\label{sec:factors-production}
+The mill's numbers come from a table layer: a CSV or a spreadsheet sheet with no coordinates (\cref{ch:columns}), with a period column, tonnes, and a grade, a metal, or both. Pick it under \ui{production (mill)} and name its columns: \ui{period}, \ui{tonnes}, \ui{grade} with its unit, and \ui{metal}. micro guesses them from names like PERIOD, MONTH or QUARTER, TONNES or DRY, a grade, METAL or CONTAINED. Leave the table at \ui{— none (F1 only)} and the window computes F1 alone.
+
+Production rows are matched to the mined periods by name. Text is compared as written, after trimming spaces; a number is compared as a number, so \code{01}, \code{1} and \code{1.0} are the same period, and a period column of 1 to 12 matches a production sheet of 01 to 12. Several rows for one period — one per shift, per stockpile, per plant — are summed. A row with a stated metal keeps that metal; a row with only a grade gets metal = tonnes × grade × the metal factor. When a row states both and they disagree by more than half a percent, the run warns — \emph{production: the stated metal differs from tonnes × grade × 0.01 by up to 1.9\,\% — check the metal factor and the units (the stated metal is used)} — because a disagreement there is nearly always a unit mistake.
+
+Two more warnings keep the periods honest: \emph{production periods not mined in either model: …} names rows whose period no block carries, and \emph{no production for: … — its F2 / F3 are blank} names mined periods the table lacks.
+
+\subsection{Cutoff, units and metal}\label{sec:factors-report}
+The \ui{report} section sets what is counted and how it is expressed:
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
+setting & meaning & default \\ \midrule
+\ui{cutoff} & blocks at or above it count, in the report unit, each model judged by its own grade. Blank or \code{none}: every block & none \\
+\ui{unit} & the report grade unit. Each source's declared unit converts into it & the model's grade–tonnage unit, if set \\
+\ui{metal ×} & metal = tonnes × grade × this. Blank: from the report unit — \% gives 0.01 and g/t gives $10^{-6}$, so the metal is in tonnes — or 1 with no unit & \ui{auto} \\
+\ui{metal unit} & the name of a stated factor's unit (\code{oz}, \code{lb}); shown once \ui{metal ×} is filled & — \\
+\ui{tolerance} & the band drawn about 1.0, and the limit past which a factor is marked: \code{0.1} is ±10\,\% & 0.1 \\ \bottomrule
+\end{tabularx}
+\end{center}
+
+Tonnes and grade are counted as in grade–tonnage and the resource table (\cref{ch:gt,ch:resources}): block volume × density, a blank grade left out as unestimated rather than zero, and a block with no density left out, each with a warning naming how many. For gold in g/t reported in troy ounces, set \ui{metal ×} to 0.0321507 (1 ÷ 31.1035) and \ui{metal unit} to \code{oz}.
+
+\begin{note}
+A cutoff applies to each model's own grade, so it changes what each model counts as ore. A grade-control model that grades a few percent lower than the resource model loses blocks across the cutoff, and its tonnage factor falls further than the bias suggests. Compare factors only at the cutoff the mine actually uses, and state it.
+\end{note}
+
+\section{Reconciling the demo}\label{sec:factors-demo}
+The demo project has one model and no production. The try-it below makes the rest: a grade-control estimate as two ƒ columns with a known bias, three years of mining as elevation bands, and a mill table typed by hand. Because the bias is known, you can see the factors recover it.
+
+\begin{tryit}
+In the demo project, with \file{deposit.csv} active:
+\begin{enumerate}
+\item Choose \menu{Data>Calculated columns…} and add three columns (\cref{sec:filter-calc}): \code{FE\_GC} = \code{FE * 0.96} and \code{SG\_GC} = \code{SG * 1.05}, both of type \ui{auto}; then \code{PERIOD}, of type \ui{text}:
+
+\code{if(ZC > 750, "2027", if(ZC > 700, "2028", if(ZC > 650, "2029", "")))}
+
+The first two are a grade control that reads 4\,\% poorer and 5\,\% denser than the model; the third mines the deposit top-down, one band of benches a year, and leaves everything below 650~m unmined.
+\item In a text editor, save this as \file{mill.csv}:
+\begin{lstlisting}
+YEAR,DRY_T,FE_HEAD
+2027,79964000,50.30
+2028,49664000,39.42
+2029,80580000,51.08
+\end{lstlisting}
+Drag it onto micro. The open dialog finds no coordinate columns in its header and offers it as \ui{table (no coordinates)}; press \ui{Open}. It arrives as a table layer (▦) of three rows (\cref{ch:columns}).
+\item Right-click \file{deposit.csv} and choose \ui{Reconciliation factors…}. Both model boxes show \file{deposit.csv}; the period column is already \col{PERIOD}, and the production table \file{mill.csv} with \col{YEAR}, \col{DRY\_T} and \col{FE\_HEAD}.
+\item In the \ui{grade control} box, set the grade to \col{FE\_GC} and the density column to \col{SG\_GC}.
+\item Type \code{LITO != "WASTE"} in \ui{domain}. Under \ui{report}, set \ui{unit} to \ui{\%} and \ui{tolerance} to \code{0.05}. Under \ui{chart}, set \ui{show} to \ui{F1 · F2 · F3 — tonnes}.
+\item Press \ui{Run}. In a few seconds the subtitle reads \emph{3 periods · no cutoff · deposit.csv 106,265 blocks mined · deposit.csv 106,265 · mill: mill.csv}.
+\item Read the readout: \emph{last (2029) · F1 t 1.050 · g 0.960 · m 1.008}. The bias you built in comes back exactly, and so it does in every year.
+\item Tick \ui{cumulative (to date)}: F2 to date reads \emph{t 0.967 · g 1.036 · m 1.002}.
+\end{enumerate}
+\end{tryit}
+
+\shot{factors-window}{The factors window on the demo after the try-it: the factors for tonnes by year, with the ±5\,\% band shaded and grade-control tonnes as bars; the readout for the last year; and the table, where F3 tonnes in 2028 and F2 tonnes and grade in 2029 are marked for falling outside the band.}
+
+F1 is flat because the bias was built in uniformly. A real grade control is not so tidy. Its F1 moves with the geology and with how well the resource model's domains held up in each mined area, and the year-to-year scatter is information too.
+
+The mill was typed from grade control with its own errors: 3\,\% light and 3\,\% rich in 2027, 1\,\% heavy and 1\,\% poor in 2028, 6\,\% light and 7\,\% rich in 2029. \Cref{fig:factors-f2} draws F2 for the three quantities. Tonnes and grade wander in opposite directions while metal stays within 0.6\,\% of 1: the plant's weightometer and its sampling disagree with grade control about how the metal is shared between tonnes and grade, not about the metal. That is the pattern of moisture or a weightometer calibration on one side and a head-grade bias on the other, and it is why you read the three quantities together.
+
+\begin{figure}[htbp]\centering
+% micro's numbers: runTool('factors', …) on the try-it's setup (experiments/manual-fac-4.mjs)
+\begin{tikzpicture}
+\begin{axis}[width=0.82\linewidth, height=55mm, xmin=0.6, xmax=3.4, ymin=0.92, ymax=1.11,
+  xtick={1,2,3}, xticklabels={2027,2028,2029}, xlabel={year}, ylabel={F2 = mill ÷ grade control},
+  legend style={at={(0.02,0.98)}, anchor=north west}, legend columns=3]
+\fill[oksoft] (axis cs:0.6,0.95) rectangle (axis cs:3.4,1.05);
+\addplot[muted, dashed, forget plot] coordinates {(0.6,1) (3.4,1)};
+\addplot[info, very thick, mark=*, mark size=1.4pt] coordinates {(1,0.97) (2,1.01) (3,0.94)};
+\addlegendentry{tonnes}
+\addplot[sel, very thick, mark=*, mark size=1.4pt] coordinates {(1,1.0299) (2,0.98988) (3,1.07)};
+\addlegendentry{grade}
+\addplot[amber, very thick, mark=*, mark size=1.4pt] coordinates {(1,0.999) (2,0.99978) (3,1.0058)};
+\addlegendentry{metal}
+\end{axis}
+\end{tikzpicture}
+\caption{F2 by year on the demo, from micro's numbers, with the ±5\,\% band. Tonnes and grade err in opposite directions; their product, metal, stays on 1.}\label{fig:factors-f2}
+\end{figure}
+
+\section{Reading the result}\label{sec:factors-reading}
+\paragraph{The chart} puts the periods along the bottom and the factors on the left axis, zoomed about 1.0 rather than drawn from zero, because a factor's story is its distance from 1. A dashed line marks 1.0, and the band shaded around it is the \ui{tolerance}. Grade-control tonnes stand behind the lines as gray bars on the right axis, kept in the bottom third: they are context, telling you which periods carry weight. \ui{show} chooses what is drawn — F1, F2 and F3 for one quantity (\ui{F1 · F2 · F3 — metal}, the default, or tonnes or grade), or one factor for all three quantities (\ui{F1 — t · g · metal} and the like). \ui{cumulative (to date)} redraws every point as the factor to date. Neither needs a new \ui{Run}.
+
+\paragraph{The table} has three rows per period — tonnes, grade and metal, with their units — and the three sources' totals beside the three factors. A factor outside the tolerance band is drawn in the caution color, with a tooltip naming the band. With \ui{cumulative} ticked, the table shows the to-date totals and factors.
+
+\paragraph{The readout} gives the last period's F1, F2 and F3, each as \emph{t · g · m}, or the factors to date with \ui{cumulative}. A factor is green when all three of its numbers are defined and inside the band, and marked when any is outside. The subtitle counts the periods, states the cutoff, and gives each model's blocks mined and the production table's name — or \emph{no production table}. Warnings are listed under the readout, in the caution color.
+
+\subsection{Blanks, never infinity}\label{sec:factors-blanks}
+A factor whose denominator is zero or blank is blank, drawn as a gap in the chart and as a dash in the table. It is never ∞ and never 0. A period in which the resource model has no tonnes has no F1; it does not have a bad one.
+
+Production is stricter. A period without a production row has a blank mill, so its F2 and F3 are blank. And from that period on, the \emph{to-date} F2 and F3 are blank too, for every later period, even those that have production. On the demo, deleting the 2028 row from \file{mill.csv} leaves 2027 as it was, blanks F2 and F3 for 2028, and blanks the to-date F2 and F3 of 2029, while 2029's own F2 still reads 0.940.
+
+\begin{why}
+A to-date figure that silently skipped a month would compare eleven months of mill against twelve of grade control, and read as a fine factor — or as an alarming one — for no reason in the ground. Blank says what is true: the to-date number cannot be known until the missing month is entered. A routine check that reads it is \emph{not evaluated}, never passed (\cref{sec:checks-noteval}).
+\end{why}
+
+\section{Out of the window}\label{sec:factors-out}
+The results row is the shared one (\cref{sec:analysis-results}). \ui{⇥ figure} puts the chart and its table on the composer page, and the chart remembers its setup, so \ui{↻ refresh} in the composer runs the factors again with the data as it is now — next month's figure from this month's page. \ui{⇥ layer} keeps the table as a table layer in a group named \emph{factors}: three rows a period, the totals and the factors, ready to filter or to key-join with last month's (\cref{ch:joins}). \ui{⧉ table} copies the same table as tab-separated text, with \emph{F1 to date}, \emph{F2 to date} and \emph{F3 to date} beside the period factors.
+
+\ui{save as recipe…} writes the setup as a recipe named after the model with \emph{factors} (\cref{ch:recipes}); running the recipe opens the window configured and runs it. The setup is also saved with the project on every \ui{Run}, and a window left open reopens with the project, reading \emph{restored — Run to compute}.
+
+\section{In a routine}\label{sec:factors-routine}
+The tool is \code{factors} (its settings: \cref{tool:factors}). A routine must state two things a window would let you leave: the \code{density} — tonnes are volume × density, and an automatic choice would move with the data — and the \code{cutoff}, a number or \code{"none"}, because a factor at another cutoff is another factor. The mined volume is a period column, volumes or a filter; a selection is refused, since it is not saved with the routine. Layers are named, and an absent \code{gc} means the model layer itself.
+
+\begin{lstlisting}[language=yaml]
+- tool: "factors"
+  with:
+    model: "deposit.csv"
+    grade: "FE"
+    modelUnit: "pct"
+    density:
+      col: "SG"
+    gcGrade: "FE_GC"
+    gcDensity:
+      col: "SG_GC"
+    periods: "column"
+    periodCol: "PERIOD"
+    filter: "LITO != \"WASTE\""
+    production: "mill.csv"
+    prodPeriod: "YEAR"
+    prodTonnes: "DRY_T"
+    prodGrade: "FE_HEAD"
+    gradeUnit: "pct"
+    cutoff: "none"
+  as: "fac"
+- check: "abs(fac.f1_t - 1) < 0.1"
+  say: "grade control within 10% of the model's tonnes"
+- check: "abs(fac.c_f3_m - 1) < 0.05"
+  level: "warn"
+  say: "metal to date within 5% of the promise"
+\end{lstlisting}
+
+Volumes are a list, one period each, in order:
+
+\begin{lstlisting}[language=yaml]
+    periods: "volumes"
+    nested: true
+    volumes:
+      - name: "2027-Q1"
+        mesh: "q1.obj"
+        side: "above"
+      - name: "2027-Q2"
+        mesh: "q2.obj"
+        side: "above"
+\end{lstlisting}
+
+Note that \code{nested} is off unless you say so, in a routine. Each period's mesh counts among the step's inputs, so a changed surface makes the step run again rather than reuse a cached result (\cref{ch:records}).
+
+The machine table is keyed by \col{period} and \col{quantity} (\code{tonnes}, \code{grade}, \code{metal}): \col{model}, \col{gc}, \col{mill}, \col{f1}, \col{f2}, \col{f3} for the period, and \col{c\_model} … \col{c\_f3} to date. The values a check reads are those of the \emph{last} period:
+
+\medskip
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+value & meaning \\ \midrule
+\code{f1\_t}, \code{f1\_g}, \code{f1\_m} & F1 for tonnes, grade and metal; \code{f2\_*} and \code{f3\_*} the same \\
+\code{model\_t}, \code{gc\_t}, \code{mill\_t} & each source's tonnes; \code{\_g} and \code{\_m} its grade and metal \\
+\code{c\_f1\_t} … \code{c\_mill\_m} & the same, to date \\
+\code{periods} & how many periods \\ \bottomrule
+\end{tabularx}
+\medskip
+
+On the demo setup, \code{fac.f1\_t} is 1.05 and \code{fac.c\_f3\_m} 1.010, so both checks pass. Before the mill's figures for a period are in, its \code{f2\_*} and \code{f3\_*} are blank and a check on them is not evaluated — at a month-end that is the right answer, not a pass. To watch the factors move from one close to the next, add \code{compare: "fac"} with a \code{tolerance} (\cref{sec:checks-compare}): each period and quantity is set beside the baseline's, so a month whose numbers were revised since last close shows up by name.

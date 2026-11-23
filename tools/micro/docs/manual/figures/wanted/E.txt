@@ -4,6 +4,9 @@
 # ── 20-joins ──
 joins-reconcile | two versions of one block model loaded (the demo's deposit.csv, and a copy whose FE is shifted low at the north end and high at the south so the mean delta is ~0); Properties → join on the newer one, right = the older, Reconcile… → Δ on FE; the Δ layer shown alone in plan, its ramp range tightened to about ±2×mean|Δ|; the properties panel open on the join tab so the banner and buttons show | full
 
+# ── 20b-factors ──
+factors-window | the demo project; on deposit.csv the ƒ columns FE_GC = FE * 0.96, SG_GC = SG * 1.05 and PERIOD = if(ZC > 750, "2027", if(ZC > 700, "2028", if(ZC > 650, "2029", ""))); a production table mill.csv (YEAR, DRY_T, FE_HEAD: 2027 79964000 50.30 · 2028 49664000 39.42 · 2029 80580000 51.08); Reconciliation factors… on deposit.csv: grade control = deposit.csv FE_GC / SG_GC, units %, period column PERIOD, domain LITO != "WASTE", production mill.csv, report unit %, tolerance 0.05, show F1 · F2 · F3 — tonnes; Run | window
+
 # ── 21-geometry ──
 geometry-dialog | the demo project; right-click "ore shell" → Select by this solid…; do = fraction column, model = deposit.csv, probes 3 × 3 × 2 (the tally reading "= 18 probes/block · … m blocklings"), topology note "closed solid — inside / outside apply" visible; not yet run | region (the "select by solid" dialog box with a margin of the view behind it)
 
