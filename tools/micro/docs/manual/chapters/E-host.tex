@@ -1,0 +1,655 @@
+\chapter{For developers: hosting micro}\label{app:host}\label{ch:host}
+
+\begin{goals}
+\textbf{In this appendix}: how another web page loads micro in a frame and drives it through
+\code{window.micro} — layers, the view and the section, picks and selections, the analysis tools
+and routines — how to hand micro a layer as typed columns with \code{addLayer}, and how a Parquet
+file states its own lattice with \code{micro:model}.
+\end{goals}
+
+This appendix is for people writing software around micro: an estimation package that wants a 3D
+view of its results, a dashboard with a model beside its charts, a script that runs a month-end
+routine and files the record. Everything in it is exercised by micro's own tests
+(\file{test/micro-host-smoke.mjs}); if you only use micro yourself, you can skip it.
+
+\section{Loading micro in a frame}\label{sec:host-frame}
+
+Serve \file{micro.html}, unmodified, from the same origin as your page, and put it in a frame.
+micro announces itself on your frame element, so you can listen before its window exists:
+
+\begin{lstlisting}[language=js]
+// <iframe id="m" src="micro.html?embed=1"></iframe>
+const frame = document.getElementById('m');
+frame.addEventListener('micro:ready', () => {
+  const micro = frame.contentWindow.micro;
+  // micro.version === 1
+});
+
+// or, when micro may already be up:
+const micro = await frame.contentWindow.micro.ready;
+\end{lstlisting}
+
+\code{?embed=1} hides micro's title and the Sealed badge from the first paint. \code{setChrome}
+changes that later (\cref{sec:host-chrome}).
+
+\begin{why}
+Hiding the badge in an embed is the honest default. Sealed is a claim about micro's own page
+(\cref{ch:sealed}). A same-origin host can read everything micro holds, and the host has a network
+of its own; micro cannot vouch for it. \menu{Help>Why it’s Sealed (security)…} stays available either
+way.
+\end{why}
+
+\subsection{The contract}\label{sec:host-contract}
+
+\begin{description}
+\item[One surface.] Build on \code{window.micro} only. A second object, \code{window.\_micro},
+  also exists: it is the test suite's reach into hundreds of internals, and any of them can be
+  renamed without notice.
+\item[Versioned.] Within \code{micro.version === 1}, changes only add. A change that breaks a host
+  would be version 2.
+\item[Ids in, plain data out.] A layer is named by its id. What comes back is plain data — numbers,
+  strings, arrays — never a live internal object.
+\item[Every verb names its layer.] Nothing depends on which layer happens to be active.
+\item[Actions are promises.] An action resolves when it is done and rejects with the reason, as an
+  \code{Error} whose message is the one micro would show on its status line. Getters
+  (\code{layers}, \code{layer}, \code{columns}, \code{groups}, \code{section}, \code{view},
+  \code{chrome}, \code{tools}, \code{routines}) answer at once.
+\item[Ids can change, and the API follows them.] Some re-reads replace a layer with a new one under
+  a new id: re-desurveying drillholes, \ui{Reinterpret as…}, \ui{Reload from disk}, a different
+  band of a grid. micro fires \code{micro:layer-replaced} with \code{\{ from, to \}}, the new layer
+  keeps its place in the tree, and a call given the old id acts on the new layer.
+\end{description}
+
+\begin{caution}
+The first layer's id is \code{0}. Test a returned id against \code{null}, never for truthiness.
+\end{caution}
+
+\section{Layers}\label{sec:host-layers}
+
+\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}p{44mm}L@{}}
+\toprule
+call & what it does \\
+\midrule
+\code{layers()} \newline \code{layer(id)} & Every layer, or one (or \code{null}), as plain data:
+  see below. \\
+\code{addLayer(spec)} & A layer from columns or from a file, with its roles stated
+  (\cref{sec:host-addlayer}). Resolves to the new id. \\
+\code{open(file, opts)} & Opens a \code{File}, \code{Blob} or file handle as micro opens a dropped
+  file, with everything detected. Options: \code{name}, \code{group}, \code{acceptLattice}.
+  Resolves to the id. \\
+\code{removeLayer(id)} & Removes the layer. \\
+\code{setVisible(id, on)} & Shows or hides it. In a mutually exclusive group, showing one hides
+  its siblings. \\
+\code{setActive(id)} & Makes it the active layer (the one micro's own panels show). \\
+\code{columns(id)} & The column names. \\
+\code{row(id, rec)} & One record, as \code{\{ column: value, … \}} by name. Rejects on a record
+  number outside the layer. \\
+\bottomrule
+\end{tabularx}
+
+A layer, as \code{layers()} and \code{layer(id)} describe it (here the demo project's block
+model):
+
+\begin{lstlisting}[language=js]
+{ id: 0,
+  name: 'deposit.csv',        // the label shown in the panel
+  file: 'deposit.csv',        // the source file's name
+  kind: 'blocks',             // blocks | points | drillholes | mesh |
+                              // surface | grid | table | traces
+  count: 1786620,             // records
+  columns: ['XC', 'YC', 'ZC', 'FE', 'SG', 'LITO'],
+  colorBy: 'FE',
+  colorChoices: [ /* what setColorBy accepts */ ],
+  colorRange: { min: 11.72, max: 68, fixed: false },  // or null
+  palette: 'viridis',         // or null
+  visible: true,
+  group: '',                  // its group path; '' at the top
+  viewOf: null }              // the model's id, when this is a view
+\end{lstlisting}
+
+The label and the file name differ when the layer has been renamed, or was named by micro: the
+demo's drillholes are \code{'holes · demo\_assay.csv'}, from \code{demo\_assay.csv}.
+
+A view also carries \code{offset}, the \code{[dx, dy, dz]} it is drawn at. Column names come
+without micro's display marks: a calculated column listed as \ui{ƒ FE\_EQ} in the interface is
+\code{'FE\_EQ'} here.
+
+\subsection{Color and filter}\label{sec:host-color}
+
+\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}p{44mm}L@{}}
+\toprule
+call & what it does \\
+\midrule
+\code{setColorBy(id, column)} & Colors the layer by a column, or by \code{'elev'},
+  \code{'solid'} or \code{'rules'}; LAS and PLY points also take \code{'elevation'},
+  \code{'intensity'}, \code{'classification'} and \code{'rgb'}. Rejects with the list of choices.
+  Resolves to the id the layer has afterwards. \\
+\code{setColorRange(id, range)} \newline \code{colorRange(id)} & Fixes the scale of a numeric
+  color-by to \code{\{ min, max \}}; values outside take the end colors. \code{null} hands the
+  range back to the data. \code{colorRange} reads \code{\{ min, max, fixed \}}, or \code{null}
+  for a color-by with no numeric range. \\
+\code{setPalette(id, name)} \newline \code{palettes()} & A palette by name for the current
+  color-by. \code{palettes()} lists them as \code{[\{ name, kind \}]}, \code{kind} being
+  \code{sequential} or \code{diverging}. \\
+\code{filter(id, expr)} \newline \code{clearFilter(id)} & The language of micro's filter box
+  (\cref{app:expr}), on any layer. An empty string clears. \\
+\code{setDetectionLimits(id, column, policy)} & The detection-limit rule of a numeric column in a
+  CSV or drillhole layer: \code{below} is \code{'half'}, \code{'limit'}, \code{'zero'} or
+  \code{'blank'}; \code{above} is \code{'limit'} or \code{'blank'}; \code{negBelow} reads a
+  negative value as below detection. Any subset. \\
+\bottomrule
+\end{tabularx}
+
+The range belongs to the layer, as the min and max boxes of the styling panel do, so set it
+\emph{after} \code{setColorBy}. Two panes that must be compared by eye should be given the same
+range. For a difference, use a diverging palette and a range symmetric about zero:
+
+\begin{lstlisting}[language=js]
+await micro.setColorBy(id, 'DELTA_FE');
+await micro.setPalette(id, 'rdbu');
+await micro.setColorRange(id, { min: -5, max: 5 });
+\end{lstlisting}
+
+Coloring a block model, a drillhole layer or a cloud by a numeric column it wasn't opened with
+reads only that column. Making another text column a model's category re-reads the file, which
+takes a while on a large model; on a view it does not.
+
+\subsection{Views of a model}\label{sec:host-views}
+
+A \term{view} shows the same records again with its own color, filter and visibility
+(\cref{ch:sections}).
+
+\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}p{44mm}L@{}}
+\toprule
+call & what it does \\
+\midrule
+\code{addView(id, opts)} & A view of a block model, drillhole layer or cloud. Options:
+  \code{name}; \code{color} (any column the layer can be colored by; a text column becomes the
+  view's own classes); \code{filter}; \code{visible}; \code{offset} as \code{[dx, dy, dz]};
+  \code{beside: true} to place it just east of its model and other views. Resolves to the view's
+  id. \\
+\code{setViewOffset(id, offset)} & Moves a view on the screen; \code{null} puts it back on its
+  model. Its records keep their coordinates. \\
+\bottomrule
+\end{tabularx}
+
+\section{The view and the section}\label{sec:host-view}
+
+\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}p{44mm}L@{}}
+\toprule
+call & what it does \\
+\midrule
+\code{view()} \newline \code{setView(v)} & The camera in world terms (below). \code{setView} takes
+  any subset. \\
+\code{fit(id?)} & Fits one layer, or everything. \\
+\code{look(view)} & \code{'north'}, \code{'south'}, \code{'east'}, \code{'west'}, \code{'plan'} or
+  \code{'below'}. \\
+\code{section()} \newline \code{setSection(plane)} & The section in world terms (below).
+  \code{setSection(null)} turns it off. \\
+\code{layerCut(id)} \newline \code{setLayerCut(id, cut)} & How the section cuts one layer. \\
+\code{snapshot(opts)} & The view as a PNG \code{Blob}, rendered to completion. \code{scale} (1 by
+  default) enlarges it; \code{decorations: false} leaves off the scale bar, north arrow, legends
+  and title. \\
+\bottomrule
+\end{tabularx}
+
+\begin{lstlisting}[language=js]
+micro.view();
+// { target: [613000, 7765490, 655],  // world; what the camera
+//                                    // looks at
+//   look: 225,           // bearing looked toward: 0 north, 90 east
+//   elevation: 36,       // degrees above the target; 90 is plan
+//   distance: 3938, ortho: false, zExag: 1 }
+
+micro.section();
+// null when off, else
+// { mode, axis, normal, position, thickness, clip, dipDir?, dip? }
+// the plane is  normal · p = position
+
+await micro.setSection({ axis: 'y', at: [613000, 7765500, 650],
+                         thickness: 20, clip: 'slab' });
+await micro.setSection({ dipDir: 120, dip: 60 });   // the rest stays
+\end{lstlisting}
+
+A plane is given by \code{axis} (\code{'x'}, \code{'y'} or \code{'z'}), by a \code{normal}, or by
+\code{dipDir} and \code{dip}. Its place is \code{at} (a point it passes through) or
+\code{position}. \code{clip} is \code{'slab'}, \code{'front'} or \code{'behind'}. What you leave out
+stays as it is, and a position beyond the data is clamped to it.
+
+\code{setLayerCut} takes \code{'follow'}, \code{'front'}, \code{'behind'}, \code{'off'},
+\code{\{ thickness \}} (follow, with this layer's own slab) or, for drillholes,
+\code{\{ wholeHoles: true, thickness? \}}: holes whose path from collar to end crosses the slab are
+drawn whole and the rest are hidden. It is saved with the project.
+
+\section{Picks, selections and screen positions}\label{sec:host-pick}
+
+\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}p{44mm}L@{}}
+\toprule
+call & what it does \\
+\midrule
+\code{pick(\{ layer, rec, frame \})} & Highlights a record, shows its panel, reveals it in an open
+  attribute table and, with \code{frame: true}, centers the view on it at the same zoom. Resolves
+  to the record's world position. \\
+\code{clearPick()} & Clears the pick. \\
+\code{selection(id)} & \code{\{ layer, count, records \}}, the record numbers selected on that
+  layer. \\
+\code{select(id, records, opts)} & Sets the selection by record number. \code{mode}:
+  \code{'replace'} (the default), \code{'add'} or \code{'remove'}. \\
+\code{clearSelection(id?)} & Clears one layer's selection, or all. \\
+\code{selectInPolygon(id, polygon, opts)} & micro's own lasso over a polygon of canvas CSS pixels,
+  \code{[[x, y], …]}: exactly what a user's lasso would select there. \code{through: true} takes
+  everything inside the tube, hidden or not. \code{id} \code{null} means every layer. Resolves to
+  \code{\{ layer, count \}}, or one per layer. \\
+\code{worldAt(points)} & The surface under a canvas point \code{[x, y]}, or under each of a list:
+  \code{\{ world, layer, rec, face \}}, or \code{null} where there is nothing. A batch costs one
+  pick render however many points it holds. \\
+\bottomrule
+\end{tabularx}
+
+To hear what the \emph{user} picks, listen for \code{micro:pick}:
+
+\begin{lstlisting}[language=js]
+frame.contentWindow.addEventListener('micro:pick', async (e) => {
+  const d = e.detail;
+  // { layer, rec, face, world: [x, y, z] | null,
+  //   source: 'canvas' | 'table' }   — or null
+  if (!d) return clearMyPanel();   // a click on nothing
+  const row = await micro.row(d.layer, d.rec);
+  // { FE: 62.1, LITO: 'HEMATITE', … }
+});
+\end{lstlisting}
+
+\begin{itemize}
+\item \code{rec} is micro's record number, which is not necessarily your row number: micro may
+  reorder a Parquet file spatially. Carry your own key in a column and read it from the row.
+\item A click on a mesh gives \code{rec: null} and the point on the surface in \code{world}.
+\item \code{pick()} called by the host does \emph{not} fire \code{micro:pick}, so a host that
+  answers picks by picking cannot loop. \code{worldAt} fires nothing and opens nothing.
+\item \code{world} is always in real coordinates, whatever the vertical exaggeration.
+\end{itemize}
+
+\section{Groups}\label{sec:host-groups}
+
+A group is a path of names, such as \code{'Model/Domains'}.
+
+\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}p{44mm}L@{}}
+\toprule
+call & what it does \\
+\midrule
+\code{groups()} & \code{[\{ path, name, visible, collapsed, exclusive, layers \}]}. \\
+\code{group(path, ids)} & Files existing layers into the group, creating it and its parents. \\
+\code{ungroup(path)} & Dissolves the group; its layers stay. \\
+\code{setGroupVisible(path, on)} & The group's eye. The layers keep their own. \\
+\code{setGroupExclusive(path, on)} & Makes the group mutually exclusive: at most one direct child
+  shows. Turning it on keeps the topmost shown child. \\
+\code{stepGroup(path, dir)} & Shows the next (\code{1}) or previous (\code{-1}) child of an
+  exclusive group, wrapping, and makes it the active layer. \\
+\bottomrule
+\end{tabularx}
+
+A group exists while it holds layers, so there is no empty group to create:
+\code{addLayer(\{ …, group \})} and \code{open(file, \{ group \})} file a new layer into a path,
+and \code{group(path, ids)} moves existing ones. A drillhole layer moves with its whole set.
+
+\section{Chrome, presenting and decorations}\label{sec:host-chrome}
+
+\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}p{44mm}L@{}}
+\toprule
+call & what it does \\
+\midrule
+\code{chrome()} \newline \code{setChrome(opts)} & \code{\{ title, badge, presenting \}}: micro's
+  title, the Sealed badge, and presenting. \code{setChrome} takes any subset and returns the
+  result. \\
+\code{decorations()} \newline \code{setDecorations(opts)} & \code{\{ scale, north, title, legend
+  \}}: the scale bar, the north arrow, a title (text, or \code{null}), and color legends
+  (\code{true} for every visible layer, \code{false}, an id or a list of ids). Any subset; a bad
+  value rejects and changes nothing. \\
+\bottomrule
+\end{tabularx}
+
+\code{setChrome(\{ presenting: true \})} hides every bar, panel and analysis window, and the canvas
+takes the whole frame. The camera does not move. Orbit, zoom and pick still work, and a dialog that
+asks a question still shows. \code{presenting: false} brings back exactly what was open.
+
+Decorations are drawn on the picture, so they stay while presenting and appear in
+\code{snapshot}. They are not remembered between sessions: the host states what it wants each
+time.
+
+\section{Tools and routines}\label{sec:host-tools}
+
+The analyses a routine can run are available to a host without their windows, and a routine can be
+run from start to end with its record returned. Layers are named here as a routine names them: by
+name, not by id.
+
+\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}p{44mm}L@{}}
+\toprule
+call & what it does \\
+\midrule
+\code{tools()} & The tools, as data: \code{[\{ name, label, params, outputs \}]}. Each setting
+  carries its type, default, allowed values and a line of documentation. \\
+\code{runTool(name, params)} & Runs one tool, with no window. \\
+\code{routines()} & The project's routines: \code{[\{ name, file, inputs \}]}. \\
+\code{checkRoutine(name, opts)} & The dry run: \code{\{ routine, steps, problems \}}, one line per
+  step as Preview shows it. Nothing runs and nothing is written. \\
+\code{runRoutine(name, opts)} & Runs a routine to the end. \\
+\code{runs()} & The project's runs, newest first: \code{[\{ dir, routine, status, started,
+  finished, baseline, accepted \}]}. \\
+\code{acceptRun(dir, by, note?)} & Marks a run as the baseline that later runs compare with
+  (\cref{ch:checks}). \\
+\bottomrule
+\end{tabularx}
+
+\begin{lstlisting}[language=js]
+micro.tools().map((t) => t.name);
+// ['gt', 'stats', 'swath', 'validation', 'resource', …]
+
+const r = await micro.runTool('gt', {
+  layer: 'deposit.csv',
+  series: [{ col: 'FE', weight: 'SG' }],
+  cutoffs: [30, 40, 50, 55, 60, 65],
+});
+// r.table    { columns, rows, key, units }
+// r.values   the tool's named numbers
+// r.resolved the settings as used, every automatic value pinned
+// r.warnings
+\end{lstlisting}
+
+The numbers are the ones the tool's window and a routine step give; there is one implementation.
+The tools and their settings are listed in \cref{app:tools}, which is generated from the same
+\code{tools()} list. An unknown setting is refused, with the nearest real name:
+\code{cutofs} is answered with “did you mean \code{cutoffs}?”. Numbers that are not finite arrive
+as \code{null}. A tool that produces a file (\code{export}) also returns
+\code{file: \{ name, blob \}}.
+
+A table's columns can depend on the layer. On the demo's block model, \code{gt} gives
+\code{series}, \code{cutoff}, \code{tonnes}, \code{grade}, \code{metal}, with \code{volume} in
+place of \code{tonnes} when no density is given. Pointed at a drillhole layer, \code{gt} and
+\code{xtab} add up interval length instead (\cref{sec:gt-holes}): \code{length} in meters, or
+\code{weighted\_length} (m·t/m³) with a density, and \code{accumulation}, grade × length, in place
+of metal; \code{xtab} counts \code{intervals} where a model counts \code{blocks}. One \code{gt}
+call cannot mix the two kinds of layer: its series must all be models or all be drillholes. Read the column names from \code{r.table.columns} and their units from
+\code{r.table.units} rather than assuming them.
+
+\begin{lstlisting}[language=js]
+const h = await micro.runTool('gt', {
+  layer: 'demo_assay.csv',
+  series: [{ col: 'FE', unit: 'pct', weight: 'SG' }],
+  gradeUnit: 'pct', cutoffs: [30, 60],
+});
+// h.table.columns
+//   ['series', 'cutoff', 'weighted_length', 'grade', 'accumulation']
+\end{lstlisting}
+
+\begin{lstlisting}[language=js]
+const dry = await micro.checkRoutine('month end',
+                                     { inputs: { grade: 'FE' } });
+// { routine: 'month end',
+//   steps: ['…one line per step…'], problems: [] }
+
+const res = await micro.runRoutine('month end', {
+  inputs: { grade: 'FE' },
+  onStep: (s) => console.log(s.n, s.step, s.status),
+  fresh: false,          // true: run every step again, reuse nothing
+});
+// { routine: 'month end',
+//   status: 'ok' | 'failed' | 'cancelled' | 'refused',
+//   record, problems?, error? }
+
+const runs = await micro.runs();
+await micro.acceptRun(runs[0].dir, 'A. Name', 'October close');
+\end{lstlisting}
+
+\begin{itemize}
+\item \code{runRoutine} never prompts. A routine's \code{inputs:} are given up front, and a missing
+  one rejects, naming it.
+\item It resolves when the run ends, however it ends. A run that stopped at a check resolves with
+  \code{status: 'failed'}; it does not reject.
+\item \code{record} is a copy of the run record, the \file{run.json} in the run's folder: the
+  SHA-256 of every input file and every output, each step's settings, values and checks
+  (\cref{ch:records}).
+\item With \code{fresh} left off, steps whose inputs and settings have not changed since an earlier
+  run are reused from it.
+\item A routine step must state what an automatic value would otherwise decide (a grade–tonnage
+  step needs explicit \code{cutoffs}, because automatic ones move with the data);
+  \code{checkRoutine} lists such problems before anything runs.
+\end{itemize}
+
+\section{Backups and project packs}\label{sec:host-packs}
+
+\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}p{44mm}L@{}}
+\toprule
+call & what it does \\
+\midrule
+\code{backupProject(opts)} & The open project folder as one \file{.zip.micro}, with no dialogs.
+  \code{to}: a \code{WritableStream} or a file handle to stream into; without one the result
+  carries a \code{blob}. \code{lean: true} leaves out the caches micro can rebuild.
+  \code{save: true} saves unsaved changes first. Resolves
+  \code{\{ name, size, files, lean, linked, blob? \}}; \code{linked} names the layers that live
+  outside the folder and so are not in the backup. \\
+\code{restoreProject(file, folder)} & Unpacks a \file{.zip.micro} into an \emph{empty} directory
+  handle and opens it as the project. Each file is checked against its checksum. Resolves
+  \code{\{ name, files, bytes, info \}}. \\
+\code{openProjectPack(file)} & Opens a \file{.zip.micro} as the project, read-only, with nothing
+  unpacked. Resolves \code{\{ name, files, bytes, info, checked \}}; \code{checked} is a promise
+  of \code{\{ ok, files, bad \}} that settles when the whole pack has been read through. \\
+\code{savePackAsFolder(folder)} & Writes the open pack, with the session's changes, into an empty
+  directory handle, which becomes the project. \\
+\bottomrule
+\end{tabularx}
+
+See \cref{ch:store} for what a pack is. A \code{file} here is a \code{File}, a \code{Blob} or a file
+handle.
+
+\section{Events}\label{sec:host-events}
+
+All events are \code{CustomEvent}s on micro's \code{window}; the payload is \code{event.detail}.
+
+\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}p{40mm}>{\raggedright\arraybackslash}p{40mm}L@{}}
+\toprule
+event & detail & when \\
+\midrule
+\code{micro:ready} & \code{\{ version \}} & micro is up. Also fired on the host's frame
+  element. \\
+\code{micro:layer-added} & \code{\{ id, name, kind \}}, or \code{\{ id, viewOf \}} for a view & A layer finished loading. \\
+\code{micro:layer-failed} & \code{\{ name, error \}} & A file or an \code{addLayer} could not
+  become a layer. \\
+\code{micro:layer-removed} & \code{\{ id \}} & A layer was removed. \\
+\code{micro:layer-replaced} & \code{\{ from, to \}} & A re-read gave a layer a new id. \\
+\code{micro:lattice-rejected} & \code{\{ name, reason \}} & A declared lattice did not fit the
+  records; the model opened as points. \\
+\code{micro:pick} & \code{\{ layer, rec, face, world, source \}} or \code{null} & The user picked
+  a record, or cleared the pick. \\
+\code{micro:selection} & \code{\{ layer, count \}} & A layer's selection changed. \\
+\code{micro:routine-step} & \code{\{ routine, token, n, step, status \}} & A routine step ended. \\
+\code{micro:routine-done} & \code{\{ routine, token, status, record, problems?, error? \}} & A
+  routine run ended, however it ended. \\
+\code{micro:pack-checked} & \code{\{ name, ok, files, bad \}} & The background checksum pass over an
+  opened project pack finished. \\
+\bottomrule
+\end{tabularx}
+
+The two routine events fire for every run, whether the user started it or the host did, so a host
+can follow a run it did not start. \code{onStep} in \code{runRoutine} is the same information for
+the one run you called.
+
+\section{Handing micro a layer: \texttt{addLayer}}\label{sec:host-addlayer}
+
+When the data comes from software that already knows what it is, write no file and let nothing be
+guessed. Pass the columns and say what they mean:
+
+\begin{lstlisting}[language=js]
+const id = await micro.addLayer({
+  kind: 'blocks',     // blocks | points | mesh | drillholes | table
+  name: 'FE_OK',
+  group: 'Estimates',                   // optional
+  columns: {                            // all of one length
+    E: xs, N: ys, RL: zs,               // Float64Array
+    FE: grades,                         // Float32Array
+    LITO: { codes: Uint8Array.from(codes),
+            labels: ['HEMATITE', 'ITABIRITE', 'CANGA', 'WASTE'] },
+  },
+  roles: { x: 'E', y: 'N', z: 'RL', value: 'FE', category: 'LITO' },
+  frame: { crs: 'EPSG:31983' },         // optional
+});
+\end{lstlisting}
+
+\subsection{Columns and roles}
+
+A column is a typed array (\code{Float64Array}, \code{Float32Array} or an integer kind), a plain
+array of numbers or strings, or \code{\{ codes, labels \}} for a category that is already coded.
+A coded category keeps your label order.
+
+\begin{tabularx}{\linewidth}{@{}p{24mm}L@{}}
+\toprule
+kind & what it takes \\
+\midrule
+\code{blocks} \newline \code{points} & \code{columns} and \code{roles}: \code{x}, \code{y},
+  \code{z}, and optionally \code{value}, \code{category}, \code{categories} (a list of text
+  columns to offer for coloring). For blocks, optionally \code{lattice} or \code{sizes}. \\
+\code{mesh} & \code{vertices}, a \code{Float64Array} of x, y, z triples, and \code{triangles}, a
+  \code{Uint32Array} of index triples. \\
+\code{drillholes} & Three tables, \code{collar}, \code{survey} and \code{intervals}, each
+  \code{\{ columns, roles \}}. Collar roles: \code{bhid}, \code{x}, \code{y}, \code{z}, optionally
+  \code{eoh}. Survey: \code{bhid}, \code{at} (or \code{depth}), \code{az}, \code{dip}. Intervals:
+  \code{bhid}, \code{from}, \code{to}, optionally \code{value}, \code{category},
+  \code{categories}. \code{method} and \code{dipConvention} are as in the import dialog. \\
+\code{table} & \code{columns} only. A free-text table belongs here, not inside a spatial layer. \\
+\bottomrule
+\end{tabularx}
+
+The layer opens colored by what you named: the category if there is one, else the value, else
+elevation. \code{colorBy}, \code{palette} and \code{colorRange} in the spec choose otherwise, as
+\code{setColorBy}, \code{setPalette} and \code{setColorRange} do later. A wrong one rejects and
+leaves no layer behind.
+
+\subsection{Sub-blocks and lattices}
+
+\begin{lstlisting}[language=js]
+// sub-blocked: each block's size, by column name, array or constant
+sizes: { dx: 'DX', dy: 'DY', dz: 'DZ' },
+
+// or a declared lattice (not both)
+lattice: { basis: { origin: [x, y, z],
+                    U: [ux, uy, uz], V: [vx, vy, vz], W: [wx, wy, wz],
+                    counts: [nu, nv, nw] } },
+\end{lstlisting}
+
+\code{sizes} and \code{lattice} cannot be given together: a sub-blocked model's fine lattice is
+measured from its sizes. A declared lattice is applied without a question, and checked against
+every record (\cref{sec:host-rotated}). With no declaration, a rotation micro detects still asks
+the user first; pass \code{acceptLattice: true} or \code{false} to answer in advance.
+
+\subsection{Large data: pass a file}
+
+For data too large to hold as arrays, give \code{file} in place of \code{columns}: a \code{File},
+a \code{Blob} or a \code{FileSystemFileHandle}. The file is opened in place. It is never copied,
+and CSV, Parquet and \file{.dm} are streamed from it without being held decoded. Roles then name
+the columns of its header.
+
+\begin{lstlisting}[language=js]
+await micro.addLayer({ kind: 'blocks', file, name: 'FE_OK',
+  roles: { x: 'EAST', y: 'NORTH', z: 'RL', value: 'FE' },
+  sizes: { dx: 'SX', dy: 'SY', dz: 'SZ' },   // column names
+  format: 'parquet' });   // only when the name has no extension
+\end{lstlisting}
+
+\begin{itemize}
+\item A handle is kept with the layer, so project save and \ui{Reload from disk} use the real file.
+\item A \code{File} created in the host's own frame works: micro tests what the object can do, not
+  which window's \code{File} it is.
+\item Meshes (\file{.ply}, \file{.obj}, \file{.msh}, \file{.lfm}, \file{.wfr}, \file{.dxf}) and
+  tables (delimited or \file{.xlsx}) take \code{file} the same way.
+\item Each drillhole table may be \code{\{ file, roles \}} or \code{\{ columns, roles \}}, and the
+  two can be mixed.
+\item A declared \code{lattice} is accepted for CSV and Parquet files.
+\end{itemize}
+
+\begin{why}
+A layer made from columns is not a second kind of layer. micro writes the columns once into its
+own formats — Parquet with a \code{micro:model} footer for blocks and points, binary PLY for
+meshes, CSV for drillhole and plain tables — and opens the result with every role stated. Picking,
+coloring, filters, statistics, grade–tonnage, swaths, sections, export and project save therefore
+behave exactly as they do for a file, and there is no second code path that could drift from the
+first.
+\end{why}
+
+\section{A Parquet file that states its lattice: \texttt{micro:model}}\label{sec:host-model}
+
+micro reads the \code{micro:model} key–value entry from the footer of \emph{any} Parquet file, not
+only its own exports. A producer that knows its block model's lattice can write it there, and the
+file then opens with no discovery pass. The value is JSON:
+
+\begin{tabularx}{\linewidth}{@{}p{22mm}p{20mm}L@{}}
+\toprule
+key & & meaning \\
+\midrule
+\code{bbox} & required & \code{\{ min: [x,y,z], max: [x,y,z] \}}, the model's extent. It frames
+  the view. \\
+\code{grid} & required & The lattice, or \code{null} for points. Axis-aligned:
+  \code{\{ x, y, z \}}, each \code{\{ origin, pitch, count \}}, where \code{origin} is the
+  \emph{centroid of block 0}, not its corner. Rotated: \code{\{ basis: … \}}
+  (\cref{sec:host-rotated}). \\
+\code{categories} & optional & The category column's distinct values (at most 255), in the code
+  order you want. \\
+\code{subBlocked} & optional & \code{true} for blocks of varying size. \code{grid} is then the
+  \emph{fine} lattice, with a pitch of half the smallest block size, and \code{dims} and
+  \code{dimPalette} must be written too. \\
+\code{dims} & with \code{subBlocked} & \code{\{ x: 'DX', y: 'DY', z: 'DZ' \}}: the size columns,
+  by name. \\
+\code{dimPalette} & with \code{subBlocked} & The distinct sizes as \emph{half}-sizes,
+  \code{[[hx,hy,hz], …]} (at most 256). \\
+\code{declared} & optional & Who states the lattice, as a short name. A declared or rotated
+  lattice is applied without asking, and checked. \\
+\code{v} & optional & The format version; \code{1} today. \\
+\bottomrule
+\end{tabularx}
+
+A sub-blocked model written \emph{without} \code{dims} and \code{dimPalette} is not trusted: micro
+runs its discovery and rebuilds them. The size columns are found by the same names as in a CSV
+(\col{DX}/\col{DY}/\col{DZ}, \col{XINC}…, \col{DIMX}…), so a sub-blocked Parquet file also works
+with no \code{micro:model} at all.
+
+Two more footer entries travel with micro's own exports: \code{micro:frame}, \code{\{ crs \}}, the
+coordinate system; and \code{micro:lineage}, the provenance tree of a derived layer
+(\cref{ch:records}).
+
+\subsection{Rotated block models}\label{sec:host-rotated}
+
+A model whose lattice axes are not east, north and up is drawn as true rotated boxes, with exact
+picking and true sections (\cref{ch:blocks}). The rotation is stored as a basis, never as angles:
+
+\begin{lstlisting}[language=js]
+"grid": { "basis": {
+  "origin": [x, y, z],     // the CENTROID of block (0,0,0), world
+  "U": [ux, uy, uz],       // world vectors:
+  "V": [vx, vy, vz],       //   block size × direction
+  "W": [wx, wy, wz],
+  "counts": [nu, nv, nw],
+  "source": { "convention": "azimuth/dip/pitch (ZXZ)",
+              "angles": [a, b, c] }
+} }
+\end{lstlisting}
+
+\begin{description}
+\item[Convert your angles once] to U, V and W. \code{source} is kept for provenance only; micro
+  never reads angles back. U, V and W must be perpendicular. A sheared lattice is refused, not
+  approximated.
+\item[A declared lattice is your statement,] not micro's guess, so no confirmation is asked. micro
+  still maps every centroid through it. If one falls off the lattice by more than a thousandth of
+  a block, the declaration is refused: a file opens as points, with
+  \code{micro:lattice-rejected} and a status line naming the record and the distance;
+  \code{addLayer} rejects.
+\item[With no declaration,] micro tries to infer a rotation, and an inferred rotation is never
+  applied silently. The user is asked “rotated boxes or points?”, unless the host answered in
+  advance with \code{acceptLattice}.
+\item[Exports write the lattice back,] so a rotated model round-trips through Parquet and project
+  save. The layer's lineage and its element manifest record whether the lattice was inferred or
+  declared, and who confirmed it.
+\end{description}
+
+\begin{note}
+On a rotated model, everything per record works — filters, statistics, grade–tonnage, swaths,
+export, select and flag by a solid per centroid — and so do joins and reconciles between models on
+the same rotated lattice. Not supported: resampling between different orientations, proportions by
+a solid, rotated sub-blocked models, and the empty-grid creator.
+\end{note}

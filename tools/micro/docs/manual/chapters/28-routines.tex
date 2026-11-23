@@ -1,0 +1,604 @@
+\chapter{Routines}\label{ch:routines}
+\begin{goals}
+\textbf{In this chapter} you chain recipes and tools into a routine, repeat steps over a table of parameters, feed it values from a spreadsheet, make it ask its questions first, preview every step before it runs, and recover a run that stopped.
+\end{goals}
+
+\Cref{ch:recipes} left you with one analysis you can run again. A month-end is many of them: the same analyses, in the same order, on new data. So is a model update, and so is a reconciliation. A \term{routine} is that job written down. It is a recipe whose tool is \code{routine} and whose settings are a list of \term{steps}. Each step runs a saved recipe or a tool, and micro runs them one after another without opening a window and without asking anything on the way.
+
+A routine is a document, not a program. There are no loops you can't count, no branches, no code. Before anything runs, micro can list every step it will take and every file it will write, and so can the person who reviews it.
+
+This chapter builds the routine \code{month-end} on the demo project, starting from two steps. \Cref{ch:checks} makes it judge its own results; \cref{ch:records} reads the record it leaves.
+
+\section{A first routine}\label{sec:routines-first}
+Start with two steps: check the model, then tabulate grade–tonnage.
+
+\begin{lstlisting}[language=yaml]
+# micro recipe — routine. Hand-edit freely; series
+# reference layers by NAME.
+name: "month-end"
+tool: "routine"
+params:
+  steps:
+    - tool: "modelqa"
+      with:
+        layer: "deposit.csv"
+      as: "mq"
+    - recipe: "deposit grade-tonnage"
+      with:
+        cutoffs:
+          - 30
+          - 40
+          - 50
+          - 55
+          - 60
+          - 65
+      as: "gt"
+\end{lstlisting}
+
+The first step is an \term{inline step}: \code{tool:} names a tool and \code{with:} holds its settings, so nothing has to be saved beforehand. The second runs the recipe from \cref{ch:recipes} and layers one setting on top of it, the explicit cutoffs a routine insists on (\cref{sec:routines-rules}).
+
+\begin{tryit}
+You need the demo project saved to a folder and the recipe \code{deposit grade-tonnage}. If you skipped the try-it of \cref{sec:recipes-save}, do that first: it takes two clicks.
+\begin{enumerate}
+\item Open \menu{Tools>Recipes>New routine…} and type the name \code{month-end}.
+\item Press \ui{+ inline step}. In the \ui{do} list choose \ui{model QA}, and type \code{mq} in \ui{as}.
+\item In the box below, write:
+\begin{lstlisting}[language=yaml]
+with:
+  layer: "deposit.csv"
+\end{lstlisting}
+\item Press \ui{+ run a recipe}. Choose \ui{deposit grade-tonnage}, and type \code{gt} in \ui{as}.
+\item Press \ui{⋯} and write the \code{with:} block with the six cutoffs, as in the listing above.
+\item Remove the empty first step with its \ui{×}.
+\item Press \ui{Preview}. It shows two lines, each with the report it will write: \file{runs/(this run)/mq.tsv} and \file{runs/(this run)/gt.tsv}.
+\item Press \ui{Save \& Run}. The run tracker opens, ticks both steps, and names the run's folder.
+\end{enumerate}
+\end{tryit}
+
+Now look in the project folder. A new folder, \file{runs/}, holds one folder for this run, and in it are \file{mq.tsv}, \file{gt.tsv} and \file{run.json}: two tables and the record of how they were made.
+
+\section{Steps}\label{sec:routines-steps}
+A step is one item of the \code{steps} list. What it is depends on its first key.
+
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+key & the step \\ \midrule
+\code{recipe:} & runs a saved recipe, by name \\
+\code{tool:} & runs a tool with the settings given in the step \\
+\code{each:} & repeats the steps inside it, once per row of a table (\cref{sec:routines-each}) \\
+\code{params:} & reads a parameter sheet into named values (\cref{sec:routines-params}) \\
+\code{check:} · \code{compare:} & judges results (\cref{ch:checks}) \\
+\code{guard:} & refuses to overwrite (\cref{sec:routines-guard}) \\
+\bottomrule
+\end{tabularx}
+
+\subsection{Settings go under \texorpdfstring{\code{with:}}{with:}}\label{sec:routines-with}
+A recipe or tool step has a few keywords of its own: \code{as}, \code{emit}, \code{cache}. Everything that belongs to the \emph{tool} goes under \code{with:}. For a \code{tool:} step that is the whole setup. For a \code{recipe:} step it is a set of overrides laid over the recipe's saved settings.
+
+An override replaces a setting whole. To point a recipe's series at another column, give the full \code{series} list under \code{with:}, not one field of it.
+
+\begin{why}
+With step keywords and tool settings in separate places, one can never be mistaken for the other. Before \code{with:} existed, a stats step's own \code{filter:} was taken for a step keyword and dropped without a word. Older files with settings mixed into the step still run; \menu{Tools>Recipes>Check all recipes…} flags them and rewrites them (\cref{sec:recipes-checkall}).
+\end{why}
+
+\subsection{Names: \texorpdfstring{\code{as}}{as}}\label{sec:routines-as}
+\code{as:} names the step. The name does three jobs: it is the report's file name (\file{gt.tsv}), it is how a later check refers to the step's results (\cref{ch:checks}), and it is the step's identity in the run record. Without \code{as}, the name is the recipe's or the tool's. Names are made file-safe: lowercase, with anything unusual turned into a hyphen.
+
+If two steps would write the same report, micro says so before it runs anything. Give each its own \code{as}.
+
+\subsection{What a step writes}
+Every step with a table writes it as a tab-separated file into the run's folder: plain column names, numbers as they are, blanks for missing values. An \code{export} or \code{sections} step writes its file there too. A few tools make something in the session instead: a layer (\code{composite}, \code{shell}, \code{reconcile}) or columns on a layer (\code{join}, calc columns, by solid). Running such a step twice replaces what the first run made; it doesn't pile up copies. Preview and the tracker say what these steps make in place of a report path: \emph{a new layer (composite)}, or \emph{deposit.csv · joined column “FE”}. No table is written for them.
+
+To keep a step's table as a layer you can filter, join and color, add \code{emit:}
+
+\begin{lstlisting}[language=yaml]
+    - recipe: "deposit grade-tonnage"
+      as: "gt"
+      emit: "layer"
+\end{lstlisting}
+
+The table becomes a table layer named after the routine and the step (\file{month-end/gt}); a name with a slash files the layer into a group. To choose the name, write \code{emit:} as a map with a \code{layer:} key.
+
+\subsection{Where reports go}
+By default a run's files go into its own new folder, \file{runs/<date> <time> <routine>/} (\cref{ch:records}). The routine's \code{output:} setting changes that:
+
+\begin{lstlisting}[language=yaml]
+params:
+  output:
+    dir: "reports/2026-11"
+    prefix: "m-"
+    suffix: "-final"
+  steps:
+\end{lstlisting}
+
+\code{dir} sends the reports to a fixed folder in the project, and \code{prefix} and \code{suffix} wrap each report's name. The record \file{run.json} always stays in the run's folder.
+
+\begin{caution}
+A fixed \code{dir} means the next run writes over this run's reports, and the hashes the earlier record noted no longer match the files. Leave \code{dir} out unless something outside micro needs a stable path.
+\end{caution}
+
+\section{What a routine must state}\label{sec:routines-rules}
+A window may choose values from the data. A routine may not: a value that moves with the data leaves this month's table with nothing to line up against in last month's. Three rules follow, and each is checked before the run starts.
+
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+rule & why \\ \midrule
+\code{gt} and \code{xtab} state \code{cutoffs} & automatic cutoffs come from the data's range and move with it \\
+\code{swath} and \code{validation} state \code{bandW} & an automatic band width comes from the extent and moves with it \\
+\code{scope} is \code{all} & a selection or the filter box isn't saved with the routine; use the tool's \code{filter} \\
+\bottomrule
+\end{tabularx}
+
+A swath in a routine also anchors its bands at zero unless you give \code{off}, so the band centers are the same every month.
+
+The message says what is missing, in the tool's words: \emph{step 2 (gt): cutoffs: a routine must state it (automatic cutoffs come from the data’s range and move with it)}.
+
+\section{Each: one block, many runs}\label{sec:routines-each}
+An \code{each} block runs its steps once per row of a \term{parameter table}. Write \code{\$name} in the steps wherever a row's value should land.
+
+\begin{lstlisting}[language=yaml]
+    - each:
+        - lito: "HEMATITE"
+        - lito: "ITABIRITE"
+        - lito: "CANGA"
+      steps:
+        - tool: "stats"
+          with:
+            layer: "deposit.csv"
+            cols:
+              - "FE"
+              - "SG"
+            filter: 'LITO = "$lito"'
+          as: "stats"
+        - recipe: "deposit grade-tonnage"
+          with:
+            cutoffs:
+              - 40
+              - 50
+              - 60
+            series:
+              - layer: "deposit.csv"
+                col: "FE"
+                unit: "pct"
+                weight: "SG"
+                filter: 'LITO = "$lito"'
+          as: "gt"
+\end{lstlisting}
+
+Three rows and two steps make six runs. Each report's name carries its row's values: \file{stats-hematite.tsv}, \file{gt-hematite.tsv}, \file{stats-itabirite.tsv}, and so on. With several columns in the table, the name carries every value of the row, in order.
+
+\begin{figure}[htbp]\centering
+\begin{tikzpicture}[font=\sffamily\footnotesize,
+  box/.style={draw=rule, fill=tint, rounded corners=1.5pt, text=ink, inner sep=3pt, minimum height=6mm, anchor=west, text width=33mm},
+  outb/.style={draw=rule, fill=white, rounded corners=1.5pt, text=ink, inner sep=3pt, minimum height=5.2mm, anchor=west, text width=46mm},
+  arr/.style={-{Stealth[length=1.8mm]}, rule, line width=0.5pt}]
+% the document
+\node[anchor=west, text=muted] at (0,0.75) {the routine, as written};
+\node[box] (s1) at (0,0) {tool: modelqa \hfill as mq};
+\node[box, draw=amber, line width=0.8pt, minimum height=21mm, text depth=15mm] (e) at (0,-1.75) {each: \textcolor{amber}{lito}};
+\node[box, fill=white, text width=27mm] (e1) at (0.35,-1.65) {tool: stats};
+\node[box, fill=white, text width=27mm] (e2) at (0.35,-2.4) {recipe: … \hfill as gt};
+\node[box] (s3) at (0,-3.5) {check: mq.errors = 0};
+% the table
+\node[anchor=west, text=muted] at (4.3,0.75) {× rows};
+\node[draw=amber, fill=ambersoft, rounded corners=1.5pt, text=ink, align=left, inner sep=3pt] (t) at (5.0,-1.75) {HEMATITE\\ITABIRITE\\CANGA};
+% the expansion
+\node[anchor=west, text=muted] at (6.9,0.75) {the steps that run};
+\node[outb] (o1) at (6.9,0) {1.\enskip model QA → mq.tsv};
+\node[outb] (o2) at (6.9,-0.62) {2.\enskip stats → stats-hematite.tsv};
+\node[outb] (o3) at (6.9,-1.24) {3.\enskip gt → gt-hematite.tsv};
+\node[outb] (o4) at (6.9,-1.86) {4.\enskip stats → stats-itabirite.tsv};
+\node[outb] (o5) at (6.9,-2.48) {5.\enskip gt → gt-itabirite.tsv};
+\node[outb] (o6) at (6.9,-3.10) {6.\enskip stats → stats-canga.tsv};
+\node[outb] (o7) at (6.9,-3.72) {7.\enskip gt → gt-canga.tsv};
+\node[outb] (o8) at (6.9,-4.34) {8.\enskip check — mq.errors = 0};
+\draw[arr] (e.east) -- (t.west);
+\draw[arr] (t.east) -- ([xshift=-1mm]o4.south west);
+\draw[decorate, decoration={brace, amplitude=3pt, mirror}, amber, line width=0.6pt] ([xshift=-1.5mm]o2.north west) -- ([xshift=-1.5mm]o7.south west);
+\end{tikzpicture}
+\caption{Expansion. The \code{each} block and its table become six plain steps before anything runs; the list on the right is what Preview shows and what the tracker walks.}\label{fig:routines-expansion}
+\end{figure}
+
+\subsection{Three ways to give the table}
+\textbf{Rows}, as above: a list with one map per run. This is what the editor writes.
+
+\textbf{Columns}: one list per variable, paired row by row.
+
+\begin{lstlisting}[language=yaml]
+    - each:
+        lito:
+          - "HEMATITE"
+          - "ITABIRITE"
+        cut:
+          - 60
+          - 45
+\end{lstlisting}
+
+This is a \term{zip}: HEMATITE goes with 60 and ITABIRITE with 45, two runs. It is never a cross product. Lists of unequal length are an error, not a guess.
+
+\textbf{A file}: a CSV or a worksheet in the project.
+
+\begin{lstlisting}[language=yaml]
+    - each:
+        from: "benches.csv"
+\end{lstlisting}
+
+The first line of the CSV names the variables; every other line is a run. For an Excel workbook, name the sheet after a hash: \code{"params.xlsx\#Benches"}. micro looks for the file in the project folder, then in \file{recipes/}. Values that look like numbers arrive as numbers, even when Excel typed the column as text because of one blank cell.
+
+\begin{tip}
+Keep the parameter table as a CSV or a sheet and the routine stays short. Edit the table, run again. The person who owns the table doesn't need to read YAML.
+\end{tip}
+
+\subsection{Namespaces and nesting}
+\code{as:} on an \code{each} block gives its columns a prefix: with \code{as: "b"}, a column \code{bench} is written \code{\$b.bench}. On an \code{each} or \code{params} step, \code{as} names a scope; on a recipe or tool step it names the report. They are different kinds of step.
+
+An \code{each} block is a step, and its body is a list of steps, so one can sit inside another. Nesting is a cross product: every row of the outer table against every row of the inner.
+
+\begin{lstlisting}[language=yaml]
+    - each:
+        from: "benches.csv"
+      as: "b"
+      steps:
+        - each:
+            - lito: "HEMATITE"
+            - lito: "ITABIRITE"
+          steps:
+            - tool: "stats"
+              with:
+                layer: "deposit.csv"
+                cols:
+                  - "FE"
+                filter: 'LITO = "$lito" and ZC >= $b.z0 and ZC < $b.z1'
+              as: "stats"
+\end{lstlisting}
+
+Four benches and two lithologies give eight runs. One \code{each} with two columns is a zip; two nested \code{each} blocks are a cross. They are easy to confuse, and Preview settles it: count the lines.
+
+\subsection{Which rows run: \texorpdfstring{\code{filter:}}{filter:}}\label{sec:routines-filter}
+A parameter table outlives any one run. Some benches are mined out; a domain isn't reported this month. Don't keep a second copy of the table. Give the block a \code{filter}:
+
+\begin{lstlisting}[language=yaml]
+    - each:
+        from: "benches.csv"
+      as: "b"
+      filter: "active = 1 and z0 >= g.floor"
+      steps:
+\end{lstlisting}
+
+The filter is an expression in micro's usual language (\cref{app:expr}). The row's own columns are bare names (\code{active}, \code{z0}); values from a \code{params} sheet are visible by their dotted names (\code{g.floor}). A misspelled column is an error that names the columns the table has; it never quietly matches nothing.
+
+\begin{why}
+This is choosing data, not branching. Which rows run is decided by a file you can read, never by the result of a step. So Preview still lists every run before anything executes.
+\end{why}
+
+\section{Parameter sheets: \texorpdfstring{\code{params:}}{params:}}\label{sec:routines-params}
+A parameter workbook usually holds two kinds of sheet. One has a row per run; that is a parameter table, and \code{each} reads it. The other is a key-and-value sheet, often called General: a \col{parameter} column and a \col{value} column. You want its numbers available to every step, not a run per row. That is \code{params}.
+
+Suppose \file{params.csv} in the project reads:
+
+\begin{lstlisting}
+parameter,value
+cutoff,55
+floor,650
+bench height,10
+\end{lstlisting}
+
+\begin{lstlisting}[language=yaml]
+params:
+  params:
+    - from: "params.csv"
+      as: "g"
+  steps:
+    - tool: "resource"
+      with:
+        layer: "deposit.csv"
+        grade: "FE"
+        cutoffs:
+          - "$g.cutoff"
+        density:
+          col: "SG"
+        groupBy:
+          - "LITO"
+        metalFactor: 0.01
+      as: "resource"
+\end{lstlisting}
+
+The sheet becomes a set of named values: \code{\$g.cutoff} is 55, \code{\$g.floor} is 650. Keys are made safe for use as names, so \emph{bench height} is \code{\$g.bench\_height}.
+
+\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+setting & meaning & default \\ \midrule
+\code{from} & the CSV, or \code{"book.xlsx\#Sheet"} & required \\
+\code{as} & the prefix of the names; \code{""} merges them with no prefix & the sheet's name \\
+\code{index} & the key column & the first \\
+\code{value} & the value column, or a list of columns & the second, when there are two \\
+\code{fill} & what an empty cell means & an empty text \\
+\bottomrule
+\end{tabularx}
+
+A sheet with more than two columns and no \code{value} keeps the whole row reachable. A Domains sheet keyed by domain, with columns \col{cutoff} and \col{price}, gives \code{\$d.hematite.cutoff} and \code{\$d.hematite.price}.
+
+Written at the top of the routine, as above, \code{params} is a prelude the whole routine sees. It can also be a step in the list: it then binds its names for the steps that follow, and inside an \code{each} block only for that block. A variable from an \code{each} row shadows a \code{params} value of the same name, so a parameter table can override a general value for one run.
+
+\section{Values: \texorpdfstring{\code{\$name} and \code{\$\{…\}}}{\$name and \$\{…\}}}\label{sec:routines-values}
+\code{\$name} puts a value in as it stands. There are two cases.
+
+\begin{itemize}
+\item A setting that is \emph{exactly} a marker (\code{"\$g.cutoff"}) receives the value with its type: a number arrives as a number.
+\item A marker inside longer text (\code{'LITO = "\$lito"'}) is replaced as text.
+\end{itemize}
+
+\code{\$\{…\}} is an expression: the same language as the filter box and ƒ columns (\cref{app:expr}), computed over the routine's named values.
+
+\begin{lstlisting}[language=yaml]
+        cutoffs:
+          - "${g.cutoff}"
+          - "${g.cutoff + 5}"
+          - "${g.cutoff + 10}"
+        filter: 'ZC >= ${b.bench} and ZC < ${b.bench + g.bench_height}'
+\end{lstlisting}
+
+The same two cases apply: a setting that is exactly one \code{\$\{…\}} gets the typed result; inside longer text the result is written in as text. A name the routine doesn't have is an error that lists the names it does have. It is never an empty value.
+
+\begin{why}
+Expressions compute \emph{values}, never \emph{structure}. They can say what a cutoff is. They can't decide how many runs there are, which steps exist, or what a report is called from a result. That keeps the step list countable before the run, and it is the whole difference between a routine and a script.
+\end{why}
+
+\section{Asking first: \texorpdfstring{\code{inputs:}}{inputs:}}\label{sec:routines-inputs}
+A routine written for \file{deposit.csv} runs on \file{deposit.csv}, and the next model may have another name. To make the routine serve any model, declare \code{inputs}: questions it asks before it starts. The answers land at \code{\$name} markers everywhere in the steps, before the parameter tables expand.
+
+\begin{lstlisting}[language=yaml]
+name: "month-end"
+tool: "routine"
+inputs:
+  - name: "model"
+    label: "Block model"
+    type: "layer"
+    requires:
+      - "FE"
+      - "SG"
+      - "LITO"
+  - name: "holes"
+    label: "Drillholes"
+    type: "layer"
+    requires:
+      - "FE"
+  - name: "tol"
+    label: "Bias tolerance (%)"
+    type: "number"
+    default: 5
+params:
+  steps:
+    - tool: "modelqa"
+      with:
+        layer: "$model"
+      as: "mq"
+\end{lstlisting}
+
+In the menu the routine now reads \ui{Run…}. The dialog shows one field per input; press \ui{Run} and the routine runs on a copy with your answers filled in. The answers are written into the run record.
+
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+\code{type} & the field \\ \midrule
+\code{text} & a text box (the default) \\
+\code{number} & a number box; the value arrives as a number \\
+\code{choice} & a list of the values under \code{options:} \\
+\code{layer} & a picker over the loaded layers \\
+\code{column} & a picker over the columns of the layer input named by \code{of:} (else the first layer input, else the active layer) \\
+\bottomrule
+\end{tabularx}
+
+Every input takes a \code{label} (the question) and a \code{default}.
+
+\subsection{\texorpdfstring{\code{requires:}}{requires:}}\label{sec:routines-requires}
+A layer input can say which columns the chosen layer must carry. When you press \ui{Run} with a layer that lacks one, the dialog stays open and says which: \emph{input “model”: deposit.csv has no column “LITO”}. A routine meant for another model fails here, by name, not halfway through.
+
+\begin{caution}
+Keep input names different from the variables of your \code{each} tables. The answers are filled in first; the tables fan out after.
+\end{caution}
+
+\section{Before it runs: the pre-flight}\label{sec:routines-preflight}
+A routine never prompts mid-run, so micro checks everything that could stop it before the first step. If anything is wrong, nothing runs, and the status line lists the problems:
+
+\begin{itemize}
+\item a step names a recipe that isn't in the project;
+\item a layer a step reads isn't loaded (\emph{load these layers first — …});
+\item a tool setting is unknown, of the wrong type, or missing where a routine must state it (\cref{sec:routines-rules});
+\item a column a step names isn't on its layer (\emph{renamed or removed?});
+\item two steps would write the same report;
+\item past a guard, something would be overwritten.
+\end{itemize}
+
+\subsection{The guard}\label{sec:routines-guard}
+Put a guard step at the top of the list:
+
+\begin{lstlisting}[language=yaml]
+  steps:
+    - guard: "no-overwrites"
+\end{lstlisting}
+
+From there down, the routine refuses to start if a step would replace something that exists. A column counts always: a calc-columns step, a \code{join} step, or a by-solid step that flags or measures a fraction, whose column the layer already has stops the run. A report counts when the routine writes to a fixed \code{output: dir}; in the default layout each run has a new folder, so reports can't collide.
+
+\section{The editor}\label{sec:routines-editor}
+\menu{Tools>Recipes>New routine…} opens the routine editor; \ui{Edit (open configured)} on a routine opens it on that file. The file stays the truth: the editor edits a copy and \ui{Save} writes the whole file again.
+
+\shot{routines-editor}{The routine editor on a variant of \code{month-end} that asks for its model: the name, the guard, the report naming, an \ui{ask} row, a for-each block with its parameter table, and \ui{Preview} listing every step with the answer it assumed.}
+
+From the top:
+
+\begin{description}
+\item[name] the routine's name; the file is named after it in \file{recipes/}, in lower case with spaces and symbols turned into hyphens (\file{month-end.yaml}).
+\item[guard] the checkbox \ui{guard: stop before running if a report already exists} adds the guard step.
+\item[reports →] the \code{output} folder, \ui{prefix} and \ui{suffix}. Leave the folder empty for a folder per run; the gray date shown in the empty field is only a suggestion and is not written.
+\item[+ ask first (inputs)…] adds a question: its \code{\$name}, its type, its label, and a default, options or \code{of:} according to the type.
+\end{description}
+
+Then the steps. Four buttons add them: \ui{+ run a recipe}, \ui{+ inline step}, \ui{+ for-each block} and \ui{+ params}.
+
+A recipe step reads \ui{run} and a list of the project's recipes; an inline step reads \ui{do} and a list of tools. Both have an \ui{as} field, and \ui{⋯} opens a box for the rest of the step in YAML: write the settings under \code{with:}. The box turns red when its YAML doesn't parse, and the routine won't save until it does. \ui{↑}, \ui{↓} and \ui{×} move and remove the step.
+
+A for-each block reads \ui{for each row —}, with \ui{as} for the namespace and \ui{where} for the row filter. Its parameters are a \ui{table (edit below)} or come \ui{from a CSV in the project}. The table is a grid: variables are columns, runs are rows. \ui{+ var} adds a column; \ui{+ row} copies the last row so you only change what differs. Inside the block, \ui{+ step in this block}, \ui{+ inline step} and \ui{+ nested for-each} add to its body.
+
+A params step reads \ui{bind params —} with the sheet and its \ui{as}.
+
+\begin{note}
+The editor has no row of its own for checks and compares (\cref{ch:checks}). Build the steps in the editor, save, and add the \code{check:} lines to the YAML in a text editor. The editor keeps them after that: a check or compare step shows as a \ui{run} row with no recipe chosen, its lines in the \ui{⋯} box, and \ui{Save} writes it back as it was.
+\end{note}
+
+\section{Preview}\label{sec:routines-preview}
+\ui{Preview} lists the routine as it will run: every step after expansion, numbered, with what it writes.
+
+For the month-end of \cref{sec:routines-monthend}:
+
+\begin{lstlisting}
+1. model QA (inline)  →  runs/(this run)/mq.tsv
+2. drillhole QA (inline)  →  runs/(this run)/dq.tsv
+3. deposit grade-tonnage  →  runs/(this run)/gt.tsv
+4. validation (inline)  →  runs/(this run)/val.tsv
+5. stats (inline)  →  runs/(this run)/stats-hematite.tsv
+6. stats (inline)  →  runs/(this run)/stats-itabirite.tsv
+7. stats (inline)  →  runs/(this run)/stats-canga.tsv
+8. export (inline)  →  runs/(this run)/ore.parquet
+\end{lstlisting}
+
+Nothing runs. A step that writes a column says so, with \emph{(replaces)} when the layer already has it; a step that makes a layer says \emph{a new layer}. A recipe that can't be found is marked. A \code{params} sheet adds a line at the top naming what it read (\emph{params: params.csv → \$g.cutoff, floor, bench\_height}). When the routine has inputs, Preview uses their defaults or your last answers and says which it assumed (\emph{assuming model=deposit.csv}).
+
+The lines are live:
+
+\begin{itemize}
+\item \textbf{Click} a grade–tonnage, swath, stats or scatter line to open that step's window configured with exactly that row's values, without running it. Tune it there.
+\item \textbf{Right-click} any line to save the routine and run it \emph{from that step}.
+\end{itemize}
+
+\section{The run tracker}\label{sec:routines-tracker}
+A running routine opens the \term{run tracker}: the same expanded list, with a mark that changes as each step runs and \emph{step n/N} in the title.
+
+\shot[0.7\linewidth]{routines-tracker}{The run tracker on \code{month-end}: finished steps ticked, one running, the rest waiting, and \ui{Cancel} below.}
+
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+mark & the step \\ \midrule
+· & is waiting \\
+▶ & is running; the status line shows its progress \\
+✓ & finished. A warning, or \emph{reused from …} (\cref{ch:records}), is written under it. \\
+✗ & failed; the reason is written under it \\
+– & was not run in this pass (skipped, or done before a resume) \\
+\bottomrule
+\end{tabularx}
+
+\ui{Cancel} stops the routine after the current step finishes. Nothing is left half-written.
+
+When the run ends, the tracker stays as its summary: how many steps ran, how many reports went where, and the path of the record. A finished run offers \ui{Accept as baseline…} (\cref{sec:checks-accept}).
+
+\section{When a run stops}\label{sec:routines-stops}
+A routine that fails at step nine shouldn't cost you the first eight.
+
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+button & what it does \\ \midrule
+\ui{Retry step} & runs the failed step again, then carries on. Use it after fixing the cause: loading a layer, correcting a column. \\
+\ui{Skip \& continue} & leaves the step undone and runs the rest \\
+\ui{Resume} & after \ui{Cancel}: carries on from where you stopped \\
+\bottomrule
+\end{tabularx}
+
+All three continue the \emph{same run}: the same folder, the same record, the same expanded step list. A parameter table edited since the run began doesn't reshuffle the remaining steps. The record notes each retry, skip and resume with its time, and the summary counts only what this pass did: \emph{1 step run (2 skipped)}.
+
+\begin{note}
+A skipped step is recorded as skipped. A check that reads its results afterwards finds them blank, and a blank is \emph{not evaluated}, never a pass (\cref{sec:checks-noteval}).
+\end{note}
+
+\section{The tools}\label{sec:routines-tools}
+Seventeen tools run in a routine without a window. Each computes with the same code as its window, so a step's numbers are the window's numbers. \Cref{app:tools} lists every setting.
+
+\begin{tabularx}{\linewidth}{@{}lLL@{}}\toprule
+\code{tool} & what it does & what it leaves \\ \midrule
+\code{gt} & grade–tonnage (\cref{ch:gt}) & a table by series and cutoff \\
+\code{stats} & summary statistics (\cref{ch:stats}) & a table by group and column \\
+\code{swath} & swath / drift (\cref{ch:swath}) & a table by series, direction and band \\
+\code{xy} & scatter or Q-Q (\cref{ch:stats}) & the pairs or quantiles; n and r \\
+\code{xtab} & resource cross-tab (\cref{ch:resources}) & a table by group and grade bin \\
+\code{resource} & resource table (\cref{ch:resources}) & a table by cutoff and up to two groups \\
+\code{validation} & model against declustered samples (\cref{ch:validation}) & the swath table; the bias \\
+\code{pairing} & each sample with its block (\cref{ch:validation}) & a table by group; bias, r, slope \\
+\code{modelqa} & block model QA (\cref{ch:qa}) & the findings; their counts \\
+\code{dhqa} & drillhole QA (\cref{ch:qa}) & the findings; their counts \\
+\code{meshqa} & mesh QA and volume (\cref{ch:qa}) & a table by shell; watertight, volume \\
+\code{export} & a layer or filtered records & a CSV or Parquet file \\
+\code{sections} & a section series (\cref{ch:sections}) & a zip of PNG sheets \\
+\code{composite} & composite a drillhole table (\cref{ch:drillholes}) & a new points layer \\
+\code{shell} & grade shell at a cutoff (\cref{ch:blocks}) & a new mesh layer \\
+\code{join} & spatial join (\cref{ch:joins}) & columns on the model \\
+\code{reconcile} & this model minus a reference (\cref{ch:joins}) & a Δ layer; its summary \\
+\bottomrule
+\end{tabularx}
+
+Four more kinds of step run through their own engines: \code{calccols} (apply ƒ columns; the step fails naming any invalid expression, and an entry without \code{ty:} gets its type from the values, as \ui{auto} does in the Calculations window), \code{solid} (by solid or surface), \code{figure} (export a figure to its \code{out:} path) and \code{compo} (a composer page into a \code{book:} or its own \code{out:} file; \cref{ch:atlas}). These take their settings from a saved recipe or from \code{with:} in the same way.
+
+\section{The month-end so far}\label{sec:routines-monthend}
+Here is \code{month-end} grown from two steps to a working close, in one file. It needs the recipe \code{deposit grade-tonnage} and the demo project's two data layers: the model \file{deposit.csv} and the drillholes \file{demo\_assay.csv}.
+
+\begin{lstlisting}[language=yaml]
+name: "month-end"
+tool: "routine"
+params:
+  steps:
+    - tool: "modelqa"
+      with:
+        layer: "deposit.csv"
+      as: "mq"
+    - tool: "dhqa"
+      with:
+        layer: "demo_assay.csv"
+      as: "dq"
+    - recipe: "deposit grade-tonnage"
+      with:
+        cutoffs:
+          - 30
+          - 40
+          - 50
+          - 55
+          - 60
+          - 65
+      as: "gt"
+    - tool: "validation"
+      with:
+        model: "deposit.csv"
+        samples: "demo_assay.csv"
+        modelGrade: "FE"
+        sampleGrade: "FE"
+        axis: "Y"
+        bandW: 50
+      as: "val"
+    - each:
+        - lito: "HEMATITE"
+        - lito: "ITABIRITE"
+        - lito: "CANGA"
+      steps:
+        - tool: "stats"
+          with:
+            layer: "deposit.csv"
+            cols:
+              - "FE"
+              - "SG"
+            filter: 'LITO = "$lito"'
+          as: "stats"
+    - tool: "export"
+      with:
+        layer: "deposit.csv"
+        format: "parquet"
+        filter: "FE >= 55"
+        out: "ore.parquet"
+      as: "ore"
+\end{lstlisting}
+
+That is eight steps after expansion. A run leaves seven tables and one Parquet file in its folder, beside \file{run.json}.
+
+\begin{tryit}
+Grow your own \code{month-end} to this. You need the project and the recipe from the first try-it of this chapter (\cref{sec:routines-first}); if you skipped it, save the demo project to a folder and the recipe as in \cref{sec:recipes-save} first.
+\begin{enumerate}
+\item Open \file{recipes/month-end.yaml} in a text editor (or create it), replace its contents with the listing above, and save it.
+\item In micro, choose \menu{File>Scan folder for new data…}. micro reads the folder's recipes again. (The status line may say there are no new data files; the edited routine is read all the same.)
+\item Open \menu{Tools>Recipes>month-end>Run}. The tracker walks eight steps. If you ran the two-step routine before, the model QA and the grade–tonnage are ticked with \emph{reused from …}: nothing about them changed (\cref{sec:records-cache}).
+\item Open the newest folder under \file{runs/}. It holds \file{mq.tsv}, \file{dq.tsv}, \file{gt.tsv}, \file{val.tsv}, the three \file{stats-….tsv}, \file{ore.parquet} (the 38,452 blocks at 55\% Fe or more) and \file{run.json}.
+\end{enumerate}
+\end{tryit}
+
+What the routine doesn't do yet is say whether the numbers are acceptable. \Cref{ch:checks} adds the lines that make it pass or fail by itself.
+
+\section{From a host page}
+A page that embeds micro can list the routines, dry-run one and run it to the end with \code{window.micro.routines()}, \code{checkRoutine} and \code{runRoutine}. The inputs are given up front, since a host can't answer a dialog, and the call resolves with a copy of the run record. See \cref{app:host}.

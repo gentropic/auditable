@@ -1,0 +1,21 @@
+% The micro manual — LuaLaTeX. Build: node build.mjs (figures, then latexmk -lualatex).
+\documentclass[11pt, twoside, open=right, parskip=false, headings=standardclasses, numbers=noendperiod, toc=index]{scrbook}
+\usepackage{style/micro}
+
+\title{micro}
+\subtitle{a streaming workbench for resource geology}
+\author{Geoscientific Chaos Union}
+\date{\today}
+
+\begin{document}
+\frontmatter
+\input{chapters/00-title}
+\tableofcontents
+\input{chapters/00-preface}
+
+\mainmatter
+\input{chapters/index}
+
+\backmatter
+\printindex
+\end{document}

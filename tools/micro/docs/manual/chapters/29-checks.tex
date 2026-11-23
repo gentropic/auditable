@@ -1,0 +1,343 @@
+\chapter{Checks \& comparisons}\label{ch:checks}
+\begin{goals}
+\textbf{In this chapter} you make a routine judge its own results: a single number against a limit, every row of a table against a rule, and this month's table against the run you accepted last month.
+\end{goals}
+
+The \code{month-end} of \cref{ch:routines} writes seven tables and leaves the reading to you. Was the bias inside five percent? Did any tonnage move by more than a tenth since last month? Did the model QA find errors? These questions have yes-or-no answers, and you ask the same ones at every close. A \term{check} is such a question written into the routine. A \term{compare} sets this run's table beside the previous one's.
+
+Both are steps. They run where they stand in the list, read the results of the steps before them, and go into the run record with what they read and what they concluded (\cref{ch:records}). With them, a finished run says whether its numbers are ready to sign off.
+
+\section{A check on one number}\label{sec:checks-scalar}
+Many tools return \term{values} beside their table: named numbers such as the validation's bias or the QA's count of errors. A step's values are known by the step's \code{as} name and a dot:
+
+\begin{lstlisting}[language=yaml]
+    - tool: "modelqa"
+      with:
+        layer: "deposit.csv"
+      as: "mq"
+    - check: "mq.errors = 0"
+      say: "the model has no QA errors"
+    - tool: "validation"
+      with:
+        model: "deposit.csv"
+        samples: "demo_assay.csv"
+        modelGrade: "FE"
+        sampleGrade: "FE"
+        axis: "Y"
+        bandW: 50
+      as: "val"
+    - check: "abs(val.bias_pct) < 5"
+      say: "model mean within 5% of the declustered samples"
+\end{lstlisting}
+
+The check is an expression in micro's usual language (\cref{app:expr}) that comes out true or false. True is a pass and the run carries on. False is a fail and, by default, the run stops there.
+
+\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+key & meaning & default \\ \midrule
+\code{check} & the expression, or a row check (\cref{sec:checks-rows}) & \\
+\code{say} & what the check means, in words; shown in the tracker and kept in the record & none \\
+\code{level} & \code{stop}: a check that doesn't pass stops the run. \code{warn}: it is recorded and the run carries on. & \code{stop} \\
+\code{as} & the check's name in the record & \code{check} \\
+\bottomrule
+\end{tabularx}
+
+Write \code{say} for the reviewer, not for yourself. A year from now \emph{abs(val.bias\_pct) < 5} needs decoding; \emph{model mean within 5\% of the declustered samples} doesn't.
+
+When a check fails, the tracker shows what it read. On the demo project this one does:
+
+\begin{lstlisting}
+✗ 4. check — abs(val.bias_pct) < 5   “model mean within …”
+     “model mean within 5% of the declustered samples” —
+     failed (val.bias_pct = -22.7049)
+\end{lstlisting}
+
+The record keeps the same three things: the expression, the outcome, and the value of every name the expression read.
+
+\begin{note}
+The demo fails this check, and so would any model laid out like it. The model's mean, 24.7\% Fe, is taken over every block, including the waste far from any hole; the holes were drilled at the lens. Declustering brings the samples' mean down from 34.5 to 32.0\% Fe, but it can only reweight the samples there are. It can't supply samples where none were taken. The month-end keeps this check at \code{level: "warn"} (\cref{sec:checks-practice}), so the number is recorded and the run carries on.
+\end{note}
+
+\begin{caution}
+A check must come \emph{after} the step it reads, and it must use that step's \code{as} name. A name no earlier step produced is an error that lists the names available. It is not a silent pass, and because it is a mistake in the routine rather than a verdict on the data, it stops the run even at \code{level: "warn"}. (A missing \code{prev.} name is different: it reads as a blank, \cref{sec:checks-noteval}.)
+\end{caution}
+
+\subsection{The values each tool gives}\label{sec:checks-values}
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+tool & values \\ \midrule
+\code{validation} & \code{model\_mean}, \code{samples\_declustered}, \code{samples\_naive}, \code{bias\_pct}, \code{samples}, \code{cell} \\
+\code{pairing} & \code{pairs}, \code{bias}, \code{r}, \code{slope}, \code{outside}, \code{no\_block}, \code{no\_value} \\
+\code{modelqa} & \code{errors}, \code{warnings}, \code{info}, \code{findings}, \code{blocks} \\
+\code{dhqa} & \code{errors}, \code{warnings}, \code{info}, \code{findings} \\
+\code{meshqa} & \code{watertight} and \code{consistent} (1 or 0), \code{shells}, \code{volume}, \code{area}, \code{triangles}, and a count per kind of topology issue \\
+\code{reconcile} & \code{matched}, \code{mean\_delta}, \code{mean\_abs\_delta}, \code{this\_only}, \code{ref\_only} \\
+\code{xy} & scatter: \code{n}, \code{r}. Q-Q: \code{n\_x}, \code{n\_y}, \code{mean\_x}, \code{mean\_y}, \code{p10\_ratio}, \code{p50\_ratio}, \code{p90\_ratio} \\
+\code{xtab} & \code{blocks} \\
+\code{export} & \code{rows}, \code{bytes} \\
+\code{composite} & \code{composites}, \code{length} \\
+\code{shell} & \code{triangles}, \code{blocks\_inside} \\
+\code{join} & \code{columns} \\
+\code{sections} & \code{sheets} \\
+\bottomrule
+\end{tabularx}
+
+\code{gt}, \code{stats}, \code{swath} and \code{resource} return a table and no values: no one number sums up a curve. You check those row by row (\cref{sec:checks-rows}).
+
+Four checks worth having in most routines:
+
+\begin{lstlisting}[language=yaml]
+    - check: "mq.errors = 0"
+    - check: "dq.errors = 0"
+      say: "no drillhole QA errors (overlaps, bad surveys)"
+    - check: "shellqa.watertight = 1"
+      say: "the ore shell is closed, so its volume means something"
+    - check: "ore.rows > 0"
+      say: "the export wrote something"
+\end{lstlisting}
+
+\section{A check on every row}\label{sec:checks-rows}
+For a table, write the check as a map: a rule for \code{every} row \code{in} a step's table.
+
+\begin{lstlisting}[language=yaml]
+    - recipe: "deposit grade-tonnage"
+      with:
+        cutoffs:
+          - 30
+          - 40
+          - 50
+          - 55
+          - 60
+          - 65
+      as: "gt"
+    - check:
+        every: "tonnes > 0 and grade >= cutoff"
+        in: "gt"
+      say: "every cutoff has tonnage, at a grade above the cutoff"
+\end{lstlisting}
+
+Inside \code{every}, the table's columns are bare names. For grade–tonnage those are \code{series}, \code{cutoff}, \code{tonnes} (or \code{volume} when there is no density), \code{grade} and \code{metal}. Values from other steps are still there under their dotted names, so a row can be held against a number: \code{"sample\_count >= 10 or model\_volume = 0"}, or \code{"mean < val.model\_mean * 2"}.
+
+The check passes when the rule holds on every row. When it fails, the tracker names the first few failing rows by their key, and the record keeps up to twenty of them with the total count:
+
+\begin{lstlisting}
+✗ 5. check — every row of gt: tonnes > 0 and grade >= cutoff   “…”
+     “every cutoff has tonnage, at a grade above the cutoff” —
+     failed (1 row: FE · 65)
+\end{lstlisting}
+
+\subsection{What a table's rows are called}
+Every table declares its \term{key}: the columns that identify a row. The key is what names a failing row, and what lines rows up between two runs.
+
+\begin{tabularx}{\linewidth}{@{}lLL@{}}\toprule
+tool & key & other columns \\ \midrule
+\code{gt} & series, cutoff & tonnes or volume, grade, metal \\
+\code{stats} & (group,) column & n, mean, std, min, q25, median, q75, max \\
+\code{swath} & series, direction, center & count, weight, mean \\
+\code{validation} & center & model\_mean, model\_volume, sample\_mean, sample\_count \\
+\code{xtab} & group, bin & from, to, tonnes or volume, grade, metal, blocks \\
+\code{resource} & cutoff, and the grouping columns & see \cref{ch:resources} \\
+\code{pairing} & group & pairs, sample\_mean, block\_mean, bias, r, slope \\
+\code{modelqa} & check, column & severity, count, note \\
+\code{dhqa} & check, table, row & severity, hole, from, to, detail \\
+\code{meshqa} & shell & triangles, closed, volume, area \\
+\bottomrule
+\end{tabularx}
+
+This is why a routine must state its cutoffs and band widths (\cref{sec:routines-rules}). The cutoff \emph{is} the row's name. If it moved with the data, last month's row for 55 would have no partner this month.
+
+\section{Not evaluated is not a pass}\label{sec:checks-noteval}
+A check has three outcomes, not two.
+
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+outcome & when \\ \midrule
+\textbf{pass} & the expression read real values and came out true \\
+\textbf{fail} & it read real values and came out false \\
+\textbf{not evaluated} & it read a blank: a value that is missing, a step that was skipped, a baseline that doesn't exist yet \\
+\bottomrule
+\end{tabularx}
+
+At \code{level: stop}, \emph{not evaluated} stops the run the same as a fail. At \code{level: warn} it is recorded as \emph{warn: not-evaluated} and the run carries on. It is never counted as a pass.
+
+For a row check, one failing row makes the check fail. If no row fails but some read a blank, the check is not evaluated, and the record lists those rows.
+
+\begin{why}
+In micro's expression language a blank equals a blank. A careless \code{"a = b"} over two missing values would come out true, and a check would ``pass'' having looked at nothing. A reviewer who reads \emph{pass} is entitled to assume the numbers were there. So micro sets aside any check that touched a blank, and says so.
+\end{why}
+
+\section{Against the previous run}\label{sec:checks-prev}
+The checks so far ask whether this run is sound. The other question at a close is what changed. micro keeps a \term{baseline} for each routine: an earlier run of the same routine that this run is judged against (\cref{sec:checks-accept} says which). Its numbers are available under \code{prev}.
+
+For a single value, put \code{prev.} in front of the name:
+
+\begin{lstlisting}[language=yaml]
+    - check: "abs(val.bias_pct - prev.val.bias_pct) < 2"
+      say: "the bias moved by less than 2 points since the baseline"
+      level: "warn"
+\end{lstlisting}
+
+For a table, add \code{against: "prev"}. Each row is joined to the baseline's row with the same key, and that row's columns are \code{prev.<column>}:
+
+\begin{lstlisting}[language=yaml]
+    - check:
+        every: "abs(tonnes / prev.tonnes - 1) < 0.1"
+        in: "gt"
+        against: "prev"
+      say: "tonnage within 10% of the baseline at every cutoff"
+\end{lstlisting}
+
+A row with no partner in the baseline reads blanks from it, so that row is not evaluated. With no baseline at all, the whole check is not evaluated: \emph{no baseline run to compare with}.
+
+\section{Compare}\label{sec:checks-compare}
+A \code{compare} step does the common case in one line. It takes a table from this run, joins it to the baseline's on the key, and writes the two side by side.
+
+\begin{lstlisting}[language=yaml]
+    - compare: "gt"
+      tolerance: 0.1
+      say: "grade-tonnage within 10% of the baseline"
+\end{lstlisting}
+
+The result is a report of its own, \file{gt-compare.tsv} (or the step's \code{as}). Each numeric column becomes four: this run's value, the baseline's (\code{\_prev}), the difference (\code{\_delta}) and the relative difference (\code{\_pct}). A last column, \code{in}, says where the row was found.
+
+\begin{lstlisting}
+series cutoff tonnes tonnes_prev tonnes_delta tonnes_pct … in
+FE     55     …      …           …            0.021      … both
+FE     60     …      …           …            0.034      … both
+FE     65     …      …           …            -0.118     … both
+\end{lstlisting}
+
+\begin{note}
+\code{\_pct} is a fraction, not a percentage: 0.021 is a change of 2.1\%. \code{tolerance} is in the same terms, so \code{0.1} allows 10\%.
+\end{note}
+
+\code{in} reads \emph{both} for a row found in the two runs, \emph{this run} for a row that is new, and \emph{baseline} for a row that has disappeared.
+
+Without \code{tolerance}, a compare only writes the report and passes. With it, the compare is also a check: it fails if the relative change of any value column, on any row, is larger than the tolerance, or if a row exists in one run only. The tracker names the offenders (\emph{FE · 65: tonnes -11.8\%}). \code{level} and \code{say} work as on a check.
+
+\begin{caution}
+On a routine's very first run there is no baseline, so every \code{compare} and every check \code{against: "prev"} is \emph{not evaluated} and, at the default level, stops the run. Press \ui{Skip \& continue} on that first run, or give those steps \code{level: "warn"}. From the second run on they have something to read.
+\end{caution}
+
+Inside an \code{each} block, a compare (or a check \code{against: "prev"}) pairs each row's table with the same row's table in the baseline: \file{stats-itabirite} with last month's \file{stats-itabirite}, never with the first row's. The report carries the row's values in its name (\file{stats-compare-itabirite.tsv}).
+
+\section{Baselines and Accept}\label{sec:checks-accept}
+Which run is the baseline? Two rules decide, in order.
+
+\begin{enumerate}
+\item The most recently \emph{accepted} run of the same routine.
+\item If none has been accepted, the latest run of the same routine that finished \emph{ok}.
+\end{enumerate}
+
+The baseline is chosen when a run starts and written into its record, so a run always says what it was judged against. A retry or a resume keeps the same one.
+
+\term{Accepting} a run is your statement that its numbers are the reference. When a run finishes, the tracker offers \ui{Accept as baseline…}. micro asks for your name and writes a small file, \file{accepted.json}, beside the run's record: who, when. There are no accounts in micro; the name is what you type.
+
+\begin{figure}[htbp]\centering
+\begin{tikzpicture}[font=\sffamily\small,
+  run/.style={draw=rule, fill=tint, rounded corners=1.5pt, minimum width=25mm, minimum height=11mm, align=center, text=ink},
+  acc/.style={run, draw=amber, line width=0.9pt, fill=ambersoft},
+  arr/.style={-{Stealth[length=2mm]}, rule, line width=0.6pt},
+  lab/.style={font=\sffamily\footnotesize, text=muted}]
+\node[acc] (oct) at (0,0) {October\\[-1pt]{\footnotesize accepted}};
+\node[run] (nov) at (4.6,0) {November\\[-1pt]{\footnotesize finished ok}};
+\node[run] (dec) at (9.2,0) {December\\[-1pt]{\footnotesize running}};
+\draw[arr] (nov.west) -- node[above, lab] {compared with} (oct.east);
+\draw[arr, dashed] (dec.north) to[out=150, in=30] node[above, lab] {compared with October, until November is accepted} (oct.north);
+\draw[arr, amber, line width=0.9pt] (dec.west) -- node[below, lab, text=amber] {after Accept} (nov.east);
+\end{tikzpicture}
+\caption{The baseline loop. A run is judged against the last accepted run of its routine; accepting November moves the baseline forward. A run that stopped at a check is never a baseline.}\label{fig:checks-baseline}
+\end{figure}
+
+A month-end then runs as a loop of three steps:
+
+\begin{enumerate}
+\item Run the routine. Its compares and \code{prev} checks read last month's accepted run.
+\item Read what changed. If a check stopped the run, find out why: a real change in the model, or a mistake.
+\item When the numbers are the ones you stand behind, press \ui{Accept as baseline…}.
+\end{enumerate}
+
+\begin{why}
+The second rule (the latest ok run) is there so that comparisons work from the second run without ceremony. Accepting matters once a bad run could finish \emph{ok}: with only that rule, a wrong November would quietly become December's reference. With an accepted October, December is still held against October until someone puts their name to November.
+
+Acceptance is a separate file because the record itself is never edited after the run. What was written is what stays, so a record can be hashed or signed as it stands.
+\end{why}
+
+\section{The Runs window}\label{sec:checks-runs}
+\menu{Tools>Recipes>Runs…} lists every run in the project, newest first.
+
+\shot[0.8\linewidth]{runs-window}{The Runs window after three runs of \code{month-end}: the first accepted, the later ones compared with it.}
+
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+column & shows \\ \midrule
+\ui{started} & the date and time the run began, in local time, as in the run's folder name \\
+\ui{routine} & the routine's name \\
+\ui{status} & \emph{ok}, \emph{failed}, \emph{cancelled}, or \emph{running} for a run that was interrupted \\
+\ui{compared with} & the baseline's folder, with ✓ if that baseline was an accepted run; — if there was none \\
+\ui{accepted} & who accepted this run, and the date \\
+\bottomrule
+\end{tabularx}
+
+A run that finished \emph{ok} and hasn't been accepted has an \ui{Accept…} button at the end of its row. That is how you accept a run after its tracker is closed.
+
+There is no button to withdraw an acceptance. Accepting a later run supersedes it; to remove one outright, delete its \file{accepted.json} from the run's folder.
+
+\begin{tryit}
+Make \code{month-end} judge itself. You need the routine of \cref{sec:routines-monthend} in your project; if you skipped its try-it, do that first.
+\begin{enumerate}
+\item Open \file{recipes/month-end.yaml} in a text editor and add these steps at the end of the list:
+\begin{lstlisting}[language=yaml]
+    - check: "mq.errors = 0"
+      say: "the model has no QA errors"
+    - check: "abs(val.bias_pct) < 5"
+      say: "model mean within 5% of the declustered samples"
+      level: "warn"
+    - compare: "gt"
+      tolerance: 0.1
+      level: "warn"
+\end{lstlisting}
+\item Choose \menu{File>Scan folder for new data…} so micro reads the recipes again.
+\item Run the routine. The bias check is ticked with a warning beneath it, \emph{failed (val.bias\_pct = -22.7049)}, and the compare line reads \emph{not evaluated — no baseline run yet}. Both are at \code{warn}, so the run finishes.
+\item Press \ui{Accept as baseline…} in the tracker and type your name.
+\item Run it again. The tracker notes that unchanged steps were reused (\cref{ch:records}). The compare now passes, and \file{gt-compare.tsv} in the new run's folder shows every \code{\_delta} as 0.
+\item Open \menu{Tools>Recipes>Runs…}. The second run's \ui{compared with} names the first, with a ✓.
+\end{enumerate}
+\end{tryit}
+
+\section{Writing checks that earn their place}\label{sec:checks-practice}
+A few habits separate a routine that guards the estimate from one that decorates it.
+
+\textbf{Check the inputs before the outputs.} Put the QA checks first: \code{mq.errors = 0}, \code{dq.errors = 0}. A tonnage computed from a model with duplicated blocks is wrong in a way no later check will explain. Stopping at step two costs seconds. Tracing the fault back from a tonnage that moved costs an afternoon.
+
+\textbf{Stop on what must be true; warn on what should be looked at.} \code{level: "stop"} is for conditions that make the rest of the run meaningless: QA errors, an empty export, a shell that isn't closed. \code{level: "warn"} is for judgment: a bias a little outside its band, a tonnage that moved more than usual. A warning doesn't halt the month-end. It stays in the record with the number that tripped it, until someone answers for it.
+
+\textbf{Prefer a row check to a hand-picked number.} A check on one cutoff's tonnage passes while the curve bends everywhere else. \code{every:} over the whole table, or a \code{compare} with a tolerance, has no blind rows.
+
+\textbf{Make tolerances mean something.} Ten percent on tonnage at a 30\% Fe cutoff and ten percent at 65\% are different claims: the high-cutoff rows hold little material and move a lot. If one tolerance is too tight for the tail and too loose for the body, split the question with a row rule that says so:
+
+\begin{lstlisting}[language=yaml]
+    - check:
+        every: "cutoff > 55 or abs(tonnes / prev.tonnes - 1) < 0.05"
+        in: "gt"
+        against: "prev"
+      say: "tonnage within 5% of the baseline up to a 55% cutoff"
+\end{lstlisting}
+
+\textbf{Say what a pass would mean.} Read each \code{say} as a sentence in a report, because it will become one.
+
+\textbf{Don't check what can't fail.} A check that is true by construction adds a tick and no information, and ticks are what a hurried reviewer counts.
+
+\section{Where the outcomes show}\label{sec:checks-where}
+A check is visible before it runs, while it runs and long after:
+
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+place & what you see \\ \midrule
+Preview & each check as a line: the expression, \emph{(warn)} when it is one, and your \code{say} \\
+the tracker & ✓ for a pass; ✓ with the reason beneath for a warning; ✗ with the reason for a stop \\
+the status line & \emph{routine “month-end” STOPPED at step 9 (check) — …} \\
+\file{run.json} & the full entry: expression, level, outcome, observed values, failing rows (\cref{sec:records-json}) \\
+a host page & the run resolves as \emph{failed} when a check stopped it (\cref{app:host}) \\
+\bottomrule
+\end{tabularx}
+
+When a check stops the run, the tracker's two buttons work on the check. \ui{Retry step} judges it again, which is what you want after fixing its cause in the session. \ui{Skip \& continue} carries on without it. The record marks the check \emph{skipped}, keeps the error it stopped with, and adds a \emph{skip} event, so the decision to pass over it is on file with its time.
+
+\section{What a reviewer reads}
+With checks, a month-end is a list of claims, each with its evidence: \emph{the model has no QA errors — pass, mq.errors = 0}; \emph{tonnage within 10\% of October — pass}; \emph{model mean within 5\% of the declustered samples — warn: fail, val.bias\_pct = −22.7}. A reviewer re-runs nothing to read it. The claims, the observed numbers and the baseline they were measured against are all in \file{run.json}, which \cref{ch:records} takes apart field by field.

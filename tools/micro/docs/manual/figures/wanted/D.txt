@@ -1,0 +1,43 @@
+# Figure and chart requests — group D (Part IV, Analysis, first half: 14-analysis … 19-validation)
+# format: name | the state to show, precise enough to script | full / window / region
+# data lines: data <name> | <window.micro.runTool request as JSON> → figures/data/<name>.tsv (the tool's machine table, tab-separated)
+# all on the demo project (empty screen → "open the demo project") unless stated. Layers used:
+#   deposit.csv (XC YC ZC FE SG LITO) and the drillhole layer demo_assay.csv (FE).
+
+# ── 14-analysis ──
+analysis-anatomy | the demo's grade–tonnage window on deposit.csv with series FE, density SG, series unit % and plot unit %, run; overlay three callouts: 1 the rail (series · display), 2 the plot, 3 under the rail: Run · save as recipe… · the results row (⤓ png · ⧉ copy · ⇥ figure · ⇥ layer · ⧉ table) | window
+data gt-scope-all | {"tool":"gt","params":{"layer":"deposit.csv","gradeUnit":"pct","series":[{"col":"FE","unit":"pct","weight":"SG"}],"cutoffs":[30,35,40,45,50,55,58,60,62,64,66]}}
+data gt-scope-hem | {"tool":"gt","params":{"layer":"deposit.csv","gradeUnit":"pct","series":[{"col":"FE","unit":"pct","weight":"SG","filter":"LITO = \"HEMATITE\""}],"cutoffs":[30,35,40,45,50,55,58,60,62,64,66]}}
+
+# ── 15-gt ──
+gt-window | the demo's grade–tonnage window on deposit.csv: one series FE, density expr SG, series unit %, display unit %, ρ unit t/m³, 40 cutoffs, scope all, run (left axis "tonnage (t)") | window
+data gt-demo | {"tool":"gt","params":{"layer":"deposit.csv","gradeUnit":"pct","series":[{"col":"FE","unit":"pct","weight":"SG"}],"cutoffs":[30,40,50,55,60,65]}}
+
+# ── 16-resources ──
+xtab-window | Resource cross-tab on deposit.csv: rows LITO, grade FE, cutoffs "30 40 50 60", unit %, density SG, measure tonnage, bins between, run | window
+resource-table-frame | File → Composer…, + resource with model deposit.csv, grade FE, cutoffs "30, 50, 60", grade unit %, density SG (t/m3), group by LITO, metal factor 0.01, metal unit t, records all → Add; show the resulting table frame on the page | region: the resource table frame on the composer page
+data xtab-demo-all | {"tool":"xtab","params":{"layer":"deposit.csv","grade":"FE","weight":"SG","gradeUnit":"pct","cutoffs":[30,40,50,60],"mode":"bins"}}
+data xtab-demo-hem | {"tool":"xtab","params":{"layer":"deposit.csv","grade":"FE","weight":"SG","gradeUnit":"pct","filter":"LITO = \"HEMATITE\"","cutoffs":[30,40,50,60],"mode":"bins"}}
+# (the chart reads rows 1–4 of each: the grade bins 30–40 · 40–50 · 50–60 · ≥ 60 of the single "all" group; row 0 is < 30 (2.56 Gt of waste, named in the caption instead of drawn — it would flatten every other bar), rows 5–6 are "no grade" and "total")
+
+# ── 17-swath ──
+swath-window | Swath plot on deposit.csv: direction axes, one series FE with weight SG, plot unit %, bars count, run; the X tab shown | window
+swath-zebra | the same swath, X tab, band width 200, "zebra on 3D" ticked; section off so the whole model shows its stripes, the swath window beside it | full
+swath-band-ghost | the same swath (zebra off), X tab: a range of about four bands dragged out on the plot and held (violet), the slab outlined on the model, the menu open with "Select rows in …" · "Add to selection" · "Keep highlight" · "Clear" | full
+data swath-demo-east | {"tool":"swath","params":{"layer":"deposit.csv","gradeUnit":"pct","mode":"trend","trend":90,"plunge":0,"series":[{"col":"FE","unit":"pct","weight":"SG"}],"bandW":[100],"off":[0]}}
+data swath-demo-up | {"tool":"swath","params":{"layer":"deposit.csv","gradeUnit":"pct","mode":"trend","trend":0,"plunge":-90,"series":[{"col":"FE","unit":"pct","weight":"SG"}],"bandW":[25],"off":[0]}}
+# (mode "trend" so each table holds ONE direction: trend 90 / plunge 0 is east, i.e. the X swath; trend 0 / plunge −90 points up, i.e. the Z swath by elevation)
+
+# ── 18-stats ──
+stats-window | Stats on deposit.csv: columns FE and SG, group by LITO, weight blank, scope all, run | window
+scatter-window | Scatter / Q-Q on deposit.csv in scatter mode: x FE, y SG, no filter, linear axes, run (a density — more than 20,000 pairs) | window
+qq-window | Scatter / Q-Q on deposit.csv in Q-Q mode: side x = demo_assay.csv · FE, side y = deposit.csv · FE, both scope all, linear axes, run | window
+data stats-demo-lito | {"tool":"stats","params":{"layer":"deposit.csv","cols":["FE"],"groupBy":"LITO","weight":"SG"}}
+# (the chart assumes four rows in the table's own order — CANGA, HEMATITE, ITABIRITE, WASTE — and reads median, q25, q75, mean)
+data qq-demo | {"tool":"xy","params":{"mode":"qq","a":{"layer":"demo_assay.csv","col":"FE"},"b":{"layer":"deposit.csv","col":"FE"}}}
+
+# ── 19-validation ──
+validation-window | deposit.csv active, ⌘K → "Validate vs drillholes…": drillholes demo_assay.csv, model: FE, sample: FE, cell auto, axis Z | window
+pairing-window | Block vs sample on deposit.csv: samples demo_assay.csv, sample FE, block FE, by LITO, run; plot mode scatter | window
+data validation-demo | {"tool":"validation","params":{"model":"deposit.csv","samples":"demo_assay.csv","modelGrade":"FE","sampleGrade":"FE","axis":"Z","bandW":25}}
+# (the chart plots model_mean and sample_mean against center; bands with no samples / no model have a blank cell, which the chart skips)

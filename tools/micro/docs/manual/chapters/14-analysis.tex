@@ -1,0 +1,236 @@
+\chapter{How the analysis windows work}\label{ch:analysis}
+\begin{goals}
+\textbf{In this chapter} you learn the one design behind grade–tonnage, the cross-tab, swath, stats and scatter~/ Q-Q: the rail, \ui{Run}, the three scopes, series, units, the results row — and how the same numbers come out of a routine with no window at all.
+\end{goals}
+
+micro's analysis windows are built on one chassis. Once you can drive grade–tonnage you can drive the swath, and the habits carry to the cross-tab, the stats table and the scatter plot. This chapter is the shared part; \crefrange{ch:gt}{ch:validation} are the particulars of each window.
+
+Everything here reads the source file. Nothing is sampled, and nothing is held in memory beyond small running sums, so a window behaves the same on the demo deposit as on a 60-million-block model — it only takes longer to \ui{Run}.
+
+\section{Seven windows, one design}\label{sec:analysis-windows}
+Every analysis is on a layer's right-click menu and in the command palette (\key{⌘K}, or \key{Ctrl}+\key{K} on Windows). The palette lists only what applies to the active layer, so a grade–tonnage entry appears for a block model and not for a mesh.\sidekey{⌘K}{type \code{swath}, \code{stats}, \code{cross}… — only actions that apply to the active layer are listed}
+
+\medskip
+\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+window & opens on & chapter \\ \midrule
+\ui{Grade-tonnage…} & a block model with a block grid, or a drillhole layer & \cref{ch:gt} \\
+\ui{Resource cross-tab…} & a block model with a block grid & \cref{ch:resources} \\
+\ui{Swath plot…} & a block model with a block grid & \cref{ch:swath} \\
+\ui{Stats…} & any layer with a table and a numeric column & \cref{ch:stats} \\
+\ui{Scatter / Q-Q…} & any layer with a table and a numeric column & \cref{ch:stats} \\
+\ui{Block vs sample…} & a regular block model; you pick the samples in the window & \cref{ch:validation} \\
+\ui{Validate vs drillholes…} & a block model, with drillholes loaded (palette only) & \cref{ch:validation} \\ \bottomrule
+\end{tabularx}
+\medskip
+
+A \emph{block grid} is what a model has when micro reads it as blocks — regular, sub-blocked or rotated alike (\cref{ch:blocks}). A model opened \emph{as points} has none, so it has no block volume to weigh by. Grade–tonnage, the cross-tab and the swath are not offered for it, and a recipe aimed at it is refused in the status line — \emph{swath: needs a regular block model}, where “regular” means “with a block grid”: a sub-blocked or rotated model is accepted. Stats and scatter still work on it, because they need only a table.
+
+The first five windows share everything this chapter describes. The two validation windows are older and simpler — \ui{Validate vs drillholes…} has no rail and recomputes on every change; \ui{Block vs sample…} has a \ui{Run} button but no scopes — and \cref{ch:validation} describes them on their own terms.
+
+\shot{analysis-anatomy}{The anatomy every analysis window shares, shown on grade–tonnage: the rail of settings on the left, the result on the right, and under the rail \ui{Run}, \ui{save as recipe…} and the results row.}
+
+\section{The rail and Run}\label{sec:analysis-run}
+A window has a \term{rail} of settings on the left and the result — a plot or a table — on the right. A window opens reading \emph{configure, then Run} and computes nothing until you press \ui{Run}. The one exception is the demo project, which runs its grade–tonnage window for you so a newcomer sees a curve rather than an empty panel.
+
+\ui{Run} makes one streamed pass over the data. While it runs:
+
+\begin{itemize}
+\item the button reads \ui{Cancel} — click it to stop the scan;
+\item a progress line under it counts rows, for example \emph{1,200,000 of 60,000,000 rows · 2\%}, and says where the pass is running;
+\item the previous result stays on screen until a new one replaces it. A canceled scan leaves \emph{cancelled — showing the previous result}.
+\end{itemize}
+
+Where the pass runs depends on the file. On a Parquet model, a Datamine \file{.dm}, or an indexed CSV, micro reads only the columns the analysis needs and spreads the work over background workers. On anything else the pass runs on the page, a slice at a time, yielding to the interface every 65,536 rows so the window stays responsive. The numbers are the same either way; \cref{ch:blocks} explains which format to keep a large model in.
+
+\begin{note}
+\ui{Run} is always your decision. A window restored with a project reads \emph{restored — Run to compute} and waits: opening a project never starts a scan of a 20~GB model behind your back.
+\end{note}
+
+\section{What is free after Run}\label{sec:analysis-free}
+Each analysis is split in two. The \term{scan} reads the data once and keeps a small \emph{state}: cumulative sums per fine grade step for grade–tonnage, sums per fine bin along each direction for a swath, sums per group and bin for the cross-tab. The \term{shape} step turns that state into the plot and the table, and it is instant.
+
+\begin{figure}[htbp]\centering
+\begin{tikzpicture}[font=\sffamily\footnotesize, node distance=8mm and 7mm,
+  box/.style={draw=rule, fill=tint, rounded corners=1.5pt, inner sep=4.5pt, text=ink, align=center},
+  hot/.style={box, draw=amberlight, fill=ambersoft},
+  arr/.style={-{Stealth[length=2mm]}, draw=muted, line width=0.6pt}]
+\node[box] (set) {settings that\\read data};
+\node[hot, right=of set] (scan) {scan\\one pass};
+\node[box, right=of scan] (state) {state\\sums · bins};
+\node[hot, right=of state] (shape) {shape\\instant};
+\node[box, right=of shape] (out) {plot\\table};
+\node[box, above=of shape] (disp) {display settings};
+\node[box, below=of scan] (who) {a window · a routine step · the composer's ↻ refresh · the host API};
+\draw[arr] (set) -- node[above, text=muted] {Run} (scan);
+\draw[arr] (scan) -- (state);
+\draw[arr] (state) -- (shape);
+\draw[arr] (shape) -- (out);
+\draw[arr] (disp) -- (shape);
+\draw[arr, dashed] (who) -- (scan);
+\end{tikzpicture}
+\caption{Scan once, shape as often as you like. A setting that changes what is \emph{read} needs a new pass; a setting that only changes how the kept sums are \emph{presented} is live. Every caller runs the same two functions.}\label{fig:analysis-scan-shape}
+\end{figure}
+
+So after a \ui{Run}, anything the window can answer from the kept sums changes at once: the number of cutoffs in grade–tonnage, the plot unit, the band width and offset of a swath and the direction tab you are looking at, the measure of a cross-tab and whether its bins are cumulative, manual axis ranges, series colors.
+
+A setting that needs different data — another column, a density or weight expression, a filter, a new direction mode — marks the window \emph{↻ config changed — Run to update} under the button. Until you run again, the plot you see is the \emph{old} configuration's, and the note says so.
+
+\begin{why}
+The split is what makes exploration cheap on big models: you pay for one pass, then drag band widths and cutoffs freely. It is also what makes automation trustworthy. A routine step, a chart refreshed in the composer and a host page calling \code{micro.runTool} all call the same scan and the same shape as the window does. Each analysis has one implementation, so a number in a report cannot differ from the number you saw on screen.
+\end{why}
+
+\section{Scope: all · filt · sel}\label{sec:analysis-scope}
+The \ui{scope} control decides which records the pass counts.
+
+\begin{description}
+\item[all] every record of the layer.
+\item[filt] the records matching the layer's current filter — what you typed in the filter box (\cref{ch:filter}).
+\item[sel] the records in the 3D selection (\cref{ch:picking}).
+\end{description}
+
+Scopes \ui{filt} and \ui{sel} follow their source. With grade–tonnage, swath or stats scoped to the selection, draw a rectangle around a bench or a suspect corner in the 3D view and the window recomputes for those blocks; run a new filter and a window scoped to \ui{filt} recomputes for the new matches. This is \term{linked brushing}\index{selection!linked brushing}: the analysis becomes a regional probe instead of a whole-model summary.
+
+If the scope has nothing to follow, the window says so in its subtitle and does not fall back to everything: \emph{no selection — brush the 3D first}, or \emph{no active filter — run one in the filter box first}.
+
+\begin{tryit}
+Open the demo project (\emph{open the demo project} on the start screen). Its grade–tonnage window is already open on \file{deposit.csv}, at the right of the view. (If you closed it, right-click \file{deposit.csv}, choose \ui{Grade-tonnage…} and press \ui{Run}.)
+\begin{enumerate}
+\item In the filter box, type \code{LITO = "HEMATITE"} and press \key{Enter}. The view isolates the hematite.
+\item In the grade–tonnage rail, click \ui{filt} in the \ui{scope} row. The window runs at once; its subtitle now starts with \emph{filtered}, and the curve covers the hematite only: flat at about 24~Mt up to a cutoff of 60\,\%, then falling.
+\item Change the filter to \code{LITO = "ITABIRITE"}. The window follows.
+\item Click \ui{all} to return to the whole model, and clear the filter.
+\end{enumerate}
+\end{tryit}
+
+\begin{caution}
+In grade–tonnage, the cross-tab and scatter, clicking a scope button runs immediately. In swath and stats it marks the window stale and waits for \ui{Run}. Either way the subtitle names the scope a result was computed for — read it before you copy a number.
+\end{caution}
+
+A scope belongs to the session, not to the data: a selection is not saved with a recipe. So routines accept only scope \code{all} (\cref{sec:analysis-routine}); to restrict a routine step, give it a filter expression.
+
+\section{Series}\label{sec:analysis-series}
+Grade–tonnage and swath plot \term{series}. One series is one curve, and it is defined by five things:
+
+\medskip
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+part & meaning \\ \midrule
+layer & which layer the series reads. The menu lists the layers of the window's own kind that have a numeric column — block models in a block model's window, drillhole layers in a drillhole layer's grade–tonnage — so two models can share one plot. \\
+column & the grade — any numeric column, including calculated (ƒ), stored and joined ones (\cref{ch:filter}). \\
+unit & the unit the grade \emph{is} in: \%, g/t, ppm or oz/t. Blank means “not declared”. \\
+expression & grade–tonnage: the density (\code{SG}, \code{2.7}, \code{SG * PARTIAL}). Swath: the weight. Blank means volume only. \\
+filter & optional rows for this series alone, in the expression language (\cref{app:expr}). \\ \bottomrule
+\end{tabularx}
+\medskip
+
+\ui{+ add series} adds a curve; the \ui{×} on a series removes it (the last one stays). The colored dot cycles the series' color. A window on a reconcile layer (\cref{ch:joins}) starts with two series already, the reference grade and the new one.
+
+Use a per-series filter for comparisons \emph{inside} a model: the whole deposit against one lithology, measured against indicated, this domain against that. \Cref{fig:analysis-series-filter} is the demo deposit and its hematite, drawn from two runs of the same tool. The demo's hematite is the high-grade core of the deposit — 11,013 blocks, about 24~Mt at 62.3\,\% Fe, every one of them at or above 60\,\%. So its curve is flat up to a cutoff of 60, and above 60 it \emph{is} the deposit's curve: of the 23.9~Mt that grade 60\,\% or better, all but 34,000~t are hematite.
+
+\begin{figure}[htbp]\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.92\linewidth, height=56mm, xlabel={cutoff (\% Fe)}, ylabel={tonnes above cutoff (Mt)}, xmin=30, xmax=66, ymin=0, legend pos=north east]
+\addplot[amber, very thick] table[col sep=tab, x=cutoff, y expr=\thisrow{tonnes}/1e6]{figures/data/gt-scope-all.tsv};
+\addlegendentry{all of \texttt{deposit.csv}}
+\addplot[sel, very thick, dashed] table[col sep=tab, x=cutoff, y expr=\thisrow{tonnes}/1e6]{figures/data/gt-scope-hem.tsv};
+\addlegendentry{filter \texttt{LITO = "HEMATITE"}}
+\end{axis}
+\end{tikzpicture}
+\caption{One model, two series, from 30\,\% Fe up: every block, and the hematite a series filter keeps. Below 60\,\% raising the cutoff takes nothing from the hematite; above it, the two curves are almost one. Both are micro's own numbers for the demo project.}\label{fig:analysis-series-filter}
+\end{figure}
+
+If a saved setup names a layer that is not loaded, that series is \emph{left out and named} in the subtitle (\emph{left out (layer not loaded): …}). micro does not redraw it from another layer: a plausible chart of the wrong data is worse than a missing curve.
+
+\section{Units are declarations}\label{sec:analysis-units}
+Where a window offers a grade unit or a density unit, you are stating what the data \emph{is}. You are not choosing how to display it.
+
+\begin{itemize}
+\item A series' \ui{unit} declares its column: \col{FE} in the demo is in \%.
+\item The window's plot \ui{unit} is the axis the series are shown on. A series whose unit and the plot unit are both declared is converted; a \%-model then overlays a ppm sample set on one honest axis. If either is undeclared, no conversion happens.
+\item The density unit (\ui{ρ unit}: t/m³, kg/m³ or lb/ft³) declares the density expression. micro converts it to t/m³, so tonnage is in tonnes.
+\item With the plot unit declared, contained metal is in tonnes. Without it, micro cannot know whether 55 means 55\% or 55 g/t, and reports the plain product, labeled grade·t.
+\end{itemize}
+
+The declarations are remembered per layer and shared: declare \% and \code{SG} once in grade–tonnage and the cross-tab of the same model opens with both; the swath opens with the grade unit (its weight is its own).
+
+\section{What every pass counts}\label{sec:analysis-rules}
+Five rules, shared by every window, decide whether your totals add up. When a tonnage looks low, or a reviewer asks what happened to the unestimated blocks, the answer is here.
+
+\paragraph{A blank grade is unestimated, not zero.} A record whose grade is blank or not a number is left out of grade–tonnage, swath and stats. Counting it as zero would add tonnage at the lowest grade and drag every mean down. The cross-tab, whose job is to add up to the model, keeps such blocks in a \ui{no grade} column instead (\cref{ch:resources}). \Cref{ch:columns} covers what counts as blank, including detection-limit values such as \code{<0.01}.
+
+\paragraph{Tonnage is density × block volume.} The volume comes from the model's lattice. (A drillhole layer has no volume; grade–tonnage weighs its intervals by their length instead, \cref{sec:gt-holes}.) A sub-blocked model (\cref{ch:blocks}) is weighed block by block from its own size columns, so a 10~m parent and a 2.5~m sub-block each contribute their true volume. If a sub-block's dimensions are missing or zero, micro falls back to the fine-lattice cell rather than to nothing.
+
+\paragraph{A weight of zero drops the record.} If the density expression evaluates to blank, zero or a negative number for a block, that block has no tonnage and is not counted at all. A model with gaps in its density column therefore under-reports its tonnage, so check the density first (model QA, \cref{ch:qa}, counts blank values in every column and flags zero densities and densities outside 1–6 t/m³).
+
+\paragraph{A missing column is refused.} If a setup names a column the layer no longer has, \ui{Run} stops with \emph{series column "AU": unknown column: AU — pick another, or reopen the layer that has it}. It does not draw a flat line at grade zero.
+
+\paragraph{Records are the renderer's records.} A delimited file's rows with unreadable coordinates are not blocks: the view never drew them, and no analysis counts them. Selection membership, derived columns and the analyses all number records the same way.
+
+\section{Manual ranges}\label{sec:analysis-ranges}
+At the bottom of the display section of the grade–tonnage and swath rails is a small grid of \ui{min} and \ui{max} boxes, one row per axis — \ui{cutoff}, \ui{t} and \ui{grade} in grade–tonnage; \ui{x}, \ui{grade} and \ui{bars} in swath. Blank means automatic, and each bound is independent: set only a maximum to pin the top of an axis and leave its bottom free. \ui{auto} clears them all.
+
+Automatic ranges fit the data, with the vertical axes starting at zero when the data is positive. Set manual ranges when two figures must share an axis — last quarter's curve and this quarter's — because an automatic axis moves with the data. Ranges are display settings: they re-plot from the kept scan, and they are saved with the setup.
+
+\section{The results row}\label{sec:analysis-results}
+Under \ui{Run}, every window carries the same actions in the same order. A window without a plot (stats, the cross-tab) has no \ui{⤓ png} or \ui{⧉ copy}; its \ui{⇥ figure} puts the table on the composer page.
+
+\medskip
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+button & what it does \\ \midrule
+\ui{⤓ png} & saves the plot as a PNG, named after the analysis and the layer (\file{gt-deposit.png}). \\
+\ui{⧉ copy} & puts the plot on the clipboard as an image. \\
+\ui{⇥ figure} & sends the plot and its table to the composer page (\cref{ch:composer}) as a \emph{vector} chart frame that re-flows when resized and remembers the analysis that made it, so \ui{↻ refresh} in the composer can make it again. \\
+\ui{⇥ layer} & keeps the table as a \term{table layer} in the project, filed in a group named after the analysis (\file{grade-tonnage}, \file{swaths}, \file{stats}, \file{cross-tab}…). Filter it, join it against another run, export it. \\
+\ui{⧉ table} & copies the computed numbers as tab-separated text, ready to paste into a spreadsheet. \\ \bottomrule
+\end{tabularx}
+\medskip
+
+The copied table is the \emph{human} table: one row per cutoff or band with the series side by side, and units in the headings. A routine writes a different, \emph{machine} table of the same numbers — plain column names, one row per series and cutoff — because a file that will be compared next month should not change shape when you add a series (\cref{sec:analysis-routine}).
+
+\begin{tip}
+Use \ui{⇥ layer} to compare two runs inside micro. Keep this month's swath as a layer, run next month's, keep it too, and key-join the two tables (\cref{ch:joins}).
+\end{tip}
+
+\section{Saved with the project, and as recipes}\label{sec:analysis-saved}
+A window's whole setup is snapshotted into the project on every successful \ui{Run} and again when you close it, together with its position and size. A window left open when you save is \emph{pinned}: reopening the project (\cref{ch:projects}) brings it back in place, configured, reading \emph{restored — Run to compute}. This holds for grade–tonnage, swath, stats, the cross-tab and scatter~/ Q-Q.
+
+\ui{save as recipe…}, in the grade–tonnage, swath and stats rails, writes the setup as a small named YAML file in the project. A \term{recipe} is an analysis set up once; you run it again from \menu{Tools>Recipes}, or chain it into a routine. \Cref{ch:recipes} covers recipes in full, including the form that writes a recipe for any tool without opening its window.
+
+\section{The same numbers in a routine}\label{sec:analysis-routine}
+Each analysis is registered once as a \term{tool}\index{tool!analysis}: \code{gt}, \code{xtab}, \code{resource}, \code{swath}, \code{stats}, \code{xy}, \code{validation} and \code{pairing} for the chapters of this part. A routine step names a tool and gives its settings under \code{with:}; \code{as:} names the report it writes.
+
+\begin{lstlisting}[language=yaml]
+name: "demo curves"
+tool: "routine"
+params:
+  steps:
+    - tool: "gt"
+      with:
+        layer: "deposit.csv"
+        gradeUnit: "pct"
+        series:
+          - col: "FE"
+            unit: "pct"
+            weight: "SG"
+        cutoffs:
+          - 30
+          - 40
+          - 50
+          - 60
+      as: "gt"
+\end{lstlisting}
+
+A routine step opens no window and does not touch the setup of a window you have open. It writes the machine table as a TSV in the run's folder (\cref{ch:records}).
+
+Three rules apply to every analysis tool in a routine, and all three are checked before anything runs:
+
+\begin{description}
+\item[Unknown settings are errors.] A misspelled setting stops the routine and names the nearest real one: \emph{no setting “cutofs” — did you mean “cutoffs”?} Nothing is silently ignored.
+\item[Automatic values must be stated.] In a window, cutoffs and band widths can be automatic: they are chosen from the data's range. In a routine they must be written down — \emph{cutoffs: a routine must state it (automatic cutoffs come from the data’s range and move with it)}. A comparison against last month's table would otherwise match nothing the day the model's maximum grade changes.
+\item[Scope is all.] \emph{scope: a routine allows "all"} — the filter box and the selection are not saved with the routine. Use a series' \code{filter} (grade–tonnage, swath) or the tool's own \code{filter} (cross-tab, stats, scatter), which \emph{is} part of the file.
+\end{description}
+
+\begin{caution}
+A recipe saved from a window keeps the window's settings — an automatic cutoff \emph{count}, perhaps a \ui{sel} scope. Run on its own it reopens the window as you left it. Used as a routine step it is held to the routine rules above, so add explicit \code{cutoffs} (or \code{bandW}) and set the scope to \code{all}.
+\end{caution}
+
+Every tool's result also carries its \emph{resolved} settings — the settings with each automatic value pinned to what was used — and they are written into the run record. The \emph{In a routine} sections at the end of the next five chapters give each tool's YAML, its routine rules, and the columns and values of its machine table; the settings themselves, with their types and defaults, are in the generated reference, \cref{app:tools}. \Cref{ch:routines} covers steps, \code{each} blocks and inputs, and \cref{ch:checks} covers judging the results.

@@ -1,0 +1,254 @@
+\chapter{File formats}\label{app:formats}\label{ch:formats}
+
+\begin{goals}
+\textbf{In this appendix}: every file format micro reads and writes, family by family, with what is
+kept, what is left out, and the limits worth knowing before you choose a format for an exchange.
+\end{goals}
+
+micro decides what a file is from its extension first and its contents second. A \file{.csv} with
+coordinate columns is a block model or a point set; without them it is a table. A \file{.ply} with
+faces is a mesh; without them, a point cloud. What was decided is always shown in \ui{file info}
+(\key{i}) and can be changed there, in the open dialog's \ui{Open as ▾}, or later with
+\ui{Reinterpret as…} on the layer (\cref{ch:opening}).
+
+Three things hold for every format:
+
+\begin{itemize}
+\item \textbf{Nothing is uploaded and nothing is converted behind your back.} A file is read where
+  it is. micro is Sealed (\cref{ch:sealed}), so there is no server that could do otherwise.
+\item \textbf{No compiled decoders.} Every reader is plain JavaScript that can be read in the page's
+  source. That is why a few compressed variants (LAZ, some GeoTIFF codecs) are not read.
+\item \textbf{Coordinates leave as they came in.} Exports write world coordinates at full
+  precision.
+\end{itemize}
+
+In the tables, \emph{read} and \emph{write} say whether micro opens and produces the format; a dash
+means it does not.
+
+\section{Block models}\label{sec:formats-blocks}
+
+\begin{tabularx}{\linewidth}{@{}p{27mm}p{9mm}p{9mm}L@{}}
+\toprule
+format & read & write & notes \\
+\midrule
+Delimited text \file{.csv} \file{.txt} \file{.dat} \file{.tsv} & yes & yes & The delimiter (comma,
+  semicolon, tab) and the decimal mark are detected. Quoting follows RFC 4180: a quoted field may
+  hold the delimiter, a line break or a doubled quote. Needs coordinate columns. Per-block size
+  columns make it sub-blocked; a rotated lattice is detected and offered, never applied silently. \\
+Parquet \file{.parquet} \file{.pq} & yes & yes & Read streamed, holding nothing decoded, with
+  row-group skipping on the filter. micro's own store: Morton-sorted, with the lattice, extents and
+  categories in its footer, so it reopens with no discovery pass. A file may declare its lattice,
+  rotated or not, in \code{micro:model} (\cref{sec:host-model}). Written with Snappy or gzip
+  compression. \\
+Datamine \file{.dm} & yes & — & Block models, with per-record \col{XINC}, \col{YINC}, \col{ZINC}
+  read as sub-blocks. Only the columns a query needs are read from each record. To convert, open
+  and export as CSV or Parquet. \\
+OMF v1 \file{.omf} & yes & — & Block-model elements, with the lattice declared and rotated axes
+  kept. Uneven block widths open as centroids. See \cref{sec:formats-meshes}. \\
+\bottomrule
+\end{tabularx}
+
+\begin{description}
+\item[Coordinates] are found by name: \col{XC}/\col{YC}/\col{ZC}, \col{X}/\col{Y}/\col{Z}, and
+  east/north/elevation-style names. Anything micro didn't guess, you map in the open dialog.
+\item[Sub-block sizes] are found by name too: \col{DX}/\col{DY}/\col{DZ},
+  \col{XINC}/\col{YINC}/\col{ZINC}, \col{DIMX}/\col{DIMY}/\col{DIMZ}.
+\item[Limits of sub-blocked models:] at most 256 distinct block sizes, and sizes that subdivide the
+  parent block by powers of two. A model outside those limits opens as points
+  (\cref{ch:blocks}).
+\item[Rotated models] work for everything per record, and for joins between models on the same
+  rotated lattice. Resampling between different orientations, proportions by a solid, and rotated
+  sub-blocked models are not supported (\cref{ch:blocks}).
+\end{description}
+
+\begin{tip}
+For a model you will keep working on, store it as Parquet (\cref{ch:store}). It opens faster, filters
+faster, and is smaller than the CSV; the CSV remains the format to hand to software that reads
+nothing else.
+\end{tip}
+
+\section{Point clouds}\label{sec:formats-points}
+
+\begin{tabularx}{\linewidth}{@{}p{27mm}p{9mm}p{9mm}L@{}}
+\toprule
+format & read & write & notes \\
+\midrule
+LAS \file{.las} & yes & — & Point record formats 0–3 and 6–8. Every field of the record is a
+  column (intensity, classification, return numbers, GPS time, RGB), and so are the extra bytes a
+  LAS 1.4 file declares. \\
+LAZ \file{.laz} & — & — & Compressed LAS needs a compiled decoder. Convert to \file{.las} first. \\
+PLY \file{.ply} & yes & — & A PLY without faces opens as points, with its vertex properties as
+  columns. ASCII and little-endian binary; a big-endian file is refused. \\
+\file{.xyz} \file{.pts} & yes & — & Plain point dumps; opened as points by default. \\
+Delimited text, Parquet & yes & yes & A table with coordinates and no regular lattice is a point
+  set. \ui{Open as ▾} forces points for a block model, too. \\
+\bottomrule
+\end{tabularx}
+
+\section{Drillholes}\label{sec:formats-drillholes}
+
+A drillhole set is three kinds of table: one collar table, one survey table, and one or more
+interval tables (\cref{ch:drillholes}).
+
+\begin{tabularx}{\linewidth}{@{}p{27mm}p{9mm}p{9mm}L@{}}
+\toprule
+format & read & write & notes \\
+\midrule
+Delimited text & yes & yes & Each table is a delimited file. Roles are detected from the header and
+  assigned per file in the open dialog. Detection-limit text (\code{<0.01}, \code{>10}) and lab codes
+  are read as numbers and blanks under a rule you can change (\cref{ch:columns}). \\
+Set manifest & yes & yes & \file{<set>.element.json}, written by micro into \file{drillholes/} when
+  a project is saved: which collar, survey and interval files form the set, how they relate by hole
+  id, and the desurvey settings (\cref{sec:projects-layout}). The older \file{<set>.holes.json}
+  still opens. \\
+TSV report & — & yes & The drillhole QA report (\cref{ch:qa}). \\
+\bottomrule
+\end{tabularx}
+
+An Excel sheet opens as a table, not as a drillhole table: to use one as a collar, survey or
+interval table, save the sheet as CSV first.
+
+The header names micro looks for: a hole id (\col{BHID}, \col{HOLEID}-style), \col{FROM} and
+\col{TO} on intervals, and depth, azimuth and dip on surveys (\col{DEPTH}/\col{AT},
+\col{AZ}/\col{BRG}, \col{DIP}). Interval layers export through \ui{Export rows…} like any table,
+with their calculated, painted and broadcast columns.
+
+\section{Meshes, wireframes and CAD}\label{sec:formats-meshes}
+
+\begin{tabularx}{\linewidth}{@{}p{27mm}p{9mm}p{9mm}L@{}}
+\toprule
+format & read & write & notes \\
+\midrule
+PLY \file{.ply} & yes & yes & With faces, a mesh. Vertex properties (a painted outcrop's colors,
+  for one) are kept as columns. Written binary with double-precision coordinates; several layers
+  merge into one mesh. \\
+OBJ \file{.obj} & yes & yes & A multi-object file offers to split into one solid per object.
+  Written as text, one named object per layer. \\
+MSH \file{.msh} & yes & yes & The Leapfrog (ARANZ) surface format. One mesh; several layers merge on
+  export. \\
+LFM \file{.lfm} & yes & yes & Leapfrog model files: several meshes with their colors, kept on
+  import and written from each layer's tint on export. \\
+Datamine wireframe & yes & — & A pair of files: points (\file{…pt.dm}) and triangles
+  (\file{…tr.dm}). Open both together; a lone half says which half is missing. \\
+DXF \file{.dxf} & yes & — & ASCII DXF. 3D faces and polyface meshes open as a mesh; 3D polylines as
+  strings, categorized by DXF layer; points as pegs. ACIS solids are not read. \\
+\file{.wfr} & yes & yes & The open wireframe format: many surfaces, strings and point sets in one
+  file, named, with attributes. micro converts other mesh files to it without loading them, and can
+  store a project's meshes in it. \\
+OMF v1 \file{.omf} & yes & — & One layer per element, in a group named after the file: block
+  models, point sets, triangulated surfaces. Scalar data become numeric columns; mapped data become
+  a text column from its legend. \\
+\bottomrule
+\end{tabularx}
+
+\begin{note}
+Not read from an OMF file yet, and named on the status line when a file has them: line sets, gridded
+surfaces, vector and date data, textures, and data on surfaces.
+\end{note}
+
+Exports re-read the source geometry, so coordinates leave in full double precision. That matters at
+UTM northings, where single precision costs about half a meter. A large mesh held in its streamed,
+display-only form is re-read from its file to be exported (\cref{ch:meshes}).
+
+\section{Grids and surfaces}\label{sec:formats-grids}
+
+\begin{tabularx}{\linewidth}{@{}p{27mm}p{9mm}p{9mm}L@{}}
+\toprule
+format & read & write & notes \\
+\midrule
+GeoTIFF \file{.tif} \file{.tiff} & yes & — & Strips and tiles; uncompressed, LZW, deflate and
+  PackBits; predictors; several bands (picked in Properties); the overview pyramid of a
+  cloud-optimized file. Other codecs are refused by name. \\
+Surfer \file{.grd} & yes & — & Surfer 6 text and binary grids. A Surfer 7 grid is refused with the
+  advice to save it as Surfer 6. \\
+ESRI ASCII \file{.asc} & yes & yes & The grid export (\ui{Export as ESRI ASCII grid…} on the
+  layer). The surface tools write their results in it. \\
+\bottomrule
+\end{tabularx}
+
+A grid larger than the display budget is shown from its finest overview that fits, or decimated,
+while evaluation (flagging by a surface, reconciling) reads the full-resolution cells for the area
+it needs (\cref{ch:grids}). A \file{.asc} that isn't a grid header is read as delimited text.
+
+\section{Tables}\label{sec:formats-tables}
+
+\begin{tabularx}{\linewidth}{@{}p{27mm}p{9mm}p{9mm}L@{}}
+\toprule
+format & read & write & notes \\
+\midrule
+Delimited text & yes & yes & A file with no coordinate columns opens as a table layer: a lookup, a
+  parameter table, a kept result. \\
+Excel \file{.xlsx} & yes & — & Each sheet a table layer, with Excel's own column types. A routine
+  reads a parameter sheet as \code{"params.xlsx\#Sheet"}. Never opened as geometry unless you
+  reinterpret it. \\
+Parquet & yes & yes & \ui{Export rows…} writes any layer with a table as CSV or Parquet: all rows,
+  the filter's matches, or the selection; every column, including calculated, painted and joined
+  ones. \\
+TSV & — & yes & Every analysis table (the ⧉ button of a window), and the tables a routine writes
+  into its run folder (\cref{ch:records}). \\
+\bottomrule
+\end{tabularx}
+
+A CSV export offers the delimiter and the decimal comma, and can write detection-limit values
+either as the file had them or as the numbers micro substituted. A Parquet export always writes
+numbers.
+
+\section{Figures}\label{sec:formats-figures}
+
+\begin{tabularx}{\linewidth}{@{}p{27mm}p{9mm}p{9mm}L@{}}
+\toprule
+format & read & write & notes \\
+\midrule
+PNG & — & yes & \ui{Export figure (PNG)…}: the view with its decorations (\cref{ch:figures}).
+  The composer exports a page as PNG as well. \\
+PDF & own & yes & The composer's export (\cref{ch:composer}). The PDF carries its figure, so micro
+  can open a PDF it wrote and edit it again. Other PDFs are not read. \\
+WebM & — & yes & \menu{View>Turntable video…}: the camera orbiting the scene, each frame rendered
+  fully. \\
+\bottomrule
+\end{tabularx}
+
+\section{Projects, packs and recipes}\label{sec:formats-projects}
+
+A project is a plain folder, readable without micro (\cref{ch:projects,ch:store}).
+
+\begin{tabularx}{\linewidth}{@{}p{38mm}L@{}}
+\toprule
+file & what it is \\
+\midrule
+\file{project.json} & The view state: layers, styling, filters, camera, section, open windows. \\
+\file{models/} \file{drillholes/} \file{clouds/} \file{meshes/} \file{grids/} \file{tables/} &
+  The data files, by kind. A file dropped into one of these by hand is picked up by
+  \ui{Scan folder for new data}. \\
+\file{.element.json} & Beside each data file, its element manifest: the columns, the locations, and every recorded
+  operation that derived something. \\
+\file{.cols/} & Beside each data file, a folder of the derived columns that carry data, one Parquet file per column. \\
+\file{.meta.json} & Beside each data file, a cache: the discovery result, column statistics, the band index.
+  Delete it and micro scans again. \\
+\file{bookmarks/} \file{scenes/} & One small JSON file per saved view. \\
+\file{recipes/} & Recipes and routines, as commented YAML (\cref{ch:recipes,ch:routines}). \\
+\file{runs/} & What routines write: one folder per run, \file{runs/<date> <time> <routine>/},
+  holding its tables as TSV, its other outputs and its \file{run.json} record, unless the routine's
+  \code{output.dir} names another folder (\cref{ch:records}). \\
+\bottomrule
+\end{tabularx}
+
+\begin{tabularx}{\linewidth}{@{}p{27mm}p{9mm}p{9mm}L@{}}
+\toprule
+format & read & write & notes \\
+\midrule
+Project pack \file{.zip.micro} & yes & yes & The whole project folder as one ordinary zip. Opens
+  read-only without unpacking, or restores into an empty folder; every file is checked against its
+  checksum (\cref{ch:store}). \\
+Recipe, routine \file{.yaml} & yes & yes & Block-style YAML, strings quoted. Written by micro,
+  editable by hand. \\
+Recipe pack \file{.yaml} \file{.zip} & yes & yes & A routine with every recipe it names and the
+  parameter tables it reads, exported from and imported into the library. A pack with a binary
+  table (an \file{.xlsx}) needs the zip (\cref{ch:library}). \\
+Layer style & yes & yes & A \file{.microstyle.json} file. \ui{Save style…} and \ui{Load style…} on a layer: a look, carried to
+  another layer or project by column name (\cref{ch:color}). \\
+\bottomrule
+\end{tabularx}
+
+Project folders need a browser that can open folders (Chrome or Edge). Elsewhere, a project pack
+still opens.

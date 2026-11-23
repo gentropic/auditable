@@ -1,0 +1,203 @@
+\chapter{What micro is, and how it thinks}\label{ch:micro}
+\begin{goals}
+\textbf{In this chapter} you learn what micro is for and what it leaves to other software, and you meet the five ideas the rest of the book leans on: elements, columns, streaming, provenance, and Sealed.
+\end{goals}
+
+micro is a workbench for looking at resource data and checking it. You hand it a block model, a set of drillholes, a wireframe or a grid, and it shows them together in one 3D view. Then you ask it questions: filter, cut a section, pick a block, derive a column, run a grade–tonnage curve, compare this month's model with last month's, lay out a figure.
+
+It is one HTML file. There is no installer, no account and no server. You open it in a browser and it runs on your machine, and your data stays on your machine.
+
+This chapter has no exercises. It explains how micro is put together, so that when a later chapter says ``a column'', ``a record'' or ``the manifest'' you know what is meant. If you would rather start with your hands, go to \cref{ch:start} and come back.
+
+\section{What it reads}\label{sec:micro-reads}
+micro opens the files resource geology already produces. Each one becomes a \term{layer} in the scene.
+
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+kind & formats \\ \midrule
+Block models & CSV and other delimited text, Datamine \file{.dm}, Parquet; regular, sub-blocked and rotated \\
+Drillholes & collar, survey and interval tables, desurveyed as they load \\
+Meshes and CAD & \file{.msh} (Leapfrog), OBJ, PLY with faces, LFM, Datamine wireframe pairs, DXF, \file{.wfr} \\
+Grids & GeoTIFF, Surfer \file{.grd}, ESRI ASCII \file{.asc} \\
+Point clouds & LAS, PLY, XYZ and PTS dumps \\
+Tables & delimited files without coordinates, and Excel workbooks, a sheet each \\
+Projects from elsewhere & OMF (\file{.omf}): block models, points and surfaces, a layer each \\
+\bottomrule
+\end{tabularx}
+
+\Cref{ch:opening} covers opening each of these, and Part~II takes them one kind at a time.
+
+\section{What it does, and what it does not}\label{sec:micro-scope}
+micro does the everyday work around a resource model:
+
+\begin{itemize}
+\item \textbf{See.} Color by any column, cut sections, pick a record and read its whole row, measure, export a figure or a composed page.
+\item \textbf{Ask.} Filter with an expression such as \code{FE > 55 and LITO = "HEMATITE"}, select by rectangle, lasso or solid, and send the result to the attribute table.
+\item \textbf{Derive.} Calculate columns from expressions, paint domains by hand, flag blocks inside a wireframe, join one model's columns onto another.
+\item \textbf{Check.} Grade–tonnage, swath plots, statistics, validation against drillholes, reconciliation between model versions, QA reports for models, drillholes and meshes.
+\item \textbf{Repeat.} Save an analysis as a recipe, chain recipes into a routine, and run the routine again next month with a record of what ran.
+\end{itemize}
+
+micro is \emph{not} an estimation or modeling suite. It does not interpolate grades, build geological models, classify resources or write your report. The boundary is deliberate: the software that produces an estimate should not be the only software that checks it, and a tool that only looks has no stake in what it finds.
+
+\begin{note}
+A few tools do make new geometry: a grade shell around a cutoff, drillhole composites, a grid rasterized from a mesh. They exist so that you can check things, and \cref{ch:blocks,ch:drillholes,ch:grids} describe them.
+\end{note}
+
+\section{How micro thinks}\label{sec:micro-model}
+Five ideas explain almost everything in this book. \Cref{fig:micro-model} draws the first three; the sections after it take all five in turn.
+
+\begin{figure}[htbp]\centering
+\begin{tikzpicture}[
+  font=\sffamily\footnotesize,
+  >={Stealth[length=2mm, width=1.6mm]},
+  box/.style={draw=rule, fill=tint, rounded corners=1.5pt, line width=0.5pt, align=left, inner sep=2mm, text=ink, anchor=north west},
+  flow/.style={->, draw=amber, line width=0.9pt},
+  rec/.style={->, draw=faint, line width=0.6pt, dashed},
+]
+% the four stages, left to right
+\node[box, text width=19mm] (files) at (0,0) {%
+  {\sffamily\bfseries\small Files}\\[2pt]
+  deposit.csv\\ collars\\ survey\\ assays\\ topo.asc\\ ore shell\\[3pt]
+  \textcolor{muted}{read in place,\\ never changed}};
+\node[box, text width=28mm] (elem) at (27mm,0) {%
+  {\sffamily\bfseries\small Elements}\\[2pt]
+  block model\\ \quad\textcolor{amber}{cells}\\
+  drillholes\\ \quad\textcolor{amber}{intervals}\\
+  grid\\ \quad\textcolor{amber}{nodes}\\
+  mesh\\ \quad\textcolor{amber}{vertices, faces}};
+\node[box, text width=27mm] (cols) at (63mm,0) {%
+  {\sffamily\bfseries\small Columns}\\[2pt]
+  \textcolor{muted}{from the file}\\ FE \enspace SG \enspace LITO\\[3pt]
+  \textcolor{muted}{derived}\\ ƒ calculated\\ stored\\ painted\\ joined\\ broadcast};
+\node[box, text width=22mm] (use) at (98mm,0) {%
+  {\sffamily\bfseries\small Uses}\\[2pt]
+  3D view\\ filter\\ sections\\ analyses\\ figures\\ exports\\ routines};
+% the flow
+\draw[flow] (files.east |- elem.north) ++(0,-9mm) -- ++(4mm,0);
+\draw[flow] (elem.east |- elem.north) ++(0,-9mm) -- ++(4mm,0);
+\draw[flow] (cols.east |- elem.north) ++(0,-9mm) -- ++(4mm,0);
+% results come back as columns
+\draw[flow] (use.north) -- ++(0,6mm) -| (cols.north);
+\node[font=\sffamily\footnotesize, text=muted, anchor=south] at (93mm,6.5mm) {results come back as new columns};
+% provenance
+\node[box, text width=88mm, fill=ambersoft, draw=amberlight] (prov) at (27mm,-50mm) {%
+  {\sffamily\bfseries\small Recorded}\quad every derivation is written down as data: the element manifest beside each file, the lineage of each derived layer, \texttt{run.json} for each routine run};
+\draw[rec] (cols.south) -- (cols.south |- prov.north);
+\draw[rec] (use.south) -- (use.south |- prov.north);
+\draw[rec] (elem.south) -- (elem.south |- prov.north);
+\end{tikzpicture}
+\caption{micro's model. Files are read where they are. Each becomes an element whose records sit at named locations. Columns hang on those records, and everything you do consumes columns. What you derive lands as more columns, and how it was derived is recorded.}\label{fig:micro-model}
+\end{figure}
+
+\subsection{A dataset is an element}\label{sec:micro-elements}
+An \term{element} is one dataset together with an interpretation of its geometry. A block model is an element. So is a drillhole set, a grid, a mesh, a point cloud. An element is what a layer shows.
+
+An element's data lives in \term{records}, and records sit at a named \term{location}\index{location (of records)}:
+
+\begin{tabularx}{\linewidth}{@{}llL@{}}\toprule
+element & location & a record is \\ \midrule
+block model & cells & one block: its centroid, its size, its values \\
+drillhole set & intervals & one sampled interval; the set also keeps its collars and its survey stations \\
+grid & nodes & one grid node and its value \\
+mesh & vertices, faces & one vertex, with whatever the file stored on it \\
+point cloud & points & one point \\
+\bottomrule
+\end{tabularx}
+
+Records are positional. Row 173 of \file{deposit.csv} is block 173 in the view, in the attribute table, in a selection and in an export, for as long as the file is the same file. That is why a domain you painted last month, saved beside the file, still lands on the same blocks when you reopen it.
+
+A drillhole set is the one compound element. It is built from three tables, and each keeps its role: the collars say where each hole starts, the survey says how it bends, the intervals carry the assays. The layers panel shows all three, and a filter on the collars flows down to every interval (\cref{ch:drillholes}).
+
+\begin{why}
+The same machinery serves every kind of data because the location is named, not assumed. Filtering, coloring, painting, the attribute table and export all work ``per record at a location''. A mesh joined that family when its vertices became records, which is what lets you paint a joint plane on an outcrop scan (\cref{ch:structure}).
+\end{why}
+
+\subsection{Columns are the atom}\label{sec:micro-columns}
+Everything micro shows or computes is a \term{column}: a named value per record. \col{FE}, \col{SG} and \col{LITO} come from the file. The rest you make:
+
+\begin{description}
+\item[Calculated (ƒ)] An expression over other columns, such as \code{FE * SG}. It is evaluated when needed and follows its inputs (\cref{ch:filter}).
+\item[Stored] Values computed once and kept: a calculated column you materialized, a join result, a fraction inside a solid.
+\item[Painted] A category you fill by hand with the brush, or that a selection or a solid writes for you (\cref{ch:picking}).
+\item[Joined] Values brought over from another model or table (\cref{ch:joins}).
+\item[Broadcast] A collar value such as \col{COMPANY} copied down onto every interval of its hole (\cref{ch:drillholes}).
+\end{description}
+
+Once a column exists, nothing downstream cares where it came from. The filter, the color dropdown, grade–tonnage, the record panel and the export dialog all take a column name. A derived column can feed another derived column.
+
+Hold on to this one. When you wonder whether micro can color by, filter on or export some result, the answer is yes if the result is a column, and most results are.
+
+\subsection{Nothing is imported}\label{sec:micro-streaming}
+micro has no import step. It reads your file where it is, in pieces, and draws as it reads. A model of a few thousand blocks and one of a hundred million open the same way: a first picture in about a second, then more detail as the rest arrives. While you orbit, the picture is rebuilt a slice at a time; when you stop, it converges to the full data.
+
+This is what \term{never resident}\index{streaming} means: the file is never loaded whole into memory. A filter or a grade–tonnage run sweeps the file once and keeps only totals. The attribute table reads the rows you scroll to. So the memory of your machine does not limit the size of the file you can open. \Cref{sec:opening-resident} follows a large file from disk to screen.
+
+Two consequences follow.
+
+First, micro never writes to your source files. What it adds, it keeps \emph{beside} them: a small manifest, stored columns, caches. Delete micro's files and your data is exactly as it was. The one exception is one you approve in a dialog: storing a block model inside a project as Parquet, where you choose whether the original stays (\cref{ch:blocks}).
+
+Second, a long operation is a sweep, and a sweep can be stopped. An analysis window's \ui{Run} button becomes its cancel while it works, and an export shows \ui{cancel} beside the status line. A cancelled export writes nothing.
+
+\begin{note}
+Formats differ in how fast a sweep is. Parquet lets micro skip whole parts of a file that cannot match a filter; a CSV must be read through. \Cref{ch:blocks} explains which format to keep a model in, and \cref{ch:store} what micro stores for itself.
+\end{note}
+
+\subsection{What was done is written down}\label{sec:micro-provenance}
+A number you cannot trace is a number you cannot sign. micro records each derivation as data you can read without micro:
+
+\begin{itemize}
+\item \textbf{Columns.} Each element in a saved project has an \term{element manifest}, a JSON file beside the data: \file{deposit.csv.element.json}. A calculated column is there as its expression. A stored column is there with the operation that made it and its inputs.
+\item \textbf{Layers.} A layer made from other layers, such as a reconciliation or a model stored as Parquet, carries its \term{lineage}: the operation, its settings, its sources, the micro build and the time. \menu{Lineage…} on the layer shows the tree and exports a readable report. A Parquet export carries its lineage inside the file.
+\item \textbf{Runs.} Every run of a routine leaves a folder, \file{runs/<date> <time> <routine>/}, holding its tables and a \file{run.json}: the SHA-256 of every input file and every output, each step's settings, and what each check concluded.
+\end{itemize}
+
+Recipes and routines are part of the same idea. They are plain YAML files that say what to compute; they cannot carry code. \Cref{ch:records} is the full account.
+
+\subsection{Sealed}\label{sec:micro-sealed}
+micro makes no network requests. This is enforced by the browser: the page carries a security policy, \code{connect-src 'none'}, that blocks every connection. There is no telemetry, no cloud storage and no license check. The demo data is generated on your machine. The \ui{Sealed} badge at the top left of the window says so, and a click on it explains the details.
+
+Two more properties belong to the same promise. The file contains no WebAssembly, so its code can be read. And the build publishes what it claims about itself, so the claim can be checked: \file{gentropic.org/security} has the verifier and a guide for taking micro through a company's approval process.
+
+\begin{note}
+The downloadable \file{micro.html} is the sealed thing: no network at all. The hosted copy at \file{gentropic.org/micro} adds a service worker, outside the sealed page, that keeps the app available offline and can look for a newer build. It fetches micro's own files and never your data. \Cref{ch:sealed} has the full picture.
+\end{note}
+
+\section{Where things live}\label{sec:micro-where}
+State lives in three places. Knowing which holds what tells you what travels with a project and what a colleague will see when they open it.
+
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+place & holds \\ \midrule
+Your files & the data. micro reads them and does not change them. \\
+The project folder & what you did with the data: which layers, their colors and filters, the camera and section, open analysis windows, bookmarks, figures, recipes, runs, and the manifests and stored columns beside each file. \\
+This browser & your preferences: theme, language, background, render budget, recent files. They never travel inside a project. \\
+\bottomrule
+\end{tabularx}
+
+A \term{project} is an ordinary folder with a \file{project.json} in it and subfolders by kind of data: \file{models/}, \file{drillholes/}, \file{meshes/}, \file{grids/} and so on. You can open it in a file manager, read it in a text editor, and put it under version control. \Cref{ch:projects} describes it.
+
+You do not need a project to look at a file. Drop a model on micro, filter it, run a curve and close the tab: nothing is left behind. Make a project when you want to keep the work.
+
+\begin{caution}
+Saving a project folder uses a browser feature that only Chrome and Edge provide. In Firefox you can view, filter and analyze, and you can open a \term{project pack} (a whole project in one file), but you cannot save a project folder. \Cref{ch:start} says more.
+\end{caution}
+
+\section{How the interface is organized}\label{sec:micro-interface}
+micro's interface follows one rule: pick the thing, then say what to do with it. Right-click a layer and its menu lists what applies to that layer, and only that. A block model offers grade–tonnage; a mesh offers volume; a drillhole set offers its QA report.
+
+The same actions are in the menu bar and in the \term{command palette}, which you open with \key{⌘K} (\key{Ctrl}+\key{K} on Windows and Linux). The palette searches every action by name and shows the ones that apply to the active layer. Wherever this book gives a menu path, you can type a word of it into the palette instead.
+
+Analysis results open in floating windows that stay with their layer. You can keep several open, minimize them, and find them again under \menu{View>Windows…}. They are saved with the project, so a reopened project comes back with its curves in place.
+
+\section{Words this book uses}\label{sec:micro-words}
+\begin{description}
+\item[Layer] One entry in the layers panel: an element, drawn. Two layers can show the same element in two ways (a \emph{view}, \cref{ch:sections}).
+\item[Active layer] The layer the toolbar, the filter box and the keyboard act on. Click a layer to make it active.
+\item[Record] One row of an element at a location: a block, an interval, a node, a vertex.
+\item[Column] A named value per record, from the file or derived.
+\item[Scope] Which records an analysis reads: all of them, those matching the filter, or the 3D selection.
+\item[Recipe] One analysis, set up and saved as a YAML file.
+\item[Routine] A list of recipes and inline steps that run in order, with checks.
+\item[Run] One execution of a routine, and the folder it leaves.
+\end{description}
+
+The glossary in \cref{app:glossary} has the rest.

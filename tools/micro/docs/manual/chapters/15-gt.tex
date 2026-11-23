@@ -1,0 +1,201 @@
+\chapter{Grade–tonnage}\label{ch:gt}
+\begin{goals}
+\textbf{In this chapter} you draw tonnage and mean grade above cutoff for a block model, give it a density and units so the tonnes are tonnes, overlay a second model or a second domain, read a reconciliation as two curves, and write the same curve from a routine. On a drillhole layer the same window adds up interval length in meters instead.
+\end{goals}
+
+Grade–tonnage answers the first question anyone asks of a block model: \emph{how much is there above a given grade, and at what grade?} micro computes the curve exactly, at any model size, from the source file — every block weighted by its own volume and density.
+
+Open it from a block model's (or a drillhole layer's) right-click menu, \ui{Grade-tonnage…}, or press \key{⌘K} (\key{Ctrl}+\key{K} on Windows) and type \code{grade}. The window works as \cref{ch:analysis} describes; this chapter covers what is particular to grade–tonnage.
+
+\section{A first curve}\label{sec:gt-first}
+The demo project opens with a grade–tonnage window already run on \file{deposit.csv}, floating at the right of the view. It is set up the way a report needs it: \col{FE} as the grade, declared in \%, and \col{SG} as the density. So its left axis reads \emph{tonnage (t)}, and the subtitle \emph{tonnes · 40 cutoffs · 1,786,620 rows}.
+
+\begin{tryit}
+Open the demo project and find the grade–tonnage window at the right of the view. (If you closed it, right-click \file{deposit.csv}, choose \ui{Grade-tonnage…} and press \ui{Run}.)
+\begin{enumerate}
+\item Read the series box: the layer \file{deposit.csv}, the grade column \col{FE} with its unit \ui{\%} beside it, and \col{SG} in the field below — \emph{density expr (blank = count)}. Under \ui{display}, the plot \ui{unit} is \ui{\%} too.
+\item Change \ui{cutoffs} from 40 to 20. The curve redraws at once — no new pass.
+\item Clear the density field and press \key{Enter}. The window notes \emph{↻ config changed — Run to update}; the old curve stays until you act.
+\item Press \ui{Run}. The left axis now reads \emph{volume (m³)} and the subtitle \emph{volume (no density)}: the same curve in cubic meters.
+\item Type \code{SG} back into the density field and press \ui{Run} again.
+\item Click \ui{⧉ table} and paste into a spreadsheet: one row per cutoff, with tonnes, grade and contained metal in tonnes.
+\end{enumerate}
+\end{tryit}
+
+\shot{gt-window}{Grade–tonnage on the demo deposit with \col{FE} as the grade and \col{SG} as the density: tonnage above cutoff (solid, left axis) falls while the mean grade of what remains (dashed, right axis) rises.}
+
+The solid line is tonnage on the left axis; the dashed line of the same color is the mean grade of that tonnage, on the right axis. The demo deposit is mostly waste around an iron-ore lens, and the curve shows the two populations: the tonnage falls steeply between 20 and 30\,\% — 2.28~Gt grades above 20\,\%, only 0.32~Gt above 30\,\% — and then declines slowly through the ore. \Cref{fig:gt-demo} is the ore part of the curve, at six stated cutoffs, drawn from micro's numbers: 322~Mt at 47.9\,\% above 30, 173~Mt at 55.4\,\% above 50, 24~Mt at 62.3\,\% above 60.
+
+\begin{figure}[htbp]\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.86\linewidth, height=58mm, xlabel={cutoff (\% Fe)}, ylabel={tonnes above cutoff (Mt)}, ymin=0, legend style={at={(0.03,0.05)}, anchor=south west}]
+\addplot[amber, very thick, mark=*, mark size=1.4pt] table[col sep=tab, x=cutoff, y expr=\thisrow{tonnes}/1e6]{figures/data/gt-demo.tsv};
+\addlegendentry{tonnage}
+\addlegendimage{info, very thick, dashed, mark=square*, mark size=1.3pt}
+\addlegendentry{mean grade}
+\end{axis}
+\begin{axis}[width=0.86\linewidth, height=58mm, axis y line*=right, axis x line=none, grid=none, ylabel={mean grade above cutoff (\% Fe)}]
+\addplot[info, very thick, dashed, mark=square*, mark size=1.3pt] table[col sep=tab, x=cutoff, y=grade]{figures/data/gt-demo.tsv};
+\end{axis}
+\end{tikzpicture}
+\caption{The demo deposit's grade–tonnage curve for \col{FE}, tonnage from \col{SG} × block volume, at the cutoffs 30, 40, 50, 55, 60 and 65\%.}\label{fig:gt-demo}
+\end{figure}
+
+\section{How the numbers are made}\label{sec:gt-method}
+For each series micro makes one pass over the layer. For every record it evaluates the grade $g$, the density $\rho$ and the block's volume $V$, and forms the weight
+\[ w = \rho \times V . \]
+Then, for a cutoff $c$, tonnage is the sum of $w$ over the records with $g \ge c$, the mean grade is $\sum w g / \sum w$ over the same records, and contained metal is tonnage × mean grade.
+
+Four details decide what goes into those sums. The first three are the shared rules of \cref{sec:analysis-rules}, repeated here because in this window they decide the tonnage you report.
+
+\paragraph{The volume is the block's own.} For a regular model $V$ is the lattice cell: 10 × 10 × 5 = 500 m³ in the demo. For a sub-blocked model it is each record's own size, read from its dimension columns, so a parent block and a sub-block weigh what they are (\cref{ch:blocks}). Weighting every record by the fine cell would count a 20~m parent as one 2.5~m sub-block and lose most of the waste tonnage.
+
+\paragraph{A blank grade is unestimated.} A record whose grade is blank or not numeric is skipped: it adds no tonnage at any cutoff, including the lowest. That is the right reading of a block the estimator never reached. It also means the tonnage at the lowest cutoff is the tonnage of the \emph{estimated} model, not of the whole lattice. If you need the unestimated tonnage as a line of its own, the cross-tab keeps it (\cref{ch:resources}).
+
+\paragraph{A zero weight is no weight.} A record whose density evaluates to blank, zero or a negative number is skipped too. Blank density is the commonest reason a tonnage comes out low.
+
+\paragraph{“Above” includes the cutoff.} A block grading exactly 55 is counted at a cutoff of 55.
+
+\begin{why}
+micro does not sort the model, and it does not keep every grade in memory. The pass drops each record into a fine grade step — a power of ten chosen so that at least 20,000 steps span the data, 0.001 for the demo's \col{FE} — and keeps the exact sum of $w$ and of $w g$ per step. Tonnage and grade at a cutoff that lies \emph{on} a step are then exact, with memory that depends on the number of occupied steps, not on the number of blocks. That is why a 60-million-block model gives the same curve as a spreadsheet would, if a spreadsheet could hold it.
+\end{why}
+
+For the cutoffs you state in a recipe or routine (\cref{sec:gt-routine}), the consequence is simple: any cutoff you would normally type — 0.5, 55, 0.35 — lies on a step and is exact. A cutoff \emph{between} two steps, such as 40.0001 on a 0.001 step, is counted from the next step up, and micro says so in a warning (\emph{… not on the 0.001 grade step — counted from the next step up}).
+
+Exact arithmetic is not a correct model. The curve describes the blocks as estimated, at their support, and it inherits the estimate's smoothing: an over-smoothed model shows too little grade above a high cutoff, and nothing in this window corrects that. Testing the model against its data is the subject of \cref{ch:validation}.
+
+\section{The settings}\label{sec:gt-settings}
+\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+setting & meaning & default \\ \midrule
+series · layer & the layer this curve reads & the window's layer \\
+series · column & the grade column; calculated and stored columns are offered too & the first numeric column \\
+series · unit & what the grade is in: \%, g/t, ppm, oz/t & the layer's declaration \\
+series · density & an expression: \code{SG}, \code{2.7}, \code{SG * PARTIAL}. Blank = volume & the layer's, else blank \\
+series · filter & rows for this series only, e.g. \code{LITO = "HEMATITE"} & none \\
+\ui{cutoffs} & how many cutoff steps to draw, 5–200 & 40 \\
+\ui{unit} & the plot unit: the cutoff and mean-grade axes & the layer's declaration \\
+\ui{ρ unit} & the unit of the density expressions: t/m³ (= g/cm³), kg/m³, lb/ft³ & t/m³ \\
+\ui{scope} & \ui{all} · \ui{filt} · \ui{sel} (\cref{sec:analysis-scope}) & all \\
+ranges & manual \ui{min}/\ui{max} for the cutoff, tonnage and grade axes & automatic \\ \bottomrule
+\end{tabularx}
+\medskip
+
+Changing a series' layer, column, density or filter, or the \ui{ρ unit}, needs a new \ui{Run}. The cutoff count, the units of grade and the ranges are live.
+
+\section{Density}\label{sec:gt-units}
+The density field is an expression in the same language as the filter (\cref{app:expr}), evaluated per block:
+
+\begin{itemize}
+\item \code{SG} — a density column;
+\item \code{2.7} — a constant, for a model without one;
+\item \code{SG * PARTIAL} — a density scaled by an ore fraction or a partial-block percentage. A fraction column made by a solid query (\cref{ch:geometry}) works here, which gives the tonnage inside a wireframe;
+\item \code{if(LITO = "CANGA", 3.1, SG)} — a correction by rock type.
+\end{itemize}
+
+Leave it blank and the weight is the block volume alone: the axis is labeled \emph{volume (m³)} and the subtitle says \emph{volume (no density)}. Those two labels are the only warnings in this window, so read them before you read a number off the curve.
+
+\begin{caution}
+A density of 2,700 with the \ui{ρ unit} left at t/m³ gives tonnages a thousand times too large, and nothing can detect it — 2,700 t/m³ is a number like any other. If your density column is in kg/m³, declare it in \ui{ρ unit}. Model QA (\cref{ch:qa}) flags densities outside 1–6 t/m³.
+\end{caution}
+
+Grade units work as in every analysis window (\cref{sec:analysis-units}): declared on the series and on the plot, they put series in different units on one honest axis and turn the table's last column into tonnes of metal — or m³ of metal, with no density.
+
+\section{Cutoffs}\label{sec:gt-cutoffs}
+In the window you choose \emph{how many} cutoff steps, not which cutoffs. micro draws one more round value than the count — 40 steps are 41 cutoffs, the first and the last included — evenly spaced by a step of 1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6 or 8 × a power of ten, from a round number at or below the lowest grade to one at or above the highest. Every one is on a grade step, so every plotted point is exact.
+
+Automatic cutoffs are good for looking and wrong for reporting: they come from the data's range, so adding one high-grade block can move them all. A routine therefore requires an explicit list (\cref{sec:gt-routine}), and a figure meant to be compared with last quarter's should come from a recipe or routine with stated cutoffs, or at least fixed axis ranges.
+
+To read a single cutoff precisely in the window, copy the table (\ui{⧉ table}) — it has one row per cutoff drawn — or raise the cutoff count until your value is among the steps.
+
+\section{Comparing models}\label{sec:gt-compare}
+Each series picks its own layer, so you compare two models, or two domains of one, in a single window.
+
+\begin{tryit}
+With the demo's grade–tonnage window open (right-click \file{deposit.csv}, \ui{Grade-tonnage…}, if you closed it):
+\begin{enumerate}
+\item Click \ui{+ add series}. A second series appears on the window's layer, with its first numeric column (\col{FE}) and an empty filter.
+\item In its density field type \code{SG}; in its filter field type \code{LITO = "HEMATITE"}.
+\item Press \ui{Run}. Two pairs of curves appear: the deposit, and its hematite — flat at about 24~Mt until the cutoff passes 60\,\%, then running along the deposit's curve.
+\item Click a series' colored dot to change its color. Both series read the same layer and column, so the legend names both \emph{FE}; the color tells them apart.
+\end{enumerate}
+\end{tryit}
+
+With two block models loaded — this estimate and the previous one, kriging and nearest-neighbor — set the second series' layer menu to the other model and choose its column. The legend then names each curve by layer (without its extension) and column: \emph{model\_A·FE · t} and \emph{model\_A·FE · grade}, then the same for \emph{model\_B}.
+
+The two models need not share a lattice, a block size or even a format, because each series is weighed by its own layer's block volumes. So when a re-blocked model changes the curve, you are looking at the support effect — larger blocks, less variance, fewer tonnes above a high cutoff — not at an artifact of the tool.
+
+\section{On a drillhole layer}\label{sec:gt-holes}
+Grade–tonnage also runs on a drillhole interval table: right-click the drillhole layer and choose \ui{Grade-tonnage…}, or make it active, press \key{⌘K} and type \code{grade}. The window is the same; what it adds up is not.
+
+A drillhole interval has no block volume. It weighs its length, TO − FROM, so the curve is \emph{meters of drilling above the cutoff}, on an axis labeled \emph{length (m)}, with the subtitle \emph{length-weighted (m)}. The mean grade is length-weighted, as a composite's would be, and the table's last column is the \term{accumulation}, grade × length (\%·m, g/t·m) — the number a drill intercept is quoted in.
+
+A density multiplies the length: the axis becomes \emph{length × density (m·t/m³)} and the subtitle says \emph{not tonnes — no section area}. That product is tonnes per square meter of section; an interval table holds no area, so micro never calls it tonnes. On the demo's \file{demo\_assay.csv}, 2,205~m of the drilling grades 30\,\% Fe or better, at a length-weighted 48.7\,\%; 80~m grades 60\,\% or better.
+
+\begin{caution}
+A block model and a drillhole layer cannot share one curve: cubic meters and meters of core are not the same measure. A block model's window lists only block models in its series' layer menu, a drillhole layer's window only drillhole layers, and a routine step that mixes them stops with \emph{series measure different things — block models accumulate volume / tonnes (…), drillholes accumulate interval length in metres (…)}. Run them as two curves. For a model-against-samples check use Q-Q (\cref{ch:stats}) or the validation windows (\cref{ch:validation}), which are made for it.
+\end{caution}
+
+\section{Reconciliation-aware curves}\label{sec:gt-reconcile}
+When you reconcile two models (\cref{ch:joins}), micro makes a derived layer carrying both grades side by side on the common lattice, in columns named \col{ref\_}\emph{grade} and \col{this\_}\emph{grade} — \col{ref\_FE} and \col{this\_FE}.
+
+Open grade–tonnage on that layer and it recognizes the pair: the window starts with two series, the reference and the new model, instead of one. Press \ui{Run} and you have the reconciliation as a pair of grade–tonnage curves over exactly the same blocks. The Δ map of \cref{ch:joins} shows \emph{where} the models differ; this shows what the difference does to the tonnage above each cutoff.
+
+Because both series read one layer, the scope applies to both. Select the bench that was mined this month, set the scope to \ui{sel}, and the pair of curves is the reconciliation of that bench alone, recomputed whenever the selection changes.
+
+\section{Before you quote a number}\label{sec:gt-pitfalls}
+\begin{itemize}
+\item The left axis says \emph{tonnage (t)}, not \emph{volume (m³)} — no density, no tonnes (\cref{sec:gt-units}).
+\item The density is in the declared \ui{ρ unit}, and it has no gaps: a blank density drops the block (\cref{sec:gt-method}).
+\item Unestimated blocks are in no cutoff; the cross-tab's \ui{no grade} column says how much that is (\cref{sec:xtab-nograde}).
+\item There is no \emph{↻ config changed} note under \ui{Run} (\cref{sec:analysis-free}).
+\item The subtitle does not start with \emph{selection} or \emph{filtered} unless you meant it (\cref{sec:analysis-scope}).
+\item The cutoffs in a report are stated, not automatic (\cref{sec:gt-cutoffs}).
+\end{itemize}
+
+\section{In a routine}\label{sec:gt-routine}
+The tool is \code{gt} (its settings: \cref{tool:gt}). They are the window's, with one addition — \code{cutoffs}, the explicit list, in the plot unit \code{gradeUnit} — which a routine must give.
+
+\begin{lstlisting}[language=yaml]
+- tool: "gt"
+  with:
+    layer: "deposit.csv"
+    gradeUnit: "pct"
+    densUnit: "t/m3"
+    series:
+      - col: "FE"
+        unit: "pct"
+        weight: "SG"
+    cutoffs:
+      - 30
+      - 40
+      - 50
+      - 55
+      - 60
+      - 65
+  as: "gt"
+- check:
+    every: "tonnes >= 0"
+    in: "gt"
+  say: "no negative tonnage"
+\end{lstlisting}
+
+The report is a machine table with one row per cutoff and series, keyed by \col{series} and \col{cutoff}:
+
+\medskip
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+column & meaning \\ \midrule
+\col{series} & the grade column; with several series, \emph{layer·column}, the layer without its extension (\code{deposit·FE}) \\
+\col{cutoff} & the cutoff, in \code{gradeUnit} \\
+\col{tonnes} & tonnage at or above the cutoff — named \col{volume} (m³) when no series has a density; on a drillhole layer \col{length} (m), or \col{weighted\_length} (m·t/m³) with a density \\
+\col{grade} & the mean grade of that tonnage; blank when there is none \\
+\col{metal} & tonnes × grade, in tonnes of metal when \code{gradeUnit} is declared (m³ of metal without a density); on a drillhole layer \col{accumulation}, grade × length \\ \bottomrule
+\end{tabularx}
+\medskip
+
+\begin{caution}
+Two series that read the same column of the same layer get the same name in the \col{series} column, so their rows cannot be told apart in the report. In a routine, give each such comparison its own step — one \code{gt} step per filter, each with its own \code{as:} name.
+\end{caution}
+
+A cutoff that is not on the grade step is not an error: the step runs, and the warning appears on the step's line in the run tracker. The resolved settings in the run record (\cref{ch:records}) list the cutoffs actually used, sorted ascending.
+
+To judge the curve, add checks (\cref{ch:checks}): a row check as above, or a comparison of the whole table with the accepted baseline run — \code{compare: "gt"} with a \code{tolerance} — which is the month-over-month test that a model's tonnage above each cutoff has not moved by more than you allow.

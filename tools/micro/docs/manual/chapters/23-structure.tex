@@ -1,0 +1,301 @@
+\chapter{Structural geology on an outcrop mesh}\label{ch:structure}
+\begin{goals}
+\textbf{In this chapter} you measure joint planes on a photogrammetric mesh of an outcrop or a pit wall: paint a face and read its dip and dip direction with a measure of how well it fits a plane, digitize fracture traces and count their I, Y and X nodes, sort the planes into sets on a stereonet, and take the measurements out as a table.
+\end{goals}
+
+A drone or a camera on a stick now gives you an outcrop as a mesh of millions of triangles, in real coordinates. Every joint face exposed on it is an orientation measurement waiting to be taken — hundreds of them, including the ones no one can reach with a compass. \term{Structural analysis} is the window that takes them.
+
+The idea is small. You \emph{paint} the patch of mesh that is one joint face. micro fits a plane through the painted vertices and reports its attitude. Paint is grouped into \term{sets} — J1, J2, bedding — and each connected patch of one set is one \term{plane}. Nothing else is stored: the planes are measured again from the paint whenever the paint changes, so the table can never disagree with what you see on the rock.
+
+\section{Opening a mesh for analysis}\label{sec:structure-open}
+
+Right-click a mesh layer and choose \menu{Structural analysis…}, or press \key{⌘K} and type \code{structural}.\side{The item is offered on meshes you opened, not on the helper layers the window itself creates.} The window is titled \emph{structure} and the mesh's name.
+
+Two things may stand between you and the first measurement.
+
+\paragraph{A streamed mesh.} A very large mesh is drawn \emph{streamed}: micro keeps only what the screen needs, and there is no geometry on the page to measure (\cref{ch:meshes}). The window says so and offers one button, \ui{Load exact (\textasciitilde… GPU)…}, with the memory it will take. Press it and the mesh is loaded exactly.
+
+\paragraph{Preparing.} The first time, micro prepares the mesh: it builds the topology (which vertex touches which), estimates a normal at every vertex, and computes the area each vertex stands for. The subtitle shows the step and the memory kept — “building topology… · \textasciitilde 48 MB”. This is paid once per mesh and stays for as long as the mesh is loaded.
+
+\begin{why}
+Many meshes repeat every corner of every triangle, so that literally no triangle shares a vertex with its neighbor. Before it can walk across a surface, micro welds the vertices that coincide. The paint is still stored against the file's own vertices, so what you paint survives a save, shows in the attribute table and exports with the mesh (\cref{ch:meshes}).
+\end{why}
+
+\section{Attitudes, and how a plane is fitted}\label{sec:structure-attitude}
+
+micro reports a plane as \term{dip direction}/\term{dip}, written \code{270/60}: three digits for the azimuth toward which the plane dips, clockwise from north, and two for the angle below horizontal. Strike is not shown; it is the dip direction less 90°.
+
+\begin{figure}[htbp]\centering
+\begin{tikzpicture}[font=\sffamily\footnotesize, every node/.style={text=ink}, >=Stealth]
+% (a) the plane
+\begin{scope}
+\draw[rule, line width=0.4pt] (-0.4,0) -- (4.4,0) -- (5.6,1.3) -- (0.8,1.3) -- cycle;
+\node[anchor=west, text=muted] at (4.6,0.25) {horizontal};
+\fill[tint, opacity=0.9] (1.0,1.05) -- (4.0,1.05) -- (3.0,-1.25) -- (0.0,-1.25) -- cycle;
+\draw[amber, line width=0.9pt] (1.0,1.05) -- (4.0,1.05) -- (3.0,-1.25) -- (0.0,-1.25) -- cycle;
+\draw[ink, line width=0.7pt] (1.0,1.05) -- (4.0,1.05);
+\node[anchor=south, text=ink] at (2.5,1.05) {strike};
+\draw[amber, ->, line width=0.9pt] (2.5,1.05) -- (1.62,-0.98);
+\node[anchor=east, text=amber] at (1.95,-0.2) {dip};
+\draw[info, ->, line width=0.8pt] (2.5,1.05) -- (1.0,0.45);
+\node[anchor=east, text=info] at (1.05,0.5) {dip direction};
+\draw[ink, ->, line width=0.6pt] (5.0,-1.2) -- (5.0,-0.3); \node[anchor=south] at (5.0,-0.3) {N};
+\draw[ok, ->, line width=0.8pt] (2.0,-0.1) -- (3.1,0.55);
+\node[anchor=west, text=ok] at (3.1,0.6) {normal, out of the rock};
+\node[anchor=north, text=muted] at (2.4,-1.5) {a plane dipping 60° toward 270°};
+\end{scope}
+% (b) the stereonet
+\begin{scope}[xshift=92mm, yshift=-1mm]
+\draw[rule, line width=0.6pt, fill=tint] (0,0) circle (2);
+\draw[rule, line width=0.3pt] (-2,0) -- (2,0); \draw[rule, line width=0.3pt] (0,-2) -- (0,2);
+\draw[ink, line width=0.6pt] (0,2) -- (0,2.18); \node[anchor=south] at (0,2.18) {N};
+\draw[amber, line width=0.9pt] (0,2) arc[start angle=139.8, end angle=220.2, radius=3.098];
+\fill[amber] (1.414,0) circle (2.2pt);
+\node[anchor=south west, text=amber] at (1.45,0.02) {pole};
+\node[anchor=east, text=amber] at (-0.78,0.55) {great circle};
+\node[anchor=north, text=muted] at (0,-2.2) {270/60 on the net};
+\end{scope}
+\end{tikzpicture}
+\caption{Left: dip direction is the azimuth of the steepest way down the plane; dip is the angle of that line below horizontal. Right: the same plane on a lower-hemisphere equal-area stereonet. A plane dipping west plots as a great circle bulging west and as a single \emph{pole} on the east side, 90° from it.}\label{fig:structure-dip}
+\end{figure}
+
+The plane through a painted patch is fitted by \emph{total least squares}: micro takes the positions of the patch's vertices, weights each by the mesh area it stands for, and finds the direction along which the points are thinnest. That direction is the plane's normal. It is a fit to where the rock \emph{is}, not an average of the triangles' normals, so the roughness of a photogrammetric surface averages out instead of biasing the answer.
+
+The fit also yields three numbers that say how the points are spread: the variance along the plane's long axis, along its short axis, and across it. micro calls them $e_0 \ge e_1 \ge e_2$, and reads the quality of the plane from their ratios.
+
+\begin{table}[htbp]\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+column & meaning \\ \midrule
+\ui{\#} & the plane's number \\
+\ui{set} & its set, in the set's color; ⌇ marks a plane measured from a trace \\
+\ui{dd/dip} & dip direction / dip \\
+\ui{n} & the number of vertices in the patch \\
+\ui{radius} & how far the patch reaches from its center, in the mesh's units \\
+\ui{e₂/e₁} & thickness against width. Near zero, the patch is flat; larger, it is rough or curved \\
+\ui{κ} & Fisher's concentration of the patch's vertex normals — how well the surface agrees with itself. High is tight. Beyond 10⁵ it reads \code{>10⁵}: parallel to measuring precision \\
+\ui{quality} & ✓, or ⚠ with the reasons below \\ \bottomrule
+\end{tabularx}
+\caption{The planes table.}\label{tab:structure-planes}
+\end{table}
+
+\begin{table}[htbp]\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+flag & what it tells you \\ \midrule
+\code{rough} & $e_2/e_1 > 0.1$: the patch is not very planar. You may have painted across an edge onto a second face. \\
+\code{elongated} & $e_1/e_0 < 0.01$: the patch is a strip about ten times longer than wide. Its strike is well determined; its dip much less so. \\
+\code{few} & Fewer than 10 vertices. \\
+\code{straight} & For a trace: the line is nearly straight, so it fixes the strike and says nothing reliable about the dip. \\ \bottomrule
+\end{tabularx}
+\caption{The quality flags. Hover a flagged cell for the reason.}\label{tab:structure-flags}
+\end{table}
+
+A flag is advice, not a rejection: a flagged plane stays in the table and on the stereonet. Filter them out later, in the table layer, if your study calls for it (\cref{sec:structure-out}).
+
+\section{Painting planes}\label{sec:structure-paint}
+
+The rail has three groups: \ui{sets}, \ui{tool} and \ui{show}.
+
+\subsection{Sets}
+
+A new window starts with one set, \code{J1}. Each set is a row: a radio button to make it the set you are painting, a color swatch, its name, and — once it has planes — a summary such as \code{14 · 268/61}: the number of planes and their mean attitude. Hover the summary for the full statistics: the Fisher mean, its concentration κ and the 95\% confidence cone α95.
+
+\ui{+ set} adds one, named \code{J2}, \code{J3} and so on in a new color. Click a name to rename it (\code{bedding}, \code{fault}); names must be unique.
+
+\subsection{The wand and the brush}
+
+Choose a tool and press \ui{▸ paint}. The cursor becomes a crosshair and the status line tells you what a click will do. \ui{■ stop (Esc)} or \key{Esc} puts the tool down. While a tool is armed, right-drag still orbits, so you never have to stop painting to look around.
+
+\begin{description}
+\item[\ui{wand}] Click a face and the wand takes \emph{the whole face}: it walks outward from the point you clicked across every vertex whose surface is within a few degrees of the one you clicked, and stops where the rock turns away. One click, one joint face.
+\item[\ui{brush}] Drag across a face. The brush paints within its radius along the stroke — and, like the wand, stays on the face the stroke started on. It does not bleed round an edge onto the next face, which would contaminate the measurement.
+\item[\ui{erase}] Click or drag to unpaint, with whichever of the two shapes you used last. Holding \key{Alt} while painting erases too.
+\end{description}
+
+\begin{table}[htbp]\small
+\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+setting & meaning & default \\ \midrule
+\ui{angle} & The wand and the brush stop where the surface turns more than this from the face you clicked. & 12° \\
+\ui{offset} & Optional. They also stop this far off the clicked plane — at a step onto a parallel face. & off \\
+\ui{radius} & The brush's circle, in the mesh's units. Shown for the brush. & 1 m \\ \bottomrule
+\end{tabularx}
+\caption{The painting tools' settings. They are remembered between sessions.}\label{tab:structure-tools}
+\end{table}
+
+\paragraph{Look before you click.} With the mouse at rest over the rock, micro shows what the tool \emph{would} take: the region lights up in a pale version of the set's color, and the status line reads its attitude and fit — for example “wand → J1: 268/61 · 412 vertices · e₂/e₁ 0.012 — click to take it”. If the stereonet is open, a dashed ghost pole shows where the measurement would land. You see the answer before committing to it. If the highlighted region runs over an edge you did not mean, lower \ui{angle}; if it stops short on a rough face, raise it.
+
+\paragraph{Sets do not overlap.} Painting stays out of vertices that already belong to another set. Click on a face that is already in J2 while painting J1 and the status line says so and asks you to erase it first.
+
+Every paint step is one step of undo: \key{⌘Z} takes it back (\cref{ch:start}).
+
+\shot{structure-window}{The structure window on the demo's final pit, standing in for an outcrop: three sets painted on the pit's walls, a plane disc on each painted face, the wand armed (\ui{■ stop (Esc)}), and eight planes in the table. Plane 5, a long narrow strip down the east wall, is flagged elongated: its strike is sure, its dip much less so.}
+
+\subsection{Seeing what you measured}
+
+The \ui{show} group has three switches.
+
+\begin{description}
+\item[\ui{plane discs}] A disc for each measured plane, drawn on the rock at the plane's center in a lighter tint of its set's color, sized to the patch. A well-fitted disc lies flush on its face. A wrong fit is a disc cutting into the rock at an angle — which is the point of drawing it.
+\item[\ui{colour by orientation}] Colors the whole mesh by the way it faces: hue is the dip direction, saturation is the dip, and a flat surface is white. Joint sets appear as patches of one color \emph{before you paint anything}, which tells you where to click. With this on, the stereonet wears the same color wheel, so a color on the rock reads directly as a position on the net.
+\item[\ui{trace nodes}] Appears once there are traces; see \cref{sec:structure-traces}.
+\end{description}
+
+Click a row in the planes table and the camera goes to that plane.
+
+\begin{tryit}
+The demo project has no outcrop, but its final pit is a mesh with sloping sides, and you can measure a patch of slope.
+\begin{enumerate}
+\item Open the demo project. In the layers panel open the \ui{mining phases} group and show \ui{phase 3 — final pit}.
+\item Hide \file{deposit.csv} so the pit is easy to see, and turn the section off (\key{x}).
+\item Right-click the pit layer and choose \menu{Structural analysis…}. Wait for the preparation to finish.
+\item Tick \ui{colour by orientation}. The sides of the pit take colors by the way they face; the floor of the bowl, nearly level, is pale.
+\item Press \ui{▸ paint}, rest the mouse on the pit's side, and read the attitude on the status line. Click. A disc appears and the table gains a row.
+\item Paint a patch on the opposite side of the pit. Its dip direction differs by about 180°.
+\item Press \ui{◎ stereonet}: the two poles sit on opposite sides of the net.
+\end{enumerate}
+The demo pit is a smooth bowl, not a benched wall, so the wand takes a band of slope rather than a crisp face, and the quality column may well flag it. On a real outcrop the faces stop where the rock turns, and the wand stops with them.
+\end{tryit}
+
+\section{Traces and the fracture network}\label{sec:structure-traces}
+
+Many joints show no face at all — only the line where they cut the outcrop. The \ui{trace} tool digitizes that line.
+
+Choose \ui{trace}, press \ui{▸ paint}, and click points along the fracture. Between your clicks the line does not cut straight through the air: it follows the \emph{surface} of the mesh, along the shortest path over the rock. A live preview runs from the last point to the cursor.
+
+\begin{table}[htbp]\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+action & effect \\ \midrule
+click & add a point \\
+double-click, or \key{Enter} & finish the trace \\
+\key{Backspace} & drop the last point \\
+\key{Esc} & cancel the trace being drawn; again, put the tool down \\ \bottomrule
+\end{tabularx}
+\caption{Drawing a trace.}\label{tab:structure-trace-keys}
+\end{table}
+
+A trace belongs to the active set and is drawn as a thin tube in its color. It also yields a plane: micro fits one through the trace's points. Where the trace crosses relief — climbs over a ledge, wraps a corner — the plane is well determined, and it appears in the planes table marked ⌇ with the trace's length. Where the outcrop is flat the trace is a straight line, which fixes a strike and nothing more; that plane is flagged \code{straight} instead of reporting a confident dip it does not have. Delete a trace with the × at the end of its row.
+
+\subsection{I, Y and X nodes}
+
+Draw several traces and they form a network. The way fractures end and meet says how connected the rock mass is, and micro counts it in the standard way of Sanderson and Nixon (2015):
+
+\begin{description}
+\item[I] a trace ends in intact rock;
+\item[Y] a trace ends against another;
+\item[X] two traces cross.
+\end{description}
+
+\begin{figure}[htbp]\centering
+\begin{tikzpicture}[font=\sffamily\footnotesize, every node/.style={text=ink}]
+\draw[amber, line width=1pt] (0.2,0.4) -- (5.6,1.6);
+\draw[info, line width=1pt] (1.6,2.4) -- (2.4,0.9);
+\draw[info, line width=1pt] (3.6,2.6) -- (4.6,-0.2);
+\draw[ok, line width=1pt] (6.4,2.2) -- (7.6,0.6);
+\foreach \p/\l/\a in {{(0.2,0.4)}/I/north, {(5.6,1.6)}/I/south, {(1.6,2.4)}/I/east, {(3.6,2.6)}/I/east, {(4.6,-0.2)}/I/west, {(6.4,2.2)}/I/east, {(7.6,0.6)}/I/west} {\fill[white, draw=ink, line width=0.5pt] \p circle (2.2pt); \node[anchor=\a, text=muted] at \p {\,\l\,};}
+\fill[sel] (2.39,0.89) circle (2.6pt); \node[anchor=north, text=sel] at (2.39,0.78) {Y};
+\fill[fault] (4.08,1.26) circle (2.6pt); \node[anchor=south west, text=fault] at (4.12,1.28) {X};
+\node[anchor=north, text=muted] at (3.9,-0.6) {4 traces: 7 I · 1 Y · 1 X};
+\end{tikzpicture}
+\caption{Node types on a small network. The short blue trace on the left ends against the amber one: a Y. The second blue trace carries on across it: an X. Every other end stops in intact rock: an I. The isolated green trace contributes two I nodes and no connection.}\label{fig:structure-nodes}
+\end{figure}
+
+To make a Y or an X on purpose, bring the cursor onto an existing trace. It snaps, and the status line says: \emph{on an existing trace — click to end against it (a Y node) or carry on across it (an X)}. Finish there for a Y; keep clicking beyond it for an X.
+
+Under the planes table a \ui{trace network} panel appears:
+
+\begin{itemize}
+\item the counts of I, Y and X, each in its color (and “other” for five or more branches at one point, which usually means two nodes digitized on top of each other);
+\item \emph{branches} and \emph{lines}: branches = (I + 3Y + 4X)/2, lines = (I + Y)/2;
+\item $C_B$, connections per branch, from 0 to 2, and $C_L$, connections per line. A $C_L$ of about 3.57 is the percolation threshold usually quoted;
+\item a small I–Y–X triangle with the network plotted as one point by its node proportions, and dashed lines of constant $C_L$ = 1, 2, 3;
+\item \ui{abutments}: which set ends against which, and how often — “J2 ends against J1 ×4”. A trace that ends against another formed after it, so abutments are evidence of relative age: the younger set abuts the older;
+\item a count of \emph{touches not counted}: two traces that share a point without truly crossing, or that run along each other, are not nodes.
+\end{itemize}
+
+Tick \ui{trace nodes} in the \ui{show} group to mark the nodes on the rock.
+
+\begin{caution}
+Node counts depend on where the outcrop ends. A trace that runs off the edge of the mesh ends in an I that is not an end at all. Digitize inside a window comfortably within the mesh, and treat the I count as an upper bound.
+\end{caution}
+
+\section{The stereonet}\label{sec:structure-net}
+
+Press \ui{◎ stereonet} on the rail. A second window opens with the planes' poles on a lower-hemisphere, equal-area net.
+
+\shot[0.55\linewidth]{structure-stereonet}{The stereonet of the same eight planes: poles colored by set, each set's mean as an open circle with its α95 cone dashed around it, a density contour behind, and the statistics beneath. The three J1 poles have been lassoed, so the row for moving them to another set shows.}
+
+Each plane is a dot in its set's color, a little larger when the patch has more vertices. Each set with planes gets an open circle at its Fisher mean and, with two or more planes, a small circle around the mean at its α95. Beneath the net, one line per set gives the numbers: the set's name, the number of planes, the mean attitude, κ and α95.
+
+\begin{table}[htbp]\small
+\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+setting & meaning & default \\ \midrule
+\ui{great circles} & Draw each plane as its great circle too, not only as its pole. & off \\
+\ui{density} & Fisher-kernel density contours of all the poles; drawn with three or more. & on \\ \bottomrule
+\end{tabularx}
+\caption{The stereonet's options.}\label{tab:structure-net}
+\end{table}
+
+\begin{note}
+A set's statistics count each plane as one observation, whatever its size — the usual practice: a stereonet counts measurements, not square meters. The poles of a near-vertical set fall on both sides of the net's rim; micro aligns them before averaging, so such a set gets one mean and not two.
+\end{note}
+
+\subsection{Sorting planes into sets on the net}
+
+The net is also a tool. It is often easier to decide what is one set by looking at where the poles cluster than by deciding face by face on the rock.
+
+\begin{itemize}
+\item \emph{Click a pole} to select its plane; the camera goes to it on the rock, and its row is highlighted in the planes table. \key{Shift}-click adds or removes one.
+\item \emph{Drag a lasso} around a cluster to select every pole inside. \key{Shift} adds to the selection.
+\end{itemize}
+
+With planes selected, a row appears under the net: “\emph{N} planes selected →”, a list of the sets plus \ui{+ new set}, and the buttons \ui{move} and \ui{clear}. Choose a set and press \ui{move}: the planes' paint is repainted in that set, traces are reassigned, and everything is measured again. \key{⌘Z} undoes it.
+
+That suggests a method: paint every face you can find into a single set, without thinking about sets at all; open the stereonet; lasso each cluster and move it to a set of its own.
+
+\subsection{The net as a figure}
+
+\ui{⇥ figure} sends the stereonet to the composer as a vector frame, on white, with the set statistics printed beneath it (\cref{ch:composer}). The frame remembers which mesh it came from. When you later press \ui{↻ refresh} in the composer, the planes are measured again from the current paint and the net is redrawn — a figure in a report follows the work.
+
+\section{Sets from a painted mesh}\label{sec:structure-import}
+
+Before tools like this existed, a common practice was to paint the joint faces by hand in a mesh editor — pure red for one set, pure green for another — and extract attitudes from the colors afterwards. If you have such a mesh, micro reads it directly.
+
+When a mesh carries vertex colors, the rail shows a button, \ui{⇩ sets from paint}. Press it and every \emph{saturated} color present — pure red, green, blue, yellow, magenta, cyan — becomes a set, named for its color and painted in it. The status line reports the sets made and the vertices in each.
+
+Photographic color never becomes a set. The texture of real rock is never exactly pure red; only deliberate paint is. So the button is safe to press on a textured photogrammetric mesh: it either finds the paint, or says \emph{no saturated paint found}.
+
+Each color arrives as one undo step, so \key{⌘Z} takes the sets back one at a time.
+
+\section{Taking the measurements out}\label{sec:structure-out}
+
+The foot of the rail holds the exports.
+
+\paragraph{\ui{→ table layer}} makes the planes a table layer named after the mesh, with \code{-planes} appended (\cref{ch:columns}). Pressing it again replaces the earlier table, so there is only ever one. Prefer this form. You can filter a table layer (\code{quality == "ok" and n\_vertices > 50}), add calculated columns and export it as CSV or Parquet, and its lineage records the sets, the plane count and the wand's settings.
+
+\begin{table}[htbp]\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+column & meaning \\ \midrule
+\col{plane\_id}, \col{set} & the plane's number and its set \\
+\col{source} & \code{patch} for a painted face, \code{trace} for a trace \\
+\col{length} & a trace's length along the surface \\
+\col{dip\_direction}, \col{dip} & the attitude, in degrees \\
+\col{X}, \col{Y}, \col{Z} & the patch's center, in world coordinates \\
+\col{nx}, \col{ny}, \col{nz} & the plane's unit normal. For a painted face it points \emph{out of the rock} — the polarity an implicit model needs and an attitude alone throws away \\
+\col{eig0}, \col{eig1}, \col{eig2} & the three variances of the fit \\
+\col{n\_vertices}, \col{radius} & the patch's size \\
+\col{average\_resultant\_length}, \col{kappa} & Fisher statistics of the patch's normals; κ is capped at 10⁵ \\
+\col{rms} & the root-mean-square distance of the vertices from the plane \\
+\col{eig\_ratio} & $e_2/e_1$ \\
+\col{quality} & \code{ok}, or the flags \\ \bottomrule
+\end{tabularx}
+\caption{The columns of the planes table layer.}\label{tab:structure-columns}
+\end{table}
+
+\paragraph{\ui{⧉ table}} copies the same table to the clipboard as tab-separated text, and \ui{⇥ figure} beside it puts the table on the composer page (\cref{ch:composer}).
+
+\paragraph{\ui{⇥ traces .dxf}} appears once there are traces. It writes each trace as a 3D polyline following the surface, in world coordinates, on a DXF layer named for its set and in the set's color — ready for CAD or a modeling package.
+
+\begin{note}
+What you paint is saved with the project. The sets are a category column named \col{SET} on the mesh's vertices, and the traces are stored with the layer; reopen the project and the planes are measured again from them (\cref{ch:projects}). Because \col{SET} is an ordinary painted column, it also shows in the mesh's attribute table and in its filter.
+\end{note}
+
+There is no routine tool for structural analysis: painting is done by hand and by eye. What a routine can do is use the result — the planes table is a layer that later steps can read, and a composer page carrying the stereonet is rebuilt by \ui{↻ refresh} (\cref{ch:composer,ch:atlas}).

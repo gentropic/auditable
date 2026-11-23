@@ -1,0 +1,226 @@
+\chapter{Opening data}\label{ch:opening}
+\begin{goals}
+\textbf{In this chapter} you open any file micro reads, correct what it guessed in the open dialog, change your mind afterwards with \ui{Reinterpret as…}, pick up a file that changed on disk, and learn what ``never resident'' means when the file is larger than your memory.
+\end{goals}
+
+micro has no import step (\cref{sec:micro-streaming}). You hand it a file, it reads the first few kilobytes to decide what the file is, and the data starts to draw while the rest is still being read. Nothing is converted, copied or uploaded on the way in: the file on your disk stays the source, and micro goes back to it whenever it needs a value.
+
+So micro has to know \emph{how} to read the file: which columns are the coordinates, whether a comma is a decimal mark, whether three tables are one drillhole set. It guesses. The open dialog is where it shows you its guesses and where you correct them, and a wrong guess caught there costs a click, where one caught in a tonnage table costs a week.
+
+\section{Formats at a glance}\label{sec:opening-formats}
+
+\Cref{tab:opening-formats} lists what opens, and as what. The rest of Part~II takes each kind in turn; \cref{ch:formats} is the full reference, including what micro writes.
+
+\begin{table}[htbp]
+\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+file & opens as \\ \midrule
+\file{.csv} \file{.txt} \file{.dat} & a block model, points, a drillhole table (collar, survey or intervals), or a plain table — decided from the header (\cref{ch:blocks,ch:drillholes,ch:columns}) \\
+\file{.parquet} & a block model, or points \\
+\file{.dm} & a Datamine block model, or one half of a wireframe pair (\cref{ch:meshes}) \\
+\file{.xlsx} & tables, one per sheet (\cref{ch:columns}) \\
+\file{.las} \file{.xyz} \file{.pts} & a point cloud \\
+\file{.ply} & a mesh when it has faces, points when it does not \\
+\file{.obj} \file{.msh} \file{.lfm} \file{.wfr} & meshes (\cref{ch:meshes}) \\
+\file{.dxf} & a mesh, design strings, or points — by what the drawing holds (\cref{sec:meshes-dxf}) \\
+\file{.omf} & a layer per element, in a group \\
+\file{.tif} \file{.grd} \file{.asc} & a grid (\cref{ch:grids}) \\
+\bottomrule
+\end{tabularx}
+\caption{What micro opens. Every row is read in place; none is imported.}\label{tab:opening-formats}
+\end{table}
+
+\begin{note}
+Compressed point clouds (\file{.laz}) are not read. Decoding them needs a compiled decoder, and micro ships none (\cref{ch:sealed} says why). Convert a \file{.laz} to \file{.las} first.
+\end{note}
+
+\section{Three ways in}\label{sec:opening-ways}
+
+\textbf{Drag} one file or several anywhere onto the window. \textbf{\menu{File>Open…}} opens the system file picker, where you can also choose several files. Either way you land in the open dialog (\cref{sec:opening-dialog}).
+
+The third way is a project. \menu{File>Open project folder…} restores a whole saved session, with its layers, styling, filters and camera (\cref{ch:projects}). A project pack, a whole project in one file, opens from \menu{File>Open project pack…}, or by dropping it on the window.
+
+With \ui{Remember recent files} ticked in the \ui{File} menu, the files you opened last are listed in that menu, and on the start screen. Recent projects are listed on the start screen too. An entry with a \ui{↻} in front is one micro remembers by name only, without a handle to the file, so it has to be located again.
+
+\begin{caution}
+How you open a file decides what micro can do with it later. In Chrome and Edge, a file opened through \menu{File>Open…}, or from a project folder, comes with a \term{file handle}: micro can read it again after it changes (\cref{sec:opening-reload}). A file you \emph{drag} in, or open in a browser without that feature, is a snapshot of its bytes at that moment. It works the same in every other way, but \ui{Reload from disk} is not offered for it.
+\end{caution}
+
+If you have no data at hand, the start screen offers \ui{▸ open the demo project} (\cref{sec:start-data}). Every exercise in this book uses it.
+
+\section{The open dialog}\label{sec:opening-dialog}
+
+\shot{open-dialog}{The open dialog with a block model, a drillhole trio and a mesh dropped together. Each row says what micro thinks the file is; \ui{Open as} overrides it.}
+
+The dialog, titled \ui{open files}, has one row per file. Reading a row from left to right:
+
+\begin{itemize}
+\item A \textbf{checkbox}. Untick it to leave that file out without starting over.
+\item The file's \textbf{name} and \textbf{size}.
+\item A \textbf{description} read from the file itself, not from its extension: \ui{Parquet · 1,786,620 rows · 6 cols · snappy}, \ui{GeoTIFF · 4,096×4,096 32-bit float · 3 overviews}, \ui{Wavefront mesh (.obj) · 4 objects}, \ui{delimited · 6 cols}. Formats that carry a census in their header or footer (LAS, PLY, Parquet, GeoTIFF, \file{.wfr}, OMF, \file{.lfm}) are described from that part alone, so a 40~GB file takes as long to describe as a small one.
+\end{itemize}
+
+Under the row come the controls that apply to that file.
+
+\subsection{Open as}\label{sec:opening-openas}
+
+\ui{Open as} appears whenever a file can be read more than one way. \Cref{tab:opening-openas} lists the choices.
+
+\begin{table}[htbp]
+\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+file & \ui{Open as} offers \\ \midrule
+delimited text & \ui{block model} · \ui{points} · \ui{DH collar} · \ui{DH survey} · \ui{DH intervals} \\
+Parquet, Datamine \file{.dm} model & \ui{block model} · \ui{points} \\
+PLY & \ui{mesh} · \ui{points} \\
+DXF & \ui{mesh (3DFACE surfaces)} · \ui{design strings (capsules)} · \ui{points (pegs)} — only the kinds the drawing holds \\
+\bottomrule
+\end{tabularx}
+\caption{The interpretations the open dialog offers. A file with a single reading (a LAS cloud, a grid, a \file{.msh}) shows no \ui{Open as} at all.}\label{tab:opening-openas}
+\end{table}
+
+The default is micro's best guess. A delimited file whose header reads like a collar, survey or interval table defaults to that drillhole role; a PLY with faces defaults to \ui{mesh}; \file{.xyz} and \file{.pts} dumps default to \ui{points}. Everything else that is delimited defaults to \ui{block model}, which falls back to points by itself when the coordinates sit on no lattice (\cref{ch:blocks}).
+
+\ui{points} is the escape hatch for a model that micro grids wrongly, or that you only want to look at. Every row becomes a dot at its coordinates, and filters, colors and statistics still work. Analyses that need block volumes, such as grade–tonnage and swath, are not offered for it.
+
+\subsection{The coordinate mapping}
+
+A delimited file opened as a block model or as points shows three dropdowns, \ui{X}, \ui{Y} and \ui{Z}, each listing the file's columns. micro pre-selects them from the names (\col{XC} \col{YC} \col{ZC}, \col{X} \col{Y} \col{Z}, easting/northing/elevation-style names). Correct them here when it picked wrong, for instance when a file carries both a block centroid and a corner.
+
+Formats that describe their own layout need no mapping, so none is shown for them. Drillhole tables have a mapping too, but it is sniffed at open and edited afterwards (\cref{sec:opening-fileinfo}).
+
+\subsection{Drillhole sets}
+
+Rows opened as \ui{DH collar}, \ui{DH survey} and \ui{DH intervals} assemble themselves into a set. A banner under the rows reports it, \ui{drillhole set: collar + survey + 1 interval table}, and carries the two desurvey choices, \ui{desurvey} and \ui{dip}. When a piece is missing the banner says which: \ui{drillhole set incomplete — need survey}. With two or more collar files, each drillhole row gains a \ui{set} number, so that you can say which survey and which assays belong to which collars. \Cref{ch:drillholes} covers all of it.
+
+\subsection{Splitting, and adding or replacing}
+
+An \file{.obj} or \file{.lfm} that holds several objects shows \ui{split into N solids (as a group)}, ticked by default; hover it to read the object names. Left ticked, each object becomes its own mesh layer inside a group named after the file.
+
+At the bottom, \ui{add to the view} keeps what is already open and \ui{replace the view} closes it first. The dialog chooses \ui{add} when layers are open and \ui{replace} when the view is empty. \ui{Open} loads everything that is ticked.
+
+\begin{tryit}
+See the dialog on real files, without leaving the demo. The first step saves a project folder, so use Chrome or Edge. If you kept the \file{micro-tour} folder from \cref{sec:tour-save}, start at step~3.
+\begin{enumerate}
+\item On the start screen, click \ui{▸ open the demo project}.
+\item Choose \menu{File>Save project as…}, pick an empty folder, and click \ui{Copy into project} when micro asks. Answer \ui{Not now} if it offers to convert anything. The demo is now ordinary files in that folder.
+\item Reload the page. The view is empty again.
+\item Choose \menu{File>Open…}, go to the folder's \file{drillholes} subfolder, and select the collar, survey and assay files together.
+\item Read the three rows. Each says \ui{delimited} and its column count, and \ui{Open as} already shows \ui{DH collar}, \ui{DH survey} and \ui{DH intervals}. The banner reports one complete set.
+\item Change the assay file's \ui{Open as} to \ui{points}. The banner turns to \ui{incomplete — need intervals}, and \ui{X} \ui{Y} \ui{Z} dropdowns appear for a file that has no coordinates.
+\item Change it back, and click \ui{Open}.
+\end{enumerate}
+\end{tryit}
+
+\section{What micro detected: file info and the source tab}\label{sec:opening-fileinfo}
+
+\sidekey{i}{file info for the active layer}
+When a number in an analysis surprises you, look first at what micro made of the file. Press \key{i} (or choose \menu{File>File info…}, or \ui{File info…} on the layer's right-click menu). \term{File info} gives the kind micro read the file as, the number of records, the extent in X, Y and Z, and the column names.
+
+For a block model it adds the grid it found (the count of blocks along each axis), the block size, block 0's centroid, and the rotation or the sub-block sizes where there are any, then the columns micro colors by (\ui{channels}) and the classes of the category column. Two rows describe micro's side rather than the file: \ui{frame origin}, the local origin micro draws around, and \ui{vram (layer)}, the graphics memory the layer holds. For a drillhole set it adds the number of holes, how many intervals could be placed, and each failed check with the holes it concerns. Click a value to copy it.
+
+\shot[0.7\linewidth]{open-fileinfo}{File info for the demo's \file{deposit.csv}: a delimited block model of 1,786,620 records, its extent, the 200 × 100 × 100 grid of 10 × 10 × 5~m blocks micro inferred from the centroids, its columns, and the four classes of \col{LITO}.}
+
+You correct these decisions on the \ui{source} tab of the layer's properties (\menu{Data>Source (mapping / desurvey)…}). For a delimited model it holds the \ui{X}, \ui{Y}, \ui{Z} mapping again; changing one re-reads the file. For a drillhole layer it holds the collar and survey column mappings and the desurvey method and dip convention; changing one re-desurveys the set.
+
+\begin{why}
+micro guesses, shows the guess, and lets you change it, in that order. The alternative, a wizard that asks every question before showing anything, costs you a minute on every file to protect you from a mistake that happens on one file in twenty. The price of guessing first is that you must be able to audit the guess. File info is that audit.
+\end{why}
+
+\section{Delimiters, quotes and decimal commas}\label{sec:opening-delimited}
+
+Delimited text is the least self-describing format micro reads, so it gets the most sniffing.
+
+\textbf{The delimiter} is detected from the first lines: comma, semicolon, tab or runs of spaces. A \file{.csv} that turns out to be semicolon-separated needs no attention.
+
+\textbf{Quoting} follows RFC~4180. A quoted field may contain the delimiter, a line break, or a doubled quote, and micro reads it as one value. This matters for lithology descriptions and comments exported from a database.
+
+\textbf{Decimal commas.}\index{decimal comma} A semicolon-separated file whose numbers are written \code{61,4}, the Brazilian and European convention, is detected from its data rows and read as numbers everywhere: coordinates, grades, even a detection-limit value such as \code{<0,05}. Exports offer the decimal comma on the way out (\cref{sec:columns-export}).
+
+\textbf{A missing header} is noticed: the dialog reports \ui{delimited · 6 cols, no header}.
+
+What micro makes of awkward \emph{values} (\code{<0.01}, \code{-99}, a blank) is a property of the column, not of the file. \Cref{ch:columns} covers it.
+
+\section{Reinterpret as…}\label{sec:opening-reinterpret}
+
+The open dialog is not your last chance. Right-click a layer and choose \ui{Reinterpret as…} to re-open its source through a different reader, in place: the layer keeps its position in the panel, its name and its visibility. The menu offers only what makes sense for that layer (\cref{tab:opening-reinterpret}).
+
+\begin{table}[htbp]
+\small
+\begin{tabularx}{\linewidth}{@{}LL@{}}\toprule
+the layer is & \ui{Reinterpret as…} offers \\ \midrule
+a block model & \ui{points} · \ui{table (drop the geometry)} \\
+a model drawn as points & \ui{block model} · \ui{table (drop the geometry)} \\
+a table whose columns include coordinates & \ui{block model (use its X/Y/Z)} · \ui{points (use its X/Y/Z)} \\
+a PLY mesh / PLY points & \ui{points} / \ui{mesh} \\
+a grid & \ui{surface (shaded relief)}, and back with \ui{points (elevation)} \\
+a DXF layer & the other kinds the drawing holds: mesh, design strings, points \\
+\bottomrule
+\end{tabularx}
+\caption{What a loaded layer can be reinterpreted as.}\label{tab:opening-reinterpret}
+\end{table}
+
+Drillhole layers are not on the list. A drillhole set is three files bound together, so its equivalents live on the set's own menu: \ui{Re-desurvey set…} and \ui{Add interval table…} (\cref{ch:drillholes}).
+
+\begin{tryit}
+\begin{enumerate}
+\item In the demo project, right-click \file{deposit.csv} and choose \menu{Reinterpret as…>points}. The boxes become dots; the grade colors and the filter are unchanged.
+\item Right-click it again and choose \menu{Reinterpret as…>block model}. The boxes return.
+\item Press \key{x} to turn the section off, so that the topography is drawn whole and not only as its line on the cut face (\cref{sec:meshes-style}). Right-click \ui{topography} and choose \menu{Reinterpret as…>points (elevation)}. The shaded relief becomes the cloud of grid nodes it is made from.
+\item Choose \menu{Reinterpret as…>surface (shaded relief)} on it to bring the relief back, and press \key{x} to turn the section on again.
+\end{enumerate}
+\end{tryit}
+
+\section{Reload from disk, and Change file…}\label{sec:opening-reload}
+
+Models get re-exported. Two commands on a layer's right-click menu deal with that without making you rebuild the layer.
+
+\ui{Reload from disk}\index{reload from disk} reads the same file again, fresh, and re-opens it through the layer's existing configuration. The column mapping, the styling, the filter, the calculated columns and, for a grid, its surface state all carry over. Use it after another program overwrites the file, or after you edit a parameter workbook in Excel.
+
+\ui{Change file…} points the layer at a \emph{different} file of the same kind: this month's model in place of last month's. The mapping is carried over by column \emph{name}, so a new file with its columns in another order still lands correctly. If the new file holds another kind of data, micro refuses and suggests opening it as a new layer.
+
+\begin{caution}
+Painted columns, stored columns and the selection are made record by record. If the file's contents changed, record 1,204 is no longer the same block, and that work would land on the wrong records. micro compares the old and new contents; when they differ and such work exists, it asks first, names what will be dropped, and offers \ui{Reload and drop} or \ui{Cancel}. Calculated columns are always kept: they are expressions, and recompute. Identical bytes keep everything.
+\end{caution}
+
+Neither command is offered for a drillhole set or a Datamine wireframe pair, since both are several files. \ui{Reload from disk} needs a file handle, so it is absent on drag-dropped layers, and \ui{Change file…} is not offered for one sheet of a workbook.
+
+Both commands work on a file you already have open. For data that arrived since the last save, \menu{File>Scan folder for new data…} looks through the project folder and offers what it finds (\cref{ch:projects}).
+
+\section{What ``never resident'' means for big files}\label{sec:opening-resident}
+
+\begin{figure}[htbp]\centering
+\begin{tikzpicture}[font=\sffamily\small, node distance=6mm,
+  box/.style={draw=rule, fill=tint, rounded corners=1.5pt, minimum height=10mm, inner xsep=3mm, text=ink, align=center},
+  arr/.style={-{Stealth[length=2mm]}, draw=amber, line width=0.7pt}]
+\node[box] (file) {file on disk\\[-1pt]{\footnotesize\color{muted}any size}};
+\node[box, right=of file] (read) {read a piece\\[-1pt]{\footnotesize\color{muted}megabytes}};
+\node[box, right=of read] (chunk) {pack a chunk\\[-1pt]{\footnotesize\color{muted}position + color}};
+\node[box, right=of chunk] (view) {the view\\[-1pt]{\footnotesize\color{muted}graphics memory}};
+\draw[arr] (file) -- (read);
+\draw[arr] (read) -- (chunk);
+\draw[arr] (chunk) -- (view);
+\draw[arr, draw=rule, dashed] (view.south) -- ++(0,-6mm) -| node[pos=0.25, below, text=muted, font=\sffamily\footnotesize]{a pick, a filter, an analysis: read those rows again} (file.south);
+\end{tikzpicture}
+\caption{How a file reaches the screen. Only the piece being read is in memory; what stays is a compact chunk on the graphics card. Anything that needs the real values goes back to the file.}\label{fig:opening-stream}
+\end{figure}
+
+A file is \term{resident} when a program holds all of it, decoded, in memory. Most desktop packages work that way, which is why a 20~GB model needs a 64~GB workstation. micro never does. It reads a file in pieces. From each piece it keeps, for display, only a position and one color value per record, packed small. Then it lets the piece go (\cref{fig:opening-stream}).
+
+Five things follow for you.
+
+\textbf{The first picture is early and coarse.} Chunks are drawn in an order that spreads them across the whole dataset, so a few percent of a model already shows its full extent and shape. The view sharpens while you orbit.
+
+\textbf{The full row lives in the file.} Click a block and the record panel shows every column of its row: micro read that one row from the source at that moment. The attribute table scrolls the same way, fetching the rows on screen (\cref{sec:columns-attrtable}). Neither needs the table in memory.
+
+\textbf{Filters and analyses are sweeps.} A filter on a column micro has not seen yet streams the file once to evaluate it. Formats that can prove a stretch of the file does not match, Parquet above all, let the sweep skip it (\cref{sec:blocks-parquet}). Columns you filter on repeatedly are kept in a budgeted cache, so the second filter is instant (\cref{ch:store}).
+
+\textbf{Big inputs are thinned for display, not for evaluation.} A grid larger than about eight million nodes is shown through one of its overviews or a decimated read, while every calculation against it reads the full resolution for the area it needs (\cref{ch:grids}). A mesh above two million triangles opens \emph{streamed}, for display only and light on memory, and you can convert it to the exact form when a query needs it (\cref{sec:meshes-tiers}).
+
+\textbf{The source file must stay reachable.} micro goes back to the file, so moving or deleting it while the layer is open leaves the layer unable to answer. Saving a project copies the sources or records where they are, by your choice, so that the project can find them again (\cref{ch:projects}).
+
+\begin{tip}
+The open dialog is a quick way to find out what an unknown file is, because describing a file never reads all of it. Drop the file, read its row, and click \ui{×} to cancel if you only wanted to know.
+\end{tip}
+
+A few things are held whole, on purpose, because they are small or because exactness needs them: the collar and survey tables of a drillhole set; a mesh in its exact form; the geometry micro derives itself, such as a grade shell. Each chapter says so where it applies.

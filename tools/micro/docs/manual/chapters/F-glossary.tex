@@ -1,0 +1,409 @@
+\chapter{Glossary}\label{app:glossary}\label{ch:glossary}
+
+\begin{goals}
+\textbf{In this appendix}: the words micro uses in a particular sense, each with a short definition
+and the chapter that explains it. Geological terms are listed only where micro means something
+specific by them.
+\end{goals}
+
+\begin{description}
+
+\item[accept] To put your name to a finished run, making it the baseline for later runs of the same
+  routine. Recorded in \file{accepted.json} beside the run record, which is never edited.
+  \cref{ch:checks}.
+
+\item[accumulation] Grade × length: what a grade–tonnage curve on a drillhole layer (and the
+  \code{xtab} tool run on one) gives in place of metal, in units such as \%·m or g/t·m (times density when one is given).
+  \cref{sec:gt-holes,ch:resources}.
+
+\item[active layer] The layer micro's own panels and single keys act on: the one the filter box
+  shows, \key{t} opens the table of, and \key{h} hides. Step it with \key{[} and \key{]}.
+  \cref{ch:start}.
+
+\item[atlas] A set of pages made from one composer figure, one page per bench or per section,
+  written by a routine. \cref{ch:atlas}.
+
+\item[attitude] The orientation of a plane fitted to a painted patch of an outcrop mesh, given as
+  dip and dip direction, with a measure of how well the patch fits a plane. \cref{ch:structure}.
+
+\item[attribute table] A layer's records as rows in a floating window, read in windows so a model
+  of millions of rows scrolls at once. Linked to the view both ways: click a row to pick the
+  record. \cref{ch:columns}.
+
+\item[band] One slice of a swath: the records whose position along the swath direction falls in one
+  interval. Each band gives one point of the swath plot. \cref{ch:swath}.
+
+\item[band ghost] The slab of a swath band drawn in the 3D view while you hover its point on the
+  plot. \cref{ch:swath}.
+
+\item[baseline] The earlier run of a routine that a new run is judged against: the most recently
+  accepted run or, if none has been accepted, the latest that finished ok. Checks read it as
+  \code{prev.}. \cref{ch:checks}.
+
+\item[blank] A missing value. Never a zero: a blank grade is unestimated or unassayed, and it is
+  left out of means, curves and color scales. \cref{ch:columns,app:expr}.
+
+\item[block edges] The outline drawn around every block, and around every cut block on a section.
+  \key{⇧B} toggles it. \cref{ch:color}.
+
+\item[bookmark] A saved viewpoint: the camera and the section. A numbered bookmark is a view
+  slot. \cref{ch:sections}.
+
+\item[broadcast] Landing a collar column on the intervals of the same holes, matched by hole id, so
+  that interval-level work can use it. \cref{ch:drillholes}.
+
+\item[calculated column (ƒ)] A column defined by an expression and computed when needed; what is
+  stored is the definition. Shown with an ƒ. Materializing it makes a stored column.
+  \cref{ch:filter}.
+
+\item[captions: in the section] The default setting of a composer view for the statistics its
+  captions quote (\code{\{count\}}, \code{\{mean:…\}}): only the records inside the view's section
+  are counted, so each bench of an atlas reports its own numbers and the benches add up to the
+  model. The other setting, \emph{whole model}, counts every record the filters keep.
+  \cref{ch:composer,ch:atlas}.
+
+\item[category] The text column a layer is classed by (a lithology, a domain), with one legend
+  entry, color and eye per value. \cref{ch:color}.
+
+\item[check] A step of a routine that judges a result: one condition over the values of earlier
+  steps, or over every row of a step's table. It passes, fails, or is not evaluated.
+  \cref{ch:checks}.
+
+\item[class] One interval of a classed numeric color scale (the values between two breaks), or one
+  entry of a category legend. Each has its own color and eye. \cref{ch:color}.
+
+\item[collar] The record of a hole's start: its id, its position and usually its length. In micro,
+  the collars are one location of a drillhole set, with a table of their own. \cref{ch:drillholes}.
+
+\item[command palette] The searchable list of every action, filtered to what applies right now.
+  \key{⌘K}. \cref{ch:start}.
+
+\item[compare] A routine step that sets a table of this run beside the same table of the baseline,
+  row by row on the key, with the differences. Given a tolerance, it is also a check. \cref{ch:checks}.
+
+\item[compatible grids] Two block models or grids whose lattices can be brought onto a common one:
+  the same orientation, with pitches and origins that line up. A spatial join or a reconcile needs
+  them. \cref{ch:joins}.
+
+\item[composer] The page layout window: frames holding 3D views, charts, tables, text and legends,
+  exported as a PDF that carries its own figure. \cref{ch:composer}.
+
+\item[composite] One interval table of a drillhole set re-cut into equal lengths, numbers weighted
+  by length. The result is a new points layer, each composite at its centroid.
+  \cref{ch:drillholes}.
+
+\item[cut mode] How one layer responds to the section: follow it, follow with its own slab, keep
+  only the front or the back, or ignore it. \cref{ch:sections}.
+
+\item[declared lattice] A lattice that a file or a host states instead of leaving micro to find
+  it. Applied without asking, and checked against every record. \cref{ch:blocks,app:host}.
+
+\item[declustering] Weighting samples so that densely drilled areas do not dominate a mean. micro
+  uses it when it compares a model with its samples. \cref{ch:validation}.
+
+\item[decorations] The scale bar, north arrow, color legend and title drawn on the view, live and
+  in an exported figure. \cref{ch:figures}.
+
+\item[derived column] Any column that did not come from the source file: calculated, stored,
+  painted, joined or broadcast. All behave like source columns. \cref{ch:filter}.
+
+\item[desurvey] Computing where each interval lies in space from the collar position and the survey
+  stations. The method and dip convention are settings of the drillhole set. \cref{ch:drillholes}.
+
+\item[detection limit] A lab's lower or upper reporting bound, written in assay files as
+  \code{<0.01} or \code{>10}. micro reads such a column as numeric and substitutes by a rule you
+  choose. \cref{ch:columns}.
+
+\item[discovery] The pass micro makes over a new block-model file to find its lattice, extents and
+  categories. Its result is cached, and a file that declares its lattice skips it.
+  \cref{ch:blocks}.
+
+\item[dogleg] How sharply a hole bends between two survey stations, in degrees per 30 m. Reported
+  by the drillhole QA. \cref{ch:qa}.
+
+\item[domaining] Assigning records to domains: by painting, by flagging against solids, or by
+  \ui{assign domains}, which gives each block to the solid holding most of it.
+  \cref{ch:picking,ch:geometry}.
+
+\item[drape] Coloring a relief surface by the values of another grid, sampled at each position.
+  \cref{ch:grids}.
+
+\item[drawer] The panel under the filter box that shows the current expression as sliders, chips
+  and groups. Every control rewrites its own part of the text. \cref{ch:filter}.
+
+\item[drillhole set] A collar table, a survey table and one or more interval tables that belong
+  together. In the layers panel it is one group. \cref{ch:drillholes}.
+
+\item[element] One dataset as micro models it: a geometry, one or more locations of records, their
+  columns, and the recorded operations that derived anything. \cref{ch:micro}.
+
+\item[element manifest] The readable \file{.element.json} file beside a data file in a project,
+  describing the element and listing its operations. A drillhole set has one for the whole set,
+  the set manifest. \cref{ch:store}.
+
+\item[exact / streamed] The two ways a large mesh is held: exact keeps every triangle (needed for
+  solid queries and mesh QA); streamed is for display only and light on memory. \cref{ch:meshes}.
+
+\item[exclusive group] A group in which at most one child shows at a time. \key{\{} and \key{\}}
+  step through it. \cref{ch:start}.
+
+\item[exploded view] A group's layers pulled apart along an axis so that each can be seen whole.
+  Display only: picks, filters, analyses and exports read the true coordinates.
+  \cref{ch:sections}.
+
+\item[expression] A condition or a formula over the columns of one record, in micro's one
+  expression language. \cref{app:expr}.
+
+\item[filter] An expression that decides which records of a layer take part: the rest leave the
+  view, the table and every analysis. \cref{ch:filter}.
+
+\item[fine lattice] The lattice of a sub-blocked model at its smallest block size, on which every
+  sub-block's position is expressed. \cref{ch:blocks}.
+
+\item[fingerprint] A hash that identifies what a result was made from. A source file's is taken
+  from samples across the file; a routine step's covers its inputs and settings, and decides
+  whether an earlier result can be reused. \cref{ch:records,ch:store}.
+
+\item[frame] A rectangle on a composer page holding one thing: a 3D view, a chart, a table, text, a
+  legend, an image. \cref{ch:composer}. (In the host API, also the coordinate frame: the CRS a
+  layer's coordinates are in.)
+
+\item[global bias] The difference between a model's mean grade and the declustered mean of its
+  samples. \cref{ch:validation}.
+
+\item[grade shell] The surface around every block at or above a cutoff, made as a watertight mesh
+  layer. \cref{ch:blocks}.
+
+\item[grade–tonnage curve] Tonnage and mean grade above each of a list of cutoffs, weighted by
+  block volume and density (volume alone when there is no density). On a drillhole layer, interval
+  length above each cutoff instead, length-weighted. \cref{ch:gt,sec:gt-holes}.
+
+\item[group] A folder in the layers panel. Its eye hides its children without changing their own
+  eyes. A name with slashes files a layer into a group path. \cref{ch:start}.
+
+\item[guard] A routine step, \code{guard: "no-overwrites"}, after which the routine refuses to
+  start if a step would replace something that exists. \cref{ch:routines}.
+
+\item[hole filter] A filter written over collar columns. Its verdict applies to whole holes, across
+  every interval table and the traces. \cref{ch:drillholes}.
+
+\item[host] A web page that loads micro in a frame and drives it through \code{window.micro}.
+  \cref{app:host}.
+
+\item[inline step] A routine step that carries its tool and settings itself (\code{tool:} with
+  \code{with:}) instead of naming a saved recipe. \cref{ch:routines}.
+
+\item[inputs] The questions a recipe or routine asks before it runs, declared under
+  \code{inputs:}. Their answers are substituted where \code{\$name} appears. \cref{ch:routines}.
+
+\item[isolate] What a filter does to the view: matching records stay, everything else is neither
+  drawn nor pickable. \cref{ch:filter}.
+
+\item[key] The columns that identify a row of a tool's table: series and cutoff for
+  grade–tonnage. The key names a failing row and lines rows up between two runs. \cref{ch:checks}.
+
+\item[key join] Bringing columns from one table to another by matching a key column.
+  \cref{ch:joins}.
+
+\item[knife] The tool that makes a vertical section along a line you drag in the view. \key{k}.
+  \cref{ch:sections}.
+
+\item[lattice] The regular grid a block model's centroids sit on: an origin, a block size and a
+  count per axis, and a rotation for a rotated model. \cref{ch:blocks}.
+
+\item[layer] One entry in the layers panel: a dataset as it is shown, with its own eye, color,
+  filter and cut mode. \cref{ch:start}.
+
+\item[length-weighted] Of a drillhole statistic: each interval counts in proportion to its length
+  (TO − FROM), times its density when one is given, so a 1 m sample weighs a fifth of a 5 m one.
+  \cref{sec:gt-holes,ch:resources}.
+
+\item[library] Recipes and routines kept in the browser, outside any project, and runnable without
+  one. \cref{ch:library}.
+
+\item[lineage] The derivation tree of a derived layer or export: the operation, its settings, its
+  sources and when. \cref{ch:records}.
+
+\item[location] A space of records within an element. A block model has cells; a grid, nodes; a
+  mesh, vertices and faces; a drillhole set, collars, the vertices of the hole paths, and intervals. A column
+  belongs to one location. \cref{ch:micro}.
+
+\item[machine table] A tool's table as a routine files it: tab-separated, plain column names,
+  numbers as they are, an empty cell for a blank. \cref{ch:records}.
+
+\item[materialize] To compute a ƒ column's values once and keep them, as a stored column
+  (\ui{Materialize calc column}). \cref{ch:filter}.
+
+\item[materialized column] See \emph{stored column}.
+
+\item[never resident] micro's way of reading large files: in passes, a piece at a time, without
+  ever holding the whole file decoded in memory. \cref{ch:micro}.
+
+\item[no data] How blanks are drawn: gray, or hidden; never as the lowest value of the scale.
+  \cref{ch:color}.
+
+\item[not evaluated] The outcome of a check that read a blank: neither a pass nor a fail. At level
+  \code{stop} it stops the run. \cref{ch:checks}.
+
+\item[operation (op)] A recorded, re-runnable derivation: the expression, method or inputs that
+  made a column, stored as data in the element manifest. \cref{ch:store}.
+
+\item[pack] A recipe or routine with everything it needs to run: the recipes its steps name and the
+  parameter tables it reads. Kept in the library, or exported as one YAML or zip file. Not the same
+  thing as a project pack. \cref{ch:library}.
+
+\item[painted column] A category column filled by hand with the brush, or by a classification
+  against a solid or a surface. Shown with a ✎. \cref{ch:picking}.
+
+\item[pairing] Matching each sample with the block it falls in, to compare the two values as a
+  scatter or a Q-Q plot. \cref{ch:validation}.
+
+\item[parameter table] The table an \code{each} block of a routine fans out over: one run per row.
+  Written in the routine, or read from a CSV or a spreadsheet sheet. \cref{ch:routines}.
+
+\item[pick] Clicking a record to see it: it is highlighted, and the record panel shows its full
+  row. \cref{ch:picking}.
+
+\item[pinned column] A column held in memory after a scan, within a budget, so that repeated
+  filters read no file. \cref{ch:store}.
+
+\item[pre-flight] The checks micro makes on a routine before its first step. If anything is wrong,
+  nothing runs. \cref{ch:routines}.
+
+\item[project] A plain folder holding \file{project.json}, the data files by kind, and what micro
+  derived from them. \cref{ch:projects}.
+
+\item[project pack] A whole project as one \file{.zip.micro} file: a backup that also opens
+  read-only without being unpacked. \cref{ch:store}.
+
+\item[recipe] An analysis setup saved as YAML: the tool and its settings, re-runnable and editable
+  by hand. \cref{ch:recipes}.
+
+\item[reconcile] Comparing two models on a common lattice: a map of the difference, and its
+  summary. \cref{ch:joins}.
+
+\item[record] One row of a location: a block, a point, an interval, a mesh vertex. Its number is
+  its position in the data. \cref{ch:micro}.
+
+\item[record panel] The panel that shows a picked record's values, source columns and derived ones
+  alike. \cref{ch:picking}.
+
+\item[reinterpret] Opening a layer's source again as another kind of thing: a block model as
+  points, a grid as a surface, a table as geometry. \cref{ch:opening}.
+
+\item[relief / flat sheet] The two shapes of a grid shown as a surface: relief takes its height
+  from the grid's values; a flat sheet lies at one level and is colored by them. \cref{ch:grids}.
+
+\item[resource table] Tonnage, grade and metal by group and by grade bin or cutoff: the cross-tab
+  window, and the table the composer places on a page. Run as the \code{xtab} tool on a drillhole
+  layer, it gives length-weighted length, grade and accumulation instead. \cref{ch:resources}.
+
+\item[review layout] The arrangement micro switches to on a narrow screen: one top bar, a bottom bar
+  of large targets, and every panel and window as a sheet. \cref{ch:sealed}.
+
+\item[routine] A recipe that runs other steps in order: recipes, inline tools, checks and
+  comparisons, with parameter tables. Its whole run can be listed before it starts.
+  \cref{ch:routines}.
+
+\item[rule-based styling] Coloring by an ordered list of rules, each an expression with a name and
+  a color. A record wears the color of the first rule it matches. \cref{ch:color}.
+
+\item[run record] The \file{run.json} a routine run leaves in its folder: the hash of every input
+  and output, and each step's settings, values and checks. \cref{ch:records}.
+
+\item[run tracker] The window a running routine opens: every expanded step with its live mark, and
+  the summary of the run when it ends. Also \emph{the tracker}. \cref{ch:routines}.
+
+\item[scan] One pass over a table that fills each column's count, mean, quantiles and histogram.
+  \cref{ch:columns}.
+
+\item[scene] A saved working state: the camera and section, plus each layer's visibility, color
+  and filter. \cref{ch:sections}.
+
+\item[scope] Which records an analysis reads: all, the filter's matches, or the 3D selection.
+  \cref{ch:analysis}.
+
+\item[Sealed] micro's security posture: the page cannot reach the network, your data stays on your
+  device, and it contains no WebAssembly, only JavaScript that can be read. \cref{ch:sealed}.
+
+\item[section] The live cut through the scene: a plane, with a thickness. Blocks and intervals are
+  cut exactly at the plane. \cref{ch:sections}.
+
+\item[select through] The selection mode that takes everything inside the shape you drew, hidden or
+  not, instead of only what you can see. \cref{ch:picking}.
+
+\item[selection] The set of records chosen with the rectangle or the lasso (or by a tool), per
+  layer. It can be painted, exported, used as an analysis scope, or turned into a column.
+  \cref{ch:picking}.
+
+\item[series] One line of an analysis: a layer, a column, and optionally a weight and a filter of
+  its own. A window compares several. \cref{ch:analysis}.
+
+\item[set manifest] The one element manifest of a drillhole set, \file{drillholes/<set>.element.json}:
+  its collar, survey and interval tables, how they relate by hole id, and the desurvey settings.
+  Older projects kept the same in a \file{<set>.holes.json}, which still opens.
+  \cref{ch:projects,ch:store}.
+
+\item[sheet] In the review layout, a panel or window that rises from the bottom of the screen. One
+  is open at a time. \cref{ch:sealed}.
+
+\item[sidecar] A small file micro keeps beside one of yours in a project: a cache
+  (\file{.meta.json}), stored columns (\file{.cols/}), a display grid. \cref{ch:store}.
+
+\item[slab] The band of the section that is kept: the plane, plus and minus a thickness.
+  \cref{ch:sections}.
+
+\item[solid] A closed mesh, with an inside. micro classifies records against it by winding number.
+  An open mesh is a surface, with an above and a below. \cref{ch:geometry}.
+
+\item[spatial join] Resampling one model's columns onto another model's lattice, weighted by
+  overlapping volume. \cref{ch:joins}.
+
+\item[statistics scope] What a composer caption's statistics count: the records in the view's
+  section, or the whole model. See \emph{captions: in the section}.
+
+\item[step] One item of a routine's list: a recipe, an inline tool, an \code{each} block, a
+  \code{params} sheet, a check, a compare or a guard. \cref{ch:routines}.
+
+\item[stored column] A derived column whose values are kept, one Parquet file per column in the
+  data file's \file{.cols/} folder: a ƒ column that was materialized, a join, a broadcast. Listed
+  with a ✎, as painted columns are. Also called a materialized column. \cref{ch:filter,ch:store}.
+
+\item[sub-blocked model] A block model whose blocks are split into smaller boxes near boundaries.
+  Each block keeps its own size and is drawn at it. \cref{ch:blocks}.
+
+\item[swath] Mean grade per band along a direction: the drift plot that compares a model with
+  another model or with its samples. \cref{ch:swath}.
+
+\item[table layer] A layer with rows and columns and no geometry: a lookup, a parameter table, a
+  kept result. \cref{ch:columns}.
+
+\item[tool] One analysis as a routine can run it: a name, a set of settings, a table and values
+  out. Each analysis window is a tool with a window on it. \cref{ch:analysis,app:tools}.
+
+\item[trace] Three things, by context. A sectioned mesh's outline on the cut face
+  (\cref{ch:sections}); a hole's path from collar to end (\cref{ch:drillholes}); a fracture trace
+  drawn on an outcrop mesh (\cref{ch:structure}).
+
+\item[values] The named numbers a tool returns beside its table, such as a validation's
+  \code{bias\_pct}. A check reads them as \code{step.name}. \cref{ch:checks}.
+
+\item[vertical exaggeration] A stretch of the z axis applied to the display only. Coordinates,
+  measurements and queries stay real. \cref{ch:sections}.
+
+\item[view (of a model)] The same records shown again as another layer, with its own color,
+  filter, visibility and position on the screen. \cref{ch:sections}.
+
+\item[view slot] One of nine numbered bookmarks: \key{g} then a digit goes to it, \key{g} then
+  \key{⇧}+digit saves into it. \cref{ch:sections,app:keys}.
+
+\item[watertight] Of a mesh: every edge shared by exactly two triangles. A closed solid, with a
+  volume. \cref{ch:qa}.
+
+\item[whole holes] A cut mode for drillholes: a hole whose path crosses the slab is drawn entire,
+  and the rest are hidden. \cref{ch:sections}.
+
+\item[zebra] The swath's bands striped onto the 3D view, so the plot and the model can be read
+  together. \cref{ch:swath}.
+
+\end{description}

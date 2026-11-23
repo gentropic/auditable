@@ -1,0 +1,22 @@
+# group C — Part III, Seeing (chapters 10–13)
+# name | the state to show, precise enough to script | full / window / region
+
+# 10-color
+color-props-style | the demo project; deposit.csv active, colored by FE, clip empty (automatic), ramp viridis, breaks 20, 40, 55, 60, 65 with "classed" ticked, FE scanned so the histogram and per-class counts show; Properties panel open on the style tab | region (the properties panel, style tab, from "mode" down to the histogram and the quantiles / equal / log row)
+color-categories | the demo project; deposit.csv in Properties → style, mode "categorized", column LITO, counts filled (columns scanned), the WASTE class hidden via its eye | region (the properties panel: the column row and the class list)
+
+# 11-sections
+sections-bar | the demo project as it opens (E–W slab on the deposit), camera facing the section (key l) | region (the second toolbar row from "Z×" to the "2D" checkbox, with a strip of the 3D view below it)
+sections-whole-holes | the demo project; E–W section at the demo's own position, slab half-thickness 5 m, camera facing it (l) then turned obliquely so the fans open out; the drillhole assay layer set to Cut by sections → "keep holes that cross the slab, whole"; topography set to "don't cut" | full
+
+# 12-picking
+pick-record-panel | the demo project; E–W section faced (l); one high-grade block on the cut face picked; record panel open on the right showing XC, YC, ZC, FE, SG, LITO | full
+pick-paint-palette | the demo project; deposit.csv; paint palette open (b) with a column DOMAIN holding two values CORE and HALO (some blocks painted with each on the cut face), CORE armed, the "unpainted" row and the "+ value / apply to selection / undo" footer visible | window
+
+# 13-filter
+filter-drawer | the demo project; deposit.csv with the filter  FE > 55 and (LITO = "HEMATITE" or LITO = "CANGA")  applied; the filter drawer open (▾) | region (the filter box and the open drawer beneath it, with a strip of the filtered model)
+filter-calc-window | the demo project; Data → Calculated columns… on deposit.csv; a saved column DENS with  if(LITO = "HEMATITE", 4.2, if(LITO = "ITABIRITE", 3.4, if(LITO = "CANGA", 3.0, 2.7)))  selected on the rail, the case table visible below the editor | window
+
+# no `data` (pgfplots TSV) requests from group C: the diagrams in these chapters are schematic TikZ, drawn inline
+# (fig:color-classes-diagram, fig:sections-slab-diagram, fig:sections-views-diagram, fig:pick-through-diagram,
+#  fig:filter-drawer-diagram, fig:filter-materialize-diagram).

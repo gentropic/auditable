@@ -1,0 +1,225 @@
+\chapter{The resource cross-tab and the resource table}\label{ch:resources}
+\begin{goals}
+\textbf{In this chapter} you tabulate a model by domain and grade bin — tonnage, grade, metal and block count — read it between cutoffs or cumulatively above them, check that it adds up to the model, and put a print-ready resource table on a composer page.
+\end{goals}
+
+A grade–tonnage curve answers one question about one population. A resource table answers it for every domain, class or rock type at once, at the cutoffs you report. micro has two tools for this, meant for different moments.
+
+The \term{resource cross-tab} is a working window: a group down the side, grade bins across, four measures to switch between, and a column that keeps the tonnage of unestimated blocks so the table adds up to the model. The \term{resource table} is a frame in the composer: tonnes, grade and metal above each cutoff, by domain and class, laid out for print and made again when the data changes.
+
+\begin{note}
+Both tabulate what the model holds. Neither classifies anything: the classes, the domains and the cutoffs are yours, and so is the statement. micro's part is to make the arithmetic exact and repeatable.
+\end{note}
+
+\section{The cross-tab window}\label{sec:xtab-window}
+Open \ui{Resource cross-tab…} from a block model's right-click menu, or press \key{⌘K} and type \code{cross}. The window works as \cref{ch:analysis} describes, with the table actions of the results row.
+
+\begin{tryit}
+In the demo project, right-click \file{deposit.csv} and choose \ui{Resource cross-tab…}.
+\begin{enumerate}
+\item \ui{rows} is already \col{LITO}, the model's category column. Leave \ui{grade} on \col{FE}.
+\item In \ui{cutoffs}, type \code{30 40 50 60}.
+\item Set \ui{unit} to \ui{\%}. In \ui{density}, type \code{SG}. The small warning under the field — \emph{no density → volumes in m³, not tonnes} — disappears as you type.
+\item Press \ui{Run}. Four rock types down the side, five grade bins across, then \ui{no grade} and \ui{total}; a \ui{total} row at the bottom. All of the hematite's 23.8~Mt sits in \ui{≥ 60}; the itabirite spreads across every bin.
+\item Switch \ui{measure} to \ui{grade}, then \ui{metal}, then \ui{blocks}. The table changes at once, with no new pass.
+\item Click \ui{≥ cutoff} in the \ui{bins} row: the columns become cumulative.
+\end{enumerate}
+\end{tryit}
+
+\shot{xtab-window}{The cross-tab on the demo deposit: \col{LITO} down the side, \col{FE} bins between 30, 40, 50 and 60\% across, tonnage in each cell. The \ui{no grade} column and the totals make the table add up to the model.}
+
+\medskip
+\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+setting & meaning & default \\ \midrule
+\ui{rows} & the group down the side: the model's category column or a painted column (domains, classes). \ui{(none — one total)} gives a single row & the category column \\
+\ui{grade} & the grade the bins cut & the first numeric column \\
+\ui{cutoffs} & the bin edges, ascending. Empty gives one \ui{graded} column & empty \\
+\ui{unit} & the grade's declared unit; metal is in tonnes when it is set & the layer's \\
+\ui{density} & an expression: \code{SG}, \code{2.7}. Blank = volume & the layer's \\
+\ui{ρ unit} & t/m³ (= g/cm³), kg/m³ or lb/ft³ & t/m³ \\
+\ui{filter} & rows to count, e.g. \code{CLASS <= 2} & none \\
+\ui{scope} & \ui{all} · \ui{filt} · \ui{sel} & all \\
+\ui{measure} & tonnage, grade, metal or blocks — live & tonnage \\
+\ui{bins} & \ui{between} consecutive cutoffs, or \ui{≥ cutoff} — live & between \\
+\ui{⇄ flip rows / columns} & swaps the two axes of the table — live & off \\ \bottomrule
+\end{tabularx}
+\medskip
+
+The first eight need a \ui{Run}; the last three re-shape the kept result. The grade unit, density and density unit are the layer's own declarations, shared with grade–tonnage; the swath shares the grade unit (\cref{sec:analysis-units}).
+
+\paragraph{Typing cutoffs.} Separate cutoffs with spaces or semicolons: \code{0.5 1 2}. Written that way, a comma is a decimal comma, so \code{0,5 1 2} means the same three numbers. With no spaces or semicolons at all, commas separate: \code{0.5,1,2}. Duplicates are dropped and the list is sorted.
+
+\paragraph{Groups.} The \ui{rows} menu offers the layer's category column and every painted column. For a table by domain, assign domains by solids or paint them (\cref{ch:picking,ch:geometry}), then choose that column here. A model may have up to 256 distinct groups; beyond that the extra groups are dropped and the subtitle says so with a warning.
+
+\section{Reading the table}\label{sec:xtab-reading}
+With cutoffs $c_0 < c_1 < \dots < c_n$ the columns, in \ui{between} mode, are
+
+\begin{center}
+\ui{< $c_0$} \quad \ui{$c_0$–$c_1$} \quad … \quad \ui{≥ $c_n$} \quad \ui{no grade} \quad \ui{total}
+\end{center}
+
+A bin includes its lower edge and excludes its upper one: with cutoffs 30 and 40, a block grading exactly 40 is in \ui{≥ 40}, not in \ui{30–40}. This agrees with grade–tonnage, where \emph{above} a cutoff includes the cutoff.
+
+Each cell holds three sums over its blocks — the weight $w = \rho \times V$, the product $w g$, and the count — and the four measures are read from them:
+
+\medskip
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+measure & what the cell shows \\ \midrule
+tonnage & $\sum w$: density × block volume, each sub-block at its own size. Labeled \emph{volume (m³)} when there is no density \\
+grade & $\sum w g / \sum w$: the tonnage-weighted mean grade of the cell \\
+metal & $\sum w g$, converted to tonnes of metal when the grade unit is declared; otherwise the bare product, labeled grade·t \\
+blocks & the number of records in the cell \\ \bottomrule
+\end{tabularx}
+\medskip
+
+The \ui{total} column and the \ui{total} row are sums of the same three quantities, so a total grade is the weighted mean of its row or column, not an average of the cell grades.
+
+\subsection{The no-grade column}\label{sec:xtab-nograde}
+A block whose grade is blank is \emph{unestimated}. Grade–tonnage leaves it out (\cref{sec:gt-method}). The cross-tab keeps its tonnage in the \ui{no grade} column, so that the grand total — bottom right — is the tonnage of every block with a density, estimated or not. The column has a tonnage and a block count; its grade and metal cells are empty, because there is no grade to weigh.
+
+Look at this column first in a new model. A non-zero \ui{no grade} tonnage inside an ore domain means the estimate did not fill the domain, and any tonnage reported above a cutoff is short by an unknown part of it.
+
+\begin{caution}
+The table adds up to the model \emph{that has a density}. A block whose density is blank or zero has no tonnage and is not in any cell, the \ui{blocks} measure included. If the grand-total block count is lower than the model's record count, look for blank densities.
+\end{caution}
+
+\subsection{No density, no tonnes}
+With the density field empty, the weight is the block volume alone. The cross-tab says so three times: under the density field as you type, in the \ui{measure} menu (\emph{volume (no density)}), and above the result — \emph{⚠ no density was given — these are volumes (m³), not tonnes}. A cubic meter read as a tonne understates an iron ore by a factor of three or four.
+
+\section{Between cutoffs, or above them}\label{sec:xtab-cum}
+\ui{between} reads the sums as a histogram: how the tonnage of each group is distributed over grade. \ui{≥ cutoff} reads the same sums as grade–tonnage: each column holds everything at or above its cutoff, so the columns are
+
+\begin{center}
+\ui{≥ $c_0$} \quad \ui{≥ $c_1$} \quad … \quad \ui{≥ $c_n$} \quad \ui{all graded} \quad \ui{no grade} \quad \ui{total}
+\end{center}
+
+\ui{all graded} is everything with a grade, below the lowest cutoff included. A row of the cumulative table is a grade–tonnage curve for that group at your cutoffs; the \ui{total} row is the model's. It is the same arithmetic as \cref{ch:gt}, cut on the same edge rule, so for the same density and cutoffs the two windows give the same tonnage and grade.
+
+\Cref{fig:xtab-demo} is the \ui{between} view of the demo, with and without a filter. Each bar is one cell of an ungrouped cross-tab, whose single row is labeled \ui{all}. The demo's hematite is the high-grade core — 11,013 blocks, every one at or above 60\,\% — so it has a single bar, and that bar is nearly the whole of the model's \ui{≥ 60}: 23.85 of 23.88~Mt.
+
+\begin{figure}[htbp]\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.9\linewidth, height=58mm, ybar, bar width=9pt, ymin=0, enlarge x limits=0.14,
+  xtick={1,2,3,4}, xticklabels={{30–40}, {40–50}, {50–60}, {$\geq$\,60}},
+  xlabel={\% Fe bin}, ylabel={tonnes (Mt)}, legend pos=north west]
+\addplot[fill=amberlight, draw=amber, restrict x to domain=1:4] table[col sep=tab, x expr=\coordindex, y expr=\thisrow{tonnes}/1e6]{figures/data/xtab-demo-all.tsv};
+\addlegendentry{whole model}
+\addplot[fill=selsoft, draw=sel, restrict x to domain=1:4] table[col sep=tab, x expr=\coordindex, y expr=\thisrow{tonnes}/1e6]{figures/data/xtab-demo-hem.tsv};
+\addlegendentry{filter \texttt{LITO = "HEMATITE"}}
+\end{axis}
+\end{tikzpicture}
+\caption{Tonnage between cutoffs for the demo deposit (\col{FE} cut at 30, 40, 50 and 60\%, density \col{SG}): the whole model, and its hematite. The \ui{< 30} bin — 2.56~Gt, nearly all waste — is left off so the ore bins can be read.}\label{fig:xtab-demo}
+\end{figure}
+
+\section{Taking the table out}\label{sec:xtab-out}
+\ui{⧉ table} copies \emph{every} measure in long form — one row per group and bin, with the tonnage, grade, metal and block count side by side — whatever the window is currently showing. Long form is what a spreadsheet pivot wants, and one copy carries the whole result.
+
+\ui{⇥ layer} keeps the same long table as a table layer in a \file{cross-tab} group; \ui{⇥ figure} sends it to the composer as a table frame (\cref{sec:analysis-results}).
+
+\begin{tip}
+For a table restricted to part of the model — one pit phase, above a surface — make a 0/1 or fraction column with a solid query (\cref{ch:geometry}) and use it in \ui{filter} (\code{IN\_PIT = 1}) or in the density (\code{SG * IN\_PIT}). A filter chooses whole blocks; a fraction in the density takes partial ones.
+\end{tip}
+
+\section{The resource table in the composer}\label{sec:resource-table}
+When the numbers are settled and you need the table on a page, use the composer (\cref{ch:composer}). Open it with \menu{File>Composer…} and click \ui{+ resource} in its toolbar. A small dialog asks for the table's definition.
+
+\medskip
+\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+field & meaning & default \\ \midrule
+\ui{model} & the layer & the first with a numeric column \\
+\ui{grade} & the grade column & a column named like a grade (AU, CU, FE…) \\
+\ui{cutoffs} & the cutoffs, separated by commas, spaces or semicolons & \code{0, 0.5, 1} \\
+\ui{grade unit} & text shown in the heading, e.g. \code{\%} or \code{g/t} & none \\
+\ui{density} & a density column & a column named like one (SG, DENS…) \\
+\ui{… or constant} & the density used when no column is chosen & \code{2.7} \\
+\ui{density unit} & t/m3, kg/m3, g/cm3 or lb/ft3 & t/m3 \\
+\ui{group by} & the first category (domain, lithology) & a column named like one, else none \\
+\ui{… then by} & the second category (class) & a column named like one, else none \\
+\ui{metal factor} & metal = tonnes × grade × this & \code{1} \\
+\ui{metal unit} & text shown in the heading, e.g. \code{oz} or \code{t} & none \\
+\ui{records} & \ui{all}, or \ui{filter} for the layer's current filter & all \\ \bottomrule
+\end{tabularx}
+\medskip
+
+\ui{Add} computes the table and places it on the page as a table frame, with a line under it stating the density, the filter if any, and the number of records read.
+
+\begin{tryit}
+With the demo project open, choose \menu{File>Composer…}, then \ui{+ resource}.
+\begin{enumerate}
+\item \ui{grade} is \col{FE}, \ui{density} is \col{SG} and \ui{group by} is \col{LITO} already — the dialog guesses them from the column names. Set \ui{cutoffs} to \code{30, 50, 60}.
+\item Set \ui{grade unit} to \code{\%}, \ui{metal factor} to \code{0.01} and \ui{metal unit} to \code{t}.
+\item Click \ui{Add}. For each cutoff the table lists the rock types that have tonnage above it, then a \emph{total} line. Above 60 only two are left: the hematite, and 34,080~t of itabirite grading exactly 60.
+\end{enumerate}
+\end{tryit}
+
+\shot{resource-table-frame}{A resource table frame on a composer page: tonnes, grade and metal above 30, 50 and 60\,\% Fe, by \col{LITO}, with a total line per cutoff and, under it, the note stating the density and the number of records read.}
+
+\subsection{What it computes}
+The table is always \emph{cumulative}: for each cutoff, the tonnes, mean grade and metal of the blocks grading at or above it, split by up to two category columns. Tonnes are block volume × density, per record, sub-blocks at their own size, with the density converted from its declared unit to t/m³.
+
+Before you compare it with the cross-tab, know three differences:
+
+\begin{itemize}
+\item \textbf{Unestimated blocks are left out.} A block with a blank grade is in no row. There is no \emph{no grade} line; the cross-tab is where you check that.
+\item \textbf{Density is a column or a constant}, not an expression. To use \code{SG * PARTIAL}, make it a calculated column first (\cref{ch:filter}) and choose that.
+\item \textbf{Metal uses a factor you state}, not a declared unit: metal = tonnes × grade × \ui{metal factor}. Use 0.01 for a grade in \% and metal in tonnes; 0.0321507 (1 ÷ 31.1035) for g/t and troy ounces. With the factor left at 1, the metal column is the bare product.
+\end{itemize}
+
+A group with no tonnage above a cutoff has no row at that cutoff; if nothing at all grades above it, the cutoff gets one row of zero tonnes with \emph{—} for the groups. When there are groups, and more than one of them appears at a cutoff, a \emph{total} row follows them: total tonnes, the tonnage-weighted grade, total metal.
+
+On the page, tonnes are rounded and grouped in thousands with spaces (2 343 000), grades are shown to four significant figures, and metal is grouped like tonnes from 1,000 up. The frame remembers its definition: \ui{↻ refresh} in the composer makes the table again from the data as it is now, along with every view and chart on the page.
+
+\begin{why}
+Two tools, because the jobs differ. The cross-tab is for finding out: four measures, bins or cumulative, the unestimated tonnage in plain sight. The resource table is for stating: one fixed layout, cutoffs written down, a note recording density and record count, re-made by a refresh. Do the first until you believe the model; then do the second.
+\end{why}
+
+\section{In a routine}\label{sec:resources-routine}
+The cross-tab is the tool \code{xtab}; the resource table is \code{resource}. Their settings are in \cref{tool:xtab,tool:resource}.
+
+\begin{lstlisting}[language=yaml]
+- tool: "xtab"
+  with:
+    layer: "deposit.csv"
+    grade: "FE"
+    group: "LITO"
+    weight: "SG"
+    gradeUnit: "pct"
+    cutoffs:
+      - 30
+      - 40
+      - 50
+      - 60
+    mode: "bins"
+  as: "xtab"
+- tool: "resource"
+  with:
+    layer: "deposit.csv"
+    grade: "FE"
+    cutoffs:
+      - 30
+      - 50
+      - 60
+    density:
+      col: "SG"
+      unit: "t/m3"
+    groupBy:
+      - "LITO"
+    metalFactor: 0.01
+  as: "resources"
+\end{lstlisting}
+
+An \code{xtab} step takes \code{cutoffs} as a list of numbers or as text such as \code{"0.3 0.5 1"}, and a routine must state them; \code{mode} is \code{bins} (between cutoffs) or \code{cum} (above each).
+
+The \code{xtab} report has one row per group and bin, keyed by \col{group} and \col{bin}: \col{group}, \col{bin} (the column's label), \col{from}, \col{to} (the bin's edges, blank where open), \col{tonnes} (named \col{volume} without a density), \col{grade}, \col{metal} and \col{blocks}. The \emph{no grade} and \emph{total} bins and the \emph{total} group (\emph{all} when there is no \code{group}) are rows of the table like any other. The step also reports one value, \code{blocks}, the number of records counted — so a check such as \code{xtab.blocks > 0} can guard against an empty filter.
+
+The \code{xtab} tool — not the window — also runs on a drillhole layer, weighing each interval by its length as grade–tonnage does (\cref{sec:gt-holes}). Its columns are then \col{length} (m), or \col{weighted\_length} (m·t/m³) with a density, \col{grade} (length-weighted), \col{accumulation} (grade × length) and \col{intervals}, and the value it reports is \code{intervals}.
+
+A \code{resource} step needs its \code{cutoffs} in a routine or not. Its \code{density} is \code{col} (a density column) or \code{const} (a value), with an optional \code{unit} (\code{t/m3}, \code{g/cm3}, \code{kg/m3}, \code{lb/ft3}); \code{groupBy} lists up to two category columns.
+
+The \code{resource} report has the columns \col{cutoff}, the group columns by their own names (\col{LITO}), \col{tonnes}, \col{grade} and \col{metal}, keyed by cutoff and groups. Its machine form leaves out the \emph{total} rows: they are presentation, they are the sum of their cutoff's rows, and a real domain called \emph{total} would collide with them.
+
+\begin{caution}
+The \code{resource} tool's \code{density} has no default density column, unlike the dialog. Leave it out and every block weighs 1 t/m³ × its volume — a table of cubic meters headed \emph{tonnes}. State \code{density} in every routine step.
+\end{caution}
+
+A saved \code{resource} recipe run on its own (\menu{Tools>Recipes}) puts its table into the composer; as a routine step it writes the TSV. For a month-end run, the usual pairing is a \code{resource} step followed by a \code{compare} against the accepted baseline (\cref{ch:checks}): the comparison names every cutoff and domain whose tonnes moved by more than the tolerance.

@@ -1,0 +1,166 @@
+\chapter{Projects}\label{ch:projects}
+\begin{goals}
+\textbf{In this chapter} you save a session as a project folder, open it again, understand what is in the folder and why, tidy an older project, and use the folder as an inbox for new data.
+\end{goals}
+
+Without a project, micro is a viewer: you open files, look, and everything you set up is gone when the tab closes. A \term{project} keeps the session. It is a folder on your disk holding your data files and a small file, \file{project.json}, that says how they were open: which layers, how they were colored and filtered, where the camera was, which analysis windows were up.
+
+The folder is plain. Every file in it can be read without micro: models as CSV or Parquet, recipes as YAML, records as JSON. That is deliberate. A project that opens only in the tool that made it is a project nobody else can audit.
+
+\section{Saving}\label{sec:projects-save}
+\menu{File>Save project as…} asks for a folder. Pick an empty one, or make one. micro writes \file{project.json} there and carries on working in that folder. From then on \menu{File>Save project} (\key{⌘S}) saves in place. While there are unsaved changes the menu item carries a dot (\ui{Save project •}).
+
+\begin{note}
+Project folders need a browser that can write to folders you choose: Chrome or Edge. In other browsers micro still opens files and still opens a whole project from a single pack file (\cref{ch:store}); the command palette says so (\ui{Save / open project (needs Chrome or Edge)}).
+\end{note}
+
+\subsection{Copy or link}\label{sec:projects-copy}
+The files you opened usually live somewhere else: a downloads folder, a network drive. On the first save micro lists every layer whose file is outside the project folder, with sizes, and asks what to do with them. The list names files, not layers: a drillhole set is one layer made of three files, so the demo's seven layers come to nine lines.
+
+\shot[0.7\linewidth]{projects-save-dialog}{Saving the demo project: seven layers in nine files, all outside the folder because the demo is made in memory, and the two choices.}
+
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+button & what happens \\ \midrule
+\ui{Copy into project} & each file is copied into the folder. The project is self-contained: move it, back it up, hand it over. \\
+\ui{Link without copying} & the files stay where they are and the project remembers them. Nothing is duplicated, but the project depends on those files staying put. \\
+\bottomrule
+\end{tabularx}
+
+Copy unless the data is too large to duplicate. A layer with no file on disk behind it (a file dragged in, or the demo, which is made in memory) has nothing to link to; the dialog warns that such layers \emph{will need locating on reopen}. A linked layer can be brought in later: \ui{Copy into project} on its context menu shows the size and asks before copying.
+
+\begin{caution}
+A linked layer isn't in the project folder, so it isn't in a backup of that folder either (\cref{sec:store-backup}). If a linked file moves, opening the project asks you to locate it.
+\end{caution}
+
+\subsection{What a save keeps}
+\begin{itemize}
+\item the layers, their order and groups in the layers panel, their labels;
+\item each layer's styling: color-by, ramps and classes, opacity, legend, hidden categories (\cref{ch:color});
+\item each layer's filter, and the ƒ columns, painted columns and stored columns it carries (\cref{ch:filter});
+\item views of a model shown twice, with their offsets (\cref{ch:sections});
+\item the camera and the section;
+\item bookmarks and scenes (\cref{sec:projects-views});
+\item the analysis windows that were open, with their setups (\cref{ch:analysis});
+\item figures, recipes, routines and run records, which are files in the folder already.
+\end{itemize}
+
+A save may also offer to convert block models to Parquet and meshes to \file{.wfr}, the compact forms micro reopens fastest. It asks before it does either, and remembers your answer. \Cref{ch:store} explains both.
+
+\section{The folder}\label{sec:projects-layout}
+Data files are filed by kind. The layout mirrors the layers panel, and it is the same for every project.
+
+\begin{figure}[htbp]\centering
+\begin{tikzpicture}[font=\sffamily\small, x=1mm, y=1mm,
+  d/.style={anchor=west, text=ink, font=\ttfamily\footnotesize},
+  n/.style={anchor=west, text=muted, font=\sffamily\footnotesize},
+  tk/.style={rule, line width=0.5pt}]
+\node[d] at (0,0) {deposit-2026/};
+\node[d, text=amber] at (6,-6) {project.json};  \node[n] at (46,-6) {the session: layers, styling, camera, windows};
+\node[d] at (6,-12) {models/};      \node[n] at (46,-12) {block models};
+\node[d] at (6,-18) {drillholes/};  \node[n] at (46,-18) {collar, survey and interval tables; one set manifest per set};
+\node[d] at (6,-24) {meshes/};      \node[n] at (46,-24) {wireframes, surfaces, design strings};
+\node[d] at (6,-30) {grids/};       \node[n] at (46,-30) {GeoTIFF, Surfer and ESRI grids};
+\node[d] at (6,-36) {clouds/};      \node[n] at (46,-36) {point clouds};
+\node[d] at (6,-42) {tables/};      \node[n] at (46,-42) {tables without coordinates};
+\node[d] at (6,-50) {recipes/};     \node[n] at (46,-50) {recipes and routines, as YAML (\cref{ch:recipes})};
+\node[d] at (6,-56) {runs/};        \node[n] at (46,-56) {one folder per routine run (\cref{ch:records})};
+\node[d] at (6,-62) {figures/};     \node[n] at (46,-62) {composer figures (\cref{ch:composer})};
+\node[d] at (6,-68) {bookmarks/ \ scenes/}; \node[n] at (46,-68) {one small JSON per saved view};
+\draw[tk] (2,-2.5) -- (2,-68);
+\foreach \y in {-6,-12,-18,-24,-30,-36,-42,-50,-56,-62,-68} \draw[tk] (2,\y) -- (5,\y);
+\draw[decorate, decoration={brace, amplitude=3pt}, amber, line width=0.6pt] (-1.5,-43.5) -- node[left=3pt, n, anchor=east, text=amber] {data} (-1.5,-10.5);
+\draw[decorate, decoration={brace, amplitude=3pt}, rule, line width=0.6pt] (-1.5,-69.5) -- node[left=3pt, n, anchor=east] {work} (-1.5,-48.5);
+\end{tikzpicture}
+\caption{A project folder. Data is filed by kind; what you made with it sits beside.}\label{fig:projects-layout}
+\end{figure}
+
+Beside each data file micro keeps a few small companions: a manifest describing its columns and how the derived ones were made, a cache that lets it reopen without rescanning, and a folder of derived columns. They are named after the file (\file{deposit.csv.element.json}, \file{deposit.csv.meta.json}, \file{deposit.csv.cols/}) and are covered in \cref{ch:store}.
+
+\begin{why}
+The kind folders are a contract as well as a filing system. A file in \file{drillholes/} is declared to be drillhole data, whoever put it there. So another tool, or a colleague, can add data to a project by saving a file in the right place (\cref{sec:projects-inbox}).
+\end{why}
+
+Drillholes are the one compound case: a set is a collar table, a survey table and one or more interval tables that only make sense together. So a set has one \term{set manifest}, \file{drillholes/<set>.element.json}, in place of a manifest per file. It names the set's tables, ties them together by hole id and keeps the desurvey settings, so a set reopens as a set (\cref{ch:drillholes}); the demo's is \file{demo\_assay.element.json}. Projects saved by older versions of micro kept the same facts in a \file{<set>.holes.json}, which still opens.
+
+\section{Opening}\label{sec:projects-open}
+\menu{File>Open project folder…} asks for the folder. The projects you opened recently are listed on the start screen, and only there, as chips after \ui{projects:}. A chip opens its project in one click; the browser may first ask you to allow the folder again. Project packs you opened are listed there too (\cref{sec:store-packs}).
+
+While the project opens, a dialog lists every layer with its state: waiting, opening, done, or skipped with the reason. Each layer comes back as it was saved: same mapping, same styling, same filter, same derived columns. Then the camera, the section and the analysis windows are restored.
+
+Three things can go differently.
+
+\begin{itemize}
+\item \textbf{A file is missing from the folder.} The layer is skipped and the dialog says which file. The rest of the project opens.
+\item \textbf{A linked file isn't where it was.} micro offers \ui{Locate “deposit.csv”…} and \ui{Skip this layer}.
+\item \textbf{A data file changed since the save.} The layer opens on the new bytes. Columns that were painted or stored record by record were made for the old file; micro compares a fingerprint of the file's content with the one it noted and doesn't lay them back onto data they no longer describe (\cref{sec:store-stale}).
+\end{itemize}
+
+\menu{File>Close project (…)} closes the project and leaves the layers open; the files on disk are untouched. \menu{File>New project…} clears the session, after telling you what it closes.
+
+\begin{tryit}
+Save the demo project, close it, and get it back.
+\begin{enumerate}
+\item Open the demo project from the start screen. It lives in memory only.
+\item Choose \menu{File>Save project as…} and make a new folder called \file{demo}.
+\item micro first offers to store the model as Parquet, then the meshes as \file{.wfr}. Choose \ui{Not now} to both for this exercise (\cref{sec:store-parquet}).
+\item The save dialog lists the nine files outside the folder. Choose \ui{Copy into project}. The status line reads \emph{project saved — demo/project.json} when it is done.
+\item Look at the folder in your file manager. It holds \file{project.json}; \file{models/} with \file{deposit.csv}; \file{drillholes/} with the three tables and the set manifest \file{demo\_assay.element.json}; \file{grids/} with the topography; \file{meshes/} with the three phases and the ore shell; and \file{bookmarks/} with the demo's one bookmark. Each data file has its \file{.element.json} beside it, and the model also a \file{.meta.json} cache.
+\item Close the browser tab.
+\item Open micro again and click the \ui{demo} chip on the start screen. Everything returns: the section, the bookmark, the grade–tonnage window.
+\end{enumerate}
+\end{tryit}
+
+\section{When the data changes}\label{sec:projects-change}
+A project outlives the first versions of its files: the model is re-estimated, the assays grow. Two commands on a layer's context menu deal with that. \Cref{ch:opening} describes both in full.
+
+\ui{Reload from disk} reads the same file again after something else changed it: a model re-exported over itself, a parameter table edited in a spreadsheet. The layer keeps its mapping, styling, ƒ columns and filter. It works for layers micro has a path to; a file that was dragged in is a snapshot with no path, and micro says so.
+
+\ui{Change file…} points the layer at a different file and keeps everything else. Next month's model takes the place of last month's under the same setup. Columns painted record by record on the old file can't be carried over, and micro asks before dropping them.
+
+\begin{tip}
+For a monthly model, keep the layer and change its file. Recipes and routines name layers, so name the routine's layer through an input (\cref{sec:routines-inputs}) or keep the file's name stable from month to month, and the whole month-end follows the new data.
+\end{tip}
+
+\section{The folder as an inbox}\label{sec:projects-inbox}
+\menu{File>Scan folder for new data…} looks through the project folder for anything the project doesn't know about yet.
+
+\begin{itemize}
+\item A data file no layer uses is offered in the usual open dialog, where you confirm what it is (\cref{ch:opening}). The scan looks for delimited text, Parquet, Datamine, LAS, PLY, XYZ, OBJ, MSH, LFM and grid files; an Excel sheet, a DXF, an OMF or a \file{.wfr} put in the folder by hand is opened with \menu{File>Open…} instead.
+\item A drillhole set with its set manifest (or an older \file{.holes.json}) is loaded directly, with all its tables.
+\item Recipes and routines in \file{recipes/} are read again, so new and edited files both arrive.
+\end{itemize}
+
+Bookmarks and scenes are read when the project opens, not by a scan.
+
+Files micro wrote itself (manifests, caches, the contents of a \file{.cols/} folder) are not data and are never offered. Scanning twice changes nothing the second time; when there is nothing new, the status line says \emph{scan: no new data files in the folder}.
+
+This is how data arrives from outside. Another program exports a model into \file{models/}. A colleague drops an assay table into \file{drillholes/}. You copy a recipe file from another project. Scan, and it is there.
+
+\section{Tidy project folder}\label{sec:projects-tidy}
+Projects saved by early versions of micro kept every file at the top of the folder. They still open. \menu{File>Tidy project folder…} moves such a project into the layout by kind.
+
+micro explains first and waits for \ui{Tidy}: each layer's file moves into its kind folder, its companions move with it, and \file{project.json} is rewritten to match. Files are moved, not copied. Linked layers stay where they are. If two files would land on the same name in a kind folder, the second is left in place and named in the status line. Running it on a tidy project does nothing: \emph{project already tidy}.
+
+\begin{caution}
+Tidy moves files on disk. If something outside micro refers to those files by path (a script, a spreadsheet link), update it afterwards. Back the project up first if you are unsure (\cref{sec:store-backup}).
+\end{caution}
+
+\section{Bookmarks and scenes}\label{sec:projects-views}
+Two kinds of saved view live in the project. \Cref{ch:sections} covers using them; this section covers what they are as files.
+
+A \term{bookmark} is a viewpoint: the camera and the section. \menu{View>Bookmarks>Save bookmark…} saves one by name. For quick use, press \key{g} and then \key{Shift}+\key{1}…\key{9} to save the current view into a numbered slot, and \key{g} then the digit to return to it. A bare digit does nothing, so a stray key can't move the camera.
+
+A \term{scene} is the working state: the camera and the section, plus each layer's visibility, color-by and filter. \menu{View>Scenes>Save scene…} saves one; \ui{Save scene (with selection)…} appears when something is selected and also keeps the selection. Applying a scene puts the layers back as they were. A layer the scene mentions that isn't loaded is named in the status line and skipped.
+
+Each is one small JSON file, in \file{bookmarks/} or \file{scenes/}, named after it in lower case with spaces and symbols turned into underscores: the demo's bookmark \emph{Ore lens — E–W section} is \file{bookmarks/ore\_lens\_e\_w\_section.json}. They travel with the project, can be edited by hand, and can be copied between projects that share layer names. Until the project is saved to a folder they exist in memory only, and micro says so when you save one.
+
+\begin{tabularx}{\linewidth}{@{}lLL@{}}\toprule
+& bookmark & scene \\ \midrule
+keeps & camera, section & camera, section, each layer's visibility, color-by and filter; optionally the selection \\
+for & getting around & returning to a state of work; the starting point of a figure \\
+file & \file{bookmarks/<name>.json} & \file{scenes/<name>.json} \\
+\bottomrule
+\end{tabularx}
+
+\section{Getting data out}
+Nothing you make in a project is trapped in it. \ui{Export rows…} on a layer writes it out as CSV or Parquet, every column included: calculated, painted, stored and joined (\cref{ch:columns}). Meshes export to their own formats (\cref{ch:meshes}), grids to ESRI ASCII (\cref{ch:grids}). In a routine, the \code{export} tool does the same without a dialog (\cref{sec:routines-tools}). To move the whole project as one file, back it up (\cref{ch:store}).

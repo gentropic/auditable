@@ -1,0 +1,230 @@
+\chapter{Stats, scatter \& Q-Q}\label{ch:stats}
+\begin{goals}
+\textbf{In this chapter} you summarize columns by domain — count, mean, spread and quartiles, weighted or not — plot one column against another at any model size, and compare two distributions quantile by quantile: model against samples, this estimate against the last.
+\end{goals}
+
+These three plain statistical views work on more than block models. Any layer with a table and a numeric column will do: a block model, a drillhole interval table, a point file, a result kept with \ui{⇥ layer}.
+
+\ui{Stats…} is a grouped summary table. \ui{Scatter / Q-Q…} is one window with two modes: a \emph{scatter} of two columns of one layer, and a \emph{Q-Q} plot of two distributions that may come from different layers. Both are on a layer's right-click menu; in the palette (\key{⌘K}) they are \ui{Stats…}, \ui{Scatter plot} and \ui{Q-Q plot}. Both work as \cref{ch:analysis} describes.
+
+\section{The stats table}\label{sec:stats-table}
+\begin{tryit}
+In the demo project, right-click \file{deposit.csv} and choose \ui{Stats…}.
+\begin{enumerate}
+\item Under \ui{columns}, the button names the chosen column, \col{FE}. Click it: a menu lists the numeric columns, with a ✓ on those chosen.
+\item Choose \col{SG}. The button now reads \emph{FE, SG}.
+\item Under \ui{group by}, choose \col{LITO}.
+\item Press \ui{Run}. One row for each rock type and column.
+\item Under \ui{weight}, type \code{SG} and \ui{Run} again. The headings change to \emph{mean·w} and \emph{std·w}, and the subtitle adds \emph{weighted mean/std (quantiles unweighted)}.
+\end{enumerate}
+\end{tryit}
+
+\shot{stats-window}{The stats table on the demo deposit: \col{FE} and \col{SG} by \col{LITO}, with count, mean, standard deviation, minimum, quartiles and maximum.}
+
+\medskip
+\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+setting & meaning & default \\ \midrule
+\ui{columns} & the numeric columns to summarize; choosing a column in the menu adds it, choosing it again removes it, and the last one stays & the first numeric column \\
+\ui{group by} & the layer's category column or a painted column; \ui{— whole layer —} for one group & whole layer \\
+\ui{weight} & an expression weighting the mean and standard deviation; blank = none & blank \\
+\ui{scope} & \ui{all} · \ui{filt} · \ui{sel} & all \\ \bottomrule
+\end{tabularx}
+\medskip
+
+Every one of these needs a \ui{Run}. The window has \ui{save as recipe…} and the table actions of the results row — \ui{⇥ figure}, \ui{⇥ layer} and \ui{⧉ table}.
+
+\subsection{What each number is}
+Each row is one column within one group.
+
+\medskip
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+column & meaning \\ \midrule
+\ui{n} & the records counted: those with a numeric value in this column and a positive weight \\
+\ui{mean}, \ui{std} & the mean and standard deviation — weighted when a weight is given, and then headed \ui{mean·w}, \ui{std·w} \\
+\ui{min}, \ui{max} & the smallest and largest value, exact \\
+\ui{q25}, \ui{median}, \ui{q75} & the quartiles, \emph{unweighted} \\ \bottomrule
+\end{tabularx}
+\medskip
+
+Three points decide how far to trust the table.
+
+\paragraph{Blanks are not zeros.} A blank value is left out of its column's row; it lowers \ui{n} and nothing else. Different columns of the same group can therefore have different counts, and the difference is the number of blanks. A record whose group value is blank goes to a group shown as \emph{—}. Groups are listed in alphabetical order, numbers in numeric order.
+
+\paragraph{Quartiles are estimates, and unweighted.} micro never holds a whole column in memory, so it cannot sort it. Quantiles come from a streaming digest — a compact summary of the distribution that is very accurate in the tails and close everywhere, but not exact in the way the mean, minimum and maximum are. They also ignore the weight, and the window says so in its subtitle whenever a weight is in use. So a weighted mean sits beside an unweighted median: before you read skewness into the gap between them, check that it is not the weight.
+
+\paragraph{The weight is only what you type.} Unlike grade–tonnage and swath, stats does \emph{not} multiply by block volume. With no weight, every record counts once.
+
+\begin{caution}
+On a sub-blocked model an unweighted mean is a mean \emph{per record}: a 2.5~m sub-block counts as much as a 20~m parent, so the mean leans toward wherever the sub-blocking is finest — usually the contacts. For a volume- or tonnage-weighted mean, put the volume in the weight yourself, from the model's size columns — for example \code{DX * DY * DZ}, or \code{DX * DY * DZ * SG}. On a regular model, \code{SG} alone gives the tonnage-weighted mean, because every block has the same volume.
+\end{caution}
+
+\Cref{fig:stats-demo} draws the demo's table as a chart: the spread of \col{FE} in each rock type. The hematite sits tight above 60\,\% (its interquartile range is 60.9–63.4), the canga just over 50, the waste near 22; the itabirite, which holds the rest of the ore and its low-grade halo, spreads widest — from 32 to 53\,\% between its quartiles.
+
+\begin{figure}[htbp]\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.86\linewidth, height=58mm, ymin=0, enlarge x limits=0.2,
+  xtick={0,1,2,3}, xticklabels={CANGA, HEMATITE, ITABIRITE, WASTE}, ylabel={\% Fe}, legend pos=north east]
+\addplot[only marks, mark=*, mark size=2pt, amber, error bars/.cd, y dir=both, y explicit, error bar style={line width=1.2pt}]
+  table[col sep=tab, x expr=\coordindex, y=median, y error plus expr=\thisrow{q75}-\thisrow{median}, y error minus expr=\thisrow{median}-\thisrow{q25}]{figures/data/stats-demo-lito.tsv};
+\addlegendentry{median, with q25–q75}
+\addplot[only marks, mark=diamond*, mark size=2.4pt, info] table[col sep=tab, x expr=\coordindex, y=mean]{figures/data/stats-demo-lito.tsv};
+\addlegendentry{mean, weighted by \texttt{SG}}
+\end{axis}
+\end{tikzpicture}
+\caption{\col{FE} by \col{LITO} in the demo deposit, from the stats tool: the unweighted median and interquartile range, and the \col{SG}-weighted mean. Groups are in alphabetical order, as the table lists them. Inside each rock type the weight hardly moves the mean; across rock types the grade is what tells them apart.}\label{fig:stats-demo}
+\end{figure}
+
+\subsection{Stats by domain}
+The \ui{group by} menu offers the layer's category column and every painted column. Stats by domain is therefore two steps: assign domains — by solids, or by painting a selection (\cref{ch:picking,ch:geometry}) — then group by the domain column. A layer may have up to 256 groups; beyond that the extra groups are dropped and the subtitle carries a warning.
+
+With the scope set to \ui{sel}, the table is the statistics of whatever you select in 3D: select a bench, a fault block, the blocks inside a pit shell, and press \ui{Run}.
+
+If a saved setup names a column the layer does not have, the window says \emph{no numeric column “…” on this layer} and shows the rest. Run from a recipe, it refuses instead of computing other columns in its place.
+
+\section{Scatter}\label{sec:stats-scatter}
+The scatter plots one column of a layer against another: copper against gold, an estimate against its kriging variance, density against grade.
+
+\begin{tryit}
+Right-click \file{deposit.csv} and choose \ui{Scatter / Q-Q…}. The window opens in \ui{scatter} mode.
+\begin{enumerate}
+\item Set \ui{x} to \col{FE} and \ui{y} to \col{SG}, and press \ui{Run}.
+\item The plot is a density — there are far more than 20,000 blocks — and it is a narrow line. The note under it reads \emph{n 1,786,620 · r 1.000 · density of 160×160 cells (log counts)}.
+\end{enumerate}
+\end{tryit}
+
+The demo's density is a formula of its iron grade, and the scatter shows that at a glance. On a real model the same picture tells you a density column was regressed from grade, not measured — worth knowing before you call a tonnage “measured”.
+
+\shot{scatter-window}{Scatter mode: \col{SG} against \col{FE} over the demo model, drawn as a density of counts. The note gives n and r.}
+
+\medskip
+\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+setting & meaning & default \\ \midrule
+\ui{x}, \ui{y} & the two columns, of the window's layer & the first two numeric columns \\
+\ui{filter} & rows to plot, e.g. \code{LITO = "HEMATITE"} & none \\
+\ui{scope} & \ui{all} · \ui{filt} · \ui{sel}; clicking runs at once & all \\
+\ui{log x}, \ui{log y} & a logarithmic axis; needs \ui{Run} & off \\
+\ui{1:1 line} & draws $y = x$ — live & off \\ \bottomrule
+\end{tabularx}
+\medskip
+
+\paragraph{Points, then a density.} A pair is a record with a numeric value in both columns. While there are 20,000 pairs or fewer, every pair is drawn as a point. Beyond that the plot is a \emph{density}: the plane is divided into a 160 × 160 grid and each cell is colored by how many pairs fall in it. The color scale is logarithmic, so a handful of outliers stays visible beside a core of a million blocks, and empty cells are left blank. The plot therefore looks and costs the same on 30,000 blocks and on 60 million.
+
+\paragraph{The note.} Under the plot: \emph{n}, the number of pairs; \emph{r}, the correlation coefficient; and whether you are looking at every pair or at a density. The correlation is computed on the axes \emph{as drawn} — with a log axis it is the correlation of the logarithms, and the note says \emph{(on the log axes)}.
+
+\paragraph{Log axes.} Skewed grades — gold, most trace elements — are unreadable on linear axes, and a log axis fixes that. A value of zero or below cannot be placed on one; those pairs are counted and reported, \emph{… pairs ≤ 0 left off the log axis}, never silently dropped. If that count is large, your column probably uses zero or a negative number for “not assayed” (\cref{ch:columns}).
+
+\paragraph{The 1:1 line} only makes sense when both columns are the same quantity in the same unit: two estimates of one grade, an estimate and a check assay.
+
+\ui{⧉ table} copies the pairs themselves while every pair is drawn; for a density it copies the non-empty cells — each cell's range in x and y, and its count.
+
+\section{Q-Q}\label{sec:stats-qq}
+A Q-Q plot compares two \emph{distributions}: it plots the quantiles of one against the same quantiles of the other. The two sides need not be paired, need not have the same number of values, and need not be in the same layer. Click \ui{Q-Q} at the top of the rail to switch the window to it.
+
+Each side — \ui{x} and \ui{y} — is its own small box:
+
+\medskip
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+part & meaning \\ \midrule
+layer & any loaded layer with a table and a numeric column \\
+column & the column whose distribution is taken \\
+filter & optional rows for this side \\
+scope & \ui{all} · \ui{filt} · \ui{sel}, per side \\ \bottomrule
+\end{tabularx}
+\medskip
+
+Below the two sides, \ui{log axes} switches both axes at once and is live.
+
+Each of the classic comparisons is then one setup:
+
+\begin{itemize}
+\item \textbf{model against samples} — x: the drillhole layer's grade; y: the model's;
+\item \textbf{this estimate against the last} — two models, the same column;
+\item \textbf{one domain against another} — the same layer and column on both sides, a different filter on each;
+\item \textbf{kriged against nearest-neighbor} — two columns of one model.
+\end{itemize}
+
+\begin{tryit}
+Right-click \file{deposit.csv}, choose \ui{Scatter / Q-Q…} and click \ui{Q-Q} at the top of the rail.
+\begin{enumerate}
+\item On side \ui{x}, choose the drillhole layer, \ui{holes · demo\_assay.csv}, and the column \col{FE}.
+\item On side \ui{y}, choose \file{deposit.csv} and \col{FE}.
+\item Press \ui{Run}. The curve of quantiles appears against the dashed 1:1 line, and the note reads \emph{n 951 vs 1,786,620 · mean 34.52 vs 24.72 · P10/P50/P90 ratio (y/x) 0.9301 / 0.8439 / 0.5304}.
+\end{enumerate}
+\end{tryit}
+
+\shot{qq-window}{Q-Q mode: the demo model's \col{FE} against the drillhole samples' \col{FE}, quantile against quantile, with the dashed 1:1 line and dots at P10, P25, P50, P75 and P90. Above its lowest quantiles the model's curve falls far below the line.}
+
+\subsection{Reading it}
+The curve joins 101 quantiles, from P0.5 to P99.5. The dashed line is 1:1. Dots mark P10, P25, P50, P75 and P90, and the note gives both counts, both means, and the ratio $y/x$ at P10, P50 and P90.
+
+\begin{itemize}
+\item \textbf{On the line}: the two distributions agree at those quantiles.
+\item \textbf{Parallel to the line, shifted}: the same shape, a different level — a bias.
+\item \textbf{Flatter than the line} (x on the horizontal axis being the samples): the y distribution is \emph{narrower}. Between samples and a block model this is expected: blocks are larger than samples and average out the extremes, so the model has fewer very low and very high values. That is the support effect, not an error. How \emph{much} flatter is the question of smoothing: a model far narrower than its block size justifies is over-smoothed, and \cref{sec:validation-pairing} measures it pair by pair.
+\item \textbf{Bending away at one end}: the distributions differ in a tail — top-cutting, a detection limit, a population in one and not the other.
+\end{itemize}
+
+\Cref{fig:qq-demo} is the demo's comparison, from micro's quantiles.
+
+\begin{figure}[htbp]\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.62\linewidth, height=0.62\linewidth, xmin=0, xmax=70, ymin=0, ymax=70, xlabel={drillhole samples, \% Fe}, ylabel={block model, \% Fe}, legend pos=north west]
+\addplot[rule, thick, dashed, domain=0:70, samples=2] {x};
+\addlegendentry{1:1}
+\addplot[amber, very thick] table[col sep=tab, x=x, y=y]{figures/data/qq-demo.tsv};
+\addlegendentry{quantiles, P0.5–P99.5}
+\end{axis}
+\end{tikzpicture}
+\caption{Q-Q of the demo: the quantiles of \col{FE} in \file{deposit.csv} against those of \col{FE} in the drillhole intervals. Both sides unweighted.}\label{fig:qq-demo}
+\end{figure}
+
+Read literally, the demo's curve says the model is far narrower than its samples: its median is 84\% of theirs, its P90 barely half. It is not. Pair each sample with its block (\cref{sec:validation-pairing}) and the blocks reproduce the samples almost one for one. The difference is in \emph{what was sampled}: the holes were drilled at the ore lens, so nearly half of the drilled length grades above 30\,\% Fe, while nine-tenths of the model's blocks are the waste around it. The two sides are not the same population, which is the trap the caution below describes.
+
+\begin{caution}
+Q-Q quantiles are unweighted on both sides, and the window's subtitle says so. On the sample side this means every interval counts once: long and short intervals alike, and clustered infill holes as much as the wide-spaced ones. If the drilling is clustered on the high grade, the sample quantiles run high and the model will look biased low when it is not. Composite the drillholes to a constant length first (\cref{ch:drillholes}), and for a \emph{declustered} comparison of the means use \ui{Validate vs drillholes…} (\cref{ch:validation}).
+\end{caution}
+
+On the model side, a sub-blocked model carries the same reservation as in the stats table: every record counts once, whatever its size.
+
+\section{In a routine}\label{sec:stats-routine}
+The stats tool is \code{stats}; scatter and Q-Q are one tool, \code{xy}, with a \code{mode}. Their settings are in \cref{tool:stats,tool:xy}.
+
+\begin{lstlisting}[language=yaml]
+- tool: "stats"
+  with:
+    layer: "deposit.csv"
+    cols:
+      - "FE"
+      - "SG"
+    groupBy: "LITO"
+    weight: "SG"
+    filter: "FE > 0"
+  as: "stats"
+- tool: "xy"
+  with:
+    mode: "qq"
+    a:
+      layer: "demo_assay.csv"
+      col: "FE"
+    b:
+      layer: "deposit.csv"
+      col: "FE"
+  as: "qq"
+- check: "abs(qq.p50_ratio - 1) < 0.1"
+  say: "model and sample medians within 10%"
+\end{lstlisting}
+
+A \code{stats} step lists its columns under \code{cols} and may group by a column or an expression; it also takes a \code{filter}, which the window does not have.
+
+The \code{stats} report has one row per group and column: the group column, headed by the \code{groupBy} text itself (\col{LITO}) and present only when there is one, then \col{column}, \col{n}, \col{mean}, \col{std}, \col{min}, \col{q25}, \col{median}, \col{q75} and \col{max}. A column name that is not a numeric column of the layer stops the step before it reads anything.
+
+An \code{xy} step in \code{scatter} mode takes \code{layer}, \code{x} and \code{y}; in \code{qq} mode it takes the two sides \code{a} (x) and \code{b} (y), each with \code{layer}, \code{col} and optionally \code{filter}. In a routine the scope, of the scatter and of each side, must be \code{all}. What an \code{xy} step reports depends on the mode.
+
+\begin{description}
+\item[Q-Q] a table of 101 rows — \col{p}, \col{x}, \col{y} — and the values \code{n\_x}, \code{n\_y}, \code{mean\_x}, \code{mean\_y}, \code{p10\_ratio}, \code{p50\_ratio} and \code{p90\_ratio} (the ratios are $y/x$).
+\item[Scatter] the values \code{n} and \code{r}, plus \code{off\_log} when pairs were left off a log axis. The table is the pairs (\col{x}, \col{y}) while there are 20,000 or fewer; otherwise the occupied density cells, \col{x\_from}, \col{x\_to}, \col{y\_from}, \col{y\_to} and \col{count}.
+\end{description}
+
+The values are what checks read (\cref{ch:checks}). The example above passes while the model's median \col{FE} is within 10\% of the samples' — on the demo it fails, with \code{p50\_ratio} at 0.84, for the reason the Q-Q figure shows; \code{qq.p90\_ratio} bounds the upper tail the same way, and for a scatter step named \code{sc}, \code{sc.r > 0.9} asserts a correlation. A check that reads a blank — a ratio whose sample quantile is zero — is reported as \emph{not evaluated}, never as passed.
+
+Charts sent to the composer with \ui{⇥ figure} remember the \code{stats} or \code{xy} settings behind them, so \ui{↻ refresh} on the page re-runs the tool and redraws the frame from the current data (\cref{ch:composer}).

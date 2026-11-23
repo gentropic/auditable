@@ -1,0 +1,160 @@
+\chapter{Sealed, and everywhere}\label{ch:sealed}
+\begin{goals}
+\textbf{In this chapter} you learn what \emph{Sealed} means and how to check it for yourself, and how to run micro wherever you work: installed, from a single file with no network, on a phone, and inside the Android shell.
+\end{goals}
+
+A block model is confidential in a way few files are. It is the asset. Before a resource is published, the numbers in it can move a share price; afterwards they are still the company's. So the first question about any tool you open one in is: where does my data go?
+
+micro's answer is \emph{nowhere}, and it is built so that you can check the answer yourself.
+
+\section{Sealed}\label{sec:sealed-what}
+micro is \term{Sealed}. The word names three properties.
+
+\begin{description}
+\item[No network access from the page.] The page carries a security policy, \code{connect-src 'none'}, which tells the browser to refuse every connection the page tries to make. micro doesn't choose not to phone home; the browser won't let it. There is no telemetry, no analytics, no cloud storage and no licence check.
+\item[Your data stays on your device.] A file you open is read from your disk into the tab's memory. A project is a folder on your disk. Exports are files you save. Nothing is uploaded, because nothing can be.
+\item[No opaque binaries.] micro contains no WebAssembly. Everything it runs is JavaScript you can read, so what it does can be audited and not only asserted.
+\end{description}
+
+The \ui{Sealed} badge at the top left of the window, beside micro's name, says this at a glance. Click it, or choose \menu{Help>Why it’s Sealed (security)…}, and a panel headed \emph{Sealed — nothing leaves this machine} gives the short version: the three properties above, and a fourth point that \cref{sec:sealed-run} explains, the difference between the downloaded file and the hosted app. At its foot, a link to \url{https://gentropic.org/security} for verifying the build.
+
+\shot[0.6\linewidth]{sealed-badge}{The Sealed badge, clicked: no network access from the page, data stays on the device, no WebAssembly, and what the hosted app adds around the file.}
+
+\begin{why}
+A promise not to send data is only as good as the next update. A policy the browser enforces is different in kind. For micro to send your model anywhere, someone would have to remove the policy from the file, and anyone can see that change. Sealed is a property of the file, not a statement of intentions.
+\end{why}
+
+\subsection{What Sealed costs}
+A page that can't reach the network can't do some things other tools do.
+
+\begin{itemize}
+\item No map tiles, no web services, no online base layers. Bring topography as a grid (\cref{ch:grids}).
+\item No accounts, no sharing links, no collaboration server. You share a project by handing over a file (\cref{ch:store}).
+\item No scheduler. A routine runs when a person, or a page hosting micro, starts it (\cref{ch:routines}).
+\item No update from inside the page. See \cref{sec:sealed-updates}.
+\end{itemize}
+
+\section{Checking it yourself}\label{sec:sealed-verify}
+Three checks, in order of effort.
+
+\textbf{Watch the network.} The browser's own network panel lists every request the page makes. Use micro with it open and look at the addresses (the try-it below). No entry has a web address (\code{http:} or \code{https:}). What you do see are \code{blob:} entries: memory the page set aside for itself, for its own modules and its background workers, read without ever leaving the tab.
+
+\textbf{Read the policy.} Open \file{micro.html} in a text editor and search for \code{Content-Security-Policy}. The policy is in the file's own header, and \code{connect-src 'none'} is in it.
+
+\textbf{Verify the build.} The Sealed panel links to \url{https://gentropic.org/security}, the page for verifying the build and for taking micro through an IT approval process. Each build of micro produces what such a check needs: the file's SHA-256, a declaration of the capabilities it claims, the policy it carries and a list of its components. The build also checks the file against its own declaration, so a claim the file doesn't live up to fails the build.
+
+You can hash the file yourself with the same commands as in \cref{sec:records-sha} and compare.
+
+\begin{tryit}
+Watch the network while you work. Chrome or Edge is assumed; Firefox's panel is the same idea.
+\begin{enumerate}
+\item Download \file{micro.html} (the link is on the start screen: \ui{download micro.html}) and double-click it, so micro runs from your disk.
+\item Press \key{F12} to open the developer tools and choose the \ui{Network} tab. Its list already holds what the page loaded: the file itself and many \code{blob:} entries.
+\item Clear the list (the ⊘ button), so that only what happens from now on appears.
+\item Open the demo project, filter the model to \code{FE >= 55}, and open the grade–tonnage window.
+\item Look down the list. It holds a handful of new \code{blob:} entries, the page's own workers starting, and nothing else: no \code{https:}, no other address of any kind.
+\item Click the \ui{Sealed} badge and read its panel. Its first line is the claim you have just checked in the browser's own list.
+\end{enumerate}
+\end{tryit}
+
+\begin{note}
+The run records of \cref{ch:records} name the micro build that produced them. With the published hash of that build, a reviewer can establish which data a number came from and which exact program computed it.
+\end{note}
+
+\section{Three ways to run it}\label{sec:sealed-run}
+
+\subsection{On the web}
+\url{https://gentropic.org/micro} is the hosted app. There is nothing to sign up for. Open it and drop a file.
+
+The page there is the same Sealed page. Around it, outside the page, the site adds one thing a file on disk can't have: a \term{service worker}, a small piece of the site that keeps a copy of micro in the browser so it opens without a connection, and that can check whether a newer build exists. It fetches only micro's own files. It never sees your data: that lives in the page, and the page can't reach it or the network.
+
+\subsection{Installed}\label{sec:sealed-install}
+From the hosted app, your browser offers to install micro: an install icon in the address bar in Chrome and Edge, or \emph{Install} in the browser's menu. Installed, micro has its own window and its own icon, and opens without a browser tab around it. It is the same app, kept current the same way, and it works offline.
+
+\subsection{From one file}\label{sec:sealed-file}
+micro is also a single file, \file{micro.html}, that you can download from the site. Keep it, put it on a shared drive, carry it on a USB stick. Double-click it and it opens in your browser from your disk. There is no installer and nothing else to fetch.
+
+This form carries the strongest guarantee. A file opened from disk has no service worker and no site behind it: nothing about it touches the network. For a machine that isn't allowed online, or for a review that must be provably offline, use the file.
+
+\begin{tabularx}{\linewidth}{@{}lLLL@{}}\toprule
+& on the web & installed & one file \\ \midrule
+needs a connection & the first time & to install & never \\
+works offline & after the first visit & yes & yes \\
+updates & when a new build is published & the same & you download a new file \\
+network use & micro's own files only & micro's own files only & none \\
+\bottomrule
+\end{tabularx}
+
+\subsection{Updates}\label{sec:sealed-updates}
+\menu{Help>Check for updates…} asks whether a newer build exists. The page itself can't ask; it passes the question to the service worker, which does. If there is a new version the status line says so and a reload applies it. From the downloaded file there is no service worker, and micro tells you: \emph{this is the offline file}. To update a file, download a new one.
+
+micro never updates under you in the middle of a session.
+
+\subsection{Browsers}
+micro runs in current Chrome, Edge and Firefox. Two features need a browser that can read and write folders you choose, which today means Chrome or Edge:
+
+\begin{itemize}
+\item project folders: opening, saving, tidying, scanning (\cref{ch:projects});
+\item writing a run or a restore into a folder you pick (\cref{ch:library,ch:store}).
+\end{itemize}
+
+Everywhere else you can still open files, analyze, export, open a whole project from a pack (\cref{sec:store-packs}), and run a library routine into a zip (\cref{sec:library-zip}).
+
+\section{On a phone}\label{sec:sealed-phone}
+micro runs on a phone or a small tablet. On a narrow screen it switches to a \term{review layout}: the same micro, arranged for looking and checking with a thumb.
+
+\shot[0.42\linewidth]{mobile-review}{The review layout on a phone: the grade–tonnage window as a sheet, its plot above its settings, the model still visible above it; below, the section strip and the bottom bar.}
+
+\begin{itemize}
+\item One top bar: the ☰ menu, the Sealed badge, the command palette (⌘K), undo and redo, and the filter.
+\item A bottom bar of large targets: layers, properties, select, section, measure, fit.
+\item Every panel and window becomes a \term{sheet} that rises from the bottom. Drag its header between three heights (a peek, half, tall); drag below the peek to dismiss it.
+\item One sheet is open at a time. The others wait as chips on its top edge.
+\item The 3D view shrinks to stay visible above the sheet, and the model moves with it into the part you can see.
+\item Analysis windows stack: the plot on top, the settings below.
+\item With a section on, a strip above the bottom bar gives a full-width scrub and buttons to step by one slab.
+\end{itemize}
+
+Nothing is removed. Every command is still in the menu and the palette. The defaults are chosen for review: opening a project someone sent, turning the model, reading a curve, checking a section.
+
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+gesture & does \\ \midrule
+one finger & orbit \\
+pinch & zoom \\
+two fingers & pan, and twist to turn the view \\
+tap & pick a record; its values open in a sheet \\
+\bottomrule
+\end{tabularx}
+
+\begin{tip}
+To put a project on a phone, use a project pack (\cref{sec:store-packs}): one file, opened read-only, no folder access needed. Back the project up \ui{Lean} at your desk, send the file to yourself, and open it in micro on the phone.
+\end{tip}
+
+A phone has less memory than a desk machine, and the browser may reclaim the graphics context when the device is under pressure. micro restores the session when that happens. A model that is comfortable on a laptop may still be too much for a phone; a filtered export of the part you need to review (\cref{sec:routines-tools}) travels better.
+
+\section{Inside the Android shell}\label{sec:sealed-android}
+Where it is provided to you, micro can also run inside an Android app shell: a thin native wrapper that gives the same \file{micro.html} the things a browser tab on a phone lacks. When micro detects the shell, three things change.
+
+\begin{itemize}
+\item \textbf{Files open into micro.} Choose \emph{open with} micro on a file in Android's file manager, or share one to it, and it arrives as a layer. The first file replaces an empty scene; later ones are added. The file is read in place, in ranges, so a large model doesn't have to fit in memory to open.
+\item \textbf{Exports go to Downloads.} In a browser tab an export is a download. In the shell it is written to the device's \file{Downloads} folder as a stream, and the status line says \emph{saved … → Downloads} with a \ui{share…} button that hands the file to another app.
+\item \textbf{Project folders work.} The shell provides Android's folder picker, so you can open and save project folders as on a desktop, and the folder is remembered between sessions.
+\end{itemize}
+
+The file is the same Sealed \file{micro.html}. Inside the shell the page talks to the shell itself to read and write files, and to nothing else; the shell app holds no internet permission, so there is no route out of the device through it.
+
+\section{Bringing it through approval}\label{sec:sealed-approval}
+If your organization reviews software before it may touch resource data, these are the answers its reviewer will ask for.
+
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+question & answer \\ \midrule
+What is installed? & Nothing has to be. One HTML file, opened in a browser the organization already runs. \\
+What does it connect to? & Nothing. The page's policy forbids all connections; the offline file has no service worker either. \\
+Where is data stored? & In files and folders the user chooses, and in the browser's own storage on the same machine (remembered projects, the recipe library). \\
+Does it run code from elsewhere? & No. It loads nothing at run time, contains no WebAssembly, and its recipes and routines are data (\cref{ch:recipes}). \\
+How do we know which build we have? & The file's SHA-256, checked against the published one (\cref{sec:sealed-verify}). \\
+How is it updated? & By replacing the file, when you decide to. \\
+\bottomrule
+\end{tabularx}
+
+\url{https://gentropic.org/security} keeps the current version of these statements, with the artifacts that back them.

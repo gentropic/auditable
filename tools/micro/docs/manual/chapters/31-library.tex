@@ -1,0 +1,194 @@
+\chapter{The library}\label{ch:library}
+\begin{goals}
+\textbf{In this chapter} you keep recipes and routines outside any project, run a routine with no project open (into a folder, or a zip of the outputs you choose), and pass a routine to a colleague as one file.
+\end{goals}
+
+Your \code{month-end} now runs, judges itself and leaves a record. It also lives in one project's \file{recipes/} folder. That is right for a setup that belongs to one deposit, and wrong for what you carry from job to job: your standard model QA, your month-end, the validation you always run. The \term{library} is where those live. It belongs to you and your browser, apart from every project.
+
+The library answers a second need. Sometimes there is no project: someone sends a model, and you want your standard checks on it before deciding whether it deserves one. A routine in the library runs on whatever layers are open.
+
+\section{The Library window}\label{sec:library-window}
+Open it from \menu{Tools>Recipes>Library…}. It is there with or without a project; with no project open, the Recipes menu reads \ui{Library… (routines without a project)}.
+
+\shot[0.85\linewidth]{library-window}{The recipe library with a project open: the library's packs above, the project's own recipes below, and the import buttons at the foot.}
+
+The window has two lists.
+
+\textbf{Library} is yours in this browser. Each entry is a \term{pack}: a recipe or routine together with everything it needs to run. For a routine that means the recipes its steps name and the parameter tables it reads (every \code{from:} of an \code{each} or \code{params} block). The line says how many of each it carries. The month-end reads one recipe and no table: \emph{month-end · routine (1 recipe)}. A routine with an \code{each} over \file{benches.csv} would add \emph{· 1 table}.
+
+\textbf{This project} lists the files of the open project's \file{recipes/} folder. It appears only when a project is open.
+
+\subsection{Between the project and the library}
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+button & what it does \\ \midrule
+\ui{To library} & on a project recipe: copies it into the library, with the recipes and tables it uses. If one of those can't be found, the status line names it. \\
+\ui{Into project} & on a library pack: writes the routine, its recipes and its tables into the open project \\
+\ui{Delete} & removes a pack from the library, after a confirmation. The project's files are not touched. \\
+\bottomrule
+\end{tabularx}
+
+Both directions are copies. Editing the project's file afterwards doesn't change the library's pack, or the reverse. To update the library after improving a routine, press \ui{To library} again: a pack with the same name replaces the old one.
+
+\ui{Into project} never overwrites your work. A file that already exists in the project with different contents is left alone, and the status line says which: \emph{“month-end” → the project: wrote 2, kept your own recipes/deposit-grade-tonnage.yaml}.
+
+\begin{note}
+The library is stored in the browser's own storage on this machine, for this browser profile. It isn't in any project folder and it doesn't travel with one. Clearing the browser's site data for micro clears the library. Export what you can't afford to lose (\cref{sec:library-export}).
+\end{note}
+
+\section{Running from the library}\label{sec:library-run}
+A routine in the library has up to three run buttons.
+
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+button & the run is written \\ \midrule
+\ui{Run in project} & into the open project's \file{runs/}, like any routine. Shown only with a project open. \\
+\ui{Run → zip} & nowhere on disk; at the end you choose which outputs to download as one zip \\
+\ui{Run → folder…} & into a folder you pick \\
+\bottomrule
+\end{tabularx}
+
+In all three the routine runs on the layers that are loaded, using its \emph{own} recipes and tables from the pack. Nothing is written into a project's \file{recipes/}. The pre-flight is the usual one (\cref{sec:routines-preflight}): if a layer the routine names isn't loaded, nothing runs and the status line says which.
+
+Only a routine runs this way. A single recipe opens a window on a project's layer; to run one on its own, wrap it in a one-step routine.
+
+\begin{tip}
+A library routine is most useful when it doesn't name its layers. Give it \code{inputs} with \code{type: "layer"} and \code{requires:} (\cref{sec:routines-inputs}), and the same routine serves whatever model is on screen. All three run buttons then open the questions first.
+\end{tip}
+
+\subsection{Run → zip}\label{sec:library-zip}
+Use \ui{Run → zip} when you have no project and want none. The tracker walks the steps as usual. The run's files are held in memory, and when the run ends a window lists them:
+
+\shot[0.6\linewidth]{library-outputs}{The outputs of a run without a project. The record is always included; untick what you don't want.}
+
+Each file has a checkbox and its size. \file{run.json} is ticked and can't be unticked: \emph{the record — always}. Untick the reports you don't need and press \ui{Download zip}. You get one file named after the run's folder, with that folder inside it.
+
+\begin{why}
+The record always goes because the outputs mean little without it. A table on its own says nothing about which file it was computed from; the same table beside its \file{run.json} can be checked (\cref{sec:records-trust}).
+\end{why}
+
+\subsection{Run → folder…}
+\ui{Run → folder…} asks for a folder and treats it as it would a project: the run goes into \file{runs/<date> <time> <routine>/} inside it, on disk, as it happens. Run again into the same folder and the earlier runs are there to compare with. This needs a browser that can write folders (Chrome or Edge).
+
+Use a folder when the outputs are large (an exported Parquet model, a section series) or when you'll run the routine repeatedly and want the history as files.
+
+\subsection{Baselines and reuse without a project}
+Checks against \code{prev}, compares, acceptance and the cache (\cref{ch:checks,ch:records}) all rest on earlier runs. With \ui{Run → folder…} those are in the folder. With \ui{Run → zip} there is no folder, so the library keeps them: after each zip run it stores the run's record and its small text outputs (tables under 2 MB), up to the last twenty runs of each routine.
+
+The next zip run of the same routine starts with those records in place. So the second run compares with the first, a step whose inputs haven't changed is reused, and \ui{Accept as baseline…} in the tracker works as it does in a project.
+
+\begin{tryit}
+Run your month-end with no project. Start with the demo project saved and open, with the \code{month-end} of \cref{sec:routines-monthend} (and the checks of \cref{ch:checks}, if you added them) in its \file{recipes/}.
+\begin{enumerate}
+\item Open \menu{Tools>Recipes>Library…}.
+\item On the \code{month-end} line under \emph{this project}, press \ui{To library}.
+\item Close the project from the \ui{File} menu (\ui{Close project (…)}). The layers stay open.
+\item Open \menu{Tools>Recipes>Library… (routines without a project)}.
+\item On \code{month-end}, press \ui{Run → zip}.
+\item When the run ends, the outputs window lists \file{run.json}, the seven tables and \file{ore.parquet}. There is no \file{gt-compare.tsv}: the library holds no earlier run of this routine to compare with. Untick \file{ore.parquet} and press \ui{Download zip}.
+\item Unzip the download. Inside one folder are \file{run.json} and the tables.
+\item Open \file{run.json}. The model's SHA-256 is there, as in \cref{ch:records}.
+\end{enumerate}
+\end{tryit}
+
+\section{Packs: export and import}\label{sec:library-export}
+A pack leaves micro as one file, in either of two forms. Both buttons are on every line of both lists.
+
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+button & the file \\ \midrule
+\ui{YAML} & \file{month-end.yaml}: one self-contained text file \\
+\ui{zip} & \file{month-end.zip}: the same pack as separate files in an archive \\
+\bottomrule
+\end{tabularx}
+
+\subsection{One YAML}
+The YAML form is an ordinary recipe file with one more key, \code{bundle}, holding the recipes it uses and its tables as text:
+
+\begin{lstlisting}[language=yaml]
+# a micro recipe pack: the recipe, the recipes it uses and its
+# parameter tables (bundle). Import it with Recipes → Library…
+# → Import.
+name: "month-end"
+tool: "routine"
+params:
+  steps:
+    - each:
+        from: "benches.csv"
+      as: "b"
+      steps:
+        - recipe: "bench stats"
+          as: "stats"
+bundle:
+  recipes:
+    - name: "bench stats"
+      tool: "stats"
+      params:
+        layer: "deposit.csv"
+        cols:
+          - "FE"
+  tables:
+    benches.csv: "z0,z1\n650,660\n660,670\n"
+\end{lstlisting}
+
+It reads from top to bottom, is small enough to paste into an e-mail, and diffs. It carries text tables (CSV) only. If the routine reads an Excel workbook, micro says so and asks you to export a zip.
+
+\subsection{A zip}
+The zip form holds the same things as files:
+
+\begin{lstlisting}
+month-end.zip
+├─ micro-pack.json        which file is the main one
+├─ month-end.yaml         the routine
+├─ recipes/
+│  └─ bench-stats.yaml    each recipe it uses
+└─ tables/
+   └─ params.xlsx         each table it reads, as it is
+\end{lstlisting}
+
+Use it when a table is a workbook, or when the recipient should be able to open the pieces without micro.
+
+\begin{figure}[htbp]\centering
+\begin{tikzpicture}[font=\sffamily\small,
+  place/.style={draw=rule, fill=tint, rounded corners=1.5pt, minimum width=30mm, minimum height=13mm, align=center, text=ink},
+  filebox/.style={draw=amber, fill=ambersoft, rounded corners=1.5pt, minimum width=30mm, minimum height=11mm, align=center, text=ink, line width=0.8pt},
+  arr/.style={{Stealth[length=1.8mm]}-{Stealth[length=1.8mm]}, rule, line width=0.6pt},
+  one/.style={-{Stealth[length=1.8mm]}, rule, line width=0.6pt},
+  lab/.style={font=\sffamily\footnotesize, text=muted}]
+\node[place] (proj) at (0,0) {a project\\[-1pt]{\footnotesize recipes/}};
+\node[place] (lib) at (5.4,0) {the library\\[-1pt]{\footnotesize this browser}};
+\node[filebox] (file) at (10.8,0) {a pack file\\[-1pt]{\footnotesize .yaml or .zip}};
+\draw[arr] (proj) -- node[above, lab] {To library} node[below, lab] {Into project} (lib);
+\draw[arr] (lib) -- node[above, lab] {YAML · zip} node[below, lab] {Import…} (file);
+\draw[one] (file.south) -- ++(0,-0.9) -| node[below, lab, pos=0.25] {Import into project…} (proj.south);
+\node[place, minimum height=9mm] (run) at (5.4,2.1) {a run};
+\draw[one] (lib) -- node[right, lab] {Run → zip · Run → folder…} (run);
+\end{tikzpicture}
+\caption{Where a routine can live, and the buttons that move it.}\label{fig:library-flow}
+\end{figure}
+
+\subsection{Import}
+At the foot of the window:
+
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+button & what it does \\ \midrule
+\ui{Import…} & reads a \file{.yaml} or \file{.zip} pack into the library \\
+\ui{Import into project…} & reads a pack straight into the open project's \file{recipes/}, with its tables. Existing files of yours are kept, as with \ui{Into project}. \\
+\bottomrule
+\end{tabularx}
+
+A file that isn't a micro recipe is refused with the reason: it has no name, tool and params, or (for a zip) there is no \file{micro-pack.json} inside.
+
+\begin{why}
+A pack from a colleague is safe to import and run for the same reason a recipe is: it is data. The routine is a list of tools and settings, its expressions are in micro's own expression language, and its tables are tables. Nothing in a pack can execute.
+\end{why}
+
+\section{An office standard}\label{sec:library-office}
+This is the top of the ladder that began with one saved recipe: a routine written once and run the same way on every model in the office.
+
+\begin{enumerate}
+\item One person builds the standard routine in a project, with \code{inputs} and \code{requires:} in place of layer names, and with its checks (\cref{ch:checks}).
+\item That person exports it as a pack and puts the file where the team keeps such things.
+\item Everyone imports it into their library once.
+\item On a new model, anyone runs it from the library: \ui{Run in project} when the model has a project, \ui{Run → zip} when it doesn't. Either way the questions come first.
+\item Each run leaves its \file{run.json}, with the inputs answered, the files hashed and the checks judged (\cref{ch:records}). The reviews of ten models then read alike, because the same routine wrote them.
+\end{enumerate}
+
+When the standard changes, the new pack is exported and imported again under the same name, replacing the old one in each library.

@@ -1,0 +1,169 @@
+\chapter{Backups, packs \& the project store inside}\label{ch:store}
+\begin{goals}
+\textbf{In this chapter} you back a project up into one file, open that file directly as a read-only project, restore it, and learn what the files inside a project folder are: the Parquet model store, the element manifests, the column sidecars and the caches.
+\end{goals}
+
+A project is a folder (\cref{ch:projects}). Folders are awkward to e-mail, easy to copy half of, and impossible to open in a browser that can't read folders. So micro can put the whole project into one file. That file is a backup, and it is also a project you can open as it is.
+
+The second half of this chapter opens the hood. You don't need it to use micro. You need it the day a reviewer asks where a column came from, or you wonder why a 13 GB model reopened in a second.
+
+\section{Backing up}\label{sec:store-backup}
+\menu{File>Back up project…} writes the project folder into a single file named after the project and the date, ending in \file{.zip.micro}.
+
+micro asks two things first.
+
+\textbf{If there are unsaved changes}: a backup is made from the folder, so on its own it would hold the last save. Choose \ui{Save, then back up}, or \ui{Back up the last save}.
+
+\textbf{Lean or full}: the dialog counts the files and gives both sizes. (When the folder holds no caches, there is nothing to leave out and only \ui{Full} is offered.)
+
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+choice & what goes in \\ \midrule
+\ui{Full} & every file in the folder \\
+\ui{Lean} & everything except the caches micro rebuilds by itself (\cref{sec:store-caches}). Smaller; a big model is read through once when the restored project first opens. \\
+\bottomrule
+\end{tabularx}
+
+Everything in the folder goes in, including files you put there yourself, the derived columns, the recipes and the run records. What does \emph{not} go in is anything outside it: the dialog names the layers that are linked from elsewhere and tells you how to include them (save, and choose \ui{Copy into project}; \cref{sec:projects-copy}).
+
+The file is written as a stream, straight to disk. A project with models of many gigabytes never has to fit in memory.
+
+\begin{note}
+A \file{.zip.micro} is an ordinary zip. Rename it to \file{.zip} and any archive tool opens it: a small \file{micro-backup.json} saying what it is, and a \file{project/} folder with every file at its place. Your data is never locked in a format only micro reads.
+\end{note}
+
+\section{Opening a backup as it is: project packs}\label{sec:store-packs}
+A backup is also a \term{project pack}: micro can open it without unpacking it. Use \menu{File>Open project pack…}, or open a \file{.zip.micro} like any other file. In the second case micro summarizes what the pack holds and offers:
+
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+button & what happens \\ \midrule
+\ui{Open (read-only)} & the project opens straight from the one file \\
+\ui{Unpack to a folder…} & the pack is restored into an empty folder, which becomes the project (\cref{sec:store-restore}). Offered where the browser can write folders. \\
+\bottomrule
+\end{tabularx}
+
+Opened read-only, the project is all there: every model, drillhole set, bookmark, scene and recipe, with the filters and styles as saved. Nothing is unpacked. Files in the pack are stored uncompressed, so micro reads each one where it sits. A pack of several gigabytes opens as fast as the folder it came from.
+
+A pack needs no folder access, so it opens in browsers that can't open project folders at all. To hand a reviewer a project to look at, send a pack: one file, any current browser, nothing to install.
+
+\subsection{Working in a pack}
+You can still filter, paint, bookmark and run analyses. Those changes are kept for the session, in memory beside the pack. The pack itself never changes.
+
+To keep them, save. \ui{File} then reads \ui{Save as a project folder…}: pick an empty folder, and micro writes the whole project there with your changes and carries on in that folder as a normal project. This needs a browser that can write folders (Chrome or Edge); elsewhere the pack stays read-only and the \ui{File} menu offers no save.
+
+\subsection{Is the pack intact?}
+Files read straight out of a pack aren't checksummed as they are read; that is the price of not unpacking. So after a pack opens, micro reads the whole of it once in the background and compares every file with the checksum it was written with. The status line then reads \emph{pack checked — … files intact}, or names the files that failed and warns that what it shows from them may be wrong.
+
+\section{Restoring}\label{sec:store-restore}
+\menu{File>Restore project from backup…} shows what the backup holds, asks for an empty folder, unpacks into it and opens it as the project.
+
+Every file is checked against its checksum as it is written. A damaged backup stops with the name of the bad file; it does not restore wrong data quietly. micro won't restore into a folder that already holds a project, or over a file that is already there.
+
+\begin{tryit}
+Back up the demo project and open the backup as a pack. If you skipped the try-it of \cref{sec:projects-open}, first open the demo project and save it to a new folder with \menu{File>Save project as…} and \ui{Copy into project}.
+\begin{enumerate}
+\item Choose \menu{File>Back up project…}, then \ui{Lean}, and save the file. It is named after the project and the day, such as \file{demo-2026-11-23.zip.micro}: about 63 MB, 18 files (a full backup adds the model's cache as a nineteenth).
+\item Choose \menu{File>Open project pack…} and pick the file. The project opens with its seven layers, its bookmark and its grade–tonnage window; the status line names it \emph{(pack, read-only)} and, a moment later, reads \emph{pack checked — 18 files intact}.
+\item Change the color of the block model.
+\item Open the \ui{File} menu. Saving now offers \ui{Save as a project folder…}; the pack itself has not changed.
+\item Copy the file and rename the copy to end in \file{.zip}.
+\item Open the copy with your system's archive tool and find \file{project/project.json}.
+\end{enumerate}
+\end{tryit}
+
+\section{The store, inside}\label{sec:store-inside}
+Here is one model's corner of a project folder:
+
+\begin{lstlisting}
+models/
+├─ deposit.parquet                the model
+├─ deposit.parquet.element.json   the data model: columns, operations
+├─ deposit.parquet.meta.json      a cache: discovery, statistics, index
+└─ deposit.parquet.cols/
+   ├─ DOMAIN.parquet              a painted column
+   └─ FE_NN.parquet               a stored (joined, estimated) column
+\end{lstlisting}
+
+Four things, each with its own job.
+
+\subsection{Parquet: the model store}\label{sec:store-parquet}
+A block model can stay in the format it arrived in: micro reads CSV and Datamine files without converting them. It works best in Parquet, though, and offers to convert.
+
+\ui{Store as Parquet…} on a block model's menu opens a dialog that says what will happen before it happens: each model with its size and block count, and two options.
+
+\begin{tabularx}{\linewidth}{@{}LL@{}}\toprule
+option & meaning \\ \midrule
+\ui{keep the original file in the project} & otherwise the original is removed once the Parquet file is safely saved \\
+\ui{do this automatically on every save} & shown when the dialog comes up during a save; applies to models under 8 million blocks \\
+\bottomrule
+\end{tabularx}
+
+Press \ui{Convert}, or \ui{Not now}. The same choice is a toggle in the \ui{Tools} menu: \ui{Auto-optimize block models to spatial Parquet on save}.
+
+The conversion sorts the blocks so that neighbors in space are neighbors in the file. Parquet stores data in groups of rows and records each group's minimum and maximum per column in its footer. After the sort, each group covers a compact region, so the footer works as a spatial index: a filter, a selection or a section can skip every group that provably can't match, without reading it.
+
+The layer swaps to the Parquet file in place. Painted columns stay editable, filters are applied again, and the layer's lineage records the conversion (\cref{sec:records-lineage}). The file describes itself: its grid, extents and categories are in its metadata, so it reopens without a discovery pass.
+
+Meshes have a counterpart. \ui{Store meshes as .wfr on save} in the \ui{Tools} menu keeps wireframes, design strings and points in the compact \file{.wfr} format (\cref{ch:meshes}). The first save that could do it asks: \ui{Never}, \ui{Not now}, \ui{Yes}, or \ui{Yes, always}.
+
+\subsection{The element manifest}\label{sec:store-manifest}
+Beside each data file is \file{<file>.element.json}: a readable description of the element (\cref{ch:micro}). It says how the file's records are located in space, which columns there are, and it carries a list of \term{operations}: one entry for every derived column, recording how it was made. A calculation's expression. A join's source and method. A broadcast's source column.
+
+That list is the audit trail for columns. Open the JSON and read how every derived column came to be. It is also how a project reopens: the definitions reload from the manifest, and derived data that is missing can be derived again.
+
+A drillhole set has one \term{set manifest} for the whole set, \file{drillholes/<set>.element.json}, listing its collar, survey and interval tables, the relation that ties them together by hole, and the desurvey settings (\cref{sec:projects-layout}).
+
+\subsection{Column sidecars}\label{sec:store-cols}
+Derived columns that hold data of their own live in the \file{<file>.cols/} folder, one small Parquet file per column: numbers as floating point, categories as text. These are the columns micro can't recompute from an expression: painted domains, joined and estimated values, calculations you chose to store.
+
+They are ordinary Parquet. Anything that reads Parquet reads them. A ƒ column that is only an expression has no sidecar; its definition is in the manifest and its values are computed on demand.
+
+\subsection{Stale or not: by content}\label{sec:store-stale}
+A painted column attaches to its model by row: the fifth value belongs to the fifth block. If the model file is replaced, those rows mean something else. So each sidecar records a fingerprint of the source file it was made for, and micro checks it before using the column.
+
+The fingerprint is a hash of samples taken from the start, the end and across the middle of the file. It costs a few small reads even on a model of many gigabytes. It judges by content, not by date:
+
+\begin{itemize}
+\item A copy of the same bytes still matches, however new its date. Saving a project copies files in, and the copies get today's date; they must still match.
+\item A re-export that changes values but happens to keep the same size doesn't match. The painted column is not laid back onto blocks it no longer describes.
+\end{itemize}
+
+\begin{why}
+This sampled fingerprint is fast enough to compute every time a file opens. It is micro's own, and a third party can't reproduce it with a standard tool, which is why run records use the full SHA-256 instead (\cref{sec:records-sha}). One is for micro's own bookkeeping; the other is evidence.
+\end{why}
+
+\subsection{Caches}\label{sec:store-caches}
+\file{<file>.meta.json} holds what micro learned by reading the file once: its grid and extents, whether it is sub-blocked, its categories, statistics for each column, and an index of value ranges along the file that lets a filter skip stretches that can't match. A model that took a full sweep to open the first time reopens without one.
+
+A GeoTIFF shown at reduced resolution gets a display cache of the same kind beside it.
+
+These are caches and nothing more. Delete one and micro scans again; you lose only the time. They are what a \ui{Lean} backup leaves out.
+
+\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+file & what it is & if deleted \\ \midrule
+the data file & your data & gone \\
+\file{.element.json} & columns and how they were made & derived column definitions are lost \\
+\file{.cols/} & stored column values & painted and joined values are lost \\
+\file{.meta.json}, display caches & what micro learned by scanning & rebuilt on the next open \\
+\bottomrule
+\end{tabularx}
+
+\section{Memory}\label{sec:store-memory}
+micro never loads a whole model to work on it; it streams (\cref{ch:micro}). Reading a column from disk at every filter keystroke would be slow, though, so micro keeps the columns you use in memory, up to a budget.
+
+\menu{View>Filter column cache} sets the budget.
+
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+setting & meaning \\ \midrule
+\ui{off (always re-scan)} & nothing is kept; every filter reads the file \\
+\ui{auto} & a budget scaled to the machine; the menu shows the figure \\
+\ui{256 MB} · \ui{512 MB} · \ui{1 GB} & a fixed budget \\
+\bottomrule
+\end{tabularx}
+
+Within the budget, a repeated filter or a dragged filter control runs without touching the file. Stored column values share the same budget. When it is full, the columns used least recently are dropped, and they reload from their sidecars the next time something needs them. You see a pause, never a wrong number.
+
+\menu{Tools>Memory…} shows what is held at the moment.
+
+\begin{tip}
+On a machine with little memory and a very large model, leave the cache on \ui{auto}. Turning it \ui{off} saves memory at the cost of a file read per filter, which on a network drive is the slower trade.
+\end{tip}

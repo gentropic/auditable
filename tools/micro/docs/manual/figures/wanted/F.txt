@@ -1,0 +1,25 @@
+# Figure requests — group F (Part VI, Automation: 27-recipes … 31-library; Part VII, Projects & trust: 32-projects … 34-sealed)
+# format: name | the state to show, precise enough to script | full / window / region
+#
+# Shared setup for the automation shots ("the month-end project"):
+#   the demo project (empty screen → "open the demo project"), saved to a folder (OPFS is fine);
+#   a recipe "deposit grade-tonnage" (tool gt; layer deposit.csv; series [{layer: deposit.csv, col: FE, unit: pct, weight: SG}];
+#   gradeUnit pct; cutoffs [30,40,50,55,60,65]);
+#   a routine "month-end" as in chapters/28-routines.tex ("A complete example"), plus the three check/compare steps of
+#   chapters/29-checks.tex (Try it): modelqa as mq · dhqa (demo_assay.csv) as dq · recipe deposit grade-tonnage as gt ·
+#   validation (model deposit.csv, samples demo_assay.csv, modelGrade FE, sampleGrade FE, axis Y, bandW 50) as val ·
+#   each lito in HEMATITE/ITABIRITE/CANGA → stats (cols FE, SG; filter LITO = "$lito") as stats ·
+#   export (parquet, filter FE >= 55, out ore.parquet) as ore · check "mq.errors = 0" ·
+#   check "abs(val.bias_pct) < 5" (level warn) · compare gt (tolerance 0.1, level warn)
+
+recipes-form | the month-end project; Tools → Recipes → New recipe… with tool = grade-tonnage, name "deposit grade-tonnage", layer deposit.csv, one series (col FE, unit pct, weight SG), cutoffs "30, 40, 50, 55, 60, 65", gradeUnit pct — not yet saved | window
+recipes-inputs | the month-end project with a recipe "GT — any model" (the YAML in chapters/27-recipes.tex, sec:recipes-inputs); Tools → Recipes → GT — any model → Run… — the inputs dialog with Block model = deposit.csv, Grade column = FE, Density column = SG | window
+recipes-checkall | the month-end project plus one deliberately broken recipe "typo gt" (tool gt, params { layer: deposit.csv, series: [{ col: FE }], cutofs: [50] }); Tools → Recipes → Check all recipes… — one ✗ line with "no setting “cutofs” — did you mean “cutoffs”?" under it, the rest ✓ | window
+routines-editor | the month-end project; Tools → Recipes → month-end → Edit (open configured) on a variant of month-end that has one input (model, type layer), the guard ticked, and the each block over lito (HEMATITE / ITABIRITE / CANGA) visible as a grid; Preview pressed so the expanded step list shows at the bottom (resize the window tall enough to show name, guard, reports →, ask row, the for-each grid and the first preview lines) | window
+routines-tracker | the month-end project; run month-end (Run fresh) and capture the run tracker mid-run: several steps ✓, one ▶, the rest ·, the Cancel button below (if a mid-run capture is not scriptable: the finished tracker with all ✓, the warn line under the compare, and "Accept as baseline…") | window
+runs-window | the month-end project after three runs of month-end, the FIRST accepted (acceptRun(dir, 'A. Geologist')); Tools → Recipes → Runs… — three rows, the later two with "compared with" naming the first and a ✓, the first with its "accepted" cell filled, Accept… buttons on the other two | window
+library-window | the month-end project; month-end sent To library (packFromProject + libraryPut); Tools → Recipes → Library… — the library section with the month-end pack and its buttons (Run in project · Run → zip · Run → folder… · Into project · YAML · zip · Delete), the "this project" section with both recipes, Import… / Import into project… at the foot | window
+library-outputs | month-end in the library; the project CLOSED with the demo layers still loaded; Library… → month-end → Run → zip, run to the end — the "outputs · month-end" window: run.json ticked and disabled "(the record — always)", the .tsv reports and ore.parquet with sizes, Download zip | window
+projects-save-dialog | the demo project freshly opened (in memory); File → Save project as… into a new folder, stopped at the "save project" dialog listing the layers that live outside the folder with their sizes, and the buttons "Link without copying" / "Copy into project" | window
+sealed-badge | the demo project; click the Sealed badge (top left) so the "Sealed — nothing leaves this machine" popover is open | region: the top-left corner of the micro window, wide and tall enough to hold the badge and the whole popover
+mobile-review | the demo project at a phone viewport (e.g. 412×915, or ?mobile=1): the review layout with the grade–tonnage window open as a bottom sheet at half height — plot above its settings, the model visible above the sheet, the top bar and the bottom tool bar in frame | full

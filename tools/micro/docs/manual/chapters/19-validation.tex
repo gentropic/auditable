@@ -1,0 +1,260 @@
+\chapter{Validation \& pairing}\label{ch:validation}
+\begin{goals}
+\textbf{In this chapter} you check a block model against the drillholes it was built from: the global bias against the \emph{declustered} sample mean, a model-against-sample swath, and — sample by sample — the block each one falls in, with the bias, correlation and slope of the pairs by domain.
+\end{goals}
+
+A model can be internally consistent and still not honor its data. Two windows put the model and the samples side by side, and they ask different questions.
+
+\ui{Validate vs drillholes…} asks about \emph{averages}: is the model's mean grade what the samples say it should be, globally and band by band? It declusters the samples first, because a sample mean taken straight from the drillholes is rarely the mean of the deposit.
+
+\ui{Block vs sample…} asks about \emph{individuals}: take every sample, find the block it sits in, and compare the two numbers. It gives the conditional picture — does a high sample sit in a high block? — as a scatter, a correlation and a slope.
+
+\begin{note}
+Samples are point support and blocks are block support. Their variances differ, and a small global difference in grade between them can be real. Neither window can tell you an estimate is right; they tell you where it disagrees with its data, and how much, so that you can decide whether the disagreement is support, smoothing, or a mistake.
+\end{note}
+
+Both windows predate the shared design of \cref{ch:analysis} and are simpler: no scopes, no series, and their setup is not saved with the project. Both are also tools, so a routine can run them and gate on the result (\cref{sec:validation-routine}).
+
+\section{Validate vs drillholes}\label{sec:validation-window}
+Make the block model the active layer, press \key{⌘K} and type \code{validate}. The command is listed when the active layer is a block model with a block grid and at least one drillhole layer is loaded. It is in the palette only, not on the layer's menu.
+
+\begin{tryit}
+In the demo project:
+\begin{enumerate}
+\item Click \file{deposit.csv} in the layers panel to make it active.
+\item Press \key{⌘K} (\key{Ctrl}+\key{K} on Windows), type \code{validate} and press \key{Enter}. The window computes at once — there is no \ui{Run} button. The subtitle reports the number of samples, the decluster cell that was chosen, and the swath's axis: \emph{951 samples · decluster cell 253 m · X (east)}.
+\item Read the line under the plot: \ui{model} 24.72, \ui{samples (decl)} 31.98, \ui{naïve} 34.52, \ui{global bias} −22.7\%, highlighted.
+\item Click \ui{Z}. The swath is now by elevation: the model's mean \col{FE} and the samples', per band.
+\item Type \code{100} in \ui{cell}. The declustered mean rises to 33.62 and the bias to −26.5\%; the naïve mean does not change.
+\item Clear the field to return to the automatic cell.
+\end{enumerate}
+\end{tryit}
+
+\shot{validation-window}{Validate vs drillholes on the demo, by elevation: the model's mean \col{FE} per band (blue) against the declustered samples' (orange), over the number of samples per band (bars); below, the model mean, the declustered and naïve sample means, and the global bias of −22.7\%.}
+
+A bias of −23\% would condemn a real model. In the demo it says something else, and \cref{sec:validation-reading} reads it.
+
+The controls are a single row under the readout.
+
+\medskip
+\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+control & meaning & default \\ \midrule
+drillhole layer & which samples to use & the first drillhole layer \\
+\ui{model: …} & the model's grade column & a column name the two layers share, if any \\
+\ui{sample: …} & the samples' grade column & the same \\
+\ui{cell} & the decluster cell size, in meters; blank = automatic & automatic \\
+\ui{X} \ui{Y} \ui{Z} & the swath's axis & X \\
+\ui{⤓ png} \ui{⧉ copy} \ui{⇥ figure} & the plot, out (\cref{sec:analysis-results}) & \\ \bottomrule
+\end{tabularx}
+\medskip
+
+Every change recomputes. There is no filter and no scope: the window compares the whole model with all the samples of the chosen layer.
+
+\section{Declustering}\label{sec:validation-decluster}
+Drilling is not random. Holes are closest together where the grade is best — infill follows discovery — so high-grade ground is over-represented among the samples, and their plain average, the \term{naïve mean}, is higher than the deposit's. \term{Declustering} gives each sample a weight that undoes this: samples in crowded places count for less.
+
+micro uses \emph{cell declustering}\index{declustering!cell}. The samples are the drillhole intervals, each placed at its desurveyed midpoint. A lattice of cubic cells is laid over them, and each sample is weighted by one over the number of samples sharing its cell. A cell with one sample and a cell with twenty then contribute equally to the mean.
+
+\begin{figure}[htbp]\centering
+\begin{tikzpicture}[font=\sffamily\footnotesize, x=17mm, y=17mm]
+\fill[ambersoft] (1,1) rectangle (2,2);
+\draw[rule, line width=0.5pt] (0,0) grid (4,2);
+\foreach \x/\y in {0.45/0.55, 2.6/0.4, 3.5/1.5, 0.6/1.4, 2.4/1.6, 3.4/0.5} \fill[info] (\x,\y) circle (1.7pt);
+\foreach \x/\y in {1.25/1.3, 1.6/1.7, 1.7/1.25, 1.35/1.75} \fill[amber] (\x,\y) circle (1.7pt);
+\node[text=amber, anchor=south] at (1.5,2.03) {4 samples in the cell: weight 1/4 each};
+\node[text=info, anchor=north] at (3,-0.03) {1 sample in the cell: weight 1};
+\draw[decorate, decoration={brace, amplitude=3pt, mirror}, muted] (0,-0.08) -- node[below=3pt, text=muted] {cell} (1,-0.08);
+\end{tikzpicture}
+\caption{Cell declustering. Each occupied cell contributes equally, so the clustered samples (amber) share one cell's worth of weight. micro's cells are cubes, and the weights are averaged over several shifted positions of the lattice.}\label{fig:validation-cells}
+\end{figure}
+
+Three details of the method decide what the declustered mean is worth.
+
+\paragraph{The lattice is shifted and averaged.} Where the cell walls fall is arbitrary, and a sample near a wall could be binned either way. micro computes the weights for several origins of the lattice — four shifts along each axis — and averages them, which removes most of that arbitrariness.
+
+\paragraph{The cells are cubes.} One number sets the cell's size in X, Y and Z. Samples down a hole are far closer together than holes are to one another, so a cell the size of the drill spacing holds many intervals of one hole, and they share its weight. That is usually what you want; if your intervals have very uneven lengths, composite them first (\cref{ch:drillholes}), since each interval counts as one sample whatever its length.
+
+\paragraph{The automatic cell is the one with the lowest mean.} The declustered mean depends on the cell size. Tiny cells put every sample alone (the naïve mean again); huge cells put everything together (the naïve mean once more); in between, the mean dips. With \ui{cell} blank, micro tries 24 sizes spaced geometrically from one hundredth to one half of the samples' horizontal extent and takes the size giving the \emph{minimum} declustered mean. The subtitle states the cell it chose.
+
+\begin{caution}
+Choosing the minimum assumes the usual mining case: clustering in \emph{high} grade. If your infill went into low-grade ground — sterilization drilling, a waste dump, a barren dyke — the minimum is the wrong choice and exaggerates the correction. And on regularly spaced drilling there is no clustering to undo: the dip is noise, and the automatic cell is not meaningful. In both cases type a cell size you can defend, typically the spacing of the widest regular drilling pattern.
+\end{caution}
+
+\section{Reading the result}\label{sec:validation-reading}
+\paragraph{The readout.} Four numbers:
+
+\medskip
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+value & how it is computed \\ \midrule
+\ui{model} & the volume-weighted mean of the model's grade, assembled from the swath's bands: each band's mean over its blocks that have a grade, weighted by the band's volume — sub-blocks at their own size. Density is not used \\
+\ui{samples (decl)} & the declustered mean of the samples \\
+\ui{naïve} & the plain mean of the samples \\
+\ui{global bias} & model ÷ declustered samples − 1, in percent. Positive: the model is higher than its data. Highlighted when it exceeds ±10\% \\ \bottomrule
+\end{tabularx}
+\medskip
+
+The gap between \ui{naïve} and \ui{samples (decl)} measures how clustered the drilling is. If the model's mean sits near the naïve mean rather than the declustered one, the estimate has probably inherited the clustering — too little search restriction, or a nearest-sample method — and overstates the deposit.
+
+\paragraph{The swath.} Bands along the chosen axis; by default about 25 of them, never narrower than a block, starting at the low end of the model's extent. In each band the blue line is the model's volume-weighted mean and the orange line is the mean of the samples that fall in the band, using their declustering weights. The bars count the samples per band.
+
+Read the lines against the bars. Where there are many samples, the two lines should track each other, the sample line wobbling more. A band with three samples proves nothing. A run of well-sampled bands where the model sits consistently on one side of the samples is a local bias, and the axis tells you where to look; \cref{ch:swath} has the tools for that.
+
+\Cref{fig:validation-demo} is the demo's comparison by elevation, from the validation tool.
+
+\begin{figure}[htbp]\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.6\linewidth, height=72mm, xmin=0, xlabel={mean \% Fe}, ylabel={elevation (m)}, scaled ticks=false, unbounded coords=jump, legend style={at={(1.04,0.98)}, anchor=north west}]
+\addplot[info, very thick] table[col sep=tab, x=model_mean, y=center]{figures/data/validation-demo.tsv};
+\addlegendentry{model}
+\addplot[amber, very thick, mark=*, mark size=1.2pt] table[col sep=tab, x=sample_mean, y=center]{figures/data/validation-demo.tsv};
+\addlegendentry{samples, declustered}
+\end{axis}
+\end{tikzpicture}
+\caption{The demo model against its drillholes, in 25~m bands of elevation: the model's volume-weighted mean \col{FE} and the declustered sample mean of each band. The model holds everything in a band; the samples only what twelve inclined holes, drilled at the ore lens, intersect.}\label{fig:validation-demo}
+\end{figure}
+
+In the demo the two lines agree below 550~m and above 800~m, and part company in between: from 550 to 800~m the samples average up to 55\,\% while the model's band means stay under 30. The model is not wrong there. Each band is a 2~km × 1~km slab, mostly waste, with the ore lens in its middle; the holes were aimed at the lens, so their samples are mostly ore. That is the first item of the list below, and it is the whole of the demo's −23\%. The pairing (\cref{sec:validation-pairing}), which compares each sample only with its own block, finds a bias of almost zero.
+
+\subsection{What the comparison leaves out}
+\begin{itemize}
+\item \textbf{The whole model is compared with all the samples.} A model usually extends beyond the drilling, into extrapolated or unestimated ground, and its mean includes those blocks. If the model's margin is waste, its mean will be below the samples' for a reason that has nothing to do with bias. Compare like with like: validate a model exported for the drilled domain, or use the per-domain tools — pairing by domain below, or a swath and a Q-Q with a filter on each side (\cref{ch:swath,ch:stats}).
+\item \textbf{The model's mean is by volume, not tonnage.} For a deposit whose density rises with grade — iron ore, massive sulfide — the tonnage-weighted mean is higher. The samples are not density-weighted either, so the two sides are consistent with each other; they are not the grade of a resource statement.
+\item \textbf{Interval length is not a weight.} Composite first if lengths vary.
+\item \textbf{Blank sample grades are left out.} An interval with no assay is not a sample of zero grade: it is dropped from the declustering, the means and the swath, and the sample count in the subtitle does not include it.
+\item \textbf{Blank model grades are left out} of their band's mean; the band's volume still counts toward the model mean's weights.
+\end{itemize}
+
+\section{Block vs sample}\label{sec:validation-pairing}
+\ui{Block vs sample…} is on a block model's right-click menu and in the palette. It pairs every sample with the block it falls in, the most direct check that an estimate honors its data.
+
+The samples can be a drillhole layer, each interval taken at its midpoint, or a points layer: composites, or a sample file opened as points. The model must be a regular, unrotated block model; for a sub-blocked or rotated one the status line explains that pairing reads regular, axis-aligned lattices only.
+
+\begin{tryit}
+In the demo project, right-click \file{deposit.csv} and choose \ui{Block vs sample…}.
+\begin{enumerate}
+\item \ui{samples} is the drillhole layer, \ui{holes · demo\_assay.csv}; \ui{sample} and \ui{block} are both \col{FE}.
+\item Set \ui{by} to \col{LITO} and press \ui{Run}.
+\item The plot shows every pair, sample on the horizontal axis and block on the vertical, with the dashed 1:1 line. Below it, a table: \emph{all} — 562 pairs, bias +0.0\%, slope 0.99 — then one row per rock type. Under the table: \emph{not paired: 14 outside the model · 375 in no block / a blank block}.
+\item Switch the menu above the plot from \ui{scatter} to \ui{Q–Q}.
+\item At the bottom, leave the factor at 2 and click \ui{select the disagreeing samples}. The count appears beside the button — on the demo, \emph{0 selected}: no block differs from its sample by a factor of two. Lower the factor and click again, and the intervals it finds are selected on the drillhole layer in the 3D view.
+\end{enumerate}
+\end{tryit}
+
+\shot{pairing-window}{Block vs sample on the demo: each drillhole interval's \col{FE} against the \col{FE} of the block it falls in, and the table of pairs, means, bias, r and slope by \col{LITO}. The hematite's slope, 0.72 on only 20 pairs, is highlighted.}
+
+The demo's 375 unpaired intervals are not an error: the holes were collared on the pre-mining ground, and their upper intervals pass through the pit, which the model no longer holds. The hematite's low slope is the other thing the table points at — a narrow range of grades and twenty pairs make a slope that wanders; read it with its \ui{pairs} count.
+
+\medskip
+\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+control & meaning & default \\ \midrule
+\ui{samples} & the samples' layer: drillholes or points & the first candidate \\
+\ui{sample} & the samples' grade column & the block column's name, if the samples have it \\
+\ui{block} & the model's estimated column & the first numeric column \\
+\ui{by} & a text column of the model to split the table by; \ui{(all together)} for none & all together \\
+\ui{scatter} / \ui{Q–Q} & the plot — live & scatter \\
+\ui{log} & logarithmic axes — live & off \\
+factor & the threshold for \ui{select the disagreeing samples} & 2 \\ \bottomrule
+\end{tabularx}
+\medskip
+
+Choosing the layers and columns needs \ui{Run}; the plot mode and the log axes re-draw from the kept pairs.
+
+\subsection{How pairs are made}
+micro reads the model's column once into the cells of its lattice, then walks the samples. Each sample's position is turned into a cell, and the outcome is one of four:
+
+\begin{itemize}
+\item \textbf{paired} — the cell holds a block with a grade;
+\item \textbf{outside the model} — the position is beyond the lattice;
+\item \textbf{in no block / a blank block} — inside the lattice, but there is no block there (air, an unmodeled cell) or its grade is blank;
+\item \textbf{without a value} — the sample's own grade is blank or not a number.
+\end{itemize}
+
+Only the first kind enters the plot and the table. The other three are counted, and the counts are written under the table (\emph{not paired: …}) so no sample disappears unannounced. A large \emph{outside the model} count usually means the two layers are in different coordinate systems, or the model was clipped.
+
+The group of a pair is the \emph{block's} value in the \ui{by} column — the domain the sample sits in according to the model, not according to the log.
+
+\subsection{The table}
+One row for all pairs, then one per group:
+
+\medskip
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+column & meaning \\ \midrule
+\ui{pairs} & the number of pairs \\
+\ui{sample mean}, \ui{block mean} & the plain means of the two sides over the pairs \\
+\ui{bias} & (block mean − sample mean) ÷ sample mean, in percent. Highlighted beyond ±10\% \\
+\ui{r} & the correlation between sample and block \\
+\ui{slope} & the slope of the regression of block on sample. Highlighted outside 0.8–1.2 \\ \bottomrule
+\end{tabularx}
+\medskip
+
+The statistics are unweighted: one pair, one vote. They are not declustered, so the pair means are for comparing with each other, not for quoting.
+
+\paragraph{Reading the slope.} A slope of 1 with points along the 1:1 line means blocks reproduce their samples. A slope \emph{below 1} means the estimate is smoother than its data: where samples are high the blocks are less high, where samples are low the blocks are less low. Some of that is unavoidable and correct — a block averages many samples, and no estimator should reproduce every assay. A slope far below 1, or one that differs sharply between domains, says the estimate is over-smoothed there, and the resource above a cutoff will be mis-stated even when the global mean is right.
+
+\paragraph{The Q–Q view} sorts the two sides of the pairs separately and plots percentile against percentile, with a dot at every tenth. It is the same reading as \cref{sec:stats-qq}, restricted to the samples that found a block, which makes the two distributions cover the same ground.
+
+\begin{caution}
+The samples in a block were used to estimate that block. These pairs are therefore not independent, and this is not a cross-validation: a good result here is necessary, not sufficient. What the window reliably finds is \emph{disagreement} — a domain coded differently in the model and the logs, a shifted or mis-rotated model, a column in the wrong unit, a capping applied to one side only.
+\end{caution}
+
+\subsection{Finding the disagreeing samples}
+\ui{select the disagreeing samples} selects, on the samples' layer, every paired sample whose block differs from it by more than the factor, either way: with the factor at 2, a sample of 60 in a block of 25, or a sample of 20 in a block of 45. A pair with a side at zero or below counts whenever the two values differ.
+
+The selection is an ordinary one (\cref{ch:picking}). Look at where the selected intervals lie in 3D — a cluster along one contact is a domain problem; a whole hole is a collar or survey problem (\cref{ch:qa}) — open the attribute table on the selection, or write it to a column. Nothing is written to either layer by the pairing itself.
+
+\begin{tip}
+Composite the drillholes to the block height before pairing (\ui{Composite…} on the drillhole layer, \cref{ch:drillholes}). A 1~m assay against a 10~m block compares across a large change of support. A composite of the block's height against the block is close to like for like, and the slope becomes much easier to interpret.
+\end{tip}
+
+\section{In a routine}\label{sec:validation-routine}
+The tools are \code{validation} and \code{pairing}. Both report \emph{values} — single numbers a check can read — so they make natural gates for a month-end routine.
+
+\begin{lstlisting}[language=yaml]
+- tool: "validation"
+  with:
+    model: "deposit.csv"
+    samples: "demo_assay.csv"
+    modelGrade: "FE"
+    sampleGrade: "FE"
+    cell: 100
+    axis: "Z"
+    bandW: 25
+  as: "val"
+- check: "abs(val.bias_pct) < 5"
+  say: "global bias within 5%"
+- tool: "pairing"
+  with:
+    model: "deposit.csv"
+    samples: "demo_assay.csv"
+    blockCol: "FE"
+    sampleCol: "FE"
+    groupCol: "LITO"
+  as: "pairs"
+- check: "pairs.slope > 0.8"
+  level: "warn"
+  say: "blocks not over-smoothed"
+\end{lstlisting}
+
+The settings of both tools are in \cref{tool:validation,tool:pairing}. A \code{validation} step must state \code{bandW}, the swath's band width; \code{cell} left out is the automatic, minimum-mean cell. On the demo the first check above fails — \code{val.bias\_pct} is −26.5 with the example's \code{cell: 100}, −22.7 with the automatic cell — for the reason \cref{sec:validation-reading} gives, and the second passes.
+
+The \code{validation} step's values are \code{model\_mean}, \code{samples\_declustered}, \code{samples\_naive}, \code{bias\_pct}, \code{samples} (how many) and \code{cell} (the cell used). Its table is the swath, keyed by \col{center}: \col{center}, \col{model\_mean}, \col{model\_volume}, \col{sample\_mean} and \col{sample\_count}.
+
+\begin{caution}
+A routine must state \code{bandW}, but \code{cell} may be left automatic — and the automatic cell is chosen from the samples, so it can change when holes are added. For a number you will compare month to month, state \code{cell} as well. The cell actually used is recorded in the step's resolved settings and in its \code{cell} value either way (\cref{ch:records}).
+\end{caution}
+
+The \code{pairing} table has one row per group, the first being \emph{all}: \col{group}, \col{pairs}, \col{sample\_mean}, \col{block\_mean}, \col{bias}, \col{r} and \col{slope}. Its values are \code{pairs}, \code{bias}, \code{r} and \code{slope} for all pairs together, and the three not-paired counts: \code{outside}, \code{no\_block} and \code{no\_value}.
+
+The two biases are in different units. \code{val.bias\_pct} is a percentage: 5 means five percent. The pairing tool's \code{bias} is a \emph{fraction}: 0.05 means five percent, although the window displays it as a percentage. A check on it reads \code{abs(pairs.bias) < 0.05}.
+
+A row check covers every domain at once (\cref{ch:checks}):
+
+\begin{lstlisting}[language=yaml]
+- check:
+    every: "pairs < 30 or abs(bias) < 0.1"
+    in: "pairs"
+  level: "warn"
+  say: "no domain biased by more than 10%"
+\end{lstlisting}
+
+A check that reads a blank — the slope of a domain with a single pair, a bias whose sample mean is zero — is reported as \emph{not evaluated}. It is never counted as passed.

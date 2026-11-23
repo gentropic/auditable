@@ -1,0 +1,265 @@
+\chapter{Picking, measuring \& selecting}\label{ch:picking}
+\begin{goals}
+\textbf{In this chapter} you click a block, an interval or a surface and read its whole record; measure between two records; select by rectangle or lasso, on the visible surface or straight through the volume; turn a selection into a column; and build a domain column by hand with the brush.
+\end{goals}
+
+Looking is half of checking a model. The other half is asking: \emph{what is this block, exactly? How far is that hole from this contact? Which blocks are these, and can I mark them?} This chapter is about those three gestures — pick one thing, measure two, select many — and what you can do with a selection once you have it.
+
+They share one principle. What you click is a \term{record}: a row of the layer's table. Picks, measurements and selections all resolve to rows, in true coordinates, so they stay exact under vertical exaggeration, across layers, and on a section's cut face.
+
+\section{Picking: the record panel}\label{sec:picking-record}
+Click any block, point or drillhole interval. It lights up, and the \term{record panel} opens on the right with its full source row — every column of the file, followed by the columns micro has added. Those carry a mark — \code{✎} for a stored column (painted, joined, or a \code{ƒ} you materialized), \code{\%} for a fraction-inside column, \code{ƒ} for a calculated one — so you can tell a grade the estimator wrote from one you derived this morning.
+
+When more than one layer is loaded, the panel's title names the layer the record belongs to. If that layer is drawn somewhere other than where its data is (\cref{sec:sections-explode}), the title says \emph{drawn displaced}, and the coordinates shown are the true ones.
+
+\shot{pick-record-panel}{A hematite block picked on the cut face of the demo deposit (the small mark in the lens), and the record panel with its row: coordinates, \col{FE} 63.15, \col{SG} 4.36, \col{LITO} HEMATITE. The title names the layer, the row number and \emph{section cut} — the pick landed on the wall.}
+
+\subsection{Picking through a section}
+A section's cut face is pickable: click the wall and you get the block the wall belongs to. Anything a section hides cannot be picked, and neither can a hidden class or category (\cref{sec:color-classes}). You never pick something you cannot see.
+
+\subsection{Trimming the panel}
+A real block model has sixty columns, and you care about six. The \ui{fields ▾} button at the top of the panel opens a picker: a search box, a checkbox per column, \ui{all} and \ui{none} (which act on the search results when you have typed something), and a tally of how many are shown. The button itself then reads \code{fields ▾ (6/60)}.
+
+You can also work from the rows: right-click one and choose \menu{Hide “FE”}, or \menu{Show all fields} to undo the trimming. The choice is per layer and is saved with the project.
+
+\subsection{What a mesh pick tells you}
+A mesh has no row per triangle to show, so a click on a surface reports the point you hit:
+
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+\code{X}, \code{Y}, \code{Z} & the point on the surface, in world coordinates \\
+\code{dip}, \code{dip dir} & the attitude of the triangle under the cursor \\
+\code{vertices} & the triangle's three vertex numbers \\
+\code{distance} & how far the point is from the camera \\ \bottomrule
+\end{tabularx}
+\end{center}
+
+The dip and dip direction come free from the triangle's normal. On a pit wall, a fault surface or a vein's hanging wall, that is often the number you wanted. (For attitudes fitted to a painted patch of an outcrop mesh, see \cref{ch:structure}.)
+
+A see-through mesh (opacity below 95\,\%) is pickable only while it is the active layer, so a click passes through a veil such as the demo's topography to what lies behind it.
+
+\subsection{The table and the scene are linked}
+With the attribute table open (\key{t}), the link runs both ways. Click a row and the record is picked in the scene; pick in the scene and the table scrolls to its row. \Cref{ch:columns} describes the table.
+
+\begin{tryit}
+In the demo project:
+\begin{enumerate}
+\item Click a yellow block on the cut face. Read \col{FE}, \col{SG} and \col{LITO} in the record panel.
+\item Click \ui{fields ▾}, then \ui{none}, then tick \col{FE} and \col{LITO}. Close the picker with the same button. The panel now shows two lines for every pick on this layer.
+\item Click a drillhole interval. The panel changes to the assay row: \col{HOLEID}, \col{FROM}, \col{TO}, \col{FE}, \col{SG}, \col{LITO}. The deposit's field choice does not carry over; it is per layer.
+\item The ore shell is drawn at 70\,\% opacity, so make it active first: click \ui{ore shell} in the layers panel. Then click the shell away from the cut. The panel reports the point, its dip and dip direction.
+\item Right-click a row of the deposit's panel and choose \menu{Show all fields}.
+\end{enumerate}
+\end{tryit}
+
+\section{Measuring}\label{sec:picking-measure}
+Press \key{m}, or click the ruler on the toolbar, and click two records.\sidekey{m}{measure: then two clicks} After the first click a line follows the cursor; after the second the status line reads
+
+\begin{lstlisting}
+measure: 212.47 m · plan 180.00 m · Δz 112.88 m
+\end{lstlisting}
+
+The three numbers are the straight-line distance, the horizontal distance, and the difference in elevation. The line and its length stay drawn in the view, turning with the camera, until you press \key{Esc} or start a new measurement with \key{m}.
+
+Three things make the tape trustworthy:
+
+\begin{itemize}
+\item \textbf{It anchors to what you clicked, not to the screen.} Each end is the point on the face of the block, interval or surface under the cursor, in world coordinates — not a pixel, and not the block's center. The reading does not depend on the zoom.
+\item \textbf{It works across layers.} From a drillhole interval to a block; from a block to the topography above it; from one collar to the next.
+\item \textbf{It is in true coordinates.} Vertical exaggeration stretches the picture, not the measurement. If either end is on a layer drawn displaced, the line is drawn where you clicked, the numbers use the true positions, and the status line adds \emph{true positions (a layer is drawn displaced)}.
+\end{itemize}
+
+\subsection{Trend and plunge}
+Tick \menu{Tools>Measure trend \& plunge} and every measurement also reports the direction from the first point to the second, as \emph{plunge → trend}:
+
+\begin{lstlisting}
+measure: 212.47 m · plan 180.00 m · Δz 112.88 m · 32°→045°
+\end{lstlisting}
+
+Plunge is positive downward, the mining convention. Click the top and bottom of a shoot to read its plunge, or two points along a contact on a section to read an apparent dip. The setting is remembered between sessions.
+
+\begin{tip}
+For measuring on a section, turn on \ui{2D} (\cref{sec:sections-walk}). The view is square to the section and orthographic, drags pan instead of orbit, and you can work across it like a sheet of paper.
+\end{tip}
+
+\section{Selecting}\label{sec:picking-select}
+A pick is one record. A \term{selection} is a set of them, and it is the handle most other tools take: the analysis windows have a \emph{selection} scope (\cref{ch:analysis}), the attribute table has a \ui{selected} view, exports can write only the selected rows, and the brush can stamp a value onto them.
+
+You select with one of two shapes, on the toolbar and under \menu{Tools}:
+
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+\key{r} & \menu{Select — rectangle}: drag a box \\
+\key{v} & \menu{Select — lasso}: draw a freehand outline \\ \bottomrule
+\end{tabularx}
+\end{center}
+
+Selected records are tinted gold. The status line counts them — \emph{selected: 4,812 elements across 2 layers} — because a selection acts on every visible layer at once: draw around a zone and you take its blocks and the drillhole intervals inside it together.
+
+\subsection{Adding and subtracting}
+A plain drag \emph{replaces} the selection. Hold \key{⇧} to add to it, or \key{Alt} to subtract. \key{Esc} clears it, as does \menu{Tools>Clear selection}; \key{⌘Z} brings back the one you replaced or cleared.
+
+\subsection{When the tool lets go}
+After a plain drag the tool puts itself down: the next left-drag orbits again. Release \emph{with \key{⇧} or \key{Alt} still held} and the tool stays armed for the next gesture, since you are clearly building something up. Middle-drag orbits and right-drag pans the whole time, so you can turn the model between strokes without leaving the tool.
+
+If you prefer otherwise, \menu{Tools>Settings…} has \ui{selection tool stays armed}: \ui{never (one shot)}, \ui{with shift/alt held} (the default behavior described here), or \ui{until Esc}.
+
+\subsection{Surface or through}\label{sec:picking-through}
+By default a selection takes \emph{what you can see}: the records on the visible surface inside your shape. A block behind another is not taken; a block hidden by a section or a filter is not taken. For visual work this is the honest default: you select what you looked at.
+
+The \ui{select through} toggle — the stacked-layers button on the toolbar, or \menu{Tools>Select through (volume)} — changes the shape into a tube extruded away from you. Everything whose position falls inside it is taken, occluded or not.
+
+\begin{figure}[htbp]\centering
+\begin{tikzpicture}[font=\sffamily\small, x=1mm, y=1mm]
+\foreach \k/\name in {0/surface, 1/through} {
+  \begin{scope}[xshift=\k*66mm]
+    % the eye
+    \draw[ink, line width=0.6pt] (0,13) circle[radius=1.6];
+    \fill[ink] (0.5,13) circle[radius=0.6];
+    % the shape's two bounding rays
+    \draw[muted, line width=0.4pt, dashed] (2,13) -- (56,22);
+    \draw[muted, line width=0.4pt, dashed] (2,13) -- (56,4);
+    % a 6 x 6 block of the model, seen from the side
+    \foreach \i in {0,...,5} \foreach \j in {0,...,5} {
+      \pgfmathsetmacro{\blkx}{22+\i*5}
+      \pgfmathsetmacro{\blky}{-2+\j*5}
+      % is the block's centre inside the tube at this depth? (1 / 0)
+      \pgfmathtruncatemacro{\inside}{(abs(\blky+2.5-13) < (\blkx+0.5)*9/54) ? 1 : 0}
+      \ifnum\k=0
+        \ifnum\i=0
+          \ifnum\inside=1 \fill[amberlight] (\blkx,\blky) rectangle ++(5,5); \else \fill[tint] (\blkx,\blky) rectangle ++(5,5); \fi
+        \else \fill[tint] (\blkx,\blky) rectangle ++(5,5); \fi
+      \else
+        \ifnum\inside=1 \fill[amberlight] (\blkx,\blky) rectangle ++(5,5); \else \fill[tint] (\blkx,\blky) rectangle ++(5,5); \fi
+      \fi
+      \draw[rule, line width=0.3pt] (\blkx,\blky) rectangle ++(5,5);
+    }
+    \node[text=ink, anchor=south, font=\sffamily\bfseries\small] at (37,30) {\name};
+  \end{scope}
+}
+\node[text=muted, anchor=north, font=\sffamily\footnotesize, align=center] at (37,-4) {the first records your shape meets};
+\node[text=muted, anchor=north, font=\sffamily\footnotesize, align=center] at (103,-4) {everything inside the tube};
+\end{tikzpicture}
+\caption{The same rectangle, seen from the side. On the left it takes the visible surface; with \ui{select through} on, it takes every record whose position falls inside the tube.}\label{fig:pick-through-diagram}
+\end{figure}
+
+On a solid model the difference is large: the tube takes the whole column of blocks behind each one you can see. It also costs more: a through selection makes one pass over the layer's data, about what loading it cost, and the status line shows the progress. On drillholes it is immediate.
+
+\begin{caution}
+\ui{Select through} defeats \emph{occlusion}; it does not defeat what you have chosen not to show. A filtered-out block, one in a hidden class or rule, one the section cuts away, or one on a hidden layer is not selected in either mode. Check the count in the status line: it is the quickest way to notice that a selection took far more, or far less, than you meant.
+\end{caution}
+
+\subsection{From a filter, and into a scene}
+A selection can also come from a filter, and leave in a scene:
+
+\begin{itemize}
+\item \menu{Filter → selection} (a layer's right-click menu while it has a filter, or the command palette) selects every row the filter matches. Write the question as an expression (\cref{ch:filter}), then refine the answer by hand with \key{Alt}-lasso.
+\item Selections are saved with the project, and \menu{View>Scenes>Save scene (with selection)…} pins one to a named scene (\cref{sec:sections-scenes}).
+\end{itemize}
+
+\begin{tryit}
+In the demo project, with the deposit on its E–W section:
+\begin{enumerate}
+\item Press \key{l} to face the section, then \key{r} and drag a rectangle around the yellow core of the lens. The cut blocks and the intervals crossing them turn gold; read the count.
+\item Hold \key{⇧}, press \key{v}, and lasso a second patch. Release with \key{⇧} still down: the tool stays armed.
+\item Lasso again with \key{Alt} held to carve a piece off.
+\item Press \key{Esc} to put the tool down, and \key{Esc} again to clear the selection.
+\item Click the \ui{select through} button on the toolbar and repeat the first rectangle. The count is many times larger: you now have the whole lens behind the face, along the line of sight.
+\item Press \key{t} for the attribute table and click \ui{selected}: only those rows are listed.
+\item Turn \ui{select through} off again.
+\end{enumerate}
+\end{tryit}
+
+\section{Selection → column}\label{sec:picking-selcol}
+A selection is temporary. To keep it, and to use it everywhere a column works, right-click the layer and choose \menu{Selection → column…} (the item shows how many rows are selected; it is also in the command palette, \key{⌘K}).
+
+micro asks for a name — \code{SEL} unless you type another — and writes a column where every row has an explicit value: \code{1} if it was selected, \code{0} if not. Because every row has a value, there are no blanks to reason about. The new column:
+
+\begin{itemize}
+\item filters: \code{SEL = 1};
+\item colors, tabulates, and appears in the record panel;
+\item rides every export of rows;
+\item carries a provenance entry saying it came from a selection, of how many rows, on which layer;
+\item is a painted column underneath, so you can touch it up with the brush.
+\end{itemize}
+
+When the shape is simple enough to draw, this is the bridge from “these blocks, on screen” to “this domain, in the model”. When it is not, paint it.
+
+\section{Painting a column}\label{sec:picking-paint}
+\term{Painting} is domaining by hand. A painted column is a category column you fill by brushing values onto records: \code{HW\_OXIDE} here, \code{FRESH} there. It is for the judgments a formula cannot make — the block the contact clearly passes through, the holes you do not trust — and for touching up a column a tool wrote.
+
+You can paint on table-backed layers: block models and drillholes.
+
+\subsection{The palette}
+Press \key{b}, click the brush on the toolbar, or choose \menu{Data>Paint to column…}.\sidekey{b}{paint a column} A small \term{paint palette} window opens, pinned to the layer.
+
+The first time, it asks for a column name (the placeholder suggests \code{DOMAIN}) and a \ui{create} button. The name must be new: micro refuses one that a source or a calculated column already uses, so a painted column can never shadow real data.
+
+Then the palette lists the column's values, one row each:
+
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+the radio dot & arms the value: it becomes the one your gestures paint \\
+the color chip & the value's color in the view \\
+the name & editable in place — rename a value and the column follows \\
+the count & how many records carry it \\
+\code{⋮} & \menu{Clear (n → unpainted)} empties the value's records; \menu{Remove value} empties them and deletes the value \\ \bottomrule
+\end{tabularx}
+\end{center}
+
+The last row is always \ui{unpainted}: arming it arms the eraser. At the bottom are \ui{+ value}, \ui{apply to selection} and \ui{undo}. A column holds up to 255 values.
+
+\shot[0.5\linewidth]{pick-paint-palette}{The paint palette on the demo deposit: a \col{DOMAIN} column with two values, one armed, and the unpainted row.}
+
+\subsection{Brushing}
+While a value is armed, the selection gestures \emph{paint}. Press \key{r} or \key{v} and drag: every record the shape takes gets the armed value. The status line says what you are painting and, after each stroke, how many records changed.
+
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+drag with \key{r} / \key{v} & paint the armed value \\
+hold \key{Alt} & erase instead (back to unpainted) \\
+\ui{select through} on & paint the whole tube, not only the visible surface \\
+\key{⌘Z} & undo the last stroke; the palette's \ui{undo} does the same \\
+\key{Esc} & put the brush down \\ \bottomrule
+\end{tabularx}
+\end{center}
+
+While the palette is open the layer is colored by the column, with unpainted records receding dark, so you see exactly what you have covered. Close the palette and the layer returns to the color it had.
+
+For careful work, reverse the order. Put the brush down, build a selection with plain \key{r} and \key{v} — adding, subtracting, turning the model — and only when it is right arm a value and press \ui{apply to selection}. One stroke, one undo step.
+
+\subsection{Painting on sections}
+The surface rule from \cref{sec:picking-through} is what makes hand domaining workable. Cut a thin slab, face it with \key{l}, turn on \ui{2D}, and lasso the oxide zone: only the blocks on that slab are painted. Step with \key{.} and do the next. A domain painted section by section is exactly as wide as the sections you painted it on.
+
+\begin{why}
+A painted value is a real column, not an annotation. The filter sees it (\code{DOMAIN = "HW\_OXIDE"}), the column scan counts it, the attribute table lists it, the record panel shows it, and exports write it. It is saved with the project and its provenance says it was painted by hand. A judgment you made by eye becomes data you can audit, hand to the estimator, and compare next month.
+\end{why}
+
+\begin{tryit}
+In the demo project:
+\begin{enumerate}
+\item Make the deposit active and press \key{b}. In the palette type \code{DOMAIN} and click \ui{create}.
+\item Click \ui{+ value} and rename the new value \code{CORE}. It is armed, and the deposit turns dark: nothing is painted yet.
+\item Face the section (\key{l}), press \key{v}, and lasso the heart of the lens. The blocks take CORE's color; the status line counts them.
+\item Press \key{.} to step one slab and paint again. Press \key{⌘Z} once: the second stroke is gone, the first remains.
+\item Click \ui{+ value}, name it \code{HALO}, and with \key{r} paint a band around the core. Hold \key{Alt} and drag to erase a corner.
+\item Press \key{Esc} to put the brush down.
+\item Press \key{/}, type \code{DOMAIN = "CORE"} in the filter box and press \key{Enter} (\cref{ch:filter}). Only the blocks you painted remain. Press \key{Esc} in the filter box to clear it.
+\end{enumerate}
+\end{tryit}
+
+\section{Domains from geometry}\label{sec:picking-geometry}
+Hand painting is for the few hundred blocks that need a decision; for the bulk, let geometry do it. \menu{Tools>Select by solid / surface…} flags the blocks inside a solid such as the ore shell (or above, below or between surfaces), and \menu{Tools>Assign domains…} codes a whole model from a set of domain solids. Both write painted columns, so you can open the palette on the result and brush the edge cases by hand. \Cref{ch:geometry} covers them in full.
+
+\section{Undo, and what it covers}\label{sec:picking-undo}
+\key{⌘Z} (or \key{Ctrl}+\key{Z}) undoes the last step and, pressed again, the one before; the undo and redo arrows on the toolbar do the same and say in their tooltips what they would take back. Of the things in this chapter it covers:
+
+\begin{itemize}
+\item a paint stroke — these undo first while the brush is armed;
+\item a selection replaced or cleared;
+\item a filter changed from the filter box.
+\end{itemize}
+
+\key{⌘}+\key{⇧}+\key{Z} (or \key{Ctrl}+\key{Y}) redoes what the last undo took back; a new edit clears the redo. Inside a text field the same keys remain that field's own text undo. The status line always answers: it names what was undone, or says \emph{nothing to undo}.
+
+Picking and measuring change nothing, so there is nothing to undo: \key{Esc} dismisses a measurement, and the next click replaces a pick.

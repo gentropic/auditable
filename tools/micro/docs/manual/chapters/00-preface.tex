@@ -1,0 +1,79 @@
+\chapter*{How to read this book}
+\addcontentsline{toc}{chapter}{How to read this book}
+\markboth{How to read this book}{How to read this book}
+
+This book is for the resource geologist who has a block model, a set of drillholes and a question,
+and for the reviewer who has to check someone else's answer. It assumes you know what a cutoff, a
+swath and a declustered mean are. It does not assume you know micro.
+
+micro opens your files where they are, never uploads them, and keeps a record of what it did with
+them. The book follows the same order a piece of work does: look at the data, ask it questions,
+put the answers on a page, then make the whole thing repeatable and checkable.
+
+\section*{Paths through it}
+
+\begin{description}[leftmargin=0pt, labelsep=0.6em, font=\sffamily\bfseries\color{ink}]
+\item[New to micro.] Read Part~I. \Cref{ch:tour} is a guided tour of the demo project, from opening
+  it to a figure and a first routine. It takes about an hour and touches every major idea once.
+\item[Here for one task.] Each chapter stands on its own. The index, the glossary
+  (\cref{app:glossary}) and the command palette (\key{⌘K} in micro) find the rest.
+\item[Reviewing an estimate.] Read Part~IV, \cref{ch:analysis} to \cref{ch:validation}, for what
+  each number means and how micro computes it. Then read \cref{ch:checks} and \cref{ch:records} for
+  how a routine's checks and run records let you audit someone's month-end without redoing it.
+\item[Automating.] Part~VI climbs from one saved analysis (\cref{ch:recipes}) to a month-end
+  routine that checks itself, compares with last month and leaves a signed-off record. Developers
+  embedding micro in their own page start at \cref{app:host}.
+\end{description}
+
+\section*{Follow along}
+
+Every example uses the \term{demo project}. Open it from micro's start screen with \ui{▸ open the
+demo project}: a 1.8-million-block iron deposit (\file{deposit.csv}, with \col{FE}, \col{SG} and
+\col{LITO}), twelve drillholes drilled in fans across it, the pre-mining topography, three pit phases
+and an ore shell. micro generates it on your machine in well under a minute, so you need no data
+to work through the book.
+
+The screenshots and charts are made by a script that drives micro on that same demo project, and
+the chart values come straight from micro's own tools. When a figure says 24~Mt above 60\%~Fe,
+that is what micro computed for this edition. If your copy of micro is newer, a number may differ
+slightly. The method won't.
+
+\section*{Conventions}
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+\menu{File>Save project as…} & a menu path \\
+\ui{Run} & a button, a field, a tab or a checkbox \\
+\key{⌘K} & a key. \key{⌘} is \key{Ctrl} on Windows and Linux; the book writes ⌘ throughout \\
+\col{FE} & a column \\
+\file{deposit.csv} & a file, a folder or a layer named after its file \\
+\code{FE > 55 and LITO = "HEMATITE"} & something you type: an expression, a setting, YAML \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Notes in the margin\side{like this one} give a cross-reference or a shortcut. Boxes in the text
+have one job each:
+
+\begin{tip}
+A better way to do what the text just described.
+\end{tip}
+\begin{note}
+A fact worth knowing before you go on.
+\end{note}
+\begin{caution}
+A trap: the place where a number can quietly come out wrong.
+\end{caution}
+\begin{why}
+Why micro works this way. Read these when you want to trust a result, not only reproduce it.
+\end{why}
+\begin{tryit}
+An exercise on the demo project, in steps you can do now. Each starts from the demo as it opens,
+or tells you how to get there.
+\end{tryit}
+
+\section*{What micro is not}
+
+micro is not an estimation package. It doesn't krige or simulate, and it doesn't design pits. It reads
+the outputs of those tools, lets you look at them, measure them and compare them, and writes down what
+it did. \Cref{ch:micro} says where its boundaries are and why.

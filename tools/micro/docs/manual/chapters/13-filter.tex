@@ -1,0 +1,411 @@
+\chapter{The filter \& ƒ derived columns}\label{ch:filter}
+\begin{goals}
+\textbf{In this chapter} you ask a layer a question in one line and see only the rows that answer it; edit that question with sliders and chips instead of typing; and define new columns from expressions — an equivalent grade, a density by lithology, a class code — that every other part of micro treats as real columns.
+\end{goals}
+
+micro has one small language for saying things about rows. \code{FE > 55} is a sentence in it. So is \code{FE + 0.4 * MN}. The first is true or false for each row, and that makes it a \term{filter}. The second has a value for each row, and that makes it a \term{calculated column}, written \code{ƒ} throughout the interface.
+
+micro uses this language wherever it accepts an expression: the filter box, calculated columns, styling rules (\cref{sec:color-rules}), the density and weight slots of the analysis windows (\cref{ch:analysis}), per-series filters, the drillhole hole filter (\cref{ch:drillholes}), and routine steps (\cref{ch:routines}). Learn it once. This chapter teaches it by example; \cref{app:expr} is the full reference.
+
+\section{The filter box}\label{sec:filter-box}
+Press \key{/}.\sidekey{/}{focus the filter box} The cursor lands in the long box on the first toolbar row. Type
+
+\begin{lstlisting}[language=expr]
+FE > 55
+\end{lstlisting}
+
+and press \key{Enter}. The active layer reduces to the rows where that is true. Everything else leaves the view, the attribute table's \ui{matches} view, and any analysis run with the \emph{filtered} scope. The status line ends with the count — \emph{filter: \textit{n} of 1,786,620 match} on the demo deposit.
+
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+\key{/} & focus the box (also \menu{Data>Filter…}, or \menu{Filter…} on a layer's menu) \\
+\key{Enter} & apply \\
+\key{Esc} & clear the filter (also the \ui{×} in the box, or \menu{Data>Clear filter}); while suggestions are open, the first \key{Esc} only closes them \\
+\key{Tab} / \key{Enter} & accept the highlighted autocomplete suggestion \\
+\ui{▾} & open the drawer (\cref{sec:filter-drawer}) \\ \bottomrule
+\end{tabularx}
+\end{center}
+
+A filter belongs to a \emph{layer}. Each layer keeps its own; the box shows the active layer's, and changes as you step between layers with \key{[} and \key{]}. Block models, drillholes, point clouds and tables can all be filtered.
+
+\subsection{Help while you type}
+The box colors the expression as you type — columns, numbers, text and keywords each in their own color — so a missing quote shows before you press \key{Enter}. Autocomplete offers what fits at the cursor: column names, functions, and after \code{LITO =} the values that column actually holds.
+
+If the expression is wrong, the box turns red and the status line says why. An unknown name gets a suggestion: \emph{unknown column: FEE — did you mean FE?} Nothing is applied until the expression is valid; a broken filter never leaves you looking at a wrong subset.
+
+\subsection{Every column, whatever its origin}
+The filter sees every column the layer has: the file's own, calculated ones, painted ones (\cref{sec:picking-paint}), stored columns you materialized (\cref{sec:filter-materialize}), joined ones (\cref{ch:joins}) and broadcast ones. \code{DOMAIN = "CORE" and FE > 55} mixes a column you painted five minutes ago with one the estimator wrote, and micro does not care which is which.
+
+\begin{tryit}
+Open the demo project and make the deposit the active layer.
+\begin{enumerate}
+\item Press \key{/}, type \code{FE > 55}, press \key{Enter}. The deposit shrinks to its high-grade core; the status line reads \emph{filter: 38,357 of 1,786,620 match}.
+\item Edit the box to \code{FE > 55 and LITO = "HEMATITE"}. While typing after the \code{=}, pick HEMATITE from the suggestions with \key{Tab}. Press \key{Enter}. 11,013 blocks remain — every hematite block, since in the demo hematite is the core above 60\,\% Fe; the rest of the 55-plus blocks were itabirite and canga.
+\item Change \code{FE} to \code{FEE} and press \key{Enter}. Read the status line, then fix it.
+\item Press \key{t}. In the attribute table, click \ui{matches}: only the filtered rows are listed.
+\item Click in the filter box and press \key{Esc}. The whole deposit returns.
+\end{enumerate}
+\end{tryit}
+
+\section{The language, by example}\label{sec:filter-language}
+A handful of patterns covers most questions you will ask of a model.
+
+\subsection{Comparing}
+\begin{lstlisting}[language=expr]
+FE >= 60
+SG < 2.8
+LITO = "CANGA"
+LITO != "WASTE"
+FE > SG * 20        # two columns: a bare word is a column
+\end{lstlisting}
+
+A bare word is a column; text goes in double quotes. That is the whole rule, and it is why \code{LITO = HEMATITE} is an error (there is no column called HEMATITE) while \code{LITO = "HEMATITE"} is a test. Column names are not case-sensitive — \code{fe}, \code{Fe} and \code{FE} are the same column — but text values are compared exactly, case included, so \code{"Hematite"} does not match \code{HEMATITE}. The same holds for \code{in}, \code{like}, \code{contains} and \code{matches}. When a file is inconsistent, normalize: \code{upper(LITO) = "HEMATITE"}.
+
+\subsection{Combining}
+\begin{lstlisting}[language=expr]
+FE > 55 and LITO = "HEMATITE"
+LITO = "HEMATITE" or LITO = "ITABIRITE"
+FE > 55 and (LITO = "HEMATITE" or LITO = "CANGA")
+not (LITO = "WASTE")
+\end{lstlisting}
+
+\code{and} binds tighter than \code{or}. When in doubt, add parentheses; they cost nothing. On the demo the third line keeps 14,897 blocks: all the hematite and the richest canga. Without the parentheses it would read \code{(FE > 55 and LITO = "HEMATITE") or LITO = "CANGA"} and keep every canga block, poor or rich.
+
+\subsection{Ranges, sets and text}
+\begin{lstlisting}[language=expr]
+FE between 40 and 55
+LITO in ("HEMATITE", "ITABIRITE")
+LITO not in ("WASTE", "CANGA")
+HOLEID like "DH00%"          # SQL wildcards: % any run, _ one character
+HOLEID contains "01"
+HOLEID matches "^DH0[0-4]"   # a regular expression
+\end{lstlisting}
+
+\code{between} includes both ends.
+
+\subsection{Blanks}
+\begin{lstlisting}[language=expr]
+FE is blank
+FE is filled
+FE is filled and FE > 0
+\end{lstlisting}
+
+A blank is a missing value: an unestimated block, an unassayed interval. The language never treats it as zero. Any arithmetic on a blank gives a blank, and a comparison with a blank is not true, so \code{FE > 55} quietly leaves unestimated blocks out. That is nearly always what you want. Division by zero also gives a blank, so an expression cannot crash a scan.
+
+\begin{caution}
+\code{not} is a true complement. \code{not (FE > 55)} keeps every row where \code{FE > 55} is not true — \emph{including blanks}. So it is \emph{not} the same as \code{FE <= 55}, which leaves blanks out. This is deliberate: a filter and its negation always add up to the whole table, which is what you need when you split a model in two and expect the tonnes to reconcile.
+\end{caution}
+
+\subsection{Awkward names, and comments}
+\begin{lstlisting}[language=expr]
+`Assay Au ppm` > 0.5        # backticks around a name with spaces or symbols
+`OK-Indic` = 1              # a hyphen would otherwise be a minus
+FE > 55                     # high grade
+  and SG > 3.2              # expressions may span lines
+\end{lstlisting}
+
+Anything after \code{\#} is a comment. In a one-line box that is mostly useful for a note at the end; in the drawer's multiline editor, in a calculated column, or in a routine file, it is how you explain a cutoff to the next reader.
+
+\subsection{Arithmetic and functions}
+A filter can compute before it compares, and a calculated column is nothing but the computation.
+
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+you want & write \\ \midrule
+arithmetic & \code{+ - * /}, and \code{\textasciicircum} for a power \\
+rounding and limits & \code{round(x)}, \code{floor(x)}, \code{ceil(x)}, \code{abs(x)}, \code{clamp(x, lo, hi)}, \code{min(a, b)}, \code{max(a, b)} \\
+logs and roots & \code{log(x)} (natural), \code{log10(x)}, \code{exp(x)}, \code{sqrt(x)}, \code{pow(x, y)} \\
+a regular bin & \code{bin(x, width)} or \code{bin(x, width, origin)} — the lower edge of the bin \code{x} falls in; bins start at 0 unless you give an origin \\
+a choice & \code{if(condition, then, else)} — nest it for a ladder \\
+the first filled value & \code{coalesce(a, b, …)} \\
+a sentinel turned blank & \code{nullif(x, -99)} \\
+text & \code{upper}, \code{lower}, \code{trim}, \code{len}, \code{left}, \code{right}, \code{substr}, \code{replace}, \code{concat} \\ \bottomrule
+\end{tabularx}
+\end{center}
+
+Three filters that use them:
+
+\begin{lstlisting}[language=expr]
+FE / 100 * SG * 500 > 800     # contained Fe per 10 x 10 x 5 m block, t
+floor(ZC / 10) = 78           # one 10 m bench, by elevation
+abs(FE - FE_ID2) > 5          # where two estimates disagree
+\end{lstlisting}
+
+\begin{why}
+The language is \emph{total}: it can compare and compute, and it cannot loop, call out, read a file, or fail halfway through a table. Every expression finishes, on every row, with a value or a blank. That is what lets micro run one over two million blocks while you drag a slider, show it in a routine file to a reviewer, and evaluate it under a security policy that forbids running arbitrary code (\cref{ch:sealed}).
+\end{why}
+
+\section{The drawer: the filter as controls}\label{sec:filter-drawer}
+Typing is exact. For \emph{exploring} — where does the grade shell close if I raise the cutoff? — you want a slider. The \ui{▾} button at the right end of the filter box opens the \term{drawer}: the current expression laid out as controls, one row per condition.
+
+The expression stays the single source of truth. Every control rewrites its own piece of the text and nothing else, so the box updates as you drag and your spacing, comments and bracketing survive. Using the drawer is typing, done for you.
+
+\begin{figure}[htbp]\centering
+\begin{tikzpicture}[font=\sffamily\small, x=1mm, y=1mm]
+% the expression, as three spans
+\node[anchor=west, inner sep=1.2mm, fill=tint, text=ink, font=\ttfamily\small] (a) at (0,0) {FE > 55};
+\node[anchor=west, inner sep=1.2mm, text=info, font=\ttfamily\small\bfseries] (j) at ([xshift=1mm]a.east) {and};
+\node[anchor=west, inner sep=1.2mm, fill=tint, text=ink, font=\ttfamily\small] (b) at ([xshift=1mm]j.east) {LITO in ("HEMATITE", "CANGA")};
+\draw[rule, line width=0.5pt] ([xshift=-2mm,yshift=-2.2mm]a.south west) rectangle ([xshift=2mm,yshift=2.2mm]b.north east);
+\node[anchor=south west, text=muted, font=\sffamily\footnotesize] at ([xshift=-2mm,yshift=2.4mm]a.north west) {the filter box — the truth};
+% row 1: slider
+\begin{scope}[yshift=-22mm]
+\node[anchor=west, text=ink] (r1) at (0,0) {FE};
+\node[anchor=west, draw=rule, rounded corners=1pt, inner sep=1mm, font=\ttfamily\footnotesize] (op1) at (10,0) {> ▾};
+\draw[rule, line width=1.2pt] (24,0) -- (70,0);
+\draw[amber, line width=1.2pt] (24,0) -- (58,0);
+\fill[amber] (58,0) circle[radius=1.5];
+\node[anchor=west, draw=rule, rounded corners=1pt, inner sep=1mm, font=\ttfamily\footnotesize] (v1) at (74,0) {55};
+\node[anchor=west, text=muted] at (88,0) {×};
+\end{scope}
+% joiner pill
+\node[anchor=west, fill=infosoft, text=info, rounded corners=3pt, inner xsep=2mm, inner ysep=0.6mm, font=\sffamily\footnotesize\bfseries] (pill) at (0,-30) {AND};
+% row 2: chips
+\begin{scope}[yshift=-38mm]
+\node[anchor=west, text=ink] (r2) at (0,0) {LITO};
+\node[anchor=west, draw=rule, rounded corners=1pt, inner sep=1mm, font=\ttfamily\footnotesize] (op2) at (10,0) {in ▾};
+\node[anchor=west, fill=ambersoft, draw=amberlight, rounded corners=3pt, inner xsep=1.6mm, inner ysep=0.8mm, font=\sffamily\footnotesize] (c1) at (24,0) {HEMATITE};
+\node[anchor=west, draw=rule, rounded corners=3pt, inner xsep=1.6mm, inner ysep=0.8mm, font=\sffamily\footnotesize, text=muted] (c2) at ([xshift=1.5mm]c1.east) {ITABIRITE};
+\node[anchor=west, fill=ambersoft, draw=amberlight, rounded corners=3pt, inner xsep=1.6mm, inner ysep=0.8mm, font=\sffamily\footnotesize] (c3) at ([xshift=1.5mm]c2.east) {CANGA};
+\node[anchor=west, draw=rule, rounded corners=3pt, inner xsep=1.6mm, inner ysep=0.8mm, font=\sffamily\footnotesize, text=muted] (c4) at ([xshift=1.5mm]c3.east) {WASTE};
+\node[anchor=west, text=muted] at (88,0) {×};
+\end{scope}
+% links from spans to rows
+\draw[amber, line width=0.5pt, -{Stealth[length=1.5mm]}] (a.south) -- ++(0,-9) -| (30,-19.5);
+\draw[info, line width=0.5pt, -{Stealth[length=1.5mm]}] (j.south) -- ++(0,-5) -| (-4,-30) -- (pill.west);
+\draw[amber, line width=0.5pt, -{Stealth[length=1.5mm]}] (b.south) -- ++(0,-12) -| (96,-38) -- (92,-38);
+\node[anchor=north west, text=muted, font=\sffamily\footnotesize] at (0,-43) {the drawer — each control rewrites its own span};
+\end{tikzpicture}
+\caption{The drawer projects the expression as controls. Drag the slider and only the \code{55} in the text changes; click a chip and only the list inside the parentheses does.}\label{fig:filter-drawer-diagram}
+\end{figure}
+
+What each kind of condition becomes:
+
+\begin{description}
+\item[A numeric comparison] is a slider with a number box. Its range comes from what micro knows of the column: exact once the column is in memory, otherwise from the statistics stored with the file, and failing both a span around the current value. The operator is a dropdown (\code{>}, \code{>=}, \code{<}, \code{<=}, \code{=}, \code{!=}, \code{between}); switching to \code{between} converts the condition in place into a two-handled range.
+\item[A category comparison] is a row of chips, one per value. With \code{=} a click swaps the value; with \code{in (…)} each chip toggles membership. The operator dropdown offers \code{=}, \code{!=}, \code{in} and \code{not in}.
+\item[The joiners] between rows are pills, \ui{AND} and \ui{OR}. Click one to switch that joiner in the text.
+\item[Brackets] are real. A parenthesized group is drawn as an indented block with its own \ui{add condition} row, which inserts inside the brackets.
+\end{description}
+
+\ui{add condition…} at the bottom starts a new row from a column you pick: the numeric columns, the category column, and painted category columns are offered. It can also seed a new bracketed group, or wrap everything so far in brackets and start an alternative branch with \code{or}. Nothing is fixed at the moment you add it; reshape the row afterwards with its own controls.
+
+Every row has a \ui{×}. Removing a condition removes its joiner with it; removing the last condition inside brackets removes the brackets; removing the only condition clears the filter.
+
+The drawer also holds a multiline editor for the expression itself, checked as you type, with room for \code{\#} comments. \ui{reset} puts the filter back as it was when the drawer opened.
+
+\shot{filter-drawer}{The drawer (titled \emph{filter widgets}) on the demo deposit, projecting \code{FE > 55 and (LITO = "HEMATITE" or LITO = "CANGA")}: the multiline editor, a slider with its operator, and the bracketed group indented with its two rows of chips and its own \ui{add condition…}. The OR and AND joiners sit between the rows, and every row has a ×. Below, what matches: the hematite core inside the ore shell's ring, and scattered patches of rich canga near the surface.}
+
+\subsection{Why dragging is fast}
+A slider is only useful if the model keeps up. On large files three things make that happen:
+
+\begin{itemize}
+\item A \textbf{Parquet} model skips whole row groups whose stored minimum and maximum prove nothing in them can match.
+\item A \textbf{CSV or Datamine} model in a project skips stretches the same way, using the index micro keeps beside the file.
+\item After one complete scan, the columns the filter touched stay \textbf{in memory}, within a budget you can set under \menu{View>Filter column cache}.
+\end{itemize}
+
+The first filter on a cold two-million-block CSV takes one pass over the file. The slider after it re-filters without reading the file again. \Cref{ch:store} explains the index and the memory budget; \cref{ch:blocks} explains why Parquet is the format to keep a large model in.
+
+\begin{tryit}
+In the demo project, with \code{FE > 55} in the filter box (press \key{/}, type it, \key{Enter}):
+\begin{enumerate}
+\item Click the \ui{▾} at the end of the box. The drawer shows one row: \col{FE}, an operator, a slider at 55.
+\item Drag the slider down toward 40. The deposit grows, the number in the box follows, and the status line recounts.
+\item Open the operator dropdown and choose \code{between}. The row becomes a range; drag the upper handle down to cut the richest blocks off the top.
+\item Open \ui{add condition…} and pick \col{LITO}. A row of chips appears, one lithology lit; click another to swap it.
+\item Click the \ui{AND} pill between the rows. It becomes \ui{OR} — and the text in the box says \code{or}. Click it back.
+\item Remove the \col{LITO} row with its \ui{×}, then press \ui{reset}: the filter is \code{FE > 55} again.
+\end{enumerate}
+\end{tryit}
+
+\section{From a filter to something that lasts}\label{sec:filter-next}
+A filter is a way of looking. Several tools take it further:
+
+\begin{itemize}
+\item \textbf{Analyze it.} The analysis windows have a \emph{filtered} scope, so a grade–tonnage curve or a swath can be computed for the matching rows only (\cref{ch:analysis}).
+\item \textbf{Export it.} \menu{Data>Export rows…} offers \emph{filter matches} as a scope.
+\item \textbf{Select it.} \menu{Filter → selection} on the layer's menu turns the matching rows into a selection, which you can then refine by hand or write to a column (\cref{sec:picking-selcol}).
+\item \textbf{Keep it with the view.} A scene saves each layer's filter (\cref{sec:sections-scenes}).
+\item \textbf{Name it.} If you keep typing the same condition, make it a column (\cref{sec:filter-calc}).
+\end{itemize}
+
+Changing the filter from the box is an undo step, so \key{⌘Z} (or \key{Ctrl}+\key{Z}) returns to the previous one.
+
+\section{Calculated columns}\label{sec:filter-calc}
+A calculated column is an expression with a name. Once defined it behaves like a column of the file: the filter, color ramps and classes, stats, grade–tonnage, swath, the record panel, the attribute table and every export see it.
+
+What is stored is the \emph{definition}. The values are computed when something needs them, from the columns as they are now. Change an input and the result follows; reopen the project and the column is there because its formula is.
+
+\subsection{The Calculations window}
+Open it with \menu{Data>Calculated columns…} for the active layer; it is also reachable from \menu{Properties…>columns}. On the left is a rail listing the layer's \code{ƒ} columns, ending in \ui{+ add…}. On the right is one editor:
+
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+the name & letters, digits and underscores, not starting with a digit, and not a name already in use \\
+the type & \ui{auto}, \ui{number} or \ui{text}. On save, \ui{auto} evaluates the expression on up to eight rows spread through the layer: a text result on any of them makes the column text, otherwise it is a number. Blanks decide nothing, so a blank first row cannot turn a grade into text. If the expression reads other derived columns, \ui{auto} means number — choose \ui{text} yourself for a text result \\
+the expression & a multiline editor, colored and checked as you type; \code{\#} comments are welcome \\
+\ui{add column} / \ui{save} & store the definition \\
+\ui{remove} & delete the column (one undo step) \\
+\ui{materialize → stored} & freeze it into a stored column (\cref{sec:filter-materialize}) \\
+\ui{save as recipe…} & write the layer's whole set of \code{ƒ} columns as a recipe \\ \bottomrule
+\end{tabularx}
+\end{center}
+
+The expression is checked against the layer's full schema, so it may use source columns, painted and other stored columns, and \emph{other calculated columns}. Define \code{FE\_EQ}, then define \code{FE\_EQ2 = FE\_EQ * 2}; micro works out the order.
+
+Saving takes effect at once. A filter or a color that uses the column updates the moment you save, and the status line confirms: \emph{ƒ FE\_EQ added — it works in the filter, color ramps, GT/swath, the record panel, and exports}.
+
+\subsection{Useful definitions}
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}Ll@{}}\toprule
+purpose & expression \\ \midrule
+tonnes per 10 × 10 × 5 m block & \code{SG * 500} \\
+contained iron per block, t & \code{FE / 100 * SG * 500} \\
+a grade class as a code & \code{if(FE > 58, 2, if(FE > 45, 1, 0))} \\
+a capped grade for a resource case & \code{clamp(FE, 0, 66)} \\
+a bench index from elevation & \code{floor(ZC / 10)} \\
+a sentinel turned into a blank & \code{nullif(FE, -99)} \\
+two estimates, the first filled wins & \code{coalesce(FE\_OK, FE\_ID2)} \\
+a log grade for a skewed element & \code{log10(clamp(AU, 0.01, 100))} \\ \bottomrule
+\end{tabularx}
+\end{center}
+
+And one that returns text, for a record panel, an attribute table and an export that read as words:
+
+\begin{lstlisting}[language=expr]
+if(LITO = "WASTE", "waste",
+  if(FE >= 58, "high grade",
+    if(FE >= 45, "medium grade", "low grade")))
+\end{lstlisting}
+
+Saved as \code{GRADE} with the type on \ui{auto}, it becomes a text column, and \code{GRADE = "high grade"} filters on it. A text column cannot color the model, though: to see the classes in 3D, return codes (\code{2}, \code{1}, \code{0}) instead and give the codes breaks (\cref{sec:color-classes}).
+
+\subsection{The definition as controls}
+Below the editor, the definition is projected as controls — the same contract as the filter drawer.
+
+An \code{if(…)} ladder becomes a \term{case table} under the heading \ui{cases}: one row per case, the condition on the left as filter controls (a slider, chips), the value on the right, then an \ui{else} row and a way to add a case. A density by lithology is the natural example:
+
+\begin{lstlisting}[language=expr]
+if(LITO = "HEMATITE", 4.2,
+  if(LITO = "ITABIRITE", 3.4,
+    if(LITO = "CANGA", 3.0, 2.7)))
+\end{lstlisting}
+
+It appears as four rows that you read at a glance and edit without counting parentheses.
+
+Any other expression with one to eight numeric constants lists them under \ui{constants}, each as a slider labeled with the text around it. In \code{FE + 0.4 * MN} the \code{0.4} becomes a slider.
+
+Edits made with these controls save themselves on an existing column a moment after you stop, so the model responds as you tune. Edits you \emph{type} wait for \ui{save}.
+
+\shot{filter-calc-window}{The Calculations window on the demo deposit: a density-by-lithology ladder, with the expression above and the same definition as a case table below.}
+
+\section{Color by ƒ}\label{sec:filter-colorby}
+A numeric calculated column appears in the \ui{color} dropdown as \code{ƒ NAME}, and in \menu{Properties…>style} as a column like any other, with a ramp, a clip, breaks, classes and a histogram (\cref{ch:color}). It behaves as a source column does: the clip and the breaks are typed in the column's own units (a clip of 50–60 on an equivalent grade means 50 to 60), and a block where the expression is blank — an input missing — draws in the no-data gray, never as the lowest color.
+
+To color by it, micro computes the column once for display. The status line says \emph{ƒ CLASS: computing for display…} and then the result — \emph{ƒ CLASS: colored — 1,786,620 values, 0 … 2} on the demo. That realization is a cache: it is recomputed when the definition, or anything the definition refers to, changes, and it is never written to disk. The formula is the record.
+
+A text \code{ƒ} is not offered for color. It filters, shows in the record panel and the table, and exports.
+
+With the constant sliders this closes a loop: define a column, color by it, and tune its numbers while you watch the model.
+
+\begin{tryit}
+In the demo project, with the deposit active and no filter:
+\begin{enumerate}
+\item Choose \menu{Data>Calculated columns…}. Name the column \code{CLASS}, leave the type on \ui{auto}, and type
+
+\code{if(FE > 58, 2, if(FE > 45, 1, 0))}
+
+Click \ui{add column}.
+\item Below the editor, the ladder is now a case table: two conditions with sliders, their values, and an else.
+\item In the \ui{color} dropdown choose \code{ƒ CLASS}. The status line reports the pass, then \emph{colored — 1,786,620 values, 0 … 2}, and the deposit repaints in three grade classes.
+\item Back in the Calculations window, drag the slider of the first case from 58 down to 52. Pause, and the high-grade class spreads outward in the view. Drag it back to 58.
+\item Press \key{/} and filter with \code{CLASS = 2}: 19,305 blocks match. The filter treats your column like any other.
+\item Click a block: \col{CLASS} is in the record panel, marked as calculated.
+\end{enumerate}
+\end{tryit}
+
+\section{Materializing}\label{sec:filter-materialize}
+A calculated column is computed on demand. Usually that is right. Sometimes you want the numbers \emph{fixed}:
+
+\begin{itemize}
+\item the expression is expensive and you filter on it constantly;
+\item you want the values to survive even if an input column is later removed or changed;
+\item the column is a result you are signing off, not a formula you are still tuning.
+\end{itemize}
+
+\ui{materialize → stored} in the Calculations window — or \menu{Materialize calc column} on the layer's right-click menu, which lists each \code{ƒ} as \emph{NAME → stored} — computes the column once and stores the values as a \term{stored column} of the same name, beside the source; the \code{ƒ} definition goes. The status line confirms how many values were stored (\emph{materialized “CLASS” — 1,786,620 values stored}), and the record panel marks the column \code{✎}. From then on it scans like a source column, and it no longer depends on its inputs.
+
+\begin{caution}
+Materialize stores numbers. A text \code{ƒ} materializes as a column of blanks, so keep text columns as formulas.
+% TODO verify: reported to micro as a bug (materializeCalcCol reads values through numOf) — drop this caution if it is fixed.
+\end{caution}
+
+\begin{figure}[htbp]\centering
+\begin{tikzpicture}[font=\sffamily\small, node distance=5mm and 14mm,
+  box/.style={draw=rule, fill=paper, rounded corners=1.5pt, inner xsep=3mm, inner ysep=2mm, align=left, text=ink, text width=40mm}]
+\node[box, fill=tint] (src) {\textbf{source columns}\\[1pt]\footnotesize\color{muted} FE · SG · LITO — in the file};
+\node[box, fill=ambersoft!60, right=of src] (calc) {\textbf{ƒ calculated}\\[1pt]\footnotesize\color{muted} a definition; computed when needed; follows its inputs};
+\node[box, below=9mm of calc] (mat) {\textbf{✎ stored}\\[1pt]\footnotesize\color{muted} stored values; fast to scan; independent of its inputs};
+\draw[amber, line width=0.7pt, -{Stealth[length=1.8mm]}] (src) -- node[above, text=muted, font=\sffamily\footnotesize]{expression} (calc);
+\draw[amber, line width=0.7pt, -{Stealth[length=1.8mm]}] (calc) -- node[right, text=muted, font=\sffamily\footnotesize]{materialize → stored} (mat);
+\node[text=muted, font=\sffamily\footnotesize, anchor=north west, text width=40mm, align=left] at ([yshift=-9mm]src.south west) {all three are columns to the filter, the styles, the analyses and the exports};
+\end{tikzpicture}
+\caption{A calculated column is a formula; materializing it stores the answer. Both record how they were made.}\label{fig:filter-materialize-diagram}
+\end{figure}
+
+micro derives columns five ways, and each records \emph{how} in the layer's provenance:
+
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+kind & made by & see \\ \midrule
+\code{ƒ} calculated & an expression & this chapter \\
+\code{✎} stored & materializing a \code{ƒ} into stored values & this section \\
+\code{✎} painted & the brush, a selection, or a flag / assign-domains by solid & \cref{ch:picking} \\
+joined & a key join or a spatial join from another layer & \cref{ch:joins} \\
+broadcast & a collar column landed on drillhole intervals & \cref{ch:drillholes} \\ \bottomrule
+\end{tabularx}
+\end{center}
+
+\begin{note}
+A stored column's values are kept with the project, in a file per column beside the source, and the source file itself is never rewritten. \Cref{ch:store} describes where they live and how micro keeps a stored column tied to the exact file it was computed from; \cref{ch:records} describes the provenance trail.
+\end{note}
+
+\section{In a routine}\label{sec:filter-routine}
+Your standard derived columns should not be retyped on every new model. \ui{save as recipe…} in the Calculations window writes the layer's whole set of \code{ƒ} columns as a recipe (\cref{ch:recipes}). Running it on another layer adds the columns there; a column whose name already exists is replaced by the recipe's definition, so running it twice is the same as running it once.
+
+As an inline routine step it reads:
+
+\begin{lstlisting}[language=yaml]
+- tool: "calccols"
+  with:
+    layer: "deposit.csv"
+    cols:
+      - name: "T_BLOCK"
+        expr: "SG * 500"
+      - name: "CLASS"
+        expr: "if(FE > 58, 2, if(FE > 45, 1, 0))"
+\end{lstlisting}
+
+An entry without \code{ty:} gets its type the way the window's \ui{auto} does — sampled on up to eight rows, text if any of them gives text — so \code{CLASS} above is a number and a ladder of words would be text. Write \code{ty: "number"} or \code{ty: "string"} to say it outright. If an expression is invalid on the target layer — a column it names is missing — the step fails naming the column it could not add (\emph{invalid expression for CLASS}), and the routine stops there instead of carrying on with a model that lacks it.
+
+Filters travel in routines the same way: wherever a tool takes a \code{filter}, it takes an expression from this chapter. A grade–tonnage series restricted to hematite is one more line:
+
+\begin{lstlisting}[language=yaml]
+- tool: "gt"
+  with:
+    layer: "deposit.csv"
+    series:
+      - col: "FE"
+        weight: "SG"
+        filter: "LITO = 'HEMATITE'"
+    cutoffs:
+      - 40
+      - 50
+      - 55
+      - 60
+\end{lstlisting}
+
+Inside a double-quoted YAML string, write text values in single quotes; the language accepts them as well as double ones. micro's YAML is strict: text values are quoted, lists are written one item per line, and \code{[40, 50]} on one line is refused.
+
+\Cref{ch:routines} covers steps, \code{each} blocks and parameters; \cref{app:expr} lists every operator and function.

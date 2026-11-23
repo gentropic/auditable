@@ -1,0 +1,261 @@
+\chapter{QA reports}\label{ch:qa}
+\begin{goals}
+\textbf{In this chapter} you run the three reports that answer “is this data fit to use?” — for a block model, a drillhole set and a wireframe — read their findings, go from a finding to the records behind it, export the report, and make a routine stop when a report is not clean.
+\end{goals}
+
+Before anyone reports a number from a dataset, someone has to look at every row that is wrong. micro has a report for each kind of data an estimate rests on:
+
+\begin{itemize}
+\item \term{Model QA} — a block model's lattice and every one of its columns;
+\item \term{Drillhole QA} — a drillhole set's collars, surveys and interval tables;
+\item \term{Mesh QA} — a wireframe's topology, and the volume it holds.
+\end{itemize}
+
+The three share a design. Each reads the data once and changes nothing. Each lists what it found worst first, with a colored dot for severity: red for an \emph{error} (something is dropped, misplaced or will bias a result), yellow for a \emph{warning} (look at it), blue for a \emph{note}. Each finding leads back to the data — click it and micro selects the records or moves the camera to the place. And each can be exported as a table that says what it was run on.
+
+\section{Model QA}\label{sec:qa-model}
+
+Right-click a block model and choose \menu{Model QA…}, or press \key{⌘K} and type \code{model QA}. The window opens and starts reading at once; its subtitle counts blocks as it goes, and ends as \emph{clean}, \emph{N to look at} or \emph{N errors}.
+
+\shot{qa-model}{Model QA on a deliberately damaged copy of the demo deposit — four grades set to −99, one block written twice, one density of zero and five blocks removed from the middle of two columns. The findings are above, worst first; the census of every column below; the model's summary on the rail.}
+
+\subsection{What it checks}
+
+\paragraph{The lattice.} For a regular model, three things can be wrong with where the blocks are:
+
+\begin{itemize}
+\item \emph{two blocks in one cell} — an error; the later block of each pair is the one listed;
+\item \emph{centroid off the grid} — an error: a block whose center is not on the model's lattice, or lies outside its extent;
+\item \emph{gap inside a column} — a warning: blocks missing between a vertical column's lowest and highest block. The count is of missing blocks, and the note says in how many columns.
+\end{itemize}
+
+A gap is not always a fault — a model clipped to a pit shell, or with a void for an old stope, has gaps on purpose. That is why it is a warning and not an error.
+
+The lattice checks run on regular, axis-aligned models. For a sub-blocked or rotated model, or one that opened as points, the rail says \emph{lattice: not checked} and why; the column checks still run.
+
+\paragraph{Every column.} Each column of the file is read and tested:
+
+\begin{table}[htbp]\small
+\begin{tabularx}{\linewidth}{@{}llL@{}}\toprule
+finding & severity & meaning \\ \midrule
+blank coordinate & error & a block with no X, Y or Z cannot be placed \\
+density outside 1–6 t/m³ & error & no rock is lighter than water or heavier than 6; the note splits the count below 1 and above 6 \\
+zero density & error & a block of no tonnage \\
+sentinel values & warning & \code{-99}, \code{-999}, \code{-9999}, \code{-1e30} and their kin, read as numbers \\
+text in a numeric column & warning & a few entries that are not numbers in a column of numbers \\
+negative values & warning & in any column but a coordinate \\
+maximum far above the 99.9th percentile & warning & a maximum more than ten times the 99.9th percentile — a top-cut question \\
+empty column & warning & every value blank \\
+blank values & note & blanks in a column that is not a coordinate \\
+constant column & note & every value the same \\ \bottomrule
+\end{tabularx}
+\caption{Model QA's column findings.}\label{tab:qa-model}
+\end{table}
+
+A column is treated as a density when its name is one of the usual ones — \col{DENSITY}, \col{DENS}, \col{SG}, \col{BD}, \col{BULK\_DENSITY}, \col{RHO} and the like. The census marks it \emph{(density)} so you can see which columns got the stricter test.
+
+\begin{why}
+A sentinel is the most dangerous of these. A missing value written as \code{-99} is a perfectly good number to a computer. It lowers every mean it enters and adds tonnage at a grade that does not exist. micro treats a truly blank value as unestimated and leaves it out (\cref{ch:columns}); a sentinel gets no such protection unless someone notices it, so the report notices it for you.
+\end{why}
+
+\subsection{From a finding to its blocks}
+
+Click a finding. For most, the last cell of the row changes to a count — “212 selected” — and those blocks are now the selection: gold in the view, ready for the attribute table's selection view, for \menu{Selection → column…} to mark them permanently, or for a filter (\cref{ch:picking}).
+
+A gap has no blocks to select, because the blocks are not there. Clicking it steps the camera to an example instead, and the cell counts where you are — “3 / 200”. Click again for the next.
+
+Below the findings is a \term{census} of every column: how many values and blanks, the minimum, median, 99.9th percentile, maximum and mean of a numeric column, or the number of distinct values of a text one. It is the quickest way to see the shape of a model you have just been handed.
+
+The rail summarizes the model — blocks, columns, the grid's dimensions, the percentage of its cells that are filled, and a verdict — and holds one button, \ui{export .tsv}, which saves the findings and the census as one tab-separated file headed by the model's name, its block count and the time.
+
+\begin{tryit}
+\begin{enumerate}
+\item Open the demo project, right-click \file{deposit.csv} and choose \menu{Model QA…}.
+\item Read the rail: 1,786,620 blocks on a 200×100×100 grid, 89.3\% of its cells filled. The demo deposit has a pit carved out of its top, so it does not fill its box.
+\item The subtitle and the verdict read \emph{clean}, and the findings say \emph{nothing to report}. The pit was cut bench by bench from the top down, so no vertical column of blocks has a gap inside it — a model that does not fill its box is not, by itself, a finding.
+\item Scroll to the census. Find \col{SG}, marked \emph{(density)}, and read its minimum and maximum; find \col{LITO} and read how many distinct values it has: four.
+\end{enumerate}
+\end{tryit}
+
+\section{Drillhole QA}\label{sec:qa-dh}
+
+A drillhole set is three kinds of table that must agree with each other (\cref{ch:drillholes}), and most of what goes wrong is a disagreement: a survey for a hole that has no collar, an interval deeper than the hole. Right-click a drillhole set in the layers panel and choose \menu{QA report…}, or find \emph{Drillhole QA report} in the command palette.
+
+The report reads the set's own files — the collar table, the survey table, and \emph{every} interval table in the set — and lists each problem at its table and row.
+
+\shot{qa-dh}{The report on the broken copy of the demo set made in the exercise below: one deleted collar row fills the table with its hole's 105 orphaned survey and interval rows, while the one overlapping interval waits on the rail, a click away. Every finding here is an error, so the dots are all red.}
+
+\subsection{What it checks}
+
+\begin{table}[htbp]\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+table & checks \\ \midrule
+collars & no hole ID · blank or non-numeric X, Y or Z (the hole is dropped) · a duplicate ID (the first is kept) · end of hole ≤ 0 · no usable survey (the hole is desurveyed straight down) · no rows in an interval table \\
+surveys & hole not in the collars · blank depth, azimuth or dip (the station is dropped) · negative depth · |dip| > 90° · azimuth outside 0–360° · two stations at one depth (the last is kept) · a dogleg faster than the limit · a station past the end of hole \\
+intervals & hole not in the collars · blank FROM or TO (not placed) · negative depth · FROM ≥ TO · overlap with an earlier interval, naming it · a gap between consecutive intervals · past the end of hole · far past the deepest survey station (a note: the hole is extrapolated along it) \\
+values & a column of numbers holding a few text entries — a typo such as \code{l.5} that would read as blank \\ \bottomrule
+\end{tabularx}
+\caption{Drillhole QA's checks, by the table they belong to.}\label{tab:qa-dh}
+\end{table}
+
+Two points about what is \emph{not} reported. A collar that cannot be placed is reported once, at its own row; its surveys and intervals are not then reported again as orphans, which would bury the one real problem under fifty consequences of it. And a laboratory code such as \code{BDL} in a grade column is a code, not a typo: it is counted in the values census and not flagged (\cref{ch:columns}).
+
+\subsection{The limits}
+
+Three of the checks depend on a threshold, and the three thresholds are fields at the top of the rail. Change one and the report runs again.
+
+\begin{table}[htbp]\small
+\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+setting & meaning & default \\ \midrule
+\ui{dogleg °/30} & A survey interval that bends faster than this many degrees per 30 length units is flagged. & 10 \\
+\ui{gap ≥} & A gap between consecutive intervals at least this long is flagged. & 0.001 \\
+\ui{past survey >} & An interval deeper than the deepest survey station by more than this is noted. & 30 \\ \bottomrule
+\end{tabularx}
+\caption{The limits of drillhole QA, in the set's own length units.}\label{tab:qa-dh-limits}
+\end{table}
+
+The default gap of 0.001 reports every gap that is not rounding. Selective sampling leaves real, intended gaps between assayed intervals, and for such a table you will want to raise the limit — to a meter, say — so that only the unexpected ones remain.
+
+\subsection{Reading and using the report}
+
+Under \ui{checks}, the rail lists each check that fired with its count. Click one to show only its rows; click it again to show all. Above the table are two more filters: a list to show one table's findings only, and a box to type part of a hole ID.
+
+Each row gives the table, the row number, the hole, the depths and the detail. Row numbers count data rows, with 1 the first row after the header, so they match what you see in a spreadsheet minus the header line. Errors come first, then warnings, then notes.
+
+Click a row and two things happen: the camera goes to that hole, and the hole's intervals are selected in every interval table of the set. \key{⌘Z} gives the previous selection back. A hole that could not be placed has nowhere to go to, and a note at the foot of the report says so.
+
+The second tab, \ui{values}, is a census of every interval column except the hole ID and the depths: rows, blanks, numbers, values below and above detection (\code{<x}, \code{>x}), codes, and text. A number in the \ui{text} cell of a numeric column is shown in the warning color; hover it for the first offending row and what it holds.
+
+\ui{export TSV} writes every finding — not only the ones shown — under three header lines that name the set, the time and micro's build; the files read and their sizes; and the limits and the dip convention used. It is a report you can file with the estimate.
+
+\begin{tryit}
+The demo's drillholes are clean, so this exercise breaks a copy of them on purpose.
+\begin{enumerate}
+\item In the demo project, right-click the drillhole set in the layers panel and choose \menu{QA report…}. The subtitle reads \emph{12 holes · 0 errors · 0 warnings · 0 notes}, and the rail says \emph{nothing to report}.
+\item Open the \ui{values} tab and find \col{FE}: every row is a number, none blank.
+\item Save the project to a folder (\menu{File>Save project}, in Chrome or Edge; \cref{ch:projects}). Its \file{drillholes} folder now holds \file{demo\_collars.csv}, \file{demo\_survey.csv} and \file{demo\_assay.csv}.
+\item Outside micro, copy the three files and name the copies \file{broken\_collars.csv}, \file{broken\_survey.csv} and \file{broken\_assay.csv}. In a text editor or spreadsheet, make two mistakes: in \file{broken\_assay.csv}, change the \col{FROM} of DH005's interval from 40 to 38, so it overlaps the one above it; in \file{broken\_collars.csv}, delete DH012's row.
+\item Drag the three copies into micro. The open dialog recognizes them as a collar, a survey and an interval table; add them as a second drillhole set beside the demo's.
+\item Right-click the new set and choose \menu{QA report…}. The subtitle now reads \emph{11 holes · 106 errors}. One missing collar has orphaned all of DH012's rows — two survey stations and 103 intervals — and the overlap is a single row among them.
+\item Under \ui{checks}, click \emph{intervals overlapping an earlier one in the same hole}. The table shows one row: \file{broken\_assay.csv}, DH005, 38–45, overlapping the row above. Click it: the camera goes to DH005 and its intervals are selected.
+\end{enumerate}
+A collar row that is present but cannot be placed is reported once, at its own row; a collar that is missing altogether leaves nothing to report it at, so every row of its hole is reported instead. Either way, one fix in the collar table clears them all.
+\end{tryit}
+
+\section{Mesh QA \& volume}\label{sec:qa-mesh}
+
+A wireframe that is going to bound an estimate has to be a solid. Right-click a mesh and choose \menu{Mesh QA / volume…}, or use the command palette. The report answers four questions: is it closed, is it one piece, do its faces agree, and what does it hold.
+
+\shot{qa-mesh}{A box-shaped solid with one triangle missing: its three boundary edges make it not watertight, so the rail gives no volume. The issue row has been clicked once and reads “1 / 3”; each click steps the camera to the next edge.}
+
+\subsection{Topology}
+
+\begin{table}[htbp]\small
+\begin{tabularx}{\linewidth}{@{}llL@{}}\toprule
+issue & severity & meaning \\ \midrule
+boundary edges & error & an edge that belongs to one triangle only — a hole; the mesh is not closed \\
+non-manifold edges & error & an edge shared by three or more triangles — a fin, or two shells touching along a line \\
+a flipped face & warning & two triangles that cross their shared edge in the same direction, so one of them faces the wrong way \\
+zero-area triangles & warning & slivers \\
+duplicate triangles & warning & the same triangle twice \\ \bottomrule
+\end{tabularx}
+\caption{Mesh QA's topology issues.}\label{tab:qa-mesh}
+\end{table}
+
+A mesh is \term{watertight} when it has no boundary and no non-manifold edges and every shell is closed. Its faces are \emph{one way} when no face is flipped. The rail states both, with a tick or a cross.
+
+Click an issue to step the camera through the places where it occurs; the last cell counts them, “2 / 7”. That turns “not watertight” from a verdict into something you can go and look at.
+
+\subsection{Shells and volume}
+
+A mesh file may hold several separate pieces. Each is a \term{shell}, and the table lists them with their triangle count, whether each is closed, its volume, its area and its size along x, y and z. Click a shell to frame it.
+
+Volume is computed for each closed shell, in the coordinates' units cubed. A shell wound inward has a \emph{negative} volume. That is deliberate: it is how a void inside a solid subtracts, and the total on the rail is the signed sum. A total that is negative is shown in the warning color — the whole solid is probably inside-out. A mesh that is not closed has no volume, and the rail says \emph{— (not closed)} instead of offering a number that means nothing.
+
+Type a density in the \ui{density} field and choose its unit in \ui{ρ unit} — t/m³, kg/m³ or lb/ft³ — and the rail and the shell table gain a \emph{tonnes} figure.
+
+\begin{table}[htbp]\small
+\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+setting & meaning & default \\ \midrule
+\ui{weld coincident vertices} & Merge vertices at exactly the same coordinates before checking. & on \\
+\ui{density} & A density; tonnage = volume × density. A decimal comma is accepted. & blank \\
+\ui{ρ unit} & The density's unit. & t/m³ \\ \bottomrule
+\end{tabularx}
+\caption{Mesh QA's options.}\label{tab:qa-mesh-opts}
+\end{table}
+
+\begin{why}
+Many CAD exports write every triangle with three vertices of its own. Such a mesh shares no edge with anything: read literally, it is a pile of loose triangles and every edge is a hole. Welding the coincident vertices first recovers the surface the author meant. The rail reports how many vertices were welded. Untick the option to see the file as it literally is.
+\end{why}
+
+The window ends with the usual results row (\cref{ch:analysis}): \ui{⧉ table} copies the shell table, with each shell's bounding box, for a report or a spreadsheet; \ui{⇥ layer} keeps it as a table layer; \ui{⇥ figure} puts it on the composer page.
+
+Two limits. Self-intersections — faces that cross without sharing an edge — are not checked yet, and the window says so. And a mesh drawn streamed keeps no triangles on the page; the report asks you to \menu{Convert to exact} first (\cref{ch:meshes}).
+
+\begin{tryit}
+\begin{enumerate}
+\item In the demo project, right-click \ui{ore shell} and choose \menu{Mesh QA / volume…}.
+\item Read the rail: \emph{watertight ✓ yes}, \emph{faces ✓ one way}, one shell of 728 triangles, and a volume of about 54.2 million cubic meters.
+\item Type \code{4.2} in \ui{density}. The rail now shows the tonnes the shell would hold at 4.2 t/m³, about 228 million — a quick upper bound to hold against the grade–tonnage curve of the blocks inside it (\cref{ch:geometry,ch:gt}).
+\item Run the same report on \ui{phase 1 — starter pit}. A pit surface is an open sheet: 324 boundary edges all round its rim, \emph{watertight ✗ no}, and no volume.
+\end{enumerate}
+\end{tryit}
+
+\begin{tip}
+A grade shell made by micro is always a closed solid (\cref{ch:blocks}). Running Mesh QA on it with a density is the fastest way to a volume and tonnage above a cutoff as a wireframe sees it.
+\end{tip}
+
+\section{In a routine}\label{sec:qa-routine}
+
+All three reports are routine tools (\cref{ch:routines}). Each writes its findings as a table in the run's folder, and each gives a check its \emph{counts} to judge, so a routine can refuse to go on when the data is not clean (\cref{ch:checks}).
+
+\begin{lstlisting}[language=yaml]
+- tool: "modelqa"
+  with:
+    layer: "deposit.csv"
+  as: "mq"
+- check: "mq.errors = 0"
+  say: "the model has no errors"
+- check: "mq.warnings = 0"
+  level: "warn"
+  say: "nothing to look at in the model"
+
+- tool: "dhqa"
+  with:
+    layer: "demo_assay.csv"    # any interval table of the set
+    doglegMax: 10
+    gapMin: 0.5
+    extrapMax: 30
+  as: "dq"
+- check: "dq.errors = 0"
+
+- tool: "meshqa"
+  with:
+    layer: "ore_shell.obj"
+    weld: true
+  as: "shell"
+- check: "shell.watertight = 1 and shell.boundary = 0"
+  say: "the ore shell is closed"
+\end{lstlisting}
+
+\begin{table}[htbp]\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+tool & values a check can read \\ \midrule
+\code{modelqa} & \code{errors}, \code{warnings}, \code{info} (blocks counted over the findings of each severity) · \code{findings} · \code{blocks} \\
+\code{dhqa} & \code{errors}, \code{warnings}, \code{info} (findings of each severity) · \code{findings} \\
+\code{meshqa} & \code{watertight}, \code{consistent} (1 or 0) · \code{shells} · \code{volume} · \code{area} · \code{triangles} · and each issue's count: \code{boundary}, \code{nonManifold}, \code{flipped}, \code{degenerate}, \code{duplicate} \\ \bottomrule
+\end{tabularx}
+\caption{The values the QA tools give a check. Their settings — a \code{dhqa} step names any interval table of the set, and takes the three limits as \code{doglegMax}, \code{gapMin} and \code{extrapMax} — are in \cref{tool:modelqa,tool:dhqa,tool:meshqa}.}\label{tab:qa-tools}
+\end{table}
+
+The tables they write have these columns:
+
+\begin{itemize}
+\item \code{modelqa}: \code{severity}, \code{check}, \code{column}, \code{count}, \code{note};
+\item \code{dhqa}: \code{severity}, \code{check}, \code{table}, \code{row}, \code{hole}, \code{from}, \code{to}, \code{detail};
+\item \code{meshqa}: one row per shell — \code{shell}, \code{triangles}, \code{closed}, \code{volume}, \code{area}.
+\end{itemize}
+
+The counts differ in one respect. For a model, each severity's count adds up the \emph{blocks} behind its findings — sentinels are a warning, so one finding of 212 sentinel values contributes 212 to \code{warnings} — while for drillholes each finding is one row and counts as one. Either way, zero means clean, which is what a gate usually asks.
+
+A QA table is a table like any other in a run, so a later run can be compared with it: a \code{compare} step on the model QA table shows which findings appeared or disappeared since the baseline (\cref{ch:checks}). Put the QA steps first in a monthly routine. A grade–tonnage curve computed from a model with sentinels in its grade column is wrong, and a routine that checks first never produces it.

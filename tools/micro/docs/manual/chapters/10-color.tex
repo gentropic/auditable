@@ -1,0 +1,264 @@
+\chapter{Color \& styling}\label{ch:color}
+\begin{goals}
+\textbf{In this chapter} you color a layer by any of its columns, set the range of a ramp, turn a grade into classes with breaks you place on its histogram, tidy a category legend, decide how blanks look, and carry a finished look to another layer, model or project.
+\end{goals}
+
+Color is how a model answers a question at a glance: where is the grade, which rock is it in, what did I flag. In micro a color is always \emph{a column seen through a style}. The column can be anything the layer carries — a source column such as \col{FE}, a calculated one (\cref{ch:filter}), a painted one (\cref{ch:picking}). The style says how its values become colors: a continuous ramp, a set of classes, a legend of categories, or a list of rules.
+
+Nothing in this chapter changes your data. A style is display state: it is saved with the project, and it is what the legend of a figure draws (\cref{ch:figures}). A scene (\cref{sec:sections-scenes}) remembers which column each layer is colored by, and because a style is stored against its column, that column's ramp and classes come back with it.
+
+\section{Where color lives}\label{sec:color-where}
+Color has two controls, and they show the same state.
+
+The \ui{color} dropdown, on the second toolbar row, is the quick one. It drives the \emph{active} layer — the one highlighted in the layers panel — and lists what that layer can be colored by: elevation, each numeric column, the category column, \ui{rules}, and every derived column, marked by kind (\code{ƒ} calculated, \code{✎} painted, \code{\%} a fraction-inside column). A calculated column is offered only when it is numeric: a text \code{ƒ} filters and exports, but cannot color (\cref{sec:filter-colorby}). Beside it sit the \ui{min} and \ui{max} boxes that clip the color scale.
+
+\menu{Properties…>style} is the full one. Open it from a layer's right-click menu, from \menu{Data>Layer properties…}, or with \key{⇧P}.\sidekey{⇧P}{properties of the active layer} It asks two things first: a \ui{mode} and a \ui{column}.
+
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+mode & what it does \\ \midrule
+\ui{continuous} & a numeric column (or elevation) through a ramp, optionally cut into classes \\
+\ui{categorized} & a text column as a legend of classes, one color each \\
+\ui{rule-based} & ordered expressions; the first rule a record matches colors it \\
+\ui{painted} & a painted column, in the colors of its palette (offered once the layer has one) \\
+\ui{solid} & one color, nothing to map \\ \bottomrule
+\end{tabularx}
+\end{center}
+
+That list is for block models and drillholes. A point cloud offers \ui{continuous}, \ui{categorized} (its classification) and \ui{rgb} (the colors stored in the file).
+
+\begin{note}
+Style edits apply as you make them. On a very large layer each edit costs a redraw, so the footer of the properties panel has an \ui{auto} checkbox: untick it, make several edits, and press \ui{apply} to push them together. \ui{revert} returns to the style the panel opened with.
+\end{note}
+
+\shot{color-props-style}{The style tab for the demo deposit, colored by \col{FE} with the clip left automatic: mode and column on top, the ramp cut into six classes by five breaks (each row with its count and share), the no-data row, and the histogram that edits them — the waste piled up around 20\,\% Fe, the ore a long, low tail.}
+
+\section{A ramp and its range}\label{sec:color-ramp}
+In \ui{continuous} mode, the \ui{ramp} section picks the palette. There are six.
+
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}llL@{}}\toprule
+ramp & kind & a good use \\ \midrule
+\code{viridis} & sequential & the default; grades, elevation \\
+\code{magma} & sequential & grades on a light background \\
+\code{turbo} & sequential & wide ranges where you want many distinguishable hues \\
+\code{greys} & sequential & a quiet backdrop under colored drillholes \\
+\code{spectral} & diverging & a quantity with a meaningful middle \\
+\code{rdbu} & diverging & differences: white sits exactly in the middle, so a range symmetric about zero centers on it \\ \bottomrule
+\end{tabularx}
+\end{center}
+
+A ramp stretches from the column's lowest value to its highest unless you set a \term{clip}: type a minimum and a maximum in the \ui{clip} row (or in the \ui{min}/\ui{max} boxes on the toolbar — they are the same boxes). Everything at or below the minimum takes the first color, everything at or above the maximum the last. An empty box means automatic.
+
+Clip when a few outliers eat the ramp. In the demo deposit nine blocks in ten are waste between 12 and 35\,\% Fe, and an automatic ramp from 12 to 68 spends nearly half its colors on them. A clip of 40–65 gives the colors to the ore.
+
+Two details make the clip safe to use:
+
+\begin{itemize}
+\item \textbf{The clip belongs to the column.} Set 40–65 on \col{FE}, switch the color to \col{SG}, and \col{SG} gets its own automatic range. Switch back and \col{FE}'s 40–65 returns.
+\item \textbf{The legend says it is clipped.} A clipped end is labeled \code{≤ 40} or \code{≥ 65}, so a reader of your figure knows the darkest color is “40 or less”, not “40”.
+\end{itemize}
+
+A calculated (\code{ƒ}) or stored column ramps the same way. Its clip is typed in the column's own units, like a source column's, and a block where it is blank draws in a dark no-data gray, never in the ramp's lowest color.
+
+\begin{tryit}
+Open the demo project (on the empty screen, \ui{open the demo project}). The deposit arrives colored by \col{FE}.
+\begin{enumerate}
+\item Click the deposit in the layers panel to make it active, then press \key{⇧P} and choose the \ui{style} tab.
+\item In the \ui{clip} row type \code{40} and \code{65}. The waste collapses into one dark color, and the lens shows its hematite core.
+\item Change the ramp to \code{magma}, then to \code{turbo}. The clip stays.
+\item In the \ui{column} dropdown choose \col{SG}. The clip boxes empty: this is another column. Choose \col{FE} again and 40–65 comes back.
+\end{enumerate}
+\end{tryit}
+
+\section{Classes: breaks on the histogram}\label{sec:color-classes}
+A continuous ramp is good for looking. A report wants \term{classes}: below 20, 20 to 40, 40 to 55, and so on, each a flat color with a name in the legend. In micro, classes are a property of the ramp.
+
+Type the breaks into the \ui{breaks} box, separated by commas — \code{20, 40, 55, 60, 65} — and tick \ui{classed}. Five breaks make six classes, labeled \code{< 20}, \code{20 – 40}, \code{40 – 55}, \code{55 – 60}, \code{60 – 65} and \code{≥ 65}. Each class is a row with a color chip you can set, taken from the ramp to begin with.
+
+With breaks typed but \ui{classed} \emph{unticked}, the ramp stays continuous and bends at the breaks: each interval gets an equal share of the palette. Use it to give a narrow ore range more color without making classes.
+
+\begin{figure}[htbp]\centering
+\definecolor{cA}{HTML}{440154}\definecolor{cB}{HTML}{3B528B}\definecolor{cC}{HTML}{21918C}
+\definecolor{cD}{HTML}{5EC962}\definecolor{cE}{HTML}{B8DE29}\definecolor{cF}{HTML}{FDE725}
+\begin{tikzpicture}[x=1.55mm, y=1mm, font=\sffamily\small]
+% value axis 0..70 (% Fe)
+% histogram bars (schematic bimodal grade distribution), 5-unit bins
+\foreach \binx/\binh/\binc in {0/30/cA, 5/36/cA, 10/24/cA, 15/13/cA, 20/8/cB, 25/6/cB, 30/5/cB, 35/7/cB,
+                      40/10/cC, 45/14/cC, 50/19/cC, 55/24/cD, 60/21/cE, 65/11/cF}
+  \fill[\binc!70] (\binx+0.35, 0) rectangle (\binx+4.65, \binh);
+\draw[rule, line width=0.5pt] (0,0) -- (71,0);
+\foreach \tick in {0,10,...,70} { \draw[rule] (\tick,0) -- (\tick,-1.2); \node[text=muted, font=\sffamily\footnotesize, anchor=north] at (\tick,-1.4) {\tick}; }
+\node[text=muted, font=\sffamily\footnotesize, anchor=north] at (35,-6) {FE (\%)};
+% breaks
+\foreach \brk in {20,40,55,60,65} {
+  \draw[amber, line width=0.9pt] (\brk,-0.2) -- (\brk,41);
+  \fill[amber] (\brk,41) circle[radius=1.6pt];
+}
+\node[text=amber, anchor=south, font=\sffamily\footnotesize] at (20,42) {20};
+\node[text=amber, anchor=south, font=\sffamily\footnotesize] at (40,42) {40};
+\node[text=amber, anchor=south, font=\sffamily\footnotesize] at (54.2,42) {55};
+\node[text=amber, anchor=south, font=\sffamily\footnotesize] at (60,42) {60};
+\node[text=amber, anchor=south, font=\sffamily\footnotesize] at (65.8,42) {65};
+\node[text=ink, anchor=west, font=\sffamily\footnotesize, align=left] at (72,34) {breaks —\\drag to move};
+% the class strip
+\begin{scope}[yshift=-17mm]
+\fill[cA] (0,0) rectangle (20,5); \fill[cB] (20,0) rectangle (40,5); \fill[cC] (40,0) rectangle (55,5);
+\fill[cD] (55,0) rectangle (60,5); \fill[cE] (60,0) rectangle (65,5); \fill[cF] (65,0) rectangle (71,5);
+\draw[rule, line width=0.4pt] (0,0) rectangle (71,5);
+\node[text=muted, anchor=north, font=\sffamily\footnotesize] at (10,-0.8) {$<$ 20};
+\node[text=muted, anchor=north, font=\sffamily\footnotesize] at (30,-0.8) {20 – 40};
+\node[text=muted, anchor=north, font=\sffamily\footnotesize] at (47.5,-0.8) {40 – 55};
+\node[text=muted, anchor=north, font=\sffamily\footnotesize] at (57.5,-6) {55 – 60};
+\node[text=muted, anchor=north, font=\sffamily\footnotesize] at (62.5,-0.8) {60 – 65};
+\node[text=muted, anchor=north, font=\sffamily\footnotesize] at (69,-6) {≥ 65};
+\draw[rule] (57.5,-0.6) -- (57.5,-5.6); \draw[rule] (68,-0.6) -- (68.6,-5.6);
+\node[text=ink, anchor=west, font=\sffamily\footnotesize, align=left] at (72,2.5) {classes —\\one color each};
+\end{scope}
+\end{tikzpicture}
+\caption{Five breaks cut a grade into six classes (schematic). A class is its interval: it keeps its color wherever the data's range, the clip, or the layer puts it.}\label{fig:color-classes-diagram}
+\end{figure}
+
+\subsection{The histogram is the editor}
+Typing breaks works on any numeric column. Placing them well needs the distribution, and micro shows it once the column has been \emph{scanned}. If it hasn't, the ramp section offers a button, \ui{scan FE for its histogram + quantiles}; one pass over the table fills it in (\cref{ch:columns} has more on the scan).
+
+Then the histogram under the ramp is live:
+
+\begin{itemize}
+\item \textbf{Drag} a break to move it. The 3D view recolors as you drag, and the class rows update their bounds, counts and shares.
+\item \textbf{Double-click} to add a break. Both halves of the split class keep its color until you change one.
+\item \textbf{Right-click} a break to remove it. The lower class's color stays.
+\item \ui{log} switches the count axis to a log scale. A grade distribution buries its ore tail on a linear axis; this brings it up. micro ticks it for you when one bin towers over the rest.
+\end{itemize}
+
+Next to \ui{log} are shortcuts that make breaks for you. Type a class count (2 to 12, five to begin with) and click \ui{quantiles} for classes holding equal numbers of records, or \ui{equal} for classes of equal width across the ramp's range; \ui{clear} removes every break. When one value dominates — waste at the lowest grade — the quantiles would collapse onto it, so micro takes them from the values above it instead.
+
+Every break edit is one undo step (\key{⌘Z}, or \key{Ctrl}+\key{Z} on Windows and Linux).
+
+\subsection{A class is its interval}
+A class is defined by its bounds, and its color belongs to those bounds. Change the clip, reload the model with a wider range, look at a filtered subset: \code{55 – 60} is still the same green.
+
+It also means two layers can share a legend. Give the drillhole assays the same breaks and colors as the block model (\cref{sec:color-copy} does it in two clicks) and a hole reads against the blocks around it, color for color.
+
+\subsection{Hiding a class}
+Each class row has an eye. A hidden class is not drawn, cannot be picked, and leaves the legend. Hiding everything below 40 is a fast way to see the ore body alone.
+
+\begin{caution}
+A hidden class is a \emph{display} choice. The blocks are still in the model, and grade–tonnage, stats and exports still count them. To restrict an analysis, use the filter (\cref{ch:filter}) or a selection.
+\end{caution}
+
+\begin{tryit}
+On the demo deposit, colored by \col{FE}, in the \ui{style} tab (if you skipped the last exercise: open the demo project, click the deposit, press \key{⇧P}):
+\begin{enumerate}
+\item Empty both \ui{clip} boxes, so the histogram spans every value.
+\item In the \ui{breaks} box type \code{20, 40, 55, 60, 65} and tick \ui{classed}. Six class rows appear.
+\item If the histogram is empty, click the \ui{scan FE…} button and wait for the pass to finish.
+\item Drag the break at 55 slowly to the left. The cut face of the model recolors as you go, and the class rows recount; stop near 50.
+\item Double-click the histogram near 30. \code{20 – 40} splits in two, both halves the same color.
+\item Click the color chip of the new upper class and choose a different color.
+\item Click the eye of \code{< 20}. The poorest waste — 22\,\% of the blocks — disappears from the view and from the legend.
+\item Press \key{⌘Z} until the model is back to five breaks, everything visible.
+\end{enumerate}
+\end{tryit}
+
+\section{Categories and their legend}\label{sec:color-categories}
+\ui{categorized} mode colors by a text column: \col{LITO} in the demo, with HEMATITE, ITABIRITE, CANGA and WASTE. The \ui{column} dropdown picks which column classes the layer; any column can, zone codes stored as numbers included. On a model, changing it re-reads the file once.
+
+Below the column is the class list, also reachable as the \ui{classes} tab. Each entry has an eye, a color chip, a name and a count with its share, which micro fills in by reading the layer once. Lists longer than eight entries get a search box, and \ui{all}, \ui{none} and \ui{invert} act on every eye at once.
+
+The legend is yours to tidy:
+
+\begin{itemize}
+\item \textbf{Recolor}: click the chip.
+\item \textbf{Reorder}: drag the \code{⠿} grip. The order is the order of the figure's legend.
+\item \textbf{Rename}: right-click an entry, \menu{Rename…}. The data keeps its value; the legend shows your label.
+\item \textbf{Merge}: right-click, \menu{Merge into}, and pick another entry. Merged classes share one color and one eye — ITABIRITE and a banded-iron code under one “Iron Fm”, say. \menu{Ungroup} separates them again.
+\item \textbf{Remove}: right-click, \menu{Remove (→ other)}. The values fall into a gray \emph{other} entry; \menu{Split into entries} on \emph{other} brings them back.
+\item \ui{reset legend}, offered once you have edited the legend, returns to the raw values.
+\end{itemize}
+
+\begin{note}
+Renaming and merging here change the \emph{legend}, never the column. A filter still says \code{LITO = "ITABIRITE"}, and an export still writes ITABIRITE. To change the data, derive a new column (\cref{sec:filter-calc}).
+\end{note}
+
+As with grade classes, a hidden category is not drawn, not pickable and not in the legend — and still counted by every analysis.
+
+\shot[0.62\linewidth]{color-categories}{The class list for \col{LITO} on the demo deposit: an eye, a color and a count for each lithology — CANGA 36,495, HEMATITE 11,013, ITABIRITE 129,196 — with WASTE (1,609,916 blocks, 90\,\%) hidden.}
+
+\section{Rules}\label{sec:color-rules}
+Sometimes neither one grade nor one category says what you mean: “high grade \emph{in hematite}”, “anything flagged, whatever its grade”. \ui{rule-based} mode colors by expressions, written in the same language as the filter (\cref{ch:filter}):
+
+\begin{lstlisting}[language=expr]
+FE >= 60 and LITO = "HEMATITE"
+FE >= 55
+LITO = "CANGA"
+\end{lstlisting}
+
+Rules are ordered and \textbf{the first match wins}. A hematite block at 62\,\% takes the first rule's color; one at 57\,\% falls to the second. Whatever matches nothing takes the color of the last row, \ui{everything else}.
+
+Each rule has a name (it is what the legend shows; unnamed, the expression stands in), a color, an eye, and a count. \ui{+ add rule} appends one, and the \code{⠿} grip drags a rule to a new priority. The \code{⋮} button on a row holds \menu{Duplicate} and \menu{Remove}.
+
+Rules are evaluated in one sweep over the table. Colors, names and eyes change instantly. Editing an expression, or adding, removing or reordering a rule, changes what the sweep means, so the \ui{run rules} button shows a dot until the sweep has run again. With \ui{auto} on, it runs on its own. Rules are saved with the project and swept again when it opens.
+
+\begin{tip}
+Rules are the right tool when the legend should read as sentences. If what you want is a column you can also filter, tabulate and export, write the same logic once as a calculated column that returns a class code — \code{if(LITO = "HEMATITE", 2, if(FE >= 55, 1, 0))} — and color it with breaks between the codes (\cref{sec:filter-calc}). The column must return a number to color; a text result filters and exports, but is not offered in the \ui{color} list.
+\end{tip}
+
+\section{Blanks: the no-data color}\label{sec:color-nodata}
+A blank grade is \emph{unestimated}. It is not zero and it is not the lowest class, so micro never draws it as either. Blanks draw in their own color, gray by default.
+
+The \ui{no data} row of the style tab sets that color, or hides blanks with its \ui{hide} checkbox. Once the column has been scanned the row also says how many there are — \code{12,408 blank}, say (the demo deposit reads \code{0 blank}) — and that count is worth a look before you trust a mean. If any are visible, the figure legend lists a \emph{no data} entry.
+
+A value that only \emph{means} blank is a different matter. A \code{-99} written by an estimator is a number until you say otherwise, and it will drag the ramp and every statistic down. Declare it once: in \menu{Properties…>columns}, right-click the column and choose \menu{Detection limits \& blanks>Values that mean blank…}. That works for CSV and drillhole tables; Datamine and Parquet files carry real nulls of their own. \Cref{ch:columns} covers blanks and detection limits in full.
+
+\section{Opacity, edges, and how things are drawn}\label{sec:color-draw}
+A few display settings are not about color, yet they decide how well it reads.
+
+\begin{description}
+\item[Opacity] Right-click a layer, \menu{Opacity}, and pick 100, 75, 50 or 25\,\%; the style tab has a slider from 5 to 100\,\%. It works on block models, drillholes and meshes, and a group's menu sets it for all its members. micro draws transparency as a fine dither, so a see-through shell never hides what is behind it in the wrong order.
+\item[Block edges] \key{⇧B}, or \menu{View>Block edges}, outlines every block — and every cut block on a section. It is how you check sub-blocking and lattice alignment. A layer can override the global switch: right-click, \menu{Block edges}, and choose \ui{auto} (follow \ui{View}), \ui{on} or \ui{off}.
+\item[Boxes or points] \menu{View>Blocks as boxes} draws true block faces; \menu{View>Blocks as points} draws each block as a splat, which is lighter on a slow machine.
+\item[Point size] A layer drawn as points — a cloud, a model opened as points — has its own \menu{Point size} (×1, ×2, ×3, ×5, ×8), a multiple of the global \ui{pt px} slider.
+\item[Stick radius] Drillholes draw as sticks; \menu{Stick radius…} or the \ui{stick radius (m)} row sets how fat (\cref{ch:drillholes}).
+\item[Tint] A mesh has no column to color by here; \menu{Tint…} gives it one color from a short geological palette (Grey, Sand, Rust, Green, Blue, Violet, Brown) or a custom hex value (\cref{ch:meshes}).
+\end{description}
+
+The \ui{EDL} checkbox and its \ui{strength} slider control the shading that makes a point cloud read as a surface, and \ui{budget} sets how many elements are drawn per frame: lower is snappier while you move, and the picture converges when you stop.
+
+\section{Reusing a look}\label{sec:color-copy}
+Once the classes, colors and no-data choices are right on one layer, you should not have to build them again. Right-click the layer and open \menu{Style}:
+
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+\menu{Copy style} & takes the layer's whole look. The copy also goes to the system clipboard, so it survives into another project or another tab. \\
+\menu{Paste style} & applies it to the layer you right-clicked. \\
+\menu{Save style…} & writes it as a \file{.microstyle.json} file. \\
+\menu{Load style…} & applies such a file. \\ \bottomrule
+\end{tabularx}
+\end{center}
+
+Everything is matched \textbf{by column name}. The \col{FE} classes land on \col{FE} wherever \col{FE} sits in the other file; a \col{LITO} legend lands on a column called \col{LITO}. The status line then says what applied and what had no match, so a silent half-paste cannot happen.
+
+Three uses come up again and again: the drillholes in the model's grade classes; next month's model in this month's legend; a company standard kept as one \file{.microstyle.json} that every project loads. \menu{Change file…}, which points a layer at a new file, keeps the look by column name the same way.
+
+\begin{tryit}
+With the demo deposit classed as in the last exercise (if you skipped it, type \code{20, 40, 55, 60, 65} in the \ui{breaks} box and tick \ui{classed}):
+\begin{enumerate}
+\item Right-click the deposit, \menu{Style>Copy style}.
+\item In the layers panel, open the drillhole set and right-click its assay layer. Choose \menu{Style>Paste style}.
+\item Read the status line: \emph{style from deposit.csv → holes · demo\_assay.csv: FE, colour by FE}. The sticks now wear the model's classes, and where a hole crosses the cut face the colors agree — or show you where they don't. (In the demo they agree: the holes were sampled from the same rock as the blocks.)
+\end{enumerate}
+\end{tryit}
+
+\section{The legend, the background and the theme}\label{sec:color-legend}
+The legend draws what the model draws. Classes appear as swatches in their colors; a continuous ramp as its bar, with clipped ends marked; categories under their labels, hidden ones left out; rules under their names. It is titled with the column's name, and two legends on the same column say which layer each belongs to.
+
+Turn it on in \menu{View>Decorations \& figure…}, where each colored layer has its own checkbox under \ui{legends}, next to the scale bar, north arrow and title. \Cref{ch:figures} covers that panel. You never draw a legend by hand, so it cannot disagree with the picture.
+
+The same panel sets the \ui{background}: \ui{match the theme}, \ui{basalt}, \ui{black}, \ui{white}, \ui{paper}, or a custom color. A white or paper background is what a report page wants, and the decorations switch to dark ink on it. Check your ramp against the background you will publish on: \code{viridis} ends in a yellow that fades on white, where \code{magma} or \code{turbo} hold.
+
+The interface itself has a light and a dark \term{theme}, under \menu{View>Theme}, which can also follow the system or be a custom theme you edit. The theme is about the panels and menus; with the background on \ui{match the theme}, the 3D view follows it.
+
+\begin{why}
+The clip, the classes, the colors and the no-data choice are all stored against the \emph{column}, not against the layer's current state. That is why switching the color dropdown back and forth loses nothing, why a pasted style can find its target by name, and why a figure made in March and one made in June use the same green for 55–60\,\% Fe without anyone remembering to make them match.
+\end{why}

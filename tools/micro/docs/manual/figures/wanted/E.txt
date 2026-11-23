@@ -1,0 +1,33 @@
+# group E — Part IV second half (joins, geometry, QA, structure) and Part V (figures, composer, atlas)
+# name | the state to show, precise enough to script | full / window / region
+
+# ── 20-joins ──
+joins-reconcile | two versions of one block model loaded (the demo's deposit.csv, and a copy whose FE is shifted low at the north end and high at the south so the mean delta is ~0); Properties → join on the newer one, right = the older, Reconcile… → Δ on FE; the Δ layer shown alone in plan, its ramp range tightened to about ±2×mean|Δ|; the properties panel open on the join tab so the banner and buttons show | full
+
+# ── 21-geometry ──
+geometry-dialog | the demo project; right-click "ore shell" → Select by this solid…; do = fraction column, model = deposit.csv, probes 3 × 3 × 2 (the tally reading "= 18 probes/block · … m blocklings"), topology note "closed solid — inside / outside apply" visible; not yet run | region (the "select by solid" dialog box with a margin of the view behind it)
+
+# ── 22-qa ──
+qa-model | a block model with problems (the demo's deposit.csv with a few FE values set to -99, one duplicated block, one SG of 0 and a few blocks removed mid-column); right-click → Model QA…; the report finished, findings and the top of the column census visible | window
+qa-dh | a deliberately broken copy of the demo set (the ch22 exercise: broken_collars/survey/assay.csv, DH005's 40–45 m interval starting at 38 — an overlap — and DH012's collar row deleted — orphan surveys and intervals); the set's menu → QA report…; findings tab, the checks listed on the rail | window
+qa-mesh | a closed box mesh with one triangle removed; right-click → Mesh QA / volume…; rail reading "watertight ✗ no", "volume — (not closed)"; the boundary-edges issue row clicked once ("1 / n") | window
+
+# ── 23-structure ──
+structure-window | a pit-wall / outcrop mesh (the demo's "phase 3 — final pit" surface, deposit hidden, section off); Structural analysis…; three sets (J1, J2, J3) each with two or three painted faces, plane discs on, the wand armed (▸ paint showing "■ stop (Esc)"), the planes table with at least one row flagged "⚠ elongated"; the 3D view behind showing the painted faces and discs | full
+structure-stereonet | the same mesh and sets; ◎ stereonet open, density on, great circles off; each set's mean circle and α95 cone visible, the statistics lines beneath; three poles lasso-selected so the "3 planes selected → [set] move clear" row shows | window
+
+# ── 24-figures ──
+figures-panel | the demo project, plan-ish oblique view; View → Decorations & figure… open; Scale bar, North arrow and Title ("Demo deposit — FE") on; the deposit.csv legend ticked; background = white | full
+figures-export | the PNG that Export figure (PNG) writes at 2× for this state: the demo project, orthographic E–W section view (key l), white background, scale bar, title "Demo deposit — FE, E–W section", NO north arrow (a vertical section looking north has none; micro's overlay arrow mis-points there — reported), deposit.csv coloured by FE in classes with its legend on | region (the exported image itself, not the micro window)
+
+# ── 25-composer ──
+compo-window | the demo project; File → Composer…; an A4 landscape figure with a plan 3D view (orthographic), its legend, scale bar and north arrow, a caption beneath, and the grade–tonnage chart and table at the right; the view frame selected so its inspector (id, position, size, fit, coords, scale) and the frame list show | window
+compo-fields | the plan figure of compo-window, the view cut to the bench at 640 RL ± 5 (plan slab) and filtered FE > 55; the caption text frame selected, its text "**Figure {fig}.** Bench {section}: {count:deposit.csv:,} blocks above 55 % Fe, mean {mean:FE:.1f} % Fe." resolved on the page after Refresh fields; the dashed refers-to link to the view visible; the inspector with its "insert field…" menu (it can't be captured open) | window
+compo-vector | the demo project at its own E–W section (behind, through the lens) with the drillholes set to follow the section (on the magma palette); key l, orthographic, the camera lowered 55 m onto the lens; in the composer a view frame with Vector section on, coords = ticks, scale locked at 1 : 2000; page zoom 150% so the block outlines, two drillholes as interval bands, the ore shell's cut line and the coordinate ticks read | region (the page area of the composer, cropped to the view frame and a little margin)
+compo-keyplan | a figure with one E–W section view (with a "**Figure {fig}.** {section}" caption) and + key plan added; the key plan at the bottom right showing the whole model in plan with the section's line, slab band and "Fig 1 · … N" label | region (the composer page)
+compo-multiples | a plan view frame → Small multiples… → vary = section level, values "560, 600, 640, 680" (levels inside the demo deposit), axis z, thickness 10, per row 2 → Make; the 2 × 2 grid with a {section} caption under each | region (the composer page)
+compo-titleblock | properties… filled (company "Example Mining", project "Demo deposit", client "—", drawing "DD-001", revision "A", prepared "AB", checked "CD"); + title block; page zoom 200% on the title block | region (the title block group with a small margin)
+compo-retarget | a figure made from deposit.csv (a view coloured by FE, a resource table grouped by LITO, a caption with {mean:FE}); a second block model loaded whose domain column is named ZONE instead of LITO; ⇄ other data… open, the layer matched to the second model and the LITO → ZONE column row showing | window (the "use with other data" window)
+
+# ── 26-atlas ──
+atlas-pages | the bench-plan atlas of ch. 26's tryit run on the demo project (topography hidden; figure "bench plan": plan view, legend, scale, caption "**Figure {fig}.** Bench ${level} m RL — {count:deposit.csv:,} blocks. Page {page} of {pages}."), the levels atlas… offers (440 … 869, thickness 68.6); pages 1, 3 and 6 of atlas/bench_plan.pdf rasterised and set side by side | region (three PDF pages as one image)

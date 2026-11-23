@@ -1,0 +1,313 @@
+\chapter{Sections \& views}\label{ch:sections}
+\begin{goals}
+\textbf{In this chapter} you cut the scene with a section — a plan, a vertical section, a plane with a dip, a line dragged across the model — walk it through the deposit, decide layer by layer what it cuts, and print a series of sections. Then you show one model twice, pull layers apart, exaggerate the vertical, and save where you were looking.
+\end{goals}
+
+A block model is a solid, and the interesting part is inside. A \term{section} opens it: a live cut that hides what you are not looking at and shows the cut face in the model's own colors. Everything hidden by a section is neither drawn nor pickable, so what you click is what you see.
+
+The chapter has two halves. The first is about sections: turning one on (\cref{sec:sections-on}), what it keeps (\cref{sec:sections-slab}), walking it through the deposit (\cref{sec:sections-walk}), cutting at any angle (\cref{sec:sections-knife}), deciding layer by layer what it cuts (\cref{sec:sections-layers}), and printing a series (\cref{sec:sections-series}). The second, \cref{sec:sections-arrange}, is about arranging the picture: a second view of the same model, layers pulled apart, the vertical stretched, and bookmarks and scenes to come back to. None of it touches the data.
+
+\section{Turning a section on}\label{sec:sections-on}
+The \ui{section} dropdown is on the right of the second toolbar row. Its choices:
+
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+\ui{off} & no section \\
+\ui{plan} & a horizontal slice — a bench \\
+\ui{N–S} & a vertical section running north–south (it faces east) \\
+\ui{E–W} & a vertical section running east–west (it faces north) \\
+\ui{knife} & drag a line across the view; the vertical section through it (\cref{sec:sections-knife}) \\
+\ui{custom} & type the plane's dip direction and dip \\ \bottomrule
+\end{tabularx}
+\end{center}
+
+\key{x} switches the section off and back on, keeping its orientation and position; so does the section button on the toolbar.\sidekey{x}{section on / off} The demo project opens with an E–W section already cutting the deposit through the ore lens, set to \ui{behind} so the half beyond the plane stands open, with a half-thickness of 10\,m waiting for a slab, and with its drillholes left uncut.
+
+When a section is on, its controls appear beside the dropdown:
+
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+control & meaning & starts at \\ \midrule
+dip direction, dip & \ui{custom} only: the plane's attitude, in degrees & 90, 90 \\
+\ui{slab} / \ui{front} / \ui{behind} & what the section keeps (\cref{sec:sections-slab}) & \ui{slab} \\
+the slider & the section's position across the data & the middle \\
+the number & the slab's \emph{half}-thickness, in meters & 5 (10 in the demo) \\
+\ui{plane} & outline the cut plane in the view & off \\
+\ui{follow} & the camera moves with the section as you scrub & off \\
+\ui{2D} & face the section, orthographic, rotation locked & off \\ \bottomrule
+\end{tabularx}
+\end{center}
+
+\shot{sections-bar}{The section controls on the second toolbar row: an E–W \ui{slab} of ± 5\,m on the demo deposit, faced with \key{l}. The ore shell's trace rings the lens on the cut face, and the uncut drillholes rise out of it to their collars.}
+
+\section{Slab, front, behind}\label{sec:sections-slab}
+A section is a plane with a position. What it keeps is your choice.
+
+A \term{slab} keeps a band around the plane: the number beside the slider is the half-thickness, so \code{5} keeps 5\,m on each side, a 10\,m slab. This is the working section — thin enough to read as a drawing, thick enough to catch the drillholes near it.
+
+\ui{front} and \ui{behind} keep a half-space instead: everything on one side of the plane, cut clean at the plane. Use them for a block diagram — the deposit sliced open, the far half standing.
+
+\begin{figure}[htbp]\centering
+\begin{tikzpicture}[font=\sffamily\small, x=1mm, y=1mm]
+% three plan-view panels of the same model, each with the section plane
+\foreach \k/\name in {0/slab, 1/front, 2/behind} {
+  \begin{scope}[xshift=\k*46mm]
+    % the model outline
+    \draw[rule, line width=0.5pt, fill=paper] (0,0) rectangle (38,26);
+    % kept region
+    \ifnum\k=0 \fill[ambersoft] (0,10) rectangle (38,16); \fi
+    \ifnum\k=1 \fill[ambersoft] (0,13) rectangle (38,26); \fi
+    \ifnum\k=2 \fill[ambersoft] (0,0) rectangle (38,13); \fi
+    \draw[rule, line width=0.5pt] (0,0) rectangle (38,26);
+    % an ore lens for context
+    \draw[muted, line width=0.4pt, dashed] (19,13) ellipse[x radius=11, y radius=7];
+    % the plane
+    \draw[amber, line width=1pt] (-3,13) -- (41,13);
+    % the normal
+    \draw[amber, line width=0.6pt, -{Stealth[length=1.6mm]}] (33,13) -- (33,19);
+    \node[text=ink, anchor=south, font=\sffamily\bfseries\small] at (19,28) {\name};
+  \end{scope}
+}
+% annotations on the slab panel
+\draw[muted, line width=0.4pt, {Stealth[length=1.2mm]}-{Stealth[length=1.2mm]}] (5,13) -- (5,16);
+\node[text=muted, anchor=west, font=\sffamily\footnotesize] at (5.6,18.2) {half};
+\node[text=amber, anchor=north west, font=\sffamily\footnotesize] at (-3,-2) {the plane, seen from above};
+\node[text=muted, anchor=north west, font=\sffamily\footnotesize] at (46,-2) {the side the arrow points to};
+\node[text=muted, anchor=north west, font=\sffamily\footnotesize] at (92,-2) {the other side};
+\end{tikzpicture}
+\caption{What a section keeps, drawn in plan for an E–W section. The amber line is the plane and the arrow its normal. A slab keeps ± the half-thickness around the plane; \ui{front} keeps the side the normal points to, \ui{behind} the other.}\label{fig:sections-slab-diagram}
+\end{figure}
+
+\subsection{A true cut}
+On a block model the cut is exact. Each block the plane crosses is clipped against the slab's faces, so the cut paints a continuous wall in the block's color; micro does not drop or keep whole blocks by their centroids, which would leave a ragged staircase. Drillhole sticks are cut the same way.
+
+The wall is part of the model: click it and you pick the block behind it (\cref{ch:picking}). With block edges on (\key{⇧B}), each cut block is outlined on the wall.
+
+\subsection{Meshes draw their trace}
+A sectioned mesh does not try to hide the cut face. It draws its \term{trace}: the line where the plane crosses it, laid onto the section like linework on a drafted section. A closed ore shell becomes a ring around the grade it encloses; a topography surface becomes a thin line across the top. The trace's width follows the slab's.
+
+In the demo, switch the section to \ui{slab}: the orange ring on the cut face is the ore shell's trace.
+
+\section{Walking a section through the deposit}\label{sec:sections-walk}
+Reviewing a model means looking at every section, not one. Four controls do the walking.
+
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+\key{,} \key{.} & step back / forward by one slab thickness — consecutive slices with no gap and no overlap \\
+\key{Ctrl}+wheel & scrub the position by half a slab per notch, finer than the keys (\key{⌘}+wheel on macOS) \\
+\key{Alt}+wheel & make the slab thicker (wheel up) or thinner, by about 15\,\% per notch, down to a half-thickness of 0.5\,m; a slab only — \ui{front} and \ui{behind} have no thickness \\
+the slider & drag to any position across the data \\ \bottomrule
+\end{tabularx}
+\end{center}
+
+\key{l} turns the camera to face the section square-on, and \key{⇧L} faces it from behind.\sidekey{l}{face the section} Any of the view keys still work with a section on: \key{d} for plan, \key{n} \key{s} \key{e} \key{w} to look level in a compass direction, \key{o} for orthographic.
+
+Two checkboxes change how the walk feels:
+
+\begin{description}
+\item[\ui{follow}] The camera rides along with the section, so the cut stays in the same place on screen while the deposit moves through it. Without it, the camera stays put and the cut recedes or approaches. \menu{Tools>Settings…} can make \ui{follow} the default.
+\item[\ui{2D}] Faces the section, switches to orthographic, and locks rotation: a drag pans instead of orbiting, and the view reads like a paper section. This is the mode for section-by-section interpretation and for measuring off the screen. Untick it to orbit again.
+\end{description}
+
+\begin{tryit}
+Open the demo project. The deposit is already cut E–W, on \ui{behind}.
+\begin{enumerate}
+\item Change \ui{behind} to \ui{slab}. A 20\,m slice of the deposit remains: the demo's half-thickness is 10\,m.
+\item Press \key{l} to face the section.
+\item Hold \key{Ctrl} and roll the wheel. The section scrubs through the deposit, and the ore shell's ring grows and shrinks with the lens.
+\item Press \key{.} five times. Each press moves exactly one slab.
+\item Hold \key{Alt} and roll the wheel up until the status line reads a half-thickness near 25\,m. The slice thickens.
+\item In the section dropdown choose \ui{plan}, then scrub with \key{Ctrl}+wheel: you are stepping through benches.
+\item Press \key{d} to look straight down at them.
+\item Change \ui{slab} to \ui{front}, orbit to look at the model from the side, and scrub again: a block diagram, opening and closing.
+\item Press \key{x} to switch the section off, and \key{x} again to get it back as it was.
+\end{enumerate}
+\end{tryit}
+
+\section{The knife, and a plane with a dip}\label{sec:sections-knife}
+The presets follow the grid. Deposits don't. Two modes cut at any angle.
+
+\textbf{The knife.} Press \key{k} (or \key{c}, for \emph{cut}), or click the scissors on the toolbar, then drag a line across the model. You get the vertical section through that line.\sidekey{k}{knife: drag a line} Hold \key{⇧} while dragging to snap the line's direction to 15° steps, and \key{⇧}+\key{⌥} for 5°. \key{Esc} cancels. The knife is the fast way to cut along a drill fence or across strike: look down in plan (\key{d}), then draw the line where you want the section.
+
+\textbf{Custom.} Choose \ui{custom} and type the plane's \emph{dip direction} and \emph{dip} into the two boxes that appear. Dip 90 is a vertical section; dip 0 is a plan; anything between is an inclined plane — along a vein's footwall, perpendicular to a plunge. The slab, scrub and step controls work as before, moving the plane along its normal.
+
+\begin{tip}
+The right end of the status line shows where the camera is looking as \emph{plunge → trend}. After \key{l} on a custom section, that readout is the plane's normal — a quick check that you typed the attitude you meant.
+\end{tip}
+
+\section{What a section cuts, layer by layer}\label{sec:sections-layers}
+By default the section cuts every layer the same way. Often that is wrong: you want a thin slice of the model with the whole topography over it, or the drillholes near the section rather than only the pieces of them inside a 10\,m slab.
+
+Right-click a layer and open \menu{Cut by sections}:
+
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+choice & the layer is… \\ \midrule
+\ui{follow the section} & cut as the section bar says (the default) \\
+\ui{follow, with its own slab…} & cut around the same plane, moving with it, but with its own ± thickness in meters \\
+\ui{keep front only} & split at the plane, the front half kept — whatever the bar says \\
+\ui{keep behind only} & the other half \\
+\ui{keep holes that cross the slab, whole} & drillholes only: a hole whose path crosses the slab is drawn from collar to end of hole; the others are hidden \\
+\ui{don't cut} & left whole \\ \bottomrule
+\end{tabularx}
+\end{center}
+
+The menu item itself reports the setting — \emph{Cut by sections (± 50 m)}, \emph{(off)}, \emph{(whole holes)} — so you can read a layer's mode without opening it. The modes are saved with the project; a bookmark or scene records the section itself, not these per-layer modes.
+
+Three combinations cover most work:
+
+\begin{itemize}
+\item \textbf{A thin model, thick holes.} Leave the model on the section's 5\,m slab; give the drillholes \ui{follow, with its own slab…} at ± 25\,m. The section shows the blocks at the plane and every hole within 25\,m of it.
+\item \textbf{Whole holes.} On the drillholes choose \ui{keep holes that cross the slab, whole}. Holes that intersect the slab appear complete, so you see what each hole found on the way to the cut and beyond it, and none are chopped into fragments; holes that never reach the slab are hidden. A further entry, \ui{holes test their own slab…}, lets the crossing test use a different thickness than the section's.
+\item \textbf{Context that stays.} Set the topography to \ui{don't cut} to keep the whole surface over a sectioned model. With the model on \ui{keep behind only} you have the classic cutaway.
+\end{itemize}
+
+The demo shows why. Its holes are drilled north in fans from collars south of the lens, so the E–W section it opens on is crossed by eight of them — the MERIDIAN holes, two from each fan. PIONEER's four scout holes stopped at 150\,m, short of the section, and drop out of the picture.
+
+\shot{sections-whole-holes}{The demo deposit on its own E–W section, a ± 5\,m slab, seen obliquely from the collars' side, with the drillholes set to \ui{keep holes that cross the slab, whole}. Each of the four drill lines shows its MERIDIAN holes complete, from the collar on the topography down through the cut face (the two holes of a fan nearly overlap from here); the short PIONEER holes, which never reach the section, are hidden.}
+
+\begin{tryit}
+In the demo project (it opens with the holes on \ui{don't cut}):
+\begin{enumerate}
+\item Change \ui{behind} to \ui{slab}, and set the number to \code{5}.
+\item Right-click the \ui{holes} layer, \menu{Cut by sections>keep holes that cross the slab, whole}. The menu item now reads \emph{Cut by sections (whole holes)}.
+\item Press \key{⇧L} to face the section from the south, then orbit a little. Eight holes remain, complete; the four short ones have gone.
+\item Set the holes back to \ui{don't cut}.
+\end{enumerate}
+\end{tryit}
+
+\section{A series of sections}\label{sec:sections-series}
+A model review ends with a pack of sections at a fixed spacing. \menu{View>Section series…} makes it from the section you have on.
+
+Set up one section the way every sheet should look — orientation, slab thickness, colors, legend, the camera facing it — and open the window. It asks for:
+
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+setting & meaning & starts at \\ \midrule
+\ui{from}, \ui{to} & the first and last positions, in world units along the section's normal (a northing for an E–W section, an elevation for a plan) & the data's extent, inset by half a slab \\
+\ui{every} & the spacing between sections & about a tenth of the extent, never less than one slab \\
+\ui{resolution} & \ui{1× (screen)} or \ui{2×} & 1× \\ \bottomrule
+\end{tabularx}
+\end{center}
+
+A line under the fields counts the sections before you commit. \ui{Render} then moves the section to each position, moves the camera by the same amount so every sheet is framed alike, waits for the picture to converge, and captures it with the decorations on and a title naming the position (\emph{E–W section 7765424 ± 5} — the northing and the half-thickness). The button becomes \ui{Cancel} while it runs.
+
+The result is one \file{.zip}: a PNG per section, numbered in order, and an \file{index.html} that lists them and prints one per page. When it finishes, your section and camera are back where they were.
+
+\begin{caution}
+A series steps a \ui{slab}. With the section on \ui{front} or \ui{behind} the window says so and renders nothing. The limit is 500 sections; for more, use a larger step.
+\end{caution}
+
+For sections laid out on a page with a title block and a scale, the composer's atlas does the same job at print quality (\cref{ch:atlas}); as a routine step it is in \cref{ch:routines}.
+
+\section{Arranging the picture}\label{sec:sections-arrange}
+The rest of the chapter changes how the scene is laid out, never what it contains. A \emph{view} shows one model a second time with its own look (\cref{sec:sections-views}); an \emph{offset} or an \emph{exploded} group pulls layers apart (\cref{sec:sections-explode}); \emph{vertical exaggeration} stretches everything together (\cref{sec:sections-zexag}); and \emph{bookmarks} and \emph{scenes} take you back to a picture you have made (\cref{sec:sections-scenes}). Picks, measurements, analyses and exports keep reading the true coordinates throughout.
+
+\subsection{One model, shown twice: views}\label{sec:sections-views}
+To compare iron with density, or two filters of the same model, you do not open the file twice. Right-click a block model, a drillhole interval layer or a point cloud and choose \menu{New view of this layer}.
+
+A \term{view} is a second layer that draws the \emph{same data}. The file is read once and the graphics card holds the model once. In the layers panel the view sits indented under its model with a \code{⧉} mark, named for what it shows.
+
+\begin{figure}[htbp]\centering
+\begin{tikzpicture}[font=\sffamily\small, node distance=6mm,
+  box/.style={draw=rule, fill=paper, rounded corners=1.5pt, inner xsep=3mm, inner ysep=2mm, align=left, text=ink},
+  own/.style={box, fill=ambersoft!60}]
+\node[box, fill=tint, text width=38mm] (file) {\textbf{deposit.csv}\\[1pt]\footnotesize\color{muted} the file, read once\\every column: stored, ƒ, painted\\the selection · the provenance};
+\node[own, right=18mm of file, yshift=11mm, text width=44mm] (m) {\textbf{the model}\\[1pt]\footnotesize\color{muted} color by FE · its filter · its classes};
+\node[own, right=18mm of file, yshift=-11mm, text width=44mm] (v) {\textbf{⧉ a view}\\[1pt]\footnotesize\color{muted} color by SG · its own filter · offset};
+\draw[amber, line width=0.7pt, -{Stealth[length=1.8mm]}] (file.east) -- ++(7mm,0) |- (m.west);
+\draw[amber, line width=0.7pt, -{Stealth[length=1.8mm]}] (file.east) -- ++(7mm,0) |- (v.west);
+\node[text=muted, font=\sffamily\footnotesize, anchor=north west] at ([yshift=-2mm]file.south west) {shared};
+\node[text=muted, font=\sffamily\footnotesize, anchor=north west] at ([yshift=-2mm]v.south west) {each one's own};
+\end{tikzpicture}
+\caption{A view shares the data and owns its look.}\label{fig:sections-views-diagram}
+\end{figure}
+
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}LL@{}}\toprule
+a view's own & shared with its model \\ \midrule
+color-by, ramp, clip, classes and hidden classes; its category column and legend; filter; opacity; block edges; visibility; where it is drawn &
+the file; every column — stored, calculated, painted; the selection; the provenance \\ \bottomrule
+\end{tabularx}
+\end{center}
+
+Because the columns are shared, a column you paint through a view lands on the model, and every view colored by it shows the stroke. Selecting through a view selects the model's records.
+
+\subsubsection{Beside its model}
+Two views in the same place hide each other. \menu{New view beside it} creates the view and places it just east of the model and its other views, in one step. For an existing view, \menu{Properties…>style} has an \ui{offset} row (dx, dy, dz in world units), a \ui{beside its model} button, and \ui{on its model} to put it back.
+
+The move is for display only. The record panel, exports and analyses read the true coordinates. Picking, measuring and lassoing work where the view is drawn, and the section cuts it there — so an E–W section through the model also cuts the view beside it, at the matching place.
+
+\subsubsection{What a view cannot do}
+Reload, reinterpret, \menu{Store as Parquet…} and the column operations act on the file, so they live on the model; a view's menu begins with \menu{View of “…” — select it} to take you there. A view can class by any text column of its own in \ui{categorized} mode without disturbing its model; past 255 different values, the rest share one gray class.
+
+Removing a view asks nothing. Removing a model asks first and names its views, which go with it. In a project a view is saved as display settings that name its model, never as a second copy of the file, and if the model re-reads its file its views follow.
+
+\begin{tryit}
+In the demo project:
+\begin{enumerate}
+\item Right-click the deposit and choose \menu{New view beside it}. A second deposit appears to the east, with a \code{⧉} row under the first in the layers panel.
+\item Make the view active and set the \ui{color} dropdown to \col{SG}. The original stays on \col{FE}.
+\item Scrub the section with \key{Ctrl}+wheel. Both are cut together: grade on the left, density on the right, the same slice.
+\item Click a block on the view. The record panel shows its true coordinates and notes that the layer is drawn displaced.
+\item Right-click the view, \menu{Remove view}.
+\end{enumerate}
+\end{tryit}
+
+\subsection{Pulling layers apart: offsets and exploded views}\label{sec:sections-explode}
+The offset is not only for views. Any layer's \menu{Properties…>style} has an \ui{offset} row and, once it is moved, a \ui{home} button. Pull one wireframe revision aside next to another, or lift the topography off the model to see under it.
+
+For a whole group, right-click it and choose \menu{Explode…} (offered when the group has at least two layers). A small window has two controls:
+
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+\ui{along} & the direction: \ui{up (z)}, \ui{east (x)} or \ui{north (y)} \\
+\ui{gap} & a slider; the readout is the distance between neighbors, in meters \\ \bottomrule
+\end{tabularx}
+\end{center}
+
+The layers spread in list order: the bottom of the list stays, and each one above it moves a further gap, so the stack on screen reads like the list. \ui{home} puts everything back. In the demo, show all three members of \emph{mining phases} (phases 2 and 3 start hidden), then explode the group upward: the three pit shells lift apart so each can be seen whole.
+
+\begin{caution}
+Offsets are display only, and micro keeps saying so. Filters, selections, grade–tonnage, swaths, exports and joins read the true coordinates. A pick on a moved layer shows the true record and says \emph{drawn displaced}; a measurement is drawn where you click but reads true positions, and its readout says that too. A figure with displaced layers carries a footnote, because the distances between them are not real.
+\end{caution}
+
+\subsection{Vertical exaggeration}\label{sec:sections-zexag}
+Flat-lying deposits and gentle topography disappear at true scale. The \ui{Z×} box on the second toolbar row stretches the whole scene vertically by the factor you type (0.1 to 50); \menu{View>Vertical exaggeration} offers 1×, 2×, 3×, 5×, 10× and 20×.
+
+It is a property of the \emph{view}, not of a layer. Every layer stretches together and stays registered, and nothing is measured in the stretched space: picking, measuring and section positions all stay in true coordinates. The factor travels with bookmarks and scenes.
+
+\begin{note}
+A figure made with vertical exaggeration should say so. Put the factor in the title or a caption (\cref{ch:figures}); a scale bar alone describes the horizontal.
+\end{note}
+
+\subsection{Bookmarks and scenes}\label{sec:sections-scenes}
+micro saves where you were looking in two ways, for two purposes.
+
+A \term{bookmark} is a \emph{viewpoint}: the camera and the section, nothing else. It is the navigation aid — the plan view at the 780 bench, the long section through the lens. Make one with \menu{View>Bookmarks>Save bookmark…}; the demo project comes with one, \emph{Ore lens — E–W section}.
+
+A \term{scene} is the \emph{working state}: the camera and section, plus each layer's visibility, color-by and filter. Applying one puts the whole picture back. Make one with \menu{View>Scenes>Save scene…}. A scene does not store styles or per-layer cut modes, but a style is kept against its column (\cref{ch:color}), so coloring by \col{FE} again brings back \col{FE}'s classes.
+
+\subsubsection{Numbered slots}
+Bookmarks have a faster route than the menu. Press \key{g}, then \key{⇧} with a digit \key{1}–\key{9}, to save the current view into that slot. Press \key{g} then the digit to jump back.\sidekey{g}{then 1–9: go to a view slot} A bare digit does nothing on purpose, so a stray keystroke cannot move the camera. After \key{g} the status line reminds you of the choices, and the prompt lapses after a couple of seconds. A slot you have saved is a bookmark named \emph{slot 1}, \emph{slot 2}…; an empty slot falls back to the bookmark in that position of the list, so in the demo \key{g} \key{1} goes to \emph{Ore lens — E–W section}.
+
+\subsubsection{Scenes with a selection}
+When something is selected, the menu also offers \menu{Save scene (with selection)…}, which pins the 3D selection into the scene. Use it to keep “the blocks I was worried about” together with the view that shows them.
+
+Applying a scene is forgiving. If it names a layer that is not loaded, it says which and skips it; if a layer no longer has the column it was colored by, the color is left as it was and the status line says so.
+
+\subsubsection{Where they live}
+Both are small JSON files in the project folder, one per entry, in \file{bookmarks/} and \file{scenes/}, so they travel with the project and can be edited by hand. Saving a name that exists updates it. Without a project they live in memory, and the status line reminds you to save the project to keep them. Removing one (\menu{Remove bookmark}, \menu{Remove scene}) deletes a file, so micro asks first. \Cref{ch:projects} describes the folder.
+
+There is no fly-through. Applying a bookmark or a scene goes straight there.
+
+\begin{tryit}
+In the demo project:
+\begin{enumerate}
+\item Press \key{d} for plan and switch the section to \ui{plan}. Press \key{g}, then \key{⇧}+\key{1}. The status line confirms slot 1.
+\item Switch the section to \ui{E–W}, press \key{l}, and save it with \key{g}, \key{⇧}+\key{2}.
+\item Press \key{g} \key{1}, then \key{g} \key{2}: you flip between the bench and the cross-section.
+\item Hide the topography, color the deposit by \col{SG}, and choose \menu{View>Scenes>Save scene…}; call it \code{density}.
+\item Put things back by hand — show the topography, color by \col{FE} — then pick \menu{View>Scenes>◆ density}. The whole state returns at once.
+\end{enumerate}
+\end{tryit}

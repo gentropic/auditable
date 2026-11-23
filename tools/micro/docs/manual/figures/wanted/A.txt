@@ -1,0 +1,28 @@
+# Figure and chart requests — group A (Part I: 01-micro, 02-start, 03-tour)
+# format: name | the state to show | full / window / region
+# all on the demo project (empty screen → "open the demo project") unless stated; dark theme, desktop width
+
+# ── 02-start ──
+start-screen-labelled | the demo project just opened, layers panel shown, the grade–tonnage window open at the right, one block on the cut face picked so the record panel is open; overlay numbered callouts 1–9: 1 the menu bar (Sealed badge · File Data Tools View Help · ⌘K · undo/redo), 2 the filter box, 3 the tool buttons at the right of the top bar, 4 the second row (color · min/max · EDL · pt px · budget … Z× · section controls), 5 the layers panel, 6 the 3D view with the compass, 7 the floating grade–tonnage window, 8 the record panel, 9 the status line | full
+start-empty | micro with nothing open: the start screen with "▸ open the demo project" and the sample links | full
+start-open-dialog | the "open files" dialog after dropping three files together — a block model CSV, a collar CSV and a PLY mesh — each row showing name, size, the detected description and its "Open as" choice | region: the open dialog
+start-layers-panel | the demo project's layers panel: deposit.csv, the "demo" drillhole group expanded (◈ demo_collars.csv · ↧ demo_survey.csv · demo_assay.csv), topography, the "mining phases" group expanded (phase 1 shown, 2 and 3 hidden), ore shell; deposit.csv active | region: the layers panel
+start-layer-menu | the right-click menu of deposit.csv in the layers panel, fully visible | region: the layers panel and the open menu
+start-palette | deposit.csv active, the command palette open (⌘K) with "grade" typed, showing its matches | region: the palette overlay
+
+# ── 03-tour ──
+tour-opened | the demo project exactly as it opens (E–W section, keep behind; drillholes whole; ore-shell ring on the cut face; grade–tonnage window docked right) | full
+tour-pick | the demo project, facing the section (key l), a high-grade block on the cut face picked: the glow on the block and the record panel with XC YC ZC FE SG LITO | full
+tour-filter | deposit.csv active with the filter FE > 55 applied, orbited to show the lens and its two pods; the status line showing the match count; grade–tonnage window minimized | full
+tour-filter-drawer | filter FE > 55 with the filter drawer open (▾): the FE row with its slider, and a second row added for LITO showing the lithology chips | region: the top bar, the drawer, and the upper part of the view
+tour-collars-table | the collar attribute table opened from the ◈ demo_collars.csv row (HOLEID X Y Z EOH COMPANY, twelve rows) | window
+tour-calc-window | Data → Calculated columns… on deposit.csv with the column CLASS = if(FE > 58, 2, if(FE > 45, 1, 0)) saved and selected: the editor, the case table with its sliders, the buttons | window
+tour-class-colored | deposit.csv colored by ƒ CLASS (three classes), E–W section as opened, the calculations window beside the model | full
+tour-gt-window | the grade–tonnage window on deposit.csv: series FE, unit %, density expr SG, display unit %, 40 cutoffs, scope all, run — tonnage and mean-grade curves | window
+tour-section-2d | section E–W, keep slab, half-thickness 5, 2D ticked, drillholes still "don't cut": block grades on the cut, ore-shell outline, topography line, the holes | full
+tour-composer | the composer (File → Composer…) with figure 1, A4 landscape: a 3D-view frame of the E–W slab (orthographic, faced), its FE legend, a scale bar, a north arrow, a caption text frame "Figure 1. E–W section through the ore lens.", and the grade–tonnage chart frame sent with ⇥ figure; the view frame selected so the inspector shows | window
+tour-routine-editor | Tools → Recipes → New routine… in a saved project: name "first look", two inline steps (grade-tonnage as gt; stats as stats) with their with: settings as in the chapter, Preview pressed so the step list and report paths show | window
+tour-routine-tracker | the tracker window after "first look" has run: both steps ✓ | window
+
+# ── charts from micro's own numbers ──
+data tour-gt | {"tool":"gt","params":{"layer":"deposit.csv","series":[{"col":"FE","weight":"SG"}],"gradeUnit":"pct","cutoffs":[10,15,20,25,30,35,40,45,50,52,54,56,58,60,62,64,66]}}

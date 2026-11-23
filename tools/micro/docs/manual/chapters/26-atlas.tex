@@ -1,0 +1,258 @@
+\chapter{Atlases}\label{ch:atlas}
+\begin{goals}
+\textbf{In this chapter} you turn one composed figure into a book: a page per bench, per section or per domain, in a single PDF, with the level in each caption, the key plan's line moving from page to page, and figure and page numbers running through — and you make it again next month by pressing \ui{Run}.
+\end{goals}
+
+A set of bench plans is forty figures that differ in one number. So is a set of cross-sections every 25 m, or the same plan filtered to each domain in turn. Nobody should lay those out forty times, and nobody should trust forty hand-made pages to be consistent with each other.
+
+An \term{atlas} is one figure from the composer (\cref{ch:composer}) printed once per row of a table. The figure supplies everything that stays the same: the page, the frames, the legend, the title block. The table supplies what changes: a section position, a filter, a camera. The machinery is a routine (\cref{ch:routines}), so an atlas is a file you can read, rerun, and keep with the project.
+
+\begin{figure}[htbp]\centering
+\begin{tikzpicture}[font=\sffamily\footnotesize, every node/.style={text=ink}, >=Stealth,
+  box/.style={draw=rule, fill=tint, rounded corners=1.5pt, line width=0.5pt, inner sep=5pt, align=center}]
+\node[box] (fig) at (0,1.6) {the figure\\[1pt]\textcolor{muted}{\scriptsize page · frames · captions}};
+\node[box] (tab) at (0,-0.4) {the table\\[1pt]\textcolor{muted}{\scriptsize level: 560, 580, 600 …}};
+\node[box, fill=ambersoft, draw=amber] (step) at (4.3,0.6) {a \texttt{compo} step\\[1pt]\textcolor{muted}{\scriptsize once per row}};
+\draw[->, rule, line width=0.8pt] (fig.east) -- (step.north west);
+\draw[->, rule, line width=0.8pt] (tab.east) -- (step.south west);
+% pages
+\foreach \k/\l in {0/560, 1/580, 2/600} {
+  \draw[rule, fill=white, line width=0.5pt] (7.3+\k*0.42,0.05-\k*0.14) rectangle ++(1.5,1.1);
+}
+\node[font=\sffamily\scriptsize, text=muted] at (8.9,0.3) {600 RL};
+\draw[->, rule, line width=0.8pt] (step.east) -- (7.2,0.6);
+\node[box] (book) at (12.1,0.6) {\texttt{atlas/plan.pdf}\\[1pt]\textcolor{muted}{\scriptsize one page per row}};
+\draw[->, rule, line width=0.8pt] (9.75,0.6) -- (book.west);
+\end{tikzpicture}
+\caption{An atlas. The figure is the constant, the table is the variable; each row makes a page, and the pages are bound into one PDF when the run ends.}\label{fig:atlas-flow}
+\end{figure}
+
+\section{A first atlas}\label{sec:atlas-first}
+
+Build the figure first, as one good page. Put a 3D view on it showing the section you want to step — a plan slab for bench plans, a N–S or E–W section for cross-sections — add its legend, scale and north, and write a caption. Then press \ui{atlas…} in the composer's figure bar.
+
+micro proposes a starter routine named after the figure, with \emph{atlas} appended, asks you to confirm the name, saves it in the project's \file{recipes/} folder, and opens it in the routine editor. Routines are files in a project, so the project must be saved first.
+
+The starter makes reasonable guesses, all of which you can change:
+
+\begin{itemize}
+\item it steps along the axis of the view's own section: a plan steps in z, a N–S section in x, an E–W section in y;
+\item it cuts the extent of everything loaded along that axis — the meshes and the topography included — into six equal parts, and takes the middle of each;
+\item it gives each page a slab four-fifths of the spacing thick, so neighboring pages do not overlap;
+\item it collects the pages into \file{atlas/}\emph{figure}\file{.pdf} at 200 dpi;
+\item it hands each page its position as a value called \code{level}.
+\end{itemize}
+
+The status line tells you the one thing left to do by hand: write \code{\$\{level\}} in a caption, so each page says where it is. Then press \ui{Run}.
+
+\begin{tryit}
+\begin{enumerate}
+\item Open the demo project and save it to a folder with \menu{File>Save project as…}.
+\item Hide the topography, press \key{d} for a plan view, make it orthographic, and turn on a plan section with a slab (\cref{ch:sections}).
+\item Open \menu{File>Composer…}. Add \ui{+ 3D view}, \ui{+ legend}, \ui{+ scale}.
+\item Add \ui{+ text} under the view and set it to\\
+\code{**Figure \{fig\}.** Bench \$\{level\} m RL — \{count:deposit.csv:,\} blocks. Page \{page\} of \{pages\}.}
+\item Rename the figure \code{bench plan} with \ui{rename}.
+\item Press \ui{atlas…} and accept the name it offers. The routine editor opens on \emph{bench plan atlas}.
+\item Press \ui{Preview} to see the six pages it will make, then \ui{Run}.
+\item When the run finishes, open \file{atlas/bench\_plan.pdf} from the project folder: six pages, at 440, 526, 612, 698, 783 and 869 m RL, numbered 1 of 6 to 6 of 6. Each caption counts its own slab's blocks — 260,000 on the first page, 280,000 through the middle of the deposit, fewer on the last, where the topography has cut the model away.
+\end{enumerate}
+\end{tryit}
+
+\shot{atlas-pages}{Pages 1, 3 and 6 of the demo's bench atlas side by side: the same layout, the slab stepping up through the deposit, and each caption giving its own level, its own block count and its page number. On page 6 the starter pit (gray) covers most of the bench; the topography is hidden.}
+
+\section{Reading the routine}\label{sec:atlas-yaml}
+
+The whole atlas is this:
+
+\begin{lstlisting}[language=yaml]
+name: "bench plan atlas"
+tool: "routine"
+params:
+  steps:
+    - each:
+        level:
+          - 440
+          - 526
+          - 612
+          - 698
+          - 783
+          - 869
+      steps:
+        - tool: "compo"
+          with:
+            figure: "bench plan"
+            view:
+              section:
+                axis: "z"
+                position: "$level"
+                thickness: 68.6
+                clip: "slab"
+            vars:
+              level: "$level"
+            book: "atlas/bench_plan.pdf"
+            dpi: 200
+\end{lstlisting}
+
+That is what \ui{atlas…} writes on the demo; on your data the levels and the thickness are its guesses for your extent. Read it from the outside in. The \code{each} block holds a table — here one column, \code{level}, with six rows — and runs the steps inside it once per row. \code{\$level} is replaced by the row's value before the step runs. The one step inside is the \code{compo} tool: render a page of the figure \emph{bench plan}, with its view's section moved to this row's level, and add the page to the book.
+
+To change the levels, edit the list — in the YAML, or as a grid in the routine editor. This is the first thing to edit: the guesses are spread through the bounding box of everything loaded, not over your benches. On the demo they are 86 m apart with slabs 68.6 m thick — six sections through the whole deposit rather than six benches. For true 10 m benches through the ore, list the bench midpoints and set the thickness to match:
+
+\begin{lstlisting}[language=yaml]
+    - each:
+        level:
+          - 575
+          - 585
+          - 595
+          - 605
+      steps:
+        - tool: "compo"
+          with:
+            figure: "bench plan"
+            view:
+              section:
+                axis: "z"
+                position: "$level"
+                thickness: 10
+                clip: "slab"
+            vars:
+              level: "$level"
+            book: "atlas/bench_plan.pdf"
+            dpi: 200
+\end{lstlisting}
+
+Slabs of 10 m centered 10 m apart touch without overlapping, so each block lands on exactly one page, and the pages' block counts add up to the blocks between 570 and 610 m RL (\cref{sec:compo-statsscope}). Add a level per bench for the rest of the pit.
+
+\section{What changes from page to page}\label{sec:atlas-view}
+
+The \code{view} setting holds the changes applied to the figure's view frames for one page. There are three, and they combine.
+
+\begin{table}[htbp]\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+setting & meaning \\ \midrule
+\code{section} & The section for this page. \code{axis} (\code{x}, \code{y} or \code{z}) or a \code{normal} of three numbers, or \code{dipDir} and \code{dip}; then \code{position}, \code{thickness}, and \code{clip} (\code{slab}, \code{front} or \code{behind}). The word \code{"off"} removes the section. \\
+\code{camera} & The camera for this page: \code{look} (the bearing it looks toward), \code{elevation}, \code{distance}, \code{target} (three world coordinates), \code{ortho}, \code{zExag}. \\
+\code{filter} & A filter for this page. One expression applies to every visible layer of the view; a map applies an expression per layer, by name. \\ \bottomrule
+\end{tabularx}
+\caption{The \code{view} setting of the \code{compo} tool.}\label{tab:atlas-view}
+\end{table}
+
+Whatever a page does not change, it takes from the figure: a page that sets only the section keeps the figure's camera, colors and filters.
+
+\paragraph{A page per section.} For vertical sections, step \code{x} or \code{y}. If the camera in the figure looks square at the section, it still does on every page: the section moves, the direction of view does not.
+
+\begin{lstlisting}[language=yaml]
+- each:
+    northing:
+      - 7765200
+      - 7765400
+      - 7765600
+      - 7765800
+  steps:
+    - tool: "compo"
+      with:
+        figure: "cross section"
+        view:
+          section:
+            axis: "y"
+            position: "$northing"
+            thickness: 20
+        vars:
+          northing: "$northing"
+        book: "atlas/sections.pdf"
+\end{lstlisting}
+
+\paragraph{A page per domain.} Nothing says an atlas must step a section. Step a filter instead, and the pages are the same plan, domain by domain:
+
+\begin{lstlisting}[language=yaml]
+- each:
+    lito:
+      - "HEMATITE"
+      - "ITABIRITE"
+      - "CANGA"
+  steps:
+    - tool: "compo"
+      with:
+        figure: "domain plan"
+        view:
+          filter:
+            "deposit.csv": "LITO == \"$lito\""
+        vars:
+          lito: "$lito"
+        book: "atlas/domains.pdf"
+\end{lstlisting}
+
+With a caption reading \code{\$\{lito\}: \{count:deposit.csv:,\} blocks, mean \{mean:FE:.1f\} \% Fe}, each page reports its own domain's count and mean, computed over what that page shows (inside its section, if the figure's view has one).
+
+\paragraph{Two things at once.} An \code{each} inside an \code{each} is every combination — every domain on every bench. A single \code{each} with two columns of equal length pairs them row by row: section 1 with camera 1, section 2 with camera 2. The routine's \ui{Preview} lists every page before anything is rendered, so you can see which you wrote (\cref{ch:routines}).
+
+\paragraph{A table from a file.} For a long or a maintained list — the mine's bench elevations, the section lines of a drilling grid — keep the table in the project as a CSV or a worksheet and name it under the \code{each}: \code{from: "benches.csv"}, as in the routine at the end of this chapter. Each column of the file becomes a \code{\$}name. The atlas then follows the file.
+
+\section{What every page gets right}\label{sec:atlas-page}
+
+Each page is the figure made again with that page's changes, and everything in the figure that depends on its view follows without being told:
+
+\begin{description}
+\item[Captions] \code{\$\{level\}} — or any value named under \code{vars} — is filled from the row. So is any expression over them: \code{\$\{level - 10\}} prints the toe of a 10 m bench. View fields such as \code{\{section\}}, \code{\{count\}} and \code{\{mean:FE\}} are read from this page's render — and count only what is inside this page's section, so each page reports its own bench, and the benches' block counts add up to the model's (\cref{sec:compo-statsscope}). Set the view's \ui{captions} row to \ui{whole model} for a caption that quotes the whole model on every page.
+\item[Page and figure numbers] \code{\{page\}} and \code{\{pages\}} count through the book, and \code{\{fig\}} continues from one page to the next: Figure 1 on page 1, Figure 2 on page 2.
+\item[Legends] are read again from the layers while the page's scene is on.
+\item[Scale] A view with a locked scale stays at that scale on every page (\cref{sec:compo-drawing}). The scale bar, \code{\{scale\}} and the coordinate ticks follow each page's view.
+\item[Key plans] The key plan keeps its own whole-model view; only the section line on it moves, to where this page's section is (\cref{sec:compo-keyplan}).
+\item[Vector sections] are rebuilt for each page, so every page is line work (\cref{sec:compo-vector}).
+\item[Charts and tables] on the figure are printed as they stand. They are not recomputed per page.
+\end{description}
+
+\begin{caution}
+The last point is easy to miss. A grade–tonnage chart placed on an atlas figure shows the same curve on every page — the one the figure holds. Statistics that should change with the page belong in caption fields, which are computed per page, not in a chart frame.
+\end{caution}
+
+Your own 3D view is put back when the run ends, exactly as you left it, and the figure in the project is not changed: each page is a copy.
+
+\section{One book, or a file per page}\label{sec:atlas-out}
+
+A \code{compo} step needs to know where its page goes, and has two ways to say it (the settings are in \cref{tab:compo-tool}). \code{book} collects every page that names the same PDF in a run, in order, and writes the file once, when all the steps have finished. \code{out} writes this page alone, as a \file{.pdf} or a \file{.png}; inside an \code{each}, put the row's value in its name — \code{out: "atlas/bench-\$level.png"} — or every page overwrites the last. A step may set both, and must set one.
+
+A book carries its figure inside it, like any PDF from the composer, unless the figure's \ui{embed figure} is unticked (\cref{sec:compo-pdf}). Drop the atlas on micro a year later and the figure it was made from opens, ready to be run again.
+
+Several books can come out of one routine: a step with \code{book: "atlas/plans.pdf"} in one \code{each} and another with \code{book: "atlas/sections.pdf"} in a second make two PDFs in one run.
+
+Rendering is the slow part. Forty pages of a large model at 300 dpi take a while, since every view on every page is rendered to completion; 200 dpi is a sensible working resolution, and vector sections cost far less to print than rendered ones.
+
+\section{Running it, and running it again}\label{sec:atlas-run}
+
+An atlas runs like any routine (\cref{ch:routines}). \ui{Preview} lists each page and the file it goes to. The run opens a tracker showing each page as it is made, with \ui{Cancel} between pages. If a page fails — a layer the figure needs is not loaded, a filter names a column that is not there — the run stops at that step and says why, and you can retry it or skip it and carry on.
+
+Afterwards the run's record lists each book with its page count and the SHA-256 of the file (\cref{ch:records}). If the routine has the no-overwrites guard, it stops before rendering anything when a book or page file it would write already exists.
+
+Because an atlas is a routine, it sits naturally at the end of a longer one: check the model, recompute the columns, then print.
+
+\begin{lstlisting}[language=yaml]
+steps:
+  - tool: "modelqa"
+    with:
+      layer: "deposit.csv"
+    as: "mq"
+  - check: "mq.errors = 0"
+    say: "the model is clean before it is printed"
+  - each:
+      from: "benches.csv"
+    steps:
+      - tool: "compo"
+        with:
+          figure: "bench plan"
+          view:
+            section:
+              axis: "z"
+              position: "$level"
+              thickness: 10
+          vars:
+            level: "$level"
+            name: "$name"
+          book: "atlas/bench_plans.pdf"
+\end{lstlisting}
+
+Next month, load the new model under the same layer name and run it again. Every page is rendered from the data as it then is; nothing in the figure or the routine needs to be touched. To print the same atlas for a different deposit, point the figure at the other data first with \ui{⇄ other data…} (\cref{sec:compo-retarget}), and give the routine that figure's name.
+
+\begin{tip}
+Design the figure on its hardest page. Step the section to the widest bench and the longest caption value before you press \ui{atlas…}: a layout that holds there holds everywhere, and a view with a locked scale and a fixed camera target keeps every page registered with the next, so a reader can flip through the book and watch the orebody change in place.
+\end{tip}

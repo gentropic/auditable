@@ -1,0 +1,225 @@
+\chapter{Swath / drift}\label{ch:swath}
+\begin{goals}
+\textbf{In this chapter} you plot mean grade per band along an axis, a structural direction or a trend and plunge, set band widths that mean something, overlay several estimates in one plot, see the bands on the 3D model, and turn a suspicious band into a selection.
+\end{goals}
+
+A swath plot — a drift plot, if you prefer — cuts the model into parallel slabs and plots the mean grade of each. It is the standard check for local bias: two estimates of the same deposit should drift together, and where they part company you have somewhere to look.
+
+Three things set micro's swath apart from a static plot. Band width and offset are free after one pass, so you can tune them by eye. The bands can be striped onto the model, so the bins of the plot are slabs you can see. And the plot is a selection tool: drag across a dip in the profile and the blocks that caused it are selected in 3D.
+
+Open it from a block model's right-click menu, \ui{Swath plot…}, or press \key{⌘K} (\key{Ctrl}+\key{K} on Windows and Linux) and type \code{swath}. The window needs a block model with a block grid — regular, sub-blocked or rotated; a model opened as points has no swath. The window works as \cref{ch:analysis} describes.
+
+\section{A first swath}\label{sec:swath-first}
+\begin{tryit}
+In the demo project, right-click \file{deposit.csv} and choose \ui{Swath plot…}.
+\begin{enumerate}
+\item The series is \col{FE} already. In its weight field — \emph{weight expr (blank = support)} — type \code{SG}.
+\item Press \ui{Run}. The line is the tonnage-weighted mean \col{FE} of each band along X; the gray bars behind it count the blocks per band. The subtitle reads \emph{20 bands · 100 m · 1,786,620 rows}, and the profile rises from about 23\,\% at the edges to 30\,\% over the ore lens.
+\item Click the \ui{Y} and \ui{Z} tabs above the plot. Each is already computed.
+\item On the \ui{Z} tab, type \code{10} in \ui{width} under \ui{bands · Z}: two 5~m benches per band.
+\item Go back to \ui{X}. Its width is untouched.
+\item Move the pointer over the plot. A translucent slab follows it on the model.
+\end{enumerate}
+\end{tryit}
+
+\shot{swath-window}{A swath of \col{FE} along X on the demo deposit: mean grade per band (line, left axis) over the number of blocks in each band (bars, right axis). The tabs above the plot switch direction without a new pass.}
+
+The plot puts distance along the direction on the horizontal axis, mean grade on the left axis and, on the right, bars for the first series: its record count per band, or its total weight if you set \ui{bars} to \ui{weight}. Read the bars with the line. A mean made of a dozen blocks at the edge of the model deserves less attention than one made of ten thousand.
+
+\Cref{fig:swath-demo} shows two of the demo's profiles drawn from micro's numbers. Both bands are wide, so each mean mixes the ore lens with the waste around it: the lens lifts the easting profile to 30\,\% in its middle, and the elevation profile to about 30\,\% between 650 and 700~m. The jump in the top band, to 52\,\%, is the canga — the ferruginous cap that is nearly all that band holds.
+
+\begin{figure}[htbp]\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.56\linewidth, height=58mm, xlabel={easting − 612\,000 (m)}, ylabel={mean \% Fe}, ymin=0, scaled ticks=false, title={along east, 100 m bands}]
+\addplot[amber, very thick, mark=*, mark size=1.1pt] table[col sep=tab, x expr=\thisrow{center}-612000, y=mean]{figures/data/swath-demo-east.tsv};
+\end{axis}
+\end{tikzpicture}\hfill
+\begin{tikzpicture}
+\begin{axis}[width=0.43\linewidth, height=58mm, xlabel={mean \% Fe}, ylabel={elevation (m)}, xmin=0, scaled ticks=false, title={by elevation, 25 m bands}]
+\addplot[info, very thick, mark=*, mark size=1.1pt] table[col sep=tab, x=mean, y=center]{figures/data/swath-demo-up.tsv};
+\end{axis}
+\end{tikzpicture}
+\caption{The demo deposit's \col{FE} drift, weighted by \col{SG} × block volume: along easting, and bench by bench. Each point is one band.}\label{fig:swath-demo}
+\end{figure}
+
+\section{Directions}\label{sec:swath-directions}
+The \ui{direction} menu at the top of the rail has three modes. In each, a band is a slab perpendicular to the direction, and a block belongs to the band its \emph{centroid} falls in.
+
+\medskip
+\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+mode & directions scanned & settings \\ \midrule
+\ui{axes X / Y / Z} & three: east, north, elevation — tabs \ui{X}, \ui{Y}, \ui{Z} & none \\
+\ui{dip-dir / dip / rake} & three, from a plane: the rake line, the in-plane perpendicular, and the pole — tabs \ui{rake}, \ui{in-plane}, \ui{pole} & \ui{dipdir} 90, \ui{dip} 45, \ui{rake} 0 \\
+\ui{trend / plunge} & one line & \ui{trend} 0, \ui{plunge} 0 \\ \bottomrule
+\end{tabularx}
+\medskip
+
+One pass scans all the directions of a mode together, which is why switching tabs is free. Changing the mode, or any of its angles, needs a new \ui{Run}.
+
+\paragraph{Axes.} The model's coordinate axes. Z is the bench-by-bench profile; X and Y are the classic easting and northing swaths.
+
+\paragraph{The oriented trio.} Give the orientation of the structure that controls the grade — a lens, a shear, the bedding — as dip direction and dip, and micro swaths along three mutually perpendicular lines tied to that plane. With \ui{rake} at 0 they are the strike (the rake line), the down-dip line (the in-plane perpendicular), and the pole to the plane, which runs across the structure. A non-zero rake rotates the first two within the plane, the rake measured from the strike toward the down-dip line, so the first direction can follow a plunging shoot.
+
+The \ui{pole} swath usually tells you most. Bands perpendicular to the pole are slabs parallel to the structure, so the profile reads grade \emph{across} it: hanging wall, ore, footwall. A smoothed estimate shows there as a peak that is too low and too wide.
+
+\paragraph{Trend and plunge.} A single line, the trend clockwise from north and the plunge positive downward. Distance increases along the line, so with a positive plunge the profile runs from shallow to deep. A recipe saves this mode as \code{trend}, the routine tool's name for it; older recipes and projects that call it \code{direction} still open.
+
+\begin{note}
+Swath directions do not have to match the model's lattice, and a rotated model (\cref{ch:blocks}) is swathed in world coordinates like any other. But a direction oblique to the blocks, with bands narrower than a block, gives a profile that beats against the lattice: bands alternately catching more and fewer centroids. Watch the bars — if the count per band zigzags, widen the bands.
+\end{note}
+
+\section{Bands}\label{sec:swath-bands}
+\index{swath!band width}Under \ui{bands} are two fields, \ui{width} and \ui{offset}, in the model's length unit. Both are \emph{per direction}: the section heading names the tab they belong to (\ui{bands · X}), and each tab keeps its own. An E–W drift can hold 100~m bands while the Z profile holds one bench.
+
+\medskip
+\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+setting & meaning & automatic value \\ \midrule
+\ui{width} & the thickness of a band along the direction & a round step giving about 25 bands over the extent \\
+\ui{offset} & where a band edge sits: edges are at offset, offset ± width, … & the low end of the extent \\ \bottomrule
+\end{tabularx}
+\medskip
+
+Both re-bin instantly. The pass does not accumulate into your bands; it accumulates into about 600 \emph{fine bins} per direction and keeps, for each, the sum of weights, the sum of weight × grade and the count. Your bands are then sums of fine bins, and a weighted mean of sums is exact — not an average of averages.
+
+Choose widths that mean something on the ground. For the vertical profile, a whole number of benches; along strike, something near the drill spacing or a multiple of the block size. Set the offset so the band edges fall on block faces: with 10~m blocks whose centroids sit at …5, …15, a 50~m band with an edge at a multiple of 10 holds exactly five columns of blocks, every band the same.
+
+\begin{caution}
+A band cannot be finer than the fine bins it is built from — the extent divided by 600. A width below that is accepted, but each fine bin goes whole to the band its center falls in, so the result is the fine profile, not a finer one. In practice this only matters if you ask for sub-meter bands on a kilometer-long model.
+\end{caution}
+
+\section{Series and weights}\label{sec:swath-series}
+A swath's series have the five parts of \cref{sec:analysis-series}. Here the expression is a \emph{weight}, and each band's value is
+\[ \text{mean} = \frac{\sum w\,g}{\sum w}, \qquad w = \text{weight} \times V , \]
+with $V$ the block's own volume — sub-blocks at their true size.
+
+\begin{itemize}
+\item Blank weight: $w = V$, a volume-weighted mean. On a regular model that is the plain average of the blocks.
+\item \code{SG}: a tonnage-weighted mean, the grade a truck would carry.
+\item \code{SG * PARTIAL}: tonnage inside a solid, when \col{PARTIAL} is a fraction column.
+\end{itemize}
+
+Blocks with a blank grade are left out of their band, as are blocks whose weight is blank or zero. The weight has no unit to declare, because a mean does not care whether density is in t/m³ or kg/m³.
+
+The usual reason to add series is to compare estimates. Put the kriged grade, the nearest-neighbor grade and an inverse-distance check in three series of the same model — or of three models, since each series picks its own layer — and \ui{Run} once. A nearest-neighbor estimate is a declustered picture of the samples, laid on the model's blocks. A kriged profile that sits consistently above or below it over a run of bands is a local bias; one that only wobbles less is the smoothing you expect.
+
+A per-series filter restricts one curve: \code{LITO = "HEMATITE"} for the drift of the ore alone, or \code{CLASS <= 2} to leave inferred blocks out of the comparison. A window on a reconcile layer (\cref{ch:joins}) opens with the reference and new grades as two series.
+
+\begin{note}
+The swath bands block centroids, which a drillhole interval table does not have — its intervals sit on desurveyed traces. So the series' layer menu lists block models only, and a routine step that names a drillhole layer stops with \emph{a swath reads a block model; for model against drillhole samples use the validation tool}. For a drift of the model against its samples — declustered, interval by interval at the desurveyed midpoints — use \ui{Validate vs drillholes…} (\cref{ch:validation}), which is built for that comparison.
+\end{note}
+
+\section{The settings}\label{sec:swath-settings}
+\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+setting & meaning & default \\ \midrule
+\ui{direction} & axes · dip-dir / dip / rake · trend / plunge, with its angles & axes \\
+\ui{width}, \ui{offset} & the bands of the current tab — live & automatic \\
+series & layer, column, unit, weight expression, filter & the first numeric column, no weight \\
+\ui{bars} & what the bars show: \ui{count} or \ui{weight}, for the first series — live & count \\
+\ui{unit} & the plot unit of the mean-grade axis — live & the layer's \\
+\ui{locate on 3D} & the band ghost (\cref{sec:swath-ghost}) & on \\
+\ui{zebra on 3D} & stripe the bands onto the model (\cref{sec:swath-zebra}) & off \\
+\ui{scope} & \ui{all} · \ui{filt} · \ui{sel}; needs \ui{Run} & all \\
+ranges & manual \ui{min}/\ui{max} for \ui{x}, \ui{grade} and \ui{bars} — live & automatic \\ \bottomrule
+\end{tabularx}
+\medskip
+
+With a scope of \ui{filt} or \ui{sel}, a series whose layer carries no such mask contributes all its rows. That is deliberate — it lets you compare a filtered model with an unfiltered reference — and the subtitle names the scope.
+
+\section{Zebra: the bands on the model}\label{sec:swath-zebra}
+Tick \ui{zebra on 3D} and micro colors the model in two alternating tones, one band dark, the next light, using the direction, width and offset of the tab you are on. The stripes \emph{are} the bins: change the width and they move.
+
+\shot{swath-zebra}{Zebra on: the swath's 200~m bands along X striped onto the demo model, with the topography and the ore shell hidden so the stripes show. The plot's bins and the slabs in space share one direction, width and offset.}
+
+Use zebra to check a band definition before you trust a profile: that the bands line up with benches, that an oriented trio really runs along the lens, that the offset puts edges on block faces.
+
+The coloring is temporary. micro remembers what the layer was colored by and restores it when you untick zebra or close the window. Zebra needs a block model with a block grid as the first series, and it appears after a \ui{Run}. Surfaces drawn over the model, such as the demo's topography, hide the stripes on its top; uncheck them in the layers panel.
+
+\section{The band ghost, and selecting from the plot}\label{sec:swath-ghost}
+With \ui{locate on 3D} ticked, the plot points at the model in two ways.
+
+\paragraph{Hover.} Move the pointer across the plot and the band under it is shaded in the plot and drawn on the model as a translucent slab — the \term{band ghost}. A dip in the profile points straight at the benches or the zone that made it.
+
+\paragraph{Drag.} Press and drag sideways across several bands. The range snaps to band edges, turns violet, and stays held when you release. A small menu opens:
+
+\medskip
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+item & what it does \\ \midrule
+\ui{Select rows in a – b} & replaces the 3D selection with every record whose centroid lies in the range, on each series' layer \\
+\ui{Add to selection} & adds them to the current selection \\
+\ui{Keep highlight} & leaves the violet ghost in place, selecting nothing \\
+\ui{Clear} & removes it \\ \bottomrule
+\end{tabularx}
+\medskip
+
+Dismissing the menu keeps the ghost; a click on the plot releases it.
+
+\shot{swath-band-ghost}{A band range dragged across the middle of the X profile and held in violet, its slab outlined on the model with the range printed on it, and the menu offering \ui{Select rows in 612,795 – 613,595}, \ui{Add to selection}, \ui{Keep highlight} and \ui{Clear}.}
+
+Once the band is a selection, every selection tool applies (\cref{ch:picking}): scope a grade–tonnage or stats window to \ui{sel} for the numbers of those bands alone, write the selection to a 0/1 column, open the attribute table on it, export it.
+
+\begin{tryit}
+With the demo's swath on the \ui{X} tab (if you skipped the first exercise: right-click \file{deposit.csv}, \ui{Swath plot…}, weight \code{SG}, \ui{Run}):
+\begin{enumerate}
+\item Drag across the three or four bands where the profile peaks, and choose \ui{Select rows in …}.
+\item Right-click \file{deposit.csv} and choose \ui{Stats…} (\cref{ch:stats}).
+\item Set its \ui{scope} to \ui{sel}, choose \ui{group by} \col{LITO}, and press \ui{Run}. The table lists the rock types of the high-grade bands, with their grades.
+\item Clear the selection when you are done.
+\end{enumerate}
+\end{tryit}
+
+On a touch screen there is no hover: tap a bar to ghost its band, and drag sideways to hold a range (\cref{ch:sealed}).
+
+\section{Pitfalls}\label{sec:swath-pitfalls}
+\begin{itemize}
+\item \textbf{Thin bands at the edges.} The first and last bands often hold a sliver of the model. Check the bars, and set the offset so the bands start on the model's edge.
+\item \textbf{Unweighted means on sub-blocked models} are still volume-weighted — the blank weight is the block's volume, never 1 per record. Only the \ui{count} bars count records.
+\item \textbf{Comparing unlike supports.} Samples and blocks do not have the same variance; a sample profile is noisier, and its peaks are higher. Compare trends, not band-by-band values.
+\item \textbf{The window's bands are not a routine's bands.} The window's automatic offset is the data's low end; the tool's default offset is 0 (\cref{sec:swath-routine}). State both width and offset if a figure and a report must agree.
+\item \textbf{Stale after editing.} Series, mode and scope changes wait for \ui{Run}; the note \emph{↻ config changed — Run to update} says so.
+\end{itemize}
+
+\section{In a routine}\label{sec:swath-routine}
+The tool is \code{swath} (its settings: \cref{tool:swath}). A routine must state the band width of every direction — an automatic width comes from the extent and moves with it.
+
+\begin{lstlisting}[language=yaml]
+- tool: "swath"
+  with:
+    layer: "deposit.csv"
+    gradeUnit: "pct"
+    mode: "axes"
+    series:
+      - col: "FE"
+        unit: "pct"
+        weight: "SG"
+    bandW:
+      - 100
+      - 100
+      - 25
+    off:
+      - 0
+      - 0
+      - 0
+  as: "drift"
+\end{lstlisting}
+
+The \code{mode} is \code{axes}, \code{oriented} (with \code{dd}, \code{dip}, \code{rake}) or \code{trend} (with \code{trend}, \code{plunge}). Give \code{bandW} one value per direction, in the order of the tabs: three for \code{axes} and \code{oriented}, one for \code{trend}. A direction without a value falls back to the automatic width. \code{off} gives the offsets the same way, and defaults to 0.
+
+\begin{why}
+The tool's default offset is 0, not the data's minimum. Bands anchored at the origin are a fixed lattice: 0–100, 100–200… wherever the model happens to start. Next month's model, a little larger, then puts the same blocks in the same bands, and a comparison matches row for row. The window's automatic offset is friendlier to the eye and useless for that.
+\end{why}
+
+The report is one machine table for \emph{all} directions, keyed by \col{series}, \col{direction} and \col{center}:
+
+\medskip
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+column & meaning \\ \midrule
+\col{series} & the grade column; with several series, \emph{layer·column} \\
+\col{direction} & the direction's name: \emph{X (east)}, \emph{Y (north)}, \emph{Z (elev)}; \emph{rake line}, \emph{in-plane ⟂}, \emph{pole}; or \emph{trend … / plunge …} \\
+\col{center} & the band's center along the direction \\
+\col{count} & records in the band for this series \\
+\col{weight} & the sum of weights \\
+\col{mean} & the weighted mean grade, in \code{gradeUnit}; blank for an empty band \\ \bottomrule
+\end{tabularx}
+\medskip
+
+Two patterns commonly follow a swath step. A \code{compare: "drift"} against the accepted baseline (\cref{ch:checks}) flags the bands whose mean moved more than a tolerance since the last accepted run — a drift check on the drift. And an \code{each} block (\cref{ch:routines}) runs the same swath for every grade column of a parameter table, one report per grade.

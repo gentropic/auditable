@@ -1,0 +1,261 @@
+\chapter{Getting started}\label{ch:start}
+\begin{goals}
+\textbf{In this chapter} you open micro, learn the parts of its window, open the demo project and your own files, move around the 3D view, find any action with the command palette, and learn what can be undone.
+\end{goals}
+
+Nothing needs installing. By the end of this chapter you have a scene on screen and know where everything is. \Cref{ch:tour} then takes one piece of work from start to finish.
+
+\section{Opening micro}\label{sec:start-open}
+You can run micro three ways. All three are the same program.
+
+\begin{description}
+\item[In the browser] Go to \file{gentropic.org/micro}. After the first visit the page is kept on your machine and opens without a connection.
+\item[As an installed app] On that page, use your browser's \emph{install} command (in Chrome and Edge it is in the address bar). micro then has its own window and its own icon, and still needs no connection.
+\item[As a file] Download \file{micro.html} from the link on the start screen and double-click it. It is one file with no installer. You can keep it on a shared drive, send it to a colleague, or carry it to a machine that has never been online.
+\end{description}
+
+micro runs in current Chrome, Edge and Firefox. One thing depends on the browser: saving and opening a \emph{project folder} needs Chrome or Edge. Elsewhere you can still view, filter and analyze, and open a project pack (\cref{ch:store}).
+
+\begin{note}
+On a phone or a narrow tablet, micro rearranges itself into its \term{review mode}: a bar of large buttons at the bottom, and every panel as a sheet that slides up. Everything in this book is still there. \Cref{ch:sealed} describes the layout; this chapter assumes a desktop window.
+\end{note}
+
+\section{The screen}\label{sec:start-screen}
+The window has nine parts, and each kind of thing has one place: the data you opened on the left, the scene in the middle, the row you clicked on the right, what micro last did along the bottom.
+
+\shot{start-screen-labelled}{The micro window with the demo project open. The numbers match the table below.}
+
+\begin{tabularx}{\linewidth}{@{}clL@{}}\toprule
+ & part & what it is for \\ \midrule
+1 & Menu bar & \ui{File}, \ui{Data}, \ui{Tools}, \ui{View}, \ui{Help}, then the \ui{⌘K} button for the command palette. The \ui{Sealed} badge sits at its left. \\
+2 & Filter box & An expression over the active layer's columns. \key{/} puts the cursor in it. \\
+3 & Tools & At the right of the top bar, from the left: the knife, select by rectangle, select by lasso, select through, paint, measure, section on or off, save the view as a PNG, and fit. \\
+4 & Instrument rail & The second row. On the left, how the active layer is drawn: \ui{color}, the \ui{min} and \ui{max} of the color scale, \ui{EDL} shading and its \ui{strength}, point size (\ui{pt px}) and the render \ui{budget}. On the right, \ui{Z×} (vertical exaggeration) and the section controls. \\
+5 & Layers panel & Every open dataset, as a tree. \key{p} shows and hides it. \\
+6 & The view & The 3D scene. The compass in the corner shows north; click it for a plan view. \\
+7 & Windows & Analysis results, tables and editors float over the view and belong to their layer. \\
+8 & Record panel & Appears when you click a block, an interval or a point, and shows its whole row. The properties panel opens in the same place. \\
+9 & Status line & What micro last did or found, a \ui{cancel} button while a long job runs, and at the far right the camera's direction as plunge and trend. \\
+\bottomrule
+\end{tabularx}
+
+Watch the status line. micro has no pop-up messages for ordinary results. When a filter matches 38,357 of 1,786,620 blocks, or an export finishes, or something could not be done, the status line says so in a sentence.
+
+The five menus divide the work this way:
+
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+menu & holds \\ \midrule
+\ui{File} & opening files and projects, saving, backups, sample data, the composer \\
+\ui{Data} & how a dataset is read and what is derived from it: drillhole import, new grids and models, properties, calculated columns, the attribute table, paint, the filter, export \\
+\ui{Tools} & measuring, selecting, by-solid tools, recipes, section commands, settings \\
+\ui{View} & camera directions, perspective, how blocks draw, vertical exaggeration, decorations and figure export, theme, windows, bookmarks and scenes \\
+\ui{Help} & the key list, a summary of the analysis tools, this manual, the Sealed explanation, the update check \\
+\bottomrule
+\end{tabularx}
+
+Most of what you do to one dataset is not in the menu bar at all. It is on that layer's right-click menu (\cref{sec:start-layers}).
+
+\section{Opening data}\label{sec:start-data}
+\subsection{The demo project}
+When nothing is open, micro shows its \term{start screen}. Look for the line \ui{▸ open the demo project}.
+
+\shot[0.8\linewidth]{start-empty}{The start screen. The demo project and the sample models are generated on your machine; nothing is downloaded.}
+
+The demo project is a small iron-ore scene, made on the spot each time:
+
+\begin{itemize}
+\item \file{deposit.csv}, a block model of 1,786,620 blocks, each 10 × 10 × 5~m, on a lattice of 200 × 100 × 100, with columns \col{XC}, \col{YC}, \col{ZC}, \col{FE}, \col{SG} and \col{LITO}. \col{LITO} is one of HEMATITE (the high-grade core: every hematite block is 60\,\% Fe or more), ITABIRITE (the rest of the ore and a lower-grade halo around it), CANGA (a ferruginous cap, about 52\,\% Fe, over the top 25~m outside the ore) or WASTE.
+\item Twelve inclined drillholes, DH001 to DH012, from the same rock model as the blocks. They stand in four north–south lines; on each line, three holes start from one collar on the ground south of the lens and drill north at −45°, −60° and −75°. Their intervals are 5~m long and carry \col{FE}, \col{SG} and \col{LITO}. The collars carry \col{EOH} and \col{COMPANY} (PIONEER or MERIDIAN).
+\item A topography surface, three mining-phase pit shells in a group, and the ore shell as a closed mesh.
+\end{itemize}
+
+It opens already cut by an east–west section, with a grade–tonnage window computed in tonnes, using \col{SG} as the density. Every example in this book uses it, so you can follow any chapter without data of your own.
+
+\begin{tryit}
+\begin{enumerate}
+\item Open micro. If something is already open, choose \menu{File>New project…} to return to the start screen.
+\item Click \ui{▸ open the demo project}. The status line reports each stage, and the scene appears after a few moments.
+\item Leave the project open for the rest of this chapter.
+\end{enumerate}
+\end{tryit}
+
+The start screen also offers larger samples for trying micro's speed: a 2~million-block model, and bench scans of 2, 10 and 50~million points. They are under \menu{File>Sample data} as well.
+
+\subsection{Your own files}
+Drag one file or several anywhere onto the window, or choose \menu{File>Open…}. Either way you get the \term{open dialog}.
+
+\shot[0.8\linewidth]{start-open-dialog}{The open dialog with a block model, a collar table and a PLY mesh. Each row is a file, its size, what micro takes it to be, and an \ui{Open as} choice. The collar file alone is not yet a drillhole set, and the dialog says what is missing.}
+
+Each row has a checkbox, the file's name and size, and a description of what micro detected. Where a file could be read more than one way, the row has an \ui{Open as} choice: a block model as plain points, a PLY mesh as a point cloud, a delimited table as a collar, a survey or an interval table. Below the rows, \ui{add to the view} keeps what is already open and \ui{replace the view} closes it first. Pick the roles, click \ui{Open}, and each file becomes a layer.
+
+Drillholes are the one case where several files make one layer. Give the open dialog a collar file, a survey file and an interval file together and it assembles the set. Until all three roles are filled, it says what is missing, as in \cref{fig:start-open-dialog}: a collar on its own makes no drillholes. \menu{Data>Import drillholes…} does the same through a form, where you state each table and column yourself (\cref{ch:drillholes}).
+
+After a file opens, press \key{i} for \term{file info}\sidekey{i}{file info: what micro detected in the active layer}. It lists what micro found: the kind of file, the record count and extent, the columns, and for a block model the grid and block size it inferred. If the detection is wrong, correct it on the \ui{source} tab of the layer's properties. \Cref{ch:opening} is the full account of opening data.
+
+\begin{tip}
+micro remembers recently opened files and lists them on the start screen and in the \ui{File} menu. If you would rather it did not, untick \menu{File>Remember recent files}.
+\end{tip}
+
+\section{The layers panel}\label{sec:start-layers}
+Each opened dataset is a \term{layer}. The layers panel lists them as a tree, and it is where you choose what to work on.
+
+\shot[0.55\linewidth]{start-layers-panel}{The layers panel with the demo project: the block model, the drillhole set with its collar and survey rows, the surfaces, and the mining phases group.}
+
+\begin{itemize}
+\item \textbf{Click} a layer to make it the \term{active layer}. The filter box, the color controls, the keyboard and the command palette all act on the active layer.
+\item The \textbf{eye} shows or hides a layer. \key{h} does the same for the active layer.
+\item \textbf{Right-click} a layer for its menu. On a touch screen, press and hold the row.
+\item \textbf{Drag} a row to reorder it, or onto a group to put it in the group.
+\item \key{Ctrl}-click selects several rows; right-click them to group or rename them together.
+\end{itemize}
+
+A \term{group} is a folder of layers with an eye of its own. Hiding a group hides its children without changing their own eyes, so the pattern returns when you show the group again. In the demo, \ui{mining phases} is a group; click it to open it.
+
+A drillhole set is a group with two extra rows. The row marked ◈ is the collar table and the row marked ↧ is the survey. They are not layers that draw; they are the other tables of the set, and clicking one opens a menu of what you can do with it.
+
+\subsection{A layer's menu}
+The right-click menu is the main way into micro's features. It lists only what applies to that layer, in the same order every time:
+
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+group & items (for a block model) \\ \midrule
+Identity & \ui{Zoom to layer}, \ui{Rename layer…}, \ui{New view of this layer}, \ui{New view beside it}, \ui{Reinterpret as…}, \ui{Reload from disk}, \ui{Change file…} \\
+Inspect and analyze & \ui{Attribute table…}, \ui{Filter…}, \ui{Stats…}, \ui{Scatter / Q-Q…}, \ui{Grade-tonnage…}, \ui{Resource cross-tab…}, \ui{Swath plot…}, \ui{Model QA…}, \ui{Block vs sample…}, \ui{Grade shell…}, \ui{File info…}, \ui{Lineage…}, \ui{Export rows…} \\
+Derive and store & \ui{Materialize calc column}, \ui{Store as Parquet…}, \ui{Build index (stats + pushdown)…} \\
+Display & \ui{Opacity}, \ui{Block edges}, \ui{Cut by sections}, \ui{Hide layer} \\
+Arrange & \ui{Move}, \ui{Copy into project}, \ui{Remove layer} \\
+Look & \ui{Style} (copy, paste, save, load), \ui{Properties…} \\
+\bottomrule
+\end{tabularx}
+
+Some items appear only when they make sense: \ui{Reload from disk} on a layer read from a file on disk, \ui{Copy into project} on a layer that lives outside an open project, \ui{Materialize calc column} once the layer has a calculated column, \ui{Lineage…} on a layer that carries a lineage (an opened file has one that names its source; a derived layer's also names the operation that made it). A mesh, a grid or a drillhole layer has a different middle section, with its own tools.
+
+\shot[0.5\linewidth]{start-layer-menu}{The right-click menu of the demo block model. The demo's files are generated in memory and no project is open, so \ui{Reload from disk} and \ui{Copy into project} are not offered.}
+
+A few keys work on the active layer without opening the menu:
+
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+key & does \\ \midrule
+\key{[} \key{]} & step the active layer up or down the list \\
+\key{h} & hide or show it \\
+\key{⇧H} & \emph{solo} it: hide everything else; press again to bring the others back \\
+\key{F2} & rename it \\
+\key{t} & open its attribute table \\
+\key{⇧P} & open its properties \\
+\bottomrule
+\end{tabularx}
+
+\section{Getting around}\label{sec:start-nav}
+The mouse moves the camera, and single keys turn it to a standard direction.
+
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+to & do this \\ \midrule
+Orbit & drag \\
+Pan & right-drag, or \key{Shift}-drag \\
+Zoom & roll the wheel \\
+Fit everything & press \key{f}, or the fit button at the right of the toolbar \\
+Look north, south, east, west & \key{n} \key{s} \key{e} \key{w}. The view is level, and \key{n} means \emph{looking} north. \\
+Plan view & \key{d} (looking down), or click the compass. \key{u} looks up from below. \\
+Perspective or orthographic & \key{o} \\
+\bottomrule
+\end{tabularx}
+
+On a touch screen, one finger orbits, two fingers pinch to zoom and move together to pan, and a twist turns the view.
+
+Use \term{orthographic} projection when distances on screen must be comparable: a scale bar only means something in an orthographic view, and a section reads like a drawing. Use perspective to understand shape.
+
+While you move, micro draws a share of the data each frame and fills in the rest when you stop. On a large file you see the picture sharpen over a second or two. Nothing is missing from the final picture; this is how micro stays responsive at any size (\cref{sec:micro-streaming}).
+
+\begin{tryit}
+With the demo project open:
+\begin{enumerate}
+\item Drag to orbit. Roll the wheel to move in on the pit.
+\item Press \key{d}. You look straight down: a plan view.
+\item Press \key{n}. The camera levels and looks north.
+\item Press \key{o} twice. The view switches to the other projection and back; watch how parallel edges behave in each.
+\item Press \key{f}. The whole scene fits the view again.
+\item Click a block on the cut face. It glows, and the record panel opens on the right with its row: \col{XC}, \col{YC}, \col{ZC}, \col{FE}, \col{SG}, \col{LITO}.
+\end{enumerate}
+\end{tryit}
+
+\subsection{Picking}
+A click on a block, a drillhole interval, a grid node or a point \emph{picks} it. The record panel shows every column of that record, derived ones included. Its \ui{fields ▾} button chooses which columns to list, per layer. A click on a mesh reports the point on its surface.
+
+Picking is the fastest check there is. When a color looks wrong, click the block and read the number.
+
+\subsection{Sections and vertical exaggeration, briefly}
+The demo opens with a section on. \key{x} turns the section off and on. The section's orientation and position are on the right of the instrument rail; \cref{ch:tour} uses them and \cref{ch:sections} explains them.
+
+\ui{Z×} on the same rail stretches the whole scene vertically, so that you can read a flat-lying layer or gentle relief. It changes the picture only. Picking, measuring and sections stay in true coordinates.
+
+\section{The command palette}\label{sec:start-palette}
+Press \key{⌘K} (\key{Ctrl}+\key{K} on Windows and Linux), or click the \ui{⌘K} button in the menu bar. Type a word or two. \key{↑} and \key{↓} move through the matches, \key{Enter} runs one, \key{Esc} closes the palette.
+
+\shot[0.7\linewidth]{start-palette}{The command palette after typing \emph{grade}. It lists the actions that apply to the active layer.}
+
+The palette searches every action micro has, by its name and by related words: \emph{tonnes} finds grade–tonnage, \emph{screenshot} finds \ui{Save viewport PNG}, \emph{drift} finds the swath plot. It leaves out actions that cannot apply right now. With a mesh active you will not be offered grade–tonnage; with nothing selected you will not be offered \ui{Selection → column…}.
+
+\begin{tip}
+If an action you expect is missing from the palette, check which layer is active. The palette is telling you the action does not apply to that layer.
+\end{tip}
+
+\begin{tryit}
+\begin{enumerate}
+\item Click \file{deposit.csv} in the layers panel to make it active.
+\item Press \key{⌘K}, type \code{tonnes}, and press \key{Enter}. The grade–tonnage window of the block model comes to the front.
+\item Click the \ui{ore shell} layer, open the palette again and type \code{tonnes}. \ui{Grade-tonnage…} is not offered, because a mesh has no blocks to weigh.
+\item Type \code{volume} instead. \ui{Mesh QA / volume} is in the list.
+\end{enumerate}
+\end{tryit}
+
+\section{Windows}\label{sec:start-windows}
+Analysis windows, attribute tables and editors float over the view. Each belongs to the layer it was opened from, and you can have several open.
+
+\begin{itemize}
+\item Drag a window by its title bar. Drag it to the left or right edge of the screen and it snaps to that half.
+\item The \ui{–} button minimizes a window to a chip above the status line. Click the chip to bring it back where it was.
+\item The window on top has an amber accent in its title bar. \key{Ctrl}+\key{`} cycles through the open windows.
+\item \menu{View>Windows…} lists every open window, and offers \ui{Cascade} and \ui{Close all}.
+\end{itemize}
+
+Each kind of window remembers its size. Open windows and their settings are saved with the project.
+
+\section{Undo, and the safety nets}\label{sec:start-undo}
+\subsection{Undo}
+\key{⌘Z} undoes the last step, and pressing it again undoes the one before. \key{⌘⇧Z} or \key{Ctrl}+\key{Y} redoes. On a phone, where there is no keyboard, two arrow buttons in the top bar do the same.
+
+What can be undone:
+
+\begin{itemize}
+\item a paint stroke;
+\item a selection that was replaced or cleared;
+\item a change to the filter made in the filter box;
+\item removing a calculated column or a styling rule;
+\item an edit to color classes, and a pasted style.
+\end{itemize}
+
+The status line says what was undone, or \emph{nothing to undo}. While the cursor is in a text field, \key{⌘Z} is that field's own text undo.
+
+Camera moves are not steps and are not undone. To get back to a view, save a \term{bookmark} first (\menu{View>Bookmarks>Save bookmark…}); the demo project has one, \ui{Ore lens — E–W section}, which you can choose from the same menu at any time.
+
+\begin{why}
+Undo covers decisions, not computations. A grade–tonnage run changes nothing, so there is nothing to undo; you change a setting and run it again. A painted block or a replaced selection is a decision you made by hand, and that is what undo protects.
+\end{why}
+
+\subsection{Nothing is lost without asking}
+\begin{itemize}
+\item \textbf{Closing or reloading the tab} asks first if there is work that exists only in this session: a project with unsaved changes, or a layer with painted or calculated columns that is not in a project.
+\item \textbf{Removing a layer} that carries columns of its own names them and asks. So does closing a project with unsaved changes.
+\item \textbf{Deleting a recipe, a bookmark, a scene or a figure} removes a file from the project folder, so micro asks, and names the file.
+\item \textbf{Long jobs can be stopped.} While an export or a conversion runs, a \ui{cancel} button appears beside the status line. A cancelled export writes nothing. A cancelled conversion leaves the layer as it was. An analysis window's \ui{Run} button turns into \ui{Cancel} while it scans, and the previous result stays on screen.
+\end{itemize}
+
+One net is always there: micro does not write to the files you open. The worst a mistake inside micro can do is lose work you did in micro.
+
+\begin{caution}
+Outside a project, derived work lives only in the open tab. If you have painted a domain or built calculated columns on a file you dropped in, save a project (\cref{ch:projects}) or export the rows (\menu{Data>Export rows…}) before you close.
+\end{caution}
+
+\section{Settings and help}\label{sec:start-settings}
+\menu{Tools>Settings…} holds the preferences of this machine: the theme (dark, light, or follow the system), the interface language (English or Português (Brasil)), the background of the 3D view, the render budget, and how the selection tools behave. They are stored in this browser and never inside a project, so a project looks the way each person prefers.
+
+\ui{Help} has two references you will use: \menu{Help>Keyboard \& mouse…} (\key{F1}) lists every key, and \menu{Help>Analysis \& workbench…} summarizes each analysis tool in a paragraph. \Cref{app:keys} is the same key list in print.

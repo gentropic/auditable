@@ -1,0 +1,272 @@
+\chapter{Decorations \& figure export}\label{ch:figures}
+\begin{goals}
+\textbf{In this chapter} you put a scale bar, a north arrow, legends and a title on the 3D view, choose a background for print, export what you see as a PNG sharp enough for a report, and save the whole picture as a recipe that makes the same figure again next month.
+\end{goals}
+
+Sooner or later a view has to leave micro and go into a report. This chapter covers the quick way: dress the view you are looking at and export it. What you see is what you get: the exported image is the viewport with its decorations, framed exactly as on screen — at the screen's own pixels, or rendered again two or three times as finely for print (\cref{sec:figures-export}).
+
+For a laid-out page — several views, charts, tables, captions, a title block, a PDF — use the composer (\cref{ch:composer}). The two do not compete. A decorated export takes ten seconds and suits a slide or an email; a composed page takes ten minutes and suits a signed report.
+
+\section{The decorations panel}\label{sec:figures-panel}
+
+Choose \menu{View>Decorations \& figure…}, or press \key{⌘K} and type \code{decorations}.\sidekey{⌘K}{\code{decorations}, \code{export figure}, \code{figure title}} A small panel opens at the right of the view. It does not dim or block the view: the decorations draw live on the viewport, and you watch them as you adjust them. Every control applies at once. Close the panel with its × when you are done; the decorations stay.
+
+\shot{figures-panel}{The decorations panel beside the view it controls: scale bar, north arrow, title and the model's legend on, on a white background. The view is in perspective, so the scale bar reads \code{\textasciitilde 1 km}.}
+
+The panel has three groups — \ui{decorations}, \ui{legends}, \ui{background} — and a foot with the export controls.
+
+\begin{figure}[htbp]\centering
+\begin{tikzpicture}[font=\sffamily\footnotesize, every node/.style={text=ink}]
+\draw[rule, line width=0.6pt, fill=tint] (0,0) rectangle (11,6.2);
+% model blob
+\fill[ambersoft] (2.4,1.4) .. controls (3.0,3.6) and (5.4,4.4) .. (7.2,3.6) .. controls (8.4,3.0) and (8.0,1.5) .. (6.4,1.2) .. controls (4.8,0.9) and (2.6,0.8) .. (2.4,1.4) -- cycle;
+\node[text=muted] at (5.2,2.4) {the 3D view};
+% title
+\node[font=\sffamily\bfseries\small] at (5.5,5.75) {FE above 55 \% — final pit};
+\node[anchor=north, text=muted] at (5.5,5.45) {title: top center};
+% north
+\draw[ink, line width=0.8pt, -{Stealth[length=2.2mm]}] (10.1,4.5) -- (10.3,5.5);
+\node[font=\sffamily\bfseries\scriptsize] at (10.38,5.82) {N};
+\node[anchor=east, text=muted] at (9.85,5.05) {north arrow};
+% legend
+\foreach \k/\c in {0/amber, 1/amberlight, 2/ambersoft} \fill[\c] (9.25,3.6-\k*0.42) rectangle (9.55,3.9-\k*0.42);
+\node[anchor=west, font=\sffamily\scriptsize] at (9.6,3.75) {≥ 60};
+\node[anchor=west, font=\sffamily\scriptsize] at (9.6,3.33) {50–60};
+\node[anchor=west, font=\sffamily\scriptsize] at (9.6,2.91) {< 50};
+\node[anchor=west, font=\sffamily\scriptsize] at (9.2,4.15) {FE};
+\node[anchor=east, text=muted] at (9.1,3.3) {legends stack};
+\node[anchor=east, text=muted] at (9.1,2.95) {down the right};
+% scale bar
+\draw[ink, line width=0.9pt] (0.5,0.55) -- (2.5,0.55); \draw[ink, line width=0.9pt] (0.5,0.42) -- (0.5,0.68); \draw[ink, line width=0.9pt] (2.5,0.42) -- (2.5,0.68);
+\node[anchor=south west, font=\ttfamily\scriptsize] at (0.45,0.6) {200 m};
+\node[anchor=west, text=muted] at (2.8,0.55) {scale bar: bottom left};
+\end{tikzpicture}
+\caption{Where each decoration sits. The positions are fixed, so every figure exported from micro reads the same way.}\label{fig:figures-layout}
+\end{figure}
+
+\section{Scale bar, north arrow and title}\label{sec:figures-basic}
+
+\paragraph{\ui{Scale bar}} draws a bar at the bottom left with its length above it. The length is always a round number — 1, 2 or 5 times a power of ten — chosen so the bar spans roughly a fifth of the view, and it changes as you zoom. Lengths of a kilometer or more are written in km.
+
+The bar is exact only in an orthographic view, where one length on screen is one length in the world everywhere. In a perspective view distant things are smaller, and the bar is true only at the depth of the point you are orbiting. micro says so by putting a tilde in front of the length: \code{\textasciitilde 200 m}.\side{Switch to an orthographic view before exporting a figure anyone will measure from (\cref{ch:sections}).}
+
+% micro bug (reported 2026-11-23): deco.js drawNorthArrow reads view[9] where view[5] is meant, so the
+% overlay arrow points up in a horizontal view looking north and mis-points in a rotated plan; the text
+% below describes the intended behaviour
+\paragraph{\ui{North arrow}} draws an arrow at the top right pointing where north lies on the screen, and turns as you orbit. When you look exactly along north–south, in a horizontal view, north points into or out of the screen and there is no arrow to draw; it disappears until you turn.
+
+\paragraph{\ui{Title}} puts a line of bold text at the top center. Type it in the field beside the checkbox: typing turns the title on, and clearing the field turns it off. The same title can be set from the palette with \emph{Set figure title…}.
+
+\begin{note}
+The scale bar, north arrow and title are remembered by this browser, not by the project: they are how \emph{you} like your view dressed, and they are still on tomorrow, whatever you open. Legends are different — see below.
+\end{note}
+
+When the layer properties panel is docked on the right, the north arrow and the legends shift left by its width so that they are never hidden under it.
+
+\section{Legends}\label{sec:figures-legends}
+
+A legend belongs to a layer. The \ui{legends} group lists every visible layer whose color means something, each with a checkbox and a field for its caption. Tick as many as you need: they stack down the right-hand side, one under another.
+
+A layer in a solid color, or one showing the colors stored in its file, has nothing to explain and is not listed. If nothing is listed, the group says \emph{no coloured layers to key}.
+
+A legend always describes the layer exactly as it is drawn, because the drawing and the legend read the same description of the layer's color. What it looks like follows the layer's color mode (\cref{ch:color}):
+
+\begin{table}[htbp]\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+the layer is colored by & its legend \\ \midrule
+a continuous ramp & A vertical bar with the high value on top, the low at the bottom and a mid value between. If the range is clipped, the ends read \code{≥ 65} and \code{≤ 30}: values beyond them share the end colors. If the ramp is stretched through breaks, ticks mark where the colors bend. \\
+classes & One swatch per class, the highest on top. A class you have hidden is not drawn, so it is not listed. \\
+categories & One swatch per category, with the labels and colors of the layer's classes tab; hidden categories are left out. \\
+rules & One swatch per rule, by name, then \emph{everything else}. \\
+a painted column & One swatch per value. \\ \bottomrule
+\end{tabularx}
+\caption{What a legend shows, by color mode.}\label{tab:figures-legends}
+\end{table}
+
+When the colored column has blanks and they are shown, the legend ends with a \emph{no data} swatch in the no-data color. A list longer than twelve entries shows the first twelve and \emph{+N more}.
+
+\paragraph{Captions.} Each legend is captioned with the name of the colored attribute — \col{FE}, \col{LITO}, \emph{elevation}. Type in the field beside the layer to replace it; the placeholder shows what the default would be. When two layers with legends are colored by attributes of the same name — the model's \col{FE} and the drillholes' \col{FE} — micro adds the layer's name to each caption so you can tell whose is whose. A long caption is cut with an ellipsis to fit the legend column.
+
+Legends are saved with the project, layer by layer, along with their captions.
+
+\begin{tryit}
+\begin{enumerate}
+\item Open the demo project and choose \menu{View>Decorations \& figure…}.
+\item Tick \ui{Scale bar} and \ui{North arrow}. Orbit the view: the arrow turns, and the bar's length stays a round number.
+\item Under \ui{legends}, tick \file{deposit.csv}. A ramp legend for \col{FE} appears on the right.
+\item Tick the drillholes too. They are also colored by \col{FE}, so both captions now carry their layer's name.
+\item In the title field type \code{Demo deposit — FE, E–W section}.
+\item Open the model's styling and switch \col{FE} to classes (\cref{ch:color}). The legend changes from a bar to swatches at once.
+\end{enumerate}
+\end{tryit}
+
+\section{Background}\label{sec:figures-bg}
+
+The \ui{background} group is a row of swatches and a color picker:
+
+\begin{table}[htbp]\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+swatch & background \\ \midrule
+\emph{match the theme} & basalt in the dark theme, a light gray in the light one; it changes when you switch theme. The default. \\
+\emph{basalt} & micro's dark gray, whatever the theme \\
+\emph{black} & pure black — for a projector \\
+\emph{white} & pure white — for print \\
+\emph{paper} & a warm off-white, easier on the eye than pure white \\
+the color picker & any color \\ \bottomrule
+\end{tabularx}
+\caption{Background choices. Hover a swatch for its name.}\label{tab:figures-bg}
+\end{table}
+
+The decorations watch the background. On a light one their ink flips from white to near-black, and the faint backing behind each label flips with it, so a scale bar set up on basalt is still readable when you switch to white.
+
+\begin{tip}
+For a figure that will be printed, choose \emph{white} or \emph{paper} before you fine-tune the colors. A ramp that reads well on basalt can look washed out on white, and it is better to find that out on screen.
+\end{tip}
+
+\begin{caution}
+In an exploded view, where layers are drawn displaced from each other (\cref{ch:sections}), any figure with decorations carries a line at the bottom saying so: distances between displaced layers are not real, and a scale bar beside them would otherwise claim they were.
+\end{caution}
+
+\section{Export figure}\label{sec:figures-export}
+
+At the foot of the panel, choose a \ui{Resolution} and press \ui{Export figure (PNG)}. The palette has the same action, \emph{Export figure (PNG)…}.
+
+\begin{table}[htbp]\small
+\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+setting & meaning & default \\ \midrule
+\ui{Resolution} & \ui{1× (screen)}: the image has the viewport's pixels. \ui{2×} and \ui{3×} render the scene again with two or three times as many pixels each way. & 1× \\ \bottomrule
+\end{tabularx}
+\caption{The export control. The choice is remembered.}\label{tab:figures-export}
+\end{table}
+
+The image is named \file{figure\_} plus the active layer's name without its extension — \file{figure\_deposit.png} on the demo — and arrives the way every export from micro does: as a download (inside the Android shell, into Downloads; \cref{ch:sealed}).
+
+Two properties of the export matter.
+
+\paragraph{It is finished.} micro draws a big model progressively, refining the picture over a second or two after you stop moving. An exported figure is always rendered to completion first, at any resolution. You never export a half-drawn frame.
+
+\paragraph{Higher resolution is sharper, not different.} At 2× and 3× the scene is rendered into a larger image and the point sizes and edge shading scale with it. The figure has the same framing and the same look, with finer detail. For print, the arithmetic is the usual one: a viewport 1400 pixels wide exported at 3× is 4200 pixels, which is 14 inches at 300 dpi.
+
+Nothing leaves your machine. The export is made in the page and handed to you; there is no upload (\cref{ch:sealed}).
+
+\begin{tryit}
+\begin{enumerate}
+\item With the decorations from the last exercise on, click the \emph{white} swatch. The decorations turn dark.
+\item Set \ui{Resolution} to \ui{2×} and press \ui{Export figure (PNG)}. The status line says \emph{rendering figure 2×…} and then names the file, \file{figure\_deposit.png}.
+\item Open the PNG. Compare its legend with the view: same colors, same breaks, same caption.
+\end{enumerate}
+\end{tryit}
+
+\shot{figures-export}{An exported figure at 2×: the demo's E–W section seen square-on in an orthographic view, on white, with a scale bar, a classed grade legend and a title, exactly as they stood on the view. A vertical section looking north has no north arrow to draw, so it is off here.}
+
+\section{Figure recipes}\label{sec:figures-recipes}
+
+A figure you make every month should not be rebuilt by hand every month. \ui{save as recipe…}, at the foot of the panel, stores the whole picture as a \term{figure recipe} in the project's \file{recipes/} folder (\cref{ch:recipes}). Recipes are files in a project, so open or save a project first.
+
+A figure recipe captures:
+
+\begin{itemize}
+\item the \emph{camera} — where it looks from and at, perspective or orthographic, and the vertical exaggeration;
+\item the \emph{section} — its mode, position, thickness and orientation;
+\item each layer's \emph{cut mode}, where it is not the default, by layer name;
+\item the \emph{decorations} — scale bar, north arrow, title and its text;
+\item the \emph{background} and the \emph{resolution}.
+\end{itemize}
+
+Run it from \menu{Tools>Recipes} and micro applies all of that, renders the figure to completion, exports the PNG — and then puts everything back. Your camera, section, decorations and background are exactly as they were before you ran it. A recipe borrows the view; it does not take it.
+
+The file is plain YAML, and you may edit it:
+
+\begin{lstlisting}[language=yaml]
+# micro recipe — figure. Hand-edit freely; series reference layers by NAME.
+name: "monthly E-W section"
+tool: "figure"
+params:
+  camera:
+    target:
+      - 613000
+      - 7765450
+      - 650
+    radius: 1850
+    theta: 1.5708
+    phi: 0
+    ortho: true
+    zExag: 1
+  bg: "#ffffff"
+  deco:
+    scale: true
+    north: true
+    legend: false
+    title: true
+    titleText: "FE — E-W section"
+  figScale: 2
+  section:
+    mode: "ew"
+    pos: 0.45
+    half: 10
+    clip: "slab"
+    dipDir: 0
+    dip: 90
+  cutModes:
+    - layer: "demo_assay.csv"
+      mode: false
+\end{lstlisting}
+The numbers are illustrative; the keys are the ones micro writes. The camera's \code{target} is the point it orbits, in world coordinates; \code{radius} is the distance to it; \code{theta} and \code{phi} are its two angles. The section's \code{pos} is its position through the data as a fraction from 0 to 1, \code{half} is half the slab's thickness, \code{clip} is \code{slab}, \code{front} or \code{behind}, and \code{dipDir} and \code{dip} are used by the dip mode.
+
+\begin{note}
+A figure recipe does not record which layers are visible, how they are colored, or their filters and legends. It is a camera, a section and a dressing, applied to the project as it stands — which is what lets the same recipe draw next month's model. To pin down the layers and their colors as well, save a scene (\cref{ch:sections}), or put the view in a composer frame, which remembers its whole scene (\cref{ch:composer}).
+\end{note}
+
+\subsection{In a routine}
+
+In a routine a figure recipe is a step like any other, and one extra setting matters: \code{out}, the path in the project where the PNG is written. Without it an interactive run downloads the image; with it the file lands in the project and is listed in the run's record with its hash (\cref{ch:routines,ch:records}).
+
+\begin{lstlisting}[language=yaml]
+name: "month end"
+tool: "routine"
+params:
+  steps:
+    - tool: "modelqa"
+      with:
+        layer: "deposit.csv"
+      as: "mq"
+    - check: "mq.errors = 0"
+    - recipe: "monthly E-W section"
+      with:
+        out: "figures/ew-section.png"
+        figScale: 3
+\end{lstlisting}
+
+Settings under \code{with:} override the recipe's own, so one saved view can be exported at several resolutions or under several titles. Inside an \code{each} block the path can carry the row's value — \code{out: "figures/ew-\$level.png"} — to write one figure per row; for a page per section in a single PDF, an atlas is the better tool (\cref{ch:atlas}).
+
+\begin{table}[htbp]\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+setting & meaning \\ \midrule
+\code{camera} & the view; left out, the current camera is used \\
+\code{section} & the section; left out, the current section stays \\
+\code{cutModes} & per-layer cut modes, by layer name \\
+\code{deco} & \code{scale}, \code{north}, \code{title} (true or false) and \code{titleText} \\
+\code{bg} & the background, \code{"auto"} or a color such as \code{"\#ffffff"} \\
+\code{figScale} & the resolution multiplier: 1, 2 or 3 \\
+\code{out} & where to write the PNG, a path in the project \\ \bottomrule
+\end{tabularx}
+\caption{Settings of the \code{figure} tool.}\label{tab:figures-tool}
+\end{table}
+
+\section{Other ways out of the view}\label{sec:figures-other}
+
+Three other exports start from the same view.
+
+\begin{description}
+\item[Section series] With a section on, \menu{View>Section series…} renders the section again and again across the data — from, to, every so many meters — each sheet a finished figure with the decorations on and its position in the title, collected into one zip (\cref{ch:sections}). As a routine tool it is \code{sections}.
+\item[Turntable video] A turning model for a slide (\cref{sec:figures-turntable}).
+\item[Plots] Every analysis window has its own \ui{⤓ png}, \ui{⧉ copy} and \ui{⧉ table} buttons for its chart and its numbers, and \ui{⇥ figure} to send them to the composer (\cref{ch:analysis}).
+\end{description}
+
+\subsection{Turntable video}\label{sec:figures-turntable}
+
+A model you want to show rather than print — on a slide, in a meeting — reads better turning. \ui{record turntable video…}, at the foot of the decorations panel (also \menu{View>Turntable video…}), orbits the camera around the point the view looks at and saves the result as a video. A small window asks for the \ui{length} (4, 8, 12 or 20 s), the \ui{turn} (a full turn either way, half a turn or a quarter), the \ui{frame rate} (24, 30 or 60 fps), the \ui{resolution} (1× or 2×) and whether to draw the decorations. Press \ui{Record}.
+
+Every frame is rendered to completion, as an exported figure is, so a two-million-block model records as cleanly as a small one, only more slowly; the video still plays at its stated frame rate. When it is done it plays in the window: check it, then press \ui{Save video}. The file is a WebM (or an MP4, where the browser records that), named after the figure title.
+
+Whichever way a figure leaves, it can be accounted for. A derived layer shown in it carries its lineage, and a figure written by a routine is listed in the run's record with the SHA-256 of the file (\cref{ch:records}) — so the picture in the report can be tied to the data and the steps that made it.

@@ -1,0 +1,671 @@
+\chapter{The composer}\label{ch:composer}
+\begin{goals}
+\textbf{In this chapter} you lay out a page — 3D views, legends, scale bars, charts, tables, captions and a title block — and print it as a vector PDF. You write captions that fill themselves in, lock a view to a scale, print a section as line work, repeat a view as small multiples, build a house style and templates, point a finished figure at next month's data, and learn what the PDF carries inside it.
+\end{goals}
+
+A figure in a report is more than a picture of the model. It is a plan at a stated scale with coordinates on its border, a legend that matches it, the grade–tonnage curve beside it, a caption that says which section and how many blocks, and a title block with a drawing number. Assembling that in a drawing program takes an afternoon, and the result is dead: when the estimate changes, you start again.
+
+The \term{composer} is micro's page. You place \term{frames} on it, and each frame knows where its content came from: a 3D view remembers its camera, section, layers and colors; a chart remembers the analysis that drew it; a caption computes its own numbers. So a figure can be made again — with new data, at another resolution, once per bench — without being redrawn.
+
+The chapter follows the order in which a page is built:
+
+\begin{itemize}
+\item the window, the page and handling frames (\cref{sec:compo-window,sec:compo-frames}), and the inspector that edits one frame (\cref{sec:compo-inspector});
+\item each kind of frame (\cref{sec:compo-kinds}), and captions that fill in their own numbers (\cref{sec:compo-fields});
+\item what turns a view into a drawing: a stated scale and coordinates (\cref{sec:compo-drawing}), line work (\cref{sec:compo-vector}), a key plan (\cref{sec:compo-keyplan}) and small multiples (\cref{sec:compo-multiples});
+\item house properties and title blocks (\cref{sec:compo-house});
+\item keeping a figure current, pointing it at other data (\cref{sec:compo-refresh}), and templates (\cref{sec:compo-templates});
+\item export, by hand (\cref{sec:compo-pdf}) or from a routine (\cref{sec:compo-routine}).
+\end{itemize}
+
+If you only need one page today, read as far as the first exercise in \cref{sec:compo-kinds} and come back for the rest.
+
+\section{Figures and the composer window}\label{sec:compo-window}
+
+Open the composer with \menu{File>Composer…}, or \key{⌘K} and \code{composer}. It opens on the current figure, or creates \emph{figure 1}: an A4 landscape page with 12 mm margins. Once a project has figures, \menu{File>Figures} lists them by name, a ★ beside each template.
+
+\shot{compo-window}{The composer: the figure bar on top, the page bar below it, the page on its desk with dashed margins, and at the right the frame list above the inspector of the selected view frame, ending in its \ui{fit}, \ui{coords}, \ui{scale} and \ui{captions} rows.}
+
+A \term{figure} is one page with its frames. In a project it is a file, \file{figures/}\emph{name}\file{.compo.json} — plain JSON with each view's last render stored inside, so a figure opens instantly without rendering anything (\cref{ch:projects}). Edits are saved as you make them. Without a project a figure lives for the session only.
+
+\begin{figure}[htbp]\centering
+\begin{tikzpicture}[font=\sffamily\footnotesize, every node/.style={text=ink}, >=Stealth]
+% page
+\draw[rule, line width=0.6pt, fill=white] (0,0) rectangle (9.6,6.8);
+\draw[info, dashed, line width=0.4pt] (0.4,0.4) rectangle (9.2,6.4);
+% view frame
+\draw[amber, line width=0.9pt, fill=tint] (0.6,1.9) rectangle (6.3,6.2);
+\node[text=amber, font=\ttfamily\footnotesize, anchor=north west] at (0.65,6.15) {view-1};
+\node[text=muted] at (3.45,4.1) {3D view};
+\node[text=muted, font=\sffamily\scriptsize] at (3.45,3.65) {remembers its scene};
+% legend
+\draw[ink, line width=0.5pt] (6.6,4.6) rectangle (8.0,6.2);
+\node[font=\ttfamily\scriptsize, anchor=north west] at (6.62,6.18) {legend-2};
+% north
+\draw[ink, line width=0.5pt] (8.3,5.3) rectangle (9.0,6.2);
+\node[font=\ttfamily\scriptsize] at (8.65,5.75) {N};
+% scale bar
+\draw[ink, line width=0.5pt] (0.6,1.35) rectangle (2.6,1.75);
+\node[font=\ttfamily\scriptsize] at (1.6,1.55) {scale-3};
+% caption
+\draw[ink, line width=0.5pt] (2.9,1.25) rectangle (6.3,1.75);
+\node[font=\ttfamily\scriptsize] at (4.6,1.5) {text-4: \{fig\} \{section\}};
+% chart
+\draw[ink, line width=0.5pt] (6.6,2.3) rectangle (9.0,4.3);
+\node[font=\ttfamily\scriptsize, anchor=north west] at (6.62,4.28) {chart-5};
+\draw[amber, line width=0.7pt] (6.8,3.9) .. controls (7.4,3.7) and (7.9,2.9) .. (8.8,2.55);
+% title block
+\draw[ink, line width=0.5pt] (6.3,0.5) rectangle (9.1,1.95);
+\foreach \y in {0.85,1.2,1.55} \draw[ink, line width=0.3pt] (6.3,\y) -- (9.1,\y);
+\node[font=\ttfamily\scriptsize] at (7.7,1.75) {title block};
+% refers-to links
+\draw[info, dashed, ->, line width=0.5pt] (1.6,1.75) -- (1.6,2.35);
+\draw[info, dashed, ->, line width=0.5pt] (4.6,1.75) -- (4.6,2.35);
+\draw[info, dashed, ->, line width=0.5pt] (6.6,5.4) -- (5.9,5.4);
+\draw[info, dashed, ->, line width=0.5pt] (8.3,5.75) .. controls (7.6,6.6) and (6.2,6.6) .. (5.6,6.2);
+% side notes
+\node[anchor=west, text=info] at (9.9,5.9) {margins (dashed)};
+\node[anchor=west, text=amber] at (9.9,5.3) {a frame: a box in mm,};
+\node[anchor=west, text=amber] at (9.9,4.95) {a kind, an id, a source};
+\node[anchor=west, text=info] at (9.9,4.2) {dashed arrows:};
+\node[anchor=west, text=info] at (9.9,3.85) {“refers to”};
+\node[anchor=west, text=muted] at (9.9,3.1) {units: millimeters};
+\node[anchor=west, text=muted] at (9.9,2.75) {on the page};
+\end{tikzpicture}
+\caption{The page model. A figure is a page with frames; each frame is a box in millimeters with a kind, an id and — for most kinds — a source it can be made from again. A scale bar, a north arrow, a legend and a caption each \emph{refer to} a view frame and take their content from it.}\label{fig:compo-model}
+\end{figure}
+
+\subsection{The figure bar and the page bar}
+
+The top bar, the \emph{figure bar}, acts on the figure as a whole. The second, the \emph{page bar}, starts with the page itself and goes on with the buttons that add and arrange frames (\cref{sec:compo-frames,sec:compo-kinds}).
+
+\begin{table}[htbp]\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+control & what it does \\ \midrule
+\multicolumn{2}{@{}l}{\emph{the figure bar}} \\
+the figure list & switch to another figure; a ★ marks a template \\
+\ui{new} & a new figure, named in a prompt, starting from whatever the list beside it says: \ui{blank}, or \ui{from} a template \\
+\ui{rename} / \ui{delete} & rename this figure (its file is renamed too), or delete it after a confirmation \\
+\ui{↻ refresh} & make the figure again with the data as it is now (\cref{sec:compo-refresh}) \\
+\ui{⇄ other data…} & make the figure with other layers (\cref{sec:compo-retarget}) \\
+\ui{☆ template} & mark this figure as a template; ★ when it is one (\cref{sec:compo-templates}) \\
+\ui{properties…} & the drawing number, revision and house properties (\cref{sec:compo-house}) \\
+\ui{atlas…} & write a routine that prints this figure once per section level (\cref{ch:atlas}) \\
+\ui{embed figure} & whether the PDF carries the figure inside it; on by default (\cref{sec:compo-pdf}) \\
+the dpi list & 150, 300 or 600 dpi for export; 300 by default \\
+\ui{⤓ pdf} / \ui{⤓ png} & export the page (\cref{sec:compo-pdf}) \\[3pt]
+\multicolumn{2}{@{}l}{\emph{the page bar}} \\
+paper size & A5, A4, A3, A2, Letter, Legal, Tabloid, or \ui{custom} with a width and height in mm; A4 by default \\
+orientation & \ui{portrait} or \ui{landscape} (not offered for a custom size); landscape by default \\
+zoom & \ui{fit}, or 50\% to 200\% \\
+grid & \ui{no grid} (the default), or a grid of 1, 2, 5 or 10 mm that is shown and snapped to \\
+\ui{rulers} & show or hide the rulers along the top and left; shown by default \\ \bottomrule
+\end{tabularx}
+\caption{The figure bar and the start of the page bar.}\label{tab:compo-figbar}\label{tab:compo-page}
+\end{table}
+
+Drag down out of the top ruler, or right out of the left one, to pull a \term{guide} onto the page. Frames snap to guides. Drag a guide to move it, and drag it off the page to remove it. The dashed rectangle is the margin; frames snap to that too.
+
+\section{Working with frames}\label{sec:compo-frames}
+
+The page behaves like a drawing program, and most of it will be familiar.
+
+\begin{itemize}
+\item \emph{Click} a frame to select it; \key{Shift}-click adds or removes one. \emph{Drag on the empty page} to box-select.
+\item \emph{Drag} a frame to move it. It snaps to the margins, to guides, to the edges and centers of other frames, and to equal gaps between them: magenta lines show what it snapped to, and the gap is labeled in mm. Hold \key{Alt} to move freely.
+\item A single selected frame has eight \emph{handles}; drag one to resize. Resizing snaps the same way.
+\item The \emph{arrow keys} nudge the selection by 0.5 mm, or 5 mm with \key{Shift}.
+\item \emph{Double-click} a text frame to edit its text, or a view frame to work on its view (\cref{sec:compo-view}).
+\item \emph{Right-click} a frame for its menu: the frame kind's own items first, then duplicate, group, size, stacking order, lock and delete.
+\end{itemize}
+
+With two or more frames selected, the page bar's buttons come alive: six \emph{align} buttons (left, center, right, top, middle, bottom), two \emph{distribute} buttons (for three or more), and three \emph{match size} buttons — \ui{W=}, \ui{H=} and \ui{▣=} — that give every selected frame the width, height or both of the \emph{first} one you selected. \ui{group} makes the selection one unit that selects and moves together; \ui{ungroup} dissolves it. \ui{front}, \ui{↑}, \ui{↓} and \ui{back} change the stacking order.
+
+\begin{table}[htbp]\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+key & action \\ \midrule
+\key{⌘Z} · \key{⌘⇧Z} or \key{⌘Y} & undo · redo \\
+\key{⌘D} & duplicate the selection \\
+\key{⌘A} & select every frame \\
+\key{⌘G} · \key{⌘⇧G} & group · ungroup \\
+\key{⌘]} · \key{⌘[} & forward · backward one step \\
+\key{⌘⇧]} · \key{⌘⇧[} & to the front · to the back \\
+\key{Delete} or \key{Backspace} & delete the selection (locked frames stay) \\
+arrows · \key{Shift}+arrows & nudge 0.5 mm · 5 mm \\
+\key{Esc} & deselect \\ \bottomrule
+\end{tabularx}
+\caption{Keys on the page. \key{⌘} is \key{Ctrl} on Windows and Linux. They apply while the page has the focus, not while you type in a field.}\label{tab:compo-keys}
+\end{table}
+
+The composer has its own undo history, separate from the 3D view's: \key{⌘Z} on the page undoes page edits only.
+
+\subsection{The frame list}
+
+The upper part of the side panel lists the frames, front first, each with its id and a short description. From here you can:
+
+\begin{itemize}
+\item click a row to select a frame that is hidden behind another;
+\item press ◉ to hide a frame — a hidden frame is neither drawn nor printed — and ◌ to show it again;
+\item press the padlock to lock it — a locked frame will not move, resize or delete;
+\item double-click the id to rename it;
+\item drag a row up or down to restack it.
+\end{itemize}
+
+A group appears as a folder with its members indented. A ⚠ beside a row is the same warning as the badge on the frame (\cref{sec:compo-refresh}).
+
+\section{The inspector}\label{sec:compo-inspector}
+
+Select one frame and the lower part of the side panel becomes its \term{inspector}. The first rows are the same for every kind:
+
+\begin{table}[htbp]\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+row & meaning \\ \midrule
+\ui{id} & The frame's name: \code{view-1}, \code{text-2}, … Rename it to something that means something (\code{plan}, \code{caption}). Letters, digits, \code{-}, \code{\_} and \code{.} are allowed, and ids are unique. Every reference to the frame follows the rename. \\
+\ui{refers to} & For a caption, a scale bar or a north arrow: the view it is about. For a label: the view whose picture its leader is drawn into. \ui{nearest → view-1} names the view that is nearest now; or choose a fixed one (\cref{sec:compo-refers}). \\
+\ui{position} & x and y of the frame's top-left corner, in mm from the page's top-left \\
+\ui{size} & width and height, in mm \\
+\ui{border} & a thin line round the frame \\
+\ui{locked} & the same lock as the padlock in the frame list and \ui{Lock} on the frame's menu: the frame will not move, resize or delete, and shows a small \emph{locked} tag \\ \bottomrule
+\end{tabularx}
+\caption{The inspector's common rows.}\label{tab:compo-inspector}
+\end{table}
+
+Below them come the kind's own rows, described with each kind. A frame that was produced from data ends with the time it was last made: \emph{produced 2026-11-22 14:05}.
+
+Select several frames and the inspector shows how many, reminds you that the first selected is the size key, and offers \ui{locked} for all of them at once.
+
+\subsection{Refers to}\label{sec:compo-refers}
+
+Several kinds of frame are \emph{about} another frame. A scale bar measures a view. A north arrow shows a view's north. A caption's \code{\{section\}} is a view's section. Which view?
+
+By default, the \emph{nearest}: the one whose box is closest to this frame's box. That is nearly always right — the caption under a view means that view — and it stays right when you rearrange the page. Select such a frame and a dashed blue line joins it to the view it refers to, and that view is outlined, so the relationship is never a guess.
+
+When nearest is wrong, set \ui{refers to} to a named frame. And inside a caption you can name a frame for one field alone, with \code{@} and its id: \code{\{scale@plan\}} is the scale of the frame called \code{plan}, wherever the caption sits. This is why renaming frames is worth the few seconds: \code{\{section@north-wall\}} reads better than \code{\{section@view-7\}}.
+
+\section{The frame kinds}\label{sec:compo-kinds}
+
+Most frames are added with a \ui{+} button on the page bar — \ui{+ 3D view}, \ui{+ legend}, \ui{+ scale}, \ui{+ north}, \ui{+ text}, \ui{+ label}, \ui{+ image}, \ui{+ key plan}, \ui{+ resource} and \ui{+ title block}. Charts, tables and stereonets are sent from the windows that made them.
+
+\subsection{3D view}\label{sec:compo-view}
+
+\ui{+ 3D view} puts the current 3D view on the page. The frame is not a screenshot. It:
+
+\begin{itemize}
+\item \emph{remembers its scene} — the camera, the section, which layers are visible, how each is colored and filtered, and the background;
+\item \emph{renders at its own size and shape}, not the window's, so it is never stretched or cropped by accident;
+\item \emph{is rendered again at export}, at the dpi you chose. On screen it shows a lighter preview at about 150 dpi.
+\end{itemize}
+
+Resize the frame freely: it shows more or less of the scene, at the frame's proportions. Its menu (right-click) is where you work with it:
+
+\begin{table}[htbp]\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+menu item & what it does \\ \midrule
+\ui{Update from the 3D view} & replace the frame's scene with what the 3D view shows now \\
+\ui{Show in the 3D view} & the reverse: put the frame's scene on the 3D view \\
+\ui{Re-render at this size} & render again after resizing \\
+\ui{Refresh fields (statistics)} & recompute the statistics its captions ask for \\
+\ui{Vector section (blocks, drillholes, meshes as vectors)} & print the section as vectors (\cref{sec:compo-vector}) \\
+\ui{Small multiples…} & repeat the view (\cref{sec:compo-multiples}) \\
+\ui{Key plan for this view} & add a key plan (\cref{sec:compo-keyplan}) \\ \bottomrule
+\end{tabularx}
+\caption{A view frame's menu.}\label{tab:compo-viewmenu}
+\end{table}
+
+\paragraph{Editing a view in place.} Double-click a view frame. The composer steps aside and the 3D view takes the frame's scene, with a dashed outline in the frame's exact proportions and everything outside it dimmed. Navigate, move the section, change a filter or a color — what is inside the outline is what the frame will show. Press \ui{Done} to capture it, or \ui{Cancel} to leave the frame as it was. Either way your own view is put back afterwards.
+
+The inspector of a view frame has four rows of its own: \ui{fit} (\ui{contain}, \ui{cover} or \ui{fill} — how the render sits in the box), \ui{coords} and \ui{scale}, both described in \cref{sec:compo-drawing}, and \ui{captions} — \ui{in the section} or \ui{whole model} — which says what the counts and statistics in captions about this view cover (\cref{sec:compo-statsscope}).
+
+\begin{why}
+Every operation that renders a frame — an update, a refresh, an export, an atlas page — borrows the 3D view for a moment and then gives it back exactly as it was. A frame keeps its own scene so that it does not depend on what you happen to be looking at, and so that making a figure never disturbs your work.
+\end{why}
+
+\subsection{Legend, scale bar and north arrow}
+
+These three follow a view frame. Select the view first (otherwise they take the topmost view on the page).
+
+\paragraph{\ui{+ legend}} adds one legend frame for each layer the view shows that has a legend — a ramp bar with its ends, or swatches for classes, categories, rules or painted values, exactly as the decorations draw them (\cref{ch:figures}). They are placed in a column to the right of the view. The inspector has one row, \ui{title}; a legend's menu has \ui{Update from the layer}, which re-reads the layer's current colors. A layer in a solid color has no legend, and the status line says so if none of the layers has one.
+
+\paragraph{\ui{+ scale}} adds a scale bar under the view: a four-part bar of a round length, labeled 0 and its length, in m or km. It is computed from the view's scale and the frame's size \emph{each time the page is drawn}, so it stays true when you resize the view. A perspective view has no single scale, and the bar says \emph{no scale (a perspective view)} instead of drawing a wrong one.
+
+\paragraph{\ui{+ north}} adds a north arrow on the view's top-right corner, on a light backing, rotated to the view's north. For a view looking horizontally along north–south it reads \emph{N · out of the page}.
+
+\subsection{Text}
+
+\ui{+ text} adds a text frame holding \code{**Figure \{fig\}.** caption}. Its inspector is a text box and three settings:
+
+\begin{table}[htbp]\small
+\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+setting & meaning & default \\ \midrule
+the text & Line breaks are kept; text wraps to the frame's width. \code{**bold**} makes a bold run. & \\
+\ui{size (pt)} & type size, with the alignment beside it: left, center or right & 9, left \\
+\ui{monospace} & set the text in the monospaced face & off \\
+\ui{fields} & \ui{insert field…} lists every field; choosing one inserts it at the cursor. Hover an entry for what it means. & \\ \bottomrule
+\end{tabularx}
+\caption{A text frame's inspector.}\label{tab:compo-text}
+\end{table}
+
+The page updates as you type. Fields are what make a text frame worth having, and they have a section of their own (\cref{sec:compo-fields}).
+
+\subsection{Label}
+
+\ui{+ label} pins a short text to a \emph{point in the world}, in a view: the selected view frame, or the first one on the page. If you clicked a record in the 3D view in the last ten minutes, the label points at that record; otherwise at the middle of the view. Drag the label's box wherever it reads well: a thin leader runs from the box to the point, ending in a dot. Name a hole, a fault, a pit stage, and the leader stays on it.
+
+Because the label holds world coordinates, not page coordinates, the leader follows the point when the view is rendered again from another angle or at another scale — in a perspective view as well as an orthographic one. If the point falls outside the picture the leader stops at the picture's edge with an arrowhead pointing toward it. The inspector shows the text (fields work in it, as in a text frame), \ui{refers to} — the view the leader is drawn into — and \ui{points at}: the x, y and z, which you can type.
+
+\subsection{Chart and table}
+
+Charts and tables come from the analysis windows. Every one of them — grade–tonnage, swath, stats, scatter and Q-Q, the cross-tab, validation — has a \ui{⇥ figure} button that sends its chart and its table to the current figure (\cref{ch:analysis}).
+
+A \term{chart frame} is not an image. It holds the chart's description — its series, axes and labels — and lays it out afresh at the frame's size every time it draws. Resize it and the chart re-flows: the plot area grows while the text stays the size it was. In the PDF it is vector line work and real text.
+
+A \term{table frame} is set as a book table: a rule above and below, a thin one under the header, no vertical lines, numbers right-aligned, light striping. The type shrinks to fit the frame's width, down to 4.5 pt; rows that do not fit are replaced by a line saying how many more there are, so a table never silently loses its end.
+
+Both remember the analysis that made them — its recipe — which is what lets \ui{↻ refresh} make them again (\cref{sec:compo-refresh}).
+
+\subsection{Resource table}\label{sec:compo-resource}
+
+\ui{+ resource} builds the table most reports are written around: tonnes, grade and metal above a list of cutoffs, by domain and by class. A dialog asks for what it needs:
+
+\begin{table}[htbp]\small
+\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+setting & meaning & default \\ \midrule
+\ui{model} & the block model & the first with a numeric column \\
+\ui{grade} & the grade column & a likely one (\col{AU}, \col{CU}, \col{FE}…) \\
+\ui{cutoffs} & comma-separated, in the grade's units & \code{0, 0.5, 1} \\
+\ui{grade unit} & shown in the column header: \code{g/t}, \code{\%} & blank \\
+\ui{density} & a density column… & a likely one (\col{SG}, \col{DENSITY}) \\
+\ui{… or constant} & …or a constant, used when no column is chosen & 2.7 \\
+\ui{density unit} & t/m3, kg/m3, g/cm3 or lb/ft3 & t/m3 \\
+\ui{group by} / \ui{… then by} & up to two grouping columns, such as domain then class & likely ones, else none \\
+\ui{metal factor} & metal = tonnes × grade × this. For g/t to ounces use 0.0321507; for \% to tonnes, 0.01. & 1 \\
+\ui{metal unit} & shown in the header: \code{oz}, \code{t} & blank \\
+\ui{records} & \ui{all}, or \ui{filter} to count only the blocks the layer's filter keeps & all \\ \bottomrule
+\end{tabularx}
+\caption{The resource table dialog.}\label{tab:compo-resource}
+\end{table}
+
+Press \ui{Add}. The table arrives titled with the model's name and \emph{resources}, tonnes written whole with a space between thousands (\code{2 343 000}), and a note beneath stating the density used, the filter if any, and the number of records. The same computation is available as a window and a routine tool (\cref{ch:resources}).
+
+\subsection{Image}
+
+\ui{+ image} places a picture from a file — a logo, a photograph, a hand sketch. Its inspector has \ui{fit}.
+
+\subsection{Stereonet}
+
+A stereonet sent from the structure window with its \ui{⇥ figure} arrives as a vector graphic with the set statistics printed beneath (\cref{ch:structure}).
+
+\begin{tryit}
+\begin{enumerate}
+\item Open the demo project.
+\item Press \key{d} for a plan view and switch the view to orthographic (\cref{ch:sections}).
+\item Choose \menu{File>Composer…}. Press \ui{+ 3D view}. The plan lands on the page.
+\item With the view selected, press \ui{+ legend}, then \ui{+ scale}, then \ui{+ north}.
+\item Press \ui{+ text}, drag the caption under the view and stretch it to the view's width.
+\item In the inspector, replace the text with\\
+\code{**Figure \{fig\}.** \{layers\} — \{section\}. \{count:,\} of \{total:,\} records, at \{scale\}.}
+\item Rename the view: select it and type \code{plan} in \ui{id}.
+\item In the grade–tonnage window the demo opened, press \ui{⇥ figure}. A chart and its table land on the page. Drag them to the right of the view.
+\end{enumerate}
+You have a figure with a view, its legend, scale and north, a live caption, and the curve beside it.
+\end{tryit}
+
+\section{Fields and captions}\label{sec:compo-fields}
+
+A \term{field} is a word in braces that the page replaces when it draws. Write \code{\{date\}} and the page prints today's date — today's whenever it is printed. Write \code{\{count\}} and it prints how many records the view showed. A caption written with fields describes the figure as it is, not as it was when you typed it.
+
+\subsection{The grammar}
+
+\begin{table}[htbp]\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+form & meaning \\ \midrule
+\code{\{name\}} & a field \\
+\code{\{name:arg\}} & a field with an argument: a date format, a layer's name, a column \\
+\code{\{name:arg:fmt\}} & …and a number format last \\
+\code{\{name@id\}} & …about the frame with that id \\
+\code{\$\{expr\}} & an expression, computed \\
+\code{\$\{expr:fmt\}} & …and formatted \\ \bottomrule
+\end{tabularx}
+\caption{How a field is written.}\label{tab:compo-grammar}
+\end{table}
+
+A word in braces that is not a field is left exactly as you wrote it, so ordinary braces in text survive. A field that cannot be answered says why, in angle brackets — \code{⟨no frame “plan”⟩}, \code{⟨which column? \{mean:AU\}⟩} — instead of printing something wrong or nothing.
+
+\subsection{The fields}
+
+\begin{table}[htbp]\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+field & prints \\ \midrule
+\multicolumn{2}{@{}l}{\emph{the page}} \\
+\code{\{fig\}} & the figure number, counted in page order through the captions that use it — and on across the pages of an atlas \\
+\code{\{page\}} · \code{\{pages\}} & the page number · the page count \\
+\code{\{date\}} & today, as 2026-11-22. With a format: \code{\{date:DD/MM/YYYY\}}, \code{\{date:D MMMM YYYY\}} \\
+\code{\{time\}} & the time, as 14:05. \code{\{time:HH:mm:ss\}} \\
+\code{\{title\}} & the figure's name \\
+\code{\{prop:key\}} & a property: \code{\{prop:client\}}, \code{\{prop:drawing\}} (\cref{sec:compo-house}) \\[3pt]
+\multicolumn{2}{@{}l}{\emph{the view the caption refers to}} \\
+\code{\{scale\}} & its scale, as \code{1 : 2 500}. Orthographic views only; a perspective view prints \emph{no scale (perspective)} \\
+\code{\{section\}} & its section in words: \code{630 RL ± 5}, \code{7 604 125 N}, \emph{a plane dipping 60° toward 270°}, or \emph{no section} \\
+\code{\{look\}} · \code{\{elevation\}} & the bearing it looks toward, \code{045°} · how far above the horizon the eye sits, \code{30°} (90° is plan) \\
+\code{\{layers\}} & the layers it shows, by name \\
+\code{\{count\}} · \code{\{total\}} & records shown after filters, added up over the shown layers — inside the view's section, unless the view counts the whole model (\cref{sec:compo-statsscope}) · records in the shown layers before filters, the whole layers. One layer: \code{\{count:deposit.csv\}} \\
+\code{\{filter\}} & the filter or filters it used, or \emph{no filter} \\
+\code{\{source\}} · \code{\{sha\}} & the files its layers read · a short content hash of each \\[3pt]
+\multicolumn{2}{@{}l}{\emph{statistics over what the view shows}} \\
+\code{\{mean:FE\}} \code{\{median:FE\}} & a column's mean, median… \\
+\code{\{min:FE\}} \code{\{max:FE\}} \code{\{std:FE\}} & …minimum, maximum, standard deviation… \\
+\code{\{n:FE\}} & …and how many of the records counted have a value. Each reads the first shown layer that has the column; name the layer when two share one: \code{\{mean:deposit.csv:FE\}} \\[3pt]
+\multicolumn{2}{@{}l}{\emph{the making}} \\
+\code{\{project\}} · \code{\{micro\}} & the project's name · the build of micro that made the page \\ \bottomrule
+\end{tabularx}
+\caption{The fields. The date format understands \code{YYYY YY MMMM MMM MM M DD D HH mm ss}.}\label{tab:compo-fields}
+\end{table}
+
+\begin{note}
+The view fields describe the \emph{image on the page}: the scene the frame rendered, not whatever the 3D view shows at this moment. \code{\{count:deposit.csv\}} under a view filtered to \code{FE > 55} and cut to one bench is the number of blocks of that bench in that picture. The figure and its caption cannot drift apart.
+\end{note}
+
+\subsection{Number formats}
+
+A number format is the last part of a field, after a colon.
+
+\begin{table}[htbp]\small
+\begin{tabularx}{\linewidth}{@{}llL@{}}\toprule
+you write & you get & \\ \midrule
+\code{\{count\}} & 48213 & no format: up to six significant figures, the whole part never rounded away \\
+\code{\{count:,\}} & 48,213 & a comma groups thousands \\
+\code{\{count:\_\}} & 48 213 & an underscore groups them with a space \\
+\code{\{mean:FE:.2f\}} & 52.37 & \code{.N} is the number of decimals, \code{f} fixed \\
+\code{\{mean:FE:,.1f\}} & 52.4 & grouping and decimals together \\
+\code{\$\{count / total:.1\%\}} & 37.2\% & \code{\%} multiplies by 100 and adds the sign \\
+\code{\{max:FE:.2e\}} & 6.87e+1 & \code{e} is exponent notation \\ \bottomrule
+\end{tabularx}
+\caption{Number formats.}\label{tab:compo-formats}
+\end{table}
+
+\subsection{Statistics}
+
+The statistic fields are computed over the records the view shows, with its filters applied — and, when the view is cut by a section, only over those inside it — when the view frame is rendered. Until then such a field prints \code{…}. After editing a caption to add one, right-click the view and choose \ui{Refresh fields (statistics)}, or re-render the frame. Over a section with nothing in it a statistic prints \code{—} and \code{\{count\}} prints 0. A column that no shown layer carries prints a message naming it.
+
+\paragraph{In the section, or the whole model.}\label{sec:compo-statsscope} A view frame's \ui{captions} row decides what \code{\{count\}}, \code{\{n\}} and the statistics about that view cover. \ui{in the section}, the default (for figures made before the row existed, too), counts what the picture shows: the records inside the view's section. Each record is judged by one point — a block by its centroid, a drillhole interval by its midpoint, a point of a cloud by itself — so neighboring slabs share the blocks out between them and never count one twice: the bench counts of an atlas add up to the model's. A slab thinner than a block still keeps the blocks its plane cuts, since the picture shows them. A half-space (\ui{front} or \ui{behind}) keeps its kept side. A drillhole set shown as whole holes counts the holes the picture draws. A view with no section counts every shown record. So does a layer the section does not cut — a drillhole set left uncut, and every mesh and grid, which add all their vertices or nodes — and \code{\{count\}} adds up the shown layers. To count blocks, name the layer: \code{\{count:deposit.csv:,\} blocks}. (A statistic such as \code{\{mean:FE\}} reads one layer only, the first shown layer that has the column.) \ui{whole model} counts every shown record whatever the section, for a caption that should quote the whole model. Filters apply either way, and the choice is saved with the figure.
+
+\subsection{Expressions}
+
+\code{\$\{…\}} computes. Inside it you can use the view's numbers — \code{count}, \code{total}, \code{section} (the section's position), \code{look}, \code{elevation} — and \code{page} and \code{pages}, in micro's expression language (\cref{ch:filter}). \code{\$\{count / total:.1\%\}} prints the share of the model the picture shows. In an atlas the same braces also read the page's own values, so \code{\$\{level\}} prints each page's bench (\cref{ch:atlas}).
+
+\begin{tryit}
+Continue with the figure from the last exercise. (If you skipped it: open the demo, press \key{d}, \menu{File>Composer…}, \ui{+ 3D view}, then \ui{+ text} under the view.)
+\begin{enumerate}
+\item In the 3D view, cut the model to one bench: in the toolbar's section controls choose \ui{plan} and \ui{slab}, leave the half-thickness at 5, and scrub the slider into the ore lens. Filter the model with \code{FE > 55}. Right-click the view frame and choose \ui{Update from the 3D view}.
+\item Edit the caption to\\
+\code{**Figure \{fig\}.** Bench \{section\}: \{count:deposit.csv:,\} blocks above 55 \% Fe, mean \{mean:FE:.1f\} \% Fe.}
+\item Right-click the view → \ui{Refresh fields (statistics)}. The \code{…} becomes numbers: a few thousand blocks on a bench through the middle of the lens, at a mean near 59 \% Fe.
+\item Select the view and set its \ui{captions} row to \ui{whole model}. The count jumps to 38,357 — every block above 55 \% Fe — at a mean of 58.6 \%; set it back to \ui{in the section}.
+\item Clear the filter in the 3D view. The caption does not change: it describes the frame's scene. \ui{Update from the 3D view} again, and it does.
+\end{enumerate}
+\end{tryit}
+
+\shot{compo-fields}{A caption with fields, selected: the dashed line shows the view it refers to; the inspector shows its text and the \ui{insert field…} menu. The view is cut to the bench at 640 RL ± 5, so the caption counts that bench's blocks above 55 \% Fe — 3,191 of them, at a mean of 58.7 \%.}
+
+\section{Drawing-grade views}\label{sec:compo-drawing}
+
+A view frame knows its projection: for every point of the picture, which world coordinate it shows. That is what lets a label stay on its world point (\cref{sec:compo-kinds}), and two more things follow from it that turn a picture into a drawing: a stated scale and coordinates on the border. Both need an \emph{orthographic} view (\cref{ch:sections}), where one length on the page is one length in the world everywhere; labels work in perspective too.
+
+\subsection{A locked scale}
+
+The \ui{scale} row of a view's inspector shows \ui{1 :} and a field. Left empty, the scale is \emph{free} — the placeholder shows what it currently is — and resizing the frame rescales the picture. Type a number, say \code{2500}, and the scale is \emph{locked} at 1:2500. From then on, resizing the frame changes how much of the model it shows, never the scale; an export and an atlas page hold it too. Clear the field to free it. For a perspective view the field is disabled and reads \emph{perspective}.
+
+\code{\{scale\}} in a caption and a scale bar frame both read the frame's actual scale, so they agree with the lock without being told.
+
+\subsection{Coordinates on the border}
+
+The \ui{coords} row offers \ui{off}, \ui{ticks} and \ui{grid}. \ui{ticks} draws short ticks inside the border with their coordinates — \code{512 300 E}, \code{630 RL} — at round intervals chosen for the scale; \ui{grid} also draws faint lines across the picture. Which axes appear depends on the view: a plan carries eastings and northings, an E–W section eastings and elevations. They are drawn as vectors and text, so they stay sharp in the PDF.
+
+\section{Vector sections}\label{sec:compo-vector}
+
+A rendered section is an image: at 300 dpi it is heavy, and enlarged it shows pixels. A \term{vector section} prints the section as line work instead — every block the section plane cuts, drawn as the exact shape the plane makes of it, filled with its legend color.
+
+Right-click a view frame and choose \ui{Vector section (blocks, drillholes, meshes as vectors)}. The status line reports what was drawn — on the demo's E–W section, for example, “view-1 is a vector section (deposit.csv: 13856 cells from 15568 blocks · holes · demo\_assay.csv: 808 lines from 847 intervals · phase 1 — starter pit: 1 lines · ore shell: 1 lines)”. The same menu item, now reading \ui{Vector section: off (raster)}, turns it back.
+
+\begin{table}[htbp]\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+layer & how it is drawn \\ \midrule
+block model & Each block the plane cuts, as its outline on the plane, in its legend color — a ramp, classes or categories — with the layer's filter applied. Where the plane is square to the blocks the outlines are rectangles and same-colored neighbors merge into one, which keeps a large section small. An inclined plane gives each block its true polygon, of three to six sides. Sub-blocked and rotated models are cut the same way. \\
+drillholes & The intervals inside the section's slab (or on the kept side of a half-space), projected onto the plane and drawn as bands the sticks' width, in their colors. A set shown as whole holes is drawn whole. \\
+mesh & Its cut line: where the plane crosses the surface, in the mesh's tint. A closed solid gives a closed outline. \\
+everything else & Points, grids and the like stay a rendered image, laid over the vectors with a transparent background. \\ \bottomrule
+\end{tabularx}
+\caption{What a vector section draws, layer by layer.}\label{tab:compo-vector}
+\end{table}
+
+\begin{figure}[htbp]\centering
+\begin{tikzpicture}[font=\sffamily\footnotesize, every node/.style={text=ink}, >=Stealth]
+% raster
+\begin{scope}
+\foreach \x in {0,...,7} \foreach \y in {0,...,4} {\pgfmathtruncatemacro\shade{20+mod(\x*13+\y*29,60)} \fill[amber!\shade!white] (\x*0.5,\y*0.5) rectangle ++(0.5,0.5);}
+\draw[rule, line width=0.3pt, step=0.125] (0,0) grid (4,2.5);
+\node[anchor=north, text=muted] at (2,-0.15) {a render: pixels};
+\end{scope}
+\draw[->, rule, line width=0.8pt] (4.5,1.25) -- (5.5,1.25);
+% vector
+\begin{scope}[xshift=60mm]
+\fill[amber!70!white] (0,0) rectangle (1.5,1); \fill[amber!70!white] (1.5,0) rectangle (4,0.5);
+\fill[amber!40!white] (0,1) rectangle (2.5,2); \fill[amber!40!white] (1.5,0.5) rectangle (4,1);
+\fill[amber!20!white] (0,2) rectangle (4,2.5); \fill[amber!20!white] (2.5,1) rectangle (4,2);
+\draw[ink, line width=0.5pt] (0,0) rectangle (4,2.5);
+\draw[ink, line width=0.3pt] (0,1) -- (1.5,1) -- (1.5,0.5) -- (4,0.5);
+\draw[ink, line width=0.3pt] (0,2) -- (2.5,2) -- (2.5,1) -- (4,1);
+\draw[info, line width=1.4pt] (0.9,2.5) -- (1.5,0.2);
+\draw[info, line width=1.4pt] (3.0,2.5) -- (2.7,0.6);
+\node[anchor=north, text=muted] at (2,-0.15) {a vector section: shapes};
+\end{scope}
+\end{tikzpicture}
+\caption{The same section twice. As a render it is a grid of pixels. As vectors, same-colored blocks merge into a few outlines and the drillholes are lines — sharp at any zoom, and editable in a drawing program.}\label{fig:compo-vector}
+\end{figure}
+
+\paragraph{What it needs.} A vector section is a drawing of a plane seen square-on, so the frame must have:
+
+\begin{itemize}
+\item a \emph{section} on its view — any plane: plan, N–S, E–W, a dip and dip direction, or a knife cut (\cref{ch:sections});
+\item an \emph{orthographic} camera;
+\item a camera looking \emph{straight at the plane}, within 5° — a plan from directly above, a vertical section along its strike. Press \key{l} in the 3D view (\emph{Along the section}) to look square at the current section.
+\end{itemize}
+
+If one of these is missing, the frame stays a render and the status line says which, in plain words. A drillhole layer or a mesh that is set not to be cut by the section stays in the render too, and is named.
+
+\paragraph{It is made again every time.} The vectors are rebuilt whenever the frame renders — on a refresh, at export, on every page of an atlas. A hundred-page atlas of vector sections is a hundred pages of line work with no image in it.
+
+\begin{tryit}
+\begin{enumerate}
+\item In the demo project the model is cut by an E–W section. Press \key{l} to look along it, and switch the view to orthographic.
+\item In the composer, press \ui{+ 3D view}, then right-click the new frame → \ui{Vector section (blocks, drillholes, meshes as vectors)}.
+\item Read the status line: 13856 cells from 15568 blocks, and a line each for the starter pit and the ore shell. The demo leaves its drillholes uncut by the section, so the line ends “raster: holes · demo\_assay.csv: not cut by the section”. The fans cross this section, so set the drillholes to follow it (\menu{Cut by sections (off)>follow the section} on their menu, \cref{ch:sections}) and choose \ui{Update from the 3D view} on the frame: the holes become vector bands too, 808 of them from 847 intervals.
+\item In the inspector set \ui{coords} to \ui{ticks} and type \code{2000} in \ui{scale}.
+\item Zoom the page to 200\%. The block outlines and the coordinates stay sharp.
+\end{enumerate}
+\end{tryit}
+
+\shot{compo-vector}{The demo's own E–W section as a vector section, at a locked 1:2000 with coordinate ticks: the blocks as colored outlines, two drillholes as bands of interval colors (on another palette, so they read against the blocks), and the ore shell as its orange cut line. \key{l} faces the cut from the north, so eastings run right to left.}
+
+\section{Key plans}\label{sec:compo-keyplan}
+
+A section means little without knowing where it was cut. A \term{key plan} is a small plan of the whole model with the section's line drawn across it.
+
+Select a view that shows a section and press \ui{+ key plan} (or choose \ui{Key plan for this view} from the view's menu). micro adds a small view frame at the bottom right: the same layers and colors as the view it keys, seen from directly above with north up and no section. Across it runs the line of the keyed view's section, with its slab as a band, labeled with the section in words and — if the view has a caption with \code{\{fig\}} — its figure number: \emph{Fig 3 · 7 604 125 N ± 10}.
+
+With no view selected, the key plan shows the section of every view on the page that is cut by something other than a plan, each in its own color. The key plan's inspector lists them under \emph{shows the sections of:}, with a checkbox each.
+
+The line is read from the keyed view each time the page draws. So on every page of an atlas, as the section steps through the deposit, the line on the key plan moves with it.
+
+\shot[0.7\linewidth]{compo-keyplan}{A section with its key plan: the plan of the whole model at the corner, the section's line and slab across it, labeled with its figure number and northing.}
+
+\section{Small multiples}\label{sec:compo-multiples}
+
+Sometimes the figure is a comparison: the same view colored by four variables, or cut at five levels, or under three filters. Right-click a view frame and choose \ui{Small multiples…}.
+
+\begin{table}[htbp]\small
+\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+setting & meaning & default \\ \midrule
+\ui{vary} & \ui{colour by a column}, \ui{section level} or \ui{filter} & \ui{colour by a column} \\
+\ui{columns} & for a column: tick the columns to color by & the first four \\
+\ui{values} & for sections: the levels, comma-separated (\code{600, 620, 640}). For filters: the expressions, separated by semicolons (\code{FE > 50; FE > 60}) & \\
+\ui{axis} & for sections: \ui{z (plan)}, \ui{x (N–S)} or \ui{y (E–W)} & z \\
+\ui{thickness} & for sections: the slab's thickness & 10 \\
+\ui{per row} & how many copies across & automatic, near a square \\ \bottomrule
+\end{tabularx}
+\caption{The small multiples dialog.}\label{tab:compo-multiples}
+\end{table}
+
+Press \ui{Make}. The view is replaced by a grid of copies fitted into the box it occupied, each with a centered caption beneath saying which it is — the column's name, the filter, or \code{\{section\}} for a level. The copies form a group, so they move as one; but each is an ordinary view frame with its own scene, so you can ungroup and adjust any one. If the box is too small for that many, the dialog says so; make the view bigger first.
+
+\shot{compo-multiples}{Small multiples: one plan repeated at four bench levels, each captioned with its own section.}
+
+\section{House style and title blocks}\label{sec:compo-house}
+
+\subsection{Properties}
+
+\ui{properties…} opens two short lists.
+
+\begin{description}
+\item[this figure] \ui{drawing no.} and \ui{revision} — they belong to this figure alone.
+\item[the project (every figure)] \ui{company}, \ui{client}, \ui{project}, \ui{prepared by}, \ui{checked by} and \ui{disclaimer} — shared by every figure in the project, and saved in \file{figures/house.json}.
+\end{description}
+
+Captions read them as \code{\{prop:key\}}, with the keys \code{drawing}, \code{revision}, \code{company}, \code{client}, \code{project}, \code{prepared}, \code{checked} and \code{disclaimer}. A figure's own value wins over the project's when both exist. Change the client's name once, and every figure in the project prints the new one.
+
+\subsection{Title block}
+
+\ui{+ title block} lays out a block at the bottom right of the page: six bordered rows, grouped.
+
+\begin{lstlisting}
+**{prop:company}**
+{prop:project} · {prop:client}
+**{title}**
+drawing {prop:drawing} · rev {prop:revision} · {date}
+prepared {prop:prepared} · checked {prop:checked}
+scale {scale} · page {page} of {pages}
+\end{lstlisting}
+
+Each row is an ordinary text frame, so the block is yours to change: ungroup it, reword a row, delete one, add a logo with \ui{+ image}, then group it again. Fill in the properties and the block fills itself.
+
+\shot[0.6\linewidth]{compo-titleblock}{A title block filled from the figure's and the project's properties.}
+
+\section{Figures that know their data}\label{sec:compo-refresh}
+
+When a view frame renders, it records what it showed: each layer's name, its file, and a hash of the file's content. Charts, tables, resource tables and stereonets record the same for the layers they read. A figure can therefore tell whether it still matches the data.
+
+\begin{description}
+\item[\emph{older data}] A badge on a frame when a layer it used is now a different file — a new estimate was loaded under the same name. Hover it for the detail: which layer, the hash it was made from, the hash now.
+\item[\emph{data not loaded}] The layer the frame used is not loaded at all.
+\end{description}
+
+The same warning shows as ⚠ in the frame list.
+
+\ui{↻ refresh} makes the figure again with the data as it is now:
+
+\begin{itemize}
+\item every 3D view is rendered from its own scene;
+\item every chart and table is recomputed from the analysis that made it — grade–tonnage, swath, stats, scatter and Q-Q — without opening a window;
+\item every resource table is recomputed from its settings;
+\item every stereonet is measured again from the painted sets.
+\end{itemize}
+
+The badges go, and each frame's \emph{produced} time is updated. \menu{File>Figures>Refresh all figures} (or \emph{Refresh all figures} in the palette) does it for every figure in the project.
+
+\begin{caution}
+A refresh recomputes; it does not approve. If this month's model has a new domain, the resource table gains a row and the caption's mean changes. Read a refreshed figure before you sign it — that is what the \emph{produced} time and the \code{\{sha\}} field are there to support.
+\end{caution}
+
+\subsection{Use with other data}\label{sec:compo-retarget}
+
+A refresh follows the same layers. \ui{⇄ other data…} points a figure at \emph{different} ones: last year's report figure, made again for another deposit, or for a model whose file and columns are named differently.
+
+Load the other data first, then press the button. The dialog lists every layer the figure names, each with where it is used — which views, charts and captions — and any filters.
+
+\begin{table}[htbp]\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+control & meaning \\ \midrule
+layer → layer & For each layer the figure used, the loaded layer to use instead. micro proposes a match; \ui{— leave as it is} keeps the original. \\
+column → column & Shown only for columns the new layer \emph{lacks}. micro proposes a likely replacement (\col{DOM} for \col{ZONE}); \ui{— missing} leaves it, and the frame will then say what it could not find. When nothing is missing the dialog says the columns are all there. \\
+view placement & \ui{views move with the data}: each view keeps its size and shifts by the difference between the old and the new data's centers, so a view of the north end still frames the north end. \ui{views scale to the data}: the same, and it also grows or shrinks with the data's extent. A locked scale stays as it is either way. \\
+\ui{as a new figure} & Ticked: the original is untouched and a copy is made, named for the new layer, with its drawing number and revision cleared. Unticked: this figure is changed. \\ \bottomrule
+\end{tabularx}
+\caption{The “use with other data” dialog.}\label{tab:compo-retarget}
+\end{table}
+
+Press \ui{Apply}. micro rewrites every place the figure names its data — the views' scenes and color columns, the legends, the recipes behind charts and tables, the resource table's settings, the statistics in captions — and then refreshes it. The status line reports how many views and data frames were made, and lists anything still missing.
+
+Columns are matched by \emph{name}, never by position: a view colored by \col{CU} is colored by \col{CU} in the new model even if it is the fourth column there and was the seventh before.
+
+\shot{compo-retarget}{Use with other data: one layer matched to a newly loaded model, and one column the new model lacks swapped for its equivalent.}
+
+\section{Templates}\label{sec:compo-templates}
+
+A template is the other half of reuse. Once a page looks the way your reports should — the page size, the title block, the logo, a caption style — press \ui{☆ template}. The button becomes \ui{★ template} and the figure is marked in the list.
+
+To start a figure from it, choose \ui{from} and its name in the list beside \ui{new}, then press \ui{new}. The new figure gets the template's page, frames and properties, with the drawing number and revision cleared for you to fill in. A template remains an ordinary figure; press the button again to unmark it.
+
+\begin{tip}
+A template's view frames carry over too, scenes and all. For a house template that should start empty, delete its views before marking it. For a \emph{report} template that should start full — the standard plan, the two standard sections — keep them, and point the copy at the new data with \ui{⇄ other data…}.
+\end{tip}
+
+\section{Exporting: PDF and PNG}\label{sec:compo-pdf}
+
+Choose a resolution in the figure bar's dpi list (300 by default) and press \ui{⤓ pdf} or \ui{⤓ png}. The file is named after the figure. The dpi is the resolution of the rendered views in a PDF, and of the whole page in a PNG.
+
+Before writing, micro renders every view frame again from its scene at the chosen dpi — 150 for a draft, 300 for print, 600 for fine line work. A very large frame is capped at 6000 pixels on its longer side.
+
+\paragraph{What is vector.} In the PDF, text is text — selectable and searchable. Charts, tables, legends, scale bars, north arrows, coordinate ticks, labels, stereonets and vector sections are line work. Only the rendered 3D views and placed images are pictures. A page built from vector sections and charts has no image in it at all, and a few hundred kilobytes is typical.
+
+\paragraph{PNG} exports the page as one image at the chosen dpi — for a slide, or a system that takes no PDF.
+
+\subsection{The figure inside the PDF}
+
+By default a PDF written by the composer \emph{carries its figure}: the \file{.compo.json} is attached inside the file. Open such a PDF in micro — drop it on the window, or \menu{File>Open…} — and it comes back as an editable figure, added to the project's figures. Its badges tell you at once whether the data you have loaded is the data it was made from, and \ui{⇄ other data…} points it at what you have.
+
+That makes the PDF its own source. A report received a year later, with nothing else, can be opened, checked against the data and made again.
+
+The figure's scenes name its files, its layers and its coordinates. For a deliverable that should hold only the page — a figure for a client, a public filing — untick \ui{embed figure} in the figure bar before exporting. It is on by default; the choice belongs to the figure and is saved with it.
+
+\begin{why}
+A PDF with no figure inside is a picture of a result. A PDF with its figure inside is the result and the way to reproduce it, in one file that any PDF reader still opens normally. It costs a little size. The switch exists because the same property that makes a figure auditable — it names its data — is sometimes exactly what you must not send.
+\end{why}
+
+\begin{tryit}
+\begin{enumerate}
+\item With the figure from the earlier exercises open, press \ui{properties…}. Fill in a company, a client and a drawing number, and press \ui{Save}.
+\item Press \ui{+ title block}.
+\item Leave the resolution at 300 dpi and press \ui{⤓ pdf}.
+\item Open the PDF in any reader. Select the caption's text: it is real text. Zoom into the chart: it stays sharp.
+\item Drop the PDF onto micro's window. It opens as a second figure with the same frames and no badges, because the demo data it was made from is still loaded.
+\end{enumerate}
+\end{tryit}
+
+\section{In a routine}\label{sec:compo-routine}
+
+A figure is printed from a routine with the \code{compo} tool (\cref{ch:routines}). One step renders one page: the named figure, with optional changes to its views for this page only, written to a file of its own (\code{out}) or collected with other pages into one PDF (\code{book}).
+
+\begin{lstlisting}[language=yaml]
+- tool: "compo"
+  with:
+    figure: "plan and section"
+    dpi: 300
+    out: "figures/plan-and-section.pdf"
+\end{lstlisting}
+
+\begin{table}[htbp]\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+setting & meaning \\ \midrule
+\code{figure} & the figure's name; required \\
+\code{view} & changes to the figure's views for this page: \code{section}, \code{camera}, \code{filter} (\cref{tab:atlas-view}) \\
+\code{vars} & values the page's captions can print as \code{\$\{name\}} \\
+\code{dpi} & the resolution of the rendered views, 72 to 600; default 300 \\
+\code{out} & a \file{.pdf} or \file{.png} for this page alone, a path in the project. Inside an \code{each}, put the row's value in the name — \code{out: "atlas/bench-\$level.png"} — or every page overwrites the last \\
+\code{book} & a \file{.pdf} path in the project. Every page that names the same book in a run is collected, in order, and the PDF is written once, when all the steps have finished \\ \bottomrule
+\end{tabularx}
+\caption{Settings of the \code{compo} tool. A step needs \code{out} or \code{book}, and may set both.}\label{tab:compo-tool}
+\end{table}
+
+A \code{compo} step renders the views with the data loaded at that moment, so placed after the steps that update a model it prints the current figure every time the routine runs — and the file is listed in the run's record with its hash (\cref{ch:records}). The page is a copy: the figure in the project is not changed by the run.
+
+Stepping a figure through a deposit, one page per bench or per section, is the subject of the next chapter.

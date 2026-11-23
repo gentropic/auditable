@@ -1,0 +1,248 @@
+\chapter{Block models}\label{ch:blocks}
+\begin{goals}
+\textbf{In this chapter} you open regular, sub-blocked and rotated block models from CSV, Datamine and Parquet files, learn how micro finds the lattice and what it does when there is none, choose a format to keep a model in, and contour a grade shell.
+\end{goals}
+
+To micro a block model is a table with one row per block and three columns that hold the block's centroid. Everything else (the block size, the origin, the counts, whether the model is sub-blocked or rotated) micro works out from the centroids themselves. You do not type a block size. You do not need a definition file beside the CSV.
+
+When micro finds the lattice, it draws every block as a true box, cuts it true on a section, picks it exactly, and offers the analyses that need a volume. When it finds none, the model still opens, as points. Points have no volume, and so no tonnage. This chapter is about the difference, and about how to get from one to the other.
+
+\section{How micro finds the lattice}\label{sec:blocks-lattice}
+
+Opening a delimited model takes two passes over the file. The first reads the three coordinate columns and looks, on each axis, for the spacing that every centroid is a whole number of steps along: that is the block size on that axis, and the smallest centroid is the origin. The second pass streams the blocks to the screen, each placed by its integer position on that lattice.
+
+For the first pass micro needs to know which columns are the coordinates. It recognizes the usual names, and the open dialog lets you correct the choice (\cref{sec:opening-dialog}). It also picks one numeric column to color by and, if there is one, a text column to use for categories; you can change both afterwards (\cref{ch:color}).
+
+The result is on the status line and in file info (\key{i}): the block size on each axis, the counts, and the number of blocks present. A model need not fill its box. The demo's \file{deposit.csv} has no blocks above the pit surface, and missing blocks cost nothing.
+
+\begin{note}
+A row with a blank coordinate is not drawn, since it has nowhere to go, and is not counted as a record by any analysis. A blank is never read as zero (\cref{sec:columns-blanks}).
+\end{note}
+
+\subsection{When there is no lattice}
+
+Some files are not block models, or not regular ones: a model exported with rounded coordinates, a cloud of estimation points, a model whose sub-blocks follow no simple rule. micro does not force a grid onto them. The layer opens as \term{points}: one dot per row, colored, filterable and pickable like any model, with statistics and export available. Grade–tonnage, swath, the cross-tab and grade shells are not offered, because a dot has no volume.
+
+You can also choose points deliberately, for a quick look at a huge model or when you suspect the detected grid is wrong: \ui{Open as} \ui{points} in the open dialog, or \menu{Reinterpret as…>points} on the layer (\cref{sec:opening-openas,sec:opening-reinterpret}).
+
+\section{Looking at a model}\label{sec:blocks-display}
+
+Blocks are drawn as boxes with their real faces, so a model reads as a solid and a thin section reads as a painted wall. Four display choices belong to the model, not to its colors:
+
+\begin{itemize}
+\item \textbf{Block edges} outline every block, and every cut block on a section. \sidekey{⇧B}{block edges on or off, for every model} \key{⇧B} toggles them for the whole view; \ui{Block edges} on a layer's right-click menu overrides that for one model (\ui{auto}, \ui{on}, \ui{off}).
+\item \textbf{Opacity} on the layer's menu (100, 75, 50 or 25\,\%) makes a model see-through, for a shell or drillholes inside it.
+\item \textbf{Boxes or points} for all models at once is in the \ui{View} menu: \ui{Blocks as points} draws fixed splats and is snappier on a weak graphics card; \ui{Blocks as boxes} returns to true faces.
+\item \textbf{Point size} (×1 to ×8) appears on the menu of a model drawn as points.
+\end{itemize}
+
+\Cref{ch:color} covers color, ramps, classes and the legend; \cref{ch:sections} covers sections.
+
+\begin{tryit}
+\begin{enumerate}
+\item Open the demo project and click any block of \file{deposit.csv}. The record panel shows its whole row: \col{XC}, \col{YC}, \col{ZC}, \col{FE}, \col{SG}, \col{LITO}.
+\item Press \key{i}. File info lists the block size and counts micro inferred.
+\item Press \key{⇧B}. Every block is outlined.
+\item Zoom in on the cut face until you can count the blocks along a bench.
+\end{enumerate}
+\end{tryit}
+
+\section{Sub-blocked models}\label{sec:blocks-sub}
+
+A sub-blocked model refines its parent blocks into smaller ones near a contact or a high-grade zone. micro reads these and draws each block at its \emph{true size}, straight from the file.
+
+\begin{figure}[htbp]\centering
+\begin{tikzpicture}[x=9mm, y=9mm, font=\sffamily\footnotesize]
+\foreach \i in {0,1,2,3} \foreach \j in {0,1} \draw[rule, fill=tint] (\i,\j) rectangle ++(1,1);
+\foreach \i in {0,1} \foreach \j in {0,1} \draw[rule, fill=ambersoft] (1+0.5*\i,0.5*\j) rectangle ++(0.5,0.5);
+\foreach \i in {0,1} \foreach \j in {0,1} \draw[rule, fill=ambersoft] (2+0.5*\i,1+0.5*\j) rectangle ++(0.5,0.5);
+\foreach \i in {0,1} \foreach \j in {0,1} \draw[rule, fill=amberlight!60] (2+0.25*\i,1+0.25*\j) rectangle ++(0.25,0.25);
+\draw[amber, line width=0.9pt] (0.6,-0.1) .. controls (1.6,0.4) and (2.0,1.2) .. (3.4,2.1);
+\node[text=muted, anchor=west] at (4.3,1.75) {parent 20 m};
+\node[text=muted, anchor=west] at (4.3,1.25) {sub-block 10 m};
+\node[text=muted, anchor=west] at (4.3,0.75) {sub-block 5 m};
+\node[text=amber, anchor=west] at (4.3,0.25) {the contact};
+\end{tikzpicture}
+\caption{A sub-blocked model in section. micro places every block on one fine lattice, at half the \emph{smallest} block size, and gives each its own dimensions, so a parent and its sub-blocks are each one record, drawn and weighed at their real volume.}\label{fig:blocks-subblocks}
+\end{figure}
+
+\shot{blocks-subblocked}{A sub-blocked model in micro: 20~m parent blocks away from a dipping contact, refined to 10~m and 5~m boxes along it, each drawn at its own size, with block edges on. The status line reads \ui{9,744 sub-blocks · fine 2.5×2.5×2.5 · 3 sizes}.}
+
+Detection is automatic, from the columns that carry each block's size:
+
+\begin{itemize}
+\item In a CSV or Parquet model, three per-block dimension columns: \col{DX} \col{DY} \col{DZ}, \col{XINC} \col{YINC} \col{ZINC}, or \col{DIMX} \col{DIMY} \col{DIMZ}.
+\item In a Datamine \file{.dm} model, \col{XINC} \col{YINC} \col{ZINC} that vary from record to record.
+\end{itemize}
+
+When those are present, micro builds a fine lattice whose pitch on each axis is half the smallest block size there: fine enough that the centroid of every block, parent or sub-block, lands on one of its nodes (\cref{fig:blocks-subblocks}). It collects the distinct block sizes into a short list. The status line reports both, as in \ui{fine 2.5×2.5×2.5 · 3 sizes} for a model of 20, 10 and 5~m blocks, and file info lists the sizes. Each block then needs only one small code to say which size it is, which is why a sub-blocked model costs about the same memory as a regular one.
+
+Everything that works record by record treats a sub-block as an ordinary block: filter, color, pick, statistics, export. The analyses that weigh blocks use each block's own volume, so grade–tonnage and swath do not mistake a 5~m sub-block for a 20~m parent. Join and reconcile aggregate sub-blocks onto a regular grid by the volume each one overlaps (\cref{ch:joins}).
+
+\begin{caution}
+Detection expects the standard export: sub-blocks that halve the parent, and halve again (power-of-two refinement), and at most 256 distinct block sizes. A model refined by odd ratios, or with more sizes than that, opens as points. The grades are all there; only the boxes are missing.
+\end{caution}
+
+\section{Rotated models}\label{sec:blocks-rotated}
+
+A deposit modeled along its strike has lattice axes that are not east, north and up. Its centroids sit on no axis-aligned grid, so the ordinary search fails, and micro then tries a rotated one. If every centroid sits on a rotated lattice, micro tells you and asks:
+
+\begin{quote}
+\sffamily\small\color{ink}deposit.csv isn't on an axis-aligned grid, but every centroid sits on a ROTATED lattice: … Draw it as rotated boxes, or keep the centroids as points?
+\end{quote}
+
+The buttons are \ui{rotated boxes} and \ui{points}. Choose \ui{rotated boxes} and the model draws as true rotated boxes, with exact picking and true sections; the status line gives the azimuth and, for a model tilted out of the horizontal, the tilt.
+
+\begin{why}
+An inferred rotation is never applied silently. A rotation a hundredth of a degree off moves a block two kilometers along the model by a third of a meter, and a wrong one looks entirely plausible on screen. So micro shows what it found and you decide. The answer is recorded in the layer's lineage, where a reviewer can read it.
+\end{why}
+
+\subsection{Declared lattices}
+
+A file can also \emph{state} its lattice instead of leaving it to be inferred. A Parquet file may carry a \code{micro:model} entry in its metadata giving the origin, the three axis directions and the counts; micro writes one when it stores a model, an OMF project supplies one, and any producer can (\cref{ch:host}). A declared lattice is applied without asking, but it is checked against every centroid. If a block falls off the stated lattice, micro refuses the lattice, says so on the status line, and opens the centroids as points.
+
+\subsection{What works on a rotated model}
+
+Everything that works record by record works on a rotated model: filters, statistics, grade–tonnage, swath, the cross-tab, export, and select or flag by a solid. Join and reconcile work between two models that share the same rotated lattice.
+
+Five things are not available yet, and micro refuses each with a reason instead of approximating: resampling between models of different orientation, proportions inside a solid, rotated models that are also sub-blocked, grade shells, and the empty-model creator.
+
+\begin{caution}
+A \emph{Datamine} model with a rotation in its header is a separate case. micro does not yet convert Datamine's rotation, so it draws the model in the model's own unrotated frame and puts a warning on the status line. Volumes, grades and tonnages are right. Positions against other layers — drillholes, topography — are not.
+\end{caution}
+
+\section{Datamine \file{.dm} models}\label{sec:blocks-dm}
+
+A \file{.dm} file stores fixed-width records, so a given field always sits at the same offset inside every record. micro uses that to read one column without touching the others: coloring by \col{FE} reads \col{FE}, a filter on \col{LITO} reads \col{LITO}. On a model with many columns this is several times faster than decoding every record.
+
+The header also names the columns and types them, so there is nothing to sniff and no mapping to confirm. Sub-blocking is detected from the per-record \col{XINC} \col{YINC} \col{ZINC} (\cref{sec:blocks-sub}).
+
+micro reads \file{.dm} and does not write it. To hand a model on, export it as CSV or Parquet (\cref{sec:columns-export}), which also makes micro a \file{.dm} to CSV converter. A \file{.dm} file can instead be half of a \emph{wireframe} (\cref{sec:meshes-dm}).
+
+\section{Parquet models}\label{sec:blocks-parquet}
+
+Parquet is a columnar file format: values are stored column by column, compressed, in blocks of rows called \term{row groups}, with a footer that lists every column's minimum, maximum and blank count for each group. Three properties make it a good home for a block model.
+
+\textbf{It opens from its footer.} The open dialog's description (rows, columns, compression) is read from the last few kilobytes of the file. The model then streams one row group at a time, and nothing decoded is held.
+
+\textbf{Filters skip what cannot match.} For a filter such as \code{FE > 60}, micro reads each row group's maximum of \col{FE} from the footer and skips every group whose maximum is below 60, without reading it. It also reads only the columns the expression names. On a model stored by micro the same trick works in space: a section, a selection box or a solid skips the row groups whose bounding box lies outside it.
+
+\textbf{It is typed and self-describing.} A number is a number; blanks are blanks, not a code. A model micro wrote also records its grid, its extents and its categories in the file, so it reopens without the inference pass of \cref{sec:blocks-lattice}.
+
+\subsection{Store as Parquet…}\label{sec:blocks-optimize}
+
+\index{Parquet!Store as Parquet}\index{optimize to spatial Parquet}
+Right-click a CSV or \file{.dm} model and choose \ui{Store as Parquet…}. The dialog, \ui{store block models as Parquet}, lists the model with its size and block count, and what will happen to it: \ui{→ Morton-sorted (spatial index)}.
+
+\shot[0.75\linewidth]{blocks-store-parquet}{The \ui{store block models as Parquet} dialog for the demo deposit: what will be converted, how, and whether the original stays.}
+
+\term{Morton order} numbers blocks so that blocks close in space are close in the file. Sorted that way, each row group covers a compact piece of the deposit, and its footer entry, the minimum and maximum of X, Y and Z, becomes an entry in a spatial index. That is what makes the spatial skipping above work.
+
+\begin{table}[htbp]
+\small
+\begin{tabularx}{\linewidth}{@{}LLl@{}}\toprule
+setting & meaning & default \\ \midrule
+the checkbox on each row & convert this model & on \\
+\ui{keep the original file in the project} & leave the CSV or \file{.dm} where it is; otherwise it is removed after the Parquet has saved & off \\
+\ui{do this automatically on every save} & shown when the dialog was raised by a project save; makes the conversion standing, for models under 8 million blocks & off \\
+\bottomrule
+\end{tabularx}
+\caption{The \ui{Store as Parquet…} dialog. \ui{Convert} runs it; \ui{Not now} leaves the model as it is.}\label{tab:blocks-optimize}
+\end{table}
+
+The layer swaps to the Parquet file in place. Its styling and filter are re-applied. Painted columns are reordered along with the blocks and stay editable. The layer's lineage records the conversion.
+
+The same conversion is offered when you save a project. Tick \ui{do this automatically on every save} to make it standing; \ui{Not now} asks again in your next session, and a conversion without the tick still asks about the next new model. \menu{Tools>Auto-optimize block models to spatial Parquet on save} shows the standing choice and changes it, and \menu{Tools>Settings…} can set it to never. Models above 8 million blocks are left for the explicit menu command: they sort in bounded memory, so they do not fail, but rewriting a multi-gigabyte file in the middle of a save would be an unwelcome surprise.
+
+\begin{note}
+\ui{Export rows…} can also write Parquet, with a \ui{spatial sort} checkbox for the same Morton order (\cref{sec:columns-export}). Use \ui{Store as Parquet…} to change what the \emph{project} keeps, and \ui{Export rows…} to make a file for someone else.
+\end{note}
+
+\subsection{Build index}
+
+A model you would rather keep as CSV or \file{.dm} can still be made quick to filter. \ui{Build index (stats + pushdown)…} on its menu streams the model once and records, for consecutive stretches of the file, each column's range. A later filter then skips the stretches that cannot match, as Parquet's footer allows. The index is written as a small file beside the model on the next project save (\cref{ch:store}); delete it and micro scans again.
+
+\section{Which format to keep a model in}\label{sec:blocks-which}
+
+Each of the three formats wins somewhere (\cref{tab:blocks-formats}).
+
+\begin{table}[htbp]
+\small
+\begin{tabularx}{\linewidth}{@{}lLL@{}}\toprule
+format & good at & weak at \\ \midrule
+CSV & read by everything; readable by eye; the lingua franca between packages & largest on disk; every number is parsed from text; types and blanks are guessed \\
+Datamine \file{.dm} & opens at once; one column read at a time; typed & micro cannot write it; a rotated model is not placed in world coordinates \\
+Parquet & smallest; typed; filters skip row groups, and regions of space once Morton-sorted; reopens without inference & not readable by eye; not every mining package reads it \\
+\bottomrule
+\end{tabularx}
+\caption{The three block-model formats compared.}\label{tab:blocks-formats}
+\end{table}
+
+A workable rule: \emph{receive} a model in whatever format its author's software writes, \emph{work} on it as Parquet, and \emph{deliver} CSV when the recipient needs it. Accepting the save-time offer does the middle step for you.
+
+Keep the original when it is the record of what you were sent. A project is a plain folder (\cref{ch:projects}); a model and the Parquet micro made from it can sit side by side, and the lineage of the Parquet layer names its source.
+
+\section{Grade shells}\label{sec:blocks-shells}
+
+A \term{grade shell} is the surface that encloses every block at or above a cutoff: the three-dimensional equivalent of a contour line. It answers ``where is the material above 55\,\% Fe, as a shape?'', and it gives you that shape as a solid you can measure and reuse.
+
+Right-click a block model and choose \ui{Grade shell…} (or press \key{⌘K} and type \code{shell}). The window has four settings and one button.
+
+\begin{table}[htbp]
+\small
+\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+setting & meaning & default \\ \midrule
+\ui{column} & the numeric column to contour & the column the layer is colored by \\
+\ui{cutoff (≥)} & the shell encloses every block at or above this value & none — type one \\
+\ui{smoothing} & average each block with its neighbors before contouring: \ui{none (the blocks as they are)}, \ui{light}, \ui{medium}, \ui{strong} & none \\
+\ui{only the filtered blocks} & count only blocks matching the layer's filter as inside; available when the layer has a filter & off \\
+\bottomrule
+\end{tabularx}
+\caption{The grade shell window. \ui{Make shell} builds the mesh.}\label{tab:blocks-shell}
+\end{table}
+
+\ui{Make shell} reads the model and adds a new mesh layer named after what it is, such as \ui{FE ≥ 55 shell}, or \ui{FE ≥ 55 shell (smoothed ×1)} when smoothing was used. The window reports the triangle count and how many blocks ended up inside, as in \ui{62,232 triangles around 11,029 blocks}. Each click makes a new layer, so shells of different settings can be compared side by side.
+
+The surface passes between block centers where the grade crosses the cutoff. Where the model ends, or a block is missing, it closes on the block face. So a shell is always a closed solid, never an open sheet. With smoothing off it shows exactly the blockiness the model has, which is honest and a little ugly; \ui{light} is usually enough to make a shape that reads as geology without moving it far.
+
+\ui{only the filtered blocks} is how you make a shell within one domain: filter the model to \code{LITO = "HEMATITE"}, tick the box, and blocks of other lithologies count as outside whatever their grade.
+
+\begin{tryit}
+Make a high-grade shell in the demo.
+\begin{enumerate}
+\item Right-click \file{deposit.csv} and choose \ui{Grade shell…}.
+\item Leave \ui{column} on \col{FE}, type \code{60} for the cutoff, and click \ui{Make shell}.
+\item The window reports \ui{62,232 triangles around 11,029 blocks}, close to the 11,013 blocks of the demo's \code{HEMATITE} core, and a layer \ui{FE ≥ 60 shell} appears. Hide \file{deposit.csv} with its eye (or press \key{h} with it active) to see the shell by itself.
+\item Set \ui{smoothing} to \ui{light} and click \ui{Make shell} again. A second layer, \ui{FE ≥ 60 shell (smoothed ×1)}, appears with about half the triangles (32,212). Compare the two shells by toggling their eyes.
+\item Right-click a shell and choose \ui{Mesh QA / volume…}: it is watertight, and it has a volume.
+\end{enumerate}
+\end{tryit}
+
+\shot{blocks-shell}{A grade shell on the demo deposit: every block at or above 60\,\% Fe, lightly smoothed and enclosed in a closed mesh, with the model hidden and the four fans of drillholes threading it.}
+
+A shell is a mesh like any wireframe. You can select or flag the model, or the drillholes, against it (\cref{ch:geometry}), read its volume and tonnage in mesh QA (\cref{ch:qa}), restyle it, and export it (\cref{sec:meshes-export}). Its lineage records the column, the cutoff, the smoothing and, when used, the filter.
+
+Shells are built for regular, axis-aligned models. On a rotated or sub-blocked model the command says why it cannot run.
+
+\subsection{In a routine}
+
+The tool is \code{shell}. A re-run replaces the shell an earlier run made instead of adding a copy.
+
+\begin{lstlisting}[language=yaml]
+- tool: "shell"
+  with:
+    layer: "deposit.csv"
+    col: "FE"
+    cutoff: 60
+    smooth: 1
+\end{lstlisting}
+
+\code{smooth} is the number of smoothing passes, 0 to 3, matching \ui{none} to \ui{strong}. An optional \code{name} sets the mesh's name; without it the shell is named as the window names it. Routines are the subject of \cref{ch:routines}.
+
+\section{Related tools}\label{sec:blocks-qa}\label{sec:blocks-new}
+
+Two tools that belong to block models are described elsewhere.
+
+\textbf{Model QA.} Before anyone reports from a model, run \ui{Model QA…} from its menu. It reads the model once and lists what a reviewer should see: duplicate blocks, centroids off the grid, gaps inside a column of blocks, blanks, sentinel codes such as \code{-99} read as numbers, densities outside a plausible range, and outliers. Click a finding to select its blocks; the report changes nothing in the model (\cref{ch:qa}).
+
+\textbf{Empty models and common grids.} \menu{Data>New grid / block model…} makes a model that does not exist yet: a blank lattice to paint domains into, or one that two models of different block sizes can both be compared on. It works from typed parameters, from the extent of a layer, or by covering several compatible models at once (\cref{sec:grids-new}; the reconciliation it serves is in \cref{ch:joins}).

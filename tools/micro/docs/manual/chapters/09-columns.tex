@@ -1,0 +1,222 @@
+\chapter{Tables, columns \& the attribute table}\label{ch:columns}
+\begin{goals}
+\textbf{In this chapter} you open plain tables and Excel workbooks, check and correct what micro decided about each column, tell it how to read detection limits and sentinel values, learn exactly what a blank means, browse rows in the attribute table, and export them to CSV or Parquet with \ui{Export rows…} (\cref{sec:columns-export}).
+\end{goals}
+
+Every dataset in micro is a table. A block model is a table with one row per block; a drillhole layer, one row per interval; a grid, one per node; a mesh, one per vertex. The view shows where the rows are, and the columns say what they are. Most of what micro does (filter, color, statistics, grade–tonnage) is a question asked of columns.
+
+\label{sec:columns-locations}Each of those kinds of row is a \emph{location} of its element (\cref{sec:micro-elements}), and a column belongs to one location. That is why a collar column is not automatically a column of the assays (\ui{Broadcast} carries it across, \cref{sec:dh-broadcast}), and why a mesh's attribute table has one row per vertex, not per triangle.
+
+So it matters what micro thinks a column \emph{is}. A grade column read as text cannot be averaged. A \code{-99} read as a grade drags a mean down. A \code{<0.01} read as a blank loses a sample. This chapter is about those decisions: where micro makes them, where it shows them, and how you change them.
+
+\section{Tables without geometry}\label{sec:columns-tables}
+
+Not everything in a project has coordinates. A cutoff table, a density lookup by lithology, a price deck, the parameter table of a routine, a report exported last month: these are tables and nothing more.
+
+Open a delimited file with no coordinate columns and micro opens it as a \term{table layer}: rows and columns, no geometry. It appears in the layers panel with a \ui{▦} mark where other layers have an eye, since there is nothing to show or hide, and it takes nothing from the view's drawing budget.
+
+Everything that is about data works on it: the attribute table, the filter, calculated columns, \ui{Stats…}, and \ui{Export rows…}. Nothing that is about space is offered, because there are no coordinates to work with: there is no grade–tonnage of a price deck. In a saved project, table files live in the \file{tables} folder.
+
+\ui{Reinterpret as…} crosses the boundary in both directions (\cref{sec:opening-reinterpret}):
+
+\begin{itemize}
+\item A block model or points layer offers \ui{table (drop the geometry)}.
+\item A table whose columns include recognizable coordinates offers \ui{block model (use its X/Y/Z)} and \ui{points (use its X/Y/Z)}.
+\end{itemize}
+
+What a table is \emph{for}, mostly, is to be joined to something. A key join lands a table's columns on a model by a shared column: density by \col{LITO}, a price by element (\cref{ch:joins}). A routine can also read its parameters from a table (\cref{ch:routines}).
+
+\subsection{Excel workbooks}\label{sec:columns-xlsx}
+
+Open an \file{.xlsx} and micro reads it directly. The open dialog describes it, as in \ui{Excel workbook · 3 sheets · 240 rows in “Cutoffs” → tables}. A workbook with several sheets then shows a small window, \ui{sheets}, where you tick the ones you want. All are ticked to begin with. Each sheet becomes a table layer named after the workbook and the sheet, and several sheets arrive in a group named after the file. Empty sheets are skipped.
+
+Column types come from Excel itself. A cell Excel holds as a number is a number, and a date is a date; nothing is guessed again from text.
+
+\begin{why}
+A sheet whose columns happen to be called X, Y and Z might be a block model, or it might be a table about something else. A workbook says nothing about coordinates, so micro never assumes: every sheet opens as a table. Promoting one to geometry is your explicit act, through \ui{Reinterpret as…}, which is offered only when the columns support it.
+\end{why}
+
+The workbook stays the layer's source. The project remembers which sheet each layer came from and reads it again on load, so the spreadsheet can remain where your team already maintains it. Edit the workbook in Excel, save, and choose \ui{Reload from disk} on the layer (\cref{sec:opening-reload}).
+
+A routine addresses a sheet as the file name, a \code{\#}, and the sheet name:
+
+\begin{lstlisting}[language=yaml]
+- each:
+    from: "params.xlsx#Bench targets"
+\end{lstlisting}
+
+\section{Column types}\label{sec:columns-types}
+
+\sidekey{⇧P}{layer properties}
+Open the layer's properties (\key{⇧P}, or \ui{Properties…} on its menu) and choose the \ui{columns} tab. It lists every column with its type: \ui{number} or \ui{text}.
+
+\shot[0.7\linewidth]{columns-tab}{The \ui{columns} tab on the demo's deposit after a scan: each column with its type and its role (\ui{X}, \ui{Y}, \ui{Z}, \ui{color}, \ui{category}); for numeric ones the count, \ui{nulls} (blanks), mean, standard deviation, quartiles and a small histogram; for \col{LITO} its classes by share.}
+
+The type decides what the rest of micro offers for the column. A number can be colored on a ramp, compared with \code{>} in the filter, averaged, and used as a grade. Text gives categories: classes with a legend, \code{=} and \code{in (…)} in the filter, a grouping for statistics.
+
+For delimited files micro decides the type from a sample of the data. For Datamine, Parquet and Excel it reads the type from the file. When the decision is wrong (one stray \code{n/a} far down a grade column, or a numeric rock code you want as categories), right-click the column, or click its \ui{⋮}, and choose \ui{Number} or \ui{Text}. The change is immediate everywhere and is saved with the project. The coordinate columns cannot be retyped.
+
+The same menu has two more choices on block models and drillhole layers: \ui{Use as color channel} for a numeric column, and \ui{Use as category} to make a text column the layer's class column (\cref{ch:color}).
+
+Small badges beside a name mark what a column is: the role of a coordinate column, \ui{ƒ} for a calculated column (\cref{ch:filter}), and \ui{<DL} for a column with detection-limit values, described below.
+
+\subsection{The scan}\label{sec:columns-scan}
+
+Types are decided from a sample; statistics need the whole table. The button at the top of the tab, \ui{scan columns — one pass, every column}, streams the table once and fills in, for each column, the count, mean, standard deviation, quantiles and a histogram. Calculated and derived columns are included. \menu{Data>Scan columns} does the same from the menu. After a scan the button reads \ui{rescan columns}.
+
+A scan of a large model takes as long as one read of the file. It runs in the background; click the running scan to cancel it. A Parquet model shows each column's range and blank count before any scan, because the file's footer already states them (\cref{sec:blocks-parquet}).
+
+You do not need to scan before working. Coloring by a column scans only that column for its histogram, and a filter reads only the columns it names. Scan when you want the overview, or before saving a project, since the statistics are stored beside the file and reopen with it (\cref{ch:store}).
+
+\begin{tryit}
+Read the demo deposit's columns.
+\begin{enumerate}
+\item Open the demo project, make \file{deposit.csv} the active layer, press \key{⇧P} and choose the \ui{columns} tab.
+\item Read the six columns. \col{XC}, \col{YC}, \col{ZC}, \col{FE} and \col{SG} are \ui{number}; \col{LITO} is \ui{text}.
+\item Click \ui{scan columns — one pass, every column}. When it finishes, each numeric column has its statistics: 1,786,620 values, no nulls. \col{FE} has a mean of 24.72, and its histogram shows a tall hump of low-grade waste and, set apart from it, a small group of high-grade ore up to 68. \col{LITO} lists its four classes by share: \code{WASTE} 90\,\%, \code{ITABIRITE} 7\,\%, \code{CANGA} 2\,\%, \code{HEMATITE} 1\,\%.
+\item Right-click \col{SG} and choose \ui{Text}. Its statistics vanish, and \col{SG} leaves the list of columns you can color on a ramp.
+\item Right-click \col{SG} again and choose \ui{Number}. The column is numeric again.
+\end{enumerate}
+\end{tryit}
+
+\section{Detection limits}\label{sec:columns-dl}
+
+A laboratory does not report a value it cannot measure. It writes \code{<0.001} for a value below its detection limit, \code{>10} for one above its upper limit, and a code (\code{BDL}, \code{ND}, \code{LNR}, a lone \code{-}) for no value at all.
+
+Read naively, one \code{<0.001} turns a whole grade column into text. micro recognizes the pattern instead. In a delimited block model, a delimited table, or a drillhole interval file, a column of numbers mixed with these reads as \emph{numeric}, and carries the \ui{<DL} badge\index{detection limit} in the \ui{columns} tab. Hover the badge for how many such values the sample held and how they are being read.
+
+By default micro substitutes when it reads:
+
+\begin{itemize}
+\item \code{<x} becomes \code{x/2}: half the detection limit, the usual convention;
+\item \code{>x} becomes \code{x};
+\item a lab code becomes a blank.
+\end{itemize}
+
+Color, the filter, statistics, grade–tonnage, swath, calculated columns, joins and validation all see the same substituted number. The record panel and the attribute table still show the text as the file had it, so you can always see that a value was qualified. The column scan counts what it substituted, in the form \ui{8 below detection · 2 above · 5 lab codes → blank}.
+
+\subsection{Choosing the rule}
+
+Half the limit is a convention, not a law; commodities and company standards differ. Right-click the column and open \ui{Detection limits \& blanks} (\cref{tab:columns-dl}).
+
+\begin{table}[htbp]
+\small
+\begin{tabularx}{\linewidth}{@{}LLl@{}}\toprule
+choice & meaning & default \\ \midrule
+\ui{<x → x/2 (half the limit)} · \ui{<x → x (the limit)} · \ui{<x → 0} · \ui{<x → blank} & what a below-detection value is read as & half the limit \\
+\ui{>x → x (the limit)} · \ui{>x → blank} & what an above-limit value is read as & the limit \\
+\ui{Negative = below detection (−0.001 → <0.001)} & treat a negative value as below detection at its absolute value & off \\
+\ui{Values that mean blank…} & a list of numbers that mean ``no data'' in this column, such as \code{-99, -999} & none \\
+\bottomrule
+\end{tabularx}
+\caption{\ui{Detection limits \& blanks}, per column. The rule is saved with the project.}\label{tab:columns-dl}
+\end{table}
+
+The negative option is off by default for a reason: some laboratories do write \code{-0.001} for \code{<0.001}, but in most files \code{-99} means missing, and halving it would be absurd. Turn it on when you know the file's convention.
+
+\ui{Values that mean blank…} is how you deal with sentinels. A \code{-99} is a real number until something says otherwise; type it here and it is read as a blank from then on, with everything that follows from that (\cref{sec:columns-blanks}).
+
+A change of rule re-reads the column. Everything derived from the old reading (statistics, the filter's result, the colors) is recomputed, so no number computed under one rule survives under another.
+
+\begin{caution}
+The substitution happens when micro \emph{reads}. Your file is not changed. An export to CSV writes the values as the file had them, \code{<0.001} included, unless you tick \ui{write <x / >x as their substitutes} in the export dialog. An export to Parquet always writes the number, since a Parquet number column cannot hold \code{<0.001}.
+\end{caution}
+
+Datamine, Parquet and Excel columns are typed already and hold only numbers or blanks, so none of this applies to them: \ui{Detection limits \& blanks} is not on their column menu. If such a file carries a sentinel, scrub it with a calculated column instead, \code{nullif(FE, -99)}, which reads \code{-99} as blank and leaves every other value alone (\cref{ch:filter}).
+
+\section{Blanks}\label{sec:columns-blanks}
+
+\index{blank}
+One rule runs through all of micro: \emph{a blank is never a zero.}
+
+A blank grade is unestimated, or unassayed. It is not a grade of nothing. So a blank:
+
+\begin{itemize}
+\item drops out of means, quantiles and histograms: the count of values goes down, not the mean;
+\item adds no tonnage to a grade–tonnage curve at the lowest grade;
+\item is drawn in a neutral gray, or hidden, never as the bottom color of the ramp (\cref{ch:color});
+\item is not matched by a filter such as \code{FE > 0}; to find the blanks themselves, test for them with \code{FE is blank} (\cref{ch:expr}).
+\end{itemize}
+
+Coordinates follow the same rule, more strictly. A block with a blank X, Y or Z is not drawn (it would otherwise land at the origin, far from everything), and it is not a record of any analysis. In drillhole tables a blank coordinate, survey value or depth is dropped and reported (\cref{sec:dh-blanks}).
+
+\begin{why}
+The alternative is a tool that quietly averages unestimated blocks as zero grade. Its numbers are wrong in the conservative-looking direction, where nobody questions them. Leaving blanks out makes every mean a mean of what was estimated. When blanks \emph{should} count as zero (unsampled barren core, by company policy), say so explicitly with a calculated column, \code{coalesce(FE, 0)}. The decision is then written down in the project.
+\end{why}
+
+What counts as blank depends on the format. In delimited text: an empty field, a lab code, and whatever you listed under \ui{Values that mean blank…}. In Parquet, Datamine and Excel files: the format's own missing value.
+
+\section{The attribute table}\label{sec:columns-attrtable}
+
+\sidekey{t}{attribute table of the active layer}
+Press \key{t}, or choose \ui{Attribute table…} on a layer's menu, to see the layer's rows. The table opens as a floating window, titled \ui{table ·} and the layer's name, with the row count beside it. It is pinned to its layer; you can have several open, one per layer.
+
+\shot{attr-table}{The attribute table of the demo deposit, filtered to \code{FE > 64 and LITO = "HEMATITE"} with \ui{matches} ticked: 1,885 of 1,786,620 rows. The highlighted row, record 949,710, is the block picked in the view and shown in the record panel on the right.}
+
+\textbf{It reads only what it shows.} The table fetches the rows on screen from the source file and lets them go again when you scroll away. A model with millions of rows scrolls as readily as one with hundreds, and opening the table costs nothing.
+
+\textbf{Every column is there.} The file's own columns, calculated columns, painted and joined ones. The row header is the record number.
+
+\textbf{The link with the view runs both ways.} Click a row and that record is picked in the scene and shown in the record panel. Pick a block, a sample or a vertex in the scene and the table scrolls to its row.
+
+\textbf{Two view toggles} in the window's title bar narrow the rows:
+
+\begin{itemize}
+\item \ui{matches} shows only the rows matching the layer's current filter;
+\item \ui{selected} shows only the selected rows, those you gathered with the rectangle or lasso (\cref{ch:picking}).
+\end{itemize}
+
+They are alternatives; ticking one unticks the other. The row count becomes \ui{1,204 rows of 1,786,620} while one is on, and the view follows the filter or the selection as it changes.
+
+\textbf{Copying.} Drag across cells and press \key{Ctrl}+\key{C} to copy them, tab-separated, ready to paste into a spreadsheet. The table is read-only. You change values by painting (\cref{ch:picking}) or with a calculated column (\cref{ch:filter}), both of which leave a record of what was done. Typing over a cell would leave none.
+
+The collars and the survey of a drillhole set open as tables from their rows in the layers panel (\cref{sec:dh-set}). A mesh's table lists its vertices (\cref{sec:meshes-records}).
+
+\begin{tryit}
+Find the richest hematite blocks.
+\begin{enumerate}
+\item In the demo project, make \file{deposit.csv} active and press \key{t}.
+\item Click any row. The block lights up in the view, and the record panel fills.
+\item Click a block in the view instead. The table jumps to its row.
+\item Press \key{/}, type \code{FE > 64 and LITO = "HEMATITE"} and press \key{Enter}. The view keeps only those blocks.
+\item In the table's title bar, tick \ui{matches}. The table now lists only those blocks, and its title reads \ui{1,885 rows of 1,786,620}. (Every block above 64\,\% Fe in the demo is hematite, so the second condition removes none.)
+\item Drag over a few rows of the \col{FE} column and press \key{Ctrl}+\key{C}.
+\item Paste into a spreadsheet. The values arrive as a column of numbers.
+\end{enumerate}
+\end{tryit}
+
+\section{Exporting rows}\label{sec:columns-export}
+
+Data leaves micro the way it came in: as rows. \ui{Export rows…} is on every table-backed layer's menu and in the \ui{Data} menu. \Cref{tab:columns-export} lists its settings; \cref{sec:blocks-optimize} explains the Morton order behind \ui{spatial sort}.
+
+\begin{table}[htbp]
+\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+setting & meaning \\ \midrule
+layer & which layer to export \\
+scope & \ui{all}, \ui{filter matches} or \ui{selection}, each with its row count \\
+columns & tick the columns to write; a search box narrows a long list, with \ui{all} and \ui{none} \\
+format & \ui{CSV} or \ui{Parquet} \\
+\ui{delimiter} (CSV) & \ui{comma ,} · \ui{semicolon ;} · \ui{tab}, and \ui{decimal comma} to write \code{61,4} for \code{61.4} \\
+\ui{detection limits} (CSV) & \ui{write <x / >x as their substitutes}; off writes the values as the file had them \\
+\ui{compression} (Parquet) & \ui{snappy (fast)} · \ui{gzip (smaller)} · \ui{none}, and \ui{spatial sort} (ticked to begin with) for a Morton-ordered file \\
+\bottomrule
+\end{tabularx}
+\caption{The \ui{Export rows…} dialog.}\label{tab:columns-export}
+\end{table}
+
+Every column can be exported, including calculated and painted ones. That closes a common loop: paint a \col{DOMAIN} column on a model, export the model with it, and hand it to the estimation software.
+
+The export streams. Writing 1.8 million rows is one pass over the source, and the result is never held whole in memory. Three things follow:
+
+\begin{itemize}
+\item Opening a \file{.dm} and exporting it is a Datamine-to-CSV converter. Opening a CSV and exporting Parquet is a CSV-to-Parquet converter.
+\item Scope \ui{filter matches} makes it a filter-then-export pipeline: the 40,000 blocks of one domain out of a model of millions, without the intermediate file.
+\item A Parquet export carries the layer's lineage inside the file, so the provenance travels with the data (\cref{ch:records}).
+\end{itemize}
+
+\begin{tip}
+For a colleague in Brazil or Europe whose Excel expects them, choose \ui{semicolon ;} and tick \ui{decimal comma}. The file opens in their Excel with numbers as numbers, and opens in micro the same way (\cref{sec:opening-delimited}).
+\end{tip}
+
+Analysis results are exported from their own windows, as tables and figures (\cref{ch:analysis}); meshes and grids from their own commands (\cref{sec:meshes-export,sec:grids-export}).

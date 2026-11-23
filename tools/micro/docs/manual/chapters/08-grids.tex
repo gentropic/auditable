@@ -1,0 +1,240 @@
+\chapter{Grids \& surfaces}\label{ch:grids}
+\begin{goals}
+\textbf{In this chapter} you open GeoTIFF, Surfer and ESRI ASCII grids, show one as shaded relief, as a flat colored sheet, or draped with another grid's values, extend and combine surfaces, turn a mesh into a grid, and create empty grids and block models from parameters.
+\end{goals}
+
+A \term{grid} is a rectangle of evenly spaced nodes with one value at each: an elevation model, a weathering base, a geophysical or geochemical map. Topography is the grid every project has. micro treats a grid as a layer whose records are its nodes.
+
+A surface defined on a grid can be evaluated exactly and fast, so micro also uses grids as the working form of surfaces. The tools in this chapter that extend, combine and rasterize surfaces all produce grids.
+
+\section{Opening a grid}\label{sec:grids-open}
+
+Three formats open as grids (\cref{tab:grids-formats}). Drag the file in or use \menu{File>Open…}; the open dialog describes it. For a GeoTIFF that is its size in pixels, bit depth, number of overviews and coordinate system.
+
+\begin{table}[htbp]
+\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+format & notes \\ \midrule
+GeoTIFF (\file{.tif}, \file{.tiff}) & strips or tiles; uncompressed, LZW, deflate or PackBits; several bands; the overview pyramid of a cloud-optimized file is used \\
+Surfer (\file{.grd}) & the ASCII and the binary form \\
+ESRI ASCII (\file{.asc}) & read, and the format micro writes grids in \\
+\bottomrule
+\end{tabularx}
+\caption{Grid formats.}\label{tab:grids-formats}
+\end{table}
+
+A grid opens as a cloud of its nodes, each at its position with its value as elevation, colored by that value. Every node is a record: click one and the record panel gives its coordinates and value. Blank nodes, those holding the file's no-data value, are not drawn.
+
+The coordinate system named in a GeoTIFF is shown, and kept with the layer as a statement of what the coordinates are. micro does not reproject. A grid in one system and a model in another will not line up; make them agree in a GIS before the file reaches micro.
+
+\subsection{Big grids: display and evaluation}\label{sec:grids-big}
+
+A regional elevation model can have hundreds of millions of nodes. micro separates what it \emph{shows} from what it \emph{computes with}.
+
+\begin{figure}[htbp]\centering
+\begin{tikzpicture}[font=\sffamily\small, node distance=8mm and 10mm,
+  box/.style={draw=rule, fill=tint, rounded corners=1.5pt, minimum height=10mm, inner xsep=3mm, text=ink, align=center, text width=40mm},
+  arr/.style={-{Stealth[length=2mm]}, draw=amber, line width=0.7pt}]
+\node[box] (file) {the grid file\\ {\footnotesize\color{muted}full resolution, on disk}};
+\node[box, above right=2mm and 12mm of file] (disp) {display\\ {\footnotesize\color{muted}an overview, or every $n$th node}};
+\node[box, below right=2mm and 12mm of file] (eval) {evaluation\\ {\footnotesize\color{muted}full resolution, only the window needed}};
+\draw[arr] (file.east) -- (disp.west);
+\draw[arr] (file.east) -- (eval.west);
+\end{tikzpicture}
+\caption{One grid, two reads. What you look at may be thinned; what a calculation reads never is.}\label{fig:grids-two-reads}
+\end{figure}
+
+For display, a grid above about eight million nodes is thinned. A GeoTIFF with overviews is shown through the finest overview that fits; a file without them is read decimated, keeping every $n$th node. The status line says which, giving the overview's size beside the full one.
+
+For evaluation (flagging a model above or below the surface, reading a value at a point, exporting) micro reads the full-resolution values, for only the area the calculation covers. The thinning you see has no effect on any number.
+
+\begin{tip}
+For a large GeoTIFF kept in a project, \menu{Surface tools>Build display cache} on the grid's menu writes the thinned display grid beside the file. The next time the project opens, the grid appears at once instead of being decimated again.
+\end{tip}
+
+\subsection{Bands}
+
+A GeoTIFF can hold several bands: a multi-element geochemical raster, or a stack of geophysical channels. Think of them as the grid's columns. The \ui{style} tab of the layer's properties shows a \ui{band} dropdown when there is more than one; choosing a band re-reads that band from the file. The choice is saved with the project, and every evaluation reads the band you chose.
+
+\section{A grid as a surface}\label{sec:grids-surface}
+
+A cloud of nodes is the honest picture of a grid, but terrain should look like terrain. Right-click the grid and choose \menu{Reinterpret as…>surface (shaded relief)}. The nodes are joined into a solid, shaded surface. \menu{Reinterpret as…>points (elevation)} goes back.
+
+\shot{grids-relief}{The demo's topography, a grid shown as a translucent shaded-relief surface, over the final pit (a mesh) and the sectioned deposit. Both surfaces are set to \ui{don't cut}, so they are drawn whole.}
+
+As a surface, the layer behaves like any mesh (\cref{sec:meshes-style}). While it follows the section it is drawn only as its trace on the cut face; set \ui{Cut by sections} to \ui{don't cut} to see the relief whole over a sectioned model, as in the figure. It takes an opacity (the demo's topography is a 35\,\% veil), and can be picked for the point under the cursor. It gives up the pick of an individual node; reinterpret it as points when you need that.
+
+The \ui{style} tab of a surface's properties has four rows that a plain mesh does not (\cref{tab:grids-style}).
+
+\begin{table}[htbp]
+\small
+\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+setting & meaning & default \\ \midrule
+\ui{band} & which band of a multi-band GeoTIFF is shown & the first \\
+\ui{drape} & what colors the surface: its own \ui{elevation}, or the values of another loaded grid & elevation \\
+\ui{shape} & \ui{flatten} turns the relief into a horizontal sheet at the level typed in \ui{flat @ z} & relief \\
+\ui{shading} & \ui{smooth}, or \ui{faceted (flat)}, which shades each triangle by itself so the grid cells read & smooth \\
+\bottomrule
+\end{tabularx}
+\caption{The \ui{style} tab of a grid shown as a surface.}\label{tab:grids-style}
+\end{table}
+
+\subsection{Drape}
+
+\term{Draping} colors a surface by a \emph{second} grid's values. The shape stays the topography; the color becomes the soil geochemistry, the magnetics, the slope. Choose the source in the \ui{drape} row, or from \ui{Drape} on the surface's right-click menu, which lists \ui{elevation} and every other loaded grid.
+
+The source is sampled by position, at each node of the surface, so the two grids need not share a cell size or an extent. The source must be another grid; load one first if the list offers only \ui{elevation}.
+
+\subsection{Flat sheets}
+
+Not every grid is an elevation. A grade map or a geochemical grid has values that are not heights, and drawing them as relief makes a meaningless landscape. Tick \ui{flatten} and type a level: the grid becomes a horizontal sheet at that elevation, colored by its value. It is a plan map floating in the scene where you put it, at a bench level under the drillholes, say.
+
+Surface, drape, flat level and band are all saved with the project.
+
+\begin{tryit}
+Work with the demo's topography.
+\begin{enumerate}
+\item Open the demo project and press \key{x} to turn the section off; with it on, the topography shows only as its line on the cut face. Right-click \ui{topography} and choose \menu{Reinterpret as…>points (elevation)}. This is the grid as micro read it: nodes.
+\item Click a node. The record panel gives its elevation.
+\item Choose \menu{Reinterpret as…>surface (shaded relief)}. The relief returns.
+\item Open the layer's properties (right-click, \ui{Properties…}) and go to the \ui{style} tab. Set \ui{shading} to \ui{faceted (flat)} and zoom in. The grid's cells show as flat facets. Set it back to \ui{smooth}.
+\item Tick \ui{flatten}. A \ui{flat @ z} box appears, starting at 0, which is far below the demo.
+\item Type \code{950} in the box and press \key{Enter}. The terrain collapses to a sheet just above the model, still colored by elevation. Untick \ui{flatten}.
+\item Set \ui{Z×} on the instrument rail to 3. Every layer stretches together, and the topography's relief becomes easy to read (\cref{ch:sections}).
+\end{enumerate}
+\end{tryit}
+
+\section{Surface tools: extend and combine}\label{sec:grids-tools}
+
+Surfaces from the real world stop short, overlap and disagree. Two tools repair that. Both are on the right-click menu of a surface: under \ui{Surface tools} for a grid, directly on the menu for a mesh. Both open the same dialog, titled \ui{extend surface} or \ui{combine surfaces} by its \ui{mode}, and both produce a new grid layer whose name and lineage record what was done.
+
+\subsection{Extend to footprint…}
+
+A topography that ends 50~m inside the model's edge leaves blocks that are neither above nor below it. \ui{Extend to footprint…} grows a surface to cover a chosen extent.
+
+\begin{table}[htbp]
+\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+setting & meaning \\ \midrule
+\ui{mode} & \ui{extend to a footprint} (or switch to \ui{combine with a rule}) \\
+\ui{surface} & the mesh or grid to extend \\
+\ui{footprint} & the extent to cover: \ui{all layers (union)}, or one layer \\
+\ui{extend by} & \ui{nearest (flat extension)} holds the boundary value outward; \ui{planar trend (continue dip)} continues the fitted dip of the surface \\
+\ui{cell (m)} & the cell size of the result; the node count is shown beside it \\
+\bottomrule
+\end{tabularx}
+\caption{\ui{Extend to footprint…}. \ui{Create} builds the grid.}\label{tab:grids-extend}
+\end{table}
+
+\shot[0.7\linewidth]{grids-surface-tools}{The \ui{extend surface} dialog growing the demo's topography to the footprint of all layers: a 20~m cell gives 117 × 67 nodes.}
+
+\ui{nearest} is the cautious choice for topography, where inventing a slope beyond the survey is worse than assuming flat ground. \ui{planar trend} suits a dipping contact that plainly carries on. The dialog refuses a result above 32 million nodes and asks for a larger cell.
+
+\subsection{Combine surfaces…}
+
+\ui{Combine surfaces…} is offered when at least two surfaces are loaded. It puts them on one grid and resolves every place where more than one has a value, by a rule (\cref{tab:grids-combine}).
+
+\begin{table}[htbp]
+\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+\ui{overlap} rule & use \\ \midrule
+\ui{min — take the lower} & the lower of topography and a weathering base \\
+\ui{max — take the higher} & the upper envelope of several surfaces \\
+\ui{first listed wins (priority)} & patch a new survey into an older topography: list the survey first \\
+\ui{mean} & average the surfaces where they overlap \\
+\bottomrule
+\end{tabularx}
+\caption{The overlap rules of \ui{Combine surfaces…}.}\label{tab:grids-combine}
+\end{table}
+
+The \ui{surfaces} list holds the inputs in order, with \ui{↑} to move one up, \ui{×} to remove it and \ui{+ add surface}. Order matters only for \ui{first listed wins}. \ui{empties} says what to do where no surface has a value: \ui{leave nodata}, \ui{nearest (flat)} or \ui{planar trend}.
+
+\begin{why}
+Both tools produce grids, even when you start from meshes. The tools that consume a surface, such as flagging blocks above and below it or reconciling, evaluate a grid exactly and quickly. Stitching triangle meshes together without gaps or overlaps is a much harder problem, and solving it would add nothing to those answers. When you need the result as a mesh for another package, export the grid.
+\end{why}
+
+\section{From a mesh to a grid}\label{sec:grids-rasterize}
+
+\ui{Rasterize to grid…} on a mesh's right-click menu turns a triangulated surface into a grid. The dialog is titled \ui{mesh → grid}.
+
+\begin{table}[htbp]
+\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+setting & meaning \\ \midrule
+\ui{surface} & the mesh to rasterize \\
+\ui{extent} & \ui{the mesh bounds}, or \ui{match:} an existing grid layer, to land on that grid's lattice \\
+\ui{cell (m)} & the cell size, with the resulting node count beside it \\
+\ui{keep} & where the mesh folds over itself, the \ui{top surface} or the \ui{bottom surface} \\
+\ui{empties} & nodes the mesh does not cover: \ui{leave nodata}, \ui{nearest (flat extension)} or \ui{planar trend (continue dip)} \\
+\bottomrule
+\end{tabularx}
+\caption{The \ui{mesh → grid} dialog. \ui{Rasterize} builds the grid.}\label{tab:grids-rasterize}
+\end{table}
+
+\ui{match:} is the setting to remember. Two surfaces rasterized onto the \emph{same} grid can be subtracted, compared and combined node for node; two surfaces on grids that are a few centimeters out of step cannot.
+
+\ui{keep} matters for a closed solid or an overhanging surface. Of a pit shell you usually want the top; of an orebody wireframe you may want each in turn, to get its hanging wall and its footwall as two grids.
+
+The mesh must be in its exact form (\cref{sec:meshes-tiers}); the command is absent from a streamed mesh's menu.
+
+\section{Using a surface}\label{sec:grids-using}
+
+A grid is the fastest and most exact way to ask where a model sits relative to a surface. \menu{Surface tools>Flag / ratio by this surface…} on a grid's menu opens the by-geometry dialog with the grid as the surface. There you select or flag the blocks above or below it, or between it and a second surface, or compute the fraction of each block that lies below: the partial blocks along a topography, where counting whole blocks would misstate the tonnage. \Cref{ch:geometry} covers it.
+
+Because the surface is a grid, the fraction is computed from the grid's own values under each block's footprint, without any of the searching a triangle mesh requires.
+
+\section{Exporting a grid}\label{sec:grids-export}
+
+\menu{Surface tools>Export as ESRI ASCII grid…} writes the grid as an \file{.asc} file, named after the layer. The export reads the full-resolution values, not the thinned display, and it writes the band you have chosen. ESRI ASCII has a single cell size, so a grid whose cells are not square is written with its X spacing and a note on the status line.
+
+\section{New grids and block models}\label{sec:grids-new}
+
+\menu{Data>New grid / block model…} creates an empty one: a blank grid to rasterize into, an empty model to paint domains on, or a common lattice on which to compare two models.
+
+\shot[0.7\linewidth]{grids-new-dialog}{The \ui{new grid / block model} dialog set to cover the demo's deposit with a block model aligned to a point.}
+
+The dialog asks three things: what to make, where, and how fine.
+
+\begin{table}[htbp]
+\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+setting & meaning \\ \midrule
+\ui{type} & \ui{grid (heightfield)} or \ui{block model} \\
+\ui{extent} & \ui{cover a layer}, \ui{cover compatible models}, or \ui{from parameters} \\
+\ui{source} & with \ui{cover a layer}: \ui{all layers}, a group, or one layer whose bounding box to cover \\
+\ui{align} & \ui{to a point}: make the lattice pass through coordinates you type \\
+\ui{origin} and \ui{counts} & with \ui{from parameters}: the origin, and how many nodes or blocks along each axis \\
+\ui{cell (m)} / \ui{block (m)} & the grid's cell size, or the block's size on each axis \\
+\ui{fill Z} / \ui{fill VAL} & the value every node or block starts with; for a block model, the \ui{column} name too \\
+\bottomrule
+\end{tabularx}
+\caption{The \ui{new grid / block model} dialog. A line under the form counts the result as you type; \ui{Create} builds it.}\label{tab:grids-new}
+\end{table}
+
+\subsection{Aligning to a point}
+
+Two block models with the same block size are still incompatible if their lattices are offset by half a block. \ui{align} \ui{to a point} fixes the phase: the lattice is shifted so that it passes through the point you give (as a block center for a model, as a node for a grid) while still covering the extent. Give it a block centroid of your existing model, and the new one lines up with it. Under the fields, the dialog states what it will do.
+
+\subsection{Cover compatible models}
+
+\ui{cover compatible models} builds an empty block model on a lattice that covers several models at once and is compatible with each of them. Tick the models; each is listed with its block size. \ui{resolution} chooses the block size of the result: \ui{finest} of the ticked models, \ui{coarsest}, or \ui{common lattice}.
+
+A banner reports the outcome before you create anything: the common block size and counts when the models can share a lattice, or \ui{incompatible —} with the reason when they cannot. Use it as the target when you reconcile two versions of a model that were built on different grids (\cref{ch:joins}).
+
+\begin{tryit}
+Make a coarse copy of the demo's lattice.
+\begin{enumerate}
+\item Make \file{deposit.csv} active and press \key{i}. Note its block size: 10 × 10 × 5~m.
+\item Choose \menu{Data>New grid / block model…}. Set \ui{type} to \ui{block model} and \ui{extent} to \ui{cover a layer}.
+\item Set \ui{source} to \file{deposit.csv}.
+\item Type a block size several times larger than the deposit's. The count under the form falls as you type.
+\item Click \ui{Create}. A new, empty block model appears, covering the deposit.
+\item Choose \ui{Lineage…} on the new model's menu. It records the block size, the counts and the layer it covers.
+\end{enumerate}
+\end{tryit}
+
+The new model is empty on purpose. You decide what fills it: paint domains into it (\cref{ch:picking}), flag it by solids and surfaces (\cref{ch:geometry}), or join another model's values onto it (\cref{ch:joins}).
+
+\begin{note}
+The empty-model creator builds axis-aligned lattices. It does not yet create rotated models (\cref{sec:blocks-rotated}).
+\end{note}

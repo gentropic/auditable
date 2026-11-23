@@ -1,0 +1,29 @@
+# Group B — Part II (Data): chapters 04–09. Format: name | the state to show | full / window / region
+# (no `data` charts requested by this group; the diagrams in 04, 05, 06 and 08 are inline TikZ)
+
+# ── 04-opening ──
+open-dialog | save the demo project to a folder, reload micro empty, then File → Open… with models/deposit.csv, the three drillholes/ files (collar, survey, assay) and meshes/ore_shell.obj selected together; show the "open files" dialog before pressing Open — the Open as ▾ on each row, X/Y/Z dropdowns on deposit.csv, and the "drillhole set: collar + survey + 1 interval table" banner with desurvey + dip | region (the open files dialog box)
+open-fileinfo | the demo project, deposit.csv active, press i — the file info panel showing delimiter, coordinate mapping and the inferred grid | region (the file info panel)
+
+# ── 05-blocks ──
+blocks-subblocked | a synthetic sub-blocked CSV (XC,YC,ZC,DX,DY,DZ,FE — 20 m parents refined to 10 m and 5 m along a dipping contact, power-of-two), opened as a block model, block edges on (⇧B), colored by FE, an oblique view close enough to see three block sizes | full
+blocks-store-parquet | the demo project, right-click deposit.csv → Store as Parquet… — the "store block models as Parquet" dialog with its row (size · blocks · → Morton-sorted (spatial index)) and the keep-the-original checkbox | region (the dialog box)
+blocks-shell | the demo project; Grade shell… on deposit.csv with column FE, cutoff 60, smoothing light → Make shell; hide deposit.csv, topography and the mining phases, keep the drillholes and the new "FE ≥ 60 shell" layer visible, section off, fit | full
+
+# ── 06-drillholes ──
+dh-set-panel | the demo project, layers panel open (p), the drillhole set group expanded so the ◈ collars row (12 holes), the ↧ survey row (min curv) and the interval layer are visible | region (the layers panel)
+dh-hole-filter | the demo project; Show hole traces on the drillhole set; ◈ collars → Filter holes… with COMPANY = "MERIDIAN"; model hidden so the kept holes and their traces read clearly; status line showing "hole filter: N of 12 holes" | full
+dh-composite-window | the demo project; Composite… on the drillhole interval layer, length 5, press Composite and wait for the report line ("… composites of 5 from 12 holes") | window
+
+# ── 07-meshes ──
+meshes-demo | the demo project as it opens (E–W section through the ore lens), ore shell set to "don't cut" and tinted Green at 50 % opacity (drawn whole), phase 1 — starter pit visible, topography hidden, zoomed so the mesh traces on the cut face are visible | full
+meshes-export-dialog | the demo project; right-click the "mining phases" group → Export 3 meshes…; choose "LFM — Leapfrog model (colours)" so the note about named meshes + colours shows | region (the export dialog box)
+
+# ── 08-grids ──
+grids-relief | the demo project: topography (relief surface, translucent) and phase 3 — final pit over the sectioned deposit, vertical exaggeration 1, an oblique view from the south-east | full
+grids-surface-tools | the demo project; right-click topography → Surface tools → Extend to footprint… (or directly on the menu if it lists it there) (surface tools dialog, mode "extend to a footprint", footprint "all layers (union)", extend by "nearest (flat extension)"), node tally visible | region (the surface tools dialog box)
+grids-new-dialog | the demo project; Data → New grid / block model…; type "block model", extent "cover a layer", source deposit.csv, align "to a point" ticked, block 50 × 50 × 20, the count tally visible | region (the new grid / block model dialog box)
+
+# ── 09-columns ──
+columns-tab | the demo project, deposit.csv active, ⇧P → columns tab, after pressing "scan columns — one pass, every column" and waiting for it to finish (types, n · mean, histograms for FE and SG; LITO as text) | region (the properties panel)
+attr-table | the demo project, deposit.csv active; filter FE > 64 and LITO = "HEMATITE"; press t; tick "matches" in the table's title bar; click a row so the block is picked (magenta) in the view and the record panel shows it; table window placed lower-left so the picked block stays visible | full

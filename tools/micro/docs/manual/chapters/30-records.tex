@@ -1,0 +1,332 @@
+\chapter{Run records, the cache \& provenance}\label{ch:records}
+\begin{goals}
+\textbf{In this chapter} you read the record every routine run leaves behind, verify a file against the hash the record noted, understand when micro reuses a step and when it recomputes, and trace a derived layer back to its sources.
+\end{goals}
+
+A table of tonnages is a claim. To stand behind it, or to review someone else's, you need to know what it was computed from, with which settings, by which version of the tool, and whether anyone checked it. A routine answers all four by writing a \term{run record}: a folder per run, with a file called \file{run.json} that says what happened.
+
+You have been making these records since the first run of \code{month-end} in \cref{ch:routines}. This chapter asks you to do nothing new: the record is written whether you look at it or not. What follows is how to read one, and how far you can trust it.
+
+\section{The run folder}\label{sec:records-folder}
+Every run of a routine gets its own folder under \file{runs/} in the project:
+
+\begin{lstlisting}
+runs/2026-11-22 1432 month-end/
+\end{lstlisting}
+
+The name is the local date, the local time as hours and minutes, and the routine's name made file-safe. Two runs in the same minute get \file{-2}, \file{-3}. A run never writes into another run's folder.
+
+\begin{figure}[htbp]\centering
+\begin{tikzpicture}[font=\sffamily\small, x=1mm, y=1mm,
+  f/.style={anchor=west, text=ink, font=\ttfamily\footnotesize},
+  n/.style={anchor=west, text=muted, font=\sffamily\footnotesize},
+  tk/.style={rule, line width=0.5pt}]
+\node[f] at (0,0) {runs/};
+\node[f] at (6,-6) {2026-10-24 0910 month-end/};
+\node[n] at (62,-6) {last month's run};
+\node[f] at (12,-12) {run.json \quad accepted.json \quad …};
+\node[f, text=amber] at (6,-19) {2026-11-22 1432 month-end/};
+\node[n] at (62,-19) {this run};
+\node[f] at (12,-25) {run.json};
+\node[n] at (62,-25) {the record: inputs, steps, checks, hashes};
+\node[f] at (12,-31) {mq.tsv \quad dq.tsv};
+\node[n] at (62,-31) {QA findings};
+\node[f] at (12,-37) {gt.tsv \quad val.tsv};
+\node[n] at (62,-37) {one machine table per step};
+\node[f] at (12,-43) {stats-hematite.tsv \quad …};
+\node[n] at (62,-43) {one per row of an each block};
+\node[f] at (12,-49) {gt-compare.tsv};
+\node[n] at (62,-49) {this run beside the baseline};
+\node[f] at (12,-55) {ore.parquet};
+\node[n] at (62,-55) {a file an export step wrote};
+\node[f] at (12,-61) {accepted.json};
+\node[n] at (62,-61) {only once someone accepts the run};
+\draw[tk] (2,-2.5) -- (2,-19) -- (5,-19); \draw[tk] (2,-6) -- (5,-6);
+\draw[tk] (8,-8.5) -- (8,-12) -- (11,-12);
+\draw[tk, amber] (8,-21.5) -- (8,-61) -- (11,-61);
+\foreach \y in {-25,-31,-37,-43,-49,-55} \draw[tk, amber] (8,\y) -- (11,\y);
+\end{tikzpicture}
+\caption{The anatomy of a run folder for the \code{month-end} routine of \cref{ch:routines,ch:checks}.}\label{fig:records-folder}
+\end{figure}
+
+The \file{.tsv} files are \term{machine tables}: tab-separated, a header of plain column names, numbers written as they are, an empty cell for a missing value. They open in any spreadsheet and diff cleanly from month to month. What a window shows (units in headers, rounded figures) is a rendering of the same table.
+
+\begin{note}
+If the routine sets \code{output: dir} (\cref{ch:routines}), its reports go to that folder instead. \file{run.json} still goes in the run's folder and records where each report went.
+\end{note}
+
+\section{run.json, field by field}\label{sec:records-json}
+\file{run.json} is plain JSON. Here is a shortened one; the hashes are cut for the page.
+
+\begin{lstlisting}
+{
+ "v": 1,
+ "dir": "runs/2026-11-22 1432 month-end",
+ "routine": {
+  "name": "month-end",
+  "file": "recipes/month-end.yaml",
+  "sha256": "5d0c…e2a1"
+ },
+ "micro": "…",
+ "started": "2026-11-22T17:32:08.114Z",
+ "finished": "2026-11-22T17:32:41.902Z",
+ "status": "ok",
+ "inputs": null,
+ "layers": [
+  { "name": "deposit.csv", "label": "deposit.csv", "kind": "blocks",
+    "files": [ { "role": "source", "name": "deposit.csv",
+                 "size": …, "sha256": "91be…07c4" } ] },
+  { "name": "demo_assay.csv", "label": "holes · demo_assay.csv",
+    "kind": "drillholes",
+    "files": [ { "role": "collar", "name": "demo_collars.csv", … },
+               { "role": "survey", "name": "demo_survey.csv", … },
+               { "role": "intervals", "name": "demo_assay.csv", … } ] }
+ ],
+ "steps": [ … ],
+ "events": [ { "at": "2026-11-22T17:32:08.120Z", "kind": "start" } ],
+ "baseline": { "dir": "runs/2026-10-24 0910 month-end",
+               "accepted": true, "started": "2026-10-24T12:10:…" }
+}
+\end{lstlisting}
+
+\subsection{The run}
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+field & meaning \\ \midrule
+\code{v} & the record format's version \\
+\code{dir} & the run's folder \\
+\code{routine} & the routine's name, its file, and the SHA-256 of that file as it was when the run began. A routine run from the library (\cref{ch:library}) is not a file in the run's folder tree; its hash is then taken over its name and settings as they ran. \\
+\code{micro} & the build of micro that ran it \\
+\code{started}, \code{finished} & times, in UTC (the folder's name and the Runs window use your local time) \\
+\code{status} & \code{running}, \code{ok}, \code{failed} or \code{cancelled} \\
+\code{inputs} & the answers given to the routine's questions (\cref{sec:routines-inputs}), or \code{null} \\
+\code{layers} & every layer a step read, with its files \\
+\code{steps} & one entry per expanded step, in order \\
+\code{events} & the start, and every resume, retry and skip, each with its time and step \\
+\code{baseline} & the run this one was judged against: its folder, whether it was an accepted run, when it started. \code{null} when there was none. \\
+\code{books} & the atlases the run wrote (\cref{ch:atlas}): path, pages, size and hash \\
+\bottomrule
+\end{tabularx}
+
+Don't skip the routine's hash. The record keeps each step's settings, but the \emph{file} is what someone edited. If \file{month-end.yaml} changes between October and November, the two records carry different hashes for it, and you know to ask what changed.
+
+\subsection{The layers}
+Each layer entry lists the files the layer was read from, with a role, a size in bytes and a SHA-256. A block model, a grid or a mesh has one file with the role \code{source}. A drillhole layer has three: \code{collar}, \code{survey} and \code{intervals}.
+
+A layer made during the session, such as composites or a grade shell, has no source file on disk to point to. What made it is in the record of the step that did.
+
+\subsection{A step}
+\begin{lstlisting}
+  {
+   "n": 3,
+   "step": "gt",
+   "tool": "gt",
+   "status": "ok",
+   "started": "2026-11-22T17:32:11.480Z",
+   "params": {
+    "series": [ { "layer": "deposit.csv", "col": "FE",
+                  "unit": "pct", "weight": "SG", "filter": "" } ],
+    "cutoffs": [ 30, 40, 50, 55, 60, 65 ],
+    "nCut": 40, "scope": "all",
+    "gradeUnit": "pct", "densUnit": "t/m3"
+   },
+   "outputs": [ { "path": "runs/2026-11-22 1432 month-end/gt.tsv",
+                  "bytes": …, "sha256": "c7a2…19d0" } ],
+   "values": {},
+   "warnings": [],
+   "units": { "cutoff": "%", "tonnes": "t",
+              "grade": "%", "metal": "t" },
+   "key": [ "series", "cutoff" ],
+   "cacheKey": "0b6e…f3aa",
+   "ms": 1840
+  }
+\end{lstlisting}
+
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+field & meaning \\ \midrule
+\code{n}, \code{step} & the step's number and its name (its \code{as}, with the row's values inside an \code{each} block) \\
+\code{tool} & the tool that ran \\
+\code{status} & \code{pending}, \code{running}, \code{ok}, \code{failed} or \code{skipped} \\
+\code{params} & the settings \emph{as they ran}: the recipe's, with the step's overrides, every \code{\$name} filled in, defaults written out, and any automatic value pinned to the number it took \\
+\code{outputs} & each file the step wrote: path, size, SHA-256 \\
+\code{values} & the step's named numbers (\cref{sec:checks-values}) \\
+\code{warnings} & anything the tool said while running, such as a cutoff that fell between two grade steps \\
+\code{units}, \code{key} & the units of the table's columns, and the columns that identify a row \\
+\code{layers}, \code{columns} & what the step made in the session, if anything \\
+\code{cacheKey}, \code{reusedFrom} & the step's fingerprint, and the run its result was copied from (\cref{sec:records-cache}) \\
+\code{ms} & how long it took \\
+\code{error} & why it failed \\
+\bottomrule
+\end{tabularx}
+
+Read \code{params} when a number looks wrong. It holds what the step \emph{did}, which can differ from what the recipe \emph{says}. Display settings such as axis ranges are left out, because they don't change a number; a series' \code{color} may still ride along inside the series.
+
+\subsection{A check}
+\begin{lstlisting}
+  {
+   "n": 9,
+   "step": "check",
+   "kind": "check",
+   "level": "stop",
+   "say": "model mean within 5% of the declustered samples",
+   "expr": "abs(val.bias_pct) < 5",
+   "status": "pass",
+   "observed": { "val.bias_pct": … },
+   "ms": 2
+  }
+\end{lstlisting}
+
+A check's entry carries the expression, the level, your \code{say}, and the outcome: \code{pass}, \code{fail} or \code{not-evaluated}, with \code{warn:} in front when a check at level \code{warn} didn't pass. \code{observed} holds every name the expression read and the value it had. A row check adds \code{in}, \code{against}, the number of rows and how many were evaluated, and the keys of failing and blank rows (up to twenty of each, with the full counts). A compare adds its report under \code{outputs} and its \code{tolerance}.
+
+\section{Why the record can be trusted}\label{sec:records-trust}
+Three properties make the record evidence and not a log.
+
+\textbf{It is written as the run goes.} \file{run.json} is rewritten after every step. If the browser crashes at step six, the file on disk describes steps one to five as they finished and has the status \code{running}. Such a run shows as \emph{running} in the Runs window forever, which is the truth about it.
+
+\textbf{It is never edited afterwards.} A retry, skip or resume continues the same record and adds an event; it doesn't rewrite what happened. Acceptance lives in a separate file, \file{accepted.json}, holding a name, a time and a note. So the bytes of \file{run.json} are final when the run ends.
+
+\textbf{It names its inputs and outputs by their content.} Paths and file names can lie: a file can be replaced under the same name. A hash can't.
+
+\subsection{SHA-256}\label{sec:records-sha}
+Every input file, every output and the routine's own file is recorded with its \term{SHA-256}, the full hash of all its bytes. micro uses SHA-256 because you can check it with tools every operating system already has:
+
+\begin{lstlisting}
+sha256sum deposit.csv                       # Linux
+shasum -a 256 deposit.csv                   # macOS
+certutil -hashfile deposit.csv SHA256       # Windows
+\end{lstlisting}
+
+If the result equals the \code{sha256} in the record, the file in front of you is, byte for byte, the file the run read. If it doesn't, it isn't, whatever its name and date say.
+
+\begin{tryit}
+Verify a report from your last run of \code{month-end}. If you haven't run it yet, do the try-it of \cref{sec:routines-monthend} first.
+\begin{enumerate}
+\item In the project folder, open the newest folder under \file{runs/}.
+\item Open its \file{run.json} in a text editor.
+\item Find the step named \code{gt} and copy the \code{sha256} of its output.
+\item In a terminal in that folder, hash \file{gt.tsv} with the command for your system. The two strings match.
+\item Open \file{gt.tsv} in a spreadsheet, change one digit and save.
+\item Hash it again. The strings no longer match.
+\item Undo the change.
+\end{enumerate}
+\end{tryit}
+
+Hashing a large model takes time: around 150 MB a second, so roughly half a minute for a 5 GB file. micro does it in the background as soon as a layer opens, so a routine rarely waits. The result is remembered for as long as the file's name, size and modification time stay the same; a changed file is hashed again. When a routine does have to wait, the status line says \emph{hashing deposit.csv…}.
+
+\begin{why}
+Elsewhere micro identifies files with a fast hash of samples taken across the file (\cref{ch:store}). That is good for deciding whether a cache is stale. A third party can't reproduce it with a standard tool, and a record is for third parties. So records pay for the full hash.
+\end{why}
+
+\section{The cache: reuse what didn't change}\label{sec:records-cache}
+Run \code{month-end} twice in a row and the second run finishes almost at once. Under each tick the tracker says why:
+
+\begin{lstlisting}
+✓ 3. deposit grade-tonnage  →  runs/…/gt.tsv
+     reused from 2026-11-22 1432 month-end (nothing changed)
+\end{lstlisting}
+
+micro didn't compute the step again. It found an earlier step that was provably the same, checked that its output was still intact, and copied the file into the new run's folder. The new record's entry carries \code{reusedFrom}, naming the run the result came from, and the same output hash, because it is the same bytes.
+
+\subsection{The fingerprint}
+``Provably the same'' means the step's \term{fingerprint} matches. The fingerprint is a hash of four things:
+
+\begin{figure}[htbp]\centering
+\begin{tikzpicture}[font=\sffamily\footnotesize,
+  inp/.style={draw=rule, fill=tint, rounded corners=1.5pt, text=ink, align=left, text width=50mm, inner sep=3.5pt, anchor=west},
+  fp/.style={draw=amber, fill=ambersoft, rounded corners=1.5pt, text=ink, align=center, inner sep=4pt, line width=0.8pt},
+  arr/.style={-{Stealth[length=1.8mm]}, rule, line width=0.5pt}]
+\node[inp] (a) at (0,0) {\textbf{the tool}\\ \texttt{gt}};
+\node[inp] (b) at (0,-1.25) {\textbf{its settings, as they would run}\\ defaults filled, display settings dropped};
+\node[inp] (c) at (0,-2.75) {\textbf{each layer it reads}\\ the SHA-256 of every source file\\ + every ƒ column's expression\\ + the contents of painted and stored columns};
+\node[inp] (d) at (0,-4.25) {\textbf{the micro build}};
+\node[fp] (k) at (8.2,-2.1) {the step's\\fingerprint\\[2pt]\texttt{cacheKey}};
+\foreach \n in {a,b,c,d} \draw[arr] (\n.east) -- (k.west);
+\node[inp, text width=42mm, anchor=north] (q) at (8.2,-3.6) {an earlier \emph{ok} step with this fingerprint,\\ whose outputs still hash as recorded?};
+\draw[arr] (k.south) -- (q.north);
+\node[anchor=north, text=ok] at (7.0,-4.75) {yes: copy its files};
+\node[anchor=north, text=muted] at (9.6,-4.75) {no: run it};
+\end{tikzpicture}
+\caption{What goes into a step's fingerprint, and the question the cache asks.}\label{fig:records-fingerprint}
+\end{figure}
+
+\begin{itemize}
+\item \textbf{The tool}: \code{gt}, \code{stats}, \code{export}…
+\item \textbf{Its settings}, with defaults filled in and display settings dropped. Changing a cutoff, a filter or a band width changes the fingerprint.
+\item \textbf{The layers the step reads}, by content. For each: the SHA-256 of its source files, the name, expression and type of every ƒ column on the layer, and the actual contents of every painted column and every stored column (a ƒ column you materialized, \cref{sec:filter-materialize}). A layer made in the session, with no file behind it, enters by its name.
+\item \textbf{The micro build.} A new version of micro recomputes everything once.
+\end{itemize}
+
+A re-exported model with one changed grade has a different fingerprint. So does a repainted domain, and so does an edited ƒ expression, even though no file on disk changed.
+
+A match is not enough by itself. The earlier step must have finished \emph{ok}, and every file it wrote must still be there with the size and SHA-256 its record noted. If someone opened last month's \file{gt.tsv} in a spreadsheet and saved it, that file no longer matches its record, and micro computes the step again.
+
+\begin{why}
+The file hash alone would be a dishonest key. A step's numbers also depend on what you derived in the session: the domains you painted, the columns you calculated. A cache that ignored those would hand back last month's tonnage after you moved a domain boundary. So the fingerprint covers every derived column the layer carries. It errs toward recomputing.
+\end{why}
+
+\subsection{What is never reused}
+\begin{itemize}
+\item \textbf{Checks and compares.} They are judged every time; that is their point.
+\item \textbf{Tools that make something in the session}: \code{composite}, \code{shell}, \code{join} and \code{reconcile}. Their result is a layer or columns, which a copied file can't stand in for.
+\item \textbf{\code{sections}}, because its sheets depend on the view and the styling.
+\item \textbf{Calc-columns, by-solid, figure and composer steps.}
+\item Any step that wrote no file.
+\end{itemize}
+
+\subsection{Run fresh}\label{sec:records-fresh}
+Three ways to turn reuse off:
+
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+where & how \\ \midrule
+one run & \menu{Tools>Recipes}, the routine's submenu, \ui{Run fresh (reuse nothing)} \\
+one step & \code{cache: false} on the step \\
+a whole routine & \code{cache: false} among the routine's \code{params} \\
+\bottomrule
+\end{tabularx}
+
+\begin{lstlisting}[language=yaml]
+    - recipe: "deposit grade-tonnage"
+      as: "gt"
+      cache: false
+\end{lstlisting}
+
+\ui{Run fresh} is offered for routines without \code{inputs}. Use it when the record must show that every number was computed in this run, as for a final sign-off. For everyday runs there is nothing to gain: a reused result is the same bytes a recomputation would give, and the record says where it came from.
+
+\begin{note}
+Reuse looks across every run in the project, not only runs of the same routine. If two routines contain the same step on the same data, the second gets it from the first.
+\end{note}
+
+\section{Reading a run after the fact}\label{sec:records-reading}
+Suppose someone hands you a project and asks whether November's resource table can be relied on. Without re-running anything:
+
+\begin{enumerate}
+\item Open \menu{Tools>Recipes>Runs…} (\cref{sec:checks-runs}). Find the November run. Its status is \emph{ok}, it was compared with October's accepted run, and it carries a name in \ui{accepted}.
+\item Open its \file{run.json}. \code{routine.sha256} tells you which version of the routine ran. Compare it with October's: if they differ, the routine was edited in between.
+\item Read \code{layers}. Hash the model in \file{models/} and compare. Now you know the table was computed from the file you are looking at.
+\item Read the check entries. Each has a \code{say}, an outcome and the numbers it observed. A \code{warn: fail} is a question to ask.
+\item Read \code{events}. A \code{skip} means a step was passed over by hand; find which, and whether anything downstream read it.
+\item Hash the report you care about and compare it with its \code{outputs} entry. Now you know nobody edited the table after the run.
+\end{enumerate}
+
+That is a review of the computation, done with a text editor and one command. It can't tell you whether the estimate is \emph{good}. It tells you that the numbers are what the routine produced from those inputs, and what the routine's own checks concluded.
+
+\begin{caution}
+The record protects against accident and confusion, not against a determined forger: anyone who can edit a report can also edit \file{run.json}. micro does not sign records. If you need that guarantee, keep the run folder under your organization's own controls (a backup, a document system, a signature made outside micro).
+\end{caution}
+
+\section{Provenance of layers}\label{sec:records-lineage}
+A run record covers what a routine wrote. Layers have their own memory, whether or not a routine made them.
+
+Every derived layer carries its \term{lineage}: a tree of how it came to be. Opening a file is a leaf. A join, a reconcile or a conversion to Parquet wraps its source layers with the operation, its settings, the micro build and the time. \ui{Lineage…} on the layer's menu (or in the command palette, \key{⌘K}) shows the tree and exports it as a readable HTML report.
+
+The lineage travels with the data in two ways. A Parquet file that micro exports carries the lineage inside its metadata, so the provenance is in the file itself. And in a saved project, each data file has an \term{element manifest} beside it listing every derived column with the operation that made it: a calculation's expression, a join's inputs (\cref{ch:store}).
+
+The two records meet in the middle. When a routine step makes a layer or columns, its entry in \file{run.json} names them under \code{layers} or \code{columns}; the layer's own lineage then says what it was made from. Between them, a number in a report can be followed back through the step that computed it, the layer it read, the operations that built that layer, and the files those began as.
+
+\begin{tabularx}{\linewidth}{@{}lLL@{}}\toprule
+question & where the answer is & chapter \\ \midrule
+What did this routine run read and write? & \file{run.json} & this one \\
+Was it checked, and against what? & check entries; \code{baseline}; \file{accepted.json} & \cref{ch:checks} \\
+How was this layer made? & \ui{Lineage…}; the Parquet file's metadata & \cref{ch:joins} \\
+How was this column made? & the element manifest & \cref{ch:store} \\
+\bottomrule
+\end{tabularx}

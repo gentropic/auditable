@@ -1,0 +1,216 @@
+\chapter{Keyboard reference}\label{app:keys}\label{ch:keys}
+
+\begin{goals}
+\textbf{In this appendix}: every keyboard shortcut, mouse gesture and touch gesture in micro, grouped
+the way the in-app help groups them.
+\end{goals}
+
+micro's single keys work whenever the view has the focus. They are switched off while you type in a
+field (the filter box, a dialog, a cell of the calculations editor), so a column called \col{FE}
+never fits the view when you type its \code{f}. Shifted keys are written with ⇧: \key{⇧L} is
+\key{Shift}+\key{L}.
+
+\side{The same list, in the app: \menu{Help>Keyboard \& mouse…}, or \key{F1}.}
+Where a shortcut is written with ⌘, press \key{⌘} on macOS and \key{Ctrl} on Windows and Linux.
+\key{Ctrl}+wheel and \key{Alt}+wheel are the same on every system (\key{⌃} and \key{⌥} on a Mac
+keyboard).
+
+\begin{note}
+This table, the in-app help and the printable shortcut card are all produced from one list in
+micro's source, and a test fails when a key is bound that the list doesn't name. If a key here does
+nothing, the focus is probably in a text field: click the view, or press \key{Esc}.
+\end{note}
+
+\section{The view}\label{sec:keys-view}
+
+\begin{tabularx}{\linewidth}{@{}p{30mm}L@{}}
+\toprule
+key & what it does \\
+\midrule
+\key{f} & Fit the data in the view. \\
+\key{o} & Switch between orthographic and perspective. \\
+\key{d} & Look down: the plan view. \\
+\key{u} & Look up, from below. \\
+\key{n} \key{s} \key{e} \key{w} & Look level toward north, south, east or west. \\
+\key{g} then \key{1}–\key{9} & Go to view slot 1–9. \key{g} then \key{⇧}+digit saves the current
+  view (camera and section) into that slot. A bare digit does nothing, so a stray keystroke can't
+  move the camera. \\
+\bottomrule
+\end{tabularx}
+
+The slots are bookmarks named “slot N”; they are saved with the project (\cref{ch:sections}).
+
+\section{Sections}\label{sec:keys-section}
+
+\begin{tabularx}{\linewidth}{@{}p{30mm}L@{}}
+\toprule
+key & what it does \\
+\midrule
+\key{k} or \key{c} & Take the knife: drag a line in the view for the vertical section through it.
+  \key{⇧} snaps the line to 15°, \key{⇧}+\key{⌥} to 5°; \key{Esc} cancels. \\
+\key{x} & Turn the section on or off. \\
+\key{l} & Face the section. \\
+\key{⇧L} & Face the section from behind. \\
+\key{,} \key{.} & Step the section one slab back or forward. \\
+\key{Ctrl}+wheel & Scrub the section. \\
+\key{Alt}+wheel & Make the slab thicker or thinner. \\
+\bottomrule
+\end{tabularx}
+
+\Cref{ch:sections} covers sections, slabs and per-layer cut modes.
+
+\section{Tools}\label{sec:keys-tools}
+
+\begin{tabularx}{\linewidth}{@{}p{30mm}L@{}}
+\toprule
+key & what it does \\
+\midrule
+\key{/} & Put the cursor in the filter box. \\
+\key{m} & Measure: click two records. \\
+\key{i} & Show file info: what was read from the file (its extent, its columns and, for a model, its grid). \\
+\key{t} & Open the attribute table of the active layer. \\
+\key{r} & Select by rectangle. \\
+\key{v} & Select by lasso. \\
+\key{b} & Paint a column (the brush). \\
+\key{Esc} & Put the tool down, cancel, or clear the selection. \\
+\key{⇧P} & Open the layer's properties. \\
+\bottomrule
+\end{tabularx}
+
+While \key{r} or \key{v} is armed, the modifier you hold as you drag decides what the gesture does:
+
+\begin{tabularx}{\linewidth}{@{}p{30mm}L@{}}
+\toprule
+modifier & what the drag does \\
+\midrule
+none & Replaces the selection (or, with a paint value armed, paints it). \\
+\key{Shift} & Adds to the selection. \\
+\key{Alt} & Subtracts from the selection (with the brush: erases). \\
+\bottomrule
+\end{tabularx}
+
+Releasing the drag with \key{Shift} or \key{Alt} still held keeps the tool armed for the next
+gesture. The middle mouse button still orbits while a selection tool is armed. See
+\cref{ch:picking}.
+
+\section{Layers}\label{sec:keys-layers}
+
+\begin{tabularx}{\linewidth}{@{}p{30mm}L@{}}
+\toprule
+key & what it does \\
+\midrule
+\key{p} & Show or hide the layers panel. \\
+\key{[} \key{]} & Step the active layer up or down the panel. \\
+\key{\{} \key{\}} & Step through a mutually exclusive group (one child shown at a time). \\
+\key{h} & Hide or show the active layer. \\
+\key{⇧H} & Solo the active layer; press it again to restore the others. \\
+\key{F2} & Rename the active layer. \\
+\key{⇧B} & Turn block edges on or off. \\
+\bottomrule
+\end{tabularx}
+
+\begin{tip}
+To compare overlaid models, solo one with \key{⇧H} and walk the rest with \key{[} and \key{]}: each
+press shows the next layer alone.
+\end{tip}
+
+\section{Everything else}\label{sec:keys-global}
+
+\begin{tabularx}{\linewidth}{@{}p{36mm}L@{}}
+\toprule
+key & what it does \\
+\midrule
+\key{⌘K} & Open the command palette: every action, filtered to what applies right now. \\
+\key{⌘S} & Save the project. \\
+\key{⌘Z} & Undo: a paint stroke, a selection, a filter, a removed ƒ column or rule. \\
+\key{⌘⇧Z} or \key{Ctrl}+\key{Y} & Redo what the last undo took back. A new edit clears it. \\
+\key{Ctrl}+\key{\textasciigrave} & Cycle through the open windows. \\
+\key{F1} & Open the keyboard and mouse help. \\
+\bottomrule
+\end{tabularx}
+
+Undo and redo act on the view only when the focus is not in a text field; inside a field they are
+the field's own undo.
+
+\section{Inside a field or a window}\label{sec:keys-fields}
+
+These keys belong to one control and work while it has the focus.
+
+\begin{tabularx}{\linewidth}{@{}p{34mm}p{30mm}L@{}}
+\toprule
+where & key & what it does \\
+\midrule
+The filter box & \key{Enter} & Applies the expression. \\
+ & \key{Esc} & Clears the filter. \\
+Any expression field, with the suggestion list open & \key{↓} \key{↑} & Moves through the
+  suggestions (columns, functions, category values). \\
+ & \key{Tab} or \key{Enter} & Accepts the highlighted suggestion. \\
+ & \key{Esc} & Closes the list. \\
+The command palette & \key{↓} \key{↑} & Moves through the actions. \\
+ & \key{Enter} & Runs the highlighted action. \\
+ & \key{Esc} or \key{⌘K} & Closes the palette. \\
+A prompt (a name, a number) & \key{Enter} & Accepts. \\
+ & \key{Esc} & Cancels. \\
+Any dialog & \key{Esc} & Closes the topmost dialog. \\
+The attribute table & \key{Ctrl}+\key{C} & Copies the selected cells as tab-separated text. \\
+The breaks field (styling) & \key{Enter} & Applies the typed class breaks. \\
+\bottomrule
+\end{tabularx}
+
+While you draw a trace on an outcrop mesh (\cref{ch:structure}):
+
+\begin{tabularx}{\linewidth}{@{}p{30mm}L@{}}
+\toprule
+key & what it does \\
+\midrule
+\key{Enter} & Finishes the trace. \\
+\key{Backspace} & Removes the last point of the trace. \\
+\key{Esc} & Abandons the trace being drawn; pressed again, puts the tool down. \\
+\bottomrule
+\end{tabularx}
+
+\section{The mouse}\label{sec:keys-mouse}
+
+\begin{tabularx}{\linewidth}{@{}p{44mm}L@{}}
+\toprule
+gesture & what it does \\
+\midrule
+Drag & Orbit. \\
+Right-drag, or \key{Shift}+drag & Pan. \\
+Wheel & Zoom. \\
+\key{Ctrl}+wheel & Scrub the section. \\
+\key{Alt}+wheel & Make the slab thicker or thinner. \\
+Click a block, point or interval & Pick it: the record glows and the record panel shows its full
+  source row. A click on a mesh reports the point on its surface. \\
+Right-click a layer & Open the layer's menu. \\
+\key{Ctrl}+click a layer row & Add it to a multi-selection of rows; \key{Shift}+click selects a
+  range. \\
+Drag a layer row & Reorder it; dropped onto a group, it joins the group. \\
+Double-click the styling histogram & Add a class break there. Drag a break to move it; right-click
+  it to remove it. \\
+\bottomrule
+\end{tabularx}
+
+\section{Touch}\label{sec:keys-touch}
+
+On a phone or a small tablet micro switches to its review layout (\cref{ch:sealed}), with these gestures:
+
+\begin{tabularx}{\linewidth}{@{}p{44mm}L@{}}
+\toprule
+gesture & what it does \\
+\midrule
+One finger & Orbit. \\
+Two fingers & Pinch to zoom, move together to pan, twist to turn. \\
+Tap a block, point or surface & Its record opens as a card. Drag the card's handle up for the full
+  sheet; flick it away to close. \\
+Double-tap the model & Orbit about that spot from now on. \\
+Double-tap empty space & Fit. \\
+Hold still on the model & The magnifier: what is under your finger, enlarged above it. Slide onto
+  the exact spot and lift to pick it. \\
+Long-press a layer row & The row's menu, including \ui{Move up}, \ui{Move down} and moving to a group. \\
+\bottomrule
+\end{tabularx}
+
+The bottom bar carries \ui{layers}, \ui{props}, \ui{select}, \ui{section}, \ui{measure} and
+\ui{fit}; everything else is in the ☰ menu and the \key{⌘K} palette. The ↶ and ↷ buttons in the top
+bar undo and redo, one gesture at a time.

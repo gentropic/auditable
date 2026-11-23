@@ -1,0 +1,231 @@
+\chapter{Recipes}\label{ch:recipes}
+\begin{goals}
+\textbf{In this chapter} you save an analysis as a recipe, run and edit it, write one from scratch in a form, read the YAML file behind it, and check every recipe in a project at once.
+\end{goals}
+
+You set up a grade–tonnage window once: the series, the density, the cutoffs, the units. Next month the model is new and the setup is the same. A \term{recipe} is that setup, saved under a name as a small text file in the project. Running it puts the analysis back exactly as you left it, on whatever data the project now holds.
+
+This part of the book builds one thing, a rung at a time: a month-end you start with one click and can hand to a reviewer. The recipe is the first rung. A routine (\cref{ch:routines}) runs several in order, checks (\cref{ch:checks}) judge the results, and a run record (\cref{ch:records}) keeps the evidence. The grade–tonnage recipe you save in this chapter is still at work in the last of them.
+
+\begin{figure}[htbp]\centering
+\begin{tikzpicture}[font=\sffamily\small, node distance=5mm,
+  rung/.style={draw=rule, fill=tint, rounded corners=1.5pt, minimum height=9mm, minimum width=27mm, align=center, text=ink},
+  arr/.style={-{Stealth[length=2mm]}, rule, line width=0.6pt}]
+\node[rung, draw=amber, line width=0.8pt] (a) {recipe\\[-1pt]{\footnotesize one analysis}};
+\node[rung, right=of a] (b) {routine\\[-1pt]{\footnotesize many, in order}};
+\node[rung, right=of b] (c) {checks\\[-1pt]{\footnotesize judged}};
+\node[rung, right=of c] (d) {run record\\[-1pt]{\footnotesize the evidence}};
+\draw[arr] (a) -- (b); \draw[arr] (b) -- (c); \draw[arr] (c) -- (d);
+\end{tikzpicture}
+\caption{The automation ladder. This chapter is the first rung; each later chapter adds one.}\label{fig:recipes-ladder}
+\end{figure}
+
+\section{Save as recipe}\label{sec:recipes-save}
+A recipe is a file in the project's \file{recipes/} folder, so you need a project first: save one with \menu{File>Save project as…} (\cref{ch:projects}). Without a project the status line says so and nothing is saved.
+
+The \ui{save as recipe…} button sits:
+\begin{itemize}
+\item beside \ui{Run} in the grade–tonnage, swath and stats windows;
+\item in the Calculations window, where it saves the layer's whole set of ƒ columns;
+\item at the foot of the \ui{select by solid} dialog;
+\item in the decorations panel, where it saves a figure: the view, the section, the decorations, the background and the export resolution.
+\end{itemize}
+micro asks for a name, suggests one from the layer (``deposit grade-tonnage''), and writes \file{recipes/deposit-grade-tonnage.yaml}. The status line confirms the path.
+
+\begin{tryit}
+Open the demo project from the start screen and save it to a folder (\menu{File>Save project as…}, \cref{ch:projects}). The grade–tonnage window opens with the demo, on \file{deposit.csv}: \col{FE} as the grade in \%, \col{SG} as the density, so its left axis reads tonnes. (If you closed it, right-click \file{deposit.csv} and choose \ui{Grade-tonnage…}, then set \code{SG} as the density and \ui{\%} as the unit.)
+\begin{enumerate}
+\item Press \ui{save as recipe…} and accept the name \code{deposit grade-tonnage}. The status line reads \emph{saved recipe “deposit grade-tonnage” → recipes/deposit-grade-tonnage.yaml}.
+\item Close the window.
+\item Open \menu{Tools>Recipes}. The recipe is listed as \ui{deposit grade-tonnage · grade-tonnage}.
+\item Choose \ui{Run} from its submenu. The window comes back, configured, with the curve drawn.
+\end{enumerate}
+\end{tryit}
+
+Saving again under a name that already exists updates that file in place. That is how you change a recipe: open it, adjust the window, save it under the same name.
+
+\section{Running, editing, renaming}\label{sec:recipes-menu}
+\menu{Tools>Recipes} lists every recipe in the project with its tool. Each one has a submenu:
+
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+\ui{Run} & opens the tool configured and runs it. It reads \ui{Run…} when the recipe asks questions first (\cref{sec:recipes-inputs}). \\
+\ui{Run fresh (reuse nothing)} & routines without \code{inputs} only: runs every step again (\cref{sec:records-fresh}). \\
+\ui{Edit (open configured)} & opens the tool with the recipe's settings and does not run it. A routine, or a tool without a window, opens in the routine editor instead (\cref{sec:routines-editor}). \\
+\ui{Rename…} & changes the recipe's name. The file keeps its old file name. \\
+\ui{Delete} & removes the file from the project, after a confirmation. This can't be undone. \\
+\bottomrule
+\end{tabularx}
+
+What \ui{Run} does depends on the tool. Grade–tonnage, swath, stats, scatter / Q-Q, the cross-tab and validation open their window with the result. A resource-table recipe places its table in the composer. A calc-columns recipe applies its columns to the layer and reports how many. A figure recipe renders the figure and puts back everything it touched. A by-solid recipe runs the selection or the flag.
+
+The other tools have no window to open: the QA reports, export, composite, pairing, grade shell, join, reconcile and section series. \ui{Run} runs such a recipe as a one-step routine (\cref{ch:routines}). The run tracker opens, the step writes its table, its file or its layer, and the run leaves a record in \file{runs/} like any routine's (\cref{ch:records}). \ui{Edit (open configured)} shows that one-step routine in the routine editor and runs nothing.
+% TODO verify: in the current build the one-step routine runs NO step ("0 steps run") and the editor opens empty — recipes.js runRecipe builds { steps } instead of { params: { steps } }. Reported as a micro bug; this paragraph describes the intended behaviour.
+
+The command palette has the same list: press \key{⌘K} (\key{Ctrl}+\key{K} on Windows) and type \code{run recipe}.
+
+\subsection{When the layer isn't there}
+A recipe names its layers \emph{by name}: \file{deposit.csv}, not ``the third layer''. If that layer isn't loaded, micro offers the loaded layers that could stand in: \ui{“deposit grade-tonnage” wants deposit.csv — use deposit\_2026-11.parquet}. Pick one and the recipe runs on it. If nothing suitable is loaded, the status line says what the recipe wanted.
+
+\begin{note}
+A single recipe may ask this one question. A routine may not: it never prompts, so every layer it names must be loaded before it starts (\cref{sec:routines-preflight}).
+\end{note}
+
+\section{Which tools can be recipes}\label{sec:recipes-tools}
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+\code{tool} & what the recipe holds \\ \midrule
+\code{gt} · \code{swath} · \code{stats} · \code{xy} · \code{xtab} & an analysis window's setup (\cref{ch:gt,ch:swath,ch:stats,ch:resources}) \\
+\code{validation} · \code{pairing} & the model against its samples (\cref{ch:validation}) \\
+\code{resource} & a resource table (\cref{ch:resources}) \\
+\code{modelqa} · \code{dhqa} · \code{meshqa} & a QA report (\cref{ch:qa}) \\
+\code{export} & a layer, or the records a filter keeps, as CSV or Parquet \\
+\code{composite} · \code{shell} · \code{join} · \code{reconcile} · \code{sections} & tools that make a layer, columns or a file \\
+\code{calccols} & a layer's ƒ columns (\cref{ch:filter}) \\
+\code{solid} & select, flag or ratio by a solid or surface (\cref{ch:geometry}) \\
+\code{figure} & a figure export (\cref{ch:figures}) \\
+\code{compo} & one composer page (\cref{ch:composer,ch:atlas}) \\
+\code{routine} & a list of the above (\cref{ch:routines}) \\
+\bottomrule
+\end{tabularx}
+
+The first six rows are the seventeen tools a routine runs without a window (\cref{sec:routines-tools}); the form of \cref{sec:recipes-form} offers the same seventeen. A file whose \code{tool} isn't in this table is skipped when the project opens, and the status line says which file.
+
+\section{The file}\label{sec:recipes-yaml}
+Open \file{recipes/deposit-grade-tonnage.yaml} in any text editor:
+
+\begin{lstlisting}[language=yaml]
+# micro recipe — grade-tonnage. Hand-edit freely; series
+# reference layers by NAME.
+name: "deposit grade-tonnage"
+tool: "gt"
+params:
+  series:
+    - layer: "deposit.csv"
+      col: "FE"
+      unit: "pct"
+      weight: "SG"
+      filter: ""
+      color: "#5b7fa6"
+  nCut: 40
+  scope: "all"
+  gradeUnit: "pct"
+  densUnit: "t/m3"
+\end{lstlisting}
+
+Three keys make a recipe: a \code{name}, a \code{tool}, and the tool's settings under \code{params}. A fourth, \code{inputs}, is optional (\cref{sec:recipes-inputs}).
+
+The settings are the ones the window shows. For grade–tonnage, each \term{series} is a layer, a grade column, the grade's declared unit, a density expression (\code{weight}) and an optional filter. \code{nCut} is the window's \ui{cutoffs} field: the number of automatic cutoff steps between the data's lowest and highest grade. Display settings (a series' \code{color}, the axis ranges) ride along in the file and don't affect the numbers. \Cref{app:tools} lists every tool's settings.
+
+\subsection{Stating the cutoffs}\label{sec:recipes-cutoffs}
+The window chooses its cutoffs from the data's range. That is right for looking and wrong for a table you mean to set beside last month's: when the range moves, every cutoff moves with it, and no row has a partner. So the tool also takes an explicit list, which only the file can give:
+
+\begin{lstlisting}[language=yaml]
+params:
+  cutoffs:
+    - 30
+    - 40
+    - 50
+    - 55
+    - 60
+    - 65
+  gradeUnit: "pct"
+\end{lstlisting}
+
+Add the list to the file by hand (or write the recipe in the form of \cref{sec:recipes-form}, which has a \code{cutoffs} field). With \code{cutoffs} present, \code{nCut} is ignored. A routine \emph{requires} the list (\cref{sec:routines-rules}).
+
+The file is yours to edit. Comment it, copy it into another project, keep an office set in a shared folder. When you drop a recipe file into \file{recipes/} by hand, \menu{File>Scan folder for new data…} picks it up (\cref{sec:projects-inbox}).
+
+When you write YAML by hand, write it the way micro does: block style (one item per line, lists with dashes), with strings in double quotes.
+
+\begin{why}
+A recipe is data, never code. The YAML micro reads is a strict subset with no tags and no executable constructs, so a recipe file from a colleague can't carry a script. Running it is as safe as opening a spreadsheet of numbers, and a reviewer can read all of what it does.
+\end{why}
+
+\subsection{Settings are checked}
+A setting micro doesn't know is an error, and the error names the nearest real one:
+
+\begin{lstlisting}
+grade-tonnage: no setting “cutofs” — did you mean “cutoffs”?
+\end{lstlisting}
+
+A wrong type is refused the same way (\code{nCut: expects a whole number, got "many"}), and so is a column the layer doesn't have. Nothing is silently ignored and no default quietly takes a typo's place.
+
+\section{New recipe… — the form}\label{sec:recipes-form}
+You don't have to run an analysis to record it. \menu{Tools>Recipes>New recipe…} opens a form generated from the tool's own list of settings.
+
+\shot[0.62\linewidth]{recipes-form}{The new-recipe form for grade–tonnage. Required settings carry an asterisk; hover a label to read what the setting means.}
+
+\begin{enumerate}
+\item Choose the \ui{tool}. The form rebuilds for it.
+\item Type a \ui{name}.
+\item Fill in the settings. A layer setting is a picker over the loaded layers. A column setting suggests the chosen layer's columns and also takes an expression. A list of numbers is typed with commas or spaces (\code{30, 40, 50}). A list such as \code{series} has a \ui{+ series} button that adds a row.
+\item Press \ui{Save recipe}.
+\end{enumerate}
+
+The form checks what you entered against the tool's list of settings, the same list a routine uses. If something is wrong, the problems appear in red above the button and nothing is saved.
+
+What only a routine demands doesn't stop the save. A grade–tonnage recipe without \code{cutoffs} is a good recipe for the window, so the form saves it, and the status line says what a routine would still need: \emph{recipe “deposit grade-tonnage” saved — to use it in a routine, add: cutoffs: a routine must state it (automatic cutoffs come from the data’s range and move with it)}. A routine step that uses the recipe adds the cutoffs under \code{with:} (\cref{sec:routines-rules}).
+
+The form lists the seventeen tools of \cref{sec:recipes-tools}. Figures, composer pages, calc columns and by-solid recipes are saved from their own windows.
+
+\section{Recipes that ask first}\label{sec:recipes-inputs}
+A recipe can declare \code{inputs}: a short list of questions. Running it then opens a small dialog, and the answers land in the settings wherever a \code{\$name} marker stands.
+
+\begin{lstlisting}[language=yaml]
+name: "GT — any model"
+tool: "gt"
+inputs:
+  - name: "model"
+    label: "Block model"
+    type: "layer"
+  - name: "grade"
+    label: "Grade column"
+    type: "column"
+    of: "model"
+  - name: "density"
+    label: "Density column"
+    type: "column"
+    of: "model"
+params:
+  layer: "$model"
+  gradeUnit: "pct"
+  cutoffs:
+    - 30
+    - 40
+    - 50
+    - 60
+  series:
+    - layer: "$model"
+      col: "$grade"
+      unit: "pct"
+      weight: "$density"
+\end{lstlisting}
+
+\shot[0.5\linewidth]{recipes-inputs}{The dialog generated from \code{inputs}. The column pickers follow the layer chosen above them.}
+
+Choose \ui{Run…} and the dialog shows one field per input: a picker of loaded layers for \code{model}, and for \code{grade} and \code{density} a picker of that layer's columns, which refills when you change the layer. Press \ui{Run}. Your answers are remembered for the session, so the next \ui{Run…} starts from them.
+
+There are five input types (text, number, choice, layer, column). They work the same way in a routine, where they matter more, so the full table is in \cref{sec:routines-inputs}.
+
+\begin{tip}
+\code{inputs} is written by hand in the file. When you later re-save the recipe from its window under the same name, micro keeps the inputs you wrote.
+\end{tip}
+
+\section{Check all recipes…}\label{sec:recipes-checkall}
+\menu{Tools>Recipes>Check all recipes…} reads every file in \file{recipes/} and checks it the way it will run, without running anything. (The item is listed once the project has a recipe.)
+
+\shot[0.7\linewidth]{recipes-checkall}{Check all recipes: one line per file, with each problem listed beneath it.}
+
+\begin{itemize}
+\item A recipe for one of the seventeen tools has its settings checked against the tool's list. Unknown settings, wrong types and missing required settings are listed under it.
+\item A routine is expanded and put through its pre-flight (\cref{sec:routines-preflight}): missing recipes, bad settings, columns that don't exist, two steps writing the same report.
+\item A recipe for a tool without a settings list (a figure, a composer page, calc columns, by solid) is marked \emph{not checked}.
+\end{itemize}
+
+Each line starts with ✓ or ✗. A routine written for layers that aren't loaded isn't wrong, so missing layers are a note, not a problem: \emph{some layers aren't loaded — their columns weren't checked}.
+
+\subsection{Old routine files}
+Routines written before settings moved under \code{with:} (\cref{sec:routines-with}) are flagged as \emph{in the old step form}. The window then offers \ui{Rewrite old steps into with:}, which moves each step's settings under \code{with:} and writes the file back. The step's own keywords stay where they are.
+
+\begin{tip}
+Run \ui{Check all recipes…} after you rename a column or replace a model. It finds every recipe the change broke, in one pass, before a month-end run does.
+\end{tip}

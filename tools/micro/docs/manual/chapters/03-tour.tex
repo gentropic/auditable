@@ -1,0 +1,674 @@
+\chapter{A guided tour}\label{ch:tour}
+\begin{goals}
+\textbf{In this chapter} you work through one small job from start to finish on the demo project: look at a deposit, question it with the filter, read its drillholes, derive a column, run a grade–tonnage curve, cut a section, compose a figure, save the project, and write a first routine that repeats the numbers.
+\end{goals}
+
+Allow forty minutes, or take the tour a section at a time; each section leaves the scene in a state the next one can start from. You need nothing but micro itself. For the last two sections, saving and the routine, use Chrome or Edge, because they write a project folder.
+
+Every idea here has a chapter of its own later. The tour shows each one once, in the order you would meet it in real work, and points to where the detail is.
+
+\begin{figure}[htbp]\centering
+\begin{tikzpicture}[
+  font=\sffamily\footnotesize,
+  >={Stealth[length=1.8mm, width=1.4mm]},
+  stop/.style={draw=rule, fill=tint, rounded corners=1.5pt, line width=0.5pt, minimum height=8mm, text width=19mm, align=center, text=ink, inner sep=1mm},
+  num/.style={font=\sffamily\bfseries\footnotesize, text=amber},
+  go/.style={->, draw=amber, line width=0.8pt},
+]
+\node[stop] (a) at (0,0)       {{\color{amber}\bfseries 1}\enspace look around};
+\node[stop] (b) at (25mm,0)    {{\color{amber}\bfseries 2}\enspace filter};
+\node[stop] (c) at (50mm,0)    {{\color{amber}\bfseries 3}\enspace drillholes};
+\node[stop] (d) at (75mm,0)    {{\color{amber}\bfseries 4}\enspace derive a column};
+\node[stop] (e) at (100mm,0)   {{\color{amber}\bfseries 5}\enspace grade–tonnage};
+\node[stop] (f) at (100mm,-14mm) {{\color{amber}\bfseries 6}\enspace a section};
+\node[stop] (g) at (75mm,-14mm)  {{\color{amber}\bfseries 7}\enspace a figure};
+\node[stop] (h) at (50mm,-14mm)  {{\color{amber}\bfseries 8}\enspace save the project};
+\node[stop] (i) at (25mm,-14mm)  {{\color{amber}\bfseries 9}\enspace a routine};
+\draw[go] (a) -- (b); \draw[go] (b) -- (c); \draw[go] (c) -- (d); \draw[go] (d) -- (e);
+\draw[go] (e) -- (f); \draw[go] (f) -- (g); \draw[go] (g) -- (h); \draw[go] (h) -- (i);
+\end{tikzpicture}
+\caption{The route of the tour. Stops 1 to 7 work in any browser and leave nothing behind; stops 8 and 9 write a project folder.}\label{fig:tour-route}
+\end{figure}
+
+\section{Open the demo project}\label{sec:tour-open}
+\begin{tryit}
+\begin{enumerate}
+\item Open micro. If a scene is already open, choose \menu{File>New project…} and confirm.
+\item On the start screen, click \ui{▸ open the demo project}.
+\item Wait for the status line to read \emph{demo project — a deposit, drillholes, topography, mining phases and the ore shell, sectioned, with grade–tonnage. File → Save project as… writes it all to a folder.}
+\end{enumerate}
+\end{tryit}
+
+\shot{tour-opened}{The demo project as it opens. The deposit is cut by an east–west section; the drillholes are left whole; the ore shell shows as a ring on the cut face; a grade–tonnage window, already in tonnes, is on the right.}
+
+Here is what you are looking at.
+
+The colored body is \file{deposit.csv}, a block model of an iron deposit with a pit already carved into its top. It is colored by \col{FE}. The bright core is the ore lens, most of it above 50\,\% Fe, and its richest part is hematite, at 60\,\% or more. The dark surround is waste, mostly between 20 and 25\,\%. The green rim along the top of the model, outside the pit, is canga: a ferruginous cap at about 52\,\% Fe. The blocks are 10 × 10 × 5~m.
+
+The model is cut. An east–west \term{section} keeps everything behind a vertical plane and removes what is in front, so you see into the lens. Twelve inclined drillholes run into it in four fans of three, from collars on the ground south of the lens, drilling north. The demo tells them not to be cut, so they stay whole in front of the face. The topography and the phase 1 pit follow the section, so each is drawn as a thin line where the plane cuts it, along the top of the face. A ring on the cut face traces the ore shell, a closed mesh drawn where the plane crosses it.
+
+In the layers panel on the left you will find the block model, a group for the drillhole set, the topography, a collapsed group named \ui{mining phases}, and \ui{ore shell}. On the right is a window titled \ui{grade-tonnage · deposit.csv}. Drag it aside by its title bar if it covers the model, or minimize it with its \ui{–} button; you will come back to it in \cref{sec:tour-gt}.
+
+\section{Look around}\label{sec:tour-look}
+Start with the view itself. \Cref{sec:start-nav} has the full list of moves; these are the ones you need now.
+
+\begin{tryit}
+\begin{enumerate}
+\item Drag in the view to orbit. Right-drag to pan. Roll the wheel to zoom.
+\item Press \key{f} to fit the scene whenever you lose it.
+\item Hold \key{Ctrl} and roll the wheel. The section plane moves through the deposit and the cut face is redrawn as it goes. Watch the ring of the ore shell grow and shrink as the plane passes through the lens.
+\item Press \key{l}. The camera turns to face the section square-on.
+\item Click a block on the cut face. It glows, and the record panel opens with the block's row.
+\end{enumerate}
+\end{tryit}
+
+Scrubbing a section with \key{Ctrl} and the wheel is the fastest way to understand a body in 3D.\sidekey{Ctrl wheel}{scrub the section through the data} The cut is exact: a block that straddles the plane is drawn cut, so the face is a continuous wall, not a ragged edge of whole blocks. You can pick on that wall. The block you clicked is the one behind the face at that point.
+
+The record panel lists \col{XC}, \col{YC}, \col{ZC}, \col{FE}, \col{SG} and \col{LITO} for that block: its row of the file, read on demand. Inside the lens, \col{LITO} reads HEMATITE where \col{FE} is 60\,\% or more and ITABIRITE below. Click a block in the dark surround and compare: lower \col{FE}, lower \col{SG}, and \col{LITO} reads WASTE. A block in the bright rim at the top of the model reads CANGA.
+
+\shot[0.75\linewidth]{tour-pick}{The section faced square-on, a block in the lens picked (the small mark at its center), and its row in the record panel: \col{FE} 59.53, just under the 60\,\% that would make it hematite, so \col{LITO} reads ITABIRITE.}
+
+\subsection{Layers on and off}
+\begin{tryit}
+\begin{enumerate}
+\item In the layers panel, click the eye of \ui{topography} to hide it, and again to show it.
+\item Click the \ui{mining phases} group to open it. It holds three pit shells; only \ui{phase 1 — starter pit} is shown. Turn on the eye of \ui{phase 3 — final pit}. Like the topography it follows the section, so it appears as a line on the cut face, and that line follows the top of the blocks across the pit: the final pit is the hole the model was carved with.
+\item Turn phase 3 off again and click the group to close it.
+\item Click \file{deposit.csv} to make it the active layer, then press \key{h} twice: the model hides and returns.
+\end{enumerate}
+\end{tryit}
+
+All layers share one coordinate system, so a pit shell, a topography and a model line up without any setup. Each keeps its own color, opacity and eye.
+
+\begin{tip}
+To compare overlapping layers quickly, make one active and press \key{⇧H} to \emph{solo} it. \key{]} then steps to the next layer and \key{⇧H} solos that one. A last \key{⇧H} brings everything back.
+\end{tip}
+
+\section{Ask a question: the filter}\label{sec:tour-filter}
+The \term{filter} is how you ask a dataset a question. You write a condition over its columns; the records that satisfy it stay, and the rest drop out of the view, the attribute table and any analysis you scope to the filter.
+
+Start with the first question anyone asks of a deposit: where is the high grade?
+
+\begin{tryit}
+\begin{enumerate}
+\item Make sure \file{deposit.csv} is the active layer.
+\item Press \key{/}. The cursor goes to the filter box.
+\item Type \code{FE > 55} and press \key{Enter}.
+\end{enumerate}
+\end{tryit}
+
+The model reduces to its core. The status line reports how many blocks match, out of how many: \emph{filter: 38,357 of 1,786,620 match}. Orbit: what remains is the lens, with its two richer pods along the axis, and a few patches near the top of the model, where the canga cap runs above 55\,\% in places.
+
+\shot{tour-filter}{The block model filtered to \code{FE > 55}, still cut by the section: the lens, the canga patches near the top, and the drillholes, which the filter on the model does not touch. The status line gives the count of matching blocks.}
+
+As you typed, micro offered completions: column names, functions, and for a text column its values. \key{Tab} or \key{Enter} accepts one, so you rarely type a column name in full or have to remember how a lithology is spelled.
+
+Now narrow the question.
+
+\begin{tryit}
+\begin{enumerate}
+\item Press \key{/} again and change the filter to
+\begin{lstlisting}[language=expr]
+FE > 55 and LITO = "HEMATITE"
+\end{lstlisting}
+then press \key{Enter}. 11,013 blocks remain: the hematite core. Every hematite block is above 60\,\% Fe, so here the \code{FE > 55} part changes nothing; the lithology decides.
+\item Change \code{HEMATITE} to \code{ITABIRITE}. Now 23,460 blocks remain: the rich itabirite that wraps the core.
+\item Try \code{FE between 45 and 55}. This is the transition zone, a shell around the core, and with it most of the canga cap, which grades in the same range: 66,073 blocks.
+\end{enumerate}
+\end{tryit}
+
+The language is the one you would guess: comparisons, \code{and}, \code{or}, \code{not}, \code{between}, \code{in (…)}, arithmetic, and a set of functions. Text values go in double quotes. \Cref{ch:filter} teaches it by example and \cref{app:expr} is the reference.
+
+\subsection{The drawer}
+Typing is quick once you know what you want. To explore, use the \term{filter drawer}.
+
+\begin{tryit}
+\begin{enumerate}
+\item Set the filter back to \code{FE > 55}.
+\item Click the \ui{▾} at the right end of the filter box. The drawer opens below it, with your condition as a row: the column, the operator, and a slider for the value.
+\item Drag the slider. The number in the filter box changes with it, and the model follows.
+\item Choose \ui{add condition…} and pick \col{LITO}. A second row appears with the lithologies as chips. Click \ui{ITABIRITE}.
+\item Remove that row with its \ui{×}.
+\end{enumerate}
+\end{tryit}
+
+\shot{tour-filter-drawer}{The filter drawer, titled \ui{filter widgets}, after step 4: the whole expression at the top, then each condition as a row of controls, the \col{FE} slider and the \col{LITO} chips with ITABIRITE picked.}
+
+The drawer is not a second filter. Every control rewrites its own part of the text in the box, so the box always holds the whole filter, and you can copy it into a recipe, a report or an e-mail.
+
+\begin{why}
+A filter you can read is a filter you can audit. micro keeps one expression per layer, in plain text, and saves it with the project. There is no hidden state behind the sliders.
+\end{why}
+
+\subsection{Clear it}
+Press \key{/}, then \key{Esc}, or click the \ui{×} in the filter box. The whole model returns. A filter change is an undo step, so \key{⌘Z} also brings back the previous filter.
+
+Leave the filter empty for now.
+
+\section{Meet the drillholes}\label{sec:tour-dh}
+The drillhole set in the layers panel is a group named \ui{demo}. It has three rows inside it.
+
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+row & is \\ \midrule
+◈ \file{demo\_collars.csv} & the collar table: one row per hole \\
+↧ \file{demo\_survey.csv} & the survey table: how each hole deviates \\
+\ui{holes · demo\_assay.csv} & the interval layer, read from \file{demo\_assay.csv}: the assays, drawn as sticks along the holes \\
+\bottomrule
+\end{tabularx}
+
+Only the last is a layer that draws. Its file name is \file{demo\_assay.csv}; the layers panel prefixes \emph{holes ·} to mark it as a drillhole layer. The first two are the other tables of the same element. Clicking either opens a menu of what you can do at the level of holes.
+
+\begin{tryit}
+\begin{enumerate}
+\item Click the ◈ row and choose \ui{Attribute table…}.
+\item Read the table. There are twelve holes. Look at \col{EOH} and \col{COMPANY}: four holes belong to PIONEER and stop at 150~m; eight belong to MERIDIAN and reach 520~m (DH012, the steepest hole of the last fan, stops at 515~m, where it leaves the bottom of the model). Holes that share a collar share \col{X}, \col{Y} and \col{Z}: each fan is three rows, and its PIONEER hole is the flattest, at −45° (the dips are in the survey table).
+\item Close the table.
+\end{enumerate}
+\end{tryit}
+
+\shot[0.8\linewidth]{tour-collars-table}{The collar table of the demo set: \col{HOLEID}, \col{X}, \col{Y}, \col{Z}, \col{EOH}, \col{COMPANY}.}
+
+That difference matters to anyone checking an estimate. The shallow holes never reached the lower lens, so eight holes support the deep ore, not twelve. To see which, ask about holes by their collar data.
+
+\subsection{Filter by hole}
+\begin{tryit}
+\begin{enumerate}
+\item Click the ◈ row again and choose \ui{Filter holes…}.
+\item Type
+\begin{lstlisting}[language=expr]
+COMPANY = "MERIDIAN"
+\end{lstlisting}
+and confirm. The status line reads \emph{hole filter: 8 of 12 holes — intervals follow}, and the four PIONEER holes disappear from the view.
+\item Open \ui{Filter holes…} once more, empty the field, and confirm. All twelve return.
+\end{enumerate}
+\end{tryit}
+
+A \term{hole filter} is an expression over the \emph{collar} columns. Its verdict applies to every interval of the holes it keeps, in every interval table of the set. It is separate from the ordinary filter on the interval layer, and the two combine.
+
+\subsection{Broadcast a collar column}
+A hole filter answers a yes-or-no question per hole. Sometimes you want the collar value itself on every interval, so you can color by it or use it in an expression. That is a \term{broadcast}.
+
+\begin{tryit}
+\begin{enumerate}
+\item Click the ◈ row and choose \menu{Broadcast column to intervals>EOH (number)}.
+\item Click the \ui{holes · demo\_assay.csv} layer to make it active. The sticks are now colored by the new \col{EOH} column.
+\item Press \key{/} and filter with \code{EOH > 200}. Only the deep holes remain, 831 of the 951 intervals: the hole filter's question, now asked of the intervals.
+\item Change the filter to \code{EOH > 200 and FE > 55}: the ore intercepts of the deep holes, 106 intervals.
+\item Clear the filter, and set \ui{color} on the instrument rail back to \col{FE}.
+\end{enumerate}
+\end{tryit}
+
+\col{EOH} is now a real column of the interval layer. It appears in the record panel when you click an interval, in the attribute table, in the color choices and in an export. Nothing was written to \file{demo\_assay.csv}; the column is micro's own, kept beside the file once you save a project.
+
+\begin{note}
+The set's own menu (right-click the \ui{demo} group) has a \ui{QA report…}: every row to look at before the holes are used, from duplicate collars to overlapping intervals. \Cref{ch:qa} describes it, and \cref{ch:drillholes} the rest of the drillhole tools.
+\end{note}
+
+\section{Derive a column}\label{sec:tour-calc}
+You have filtered on what the file contains. Now make something it does not contain: a \term{calculated column}, marked with ƒ throughout micro.
+
+A calculated column is an expression that gives a value per record. Here you class every block by grade.
+
+\begin{tryit}
+\begin{enumerate}
+\item Click \file{deposit.csv} to make the model active.
+\item Choose \menu{Data>Calculated columns…}. A window titled \ui{ƒ calculations · deposit.csv} opens.
+\item In the name field, type \code{CLASS}.
+\item In the expression editor, type
+\begin{lstlisting}[language=expr]
+if(FE > 58, 2, if(FE > 45, 1, 0))
+\end{lstlisting}
+\item Click \ui{add column}. The status line confirms: \emph{ƒ CLASS added}.
+\end{enumerate}
+\end{tryit}
+
+The expression reads: 2 where iron is above 58\,\%, 1 where it is above 45\,\%, and 0 otherwise. High grade, medium grade, waste.
+
+\shot{tour-calc-window}{The calculations window with \col{CLASS}. Below the editor, the \code{if} ladder is shown as a case table: each condition with its threshold and the value it gives, each on a slider, and the \ui{else} value last.}
+
+Below the editor, micro has read the nested \code{if} and laid it out as a \term{case table}: one row per condition with the value it gives, and an \ui{else} row at the bottom. Every constant has a slider: the thresholds 58 and 45, and the values 2, 1 and 0.
+
+Now see the classes on the model.
+
+\begin{tryit}
+\begin{enumerate}
+\item If you skipped the box above, add \col{CLASS} first as it describes. Then, in the \ui{color} dropdown on the instrument rail, choose \ui{ƒ CLASS}. The status line reads \emph{ƒ CLASS: computing for display…}, then \emph{ƒ CLASS: colored — 1,786,620 values, 0 … 2}, and the model is redrawn in three classes.
+\item In the calculations window, drag the slider for 58 down toward 55. The high-grade class grows as you drag.
+\item Put it back at 58.
+\item Press \key{/} and filter with \code{CLASS = 2}. A calculated column filters like any other: 19,305 blocks match.
+\item Clear the filter, and set \ui{color} back to \col{FE}.
+\end{enumerate}
+\end{tryit}
+
+\shot{tour-class-colored}{The deposit colored by \ui{ƒ CLASS}, with the calculations window beside it: waste (0, dark), medium grade (1), and the high-grade core (2, bright). The canga cap along the top of the model falls in the medium class.}
+
+Define, look, adjust: most derived columns get made in this loop. A threshold you can drag while watching the model is a threshold you understand.
+
+Three properties make a calculated column safe to build on. It can use other calculated columns, so definitions build on one another. It is computed from its inputs whenever it is needed, so it never goes stale. And it is recorded: when you save the project, the expression is written into the model's manifest, where anyone can read how \col{CLASS} was defined. If you later want the values fixed, \ui{materialize → stored} in the same window computes them once and keeps them as a stored column. \Cref{ch:filter} covers all of this.
+
+\begin{caution}
+Outside a project, a calculated column lives in the open tab. micro asks before you close a tab that holds one, but the safe habit is to save the project (\cref{sec:tour-save}) once you have derived something you care about.
+\end{caution}
+
+You can close the calculations window.
+
+\section{The curve: grade–tonnage}\label{sec:tour-gt}
+Grade–tonnage answers the question every model is asked first: how much is there above a given grade, and at what average grade?
+
+Bring the grade–tonnage window back. If you minimized it, click its chip above the status line. If you closed it, right-click \file{deposit.csv} and choose \ui{Grade-tonnage…}: the window comes back with the same setup, says \emph{restored — Run to compute}, and waits for you to click \ui{Run}.
+
+Every analysis window has this shape. On the left is a rail of settings; on the right is the plot; \ui{Run} computes; a row of buttons below it takes the result somewhere else. \Cref{ch:analysis} describes the shape once for all of them.
+
+\shot{tour-gt-window}{The grade–tonnage window on the demo deposit as the demo sets it up: series \col{FE} in \%, density \col{SG}, display unit \%, 40 cutoffs, scope \ui{all}. Tonnage (solid, left axis) and mean grade (dashed, right axis).}
+
+The demo opened this window with one \term{series} and ran it. Read the series box from the top: the layer \file{deposit.csv}; the column \col{FE}, with the unit selector beside it set to \ui{\%}; \col{SG} in the density field; an empty \emph{filter (optional)} field. Under \ui{display}, \ui{cutoffs} is 40, \ui{unit} is \ui{\%} and \ui{ρ unit} is t/m³. The subtitle in the title bar sums it up: \emph{tonnes · 40 cutoffs · 1,786,620 rows}.
+
+Because a density is set, the left axis is in tonnes. Tonnage is density × block volume, summed over the blocks above each cutoff. The second curve is the mean grade of those blocks, weighted by tonnes. Move the pointer over the plot to read both at any cutoff: above 30\,\% Fe there are about 322~Mt at 47.9\,\%; above 50\,\%, 173~Mt at 55.4\,\%; above 60\,\%, 24~Mt at 62.3\,\%.
+
+With the density field empty, the same window would add up volume instead, and say so in its subtitle: without a density micro has no tonnes to give.
+
+The shape tells you about the deposit (\cref{fig:tour-gt}). Below about 30\,\% the curve falls steeply: that is the waste, most of the model, crossing the cutoff. Between about 30 and 48\,\% it flattens into a shelf, because few blocks grade between waste and ore; then it falls again through the ore grades. That is what a sharp contact looks like in a grade–tonnage curve, and it means that the tonnage above a cutoff on the shelf is far less sensitive to the cutoff than it is anywhere else.
+
+\begin{figure}[htbp]\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.49\linewidth, height=50mm, xlabel={cutoff (\% Fe)}, ylabel={Mt above cutoff}, ymin=0]
+\addplot[amber, very thick] table[col sep=tab, x=cutoff, y expr=\thisrow{tonnes}/1e6]{figures/data/tour-gt.tsv};
+\end{axis}
+\end{tikzpicture}\hfill
+\begin{tikzpicture}
+\begin{axis}[width=0.49\linewidth, height=50mm, xlabel={cutoff (\% Fe)}, ylabel={mean grade (\% Fe)}]
+\addplot[info, very thick] table[col sep=tab, x=cutoff, y=grade]{figures/data/tour-gt.tsv};
+\end{axis}
+\end{tikzpicture}
+\caption{Grade–tonnage of the demo deposit, from micro's own numbers: millions of tonnes above cutoff (left) and the mean grade of that tonnage (right). Below 30\,\% Fe the waste crosses the cutoff; the shelf from about 30 to 48\,\% is the sharp contact between waste and ore.}\label{fig:tour-gt}
+\end{figure}
+
+\begin{why}
+A block with no grade is \emph{unestimated}, not zero. micro leaves it out of the curve. Counting it as zero would add tonnage at the lowest grade and drag the mean down, and you would not see why.
+\end{why}
+
+\subsection{A second series}
+A series can carry its own filter, so one window can compare parts of a model, or two models.
+
+\begin{tryit}
+\begin{enumerate}
+\item Click \ui{+ add series}. A second series box appears, on the same layer and column, but with no unit and no density.
+\item Type \code{SG} in its density field, and set its unit selector to \ui{\%}.
+\item In its \emph{filter (optional)} field, type \code{LITO = "HEMATITE"} and press \key{Enter}.
+\item Click \ui{Run}.
+\end{enumerate}
+\end{tryit}
+
+There are now two pairs of curves: the whole deposit and its hematite. The hematite tonnage stays level at about 24~Mt and 62.3\,\% until the cutoff reaches 60\,\%, because no hematite block grades below that; above 60\,\% the two curves all but coincide, since nearly all the blocks that rich are hematite. The colored dot on each series box is its color in the plot; click the dot to step to the next color.
+
+\subsection{Scope}
+The \ui{scope} control decides which records the whole window reads: \ui{all}, \ui{filt} for the records matching the layer's filter, or \ui{sel} for the 3D selection.
+
+\begin{tryit}
+\begin{enumerate}
+\item Press \key{/} and filter the model with \code{ZC > 700}: the upper benches.
+\item In the grade–tonnage window, click \ui{filt}. The window runs again, on the 568,897 filtered blocks only.
+\item Click \ui{all}, and clear the filter.
+\end{enumerate}
+\end{tryit}
+
+With \ui{sel}, the curve follows the selection as you change it: press \key{r}, drag a rectangle over part of the model, and read the curve of what you enclosed. \Cref{ch:picking} covers selecting.
+
+\subsection{Taking the result out}
+The buttons under \ui{Run} send the result elsewhere:
+
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+button & does \\ \midrule
+\ui{⤓ png} & saves the plot as an image \\
+\ui{⧉ copy} & copies the plot to the clipboard \\
+\ui{⧉ table} & copies the numbers, tab-separated, ready to paste into a spreadsheet \\
+\ui{⇥ layer} & keeps the result as a table layer you can filter, join and compare \\
+\ui{⇥ figure} & puts the plot and its table on a composer page (\cref{sec:tour-figure}) \\
+\ui{save as recipe…} & saves this setup as a file, to run again (\cref{sec:tour-routine}) \\
+\bottomrule
+\end{tabularx}
+
+Before you go on, remove the hematite series with the \ui{×} on its box and click \ui{Run}, so that the window holds one curve. Leave the window open. \Cref{ch:gt} is the chapter on grade–tonnage.
+
+\section{A section}\label{sec:tour-section}
+The model has been cut since it opened. Now take control of the cut.
+
+The section controls are at the right of the instrument rail. From left to right: the orientation (\ui{off}, \ui{plan}, \ui{N–S}, \ui{E–W}, \ui{knife}, \ui{custom}); what the section keeps (\ui{slab}, \ui{front}, \ui{behind}); a slider for position; for a slab, its half-thickness in meters; and three checkboxes, \ui{plane}, \ui{follow} and \ui{2D}.
+
+The demo uses \ui{E–W} with \ui{behind}: a half-space, with half of the model removed so that you can see in. A geologist's section is something else, a thin slice. micro calls that a \term{slab}.
+
+\begin{tryit}
+\begin{enumerate}
+\item If you skipped ahead or moved the section, first choose \menu{View>Bookmarks>Ore lens — E–W section}: the camera and the demo's section return.
+\item Change \ui{behind} to \ui{slab}. The model becomes a slice, and a box for the slab's half-thickness appears beside the position slider. It reads 10, a slice 20~m thick. Type \code{5} in it and press \key{Enter}: a 10~m slab, one block deep.
+\item Press \key{l} to face it.
+\item Press \key{.} a few times. Each press moves the section forward (here, north) by one slab, so consecutive sections neither overlap nor leave gaps. \key{,} steps back, south. Step back to where you started.
+\item Hold \key{Alt} and roll the wheel to thicken the slab, then set the half-thickness box back to 5.
+\item Tick \ui{2D}. The view turns orthographic and locks flat onto the section: dragging now pans, as on paper.
+\end{enumerate}
+\end{tryit}
+
+\shot{tour-section-2d}{A 10~m east–west slab in 2D mode: block grades on the cut, the ore shell as a faint outline around the lens, and the drillholes, each fan of three seen end-on as one stick.}
+
+This is a section as you would draw one. The blocks show their grade on the cut. The ore shell is an outline around the lens, and the topography and the phase 1 pit are faint lines across the top. Because the drillholes are set not to be cut, all twelve are drawn whole, whatever their distance from the plane. They drill north, along your line of sight, so the three holes of each fan line up and read as one stick: four sticks for twelve holes.
+
+Drawing every hole is a choice per layer, and often the wrong one for a real section: a hole far off the plane says nothing about the blocks on it. Change it.
+
+\begin{tryit}
+\begin{enumerate}
+\item In the layers panel, right-click \ui{holes · demo\_assay.csv} and open \ui{Cut by sections}.
+\item Choose \ui{follow the section}. Now only the intervals inside the slab are drawn. At the opening position that is a short stretch of four holes near 565~m elevation: the −60° hole of each fan, where it crosses the plane. The −45° holes stop at 150~m, south of here, and the −75° holes never reach this far north.
+\item Press \key{,} about ten times to step the slab south, toward the collars. The other holes of each fan come into the slab, each at its own depth.
+\item Compare the stick colors with the block colors around them. Both are colored by \col{FE}; where the model honors the data, they agree. (In the demo they always do: the holes were sampled from the same rock model as the blocks.)
+\end{enumerate}
+\end{tryit}
+
+Each layer decides how the section treats it: follow the slab, keep only what is in front or behind, or ignore the section. A layer can also follow the plane with a slab thickness of its own, which is how you show a thin slice of model with a thicker corridor of holes around it. \Cref{ch:sections} has the details.
+
+\subsection{Other orientations}
+\begin{tryit}
+\begin{enumerate}
+\item Untick \ui{2D}.
+\item Set the orientation to \ui{plan}. The slab is now a bench: a horizontal slice, as thick as the half-thickness box says (twice its value). Press \key{d} to look down on it, and step through the benches with \key{.} and \key{,}.
+\item Press \key{k} to arm the knife. Drag a line across the plan view in any direction: micro cuts a vertical section along the line you drew. Hold \key{⇧} while dragging to snap the line to 15° steps.
+\item Press \key{l} to face your new section.
+\end{enumerate}
+\end{tryit}
+
+\subsection{Back to where you started}
+The demo saved a bookmark of its opening view. A \term{bookmark} holds a camera position and a section.
+
+\begin{tryit}
+\begin{enumerate}
+\item Choose \menu{View>Bookmarks>Ore lens — E–W section}. The camera and the half-space section return.
+\item Right-click \ui{holes · demo\_assay.csv}, open \ui{Cut by sections} and choose \ui{don't cut}. The holes are whole again.
+\end{enumerate}
+\end{tryit}
+
+To save a view of your own, use \menu{View>Bookmarks>Save bookmark…}. Bookmarks are saved with the project.
+
+\section{A figure in the composer}\label{sec:tour-figure}
+Sooner or later a view has to go into a report. micro has two ways to make a figure. The quick one is \menu{View>Decorations \& figure…}, which adds a scale bar, a north arrow, a legend and a title to the 3D view and exports exactly what you see as a PNG (\cref{ch:figures}). The other is the \term{composer}, which lays out a page: views, legends, charts, tables and captions, printed as a vector PDF. You use the composer here.
+
+First, set up the view you want on the page. A scale bar means something only in an orthographic view, so start there.
+
+\begin{tryit}
+\begin{enumerate}
+\item If you skipped the section stop, first choose \menu{View>Bookmarks>Ore lens — E–W section}.
+\item Set the section to \ui{slab}, and press \key{l} to face it.
+\item Open the \ui{View} menu and look at \ui{Orthographic}. If it has no tick, choose it (or press \key{o}).
+\item Zoom and pan until the section fills the view comfortably.
+\end{enumerate}
+\end{tryit}
+
+Now the page.
+
+\begin{tryit}
+\begin{enumerate}
+\item Choose \menu{File>Composer…}. A large window opens with a blank A4 landscape page, named \ui{figure 1}.
+\item Click \ui{+ 3D view}. The current view arrives on the page as a frame. Drag it to move it; drag a handle to resize it.
+\item With the view frame selected, click \ui{+ legend}. A legend appears for each layer in the view that has one, placed beside the frame: on the demo that is five, the model's \col{FE}, the holes' \col{FE}, and an elevation legend for each surface. Keep the model's; select each of the others and click \ui{delete}.
+\item Click \ui{+ scale}, then \ui{+ north}. Drag each to where you want it.
+\item Click \ui{+ text}. A caption frame appears. Select it: the inspector beside the page shows its text. Replace the word \emph{caption} with \code{E–W section through the ore lens.} and leave the rest.
+\end{enumerate}
+\end{tryit}
+
+\shot{tour-composer}{The composer with a section view, its \col{FE} legend, a scale bar, a north arrow, a caption, and the grade–tonnage chart and its table, sent from the window with \ui{⇥ figure}. The view frame is selected, so the inspector on the right shows its settings.}
+
+Three things about what you made set it apart from a pasted picture.
+
+The view frame is not a screenshot. It remembers its \emph{scene}: the camera, the section, which layers were on and how they were colored. It is rendered again at the frame's own size, and again at print resolution on export. Right-click it for \ui{Update from the 3D view} and \ui{Show in the 3D view}.
+
+The caption begins with \code{**Figure \{fig\}.**}. The braces are a \term{field}: \code{\{fig\}} becomes the figure's number. Other fields give the scale, the section position, the date, counts and statistics of what the view shows. The inspector's \ui{insert field…} lists them.
+
+The scale bar belongs to the view frame. Resize the frame and the bar stays true.
+
+\subsection{Add the curve}
+\begin{tryit}
+\begin{enumerate}
+\item Go to the grade–tonnage window. If the composer covers it, use \menu{View>Windows…} to bring it forward. If you closed it, right-click \file{deposit.csv}, choose \ui{Grade-tonnage…} and click \ui{Run}.
+\item Click \ui{⇥ figure}.
+\item Return to the composer. The chart is on the page as a frame of its own, with its table. Arrange them below or beside the section.
+\end{enumerate}
+\end{tryit}
+
+The chart is vector, so it stays sharp at any size, and it re-flows when you resize its frame. Like the view frame, it remembers what made it: the analysis and its settings. The \ui{↻ refresh} button at the top of the composer makes the whole figure again from the data as it is now, every view from its scene and every chart from its analysis. When next month's model arrives, the same figure is one click away.
+
+\subsection{Print it}
+\begin{tryit}
+\begin{enumerate}
+\item At the top right of the composer, leave the resolution at \ui{300 dpi}.
+\item Click \ui{⤓ pdf}. The browser saves \file{figure\_1.pdf}.
+\item Open the PDF. The text and the chart are vector; the 3D view is an image rendered at 300~dpi.
+\end{enumerate}
+\end{tryit}
+
+\begin{note}
+With \ui{embed figure} ticked, the PDF carries the figure's own description inside it. Drop that PDF onto micro and it opens as an editable figure again. Untick it for a deliverable that should hold the page and nothing else.
+\end{note}
+
+Close the composer. The figure is kept, and \menu{File>Figures} lists it. \Cref{ch:composer} covers the composer in full, and \cref{ch:atlas} shows how one figure becomes a page per section.
+
+\section{Save the project}\label{sec:tour-save}
+So far everything lives in the open tab. A \term{project} makes it permanent: an ordinary folder that holds the data files, what you derived, and how the scene looked.
+
+\begin{caution}
+Saving a project folder needs Chrome or Edge. In another browser the \ui{File} menu has no \ui{Save project as…}; you can read this section and the next, but not follow them.
+\end{caution}
+
+\begin{tryit}
+\begin{enumerate}
+\item Create an empty folder somewhere convenient and name it \file{micro-tour}.
+\item Choose \menu{File>Save project as…}, select that folder, and allow the browser to edit it when it asks.
+\item micro first offers to store the block model as Parquet (\emph{store block models as Parquet}), then the four meshes as \file{.wfr} (\emph{store meshes as .wfr}). For this tour, click \ui{Not now} both times, so the model stays a CSV you can open in any editor and the meshes stay OBJ files.
+\item Then micro lists the files that live outside the folder, with their sizes: \emph{7 layers (62.6 MB) live outside the project folder}, followed by nine files, since the drillhole set is one layer made of three. These are the demo files, which exist only in memory. Click \ui{Copy into project}.
+\item The status line reports the copying and indexing, and ends with \emph{project saved — micro-tour/project.json}.
+\end{enumerate}
+\end{tryit}
+
+Parquet is the better home for a large model, and \cref{ch:blocks} explains why. If you have told micro earlier to convert on every save, the model is now \file{deposit.parquet}; the tour works the same, but use that name where the routine below says \file{deposit.csv}.
+
+\begin{why}
+micro never copies data without asking. Copying makes the project self-contained; linking leaves a large file where it is and records where that was. For a model of many gigabytes the difference matters, so it is your decision each time, with the sizes in front of you.
+\end{why}
+
+Now look at the folder in your file manager, outside micro.
+
+\begin{lstlisting}
+micro-tour/
+  project.json
+  models/
+    deposit.csv
+    deposit.csv.element.json
+    deposit.csv.meta.json
+  drillholes/
+    demo_collars.csv
+    demo_survey.csv
+    demo_assay.csv
+    demo_assay.element.json
+    demo_assay.csv.cols/
+      EOH.parquet
+  grids/
+    topo.asc
+    topo.asc.element.json
+  meshes/
+    phase1.obj  phase2.obj  phase3.obj  ore_shell.obj
+    (and an .element.json beside each)
+  bookmarks/
+    ore_lens_e_w_section.json
+  figures/
+    figure_1.compo.json
+\end{lstlisting}
+
+Each data file has its manifest beside it. The drillhole set has one for all three of its tables, named after the interval file. The broadcast \col{EOH} is a stored column, so its values are kept in a file of their own, \file{demo\_assay.csv.cols/EOH.parquet}. \file{deposit.csv.meta.json} is a small cache of what micro learned reading the model, so that it opens faster next time.
+
+The folders are named for kinds of data. \file{project.json} holds the scene: the layers and their order, colors, filters, the camera and section, the open windows. The data files are the plain CSVs and meshes you would expect.
+
+\begin{tryit}
+\begin{enumerate}
+\item Open \file{models/deposit.csv.element.json} in a text editor.
+\item Search for \code{CLASS}. Your expression is there, word for word, recorded as an operation on the model.
+\end{enumerate}
+\end{tryit}
+
+That file is the \term{element manifest} of the block model: the audit trail of everything derived on it. A reviewer does not need micro to read how a column was defined.
+
+From now on \key{⌘S} (\key{Ctrl}+\key{S}) saves. A dot after \ui{Save project} in the \ui{File} menu means there are unsaved changes. The project also appears on the start screen, and \menu{File>Open project folder…} opens it from anywhere. It comes back as you left it, analysis windows included; they wait for you to click \ui{Run}, so opening a project never starts a long computation by itself.
+
+\Cref{ch:projects} describes projects, and \cref{ch:store} what micro keeps inside one.
+
+\section{A first routine}\label{sec:tour-routine}
+So far you have produced numbers by hand. Next month there will be a new model, and you will want the same numbers again, computed the same way. That is what a \term{routine} is for.
+
+A routine is a list of steps in a small text file. Each step runs a \term{tool}, the same computation an analysis window uses, without opening the window. Running the routine writes the tables to a folder of their own, with a record of exactly what ran.
+
+\subsection{Write it}
+\begin{tryit}
+\begin{enumerate}
+\item This stop writes into the project you saved in \cref{sec:tour-save}. If you skipped that, save one first, then go on.
+\item Choose \menu{Tools>Recipes>New routine…}. The routine editor opens, titled \ui{new routine}, with one empty step that would run a saved recipe. This routine uses inline steps instead, so remove that row with its \ui{×}.
+\item In \ui{name}, type \code{first look}.
+\item Click \ui{+ inline step}. A step row appears: \ui{do}, a tool selector reading \ui{grade-tonnage}, an \ui{as} field, buttons to move or remove the step, and a text box for the step's settings.
+\item In \ui{as}, type \code{gt}.
+\item In the text box, type the settings of the first step, exactly as shown below, from \code{with:} to the last cutoff.
+\item Click \ui{+ inline step} again. Set the tool selector to \ui{stats}, type \code{stats} in \ui{as}, and type the second step's settings.
+\end{enumerate}
+\end{tryit}
+
+The settings of the two steps:
+
+\begin{lstlisting}[language=yaml]
+# step 1 — tool: grade-tonnage, as: gt
+with:
+  layer: "deposit.csv"
+  series:
+    - col: "FE"
+      unit: "pct"
+      weight: "SG"
+  gradeUnit: "pct"
+  cutoffs:
+    - 30
+    - 40
+    - 50
+    - 55
+    - 60
+\end{lstlisting}
+
+\begin{lstlisting}[language=yaml]
+# step 2 — tool: stats, as: stats
+with:
+  layer: "deposit.csv"
+  cols:
+    - "FE"
+    - "SG"
+  groupBy: "LITO"
+\end{lstlisting}
+
+\shot{tour-routine-editor}{The routine editor with the two inline steps of \emph{first look}, and below them the preview: each step and the table it will write, in the run's own folder, \file{runs/(this run)/}.}
+
+Read the first step. \code{layer} names the model by its file name. \code{series} has one entry: the grade column \col{FE}, in percent (\code{pct}), weighted by \col{SG}, the same series the demo set up in the window. \code{gradeUnit} is the window's display \ui{unit}; with both in percent, the metal column comes out in tonnes of iron, as in the window. \code{cutoffs} lists five cutoffs. The second step summarizes \col{FE} and \col{SG} for each lithology.
+
+A step's settings go under \code{with:}. The words beside it, \code{tool} and \code{as}, belong to the step itself; \code{as} names the step, and its table.
+
+\begin{caution}
+A routine must state its cutoffs. In the window you gave a \emph{number} of cutoffs and micro spread them over the range of the data. A routine refuses that: automatic cutoffs move when the data moves, and then this month's table could not be compared with last month's row for row. For the same reason a routine runs on all records. To restrict a step, give it a filter; a selection is not saved with a routine.
+\end{caution}
+
+\subsection{Preview, then run}
+\begin{tryit}
+\begin{enumerate}
+\item Click \ui{Preview}. Nothing runs. The editor lists every step the routine would execute and every file it would write.
+\item If the preview shows a warning, read it. micro checks every setting before anything runs, and a misspelled one is named along with the setting it most resembles.
+\item Click \ui{Save \& Run}.
+\end{enumerate}
+\end{tryit}
+
+A \term{tracker} window, \ui{routine · first look}, opens and lists the steps. Each shows its state: waiting, running, done (✓) or failed (✗). The status line reports the end: \emph{routine “first look” — 2 steps run, 2 reports →} and the folder they went to. No analysis window opened, and the grade–tonnage window you left open was not touched.
+
+\shot[0.7\linewidth]{tour-routine-tracker}{The tracker after the run: both steps done, each with the table it wrote, the run folder and its record, and an \ui{Accept as baseline…} button for later (\cref{ch:checks}).}
+
+The routine itself was saved in the project as \file{recipes/first-look.yaml}. Open it in a text editor and you will see the same steps in full:
+
+\begin{lstlisting}[language=yaml]
+# micro recipe — routine. Hand-edit freely; series reference layers by NAME.
+name: "first look"
+tool: "routine"
+params:
+  steps:
+    - tool: "gt"
+      as: "gt"
+      with:
+        layer: "deposit.csv"
+        series:
+          - col: "FE"
+            unit: "pct"
+            weight: "SG"
+        gradeUnit: "pct"
+        cutoffs:
+          - 30
+          - 40
+          - 50
+          - 55
+          - 60
+    - tool: "stats"
+      as: "stats"
+      with:
+        layer: "deposit.csv"
+        cols:
+          - "FE"
+          - "SG"
+        groupBy: "LITO"
+\end{lstlisting}
+
+This file is the routine. The editor is a convenience for writing it; you can write or change the file by hand, copy it into another project, or keep it under version control. It is data and cannot contain code.
+
+\subsection{What a run leaves}
+Look in the project folder again. There is a new folder under \file{runs/}, named with the date, the time and the routine:
+
+\begin{lstlisting}
+runs/
+  2026-11-22 1432 first-look/
+    run.json
+    gt.tsv
+    stats.tsv
+\end{lstlisting}
+
+\file{gt.tsv} and \file{stats.tsv} are the tables: plain tab-separated text, one row per series and cutoff, or per lithology and column. Open \file{gt.tsv} in a spreadsheet. Its columns are \code{series}, \code{cutoff}, \code{tonnes}, \code{grade} and \code{metal}, and its numbers are the ones the window's curves pass through at those cutoffs: at 30\,\%, 321,646,630 tonnes at 47.90\,\% Fe, 154 million tonnes of iron. The window and the routine call the same function.
+
+\file{run.json} is the \term{run record}. It names the routine and the micro build; lists every file that was read, with its size and SHA-256; and for each step gives the settings as they were used, how long it took, what it wrote, and the SHA-256 of that too. Every run leaves one. When a reviewer asks, months later, which model a table came from, the run record answers.
+
+\begin{tryit}
+\begin{enumerate}
+\item Choose \menu{Tools>Recipes>Runs…}. The run you made a moment ago is listed.
+\item Run the routine again: open \menu{Tools>Recipes}, point at \ui{first look}, and choose \ui{Run}.
+\item Watch the tracker. Nothing about the inputs or the settings has changed, so micro reuses both steps from the earlier run. Each line says so: \emph{reused from 2026-11-22 1432 first-look (nothing changed)}, with your first run's folder name.
+\end{enumerate}
+\end{tryit}
+
+The second run still leaves a folder of its own, with its own \file{run.json}, so the record of what ran is complete; when two runs start in the same minute, the second folder's name ends in \file{-2}.
+
+A step is \emph{reused} when its input files, every derived column it reads, its settings and the micro build are all unchanged. Change the model and the steps compute again. \ui{Run fresh (reuse nothing)} in the same menu recomputes everything regardless.
+
+\begin{note}
+You did not have to write this routine from nothing. \ui{save as recipe…} in the grade–tonnage window stores that window's setup as a \term{recipe}, and a routine step can run a saved recipe by name (\ui{+ run a recipe} in the editor). Inline steps are for settings that belong to one routine; recipes are for setups you reuse.
+\end{note}
+
+This routine computes and stops. A real one goes further: it repeats a step for every domain or every grade from a table, checks its own results (\emph{is the global bias under 5\,\%?}), and compares its tables with an accepted baseline run. Part~VI builds up to that: \cref{ch:recipes} for recipes, \cref{ch:routines} for routines, \cref{ch:checks} for checks, and \cref{ch:records} for run records.
+
+\section{Where next}\label{sec:tour-next}
+You have now used each of micro's main ideas once. Where you go next depends on what you came for.
+
+\begin{tabularx}{\linewidth}{@{}LL@{}}\toprule
+if you want to & read \\ \midrule
+open your own data, and fix how it was read & \cref{ch:opening}, then the chapter for its kind in Part~II \\
+make the model look the way you need: classes, legends, sections & \cref{ch:color,ch:sections} \\
+write better filters and derived columns & \cref{ch:filter}, with \cref{app:expr} beside you \\
+check a model against its drillholes & \cref{ch:swath,ch:validation} \\
+compare two versions of a model & \cref{ch:joins} \\
+flag blocks by wireframes, or build domains & \cref{ch:geometry} \\
+produce report figures, or a page per section & \cref{ch:composer,ch:atlas} \\
+turn a monthly task into one click & Part~VI, from \cref{ch:recipes} \\
+\bottomrule
+\end{tabularx}
+
+The project you saved is yours to keep working in. To try the same steps on your own model, open it beside the demo, or start clean with \menu{File>New project…} and drag your files in.

@@ -1,0 +1,287 @@
+\chapter{Drillholes}\label{ch:drillholes}
+\begin{goals}
+\textbf{In this chapter} you open a drillhole set from its collar, survey and interval tables, choose how it is desurveyed, filter it by hole, carry collar data onto the samples, control how holes are drawn and cut by sections, and composite the samples.
+\end{goals}
+
+A drillhole database is three tables that share a hole identifier. The \term{collar} table has one row per hole: where it starts, and usually how long it is. The \term{survey} table has the deviation stations: at this depth, this azimuth and dip. The \term{interval} tables have the samples: from this depth to that, these values. None of the three means much alone.
+
+micro keeps that structure. It does not flatten the three tables into one list of points when it opens them. The set stays a set, with its collars, its survey and one layer per interval table, and the operations that belong to holes, such as filtering by campaign or showing the traces, are offered on the set.
+
+\begin{figure}[htbp]\centering
+\begin{tikzpicture}[font=\sffamily\small,
+  tbl/.style={draw=rule, fill=tint, rounded corners=1.5pt, text=ink, align=left, inner sep=2.5mm, text width=31mm},
+  lnk/.style={draw=amber, line width=0.7pt}]
+\node[tbl] (c) {\textbf{collar}\\ {\footnotesize\color{amber}HOLEID}\\ {\footnotesize X · Y · Z · EOH · COMPANY}\\ {\footnotesize\color{muted}one row per hole}};
+\node[tbl, right=7mm of c] (s) {\textbf{survey}\\ {\footnotesize\color{amber}HOLEID}\\ {\footnotesize DEPTH · AZ · DIP}\\ {\footnotesize\color{muted}stations down the hole}};
+\node[tbl, right=7mm of s] (i) {\textbf{intervals}\\ {\footnotesize\color{amber}HOLEID}\\ {\footnotesize FROM · TO · FE}\\ {\footnotesize\color{muted}one or more tables}};
+\draw[lnk] (c.east) -- (s.west);
+\draw[lnk] (s.east) -- (i.west);
+\node[below=5mm of s, text=muted, font=\sffamily\footnotesize, align=center, text width=112mm] (d) {desurvey: collar + survey → the path of each hole; intervals are placed along it};
+\draw[lnk, -{Stealth[length=2mm]}] (s.south) -- (d.north);
+\end{tikzpicture}
+\caption{A drillhole set. The hole identifier binds the three tables; desurveying turns depths into positions. The column names are the demo's.}\label{fig:dh-tables}
+\end{figure}
+
+\section{Opening a set}\label{sec:dh-open}
+
+Select or drag the collar, survey and interval files together. In the open dialog (\cref{sec:opening-dialog}) micro reads each header and assigns the roles itself: \ui{Open as} shows \ui{DH collar}, \ui{DH survey} and \ui{DH intervals}. A banner confirms the assembly:
+
+\begin{quote}
+\sffamily\small\color{ink}drillhole set: collar + survey + 1 interval table \quad desurvey [min-curv] \quad dip [auto]
+\end{quote}
+
+Click \ui{Open}. The collar and survey are read, each hole's path is computed, and the intervals are placed along it.
+
+When micro reads a header wrong (a collar file with unusual column names is offered as a block model, say), set \ui{Open as} on that row by hand. The banner tells you what is still missing: \ui{drillhole set incomplete — need survey}.
+
+\textbf{Several interval tables.} Drop assays, lithology and geotechnical logs with the collar and survey, and give each the role \ui{DH intervals}. The banner counts them, \ui{collar + survey + 3 interval tables}, and they open as sibling layers that share one geometry.
+
+\textbf{Several sets.} With two or more collar files in the dialog, each drillhole row gains a \ui{set} number. Give the files of one campaign the same number, and each set gets its own banner and its own desurvey settings.
+
+\subsection{The import dialog}\label{sec:dh-import}
+
+\menu{Data>Import drillholes…} is the same operation as a form, for when you want to state everything yourself instead of leaving it to detection. It has a slot for each table with a \ui{pick…} button, and under each slot the column mapping (\cref{tab:dh-fields}).
+
+\begin{table}[htbp]
+\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+table & columns to map \\ \midrule
+collar & \ui{hole id} · \ui{X} · \ui{Y} · \ui{Z} · \ui{EOH (optional)} \\
+survey & \ui{hole id} · \ui{depth (AT)} · \ui{azimuth} · \ui{dip} \\
+intervals & \ui{hole id} · \ui{FROM} · \ui{TO} \\
+\bottomrule
+\end{tabularx}
+\caption{The columns micro needs from each table. Every other column of an interval table becomes a column of the layer; every other collar column stays available to the hole filter and to broadcast.}\label{tab:dh-fields}
+\end{table}
+
+\ui{+ add interval table} adds another interval slot; the \ui{×} beside a slot removes it. Below are \ui{desurvey} and \ui{dip convention}. \ui{Import} needs a collar, a survey and at least one interval table, and says so if one is missing.
+
+When it detects the roles itself, micro looks for the usual names: a hole identifier such as \col{BHID} or \col{HOLEID}; \col{FROM} and \col{TO} on intervals; \col{DEPTH} or \col{AT}, \col{AZ} or \col{BRG}, and \col{DIP} on surveys.
+
+\section{Desurveying}\label{sec:dh-desurvey}
+
+\term{Desurveying} is computing each hole's path in space from its collar and its stations. micro offers three methods (\cref{tab:dh-desurvey}).
+
+\begin{table}[htbp]
+\small
+\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+setting & meaning & default \\ \midrule
+method & \ui{minimum curvature} fits a smooth arc between stations; \ui{balanced tangential} averages the directions at the two ends of each segment; \ui{tangential} holds each station's direction to the next & minimum curvature \\
+dip & the sign convention of the dip column: \ui{positive down}, \ui{negative down}, or \ui{auto-detect}, which decides from the data & auto-detect \\
+\bottomrule
+\end{tabularx}
+\caption{Desurvey settings. The open dialog abbreviates the methods to \ui{min-curv}, \ui{bal-tan} and \ui{tangential}, and the dip choices to \ui{auto}, \ui{pos-down} and \ui{neg-down}.}\label{tab:dh-desurvey}
+\end{table}
+
+Use the method your database or your estimation software uses, so that a sample sits where everyone else thinks it sits. Minimum curvature is the common standard.
+
+Check the dip convention. Some databases record a hole drilled downward at 60° as \code{-60} and others as \code{60}, and a set read with the wrong sign drills upward into the sky. \ui{auto-detect} gets it right for ordinary data; file info (\key{i}) names the convention the set was desurveyed with.
+
+\begin{tip}
+You can change your mind without re-opening anything. Click the \ui{↧} survey row of the set and choose \ui{Re-desurvey set…}; its menu lists the three methods and the three dip choices, and applies the one you pick to every interval table of the set at once. The \ui{source} tab of a drillhole layer's properties has the same settings beside the column mappings.
+\end{tip}
+
+\section{The set in the layers panel}\label{sec:dh-set}
+
+\shot{dh-set-panel}{A drillhole set in the layers panel: the group is the set, with its \ui{◈} collars row (the hole count) and \ui{↧} survey row (the desurvey method) above the interval layer.}
+
+A set lands in the layers panel as a group, named after the collar file without a trailing \emph{collar} or \emph{collars}: the demo's \file{demo\_collars.csv} gives a group named \ui{demo}. Inside it:
+
+\begin{itemize}
+\item a \ui{◈} row for the collars, showing the collar file and the number of holes;
+\item a \ui{↧} row for the survey, showing the survey file and the desurvey method;
+\item one layer per interval table.
+\end{itemize}
+
+The two rows are not layers and have no eye, but they are live: click one for its menu. \Cref{tab:dh-menus} lists what each offers.
+
+\begin{table}[htbp]
+\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+where & commands \\ \midrule
+\ui{◈} collars row & \ui{Attribute table…} · \ui{Filter holes…} · \ui{Broadcast column to intervals} \\
+\ui{↧} survey row & \ui{Attribute table…} · \ui{Re-desurvey set…} · \ui{Show hole traces} · \ui{Show collars} \\
+the set group (right-click) & \ui{Show hole traces} · \ui{Show collars} · \ui{Add interval table…} · \ui{QA report…} · \ui{Composite…}, then the commands every group has \\
+an interval layer (right-click) & the ordinary layer menu, with \ui{Composite…}, \ui{Stick radius…} and the drillhole section modes \\
+\bottomrule
+\end{tabularx}
+\caption{Where the drillhole commands live.}\label{tab:dh-menus}
+\end{table}
+
+\ui{Attribute table…} on the collars or the survey opens that file as a table, so you can read the collar of a hole without leaving micro. The attribute table of an interval layer (\key{t}) lists its samples, and clicking a row picks that interval in the view (\cref{sec:columns-attrtable}).
+
+\subsection{Adding an interval table later}
+
+\ui{Add interval table…} on the set's menu asks for one more interval file and desurveys it against the geometry the set already has. Use it when the lithology log arrives a week after the assays. The new table joins the set as a sibling layer; saving the project records it as part of the same set.
+
+\subsection{What is saved}
+
+A project stores the set as a set: the three or more files in its \file{drillholes} folder, and a small description that binds them. The description says which file is the collar, which the survey and which are interval tables, and records the column mappings and the desurvey method. Reopening the project reassembles the group, the hole filter, and the traces and collars if they were shown. \Cref{ch:projects} describes the folder.
+
+\begin{note}
+\ui{Reload from disk} and \ui{Change file…} are not offered on drillhole layers, because a set is several files. To pick up a changed table, re-import the set, or use \ui{Add interval table…} and \ui{Re-desurvey set…}.
+\end{note}
+
+\section{The hole filter}\label{sec:dh-holefilter}
+
+The filter box works on the columns of an interval table: \code{FE > 60}. But many questions about drillholes are about \emph{holes}. Does the estimate lean on one campaign? What supports the ore below 200~m? The data that answers them is on the collar: the campaign, the company, the year, the hole length.
+
+\ui{Filter holes…}\index{hole filter} on the \ui{◈} collars row takes an expression over the \emph{collar} columns. Its prompt says so: \ui{hole filter — an expression over the COLLAR columns (empty clears)}. Type \code{EOH > 200}, or \code{COMPANY = "MERIDIAN"}, and the verdict goes through the whole set:
+
+\begin{itemize}
+\item only the matching holes' intervals stay visible, in every interval table of the set at once;
+\item the traces and the collar glyphs redraw for the matching holes only;
+\item the ordinary filter box then works \emph{within} the kept holes.
+\end{itemize}
+
+The status line reports the count. On the demo, either expression above gives \ui{hole filter: 8 of 12 holes — intervals follow} (\ui{intervals + traces follow} while the traces are shown): the eight MERIDIAN holes are the ones drilled past 150~m. The menu item shows a check mark while a hole filter is on, and an empty expression clears it.
+
+\shot{dh-hole-filter}{The hole filter at work on the demo: \code{COMPANY = "MERIDIAN"} on the collars keeps that company's holes, in the intervals and in the traces alike.}
+
+Nothing is copied. The hole filter is a live mask driven by the hole identifier, and it is saved with the project. The expression language is the one the filter box uses (\cref{ch:filter,ch:expr}).
+
+\begin{tryit}
+Find which holes support the high-grade core, and look at one drill fan whole. (The tour filtered by company in \cref{sec:tour-dh}; this exercise selects holes by name and uses the traces.)
+\begin{enumerate}
+\item Open the demo project and show the layers panel (\key{p}). Right-click the drillhole set's group, \ui{demo}, and choose \ui{Show hole traces}. A \ui{demo · traces} layer appears in the set, and every hole is drawn collar to end of hole as a gray line.
+\item Click the interval layer, press \key{/}, type \code{LITO = "HEMATITE"} and press \key{Enter}. The status line reads \ui{filter: 16 of 951 match}. Only two holes keep any samples; the traces still show where all twelve went.
+\item Click the \ui{◈} row and choose \ui{Attribute table…}. The collars are four fans of three holes: DH001–DH003 share one collar, DH004–DH006 the next, and so on, each fan drilled north at −45°, −60° and −75°.
+\item Click the \ui{◈} row again, choose \ui{Filter holes…}, type \code{HOLEID in ("DH004", "DH005", "DH006")} and press \key{Enter}. The status line reads \ui{hole filter: 3 of 12 holes — intervals + traces follow}, and only that fan is drawn.
+\item Read the fan. The sixteen hematite samples all lie on DH005 and DH006. DH004, the fan's −45° hole, is a PIONEER hole: its trace stops at 150~m, short of the core.
+\item Empty the filter box, then choose \ui{Filter holes…} again and confirm an empty expression. All twelve holes return.
+\end{enumerate}
+\end{tryit}
+
+\section{Broadcast: collar data on the intervals}\label{sec:dh-broadcast}
+
+The hole filter hides holes. Sometimes you want the collar's information \emph{on} each sample instead: to color the samples by company, to export assays with their campaign, to group statistics by drilling type.
+
+\ui{Broadcast column to intervals}\index{broadcast} on the \ui{◈} row lists the collar columns with their types, \ui{COMPANY (string)}, \ui{EOH (number)}. Choose one and it lands on every interval of every table in the set, matched by hole identifier, and the interval layers are colored by it. If an interval table already has a column of that name, the broadcast one is named with \code{\_C} added. From then on it is a real column of the interval layer: the filter, the color dropdown, statistics and exports all see it.
+
+A numeric column is stored with the project's other derived columns; a text column becomes a category column with a legend. Like every derivation, the broadcast is recorded with its inputs in the layer's provenance (\cref{ch:records}).
+
+\section{How holes are drawn}\label{sec:dh-display}
+
+\subsection{Sticks}
+
+Each interval is drawn as a true cylinder along the desurveyed path, colored by a column of the interval table. \ui{Stick radius…} on the layer's menu sets the radius in meters. These are real meters in the model, not pixels, so sticks thin out as you zoom away. The demo uses 6~m so that twelve holes read against the whole deposit; real data usually wants less. \ui{Opacity} is on the same menu.
+
+Color, classes and the legend work as for any layer (\cref{ch:color}). Coloring by a text column such as lithology gives each class an eye, so one click in the \ui{classes} tab hides the waste intervals.
+
+\subsection{Hole traces}
+
+\ui{Show hole traces} draws the full path of every hole, collar to end of hole, as a thin gray line. Intervals show only where there are samples; traces show where the hole \emph{went}, including unsampled stretches. The traces follow the hole filter. They are a derived display, nested in the set and not saved as a layer of their own; the set remembers whether they were on.
+
+\subsection{Collars}
+
+\ui{Show collars} draws one glyph per hole at its collar, as a points layer nested in the set. That layer \emph{is} the collar file, so every collar column can color it, filter it, and fill the record panel when you click a collar. The glyphs start at three times the view's point size; \ui{Point size} on the layer's menu changes that. The hole filter thins them with everything else. Like the traces, the collars are not saved as a layer: the set remembers that they were shown, with their size and color.
+
+\subsection{Sections}\label{sec:dh-sections}
+
+A section cuts sticks true, like blocks. Right-click a drillhole layer and open \ui{Cut by sections} to set how \emph{this} layer responds (\cref{tab:dh-sections}); \cref{ch:sections} has the full account.
+
+\begin{table}[htbp]
+\small
+\begin{tabularx}{\linewidth}{@{}LL@{}}\toprule
+mode & what you see \\ \midrule
+\ui{follow the section} & the sticks are cut to the section's slab \\
+\ui{follow, with its own slab…} & cut to a slab of this layer's own half-thickness, in meters \\
+\ui{keep front only} / \ui{keep behind only} & everything on one side of the plane \\
+\ui{keep holes that cross the slab, whole} & holes whose path crosses the slab are drawn entire; the others are hidden \\
+\ui{don't cut} & every hole, whole, whatever the section \\
+\bottomrule
+\end{tabularx}
+\caption{\ui{Cut by sections} on a drillhole layer. The fourth mode exists only for drillholes.}\label{tab:dh-sections}
+\end{table}
+
+\ui{keep holes that cross the slab, whole} is the mode to work in for sections through a model. It tests the hole's \emph{path}, collar to end of hole, not its samples, so a hole that passes through the slab in an unsampled stretch still shows. It follows the section as you scrub. With it on, the menu gains \ui{holes test their own slab…}, which makes the test band wider or narrower than the section's: a ±5~m model section can show the holes within ±50~m.
+
+\begin{caution}
+That mode decides what is \emph{drawn}. It is not a filter. Exporting the filter's matches, \ui{Filter → selection}, an analysis scoped to the filter, and the attribute table's \ui{matches} view all still get every interval the filter matched, wherever the section happens to be.
+\end{caution}
+
+The demo project sections the model and leaves the holes uncut, threading whole through the opened deposit.
+
+\section{Blanks and bad rows}\label{sec:dh-blanks}
+
+A blank in a drillhole table is never read as zero (\cref{sec:columns-blanks}). What micro does instead depends on where the blank is:
+
+\begin{itemize}
+\item A collar with a blank X, Y or Z is dropped. Its intervals stay records of their table, but are not placed in space.
+\item A survey station with a blank depth, azimuth or dip is dropped, and the hole interpolates across it.
+\item An interval with a blank \col{FROM} or \col{TO} stays a record, but is not placed.
+\item A blank end of hole falls back to the deepest station or interval.
+\end{itemize}
+
+File info (\key{i}) lists each kind, by hole. Assay values such as \code{<0.01} are handled as detection limits, per column (\cref{sec:columns-dl}).
+
+\ui{QA report…} on the set's menu covers everything else a reviewer should look at before estimating: orphan surveys, duplicate collars, doglegs, gaps and overlaps between intervals, depths past the end of hole, text in a grade column. It lists each problem at its table and row; click a finding to go to the hole. \Cref{ch:qa} covers it.
+
+\section{Composites}\label{sec:dh-composites}
+
+Samples come in the lengths they were cut in the core shed. An estimate, and any fair comparison with a block model, wants them on equal support. \term{Compositing} re-cuts one interval table into equal lengths down each hole.
+
+Choose \ui{Composite…} on a drillhole layer's menu or on its set's menu, or press \key{⌘K} and type \code{composite}.
+
+\begin{table}[htbp]
+\small
+\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+setting & meaning & default \\ \midrule
+\ui{table} & which interval table to composite; shown when the set has more than one & the first \\
+\ui{length} & the composite length, in the holes' depth units & blank: the commonest interval length \\
+\ui{break at} & text columns whose change restarts the composite, so that none straddles a contact & none ticked \\
+\ui{density} & a numeric column; grades are then weighted by length × density & \ui{none (length-weighted)}, or a column named like \col{SG} or \col{DENSITY} if there is one \\
+\ui{min length \%} & drop a composite whose sampled length is below this share of the composite length & 0: keep them all \\
+\bottomrule
+\end{tabularx}
+\caption{The composite window. \ui{Composite} adds a layer; \ui{export .csv} saves the table without adding one.}\label{tab:dh-composite}
+\end{table}
+
+\shot[0.6\linewidth]{dh-composite-window}{The composite window on the demo's assay table, after a run: the settings, and the report of composites made.}
+
+How the values are combined matters as much as the length:
+
+\begin{itemize}
+\item \textbf{Numbers} are length-weighted means, or weighted by length × density when you name a density column. The density column itself stays length-weighted.
+\item \textbf{Missing assays are left out, not counted as zero.} A 2~m composite with 1.5~m of assay and 0.5~m of nothing takes its grade from the 1.5~m.
+\item \textbf{Text} takes the value that covers most of the composite.
+\item \textbf{Leftovers}, the short pieces at contacts and at the end of a hole, are kept, each with its true sampled length, unless \ui{min length \%} drops them. The window reports how many were dropped.
+\end{itemize}
+
+The result is a new points layer, named after the interval file and the length (\file{demo\_assay-comp5m.csv}), one point per composite at the center of its sampled length on the desurveyed hole. It carries \col{BHID}, \col{X}, \col{Y}, \col{Z}, \col{FROM}, \col{TO}, \col{SUPPORT} (the length that was sampled) and every other column of the interval table. \col{BHID} is the hole identifier, whatever the interval table called it: the demo's \col{HOLEID} arrives as \col{BHID}. Each click on \ui{Composite} adds a layer. It filters, colors, exports and saves like any layer, and its lineage records the length, the break columns, the density column, the minimum and the desurvey method.
+
+\begin{why}
+micro keeps \col{SUPPORT} on every composite instead of silently dropping the short ones, because what to do with a short composite is an estimation decision, not a display one. With the column there you can filter \code{SUPPORT >= 1.5} today and change your mind tomorrow, and anyone reading the export can see what each grade was based on.
+\end{why}
+
+\begin{tryit}
+Composite the demo's assays.
+\begin{enumerate}
+\item Right-click the drillhole interval layer and choose \ui{Composite…}.
+\item Leave \ui{length} blank and \ui{density} on \col{SG}, which the window chose itself, and click \ui{Composite}. The window reports \ui{951 composites of 5 from 12 holes}: the demo's samples are all 5~m long, so the commonest length is 5 and every sample becomes one composite.
+\item A new points layer, \file{demo\_assay-comp5m.csv}, appears. Click a point: the record panel shows \col{BHID}, \col{FROM}, \col{TO}, \col{SUPPORT}, \col{FE}, \col{SG} and \col{LITO}.
+\item Type \code{10} in \ui{length} and click \ui{Composite} again. A second layer, with 476 composites, appears beside the first.
+\item Open \ui{Stats…} on each composite layer and compare \col{FE}. The mean barely moves, and the standard deviation narrows a little: the variance falls as the support grows.
+\end{enumerate}
+\end{tryit}
+
+Composites are the sample side of the block-against-sample comparisons in \cref{ch:validation}. An interval layer also has a grade–tonnage curve of its own: right-click it and choose \ui{Grade-tonnage…} (or find it in the command palette, \key{⌘K}), and micro adds up interval \emph{length} above each cutoff instead of tonnes (\cref{ch:gt}).
+
+\subsection{In a routine}
+
+The tool is \code{composite}; \code{minSupport} is a fraction from 0 to 1, where the window takes a percentage. A re-run replaces the layer an earlier run made.
+
+\begin{lstlisting}[language=yaml]
+- tool: "composite"
+  with:
+    layer: "demo_assay.csv"
+    length: 5
+    splitCols:
+      - "LITO"
+    densityCol: "SG"
+    minSupport: 0.5
+\end{lstlisting}
+
+A routine names a layer by its file name, \file{demo\_assay.csv}; the label the layers panel shows, \ui{holes · demo\_assay.csv}, is accepted too.
+
+It runs on the demo as written: composites that restart at every change of \col{LITO}, weighted by \col{SG}, 951 of them, since each 5~m sample already lies within one lithology. The drillhole QA report is a tool too, \code{dhqa}, and a routine can gate on its error count (\cref{ch:qa,ch:checks}).

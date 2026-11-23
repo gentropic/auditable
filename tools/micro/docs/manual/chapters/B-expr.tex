@@ -1,0 +1,497 @@
+\chapter{The expression language}\label{app:expr}\label{ch:expr}
+
+\begin{goals}
+\textbf{In this appendix}: the whole expression language in one place — how names, numbers and text
+are written, every operator and function, what a blank does, and a cookbook of expressions you can
+paste and adapt.
+\end{goals}
+
+micro has one expression language and uses it everywhere a condition or a formula is needed:
+
+\begin{itemize}
+\item the filter box and its drawer (\cref{ch:filter});
+\item ƒ calculated columns (\cref{ch:filter});
+\item the density and weight slots and the per-series filters of the analysis windows
+  (\cref{ch:analysis});
+\item the hole filter, over collar columns (\cref{ch:drillholes});
+\item rule-based styling (\cref{ch:color});
+\item in a routine: the \code{filter} of an \code{each} block, the computed values written
+  \code{\$\{…\}}, and the checks (\cref{ch:routines,ch:checks}).
+\end{itemize}
+
+An expression reads the columns of \emph{one record} — one block, one interval, one row — and
+gives back a value: a number, a piece of text, true or false, or a blank. Used as a filter, the
+record is kept when the value is true.
+
+\begin{why}
+The language is \term{total}: an expression can compare and compute, but it cannot loop, call
+anything outside itself, or stop a scan with an error. Dividing by zero, taking the logarithm of a
+negative number or doing arithmetic on text all give a blank. That is what makes it safe to open a
+project, a recipe or a routine that somebody else wrote: an expression in it can be wrong, but it
+cannot do anything other than produce values.
+\end{why}
+
+\section{Writing an expression}\label{sec:expr-syntax}
+
+\begin{lstlisting}[language=expr]
+FE > 55 and LITO = "HEMATITE"
+FE between 40 and 55 or LITO in ("CANGA", "ITABIRITE")
+FE / 100 * SG * 500        # tonnes of iron in a 10 × 10 × 5 m block
+\end{lstlisting}
+
+A bare word is a column. A quoted word is text. So \code{FE > SG} compares two columns, and
+\code{LITO = "HEMATITE"} tests a column against a value. Forgetting the quotes
+(\code{LITO = HEMATITE}) asks for a column named \col{HEMATITE}, and micro says that no such column
+exists.
+
+\subsection{Names}\label{sec:expr-names}
+
+\begin{tabularx}{\linewidth}{@{}p{42mm}L@{}}
+\toprule
+you write & it means \\
+\midrule
+\code{FE}, \code{fe}, \code{Fe\_pct} & A column, by name. Letters, digits and underscores, not
+  starting with a digit. Case doesn't matter: \code{fe} finds \col{FE}. \\
+\code{Fe.pct}, \code{g.cutoff} & A dotted name is still one name. The dot is part of the name;
+  nothing is being looked up inside anything. An assay column called \col{Fe.pct} and a routine's
+  \code{g.cutoff} are written the same way. \\
+\code{\textasciigrave Assay Au ppm\textasciigrave} & Backticks, for a name with spaces, hyphens or
+  other symbols, or a name that is also a keyword (\code{\textasciigrave in\textasciigrave}). Inside
+  backticks, write \code{\textbackslash\textasciigrave} for a backtick and
+  \code{\textbackslash\textbackslash} for a backslash. \\
+\code{\$\{fe-pct\}} & The same thing in the brace form: letters, digits, \code{\_}, \code{.} and
+  \code{-} between the braces. A routine uses this form for its computed values
+  (\cref{sec:expr-routines}). \\
+\bottomrule
+\end{tabularx}
+
+\begin{caution}
+A hyphen is always a minus sign. \code{OK-INDIC} is the column \col{OK} minus the column
+\col{INDIC}. For a column that is really named \col{OK-INDIC}, write
+\code{\textasciigrave OK-INDIC\textasciigrave}; micro suggests exactly that when it sees the bare
+form and no such columns.
+\end{caution}
+
+The words \code{and}, \code{or}, \code{not}, \code{between}, \code{contains}, \code{in},
+\code{like}, \code{matches}, \code{is}, \code{blank}, \code{filled}, \code{true} and \code{false}
+are reserved. Keywords and function names are not case-sensitive (\code{AND}, \code{If(…)}). A
+function name is a function only when a parenthesis follows it, so a column that happens to be
+called \col{round} or \col{min} still works as a bare name.
+
+In the color list a calculated column appears as \ui{ƒ NAME} and a painted one with a ✎. Those marks
+are labels, not part of the name: in an expression, write the name alone.
+
+\subsection{Numbers, text and comments}\label{sec:expr-literals}
+
+\begin{tabularx}{\linewidth}{@{}p{42mm}L@{}}
+\toprule
+you write & it means \\
+\midrule
+\code{42} \; \code{3.14} \; \code{.5} \; \code{1.5e-3} & Numbers. Always with a decimal point, never
+  a comma. \\
+\code{"HEMATITE"} & Text, in double quotes. Single quotes are accepted too. \\
+\code{true} \; \code{false} & The two truth values. \\
+\code{blank} & The blank value itself, as in \code{if(FE = -99, blank, FE)}. \\
+\code{\# to the end of the line} & A comment. An expression may run over several lines, so a long
+  filter can be laid out and annotated. \\
+\bottomrule
+\end{tabularx}
+
+\begin{note}
+\textbf{Decimal commas.} A file whose numbers are written \code{1,5} (the Brazilian and European
+convention) is detected when it opens, and its columns are read as numbers everywhere
+(\cref{ch:opening}). The numbers you \emph{type} in an expression still take a point:
+\code{FE > 55.5}, never \code{FE > 55,5}. A comma in an expression separates the arguments of a
+function and the members of an \code{in (…)} list.
+\end{note}
+
+\section{Operators}\label{sec:expr-operators}
+
+\begin{tabularx}{\linewidth}{@{}p{26mm}p{42mm}L@{}}
+\toprule
+kind & operators & notes \\
+\midrule
+Arithmetic & \code{+} \; \code{-} \; \code{*} \; \code{/} & Division by zero gives a blank. \\
+Power & \code{\textasciicircum{}} (or \code{**}) & \code{FE\textasciicircum{}2}. \\
+Comparison & \code{=} \; \code{!=} \; \code{<} \; \code{<=} \; \code{>} \; \code{>=} & Numbers
+  compare as numbers; text compares as text, and exactly: \code{"Hematite"} is not
+  \code{"HEMATITE"}. \\
+Range & \code{x between a and b} & Both ends included. \\
+Membership & \code{x in (a, b, c)} & True when \code{x} is one of the listed values. \\
+Text search & \code{x contains "txt"} & The text appears somewhere in the value. \\
+ & \code{x like "DH\%\_1"} & SQL wildcards over the whole value: \code{\%} is any run of
+  characters, \code{\_} is exactly one. \\
+ & \code{x matches "\textasciicircum{}DH[0-9]+"} & A regular expression. \\
+Blank tests & \code{x is blank} \; \code{x is filled} & Also \code{is not blank},
+  \code{is not filled}. \\
+Negated forms & \code{not in (…)} \; \code{not contains} \; \code{not like} & \\
+Logic & \code{and} \; \code{or} \; \code{not} & With parentheses for grouping. \\
+\bottomrule
+\end{tabularx}
+
+Text comparisons, \code{in}, \code{contains}, \code{like} and \code{matches} are case-sensitive. To
+compare without regard to case, bring the column to one case first:
+\code{upper(LITO) = "HEMATITE"}.
+
+A few spellings from other languages are accepted, so old habits still work: \code{==} for
+\code{=}, \code{<>} for \code{!=}, \code{\&\&} and \code{||} for \code{and} and \code{or},
+\code{\textasciitilde{}} for \code{contains}. The forms in the table are the ones micro highlights and suggests.
+
+\begin{caution}
+A \code{matches} pattern is checked before it is used. A pattern that could take unbounded time on
+a crafted value — a repeated group that itself holds a repeat or an alternative, such as
+\code{(a+)+} or \code{(a|b)*}, or a back-reference — is refused, as is a pattern that isn't valid.
+Rewrite it without the nesting: \code{[ab]*} does what \code{(a|b)*} does.
+\end{caution}
+
+\subsection{Precedence}\label{sec:expr-precedence}
+
+From the loosest binding to the tightest. Operators on one line bind equally and group from the
+left, except the power, which groups from the right.
+
+\begin{tabularx}{\linewidth}{@{}p{8mm}p{52mm}L@{}}
+\toprule
+ & operators & example \\
+\midrule
+1 & \code{or} & \\
+2 & \code{and} & \code{a or b and c} is \code{a or (b and c)} \\
+3 & \code{not} & \code{not a and b} is \code{(not a) and b} \\
+4 & comparisons, \code{between}, \code{in}, \code{contains}, \code{like}, \code{matches},
+  \code{is blank} & \code{FE + 1 > SG * 2} compares the two sums \\
+5 & \code{+} \; \code{-} & \\
+6 & \code{*} \; \code{/} & \code{1 + 2 * 3} is 7 \\
+7 & the sign: \code{-x} & \\
+8 & \code{\textasciicircum{}} & \code{-2\textasciicircum{}2} is −4;
+  \code{2\textasciicircum{}-3} is 0.125; \code{2\textasciicircum{}3\textasciicircum{}2} is 512 \\
+9 & names, numbers, text, function calls, parentheses & \\
+\bottomrule
+\end{tabularx}
+
+\begin{tip}
+\code{not} takes one comparison. To negate more, use parentheses:
+\code{not (FE > 55 and LITO = "HEMATITE")}. When in doubt about \code{and} and \code{or}, add the
+parentheses; the filter drawer shows them as indented groups, which makes the structure visible.
+\end{tip}
+
+\section{Functions}\label{sec:expr-functions}
+
+Every function gives a blank when an argument it needs is blank or of the wrong kind, unless the
+table says otherwise. Square brackets mark an optional argument.
+
+\subsection{Choosing}
+
+\begin{tabularx}{\linewidth}{@{}p{46mm}L@{}}
+\toprule
+function & gives \\
+\midrule
+\code{if(cond, a, b)} & \code{a} when the condition is true, otherwise \code{b}. Nest it for a
+  ladder of cases. Only the chosen branch is computed. \\
+\code{coalesce(a, b, …)} & The first argument that isn't blank. \\
+\code{ifnum(x, d)} & \code{x} as a number when it is one, otherwise \code{d}. \\
+\code{nullif(x, v)} & Blank when \code{x} equals \code{v}, otherwise \code{x}: the way to scrub a
+  sentinel such as −99. \\
+\bottomrule
+\end{tabularx}
+
+\subsection{Rounding and binning}
+
+\begin{tabularx}{\linewidth}{@{}p{46mm}L@{}}
+\toprule
+function & gives \\
+\midrule
+\code{round(x[, n])} & \code{x} rounded to \code{n} decimals (none by default). \\
+\code{int(x)} & \code{x} with its decimals cut off, toward zero: \code{int(-2.7)} is −2. \\
+\code{floor(x)} \; \code{ceil(x)} & The whole number below, or above: \code{floor(-2.7)} is −3. \\
+\code{abs(x)} & The absolute value. \\
+\code{mod(x, y)} & The remainder, always with the sign of \code{y}, as in a spreadsheet:
+  \code{mod(-7, 3)} is 2. Blank when \code{y} is 0. \\
+\code{clamp(x, lo, hi)} & \code{x}, held between \code{lo} and \code{hi}. \\
+\code{bin(x, width[, origin])} & The lower edge of the bin of that width that holds \code{x}, with
+  bins starting at \code{origin} (0 by default): \code{bin(1047, 10)} is 1040, and
+  \code{bin(1047, 10, 5)} is 1045. Blank when the width is zero or negative. \\
+\bottomrule
+\end{tabularx}
+
+\subsection{Math}
+
+\begin{tabularx}{\linewidth}{@{}p{46mm}L@{}}
+\toprule
+function & gives \\
+\midrule
+\code{sqrt(x)} & The square root. Blank for a negative number. \\
+\code{pow(x, y)} & \code{x} to the power \code{y}; the same as
+  \code{x\textasciicircum{}y}. \\
+\code{exp(x)} & $e^x$. \\
+\code{log(x)} & The natural logarithm. Blank for zero or less. \\
+\code{log10(x)} & The base-10 logarithm, the usual transform for skewed grades. \\
+\code{min(a, b, …)} \; \code{max(a, b, …)} & The smallest, or largest, of the numeric arguments.
+  Blanks are skipped; blank only when every argument is blank. \\
+\bottomrule
+\end{tabularx}
+
+\subsection{Tests}
+
+\begin{tabularx}{\linewidth}{@{}p{46mm}L@{}}
+\toprule
+function & true when \\
+\midrule
+\code{isblank(x)} \; \code{isfilled(x)} & \code{x} is blank; \code{x} is not blank. The same as
+  \code{x is blank} and \code{x is filled}. \\
+\code{isnum(x)} & \code{x} is a number, or text that reads as one. \\
+\code{isnan(x)} & \code{x} is filled but isn't a number: a stray \code{n/a} in a grade column. \\
+\bottomrule
+\end{tabularx}
+
+These four always answer true or false, never blank.
+
+\subsection{Text}
+
+\begin{tabularx}{\linewidth}{@{}p{46mm}L@{}}
+\toprule
+function & gives \\
+\midrule
+\code{upper(s)} \; \code{lower(s)} & The text in capitals; in lower case. \\
+\code{trim(s)} & The text without spaces at either end. \\
+\code{len(s)} & The number of characters. \\
+\code{left(s, n)} \; \code{right(s, n)} & The first, or last, \code{n} characters. \\
+\code{substr(s, start[, len])} & The text from position \code{start}, counting from 1, for
+  \code{len} characters (to the end by default). \\
+\code{replace(s, find, with)} & The text with every \code{find} replaced. \code{find} is taken
+  literally, not as a pattern. A blank \code{with} deletes. \\
+\code{concat(a, b, …)} & The arguments joined. Blanks are skipped; numbers are written as text:
+  \code{concat("DH", 7)} is \code{"DH7"}. \\
+\bottomrule
+\end{tabularx}
+
+Text that comes out empty is a blank: \code{trim("  ")} is blank, and \code{len} of a blank is
+blank, not 0.
+
+\subsection{Dates}
+
+\begin{tabularx}{\linewidth}{@{}p{46mm}L@{}}
+\toprule
+function & gives \\
+\midrule
+\code{year(d)} \; \code{month(d)} \; \code{day(d)} & The part of a date written
+  \code{YYYY-MM-DD} (anything after the day is ignored). Blank for any other spelling. \\
+\bottomrule
+\end{tabularx}
+
+\section{Types}\label{sec:expr-types}
+
+A value is a number, text, true or false, or blank. You rarely have to think about which, because
+the language converts where the meaning is clear:
+
+\begin{itemize}
+\item Text that reads as a number is a number in arithmetic and in a comparison with a number. A
+  text column holding \code{"007"} equals \code{7}.
+\item When either side of a comparison isn't a number, both are compared as text. Ordering text
+  (\code{<}, \code{>}) is by character order, so \code{"DH10" < "DH9"} is true.
+\item Arithmetic on text that isn't a number gives a blank, never an error and never 0.
+\item \code{in (…)} compares the written form, so \code{BENCH in (1040, 1050)} works on a number
+  column and on a text column alike.
+\item true and false are not numbers: \code{(FE > 55) + 1} is blank. To count, write
+  \code{if(FE > 55, 1, 0)}.
+\end{itemize}
+
+The Calculations window shows a calculated column's type as a choice (\ui{auto}, \ui{number},
+\ui{text}); see \cref{ch:filter}. A source column's type is shown,
+and can be changed, in \menu{Properties>columns} (\cref{ch:columns}).
+
+\section{Blanks}\label{sec:expr-blanks}
+
+A \term{blank} is a missing value: an empty cell, a null in a Parquet file, a lab code read as no
+value, a number that isn't one. micro never turns a blank into zero by itself, because a missing
+grade that silently becomes 0 drags every mean and every tonnage with it.
+
+The rules:
+
+\begin{itemize}
+\item \textbf{Blanks propagate.} Arithmetic and functions with a blank input give a blank:
+  \code{FE * SG} is blank where either is. The exceptions are the functions made for blanks —
+  \code{coalesce}, \code{ifnum}, the tests — and \code{min}, \code{max} and \code{concat}, which
+  skip them.
+\item \textbf{An ordering with a blank is not true.} Where \col{FE} is blank, \code{FE > 55} and
+  \code{FE <= 55} are both not true, so a filter on either leaves the record out.
+\item \textbf{Blank equals blank.} \code{FE = blank} is true where \col{FE} is blank, and
+  \code{A = B} is true where both are. There is no SQL-style trap where a comparison with a
+  missing value matches nothing; still, \code{FE is blank} is the clearer spelling.
+\item \textbf{\code{not} is a complement.} A filter and its negation always split the table in two
+  with nothing left over.
+\item \textbf{\code{if} takes the else branch} when its condition is blank or false.
+\end{itemize}
+
+\begin{tabularx}{\linewidth}{@{}p{50mm}p{20mm}L@{}}
+\toprule
+where \col{FE} is blank & result & \\
+\midrule
+\code{FE > 55} & not true & a blank never satisfies an ordering \\
+\code{FE <= 55} & not true & \\
+\code{not (FE > 55)} & true & the complement takes it \\
+\code{FE between 40 and 55} & not true & \\
+\code{FE = blank} \; \code{FE is blank} & true & \\
+\code{FE != 55} & true & a blank is not 55 \\
+\code{FE + 1} & blank & \\
+\code{if(FE > 55, 1, 0)} & 0 & the else branch \\
+\code{coalesce(FE, 0)} & 0 & you asked for the zero \\
+\bottomrule
+\end{tabularx}
+
+\begin{caution}
+\code{not (FE > 55)} and \code{FE <= 55} are different filters: the first keeps the records with a
+blank \col{FE}, the second doesn't. The same goes for \code{FE != 55}, which keeps blanks. When you
+mean “assayed, and at most 55”, say so: \code{FE is filled and FE <= 55}.
+\end{caution}
+
+\begin{caution}
+\code{if(FE > 55, "ore", "waste")} calls an unassayed record “waste”, because a blank condition
+takes the else branch. Test for the blank first:
+\code{if(FE is blank, blank, if(FE > 55, "ore", "waste"))}.
+\end{caution}
+
+Sentinels are not blanks until you say so. A file that writes −99 for “not assayed” has a column of
+numbers, and its mean includes them. Either tell micro once, for a column of a CSV or drillhole table
+(\menu{Properties>columns}, right-click the column, \ui{Detection limits \& blanks};
+\cref{ch:columns}), or
+write \code{nullif(FE, -99)} where you use it.
+
+\section{In routines and checks}\label{sec:expr-routines}
+
+A routine uses the same language in three places (\cref{ch:routines,ch:checks}).
+
+\begin{lstlisting}[language=yaml]
+- each:
+    from: "params.xlsx#Benches"
+  as: "b"
+  filter: "active = 1 and z0 >= g.floor"
+  steps:
+    - recipe: "deposit grade-tonnage"
+      with:
+        cutoffs:
+          - '${if(b.lito = "HEMATITE", 55, 45)}'
+      as: "gt"
+- check: "abs(val.bias_pct) < 5"
+\end{lstlisting}
+
+\begin{description}
+\item[The \code{filter} of an \code{each} block] decides which rows of the parameter table run.
+  The row's columns are plain names; scalars from \code{params} are visible under their namespace
+  (\code{g.floor}).
+\item[\code{\$\{…\}}] computes a value from the names in scope. On its own it gives a typed value (a
+  number stays a number); inside longer text it is written into the text. A bare \code{\$name}
+  substitutes a value as it stands, with no computing.
+\item[A check] reads the values of earlier steps, each under the step's \code{as} name
+  (\code{val.bias\_pct}), and the baseline run's under \code{prev.} (\code{prev.val.bias\_pct}). A
+  row check (\code{every:}) reads the columns of a step's table by name, and \code{prev.tonnes} for
+  the same row of the baseline.
+\end{description}
+
+This is where dotted names matter: \code{b.bench}, \code{g.cutoff} and \code{val.bias\_pct} are
+each one name. A mistyped one is reported with the nearest real name, never read as empty.
+
+\begin{note}
+A check that reads a blank is \emph{not evaluated}. It is not a pass. Since blank equals blank in
+this language, a check comparing two missing values would otherwise succeed for the wrong reason;
+micro reports which names were blank and, at level \code{stop}, stops the run.
+\end{note}
+
+\section{A cookbook}\label{sec:expr-cookbook}
+
+The examples use the demo project's columns where they can: the block model \file{deposit.csv}
+(\col{XC}, \col{YC}, \col{ZC}, \col{FE}, \col{SG}, \col{LITO}) and the drillholes (\col{HOLEID},
+\col{COMPANY}, \col{EOH} on the collars; \col{HOLEID}, \col{FROM}, \col{TO}, \col{FE}, \col{SG}
+and \col{LITO} on the assays). Columns such as \col{AU},
+\col{MN} or \col{DOMAIN} stand for your own.
+
+\subsection{Filters}
+
+\begin{tabularx}{\linewidth}{@{}p{50mm}L@{}}
+\toprule
+to keep & write \\
+\midrule
+High-grade hematite & \code{FE > 60 and LITO = "HEMATITE"} \\
+A grade band & \code{FE between 45 and 55} \\
+Two lithologies & \code{LITO in ("HEMATITE", "ITABIRITE")} \\
+Everything but waste and canga & \code{LITO not in ("WASTE", "CANGA")} \\
+One bench (10 m, toe at 600) & \code{ZC between 600 and 610} \\
+A box in plan & \code{XC between 612500 and 613500 and YC between 7765300 and 7765700} \\
+Blocks with no estimate & \code{FE is blank} \\
+Estimated blocks above cutoff & \code{FE is filled and FE >= 45} \\
+Ore by either of two rules & \code{(FE > 58) or (FE > 50 and LITO = "HEMATITE")} \\
+Lithology codes starting with ITA & \code{LITO like "ITA\%"} \\
+Holes DH001 to DH009 & \code{HOLEID matches "\textasciicircum{}DH00[1-9]\$"} \\
+One company's holes (hole filter) & \code{COMPANY = "PIONEER"} \\
+Short holes (hole filter) & \code{EOH < 200} \\
+Values sitting exactly on a cap & \code{FE = 68} \\
+Junk in a grade column & \code{isnan(AU)} \\
+\bottomrule
+\end{tabularx}
+
+\subsection{Derived columns}
+
+\begin{tabularx}{\linewidth}{@{}p{50mm}L@{}}
+\toprule
+to get & write \\
+\midrule
+Sentinel −99 as blank & \code{nullif(AU, -99)} \\
+A capped grade & \code{clamp(AU, 0, 30)} \\
+The first filled of two estimates & \code{coalesce(AU\_OK, AU\_ID2)} \\
+An equivalent grade & \code{FE + 0.4 * MN} \\
+Tonnes per block (10 × 10 × 5 m) & \code{SG * 500} \\
+Contained metal per block, t & \code{FE / 100 * SG * 500} \\
+Density by lithology & \code{if(LITO = "HEMATITE", 3.9, if(LITO = "ITABIRITE", 3.4, 2.8))} \\
+A default density where none is given & \code{coalesce(SG, 2.7)} \\
+An ore / waste flag that keeps blanks blank &
+  \code{if(FE is blank, blank, if(FE >= 45, "ORE", "WASTE"))} \\
+Grade classes as a code & \code{if(FE > 58, 2, if(FE > 45, 1, 0))} \\
+Bench toe from elevation (10 m benches) & \code{bin(ZC, 10)} \\
+Bench number counted from 400 m & \code{floor((ZC - 400) / 10)} \\
+A 50 m panel index along east & \code{bin(XC, 50)} \\
+Log grade, for a skewed color scale & \code{log10(clamp(AU, 0.01, 100))} \\
+Relative difference of two estimates, \% & \code{(AU\_OK - AU\_NN) / AU\_NN * 100} \\
+Absolute difference & \code{abs(AU\_OK - AU\_NN)} \\
+Grade rounded for a report & \code{round(FE, 1)} \\
+Distance from a point in plan & \code{sqrt((XC - 613000)\textasciicircum{}2 + (YC -
+  7765500)\textasciicircum{}2)} \\
+A ratio that is blank, not infinite, on zero & \code{SIO2 / AL2O3} \\
+\bottomrule
+\end{tabularx}
+
+The last line makes a point: nothing needs guarding. Where \col{AL2O3} is 0 or blank the
+ratio is blank, and the statistics leave that record out.
+
+\subsection{Drillholes and text}
+
+\begin{tabularx}{\linewidth}{@{}p{50mm}L@{}}
+\toprule
+to get & write \\
+\midrule
+Interval length & \code{TO - FROM} \\
+Clean hole ids for a join & \code{upper(trim(HOLEID))} \\
+Hole number from DH007 & \code{ifnum(substr(HOLEID, 3), blank)} \\
+A sample key & \code{concat(HOLEID, "-", FROM, "-", TO)} \\
+Ids with a hyphen removed & \code{replace(HOLEID, "-", "")} \\
+The drilling year & \code{year(DATE)} \\
+Intervals longer than 2 m (a filter) & \code{TO - FROM > 2} \\
+A column with a space in its name & \code{\textasciigrave Fe pct\textasciigrave{} > 55} \\
+\bottomrule
+\end{tabularx}
+
+\subsection{Routines and checks}
+
+\begin{tabularx}{\linewidth}{@{}p{50mm}L@{}}
+\toprule
+to say & write \\
+\midrule
+A cutoff 10\% above the sheet's & \code{\$\{g.cutoff * 1.1\}} \\
+A cutoff that depends on the row & \code{\$\{if(b.lito = "HEMATITE", 55, 45)\}} \\
+Only the active rows of a table & \code{filter: "active = 1"} \\
+Global bias within 5\% & \code{check: "abs(val.bias\_pct) < 5"} \\
+Every row has tonnes & \code{check: \{ every: "tonnes > 0", in: gt \}} \\
+No row moved more than 10\% from the baseline &
+  \code{every: "abs(tonnes / prev.tonnes - 1) < 0.1"} \\
+\bottomrule
+\end{tabularx}
+
+Each expression in the first three tables works anywhere an expression is accepted: the filter box,
+a ƒ column, a density or weight slot, a per-series filter, the hole filter.

@@ -1,0 +1,252 @@
+\chapter{Join \& reconcile}\label{ch:joins}
+\begin{goals}
+\textbf{In this chapter} you bring columns from one layer onto another — by position, for two block models on compatible lattices, or by a key column for any two tables — and you reconcile two versions of a model into a colored map of their difference.
+\end{goals}
+
+Two files often hold two halves of one answer. Last month's estimate and this month's. A model with grades and a lookup table of densities by domain. A sub-blocked geological model and the regular model the planners use. The \term{join} tab brings data across from one layer to another, and \term{reconcile} is its preset for the most common question of all: \emph{what changed between these two models, and where?}
+
+Everything in this chapter happens on one tab. Select a layer, open its properties (\menu{Data>Layer properties…}, or right-click the layer and choose \menu{Properties…}) and go to \ui{join}.\side{Only a layer backed by a table of records has a \ui{join} tab.}
+
+\section{One rule: columns here, or a new layer}\label{sec:joins-rule}
+
+The layer whose properties you opened is the \term{left} side. The layer you pick in \ui{right} is where the data comes from. Every join then follows one rule:
+
+\begin{itemize}
+\item If the operation keeps the left layer's records exactly as they are — the same blocks, the same rows — the result lands as \emph{columns on it}. Nothing new appears in the layers panel.
+\item Only an operation that changes the set of records makes a \emph{new layer}.
+\end{itemize}
+
+A key join never changes your rows, so it can always land as columns. A spatial join lands as columns when its target grid is the left model's own lattice: each of your blocks gets one resampled value. A spatial join onto some third lattice, and a reconcile, produce blocks that did not exist before, so they are new layers.
+
+Each form has its button. \ui{Join → columns here} is the default, and the one you want most days. \ui{→ new layer} writes a joined copy: use it when the result will be exported as a file of its own.
+
+\begin{why}
+A derived layer for every lookup clutters a project and splits the truth: the grades are on one layer, the density on its copy, and a filter written on one does not apply to the other. Columns that land on the model you already have show up at once in the filter, the color menu, grade–tonnage and export (\cref{ch:filter,ch:gt}). A new layer is kept for results that really are a different set of blocks.
+\end{why}
+
+\section{Compatible lattices}\label{sec:joins-compat}
+
+A spatial join does not interpolate. It moves values between two regular lattices exactly, by the volume each source block shares with each target block. That is only possible when the two lattices fit together, and micro tells you whether they do before you pick a single column. As soon as you choose the \ui{right} model in \ui{Spatial} mode, a banner appears:
+
+\begin{description}
+\item[compatible — clean replicate / aggregate] The lattices are \emph{nested}: on every axis one pitch is a whole multiple of the other, and the block edges line up. A 20 m parent and a 10 m child, for example. Going coarse to fine, each fine block copies its parent's value; going fine to coarse, the coarse block takes the mean of its children.
+\item[compatible — common lattice (mixed weights)] The pitches are not multiples of each other, but they share a finer lattice that both sit on — 10 m and 12 m blocks both sit on a 2 m lattice. Each target block then receives pieces of several source blocks, weighted by the exact overlapping volume.
+\item[incompatible — …] The banner names the axis and the reason, and the rest of the form stays closed. The usual reasons are in \cref{tab:joins-reasons}.
+\end{description}
+
+\begin{figure}[htbp]\centering
+\begin{tikzpicture}[x=4.2mm, y=4.2mm, font=\sffamily\footnotesize, every node/.style={text=ink}]
+% (a) nested
+\begin{scope}
+\fill[tint] (0,0) rectangle (8,8);
+\foreach \i in {0,2,...,8} {\draw[rule, line width=0.3pt] (\i,0)--(\i,8); \draw[rule, line width=0.3pt] (0,\i)--(8,\i);}
+\foreach \i in {0,4,8} {\draw[amber, line width=0.9pt] (\i,0)--(\i,8); \draw[amber, line width=0.9pt] (0,\i)--(8,\i);}
+\node[anchor=north, text=muted] at (4,-0.4) {nested: 20 m over 10 m};
+\node[anchor=south, text=ok] at (4,8.2) {clean replicate / aggregate};
+\end{scope}
+% (b) common lattice
+\begin{scope}[xshift=44mm]
+\fill[tint] (0,0) rectangle (7.5,7.5);
+\foreach \i in {0,2.5,5,7.5} {\draw[rule, line width=0.3pt] (\i,0)--(\i,7.5); \draw[rule, line width=0.3pt] (0,\i)--(7.5,\i);}
+\foreach \i in {0,3,6} {\draw[amber, line width=0.9pt] (\i,0)--(\i,7.5); \draw[amber, line width=0.9pt] (0,\i)--(7.5,\i);}
+\fill[amber, opacity=0.18] (3,3) rectangle (6,6);
+\node[anchor=north, text=muted] at (3.75,-0.4) {10 m over 12 m};
+\node[anchor=south, text=ok] at (3.75,8.2) {common lattice, mixed weights};
+\end{scope}
+% (c) off phase
+\begin{scope}[xshift=86mm]
+\fill[tint] (0,0) rectangle (8,8);
+\foreach \i in {0,2,...,8} {\draw[rule, line width=0.3pt] (\i,0)--(\i,8); \draw[rule, line width=0.3pt] (0,\i)--(8,\i);}
+\foreach \i in {0.7,4.7} {\draw[fault, line width=0.9pt] (\i,0)--(\i,8); \draw[fault, line width=0.9pt] (0,\i)--(8,\i);}
+\draw[fault, <->, >=Stealth] (0,-0.5)--(0.7,-0.5);
+\node[anchor=north, text=muted] at (4,-0.9) {same pitches, shifted origin};
+\node[anchor=south, text=fault] at (4,8.2) {incompatible — off-phase};
+\end{scope}
+\end{tikzpicture}
+\caption{Three pairs of lattices in plan. Left: nested blocks share every edge. Middle: 10 m and 12 m blocks meet only on their common 2 m lattice, so one target block (shaded) takes weighted pieces of four source blocks. Right: equal pitches whose origins differ by a fraction of a block have no lattice in common, and micro refuses rather than guess.}\label{fig:joins-lattices}
+\end{figure}
+
+\begin{table}[htbp]\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+what the banner says & what it means \\ \midrule
+\code{origins off-phase by …} & The pitches fit, but one model is shifted by part of a block. The number is the shift, in model units, on the lattice it names. \\
+\code{pitches … share no small common lattice} & The pitches do have a common factor, but only on a lattice more than 4,096 steps finer than one of the blocks. An exact join would need an absurdly fine lattice. \\
+\code{no common lattice (pitches share no usable factor)} & The pitches have no common factor at all, within rounding. \\
+\code{a single-plane axis cannot join a multi-cell axis} & One model is a single layer of blocks on that axis and the other is not. \\
+\code{different lattice orientations — …} & One model is rotated and the other is not, or they are rotated differently. See \cref{sec:joins-special}. This message has no axis prefix. \\ \bottomrule
+\end{tabularx}
+\caption{Why two models may not join, as the banner words it after \code{incompatible —}. The per-axis reasons are prefixed with the axis, \code{X:}, \code{Y:} or \code{Z:}.}\label{tab:joins-reasons}
+\end{table}
+
+\begin{tip}
+When two models you must compare are off-phase, the fix belongs upstream, in the software that built them. Inside micro you can still create an empty model that both are compatible with — \menu{Data>New grid / block model…}, \ui{cover compatible models} (\cref{ch:grids}) — and that dialog has a banner of its own, so you learn at once whether a common lattice exists.
+\end{tip}
+
+\section{Spatial join}\label{sec:joins-spatial}
+
+With a compatible pair, the form opens up. From top to bottom:
+
+\begin{table}[htbp]\small
+\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+setting & meaning & default \\ \midrule
+\ui{mode} & \ui{Spatial} resamples by position; \ui{By key} matches rows by a column (\cref{sec:joins-key}). \ui{Spatial} is disabled when the left layer has no regular grid. & \ui{Spatial} \\
+\ui{right} & The layer the data comes from. In spatial mode the list holds the other block models. & none \\
+\ui{target grid} & The lattice the result is on: this model, the right model, \ui{common — finest} or \ui{common — coarsest}. & this model \\
+column checkboxes & Two lists, one per model, of every column but the coordinates. Tick what you want carried. & none \\
+aggregate & For a numeric column: \ui{mean}, \ui{sum} or \ui{count}. A text column shows \ui{majority} and has no choice. & \ui{mean} \\
+weight & For a numeric column: \ui{unweighted}, or \ui{× }another numeric column of the same model. & \ui{unweighted} \\
+\ui{only the 3D selection} & Restrict each side to its own selected blocks (\cref{sec:joins-selection}). & off \\ \bottomrule
+\end{tabularx}
+\caption{The spatial join form.}\label{tab:joins-spatial}
+\end{table}
+
+\subsection{What lands in each block}\label{sec:joins-aggregates}
+
+\paragraph{Aggregates.} \ui{mean} is the volume-weighted mean of the source blocks that fall in each target block; it is the right choice for a grade. \ui{sum} is a true total, for an additive quantity — tonnes, or metal already computed per block. Each source block hands each target block the fraction of its \emph{own} volume that falls inside it, so the column's total is conserved whatever the two pitches: 100 t on one 10 m block becomes 12.5 t on each of the eight 5 m blocks inside it, and eight 5 m blocks of 12.5 t add back up to 100 t on the 10 m block. A sub-blocked source hands over its share by each sub-block's own volume in the same way. \ui{count} gives the weight that arrived — the overlap volume, counted in cells of the common lattice, times the weight column if you chose one; use it as a check. A category takes the value that fills most of the target block.
+
+\paragraph{Weights.} A mean of grades across blocks of different density should be weighted by that density. Choose \ui{× SG} beside \col{FE} and each piece contributes in proportion to its volume times its \col{SG}. Rows whose weight is zero or blank are skipped for that column.
+
+\paragraph{Blanks.} A blank grade is missing, not zero, so it is left out of the mean. A target block that no source block with a value reaches stays blank in the result; it is never filled with a zero.
+
+\subsection{Where the result goes}\label{sec:joins-where}
+
+\ui{Join → columns here} is enabled when the target grid is this model and at least one right-hand column is ticked. Numeric results arrive as stored columns; text results arrive as category columns. The status line names them — “join: FE on model\_b — filter, color, GT and export all see it” — and the layer is recolored by the first one so you see the result at once. If a name is already taken, the new column is prefixed with the right model's name.
+
+\ui{→ new layer} builds a block model on the target grid holding only the blocks that received something, with the chosen columns as ordinary columns. It is named after both models, joined with a ⋈, and added to the project. When an aggregate lost coverage — a coarse target block only partly covered by fine source blocks — the new layer also carries a companion column ending in \code{\_cov}, the covered fraction from 0 to 1, so you can filter out poorly supported blocks.
+
+\begin{tryit}
+The demo project has one block model, so first make a second one on the same lattice.
+\begin{enumerate}
+\item Open the demo project from the empty screen.
+\item Choose \menu{Data>New grid / block model…}. For \ui{extent} choose \ui{cover compatible models}; the type becomes a block model.
+\item Tick \file{deposit.csv}, leave \ui{resolution} on \ui{finest} and press \ui{Create}. You now have \file{common\_model.csv}, an empty model whose blocks coincide with the deposit's; its one column, \col{VAL}, holds the fill value.
+\item Select the new model, open \menu{Data>Layer properties…} and go to the \ui{join} tab.
+\item Leave \ui{mode} on \ui{Spatial} and set \ui{right} to \file{deposit.csv}. The banner reads \emph{compatible — clean replicate / aggregate}.
+\item Under the deposit's columns tick \col{FE} and \col{LITO}. \col{FE} shows \ui{mean}; \col{LITO} shows \ui{majority}.
+\item Leave \ui{target grid} on this model and press \ui{Join → columns here}.
+\end{enumerate}
+The empty model is now colored by \col{FE}, and the status line reads “join: FE, LITO on common\_model.csv — filter, color, GT and export all see them”. The new model fills the whole box, pit included; where the deposit has no block — the pit — the joined columns stay blank. Type \code{FE > 55} in the filter box: the joined column filters like any other.
+\end{tryit}
+
+\begin{caution}
+A target grid of more than 40 million cells is refused. Joining onto \ui{common — finest} for two large models with awkward pitches can reach that quickly; \ui{common — coarsest}, or one model's own grid, is usually what you want.
+\end{caution}
+
+\section{Key join}\label{sec:joins-key}
+
+A key join ignores geometry. It matches each row of the left layer to a row of the right layer whose key holds the same value, and brings columns across. The right layer can be any table: a block model, a points file, or a plain table with no coordinates at all (\cref{ch:columns}). The classic use is a lookup — a small table of \col{LITO} against density, or of block IDs against a classification made elsewhere.
+
+\begin{table}[htbp]\small
+\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+setting & meaning & default \\ \midrule
+\ui{left key} & The column of this layer to match on. & none \\
+\ui{right key} & The column of the right layer holding the same values. The names need not agree. & none \\
+\ui{bring columns} & The right layer's columns to carry across. & none \\
+\ui{duplicate keys} & What to do when a key appears more than once on the right: \ui{first match}, \ui{average dups} (numeric columns are averaged over the rows that hold a value; a blank is left out, not read as zero), or \ui{error on dups}. & \ui{first match} \\ \bottomrule
+\end{tabularx}
+\caption{The key join form.}\label{tab:joins-key}
+\end{table}
+
+Keys are compared as text, exactly. \code{HEMATITE} matches \code{HEMATITE}; it does not match \code{Hematite} or a value with a trailing space in the lookup file. When fewer rows match than you expect, that is the first thing to check, and the status line gives you the count to check against: “key join: 41,208 of 48,000 rows matched”.
+
+\ui{Join → columns here} puts the brought columns on this layer. Numeric columns become stored columns, text columns become category columns, and a row with no match is left blank. \ui{→ new layer} writes this layer's rows plus the brought columns as a new file-shaped layer instead; brought names that collide with an existing column are prefixed with the right layer's name.
+
+\begin{tip}
+\ui{error on dups} is the safe choice for a lookup that must be one-to-one. A density table with two rows for \code{CANGA} is a mistake you want to hear about, and \ui{first match} would hide it.
+\end{tip}
+
+\section{Reconcile}\label{sec:joins-reconcile}
+
+This month's model against last month's: \term{reconcile} compares two versions block by block and maps the difference. Open the newer model's \ui{join} tab, pick the older one as \ui{right}, and press \ui{Reconcile…}. A small menu lists every numeric column the two models share — \ui{Δ on FE}, \ui{Δ on SG} — and you choose the one to compare. The button is disabled, with a tooltip saying why, when the models have no numeric column in common.
+
+The result is a new block-model layer named \file{reconcile\_}\emph{this}\file{\_vs\_}\emph{reference}\file{.csv}, with three columns besides the coordinates:
+
+\begin{itemize}
+\item \col{this\_FE} — this model's grade, on the common lattice;
+\item \col{ref\_FE} — the reference model's grade there;
+\item \col{ΔFE} — \emph{this minus reference}, where both exist.
+\end{itemize}
+
+It opens already colored by \col{ΔFE} on a diverging ramp centered on zero, clipped symmetrically at the largest absolute difference: blue where the new estimate is lower, red where it is higher, pale where nothing changed. The status line carries the summary, and the same numbers stay with the layer:
+
+\begin{table}[htbp]\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+number & meaning \\ \midrule
+\code{matched} & blocks where both models have a value \\
+\code{mean Δ} & the average difference over the matched blocks — the global shift \\
+\code{mean|Δ|} & the average size of the difference, sign ignored — how much moved at all \\
+\code{added} & blocks only this model has \\
+\code{removed} & blocks only the reference has \\ \bottomrule
+\end{tabularx}
+\caption{The reconcile summary.}\label{tab:joins-summary}
+\end{table}
+
+Reconcile works on the two models' common lattice at the finer resolution, so it captures added and removed blocks even when the models cover different volumes. A block present in one model only has a blank Δ and counts as added or removed.
+
+\shot{joins-reconcile}{A copy of the demo deposit, its \col{FE} deliberately shifted down in the north and up in the south, reconciled against the original, with the color range tightened to about ±2 × mean|Δ|. Over 1,786,620 matched blocks the status line reports a mean Δ of −0.043 but a mean|Δ| of 2.12: globally the two agree, while the map, in plan with north up, shows the new estimate running low (blue) at one end and high (red) at the other — a conditional bias that a global comparison would not show.}
+
+Read the two summary numbers together. A \code{mean Δ} near zero with a large \code{mean|Δ|} says the models agree globally and disagree locally: grade moved from one place to another. The map shows where.
+
+\begin{tip}
+The ramp spans the full range of Δ, and one extreme block can flatten the rest of the map into pale yellow. Tighten the color range in the layer's styling — about twice the \code{mean|Δ|} either side of zero is a good start — and the pattern reads (\cref{ch:color}).
+\end{tip}
+
+A reconcile layer is an ordinary block model. Filter it (\code{abs(ΔFE) > 2}), section it, select a zone and read its statistics, or send it to grade–tonnage, which recognizes a reconcile layer and offers the reference and the new grade as two series (\cref{ch:gt}).
+
+\section{Scoping a join to the selection}\label{sec:joins-selection}
+
+To reconcile one pit phase, or resample only the blocks inside a lease, select those blocks first — a rectangle or a lasso in the view (\cref{ch:picking}) — and tick \ui{only the 3D selection}, above the run buttons. The join or the reconcile then reads only the selected blocks. Each side uses its own selection where it has one; a side with nothing selected contributes all of its blocks. The checkbox is disabled, with a hint, until a selection exists, and it is offered in spatial mode only: a key join has no such scope.
+
+A scoped run is stamped \code{selection: true} in the result's lineage, so the record shows the comparison was partial (\cref{ch:records}).
+
+\section{Sub-blocked and rotated models}\label{sec:joins-special}
+
+\paragraph{Sub-blocked models.} A sub-blocked model has no single lattice; its blocks come in several sizes (\cref{ch:blocks}). As a join \emph{source}, each of its blocks is scattered onto the target as a box, weighted by the volume the box shares with each target block. A parent and its sub-blocks therefore count for the space each fills, and a sub-blocked estimate compares cleanly against a regular one.
+
+When you reconcile a sub-blocked model against a regular one, the comparison is made at the \emph{regular} model's resolution: the sub-blocks are aggregated up by volume. When both are sub-blocked, it is made on the finest lattice they share.
+
+\paragraph{Rotated models.} Two rotated models join and reconcile when they share one orientation and anchor — the same basis — and their pitches and phase are compatible within it. The result is a rotated model too. Models in different orientations have no lattice in common, and the banner says so. Scattering a sub-blocked model onto a rotated target is not supported yet; the join stops with a message that says exactly that.
+
+\begin{note}
+Every join records how it was made. Columns brought by a spatial join carry a lineage entry naming the source model, the column, the aggregate and the weight; a key join names both keys and the duplicate rule; a reconcile names the grade and the two models. Right-click the layer and choose \menu{Lineage…} to read it (\cref{ch:records}).
+\end{note}
+
+\section{In a routine}\label{sec:joins-routine}
+
+Spatial join and reconcile are routine tools (\cref{ch:routines}); the settings go under \code{with:}. A routine step always targets the left model's own lattice — it is the \ui{Join → columns here} form — and it reads whole models, never a selection.
+
+\begin{lstlisting}[language=yaml]
+- tool: "join"
+  with:
+    layer: "plan_model.csv"      # gets the columns
+    from: "deposit.csv"          # a compatible lattice
+    columns:
+      - "FE"
+      - "LITO"
+    ops:
+      FE: "mean"                 # mean | sum | count | coverage
+  as: "bring"
+\end{lstlisting}
+The aggregates are the form's three — \code{mean}, \code{sum} and \code{count} — plus \code{coverage}, which only a routine offers: the fraction of each block that source blocks cover, from 0 to 1. A text column always takes the majority. Any other word is refused when the routine is checked, before anything runs, with a message naming the column; it never quietly falls back to the mean. The settings themselves are in \cref{tool:join}. A check can read one value from the step, \code{columns}: the number of columns it wrote.
+
+Run twice, the step replaces the columns it made the first time instead of adding prefixed copies, so a monthly routine stays tidy.
+
+Reconcile takes the two models and the grade:
+
+\begin{lstlisting}[language=yaml]
+- tool: "reconcile"
+  with:
+    layer: "model_2026_11.csv"
+    reference: "model_2026_10.csv"
+    grade: "FE"
+  as: "rec"
+- check: "abs(rec.mean_delta) < 0.5"
+  say: "the global grade moved less than 0.5 % Fe"
+- check: "rec.this_only = 0 and rec.ref_only = 0"
+  level: "warn"
+  say: "no blocks added or removed"
+\end{lstlisting}
+
+The step adds the Δ layer to the session — replacing the one an earlier run made — and gives a check five values to judge: \code{matched}, \code{mean\_delta}, \code{mean\_abs\_delta}, \code{this\_only} and \code{ref\_only} (\cref{ch:checks}). Because both tools make something in the session rather than a table, they are run every time and never reused from the cache (\cref{ch:records}).
+
+A key join has no routine tool. For a lookup that must repeat, keep the lookup table in the project and express it as a calculated column, or run the key join once and save the project: the brought columns are stored with the layer.
