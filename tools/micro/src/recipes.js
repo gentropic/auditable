@@ -28,7 +28,7 @@ import { openInputsDialog, openRoutineWindow } from './routine-ui.js';
 import { compoPage, writePages, addResourceFrame } from './composer.js';
 import { openValidation } from './validation.js';
 import { checkParams, runTool, tableTSV, toolDef } from './tools.js';
-import { newRunRecord, writeRecord, outputEntry, localDate, findBaseline, recordTable } from './runrecord.js';
+import { newRunRecord, writeRecord, outputEntry, localDate, findBaseline, recordTable, stepFingerprints, stepKey, findCachedStep, copyOutputs } from './runrecord.js';
 import { openRunsWindow, acceptRunAsk } from './runs-ui.js';
 import { openRecipeForm } from './recipe-form.js';
 import { evalScalarCheck, evalEveryCheck, compareTables, parseTSV, flatValues } from './checks.js';
@@ -343,7 +343,7 @@ export function routineLineInfo(st, i, P) {
 
 // merge an expanded step into the op runRecipe takes (recipe params ⊕ overrides,
 // or the inline step's own params)
-export const STEP_KEYS = ['recipe', 'tool', 'as', '_slug', 'each', 'steps', 'params', 'guard', 'filter', 'emit', 'with'];
+export const STEP_KEYS = ['recipe', 'tool', 'as', '_slug', 'each', 'steps', 'params', 'guard', 'filter', 'emit', 'with', 'cache'];
 export function routineStepOp(st) {
   const rc = st.recipe ? S.recipes.find((x) => x.name === st.recipe) : null;
   // settings belong under `with:` — a step's own keywords (as, emit, filter on an each, …) can then
@@ -379,11 +379,11 @@ export function openRoutineTracker(rname, steps, P) {
   return {
     el: win.el,
     cancelled: () => cancelled,
-    state(i, st2, msg) {
+    state(i, st2, msg, cls) {
       const L2 = lines[i]; if (!L2) return;
       L2.ic.textContent = st2 === 'run' ? '▶' : st2 === 'ok' ? '✓' : st2 === 'fail' ? '✗' : st2 === 'skip' ? '–' : '·';
       L2.ic.className = 'rw-state ' + st2;
-      if (msg) { const m = document.createElement('div'); m.className = 'rw-prevline ' + (st2 === 'ok' ? 'warn' : 'fail'); m.textContent = '     ' + msg; L2.row.after(m); }
+      if (msg) { const m = document.createElement('div'); m.className = 'rw-prevline ' + (cls || (st2 === 'ok' ? 'warn' : 'fail')); m.textContent = '     ' + msg; L2.row.after(m); }
       win.sub.textContent = `step ${Math.min(i + 1, steps.length)}/${steps.length}`;
       if (L2.row.scrollIntoView) L2.row.scrollIntoView({ block: 'nearest' });
     },
@@ -604,7 +604,23 @@ export async function runRoutine(r, opts = {}) {
     tracker.state(idx, 'run');
     $('#meta').textContent = `routine “${r.name}” — step ${n}/${steps.length}: ${st._slug}…`;
     try {
-      if (toolDef(tool)) {                                   // a registered tool: scan + shape, no window
+      let reused = null;
+      if (toolDef(tool) && toolDef(tool).cache !== false && st.cache !== false && P.cache !== false && !opts.fresh) {
+        // the CACHE: the same tool, settings, micro build and input fingerprints as an earlier ok step
+        // whose outputs are intact → its outputs, copied; nothing recomputed
+        const fps = await stepFingerprints(routineLayerNames(merged));
+        entry.cacheKey = stepKey(tool, checkParams(tool, merged.params, { routine: true }).params, fps);   // (entry.key is the table's key columns)
+        const hit = await findCachedStep(entry.cacheKey, rec.dir);
+        if (hit) {
+          reused = hit;
+          entry.outputs = await copyOutputs(hit.entry, outDir); wrote += entry.outputs.length;
+          Object.assign(entry, { params: hit.entry.params, values: hit.entry.values, units: hit.entry.units, key: hit.entry.key, warnings: hit.entry.warnings || [], reusedFrom: hit.dir });
+          if (hit.entry.layers) entry.layers = hit.entry.layers;
+          keep(st, { values: hit.entry.values || {}, table: await recordTable(entry, parseTSV) });
+          stepNote = `reused from ${hit.dir.replace(/^runs\//, '')} (nothing changed)`;
+        }
+      }
+      if (reused) { /* done above */ } else if (toolDef(tool)) {                                   // a registered tool: scan + shape, no window
         const res = await runTool(tool, merged.params, { routine: true, progress: (n, N) => { $('#meta').textContent = `routine “${r.name}” — step ${n0}/${steps.length}: ${st._slug}… ${N ? Math.round((100 * n) / N) + '%' : ''}`; } });
         Object.assign(entry, { params: res.resolved, values: res.values, warnings: res.warnings });
         if (res.layers) entry.layers = res.layers; if (res.columns) entry.columns = res.columns;   // what it made: layers, columns
@@ -648,7 +664,7 @@ export async function runRoutine(r, opts = {}) {
         const fr = await runFigureRecipe(merged.params || {});
         if (fr && fr.out) entry.outputs.push(await outputEntry(fr.out));
       } else throw new Error(`unsupported tool in a routine: ${tool}`);
-      tracker.state(idx, 'ok', stepNote);                 // a warning rides on the ✓ line
+      tracker.state(idx, 'ok', stepNote, reused ? 'note' : undefined);   // a warning (or a reuse) rides on the ✓ line
       Object.assign(entry, { status: 'ok', ms: Date.now() - t0 }); await saveRec();
       stepEvt(idx + 1, st._slug, 'ok');
     } catch (e) {
@@ -718,7 +734,7 @@ export async function checkRoutineHost(name, inputs) {
   return { routine: name, steps: steps.map((st, i) => routineLineInfo(st, i, r.params || {}).text), problems };
 }
 // run to the end; resolves with { status, record, problems?, error? } — never prompts
-export function runRoutineHost(name, inputs, onStep) {
+export function runRoutineHost(name, inputs, onStep, { fresh = false } = {}) {
   const r = routineForHost(name, inputs);
   const token = `host-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   return new Promise((resolve) => {
@@ -730,7 +746,7 @@ export function runRoutineHost(name, inputs, onStep) {
       resolve({ routine, status, record, ...(problems ? { problems } : {}), ...(error ? { error } : {}) });
     };
     addEventListener('micro:routine-step', step); addEventListener('micro:routine-done', fin);
-    runRoutine(r, { token });
+    runRoutine(r, { token, fresh });
   });
 }
 
@@ -744,7 +760,7 @@ function oldFormSteps(steps, out = []) {
     if (!st || typeof st !== 'object') continue;
     if (st.each !== undefined && Array.isArray(st.steps)) { oldFormSteps(st.steps, out); continue; }
     if (!(st.tool || st.recipe)) continue;
-    const loose = Object.keys(st).filter((k) => !['recipe', 'tool', 'as', 'emit', 'with'].includes(k));
+    const loose = Object.keys(st).filter((k) => !['recipe', 'tool', 'as', 'emit', 'with', 'cache'].includes(k));
     if (loose.length) out.push({ st, loose });
   }
   return out;
@@ -939,6 +955,7 @@ export function recipesMenuItems() {
     label: `${r.name} · ${RECIPE_TOOLS[r.tool]}`,
     submenu: [
       { label: Array.isArray(r.inputs) && r.inputs.length ? 'Run…' : 'Run', action: () => runRecipe(r, true) },
+      ...(r.tool === 'routine' && !(Array.isArray(r.inputs) && r.inputs.length) ? [{ label: 'Run fresh (reuse nothing)', action: () => runRoutine(r, { fresh: true }) }] : []),
       { label: 'Edit (open configured)', action: () => runRecipe(r, false) },
       { label: 'Rename…', action: () => renameRecipe(r) },
       { label: 'Delete', action: () => deleteRecipe(r) },

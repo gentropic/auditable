@@ -558,7 +558,7 @@ const replaceOlder = (id, sameAs) => { for (const x of S.layers.filter((q) => q.
 
 // composite: a drillhole interval table → equal-length composites, a new points layer
 registerTool('composite', {
-  label: 'composite',
+  label: 'composite', cache: false,   // makes a layer in the session
   params: {
     layer: { type: 'layer', required: true, doc: 'the drillhole layer' },
     length: { type: 'number', doc: 'the composite length (blank = the commonest interval length)' },
@@ -599,7 +599,7 @@ registerTool('pairing', {
 
 // grade shell: the surface where a model's grade crosses a cutoff, a new mesh layer
 registerTool('shell', {
-  label: 'grade shell',
+  label: 'grade shell', cache: false,
   params: {
     layer: { type: 'layer', required: true }, col: { type: 'column', required: true },
     cutoff: { type: 'number', required: true }, smooth: { type: 'int', default: 0, doc: 'smoothing passes (0–3)' },
@@ -616,7 +616,7 @@ registerTool('shell', {
 
 // spatial join: columns of another model resampled onto this one's blocks (volume-weighted)
 registerTool('join', {
-  label: 'spatial join',
+  label: 'spatial join', cache: false,   // writes columns
   params: {
     layer: { type: 'layer', required: true, doc: 'the model that gets the columns' },
     from: { type: 'layer', required: true, doc: 'the model they come from (a compatible lattice)' },
@@ -636,7 +636,7 @@ registerTool('join', {
 
 // reconcile: this model − a reference, on their common lattice → a Δ layer and its summary
 registerTool('reconcile', {
-  label: 'reconcile',
+  label: 'reconcile', cache: false,
   params: {
     layer: { type: 'layer', required: true, doc: 'this model' }, reference: { type: 'layer', required: true, doc: 'the model it is compared with' },
     grade: { type: 'column', required: true, doc: 'a grade column both carry' },
@@ -652,7 +652,7 @@ registerTool('reconcile', {
 
 // section series: a sheet per section position along the section's normal, as PNGs in a zip
 registerTool('sections', {
-  label: 'section series',
+  label: 'section series', cache: false,   // depends on the view (camera, styling)
   writesFile: (p) => p.out || 'sections.zip',
   params: {
     section: { type: 'any', doc: 'the orientation: { axis: x | y | z } or { normal: [x, y, z] }, thickness, clip (default: the current section)' },

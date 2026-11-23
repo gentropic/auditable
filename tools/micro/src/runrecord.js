@@ -13,7 +13,8 @@
 // sidecar beside it), so the record can be signed as it stands.
 import { S } from './state.js';
 import { layerFiles, resolveFileHandle } from './paths.js';
-import { sha256File, sha256Text } from './sha256.js';
+import { sha256File, sha256Text, Sha256 } from './sha256.js';
+import { ensureStoredValues } from './columns.js';
 import { layerById } from './state.js';
 
 const pad = (n) => String(n).padStart(2, '0');
@@ -117,4 +118,68 @@ export async function recordTable(entry, parse) {
   const o = entry && entry.outputs && entry.outputs.find((x) => /\.tsv$/i.test(x.path));
   if (!o) return null;
   try { return parse(await (await (await resolveFileHandle(S.project.dir, o.path)).getFile()).text(), entry.key); } catch { return null; }
+}
+
+// ── the CACHE (routines v2, step 6): a step whose inputs, settings and micro build match an earlier
+// successful step — and whose outputs still hash as recorded — is reused instead of run again. Its
+// files are copied into this run's folder; the record says which run they came from. ──
+// The inputs are a FINGERPRINT per layer the step reads: its source files' SHA-256 and every derived
+// column it carries (calc expressions; painted and materialized columns' contents) — a repainted
+// domain or an edited calc column is a new fingerprint, never a stale reuse.
+const canon = (v) => {
+  if (v === undefined || v === null) return 'null';
+  if (Array.isArray(v)) return '[' + v.map(canon).join(',') + ']';
+  if (typeof v === 'object') return '{' + Object.keys(v).sort().filter((k) => v[k] !== undefined).map((k) => JSON.stringify(k) + ':' + canon(v[k])).join(',') + '}';
+  return JSON.stringify(v);
+};
+const bytesOf = (a) => new Uint8Array(a.buffer, a.byteOffset, a.byteLength);
+export async function layerDerivedHash(L) {
+  const sh = new Sha256(), enc = (s) => sh.update(new TextEncoder().encode(String(s)));
+  enc(canon((L.calcCols || []).map((c) => ({ name: c.name, expr: c.expr, ty: c.ty || 'number' }))));
+  const cols = L.paintCols || [];
+  if (cols.some((c) => c.mat && !c.fvalues)) await ensureStoredValues(L, new Set(cols.filter((c) => c.mat).map((c) => String(c.name).toLowerCase())));
+  for (const c of cols) {
+    enc(`|${c.name}|${c.kind || ''}|${canon(c.dict || [])}|`);
+    if (c.mat && c.fvalues) sh.update(bytesOf(c.fvalues)); else if (c.codes) sh.update(bytesOf(c.codes));
+  }
+  return sh.hex();
+}
+export async function stepFingerprints(layerNames) {
+  const out = [];
+  for (const nm of [...new Set(layerNames)].sort()) {
+    const L = S.layers.find((x) => x.name === nm || (x.label || x.name) === nm);
+    if (!L) { out.push({ name: nm, missing: true }); continue; }
+    const fp = await layerFingerprint(L);
+    out.push({ name: nm, files: fp.files.map((f) => f.sha256 || `session:${f.name}`), derived: await layerDerivedHash(L) });
+  }
+  return out;
+}
+export const stepKey = (tool, params, fingerprints) => sha256Text(canon({ build: S.build, tool, params, layers: fingerprints }));
+
+// an earlier step with this key whose outputs are still the recorded bytes → { dir, entry } | null
+export async function findCachedStep(key, excludeDir) {
+  for (const x of await listRuns()) {
+    if (x.dir === excludeDir) continue;
+    for (const e of x.rec.steps || []) {
+      if (!e || e.cacheKey !== key || e.status !== 'ok' || !Array.isArray(e.outputs) || !e.outputs.length) continue;
+      let intact = true;
+      for (const o of e.outputs) {
+        try { const f = await (await resolveFileHandle(S.project.dir, o.path)).getFile(); if (f.size !== o.bytes || (await sha256File(f)) !== o.sha256) { intact = false; break; } }
+        catch { intact = false; break; }
+      }
+      if (intact) return { dir: x.dir, entry: e };
+    }
+  }
+  return null;
+}
+// copy a cached step's outputs into this run's folder (same bytes, so the same hashes)
+export async function copyOutputs(entry, intoDir) {
+  const outs = [];
+  for (const o of entry.outputs) {
+    const f = await (await resolveFileHandle(S.project.dir, o.path)).getFile();
+    const to = `${intoDir}/${o.path.split('/').pop()}`;
+    const fh = await resolveFileHandle(S.project.dir, to, { create: true }); const w = await fh.createWritable(); await w.write(f); await w.close();
+    outs.push({ path: to, bytes: o.bytes, sha256: o.sha256 });
+  }
+  return outs;
 }

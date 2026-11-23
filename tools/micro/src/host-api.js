@@ -291,7 +291,8 @@ export function createHostApi(d) {
     checkRoutine: verb((name, { inputs = {} } = {}) => d.checkRoutine(name, inputs)),
     // run to the end → { status: 'ok' | 'failed' | 'cancelled' | 'refused', record, problems?, error? };
     // never prompts (a missing input rejects). onStep({ n, step, status }) as each step ends.
-    runRoutine: verb((name, { inputs = {}, onStep = null } = {}) => d.runRoutine(name, inputs, onStep)),
+    // fresh: run every step again (no reuse of an earlier run's unchanged steps)
+    runRoutine: verb((name, { inputs = {}, onStep = null, fresh = false } = {}) => d.runRoutine(name, inputs, onStep, { fresh })),
     // the project's runs (newest first) and the baseline mark
     runs: verb(async () => (await d.listRuns()).map((x) => ({ dir: x.dir, routine: x.rec.routine && x.rec.routine.name, status: x.rec.status, started: x.rec.started, finished: x.rec.finished, baseline: x.rec.baseline || null, accepted: x.accepted || null }))),
     acceptRun: verb((dir, by, note = '') => d.acceptRun(dir, by, note)),

@@ -7755,6 +7755,50 @@ if (take()) {
   await p.close();
 }
 
+// ── §122: THE CACHE (routines v2 step 6) — a re-run with nothing changed reuses each step (its files
+//     copied, same hashes, the record says from where, a check still reads the values); a new calc
+//     column is a new fingerprint (recomputed); a fresh run reuses nothing; a tampered output is not
+//     reused; a tool that makes a layer is never cached. ──
+if (take()) {
+  const p = await mkPage('sm2cache');
+  await p.evaluate(async () => { try { await (await navigator.storage.getDirectory()).removeEntry('sm2cache', { recursive: true }); } catch { } });
+  await p.evaluate(async () => {
+    const rows = ['XC,YC,ZC,FE']; for (let k = 0; k < 3; k++) for (let j = 0; j < 6; j++) for (let i = 0; i < 6; i++) rows.push(`${5 + i * 10},${5 + j * 10},${5 + k * 10},${(40 + i + j).toFixed(1)}`);
+    await window._micro.openBlob(new File([rows.join('\n') + '\n'], 'm.csv'), 'm.csv', 'replace');
+  });
+  await p.waitForFunction(() => window._micro.layers()[0] && window._micro.layers()[0].docs.blockDoc, null, { timeout: 20000 });
+  await saveProject(p);
+  const r = await p.evaluate(async () => {
+    const M_ = window._micro, m = window.micro, out = {};
+    M_._recipesList().push({ name: 'c', tool: 'routine', params: { steps: [
+      { tool: 'gt', with: { layer: 'm.csv', series: [{ col: 'FE' }], cutoffs: [40, 45] }, as: 'gt' },
+      { tool: 'modelqa', with: { layer: 'm.csv' }, as: 'mq' },
+      { check: 'mq.errors = 0' },
+    ] } });
+    const sum = (res) => res.record.steps.map((s) => (s.kind ? s.status : `${s.step}:${s.reusedFrom ? 'reused' : 'ran'}`)).join(' ');
+    const r1 = await m.runRoutine('c'); out.r1 = sum(r1);
+    const r2 = await m.runRoutine('c'); out.r2 = sum(r2);
+    const s1 = r1.record.steps[0].outputs[0], s2 = r2.record.steps[0].outputs[0];
+    out.copied = { sameSha: s1.sha256 === s2.sha256, newPath: s2.path !== s1.path && s2.path.startsWith(r2.record.dir), from: r2.record.steps[0].reusedFrom === r1.record.dir };
+    M_.applyCalcCols(M_.layers()[0], [{ name: 'FE2', expr: 'FE * 2', ty: 'number' }]);
+    const r3 = await m.runRoutine('c'); out.r3 = sum(r3);
+    const r4 = await m.runRoutine('c', { fresh: true }); out.r4 = sum(r4);
+    // tamper with every copy of gt.tsv made under the current fingerprint → the next run recomputes it
+    for (const res of [r3, r4]) { let d = M_.project().dir; for (const s of res.record.dir.split('/')) d = await d.getDirectoryHandle(s); const w = await (await d.getFileHandle('gt.tsv')).createWritable(); await w.write('tampered\n'); await w.close(); }
+    const r5 = await m.runRoutine('c'); out.r5 = sum(r5);
+    // a tool that makes a layer: never cached
+    M_._recipesList().push({ name: 'shells', tool: 'routine', params: { steps: [{ tool: 'shell', with: { layer: 'm.csv', col: 'FE', cutoff: 44.5 }, as: 'sh' }] } });
+    await m.runRoutine('shells'); const s6 = await m.runRoutine('shells');
+    out.shell = s6.record.steps[0].reusedFrom || null;
+    return out;
+  });
+  chk(`CACHE: a re-run with nothing changed reuses every step (“${r.r1}” then “${r.r2}”), files copied with the same hash, the record says from where (${JSON.stringify(r.copied)}); the check reads the reused values`,
+    r.r1 === 'gt:ran mq:ran pass' && r.r2 === 'gt:reused mq:reused pass' && r.copied.sameSha && r.copied.newPath && r.copied.from);
+  chk(`CACHE: a new calc column → recomputed (“${r.r3}”); a fresh run reuses nothing (“${r.r4}”); a tampered output isn't reused (“${r.r5}”); a shell is never cached (${r.shell})`,
+    r.r3 === 'gt:ran mq:ran pass' && r.r4 === 'gt:ran mq:ran pass' && /^gt:ran mq:reused/.test(r.r5) && r.shell === null);
+  await p.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);
