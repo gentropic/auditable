@@ -8451,6 +8451,90 @@ if (take()) {
   await pg.close();
 }
 
+if (take()) {
+  // ═══ reconciliation factors F1 / F2 / F3: a resource model (10 m blocks) and a grade-control model on
+  //     ANOTHER lattice (5 m blocks) = the resource × known factors (tonnes × 1.1 via density, grade × 0.95);
+  //     periods by a period column AND by nested solids (one block level cut in half → partial blocks);
+  //     a production table = grade control × (0.98, 1.02) → exact F1 / F2 / F3; the tool, the routine
+  //     check passing and failing, the window ═══
+  const pg = await mkPage('sm2factors');
+  await pg.evaluate(async () => { try { await (await navigator.storage.getDirectory()).removeEntry('sm2factors', { recursive: true }); } catch { } });
+  await pg.evaluate(async () => {
+    const m = window._micro;
+    // resource: 10 × 10 × 5 blocks of 10 m, centroids z 5…45; FE = 40 + level; SG 2.5; MM = M1 (top level), M2 (the next)
+    const per = (z) => (z > 40 ? 'M1' : z > 30 ? 'M2' : '');
+    const R = ['XC,YC,ZC,FE,SG,MM'];
+    for (let k = 0; k < 5; k++) for (let j = 0; j < 10; j++) for (let i = 0; i < 10; i++) { const z = 5 + 10 * k; R.push(`${5 + 10 * i},${5 + 10 * j},${z},${40 + k},2.5,${per(z)}`); }
+    await m.openBlob(new Blob([R.join('\n') + '\n']), 'res.csv', 'replace');
+    // grade control: 20 × 20 × 10 blocks of 5 m; grade 0.95 × the resource block it sits in, density 2.75 (= 1.1 × 2.5)
+    const G = ['X,Y,Z,AU_GC,DENS,MM'];
+    for (let k = 0; k < 10; k++) for (let j = 0; j < 20; j++) for (let i = 0; i < 20; i++) { const z = 2.5 + 5 * k; G.push(`${2.5 + 5 * i},${2.5 + 5 * j},${z},${(0.95 * (40 + Math.floor(z / 10))).toFixed(4)},2.75,${per(z)}`); }
+    await m.openBlob(new Blob([G.join('\n') + '\n']), 'gc.csv', 'add');
+    // production: grade control × (tonnes 0.98, grade 1.02) for M1 and M2; M3 was never mined
+    const gcT = 400 * 2 * 125 * 2.75;                       // 2 levels of 400 five-metre blocks a period
+    const P = ['PERIOD,TONNES,HEAD_PCT', `M1,${gcT * 0.98},${0.95 * 44 * 1.02}`, `M2,${gcT * 0.98},${0.95 * 43 * 1.02}`, `M3,1000,40`];
+    await m.openBlob(new Blob([P.join('\n') + '\n']), 'mill.csv', 'add', null, { asKind: 'table' });
+    // two closed boxes over the whole footprint: z 40…60 (period M1) and z 35…60 (M2 = the part of it below z 40)
+    const box = (z0, z1) => { const v = [[-20, -20, z0], [120, -20, z0], [120, 120, z0], [-20, 120, z0], [-20, -20, z1], [120, -20, z1], [120, 120, z1], [-20, 120, z1]]; const f = [[1, 3, 2], [1, 4, 3], [5, 6, 7], [5, 7, 8], [1, 2, 6], [1, 6, 5], [2, 3, 7], [2, 7, 6], [3, 4, 8], [3, 8, 7], [4, 1, 5], [4, 5, 8]]; return new Blob([v.map((x) => `v ${x.join(' ')}`).join('\n') + '\n' + f.map((t) => `f ${t.join(' ')}`).join('\n') + '\n']); };
+    await m.openBlob(box(40, 60), 'm1.obj', 'add');
+    await m.openBlob(box(35, 60), 'm2.obj', 'add');
+  });
+  await pg.waitForFunction(() => window._micro.layers().length >= 5 && window._micro.layers().find((x) => x.name === 'mill.csv' && x.docs.tableDoc), null, { timeout: 30000 });
+  const base = { model: 'res.csv', grade: 'FE', density: { col: 'SG' }, gc: 'gc.csv', gcGrade: 'AU_GC', gcDensity: { col: 'DENS' }, production: 'mill.csv', prodPeriod: 'PERIOD', prodTonnes: 'TONNES', prodGrade: 'HEAD_PCT', cutoff: 'none', gradeUnit: 'pct', modelUnit: 'pct', gcUnit: 'pct', prodUnit: 'pct' };
+  const r = await pg.evaluate(async (base) => {
+    const m = window._micro, out = {};
+    const t1 = await m.runTool('factors', { ...base, periods: 'column', periodCol: 'MM' }, { routine: true });
+    out.col = { cols: t1.table.columns.join(','), key: t1.table.key.join(','), rows: t1.table.rows, v: t1.values, warn: t1.warnings };
+    const t2 = await m.runTool('factors', { ...base, periods: 'volumes', volumes: [{ name: 'M1', mesh: 'm1.obj', side: 'inside' }, { name: 'M2', mesh: 'm2.obj', side: 'inside' }], nested: true, resolution: 2 }, { routine: true });
+    out.vol = { rows: t2.table.rows, v: t2.values };
+    out.noCut = m.checkParams('factors', { ...base, cutoff: undefined, density: undefined, periods: 'selection' }, { routine: true }).errors.join('; ');
+    out.cut = (await m.runTool('factors', { ...base, periods: 'column', periodCol: 'MM', cutoff: 43.5 })).values;   // only M1 (FE 44; grade control 41.8 < 43.5 → nothing)
+    return out;
+  }, base);
+  const near = (a, b, tol = 1e-9) => Number.isFinite(a) && Math.abs(a - b) <= tol * Math.max(1, Math.abs(b));
+  const row = (rows, p, q) => rows.find((x) => x[0] === p && x[1] === q) || [];
+  const c = r.col, v = c.v;
+  chk(`factors (period column): table ${c.cols} keyed ${c.key}, ${c.rows.length} rows; M1 tonnes ${row(c.rows, 'M1', 'tonnes').slice(2, 5).join(' / ')}`,
+    c.cols === 'period,quantity,model,gc,mill,f1,f2,f3,c_model,c_gc,c_mill,c_f1,c_f2,c_f3' && c.key === 'period,quantity' && c.rows.length === 6
+    && near(row(c.rows, 'M1', 'tonnes')[2], 250000) && near(row(c.rows, 'M1', 'tonnes')[3], 275000) && near(row(c.rows, 'M1', 'tonnes')[4], 269500)
+    && near(row(c.rows, 'M1', 'grade')[2], 44) && near(row(c.rows, 'M1', 'grade')[3], 41.8) && near(row(c.rows, 'M1', 'metal')[2], 250000 * 44 * 0.01));
+  chk(`factors values (last period M2): f1 ${v.f1_t}/${v.f1_g}/${v.f1_m}, f2 ${v.f2_t}/${v.f2_g}/${v.f2_m}, f3 ${v.f3_t}/${v.f3_m}; to date c_f1_t ${v.c_f1_t}, c_f3_m ${v.c_f3_m}; warns: ${c.warn.join(' | ')}`,
+    v.periods === 2 && near(v.f1_t, 1.1) && near(v.f1_g, 0.95) && near(v.f1_m, 1.1 * 0.95) && near(v.f2_t, 0.98) && near(v.f2_g, 1.02) && near(v.f2_m, 0.98 * 1.02)
+    && near(v.f3_t, 1.1 * 0.98) && near(v.f3_g, 0.95 * 1.02) && near(v.f3_m, 1.1 * 0.95 * 0.98 * 1.02) && near(v.c_f1_t, 1.1) && near(v.c_f3_m, 1.1 * 0.95 * 0.98 * 1.02)
+    && c.warn.some((w) => /not mined in either model: M3/.test(w)));
+  const vr = r.vol.rows;
+  chk(`factors (nested solids): M1 ${row(vr, 'M1', 'tonnes')[2]} / ${row(vr, 'M1', 'tonnes')[3]} t; M2 — half of the resource level, all of grade control's — ${row(vr, 'M2', 'tonnes')[2]} / ${row(vr, 'M2', 'tonnes')[3]} t, F1 ${row(vr, 'M2', 'tonnes')[5]} / ${row(vr, 'M2', 'grade')[5]}`,
+    near(row(vr, 'M1', 'tonnes')[2], 250000) && near(row(vr, 'M1', 'tonnes')[3], 275000) && near(row(vr, 'M1', 'tonnes')[5], 1.1)
+    && near(row(vr, 'M2', 'tonnes')[2], 125000) && near(row(vr, 'M2', 'tonnes')[3], 137500) && near(row(vr, 'M2', 'tonnes')[5], 1.1) && near(row(vr, 'M2', 'grade')[5], 0.95) && near(row(vr, 'M2', 'grade')[2], 43));
+  const blankV = (x) => x == null || Number.isNaN(x);
+  chk(`factors: a routine states cutoff and density and can't use the selection (“${r.noCut}”); cutoff 43.5 keeps only M1's resource → F1 tonnes ${r.cut.f1_t} (grade control has none above it), F1 grade and F2 tonnes blank, not ∞ (${r.cut.f1_g}, ${r.cut.f2_t})`,
+    /cutoff: a routine must state it/.test(r.noCut) && /density: a routine must state it/.test(r.noCut) && /periods: a routine allows/.test(r.noCut)
+    && r.cut.periods === 1 && r.cut.f1_t === 0 && blankV(r.cut.f1_g) && blankV(r.cut.f2_t) && near(r.cut.model_t, 250000));
+  // the routine: a passing check on F1 and a failing one (stops, naming what it read)
+  await saveProject(pg);
+  const rr = await pg.evaluate(async (base) => {
+    const M_ = window._micro, wait = (ms) => new Promise((res) => setTimeout(res, ms));
+    const waitMeta = async (re, ms = 90000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { const t = document.querySelector('#meta').textContent; if (re.test(t)) return t; await wait(150); } return document.querySelector('#meta').textContent; };
+    const run = async (name, steps) => { document.querySelector('#meta').textContent = ''; document.querySelectorAll('.fwin').forEach((w) => w.remove()); M_.runRoutine({ name, tool: 'routine', params: { steps } }); return waitMeta(new RegExp(`routine “${name}” (— \\d+ steps? run|STOPPED)|routine: `)); };
+    const step = { tool: 'factors', with: { ...base, periods: 'column', periodCol: 'MM' }, as: 'fac' };
+    const pass = await run('monthend', [step, { check: 'abs(fac.f1_t - 1.1) < 0.001 and abs(fac.c_f3_m - 1.044582) < 0.0001', say: 'F1 as built' }]);
+    const fail = await run('monthend2', [step, { check: 'abs(fac.f1_t - 1) < 0.05', say: 'F1 tonnes within 5%' }]);
+    // the window, configured from the same settings
+    const R = M_.layers().find((x) => x.name === 'res.csv');
+    const h = M_.openFactors(R, { cfg: { ...base, periods: 'column', periodCol: 'MM', tolerance: 0.05, show: 'tonnes' } });
+    await h.run();
+    const spec = h.win.el._factorsSpec;
+    return { pass, fail, win: { sub: h.win.sub.textContent, readout: h.win.el.querySelector('.fac-readout').textContent, rows: h.win.el.querySelectorAll('.fac-tbl tr').length, flagged: [...h.win.el.querySelectorAll('.fac-tbl td')].filter((td) => /outside/.test(td.title || '')).length, tsv: (h.win.el._tableTSV && h.win.el._tableTSV()) || '', recipe: h.win.el._recipe().tool, band: spec && spec.hBand, ticks: spec && spec.xTicks.map((t) => t[1]).join(','), lines: spec && spec.series.filter((s) => s.kind === 'line').map((s) => s.name).join(','), fig: !!h.win.el.querySelector('.pp-exp') && [...h.win.el.querySelectorAll('.pp-exp button')].map((b) => b.textContent).join(' ') } };
+  }, base);
+  chk(`factors routine: the F1 check passes (“${rr.pass.slice(0, 90)}”) and a 5% check stops naming what it read (“${rr.fail.slice(0, 140)}”)`,
+    /monthend” — \d+ steps? run/.test(rr.pass) && /STOPPED/.test(rr.fail) && /F1 tonnes within 5%/.test(rr.fail) && /fac\.f1_t = 1\.1/.test(rr.fail));
+  const w = rr.win;
+  chk(`factors window: “${w.sub}” · readout “${w.readout}” · ${w.rows} table rows, ${w.flagged} factors outside ±5% · chart ${w.lines} over ${w.ticks}, band ${w.band && w.band.lo}…${w.band && w.band.hi} · buttons ${w.fig} · recipe ${w.recipe}`,
+    /2 periods/.test(w.sub) && /F1 t 1\.100 · g 0\.950/.test(w.readout) && w.rows === 7 && w.flagged > 0 && w.ticks === 'M1,M2' && /F1 tonnes,F2 tonnes,F3 tonnes/.test(w.lines)
+    && near(w.band.lo, 0.95) && near(w.band.hi, 1.05) && /⇥ figure/.test(w.fig) && /⇥ layer/.test(w.fig) && w.recipe === 'factors' && /^period\tquantity\tresource model/.test(w.tsv) && w.tsv.split('\n').length === 7);
+  await pg.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

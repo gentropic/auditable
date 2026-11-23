@@ -69,7 +69,7 @@ export default {
   'Stats…': 'Estatísticas…', 'Scatter / Q-Q…': 'Dispersão / Q-Q…', 'Scatter plot': 'Gráfico de dispersão', 'Q-Q plot': 'Gráfico Q-Q',
   'Grade-tonnage…': 'Teor-tonelagem…', 'Resource cross-tab': 'Tabela de recursos', 'Resource cross-tab…': 'Tabela de recursos…', 'Swath plot…': 'Swath plot…',
   'Validate vs drillholes…': 'Validar contra os furos…', 'Join / reconcile…': 'Junção / reconciliação…', 'join': 'junção', 'reconcile': 'reconciliar',
-  'Model QA…': 'QA do modelo…', 'Block vs sample…': 'Bloco × amostra…', 'Grade shell…': 'Envoltória de teor…', 'grade shell': 'envoltória de teor',
+  'Model QA…': 'QA do modelo…', 'Block vs sample…': 'Bloco × amostra…', 'Grade shell…': 'Envoltória de teor…', 'Reconciliation factors…': 'Fatores de reconciliação…', 'grade shell': 'envoltória de teor',
   'Mesh QA / volume': 'QA da malha / volume', 'Mesh QA / volume…': 'QA da malha / volume…',
   'Structural analysis (joint planes)': 'Análise estrutural (planos de fratura)', 'Structural analysis…': 'Análise estrutural…',
   'Select by solid / surface…': 'Selecionar por sólido / superfície…', 'Select by this solid…': 'Selecionar por este sólido…', 'select by solid': 'selecionar por sólido',

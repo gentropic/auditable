@@ -34,6 +34,7 @@ import { meshVertexData } from './records.js';
 import { numericColsOf, computeResourceTable, supportMeasure } from './analysis.js';
 import { validationRun } from './validation.js';
 import { scanContact, contactRows, contactValuesOf, contactChartSpec, contactHumanTSV, contactAmountCol } from './contact.js';
+import { scanFactors, factorsStOf, factorsTable, factorsValues, factorsChartSpec, factorsHumanTSV } from './factors.js';
 import { gradeUnitFactor, niceStep, scopeMask, scopeMissing, rangesFromCfg } from './analysis-ui.js';
 import { gtCuts } from './scanner.js';
 import { scanGTSeries, gtRows, gtChartSpec, gtHumanTSV } from './gt.js';
@@ -413,6 +414,80 @@ registerTool('contact', {
     return {
       table: { columns: ['series', 'side', 'center', 'mean', amt, 'count'], key: ['series', 'side', 'center'], rows: rows.map((r) => [r.series, r.side, r.center, r.mean, r.amount, r.count]), units: { center: 'm', [amt]: scan.mode === 'downhole' ? 'm' : '' } },
       values: contactValuesOf(scan, p.near || 1), resolved: { ...p, binWidth: scan.bw, maxDist: scan.maxDist }, warnings, where: scan.where,
+    };
+  },
+});
+
+// ── reconciliation factors: totals inside the mined volume, per period ──────────────────────────
+// F1 = grade control / resource model, F2 = mill / grade control, F3 = mill / resource model (= F1 × F2),
+// each for tonnes, grade and metal (metal = tonnes × grade × metalFactor, so F_metal = F_t × F_g).
+// The mined volume per period: a period column on the blocks, one mesh per period (a solid's inside or
+// an open pit surface's above, partial blocks by their fraction; nested = each period is its volume
+// minus the one before), or a filter (one period). Production: a table layer matched by period name.
+// table, key [period, quantity] (quantity: tonnes | grade | metal): model, gc, mill, f1, f2, f3 for the
+// period and c_model … c_f3 to date (tonnes and metal summed over this period and every earlier one;
+// the to-date mill — so c_f2 / c_f3 — is blank from the first period without production).
+// values (the LAST period in order): f1_t f1_g f1_m, f2_*, f3_*, model_* gc_* mill_* (t g m), and the
+// same to date with a c_ prefix (c_f1_t …); periods = how many. Blanks stay blank: a check reading
+// one is "not evaluated" (a month without production yet is not a pass).
+const DENSITY_DOC = '{ col: SG } a density column, or { const: 2.7 }; unit t/m3 (default), kg/m3, lb/ft3';
+const densityShape = (d, path, errs) => {
+  if (d == null) return;
+  if (typeof d === 'number') { if (!(d > 0)) errs.push(`${path}: a positive number`); return; }
+  if (typeof d === 'string') return;                         // a column name (or a number written as text)
+  if (typeof d !== 'object' || Array.isArray(d) || Object.keys(d).some((k) => !['col', 'const', 'unit'].includes(k)) || (d.col == null && d.const == null)) errs.push(`${path}: ${DENSITY_DOC}`);
+};
+registerTool('factors', {
+  label: 'reconciliation factors',
+  params: {
+    model: { type: 'layer', required: true, doc: 'the resource (long-range) block model — F1 and F3’s denominator' },
+    grade: { type: 'column', required: true, doc: 'the resource model’s grade column' },
+    modelUnit: { type: 'string', default: '', doc: 'its grade unit (pct, g/t, ppm …) — converts into gradeUnit' },
+    density: { type: 'any', routine: 'required', why: 'tonnes are volume × density — a routine states which', doc: `the resource model’s density: ${DENSITY_DOC}` },
+    gc: { type: 'layer', doc: 'the grade-control (short-range) block model; absent = the model layer itself (its other columns)' },
+    gcGrade: { type: 'column', doc: 'grade control’s grade column (default: grade)' },
+    gcUnit: { type: 'string', doc: 'its grade unit (default: modelUnit)' },
+    gcDensity: { type: 'any', doc: 'grade control’s density (default: density)' },
+    periods: { type: 'enum', values: ['column', 'volumes', 'filter', 'selection'], default: 'column', routine: ['column', 'volumes', 'filter'], why: 'a selection isn’t saved with the routine — use a period column, volumes or a filter', doc: 'how the mined volume per period is known: a period column on the blocks · a mesh per period · a filter (one period) · the 3D selection (one period)' },
+    periodCol: { type: 'column', doc: 'periods column: the column naming the period each block was mined in (blank = not mined) — on both models' },
+    volumes: { type: 'list', item: { name: { type: 'string', required: true, doc: 'the period’s name (production rows match it)' }, mesh: { type: 'layer', required: true, doc: 'a closed solid or an open pit surface' }, side: { type: 'enum', values: ['inside', 'above', 'below'], default: 'inside', doc: 'inside (a solid) · above (a pit surface: what was mined from it up) · below' } }, doc: 'periods volumes: one mesh per period, in order — blocks counted by the fraction inside' },
+    nested: { type: 'bool', default: false, doc: 'periods volumes: each volume holds the ones before it (pit phases, cumulative shells) → period k = volume k minus volume k − 1' },
+    resolution: { type: 'int', default: 2, doc: 'periods volumes: sub-samples per block edge for the fraction inside (1 = centroid, 2 = 8 per block, 3 = 27)' },
+    periodFilter: { type: 'expr', doc: 'periods filter: the blocks mined (an expression; its names must exist on both models)' },
+    periodName: { type: 'string', default: 'period', doc: 'periods filter / selection: the period’s name' },
+    filter: { type: 'expr', default: '', doc: 'an optional domain filter on both models, any period mode (e.g. LITO == "ORE")' },
+    production: { type: 'layer', doc: 'the production (mill) table layer — no X/Y/Z, one or more rows per period; absent = F1 only' },
+    prodPeriod: { type: 'column', doc: 'its period column' },
+    prodTonnes: { type: 'column', doc: 'its tonnes column' },
+    prodGrade: { type: 'column', doc: 'its grade column (or prodMetal, or both — a stated metal is used as stated, and a mismatch with tonnes × grade × metalFactor warns)' },
+    prodMetal: { type: 'column', doc: 'its metal column, in the metal unit' },
+    prodUnit: { type: 'string', doc: 'its grade unit (default: gradeUnit)' },
+    cutoff: { type: 'any', routine: 'required', why: 'a factor at another cutoff is another factor — state it, or "none"', doc: 'blocks at or above it count, in gradeUnit; "none" = every block' },
+    gradeUnit: { type: 'string', default: '', doc: 'the report grade unit; declared, metal is in tonnes of metal (% → × 0.01, g/t → × 1e-6) unless metalFactor says otherwise' },
+    metalFactor: { type: 'number', doc: 'metal = tonnes × grade × this (e.g. 1/31.1035 for g/t → oz); absent = from gradeUnit, or 1' },
+    metalUnit: { type: 'string', display: true }, tolerance: { type: 'any', display: true }, show: { type: 'any', display: true }, cumulative: { type: 'any', display: true }, ranges: { type: 'any', display: true },
+  },
+  outputs: { key: ['period', 'quantity'] },
+  chart: (scan, raw) => factorsChartSpec(scan, { show: raw.show, cumulative: raw.cumulative, tolerance: raw.tolerance != null ? raw.tolerance : 0.1, ranges: raw.ranges ? rangesFromCfg(raw.ranges) : null }),
+  human: (scan) => factorsHumanTSV(scan),
+  check(p, errs) {
+    if (p.cutoff != null && p.cutoff !== 'none' && !(typeof p.cutoff === 'number' && Number.isFinite(p.cutoff))) errs.push('cutoff: a number (in gradeUnit) or "none"');
+    densityShape(p.density, 'density', errs); densityShape(p.gcDensity, 'gcDensity', errs);
+    if (p.density == null && !p.gcDensity) errs.push('density: tonnes need a density — { col: SG } or { const: 2.7 }');
+    if (p.periods === 'column' && !p.periodCol) errs.push('periodCol: the column naming each block’s period (periods: column)');
+    if (p.periods === 'volumes' && !(Array.isArray(p.volumes) && p.volumes.length)) errs.push('volumes: one { name, mesh, side } per period (periods: volumes)');
+    if (p.periods === 'filter' && !p.periodFilter) errs.push('periodFilter: the expression keeping the mined blocks (periods: filter)');
+    if (p.production) { if (!p.prodPeriod) errs.push('prodPeriod: the production table’s period column'); if (!p.prodTonnes) errs.push('prodTonnes: its tonnes column'); if (!p.prodGrade && !p.prodMetal) errs.push('prodGrade or prodMetal: the production grade, its metal, or both'); }
+    if (p.resolution != null && !(p.resolution >= 1 && p.resolution <= 6)) errs.push('resolution: 1 … 6');
+  },
+  async scan(p, ctx) { return scanFactors(factorsStOf(p), ctx.progress, ctx.signal); },
+  shape(scan, p) {
+    // units ride on the quantity column (tonnes: t · grade: gradeUnit · metal: the metal unit), not a column
+    return {
+      table: { ...factorsTable(scan), units: { quantity: `tonnes: t · grade: ${unitLabel(p.gradeUnit) || 'as stated'} · metal: ${scan.metalUnit}` } },
+      values: factorsValues(scan),
+      resolved: { ...p, cutoff: scan.cutoff == null ? 'none' : scan.cutoff, metalFactor: scan.mf },
+      warnings: scan.warnings, where: scan.where,
     };
   },
 });

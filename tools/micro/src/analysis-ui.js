@@ -61,7 +61,7 @@ export function chartFigure(spec, { width = 400, height = 240, theme = 'paper', 
     } else {
       // a right-axis line sharing its colour with a left one (GT: one model's tonnage and grade) is dashed
       const twin = s.axis === 'right' && spec.series.some((o) => o !== s && o.axis !== 'right' && o.color === s.color);
-      h = a.plot(xs, ys, { color: s.color, linewidth: 1.6, linestyle: s.dash || twin ? '--' : '-', label: s.name });
+      h = a.plot(xs, ys, { color: s.color, linewidth: 1.6, linestyle: s.dash || twin ? '--' : '-', label: s.name, ...(s.marker ? { marker: s.marker, markersize: 4 } : {}) });
     }
     handles.push(Array.isArray(h) ? h[0] : h); labels.push(s.name);
   }
@@ -69,11 +69,18 @@ export function chartFigure(spec, { width = 400, height = 240, theme = 'paper', 
     ax.set_xlim(R.xr[0], R.xr[1]); ax.set_ylim(R.lr[0], R.lr[1]);
     if (ax2) ax2.set_ylim(R.rr[0], R.rr[1]);
   }
+  // a horizontal band on the left axis (a tolerance about 1.0 — the factors chart): behind the lines
+  if (spec.hBand && Number.isFinite(spec.hBand.lo) && Number.isFinite(spec.hBand.hi)) ax.axhspan(spec.hBand.lo, spec.hBand.hi, { color: spec.hBand.color || '#5c8a5a', alpha: 0.13 });
   ax.grid(true, { alpha: 0.35 });
   // 2,000,000 — not 2000000 (nor Python's 2e+06): thousands grouped, small values to six figures
   const tickFmt = (x) => (Math.abs(x) >= 1000 ? Math.round(x).toLocaleString('en-US') : String(+(+x).toPrecision(6))).replace(/^-/, '−');
   for (const a of [ax, ax2]) if (a) a.yaxis.set_major_formatter(tickFmt);
-  ax.xaxis.set_major_formatter(tickFmt);
+  // categorical x (periods): exactly these ticks, labelled — thinned so the labels don't collide
+  if (Array.isArray(spec.xTicks) && spec.xTicks.length) {
+    const every = Math.max(1, Math.ceil(spec.xTicks.length / Math.max(2, Math.floor(width / 64))));
+    const tk = spec.xTicks.filter((_, i) => i % every === 0);
+    ax.set_xticks(tk.map((t) => t[0]), tk.map((t) => String(t[1])));
+  } else ax.xaxis.set_major_formatter(tickFmt);
   if (spec.xLabel) ax.set_xlabel(spec.xLabel, { fontsize: fontSize });
   if (spec.leftLabel) ax.set_ylabel(spec.leftLabel, { fontsize: fontSize });
   if (ax2 && spec.rightLabel) ax2.set_ylabel(spec.rightLabel, { fontsize: fontSize });

@@ -24,6 +24,7 @@ import { loadRecipes } from './recipes.js';
 import { openGradeTonnage } from './gt.js';
 import { openSwath } from './swath.js';
 import { openContact } from './contact.js';
+import { openFactors } from './factors.js';
 import { openStats } from './stats.js';
 import { openCrosstab } from './xtab.js';
 import { openXyPlot } from './xyplot.js';
@@ -840,6 +841,7 @@ export async function openProjectDir(dir, { pack = null } = {}) {
       if (a.open.includes('gt')) { try { openGradeTonnage(L); } catch { /* layer no longer qualifies */ } }
       if (a.open.includes('swath')) { try { openSwath(L); } catch { /* same */ } }
       if (a.open.includes('contact')) { try { openContact(L); } catch { /* same */ } }
+      if (a.open.includes('factors')) { try { openFactors(L); } catch { /* same */ } }
       if (a.open.includes('stats')) { try { openStats(L); } catch { /* same */ } }
       if (a.open.includes('xtab')) { try { openCrosstab(L); } catch { /* same */ } }
       if (a.open.includes('xy')) { try { openXyPlot(L); } catch { /* same */ } }

@@ -39,6 +39,7 @@ import { openComposite } from './composite-ui.js';
 import { openPairing } from './pairing.js';
 import { openGradeShell } from './shells.js';
 import { openContact, isDhLayer, isBlockLayer } from './contact.js';
+import { openFactors, isBlockModel as factorsModel } from './factors.js';
 import { openStructure } from './structure-ui.js';
 import { fmtSize, layerBytes } from './paths.js';
 import { CONTEXT_TRI_CAP, openMeshDoc } from './open-mesh.js';
@@ -125,6 +126,8 @@ export function layerMenu(L, x, y) {
     // contact analysis: grade binned by distance to a domain boundary (down the holes, or to a wireframe)
     ...(!isView(L) && isDhLayer(L) && numericColsOf(L).length ? [{ label: 'Contact plot…', action: () => openContact(L, { mode: 'downhole' }) }] : []),
     ...(!isView(L) && (isDhLayer(L) || isBlockLayer(L)) && numericColsOf(L).length ? [{ label: 'Distance to a surface…', action: () => openContact(L, { mode: 'surface' }) }] : []),
+    // reconciliation: F1 / F2 / F3 totals inside the mined volume, per period (this layer = the resource model)
+    ...(!isView(L) && factorsModel(L) ? [{ label: 'Reconciliation factors…', action: () => openFactors(L) }] : []),
     ...(L._filterMask ? [{ label: 'Filter → selection', action: () => filterToSelection(L) }] : []),
     ...(L._selCount ? [{ label: `Selection → column… (${L._selCount.toLocaleString()} rows)`, action: () => selectionToColumn(L) }] : []),
     { label: 'File info…', action: () => { setActiveLayer(L.id); showFileInfo(); } },

@@ -28,6 +28,7 @@ import { openInputsDialog, openRoutineWindow } from './routine-ui.js';
 import { compoPage, writePages, addResourceFrame } from './composer.js';
 import { openValidation } from './validation.js';
 import { openContact } from './contact.js';
+import { openFactors } from './factors.js';
 import { checkParams, runTool, tableTSV, toolDef } from './tools.js';
 import { newRunRecord, writeRecord, outputEntry, localDate, findBaseline, recordTable, stepFingerprints, stepKey, findCachedStep, copyOutputs, runRoot, setRunRoot } from './runrecord.js';
 import { openRunsWindow, acceptRunAsk } from './runs-ui.js';
@@ -44,7 +45,7 @@ const $ = (s) => document.querySelector(s);
 // Files are the interface: comment them, copy them between projects, drop one
 // in and Scan folder picks it up. Series reference layers BY NAME; a missing
 // primary gets a one-question remap — that prompt IS the parameter binding. ──
-export const RECIPE_TOOLS = { gt: 'grade-tonnage', swath: 'swath', stats: 'stats', xy: 'scatter / Q-Q', figure: 'figure', compo: 'composer page', calccols: 'calc columns', solid: 'by solid / surface', validation: 'validation', contact: 'contact analysis', resource: 'resource table', export: 'export', modelqa: 'model QA', dhqa: 'drillhole QA', meshqa: 'mesh QA', xtab: 'cross-tab', composite: 'composite', pairing: 'pairing', shell: 'grade shell', join: 'spatial join', reconcile: 'reconcile', sections: 'section series', routine: 'routine' };
+export const RECIPE_TOOLS = { gt: 'grade-tonnage', swath: 'swath', stats: 'stats', xy: 'scatter / Q-Q', figure: 'figure', compo: 'composer page', calccols: 'calc columns', solid: 'by solid / surface', validation: 'validation', contact: 'contact analysis', factors: 'reconciliation factors', resource: 'resource table', export: 'export', modelqa: 'model QA', dhqa: 'drillhole QA', meshqa: 'mesh QA', xtab: 'cross-tab', composite: 'composite', pairing: 'pairing', shell: 'grade shell', join: 'spatial join', reconcile: 'reconcile', sections: 'section series', routine: 'routine' };
 
 export const recipeSlug = (name) => (String(name).toLowerCase().replace(/[^\w.-]+/g, '-').replace(/^-+|-+$/g, '') || 'recipe');
 
@@ -344,7 +345,7 @@ export function routineLineInfo(st, i, P) {
   ];
   return {
     text: `${i + 1}. ${label}${wrote.length ? '  ' + wrote.join('  ') : '   (opens only)'}${st.recipe && !rc ? '   ⚠ recipe not found' : ''}`,
-    openable: ['gt', 'swath', 'stats', 'xy', 'interp', 'contact'].includes(tool) && !(st.recipe && !rc),
+    openable: ['gt', 'swath', 'stats', 'xy', 'interp', 'contact', 'factors'].includes(tool) && !(st.recipe && !rc),
   };
 }
 
@@ -414,6 +415,8 @@ export function routineLayerNames(rc) {                           // the layer n
   const def = rc.tool && toolDef(rc.tool);
   if (def) {
     for (const [k, spec] of Object.entries(def.params)) if (spec.type === 'layer' && typeof p2[k] === 'string' && p2[k]) names.push(p2[k]);
+    // a list whose items name layers (the factors tool's volumes: one mesh per period) — every one is an input
+    for (const [k, spec] of Object.entries(def.params)) if (spec.type === 'list' && spec.item && k !== 'series' && Array.isArray(p2[k])) for (const it of p2[k]) for (const [ik, isp] of Object.entries(spec.item)) if (isp.type === 'layer' && it && typeof it[ik] === 'string' && it[ik]) names.push(it[ik]);
     for (const ser of (Array.isArray(p2.series) ? p2.series : [])) if (ser && ser.layer) names.push(ser.layer);
     return names;
   }
@@ -941,6 +944,11 @@ export function runRecipe(r, andRun = true, runOpts = null) {
     const Lc = S.layers.find((x) => x.name === want || (x.label || x.name) === want);
     if (!Lc) { $('#meta').textContent = `recipe “${r.name}”: layer “${want}” isn't loaded`; return; }
     openContact(Lc, { cfg: r.params, run: andRun }); return;
+  }
+  if (r.tool === 'factors') {                              // the window, configured (Run on “Run”)
+    const Lf = S.layers.find((x) => x.name === r.params.model || (x.label || x.name) === r.params.model);
+    if (!Lf) { $('#meta').textContent = `recipe “${r.name}”: layer “${r.params.model}” isn't loaded`; return; }
+    openFactors(Lf, { cfg: r.params, run: andRun }); return;
   }
   if (r.tool === 'validation') {                           // the window, configured (it runs on open)
     const M = S.layers.find((x) => x.name === r.params.model || (x.label || x.name) === r.params.model);
