@@ -8,6 +8,8 @@ import { autoDeclusterSizes, computeSampleSwath, computeSwath, extractSamples, n
 import { SERIES_COLORS, fmtStat, niceStep, plotChart, plotExportBtns } from './analysis-ui.js';
 import { declusterCell, declusterSweep } from '../../../ext/gsjs/src/decluster.js';
 import { AXIS_NAMES, projRange } from './swath.js';
+import { compileBool, deps as exprDeps } from '../../../ext/expr/index.js';
+import { layerTableHeader, schemaExt, blockSchema } from './records.js';
 const $ = (s) => document.querySelector(s);
 
 // ── validation: block model vs drillhole samples ──────────────────────────────
@@ -28,8 +30,22 @@ export const _valWins = new Map();
 // grade over the model's swath bands; bias = model / declustered samples − 1, in percent.
 // bandW/off: the swath lattice (default: the window's — about 25 bands from the model's extent,
 // never narrower than a block, starting at the extent's low end).
-export async function validationRun({ M, D, mGrade, sGrade, cell = null, axis = 0, bandW = null, off = null }) {
-  const samples = extractSamples(D, sGrade);
+// filter: ONE expression applied to both sides — a domain (LITO != "WASTE") — so a model is validated
+// where it was drilled. A whole-model mean carries every waste block no hole samples, and no
+// declustering can stand in for samples that were never taken; comparing per domain is the practice.
+// The names it uses must exist on BOTH layers (a model and its assays usually share LITO / DOMAIN).
+function domainPreds(M, D, filter) {
+  if (!filter || !String(filter).trim()) return { mp: null, sp: null };
+  const expr = String(filter), hm = layerTableHeader(M), hd = layerTableHeader(D);
+  let mp, sp;
+  try { mp = compileBool(expr, schemaExt(M, hm), { decimal: '.' }); } catch (e) { throw new Error(`filter on the model (${M.label || M.name}): ${e.message}`); }
+  try { sp = compileBool(expr, blockSchema(hd), { decimal: '.' }); } catch (e) { throw new Error(`filter on the samples (${D.label || D.name}): ${e.message}`); }
+  try { mp.deps = exprDeps(expr); } catch { /* deps are a hint for stored values */ }
+  return { mp, sp };
+}
+export async function validationRun({ M, D, mGrade, sGrade, cell = null, axis = 0, bandW = null, off = null, filter = '' }) {
+  const { mp, sp } = domainPreds(M, D, filter);
+  const samples = extractSamples(D, sGrade, sp);
   if (samples.length < 2) throw new Error(`not enough samples (${samples.length}) with a value in “${sGrade}”`);
   let weights, cellUsed, declMean, naiveMean;
   try {
@@ -39,7 +55,7 @@ export async function validationRun({ M, D, mGrade, sGrade, cell = null, axis = 
   const ga = gridAxesOf(M), dir = [[1, 0, 0], [0, 1, 0], [0, 0, 1]][axis], [lo, hi] = projRange(M, dir);
   const blockAlong = (Math.abs((ga.x.pitch || 0) * dir[0]) + Math.abs((ga.y.pitch || 0) * dir[1]) + Math.abs((ga.z.pitch || 0) * dir[2])) || 1;
   const bw = bandW > 0 ? +bandW : Math.max(blockAlong, niceStep((hi - lo) / 25) || 1), o = off != null ? +off : lo;
-  const mres = await computeSwath(M, [mGrade], dir, bw, o, '');
+  const mres = await computeSwath(M, [mGrade], dir, bw, o, '', null, null, mp);
   let mt = 0, mtg = 0; for (const p of mres.profile) if (Number.isFinite(p.mean[0])) { mt += p.tonnage; mtg += p.tonnage * p.mean[0]; }
   const modelMean = mt > 0 ? mtg / mt : NaN;
   const sres = computeSampleSwath(samples, weights, dir, bw, o);
@@ -53,12 +69,12 @@ export function openValidation(M, ropts) {
   const ex = _valWins.get(M.id); if (ex) { focusWindow(ex.win.el); return; }
   const mnums = numericColsOf(M); if (!mnums.length) { $('#meta').textContent = 'validation: the model has no numeric column'; return; }
   const D0 = dhs[0], snums = numericColsOf(D0), shared = mnums.find((c) => snums.includes(c));
-  const st = { dh: D0.id, mGrade: shared || mnums[0], sGrade: shared || snums[0] || null, cell: null, axis: 0 };
+  const st = { dh: D0.id, mGrade: shared || mnums[0], sGrade: shared || snums[0] || null, cell: null, axis: 0, filter: '' };
   const cfg = ropts && ropts.cfg;                           // a validation recipe opens configured
   if (cfg) {
     const Dn = cfg.samples && dhs.find((x) => x.name === cfg.samples || (x.label || x.name) === cfg.samples); if (Dn) st.dh = Dn.id;
     if (cfg.modelGrade) st.mGrade = cfg.modelGrade; if (cfg.sampleGrade) st.sGrade = cfg.sampleGrade;
-    if (cfg.cell) st.cell = +cfg.cell; if (cfg.axis) st.axis = Math.max(0, ['X', 'Y', 'Z'].indexOf(cfg.axis));
+    if (cfg.cell) st.cell = +cfg.cell; if (cfg.filter) st.filter = String(cfg.filter); if (cfg.axis) st.axis = Math.max(0, ['X', 'Y', 'Z'].indexOf(cfg.axis));
   }
   const win = floatWin({ title: `validate · ${M.label || M.name}`, sub: '', x: 90, y: 90, w: 540, h: 420, onClose: () => _valWins.delete(M.id) });
   win.body.style.cssText += 'display:flex;flex-direction:column;gap:0';
@@ -70,7 +86,7 @@ export function openValidation(M, ropts) {
     const D = layerById(st.dh); if (!D || !st.sGrade) { win.sub.textContent = 'pick a sample grade'; return; }
     win.sub.textContent = 'sampling…';
     let v;
-    try { v = await validationRun({ M, D, mGrade: st.mGrade, sGrade: st.sGrade, cell: st.cell, axis: st.axis }); }
+    try { v = await validationRun({ M, D, mGrade: st.mGrade, sGrade: st.sGrade, cell: st.cell, axis: st.axis, filter: st.filter }); }
     catch (e) { win.sub.textContent = e.message; readout.textContent = ''; plotChart(cv, { series: [] }); return; }
     const { samples, cellUsed, declMean, naiveMean, modelMean, mres, sres } = v;
     const spec = { xLabel: `distance along ${AXIS_NAMES.axes[st.axis]}`, leftLabel: 'mean grade', rightLabel: 'samples', series: [
@@ -84,7 +100,7 @@ export function openValidation(M, ropts) {
     const add = (k, v, cls) => { const s = document.createElement('span'); s.className = 'val-stat' + (cls ? ' ' + cls : ''); const b = document.createElement('b'); b.textContent = k; s.append(b, document.createTextNode(' ' + v)); readout.appendChild(s); };
     add('model', fmtStat(modelMean)); add('samples (decl)', fmtStat(declMean)); add('naïve', fmtStat(naiveMean));
     add('global bias', (bias >= 0 ? '+' : '') + (Number.isFinite(bias) ? bias.toFixed(1) : '–') + '%', Number.isFinite(bias) && Math.abs(bias) > 10 ? 'bad' : 'ok');
-    win.sub.textContent = `${samples.length.toLocaleString()} samples · decluster cell ${fmtStat(cellUsed)} m · ${AXIS_NAMES.axes[st.axis]}`;
+    win.sub.textContent = `${samples.length.toLocaleString()} samples · decluster cell ${fmtStat(cellUsed)} m · ${AXIS_NAMES.axes[st.axis]}${st.filter ? ` · domain ${st.filter}` : ''}`;
   };
   win.el._onResized = () => { if (win._spec) plotChart(cv, win._spec); };
   const buildCtrls = () => {
@@ -93,9 +109,11 @@ export function openValidation(M, ropts) {
     const mSel = document.createElement('select'); for (const c of mnums) { const o = document.createElement('option'); o.value = c; o.textContent = 'model: ' + c; mSel.appendChild(o); } mSel.value = st.mGrade; mSel.onchange = () => { st.mGrade = mSel.value; redraw(); };
     const sSel = document.createElement('select'); for (const c of numericColsOf(layerById(st.dh))) { const o = document.createElement('option'); o.value = c; o.textContent = 'sample: ' + c; sSel.appendChild(o); } sSel.value = st.sGrade || ''; sSel.onchange = () => { st.sGrade = sSel.value; redraw(); };
     const cL = document.createElement('label'); cL.textContent = 'cell'; const cI = document.createElement('input'); cI.type = 'number'; cI.step = 'any'; cI.style.width = '68px'; cI.placeholder = 'auto'; cI.value = st.cell != null ? String(st.cell) : ''; cI.title = 'decluster cell size (m) — blank = auto-sweep'; cI.onchange = () => { st.cell = cI.value === '' ? null : +cI.value; redraw(); }; cL.appendChild(cI);
+    // a domain: one expression on both sides (the names must exist on the model AND the samples)
+    const fI = document.createElement('input'); fI.type = 'text'; fI.style.width = '150px'; fI.placeholder = 'domain, e.g. LITO != "WASTE"'; fI.value = st.filter; fI.title = 'validate inside a domain — one expression applied to the model and the samples (blank = everything)'; fI.onchange = () => { st.filter = fI.value.trim(); redraw(); };
     const seg = document.createElement('div'); seg.className = 'pp-seg';
     ['X', 'Y', 'Z'].forEach((nm, i) => { const bt = document.createElement('button'); bt.className = 'pp-segbtn' + (st.axis === i ? ' on' : ''); bt.textContent = nm; bt.onclick = () => { st.axis = i; for (const b2 of seg.children) b2.classList.toggle('on', b2 === bt); redraw(); }; seg.appendChild(bt); });
-    ctrls.append(dSel, mSel, sSel, cL, seg, plotExportBtns(cv, () => `validate-${(M.label || M.name).replace(/\.[^.]+$/, '')}.png`, null));
+    ctrls.append(dSel, mSel, sSel, cL, fI, seg, plotExportBtns(cv, () => `validate-${(M.label || M.name).replace(/\.[^.]+$/, '')}.png`, null));
   };
   _valWins.set(M.id, { win, redraw });
   buildCtrls(); redraw();

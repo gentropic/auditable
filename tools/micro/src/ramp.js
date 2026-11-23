@@ -4,7 +4,7 @@
 import { S, requestRender } from './state.js';
 import { stageGate } from './props.js';
 import { _rampRepaint } from './props-style.js';
-import { paintActiveCol, applyPaintPalette } from './paint.js';
+import { paintActiveCol, applyPaintPalette, paintBlankVis } from './paint.js';
 import { calcDisplayCol, calcSelOf, ensureCalcDisplay } from './calc.js';
 import { ensureValueTex } from './color.js';
 import { markProjectDirty } from './project.js';
@@ -171,6 +171,10 @@ export function syncNoData(L) {
   if (!L || !S.renderer || !S.renderer.setLayerNoData) return;
   const nd = noDataOf(L), n = parseInt(String(nd.color).slice(1), 16);
   S.renderer.setLayerNoData(L.id, [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255, nd.hide ? 0 : 1]);
+  // a stored / ƒ column colours its blanks through its own palette (code 0), not the chunks' no-data
+  // channel: give it the same colour and hide
+  const pc = paintActiveCol(L) || calcDisplayCol(L);
+  if (pc && pc.kind === 'ratio' && pc.mat) { applyPaintPalette(L, pc); S.renderer.setLayerCatVisibility(L.id, paintBlankVis(L, pc)); }
 }
 export function applyRamp(L, force) {
   if (!force) return stageGate(L, () => applyRamp(L, true));

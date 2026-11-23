@@ -3,8 +3,9 @@
 // names and colours them. The class list draws them (src/props-style.js).
 import { categoryPalettePixels, palettePixels, coordNum } from '../../../ext/condenser/src/main.js';
 import { stageGate } from './props.js';
-import { paintActiveCol, applyPaintPalette } from './paint.js';
+import { paintActiveCol, applyPaintPalette, paintBlankVis } from './paint.js';
 import { ruleModeOf, applyRuleVisibility, applyRulePalette } from './rules.js';
+import { calcDisplayCol } from './calc.js';
 import { S, requestRender } from './state.js';
 import { markProjectDirty } from './project.js';
 import { layerHeaderOf, layerRows } from './records.js';
@@ -47,7 +48,7 @@ export function layerClassInfo(L) {
 export function applyCatVisibility(L, force) {
   if (!force) return stageGate(L, () => applyCatVisibility(L, true));
   if (ruleModeOf(L)) return applyRuleVisibility(L, true);  // rule mode: the vis texture is indexed by RULE code
-  if (paintActiveCol(L)) { S.renderer.setLayerCatVisibility(L.id, null); requestRender(); return; }   // paint mode: no code eyes
+  if (paintActiveCol(L) || calcDisplayCol(L)) { S.renderer.setLayerCatVisibility(L.id, paintBlankVis(L, paintActiveCol(L) || calcDisplayCol(L))); requestRender(); return; }   // paint mode: no code eyes
   if (!L.catHidden || !L.catHidden.size) S.renderer.setLayerCatVisibility(L.id, null);
   else {
     const v = new Uint8Array(256).fill(1);

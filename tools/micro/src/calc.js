@@ -5,7 +5,7 @@ import { floatWin, raiseWindow } from './windows.js';
 import { markProjectDirty } from './project.js';
 import { S, requestRender } from './state.js';
 import { _propFor, _propOpen, refreshProps, renderProps } from './props.js';
-import { addPaintColorOptions } from './paint.js';
+import { addPaintColorOptions, createPaintCol } from './paint.js';
 import { syncRuleMode } from './rules.js';
 import { applyRamp, colorSelOf } from './ramp.js';
 import { compileValue, deps, parse, quoteIdent, validate, compileChunk } from '../../../ext/expr/index.js';
@@ -17,7 +17,7 @@ import { saveRecipe } from './recipes.js';
 import { setLayerColorSel } from './color.js';
 import { refilterLayer } from './filter.js';
 import { _attrTables } from './attrtable.js';
-import { matColSourceHash, matColCodes, PAINT_BLANK, expandedDeps, pinGet, pinWindow, censusChunkCols, ensureStoredValues, matColSet } from './columns.js';
+import { matColSourceHash, matColCodes, PAINT_BLANK, expandedDeps, pinGet, pinWindow, censusChunkCols, ensureStoredValues, matColSet, paintRecount, ruleDefaultColor } from './columns.js';
 import { fmtStat } from './analysis-ui.js';
 import { mkLineage } from './lineage.js';
 import { persistElement } from './element-store.js';
@@ -439,10 +439,46 @@ export async function realizeCalc(L, name) {                      // one pass �
   for (let i = rec; i < n; i++) vals[i] = NaN;              // past the last record: blank, never 0
   return vals;
 }
+// a TEXT ƒ column stored: micro keeps text as categories (the painted-column shape — a dictionary
+// and one code per record, up to 255 values), so it stays text: filter, export and colour by class.
+async function materializeTextCalc(L, cc) {
+  const h = layerTableHeader(L), name = cc.name;
+  try { await ensureStoredValues(L, expandedDeps(L, parse(quoteIdent(name)))); } catch { /* unknown deps → blanks */ }
+  const fn = compileValue(quoteIdent(name), schemaExt(L, h), { decimal: '.' });
+  const n = attrRowCountOf(L) || 0, codes = new Uint8Array(n), dict = [''], at = new Map();
+  let rec = 0;
+  for await (const { f } of layerRecords(L, null)) {      // numbered as the renderer numbers (layerRecords)
+    if (rec >= n) break;
+    let v; try { v = fn(f); } catch { v = null; }
+    const s = v == null ? '' : String(v);
+    if (s !== '') {
+      let c = at.get(s);
+      if (c == null) {
+        if (dict.length >= 256) { $('#meta').textContent = `materialize: “${name}” has more than 255 different values — micro stores text as categories; keep it as a ƒ column`; return; }
+        c = dict.length; dict.push(s); at.set(s, c);
+      }
+      codes[rec] = c;
+    }
+    rec++;
+    if ((rec & 0xFFFF) === 0) await new Promise((r) => setTimeout(r));
+  }
+  const wasColor = colorSelOf(L) === 'calc:' + name;
+  L.calcCols = (L.calcCols || []).filter((c) => c.name !== name); L._calcFns = null; L._calcDisplay = null;
+  const col = createPaintCol(L, name);
+  if (!col) return;
+  col.dict = dict; col.colors = dict.map((_, i) => (i === 0 ? '#000000' : ruleDefaultColor(i - 1))); col.codes = codes;
+  col.lineage = mkLineage('materialize', { from: 'calc', expr: cc.expr, text: true }, [L.lineage].filter(Boolean));
+  paintRecount(col);
+  if (wasColor) setLayerColorSel(L, 'paint:' + name);
+  try { await persistElement(L); } catch { /* best-effort */ }
+  markProjectDirty(); renderLayers(); requestRender();
+  $('#meta').textContent = `materialized “${name}” — ${rec.toLocaleString()} values stored as ${dict.length - 1} categor${dict.length === 2 ? 'y' : 'ies'}`;
+}
 export async function materializeCalcCol(L, name) {
   const cc = (L.calcCols || []).find((c) => c.name === name); if (!cc) { $('#meta').textContent = `materialize: no calc column “${name}”`; return; }
   if (!layerTableHeader(L)) return;
   $('#meta').textContent = `materializing “${name}”…`;
+  if (cc.ty === 'string') return materializeTextCalc(L, cc);   // text → a category column (realizeCalc is numeric: it stored all blanks)
   const vals = await realizeCalc(L, name);
   const rec = vals.length;
   const wasColor = colorSelOf(L) === 'calc:' + name;

@@ -8110,6 +8110,66 @@ if (take()) {
   await p.close();
 }
 
+// ── §125: BUGS FROM THE SECOND REVIEW ROUND (2026-11-23): a text ƒ column materialized (stored all
+//     blanks); the key join's duplicate mean (divided by every row, blank or not); a grade-tonnage
+//     step on a model opened as points (counted 1 m³ a point); the validation tool's domain filter
+//     (new); Run on a windowless recipe (the §124 check only saw a run record — it ran NO step). ──
+if (take()) {
+  const p = await mkPage('sm2fix2');
+  await p.evaluate(async () => { try { await (await navigator.storage.getDirectory()).removeEntry('sm2fix2', { recursive: true }); } catch { } });
+  const csv = (() => { const rows = ['XC,YC,ZC,FE,LITO']; for (let k = 0; k < 3; k++) for (let j = 0; j < 6; j++) for (let i = 0; i < 6; i++) rows.push(`${5 + i * 10},${5 + j * 10},${5 + k * 10},${(30 + i * 3 + j * 2).toFixed(1)},${i < 3 ? 'HEM' : 'ITA'}`); return rows.join('\n') + '\n'; })();
+  await p.evaluate(async (t) => { await window._micro.openBlob(new File([t], 'm.csv'), 'm.csv', 'replace'); }, csv);
+  await p.waitForFunction(() => window._micro.layers()[0] && window._micro.layers()[0].docs.blockDoc, null, { timeout: 20000 });
+  await saveProject(p);
+  const r = await p.evaluate(async (t) => {
+    const M = window._micro, out = {}, L = M.layers()[0];
+    const settle = async (f, n = 300) => { for (let k = 0; k < n && !f(); k++) await new Promise((q) => setTimeout(q, 50)); };
+    // 1 — a text ƒ column materializes as categories, values intact
+    await M.applyCalcCols(L, [{ name: 'CLS', expr: 'if(FE > 40, "ORE", "LOW")' }]);
+    await M.materializeCalcCol(L, 'CLS');
+    const pc = M.paintColByName(L, 'CLS');
+    out.cls = pc ? { dict: pc.dict.filter(Boolean).sort(), ore: [...pc.codes].filter((c) => pc.dict[c] === 'ORE').length } : null;
+    out.oreWant = t.split('\n').slice(1).filter(Boolean).filter((row) => +row.split(',')[3] > 40).length;
+    // 2 — key join: duplicates averaged over their NON-blank values (10, blank, 20 → 15)
+    const idL = await M.openBlob(new File(['XC,YC,ZC,ID\n5,5,5,A\n15,5,5,B\n'], 'kl.csv'), 'kl.csv', 'add');
+    const idK = await M.openBlob(new File(['ID,AU\nA,10\nA,\nA,20\nB,7\n'], 'kk.csv'), 'kk.csv', 'add');
+    const KL = M.layers().find((q) => q.id === idL), KK = M.layers().find((q) => q.id === idK);
+    const kj = await M.keyJoinToCols(KL, KK, { leftKey: 'ID', rightKey: 'ID', bring: ['AU'], dup: 'aggregate' });
+    out.kj = [...M.matColGet(KL, kj.outs[0]).fvalues];
+    // 3 — grade-tonnage on a model opened as points: refused, not 1 m³ a point
+    await M.openBlob(new File([t], 'pts.csv'), 'pts.csv', 'add', null, { asKind: 'points' });
+    try { await window.micro.runTool('gt', { layer: 'pts.csv', series: [{ col: 'FE' }], cutoffs: [35] }); out.pts = 'ran'; } catch (e) { out.pts = e.message; }
+    // 4 — validation's domain filter: one expression on the model AND the samples
+    const collar = ['HOLEID,X,Y,Z,EOH'], survey = ['HOLEID,DEPTH,AZ,DIP'], assay = ['HOLEID,FROM,TO,FE,LITO'];
+    for (let h = 0; h < 6; h++) { const id = 'H' + h; collar.push(`${id},${5 + h * 10},25,30,30`); survey.push(`${id},0,0,-90`); for (let d = 0; d < 30; d += 10) assay.push(`${id},${d},${d + 10},${40 + h},${h < 3 ? 'HEM' : 'ITA'}`); }
+    const f = (a, nm) => new File([a.join('\n')], nm, { type: 'text/csv' });
+    await M.importDrillholes({ collar: f(collar, 'c.csv'), survey: f(survey, 's.csv'), intervals: f(assay, 'a.csv') }, {}, 'add');
+    const D = M.layers().find((x) => x.dh && x.docs.dhDoc), dn = D.name;
+    const all = await window.micro.runTool('validation', { model: 'm.csv', samples: dn, modelGrade: 'FE', sampleGrade: 'FE', axis: 'Z', bandW: 10 });
+    const hem = await window.micro.runTool('validation', { model: 'm.csv', samples: dn, modelGrade: 'FE', sampleGrade: 'FE', axis: 'Z', bandW: 10, filter: 'LITO = "HEM"' });
+    out.val = { all: all.values.samples, hem: hem.values.samples, hemModel: +hem.values.model_mean.toFixed(3) };
+    out.hemModelWant = (() => { const rows = t.split('\n').slice(1).filter(Boolean).map((row) => row.split(',')).filter((c) => c[4] === 'HEM'); return +(rows.reduce((s2, c) => s2 + +c[3], 0) / rows.length).toFixed(3); })();
+    // 5 — Run on a windowless recipe runs its ONE step
+    const list = M._recipesList(); list.length = 0;
+    list.push({ name: 'qa only', tool: 'modelqa', params: { layer: 'm.csv' } });
+    const before = (await M.listRuns()).length;
+    M.runRecipe(list[0]);
+    await settle(() => /routine “qa only”/.test(document.querySelector('#meta').textContent) && /done|run|report|ok/.test(document.querySelector('#meta').textContent));
+    await new Promise((q) => setTimeout(q, 1500));
+    const runs = await M.listRuns();
+    const rec = runs.length > before ? runs[0].rec : null;
+    out.run = rec ? { status: rec.status, steps: rec.steps.length, step: rec.steps[0] && rec.steps[0].status, tool: rec.steps[0] && (rec.steps[0].tool || rec.steps[0].kind) } : null;
+    M.closeAllWindows();
+    return out;
+  }, csv);
+  chk(`FIXES 2: a text ƒ column materializes as categories (${JSON.stringify(r.cls)}; ${r.oreWant} ORE expected)`, r.cls && r.cls.dict.join() === 'LOW,ORE' && r.cls.ore === r.oreWant);
+  chk(`FIXES 2: the key join averages duplicates over their non-blank values (${JSON.stringify(r.kj)} — want 15, 7)`, r.kj[0] === 15 && r.kj[1] === 7);
+  chk(`FIXES 2: grade-tonnage refuses a model opened as points (“${r.pts}”)`, /no block grid/.test(r.pts));
+  chk(`FIXES 2: validation's domain filter applies to both sides (${JSON.stringify(r.val)}; model HEM mean ${r.hemModelWant})`, r.val.all === 18 && r.val.hem === 9 && Math.abs(r.val.hemModel - r.hemModelWant) < 1e-6);
+  chk(`FIXES 2: Run on a windowless recipe runs its step (${JSON.stringify(r.run)})`, r.run && r.run.status === 'ok' && r.run.steps === 1 && r.run.step === 'ok');
+  await p.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

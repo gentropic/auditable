@@ -209,6 +209,14 @@ gnsslog.html
 tools/micro/docs/shots/
 tools/micro/docs/micro-manual.pdf
 tools/micro/docs/micro-card.pdf
+# the LaTeX manual: generated outputs (node tools/micro/docs/manual/build.mjs remakes them) + working notes
+tools/micro/docs/manual/build/
+tools/micro/docs/manual/figures/shots/
+tools/micro/docs/manual/figures/data/
+tools/micro/docs/manual/chapters/C-tools.tex
+tools/micro/docs/manual/MICRO-BUGS.md
+tools/micro/docs/manual/REVIEW-NOTES.md
+tools/micro/docs/manual/REVIEW-BRIEF.md
 # Personal PhD documents (not part of the bands.gpu tool — never commit to the public repo)
 tools/bands/phd-notes*
 tools/bands/PHD-NOTES*

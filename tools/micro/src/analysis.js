@@ -53,6 +53,9 @@ export function supportContextOf(L) {
     if (!im || im.from == null || im.to == null || im.from < 0 || im.to < 0) throw new Error(`${L.label || L.name}: a drillhole layer without FROM/TO columns — no interval lengths to weight by`);
     return { kind: 'length', from: im.from, to: im.to };
   }
+  // a model opened AS POINTS has no blocks — no volume per record; the windows refuse it, and a
+  // routine step must too (it used to count every point as 1 m³ and call it volume)
+  if (!gridAxesOf(L)) throw new Error(`${L.label || L.name}: no block grid — a model opened as points has no block volumes to weigh by (reopen it as a block model)`);
   return { kind: 'volume', vc: volumeContextOf(L) };
 }
 // the record's support: its interval length (0 when FROM/TO are blank or
@@ -119,8 +122,9 @@ export async function computeGT(L, cols, weightCol, nCut, onProgress, selMask) {
   return { cuts, gt, gmin, gmax, weighted: wi >= 0 || dConst != null };
 }
 // per band along dir: tonnage-weighted mean grade for each series + count/tonnage
-export async function computeSwath(L, cols, dir, bandWidth, offset, weightCol, onProgress, selMask) {
-  await ensureStoredValues(L, new Set([...cols, weightCol].filter(Boolean).map((x) => String(x).toLowerCase())));
+export async function computeSwath(L, cols, dir, bandWidth, offset, weightCol, onProgress, selMask, rowPred = null) {
+  // rowPred: an optional (fields) → bool over the layer's schema (a domain filter — validation's `filter`)
+  await ensureStoredValues(L, new Set([...cols, weightCol, ...(rowPred && rowPred.deps ? rowPred.deps : [])].filter(Boolean).map((x) => String(x).toLowerCase())));
   const h = layerTableHeader(L), m = h.mapping, schema = schemaExt(L, h), nameIdx = (nm) => schema.findIndex((c) => c.name === nm);
   const idx = cols.map(nameIdx);                            // source AND derived (calc/estimated) columns
   const wi = weightCol ? nameIdx(weightCol) : -1, vc = volumeContextOf(L);   // per-record volume: a sub-blocked parent block is not one fine cell
@@ -130,6 +134,7 @@ export async function computeSwath(L, cols, dir, bandWidth, offset, weightCol, o
       rc++;
       const inSel = !selMask || (rAt < selMask.length && selMask[rAt]);
       if (!inSel) continue;
+      if (rowPred) { let keep = false; try { keep = !!rowPred(f); } catch { keep = false; } if (!keep) continue; }
       const x = coordNum(f[m.x]), y = coordNum(f[m.y]), z = coordNum(f[m.z]); if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
       const t = x * dir[0] + y * dir[1] + z * dir[2], bi = Math.floor((t - offset) / bandWidth);
       let e = bands.get(bi); if (!e) { e = { w: new Float64Array(cols.length), wg: new Float64Array(cols.length), tw: 0, n: 0 }; bands.set(bi, e); }
@@ -144,11 +149,16 @@ export async function computeSwath(L, cols, dir, bandWidth, offset, weightCol, o
   return { profile, weighted: wi >= 0 };
 }
 // drillhole samples for validation: desurveyed interval midpoints + one grade
-export function extractSamples(D, gradeCol) {
+export function extractSamples(D, gradeCol, rowPred = null) {   // rowPred: an optional domain filter over the intervals
   const dh = D.docs && D.docs.dhDoc, h = layerTableHeader(D); if (!dh || !h) return [];
   const gi = h.columns.indexOf(gradeCol); if (gi < 0) return [];
   const n = attrRowCountOf(D), rows = [];
-  for (let r = 0; r < n; r++) { const pos = dh.recordPosition(r); if (!pos) continue; const rec = dh.fetchRecord(r); const g = rec ? numOf(rec[gi]) : NaN; if (Number.isFinite(g)) rows.push([pos[0], pos[1], pos[2], g]); }
+  for (let r = 0; r < n; r++) {
+    const pos = dh.recordPosition(r); if (!pos) continue;
+    const rec = dh.fetchRecord(r); if (!rec) continue;
+    if (rowPred) { let keep = false; try { keep = !!rowPred(rec); } catch { keep = false; } if (!keep) continue; }
+    const g = numOf(rec[gi]); if (Number.isFinite(g)) rows.push([pos[0], pos[1], pos[2], g]);
+  }
   return rows;
 }
 export function autoDeclusterSizes(samples) {

@@ -12,7 +12,7 @@ import { _selArm, armSelect, disarmSelect, nextSelEpoch, pipTest, selEpoch, thro
 import { attrRowCountOf, layerTableHeader } from './records.js';
 import { PAINT_BLANK, paintRecount, ruleDefaultColor } from './columns.js';
 import { RULE_ELSE } from './rules.js';
-import { colorSelOf, bakeRampPixels } from './ramp.js';
+import { colorSelOf, bakeRampPixels, noDataOf } from './ramp.js';
 import { markProjectDirty } from './project.js';
 import { freshStep, redoLabel, redoLast, undoLabel, undoLast, undoTopRedoable } from './undo.js';
 import { structureAfterEdit, structureArmed, structureTool } from './structure-ui.js';
@@ -437,6 +437,12 @@ export function paintActiveCol(L) {
   const name = paintSelOf(L);
   return name ? (L.paintCols || []).find((c) => c.name === name) : null;
 }
+// the class-visibility a painted / ƒ / stored column draws with: everything, except code 0 (a blank)
+// when the layer's no-data is set to hide — the style tab's no-data row reaches these columns too
+export function paintBlankVis(L, col) {
+  if (!col || !(col.kind === 'ratio' && col.mat) || !noDataOf(L).hide) return null;
+  const v = new Array(256).fill(true); v[0] = false; return v;
+}
 export function applyPaintPalette(L, col) {
   if (col.kind === 'ratio') {
     // a ratio column is a full numeric channel: preset/classed/breakpoints and
@@ -459,7 +465,7 @@ export function applyPaintPalette(L, col) {
       px[code * 4] = lut[s2]; px[code * 4 + 1] = lut[s2 + 1]; px[code * 4 + 2] = lut[s2 + 2]; px[code * 4 + 3] = 255;
     }
     if (ranged) {                                          // code 0 is a BLANK there (matColCodes) — never the lowest color
-      const v = parseInt(String(col.blankColor || PAINT_BLANK).slice(1), 16);
+      const v = parseInt(String(noDataOf(L).color || col.blankColor || PAINT_BLANK).slice(1), 16);   // the layer's no-data colour (style tab)
       px[0] = (v >> 16) & 255; px[1] = (v >> 8) & 255; px[2] = v & 255; px[3] = 255;
     }
     S.renderer.setLayerPalette(L.id, px, 256);

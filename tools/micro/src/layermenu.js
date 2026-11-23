@@ -95,6 +95,7 @@ export function layerMenu(L, x, y) {
     ...(hasRecords(L) ? [{ label: 'Attribute table…', kbd: 't', action: () => openAttrTable(L) }] : []),
     ...(hasRecords(L) ? [{ label: 'Filter…', kbd: '/', action: () => { setActiveLayer(L.id); $('#filter').focus(); } }] : []),
     ...(layerTableHeader(L) && numericColsOf(L).length ? [{ label: 'Stats…', action: () => openStats(L) }, { label: 'Scatter / Q-Q…', action: () => openXyPlot(L) }] : []),
+    ...(!gridAxesOf(L) && L.dh && L.docs.dhDoc && !L.trace ? [{ label: 'Grade-tonnage…', action: () => openGradeTonnage(L) }] : []),   // length-weighted (src/analysis.js supportContextOf)
     ...(gridAxesOf(L) ? [{ label: 'Grade-tonnage…', action: () => openGradeTonnage(L) }, { label: 'Resource cross-tab…', action: () => openCrosstab(L) }, { label: 'Swath plot…', action: () => openSwath(L) }] : []),
     ...(!isView(L) && L.docs && L.docs.blockDoc ? [{ label: 'Model QA…', action: () => openModelQa(L) }] : []),
     ...(gridAxesOf(L) && !isView(L) ? [{ label: 'Block vs sample…', action: () => openPairing(L) }, { label: 'Grade shell…', action: () => openGradeShell(L) }] : []),

@@ -952,7 +952,7 @@ export function runRecipe(r, andRun = true, runOpts = null) {
   // reconcile, section series…): run it as a one-step routine — the same numbers, a run record, the
   // result in the tracker. (It used to fall through to the swath window.)
   if (!['gt', 'stats', 'xy', 'xtab', 'swath', 'calccols'].includes(r.tool)) {
-    const one = { name: r.name, tool: 'routine', steps: [{ tool: r.tool, with: { ...(r.params || {}) }, as: recipeSlug(r.name) }] };
+    const one = { name: r.name, tool: 'routine', params: { steps: [{ tool: r.tool, with: { ...(r.params || {}) }, as: recipeSlug(r.name) }] } };   // a routine's steps live under params
     if (andRun) runRoutine(one, runOpts || {}); else openRoutineWindow(one);   // “open configured” shows it, never runs it
     return;
   }

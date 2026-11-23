@@ -332,13 +332,14 @@ registerTool('validation', {
     axis: { type: 'enum', values: ['X', 'Y', 'Z'], default: 'X', doc: 'the swath direction' },
     bandW: { type: 'number', routine: 'required', why: 'an automatic band width comes from the extent and moves with it', doc: 'the swath band width' },
     off: { type: 'number', doc: 'the swath band offset (default 0 when bandW is given)' },
+    filter: { type: 'expr', default: '', doc: 'a domain — one expression applied to the model AND the samples (its names must exist on both), e.g. LITO != "WASTE"' },
   },
   outputs: { key: ['center'] },
   async scan(p) {
     const M = layerNamed(p.model), D = layerNamed(p.samples);
     if (!(D.dh && D.docs && D.docs.dhDoc)) throw new Error(`${D.label || D.name} is not a drillhole layer`);
     columnCheck(M, p.modelGrade, 'model grade'); columnCheck(D, p.sampleGrade, 'sample grade');
-    return validationRun({ M, D, mGrade: p.modelGrade, sGrade: p.sampleGrade, cell: p.cell || null, axis: ['X', 'Y', 'Z'].indexOf(p.axis), bandW: p.bandW || null, off: p.bandW ? (p.off != null ? p.off : 0) : null });
+    return validationRun({ M, D, mGrade: p.modelGrade, sGrade: p.sampleGrade, cell: p.cell || null, axis: ['X', 'Y', 'Z'].indexOf(p.axis), bandW: p.bandW || null, off: p.bandW ? (p.off != null ? p.off : 0) : null, filter: p.filter || '' });
   },
   shape(v, p) {
     const byC = new Map();

@@ -157,8 +157,8 @@ export async function runKeyJoin({ leftL, rightL, leftKey, rightKey, bring, dup 
       const k = f[rki] == null ? '' : String(f[rki]);
       const vals = bringIdx.map((i) => f[i]);
       const e = map.get(k);
-      if (!e) map.set(k, { vals, n: 1 });
-      else { dupSeen = true; e.n++; if (dup === 'aggregate') for (let b = 0; b < vals.length; b++) { if (rNum[b]) { const nv = numOf(vals[b]), cur = numOf(e.vals[b]); if (Number.isFinite(nv)) e.vals[b] = Number.isFinite(cur) ? (cur * (e.n - 1) + nv) / e.n : nv; } } }
+      if (!e) map.set(k, { vals, n: 1, cn: vals.map((v) => (Number.isFinite(numOf(v)) ? 1 : 0)) });
+      else { dupSeen = true; e.n++; if (dup === 'aggregate') for (let b = 0; b < vals.length; b++) { if (rNum[b]) { const nv = numOf(vals[b]), cur = numOf(e.vals[b]); if (Number.isFinite(nv)) { e.cn[b] = (e.cn[b] || 0) + 1; e.vals[b] = Number.isFinite(cur) ? cur + (nv - cur) / e.cn[b] : nv; } } } }
       rc++;
     }
     $('#meta').textContent = `${label}: indexing right ${rc.toLocaleString()}…`;
@@ -275,8 +275,8 @@ export async function keyJoinToCols(L, R, { leftKey, rightKey, bring, dup = 'fir
       const k = f[rki] == null ? '' : String(f[rki]);
       const vals = bringIdx.map((i) => f[i]);
       const e = map.get(k);
-      if (!e) map.set(k, { vals, n: 1 });
-      else { dupSeen = true; e.n++; if (dup === 'aggregate') for (let b = 0; b < vals.length; b++) { if (rNum[b]) { const nv = numOf(vals[b]), cur = numOf(e.vals[b]); if (Number.isFinite(nv)) e.vals[b] = Number.isFinite(cur) ? (cur * (e.n - 1) + nv) / e.n : nv; } } }
+      if (!e) map.set(k, { vals, n: 1, cn: vals.map((v) => (Number.isFinite(numOf(v)) ? 1 : 0)) });
+      else { dupSeen = true; e.n++; if (dup === 'aggregate') for (let b = 0; b < vals.length; b++) { if (rNum[b]) { const nv = numOf(vals[b]), cur = numOf(e.vals[b]); if (Number.isFinite(nv)) { e.cn[b] = (e.cn[b] || 0) + 1; e.vals[b] = Number.isFinite(cur) ? cur + (nv - cur) / e.cn[b] : nv; } } } }
       rc++;
     }
     $('#meta').textContent = `join: indexing right ${rc.toLocaleString()}…`;

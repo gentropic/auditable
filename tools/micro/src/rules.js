@@ -3,7 +3,7 @@
 // paint / a calc / a ramp) a layer is in. The rule list is drawn by src/props-style.js.
 import { colorSelOf } from './ramp.js';
 import { stageGate, _propOpen, _propFor, _propTab, renderProps } from './props.js';
-import { paintActiveCol, applyPaintPalette } from './paint.js';
+import { paintActiveCol, applyPaintPalette, paintBlankVis } from './paint.js';
 import { calcDisplayCol, calcSelOf, ensureCalcDisplay } from './calc.js';
 import { S, requestRender } from './state.js';
 import { markProjectDirty } from './project.js';
@@ -63,7 +63,7 @@ export function syncRuleMode(L) {
   } else if (pc) {
     S.renderer.setLayerRuleMode(L.id, true);
     applyPaintPalette(L, pc);
-    S.renderer.setLayerCatVisibility(L.id, null);            // no per-value eyes on paint (v1)
+    S.renderer.setLayerCatVisibility(L.id, paintBlankVis(L, pc));   // no per-value eyes on paint (v1) — only no-data's hide
     S.renderer.setLayerRuleCodes(L.id, pc.codes);
   } else if (L.viewOf != null && (viewCatName(L) || L._viewCat)) {
     // a view classing by its own column: its codes substitute for the chunks'
