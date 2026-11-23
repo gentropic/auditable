@@ -27,6 +27,7 @@ import { resultToLayer } from './analysis-ui.js';
 import { openInputsDialog, openRoutineWindow } from './routine-ui.js';
 import { compoPage, writePages, addResourceFrame } from './composer.js';
 import { openValidation } from './validation.js';
+import { openContact } from './contact.js';
 import { checkParams, runTool, tableTSV, toolDef } from './tools.js';
 import { newRunRecord, writeRecord, outputEntry, localDate, findBaseline, recordTable, stepFingerprints, stepKey, findCachedStep, copyOutputs, runRoot, setRunRoot } from './runrecord.js';
 import { openRunsWindow, acceptRunAsk } from './runs-ui.js';
@@ -43,7 +44,7 @@ const $ = (s) => document.querySelector(s);
 // Files are the interface: comment them, copy them between projects, drop one
 // in and Scan folder picks it up. Series reference layers BY NAME; a missing
 // primary gets a one-question remap — that prompt IS the parameter binding. ──
-export const RECIPE_TOOLS = { gt: 'grade-tonnage', swath: 'swath', stats: 'stats', xy: 'scatter / Q-Q', figure: 'figure', compo: 'composer page', calccols: 'calc columns', solid: 'by solid / surface', validation: 'validation', resource: 'resource table', export: 'export', modelqa: 'model QA', dhqa: 'drillhole QA', meshqa: 'mesh QA', xtab: 'cross-tab', composite: 'composite', pairing: 'pairing', shell: 'grade shell', join: 'spatial join', reconcile: 'reconcile', sections: 'section series', routine: 'routine' };
+export const RECIPE_TOOLS = { gt: 'grade-tonnage', swath: 'swath', stats: 'stats', xy: 'scatter / Q-Q', figure: 'figure', compo: 'composer page', calccols: 'calc columns', solid: 'by solid / surface', validation: 'validation', contact: 'contact analysis', resource: 'resource table', export: 'export', modelqa: 'model QA', dhqa: 'drillhole QA', meshqa: 'mesh QA', xtab: 'cross-tab', composite: 'composite', pairing: 'pairing', shell: 'grade shell', join: 'spatial join', reconcile: 'reconcile', sections: 'section series', routine: 'routine' };
 
 export const recipeSlug = (name) => (String(name).toLowerCase().replace(/[^\w.-]+/g, '-').replace(/^-+|-+$/g, '') || 'recipe');
 
@@ -343,7 +344,7 @@ export function routineLineInfo(st, i, P) {
   ];
   return {
     text: `${i + 1}. ${label}${wrote.length ? '  ' + wrote.join('  ') : '   (opens only)'}${st.recipe && !rc ? '   ⚠ recipe not found' : ''}`,
-    openable: ['gt', 'swath', 'stats', 'xy', 'interp'].includes(tool) && !(st.recipe && !rc),
+    openable: ['gt', 'swath', 'stats', 'xy', 'interp', 'contact'].includes(tool) && !(st.recipe && !rc),
   };
 }
 
@@ -934,6 +935,12 @@ export function runRecipe(r, andRun = true, runOpts = null) {
       } catch (e) { $('#meta').textContent = `composer page: ${e.message}`; }
     })();
     return;
+  }
+  if (r.tool === 'contact') {                              // the window, configured (Run on “Run”)
+    const want = (r.params.series && r.params.series[0] && r.params.series[0].layer) || r.params.layer;
+    const Lc = S.layers.find((x) => x.name === want || (x.label || x.name) === want);
+    if (!Lc) { $('#meta').textContent = `recipe “${r.name}”: layer “${want}” isn't loaded`; return; }
+    openContact(Lc, { cfg: r.params, run: andRun }); return;
   }
   if (r.tool === 'validation') {                           // the window, configured (it runs on open)
     const M = S.layers.find((x) => x.name === r.params.model || (x.label || x.name) === r.params.model);

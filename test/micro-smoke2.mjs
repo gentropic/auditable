@@ -8207,6 +8207,15 @@ if (take()) {
   const fixed = await p.evaluate(() => { const w = document.querySelector('.fwin[data-routine]'); return { text: [...w.querySelectorAll('.yf-wrap textarea')].pop().value, msgs: [...w.querySelectorAll('.yf-msg')].map((x) => x.textContent) }; });
   chk(`yaml box: one click corrects the key (${JSON.stringify(fixed.text.split('\n').pop())}; ${fixed.msgs.length} message(s) left)`,
     /\n {2}cutoffs: 0\.5$/.test(fixed.text) && !fixed.msgs.some((m) => /cutofs/.test(m)));
+  // Shift+Tab on a bare caret dedents and leaves a CARET (it used to select the line — the next key replaced it)
+  await ta.click(); await p.keyboard.press('Control+End'); await p.keyboard.press('Shift+Tab');
+  const dd = await p.evaluate(() => { const t = [...document.querySelectorAll('.fwin[data-routine] .yf-wrap textarea')].pop(); return { last: t.value.split('\n').pop(), s: t.selectionStart, e: t.selectionEnd }; });
+  await p.keyboard.press('Tab');                                     // indent it back
+  // a bare `key:` while typing is read as empty for the check — no red parse error hiding the others
+  await p.keyboard.press('End'); await p.keyboard.type('\nnCut:'); await p.waitForTimeout(700);
+  const bare = await p.evaluate(() => { const w = document.querySelector('.fwin[data-routine]'), hl = [...w.querySelectorAll('.yf-hl')].pop(); return { bad: [...hl.querySelectorAll('.yf-bad')].map((x) => x.textContent).join('|'), msgs: [...w.querySelectorAll('.yf-msg')].map((x) => x.textContent) }; });
+  chk(`yaml box: Shift+Tab on a caret dedents and keeps a caret (${JSON.stringify(dd)})`, dd.last === 'cutoffs: 0.5' && dd.s === dd.e);
+  chk(`yaml box: a bare "key:" being typed is no parse error (marks: “${bare.bad}”; ${bare.msgs.length} message(s))`, !/nCut/.test(bare.bad) && !bare.msgs.some((m) => /nCut/.test(m) && /line/.test(m) && !/no setting/.test(m)));
   await p.close();
 }
 
@@ -8371,6 +8380,75 @@ if (take()) {
   const et = await readGTiff(new Uint8Array(Buffer.from(epsg.b64, 'base64')));
   chk(`grid export GeoTIFF of a layer in EPSG:32723 writes GeoKeys (${et.geo.crs}), no CRS note`, et.geo.crs === 'EPSG:32723' && !epsg.notes.some((n) => /CRS/.test(n)));
   await pb.close();
+}
+
+if (take()) {
+  // ═══ contact analysis: a known contact down four holes (ORE FE 60 over WASTE FE 20 at 20 m), a
+  //     block model and a closed box whose bottom is the same boundary — the binned means, metres,
+  //     signed distances, the routine tool's table + values, the window, ⇥ column ═══
+  const pg = await mkPage('sm2contact');
+  const r = await pg.evaluate(async () => {
+    const m = window._micro, f = (t, n) => new File([t], n);
+    const collar = ['BHID,X,Y,Z'], survey = ['BHID,AT,AZ,DIP'], assay = ['BHID,FROM,TO,FE,LITO'];
+    for (let h = 0; h < 4; h++) {
+      const id = `H${h + 1}`; collar.push(`${id},${h * 50},0,100`); survey.push(`${id},0,0,-90`, `${id},40,0,-90`);
+      for (let d = 0; d < 40; d += 2) assay.push(`${id},${d},${d + 2},${d < 20 ? 60 : 20},${d < 20 ? 'ORE' : 'WASTE'}`);
+    }
+    await m.importDrillholes({ collar: f(collar.join('\n') + '\n', 'collars.csv'), survey: f(survey.join('\n') + '\n', 'survey.csv'), intervals: f(assay.join('\n') + '\n', 'assay.csv') }, {}, 'replace');
+    const D = m.layers().find((x) => x.dh);
+    // 16 × 5 × 25 blocks of 10 × 10 × 2 m, centroids z 51…99: FE 60 above z 80, 20 below
+    const rows = ['XC,YC,ZC,FE'];
+    for (let k = 0; k < 25; k++) for (let j = 0; j < 5; j++) for (let i = 0; i < 16; i++) { const z = 51 + 2 * k; rows.push(`${i * 10},${-20 + j * 10},${z},${z > 80 ? 60 : 20}`); }
+    await m.openBlob(new Blob([rows.join('\n') + '\n']), 'blocks.csv', 'add');
+    // a closed box x −100…250, y −100…100, z 80…200: inside = above z 80 (the holes' contact depth)
+    const box = [[-100, -100, 80], [250, -100, 80], [250, 100, 80], [-100, 100, 80], [-100, -100, 200], [250, -100, 200], [250, 100, 200], [-100, 100, 200]];
+    const faces = [[1, 3, 2], [1, 4, 3], [5, 6, 7], [5, 7, 8], [1, 2, 6], [1, 6, 5], [2, 3, 7], [2, 7, 6], [3, 4, 8], [3, 8, 7], [4, 1, 5], [4, 5, 8]];
+    await m.openBlob(new Blob([box.map((v) => `v ${v.join(' ')}`).join('\n') + '\n' + faces.map((t) => `f ${t.join(' ')}`).join('\n') + '\n']), 'box.obj', 'add');
+    const B = m.layers().find((x) => x.name === 'blocks.csv'), M = m.layers().find((x) => x.name === 'box.obj');
+    const out = {};
+    const t1 = await m.runTool('contact', { mode: 'downhole', layer: D.name, series: [{ col: 'FE' }], domain: 'LITO', domA: 'ORE', domB: 'WASTE', binWidth: 2, maxDist: 10 }, { routine: true });
+    out.down = { cols: t1.table.columns.join(','), key: t1.table.key.join(','), rows: t1.table.rows, v: t1.values };
+    out.oneWay = (await m.runTool('contact', { mode: 'downhole', layer: D.name, series: [{ col: 'FE' }], domain: 'LITO', domA: 'ORE', direction: 'BtoA', binWidth: 2, maxDist: 10 })).values.contacts;
+    out.noBins = m.checkParams('contact', { mode: 'downhole', layer: D.name, series: [{ col: 'FE' }], domain: 'LITO', domA: 'ORE' }, { routine: true }).errors.join('; ');
+    const md = await m.meshDistanceOf(M);
+    out.d = [md.at(0, 0, 79), md.at(0, 0, 81.5), md.at(0, 0, 300), md.at(260, 0, 100), md.at(0, 0, 50, 10)].map((x) => (Number.isFinite(x) ? x : null));
+    const t2 = await m.runTool('contact', { mode: 'surface', series: [{ layer: 'blocks.csv', col: 'FE' }, { layer: D.name, col: 'FE' }], surface: 'box.obj', binWidth: 2, maxDist: 10 }, { routine: true });
+    out.surf = { cols: t2.table.columns.join(','), rows: t2.table.rows, v: t2.values, closed: md.closed };
+    const h = m.openContact(D, { mode: 'downhole' });
+    await new Promise((z) => setTimeout(z, 200));
+    h.st.domain = 'LITO'; h.st.domA = 'ORE'; h.st.domB = ''; h.st.binWidth = 2; h.st.maxDist = 6;
+    await h.run();
+    out.win = { sub: h.win.sub.textContent, readout: h.win.el.querySelector('.ct-readout').textContent, tsv: (h.win.el._tableTSV && h.win.el._tableTSV()) || '', recipe: h.win.el._recipe().tool };
+    await m.writeDistanceColumn(B, M, 'DIST_BOX');
+    const col = B.paintCols.find((c) => c.name === 'DIST_BOX');
+    out.col = col ? [col.fvalues[0], col.fvalues[16 * 5 * 15], col.fvalues[16 * 5 * 24], col.nonnull] : null;
+    // an OPEN surface: the box's bottom alone, wound facing DOWN — the side is by its normals, flipped to face up
+    await m.openBlob(new Blob(['v -100 -100 80\nv 250 -100 80\nv 250 100 80\nv -100 100 80\nf 1 3 2\nf 1 4 3\n']), 'plane.obj', 'add');
+    const P = m.layers().find((x) => x.name === 'plane.obj'), pd = await m.meshDistanceOf(P);
+    out.open = { closed: pd.closed, sides: pd.sideNames.join('/'), d: [pd.at(0, 0, 79), pd.at(0, 0, 83), pd.at(300, 0, 80)] };
+    return out;
+  });
+  const near = (a, b) => Math.abs(a - b) < 1e-6;
+  const dn = r.down;
+  chk(`contact (down-hole): table ${dn.cols} keyed ${dn.key}; 10 bins of 2 m to ±10 m, ORE ${dn.rows.filter((x) => x[2] < 0).map((x) => x[3]).join('/')} | WASTE ${dn.rows.filter((x) => x[2] > 0).map((x) => x[3]).join('/')}, 8 m and 4 intervals a bin`,
+    dn.cols === 'series,side,center,mean,metres,count' && dn.key === 'series,side,center' && dn.rows.length === 10
+    && dn.rows.every((x) => near(x[3], x[2] < 0 ? 60 : 20) && near(x[4], 8) && x[5] === 4 && x[1] === (x[2] < 0 ? 'ORE' : 'WASTE'))
+    && near(dn.rows[0][2], -9) && near(dn.rows[9][2], 9));
+  chk(`contact (down-hole) values: step ${dn.v.step}, ratio ${dn.v.ratio}, slopes ${dn.v.slope_inside}/${dn.v.slope_outside}, ${dn.v.contacts} contacts in ${dn.v.holes} holes; A-below-B finds ${r.oneWay}; a routine without bins: “${r.noBins}”`,
+    near(dn.v.step, 40) && near(dn.v.ratio, 3) && near(dn.v.slope_inside, 0) && near(dn.v.slope_outside, 0) && dn.v.contacts === 4 && dn.v.holes === 4 && r.oneWay === 0 && /binWidth/.test(r.noBins) && /maxDist/.test(r.noBins));
+  chk(`contact: signed distance to a closed box (${r.d.join(', ')}) — negative inside, blank beyond maxDist`,
+    r.surf.closed && near(r.d[0], 1) && near(r.d[1], -1.5) && near(r.d[2], 100) && near(r.d[3], 10) && r.d[4] === null);
+  const sb = r.surf.rows.filter((x) => x[0] === 'blocks·FE'), ss = r.surf.rows.filter((x) => x[0] !== 'blocks·FE');
+  chk(`contact (to a surface): blocks ${sb.length} bins of 80 blocks × 200 m³ (${sb[0] && sb[0][4]}), means ${sb.map((x) => x[3]).join('/')}; samples ${ss.length} bins of 4; step_ratio_2 ${r.surf.v.step_ratio_2}`,
+    r.surf.cols === 'series,side,center,mean,weight,count' && sb.length === 10 && sb.every((x) => near(x[3], x[2] < 0 ? 60 : 20) && near(x[4], 16000) && x[5] === 80 && x[1] === (x[2] < 0 ? 'inside' : 'outside'))
+    && ss.length === 10 && ss.every((x) => near(x[3], x[2] < 0 ? 60 : 20) && x[5] === 4 && near(x[4], 8)) && near(r.surf.v.step, 40) && near(r.surf.v.step_ratio_2, 1));
+  chk(`contact window: “${r.win.sub}” · readout “${r.win.readout}” · ⧉ table ${r.win.tsv.split('\n').length - 1} rows · recipe ${r.win.recipe}`,
+    /4 contacts in 4 holes/.test(r.win.sub) && /60 \| 20/.test(r.win.readout) && /step \+40/.test(r.win.readout) && r.win.tsv.split('\n').length - 1 === 6 && /^series\tside\tcenter/.test(r.win.tsv) && r.win.recipe === 'contact');
+  chk(`contact ⇥ column: DIST_BOX on the blocks (z 51 → ${r.col && r.col[0]}, z 81 → ${r.col && r.col[1]}, z 99 → ${r.col && r.col[2]}, ${r.col && r.col[3]} values)`,
+    r.col && near(r.col[0], 29) && near(r.col[1], -1) && near(r.col[2], -19) && r.col[3] === 2000);
+  chk(`contact: an open surface reads its side by its normals (${r.open.sides}: z 79 → ${r.open.d[0]}, z 83 → ${r.open.d[1]}, beyond its edge → ${r.open.d[2]})`,
+    !r.open.closed && r.open.sides === 'below/above' && near(r.open.d[0], -1) && near(r.open.d[1], 3) && near(Math.abs(r.open.d[2]), 50));
+  await pg.close();
 }
 
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));

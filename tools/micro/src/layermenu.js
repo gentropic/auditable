@@ -38,6 +38,7 @@ import { openModelQa } from './modelqa.js';
 import { openComposite } from './composite-ui.js';
 import { openPairing } from './pairing.js';
 import { openGradeShell } from './shells.js';
+import { openContact, isDhLayer, isBlockLayer } from './contact.js';
 import { openStructure } from './structure-ui.js';
 import { fmtSize, layerBytes } from './paths.js';
 import { CONTEXT_TRI_CAP, openMeshDoc } from './open-mesh.js';
@@ -121,6 +122,9 @@ export function layerMenu(L, x, y) {
     ...(!isView(L) && L.docs && L.docs.blockDoc ? [{ label: 'Model QA…', action: () => openModelQa(L) }] : []),
     ...(gridAxesOf(L) && !isView(L) ? [{ label: 'Block vs sample…', action: () => openPairing(L) }, { label: 'Grade shell…', action: () => openGradeShell(L) }] : []),
     ...(!isView(L) && L.dh && L.docs.dhDoc && !L.trace ? [{ label: 'Composite…', action: () => openComposite(L) }] : []),
+    // contact analysis: grade binned by distance to a domain boundary (down the holes, or to a wireframe)
+    ...(!isView(L) && isDhLayer(L) && numericColsOf(L).length ? [{ label: 'Contact plot…', action: () => openContact(L, { mode: 'downhole' }) }] : []),
+    ...(!isView(L) && (isDhLayer(L) || isBlockLayer(L)) && numericColsOf(L).length ? [{ label: 'Distance to a surface…', action: () => openContact(L, { mode: 'surface' }) }] : []),
     ...(L._filterMask ? [{ label: 'Filter → selection', action: () => filterToSelection(L) }] : []),
     ...(L._selCount ? [{ label: `Selection → column… (${L._selCount.toLocaleString()} rows)`, action: () => selectionToColumn(L) }] : []),
     { label: 'File info…', action: () => { setActiveLayer(L.id); showFileInfo(); } },
