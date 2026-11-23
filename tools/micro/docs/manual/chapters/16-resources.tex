@@ -130,14 +130,14 @@ field & meaning & default \\ \midrule
 \ui{model} & the layer & the first with a numeric column \\
 \ui{grade} & the grade column & a column named like a grade (AU, CU, FE…) \\
 \ui{cutoffs} & the cutoffs, separated by commas, spaces or semicolons; unlike the cross-tab, a comma here always separates, never a decimal comma & \code{0, 0.5, 1} \\
-\ui{grade unit} & text shown in the heading, e.g. \code{\%} or \code{g/t} & none \\
+\ui{grade unit} & the grade's unit, e.g. \code{\%}, \code{g/t} or \code{ppm}: shown in the heading and, with \ui{metal factor} blank, the source of the metal factor & none \\
 \ui{density} & a density column & a column named like one (SG, DENS…) \\
 \ui{… or constant} & the density used when no column is chosen & \code{2.7} \\
 \ui{density unit} & t/m3, kg/m3, g/cm3 or lb/ft3 & t/m3 \\
 \ui{group by} & the first category (domain, lithology) & a column named like one, else none \\
 \ui{… then by} & the second category (class) & a column named like one, else none \\
-\ui{metal factor} & metal = tonnes × grade × this & \code{1} \\
-\ui{metal unit} & text shown in the heading, e.g. \code{oz} or \code{t} & none \\
+\ui{metal factor} & metal = tonnes × grade × this: a number, or a fraction such as \code{1/31.1035}. Blank: from the grade unit, as below & blank \\
+\ui{metal unit} & text shown in the heading, e.g. \code{oz}; blank, \code{t} when the factor comes from the grade unit & none \\
 \ui{records} & \ui{all}, or \ui{filter} for the layer's current filter & all \\ \bottomrule
 \end{tabularx}
 \medskip
@@ -148,7 +148,7 @@ field & meaning & default \\ \midrule
 With the demo project open, choose \menu{File>Composer…}, then \ui{+ resource}.
 \begin{enumerate}
 \item \ui{grade} is \col{FE}, \ui{density} is \col{SG} and \ui{group by} is \col{LITO} already — the dialog guesses them from the column names. Set \ui{cutoffs} to \code{30, 50, 60}.
-\item Set \ui{grade unit} to \code{\%}, \ui{metal factor} to \code{0.01} and \ui{metal unit} to \code{t}.
+\item Set \ui{grade unit} to \code{\%}. Leave \ui{metal factor} blank: a grade in \% makes it 0.01, and the metal is in tonnes.
 \item Click \ui{Add}. For each cutoff the table lists the rock types that have tonnage above it, then a \emph{total} line. Above 60 only two are left: the hematite, and 34,080~t of itabirite grading exactly 60.
 \end{enumerate}
 \end{tryit}
@@ -163,7 +163,7 @@ Before you compare it with the cross-tab, know three differences:
 \begin{itemize}
 \item \textbf{Unestimated blocks are left out.} A block with a blank grade is in no row. There is no \emph{no grade} line; the cross-tab is where you check that.
 \item \textbf{Density is a column or a constant}, not an expression. To use \code{SG * PARTIAL}, make it a calculated column first (\cref{ch:filter}) and choose that.
-\item \textbf{Metal uses a factor you state}, not a declared unit: metal = tonnes × grade × \ui{metal factor}. Use 0.01 for a grade in \% and metal in tonnes; 0.0321507 (1 ÷ 31.1035) for g/t and troy ounces. With the factor left at 1, the metal column is the bare product. (The reconciliation factors window takes the same factor, or derives it from the grade unit when you leave it blank: \cref{sec:factors-report}.)
+\item \textbf{Metal follows the grade unit} unless you state a factor: metal = tonnes × grade × \ui{metal factor}. Left blank, the factor comes from \ui{grade unit} — \% gives 0.01 and g/t or ppm give $10^{-6}$, so the metal is in tonnes — and with no unit it is 1, the bare product. To report another unit, state the factor: \code{1/31.1035} (0.0321507) for g/t and troy ounces. The rule is the one the reconciliation factors use (\cref{sec:factors-report}), so the two never disagree about what a tonne of metal is. A factor that is not a positive number or a fraction is refused, never read as 1.
 \end{itemize}
 
 A group with no tonnage above a cutoff has no row at that cutoff; if nothing at all grades above it, the cutoff gets one row of zero tonnes with \emph{—} for the groups. When there are groups, and more than one of them appears at a cutoff, a \emph{total} row follows them: total tonnes, the tonnage-weighted grade, total metal.
@@ -215,7 +215,7 @@ The \code{xtab} report has one row per group and bin, keyed by \col{group} and \
 
 The \code{xtab} tool — not the window — also runs on a drillhole layer, weighing each interval by its length as grade–tonnage does (\cref{sec:gt-holes}). Its columns are then \col{length} (m), or \col{weighted\_length} (m·t/m³) with a density, \col{grade} (length-weighted), \col{accumulation} (grade × length) and \col{intervals}, and the value it reports is \code{intervals}. On a model opened as points an \code{xtab} step stops, as a \code{gt} step does, with \emph{no block grid — a model opened as points has no block volumes…}.
 
-A \code{resource} step needs its \code{cutoffs} in a routine or not. Its \code{density} is \code{col} (a density column) or \code{const} (a value), with an optional \code{unit} (\code{t/m3}, \code{g/cm3}, \code{kg/m3}, \code{lb/ft3}); \code{groupBy} lists up to two category columns.
+A \code{resource} step needs its \code{cutoffs} in a routine or not. Its \code{density} is \code{col} (a density column) or \code{const} (a value), with an optional \code{unit} (\code{t/m3}, \code{g/cm3}, \code{kg/m3}, \code{lb/ft3}); \code{groupBy} lists up to two category columns. \code{gradeUnit} declares the grade's unit (\code{pct} or \code{\%}, \code{g/t}, \code{ppm}…) and, with \code{metalFactor} left out, gives the metal factor as the window does; a stated \code{metalFactor} — a number, since YAML has no fractions — wins. The factor used is written into the step's resolved settings either way (\cref{ch:records}).
 
 The \code{resource} report has the columns \col{cutoff}, the group columns by their own names (\col{LITO}), \col{tonnes}, \col{grade} and \col{metal}, keyed by cutoff and groups. Its machine form leaves out the \emph{total} rows: they are presentation, they are the sum of their cutoff's rows, and a real domain called \emph{total} would collide with them.
 

@@ -5,7 +5,7 @@
 
 Reconcile (\cref{sec:joins-reconcile}) compares two models block by block and shows \emph{where} they differ. At a month-end close the question is a different one: inside the volume that was actually mined this month, do the totals agree? The long-range model said so many tonnes at such a grade; the grade-control model, drawn from blast holes, said something else; the plant weighed and assayed what it received. The \term{reconciliation factors} are the ratios between those three totals, one set per period.
 
-micro computes them from the models you already have open. The two models need not share a lattice, since only their totals are compared, and the mined volume can come from a column on the blocks, from one solid or pit surface per period, or from a filter. Production is a plain table.
+micro computes them from the models you already have open. The two models need not share a lattice, since only their totals are compared, and the mined volume can come from a column on the blocks, from one solid, pit surface or gridded surface per period, or from a filter. Production is a plain table.
 
 \section{F1, F2 and F3}\label{sec:factors-what}
 Three sources, two steps between them, and one factor for each step and for the whole chain:
@@ -51,7 +51,7 @@ Each of the two boxes, \ui{resource model} and \ui{grade control}, names a block
 setting & meaning & default \\ \midrule
 layer & a block model. The grade-control box may name the resource model itself (below) & resource: this layer; grade control: a model named like \emph{gc}, \emph{grade control} or \emph{short}, else another model, else this layer \\
 grade & a numeric column, ƒ columns included, and its unit: \ui{\%}, \ui{g/t}, \ui{ppm}, \ui{oz/t} or none & a column named like FE, AU, CU… \\
-density & \ui{ρ column} (a numeric column) or \ui{ρ constant}, in \ui{t/m³}, \ui{kg/m³} or \ui{lb/ft³}; tonnes are block volume × density & a column named like SG or DENSITY, else 2.7 \\ \bottomrule
+density & \ui{ρ column} (a numeric column) or \ui{ρ constant}, in \ui{t/m³}, \ui{g/cm³}, \ui{kg/m³} or \ui{lb/ft³}; tonnes are block volume × density & the density declared for the layer in grade–tonnage, with its unit; else a column named like SG or DENSITY; else 2.7 \\ \bottomrule
 \end{tabularx}
 \end{center}
 
@@ -64,14 +64,14 @@ The \ui{mined volume · periods} selector says how micro knows which blocks were
 
 \begin{description}
 \item[\ui{a period column}] A column on the blocks names the period each block was mined in, and a blank means not mined. It may be a painted column, a column joined from a schedule (\cref{ch:joins}), or a ƒ column (\cref{ch:filter}). It must exist on both models. The default, when the model has a column named like PERIOD, MINED, MONTH, QUARTER or PHASE.
-\item[\ui{a solid / surface per period}] One mesh per period, each with a name: a closed solid counts what is \ui{inside} it; an open surface — a pit surface as surveyed at the end of the period — counts what lies \ui{above} it, or \ui{below}. \ui{+ add period} adds a row; \ui{×} removes one. The periods are reported in the order of the list.
+\item[\ui{a solid / surface per period}] One volume per period, each with a name: a mesh layer or a gridded surface (\cref{ch:grids}). The side menu offers what the volume's shape allows, as selecting by a solid does (\cref{ch:geometry}): a closed solid counts what is \ui{inside} it (the default) or \ui{outside}; an open surface — a pit surface as surveyed at the end of the period — or a grid counts what lies \ui{above} it (the default) or \ui{below}. \ui{+ add period} adds a row; \ui{×} removes one. The periods are reported in the order of the list.
 \item[\ui{a filter (one period)}] An expression that keeps the mined blocks, such as \code{MINED == 1}, and a \ui{name} for the period.
 \item[\ui{the 3D selection (one period)}] Each model's own selection, made in the view (\cref{ch:picking}), and a name. A window only: a selection is not saved with a routine.
 \end{description}
 
 Below the selector, \ui{domain} is an optional filter on both models in any mode — \code{LITO != "WASTE"} to reconcile the ore domains only, \code{LITO = "HEMATITE"} for one of them.
 
-With volumes, a block counts by the \emph{fraction} of it inside, so a block cut by the pit wall counts in part. The fraction is measured with the same winding test as selecting by a solid (\cref{ch:geometry}), on a lattice of probe points in each block. \ui{probes} sets how many along x × y × z, freely and per axis, as in the select-by-solid dialog. The default is 2 × 2 × 2; benches cut by a pit floor want more along z than across (3 × 3 × 2 on 10 × 10 × 5~m blocks), and 1 × 1 × 1 tests only the centroid. More probes cost time — the first run measures every block against every mesh, and on a large model that is minutes, not seconds — but micro keeps the measurement on the mesh layer, so a second \ui{Run} after you add the production table or change the cutoff does not measure again.
+With volumes, a block counts by the \emph{fraction} of it inside, so a block cut by the pit wall counts in part. The fraction is measured with the same winding test as selecting by a solid (\cref{ch:geometry}), on a lattice of probe points in each block; against a grid it is the grid's own footprint sample, exact along z. \ui{probes} sets how many along x × y × z, freely and per axis, as in the select-by-solid dialog. The default is 3 × 3 × 3, as there; benches cut by a pit floor want more along z than across (3 × 3 × 2 on 10 × 10 × 5~m blocks), and 1 × 1 × 1 tests only the centroid. More probes cost time — the first run measures every block against every mesh, and on a large model that is minutes, not seconds — but micro keeps the measurement on the mesh layer, so a second \ui{Run} after you add the production table or change the cutoff does not measure again.
 
 \paragraph{Nested.} Pit phases are drawn \emph{nested}: each phase's surface holds the ones before it, and the period is the difference. Tick \ui{nested (pit phases, shells)} — it is on when the window opens — and period $k$ counts the part of volume $k$ that is not in volume $k-1$. Untick it for volumes that do not overlap, such as monthly solids from a survey; then each volume counts in full, and two volumes that overlap would count the overlap twice.
 
@@ -96,9 +96,9 @@ With volumes, a block counts by the \emph{fraction} of it inside, so a block cut
 \caption{Nested volumes in section. Each period's pit surface counts what lies above it; with \ui{nested} on, period 2 is what is above surface 2 but not above surface 1, and period 3 the same one phase down. A block cut by a surface counts by the fraction on the mined side.}\label{fig:factors-nested}
 \end{figure}
 
-\begin{caution}
-A rotated model cannot be swept on its lattice, so with volumes each of its blocks counts whole or not at all, by its centroid. The run says so: \emph{a rotated lattice — the volumes count each block by its centroid (in or out), not by its fraction}. A mesh kept in its streamed, display-only form has no triangles to test and is not offered (\cref{sec:meshes-tiers}).
-\end{caution}
+\begin{note}
+On a rotated model the volumes are swept in the model's own lattice frame, so partial blocks count partially exactly as on an axis-aligned model; against a grid, each block's probes are turned with the lattice. A mesh kept in its streamed, display-only form has no triangles to test and is not offered (\cref{sec:meshes-tiers}).
+\end{note}
 
 \subsection{Production}\label{sec:factors-production}
 The mill's numbers come from a table layer: a CSV or a spreadsheet sheet with no coordinates (\cref{ch:columns}), with a period column, tonnes, and a grade, a metal, or both. Pick it under \ui{production (mill)} and name its columns: \ui{period}, \ui{tonnes}, \ui{grade} with its unit, and \ui{metal}. micro guesses them from names like PERIOD, MONTH or QUARTER, TONNES or DRY, a grade, METAL or CONTAINED. Leave the table at \ui{— none (F1 only)} and the window computes F1 alone.
@@ -115,13 +115,13 @@ The \ui{report} section sets what is counted and how it is expressed:
 setting & meaning & default \\ \midrule
 \ui{cutoff} & blocks at or above it count, in the report unit, each model judged by its own grade. Blank or \code{none}: every block & none \\
 \ui{unit} & the report grade unit. Each source's declared unit converts into it & the model's grade–tonnage unit, if set \\
-\ui{metal ×} & metal = tonnes × grade × this. Blank: from the report unit — \% gives 0.01 and g/t gives $10^{-6}$, so the metal is in tonnes — or 1 with no unit & \ui{auto} \\
+\ui{metal ×} & metal = tonnes × grade × this: a number or a fraction such as \code{1/31.1035}. Blank: from the report unit — \% gives 0.01 and g/t gives $10^{-6}$, so the metal is in tonnes — or 1 with no unit. Anything else is marked in red and \ui{Run} refuses it & \ui{auto} \\
 \ui{metal unit} & the name of a stated factor's unit (\code{oz}, \code{lb}); shown once \ui{metal ×} is filled & — \\
 \ui{tolerance} & the band drawn about 1.0, and the limit past which a factor is marked: \code{0.1} is ±10\,\% & 0.1 \\ \bottomrule
 \end{tabularx}
 \end{center}
 
-Tonnes and grade are counted as in grade–tonnage and the resource table (\cref{ch:gt,ch:resources}): block volume × density, a blank grade left out as unestimated rather than zero, and a block with no density left out, each with a warning naming how many. For gold in g/t reported in troy ounces, set \ui{metal ×} to 0.0321507 (1 ÷ 31.1035) and \ui{metal unit} to \code{oz}.
+Tonnes and grade are counted as in grade–tonnage and the resource table (\cref{ch:gt,ch:resources}): block volume × density, a blank grade left out as unestimated rather than zero, and a block with no density left out, each with a warning naming how many. For gold in g/t reported in troy ounces, set \ui{metal ×} to \code{1/31.1035} and \ui{metal unit} to \code{oz}. The rule is shared with the resource table (\cref{ch:resources}): the same grade unit gives the same metal in both.
 
 \begin{note}
 A cutoff applies to each model's own grade, so it changes what each model counts as ore. A grade-control model that grades a few percent lower than the resource model loses blocks across the cutoff, and its tonnage factor falls further than the bias suggests. Compare factors only at the cutoff the mine actually uses, and state it.
@@ -202,7 +202,7 @@ The results row is the shared one (\cref{sec:analysis-results}). \ui{⇥ figure}
 \ui{save as recipe…} writes the setup as a recipe named after the model with \emph{factors} (\cref{ch:recipes}); running the recipe opens the window configured and runs it. The setup is also saved with the project on every \ui{Run}, and a window left open reopens with the project, reading \emph{restored — Run to compute}.
 
 \section{In a routine}\label{sec:factors-routine}
-The tool is \code{factors} (its settings: \cref{tool:factors}). A routine must state two things a window would let you leave: the \code{density} — tonnes are volume × density, and an automatic choice would move with the data — and the \code{cutoff}, a number or \code{"none"}, because a factor at another cutoff is another factor. The mined volume is a period column, volumes or a filter; a selection is refused, since it is not saved with the routine. Layers are named, and an absent \code{gc} means the model layer itself.
+The tool is \code{factors} (its settings: \cref{tool:factors}). A routine must state two things a window would let you leave: the \code{density} — tonnes are volume × density, and an automatic choice would move with the data; outside a routine, a tool call that leaves it out takes the density the layer declares in grade–tonnage — and the \code{cutoff}, a number or \code{"none"}, because a factor at another cutoff is another factor. The mined volume is a period column, volumes or a filter; a selection is refused, since it is not saved with the routine. Layers are named, and an absent \code{gc} means the model layer itself.
 
 \begin{lstlisting}[language=yaml]
 - tool: "factors"
@@ -250,7 +250,7 @@ Volumes are a list, one period each, in order:
         side: "above"
 \end{lstlisting}
 
-Note that \code{nested} is off unless you say so, in a routine. \code{probes} is a list of three, x, y and z, as for a fraction column (\cref{ch:geometry}); a single number $n$ means $n$ × $n$ × $n$, and leaving it out means 2 × 2 × 2. Each period's mesh counts among the step's inputs, so a changed surface makes the step run again rather than reuse a cached result (\cref{ch:records}).
+The settings default as the window does: \code{nested} is on unless you write \code{nested: false}, and \code{probes} left out means 3 × 3 × 3. \code{probes} is a list of three, x, y and z, as for a fraction column (\cref{ch:geometry}); a single number $n$ means $n$ × $n$ × $n$. A \code{side} left out is the volume's default — \code{inside} for a closed solid, \code{above} for an open surface or a grid — and is written into the step's resolved settings; a side the volume can't take, \code{above} on a closed solid or \code{inside} on a pit surface, stops the step: \emph{period “2027-Q1”: side “inside” doesn't fit q1.obj — an open surface takes above or below}. A \code{mesh} may name a grid layer as well as a mesh. Each period's mesh counts among the step's inputs, so a changed surface makes the step run again rather than reuse a cached result (\cref{ch:records}).
 
 The machine table is keyed by \col{period} and \col{quantity} (\code{tonnes}, \code{grade}, \code{metal}): \col{model}, \col{gc}, \col{mill}, \col{f1}, \col{f2}, \col{f3} for the period, and \col{c\_model} … \col{c\_f3} to date. The values a check reads are those of the \emph{last} period:
 

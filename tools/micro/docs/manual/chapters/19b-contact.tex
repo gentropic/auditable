@@ -48,7 +48,7 @@ A \term{soft boundary}\index{boundary!soft} is gradational: an alteration halo, 
 Real boundaries are rarely one or the other, and the bin width is part of the reading: a contact that looks soft in 10~m bins can be sharp at 1~m. Choose bins near the scale of the estimate's blocks or composites, since that is the scale at which the estimate will treat the boundary.
 
 \section{Down the holes: Contact plot…}\label{sec:contact-downhole}
-\ui{Contact plot…} is on the right-click menu of a drillhole layer with a numeric column. It needs a text column of domains on the intervals — a lithology, a domain code, a painted category column, or a text ƒ column — and it finds the contacts in that column, hole by hole.
+\ui{Contact plot…} is on the right-click menu of a drillhole layer with a numeric column. It needs a column of domains on the intervals — a lithology, a painted category column, a text ƒ column, or a numeric domain code — and it finds the contacts in that column, hole by hole.
 
 \begin{tryit}
 In the demo project:
@@ -112,7 +112,7 @@ When any contact is skipped for either reason, the subtitle counts them: \emph{(
 \subsection{The settings}
 \begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
 setting & meaning & default \\ \midrule
-\ui{column} & the domain column: a text column of the intervals (not the hole id), a painted category column, or a text ƒ column & one named like LITO, DOMAIN or ROCK, else the first \\
+\ui{column} & the domain column: a text column of the intervals (not the hole id, FROM or TO), a painted category column or a text ƒ column, listed first; then the numeric ones, for domains coded as numbers (1 = ore, 2 = waste) & one named like LITO, DOMAIN or ROCK, else the first \\
 \ui{A} & the domain whose contacts you test; plotted on the negative side & one named like ore, itabirite or hematite, else the commonest \\
 \ui{B} & the domain on the positive side, or \ui{any other}: every domain next to A, pooled & any other \\
 direction & \ui{both directions (pooled)}, \ui{A above B (down the hole)}, or \ui{A below B} & both \\
@@ -121,8 +121,9 @@ direction & \ui{both directions (pooled)}, \ui{A above B (down the hole)}, or \u
 \ui{width} & the bin width (m) & 2 \\
 \ui{max dist} & how far from the contact each side is walked (m) & 20 \\
 \ui{near bins} & how many bins each side make “just inside” and “just outside” in the readout — live & 1 \\
-series & a drillhole layer and a numeric column; the weight multiplies each interval's length; the filter decides which intervals count for the value & the first numeric column \\
-\ui{scope} & \ui{all} · \ui{filt} · \ui{sel} (\cref{sec:analysis-scope}) & all \\ \bottomrule
+series & a drillhole layer and a numeric column with its declared unit; the weight multiplies each interval's length; the filter decides which intervals count for the value & the first numeric column; the unit the layer declares in grade–tonnage \\
+\ui{scope} & \ui{all} · \ui{filt} · \ui{sel} (\cref{sec:analysis-scope}) & all \\
+\ui{unit} & the report unit of the means; each series' declared unit converts into it, as in grade–tonnage and the swath — live & the layer's grade–tonnage unit \\ \bottomrule
 \end{tabularx}
 \medskip
 
@@ -158,9 +159,10 @@ The down-hole plot finds its boundaries in the logging. Often the boundary that 
 \begin{itemize}
 \item To a \textbf{closed solid}, the sign comes from the winding number — the same inside test as selecting by a solid (\cref{ch:geometry}). Inside is negative.
 \item To an \textbf{open surface}, micro first winds every triangle consistently and turns the surface so its normals face up on average; then below is negative and above positive. A surface that is mostly vertical — a fault — keeps the side its normals face, and the sides are named \emph{side −} and \emph{side +}.
+\item To a \textbf{gridded surface} (\cref{ch:grids}) — a topography, a weathering front kept as a DEM — the distance is \emph{vertical}: the record's elevation minus the surface's at the same x and y. Below is negative. Records off the grid are left out.
 \end{itemize}
 
-The distance is to the \emph{nearest point} of the mesh, in 3D, so it is a true distance whatever the drilling's angle.
+To a mesh, the distance is to the \emph{nearest point} of the mesh, in 3D, so it is a true distance whatever the drilling's angle. To a grid it is measured straight down, which is what a bench sees on a gently dipping surface; on a steep one it is longer than the true distance by one over the cosine of the dip. For a steep boundary, measure to a mesh of it instead.
 
 \begin{figure}[htbp]\centering
 \begin{tikzpicture}[font=\sffamily\footnotesize, x=10mm, y=10mm]
@@ -190,7 +192,7 @@ The distance is to the \emph{nearest point} of the mesh, in 3D, so it is a true 
 \caption{Signed distance: the length to the nearest point of the mesh, negative inside a closed solid or below an open surface.}\label{fig:contact-signed}
 \end{figure}
 
-The surface menu lists the mesh layers whose triangles micro holds — not a large mesh kept in its streamed, display-only form, which keeps no triangles to measure against (\cref{sec:meshes-tiers}); open it in its exact form — nor a grid drawn as relief. In the demo the list holds the three pit phases and the ore shell, but not the topography. After a \ui{Run}, the subtitle says which kind the mesh was: \emph{(closed: − inside)}, or for an open surface \emph{(open: − below)}.
+The surface menu lists the mesh layers whose triangles micro holds — not a large mesh kept in its streamed, display-only form, which keeps no triangles to measure against (\cref{sec:meshes-tiers}); open it in its exact form — and the grid layers, marked \emph{(grid)}. In the demo the list holds the three pit phases, the ore shell and the topography. After a \ui{Run}, the subtitle says which kind the surface was: \emph{(closed: − inside)}, or for an open surface or a grid \emph{(open: − below)}.
 
 \subsection{The model against its samples}
 Each series has its own layer, and here a series can be a drillhole layer or a block model. That is the point of this flavor: put the samples and the model on one chart, against the same surface. If the samples show a step at the boundary and the model shows a ramp, the estimate has smeared grade across a boundary its data call hard.
@@ -236,14 +238,16 @@ Those that differ from the down-hole flavor:
 \medskip
 \begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
 setting & meaning & default \\ \midrule
-surface & the mesh layer to measure against: a closed solid or an open surface & the last listed \\
-\ui{width} & the bin width (m) & 5 from a block model, 2 from a drillhole layer \\
-\ui{max dist} & how far from the mesh, each side, a record still counts (m) & 50, or 20 \\
+surface & what to measure against: a closed solid, an open surface or a gridded surface & the last mesh listed \\
+\ui{width} & the bin width (m) & 5 \\
+\ui{max dist} & how far from the surface, each side, a record still counts (m) & 50 \\
 series & a drillhole layer or a block model each; the weight multiplies an interval's length or a block's volume & the layer's first numeric column \\ \bottomrule
 \end{tabularx}
 \medskip
 
-\ui{near bins}, the scope and the ranges are as down the hole. The distances are computed once per layer, mesh and reach, and kept while the window is open: changing a weight, a filter or the bin width and pressing \ui{Run} again re-bins without measuring again.
+The bins follow the flavor until you set them: 2~m to 20~m down the hole, 5~m to 50~m to a surface, whichever layer the window was opened on. Switching flavor resets them to the new flavor's pair; once you have typed a width or a reach, they stay as you set them. A routine that leaves them out — outside a routine they may be left out — gets the same pair.
+
+\ui{near bins}, the scope, the unit and the ranges are as down the hole. The distances are computed once per layer, mesh and reach, and kept while the window is open: changing a weight, a filter or the bin width and pressing \ui{Run} again re-bins without measuring again.
 
 \section{Reading the result}\label{sec:contact-reading}
 The plot puts distance on the horizontal axis, with the negative side's name at the left of the axis label and the positive side's at the right: \emph{← ITABIRITE | WASTE →}, or \emph{← inside | outside →}. A vertical line marks the contact. The bars, on the right axis, belong to the first series: meters per bin down the hole, volume — or volume × weight — to a surface.
@@ -312,7 +316,7 @@ The tool is \code{contact} (its settings: \cref{tool:contact}). A routine must s
   say: "the model keeps half the samples' step at the shell"
 \end{lstlisting}
 
-The down-hole settings are \code{domain}, \code{domA}, \code{domB} (blank for any other), \code{direction} (\code{both}, \code{AtoB} for A above B, \code{BtoA}), \code{minRun} and \code{maxGap}; the surface flavor names its mesh in \code{surface}. \code{near} sets the bins that make just inside and just outside, as the window's \ui{near bins} does.
+The down-hole settings are \code{domain}, \code{domA}, \code{domB} (blank for any other), \code{direction} (\code{both}, \code{AtoB} for A above B, \code{BtoA}), \code{minRun} and \code{maxGap}; the surface flavor names its mesh, or a grid, in \code{surface}. Each series may declare its grade's \code{unit}, and \code{gradeUnit} is the unit the table's \col{mean} and the values are reported in, as in grade–tonnage. \code{near} sets the bins that make just inside and just outside, as the window's \ui{near bins} does.
 
 The table is keyed by \col{series}, \col{side} and \col{center}: \col{series}, \col{side} (the domain's name, or \emph{inside}, \emph{outside}, \emph{below}, \emph{above}), \col{center}, \col{mean}, then \col{metres} down the hole or \col{weight} to a surface, and \col{count}. The values are those of the first series:
 

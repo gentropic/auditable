@@ -209,7 +209,7 @@ The fields under the format change with it; the dialog shows only those that app
 setting & meaning & default \\ \midrule
 \ui{band} & which band of a multi-band GeoTIFF to write; shown only when there is more than one & the band shown \\
 \ui{nodata} & the value an empty node is written as; \code{nan} is allowed for the binary formats. Not offered for Surfer, which always blanks with its own 1.70141e38 & the grid's own no-data value if it is an ordinary number, else −9999 \\
-\ui{decimals} & text formats: digits after the point, or \ui{exact (float32, shortest)} — the shortest text that reads back as the very same 32-bit value & exact \\
+\ui{decimals} & text formats: \code{exact} — the shortest text that reads back as the very same 32-bit value — or a whole number of digits after the point, 0 to 12, as the routine tool takes; anything else is marked and refused & exact \\
 \ui{compression} & GeoTIFF: \ui{deflate + predictor 3 (smallest)}, \ui{deflate}, or \ui{none} & deflate + predictor 3 \\
 \ui{layout} & GeoTIFF: \ui{strips} or \ui{tiles 256×256} & strips \\
 \ui{delimiter} & XYZ: \ui{comma (.csv)}, \ui{tab (.txt)} or \ui{space (.xyz)} & comma \\

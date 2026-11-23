@@ -13,7 +13,7 @@ A model can be internally consistent and still not honor its data. The windows o
 Samples are point support and blocks are block support. Their variances differ, and a small global difference in grade between them can be real. Neither window can tell you an estimate is right; they tell you where it disagrees with its data, and how much, so that you can decide whether the disagreement is support, smoothing, or a mistake.
 \end{note}
 
-Both windows predate the shared design of \cref{ch:analysis} and are simpler: no scopes, no series, and their setup is not saved with the project. Both are also tools, so a routine can run them and gate on the result (\cref{sec:validation-routine}).
+Both windows are simpler than those of \cref{ch:analysis}: no scopes and no series. The validation window keeps its setup with the project and saves it as a recipe; the pairing window's setup is not saved. Both are also tools, so a routine can run them and gate on the result (\cref{sec:validation-routine}).
 
 \section{Validate vs drillholes}\label{sec:validation-window}
 Make the block model the active layer, press \key{⌘K} and type \code{validate}. The command is listed when the active layer is a block model with a block grid and at least one drillhole layer is loaded. It is in the palette only, not on the layer's menu.
@@ -35,22 +35,26 @@ In the demo project:
 
 A bias of −23\% would condemn a real model. In the demo it says something else: the whole model was compared with samples taken only at the ore lens. The last step of the box is the answer — inside the drilled domain the model is 4\% above its data. \Cref{sec:validation-domain} explains why, and \cref{sec:validation-reading} reads the rest.
 
-The controls are a single row under the readout.
+The controls are two rows under the readout.
 
 \medskip
 \begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
 control & meaning & default \\ \midrule
 drillhole layer & which samples to use & the first drillhole layer \\
 \ui{model: …} & the model's grade column & a column name the two layers share, if any \\
-\ui{sample: …} & the samples' grade column & the same \\
+\ui{sample: …} & the samples' grade column — ƒ and stored columns included & the same \\
 \ui{cell} & the decluster cell size, in meters; blank = automatic & automatic \\
 domain & one expression applied to the model \emph{and} the samples (\cref{sec:validation-domain}); blank = everything & blank \\
-\ui{X} \ui{Y} \ui{Z} & the swath's axis & X \\
+\ui{X} \ui{Y} \ui{Z} & the swath's axis; another axis returns \ui{band} and \ui{offset} to automatic & X \\
+\ui{band} & the swath's band width along the axis, in meters; blank = automatic (\cref{sec:validation-reading}) & automatic \\
+\ui{offset} & where the bands start along the axis, in meters; blank = the low end of the model's extent & automatic \\
+\ui{±} & the tolerance for the global bias: \code{0.1} marks a bias beyond ±10\,\% & 0.1 \\
+\ui{save as recipe…} & the setup as a recipe, its band width stated as a routine needs it (\cref{ch:recipes}) & \\
 \ui{⤓ png} \ui{⧉ copy} \ui{⇥ figure} & the plot, out (\cref{sec:analysis-results}) & \\ \bottomrule
 \end{tabularx}
 \medskip
 
-Every change recomputes. There is no scope and no selection: with the domain blank, the window compares the whole model with all the samples of the chosen layer.
+Every change recomputes, and the setup is kept with the project: the window reopens as you left it. There is no scope and no selection: with the domain blank, the window compares the whole model with all the samples of the chosen layer. The automatic band width and offset are shown in their fields, greyed, so you can see what a blank means before you fill it.
 
 \section{Validating inside a domain}\label{sec:validation-domain}
 A model's mean is taken over every block it holds. Most models extend well past the drilling — into waste, into extrapolated ground at the margins — and those blocks pull the mean toward whatever the margin is. The samples' mean is taken only where holes were drilled. Declustering reweights the samples there are; it can't supply samples where none were taken. A whole-model mean and a declustered sample mean therefore measure two different volumes, and the bias between them is not a property of the estimate.
@@ -67,7 +71,7 @@ blank (the whole model) & 24.72 & 31.98 & 951 & −22.7\% \\
 
 The −22.7\% was the waste nobody drilled. Inside the domain the model sits four percent above its declustered data, which is a number about the estimate. Validate each domain the estimate was built in — \code{LITO = "HEMATITE"} reads +1.1\% on the demo, over only 16 samples — and read the whole-model figure as a statement about the drilling's coverage, not about the grades. Whether the domains should have been estimated apart in the first place — whether the boundary between them is hard — is the question of \cref{ch:contact}.
 
-The names the expression uses must exist on both layers; a model and its assays usually share \col{LITO} or \col{DOMAIN}. A name one side lacks matches nothing there, and when no samples are left the subtitle says so: \emph{not enough samples (0) with a value in “FE”}. Each record is judged by its own value — a block by its \col{LITO}, an interval by the \col{LITO} of its log — so a sample logged one way inside a block coded another stays on its own side. Finding such disagreements is the pairing's job (\cref{sec:validation-pairing}).
+The names the expression uses must exist on both layers; a model and its assays usually share \col{LITO} or \col{DOMAIN}. Derived columns count on both sides alike — a ƒ column, a painted domain flag, a stored estimate — so a domain painted on the intervals and the same domain coded on the blocks under one name validate together. A name one side lacks matches nothing there, and when no samples are left the subtitle says so: \emph{not enough samples (0) with a value in “FE”}. Each record is judged by its own value — a block by its \col{LITO}, an interval by the \col{LITO} of its log — so a sample logged one way inside a block coded another stays on its own side. Finding such disagreements is the pairing's job (\cref{sec:validation-pairing}).
 
 \section{Declustering}\label{sec:validation-decluster}
 Drilling is not random. Holes are closest together where the grade is best — infill follows discovery — so high-grade ground is over-represented among the samples, and their plain average, the \term{naïve mean}, is higher than the deposit's. \term[declustering]{Declustering} gives each sample a weight that undoes this: samples in crowded places count for less.
@@ -108,13 +112,13 @@ value & how it is computed \\ \midrule
 \ui{model} & the volume-weighted mean of the model's grade, assembled from the swath's bands: each band's mean over its blocks that have a grade, weighted by the band's volume — sub-blocks at their own size. Density is not used \\
 \ui{samples (decl)} & the declustered mean of the samples \\
 \ui{naïve} & the plain mean of the samples \\
-\ui{global bias} & model ÷ declustered samples − 1, in percent. Positive: the model is higher than its data. Highlighted when it exceeds ±10\% \\ \bottomrule
+\ui{global bias} & model ÷ declustered samples − 1, in percent. Positive: the model is higher than its data. Highlighted when it exceeds the tolerance, \ui{±} (±10\% unless you change it) \\ \bottomrule
 \end{tabularx}
 \medskip
 
 The gap between \ui{naïve} and \ui{samples (decl)} measures how clustered the drilling is. If the model's mean sits near the naïve mean rather than the declustered one, the estimate has probably inherited the clustering — too little search restriction, or a nearest-sample method — and overstates the deposit.
 
-\paragraph{The swath.} Bands along the chosen axis; by default about 25 of them, never narrower than a block, starting at the low end of the model's extent. In each band the blue line is the model's volume-weighted mean and the orange line is the mean of the samples that fall in the band, using their declustering weights. The bars count the samples per band.
+\paragraph{The swath.} Bands along the chosen axis; by default about 25 of them, never narrower than a block, starting at the low end of the model's extent — or the width and start you type in \ui{band} and \ui{offset}. In each band the blue line is the model's volume-weighted mean and the orange line is the mean of the samples that fall in the band, using their declustering weights. The bars count the samples per band.
 
 Read the lines against the bars. Where there are many samples, the two lines should track each other, the sample line wobbling more. A band with three samples proves nothing. A run of well-sampled bands where the model sits consistently on one side of the samples is a local bias, and the axis tells you where to look; \cref{ch:swath} has the tools for that.
 
@@ -255,7 +259,7 @@ The tools are \code{validation} and \code{pairing}. Both report \emph{values} �
   say: "blocks not over-smoothed"
 \end{lstlisting}
 
-The settings of both tools are in \cref{tool:validation,tool:pairing}. A \code{validation} step must state \code{bandW}, the swath's band width; \code{cell} left out is the automatic, minimum-mean cell; \code{filter} is the domain, its inner quotes escaped as YAML requires inside a double-quoted string. On the demo both checks pass: \code{val.bias\_pct} is +4.4 with the example's \code{cell: 100} (+4.3 with the automatic cell). Leave out the \code{filter} line and the first check fails, at −26.5, for the reason \cref{sec:validation-domain} gives.
+The settings of both tools are in \cref{tool:validation,tool:pairing}. A \code{validation} step must state \code{bandW}, the swath's band width along \code{axis}, one number in meters; \code{off}, where the bands start, is 0 when it is left out; \code{cell} left out is the automatic, minimum-mean cell; \code{filter} is the domain, its inner quotes escaped as YAML requires inside a double-quoted string. On the demo both checks pass: \code{val.bias\_pct} is +4.4 with the example's \code{cell: 100} (+4.3 with the automatic cell). Leave out the \code{filter} line and the first check fails, at −26.5, for the reason \cref{sec:validation-domain} gives.
 
 The \code{validation} step's values are \code{model\_mean}, \code{samples\_declustered}, \code{samples\_naive}, \code{bias\_pct}, \code{samples} (how many) and \code{cell} (the cell used). Its table is the swath, keyed by \col{center}: \col{center}, \col{model\_mean}, \col{model\_volume}, \col{sample\_mean} and \col{sample\_count}.
 
