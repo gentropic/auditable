@@ -112,6 +112,45 @@ export function gtRows(scan, cuts, gradeUnit) {
   return { rows, names, weighted };
 }
 
+// the chart spec — the window draws it, a composer chart frame is made again from it.
+// o: { nCut, cutoffs?, gradeUnit, ranges? }
+export function gtChartSpec(scan, o) {
+  if (!scan || !scan.series.length) return null;
+  const weighted = scan.series.some((se) => se.weighted);
+  const cuts = Array.isArray(o.cutoffs) && o.cutoffs.length ? o.cutoffs : gtCuts(scan.series, o.nCut, (se) => gradeUnitFactor(se.s.unit, o.gradeUnit));
+  if (!cuts) return null;
+  const gl = o.gradeUnit === 'pct' ? '%' : o.gradeUnit;
+  const spec = { xLabel: `cutoff${gl ? ` (${gl})` : ''}`, leftLabel: weighted ? 'tonnage (t)' : 'volume (m³)', rightLabel: `mean grade${gl ? ` (${gl})` : ''}`, series: [], ...rangesOf(o) };
+  const multi = scan.series.length > 1 && new Set(scan.series.map((se) => se.s.layerId)).size > 1;
+  scan.series.forEach((se, i) => {
+    const f = gradeUnitFactor(se.s.unit, o.gradeUnit), Lx = layerById(se.s.layerId);
+    const nm = multi ? `${(Lx ? (Lx.label || Lx.name) : '').replace(/\.[^.]*$/, '')}·${se.s.col}` : se.s.col;
+    const tPts = [], gPts = [];
+    for (const c of cuts) { const [t, tg] = gtAbove(se, c / f); tPts.push([c, t]); gPts.push([c, t > 0 ? (tg / t) * f : NaN]); }
+    const color = se.s.color || SERIES_COLORS[i % SERIES_COLORS.length];
+    spec.series.push({ name: `${nm} · t`, color, axis: 'left', kind: 'line', data: tPts });
+    spec.series.push({ name: `${nm} · grade`, color, axis: 'right', kind: 'line', data: gPts });
+  });
+  return spec;
+}
+// the human table (the window's copy, a composer table frame): a row per cutoff, the series side by side
+export function gtHumanTSV(scan, o) {
+  const weighted = scan.series.some((se) => se.weighted);
+  const cuts = Array.isArray(o.cutoffs) && o.cutoffs.length ? o.cutoffs : gtCuts(scan.series, o.nCut, (se) => gradeUnitFactor(se.s.unit, o.gradeUnit));
+  if (!cuts) return null;
+  const gl = o.gradeUnit === 'pct' ? '%' : o.gradeUnit, tU = weighted ? 't' : 'm³';
+  const { rows, names } = gtRows(scan, cuts, o.gradeUnit);
+  const head = [`cutoff${gl ? ` (${gl})` : ''}`];
+  names.forEach((nm) => head.push(`${nm} ${tU} ≥`, `${nm} grade${gl ? ` (${gl})` : ''}`, o.gradeUnit ? `${nm} metal (t)` : `${nm} grade·${tU}`));
+  const lines = [head.join('\t')], ns = names.length;
+  cuts.forEach((c, ci) => {
+    const row = [c];
+    for (let k = 0; k < ns; k++) { const r = rows[ci * ns + k]; row.push(r.amount, Number.isFinite(r.grade) ? r.grade : '', Number.isFinite(r.grade) ? r.metal : ''); }
+    lines.push(row.join('\t'));
+  });
+  return lines.join('\n');
+}
+
 export function openGradeTonnage(L, ropts) {
   if (!L || !gridAxesOf(L)) { $('#meta').textContent = 'grade-tonnage: needs a regular block model'; return; }
   const ex = _gtWins.get(L.id); if (ex) { if (!ropts) { focusWindow(ex.win.el); return; } ex.win.close(); }   // a recipe replaces the open window
@@ -160,22 +199,8 @@ export function openGradeTonnage(L, ropts) {
       win._spec = null; win.el._gtSpec = null; return;
     }
     const weighted = st.scan.series.some((se) => se.weighted);
-    const cuts = gtCuts(st.scan.series, st.nCut, (se) => gradeUnitFactor(se.s.unit, st.gradeUnit));
-    if (!cuts) { win.sub.textContent = 'no data'; plotChart(cv, { series: [] }); win._spec = null; win.el._gtSpec = null; return; }
-    const gl = guLabel();
-    const spec = { xLabel: `cutoff${gl ? ` (${gl})` : ''}`, leftLabel: weighted ? 'tonnage (t)' : 'volume (m³)', rightLabel: `mean grade${gl ? ` (${gl})` : ''}`, series: [], ...rangesOf(st) };
-    const multi = st.scan.series.length > 1 && new Set(st.scan.series.map((se) => se.s.layerId)).size > 1;
-    for (const se of st.scan.series) {
-      const f = gradeUnitFactor(se.s.unit, st.gradeUnit), Lx = layerById(se.s.layerId);
-      const nm = multi ? `${(Lx ? (Lx.label || Lx.name) : '').replace(/\.[^.]*$/, '')}·${se.s.col}` : se.s.col;
-      const tPts = [], gPts = [];
-      for (const c of cuts) {
-        const [t, tg] = gtAbove(se, c / f);                // axis units → this series' native grade
-        tPts.push([c, t]); gPts.push([c, t > 0 ? (tg / t) * f : NaN]);
-      }
-      spec.series.push({ name: `${nm} · t`, color: se.s.color, axis: 'left', kind: 'line', data: tPts });
-      spec.series.push({ name: `${nm} · grade`, color: se.s.color, axis: 'right', kind: 'line', data: gPts });
-    }
+    const spec = gtChartSpec(st.scan, st);
+    if (!spec) { win.sub.textContent = 'no data'; plotChart(cv, { series: [] }); win._spec = null; win.el._gtSpec = null; return; }
     win.sub.textContent = `${st.scope !== 'all' ? st.scope + ' · ' : ''}${weighted ? 'tonnes' : 'count'} · ${st.nCut} cutoffs · ${st.scan.series.reduce((s2, x) => s2 + x.n, 0).toLocaleString()} rows`;
     plotChart(cv, spec); win._spec = spec; win.el._gtSpec = spec;
   };
@@ -200,20 +225,7 @@ export function openGradeTonnage(L, ropts) {
   // copy the computed numbers: cutoff | per-series tonnes/grade/metal (TSV)
   const tableTSV = () => {
     if (!st.scan || !st.scan.series.length) return null;
-    const weighted = st.scan.series.some((se) => se.weighted);
-    const cuts = gtCuts(st.scan.series, st.nCut, (se) => gradeUnitFactor(se.s.unit, st.gradeUnit));
-    if (!cuts) return null;
-    const gl = guLabel(), tU = weighted ? 't' : 'm³';
-    const { rows, names } = gtRows(st.scan, cuts, st.gradeUnit);   // the same rows the tool reports
-    const head = [`cutoff${gl ? ` (${gl})` : ''}`];
-    names.forEach((nm) => head.push(`${nm} ${tU} ≥`, `${nm} grade${gl ? ` (${gl})` : ''}`, st.gradeUnit ? `${nm} metal (t)` : `${nm} grade·${tU}`));
-    const lines = [head.join('\t')], ns = names.length;
-    cuts.forEach((c, ci) => {
-      const row = [c];
-      for (let k = 0; k < ns; k++) { const r = rows[ci * ns + k]; row.push(r.amount, Number.isFinite(r.grade) ? r.grade : '', Number.isFinite(r.grade) ? r.metal : ''); }
-      lines.push(row.join('\t'));
-    });
-    return lines.join('\n');
+    return gtHumanTSV(st.scan, st);
   };
   const seriesRow = (s, i) => {
     const box = document.createElement('div'); box.className = 'sw-ser';

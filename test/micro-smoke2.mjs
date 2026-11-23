@@ -7118,14 +7118,14 @@ if (take()) {
     const t0 = Date.now();
     M_.runRoutine({ name: 'fix', tool: 'routine', params: { steps: [
       { tool: 'compo', figure: 'F', book: 'atlas/b.pdf', dpi: 72 },
-      { tool: 'xy', layer: 'm.csv', mode: 'scatter', x: 'FE', y: 'FE', scope: 'selection', as: 'xy_sel' },
+      { tool: 'stats', with: { layer: 'm.csv', cols: ['FE2'] }, as: 'st2' },
       { tool: 'figure', out: 'figs/f.png' },
       { tool: 'compo', figure: 'F', book: 'atlas/b.pdf', dpi: 72 },
     ] } });
     out.stopMeta = await waitMeta(/STOPPED/, 60000); out.stopMs = Date.now() - t0;
     out.stopIcons = [...(document.querySelector('.fwin[data-routine-run]') || document.createElement('div')).querySelectorAll('.rw-state')].map((x) => x.textContent).join('');
     document.querySelectorAll('.fwin:not([data-routine-run])').forEach((w) => { const c = w.querySelector('.fwin-head button:last-child'); if (c && !w.dataset.routineRun && /scatter/.test(w.textContent)) c.click(); });
-    await window.micro.select(id, [0, 1, 2, 3, 4, 5]);
+    M_.applyCalcCols(L, [{ name: 'FE2', expr: 'FE * 2', ty: 'number' }]);   // the fix: the column the step wanted
     const rb = [...document.querySelectorAll('.fwin[data-routine-run] button')].find((b) => b.textContent === 'Retry step'); if (!rb) return out; rb.click();
     out.doneMeta = await waitMeta(/routine “fix” — \d+ steps? run/, 90000);
     out.doneIcons = [...(document.querySelector('.fwin[data-routine-run]') || document.createElement('div')).querySelectorAll('.rw-state')].map((x) => x.textContent).join('');
@@ -7135,7 +7135,7 @@ if (take()) {
     out.png = await read('figs/f.png').then((f) => f.size, () => 0);
     const { localDate } = await import('/tools/micro/src/recipes.js');
     { let rd = null; for await (const [k, h] of (await dir.getDirectoryHandle('runs')).entries()) if (k.startsWith(localDate()) && k.endsWith(' fix')) rd = k;
-      out.report = rd ? await read(`runs/${rd}/xy_sel.tsv`).then((f) => f.size, () => 0) : 0; }
+      out.report = rd ? await read(`runs/${rd}/st2.tsv`).then((f) => f.size, () => 0) : 0; }
     document.querySelectorAll('.fwin').forEach((w) => w.remove());
     // B. an invalid calc column fails the step, naming it
     M_.runRoutine({ name: 'badcalc', tool: 'routine', params: { steps: [{ tool: 'calccols', layer: 'm.csv', cols: [{ name: 'BAD', expr: 'FE +* 2' }] }] } });
@@ -7163,7 +7163,7 @@ if (take()) {
     return out;
   });
   chk(`ROUTINE FIX: a refused step fails at once with the window's reason (${r.stopMs} ms, “${r.stopMeta.slice(0, 120)}”, ${r.stopIcons})`,
-    /STOPPED at step 2/.test(r.stopMeta) && /selection/.test(r.stopMeta) && r.stopMs < 20000 && r.stopIcons === '✓✗··');
+    /STOPPED at step 2/.test(r.stopMeta) && /FE2/.test(r.stopMeta) && r.stopMs < 20000 && r.stopIcons === '✓✗··');
   chk(`ROUTINE FIX: Retry carries on with the same run — the book keeps the page made before the stop (${r.pages} pages; “${r.doneMeta.slice(0, 120)}”, ${r.doneIcons})`,
     r.pages === 2 && r.doneIcons === '–✓✓✓');
   chk(`ROUTINE FIX: the figure step is awaited and writes its out: (figs/f.png ${r.png} B); the report files under the LOCAL date (${r.report} B)`, r.png > 1000 && r.report > 0);
@@ -7371,12 +7371,12 @@ if (take()) {
     out.dirs = (await runDirs()).filter((k) => k.includes('month-end'));
     // a failing run (xy on a selection there is none of), then Retry once there is one
     document.querySelector('#meta').textContent = '';
-    M_.runRoutine({ name: 'flaky', tool: 'routine', params: { steps: [{ tool: 'xy', layer: 'm.csv', mode: 'scatter', x: 'FE', y: 'FE', scope: 'selection', as: 'xy' }] } });
+    M_.runRoutine({ name: 'flaky', tool: 'routine', params: { steps: [{ tool: 'stats', with: { layer: 'm.csv', cols: ['FE3'] }, as: 'st3' }] } });   // fails at run time: no FE3 yet
     await waitMeta(/STOPPED/);
     const fd = (await runDirs()).find((k) => k.endsWith(' flaky'));
     out.failed = JSON.parse(await readText(`runs/${fd}/run.json`)).status;
     document.querySelectorAll('.fwin:not([data-routine-run])').forEach((w) => w.remove());
-    await window.micro.select(L.id, [0, 1, 2, 3]);
+    M_.applyCalcCols(L, [{ name: 'FE3', expr: 'FE * 3', ty: 'number' }]);
     document.querySelector('#meta').textContent = '';
     [...document.querySelectorAll('.fwin[data-routine-run] button')].find((b) => b.textContent === 'Retry step').click();
     await waitMeta(/routine “flaky” — \d+ steps? run/);
@@ -7707,6 +7707,51 @@ if (take()) {
   chk(`REST: grade shell — one mesh after two runs (${JSON.stringify(r.shell)}); spatial join — one column after two runs (${JSON.stringify(r.join)})`, r.shell.tris > 0 && r.shell.layers === 1 && r.join.cols.filter((n) => n !== 'FE').length === 1);
   chk(`REST: reconcile — one Δ layer after two runs, mean Δ −2 (${JSON.stringify(r.rec)})`, r.rec.layers === 1 && r.rec.matched === 144 && Math.abs(r.rec.mean_delta + 2) < 1e-9);
   chk(`REST: the section series as a routine step — a zip of sheets in the run's folder (${JSON.stringify(r.sec)})`, r.sec.status === 'ok' && r.sec.sheets === 3 && /\/sections\.zip$/.test(r.sec.out || '') && r.sec.bytes > 1000);
+  await p.close();
+}
+
+// ── §121: ↻ REFRESH WITHOUT WINDOWS, and scatter / Q-Q as a tool — a composer chart frame and table
+//     frame made from a GT recipe are made again by the tool directly: no window opened, the user's
+//     own GT window left open, the chart the window's own; scatter's r and Q-Q's quantile ratios
+//     come back as values. ──
+if (take()) {
+  const p = await mkPage('sm2refresh');
+  await p.evaluate(async () => {
+    const rows = ['XC,YC,ZC,FE,FE2']; for (let k = 0; k < 3; k++) for (let j = 0; j < 6; j++) for (let i = 0; i < 8; i++) rows.push([5 + i * 10, 5 + j * 10, 5 + k * 10, (40 + i + j).toFixed(1), (80 + 2 * (i + j)).toFixed(1)].join(','));
+    await window._micro.openBlob(new File([rows.join('\n') + '\n'], 'm.csv'), 'm.csv', 'replace');
+  });
+  await p.waitForFunction(() => window._micro.layers()[0] && window._micro.layers()[0].docs.blockDoc, null, { timeout: 20000 });
+  const r = await p.evaluate(async () => {
+    const M_ = window._micro, m = window.micro, out = {}, wait = (ms) => new Promise((res) => setTimeout(res, ms));
+    const L = M_.layers()[0], cfg = { series: [{ layer: 'm.csv', col: 'FE' }], nCut: 5 };
+    // the user's GT window, run — its spec is the reference
+    M_.openGradeTonnage(L, { cfg, run: true });
+    for (let t = 0; t < 100 && !document.querySelector('.fwin') ?._gtSpec; t++) await wait(100);
+    const gw = [...document.querySelectorAll('.fwin')].find((w) => w._gtSpec);
+    const ref = gw && JSON.stringify(gw._gtSpec.series.map((s) => s.data));
+    // a figure with a chart frame and a table frame from the same recipe
+    const ed = M_.openComposer('refresh');
+    ed.addFrame({ kind: 'chart', box: [10, 10, 100, 70], content: { spec: null }, source: { app: 'micro', recipe: { tool: 'gt', name: 'g', params: cfg } } });
+    ed.addFrame({ kind: 'table', box: [10, 90, 100, 50], content: { columns: [], rows: [], title: 'GT' }, source: { app: 'micro', recipe: { tool: 'gt', name: 'g', params: cfg } } });
+    const wins = () => [...document.querySelectorAll('.fwin')].filter((w) => /grade-tonnage/.test(w.textContent)).length;
+    let opened = 0; const mo = new MutationObserver((ms) => { for (const x of ms) for (const n of x.addedNodes) if (n.classList && n.classList.contains('fwin') && /grade-tonnage/.test(n.textContent || '')) opened++; }); mo.observe(document.body, { childList: true, subtree: true });
+    const before = wins();
+    const n = await M_.refreshData(M_.currentFigure());
+    mo.disconnect();
+    const frames = M_.currentFigure().doc.frames, ch = frames.find((f) => f.kind === 'chart'), tb = frames.find((f) => f.kind === 'table');
+    out.refresh = { n, opened, winsBefore: before, winsAfter: wins(), same: ch.content.spec && JSON.stringify(ch.content.spec.series.map((s) => s.data)) === ref, tableRows: tb.content.rows.length, tableHead: tb.content.columns.slice(0, 2) };
+    // scatter / Q-Q
+    const sc = await m.runTool('xy', { layer: 'm.csv', mode: 'scatter', x: 'FE', y: 'FE2' });
+    out.scatter = { n: sc.values.n, r: sc.values.r, cols: sc.table.columns.join() };
+    const qq = await m.runTool('xy', { mode: 'qq', a: { layer: 'm.csv', col: 'FE' }, b: { layer: 'm.csv', col: 'FE2' } });
+    out.qq = { p50: qq.values.p50_ratio, rows: qq.table.rows.length };
+    try { await m.runTool('xy', { mode: 'qq', a: { layer: 'm.csv', column: 'FE' }, b: { layer: 'm.csv', col: 'FE' } }); } catch (e) { out.qqBad = e.message; }
+    return out;
+  });
+  chk(`REFRESH: chart + table frames made again by the tool — no window opened (${JSON.stringify(r.refresh)}); the chart is the window's own`,
+    r.refresh.n === 2 && r.refresh.opened === 0 && r.refresh.winsAfter === r.refresh.winsBefore && r.refresh.winsBefore === 1 && r.refresh.same && r.refresh.tableRows > 0);
+  chk(`XY: scatter r (${JSON.stringify(r.scatter)}), Q-Q ratios (${JSON.stringify(r.qq)}); a misspelled side setting names the real one (“${r.qqBad}”)`,
+    r.scatter.n === 144 && Math.abs(r.scatter.r - 1) < 1e-9 && r.scatter.cols === 'x,y' && r.qq.rows === 101 && Math.abs(r.qq.p50 - 2) < 0.05 && /no setting “column” — did you mean “col”/.test(r.qqBad || ''));
   await p.close();
 }
 

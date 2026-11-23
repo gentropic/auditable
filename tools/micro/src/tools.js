@@ -17,6 +17,8 @@ import { layerTableHeader, schemaExt, layerRecords, attrRowCountOf } from './rec
 import { runExport, exportColumnsOf } from './export.js';
 import { modelQa, qaFindings } from './modelqa.js';
 import { scanXtabOf, xtabModel, xtabValue } from './xtab.js';
+import { scanScatterOf, scanQqOf, xySpec, xyTSV, QQ_P, BINS as XY_BINS } from './xyplot.js';
+import { scatterR } from './scanner.js';
 import { compositeToLayer } from './composite-ui.js';
 import { pairBlocksSamples } from './pairing.js';
 import { gradeShell } from './shells.js';
@@ -30,11 +32,11 @@ import { meshQa } from '../../../ext/geometry/index.js';
 import { meshVertexData } from './records.js';
 import { numericColsOf, computeResourceTable } from './analysis.js';
 import { validationRun } from './validation.js';
-import { gradeUnitFactor, niceStep, scopeMask, scopeMissing } from './analysis-ui.js';
+import { gradeUnitFactor, niceStep, scopeMask, scopeMissing, rangesFromCfg } from './analysis-ui.js';
 import { gtCuts } from './scanner.js';
-import { scanGTSeries, gtRows } from './gt.js';
+import { scanGTSeries, gtRows, gtChartSpec, gtHumanTSV } from './gt.js';
 import { statsScan } from './stats.js';
-import { scanSwath, swathRows } from './swath.js';
+import { scanSwath, swathRows, binSwath, swathChartSpec, swathHumanTSV } from './swath.js';
 import { validate, compileBool } from '../../../ext/expr/index.js';
 
 export const TOOLS = new Map();
@@ -55,6 +57,8 @@ const lev = (a, b) => {
   return d[m][n];
 };
 export function nearest(word, names) {
+  const w = word.toLowerCase(), pre = names.find((n) => { const m = n.toLowerCase(); return Math.min(m.length, w.length) >= 3 && (m.startsWith(w) || w.startsWith(m)); });
+  if (pre) return pre;                                       // column → col, cutoff → cutoffs
   let best = null, bd = Infinity;
   for (const n of names) { const d = lev(word, n); if (d < bd) { bd = d; best = n; } }
   return best && bd <= Math.max(2, Math.floor(word.length / 3)) ? best : null;
@@ -136,6 +140,29 @@ export function tableTSV(table) {
   return [table.columns.join('\t'), ...table.rows.map((r) => r.map(cell).join('\t'))].join('\n') + '\n';
 }
 
+// the direction a swath window shows (raw.axis) with its band width / offset — the window's
+// automatic ones when the recipe left them unset (about 25 bands from the extent's low end)
+function swathView(scan, raw) {
+  const di = Math.max(0, Math.min(scan.dirs.length - 1, +raw.axis || 0));
+  const at = (o) => (o == null ? undefined : Array.isArray(o) ? o[di] : o[di] != null ? o[di] : o[String(di)]);
+  const [lo, hi] = scan.range[di];
+  const bw = +at(raw.bandW) || Math.max(niceStep((hi - lo) / 25) || 1, 1e-6), off = at(raw.off) != null ? +at(raw.off) : lo;
+  const b = binSwath(scan, di, bw, off);
+  return b.keys.length ? { di, bw, off, b } : null;
+}
+
+// a recipe made again without its window — the composer's ↻ refresh: { spec, tsv } as the window
+// would have drawn and copied them (null: this tool has no chart / human table)
+export async function rerunToolRecipe(recipe) {
+  const def = toolDef(recipe.tool);
+  if (!def || !(def.chart || def.human)) return null;
+  const { errors, params } = checkParams(recipe.tool, recipe.params || {});
+  if (errors.length) throw new Error(`${def.label}: ${errors.join('; ')}`);
+  const state = await def.scan(params, {});
+  const raw = { ...(recipe.params || {}) };
+  return { spec: def.chart ? def.chart(state, raw) : null, tsv: def.human ? def.human(state, raw) : null };
+}
+
 // ── helpers shared by the tools ──
 const layerNamed = (name) => {
   const L = S.layers.find((x) => x.name === name) || S.layers.find((x) => (x.label || x.name) === name);
@@ -164,7 +191,7 @@ const SERIES = {
 const seriesSt = (p) => p.series.map((s) => {
   const L = layerNamed(s.layer || p.layer);
   columnCheck(L, s.col, 'series column');
-  return { layerId: L.id, col: String(s.col), unit: s.unit || '', weight: s.weight != null ? String(s.weight) : '', filter: s.filter || '' };
+  return { layerId: L.id, col: String(s.col), unit: s.unit || '', weight: s.weight != null ? String(s.weight) : '', filter: s.filter || '', color: s.color || null };
 });
 
 // ── grade-tonnage ─────────────────────────────────────────────────────────────────────────────────
@@ -181,6 +208,10 @@ registerTool('gt', {
     ranges: { type: 'any', display: true },
   },
   outputs: { key: ['series', 'cutoff'] },
+  // what the window draws and copies — a composer frame is made again from these (raw: the saved
+  // params, display settings included)
+  chart: (scan, raw) => gtChartSpec(scan, { nCut: raw.nCut || 40, cutoffs: raw.cutoffs, gradeUnit: raw.gradeUnit || '', ranges: raw.ranges ? rangesFromCfg(raw.ranges) : null }),
+  human: (scan, raw) => gtHumanTSV(scan, { nCut: raw.nCut || 40, cutoffs: raw.cutoffs, gradeUnit: raw.gradeUnit || '' }),
   check(p, errs) { if (!p.layer && p.series && p.series.some((s) => !s.layer)) errs.push('layer: a series without its own layer needs the tool’s layer'); },
   async scan(p, ctx) {
     const series = seriesSt(p);
@@ -218,6 +249,7 @@ registerTool('stats', {
     scope: { type: 'enum', values: ['all', 'filtered', 'selection'], default: 'all', routine: ['all'], why: 'a selection isn’t saved with the routine — use filter' },
   },
   outputs: { key: ['group', 'column'] },
+  human: (scan, raw) => { const gb = raw.groupBy || ''; return [[...(gb ? [gb] : []), 'column', 'n', 'mean', 'std', 'min', 'q25', 'median', 'q75', 'max'].join('\t'), ...scan.rows.map((r) => [...(gb ? [r.group] : []), r.col, r.n, r.mean, r.std, r.min, r.q25, r.q50, r.q75, r.max].join('\t'))].join('\n'); },
   check(p, errs) { if (!Array.isArray(p.cols) || !p.cols.length || p.cols.some((c) => typeof c !== 'string')) errs.push('cols: a list of column names'); },
   async scan(p, ctx) {
     const L = layerNamed(p.layer), nums = numericColsOf(L);
@@ -252,6 +284,8 @@ registerTool('swath', {
     axis: { type: 'any', display: true }, bars: { type: 'any', display: true }, locate: { type: 'any', display: true }, zebra: { type: 'any', display: true }, ranges: { type: 'any', display: true },
   },
   outputs: { key: ['series', 'direction', 'center'] },
+  chart: (scan, raw) => { const v = swathView(scan, raw); return v ? swathChartSpec(scan, v.b, { di: v.di, bw: v.bw, off: v.off, bars: raw.bars || 'count', gradeUnit: raw.gradeUnit || '', ranges: raw.ranges ? rangesFromCfg(raw.ranges) : null, multi: S.layers.length > 1 || scan.series.length > 1 }) : null; },
+  human: (scan, raw) => { const v = swathView(scan, raw); return v ? swathHumanTSV(scan, v.di, v.bw, v.off, raw.gradeUnit || '') : null; },
   check(p, errs) { if (!p.layer && p.series && p.series.some((s) => !s.layer)) errs.push('layer: a series without its own layer needs the tool’s layer'); },
   async scan(p, ctx) {
     const series = seriesSt(p);
@@ -633,4 +667,56 @@ registerTool('sections', {
     return { ...r, name: toolDef('sections').writesFile(p) };
   },
   shape(r, p) { return { table: null, file: { name: r.name, blob: r.blob }, values: { sheets: r.sheets.length }, resolved: { ...p }, warnings: [] }; },
+});
+
+// ── scatter / Q-Q: two columns against each other, or two sides' quantiles ─────────────────────
+const SIDE_KEYS = ['layer', 'col', 'filter', 'scope'];
+registerTool('xy', {
+  label: 'scatter / Q-Q',
+  params: {
+    layer: { type: 'layer', doc: 'the layer (scatter)' },
+    mode: { type: 'enum', values: ['scatter', 'qq'], default: 'scatter' },
+    x: { type: 'column', doc: 'scatter: the x column' }, y: { type: 'column', doc: 'scatter: the y column' },
+    filter: { type: 'expr', default: '' },
+    scope: { type: 'enum', values: ['all', 'filtered', 'selection'], default: 'all', routine: ['all'], why: 'a selection isn’t saved with the routine — use filter' },
+    logX: { type: 'bool', default: false }, logY: { type: 'bool', default: false }, qqLog: { type: 'bool', default: false },
+    line11: { type: 'bool', default: false, doc: 'draw the 1:1 line (scatter)' },
+    a: { type: 'any', doc: 'Q-Q: the x side { layer, col, filter, scope }' }, b: { type: 'any', doc: 'Q-Q: the y side { layer, col, filter, scope }' },
+  },
+  outputs: { key: [] },
+  check(p, errs, { routine }) {
+    if (p.mode === 'scatter') { if (!p.layer) errs.push('layer: required for a scatter'); if (!p.x || !p.y) errs.push('x, y: the two columns of a scatter'); }
+    else for (const k of ['a', 'b']) {
+      const s = p[k];
+      if (s && typeof s === 'object') for (const key of Object.keys(s)) if (!SIDE_KEYS.includes(key)) errs.push(`${k}: no setting “${key}”${nearest(key, SIDE_KEYS) ? ` — did you mean “${nearest(key, SIDE_KEYS)}”?` : ''}`);
+      if (!s || typeof s !== 'object' || !s.layer || !s.col) { errs.push(`${k}: a side { layer, col, filter?, scope? }`); continue; }
+      if (routine && s.scope && s.scope !== 'all') errs.push(`${k}.scope: a routine allows "all" (a selection isn’t saved with the routine — use filter)`);
+    }
+  },
+  async scan(p, ctx) {
+    if (p.mode === 'qq') {
+      const side = (s) => { const L = layerNamed(s.layer); columnCheck(L, s.col, 'column'); return { layerId: L.id, col: s.col, filter: s.filter || '', scope: s.scope || 'all' }; };
+      return scanQqOf({ a: side(p.a), b: side(p.b) }, ctx.progress, ctx.signal);
+    }
+    const L = layerNamed(p.layer); columnCheck(L, p.x, 'x'); columnCheck(L, p.y, 'y'); scopeCheck(p.scope, [L]);
+    return scanScatterOf(L, { x: p.x, y: p.y, filter: p.filter, scope: p.scope, logX: p.logX, logY: p.logY }, ctx.progress, ctx.signal);
+  },
+  chart: (sc, raw) => xySpec(sc, { line11: !!raw.line11, qqLog: !!raw.qqLog }),
+  human: (sc) => xyTSV(sc),
+  shape(sc, p) {
+    if (sc.mode === 'qq') {
+      const at = (q, pp) => q[QQ_P.findIndex((x) => Math.abs(x - pp) < 1e-9)], ratio = (pp) => { const a = at(sc.qa, pp); return a ? at(sc.qb, pp) / a : NaN; };
+      return { table: { columns: ['p', 'x', 'y'], key: ['p'], rows: QQ_P.map((pp, i) => [pp, sc.qa[i], sc.qb[i]]), units: {} },
+        values: { n_x: sc.na, n_y: sc.nb, mean_x: sc.ma, mean_y: sc.mb, p10_ratio: ratio(0.1), p50_ratio: ratio(0.5), p90_ratio: ratio(0.9) }, resolved: { ...p }, warnings: [] };
+    }
+    const acc = sc.acc, r = scatterR(acc.m), rows = [];
+    let table;
+    if (!acc.over) { for (let k = 0; k < acc.pts.length; k += 2) rows.push([acc.pts[k], acc.pts[k + 1]]); table = { columns: ['x', 'y'], key: [], rows, units: {} }; }
+    else {
+      const [x0, x1, y0, y1] = sc.range, ex = (u, l) => (l ? 10 ** u : u);
+      for (let j = 0; j < XY_BINS; j++) for (let i = 0; i < XY_BINS; i++) { const c = acc.grid[j * XY_BINS + i]; if (!c) continue; rows.push([ex(x0 + (x1 - x0) * i / XY_BINS, sc.logX), ex(x0 + (x1 - x0) * (i + 1) / XY_BINS, sc.logX), ex(y0 + (y1 - y0) * j / XY_BINS, sc.logY), ex(y0 + (y1 - y0) * (j + 1) / XY_BINS, sc.logY), c]); }
+      table = { columns: ['x_from', 'x_to', 'y_from', 'y_to', 'count'], key: ['x_from', 'y_from'], rows, units: {} };
+    }
+    return { table, values: { n: acc.n, r, ...(acc.offLog ? { off_log: acc.offLog } : {}) }, resolved: { ...p }, warnings: acc.offLog ? [`${acc.offLog} pair${acc.offLog === 1 ? '' : 's'} ≤ 0 left off the log axis`] : [] };
+  },
 });

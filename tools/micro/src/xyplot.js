@@ -101,6 +101,81 @@ function axisRange(row, log) {
   return a < b ? [a, b] : [a - 0.5, b + 0.5];
 }
 
+// the chart spec of a scan (st: line11, qqLog) — the window draws it; ⇥ figure and ↻ refresh use it
+export function xySpec(sc, st) {
+  if (sc.mode === 'scatter') {
+    const spec = { xr: sc.range.slice(0, 2), yr: sc.range.slice(2), logX: sc.logX, logY: sc.logY, xLabel: sc.x, yLabel: sc.y, line11: !!st.line11 };
+    if (sc.acc.over) spec.heat = { grid: sc.acc.grid, B: BINS }; else spec.points = sc.acc.pts;
+    return spec;
+  }
+  const qa = sc.qa, qb = sc.qb, all = [...qa, ...qb].filter((v) => !st.qqLog || v > 0);
+  if (!all.length) return null;
+  const T = (v) => (st.qqLog ? Math.log10(v) : v);
+  let lo = Math.min(...all.map(T)), hi = Math.max(...all.map(T)); if (lo === hi) { lo -= 0.5; hi += 0.5; }
+  const qq = QQ_P.map((pp, i) => [qa[i], qb[i], [0.1, 0.25, 0.5, 0.75, 0.9].some((m) => Math.abs(m - pp) < 1e-9)]);
+  return { xr: [lo, hi], yr: [lo, hi], logX: !!st.qqLog, logY: !!st.qqLog, xLabel: sc.labelA, yLabel: sc.labelB, line11: true, qq };
+}
+export { QQ_P, BINS };
+
+export async function scanScatterOf(L, st, onProgress = () => {}, signal = null) {   // st: { x, y, filter, scope, logX, logY }
+  const h = layerTableHeader(L), schema = schemaExt(L, h), mask = scopeMask(st, L), filter = (st.filter || '').trim() || null;
+  const N = attrRowCountOf(L) || 0;
+  // pass 1: the ranges (and the digests a log axis needs)
+  const s1 = await statsScan(L, { cols: [st.x, st.y], groupBy: null, weight: null, filter }, mask, (d, n2, w) => onProgress(Math.floor(d / 2), N, w), signal);
+  const row = (c) => s1.rows.find((r) => r.col === c);
+  const rx = axisRange(row(st.x), st.logX), ry = axisRange(row(st.y), st.logY);
+  if (!rx || !ry) throw new Error(st.logX || st.logY ? 'nothing positive to put on a log axis' : 'no pairs with both values');
+  const p = { bins: BINS, keep: KEEP, range: [...rx, ...ry], logX: st.logX, logY: st.logY };
+  // pass 2: the pairs
+  let acc;
+  if (canScanColumnar(L)) {
+    const params = { ...p, x: quoteIdent(st.x), y: quoteIdent(st.y), filter };
+    const { parts } = await scanColumnar(L, { kernel: 'scatter', params, exprs: [params.x, params.y, filter], mask, signal, keepZone: zoneKeeper(L, { mask }),
+      onProgress: (d, n2, w) => onProgress(Math.floor(N / 2 + d / 2), N, w) });
+    acc = scatterMerge(parts, p);
+  } else {
+    const fx = compileValue(quoteIdent(st.x), schema, { decimal: '.' }), fy = compileValue(quoteIdent(st.y), schema, { decimal: '.' });
+    const ff = filter ? compileBool(filter, schema, { decimal: '.' }) : null;
+    acc = scatterAccumulator(p); let seen = 0;
+    for await (const { f: r, rec } of layerRecords(L)) {
+      seen++; if ((seen & 0xffff) === 0) { checkAbort(signal); onProgress(Math.floor(N / 2 + seen / 2), N, 'on this page'); await new Promise((z) => setTimeout(z)); }
+      if (mask && !(rec < mask.length && mask[rec])) continue;
+      if (ff && !ff(r)) continue;
+      const x = numOf(fx(r)), y = numOf(fy(r));
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      scatterAdd(acc, p, x, y);
+    }
+  }
+  return { mode: 'scatter', x: st.x, y: st.y, logX: st.logX, logY: st.logY, range: p.range, acc };
+}
+
+export async function scanQqOf(st, onProgress = () => {}, signal = null) {   // st: { a, b } sides { layerId, col, filter, scope }
+  const one = async (s, k) => {
+    const Lx = layerById(s.layerId); if (!Lx) throw new Error(`side ${k}: the layer is gone`);
+    const mask = s.scope === 'all' ? null : scopeMask(s, Lx);
+    if (s.scope !== 'all' && !mask) throw new Error(`side ${k}: ${scopeMissing(s, Lx) || 'no ' + s.scope}`);
+    const res = await statsScan(Lx, { cols: [s.col], groupBy: null, weight: null, filter: (s.filter || '').trim() || null }, mask, onProgress, signal);
+    const r = res.rows[0]; if (!r || !r.n) throw new Error(`side ${k}: no values`);
+    return { q: QQ_P.map((p) => quantileFromCentroids(r.centroids, r.count, p)), n: r.n, mean: r.mean, label: `${s.col} · ${(Lx.label || Lx.name).replace(/\.[^.]+$/, '')}${s.filter ? ' · ' + s.filter : ''}` };
+  };
+  const A = await one(st.a, 'x'), B = await one(st.b, 'y');
+  return { mode: 'qq', qa: A.q, qb: B.q, na: A.n, nb: B.n, ma: A.mean, mb: B.mean, labelA: A.label, labelB: B.label };
+}
+
+// the numbers: Q-Q → p · x quantile · y quantile; scatter → the non-empty cells (x from–to,
+// y from–to, count) or, when every pair is kept, the pairs
+export function xyTSV(sc) {
+  if (sc.mode === 'qq') return ['p\t' + sc.labelA + '\t' + sc.labelB, ...QQ_P.map((p, i) => `${p}\t${sc.qa[i]}\t${sc.qb[i]}`)].join('\n');
+  if (!sc.acc.over) { const o = [`${sc.x}\t${sc.y}`]; for (let k = 0; k < sc.acc.pts.length; k += 2) o.push(`${sc.acc.pts[k]}\t${sc.acc.pts[k + 1]}`); return o.join('\n'); }
+  const [x0, x1, y0, y1] = sc.range, ex = (u, l) => (l ? 10 ** u : u), o = [`${sc.x} from\t${sc.x} to\t${sc.y} from\t${sc.y} to\tcount`];
+  for (let j = 0; j < BINS; j++) for (let i = 0; i < BINS; i++) {
+    const c = sc.acc.grid[j * BINS + i]; if (!c) continue;
+    const ua = x0 + (x1 - x0) * i / BINS, ub = x0 + (x1 - x0) * (i + 1) / BINS, va = y0 + (y1 - y0) * j / BINS, vb = y0 + (y1 - y0) * (j + 1) / BINS;
+    o.push([ex(ua, sc.logX), ex(ub, sc.logX), ex(va, sc.logY), ex(vb, sc.logY), c].join('\t'));
+  }
+  return o.join('\n');
+}
+
 export function openXyPlot(L, ropts) {
   if (!L || !layerTableHeader(L)) { $('#meta').textContent = 'scatter / Q-Q: needs a table-backed layer'; return null; }
   const ex = _xyWins.get(L.id); if (ex) { if (!ropts) { focusWindow(ex.win.el); return ex; } ex.win.close(); }
@@ -134,20 +209,15 @@ export function openXyPlot(L, ropts) {
     const sc = st.scan;
     if (!sc || sc.mode !== st.mode) { drawXY(cv, null); win.el._xy = null; return; }
     if (sc.mode === 'scatter') {
-      const spec = { xr: sc.range.slice(0, 2), yr: sc.range.slice(2), logX: sc.logX, logY: sc.logY, xLabel: sc.x, yLabel: sc.y, line11: st.line11 };
-      if (sc.acc.over) spec.heat = { grid: sc.acc.grid, B: BINS }; else spec.points = sc.acc.pts;
-      drawXY(cv, spec);
+      drawXY(cv, xySpec(sc, st));
       const r = scatterR(sc.acc.m);
       notes.textContent = `n ${sc.acc.n.toLocaleString()} · r ${Number.isFinite(r) ? r.toFixed(3) : '–'}${sc.logX || sc.logY ? ' (on the log axes)' : ''} · ${sc.acc.over ? `density of ${BINS}×${BINS} cells (log counts)` : 'every pair drawn'}${sc.acc.offLog ? ` · ${sc.acc.offLog.toLocaleString()} pair${sc.acc.offLog === 1 ? '' : 's'} ≤ 0 left off the log axis` : ''}`;
       win.sub.textContent = `scatter${st.scope !== 'all' ? ' · ' + st.scope : ''}${st.filter ? ' · filtered' : ''}`;
       win.el._xy = { mode: 'scatter', n: sc.acc.n, r, over: sc.acc.over, pts: sc.acc.pts.length / 2, offLog: sc.acc.offLog, grid: sc.acc.grid, range: sc.range };
     } else {
-      const qa = sc.qa, qb = sc.qb, all = [...qa, ...qb].filter((v) => !st.qqLog || v > 0);
-      if (!all.length) { drawXY(cv, null); return; }
-      const T = (v) => (st.qqLog ? Math.log10(v) : v);
-      let lo = Math.min(...all.map(T)), hi = Math.max(...all.map(T)); if (lo === hi) { lo -= 0.5; hi += 0.5; }
-      const qq = QQ_P.map((p, i) => [qa[i], qb[i], [0.1, 0.25, 0.5, 0.75, 0.9].some((m) => Math.abs(m - p) < 1e-9)]);
-      drawXY(cv, { xr: [lo, hi], yr: [lo, hi], logX: st.qqLog, logY: st.qqLog, xLabel: sc.labelA, yLabel: sc.labelB, line11: true, qq });
+      const qa = sc.qa, qb = sc.qb, spec = xySpec(sc, st);
+      if (!spec) { drawXY(cv, null); return; }
+      drawXY(cv, spec);
       const at = (q, p) => q[QQ_P.findIndex((x) => Math.abs(x - p) < 1e-9)];
       const ratio = (p) => { const a = at(qa, p), b = at(qb, p); return a ? fmtStat(b / a) : '–'; };
       notes.textContent = `n ${sc.na.toLocaleString()} vs ${sc.nb.toLocaleString()} · mean ${fmtStat(sc.ma)} vs ${fmtStat(sc.mb)} · P10/P50/P90 ratio (y/x) ${ratio(0.1)} / ${ratio(0.5)} / ${ratio(0.9)} · dots at P10 P25 P50 P75 P90`;
@@ -157,49 +227,8 @@ export function openXyPlot(L, ropts) {
   };
   win.el._onResized = () => plot();
 
-  const scanScatter = async (onProgress, signal) => {
-    const h = layerTableHeader(L), schema = schemaExt(L, h), mask = scopeMask(st, L), filter = (st.filter || '').trim() || null;
-    const N = attrRowCountOf(L) || 0;
-    // pass 1: the ranges (and the digests a log axis needs)
-    const s1 = await statsScan(L, { cols: [st.x, st.y], groupBy: null, weight: null, filter }, mask, (d, n2, w) => onProgress(Math.floor(d / 2), N, w), signal);
-    const row = (c) => s1.rows.find((r) => r.col === c);
-    const rx = axisRange(row(st.x), st.logX), ry = axisRange(row(st.y), st.logY);
-    if (!rx || !ry) throw new Error(st.logX || st.logY ? 'nothing positive to put on a log axis' : 'no pairs with both values');
-    const p = { bins: BINS, keep: KEEP, range: [...rx, ...ry], logX: st.logX, logY: st.logY };
-    // pass 2: the pairs
-    let acc;
-    if (canScanColumnar(L)) {
-      const params = { ...p, x: quoteIdent(st.x), y: quoteIdent(st.y), filter };
-      const { parts } = await scanColumnar(L, { kernel: 'scatter', params, exprs: [params.x, params.y, filter], mask, signal, keepZone: zoneKeeper(L, { mask }),
-        onProgress: (d, n2, w) => onProgress(Math.floor(N / 2 + d / 2), N, w) });
-      acc = scatterMerge(parts, p);
-    } else {
-      const fx = compileValue(quoteIdent(st.x), schema, { decimal: '.' }), fy = compileValue(quoteIdent(st.y), schema, { decimal: '.' });
-      const ff = filter ? compileBool(filter, schema, { decimal: '.' }) : null;
-      acc = scatterAccumulator(p); let seen = 0;
-      for await (const { f: r, rec } of layerRecords(L)) {
-        seen++; if ((seen & 0xffff) === 0) { checkAbort(signal); onProgress(Math.floor(N / 2 + seen / 2), N, 'on this page'); await new Promise((z) => setTimeout(z)); }
-        if (mask && !(rec < mask.length && mask[rec])) continue;
-        if (ff && !ff(r)) continue;
-        const x = numOf(fx(r)), y = numOf(fy(r));
-        if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-        scatterAdd(acc, p, x, y);
-      }
-    }
-    return { mode: 'scatter', x: st.x, y: st.y, logX: st.logX, logY: st.logY, range: p.range, acc };
-  };
-  const scanQq = async (onProgress, signal) => {
-    const one = async (s, k) => {
-      const Lx = layerById(s.layerId); if (!Lx) throw new Error(`side ${k}: the layer is gone`);
-      const mask = s.scope === 'all' ? null : scopeMask(s, Lx);
-      if (s.scope !== 'all' && !mask) throw new Error(`side ${k}: ${scopeMissing(s, Lx) || 'no ' + s.scope}`);
-      const res = await statsScan(Lx, { cols: [s.col], groupBy: null, weight: null, filter: (s.filter || '').trim() || null }, mask, onProgress, signal);
-      const r = res.rows[0]; if (!r || !r.n) throw new Error(`side ${k}: no values`);
-      return { q: QQ_P.map((p) => quantileFromCentroids(r.centroids, r.count, p)), n: r.n, mean: r.mean, label: `${s.col} · ${(Lx.label || Lx.name).replace(/\.[^.]+$/, '')}${s.filter ? ' · ' + s.filter : ''}` };
-    };
-    const A = await one(st.a, 'x'), B = await one(st.b, 'y');
-    return { mode: 'qq', qa: A.q, qb: B.q, na: A.n, nb: B.n, ma: A.mean, mb: B.mean, labelA: A.label, labelB: B.label };
-  };
+  const scanScatter = (onProgress, signal) => scanScatterOf(L, st, onProgress, signal);
+  const scanQq = (onProgress, signal) => scanQqOf(st, onProgress, signal);
   const run = async () => {
     if (st.running) return;
     if (st.mode === 'scatter' && st.scope !== 'all' && !scopeMask(st, L)) { win.el._runFailed = win.sub.textContent = scopeMissing(st, L) || `no ${st.scope} on this layer`; return; }
@@ -213,18 +242,7 @@ export function openXyPlot(L, ropts) {
   };
   // the numbers: Q-Q → p · x quantile · y quantile; scatter → the non-empty cells
   // (x from–to, y from–to, count) or, when every pair is kept, the pairs
-  const tableTSV = () => {
-    const sc = st.scan; if (!sc || sc.mode !== st.mode) return null;
-    if (sc.mode === 'qq') return ['p\t' + sc.labelA + '\t' + sc.labelB, ...QQ_P.map((p, i) => `${p}\t${sc.qa[i]}\t${sc.qb[i]}`)].join('\n');
-    if (!sc.acc.over) { const o = [`${sc.x}\t${sc.y}`]; for (let k = 0; k < sc.acc.pts.length; k += 2) o.push(`${sc.acc.pts[k]}\t${sc.acc.pts[k + 1]}`); return o.join('\n'); }
-    const [x0, x1, y0, y1] = sc.range, ex = (u, l) => (l ? 10 ** u : u), o = [`${sc.x} from\t${sc.x} to\t${sc.y} from\t${sc.y} to\tcount`];
-    for (let j = 0; j < BINS; j++) for (let i = 0; i < BINS; i++) {
-      const c = sc.acc.grid[j * BINS + i]; if (!c) continue;
-      const ua = x0 + (x1 - x0) * i / BINS, ub = x0 + (x1 - x0) * (i + 1) / BINS, va = y0 + (y1 - y0) * j / BINS, vb = y0 + (y1 - y0) * (j + 1) / BINS;
-      o.push([ex(ua, sc.logX), ex(ub, sc.logX), ex(va, sc.logY), ex(vb, sc.logY), c].join('\t'));
-    }
-    return o.join('\n');
-  };
+  const tableTSV = () => { const sc = st.scan; if (!sc || sc.mode !== st.mode) return null; return xyTSV(sc); };
 
   // ── the rail ──
   const row = (label, el, title) => { const r = document.createElement('div'); r.className = 'sw-row'; if (title) r.title = title; const s = document.createElement('span'); s.textContent = label; s.style.width = '44px'; r.append(s, el); return r; };

@@ -628,31 +628,6 @@ export async function runRoutine(r, opts = {}) {
         const emit = tsv && (st.emit || (merged.params && merged.params.emit));
         if (emit) await resultToLayer(typeof emit === 'object' && emit.layer ? String(emit.layer) : `${r.name}/${st._slug}`, tsv);
         if (res.warnings.length) stepNote = res.warnings.join('; ');
-      } else if (tool === 'xy') {                            // not on the contract yet: through its window
-        const before = new Set([...document.querySelectorAll('.fwin')]);
-        runRecipe(merged, true);
-        const el = await new Promise((res, rej) => {
-          const t0 = Date.now();
-          const iv = setInterval(() => {
-            const fresh = [...document.querySelectorAll('.fwin')].filter((x) => !before.has(x));
-            const bad = fresh.find((x) => x._runFailed);          // the window refused or failed: say why, now
-            if (bad) { clearInterval(iv); rej(new Error(bad._runFailed)); return; }
-            const w = fresh.find((x) => x._tableTSV && x._tableTSV());
-            if (w) { clearInterval(iv); res(w); }
-            else if (Date.now() - t0 > 600000) { clearInterval(iv); rej(new Error('timed out')); }
-          }, 400);
-        });
-        const tsv = el._tableTSV();
-        const fh = await resolveFileHandle(S.project.dir, outPath(st._slug), { create: true });
-        const w = await fh.createWritable(); await w.write(tsv); await w.close();
-        wrote++;
-        entry.outputs.push(await outputEntry(outPath(st._slug), tsv));
-        const emit = st.emit || (merged.params && merged.params.emit);
-        if (emit) {                                        // keep the result as a table layer too
-          const path = typeof emit === 'object' && emit.layer ? String(emit.layer) : `${r.name}/${st._slug}`;
-          await resultToLayer(path, tsv);
-        }
-        el.querySelector('.fwin-head button:last-child').click();   // tidy: close the step's window
       } else if (tool === 'solid') {
         await runSolidRecipe(merged.params);              // long-running (winding/peel) — awaited, not settled
         entry.columns = routineTargets('solid', merged.params, st._slug, PR).columns;

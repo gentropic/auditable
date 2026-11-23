@@ -28,6 +28,7 @@ import { sourceHash, sourceHashSync } from './identity.js';
 import { createDocument, parseDocument, serializeDocument, mountEditor, exportPDF, exportPNG, frameById, pageDims, tableFromTsv, removeFrames, groupFrames, subjectFrame, refFrame, figureFromPdf, registerKind, replayDrawList } from '../../../ext/compo/index.js';
 import { chartFigure } from './analysis-ui.js';
 import { colorChoices, colorSelFor } from './color.js';
+import { rerunToolRecipe } from './tools.js';
 import { SEC_AXES, sectionCells, sectionShapes, sectionDrillholes, sectionMesh } from './vsection.js';
 import { gridAxesOf } from './grid-ops.js';
 import { xyFigure } from './xyplot.js';
@@ -272,6 +273,8 @@ const _until = async (fn, ms) => { const t0 = Date.now(); for (;;) { const v = f
 // run a window's recipe headlessly → { spec, tsv } (the routine runner's way: open, wait, read, close)
 async function rerunRecipe(recipe) {
   for (const nm of recipeLayers(recipe)) if (!S.layers.some((x) => x.name === nm)) throw new Error(`layer “${nm}” isn't loaded`);
+  const direct = await rerunToolRecipe(recipe);           // a registered tool: no window opened (nor the user's own replaced)
+  if (direct) return direct;
   if (!HK.runRecipe) throw new Error('recipes are not available');
   const before = new Set(document.querySelectorAll('.fwin'));
   HK.runRecipe({ tool: recipe.tool, name: recipe.name || recipe.tool, params: JSON.parse(JSON.stringify(recipe.params || {})) }, true);

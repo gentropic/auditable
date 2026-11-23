@@ -157,6 +157,27 @@ export function swathRows(scan, di, bandWidth, offset, gradeUnit) {
   return { rows, names };
 }
 
+// the chart spec for one direction's bands (b: binSwath's result) — the window draws it, a composer
+// chart frame is made again from it
+export function swathChartSpec(scan, b, { di, bw, off, bars = 'count', gradeUnit = '', ranges = null, multi = false }) {
+  const gl = gradeUnit === 'pct' ? '%' : gradeUnit;
+  const spec = { xLabel: `distance along ${scan.dirNames[di]}`, leftLabel: `mean grade${gl ? ` (${gl})` : ''}`, rightLabel: bars === 'tonnage' ? 'weight' : 'count', series: [], ...rangesOf({ ranges }) };
+  const prim = b.out[0];
+  spec.series.push({ name: bars, color: '#6a6f75', axis: 'right', kind: 'bar', data: b.keys.map((B) => { const e = prim.bands.get(B); return [off + (B + 0.5) * bw, e ? (bars === 'tonnage' ? e.sw : e.n) : 0]; }) });
+  b.out.forEach((o, i) => { const Lx = layerById(o.se.s.layerId), f = gradeUnitFactor(o.se.s.unit, gradeUnit); const nm = multi ? `${(Lx ? (Lx.label || Lx.name) : '').replace(/\.[^.]*$/, '')}·${o.se.s.col}` : o.se.s.col; spec.series.push({ name: nm, color: o.se.s.color || SERIES_COLORS[i % SERIES_COLORS.length], axis: 'left', kind: 'line', data: b.keys.map((B) => { const e = o.bands.get(B); return [off + (B + 0.5) * bw, e && e.sw > 0 ? (e.swg / e.sw) * f : NaN]; }) }); });
+  return spec;
+}
+// the human table for one direction: center · count · weight · each series' mean
+export function swathHumanTSV(scan, di, bw, off, gradeUnit) {
+  const { rows, names } = swathRows(scan, di, bw, off, gradeUnit);
+  if (!rows.length) return null;
+  const gl = gradeUnit === 'pct' ? '%' : gradeUnit;
+  const head = [`center along ${scan.dirNames[di]}`, 'count', 'weight', ...names.map((nm) => `${nm} mean${gl ? ` (${gl})` : ''}`)];
+  const lines = [head.join('\t')], ns = names.length;
+  for (let i = 0; i < rows.length; i += ns) { const r0 = rows[i]; lines.push([r0.center, r0.count, r0.weight, ...rows.slice(i, i + ns).map((r) => (Number.isFinite(r.mean) ? r.mean : ''))].join('\t')); }
+  return lines.join('\n');
+}
+
 export const _swathWins = new Map();
 
 export function openSwath(L, ropts) {
@@ -226,12 +247,7 @@ export function openSwath(L, ropts) {
     const di = st.axis, bw = effWidth(), off = effOffset();
     const b = binSwath(st.scan, di, bw, off);
     if (!b.keys.length) { win.sub.textContent = 'no data in range'; st._plotSpec = null; renderChart(); return; }
-    const multi = S.layers.length > 1 || st.series.length > 1;
-    const gl = st.gradeUnit === 'pct' ? '%' : st.gradeUnit;
-    const spec = { xLabel: `distance along ${st.scan.dirNames[di]}`, leftLabel: `mean grade${gl ? ` (${gl})` : ''}`, rightLabel: st.bars === 'tonnage' ? 'weight' : 'count', series: [], ...rangesOf(st) };
-    const prim = b.out[0];
-    spec.series.push({ name: st.bars, color: '#6a6f75', axis: 'right', kind: 'bar', data: b.keys.map((B) => { const e = prim.bands.get(B); return [off + (B + 0.5) * bw, e ? (st.bars === 'tonnage' ? e.sw : e.n) : 0]; }) });
-    b.out.forEach((o) => { const Lx = layerById(o.se.s.layerId), f = gradeUnitFactor(o.se.s.unit, st.gradeUnit); const nm = multi ? `${(Lx ? (Lx.label || Lx.name) : '').replace(/\.[^.]*$/, '')}·${o.se.s.col}` : o.se.s.col; spec.series.push({ name: nm, color: o.se.s.color, axis: 'left', kind: 'line', data: b.keys.map((B) => { const e = o.bands.get(B); return [off + (B + 0.5) * bw, e && e.sw > 0 ? (e.swg / e.sw) * f : NaN]; }) }); });
+    const spec = swathChartSpec(st.scan, b, { di, bw, off, bars: st.bars, gradeUnit: st.gradeUnit, ranges: st.ranges, multi: S.layers.length > 1 || st.series.length > 1 });
     win.sub.textContent = `${st.scope !== 'all' ? st.scope + ' · ' : ''}${b.keys.length} bands · ${bw.toPrecision(3)} m · ${st.scan.series.reduce((s, x) => s + x.n, 0).toLocaleString()} rows`;
     st._plotSpec = spec; renderChart();
     if (st.zebra) applySwathZebra(zebraL(), curDir(), bw, off);
