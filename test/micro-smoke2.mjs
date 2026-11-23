@@ -8641,6 +8641,98 @@ if (take()) {
   await pr.close();
 }
 
+// ═══ a TEXT ƒ column colours by CLASS, live: offered in color-by, its classes are the
+//     legend, a class colour edited in Properties → Style sticks through an edit of the
+//     expression (by value, not code) and a project save/reload; past 255 values it says
+//     so and goes back; a colour-by the layer can't honour says so instead of keeping
+//     the old colour under a new name ═══
+if (take()) {
+  const pt = await mkPage('sm2tcalc');
+  await pt.evaluate(async () => { try { await (await navigator.storage.getDirectory()).removeEntry('sm2tcalc', { recursive: true }); } catch { } });
+  await pt.evaluate(() => {
+    let t = 'X,Y,Z,FE\n';
+    for (let i = 0; i < 20; i++) for (let j = 0; j < 20; j++) t += `${i * 10},${j * 10},5,${45 + (i % 10)}\n`;
+    return window._micro.openBlob(new Blob([t]), 'm.csv', 'replace');
+  });
+  await pt.waitForFunction(() => window._micro.layers()[0] && window._micro.layers()[0].docs.blockDoc, null, { timeout: 20000 });
+  const tc = await pt.evaluate(async () => {
+    const M = window._micro, L = M.layers()[0];
+    L.storage = 'project';
+    await M.applyCalcCols(L, [{ name: 'CLS', expr: 'if(FE > 50, "HIGH", "LOW")', ty: 'string' }]);
+    const offered = [...document.querySelectorAll('#colorBy option')].some((o) => o.value === 'calc:CLS');
+    const before = M.legendContentFor(L);                                    // elevation: a ramp
+    M.setLayerColorSel(L, 'calc:CLS');
+    for (let k = 0; k < 200 && !(L._calcDisplay && L._calcDisplay.col && L._calcDisplay.col.cat); k++) await new Promise((r) => setTimeout(r, 50));
+    const col = L._calcDisplay && L._calcDisplay.col;
+    const leg = M.legendContentFor(L);
+    return { offered, beforeKind: before && before.kind, sel: L.colorSel, cat: !!(col && col.cat), dict: col ? col.dict.slice(1) : [],
+      counts: col ? Array.from(col.counts).slice(1) : [], legKind: leg && leg.kind, legLabels: leg && leg.entries ? leg.entries.map((e) => e.label) : [] };
+  });
+  chk(`text ƒ offered in color-by (${tc.offered}); colouring by it classes the blocks: ${tc.dict.join('/')} = ${tc.counts.join('/')} (want HIGH/LOW = 160/240)`,
+    tc.offered && tc.sel === 'calc:CLS' && tc.cat && tc.dict.join() === 'HIGH,LOW' && tc.counts.join() === '160,240');
+  chk(`its legend is the classes (was a ${tc.beforeKind}, now ${tc.legKind || 'classes'}: ${tc.legLabels.join(', ')})`,
+    tc.beforeKind === 'ramp' && tc.legKind !== 'ramp' && tc.legLabels.join() === 'HIGH,LOW');
+  // edit HIGH's colour and hide LOW in Properties → Style (the categorized class list)
+  const ed = await pt.evaluate(async () => {
+    const M = window._micro, L = M.layers()[0];
+    M.setActiveLayer(L.id); M.openProps();
+    const tab = [...document.querySelectorAll('#ppTabs .pp-tab')].find((b) => b.textContent === 'style'); if (tab) tab.click();
+    const modeSel = [...document.querySelectorAll('#ppBody .pp-row')].find((r) => /mode/.test(r.textContent));
+    const mode = modeSel && modeSel.querySelector('select') ? modeSel.querySelector('select').value : '';
+    const rowOf = (lab) => [...document.querySelectorAll('#ppBody .pp-cat')].find((r) => r.querySelector('.nm') && r.querySelector('.nm').textContent === lab);
+    const hi = rowOf('HIGH'), lo = rowOf('LOW');
+    if (!hi || !lo) return { mode, rows: false };
+    const sw = hi.querySelector('input[type=color]'); sw.value = '#ff0000'; sw.dispatchEvent(new Event('input'));
+    const eye = lo.querySelector('input[type=checkbox]'); eye.checked = false; eye.dispatchEvent(new Event('change'));
+    const leg = M.legendContentFor(L);
+    const hiC = leg && leg.entries.find((e) => e.label === 'HIGH');
+    return { mode, rows: true, hi: hiC && hiC.color, labels: leg ? leg.entries.map((e) => e.label) : [] };
+  });
+  chk(`Style shows it as categorized (${ed.mode}) with a row per class; HIGH recoloured → ${ed.hi}, LOW hidden → legend ${ed.labels.join(',')}`,
+    ed.mode === 'categorized' && ed.rows && ed.hi === '#ff0000' && ed.labels.join() === 'HIGH');
+  // edit the expression: still a ƒ (live), re-realized; HIGH keeps its colour by VALUE, LOW stays hidden, VLOW is new
+  const re = await pt.evaluate(async () => {
+    const M = window._micro, L = M.layers()[0], h0 = L._calcDisplay.hash;
+    await M.applyCalcCols(L, [{ name: 'CLS', expr: 'if(FE > 52, "HIGH", if(FE < 47, "VLOW", "LOW"))', ty: 'string' }]);
+    for (let k = 0; k < 200 && !(L._calcDisplay && L._calcDisplay.col && L._calcDisplay.hash !== h0); k++) await new Promise((r) => setTimeout(r, 50));
+    const col = L._calcDisplay.col, leg = M.legendContentFor(L);
+    const c = (lab) => { const e = leg && leg.entries.find((x) => x.label === lab); return e ? e.color : null; };
+    return { live: (L.calcCols || []).some((x) => x.name === 'CLS'), dict: col.dict.slice(1), counts: Array.from(col.counts).slice(1), hi: c('HIGH'), lo: c('LOW'), vlow: c('VLOW') };
+  });
+  chk(`editing the expression recomputes live (${re.dict.join('/')} = ${re.counts.join('/')}); HIGH keeps ${re.hi}, LOW stays hidden (${re.lo}), VLOW joins (${re.vlow})`,
+    re.live && re.dict.join() === 'HIGH,LOW,VLOW' && re.counts.join() === '80,240,80' && re.hi === '#ff0000' && re.lo === null && !!re.vlow);
+  await saveProject(pt);
+  await pt.close();
+  const pr = await mkPage('sm2tcalc');
+  await pr.evaluate(async () => { const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2tcalc'); await window._micro.openProjectDir(dir); });
+  await pr.waitForFunction(() => { const L = window._micro.layers()[0]; return L && L._calcDisplay && L._calcDisplay.col && L._calcDisplay.col.cat; }, null, { timeout: 60000 });
+  const rl = await pr.evaluate(() => {
+    const M = window._micro, L = M.layers()[0], leg = M.legendContentFor(L);
+    const c = (lab) => { const e = leg && leg.entries.find((x) => x.label === lab); return e ? e.color : null; };
+    return { sel: L.colorSel, hi: c('HIGH'), lo: c('LOW'), vlow: c('VLOW') };
+  });
+  chk(`after a project save/reload it's still coloured by ƒ CLS (${rl.sel}): HIGH ${rl.hi}, LOW hidden (${rl.lo}), VLOW ${rl.vlow}`,
+    rl.sel === 'calc:CLS' && rl.hi === '#ff0000' && rl.lo === null && rl.vlow === re.vlow);
+  const ov = await pr.evaluate(async () => {
+    const M = window._micro, L = M.layers()[0];
+    await M.applyCalcCols(L, [{ name: 'ID', expr: 'X * 1000 + Y', ty: 'string' }]);   // 400 different values
+    M.setLayerColorSel(L, 'calc:ID');
+    for (let k = 0; k < 200 && !/255/.test(document.querySelector('#meta').textContent); k++) await new Promise((r) => setTimeout(r, 50));
+    const over = { meta: document.querySelector('#meta').textContent, sel: L.colorSel };
+    // selections the layer can't honour: said on the status line, colour unchanged
+    M.setLayerColorSel(L, 'calc:NOPE');
+    const nope = { meta: document.querySelector('#meta').textContent, sel: L.colorSel };
+    M.setLayerColorSel(L, 'chan:99');
+    const chan = { meta: document.querySelector('#meta').textContent, sel: L.colorSel };
+    return { over, nope, chan };
+  });
+  chk(`a text ƒ with more than 255 values says so (“${ov.over.meta.slice(0, 70)}…”) and the layer goes back to ${ov.over.sel}`,
+    /more than 255/.test(ov.over.meta) && ov.over.sel === 'calc:CLS');
+  chk(`a colour-by that can't be honoured is reported, colour kept (“${ov.nope.meta}” · “${ov.chan.meta}”)`,
+    /no ƒ column “NOPE”/.test(ov.nope.meta) && ov.nope.sel === 'calc:CLS' && /no numeric column/.test(ov.chan.meta) && ov.chan.sel === 'calc:CLS');
+  await pr.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);
