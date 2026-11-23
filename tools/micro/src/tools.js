@@ -30,7 +30,7 @@ import { inputsOf as dhQaInputs } from './dhqa.js';
 import { drillholeQa } from '../../../ext/condenser/src/main.js';
 import { meshQa } from '../../../ext/geometry/index.js';
 import { meshVertexData } from './records.js';
-import { numericColsOf, computeResourceTable } from './analysis.js';
+import { numericColsOf, computeResourceTable, supportMeasure } from './analysis.js';
 import { validationRun } from './validation.js';
 import { gradeUnitFactor, niceStep, scopeMask, scopeMissing, rangesFromCfg } from './analysis-ui.js';
 import { gtCuts } from './scanner.js';
@@ -185,7 +185,7 @@ const SERIES = {
   layer: { type: 'layer', doc: 'the layer (default: the tool’s layer)' },
   col: { type: 'column', required: true, doc: 'the grade column (or an expression)' },
   unit: { type: 'string', doc: 'the grade’s declared unit (pct, ppm, g/t, …) — converts into gradeUnit' },
-  weight: { type: 'expr', doc: 'density expression; tonnage = density × block volume (blank = volume)' },
+  weight: { type: 'expr', doc: 'density expression; tonnage = density × block volume (blank = volume); in grade-tonnage on a drillhole layer it multiplies the interval length instead (length × density, not tonnes)' },
   filter: { type: 'expr', doc: 'a row filter for this series' },
   color: { type: 'string', display: true },
 };
@@ -199,7 +199,7 @@ const seriesSt = (p) => p.series.map((s) => {
 registerTool('gt', {
   label: 'grade-tonnage',
   params: {
-    layer: { type: 'layer', doc: 'the block model (series without a layer use it)' },
+    layer: { type: 'layer', doc: 'the block model or drillhole layer (series without a layer use it); a drillhole layer weighs each interval by its length, TO − FROM' },
     series: { type: 'list', item: SERIES, required: true, min: 1, doc: 'one curve per series' },
     cutoffs: { type: 'numbers', routine: 'required', why: 'automatic cutoffs come from the data’s range and move with it', doc: 'the cutoffs, in gradeUnit' },
     nCut: { type: 'int', default: 40, doc: 'how many automatic cutoffs (when cutoffs is absent)' },
@@ -228,11 +228,13 @@ registerTool('gt', {
       const off = cuts.filter((c) => Math.abs(c / f / step - Math.round(c / f / step)) > 1e-6);
       if (off.length) warnings.push(`${se.s.col}: cutoff${off.length > 1 ? 's' : ''} ${off.join(', ')} not on the ${step * f} grade step — counted from the next step up`);
     }
-    const { rows, weighted } = gtRows(scan, cuts, p.gradeUnit);
-    const amount = weighted ? 'tonnes' : 'volume', gl = unitLabel(p.gradeUnit);
+    // the amount column is NAMED by what it measures (supportMeasure): tonnes | volume for a block
+    // model, length | weighted_length (and accumulation for metal) for a drillhole layer
+    const { rows, measure } = gtRows(scan, cuts, p.gradeUnit);
+    const amount = measure.col, gl = unitLabel(p.gradeUnit);
     return {
-      table: { columns: ['series', 'cutoff', amount, 'grade', 'metal'], key: ['series', 'cutoff'], rows: rows.map((r) => [r.series, r.cutoff, r.amount, r.grade, r.metal]),
-        units: { cutoff: gl, [amount]: weighted ? 't' : 'm3', grade: gl, metal: p.gradeUnit ? 't' : `${gl || 'grade'}·${weighted ? 't' : 'm3'}` } },
+      table: { columns: ['series', 'cutoff', amount, 'grade', measure.metalCol], key: ['series', 'cutoff'], rows: rows.map((r) => [r.series, r.cutoff, r.amount, r.grade, r.metal]),
+        units: { cutoff: gl, [amount]: measure.unit, grade: gl, [measure.metalCol]: measure.metalUnit } },
       values: {}, resolved: { ...p, cutoffs: cuts }, warnings, where: scan.where,
     };
   },
@@ -525,7 +527,7 @@ registerTool('xtab', {
     layer: { type: 'layer', required: true },
     grade: { type: 'column', required: true },
     group: { type: 'column', default: '', doc: 'a category or painted column (domains, classes); blank = one group' },
-    weight: { type: 'expr', default: '', doc: 'density expression; tonnage = density × block volume (blank = volume)' },
+    weight: { type: 'expr', default: '', doc: 'density expression; tonnage = density × block volume (blank = volume); on a drillhole layer, × interval length' },
     filter: { type: 'expr', default: '' },
     densUnit: { type: 'string', default: 't/m3' },
     gradeUnit: { type: 'string', default: '' },
@@ -544,14 +546,14 @@ registerTool('xtab', {
     return scanXtabOf(L, { grade: p.grade, group: p.group, weight: String(p.weight || ''), filter: p.filter, densUnit: p.densUnit, gradeUnit: p.gradeUnit, cutoffs: cut, scope: p.scope }, ctx.progress, ctx.signal);
   },
   shape(scan, p) {
-    const m = xtabModel(scan, p.mode), amount = scan.weighted ? 'tonnes' : 'volume', rows = [];
+    const ms = supportMeasure(scan.support || 'volume', scan.weighted, p.gradeUnit), m = xtabModel(scan, p.mode), amount = ms.col, rows = [];
     for (const k of m.rowKeys) for (const c of m.cols) {
       const v = m.cell(k, c);
       rows.push([m.rowLabel(k), c.label, c.lo ?? NaN, c.hi ?? NaN, v.w, xtabValue(v, 'grade', c.blank, scan), xtabValue(v, 'metal', c.blank, scan), v.n]);
     }
     return {
-      table: { columns: ['group', 'bin', 'from', 'to', amount, 'grade', 'metal', 'blocks'], key: ['group', 'bin'], rows, units: { [amount]: scan.weighted ? 't' : 'm3' } },
-      values: { blocks: scan.n }, resolved: { ...p, cutoffs: scan.edges.slice() },
+      table: { columns: ['group', 'bin', 'from', 'to', amount, 'grade', ms.metalCol, ms.countCol], key: ['group', 'bin'], rows, units: { [amount]: ms.unit, [ms.metalCol]: ms.metalUnit } },
+      values: { [ms.countCol]: scan.n }, resolved: { ...p, cutoffs: scan.edges.slice() },
       warnings: scan.overflow ? ['too many groups — the extra groups were left out'] : [], where: scan.where,
     };
   },

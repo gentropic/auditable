@@ -5,7 +5,7 @@
 // index.html (phase 3).
 import { gridAxesOf } from './grid-ops.js';
 import { floatWin, focusWindow } from './windows.js';
-import { numericColsOf, volumeAt, volumeContextOf } from './analysis.js';
+import { numericColsOf, volumeContextOf, supportContextOf, supportAt, supportMeasure } from './analysis.js';
 import { SERIES_COLORS, analysisSerCfg, analysisSerRestore, applyAnalysisGeo, checkAbort, gradeUnitFactor, gradeUnitSel, plotChart, plotExportBtns, rangesForCfg, rangesFromCfg, rangesOf, rangesRow, reconcilePairs, runCancellable, saveAnalysisCfg, scanProgressText, scopeMask, scopeMissing, seriesZoneKeep, setAnalysisOpen } from './analysis-ui.js';
 import { gtAbove, gtAccumulator, gtCuts, gtMerge } from './scanner.js';
 import { S, layerById } from './state.js';
@@ -46,8 +46,17 @@ export async function scanGTSeries(st, onProgress, signal) {   // st: { series: 
     let weightFn = null, filterFn = null;
     if (s.weight && s.weight.trim()) { try { weightFn = compileValue(s.weight, schema, { decimal: '.' }); } catch { throw new Error(`series weight "${s.weight}": invalid`); } }
     if (s.filter && s.filter.trim()) { try { filterFn = compileBool(s.filter, schema, { decimal: '.' }); } catch { throw new Error(`series filter "${s.filter}": invalid`); } }
-    return Object.assign(gtAccumulator(), { s, L: Lx, vc: volumeContextOf(Lx), gradeFn, weightFn, filterFn, weighted: !!weightFn });
+    const sc = supportContextOf(Lx);                   // a block's volume, or an interval's LENGTH (drillholes)
+    return Object.assign(gtAccumulator(), { s, L: Lx, vc: sc.kind === 'volume' ? sc.vc : volumeContextOf(Lx), sc, support: sc.kind, gradeFn, weightFn, filterFn, weighted: !!weightFn });
   }).filter(Boolean);
+  // blocks accumulate VOLUME (or tonnes), drillholes accumulate LENGTH (metres). Two
+  // different measures on one tonnage axis would read as comparable and are not —
+  // a 500 m intercept is not 500 m³ — so a mixed set of series is refused, by name.
+  const kinds = new Set(series.map((se) => se.support));
+  if (kinds.size > 1) {
+    const by = (k) => [...new Set(series.filter((se) => se.support === k).map((se) => se.L.label || se.L.name))].join(', ');
+    throw new Error(`series measure different things — block models accumulate volume / tonnes (${by('volume')}), drillholes accumulate interval length in metres (${by('length')}); run them as separate grade-tonnage curves`);
+  }
   // a Parquet layer's series are scanned COLUMNAR and in parallel (src/colscan.js):
   // one pass per layer for all of its series, only the columns they need, a row
   // group per worker. Everything else keeps the row path below.
@@ -82,7 +91,7 @@ export async function scanGTSeries(st, onProgress, signal) {   // st: { series: 
         if (mask && !(rr < mask.length && mask[rr])) continue;
         if (se.filterFn && !se.filterFn(row)) continue;
         const g = numOf(se.gradeFn(row)); if (!Number.isFinite(g)) continue;   // a blank grade is unestimated, not 0
-        const w = (se.weightFn ? (+se.weightFn(row) || 0) * dScale : 1) * volumeAt(se.vc, row);
+        const w = (se.weightFn ? (+se.weightFn(row) || 0) * dScale : 1) * supportAt(se.sc, row);   // × length (m) for an interval
         if (!(w > 0)) continue;
         se.add(g, w);
       }
@@ -91,16 +100,23 @@ export async function scanGTSeries(st, onProgress, signal) {   // st: { series: 
     se.finish();
     where = where || 'on this page';
   }
-  return { series, where };
+  return { series, where, support: series.length ? series[0].support : 'volume' };
 }
 
+// what the accumulated amount IS for this scan (supportMeasure: tonnes / volume for blocks,
+// length / weighted_length for drillholes) — every label below reads it, so the window, the
+// tool's table, the human TSV and the chart can't disagree
+export function gtMeasure(scan, gradeUnit) {
+  return supportMeasure(scan.support || (scan.series[0] && scan.series[0].support) || 'volume', scan.series.some((se) => se.weighted), gradeUnit);
+}
 // the grade-tonnage TABLE, one row per cutoff × series (cutoffs in the display grade unit): the
 // window's copied table and the grade-tonnage tool's report both read these rows — one shaping
-// path. amount = tonnes when a density applies, else volume (m³); metal = amount × grade, in
-// tonnes of metal when the grade unit is declared.
+// path. amount = tonnes when a density applies, else volume (m³) — for a DRILLHOLE series,
+// interval length (m) or length × density (gtMeasure); metal = amount × grade, in tonnes of
+// metal when the grade unit is declared (blocks), else the accumulation grade × amount.
 export function gtRows(scan, cuts, gradeUnit) {
   const weighted = scan.series.some((se) => se.weighted);
-  const mScale = gradeUnit ? unitConvert(1, gradeUnit, 'fraction') : 1;
+  const measure = gtMeasure(scan, gradeUnit), mScale = measure.metalScale();
   const multi = scan.series.length > 1;
   const names = scan.series.map((se) => { const Lx = layerById(se.s.layerId); return multi ? `${(Lx ? (Lx.label || Lx.name) : '').replace(/\.[^.]*$/, '')}·${se.s.col}` : se.s.col; });
   const rows = [];
@@ -109,18 +125,18 @@ export function gtRows(scan, cuts, gradeUnit) {
     const [t, tg] = gtAbove(se, c / f), g = t > 0 ? (tg / t) * f : NaN;
     rows.push({ series: names[k], cutoff: c, amount: t, grade: g, metal: Number.isFinite(g) ? t * g * mScale : NaN });
   });
-  return { rows, names, weighted };
+  return { rows, names, weighted, measure };
 }
 
 // the chart spec — the window draws it, a composer chart frame is made again from it.
 // o: { nCut, cutoffs?, gradeUnit, ranges? }
 export function gtChartSpec(scan, o) {
   if (!scan || !scan.series.length) return null;
-  const weighted = scan.series.some((se) => se.weighted);
+  const measure = gtMeasure(scan, o.gradeUnit);
   const cuts = Array.isArray(o.cutoffs) && o.cutoffs.length ? o.cutoffs : gtCuts(scan.series, o.nCut, (se) => gradeUnitFactor(se.s.unit, o.gradeUnit));
   if (!cuts) return null;
   const gl = o.gradeUnit === 'pct' ? '%' : o.gradeUnit;
-  const spec = { xLabel: `cutoff${gl ? ` (${gl})` : ''}`, leftLabel: weighted ? 'tonnage (t)' : 'volume (m³)', rightLabel: `mean grade${gl ? ` (${gl})` : ''}`, series: [], ...rangesOf(o) };
+  const spec = { xLabel: `cutoff${gl ? ` (${gl})` : ''}`, leftLabel: measure.axis, rightLabel: `mean grade${gl ? ` (${gl})` : ''}`, series: [], ...rangesOf(o) };
   const multi = scan.series.length > 1 && new Set(scan.series.map((se) => se.s.layerId)).size > 1;
   scan.series.forEach((se, i) => {
     const f = gradeUnitFactor(se.s.unit, o.gradeUnit), Lx = layerById(se.s.layerId);
@@ -128,20 +144,19 @@ export function gtChartSpec(scan, o) {
     const tPts = [], gPts = [];
     for (const c of cuts) { const [t, tg] = gtAbove(se, c / f); tPts.push([c, t]); gPts.push([c, t > 0 ? (tg / t) * f : NaN]); }
     const color = se.s.color || SERIES_COLORS[i % SERIES_COLORS.length];
-    spec.series.push({ name: `${nm} · t`, color, axis: 'left', kind: 'line', data: tPts });
+    spec.series.push({ name: `${nm} · ${measure.short}`, color, axis: 'left', kind: 'line', data: tPts });
     spec.series.push({ name: `${nm} · grade`, color, axis: 'right', kind: 'line', data: gPts });
   });
   return spec;
 }
 // the human table (the window's copy, a composer table frame): a row per cutoff, the series side by side
 export function gtHumanTSV(scan, o) {
-  const weighted = scan.series.some((se) => se.weighted);
   const cuts = Array.isArray(o.cutoffs) && o.cutoffs.length ? o.cutoffs : gtCuts(scan.series, o.nCut, (se) => gradeUnitFactor(se.s.unit, o.gradeUnit));
   if (!cuts) return null;
-  const gl = o.gradeUnit === 'pct' ? '%' : o.gradeUnit, tU = weighted ? 't' : 'm³';
-  const { rows, names } = gtRows(scan, cuts, o.gradeUnit);
+  const gl = o.gradeUnit === 'pct' ? '%' : o.gradeUnit;
+  const { rows, names, measure } = gtRows(scan, cuts, o.gradeUnit), tU = measure.short;
   const head = [`cutoff${gl ? ` (${gl})` : ''}`];
-  names.forEach((nm) => head.push(`${nm} ${tU} ≥`, `${nm} grade${gl ? ` (${gl})` : ''}`, o.gradeUnit ? `${nm} metal (t)` : `${nm} grade·${tU}`));
+  names.forEach((nm) => head.push(`${nm} ${tU} ≥`, `${nm} grade${gl ? ` (${gl})` : ''}`, `${nm} ${measure.metalCol === 'metal' && o.gradeUnit ? `metal (${measure.metalShort})` : measure.metalShort}`));
   const lines = [head.join('\t')], ns = names.length;
   cuts.forEach((c, ci) => {
     const row = [c];
@@ -152,7 +167,7 @@ export function gtHumanTSV(scan, o) {
 }
 
 export function openGradeTonnage(L, ropts) {
-  if (!L || !gridAxesOf(L)) { $('#meta').textContent = 'grade-tonnage: needs a regular block model'; return; }
+  if (!L || !(gridAxesOf(L) || (L.docs && L.docs.dhDoc))) { $('#meta').textContent = 'grade-tonnage: needs a regular block model or a drillhole layer'; return; }
   const ex = _gtWins.get(L.id); if (ex) { if (!ropts) { focusWindow(ex.win.el); return; } ex.win.close(); }   // a recipe replaces the open window
   const nums = numericColsOf(L); if (!nums.length) { $('#meta').textContent = 'grade-tonnage: no numeric column'; return; }
   const pairs = reconcilePairs(nums);
@@ -198,10 +213,10 @@ export function openGradeTonnage(L, ropts) {
       plotChart(cv, { series: [], placeholder: busy ? 'scanning…' : (st.stale ? 'press Run' : 'no data') });
       win._spec = null; win.el._gtSpec = null; return;
     }
-    const weighted = st.scan.series.some((se) => se.weighted);
+    const measure = gtMeasure(st.scan, st.gradeUnit);
     const spec = gtChartSpec(st.scan, st);
     if (!spec) { win.sub.textContent = 'no data'; plotChart(cv, { series: [] }); win._spec = null; win.el._gtSpec = null; return; }
-    win.sub.textContent = `${st.scope !== 'all' ? st.scope + ' · ' : ''}${weighted ? 'tonnes' : 'volume (no density)'} · ${st.nCut} cutoffs · ${st.scan.series.reduce((s2, x) => s2 + x.n, 0).toLocaleString()} rows`;
+    win.sub.textContent = `${st.scope !== 'all' ? st.scope + ' · ' : ''}${measure.sub} · ${st.nCut} cutoffs · ${st.scan.series.reduce((s2, x) => s2 + x.n, 0).toLocaleString()} rows`;
     plotChart(cv, spec); win._spec = spec; win.el._gtSpec = spec;
   };
   win.el._onResized = () => { if (win._spec) plotChart(cv, win._spec); };
@@ -233,7 +248,7 @@ export function openGradeTonnage(L, ropts) {
     const dot = document.createElement('span'); dot.className = 'sw-dot'; dot.style.background = s.color; dot.title = 'cycle colour';
     dot.onclick = () => { s.color = SERIES_COLORS[(SERIES_COLORS.indexOf(s.color) + 1) % SERIES_COLORS.length]; dot.style.background = s.color; if (st.scan) plot(); };
     const laySel = document.createElement('select'); laySel.className = 'sw-sel';
-    for (const Lx of S.layers.filter((x) => numericColsOf(x).length && (x.docs.blockDoc || x.docs.dhDoc))) { const o = document.createElement('option'); o.value = Lx.id; o.textContent = Lx.label || Lx.name; if (Lx.id === s.layerId) o.selected = true; laySel.append(o); }
+    for (const Lx of S.layers.filter((x) => numericColsOf(x).length && (L.docs.blockDoc ? x.docs.blockDoc : x.docs.dhDoc))) { const o = document.createElement('option'); o.value = Lx.id; o.textContent = Lx.label || Lx.name; if (Lx.id === s.layerId) o.selected = true; laySel.append(o); }
     laySel.onchange = () => { s.layerId = +laySel.value; const cols = numericColsOf(layerById(s.layerId)); if (!cols.includes(s.col)) s.col = cols[0] || s.col; markStale(); buildRail(); };
     const x = document.createElement('button'); x.className = 'sw-x'; x.textContent = '×'; x.title = 'remove series'; x.onclick = () => { if (st.series.length > 1) { st.series.splice(i, 1); markStale(); buildRail(); } };
     top.append(dot, laySel, x); box.append(top);

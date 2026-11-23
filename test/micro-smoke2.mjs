@@ -6406,9 +6406,11 @@ if (take()) {
   });
   const get = (k) => (r.strs.find((x) => x.startsWith(k + ' ')) || '').slice(k.length + 1);
   const want = {
-    S: (v) => /^20 RL /.test(v), C: (v) => v === '1,520', T: (v) => v === '2400', M: (v) => v === '60.00', X: (v) => v === '78', F: (v) => v === 'FE > 40',
-    P: (v) => v === '63.3%', L: (v) => /^000/.test(v), K: (v) => /^1 : \d/.test(v), D: (v) => v === String(new Date().getFullYear()),
-    H: (v) => /^[0-9a-f]{8}$/.test(v), R: (v) => v === '1', A: (v) => v === '1,520', B: (v) => v === '60.0', V: (v) => v.length > 0, U: (v) => v === '{unknown}',
+    // the view is cut at 20 RL ± 5, so {count} and the statistics are over the slab's blocks (the
+    // default "captions: in the section"): centroids in (15, 25] → the z=25 level, 380 of FE > 40
+    S: (v) => /^20 RL /.test(v), C: (v) => v === '380', T: (v) => v === '2400', M: (v) => v === '60.00', X: (v) => v === '78', F: (v) => v === 'FE > 40',
+    P: (v) => v === '15.8%', L: (v) => /^000/.test(v), K: (v) => /^1 : \d/.test(v), D: (v) => v === String(new Date().getFullYear()),
+    H: (v) => /^[0-9a-f]{8}$/.test(v), R: (v) => v === '1', A: (v) => v === '380', B: (v) => v === '60.0', V: (v) => v.length > 0, U: (v) => v === '{unknown}',
   };
   const bad = Object.keys(want).filter((k) => !want[k](get(k)));
   chk(`FIELDS: a view frame's id is view-1 (${r.viewId})`, r.viewId === 'view-1');
@@ -7865,6 +7867,168 @@ if (take()) {
     r.second.runs === 2 && r.second.baseline === r.second.firstDir && r.second.reused >= 2);
   chk(`LIBRARY: a pack imports into another project — recipe files + its table (${JSON.stringify(r.imported)})`,
     r.imported.recipes.join() === 'gt std,monthly' && r.imported.table === 'cut\n40\n45\n');
+  await p.close();
+}
+
+// ── GT ON DRILLHOLES IS LENGTH-WEIGHTED, AND A JOIN `sum` IS A TRUE TOTAL (2026-11-22). A
+//     drillhole series counted each interval as 1 "m³": a 1 m sliver weighed as much as an 8 m run.
+//     Now each interval weighs TO − FROM, the amount column is `length` (m) — `weighted_length`
+//     (m·t/m³, not tonnes) with a density — and metal is the `accumulation` grade × m; a block model
+//     and a drillhole layer on one curve are refused. The join's `sum` hands each target the FRACTION
+//     of the source block it overlaps, so a summed column is conserved coarse → fine (it was ×8). ──
+if (take()) {
+  const p = await mkPage('sm2lenw');
+  await p.evaluate(async () => { try { await (await navigator.storage.getDirectory()).removeEntry('sm2lenw', { recursive: true }); } catch { } });
+  await p.evaluate(async () => {
+    // a 10 m model (2×2×2, TON 100…800) and a 5 m model over the same box (4×4×4)
+    const coarse = ['XC,YC,ZC,TON']; let t = 0;
+    for (let k = 0; k < 2; k++) for (let j = 0; j < 2; j++) for (let i = 0; i < 2; i++) coarse.push([5 + i * 10, 5 + j * 10, 5 + k * 10, (++t) * 100].join(','));
+    const fine = ['XC,YC,ZC,FE'];
+    for (let k = 0; k < 4; k++) for (let j = 0; j < 4; j++) for (let i = 0; i < 4; i++) fine.push([2.5 + i * 5, 2.5 + j * 5, 2.5 + k * 5, 40].join(','));
+    await window._micro.openBlob(new File([coarse.join('\n') + '\n'], 'c.csv'), 'c.csv', 'replace');
+    await window._micro.openBlob(new File([fine.join('\n') + '\n'], 'f.csv'), 'f.csv', 'add');
+  });
+  await p.waitForFunction(() => window._micro.layers().length === 2 && window._micro.layers().every((L) => L.docs.blockDoc), null, { timeout: 20000 });
+  await saveProject(p);
+  const r = await p.evaluate(async () => {
+    const M_ = window._micro, m = window.micro, out = {};
+    // intervals of UNEQUAL length: H1 0–2 FE60 · 2–10 FE30 · 10–11 FE55 · H2 0–5 FE50 · 5–6 FE20
+    const IV = [['H1', 0, 2, 60], ['H1', 2, 10, 30], ['H1', 10, 11, 55], ['H2', 0, 5, 50], ['H2', 5, 6, 20]];
+    const H = ['H1', 'H2'];
+    await M_.addLayer({ kind: 'drillholes', name: 'dh',
+      collar: { columns: { HOLE: H, E: Float64Array.from([5, 15]), N: Float64Array.from([5, 5]), RL: Float64Array.from([20, 20]) }, roles: { bhid: 'HOLE', x: 'E', y: 'N', z: 'RL' } },
+      survey: { columns: { HOLE: H, AT: Float64Array.from([0, 0]), AZI: Float64Array.from([0, 0]), INC: Float64Array.from([90, 90]) }, roles: { bhid: 'HOLE', at: 'AT', az: 'AZI', dip: 'INC' } },
+      intervals: { columns: { HOLE: IV.map((x) => x[0]), F: Float64Array.from(IV.map((x) => x[1])), T: Float64Array.from(IV.map((x) => x[2])), FE: Float64Array.from(IV.map((x) => x[3])) }, roles: { bhid: 'HOLE', from: 'F', to: 'T' } } });
+    const D = M_.layers().find((x) => x.dh);
+    // expected, computed here: Σ length and Σ length·grade above each cutoff
+    out.expect = [25, 50].map((c) => { const a = IV.filter((x) => x[3] >= c), L = a.reduce((s, x) => s + x[2] - x[1], 0), LG = a.reduce((s, x) => s + (x[2] - x[1]) * x[3], 0); return { cut: c, length: L, grade: LG / L, acc: LG }; });
+    const gt = await m.runTool('gt', { layer: D.name, series: [{ col: 'FE' }], cutoffs: [25, 50] });
+    out.gt = { cols: gt.table.columns.join(), units: gt.table.units, rows: gt.table.rows };
+    const gtw = await m.runTool('gt', { layer: D.name, series: [{ col: 'FE', weight: '2' }], cutoffs: [25] });
+    out.gtw = { cols: gtw.table.columns.join(), units: gtw.table.units, row: gtw.table.rows[0] };
+    try { await m.runTool('gt', { layer: 'c.csv', series: [{ col: 'TON' }, { layer: D.name, col: 'FE' }], cutoffs: [25] }); out.mixed = 'ran'; } catch (e) { out.mixed = e.message; }
+    // the window, on the drillhole layer: its axis, legend and subtitle say metres
+    M_.openGradeTonnage(D, { cfg: { series: [{ layer: D.name, col: 'FE' }], nCut: 10 }, run: true });
+    const t0 = Date.now(); let el = null;
+    while (Date.now() - t0 < 10000) { el = [...document.querySelectorAll('*')].find((e) => e._gtSpec); if (el) break; await new Promise((res) => setTimeout(res, 50)); }
+    out.win = el ? { left: el._gtSpec.leftLabel, names: el._gtSpec.series.map((s) => s.name), sub: (el.querySelector('.fw-sub, .sub') || {}).textContent || '' } : null;
+    // the join: TON summed from the 10 m model onto the 5 m one is conserved; mean replicates
+    const js = await m.runTool('join', { layer: 'f.csv', from: 'c.csv', columns: ['TON'], ops: { TON: 'sum' } });
+    const sumCol = M_.numericColsOf(M_.layers().find((x) => x.name === 'f.csv')).find((n) => /TON/i.test(n));
+    const st1 = await m.runTool('stats', { layer: 'f.csv', cols: [sumCol] });
+    const s1 = st1.table ? st1.table.rows[0] : null, ci = st1.table ? st1.table.columns : [];
+    out.join = { col: sumCol, n: s1 && s1[ci.indexOf('n')], mean: s1 && s1[ci.indexOf('mean')] };
+    return out;
+  });
+  const near = (a, b) => Math.abs(a - b) < 1e-6;
+  const [e25, e50] = r.expect, [g25, g50] = r.gt.rows || [];
+  chk(`LENGTH-WEIGHTED GT: drillhole columns name a length in metres (${r.gt.cols} · ${JSON.stringify(r.gt.units)})`, r.gt.cols === 'series,cutoff,length,grade,accumulation' && r.gt.units.length === 'm' && /·m$/.test(r.gt.units.accumulation));
+  chk(`LENGTH-WEIGHTED GT: Σ length and length-weighted grade above each cutoff (${JSON.stringify(r.gt.rows)} vs ${JSON.stringify(r.expect)})`,
+    !!g25 && !!g50 && near(g25[2], e25.length) && near(g25[3], e25.grade) && near(g25[4], e25.acc) && near(g50[2], e50.length) && near(g50[3], e50.grade) && near(g50[4], e50.acc));
+  chk(`LENGTH-WEIGHTED GT: a density makes weighted_length (m·t/m3), never tonnes (${JSON.stringify(r.gtw)})`, r.gtw.cols === 'series,cutoff,weighted_length,grade,accumulation' && r.gtw.units.weighted_length === 'm·t/m3' && near(r.gtw.row[2], 2 * e25.length) && near(r.gtw.row[3], e25.grade));
+  chk(`LENGTH-WEIGHTED GT: blocks and drillholes on one curve are refused (${r.mixed})`, /measure different things/.test(r.mixed));
+  chk(`LENGTH-WEIGHTED GT: the window's axis + legend say metres (${JSON.stringify(r.win)})`, !!r.win && r.win.left === 'length (m)' && r.win.names.some((n) => / · m$/.test(n)) && !r.win.names.some((n) => /· t$/.test(n)));
+  chk(`JOIN SUM CONSERVED: 10 m → 5 m, Σ TON over 64 children = 3600 (was ×8) (${JSON.stringify(r.join)})`, r.join.n === 64 && near(r.join.mean * r.join.n, 3600));
+  await p.close();
+}
+
+// ── §SCOPE: CAPTIONS COUNT WHAT THE IMAGE SHOWS — a view frame cut by a section counts ({count})
+//     and takes statistics ({mean:FE} {n:FE}) over the records INSIDE its section (block centroids;
+//     a slab thinner than a block keeps the blocks its plane cuts; a half-space its kept side), after
+//     its filter; the view frame's inspector → "captions: whole model" counts the whole filtered
+//     model instead. The setting is the frame's, and saves with the figure. ──
+if (take()) {
+  let p = await mkPage('sm2scope');
+  const pdfText = async (pg) => pg.evaluate(async () => {
+    const M_ = window._micro, bytes = await M_.figurePdfBytes(M_.currentFigure(), 72, { compress: false });
+    const s = new TextDecoder('latin1').decode(bytes);
+    return [...s.matchAll(/\(((?:\\.|[^\\)])*)\) Tj/g)].map((m) => m[1]).find((x) => x.startsWith('Q ')) || '';
+  });
+  const r = await p.evaluate(async () => {
+    const M_ = window._micro, out = {};
+    // 20 × 10 blocks of 10 m on 6 levels (z = 5 … 55); FE = 10·level + i
+    const rows = ['XC,YC,ZC,FE'], recs = [];
+    for (let k = 0; k < 6; k++) for (let j = 0; j < 10; j++) for (let i = 0; i < 20; i++) { rows.push(`${5 + i * 10},${5 + j * 10},${5 + k * 10},${10 * k + i}`); recs.push({ z: 5 + k * 10, fe: 10 * k + i }); }
+    const id = await M_.openBlob(new File([rows.join('\n') + '\n'], 'scope.csv'), 'scope.csv', 'replace');
+    M_.setActiveLayer(id);
+    document.querySelector('#filter').value = 'FE >= 30'; await M_.applyBlockFilter('FE >= 30');
+    await window.micro.setView({ look: 0, elevation: 90, ortho: true });
+    // the expected numbers, from the rows: inside = centroid z in (lo, hi], and FE >= 30
+    const stat = (lo, hi) => { const v = recs.filter((x) => x.z > lo && x.z <= hi && x.fe >= 30).map((x) => x.fe); return { n: v.length, mean: v.length ? (v.reduce((a, b) => a + b, 0) / v.length).toFixed(3) : '—' }; };
+    out.want = { slab: stat(20, 40), model: stat(-1e9, 1e9), thin: stat(20, 30), front: stat(30, 1e9), p15: stat(10, 20), p45: stat(40, 50) };
+    await window.micro.setSection({ axis: 'z', position: 30, thickness: 20, clip: 'slab' });   // 30 RL ± 10: the z=25 and z=35 levels
+    await new Promise((res) => setTimeout(res, 200));
+    const ed = M_.openComposer('scope');
+    const f = M_.addViewFrame(ed);
+    out.viewId = f.id;
+    ed.addFrame({ kind: 'text', box: [f.box[0], f.box[1] + f.box[3] + 2, 160, 8], content: { md: 'Q {count} blocks · mean {mean:FE:.3f} · n {n:FE} · of {total}', size: 9 } });
+    out.defaultScope = ed.getDoc().frames.find((x) => x.id === f.id).content.statsScope ?? 'absent';
+    return out;
+  });
+  // the caption's text in the PDF (its · arrives as an octal escape)
+  const T = (q) => { const m = /^Q (\S+) blocks \S+ mean (\S+) \S+ n (\S+) \S+ of (\S+)/.exec(q); return m ? { count: m[1], mean: m[2], n: m[3], total: m[4] } : null; };
+  const slab = T(await pdfText(p));
+  chk(`SCOPE: by default a view cut by a slab counts its slab — centroids in (20, 40], FE ≥ 30 (${JSON.stringify(slab)} vs ${JSON.stringify(r.want.slab)}; scope ${r.defaultScope})`,
+    slab && +slab.count === r.want.slab.n && slab.mean === r.want.slab.mean && +slab.n === r.want.slab.n && +slab.total === 1200 && r.defaultScope === 'absent');
+  // a slab thinner than a block, its plane on a block face: the blocks above the plane (half-open)
+  await p.evaluate(async () => { await window.micro.setSection({ axis: 'z', position: 25, thickness: 2, clip: 'slab' }); });
+  await p.evaluate(async () => { const M_ = window._micro, ed = M_.composerEditor(), f = ed.getDoc().frames.find((x) => x.source && x.source.kind === 'view'); M_.composerFrameMenu(f, ed).find((x) => x.label === 'Update from the 3D view').run(); });
+  const thin = T(await pdfText(p));
+  chk(`SCOPE: a slab thinner than a block keeps the blocks its plane cuts (${JSON.stringify(thin)} vs ${JSON.stringify(r.want.thin)})`, thin && +thin.count === r.want.thin.n && thin.mean === r.want.thin.mean);
+  // a half-space: what is drawn is the kept side
+  await p.evaluate(async () => { await window.micro.setSection({ axis: 'z', position: 30, clip: 'front' }); });
+  await p.evaluate(async () => { const M_ = window._micro, ed = M_.composerEditor(), f = ed.getDoc().frames.find((x) => x.source && x.source.kind === 'view'); M_.composerFrameMenu(f, ed).find((x) => x.label === 'Update from the 3D view').run(); });
+  const front = T(await pdfText(p));
+  chk(`SCOPE: a half-space (front) counts its kept side (${JSON.stringify(front)} vs ${JSON.stringify(r.want.front)})`, front && +front.count === r.want.front.n && front.mean === r.want.front.mean);
+  // atlas pages: each page's own section, so each page counts its bench (an empty one says so)
+  const pages = await p.evaluate(async () => {
+    const M_ = window._micro, out = [];
+    for (const z of [15, 45]) {
+      const doc = await M_.compoPage({ figure: 'scope', view: { section: { axis: 'z', position: z, thickness: 10, clip: 'slab' } }, dpi: 72 });
+      const env = { ...M_.composerEnv(), doc }, cap = doc.frames.find((x) => x.kind === 'text');
+      out.push([env.fields.count(null, cap, env), env.fields.mean('FE', cap, env), env.fields.n('FE', cap, env)]);
+    }
+    return out;
+  });
+  const fmt3 = (v) => (typeof v === 'number' ? v.toFixed(3) : v);
+  chk(`SCOPE: atlas pages count their own bench (${JSON.stringify(pages)} vs ${JSON.stringify([r.want.p15, r.want.p45])})`,
+    pages[0][0] === r.want.p15.n && pages[0][1] === r.want.p15.mean && pages[0][2] === 0 && pages[1][0] === r.want.p45.n && fmt3(pages[1][1]) === r.want.p45.mean && pages[1][2] === r.want.p45.n);
+  // back to the slab, then the inspector → whole model
+  const sw = await p.evaluate(async () => {
+    const M_ = window._micro, ed = M_.composerEditor(), f = ed.getDoc().frames.find((x) => x.source && x.source.kind === 'view');
+    await window.micro.setSection({ axis: 'z', position: 30, thickness: 20, clip: 'slab' });
+    M_.composerFrameMenu(f, ed).find((x) => x.label === 'Update from the 3D view').run();
+    ed.select([f.id]); await new Promise((res) => setTimeout(res, 50));
+    const sel = document.querySelector('.cmp-statsscope');
+    const o = { label: sel && sel.selectedOptions[0].textContent, row: sel && sel.closest('.row').firstChild.textContent };
+    sel.value = 'model'; sel.dispatchEvent(new Event('change'));
+    const t0 = performance.now(); while (performance.now() - t0 < 8000) { const fx = ed.getDoc().frames.find((x) => x.id === f.id).content.meta.facts; if (fx.statsScope === 'model' && fx.stats) break; await new Promise((res) => setTimeout(res, 50)); }
+    o.stored = ed.getDoc().frames.find((x) => x.id === f.id).content.statsScope;
+    // the caption on screen (the editor's fields), before any export
+    const env = { ...M_.composerEnv(), doc: ed.getDoc() }, cap = ed.getDoc().frames.find((x) => x.kind === 'text');
+    o.live = [env.fields.count(null, cap, env), env.fields.mean('FE', cap, env)];
+    return o;
+  });
+  const model = T(await pdfText(p));
+  chk(`SCOPE: the inspector row reads "${sw.row}: ${sw.label}"; → whole model stores statsScope=${sw.stored} and counts every filtered block (${JSON.stringify(model)} vs ${JSON.stringify(r.want.model)}; on screen ${JSON.stringify(sw.live)})`,
+    sw.row === 'captions' && sw.label === 'in the section' && sw.stored === 'model' && model && +model.count === r.want.model.n && model.mean === r.want.model.mean && sw.live[0] === r.want.model.n);
+  await saveProject(p);
+  await p.close();
+  // the setting saves with the figure
+  p = await mkPage('sm2scope');
+  await p.evaluate(async () => { const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2scope'); await window._micro.openProjectDir(dir); });
+  await p.waitForFunction(() => window._micro.layers().length, null, { timeout: 60000 });
+  const back = await p.evaluate(async () => {
+    const M_ = window._micro, ed = M_.openComposer('scope');
+    await new Promise((res) => setTimeout(res, 300));
+    const f = ed.getDoc().frames.find((x) => x.source && x.source.kind === 'view');
+    ed.select([f.id]); await new Promise((res) => setTimeout(res, 50));
+    const sel = document.querySelector('.cmp-statsscope');
+    return { stored: f.content.statsScope, shown: sel && sel.value };
+  });
+  const after = T(await pdfText(p));
+  chk(`SCOPE: the figure reopens counting the whole model (statsScope ${back.stored}, inspector ${back.shown}; ${JSON.stringify(after)})`,
+    back.stored === 'model' && back.shown === 'model' && after && +after.count === r.want.model.n);
   await p.close();
 }
 

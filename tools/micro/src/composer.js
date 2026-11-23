@@ -19,7 +19,8 @@ import { captureScene, applyScene } from './views.js';
 import { legendSpec, legendDefaultTitle, _bgColor, applyBg } from './deco.js';
 import { microPrompt, microConfirm } from './prompts.js';
 import { resolveFileHandle, removeFileAt } from './paths.js';
-import { setSectionWorld, sectionWorld } from './section.js';
+import { setSectionWorld, sectionWorld, currentSection } from './section.js';
+import { sectionCutOf, sectionRecordMask, filterMaskOf } from './insection.js';
 import { rendererDocBbox, layerShown } from './layers.js';
 import { attrRowCountOf, layerBlob, layerTableHeader, schemaExt, layerWorldBox, meshVertexData } from './records.js';
 import { figureRefs, retargetDoc, guessLayer, guessColumn } from './retarget.js';
@@ -81,13 +82,48 @@ function viewFacts() {
   };
 }
 // the slower facts, once a view frame has rendered: each layer's content hash, and the statistics
-// its captions ask for ({mean:AU} …), over the records the view showed (its filters)
+// its captions ask for ({mean:AU} …), over the records the view showed (its filters) — and, when the
+// frame counts IN THE SECTION (content.statsScope, the default), only those inside its section
 const STAT_RE = /\{(mean|median|min|max|std|n):([^{}@]+?)(?::[,_]?(?:\.\d{1,2})?[f%e]?)?(?:@([\w.-]+))?\}/g;
+const COUNT_RE = /\{(?:count|mean|median|min|max|std|n)\b[^{}]*?(?:@([\w.-]+))?\}|\$\{[^}]*\bcount\b[^}]*\}/g;
 const isView = (f) => !!(f.source && f.source.kind === 'view');
+// what a view frame's {count} and statistics cover: 'section' (the records inside its section —
+// what the image shows; the default) or 'model' (the whole model, after filters). A view with no
+// section cutting a layer counts that layer whole either way.
+export const statsScopeOf = (f) => (f && f.content && f.content.statsScope === 'model' ? 'model' : 'section');
+// does any caption on the page count / take statistics about view frame f?
+function countsAbout(doc, f) {
+  for (const t of doc.frames) {
+    if (t.kind !== 'text' || !t.content || !t.content.md) continue;
+    const md = String(t.content.md); COUNT_RE.lastIndex = 0; let m;
+    while ((m = COUNT_RE.exec(md))) if (subjectFrame({ doc, at: m[1] || null }, t, isView) === f) return true;
+  }
+  return false;
+}
 async function completeFacts(doc, f) {
   const fx = f.content && f.content.meta && f.content.meta.facts; if (!fx) return;
+  // the section, captured NOW (before any await): the caller has the frame's scene on the 3D view,
+  // and may put the user's view back while this runs
+  const scope = statsScopeOf(f), cs = currentSection(), cuts = new Map();
+  for (const l of fx.layers) {
+    const L = S.layers.find((x) => (x.label || x.name) === l.name);
+    const cut = L ? sectionCutOf(L, cs) : null;
+    l.cut = !!cut; delete l.inSection;
+    if (cut && scope === 'section') cuts.set(l.name, { l, cut });
+  }
+  const baseMasks = new Map(S.layers.map((L) => [L, filterMaskOf(L)]));
+  fx.statsScope = scope;
   for (const l of fx.layers) if (l._blob && !l.sha) { try { l.sha = await sourceHash(l._blob); } catch { /* unreadable: no hash */ } }
   if (f.content.vectorOn) { try { await buildVector(f); } catch (e) { f.content.vector = null; f.content.vectorError = e.message; } }
+  // the records inside the section, ONE positions pass per layer, only when a caption counts
+  // about this view; the masks then serve every statistic below (N captions, one pass)
+  const masks = new Map();
+  if (cuts.size && countsAbout(doc, f)) {
+    for (const [name, { l, cut }] of cuts) {
+      try { const r = await sectionRecordMask(cut); masks.set(name, r.mask); l.inSection = r.count; }
+      catch { l.inSection = null; }                // couldn't read the positions: the field says so ('…')
+    }
+  }
   const want = new Set();
   for (const t of doc.frames) {
     if (t.kind !== 'text' || !t.content || !t.content.md) continue;
@@ -105,9 +141,12 @@ async function completeFacts(doc, f) {
     let got = null;
     for (const L of cands) {
       try {
-        const r = await HK.statsScan(L, { cols: [col] }, L.filterExpr ? L._filterMask : null);
+        const nm = L.label || L.name, inSec = masks.get(nm);
+        if (cuts.has(nm) && !inSec) continue;      // in the section, but its positions couldn't be read
+        const r = await HK.statsScan(L, { cols: [col] }, inSec || baseMasks.get(L) || null);
         const row = r.rows.find((x) => x.group === '' || x.group == null) || r.rows[0];
-        if (row) { got = { layer: L.label || L.name, n: row.n, mean: row.mean, median: row.q50, min: row.min, max: row.max, std: row.std }; break; }
+        if (row) { got = { layer: nm, n: row.n, mean: row.mean, median: row.q50, min: row.min, max: row.max, std: row.std }; break; }
+        if (inSec) { got = { layer: nm, n: 0, mean: null, median: null, min: null, max: null, std: null }; break; }   // the column, but nothing in the section has a value
       } catch { /* not this layer's column */ }
     }
     fx.stats[key] = got || { error: `no shown layer has a column “${col}”` };
@@ -525,6 +564,26 @@ function viewInspector(f, el) {
   const hint = document.createElement('span'); hint.className = 'hint';
   hint.textContent = f.content.scaleLock ? 'locked' : m.ortho ? 'free' : 'perspective';
   ctl.append(one, inp, hint); row.append(lab, ctl); el.append(row);
+  // what this view's {count} and statistics captions cover: the records inside its section (what
+  // the image shows — the default), or the whole model; filters apply either way
+  const sec = m.facts && m.facts.section;
+  const srow = document.createElement('div'); srow.className = 'row';
+  const slab = document.createElement('span'); slab.textContent = 'captions';
+  const sctl = document.createElement('span'); sctl.className = 'ctl';
+  const ssel = document.createElement('select'); ssel.className = 'cmp-statsscope';
+  for (const [v, t] of [['section', 'in the section'], ['model', 'whole model']]) { const o = document.createElement('option'); o.value = v; o.textContent = t; ssel.append(o); }
+  ssel.value = statsScopeOf(f);
+  ssel.title = 'what {count} and the statistics ({mean:AU} …) in captions about this view count: the records inside its section — block centroids, interval midpoints; what the image shows — or the whole model. Filters apply either way.';
+  ssel.onkeydown = (e) => e.stopPropagation();
+  ssel.onchange = async () => {
+    const v = ssel.value;
+    _ed.update(f.id, (fr) => { fr.content = { ...fr.content, statsScope: v }; });
+    const fr = frameById(_ed.getDoc(), f.id);
+    if (fr && fr.source && fr.source.scene) { await withScene(fr.source.scene, () => completeFacts(_ed.getDoc(), fr)); _ed.render(); }
+  };
+  sctl.append(ssel);
+  if (!sec) { const nh = document.createElement('span'); nh.className = 'hint'; nh.textContent = 'no section'; nh.title = 'this view has no section: its captions count the whole model either way'; sctl.append(nh); }
+  srow.append(slab, sctl); el.append(srow);
 }
 // ── double-click a view frame: work it in the 3D view, at the frame's shape; Done re-captures it ──
 let _editing = null;
@@ -1015,12 +1074,25 @@ function sectionText(sec) {
 const layersOf = (fx, a) => (fx ? fx.layers.filter((l) => !a || l.name === a) : []);
 const deg3 = (v) => String(Math.round(((v % 360) + 360) % 360) % 360).padStart(3, '0') + '°';
 const sum = (ls, k) => ls.reduce((s, l) => s + l[k], 0);
+// {count}: the records the view shows after filters — in its section when the frame counts there
+// (statsScope 'section', the default) and a section cuts the layer. null = not computed yet ('…')
+function countOf(v, fx, ls) {
+  if (statsScopeOf(v) !== 'section') return sum(ls, 'shown');
+  let n = 0;
+  for (const l of ls) {
+    const cut = l.cut != null ? l.cut : !!fx.section;      // facts from before the scope existed: cut if the view had a section
+    if (!cut) { n += l.shown; continue; }
+    if (fx.statsScope !== 'section' || typeof l.inSection !== 'number') return null;
+    n += l.inSection;
+  }
+  return n;
+}
 const MICRO_FIELDS = {
   section: (a, f, env) => { const fx = factsOf(f, env); return fx ? sectionText(fx.section) : null; },
   look: (a, f, env) => { const fx = factsOf(f, env); return fx && fx.camera ? deg3(fx.camera.look) : null; },
   elevation: (a, f, env) => { const fx = factsOf(f, env); return fx && fx.camera ? Math.round(fx.camera.elevation) + '°' : null; },
   layers: (a, f, env) => { const fx = factsOf(f, env); return fx ? fx.layers.map((l) => l.name).join(', ') || 'no layers' : null; },
-  count: (a, f, env) => { const ls = layersOf(factsOf(f, env), a); return ls.length ? sum(ls, 'shown') : null; },
+  count: (a, f, env) => { const fx = factsOf(f, env), ls = layersOf(fx, a); if (!ls.length) return null; const n = countOf(viewOf(f, env), fx, ls); return n == null ? '…' : n; },
   total: (a, f, env) => { const ls = layersOf(factsOf(f, env), a); return ls.length ? sum(ls, 'total') : null; },
   filter: (a, f, env) => {
     const ls = layersOf(factsOf(f, env), a); if (!ls.length) return null;
@@ -1040,34 +1112,35 @@ for (const k of ['mean', 'median', 'min', 'max', 'std', 'n']) MICRO_FIELDS[k] = 
   if (!a) return `⟨which column? {${k}:AU}⟩`;
   const fx = factsOf(f, env); if (!fx) return null;
   const st = fx.stats && fx.stats[a];
-  if (!st) return '…';                                       // not computed yet (the view frame's menu: Refresh fields)
-  return st.error ? `⟨${st.error}⟩` : st[k];
+  if (!st || (fx.statsScope || 'model') !== statsScopeOf(viewOf(f, env))) return '…';   // not computed yet, or for the other scope (the view frame's menu: Refresh fields)
+  return st.error ? `⟨${st.error}⟩` : st[k] == null ? '—' : st[k];   // — : nothing in the section has a value
 };
 const MICRO_FIELD_HELP = [
   { name: 'section', help: 'the section the nearest view shows: 630 RL ± 5 · 7 604 125 N' },
   { name: 'look', help: 'the bearing the view looks toward: 045°' },
   { name: 'elevation', help: 'how far above the horizon the eye sits: 30° (90° = plan)' },
   { name: 'layers', help: 'the layers the view shows' },
-  { name: 'count', help: 'records shown, after filters: {count:,} · {count:layer}' },
+  { name: 'count', help: 'records shown, after filters — inside the view’s section unless the view frame counts the whole model (its “captions” setting): {count:,} · {count:layer}' },
   { name: 'total', help: 'records in the shown layers, before filters' },
   { name: 'filter', help: 'the filter(s) the view used' },
   { name: 'source', help: 'the files the shown layers read' },
   { name: 'sha', help: 'a short content hash of each source file' },
   { name: 'project', help: 'the project folder' },
   { name: 'micro', help: 'the micro build that made the page' },
-  { name: 'mean', help: 'a column’s mean over the shown records: {mean:AU:.2f} · {mean:layer:AU}' },
+  { name: 'mean', help: 'a column’s mean over the shown records (the same records {count} counts — the section’s, or the whole model’s): {mean:AU:.2f} · {mean:layer:AU}' },
   { name: 'median', help: 'a column’s median: {median:AU}' },
   { name: 'min', help: 'a column’s minimum: {min:AU}' },
   { name: 'max', help: 'a column’s maximum: {max:AU}' },
   { name: 'std', help: 'a column’s standard deviation: {std:AU}' },
-  { name: 'n', help: 'how many shown records have a value: {n:AU}' },
+  { name: 'n', help: 'how many of the records {count} counts have a value: {n:AU}' },
 ];
 // the ${…} scope: the nearest view's numbers
 function scopeOf(frame, env) {
   const out = { page: env.page ?? 1, pages: env.pages ?? 1 };
   const fx = env.doc ? factsOf(frame, env) : null;
   if (!fx) return out;
-  out.count = sum(fx.layers, 'shown'); out.total = sum(fx.layers, 'total');
+  const n = countOf(viewOf(frame, env), fx, fx.layers);
+  out.count = n == null ? sum(fx.layers, 'shown') : n; out.total = sum(fx.layers, 'total');
   if (fx.camera) { out.look = fx.camera.look; out.elevation = fx.camera.elevation; }
   if (fx.section) out.section = fx.section.position;
   return out;

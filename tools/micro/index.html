@@ -2340,7 +2340,8 @@ const COMMANDS = [
   { id: 'selclear', group: 'Select', title: 'Clear selection', kw: 'deselect', run: () => clearSelection() },
   { id: 'solid', group: 'Select', title: 'Select by solid / surface…', kw: 'winding flag ratio fraction inside', when: () => S.layers.some((L) => L.kind === 'mesh'), run: () => openSolidDialog(null) },
   { id: 'domains', group: 'Select', title: 'Assign domains…', kw: 'coded model solids', when: () => S.layers.some((L) => L.kind === 'mesh'), run: () => openDomainsDialog() },
-  { id: 'gt', group: 'Analyse', title: 'Grade-tonnage…', kw: 'cutoff tonnes curve reserve', when: (c) => c.L && gridAxesOf(c.L), run: (c) => openGradeTonnage(c.L) },
+  { id: 'gt', group: 'Analyse', title: 'Grade-tonnage…', kw: 'cutoff tonnes curve reserve', when: (c) => c.L && (gridAxesOf(c.L) || (c.L.dh && c.L.docs.dhDoc)),   // a drillhole layer: length-weighted (src/analysis.js supportContextOf)
+    run: (c) => openGradeTonnage(c.L) },
   { id: 'swath', group: 'Analyse', title: 'Swath plot…', kw: 'drift bias direction trend plunge dip rake', when: (c) => c.L && gridAxesOf(c.L), run: (c) => openSwath(c.L) },
   // validate vs drillholes — palette-only (not on the layer menu): shown for a gridded block model once a drillhole layer is loaded
   { id: 'validate', group: 'Analyse', title: 'Validate vs drillholes…', kw: 'declustered sample bias check reconcile composite', when: (c) => c.L && gridAxesOf(c.L) && S.layers.some((L) => L.dh), run: (c) => openValidation(c.L) },
@@ -2596,11 +2597,33 @@ function _demoFeAt(x, y, z, rnd) {
   const p2 = (u + 0.5) * (u + 0.5) * 2.0 + (v + 0.25) * (v + 0.25) * 1.6 + (w - 0.2) * (w - 0.2) * 1.8;
   const shoot = Math.max(Math.exp(-p1 * 2.2), Math.exp(-p2 * 2.2));
   const waste = 22 + n * 9;                                // 13–31: canga/itabirite background
-  const ore = 57 + n * 5 + shoot * 9;                      // 52–68+: itabirite → hematite, pods run high
+  const ore = 58.5 + n * 5 + shoot * 9;                    // 53–68: itabirite → a hematite core above 60, pods run high
   const fe = waste + (ore - waste) * m + ((rnd ? rnd() : 0.5) - 0.5) * 3;   // ±1.5 measurement jitter
   return Math.max(8, Math.min(68, fe));
 }
 const _demoSg = (fe) => +(2.5 + (fe / 68) * 2.0).toFixed(2);   // iron ore: ~2.5 waste → ~4.5 hematite
+// the pre-mining ground — the model's top is carved from it; collars sit on it
+const _demoTopoAt = (x, y) => { const D = _DEMO, zTop = D.z0 + (D.nz - 1) * D.dz; return zTop + 4 + 9 * Math.sin((x - D.x0) / 260) * Math.cos((y - D.y0) / 210) + 6 * Math.sin((x + y - D.x0 - D.y0) / 610); };
+// ONE rock model for the blocks AND the holes (so a hole's LITO and FE agree with the blocks it
+// crosses): the lens membership decides ore; within it the friable HEMATITE core runs ≥ 60% Fe,
+// ITABIRITE carries the rest of the ore and a lower-grade halo; a CANGA duricrust caps the top
+// 25 m outside the ore (ferruginous, 46–58% Fe — not the 13–31 country rock it used to be); the
+// rest is WASTE (phyllite/quartzite, 13–31%). The old LITO came from a second, different ellipsoid
+// and only named the top of the lens HEMATITE — 114 blocks, most of them mined out.
+function _demoRock(x, y, z, rnd) {
+  const D = _DEMO;
+  const i = (x - D.x0) / D.dx, j = (y - D.y0) / D.dy, k = (z - D.z0) / D.dz;
+  const u = (i - D.nx * 0.5 - (k - D.nz / 2) * 0.35) / (D.nx * 0.22), v = (j - D.ny * 0.45) / (D.ny * 0.3), w = (k - D.nz * 0.55) / (D.nz * 0.28);
+  const n = _demoNoise(x, y, z);
+  const m = 1 / (1 + Math.exp((u * u + v * v + w * w + n * 0.35 - 0.75) * 6));   // ore membership (the same as _demoFeAt's)
+  let fe = _demoFeAt(x, y, z, rnd), lito;
+  const nearTop = z > D.z0 + (D.nz - 1) * D.dz - 25;
+  if (m >= 0.5) lito = fe >= 60 ? 'HEMATITE' : 'ITABIRITE';
+  else if (nearTop) { lito = 'CANGA'; fe = Math.max(fe, 52 + n * 6 + ((rnd ? rnd() : 0.5) - 0.5) * 2); }
+  else if (m >= 0.12) lito = 'ITABIRITE';                  // the low-grade halo
+  else lito = 'WASTE';
+  return { fe: Math.max(8, Math.min(68, fe)), lito };
+}
 // block model with FE + SG (density → real grade-tonnage) + LITO
 function makeDemoBlockCsv() {
   const D = _DEMO, parts = ['XC,YC,ZC,FE,SG,LITO\n']; let rows = [];
@@ -2613,10 +2636,7 @@ function makeDemoBlockCsv() {
         const kSurf = D.nz - 1 - Math.floor(pitDepth / D.dz / benchBlocks) * benchBlocks;
         if (k > kSurf) continue;
         const x = D.x0 + i * D.dx, y = D.y0 + j * D.dy, z = D.z0 + k * D.dz;
-        const fe = _demoFeAt(x, y, z, rnd);
-        const u = (i - D.nx * 0.5 - (k - D.nz / 2) * 0.35) / (D.nx * 0.22), v = (j - D.ny * 0.45) / (D.ny * 0.3), w = (k - D.nz * 0.55) / (D.nz * 0.28);
-        const d2 = u * u + v * v + w * w;
-        const lito = d2 < 0.8 ? (k > D.nz * 0.7 ? 'HEMATITE' : 'ITABIRITE') : (k > D.nz * 0.8 ? 'CANGA' : 'WASTE');
+        const { fe, lito } = _demoRock(x, y, z, rnd);
         rows.push(`${x},${y},${z},${fe.toFixed(2)},${_demoSg(fe)},${lito}`);
       }
     }
@@ -2628,29 +2648,36 @@ function makeDemoBlockCsv() {
 // FE from the same lens so the holes agree with the model (collar/survey/assay
 // column conventions per the @gcu/condenser drillhole provider)
 function makeDemoDrillholes() {
+  // four N–S drill lines across the E–W-striking lens; on each, a FAN of three holes from one collar
+  // on the pre-mining ground, south of the lens, drilled north at −45°, −60° and −75° — the way a
+  // lens like this is drilled, and the reason holes cross the demo's own E–W section (the old set
+  // was twelve vertical holes in three E–W rows: a slab at the section crossed none of them).
+  // Assays carry FE, SG and LITO from the SAME rock model as the blocks; surveys a station at the
+  // collar and at end of hole (straight holes — desurvey places them exactly where they sampled).
   const D = _DEMO, rnd = mulberry32(11);
-  const collar = ['HOLEID,X,Y,Z,EOH,COMPANY'], survey = ['HOLEID,DEPTH,AZ,DIP'], assay = ['HOLEID,FROM,TO,FE'];
-  const zc = D.z0 + D.nz * D.dz + 10;                     // collar just above the model top
+  const collar = ['HOLEID,X,Y,Z,EOH,COMPANY'], survey = ['HOLEID,DEPTH,AZ,DIP'], assay = ['HOLEID,FROM,TO,FE,SG,LITO'];
+  const cx = D.x0 + D.nx * 0.5 * D.dx, cy = D.y0 + D.ny * 0.45 * D.dy;
+  const lines = [-300, -100, 100, 300], dips = [45, 60, 75];
   let n = 0;
-  for (let gy = 0; gy < 3; gy++) {
-    for (let gx = 0; gx < 4; gx++) {
+  for (const off of lines) {
+    const x0 = cx + off, y0 = cy - 220, z0 = +_demoTopoAt(x0, y0).toFixed(1);
+    for (const dip of dips) {
       const id = `DH${String(++n).padStart(3, '0')}`;
-      const x = D.x0 + (0.15 + 0.7 * gx / 3) * D.nx * D.dx;
-      const y = D.y0 + (0.15 + 0.7 * gy / 2) * D.ny * D.dy;
-      // two campaigns: PIONEER's early scout holes stopped shallow; MERIDIAN
-      // drilled to the model floor — so the hole filter + broadcast have real
-      // hole-granularity data to work with (EOH, COMPANY)
+      // two campaigns: PIONEER's early scout holes stopped shallow; MERIDIAN drilled through —
+      // so the hole filter + broadcast have real hole-granularity data (EOH, COMPANY)
       const pioneer = n % 3 === 1;
-      const maxDp = pioneer ? 150 : 500;
-      survey.push(`${id},0,0,-90`);                        // vertical hole
+      const maxDp = pioneer ? 150 : 520;
+      const sd = Math.sin(dip * Math.PI / 180), cd = Math.cos(dip * Math.PI / 180);
       let eoh = 0;
       for (let dp = 0; dp < maxDp; dp += 5) {
-        const zmid = zc - (dp + 2.5);
-        if (zmid < D.z0) break;
-        assay.push(`${id},${dp},${dp + 5},${_demoFeAt(x, y, zmid, rnd).toFixed(2)}`);
+        const t = dp + 2.5, z = z0 - t * sd, y = y0 + t * cd;     // azimuth 0: north
+        if (z < D.z0) break;
+        const r = _demoRock(x0, y, z, rnd);
+        assay.push(`${id},${dp},${dp + 5},${r.fe.toFixed(2)},${_demoSg(r.fe)},${r.lito}`);
         eoh = dp + 5;
       }
-      collar.push(`${id},${x.toFixed(1)},${y.toFixed(1)},${zc},${eoh},${pioneer ? 'PIONEER' : 'MERIDIAN'}`);
+      survey.push(`${id},0,0,-${dip}`, `${id},${eoh},0,-${dip}`);
+      collar.push(`${id},${x0.toFixed(1)},${y0.toFixed(1)},${z0},${eoh},${pioneer ? 'PIONEER' : 'MERIDIAN'}`);
     }
   }
   return {
@@ -2668,7 +2695,7 @@ function makeDemoSurfaces() {
   const x0 = D.x0 - pad, yTop = D.y0 + (D.ny - 1) * D.dy + pad;
   const nx = Math.round((D.nx * D.dx + 2 * pad) / dx) + 1, ny = Math.round((D.ny * D.dy + 2 * pad) / dx) + 1;
   const zTop = D.z0 + (D.nz - 1) * D.dz;                   // the pre-pit ground the model is carved from
-  const topoAt = (x, y) => zTop + 4 + 9 * Math.sin((x - D.x0) / 260) * Math.cos((y - D.y0) / 210) + 6 * Math.sin((x + y - D.x0 - D.y0) / 610);
+  const topoAt = _demoTopoAt;                             // the same ground the collars sit on
   const pitAt = (x, y) => {
     const gx = ((x - D.x0) / D.dx - D.nx * 0.5) / (D.nx * 0.42), gy = ((y - D.y0) / D.dy - D.ny * 0.45) / (D.ny * 0.42);
     return Math.max(0, 240 * Math.exp(-(gx * gx + gy * gy) * 1.9) - 10);
@@ -2786,7 +2813,7 @@ async function openDemoProject() {
   if (bm) {
     setActiveLayer(bm.id);
     try {
-      openGradeTonnage(bm, { run: true });
+      openGradeTonnage(bm, { run: true, cfg: { series: [{ layer: bm.name, col: 'FE', unit: 'pct', weight: 'SG' }], gradeUnit: 'pct', densUnit: 't/m3', nCut: 40 } });   // tonnes, not volume: SG is the density, FE is in %
       const gtWin = [...document.querySelectorAll('.fwin')].pop();
       if (gtWin) { gtWin.style.left = Math.max(0, innerWidth - gtWin.offsetWidth - 14) + 'px'; gtWin.style.top = '70px'; }
     } catch { /* window optional */ }

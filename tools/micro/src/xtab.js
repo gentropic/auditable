@@ -8,7 +8,7 @@
 import { attrRowCountOf, layerRecords, layerTableHeader, numOf, schemaExt } from './records.js';
 import { compileBool, compileValue, quoteIdent, validate } from '../../../ext/expr/index.js';
 import { convert as unitConvert } from '../../../ext/units/index.js';
-import { volumeAt, volumeContextOf, numericColsOf } from './analysis.js';
+import { supportAt, supportContextOf, numericColsOf } from './analysis.js';
 import { applyAnalysisGeo, checkAbort, fmtStat, gradeUnitSel, plotExportBtns, runCancellable, saveAnalysisCfg, scanProgressText, scopeMask, scopeMissing, setAnalysisOpen } from './analysis-ui.js';
 import { floatWin, focusWindow } from './windows.js';
 import { canScanColumnar, scanColumnar, zoneKeeper } from './colscan.js';
@@ -52,7 +52,9 @@ export function xtabColumns(edges, mode) {
 export function xtabValue(c, measure, blank, scan) {
   if (measure === 'count') return c.n;
   if (measure === 'grade') return blank || !(c.w > 0) ? NaN : c.wg / c.w;
-  if (measure === 'metal') return blank ? NaN : c.wg * (scan && scan.gradeUnit ? unitConvert(1, scan.gradeUnit, 'fraction') : 1);
+  // a drillhole's "metal" is the accumulation grade × length, in the grade's own unit — never
+  // converted to a fraction (there is no tonnage under it to make metal of)
+  if (measure === 'metal') return blank ? NaN : c.wg * (scan && scan.gradeUnit && scan.support !== 'length' ? unitConvert(1, scan.gradeUnit, 'fraction') : 1);
   return c.w;
 }
 // → { rowKeys, cols, cell(rowKey, col) → {w,wg,n}, rowLabel } (the total row adds every group)
@@ -81,9 +83,10 @@ export async function scanXtabOf(L, st, onProgress, signal) {   // st: { grade, 
   if (groupX) { try { groupFn = compileValue(groupX, schema, { decimal: '.' }); } catch { throw new Error(`group "${st.group}": invalid`); } }
   if (weightX) { try { weightFn = compileValue(weightX, schema, { decimal: '.' }); } catch { throw new Error(`density "${weightX}": invalid`); } }
   if (filterX) { try { filterFn = compileBool(filterX, schema, { decimal: '.' }); } catch { throw new Error(`filter "${filterX}": invalid`); } }
-  const mask = scopeMask(st, L), vc = volumeContextOf(L), N = attrRowCountOf(L) || 0;
-  const base = { edges, grade: st.grade, group: st.group, grouped: !!groupX, weighted: !!weightX, gradeUnit: st.gradeUnit };
-  if (canScanColumnar(L)) {
+  // support: a block's volume, or a drillhole interval's LENGTH (TO − FROM, m) — see supportContextOf
+  const mask = scopeMask(st, L), sc = supportContextOf(L), vc = sc.vc, N = attrRowCountOf(L) || 0;
+  const base = { edges, grade: st.grade, group: st.group, grouped: !!groupX, weighted: !!weightX, gradeUnit: st.gradeUnit, support: sc.kind };
+  if (sc.kind === 'volume' && canScanColumnar(L)) {
     const dims = vc.dc ? [h.columns[vc.dc.x], h.columns[vc.dc.y], h.columns[vc.dc.z]] : null;
     const params = { group: groupX, grade: gradeX, weight: weightX, filter: filterX, dScale, vol: { base: vc.base, dims }, edges };
     const { parts, where } = await scanColumnar(L, { kernel: 'crosstab', params, exprs: [groupX, gradeX, weightX, filterX], extraCols: dims || [], mask, signal,
@@ -98,7 +101,7 @@ export async function scanXtabOf(L, st, onProgress, signal) {   // st: { grade, 
     seen++; if ((seen & 0xffff) === 0) { checkAbort(signal); if (onProgress) onProgress(seen, N, 'on this page'); await new Promise((r) => setTimeout(r)); }
     if (mask && !(rec < mask.length && mask[rec])) continue;
     if (filterFn && !filterFn(row)) continue;
-    const w = (weightFn ? (+weightFn(row) || 0) * dScale : 1) * volumeAt(vc, row);
+    const w = (weightFn ? (+weightFn(row) || 0) * dScale : 1) * supportAt(sc, row);
     if (!(w > 0)) continue;
     if (xtabAdd(groups, groupFn ? xtabKey(groupFn(row)) : '', edges, numOf(gradeFn(row)), w)) n++; else overflow = true;
   }

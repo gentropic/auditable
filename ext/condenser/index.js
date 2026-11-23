@@ -1699,10 +1699,18 @@ function makeResampler(srcAxes, tgtAxes, opts = {}) {
   const idxOf = (ti, tj, tk) => ti + nx * (tj + ny * tk);
   // full target-cell g-volume, for coverage (= tp_x·tp_y·tp_z)
   const fullW = X.tp * Y.tp * Z.tp;
+  // a SOURCE cell's own g-volume (= sp_x·sp_y·sp_z). 'sum' is a TRUE total: each source
+  // cell hands each target the FRACTION of itself that overlaps it (w / srcW), so a summed
+  // column (tonnes, metal) is conserved — Σ over targets = Σ over sources (restricted to
+  // the overlap) — at any pitch pair. Summing v·w alone was conserved only when fine
+  // blocks nest into coarse ones (sp = 1 on the g lattice): coarse → fine replicated the
+  // whole value into every child (×8 for 10 m → 5 m), mixed pitches inflated by srcW.
+  const srcW = X.sp * Y.sp * Z.sp;
   const nested = X.nested && Y.nested && Z.nested;
   return {
-    ok: true, nx, ny, nz, cells, idxOf, fullW, nested, X, Y, Z,
-    newAcc: () => ({ sum: new Float64Array(cells), w: new Float64Array(cells) }),
+    ok: true, nx, ny, nz, cells, idxOf, fullW, srcW, nested, X, Y, Z,
+    // sum/w → mean · w → count/coverage · tot → the conserved total ('sum')
+    newAcc: () => ({ sum: new Float64Array(cells), w: new Float64Array(cells), tot: new Float64Array(cells) }),
     // scatter one NUMERIC source cell (si,sj,sk index in the SOURCE lattice)
     scatter(si, sj, sk, v, wt, acc) {
       const xm = X.map[si], ym = Y.map[sj], zm = Z.map[sk];
@@ -1710,6 +1718,7 @@ function makeResampler(srcAxes, tgtAxes, opts = {}) {
       for (const { t: ti, w: wi } of xm) for (const { t: tj, w: wj } of ym) for (const { t: tk, w: wk } of zm) {
         const w = wi * wj * wk * wt; if (w <= 0) continue;
         const idx = idxOf(ti, tj, tk); acc.sum[idx] += v * w; acc.w[idx] += w;
+        if (acc.tot) acc.tot[idx] += v * w / srcW;
       }
     },
     // finalize numeric → { out: Float64Array(cells), coverage: Float32Array, present: Uint8Array }
@@ -1718,7 +1727,7 @@ function makeResampler(srcAxes, tgtAxes, opts = {}) {
       for (let i = 0; i < cells; i++) {
         const w = acc.w[i]; if (w <= 0) { out[i] = NaN; continue; }
         present[i] = 1; coverage[i] = Math.min(1, w / fullW);
-        out[i] = op === 'sum' ? acc.sum[i] : op === 'count' ? acc.w[i] : op === 'coverage' ? coverage[i] : acc.sum[i] / w;   // mean default
+        out[i] = op === 'sum' ? (acc.tot ? acc.tot[i] : acc.sum[i] / srcW) : op === 'count' ? acc.w[i] : op === 'coverage' ? coverage[i] : acc.sum[i] / w;   // mean default
       }
       return { out, coverage, present };
     },
@@ -1777,9 +1786,12 @@ function makeBoxAggregator(tgt, opts = {}) {
   };
   return {
     ok: true, nx, ny, nz, cells, idxOf, cellVol,
-    newAcc: () => ({ sum: new Float64Array(cells), w: new Float64Array(cells) }),
+    newAcc: () => ({ sum: new Float64Array(cells), w: new Float64Array(cells), tot: new Float64Array(cells) }),
     // scatter one box (world centroid cx,cy,cz + half-dims hx,hy,hz), value v,
-    // extra weight wt (e.g. 0 to exclude). Accumulates v·overlapVol and overlapVol.
+    // extra weight wt (e.g. 0 to exclude). Accumulates v·overlapVol and overlapVol,
+    // and — for 'sum' — v·(overlapVol / the box's OWN volume): the fraction of the box
+    // each target holds, so a summed column is conserved (same rule as makeResampler).
+    // A single-plane target axis measures overlap as 1, so the box's extent on it is 1 too.
     scatterBox(cx, cy, cz, hx, hy, hz, v, wt, acc) {
       if (!(wt > 0) || !Number.isFinite(v)) return;
       const xs = axisCells(tgt.x, cx - hx, cx + hx);
@@ -1787,9 +1799,12 @@ function makeBoxAggregator(tgt, opts = {}) {
       const ys = axisCells(tgt.y, cy - hy, cy + hy);
       if (!ys.length) return;
       const zs = axisCells(tgt.z, cz - hz, cz + hz);
+      const ext = (ax, h) => (ax.pitch > 0 ? 2 * h : 1);
+      const boxVol = ext(tgt.x, hx) * ext(tgt.y, hy) * ext(tgt.z, hz);
       for (const X of xs) for (const Y of ys) for (const Z of zs) {
         const w = X.ov * Y.ov * Z.ov * wt; if (w <= 0) continue;
         const idx = idxOf(X.i, Y.i, Z.i); acc.sum[idx] += v * w; acc.w[idx] += w;
+        if (acc.tot && boxVol > 0) acc.tot[idx] += v * w / boxVol;
       }
     },
     // → { out: Float64Array (NaN where empty), coverage: Float32Array (w/cellVol),
@@ -1799,7 +1814,7 @@ function makeBoxAggregator(tgt, opts = {}) {
       for (let i = 0; i < cells; i++) {
         const w = acc.w[i]; if (w <= 0) { out[i] = NaN; continue; }
         present[i] = 1; coverage[i] = cellVol > 0 ? Math.min(1, w / cellVol) : 1;
-        out[i] = op === 'sum' ? acc.sum[i] : op === 'volume' ? w : op === 'coverage' ? coverage[i] : acc.sum[i] / w;
+        out[i] = op === 'sum' ? (acc.tot ? acc.tot[i] : acc.sum[i]) : op === 'volume' ? w : op === 'coverage' ? coverage[i] : acc.sum[i] / w;
       }
       return { out, coverage, present };
     },

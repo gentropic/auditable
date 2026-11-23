@@ -37,6 +37,49 @@ export function volumeAt(vc, f) {
   const v = Math.abs(dx * dy * dz);
   return v > 0 ? v : vc.base;                              // a missing/zero dim → the fine pitch, honest not zero
 }
+// The SUPPORT a record stands for, for the accumulating tools (grade-tonnage,
+// cross-tab). A block stands for a VOLUME (m³; × density → tonnes). A drillhole
+// interval stands for a LENGTH of core: TO − FROM, in metres. There is no
+// cross-section area anywhere in an interval table, so length × density is NOT
+// tonnes — it is tonnes per m² of section (m · t/m³), and the tools must name it
+// that way rather than borrow the block model's "tonnes". Counting each interval
+// as 1 (what volumeAt did, since a drillhole has no grid) weighted a 0.3 m sliver
+// like a 3 m run and labelled the count m³. → { kind: 'volume', vc } |
+// { kind: 'length', from, to } (column indices into the interval row).
+export function supportContextOf(L) {
+  const d = L.docs || {};
+  if (d.dhDoc && !d.blockDoc) {
+    const im = d.dhDoc.header && d.dhDoc.header.intervalMapping;
+    if (!im || im.from == null || im.to == null || im.from < 0 || im.to < 0) throw new Error(`${L.label || L.name}: a drillhole layer without FROM/TO columns — no interval lengths to weight by`);
+    return { kind: 'length', from: im.from, to: im.to };
+  }
+  return { kind: 'volume', vc: volumeContextOf(L) };
+}
+// the record's support: its interval length (0 when FROM/TO are blank or
+// reversed — such a row is left out, not counted as 1) or its block volume
+export function supportAt(sc, f) {
+  if (sc.kind === 'length') { const len = numOf(f[sc.to]) - numOf(f[sc.from]); return len > 0 ? len : 0; }
+  return volumeAt(sc.vc, f);
+}
+// how an accumulated support is NAMED, in a machine table and on a chart.
+// weighted = a density/weight expression multiplied in.
+//   volume, no weight → volume  (m³)            · metal = grade × m³
+//   volume, weight    → tonnes  (t)             · metal = t of metal when the grade unit is declared
+//   length, no weight → length  (m)             · accumulation = grade × m (the "%·m" / "g/t·m" of an intercept)
+//   length, weight    → weighted_length (m·t/m³ = t per m² of section, NOT tonnes) · accumulation = grade × that
+export function supportMeasure(kind, weighted, gradeUnit) {
+  const gl = gradeUnit === 'pct' ? '%' : (gradeUnit || '');
+  if (kind === 'length') {
+    const col = weighted ? 'weighted_length' : 'length', unit = weighted ? 'm·t/m3' : 'm', short = weighted ? 'm·t/m³' : 'm';
+    return { kind, col, unit, short, axis: weighted ? 'length × density (m·t/m³)' : 'length (m)', sub: weighted ? 'length × density (not tonnes — no section area)' : 'length-weighted (m)',
+      metalCol: 'accumulation', metalUnit: `${gl || 'grade'}·${unit}`, metalShort: `${gl || 'grade'}·${short}`, metalScale: () => 1, countCol: 'intervals' };
+  }
+  const col = weighted ? 'tonnes' : 'volume', unit = weighted ? 't' : 'm3', short = weighted ? 't' : 'm³';
+  return { kind, col, unit, short, axis: weighted ? 'tonnage (t)' : 'volume (m³)', sub: weighted ? 'tonnes' : 'volume (no density)',
+    // a declared grade unit turns grade × amount into metal: tonnes of it over tonnes, m³ of it over m³
+    metalCol: 'metal', metalUnit: gradeUnit ? unit : `${gl || 'grade'}·${unit}`, metalShort: gradeUnit ? short : `${gl || 'grade'}·${short}`,
+    metalScale: () => (gradeUnit ? unitConvert(1, gradeUnit, 'fraction') : 1), countCol: 'blocks' };
+}
 // grade-tonnage: for each series column, cutoff → (tonnage above, mean grade above)
 // weight: a column name (back-compat) or { col?, const?, unit? } — `unit` is a
 // DECLARED density unit ('t/m3' | 'kg/m3' | 'lb/ft3'…), converted to t/m³ via

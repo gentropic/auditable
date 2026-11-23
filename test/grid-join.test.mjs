@@ -180,3 +180,55 @@ test('makeBoxAggregator — a full block covering the parent = that block grade;
   assert.ok(Math.abs(vol.out[0] - 500) < 1e-6, 'parent 0 overlap volume = 500');
   assert.ok(Math.abs(vol.out[1] - 125) < 1e-6, 'parent 1 overlap volume = 125');
 });
+
+// ── 'sum' is a TRUE total: each source block contributes value × (overlap / its own
+// volume), so Σ over target blocks of a summed column = Σ over source blocks
+// (restricted to the overlap), whatever the pitch pair. Mean is unchanged.
+const sumOut = (R, acc, op) => { const { out, present } = R.finalize(acc, op); let s = 0; for (let i = 0; i < out.length; i++) if (present[i]) s += out[i]; return s; };
+
+test('makeResampler — sum conserved: coarse → fine (10 m → 5 m)', () => {
+  const src = grid(ax(5, 10, 2), ax(5, 10, 2), Z1);   // 2×2 at 10 m
+  const tgt = grid(ax(2.5, 5, 4), ax(2.5, 5, 4), Z1); // 4×4 at 5 m
+  const R = makeResampler(src, tgt); assert.ok(R.ok);
+  const acc = R.newAcc(), tonnes = [[100, 200], [300, 400]];
+  for (let j = 0; j < 2; j++) for (let i = 0; i < 2; i++) R.scatter(i, j, 0, tonnes[j][i], 1, acc);
+  assert.ok(Math.abs(sumOut(R, acc, 'sum') - 1000) < 1e-9, 'Σ tonnes conserved (was ×4 before the fix)');
+  assert.equal(R.finalize(acc, 'sum').out[R.idxOf(0, 0, 0)], 25);    // a quarter of the 100 t parent
+  assert.equal(R.finalize(acc, 'mean').out[R.idxOf(0, 0, 0)], 100);  // mean: the child inherits the value
+});
+
+test('makeResampler — sum conserved: fine → coarse (5 m → 10 m, 3D)', () => {
+  const src = grid(ax(2.5, 5, 4), ax(2.5, 5, 4), ax(2.5, 5, 2));
+  const tgt = grid(ax(5, 10, 2), ax(5, 10, 2), ax(5, 10, 1));
+  const R = makeResampler(src, tgt); assert.ok(R.ok);
+  const acc = R.newAcc(); let total = 0, n = 0, vsum = 0;
+  for (let k = 0; k < 2; k++) for (let j = 0; j < 4; j++) for (let i = 0; i < 4; i++) { const v = 1 + i + 4 * j + 16 * k; R.scatter(i, j, k, v, 1, acc); total += v; if (i < 2 && j < 2) { vsum += v; n++; } }
+  assert.ok(Math.abs(sumOut(R, acc, 'sum') - total) < 1e-9);
+  assert.ok(Math.abs(R.finalize(acc, 'mean').out[R.idxOf(0, 0, 0)] - vsum / n) < 1e-9, 'mean = the plain mean of its 8 children');
+});
+
+test('makeResampler — sum conserved: mixed pitch (10 m → 15 m)', () => {
+  const src = grid(ax(5, 10, 3), ax(5, 10, 3), Z1);     // [0,30] at 10 m
+  const tgt = grid(ax(7.5, 15, 2), ax(7.5, 15, 2), Z1); // [0,30] at 15 m
+  const R = makeResampler(src, tgt); assert.ok(R.ok);
+  const acc = R.newAcc(); let total = 0;
+  for (let j = 0; j < 3; j++) for (let i = 0; i < 3; i++) { const v = 10 * (i + 3 * j + 1); R.scatter(i, j, 0, v, 1, acc); total += v; }
+  assert.ok(Math.abs(sumOut(R, acc, 'sum') - total) < 1e-9, `Σ ${sumOut(R, acc, 'sum')} vs ${total}`);
+  // target (0,0) = [0,15]²: source (0,0) whole (10×10), (1,0) & (0,1) halves (5×10), (1,1) a quarter
+  const s00 = 10 * 1 + 0.5 * 20 + 0.5 * 40 + 0.25 * 50;
+  assert.ok(Math.abs(R.finalize(acc, 'sum').out[R.idxOf(0, 0, 0)] - s00) < 1e-9);
+  // mean unchanged: overlap-area weighted — (100·10 + 50·20 + 50·40 + 25·50) / 225
+  assert.ok(Math.abs(R.finalize(acc, 'mean').out[R.idxOf(0, 0, 0)] - (100 * 10 + 50 * 20 + 50 * 40 + 25 * 50) / 225) < 1e-9);
+});
+
+test('makeBoxAggregator — sum conserved: a coarse box split over finer targets', () => {
+  const tgt = grid(ax(2.5, 5, 4), ax(2.5, 5, 2), ax(2.5, 5, 1));   // 20×10×5 of 5 m cells
+  const A = makeBoxAggregator(tgt);
+  const acc = A.newAcc();
+  A.scatterBox(5, 5, 2.5, 5, 5, 2.5, 80, 1, acc);       // a 10×10×5 block of 80 t over 4 cells
+  A.scatterBox(12.5, 2.5, 2.5, 2.5, 2.5, 2.5, 7, 1, acc); // a 5 m sub-block, wholly in one cell
+  const { out, present } = A.finalize(acc, 'sum'); let s = 0; for (let i = 0; i < out.length; i++) if (present[i]) s += out[i];
+  assert.ok(Math.abs(s - 87) < 1e-9, `Σ ${s}`);
+  assert.ok(Math.abs(out[A.idxOf(0, 0, 0)] - 20) < 1e-9);
+  assert.ok(Math.abs(A.finalize(acc, 'mean').out[A.idxOf(0, 0, 0)] - 80) < 1e-9);
+});
