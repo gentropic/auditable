@@ -14,6 +14,7 @@ import { openGradeTonnage } from './gt.js';
 import { openStats } from './stats.js';
 import { openXyPlot } from './xyplot.js';
 import { openSwath } from './swath.js';
+import { openCrosstab } from './xtab.js';
 import { gridAxesOf } from './grid-ops.js';
 import { menuXY } from './menu.js';
 import { microConfirm, microPrompt } from './prompts.js';
@@ -41,7 +42,7 @@ const $ = (s) => document.querySelector(s);
 // Files are the interface: comment them, copy them between projects, drop one
 // in and Scan folder picks it up. Series reference layers BY NAME; a missing
 // primary gets a one-question remap — that prompt IS the parameter binding. ──
-export const RECIPE_TOOLS = { gt: 'grade-tonnage', swath: 'swath', stats: 'stats', xy: 'scatter / Q-Q', figure: 'figure', compo: 'composer page', calccols: 'calc columns', solid: 'by solid / surface', validation: 'validation', resource: 'resource table', export: 'export', modelqa: 'model QA', dhqa: 'drillhole QA', meshqa: 'mesh QA', routine: 'routine' };
+export const RECIPE_TOOLS = { gt: 'grade-tonnage', swath: 'swath', stats: 'stats', xy: 'scatter / Q-Q', figure: 'figure', compo: 'composer page', calccols: 'calc columns', solid: 'by solid / surface', validation: 'validation', resource: 'resource table', export: 'export', modelqa: 'model QA', dhqa: 'drillhole QA', meshqa: 'mesh QA', xtab: 'cross-tab', composite: 'composite', pairing: 'pairing', shell: 'grade shell', join: 'spatial join', reconcile: 'reconcile', sections: 'section series', routine: 'routine' };
 
 export const recipeSlug = (name) => (String(name).toLowerCase().replace(/[^\w.-]+/g, '-').replace(/^-+|-+$/g, '') || 'recipe');
 
@@ -401,6 +402,14 @@ export function openRoutineTracker(rname, steps, P) {
 export function routineLayerNames(rc) {                           // the layer names a recipe's params reference
   const p2 = rc.params || {};
   const names = [];
+  // a registered tool says which of its settings name layers (its list: type layer) — a setting
+  // that merely shares a name (the section series' from: 5) is not taken for a layer
+  const def = rc.tool && toolDef(rc.tool);
+  if (def) {
+    for (const [k, spec] of Object.entries(def.params)) if (spec.type === 'layer' && typeof p2[k] === 'string' && p2[k]) names.push(p2[k]);
+    for (const ser of (Array.isArray(p2.series) ? p2.series : [])) if (ser && ser.layer) names.push(ser.layer);
+    return names;
+  }
   if (p2.layer) names.push(p2.layer);
   for (const ser of p2.series || []) if (ser.layer) names.push(ser.layer);
   if (p2.source) names.push(String(p2.source).split(':')[0]);
@@ -420,7 +429,7 @@ export async function routinePreflight(r, steps, { resume = false } = {}) {
   const missingR = [...new Set(steps.filter((st) => st.recipe && !byName.get(st.recipe)).map((st) => st.recipe))];
   if (missingR.length) problems.push(`missing recipe${missingR.length > 1 ? 's' : ''} — ${missingR.join(', ')}`);
   const loaded = new Set(S.layers.map((x) => x.name)), missingL = new Set();
-  for (const st of steps) if (!st.guard) for (const nm of routineLayerNames({ params: routineStepOp(st).params })) if (nm && !loaded.has(nm)) missingL.add(nm);
+  for (const st of steps) if (!st.guard) for (const nm of routineLayerNames(routineStepOp(st))) if (nm && !loaded.has(nm)) missingL.add(nm);
   if (missingL.size) problems.push(`load these layers first — ${[...missingL].join(', ')} (routines run without prompts)`);
   // the settings of every registered tool's step (src/tools.js): unknown ones name the nearest real
   // one, cutoffs and band widths are stated, the scope is all
@@ -479,7 +488,7 @@ export async function runRoutine(r, opts = {}) {
   // continues the same record and logs the event
   let rec = opts.record || null;
   if (!rec) {
-    const names = [...new Set(steps.filter((st) => !st.guard).flatMap((st) => routineLayerNames({ params: routineStepOp(st).params })).filter(Boolean))];
+    const names = [...new Set(steps.filter((st) => !st.guard).flatMap((st) => routineLayerNames(routineStepOp(st))).filter(Boolean))];
     try { rec = await newRunRecord(r, steps, names, (m) => { $('#meta').textContent = `routine “${r.name}” — ${m}`; }); }
     catch (e) { $('#meta').textContent = `routine: the run record could not start — ${e.message}`; done('refused', { problems: [e.message] }); return; }
   } else rec.events.push({ at: new Date().toISOString(), kind: opts.event || 'resume', step: (opts.from || 0) + 1 });
@@ -598,6 +607,7 @@ export async function runRoutine(r, opts = {}) {
       if (toolDef(tool)) {                                   // a registered tool: scan + shape, no window
         const res = await runTool(tool, merged.params, { routine: true, progress: (n, N) => { $('#meta').textContent = `routine “${r.name}” — step ${n0}/${steps.length}: ${st._slug}… ${N ? Math.round((100 * n) / N) + '%' : ''}`; } });
         Object.assign(entry, { params: res.resolved, values: res.values, warnings: res.warnings });
+        if (res.layers) entry.layers = res.layers; if (res.columns) entry.columns = res.columns;   // what it made: layers, columns
         let tsv = null;
         if (res.table) {                                     // a table → the step's machine TSV
           tsv = tableTSV(res.table);
@@ -929,6 +939,7 @@ export function runRecipe(r, andRun = true) {
     return r.tool === 'gt' ? openGradeTonnage(Lp, { cfg: r.params, run: andRun })
       : r.tool === 'stats' ? openStats(Lp, { cfg: r.params, run: andRun })
       : r.tool === 'xy' ? openXyPlot(Lp, { cfg: r.params, run: andRun })
+      : r.tool === 'xtab' ? openCrosstab(Lp, { cfg: r.params, run: andRun })
       : openSwath(Lp, { cfg: r.params, run: andRun });
   };
   const wantName = (r.params.series && r.params.series[0] && r.params.series[0].layer) || r.params.layer;

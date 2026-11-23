@@ -11,6 +11,7 @@ import { mkLineage } from './lineage.js';
 import { matColSet, paintRecount } from './columns.js';
 import { persistElement } from './element-store.js';
 import { S, activeLayer, requestRender, layerById } from './state.js';
+import { removeLayerUI } from './layers.js';
 import { renderProps, ppNote, mkRow } from './props.js';
 import { applyRamp, setRampCfg } from './ramp.js';
 import { markProjectDirty } from './project.js';
@@ -223,7 +224,7 @@ export async function spatialJoinToCols(L, R, jf) {
   const h = layerTableHeader(L), m = h.mapping;
   const cellAt = cellOf(T);                                // rotation-aware: a rotated target is looked up in its own lattice frame
   const n = attrRowCountOf(L) || 0;
-  const taken = new Set([...h.columns, ...(L.calcCols || []).map((c) => c.name), ...(L.paintCols || []).map((c) => c.name)].map((x) => String(x).toLowerCase()));
+  const taken = new Set([...h.columns, ...(L.calcCols || []).map((c) => c.name), ...(jf.replace ? [] : (L.paintCols || []).map((c) => c.name))].map((x) => String(x).toLowerCase()));   // replace: a re-run replaces its own columns
   const outs = res.columns.map((c) => {
     const out = joinOutName(taken, c.out || c.name, R);
     const o = { c, out };
@@ -318,7 +319,11 @@ export async function keyJoinToCols(L, R, { leftKey, rightKey, bring, dup = 'fir
 }
 
 export async function runReconcile(L, R, jf, grade) {
-  try {
+  try { return await reconcileModels(L, R, jf, grade); } catch (e) { $('#meta').textContent = `reconcile: ${e.message}`; return null; }
+}
+// → { layer, name, matched, meanDelta, meanAbsDelta, thisOnly, refOnly } (the reconcile tool reads it)
+export async function reconcileModels(L, R, jf, grade, { replace = false } = {}) {
+  {
     // reconcile on the COMMON lattice (finest) so it captures matched AND
     // added/removed cells even when the two models' extents differ. When ONE side
     // is sub-blocked, its gridAxesOf is the fine lattice — reconcile at the
@@ -336,6 +341,7 @@ export async function runReconcile(L, R, jf, grade) {
     ];
     const derived = [{ out: dName, num: true, compute: (g) => { const a = g(aName), b = g(bName); return a != null && b != null ? b - a : null; } }];
     const name = `reconcile_${shortName(L)}_vs_${shortName(R)}.csv`;
+    if (replace) for (const old of S.layers.filter((x) => x.name === name)) removeLayerUI(old.id);   // a re-run replaces its own result
     const { blob } = await runSpatialJoin({ leftL: L, rightL: R, target: T, columns, derived, label: 'reconcile', useSelection: !!jf.useSel });
     // open ALREADY coloured by Δ (chan = the Δ column) — heads are
     // XC,YC,ZC, ...columns, ...derived, so Δ is at 3 + columns.length
@@ -357,10 +363,12 @@ export async function runReconcile(L, R, jf, grade) {
       setRampCfg(J, { preset: 'spectral' });
       applyRamp(J, true); requestRender();
       const mean = n ? sum / n : 0, mabs = n ? sumAbs / n : 0;
+      J._reconcile = { matched: n, meanDelta: mean, meanAbsDelta: mabs, thisOnly, refOnly };
       $('#meta').textContent = `reconcile ${shortName(L)}−${shortName(R)} (${dName}): ${n.toLocaleString()} matched · mean Δ ${mean >= 0 ? '+' : ''}${mean.toPrecision(3)} · mean|Δ| ${mabs.toPrecision(3)}${thisOnly ? ` · ${thisOnly.toLocaleString()} added` : ''}${refOnly ? ` · ${refOnly.toLocaleString()} removed` : ''} → ${name}`;
     }
     renderLayers();
-  } catch (e) { $('#meta').textContent = `reconcile: ${e.message}`; }
+    return J ? { layer: J.id, name, ...(J._reconcile || {}) } : null;
+  }
 }
 
 // ── the join tab's two buttons (Properties → join) ──

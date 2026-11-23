@@ -16,6 +16,14 @@ import { S, layerById } from './state.js';
 import { layerTableHeader, schemaExt, layerRecords, attrRowCountOf } from './records.js';
 import { runExport, exportColumnsOf } from './export.js';
 import { modelQa, qaFindings } from './modelqa.js';
+import { scanXtabOf, xtabModel, xtabValue } from './xtab.js';
+import { compositeToLayer } from './composite-ui.js';
+import { pairBlocksSamples } from './pairing.js';
+import { gradeShell } from './shells.js';
+import { spatialJoinToCols, reconcileModels } from './joins.js';
+import { renderSectionSeries } from './section-series.js';
+import { setSectionWorld } from './section.js';
+import { removeLayerUI } from './layers.js';
 import { inputsOf as dhQaInputs } from './dhqa.js';
 import { drillholeQa } from '../../../ext/condenser/src/main.js';
 import { meshQa } from '../../../ext/geometry/index.js';
@@ -469,4 +477,160 @@ registerTool('meshqa', {
       resolved: { ...p }, warnings: [],
     };
   },
+});
+
+// ── the resource cross-tab: tonnage · grade · metal · blocks by a group × grade bins ─────────────
+registerTool('xtab', {
+  label: 'cross-tab',
+  params: {
+    layer: { type: 'layer', required: true },
+    grade: { type: 'column', required: true },
+    group: { type: 'column', default: '', doc: 'a category or painted column (domains, classes); blank = one group' },
+    weight: { type: 'expr', default: '', doc: 'density expression; tonnage = density × block volume (blank = volume)' },
+    filter: { type: 'expr', default: '' },
+    densUnit: { type: 'string', default: 't/m3' },
+    gradeUnit: { type: 'string', default: '' },
+    cutoffs: { type: 'any', routine: 'required', why: 'the bins are the cutoffs', doc: 'the grade bin edges (a list, or text: "0.3 0.5 1")' },
+    mode: { type: 'enum', values: ['bins', 'cum'], default: 'bins', doc: 'between cutoffs, or above each cutoff' },
+    scope: { type: 'enum', values: ['all', 'filtered', 'selection'], default: 'all', routine: ['all'], why: 'a selection isn’t saved with the routine — use filter' },
+    measure: { type: 'any', display: true }, flip: { type: 'any', display: true },
+  },
+  outputs: { key: ['group', 'bin'] },
+  check(p, errs) { if (p.cutoffs != null && !(typeof p.cutoffs === 'string' || (Array.isArray(p.cutoffs) && p.cutoffs.every((x) => typeof x === 'number')))) errs.push('cutoffs: a list of numbers, or text like "0.3 0.5 1"'); },
+  async scan(p, ctx) {
+    const L = layerNamed(p.layer);
+    columnCheck(L, p.grade, 'grade'); if (p.group) columnCheck(L, p.group, 'group');
+    scopeCheck(p.scope, [L]);
+    const cut = Array.isArray(p.cutoffs) ? p.cutoffs.join(' ') : String(p.cutoffs || '');
+    return scanXtabOf(L, { grade: p.grade, group: p.group, weight: String(p.weight || ''), filter: p.filter, densUnit: p.densUnit, gradeUnit: p.gradeUnit, cutoffs: cut, scope: p.scope }, ctx.progress, ctx.signal);
+  },
+  shape(scan, p) {
+    const m = xtabModel(scan, p.mode), amount = scan.weighted ? 'tonnes' : 'volume', rows = [];
+    for (const k of m.rowKeys) for (const c of m.cols) {
+      const v = m.cell(k, c);
+      rows.push([m.rowLabel(k), c.label, c.lo ?? NaN, c.hi ?? NaN, v.w, xtabValue(v, 'grade', c.blank, scan), xtabValue(v, 'metal', c.blank, scan), v.n]);
+    }
+    return {
+      table: { columns: ['group', 'bin', 'from', 'to', amount, 'grade', 'metal', 'blocks'], key: ['group', 'bin'], rows, units: { [amount]: scan.weighted ? 't' : 'm3' } },
+      values: { blocks: scan.n }, resolved: { ...p, cutoffs: scan.edges.slice() },
+      warnings: scan.overflow ? ['too many groups — the extra groups were left out'] : [], where: scan.where,
+    };
+  },
+});
+
+// ── tools that MAKE something: a layer, columns, a file. A re-run replaces what an earlier run made
+// (same name, made in this session) instead of piling up copies — re-running is running once. ──
+const replaceOlder = (id, sameAs) => { for (const x of S.layers.filter((q) => q.id !== id && q.memoryOnly && sameAs(q))) removeLayerUI(x.id); };
+
+// composite: a drillhole interval table → equal-length composites, a new points layer
+registerTool('composite', {
+  label: 'composite',
+  params: {
+    layer: { type: 'layer', required: true, doc: 'the drillhole layer' },
+    length: { type: 'number', doc: 'the composite length (blank = the commonest interval length)' },
+    splitCols: { type: 'any', doc: 'columns whose change starts a new composite (domains)' },
+    densityCol: { type: 'column', doc: 'weight the grades by this density' },
+    minSupport: { type: 'number', doc: 'drop composites with less coverage than this (0–1)' },
+  },
+  outputs: { key: [] },
+  async scan(p) {
+    const L = layerNamed(p.layer);
+    if (!(L.dh && L.docs && L.docs.dhDoc)) throw new Error(`${L.label || L.name} is not a drillhole layer`);
+    const r = await compositeToLayer(L, { length: p.length || undefined, splitCols: p.splitCols || null, densityCol: p.densityCol || null, minSupport: p.minSupport || null });
+    replaceOlder(r.id, (q) => q.name === r.name);
+    return { ...r, count: attrRowCountOf(layerById(r.id)) || 0 };
+  },
+  shape(r, p) { return { table: null, values: { composites: r.count, length: +r.report.length }, layers: [r.name], resolved: { ...p, length: +r.report.length }, warnings: [] }; },
+});
+
+// pairing: each sample with the block it falls in — bias, correlation, slope (all, and per group)
+registerTool('pairing', {
+  label: 'pairing',
+  params: {
+    model: { type: 'layer', required: true }, samples: { type: 'layer', required: true },
+    blockCol: { type: 'column', required: true }, sampleCol: { type: 'column', required: true },
+    groupCol: { type: 'column', default: '' },
+  },
+  outputs: { key: ['group'] },
+  async scan(p, ctx) { return pairBlocksSamples(layerNamed(p.model), layerNamed(p.samples), { blockCol: p.blockCol, sampleCol: p.sampleCol, groupCol: p.groupCol, signal: ctx.signal, onProgress: ctx.progress || null }); },
+  shape(r, p) {
+    const all = r.stats[0] || {};
+    return {
+      table: { columns: ['group', 'pairs', 'sample_mean', 'block_mean', 'bias', 'r', 'slope'], key: ['group'], rows: r.stats.map((s) => [s.group, s.n, s.sMean, s.bMean, s.bias ?? NaN, s.r ?? NaN, s.slope ?? NaN]), units: {} },
+      values: { pairs: r.n, bias: all.bias ?? NaN, r: all.r ?? NaN, slope: all.slope ?? NaN, outside: r.outside, no_block: r.noBlock, no_value: r.noValue },
+      resolved: { ...p }, warnings: [],
+    };
+  },
+});
+
+// grade shell: the surface where a model's grade crosses a cutoff, a new mesh layer
+registerTool('shell', {
+  label: 'grade shell',
+  params: {
+    layer: { type: 'layer', required: true }, col: { type: 'column', required: true },
+    cutoff: { type: 'number', required: true }, smooth: { type: 'int', default: 0, doc: 'smoothing passes (0–3)' },
+    name: { type: 'string', doc: 'the mesh’s name (default: “<col> ≥ <cutoff> shell”)' },
+  },
+  outputs: { key: [] },
+  async scan(p, ctx) {
+    const r = await gradeShell(layerNamed(p.layer), { col: p.col, cutoff: p.cutoff, smooth: p.smooth, name: p.name || null, signal: ctx.signal });
+    const NL = layerById(r.id); replaceOlder(r.id, (q) => (q.label || q.name) === (NL.label || NL.name));
+    return { ...r, label: NL.label || NL.name };
+  },
+  shape(r, p) { return { table: null, values: { triangles: r.triangles, blocks_inside: r.blocksInside }, layers: [r.label], resolved: { ...p }, warnings: [] }; },
+});
+
+// spatial join: columns of another model resampled onto this one's blocks (volume-weighted)
+registerTool('join', {
+  label: 'spatial join',
+  params: {
+    layer: { type: 'layer', required: true, doc: 'the model that gets the columns' },
+    from: { type: 'layer', required: true, doc: 'the model they come from (a compatible lattice)' },
+    columns: { type: 'any', required: true, doc: 'the columns to bring, by name' },
+    ops: { type: 'any', doc: '{ column: mean | sum | min | max | majority } (default mean, majority for text)' },
+  },
+  outputs: { key: [] },
+  check(p, errs) { if (p.columns != null && (!Array.isArray(p.columns) || !p.columns.length || p.columns.some((c) => typeof c !== 'string'))) errs.push('columns: a list of column names'); },
+  async scan(p) {
+    const L = layerNamed(p.layer), R = layerNamed(p.from);
+    const ops = Object.fromEntries(Object.entries(p.ops || {}).map(([k, v]) => [`right:${k}`, v]));
+    const outs = await spatialJoinToCols(L, R, { cols: p.columns.map((c) => `right:${c}`), ops, weights: {}, useSel: false, replace: true });
+    return { outs, layer: L.name };
+  },
+  shape(r, p) { return { table: null, values: { columns: r.outs.length }, columns: r.outs.map((name) => ({ layer: r.layer, name })), resolved: { ...p }, warnings: [] }; },
+});
+
+// reconcile: this model − a reference, on their common lattice → a Δ layer and its summary
+registerTool('reconcile', {
+  label: 'reconcile',
+  params: {
+    layer: { type: 'layer', required: true, doc: 'this model' }, reference: { type: 'layer', required: true, doc: 'the model it is compared with' },
+    grade: { type: 'column', required: true, doc: 'a grade column both carry' },
+  },
+  outputs: { key: [] },
+  async scan(p) {
+    const r = await reconcileModels(layerNamed(p.layer), layerNamed(p.reference), { weights: {}, useSel: false }, p.grade, { replace: true });
+    if (!r) throw new Error('reconcile: no result');
+    return r;
+  },
+  shape(r, p) { return { table: null, values: { matched: r.matched ?? 0, mean_delta: r.meanDelta ?? NaN, mean_abs_delta: r.meanAbsDelta ?? NaN, this_only: r.thisOnly ?? 0, ref_only: r.refOnly ?? 0 }, layers: [r.name], resolved: { ...p }, warnings: [] }; },
+});
+
+// section series: a sheet per section position along the section's normal, as PNGs in a zip
+registerTool('sections', {
+  label: 'section series',
+  writesFile: (p) => p.out || 'sections.zip',
+  params: {
+    section: { type: 'any', doc: 'the orientation: { axis: x | y | z } or { normal: [x, y, z] }, thickness, clip (default: the current section)' },
+    from: { type: 'number', required: true }, to: { type: 'number', required: true }, step: { type: 'number', required: true },
+    scale: { type: 'int', default: 1 }, decorations: { type: 'bool', default: true }, title: { type: 'string' },
+    out: { type: 'string', doc: 'the zip’s name (default sections.zip)' },
+  },
+  outputs: { key: [] },
+  async scan(p, ctx) {
+    if (p.section) setSectionWorld(p.section);
+    const r = await renderSectionSeries({ from: p.from, to: p.to, step: p.step, scale: p.scale, decorations: p.decorations, title: p.title || null, signal: ctx.signal });
+    return { ...r, name: toolDef('sections').writesFile(p) };
+  },
+  shape(r, p) { return { table: null, file: { name: r.name, blob: r.blob }, values: { sheets: r.sheets.length }, resolved: { ...p }, warnings: [] }; },
 });

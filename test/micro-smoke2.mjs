@@ -7653,6 +7653,63 @@ if (take()) {
   await p.close();
 }
 
+// ── §120: THE REST AS TOOLS — cross-tab, composite, pairing, grade shell, spatial join, reconcile
+//     and the section series run without their windows; the ones that MAKE something (a layer,
+//     columns) replace what an earlier run made — run twice, there is still one. ──
+if (take()) {
+  const p = await mkPage('sm2rest');
+  await p.evaluate(async () => { try { await (await navigator.storage.getDirectory()).removeEntry('sm2rest', { recursive: true }); } catch { } });
+  await p.evaluate(async () => {
+    const mk = (shift) => { const rows = ['XC,YC,ZC,FE,DOM']; for (let k = 0; k < 3; k++) for (let j = 0; j < 6; j++) for (let i = 0; i < 8; i++) rows.push([5 + i * 10, 5 + j * 10, 5 + k * 10, (40 + i + shift).toFixed(1), i < 4 ? 'hem' : 'itb'].join(',')); return rows.join('\n') + '\n'; };
+    await window._micro.openBlob(new File([mk(0)], 'm.csv'), 'm.csv', 'replace');
+    await window._micro.openBlob(new File([mk(2)], 'n.csv'), 'n.csv', 'add');
+  });
+  await p.waitForFunction(() => window._micro.layers().length === 2 && window._micro.layers().every((L) => L.docs.blockDoc), null, { timeout: 20000 });
+  await saveProject(p);
+  const r = await p.evaluate(async () => {
+    const M_ = window._micro, m = window.micro, out = {};
+    const H = ['H1', 'H2'];
+    await M_.addLayer({ kind: 'drillholes', name: 'dh',
+      collar: { columns: { HOLE: H, E: Float64Array.from([15, 55]), N: Float64Array.from([25, 25]), RL: Float64Array.from([30, 30]) }, roles: { bhid: 'HOLE', x: 'E', y: 'N', z: 'RL' } },
+      survey: { columns: { HOLE: H, AT: Float64Array.from([0, 0]), AZI: Float64Array.from([0, 0]), INC: Float64Array.from([90, 90]) }, roles: { bhid: 'HOLE', at: 'AT', az: 'AZI', dip: 'INC' } },
+      intervals: { columns: { HOLE: ['H1', 'H1', 'H1', 'H2', 'H2', 'H2'], F: Float64Array.from([0, 10, 20, 0, 10, 20]), T: Float64Array.from([10, 20, 30, 10, 20, 30]), FE: Float64Array.from([41, 41, 41, 45, 45, 45]) }, roles: { bhid: 'HOLE', from: 'F', to: 'T' } } });
+    const D = M_.layers().find((x) => x.dh);
+    const count = (pred) => M_.layers().filter(pred).length;
+    // cross-tab
+    const xt = await m.runTool('xtab', { layer: 'm.csv', grade: 'FE', group: 'DOM', cutoffs: [44] });
+    const tot = xt.table.rows.find((x) => x[0] === 'total' && x[1] === 'total');
+    out.xt = { cols: xt.table.columns.join(), rows: xt.table.rows.length, totalVolume: tot && tot[4], blocks: xt.values.blocks };
+    // composite, twice
+    const c1 = await m.runTool('composite', { layer: D.name, length: 5 }); await m.runTool('composite', { layer: D.name, length: 5 });
+    out.comp = { n: c1.values.composites, layers: count((x) => x.composites) };
+    // pairing
+    const pr = await m.runTool('pairing', { model: 'm.csv', samples: D.name, blockCol: 'FE', sampleCol: 'FE' });
+    out.pair = { pairs: pr.values.pairs, bias: pr.values.bias };
+    // grade shell, twice
+    const sh = await m.runTool('shell', { layer: 'm.csv', col: 'FE', cutoff: 44.5 }); await m.runTool('shell', { layer: 'm.csv', col: 'FE', cutoff: 44.5 });
+    out.shell = { tris: sh.values.triangles, layers: count((x) => x.kind === 'mesh') };
+    // spatial join, twice: one column
+    await m.runTool('join', { layer: 'm.csv', from: 'n.csv', columns: ['FE'] }); const j2 = await m.runTool('join', { layer: 'm.csv', from: 'n.csv', columns: ['FE'] });
+    const Lm = M_.layers().find((x) => x.name === 'm.csv');
+    out.join = { cols: M_.layerTableHeader(Lm) ? M_.attrColumnsOf(Lm).map((c) => c.name).filter((n) => /FE/.test(n)) : [], v: j2.values.columns };
+    // reconcile, twice: one Δ layer, mean Δ = −2 (this − reference)
+    await m.runTool('reconcile', { layer: 'm.csv', reference: 'n.csv', grade: 'FE' }); const rc = await m.runTool('reconcile', { layer: 'm.csv', reference: 'n.csv', grade: 'FE' });
+    out.rec = { ...rc.values, layers: count((x) => /^reconcile_/.test(x.name)) };
+    // the section series, as a routine step: a zip in the run's folder
+    M_._recipesList().push({ name: 'sheets', tool: 'routine', params: { steps: [{ tool: 'sections', with: { section: { axis: 'z', thickness: 10 }, from: 5, to: 25, step: 10 }, as: 'sec' }] } });
+    const rs = await m.runRoutine('sheets');
+    const se = rs.record && rs.record.steps[0];
+    out.sec = { status: rs.status, error: rs.error, problems: rs.problems, sheets: se && se.values && se.values.sheets, out: se && se.outputs[0] && se.outputs[0].path, bytes: se && se.outputs[0] && se.outputs[0].bytes };
+    return out;
+  });
+  chk(`REST: cross-tab without its window (${JSON.stringify(r.xt)})`, r.xt.cols === 'group,bin,from,to,volume,grade,metal,blocks' && r.xt.blocks === 144 && r.xt.totalVolume === 144000);
+  chk(`REST: composite — made once even when run twice (${JSON.stringify(r.comp)}); pairing (${JSON.stringify(r.pair)})`, r.comp.n > 0 && r.comp.layers === 1 && r.pair.pairs > 0 && Number.isFinite(r.pair.bias));
+  chk(`REST: grade shell — one mesh after two runs (${JSON.stringify(r.shell)}); spatial join — one column after two runs (${JSON.stringify(r.join)})`, r.shell.tris > 0 && r.shell.layers === 1 && r.join.cols.filter((n) => n !== 'FE').length === 1);
+  chk(`REST: reconcile — one Δ layer after two runs, mean Δ −2 (${JSON.stringify(r.rec)})`, r.rec.layers === 1 && r.rec.matched === 144 && Math.abs(r.rec.mean_delta + 2) < 1e-9);
+  chk(`REST: the section series as a routine step — a zip of sheets in the run's folder (${JSON.stringify(r.sec)})`, r.sec.status === 'ok' && r.sec.sheets === 3 && /\/sections\.zip$/.test(r.sec.out || '') && r.sec.bytes > 1000);
+  await p.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

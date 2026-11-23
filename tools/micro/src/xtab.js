@@ -29,6 +29,82 @@ export function parseCutoffs(txt) {
   return [...new Set(v)].sort((a, b) => a - b);
 }
 
+// ── the cross-tab's table, from a scan: pure, shared by the window and the cross-tab tool ──
+// columns (bins mode): < c0 · c0–c1 · … · ≥ cN · no grade · total
+//          (cumulative): ≥ c0 · … · ≥ cN · (graded) · no grade · total
+const xrange = (a, b) => Array.from({ length: Math.max(0, b - a) }, (_, i) => a + i);
+const xsum = (A, slots) => { let w = 0, wg = 0, n = 0; for (const s of slots) { w += A[3 * s]; wg += A[3 * s + 1]; n += A[3 * s + 2]; } return { w, wg, n }; };
+export function xtabColumns(edges, mode) {
+  const nb = edges.length + 1, f = (v) => fmtStat(v), cols = [];
+  if (mode === 'cum') {
+    for (let k = 0; k < edges.length; k++) cols.push({ label: `≥ ${f(edges[k])}`, slots: xrange(k + 1, nb), lo: edges[k], hi: null });
+    cols.push({ label: edges.length ? 'all graded' : 'graded', slots: xrange(0, nb), lo: null, hi: null });
+  } else if (!edges.length) cols.push({ label: 'graded', slots: [0], lo: null, hi: null });
+  else {
+    cols.push({ label: `< ${f(edges[0])}`, slots: [0], lo: null, hi: edges[0] });
+    for (let k = 1; k < edges.length; k++) cols.push({ label: `${f(edges[k - 1])}–${f(edges[k])}`, slots: [k], lo: edges[k - 1], hi: edges[k] });
+    cols.push({ label: `≥ ${f(edges[edges.length - 1])}`, slots: [edges.length], lo: edges[edges.length - 1], hi: null });
+  }
+  cols.push({ label: 'no grade', slots: [nb], blank: true, lo: null, hi: null });
+  cols.push({ label: 'total', slots: xrange(0, nb + 1), total: true, lo: null, hi: null });
+  return cols;
+}
+export function xtabValue(c, measure, blank, scan) {
+  if (measure === 'count') return c.n;
+  if (measure === 'grade') return blank || !(c.w > 0) ? NaN : c.wg / c.w;
+  if (measure === 'metal') return blank ? NaN : c.wg * (scan && scan.gradeUnit ? unitConvert(1, scan.gradeUnit, 'fraction') : 1);
+  return c.w;
+}
+// → { rowKeys, cols, cell(rowKey, col) → {w,wg,n}, rowLabel } (the total row adds every group)
+export function xtabModel(scan, mode) {
+  const { groups, edges } = scan;
+  const keys = [...groups.keys()].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  const tot = new Float64Array(3 * (edges.length + 2));
+  for (const A of groups.values()) for (let i = 0; i < tot.length; i++) tot[i] += A[i];
+  const rowKeys = scan.grouped ? [...keys, '__total'] : ['__total'];
+  return { rowKeys, cols: xtabColumns(edges, mode), cell: (k, c) => xsum(k === '__total' ? tot : groups.get(k), c.slots), rowLabel: (k) => (k === '__total' ? (scan.grouped ? 'total' : 'all') : k) };
+}
+
+
+export async function scanXtabOf(L, st, onProgress, signal) {   // st: { grade, group, weight, filter, densUnit, gradeUnit, cutoffs, scope }
+  const h = layerTableHeader(L), schema = schemaExt(L, h);
+  const edges = parseCutoffs(st.cutoffs);
+  const dScale = unitConvert(1, st.densUnit, 't/m3');
+  if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(String(st.grade).trim())) {
+    const v = validate(String(st.grade).trim(), schema);
+    if (!v.ok) throw new Error(`grade "${st.grade}": ${(v.errors[0] && v.errors[0].message) || 'unknown column'}`);
+  }
+  const gradeX = quoteIdent(st.grade), groupX = st.group ? quoteIdent(st.group) : null;
+  const weightX = (st.weight || '').trim() || null, filterX = (st.filter || '').trim() || null;
+  let gradeFn, groupFn = null, weightFn = null, filterFn = null;
+  try { gradeFn = compileValue(gradeX, schema, { decimal: '.' }); } catch { throw new Error(`grade "${st.grade}": invalid`); }
+  if (groupX) { try { groupFn = compileValue(groupX, schema, { decimal: '.' }); } catch { throw new Error(`group "${st.group}": invalid`); } }
+  if (weightX) { try { weightFn = compileValue(weightX, schema, { decimal: '.' }); } catch { throw new Error(`density "${weightX}": invalid`); } }
+  if (filterX) { try { filterFn = compileBool(filterX, schema, { decimal: '.' }); } catch { throw new Error(`filter "${filterX}": invalid`); } }
+  const mask = scopeMask(st, L), vc = volumeContextOf(L), N = attrRowCountOf(L) || 0;
+  const base = { edges, grade: st.grade, group: st.group, grouped: !!groupX, weighted: !!weightX, gradeUnit: st.gradeUnit };
+  if (canScanColumnar(L)) {
+    const dims = vc.dc ? [h.columns[vc.dc.x], h.columns[vc.dc.y], h.columns[vc.dc.z]] : null;
+    const params = { group: groupX, grade: gradeX, weight: weightX, filter: filterX, dScale, vol: { base: vc.base, dims }, edges };
+    const { parts, where } = await scanColumnar(L, { kernel: 'crosstab', params, exprs: [groupX, gradeX, weightX, filterX], extraCols: dims || [], mask, signal,
+      onProgress, keepZone: zoneKeeper(L, { mask }) });
+    const merged = crosstabMerge(parts);
+    let n = 0; for (const A of merged.groups.values()) for (let i = 2; i < A.length; i += 3) n += A[i];
+    return { ...base, groups: merged.groups, overflow: merged.overflow, n, where };
+  }
+  // the row path: the same add, a record at a time (layerRecords owns the numbering)
+  const groups = new Map(); let overflow = false, n = 0, seen = 0;
+  for await (const { f: row, rec } of layerRecords(L)) {
+    seen++; if ((seen & 0xffff) === 0) { checkAbort(signal); if (onProgress) onProgress(seen, N, 'on this page'); await new Promise((r) => setTimeout(r)); }
+    if (mask && !(rec < mask.length && mask[rec])) continue;
+    if (filterFn && !filterFn(row)) continue;
+    const w = (weightFn ? (+weightFn(row) || 0) * dScale : 1) * volumeAt(vc, row);
+    if (!(w > 0)) continue;
+    if (xtabAdd(groups, groupFn ? xtabKey(groupFn(row)) : '', edges, numOf(gradeFn(row)), w)) n++; else overflow = true;
+  }
+  return { ...base, groups, overflow, n, where: 'on this page' };
+}
+
 export function openCrosstab(L, ropts) {
   if (!L || !gridAxesOf(L)) { $('#meta').textContent = 'cross-tab: needs a regular block model'; return null; }
   const ex = _xtabWins.get(L.id); if (ex) { if (!ropts) { focusWindow(ex.win.el); return ex; } ex.win.close(); }
@@ -55,43 +131,11 @@ export function openCrosstab(L, ropts) {
   // ── the table, from the cached scan ──
   // columns (bins mode): < c0 · c0–c1 · … · ≥ cN · no grade · total
   //          (cumulative): ≥ c0 · … · ≥ cN · (graded) · no grade · total
-  const columnsOf = (edges) => {
-    const nb = edges.length + 1, f = (v) => fmtStat(v);
-    const cols = [];
-    if (st.mode === 'cum') {
-      for (let k = 0; k < edges.length; k++) cols.push({ label: `≥ ${f(edges[k])}`, slots: range(k + 1, nb) });
-      cols.push({ label: edges.length ? 'all graded' : 'graded', slots: range(0, nb) });
-    } else if (!edges.length) cols.push({ label: 'graded', slots: [0] });
-    else {
-      cols.push({ label: `< ${f(edges[0])}`, slots: [0] });
-      for (let k = 1; k < edges.length; k++) cols.push({ label: `${f(edges[k - 1])}–${f(edges[k])}`, slots: [k] });
-      cols.push({ label: `≥ ${f(edges[edges.length - 1])}`, slots: [edges.length] });
-    }
-    cols.push({ label: 'no grade', slots: [nb], blank: true });
-    cols.push({ label: 'total', slots: range(0, nb + 1), total: true });
-    return cols;
-  };
-  const range = (a, b) => Array.from({ length: Math.max(0, b - a) }, (_, i) => a + i);
-  const sumOf = (A, slots) => { let w = 0, wg = 0, n = 0; for (const s of slots) { w += A[3 * s]; wg += A[3 * s + 1]; n += A[3 * s + 2]; } return { w, wg, n }; };
-  const mScale = () => (st.scan && st.scan.gradeUnit ? unitConvert(1, st.scan.gradeUnit, 'fraction') : 1);
-  const value = (c, measure, blank) => {
-    if (measure === 'count') return c.n;
-    if (measure === 'grade') return blank || !(c.w > 0) ? NaN : c.wg / c.w;
-    if (measure === 'metal') return blank ? NaN : c.wg * mScale();
-    return c.w;
-  };
+  const columnsOf = (edges) => xtabColumns(edges, st.mode);
+  const value = (c, measure, blank) => xtabValue(c, measure, blank, st.scan);
   const tU = () => (st.scan && st.scan.weighted ? 't' : 'm³');
   const measureLabel = (m) => (m === 'tonnage' ? (st.scan && st.scan.weighted ? 'tonnage (t)' : 'volume (m³)') : m === 'metal' ? (st.scan && st.scan.gradeUnit ? 'metal (t)' : `grade·${tU()}`) : m === 'grade' ? `grade${st.scan && st.scan.gradeUnit ? ` (${st.scan.gradeUnit === 'pct' ? '%' : st.scan.gradeUnit})` : ''}` : 'blocks');
-  // the cached scan → { rowKeys, cols, cell(rowKey, col) → {w,wg,n} } (the total row adds every group)
-  const model = () => {
-    const { groups, edges } = st.scan;
-    const keys = [...groups.keys()].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-    const tot = new Float64Array(3 * (edges.length + 2));
-    for (const A of groups.values()) for (let i = 0; i < tot.length; i++) tot[i] += A[i];
-    const rowKeys = st.scan.grouped ? [...keys, '__total'] : ['__total'];
-    const cols = columnsOf(edges);
-    return { rowKeys, cols, cell: (k, c) => sumOf(k === '__total' ? tot : groups.get(k), c.slots), rowLabel: (k) => (k === '__total' ? (st.scan.grouped ? 'total' : 'all') : k) };
-  };
+  const model = () => xtabModel(st.scan, st.mode);
   let syncDensForm = null;                               // the rail's "no density" cues (set by buildRail)
   const render = () => {
     if (syncDensForm) syncDensForm();                     // st.weight may have been set by a recipe, not typed
@@ -130,44 +174,7 @@ export function openCrosstab(L, ropts) {
   };
 
   // ── one pass: group × slot accumulation ──
-  const scanXtab = async (onProgress, signal) => {
-    const h = layerTableHeader(L), schema = schemaExt(L, h);
-    const edges = parseCutoffs(st.cutoffs);
-    const dScale = unitConvert(1, st.densUnit, 't/m3');
-    if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(String(st.grade).trim())) {
-      const v = validate(String(st.grade).trim(), schema);
-      if (!v.ok) throw new Error(`grade "${st.grade}": ${(v.errors[0] && v.errors[0].message) || 'unknown column'}`);
-    }
-    const gradeX = quoteIdent(st.grade), groupX = st.group ? quoteIdent(st.group) : null;
-    const weightX = (st.weight || '').trim() || null, filterX = (st.filter || '').trim() || null;
-    let gradeFn, groupFn = null, weightFn = null, filterFn = null;
-    try { gradeFn = compileValue(gradeX, schema, { decimal: '.' }); } catch { throw new Error(`grade "${st.grade}": invalid`); }
-    if (groupX) { try { groupFn = compileValue(groupX, schema, { decimal: '.' }); } catch { throw new Error(`group "${st.group}": invalid`); } }
-    if (weightX) { try { weightFn = compileValue(weightX, schema, { decimal: '.' }); } catch { throw new Error(`density "${weightX}": invalid`); } }
-    if (filterX) { try { filterFn = compileBool(filterX, schema, { decimal: '.' }); } catch { throw new Error(`filter "${filterX}": invalid`); } }
-    const mask = scopeMask(st, L), vc = volumeContextOf(L), N = attrRowCountOf(L) || 0;
-    const base = { edges, grade: st.grade, group: st.group, grouped: !!groupX, weighted: !!weightX, gradeUnit: st.gradeUnit };
-    if (canScanColumnar(L)) {
-      const dims = vc.dc ? [h.columns[vc.dc.x], h.columns[vc.dc.y], h.columns[vc.dc.z]] : null;
-      const params = { group: groupX, grade: gradeX, weight: weightX, filter: filterX, dScale, vol: { base: vc.base, dims }, edges };
-      const { parts, where } = await scanColumnar(L, { kernel: 'crosstab', params, exprs: [groupX, gradeX, weightX, filterX], extraCols: dims || [], mask, signal,
-        onProgress, keepZone: zoneKeeper(L, { mask }) });
-      const merged = crosstabMerge(parts);
-      let n = 0; for (const A of merged.groups.values()) for (let i = 2; i < A.length; i += 3) n += A[i];
-      return { ...base, groups: merged.groups, overflow: merged.overflow, n, where };
-    }
-    // the row path: the same add, a record at a time (layerRecords owns the numbering)
-    const groups = new Map(); let overflow = false, n = 0, seen = 0;
-    for await (const { f: row, rec } of layerRecords(L)) {
-      seen++; if ((seen & 0xffff) === 0) { checkAbort(signal); if (onProgress) onProgress(seen, N, 'on this page'); await new Promise((r) => setTimeout(r)); }
-      if (mask && !(rec < mask.length && mask[rec])) continue;
-      if (filterFn && !filterFn(row)) continue;
-      const w = (weightFn ? (+weightFn(row) || 0) * dScale : 1) * volumeAt(vc, row);
-      if (!(w > 0)) continue;
-      if (xtabAdd(groups, groupFn ? xtabKey(groupFn(row)) : '', edges, numOf(gradeFn(row)), w)) n++; else overflow = true;
-    }
-    return { ...base, groups, overflow, n, where: 'on this page' };
-  };
+  const scanXtab = (onProgress, signal) => scanXtabOf(L, st, onProgress, signal);
   const run = async () => {
     if (st.running) return;
     if (st.scope !== 'all' && !scopeMask(st, L)) { win.sub.textContent = scopeMissing(st, L) || `no ${st.scope} on this layer`; return; }
