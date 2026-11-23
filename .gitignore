@@ -238,3 +238,6 @@ ext/dispatch/bench/playground.html
 test/cpython-suite/cpython/
 test/cpython-suite/stage/
 test/cpython-suite/results/
+
+# micro-bench results + generated models (test/micro-bench.mjs)
+/bench/
