@@ -525,7 +525,7 @@ export function attrColumnsOf(L) {
   const h = layerTableHeader(L);
   if (h) {
     const cols = h.columns.map((name, i) => ({ name, num: colIsNumeric(L, h, i) }));
-    for (const c of L.paintCols || []) cols.push({ name: (c.kind === 'ratio' ? '% ' : '✎ ') + c.name, num: c.kind === 'ratio' });   // census order: stored before calc (matches extendRow)
+    for (const c of L.paintCols || []) cols.push({ name: (c.kind === 'ratio' && !c.mat ? '% ' : '✎ ') + c.name, num: c.kind === 'ratio' });   // census order: stored before calc (matches extendRow)
     for (const c of L.calcCols || []) cols.push({ name: 'ƒ ' + c.name, num: (c.ty || 'number') === 'number' });
     return cols;
   }

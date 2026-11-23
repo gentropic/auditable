@@ -490,7 +490,7 @@ export function addPaintColorOptions(L) {
   for (const pc of L.paintCols || []) {
     const v = 'paint:' + pc.name;
     if (![...sel.options].some((o) => o.value === v)) {
-      const o = document.createElement('option'); o.value = v; o.textContent = (pc.kind === 'ratio' ? '% ' : '✎ ') + pc.name;
+      const o = document.createElement('option'); o.value = v; o.textContent = (pc.kind === 'ratio' && !pc.mat ? '% ' : '✎ ') + pc.name;
       const solid = [...sel.options].find((x) => x.value === 'solid');
       sel.insertBefore(o, solid || null);
     }

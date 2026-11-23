@@ -278,7 +278,17 @@ function lint(f) {
   const mark = (li, s, e) => { if (!f.marks.has(li)) f.marks.set(li, []); f.marks.get(li).push({ s, e }); };
   if (text.trim()) {
     let obj = null;
-    try { obj = yamlToJs(yamlParse(text)); } catch (e) {
+    // check a LENIENT copy: a bare `key:` still being typed (nothing nested under it) reads as empty —
+    // the strict reader refuses it, which turned the box red mid-word and hid every other check.
+    // The routine itself still parses strictly.
+    const src = text.split('\n'), indOf = (s) => s.match(/^ */)[0].length;
+    for (let i = 0; i < src.length; i++) {
+      if (!/^\s*(?:- )?[\w.$-]+:\s*$/.test(src[i])) continue;
+      let j = i + 1; while (j < src.length && !src[j].trim()) j++;
+      const sameIndList = j < src.length && indOf(src[j]) === indOf(src[i]) && /^\s*- /.test(src[j]) && !/^\s*- /.test(src[i]);   // `key:` then `- item` at the same indent is a list
+      if (j >= src.length || (indOf(src[j]) <= indOf(src[i]) && !sameIndList)) src[i] = src[i].replace(/:\s*$/, ': ""');
+    }
+    try { obj = yamlToJs(yamlParse(src.join('\n'))); } catch (e) {
       const li = (e.line || 1) - 1, L = lines[li];
       if (L) mark(li, L.ind, L.text.length || 1);
       probs.push({ li, msg: String(e.message).replace(/^\[rule [^\]]*\]\s*line \d+, col \d+:\s*/, '') });
@@ -331,7 +341,11 @@ function editKey(e, f) {
     if (!e.shiftKey && a === b) return insertText(ta, '  ');
     const le = v.indexOf('\n', b - (b > a && v[b - 1] === '\n' ? 1 : 0)); const end = le < 0 ? v.length : le;
     const block = v.slice(ls, end).split('\n'), out = block.map((l) => (e.shiftKey ? l.replace(/^ {1,2}/, '') : '  ' + l)).join('\n');
-    ta.setSelectionRange(ls, end); insertText(ta, out); ta.setSelectionRange(ls, ls + out.length);
+    ta.setSelectionRange(ls, end); insertText(ta, out);
+    // a selection stays selected (indent it again, or keep typing over it); a bare caret stays a caret —
+    // selecting the line after a dedent made the next keystroke replace the whole line
+    if (a !== b) ta.setSelectionRange(ls, ls + out.length);
+    else { const c = Math.max(ls, a - (end - ls - out.length)); ta.setSelectionRange(c, c); }
   } else if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey && a === b) {
     e.preventDefault();
     const ls = v.lastIndexOf('\n', a - 1) + 1, before = v.slice(ls, a), L = scanLine(before);
