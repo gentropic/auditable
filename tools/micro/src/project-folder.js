@@ -120,7 +120,7 @@ export async function scanFolderForNewData() {
     const isSidecar = (fullPath, n) => n === 'project.json'
       || /(\.meta\.json|\.disp\.grd|\.disp\.json|\.element\.json)$/i.test(n)
       || /\.cols\//i.test(fullPath);
-    const isData = (n) => /\.(las|ply|xyz|pts|csv|txt|dat|parquet|pq|dm|obj|msh|lfm|tif|tiff|grd|asc)$/i.test(n);
+    const isData = (n) => /\.(las|ply|xyz|pts|csv|txt|dat|parquet|pq|dm|obj|msh|lfm|wfr|omf|dxf|xlsx|tif|tiff|grd|asc)$/i.test(n);   // every format the open dialog reads (xlsx/wfr/omf/dxf were never offered)
     // new drillhole-set descriptors (claim their member CSVs so they don't also
     // show up as loose files)
     const claimed = new Set();

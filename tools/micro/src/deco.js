@@ -98,7 +98,8 @@ export function drawScaleBar(g, W, H) {
 
 export function drawNorthArrow(g, W, H) {
   const v = S.cam.state.view; if (!v) return;
-  let nx = v[4], ny = -v[9]; const m = Math.hypot(nx, ny); if (m < 1e-3) return; nx /= m; ny /= m;
+  // world north (0,1,0) on screen: x = v[4], y = v[5] (the camera basis, src/overlay.js) — v[9] was world Z's
+  let nx = v[4], ny = -v[5]; const m = Math.hypot(nx, ny); if (m < 1e-3) return; nx /= m; ny /= m;
   const cx = W - 42 - _rightInset(), cy = 52, Ln = 22;
   const arrow = () => { g.beginPath(); g.moveTo(cx - nx * Ln, cy - ny * Ln); g.lineTo(cx + nx * Ln, cy + ny * Ln); const px = -ny, py = nx; g.moveTo(cx + nx * Ln, cy + ny * Ln); g.lineTo(cx + nx * (Ln - 8) + px * 5, cy + ny * (Ln - 8) + py * 5); g.moveTo(cx + nx * Ln, cy + ny * Ln); g.lineTo(cx + nx * (Ln - 8) - px * 5, cy + ny * (Ln - 8) - py * 5); g.stroke(); };
   _stroked(g, arrow, 2);

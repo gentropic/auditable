@@ -183,7 +183,7 @@ export function openRoutineWindow(r0) {
   gBar.append(gChk, gLab); top.appendChild(gBar);
   const oBar = document.createElement('div'); oBar.className = 'rw-bar';
   const oL = document.createElement('span'); oL.className = 'lbl'; oL.textContent = 'reports →';
-  const dirI = document.createElement('input'); dirI.type = 'text'; dirI.style.width = '11em'; dirI.placeholder = `reports/${new Date().toISOString().slice(0, 10)}`; dirI.value = (model.params.output && model.params.output.dir) || '';
+  const dirI = document.createElement('input'); dirI.type = 'text'; dirI.style.width = '11em'; dirI.placeholder = 'runs/<date time> <routine>';   // the default: each run gets its own folder dirI.value = (model.params.output && model.params.output.dir) || '';
   const preL = document.createElement('span'); preL.className = 'lbl'; preL.textContent = 'prefix';
   const preI = document.createElement('input'); preI.type = 'text'; preI.style.width = '5em'; preI.value = (model.params.output && model.params.output.prefix) || '';
   const sufL = document.createElement('span'); sufL.className = 'lbl'; sufL.textContent = 'suffix';

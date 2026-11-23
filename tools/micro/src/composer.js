@@ -49,7 +49,7 @@ function viewMeta(pxH, canvas) {
   const st = S.cam.state, v = st.view;
   const meta = { ortho: !!st.ortho, zExag: st.zExag || 1 };
   if (v) {
-    const nx = v[4], ny = -v[9], m = Math.hypot(nx, ny);    // north's direction on screen (x right, y down)
+    const nx = v[4], ny = -v[5], m = Math.hypot(nx, ny);    // north's direction on screen (x right, y down): world Y through the camera basis (v[9] was world Z's)
     meta.north = m < 1e-3 ? null : +((Math.atan2(nx / m, -ny / m) * 180) / Math.PI).toFixed(2);
   }
   // an orthographic view has ONE scale: its visible height (2·halfH, world units) over the image's
@@ -71,7 +71,7 @@ function viewFacts() {
     const total = attrRowCountOf(L) || 0, m = L._filterMask;
     let shown = total;
     if (m && L.filterExpr) { shown = 0; for (let i = 0; i < m.length; i++) if (m[i]) shown++; }
-    const blob = layerBlob(L), l = { name: L.label || L.name, file: (blob && blob.name) || L.name, sha: blob ? sourceHashSync(blob) : null, filter: L.filterExpr || '', shown, total };
+    const blob = layerBlob(L), l = { name: L.label || L.name, file: (blob && blob.name) || L.name, sha: blob ? sourceHashSync(blob) : null, filter: L.filterExpr || '', shown, total, ...(L.kind === 'mesh' || (L.docs && L.docs.gridDoc) ? { ctx: true } : {}) };   // ctx: a mesh / grid — context, not records anyone counts
     Object.defineProperty(l, '_blob', { value: blob, enumerable: false });   // for completeFacts' hash; never saved
     layers.push(l);
   }
@@ -1071,7 +1071,9 @@ function sectionText(sec) {
   const dip = sec.dip != null ? sec.dip : (Math.acos(Math.min(1, Math.abs(n[2]))) * 180) / Math.PI;
   return `a plane dipping ${Math.round(dip)}° toward ${String(Math.round(dipDir) % 360).padStart(3, '0')}°${band}`;
 }
-const layersOf = (fx, a) => (fx ? fx.layers.filter((l) => !a || l.name === a) : []);
+// a named layer → that layer; unnamed → the layers whose records a caption counts (meshes' vertices and
+// grids' nodes are context: an atlas bench read 265,998 'blocks' with them, 260,000 without)
+const layersOf = (fx, a) => (fx ? fx.layers.filter((l) => (a ? l.name === a : !l.ctx)) : []);
 const deg3 = (v) => String(Math.round(((v % 360) + 360) % 360) % 360).padStart(3, '0') + '°';
 const sum = (ls, k) => ls.reduce((s, l) => s + l[k], 0);
 // {count}: the records the view shows after filters — in its section when the frame counts there
@@ -1139,8 +1141,8 @@ function scopeOf(frame, env) {
   const out = { page: env.page ?? 1, pages: env.pages ?? 1 };
   const fx = env.doc ? factsOf(frame, env) : null;
   if (!fx) return out;
-  const n = countOf(viewOf(frame, env), fx, fx.layers);
-  out.count = n == null ? sum(fx.layers, 'shown') : n; out.total = sum(fx.layers, 'total');
+  const rl = layersOf(fx, null), n = countOf(viewOf(frame, env), fx, rl);
+  out.count = n == null ? sum(rl, 'shown') : n; out.total = sum(rl, 'total');
   if (fx.camera) { out.look = fx.camera.look; out.elevation = fx.camera.elevation; }
   if (fx.section) out.section = fx.section.position;
   return out;

@@ -48,6 +48,26 @@ const $ = (s) => document.querySelector(s);
 let H = {};
 export function setLayermenuHooks(h) { H = h; }
 
+// the menu verbs the command palette shares (index.html COMMANDS) — one body each
+// a lone drillhole layer's hole filter (a set's goes through drillholes.js filterHolesSet)
+export async function filterHolesLayer(L) {
+  const cc = await peekCollarCols(L.docs.dhDoc).catch(() => []);
+  const v = await microPrompt('hole filter — an expression over the COLLAR columns (empty clears)', L.holeFilter || '', { expr: () => ({ columns: cc.map((c) => ({ name: c.name, type: c.type === 'number' ? 'number' : 'string' })) }) });
+  if (v == null) return;
+  const r = await applyHoleFilter(L, v);
+  $('#meta').textContent = r && r.err ? `hole filter: ${r.err}` : (r && r.holes != null ? `hole filter: ${r.holes} of ${r.total} holes` : 'hole filter cleared');
+}
+// a block model's stats + band index (written as a sidecar on the next save)
+export async function buildLayerIndex(L) {
+  await scanColumns(L, (a2, b2) => { $('#meta').textContent = `indexing ${L.label || L.name} — ${b2 ? Math.round(100 * a2 / b2) : 0}%…`; }, { bands: !L.docs.blockDoc.parquet });
+  $('#meta').textContent = `indexed ${L.label || L.name} — stats + band index ready (written as a sidecar on the next project save)`;
+  markProjectDirty();
+}
+// a decimated GeoTIFF's Surfer display-cache sidecar (fast reopen) — needs a project folder
+export const canBuildDisplayCache = (L) => !!(L && L.docs.gridDoc && L.docs.gridDoc.source && !L.docs.gridDoc.fullRes && S.project && /\.(tif|tiff)$/i.test(L.name));
+export async function buildDisplayCache(L) {
+  try { const why = await writeGridDisplayCache(L, S.project.dir); $('#meta').textContent = why ? `display cache: ${why}` : `display cache written · ${L.name}.disp.grd`; } catch (e) { $('#meta').textContent = `display cache — ${e.message}`; }
+}
 export function fitLayer(L) { if (L.bboxLocal) { S.cam.fit(L.bboxLocal); requestRender(); } }
 
 // the UI's remove (context menu, palette): a layer carrying its OWN columns —
@@ -107,25 +127,15 @@ export function layerMenu(L, x, y) {
     ...(layerTableHeader(L) ? [{ label: 'Export rows…', action: () => openExportDialog(L) }] : []),
     { sep: true },                                          // ── derive / store ──
     ...(!isView(L) && (L.calcCols || []).length ? [{ label: 'Materialize calc column', submenu: () => (L.calcCols || []).map((c) => ({ label: `${c.name} → stored`, action: () => materializeCalcCol(L, c.name) })) }] : []),
-    ...(L.dh && L.docs.dhDoc && !dhSetGroupOf(L.id) ? [{ label: (L.holeFilter ? '✓ ' : '') + 'Filter holes…', action: async () => {
-      const cc = await peekCollarCols(L.docs.dhDoc).catch(() => []);
-      const v = await microPrompt('hole filter — an expression over the COLLAR columns (empty clears)', L.holeFilter || '', { expr: () => ({ columns: cc.map((c) => ({ name: c.name, type: c.type === 'number' ? 'number' : 'string' })) }) });
-      if (v == null) return;
-      const r = await applyHoleFilter(L, v);
-      $('#meta').textContent = r && r.err ? `hole filter: ${r.err}` : (r && r.holes != null ? `hole filter: ${r.holes} of ${r.total} holes` : 'hole filter cleared');
-    } }] : []),
+    ...(L.dh && L.docs.dhDoc && !dhSetGroupOf(L.id) ? [{ label: (L.holeFilter ? '✓ ' : '') + 'Filter holes…', action: () => filterHolesLayer(L) }] : []),
     ...(isView(L) ? [] : L.docs.blockDoc && !(L.docs.blockDoc.parquet) ? [{ label: 'Store as Parquet…', action: async () => { const res = await openOptimizeDialog([L]); if (res && res.layers.length) await convertLayerToParquet(L, { keepOriginal: res.keepOriginal }); } }] : []),
-    ...(L.docs.blockDoc && !isView(L) ? [{ label: 'Build index (stats + pushdown)…', action: async () => {
-      await scanColumns(L, (a2, b2) => { $('#meta').textContent = `indexing ${L.label || L.name} — ${b2 ? Math.round(100 * a2 / b2) : 0}%…`; }, { bands: !L.docs.blockDoc.parquet });
-      $('#meta').textContent = `indexed ${L.label || L.name} — stats + band index ready (written as a sidecar on the next project save)`;
-      markProjectDirty();
-    } }] : []),
+    ...(L.docs.blockDoc && !isView(L) ? [{ label: 'Build index (stats + pushdown)…', action: () => buildLayerIndex(L) }] : []),
     ...(L.docs.gridDoc ? [{ label: 'Surface tools', submenu: () => [
       { label: 'Flag / ratio by this surface…', action: () => openSolidDialog(L) },
       { label: 'Extend to footprint…', action: () => openSurfaceTools('extend', L) },
       ...(surfaceableLayers().length >= 2 ? [{ label: 'Combine surfaces…', action: () => openSurfaceTools('combine', L) }] : []),
       { label: 'Export as ESRI ASCII grid…', action: () => exportGridAsc(L) },
-      ...(L.docs.gridDoc.source && !L.docs.gridDoc.fullRes && S.project && /\.(tif|tiff)$/i.test(L.name) ? [{ label: 'Build display cache', action: async () => { try { const why = await writeGridDisplayCache(L, S.project.dir); $('#meta').textContent = why ? `display cache: ${why}` : `display cache written · ${L.name}.disp.grd`; } catch (e) { $('#meta').textContent = `display cache — ${e.message}`; } } }] : []),
+      ...(canBuildDisplayCache(L) ? [{ label: 'Build display cache', action: () => buildDisplayCache(L) }] : []),
     ] }] : []),
     ...(L.kind === 'mesh' ? (() => {
       const items = [];

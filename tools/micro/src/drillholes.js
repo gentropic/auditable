@@ -283,13 +283,19 @@ export function collarsRowMenu(nd, x, y) {
   menuXY(x, y, [
     { label: 'Attribute table…', action: () => openCsvTableWindow(`collars · ${basename(info.blobs.collar.name || 'collars')}`, info.blobs.collar) },
     { label: (hf ? '✓ ' : '') + 'Filter holes…', action: () => filterHolesSet(nd) },
-    { label: 'Broadcast column to intervals', submenu: () => {
-      const cols = (rep.docs.dhDoc._collarCols || []).filter((c) => c.name);
-      return cols.length
-        ? cols.map((c) => ({ label: `${c.name} (${c.type})`, action: async () => { for (const L2 of members) await broadcastCollarCol(L2, c.name); } }))
-        : [{ label: '(reading collar columns…)', action: () => {} }];
-    } },
+    { label: 'Broadcast column to intervals', submenu: () => broadcastMenuItems(nd) },
   ]);
+}
+
+// the collar columns that can be broadcast onto every member's intervals (the collars
+// row's submenu and the command palette share it)
+export function broadcastMenuItems(nd) {
+  const members = groupLayerIds(nd).map(layerById).filter((L2) => L2 && L2.dh && L2.docs.dhDoc);
+  const rep = members[0]; if (!rep) return [];
+  const cols = (rep.docs.dhDoc._collarCols || []).filter((c) => c.name);
+  return cols.length
+    ? cols.map((c) => ({ label: `${c.name} (${c.type})`, action: async () => { for (const L2 of members) await broadcastCollarCol(L2, c.name); } }))
+    : [{ label: '(reading collar columns…)', action: () => {} }];
 }
 
 // the SURVEY row: the trajectory nouns — table view, desurvey method, traces

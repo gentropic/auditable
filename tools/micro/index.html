@@ -1259,13 +1259,13 @@ import { openGridBlob } from './src/open-grid.js';
 import { openObjSplit, openLfmSplit } from './src/open-mesh.js';
 import { addLayer, ingestSource } from './src/ingest.js';
 import { openFilesDialog, ofConfirm, ofCancel, openDhDialog, dhImport, dhCancel } from './src/open-dialog.js';
-import { reopenDh, syncWholeHoles, applyHoleFilter, filterHolesSet, openCsvTableWindow, collarsRowMenu, surveyRowMenu, dhSetGroupOf, addIntervalToSet, redesurveySet, showHoleTraces, showCollars, hideCollars, setHoleFilter, broadcastCollarCol } from './src/drillholes.js';
+import { reopenDh, syncWholeHoles, applyHoleFilter, filterHolesSet, openCsvTableWindow, collarsRowMenu, surveyRowMenu, dhSetGroupOf, addIntervalToSet, redesurveySet, showHoleTraces, showCollars, hideCollars, setHoleFilter, broadcastCollarCol, redesurveyMenu, broadcastMenuItems } from './src/drillholes.js';
 import { resolveColorMode, setColorLabels, setLayerColorBy, setLayerColorSel, colorChoices, colorByName, colorSelFor, layerColorRange, setLayerColorRange, layerPalette, setLayerPalette, paletteList } from './src/color.js';
 import { syncMeshPickable, meshToGridLayer, recolorSurface, setSurfaceFlatZ, setSurfaceSmooth, setGridBand } from './src/surfaces.js';
-import { reopenWithMapping, reinterpretOptions, reopenAs, canReloadLayer, reloadLayerFromDisk, canChangeFile, changeLayerFile } from './src/reopen.js';
+import { reopenWithMapping, reinterpretOptions, reopenAs, canReloadLayer, reloadLayerFromDisk, canChangeFile, changeLayerFile, reinterpretMenu } from './src/reopen.js';
 import { _deco, saveDeco, _bgColor, applyBg, setBg, renderDeco, drawDecorations, setDeco, setDecoTitle, setLayerLegend, hostDecorations, setHostDecorations, setFigScale, exportFigure, openDecoPanel, decorationsMenu, captureFigureCfg, runFigureRecipe, setDecoHooks } from './src/deco.js';
-import { applyTreeVisibility, showNode, setGroupExclusive, stepExclusive, ensureGroupPath, fileLayerByPath, createLayerGroup, groupAt, groupPathOf, groupsList, fileLayersInGroup, setGroupVisible, ungroupAt, followLayer, treeMove } from './src/tree.js';
-import { lpSelIds, setLayerSectionMode, groupMenu, renderLayers, _lpSel, toggleLayersPanel, closeLayersPanel } from './src/layers-panel.js';
+import { applyTreeVisibility, showNode, setGroupExclusive, stepExclusive, ensureGroupPath, fileLayerByPath, createLayerGroup, groupAt, groupPathOf, groupsList, fileLayersInGroup, setGroupVisible, ungroupAt, followLayer, treeMove, groupLayerIds } from './src/tree.js';
+import { lpSelIds, setLayerSectionMode, groupMenu, renderLayers, _lpSel, toggleLayersPanel, closeLayersPanel, moveLayerToGroupMenu } from './src/layers-panel.js';
 import { saveViewAs, applyView, saveViewSlot, recallViewSlot, _gotoArm, gotoDisarm, armGoto, removeBookmark, captureScene, applyScene, saveSceneAs, removeScene } from './src/views.js';
 import { _measure, recordPosition, armMeasure, clearMeasure, measureClick, _measureTP, toggleMeasureTP, drawMeasure, drawSectionPlane, setSwathBand, drawSwathBand, drawCompass, setOverlayHooks } from './src/overlay.js';
 import { microPrompt, _pmOkValue, microConfirm, pmClose } from './src/prompts.js';
@@ -1308,7 +1308,7 @@ import { deliverBlob } from './src/hostio.js';
 import { _attrTables, openAttrTable } from './src/attrtable.js';
 import { allocLayerId, closeAllLayers, recomputeUnion, setActiveLayer, removeLayerUI, rendererDocBbox, fitFromHeader, layerShown } from './src/layers.js';
 import { createView, viewsOf, isView, canView, modelOf, setViewOffset } from './src/layerviews.js';
-import { fitLayer, confirmRemoveLayer, convertMeshLayer, setMeshTint, setLayermenuHooks } from './src/layermenu.js';
+import { fitLayer, confirmRemoveLayer, convertMeshLayer, setMeshTint, setLayermenuHooks, meshTintMenu, filterHolesLayer, buildLayerIndex, canBuildDisplayCache, buildDisplayCache } from './src/layermenu.js';
 import { _nlOn, _nlDispatcher, _nlBusy, nlEnsureTrained, nlPropose, nlStarters, nlComplete, nlSetEnabled, nlStats, nlHoldOut } from './src/nl.js';
 import { clearSelection, applyLayerSelection, filterToSelection, selectionToColumn, selectionStatus, selectByPolygon, _selThrough, selectVolume, _selArm, setSelStick, armSelect, disarmSelect, setSelThrough, syncSelBar, installSelectionTool, setSelectionHooks } from './src/selection.js';
 import { PAINT, paintColByName, paintDisarm, paintArm, createPaintCol, addPaintValue, paintApply, paintUndo, _redoOrder, undoAction, redoAction, syncUndoBtn, paintVolume, openPaintPalette, setPaintHooks, paintActiveCol, addPaintColorOptions } from './src/paint.js';
@@ -1943,6 +1943,7 @@ function scenesMenuItems() {
 }
 // Data = the dataset's interpretation + derived state (lamina's grammar:
 // intake wizards, the properties panel's deep tabs, filter state)
+function clearFilter() { $('#filter').value = ''; syncFilterClear(); applyBlockFilter(''); }
 const openPropsTab = (tab) => {
   if (!S.layers.length) return;
   setPropTab(tab);
@@ -1965,7 +1966,7 @@ $('#mData').onclick = () => menuAt($('#mData'), [
   { label: 'Paint to column…', kbd: 'b', action: () => { const L = activeLayer(); if (L) openPaintPalette(L); } },
   { sep: true },
   { label: 'Filter…', kbd: '/', action: () => $('#filter').focus() },
-  { label: 'Clear filter', action: () => { $('#filter').value = ''; syncFilterClear(); applyBlockFilter(''); } },
+  { label: 'Clear filter', action: () => clearFilter() },
   { sep: true },
   { label: 'Export rows…', action: () => openExportDialog(activeLayer()) },
 ]);
@@ -2364,6 +2365,50 @@ const COMMANDS = [
   { id: 'helpwork', group: 'Help', title: 'Analysis & workbench help…', kw: 'grade tonnage swath reconcile join validate lineage figure docs guide', run: () => showHelp('analysis & workbench', trusted(HELP_ANALYSIS)) },
   { id: 'helptouch', group: 'Help', title: 'Touch help…', kw: 'phone gestures finger tap pinch docs guide', run: () => showHelp('touch', trusted(HELP_TOUCH)) },
   { id: 'helpkeys', group: 'Help', title: 'Keyboard & mouse help…', kw: 'shortcuts docs guide', run: () => showHelp('keyboard & mouse', trusted(HELP_KEYS)) },
+  // ── the menus' verbs, mirrored — test/micro-palette.test.mjs fails when a menu label has no command here ──
+  { id: 'proj-open', group: 'File', title: 'Open project folder…', kw: 'project folder directory load open existing', when: () => S.hasFSAA, run: () => openProjectPicker() },
+  { id: 'save-as', group: 'File', title: 'Save project as…', kw: 'store new folder copy duplicate elsewhere', when: () => S.hasFSAA && !(S.project && S.project.pack), run: () => saveProjectAs() },
+  { id: 'fileinfo', group: 'File', title: 'File info…', kw: 'header format size columns rows bbox extent crs details metadata', when: (c) => !!c.L, run: () => showFileInfo() },
+  { id: 'recents-clear', group: 'File', title: 'Clear recents', kw: 'recent files history forget list', when: () => _remember && _recents.length > 0, run: () => clearRecents() },
+  { id: 'import-dh', group: 'File', title: 'Import drillholes…', kw: 'drillhole collar survey assay interval lithology desurvey holes boreholes trio', run: () => openDhDialog(null) },
+  { id: 'source', group: 'Layer', title: 'Source (mapping / desurvey)…', kw: 'mapping columns coordinates x y z roles header desurvey reread', when: () => S.layers.length > 0, run: () => openPropsTab('source') },
+  { id: 'calc', group: 'Layer', title: 'Calculated columns…', kw: 'calc expression formula derived new column f fx compute', when: (c) => !!(c.L && layerTableHeader(c.L)), run: (c) => openCalcWindow(c.L) },
+  { id: 'filter-clear', group: 'Analyse', title: 'Clear filter', kw: 'reset remove query expression show all', when: () => !!$('#filter').value, run: () => clearFilter() },
+  { id: 'zoom-layer', group: 'View', title: 'Zoom to layer', kw: 'fit extent frame focus centre center', when: (c) => !!(c.L && c.L.kind !== 'table'), run: (c) => fitLayer(c.L) },
+  { id: 'look-n', group: 'View', title: 'Look north', kw: 'view direction camera facing azimuth', run: () => setView(-Math.PI / 2, 0) },
+  { id: 'look-s', group: 'View', title: 'Look south', kw: 'view direction camera facing azimuth', run: () => setView(Math.PI / 2, 0) },
+  { id: 'look-e', group: 'View', title: 'Look east', kw: 'view direction camera facing azimuth', run: () => setView(Math.PI, 0) },
+  { id: 'look-w', group: 'View', title: 'Look west', kw: 'view direction camera facing azimuth', run: () => setView(0, 0) },
+  { id: 'look-up', group: 'View', title: 'From below (looking up)', kw: 'underneath bottom view camera upward', run: () => setView(cam.state.theta, -PHI_MAX) },
+  { id: 'sec-back', group: 'View', title: 'Scrub section back', kw: 'step previous slice bench move section', when: () => !!currentSection(), run: () => scrubSection(-1) },
+  { id: 'sec-fwd', group: 'View', title: 'Scrub section forward', kw: 'step next slice bench move section', when: () => !!currentSection(), run: () => scrubSection(1) },
+  { id: 'compass', group: 'View', title: 'Compass…', kw: 'north arrow corner position size overlay', run: () => { const r = $('#compass').getBoundingClientRect(); compassMenu(r.left - 40, r.top - 8); } },
+  { id: 'bm-save', group: 'View', title: 'Save bookmark…', kw: 'viewpoint camera position remember store view', run: () => saveViewAs() },
+  { id: 'bm-go', group: 'View', title: 'Go to bookmark…', kw: 'viewpoint camera recall apply saved view jump', when: () => S.views.length > 0, run: () => setTimeout(() => menuXY(innerWidth / 2 - 130, innerHeight / 3, bookmarksMenuItems()), 0) },
+  { id: 'scene-save', group: 'View', title: 'Save scene…', kw: 'state visibility colours filter remember store snapshot', run: () => saveSceneAs(false) },
+  { id: 'scene-save-sel', group: 'View', title: 'Save scene (with selection)…', kw: 'state visibility colours filter selected remember store snapshot', when: () => S.layers.some((L) => L._selMask && L._selCount), run: () => saveSceneAs(true) },
+  { id: 'scene-go', group: 'View', title: 'Apply scene…', kw: 'state recall restore saved scene visibility colours', when: () => S.scenes.length > 0, run: () => setTimeout(() => menuXY(innerWidth / 2 - 130, innerHeight / 3, scenesMenuItems()), 0) },
+  { id: 'reinterpret', group: 'Layer', title: 'Reinterpret as…', kw: 'open as points blocks mesh surface grid reopen kind type', when: (c) => !!(c.L && !isView(c.L) && reinterpretOptions(c.L).length), run: (c) => setTimeout(() => reinterpretMenu(c.L, innerWidth / 2 - 130, innerHeight / 3), 0) },
+  { id: 'group-move', group: 'Layer', title: 'New group / move layer to group…', kw: 'folder group organize tree into move root leave', when: (c) => !!c.L, run: (c) => setTimeout(() => moveLayerToGroupMenu(c.L, innerWidth / 2 - 130, innerHeight / 3), 0) },
+  { id: 'explode', group: 'Layer', title: 'Explode…', kw: 'group spread apart offset separate displace exploded view', when: (c) => { const g = c.L && groupAt(groupPathOf(c.L.id)); return !!(g && groupLayerIds(g).length >= 2); }, run: (c) => openExplode(groupAt(groupPathOf(c.L.id))) },
+  { id: 'tint', group: 'Layer', title: 'Tint…', kw: 'mesh colour color wireframe solid surface shade', when: (c) => !!(c.L && c.L.kind === 'mesh'), run: (c) => setTimeout(() => meshTintMenu(c.L, innerWidth / 2 - 130, innerHeight / 3), 0) },
+  { id: 'build-index', group: 'Layer', title: 'Build index (stats + pushdown)…', kw: 'index stats band sidecar pushdown faster filter scan', when: (c) => !!(c.L && c.L.docs.blockDoc && !isView(c.L)), run: (c) => buildLayerIndex(c.L) },
+  { id: 'rasterize', group: 'Layer', title: 'Rasterize to grid…', kw: 'mesh surface to grid dem raster heightfield topo convert', when: (c) => !!(c.L && c.L.kind === 'mesh' && c.L.docs.meshDoc && c.L.docs.meshDoc.header && !c.L.docs.meshDoc.header.soup), run: (c) => openMeshGridDialog(c.L) },
+  { id: 'export-asc', group: 'Layer', title: 'Export as ESRI ASCII grid…', kw: 'asc arcgis raster grid save dem export', when: (c) => !!(c.L && c.L.docs.gridDoc), run: (c) => exportGridAsc(c.L) },
+  { id: 'disp-cache', group: 'Layer', title: 'Build display cache', kw: 'geotiff tif overview fast reopen grd sidecar preview', when: (c) => canBuildDisplayCache(c.L), run: (c) => buildDisplayCache(c.L) },
+  { id: 'dh-filter', group: 'Drillholes', title: 'Filter holes…', kw: 'hole filter collar campaign company eoh depth subset', when: (c) => !!(c.L && c.L.dh && c.L.docs.dhDoc), run: (c) => { const nd = dhSetGroupOf(c.L.id); return nd ? filterHolesSet(nd) : filterHolesLayer(c.L); } },
+  { id: 'dh-interval', group: 'Drillholes', title: 'Add interval table…', kw: 'assay lithology interval file another table drillhole set', when: (c) => !!(c.L && dhSetGroupOf(c.L.id)), run: (c) => addIntervalToSet(dhSetGroupOf(c.L.id)) },
+  { id: 'dh-redesurvey', group: 'Drillholes', title: 'Re-desurvey set…', kw: 'desurvey method minimum curvature tangential dip convention trajectory survey', when: (c) => !!(c.L && dhSetGroupOf(c.L.id)), run: (c) => setTimeout(() => redesurveyMenu(dhSetGroupOf(c.L.id), innerWidth / 2 - 130, innerHeight / 3), 0) },
+  { id: 'dh-traces', group: 'Drillholes', title: 'Show / hide hole traces', kw: 'traces trajectory path collar eoh lines sticks toggle', when: (c) => !!(c.L && dhSetGroupOf(c.L.id)), run: (c) => showHoleTraces(dhSetGroupOf(c.L.id)) },
+  { id: 'dh-collars', group: 'Drillholes', title: 'Show / hide collars', kw: 'collar points hole tops toggle', when: (c) => !!(c.L && dhSetGroupOf(c.L.id)), run: (c) => showCollars(dhSetGroupOf(c.L.id)) },
+  { id: 'dh-broadcast', group: 'Drillholes', title: 'Broadcast collar column to intervals…', kw: 'broadcast collar attribute copy join hole column intervals', when: (c) => !!(c.L && dhSetGroupOf(c.L.id)), run: (c) => setTimeout(() => menuXY(innerWidth / 2 - 130, innerHeight / 3, broadcastMenuItems(dhSetGroupOf(c.L.id))), 0) },
+  { id: 'recipe-new', group: 'Analysis', title: 'New recipe…', kw: 'recipe yaml analysis save create automate', when: () => !!S.project, run: () => openRecipeForm() },
+  { id: 'library', group: 'Analysis', title: 'Library…', kw: 'recipes routines library shared without project import export', run: () => openLibraryWindow() },
+  { id: 'runs', group: 'Analysis', title: 'Runs…', kw: 'routine runs history record past results tracker', when: () => !!S.project, run: () => openRunsWindow() },
+  { id: 'recipes-check', group: 'Analysis', title: 'Check all recipes…', kw: 'validate recipes routines verify broken columns layers', when: () => !!S.project && S.recipes.length > 0, run: () => openCheckAllRecipes() },
+  { id: 'about', group: 'Help', title: 'About micro', kw: 'version build licence license credits', run: () => showAbout() },
+  { id: 'docs', group: 'Help', title: 'Full documentation ↗', kw: 'manual docs guide reference online help', run: () => window.open('https://gentropic.org/micro/docs/', '_blank', 'noopener') },
+  { id: 'card', group: 'Help', title: 'Shortcut card (print) ↗', kw: 'keyboard shortcuts cheat sheet print reference', when: () => !_isMobile(), run: () => window.open('https://gentropic.org/micro/docs/card.html', '_blank', 'noopener') },
 ];
 let _palOpen = false, _palSel = 0, _palItems = [], _palNlMode = false;
 const palCtx = () => ({ L: activeLayer(), layers: S.layers, project: S.project });
