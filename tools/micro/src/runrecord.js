@@ -17,6 +17,13 @@ import { sha256File, sha256Text, Sha256 } from './sha256.js';
 import { ensureStoredValues } from './columns.js';
 import { layerById } from './state.js';
 
+// the RUN ROOT: where runs/ and a run's outputs live — the project folder, or (a run without a
+// project) a folder picked for it or an in-memory folder that becomes a zip. A run sets it for its
+// duration (one routine runs at a time).
+let _root = null;
+export const runRoot = () => _root || (S.project && S.project.dir) || null;
+export function setRunRoot(dir) { const prev = _root; _root = dir || null; return prev; }
+
 const pad = (n) => String(n).padStart(2, '0');
 export const localDate = (d = new Date()) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 const localStamp = (d = new Date()) => `${localDate(d)} ${pad(d.getHours())}${pad(d.getMinutes())}`;
@@ -37,9 +44,9 @@ export async function layerFingerprint(L) {
 export async function newRunRecord(r, steps, layerNames, onStatus) {
   const dir0 = `runs/${localStamp()} ${slugOf(r.name)}`;
   let dir = dir0, k = 2;
-  for (;;) { const taken = await resolveFileHandle(S.project.dir, `${dir}/run.json`).then(() => true, () => false); if (!taken) break; dir = `${dir0}-${k++}`; }
+  for (;;) { const taken = await resolveFileHandle(runRoot(), `${dir}/run.json`).then(() => true, () => false); if (!taken) break; dir = `${dir0}-${k++}`; }
   let routineHash = null;
-  if (r.file) { try { routineHash = await sha256File(await (await resolveFileHandle(S.project.dir, r.file)).getFile()); } catch { /* not on disk (a routine made in code) */ } }
+  if (r.file) { try { routineHash = await sha256File(await (await resolveFileHandle(runRoot(), r.file)).getFile()); } catch { /* not on disk (a routine made in code) */ } }
   if (!routineHash) routineHash = sha256Text(JSON.stringify({ name: r.name, params: r.params }));
   const layers = [];
   for (const nm of layerNames) {
@@ -60,14 +67,14 @@ export async function newRunRecord(r, steps, layerNames, onStatus) {
 }
 
 export async function writeRecord(rec) {
-  const fh = await resolveFileHandle(S.project.dir, `${rec.dir}/run.json`, { create: true });
+  const fh = await resolveFileHandle(runRoot(), `${rec.dir}/run.json`, { create: true });
   const w = await fh.createWritable(); await w.write(JSON.stringify(rec, null, 1) + '\n'); await w.close();
 }
 
 // an output's entry: its path, size and hash
 export async function outputEntry(path, text) {
   if (text != null) return { path, bytes: new TextEncoder().encode(text).length, sha256: sha256Text(text) };
-  try { const f = await (await resolveFileHandle(S.project.dir, path)).getFile(); return { path, bytes: f.size, sha256: await sha256File(f) }; }
+  try { const f = await (await resolveFileHandle(runRoot(), path)).getFile(); return { path, bytes: f.size, sha256: await sha256File(f) }; }
   catch { return { path, bytes: null, sha256: null }; }
 }
 
@@ -84,7 +91,7 @@ addEventListener('micro:layer-added', (e) => {
 export async function listRuns() {
   const out = [];
   let runs;
-  try { runs = await S.project.dir.getDirectoryHandle('runs'); } catch { return out; }
+  try { runs = await runRoot().getDirectoryHandle('runs'); } catch { return out; }
   for await (const [name, h] of runs.entries()) {
     if (h.kind !== 'directory') continue;
     let rec = null, accepted = null;
@@ -106,8 +113,8 @@ export async function findBaseline(routineName, excludeDir) {
 
 // accept a run as the baseline: a SIDECAR beside run.json (the record itself stays as written, so
 // it can be signed as it stands). by: a typed name — there are no accounts.
-export async function acceptRun(dir, by, note = '') {
-  const fh = await resolveFileHandle(S.project.dir, `${dir}/accepted.json`, { create: true });
+export async function acceptRun(dir, by, note = '', root = runRoot()) {
+  const fh = await resolveFileHandle(root, `${dir}/accepted.json`, { create: true });
   const body = { by: String(by || '').trim() || 'unnamed', at: new Date().toISOString(), note: String(note || '') };
   const w = await fh.createWritable(); await w.write(JSON.stringify(body, null, 1) + '\n'); await w.close();
   return body;
@@ -117,7 +124,7 @@ export async function acceptRun(dir, by, note = '') {
 export async function recordTable(entry, parse) {
   const o = entry && entry.outputs && entry.outputs.find((x) => /\.tsv$/i.test(x.path));
   if (!o) return null;
-  try { return parse(await (await (await resolveFileHandle(S.project.dir, o.path)).getFile()).text(), entry.key); } catch { return null; }
+  try { return parse(await (await (await resolveFileHandle(runRoot(), o.path)).getFile()).text(), entry.key); } catch { return null; }
 }
 
 // ── the CACHE (routines v2, step 6): a step whose inputs, settings and micro build match an earlier
@@ -164,7 +171,7 @@ export async function findCachedStep(key, excludeDir) {
       if (!e || e.cacheKey !== key || e.status !== 'ok' || !Array.isArray(e.outputs) || !e.outputs.length) continue;
       let intact = true;
       for (const o of e.outputs) {
-        try { const f = await (await resolveFileHandle(S.project.dir, o.path)).getFile(); if (f.size !== o.bytes || (await sha256File(f)) !== o.sha256) { intact = false; break; } }
+        try { const f = await (await resolveFileHandle(runRoot(), o.path)).getFile(); if (f.size !== o.bytes || (await sha256File(f)) !== o.sha256) { intact = false; break; } }
         catch { intact = false; break; }
       }
       if (intact) return { dir: x.dir, entry: e };
@@ -176,9 +183,9 @@ export async function findCachedStep(key, excludeDir) {
 export async function copyOutputs(entry, intoDir) {
   const outs = [];
   for (const o of entry.outputs) {
-    const f = await (await resolveFileHandle(S.project.dir, o.path)).getFile();
+    const f = await (await resolveFileHandle(runRoot(), o.path)).getFile();
     const to = `${intoDir}/${o.path.split('/').pop()}`;
-    const fh = await resolveFileHandle(S.project.dir, to, { create: true }); const w = await fh.createWritable(); await w.write(f); await w.close();
+    const fh = await resolveFileHandle(runRoot(), to, { create: true }); const w = await fh.createWritable(); await w.write(f); await w.close();
     outs.push({ path: to, bytes: o.bytes, sha256: o.sha256 });
   }
   return outs;

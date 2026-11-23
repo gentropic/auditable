@@ -8,10 +8,11 @@ import { listRuns, acceptRun } from './runrecord.js';
 const $ = (s) => document.querySelector(s);
 let _win = null;
 
-export async function acceptRunAsk(dir) {
+export async function acceptRunAsk(dir, { root = undefined, onAccept = null } = {}) {
   const by = ((await microPrompt('accept this run as the baseline — accepted by (your name)', '')) || '').trim();
   if (!by) return null;
-  const a = await acceptRun(dir, by);
+  const a = await acceptRun(dir, by, '', root);
+  if (onAccept) await onAccept();
   $('#meta').textContent = `${dir} accepted by ${a.by} — the next runs of this routine compare with it`;
   if (_win && _win._render) _win._render();
   return a;

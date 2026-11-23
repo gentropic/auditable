@@ -7799,6 +7799,75 @@ if (take()) {
   await p.close();
 }
 
+// ── §123: THE LIBRARY — a project routine packs with the recipe and the table it uses; the pack goes
+//     out as one YAML or a zip and comes back the same; it lives in the browser's library apart from
+//     any project; with NO project open it runs into a zip of the outputs you choose (the record always
+//     in it), and the next run compares with it and reuses its unchanged steps (the library keeps the
+//     records); a pack imports into another project as recipe files + the table. ──
+if (take()) {
+  const p = await mkPage('sm2lib');
+  await p.evaluate(async () => { for (const d of ['sm2lib', 'sm2lib2']) { try { await (await navigator.storage.getDirectory()).removeEntry(d, { recursive: true }); } catch { } } });
+  const csv = () => { const rows = ['XC,YC,ZC,FE']; for (let k = 0; k < 3; k++) for (let j = 0; j < 6; j++) for (let i = 0; i < 6; i++) rows.push(`${5 + i * 10},${5 + j * 10},${5 + k * 10},${(40 + i + j).toFixed(1)}`); return rows.join('\n') + '\n'; };
+  await p.evaluate(async (t) => { await window._micro.openBlob(new File([t], 'm.csv'), 'm.csv', 'replace'); }, csv());
+  await p.waitForFunction(() => window._micro.layers()[0] && window._micro.layers()[0].docs.blockDoc, null, { timeout: 20000 });
+  await saveProject(p);
+  const r = await p.evaluate(async (t) => {
+    const M_ = window._micro, out = {}, wait = (ms) => new Promise((res) => setTimeout(res, ms));
+    const dir = M_.project().dir;
+    { const fh = await dir.getFileHandle('cuts.csv', { create: true }); const w = await fh.createWritable(); await w.write('cut\n40\n45\n'); await w.close(); }
+    const list = M_._recipesList(); list.length = 0;
+    list.push({ name: 'gt std', tool: 'gt', params: { layer: 'm.csv', series: [{ layer: 'm.csv', col: 'FE' }], cutoffs: [40, 45, 50] } });
+    const routine = { name: 'monthly', tool: 'routine', params: { steps: [
+      { each: { from: 'cuts.csv' }, as: 'c', steps: [{ recipe: 'gt std', with: { cutoffs: ['$c.cut'] }, as: 'gt' }] },
+      { tool: 'modelqa', with: { layer: 'm.csv' }, as: 'mq' },
+      { check: 'mq.errors = 0' },
+    ] } };
+    list.push(routine);
+    // pack + both encodings
+    const pack = await M_.packFromProject(routine);
+    out.pack = { recipes: pack.recipes.map((x) => x.name), tables: Object.keys(pack.tables), missing: pack.missing || null };
+    const y = await M_.packToYaml(pack), fromY = await M_.packFromFile(new File([y], 'monthly.yaml'));
+    const z = await M_.packToZip(pack), fromZ = await M_.packFromFile(new File([z], 'monthly.zip', { type: 'application/zip' }));
+    const same = async (a) => a.main.name === 'monthly' && JSON.stringify(a.main.params) === JSON.stringify(routine.params) && a.recipes[0].name === 'gt std' && (await a.tables['cuts.csv'].text()) === 'cut\n40\n45\n';
+    out.yaml = { bundled: /bundle:/.test(y), same: await same(fromY) }; out.zip = { same: await same(fromZ) };
+    await M_.libraryPut(fromZ);
+    out.lib = (await M_.libraryList()).map((x) => x.main.name);
+    // no project: close it, open the model on its own, run from the library → a zip
+    await M_.closeProject(); await wait(300);
+    await M_.openBlob(new File([t], 'm.csv'), 'm.csv', 'replace'); await wait(300);
+    out.noProject = !M_.project() || !M_.project().dir;
+    const lp = await M_.libraryGet('monthly');
+    const runA = async () => { document.querySelectorAll('.fwin').forEach((w) => w.remove()); await M_.runWithoutProject(lp, 'zip'); for (let k = 0; k < 50 && !document.querySelector('.fwin[data-run-outputs]'); k++) await wait(100); return document.querySelector('.fwin[data-run-outputs]'); };
+    let ow = await runA();
+    const boxes = [...ow.querySelectorAll('input[type=checkbox]')];
+    out.outputs = boxes.length; boxes.filter((b) => !b.disabled).slice(-1).forEach((b) => { b.checked = false; });   // leave one report out
+    [...ow.querySelectorAll('button')].find((b) => b.textContent === 'Download zip').click();
+    for (let k = 0; k < 50 && !ow._zip; k++) await wait(100);
+    const { openZipRanged, blobSource } = await import('/ext/archive/src/zipstream.js');
+    const zz = await openZipRanged(blobSource(ow._zip)), names = zz.list().map((e) => e.name.split('/').pop());
+    const rec1 = JSON.parse(new TextDecoder().decode(await zz.bytes(zz.list().find((e) => /run\.json$/.test(e.name)))));
+    out.zip1 = { names, status: rec1.status, baseline: rec1.baseline };
+    // the next run (still no project): its baseline is the first, its unchanged steps reused
+    ow = await runA();
+    out.second = await (async () => { const v = (await (await import('/tools/micro/src/element-store.js'))._idb.get('routine-library')); const runs = v.runs.monthly || []; const last = JSON.parse(runs[runs.length - 1].files['run.json']); return { runs: runs.length, baseline: last.baseline && last.baseline.dir, firstDir: rec1.dir, reused: last.steps.filter((s) => s.reusedFrom).length }; })();
+    // import into a fresh project
+    const d2 = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2lib');   // the first project (its recipes were only ever in memory)
+    await M_.openProjectDir(d2); await wait(300);
+    await M_.importPackFile(new File([y], 'monthly.yaml'), 'project');
+    out.imported = { recipes: M_._recipesList().map((x) => x.name).sort(), table: await (await (await d2.getFileHandle('cuts.csv')).getFile()).text() };
+    return out;
+  }, csv());
+  chk(`LIBRARY: a project routine packs with its recipe and table (${JSON.stringify(r.pack)}); YAML (${JSON.stringify(r.yaml)}) and zip (${JSON.stringify(r.zip)}) come back the same; in the library (${r.lib})`,
+    r.pack.recipes.join() === 'gt std' && r.pack.tables.join() === 'cuts.csv' && !r.pack.missing && r.yaml.bundled && r.yaml.same && r.zip.same && r.lib.includes('monthly'));
+  chk(`LIBRARY: with no project (${r.noProject}) it runs into a zip of the chosen outputs — the record always (${JSON.stringify(r.zip1)}, of ${r.outputs})`,
+    r.noProject && r.zip1.status === 'ok' && r.zip1.names.includes('run.json') && r.zip1.names.length === r.outputs - 1 && r.zip1.baseline === null);
+  chk(`LIBRARY: the next run without a project compares with the first and reuses its unchanged steps (${JSON.stringify(r.second)})`,
+    r.second.runs === 2 && r.second.baseline === r.second.firstDir && r.second.reused >= 2);
+  chk(`LIBRARY: a pack imports into another project — recipe files + its table (${JSON.stringify(r.imported)})`,
+    r.imported.recipes.join() === 'gt std,monthly' && r.imported.table === 'cut\n40\n45\n');
+  await p.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

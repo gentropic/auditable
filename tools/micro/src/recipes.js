@@ -28,9 +28,10 @@ import { openInputsDialog, openRoutineWindow } from './routine-ui.js';
 import { compoPage, writePages, addResourceFrame } from './composer.js';
 import { openValidation } from './validation.js';
 import { checkParams, runTool, tableTSV, toolDef } from './tools.js';
-import { newRunRecord, writeRecord, outputEntry, localDate, findBaseline, recordTable, stepFingerprints, stepKey, findCachedStep, copyOutputs } from './runrecord.js';
+import { newRunRecord, writeRecord, outputEntry, localDate, findBaseline, recordTable, stepFingerprints, stepKey, findCachedStep, copyOutputs, runRoot, setRunRoot } from './runrecord.js';
 import { openRunsWindow, acceptRunAsk } from './runs-ui.js';
 import { openRecipeForm } from './recipe-form.js';
+import { openLibraryWindow } from './library.js';
 import { evalScalarCheck, evalEveryCheck, compareTables, parseTSV, flatValues } from './checks.js';
 export { localDate };
 const $ = (s) => document.querySelector(s);
@@ -153,7 +154,8 @@ export function routineSubst(v, scope) {
 // "params.xlsx#Bench targets" — the sheet rides after the hash.
 export async function routineReadTableFull(name) {
   const [path, sheetName] = String(name).split('#');
-  const fh = await resolveFileHandle(S.project.dir, path).catch(() => resolveFileHandle(S.project.dir, 'recipes/' + path));
+  const own = _overlay && _overlay.tables && (_overlay.tables[path] || _overlay.tables['recipes/' + path]);   // a pack's own table
+  const fh = own ? { getFile: async () => (own instanceof Blob ? own : new File([own.text != null ? own.text : own], path)) } : await resolveFileHandle(runRoot(), path).catch(() => resolveFileHandle(runRoot(), 'recipes/' + path));
   if (/\.xlsx$/i.test(path)) {
     const doc = await xlsxOpenSheet(await fh.getFile(), { sheet: sheetName || null });
     const h = doc.header;
@@ -324,7 +326,7 @@ export function routineLineInfo(st, i, P) {
     return { text: `${i + 1}. check — ${what}${st.level === 'warn' ? '   (warn)' : ''}${st.say ? `   “${st.say}”` : ''}` };
   }
   if (st.compare !== undefined) return { text: `${i + 1}. compare ${st.compare} with the baseline run  →  ${routineOutPath(P, st._slug)}${st.tolerance != null ? `   (tolerance ${st.tolerance})` : ''}` };
-  const rc = st.recipe ? S.recipes.find((x) => x.name === st.recipe) : null;
+  const rc = st.recipe ? recipeNamed(st.recipe) : null;
   const tool = st.recipe ? rc && rc.tool : st.tool;
   const label = st.recipe || (st.tool ? `${RECIPE_TOOLS[st.tool]} (inline)` : '(pick a recipe)');
   const params = routineStepOp(st).params;
@@ -345,7 +347,7 @@ export function routineLineInfo(st, i, P) {
 // or the inline step's own params)
 export const STEP_KEYS = ['recipe', 'tool', 'as', '_slug', 'each', 'steps', 'params', 'guard', 'filter', 'emit', 'with', 'cache'];
 export function routineStepOp(st) {
-  const rc = st.recipe ? S.recipes.find((x) => x.name === st.recipe) : null;
+  const rc = st.recipe ? recipeNamed(st.recipe) : null;
   // settings belong under `with:` — a step's own keywords (as, emit, filter on an each, …) can then
   // never swallow a tool setting of the same name (an inline step's `filter:` was silently dropped).
   // The older form, settings mixed into the step, still merges, minus the keywords.
@@ -425,7 +427,7 @@ export function routineLayerNames(rc) {                           // the layer n
 // guard (it has written some of them by design). → { problems: [..] }
 export async function routinePreflight(r, steps, { resume = false } = {}) {
   const P = r.params || {}, problems = [];
-  const byName = new Map(S.recipes.map((x) => [x.name, x]));
+  const byName = new Map([...S.recipes, ...((_overlay && _overlay.recipes) || [])].map((x) => [x.name, x]));
   const missingR = [...new Set(steps.filter((st) => st.recipe && !byName.get(st.recipe)).map((st) => st.recipe))];
   if (missingR.length) problems.push(`missing recipe${missingR.length > 1 ? 's' : ''} — ${missingR.join(', ')}`);
   const loaded = new Set(S.layers.map((x) => x.name)), missingL = new Set();
@@ -463,25 +465,39 @@ export async function routinePreflight(r, steps, { resume = false } = {}) {
   if (guardAt >= 0) for (const st of steps.slice(guardAt + 1)) {
     if (st.guard) continue;
     const op = routineStepOp(st), t = routineTargets(op.tool, op.params, st._slug, P);
-    if (P.output && P.output.dir) for (const rep of t.reports) if (await resolveFileHandle(S.project.dir, rep).then(() => true, () => false)) problems.push(`guard stopped — ${rep} already exists`);
+    if (P.output && P.output.dir) for (const rep of t.reports) if (await resolveFileHandle(runRoot(), rep).then(() => true, () => false)) problems.push(`guard stopped — ${rep} already exists`);
     for (const c of t.columns) if (layerHasColumn(c.name, c.layer)) problems.push(`guard stopped — ${c.layer || 'the layer'} already has a column “${c.name}”`);
   }
   return { problems };
 }
 
 
+// a pack's own recipes and tables (a routine run from the Library: nothing written into a project)
+let _overlay = null;
+export function recipeNamed(name) { return ((_overlay && _overlay.recipes) || []).find((x) => x.name === name) || S.recipes.find((x) => x.name === name) || null; }
+// opts.root: where the run writes (default the project); opts.pack: its own recipes + tables;
+// opts.onFinish(status, record) / opts.onAccept(): a run without a project packages its outputs
 export async function runRoutine(r, opts = {}) {
+  const prevRoot = setRunRoot(opts.root || null), prevOv = _overlay;
+  _overlay = opts.pack || null;
+  try { return await runRoutineInner(r, opts); } finally { setRunRoot(prevRoot); _overlay = prevOv; }
+}
+async function runRoutineInner(r, opts) {
+  const carry = { root: opts.root, pack: opts.pack, onFinish: opts.onFinish, onAccept: opts.onAccept, token: opts.token };
   // events for a host (window.micro.runRoutine): micro:routine-step per step, micro:routine-done once
   // at the end, whatever the end — refused, cancelled, failed, ok — with a copy of the record
-  const done = (status, extra = {}, rr = null) => dispatchEvent(new CustomEvent('micro:routine-done', { detail: { routine: r.name, token: opts.token || null, status, record: rr ? JSON.parse(JSON.stringify(rr)) : null, ...extra } }));
+  const done = (status, extra = {}, rr = null) => {
+    dispatchEvent(new CustomEvent('micro:routine-done', { detail: { routine: r.name, token: opts.token || null, status, record: rr ? JSON.parse(JSON.stringify(rr)) : null, ...extra } }));
+    if (opts.onFinish && rr) Promise.resolve(opts.onFinish(status, rr)).catch((e) => { $('#meta').textContent = `routine: ${e.message}`; });
+  };
   const stepEvt = (n, step, status) => dispatchEvent(new CustomEvent('micro:routine-step', { detail: { routine: r.name, token: opts.token || null, n, step, status } }));
-  if (!S.project || !S.project.dir) { $('#meta').textContent = 'routine: reports/ needs a project — open or save one first'; done('refused', { problems: ['no project open'] }); return; }
+  if (!runRoot()) { $('#meta').textContent = 'routine: a run needs somewhere to write — open a project, or run it from the Library without one'; done('refused', { problems: ['no project open'] }); return; }
   const P = r.params || {};
   let steps;
   // a resume continues THIS run: the same expansion (a params table edited since must not reshuffle
   // the steps) and the atlas pages already made (the book is written when the routine finishes)
   try { steps = opts.steps || await expandRoutine(P); } catch (e) { $('#meta').textContent = `routine: ${e.message}`; done('refused', { problems: [e.message] }); return; }
-  const byName = new Map(S.recipes.map((x) => [x.name, x]));
+  const byName = new Map([...S.recipes, ...((_overlay && _overlay.recipes) || [])].map((x) => [x.name, x]));
   { const pf = await routinePreflight(r, steps, { resume: !!opts.record });
     if (pf.problems.length) { $('#meta').textContent = `routine: ${pf.problems.slice(0, 4).join(' · ')}${pf.problems.length > 4 ? ` · +${pf.problems.length - 4} more` : ''}`; done('refused', { problems: pf.problems }); return; } }
   // the RUN RECORD (src/runrecord.js): a new run gets its own folder; a resume, retry or skip
@@ -507,7 +523,7 @@ export async function runRoutine(r, opts = {}) {
     rec.baseline = b ? { dir: b.dir, accepted: b.accepted, started: b.rec.started } : null;
   }
   let baseRec = null;
-  if (rec.baseline) { try { baseRec = JSON.parse(await (await (await resolveFileHandle(S.project.dir, `${rec.baseline.dir}/run.json`)).getFile()).text()); } catch { baseRec = null; } }
+  if (rec.baseline) { try { baseRec = JSON.parse(await (await (await resolveFileHandle(runRoot(), `${rec.baseline.dir}/run.json`)).getFile()).text()); } catch { baseRec = null; } }
   const prevEntry = (name) => baseRec && (baseRec.steps.find((e) => e.step === name) || baseRec.steps.find((e) => e.step && e.step.replace(/-.*/, '') === name && e.values));
   const scalarScope = () => {
     const o = {};
@@ -535,7 +551,7 @@ export async function runRoutine(r, opts = {}) {
       if (wrote) markProjectDirty();
       rec.status = 'cancelled'; rec.finished = new Date().toISOString(); await saveRec();
       tracker.done(`cancelled — ${idx} of ${steps.length} steps done, ${wrote} report${wrote === 1 ? '' : 's'} → ${outDir}/`,
-        idx < steps.length ? [['Resume', () => runRoutine(r, { from: idx, steps, books, record: rec, event: 'resume' }), 'carry on from where you stopped it']] : []);
+        idx < steps.length ? [['Resume', () => runRoutine(r, { ...carry, from: idx, steps, books, record: rec, event: 'resume' }), 'carry on from where you stopped it']] : []);
       $('#meta').textContent = `routine “${r.name}” cancelled after ${idx} step${idx === 1 ? '' : 's'}`;
       done('cancelled', {}, rec);
       return;
@@ -564,7 +580,7 @@ export async function runRoutine(r, opts = {}) {
           if (!prevT) res = { status: 'not-evaluated', why: rec.baseline ? 'the baseline run has no such table' : 'no baseline run yet (accept a run, or run once more)' };
           else {
             const cmp = compareTables(src.table, prevT), path = outPath(st._slug), tsv = tableTSV(cmp);
-            const fh = await resolveFileHandle(S.project.dir, path, { create: true }); const w = await fh.createWritable(); await w.write(tsv); await w.close(); wrote++;
+            const fh = await resolveFileHandle(runRoot(), path, { create: true }); const w = await fh.createWritable(); await w.write(tsv); await w.close(); wrote++;
             entry.outputs = [await outputEntry(path, tsv)];
             keep(st, { values: {}, table: cmp });
             res = { status: 'pass' };
@@ -587,8 +603,8 @@ export async function runRoutine(r, opts = {}) {
         if (entry.status === 'running') entry.status = 'failed';
         Object.assign(entry, { error: e.message, ms: Date.now() - t0c }); rec.status = 'failed'; await saveRec();
         tracker.done(`stopped at step ${n} — a check`, [
-          ['Retry step', () => runRoutine(r, { from: idx, steps, books, record: rec, event: 'retry' }), 'judge again (after changing something)'],
-          ['Skip & continue', () => runRoutine(r, { from: idx + 1, steps, books, record: rec, event: 'skip' }), 'carry on without this check'],
+          ['Retry step', () => runRoutine(r, { ...carry, from: idx, steps, books, record: rec, event: 'retry' }), 'judge again (after changing something)'],
+          ['Skip & continue', () => runRoutine(r, { ...carry, from: idx + 1, steps, books, record: rec, event: 'skip' }), 'carry on without this check'],
         ]);
         $('#meta').textContent = `routine “${r.name}” STOPPED at step ${n} (${st._slug}) — ${e.message}`;
         stepEvt(idx + 1, st._slug, 'failed'); done('failed', { error: e.message }, rec);
@@ -627,7 +643,7 @@ export async function runRoutine(r, opts = {}) {
         let tsv = null;
         if (res.table) {                                     // a table → the step's machine TSV
           tsv = tableTSV(res.table);
-          const fh = await resolveFileHandle(S.project.dir, outPath(st._slug), { create: true });
+          const fh = await resolveFileHandle(runRoot(), outPath(st._slug), { create: true });
           const w = await fh.createWritable(); await w.write(tsv); await w.close();
           wrote++;
           Object.assign(entry, { units: res.table.units, key: res.table.key });
@@ -635,7 +651,7 @@ export async function runRoutine(r, opts = {}) {
         }
         if (res.file) {                                      // a file (export) → into the run's folder, hashed
           const fpath = `${outDir}/${res.file.name}`;
-          const fh = await resolveFileHandle(S.project.dir, fpath, { create: true });
+          const fh = await resolveFileHandle(runRoot(), fpath, { create: true });
           const w = await fh.createWritable(); await w.write(res.file.blob); await w.close();
           wrote++;
           entry.outputs.push(await outputEntry(fpath));
@@ -671,8 +687,8 @@ export async function runRoutine(r, opts = {}) {
       tracker.state(idx, 'fail', e.message);
       Object.assign(entry, { status: 'failed', ms: Date.now() - t0, error: e.message }); rec.status = 'failed'; await saveRec();
       tracker.done(`stopped at step ${n} — the step's window is left open`, [
-        ['Retry step', () => runRoutine(r, { from: idx, steps, books, record: rec, event: 'retry' }), 'run this step again, then carry on'],
-        ['Skip & continue', () => runRoutine(r, { from: idx + 1, steps, books, record: rec, event: 'skip' }), 'leave this step undone and run the rest'],
+        ['Retry step', () => runRoutine(r, { ...carry, from: idx, steps, books, record: rec, event: 'retry' }), 'run this step again, then carry on'],
+        ['Skip & continue', () => runRoutine(r, { ...carry, from: idx + 1, steps, books, record: rec, event: 'skip' }), 'leave this step undone and run the rest'],
       ]);
       $('#meta').textContent = `routine “${r.name}” STOPPED at step ${n} (${st._slug}) — ${e.message}`;
       stepEvt(idx + 1, st._slug, 'failed'); done('failed', { error: e.message }, rec);
@@ -688,7 +704,7 @@ export async function runRoutine(r, opts = {}) {
   // say what THIS run did — a resume must not claim the steps it skipped
   const ran = n - from;
   const line = `${ran} step${ran === 1 ? "" : "s"} run${from ? ` (${from} skipped)` : ""}${wrote || !bookLines.length ? `, ${wrote} report${wrote === 1 ? "" : "s"} → ${outDir}/` : ""}${bookLines.length ? `, ${bookLines.join(", ")}` : ""}`;
-  tracker.done(`${line} · record ${rec.dir}/run.json`, [['Accept as baseline…', () => acceptRunAsk(rec.dir), 'the run the next runs of this routine compare with', true]]);
+  tracker.done(`${line} · record ${rec.dir}/run.json`, [['Accept as baseline…', () => acceptRunAsk(rec.dir, { root: runRoot(), onAccept: opts.onAccept }), 'the run the next runs of this routine compare with', true]]);
   $('#meta').textContent = `routine “${r.name}” — ${line}`;
   done('ok', {}, rec);
 }
@@ -893,9 +909,9 @@ export async function renameRecipe(r) {
 // run (or just open configured): resolve the primary layer from the first
 // series; a missing primary gets the remap menu — every series whose layer is
 // missing then falls back to the substitute
-export function runRecipe(r, andRun = true) {
-  if (andRun && Array.isArray(r.inputs) && r.inputs.length) { openInputsDialog(r); return; }   // ask-me-first: the generated dialog runs the substituted copy
-  if (r.tool === 'routine') { if (andRun) runRoutine(r); else openRoutineWindow(r); return; }
+export function runRecipe(r, andRun = true, runOpts = null) {
+  if (andRun && Array.isArray(r.inputs) && r.inputs.length) { openInputsDialog(r, runOpts); return; }   // ask-me-first: the generated dialog runs the substituted copy
+  if (r.tool === 'routine') { if (andRun) runRoutine(r, runOpts || {}); else openRoutineWindow(r); return; }
   if (r.tool === 'figure') { runFigureRecipe(r.params).catch((e) => { $('#meta').textContent = `figure recipe: ${e.message}`; }); return; }   // camera-based — no layer to resolve
   if (r.tool === 'compo') {                                // one page, written to its out / book path
     (async () => {
@@ -945,11 +961,12 @@ export function runRecipe(r, andRun = true) {
 }
 
 export function recipesMenuItems() {
-  if (!S.project) return [{ label: 'open a project folder first', action: () => {} }];
+  if (!S.project) return [{ label: 'Library… (routines without a project)', action: () => openLibraryWindow() }, { label: 'a project’s own recipes: open a project folder', action: () => {} }];
   if (!S.recipes.length) return [
     { label: 'none yet — “save as recipe…” in an analysis window, or:', action: () => {} },
     { label: 'New recipe…', action: () => openRecipeForm() },
     { label: 'New routine…', action: () => openRoutineWindow(null) },
+    { label: 'Library…', action: () => openLibraryWindow() },
   ];
   return [...S.recipes.map((r) => ({
     label: `${r.name} · ${RECIPE_TOOLS[r.tool]}`,
@@ -960,6 +977,6 @@ export function recipesMenuItems() {
       { label: 'Rename…', action: () => renameRecipe(r) },
       { label: 'Delete', action: () => deleteRecipe(r) },
     ],
-  })), { label: 'New recipe…', action: () => openRecipeForm() }, { label: 'New routine…', action: () => openRoutineWindow(null) }, { label: 'Runs…', action: () => openRunsWindow() }, { label: 'Check all recipes…', action: () => openCheckAllRecipes() }];
+  })), { label: 'New recipe…', action: () => openRecipeForm() }, { label: 'New routine…', action: () => openRoutineWindow(null) }, { label: 'Library…', action: () => openLibraryWindow() }, { label: 'Runs…', action: () => openRunsWindow() }, { label: 'Check all recipes…', action: () => openCheckAllRecipes() }];
 }
 

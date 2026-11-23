@@ -405,7 +405,7 @@ export function openRoutineWindow(r0) {
 // Types: text (default), number, choice (options:), layer (loaded layers),
 // column (columns of the layer named by `of:`, else the first layer input,
 // else the active layer). Same rule as each: exact "$name" lands typed. ──
-export function openInputsDialog(r) {
+export function openInputsDialog(r, runOpts = null) {   // runOpts: carried to the run (a run without a project)
   const win = floatWin({ title: r.name || 'recipe', sub: 'inputs', x: innerWidth / 2 - 190, y: innerHeight / 3, w: 380, h: Math.min(90 + r.inputs.length * 30 + 40, innerHeight - 120) });
   win.el.dataset.inputsDialog = '1';
   win.body.className += ' rw-body';
@@ -456,7 +456,7 @@ export function openInputsDialog(r) {
     const req = inputsProblems(r, values);                    // a layer input's required columns, before anything runs
     if (req.length) { let m = win.body.querySelector('.rw-prevline.fail'); if (!m) { m = document.createElement('div'); m.className = 'rw-prevline fail'; bar.before(m); } m.textContent = req.join(' · '); return; }
     win.close();
-    runRecipe({ ...r, inputs: undefined, _inputs: values, params: routineSubst(JSON.parse(JSON.stringify(r.params)), values) }, true);   // _inputs: the run record keeps the answers
+    runRecipe({ ...r, inputs: undefined, _inputs: values, params: routineSubst(JSON.parse(JSON.stringify(r.params)), values) }, true, runOpts);   // _inputs: the run record keeps the answers
   };
   bar.appendChild(runB);
   win.body.appendChild(bar);
