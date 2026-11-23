@@ -3,13 +3,13 @@
 \textbf{In this chapter} you bring columns from one layer onto another — by position, for two block models on compatible lattices, or by a key column for any two tables — and you reconcile two versions of a model into a colored map of their difference.
 \end{goals}
 
-Two files often hold two halves of one answer. Last month's estimate and this month's. A model with grades and a lookup table of densities by domain. A sub-blocked geological model and the regular model the planners use. The \term{join} tab brings data across from one layer to another, and \term{reconcile} is its preset for the most common question of all: \emph{what changed between these two models, and where?}
+The analysis windows read one layer at a time, or put two side by side on a plot. Often, though, two files hold two halves of one answer. Last month's estimate and this month's. A model with grades and a lookup table of densities by domain. A sub-blocked geological model and the regular model the planners use. The \term{join} tab brings data across from one layer to another, and \term{reconcile} is its preset for the most common question of all: \emph{what changed between these two models, and where?}
 
 Everything in this chapter happens on one tab. Select a layer, open its properties (\menu{Data>Layer properties…}, or right-click the layer and choose \menu{Properties…}) and go to \ui{join}.\side{Only a layer backed by a table of records has a \ui{join} tab.}
 
 \section{One rule: columns here, or a new layer}\label{sec:joins-rule}
 
-The layer whose properties you opened is the \term{left} side. The layer you pick in \ui{right} is where the data comes from. Every join then follows one rule:
+The layer whose properties you opened is the \term[join!left and right side]{left} side. The layer you pick in \ui{right} is where the data comes from. Every join then follows one rule:
 
 \begin{itemize}
 \item If the operation keeps the left layer's records exactly as they are — the same blocks, the same rows — the result lands as \emph{columns on it}. Nothing new appears in the layers panel.
@@ -87,7 +87,7 @@ When two models you must compare are off-phase, the fix belongs upstream, in the
 With a compatible pair, the form opens up. From top to bottom:
 
 \begin{table}[htbp]\small
-\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+\begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
 setting & meaning & default \\ \midrule
 \ui{mode} & \ui{Spatial} resamples by position; \ui{By key} matches rows by a column (\cref{sec:joins-key}). \ui{Spatial} is disabled when the left layer has no regular grid. & \ui{Spatial} \\
 \ui{right} & The layer the data comes from. In spatial mode the list holds the other block models. & none \\
@@ -117,7 +117,7 @@ weight & For a numeric column: \ui{unweighted}, or \ui{× }another numeric colum
 \begin{tryit}
 The demo project has one block model, so first make a second one on the same lattice.
 \begin{enumerate}
-\item Open the demo project from the empty screen.
+\item Open the demo project from the start screen.
 \item Choose \menu{Data>New grid / block model…}. For \ui{extent} choose \ui{cover compatible models}; the type becomes a block model.
 \item Tick \file{deposit.csv}, leave \ui{resolution} on \ui{finest} and press \ui{Create}. You now have \file{common\_model.csv}, an empty model whose blocks coincide with the deposit's; its one column, \col{VAL}, holds the fill value.
 \item Select the new model, open \menu{Data>Layer properties…} and go to the \ui{join} tab.
@@ -137,7 +137,7 @@ A target grid of more than 40 million cells is refused. Joining onto \ui{common 
 A key join ignores geometry. It matches each row of the left layer to a row of the right layer whose key holds the same value, and brings columns across. The right layer can be any table: a block model, a points file, or a plain table with no coordinates at all (\cref{ch:columns}). The classic use is a lookup — a small table of \col{LITO} against density, or of block IDs against a classification made elsewhere.
 
 \begin{table}[htbp]\small
-\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+\begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
 setting & meaning & default \\ \midrule
 \ui{left key} & The column of this layer to match on. & none \\
 \ui{right key} & The column of the right layer holding the same values. The names need not agree. & none \\

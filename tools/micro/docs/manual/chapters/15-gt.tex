@@ -1,11 +1,11 @@
 \chapter{Grade–tonnage}\label{ch:gt}
 \begin{goals}
-\textbf{In this chapter} you draw tonnage and mean grade above cutoff for a block model, give it a density and units so the tonnes are tonnes, overlay a second model or a second domain, read a reconciliation as two curves, and write the same curve from a routine. On a drillhole layer the same window adds up interval length in meters instead.
+\textbf{In\index{grade–tonnage} this chapter} you draw tonnage and mean grade above cutoff for a block model, give it a density and units so the tonnes are tonnes, overlay a second model or a second domain, read a reconciliation as two curves, and write the same curve from a routine. On a drillhole layer the same window adds up interval length in meters instead.
 \end{goals}
 
 Grade–tonnage answers the first question anyone asks of a block model: \emph{how much is there above a given grade, and at what grade?} micro computes the curve exactly, at any model size, from the source file — every block weighted by its own volume and density.
 
-Open it from a block model's (or a drillhole layer's) right-click menu, \ui{Grade-tonnage…}, or press \key{⌘K} (\key{Ctrl}+\key{K} on Windows) and type \code{grade}. The window works as \cref{ch:analysis} describes; this chapter covers what is particular to grade–tonnage.
+Open it from a block model's (or a drillhole layer's) right-click menu, \ui{Grade-tonnage…}, or press \key{⌘K} (\key{Ctrl}+\key{K} on Windows and Linux) and type \code{grade}. The window works as \cref{ch:analysis} describes; this chapter covers what is particular to grade–tonnage.
 
 \section{A first curve}\label{sec:gt-first}
 The demo project opens with a grade–tonnage window already run on \file{deposit.csv}, floating at the right of the view. It is set up the way a report needs it: \col{FE} as the grade, declared in \%, and \col{SG} as the density. So its left axis reads \emph{tonnage (t)}, and the subtitle \emph{tonnes · 40 cutoffs · 1,786,620 rows}.
@@ -65,7 +65,7 @@ For the cutoffs you state in a recipe or routine (\cref{sec:gt-routine}), the co
 Exact arithmetic is not a correct model. The curve describes the blocks as estimated, at their support, and it inherits the estimate's smoothing: an over-smoothed model shows too little grade above a high cutoff, and nothing in this window corrects that. Testing the model against its data is the subject of \cref{ch:validation}.
 
 \section{The settings}\label{sec:gt-settings}
-\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+\begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
 setting & meaning & default \\ \midrule
 series · layer & the layer this curve reads & the window's layer \\
 series · column & the grade column; calculated and stored columns are offered too & the first numeric column \\
@@ -83,7 +83,7 @@ ranges & manual \ui{min}/\ui{max} for the cutoff, tonnage and grade axes & autom
 Changing a series' layer, column, density or filter, or the \ui{ρ unit}, needs a new \ui{Run}. The cutoff count, the units of grade and the ranges are live.
 
 \section{Density}\label{sec:gt-units}
-The density field is an expression in the same language as the filter (\cref{app:expr}), evaluated per block:
+The\index{density} density field is an expression in the same language as the filter (\cref{app:expr}), evaluated per block:
 
 \begin{itemize}
 \item \code{SG} — a density column;
@@ -101,20 +101,21 @@ A density of 2,700 with the \ui{ρ unit} left at t/m³ gives tonnages a thousand
 Grade units work as in every analysis window (\cref{sec:analysis-units}): declared on the series and on the plot, they put series in different units on one honest axis and turn the table's last column into tonnes of metal — or m³ of metal, with no density.
 
 \section{Cutoffs}\label{sec:gt-cutoffs}
-In the window you choose \emph{how many} cutoff steps, not which cutoffs. micro draws one more round value than the count — 40 steps are 41 cutoffs, the first and the last included — evenly spaced by a step of 1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6 or 8 × a power of ten, from a round number at or below the lowest grade to one at or above the highest. Every one is on a grade step, so every plotted point is exact.
+In\index{cutoff} the window you choose \emph{how many} cutoff steps, not which cutoffs. micro draws one more round value than the count — 40 steps are 41 cutoffs, the first and the last included — evenly spaced by a step of 1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6 or 8 × a power of ten, from a round number at or below the lowest grade to one at or above the highest. Every one is on a grade step, so every plotted point is exact.
 
 Automatic cutoffs are good for looking and wrong for reporting: they come from the data's range, so adding one high-grade block can move them all. A routine therefore requires an explicit list (\cref{sec:gt-routine}), and a figure meant to be compared with last quarter's should come from a recipe or routine with stated cutoffs, or at least fixed axis ranges.
 
 To read a single cutoff precisely in the window, copy the table (\ui{⧉ table}) — it has one row per cutoff drawn — or raise the cutoff count until your value is among the steps.
 
 \section{Comparing models}\label{sec:gt-compare}
-Each series picks its own layer, so you compare two models, or two domains of one, in a single window.
+Each\index{grade–tonnage!comparing models} series picks its own layer, so you compare two models, or two domains of one, in a single window.
 
 \begin{tryit}
 With the demo's grade–tonnage window open (right-click \file{deposit.csv}, \ui{Grade-tonnage…}, if you closed it):
 \begin{enumerate}
 \item Click \ui{+ add series}. A second series appears on the window's layer, with its first numeric column (\col{FE}) and an empty filter.
-\item In its density field type \code{SG}; in its filter field type \code{LITO = "HEMATITE"}.
+\item In its density field type \code{SG}.
+\item In its filter field type \code{LITO = "HEMATITE"}.
 \item Press \ui{Run}. Two pairs of curves appear: the deposit, and its hematite — flat at about 24~Mt until the cutoff passes 60\,\%, then running along the deposit's curve.
 \item Click a series' colored dot to change its color. Both series read the same layer and column, so the legend names both \emph{FE}; the color tells them apart.
 \end{enumerate}
@@ -136,7 +137,7 @@ A block model and a drillhole layer cannot share one curve: cubic meters and met
 \end{caution}
 
 \section{Reconciliation-aware curves}\label{sec:gt-reconcile}
-When you reconcile two models (\cref{ch:joins}), micro makes a derived layer carrying both grades side by side on the common lattice, in columns named \col{ref\_}\emph{grade} and \col{this\_}\emph{grade} — \col{ref\_FE} and \col{this\_FE}.
+When\index{reconcile!grade–tonnage} you reconcile two models (\cref{ch:joins}), micro makes a derived layer carrying both grades side by side on the common lattice, in columns named \col{ref\_}\emph{grade} and \col{this\_}\emph{grade} — \col{ref\_FE} and \col{this\_FE}.
 
 Open grade–tonnage on that layer and it recognizes the pair: the window starts with two series, the reference and the new model, instead of one. Press \ui{Run} and you have the reconciliation as a pair of grade–tonnage curves over exactly the same blocks. The Δ map of \cref{ch:joins} shows \emph{where} the models differ; this shows what the difference does to the tonnage above each cutoff.
 
@@ -195,6 +196,8 @@ column & meaning \\ \midrule
 \begin{caution}
 Two series that read the same column of the same layer get the same name in the \col{series} column, so their rows cannot be told apart in the report. In a routine, give each such comparison its own step — one \code{gt} step per filter, each with its own \code{as:} name.
 \end{caution}
+
+A block model opened as points (\cref{ch:opening}) has no block volumes to weigh, so a \code{gt} step on it stops with \emph{deposit.csv: no block grid — a model opened as points has no block volumes to weigh by (reopen it as a block model)}, rather than counting every point as a cubic meter.
 
 A cutoff that is not on the grade step is not an error: the step runs, and the warning appears on the step's line in the run tracker. The resolved settings in the run record (\cref{ch:records}) list the cutoffs actually used, sorted ascending.
 

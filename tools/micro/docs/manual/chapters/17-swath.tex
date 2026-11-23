@@ -1,9 +1,9 @@
 \chapter{Swath / drift}\label{ch:swath}
 \begin{goals}
-\textbf{In this chapter} you plot mean grade per band along an axis, a structural direction or a trend and plunge, set band widths that mean something, overlay several estimates in one plot, see the bands on the 3D model, and turn a suspicious band into a selection.
+\textbf{In\index{swath} this chapter} you plot mean grade per band along an axis, a structural direction or a trend and plunge, set band widths that mean something, overlay several estimates in one plot, see the bands on the 3D model, and turn a suspicious band into a selection.
 \end{goals}
 
-A swath plot — a drift plot, if you prefer — cuts the model into parallel slabs and plots the mean grade of each. It is the standard check for local bias: two estimates of the same deposit should drift together, and where they part company you have somewhere to look.
+Grade–tonnage and the cross-tab say how much there is; neither says \emph{where}. A swath plot — a drift plot, if you prefer — cuts the model into parallel slabs and plots the mean grade of each. It is the standard check for local bias: two estimates of the same deposit should drift together, and where they part company you have somewhere to look.
 
 Three things set micro's swath apart from a static plot. Band width and offset are free after one pass, so you can tune them by eye. The bands can be striped onto the model, so the bins of the plot are slabs you can see. And the plot is a selection tool: drag across a dip in the profile and the blocks that caused it are selected in 3D.
 
@@ -46,7 +46,7 @@ The plot puts distance along the direction on the horizontal axis, mean grade on
 The \ui{direction} menu at the top of the rail has three modes. In each, a band is a slab perpendicular to the direction, and a block belongs to the band its \emph{centroid} falls in.
 
 \medskip
-\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+\begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
 mode & directions scanned & settings \\ \midrule
 \ui{axes X / Y / Z} & three: east, north, elevation — tabs \ui{X}, \ui{Y}, \ui{Z} & none \\
 \ui{dip-dir / dip / rake} & three, from a plane: the rake line, the in-plane perpendicular, and the pole — tabs \ui{rake}, \ui{in-plane}, \ui{pole} & \ui{dipdir} 90, \ui{dip} 45, \ui{rake} 0 \\
@@ -72,7 +72,7 @@ Swath directions do not have to match the model's lattice, and a rotated model (
 \index{swath!band width}Under \ui{bands} are two fields, \ui{width} and \ui{offset}, in the model's length unit. Both are \emph{per direction}: the section heading names the tab they belong to (\ui{bands · X}), and each tab keeps its own. An E–W drift can hold 100~m bands while the Z profile holds one bench.
 
 \medskip
-\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+\begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
 setting & meaning & automatic value \\ \midrule
 \ui{width} & the thickness of a band along the direction & a round step giving about 25 bands over the extent \\
 \ui{offset} & where a band edge sits: edges are at offset, offset ± width, … & the low end of the extent \\ \bottomrule
@@ -98,7 +98,7 @@ with $V$ the block's own volume — sub-blocks at their true size.
 \item \code{SG * PARTIAL}: tonnage inside a solid, when \col{PARTIAL} is a fraction column.
 \end{itemize}
 
-Blocks with a blank grade are left out of their band, as are blocks whose weight is blank or zero. The weight has no unit to declare, because a mean does not care whether density is in t/m³ or kg/m³.
+Blocks with a blank grade are left out of their band, as are blocks whose weight is blank or zero (\cref{sec:analysis-rules}). The weight has no unit to declare, because a mean does not care whether density is in t/m³ or kg/m³.
 
 The usual reason to add series is to compare estimates. Put the kriged grade, the nearest-neighbor grade and an inverse-distance check in three series of the same model — or of three models, since each series picks its own layer — and \ui{Run} once. A nearest-neighbor estimate is a declustered picture of the samples, laid on the model's blocks. A kriged profile that sits consistently above or below it over a run of bands is a local bias; one that only wobbles less is the smoothing you expect.
 
@@ -109,7 +109,7 @@ The swath bands block centroids, which a drillhole interval table does not have 
 \end{note}
 
 \section{The settings}\label{sec:swath-settings}
-\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+\begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
 setting & meaning & default \\ \midrule
 \ui{direction} & axes · dip-dir / dip / rake · trend / plunge, with its angles & axes \\
 \ui{width}, \ui{offset} & the bands of the current tab — live & automatic \\
@@ -162,18 +162,43 @@ With the demo's swath on the \ui{X} tab (if you skipped the first exercise: righ
 \begin{enumerate}
 \item Drag across the three or four bands where the profile peaks, and choose \ui{Select rows in …}.
 \item Right-click \file{deposit.csv} and choose \ui{Stats…} (\cref{ch:stats}).
-\item Set its \ui{scope} to \ui{sel}, choose \ui{group by} \col{LITO}, and press \ui{Run}. The table lists the rock types of the high-grade bands, with their grades.
+\item Set its \ui{scope} to \ui{sel} and choose \ui{group by} \col{LITO}.
+\item Press \ui{Run}. The table lists the rock types of the high-grade bands, with their grades.
 \item Clear the selection when you are done.
 \end{enumerate}
 \end{tryit}
 
 On a touch screen there is no hover: tap a bar to ghost its band, and drag sideways to hold a range (\cref{ch:sealed}).
 
+\subsection{Oriented swaths: seeing an oblique band}\label{sec:swath-ghost-oriented}
+\index{swath!oriented}\index{band ghost}Along X, Y or Z a band is easy to picture: a north–south slab, a bench. Along an oriented trio or a trend and plunge (\cref{sec:swath-directions}) it is not. A band perpendicular to a line plunging 55° west is a slab dipping 35° east, and it cuts the lens, the waste and the cap at angles nobody holds in their head. The band ghost is what makes such a profile readable: it draws the band you point at on the model, at its true attitude, so a peak or a dip in the profile points at the rock that made it.
+
+The demo's lens is a good case. Its center moves west as it deepens, about 0.7~m for every meter of depth, so the line it follows plunges about 55° toward the west: trend 270, plunge 55. Swath along that line and the bands are slabs parallel to nothing in the model's lattice.
+
+\shot{swath-ghost-oriented}{A swath of \col{FE} along trend 270 / plunge 55 on the demo deposit, 50~m bands. The pointer rests on the band at −352,058 – −352,008, just past the profile's peak; on the model, seen from the south with the topography and the ore shell hidden, its ghost is a slab dipping east through the lens.}
+
+The horizontal axis reads \emph{distance along trend 270° / plunge 55°}: each block's position projected on the line, in world coordinates, so the numbers are large and negative, and they grow downward and westward. Read the profile from left to right as from shallow to deep. On the demo it climbs from about 23\,\% to 29\,\% where the bands cross the lens, and falls back to 24\,\% beyond it. The few blocks of the shallowest band, at the top eastern corner of the model, are canga, which is why the profile starts above 50\,\%: the bars show how few they are.
+
+\begin{tryit}
+In the demo project, right-click \file{deposit.csv} and choose \ui{Swath plot…} (if a swath window is already open, use it).
+\begin{enumerate}
+\item Set the \ui{direction} menu to \ui{trend / plunge}. Type \code{270} in \ui{trend} and \code{55} in \ui{plunge}.
+\item If the weight field is empty, type \code{SG} in it. Press \ui{Run}. The subtitle reads \emph{16 bands · 100 m · 1,786,620 rows}.
+\item Type \code{50} in \ui{width} under \ui{bands · trend}. The plot re-bins at once: \emph{32 bands · 50.0 m}.
+\item Set \ui{section} on the instrument rail to \ui{off}, and uncheck \file{topography} and \file{ore shell} in the layers panel.
+\item Drag in the view to orbit until you look at the model from the south, east to your right.
+\item Move the pointer across the plot. The ghost sweeps through the model as a slab dipping east, from the top eastern corner down to the deep west. Stop on the peak: its slab runs through the middle of the lens.
+\item Drag across the three or four bands of the peak and choose \ui{Select rows in …}. The selected blocks form an oblique slab — the rock behind the peak, ready for a stats window scoped to \ui{sel}.
+\end{enumerate}
+\end{tryit}
+
+The same goes for the oriented trio. Its \ui{pole} tab bins slabs parallel to the plane you gave, so the ghost lets you check that the plane really lies along the structure before you trust what the profile says about grade across it. Zebra (\cref{sec:swath-zebra}) shows all the bands at once; the ghost shows one, wherever you point.
+
 \section{Pitfalls}\label{sec:swath-pitfalls}
 \begin{itemize}
 \item \textbf{Thin bands at the edges.} The first and last bands often hold a sliver of the model. Check the bars, and set the offset so the bands start on the model's edge.
 \item \textbf{Unweighted means on sub-blocked models} are still volume-weighted — the blank weight is the block's volume, never 1 per record. Only the \ui{count} bars count records.
-\item \textbf{Comparing unlike supports.} Samples and blocks do not have the same variance; a sample profile is noisier, and its peaks are higher. Compare trends, not band-by-band values.
+\item \textbf{Comparing unlike supports.} When you hold a model's profile against a sample profile (\cref{ch:validation}), remember that samples and blocks do not have the same variance; a sample profile is noisier, and its peaks are higher. Compare trends, not band-by-band values.
 \item \textbf{The window's bands are not a routine's bands.} The window's automatic offset is the data's low end; the tool's default offset is 0 (\cref{sec:swath-routine}). State both width and offset if a figure and a report must agree.
 \item \textbf{Stale after editing.} Series, mode and scope changes wait for \ui{Run}; the note \emph{↻ config changed — Run to update} says so.
 \end{itemize}

@@ -3,12 +3,12 @@
 \textbf{In this chapter} you ask a layer a question in one line and see only the rows that answer it; edit that question with sliders and chips instead of typing; and define new columns from expressions — an equivalent grade, a density by lithology, a class code — that every other part of micro treats as real columns.
 \end{goals}
 
-micro has one small language for saying things about rows. \code{FE > 55} is a sentence in it. So is \code{FE + 0.4 * MN}. The first is true or false for each row, and that makes it a \term{filter}. The second has a value for each row, and that makes it a \term{calculated column}, written \code{ƒ} throughout the interface.
+micro has one small language for saying things about rows. \code{FE > 55} is a sentence in it. So is \code{FE + 0.4 * MN}. The first is true or false for each row, and that makes it a \term{filter}. The second has a value for each row, and that makes it a \term{calculated column}, written \code{ƒ} throughout the interface and called an \emph{ƒ column} for short.
 
 micro uses this language wherever it accepts an expression: the filter box, calculated columns, styling rules (\cref{sec:color-rules}), the density and weight slots of the analysis windows (\cref{ch:analysis}), per-series filters, the drillhole hole filter (\cref{ch:drillholes}), and routine steps (\cref{ch:routines}). Learn it once. This chapter teaches it by example; \cref{app:expr} is the full reference.
 
 \section{The filter box}\label{sec:filter-box}
-Press \key{/}.\sidekey{/}{focus the filter box} The cursor lands in the long box on the first toolbar row. Type
+Press \key{/}.\sidekey{/}{focus the filter box} The cursor lands in the long box in the top bar. Type
 
 \begin{lstlisting}[language=expr]
 FE > 55
@@ -48,7 +48,7 @@ Open the demo project and make the deposit the active layer.
 \end{tryit}
 
 \section{The language, by example}\label{sec:filter-language}
-A handful of patterns covers most questions you will ask of a model.
+A\index{expression language} handful of patterns covers most questions you will ask of a model.
 
 \subsection{Comparing}
 \begin{lstlisting}[language=expr]
@@ -90,7 +90,7 @@ FE is filled
 FE is filled and FE > 0
 \end{lstlisting}
 
-A blank is a missing value: an unestimated block, an unassayed interval. The language never treats it as zero. Any arithmetic on a blank gives a blank, and a comparison with a blank is not true, so \code{FE > 55} quietly leaves unestimated blocks out. That is nearly always what you want. Division by zero also gives a blank, so an expression cannot crash a scan.
+A blank is a missing value: an unestimated block, an unassayed interval. The language never treats it as zero. Any arithmetic on a blank gives a blank, and a comparison with a blank is not true, so \code{FE > 55} quietly leaves unestimated blocks out. That is nearly always what you want (\cref{sec:columns-blanks} gives the reasons). Division by zero also gives a blank, so an expression cannot crash a scan.
 
 \begin{caution}
 \code{not} is a true complement. \code{not (FE > 55)} keeps every row where \code{FE > 55} is not true — \emph{including blanks}. So it is \emph{not} the same as \code{FE <= 55}, which leaves blanks out. This is deliberate: a filter and its negation always add up to the whole table, which is what you need when you split a model in two and expect the tonnes to reconcile.
@@ -136,7 +136,7 @@ The language is \emph{total}: it can compare and compute, and it cannot loop, ca
 \end{why}
 
 \section{The drawer: the filter as controls}\label{sec:filter-drawer}
-Typing is exact. For \emph{exploring} — where does the grade shell close if I raise the cutoff? — you want a slider. The \ui{▾} button at the right end of the filter box opens the \term{drawer}: the current expression laid out as controls, one row per condition.
+Typing is exact. For \emph{exploring} — where does the grade shell close if I raise the cutoff? — you want a slider. The \ui{▾} button at the right end of the filter box opens the \term{filter drawer}: the current expression laid out as controls, one row per condition.
 
 The expression stays the single source of truth. Every control rewrites its own piece of the text and nothing else, so the box updates as you drag and your spacing, comments and bracketing survive. Using the drawer is typing, done for you.
 
@@ -230,7 +230,7 @@ A filter is a way of looking. Several tools take it further:
 \item \textbf{Name it.} If you keep typing the same condition, make it a column (\cref{sec:filter-calc}).
 \end{itemize}
 
-Changing the filter from the box is an undo step, so \key{⌘Z} (or \key{Ctrl}+\key{Z}) returns to the previous one.
+Changing the filter from the box is an undo step, so \key{⌘Z} (\key{Ctrl}+\key{Z} on Windows and Linux) returns to the previous one.
 
 \section{Calculated columns}\label{sec:filter-calc}
 A calculated column is an expression with a name. Once defined it behaves like a column of the file: the filter, color ramps and classes, stats, grade–tonnage, swath, the record panel, the attribute table and every export see it.
@@ -279,7 +279,7 @@ if(LITO = "WASTE", "waste",
     if(FE >= 45, "medium grade", "low grade")))
 \end{lstlisting}
 
-Saved as \code{GRADE} with the type on \ui{auto}, it becomes a text column, and \code{GRADE = "high grade"} filters on it. A text column cannot color the model, though: to see the classes in 3D, return codes (\code{2}, \code{1}, \code{0}) instead and give the codes breaks (\cref{sec:color-classes}).
+Saved as \code{GRADE} with the type on \ui{auto}, it becomes a text column, and \code{GRADE = "high grade"} filters on it. A text \code{ƒ} cannot color the model, though. To see the classes in 3D, return codes (\code{2}, \code{1}, \code{0}) instead and give the codes breaks (\cref{sec:color-classes}), or materialize the text column into a stored category column, which colors by class (\cref{sec:filter-materialize}).
 
 \subsection{The definition as controls}
 Below the editor, the definition is projected as controls — the same contract as the filter drawer.
@@ -301,16 +301,16 @@ Edits made with these controls save themselves on an existing column a moment af
 \shot{filter-calc-window}{The Calculations window on the demo deposit: a density-by-lithology ladder, with the expression above and the same definition as a case table below.}
 
 \section{Color by ƒ}\label{sec:filter-colorby}
-A numeric calculated column appears in the \ui{color} dropdown as \code{ƒ NAME}, and in \menu{Properties…>style} as a column like any other, with a ramp, a clip, breaks, classes and a histogram (\cref{ch:color}). It behaves as a source column does: the clip and the breaks are typed in the column's own units (a clip of 50–60 on an equivalent grade means 50 to 60), and a block where the expression is blank — an input missing — draws in the no-data gray, never as the lowest color.
+A numeric calculated column appears in the \ui{color} dropdown as \code{ƒ NAME}, and in \menu{Properties…>style} as a column like any other, with a ramp, a clip, breaks, classes and a histogram (\cref{ch:color}). It behaves as a source column does: the clip and the breaks are typed in the column's own units (a clip of 50–60 on an equivalent grade means 50 to 60), and a block where the expression is blank — an input missing — draws in the no-data gray, never as the lowest color. The style tab's \ui{no data} row — its color and its \ui{hide} checkbox — works on it as on a source column (\cref{sec:color-nodata}), and so it does on a stored column.
 
 To color by it, micro computes the column once for display. The status line says \emph{ƒ CLASS: computing for display…} and then the result — \emph{ƒ CLASS: colored — 1,786,620 values, 0 … 2} on the demo. That realization is a cache: it is recomputed when the definition, or anything the definition refers to, changes, and it is never written to disk. The formula is the record.
 
-A text \code{ƒ} is not offered for color. It filters, shows in the record panel and the table, and exports.
+A text \code{ƒ} is not offered for color. Materialized, it becomes a category column that colors by class (\cref{sec:filter-materialize}).
 
 With the constant sliders this closes a loop: define a column, color by it, and tune its numbers while you watch the model.
 
 \begin{tryit}
-In the demo project, with the deposit active and no filter:
+Work in the demo project, with the deposit active and no filter. If \col{CLASS} is still there from the tour (\cref{sec:tour-calc}), skip the first step.
 \begin{enumerate}
 \item Choose \menu{Data>Calculated columns…}. Name the column \code{CLASS}, leave the type on \ui{auto}, and type
 
@@ -326,7 +326,7 @@ Click \ui{add column}.
 \end{tryit}
 
 \section{Materializing}\label{sec:filter-materialize}
-A calculated column is computed on demand. Usually that is right. Sometimes you want the numbers \emph{fixed}:
+A\index{materializing} calculated column is computed on demand. Usually that is right. Sometimes you want the numbers \emph{fixed}:
 
 \begin{itemize}
 \item the expression is expensive and you filter on it constantly;
@@ -334,12 +334,11 @@ A calculated column is computed on demand. Usually that is right. Sometimes you 
 \item the column is a result you are signing off, not a formula you are still tuning.
 \end{itemize}
 
-\ui{materialize → stored} in the Calculations window — or \menu{Materialize calc column} on the layer's right-click menu, which lists each \code{ƒ} as \emph{NAME → stored} — computes the column once and stores the values as a \term{stored column} of the same name, beside the source; the \code{ƒ} definition goes. The status line confirms how many values were stored (\emph{materialized “CLASS” — 1,786,620 values stored}), and the record panel marks the column \code{✎}. From then on it scans like a source column, and it no longer depends on its inputs.
+\ui{materialize → stored} in the Calculations window — or \menu{Materialize calc column} on the layer's right-click menu, which lists each \code{ƒ} as \emph{NAME → stored} — computes the column once and stores the values as a \term{stored column} of the same name, beside the source; the \code{ƒ} definition goes. The status line confirms how many values were stored (\emph{materialized “CLASS” — 1,786,620 values stored}), and the record panel marks the column \code{✎}, its mark for a stored column, number or text alike — the same mark painted columns get. From then on it scans like a source column, and it no longer depends on its inputs.
 
-\begin{caution}
-Materialize stores numbers. A text \code{ƒ} materializes as a column of blanks, so keep text columns as formulas.
-% TODO verify: reported to micro as a bug (materializeCalcCol reads values through numOf) — drop this caution if it is fixed.
-\end{caution}
+\begin{note}
+A text \code{ƒ} is stored as a \emph{category} column: a dictionary of its values and one small code per record, the way painted columns are kept, so it stays text to the filter, the styles and the exports. On the demo, \code{ORE} defined as \code{if(FE >= 55, "ore", "waste")} materializes with \emph{materialized “ORE” — 1,786,620 values stored as 2 categories}, and \code{ORE = "ore"} still finds its 38,452 blocks. A category column holds up to 255 different values. Past that micro refuses, with \emph{materialize: “…” has more than 255 different values — micro stores text as categories; keep it as a ƒ column}, and the \code{ƒ} column stays as it was.
+\end{note}
 
 \begin{figure}[htbp]\centering
 \begin{tikzpicture}[font=\sffamily\small, node distance=5mm and 14mm,
@@ -354,16 +353,17 @@ Materialize stores numbers. A text \code{ƒ} materializes as a column of blanks,
 \caption{A calculated column is a formula; materializing it stores the answer. Both record how they were made.}\label{fig:filter-materialize-diagram}
 \end{figure}
 
-micro derives columns five ways, and each records \emph{how} in the layer's provenance:
+micro derives columns six ways, and each records \emph{how} in the layer's provenance:
 
 \begin{center}
-\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+\begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
 kind & made by & see \\ \midrule
 \code{ƒ} calculated & an expression & this chapter \\
-\code{✎} stored & materializing a \code{ƒ} into stored values & this section \\
+\code{✎} stored & materializing a \code{ƒ} into stored values, number or text & this section \\
 \code{✎} painted & the brush, a selection, or a flag / assign-domains by solid & \cref{ch:picking} \\
-joined & a key join or a spatial join from another layer & \cref{ch:joins} \\
-broadcast & a collar column landed on drillhole intervals & \cref{ch:drillholes} \\ \bottomrule
+\code{\%} fraction & the share of each block inside a solid, or below or above a surface & \cref{sec:geometry-do} \\
+\code{✎} joined & a key join or a spatial join from another layer & \cref{ch:joins} \\
+\code{✎} broadcast & a collar column landed on drillhole intervals & \cref{ch:drillholes} \\ \bottomrule
 \end{tabularx}
 \end{center}
 

@@ -3,7 +3,7 @@
 \textbf{In this chapter} you classify records against geometry: select or flag what lies inside a wireframe solid, above or below a surface, or between two surfaces; write the fraction of each block a solid fills; and code a whole model by its domain solids in one run.
 \end{goals}
 
-A wireframe says where something is. A block model, a set of composites or a drillhole table says what is there. The work of coding a model — which blocks are oxide, which samples are inside the ore shell, how much of each bench block lies below topography — is the work of bringing the two together. micro does it with two dialogs.
+A wireframe says where something is. A block model, a set of composites or a drillhole table says what is there. The work of coding a model — which blocks are oxide, which samples are inside the ore shell, how much of each bench block lies below topography — is the work of bringing the two together. Earlier chapters used the results as if they were given — a fraction column such as \col{PARTIAL} in a density, a flag such as \col{IN\_PIT} in a filter (\cref{sec:gt-units,sec:xtab-out}). This chapter is where those columns come from. micro makes them with two dialogs.
 
 \begin{itemize}
 \item \menu{Tools>Select by solid / surface…} classifies records against \emph{one} piece of geometry: a closed solid, an open surface, or a gridded surface.
@@ -42,7 +42,7 @@ Not sure whether a wireframe is closed? \menu{Mesh QA / volume…} on its menu t
 
 \section{How “inside” is decided}\label{sec:geometry-winding}
 
-micro decides containment with the \term{winding number}. For any point, it adds up the solid angle that every triangle of the mesh subtends as seen from that point, signed by which way the triangle faces. From inside a closed solid the triangles surround the point completely and the sum is one full sphere: winding number 1. From outside, the near and far faces cancel: winding number 0. A point is inside when its winding number is above one half.
+micro decides containment with the generalized \term{winding number} of \textcite{jacobson2013}. For any point, it adds up the solid angle that every triangle of the mesh subtends as seen from that point, signed by which way the triangle faces. From inside a closed solid the triangles surround the point completely and the sum is one full sphere: winding number 1. From outside, the near and far faces cancel: winding number 0. A point is inside when its winding number is above one half.
 
 \begin{figure}[htbp]\centering
 \begin{tikzpicture}[font=\sffamily\footnotesize, every node/.style={text=ink}, >=Stealth]
@@ -76,7 +76,7 @@ This is why the method is robust. A ray-counting test fails the moment a ray pas
 Two further choices in the dialog concern how the sum is computed, not what it means.
 
 \begin{table}[htbp]\small
-\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+\begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
 setting & meaning & default \\ \midrule
 \ui{compute} & \ui{GPU} evaluates on the graphics card. \ui{CPU} runs the same evaluation in a background worker: slower, but it cannot stall a graphics driver on a very large solid. & \ui{GPU} \\
 \ui{engine} & \ui{winding} is the robust sum described above; it tolerates holes and flipped faces. \ui{peel · fast} casts one ray down each column of blocks and is exact along Z — much faster for a \emph{clean} solid or surface. Meshes only; a grid has its own method. & \ui{winding} \\ \bottomrule
@@ -103,7 +103,7 @@ A selection is the lightest result. Use it to look (“which composites are insi
 \ui{flag column} writes the answer down. It creates a new category column on each ticked layer and puts a value in it for every record that qualifies; the others stay blank.
 
 \begin{table}[htbp]\small
-\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+\begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
 setting & meaning & default \\ \midrule
 \ui{layers} & The layers that get the column. Only table-backed layers can take one; the others are grayed, with a tooltip. & the visible ones \\
 \ui{column} & The column's name. & \code{IN\_}, \code{BELOW\_}, \code{ABOVE\_} or \code{BTW\_} plus the geometry's layer name (see below) \\
@@ -114,7 +114,7 @@ setting & meaning & default \\ \midrule
 
 The offered name is built from the geometry's layer name: its file extension dropped, every run of spaces or punctuation turned into one underscore, the whole in capitals and cut at 24 characters. The demo's \ui{ore shell} therefore offers \code{IN\_ORE\_SHELL}, and a surface named \file{base of ox.dxf} offers \code{BELOW\_BASE\_OF\_OX}. Type a name of your own to override it.
 
-A record is judged by one point: a block by its centroid, a drillhole interval by its position. The result is a painted column like any other (\cref{ch:picking}): the filter sees it (\code{IN\_ORE\_SHELL == "IN"}), the attribute table shows it, export carries it, and you can touch it up by hand with the brush where you disagree with the wireframe. When the run ends the layer is colored by the new column and the status line reports the count.
+A record is judged by one point: a block by its centroid, a drillhole interval by its position. The result is a painted column like any other (\cref{ch:picking}): the filter sees it (\code{IN\_ORE\_SHELL = "IN"}), the attribute table shows it, export carries it, and you can touch it up by hand with the brush where you disagree with the wireframe. When the run ends the layer is colored by the new column and the status line reports the count.
 
 \subsection{Fraction column}
 
@@ -123,7 +123,7 @@ A centroid is either in or out. For a block cut by a contact that is a crude ans
 The block is sampled at a small lattice of probe points, and the fraction is the share of probes that qualify. You set the number of probes per axis in the \ui{probes} row, and the dialog works out what that means in meters.
 
 \begin{table}[htbp]\small
-\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+\begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
 setting & meaning & default \\ \midrule
 \ui{model} & The regular block model that gets the column. & the first one \\
 \ui{column} & The column's name. & as for a flag \\
@@ -143,10 +143,11 @@ Fractions need a regular block model. A rotated model is refused for now with a 
 \begin{tryit}
 \begin{enumerate}
 \item Open the demo project. Right-click \ui{ore shell} in the layers panel and choose \menu{Select by this solid…}. The dialog reports \emph{closed solid — inside / outside apply}.
-\item Leave \ui{do} on \ui{select} and \ui{which} on \ui{inside}, under \ui{layers} tick \file{deposit.csv} and the drillholes (\ui{holes · demo\_assay.csv}) and untick anything else, and press \ui{Run}. The blocks and intervals inside the shell turn gold — 81,552 blocks and 267 of the 951 intervals.
+\item Leave \ui{do} on \ui{select} and \ui{which} on \ui{inside}. Under \ui{layers}, tick \file{deposit.csv} and the drillholes (\ui{holes · demo\_assay.csv}) and untick anything else.
+\item Press \ui{Run}. The blocks and intervals inside the shell turn gold — 81,552 blocks and 267 of the 951 intervals.
 \item Press \key{Esc} to clear the selection.
 \item Open the dialog again and set \ui{do} to \ui{flag column}. Leave the name as offered and the value as \code{IN}, and press \ui{Run}.
-\item The status line ends with the expression to use: \code{filter with IN\_ORE\_SHELL == "IN"}. Select \file{deposit.csv} in the layers panel and type that expression in the filter box. Only the blocks inside the shell remain.
+\item The status line ends with the expression to use: \code{filter with IN\_ORE\_SHELL == "IN"}. Select \file{deposit.csv} in the layers panel and type that expression in the filter box (micro writes \code{==}, which the filter reads as \code{=}; \cref{app:expr}). Only the blocks inside the shell remain.
 \item Open the dialog once more. Set \ui{do} to \ui{fraction column} and \ui{probes} to 3 × 3 × 2, give the column a name of your own such as \code{ORE\_FRAC}, and press \ui{Run}.
 \item Color the model by \col{ORE\_FRAC}. The interior is 1, the outside 0, and the skin of the shell shows every value between.
 \end{enumerate}
@@ -195,17 +196,17 @@ Two details matter for trust:
 \item In the demo project choose \menu{Tools>Select by solid / surface…} and set \ui{geometry} to \ui{topography}.
 \item The choices are now \ui{below}, \ui{above}, \ui{between}. Choose \ui{flag column} and \ui{above}, name the column \code{AIR} and set the value to \code{AIR}.
 \item Tick \file{deposit.csv} only and press \ui{Run}.
-\item Filter with \code{AIR == "AIR"} to see which block centroids sit above the ground. The demo's model has a flat top bench while its synthetic topography rolls by several meters, so a scatter of top-bench blocks shows up — 1,996 of them. In a model you are handed, every one of them is a question for whoever built it — the check is worth running.
+\item Filter with \code{AIR = "AIR"} to see which block centroids sit above the ground. The demo's model has a flat top bench while its synthetic topography rolls by several meters, so a scatter of top-bench blocks shows up — 1,996 of them. In a model you are handed, every one of them is a question for whoever built it — the check is worth running.
 \end{enumerate}
 The topography appears in the list as \ui{▦ topography}: although it is drawn as shaded relief, it is a grid, so it is evaluated by bilinear sampling.
 \end{tryit}
 
 \section{Assign domains}\label{sec:geometry-domains}
 
-A coded model has one column saying which domain each block belongs to. Building it by hand means one flag per solid and then a rule for the blocks that two solids both claim. \menu{Tools>Assign domains…} does the whole loop in one run and applies one clear rule: \emph{each block goes to the solid holding its largest fraction}.
+A\index{domain!assigning} coded model has one column saying which domain each block belongs to. Building it by hand means one flag per solid and then a rule for the blocks that two solids both claim. \menu{Tools>Assign domains…} does the whole loop in one run and applies one clear rule: \emph{each block goes to the solid holding its largest fraction}.
 
 \begin{table}[htbp]\small
-\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+\begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
 setting & meaning & default \\ \midrule
 \ui{solids} & A checkbox per exact mesh. An open surface is listed but grayed — “open surface, claims nothing”. & all ticked \\
 \ui{model} & The regular block model to code. & the first one \\
@@ -231,7 +232,7 @@ Assign domains needs a regular, axis-aligned block model. For a rotated model us
 
 The select-by-solid dialog has a \ui{save as recipe…} button beside \ui{Run}. It stores the whole evaluation — geometry, action, side, engine, targets, column and value — as a recipe that names its layers, so “flag the oxide onto this month's model” becomes a file that runs again from \menu{Tools>Recipes} (\cref{ch:recipes}). Opening such a recipe for preview shows the dialog configured and not yet run.
 
-In a routine the same evaluation is the \code{solid} tool. A fraction step's \code{model} is checked before anything runs; a geometry, lower surface or target layer that is not loaded stops the step itself, with a message naming the layer.
+In a routine the same evaluation is the \code{solid} tool. A fraction step's \code{model} is checked before anything runs; a geometry, lower surface or target layer that is not loaded stops the step itself, with a message naming the layer. Name a layer by its file, as \code{ore\_shell.obj} below, or by its label in the layers panel (\ui{ore shell}); either finds it.
 
 \begin{lstlisting}[language=yaml]
 - tool: "solid"
@@ -256,7 +257,7 @@ In a routine the same evaluation is the \code{solid} tool. A fraction step's \co
 \end{lstlisting}
 
 \begin{table}[htbp]\small
-\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+\begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
 setting & meaning & default \\ \midrule
 \code{geometry} & the solid, surface or grid, by layer name & required \\
 \code{do} & \code{select}, \code{flag} or \code{ratio} & \code{flag} \\
@@ -274,6 +275,6 @@ setting & meaning & default \\ \midrule
 \caption{Settings of the \code{solid} tool. They are the dialog's own, by name. The step runs through the dialog itself rather than the tool registry, so it is not in the generated reference of \cref{app:tools}; this table is its reference.}\label{tab:geometry-tool}
 \end{table}
 
-A flag or ratio step lists the column it writes in the routine's preview — with “(replaces)” when the column already exists — so the opt-in overwrite guard can stop a run that would write over last month's flags (\cref{ch:routines}). Combine it with a check on a later analysis step: flag the shell, run grade–tonnage filtered to it, and require that the tonnage has not moved by more than a tolerance.
+A flag or ratio step lists the column it writes in the routine's preview — with “(replaces)” when the column already exists — so the opt-in no-overwrites guard can stop a run that would write over last month's flags (\cref{ch:routines}). Combine it with a check on a later analysis step: flag the shell, run grade–tonnage filtered to it, and require that the tonnage has not moved by more than a tolerance.
 
 Assign domains has no recipe of its own. To automate a coded model, use one \code{ratio} step per solid, then a calculated column that picks the largest.

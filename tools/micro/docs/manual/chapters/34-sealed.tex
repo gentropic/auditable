@@ -11,7 +11,7 @@ micro's answer is \emph{nowhere}, and it is built so that you can check the answ
 micro is \term{Sealed}. The word names three properties.
 
 \begin{description}
-\item[No network access from the page.] The page carries a security policy, \code{connect-src 'none'}, which tells the browser to refuse every connection the page tries to make. micro doesn't choose not to phone home; the browser won't let it. There is no telemetry, no analytics, no cloud storage and no licence check.
+\item[No network access from the page.] The page carries a security policy, \code{connect-src 'none'}, which tells the browser to refuse every connection the page tries to make. micro doesn't choose not to phone home; the browser won't let it. There is no telemetry, no analytics, no cloud storage and no license check.
 \item[Your data stays on your device.] A file you open is read from your disk into the tab's memory. A project is a folder on your disk. Exports are files you save. Nothing is uploaded, because nothing can be.
 \item[No opaque binaries.] micro contains no WebAssembly. Everything it runs is JavaScript you can read, so what it does can be audited and not only asserted.
 \end{description}
@@ -35,7 +35,7 @@ A page that can't reach the network can't do some things other tools do.
 \end{itemize}
 
 \section{Checking it yourself}\label{sec:sealed-verify}
-Three checks, in order of effort.
+Three\index{Sealed!checking} checks, in order of effort.
 
 \textbf{Watch the network.} The browser's own network panel lists every request the page makes. Use micro with it open and look at the addresses (the try-it below). No entry has a web address (\code{http:} or \code{https:}). What you do see are \code{blob:} entries: memory the page set aside for itself, for its own modules and its background workers, read without ever leaving the tab.
 
@@ -98,17 +98,17 @@ micro runs in current Chrome, Edge and Firefox. Two features need a browser that
 \item writing a run or a restore into a folder you pick (\cref{ch:library,ch:store}).
 \end{itemize}
 
-Everywhere else you can still open files, analyze, export, open a whole project from a pack (\cref{sec:store-packs}), and run a library routine into a zip (\cref{sec:library-zip}).
+Everywhere else you can still open files, analyze, export, open a whole project from a project pack (\cref{sec:store-packs}), and run a library routine into a zip (\cref{sec:library-zip}).
 
 \section{On a phone}\label{sec:sealed-phone}
-micro runs on a phone or a small tablet. On a narrow screen it switches to a \term{review layout}: the same micro, arranged for looking and checking with a thumb.
+micro\index{phone layout} runs on a phone or a small tablet. On a narrow screen it switches to a \term{review layout}: the same micro, arranged for looking and checking with a thumb.
 
 \shot[0.42\linewidth]{mobile-review}{The review layout on a phone: the grade–tonnage window as a sheet, its plot above its settings, the model still visible above it; below, the section strip and the bottom bar.}
 
 \begin{itemize}
 \item One top bar: the ☰ menu, the Sealed badge, the command palette (⌘K), undo and redo, and the filter.
 \item A bottom bar of large targets: layers, properties, select, section, measure, fit.
-\item Every panel and window becomes a \term{sheet} that rises from the bottom. Drag its header between three heights (a peek, half, tall); drag below the peek to dismiss it.
+\item Every panel and window becomes a \term[sheet (phone layout)]{sheet} that rises from the bottom. Drag its header between three heights (a peek, half, tall); drag below the peek to dismiss it.
 \item One sheet is open at a time. The others wait as chips on its top edge.
 \item The 3D view shrinks to stay visible above the sheet, and the model moves with it into the part you can see.
 \item Analysis windows stack: the plot on top, the settings below.

@@ -51,8 +51,8 @@ OMF v1 \file{.omf} & yes & — & Block-model elements, with the lattice declared
 \begin{description}
 \item[Coordinates] are found by name: \col{XC}/\col{YC}/\col{ZC}, \col{X}/\col{Y}/\col{Z}, and
   east/north/elevation-style names. Anything micro didn't guess, you map in the open dialog.
-\item[Sub-block sizes] are found by name too: \col{DX}/\col{DY}/\col{DZ},
-  \col{XINC}/\col{YINC}/\col{ZINC}, \col{DIMX}/\col{DIMY}/\col{DIMZ}.
+\item[Sub-block sizes] are found by name too: \col{DX}\slash\col{DY}\slash\col{DZ},
+  \col{XINC}\slash\col{YINC}\slash\col{ZINC}, \col{DIMX}\slash\col{DIMY}\slash\col{DIMZ}.
 \item[Limits of sub-blocked models:] at most 256 distinct block sizes, and sizes that subdivide the
   parent block by powers of two. A model outside those limits opens as points
   (\cref{ch:blocks}).
@@ -156,15 +156,27 @@ display-only form is re-read from its file to be exported (\cref{ch:meshes}).
 \toprule
 format & read & write & notes \\
 \midrule
-GeoTIFF \file{.tif} \file{.tiff} & yes & — & Strips and tiles; uncompressed, LZW, deflate and
-  PackBits; predictors; several bands (picked in Properties); the overview pyramid of a
-  cloud-optimized file. Other codecs are refused by name. \\
-Surfer \file{.grd} & yes & — & Surfer 6 text and binary grids. A Surfer 7 grid is refused with the
-  advice to save it as Surfer 6. \\
-ESRI ASCII \file{.asc} & yes & yes & The grid export (\ui{Export as ESRI ASCII grid…} on the
-  layer). The surface tools write their results in it. \\
+GeoTIFF \file{.tif} \file{.tiff} & yes & yes & Read: strips and tiles; uncompressed, LZW, deflate
+  and PackBits; predictors; several bands (picked in Properties); the overview pyramid of a
+  cloud-optimized file. Other codecs are refused by name. Written: one band, float32; deflate
+  (with or without predictor 3) or none; strips or 256×256 tiles; the CRS only for a known EPSG
+  code; the lineage in the ImageDescription tag. \\
+Surfer 7 binary \file{.grd} & yes & yes & An unrotated grid (a rotated one is refused). Empty
+  nodes are blanked with Surfer's 1.70141e38. \\
+Surfer 6 binary \file{.grd} & yes & yes & At most 32\,767 rows and columns; blanks as above. \\
+Surfer 6 ASCII \file{.grd} & yes & yes & The DSAA text grid; blanks as above. \\
+ESRI ASCII \file{.asc} & yes & yes & The surface tools write their results in it. Rectangular cells
+  are written in GDAL's \code{dx}/\code{dy} form. \\
+ESRI binary float \file{.flt} & — & yes & Written as one \file{.zip}: the \file{.flt}, its
+  \file{.hdr} and the lineage as \file{.lineage.json}. \\
+XYZ / CSV of nodes & — & yes & One row per node, north row first: comma, tab or space, a header
+  row, empty nodes skipped by default. Opens back as an ordinary delimited file. \\
 \bottomrule
 \end{tabularx}
+
+Every grid format is written by \ui{Export grid…} (\cref{sec:grids-export}) and by the
+\code{gridexport} routine tool, always from the full-resolution grid of the chosen band. Text
+formats default to \emph{exact} decimals: the shortest text that reads back as the same float32.
 
 A grid larger than the display budget is shown from its finest overview that fits, or decimated,
 while evaluation (flagging by a surface, reconciling) reads the full-resolution cells for the area
@@ -216,7 +228,7 @@ A project is a plain folder, readable without micro (\cref{ch:projects,ch:store}
 \toprule
 file & what it is \\
 \midrule
-\file{project.json} & The view state: layers, styling, filters, camera, section, open windows. \\
+\file{project.json} & The session: layers, styling, filters, camera, section, open windows. \\
 \file{models/} \file{drillholes/} \file{clouds/} \file{meshes/} \file{grids/} \file{tables/} &
   The data files, by kind. A file dropped into one of these by hand is picked up by
   \ui{Scan folder for new data}. \\

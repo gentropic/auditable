@@ -26,6 +26,8 @@
 \RequirePackage{enumitem}
 \RequirePackage{booktabs}
 \RequirePackage{tabularx}
+\RequirePackage{xltabular}   % a table in running text may break across pages (see "tables" below)
+\RequirePackage{adjustbox}   % a diagram a little wider than the measure scales to fit it
 \RequirePackage{array}
 \RequirePackage{multicol}
 \RequirePackage{caption}
@@ -34,6 +36,10 @@
 \RequirePackage{scrlayer-scrpage}
 \RequirePackage{imakeidx}
 \RequirePackage{fontawesome5}
+% references: author–year, biber; references.bib beside the main file
+\RequirePackage{csquotes}
+\RequirePackage[backend=biber, style=authoryear-comp, maxcitenames=2, maxbibnames=99, uniquename=false, uniquelist=false, giveninits=true, dashed=false, doi=true, url=true, isbn=false, eprint=false]{biblatex}
+\addbibresource{references.bib}
 \RequirePackage{hyperref}
 \RequirePackage[nameinlink, noabbrev]{cleveref}
 
@@ -103,11 +109,6 @@
 
 % chapter opener: a basalt band across the top with the number in amber, the title below
 % every chapter (numbered or not) starts under a basalt band; a numbered one carries its number in it
-\renewcommand*{\chapterheadstartvskip}{%
-  \begin{tikzpicture}[remember picture, overlay]
-    \fill[basalt] (current page.north west) rectangle ([yshift=-38mm]current page.north east);
-    \fill[amberlight] ([yshift=-38mm]current page.north west) rectangle ([yshift=-39.2mm]current page.north east);
-  \end{tikzpicture}\vspace*{14mm}}
 \renewcommand*{\chapterformat}{%
   \begin{tikzpicture}[remember picture, overlay]
     \node[anchor=south east, inner sep=0pt, text=amberlight, font=\numfont\fontsize{64}{64}\selectfont]
@@ -116,6 +117,22 @@
       at ([xshift=24mm, yshift=-33mm]current page.north west) {CHAPTER};
   \end{tikzpicture}}
 \RedeclareSectionCommand[beforeskip=0pt, afterskip=1.6\baselineskip]{chapter}
+% an UNNUMBERED chapter (the preface, References, the index) has no number line pushing its title below
+% the 38 mm band — it sat in it, dark on basalt. KOMA keeps spacing at the top of a page out of reach
+% (\IfUseNumber isn't allowed here, beforeskip is discarded at a page top), so such a chapter gets a
+% SHORTER band instead — it carries no number to hold. \chapter* raises the flag (the wrapper below).
+\newif\ifmicrostarchapter
+\renewcommand*{\chapterheadstartvskip}{%
+  \begin{tikzpicture}[remember picture, overlay]
+    \ifmicrostarchapter\def\microband{20mm}\else\def\microband{38mm}\fi
+    \fill[basalt] (current page.north west) rectangle ([yshift=-\microband]current page.north east);
+    \fill[amberlight] ([yshift=-\microband]current page.north west) rectangle ([yshift=-\microband-1.2mm]current page.north east);
+  \end{tikzpicture}\vspace*{14mm}}
+\NewCommandCopy\microOrigChapter\chapter
+\RenewDocumentCommand\chapter{s o m}{%
+  \IfBooleanTF{#1}%
+    {\microstarchaptertrue\microOrigChapter*{#3}\microstarchapterfalse}%
+    {\IfValueTF{#2}{\microOrigChapter[#2]{#3}}{\microOrigChapter{#3}}}}
 
 % part page: a full basalt page
 \renewcommand*{\partformat}{\partname~\thepart}
@@ -144,13 +161,21 @@
 \DeclareRobustCommand\key[1]{\tikz[baseline=(k.base)]\node[draw=rule, fill=tint, rounded corners=1.6pt, inner xsep=2.6pt, inner ysep=1.2pt, line width=0.5pt, font=\ttfamily\footnotesize\color{ink}](k){\strut#1};}
 \newcommand\keys[1]{\begingroup\def\+{\,}\key{#1}\endgroup}
 \ExplSyntaxOn
-\NewDocumentCommand\menu{m}{\group_begin:\sffamily\color{ink}\seq_set_split:Nnn\l_tmpa_seq{>}{#1}\seq_use:Nn\l_tmpa_seq{\,\textcolor{amber}{\scriptsize\faChevronRight}\,}\group_end:}
+\NewDocumentCommand\menu{m}{\leavevmode\group_begin:\sffamily\color{ink}\seq_set_split:Nnn\l_tmpa_seq{>}{#1}\seq_use:Nn\l_tmpa_seq{\nobreak\,\textcolor{amber}{\scriptsize\faChevronRight}\penalty200\,}\group_end:}
 \ExplSyntaxOff
-\DeclareRobustCommand\ui[1]{{\sffamily\color{ink}#1}}
-\DeclareRobustCommand\file[1]{{\ttfamily\color{ink}#1}}
-\DeclareRobustCommand\code[1]{{\ttfamily\color{ink}#1}}
-\DeclareRobustCommand\col[1]{{\ttfamily\color{amber}#1}}
-\newcommand\term[1]{\emph{#1}\index{#1}}
+% \leavevmode first: a \color at the very start of a table cell (vertical mode) opens an empty line
+% and drops the cell's text half a row
+\DeclareRobustCommand\ui[1]{\leavevmode{\sffamily\color{ink}#1}}
+% \file, \code and \col may break after / . _ , = : and before a bracket (style/microbreak.lua): the
+% code face doesn't hyphenate, and a long path had nowhere to go but the margin
+\newattribute\microcode
+\directlua{dofile(kpse.find_file('style/microbreak.lua') or 'style/microbreak.lua')}
+\DeclareRobustCommand\file[1]{\leavevmode{\setattribute\microcode{1}\ttfamily\color{ink}#1}}
+\DeclareRobustCommand\code[1]{\leavevmode{\setattribute\microcode{1}\ttfamily\color{ink}#1}}
+\DeclareRobustCommand\col[1]{\leavevmode{\setattribute\microcode{1}\ttfamily\color{amber}#1}}
+% \term{grade shell} — the defining use, indexed under its own words; \term[mesh!shell]{shell} indexes it
+% under a clearer key (a plural, a capital at a sentence start, a word that means little alone)
+\NewDocumentCommand\term{o m}{\emph{#2}\IfValueTF{#1}{\index{#1}}{\index{#2}}}
 \newcommand\new[1]{\textcolor{amber}{\sffamily\bfseries\scriptsize\MakeUppercase{#1}}}
 
 % margin notes: keys and pointers in the outer column
@@ -179,10 +204,11 @@
 \lstset{style=micro}
 
 % ── figures ──
+% a tall screenshot is capped at 0.8 of the text height, so it and its caption always fit one page
 \newcommand\shot[3][\linewidth]{% \shot[width]{file}{caption}
   \begin{figure}[htbp]\centering
   \IfFileExists{figures/shots/#2.png}{%
-  \begin{tikzpicture}\node[inner sep=0pt, drop shadow={opacity=0.22, shadow xshift=0.6mm, shadow yshift=-0.8mm}]{\includegraphics[width=#1]{#2}};\end{tikzpicture}}{%
+  \begin{tikzpicture}\node[inner sep=0pt, drop shadow={opacity=0.22, shadow xshift=0.6mm, shadow yshift=-0.8mm}]{\includegraphics[width=#1, height=0.8\textheight, keepaspectratio]{#2}};\end{tikzpicture}}{%
   \begin{tikzpicture}\node[draw=rule, dashed, fill=tint, minimum width=#1, minimum height=0.5\dimexpr#1\relax, font=\sffamily\small\color{muted}, align=center]{screenshot pending\\\texttt{#2}};\end{tikzpicture}\typeout{(screenshot #2 pending)}}%
   \caption{#3}\label{fig:#2}\end{figure}}
 \captionsetup{format=plain, labelsep=quad, justification=raggedright, singlelinecheck=false, skip=6pt}
@@ -197,6 +223,141 @@
 % tables
 \renewcommand{\arraystretch}{1.18}
 \newcolumntype{L}{>{\raggedright\arraybackslash}X}
+% settings tables — setting & meaning & default: both text columns WRAP, the meaning gets ~2/3 of the
+% width and the default ~1/3 (an `l` default never wraps: a long one pushed the row off the page and
+% squeezed the meaning to a word a line)
+\newcolumntype{M}{>{\raggedright\arraybackslash\hsize=1.36\hsize}X}
+\newcolumntype{D}{>{\raggedright\arraybackslash\hsize=0.64\hsize}X}
+\newcolumntype{N}{>{\raggedright\arraybackslash\hsize=1.18\hsize}X}   % two of these + one D = three columns' width
+% a tabularx standing in running text (its own paragraph, not in a float, a box or a list) is set as an
+% xltabular — a longtable — so a long settings table can break across pages instead of leaving the rest
+% of the page empty and jumping to the next. Anywhere else it stays an ordinary tabularx.
+\newif\ifmicroLT
+\makeatletter
+\renewenvironment{tabularx}{%
+  \microLTfalse
+  \ifvmode\ifinner\else\ifnum\@listdepth=\z@\@ifundefined{@captype}{\microLTtrue}{}\fi\fi\fi
+  \ifmicroLT
+    \par\LTleft\z@ \LTright\fill
+    \let\TX@endtabularx=\micro@lt@end
+    \expandafter\XLT@ii@tabularx
+  \else
+    \let\TX@endtabularx=\XLT@i@TX@endtabularx
+    \expandafter\XLT@i@tabularx
+  \fi}
+  {\ifmicroLT\else\XLT@i@endtabularx\fi}
+% once the body is read: a short table (under 6 rows) stays one unbreakable tabularx; a long one keeps
+% its header with the first two rows and its last two rows together (\\* forbids a break), so no page
+% ever carries a lone row of it
+\ExplSyntaxOn
+\seq_new:N \l__micro_rows_seq
+\tl_new:N \l__micro_body_tl
+\int_new:N \l__micro_rows_int
+\cs_new_protected:Npn \micro@lt@end
+  {
+    \exp_args:NNno \seq_set_split_keep_spaces:Nnn \l__micro_rows_seq { \\ } { \the\toks@ }
+    \int_set:Nn \l__micro_rows_int { \seq_count:N \l__micro_rows_seq - 1 }
+    \int_compare:nNnTF { \l__micro_rows_int } < { 6 }
+      { \microLTfalse \XLT@i@TX@endtabularx }
+      {
+        \tl_clear:N \l__micro_body_tl
+        \int_step_inline:nn { \seq_count:N \l__micro_rows_seq }
+          {
+            \tl_put_right:Nx \l__micro_body_tl { \seq_item:Nn \l__micro_rows_seq {##1} }
+            \int_compare:nNnT {##1} < { \seq_count:N \l__micro_rows_seq }
+              {
+                \bool_lazy_or:nnTF { \int_compare_p:nNn {##1} < { 3 } }
+                    { \int_compare_p:nNn {##1} > { \l__micro_rows_int - 2 } }
+                  { \tl_put_right:Nn \l__micro_body_tl { \\* } }
+                  { \tl_put_right:Nn \l__micro_body_tl { \\ } }
+              }
+          }
+        \toks@ \exp_after:wN { \l__micro_body_tl }
+        \XLT@ii@TX@endtabularx
+      }
+  }
+\ExplSyntaxOff
+% a booktabs rule is followed by glue, and glue after a rule is a legal page break: a long table could
+% leave its header (top rule, header row, mid rule) alone at a page foot. A \nobreak before that glue
+% ties every rule to the row after it.
+\patchcmd{\@BTendrule}{\else\vskip\@belowrulesep}{\else\nobreak\vskip\@belowrulesep}{}{\PackageWarning{micro}{booktabs patch failed}}
+\makeatother
+% no forced break point at a long table's start (longtable puts a \penalty0 there, which beat the
+% \nobreak after a heading and left the heading alone at a page foot), and no \vfil\break when the first
+% rows don't fit — TeX then breaks before the heading instead. (xltabular's \specialLTpagebreak means to
+% do this, but its patch no longer matches: \LT@start now holds expl3 names, so it is patched here under
+% expl syntax, which is the only way the patch can retokenize it.)
+\ExplSyntaxOn\makeatletter
+\patchcmd{\LT@start}{\endgraf\penalty\z@\vskip\LTpre}{\endgraf\vskip\LTpre}{}{\PackageWarning{micro}{longtable~start~patch~failed}}
+\patchcmd{\LT@start}{\vfil\break}{}{}{\PackageWarning{micro}{longtable~start~patch~failed}}
+\makeatother\ExplSyntaxOff
+% longtable closes a page with \vss; LaTeX's mark code \vsplit's the page box and stops at infinite
+% shrink ("Infinite glue shrinkage found in box being split", an error per broken page). \vfil
+% fills the same way without the shrink.
+\makeatletter
+\patchcmd{\LT@output}{\vss}{\vfil}{}{\PackageWarning{micro}{longtable patch failed}}
+\patchcmd{\LT@output}{\vss}{\vfil}{}{\PackageWarning{micro}{longtable patch failed}}
+\makeatother
+\setlength{\LTpre}{0.4em}
+\setlength{\LTpost}{0.4em}
+
+% bibliography: the text face, a size down; a DOI is the link and a URL is dropped where there is
+% one; DOIs and URLs in Barlow, not the code face
+\DeclareSourcemap{\maps[datatype=bibtex]{\map[overwrite]{\step[fieldsource=doi, final]\step[fieldset=url, null]}}}
+\renewcommand*{\bibfont}{\small\urlstyle{same}}
+\setlength{\bibitemsep}{0.45em}
+\setlength{\bibhang}{1.4em}
+\DeclareFieldFormat{doi}{DOI\addcolon\space\ifhyperref{\href{https://doi.org/#1}{\nolinkurl{#1}}}{\nolinkurl{#1}}}
+\renewbibmacro{in:}{\ifentrytype{article}{}{\printtext{\bibstring{in}\intitlepunct}}}   % no "In:" before a journal
+\defbibheading{micro}[References]{\chapter*{#1}\phantomsection\addcontentsline{toc}{chapter}{#1}\markboth{#1}{#1}}
+
+% ── page make-up ──
+% lines: a narrow measure (128 mm) with a lot of code-face words; a little emergency stretch lets a
+% paragraph loosen rather than stick out. The bottom is ragged, so widows and club lines can be refused
+% outright — a page just runs a line short.
+\setlength{\emergencystretch}{3em}
+\clubpenalty=10000 \widowpenalty=10000 \displaywidowpenalty=10000
+\makeatletter\@clubpenalty=10000\makeatother   % LaTeX restores \clubpenalty from this after a heading
+% a box never starts with only its first line or two at a page foot: if there isn't room for a few
+% lines of it, it starts on the next page (a try-it box carries a title and a numbered step, so more)
+% (only on the main page: inside a box the test would force a break into the box itself). Measured
+% against \pagetotal rather than with needspace's glue-and-penalty trick: under \raggedbottom every
+% break costs the same, so needspace's -100 penalty won wherever it appeared and pages ended early.
+\makeatletter
+\newcommand\microneed[1]{\par\ifinner\else\ifdim\pagetotal>\z@
+  \dimen@=\pagegoal \advance\dimen@-\pagetotal
+  \ifdim\dimen@<\z@\else\ifdim\dimen@<#1\baselineskip\newpage\fi\fi\fi\fi}
+% (a negative remainder means the page is already over-full and about to break by itself: leave it)
+\makeatother
+\AddToHook{env/tryit/before}{\microneed{7}}
+\AddToHook{env/goals/before}{\microneed{5}}
+\AddToHook{env/tip/before}{\microneed{4}}
+\AddToHook{env/note/before}{\microneed{4}}
+\AddToHook{env/caution/before}{\microneed{4}}
+\AddToHook{env/why/before}{\microneed{4}}
+\AddToHook{env/lstlisting/before}{\microneed{4}}
+\brokenpenalty=500
+% floats: a book of large screenshots. Let a page carry up to two of them at the top and keep at least
+% a few lines of text with them; a float page only when it is mostly full, so a screenshot that can't
+% fit goes to the next page's top instead of a half-empty float page of its own.
+\setcounter{topnumber}{3}\setcounter{bottomnumber}{2}\setcounter{totalnumber}{4}
+\renewcommand{\topfraction}{0.88}
+\renewcommand{\bottomfraction}{0.7}
+\renewcommand{\textfraction}{0.1}
+\renewcommand{\floatpagefraction}{0.75}
+\setlength{\floatsep}{14pt plus 4pt minus 2pt}
+\setlength{\textfloatsep}{16pt plus 4pt minus 3pt}
+\setlength{\intextsep}{12pt plus 4pt minus 2pt}
+% a float page stacks its floats from the top instead of spreading them over the page height
+\makeatletter
+\setlength{\@fptop}{0pt}\setlength{\@fpsep}{14pt plus 4pt}\setlength{\@fpbot}{0pt plus 1fil}
+\makeatother
+% the contents: three-digit page numbers were a hair wider than the box KOMA keeps for them
+\makeatletter\renewcommand*\@pnumwidth{2.2em}\makeatother
 
 \makeindex[intoc, columns=2, title=Index]
+% the index: a size down, letter groups headed in the display face (style/micro.ist puts
+% \microidxhead before each group; latexmkrc hands makeindex that style)
+\indexsetup{othercode=\small, headers={\indexname}{\indexname}}   % running head in the book's case, not capitals
+\newcommand\microidxhead[1]{\par\addvspace{0.9em}{\displayfont\large\color{amber}#1}\par\nobreak\vskip0.2em\nobreak}
 \endinput

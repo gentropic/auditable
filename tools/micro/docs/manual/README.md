@@ -16,7 +16,7 @@ Phases: **tools** (Appendix C from `window.micro.tools()`), **data** (every `dat
 **shots** (every screenshot named in `figures/wanted/*.txt`, staged by `scenes/<group>.mjs`),
 **pdf** (latexmk). A screenshot with no scene yet prints as a labelled placeholder.
 
-Needs: Node with Playwright (the repo's dev dependency), and a TeX distribution with LuaLaTeX and
+Needs: Node with Playwright (the repo's dev dependency), and a TeX distribution with LuaLaTeX, biber and
 latexmk (MiKTeX or TeX Live, 2025 or later). Fonts ship in `fonts/` (Barlow, Barlow Semi Condensed,
 Space Mono, Noto Sans Math — all OFL); the build points `TTFONTS` at that folder.
 
@@ -26,6 +26,7 @@ Space Mono, Noto Sans Math — all OFL); the build points `TTFONTS` at that fold
 |---|---|
 | `micro-manual.tex` | the book's main file |
 | `style/micro.sty` | the design: page, fonts, colors, chapter/part openers, boxes, code, figures |
+| `references.bib` | the works micro builds on (biblatex/biber, author–year); every entry checked against its publisher's record |
 | `chapters/` | one file per chapter; `index.tex` lists them in order |
 | `figures/wanted/<group>.txt` | the screenshots and charts each group of chapters asks for |
 | `scenes/<group>.mjs` | how to stage each screenshot in a live micro |

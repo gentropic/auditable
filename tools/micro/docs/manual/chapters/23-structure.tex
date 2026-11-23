@@ -3,9 +3,9 @@
 \textbf{In this chapter} you measure joint planes on a photogrammetric mesh of an outcrop or a pit wall: paint a face and read its dip and dip direction with a measure of how well it fits a plane, digitize fracture traces and count their I, Y and X nodes, sort the planes into sets on a stereonet, and take the measurements out as a table.
 \end{goals}
 
-A drone or a camera on a stick now gives you an outcrop as a mesh of millions of triangles, in real coordinates. Every joint face exposed on it is an orientation measurement waiting to be taken — hundreds of them, including the ones no one can reach with a compass. \term{Structural analysis} is the window that takes them.
+This part ends away from the block model, on the rock itself. A drone or a camera on a stick now gives you an outcrop as a mesh of millions of triangles, in real coordinates. Every joint face exposed on it is an orientation measurement waiting to be taken — hundreds of them, including the ones no one can reach with a compass. \term[structural analysis]{Structural analysis} is the window that takes them.
 
-The idea is small. You \emph{paint} the patch of mesh that is one joint face. micro fits a plane through the painted vertices and reports its attitude. Paint is grouped into \term{sets} — J1, J2, bedding — and each connected patch of one set is one \term{plane}. Nothing else is stored: the planes are measured again from the paint whenever the paint changes, so the table can never disagree with what you see on the rock.
+The idea is small. You \emph{paint} the patch of mesh that is one joint face. micro fits a plane through the painted vertices and reports its attitude. Paint is grouped into \term[set (structural)]{sets} — J1, J2, bedding — and each connected patch of one set is one \term[plane (structural)]{plane}. Nothing else is stored: the planes are measured again from the paint whenever the paint changes, so the table can never disagree with what you see on the rock.
 
 \section{Opening a mesh for analysis}\label{sec:structure-open}
 
@@ -72,7 +72,7 @@ column & meaning \\ \midrule
 \ui{n} & the number of vertices in the patch \\
 \ui{radius} & how far the patch reaches from its center, in the mesh's units \\
 \ui{e₂/e₁} & thickness against width. Near zero, the patch is flat; larger, it is rough or curved \\
-\ui{κ} & Fisher's concentration of the patch's vertex normals — how well the surface agrees with itself. High is tight. Beyond 10⁵ it reads \code{>10⁵}: parallel to measuring precision \\
+\ui{κ} & Fisher's concentration \parencite{fisher1953} of the patch's vertex normals — how well the surface agrees with itself. High is tight. Beyond 10⁵ it reads \code{>10⁵}: parallel to measuring precision \\
 \ui{quality} & ✓, or ⚠ with the reasons below \\ \bottomrule
 \end{tabularx}
 \caption{The planes table.}\label{tab:structure-planes}
@@ -112,11 +112,11 @@ Choose a tool and press \ui{▸ paint}. The cursor becomes a crosshair and the s
 \end{description}
 
 \begin{table}[htbp]\small
-\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+\begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
 setting & meaning & default \\ \midrule
 \ui{angle} & The wand and the brush stop where the surface turns more than this from the face you clicked. & 12° \\
 \ui{offset} & Optional. They also stop this far off the clicked plane — at a step onto a parallel face. & off \\
-\ui{radius} & The brush's circle, in the mesh's units. Shown for the brush. & 1 m \\ \bottomrule
+\ui{radius} & The brush's circle, in the mesh's units. Shown for the brush. While the brush is armed, \key{⇧}+wheel over the mesh resizes it, a notch at a time, and the hover preview redraws at the new size. & 1 m \\ \bottomrule
 \end{tabularx}
 \caption{The painting tools' settings. They are remembered between sessions.}\label{tab:structure-tools}
 \end{table}
@@ -176,7 +176,7 @@ A trace belongs to the active set and is drawn as a thin tube in its color. It a
 
 \subsection{I, Y and X nodes}
 
-Draw several traces and they form a network. The way fractures end and meet says how connected the rock mass is, and micro counts it in the standard way of Sanderson and Nixon (2015):
+Draw several traces and they form a network. The way fractures end and meet says how connected the rock mass is, and micro counts it in the standard way of \textcite{sanderson2015}:
 
 \begin{description}
 \item[I] a trace ends in intact rock;
@@ -226,7 +226,7 @@ Press \ui{◎ stereonet} on the rail. A second window opens with the planes' pol
 Each plane is a dot in its set's color, a little larger when the patch has more vertices. Each set with planes gets an open circle at its Fisher mean and, with two or more planes, a small circle around the mean at its α95. Beneath the net, one line per set gives the numbers: the set's name, the number of planes, the mean attitude, κ and α95.
 
 \begin{table}[htbp]\small
-\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+\begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
 setting & meaning & default \\ \midrule
 \ui{great circles} & Draw each plane as its great circle too, not only as its pole. & off \\
 \ui{density} & Fisher-kernel density contours of all the poles; drawn with three or more. & on \\ \bottomrule
@@ -257,7 +257,7 @@ That suggests a method: paint every face you can find into a single set, without
 
 \section{Sets from a painted mesh}\label{sec:structure-import}
 
-Before tools like this existed, a common practice was to paint the joint faces by hand in a mesh editor — pure red for one set, pure green for another — and extract attitudes from the colors afterwards. If you have such a mesh, micro reads it directly.
+This is how ply2atti worked \parencite{viana2016}, the method micro's structural analysis descends from, through CAPIVARAS \parencite{viana2021}: the joint faces were painted by hand in a mesh editor, one pure color per set — pure red for one, pure green for another — and the attitudes were extracted from the colors afterwards. If you have such a mesh, micro reads it directly.
 
 When a mesh carries vertex colors, the rail shows a button, \ui{⇩ sets from paint}. Press it and every \emph{saturated} color present — pure red, green, blue, yellow, magenta, cyan — becomes a set, named for its color and painted in it. The status line reports the sets made and the vertices in each.
 
@@ -269,7 +269,7 @@ Each color arrives as one undo step, so \key{⌘Z} takes the sets back one at a 
 
 The foot of the rail holds the exports.
 
-\paragraph{\ui{→ table layer}} makes the planes a table layer named after the mesh, with \code{-planes} appended (\cref{ch:columns}). Pressing it again replaces the earlier table, so there is only ever one. Prefer this form. You can filter a table layer (\code{quality == "ok" and n\_vertices > 50}), add calculated columns and export it as CSV or Parquet, and its lineage records the sets, the plane count and the wand's settings.
+\paragraph{\ui{→ table layer}} makes the planes a table layer named after the mesh, with \code{-planes} appended (\cref{ch:columns}). Pressing it again replaces the earlier table, so there is only ever one. Prefer this form. You can filter a table layer (\code{quality = "ok" and n\_vertices > 50}), add calculated columns and export it as CSV or Parquet, and its lineage records the sets, the plane count and the wand's settings.
 
 \begin{table}[htbp]\small
 \begin{tabularx}{\linewidth}{@{}lL@{}}\toprule

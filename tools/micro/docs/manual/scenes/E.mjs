@@ -391,7 +391,7 @@ export const SCENES = {
     const prev = await decoOn(h, 'Demo deposit — FE, E–W section', '#ffffff');
     await h.ev(() => {
       const m = window._micro, L = m.layers().find((x) => x.name === 'deposit.csv');
-      m.setDeco('north', false);   // a vertical section looking north has no north arrow to draw (and micro's overlay arrow mis-points there — reported)
+      m.setDeco('north', true);    // ticked: a vertical section looking north has no north arrow to draw, so it vanishes
       m.setRampCfg(L, { preset: 'viridis', classed: true, breaks: [30, 40, 50, 55, 60], colors: null, hide: null });
       window.micro.setColorRange(L.id, { min: 20, max: 65 });
     });

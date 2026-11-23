@@ -58,10 +58,9 @@ Saving again under a name that already exists updates that file in place. That i
 
 What \ui{Run} does depends on the tool. Grade–tonnage, swath, stats, scatter / Q-Q, the cross-tab and validation open their window with the result. A resource-table recipe places its table in the composer. A calc-columns recipe applies its columns to the layer and reports how many. A figure recipe renders the figure and puts back everything it touched. A by-solid recipe runs the selection or the flag.
 
-The other tools have no window to open: the QA reports, export, composite, pairing, grade shell, join, reconcile and section series. \ui{Run} runs such a recipe as a one-step routine (\cref{ch:routines}). The run tracker opens, the step writes its table, its file or its layer, and the run leaves a record in \file{runs/} like any routine's (\cref{ch:records}). \ui{Edit (open configured)} shows that one-step routine in the routine editor and runs nothing.
-% TODO verify: in the current build the one-step routine runs NO step ("0 steps run") and the editor opens empty — recipes.js runRecipe builds { steps } instead of { params: { steps } }. Reported as a micro bug; this paragraph describes the intended behaviour.
+The other tools have no window to open: the QA reports, export, composite, pairing, grade shell, join, reconcile and section series. \ui{Run} runs such a recipe as a one-step routine (\cref{ch:routines}). The run tracker opens (\cref{sec:routines-tracker}), the step writes its table, its file or its layer, and the run leaves a record in \file{runs/} like any routine's (\cref{ch:records}). \ui{Edit (open configured)} shows that one-step routine in the routine editor and runs nothing.
 
-The command palette has the same list: press \key{⌘K} (\key{Ctrl}+\key{K} on Windows) and type \code{run recipe}.
+The command palette has the same list: press \key{⌘K} (\key{Ctrl}+\key{K} on Windows and Linux) and type \code{run recipe}.
 
 \subsection{When the layer isn't there}
 A recipe names its layers \emph{by name}: \file{deposit.csv}, not ``the third layer''. If that layer isn't loaded, micro offers the loaded layers that could stand in: \ui{“deposit grade-tonnage” wants deposit.csv — use deposit\_2026-11.parquet}. Pick one and the recipe runs on it. If nothing suitable is loaded, the status line says what the recipe wanted.
@@ -168,7 +167,7 @@ What only a routine demands doesn't stop the save. A grade–tonnage recipe with
 The form lists the seventeen tools of \cref{sec:recipes-tools}. Figures, composer pages, calc columns and by-solid recipes are saved from their own windows.
 
 \section{Recipes that ask first}\label{sec:recipes-inputs}
-A recipe can declare \code{inputs}: a short list of questions. Running it then opens a small dialog, and the answers land in the settings wherever a \code{\$name} marker stands.
+A\index{recipe!asking first} recipe can declare \code{inputs}: a short list of questions. Running it then opens a small dialog, and the answers land in the settings wherever a \code{\$name} marker stands.
 
 \begin{lstlisting}[language=yaml]
 name: "GT — any model"

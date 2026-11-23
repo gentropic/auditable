@@ -60,7 +60,7 @@ specific by them.
   captions quote (\code{\{count\}}, \code{\{mean:…\}}): only the records inside the view's section
   are counted, so each bench of an atlas reports its own numbers and the benches add up to the
   model. The other setting, \emph{whole model}, counts every record the filters keep.
-  \cref{ch:composer,ch:atlas}.
+  \cref{sec:compo-statsscope,ch:atlas}.
 
 \item[category] The text column a layer is classed by (a lithology, a domain), with one legend
   entry, color and eye per value. \cref{ch:color}.
@@ -91,6 +91,10 @@ specific by them.
 \item[composite] One interval table of a drillhole set re-cut into equal lengths, numbers weighted
   by length. The result is a new points layer, each composite at its centroid.
   \cref{ch:drillholes}.
+
+\item[contact plot] Mean grade in bins of distance from a domain boundary, on both sides of it:
+  down the holes from every A-to-B transition (\ui{Contact plot…}), or by signed distance to a
+  wireframe (\ui{Distance to a surface…}). The routine tool is \code{contact}. \cref{ch:contact}.
 
 \item[cut mode] How one layer responds to the section: follow it, follow with its own slab, keep
   only the front or the back, or ignore it. \cref{ch:sections}.
@@ -164,12 +168,16 @@ specific by them.
   from samples across the file; a routine step's covers its inputs and settings, and decides
   whether an earlier result can be reused. \cref{ch:records,ch:store}.
 
+\item[fraction inside] A number column holding, for each block, the share of its volume inside a
+  solid, or below or above a surface, from 0 to 1. The record panel and the export dialog mark it
+  \%, the one stored column not marked ✎. \cref{sec:geometry-do}.
+
 \item[frame] A rectangle on a composer page holding one thing: a 3D view, a chart, a table, text, a
   legend, an image. \cref{ch:composer}. (In the host API, also the coordinate frame: the CRS a
   layer's coordinates are in.)
 
 \item[global bias] The difference between a model's mean grade and the declustered mean of its
-  samples. \cref{ch:validation}.
+  samples, best measured inside a domain the holes sampled. \cref{ch:validation,sec:validation-domain}.
 
 \item[grade shell] The surface around every block at or above a cutoff, made as a watertight mesh
   layer. \cref{ch:blocks}.
@@ -183,6 +191,11 @@ specific by them.
 
 \item[guard] A routine step, \code{guard: "no-overwrites"}, after which the routine refuses to
   start if a step would replace something that exists. \cref{ch:routines}.
+
+\item[hard / soft boundary] A domain boundary across which grade jumps (hard: estimate each domain
+  with its own samples only) or changes gradually (soft: let the estimate use samples from both
+  sides near it). Read from a contact plot: a step at the contact with flat sides, or a ramp.
+  \cref{ch:contact}.
 
 \item[hole filter] A filter written over collar columns. Its verdict applies to whole holes, across
   every interval table and the traces. \cref{ch:drillholes}.
@@ -308,8 +321,12 @@ specific by them.
 \item[rule-based styling] Coloring by an ordered list of rules, each an expression with a name and
   a color. A record wears the color of the first rule it matches. \cref{ch:color}.
 
-\item[run record] The \file{run.json} a routine run leaves in its folder: the hash of every input
-  and output, and each step's settings, values and checks. \cref{ch:records}.
+\item[run folder] The folder a routine run has to itself, \file{runs/<date> <time> <routine>/}:
+  its tables, its other outputs and its run record. \cref{ch:records}.
+
+\item[run record] The \file{run.json} a routine run leaves in its run folder: the hash of every
+  input and output, and each step's settings, values and checks. Never edited after the run.
+  \cref{ch:records}.
 
 \item[run tracker] The window a running routine opens: every expanded step with its live mark, and
   the summary of the run when it ends. Also \emph{the tracker}. \cref{ch:routines}.
@@ -348,7 +365,12 @@ specific by them.
   is open at a time. \cref{ch:sealed}.
 
 \item[sidecar] A small file micro keeps beside one of yours in a project: a cache
-  (\file{.meta.json}), stored columns (\file{.cols/}), a display grid. \cref{ch:store}.
+  (\file{.meta.json}), stored columns (\file{.cols/}), a grid's display cache. \cref{ch:store}.
+
+\item[signed distance] A record's distance to the nearest point of a mesh, negative on one side:
+  inside a closed solid (decided by winding number), or below an open surface (decided by its
+  normals). What \ui{Distance to a surface…} bins, and what its \ui{⇥ column} keeps as
+  \col{DIST\_<SURFACE>}. \cref{sec:contact-surface}.
 
 \item[slab] The band of the section that is kept: the plane, plus and minus a thickness.
   \cref{ch:sections}.
@@ -360,14 +382,18 @@ specific by them.
   overlapping volume. \cref{ch:joins}.
 
 \item[statistics scope] What a composer caption's statistics count: the records in the view's
-  section, or the whole model. See \emph{captions: in the section}.
+  section, or the whole model. See \emph{captions: in the section}. \cref{sec:compo-statsscope}.
+
+\item[status line] The line along the bottom of the window where micro says, in a sentence, what
+  it last did or found, and what could not be done. \cref{ch:start}.
 
 \item[step] One item of a routine's list: a recipe, an inline tool, an \code{each} block, a
   \code{params} sheet, a check, a compare or a guard. \cref{ch:routines}.
 
 \item[stored column] A derived column whose values are kept, one Parquet file per column in the
-  data file's \file{.cols/} folder: a ƒ column that was materialized, a join, a broadcast. Listed
-  with a ✎, as painted columns are. Also called a materialized column. \cref{ch:filter,ch:store}.
+  data file's \file{.cols/} folder: a ƒ column that was materialized, a join, a broadcast. The
+  record panel and the export dialog mark it ✎, numbers and text alike, as they mark painted
+  columns; only a fraction inside a solid is marked \% instead. Also called a materialized column. \cref{ch:filter,ch:store}.
 
 \item[sub-blocked model] A block model whose blocks are split into smaller boxes near boundaries.
   Each block keeps its own size and is drawn at it. \cref{ch:blocks}.

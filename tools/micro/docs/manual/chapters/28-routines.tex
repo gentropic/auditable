@@ -3,7 +3,7 @@
 \textbf{In this chapter} you chain recipes and tools into a routine, repeat steps over a table of parameters, feed it values from a spreadsheet, make it ask its questions first, preview every step before it runs, and recover a run that stopped.
 \end{goals}
 
-\Cref{ch:recipes} left you with one analysis you can run again. A month-end is many of them: the same analyses, in the same order, on new data. So is a model update, and so is a reconciliation. A \term{routine} is that job written down. It is a recipe whose tool is \code{routine} and whose settings are a list of \term{steps}. Each step runs a saved recipe or a tool, and micro runs them one after another without opening a window and without asking anything on the way.
+\Cref{ch:recipes} left you with one analysis you can run again. A month-end is many of them: the same analyses, in the same order, on new data. So is a model update, and so is a reconciliation. A \term{routine} is that job written down. It is a recipe whose tool is \code{routine} and whose settings are a list of \term[routine!step]{steps}. Each step runs a saved recipe or a tool, and micro runs them one after another without opening a window and without asking anything on the way.
 
 A routine is a document, not a program. There are no loops you can't count, no branches, no code. Before anything runs, micro can list every step it will take and every file it will write, and so can the person who reviews it.
 
@@ -99,7 +99,7 @@ To keep a step's table as a layer you can filter, join and color, add \code{emit
 The table becomes a table layer named after the routine and the step (\file{month-end/gt}); a name with a slash files the layer into a group. To choose the name, write \code{emit:} as a map with a \code{layer:} key.
 
 \subsection{Where reports go}
-By default a run's files go into its own new folder, \file{runs/<date> <time> <routine>/} (\cref{ch:records}). The routine's \code{output:} setting changes that:
+By default a run's files go into its own new folder, the run folder: \file{runs/<date> <time> <routine>/} (\cref{sec:records-folder}). The routine's \code{output:} setting changes that:
 
 \begin{lstlisting}[language=yaml]
 params:
@@ -212,7 +212,7 @@ Three rows and two steps make six runs. Each report's name carries its row's val
           - 45
 \end{lstlisting}
 
-This is a \term{zip}: HEMATITE goes with 60 and ITABIRITE with 45, two runs. It is never a cross product. Lists of unequal length are an error, not a guess.
+This is a \term[routine!zip (each table)]{zip}: HEMATITE goes with 60 and ITABIRITE with 45, two runs. It is never a cross product. Lists of unequal length are an error, not a guess.
 
 \textbf{A file}: a CSV or a worksheet in the project.
 
@@ -228,7 +228,7 @@ Keep the parameter table as a CSV or a sheet and the routine stays short. Edit t
 \end{tip}
 
 \subsection{Namespaces and nesting}
-\code{as:} on an \code{each} block gives its columns a prefix: with \code{as: "b"}, a column \code{bench} is written \code{\$b.bench}. On an \code{each} or \code{params} step, \code{as} names a scope; on a recipe or tool step it names the report. They are different kinds of step.
+\code{as:} on an \code{each} block gives its columns a prefix: with \code{as: "b"}, a column \code{bench} is written \code{\$b.bench}. The two uses of \code{as} never meet, because they belong to different kinds of step: on an \code{each} or \code{params} step it names a scope; on a recipe or tool step it names the report.
 
 An \code{each} block is a step, and its body is a list of steps, so one can sit inside another. Nesting is a cross product: every row of the outer table against every row of the inner.
 
@@ -303,7 +303,7 @@ params:
 
 The sheet becomes a set of named values: \code{\$g.cutoff} is 55, \code{\$g.floor} is 650. Keys are made safe for use as names, so \emph{bench height} is \code{\$g.bench\_height}.
 
-\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+\begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
 setting & meaning & default \\ \midrule
 \code{from} & the CSV, or \code{"book.xlsx\#Sheet"} & required \\
 \code{as} & the prefix of the names; \code{""} merges them with no prefix & the sheet's name \\
@@ -418,20 +418,20 @@ From there down, the routine refuses to start if a step would replace something 
 \section{The editor}\label{sec:routines-editor}
 \menu{Tools>Recipes>New routine…} opens the routine editor; \ui{Edit (open configured)} on a routine opens it on that file. The file stays the truth: the editor edits a copy and \ui{Save} writes the whole file again.
 
-\shot{routines-editor}{The routine editor on a variant of \code{month-end} that asks for its model: the name, the guard, the report naming, an \ui{ask} row, a for-each block with its parameter table, and \ui{Preview} listing every step with the answer it assumed.}
+\shot{routines-editor}{The routine editor on a variant of \code{month-end} that asks for its model: the name, the guard, the report naming, an \ui{ask} row, the steps with the model-QA step's YAML box open (keys, the string and the \code{\$model} variable each in its color, \cref{sec:routines-stepbox}), a for-each block with its parameter table, and \ui{Preview} below, starting with the answer it assumed and listing the steps (it scrolls on).}
 
 From the top:
 
 \begin{description}
 \item[name] the routine's name; the file is named after it in \file{recipes/}, in lower case with spaces and symbols turned into hyphens (\file{month-end.yaml}).
 \item[guard] the checkbox \ui{guard: stop before running if a report already exists} adds the guard step.
-\item[reports →] the \code{output} folder, \ui{prefix} and \ui{suffix}. Leave the folder empty for a folder per run; the gray date shown in the empty field is only a suggestion and is not written.
+\item[reports →] the \code{output} folder, \ui{prefix} and \ui{suffix}. Leave the folder empty for a folder per run, as the gray placeholder says: \emph{runs/<date time> <routine>}. The placeholder is not written to the file.
 \item[+ ask first (inputs)…] adds a question: its \code{\$name}, its type, its label, and a default, options or \code{of:} according to the type.
 \end{description}
 
 Then the steps. Four buttons add them: \ui{+ run a recipe}, \ui{+ inline step}, \ui{+ for-each block} and \ui{+ params}.
 
-A recipe step reads \ui{run} and a list of the project's recipes; an inline step reads \ui{do} and a list of tools. Both have an \ui{as} field, and \ui{⋯} opens a box for the rest of the step in YAML: write the settings under \code{with:}. The box turns red when its YAML doesn't parse, and the routine won't save until it does. \ui{↑}, \ui{↓} and \ui{×} move and remove the step.
+A recipe step reads \ui{run} and a list of the project's recipes; an inline step reads \ui{do} and a list of tools. Both have an \ui{as} field and a box for the rest of the step in YAML: write the settings under \code{with:}. An inline step's box is open from the start; on a recipe step, \ui{⋯} opens it (and folds either kind away). The box turns red when its YAML doesn't parse, and the routine won't save until it does. \ui{↑}, \ui{↓} and \ui{×} move and remove the step.
 
 A for-each block reads \ui{for each row —}, with \ui{as} for the namespace and \ui{where} for the row filter. Its parameters are a \ui{table (edit below)} or come \ui{from a CSV in the project}. The table is a grid: variables are columns, runs are rows. \ui{+ var} adds a column; \ui{+ row} copies the last row so you only change what differs. Inside the block, \ui{+ step in this block}, \ui{+ inline step} and \ui{+ nested for-each} add to its body.
 
@@ -440,6 +440,40 @@ A params step reads \ui{bind params —} with the sheet and its \ui{as}.
 \begin{note}
 The editor has no row of its own for checks and compares (\cref{ch:checks}). Build the steps in the editor, save, and add the \code{check:} lines to the YAML in a text editor. The editor keeps them after that: a check or compare step shows as a \ui{run} row with no recipe chosen, its lines in the \ui{⋯} box, and \ui{Save} writes it back as it was.
 \end{note}
+
+\subsection{The step box is a small editor}\label{sec:routines-stepbox}
+\index{routine!step box}The YAML box under a step knows which tool the step runs, so it helps you write the settings the way the routine will read them. Nothing in it changes your text unless you ask.
+
+\paragraph{Colors.} Keys, quoted strings, numbers, \code{true} and \code{false}, comments and the \code{\$name} and \code{\$\{…\}} values each have their color. A setting that is an expression — a \code{filter}, a series' \code{weight} — is colored inside its quotes the way the filter box colors it: columns, operators, functions.
+
+\paragraph{Completions.} A list opens at the caret with what can go there, read from where the caret sits in the YAML:
+\begin{itemize}
+\item at the start of a line under \code{with:}, the tool's settings not yet written, each with its type, its default and a line of help (the list is Appendix C's, \cref{app:tools}); inside a list such as \code{series}, the settings of one item;
+\item after a setting with fixed values, its values: \code{scope:} offers \code{all}, \code{filtered} and \code{selection};
+\item after \code{layer:}, the loaded layers; after \code{col:}, the columns of that layer (the nearest \code{layer:} above, else the recipe's layer, else the active one);
+\item after \code{recipe:} or \code{tool:}, the recipes or the tools;
+\item inside an expression, its layer's columns, a category column's values (when that layer is the active one), and the \code{\$} variables in reach: those of the enclosing for-each blocks and the routine's inputs.
+\end{itemize}
+\key{↑} and \key{↓} move in the list, \key{Enter} or \key{Tab} takes the highlighted entry, \key{Esc} closes it. While the list is open those two keys belong to it: press \key{Esc} first when you want a plain new line or an indent. Taking a setting writes \code{key: } and, when the setting has values to offer, opens the next list at once.
+
+\paragraph{Checks.} About 300~ms after you stop typing, the box is parsed and checked with the routine's own rules (\cref{sec:routines-rules}). Each problem is listed under the box with its line, and the key at fault gets a wavy underline. A setting the tool doesn't have reads \emph{line 3: no setting “cutoff” — did you mean “cutoffs”?}, with a button, \ui{→ cutoffs}, that makes the correction. Click the message itself to select the key it is about. The other rules land there too — \emph{cutoffs: a routine must state it}, \emph{series: required} — so a step that would stop the pre-flight shows it while you write it.
+
+\paragraph{Keys.} With no list open, \key{Tab} indents by two spaces, or indents every selected line; \key{Shift}+\key{Tab} takes two away. \key{Enter} keeps the indent and goes on with the YAML: after \code{key:} with nothing on the line it opens the block two spaces in; after \code{- 30} it starts the next item, \code{- }; after \code{- col: "FE"} it lines up under \code{col}, for the next setting of the same item. \key{Enter} on an empty \code{- } ends the list and steps back out.
+
+\shot{routines-yaml-complete}{An inline grade-tonnage step being written. \code{cutoff} is underlined, and under the box the check reads \emph{line 8: no setting “cutoff” — did you mean “cutoffs”?} with its \ui{→ cutoffs} button, above the rule that a routine must state its cutoffs. The caret sits inside \code{scope}'s quotes, and the list offers its three values.}
+
+\begin{tryit}
+\begin{enumerate}
+\item Open \menu{Tools>Recipes>New routine…}. Remove the empty \ui{run} row with its \ui{×}, press \ui{+ inline step}, and choose \ui{grade-tonnage} in \ui{do}.
+\item Click in the box, type \code{with:} and press \key{Enter}. The next line starts two spaces in, and the list shows the tool's settings.
+\item Type \code{la}. Only \code{layer} is left, with its help line. Press \key{Enter}: \code{layer: } is written and the list now shows the loaded layers. Press \key{Enter} again for \file{deposit.csv}.
+\item Press \key{Enter}, type \code{cutoff:} — misspelled on purpose — and \key{Enter}. Type \code{- 30}, \key{Enter} (the next \code{- } is already there), \code{40}.
+\item Press \key{Enter} twice: the second ends the list and brings you back to two spaces. Type \code{series:}, \key{Enter}, \code{- col: "FE"}, \key{Enter} (the caret lines up under \code{col}), and \code{weight: "SG"}.
+\item Stop typing. \code{cutoff} gets its underline, and under the box: \emph{line 3: no setting “cutoff” — did you mean “cutoffs”?} \ui{→ cutoffs}, then \emph{cutoffs: a routine must state it (…)}.
+\item Click \ui{→ cutoffs}. The key is corrected and both messages go.
+\item Press \ui{Preview}: \emph{1. grade-tonnage (inline) → runs/(this run)/gt.tsv}. Close the editor without saving, or name it and keep it.
+\end{enumerate}
+\end{tryit}
 
 \section{Preview}\label{sec:routines-preview}
 \ui{Preview} lists the routine as it will run: every step after expansion, numbered, with what it writes.
@@ -563,6 +597,7 @@ params:
         sampleGrade: "FE"
         axis: "Y"
         bandW: 50
+        filter: "LITO != \"WASTE\""
       as: "val"
     - each:
         - lito: "HEMATITE"
@@ -586,7 +621,7 @@ params:
       as: "ore"
 \end{lstlisting}
 
-That is eight steps after expansion. A run leaves seven tables and one Parquet file in its folder, beside \file{run.json}.
+That is eight steps after expansion. The validation step compares the model with the samples inside the domain \code{LITO != "WASTE"} — the ore and the cap, which the holes were drilled to test (\cref{sec:validation-domain}); the inner quotes are escaped because the whole expression is a double-quoted YAML string. A run leaves seven tables and one Parquet file in its folder, beside \file{run.json}.
 
 \begin{tryit}
 Grow your own \code{month-end} to this. You need the project and the recipe from the first try-it of this chapter (\cref{sec:routines-first}); if you skipped it, save the demo project to a folder and the recipe as in \cref{sec:recipes-save} first.

@@ -185,13 +185,49 @@ export const SCENES = {
     await h.ev(() => {
       const w = document.querySelector('.fwin[data-routine]');
       [...w.querySelectorAll('button')].find((b) => b.textContent === 'Preview').click();
-      // fold each step's YAML box (the ⋯ toggle), so the outline of the routine reads in one window
-      for (const b of [...w.querySelectorAll('button.rw-x')].filter((x) => x.textContent === '⋯')) { const ta = b.parentElement.nextElementSibling; if (ta && ta.tagName === 'TEXTAREA' && ta.style.display !== 'none') b.click(); }
+      // fold the steps' YAML boxes (the ⋯ toggle; each box is a .yf editor wrapping its textarea), so the
+      // outline of the routine reads in one window — all but the model QA step's, kept open to show a
+      // box as the small editor it is: keys, strings, numbers and the $model variable each in its color
+      for (const b of [...w.querySelectorAll('button.rw-x')].filter((x) => x.textContent === '⋯')) {
+        const box = b.parentElement.nextElementSibling, sel = b.parentElement.querySelector('select');
+        const keep = sel && /model QA/i.test(sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].textContent : '');
+        if (box && box.classList.contains('yf') && box.style.display !== 'none' && !keep) b.click();
+      }
     });
     await h.p.waitForTimeout(1200);
     await h.ev(() => { const s = document.querySelector('.fwin[data-routine] .rw-scroll'); if (s) s.scrollTop = 0; });
     await h.p.waitForTimeout(300);
     return { el: fwin(h, 'routine'), blankOk: true, after: () => closeAll(h) };
+  },
+
+  // a step box as an editor: an inline grade-tonnage step with `cutoff` misspelled (underlined, listed
+  // under the box with its one-click fix), and the caret inside scope's quotes — the completion
+  // popup offering that setting's values (an empty `scope:` wouldn't parse, which would hide the check)
+  'routines-yaml-complete': async (h) => {
+    const W = fwin(h, 'routine');
+    await h.ev(() => window._micro.openRoutineWindow({ name: 'first look', params: { steps: [{ tool: 'gt', as: 'gt' }] } }));
+    await h.p.waitForSelector(W);
+    await place(h, 'routine', 300, 60, 720, 470);
+    const text = 'with:\n  layer: "deposit.csv"\n  scope: "all"\n  series:\n    - col: "FE"\n      unit: "pct"\n      weight: "SG"\n  cutoff:\n    - 30\n    - 50\n    - 60';
+    await h.ev(([w, t]) => {
+      const ta = document.querySelector(w + ' .rw-step textarea');
+      ta.value = t; ta.dispatchEvent(new Event('input')); ta.focus();
+    }, [W, text]);
+    await h.p.waitForTimeout(800);                       // the live check runs ~300 ms after typing stops
+    // the caret just inside scope's opening quote, where a click would put it → the enum's values
+    await h.ev(([w, t]) => {
+      const ta = document.querySelector(w + ' .rw-step textarea'), at = t.indexOf('scope: "') + 8;
+      ta.focus(); ta.setSelectionRange(at, at); ta.dispatchEvent(new Event('click'));
+    }, [W, text]);
+    await h.p.waitForTimeout(400);
+    const clip = await h.ev((w) => {
+      const r = document.querySelector(w).getBoundingClientRect();
+      const pop = [...document.querySelectorAll('.ac-item')].map((e) => e.parentElement).find((e) => e && e.offsetParent);
+      const p = pop ? pop.getBoundingClientRect() : r;
+      const x = Math.min(r.left, p.left) - 8, y = Math.min(r.top, p.top);
+      return { x, y, width: Math.max(r.right, p.right) + 8 - x, height: Math.max(r.bottom, p.bottom) + 8 - y };
+    }, W);
+    return { clip, blankOk: true, wait: 300, after: async () => { await h.p.keyboard.press('Escape'); await closeAll(h); } };
   },
 
   'routines-tracker': async (h) => {

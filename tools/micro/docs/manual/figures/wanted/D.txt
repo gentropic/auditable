@@ -24,6 +24,7 @@ data xtab-demo-hem | {"tool":"xtab","params":{"layer":"deposit.csv","grade":"FE"
 swath-window | Swath plot on deposit.csv: direction axes, one series FE with weight SG, plot unit %, bars count, run; the X tab shown | window
 swath-zebra | the same swath, X tab, band width 200, "zebra on 3D" ticked; section off so the whole model shows its stripes, the swath window beside it | full
 swath-band-ghost | the same swath (zebra off), X tab: a range of about four bands dragged out on the plot and held (violet), the slab outlined on the model, the menu open with "Select rows in …" · "Add to selection" · "Keep highlight" · "Clear" | full
+swath-ghost-oriented | the same swath set to trend / plunge, trend 270, plunge 55 (the line the lens center follows down-dip), band width 50, run; the pointer resting on a band near the profile's peak, its ghost slab drawn on the model seen from the south (topography + ore shell hidden), visibly dipping east; the swath window beside it | full
 data swath-demo-east | {"tool":"swath","params":{"layer":"deposit.csv","gradeUnit":"pct","mode":"trend","trend":90,"plunge":0,"series":[{"col":"FE","unit":"pct","weight":"SG"}],"bandW":[100],"off":[0]}}
 data swath-demo-up | {"tool":"swath","params":{"layer":"deposit.csv","gradeUnit":"pct","mode":"trend","trend":0,"plunge":-90,"series":[{"col":"FE","unit":"pct","weight":"SG"}],"bandW":[25],"off":[0]}}
 # (mode "trend" so each table holds ONE direction: trend 90 / plunge 0 is east, i.e. the X swath; trend 0 / plunge −90 points up, i.e. the Z swath by elevation)
@@ -41,3 +42,11 @@ validation-window | deposit.csv active, ⌘K → "Validate vs drillholes…": dr
 pairing-window | Block vs sample on deposit.csv: samples demo_assay.csv, sample FE, block FE, by LITO, run; plot mode scatter | window
 data validation-demo | {"tool":"validation","params":{"model":"deposit.csv","samples":"demo_assay.csv","modelGrade":"FE","sampleGrade":"FE","axis":"Z","bandW":25}}
 # (the chart plots model_mean and sample_mean against center; bands with no samples / no model have a blank cell, which the chart skips)
+
+# ── 19b-contact ──
+contact-window | demo_assay.csv right-click → Contact plot…: domain column LITO, A ITABIRITE, B WASTE, both directions, bins width 5, max dist 50, series FE, run | window
+contact-surface | deposit.csv right-click → Distance to a surface…: surface ore shell, bins width 10, max dist 100, series deposit.csv FE weight SG, + add series → holes · demo_assay.csv FE, run | window
+data contact-itab-waste | {"tool":"contact","params":{"mode":"downhole","layer":"demo_assay.csv","series":[{"col":"FE"}],"domain":"LITO","domA":"ITABIRITE","domB":"WASTE","binWidth":5,"maxDist":50}}
+data contact-shell-model | {"tool":"contact","params":{"mode":"surface","surface":"ore_shell.obj","series":[{"layer":"deposit.csv","col":"FE","weight":"SG"}],"binWidth":10,"maxDist":100}}
+data contact-shell-samples | {"tool":"contact","params":{"mode":"surface","surface":"ore_shell.obj","series":[{"layer":"demo_assay.csv","col":"FE"}],"binWidth":10,"maxDist":100}}
+# (each table: series · side · center · mean · metres (down-hole) or weight (to a surface) · count; the charts plot mean against center, one series per table)

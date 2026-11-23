@@ -11,7 +11,7 @@ The folder is plain. Every file in it can be read without micro: models as CSV o
 \menu{File>Save project as…} asks for a folder. Pick an empty one, or make one. micro writes \file{project.json} there and carries on working in that folder. From then on \menu{File>Save project} (\key{⌘S}) saves in place. While there are unsaved changes the menu item carries a dot (\ui{Save project •}).
 
 \begin{note}
-Project folders need a browser that can write to folders you choose: Chrome or Edge. In other browsers micro still opens files and still opens a whole project from a single pack file (\cref{ch:store}); the command palette says so (\ui{Save / open project (needs Chrome or Edge)}).
+Project folders need a browser that can write to folders you choose: Chrome or Edge. In other browsers micro still opens files and still opens a whole project from a single file, a project pack (\cref{sec:store-packs}); the command palette says so (\ui{Save / open project (needs Chrome or Edge)}).
 \end{note}
 
 \subsection{Copy or link}\label{sec:projects-copy}
@@ -47,10 +47,10 @@ A linked layer isn't in the project folder, so it isn't in a backup of that fold
 A save may also offer to convert block models to Parquet and meshes to \file{.wfr}, the compact forms micro reopens fastest. It asks before it does either, and remembers your answer. \Cref{ch:store} explains both.
 
 \section{The folder}\label{sec:projects-layout}
-Data files are filed by kind. The layout mirrors the layers panel, and it is the same for every project.
+Data\index{project folder} files are filed by kind. The layout mirrors the layers panel, and it is the same for every project.
 
 \begin{figure}[htbp]\centering
-\begin{tikzpicture}[font=\sffamily\small, x=1mm, y=1mm,
+\begin{adjustbox}{max width=\linewidth}\begin{tikzpicture}[font=\sffamily\small, x=1mm, y=1mm,
   d/.style={anchor=west, text=ink, font=\ttfamily\footnotesize},
   n/.style={anchor=west, text=muted, font=\sffamily\footnotesize},
   tk/.style={rule, line width=0.5pt}]
@@ -70,7 +70,7 @@ Data files are filed by kind. The layout mirrors the layers panel, and it is the
 \foreach \y in {-6,-12,-18,-24,-30,-36,-42,-50,-56,-62,-68} \draw[tk] (2,\y) -- (5,\y);
 \draw[decorate, decoration={brace, amplitude=3pt}, amber, line width=0.6pt] (-1.5,-43.5) -- node[left=3pt, n, anchor=east, text=amber] {data} (-1.5,-10.5);
 \draw[decorate, decoration={brace, amplitude=3pt}, rule, line width=0.6pt] (-1.5,-69.5) -- node[left=3pt, n, anchor=east] {work} (-1.5,-48.5);
-\end{tikzpicture}
+\end{tikzpicture}\end{adjustbox}
 \caption{A project folder. Data is filed by kind; what you made with it sits beside.}\label{fig:projects-layout}
 \end{figure}
 
@@ -122,10 +122,10 @@ For a monthly model, keep the layer and change its file. Recipes and routines na
 \end{tip}
 
 \section{The folder as an inbox}\label{sec:projects-inbox}
-\menu{File>Scan folder for new data…} looks through the project folder for anything the project doesn't know about yet.
+\menu{File>Scan folder for new data…}\index{project folder!as an inbox} looks through the project folder for anything the project doesn't know about yet.
 
 \begin{itemize}
-\item A data file no layer uses is offered in the usual open dialog, where you confirm what it is (\cref{ch:opening}). The scan looks for delimited text, Parquet, Datamine, LAS, PLY, XYZ, OBJ, MSH, LFM and grid files; an Excel sheet, a DXF, an OMF or a \file{.wfr} put in the folder by hand is opened with \menu{File>Open…} instead.
+\item A data file no layer uses is offered in the usual open dialog, where you confirm what it is (\cref{ch:opening}). The scan looks for every format the open dialog reads: delimited text, Parquet, Datamine, LAS, PLY, XYZ, OBJ, MSH, LFM, \file{.wfr}, OMF, DXF, Excel workbooks (\file{.xlsx}) and grid files.
 \item A drillhole set with its set manifest (or an older \file{.holes.json}) is loaded directly, with all its tables.
 \item Recipes and routines in \file{recipes/} are read again, so new and edited files both arrive.
 \end{itemize}
@@ -163,4 +163,4 @@ file & \file{bookmarks/<name>.json} & \file{scenes/<name>.json} \\
 \end{tabularx}
 
 \section{Getting data out}
-Nothing you make in a project is trapped in it. \ui{Export rows…} on a layer writes it out as CSV or Parquet, every column included: calculated, painted, stored and joined (\cref{ch:columns}). Meshes export to their own formats (\cref{ch:meshes}), grids to ESRI ASCII (\cref{ch:grids}). In a routine, the \code{export} tool does the same without a dialog (\cref{sec:routines-tools}). To move the whole project as one file, back it up (\cref{ch:store}).
+Nothing you make in a project is trapped in it. \ui{Export rows…} on a layer writes it out as CSV or Parquet, every column included: calculated, painted, stored and joined (\cref{ch:columns}). Meshes export to their own formats (\cref{ch:meshes}), grids to GeoTIFF, Surfer, ESRI or XYZ files (\cref{sec:grids-export}). In a routine, the \code{export} tool does the same without a dialog (\cref{sec:routines-tools}). To move the whole project as one file, back it up (\cref{ch:store}).

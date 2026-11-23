@@ -3,13 +3,13 @@
 \textbf{In this chapter} you summarize columns by domain — count, mean, spread and quartiles, weighted or not — plot one column against another at any model size, and compare two distributions quantile by quantile: model against samples, this estimate against the last.
 \end{goals}
 
-These three plain statistical views work on more than block models. Any layer with a table and a numeric column will do: a block model, a drillhole interval table, a point file, a result kept with \ui{⇥ layer}.
+Grade–tonnage, the cross-tab and the swath need a block grid, because they weigh by block volume. The three plain statistical views of this chapter need only a table, so they work on more than block models. Any layer with a table and a numeric column will do: a block model, a drillhole interval table, a point file, a result kept with \ui{⇥ layer}.
 
 \ui{Stats…} is a grouped summary table. \ui{Scatter / Q-Q…} is one window with two modes: a \emph{scatter} of two columns of one layer, and a \emph{Q-Q} plot of two distributions that may come from different layers. Both are on a layer's right-click menu; in the palette (\key{⌘K}) they are \ui{Stats…}, \ui{Scatter plot} and \ui{Q-Q plot}. Both work as \cref{ch:analysis} describes.
 
 \section{The stats table}\label{sec:stats-table}
 \begin{tryit}
-In the demo project, right-click \file{deposit.csv} and choose \ui{Stats…}.
+In\index{stats table} the demo project, right-click \file{deposit.csv} and choose \ui{Stats…}.
 \begin{enumerate}
 \item Under \ui{columns}, the button names the chosen column, \col{FE}. Click it: a menu lists the numeric columns, with a ✓ on those chosen.
 \item Choose \col{SG}. The button now reads \emph{FE, SG}.
@@ -22,7 +22,7 @@ In the demo project, right-click \file{deposit.csv} and choose \ui{Stats…}.
 \shot{stats-window}{The stats table on the demo deposit: \col{FE} and \col{SG} by \col{LITO}, with count, mean, standard deviation, minimum, quartiles and maximum.}
 
 \medskip
-\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+\begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
 setting & meaning & default \\ \midrule
 \ui{columns} & the numeric columns to summarize; choosing a column in the menu adds it, choosing it again removes it, and the last one stays & the first numeric column \\
 \ui{group by} & the layer's category column or a painted column; \ui{— whole layer —} for one group & whole layer \\
@@ -77,12 +77,12 @@ On a sub-blocked model an unweighted mean is a mean \emph{per record}: a 2.5~m s
 \subsection{Stats by domain}
 The \ui{group by} menu offers the layer's category column and every painted column. Stats by domain is therefore two steps: assign domains — by solids, or by painting a selection (\cref{ch:picking,ch:geometry}) — then group by the domain column. A layer may have up to 256 groups; beyond that the extra groups are dropped and the subtitle carries a warning.
 
-With the scope set to \ui{sel}, the table is the statistics of whatever you select in 3D: select a bench, a fault block, the blocks inside a pit shell, and press \ui{Run}.
+With the scope set to \ui{sel} (and \ui{Run} pressed once to apply it), the table is the statistics of whatever you select in 3D: select a bench, a fault block, the blocks inside a pit shell, and the table recomputes for each new selection without another \ui{Run} (\cref{sec:analysis-scope}).
 
 If a saved setup names a column the layer does not have, the window says \emph{no numeric column “…” on this layer} and shows the rest. Run from a recipe, it refuses instead of computing other columns in its place.
 
 \section{Scatter}\label{sec:stats-scatter}
-The scatter plots one column of a layer against another: copper against gold, an estimate against its kriging variance, density against grade.
+The\index{scatter plot} scatter plots one column of a layer against another: copper against gold, an estimate against its kriging variance, density against grade.
 
 \begin{tryit}
 Right-click \file{deposit.csv} and choose \ui{Scatter / Q-Q…}. The window opens in \ui{scatter} mode.
@@ -97,7 +97,7 @@ The demo's density is a formula of its iron grade, and the scatter shows that at
 \shot{scatter-window}{Scatter mode: \col{SG} against \col{FE} over the demo model, drawn as a density of counts. The note gives n and r.}
 
 \medskip
-\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+\begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
 setting & meaning & default \\ \midrule
 \ui{x}, \ui{y} & the two columns, of the window's layer & the first two numeric columns \\
 \ui{filter} & rows to plot, e.g. \code{LITO = "HEMATITE"} & none \\
@@ -118,7 +118,7 @@ setting & meaning & default \\ \midrule
 \ui{⧉ table} copies the pairs themselves while every pair is drawn; for a density it copies the non-empty cells — each cell's range in x and y, and its count.
 
 \section{Q-Q}\label{sec:stats-qq}
-A Q-Q plot compares two \emph{distributions}: it plots the quantiles of one against the same quantiles of the other. The two sides need not be paired, need not have the same number of values, and need not be in the same layer. Click \ui{Q-Q} at the top of the rail to switch the window to it.
+A\index{Q-Q plot} Q-Q plot compares two \emph{distributions}: it plots the quantiles of one against the same quantiles of the other. The two sides need not be paired, need not have the same number of values, and need not be in the same layer. Click \ui{Q-Q} at the top of the rail to switch the window to it.
 
 Each side — \ui{x} and \ui{y} — is its own small box:
 
@@ -178,10 +178,10 @@ The curve joins 101 quantiles, from P0.5 to P99.5. The dashed line is 1:1. Dots 
 \caption{Q-Q of the demo: the quantiles of \col{FE} in \file{deposit.csv} against those of \col{FE} in the drillhole intervals. Both sides unweighted.}\label{fig:qq-demo}
 \end{figure}
 
-Read literally, the demo's curve says the model is far narrower than its samples: its median is 84\% of theirs, its P90 barely half. It is not. Pair each sample with its block (\cref{sec:validation-pairing}) and the blocks reproduce the samples almost one for one. The difference is in \emph{what was sampled}: the holes were drilled at the ore lens, so nearly half of the drilled length grades above 30\,\% Fe, while nine-tenths of the model's blocks are the waste around it. The two sides are not the same population, which is the trap the caution below describes.
+Read literally, the demo's curve says the model is far narrower than its samples: its median is 84\% of theirs, its P90 barely half. It is not. Pair each sample with its block (\cref{sec:validation-pairing}) and the blocks reproduce the samples almost one for one. The difference is in \emph{what was sampled}: the holes were drilled at the ore lens, so nearly half of the drilled length grades above 30\,\% Fe, while nine-tenths of the model's blocks are the waste around it. The two sides are not the same population, which is the trap the caution below describes. Give each side the same filter — \code{LITO != "WASTE"} on the demo — to compare the ground the holes sampled, as the validation's domain does for the means (\cref{sec:validation-domain}).
 
 \begin{caution}
-Q-Q quantiles are unweighted on both sides, and the window's subtitle says so. On the sample side this means every interval counts once: long and short intervals alike, and clustered infill holes as much as the wide-spaced ones. If the drilling is clustered on the high grade, the sample quantiles run high and the model will look biased low when it is not. Composite the drillholes to a constant length first (\cref{ch:drillholes}), and for a \emph{declustered} comparison of the means use \ui{Validate vs drillholes…} (\cref{ch:validation}).
+Q-Q quantiles are unweighted on both sides, and the window's subtitle says so. On the sample side this means every interval counts once: long and short intervals alike, and clustered infill holes as much as the wide-spaced ones. If the drilling is clustered on the high grade, the sample quantiles run high and the model will look biased low when it is not. Composite the drillholes to a constant length first (\cref{ch:drillholes}), and for a \emph{declustered} comparison of the means use \ui{Validate vs drillholes…} with a domain (\cref{sec:validation-domain}).
 \end{caution}
 
 On the model side, a sub-blocked model carries the same reservation as in the stats table: every record counts once, whatever its size.

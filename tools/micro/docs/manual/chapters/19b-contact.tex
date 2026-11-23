@@ -1,0 +1,334 @@
+\chapter{Contact analysis}\label{ch:contact}
+\begin{goals}
+\textbf{In\index{contact analysis} this chapter} you plot grade against distance from a domain boundary, on both sides of it — down the holes from every contact the logging records, or by signed distance to a solid or a surface — read whether the boundary is hard or soft, check that the model keeps it the way the samples do, and gate a routine on the answer.
+\end{goals}
+
+Every estimate is built in domains, and every domain has a boundary. Before the estimate, the boundary poses a question: does the grade jump across it, or change gradually? The answer decides how the domains are estimated — each with its own samples only, or with samples shared across the contact. After the estimate the question returns in another form: did the model keep the boundary the way the samples have it, or smear grade across a line the samples call sharp?
+
+A \term{contact plot}\index{contact plot} answers both. It takes every record near a boundary, measures its distance from it — negative on one side, positive on the other — and plots the mean grade in bins of that distance. The shape at zero is the answer.
+
+micro draws it two ways, as one window with two flavors:
+
+\begin{itemize}
+\item \ui{Contact plot…} on a drillhole layer finds the boundaries in the logging: every place a hole passes from domain A to domain B, measured \emph{down the hole} (\cref{sec:contact-downhole}).
+\item \ui{Distance to a surface…} on a drillhole layer or a block model measures the \emph{signed distance} of every record to a wireframe — the ore shell, a fault, a weathering surface — and draws the samples and the model on one chart (\cref{sec:contact-surface}).
+\end{itemize}
+
+Both are on the layer's right-click menu and in the command palette (\key{⌘K}; type \code{contact} or \code{distance}). The window is built on the chassis of \cref{ch:analysis}: a rail of settings, \ui{Run}, series, scopes, manual ranges, the results row and \ui{save as recipe…}, and its setup is saved with the project.
+
+\section{Hard and soft boundaries}\label{sec:contact-hardsoft}
+A \term{hard boundary}\index{boundary!hard} is one across which the grade changes abruptly: a fault that juxtaposes ore against barren rock, an intrusive contact, a sharp mineralization front. On a contact plot it is a \emph{step} at zero, with each side roughly flat as you move away from it. The two domains have nothing to say about each other, and each is estimated with its own samples alone.
+
+A \term{soft boundary}\index{boundary!soft} is gradational: an alteration halo, a weathering profile, a disseminated zone that thins out. On a contact plot it is a \emph{ramp} — the grade on one side, or both, trends toward the other side's as it nears the contact, and the step at zero is small. Near such a boundary the samples on the far side are informative, and an estimate may let samples from across the contact inform the blocks within the width of the ramp.
+
+\begin{figure}[htbp]\centering
+\begin{tikzpicture}[font=\sffamily\footnotesize, x=2.6mm, y=1.1mm]
+\draw[rule] (-10,0) -- (10,0);
+\draw[rule] (-10,0) -- (-10,32);
+\draw[muted, dashed] (0,0) -- (0,32);
+\draw[info, very thick] (-10,26) -- (0,25) (0,9) -- (10,8);
+\node[anchor=north] at (0,-1) {0};
+\node[anchor=north, text=muted] at (-5,-1) {A};
+\node[anchor=north, text=muted] at (5,-1) {B};
+\node[anchor=south, text=ink] at (0,33) {hard: a step, flat sides};
+\begin{scope}[xshift=68mm]
+\draw[rule] (-10,0) -- (10,0);
+\draw[rule] (-10,0) -- (-10,32);
+\draw[muted, dashed] (0,0) -- (0,32);
+\draw[amber, very thick] (-10,27) .. controls (-5,22) and (-2,16) .. (0,14.5) (0,13) .. controls (3,10.5) and (6,9.5) .. (10,9);
+\node[anchor=north] at (0,-1) {0};
+\node[anchor=north, text=muted] at (-5,-1) {A};
+\node[anchor=north, text=muted] at (5,-1) {B};
+\node[anchor=south, text=ink] at (0,33) {soft: a ramp, a small step};
+\end{scope}
+\end{tikzpicture}
+\caption{The two shapes a contact plot can take: mean grade against distance from the contact, domain A on the negative side. Real profiles lie between them, and the width of a ramp is part of the answer.}\label{fig:contact-shapes}
+\end{figure}
+
+Real boundaries are rarely one or the other, and the bin width is part of the reading: a contact that looks soft in 10~m bins can be sharp at 1~m. Choose bins near the scale of the estimate's blocks or composites, since that is the scale at which the estimate will treat the boundary.
+
+\section{Down the holes: Contact plot…}\label{sec:contact-downhole}
+\ui{Contact plot…} is on the right-click menu of a drillhole layer with a numeric column. It needs a text column of domains on the intervals — a lithology, a domain code, a painted category column, or a text ƒ column — and it finds the contacts in that column, hole by hole.
+
+\begin{tryit}
+In the demo project:
+\begin{enumerate}
+\item Right-click \ui{holes · demo\_assay.csv} in the layers panel and choose \ui{Contact plot…}. The window opens on the \ui{down-hole} flavor with \ui{column: LITO}, \ui{A: ITABIRITE} and \ui{B: any other}, in 2~m bins to 20~m.
+\item Set \ui{B} to \ui{WASTE}. Under \ui{bins}, type \code{5} in \ui{width} and \code{50} in \ui{max dist}.
+\item Press \ui{Run}. The subtitle reads \emph{18 contacts in 10 holes · bins 5 m}; under the plot, \emph{FE 25.51 | 24.19 · step +1.32}.
+\item Change \ui{both directions (pooled)} to \ui{A above B (down the hole)} and press \ui{Run}: \emph{8 contacts in 8 holes}. \ui{A below B} finds the other 10. The profile keeps its shape either way.
+\item Set \ui{A} to \ui{HEMATITE} and \ui{B} back to \ui{any other}, return to both directions, and \ui{Run}: \emph{6 contacts in 2 holes}, \emph{60.69 | 58.94}.
+\end{enumerate}
+\end{tryit}
+
+\shot{contact-window}{A down-hole contact plot on the demo: mean \col{FE} of the ITABIRITE intervals (left of zero) and the WASTE intervals (right) in 5~m bins from 18 contacts, over the meters counted in each bin (bars). The readout gives the means just inside and just outside, and the step between them.}
+
+\subsection{How the contacts are found}\label{sec:contact-walk}
+For each hole, micro sorts the intervals by \col{FROM} and joins consecutive intervals of the same domain into a \emph{run}. Two neighboring runs make a contact when one is domain A and the other is B — or, with \ui{B: any other}, any domain but A. The contact's depth is the middle of the gap between the runs, which is the shared boundary when the intervals touch.
+
+From the contact, micro walks \emph{away} along each run: up the hole through the run above, down through the run below, out to \ui{max dist}. Every interval's length is shared out among the bins it overlaps, at the interval's grade, so a 5~m assay that straddles a bin edge puts 2~m in one bin and 3~m in the next. Domain A always lands on the negative side, whichever way the hole crosses it.
+
+\begin{figure}[htbp]\centering
+\begin{tikzpicture}[font=\sffamily\footnotesize, x=10mm, y=5mm]
+\fill[ambersoft] (0,0) rectangle (0.6,-6);
+\fill[infosoft] (0,-6) rectangle (0.6,-12);
+\draw[ink, line width=0.6pt] (0,0) rectangle (0.6,-12);
+\foreach \y in {-1.4,-2.7,-3.6,-4.9,-7.3,-8.5,-9.6,-10.8} \draw[ink, line width=0.3pt] (0,\y) -- (0.6,\y);
+\node[anchor=east, text=amber] at (-0.15,-3) {ITABIRITE (A)};
+\node[anchor=east, text=info] at (-0.15,-9) {WASTE (B)};
+\node[anchor=south, text=muted] at (0.3,0.1) {a hole};
+\draw[amber, line width=1pt, dashed] (-0.4,-6) -- (4.6,-6);
+\node[anchor=west, text=amber] at (4.7,-6) {the contact};
+\foreach \bk in {1,...,5} {
+  \draw[rule] (1.4,{-6+\bk}) -- (2.4,{-6+\bk});
+  \draw[rule] (1.4,{-6-\bk}) -- (2.4,{-6-\bk});
+}
+\draw[rule] (1.4,-1) -- (1.4,-11) (2.4,-1) -- (2.4,-11);
+\foreach \bk/\bc in {1/2.5,2/7.5,3/12.5,4/17.5,5/22.5} {
+  \node[anchor=west, text=ink] at (2.5,{-6+\bk-0.5}) {−\bc};
+  \node[anchor=west, text=ink] at (2.5,{-6-\bk+0.5}) {+\bc};
+}
+\draw[-{Stealth[length=2mm]}, amber, line width=0.7pt] (3.7,-6.3) -- (3.7,-10.6);
+\draw[-{Stealth[length=2mm]}, amber, line width=0.7pt] (3.7,-5.7) -- (3.7,-1.4);
+\node[anchor=west, text=muted, align=left] at (3.9,-3.5) {walk away from\\ the contact: A's\\ side is negative};
+\node[anchor=west, text=muted, align=left] at (3.9,-8.5) {and B's side\\ positive};
+\fill[sel, opacity=0.25] (0,-2.7) rectangle (0.6,-3.6);
+\draw[sel, line width=0.5pt] (0.6,-3.15) -- (1.4,-3.15);
+\node[anchor=south, text=muted] at (1.9,-0.95) {bins (m)};
+\end{tikzpicture}
+\caption{The down-hole walk, in 5~m bins. Each run is walked away from the contact, its intervals' lengths shared among the bins they overlap; the shaded interval straddles the edge between the −12.5 and −17.5~m bins and is split between them by overlap. Every contact in every hole adds to the same bins.}\label{fig:contact-walk}
+\end{figure}
+
+Three rules keep the contacts honest:
+
+\begin{itemize}
+\item \textbf{A blank domain breaks a run.} An unlogged interval between ITABIRITE and WASTE is not a contact: nobody knows where the boundary is.
+\item \textbf{\ui{max gap}} is the widest unsampled gap a run may bridge, and a contact too. Two runs farther apart than that are not in contact. Blank means the bin width.
+\item \textbf{\ui{min run}} skips slivers: a contact counts only when both runs are at least that long. A 1~m stringer of waste inside ore makes two contacts that say more about the logging than about the boundary.
+\end{itemize}
+
+When any contact is skipped for either reason, the subtitle counts them: \emph{(skipped: … slivers, … across a gap)}.
+
+\subsection{The settings}
+\begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
+setting & meaning & default \\ \midrule
+\ui{column} & the domain column: a text column of the intervals (not the hole id), a painted category column, or a text ƒ column & one named like LITO, DOMAIN or ROCK, else the first \\
+\ui{A} & the domain whose contacts you test; plotted on the negative side & one named like ore, itabirite or hematite, else the commonest \\
+\ui{B} & the domain on the positive side, or \ui{any other}: every domain next to A, pooled & any other \\
+direction & \ui{both directions (pooled)}, \ui{A above B (down the hole)}, or \ui{A below B} & both \\
+\ui{min run} & the shortest run, on either side, that makes a contact (m) & 0 \\
+\ui{max gap} & the widest gap a contact or a run may bridge (m); blank = the bin width & blank \\
+\ui{width} & the bin width (m) & 2 \\
+\ui{max dist} & how far from the contact each side is walked (m) & 20 \\
+\ui{near bins} & how many bins each side make “just inside” and “just outside” in the readout — live & 1 \\
+series & a drillhole layer and a numeric column; the weight multiplies each interval's length; the filter decides which intervals count for the value & the first numeric column \\
+\ui{scope} & \ui{all} · \ui{filt} · \ui{sel} (\cref{sec:analysis-scope}) & all \\ \bottomrule
+\end{tabularx}
+\medskip
+
+A series' filter and the scope decide which intervals count for the \emph{grade}; the domains and the contacts always come from every interval. Filtering out the low-recovery intervals therefore leaves the boundaries where they are and only removes those intervals' grades from the bins. The direction matters when the two sides differ — a supergene blanket over its protore, ore that is enriched against its hanging wall but not its footwall. Pooled, the two directions average.
+
+\begin{caution}
+Down the hole, distance is measured \emph{along the hole}. A hole that crosses a contact at 30° to the boundary travels twice as far as the perpendicular distance, and a ramp drawn from it looks twice as wide. For inclined drilling into dipping contacts, read widths with that in mind — or model the boundary as a wireframe and measure true distances to it (\cref{sec:contact-surface}).
+\end{caution}
+
+\subsection{Reading the demo}
+\Cref{fig:contact-itab} is the plot of the try-it box, drawn from micro's own numbers. The itabirite falls steadily, from 44\,\% Fe at 47.5~m from the contact to 25.5\,\% in the last 5~m before it. The waste is flat, between 21 and 24\,\%, all the way out. At the contact itself the step is 1.3 points.
+
+\begin{figure}[htbp]\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.86\linewidth, height=62mm, xlabel={distance from the contact (m)}, ylabel={mean \% Fe}, ymin=15, ymax=48, xmin=-50, xmax=50, legend style={at={(0.98,0.98)}, anchor=north east}]
+\addplot[amber, very thick, mark=*, mark size=1.2pt, restrict x to domain=-100:0] table[x=center, y=mean]{figures/data/contact-itab-waste.tsv};
+\addlegendentry{ITABIRITE}
+\addplot[info, very thick, mark=*, mark size=1.2pt, restrict x to domain=0:100] table[x=center, y=mean]{figures/data/contact-itab-waste.tsv};
+\addlegendentry{WASTE}
+\addplot[muted, dashed, forget plot] coordinates {(0,15) (0,48)};
+\end{axis}
+\end{tikzpicture}
+\caption{The demo's itabirite–waste contacts, down the holes: mean \col{FE} in 5~m bins from 18 contacts in 10 holes. The itabirite ramps down toward the waste; the waste does not answer. A soft contact, soft on one side.}\label{fig:contact-itab}
+\end{figure}
+
+That shape is the low-grade halo the demo's itabirite carries around its core: its margin, near the waste, is barely richer than the waste itself. The contact is soft — but only on the itabirite's side. Waste samples near the contact are a fair guide to the itabirite's margin; itabirite samples from the core are not, and an estimate that walls the domains off and searches far within the itabirite will carry the core's grade out to the margin.
+
+The hematite's six contacts, in two holes, read 60.7 just inside and 58.9 just outside. All six are with itabirite — the demo has no hematite–waste contact — and the itabirite next to the hematite is rich. Six contacts are too few to call a boundary either way. Read the subtitle's count, and the bars, before reading the curve.
+
+\section{To a surface: Distance to a surface…}\label{sec:contact-surface}
+The down-hole plot finds its boundaries in the logging. Often the boundary that matters is a wireframe: the ore shell the estimate was domained by, a fault, a weathering surface. \ui{Distance to a surface…} measures every record's \term{signed distance}\index{signed distance} to a mesh layer and bins the grade by it.
+
+\begin{itemize}
+\item To a \textbf{closed solid}, the sign comes from the winding number — the same inside test as selecting by a solid (\cref{ch:geometry}). Inside is negative.
+\item To an \textbf{open surface}, micro first winds every triangle consistently and turns the surface so its normals face up on average; then below is negative and above positive. A surface that is mostly vertical — a fault — keeps the side its normals face, and the sides are named \emph{side −} and \emph{side +}.
+\end{itemize}
+
+The distance is to the \emph{nearest point} of the mesh, in 3D, so it is a true distance whatever the drilling's angle.
+
+\begin{figure}[htbp]\centering
+\begin{tikzpicture}[font=\sffamily\footnotesize, x=10mm, y=10mm]
+\fill[ambersoft] (1.6,1.2) ellipse (1.5 and 0.95);
+\draw[amber, line width=0.8pt] (1.6,1.2) ellipse (1.5 and 0.95);
+\node[text=amber] at (1.6,1.85) {solid};
+\fill[ink] (1.3,1.0) circle (1.6pt);
+\draw[ink, dashed] (1.3,1.0) -- (1.18,0.29);
+\node[anchor=west, text=ink] at (1.35,0.75) {$d<0$};
+\fill[ink] (3.6,0.5) circle (1.6pt);
+\draw[ink, dashed] (3.6,0.5) -- (2.95,0.82);
+\node[anchor=west, text=ink] at (3.65,0.45) {$d>0$};
+\node[text=muted] at (1.8,-0.35) {closed: inside is negative};
+\begin{scope}[xshift=55mm]
+\draw[info, line width=0.8pt] (0,0.9) .. controls (1,1.5) and (2,0.6) .. (3.6,1.2);
+\foreach \x/\y in {0.6/1.18, 1.8/1.0, 3.0/1.04} \draw[-{Stealth[length=1.6mm]}, info] (\x,\y) -- (\x,{\y+0.4});
+\node[text=info, anchor=west] at (3.65,1.2) {surface};
+\fill[ink] (1.2,0.3) circle (1.6pt);
+\draw[ink, dashed] (1.2,0.3) -- (1.2,1.12);
+\node[anchor=west, text=ink] at (1.25,0.3) {$d<0$};
+\fill[ink] (2.5,1.9) circle (1.6pt);
+\draw[ink, dashed] (2.5,1.9) -- (2.5,0.95);
+\node[anchor=west, text=ink] at (2.55,1.9) {$d>0$};
+\node[text=muted] at (1.8,-0.35) {open: below its normals is negative};
+\end{scope}
+\end{tikzpicture}
+\caption{Signed distance: the length to the nearest point of the mesh, negative inside a closed solid or below an open surface.}\label{fig:contact-signed}
+\end{figure}
+
+The surface menu lists the mesh layers whose triangles micro holds — not a large mesh kept in its streamed, display-only form, which keeps no triangles to measure against (\cref{sec:meshes-tiers}); open it in its exact form — nor a grid drawn as relief. In the demo the list holds the three pit phases and the ore shell, but not the topography. After a \ui{Run}, the subtitle says which kind the mesh was: \emph{(closed: − inside)}, or for an open surface \emph{(open: − below)}.
+
+\subsection{The model against its samples}
+Each series has its own layer, and here a series can be a drillhole layer or a block model. That is the point of this flavor: put the samples and the model on one chart, against the same surface. If the samples show a step at the boundary and the model shows a ramp, the estimate has smeared grade across a boundary its data call hard.
+
+Samples count at their interval's midpoint, weighted by length. Blocks count at their centroid, weighted by their volume — sub-blocks at their own size — times the series' weight expression, so \code{SG} makes the model's curve tonnage-weighted. Records farther than \ui{max dist} from the mesh are left out.
+
+\begin{tryit}
+In the demo project:
+\begin{enumerate}
+\item Right-click \file{deposit.csv} and choose \ui{Distance to a surface…}. The surface is already \ui{ore shell}.
+\item Under \ui{bins}, set \ui{width} to \code{10} and \ui{max dist} to \code{100}. In the series' weight field, type \code{SG}.
+\item Click \ui{+ add series}. The new series is \ui{holes · demo\_assay.csv}, column \col{FE}.
+\item Press \ui{Run}. The subtitle reads \emph{258,844 blocks · 687 intervals within 100 m of ore shell (closed: − inside) · bins 10 m}. The readout: \emph{deposit·FE 42.37 | 38.23 · step +4.13} and \emph{holes · demo\_assay·FE 42.92 | 37.43 · step +5.5 (133\% of the first)}.
+\end{enumerate}
+\end{tryit}
+
+\shot{contact-surface}{The model and its samples against the ore shell: mean \col{FE} by signed distance in 10~m bins, the model weighted by \col{SG} × block volume (blue) and the drillhole intervals by length (orange), over the model's tonnage per bin. The readout compares the two steps.}
+
+\Cref{fig:contact-shell} draws the same numbers. The two curves lie on each other. Inside the shell both climb from about 42\,\% at the boundary to 60\,\% at 100~m in; outside both fall to about 22\,\%. At the boundary the samples step down by 5.5 points and the model by 4.1 — three quarters of the samples' step. Outside, the model runs one to two and a half points above the samples all the way out. That is the smoothing any estimate has, carrying a little grade out of the shell, not a smear.
+
+\begin{figure}[htbp]\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.86\linewidth, height=62mm, xlabel={signed distance to the ore shell (m)}, ylabel={mean \% Fe}, ymin=15, ymax=65, xmin=-100, xmax=100, legend style={at={(0.98,0.98)}, anchor=north east}]
+\addplot[info, very thick, restrict x to domain=-200:0] table[x=center, y=mean]{figures/data/contact-shell-model.tsv};
+\addlegendentry{model, SG × volume}
+\addplot[info, very thick, restrict x to domain=0:200, forget plot] table[x=center, y=mean]{figures/data/contact-shell-model.tsv};
+\addplot[amber, thick, mark=*, mark size=1.2pt, restrict x to domain=-200:0] table[x=center, y=mean]{figures/data/contact-shell-samples.tsv};
+\addlegendentry{samples (length)}
+\addplot[amber, thick, mark=*, mark size=1.2pt, restrict x to domain=0:200, forget plot] table[x=center, y=mean]{figures/data/contact-shell-samples.tsv};
+\addplot[muted, dashed, forget plot] coordinates {(0,15) (0,65)};
+\node[anchor=north west, text=muted, font=\sffamily\footnotesize] at (rel axis cs:0.02,0.12) {← inside};
+\node[anchor=north east, text=muted, font=\sffamily\footnotesize] at (rel axis cs:0.98,0.12) {outside →};
+\end{axis}
+\end{tikzpicture}
+\caption{The demo model and its samples against the ore shell, in 10~m bins to 100~m: the model's mean \col{FE} weighted by \col{SG} × volume, and the drillhole intervals' weighted by length. The curves overlay: the model honors the samples across its own domain boundary.}\label{fig:contact-shell}
+\end{figure}
+
+Notice what the curves say about the shell itself. It is drawn around a gradational deposit, so the grade ramps on both sides of it and the step at the boundary is modest. That is a fact about the deposit, which both curves agree on; the contact plot's job here was the other question, and the answer is that the model keeps what the samples have.
+
+\subsection{The settings}
+Those that differ from the down-hole flavor:
+
+\medskip
+\begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
+setting & meaning & default \\ \midrule
+surface & the mesh layer to measure against: a closed solid or an open surface & the last listed \\
+\ui{width} & the bin width (m) & 5 from a block model, 2 from a drillhole layer \\
+\ui{max dist} & how far from the mesh, each side, a record still counts (m) & 50, or 20 \\
+series & a drillhole layer or a block model each; the weight multiplies an interval's length or a block's volume & the layer's first numeric column \\ \bottomrule
+\end{tabularx}
+\medskip
+
+\ui{near bins}, the scope and the ranges are as down the hole. The distances are computed once per layer, mesh and reach, and kept while the window is open: changing a weight, a filter or the bin width and pressing \ui{Run} again re-bins without measuring again.
+
+\section{Reading the result}\label{sec:contact-reading}
+The plot puts distance on the horizontal axis, with the negative side's name at the left of the axis label and the positive side's at the right: \emph{← ITABIRITE | WASTE →}, or \emph{← inside | outside →}. A vertical line marks the contact. The bars, on the right axis, belong to the first series: meters per bin down the hole, volume — or volume × weight — to a surface.
+
+The readout under the plot gives, for each series, the weighted mean \emph{just inside} and \emph{just outside} — in the bin nearest the contact on each side, or the nearest \ui{near bins} bins — and the \emph{step} between them. A second series' step is also given as a percentage of the first's.
+
+\begin{itemize}
+\item \textbf{A large step with flat sides} is a hard boundary.
+\item \textbf{A small step with a ramp} on one side or both is a soft one; the width of the ramp is how far its influence reaches.
+\item \textbf{Model against samples}: a model step much smaller than the samples' — a third, a half — has smeared the boundary. A model curve that ramps where the samples step is the same thing seen whole.
+\end{itemize}
+
+Read the counts before the curve. The subtitle counts the contacts (down the hole) or the records within reach (to a surface), and the bars show how much each bin holds. The bins far from a contact hold fewer meters than the near ones, because short runs end before \ui{max dist}; the end of a curve built from a few runs proves little. A blank grade is left out of its bin, and so is an interval or a block whose weight is blank or zero (\cref{sec:analysis-rules}).
+
+\begin{note}
+A down-hole contact plot compares samples with samples, so it is about the deposit. A plot to a surface with the model in it is about the estimate. Use the first to choose how to estimate, the second to check what was done.
+\end{note}
+
+\section{Keeping the distance: ⇥ column}\label{sec:contact-column}
+In the \ui{to a surface} flavor, the results row has one more button, \ui{⇥ column}. It asks for a name — \col{DIST\_ORE\_SHELL} for the ore shell, made from the mesh's name — and writes every record's signed distance to the surface as a stored column on each series' layer (\cref{ch:columns}). Unlike the plot, it measures every record, however far: this takes longer on a large model.
+
+The column is an ordinary one: color by it, chart it, export it, use it in an expression. Its lineage records the surface and which side is negative. Its most direct use is the filter, which turns \emph{near the boundary} into a selection:
+
+\begin{lstlisting}[language=expr]
+abs(DIST_ORE_SHELL) < 10
+\end{lstlisting}
+
+On the demo that keeps the 24,856 blocks within 10~m of the shell — the same blocks the plot's two nearest bins hold — ready for a stats window, a grade–tonnage curve of the contact zone, or a section to look at them. \code{DIST\_ORE\_SHELL < 0} is the inside of the shell, and \code{DIST\_ORE\_SHELL > -20 and DIST\_ORE\_SHELL < 0} its inner 20~m.
+
+\section{Out of the window}
+The rest of the results row is shared with every analysis window (\cref{sec:analysis-results}): \ui{⤓ png} and \ui{⧉ copy} for the plot, \ui{⇥ figure} to put the plot and its table on the composer page, \ui{⇥ layer} to keep the table as a table layer (in a group named \emph{contacts}), and \ui{⧉ table} to copy it. \ui{save as recipe…} saves the setup, named after the layer with \emph{contact}, as a recipe (\cref{ch:recipes}).
+
+\section{In a routine}\label{sec:contact-routine}
+The tool is \code{contact} (its settings: \cref{tool:contact}). A routine must state \code{binWidth} and \code{maxDist} — the bins are what a check compares run to run, and the reach decides which records count — and it runs on all records: to restrict one, give its series a filter.
+
+\begin{lstlisting}[language=yaml]
+- tool: "contact"
+  with:
+    mode: "downhole"
+    layer: "demo_assay.csv"
+    domain: "LITO"
+    domA: "ITABIRITE"
+    domB: "WASTE"
+    binWidth: 5
+    maxDist: 50
+    series:
+      - col: "FE"
+  as: "itab"
+- check: "abs(itab.step) < 3"
+  level: "warn"
+  say: "the itabirite–waste contact is still soft"
+- tool: "contact"
+  with:
+    mode: "surface"
+    surface: "ore_shell.obj"
+    binWidth: 10
+    maxDist: 100
+    series:
+      - layer: "demo_assay.csv"
+        col: "FE"
+      - layer: "deposit.csv"
+        col: "FE"
+        weight: "SG"
+  as: "shell"
+- check: "shell.step_ratio_2 > 0.5"
+  say: "the model keeps half the samples' step at the shell"
+\end{lstlisting}
+
+The down-hole settings are \code{domain}, \code{domA}, \code{domB} (blank for any other), \code{direction} (\code{both}, \code{AtoB} for A above B, \code{BtoA}), \code{minRun} and \code{maxGap}; the surface flavor names its mesh in \code{surface}. \code{near} sets the bins that make just inside and just outside, as the window's \ui{near bins} does.
+
+The table is keyed by \col{series}, \col{side} and \col{center}: \col{series}, \col{side} (the domain's name, or \emph{inside}, \emph{outside}, \emph{below}, \emph{above}), \col{center}, \col{mean}, then \col{metres} down the hole or \col{weight} to a surface, and \col{count}. The values are those of the first series:
+
+\medskip
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+value & meaning \\ \midrule
+\code{mean\_inside}, \code{mean\_outside} & the weighted means just inside and just outside the contact \\
+\code{step} & \code{mean\_inside} − \code{mean\_outside} \\
+\code{ratio} & \code{mean\_inside} ÷ \code{mean\_outside} \\
+\code{n\_inside}, \code{n\_outside}, \code{n} & the pieces counted in those bins, and their sum \\
+\code{slope\_inside}, \code{slope\_outside} & the weighted least-squares slope of the bin means against distance on each side, per meter: near zero on both sides for a hard contact \\
+\code{mean\_all\_inside}, \code{mean\_all\_outside} & the whole side's mean, out to \code{maxDist} \\
+\code{contacts}, \code{holes} & down the hole: the contacts found, and the holes they are in \\ \bottomrule
+\end{tabularx}
+\medskip
+
+A later series repeats them with a suffix — \code{step\_2}, \code{mean\_inside\_3} — and adds \code{step\_ratio\_2}, \code{step\_ratio\_3}: that series' step divided by the first's. Put the samples first and the model second, as above, and \code{step\_ratio\_2} is the share of the samples' step the model keeps: 0.75 on the demo, so both checks pass. \code{itab.step} is 1.32, \code{itab.slope\_inside} −0.43 (the ramp) and \code{itab.slope\_outside} −0.04 (the flat waste).
+
+A step that finds no contact, or no record within reach, warns by name — \emph{holes · demo\_assay.csv: no HEMATITE contact with WASTE found} — and its means, step and slopes are blank. A check that reads a blank is \emph{not evaluated}, never passed (\cref{ch:checks}).

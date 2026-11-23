@@ -1,6 +1,6 @@
 \chapter{Grids \& surfaces}\label{ch:grids}
 \begin{goals}
-\textbf{In this chapter} you open GeoTIFF, Surfer and ESRI ASCII grids, show one as shaded relief, as a flat colored sheet, or draped with another grid's values, extend and combine surfaces, turn a mesh into a grid, and create empty grids and block models from parameters.
+\textbf{In\index{grid!GeoTIFF, Surfer, ESRI} this chapter} you open GeoTIFF, Surfer and ESRI ASCII grids, show one as shaded relief, as a flat colored sheet, or draped with another grid's values, extend and combine surfaces, turn a mesh into a grid, and create empty grids and block models from parameters.
 \end{goals}
 
 A \term{grid} is a rectangle of evenly spaced nodes with one value at each: an elevation model, a weathering base, a geophysical or geochemical map. Topography is the grid every project has. micro treats a grid as a layer whose records are its nodes.
@@ -16,8 +16,8 @@ Three formats open as grids (\cref{tab:grids-formats}). Drag the file in or use 
 \begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
 format & notes \\ \midrule
 GeoTIFF (\file{.tif}, \file{.tiff}) & strips or tiles; uncompressed, LZW, deflate or PackBits; several bands; the overview pyramid of a cloud-optimized file is used \\
-Surfer (\file{.grd}) & the ASCII and the binary form \\
-ESRI ASCII (\file{.asc}) & read, and the format micro writes grids in \\
+Surfer (\file{.grd}) & Surfer 6 ASCII and binary; Surfer 7 binary (an unrotated grid) \\
+ESRI ASCII (\file{.asc}) & the text grid; the surface tools write their results in it \\
 \bottomrule
 \end{tabularx}
 \caption{Grid formats.}\label{tab:grids-formats}
@@ -68,7 +68,7 @@ The \ui{style} tab of a surface's properties has four rows that a plain mesh doe
 
 \begin{table}[htbp]
 \small
-\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+\begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
 setting & meaning & default \\ \midrule
 \ui{band} & which band of a multi-band GeoTIFF is shown & the first \\
 \ui{drape} & what colors the surface: its own \ui{elevation}, or the values of another loaded grid & elevation \\
@@ -81,7 +81,7 @@ setting & meaning & default \\ \midrule
 
 \subsection{Drape}
 
-\term{Draping} colors a surface by a \emph{second} grid's values. The shape stays the topography; the color becomes the soil geochemistry, the magnetics, the slope. Choose the source in the \ui{drape} row, or from \ui{Drape} on the surface's right-click menu, which lists \ui{elevation} and every other loaded grid.
+\term[draping]{Draping} colors a surface by a \emph{second} grid's values. The shape stays the topography; the color becomes the soil geochemistry, the magnetics, the slope. Choose the source in the \ui{drape} row, or from \ui{Drape} on the surface's right-click menu, which lists \ui{elevation} and every other loaded grid.
 
 The source is sampled by position, at each node of the surface, so the two grids need not share a cell size or an extent. The source must be another grid; load one first if the list offers only \ui{elevation}.
 
@@ -92,12 +92,14 @@ Not every grid is an elevation. A grade map or a geochemical grid has values tha
 Surface, drape, flat level and band are all saved with the project.
 
 \begin{tryit}
-Work with the demo's topography.
+Work with the demo's topography. Start with the demo project open.
 \begin{enumerate}
-\item Open the demo project and press \key{x} to turn the section off; with it on, the topography shows only as its line on the cut face. Right-click \ui{topography} and choose \menu{Reinterpret as…>points (elevation)}. This is the grid as micro read it: nodes.
+\item Press \key{x} to turn the section off; with it on, the topography shows only as its line on the cut face.
+\item Right-click \ui{topography} and choose \menu{Reinterpret as…>points (elevation)}. This is the grid as micro read it: nodes.
 \item Click a node. The record panel gives its elevation.
 \item Choose \menu{Reinterpret as…>surface (shaded relief)}. The relief returns.
-\item Open the layer's properties (right-click, \ui{Properties…}) and go to the \ui{style} tab. Set \ui{shading} to \ui{faceted (flat)} and zoom in. The grid's cells show as flat facets. Set it back to \ui{smooth}.
+\item Open the layer's properties (right-click, \ui{Properties…}) and go to the \ui{style} tab.
+\item Set \ui{shading} to \ui{faceted (flat)} and zoom in. The grid's cells show as flat facets. Set it back to \ui{smooth}.
 \item Tick \ui{flatten}. A \ui{flat @ z} box appears, starting at 0, which is far below the demo.
 \item Type \code{950} in the box and press \key{Enter}. The terrain collapses to a sheet just above the model, still colored by elevation. Untick \ui{flatten}.
 \item Set \ui{Z×} on the instrument rail to 3. Every layer stretches together, and the topography's relief becomes easy to read (\cref{ch:sections}).
@@ -185,7 +187,51 @@ Because the surface is a grid, the fraction is computed from the grid's own valu
 
 \section{Exporting a grid}\label{sec:grids-export}
 
-\menu{Surface tools>Export as ESRI ASCII grid…} writes the grid as an \file{.asc} file, named after the layer. The export reads the full-resolution values, not the thinned display, and it writes the band you have chosen. ESRI ASCII has a single cell size, so a grid whose cells are not square is written with its X spacing and a note on the status line.
+\menu{Surface tools>Export grid…} on a grid's right-click menu, or \code{export grid} in the command palette, opens one dialog for every format micro writes. Its first line names the grid and its full size in nodes. Whatever the format, what leaves is the \emph{full-resolution} grid of the chosen band in world coordinates — never the thinned display of \cref{sec:grids-big} — and the note at the bottom of the dialog says so, with whatever else the chosen format needs you to know.
+
+\medskip
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+\ui{format} & what is written \\ \midrule
+\ui{ESRI ASCII grid (.asc)} & the text grid every GIS reads \\
+\ui{GeoTIFF, float32 (.tif)} & a single-band 32-bit floating-point GeoTIFF; the provenance in its ImageDescription tag \\
+\ui{Surfer 7 binary (.grd)} & Surfer's current grid \\
+\ui{Surfer 6 binary (.grd)} & the older binary grid, for older software; at most 32\,767 rows and columns \\
+\ui{Surfer 6 ASCII, DSAA (.grd)} & Surfer's text grid \\
+\ui{ESRI binary float (.flt + .hdr, zipped)} & one \file{.zip} holding the \file{.flt}, its \file{.hdr} and the provenance as \file{.lineage.json} \\
+\ui{XYZ / CSV of nodes} & one row per node, north row first, with x and y at the node \\ \bottomrule
+\end{tabularx}
+\medskip
+
+The fields under the format change with it; the dialog shows only those that apply.
+
+\medskip
+\begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
+setting & meaning & default \\ \midrule
+\ui{band} & which band of a multi-band GeoTIFF to write; shown only when there is more than one & the band shown \\
+\ui{nodata} & the value an empty node is written as; \code{nan} is allowed for the binary formats. Not offered for Surfer, which always blanks with its own 1.70141e38 & the grid's own no-data value if it is an ordinary number, else −9999 \\
+\ui{decimals} & text formats: digits after the point, or \ui{exact (float32, shortest)} — the shortest text that reads back as the very same 32-bit value & exact \\
+\ui{compression} & GeoTIFF: \ui{deflate + predictor 3 (smallest)}, \ui{deflate}, or \ui{none} & deflate + predictor 3 \\
+\ui{layout} & GeoTIFF: \ui{strips} or \ui{tiles 256×256} & strips \\
+\ui{delimiter} & XYZ: \ui{comma (.csv)}, \ui{tab (.txt)} or \ui{space (.xyz)} & comma \\
+\ui{value column} & XYZ: the name of the value column & \code{z} \\
+\ui{header row}, \ui{skip empty nodes} & XYZ: a first row of names; empty nodes left out rather than written blank & both on \\
+\ui{file} & the file name; the extension follows the format & the layer's name \\ \bottomrule
+\end{tabularx}
+\medskip
+
+A few behaviors are worth knowing before you hand the file on:
+
+\begin{itemize}
+\item \textbf{A GeoTIFF states a coordinate system only when micro knows its EPSG code} — the grid's own, from the GeoTIFF it was opened from, or the project's. Otherwise none is written; the coordinates are, and the note asks you to set the system in your GIS. micro never invents a CRS (\cref{sec:grids-open}).
+\item \textbf{Rectangular cells.} ESRI's formats were made for square cells. A grid whose cells are not square is written in the form GDAL reads — separate X and Y sizes — and the status line notes that ArcGIS proper reads square cells only.
+\item \textbf{A value equal to the nodata} would read back as empty. If any node holds it, the status line counts them and asks you to pick another nodata.
+\end{itemize}
+
+\begin{tryit}
+In the demo project, right-click \ui{topography} in the layers panel and choose \menu{Surface tools>Export grid…}. The dialog reads \emph{topography — 117×67 nodes}. Choose \ui{GeoTIFF, float32 (.tif)}: the note now says that no CRS is known for this layer, so none is written. Choose \ui{Surfer 7 binary (.grd)}, and the nodata field disappears — Surfer blanks with its own value. Press \ui{Export}; the status line names the file and its size.
+\end{tryit}
+
+In a routine the same producer is the \code{gridexport} tool: \code{layer}, \code{format} (\code{asc}, \code{tif}, \code{grd7}, \code{grd6}, \code{dsaa}, \code{flt}, \code{xyz}) and the options above, with \code{band} counted from 1. The file goes into the run folder (\cref{ch:records}), and its values are \code{nodes} and \code{bytes}. The settings are in \cref{tool:gridexport}.
 
 \section{New grids and block models}\label{sec:grids-new}
 

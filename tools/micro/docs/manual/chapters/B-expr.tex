@@ -1,7 +1,7 @@
 \chapter{The expression language}\label{app:expr}\label{ch:expr}
 
 \begin{goals}
-\textbf{In this appendix}: the whole expression language in one place — how names, numbers and text
+\textbf{In\index{expression language} this appendix}: the whole expression language in one place — how names, numbers and text
 are written, every operator and function, what a blank does, and a cookbook of expressions you can
 paste and adapt.
 \end{goals}
@@ -24,7 +24,7 @@ gives back a value: a number, a piece of text, true or false, or a blank. Used a
 record is kept when the value is true.
 
 \begin{why}
-The language is \term{total}: an expression can compare and compute, but it cannot loop, call
+The language is \term[expression language!total]{total}: an expression can compare and compute, but it cannot loop, call
 anything outside itself, or stop a scan with an error. Dividing by zero, taking the logarithm of a
 negative number or doing arithmetic on text all give a blank. That is what makes it safe to open a
 project, a recipe or a routine that somebody else wrote: an expression in it can be wrong, but it
@@ -78,7 +78,8 @@ are reserved. Keywords and function names are not case-sensitive (\code{AND}, \c
 function name is a function only when a parenthesis follows it, so a column that happens to be
 called \col{round} or \col{min} still works as a bare name.
 
-In the color list a calculated column appears as \ui{ƒ NAME} and a painted one with a ✎. Those marks
+In the color list and the record panel a calculated column appears as \ui{ƒ NAME}, and a stored
+one — materialized, joined, painted, a fraction inside a solid — with a ✎ or a \%. Those marks
 are labels, not part of the name: in an expression, write the name alone.
 
 \subsection{Numbers, text and comments}\label{sec:expr-literals}
@@ -226,6 +227,19 @@ function & gives \\
 \code{log10(x)} & The base-10 logarithm, the usual transform for skewed grades. \\
 \code{min(a, b, …)} \; \code{max(a, b, …)} & The smallest, or largest, of the numeric arguments.
   Blanks are skipped; blank only when every argument is blank. \\
+\code{lerp(a, b, t)} & The point a fraction \code{t} of the way from \code{a} to \code{b}:
+  $a + (b - a)\,t$. \code{t} is not held to 0–1: \code{lerp(2, 4, 0.25)} is 2.5, and
+  \code{lerp(2, 4, 2)} is 6. \\
+\code{remap(x, a1, b1, a2, b2)} & \code{x} rescaled so that \code{a1}…\code{b1} lands on
+  \code{a2}…\code{b2}: \code{remap(40, 20, 60, 0, 1)} is 0.5. Not held to the range (wrap it
+  in \code{clamp} for that); blank when \code{a1} = \code{b1}. \\
+\code{interp(x, x1, y1, x2, y2, …)} & The straight-line curve through the points
+  (\code{x1}, \code{y1}), (\code{x2}, \code{y2}), …, read at \code{x}, and flat beyond the
+  first and last: \code{interp(55, 20, 2.7, 45, 3.4, 65, 4.3)} is 3.85. Needs at least two
+  points. Points written as numbers must have increasing \code{x1}, \code{x2}, …, or the
+  expression is refused; points taken from columns are put in order for you. \\
+\code{smoothstep(a, b, x)} & A smooth 0-to-1 ramp as \code{x} goes from \code{a} to
+  \code{b}, 0 before and 1 after: \code{smoothstep(0, 10, 2.5)} is 0.15625. \\
 \bottomrule
 \end{tabularx}
 
@@ -300,7 +314,7 @@ and can be changed, in \menu{Properties>columns} (\cref{ch:columns}).
 
 \section{Blanks}\label{sec:expr-blanks}
 
-A \term{blank} is a missing value: an empty cell, a null in a Parquet file, a lab code read as no
+A \term[blank (missing value)]{blank} is a missing value: an empty cell, a null in a Parquet file, a lab code read as no
 value, a number that isn't one. micro never turns a blank into zero by itself, because a missing
 grade that silently becomes 0 drags every mean and every tonnage with it.
 
@@ -440,6 +454,8 @@ An equivalent grade & \code{FE + 0.4 * MN} \\
 Tonnes per block (10 × 10 × 5 m) & \code{SG * 500} \\
 Contained metal per block, t & \code{FE / 100 * SG * 500} \\
 Density by lithology & \code{if(LITO = "HEMATITE", 3.9, if(LITO = "ITABIRITE", 3.4, 2.8))} \\
+Density from grade, along a curve & \code{interp(FE, 20, 2.7, 45, 3.4, 65, 4.3)} \\
+A grade rescaled to 0–1 between 20 and 65 & \code{clamp(remap(FE, 20, 65, 0, 1), 0, 1)} \\
 A default density where none is given & \code{coalesce(SG, 2.7)} \\
 An ore / waste flag that keeps blanks blank &
   \code{if(FE is blank, blank, if(FE >= 45, "ORE", "WASTE"))} \\
@@ -487,9 +503,10 @@ A cutoff 10\% above the sheet's & \code{\$\{g.cutoff * 1.1\}} \\
 A cutoff that depends on the row & \code{\$\{if(b.lito = "HEMATITE", 55, 45)\}} \\
 Only the active rows of a table & \code{filter: "active = 1"} \\
 Global bias within 5\% & \code{check: "abs(val.bias\_pct) < 5"} \\
-Every row has tonnes & \code{check: \{ every: "tonnes > 0", in: gt \}} \\
+Every row has tonnes & under \code{check:}, \code{every: "tonnes > 0"} and \code{in: "gt"} \\
 No row moved more than 10\% from the baseline &
-  \code{every: "abs(tonnes / prev.tonnes - 1) < 0.1"} \\
+  under \code{check:}, \code{every: "abs(tonnes / prev.tonnes - 1) < 0.1"}, \code{in: "gt"} and
+  \code{against: "prev"} \\
 \bottomrule
 \end{tabularx}
 

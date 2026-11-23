@@ -8,7 +8,7 @@ Allow forty minutes, or take the tour a section at a time; each section leaves t
 Every idea here has a chapter of its own later. The tour shows each one once, in the order you would meet it in real work, and points to where the detail is.
 
 \begin{figure}[htbp]\centering
-\begin{tikzpicture}[
+\begin{adjustbox}{max width=\linewidth}\begin{tikzpicture}[
   font=\sffamily\footnotesize,
   >={Stealth[length=1.8mm, width=1.4mm]},
   stop/.style={draw=rule, fill=tint, rounded corners=1.5pt, line width=0.5pt, minimum height=8mm, text width=19mm, align=center, text=ink, inner sep=1mm},
@@ -19,14 +19,14 @@ Every idea here has a chapter of its own later. The tour shows each one once, in
 \node[stop] (b) at (25mm,0)    {{\color{amber}\bfseries 2}\enspace filter};
 \node[stop] (c) at (50mm,0)    {{\color{amber}\bfseries 3}\enspace drillholes};
 \node[stop] (d) at (75mm,0)    {{\color{amber}\bfseries 4}\enspace derive a column};
-\node[stop] (e) at (100mm,0)   {{\color{amber}\bfseries 5}\enspace grade–tonnage};
+\node[stop] (e) at (100mm,0)   {{\color{amber}\bfseries 5}\enspace grade–\allowbreak tonnage};
 \node[stop] (f) at (100mm,-14mm) {{\color{amber}\bfseries 6}\enspace a section};
 \node[stop] (g) at (75mm,-14mm)  {{\color{amber}\bfseries 7}\enspace a figure};
 \node[stop] (h) at (50mm,-14mm)  {{\color{amber}\bfseries 8}\enspace save the project};
 \node[stop] (i) at (25mm,-14mm)  {{\color{amber}\bfseries 9}\enspace a routine};
 \draw[go] (a) -- (b); \draw[go] (b) -- (c); \draw[go] (c) -- (d); \draw[go] (d) -- (e);
 \draw[go] (e) -- (f); \draw[go] (f) -- (g); \draw[go] (g) -- (h); \draw[go] (h) -- (i);
-\end{tikzpicture}
+\end{tikzpicture}\end{adjustbox}
 \caption{The route of the tour. Stops 1 to 7 work in any browser and leave nothing behind; stops 8 and 9 write a project folder.}\label{fig:tour-route}
 \end{figure}
 
@@ -56,7 +56,7 @@ Start with the view itself. \Cref{sec:start-nav} has the full list of moves; the
 \begin{enumerate}
 \item Drag in the view to orbit. Right-drag to pan. Roll the wheel to zoom.
 \item Press \key{f} to fit the scene whenever you lose it.
-\item Hold \key{Ctrl} and roll the wheel. The section plane moves through the deposit and the cut face is redrawn as it goes. Watch the ring of the ore shell grow and shrink as the plane passes through the lens.
+\item Hold \key{Ctrl} and roll the wheel (on a Mac, \key{⌃} or \key{⌘}). The section plane moves through the deposit and the cut face is redrawn as it goes. Watch the ring of the ore shell grow and shrink as the plane passes through the lens.
 \item Press \key{l}. The camera turns to face the section square-on.
 \item Click a block on the cut face. It glows, and the record panel opens with the block's row.
 \end{enumerate}
@@ -228,11 +228,11 @@ The expression reads: 2 where iron is above 58\,\%, 1 where it is above 45\,\%, 
 
 Below the editor, micro has read the nested \code{if} and laid it out as a \term{case table}: one row per condition with the value it gives, and an \ui{else} row at the bottom. Every constant has a slider: the thresholds 58 and 45, and the values 2, 1 and 0.
 
-Now see the classes on the model.
+Now see the classes on the model. If you skipped the box above, add \col{CLASS} first as it describes.
 
 \begin{tryit}
 \begin{enumerate}
-\item If you skipped the box above, add \col{CLASS} first as it describes. Then, in the \ui{color} dropdown on the instrument rail, choose \ui{ƒ CLASS}. The status line reads \emph{ƒ CLASS: computing for display…}, then \emph{ƒ CLASS: colored — 1,786,620 values, 0 … 2}, and the model is redrawn in three classes.
+\item In the \ui{color} dropdown on the instrument rail, choose \ui{ƒ CLASS}. The status line reads \emph{ƒ CLASS: computing for display…}, then \emph{ƒ CLASS: colored — 1,786,620 values, 0 … 2}, and the model is redrawn in three classes.
 \item In the calculations window, drag the slider for 58 down toward 55. The high-grade class grows as you drag.
 \item Put it back at 58.
 \item Press \key{/} and filter with \code{CLASS = 2}. A calculated column filters like any other: 19,305 blocks match.
@@ -419,7 +419,7 @@ Three things about what you made set it apart from a pasted picture.
 
 The view frame is not a screenshot. It remembers its \emph{scene}: the camera, the section, which layers were on and how they were colored. It is rendered again at the frame's own size, and again at print resolution on export. Right-click it for \ui{Update from the 3D view} and \ui{Show in the 3D view}.
 
-The caption begins with \code{**Figure \{fig\}.**}. The braces are a \term{field}: \code{\{fig\}} becomes the figure's number. Other fields give the scale, the section position, the date, counts and statistics of what the view shows. The inspector's \ui{insert field…} lists them.
+The caption begins with \code{**Figure \{fig\}.**}. The braces are a \term[field (in a caption)]{field}: \code{\{fig\}} becomes the figure's number. Other fields give the scale, the section position, the date, counts and statistics of what the view shows. The inspector's \ui{insert field…} lists them.
 
 The scale bar belongs to the view frame. Resize the frame and the bar stays true.
 
@@ -500,7 +500,7 @@ micro-tour/
     figure_1.compo.json
 \end{lstlisting}
 
-Each data file has its manifest beside it. The drillhole set has one for all three of its tables, named after the interval file. The broadcast \col{EOH} is a stored column, so its values are kept in a file of their own, \file{demo\_assay.csv.cols/EOH.parquet}. \file{deposit.csv.meta.json} is a small cache of what micro learned reading the model, so that it opens faster next time.
+Each data file has its manifest beside it. The drillhole set has one for all three of its tables, its \emph{set manifest}, named after the interval file. The broadcast \col{EOH} is a stored column, so its values are kept in a file of their own, \file{demo\_assay.csv.cols/EOH.parquet}. \file{deposit.csv.meta.json} is a small cache of what micro learned reading the model, so that it opens faster next time.
 
 The folders are named for kinds of data. \file{project.json} holds the scene: the layers and their order, colors, filters, the camera and section, the open windows. The data files are the plain CSVs and meshes you would expect.
 
@@ -513,7 +513,7 @@ The folders are named for kinds of data. \file{project.json} holds the scene: th
 
 That file is the \term{element manifest} of the block model: the audit trail of everything derived on it. A reviewer does not need micro to read how a column was defined.
 
-From now on \key{⌘S} (\key{Ctrl}+\key{S}) saves. A dot after \ui{Save project} in the \ui{File} menu means there are unsaved changes. The project also appears on the start screen, and \menu{File>Open project folder…} opens it from anywhere. It comes back as you left it, analysis windows included; they wait for you to click \ui{Run}, so opening a project never starts a long computation by itself.
+From now on \key{⌘S} (\key{Ctrl}+\key{S} on Windows and Linux) saves. A dot after \ui{Save project} in the \ui{File} menu means there are unsaved changes. The project also appears on the start screen, and \menu{File>Open project folder…} opens it from anywhere. It comes back as you left it, analysis windows included; they wait for you to click \ui{Run}, so opening a project never starts a long computation by itself.
 
 \Cref{ch:projects} describes projects, and \cref{ch:store} what micro keeps inside one.
 

@@ -1,7 +1,7 @@
 \chapter{For developers: hosting micro}\label{app:host}\label{ch:host}
 
 \begin{goals}
-\textbf{In this appendix}: how another web page loads micro in a frame and drives it through
+\textbf{In\index{host API} this appendix}: how another web page loads micro in a frame and drives it through
 \code{window.micro} — layers, the view and the section, picks and selections, the analysis tools
 and routines — how to hand micro a layer as typed columns with \code{addLayer}, and how a Parquet
 file states its own lattice with \code{micro:model}.
@@ -381,17 +381,18 @@ const h = await micro.runTool('gt', {
 \end{lstlisting}
 
 \begin{lstlisting}[language=js]
-const dry = await micro.checkRoutine('month end',
-                                     { inputs: { grade: 'FE' } });
-// { routine: 'month end',
+const inputs = { model: 'deposit.csv', holes: 'demo_assay.csv',
+                 tol: 5 };
+const dry = await micro.checkRoutine('month-end', { inputs });
+// { routine: 'month-end',
 //   steps: ['…one line per step…'], problems: [] }
 
-const res = await micro.runRoutine('month end', {
-  inputs: { grade: 'FE' },
+const res = await micro.runRoutine('month-end', {
+  inputs,
   onStep: (s) => console.log(s.n, s.step, s.status),
   fresh: false,          // true: run every step again, reuse nothing
 });
-// { routine: 'month end',
+// { routine: 'month-end',
 //   status: 'ok' | 'failed' | 'cancelled' | 'refused',
 //   record, problems?, error? }
 
@@ -437,7 +438,7 @@ call & what it does \\
 \bottomrule
 \end{tabularx}
 
-See \cref{ch:store} for what a pack is. A \code{file} here is a \code{File}, a \code{Blob} or a file
+See \cref{sec:store-packs} for what a project pack is. A \code{file} here is a \code{File}, a \code{Blob} or a file
 handle.
 
 \section{Events}\label{sec:host-events}
@@ -474,7 +475,7 @@ the one run you called.
 
 \section{Handing micro a layer: \texttt{addLayer}}\label{sec:host-addlayer}
 
-When the data comes from software that already knows what it is, write no file and let nothing be
+When\index{host API!addLayer} the data comes from software that already knows what it is, write no file and let nothing be
 guessed. Pass the columns and say what they mean:
 
 \begin{lstlisting}[language=js]
@@ -579,7 +580,7 @@ micro reads the \code{micro:model} key–value entry from the footer of \emph{an
 only its own exports. A producer that knows its block model's lattice can write it there, and the
 file then opens with no discovery pass. The value is JSON:
 
-\begin{tabularx}{\linewidth}{@{}p{22mm}p{20mm}L@{}}
+\begin{tabularx}{\linewidth}{@{}p{22mm}p{21mm}L@{}}
 \toprule
 key & & meaning \\
 \midrule

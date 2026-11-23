@@ -14,7 +14,7 @@ Open it from \menu{Tools>Recipes>Library…}. It is there with or without a proj
 
 The window has two lists.
 
-\textbf{Library} is yours in this browser. Each entry is a \term{pack}: a recipe or routine together with everything it needs to run. For a routine that means the recipes its steps name and the parameter tables it reads (every \code{from:} of an \code{each} or \code{params} block). The line says how many of each it carries. The month-end reads one recipe and no table: \emph{month-end · routine (1 recipe)}. A routine with an \code{each} over \file{benches.csv} would add \emph{· 1 table}.
+\textbf{Library} is yours in this browser. Each entry is a \term[pack (library)]{pack}: a recipe or routine together with everything it needs to run. For a routine that means the recipes its steps name and the parameter tables it reads (every \code{from:} of an \code{each} or \code{params} block). The line says how many of each it carries. The month-end reads one recipe and no table: \emph{month-end · routine (1 recipe)}. A routine with an \code{each} over \file{benches.csv} would add \emph{· 1 table}.
 
 \textbf{This project} lists the files of the open project's \file{recipes/} folder. It appears only when a project is open.
 
@@ -146,7 +146,7 @@ month-end.zip
 Use it when a table is a workbook, or when the recipient should be able to open the pieces without micro.
 
 \begin{figure}[htbp]\centering
-\begin{tikzpicture}[font=\sffamily\small,
+\begin{adjustbox}{max width=\linewidth}\begin{tikzpicture}[font=\sffamily\small,
   place/.style={draw=rule, fill=tint, rounded corners=1.5pt, minimum width=30mm, minimum height=13mm, align=center, text=ink},
   filebox/.style={draw=amber, fill=ambersoft, rounded corners=1.5pt, minimum width=30mm, minimum height=11mm, align=center, text=ink, line width=0.8pt},
   arr/.style={{Stealth[length=1.8mm]}-{Stealth[length=1.8mm]}, rule, line width=0.6pt},
@@ -160,7 +160,7 @@ Use it when a table is a workbook, or when the recipient should be able to open 
 \draw[one] (file.south) -- ++(0,-0.9) -| node[below, lab, pos=0.25] {Import into project…} (proj.south);
 \node[place, minimum height=9mm] (run) at (5.4,2.1) {a run};
 \draw[one] (lib) -- node[right, lab] {Run → zip · Run → folder…} (run);
-\end{tikzpicture}
+\end{tikzpicture}\end{adjustbox}
 \caption{Where a routine can live, and the buttons that move it.}\label{fig:library-flow}
 \end{figure}
 

@@ -9,7 +9,7 @@ So micro has to know \emph{how} to read the file: which columns are the coordina
 
 \section{Formats at a glance}\label{sec:opening-formats}
 
-\Cref{tab:opening-formats} lists what opens, and as what. The rest of Part~II takes each kind in turn; \cref{ch:formats} is the full reference, including what micro writes.
+\Cref{tab:opening-formats} lists what opens, and as what. The rest of Part~II takes each kind in turn; \cref{app:formats} is the full reference, including what micro writes.
 
 \begin{table}[htbp]
 \small
@@ -46,7 +46,7 @@ With \ui{Remember recent files} ticked in the \ui{File} menu, the files you open
 How you open a file decides what micro can do with it later. In Chrome and Edge, a file opened through \menu{File>Open…}, or from a project folder, comes with a \term{file handle}: micro can read it again after it changes (\cref{sec:opening-reload}). A file you \emph{drag} in, or open in a browser without that feature, is a snapshot of its bytes at that moment. It works the same in every other way, but \ui{Reload from disk} is not offered for it.
 \end{caution}
 
-If you have no data at hand, the start screen offers \ui{▸ open the demo project} (\cref{sec:start-data}). Every exercise in this book uses it.
+If you have no data at hand, the start screen offers \ui{▸ open the demo project} (\cref{sec:start-data}).
 
 \section{The open dialog}\label{sec:opening-dialog}
 
@@ -115,7 +115,7 @@ See the dialog on real files, without leaving the demo. The first step saves a p
 \section{What micro detected: file info and the source tab}\label{sec:opening-fileinfo}
 
 \sidekey{i}{file info for the active layer}
-When a number in an analysis surprises you, look first at what micro made of the file. Press \key{i} (or choose \menu{File>File info…}, or \ui{File info…} on the layer's right-click menu). \term{File info} gives the kind micro read the file as, the number of records, the extent in X, Y and Z, and the column names.
+When a number in an analysis surprises you, look first at what micro made of the file. Press \key{i} (or choose \menu{File>File info…}, or \ui{File info…} on the layer's right-click menu). \term[file info]{File info} gives the kind micro read the file as, the number of records, the extent in X, Y and Z, and the column names.
 
 For a block model it adds the grid it found (the count of blocks along each axis), the block size, block 0's centroid, and the rotation or the sub-block sizes where there are any, then the columns micro colors by (\ui{channels}) and the classes of the category column. Two rows describe micro's side rather than the file: \ui{frame origin}, the local origin micro draws around, and \ui{vram (layer)}, the graphics memory the layer holds. For a drillhole set it adds the number of holes, how many intervals could be placed, and each failed check with the holes it concerns. Click a value to copy it.
 
@@ -209,7 +209,7 @@ A file is \term{resident} when a program holds all of it, decoded, in memory. Mo
 
 Five things follow for you.
 
-\textbf{The first picture is early and coarse.} Chunks are drawn in an order that spreads them across the whole dataset, so a few percent of a model already shows its full extent and shape. The view sharpens while you orbit.
+\textbf{The first picture is early and coarse.} Chunks are drawn in an order that spreads them across the whole dataset \parencite{schutz2020}, so a few percent of a model already shows its full extent and shape. The view sharpens while you orbit.
 
 \textbf{The full row lives in the file.} Click a block and the record panel shows every column of its row: micro read that one row from the source at that moment. The attribute table scrolls the same way, fetching the rows on screen (\cref{sec:columns-attrtable}). Neither needs the table in memory.
 

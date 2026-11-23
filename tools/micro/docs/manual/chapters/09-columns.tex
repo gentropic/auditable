@@ -69,9 +69,9 @@ A scan of a large model takes as long as one read of the file. It runs in the ba
 You do not need to scan before working. Coloring by a column scans only that column for its histogram, and a filter reads only the columns it names. Scan when you want the overview, or before saving a project, since the statistics are stored beside the file and reopen with it (\cref{ch:store}).
 
 \begin{tryit}
-Read the demo deposit's columns.
+Read the demo deposit's columns. Start in the demo project, with \file{deposit.csv} the active layer.
 \begin{enumerate}
-\item Open the demo project, make \file{deposit.csv} the active layer, press \key{⇧P} and choose the \ui{columns} tab.
+\item Press \key{⇧P} and choose the \ui{columns} tab.
 \item Read the six columns. \col{XC}, \col{YC}, \col{ZC}, \col{FE} and \col{SG} are \ui{number}; \col{LITO} is \ui{text}.
 \item Click \ui{scan columns — one pass, every column}. When it finishes, each numeric column has its statistics: 1,786,620 values, no nulls. \col{FE} has a mean of 24.72, and its histogram shows a tall hump of low-grade waste and, set apart from it, a small group of high-grade ore up to 68. \col{LITO} lists its four classes by share: \code{WASTE} 90\,\%, \code{ITABIRITE} 7\,\%, \code{CANGA} 2\,\%, \code{HEMATITE} 1\,\%.
 \item Right-click \col{SG} and choose \ui{Text}. Its statistics vanish, and \col{SG} leaves the list of columns you can color on a ramp.
@@ -101,7 +101,7 @@ Half the limit is a convention, not a law; commodities and company standards dif
 
 \begin{table}[htbp]
 \small
-\begin{tabularx}{\linewidth}{@{}LLl@{}}\toprule
+\begin{tabularx}{\linewidth}{@{}NND@{}}\toprule
 choice & meaning & default \\ \midrule
 \ui{<x → x/2 (half the limit)} · \ui{<x → x (the limit)} · \ui{<x → 0} · \ui{<x → blank} & what a below-detection value is read as & half the limit \\
 \ui{>x → x (the limit)} · \ui{>x → blank} & what an above-limit value is read as & the limit \\
@@ -126,7 +126,7 @@ Datamine, Parquet and Excel columns are typed already and hold only numbers or b
 
 \section{Blanks}\label{sec:columns-blanks}
 
-\index{blank}
+\index{blank (missing value)}
 One rule runs through all of micro: \emph{a blank is never a zero.}
 
 A blank grade is unestimated, or unassayed. It is not a grade of nothing. So a blank:
@@ -135,7 +135,7 @@ A blank grade is unestimated, or unassayed. It is not a grade of nothing. So a b
 \item drops out of means, quantiles and histograms: the count of values goes down, not the mean;
 \item adds no tonnage to a grade–tonnage curve at the lowest grade;
 \item is drawn in a neutral gray, or hidden, never as the bottom color of the ramp (\cref{ch:color});
-\item is not matched by a filter such as \code{FE > 0}; to find the blanks themselves, test for them with \code{FE is blank} (\cref{ch:expr}).
+\item is not matched by a filter such as \code{FE > 0}; to find the blanks themselves, test for them with \code{FE is blank} (\cref{app:expr}).
 \end{itemize}
 
 Coordinates follow the same rule, more strictly. A block with a blank X, Y or Z is not drawn (it would otherwise land at the origin, far from everything), and it is not a record of any analysis. In drillhole tables a blank coordinate, survey value or depth is dropped and reported (\cref{sec:dh-blanks}).
@@ -168,7 +168,7 @@ Press \key{t}, or choose \ui{Attribute table…} on a layer's menu, to see the l
 
 They are alternatives; ticking one unticks the other. The row count becomes \ui{1,204 rows of 1,786,620} while one is on, and the view follows the filter or the selection as it changes.
 
-\textbf{Copying.} Drag across cells and press \key{Ctrl}+\key{C} to copy them, tab-separated, ready to paste into a spreadsheet. The table is read-only. You change values by painting (\cref{ch:picking}) or with a calculated column (\cref{ch:filter}), both of which leave a record of what was done. Typing over a cell would leave none.
+\textbf{Copying.} Drag across cells and press \key{⌘C} to copy them, tab-separated, ready to paste into a spreadsheet. The table is read-only. You change values by painting (\cref{ch:picking}) or with a calculated column (\cref{ch:filter}), both of which leave a record of what was done. Typing over a cell would leave none.
 
 The collars and the survey of a drillhole set open as tables from their rows in the layers panel (\cref{sec:dh-set}). A mesh's table lists its vertices (\cref{sec:meshes-records}).
 
@@ -180,7 +180,7 @@ Find the richest hematite blocks.
 \item Click a block in the view instead. The table jumps to its row.
 \item Press \key{/}, type \code{FE > 64 and LITO = "HEMATITE"} and press \key{Enter}. The view keeps only those blocks.
 \item In the table's title bar, tick \ui{matches}. The table now lists only those blocks, and its title reads \ui{1,885 rows of 1,786,620}. (Every block above 64\,\% Fe in the demo is hematite, so the second condition removes none.)
-\item Drag over a few rows of the \col{FE} column and press \key{Ctrl}+\key{C}.
+\item Drag over a few rows of the \col{FE} column and press \key{⌘C}.
 \item Paste into a spreadsheet. The values arrive as a column of numbers.
 \end{enumerate}
 \end{tryit}

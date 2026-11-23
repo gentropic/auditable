@@ -19,8 +19,9 @@ In the demo project, right-click \file{deposit.csv} and choose \ui{Resource cros
 \begin{enumerate}
 \item \ui{rows} is already \col{LITO}, the model's category column. Leave \ui{grade} on \col{FE}.
 \item In \ui{cutoffs}, type \code{30 40 50 60}.
-\item Set \ui{unit} to \ui{\%}. In \ui{density}, type \code{SG}. The small warning under the field — \emph{no density → volumes in m³, not tonnes} — disappears as you type.
-\item Press \ui{Run}. Four rock types down the side, five grade bins across, then \ui{no grade} and \ui{total}; a \ui{total} row at the bottom. All of the hematite's 23.8~Mt sits in \ui{≥ 60}; the itabirite spreads across every bin.
+\item Set \ui{unit} to \ui{\%}.
+\item In \ui{density}, type \code{SG}. The small warning under the field — \emph{no density → volumes in m³, not tonnes} — disappears as you type.
+\item Press \ui{Run}. Four rock types down the side, five grade bins across, then \ui{no grade} and \ui{total}; a \ui{total} row at the bottom. All of the hematite's 23.85~Mt (23,849,925~t) sits in \ui{≥ 60}; the itabirite spreads across every bin.
 \item Switch \ui{measure} to \ui{grade}, then \ui{metal}, then \ui{blocks}. The table changes at once, with no new pass.
 \item Click \ui{≥ cutoff} in the \ui{bins} row: the columns become cumulative.
 \end{enumerate}
@@ -29,7 +30,7 @@ In the demo project, right-click \file{deposit.csv} and choose \ui{Resource cros
 \shot{xtab-window}{The cross-tab on the demo deposit: \col{LITO} down the side, \col{FE} bins between 30, 40, 50 and 60\% across, tonnage in each cell. The \ui{no grade} column and the totals make the table add up to the model.}
 
 \medskip
-\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+\begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
 setting & meaning & default \\ \midrule
 \ui{rows} & the group down the side: the model's category column or a painted column (domains, classes). \ui{(none — one total)} gives a single row & the category column \\
 \ui{grade} & the grade the bins cut & the first numeric column \\
@@ -121,14 +122,14 @@ For a table restricted to part of the model — one pit phase, above a surface �
 \end{tip}
 
 \section{The resource table in the composer}\label{sec:resource-table}
-When the numbers are settled and you need the table on a page, use the composer (\cref{ch:composer}). Open it with \menu{File>Composer…} and click \ui{+ resource} in its toolbar. A small dialog asks for the table's definition.
+When the numbers are settled and you need the table on a page, use the composer (\cref{ch:composer}). Open it with \menu{File>Composer…} and click \ui{+ resource} on its page bar. A small dialog asks for the table's definition.
 
 \medskip
-\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+\begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
 field & meaning & default \\ \midrule
 \ui{model} & the layer & the first with a numeric column \\
 \ui{grade} & the grade column & a column named like a grade (AU, CU, FE…) \\
-\ui{cutoffs} & the cutoffs, separated by commas, spaces or semicolons & \code{0, 0.5, 1} \\
+\ui{cutoffs} & the cutoffs, separated by commas, spaces or semicolons; unlike the cross-tab, a comma here always separates, never a decimal comma & \code{0, 0.5, 1} \\
 \ui{grade unit} & text shown in the heading, e.g. \code{\%} or \code{g/t} & none \\
 \ui{density} & a density column & a column named like one (SG, DENS…) \\
 \ui{… or constant} & the density used when no column is chosen & \code{2.7} \\
@@ -212,7 +213,7 @@ An \code{xtab} step takes \code{cutoffs} as a list of numbers or as text such as
 
 The \code{xtab} report has one row per group and bin, keyed by \col{group} and \col{bin}: \col{group}, \col{bin} (the column's label), \col{from}, \col{to} (the bin's edges, blank where open), \col{tonnes} (named \col{volume} without a density), \col{grade}, \col{metal} and \col{blocks}. The \emph{no grade} and \emph{total} bins and the \emph{total} group (\emph{all} when there is no \code{group}) are rows of the table like any other. The step also reports one value, \code{blocks}, the number of records counted — so a check such as \code{xtab.blocks > 0} can guard against an empty filter.
 
-The \code{xtab} tool — not the window — also runs on a drillhole layer, weighing each interval by its length as grade–tonnage does (\cref{sec:gt-holes}). Its columns are then \col{length} (m), or \col{weighted\_length} (m·t/m³) with a density, \col{grade} (length-weighted), \col{accumulation} (grade × length) and \col{intervals}, and the value it reports is \code{intervals}.
+The \code{xtab} tool — not the window — also runs on a drillhole layer, weighing each interval by its length as grade–tonnage does (\cref{sec:gt-holes}). Its columns are then \col{length} (m), or \col{weighted\_length} (m·t/m³) with a density, \col{grade} (length-weighted), \col{accumulation} (grade × length) and \col{intervals}, and the value it reports is \code{intervals}. On a model opened as points an \code{xtab} step stops, as a \code{gt} step does, with \emph{no block grid — a model opened as points has no block volumes…}.
 
 A \code{resource} step needs its \code{cutoffs} in a routine or not. Its \code{density} is \code{col} (a density column) or \code{const} (a value), with an optional \code{unit} (\code{t/m3}, \code{g/cm3}, \code{kg/m3}, \code{lb/ft3}); \code{groupBy} lists up to two category columns.
 

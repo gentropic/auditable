@@ -1,6 +1,6 @@
 \chapter{Picking, measuring \& selecting}\label{ch:picking}
 \begin{goals}
-\textbf{In this chapter} you click a block, an interval or a surface and read its whole record; measure between two records; select by rectangle or lasso, on the visible surface or straight through the volume; turn a selection into a column; and build a domain column by hand with the brush.
+\textbf{In\index{picking} this chapter} you click a block, an interval or a surface and read its whole record; measure between two records; select by rectangle or lasso, on the visible surface or straight through the volume; turn a selection into a column; and build a domain column by hand with the brush.
 \end{goals}
 
 Looking is half of checking a model. The other half is asking: \emph{what is this block, exactly? How far is that hole from this contact? Which blocks are these, and can I mark them?} This chapter is about those three gestures — pick one thing, measure two, select many — and what you can do with a selection once you have it.
@@ -8,7 +8,7 @@ Looking is half of checking a model. The other half is asking: \emph{what is thi
 They share one principle. What you click is a \term{record}: a row of the layer's table. Picks, measurements and selections all resolve to rows, in true coordinates, so they stay exact under vertical exaggeration, across layers, and on a section's cut face.
 
 \section{Picking: the record panel}\label{sec:picking-record}
-Click any block, point or drillhole interval. It lights up, and the \term{record panel} opens on the right with its full source row — every column of the file, followed by the columns micro has added. Those carry a mark — \code{✎} for a stored column (painted, joined, or a \code{ƒ} you materialized), \code{\%} for a fraction-inside column, \code{ƒ} for a calculated one — so you can tell a grade the estimator wrote from one you derived this morning.
+Click any block, point or drillhole interval. It lights up, and the \term{record panel} opens on the right with its full source row — every column of the file, followed by the columns micro has added. Those carry a mark — \code{ƒ} for a calculated column, \code{\%} for a fraction inside a solid (\cref{sec:geometry-do}), and \code{✎} for every other stored column, numbers and categories alike: a \code{ƒ} you materialized, a join, a broadcast collar column, a painted or flagged column — so you can tell a grade the estimator wrote from one you derived this morning.
 
 When more than one layer is loaded, the panel's title names the layer the record belongs to. If that layer is drawn somewhere other than where its data is (\cref{sec:sections-explode}), the title says \emph{drawn displaced}, and the coordinates shown are the true ones.
 
@@ -47,7 +47,7 @@ In the demo project:
 \item Click a yellow block on the cut face. Read \col{FE}, \col{SG} and \col{LITO} in the record panel.
 \item Click \ui{fields ▾}, then \ui{none}, then tick \col{FE} and \col{LITO}. Close the picker with the same button. The panel now shows two lines for every pick on this layer.
 \item Click a drillhole interval. The panel changes to the assay row: \col{HOLEID}, \col{FROM}, \col{TO}, \col{FE}, \col{SG}, \col{LITO}. The deposit's field choice does not carry over; it is per layer.
-\item The ore shell is drawn at 70\,\% opacity, so make it active first: click \ui{ore shell} in the layers panel. Then click the shell away from the cut. The panel reports the point, its dip and dip direction.
+\item The section draws the ore shell as its trace only, so right-click \ui{ore shell} in the layers panel and choose \menu{Cut by sections>don't cut}: the whole shell comes back. It is drawn at 70\,\% opacity, and a translucent mesh is picked only while it is the active layer, so click \ui{ore shell} in the layers panel to make it active. Then click the shell away from the cut. The panel reports the point, its dip and dip direction.
 \item Right-click a row of the deposit's panel and choose \menu{Show all fields}.
 \end{enumerate}
 \end{tryit}
@@ -186,7 +186,7 @@ micro asks for a name — \code{SEL} unless you type another — and writes a co
 When the shape is simple enough to draw, this is the bridge from “these blocks, on screen” to “this domain, in the model”. When it is not, paint it.
 
 \section{Painting a column}\label{sec:picking-paint}
-\term{Painting} is domaining by hand. A painted column is a category column you fill by brushing values onto records: \code{HW\_OXIDE} here, \code{FRESH} there. It is for the judgments a formula cannot make — the block the contact clearly passes through, the holes you do not trust — and for touching up a column a tool wrote.
+\term[painting]{Painting} is domaining by hand. A painted column is a category column you fill by brushing values onto records: \code{HW\_OXIDE} here, \code{FRESH} there. It is for the judgments a formula cannot make — the block the contact clearly passes through, the holes you do not trust — and for touching up a column a tool wrote.
 
 You can paint on table-backed layers: block models and drillholes.
 
@@ -252,7 +252,7 @@ In the demo project:
 Hand painting is for the few hundred blocks that need a decision; for the bulk, let geometry do it. \menu{Tools>Select by solid / surface…} flags the blocks inside a solid such as the ore shell (or above, below or between surfaces), and \menu{Tools>Assign domains…} codes a whole model from a set of domain solids. Both write painted columns, so you can open the palette on the result and brush the edge cases by hand. \Cref{ch:geometry} covers them in full.
 
 \section{Undo, and what it covers}\label{sec:picking-undo}
-\key{⌘Z} (or \key{Ctrl}+\key{Z}) undoes the last step and, pressed again, the one before; the undo and redo arrows on the toolbar do the same and say in their tooltips what they would take back. Of the things in this chapter it covers:
+\key{⌘Z} undoes the last step and, pressed again, the one before; on a phone the undo and redo arrows in the top bar do the same. \Cref{sec:start-undo} has the whole list; of the things in this chapter it covers:
 
 \begin{itemize}
 \item a paint stroke — these undo first while the brush is armed;

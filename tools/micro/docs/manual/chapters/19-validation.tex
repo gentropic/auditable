@@ -1,9 +1,9 @@
 \chapter{Validation \& pairing}\label{ch:validation}
 \begin{goals}
-\textbf{In this chapter} you check a block model against the drillholes it was built from: the global bias against the \emph{declustered} sample mean, a model-against-sample swath, and — sample by sample — the block each one falls in, with the bias, correlation and slope of the pairs by domain.
+\textbf{In\index{validation} this chapter} you check a block model against the drillholes it was built from: the global bias against the \emph{declustered} sample mean — inside a domain, where it means something — a model-against-sample swath, and — sample by sample — the block each one falls in, with the bias, correlation and slope of the pairs by domain.
 \end{goals}
 
-A model can be internally consistent and still not honor its data. Two windows put the model and the samples side by side, and they ask different questions.
+A model can be internally consistent and still not honor its data. The windows of the last four chapters describe the model by itself; the Q-Q of \cref{sec:stats-qq} was the first to hold it against the drillholes, and it ended on a warning about comparing unlike populations. Two windows put the model and the samples side by side, and they ask different questions.
 
 \ui{Validate vs drillholes…} asks about \emph{averages}: is the model's mean grade what the samples say it should be, globally and band by band? It declusters the samples first, because a sample mean taken straight from the drillholes is rarely the mean of the deposit.
 
@@ -22,38 +22,57 @@ Make the block model the active layer, press \key{⌘K} and type \code{validate}
 In the demo project:
 \begin{enumerate}
 \item Click \file{deposit.csv} in the layers panel to make it active.
-\item Press \key{⌘K} (\key{Ctrl}+\key{K} on Windows), type \code{validate} and press \key{Enter}. The window computes at once — there is no \ui{Run} button. The subtitle reports the number of samples, the decluster cell that was chosen, and the swath's axis: \emph{951 samples · decluster cell 253 m · X (east)}.
+\item Press \key{⌘K} (\key{Ctrl}+\key{K} on Windows and Linux), type \code{validate} and press \key{Enter}. The window computes at once — there is no \ui{Run} button. The subtitle reports the number of samples, the decluster cell that was chosen, and the swath's axis: \emph{951 samples · decluster cell 253 m · X (east)}.
 \item Read the line under the plot: \ui{model} 24.72, \ui{samples (decl)} 31.98, \ui{naïve} 34.52, \ui{global bias} −22.7\%, highlighted.
 \item Click \ui{Z}. The swath is now by elevation: the model's mean \col{FE} and the samples', per band.
 \item Type \code{100} in \ui{cell}. The declustered mean rises to 33.62 and the bias to −26.5\%; the naïve mean does not change.
 \item Clear the field to return to the automatic cell.
+\item Type \code{LITO != "WASTE"} in the field whose placeholder reads \emph{domain, e.g. LITO != "WASTE"}, and press \key{Enter}. The subtitle now ends \emph{· domain LITO != "WASTE"} and counts 494 samples, declustered on a 91.2~m cell; the readout reads \ui{model} 45.59, \ui{samples (decl)} 43.69, \ui{naïve} 46.28, \ui{global bias} +4.3\%.
 \end{enumerate}
 \end{tryit}
 
 \shot{validation-window}{Validate vs drillholes on the demo, by elevation: the model's mean \col{FE} per band (blue) against the declustered samples' (orange), over the number of samples per band (bars); below, the model mean, the declustered and naïve sample means, and the global bias of −22.7\%.}
 
-A bias of −23\% would condemn a real model. In the demo it says something else, and \cref{sec:validation-reading} reads it.
+A bias of −23\% would condemn a real model. In the demo it says something else: the whole model was compared with samples taken only at the ore lens. The last step of the box is the answer — inside the drilled domain the model is 4\% above its data. \Cref{sec:validation-domain} explains why, and \cref{sec:validation-reading} reads the rest.
 
 The controls are a single row under the readout.
 
 \medskip
-\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+\begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
 control & meaning & default \\ \midrule
 drillhole layer & which samples to use & the first drillhole layer \\
 \ui{model: …} & the model's grade column & a column name the two layers share, if any \\
 \ui{sample: …} & the samples' grade column & the same \\
 \ui{cell} & the decluster cell size, in meters; blank = automatic & automatic \\
+domain & one expression applied to the model \emph{and} the samples (\cref{sec:validation-domain}); blank = everything & blank \\
 \ui{X} \ui{Y} \ui{Z} & the swath's axis & X \\
 \ui{⤓ png} \ui{⧉ copy} \ui{⇥ figure} & the plot, out (\cref{sec:analysis-results}) & \\ \bottomrule
 \end{tabularx}
 \medskip
 
-Every change recomputes. There is no filter and no scope: the window compares the whole model with all the samples of the chosen layer.
+Every change recomputes. There is no scope and no selection: with the domain blank, the window compares the whole model with all the samples of the chosen layer.
+
+\section{Validating inside a domain}\label{sec:validation-domain}
+A model's mean is taken over every block it holds. Most models extend well past the drilling — into waste, into extrapolated ground at the margins — and those blocks pull the mean toward whatever the margin is. The samples' mean is taken only where holes were drilled. Declustering reweights the samples there are; it can't supply samples where none were taken. A whole-model mean and a declustered sample mean therefore measure two different volumes, and the bias between them is not a property of the estimate.
+
+The \term{domain}\index{validation!domain} field fixes that. It takes one expression in the filter's language (\cref{app:expr}) and applies it to \emph{both} sides: the blocks that match make the model's mean and its swath line; the intervals that match are the samples that get declustered. On the demo, \code{LITO != "WASTE"} keeps the ore and the cap on each side:
+
+\medskip
+\begin{tabularx}{\linewidth}{@{}Lrrrr@{}}\toprule
+domain & model & samples (decl) & samples & global bias \\ \midrule
+blank (the whole model) & 24.72 & 31.98 & 951 & −22.7\% \\
+\code{LITO != "WASTE"} & 45.59 & 43.69 & 494 & +4.3\% \\ \bottomrule
+\end{tabularx}
+\medskip
+
+The −22.7\% was the waste nobody drilled. Inside the domain the model sits four percent above its declustered data, which is a number about the estimate. Validate each domain the estimate was built in — \code{LITO = "HEMATITE"} reads +1.1\% on the demo, over only 16 samples — and read the whole-model figure as a statement about the drilling's coverage, not about the grades. Whether the domains should have been estimated apart in the first place — whether the boundary between them is hard — is the question of \cref{ch:contact}.
+
+The names the expression uses must exist on both layers; a model and its assays usually share \col{LITO} or \col{DOMAIN}. A name one side lacks matches nothing there, and when no samples are left the subtitle says so: \emph{not enough samples (0) with a value in “FE”}. Each record is judged by its own value — a block by its \col{LITO}, an interval by the \col{LITO} of its log — so a sample logged one way inside a block coded another stays on its own side. Finding such disagreements is the pairing's job (\cref{sec:validation-pairing}).
 
 \section{Declustering}\label{sec:validation-decluster}
-Drilling is not random. Holes are closest together where the grade is best — infill follows discovery — so high-grade ground is over-represented among the samples, and their plain average, the \term{naïve mean}, is higher than the deposit's. \term{Declustering} gives each sample a weight that undoes this: samples in crowded places count for less.
+Drilling is not random. Holes are closest together where the grade is best — infill follows discovery — so high-grade ground is over-represented among the samples, and their plain average, the \term{naïve mean}, is higher than the deposit's. \term[declustering]{Declustering} gives each sample a weight that undoes this: samples in crowded places count for less.
 
-micro uses \emph{cell declustering}\index{declustering!cell}. The samples are the drillhole intervals, each placed at its desurveyed midpoint. A lattice of cubic cells is laid over them, and each sample is weighted by one over the number of samples sharing its cell. A cell with one sample and a cell with twenty then contribute equally to the mean.
+micro uses \emph{cell declustering}\index{declustering!cell} \parencite{journel1983,deutsch1989,deutsch1998}. The samples are the drillhole intervals, each placed at its desurveyed midpoint. A lattice of cubic cells is laid over them, and each sample is weighted by one over the number of samples sharing its cell. A cell with one sample and a cell with twenty then contribute equally to the mean.
 
 \begin{figure}[htbp]\centering
 \begin{tikzpicture}[font=\sffamily\footnotesize, x=17mm, y=17mm]
@@ -113,11 +132,11 @@ Read the lines against the bars. Where there are many samples, the two lines sho
 \caption{The demo model against its drillholes, in 25~m bands of elevation: the model's volume-weighted mean \col{FE} and the declustered sample mean of each band. The model holds everything in a band; the samples only what twelve inclined holes, drilled at the ore lens, intersect.}\label{fig:validation-demo}
 \end{figure}
 
-In the demo the two lines agree below 550~m and above 800~m, and part company in between: from 550 to 800~m the samples average up to 55\,\% while the model's band means stay under 30. The model is not wrong there. Each band is a 2~km × 1~km slab, mostly waste, with the ore lens in its middle; the holes were aimed at the lens, so their samples are mostly ore. That is the first item of the list below, and it is the whole of the demo's −23\%. The pairing (\cref{sec:validation-pairing}), which compares each sample only with its own block, finds a bias of almost zero.
+In the demo the two lines agree below 550~m and above 800~m, and part company in between: from 550 to 800~m the samples average up to 55\,\% while the model's band means stay under 30. The model is not wrong there. Each band is a 2~km × 1~km slab, mostly waste, with the ore lens in its middle; the holes were aimed at the lens, so their samples are mostly ore. That is the first item of the list below, and it is the whole of the demo's −23\%; inside the domain \code{LITO != "WASTE"} the bias is +4.3\%. The pairing (\cref{sec:validation-pairing}), which compares each sample only with its own block, finds a bias of almost zero.
 
 \subsection{What the comparison leaves out}
 \begin{itemize}
-\item \textbf{The whole model is compared with all the samples.} A model usually extends beyond the drilling, into extrapolated or unestimated ground, and its mean includes those blocks. If the model's margin is waste, its mean will be below the samples' for a reason that has nothing to do with bias. Compare like with like: validate a model exported for the drilled domain, or use the per-domain tools — pairing by domain below, or a swath and a Q-Q with a filter on each side (\cref{ch:swath,ch:stats}).
+\item \textbf{With the domain blank, the whole model is compared with all the samples.} That is the mismatch of \cref{sec:validation-domain}: the model's mean includes ground the holes never reached. Compare like with like: set a domain, or use the other per-domain tools — pairing by domain below, or a swath and a Q-Q with a filter on each side (\cref{ch:swath,ch:stats}).
 \item \textbf{The model's mean is by volume, not tonnage.} For a deposit whose density rises with grade — iron ore, massive sulfide — the tonnage-weighted mean is higher. The samples are not density-weighted either, so the two sides are consistent with each other; they are not the grade of a resource statement.
 \item \textbf{Interval length is not a weight.} Composite first if lengths vary.
 \item \textbf{Blank sample grades are left out.} An interval with no assay is not a sample of zero grade: it is dropped from the declustering, the means and the swath, and the sample count in the subtitle does not include it.
@@ -127,7 +146,7 @@ In the demo the two lines agree below 550~m and above 800~m, and part company in
 \section{Block vs sample}\label{sec:validation-pairing}
 \ui{Block vs sample…} is on a block model's right-click menu and in the palette. It pairs every sample with the block it falls in, the most direct check that an estimate honors its data.
 
-The samples can be a drillhole layer, each interval taken at its midpoint, or a points layer: composites, or a sample file opened as points. The model must be a regular, unrotated block model; for a sub-blocked or rotated one the status line explains that pairing reads regular, axis-aligned lattices only.
+The\index{block vs sample} samples can be a drillhole layer, each interval taken at its midpoint, or a points layer: composites, or a sample file opened as points. The model must be a regular, unrotated block model; for a sub-blocked or rotated one the status line explains that pairing reads regular, axis-aligned lattices only.
 
 \begin{tryit}
 In the demo project, right-click \file{deposit.csv} and choose \ui{Block vs sample…}.
@@ -145,7 +164,7 @@ In the demo project, right-click \file{deposit.csv} and choose \ui{Block vs samp
 The demo's 375 unpaired intervals are not an error: the holes were collared on the pre-mining ground, and their upper intervals pass through the pit, which the model no longer holds. The hematite's low slope is the other thing the table points at — a narrow range of grades and twenty pairs make a slope that wanders; read it with its \ui{pairs} count.
 
 \medskip
-\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+\begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
 control & meaning & default \\ \midrule
 \ui{samples} & the samples' layer: drillholes or points & the first candidate \\
 \ui{sample} & the samples' grade column & the block column's name, if the samples have it \\
@@ -219,6 +238,7 @@ The tools are \code{validation} and \code{pairing}. Both report \emph{values} �
     cell: 100
     axis: "Z"
     bandW: 25
+    filter: "LITO != \"WASTE\""
   as: "val"
 - check: "abs(val.bias_pct) < 5"
   say: "global bias within 5%"
@@ -235,7 +255,7 @@ The tools are \code{validation} and \code{pairing}. Both report \emph{values} �
   say: "blocks not over-smoothed"
 \end{lstlisting}
 
-The settings of both tools are in \cref{tool:validation,tool:pairing}. A \code{validation} step must state \code{bandW}, the swath's band width; \code{cell} left out is the automatic, minimum-mean cell. On the demo the first check above fails — \code{val.bias\_pct} is −26.5 with the example's \code{cell: 100}, −22.7 with the automatic cell — for the reason \cref{sec:validation-reading} gives, and the second passes.
+The settings of both tools are in \cref{tool:validation,tool:pairing}. A \code{validation} step must state \code{bandW}, the swath's band width; \code{cell} left out is the automatic, minimum-mean cell; \code{filter} is the domain, its inner quotes escaped as YAML requires inside a double-quoted string. On the demo both checks pass: \code{val.bias\_pct} is +4.4 with the example's \code{cell: 100} (+4.3 with the automatic cell). Leave out the \code{filter} line and the first check fails, at −26.5, for the reason \cref{sec:validation-domain} gives.
 
 The \code{validation} step's values are \code{model\_mean}, \code{samples\_declustered}, \code{samples\_naive}, \code{bias\_pct}, \code{samples} (how many) and \code{cell} (the cell used). Its table is the swath, keyed by \col{center}: \col{center}, \col{model\_mean}, \col{model\_volume}, \col{sample\_mean} and \col{sample\_count}.
 

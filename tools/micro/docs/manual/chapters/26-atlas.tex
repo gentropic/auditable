@@ -8,22 +8,22 @@ A set of bench plans is forty figures that differ in one number. So is a set of 
 An \term{atlas} is one figure from the composer (\cref{ch:composer}) printed once per row of a table. The figure supplies everything that stays the same: the page, the frames, the legend, the title block. The table supplies what changes: a section position, a filter, a camera. The machinery is a routine (\cref{ch:routines}), so an atlas is a file you can read, rerun, and keep with the project.
 
 \begin{figure}[htbp]\centering
-\begin{tikzpicture}[font=\sffamily\footnotesize, every node/.style={text=ink}, >=Stealth,
+\begin{adjustbox}{max width=\linewidth}\begin{tikzpicture}[font=\sffamily\footnotesize, every node/.style={text=ink}, >=Stealth,
   box/.style={draw=rule, fill=tint, rounded corners=1.5pt, line width=0.5pt, inner sep=5pt, align=center}]
 \node[box] (fig) at (0,1.6) {the figure\\[1pt]\textcolor{muted}{\scriptsize page · frames · captions}};
 \node[box] (tab) at (0,-0.4) {the table\\[1pt]\textcolor{muted}{\scriptsize level: 560, 580, 600 …}};
-\node[box, fill=ambersoft, draw=amber] (step) at (4.3,0.6) {a \texttt{compo} step\\[1pt]\textcolor{muted}{\scriptsize once per row}};
+\node[box, fill=ambersoft, draw=amber] (step) at (3.8,0.6) {a \texttt{compo} step\\[1pt]\textcolor{muted}{\scriptsize once per row}};
 \draw[->, rule, line width=0.8pt] (fig.east) -- (step.north west);
 \draw[->, rule, line width=0.8pt] (tab.east) -- (step.south west);
 % pages
 \foreach \k/\l in {0/560, 1/580, 2/600} {
-  \draw[rule, fill=white, line width=0.5pt] (7.3+\k*0.42,0.05-\k*0.14) rectangle ++(1.5,1.1);
+  \draw[rule, fill=white, line width=0.5pt] (6.3+\k*0.3,0.05-\k*0.14) rectangle ++(1.5,1.1);
 }
-\node[font=\sffamily\scriptsize, text=muted] at (8.9,0.3) {600 RL};
-\draw[->, rule, line width=0.8pt] (step.east) -- (7.2,0.6);
-\node[box] (book) at (12.1,0.6) {\texttt{atlas/plan.pdf}\\[1pt]\textcolor{muted}{\scriptsize one page per row}};
-\draw[->, rule, line width=0.8pt] (9.75,0.6) -- (book.west);
-\end{tikzpicture}
+\node[font=\sffamily\scriptsize, text=muted] at (7.65,0.3) {600 RL};
+\draw[->, rule, line width=0.8pt] (step.east) -- (6.2,0.6);
+\node[box] (book) at (10.6,0.6) {\texttt{atlas/plan.pdf}\\[1pt]\textcolor{muted}{\scriptsize one page per row}};
+\draw[->, rule, line width=0.8pt] (8.5,0.6) -- (book.west);
+\end{tikzpicture}\end{adjustbox}
 \caption{An atlas. The figure is the constant, the table is the variable; each row makes a page, and the pages are bound into one PDF when the run ends.}\label{fig:atlas-flow}
 \end{figure}
 
@@ -48,7 +48,8 @@ The status line tells you the one thing left to do by hand: write \code{\$\{leve
 \begin{tryit}
 \begin{enumerate}
 \item Open the demo project and save it to a folder with \menu{File>Save project as…}.
-\item Hide the topography, press \key{d} for a plan view, make it orthographic, and turn on a plan section with a slab (\cref{ch:sections}).
+\item Hide the topography, press \key{d} for a plan view and make it orthographic.
+\item Turn on a plan section with a slab (\cref{ch:sections}).
 \item Open \menu{File>Composer…}. Add \ui{+ 3D view}, \ui{+ legend}, \ui{+ scale}.
 \item Add \ui{+ text} under the view and set it to\\
 \code{**Figure \{fig\}.** Bench \$\{level\} m RL — \{count:deposit.csv:,\} blocks. Page \{page\} of \{pages\}.}
@@ -176,7 +177,7 @@ Whatever a page does not change, it takes from the figure: a page that sets only
         figure: "domain plan"
         view:
           filter:
-            "deposit.csv": "LITO == \"$lito\""
+            "deposit.csv": "LITO = \"$lito\""
         vars:
           lito: "$lito"
         book: "atlas/domains.pdf"
@@ -210,7 +211,7 @@ Your own 3D view is put back when the run ends, exactly as you left it, and the 
 
 \section{One book, or a file per page}\label{sec:atlas-out}
 
-A \code{compo} step needs to know where its page goes, and has two ways to say it (the settings are in \cref{tab:compo-tool}). \code{book} collects every page that names the same PDF in a run, in order, and writes the file once, when all the steps have finished. \code{out} writes this page alone, as a \file{.pdf} or a \file{.png}; inside an \code{each}, put the row's value in its name — \code{out: "atlas/bench-\$level.png"} — or every page overwrites the last. A step may set both, and must set one.
+A \code{compo} step sends its page to a \code{book}, to an \code{out} file, or to both (\cref{tab:compo-tool}). An atlas normally uses \code{book}: one PDF, its pages in the order of the rows, written once when the run's steps have finished. Use \code{out} when you want a file per page — a PNG of each bench for a slide deck — and put the row's value in its name, as the table shows.
 
 A book carries its figure inside it, like any PDF from the composer, unless the figure's \ui{embed figure} is unticked (\cref{sec:compo-pdf}). Drop the atlas on micro a year later and the figure it was made from opens, ready to be run again.
 

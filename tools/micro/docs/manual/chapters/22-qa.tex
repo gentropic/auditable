@@ -1,6 +1,6 @@
 \chapter{QA reports}\label{ch:qa}
 \begin{goals}
-\textbf{In this chapter} you run the three reports that answer “is this data fit to use?” — for a block model, a drillhole set and a wireframe — read their findings, go from a finding to the records behind it, export the report, and make a routine stop when a report is not clean.
+\textbf{In\index{QA reports} this chapter} you run the three reports that answer “is this data fit to use?” — for a block model, a drillhole set and a wireframe — read their findings, go from a finding to the records behind it, export the report, and make a routine stop when a report is not clean.
 \end{goals}
 
 Before anyone reports a number from a dataset, someone has to look at every row that is wrong. micro has a report for each kind of data an estimate rests on:
@@ -105,7 +105,7 @@ Two points about what is \emph{not} reported. A collar that cannot be placed is 
 Three of the checks depend on a threshold, and the three thresholds are fields at the top of the rail. Change one and the report runs again.
 
 \begin{table}[htbp]\small
-\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+\begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
 setting & meaning & default \\ \midrule
 \ui{dogleg °/30} & A survey interval that bends faster than this many degrees per 30 length units is flagged. & 10 \\
 \ui{gap ≥} & A gap between consecutive intervals at least this long is flagged. & 0.001 \\
@@ -168,14 +168,14 @@ Click an issue to step the camera through the places where it occurs; the last c
 
 \subsection{Shells and volume}
 
-A mesh file may hold several separate pieces. Each is a \term{shell}, and the table lists them with their triangle count, whether each is closed, its volume, its area and its size along x, y and z. Click a shell to frame it.
+A mesh file may hold several separate pieces. Each is a \term[mesh!shell]{shell}, and the table lists them with their triangle count, whether each is closed, its volume, its area and its size along x, y and z. Click a shell to frame it.
 
 Volume is computed for each closed shell, in the coordinates' units cubed. A shell wound inward has a \emph{negative} volume. That is deliberate: it is how a void inside a solid subtracts, and the total on the rail is the signed sum. A total that is negative is shown in the warning color — the whole solid is probably inside-out. A mesh that is not closed has no volume, and the rail says \emph{— (not closed)} instead of offering a number that means nothing.
 
 Type a density in the \ui{density} field and choose its unit in \ui{ρ unit} — t/m³, kg/m³ or lb/ft³ — and the rail and the shell table gain a \emph{tonnes} figure.
 
 \begin{table}[htbp]\small
-\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+\begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
 setting & meaning & default \\ \midrule
 \ui{weld coincident vertices} & Merge vertices at exactly the same coordinates before checking. & on \\
 \ui{density} & A density; tonnage = volume × density. A decimal comma is accepted. & blank \\
@@ -188,14 +188,14 @@ setting & meaning & default \\ \midrule
 Many CAD exports write every triangle with three vertices of its own. Such a mesh shares no edge with anything: read literally, it is a pile of loose triangles and every edge is a hole. Welding the coincident vertices first recovers the surface the author meant. The rail reports how many vertices were welded. Untick the option to see the file as it literally is.
 \end{why}
 
-The window ends with the usual results row (\cref{ch:analysis}): \ui{⧉ table} copies the shell table, with each shell's bounding box, for a report or a spreadsheet; \ui{⇥ layer} keeps it as a table layer; \ui{⇥ figure} puts it on the composer page.
+The window ends with the usual results row (\cref{sec:analysis-results}): \ui{⧉ table} copies the shell table, with each shell's bounding box, for a report or a spreadsheet; \ui{⇥ layer} keeps it as a table layer; \ui{⇥ figure} puts it on the composer page.
 
 Two limits. Self-intersections — faces that cross without sharing an edge — are not checked yet, and the window says so. And a mesh drawn streamed keeps no triangles on the page; the report asks you to \menu{Convert to exact} first (\cref{ch:meshes}).
 
 \begin{tryit}
 \begin{enumerate}
 \item In the demo project, right-click \ui{ore shell} and choose \menu{Mesh QA / volume…}.
-\item Read the rail: \emph{watertight ✓ yes}, \emph{faces ✓ one way}, one shell of 728 triangles, and a volume of about 54.2 million cubic meters.
+\item Read the rail: \emph{watertight ✓ yes}, \emph{faces ✓ one way}, one shell of 728 triangles, and a volume of about 54.2 million cubic meters. That is more than the 81,552 blocks inside the shell hold (\cref{ch:geometry}) — 40.8 million at 500\,m³ a block — because the top of the shell reaches up into the pit the demo has already mined out, where there are no blocks.
 \item Type \code{4.2} in \ui{density}. The rail now shows the tonnes the shell would hold at 4.2 t/m³, about 228 million — a quick upper bound to hold against the grade–tonnage curve of the blocks inside it (\cref{ch:geometry,ch:gt}).
 \item Run the same report on \ui{phase 1 — starter pit}. A pit surface is an open sheet: 324 boundary edges all round its rim, \emph{watertight ✗ no}, and no volume.
 \end{enumerate}
@@ -207,7 +207,7 @@ A grade shell made by micro is always a closed solid (\cref{ch:blocks}). Running
 
 \section{In a routine}\label{sec:qa-routine}
 
-All three reports are routine tools (\cref{ch:routines}). Each writes its findings as a table in the run's folder, and each gives a check its \emph{counts} to judge, so a routine can refuse to go on when the data is not clean (\cref{ch:checks}).
+All three reports are routine tools (\cref{ch:routines}). Each writes its findings as a table in the run's folder, and each gives a check its \emph{counts} to judge, so a routine can refuse to go on when the data is not clean (\cref{ch:checks}). A step names a layer by its file name, as \code{ore\_shell.obj} below, or by its label in the layers panel (\ui{ore shell}); micro tries the file name first.
 
 \begin{lstlisting}[language=yaml]
 - tool: "modelqa"

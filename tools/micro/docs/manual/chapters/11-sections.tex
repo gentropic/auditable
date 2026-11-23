@@ -8,7 +8,7 @@ A block model is a solid, and the interesting part is inside. A \term{section} o
 The chapter has two halves. The first is about sections: turning one on (\cref{sec:sections-on}), what it keeps (\cref{sec:sections-slab}), walking it through the deposit (\cref{sec:sections-walk}), cutting at any angle (\cref{sec:sections-knife}), deciding layer by layer what it cuts (\cref{sec:sections-layers}), and printing a series (\cref{sec:sections-series}). The second, \cref{sec:sections-arrange}, is about arranging the picture: a second view of the same model, layers pulled apart, the vertical stretched, and bookmarks and scenes to come back to. None of it touches the data.
 
 \section{Turning a section on}\label{sec:sections-on}
-The \ui{section} dropdown is on the right of the second toolbar row. Its choices:
+The \ui{section} dropdown is on the right of the instrument rail (\cref{sec:start-screen}). Its choices:
 
 \begin{center}
 \begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
@@ -26,7 +26,7 @@ The \ui{section} dropdown is on the right of the second toolbar row. Its choices
 When a section is on, its controls appear beside the dropdown:
 
 \begin{center}
-\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+\begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
 control & meaning & starts at \\ \midrule
 dip direction, dip & \ui{custom} only: the plane's attitude, in degrees & 90, 90 \\
 \ui{slab} / \ui{front} / \ui{behind} & what the section keeps (\cref{sec:sections-slab}) & \ui{slab} \\
@@ -38,7 +38,7 @@ the number & the slab's \emph{half}-thickness, in meters & 5 (10 in the demo) \\
 \end{tabularx}
 \end{center}
 
-\shot{sections-bar}{The section controls on the second toolbar row: an E–W \ui{slab} of ± 5\,m on the demo deposit, faced with \key{l}. The ore shell's trace rings the lens on the cut face, and the uncut drillholes rise out of it to their collars.}
+\shot{sections-bar}{The section controls on the instrument rail: an E–W \ui{slab} of ± 5\,m on the demo deposit, faced with \key{l}. The ore shell's trace rings the lens on the cut face, and the uncut drillholes rise out of it to their collars.}
 
 \section{Slab, front, behind}\label{sec:sections-slab}
 A section is a plane with a position. What it keeps is your choice.
@@ -48,7 +48,7 @@ A \term{slab} keeps a band around the plane: the number beside the slider is the
 \ui{front} and \ui{behind} keep a half-space instead: everything on one side of the plane, cut clean at the plane. Use them for a block diagram — the deposit sliced open, the far half standing.
 
 \begin{figure}[htbp]\centering
-\begin{tikzpicture}[font=\sffamily\small, x=1mm, y=1mm]
+\begin{adjustbox}{max width=\linewidth}\begin{tikzpicture}[font=\sffamily\small, x=1mm, y=1mm]
 % three plan-view panels of the same model, each with the section plane
 \foreach \k/\name in {0/slab, 1/front, 2/behind} {
   \begin{scope}[xshift=\k*46mm]
@@ -74,7 +74,7 @@ A \term{slab} keeps a band around the plane: the number beside the slider is the
 \node[text=amber, anchor=north west, font=\sffamily\footnotesize] at (-3,-2) {the plane, seen from above};
 \node[text=muted, anchor=north west, font=\sffamily\footnotesize] at (46,-2) {the side the arrow points to};
 \node[text=muted, anchor=north west, font=\sffamily\footnotesize] at (92,-2) {the other side};
-\end{tikzpicture}
+\end{tikzpicture}\end{adjustbox}
 \caption{What a section keeps, drawn in plan for an E–W section. The amber line is the plane and the arrow its normal. A slab keeps ± the half-thickness around the plane; \ui{front} keeps the side the normal points to, \ui{behind} the other.}\label{fig:sections-slab-diagram}
 \end{figure}
 
@@ -94,7 +94,7 @@ Reviewing a model means looking at every section, not one. Four controls do the 
 \begin{center}
 \begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
 \key{,} \key{.} & step back / forward by one slab thickness — consecutive slices with no gap and no overlap \\
-\key{Ctrl}+wheel & scrub the position by half a slab per notch, finer than the keys (\key{⌘}+wheel on macOS) \\
+\key{Ctrl}+wheel & scrub the position by half a slab per notch, finer than the keys (on a Mac, \key{⌃} or \key{⌘} with the wheel) \\
 \key{Alt}+wheel & make the slab thicker (wheel up) or thinner, by about 15\,\% per notch, down to a half-thickness of 0.5\,m; a slab only — \ui{front} and \ui{behind} have no thickness \\
 the slider & drag to any position across the data \\ \bottomrule
 \end{tabularx}
@@ -143,9 +143,9 @@ Right-click a layer and open \menu{Cut by sections}:
 \begin{center}
 \begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
 choice & the layer is… \\ \midrule
-\ui{follow the section} & cut as the section bar says (the default) \\
+\ui{follow the section} & cut as the section controls say (the default) \\
 \ui{follow, with its own slab…} & cut around the same plane, moving with it, but with its own ± thickness in meters \\
-\ui{keep front only} & split at the plane, the front half kept — whatever the bar says \\
+\ui{keep front only} & split at the plane, the front half kept — whatever the section controls say \\
 \ui{keep behind only} & the other half \\
 \ui{keep holes that cross the slab, whole} & drillholes only: a hole whose path crosses the slab is drawn from collar to end of hole; the others are hidden \\
 \ui{don't cut} & left whole \\ \bottomrule
@@ -170,19 +170,19 @@ The demo shows why. Its holes are drilled north in fans from collars south of th
 In the demo project (it opens with the holes on \ui{don't cut}):
 \begin{enumerate}
 \item Change \ui{behind} to \ui{slab}, and set the number to \code{5}.
-\item Right-click the \ui{holes} layer, \menu{Cut by sections>keep holes that cross the slab, whole}. The menu item now reads \emph{Cut by sections (whole holes)}.
+\item Right-click the \ui{holes · demo\_assay.csv} layer, \menu{Cut by sections>keep holes that cross the slab, whole}. The menu item now reads \emph{Cut by sections (whole holes)}.
 \item Press \key{⇧L} to face the section from the south, then orbit a little. Eight holes remain, complete; the four short ones have gone.
 \item Set the holes back to \ui{don't cut}.
 \end{enumerate}
 \end{tryit}
 
 \section{A series of sections}\label{sec:sections-series}
-A model review ends with a pack of sections at a fixed spacing. \menu{View>Section series…} makes it from the section you have on.
+A\index{section!series} model review ends with a pack of sections at a fixed spacing. \menu{View>Section series…} makes it from the section you have on.
 
 Set up one section the way every sheet should look — orientation, slab thickness, colors, legend, the camera facing it — and open the window. It asks for:
 
 \begin{center}
-\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+\begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
 setting & meaning & starts at \\ \midrule
 \ui{from}, \ui{to} & the first and last positions, in world units along the section's normal (a northing for an E–W section, an elevation for a plan) & the data's extent, inset by half a slab \\
 \ui{every} & the spacing between sections & about a tenth of the extent, never less than one slab \\
@@ -273,7 +273,7 @@ Offsets are display only, and micro keeps saying so. Filters, selections, grade�
 \end{caution}
 
 \subsection{Vertical exaggeration}\label{sec:sections-zexag}
-Flat-lying deposits and gentle topography disappear at true scale. The \ui{Z×} box on the second toolbar row stretches the whole scene vertically by the factor you type (0.1 to 50); \menu{View>Vertical exaggeration} offers 1×, 2×, 3×, 5×, 10× and 20×.
+Flat-lying deposits and gentle topography disappear at true scale. The \ui{Z×} box on the instrument rail stretches the whole scene vertically by the factor you type (0.1 to 50); \menu{View>Vertical exaggeration} offers 1×, 2×, 3×, 5×, 10× and 20×.
 
 It is a property of the \emph{view}, not of a layer. Every layer stretches together and stays registered, and nothing is measured in the stretched space: picking, measuring and section positions all stay in true coordinates. The factor travels with bookmarks and scenes.
 

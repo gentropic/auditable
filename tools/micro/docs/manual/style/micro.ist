@@ -1,0 +1,7 @@
+% micro.ist — makeindex style for the micro manual: a letter heading in the display face above
+% each group (\microidxhead, defined in micro.sty)
+headings_flag     1
+heading_prefix    "\\microidxhead{"
+heading_suffix    "}\n"
+symhead_positive  "Symbols"
+numhead_positive  "Numbers"

@@ -17,7 +17,7 @@ You can run micro three ways. All three are the same program.
 micro runs in current Chrome, Edge and Firefox. One thing depends on the browser: saving and opening a \emph{project folder} needs Chrome or Edge. Elsewhere you can still view, filter and analyze, and open a project pack (\cref{ch:store}).
 
 \begin{note}
-On a phone or a narrow tablet, micro rearranges itself into its \term{review mode}: a bar of large buttons at the bottom, and every panel as a sheet that slides up. Everything in this book is still there. \Cref{ch:sealed} describes the layout; this chapter assumes a desktop window.
+On a phone or a narrow tablet, micro rearranges itself into its \term{review layout}: a bar of large buttons at the bottom, and every panel as a sheet that slides up. Everything in this book is still there. \Cref{ch:sealed} describes the layout; this chapter assumes a desktop window.
 \end{note}
 
 \section{The screen}\label{sec:start-screen}
@@ -90,7 +90,7 @@ Each row has a checkbox, the file's name and size, and a description of what mic
 
 Drillholes are the one case where several files make one layer. Give the open dialog a collar file, a survey file and an interval file together and it assembles the set. Until all three roles are filled, it says what is missing, as in \cref{fig:start-open-dialog}: a collar on its own makes no drillholes. \menu{Data>Import drillholes…} does the same through a form, where you state each table and column yourself (\cref{ch:drillholes}).
 
-After a file opens, press \key{i} for \term{file info}\sidekey{i}{file info: what micro detected in the active layer}. It lists what micro found: the kind of file, the record count and extent, the columns, and for a block model the grid and block size it inferred. If the detection is wrong, correct it on the \ui{source} tab of the layer's properties. \Cref{ch:opening} is the full account of opening data.
+After a file opens, press \key{i} for \term[file info]{file info}\sidekey{i}{file info: what micro detected in the active layer}. It lists what micro found: the kind of file, the record count and extent, the columns, and for a block model the grid and block size it inferred. If the detection is wrong, correct it on the \ui{source} tab of the layer's properties. \Cref{ch:opening} is the full account of opening data.
 
 \begin{tip}
 micro remembers recently opened files and lists them on the start screen and in the \ui{File} menu. If you would rather it did not, untick \menu{File>Remember recent files}.
@@ -106,7 +106,7 @@ Each opened dataset is a \term{layer}. The layers panel lists them as a tree, an
 \item The \textbf{eye} shows or hides a layer. \key{h} does the same for the active layer.
 \item \textbf{Right-click} a layer for its menu. On a touch screen, press and hold the row.
 \item \textbf{Drag} a row to reorder it, or onto a group to put it in the group.
-\item \key{Ctrl}-click selects several rows; right-click them to group or rename them together.
+\item \key{⌘}-click selects several rows; right-click them to group or rename them together.
 \end{itemize}
 
 A \term{group} is a folder of layers with an eye of its own. Hiding a group hides its children without changing their own eyes, so the pattern returns when you show the group again. In the demo, \ui{mining phases} is a group; click it to open it.
@@ -183,7 +183,7 @@ A click on a block, a drillhole interval, a grid node or a point \emph{picks} it
 Picking is the fastest check there is. When a color looks wrong, click the block and read the number.
 
 \subsection{Sections and vertical exaggeration, briefly}
-The demo opens with a section on. \key{x} turns the section off and on. The section's orientation and position are on the right of the instrument rail; \cref{ch:tour} uses them and \cref{ch:sections} explains them.
+The\index{vertical exaggeration} demo opens with a section on. \key{x} turns the section off and on. The section's orientation and position are on the right of the instrument rail; \cref{ch:tour} uses them and \cref{ch:sections} explains them.
 
 \ui{Z×} on the same rail stretches the whole scene vertically, so that you can read a flat-lying layer or gentle relief. It changes the picture only. Picking, measuring and sections stay in true coordinates.
 
@@ -192,7 +192,7 @@ Press \key{⌘K} (\key{Ctrl}+\key{K} on Windows and Linux), or click the \ui{⌘
 
 \shot[0.7\linewidth]{start-palette}{The command palette after typing \emph{grade}. It lists the actions that apply to the active layer.}
 
-The palette searches every action micro has, by its name and by related words: \emph{tonnes} finds grade–tonnage, \emph{screenshot} finds \ui{Save viewport PNG}, \emph{drift} finds the swath plot. It leaves out actions that cannot apply right now. With a mesh active you will not be offered grade–tonnage; with nothing selected you will not be offered \ui{Selection → column…}.
+The palette searches every action micro has, by its name and by related words: \emph{tonnes} finds grade–tonnage, \emph{screenshot} finds \ui{Save viewport PNG}, \emph{drift} finds the swath plot. Every action on micro's menus, a layer's right-click menu included, is also in the palette. The exceptions are the few that act on one row of a list, such as moving a layer up or down. So \key{⌘K} alone is enough to find what the book describes. It leaves out actions that cannot apply right now. With a mesh active you will not be offered grade–tonnage; with nothing selected you will not be offered \ui{Selection → column…}.
 
 \begin{tip}
 If an action you expect is missing from the palette, check which layer is active. The palette is telling you the action does not apply to that layer.
@@ -213,7 +213,7 @@ Analysis windows, attribute tables and editors float over the view. Each belongs
 \begin{itemize}
 \item Drag a window by its title bar. Drag it to the left or right edge of the screen and it snaps to that half.
 \item The \ui{–} button minimizes a window to a chip above the status line. Click the chip to bring it back where it was.
-\item The window on top has an amber accent in its title bar. \key{Ctrl}+\key{`} cycles through the open windows.
+\item The window on top has an amber accent in its title bar. \key{Ctrl}+\key{\textasciigrave} cycles through the open windows; this one is \key{Ctrl} on a Mac too.
 \item \menu{View>Windows…} lists every open window, and offers \ui{Cascade} and \ui{Close all}.
 \end{itemize}
 

@@ -92,7 +92,7 @@ Five ideas explain almost everything in this book. \Cref{fig:micro-model} draws 
 \subsection{A dataset is an element}\label{sec:micro-elements}
 An \term{element} is one dataset together with an interpretation of its geometry. A block model is an element. So is a drillhole set, a grid, a mesh, a point cloud. An element is what a layer shows.
 
-An element's data lives in \term{records}, and records sit at a named \term{location}\index{location (of records)}:
+An element's data lives in \term[record]{records}, and records sit at a named \term{location}:
 
 \begin{tabularx}{\linewidth}{@{}llL@{}}\toprule
 element & location & a record is \\ \midrule
@@ -136,7 +136,7 @@ Two consequences follow.
 
 First, micro never writes to your source files. What it adds, it keeps \emph{beside} them: a small manifest, stored columns, caches. Delete micro's files and your data is exactly as it was. The one exception is one you approve in a dialog: storing a block model inside a project as Parquet, where you choose whether the original stays (\cref{ch:blocks}).
 
-Second, a long operation is a sweep, and a sweep can be stopped. An analysis window's \ui{Run} button becomes its cancel while it works, and an export shows \ui{cancel} beside the status line. A cancelled export writes nothing.
+Second, a long operation is a sweep, and a sweep can be stopped. An analysis window's \ui{Run} button becomes its cancel while it works, and an export shows \ui{cancel} beside the status line (\cref{sec:start-undo}).
 
 \begin{note}
 Formats differ in how fast a sweep is. Parquet lets micro skip whole parts of a file that cannot match a filter; a CSV must be read through. \Cref{ch:blocks} explains which format to keep a model in, and \cref{ch:store} what micro stores for itself.
@@ -148,7 +148,7 @@ A number you cannot trace is a number you cannot sign. micro records each deriva
 \begin{itemize}
 \item \textbf{Columns.} Each element in a saved project has an \term{element manifest}, a JSON file beside the data: \file{deposit.csv.element.json}. A calculated column is there as its expression. A stored column is there with the operation that made it and its inputs.
 \item \textbf{Layers.} A layer made from other layers, such as a reconciliation or a model stored as Parquet, carries its \term{lineage}: the operation, its settings, its sources, the micro build and the time. \menu{Lineage…} on the layer shows the tree and exports a readable report. A Parquet export carries its lineage inside the file.
-\item \textbf{Runs.} Every run of a routine leaves a folder, \file{runs/<date> <time> <routine>/}, holding its tables and a \file{run.json}: the SHA-256 of every input file and every output, each step's settings, and what each check concluded.
+\item \textbf{Runs.} Every run of a routine leaves a folder of its own, \file{runs/<date> <time> <routine>/}, holding its tables and a \file{run.json}: the SHA-256 of every input file and every output, each step's settings, and what each check concluded.
 \end{itemize}
 
 Recipes and routines are part of the same idea. They are plain YAML files that say what to compute; they cannot carry code. \Cref{ch:records} is the full account.

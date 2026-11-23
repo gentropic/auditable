@@ -50,9 +50,6 @@ The panel has three groups — \ui{decorations}, \ui{legends}, \ui{background} �
 
 The bar is exact only in an orthographic view, where one length on screen is one length in the world everywhere. In a perspective view distant things are smaller, and the bar is true only at the depth of the point you are orbiting. micro says so by putting a tilde in front of the length: \code{\textasciitilde 200 m}.\side{Switch to an orthographic view before exporting a figure anyone will measure from (\cref{ch:sections}).}
 
-% micro bug (reported 2026-11-23): deco.js drawNorthArrow reads view[9] where view[5] is meant, so the
-% overlay arrow points up in a horizontal view looking north and mis-points in a rotated plan; the text
-% below describes the intended behaviour
 \paragraph{\ui{North arrow}} draws an arrow at the top right pointing where north lies on the screen, and turns as you orbit. When you look exactly along north–south, in a horizontal view, north points into or out of the screen and there is no arrow to draw; it disappears until you turn.
 
 \paragraph{\ui{Title}} puts a line of bold text at the top center. Type it in the field beside the checkbox: typing turns the title on, and clearing the field turns it off. The same title can be set from the palette with \emph{Set figure title…}.
@@ -132,7 +129,7 @@ In an exploded view, where layers are drawn displaced from each other (\cref{ch:
 At the foot of the panel, choose a \ui{Resolution} and press \ui{Export figure (PNG)}. The palette has the same action, \emph{Export figure (PNG)…}.
 
 \begin{table}[htbp]\small
-\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+\begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
 setting & meaning & default \\ \midrule
 \ui{Resolution} & \ui{1× (screen)}: the image has the viewport's pixels. \ui{2×} and \ui{3×} render the scene again with two or three times as many pixels each way. & 1× \\ \bottomrule
 \end{tabularx}
@@ -157,7 +154,7 @@ Nothing leaves your machine. The export is made in the page and handed to you; t
 \end{enumerate}
 \end{tryit}
 
-\shot{figures-export}{An exported figure at 2×: the demo's E–W section seen square-on in an orthographic view, on white, with a scale bar, a classed grade legend and a title, exactly as they stood on the view. A vertical section looking north has no north arrow to draw, so it is off here.}
+\shot{figures-export}{An exported figure at 2×: the demo's E–W section seen square-on in an orthographic view, on white, with a scale bar, a classed grade legend and a title, exactly as they stood on the view. The north arrow is ticked too, but a vertical section looking north has no arrow to draw, so none shows.}
 
 \section{Figure recipes}\label{sec:figures-recipes}
 
@@ -211,7 +208,7 @@ params:
     - layer: "demo_assay.csv"
       mode: false
 \end{lstlisting}
-The numbers are illustrative; the keys are the ones micro writes. The camera's \code{target} is the point it orbits, in world coordinates; \code{radius} is the distance to it; \code{theta} and \code{phi} are its two angles. The section's \code{pos} is its position through the data as a fraction from 0 to 1, \code{half} is half the slab's thickness, \code{clip} is \code{slab}, \code{front} or \code{behind}, and \code{dipDir} and \code{dip} are used by the dip mode.
+The numbers are illustrative; the keys are the ones micro writes. The camera's \code{target} is the point it orbits, in world coordinates; \code{radius} is the distance to it; \code{theta} and \code{phi} are its two angles. The section's \code{pos} is its position through the data as a fraction from 0 to 1, \code{half} is half the slab's thickness, \code{clip} is \code{slab}, \code{front} or \code{behind}, and \code{dipDir} and \code{dip} are used by the dip mode. The \code{legend} key under \code{deco} is written but draws nothing: legends belong to the layers, and a figure recipe leaves them as they are.
 
 \begin{note}
 A figure recipe does not record which layers are visible, how they are colored, or their filters and legends. It is a camera, a section and a dressing, applied to the project as it stands — which is what lets the same recipe draw next month's model. To pin down the layers and their colors as well, save a scene (\cref{ch:sections}), or put the view in a composer frame, which remembers its whole scene (\cref{ch:composer}).
@@ -260,7 +257,7 @@ Three other exports start from the same view.
 \begin{description}
 \item[Section series] With a section on, \menu{View>Section series…} renders the section again and again across the data — from, to, every so many meters — each sheet a finished figure with the decorations on and its position in the title, collected into one zip (\cref{ch:sections}). As a routine tool it is \code{sections}.
 \item[Turntable video] A turning model for a slide (\cref{sec:figures-turntable}).
-\item[Plots] Every analysis window has its own \ui{⤓ png}, \ui{⧉ copy} and \ui{⧉ table} buttons for its chart and its numbers, and \ui{⇥ figure} to send them to the composer (\cref{ch:analysis}).
+\item[Plots] Every analysis window has its own \ui{⤓ png}, \ui{⧉ copy} and \ui{⧉ table} buttons for its chart and its numbers, and \ui{⇥ figure} to send them to the composer (\cref{sec:analysis-results}).
 \end{description}
 
 \subsection{Turntable video}\label{sec:figures-turntable}

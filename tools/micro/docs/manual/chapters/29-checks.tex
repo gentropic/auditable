@@ -3,12 +3,12 @@
 \textbf{In this chapter} you make a routine judge its own results: a single number against a limit, every row of a table against a rule, and this month's table against the run you accepted last month.
 \end{goals}
 
-The \code{month-end} of \cref{ch:routines} writes seven tables and leaves the reading to you. Was the bias inside five percent? Did any tonnage move by more than a tenth since last month? Did the model QA find errors? These questions have yes-or-no answers, and you ask the same ones at every close. A \term{check} is such a question written into the routine. A \term{compare} sets this run's table beside the previous one's.
+The \code{month-end} of \cref{ch:routines} writes seven tables and leaves the reading to you. Was the bias inside five percent? Did any tonnage move by more than a tenth since last month? Did the model QA find errors? These questions have yes-or-no answers, and you ask the same ones at every close. A \term{check} is such a question written into the routine. A \term[check!compare]{compare} sets this run's table beside the previous one's.
 
 Both are steps. They run where they stand in the list, read the results of the steps before them, and go into the run record with what they read and what they concluded (\cref{ch:records}). With them, a finished run says whether its numbers are ready to sign off.
 
 \section{A check on one number}\label{sec:checks-scalar}
-Many tools return \term{values} beside their table: named numbers such as the validation's bias or the QA's count of errors. A step's values are known by the step's \code{as} name and a dot:
+Many tools return \term[values (of a tool)]{values} beside their table: named numbers such as the validation's bias or the QA's count of errors. A step's values are known by the step's \code{as} name and a dot:
 
 \begin{lstlisting}[language=yaml]
     - tool: "modelqa"
@@ -25,6 +25,7 @@ Many tools return \term{values} beside their table: named numbers such as the va
         sampleGrade: "FE"
         axis: "Y"
         bandW: 50
+        filter: "LITO != \"WASTE\""
       as: "val"
     - check: "abs(val.bias_pct) < 5"
       say: "model mean within 5% of the declustered samples"
@@ -32,7 +33,7 @@ Many tools return \term{values} beside their table: named numbers such as the va
 
 The check is an expression in micro's usual language (\cref{app:expr}) that comes out true or false. True is a pass and the run carries on. False is a fail and, by default, the run stops there.
 
-\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+\begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
 key & meaning & default \\ \midrule
 \code{check} & the expression, or a row check (\cref{sec:checks-rows}) & \\
 \code{say} & what the check means, in words; shown in the tracker and kept in the record & none \\
@@ -43,7 +44,7 @@ key & meaning & default \\ \midrule
 
 Write \code{say} for the reviewer, not for yourself. A year from now \emph{abs(val.bias\_pct) < 5} needs decoding; \emph{model mean within 5\% of the declustered samples} doesn't.
 
-When a check fails, the tracker shows what it read. On the demo project this one does:
+On the demo both checks pass: the model has no QA errors, and inside the domain \code{LITO != "WASTE"} (\cref{sec:validation-domain}) the bias is +4.3\%. When a check fails, the tracker shows what it read. Delete the validation's \code{filter} line and run again, and the bias check reads:
 
 \begin{lstlisting}
 ✗ 4. check — abs(val.bias_pct) < 5   “model mean within …”
@@ -54,7 +55,7 @@ When a check fails, the tracker shows what it read. On the demo project this one
 The record keeps the same three things: the expression, the outcome, and the value of every name the expression read.
 
 \begin{note}
-The demo fails this check, and so would any model laid out like it. The model's mean, 24.7\% Fe, is taken over every block, including the waste far from any hole; the holes were drilled at the lens. Declustering brings the samples' mean down from 34.5 to 32.0\% Fe, but it can only reweight the samples there are. It can't supply samples where none were taken. The month-end keeps this check at \code{level: "warn"} (\cref{sec:checks-practice}), so the number is recorded and the run carries on.
+Without its domain, the demo fails this check, and so would any model laid out like it. The model's mean, 24.7\% Fe, is taken over every block, including the waste far from any hole; the holes were drilled at the lens. Declustering brings the samples' mean down from 34.5 to 32.0\% Fe, but it can only reweight the samples there are. It can't supply samples where none were taken. That is why the month-end validates inside \code{LITO != "WASTE"}, and why it still keeps the check at \code{level: "warn"} (\cref{sec:checks-practice}): a bias near its limit is a question for a person, not a reason to halt the close.
 \end{note}
 
 \begin{caution}
@@ -125,7 +126,7 @@ The check passes when the rule holds on every row. When it fails, the tracker na
 \end{lstlisting}
 
 \subsection{What a table's rows are called}
-Every table declares its \term{key}: the columns that identify a row. The key is what names a failing row, and what lines rows up between two runs.
+Every table declares its \term[key (of a table)]{key}: the columns that identify a row. The key is what names a failing row, and what lines rows up between two runs.
 
 \begin{tabularx}{\linewidth}{@{}lLL@{}}\toprule
 tool & key & other columns \\ \midrule
@@ -228,7 +229,7 @@ Which run is the baseline? Two rules decide, in order.
 
 The baseline is chosen when a run starts and written into its record, so a run always says what it was judged against. A retry or a resume keeps the same one.
 
-\term{Accepting} a run is your statement that its numbers are the reference. When a run finishes, the tracker offers \ui{Accept as baseline…}. micro asks for your name and writes a small file, \file{accepted.json}, beside the run's record: who, when. There are no accounts in micro; the name is what you type.
+\term[baseline!accepting a run]{Accepting} a run is your statement that its numbers are the reference. When a run finishes, the tracker offers \ui{Accept as baseline…}. micro asks for your name and writes a small file, \file{accepted.json}, beside the run's record: who, when, and a note — left empty when you accept in micro; a host page that accepts runs can fill it (\cref{app:host}). There are no accounts in micro; the name is what you type.
 
 \begin{figure}[htbp]\centering
 \begin{tikzpicture}[font=\sffamily\small,
@@ -246,7 +247,7 @@ The baseline is chosen when a run starts and written into its record, so a run a
 \caption{The baseline loop. A run is judged against the last accepted run of its routine; accepting November moves the baseline forward. A run that stopped at a check is never a baseline.}\label{fig:checks-baseline}
 \end{figure}
 
-A month-end then runs as a loop of three steps:
+A month-end then runs as a loop:
 
 \begin{enumerate}
 \item Run the routine. Its compares and \code{prev} checks read last month's accepted run.
@@ -294,11 +295,12 @@ Make \code{month-end} judge itself. You need the routine of \cref{sec:routines-m
       level: "warn"
 \end{lstlisting}
 \item Choose \menu{File>Scan folder for new data…} so micro reads the recipes again.
-\item Run the routine. The bias check is ticked with a warning beneath it, \emph{failed (val.bias\_pct = -22.7049)}, and the compare line reads \emph{not evaluated — no baseline run yet}. Both are at \code{warn}, so the run finishes.
+\item Run the routine. Each of the eight tool steps is ticked with \emph{reused from … (nothing changed)} beneath it: your run from \cref{ch:routines} already computed them (\cref{ch:records}). Both checks pass: the model has no QA errors, and the bias, +4.3\%, is inside five percent. That earlier run is also this one's baseline — none has been accepted, so the latest run that finished ok is used — and the compare passes against it. The status line reads \emph{routine “month-end” — 11 steps run, 9 reports → runs/… month-end-2/}, and \file{gt-compare.tsv} in the new folder shows every \code{\_delta} as 0.
 \item Press \ui{Accept as baseline…} in the tracker and type your name.
-\item Run it again. The tracker notes that unchanged steps were reused (\cref{ch:records}). The compare now passes, and \file{gt-compare.tsv} in the new run's folder shows every \code{\_delta} as 0.
-\item Open \menu{Tools>Recipes>Runs…}. The second run's \ui{compared with} names the first, with a ✓.
+\item Run it again. Everything passes as before, but now against the run you accepted.
+\item Open \menu{Tools>Recipes>Runs…}. The newest run's \ui{compared with} names the one you accepted, with a ✓; that one's names your run from \cref{ch:routines}, without one, and its \ui{accepted} column shows your name and the date.
 \end{enumerate}
+If this was the routine's very first run — a fresh \file{runs/} folder — the compare has no baseline yet: it is ticked with \emph{not evaluated — no baseline run yet (accept a run, or run once more)} beneath it, and being at \code{warn} it lets the run finish. Run it once more and it has one.
 \end{tryit}
 
 \section{Writing checks that earn their place}\label{sec:checks-practice}
@@ -340,4 +342,4 @@ a host page & the run resolves as \emph{failed} when a check stopped it (\cref{a
 When a check stops the run, the tracker's two buttons work on the check. \ui{Retry step} judges it again, which is what you want after fixing its cause in the session. \ui{Skip \& continue} carries on without it. The record marks the check \emph{skipped}, keeps the error it stopped with, and adds a \emph{skip} event, so the decision to pass over it is on file with its time.
 
 \section{What a reviewer reads}
-With checks, a month-end is a list of claims, each with its evidence: \emph{the model has no QA errors — pass, mq.errors = 0}; \emph{tonnage within 10\% of October — pass}; \emph{model mean within 5\% of the declustered samples — warn: fail, val.bias\_pct = −22.7}. A reviewer re-runs nothing to read it. The claims, the observed numbers and the baseline they were measured against are all in \file{run.json}, which \cref{ch:records} takes apart field by field.
+With checks, a month-end is a list of claims, each with its evidence: \emph{the model has no QA errors — pass, mq.errors = 0}; \emph{tonnage within 10\% of October — pass}; \emph{model mean within 5\% of the declustered samples — pass, val.bias\_pct = 4.3}. A reviewer re-runs nothing to read it. The claims, the observed numbers and the baseline they were measured against are all in \file{run.json}, which \cref{ch:records} takes apart field by field.

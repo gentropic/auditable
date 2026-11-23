@@ -31,6 +31,7 @@ Files: `chapters/<nn>-<slug>.tex`, labels `ch:<slug>`. Figure requests: `figures
 - 17-swath (D) — Swath / drift: directions (axes, oriented trio, trend/plunge), bands, the zebra and the band ghost, comparing model and samples.
 - 18-stats (D) — Stats, scatter & Q-Q.
 - 19-validation (D) — Validation & pairing: declustering, global bias, the sample swath, block-vs-sample pairs.
+- 19b-contact (D) — Contact analysis: hard vs soft boundaries; Contact plot… (down the holes, A vs B, direction, min run, max gap) and Distance to a surface… (signed distance to a solid or an open surface, model and samples overlaid); reading the step and the ramp; ⇥ column (DIST_<SURFACE>); the `contact` routine tool and its values.
 - 20-joins (E) — Join & reconcile: compatibility, spatial join, key join, reconcile (Δ), sub-blocked and rotated cases.
 - 21-geometry (E) — By geometry: select / flag / ratio by a solid, a surface, a gridded surface; assign domains.
 - 22-qa (E) — QA reports: model QA, drillhole QA, mesh QA & volume.

@@ -87,7 +87,7 @@ A drawing too large to preview opens streamed, and its \ui{Open as} offers \ui{e
 
 \begin{table}[htbp]
 \small
-\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+\begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
 setting & meaning & default \\ \midrule
 \ui{output} & the name of the \file{.wfr} to write & — \\
 \ui{save to} & \ui{a file on disk (streamed)} (Chrome and Edge), the open project's \file{meshes} folder, or \ui{download} & the project, when one is open \\
@@ -137,7 +137,7 @@ Treating vertices as records looks like bookkeeping, but it is what lets everyth
 
 \section{Styling a mesh}\label{sec:meshes-style}
 
-A mesh has one color, its \term{tint}, and an opacity.
+A mesh has one color, its \term[mesh!tint]{tint}, and an opacity.
 
 \ui{Tint…} on the layer's menu offers seven presets chosen to read as geology (\ui{Grey}, \ui{Sand}, \ui{Rust}, \ui{Green}, \ui{Blue}, \ui{Violet}, \ui{Brown}) and \ui{Custom…}, which takes a hex color. The \ui{style} tab of the layer's properties has a color picker for the same thing.
 
@@ -155,8 +155,8 @@ Style the demo's shapes.
 \item Open the demo project. The ore shell shows only as an orange ring on the cut face: it follows the section, so only its trace is drawn.
 \item In the layers panel, right-click \ui{ore shell} and set \ui{Cut by sections} to \ui{don't cut}. The whole shell appears over the cut model.
 \item Right-click it again and choose \ui{Tint…}, then \ui{Green}.
-\item Right-click it once more and set \ui{Opacity} to \ui{25\%}. The blocks behind it show through.
-\item Click on the shell. The record panel gives the coordinates of the point you clicked.
+\item Right-click it once more and set \ui{Opacity} to \ui{50\%}. The blocks behind it show through.
+\item A translucent mesh is picked only while it is the active layer, so click \ui{ore shell} in the layers panel, then click on the shell. The record panel gives the coordinates of the point you clicked.
 \item Open the \ui{mining phases} group. Only \ui{phase 1 — starter pit} is shown.
 \item Right-click the group and tick \ui{Mutually exclusive}.
 \item Click the phase to make it the active layer, then press \key{\}} repeatedly. The group shows each of the three phases in turn.
@@ -170,7 +170,7 @@ The middle of a mesh's right-click menu holds the tools. Each has its own chapte
 
 \begin{table}[htbp]
 \small
-\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+\begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
 command & what it does & see \\ \midrule
 \ui{Select by this solid…} & select, flag or measure the fraction of a model's blocks inside the solid, or above and below an open surface & \cref{ch:geometry} \\
 \ui{Rasterize to grid…} & turn the mesh into a gridded surface & \cref{sec:grids-rasterize} \\
@@ -190,7 +190,7 @@ Before a wireframe bounds anything, whether a domain flag or a volume in a repor
 
 \section{Exporting meshes}\label{sec:meshes-export}
 
-Right-click a mesh and choose \ui{Export mesh…}. With several mesh layers selected in the panel (\key{Ctrl}+click), or on a group, the command becomes \ui{Export N meshes…} and writes them together.
+Right-click a mesh and choose \ui{Export mesh…}. With several mesh layers selected in the panel (\key{⌘}-click), or on a group, the command becomes \ui{Export N meshes…} and writes them together.
 
 \begin{table}[htbp]
 \small
@@ -212,4 +212,4 @@ The export re-reads the source geometry, so coordinates leave at full double pre
 
 Any mesh micro reads can be written in any of these formats, so micro is also a converter: a Datamine wireframe pair in, an \file{.lfm} out, with the layer names and tints you set.
 
-A grid is exported as a grid, not a mesh: \menu{Surface tools>Export as ESRI ASCII grid…} on a grid layer (\cref{sec:grids-export}).
+A grid is exported as a grid, not a mesh: \menu{Surface tools>Export grid…} on a grid layer, as ESRI ASCII, GeoTIFF, Surfer, ESRI binary or XYZ (\cref{sec:grids-export}).

@@ -10,7 +10,7 @@
 // tools — chapters/C-tools.tex, the tool reference, from window.micro.tools()
 // shots — every screenshot named in figures/wanted/*.txt that scenes.mjs knows how to stage →
 //         figures/shots/<name>.png; a name with no scene is listed, and the book shows a placeholder
-// pdf   — latexmk (LuaLaTeX) → build/micro-manual.pdf
+// pdf   — latexmk (LuaLaTeX, biber for references.bib) → build/micro-manual.pdf
 import { chromium } from 'playwright';
 import http from 'http';
 import { readFile, writeFile, mkdir, readdir } from 'fs/promises';
@@ -248,7 +248,13 @@ function phasePdf() {
   let log = ''; try { log = readFileSync(join(HERE, 'build', 'micro-manual.log'), 'utf8'); } catch {}
   const errors = (log.match(/^\S+\.tex:\d+: .*$/gm) || []).length + (/Fatal error occurred/.test(log) ? 1 : 0);
   const overfull = (log.match(/^Overfull \\hbox/gm) || []).length, missing = (log.match(/Missing character/g) || []).length;
-  if (errors || r.status !== 0 && !existsSync(join(HERE, 'build', 'micro-manual.pdf'))) { console.log(`pdf: FAILED (${errors} errors) — see build/micro-manual.log`); process.exitCode = 1; }
+  // the references: biber's own errors live in the .blg; a citation it never resolved, in the log
+  let blg = ''; try { blg = readFileSync(join(HERE, 'build', 'micro-manual.blg'), 'utf8'); } catch {}
+  const biberErrors = (blg.match(/^ERROR - .*$/gm) || []);
+  const undefinedCites = [...new Set((log.match(/Citation '[^']+'[^\n]*undefined/g) || []).map((m) => m.match(/'([^']+)'/)[1]))];
+  if (biberErrors.length) console.log('pdf: biber —\n  ' + biberErrors.join('\n  '));
+  if (undefinedCites.length) console.log('pdf: undefined citations — ' + undefinedCites.join(', '));
+  if (errors || biberErrors.length || undefinedCites.length || r.status !== 0 && !existsSync(join(HERE, 'build', 'micro-manual.pdf'))) { console.log(`pdf: FAILED (${errors} errors, ${biberErrors.length} biber errors, ${undefinedCites.length} undefined citations) — see build/micro-manual.log`); process.exitCode = 1; }
   else console.log(`pdf: build/micro-manual.pdf  (overfull lines ${overfull}, missing glyphs ${missing})`);
 }
 

@@ -8,7 +8,7 @@ A project is a folder (\cref{ch:projects}). Folders are awkward to e-mail, easy 
 The second half of this chapter opens the hood. You don't need it to use micro. You need it the day a reviewer asks where a column came from, or you wonder why a 13 GB model reopened in a second.
 
 \section{Backing up}\label{sec:store-backup}
-\menu{File>Back up project…} writes the project folder into a single file named after the project and the date, ending in \file{.zip.micro}.
+\menu{File>Back up project…}\index{backup} writes the project folder into a single file named after the project and the date, ending in \file{.zip.micro}.
 
 micro asks two things first.
 
@@ -71,7 +71,7 @@ Back up the demo project and open the backup as a pack. If you skipped the try-i
 \end{tryit}
 
 \section{The store, inside}\label{sec:store-inside}
-Here is one model's corner of a project folder:
+Here\index{store (inside a project)} is one model's corner of a project folder:
 
 \begin{lstlisting}
 models/
@@ -106,7 +106,7 @@ The layer swaps to the Parquet file in place. Painted columns stay editable, fil
 Meshes have a counterpart. \ui{Store meshes as .wfr on save} in the \ui{Tools} menu keeps wireframes, design strings and points in the compact \file{.wfr} format (\cref{ch:meshes}). The first save that could do it asks: \ui{Never}, \ui{Not now}, \ui{Yes}, or \ui{Yes, always}.
 
 \subsection{The element manifest}\label{sec:store-manifest}
-Beside each data file is \file{<file>.element.json}: a readable description of the element (\cref{ch:micro}). It says how the file's records are located in space, which columns there are, and it carries a list of \term{operations}: one entry for every derived column, recording how it was made. A calculation's expression. A join's source and method. A broadcast's source column.
+Beside each data file is \file{<file>.element.json}: a readable description of the element (\cref{ch:micro}). It says how the file's records are located in space, which columns there are, and it carries a list of \term[element manifest!operations]{operations}: one entry for every derived column, recording how it was made. A calculation's expression. A join's source and method. A broadcast's source column.
 
 That list is the audit trail for columns. Open the JSON and read how every derived column came to be. It is also how a project reopens: the definitions reload from the manifest, and derived data that is missing can be derived again.
 
@@ -138,7 +138,7 @@ A GeoTIFF shown at reduced resolution gets a display cache of the same kind besi
 
 These are caches and nothing more. Delete one and micro scans again; you lose only the time. They are what a \ui{Lean} backup leaves out.
 
-\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+\begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
 file & what it is & if deleted \\ \midrule
 the data file & your data & gone \\
 \file{.element.json} & columns and how they were made & derived column definitions are lost \\

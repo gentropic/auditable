@@ -5,7 +5,7 @@
 
 A figure in a report is more than a picture of the model. It is a plan at a stated scale with coordinates on its border, a legend that matches it, the grade–tonnage curve beside it, a caption that says which section and how many blocks, and a title block with a drawing number. Assembling that in a drawing program takes an afternoon, and the result is dead: when the estimate changes, you start again.
 
-The \term{composer} is micro's page. You place \term{frames} on it, and each frame knows where its content came from: a 3D view remembers its camera, section, layers and colors; a chart remembers the analysis that drew it; a caption computes its own numbers. So a figure can be made again — with new data, at another resolution, once per bench — without being redrawn.
+The \term{composer} is micro's page. You place \term[frame (composer)]{frames} on it, and each frame knows where its content came from: a 3D view remembers its camera, section, layers and colors; a chart remembers the analysis that drew it; a caption computes its own numbers. So a figure can be made again — with new data, at another resolution, once per bench — without being redrawn.
 
 The chapter follows the order in which a page is built:
 
@@ -29,7 +29,7 @@ Open the composer with \menu{File>Composer…}, or \key{⌘K} and \code{composer
 A \term{figure} is one page with its frames. In a project it is a file, \file{figures/}\emph{name}\file{.compo.json} — plain JSON with each view's last render stored inside, so a figure opens instantly without rendering anything (\cref{ch:projects}). Edits are saved as you make them. Without a project a figure lives for the session only.
 
 \begin{figure}[htbp]\centering
-\begin{tikzpicture}[font=\sffamily\footnotesize, every node/.style={text=ink}, >=Stealth]
+\begin{adjustbox}{max width=\linewidth}\begin{tikzpicture}[font=\sffamily\footnotesize, every node/.style={text=ink}, >=Stealth]
 % page
 \draw[rule, line width=0.6pt, fill=white] (0,0) rectangle (9.6,6.8);
 \draw[info, dashed, line width=0.4pt] (0.4,0.4) rectangle (9.2,6.4);
@@ -71,7 +71,7 @@ A \term{figure} is one page with its frames. In a project it is a file, \file{fi
 \node[anchor=west, text=info] at (9.9,3.85) {“refers to”};
 \node[anchor=west, text=muted] at (9.9,3.1) {units: millimeters};
 \node[anchor=west, text=muted] at (9.9,2.75) {on the page};
-\end{tikzpicture}
+\end{tikzpicture}\end{adjustbox}
 \caption{The page model. A figure is a page with frames; each frame is a box in millimeters with a kind, an id and — for most kinds — a source it can be made from again. A scale bar, a north arrow, a legend and a caption each \emph{refer to} a view frame and take their content from it.}\label{fig:compo-model}
 \end{figure}
 
@@ -104,7 +104,7 @@ grid & \ui{no grid} (the default), or a grid of 1, 2, 5 or 10 mm that is shown a
 \caption{The figure bar and the start of the page bar.}\label{tab:compo-figbar}\label{tab:compo-page}
 \end{table}
 
-Drag down out of the top ruler, or right out of the left one, to pull a \term{guide} onto the page. Frames snap to guides. Drag a guide to move it, and drag it off the page to remove it. The dashed rectangle is the margin; frames snap to that too.
+Drag down out of the top ruler, or right out of the left one, to pull a \term[composer!guide]{guide} onto the page. Frames snap to guides. Drag a guide to move it, and drag it off the page to remove it. The dashed rectangle is the margin; frames snap to that too.
 
 \section{Working with frames}\label{sec:compo-frames}
 
@@ -235,7 +235,7 @@ These three follow a view frame. Select the view first (otherwise they take the 
 \ui{+ text} adds a text frame holding \code{**Figure \{fig\}.** caption}. Its inspector is a text box and three settings:
 
 \begin{table}[htbp]\small
-\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+\begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
 setting & meaning & default \\ \midrule
 the text & Line breaks are kept; text wraps to the frame's width. \code{**bold**} makes a bold run. & \\
 \ui{size (pt)} & type size, with the alignment beside it: left, center or right & 9, left \\
@@ -261,31 +261,13 @@ A \term{chart frame} is not an image. It holds the chart's description — its s
 
 A \term{table frame} is set as a book table: a rule above and below, a thin one under the header, no vertical lines, numbers right-aligned, light striping. The type shrinks to fit the frame's width, down to 4.5 pt; rows that do not fit are replaced by a line saying how many more there are, so a table never silently loses its end.
 
-Both remember the analysis that made them — its recipe — which is what lets \ui{↻ refresh} make them again (\cref{sec:compo-refresh}).
+Those from grade–tonnage, swath, stats, scatter and Q-Q remember the analysis that made them — its recipe — which is what lets \ui{↻ refresh} make them again (\cref{sec:compo-refresh}). A cross-tab or validation chart has no recipe behind it: it is kept as it was sent, and a refresh leaves it alone.
 
 \subsection{Resource table}\label{sec:compo-resource}
 
-\ui{+ resource} builds the table most reports are written around: tonnes, grade and metal above a list of cutoffs, by domain and by class. A dialog asks for what it needs:
+\ui{+ resource} builds the table most reports are written around: tonnes, grade and metal above a list of cutoffs, by domain and by class. A dialog asks for the model, the grade and its cutoffs, the density, up to two grouping columns and a metal factor; \cref{sec:resource-table} describes every field, what the table computes, and how it differs from the cross-tab.
 
-\begin{table}[htbp]\small
-\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
-setting & meaning & default \\ \midrule
-\ui{model} & the block model & the first with a numeric column \\
-\ui{grade} & the grade column & a likely one (\col{AU}, \col{CU}, \col{FE}…) \\
-\ui{cutoffs} & comma-separated, in the grade's units & \code{0, 0.5, 1} \\
-\ui{grade unit} & shown in the column header: \code{g/t}, \code{\%} & blank \\
-\ui{density} & a density column… & a likely one (\col{SG}, \col{DENSITY}) \\
-\ui{… or constant} & …or a constant, used when no column is chosen & 2.7 \\
-\ui{density unit} & t/m3, kg/m3, g/cm3 or lb/ft3 & t/m3 \\
-\ui{group by} / \ui{… then by} & up to two grouping columns, such as domain then class & likely ones, else none \\
-\ui{metal factor} & metal = tonnes × grade × this. For g/t to ounces use 0.0321507; for \% to tonnes, 0.01. & 1 \\
-\ui{metal unit} & shown in the header: \code{oz}, \code{t} & blank \\
-\ui{records} & \ui{all}, or \ui{filter} to count only the blocks the layer's filter keeps & all \\ \bottomrule
-\end{tabularx}
-\caption{The resource table dialog.}\label{tab:compo-resource}
-\end{table}
-
-Press \ui{Add}. The table arrives titled with the model's name and \emph{resources}, tonnes written whole with a space between thousands (\code{2 343 000}), and a note beneath stating the density used, the filter if any, and the number of records. The same computation is available as a window and a routine tool (\cref{ch:resources}).
+Press \ui{Add}. The table arrives titled with the model's name and \emph{resources}, with a note beneath stating the density used, the filter if any, and the number of records. Like a chart, it remembers its settings, so \ui{↻ refresh} makes it again (\cref{sec:compo-refresh}).
 
 \subsection{Image}
 
@@ -312,7 +294,7 @@ You have a figure with a view, its legend, scale and north, a live caption, and 
 
 \section{Fields and captions}\label{sec:compo-fields}
 
-A \term{field} is a word in braces that the page replaces when it draws. Write \code{\{date\}} and the page prints today's date — today's whenever it is printed. Write \code{\{count\}} and it prints how many records the view showed. A caption written with fields describes the figure as it is, not as it was when you typed it.
+A \term[field (in a caption)]{field} is a word in braces that the page replaces when it draws. Write \code{\{date\}} and the page prints today's date — today's whenever it is printed. Write \code{\{count\}} and it prints how many records the view showed. A caption written with fields describes the figure as it is, not as it was when you typed it.
 
 \subsection{The grammar}
 
@@ -348,7 +330,7 @@ field & prints \\ \midrule
 \code{\{section\}} & its section in words: \code{630 RL ± 5}, \code{7 604 125 N}, \emph{a plane dipping 60° toward 270°}, or \emph{no section} \\
 \code{\{look\}} · \code{\{elevation\}} & the bearing it looks toward, \code{045°} · how far above the horizon the eye sits, \code{30°} (90° is plan) \\
 \code{\{layers\}} & the layers it shows, by name \\
-\code{\{count\}} · \code{\{total\}} & records shown after filters, added up over the shown layers — inside the view's section, unless the view counts the whole model (\cref{sec:compo-statsscope}) · records in the shown layers before filters, the whole layers. One layer: \code{\{count:deposit.csv\}} \\
+\code{\{count\}} · \code{\{total\}} & records shown after filters, added up over the shown record layers (meshes and grids left out) — inside the view's section, unless the view counts the whole model (\cref{sec:compo-statsscope}) · records in the shown layers before filters, the whole layers. One layer: \code{\{count:deposit.csv\}} \\
 \code{\{filter\}} & the filter or filters it used, or \emph{no filter} \\
 \code{\{source\}} · \code{\{sha\}} & the files its layers read · a short content hash of each \\[3pt]
 \multicolumn{2}{@{}l}{\emph{statistics over what the view shows}} \\
@@ -387,7 +369,7 @@ you write & you get & \\ \midrule
 
 The statistic fields are computed over the records the view shows, with its filters applied — and, when the view is cut by a section, only over those inside it — when the view frame is rendered. Until then such a field prints \code{…}. After editing a caption to add one, right-click the view and choose \ui{Refresh fields (statistics)}, or re-render the frame. Over a section with nothing in it a statistic prints \code{—} and \code{\{count\}} prints 0. A column that no shown layer carries prints a message naming it.
 
-\paragraph{In the section, or the whole model.}\label{sec:compo-statsscope} A view frame's \ui{captions} row decides what \code{\{count\}}, \code{\{n\}} and the statistics about that view cover. \ui{in the section}, the default (for figures made before the row existed, too), counts what the picture shows: the records inside the view's section. Each record is judged by one point — a block by its centroid, a drillhole interval by its midpoint, a point of a cloud by itself — so neighboring slabs share the blocks out between them and never count one twice: the bench counts of an atlas add up to the model's. A slab thinner than a block still keeps the blocks its plane cuts, since the picture shows them. A half-space (\ui{front} or \ui{behind}) keeps its kept side. A drillhole set shown as whole holes counts the holes the picture draws. A view with no section counts every shown record. So does a layer the section does not cut — a drillhole set left uncut, and every mesh and grid, which add all their vertices or nodes — and \code{\{count\}} adds up the shown layers. To count blocks, name the layer: \code{\{count:deposit.csv:,\} blocks}. (A statistic such as \code{\{mean:FE\}} reads one layer only, the first shown layer that has the column.) \ui{whole model} counts every shown record whatever the section, for a caption that should quote the whole model. Filters apply either way, and the choice is saved with the figure.
+\paragraph{In the section, or the whole model.}\label{sec:compo-statsscope} A view frame's \ui{captions} row decides what \code{\{count\}}, \code{\{n\}} and the statistics about that view cover. \ui{in the section}, the default (for figures made before the row existed, too), counts what the picture shows: the records inside the view's section. Each record is judged by one point — a block by its centroid, a drillhole interval by its midpoint, a point of a cloud by itself — so neighboring slabs share the blocks out between them and never count one twice: the bench counts of an atlas add up to the model's. A slab thinner than a block still keeps the blocks its plane cuts, since the picture shows them. A half-space (\ui{front} or \ui{behind}) keeps its kept side. A drillhole set shown as whole holes (\cref{ch:sections}) counts the holes the picture draws. A view with no section counts every shown record. So does a record layer the section does not cut, such as a drillhole set left uncut. A plain \code{\{count\}} or \code{\{total\}} adds up the shown \emph{record} layers — models, drillholes, points — and leaves out meshes and grids, whose vertices and nodes are context, not records. \code{\{count:layer\}} counts exactly the layer it names, a mesh included; naming the layer still reads well when the caption says what it counts: \code{\{count:deposit.csv:,\} blocks}. (A statistic such as \code{\{mean:FE\}} reads one layer only, the first shown layer that has the column.) \ui{whole model} counts every shown record whatever the section, for a caption that should quote the whole model. Filters apply either way, and the choice is saved with the figure.
 
 \subsection{Expressions}
 
@@ -396,7 +378,9 @@ The statistic fields are computed over the records the view shows, with its filt
 \begin{tryit}
 Continue with the figure from the last exercise. (If you skipped it: open the demo, press \key{d}, \menu{File>Composer…}, \ui{+ 3D view}, then \ui{+ text} under the view.)
 \begin{enumerate}
-\item In the 3D view, cut the model to one bench: in the toolbar's section controls choose \ui{plan} and \ui{slab}, leave the half-thickness at 5, and scrub the slider into the ore lens. Filter the model with \code{FE > 55}. Right-click the view frame and choose \ui{Update from the 3D view}.
+\item In the 3D view, cut the model to one bench: in the toolbar's section controls choose \ui{plan} and \ui{slab}, leave the half-thickness at 5, and scrub the slider into the ore lens.
+\item Filter the model with \code{FE > 55}.
+\item Right-click the view frame and choose \ui{Update from the 3D view}.
 \item Edit the caption to\\
 \code{**Figure \{fig\}.** Bench \{section\}: \{count:deposit.csv:,\} blocks above 55 \% Fe, mean \{mean:FE:.1f\} \% Fe.}
 \item Right-click the view → \ui{Refresh fields (statistics)}. The \code{…} becomes numbers: a few thousand blocks on a bench through the middle of the lens, at a mean near 59 \% Fe.
@@ -460,7 +444,7 @@ everything else & Points, grids and the like stay a rendered image, laid over th
 \node[anchor=north, text=muted] at (2,-0.15) {a vector section: shapes};
 \end{scope}
 \end{tikzpicture}
-\caption{The same section twice. As a render it is a grid of pixels. As vectors, same-colored blocks merge into a few outlines and the drillholes are lines — sharp at any zoom, and editable in a drawing program.}\label{fig:compo-vector}
+\caption{The same section twice. As a render it is a grid of pixels. As vectors, same-colored blocks merge into a few outlines and the drillholes are lines — sharp at any zoom, and editable in a drawing program.}\label{fig:compo-vector-diagram}
 \end{figure}
 
 \paragraph{What it needs.} A vector section is a drawing of a plane seen square-on, so the frame must have:
@@ -479,7 +463,8 @@ If one of these is missing, the frame stays a render and the status line says wh
 \begin{enumerate}
 \item In the demo project the model is cut by an E–W section. Press \key{l} to look along it, and switch the view to orthographic.
 \item In the composer, press \ui{+ 3D view}, then right-click the new frame → \ui{Vector section (blocks, drillholes, meshes as vectors)}.
-\item Read the status line: 13856 cells from 15568 blocks, and a line each for the starter pit and the ore shell. The demo leaves its drillholes uncut by the section, so the line ends “raster: holes · demo\_assay.csv: not cut by the section”. The fans cross this section, so set the drillholes to follow it (\menu{Cut by sections (off)>follow the section} on their menu, \cref{ch:sections}) and choose \ui{Update from the 3D view} on the frame: the holes become vector bands too, 808 of them from 847 intervals.
+\item Read the status line: 13856 cells from 15568 blocks, and a line each for the starter pit and the ore shell. The demo leaves its drillholes uncut by the section, so the line ends “raster: holes · demo\_assay.csv: not cut by the section”.
+\item The fans of holes cross this section, so set the drillholes to follow it (\menu{Cut by sections (off)>follow the section} on their menu, \cref{ch:sections}) and choose \ui{Update from the 3D view} on the frame: the holes become vector bands too, 808 of them from 847 intervals.
 \item In the inspector set \ui{coords} to \ui{ticks} and type \code{2000} in \ui{scale}.
 \item Zoom the page to 200\%. The block outlines and the coordinates stay sharp.
 \end{enumerate}
@@ -504,7 +489,7 @@ The line is read from the keyed view each time the page draws. So on every page 
 Sometimes the figure is a comparison: the same view colored by four variables, or cut at five levels, or under three filters. Right-click a view frame and choose \ui{Small multiples…}.
 
 \begin{table}[htbp]\small
-\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+\begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
 setting & meaning & default \\ \midrule
 \ui{vary} & \ui{colour by a column}, \ui{section level} or \ui{filter} & \ui{colour by a column} \\
 \ui{columns} & for a column: tick the columns to color by & the first four \\
@@ -569,6 +554,8 @@ The same warning shows as ⚠ in the frame list.
 \item every resource table is recomputed from its settings;
 \item every stereonet is measured again from the painted sets.
 \end{itemize}
+
+A chart or table from the cross-tab or the validation window is not on that list; it stays as it was sent.
 
 The badges go, and each frame's \emph{produced} time is updated. \menu{File>Figures>Refresh all figures} (or \emph{Refresh all figures} in the palette) does it for every figure in the project.
 

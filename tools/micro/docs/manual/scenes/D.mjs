@@ -171,6 +171,50 @@ export const SCENES = {
     return { el: h.win('block vs sample'), blankOk: true, after: () => closeAll(h) };
   },
 
+  // contact analysis, down the holes: ITABIRITE against WASTE in 5 m bins to 50 m, set through the
+  // window's own controls (the A / B menus, the width and max-dist fields) and run
+  'contact-window': async (h) => {
+    await h.ev(async () => {
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      const m = window._micro, L = m.layers().find((x) => x.name === 'demo_assay.csv');
+      const e = m.openContact(L, { mode: 'downhole' });
+      for (let i = 0; i < 100 && !(e.st._domVals || []).length; i++) await wait(100);
+      const rail = () => e.win.el.querySelector('.sw-rail');
+      const pickSel = (prefix, v) => { const s = [...rail().querySelectorAll('select')].find((x) => [...x.options].some((o) => o.textContent.startsWith(prefix))); s.value = v; s.dispatchEvent(new Event('change')); };
+      const setNum = (label, v) => { const row = [...rail().querySelectorAll('.sw-row')].find((x) => x.querySelector('span') && x.querySelector('span').textContent === label); const inp = row.querySelector('input'); inp.value = v; inp.dispatchEvent(new Event('change')); };
+      pickSel('A: ', 'ITABIRITE'); await wait(50);
+      pickSel('B: ', 'WASTE');
+      setNum('width', 5); setNum('max dist', 50);
+      [...rail().querySelectorAll('button')].find((b) => b.textContent === 'Run').click();
+    });
+    await waitDone(h, '^contact');
+    await place(h, '^contact', 300, 90, 860, 560);
+    await h.p.waitForTimeout(500);
+    return { el: h.win('^contact'), blankOk: true, after: () => closeAll(h) };
+  },
+
+  // contact analysis, to a surface: the model (FE weighted by SG) and the drillhole samples against
+  // the ore shell, 10 m bins to 100 m either side
+  'contact-surface': async (h) => {
+    await h.ev(async () => {
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      const m = window._micro, L = m.layers().find((x) => x.name === 'deposit.csv');
+      const e = m.openContact(L, { mode: 'surface' });
+      await wait(200);
+      const rail = () => e.win.el.querySelector('.sw-rail');
+      const setNum = (label, v) => { const row = [...rail().querySelectorAll('.sw-row')].find((x) => x.querySelector('span') && x.querySelector('span').textContent === label); const inp = row.querySelector('input'); inp.value = v; inp.dispatchEvent(new Event('change')); };
+      setNum('width', 10); setNum('max dist', 100);
+      const w = rail().querySelector('input[placeholder^="weight expr"]'); w.value = 'SG'; w.dispatchEvent(new Event('change'));
+      [...rail().querySelectorAll('button')].find((b) => b.textContent === '+ add series').click();
+      await wait(100);
+      [...rail().querySelectorAll('button')].find((b) => b.textContent === 'Run').click();
+    });
+    await waitDone(h, '^contact');
+    await place(h, '^contact', 300, 60, 860, 640);
+    await h.p.waitForTimeout(500);
+    return { el: h.win('^contact'), blankOk: true, after: () => closeAll(h) };
+  },
+
   'swath-window': async (h) => {
     await openSwathRun(h);
     await place(h, '^swath', 300, 100, 820, 520);
@@ -202,6 +246,26 @@ export const SCENES = {
     await h.p.mouse.move(r.x + r.w * 0.62, y, { steps: 5 });
     await h.p.mouse.up();
     return { wait: 2000, after: swathAfter(h, v) };
+  },
+
+  // an oriented swath: trend 270 / plunge 55 — the line the lens's center follows down-dip (it moves
+  // west as it deepens) — so each band is a slab dipping 35° east. The pointer rests on a band near the
+  // peak, and its ghost is drawn on the model, seen from the south, where the slab's tilt reads.
+  'swath-ghost-oriented': async (h) => {
+    const v = await saveView(h);
+    await openSwathRun(h, { mode: 'trend', trend: 270, plunge: 55, axis: 0, bandW: { 0: 50 } });
+    const hid = await setShown(h, ['topography', 'ore shell'], false);
+    await h.ev(() => {
+      const m = window._micro, e = document.querySelector('#secMode'); e.value = 'off'; e.dispatchEvent(new Event('input'));
+      m.cam.fit(m.docBbox()); const s = m.cam.state; s.theta = -Math.PI / 2 - 0.25; s.phi = 0.32; m.cam.update();
+      m.cam.dolly(0.95); m.cam.pan(-170, 0, document.querySelector('#cv').clientHeight); m.requestRender();
+    });
+    await place(h, '^swath', 870, 110, 550, 440);
+    await h.p.waitForTimeout(800);
+    const r = await h.ev(() => { const w = [...document.querySelectorAll('.fwin')].find((e) => /^swath/.test(e.querySelector('.t').textContent)); const c = w.querySelector('.sw-main canvas').getBoundingClientRect(); return { x: c.left, y: c.top, w: c.width, h: c.height }; });
+    await h.p.mouse.move(r.x + r.w * 0.3, r.y + r.h * 0.5);
+    await h.p.mouse.move(r.x + r.w * 0.5, r.y + r.h * 0.5, { steps: 6 });
+    return { wait: 1500, after: async () => { await h.p.mouse.move(5, 5); await swathAfter(h, v)(); await setShown(h, hid, true); } };
   },
 
   'resource-table-frame': async (h) => {

@@ -3,12 +3,12 @@
 \textbf{In this chapter} you read the record every routine run leaves behind, verify a file against the hash the record noted, understand when micro reuses a step and when it recomputes, and trace a derived layer back to its sources.
 \end{goals}
 
-A table of tonnages is a claim. To stand behind it, or to review someone else's, you need to know what it was computed from, with which settings, by which version of the tool, and whether anyone checked it. A routine answers all four by writing a \term{run record}: a folder per run, with a file called \file{run.json} that says what happened.
+A table of tonnages is a claim. To stand behind it, or to review someone else's, you need to know what it was computed from, with which settings, by which version of the tool, and whether anyone checked it. A routine answers all four by writing a \term{run record}: a file called \file{run.json} that says what happened, kept in a folder the run has to itself.
 
 You have been making these records since the first run of \code{month-end} in \cref{ch:routines}. This chapter asks you to do nothing new: the record is written whether you look at it or not. What follows is how to read one, and how far you can trust it.
 
 \section{The run folder}\label{sec:records-folder}
-Every run of a routine gets its own folder under \file{runs/} in the project:
+Every run of a routine gets its own folder, its \term{run folder}, under \file{runs/} in the project:
 
 \begin{lstlisting}
 runs/2026-11-22 1432 month-end/
@@ -52,7 +52,7 @@ The name is the local date, the local time as hours and minutes, and the routine
 The \file{.tsv} files are \term{machine tables}: tab-separated, a header of plain column names, numbers written as they are, an empty cell for a missing value. They open in any spreadsheet and diff cleanly from month to month. What a window shows (units in headers, rounded figures) is a rendering of the same table.
 
 \begin{note}
-If the routine sets \code{output: dir} (\cref{ch:routines}), its reports go to that folder instead. \file{run.json} still goes in the run's folder and records where each report went.
+If the routine sets \code{output: dir} (\cref{sec:routines-steps}), its reports go to that folder instead. \file{run.json} still goes in the run folder and records where each report went.
 \end{note}
 
 \section{run.json, field by field}\label{sec:records-json}
@@ -94,7 +94,7 @@ If the routine sets \code{output: dir} (\cref{ch:routines}), its reports go to t
 field & meaning \\ \midrule
 \code{v} & the record format's version \\
 \code{dir} & the run's folder \\
-\code{routine} & the routine's name, its file, and the SHA-256 of that file as it was when the run began. A routine run from the library (\cref{ch:library}) is not a file in the run's folder tree; its hash is then taken over its name and settings as they ran. \\
+\code{routine} & the routine's name, its file, and the SHA-256 of that file as it was when the run began. A routine run from the library (\cref{ch:library}) has no file on disk to hash, so the hash is taken over the routine itself — its name and its steps, written out as JSON text. \\
 \code{micro} & the build of micro that ran it \\
 \code{started}, \code{finished} & times, in UTC (the folder's name and the Runs window use your local time) \\
 \code{status} & \code{running}, \code{ok}, \code{failed} or \code{cancelled} \\
@@ -163,15 +163,15 @@ Read \code{params} when a number looks wrong. It holds what the step \emph{did},
 \subsection{A check}
 \begin{lstlisting}
   {
-   "n": 9,
+   "n": 10,
    "step": "check",
    "kind": "check",
-   "level": "stop",
+   "level": "warn",
    "say": "model mean within 5% of the declustered samples",
-   "expr": "abs(val.bias_pct) < 5",
    "status": "pass",
-   "observed": { "val.bias_pct": … },
-   "ms": 2
+   "expr": "abs(val.bias_pct) < 5",
+   "observed": { "val.bias_pct": 4.341779492483222 },
+   "ms": 0
   }
 \end{lstlisting}
 
@@ -217,7 +217,7 @@ Elsewhere micro identifies files with a fast hash of samples taken across the fi
 \end{why}
 
 \section{The cache: reuse what didn't change}\label{sec:records-cache}
-Run \code{month-end} twice in a row and the second run finishes almost at once. Under each tick the tracker says why:
+Run\index{cache} \code{month-end} twice in a row and the second run finishes almost at once. Under each tick the tracker says why:
 
 \begin{lstlisting}
 ✓ 3. deposit grade-tonnage  →  runs/…/gt.tsv

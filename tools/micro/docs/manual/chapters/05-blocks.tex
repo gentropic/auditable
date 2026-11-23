@@ -1,6 +1,6 @@
 \chapter{Block models}\label{ch:blocks}
 \begin{goals}
-\textbf{In this chapter} you open regular, sub-blocked and rotated block models from CSV, Datamine and Parquet files, learn how micro finds the lattice and what it does when there is none, choose a format to keep a model in, and contour a grade shell.
+\textbf{In\index{block model} this chapter} you open regular, sub-blocked and rotated block models from CSV, Datamine and Parquet files, learn how micro finds the lattice and what it does when there is none, choose a format to keep a model in, and contour a grade shell.
 \end{goals}
 
 To micro a block model is a table with one row per block and three columns that hold the block's centroid. Everything else (the block size, the origin, the counts, whether the model is sub-blocked or rotated) micro works out from the centroids themselves. You do not type a block size. You do not need a definition file beside the CSV.
@@ -9,7 +9,7 @@ When micro finds the lattice, it draws every block as a true box, cuts it true o
 
 \section{How micro finds the lattice}\label{sec:blocks-lattice}
 
-Opening a delimited model takes two passes over the file. The first reads the three coordinate columns and looks, on each axis, for the spacing that every centroid is a whole number of steps along: that is the block size on that axis, and the smallest centroid is the origin. The second pass streams the blocks to the screen, each placed by its integer position on that lattice.
+Opening\index{lattice} a delimited model takes two passes over the file. The first reads the three coordinate columns and looks, on each axis, for the spacing that every centroid is a whole number of steps along: that is the block size on that axis, and the smallest centroid is the origin. The second pass streams the blocks to the screen, each placed by its integer position on that lattice.
 
 For the first pass micro needs to know which columns are the coordinates. It recognizes the usual names, and the open dialog lets you correct the choice (\cref{sec:opening-dialog}). It also picks one numeric column to color by and, if there is one, a text column to use for categories; you can change both afterwards (\cref{ch:color}).
 
@@ -40,7 +40,7 @@ Blocks are drawn as boxes with their real faces, so a model reads as a solid and
 
 \begin{tryit}
 \begin{enumerate}
-\item Open the demo project and click any block of \file{deposit.csv}. The record panel shows its whole row: \col{XC}, \col{YC}, \col{ZC}, \col{FE}, \col{SG}, \col{LITO}.
+\item With the demo project open, click any block of \file{deposit.csv}. The record panel shows its whole row: \col{XC}, \col{YC}, \col{ZC}, \col{FE}, \col{SG}, \col{LITO}.
 \item Press \key{i}. File info lists the block size and counts micro inferred.
 \item Press \key{⇧B}. Every block is outlined.
 \item Zoom in on the cut face until you can count the blocks along a bench.
@@ -49,7 +49,7 @@ Blocks are drawn as boxes with their real faces, so a model reads as a solid and
 
 \section{Sub-blocked models}\label{sec:blocks-sub}
 
-A sub-blocked model refines its parent blocks into smaller ones near a contact or a high-grade zone. micro reads these and draws each block at its \emph{true size}, straight from the file.
+A\index{sub-blocked model}\index{block model!sub-blocked} sub-blocked model refines its parent blocks into smaller ones near a contact or a high-grade zone. micro reads these and draws each block at its \emph{true size}, straight from the file.
 
 \begin{figure}[htbp]\centering
 \begin{tikzpicture}[x=9mm, y=9mm, font=\sffamily\footnotesize]
@@ -85,7 +85,7 @@ Detection expects the standard export: sub-blocks that halve the parent, and hal
 
 \section{Rotated models}\label{sec:blocks-rotated}
 
-A deposit modeled along its strike has lattice axes that are not east, north and up. Its centroids sit on no axis-aligned grid, so the ordinary search fails, and micro then tries a rotated one. If every centroid sits on a rotated lattice, micro tells you and asks:
+A\index{rotated model}\index{block model!rotated} deposit modeled along its strike has lattice axes that are not east, north and up. Its centroids sit on no axis-aligned grid, so the ordinary search fails, and micro then tries a rotated one. If every centroid sits on a rotated lattice, micro tells you and asks:
 
 \begin{quote}
 \sffamily\small\color{ink}deposit.csv isn't on an axis-aligned grid, but every centroid sits on a ROTATED lattice: … Draw it as rotated boxes, or keep the centroids as points?
@@ -99,7 +99,7 @@ An inferred rotation is never applied silently. A rotation a hundredth of a degr
 
 \subsection{Declared lattices}
 
-A file can also \emph{state} its lattice instead of leaving it to be inferred. A Parquet file may carry a \code{micro:model} entry in its metadata giving the origin, the three axis directions and the counts; micro writes one when it stores a model, an OMF project supplies one, and any producer can (\cref{ch:host}). A declared lattice is applied without asking, but it is checked against every centroid. If a block falls off the stated lattice, micro refuses the lattice, says so on the status line, and opens the centroids as points.
+A file can also \emph{state} its lattice instead of leaving it to be inferred. A Parquet file may carry a \code{micro:model} entry in its metadata giving the origin, the three axis directions and the counts; micro writes one when it stores a model, an OMF project supplies one, and any producer can (\cref{app:host}). A declared lattice is applied without asking, but it is checked against every centroid. If a block falls off the stated lattice, micro refuses the lattice, says so on the status line, and opens the centroids as points.
 
 \subsection{What works on a rotated model}
 
@@ -113,7 +113,7 @@ A \emph{Datamine} model with a rotation in its header is a separate case. micro 
 
 \section{Datamine \file{.dm} models}\label{sec:blocks-dm}
 
-A \file{.dm} file stores fixed-width records, so a given field always sits at the same offset inside every record. micro uses that to read one column without touching the others: coloring by \col{FE} reads \col{FE}, a filter on \col{LITO} reads \col{LITO}. On a model with many columns this is several times faster than decoding every record.
+A\index{Datamine .dm} \file{.dm} file stores fixed-width records, so a given field always sits at the same offset inside every record. micro uses that to read one column without touching the others: coloring by \col{FE} reads \col{FE}, a filter on \col{LITO} reads \col{LITO}. On a model with many columns this is several times faster than decoding every record.
 
 The header also names the columns and types them, so there is nothing to sniff and no mapping to confirm. Sub-blocking is detected from the per-record \col{XINC} \col{YINC} \col{ZINC} (\cref{sec:blocks-sub}).
 
@@ -121,7 +121,7 @@ micro reads \file{.dm} and does not write it. To hand a model on, export it as C
 
 \section{Parquet models}\label{sec:blocks-parquet}
 
-Parquet is a columnar file format: values are stored column by column, compressed, in blocks of rows called \term{row groups}, with a footer that lists every column's minimum, maximum and blank count for each group. Three properties make it a good home for a block model.
+Parquet\index{Parquet!block models} is a columnar file format: values are stored column by column, compressed, in blocks of rows called \term{row groups}, with a footer that lists every column's minimum, maximum and blank count for each group. Three properties make it a good home for a block model.
 
 \textbf{It opens from its footer.} The open dialog's description (rows, columns, compression) is read from the last few kilobytes of the file. The model then streams one row group at a time, and nothing decoded is held.
 
@@ -136,11 +136,11 @@ Right-click a CSV or \file{.dm} model and choose \ui{Store as Parquet…}. The d
 
 \shot[0.75\linewidth]{blocks-store-parquet}{The \ui{store block models as Parquet} dialog for the demo deposit: what will be converted, how, and whether the original stays.}
 
-\term{Morton order} numbers blocks so that blocks close in space are close in the file. Sorted that way, each row group covers a compact piece of the deposit, and its footer entry, the minimum and maximum of X, Y and Z, becomes an entry in a spatial index. That is what makes the spatial skipping above work.
+\term{Morton order} \parencite{morton1966} numbers blocks so that blocks close in space are close in the file. Sorted that way, each row group covers a compact piece of the deposit, and its footer entry, the minimum and maximum of X, Y and Z, becomes an entry in a spatial index. That is what makes the spatial skipping above work.
 
 \begin{table}[htbp]
 \small
-\begin{tabularx}{\linewidth}{@{}LLl@{}}\toprule
+\begin{tabularx}{\linewidth}{@{}NND@{}}\toprule
 setting & meaning & default \\ \midrule
 the checkbox on each row & convert this model & on \\
 \ui{keep the original file in the project} & leave the CSV or \file{.dm} where it is; otherwise it is removed after the Parquet has saved & off \\
@@ -190,7 +190,7 @@ Right-click a block model and choose \ui{Grade shell…} (or press \key{⌘K} an
 
 \begin{table}[htbp]
 \small
-\begin{tabularx}{\linewidth}{@{}lLl@{}}\toprule
+\begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
 setting & meaning & default \\ \midrule
 \ui{column} & the numeric column to contour & the column the layer is colored by \\
 \ui{cutoff (≥)} & the shell encloses every block at or above this value & none — type one \\
@@ -203,7 +203,7 @@ setting & meaning & default \\ \midrule
 
 \ui{Make shell} reads the model and adds a new mesh layer named after what it is, such as \ui{FE ≥ 55 shell}, or \ui{FE ≥ 55 shell (smoothed ×1)} when smoothing was used. The window reports the triangle count and how many blocks ended up inside, as in \ui{62,232 triangles around 11,029 blocks}. Each click makes a new layer, so shells of different settings can be compared side by side.
 
-The surface passes between block centers where the grade crosses the cutoff. Where the model ends, or a block is missing, it closes on the block face. So a shell is always a closed solid, never an open sheet. With smoothing off it shows exactly the blockiness the model has, which is honest and a little ugly; \ui{light} is usually enough to make a shape that reads as geology without moving it far.
+The surface passes between block centers where the grade crosses the cutoff; micro traces it by marching tetrahedra \parencite{doi1991}. Where the model ends, or a block is missing, it closes on the block face. So a shell is always a closed solid, never an open sheet. With smoothing off it shows exactly the blockiness the model has, which is honest and a little ugly; \ui{light} is usually enough to make a shape that reads as geology without moving it far.
 
 \ui{only the filtered blocks} is how you make a shell within one domain: filter the model to \code{LITO = "HEMATITE"}, tick the box, and blocks of other lithologies count as outside whatever their grade.
 
@@ -212,7 +212,7 @@ Make a high-grade shell in the demo.
 \begin{enumerate}
 \item Right-click \file{deposit.csv} and choose \ui{Grade shell…}.
 \item Leave \ui{column} on \col{FE}, type \code{60} for the cutoff, and click \ui{Make shell}.
-\item The window reports \ui{62,232 triangles around 11,029 blocks}, close to the 11,013 blocks of the demo's \code{HEMATITE} core, and a layer \ui{FE ≥ 60 shell} appears. Hide \file{deposit.csv} with its eye (or press \key{h} with it active) to see the shell by itself.
+\item The window reports \ui{62,232 triangles around 11,029 blocks}: every block at or above 60\,\% Fe, which is the 11,013 of the demo's \code{HEMATITE} core and 16 itabirite blocks. A layer \ui{FE ≥ 60 shell} appears. Hide \file{deposit.csv} with its eye (or press \key{h} with it active) to see the shell by itself.
 \item Set \ui{smoothing} to \ui{light} and click \ui{Make shell} again. A second layer, \ui{FE ≥ 60 shell (smoothed ×1)}, appears with about half the triangles (32,212). Compare the two shells by toggling their eyes.
 \item Right-click a shell and choose \ui{Mesh QA / volume…}: it is watertight, and it has a volume.
 \end{enumerate}
