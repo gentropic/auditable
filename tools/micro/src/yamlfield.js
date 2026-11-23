@@ -107,15 +107,28 @@ function resolve(segs, lines, ctx) {
 const isExprKey = (key, n) => (n.kind === 'value' && n.spec.type === 'expr') || (EXPR_KEYS.has(key) && n.kind !== 'opaque');
 
 const layerNamed = (nm) => nm && S.layers.find((x) => x.name === nm || (x.label || x.name) === nm);
-function layerFor(lines, segs, ctx) {                       // the nearest `layer:` (or `model:`) up the path
-  for (let k = segs.length; k >= 0; k--) {
-    const p = segs.slice(0, k); if (typeof p[p.length - 1] === 'number' || !p.length || p[p.length - 1] === 'with') {
-      for (const key of ['layer', 'model']) { const L = layerNamed(valAt(lines, [...p, key])); if (L) return L; }
+// the layer a column (or expression) setting names columns of: the setting's schema says which layer
+// setting via `of` (gcGrade → gc, then model; prodPeriod → production; sampleGrade → samples); without
+// one, the nearest `layer:` (or `model:`) up the path. The recipe's own params (base) answer last.
+function layerFor(lines, segs, ctx, spec = null) {
+  const keys = spec && spec.of ? [].concat(spec.of) : ['layer', 'model'];
+  for (const key of keys) {
+    for (let k = segs.length; k >= 0; k--) {
+      const p = segs.slice(0, k); if (typeof p[p.length - 1] === 'number' || !p.length || p[p.length - 1] === 'with') {
+        const L = layerNamed(valAt(lines, [...p, key])); if (L) return L;
+      }
     }
+    const b = ctx.base() || {}; const Lb = layerNamed(b[key]); if (Lb) return Lb;
   }
+  if (spec && spec.of) { const b = ctx.base() || {}; return layerNamed(b.layer) || layerNamed(b.model) || null; }   // a stated `of` never guesses the active layer
   const b = ctx.base() || {};
   return layerNamed(b.layer) || layerNamed(b.model) || activeLayer();
 }
+// a layer's kind, as a layer setting's `kinds` names them
+const kindOf = (L) => {
+  const d = L.docs || {};
+  return d.gridDoc ? 'grid' : L.kind === 'mesh' || d.meshDoc ? 'mesh' : d.tableDoc ? 'table' : d.dhDoc ? 'drillholes' : d.blockDoc ? 'blocks' : 'points';
+};
 const colsOf = (L) => { const h = L && layerTableHeader(L); return h ? schemaExt(L, h) : []; };
 
 // ── highlight ──
@@ -201,7 +214,10 @@ function keyOptions(n, siblings, pad) {
   if (n.kind === 'step') {
     if (n.box) for (const k of BOX_KW) add(k, KW[k], 'keyword');
     else for (const k of Object.keys(KW)) add(k, KW[k], 'keyword');
-    if (def && (n.box || !siblings.has('with'))) for (const [k, sp] of Object.entries(def.params)) add(k, sp);
+    // a tool setting whose name is also a step keyword (filter, tolerance …) is offered only under
+    // `with:` — at the step's top level the keyword would take it (a step's filter: only filters an
+    // each block's rows), so offering it there invited a silently ignored setting
+    if (def && (n.box || !siblings.has('with'))) for (const [k, sp] of Object.entries(def.params)) if (!KW[k]) add(k, sp);
   } else if (n.kind === 'tool' || n.kind === 'item') for (const [k, sp] of Object.entries(n.schema || {})) add(k, sp);
   return out;
 }
@@ -210,8 +226,8 @@ function valueOptions(sp, f, lines, segs, typed) {
   const push = (v, kind, detail) => out.push({ value: String(v), kind, detail, insert: q(v) });
   if (sp.type === 'enum') for (const v of sp.values) push(v, 'value', 'one of');
   else if (sp.type === 'bool') for (const v of ['true', 'false']) out.push({ value: v, kind: 'keyword', insert: v });
-  else if (sp.type === 'layer') for (const L of S.layers) push(L.name, 'value', L.label && L.label !== L.name ? L.label : 'layer');
-  else if (sp.type === 'column') for (const c of colsOf(layerFor(lines, segs, ctx))) push(c.name, 'column', c.type);
+  else if (sp.type === 'layer') for (const L of S.layers) { if (sp.kinds && !sp.kinds.includes(kindOf(L))) continue; push(L.name, 'value', L.label && L.label !== L.name ? L.label : kindOf(L)); }
+  else if (sp.type === 'column') for (const c of colsOf(layerFor(lines, segs, ctx, sp))) push(c.name, 'column', c.type);
   else if (sp.type === 'tool') for (const t of toolList()) push(t.name, 'value', t.label);
   else if (sp.type === 'recipe') for (const r of S.recipes) if (r.tool !== 'routine') push(r.name, 'value', r.tool);
   if (['layer', 'column', 'string', 'expr', 'enum', 'any'].includes(sp.type)) for (const v of ctx.vars()) push('$' + v, 'function', 'variable');
@@ -252,7 +268,7 @@ function completionsAt(f) {
     const raw = line.slice(L.vs + 1, qe), rel = col - L.vs - 1;
     const vm = /\$\{?([\w.]*)$/.exec(raw.slice(0, rel));
     if (vm) return { from: caret - vm[0].length, to: caret, options: f.ctx.vars().filter((x) => x.startsWith(vm[1])).map((x) => ({ value: '$' + x, kind: 'function', detail: 'variable' })) };
-    const Ly = layerFor(all, parent, f.ctx);
+    const Ly = layerFor(all, parent, f.ctx, n.spec);
     const masked = raw.replace(/\\./g, (m) => ' ' + m[1]).replace(VAR_RE, (m) => '_'.repeat(m.length));
     const res = complete(masked, rel, { columns: colsOf(Ly), values: Ly && Ly === activeLayer() ? columnValues : undefined });
     const esc = v[0] === '"' ? (s) => s.replace(/"/g, '\\"') : (s) => s;
@@ -294,6 +310,18 @@ function lint(f) {
       probs.push({ li, msg: String(e.message).replace(/^\[rule [^\]]*\]\s*line \d+, col \d+:\s*/, '') });
     }
     const tool = f.ctx.tool();
+    // a step box (a recipe / tool step — an each block's own keys live elsewhere): a top-level key that is
+    // a STEP keyword is never a tool setting. One that collides with a tool setting (filter, tolerance …)
+    // would be taken by the step and the tool would never see it — say so, never ignore it silently.
+    if (f.box && obj && typeof obj === 'object' && !Array.isArray(obj)) {
+      const def = tool && toolDef(tool);
+      for (const k of Object.keys(obj)) {
+        if (!KW[k] || BOX_KW.includes(k) || k === 'as' || k === 'emit') continue;
+        const li = lines.findIndex((L) => L.path && L.key === k && eq(L.path, [k]));
+        if (li >= 0) mark(li, lines[li].ks, lines[li].ke);
+        probs.push({ li, msg: def && def.params[k] ? `${k}: at the step’s top level this is a step keyword, not the ${def.label || tool} setting — the tool would never see it; put it under with:` : `${k}: a step keyword a recipe / tool step doesn’t take${def ? ` (not a ${def.label || tool} setting either)` : ''}` });
+      }
+    }
     if (obj && typeof obj === 'object' && !Array.isArray(obj) && tool && toolDef(tool)) {
       const own = Object.fromEntries(Object.entries(obj).filter(([k]) => !STEP_KEYS.includes(k) && !KW[k]));
       const params = { ...(f.ctx.base() || {}), ...own, ...(obj.with && typeof obj.with === 'object' ? obj.with : {}) };

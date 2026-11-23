@@ -34,7 +34,7 @@ import { meshVertexData } from './records.js';
 import { numericColsOf, computeResourceTable, supportMeasure } from './analysis.js';
 import { validationRun } from './validation.js';
 import { scanContact, contactRows, contactValuesOf, contactChartSpec, contactHumanTSV, contactAmountCol } from './contact.js';
-import { scanFactors, factorsStOf, factorsTable, factorsValues, factorsChartSpec, factorsHumanTSV } from './factors.js';
+import { scanFactors, factorsStOf, factorsTable, factorsValues, factorsChartSpec, factorsHumanTSV, declaredDensity } from './factors.js';
 import { gradeUnitFactor, niceStep, scopeMask, scopeMissing, rangesFromCfg } from './analysis-ui.js';
 import { gtCuts } from './scanner.js';
 import { scanGTSeries, gtRows, gtChartSpec, gtHumanTSV } from './gt.js';
@@ -47,8 +47,11 @@ export function registerTool(name, def) { TOOLS.set(name, { name, ...def }); }
 export const toolDef = (name) => TOOLS.get(name) || null;
 
 // ── the schema ────────────────────────────────────────────────────────────────────────────────────
-// { type, default, doc, required, display, values (enum), item (list of objects), routine }
+// { type, default, doc, required, display, values (enum), item (list of objects), routine, of, kinds }
 //   type: layer | column | expr | number | int | numbers | string | enum | bool | list | object | any
+//   of: (column / expr) the layer setting(s) whose columns it names — a name or a list tried in order
+//   (gcGrade: ['gc', 'model']); absent = the nearest `layer` / `model`. The routine editor completes from it.
+//   kinds: (layer) the kinds of layer it takes — blocks | drillholes | mesh | grid | table | points
 //   display: true — accepted (windows save it) but not part of what the tool computes; dropped
 //   from the resolved params
 //   routine: 'required' — a routine must state it (an automatic value moves with the data, and a
@@ -125,7 +128,7 @@ export function checkParams(name, params, { routine = false } = {}) {
 
 // the tools, as plain data (a host lists them; the from-scratch form and the docs read the same)
 export function toolList() {
-  const plain = (schema) => Object.fromEntries(Object.entries(schema).filter(([, v]) => !v.display).map(([k, v]) => [k, { type: v.type, ...(v.required ? { required: true } : {}), ...(v.default !== undefined ? { default: v.default } : {}), ...(v.values ? { values: v.values.slice() } : {}), ...(v.doc ? { doc: v.doc } : {}), ...(v.routine ? { routine: Array.isArray(v.routine) ? v.routine.slice() : v.routine } : {}), ...(v.item ? { item: plain(v.item) } : {}) }]));
+  const plain = (schema) => Object.fromEntries(Object.entries(schema).filter(([, v]) => !v.display).map(([k, v]) => [k, { type: v.type, ...(v.required ? { required: true } : {}), ...(v.default !== undefined ? { default: v.default } : {}), ...(v.values ? { values: v.values.slice() } : {}), ...(v.doc ? { doc: v.doc } : {}), ...(v.routine ? { routine: Array.isArray(v.routine) ? v.routine.slice() : v.routine } : {}), ...(v.of ? { of: [].concat(v.of) } : {}), ...(v.kinds ? { kinds: v.kinds.slice() } : {}), ...(v.item ? { item: plain(v.item) } : {}) }]));
   return [...TOOLS.values()].map((t) => ({ name: t.name, label: t.label, params: plain(t.params), outputs: { key: (t.outputs && t.outputs.key || []).slice() } }));
 }
 
@@ -327,15 +330,16 @@ registerTool('swath', {
 registerTool('validation', {
   label: 'validation',
   params: {
-    model: { type: 'layer', required: true, doc: 'the block model' },
-    samples: { type: 'layer', required: true, doc: 'the drillhole layer' },
-    modelGrade: { type: 'column', required: true, doc: 'the model’s grade column' },
-    sampleGrade: { type: 'column', required: true, doc: 'the samples’ grade column' },
+    model: { type: 'layer', required: true, kinds: ['blocks'], doc: 'the block model' },
+    samples: { type: 'layer', required: true, kinds: ['drillholes'], doc: 'the drillhole layer' },
+    modelGrade: { type: 'column', required: true, of: 'model', doc: 'the model’s grade column (calc and painted columns count)' },
+    sampleGrade: { type: 'column', required: true, of: 'samples', doc: 'the samples’ grade column (calc and painted columns count)' },
     cell: { type: 'number', doc: 'the decluster cell (m); absent = the auto-sweep’s minimum-mean cell' },
     axis: { type: 'enum', values: ['X', 'Y', 'Z'], default: 'X', doc: 'the swath direction' },
-    bandW: { type: 'number', routine: 'required', why: 'an automatic band width comes from the extent and moves with it', doc: 'the swath band width' },
-    off: { type: 'number', doc: 'the swath band offset (default 0 when bandW is given)' },
-    filter: { type: 'expr', default: '', doc: 'a domain — one expression applied to the model AND the samples (its names must exist on both), e.g. LITO != "WASTE"' },
+    bandW: { type: 'number', routine: 'required', why: 'an automatic band width comes from the extent and moves with it', doc: 'the swath band width along axis, m — one number (absent: about 25 bands over the model’s extent, never narrower than a block)' },
+    off: { type: 'number', doc: 'where the band lattice starts along axis, m (default 0 when bandW is given; with bandW absent, the low end of the model’s extent)' },
+    filter: { type: 'expr', default: '', of: ['model', 'samples'], doc: 'a domain — one expression applied to the model AND the samples (its names must exist on both; derived columns count), e.g. LITO != "WASTE"' },
+    tolerance: { type: 'any', display: true },
   },
   outputs: { key: ['center'] },
   async scan(p) {
@@ -373,22 +377,23 @@ registerTool('contact', {
     mode: { type: 'enum', values: ['downhole', 'surface'], default: 'downhole', doc: 'downhole: transitions along each hole · surface: signed distance to a wireframe' },
     layer: { type: 'layer', doc: 'the layer series without their own layer read' },
     series: { type: 'list', item: SERIES, required: true, min: 1, doc: 'one curve per series: col, weight (× the support: an interval’s length, a block’s volume), filter' },
-    domain: { type: 'column', doc: 'downhole: the domain column (text) on the drillhole layer' },
+    domain: { type: 'column', doc: 'downhole: the domain column on the drillhole layer — text, or numeric domain codes' },
     domA: { type: 'string', doc: 'downhole: domain A — the negative side' },
     domB: { type: 'string', default: '', doc: 'downhole: domain B — the positive side (blank = any other domain)' },
     direction: { type: 'enum', values: ['both', 'AtoB', 'BtoA'], default: 'both', doc: 'downhole: both (pooled) · AtoB (A above B down the hole) · BtoA' },
     minRun: { type: 'number', default: 0, doc: 'downhole: each side’s run at least this long, m (skips slivers)' },
     maxGap: { type: 'number', doc: 'downhole: the widest unsampled gap a contact or a run may bridge, m (default: binWidth)' },
-    surface: { type: 'layer', doc: 'surface: the mesh layer — a closed solid (negative inside) or an open surface (negative below)' },
-    binWidth: { type: 'number', routine: 'required', why: 'the bins are what a check compares run to run', doc: 'bin width, m (default 2)' },
+    surface: { type: 'layer', kinds: ['mesh', 'grid'], doc: 'surface: a mesh layer — a closed solid (negative inside) or an open surface (negative below) — or a gridded surface (the VERTICAL distance, z − the surface’s z at x, y; negative below)' },
+    binWidth: { type: 'number', routine: 'required', why: 'the bins are what a check compares run to run', doc: 'bin width, m (absent: 2 down-hole, 5 to a surface — the window’s starting values)' },
     maxDist: { type: 'number', routine: 'required', why: 'the reach decides which records count', doc: 'how far from the contact each side, m (default 10 × binWidth)' },
     near: { type: 'int', default: 1, doc: 'bins each side that make “just inside / just outside” for step and ratio' },
     scope: { type: 'enum', values: ['all', 'filtered', 'selection'], default: 'all', routine: ['all'], why: 'a selection isn’t saved with the routine — use a series filter' },
+    gradeUnit: { type: 'string', default: '', doc: 'the unit the means are reported in; a series with a declared unit converts into it (as grade-tonnage and swath)' },
     ranges: { type: 'any', display: true },
   },
   outputs: { key: ['series', 'side', 'center'] },
-  chart: (scan, raw) => contactChartSpec(scan, { ranges: raw.ranges ? rangesFromCfg(raw.ranges) : null }),
-  human: (scan) => contactHumanTSV(scan),
+  chart: (scan, raw) => contactChartSpec(scan, { ranges: raw.ranges ? rangesFromCfg(raw.ranges) : null, gradeUnit: raw.gradeUnit || '' }),
+  human: (scan, raw) => contactHumanTSV(scan, (raw && raw.gradeUnit) || ''),
   check(p, errs) {
     if (!p.layer && p.series && p.series.some((s) => !s.layer)) errs.push('layer: a series without its own layer needs the tool’s layer');
     if (p.mode === 'downhole') { if (!p.domain) errs.push('domain: a downhole contact plot needs the domain column'); if (!p.domA) errs.push('domA: the domain whose contacts are tested'); }
@@ -399,21 +404,21 @@ registerTool('contact', {
   async scan(p, ctx) {
     const series = seriesSt(p);
     scopeCheck(p.scope, series.map((s) => layerById(s.layerId)));
-    const bw = p.binWidth || 2;
+    const bw = p.binWidth || (p.mode === 'downhole' ? 2 : 5);   // the window's starting bins
     const st = { mode: p.mode, series, binWidth: bw, maxDist: p.maxDist || 10 * bw, scope: p.scope, domain: p.domain, domA: p.domA, domB: p.domB, direction: p.direction, minRun: p.minRun, maxGap: p.maxGap,
       surfaceId: p.mode === 'surface' ? layerNamed(p.surface).id : null };
     return scanContact(st, ctx.progress, ctx.signal);
   },
   shape(scan, p) {
-    const amt = contactAmountCol(scan), rows = contactRows(scan);
+    const amt = contactAmountCol(scan), rows = contactRows(scan, p.gradeUnit);
     const warnings = [];
     for (const se of scan.series) {
       if (scan.mode === 'downhole' && !se.contacts) warnings.push(`${se.L.label || se.L.name}: no ${p.domA} contact${p.domB ? ` with ${p.domB}` : ''} found`);
       if (scan.mode === 'surface' && !se.counted) warnings.push(`${se.L.label || se.L.name}: nothing within ${scan.maxDist} m of the surface`);
     }
     return {
-      table: { columns: ['series', 'side', 'center', 'mean', amt, 'count'], key: ['series', 'side', 'center'], rows: rows.map((r) => [r.series, r.side, r.center, r.mean, r.amount, r.count]), units: { center: 'm', [amt]: scan.mode === 'downhole' ? 'm' : '' } },
-      values: contactValuesOf(scan, p.near || 1), resolved: { ...p, binWidth: scan.bw, maxDist: scan.maxDist }, warnings, where: scan.where,
+      table: { columns: ['series', 'side', 'center', 'mean', amt, 'count'], key: ['series', 'side', 'center'], rows: rows.map((r) => [r.series, r.side, r.center, r.mean, r.amount, r.count]), units: { center: 'm', mean: unitLabel(p.gradeUnit), [amt]: scan.mode === 'downhole' ? 'm' : '' } },
+      values: contactValuesOf(scan, p.near || 1, p.gradeUnit), resolved: { ...p, binWidth: scan.bw, maxDist: scan.maxDist }, warnings, where: scan.where,
     };
   },
 });
@@ -421,16 +426,17 @@ registerTool('contact', {
 // ── reconciliation factors: totals inside the mined volume, per period ──────────────────────────
 // F1 = grade control / resource model, F2 = mill / grade control, F3 = mill / resource model (= F1 × F2),
 // each for tonnes, grade and metal (metal = tonnes × grade × metalFactor, so F_metal = F_t × F_g).
-// The mined volume per period: a period column on the blocks, one mesh per period (a solid's inside or
-// an open pit surface's above, partial blocks by their fraction; nested = each period is its volume
-// minus the one before), or a filter (one period). Production: a table layer matched by period name.
+// The mined volume per period: a period column on the blocks, one volume per period (a closed solid's
+// inside / outside, an open pit surface's or a gridded surface's above / below — the topology decides —
+// partial blocks by their fraction; nested, the default = each period is its volume minus the one
+// before), or a filter (one period). Production: a table layer matched by period name.
 // table, key [period, quantity] (quantity: tonnes | grade | metal): model, gc, mill, f1, f2, f3 for the
 // period and c_model … c_f3 to date (tonnes and metal summed over this period and every earlier one;
 // the to-date mill — so c_f2 / c_f3 — is blank from the first period without production).
 // values (the LAST period in order): f1_t f1_g f1_m, f2_*, f3_*, model_* gc_* mill_* (t g m), and the
 // same to date with a c_ prefix (c_f1_t …); periods = how many. Blanks stay blank: a check reading
 // one is "not evaluated" (a month without production yet is not a pass).
-const DENSITY_DOC = '{ col: SG } a density column, or { const: 2.7 }; unit t/m3 (default), kg/m3, lb/ft3';
+const DENSITY_DOC = '{ col: SG } a density column (or expression), or { const: 2.7 }; unit t/m3 (default) = g/cm3, kg/m3, lb/ft3';
 const densityShape = (d, path, errs) => {
   if (d == null) return;
   if (typeof d === 'number') { if (!(d > 0)) errs.push(`${path}: a positive number`); return; }
@@ -440,31 +446,31 @@ const densityShape = (d, path, errs) => {
 registerTool('factors', {
   label: 'reconciliation factors',
   params: {
-    model: { type: 'layer', required: true, doc: 'the resource (long-range) block model — F1 and F3’s denominator' },
-    grade: { type: 'column', required: true, doc: 'the resource model’s grade column' },
+    model: { type: 'layer', required: true, kinds: ['blocks'], doc: 'the resource (long-range) block model — F1 and F3’s denominator' },
+    grade: { type: 'column', required: true, of: 'model', doc: 'the resource model’s grade column' },
     modelUnit: { type: 'string', default: '', doc: 'its grade unit (pct, g/t, ppm …) — converts into gradeUnit' },
-    density: { type: 'any', routine: 'required', why: 'tonnes are volume × density — a routine states which', doc: `the resource model’s density: ${DENSITY_DOC}` },
-    gc: { type: 'layer', doc: 'the grade-control (short-range) block model; absent = the model layer itself (its other columns)' },
-    gcGrade: { type: 'column', doc: 'grade control’s grade column (default: grade)' },
+    density: { type: 'any', routine: 'required', why: 'tonnes are volume × density — a routine states which', doc: `the resource model’s density: ${DENSITY_DOC}. Absent (outside a routine): the density the layer declares in grade-tonnage, with its unit` },
+    gc: { type: 'layer', kinds: ['blocks'], doc: 'the grade-control (short-range) block model; absent = the model layer itself (its other columns)' },
+    gcGrade: { type: 'column', of: ['gc', 'model'], doc: 'grade control’s grade column (default: grade)' },
     gcUnit: { type: 'string', doc: 'its grade unit (default: modelUnit)' },
-    gcDensity: { type: 'any', doc: 'grade control’s density (default: density)' },
+    gcDensity: { type: 'any', doc: 'grade control’s density (default: what gc declares in grade-tonnage, else density)' },
     periods: { type: 'enum', values: ['column', 'volumes', 'filter', 'selection'], default: 'column', routine: ['column', 'volumes', 'filter'], why: 'a selection isn’t saved with the routine — use a period column, volumes or a filter', doc: 'how the mined volume per period is known: a period column on the blocks · a mesh per period · a filter (one period) · the 3D selection (one period)' },
-    periodCol: { type: 'column', doc: 'periods column: the column naming the period each block was mined in (blank = not mined) — on both models' },
-    volumes: { type: 'list', item: { name: { type: 'string', required: true, doc: 'the period’s name (production rows match it)' }, mesh: { type: 'layer', required: true, doc: 'a closed solid or an open pit surface' }, side: { type: 'enum', values: ['inside', 'above', 'below'], default: 'inside', doc: 'inside (a solid) · above (a pit surface: what was mined from it up) · below' } }, doc: 'periods volumes: one mesh per period, in order — blocks counted by the fraction inside' },
-    nested: { type: 'bool', default: false, doc: 'periods volumes: each volume holds the ones before it (pit phases, cumulative shells) → period k = volume k minus volume k − 1' },
-    probes: { type: 'any', default: [2, 2, 2], doc: 'periods volumes: probes per block along x, y, z for the fraction inside — [3, 3, 2] for benches; a single n means n × n × n; [1, 1, 1] tests the centroid' },
-    periodFilter: { type: 'expr', doc: 'periods filter: the blocks mined (an expression; its names must exist on both models)' },
+    periodCol: { type: 'column', of: 'model', doc: 'periods column: the column naming the period each block was mined in (blank = not mined) — on both models' },
+    volumes: { type: 'list', item: { name: { type: 'string', required: true, doc: 'the period’s name (production rows match it)' }, mesh: { type: 'layer', required: true, kinds: ['mesh', 'grid'], doc: 'a closed solid, an open pit surface, or a gridded surface' }, side: { type: 'enum', values: ['inside', 'outside', 'above', 'below'], doc: 'by the volume’s topology — a closed solid: inside (default) · outside; an open surface or a grid: above (default — a pit, mined from it up) · below. A side that doesn’t fit is an error' } }, doc: 'periods volumes: one solid or surface per period, in order — blocks counted by the fraction inside' },
+    nested: { type: 'bool', default: true, doc: 'periods volumes: each volume holds the ones before it (pit phases, cumulative shells) → period k = volume k minus volume k − 1; false = each volume counted whole' },
+    probes: { type: 'any', default: [3, 3, 3], doc: 'periods volumes: probes per block along x, y, z for the fraction inside — [3, 3, 2] for benches; a single n means n × n × n; [1, 1, 1] tests the centroid' },
+    periodFilter: { type: 'expr', of: 'model', doc: 'periods filter: the blocks mined (an expression; its names must exist on both models)' },
     periodName: { type: 'string', default: 'period', doc: 'periods filter / selection: the period’s name' },
-    filter: { type: 'expr', default: '', doc: 'an optional domain filter on both models, any period mode (e.g. LITO == "ORE")' },
-    production: { type: 'layer', doc: 'the production (mill) table layer — no X/Y/Z, one or more rows per period; absent = F1 only' },
-    prodPeriod: { type: 'column', doc: 'its period column' },
-    prodTonnes: { type: 'column', doc: 'its tonnes column' },
-    prodGrade: { type: 'column', doc: 'its grade column (or prodMetal, or both — a stated metal is used as stated, and a mismatch with tonnes × grade × metalFactor warns)' },
-    prodMetal: { type: 'column', doc: 'its metal column, in the metal unit' },
+    filter: { type: 'expr', default: '', of: 'model', doc: 'an optional domain filter on both models, any period mode (e.g. LITO == "ORE")' },
+    production: { type: 'layer', kinds: ['table'], doc: 'the production (mill) table layer — no X/Y/Z, one or more rows per period; absent = F1 only' },
+    prodPeriod: { type: 'column', of: 'production', doc: 'its period column' },
+    prodTonnes: { type: 'column', of: 'production', doc: 'its tonnes column' },
+    prodGrade: { type: 'column', of: 'production', doc: 'its grade column (or prodMetal, or both — a stated metal is used as stated, and a mismatch with tonnes × grade × metalFactor warns)' },
+    prodMetal: { type: 'column', of: 'production', doc: 'its metal column, in the metal unit' },
     prodUnit: { type: 'string', doc: 'its grade unit (default: gradeUnit)' },
     cutoff: { type: 'any', routine: 'required', why: 'a factor at another cutoff is another factor — state it, or "none"', doc: 'blocks at or above it count, in gradeUnit; "none" = every block' },
     gradeUnit: { type: 'string', default: '', doc: 'the report grade unit; declared, metal is in tonnes of metal (% → × 0.01, g/t → × 1e-6) unless metalFactor says otherwise' },
-    metalFactor: { type: 'number', doc: 'metal = tonnes × grade × this (e.g. 1/31.1035 for g/t → oz); absent = from gradeUnit, or 1' },
+    metalFactor: { type: 'number', doc: 'metal = tonnes × grade × this, a number (0.0321507 = 1/31.1035 for g/t → troy oz); absent = from gradeUnit (% → 0.01, g/t → 1e-6, metal in tonnes), or 1' },
     metalUnit: { type: 'string', display: true }, tolerance: { type: 'any', display: true }, show: { type: 'any', display: true }, cumulative: { type: 'any', display: true }, ranges: { type: 'any', display: true },
   },
   outputs: { key: ['period', 'quantity'] },
@@ -473,7 +479,10 @@ registerTool('factors', {
   check(p, errs) {
     if (p.cutoff != null && p.cutoff !== 'none' && !(typeof p.cutoff === 'number' && Number.isFinite(p.cutoff))) errs.push('cutoff: a number (in gradeUnit) or "none"');
     densityShape(p.density, 'density', errs); densityShape(p.gcDensity, 'gcDensity', errs);
-    if (p.density == null && !p.gcDensity) errs.push('density: tonnes need a density — { col: SG } or { const: 2.7 }');
+    if (p.density == null && !p.gcDensity) {
+      const ML = p.model && S.layers.find((x) => x.name === p.model || (x.label || x.name) === p.model);
+      if (!(ML && declaredDensity(ML))) errs.push('density: tonnes need a density — { col: SG } or { const: 2.7 } (or one declared for the layer in grade-tonnage)');
+    }
     if (p.periods === 'column' && !p.periodCol) errs.push('periodCol: the column naming each block’s period (periods: column)');
     if (p.periods === 'volumes' && !(Array.isArray(p.volumes) && p.volumes.length)) errs.push('volumes: one { name, mesh, side } per period (periods: volumes)');
     if (p.periods === 'filter' && !p.periodFilter) errs.push('periodFilter: the expression keeping the mined blocks (periods: filter)');
@@ -486,7 +495,7 @@ registerTool('factors', {
     return {
       table: { ...factorsTable(scan), units: { quantity: `tonnes: t · grade: ${unitLabel(p.gradeUnit) || 'as stated'} · metal: ${scan.metalUnit}` } },
       values: factorsValues(scan),
-      resolved: { ...p, cutoff: scan.cutoff == null ? 'none' : scan.cutoff, metalFactor: scan.mf },
+      resolved: { ...p, cutoff: scan.cutoff == null ? 'none' : scan.cutoff, metalFactor: scan.mf, ...(Array.isArray(p.volumes) && scan.sides ? { volumes: p.volumes.map((v, i) => ({ ...v, side: scan.sides[i] || v.side })) } : {}) },
       warnings: scan.warnings, where: scan.where,
     };
   },
@@ -496,14 +505,15 @@ registerTool('factors', {
 registerTool('resource', {
   label: 'resource table',
   params: {
-    layer: { type: 'layer', required: true },
+    layer: { type: 'layer', required: true, kinds: ['blocks'] },
     grade: { type: 'column', required: true },
     cutoffs: { type: 'numbers', required: true, doc: 'the cutoffs (a resource statement always states them)' },
     density: { type: 'any', doc: '{ col } a density column, or { const } a value; unit (t/m3, g/cm3, kg/m3, lb/ft3)' },
     groupBy: { type: 'any', doc: 'up to two category columns (domain × class)' },
-    metalFactor: { type: 'number', default: 1, doc: 'metal = tonnes × grade × this (1/100 for % → t, 1/31.1035 for g/t → oz)' },
+    gradeUnit: { type: 'string', default: '', doc: 'the grade’s unit (pct or %, g/t, ppm …) — declared, it sets the metal factor as the factors tool does: metal in tonnes (% → × 0.01, g/t → × 1e-6) unless metalFactor says otherwise' },
+    metalFactor: { type: 'number', doc: 'metal = tonnes × grade × this, a number (0.0321507 = 1/31.1035 for g/t → troy oz); absent = from gradeUnit, or 1' },
     scope: { type: 'enum', values: ['all', 'filter'], default: 'all', routine: ['all'], why: 'the layer’s current filter isn’t saved with the routine' },
-    metalUnit: { type: 'string', display: true }, gradeUnit: { type: 'string', display: true }, title: { type: 'string', display: true },
+    metalUnit: { type: 'string', display: true }, title: { type: 'string', display: true },
   },
   outputs: { key: ['cutoff'] },
   check(p, errs) {
@@ -515,7 +525,7 @@ registerTool('resource', {
     const L = layerNamed(p.layer);
     columnCheck(L, p.grade, 'grade');
     const mask = p.scope === 'filter' && L.filterExpr ? L._filterMask : null;
-    return computeResourceTable(L, { grade: p.grade, cutoffs: p.cutoffs, density: p.density, groupBy: p.groupBy, metalFactor: p.metalFactor, mask }, ctx.progress);
+    return computeResourceTable(L, { grade: p.grade, cutoffs: p.cutoffs, density: p.density, groupBy: p.groupBy, metalFactor: p.metalFactor, metalUnit: p.metalUnit, gradeUnit: p.gradeUnit, mask }, ctx.progress);
   },
   shape(r, p) {
     const g = (p.groupBy || []).filter(Boolean).slice(0, 2);
@@ -523,8 +533,8 @@ registerTool('resource', {
     // group called "total") — they're the sum of their cutoff's rows
     const rows = r.rows.filter((row) => !(g.length && row[1] === 'total' && row.slice(2, 1 + g.length).every((x) => x === '')));
     return {
-      table: { columns: r.columns, key: ['cutoff', ...g], rows, units: { tonnes: 't' } },
-      values: {}, resolved: { ...p }, warnings: [],
+      table: { columns: r.columns, key: ['cutoff', ...g], rows, units: { tonnes: 't', grade: unitLabel(p.gradeUnit), metal: r.metalUnit } },
+      values: {}, resolved: { ...p, metalFactor: r.mf }, warnings: [],
     };
   },
 });
@@ -591,7 +601,7 @@ registerTool('gridexport', {
     format: { type: 'enum', values: GRID_EXPORT_FMTS.map((f) => f.id), default: 'asc', doc: 'asc · tif (GeoTIFF float32) · grd7 / grd6 (Surfer binary) · dsaa (Surfer ASCII) · flt (zipped .flt + .hdr) · xyz (nodes)' },
     band: { type: 'int', doc: '1-based band of a multi-band GeoTIFF (default: the band shown)' },
     nodata: { type: 'number', doc: 'the value an empty cell is written as (default: the grid’s own, else -9999; Surfer formats always blank with 1.70141e38)' },
-    decimals: { type: 'int', doc: 'text formats: digits after the point (default: float32-exact)' },
+    decimals: { type: 'int', doc: 'text formats: digits after the point, 0–12 (absent: float32-exact — the shortest text that reads back the same float32)' },
     out: { type: 'string', doc: 'the file name (default: the layer’s, with the format’s extension)' },
     delim: { type: 'enum', values: [',', 'tab', ' '], default: ',', doc: 'xyz: the delimiter' },
     header: { type: 'bool', default: true, doc: 'xyz: a header row' },
@@ -602,6 +612,7 @@ registerTool('gridexport', {
     tiles: { type: 'bool', default: false, doc: 'tif: 256×256 tiles instead of strips' },
   },
   outputs: { key: [] },
+  check(p, errs) { if (p.decimals != null && !(p.decimals >= 0 && p.decimals <= 12)) errs.push('decimals: a whole number 0–12 (absent: float32-exact)'); },
   async scan(p) {
     const L = layerNamed(p.layer);
     if (!(L.docs && L.docs.gridDoc)) throw new Error(`${L.label || L.name} is not a grid`);

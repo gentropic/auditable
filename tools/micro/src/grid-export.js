@@ -173,7 +173,11 @@ export function openGridExportDialog(L) {
   const band = field('band', 'band', sel(Array.from({ length: nb }, (_, i) => [String(i), `band ${i + 1}${i === gridBandOf(L) ? ' (shown)' : ''}`])));
   band.value = String(gridBandOf(L));
   const nodata = field('nodata', 'nodata', Object.assign(document.createElement('input'), { type: 'text', spellcheck: false, value: String(defaultNodata(g0)), title: 'the value an empty cell is written as (nan allowed for binary formats)' }));
-  const dec = field('decimals', 'decimals', sel([['exact', 'exact (float32, shortest)'], ...[0, 1, 2, 3, 4, 6].map((d) => [String(d), `${d}`])]));
+  // "exact" (blank) = float32-exact, shortest; or a whole number of digits, 0–12 (what the tool takes)
+  const dec = field('decimals', 'decimals', Object.assign(document.createElement('input'), { type: 'text', spellcheck: false, value: 'exact', placeholder: 'exact or 0–12', title: 'digits after the point, a whole number 0–12 — or exact: the shortest text that reads back the same float32' }));
+  dec.dataset.decimals = '1';
+  const decOf = () => { const t = dec.value.trim().toLowerCase(); if (t === '' || t === 'exact') return null; return /^\d+$/.test(t) && +t <= 12 ? +t : NaN; };
+  dec.oninput = () => dec.classList.toggle('bad-in', Number.isNaN(decOf()));
   const delim = field('delim', 'delimiter', sel([[',', 'comma (.csv)'], ['\t', 'tab (.txt)'], [' ', 'space (.xyz)']]));
   const vname = field('vname', 'value column', Object.assign(document.createElement('input'), { type: 'text', spellcheck: false, value: 'z' }));
   const comp = field('comp', 'compression', sel([['deflate3', 'deflate + predictor 3 (smallest)'], ['deflate', 'deflate'], ['none', 'none']]));
@@ -209,10 +213,11 @@ export function openGridExportDialog(L) {
   const msg = $('#geDlgMsg'); msg.textContent = '';
   const close = () => { $('#geDlg').classList.remove('show'); $('#geGo').onclick = $('#geNot').onclick = $('#geCancel').onclick = null; };
   $('#geGo').onclick = async () => {
+    if (fmtOf(fmt.value).decimals && Number.isNaN(decOf())) { dec.classList.add('bad-in'); msg.textContent = `decimals “${dec.value.trim()}”: exact, or a whole number 0–12`; return; }
     _lastFmt = fmt.value;
     const opts = {
       format: fmt.value, band: +band.value, nodata: nodata.value, name: nameIn.value,
-      decimals: dec.value === 'exact' ? null : +dec.value,
+      decimals: Number.isNaN(decOf()) ? null : decOf(),
       delim: delim.value, valueName: vname.value, header: header.checked, skipEmpty: skip.checked,
       compression: comp.value === 'none' ? 'none' : 'deflate', predictor: comp.value === 'deflate3' ? 3 : 1, layout: layout.value,
     };

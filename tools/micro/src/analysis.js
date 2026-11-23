@@ -5,10 +5,38 @@
 // rows come from there); ensureStoredValues faults evicted matcols back in at
 // every scan head. No DOM — the windows drive these and own the drawing.
 import { convert as unitConvert } from '../../../ext/units/index.js';
-import { layerTableHeader, colIsNumeric, schemaExt, layerRecords, attrRowCountOf, numOf } from './records.js';
+import { layerTableHeader, colIsNumeric, schemaExt, layerRecords, attrRowCountOf, numOf, extendRow } from './records.js';
 import { ensureStoredValues } from './columns.js';
 import { gridAxesOf } from './grid-ops.js';
 import { coordNum } from '../../../ext/condenser/src/main.js';
+
+// ── the metal factor: ONE rule for every metal = tonnes × grade × factor (factors, the resource table) ──
+// A typed factor: a plain number or a simple fraction a/b ("1/31.1035" for g/t → oz). Blank → null
+// (absent: the rule below decides); anything else → NaN, which callers REFUSE (never a silent fallback).
+export function parseFactor(v) {
+  if (v == null) return null;
+  if (typeof v === 'number') return Number.isFinite(v) && v > 0 ? v : NaN;
+  const s = String(v).trim();
+  if (!s) return null;
+  const num = /^[+]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
+  if (num.test(s)) return +s > 0 ? +s : NaN;
+  const m = /^(.+?)\s*\/\s*(.+)$/.exec(s);
+  if (m && num.test(m[1].trim()) && num.test(m[2].trim()) && +m[2] > 0 && +m[1] > 0) return +m[1] / +m[2];
+  return NaN;
+}
+// a grade unit as @gcu/units spells it (the windows offer pct; a typed "%" means the same)
+export const unitKey = (u) => { const s = String(u || '').trim(); return s === '%' ? 'pct' : s; };
+// { metalFactor?, metalUnit?, gradeUnit? } → { mf, unit, auto }: a stated factor wins (its unit as
+// stated); else a declared grade unit gives tonnes of metal (% → × 0.01, g/t and ppm → × 1e-6);
+// else 1, the metal in "grade·t". A stated factor that isn't a positive number or a/b throws.
+export function metalFactorOf(st) {
+  const f = parseFactor(st.metalFactor);
+  if (Number.isNaN(f)) throw new Error(`metal factor “${st.metalFactor}”: a positive number or a fraction such as 1/31.1035`);
+  if (f != null) return { mf: f, unit: st.metalUnit || '', auto: false };
+  const gu = unitKey(st.gradeUnit);
+  if (gu) { try { return { mf: unitConvert(1, gu, 'fraction'), unit: 't', auto: true }; } catch { /* an undeclared unit → 1 */ } }
+  return { mf: 1, unit: `${gu === 'pct' ? '%' : gu || 'grade'}·t`, auto: true };
+}
 
 export function numericColsOf(L) {
   const h = layerTableHeader(L); if (!h) return []; const m = h.mapping || {};
@@ -149,13 +177,22 @@ export async function computeSwath(L, cols, dir, bandWidth, offset, weightCol, o
   return { profile, weighted: wi >= 0 };
 }
 // drillhole samples for validation: desurveyed interval midpoints + one grade
+// The grade and the filter resolve against the FULL census (schemaExt) on the extended row, the way
+// the model side does — a calc (ƒ) sample grade or a painted domain flag is a column like any other.
+// rowPred is compiled against schemaExt(D) too. Materialized inputs must be resident (validationRun
+// faults them in before calling this).
 export function extractSamples(D, gradeCol, rowPred = null) {   // rowPred: an optional domain filter over the intervals
   const dh = D.docs && D.docs.dhDoc, h = layerTableHeader(D); if (!dh || !h) return [];
-  const gi = h.columns.indexOf(gradeCol); if (gi < 0) return [];
+  const census = schemaExt(D, h);
+  let gi = census.findIndex((c) => c.name === gradeCol);
+  if (gi < 0) gi = census.findIndex((c) => c.name.toLowerCase() === String(gradeCol).toLowerCase());
+  if (gi < 0) return [];
+  const derived = gi >= h.columns.length || !!rowPred;      // only extend the row when something reads past the raw columns
   const n = attrRowCountOf(D), rows = [];
   for (let r = 0; r < n; r++) {
     const pos = dh.recordPosition(r); if (!pos) continue;
-    const rec = dh.fetchRecord(r); if (!rec) continue;
+    const raw = dh.fetchRecord(r); if (!raw) continue;
+    const rec = derived ? extendRow(D, raw, r) : raw;
     if (rowPred) { let keep = false; try { keep = !!rowPred(rec); } catch { keep = false; } if (!keep) continue; }
     const g = numOf(rec[gi]); if (Number.isFinite(g)) rows.push([pos[0], pos[1], pos[2], g]);
   }
@@ -184,9 +221,10 @@ export function computeSampleSwath(samples, weights, dir, bandWidth, offset) {
 // ── the RESOURCE TABLE: tonnes, grade and metal above each cutoff, by up to two categories
 // (domain × class) — the table a resource statement is. Tonnes = volume × density, the volume
 // per record (sub-blocked aware), the density a column or a constant (a declared unit → t/m³).
-// Metal = tonnes × grade × metalFactor (e.g. 1/31.1035 for g/t → oz, 1/100 for % → t).
+// Metal = tonnes × grade × metalFactor — stated, or from the declared gradeUnit (metalFactorOf:
+// % → × 0.01, g/t → × 1e-6, metal in tonnes), or 1.
 // p: { grade, cutoffs: [..], density: { col? | const?, unit? }, groupBy: [col, col?],
-//   metalFactor = 1, mask } → { columns, rows } (rows: cutoff, groups…, tonnes, grade, metal;
+//   metalFactor?, gradeUnit?, mask } → { columns, rows } (rows: cutoff, groups…, tonnes, grade, metal;
 //   a "total" row after each cutoff's groups when there are groups)
 export async function computeResourceTable(L, p, onProgress) {
   const groupBy = (p.groupBy || []).filter(Boolean).slice(0, 2), cutoffs = (p.cutoffs || [0]).map(Number).filter(Number.isFinite).sort((a, b) => a - b);
@@ -199,7 +237,8 @@ export async function computeResourceTable(L, p, onProgress) {
   const di = dens.col ? at(dens.col) : -1; if (dens.col && di < 0) throw new Error(`resource table: no density column “${dens.col}”`);
   const ki = groupBy.map((c) => { const i = at(c); if (i < 0) throw new Error(`resource table: no column “${c}”`); return i; });
   const dScale = dens.unit ? unitConvert(1, dens.unit, 't/m3') : 1, dConst = dens.const != null && Number.isFinite(+dens.const) ? +dens.const : 1;
-  const vc = volumeContextOf(L), mask = p.mask || null, mf = Number.isFinite(+p.metalFactor) && +p.metalFactor > 0 ? +p.metalFactor : 1;
+  const vc = volumeContextOf(L), mask = p.mask || null;
+  const { mf, unit: metalUnit, auto: mfAuto } = metalFactorOf(p);   // stated, or from the declared grade unit (as the factors tool)
   const acc = new Map();                                    // "cutoff|g1|g2" → { t, tg }
   let rc = 0;
   for await (const { f, rec } of layerRecords(L)) {
@@ -228,5 +267,5 @@ export async function computeResourceTable(L, p, onProgress) {
     if (groupBy.length && keys.length > 1) rows.push([c, 'total', ...groupBy.slice(1).map(() => ''), T, T > 0 ? TG / T : NaN, TG * mf]);
     if (!keys.length) rows.push([c, ...groupBy.map(() => '—'), 0, NaN, 0]);
   }
-  return { columns, rows, records: rc };
+  return { columns, rows, records: rc, mf, metalUnit, mfAuto };
 }

@@ -236,6 +236,11 @@ export function routineCheckStep(st) {                            // inline step
   if (!st.recipe && st.tool && (!RECIPE_TOOLS[st.tool] || st.tool === 'routine')) {
     throw new Error(`unknown tool "${st.tool}" (inline steps take ${Object.keys(RECIPE_TOOLS).filter((t) => t !== 'routine').join(' / ')})`);
   }
+  // a step's own `filter:` filters an each block's ROWS; on a recipe / tool step it is nobody's — the
+  // tool never sees it (routineStepOp keeps step keywords out of the settings). Refuse, never drop it.
+  if ((st.recipe || st.tool) && st.filter !== undefined) {
+    throw new Error(`step “${st.as || st.recipe || st.tool}”: filter at the step’s top level is a step keyword (it filters an each block’s rows), not the tool’s setting — put it under with:`);
+  }
 }
 
 // `each` is a STEP, and its body is steps — so an each INSIDE an each simply

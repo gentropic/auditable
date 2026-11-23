@@ -160,3 +160,23 @@ export function contactBinRows(bins, bw, sideNames) {
     return { side: k < 0 ? sideNames[0] : sideNames[1], center: binCenter(k, bw), mean: e.w > 0 ? e.wv / e.w : NaN, support: e.s, weight: e.w, count: e.n };
   });
 }
+
+// a gridded surface (a heightfield, z = sample(x, y)): the signed VERTICAL distance — z minus the
+// surface's z at (x, y), so below is negative (the open-surface convention). NaN off the grid or
+// past maxDist. For a gently dipping surface this is the distance a bench sees; on a steep one it is
+// longer than the true (nearest-point) distance by 1 / cos(dip).
+export function gridSignedDistance(sampleZ, x, y, z, maxDist = Infinity) {
+  const zs = sampleZ(x, y);
+  if (!Number.isFinite(zs)) return NaN;
+  const d = z - zs;
+  return Math.abs(d) > maxDist ? NaN : d;
+}
+
+// the values of contactValues in another grade unit: means, steps and slopes scale by f (ratios and
+// counts don't)
+export function scaleContactValues(v, f) {
+  if (f === 1) return v;
+  const out = { ...v };
+  for (const k of ['mean_inside', 'mean_outside', 'step', 'slope_inside', 'slope_outside', 'mean_all_inside', 'mean_all_outside']) out[k] = v[k] * f;
+  return out;
+}

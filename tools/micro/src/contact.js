@@ -17,9 +17,9 @@ import { nearestBVH, orientTriangles, pseudoNormals, sideOf } from '../../../ext
 import { windingBVH } from '../../../ext/winding/index.js';
 import { numericColsOf, volumeContextOf, blockVolumeOf } from './analysis.js';
 import { canScanColumnar, scanColumnar } from './colscan.js';
-import { meshSolidOf, solidOrientedMesh, layerPositions } from './bygeom.js';
-import { gridAxesOf } from './grid-ops.js';
-import { SERIES_COLORS, analysisSerCfg, analysisSerRestore, applyAnalysisGeo, checkAbort, fmtStat, plotChart, plotExportBtns, rangesForCfg, rangesFromCfg, rangesOf, rangesRow, runCancellable, saveAnalysisCfg, scanProgressText, scopeMask, scopeMissing, setAnalysisOpen } from './analysis-ui.js';
+import { meshSolidOf, solidOrientedMesh, layerPositions, residentGridForEval, targetsXYBbox } from './bygeom.js';
+import { gridAxesOf, surfaceFromGrid } from './grid-ops.js';
+import { SERIES_COLORS, analysisSerCfg, analysisSerRestore, applyAnalysisGeo, checkAbort, fmtStat, gradeUnitFactor, gradeUnitSel, plotChart, plotExportBtns, rangesForCfg, rangesFromCfg, rangesOf, rangesRow, runCancellable, saveAnalysisCfg, scanProgressText, scopeMask, scopeMissing, setAnalysisOpen } from './analysis-ui.js';
 import { floatWin, focusWindow } from './windows.js';
 import { saveRecipe } from './recipes.js';
 import { matColSet, ensureStoredValues } from './columns.js';
@@ -27,21 +27,26 @@ import { persistElement } from './element-store.js';
 import { mkLineage } from './lineage.js';
 import { markProjectDirty } from './project.js';
 import { microPrompt } from './prompts.js';
-import { downholeContacts, binRecord, contactValues, contactBinRows } from './contact-core.js';
+import { downholeContacts, binRecord, contactValues, contactBinRows, gridSignedDistance, scaleContactValues } from './contact-core.js';
 const $ = (s) => document.querySelector(s);
 
 // ── what can take part ────────────────────────────────────────────────────────
 export const isDhLayer = (L) => !!(L && L.dh && L.docs && L.docs.dhDoc && !L.trace);
 export const isBlockLayer = (L) => !!(L && L.docs && L.docs.blockDoc && gridAxesOf(L));
-export const contactSurfaces = () => S.layers.filter((L) => L.kind === 'mesh' && L.docs && L.docs.meshDoc && !L.docs.meshDoc.header.soup);
-// the text columns a domain can come from: the table's text columns (not the hole id), painted
-// category columns and text ƒ columns
+export const isGridLayer = (L) => !!(L && L.docs && L.docs.gridDoc && L.docs.gridDoc.grid);
+// what a contact can be measured to: a context-tier mesh (solid or surface) or a gridded surface
+export const contactSurfaces = () => S.layers.filter((L) => (L.kind === 'mesh' && L.docs && L.docs.meshDoc && !L.docs.meshDoc.header.soup) || isGridLayer(L));
+// the columns a domain can come from — TEXT first (the table's text columns, painted category
+// columns, text ƒ columns), then NUMERIC ones (domain codes: 1 = ore, 2 = waste …; numeric ƒ and
+// ratio columns); never the hole id, FROM, TO or the coordinates
 export function categoryColsOf(L) {
   const h = layerTableHeader(L); if (!h) return [];
-  const im = (L.docs.dhDoc && L.docs.dhDoc.header.intervalMapping) || {};
-  const skip = new Set([im.bhid, im.from, im.to]);
-  const base = h.columns.filter((_, i) => !skip.has(i) && !colIsNumeric(L, h, i));
-  return [...base, ...(L.paintCols || []).filter((c) => c.kind !== 'ratio').map((c) => c.name), ...(L.calcCols || []).filter((c) => c.ty === 'string').map((c) => c.name)];
+  const im = (L.docs.dhDoc && L.docs.dhDoc.header.intervalMapping) || {}, m = h.mapping || {};
+  const skip = new Set([im.bhid, im.from, im.to, m.x, m.y, m.z]);
+  const text = h.columns.filter((_, i) => !skip.has(i) && !colIsNumeric(L, h, i));
+  const nums = h.columns.filter((_, i) => !skip.has(i) && colIsNumeric(L, h, i));
+  return [...text, ...(L.paintCols || []).filter((c) => c.kind !== 'ratio').map((c) => c.name), ...(L.calcCols || []).filter((c) => c.ty === 'string').map((c) => c.name),
+    ...nums, ...(L.calcCols || []).filter((c) => c.ty !== 'string').map((c) => c.name)];
 }
 // the distinct values of a column (a domain's catalogue), at most 256
 export async function distinctValues(L, col) {
@@ -61,8 +66,9 @@ export async function distinctValues(L, col) {
 // closed: |winding| ≥ ½ is inside → negative. Open: each piece wound consistently, then the
 // whole flipped so its normals face UP on average (so "above" is positive); a surface that is
 // mostly vertical keeps the side its normals face, and the sides are named "−" / "+".
-export async function meshDistanceOf(meshL) {
-  if (!meshL || meshL.kind !== 'mesh') throw new Error('a surface or solid must be a mesh layer');
+export async function meshDistanceOf(meshL, targets = null) {
+  if (isGridLayer(meshL)) return gridDistanceOf(meshL, targets);
+  if (!meshL || meshL.kind !== 'mesh') throw new Error('a surface or solid must be a mesh layer or a gridded surface');
   const SA = await meshSolidOf(meshL, 'solid');
   const m = await solidOrientedMesh(meshL);
   if (!SA || !m) throw new Error(`${meshL.label || meshL.name}: no triangles to measure against (a streamed soup keeps none — open it as a context mesh)`);
@@ -106,12 +112,30 @@ export async function meshDistanceOf(meshL) {
   return out;
 }
 
+// a gridded surface (a heightfield): the VERTICAL signed distance, negative below (contact-core's
+// gridSignedDistance); the full-res window of the grid read once, like select by surface
+async function gridDistanceOf(gridL, targets) {
+  const gd = gridL.docs.gridDoc, bbox4 = targets && targets.length ? targetsXYBbox(targets) : null, bkey = bbox4 ? bbox4.join(',') : '';
+  if (gridL._contactDist && gridL._contactDist.grid === gd.grid && gridL._contactDist.band === (gd.source && gd.source.band) && gridL._contactDist.bkey === bkey) return gridL._contactDist;
+  const g = await residentGridForEval(gridL, bbox4);       // the full-res window over the records (a COG's overview is coarse)
+  const surf = surfaceFromGrid(g);
+  let zlo = Infinity, zhi = -Infinity;
+  for (let i = 0; i < g.data.length; i++) { const v = g.data[i]; if (Number.isFinite(v) && !(g.nodata != null && (g.nodata >= 1.7e38 ? v >= 1.7014e38 : v === g.nodata))) { if (v < zlo) zlo = v; if (v > zhi) zhi = v; } }
+  const out = {
+    grid: gd.grid, band: gd.source && gd.source.band, bkey, closed: false, isGrid: true, label: gridL.label || gridL.name, sideNames: ['below', 'above'],
+    bbox: [g.x0, g.y0 - (g.ny - 1) * g.dy, zlo, g.x0 + (g.nx - 1) * g.dx, g.y0, zhi],
+    at(x, y, z, maxDist = Infinity) { return gridSignedDistance(surf.sampleZ, x, y, z, maxDist); },
+  };
+  gridL._contactDist = out;
+  return out;
+}
+
 // every record's signed distance to the mesh (NaN: no position, or farther than maxDist) — the
 // positions streamed (block models through the columnar engine), the far field skipped by the
 // mesh's box grown by maxDist
 export async function layerSignedDistances(L, md, { maxDist = Infinity, onProgress = null, signal = null } = {}) {
   const n = attrRowCountOf(L) || 0, dist = new Float32Array(n).fill(NaN);
-  const bb = md.SA.bbox, g = Number.isFinite(maxDist) ? maxDist : 0;
+  const bb = md.bbox || md.SA.bbox, g = Number.isFinite(maxDist) ? maxDist : 0;
   const box = Number.isFinite(maxDist) ? [bb[0] - g, bb[1] - g, bb[2] - g, bb[3] + g, bb[4] + g, bb[5] + g] : null;
   let done = 0, t0 = performance.now();
   for await (const ch of layerPositions(L, box)) {
@@ -213,9 +237,9 @@ export async function scanContact(st, onProgress, signal) {
   // ── to a surface ──
   const meshL = layerById(st.surfaceId);
   if (!meshL) throw new Error('pick the surface or solid to measure against');
-  const md = await meshDistanceOf(meshL);
+  const md = await meshDistanceOf(meshL, series.map((x) => x.L));
   out.sideNames = md.sideNames; out.surface = { name: meshL.name, label: md.label, closed: md.closed };
-  if (!st._distCache || st._distMd !== md) { st._distCache = new Map(); st._distMd = md; }   // a reloaded mesh measures afresh
+  if (!st._distCache || st._distMd !== md) { st._distCache = new Map(); st._distMd = md; }   // a reloaded mesh (or grid) measures afresh
   for (const [k, { s, L }] of series.entries()) {
     const n = attrRowCountOf(L) || 0;
     const prog = (frac, what) => { if (onProgress) onProgress(Math.round((k + Math.min(1, frac)) * 1000), series.length * 1000, `${L.label || L.name} · ${what}`); };
@@ -273,52 +297,56 @@ export async function scanContact(st, onProgress, signal) {
 }
 
 // ── the shapes: table rows, values, the chart ────────────────────────────────
+// grades: each series' declared unit (s.unit) converts into the report unit (gradeUnit) at shaping —
+// as grade-tonnage and swath do; the scan holds the values as read
 export const contactAmountCol = (scan) => (scan.mode === 'downhole' ? 'metres' : 'weight');
-export function contactRows(scan) {
+const serFactor = (se, gradeUnit) => gradeUnitFactor(se.s.unit, gradeUnit);
+export function contactRows(scan, gradeUnit = '') {
   const multi = scan.series.length > 1, rows = [];
-  for (const se of scan.series) for (const r of contactBinRows(se.bins, scan.bw, scan.sideNames)) {
-    rows.push({ series: serName(se, multi), side: r.side, center: +r.center.toPrecision(12), mean: r.mean, amount: scan.mode === 'downhole' ? (se.weighted ? r.weight : r.support) : r.weight, support: r.support, count: r.count });
-  }
+  for (const se of scan.series) { const f = serFactor(se, gradeUnit); for (const r of contactBinRows(se.bins, scan.bw, scan.sideNames)) {
+    rows.push({ series: serName(se, multi), side: r.side, center: +r.center.toPrecision(12), mean: r.mean * f, amount: scan.mode === 'downhole' ? (se.weighted ? r.weight : r.support) : r.weight, support: r.support, count: r.count });
+  } }
   return rows;
 }
 // values for checks: the first series' numbers bare (step, ratio, mean_inside, …), every later
 // series' with a _2, _3 suffix, and step_ratio_k = series k's step / the first's (a model that keeps
 // 30 % of the samples' step has smeared the contact)
-export function contactValuesOf(scan, near = 1) {
+export function contactValuesOf(scan, near = 1, gradeUnit = '') {
   const out = {};
   scan.series.forEach((se, i) => {
-    const v = contactValues(se.bins, scan.bw, near), sfx = i ? `_${i + 1}` : '';
+    const v = scaleContactValues(contactValues(se.bins, scan.bw, near), serFactor(se, gradeUnit)), sfx = i ? `_${i + 1}` : '';
     for (const [k, x] of Object.entries(v)) out[k + sfx] = x;
     if (i) out[`step_ratio${sfx}`] = out.step !== 0 ? v.step / out.step : NaN;
   });
   if (scan.mode === 'downhole') { out.contacts = scan.series[0] ? scan.series[0].contacts : 0; out.holes = scan.series[0] ? scan.series[0].holes : 0; }
   return out;
 }
-export function contactChartSpec(scan, { ranges = null } = {}) {
+export function contactChartSpec(scan, { ranges = null, gradeUnit = '' } = {}) {
   const multi = scan.series.length > 1, bw = scan.bw;
   const xl = scan.mode === 'downhole' ? `distance from the contact (m) · ← ${scan.sideNames[0]} | ${scan.sideNames[1]} →` : `signed distance to ${scan.surface ? scan.surface.label : 'the surface'} (m) · ← ${scan.sideNames[0]} | ${scan.sideNames[1]} →`;
   const s0 = scan.series[0];
   const amount = s0 ? (s0.kind === 'length' ? (s0.weighted ? 'metres × weight' : 'metres') : (s0.weighted ? 'volume × weight' : 'volume (m³)')) : 'amount';
-  const spec = { xLabel: xl, leftLabel: 'mean', rightLabel: amount, series: [], ...rangesOf({ ranges }) };
+  const gul = gradeUnit === 'pct' ? '%' : gradeUnit;
+  const spec = { xLabel: xl, leftLabel: gul ? `mean (${gul})` : 'mean', rightLabel: amount, series: [], ...rangesOf({ ranges }) };
   if (s0) spec.series.push({ name: amount, color: '#6a6f75', axis: 'right', kind: 'bar', data: contactBinRows(s0.bins, bw, scan.sideNames).map((r) => [r.center, s0.weighted ? r.weight : r.support]) });
   let lo = Infinity, hi = -Infinity;
   scan.series.forEach((se, i) => {
-    const data = contactBinRows(se.bins, bw, scan.sideNames).map((r) => [r.center, r.mean]);
+    const f = serFactor(se, gradeUnit), data = contactBinRows(se.bins, bw, scan.sideNames).map((r) => [r.center, r.mean * f]);
     for (const [, y] of data) if (Number.isFinite(y)) { if (y < lo) lo = y; if (y > hi) hi = y; }
     spec.series.push({ name: serName(se, multi), color: se.s.color || SERIES_COLORS[i % SERIES_COLORS.length], axis: 'left', kind: 'line', data });
   });
   if (lo < hi) spec.series.push({ name: 'contact', color: '#9aa0a6', axis: 'left', kind: 'line', data: [[0, Math.min(0, lo)], [0, hi]] });
   return spec;
 }
-export function contactHumanTSV(scan) {
-  const rows = contactRows(scan); if (!rows.length) return null;
-  const amt = contactAmountCol(scan);
-  return [['series', 'side', 'center (m)', 'mean', amt, 'count'].join('\t'), ...rows.map((r) => [r.series, r.side, r.center, Number.isFinite(r.mean) ? r.mean : '', r.amount, r.count].join('\t'))].join('\n');
+export function contactHumanTSV(scan, gradeUnit = '') {
+  const rows = contactRows(scan, gradeUnit); if (!rows.length) return null;
+  const amt = contactAmountCol(scan), gul = gradeUnit === 'pct' ? '%' : gradeUnit;
+  return [['series', 'side', 'center (m)', gul ? `mean (${gul})` : 'mean', amt, 'count'].join('\t'), ...rows.map((r) => [r.series, r.side, r.center, Number.isFinite(r.mean) ? r.mean : '', r.amount, r.count].join('\t'))].join('\n');
 }
 
 // ── ⇥ column: the signed distance as a stored column on a layer ──────────────
 export async function writeDistanceColumn(L, meshL, name, { onProgress = null, signal = null } = {}) {
-  const md = await meshDistanceOf(meshL);
+  const md = await meshDistanceOf(meshL, [L]);
   const dist = await layerSignedDistances(L, md, { maxDist: Infinity, onProgress, signal });
   matColSet(L, name, dist, { lineage: mkLineage('distance', { to: meshL.name, closed: md.closed, sign: `${md.sideNames[0]} negative` }, [meshL.lineage, L.lineage].filter(Boolean)) });
   try { await persistElement(L); } catch { /* best-effort */ }
@@ -329,21 +357,28 @@ export const distColName = (meshL) => `DIST_${String(meshL.label || meshL.name).
 
 // ── the window ───────────────────────────────────────────────────────────────
 export const _contactWins = new Map();
+const BINS = { downhole: [2, 20], surface: [5, 50] };     // [bin width, max distance] a flavour starts with
 
 export function openContact(L, ropts) {
   if (!L || !(isDhLayer(L) || isBlockLayer(L))) { $('#meta').textContent = 'contact analysis: a drillhole layer (down-hole) or a block model (to a surface)'; return null; }
   const ex = _contactWins.get(L.id);
   if (ex) { if (!ropts || (!ropts.cfg && !ropts.run && (!ropts.mode || ropts.mode === ex.st.mode))) { focusWindow(ex.win.el); return ex; } ex.win.close(); }
   const nums = numericColsOf(L); if (!nums.length) { $('#meta').textContent = 'contact analysis: no numeric column'; return null; }
-  const mkSer = (Lx, col, i) => ({ layerId: Lx.id, col, unit: '', weight: '', filter: '', color: SERIES_COLORS[i % SERIES_COLORS.length] });
+  // a series' grade unit: the layer's declaration (grade-tonnage's, L.gtUnits) — converts into the report unit
+  const mkSer = (Lx, col, i) => ({ layerId: Lx.id, col, unit: (Lx.gtUnits && Lx.gtUnits.grade) || '', weight: '', filter: '', color: SERIES_COLORS[i % SERIES_COLORS.length] });
   const surfs = contactSurfaces();
-  const st = { mode: isDhLayer(L) && !(ropts && ropts.mode === 'surface') ? 'downhole' : 'surface', domain: '', domA: '', domB: '', direction: 'both', minRun: 0, maxGap: null,
-    surfaceId: surfs.length ? surfs[surfs.length - 1].id : null, binWidth: isDhLayer(L) ? 2 : 5, maxDist: isDhLayer(L) ? 20 : 50, near: 1, scope: 'all',
+  const mode0 = isDhLayer(L) && !(ropts && ropts.mode === 'surface') ? 'downhole' : 'surface';
+  // the bins follow the flavour until you set them: 2 m bins / 20 m reach down-hole, 5 m / 50 m to a
+  // surface (where blocks are the usual series) — the tool's defaults when binWidth / maxDist are absent
+  const st = { mode: mode0, domain: '', domA: '', domB: '', direction: 'both', minRun: 0, maxGap: null,
+    surfaceId: surfs.length ? (surfs.filter((x) => !isGridLayer(x)).pop() || surfs[surfs.length - 1]).id : null, binWidth: BINS[mode0][0], maxDist: BINS[mode0][1], binsSet: false, near: 1, scope: 'all',
+    gradeUnit: (L.gtUnits && L.gtUnits.grade) || '',
     series: [mkSer(L, nums[0], 0)], scan: null, stale: true, running: false, _domVals: [] };
   if (isDhLayer(L)) { const cats = categoryColsOf(L); st.domain = cats.find((c) => /^(lito|lith|litho|domain|dom|rock|geol)/i.test(c)) || cats[0] || ''; }
   const saved = (ropts && ropts.cfg) || (L.analysis && L.analysis.contact);
   if (saved) {
-    for (const k of ['mode', 'domain', 'domA', 'domB', 'direction', 'minRun', 'maxGap', 'binWidth', 'maxDist', 'near', 'scope']) if (saved[k] != null) st[k] = saved[k];
+    for (const k of ['mode', 'domain', 'domA', 'domB', 'direction', 'minRun', 'maxGap', 'binWidth', 'maxDist', 'near', 'scope', 'gradeUnit']) if (saved[k] != null) st[k] = saved[k];
+    if (saved.binWidth != null || saved.maxDist != null) st.binsSet = true;   // a saved setup's bins are the user's
     if (saved.surface) { const m = surfs.find((x) => x.name === saved.surface || (x.label || x.name) === saved.surface); if (m) st.surfaceId = m.id; }
     if (saved.ranges) st.ranges = rangesFromCfg(saved.ranges);
     const ser = analysisSerRestore(saved.series, L); if (ser) { st.series = ser; if (ser.dropped.length) st.droppedNote = `left out (layer not loaded): ${ser.dropped.join(', ')}`; }
@@ -355,7 +390,7 @@ export function openContact(L, ropts) {
   }
   const surfName = () => { const m = layerById(st.surfaceId); return m ? m.name : null; };
   const cfgOf = () => ({ mode: st.mode, series: analysisSerCfg(st.series), ...(st.mode === 'downhole' ? { domain: st.domain, domA: st.domA, domB: st.domB, direction: st.direction, minRun: +st.minRun || 0, ...(st.maxGap != null && st.maxGap !== '' ? { maxGap: +st.maxGap } : {}) } : { surface: surfName() }),
-    binWidth: +st.binWidth, maxDist: +st.maxDist, near: +st.near || 1, scope: st.scope, ranges: rangesForCfg(st.ranges) });
+    binWidth: +st.binWidth, maxDist: +st.maxDist, near: +st.near || 1, scope: st.scope, gradeUnit: st.gradeUnit || '', ranges: rangesForCfg(st.ranges) });
   const win = floatWin({ title: `contact · ${L.label || L.name}`, sub: saved ? 'restored — Run to compute' : 'configure, then Run', x: Math.max(12, innerWidth - 700), y: 110, w: 680, h: 460,
     onClose: () => { saveAnalysisCfg(L, 'contact', cfgOf(), win); setAnalysisOpen(L, 'contact', false); _contactWins.delete(L.id); } });
   setAnalysisOpen(L, 'contact', true);
@@ -371,13 +406,13 @@ export function openContact(L, ropts) {
   const markStale = () => { st.stale = true; if (staleEl) staleEl.textContent = st.scan ? '↻ config changed — Run to update' : ''; };
   const plot = () => {
     if (!st.scan) { plotChart(cv, { series: [] }); win._spec = null; readout.textContent = ''; return; }
-    const spec = contactChartSpec(st.scan, { ranges: st.ranges });
+    const spec = contactChartSpec(st.scan, { ranges: st.ranges, gradeUnit: st.gradeUnit });
     plotChart(cv, spec); win._spec = spec; win.el._contactSpec = spec;
     readout.textContent = '';
     const add = (k, v, cls) => { const s = document.createElement('span'); s.className = 'val-stat' + (cls ? ' ' + cls : ''); const b = document.createElement('b'); b.textContent = k; s.append(b, document.createTextNode(' ' + v)); readout.appendChild(s); };
     const multi = st.scan.series.length > 1;
     st.scan.series.forEach((se, i) => {
-      const v = contactValues(se.bins, st.scan.bw, +st.near || 1);
+      const v = scaleContactValues(contactValues(se.bins, st.scan.bw, +st.near || 1), serFactor(se, st.gradeUnit));
       add(multi ? serName(se, true) : se.s.col, `${fmtStat(v.mean_inside)} | ${fmtStat(v.mean_outside)}`);
       const pct = i ? 100 * v.step / contactValues(st.scan.series[0].bins, st.scan.bw, +st.near || 1).step : NaN;
       add('step', `${v.step >= 0 ? '+' : ''}${fmtStat(v.step)}${Number.isFinite(pct) ? ` (${Math.round(pct)}% of the first)` : ''}`);
@@ -431,7 +466,10 @@ export function openContact(L, ropts) {
     top.append(dot, laySel, x); box.append(top);
     const colSel = document.createElement('select'); colSel.className = 'sw-sel'; colSel.style.width = '100%';
     for (const c of numericColsOf(layerById(s.layerId) || L)) { const o = document.createElement('option'); o.value = c; o.textContent = c; if (c === s.col) o.selected = true; colSel.append(o); }
-    colSel.onchange = () => { s.col = colSel.value; markStale(); }; box.append(colSel);
+    colSel.onchange = () => { s.col = colSel.value; markStale(); };
+    const mid = document.createElement('div'); mid.className = 'sw-ser-top';
+    mid.append(colSel, gradeUnitSel(s.unit || '', (v) => { s.unit = v; if (st.scan) plot(); }, 'declared unit of THIS series — converts into the report unit when both are declared (display-time, no re-scan)'));
+    box.append(mid);
     const wIn = document.createElement('input'); wIn.className = 'sw-in'; wIn.type = 'text'; wIn.placeholder = 'weight expr (blank = length / volume)'; wIn.value = s.weight || ''; wIn.title = 'multiplies each record’s support (an interval’s length, a block’s volume) — e.g. SG for tonnage weighting'; wIn.onchange = () => { s.weight = wIn.value.trim(); markStale(); }; box.append(wIn);
     const fIn = document.createElement('input'); fIn.className = 'sw-in'; fIn.type = 'text'; fIn.placeholder = 'filter (optional)'; fIn.value = s.filter || ''; fIn.title = st.mode === 'downhole' ? 'which intervals count for the VALUE — the domains and contacts come from every interval' : 'a row filter for this series (@gcu/expr)'; fIn.onchange = () => { s.filter = fIn.value.trim(); markStale(); }; box.append(fIn);
     return box;
@@ -446,7 +484,8 @@ export function openContact(L, ropts) {
       bt.onclick = () => {
         if (st.mode === v) return;
         st.mode = v; st.scan = null; markStale();
-        if (v === 'downhole') { st.series = st.series.filter((s) => isDhLayer(layerById(s.layerId))); if (!st.series.length) { const D = S.layers.find(isDhLayer); if (D) st.series = [mkSer(D, numericColsOf(D)[0], 0)]; } if (st.binWidth > 10) { st.binWidth = 2; st.maxDist = 20; } loadDomains(); }
+        if (!st.binsSet) { st.binWidth = BINS[v][0]; st.maxDist = BINS[v][1]; }   // bins you set stay; the defaults follow the flavour
+        if (v === 'downhole') { st.series = st.series.filter((s) => isDhLayer(layerById(s.layerId))); if (!st.series.length) { const D = S.layers.find(isDhLayer); if (D) st.series = [mkSer(D, numericColsOf(D)[0], 0)]; } loadDomains(); }
         else buildRail();
         plot();
       };
@@ -457,7 +496,7 @@ export function openContact(L, ropts) {
       const dSec = document.createElement('div'); dSec.append(head('domains'));
       const L0 = layerById(st.series[0] && st.series[0].layerId) || L;
       const cats = isDhLayer(L0) ? categoryColsOf(L0) : [];
-      dSec.append(sel(cats.map((c) => [c, `column: ${c}`]), st.domain, (v) => { st.domain = v; st.domA = ''; st.domB = ''; markStale(); loadDomains(); }, 'the domain column (text) on the drillhole layer'));
+      dSec.append(sel(cats.map((c) => [c, `column: ${c}`]), st.domain, (v) => { st.domain = v; st.domA = ''; st.domB = ''; markStale(); loadDomains(); }, 'the domain column on the drillhole layer — text, or numeric domain codes'));
       const vals = st._domVals || [];
       dSec.append(sel(vals.map((v) => [v, `A: ${v}`]), st.domA, (v) => { st.domA = v; if (st.domB === v) st.domB = ''; markStale(); buildRail(); }, 'domain A — plotted on the NEGATIVE side'));
       dSec.append(sel([['', 'B: any other'], ...vals.filter((v) => v !== st.domA).map((v) => [v, `B: ${v}`])], st.domB, (v) => { st.domB = v; markStale(); }, 'domain B — the positive side; “any other” pools every domain next to A'));
@@ -468,16 +507,17 @@ export function openContact(L, ropts) {
     } else {
       const sSec = document.createElement('div'); sSec.append(head('surface / solid'));
       const ss = contactSurfaces();
-      if (!ss.length) sSec.append(Object.assign(document.createElement('div'), { className: 'sw-stale', textContent: 'open a wireframe (a mesh layer) first' }));
-      else sSec.append(sel(ss.map((m) => [m.id, m.label || m.name]), st.surfaceId, (v) => { st.surfaceId = +v; markStale(); buildRail(); }, 'a closed solid: negative inside (winding number) · an open surface: negative below'));
+      if (!ss.length) sSec.append(Object.assign(document.createElement('div'), { className: 'sw-stale', textContent: 'open a wireframe (a mesh layer) or a gridded surface first' }));
+      else sSec.append(sel(ss.map((m) => [m.id, `${m.label || m.name}${isGridLayer(m) ? ' (grid)' : ''}`]), st.surfaceId, (v) => { st.surfaceId = +v; markStale(); buildRail(); }, 'a closed solid: negative inside (winding number) · an open surface: negative below · a gridded surface: the vertical distance, negative below'));
       const m = layerById(st.surfaceId);
-      if (m && m._solidMesh) sSec.append(Object.assign(document.createElement('div'), { className: 'sw-stale', textContent: m._solidMesh.closed ? 'closed — negative inside' : 'open — negative below / behind its normals' }));
+      if (m && isGridLayer(m)) sSec.append(Object.assign(document.createElement('div'), { className: 'sw-stale', textContent: 'gridded surface — vertical distance (z − the surface), negative below' }));
+      else if (m && m._solidMesh) sSec.append(Object.assign(document.createElement('div'), { className: 'sw-stale', textContent: m._solidMesh.closed ? 'closed — negative inside' : 'open — negative below / behind its normals' }));
       rail.append(sSec);
     }
     // ── bins ──
     const bSec = document.createElement('div'); bSec.append(head('bins'));
-    bSec.append(numRow('width', st.binWidth, (v) => { st.binWidth = +v || st.binWidth; markStale(); }, 'bin width (m)'));
-    bSec.append(numRow('max dist', st.maxDist, (v) => { st.maxDist = +v || st.maxDist; markStale(); }, 'how far from the contact, each side (m)'));
+    bSec.append(numRow('width', st.binWidth, (v) => { st.binWidth = +v || st.binWidth; st.binsSet = true; markStale(); }, 'bin width (m) — until you set it, 2 down-hole and 5 to a surface'));
+    bSec.append(numRow('max dist', st.maxDist, (v) => { st.maxDist = +v || st.maxDist; st.binsSet = true; markStale(); }, 'how far from the contact, each side (m) — until you set it, 20 down-hole and 50 to a surface'));
     bSec.append(numRow('near bins', st.near, (v) => { st.near = Math.max(1, Math.round(+v) || 1); if (st.scan) plot(); }, 'how many bins each side make “just inside / just outside” for the step and ratio'));
     rail.append(bSec);
     // ── series ──
@@ -499,6 +539,9 @@ export function openContact(L, ropts) {
     const sg = document.createElement('div'); sg.className = 'sw-seg'; sg.title = 'all rows · rows matching each layer’s current filter · the 3D selection';
     for (const [v, t] of [['all', 'all'], ['filtered', 'filt'], ['selection', 'sel']]) { const bt = document.createElement('button'); bt.className = 'sw-segbtn' + (st.scope === v ? ' on' : ''); bt.textContent = t; bt.onclick = () => { st.scope = v; markStale(); buildRail(); }; sg.append(bt); }
     scRow.append(scL, sg); vSec.append(scRow);
+    const guRow = document.createElement('div'); guRow.className = 'sw-row'; const guL = document.createElement('span'); guL.textContent = 'unit';
+    const guS = gradeUnitSel(st.gradeUnit || '', (v) => { st.gradeUnit = v; if (st.scan) plot(); }, 'report unit — the mean axis; series with a declared unit convert into it (display-time, no re-scan)');
+    guS.classList.add('sw-unit-plot'); guRow.append(guL, guS); vSec.append(guRow);
     vSec.append(rangesRow(st, () => { if (st.scan) plot(); }, { x: 'x', l: 'mean', r: 'bars' }));
     rail.append(vSec);
     // ── footer ──
@@ -508,7 +551,7 @@ export function openContact(L, ropts) {
     const rname = () => `${(L.label || L.name).replace(/\.[^.]+$/, '')} contact`;
     rcpBtn.onclick = () => saveRecipe('contact', cfgOf(), rname());
     win.el._recipe = () => ({ tool: 'contact', name: rname(), params: cfgOf() });
-    const resRow = plotExportBtns(cv, () => `contact-${(L.label || L.name).replace(/\.[^.]+$/, '')}${st.mode === 'downhole' ? `-${st.domA || 'A'}-${st.domB || 'other'}` : `-${(layerById(st.surfaceId) || {}).label || 'surface'}`}.png`.replace(/[^\w.-]+/g, '_'), () => (st.scan ? contactHumanTSV(st.scan) : null), 'contacts');
+    const resRow = plotExportBtns(cv, () => `contact-${(L.label || L.name).replace(/\.[^.]+$/, '')}${st.mode === 'downhole' ? `-${st.domA || 'A'}-${st.domB || 'other'}` : `-${(layerById(st.surfaceId) || {}).label || 'surface'}`}.png`.replace(/[^\w.-]+/g, '_'), () => (st.scan ? contactHumanTSV(st.scan, st.gradeUnit) : null), 'contacts');
     foot.append(runBtn, rcpBtn, resRow);
     if (st.mode === 'surface') {
       const colBtn = document.createElement('button'); colBtn.className = 'awin-btn'; colBtn.textContent = '⇥ column';

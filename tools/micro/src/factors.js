@@ -4,11 +4,12 @@
 // for tonnes, grade and metal. The two models are block models on any lattices (totals, not blocks:
 // no common grid needed); the mined volume per period is
 //   column   — a period column on the blocks (MINED_MONTH painted, or joined from a schedule)
-//   volumes  — one mesh per period: a closed solid (its inside) or an open pit surface (above it), the
-//              blocks counted by the FRACTION inside (partial blocks count partially — by-geometry's
-//              dense winding sweep; a rotated model falls back to centroid membership). `nested`: each
-//              volume holds the ones before it (pit phases, cumulative shells) → period k is the part of
-//              volume k outside volume k − 1
+//   volumes  — one volume per period: a closed solid (inside / outside), an open pit surface or a
+//              gridded surface (above / below — the side vocabulary follows the topology, as select by
+//              solid), the blocks counted by the FRACTION inside (partial blocks count partially —
+//              by-geometry's dense winding sweep, on a rotated model in its own lattice frame, or the
+//              grid's footprint sample). `nested` (on by default): each volume holds the ones before
+//              it (pit phases, cumulative shells) → period k is the part of volume k outside volume k − 1
 //   filter   — one period: the blocks an expression keeps
 //   selection— one period: each model's 3D selection (a window only)
 // production is a non-spatial TABLE layer (period, tonnes, grade and/or metal), matched by period name.
@@ -21,9 +22,9 @@ import { layerRecords, layerTableHeader, numOf, schemaExt } from './records.js';
 import { compileBool, compileValue, quoteIdent, validate, deps as exprDeps } from '../../../ext/expr/index.js';
 import { convert as unitConvert } from '../../../ext/units/index.js';
 import { coordNum } from '../../../ext/condenser/src/main.js';
-import { numericColsOf, volumeContextOf, volumeAt } from './analysis.js';
-import { gridAxesOf } from './grid-ops.js';
-import { evalSolidOnGrid, meshSolidOf, solidHit, sbCancelActive } from './bygeom.js';
+import { numericColsOf, volumeContextOf, volumeAt, metalFactorOf, parseFactor } from './analysis.js';
+import { gridAxesOf, surfaceFromGrid } from './grid-ops.js';
+import { evalSolidOnGrid, meshSolidOf, solidHit, sbCancelActive, solidOrientedMesh, residentGridForEval, targetsXYBbox, blockGridClassifier } from './bygeom.js';
 import { ensureStoredValues } from './columns.js';
 import { applyAnalysisGeo, checkAbort, fmtStat, gradeUnitFactor, gradeUnitSel, plotChart, plotExportBtns, rangesForCfg, rangesFromCfg, rangesRow, runCancellable, saveAnalysisCfg, setAnalysisOpen, abortErr } from './analysis-ui.js';
 import { floatWin, focusWindow } from './windows.js';
@@ -34,7 +35,20 @@ const $ = (s) => document.querySelector(s);
 // ── what can take part ────────────────────────────────────────────────────────
 export const isBlockModel = (L) => !!(L && L.docs && L.docs.blockDoc && gridAxesOf(L));
 export const productionTables = () => S.layers.filter((L) => L.docs && L.docs.tableDoc);
-export const factorMeshes = () => S.layers.filter((L) => L.kind === 'mesh' && L.docs && L.docs.meshDoc && !L.docs.meshDoc.header.soup);
+// a period volume: a context-tier mesh (a solid or a pit surface) or a gridded surface (a heightfield)
+export const isGridSurface = (L) => !!(L && L.docs && L.docs.gridDoc && L.docs.gridDoc.grid);
+export const isVolumeMesh = (L) => !!(L && L.kind === 'mesh' && L.docs && L.docs.meshDoc && !L.docs.meshDoc.header.soup);
+export const factorMeshes = () => [...S.layers.filter(isVolumeMesh), ...S.layers.filter(isGridSurface)];   // meshes (pit phases, shells) first
+// the sides a volume layer takes — its topology decides, as in select by solid: a closed solid →
+// inside / outside; an open mesh or a grid → above / below. null: a mesh not parsed yet (unknown).
+export function volumeSides(L) {
+  if (isGridSurface(L)) return ['above', 'below'];
+  const t = L && L._solidMesh;
+  if (!t) return null;
+  return t.closed ? ['inside', 'outside'] : ['above', 'below'];
+}
+// the side a period takes when none is stated: inside for a closed solid, above for a surface (a pit)
+export const defaultSide = (L) => { const s = volumeSides(L); return s ? s[0] : 'above'; };
 // every column a period can come from (text or numbers, derived included; not the coordinates)
 export function allColsOf(L) {
   const h = layerTableHeader(L); if (!h) return [];
@@ -62,7 +76,7 @@ async function residentFor(L, exprs) {
   if (need.size) await ensureStoredValues(L, need);
 }
 
-// density { col } | { const } with an optional unit (t/m3, g/cm3, kg/m3, lb/ft3) → { fn(f) | c, scale }
+// density { col } | { const } with an optional unit (t/m3 = g/cm3, kg/m3, lb/ft3) → { fn(f) | c, scale }
 export function densityOf(L, d, schema, what) {
   if (d == null || d === '') throw new Error(`${what}: state it — { col: SG } or { const: 2.7 }`);
   const dd = typeof d === 'number' ? { const: d } : typeof d === 'string' ? (Number.isFinite(+d) && d.trim() !== '' ? { const: +d } : { col: d }) : d;
@@ -73,22 +87,34 @@ export function densityOf(L, d, schema, what) {
   throw new Error(`${what}: { col: <column> } or { const: <a positive number> }`);
 }
 
-// the metal factor: stated, or from the report grade unit (tonnes of metal: % → ×0.01, g/t → ×1e-6), or 1
-export function metalFactorOf(st) {
-  if (st.metalFactor != null && st.metalFactor !== '' && Number.isFinite(+st.metalFactor) && +st.metalFactor > 0) return { mf: +st.metalFactor, unit: st.metalUnit || '', auto: false };
-  if (st.gradeUnit) { try { return { mf: unitConvert(1, st.gradeUnit, 'fraction'), unit: 't', auto: true }; } catch { /* undeclared unit → 1 */ } }
-  return { mf: 1, unit: `${st.gradeUnit === 'pct' ? '%' : st.gradeUnit || 'grade'}·t`, auto: true };
-}
+// the metal factor: stated (a number or a/b), or from the report grade unit (tonnes of metal: % → ×0.01,
+// g/t → ×1e-6), or 1 — ONE rule, shared with the resource table (src/analysis.js metalFactorOf)
+export { metalFactorOf };
 
-// a volume's fraction-inside lookup for one model: the dense winding sweep on the model's lattice
-// (partial blocks), or centroid membership where the lattice can't be swept (rotated)
 // probes per block along x, y, z — the same free per-axis count as select-by-solid's fraction column
-// (benches are anisotropic: 10×10×5 blocks want 3×3×2). A single number n means n×n×n.
+// (benches are anisotropic: 10×10×5 blocks want 3×3×2). A single number n means n×n×n; absent, 3×3×3.
 export function probesOf(v) {
   const a = Array.isArray(v) ? v : (v && typeof v === 'object' ? Object.values(v) : [v, v, v]);
-  return [0, 1, 2].map((k) => Math.max(1, Math.round(+a[k] || +a[0] || 2)));
+  return [0, 1, 2].map((k) => Math.max(1, Math.round(+a[k] || +a[0] || 3)));
 }
+// a volume's fraction-inside lookup for one model: the dense winding sweep on the model's lattice
+// (partial blocks; a rotated lattice is swept in its own frame), or centroid membership where there
+// is no regular lattice to sweep. A grid: select by surface's own per-block sampler (the column
+// integral, or rotated probes on a rotated lattice). side outside: 1 − inside.
 async function volumeLookup(L, meshL, side, res, cache) {
+  if (isGridSurface(meshL)) {
+    const key = `${L.id}|${meshL.id}|grid|${side}|${res.join('x')}`;
+    if (cache.has(key)) return cache.get(key);
+    const surf = surfaceFromGrid(await residentGridForEval(meshL, targetsXYBbox([L])));
+    const cls = blockGridClassifier(L, surf, null, side, res);
+    const out = { fn: (x, y, z) => { const fr = cls(x, y, z).frac; return Number.isFinite(fr) ? fr : 0; }, how: 'fraction' };
+    cache.set(key, out);
+    return out;
+  }
+  if (side === 'outside') {                                   // the complement of the solid's inside
+    const inn = await volumeLookup(L, meshL, 'inside', res, cache);
+    return { fn: (x, y, z) => 1 - (inn.fn(x, y, z) || 0), how: inn.how };
+  }
   const variant = side === 'above' || side === 'below' ? side : 'solid';
   const key = `${L.id}|${meshL.id}|${variant}|${res.join('x')}`;
   if (cache.has(key)) return cache.get(key);
@@ -130,9 +156,18 @@ export async function scanFactors(st, onProgress, signal) {
     // the period definition, checked once
     let vols = [];
     if (mode === 'volumes') {
-      vols = (st.volumes || []).map((v, i) => ({ name: String(v.name || '').trim() || `period ${i + 1}`, meshL: layerById(v.meshId), side: v.side || 'inside' }));
-      if (!vols.length) throw new Error('volumes: one mesh per period — add one');
-      for (const v of vols) if (!v.meshL || v.meshL.kind !== 'mesh') throw new Error(`period “${v.name}”: pick its mesh (a solid or a pit surface)`);
+      vols = (st.volumes || []).map((v, i) => ({ name: String(v.name || '').trim() || `period ${i + 1}`, meshL: layerById(v.meshId), side: v.side || null }));
+      if (!vols.length) throw new Error('volumes: one solid or surface per period — add one');
+      for (const v of vols) {
+        if (!v.meshL || !(isVolumeMesh(v.meshL) || isGridSurface(v.meshL))) throw new Error(`period “${v.name}”: pick its volume (a solid, a pit surface or a gridded surface)`);
+        // the side must fit the volume's topology (as select by solid): a closed solid is inside /
+        // outside, a surface (open mesh, grid) above / below — a routine that says otherwise is refused
+        if (isVolumeMesh(v.meshL) && !v.meshL._solidMesh) await solidOrientedMesh(v.meshL);
+        const sides = volumeSides(v.meshL);
+        if (!sides) throw new Error(`period “${v.name}”: ${nameOf(v.meshL)} has no triangles to test against`);
+        if (!v.side) v.side = sides[0];
+        if (!sides.includes(v.side)) throw new Error(`period “${v.name}”: side “${v.side}” doesn't fit ${nameOf(v.meshL)} — ${isGridSurface(v.meshL) ? 'a gridded surface' : v.meshL._solidMesh.closed ? 'a closed solid' : 'an open surface'} takes ${sides.join(' or ')}`);
+      }
       const names = vols.map((v) => v.name); const dup = names.find((n, i) => names.indexOf(n) !== i);
       if (dup) throw new Error(`two periods are called “${dup}”`);
     }
@@ -159,13 +194,13 @@ export async function scanFactors(st, onProgress, signal) {
       await residentFor(L, [isBare(gcol) ? quoteIdent(gcol) : gcol, dens.col ? (isBare(dens.col) ? quoteIdent(dens.col) : dens.col) : null, st.filter, perExpr && isBare(perExpr) ? quoteIdent(perExpr) : perExpr]);
       const looks = [];
       for (const [vi, v] of vols.entries()) {
-        if (onProgress) onProgress(si * 2 + vi / Math.max(1, vols.length), 4, `${nameOf(L)} · ${v.name}: fraction inside ${nameOf(v.meshL)}`);
+        if (onProgress) onProgress(si * 2 + vi / Math.max(1, vols.length), 4, `${nameOf(L)} · ${v.name}: fraction ${v.side} ${nameOf(v.meshL)}`);
         checkAbort(signal);
         try { looks.push(await volumeLookup(L, v.meshL, v.side, res, cache)); }
         catch (e) { if (signal && signal.aborted) throw abortErr(); if (e.message === 'cancelled') throw abortErr(); throw e; }
         checkAbort(signal);
       }
-      if (looks.some((x) => x.how === 'centroid') && !warnings.some((w) => w.startsWith(nameOf(L) + ': a rotated'))) warnings.push(`${nameOf(L)}: a rotated lattice — the volumes count each block by its centroid (in or out), not by its fraction`);
+      if (looks.some((x) => x.how === 'centroid') && !warnings.some((w) => w.startsWith(nameOf(L) + ': no regular lattice'))) warnings.push(`${nameOf(L)}: no regular lattice to sweep — the volumes count each block by its centroid (in or out), not by its fraction`);
       prepared.push({ key, L, gcol, gradeFn, dens, gf, filterFn, perFn, mask, looks, acc: makeAcc(mf), n: 0, blankG: 0, noDens: 0, below: 0, unmined: 0 });
     }
     const layers = [...new Set(prepared.map((p) => p.L))];
@@ -250,7 +285,8 @@ export async function scanFactors(st, onProgress, signal) {
     const rows = factorRows({ periods, model: accs.model, gc: accs.gc, mill, mf });
     const idErr = identityError(rows);
     if (idErr > 1e-9) warnings.push(`identity check: F3 vs F1 × F2 / metal vs tonnes × grade differ by ${idErr.toExponential(2)}`);
-    return { mode, periods, model: accs.model, gc: accs.gc, mill, mf, metalUnit, gradeUnit: st.gradeUnit || '', cutoff, warnings, info, rows, where: 'on this page' };
+    return { mode, periods, model: accs.model, gc: accs.gc, mill, mf, metalUnit, gradeUnit: st.gradeUnit || '', cutoff, warnings, info, rows, where: 'on this page',
+      sides: vols.map((v) => v.side), density: { model: prepared[0].dens, gc: prepared[1].dens } };
   } finally { if (signal) signal.removeEventListener('abort', onAbort); }
 }
 
@@ -307,11 +343,11 @@ export function factorsCfgOf(st) {
     model: nm(st.model.layerId), grade: st.model.grade, modelUnit: st.model.unit || '', density: st.model.density,
     gc: nm(st.gc.layerId), gcGrade: st.gc.grade, gcUnit: st.gc.unit || '', gcDensity: st.gc.density,
     periods: st.periods, ...(st.periods === 'column' ? { periodCol: st.periodCol } : {}),
-    ...(st.periods === 'volumes' ? { volumes: st.volumes.map((v) => ({ name: v.name, mesh: nm(v.meshId), side: v.side || 'inside' })), nested: !!st.nested, probes: probesOf(st.resolution) } : {}),
+    ...(st.periods === 'volumes' ? { volumes: st.volumes.map((v) => ({ name: v.name, mesh: nm(v.meshId), ...(v.side ? { side: v.side } : {}) })), nested: !!st.nested, probes: probesOf(st.resolution) } : {}),
     ...(st.periods === 'filter' ? { periodFilter: st.periodFilter } : {}), ...(st.periods === 'filter' || st.periods === 'selection' ? { periodName: st.periodName || 'period' } : {}),
     ...(st.filter ? { filter: st.filter } : {}),
     ...(st.production && st.production.layerId != null ? { production: nm(st.production.layerId), prodPeriod: st.production.period, prodTonnes: st.production.tonnes, ...(st.production.grade ? { prodGrade: st.production.grade } : {}), ...(st.production.metal ? { prodMetal: st.production.metal } : {}), prodUnit: st.production.unit || '' } : {}),
-    cutoff: st.cutoff == null ? 'none' : st.cutoff, gradeUnit: st.gradeUnit || '', ...(st.metalFactor != null && st.metalFactor !== '' ? { metalFactor: +st.metalFactor, metalUnit: st.metalUnit || '' } : {}),
+    cutoff: st.cutoff == null ? 'none' : st.cutoff, gradeUnit: st.gradeUnit || '', ...(st.metalFactor != null && st.metalFactor !== '' ? { metalFactor: Number.isFinite(parseFactor(st.metalFactor)) ? parseFactor(st.metalFactor) : st.metalFactor, metalUnit: st.metalUnit || '' } : {}),
     tolerance: st.tolerance, show: st.show, cumulative: !!st.cumulative, ranges: rangesForCfg(st.ranges),
   };
 }
@@ -320,20 +356,35 @@ export function factorsStOf(p, { lenient = false } = {}) {
   const lay = (name, what) => { if (name == null || name === '') return null; const L = layerNamed(name); if (!L) { if (lenient) return null; throw new Error(`${what}: layer “${name}” isn't loaded`); } return L.id; };
   const modelId = lay(p.model, 'model');
   const gcId = p.gc ? lay(p.gc, 'gc') : modelId;
+  // an unstated density is the layer's declared one (grade-tonnage's unit declarations, L.gtUnits) —
+  // a routine must state it (the schema says so); a window or a tool call may lean on the declaration
+  const mDens = p.density != null && p.density !== '' ? p.density : declaredDensity(layerById(modelId));
+  const gDens = p.gcDensity != null && p.gcDensity !== '' ? p.gcDensity : (p.gc && gcId !== modelId ? declaredDensity(layerById(gcId)) : null) || mDens;
   return {
-    model: { layerId: modelId, grade: p.grade, unit: p.modelUnit || '', density: p.density },
-    gc: { layerId: gcId, grade: p.gcGrade || p.grade, unit: p.gcUnit != null && p.gcUnit !== '' ? p.gcUnit : p.modelUnit || '', density: p.gcDensity != null ? p.gcDensity : p.density },
+    model: { layerId: modelId, grade: p.grade, unit: p.modelUnit || '', density: mDens },
+    gc: { layerId: gcId, grade: p.gcGrade || p.grade, unit: p.gcUnit != null && p.gcUnit !== '' ? p.gcUnit : p.modelUnit || '', density: gDens },
     periods: p.periods || 'column', periodCol: p.periodCol || '',
-    volumes: (p.volumes || []).map((v) => ({ name: v.name, meshId: lay(v.mesh, `period “${v.name}”`), side: v.side || 'inside' })),
-    nested: !!p.nested, resolution: probesOf(p.probes != null ? p.probes : 2), periodFilter: p.periodFilter || '', periodName: p.periodName || 'period', filter: p.filter || '',
+    volumes: (p.volumes || []).map((v) => ({ name: v.name, meshId: lay(v.mesh, `period “${v.name}”`), side: v.side || null })),   // no side: the volume's topology decides (scan)
+    nested: p.nested != null ? !!p.nested : true, resolution: probesOf(p.probes != null ? p.probes : 3), periodFilter: p.periodFilter || '', periodName: p.periodName || 'period', filter: p.filter || '',
     production: p.production ? { layerId: lay(p.production, 'production'), period: p.prodPeriod, tonnes: p.prodTonnes, grade: p.prodGrade || '', metal: p.prodMetal || '', unit: p.prodUnit != null && p.prodUnit !== '' ? p.prodUnit : p.gradeUnit || '' } : null,
     cutoff: p.cutoff == null || p.cutoff === 'none' || p.cutoff === '' ? null : +p.cutoff, gradeUnit: p.gradeUnit || '', metalFactor: p.metalFactor, metalUnit: p.metalUnit || '',
     tolerance: p.tolerance != null ? +p.tolerance : 0.1, show: p.show || 'metal', cumulative: !!p.cumulative,
   };
 }
 
+// the density a layer DECLARES — grade-tonnage's unit declarations (L.gtUnits: a density expression
+// and its unit), the same the GT window reads → { const } | { col } with the unit, or null
+export function declaredDensity(L) {
+  const gu = L && L.gtUnits; if (!gu) return null;
+  const w = gu.weight === '#const' ? (gu.densConst != null ? String(gu.densConst) : '') : String(gu.weight || '').trim();
+  if (!w) return null;
+  const unit = gu.densUnit && gu.densUnit !== 't/m3' ? { unit: gu.densUnit } : {};
+  return Number.isFinite(+w) && +w > 0 ? { const: +w, ...unit } : { col: w, ...unit };
+}
+
 // ── the window ───────────────────────────────────────────────────────────────
 export const _factorsWins = new Map();
+const _reading = new Set();                                  // meshes whose topology is being read for the side menu
 const guessCol = (cols, re) => cols.find((c) => re.test(c)) || '';
 const DENS_RE = /^(sg|dens|density|rho|bd|dbd)/i, GRADE_RE = /^(au|cu|fe|ag|zn|ni|pb|mo|grade)/i;
 
@@ -345,13 +396,15 @@ export function openFactors(L, ropts) {
   const models = () => S.layers.filter(isBlockModel);
   const others = models().filter((x) => x.id !== L.id);
   const dGuess = guessCol(nums, DENS_RE), gGuess = guessCol(nums, GRADE_RE) || nums.find((c) => c !== dGuess) || nums[0];
-  const mkSide = (Lx, grade) => ({ layerId: Lx.id, grade, unit: (Lx.gtUnits && Lx.gtUnits.grade) || '', density: guessCol(numericColsOf(Lx), DENS_RE) ? { col: guessCol(numericColsOf(Lx), DENS_RE) } : { const: 2.7 } });
+  // a side's density: what the layer declares (its grade-tonnage density + unit), else a density-looking column, else 2.7
+  const densGuess = (Lx) => declaredDensity(Lx) || (guessCol(numericColsOf(Lx), DENS_RE) ? { col: guessCol(numericColsOf(Lx), DENS_RE) } : { const: 2.7 });
+  const mkSide = (Lx, grade) => ({ layerId: Lx.id, grade, unit: (Lx.gtUnits && Lx.gtUnits.grade) || '', density: densGuess(Lx) });
   const gcL = others.find((x) => /gc|grade.?control|short/i.test(x.label || x.name)) || others[0] || L;
   const prods = productionTables(), meshes = factorMeshes();
   const st = {
     model: mkSide(L, gGuess), gc: mkSide(gcL, numericColsOf(gcL).includes(gGuess) ? gGuess : guessCol(numericColsOf(gcL), GRADE_RE) || numericColsOf(gcL)[0]),
     periods: 'column', periodCol: guessCol(allColsOf(L), /^(period|mined|month|mm|qtr|quarter|year|phase|mine_?per)/i),
-    volumes: meshes.length ? [{ name: 'period 1', meshId: meshes[0].id, side: 'above' }] : [], nested: true, resolution: [2, 2, 2],
+    volumes: meshes.length ? [{ name: 'period 1', meshId: meshes[0].id, side: null }] : [], nested: true, resolution: [3, 3, 3],   // side null: by topology once the mesh is read
     periodFilter: '', periodName: 'period', filter: '',
     production: prods.length ? (() => { const P = prods[prods.length - 1], cs = allColsOf(P); return { layerId: P.id, period: guessCol(cs, /^(period|month|mm|qtr|quarter|date|year|phase)/i) || cs[0] || '', tonnes: guessCol(cs, /^(t|tonnes|tons|tonnage|mass|dry)/i), grade: guessCol(cs, GRADE_RE), metal: guessCol(cs, /^(metal|oz|ounces|contained|recovered)/i), unit: '' }; })() : null,
     cutoff: null, gradeUnit: (L.gtUnits && L.gtUnits.grade) || '', metalFactor: '', metalUnit: '', tolerance: 0.1, show: 'metal', cumulative: false,
@@ -454,17 +507,18 @@ export function openFactors(L, ropts) {
     const cols = numericColsOf(layerById(s.layerId) || L);
     const kind = sel([['col', 'ρ column'], ['const', 'ρ constant']], isCol ? 'col' : 'const', (v) => { s.density = v === 'col' ? { col: guessCol(cols, DENS_RE) || cols[0], unit: (s.density && s.density.unit) || '' } : { const: 2.7, unit: (s.density && s.density.unit) || '' }; markStale(); buildRail(); }, 'density: a column or a constant — tonnes = block volume × density');
     kind.style.width = '92px'; kind.style.flex = '0 0 auto';
-    const val = isCol ? sel(cols.map((c) => [c, c]), s.density.col, (v) => { s.density = { ...s.density, col: v }; markStale(); }, 'the density column')
+    const dcols = isCol && s.density.col && !cols.includes(s.density.col) ? [s.density.col, ...cols] : cols;   // a declared expression (SG*PARTIAL) stays pickable
+    const val = isCol ? sel(dcols.map((c) => [c, c]), s.density.col, (v) => { s.density = { ...s.density, col: v }; markStale(); }, 'the density column (or the expression the layer declares for grade-tonnage)')
       : txt(s.density ? s.density.const : 2.7, '2.7', (v) => { s.density = { ...s.density, const: +v }; markStale(); }, 'a constant density');
     val.style.flex = '1'; val.style.minWidth = '0';
-    const un = sel([['', 't/m³'], ['kg/m3', 'kg/m³'], ['lb/ft3', 'lb/ft³']], (s.density && s.density.unit) || '', (v) => { s.density = { ...s.density }; if (v) s.density.unit = v; else delete s.density.unit; markStale(); }, 'the density’s unit (→ t/m³)');
+    const un = sel([['', 't/m³'], ['g/cm3', 'g/cm³'], ['kg/m3', 'kg/m³'], ['lb/ft3', 'lb/ft³']], (s.density && s.density.unit) || '', (v) => { s.density = { ...s.density }; if (v) s.density.unit = v; else delete s.density.unit; markStale(); }, 'the density’s unit (→ t/m³)');
     un.style.width = '62px'; un.style.flex = '0 0 auto';
     wrap.append(kind, val, un); return wrap;
   };
   const sideBox = (s, what, tip) => {
     const box = document.createElement('div'); box.className = 'sw-ser';
     box.append(Object.assign(document.createElement('div'), { className: 'sw-stale', textContent: what, title: tip }));
-    box.append(sel(models().map((x) => [x.id, nameOf(x)]), s.layerId, (v) => { s.layerId = +v; const cs = numericColsOf(layerById(s.layerId)); if (!cs.includes(s.grade)) s.grade = guessCol(cs, GRADE_RE) || cs[0]; if (s.density && s.density.col && !cs.includes(s.density.col)) s.density = guessCol(cs, DENS_RE) ? { col: guessCol(cs, DENS_RE) } : { const: 2.7 }; markStale(); buildRail(); }, `the ${what} — a block model`));
+    box.append(sel(models().map((x) => [x.id, nameOf(x)]), s.layerId, (v) => { s.layerId = +v; const cs = numericColsOf(layerById(s.layerId)); if (!cs.includes(s.grade)) s.grade = guessCol(cs, GRADE_RE) || cs[0]; if (s.density && s.density.col && !cs.includes(s.density.col)) s.density = densGuess(layerById(s.layerId)); markStale(); buildRail(); }, `the ${what} — a block model`));
     const mid = document.createElement('div'); mid.className = 'sw-ser-top';
     const gs = sel(numericColsOf(layerById(s.layerId) || L).map((c) => [c, c]), s.grade, (v) => { s.grade = v; markStale(); }, 'the grade column');
     mid.append(gs, gradeUnitSel(s.unit || '', (v) => { s.unit = v; markStale(); }, 'this model’s grade unit (declared) — converts into the report unit'));
@@ -486,7 +540,7 @@ export function openFactors(L, ropts) {
       pSec.append(row('column', sel([['', '—'], ...cols.map((c) => [c, c])], st.periodCol, (v) => { st.periodCol = v; markStale(); }, 'the column naming the period a block was mined in (blank = not mined) — on both models')));
     } else if (st.periods === 'volumes') {
       const ms = factorMeshes();
-      if (!ms.length) pSec.append(Object.assign(document.createElement('div'), { className: 'sw-stale', textContent: 'open the period solids / pit surfaces (mesh layers) first' }));
+      if (!ms.length) pSec.append(Object.assign(document.createElement('div'), { className: 'sw-stale', textContent: 'open the period solids / pit surfaces (mesh or grid layers) first' }));
       st.volumes.forEach((v, i) => {
         const box = document.createElement('div'); box.className = 'sw-ser';
         const top = document.createElement('div'); top.className = 'sw-ser-top';
@@ -494,14 +548,21 @@ export function openFactors(L, ropts) {
         const x = document.createElement('button'); x.className = 'sw-x'; x.textContent = '×'; x.title = 'remove this period'; x.onclick = () => { st.volumes.splice(i, 1); markStale(); buildRail(); };
         top.append(nm, x); box.append(top);
         const mid = document.createElement('div'); mid.className = 'sw-ser-top';
-        const msel = sel(ms.map((m) => [m.id, nameOf(m)]), v.meshId, (y) => { v.meshId = +y; markStale(); }, 'the solid (its inside) or the pit surface');
-        const ssel = sel([['inside', 'inside'], ['above', 'above'], ['below', 'below']], v.side || 'inside', (y) => { v.side = y; markStale(); }, 'a closed solid counts its inside; an open surface what lies above it (a pit) or below');
+        const msel = sel(ms.map((m) => [m.id, `${nameOf(m)}${isGridSurface(m) ? ' (grid)' : ''}`]), v.meshId, (y) => { v.meshId = +y; v.side = null; markStale(); buildRail(); }, 'the period’s volume: a closed solid, an open pit surface or a gridded surface');
+        // the sides follow the volume's topology (select by solid's vocabulary): a closed solid → inside /
+        // outside, an open surface or a grid → above / below. A mesh not read yet is read now.
+        const vm = layerById(v.meshId), sides = volumeSides(vm);
+        if (!sides && isVolumeMesh(vm) && !_reading.has(vm.id)) { _reading.add(vm.id); solidOrientedMesh(vm).then(() => { _reading.delete(vm.id); buildRail(); }, () => { _reading.delete(vm.id); }); }
+        if (sides && (!v.side || !sides.includes(v.side))) v.side = sides[0];
+        const ssel = sides ? sel(sides.map((x) => [x, x]), v.side, (y) => { v.side = y; markStale(); }, vm && isGridSurface(vm) ? 'a gridded surface: what lies above it (a pit mined from it up) or below' : vm && vm._solidMesh && vm._solidMesh.closed ? 'a closed solid: its inside, or what lies outside it' : 'an open surface: what lies above it (a pit) or below')
+          : sel([['', 'reading…']], '', () => {}, 'reading the mesh’s topology');
+        ssel.dataset.side = '1';
         ssel.style.width = '74px'; ssel.style.flex = '0 0 auto';
         mid.append(msel, ssel); box.append(mid);
         pSec.append(box);
       });
       const add = document.createElement('button'); add.className = 'sw-add'; add.textContent = '+ add period';
-      add.onclick = () => { const used = new Set(st.volumes.map((v) => v.meshId)); const m = ms.find((x) => !used.has(x.id)) || ms[0]; if (!m) return; const prev = st.volumes[st.volumes.length - 1]; st.volumes.push({ name: `period ${st.volumes.length + 1}`, meshId: m.id, side: prev ? prev.side : 'above' }); markStale(); buildRail(); };
+      add.onclick = () => { const used = new Set(st.volumes.map((v) => v.meshId)); const m = ms.find((x) => !used.has(x.id)) || ms[0]; if (!m) return; const prev = st.volumes[st.volumes.length - 1], ps = volumeSides(m); st.volumes.push({ name: `period ${st.volumes.length + 1}`, meshId: m.id, side: prev && ps && ps.includes(prev.side) ? prev.side : null }); markStale(); buildRail(); };
       pSec.append(add);
       const nl = document.createElement('label'); nl.className = 'sw-row'; nl.title = 'each volume holds the ones before it (pit phases, cumulative shells): period k = volume k minus volume k − 1';
       const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = !!st.nested; cb.onchange = () => { st.nested = cb.checked; markStale(); };
@@ -552,7 +613,10 @@ export function openFactors(L, ropts) {
     const rSec = document.createElement('div'); rSec.append(head('report'));
     rSec.append(row('cutoff', txt(st.cutoff == null ? '' : st.cutoff, 'none', (v) => { st.cutoff = v === '' || v === 'none' ? null : +v; markStale(); }, 'blocks at or above it count (in the report grade unit); blank = no cutoff')));
     rSec.append(row('unit', gradeUnitSel(st.gradeUnit || '', (v) => { st.gradeUnit = v; markStale(); }, 'the report grade unit — grades convert into it; metal is in tonnes of metal when it is declared')));
-    rSec.append(row('metal ×', txt(st.metalFactor, `auto (${+metalFactorOf({ gradeUnit: st.gradeUnit }).mf.toPrecision(4)})`, (v) => { st.metalFactor = v === '' ? '' : +v; markStale(); }, 'metal = tonnes × grade × this (blank: from the grade unit — % → 0.01, g/t → 1e-6; 1/31.1035 for g/t → oz)')));
+    // a number or a fraction a/b; anything else is marked invalid and Run refuses it (never a silent automatic)
+    const mfIn = txt(st.metalFactor, `auto (${+metalFactorOf({ gradeUnit: st.gradeUnit }).mf.toPrecision(4)})`, (v) => { st.metalFactor = v; mfIn.classList.toggle('bad-in', Number.isNaN(parseFactor(v))); markStale(); buildRail(); }, 'metal = tonnes × grade × this — a number or a fraction (1/31.1035 for g/t → troy oz); blank: from the grade unit (% → 0.01, g/t → 1e-6, metal in tonnes)');
+    mfIn.classList.toggle('bad-in', Number.isNaN(parseFactor(st.metalFactor))); mfIn.dataset.metalFactor = '1';
+    rSec.append(row('metal ×', mfIn));
     if (st.metalFactor !== '' && st.metalFactor != null) rSec.append(row('metal unit', txt(st.metalUnit, 'oz, t, lb…', (v) => { st.metalUnit = v; if (st.scan) st.scan.metalUnit = v; if (st.scan) plot(); })));
     rSec.append(row('tolerance', txt(st.tolerance, '0.1', (v) => { st.tolerance = Number.isFinite(+v) && +v >= 0 ? +v : 0.1; if (st.scan) plot(); }, 'the band drawn around 1.0 (0.1 = ±10%) — factors outside it are marked')));
     rail.append(rSec);

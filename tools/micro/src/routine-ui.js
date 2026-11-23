@@ -95,7 +95,7 @@ export function openRoutineWindow(r0) {
     host.appendChild(row);
     const ovr = document.createElement('textarea'); ovr.className = 'rw-ovr';
     ovr.placeholder = inline ? 'params (YAML, block style, strings quoted) — e.g.  layer: "model.csv"' : 'overrides (YAML, block style, strings quoted) — e.g.  nCut: 20  ·  col: "$grade"';
-    const extras = extrasOf(st, [...skip, 'each', 'steps', 'guard', 'params', 'filter', 'emit']);
+    const extras = extrasOf(st, [...skip, 'each', 'steps', 'guard', 'params', 'emit']);
     ovr.value = Object.keys(extras).length ? yamlEmit(jsToYamlNode(extras)).trimEnd() : '';
     host.appendChild(ovr);
     // the box is a small YAML editor: highlighting, the tool's settings at the caret, live checks
@@ -109,7 +109,7 @@ export function openRoutineWindow(r0) {
       try {
         const obj = txt ? yamlToJs(yamlParse(txt)) : {};
         if (!obj || typeof obj !== 'object' || Array.isArray(obj)) throw new Error('a map');
-        setExtras(st, [...skip, 'each', 'steps', 'guard', 'params', 'filter', 'emit'], obj);
+        setExtras(st, [...skip, 'each', 'steps', 'guard', 'params', 'emit'], obj);
         ovr.classList.remove('err');
       } catch { ovr.classList.add('err'); }
     };

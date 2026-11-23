@@ -24,7 +24,7 @@ import { sectionCutOf, sectionRecordMask, filterMaskOf } from './insection.js';
 import { rendererDocBbox, layerShown } from './layers.js';
 import { attrRowCountOf, layerBlob, layerTableHeader, schemaExt, layerWorldBox, meshVertexData } from './records.js';
 import { figureRefs, retargetDoc, guessLayer, guessColumn } from './retarget.js';
-import { computeResourceTable, numericColsOf } from './analysis.js';
+import { computeResourceTable, numericColsOf, parseFactor } from './analysis.js';
 import { sourceHash, sourceHashSync } from './identity.js';
 import { createDocument, parseDocument, serializeDocument, mountEditor, exportPDF, exportPNG, frameById, pageDims, tableFromTsv, removeFrames, groupFrames, subjectFrame, refFrame, figureFromPdf, registerKind, replayDrawList } from '../../../ext/compo/index.js';
 import { chartFigure } from './analysis-ui.js';
@@ -360,7 +360,8 @@ async function resourceContent(p) {
   if (!L) throw new Error(`layer “${p.layer}” isn't loaded`);
   const mask = p.scope === 'filter' && L.filterExpr ? L._filterMask : null;
   const r = await computeResourceTable(L, { ...p, mask });
-  const metal = p.metalUnit ? `metal (${p.metalUnit})` : 'metal';
+  const mu = p.metalUnit || r.metalUnit;                     // stated, or what the rule made it (t when the grade unit is declared)
+  const metal = mu ? `metal (${mu})` : 'metal';
   const columns = r.columns.map((c) => (c === 'tonnes' ? 't' : c === 'grade' ? (p.gradeUnit ? `${p.grade} (${p.gradeUnit})` : p.grade) : c === 'metal' ? metal : c));
   const grp = (v) => (Number.isFinite(v) ? Math.round(v).toLocaleString('en-US').replace(/,/g, ' ') : '');   // 2 343 000
   const rows = r.rows.map((row) => row.map((v, i) => (r.columns[i] === 'tonnes' ? grp(v) : r.columns[i] === 'grade' ? sig(v, 4) : r.columns[i] === 'metal' ? (Math.abs(v) >= 1000 ? grp(v) : sig(v, 4)) : v)));
@@ -389,10 +390,12 @@ function openResourceDialog() {
   const row = (label, el) => { const l = document.createElement('span'); l.textContent = label; body.append(l, el); return el; };
   const lay = row('model', sel(cands.map((L) => L.name), cands[0].name));
   const grade = row('grade', sel([])), cut = row('cutoffs', inp('0, 0.5, 1', 'comma-separated, in the grade\'s units'));
-  const gunit = row('grade unit', inp('', 'shown in the header, e.g. g/t, %'));
+  const gunit = row('grade unit', inp('', 'the grade’s unit, e.g. g/t, %, ppm — shown in the header; declared, it sets the metal factor (metal in tonnes) unless you state one'));
   const dcol = row('density', sel([])), dconst = row('… or constant', inp('2.7', 'used when no density column is chosen')), dunit = row('density unit', sel(['t/m3', 'kg/m3', 'g/cm3', 'lb/ft3'], 't/m3'));
   const g1 = row('group by', sel([])), g2 = row('… then by', sel([]));
-  const mf = row('metal factor', inp('1', 'metal = tonnes × grade × this (g/t → oz: 0.0321507; % → t: 0.01)')), munit = row('metal unit', inp('', 'e.g. oz, t'));
+  const mf = row('metal factor', inp('', 'metal = tonnes × grade × this — a number or a fraction (1/31.1035 for g/t → troy oz). Blank: from the grade unit (% → 0.01, g/t → 1e-6, metal in tonnes), or 1 when no unit is given')), munit = row('metal unit', inp('', 'e.g. oz, t — blank: t when the factor comes from the grade unit'));
+  mf.placeholder = 'auto (from the grade unit)'; mf.dataset.metalFactor = '1';
+  mf.oninput = () => mf.classList.toggle('bad-in', Number.isNaN(parseFactor(mf.value)));
   const scope = row('records', sel(['all', 'filter'], 'all'));
   const fill = () => {
     const L = S.layers.find((x) => x.name === lay.value), h = layerTableHeader(L), all = schemaExt(L, h).map((c) => c.name), nums = numericColsOf(L);
@@ -406,9 +409,11 @@ function openResourceDialog() {
   const msg = document.createElement('span'); msg.className = 'hint';
   body.append(msg, go);
   go.onclick = async () => {
+    const mfv = parseFactor(mf.value);
+    if (Number.isNaN(mfv)) { mf.classList.add('bad-in'); msg.textContent = `metal factor “${mf.value.trim()}”: a positive number or a fraction such as 1/31.1035 — or blank`; return; }
     const p = { layer: lay.value, grade: grade.value, gradeUnit: gunit.value.trim() || undefined, cutoffs: cut.value.split(/[,;\s]+/).map(Number).filter(Number.isFinite),
       density: dcol.value ? { col: dcol.value, unit: dunit.value } : { const: +dconst.value || 1, unit: dunit.value }, groupBy: [g1.value, g2.value].filter(Boolean),
-      metalFactor: +mf.value || 1, metalUnit: munit.value.trim() || undefined, scope: scope.value };
+      ...(mfv != null ? { metalFactor: mfv } : {}), metalUnit: munit.value.trim() || undefined, scope: scope.value };
     go.disabled = true; msg.textContent = 'computing…';
     try { await addResourceFrame(p); w.close(); } catch (e) { msg.textContent = e.message; go.disabled = false; }
   };
