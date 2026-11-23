@@ -8542,6 +8542,187 @@ if (take()) {
   await pg.close();
 }
 
+// ── §126: THE CONSISTENCY ROUND (2026-11-23) — each a place where two sides of micro said different
+//     things: a routine step's top-level filter: was dropped (now refused, flagged in the box, the tool's
+//     settings completed under with: only, column completion from the setting's own layer); factors'
+//     volume sides follow the topology (closed → inside / outside, open or a grid → above / below; a
+//     side that doesn't fit is an error), grids are volumes, nested on and 3×3×3 by default, the
+//     declared grade-tonnage density is the default, a metal factor of 1/31.1035 works and "1/x" is
+//     refused; the resource table takes its metal factor from the grade unit; contact converts units,
+//     measures to a grid, offers numeric domains and states its bins; validation reads derived sample
+//     columns, has band controls, a tolerance and a recipe, and keeps its setup; grid export's decimals
+//     are any whole number 0–12. ──
+if (take()) {
+  const pc = await mkPage('sm2consist');
+  await pc.evaluate(async () => { try { await (await navigator.storage.getDirectory()).removeEntry('sm2consist', { recursive: true }); } catch { } });
+  await pc.evaluate(async () => {
+    const m = window._micro;
+    // 6 × 6 × 3 blocks of 10 m (z 5 / 15 / 25); FE 40 + level, SG 2.5, LITO HEM (low x) / ITA, DOMC 1 / 2
+    const R = ['XC,YC,ZC,FE,SG,LITO,DOMC'];
+    for (let k = 0; k < 3; k++) for (let j = 0; j < 6; j++) for (let i = 0; i < 6; i++) R.push(`${5 + 10 * i},${5 + 10 * j},${5 + 10 * k},${40 + k},2.5,${i < 3 ? 'HEM' : 'ITA'},${i < 3 ? 1 : 2}`);
+    await m.openBlob(new Blob([R.join('\n') + '\n']), 'm.csv', 'replace');
+    const G = ['X,Y,Z,AU_GC']; for (let i = 0; i < 6; i++) G.push(`${5 + 10 * i},5,5,1`);
+    await m.openBlob(new Blob([G.join('\n') + '\n']), 'g.csv', 'add');
+    await m.openBlob(new Blob(['PERIOD,TONNES,HEAD\nP1,100,40\n']), 'mill.csv', 'add', null, { asKind: 'table' });
+    // a closed box over the middle level (z 10…20), an open sheet and a flat grid at z 10 (a block boundary)
+    const obj = (v, f) => new Blob([v.map((x) => `v ${x.join(' ')}`).join('\n') + '\n' + f.map((t) => `f ${t.join(' ')}`).join('\n') + '\n']);
+    const bv = (z0, z1) => [[-20, -20, z0], [80, -20, z0], [80, 80, z0], [-20, 80, z0], [-20, -20, z1], [80, -20, z1], [80, 80, z1], [-20, 80, z1]];
+    await m.openBlob(obj(bv(10, 20), [[1, 3, 2], [1, 4, 3], [5, 6, 7], [5, 7, 8], [1, 2, 6], [1, 6, 5], [2, 3, 7], [2, 7, 6], [3, 4, 8], [3, 8, 7], [4, 1, 5], [4, 5, 8]]), 'box.obj', 'add');
+    await m.openBlob(obj([[-20, -20, 10], [80, -20, 10], [80, 80, 10], [-20, 80, 10]], [[1, 2, 3], [1, 3, 4]]), 'sheet.obj', 'add');
+    let asc = 'ncols 11\nnrows 11\nxllcorner -25\nyllcorner -25\ncellsize 10\nNODATA_value -9999\n'; for (let r = 0; r < 11; r++) asc += Array(11).fill('10').join(' ') + '\n';
+    await m.openBlob(new Blob([asc]), 'flat.asc', 'add');
+    // six vertical holes: 0–10 m HEM (code 1), 10–30 m ITA (code 2); FE 40 + hole
+    const collar = ['HOLEID,X,Y,Z,EOH'], survey = ['HOLEID,DEPTH,AZ,DIP'], assay = ['HOLEID,FROM,TO,FE,LITO,DCODE'];
+    for (let h = 0; h < 6; h++) { const id = 'H' + h; collar.push(`${id},${5 + h * 10},25,30,30`); survey.push(`${id},0,0,-90`); for (let d = 0; d < 30; d += 10) assay.push(`${id},${d},${d + 10},${40 + h},${d < 10 ? 'HEM' : 'ITA'},${d < 10 ? 1 : 2}`); }
+    const f = (a, nm) => new File([a.join('\n')], nm, { type: 'text/csv' });
+    await m.importDrillholes({ collar: f(collar, 'c.csv'), survey: f(survey, 's.csv'), intervals: f(assay, 'a.csv') }, {}, 'add');
+  });
+  await pc.waitForFunction(() => { const Ls = window._micro.layers(); return Ls.some((x) => x.dh && x.docs.dhDoc) && Ls.some((x) => x.name === 'flat.asc' && x.docs.gridDoc) && Ls.some((x) => x.name === 'mill.csv' && x.docs.tableDoc); }, null, { timeout: 30000 });
+  await saveProject(pc);
+  const r = await pc.evaluate(async () => {
+    const M = window._micro, W = window.micro, out = {}, wait = (ms) => new Promise((q) => setTimeout(q, ms));
+    const rows = (t, q = 'tonnes') => t.table.rows.filter((x) => x[1] === q).map((x) => [x[0], x[2]]);
+    const err = (pr) => pr.then(() => 'ran', (e) => e.message);
+    const base = { model: 'm.csv', grade: 'FE', density: { col: 'SG' }, cutoff: 'none', gradeUnit: 'pct', modelUnit: 'pct', periods: 'volumes', probes: [1, 1, 1] };
+    // ── factors: the side follows the topology; the default is inside for a solid, above for a surface ──
+    const a = await W.runTool('factors', { ...base, volumes: [{ name: 'in', mesh: 'box.obj' }, { name: 'out', mesh: 'box.obj', side: 'outside' }], nested: false });
+    const s = await W.runTool('factors', { ...base, volumes: [{ name: 'up', mesh: 'sheet.obj' }] });
+    const g = await W.runTool('factors', { ...base, volumes: [{ name: 'up', mesh: 'flat.asc', side: 'above' }, { name: 'down', mesh: 'flat.asc', side: 'below' }], nested: false });
+    out.fac = { boxSides: a.resolved.volumes.map((v) => v.side), box: rows(a), sheetSide: s.resolved.volumes[0].side, sheet: rows(s), grid: rows(g),
+      openInside: await err(W.runTool('factors', { ...base, volumes: [{ name: 'x', mesh: 'sheet.obj', side: 'inside' }] })),
+      gridInside: await err(W.runTool('factors', { ...base, volumes: [{ name: 'x', mesh: 'flat.asc', side: 'inside' }] })),
+      boxAbove: await err(W.runTool('factors', { ...base, volumes: [{ name: 'x', mesh: 'box.obj', side: 'above' }] })),
+      defaults: (({ nested, probes }) => ({ nested, probes }))(M.checkParams('factors', { model: 'm.csv', grade: 'FE' }).params) };
+    // the declared grade-tonnage density (2 g/cm³) is the default when a tool call leaves density out
+    const L = M.layers().find((x) => x.name === 'm.csv');
+    L.gtUnits = { grade: 'pct', weight: '2', densUnit: 'g/cm3' };
+    const d = await W.runTool('factors', { ...base, density: undefined, periods: 'filter', periodFilter: 'FE > 0' });
+    out.fac.declared = d.values.model_t;
+    // ── the factors window: the side menu by topology, the declared density, the metal factor field ──
+    const h = M.openFactors(L, { cfg: { model: 'm.csv', grade: 'FE', gc: 'm.csv', gcGrade: 'FE', periods: 'volumes', volumes: [{ name: 'p', mesh: 'box.obj' }], cutoff: 'none', gradeUnit: 'pct' } });
+    const sideOpts = async () => { for (let k = 0; k < 60 && !(h.win.el.querySelector('select[data-side]') && h.win.el.querySelector('select[data-side]').options[0].value); k++) await wait(50); const ss = h.win.el.querySelector('select[data-side]'); return [...ss.options].map((o) => o.value).join('/'); };
+    const pickMesh = async (name) => { const ss = h.win.el.querySelector('select[data-side]'), ms = ss.previousElementSibling; ms.value = String(M.layers().find((x) => x.name === name).id); ms.dispatchEvent(new Event('change')); await wait(30); return sideOpts(); };
+    out.win = { box: await sideOpts(), sheet: await pickMesh('sheet.obj'), grid: await pickMesh('flat.asc'), dens: JSON.stringify(h.st.model.density), nested: h.st.nested, res: h.st.resolution.join('x') };
+    const mfIn = () => h.win.el.querySelector('input[data-metal-factor]');
+    mfIn().value = '1/31.1035'; mfIn().dispatchEvent(new Event('change')); await wait(30);
+    out.win.good = !mfIn().classList.contains('bad-in');
+    h.st.periods = 'filter'; h.st.periodFilter = 'FE > 0'; h.st.production = null; await h.run();
+    out.win.mf = h.st.scan ? h.st.scan.mf : h.win.el._runFailed;
+    mfIn().value = '1/x'; mfIn().dispatchEvent(new Event('change')); await wait(30);
+    out.win.bad = mfIn().classList.contains('bad-in');
+    await h.run(); out.win.refused = h.win.el._runFailed || '';
+    h.win.close();
+    // ── the resource table: a declared grade unit sets the metal factor (as factors); a stated one wins ──
+    const rb = { layer: 'm.csv', grade: 'FE', cutoffs: [0], density: { col: 'SG' } };
+    const r1 = await W.runTool('resource', { ...rb, gradeUnit: '%' }), r2 = await W.runTool('resource', { ...rb, gradeUnit: 'pct', metalFactor: 1 }), r3 = await W.runTool('resource', rb);
+    out.res = { pct: [r1.resolved.metalFactor, r1.table.rows[0][3] / (r1.table.rows[0][1] * r1.table.rows[0][2]), r1.table.units.metal], stated: r2.resolved.metalFactor, none: r3.resolved.metalFactor };
+    // ── contact: units, a grid surface, numeric domains, the stated bins ──
+    const cs = { mode: 'surface', layer: 'm.csv', series: [{ col: 'FE', unit: 'pct' }], surface: 'flat.asc', binWidth: 5, maxDist: 20 };
+    const c1 = await W.runTool('contact', cs), c2 = await W.runTool('contact', { ...cs, gradeUnit: 'fraction' });
+    out.ct = { centers: c1.table.rows.map((x) => `${x[1]}@${x[2]}`).join(' '), means: c1.table.rows.map((x) => x[3]), meansFrac: c2.table.rows.map((x) => x[3]), unit: c2.table.units.mean, stepFrac: c2.values.mean_all_outside / c1.values.mean_all_outside,
+      binsSurf: (await W.runTool('contact', { ...cs, binWidth: undefined, maxDist: undefined })).resolved.binWidth };
+    const D = M.layers().find((x) => x.dh && x.docs.dhDoc);
+    const dh = await W.runTool('contact', { mode: 'downhole', layer: D.name, series: [{ col: 'FE' }], domain: 'DCODE', domA: '1' });
+    out.ct.dhContacts = dh.values.contacts; out.ct.binsDh = dh.resolved.binWidth;
+    const hc = M.openContact(D, { mode: 'downhole' }); await wait(300);
+    out.ct.domainOpts = [...hc.win.el.querySelectorAll('select')].map((x) => [...x.options].map((o) => o.value)).find((o) => o.includes('LITO')) || [];
+    out.ct.unitSels = hc.win.el.querySelectorAll('.sw-ser select.sw-sel').length;
+    hc.win.close();
+    // ── validation: derived SAMPLE columns (a calc grade, a text calc domain), the window's band / tolerance / recipe ──
+    await M.applyCalcCols(D, [{ name: 'FE2', expr: 'FE * 2', ty: 'number' }, { name: 'DC', expr: 'LITO', ty: 'string' }]);
+    await M.applyCalcCols(L, [{ name: 'DC', expr: 'LITO', ty: 'string' }]);
+    const vb = { model: 'm.csv', samples: D.name, modelGrade: 'FE', axis: 'Z', bandW: 10 };
+    const v1 = await W.runTool('validation', { ...vb, sampleGrade: 'FE' }), v2 = await W.runTool('validation', { ...vb, sampleGrade: 'FE2' });
+    const v3 = await W.runTool('validation', { ...vb, sampleGrade: 'FE', filter: 'LITO = "HEM"' }), v4 = await err(W.runTool('validation', { ...vb, sampleGrade: 'FE', filter: 'DC = "HEM"' }));
+    const v4n = v4 !== 'ran' ? v4 : null, v4v = v4n ? null : await W.runTool('validation', { ...vb, sampleGrade: 'FE', filter: 'DC = "HEM"' });
+    out.val = { naive: [v1.values.samples_naive, v2.values.samples_naive], lito: v3.values.samples, dc: v4n || v4v.values.samples, dcModel: v4n ? null : v4v.values.model_mean, litoModel: v3.values.model_mean };
+    const hv = M.openValidation(L, { cfg: { samples: D.name, modelGrade: 'FE', sampleGrade: 'FE', axis: 'Z', bandW: 10, off: 0, tolerance: 0.5 } });
+    for (let k = 0; k < 200 && /sampling|^$/.test(hv.win.sub.textContent); k++) await wait(50);
+    out.vwin = { sub: hv.win.sub.textContent, bias: (hv.win.el.querySelector('.val-stat.ok, .val-stat.bad') || {}).className || '', recipe: [...hv.win.el.querySelectorAll('button')].some((b) => /save as recipe/.test(b.textContent)), rcp: hv.win.el._recipe().params };
+    hv.win.close();
+    const hv2 = M.openValidation(L); await wait(100);
+    out.vwin.saved = L.analysis && L.analysis.validation; out.vwin.restored = { bandW: hv2.st.bandW, off: hv2.st.off, tol: hv2.st.tolerance };
+    hv2.win.close();
+    // ── grid export: decimals any whole number 0–12 (the dialog's field and the tool) ──
+    const GL = M.layers().find((x) => x.name === 'flat.asc');
+    M.openGridExportDialog(GL);
+    const dec = document.querySelector('#geDlgBody input[data-decimals]');
+    dec.value = '7'; dec.dispatchEvent(new Event('input')); const seven = !dec.classList.contains('bad-in');
+    dec.value = '13'; dec.dispatchEvent(new Event('input')); document.querySelector('#geGo').click(); await wait(50);
+    out.ge = { seven, thirteen: dec.classList.contains('bad-in'), msg: document.querySelector('#geDlgMsg').textContent, open: document.querySelector('#geDlg').classList.contains('show') };
+    document.querySelector('#geCancel').click();
+    await M.openBlob(new Blob(['ncols 2\nnrows 2\nxllcorner 0\nyllcorner 0\ncellsize 10\nNODATA_value -9999\n1.23456789 1.23456789\n1.23456789 1.23456789\n']), 'frac.asc', 'add');
+    for (let k = 0; k < 100 && !M.layers().some((x) => x.name === 'frac.asc' && x.docs.gridDoc); k++) await wait(50);
+    const t7 = await W.runTool('gridexport', { layer: 'frac.asc', decimals: 7 });
+    out.ge.t7 = (await t7.file.blob.text()).split('\n')[6].split(' ')[0];
+    out.ge.t13 = await err(W.runTool('gridexport', { layer: 'flat.asc', decimals: 13 }));
+    // ── a routine step's top-level filter: refused, never dropped ──
+    document.querySelector('#meta').textContent = '';
+    M.runRoutine({ name: 'loose', tool: 'routine', params: { steps: [{ tool: 'stats', filter: 'FE > 41', with: { layer: 'm.csv', cols: ['FE'] }, as: 's' }] } });
+    for (let k = 0; k < 200 && !/routine/.test(document.querySelector('#meta').textContent); k++) await wait(50);
+    out.loose = document.querySelector('#meta').textContent;
+    return out;
+  });
+  const near = (x, y, t = 1e-9) => Number.isFinite(x) && Math.abs(x - y) <= t * Math.max(1, Math.abs(y));
+  const lvl = 36 * 1000 * 2.5;                                // one level of blocks, tonnes
+  const F = r.fac;
+  chk(`factors sides by topology: a closed box defaults to inside (${F.boxSides}) — inside ${F.box[0][1]} + outside ${F.box[1][1]} t = the model; an open sheet defaults to above (${F.sheetSide}, ${F.sheet[0][1]} t); a grid ${F.grid.map((x) => x[1]).join(' / ')} t above / below`,
+    F.boxSides.join() === 'inside,outside' && near(F.box[0][1], lvl) && near(F.box[1][1], 2 * lvl) && F.sheetSide === 'above' && near(F.sheet[0][1], 2 * lvl) && near(F.grid[0][1], 2 * lvl) && near(F.grid[1][1], lvl));
+  chk(`factors: a side that doesn't fit is an error (“${F.openInside}” · “${F.gridInside}” · “${F.boxAbove}”)`,
+    /doesn't fit sheet.*an open surface takes above or below/.test(F.openInside) && /a gridded surface takes above or below/.test(F.gridInside) && /a closed solid takes inside or outside/.test(F.boxAbove));
+  chk(`factors defaults: nested ${F.defaults.nested}, probes ${JSON.stringify(F.defaults.probes)}; density left out → the declared 2 g/cm³ (${F.declared} t, not SG 2.5's ${3 * lvl})`,
+    F.defaults.nested === true && JSON.stringify(F.defaults.probes) === '[3,3,3]' && near(F.declared, 3 * 36 * 1000 * 2));
+  const w = r.win;
+  chk(`factors window: sides follow the volume (box ${w.box} · sheet ${w.sheet} · grid ${w.grid}); density from the declaration ${w.dens}; nested ${w.nested}, probes ${w.res}`,
+    w.box === 'inside/outside' && w.sheet === 'above/below' && w.grid === 'above/below' && w.dens === '{"const":2,"unit":"g/cm3"}' && w.nested === true && w.res === '3x3x3');
+  chk(`factors window: metal × 1/31.1035 is valid (${w.good}) and used (${w.mf}); “1/x” is marked (${w.bad}) and Run refuses it (“${w.refused}”)`,
+    w.good && near(w.mf, 1 / 31.1035) && w.bad && /metal factor “1\/x”/.test(w.refused));
+  chk(`resource table: grade unit % → metal factor ${r.res.pct[0]} (metal / (t × g) = ${r.res.pct[1]}, unit ${r.res.pct[2]}); a stated 1 wins (${r.res.stated}); no unit → ${r.res.none}`,
+    near(r.res.pct[0], 0.01) && near(r.res.pct[1], 0.01) && r.res.pct[2] === 't' && r.res.stated === 1 && r.res.none === 1);
+  const ct = r.ct;
+  chk(`contact to a GRID: vertical distances, below negative (${ct.centers}); a pct series in a fraction report: ${ct.means.join('/')} → ${ct.meansFrac.join('/')} (${ct.unit})`,
+    ct.centers === 'below@-2.5 above@7.5 above@17.5' && ct.meansFrac.every((x, i) => near(x, ct.means[i] * 0.01)) && ct.unit === 'fraction' && near(ct.stepFrac, 0.01));
+  chk(`contact: a numeric domain code works (${ct.dhContacts} contacts on DCODE = 1) and is offered after the text ones (${ct.domainOpts.join(',')}); a unit per series (${ct.unitSels} selects); bins absent → ${ct.binsDh} down-hole, ${ct.binsSurf} to a surface`,
+    ct.dhContacts === 6 && ct.domainOpts.indexOf('LITO') >= 0 && ct.domainOpts.indexOf('DCODE') > ct.domainOpts.indexOf('LITO') && ct.unitSels >= 3 && ct.binsDh === 2 && ct.binsSurf === 5);
+  const v = r.val;
+  chk(`validation reads derived SAMPLE columns: a calc FE2 doubles the naive mean (${v.naive.join(' → ')}); a text calc domain on both sides keeps what LITO does (${v.dc} = ${v.lito} samples, model ${v.dcModel} = ${v.litoModel})`,
+    near(v.naive[1], 2 * v.naive[0]) && v.dc === v.lito && v.lito === 6 && near(v.dcModel, v.litoModel));
+  const vw = r.vwin;
+  chk(`validation window: bands from the setup (“${vw.sub}”), bias judged at ±50% (${vw.bias}), save as recipe there (${vw.recipe}, bandW ${vw.rcp.bandW})`,
+    /bands 10 m from 0/.test(vw.sub) && /ok/.test(vw.bias) && vw.recipe && vw.rcp.bandW === 10 && vw.rcp.tolerance === 0.5);
+  chk(`validation window keeps its setup (${JSON.stringify(vw.saved)}) and reopens with it (${JSON.stringify(vw.restored)})`,
+    vw.saved && vw.saved.bandW === 10 && vw.saved.off === 0 && vw.restored.bandW === 10 && vw.restored.off === 0 && vw.restored.tol === 0.5);
+  chk(`grid export decimals: 7 is fine (${r.ge.seven}, the tool writes ${r.ge.t7}); 13 is marked and refused (${r.ge.thirteen}, “${r.ge.msg}”, dialog open ${r.ge.open}; tool: “${r.ge.t13}”)`,
+    r.ge.seven && r.ge.t7 === '1.2345679' && r.ge.thirteen && /0–12/.test(r.ge.msg) && r.ge.open && /decimals: a whole number 0–12/.test(r.ge.t13));
+  chk(`a routine step's top-level filter: is refused, not dropped (“${r.loose.slice(0, 160)}”)`, /filter at the step’s top level is a step keyword.*put it under with:/.test(r.loose));
+  // the routine editor's box: a tool setting named like a step keyword is completed under with: only,
+  // flagged at the top level; a column setting completes from its own layer (gcGrade → gc)
+  await pc.evaluate(() => { window._micro.openRoutineWindow(null); [...document.querySelectorAll('.fwin[data-routine] button')].find((x) => x.textContent === '+ inline step').click(); });
+  await pc.evaluate(() => { const s = [...document.querySelectorAll('.fwin[data-routine] select')].find((x) => [...x.options].some((o) => o.value === 'stats')); s.value = 'stats'; s.dispatchEvent(new Event('change')); });
+  const ta = pc.locator('.fwin[data-routine] .yf-wrap textarea').last();
+  await ta.click();
+  const popup = () => pc.evaluate(() => (document.querySelector('#acPopup').classList.contains('show') ? [...document.querySelectorAll('#acPopup .ac-val')].map((x) => x.textContent) : []));
+  await pc.keyboard.type('fil'); const topKeys = await popup();
+  await pc.keyboard.press('Escape'); await pc.keyboard.type('ter: "FE > 41"'); await pc.keyboard.press('Escape');
+  await pc.waitForFunction(() => [...document.querySelectorAll('.fwin[data-routine] .yf-msg')].some((x) => /put it under with/.test(x.textContent)), null, { timeout: 5000 }).catch(() => {});
+  const flagged = await pc.evaluate(() => [...document.querySelectorAll('.fwin[data-routine] .yf-msg')].map((x) => x.textContent).join(' | '));
+  await pc.keyboard.press('Control+a'); await pc.keyboard.type('with:'); await pc.keyboard.press('Enter'); await pc.keyboard.type('fil');
+  const withKeys = await popup();
+  await pc.keyboard.press('Escape');
+  // factors: gcGrade completes gc's columns, production lists only table layers
+  await pc.evaluate(() => { const s = [...document.querySelectorAll('.fwin[data-routine] select')].find((x) => [...x.options].some((o) => o.value === 'factors')); s.value = 'factors'; s.dispatchEvent(new Event('change')); });
+  await ta.click(); await pc.keyboard.press('Control+a');
+  await pc.keyboard.type('with:'); await pc.keyboard.press('Enter'); await pc.keyboard.type('model: "m.csv"'); await pc.keyboard.press('Escape'); await pc.keyboard.press('End'); await pc.keyboard.press('Enter');
+  await pc.keyboard.type('gc: "g.csv"'); await pc.keyboard.press('Escape'); await pc.keyboard.press('End'); await pc.keyboard.press('Enter');
+  await pc.keyboard.type('gcGrade: '); const gcCols = await popup(); await pc.keyboard.press('Escape'); await pc.keyboard.type('"AU_GC"'); await pc.keyboard.press('Escape'); await pc.keyboard.press('End'); await pc.keyboard.press('Enter');
+  await pc.keyboard.type('production: '); const prodLayers = await popup(); await pc.keyboard.press('Escape');
+  chk(`yaml box: filter is not offered at the step's top level (${topKeys.join(',') || 'nothing'}) but is under with: (${withKeys.join(',')}); typed there it is flagged (“${flagged.slice(0, 150)}”)`,
+    !topKeys.includes('filter') && withKeys.includes('filter') && /filter: at the step’s top level this is a step keyword.*put it under with:/.test(flagged));
+  chk(`yaml box: gcGrade completes grade control's columns (${gcCols.join(',')}), production only table layers (${prodLayers.join(',')})`,
+    gcCols.includes('AU_GC') && !gcCols.includes('FE') && prodLayers.includes('mill.csv') && !prodLayers.includes('m.csv') && !prodLayers.includes('box.obj'));
+  await pc.close();
+}
+
 // ── by geometry on a ROTATED model: rotate the SOLID, not the model. A rotated copy
 //     of an axis-aligned model + solid (both turned by one rotation about one point)
 //     gives the same fraction per record as the unrotated pair — the dense engine runs
