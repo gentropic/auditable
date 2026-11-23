@@ -341,7 +341,7 @@ export function openPaintPalette(L) {
       body.appendChild(row);
       const hint = document.createElement('div');
       hint.style.cssText = 'color:var(--dim);font-size:11px;line-height:1.5;padding:8px 2px';
-      hint.textContent = 'name a category column and create it — then add values, pick one, and brush straight onto the blocks (b arms the brush; click applies, right-drag erases)';
+      hint.textContent = 'name a category column and create it — then add values, pick one, and brush straight onto the blocks (b arms the brush; drag to paint, Alt erases, Esc stops)';
       body.appendChild(hint);
       if (!col) { setTimeout(() => nameIn.focus(), 0); return; }
     }
@@ -443,15 +443,24 @@ export function applyPaintPalette(L, col) {
     // the clip window all apply, baked through the palette (codes are absolute
     // v = code/255; the LUT covers the clip range, codes remap into it)
     const cfg = (L.ramps && L.ramps[col.selKey || ('paint:' + col.name)]) || { preset: 'viridis', classed: false, breaks: [] };
+    // what a code MEANS: a fraction column's code is the fraction itself (code/255); a stored or ƒ
+    // column's codes span ITS range (matColCodes: 1 + 254·(v−min)/(max−min)). The clip is in the
+    // column's own units — reading every code as code/255 put a 0–2 clip on a 0–2 column halfway.
+    const ranged = col.mat && Number.isFinite(col.min) && Number.isFinite(col.max);
+    const valOf = ranged ? (code) => col.min + ((code - 1) / 254) * ((col.max - col.min) || 1) : (code) => code / 255;
     const clip = [parseFloat(L.clip && L.clip[0]), parseFloat(L.clip && L.clip[1])];
-    const lo = Number.isFinite(clip[0]) ? clip[0] : 0, hi = Number.isFinite(clip[1]) ? clip[1] : 1;
+    const lo = Number.isFinite(clip[0]) ? clip[0] : ranged ? col.min : 0, hi = Number.isFinite(clip[1]) ? clip[1] : ranged ? col.max : 1;
     const lut = bakeRampPixels(cfg, lo, hi);
     const px = new Uint8Array(256 * 4);
     const span = Math.max(hi - lo, 1e-9);
     for (let code = 0; code < 256; code++) {
-      const t = Math.max(0, Math.min(1, (code / 255 - lo) / span));
+      const t = Math.max(0, Math.min(1, (valOf(code) - lo) / span));
       const s2 = Math.round(t * 255) * 4;
       px[code * 4] = lut[s2]; px[code * 4 + 1] = lut[s2 + 1]; px[code * 4 + 2] = lut[s2 + 2]; px[code * 4 + 3] = 255;
+    }
+    if (ranged) {                                          // code 0 is a BLANK there (matColCodes) — never the lowest color
+      const v = parseInt(String(col.blankColor || PAINT_BLANK).slice(1), 16);
+      px[0] = (v >> 16) & 255; px[1] = (v >> 8) & 255; px[2] = v & 255; px[3] = 255;
     }
     S.renderer.setLayerPalette(L.id, px, 256);
     requestRender();

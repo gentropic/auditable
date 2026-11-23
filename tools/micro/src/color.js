@@ -27,7 +27,7 @@ export function resolveColorMode() {
   const v = $('#colorBy').value;
   if (v === 'elev') return 0;
   if (v.startsWith('chan:')) return 1;
-  if (v === 'cat' || v === 'rules' || v.startsWith('paint:')) return 2;   // rules/paint color through the palette (codes substitute)
+  if (v === 'cat' || v === 'rules' || v.startsWith('paint:') || v.startsWith('calc:')) return 2;   // rules/paint/ƒ color through the palette (codes substitute)
   if (v === 'solid') return 3;
   return +v || 0;                                          // LAS numeric values
 }

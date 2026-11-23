@@ -196,6 +196,7 @@ export function openSwath(L, ropts) {
   const saved = (ropts && ropts.cfg) || (L.analysis && L.analysis.swath);
   if (saved) {
     for (const k of ['mode', 'axis', 'dd', 'dip', 'rake', 'trend', 'plunge', 'bars', 'scope', 'gradeUnit']) if (saved[k] != null) st[k] = saved[k];
+    if (st.mode === 'direction') st.mode = 'trend';         // the window's old name for the trend/plunge mode (the tool's is "trend")
     if (saved.bandW) st.bandW = { ...saved.bandW };
     if (saved.off) st.off = { ...saved.off };
     if (saved.locate != null) st.locate = saved.locate;
@@ -387,7 +388,7 @@ export function openSwath(L, ropts) {
     const dot = document.createElement('span'); dot.className = 'sw-dot'; dot.style.background = s.color; dot.title = 'cycle colour';
     dot.onclick = () => { s.color = SERIES_COLORS[(SERIES_COLORS.indexOf(s.color) + 1) % SERIES_COLORS.length]; dot.style.background = s.color; if (st.scan) plot(); };
     const laySel = document.createElement('select'); laySel.className = 'sw-sel';
-    for (const Lx of S.layers.filter((x) => numericColsOf(x).length && (x.docs.blockDoc || x.docs.dhDoc))) { const o = document.createElement('option'); o.value = Lx.id; o.textContent = Lx.label || Lx.name; if (Lx.id === s.layerId) o.selected = true; laySel.append(o); }
+    for (const Lx of S.layers.filter((x) => numericColsOf(x).length && x.docs.blockDoc)) { const o = document.createElement('option'); o.value = Lx.id; o.textContent = Lx.label || Lx.name; if (Lx.id === s.layerId) o.selected = true; laySel.append(o); }
     laySel.onchange = () => { s.layerId = +laySel.value; const cols = numericColsOf(layerById(s.layerId)); if (!cols.includes(s.col)) s.col = cols[0] || s.col; markStale(); buildRail(); };
     const x = document.createElement('button'); x.className = 'sw-x'; x.textContent = '×'; x.title = 'remove series'; x.onclick = () => { if (st.series.length > 1) { st.series.splice(i, 1); markStale(); buildRail(); } };
     top.append(dot, laySel, x); box.append(top);
@@ -407,11 +408,11 @@ export function openSwath(L, ropts) {
     const dSec = document.createElement('div');
     dSec.append(Object.assign(document.createElement('div'), { className: 'sw-h', textContent: 'direction' }));
     const modeSel = document.createElement('select'); modeSel.className = 'sw-sel'; modeSel.style.width = '100%';
-    for (const [v, t] of [['axes', 'axes X / Y / Z'], ['oriented', 'dip-dir / dip / rake'], ['direction', 'trend / plunge']]) { const o = document.createElement('option'); o.value = v; o.textContent = t; modeSel.append(o); }
+    for (const [v, t] of [['axes', 'axes X / Y / Z'], ['oriented', 'dip-dir / dip / rake'], ['trend', 'trend / plunge']]) { const o = document.createElement('option'); o.value = v; o.textContent = t; modeSel.append(o); }
     modeSel.value = st.mode; modeSel.onchange = () => { st.mode = modeSel.value; st.axis = 0; markStale(); buildRail(); buildTabs(); }; dSec.append(modeSel);
     const numRow = (key, label) => { const r = document.createElement('div'); r.className = 'sw-row'; const l = document.createElement('span'); l.textContent = label; l.style.width = '38px'; const inp = document.createElement('input'); inp.type = 'number'; inp.step = 'any'; inp.className = 'sw-in'; inp.value = String(st[key]); inp.onchange = () => { st[key] = +inp.value; markStale(); }; r.append(l, inp); return r; };
     if (st.mode === 'oriented') { dSec.append(numRow('dd', 'dipdir'), numRow('dip', 'dip'), numRow('rake', 'rake')); }
-    if (st.mode === 'direction') { dSec.append(numRow('trend', 'trend'), numRow('plunge', 'plunge')); }
+    if (st.mode === 'trend') { dSec.append(numRow('trend', 'trend'), numRow('plunge', 'plunge')); }
     rail.append(dSec);
     // ── Bands (cheap: re-bin, no re-scan) — width + offset are PER DIRECTION ──
     const bSec = document.createElement('div');

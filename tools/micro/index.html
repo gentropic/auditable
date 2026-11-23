@@ -1287,12 +1287,13 @@ import { openTurntable, recordTurntable, turntableMime, setTurntableHooks } from
 // the smokes reach these modules through window._micro.mod(name): in the BUILT file an import of
 // the dev path would load a SECOND, unwired copy (its S.renderer null, its undo stack empty)
 import * as _modRamp from './src/ramp.js';
+import * as _modColor from './src/color.js';
 import * as _modDeco from './src/deco.js';
 import * as _modColtypes from './src/coltypes.js';
 import * as _modProps from './src/props.js';
 import * as _modStyleClip from './src/style-clip.js';
 import * as _modUndo from './src/undo.js';
-const _MODS = { 'ramp.js': _modRamp, 'deco.js': _modDeco, 'coltypes.js': _modColtypes, 'props.js': _modProps, 'style-clip.js': _modStyleClip, 'undo.js': _modUndo };
+const _MODS = { 'ramp.js': _modRamp, 'color.js': _modColor, 'deco.js': _modDeco, 'coltypes.js': _modColtypes, 'props.js': _modProps, 'style-clip.js': _modStyleClip, 'undo.js': _modUndo };
 import { runTool, checkParams, toolList } from './src/tools.js';
 import { checkRoutineHost, runRoutineHost, checkAllRecipes, openCheckAllRecipes } from './src/recipes.js';
 import { openRecipeForm } from './src/recipe-form.js';
@@ -1401,7 +1402,7 @@ function setBlockEdges(on) { _blockEdges = !!on; try { localStorage.setItem('mic
 function currentDrawOpts() {
   const clipV = (id) => { const v = $('#' + id).value.trim(); return v === '' ? null : +v; };
   const clipOf = (L) => { const c = [L.clip[0].trim(), L.clip[1].trim()]; return [c[0] === '' ? null : +c[0], c[1] === '' ? null : +c[1]]; };
-  const modeOf = (v) => (v === 'elev' ? 0 : v && v.startsWith('chan:') ? 1 : v === 'cat' || v === 'rules' || (v && v.startsWith('paint:')) ? 2 : v === 'solid' ? 3 : +v || 0);
+  const modeOf = (v) => (v === 'elev' ? 0 : v && v.startsWith('chan:') ? 1 : v === 'cat' || v === 'rules' || (v && (v.startsWith('paint:') || v.startsWith('calc:'))) ? 2 : v === 'solid' ? 3 : +v || 0);
   const layerOpts = {};
   for (const L of S.layers) layerOpts[L.id] = { colorMode: L.id === S.activeId ? resolveColorMode() : modeOf(L.colorSel), clip: L.id === S.activeId ? [clipV('clipMin'), clipV('clipMax')] : clipOf(L) };
   const section = currentSection();
@@ -2341,7 +2342,7 @@ const COMMANDS = [
   { id: 'domains', group: 'Select', title: 'Assign domains…', kw: 'coded model solids', when: () => S.layers.some((L) => L.kind === 'mesh'), run: () => openDomainsDialog() },
   { id: 'gt', group: 'Analyse', title: 'Grade-tonnage…', kw: 'cutoff tonnes curve reserve', when: (c) => c.L && gridAxesOf(c.L), run: (c) => openGradeTonnage(c.L) },
   { id: 'swath', group: 'Analyse', title: 'Swath plot…', kw: 'drift bias direction trend plunge dip rake', when: (c) => c.L && gridAxesOf(c.L), run: (c) => openSwath(c.L) },
-  // validate-vs-drillholes temporarily DISABLED (pending a rework of the window) — when: false hides it everywhere
+  // validate vs drillholes — palette-only (not on the layer menu): shown for a gridded block model once a drillhole layer is loaded
   { id: 'validate', group: 'Analyse', title: 'Validate vs drillholes…', kw: 'declustered sample bias check reconcile composite', when: (c) => c.L && gridAxesOf(c.L) && S.layers.some((L) => L.dh), run: (c) => openValidation(c.L) },
   { id: 'join', group: 'Analyse', title: 'Join / reconcile…', kw: 'merge compare delta reconciliation spatial key', when: (c) => c.L && layerTableHeader(c.L), run: (c) => { setActiveLayer(c.L.id); setPropTab('join'); openProps(); } },
   { id: 'table', group: 'Analyse', title: 'Attribute table…', kw: 'rows data grid', when: (c) => c.L && hasRecords(c.L), run: (c) => openAttrTable(c.L) },

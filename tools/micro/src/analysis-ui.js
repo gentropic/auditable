@@ -268,7 +268,10 @@ export function analysisSerRestore(cfgSeries, L) {
 export function saveAnalysisCfg(L, kind, cfg, win) {
   const a = L.analysis = L.analysis || {};
   a.geo = a.geo || {};
-  const geo = win ? [win.el.offsetLeft, win.el.offsetTop, win.el.offsetWidth, win.el.offsetHeight] : a.geo[kind];
+  // a window being CLOSED is already out of the page (windows.js removes it, then calls onClose):
+  // its offsets read 0×0, which reopened the window as a dot — keep the last good geometry then
+  const live = win && win.el.isConnected && win.el.offsetWidth > 0;
+  const geo = live ? [win.el.offsetLeft, win.el.offsetTop, win.el.offsetWidth, win.el.offsetHeight] : a.geo[kind];
   if (JSON.stringify(a[kind]) !== JSON.stringify(cfg) || JSON.stringify(a.geo[kind]) !== JSON.stringify(geo)) {
     a[kind] = cfg; a.geo[kind] = geo; markProjectDirty();
   }
@@ -284,7 +287,7 @@ export function setAnalysisOpen(L, kind, open) {
 
 export function applyAnalysisGeo(L, kind, win) {
   const g = L.analysis && L.analysis.geo && L.analysis.geo[kind];
-  if (!g) return;
+  if (!g || !(g[2] > 60) || !(g[3] > 40)) return;          // a degenerate saved size (the old close-time 0×0): keep the default
   win.el.style.left = Math.max(0, Math.min(g[0], innerWidth - 80)) + 'px';
   win.el.style.top = Math.max(28, Math.min(g[1], innerHeight - 60)) + 'px';
   win.el.style.width = Math.min(g[2], innerWidth - 12) + 'px';

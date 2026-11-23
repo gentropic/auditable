@@ -28,7 +28,7 @@ export const KEYS = [
   { group: 'section', keys: ['Alt wheel'], does: 'slab thicker / thinner', bind: null },
   { group: 'tools', keys: ['/'], does: 'focus the filter box', bind: ['/'], card: { group: 'tools', label: 'filter' } },
   { group: 'tools', keys: ['m'], does: 'measure — then click two records', bind: ['m'], card: { group: 'tools', label: 'measure' } },
-  { group: 'tools', keys: ['i'], does: 'file info — what was detected, and the mapping', bind: ['i'], card: { group: 'tools', label: 'file info' } },
+  { group: 'tools', keys: ['i'], does: 'file info — what was read: extent, columns, grid', bind: ['i'], card: { group: 'tools', label: 'file info' } },
   { group: 'tools', keys: ['t'], does: 'attribute table of the active layer', bind: ['t'], card: { group: 'tools', label: 'table' } },
   { group: 'tools', keys: ['r'], does: 'select by rectangle', bind: ['r'], card: { group: 'tools', label: 'rectangle' } },
   { group: 'tools', keys: ['v'], does: 'select by lasso', bind: ['v'], card: { group: 'tools', label: 'lasso' } },

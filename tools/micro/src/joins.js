@@ -158,7 +158,7 @@ export async function runKeyJoin({ leftL, rightL, leftKey, rightKey, bring, dup 
       const vals = bringIdx.map((i) => f[i]);
       const e = map.get(k);
       if (!e) map.set(k, { vals, n: 1 });
-      else { dupSeen = true; e.n++; if (dup === 'aggregate') for (let b = 0; b < vals.length; b++) { if (rNum[b]) { const nv = +vals[b], cur = +e.vals[b]; if (Number.isFinite(nv)) e.vals[b] = Number.isFinite(cur) ? (cur * (e.n - 1) + nv) / e.n : nv; } } }
+      else { dupSeen = true; e.n++; if (dup === 'aggregate') for (let b = 0; b < vals.length; b++) { if (rNum[b]) { const nv = numOf(vals[b]), cur = numOf(e.vals[b]); if (Number.isFinite(nv)) e.vals[b] = Number.isFinite(cur) ? (cur * (e.n - 1) + nv) / e.n : nv; } } }
       rc++;
     }
     $('#meta').textContent = `${label}: indexing right ${rc.toLocaleString()}…`;
@@ -276,7 +276,7 @@ export async function keyJoinToCols(L, R, { leftKey, rightKey, bring, dup = 'fir
       const vals = bringIdx.map((i) => f[i]);
       const e = map.get(k);
       if (!e) map.set(k, { vals, n: 1 });
-      else { dupSeen = true; e.n++; if (dup === 'aggregate') for (let b = 0; b < vals.length; b++) { if (rNum[b]) { const nv = +vals[b], cur = +e.vals[b]; if (Number.isFinite(nv)) e.vals[b] = Number.isFinite(cur) ? (cur * (e.n - 1) + nv) / e.n : nv; } } }
+      else { dupSeen = true; e.n++; if (dup === 'aggregate') for (let b = 0; b < vals.length; b++) { if (rNum[b]) { const nv = numOf(vals[b]), cur = numOf(e.vals[b]); if (Number.isFinite(nv)) e.vals[b] = Number.isFinite(cur) ? (cur * (e.n - 1) + nv) / e.n : nv; } } }
       rc++;
     }
     $('#meta').textContent = `join: indexing right ${rc.toLocaleString()}…`;
@@ -497,7 +497,8 @@ function renderSpatialJoinUI(body, L, R, jf) {
   rec.onclick = () => openReconcileMenu(L, R, jf, shared, rec);
   btns.appendChild(rec);
   body.appendChild(btns);
-  body.appendChild(ppNote('a new block-model layer on the target grid, carrying the chosen columns as real (filter/colour/export-able) columns'));
+  // the two buttons make different things — say both (the note used to describe only → new layer)
+  body.appendChild(ppNote('Join → columns here adds the chosen columns to this model (the target grid must be this model); → new layer makes a block-model layer on the target grid. Either way they are real columns — filter, color and export see them'));
 }
 function renderKeyJoinUI(body, L, R, jf) {
   const lh = layerTableHeader(L), rh = layerTableHeader(R);

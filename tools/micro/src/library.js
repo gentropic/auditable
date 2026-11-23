@@ -20,7 +20,7 @@ import { _idb } from './element-store.js';
 import { createMemDir } from './gpu-restore.js';
 import { createZipStreamWriter, openZipRanged, blobSource } from '../../../ext/archive/src/zipstream.js';
 import { emit as yamlEmit, parse as yamlParse } from '../../../ext/yaml/index.js';
-import { RECIPE_TOOLS, recipeSlug, recipeYaml, jsToYamlNode, yamlToJs, runRoutine, loadRecipes, routineSubst } from './recipes.js';
+import { RECIPE_TOOLS, recipeSlug, recipeYaml, jsToYamlNode, yamlToJs, runRoutine, runRecipe, loadRecipes, routineSubst } from './recipes.js';
 import { openInputsDialog } from './routine-ui.js';
 
 const $ = (s) => document.querySelector(s);
@@ -212,7 +212,7 @@ export async function openLibraryWindow() {
       const extra = [p.recipes && p.recipes.length ? `${p.recipes.length} recipe${p.recipes.length === 1 ? '' : 's'}` : '', Object.keys(p.tables || {}).length ? `${Object.keys(p.tables).length} table${Object.keys(p.tables).length === 1 ? '' : 's'}` : ''].filter(Boolean).join(' · ');
       const r = row(`${p.main.name} · ${RECIPE_TOOLS[p.main.tool] || p.main.tool}${extra ? ` (${extra})` : ''}`,
         ...(p.main.tool === 'routine' ? [
-          ...(hasProject ? [btn('Run in project', 'run it on this project’s layers, writing its run into the project', () => runRoutine(p.main, { pack: { recipes: p.recipes || [], tables: p.tables || {} } }))] : []),
+          ...(hasProject ? [btn('Run in project', 'run it on this project’s layers, writing its run into the project', () => runRecipe(p.main, true, { pack: { recipes: p.recipes || [], tables: p.tables || {} } }))] : []),
           btn('Run → zip', 'without a project: choose the outputs at the end, download them as a zip', () => runWithoutProject(p, 'zip')),
           btn('Run → folder…', 'without a project: pick a folder; the run is written there', () => runWithoutProject(p, 'folder')),
         ] : []),

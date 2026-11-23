@@ -1931,7 +1931,7 @@ if (take()) {
     const L = M.layers().find((x) => x.name === 'w.csv');
     // a calc, a calc ON that calc, and a calc referencing the PAINT column —
     // the three composition shapes the resolver core exists to support
-    M.applyCalcCols(L, [
+    await M.applyCalcCols(L, [
       { name: 'DBL', expr: 'FE * 2' },
       { name: 'QUAD', expr: 'DBL * 2' },
       { name: 'TAG', expr: 'if(INBOX == "IN", 1, 0)' },
@@ -2140,7 +2140,7 @@ if (take()) {
     await new Promise((z) => setTimeout(z, 1400));
     const L = M.layers()[0];
     // a materialized column carrying that same predictable value
-    M.applyCalcCols(L, [{ name: 'EST', expr: 'FE * 2' }]);
+    await M.applyCalcCols(L, [{ name: 'EST', expr: 'FE * 2' }]);
     await M.materializeCalcCol(L, 'EST');
     await new Promise((z) => setTimeout(z, 900));
 
@@ -4101,7 +4101,7 @@ if (take()) {
     for (let k = 0; k < 5; k++) for (let j = 0; j < 7; j++) for (let i = 0; i < 9; i++) t += `${5 + i * 10},${5 + j * 10},${5 + k * 10},${i * 100 + j},${(i + j) % 3 ? 'ox' : 'fr'}\n`;
     const id = await M.openBlob(new File([t], 'ms.csv'), 'ms.csv', 'replace');
     const L = M.layers().find((q) => q.id === id), h = L.docs.blockDoc.header;
-    M.applyCalcCols(L, [{ name: 'EST', expr: 'FE * 2' }]);
+    await M.applyCalcCols(L, [{ name: 'EST', expr: 'FE * 2' }]);
     await M.materializeCalcCol(L, 'EST');
     const bb = h.bbox, q = (v, a) => Math.max(0, Math.min(1023, ((v - bb.min[a]) * 1023 / (bb.max[a] - bb.min[a])) | 0));
     const keyOf = (x, y, z) => mortonKey(q(x, 0), q(y, 1), q(z, 2)) >>> 0;
@@ -4146,7 +4146,7 @@ if (take()) {
     const M = window._micro;
     let s = 'X,Y,Z,AU\n'; for (let i = 0; i < 27; i++) s += `${(i % 3) * 10},${((i / 3 | 0) % 3) * 10},${(i / 9 | 0) * 10},${i}\n`;
     const id = await M.openBlob(new File([s], 'rc.csv'), 'rc.csv', 'replace');
-    if (wc) M.applyCalcCols(M.layers().find((q) => q.id === id), [{ name: 'AU2', expr: 'AU * 2' }]);
+    if (wc) await M.applyCalcCols(M.layers().find((q) => q.id === id), [{ name: 'AU2', expr: 'AU * 2' }]);
     return id;
   }, withCol);
   const asksOnClose = async (withCol) => {
@@ -4264,7 +4264,7 @@ if (take()) {
     z(); await settle(() => L._selCount === out.sel); out.selBack = L._selCount;
     enter('AU > 50'); await settle(() => L.filterExpr === 'AU > 50');
     z(); await settle(() => L.filterExpr === 'AU > 40'); out.filterBack = L.filterExpr;
-    M.applyCalcCols(L, [{ name: 'AU2', expr: 'AU * 2' }]);
+    await M.applyCalcCols(L, [{ name: 'AU2', expr: 'AU * 2' }]);
     M.openCalcWindow(L, 0);
     const rm = [...document.querySelectorAll('.awin-btn')].find((b) => b.textContent === 'remove'); rm.click();
     out.calcGone = !(L.calcCols || []).some((c) => c.name === 'AU2'); out.top = M.undoLabel();
@@ -6329,8 +6329,8 @@ if (take()) {
     // the starter routine (not saved — run directly)
     const rt = await M_.makeAtlasRoutine(M_.currentFigure(), { save: false });
     const step = rt.params.steps[0];
-    out.levels = step.each.level; out.book = step.steps[0].book; out.axis = step.steps[0].view.section.axis;
-    rt.params.steps[0].steps[0].dpi = 96;
+    out.levels = step.each.level; out.book = step.steps[0].with.book; out.axis = step.steps[0].with.view.section.axis;
+    rt.params.steps[0].steps[0].with.dpi = 96;
     rt.name = 'levels atlas';
     await window.micro.setView({ look: 33, elevation: 40, ortho: false });
     await M_.runRoutine(rt);
@@ -7865,6 +7865,84 @@ if (take()) {
     r.second.runs === 2 && r.second.baseline === r.second.firstDir && r.second.reused >= 2);
   chk(`LIBRARY: a pack imports into another project — recipe files + its table (${JSON.stringify(r.imported)})`,
     r.imported.recipes.join() === 'gt std,monthly' && r.imported.table === 'cut\n40\n45\n');
+  await p.close();
+}
+
+// ── §124: BUGS FOUND WRITING THE MANUAL (2026-11-22) — each guarded where it lived: a ƒ column's type
+//     when nobody said (a blank first row made a grade column text; a routine's text column became a
+//     number); colouring by a ƒ column (drew ELEVATION — the mode maps didn't know calc:); the swath
+//     window's old "direction" mode in a recipe; join ops the resampler doesn't have (silently the
+//     mean); Run on a recipe whose tool has no window (opened the SWATH window); Runs… with no recipe
+//     left; an analysis window closed and reopened (saved 0×0); validation's blank sample grades (0). ──
+if (take()) {
+  const p = await mkPage('sm2fix');
+  await p.evaluate(async () => { try { await (await navigator.storage.getDirectory()).removeEntry('sm2fix', { recursive: true }); } catch { } });
+  const csv = (() => { const rows = ['XC,YC,ZC,FE,LITO']; let n = 0; for (let k = 0; k < 3; k++) for (let j = 0; j < 6; j++) for (let i = 0; i < 6; i++) { rows.push(`${5 + i * 10},${5 + j * 10},${5 + k * 10},${n === 0 ? '' : (30 + i * 3 + j * 2).toFixed(1)},${i < 3 ? 'HEM' : 'ITA'}`); n++; } return rows.join('\n') + '\n'; })();
+  await p.evaluate(async (t) => { await window._micro.openBlob(new File([t], 'm.csv'), 'm.csv', 'replace'); }, csv);
+  await p.waitForFunction(() => window._micro.layers()[0] && window._micro.layers()[0].docs.blockDoc, null, { timeout: 20000 });
+  await saveProject(p);
+  const r = await p.evaluate(async () => {
+    const M = window._micro, out = {}, L = M.layers()[0];
+    const settle = async (f, n = 200) => { for (let k = 0; k < n && !f(); k++) await new Promise((q) => setTimeout(q, 50)); };
+    // 1 — ƒ types
+    await M.applyCalcCols(L, [{ name: 'T_LITO', expr: 'LITO' }, { name: 'T_FE', expr: 'FE * 2' }]);
+    out.types = Object.fromEntries(L.calcCols.map((c) => [c.name, c.ty]));
+    // 2 — colour by a ƒ column: through the palette (mode 2), and the clip in the column's own units
+    M.setActiveLayer(L.id); M.setLayerColorSel(L, 'calc:T_FE');
+    await settle(() => L._calcDisplay && L._calcDisplay.name === 'T_FE');
+    const C = await M.mod('ramp.js'), K = await M.mod('color.js');
+    out.mode = K.resolveColorMode();
+    out.range = C.rampRangeFor(L).map((v) => +(+v).toFixed(2));
+    // 3 — the swath window's old trend/plunge name still reads
+    const sw = M.checkParams('swath', { layer: 'm.csv', series: [{ col: 'FE' }], mode: 'direction', bandW: [10] });
+    out.swath = { errors: sw.errors, mode: sw.params && sw.params.mode };
+    // 4 — join ops: only what the resampler has
+    out.joinBad = M.checkParams('join', { layer: 'm.csv', from: 'm.csv', columns: ['FE'], ops: { FE: 'max' } }).errors;
+    out.joinOk = M.checkParams('join', { layer: 'm.csv', from: 'm.csv', columns: ['FE'], ops: { FE: 'sum' } }).errors;
+    // 5 — Run on a model-QA recipe: a one-step routine (a run record), not the swath window
+    const list = M._recipesList(); list.length = 0;
+    list.push({ name: 'qa check', tool: 'modelqa', params: { layer: 'm.csv' } });
+    const runs0 = (await window.micro.runs()).length;
+    M.runRecipe(list[0]);
+    await settle(() => /routine “qa check”/.test(document.querySelector('#meta').textContent) && !/running|step/.test(document.querySelector('#meta').textContent), 300);
+    await new Promise((q) => setTimeout(q, 1500));         // the run record lands
+    out.runs = (await window.micro.runs()).length - runs0;
+    out.swathOpened = [...document.querySelectorAll('.fwin .t')].some((t) => /swath/i.test(t.textContent));
+    M.closeAllWindows();
+    // 6 — Runs… stays in the menu when no recipe is left
+    list.length = 0;
+    out.runsItem = M.recipesMenuItems().some((x) => x.label === 'Runs…');
+    // 7 — an analysis window closed (by its own ×, after a Run) reopens at a real size, not a dot
+    M.openGradeTonnage(L, { run: true });
+    await settle(() => { const w0 = [...document.querySelectorAll('.fwin')].pop(); return w0 && w0._gtSpec; });
+    const w = [...document.querySelectorAll('.fwin')].pop();
+    [...w.querySelectorAll('button')].find((b) => b.textContent === '×').click();   // onClose runs after the removal
+    out.geo = L.analysis && L.analysis.geo && L.analysis.geo.gt;
+    M.openGradeTonnage(L);
+    const w2 = [...document.querySelectorAll('.fwin')].pop();
+    out.reopened = [w2.offsetWidth, w2.offsetHeight];
+    M.closeAllWindows();
+    return out;
+  });
+  // 8 — validation reads a blank (or coded) sample grade as missing, not 0
+  const v = await p.evaluate(async () => {
+    const collar = ['HOLEID,X,Y,Z,EOH'], survey = ['HOLEID,DEPTH,AZ,DIP'], assay = ['HOLEID,FROM,TO,FE'];
+    for (let n2 = 1; n2 <= 3; n2++) { const id = 'H' + n2; collar.push(`${id},${10 + n2 * 10},25,30,30`); survey.push(`${id},0,0,-90`); for (let d = 0; d < 30; d += 10) assay.push(`${id},${d},${d + 10},${d === 10 ? (n2 === 1 ? '' : '<0.01') : 40 + n2}`); }
+    const f = (a, nm) => new File([a.join('\n')], nm, { type: 'text/csv' });
+    await window._micro.importDrillholes({ collar: f(collar, 'c.csv'), survey: f(survey, 's.csv'), intervals: f(assay, 'a.csv') }, {}, 'add');
+    const D = window._micro.layers().find((L) => L.dh && L.docs.dhDoc);
+    const s = window._micro.extractSamples(D, 'FE');
+    return { n: s.length, zeros: s.filter((x) => x[3] === 0).length };
+  });
+  chk(`FIXES: a ƒ column's type is inferred — text stays text, a grade with a blank first row stays a number (${JSON.stringify(r.types)})`, r.types.T_LITO === 'string' && r.types.T_FE === 'number');
+  chk(`FIXES: colouring by a ƒ column draws through the palette (mode ${r.mode}, not elevation), over its own range (${JSON.stringify(r.range)})`, r.mode === 2 && r.range[0] > 0 && r.range[1] > r.range[0]);
+  chk(`FIXES: a swath recipe saved in the old "direction" mode still reads (${JSON.stringify(r.swath)})`, !r.swath.errors.length && r.swath.mode === 'trend');
+  chk(`FIXES: join ops the resampler lacks are refused (${r.joinBad.join('; ')}), sum is fine (${r.joinOk.length})`, r.joinBad.length === 1 && /max/.test(r.joinBad[0]) && !r.joinOk.length);
+  chk(`FIXES: Run on a model-QA recipe runs it as a routine (${r.runs} run recorded), not the swath window (${r.swathOpened})`, r.runs === 1 && !r.swathOpened);
+  chk(`FIXES: Runs… stays in the recipes menu with no recipe left (${r.runsItem})`, r.runsItem);
+  chk(`FIXES: an analysis window closed by its × reopens at a real size (${JSON.stringify(r.reopened)}; saved ${JSON.stringify(r.geo)})`, r.reopened[0] > 100 && r.reopened[1] > 100 && (!r.geo || (r.geo[2] > 60 && r.geo[3] > 40)));
+  // the blank is left out; "<0.01" takes the layer's detection-limit value (a policy, src/records.js) — neither reads as 0
+  chk(`FIXES: validation leaves a blank sample grade out and never reads one as 0 (${v.n} of 9 samples, ${v.zeros} zeros)`, v.n === 8 && v.zeros === 0);
   await p.close();
 }
 

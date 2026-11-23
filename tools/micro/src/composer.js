@@ -360,7 +360,7 @@ function openResourceDialog() {
     const put = (s, opts, pick) => { s.replaceChildren(...opts.map((o) => { const e = document.createElement('option'); e.value = o; e.textContent = o || '—'; return e; })); if (pick != null) s.value = pick; };
     put(grade, nums, nums.find((c) => /^(au|cu|fe|ag|zn|pb|ni|grade)/i.test(c)) || nums[0]);
     put(dcol, ['', ...nums], nums.find((c) => /^(dens|sg|rho|density)/i.test(c)) || '');
-    put(g1, ['', ...all], all.find((c) => /^(dom|domain|zone|lith|lithology|rock|rocktype|geol|unit)\b|domain/i.test(c)) || ''); put(g2, ['', ...all], all.find((c) => /^(class|cat|rescat|rescla|jorc)\b|class|categ/i.test(c)) || '');
+    put(g1, ['', ...all], all.find((c) => /^(dom|domain|zone|lith|lithology|lito|litho|rock|rocktype|geol|unit)\b|domain/i.test(c)) || ''); put(g2, ['', ...all], all.find((c) => /^(class|cat|rescat|rescla|jorc)\b|class|categ/i.test(c)) || '');
   };
   lay.onchange = fill; fill();
   const go = document.createElement('button'); go.className = 'awin-btn btn-p'; go.textContent = 'Add';
@@ -1128,7 +1128,7 @@ async function exportFigurePng(dpi) {
 export async function compoPage(params, evalField) {
   const P = params || {};
   const fig = S.figures.find((f) => f.name === P.figure);
-  if (!fig) throw new Error(`composer: no figure “${P.figure}” (${S.figures.length ? 'figures: ' + S.figures.map((f) => f.name).join(', ') : 'make one in View → Composer…'})`);
+  if (!fig) throw new Error(`composer: no figure “${P.figure}” (${S.figures.length ? 'figures: ' + S.figures.map((f) => f.name).join(', ') : 'make one in File → Composer…'})`);
   const dpi = Math.max(72, Math.min(600, +P.dpi || 300));
   const vars = P.vars || {};
   // the page: a copy of the figure (images carried by reference — they're re-rendered or reused)
@@ -1200,7 +1200,9 @@ export async function makeAtlasRoutine(fig = _fig, { save = true } = {}) {
   const params = {
     steps: [{
       each: { level: levels },
-      steps: [{ tool: 'compo', figure: fig.name, view: { section: { axis, position: '$level', thickness: +(step * 0.8).toPrecision(3), clip: 'slab' } }, vars: { level: '$level' }, book: `atlas/${slug(fig.name)}.pdf`, dpi: 200 }],
+      // settings under `with:` — the form routines are written in (the old loose form still reads,
+      // but Check all recipes flags it)
+      steps: [{ tool: 'compo', with: { figure: fig.name, view: { section: { axis, position: '$level', thickness: +(step * 0.8).toPrecision(3), clip: 'slab' } }, vars: { level: '$level' }, book: `atlas/${slug(fig.name)}.pdf`, dpi: 200 } }],
     }],
   };
   if (!save) return { name, tool: 'routine', params };

@@ -201,7 +201,7 @@ export function openGradeTonnage(L, ropts) {
     const weighted = st.scan.series.some((se) => se.weighted);
     const spec = gtChartSpec(st.scan, st);
     if (!spec) { win.sub.textContent = 'no data'; plotChart(cv, { series: [] }); win._spec = null; win.el._gtSpec = null; return; }
-    win.sub.textContent = `${st.scope !== 'all' ? st.scope + ' · ' : ''}${weighted ? 'tonnes' : 'count'} · ${st.nCut} cutoffs · ${st.scan.series.reduce((s2, x) => s2 + x.n, 0).toLocaleString()} rows`;
+    win.sub.textContent = `${st.scope !== 'all' ? st.scope + ' · ' : ''}${weighted ? 'tonnes' : 'volume (no density)'} · ${st.nCut} cutoffs · ${st.scan.series.reduce((s2, x) => s2 + x.n, 0).toLocaleString()} rows`;
     plotChart(cv, spec); win._spec = spec; win.el._gtSpec = spec;
   };
   win.el._onResized = () => { if (win._spec) plotChart(cv, win._spec); };

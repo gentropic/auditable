@@ -6,6 +6,8 @@ import { microPrompt } from './prompts.js';
 import { listRuns, acceptRun } from './runrecord.js';
 
 const $ = (s) => document.querySelector(s);
+// a run's start in LOCAL time, as its folder name has it (run.json keeps the ISO/UTC instant)
+const localStamp = (iso) => { const d = new Date(iso); if (!iso || isNaN(d)) return String(iso || ''); const p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`; };
 let _win = null;
 
 export async function acceptRunAsk(dir, { root = undefined, onAccept = null } = {}) {
@@ -31,9 +33,9 @@ export async function openRunsWindow() {
     const hr = document.createElement('tr'); for (const h of ['started', 'routine', 'status', 'compared with', 'accepted', '']) { const th = document.createElement('th'); th.textContent = h; hr.append(th); } tbl.append(hr);
     for (const x of runs) {
       const tr = document.createElement('tr'); tr.dataset.dir = x.dir;
-      const cells = [String(x.rec.started || '').replace('T', ' ').slice(0, 16), x.rec.routine ? x.rec.routine.name : '?', x.rec.status,
+      const cells = [localStamp(x.rec.started), x.rec.routine ? x.rec.routine.name : '?', x.rec.status,
         x.rec.baseline ? `${x.rec.baseline.dir.replace(/^runs\//, '')}${x.rec.baseline.accepted ? ' ✓' : ''}` : '—',
-        x.accepted ? `${x.accepted.by} · ${String(x.accepted.at).slice(0, 10)}` : ''];
+        x.accepted ? `${x.accepted.by} · ${localStamp(x.accepted.at).slice(0, 10)}` : ''];
       for (const c of cells) { const td = document.createElement('td'); td.textContent = c; tr.append(td); }
       const td = document.createElement('td');
       if (!x.accepted && x.rec.status === 'ok') { const b = document.createElement('button'); b.className = 'awin-btn'; b.textContent = 'Accept…'; b.title = 'the baseline the next runs of this routine compare with'; b.onclick = () => acceptRunAsk(x.dir); td.append(b); }

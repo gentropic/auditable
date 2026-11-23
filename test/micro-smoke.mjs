@@ -151,7 +151,7 @@ const hv = await p.evaluate(() => {
   const validateGone = !window._micro.COMMANDS.find((c) => c.id === 'validate').when({ L: window._micro.layers()[0] });
   return { caret, adjacent, hasChild, validateGone };
 });
-chk(`menubar hover-submenu opens adjacent (${hv.adjacent}/${hv.hasChild}) + validate disabled (${hv.validateGone})`, hv.caret && hv.adjacent && hv.hasChild && hv.validateGone);
+chk(`menubar hover-submenu opens adjacent (${hv.adjacent}/${hv.hasChild}) + validate hidden without drillholes (${hv.validateGone})`, hv.caret && hv.adjacent && hv.hasChild && hv.validateGone);
 
 // ── 1c. viewport decorations + figure export ──
 await new Promise((r) => setTimeout(r, 300));

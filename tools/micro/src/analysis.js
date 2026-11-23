@@ -105,7 +105,7 @@ export function extractSamples(D, gradeCol) {
   const dh = D.docs && D.docs.dhDoc, h = layerTableHeader(D); if (!dh || !h) return [];
   const gi = h.columns.indexOf(gradeCol); if (gi < 0) return [];
   const n = attrRowCountOf(D), rows = [];
-  for (let r = 0; r < n; r++) { const pos = dh.recordPosition(r); if (!pos) continue; const rec = dh.fetchRecord(r); const g = rec ? +rec[gi] : NaN; if (Number.isFinite(g)) rows.push([pos[0], pos[1], pos[2], g]); }
+  for (let r = 0; r < n; r++) { const pos = dh.recordPosition(r); if (!pos) continue; const rec = dh.fetchRecord(r); const g = rec ? numOf(rec[gi]) : NaN; if (Number.isFinite(g)) rows.push([pos[0], pos[1], pos[2], g]); }
   return rows;
 }
 export function autoDeclusterSizes(samples) {

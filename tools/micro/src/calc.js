@@ -1,6 +1,6 @@
 // micro — the calculated-column window: write an expression, see it checked against
 // the layer's columns, and add it as a column the filter and the colouring can use.
-import { blockSchema, layerTableHeader, sampleRow, schemaExt, calcOrder, attrRowCountOf, numOf, layerRecords } from './records.js';
+import { blockSchema, layerTableHeader, sampleRow, fetchLayerRow, rowQualifier, schemaExt, calcOrder, attrRowCountOf, numOf, layerRecords } from './records.js';
 import { floatWin, raiseWindow } from './windows.js';
 import { markProjectDirty } from './project.js';
 import { S, requestRender } from './state.js';
@@ -87,7 +87,7 @@ export function openCalcWindow(L, selIdx) {
     const err = document.createElement('div'); err.className = 'cw-err';
     const proj = document.createElement('div'); proj.className = 'cw-proj fdw';
     const hint = document.createElement('div'); hint.className = 'cw-hint';
-    hint.textContent = 'a value expression over base + stored + other ƒ columns — if(cond, a, b) · bin(x, breaks…) · math + string fns · # comments';
+    hint.textContent = 'a value expression over base + stored + other ƒ columns — if(cond, a, b) · bin(x, width[, origin]) · math + string fns · # comments';
     const schemaFor = () => schemaExt(L, h).filter((c) => !cur || String(c.name).toLowerCase() !== String(cur.name).toLowerCase());
     const check = () => {
       const t = ed.value.trim();
@@ -223,17 +223,7 @@ export function openCalcWindow(L, selIdx) {
       if (!check()) return;
       try { compileValue(expr, schemaFor(), { decimal: '.' }); } catch (e) { err.textContent = e.message; return; }
       let ty = tySel.value;
-      if (ty === 'auto') {                                 // infer from a sample row when the expr reads base columns only
-        ty = 'number';
-        try {
-          const ds = deps(expr).map((d) => String(d).toLowerCase());
-          if (ds.every((d) => h.columns.some((c) => String(c).toLowerCase() === d))) {
-            const fnB = compileValue(expr, blockSchema(h), { decimal: '.' });
-            const sample = await sampleRow(L);
-            if (sample) { const val = fnB(sample); ty = typeof val === 'number' && Number.isFinite(val) ? 'number' : 'string'; }
-          }
-        } catch { /* number by default */ }
-      }
+      if (ty === 'auto') ty = await inferCalcType(L, expr, h);   // the same rule a routine's calccols uses
       const entry = { name, expr, ty };
       L.calcCols = L.calcCols || [];
       if (sel >= 0) L.calcCols[sel] = entry; else { L.calcCols.push(entry); sel = L.calcCols.length - 1; }
@@ -272,7 +262,32 @@ export function openCalcWindow(L, selIdx) {
 // apply a calc-column SET to a layer — REPLACE on same name (idempotency is
 // gospel: run-twice == run-once), append the new; invalid expressions are
 // skipped and named. The recipe-facing form of Properties → columns.
-export function applyCalcCols(L, cols) {
+// an ƒ column's type when nobody said: evaluate it on a few rows spread through the layer — a finite
+// number → number, a non-blank non-number → text, blanks decide nothing (one blank first row used to
+// make a grade column text, and a routine's text column used to become a number). Only when the
+// expression reads source columns alone; otherwise (and when nothing could be read) a number.
+export async function inferCalcType(L, expr, h = layerTableHeader(L)) {
+  try {
+    const ds = deps(expr).map((d) => String(d).toLowerCase());
+    if (!h || !ds.every((d) => h.columns.some((c) => String(c).toLowerCase() === d))) return 'number';
+    const fnB = compileValue(expr, blockSchema(h), { decimal: '.' });
+    const n = attrRowCountOf(L), q = rowQualifier(L);
+    const at = n > 0 ? [...new Set([0, 1, 2, n >> 3, n >> 2, n >> 1, (3 * n) >> 2, n - 1].filter((r) => r >= 0 && r < n))] : [0];
+    for (const r of at) {
+      let row = null;
+      try { row = r === 0 ? await sampleRow(L) : await fetchLayerRow(L, r); } catch { row = null; }
+      if (!row) continue;
+      if (q) row = q(row);
+      const v = fnB(row);
+      if (typeof v !== 'string') continue;                 // numbers, booleans, blanks: not text
+      if (v.trim() === '' || Number.isFinite(+v)) continue;
+      return 'string';
+    }
+    return 'number';
+  } catch { return 'number'; }
+}
+
+export async function applyCalcCols(L, cols) {
   const h = layerTableHeader(L); if (!h) return { applied: 0, bad: [] };
   L.calcCols = L.calcCols || [];
   let applied = 0; const bad = [];
@@ -280,7 +295,9 @@ export function applyCalcCols(L, cols) {
     if (!c || !c.name || !c.expr) continue;
     // schema recomputed PER entry — a recipe composes in listed order (DBL may reference the FE_EQ two lines up)
     try { compileValue(String(c.expr), schemaExt(L, h), { decimal: '.' }); } catch { bad.push(c.name); continue; }
-    const entry = { name: String(c.name), expr: String(c.expr), ty: c.ty === 'string' ? 'string' : 'number' };
+    // ty: "string" / "number" as written; absent (or "auto") → inferred, as the Calculations window does
+    const ty = c.ty === 'string' || c.ty === 'text' ? 'string' : c.ty === 'number' ? 'number' : await inferCalcType(L, String(c.expr), h);
+    const entry = { name: String(c.name), expr: String(c.expr), ty };
     const at = L.calcCols.findIndex((x) => x.name.toLowerCase() === entry.name.toLowerCase());
     if (at >= 0) L.calcCols[at] = entry; else L.calcCols.push(entry);
     applied++;

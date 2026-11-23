@@ -40,7 +40,7 @@ function field(key, spec, ctx) {
         const x = el('button', { className: 'awin-btn', textContent: '×', title: 'remove' }); x.onclick = () => { sub.remove(); items.splice(items.indexOf(fs), 1); };
         sub.append(x); box.insertBefore(sub, plus); items.push(fs);
       };
-      const plus = el('button', { className: 'awin-btn', textContent: `+ ${key.replace(/s$/, '')}` }); plus.onclick = add;
+      const plus = el('button', { className: 'awin-btn', textContent: `+ ${key === 'series' ? 'series' : key.replace(/s$/, '')}` }); plus.onclick = add;
       box.append(plus); add();
       get = () => { const v = items.map((fs) => Object.fromEntries(fs.map(([k, f]) => [k, f.get()]).filter(([, x]) => x !== undefined && x !== ''))).filter((o) => Object.keys(o).length); return v.length ? v : undefined; };
       return { node: el('div', { className: 'rf-row rf-wide', title: tip }, el('span', { textContent: key + (spec.required ? ' *' : '') }), box), get };
@@ -80,8 +80,14 @@ export function openRecipeForm(toolName = null, { onSaved = null, save = null } 
     if (!name) { msg.textContent = 'a name, please'; return; }
     const { errors } = checkParams(tool, params);
     if (errors.length) { msg.textContent = errors.join(' · '); return; }
+    // a recipe a window can run may still be one a routine refuses (a routine must state its cutoffs,
+    // band widths, scope all…) — it saves, and says what a routine would need
+    const routineOnly = checkParams(tool, params, { routine: true }).errors.filter((e) => !errors.includes(e));
     const r = await (save || writeRecipe)(name, tool, params);
-    if (r) { win.close(); if (onSaved) onSaved(r); }
+    if (r) {
+      win.close(); if (onSaved) onSaved(r);
+      if (routineOnly.length) document.querySelector('#meta').textContent = `recipe “${name}” saved — to use it in a routine, add: ${routineOnly.join(' · ')}`;
+    }
   };
   return win;
 }

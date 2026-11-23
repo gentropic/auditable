@@ -566,6 +566,17 @@ describe('figure-level edge labels', () => {
   });
 });
 
+describe('imshow honors an explicit aspect', () => {
+  // an explicit aspect: 'auto' used to be overwritten to 'equal' by the grid-data default (a density
+  // of FE (range ~50) against SG (~1.5) drew as a flat strip); equal stays the default when unsaid
+  it("aspect: 'auto' stays auto; unsaid defaults to equal", () => {
+    const a = new Axes(); a.imshow(new Float64Array([1, 2, 3, 4]), 2, 2, { aspect: 'auto' });
+    assert.equal(a._aspect, 'auto');
+    const b = new Axes(); b.imshow(new Float64Array([1, 2, 3, 4]), 2, 2);
+    assert.equal(b._aspect, 'equal');
+  });
+});
+
 describe('matshow aspect=equal shrinks plot rect to square', () => {
   // The old behavior expanded the data range to fit the plot rect,
   // which painted bg stripes through the data area. The new behavior

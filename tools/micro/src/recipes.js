@@ -292,8 +292,11 @@ export async function expandRoutine(params) {
 // what a step WRITES — reports (files) and columns (on a layer). The guard and
 // the preview both read this, so "what will this overwrite?" has ONE answer.
 export function routineTargets(tool, params, slug, P) {
-  const t = { reports: [], columns: [], figures: [] };
-  if (toolDef(tool) && toolDef(tool).writesFile) t.reports.push(`${routineOutDir(P)}/${toolDef(tool).writesFile(params || {})}`);   // a file (export)
+  const t = { reports: [], columns: [], figures: [], layers: [] };
+  const mk = toolDef(tool) && toolDef(tool).makes;
+  if (mk === 'layer') t.layers.push(`a new layer (${toolDef(tool).label})`);   // composite, grade shell, reconcile — no table
+  else if (mk === 'columns') { for (const c of params.columns || []) if (typeof c === 'string') t.columns.push({ layer: params.layer, name: c, kind: 'joined' }); }   // spatial join
+  else if (toolDef(tool) && toolDef(tool).writesFile) t.reports.push(`${routineOutDir(P)}/${toolDef(tool).writesFile(params || {})}`);   // a file (export)
   else if (toolDef(tool) || tool === 'xy') t.reports.push(routineOutPath(P, slug));   // every other registered tool writes its table
   else if (tool === 'calccols') {
     const layer = params.layer;
@@ -336,6 +339,7 @@ export function routineLineInfo(st, i, P) {
     ...t.reports.map((r) => `→  ${r}`),
     ...t.columns.map((c) => `→  ${c.layer || 'layer'} · ${c.kind} column “${c.name}”${layerHasColumn(c.name, c.layer) ? ' (replaces)' : ''}`),
     ...t.figures.map((f) => `→  ${f}`),
+    ...(t.layers || []).map((x) => `→  ${x}`),
   ];
   return {
     text: `${i + 1}. ${label}${wrote.length ? '  ' + wrote.join('  ') : '   (opens only)'}${st.recipe && !rc ? '   ⚠ recipe not found' : ''}`,
@@ -418,6 +422,11 @@ export function routineLayerNames(rc) {                           // the layer n
   if (p2.target) names.push(p2.target);
   if (p2.model) names.push(p2.model);
   if (p2.samples) names.push(p2.samples);
+  if (rc.tool === 'solid') {                                // by-geometry: its solid/surface, a lower surface, the targets
+    if (p2.geometry) names.push(String(p2.geometry));
+    if (p2.lower) names.push(String(p2.lower));
+    for (const t of (Array.isArray(p2.targets) ? p2.targets : [])) if (t) names.push(String(t));
+  }
   return names;
 }
 
@@ -512,8 +521,8 @@ async function runRoutineInner(r, opts) {
   const PR = { ...P, _runDir: rec.dir };
   // RESULTS by step name (its `as`, and its full slug inside an each) — what checks read. A resume
   // rebuilds the earlier steps' from the record. The BASELINE: the run this one is judged against.
-  const results = new Map();
-  const keep = (st, val) => { results.set(st._slug, val); if (st.as) results.set(String(st.as), val); };
+  const results = new Map(), slugOf = new Map();   // slugOf: a name (an `as`) → the full slug it last named
+  const keep = (st, val) => { results.set(st._slug, val); slugOf.set(st._slug, st._slug); if (st.as) { results.set(String(st.as), val); slugOf.set(String(st.as), st._slug); } };
   for (let k = 0; k < (opts.from || 0); k++) {
     const e = rec.steps[k], st0 = steps[k];
     if (e && e.status === 'ok' && st0 && !st0.guard && e.values !== undefined) keep(st0, { values: e.values, table: await recordTable(e, parseTSV) });
@@ -524,7 +533,9 @@ async function runRoutineInner(r, opts) {
   }
   let baseRec = null;
   if (rec.baseline) { try { baseRec = JSON.parse(await (await (await resolveFileHandle(runRoot(), `${rec.baseline.dir}/run.json`)).getFile()).text()); } catch { baseRec = null; } }
-  const prevEntry = (name) => baseRec && (baseRec.steps.find((e) => e.step === name) || baseRec.steps.find((e) => e.step && e.step.replace(/-.*/, '') === name && e.values));
+  // the baseline's step for a name: the SAME slug this run's name points at (inside an each, the
+  // row's own table — not the baseline's first row), then the name itself, then the first like it
+  const prevEntry = (name) => baseRec && ((slugOf.has(name) && baseRec.steps.find((e) => e.step === slugOf.get(name))) || baseRec.steps.find((e) => e.step === name) || baseRec.steps.find((e) => e.step && e.step.replace(/-.*/, '') === name && e.values));
   const scalarScope = () => {
     const o = {};
     for (const [nm, v] of results) flatValues(nm, v.values, o);
@@ -673,7 +684,7 @@ async function runRoutineInner(r, opts) {
       } else if (tool === 'calccols') {                      // synchronous: applied, or the step fails naming the bad ones
         const pp = merged.params || {}, Lc = S.layers.find((x) => x.name === pp.layer);
         if (!Lc) throw new Error(`layer “${pp.layer}” isn't loaded`);
-        const { bad } = applyCalcCols(Lc, pp.cols);
+        const { bad } = await applyCalcCols(Lc, pp.cols);
         if (bad.length) throw new Error(`invalid expression for ${bad.join(', ')}`);
         entry.columns = (pp.cols || []).map((c) => ({ layer: pp.layer, name: c.name, expr: c.expr }));
       } else if (tool === 'figure') {                        // awaited: the PNG is written (out:) before the next step
@@ -937,11 +948,19 @@ export function runRecipe(r, andRun = true, runOpts = null) {
     runSolidRecipe(r.params).catch((e) => { $('#meta').textContent = `recipe “${r.name}”: ${e.message}`; });
     return;
   }
+  // a tool with no window to open configured (QA reports, export, composite, pairing, shell, join,
+  // reconcile, section series…): run it as a one-step routine — the same numbers, a run record, the
+  // result in the tracker. (It used to fall through to the swath window.)
+  if (!['gt', 'stats', 'xy', 'xtab', 'swath', 'calccols'].includes(r.tool)) {
+    const one = { name: r.name, tool: 'routine', steps: [{ tool: r.tool, with: { ...(r.params || {}) }, as: recipeSlug(r.name) }] };
+    if (andRun) runRoutine(one, runOpts || {}); else openRoutineWindow(one);   // “open configured” shows it, never runs it
+    return;
+  }
   const open2 = (Lp) => {
     if (r.tool === 'calccols') {
-      const { applied, bad } = applyCalcCols(Lp, r.params.cols);
-      $('#meta').textContent = `recipe “${r.name}”: ${applied} calc column${applied === 1 ? '' : 's'} applied to ${Lp.label || Lp.name}${bad.length ? ` · skipped (invalid expr): ${bad.join(', ')}` : ''}`;
-      return;
+      return applyCalcCols(Lp, r.params.cols).then(({ applied, bad }) => {
+        $('#meta').textContent = `recipe “${r.name}”: ${applied} calc column${applied === 1 ? '' : 's'} applied to ${Lp.label || Lp.name}${bad.length ? ` · skipped (invalid expr): ${bad.join(', ')}` : ''}`;
+      });
     }
     return r.tool === 'gt' ? openGradeTonnage(Lp, { cfg: r.params, run: andRun })
       : r.tool === 'stats' ? openStats(Lp, { cfg: r.params, run: andRun })
@@ -967,6 +986,7 @@ export function recipesMenuItems() {
     { label: 'New recipe…', action: () => openRecipeForm() },
     { label: 'New routine…', action: () => openRoutineWindow(null) },
     { label: 'Library…', action: () => openLibraryWindow() },
+    { label: 'Runs…', action: () => openRunsWindow() },     // past runs stay readable when no recipe is left
   ];
   return [...S.recipes.map((r) => ({
     label: `${r.name} · ${RECIPE_TOOLS[r.tool]}`,

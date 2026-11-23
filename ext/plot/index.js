@@ -4045,8 +4045,10 @@ class Axes {
     if (o.aspect != null) this._aspect = o.aspect;
     const trace = { type: 'imshow', data: D, nx, ny, opts: o };
     this._traces.push(trace);
-    // default to equal aspect for grid data (matches matplotlib)
-    if (this._aspect === 'auto') this._aspect = 'equal';
+    // default to equal aspect for grid data (matches matplotlib) — only when the caller didn't say:
+    // an explicit aspect: 'auto' set _aspect to 'auto' two lines up, and this used to turn it straight
+    // back into 'equal' (micro's FE-vs-SG density came out a flat strip)
+    if (o.aspect == null && this._aspect === 'auto') this._aspect = 'equal';
     return _result(this, [], { _trace: trace, norm: o.norm, cmap: o.cmap, __repr__: () => '<matplotlib.image.AxesImage>' });
   }
 

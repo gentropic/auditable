@@ -106,6 +106,7 @@ export function checkParams(name, params, { routine = false } = {}) {
   const def = toolDef(name);
   if (!def) return { errors: [`no tool “${name}”${nearest(name, [...TOOLS.keys()]) ? ` — did you mean “${nearest(name, [...TOOLS.keys()])}”?` : ''}`], params: null };
   const errs = [], p = { ...(params || {}) };
+  if (def.normalize) def.normalize(p);                       // old spellings a saved recipe may still carry
   checkObject(def.params, p, '', errs);
   const out = {};
   for (const [k, spec] of Object.entries(def.params)) {
@@ -286,10 +287,14 @@ registerTool('swath', {
   outputs: { key: ['series', 'direction', 'center'] },
   chart: (scan, raw) => { const v = swathView(scan, raw); return v ? swathChartSpec(scan, v.b, { di: v.di, bw: v.bw, off: v.off, bars: raw.bars || 'count', gradeUnit: raw.gradeUnit || '', ranges: raw.ranges ? rangesFromCfg(raw.ranges) : null, multi: S.layers.length > 1 || scan.series.length > 1 }) : null; },
   human: (scan, raw) => { const v = swathView(scan, raw); return v ? swathHumanTSV(scan, v.di, v.bw, v.off, raw.gradeUnit || '') : null; },
+  normalize(p) { if (p.mode === 'direction') p.mode = 'trend'; },   // the swath window saved its trend/plunge mode as "direction" until 2026-11
   check(p, errs) { if (!p.layer && p.series && p.series.some((s) => !s.layer)) errs.push('layer: a series without its own layer needs the tool’s layer'); },
   async scan(p, ctx) {
     const series = seriesSt(p);
     scopeCheck(p.scope, series.map((s) => layerById(s.layerId)));
+    // a swath bands a block model's centroids — a drillhole layer has none to band (its intervals sit
+    // on desurveyed traces), so it would come back empty; say so instead. Validation is the model-vs-samples swath.
+    for (const s of series) { const Ls = layerById(s.layerId); if (Ls && !Ls.docs.blockDoc) throw new Error(`series “${Ls.label || Ls.name}”: a swath reads a block model; for model against drillhole samples use the validation tool`); }
     const scan = await scanSwath({ series, mode: p.mode, dd: p.dd, dip: p.dip, rake: p.rake, trend: p.trend, plunge: p.plunge, scope: p.scope }, ctx.progress, ctx.signal);
     if (!scan) throw new Error('no series could be read');
     return scan;
@@ -558,7 +563,7 @@ const replaceOlder = (id, sameAs) => { for (const x of S.layers.filter((q) => q.
 
 // composite: a drillhole interval table → equal-length composites, a new points layer
 registerTool('composite', {
-  label: 'composite', cache: false,   // makes a layer in the session
+  label: 'composite', cache: false, makes: 'layer',   // makes a layer in the session (no table)
   params: {
     layer: { type: 'layer', required: true, doc: 'the drillhole layer' },
     length: { type: 'number', doc: 'the composite length (blank = the commonest interval length)' },
@@ -599,7 +604,7 @@ registerTool('pairing', {
 
 // grade shell: the surface where a model's grade crosses a cutoff, a new mesh layer
 registerTool('shell', {
-  label: 'grade shell', cache: false,
+  label: 'grade shell', cache: false, makes: 'layer',
   params: {
     layer: { type: 'layer', required: true }, col: { type: 'column', required: true },
     cutoff: { type: 'number', required: true }, smooth: { type: 'int', default: 0, doc: 'smoothing passes (0–3)' },
@@ -616,15 +621,22 @@ registerTool('shell', {
 
 // spatial join: columns of another model resampled onto this one's blocks (volume-weighted)
 registerTool('join', {
-  label: 'spatial join', cache: false,   // writes columns
+  label: 'spatial join', cache: false, makes: 'columns',   // writes columns (no table)
   params: {
     layer: { type: 'layer', required: true, doc: 'the model that gets the columns' },
     from: { type: 'layer', required: true, doc: 'the model they come from (a compatible lattice)' },
     columns: { type: 'any', required: true, doc: 'the columns to bring, by name' },
-    ops: { type: 'any', doc: '{ column: mean | sum | min | max | majority } (default mean, majority for text)' },
+    ops: { type: 'any', doc: '{ column: mean | sum | count | coverage } for numbers (default mean); text columns take the majority' },
   },
   outputs: { key: [] },
-  check(p, errs) { if (p.columns != null && (!Array.isArray(p.columns) || !p.columns.length || p.columns.some((c) => typeof c !== 'string'))) errs.push('columns: a list of column names'); },
+  check(p, errs) {
+    if (p.columns != null && (!Array.isArray(p.columns) || !p.columns.length || p.columns.some((c) => typeof c !== 'string'))) errs.push('columns: a list of column names');
+    // the resampler knows these four — any other word used to fall back to the mean, silently
+    if (p.ops != null) {
+      if (typeof p.ops !== 'object' || Array.isArray(p.ops)) errs.push('ops: a map { column: mean | sum | count | coverage }');
+      else for (const [k, v] of Object.entries(p.ops)) if (!['mean', 'sum', 'count', 'coverage'].includes(v)) errs.push(`ops.${k}: “${v}” — use mean, sum, count or coverage`);
+    }
+  },
   async scan(p) {
     const L = layerNamed(p.layer), R = layerNamed(p.from);
     const ops = Object.fromEntries(Object.entries(p.ops || {}).map(([k, v]) => [`right:${k}`, v]));
@@ -636,7 +648,7 @@ registerTool('join', {
 
 // reconcile: this model − a reference, on their common lattice → a Δ layer and its summary
 registerTool('reconcile', {
-  label: 'reconcile', cache: false,
+  label: 'reconcile', cache: false, makes: 'layer',
   params: {
     layer: { type: 'layer', required: true, doc: 'this model' }, reference: { type: 'layer', required: true, doc: 'the model it is compared with' },
     grade: { type: 'column', required: true, doc: 'a grade column both carry' },
