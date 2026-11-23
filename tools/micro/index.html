@@ -263,8 +263,9 @@
   }
   #empty .empty-recents { margin-top: 20px; max-width: 720px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: center; }
   #empty .empty-recents .er-label { color: var(--dim); }
-  #empty .empty-recents .er-chip { pointer-events: auto; cursor: pointer; color: var(--text); background: var(--bg-field); border: 1px solid var(--border); border-radius: 4px; padding: 2px 8px; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-bottom-style: solid; }
-  #empty .empty-recents .er-chip:hover { border-color: var(--accent); color: var(--accent); }
+  #empty .empty-recents .er-chip, #empty .lang-offer .er-chip { pointer-events: auto; cursor: pointer; color: var(--text); background: var(--bg-field); border: 1px solid var(--border); border-radius: 4px; padding: 2px 8px; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-bottom-style: solid; }
+  #empty .lang-offer .er-chip { font: inherit; padding: 3px 10px; }
+  #empty .empty-recents .er-chip:hover, #empty .lang-offer .er-chip:hover { border-color: var(--accent); color: var(--accent); }
   #empty .empty-recents .er-chip.nohandle { color: var(--dim); border-style: dashed; }
   #drop-hint {
     position: absolute; inset: 0; display: none; align-items: center; justify-content: center; z-index: 3;

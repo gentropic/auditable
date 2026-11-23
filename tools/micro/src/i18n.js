@@ -86,12 +86,12 @@ export function setLang(l) {
 export function offerLanguage(host) {
   if (!host || stored() || !/^pt\b/i.test(navigator.language || '')) return null;
   const d = document.createElement('div'); d.className = 'lang-offer'; d.setAttribute('data-no-i18n', '');
-  d.style.cssText = 'margin-top:10px;font-family:var(--mono);font-size:12px;color:var(--muted)';
+  d.style.cssText = 'margin-top:10px;display:flex;gap:8px;justify-content:center;font-family:var(--mono);font-size:12px;color:var(--muted)';   // styled as the recent-project chips (#empty .lang-offer .er-chip)
   const yes = document.createElement('button'); yes.className = 'er-chip'; yes.textContent = 'Interface em português';
   yes.onclick = () => { setLang('pt'); d.remove(); };
   const no = document.createElement('button'); no.className = 'er-chip'; no.textContent = 'keep English';
   no.onclick = () => { try { localStorage.setItem('micro.lang', 'en'); } catch { /* private */ } d.remove(); };
-  d.append(yes, ' ', no);
+  d.append(yes, no);
   host.appendChild(d);
   return d;
 }
