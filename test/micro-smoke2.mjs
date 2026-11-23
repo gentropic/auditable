@@ -8049,7 +8049,7 @@ if (take()) {
     const M = window._micro, out = {}, L = M.layers()[0];
     const settle = async (f, n = 200) => { for (let k = 0; k < n && !f(); k++) await new Promise((q) => setTimeout(q, 50)); };
     // 1 — ƒ types
-    await M.applyCalcCols(L, [{ name: 'T_LITO', expr: 'LITO' }, { name: 'T_FE', expr: 'FE * 2' }]);
+    await M.applyCalcCols(L, [{ name: 'T_LITO', expr: 'LITO' }, { name: 'T_FE', expr: 'FE * 2' }, { name: 'T_BARE', expr: 'FE' }, { name: 'T_YR', expr: 'if(FE > 40, "2027", "2028")' }]);
     out.types = Object.fromEntries(L.calcCols.map((c) => [c.name, c.ty]));
     // 2 — colour by a ƒ column: through the palette (mode 2), and the clip in the column's own units
     M.setActiveLayer(L.id); M.setLayerColorSel(L, 'calc:T_FE');
@@ -8098,7 +8098,7 @@ if (take()) {
     const s = window._micro.extractSamples(D, 'FE');
     return { n: s.length, zeros: s.filter((x) => x[3] === 0).length };
   });
-  chk(`FIXES: a ƒ column's type is inferred — text stays text, a grade with a blank first row stays a number (${JSON.stringify(r.types)})`, r.types.T_LITO === 'string' && r.types.T_FE === 'number');
+  chk(`FIXES: a ƒ column's type is inferred — text stays text, a grade with a blank first row stays a number (${JSON.stringify(r.types)})`, r.types.T_LITO === 'string' && r.types.T_FE === 'number' && r.types.T_BARE === 'number' && r.types.T_YR === 'string');   // a bare numeric column is a number; a quoted year is text
   chk(`FIXES: colouring by a ƒ column draws through the palette (mode ${r.mode}, not elevation), over its own range (${JSON.stringify(r.range)})`, r.mode === 2 && r.range[0] > 0 && r.range[1] > r.range[0]);
   chk(`FIXES: a swath recipe saved in the old "direction" mode still reads (${JSON.stringify(r.swath)})`, !r.swath.errors.length && r.swath.mode === 'trend');
   chk(`FIXES: join ops the resampler lacks are refused (${r.joinBad.join('; ')}), sum is fine (${r.joinOk.length})`, r.joinBad.length === 1 && /max/.test(r.joinBad[0]) && !r.joinOk.length);

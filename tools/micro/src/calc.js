@@ -8,7 +8,7 @@ import { _propFor, _propOpen, refreshProps, renderProps } from './props.js';
 import { addPaintColorOptions, createPaintCol } from './paint.js';
 import { syncRuleMode } from './rules.js';
 import { applyRamp, colorSelOf } from './ramp.js';
-import { compileValue, deps, parse, quoteIdent, validate, compileChunk } from '../../../ext/expr/index.js';
+import { compileValue, deps, parse, quoteIdent, validate, compileChunk, tokenize } from '../../../ext/expr/index.js';
 import { columnValues, exprField, syncHL } from './exprfield.js';
 import { fdBounds, fdNum, fdRenderChain, fdRenderLeaf, fdValues } from './filter-drawer.js';
 import { numericColsOf } from './analysis.js';
@@ -271,6 +271,7 @@ export async function inferCalcType(L, expr, h = layerTableHeader(L)) {
     const ds = deps(expr).map((d) => String(d).toLowerCase());
     if (!h || !ds.every((d) => h.columns.some((c) => String(c).toLowerCase() === d))) return 'number';
     const fnB = compileValue(expr, blockSchema(h), { decimal: '.' });
+    let hasStringLiteral = false; try { hasStringLiteral = tokenize(expr).some((t) => t.kind === 'string'); } catch { /* the compile above already parsed it */ }
     const n = attrRowCountOf(L), q = rowQualifier(L);
     const at = n > 0 ? [...new Set([0, 1, 2, n >> 3, n >> 2, n >> 1, (3 * n) >> 2, n - 1].filter((r) => r >= 0 && r < n))] : [0];
     for (const r of at) {
@@ -280,7 +281,11 @@ export async function inferCalcType(L, expr, h = layerTableHeader(L)) {
       if (q) row = q(row);
       const v = fnB(row);
       if (typeof v !== 'string') continue;                 // numbers, booleans, blanks: not text
-      if (v.trim() === '' || Number.isFinite(+v)) continue;
+      if (v.trim() === '') continue;
+      // a numeric-looking string is a NUMBER when it came from a column (a bare `FE` passes the CSV
+      // field through as text) — but TEXT when the expression writes a string literal: quoting a
+      // number ("2027", a period name) is a choice
+      if (Number.isFinite(+v) && !hasStringLiteral) continue;
       return 'string';
     }
     return 'number';

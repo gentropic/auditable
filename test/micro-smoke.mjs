@@ -1011,6 +1011,21 @@ chk(`recipes: hand-authored YAML lists (${rcp && rcp.menu}) + auto-runs (${rcp &
   chk(`DXF through the OPEN DIALOG lands as a mesh (${JSON.stringify(viaDialog)}) — the describeFile fall-through no longer forces 'points'`,
     viaDialog.shown === true && viaDialog.added === 1 && viaDialog.kind === 'mesh' && viaDialog.tris === 8);
 
+  // a CSV whose header names no coordinates (a production sheet) opens through the dialog as a
+  // TABLE — its numeric columns used to be taken for X/Y/Z (a 3×3×3 "block model")
+  const viaDialogTable = await p.evaluate(async () => {
+    const m = window._micro;
+    const f = new File(['PERIOD,TONNES,FE\n2027,79964000,50.30\n2028,49664000,39.42\n2029,80580000,51.08\n'], 'mill.csv');
+    await m.openFilesDialog([f]);
+    document.querySelector('#ofOpen').click();
+    await new Promise((r) => setTimeout(r, 900));
+    const L = m.layers().find((x) => x.name === 'mill.csv');
+    const out = { kind: L && L.kind, rows: L && m.attrRowCountOf(L) };
+    if (L) { try { m.renderer.removeLayer(L.id); } catch { } }
+    return out;
+  });
+  chk(`a CSV with no coordinate columns opens through the dialog as a TABLE (${JSON.stringify(viaDialogTable)})`, viaDialogTable.kind === 'table' && viaDialogTable.rows === 3);
+
   // a MIXED dxf opens as its dominant mesh, and Reinterpret-as crosses to strings
   const reint = await p.evaluate(async (mixed) => {
     const m = window._micro;

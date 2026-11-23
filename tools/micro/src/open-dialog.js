@@ -185,7 +185,7 @@ export async function describeFile(f) {
     : d.kind === 'dm' ? [['blocks', 'block model'], ['points', 'points']]
     : d.kind === 'las' ? [['points', 'points']]
     : d.kind === 'blocks' ? [['blocks', 'block model'], ['points', 'points']]
-    : d.kind === 'delimited' ? [['blocks', 'block model'], ['points', 'points'], ['collar', 'DH collar'], ['survey', 'DH survey'], ['intervals', 'DH intervals']]
+    : d.kind === 'delimited' ? [['blocks', 'block model'], ['points', 'points'], ['table', 'table (no coordinates)'], ['collar', 'DH collar'], ['survey', 'DH survey'], ['intervals', 'DH intervals']]
     : d.kind === 'dxf' ? (d.dxfInterps && d.dxfInterps.length ? d.dxfInterps : [['mesh', 'mesh (3DFACE surfaces)'], ['lines', 'design strings (capsules)'], ['points', 'points (pegs)']])
     : [['points', 'points']];
   d.asKind = d.kind === 'xlsx' ? 'table'
@@ -193,7 +193,9 @@ export async function describeFile(f) {
     : d.kind === 'dm-wireframe' ? 'wireframe'
     : d.kind === 'mesh' ? 'mesh' : d.kind === 'grid' ? 'grid' : d.kind === 'dm' ? 'blocks'
     : d.kind === 'las' ? 'points'
-    : d.kind === 'delimited' ? (d.dhRole || (d.forcePoints ? 'points' : 'blocks'))
+    // no coordinate columns found (and not a drillhole table): a TABLE — a production sheet's numeric
+    // columns used to be taken for X/Y/Z and opened as a 3×3×3 block model
+    : d.kind === 'delimited' ? (d.dhRole || (d.columns && !d.forcePoints && (!d.mapping || d.mapping.x == null || d.mapping.y == null || d.mapping.z == null) ? 'table' : d.forcePoints ? 'points' : 'blocks'))   // headerless dumps keep the positional X/Y/Z
     : d.kind === 'blocks' ? (d.forcePoints ? 'points' : 'blocks')
     : d.kind === 'dxf' ? d.dxfAs                           // null when the peek couldn't run → the dominant pick at open
     : 'points';
@@ -394,7 +396,7 @@ export async function ofConfirm() {
   for (const { pt, tr } of wire.pairs) { await openDmWireframeBlob(pt.file, tr.file, first ? 'replace' : 'add'); first = false; }
   for (const r of toLoad) {
     const over = {};
-    if (r.mapping && r.kind === 'delimited') over.mapping = { x: r.mapping.x ?? 0, y: r.mapping.y ?? 1, z: r.mapping.z ?? 2, chan: r.mapping.chan ?? null, cat: r.mapping.cat ?? null };
+    if (r.mapping && r.kind === 'delimited' && r.asKind !== 'table') over.mapping = { x: r.mapping.x ?? 0, y: r.mapping.y ?? 1, z: r.mapping.z ?? 2, chan: r.mapping.chan ?? null, cat: r.mapping.cat ?? null };
     if (r.asKind) over.asKind = r.asKind;
     if (r.objGroups && r.objGroups.length > 1 && r.split !== false) {
       if (/\.lfm$/i.test(r.name)) await openLfmSplit(r.file, r.name, first ? 'replace' : 'add');
