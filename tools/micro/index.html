@@ -197,6 +197,21 @@
   .rw-grid button:hover, .rw-x:hover { color: var(--text-hi); }
   .rw-ovr { width: 100%; box-sizing: border-box; font: 11px var(--mono); color: var(--text); background: var(--bg-field); border: 1px solid var(--bd2); border-radius: 3px; padding: 3px 6px; resize: vertical; min-height: 2.1em; margin-top: 4px; }
   .rw-ovr.err { border-color: var(--fault); }
+  /* the YAML boxes (src/yamlfield.js): a highlight layer behind a transparent-text textarea */
+  .yf { margin-top: 4px; }
+  .yf-wrap { position: relative; }
+  .yf-wrap .rw-ovr { display: block; margin-top: 0; position: relative; z-index: 1; color: transparent; caret-color: var(--text-hi); background: transparent; line-height: 1.5; white-space: pre; overflow: auto; scrollbar-width: thin; }
+  .yf-wrap .rw-ovr::placeholder { color: var(--dim); }
+  .yf-hl { padding: 3px 6px; font-size: 11px; line-height: 1.5; color: var(--text); }
+  .yf-key { color: var(--hl-kw); } .yf-dash { color: var(--muted); } .yf-var { color: var(--accent); }
+  .yf-bad { text-decoration: underline wavy var(--fault); text-decoration-skip-ink: none; text-underline-offset: 2px; }
+  .yf-msgs:empty { display: none; }
+  .yf-msgs { margin: 2px 0 0; font: 11px var(--mono); color: var(--fault); }
+  .yf-msg { display: flex; align-items: baseline; gap: 6px; padding: 1px 0; }
+  .yf-go { cursor: pointer; } .yf-go:hover { text-decoration: underline; }
+  .yf-fix { flex: 0 0 auto; font: 11px var(--mono); color: var(--accent); background: var(--bg-btn); border: 1px solid var(--bd2); border-radius: 3px; padding: 0 6px; cursor: pointer; }
+  .yf-fix:hover { background: var(--bg-btn-hover); }
+  #acPopup .ac-doc { color: var(--dim); font-size: 10px; max-width: 240px; overflow: hidden; text-overflow: ellipsis; font-family: var(--sans); }
   .rw-prev { white-space: pre; font: 11px var(--mono); color: var(--muted); background: var(--bg-field); border: 1px solid var(--bd2); border-radius: 3px; padding: 6px 8px; margin-top: 6px; overflow: auto; max-height: 170px; }
   .rw-prevline { padding: 1px 2px; white-space: pre; font: 11px var(--mono); color: var(--muted); }
   .rw-prevline.open { cursor: pointer; }
@@ -983,6 +998,7 @@
   /* typing a filter, the top bar is the filter: the other buttons step aside until it blurs */
   body.mobile #bar:has(#filter:focus) > :not(#filterWrap) { display: none !important; }
   body.mobile #acPopup .ac-item { min-height: 40px; align-items: center; font-size: 14px; }
+  body.mobile .yf-fix { min-height: 32px; padding: 0 10px; font-size: 13px; } body.mobile .yf-msgs { font-size: 13px; }
   /* the EXPRESSION STRIP: while a filter / ƒ field has focus on a phone, two rows ride the
      keyboard's top edge (--kb, from visualViewport) — the symbols a phone keyboard hides two
      pages deep, and what the completer offers at the caret (columns, operators, the values) */

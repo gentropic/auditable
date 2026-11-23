@@ -7141,7 +7141,7 @@ if (take()) {
     document.querySelectorAll('.fwin').forEach((w) => w.remove());
     // B. an invalid calc column fails the step, naming it
     M_.runRoutine({ name: 'badcalc', tool: 'routine', params: { steps: [{ tool: 'calccols', layer: 'm.csv', cols: [{ name: 'BAD', expr: 'FE +* 2' }] }] } });
-    out.calc = await waitMeta(/badcalc/, 15000);
+    out.calc = await waitMeta(/badcalc.*(STOPPED|steps? run)/, 30000);   // the OUTCOME, not the running line (calccols awaits its type inference now)
     document.querySelectorAll('.fwin').forEach((w) => w.remove());
     // C. stats on a column the layer lacks: refused, not computed on another column
     const t1 = Date.now();
@@ -8167,6 +8167,46 @@ if (take()) {
   chk(`FIXES 2: grade-tonnage refuses a model opened as points (“${r.pts}”)`, /no block grid/.test(r.pts));
   chk(`FIXES 2: validation's domain filter applies to both sides (${JSON.stringify(r.val)}; model HEM mean ${r.hemModelWant})`, r.val.all === 18 && r.val.hem === 9 && Math.abs(r.val.hemModel - r.hemModelWant) < 1e-6);
   chk(`FIXES 2: Run on a windowless recipe runs its step (${JSON.stringify(r.run)})`, r.run && r.run.status === 'ok' && r.run.steps === 1 && r.run.step === 'ok');
+  await p.close();
+}
+
+// ═══ 131 (index 130 — alone: --shard=130/131). the routine editor's YAML boxes
+//     (src/yamlfield.js): highlight layer, completions from the tool's settings list
+//     (keys under with:, enum values, layer names), live corrections + one-click fix ═══
+if (take()) {
+  const p = await mkPage('sm2yaml');
+  await p.evaluate(() => { let t = 'X,Y,Z,FE,SG\n'; for (let i = 0; i < 8; i++) for (let j = 0; j < 8; j++) t += `${5 + i * 10},${5 + j * 10},5,${30 + i},2.5\n`; return window._micro.openBlob(new Blob([t]), 'm.csv', 'replace'); });
+  await p.waitForFunction(() => window._micro.layers().length === 1 && window._micro.layers()[0].docs.blockDoc, null, { timeout: 30000 });
+  await p.evaluate(() => { window._micro.openRoutineWindow(null); [...document.querySelectorAll('.fwin[data-routine] button')].find((x) => x.textContent === '+ inline step').click(); });
+  const ta = p.locator('.fwin[data-routine] .yf-wrap textarea').last();
+  await ta.click();
+  const popup = () => p.evaluate(() => (document.querySelector('#acPopup').classList.contains('show') ? [...document.querySelectorAll('#acPopup .ac-val')].map((x) => x.textContent) : []));
+  await p.keyboard.type('with:'); await p.keyboard.press('Enter');          // Enter after `key:` opens its block (indent 2)
+  const keys = await popup();
+  await p.keyboard.type('scope: ');
+  const enumVals = await popup();
+  await p.keyboard.press('Escape'); await p.keyboard.type('"all"'); await p.keyboard.press('Escape'); await p.keyboard.press('Enter');
+  await p.keyboard.type('layer: ');
+  const layers = await popup();
+  await p.keyboard.press('Enter');                                             // accept → "m.csv", quoted
+  await p.keyboard.press('Escape'); await p.keyboard.press('End'); await p.keyboard.press('Enter');
+  await p.keyboard.type('cutofs: 0.5'); await p.keyboard.press('Escape');
+  await p.waitForFunction(() => [...document.querySelectorAll('.fwin[data-routine] .yf-msg')].some((x) => /cutofs/.test(x.textContent)), null, { timeout: 5000 }).catch(() => {});
+  const st = await p.evaluate(() => {
+    const w = document.querySelector('.fwin[data-routine]'), hl = [...w.querySelectorAll('.yf-hl')].pop();
+    return { text: [...w.querySelectorAll('.yf-wrap textarea')].pop().value, keySpans: hl.querySelectorAll('.yf-key').length, strSpans: hl.querySelectorAll('.hl-string').length,
+      bad: [...hl.querySelectorAll('.yf-bad')].map((x) => x.textContent).join(''), msgs: [...w.querySelectorAll('.yf-msg')].map((x) => x.textContent), fix: !!w.querySelector('.yf-fix') };
+  });
+  chk(`yaml box: highlight layer has key + string spans (${st.keySpans} keys, ${st.strSpans} strings) and the indent kept (${JSON.stringify(st.text)})`,
+    st.keySpans >= 4 && st.strSpans >= 2 && /^with:\n {2}scope: "all"\n {2}layer: "m\.csv"\n {2}cutofs: 0\.5$/.test(st.text));
+  chk(`yaml box: under with: the completions are gt's settings (${keys.join(',')})`, ['cutoffs', 'series', 'scope'].every((k) => keys.includes(k)));
+  chk(`yaml box: an enum setting offers its values (${enumVals.join(',')})`, ['all', 'filtered', 'selection'].every((k) => enumVals.includes(k)));
+  chk(`yaml box: a layer setting offers the layers (${layers.join(',')})`, layers.includes('m.csv'));
+  chk(`yaml box: the misspelling is marked + named with a fix (${st.bad}; ${st.msgs[0]})`, st.bad === 'cutofs' && /did you mean “cutoffs”/.test(st.msgs.join(' ')) && st.fix);
+  await p.locator('.fwin[data-routine] .yf-fix').first().click();
+  const fixed = await p.evaluate(() => { const w = document.querySelector('.fwin[data-routine]'); return { text: [...w.querySelectorAll('.yf-wrap textarea')].pop().value, msgs: [...w.querySelectorAll('.yf-msg')].map((x) => x.textContent) }; });
+  chk(`yaml box: one click corrects the key (${JSON.stringify(fixed.text.split('\n').pop())}; ${fixed.msgs.length} message(s) left)`,
+    /\n {2}cutoffs: 0\.5$/.test(fixed.text) && !fixed.msgs.some((m) => /cutofs/.test(m)));
   await p.close();
 }
 

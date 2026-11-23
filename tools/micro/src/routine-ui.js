@@ -9,6 +9,7 @@ import { S, activeLayer } from './state.js';
 import { emit as yamlEmit, parse as yamlParse } from '../../../ext/yaml/index.js';
 import { microPrompt } from './prompts.js';
 import { resolveFileHandle } from './paths.js';
+import { yamlField } from './yamlfield.js';
 const $ = (s) => document.querySelector(s);
 
 // ── the ROUTINE EDITOR — the routine's YAML file stays the single source of
@@ -63,7 +64,7 @@ export function openRoutineWindow(r0) {
     return P2;
   };
   // ── one step row: run [recipe ▾] / do [tool ▾] (inline) + override YAML ──
-  function stepRow(st, arr, host, inEach) {
+  function stepRow(st, arr, host, inEach, varsOf) {
     const inline = st.recipe === undefined && st.tool !== undefined;
     const skip = inline ? ['tool', 'as', '_slug'] : ['recipe', 'as', '_slug'];
     const row = document.createElement('div'); row.className = 'rw-bar';
@@ -96,8 +97,13 @@ export function openRoutineWindow(r0) {
     ovr.placeholder = inline ? 'params (YAML, block style, strings quoted) — e.g.  layer: "model.csv"' : 'overrides (YAML, block style, strings quoted) — e.g.  nCut: 20  ·  col: "$grade"';
     const extras = extrasOf(st, [...skip, 'each', 'steps', 'guard', 'params', 'filter', 'emit']);
     ovr.value = Object.keys(extras).length ? yamlEmit(jsToYamlNode(extras)).trimEnd() : '';
-    ovr.style.display = inline || ovr.value ? '' : 'none';
-    ovB.onclick = () => { ovr.style.display = ovr.style.display === 'none' ? '' : 'none'; if (ovr.style.display === '') ovr.focus(); };
+    host.appendChild(ovr);
+    // the box is a small YAML editor: highlighting, the tool's settings at the caret, live checks
+    const rcOf = () => (st.recipe ? S.recipes.find((x) => x.name === st.recipe) : null);
+    const yf = yamlField(ovr, () => ({ tool: inline ? st.tool : (rcOf() || {}).tool, base: inline ? {} : (rcOf() || {}).params, vars: varsOf() }));
+    yf.el.style.display = inline || ovr.value ? '' : 'none';
+    sel.addEventListener('change', () => yf.lint());           // another tool / recipe → re-check against it
+    ovB.onclick = () => { yf.el.style.display = yf.el.style.display === 'none' ? '' : 'none'; if (yf.el.style.display === '') ovr.focus(); };
     ovr.onchange = () => {
       const txt = ovr.value.trim();
       try {
@@ -107,7 +113,6 @@ export function openRoutineWindow(r0) {
         ovr.classList.remove('err');
       } catch { ovr.classList.add('err'); }
     };
-    host.appendChild(ovr);
   }
   // ── the each-block parameter table: variables → columns, runs → rows ──
   function eachGrid(blk, host) {
@@ -238,7 +243,7 @@ export function openRoutineWindow(r0) {
   // editor renders the tree the same way the runner expands it. Nesting is a
   // CROSS PRODUCT (every outer row × every inner row); one `each` with two
   // equal-length columns is a ZIP. The block header says which, out loud.
-  function renderSteps(arr, host, depth) {
+  function renderSteps(arr, host, depth, varsOf = () => (model.inputs || []).filter((x) => x && x.name).map((x) => x.name)) {
     for (const st of arr) {
       const box = document.createElement('div'); box.className = 'rw-step';
       if (depth) box.style.marginLeft = '10px';
@@ -264,7 +269,8 @@ export function openRoutineWindow(r0) {
         hd.append(t, asL, asI, fL, fI, up, dn, rm); box.appendChild(hd);
         eachGrid(st, box);
         st.steps = st.steps || [];
-        renderSteps(st.steps, box, depth + 1);             // ← the nesting
+        const blockVars = () => { const ks = Array.isArray(st.each) ? [...new Set(st.each.flatMap((r2) => Object.keys(r2 || {})))] : []; return [...varsOf(), ...ks.map((k) => (st.as ? `${st.as}.${k}` : k))]; };
+        renderSteps(st.steps, box, depth + 1, blockVars);  // ← the nesting
         const add = document.createElement('button'); add.className = 'rw-x'; add.textContent = '+ step in this block';
         add.onclick = () => { st.steps.push({ recipe: '' }); render(); };
         const addI2 = document.createElement('button'); addI2.className = 'rw-x'; addI2.textContent = '+ inline step';
@@ -289,7 +295,7 @@ export function openRoutineWindow(r0) {
         const hint = document.createElement('div'); hint.className = 'lbl'; hint.style.paddingLeft = '10px';
         hint.textContent = 'a key→value sheet → scalars every step below can read ($g.cutoff)';
         box.appendChild(hint);
-      } else stepRow(st, arr, box, depth > 0);
+      } else stepRow(st, arr, box, depth > 0, varsOf);
       host.appendChild(box);
     }
   }

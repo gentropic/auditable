@@ -26,6 +26,8 @@ export const filterCtx = () => {
 };
 
 export const _ac = { input: null, res: null, sel: 0, suppress: false };
+// a field that places the popup at its caret (a multi-line box) registers how: field → () => rect
+export const _acAnchor = new WeakMap();
 
 export function attachAutocomplete(input, getCtx) {
   input.addEventListener('input', () => acRefresh(input, getCtx));
@@ -49,10 +51,11 @@ export function acRender(input) {
     const v = document.createElement('span'); v.className = 'ac-val ac-' + o.kind; v.textContent = o.value;
     const k = document.createElement('span'); k.className = 'ac-kind'; k.textContent = o.detail || o.kind;
     row.appendChild(v); row.appendChild(k);
+    if (o.doc) { const d = document.createElement('span'); d.className = 'ac-doc'; d.textContent = o.doc; row.title = o.doc; row.appendChild(d); }
     row.onmousedown = (e) => { e.preventDefault(); acAccept(i); };
     pop.appendChild(row);
   });
-  const r = input.getBoundingClientRect();
+  const r = _acAnchor.has(input) ? _acAnchor.get(input)() : input.getBoundingClientRect();
   pop.style.left = Math.min(r.left, innerWidth - 300) + 'px';
   pop.style.top = (r.bottom + 2) + 'px';
   pop.style.minWidth = Math.min(Math.max(r.width, 180), 320) + 'px';
@@ -74,12 +77,13 @@ export function acAccept(i) {
   const input = _ac.input, res = _ac.res; if (!res) return;
   const o = res.options[i]; if (!o) return;
   const spaceAfter = (o.kind === 'operator' || o.kind === 'keyword') && !o.value.endsWith('(');
-  const ins = o.value + (spaceAfter ? ' ' : '');
+  const ins = o.insert != null ? o.insert : o.value + (spaceAfter ? ' ' : '');   // a field's own insertion text
   input.value = input.value.slice(0, res.from) + ins + input.value.slice(res.to);
   const caret = res.from + ins.length;
   input.focus(); input.setSelectionRange(caret, caret);
   _ac.suppress = true; input.dispatchEvent(new Event('input')); _ac.suppress = false;
   acClose();
+  if (typeof o.after === 'function') o.after(input);              // e.g. a YAML key → straight on to its values
 }
 
 // ── the phone's EXPRESSION STRIP: a field registered here (the filter, the ƒ editor)
