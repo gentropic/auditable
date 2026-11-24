@@ -13,6 +13,8 @@ import { deliverBlob } from './hostio.js';
 import { S, layerById, requestRender } from './state.js';
 import { groupLayerIds } from './tree.js';
 import { applyLayerSelection } from './selection.js';
+import { dhSetGroupOf } from './drillholes.js';
+import { registerCommands } from './commands.js';
 // the set's drillhole layers (its hole traces are a derived layer, not a member)
 const membersOf = (nd) => groupLayerIds(nd).map(layerById).filter((L) => L && L.dh && L.docs.dhDoc && !L.trace);
 const setNameOf = (nd) => nd.name || 'drillholes';
@@ -233,3 +235,8 @@ export async function openDhQa(nd) {
   await run();
   return handle;
 }
+
+// ── its palette commands (src/commands.js; the palette order is src/command-list.js) ──
+registerCommands([
+  { id: 'dhqa', group: 'Analysis', title: 'Drillhole QA report', kw: 'drillhole qa qc check validate collar survey interval gaps overlaps dogleg eoh orphan duplicate blank', when: (c) => !!(c.L && c.L.dh && c.L.docs.dhDoc && dhSetGroupOf(c.L.id)), run: (c) => openDhQa(dhSetGroupOf(c.L.id)) },
+]);

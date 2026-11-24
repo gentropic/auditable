@@ -10,6 +10,7 @@
 // has no maximum; elevation's max along a vertical ray is just the top). It rides
 // with the camera — bookmarks, scenes, the project and composer frames keep it.
 import { S, requestRender } from './state.js';
+import { registerCommands } from './commands.js';
 const $ = (s) => document.querySelector(s);
 
 export const PROJECTIONS = ['max', 'min', 'mean'];
@@ -63,3 +64,11 @@ export function projectionMenuItems() {
     action: () => setProjection(v),
   }));
 }
+
+// ── its palette commands (src/commands.js; the palette order is src/command-list.js) ──
+registerCommands([
+  { id: 'proj-max', group: 'View', title: 'Projection: max (MIP)', kw: 'maximum intensity projection highest grade through the model x-ray line of sight', run: () => setProjection('max') },
+  { id: 'proj-min', group: 'View', title: 'Projection: min (MinIP)', kw: 'minimum intensity projection lowest grade through the model line of sight', run: () => setProjection('min') },
+  { id: 'proj-mean', group: 'View', title: 'Projection: mean', kw: 'average intensity projection along the line of sight', when: () => !!projectionSupport().mean, run: () => setProjection('mean') },
+  { id: 'proj-off', group: 'View', title: 'Projection: off', kw: 'front surface normal view mip', when: () => !!S.projection, run: () => setProjection(null) },
+]);

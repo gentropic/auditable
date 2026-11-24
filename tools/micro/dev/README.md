@@ -4,6 +4,13 @@ Developer tools for micro's source tree. Nothing here ships: the build
 (`node build.js --target=micro`) follows the imports of `tools/micro/index.html`
 and never reads this folder.
 
+**The carve is finished (2026-11-24).** `index.html`'s inline script is now one
+line, `import './src/boot.js'`, and `src/boot.js` lists the app's parts in the
+order they run. `carve.mjs`, `tostate.mjs`, `unused.mjs` and `hooks.mjs` work on
+that inline script, so they have nothing left to read; they stay as the record of
+how the carve was done. The hooks the feature modules still receive are set in
+`src/viewport.js`. `move.mjs` and `cycles.mjs` work on `src/` and still apply.
+
 ## carve.mjs
 
 Moves top-level declarations out of the inline module script in

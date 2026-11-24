@@ -16,6 +16,7 @@ import { supportOfHeader, supportToLattice, supportToWorld } from '../../../ext/
 import { mkLineage } from './lineage.js';
 import { ingestMeshLayer } from './ingest.js';
 import { layerById } from './state.js';
+import { registerCommands } from './commands.js';
 const $ = (s) => document.querySelector(s);
 const FIELD_MAX = 64e6;                                    // cells (incl. the padding) read into one Float32Array
 
@@ -191,3 +192,8 @@ export function openGradeShell(L) {
   };
   return win;
 }
+
+// ── its palette commands (src/commands.js; the palette order is src/command-list.js) ──
+registerCommands([
+  { id: 'shell', group: 'Analysis', title: 'Grade shell…', kw: 'isosurface contour volume envelope wireframe cutoff marching mesh solid domain', when: (c) => !!(c.L && c.L.docs && c.L.docs.blockDoc && c.L.docs.blockDoc.header.grid && c.L.viewOf == null), run: (c) => openGradeShell(c.L) },
+]);

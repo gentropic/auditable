@@ -32,6 +32,7 @@ import { convertMeshLayer } from './layermenu.js';
 import { zoomToPoint } from './camera.js';
 import { addPaintValue, createPaintCol, paintApply } from './paint.js';
 import { meshHitAt, pixelRay } from './pick.js';
+import { registerCommands } from './commands.js';
 const $ = (s) => document.querySelector(s);
 
 export const _structWins = new Map();                       // mesh layer id → handle
@@ -949,3 +950,8 @@ export function openStereonet(L) {
   render();
   return hd.stereo;
 }
+
+// ── its palette commands (src/commands.js; the palette order is src/command-list.js) ──
+registerCommands([
+  { id: 'structure', group: 'Analysis', title: 'Structural analysis (joint planes)', kw: 'capivaras outcrop joint fracture plane dip direction attitude wand brush paint set stereonet structure', when: (c) => !!(c.L && c.L.kind === 'mesh' && c.L.docs.meshDoc && !c.L.derivedOf), run: (c) => openStructure(c.L) },
+]);

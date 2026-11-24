@@ -16,6 +16,7 @@ import { layerById } from './state.js';
 import { groupLayerIds } from './tree.js';
 import { openBlob } from './open.js';
 import { deliverBlob } from './hostio.js';
+import { registerCommands } from './commands.js';
 const $ = (s) => document.querySelector(s);
 
 const dhMembers = (Lorg) => {
@@ -143,3 +144,8 @@ export function openComposite(target) {
 }
 
 export { dhMembers };
+
+// ── its palette commands (src/commands.js; the palette order is src/command-list.js) ──
+registerCommands([
+  { id: 'composite', group: 'Analysis', title: 'Composite drillholes…', kw: 'downhole composites fixed length regularize support domain break density weighted samples', when: (c) => !!(c.L && c.L.dh && c.L.docs.dhDoc && !c.L.trace && c.L.viewOf == null), run: (c) => openComposite(c.L) },
+]);

@@ -28,6 +28,7 @@ import { mkLineage } from './lineage.js';
 import { markProjectDirty } from './project.js';
 import { microPrompt } from './prompts.js';
 import { downholeContacts, binRecord, contactValues, contactBinRows, gridSignedDistance, scaleContactValues } from './contact-core.js';
+import { registerCommands } from './commands.js';
 const $ = (s) => document.querySelector(s);
 
 // ── what can take part ────────────────────────────────────────────────────────
@@ -579,3 +580,9 @@ export function openContact(L, ropts) {
   if (ropts && ropts.run) ready.then(run);
   return handle;
 }
+
+// ── its palette commands (src/commands.js; the palette order is src/command-list.js) ──
+registerCommands([
+  { id: 'contact', group: 'Analyse', title: 'Contact plot…', kw: 'contact analysis domain boundary hard soft lithology down hole transition domaining validation step ramp', when: (c) => !!(c.L && isDhLayer(c.L) && numericColsOf(c.L).length), run: (c) => openContact(c.L, { mode: 'downhole' }) },
+  { id: 'contactsurf', group: 'Analyse', title: 'Distance to a surface…', kw: 'contact analysis signed distance wireframe solid ore shell boundary hard soft smear model samples domaining', when: (c) => !!(c.L && (isDhLayer(c.L) || isBlockLayer(c.L)) && numericColsOf(c.L).length), run: (c) => openContact(c.L, { mode: 'surface' }) },
+]);

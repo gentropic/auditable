@@ -16,6 +16,7 @@ import { drawXY } from './xyplot.js';
 import { applyLayerSelection } from './selection.js';
 import { S, layerById, requestRender } from './state.js';
 import { numericColsOf } from './analysis.js';
+import { registerCommands } from './commands.js';
 const $ = (s) => document.querySelector(s);
 export const _pairWins = new Map();
 const CELL_ARRAY_MAX = 16e6;                               // cells read into a typed array up to here, a Map beyond
@@ -242,3 +243,8 @@ export function openPairing(M, ropts = {}) {
   if (ropts.samples != null) entry.set({ samples: ropts.samples });
   return entry;
 }
+
+// ── its palette commands (src/commands.js; the palette order is src/command-list.js) ──
+registerCommands([
+  { id: 'pairing', group: 'Analysis', title: 'Block vs sample…', kw: 'validation pairs scatter qq q-q bias conditional slope regression composites drillholes estimate honours data check', when: (c) => !!(c.L && c.L.docs && c.L.docs.blockDoc && c.L.docs.blockDoc.header.grid && c.L.viewOf == null), run: (c) => openPairing(c.L) },
+]);

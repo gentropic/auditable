@@ -11,6 +11,7 @@ import { floatWin, focusWindow } from './windows.js';
 import { fmtStat, plotExportBtns } from './analysis-ui.js';
 import { convert as unitConvert } from '../../../ext/units/index.js';
 import { zoomToPoint } from './camera.js';
+import { registerCommands } from './commands.js';
 const $ = (s) => document.querySelector(s);
 export const _meshQaWins = new Map();
 
@@ -123,3 +124,8 @@ export async function openMeshQa(L) {
   await run();
   return handle;
 }
+
+// ── its palette commands (src/commands.js; the palette order is src/command-list.js) ──
+registerCommands([
+  { id: 'meshqa', group: 'Analysis', title: 'Mesh QA / volume', kw: 'wireframe solid watertight closed holes shells volume tonnage manifold flipped normals check', when: (c) => !!(c.L && c.L.kind === 'mesh' && c.L.docs.meshDoc), run: (c) => openMeshQa(c.L) },
+]);

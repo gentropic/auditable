@@ -21,6 +21,7 @@ import { canScanColumnar, scanColumnar, zoneKeeper } from './colscan.js';
 import { scatterAccumulator, scatterAdd, scatterMerge, scatterR } from './scanner.js';
 import { statsScan } from './stats.js';
 import { S, layerById } from './state.js';
+import { registerCommands } from './commands.js';
 const $ = (s) => document.querySelector(s);
 export const _xyWins = new Map();
 const BINS = 160, KEEP = 20000;
@@ -294,3 +295,9 @@ export function openXyPlot(L, ropts) {
   if (ropts && ropts.run) run();
   return handle;
 }
+
+// ── its palette commands (src/commands.js; the palette order is src/command-list.js) ──
+registerCommands([
+  { id: 'scatter', group: 'Analysis', title: 'Scatter plot', kw: 'scatter xy correlation density pairs two columns crossplot', when: (c) => !!(c.L && layerTableHeader(c.L) && numericColsOf(c.L).length), run: (c) => { const h = openXyPlot(c.L); if (h && h.st.mode !== 'scatter') h.win.el.querySelectorAll('.sw-seg')[0].children[0].click(); } },
+  { id: 'qq', group: 'Analysis', title: 'Q-Q plot', kw: 'qq quantile quantile compare distributions model samples drillholes validation', when: (c) => !!(c.L && layerTableHeader(c.L) && numericColsOf(c.L).length), run: (c) => { const h = openXyPlot(c.L); if (h && h.st.mode !== 'qq') h.win.el.querySelectorAll('.sw-seg')[0].children[1].click(); } },
+]);

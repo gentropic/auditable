@@ -52,7 +52,7 @@ const $ = (s) => document.querySelector(s);
 let H = {};
 export function setLayermenuHooks(h) { H = h; }
 
-// the menu verbs the command palette shares (index.html COMMANDS) — one body each
+// the menu verbs the command palette shares (its commands: src/command-list.js) — one body each
 // a lone drillhole layer's hole filter (a set's goes through drillholes.js filterHolesSet)
 export async function filterHolesLayer(L) {
   const cc = await peekCollarCols(L.docs.dhDoc).catch(() => []);

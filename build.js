@@ -1823,11 +1823,11 @@ if (target === 'micro') {
   const srcSeen = new Set();
   const collectSrc = (src) => {
     let out = src;
-    const re = /from '\.\/src\/([\w.-]+)\.js'/g;
+    const re = /\b(?:from|import) '\.\/src\/([\w.-]+)\.js'/g;   // `… from './src/x.js'`, and a bare `import './src/x.js'` (src/boot.js lists the app's parts so)
     let m2;
     while ((m2 = re.exec(src)) !== null) {
       const nm = m2[1];
-      out = out.split(`from './src/${nm}.js'`).join(`from '#${nm}'`);
+      out = out.split(`from './src/${nm}.js'`).join(`from '#${nm}'`).split(`import './src/${nm}.js'`).join(`import '#${nm}'`);
       if (srcSeen.has(nm)) continue;
       srcSeen.add(nm);
       // a src module and a library share ONE '#name' namespace: same name → one
@@ -1840,7 +1840,7 @@ if (target === 'micro') {
       // path has one more '../' than the SPEC key; rewrite both forms.
       for (const [from, to] of Object.entries(SPEC)) ss = ss.split(`from '${from}'`).join(`from '${to}'`).split(`from '../${from}'`).join(`from '${to}'`);
       // a src module importing a sibling uses './x.js', not './src/x.js'
-      ss = ss.replace(/from '\.\/([\w.-]+)\.js'/g, "from './src/$1.js'");
+      ss = ss.replace(/\b(from|import) '\.\/([\w.-]+)\.js'/g, "$1 './src/$2.js'");
       ss = collectSrc(ss);
       modules.push({ name: nm, source: ss.trim() });
     }

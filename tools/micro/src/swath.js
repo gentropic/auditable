@@ -24,6 +24,7 @@ import { _attrTables } from './attrtable.js';
 import { rendererDocBbox } from './layers.js';
 import { applyLayerSelection, clearSelection, selectionStatus } from './selection.js';
 import { addPaintValue, createPaintCol, paintColByName, addPaintColorOptions, applyPaintPalette, paintSelOf } from './paint.js';
+import { registerCommands } from './commands.js';
 const $ = (s) => document.querySelector(s);
 
 // ── swath (drift) analysis ────────────────────────────────────────────────────
@@ -494,3 +495,8 @@ export function clearSwathZebra(L) {
   const i = (L.paintCols || []).findIndex((c) => c.name === '_swath');
   if (i >= 0) { L.paintCols.splice(i, 1); if (paintSelOf(L) === '_swath') setLayerColorSel(L, L._preZebraSel && L._preZebraSel !== 'paint:_swath' ? L._preZebraSel : 'elev'); L._preZebraSel = null; addPaintColorOptions(L); requestRender(); }
 }
+
+// ── its palette commands (src/commands.js; the palette order is src/command-list.js) ──
+registerCommands([
+  { id: 'swath', group: 'Analyse', title: 'Swath plot…', kw: 'drift bias direction trend plunge dip rake', when: (c) => c.L && gridAxesOf(c.L), run: (c) => openSwath(c.L) },
+]);

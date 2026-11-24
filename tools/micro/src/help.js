@@ -4,6 +4,8 @@ import { keysHelpHtml } from './keys.js';
 import { setHTML, trusted } from './html.js';
 import { S } from './state.js';
 import { _nlOn, nlEnsureTrained, nlSetEnabled } from './nl.js';
+import { _isMobile } from './windows.js';
+import { registerCommands } from './commands.js';
 const $ = (s) => document.querySelector(s);
 
 export const HELP_KEYS = `
@@ -180,3 +182,15 @@ export function sealedInfo() {
   const off = (e) => { if (!pop.contains(e.target) && e.target !== badge && !badge.contains(e.target)) { pop.remove(); document.removeEventListener('pointerdown', off); } };
   setTimeout(() => document.addEventListener('pointerdown', off), 0);
 }
+
+// ── its palette commands (src/commands.js; the palette order is src/command-list.js) ──
+registerCommands([
+  { id: 'sealed', group: 'Help', title: 'Why it\'s Sealed (security)…', kw: 'network privacy offline trust connect-src wasm verify', run: () => sealedInfo() },
+  { id: 'update', group: 'Help', title: 'Check for updates…', kw: 'version new build reload service worker', run: () => checkForUpdates() },
+  { id: 'helpwork', group: 'Help', title: 'Analysis & workbench help…', kw: 'grade tonnage swath reconcile join validate lineage figure docs guide', run: () => showHelp('analysis & workbench', trusted(HELP_ANALYSIS)) },
+  { id: 'helptouch', group: 'Help', title: 'Touch help…', kw: 'phone gestures finger tap pinch docs guide', run: () => showHelp('touch', trusted(HELP_TOUCH)) },
+  { id: 'helpkeys', group: 'Help', title: 'Keyboard & mouse help…', kw: 'shortcuts docs guide', run: () => showHelp('keyboard & mouse', trusted(HELP_KEYS)) },
+  { id: 'about', group: 'Help', title: 'About micro', kw: 'version build licence license credits', run: () => showAbout() },
+  { id: 'docs', group: 'Help', title: 'Full documentation ↗', kw: 'manual docs guide reference online help', run: () => window.open('https://gentropic.org/micro/docs/', '_blank', 'noopener') },
+  { id: 'card', group: 'Help', title: 'Shortcut card (print) ↗', kw: 'keyboard shortcuts cheat sheet print reference', when: () => !_isMobile(), run: () => window.open('https://gentropic.org/micro/docs/card.html', '_blank', 'noopener') },
+]);

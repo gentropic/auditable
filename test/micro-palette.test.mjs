@@ -1,4 +1,4 @@
-// micro's command palette (⌘K, the COMMANDS registry in tools/micro/index.html) must
+// micro's command palette (⌘K, the COMMANDS registry: tools/micro/src/commands.js) must
 // not drift behind its menus: every menu item literal `{ label: '…', action: … }` in
 // tools/micro/index.html and tools/micro/src/*.js needs a palette command whose title
 // matches it — or an entry in the ALLOWLIST below saying why it doesn't.
@@ -78,11 +78,16 @@ const ALLOWLIST = {
 };
 
 function scan() {
-  const src = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
-  const start = src.indexOf('const COMMANDS = [');
-  assert.ok(start >= 0, 'COMMANDS registry not found in tools/micro/index.html');
-  const reg = src.slice(start, src.indexOf('\n];', start));
-  const titles = [...reg.matchAll(/\{ id: '[\w-]+', group: '[^']*', title: '((?:[^'\\]|\\.)*)'/g)].map((m) => m[1].replace(/\\'/g, "'"));
+  // the commands: every registerCommands([…]) entry, wherever it is (src/command-list.js has the
+  // app's own; feature modules register theirs)
+  const titles = [];
+  for (const f of FILES) {
+    const src = fs.readFileSync(path.join(ROOT, f), 'utf8');
+    for (let at = src.indexOf('registerCommands(['); at >= 0; at = src.indexOf('registerCommands([', at + 1)) {
+      const reg = src.slice(at, src.indexOf('\n]', at));
+      for (const m of reg.matchAll(/\{ id: '[\w-]+', group: '[^']*', title: '((?:[^'\\]|\\.)*)'/g)) titles.push(m[1].replace(/\\'/g, "'"));
+    }
+  }
   const menu = new Map();                                    // label → first file
   for (const f of FILES) {
     const s = fs.readFileSync(path.join(ROOT, f), 'utf8');
@@ -115,7 +120,7 @@ test('every menu action has a palette command (or an allowlisted reason)', () =>
     missing.push(`  ${label}   (${file})`);
   }
   assert.equal(missing.length, 0,
-    `menu labels with no command-palette entry — add a COMMANDS entry in tools/micro/index.html (calling the menu's own function, with a matching when()), or allowlist it in test/micro-palette.test.mjs with a reason:\n${missing.join('\n')}`);
+    `menu labels with no command-palette entry — add a command to tools/micro/src/command-list.js or registerCommands it from the feature's module (calling the menu's own function, with a matching when()), or allowlist it in test/micro-palette.test.mjs with a reason:\n${missing.join('\n')}`);
 });
 
 test('the allowlist carries no dead entries', () => {

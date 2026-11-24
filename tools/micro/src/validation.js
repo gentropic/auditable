@@ -12,6 +12,7 @@ import { compileBool, deps as exprDeps } from '../../../ext/expr/index.js';
 import { layerTableHeader, schemaExt } from './records.js';
 import { ensureStoredValues } from './columns.js';
 import { saveRecipe } from './recipes.js';
+import { registerCommands } from './commands.js';
 const $ = (s) => document.querySelector(s);
 
 // ── validation: block model vs drillhole samples ──────────────────────────────
@@ -186,3 +187,9 @@ export function openValidation(M, ropts) {
   buildCtrls(); redraw();
   return handle;
 }
+
+// ── its palette commands (src/commands.js; the palette order is src/command-list.js) ──
+registerCommands([
+  // validate vs drillholes — palette-only (not on the layer menu): shown for a gridded block model once a drillhole layer is loaded
+  { id: 'validate', group: 'Analyse', title: 'Validate vs drillholes…', kw: 'declustered sample bias check reconcile composite', when: (c) => c.L && gridAxesOf(c.L) && S.layers.some((L) => L.dh), run: (c) => openValidation(c.L) },
+]);

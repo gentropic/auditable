@@ -15,6 +15,7 @@ import { compileBool, compileValue, quoteIdent, validate } from '../../../ext/ex
 import { canScanColumnar, scanColumnar } from './colscan.js';
 import { markProjectDirty } from './project.js';
 import { saveRecipe } from './recipes.js';
+import { registerCommands } from './commands.js';
 const $ = (s) => document.querySelector(s);
 
 // (numericColsOf / blockVolumeOf / volumeContextOf / volumeAt / computeGT live in src/analysis.js)
@@ -306,3 +307,9 @@ export function openGradeTonnage(L, ropts) {
   buildRail(); plot();
   if (ropts && ropts.run) run();
 }
+
+// ── its palette commands (src/commands.js; the palette order is src/command-list.js) ──
+registerCommands([
+  { id: 'gt', group: 'Analyse', title: 'Grade-tonnage…', kw: 'cutoff tonnes curve reserve', when: (c) => c.L && (gridAxesOf(c.L) || (c.L.dh && c.L.docs.dhDoc)),   // a drillhole layer: length-weighted (src/analysis.js supportContextOf)
+    run: (c) => openGradeTonnage(c.L) },
+]);

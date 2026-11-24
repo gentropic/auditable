@@ -30,6 +30,7 @@ import { applyAnalysisGeo, checkAbort, fmtStat, gradeUnitFactor, gradeUnitSel, p
 import { floatWin, focusWindow } from './windows.js';
 import { saveRecipe } from './recipes.js';
 import { periodKey, makeAcc, factorRows, factorTable, factorValues, periodOrder, identityError, metalMismatch, QUANTITIES } from './factors-core.js';
+import { registerCommands } from './commands.js';
 const $ = (s) => document.querySelector(s);
 
 // ── what can take part ────────────────────────────────────────────────────────
@@ -649,3 +650,8 @@ export function openFactors(L, ropts) {
   if (ropts && ropts.run) run();
   return handle;
 }
+
+// ── its palette commands (src/commands.js; the palette order is src/command-list.js) ──
+registerCommands([
+  { id: 'factors', group: 'Analyse', title: 'Reconciliation factors…', kw: 'f1 f2 f3 reconcile reconciliation grade control mill production plant month end period mined volume tonnes grade metal factor', when: (c) => !!(c.L && isBlockModel(c.L)), run: (c) => openFactors(c.L) },
+]);

@@ -16,6 +16,7 @@ import { crosstabMerge, xtabAdd, xtabKey, XTAB_GROUPS_CAP } from './scanner.js';
 import { statsGroupCols } from './stats.js';
 import { gridAxesOf } from './grid-ops.js';
 import { markProjectDirty } from './project.js';
+import { registerCommands } from './commands.js';
 const $ = (s) => document.querySelector(s);
 export const _xtabWins = new Map();
 
@@ -256,3 +257,8 @@ export function openCrosstab(L, ropts) {
   if (ropts && ropts.run) run();
   return handle;
 }
+
+// ── its palette commands (src/commands.js; the palette order is src/command-list.js) ──
+registerCommands([
+  { id: 'xtab', group: 'Analysis', title: 'Resource cross-tab', kw: 'resource table tonnage grade metal domain class cutoff bins pivot crosstab report', when: (c) => !!(c.L && gridAxesOf(c.L)), run: (c) => openCrosstab(c.L) },
+]);

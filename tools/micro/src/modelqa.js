@@ -15,6 +15,7 @@ import { applyLayerSelection } from './selection.js';
 import { deliverBlob } from './hostio.js';
 import { S, requestRender } from './state.js';
 import { supportOfHeader, supportToLattice, supportToWorld } from '../../../ext/condenser/src/main.js';
+import { registerCommands } from './commands.js';
 const $ = (s) => document.querySelector(s);
 export const _modelQaWins = new Map();
 
@@ -276,3 +277,8 @@ export async function openModelQa(L) {
   })();
   return entry;
 }
+
+// ── its palette commands (src/commands.js; the palette order is src/command-list.js) ──
+registerCommands([
+  { id: 'modelqa', group: 'Analysis', title: 'Model QA…', kw: 'block model check duplicates gaps holes sentinel -99 negative density outlier top cut lattice audit validate', when: (c) => !!(c.L && c.L.docs && c.L.docs.blockDoc && c.L.viewOf == null), run: (c) => openModelQa(c.L) },
+]);

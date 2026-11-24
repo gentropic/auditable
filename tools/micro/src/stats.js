@@ -13,6 +13,7 @@ import { numericColsOf } from './analysis.js';
 import { canScanColumnar, scanColumnar, zoneKeeper } from './colscan.js';
 import { menuXY } from './menu.js';
 import { saveRecipe } from './recipes.js';
+import { registerCommands } from './commands.js';
 const $ = (s) => document.querySelector(s);
 
 // ── STATS: the grouped summary table on the analysis chassis — columns × an
@@ -308,3 +309,8 @@ export function openStats(L, ropts) {
   buildRail(); render();
   if (ropts && ropts.run) { if (missingNote) win.el._runFailed = missingNote; else run(); }   // a recipe run refuses rather than computing other columns
 }
+
+// ── its palette commands (src/commands.js; the palette order is src/command-list.js) ──
+registerCommands([
+  { id: 'stats', group: 'Analysis', title: 'Stats…', kw: 'summary table group by mean std quantiles domain report', when: (c) => !!(c.L && layerTableHeader(c.L) && numericColsOf(c.L).length), run: (c) => openStats(c.L) },
+]);

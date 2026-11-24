@@ -27,6 +27,8 @@ import { matColSet, paintRecount } from './columns.js';
 import { persistElement } from './element-store.js';
 import { createPaintCol, addPaintValue } from './paint.js';
 import { setLayerColorSel, setLayerColorBy, colorSelFor, colorByName } from './color.js';
+import { filterHolesLayer } from './layermenu.js';
+import { registerCommands } from './commands.js';
 const $ = (s) => document.querySelector(s);
 
 // re-open a drillhole layer with a patched config (method / dip / category —
@@ -582,3 +584,13 @@ export async function broadcastCollarCol(L, colName) {
   markProjectDirty(); renderProps(); requestRender();
   $('#meta').textContent = `broadcast: ${outName} on ${L.label || L.name} — the filter, color ramps, GT/swath, and exports all see it`;
 }
+
+// ── its palette commands (src/commands.js; the palette order is src/command-list.js) ──
+registerCommands([
+  { id: 'dh-filter', group: 'Drillholes', title: 'Filter holes…', kw: 'hole filter collar campaign company eoh depth subset', when: (c) => !!(c.L && c.L.dh && c.L.docs.dhDoc), run: (c) => { const nd = dhSetGroupOf(c.L.id); return nd ? filterHolesSet(nd) : filterHolesLayer(c.L); } },
+  { id: 'dh-interval', group: 'Drillholes', title: 'Add interval table…', kw: 'assay lithology interval file another table drillhole set', when: (c) => !!(c.L && dhSetGroupOf(c.L.id)), run: (c) => addIntervalToSet(dhSetGroupOf(c.L.id)) },
+  { id: 'dh-redesurvey', group: 'Drillholes', title: 'Re-desurvey set…', kw: 'desurvey method minimum curvature tangential dip convention trajectory survey', when: (c) => !!(c.L && dhSetGroupOf(c.L.id)), run: (c) => setTimeout(() => redesurveyMenu(dhSetGroupOf(c.L.id), innerWidth / 2 - 130, innerHeight / 3), 0) },
+  { id: 'dh-traces', group: 'Drillholes', title: 'Show / hide hole traces', kw: 'traces trajectory path collar eoh lines sticks toggle', when: (c) => !!(c.L && dhSetGroupOf(c.L.id)), run: (c) => showHoleTraces(dhSetGroupOf(c.L.id)) },
+  { id: 'dh-collars', group: 'Drillholes', title: 'Show / hide collars', kw: 'collar points hole tops toggle', when: (c) => !!(c.L && dhSetGroupOf(c.L.id)), run: (c) => showCollars(dhSetGroupOf(c.L.id)) },
+  { id: 'dh-broadcast', group: 'Drillholes', title: 'Broadcast collar column to intervals…', kw: 'broadcast collar attribute copy join hole column intervals', when: (c) => !!(c.L && dhSetGroupOf(c.L.id)), run: (c) => setTimeout(() => menuXY(innerWidth / 2 - 130, innerHeight / 3, broadcastMenuItems(dhSetGroupOf(c.L.id))), 0) },
+]);

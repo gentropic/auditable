@@ -14,7 +14,7 @@ test('micro keys: the manual and the card are rendered from keys.js (run docs/sy
 });
 
 test('micro keys: the single-key handler binds exactly the keys the list names', () => {
-  const src = fs.readFileSync(new URL('../tools/micro/index.html', import.meta.url), 'utf8');
+  const src = fs.readFileSync(new URL('../tools/micro/src/keyboard.js', import.meta.url), 'utf8');
   const start = src.indexOf("if (/^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;   // typing, not commanding");
   assert.ok(start > 0, 'the single-key handler');
   const body = src.slice(start, src.indexOf('\n});', start));
