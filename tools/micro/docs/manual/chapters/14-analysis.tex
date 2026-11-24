@@ -63,7 +63,7 @@ Each analysis is split in two. The \term[scan and shape]{scan} reads the data on
 \node[hot, right=of state] (shape) {shape\\instant};
 \node[box, right=of shape] (out) {plot\\table};
 \node[box, above=of shape] (disp) {display settings};
-\node[box, below=of scan] (who) {a window · a routine step · the composer's ↻ refresh · the host API};
+\node[box, below=of scan] (who) {a window · a routine step · the composer's Refresh (↻) · the host API};
 \draw[arr] (set) -- node[above, text=muted] {Run} (scan);
 \draw[arr] (scan) -- (state);
 \draw[arr] (state) -- (shape);
@@ -181,7 +181,7 @@ Under \ui{Run}, every window carries the same actions in the same order. A windo
 button & what it does \\ \midrule
 \ui{⤓ png} & saves the plot as a PNG, named after the analysis and the layer (\file{gt-deposit.png}). \\
 \ui{⧉ copy} & puts the plot on the clipboard as an image. \\
-\ui{⇥ figure} & sends the plot and its table to the composer page (\cref{ch:composer}) as a \emph{vector} chart frame that re-flows when resized and remembers the analysis that made it, so \ui{↻ refresh} in the composer can make it again. \\
+\ui{⇥ figure} & sends the plot and its table to the composer page (\cref{ch:composer}) as a \emph{vector} chart frame that re-flows when resized and remembers the analysis that made it, so \ui{Refresh} (↻) in the composer can make it again. \\
 \ui{⇥ layer} & keeps the table as a \term{table layer} in the project, filed in a group named after the analysis (\file{grade-tonnage}, \file{swaths}, \file{stats}, \file{cross-tab}…). Filter it, join it against another run, export it. \\
 \ui{⧉ table} & copies the computed numbers as tab-separated text, ready to paste into a spreadsheet. \\ \bottomrule
 \end{tabularx}

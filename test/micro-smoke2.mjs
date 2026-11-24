@@ -6246,9 +6246,9 @@ if (take()) {
     out.inked = diff / (d.length / 4);
     // legends and a scale bar, tied to the view frame
     ed.select([f.id]);
-    document.querySelector('.compo-bar button[title^="a legend"]').click();
-    document.querySelector('.compo-bar button[title^="a scale bar"]').click();
-    document.querySelector('.compo-bar button[title^="a north"]').click();
+    document.querySelector('.compo-bar button[aria-label="Add legend"]').click();
+    document.querySelector('.compo-bar button[aria-label="Add scale bar"]').click();
+    document.querySelector('.compo-bar button[aria-label="Add north arrow"]').click();
     const doc = ed.getDoc();
     const leg = doc.frames.find((x) => x.kind === 'legend'), sb = doc.frames.find((x) => x.kind === 'scalebar'), nth = doc.frames.find((x) => x.kind === 'north');
     out.legend = leg && { title: leg.content.title, kind: leg.content.kind, stops: (leg.content.stops || []).length, lo: leg.content.loLabel, hi: leg.content.hiLabel };
@@ -6337,7 +6337,7 @@ if (take()) {
     const f = M_.addViewFrame(ed);
     ed.addFrame({ kind: 'text', box: [f.box[0], f.box[1] + f.box[3] + 2, f.box[2], 10], content: { md: '**Figure {fig}.** Level ${level} m — page {page} of {pages}' } });
     ed.select([f.id]);
-    document.querySelector('.compo-bar button[title^="a legend"]').click();
+    document.querySelector('.compo-bar button[aria-label="Add legend"]').click();
     // the starter routine (not saved — run directly)
     const rt = await M_.makeAtlasRoutine(M_.currentFigure(), { save: false });
     const step = rt.params.steps[0];
@@ -6523,7 +6523,7 @@ if (take()) {
     await M_.showRecord({ layer: id, rec: 0, face: 7 });
     await new Promise((res) => setTimeout(res, 300));
     ed.select([f.id]); ed.render();
-    [...document.querySelectorAll('.compo-bar button')].find((b) => b.textContent === '+ label').click();
+    document.querySelector('.compo-bar button[aria-label="Add label"]').click();
     const lb = ed.selected()[0];
     out.label = lb && { kind: lb.kind, at: lb.content.at, of: lb.content.of, onPage: !!C.worldToPage(vf(), lb.content.at) };
     // double-click: edit in place, move the camera, Done re-captures
@@ -6630,7 +6630,7 @@ if (take()) {
     out.resAfter = doc().frames.find((f) => f.source && f.source.kind === 'resource').content.rows.map((row) => row.join(' '));
     out.windowsLeft = [...document.querySelectorAll('.fwin')].filter((el) => /grade-tonnage/.test(el.querySelector('.fwin-head .t').textContent)).length;
     // the form: its defaults guess the grade (AU) and the domain (DOM); Add makes the frame
-    [...document.querySelectorAll('.compo-bar button')].find((b) => b.textContent === '+ resource').click();
+    document.querySelector('.compo-bar button[aria-label="Add resource table"]').click();
     const dlg = document.querySelector('.cmp-resource');
     const sels = [...dlg.querySelectorAll('select')].map((x) => x.value);
     [...dlg.querySelectorAll('button')].find((b) => b.textContent === 'Add').click();
@@ -6863,7 +6863,7 @@ if (take()) {
     return { ...out, needNew: true };
   });
   // the "new" button asks a name in micro's own prompt: answer it
-  await p.locator('.cmp-top button', { hasText: /^new$/ }).click();
+  await p.locator('.cmp-top button[aria-label="New figure"]').click();
   await p.locator('#pmInput').fill('house B');
   await p.keyboard.press('Enter');
   await p.waitForFunction(() => window._micro.currentFigure().name === 'house B', null, { timeout: 5000 }).catch(() => {});
@@ -8909,6 +8909,23 @@ if (take()) {
   });
   chk(`after a project save/reload it's still coloured by ƒ CLS (${rl.sel}): HIGH ${rl.hi}, LOW hidden (${rl.lo}), VLOW ${rl.vlow}`,
     rl.sel === 'calc:CLS' && rl.hi === '#ff0000' && rl.lo === null && rl.vlow === re.vlow);
+  // the classes travel: copy style onto another model with a ƒ of the same name, and a view of the model
+  const tr = await pr.evaluate(async () => {
+    const M = window._micro, L = M.layers()[0];
+    let t = 'X,Y,Z,FE\n';
+    for (let i = 0; i < 20; i++) for (let j = 0; j < 20; j++) t += `${i * 10},${j * 10},5,${45 + (i % 10)}\n`;
+    const id2 = await M.openBlob(new Blob([t]), 'm2.csv', 'add');
+    const L2 = M.layers().find((x) => x.id === id2);
+    await M.applyCalcCols(L2, [{ name: 'CLS', expr: 'if(FE > 52, "HIGH", if(FE < 47, "VLOW", "LOW"))', ty: 'string' }]);
+    await M.applyStyle(L2, M.captureStyle(L));
+    for (let k = 0; k < 200 && !(L2._calcDisplay && L2._calcDisplay.col && L2._calcDisplay.col.cat); k++) await new Promise((r) => setTimeout(r, 50));
+    const V = await M.createView(L, { name: 'CLS view' }, { activate: false });
+    for (let k = 0; k < 200 && !(M.legendContentFor(V) && M.legendContentFor(V).entries); k++) await new Promise((r) => setTimeout(r, 50));
+    const c = (X, lab) => { const leg = M.legendContentFor(X), e = leg && leg.entries && leg.entries.find((x) => x.label === lab); return e ? e.color : null; };
+    return { sel2: L2.colorSel, hi2: c(L2, 'HIGH'), lo2: c(L2, 'LOW'), selV: V.colorSel, hiV: c(V, 'HIGH'), loV: c(V, 'LOW') };
+  });
+  chk(`a text ƒ's classes travel: pasted style on another model (${tr.sel2}: HIGH ${tr.hi2}, LOW hidden ${tr.lo2}) and a view of the model (${tr.selV}: HIGH ${tr.hiV}, LOW hidden ${tr.loV})`,
+    tr.sel2 === 'calc:CLS' && tr.hi2 === '#ff0000' && tr.lo2 === null && tr.selV === 'calc:CLS' && tr.hiV === '#ff0000' && tr.loV === null);
   const ov = await pr.evaluate(async () => {
     const M = window._micro, L = M.layers()[0];
     await M.applyCalcCols(L, [{ name: 'ID', expr: 'X * 1000 + Y', ty: 'string' }]);   // 400 different values
@@ -9310,20 +9327,3 @@ if (take()) {
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);
-  // the classes travel: copy style onto another model with a ƒ of the same name, and a view of the model
-  const tr = await pr.evaluate(async () => {
-    const M = window._micro, L = M.layers()[0];
-    let t = 'X,Y,Z,FE\n';
-    for (let i = 0; i < 20; i++) for (let j = 0; j < 20; j++) t += `${i * 10},${j * 10},5,${45 + (i % 10)}\n`;
-    const id2 = await M.openBlob(new Blob([t]), 'm2.csv', 'add');
-    const L2 = M.layers().find((x) => x.id === id2);
-    await M.applyCalcCols(L2, [{ name: 'CLS', expr: 'if(FE > 52, "HIGH", if(FE < 47, "VLOW", "LOW"))', ty: 'string' }]);
-    await M.applyStyle(L2, M.captureStyle(L));
-    for (let k = 0; k < 200 && !(L2._calcDisplay && L2._calcDisplay.col && L2._calcDisplay.col.cat); k++) await new Promise((r) => setTimeout(r, 50));
-    const V = await M.createView(L, { name: 'CLS view' }, { activate: false });
-    for (let k = 0; k < 200 && !(M.legendContentFor(V) && M.legendContentFor(V).entries); k++) await new Promise((r) => setTimeout(r, 50));
-    const c = (X, lab) => { const leg = M.legendContentFor(X), e = leg && leg.entries && leg.entries.find((x) => x.label === lab); return e ? e.color : null; };
-    return { sel2: L2.colorSel, hi2: c(L2, 'HIGH'), lo2: c(L2, 'LOW'), selV: V.colorSel, hiV: c(V, 'HIGH'), loV: c(V, 'LOW') };
-  });
-  chk(`a text ƒ's classes travel: pasted style on another model (${tr.sel2}: HIGH ${tr.hi2}, LOW hidden ${tr.lo2}) and a view of the model (${tr.selV}: HIGH ${tr.hiV}, LOW hidden ${tr.loV})`,
-    tr.sel2 === 'calc:CLS' && tr.hi2 === '#ff0000' && tr.lo2 === null && tr.selV === 'calc:CLS' && tr.hiV === '#ff0000' && tr.loV === null);

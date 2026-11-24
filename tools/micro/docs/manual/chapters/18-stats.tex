@@ -227,4 +227,4 @@ An \code{xy} step in \code{scatter} mode takes \code{layer}, \code{x} and \code{
 
 The values are what checks read (\cref{ch:checks}). The example above passes while the model's median \col{FE} is within 10\% of the samples' — on the demo it fails, with \code{p50\_ratio} at 0.84, for the reason the Q-Q figure shows; \code{qq.p90\_ratio} bounds the upper tail the same way, and for a scatter step named \code{sc}, \code{sc.r > 0.9} asserts a correlation. A check that reads a blank — a ratio whose sample quantile is zero — is reported as \emph{not evaluated}, never as passed.
 
-Charts sent to the composer with \ui{⇥ figure} remember the \code{stats} or \code{xy} settings behind them, so \ui{↻ refresh} on the page re-runs the tool and redraws the frame from the current data (\cref{ch:composer}).
+Charts sent to the composer with \ui{⇥ figure} remember the \code{stats} or \code{xy} settings behind them, so \ui{Refresh} (↻) on the page re-runs the tool and redraws the frame from the current data (\cref{ch:composer}).

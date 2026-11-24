@@ -122,7 +122,7 @@ For a table restricted to part of the model — one pit phase, above a surface �
 \end{tip}
 
 \section{The resource table in the composer}\label{sec:resource-table}
-When the numbers are settled and you need the table on a page, use the composer (\cref{ch:composer}). Open it with \menu{File>Composer…} and click \ui{+ resource} on its page bar. A small dialog asks for the table's definition.
+When the numbers are settled and you need the table on a page, use the composer (\cref{ch:composer}). Open it with \menu{File>Composer…} and click \ui{Add resource table} on its page bar. A small dialog asks for the table's definition.
 
 \medskip
 \begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
@@ -145,7 +145,7 @@ field & meaning & default \\ \midrule
 \ui{Add} computes the table and places it on the page as a table frame, with a line under it stating the density, the filter if any, and the number of records read.
 
 \begin{tryit}
-With the demo project open, choose \menu{File>Composer…}, then \ui{+ resource}.
+With the demo project open, choose \menu{File>Composer…}, then \ui{Add resource table}.
 \begin{enumerate}
 \item \ui{grade} is \col{FE}, \ui{density} is \col{SG} and \ui{group by} is \col{LITO} already — the dialog guesses them from the column names. Set \ui{cutoffs} to \code{30, 50, 60}.
 \item Set \ui{grade unit} to \code{\%}. Leave \ui{metal factor} blank: a grade in \% makes it 0.01, and the metal is in tonnes.
@@ -168,7 +168,7 @@ Before you compare it with the cross-tab, know three differences:
 
 A group with no tonnage above a cutoff has no row at that cutoff; if nothing at all grades above it, the cutoff gets one row of zero tonnes with \emph{—} for the groups. When there are groups, and more than one of them appears at a cutoff, a \emph{total} row follows them: total tonnes, the tonnage-weighted grade, total metal.
 
-On the page, tonnes are rounded and grouped in thousands with spaces (2 343 000), grades are shown to four significant figures, and metal is grouped like tonnes from 1,000 up. The frame remembers its definition: \ui{↻ refresh} in the composer makes the table again from the data as it is now, along with every view and chart on the page.
+On the page, tonnes are rounded and grouped in thousands with spaces (2 343 000), grades are shown to four significant figures, and metal is grouped like tonnes from 1,000 up. The frame remembers its definition: \ui{Refresh} (↻) in the composer makes the table again from the data as it is now, along with every view and chart on the page.
 
 \begin{why}
 Two tools, because the jobs differ. The cross-tab is for finding out: four measures, bins or cumulative, the unestimated tonnage in plain sight. The resource table is for stating: one fixed layout, cutoffs written down, a note recording density and record count, re-made by a refresh. Do the first until you believe the model; then do the second.
