@@ -17,6 +17,7 @@
 //                       the per-block draw cost the budget-capped orbit can't see)
 //   --timeout-scale=1   multiply every phase timeout (a slow machine / a huge file)
 //   --headed            show the browser
+//   --dm-origin=x,y,z   a rotated Datamine model's world origin (the open's `origin`) — a file that carries none
 //
 // Output: a table on stdout + JSON. Numbers are wall-clock in the page (performance.now()).
 // A private model file's results carry timings and counts only — never column names or values.
@@ -37,6 +38,7 @@ const LABEL = arg('label', 'run');
 const BUILT = has('built');
 const ORBIT_N = Math.max(10, +arg('orbit', 120) | 0);
 const TSCALE = +arg('timeout-scale', 1) || 1;
+const DM_ORIGIN = arg('dm-origin', '') ? arg('dm-origin', '').split(',').map(Number) : null;
 const ONLY = new Set(arg('only', 'open,orbit,recolour,colourby,gt,swath,stats,solid').split(','));
 const COMPARE = arg('compare', null);
 const FULLRES = !has('no-fullres');
@@ -167,12 +169,12 @@ async function oneRun(runIdx, modelPath) {
     const sampler = (async () => { while (sampling) { try { peak = Math.max(peak, await heap(false)); } catch { /* page busy/closing */ } await new Promise((r) => setTimeout(r, 500)); } })();
     const openTimeout = (modelPath && fs.statSync(modelPath).size > 5e8) ? 30 * MIN : 10 * MIN;
     try {
-      const o = await withTimeout(page.evaluate(async ({ fileName, timeout }) => {
+      const o = await withTimeout(page.evaluate(async ({ fileName, timeout, origin }) => {
         const M = window._micro, B = window.__bench;
         const blob = fileName ? document.querySelector('#__benchFile').files[0] : window.__benchBlob;
         const name = fileName || 'deposit.csv';
         const t0 = performance.now();
-        const id = await M.openBlob(blob, name, 'replace');
+        const id = await M.openBlob(blob, name, 'replace', null, origin ? { origin } : {});
         const tResolved = performance.now();
         if (id == null) return { failed: document.querySelector('#meta').textContent };
         const tDrawn = await B.waitSettled(t0, { timeout });
@@ -180,7 +182,7 @@ async function oneRun(runIdx, modelPath) {
         return { resolvedMs: tResolved - t0, drawnMs: tDrawn - t0, kind: L.kind, grid: !!(L.docs.blockDoc && (L.docs.blockDoc.grid || L.docs.blockDoc.header.grid)),
           subBlocked: !!(L.docs.blockDoc && L.docs.blockDoc.header.subBlocked), elements: M.renderer.layerElementCount(L.id), chunks: M.renderer.chunkCount,
           meta: document.querySelector('#meta').textContent };
-      }, { fileName, timeout: openTimeout * TSCALE }), openTimeout + MIN, 'open');
+      }, { fileName, timeout: openTimeout * TSCALE, origin: DM_ORIGIN }), openTimeout + MIN, 'open');
       if (o.failed) throw new Error(`open failed: ${isPath ? '(message withheld for a private file)' : o.failed}`);
       res.metrics.open_resolved_ms = o.resolvedMs;
       res.metrics.open_drawn_ms = o.drawnMs;
