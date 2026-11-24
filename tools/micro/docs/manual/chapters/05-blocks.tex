@@ -101,7 +101,9 @@ An inferred rotation is never applied silently. A rotation a hundredth of a degr
 
 \subsection{Declared lattices}
 
-A file can also \emph{state} its lattice instead of leaving it to be inferred. A Parquet file may carry a \code{micro:model} entry in its metadata giving the origin, the three axis directions and the counts; micro writes one when it stores a model, an OMF project supplies one, and any producer can (\cref{app:host}). A declared lattice is applied without asking, but it is checked against every centroid. If a block falls off the stated lattice, micro refuses the lattice, says so on the status line, and opens the centroids as points.
+A file can also \emph{state} its lattice instead of leaving it to be inferred. A Parquet file may carry a \code{micro:model} entry in its metadata giving the origin, the three axis directions and the counts; a CSV may carry the same description as a comment line at its top, \code{\# micro:model \{…\}}. micro writes one into every block-model export, an OMF project supplies one, and any producer can (\cref{app:host}). A declared lattice is applied without asking, but it is checked against every centroid. If a block falls off the stated lattice, micro refuses the lattice, says so on the status line, and opens the centroids as points.
+
+\index{rotated model!export}A rotated or sub-blocked model therefore leaves micro \emph{with} its lattice, in either format: exported to CSV or Parquet, it reopens as the same boxes in the same place, declared rather than inferred. That holds for a subset too. An export of the filter's matches or of the selection writes the lattice alone, without the whole model's extent and categories, which would describe rows the file does not hold; micro finds those again on reopening, and the subset opens as boxes of the same lattice, only those blocks.
 
 \subsection{What works on a rotated model}
 
@@ -118,11 +120,13 @@ The origin is where the model's local (0, 0, 0) sits in the world. micro takes i
 
 From then on the coordinate \emph{columns} mean what they mean for any other model: \col{XC} \col{YC} \col{ZC} read in world coordinates, everywhere. A filter \code{XC > 432900}, a swath, statistics, a selection by solid, the record panel, an export: all of them see the world value. The record panel also lists the model's own coordinates beside them, as \ui{XC · model frame} and so on. Volumes are unchanged, since a rotation keeps them.
 
-An export writes the world \col{XC} \col{YC} \col{ZC} with the sizes. A Parquet export carries the rotated lattice in its \code{micro:model} entry and reopens as rotated boxes, sub-blocked or not. A CSV has no place to state a lattice: a regular one is detected and offered again on reopening (\cref{sec:blocks-rotated}); a sub-blocked one reopens as points.
+An export writes the world \col{XC} \col{YC} \col{ZC} with the sizes, and the rotated lattice with them: in the \code{micro:model} entry of a Parquet file, in the \code{\# micro:model} line at the top of a CSV. Either reopens as rotated boxes, sub-blocked or not, a filtered subset included (\cref{sec:blocks-rotated}).
 
-\begin{caution}
-An export also carries the header's constant columns, \col{ANGLE1} and \col{ROTAXIS1} among them, but its \col{XC} \col{YC} \col{ZC} are already rotated. A package that reads those columns and applies the rotation again would rotate the model twice; leave them out of the export (\ui{Export rows…} lets you pick the columns) when the file goes to such a package.
-\end{caution}
+\index{Datamine .dm!placement columns}The header's placement constants are \emph{not} exported: \col{ANGLE1}–\col{ANGLE3}, \col{ROTAXIS1}–\col{ROTAXIS3}, \col{X0} \col{Y0} \col{Z0} and \col{XMORIG} \col{YMORIG} \col{ZMORIG}. They describe the model's own frame, and the exported coordinates are world coordinates; a package that read \col{ANGLE1} beside them and applied it would rotate the model twice. \ui{Export rows…} lists them greyed out, \emph{not exported}, with the reason. The counts \col{NX} \col{NY} \col{NZ} and the sizes, which mean the same in any frame, stay.
+
+\begin{tip}
+For a package that reads neither \code{micro:model} carrier, tick \ui{lattice as columns} in \ui{Export rows…}. It writes the lattice the Datamine way, as constant columns on every row, consistent with each other: \col{X0} \col{Y0} \col{Z0} (the world position of the model's origin), \col{ANGLE1} with \col{ROTAXIS1} = 3, and \col{XL} \col{YL} \col{ZL}, each block's centroid in the model's own frame, so that world = \col{X0}… + the \col{ANGLE1} rotation of \col{XL}…; a regular model adds \col{XMORIG}…, \col{XINC}… and \col{NX}…. It costs every row (the dialog says how much); micro itself reads the lattice from the comment line, not from these columns. A lattice tilted out of the horizontal gets no \col{ANGLE1} (Datamine's three-rotation order is unverified), and a sub-blocked model no parent lattice, which micro does not know.
+\end{tip}
 
 A model with two or three rotations is still drawn in its own, unrotated frame, with a warning on the status line: the order in which Datamine composes them has not been verified on a real file, and a placement that looks plausible and is wrong is worse than an honest frame. Its volumes, grades and tonnages are right; its positions against other layers are not.
 
@@ -130,7 +134,7 @@ A model with two or three rotations is still drawn in its own, unrotated frame, 
 
 A\index{Datamine .dm} \file{.dm} file stores fixed-width records, so a given field always sits at the same offset inside every record. micro uses that to read one column without touching the others: coloring by \col{FE} reads \col{FE}, a filter on \col{LITO} reads \col{LITO}. On a model with many columns this is several times faster than decoding every record.
 
-The header also names the columns and types them, so there is nothing to sniff and no mapping to confirm. Sub-blocking is detected from the per-record \col{XINC} \col{YINC} \col{ZINC} (\cref{sec:blocks-sub}).
+The header also names the columns and types them, so there is nothing to sniff and no mapping to confirm. A regular model states its lattice in the header as constants (\col{XMORIG}…, \col{XINC}…, \col{NX}…); sub-blocking is detected from the per-record \col{XINC} \col{YINC} \col{ZINC} (\cref{sec:blocks-sub}). A file with neither, whose per-record sizes are all the same or which has none, has its lattice found from the centroids, as a CSV has, checked against the stated sizes; a rotated lattice found that way is offered, never applied silently (\cref{sec:blocks-rotated}).
 
 micro reads \file{.dm} and does not write it. To hand a model on, export it as CSV or Parquet (\cref{sec:columns-export}), which also makes micro a \file{.dm} to CSV converter. A \file{.dm} file can instead be half of a \emph{wireframe} (\cref{sec:meshes-dm}).
 

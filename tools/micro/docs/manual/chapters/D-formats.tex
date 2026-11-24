@@ -34,17 +34,22 @@ format & read & write & notes \\
 Delimited text \file{.csv} \file{.txt} \file{.dat} \file{.tsv} & yes & yes & The delimiter (comma,
   semicolon, tab) and the decimal mark are detected. Quoting follows RFC 4180: a quoted field may
   hold the delimiter, a line break or a doubled quote. Needs coordinate columns. Per-block size
-  columns make it sub-blocked; a rotated lattice is detected and offered, never applied silently. \\
+  columns make it sub-blocked; a rotated lattice is detected and offered, never applied silently.
+  A first comment line \code{\# micro:model \{…\}} declares the lattice instead, rotated and
+  sub-blocked included (\cref{sec:host-csv-model}); micro writes it into every block-model
+  CSV export, and other readers skip it as a comment. \\
 Parquet \file{.parquet} \file{.pq} & yes & yes & Read streamed, holding nothing decoded, with
   row-group skipping on the filter. micro's own store: Morton-sorted, with the lattice, extents and
   categories in its footer, so it reopens with no discovery pass. A file may declare its lattice,
   rotated or not, in \code{micro:model} (\cref{sec:host-model}). Written with Snappy or gzip
   compression. \\
 Datamine \file{.dm} & yes & — & Block models, with per-record \col{XINC}, \col{YINC}, \col{ZINC}
-  read as sub-blocks. One rotation (\col{ANGLE1} about Z) is placed in world coordinates, about
-  the origin \col{X0} \col{Y0} \col{Z0} or one you give; its \col{XC} \col{YC} \col{ZC} then read
-  in world (\cref{sec:blocks-dm-rotated}). Only the columns a query needs are read from each
-  record. To convert, open and export as CSV or Parquet. \\
+  read as sub-blocks. With no lattice constants (\col{XMORIG}…, \col{NX}…) and sizes the same on
+  every record, the lattice is found from the centroids. One rotation (\col{ANGLE1} about Z) is
+  placed in world coordinates, about the origin \col{X0} \col{Y0} \col{Z0} or one you give; its
+  \col{XC} \col{YC} \col{ZC} then read in world (\cref{sec:blocks-dm-rotated}), and an export
+  leaves the placement constants out. Only the columns a query needs are read from each record.
+  To convert, open and export as CSV or Parquet. \\
 OMF v1 \file{.omf} & yes & — & Block-model elements, with the lattice declared and rotated axes
   kept. Uneven block widths open as centroids. See \cref{sec:formats-meshes}. \\
 \bottomrule
@@ -59,10 +64,9 @@ OMF v1 \file{.omf} & yes & — & Block-model elements, with the lattice declared
   block may span at most 255 steps of the fine lattice along an axis. A model past that opens as
   points (\cref{ch:blocks}).
 \item[Rotated models] work for everything per record, and for joins between models on the same
-  rotated lattice; a rotated model may be sub-blocked. Resampling between different orientations,
-  proportions by a solid on a rotated sub-blocked model, and joining sub-blocks onto a rotated
-  lattice are not supported
-  (\cref{ch:blocks}).
+  rotated lattice, sub-blocks onto their rotated parent model included; a rotated model may be
+  sub-blocked, and keeps its lattice through a CSV or Parquet export. Resampling between different
+  orientations is not supported (\cref{ch:blocks}).
 \end{description}
 
 \begin{tip}
@@ -208,6 +212,12 @@ TSV & — & yes & Every analysis table (the ⧉ button of a window), and the tab
 A CSV export offers the delimiter and the decimal comma, and can write detection-limit values
 either as the file had them or as the numbers micro substituted. A Parquet export always writes
 numbers.
+
+A block model's lattice travels with every export: in the Parquet footer's \code{micro:model},
+and in a CSV's first line, \code{\# micro:model \{…\}} (\ui{\# micro:model header}, on by
+default). A filter or selection export writes the lattice alone, without the whole model's extent
+and categories. \ui{lattice as columns} (off by default) also writes it Datamine-style as
+constant columns on every row; the dialog states what that costs (\cref{sec:blocks-dm-rotated}).
 
 \section{Figures}\label{sec:formats-figures}
 

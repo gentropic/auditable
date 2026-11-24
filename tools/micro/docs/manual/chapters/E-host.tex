@@ -584,8 +584,10 @@ file then opens with no discovery pass. The value is JSON:
 \toprule
 key & & meaning \\
 \midrule
-\code{bbox} & required & \code{\{ min: [x,y,z], max: [x,y,z] \}}, the model's extent. It frames
-  the view. \\
+\code{bbox} & optional & \code{\{ min: [x,y,z], max: [x,y,z] \}}, the model's extent. With it
+  (and \code{categories}), the file opens with no discovery pass. Without it, micro runs its
+  discovery for the extent and categories and applies \code{grid} as declared, checked on every
+  record — what micro writes for a filtered subset. \\
 \code{grid} & required & The lattice, or \code{null} for points. Axis-aligned:
   \code{\{ x, y, z \}}, each \code{\{ origin, pitch, count \}}, where \code{origin} is the
   \emph{centroid of block 0}, not its corner. Rotated: \code{\{ basis: … \}}
@@ -613,6 +615,47 @@ with no \code{micro:model} at all.
 Two more footer entries travel with micro's own exports: \code{micro:frame}, \code{\{ crs \}}, the
 coordinate system; and \code{micro:lineage}, the provenance tree of a derived layer
 (\cref{ch:records}).
+
+\subsection{The same in a CSV: \texttt{\# micro:model}}\label{sec:host-csv-model}
+
+A delimited file states its lattice in a \emph{comment line} at the top, before the header row:
+\code{\# micro:model}, a space, and the same JSON object on one line. micro writes it into every
+CSV export of a block model on a lattice; a producer may write it too. A sub-blocked model rotated
+50° about Z, as micro writes it (numbers shortened):
+
+\begin{lstlisting}
+# micro:model {"v":1,"by":"micro","subBlocked":true,
+  "grid":{"x":{"origin":0.5,"pitch":0.5,"count":119},
+          "y":{"origin":0.5,"pitch":0.5,"count":119},
+          "z":{"origin":0.5,"pitch":0.5,"count":39},
+          "rot":[0.6428,0.7660,0,-0.7660,0.6428,0,0,0,1],
+          "anchor":[432820,8522360,300],"basis":{…}},
+  "dims":{"x":"XINC","y":"YINC","z":"ZINC"},"bbox":{…}}
+XC,YC,ZC,XINC,YINC,ZINC,V
+432822.1,8522361.4,300.5,1,1,1,0.4127
+…
+\end{lstlisting}
+
+(One line in the file; broken here to fit the page.) The rules:
+
+\begin{description}
+\item[Only the comment block at the top is read:] blank lines and lines starting with \code{\#},
+  up to the first data or header line. A \code{\# micro:model} line further down is data. Other
+  readers skip it as any comment (pandas: \code{comment="\#"}); a reader that doesn't may need the
+  line deleted, or the export's \ui{\# micro:model header} turned off.
+\item[It is checked like any declared lattice.] Every centroid is mapped through \code{grid}; a
+  sub-blocked model's sizes must be whole steps of the fine lattice, at most 255. One record off
+  the lattice, a size column the file lacks, or a line that isn't JSON: the declaration is
+  refused, the model opens as points, and \code{micro:lattice-rejected} and the status line give
+  the reason. A refused declaration is not replaced by an inferred lattice.
+\item[\code{bbox} and \code{categories} are not used] from a CSV: reading the file finds them
+  anyway. The grid forms are those of the Parquet entry (axis-aligned, the rotated
+  \code{rot}/\code{anchor} form above, or \code{basis}, \cref{sec:host-rotated}).
+\item[Constant columns are not read back.] A CSV written with \ui{lattice as columns}
+  (\col{X0}… \col{ANGLE1} \col{XL}…, \cref{sec:blocks-dm-rotated}) reopens by its comment line;
+  without one, its lattice is inferred like any other CSV's. Reading the constants too would make
+  two statements of one lattice, and a file whose coordinates might be world or local.
+\end{description}
 
 \subsection{Rotated block models}\label{sec:host-rotated}
 
@@ -643,15 +686,15 @@ picking and true sections (\cref{ch:blocks}). The rotation is stored as a basis,
 \item[With no declaration,] micro tries to infer a rotation, and an inferred rotation is never
   applied silently. The user is asked “rotated boxes or points?”, unless the host answered in
   advance with \code{acceptLattice}.
-\item[Exports write the lattice back,] so a rotated model round-trips through Parquet and project
-  save. The layer's lineage and its element manifest record whether the lattice was inferred or
-  declared, and who confirmed it.
+\item[Exports write the lattice back,] so a rotated model round-trips through Parquet, CSV
+  (\cref{sec:host-csv-model}) and project save, a filtered subset included. The layer's lineage
+  and its element manifest record whether the lattice was inferred or declared, and who confirmed
+  it.
 \end{description}
 
 \begin{note}
 On a rotated model, everything per record works — filters, statistics, grade–tonnage, swaths,
-export, select and flag by a solid per centroid — and so do joins and reconciles between models on
+export, select, flag and proportions by a solid — and so do joins and reconciles between models on
 the same rotated lattice; a rotated model may be sub-blocked. Not supported: resampling between
-different orientations, proportions by a solid on a rotated sub-blocked model, joining sub-blocks
-onto a rotated lattice, and the empty-grid creator.
+different orientations, and the empty-grid creator.
 \end{note}
