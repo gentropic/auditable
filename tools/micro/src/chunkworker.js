@@ -32,14 +32,18 @@ function workerSource() {
   return `import * as C from ${JSON.stringify(libUrl('condenser', '../../../ext/condenser/src/main.js'))};
 const buffersOf = ${buffersOf.toString()};
 let b = null, o = null;
+// a chunk's OWN arrays are transferred — never its grid, which every chunk shares with
+// this worker's options (a rotated grid carries a Float32Array: transferring it
+// detached it, and the next batch's post threw)
+const own = (c) => { const g = c.grid; c.grid = null; const t = buffersOf(c); c.grid = g; return t; };
 self.onmessage = ({ data }) => {
   try {
     if (data.type === 'batch') {                           // parallel mode: one whole batch → its chunks
       const chunks = C.buildBlockBatch(data.cols, data.n, { grid: o.grid, frame: o.frame, chunkSize: o.chunkSize, rnd: C.mulberry32(C.batchSeed(o.seed, data.k)) });
-      self.postMessage({ type: 'batch', k: data.k, chunks }, buffersOf(chunks));
+      self.postMessage({ type: 'batch', k: data.k, chunks }, chunks.flatMap(own));
     } else if (data.type === 'initBatch') { o = data.o; self.postMessage({ type: 'ready' }); }
     else if (data.type === 'init') {
-      b = C.createBlockChunkBuilder({ ...data.o, onChunk: (c) => self.postMessage({ type: 'chunk', c }, buffersOf(c)) });
+      b = C.createBlockChunkBuilder({ ...data.o, onChunk: (c) => self.postMessage({ type: 'chunk', c }, own(c)) });
       self.postMessage({ type: 'ready' });
     } else if (data.type === 'push') b.push(data.raw);
     else if (data.type === 'flush') { const doc = b.flush(); self.postMessage({ type: 'flushed', doc }); }

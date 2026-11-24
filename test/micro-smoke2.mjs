@@ -8996,7 +8996,19 @@ if (take()) {
     const big = F.makeSubblockRows({ seed: 3, nx: 2, ny: 2, nz: 1, maxOver: 200 });
     const idB = await M.openBlob(new Blob([F.makeSubblockDm(big.rows)]), 'too-long.dm', 'add', null, { throw: true });
     const LB = M.layers().find((x) => x.id === idB);
-    return { pos, posWant, moved, rot, shapes, want: sample.map((b) => b.rec), pr, pa, row: row && row.slice(0, 3), src: [sample[0].XC, sample[0].YC, sample[0].ZC], big: { kind: LB.kind, grid: LB.docs.blockDoc.header.grid, meta: LB.docs.blockDoc.metaLine } };
+    // the parallel builder over a ROTATED grid, many batches: every chunk shares the
+    // worker's grid (whose rot is a Float32Array) — transferring it detached it and the
+    // SECOND batch threw (the real 18.7M-block file failed to open that way)
+    let par = null;
+    try {
+      const g = LR2.docs.blockDoc.grid, n = 3000, recs = { count: n, x: new Float64Array(n), y: new Float64Array(n), z: new Float64Array(n), chan: new Float64Array(n), cat: null, recIdx: new Uint32Array(n) };
+      for (let i = 0; i < n; i++) { const b = rows[i % rows.length]; recs.x[i] = O[0] + c * b.XC - s * b.YC; recs.y[i] = O[1] + s * b.XC + c * b.YC; recs.z[i] = O[2] + b.ZC; recs.recIdx[i] = i; }
+      let got = 0;
+      const cb = await M.startChunkBuilder({ frame: M.frame, grid: g, chunkSize: 64, batchSize: 256, seed: 1, seedPerBatch: true, workers: 2, onChunk: (ch) => { got += ch.count; } });
+      await cb.push(recs); const doc = await cb.flush(); cb.close();
+      par = { got, n: doc.count, offPage: cb.offPage };
+    } catch (e) { par = { err: e.message }; }
+    return { par, pos, posWant, moved, rot, shapes, want: sample.map((b) => b.rec), pr, pa, row: row && row.slice(0, 3), src: [sample[0].XC, sample[0].YC, sample[0].ZC], big: { kind: LB.kind, grid: LB.docs.blockDoc.header.grid, meta: LB.docs.blockDoc.metaLine } };
   });
   chk(`support: the rotated sub-blocked .dm (${r.shapes} shapes) opens as rotated BOXES — ${r.rot.kind}, sub-blocked ${r.rot.sub}, rotated ${r.rot.rot}, ${r.rot.elements} blocks, ${r.rot.bytes.toFixed(1)} B/block`,
     r.rot.kind === 'blocks' && r.rot.sub && r.rot.rot && r.rot.applied && r.shapes > 256 && r.rot.shapes === r.shapes && Math.abs(r.rot.bytes - 16) < 0.5);   // 13 B regular + 3 B dimQ (+ each chunk's 48 B bbox)
@@ -9004,6 +9016,7 @@ if (take()) {
   const hitR = r.pr.filter((x, i) => x === r.want[i]).length, hitA = r.pa.filter((x, i) => x === r.want[i]).length;
   chk(`support: every sampled block picks as ITSELF on the rotated model (${hitR}/${r.want.length})`, hitR === r.want.length && r.want.length >= 10);
   chk(`support: …and its picked record is its own row (${JSON.stringify(r.row)} = ${JSON.stringify(r.src)})`, r.row && r.row.map(Number).every((v, i) => Math.abs(v - r.src[i]) < 1e-9));
+  chk(`support: the parallel chunk builder takes a rotated grid over many batches (${JSON.stringify(r.par)})`, r.par && !r.par.err && r.par.got === 3000 && r.par.n === 3000);
   chk(`support: a pick's position is the WORLD centroid (${(r.pos || []).map((v) => +v.toFixed(3)).join(', ')})`, r.pos && r.pos.every((v, a) => Math.abs(v - r.posWant[a]) < 1e-6));
   chk(`support: the axis-aligned twin picks the same records (${hitA}/${r.want.length}; identical: ${JSON.stringify(r.pa) === JSON.stringify(r.pr)})`, hitA === r.want.length && JSON.stringify(r.pa) === JSON.stringify(r.pr));
   chk(`support: “Datamine origin…” moves the model by exactly the change (${[r.moved.dx, r.moved.dy, r.moved.dz].map((v) => +v.toFixed(6)).join(', ')}), remembered on the layer, every block still drawn (${r.moved.n})`,
