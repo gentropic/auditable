@@ -9850,6 +9850,26 @@ if (take()) {
   await pg.close();
 }
 
+// ── an EMPTY export is refused, said, never saved: deliverBlob is every export's one door, and a
+//    0-byte figure came out of an overloaded capture once (the lab, software rendering) ──
+if (take()) {
+  const pe = await mkPage('sm2empty');
+  const r = await pe.evaluate(async () => {
+    const m = window._micro, clicks = [];
+    const orig = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = function () { clicks.push(this.download); };   // a download would leave the page
+    try {
+      const empty = await m.deliverBlob(new Blob([]), 'figure_1.png');
+      const meta = document.querySelector('#meta').textContent;
+      await m.deliverBlob(new Blob(['x']), 'ok.txt');
+      return { empty, meta, clicks };
+    } finally { HTMLAnchorElement.prototype.click = orig; }
+  });
+  chk(`an empty export is refused and said (“${r.meta}”), a real one still downloads (${JSON.stringify(r.clicks)})`,
+    r.empty === false && /came out empty/.test(r.meta) && r.clicks.length === 1 && r.clicks[0] === 'ok.txt');
+  await pe.close();
+}
+
 // ── the LAYER CONTEXT MENU, regrouped (src/layermenu.js layerMenuSections). It had
 // grown to ~33 top-level entries on a block model; now the frequent verbs sit on top
 // and the rest in Analyse · Geometry · Select · Views · Display · Data & file · Move.

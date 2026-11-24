@@ -26,6 +26,12 @@ export const rehydrateHandle = (h) => (shell.present && shell.tree.isTreeHandle(
 // share sheet, by reference to the published file. Fire-and-forget: callers set
 // their own status first; the shell outcome is appended when it lands.
 export async function deliverBlob(blob, filename) {
+  // an empty export is always a failure upstream (a CSV of no rows still has its header; a figure
+  // whose capture timed out came out as 0 bytes once, under load) — say so, never save an empty file
+  if (!blob || !blob.size) {
+    $('#meta').textContent = `${filename}: the export came out empty (0 bytes) — nothing was saved; try again`;
+    return false;
+  }
   if (!shell.present) {
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = filename; a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 30000);
