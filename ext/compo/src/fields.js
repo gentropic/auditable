@@ -30,7 +30,14 @@ const SPEC_RE = /^([,_])?(?:\.(\d{1,2}))?([f%e])?$/;
 export const isFormatSpec = (s) => !!s && SPEC_RE.test(s);
 // no format: six significant figures, but never rounding away the integer part (a UTM northing)
 const plain = (x) => (Number.isInteger(x) ? String(x) : Math.abs(x) >= 1e6 ? String(Math.round(x)) : String(+x.toPrecision(6))).replace(/^-/, '−');
-const group = (intStr, sep) => intStr.replace(/\B(?=(\d{3})+(?!\d))/g, sep);
+// small formatters a host's own fields share with compo's:
+// groupDigits(2343000) → '2 343 000' — an integer's thousands grouped (a space, the SI way; ',' for 2,343,000)
+export const groupDigits = (n, sep = ' ') => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, sep);
+// significant(1234.567, 4) → 1235 — a number to k significant figures ('' when it isn't one)
+export const significant = (v, k = 4) => (Number.isFinite(v) ? +v.toPrecision(k) : '');
+// fmtBearing(45) → '045°' — a compass bearing, three digits, 0–359
+export const fmtBearing = (v) => String(Math.round(((v % 360) + 360) % 360) % 360).padStart(3, '0') + '°';
+const group = (intStr, sep) => groupDigits(intStr, sep);
 export function formatNumber(x, spec = '') {
   if (typeof x !== 'number') return x == null ? '' : String(x);
   if (!Number.isFinite(x)) return Number.isNaN(x) ? '—' : x > 0 ? '∞' : '−∞';

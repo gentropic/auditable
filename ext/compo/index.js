@@ -367,7 +367,14 @@ const SPEC_RE = /^([,_])?(?:\.(\d{1,2}))?([f%e])?$/;
 const isFormatSpec = (s) => !!s && SPEC_RE.test(s);
 // no format: six significant figures, but never rounding away the integer part (a UTM northing)
 const plain = (x) => (Number.isInteger(x) ? String(x) : Math.abs(x) >= 1e6 ? String(Math.round(x)) : String(+x.toPrecision(6))).replace(/^-/, '−');
-const group = (intStr, sep) => intStr.replace(/\B(?=(\d{3})+(?!\d))/g, sep);
+// small formatters a host's own fields share with compo's:
+// groupDigits(2343000) → '2 343 000' — an integer's thousands grouped (a space, the SI way; ',' for 2,343,000)
+const groupDigits = (n, sep = ' ') => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, sep);
+// significant(1234.567, 4) → 1235 — a number to k significant figures ('' when it isn't one)
+const significant = (v, k = 4) => (Number.isFinite(v) ? +v.toPrecision(k) : '');
+// fmtBearing(45) → '045°' — a compass bearing, three digits, 0–359
+const fmtBearing = (v) => String(Math.round(((v % 360) + 360) % 360) % 360).padStart(3, '0') + '°';
+const group = (intStr, sep) => groupDigits(intStr, sep);
 function formatNumber(x, spec = '') {
   if (typeof x !== 'number') return x == null ? '' : String(x);
   if (!Number.isFinite(x)) return Number.isNaN(x) ? '—' : x > 0 ? '∞' : '−∞';
@@ -561,7 +568,7 @@ function niceStep(raw) {
 function fmtCoord(v, step) {
   const dec = step >= 1 ? 0 : Math.min(3, Math.ceil(-Math.log10(step) - 1e-9));
   const s = Math.abs(v).toFixed(dec), [ip, fp] = s.split('.');
-  return (v < 0 ? '−' : '') + ip.replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + (fp ? '.' + fp : '');
+  return (v < 0 ? '−' : '') + groupDigits(ip) + (fp ? '.' + fp : '');
 }
 // the ticks of one view frame: [{ edge, axis, value, x, y }] — what drawTicks draws, for tests and hosts
 function worldTicks(frame, { spacing = 18 } = {}) {
@@ -2009,6 +2016,126 @@ async function exportPNG(doc, opts = {}) {
   return cv.convertToBlob ? cv.convertToBlob({ type: 'image/png' }) : new Promise((r) => cv.toBlob(r, 'image/png'));
 }
 
+// ── src/house.js ──
+
+// HOUSE STYLE — a document's PROPERTIES and the TITLE BLOCK that shows them, and TEMPLATES.
+//
+// Properties are plain strings read by the {prop:key} field (fields.js): the document's own
+// (doc.props — a drawing number, a revision) over the host's (env.props — a house style's company,
+// client, project …). compo names the usual ones; where they are kept (a project folder, a
+// settings store) is the host's business.
+//
+// Any document can be a TEMPLATE (doc.template = true): a new document can start from one — its
+// frames, its page and its properties, the per-drawing ones (drawing, revision) cleared. Which
+// templates exist, and where, is the host's catalogue.
+
+// [key, label] — the shared ones (every figure of a project) and a figure's own
+const HOUSE_KEYS = [['company', 'company'], ['client', 'client'], ['project', 'project'], ['prepared', 'prepared by'], ['checked', 'checked by'], ['disclaimer', 'disclaimer']];
+const FIGURE_KEYS = [['drawing', 'drawing no.'], ['revision', 'revision']];
+
+// ── templates ──
+function setTemplate(doc, on = true) {
+  if (on) doc.template = true; else delete doc.template;
+  return doc;
+}
+// a new document from a template: its frames, page and properties; a title of its own, not a template
+// itself, and the per-drawing properties (FIGURE_KEYS unless told otherwise) cleared
+function docFromTemplate(tpl, title = '', { clear = FIGURE_KEYS.map(([k]) => k) } = {}) {
+  const doc = parseDocument(serializeDocument(tpl));
+  doc.title = title; delete doc.template;
+  doc.props = { ...(tpl.props || {}) };
+  for (const k of clear) delete doc.props[k];
+  return doc;
+}
+
+// ── the title block: a stack of bordered text rows, bottom-right inside the margins, every row
+// made of fields — [md, type size pt, row height mm] ──
+const TITLE_BLOCK_ROWS = [
+  ['**{prop:company}**', 9, 7], ['{prop:project} · {prop:client}', 7, 5.5], ['**{title}**', 8, 6.5],
+  ['drawing {prop:drawing} · rev {prop:revision} · {date}', 6.5, 5], ['prepared {prop:prepared} · checked {prop:checked}', 6.5, 5], ['scale {scale} · page {page} of {pages}', 6.5, 5],
+];
+// the frames of a title block on this page (not yet added): [{ kind, box, content, style }]
+function titleBlockFrames(doc, { rows = TITLE_BLOCK_ROWS, width = 95 } = {}) {
+  const [W, H] = pageDims(doc.page), m = doc.page.margins || [10, 10, 10, 10];
+  const hTot = rows.reduce((s, r) => s + r[2], 0);
+  let y = H - m[2] - hTot; const x = W - m[1] - width, out = [];
+  for (const [md, size, h] of rows) {
+    out.push({ kind: 'text', box: [x, +y.toFixed(2), width, h], content: { md, size, pad: 1 }, style: { border: true, borderWidth: 0.2 } });
+    y += h;
+  }
+  return out;
+}
+
+// ── src/insert.js ──
+
+// INSERT — what an editor adds in more than one frame or from outside the page: the title block,
+// an image from a file, small multiples. Each takes the editor (mountEditor's handle), adds its
+// frames, selects them and returns their ids. The host keeps what is its own: what goes IN a
+// frame (a render, a scene), and where things are kept.
+
+// the title block (house.js) as one group, bottom-right
+function addTitleBlock(ed, opts = {}) {
+  const ids = titleBlockFrames(ed.getDoc(), opts).map((fr) => ed.addFrame(fr).id);
+  ed.update(ids[0], () => groupFrames(ed.getDoc(), ids));
+  ed.select(ids); ed.render();
+  return ids;
+}
+
+// ── an image: a logo, a photo, a sketch ──
+// addImageSrc(ed, src) — src a URL the page can load (a data: URL from a file, a blob: URL); the
+// frame lands top-left inside the margins, `width` mm wide at the image's own aspect. `source` is the
+// host's record of it (compo keeps it, never reads it).
+async function addImageSrc(ed, src, { name = 'image', width = 35, source = null } = {}) {
+  const im = new Image(); im.src = src; await im.decode();
+  const doc = ed.getDoc(), m = doc.page.margins || [10, 10, 10, 10], h = +(width * im.height / Math.max(1, im.width)).toFixed(1);
+  const f = ed.addFrame({ kind: 'image', box: [m[3] + 4, m[0] + 4, width, h], content: { src, width: im.width, height: im.height, fit: 'contain' }, ...(source ? { source } : {}) });
+  f._img = typeof createImageBitmap !== 'undefined' ? await createImageBitmap(im) : im; ed.render();
+  return f;
+}
+// a File / Blob → a data: URL (what a saved document can carry)
+const readImageFile = (file) => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file); });
+// the browser's file picker → addImageSrc. opts.source(name) → the frame's source record
+function addImageFromFile(ed, opts = {}) {
+  const inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'image/*';
+  inp.onchange = async () => {
+    const file = inp.files && inp.files[0]; if (!file) return;
+    await addImageSrc(ed, await readImageFile(file), { ...opts, name: file.name, source: opts.source ? opts.source(file.name) : null });
+  };
+  inp.click();
+}
+
+// ── SMALL MULTIPLES: one frame repeated n times in a grid over its own box, each copy captioned ──
+// multiplesGrid(box, n, { cols }) — the cells: [{ box, caption }] in reading order, `cols` per row
+// (else about square), a caption strip under each. Throws when the cells would be too small.
+function multiplesGrid(box, n, { cols = 0, gap = 3, capH = 5 } = {}) {
+  const C = Math.max(1, Math.min(n, +cols || Math.ceil(Math.sqrt(n)))), R = Math.ceil(n / C);
+  const cw = (box[2] - gap * (C - 1)) / C, ch = (box[3] - R * capH - gap * (R - 1)) / R;
+  if (!(cw > 8 && ch > 8)) throw new Error('the view frame is too small for that many — make it bigger first');
+  const cells = [];
+  for (let k = 0; k < n; k++) {
+    const r = Math.floor(k / C), c = k % C, x = box[0] + c * (cw + gap), y = box[1] + r * (ch + capH + gap);
+    cells.push({ box: [+x.toFixed(2), +y.toFixed(2), +cw.toFixed(2), +ch.toFixed(2)], caption: [+x.toFixed(2), +(y + ch + 0.5).toFixed(2), +cw.toFixed(2), capH - 0.5] });
+  }
+  return { cols: C, rows: R, cells };
+}
+// smallMultiples(ed, f, { n, variant, caption }) — the host makes copy k: `await variant(k, box)` adds
+// a frame in that box and returns it; `caption(k)` is its caption's text (a field such as {section}
+// works: the caption refers to its copy). Then f goes, and the copies + captions become one group.
+// → the new ids. A variant that throws stops it there, f still in place.
+async function smallMultiples(ed, f, { n, variant, caption = (k) => String(k + 1), cols = 0, gap = 3, capH = 5, size = 7 }) {
+  const { cells } = multiplesGrid(f.box, n, { cols, gap, capH });
+  const made = [];
+  for (let k = 0; k < n; k++) {
+    const vf = await variant(k, cells[k].box);
+    const cap = ed.addFrame({ kind: 'text', box: cells[k].caption, content: { md: caption(k), size, align: 'center', of: vf.id } });
+    made.push(vf.id, cap.id);
+  }
+  const d = ed.getDoc();
+  removeFrames(d, [f.id]); groupFrames(d, made);
+  ed.select(made); ed.render();
+  return made;
+}
+
 // ── src/icons.js ──
 
 // The editor's icons: line drawings on a 24 × 24 grid, stroked in currentColor (2 px, round caps
@@ -2918,6 +3045,9 @@ export {
   refFrame,
   subjectFrame,
   isFormatSpec,
+  groupDigits,
+  significant,
+  fmtBearing,
   hasProj,
   isOrthoProj,
   imageRect,
@@ -2935,6 +3065,18 @@ export {
   exportPDF,
   exportPNG,
   figureFromPdf,
+  HOUSE_KEYS,
+  FIGURE_KEYS,
+  setTemplate,
+  docFromTemplate,
+  TITLE_BLOCK_ROWS,
+  titleBlockFrames,
+  addTitleBlock,
+  addImageSrc,
+  addImageFromFile,
+  readImageFile,
+  multiplesGrid,
+  smallMultiples,
   mountEditor,
   ICONS,
   iconSvg,

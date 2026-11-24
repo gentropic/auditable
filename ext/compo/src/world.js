@@ -12,6 +12,7 @@
 // where a border point has one coordinate).
 
 import { fontMm } from './type.js';
+import { groupDigits } from './fields.js';
 
 export const hasProj = (f) => !!(f && f.content && f.content.meta && f.content.meta.proj && Array.isArray(f.content.meta.proj.m) && f.content.meta.proj.m.length === 16);
 export const isOrthoProj = (m) => Math.abs(m[3]) + Math.abs(m[7]) + Math.abs(m[11]) < 1e-9;
@@ -86,7 +87,7 @@ export function niceStep(raw) {
 export function fmtCoord(v, step) {
   const dec = step >= 1 ? 0 : Math.min(3, Math.ceil(-Math.log10(step) - 1e-9));
   const s = Math.abs(v).toFixed(dec), [ip, fp] = s.split('.');
-  return (v < 0 ? '−' : '') + ip.replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + (fp ? '.' + fp : '');
+  return (v < 0 ? '−' : '') + groupDigits(ip) + (fp ? '.' + fp : '');
 }
 // the ticks of one view frame: [{ edge, axis, value, x, y }] — what drawTicks draws, for tests and hosts
 export function worldTicks(frame, { spacing = 18 } = {}) {

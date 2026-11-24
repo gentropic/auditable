@@ -328,3 +328,75 @@ test('overlays: a plane trace lands where the plane crosses the picture; read at
   const tk = C.planeTrace(k, { normal: [0, 1, 0], position: 105 });
   assert.ok(tk && tk.line && tk.line[0][1] > 158 && tk.line[0][1] < 198);
 });
+
+test('formatters: grouped integers, significant figures, bearings — and fmtCoord groups the same way', async () => {
+  const C = await import('../ext/compo/src/main.js');
+  assert.equal(C.groupDigits(2343000), '2 343 000');
+  assert.equal(C.groupDigits(-2343000), '-2 343 000');
+  assert.equal(C.groupDigits(999), '999');
+  assert.equal(C.groupDigits(1234567, ','), '1,234,567');
+  assert.equal(C.significant(1234.567, 4), 1235);
+  assert.equal(C.significant(0.012345, 3), 0.0123);
+  assert.equal(C.significant(NaN), '');
+  assert.equal(C.fmtBearing(45), '045°');
+  assert.equal(C.fmtBearing(-15), '345°');
+  assert.equal(C.fmtBearing(359.7), '000°');
+  assert.equal(C.fmtCoord(7604000, 10), '7 604 000');
+  assert.equal(C.formatNumber(1234567, '_'), '1 234 567');
+});
+
+test('house style: {prop:key} reads the document over the host; the title block lays out bottom-right inside the margins', async () => {
+  const C = await import('../ext/compo/src/main.js');
+  assert.deepEqual(C.HOUSE_KEYS.map(([k]) => k), ['company', 'client', 'project', 'prepared', 'checked', 'disclaimer']);
+  assert.deepEqual(C.FIGURE_KEYS.map(([k]) => k), ['drawing', 'revision']);
+  const doc = createDocument({ title: 'Pit A', page: { size: 'A4', orientation: 'landscape', margins: [12, 12, 12, 12] } });
+  const rows = C.titleBlockFrames(doc);
+  assert.equal(rows.length, C.TITLE_BLOCK_ROWS.length);
+  const bottom = rows[rows.length - 1].box, top = rows[0].box;
+  assert.equal(+(bottom[1] + bottom[3]).toFixed(2), 210 - 12);        // the last row sits on the bottom margin
+  assert.equal(top[0] + top[2], 297 - 12);                            // flush with the right margin
+  assert.ok(rows.every((r) => r.kind === 'text' && r.style.border && r.box[2] === 95));
+  for (let i = 1; i < rows.length; i++) assert.equal(+(rows[i - 1].box[1] + rows[i - 1].box[3]).toFixed(2), rows[i].box[1]);   // stacked, no gaps
+  doc.props = { drawing: 'D-101' };
+  const env = { doc, title: doc.title, props: { company: 'Acme Mining', client: 'Ore Co', drawing: 'house D' } };
+  const R = (md) => resolveFields(md, env, null);
+  assert.equal(R(rows[0].content.md), '**Acme Mining**');
+  assert.equal(R(rows[3].content.md).split(' · ')[0], 'drawing D-101');   // the document's own over the host's
+  assert.equal(R('{prop:checked}'), '—');
+});
+
+test('templates: a document from a template keeps frames, page and properties, but not the per-drawing ones', async () => {
+  const C = await import('../ext/compo/src/main.js');
+  const tpl = createDocument({ title: 'house A3', page: { size: 'A3', orientation: 'portrait', margins: [15, 15, 15, 15] } });
+  addFrame(tpl, { kind: 'text', box: [10, 10, 50, 10], content: { md: '{prop:company}' } });
+  tpl.props = { company: 'Acme', drawing: 'T-1', revision: 'C' };
+  C.setTemplate(tpl, true);
+  assert.equal(tpl.template, true);
+  const d = C.docFromTemplate(tpl, 'Pit B');
+  assert.equal(d.title, 'Pit B');
+  assert.equal(d.template, undefined);
+  assert.deepEqual(d.page, tpl.page);
+  assert.equal(d.frames.length, 1);
+  assert.notEqual(d.frames[0], tpl.frames[0]);                        // a copy, not the template's own frames
+  assert.deepEqual(d.props, { company: 'Acme' });
+  assert.deepEqual(C.docFromTemplate(tpl, 'x', { clear: [] }).props, tpl.props);
+  C.setTemplate(tpl, false);
+  assert.equal('template' in tpl, false);
+});
+
+test('small multiples: the grid over a frame’s box — reading order, caption strips, too small refused', async () => {
+  const C = await import('../ext/compo/src/main.js');
+  const g = C.multiplesGrid([10, 20, 200, 120], 5);
+  assert.equal(g.cols, 3); assert.equal(g.rows, 2);
+  assert.equal(g.cells.length, 5);
+  assert.deepEqual(g.cells[0].box.slice(0, 2), [10, 20]);
+  assert.ok(g.cells[1].box[0] > g.cells[0].box[0] && g.cells[3].box[1] > g.cells[0].box[1]);   // across, then down
+  for (const c of g.cells) {
+    assert.equal(c.caption[0], c.box[0]); assert.equal(c.caption[2], c.box[2]);
+    assert.equal(c.caption[1], +(c.box[1] + c.box[3] + 0.5).toFixed(2));                       // its caption right under it
+  }
+  const last = g.cells[2];
+  assert.ok(Math.abs(last.box[0] + last.box[2] - 210) < 0.02);                                  // the row fills the box
+  assert.equal(C.multiplesGrid([0, 0, 200, 120], 4, { cols: 4 }).rows, 1);
+  assert.throws(() => C.multiplesGrid([0, 0, 30, 30], 9), /too small/);
+});

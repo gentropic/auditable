@@ -106,7 +106,18 @@ With no format, a number shows six significant figures, but the integer part is 
 
 `subjectFrame(env, frame, test)` is the one rule a host field uses to find its frame: the field's `@id` (`env.at`), else the frame's `content.of`, else the nearest frame that passes `test`. `refFrame(doc, frame, id, test)` is its lookup: by id, or the nearest.
 
-Also exported: `formatNumber`, `formatDate`, `fieldList`.
+Also exported: `formatNumber`, `formatDate`, `fieldList`, and the small formatters compo's own fields use, for a host's: `groupDigits(2343000)` → `2 343 000` (or `groupDigits(n, ',')`), `significant(v, k)` (k significant figures), `fmtBearing(45)` → `045°`.
+
+## House style and templates
+
+- **Properties** are what `{prop:key}` reads. `HOUSE_KEYS` names the shared ones (company, client, project, prepared, checked, disclaimer — every figure of a project; the host passes them as `env.props` and keeps them where it likes), `FIGURE_KEYS` a figure's own (drawing, revision — in `doc.props`). Each is `[key, label]`.
+- **The title block:** `addTitleBlock(ed)` adds six bordered text rows, bottom-right inside the margins, as one group — company; project · client; title; drawing · revision · date; prepared · checked; scale · page. Every row is fields. `titleBlockFrames(doc, { rows, width })` gives the frames without adding them; `TITLE_BLOCK_ROWS` is the default `[md, size pt, height mm]` list.
+- **Templates:** `setTemplate(doc, on)` marks a document as one. `docFromTemplate(tpl, title, { clear })` starts a new document from it: its frames, page and properties, a title of its own, not a template, and the per-drawing properties (`FIGURE_KEYS` unless `clear` says otherwise) gone. Which templates exist is the host's catalogue.
+
+## Inserting
+
+- `addImageSrc(ed, src, { name, width = 35, source })` adds an image frame from a URL the page can load (a `data:` URL keeps it in the saved document), top-left inside the margins, at the image's aspect. `addImageFromFile(ed, { source: (name) => record })` opens the file picker first; `readImageFile(file)` → a `data:` URL.
+- **Small multiples:** `smallMultiples(ed, frame, { n, cols, variant, caption })` repeats a frame n times in a grid over its own box. The host makes each copy: `await variant(k, box)` adds a frame in that box and returns it. compo captions it (`caption(k)`, which may be a field such as `{section}`; the caption refers to its copy), then removes the original and groups the copies and captions. `multiplesGrid(box, n, { cols, gap, capH })` is the layout alone, and throws when the cells would be too small.
 
 ## Export
 
@@ -151,5 +162,5 @@ Also exported: `formatNumber`, `formatDate`, `fieldList`.
 
 ## Tests
 
-- `test/compo.test.mjs` (npm test): the model, snapping, fields, kinds through a PDF page, and atlas export.
-- `test/compo-smoke.mjs` (Playwright): the editor driven by mouse and keys, then the PDF read back by pdf.js and its render probed. Add `--bundled` to run it against `index.js`.
+- `test/compo.test.mjs` (npm test): the model, snapping, fields and formatters, house style, templates, the small-multiples grid, kinds through a PDF page, and atlas export.
+- `test/compo-smoke.mjs` (Playwright): the editor driven by mouse and keys, the insertions (title block, image, small multiples), then the PDF read back by pdf.js and its render probed. Add `--bundled` to run it against `index.js`.

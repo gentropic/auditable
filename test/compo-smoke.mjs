@@ -316,6 +316,38 @@ chk('rulers show by default', await page.evaluate(() => [...document.querySelect
   await page.evaluate(() => { C.removeFrames(ed.getDoc(), ['G', 'H1', 'H2']); ed.select([]); });
 }
 
+// ── insertions (insert.js): the title block, an image, small multiples — no host but this page ──
+{
+  const ins = await page.evaluate(async () => {
+    const d = ed.getDoc(), before = d.frames.length;
+    const tb = C.addTitleBlock(ed);
+    const tbFrames = tb.map((id) => C.frameById(ed.getDoc(), id));
+    const env = { doc: ed.getDoc(), title: 'Smoke', props: { company: 'Acme Mining' } };
+    const tbText = C.resolveFields(tbFrames[0].content.md, env, tbFrames[0]);
+    const tbGroup = new Set(tbFrames.map((f) => f.group)).size === 1 && !!tbFrames[0].group;
+    const tbSel = JSON.stringify(ed.selected().map((f) => f.id).sort()) === JSON.stringify(tb.slice().sort());
+    // an image: a 40×20 PNG as a data: URL → 35 mm wide, its aspect kept, a bitmap ready to draw
+    const cv = Object.assign(document.createElement('canvas'), { width: 40, height: 20 });
+    cv.getContext('2d').fillRect(0, 0, 40, 20);
+    const im = await C.addImageSrc(ed, cv.toDataURL('image/png'), { name: 'logo.png', source: { app: 'smoke', name: 'logo.png' } });
+    const imOk = im.kind === 'image' && im.box[2] === 35 && im.box[3] === 17.5 && im.content.width === 40 && !!im._img && im.source.name === 'logo.png';
+    // small multiples: a host variant makes each copy; compo lays them out, captions them, groups them
+    const base = ed.addFrame({ kind: 'text', box: [20, 20, 150, 100], content: { md: 'base' } });
+    const made = await C.smallMultiples(ed, base, { n: 4, cols: 2, variant: async (k, box) => ed.addFrame({ kind: 'text', box, content: { md: 'copy ' + k } }), caption: (k) => 'level ' + (600 + 20 * k) });
+    const fr = made.map((id) => C.frameById(ed.getDoc(), id));
+    const caps = fr.filter((f) => /^level /.test(f.content.md));
+    const mOk = made.length === 8 && !C.frameById(ed.getDoc(), base.id) && new Set(fr.map((f) => f.group)).size === 1 && caps.length === 4
+      && caps.every((c, i) => c.content.of === made[2 * i]) && fr[2].box[0] > fr[0].box[0] && fr[4].box[1] > fr[0].box[1];
+    const n = ed.getDoc().frames.length;
+    C.removeFrames(ed.getDoc(), [...tb, im.id, ...made]); C.pruneGroups && C.pruneGroups(ed.getDoc()); ed.select([]); ed.render();
+    return { tbText, tbGroup, tbSel, n: tb.length, imOk, mOk, added: n - before, back: ed.getDoc().frames.length === before };
+  });
+  chk(`title block: ${ins.n} rows, one group, selected, fields from the host's props ("${ins.tbText}")`, ins.n === 6 && ins.tbGroup && ins.tbSel && ins.tbText === '**Acme Mining**');
+  chk('image from a src: 35 mm wide at its own aspect, bitmap decoded, the host\'s source kept', ins.imOk);
+  chk('small multiples: 4 copies + 4 captions (each refers to its copy), across then down, one group, the original gone', ins.mOk, `${ins.added} added`);
+  chk('the insertions cleaned up', ins.back);
+}
+
 // ── export: PDF (read back by pdf.js) and PNG ──
 const out = await page.evaluate(async () => {
   const src = await (await fetch('/ext/pdfjs/index.js')).text();

@@ -26,7 +26,7 @@ import { attrRowCountOf, layerBlob, layerTableHeader, schemaExt, layerWorldBox, 
 import { figureRefs, retargetDoc, guessLayer, guessColumn } from './retarget.js';
 import { computeResourceTable, numericColsOf, parseFactor } from './analysis.js';
 import { sourceHash, sourceHashSync } from './identity.js';
-import { createDocument, parseDocument, serializeDocument, mountEditor, iconButton, exportPDF, exportPNG, frameById, pageDims, tableFromTsv, removeFrames, groupFrames, subjectFrame, refFrame, figureFromPdf, registerKind, replayDrawList } from '../../../ext/compo/index.js';
+import { createDocument, parseDocument, serializeDocument, mountEditor, iconButton, exportPDF, exportPNG, frameById, pageDims, tableFromTsv, subjectFrame, refFrame, figureFromPdf, registerKind, replayDrawList, HOUSE_KEYS, FIGURE_KEYS, setTemplate, docFromTemplate, addTitleBlock as compoTitleBlock, addImageFromFile as compoImageFromFile, multiplesGrid, smallMultiples as compoMultiples, groupDigits, significant, fmtBearing } from '../../../ext/compo/index.js';
 import { chartFigure } from './analysis-ui.js';
 import { colorChoices, colorSelFor } from './color.js';
 import { rerunToolRecipe } from './tools.js';
@@ -357,7 +357,7 @@ export async function refreshData(fig = _fig) {
 }
 
 // ── the RESOURCE TABLE frame ──
-const sig = (v, k = 4) => (Number.isFinite(v) ? +v.toPrecision(k) : '');
+const sig = significant;
 async function resourceContent(p) {
   const L = S.layers.find((x) => x.name === p.layer || (x.label || x.name) === p.layer);
   if (!L) throw new Error(`layer “${p.layer}” isn't loaded`);
@@ -366,7 +366,7 @@ async function resourceContent(p) {
   const mu = p.metalUnit || r.metalUnit;                     // stated, or what the rule made it (t when the grade unit is declared)
   const metal = mu ? `metal (${mu})` : 'metal';
   const columns = r.columns.map((c) => (c === 'tonnes' ? 't' : c === 'grade' ? (p.gradeUnit ? `${p.grade} (${p.gradeUnit})` : p.grade) : c === 'metal' ? metal : c));
-  const grp = (v) => (Number.isFinite(v) ? Math.round(v).toLocaleString('en-US').replace(/,/g, ' ') : '');   // 2 343 000
+  const grp = (v) => (Number.isFinite(v) ? groupDigits(Math.round(v)) : '');   // 2 343 000
   const rows = r.rows.map((row) => row.map((v, i) => (r.columns[i] === 'tonnes' ? grp(v) : r.columns[i] === 'grade' ? sig(v, 4) : r.columns[i] === 'metal' ? (Math.abs(v) >= 1000 ? grp(v) : sig(v, 4)) : v)));
   const d = p.density || {};
   const dens = d.col ? `density ${d.col}${d.unit ? ` (${d.unit})` : ''}` : `density ${d.const != null ? d.const : 1}${d.unit ? ` ${d.unit}` : ' t/m³'}`;
@@ -674,33 +674,31 @@ export async function addKeyPlan(ed, target = null) {
 // normal view frame with a caption that says which. They form a group. ──
 export async function smallMultiples(ed, f, { vary, values, cols, axis = 'z', thickness = 10 }) {
   if (!isView(f) || !values || !values.length) return [];
-  const doc = ed.getDoc(), base = f.source.scene, b = f.box.slice(), n = values.length;
-  const C = Math.max(1, Math.min(n, +cols || Math.ceil(Math.sqrt(n)))), R = Math.ceil(n / C), gap = 3, capH = 5;
-  const cw = (b[2] - gap * (C - 1)) / C, ch = (b[3] - R * capH - gap * (R - 1)) / R;
-  if (!(cw > 8 && ch > 8)) throw new Error('the view frame is too small for that many — make it bigger first');
+  const base = f.source.scene, n = values.length;
+  multiplesGrid(f.box, n, { cols });                      // too small → refused before the scene moves
   const mainName = (base.layers.find((sl) => sl.visible) || base.layers[0] || {}).name;
   const L = S.layers.find((x) => (x.label || x.name) === mainName || x.name === mainName);
-  const mine = captureScene('__composer'), made = [];
+  const mine = captureScene('__composer');
+  let made;
   try {
-    for (let k = 0; k < n; k++) {
-      const v = values[k], scene = JSON.parse(JSON.stringify(base));
-      const sl = scene.layers.find((q) => q.name === mainName);
-      if (vary === 'colour' && sl && L) { sl.colorSel = colorSelFor(L, v); sl.color = v; }   // the name is what a scene applies
-      if (vary === 'filter' && sl) sl.filter = String(v);
-      await applyScene(scene);
-      if (vary === 'section') setSectionWorld({ axis, position: +v, thickness: +thickness || 10 });
-      const r = Math.floor(k / C), c = k % C, x = b[0] + c * (cw + gap), y = b[1] + r * (ch + capH + gap);
-      const vf = ed.addFrame({ kind: 'image', box: [+x.toFixed(2), +y.toFixed(2), +cw.toFixed(2), +ch.toFixed(2)], content: { photo: true }, source: { app: 'micro', kind: 'view' }, style: { border: true } });
-      ed.update(vf.id, (fr) => viewFrameContent(fr));
-      afterFacts(ed, vf.id);
-      const md = vary === 'section' ? '{section}' : String(v);
-      const cap = ed.addFrame({ kind: 'text', box: [+x.toFixed(2), +(y + ch + 0.5).toFixed(2), +cw.toFixed(2), capH - 0.5], content: { md, size: 7, align: 'center', of: vf.id } });
-      made.push(vf.id, cap.id);
-    }
+    made = await compoMultiples(ed, f, {
+      n, cols,
+      variant: async (k, box) => {                         // copy k: the view under its own scene
+        const v = values[k], scene = JSON.parse(JSON.stringify(base));
+        const sl = scene.layers.find((q) => q.name === mainName);
+        if (vary === 'colour' && sl && L) { sl.colorSel = colorSelFor(L, v); sl.color = v; }   // the name is what a scene applies
+        if (vary === 'filter' && sl) sl.filter = String(v);
+        await applyScene(scene);
+        if (vary === 'section') setSectionWorld({ axis, position: +v, thickness: +thickness || 10 });
+        const vf = ed.addFrame({ kind: 'image', box, content: { photo: true }, source: { app: 'micro', kind: 'view' }, style: { border: true } });
+        ed.update(vf.id, (fr) => viewFrameContent(fr));
+        afterFacts(ed, vf.id);
+        return vf;
+      },
+      caption: (k) => (vary === 'section' ? '{section}' : String(values[k])),
+    });
   } finally { await applyScene(mine); }
-  const d = ed.getDoc();
-  removeFrames(d, [f.id]); groupFrames(d, made);
-  ed.select(made); ed.render(); persistSoon(_fig);
+  persistSoon(_fig);
   $('#meta').textContent = `composer: ${n} small multiples (${vary}) in place of ${f.id} — a group; each is a view of its own`;
   return made;
 }
@@ -828,9 +826,8 @@ async function buildVector(f) {
 // ── HOUSE STYLE: the project's shared properties (company, client, project, prepared, checked,
 // disclaimer) in figures/house.json; a figure's own (drawing, revision) in its doc.props. {prop:key}
 // reads the figure's over the house's. Any figure can be a TEMPLATE (doc.template): "new" can start
-// from one — its frames, its page, its properties (drawing and revision cleared). ──
-export const HOUSE_KEYS = [['company', 'company'], ['client', 'client'], ['project', 'project'], ['prepared', 'prepared by'], ['checked', 'checked by'], ['disclaimer', 'disclaimer']];
-export const FIGURE_KEYS = [['drawing', 'drawing no.'], ['revision', 'revision']];
+// from one — its frames, its page, its properties (drawing and revision cleared). The keys, the title
+// block and the template mechanics are @gcu/compo's (house.js); micro keeps where they persist. ──
 const HOUSE_FILE = 'figures/house.json';
 function persistHouse() {
   if (!S.project) return Promise.resolve();
@@ -863,41 +860,14 @@ function openPropsDialog() {
     w.close();
   };
 }
-// the title block: a stack of bordered rows, bottom-right, all fields — a group
+// the title block (compo's: bordered rows of fields, bottom-right, a group)
 export function addTitleBlock(ed) {
-  const doc = ed.getDoc(), [W, H] = pageDims(doc.page), m = doc.page.margins || [10, 10, 10, 10];
-  const rows = [
-    ['**{prop:company}**', 9, 7], ['{prop:project} · {prop:client}', 7, 5.5], ['**{title}**', 8, 6.5],
-    ['drawing {prop:drawing} · rev {prop:revision} · {date}', 6.5, 5], ['prepared {prop:prepared} · checked {prop:checked}', 6.5, 5], ['scale {scale} · page {page} of {pages}', 6.5, 5],
-  ];
-  const w = 95, hTot = rows.reduce((s, r) => s + r[2], 0);
-  let y = H - m[2] - hTot; const x = W - m[1] - w, ids = [];
-  for (const [md, size, h] of rows) {
-    const f = ed.addFrame({ kind: 'text', box: [x, +y.toFixed(2), w, h], content: { md, size, pad: 1 }, style: { border: true, borderWidth: 0.2 } });
-    ids.push(f.id); y += h;
-  }
-  ed.update(ids[0], () => groupFrames(ed.getDoc(), ids));
-  ed.select(ids); ed.render();
+  const ids = compoTitleBlock(ed);
   $('#meta').textContent = 'composer: a title block — its fields read the figure\'s and the project\'s properties (properties…)';
   return ids;
 }
-// an image from a file — a logo, a photo, a sketch
-export function addImageFromFile(ed) {
-  const inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'image/*';
-  inp.onchange = async () => {
-    const file = inp.files && inp.files[0]; if (!file) return;
-    const src = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file); });
-    await addImageSrc(ed, src, file.name);
-  };
-  inp.click();
-}
-export async function addImageSrc(ed, src, name = 'image') {
-  const im = new Image(); im.src = src; await im.decode();
-  const doc = ed.getDoc(), m = doc.page.margins || [10, 10, 10, 10], w = 35, h = +(w * im.height / Math.max(1, im.width)).toFixed(1);
-  const f = ed.addFrame({ kind: 'image', box: [m[3] + 4, m[0] + 4, w, h], content: { src, width: im.width, height: im.height, fit: 'contain' }, source: { app: 'micro', kind: 'image', name } });
-  f._img = typeof createImageBitmap !== 'undefined' ? await createImageBitmap(im) : im; ed.render();
-  return f;
-}
+// an image from a file — a logo, a photo, a sketch (compo inserts it; the source record is micro's)
+const addImageFromFile = (ed) => compoImageFromFile(ed, { source: (name) => ({ app: 'micro', kind: 'image', name }) });
 
 // ── the window ──
 let _win = null, _ed = null, _fig = null, _saveT = 0;
@@ -907,10 +877,8 @@ export function currentFigure() { return _fig; }
 
 function newFigure(name, from = null) {
   let doc;
-  if (from) {                                               // from a template: its frames, page and properties; a drawing of its own
-    doc = parseDocument(serializeDocument(from.doc)); doc.title = name; delete doc.template;
-    doc.props = { ...(from.doc.props || {}) }; delete doc.props.drawing; delete doc.props.revision;
-  } else doc = createDocument({ title: name, page: { size: 'A4', orientation: 'landscape', margins: [12, 12, 12, 12] } });
+  if (from) doc = docFromTemplate(from.doc, name);         // from a template: its frames, page and properties; a drawing of its own
+  else doc = createDocument({ title: name, page: { size: 'A4', orientation: 'landscape', margins: [12, 12, 12, 12] } });
   const fig = { name, doc, file: 'figures/' + slug(name) + '.compo.json' };
   S.figures.push(fig); S.figures.sort((a, b) => a.name.localeCompare(b.name));
   return fig;
@@ -963,7 +931,7 @@ export function openComposer(name) {
   // where it isn't — the template toggle, properties…, other data…, atlas…
   const ib = (icon, label, title, fn, cls = '', text = '') => iconButton({ icon, label, title, run: fn, cls, text });
   const fromSel = document.createElement('select'); fromSel.title = 'what a new figure starts from: blank, or a template'; fromSel.className = 'cmp-from';
-  const tplBtn = btn('☆ template', 'make this figure a template — new figures can start from it (its frames, page and properties)', () => { _fig.doc.template = !_fig.doc.template; if (!_fig.doc.template) delete _fig.doc.template; persist(_fig); fill(); });
+  const tplBtn = btn('☆ template', 'make this figure a template — new figures can start from it (its frames, page and properties)', () => { setTemplate(_fig.doc, !_fig.doc.template); persist(_fig); fill(); });
   const fill = () => {
     pick.replaceChildren(...S.figures.map((f) => { const o = document.createElement('option'); o.value = f.name; o.textContent = f.name + (f.doc.template ? ' ★' : ''); return o; })); pick.value = _fig ? _fig.name : '';
     const keep = fromSel.value; fromSel.replaceChildren(...[['', 'blank'], ...S.figures.filter((f) => f.doc.template).map((f) => [f.name, 'from ' + f.name])].map(([v, t]) => { const o = document.createElement('option'); o.value = v; o.textContent = t; return o; })); fromSel.value = [...fromSel.options].some((o) => o.value === keep) ? keep : '';
@@ -1079,9 +1047,8 @@ function envFor(extra = {}) {
 // column, optionally layer:column ({mean:AU}, {mean:holes:AU}). ──
 const viewOf = (frame, env) => subjectFrame(env, frame, isView);
 const factsOf = (frame, env) => { const v = viewOf(frame, env); return v && v.content && v.content.meta && v.content.meta.facts; };
-const groupSp = (n) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
 const coord = (v, th) => {
-  if (Math.abs(v) >= 1000) return groupSp(Math.round(v)).replace(/^-/, '−');
+  if (Math.abs(v) >= 1000) return groupDigits(Math.round(v)).replace(/^-/, '−');
   const dec = th && th < 1 ? 2 : Math.abs(v) < 10 ? 2 : 1;
   return String(+v.toFixed(dec)).replace(/^-/, '−');
 };
@@ -1099,7 +1066,6 @@ function sectionText(sec) {
 // a named layer → that layer; unnamed → the layers whose records a caption counts (meshes' vertices and
 // grids' nodes are context: an atlas bench read 265,998 'blocks' with them, 260,000 without)
 const layersOf = (fx, a) => (fx ? fx.layers.filter((l) => (a ? l.name === a : !l.ctx)) : []);
-const deg3 = (v) => String(Math.round(((v % 360) + 360) % 360) % 360).padStart(3, '0') + '°';
 const sum = (ls, k) => ls.reduce((s, l) => s + l[k], 0);
 // {count}: the records the view shows after filters — in its section when the frame counts there
 // (statsScope 'section', the default) and a section cuts the layer. null = not computed yet ('…')
@@ -1116,7 +1082,7 @@ function countOf(v, fx, ls) {
 }
 const MICRO_FIELDS = {
   section: (a, f, env) => { const fx = factsOf(f, env); return fx ? sectionText(fx.section) : null; },
-  look: (a, f, env) => { const fx = factsOf(f, env); return fx && fx.camera ? deg3(fx.camera.look) : null; },
+  look: (a, f, env) => { const fx = factsOf(f, env); return fx && fx.camera ? fmtBearing(fx.camera.look) : null; },
   elevation: (a, f, env) => { const fx = factsOf(f, env); return fx && fx.camera ? Math.round(fx.camera.elevation) + '°' : null; },
   layers: (a, f, env) => { const fx = factsOf(f, env); return fx ? fx.layers.map((l) => l.name).join(', ') || 'no layers' : null; },
   count: (a, f, env) => { const fx = factsOf(f, env), ls = layersOf(fx, a); if (!ls.length) return null; const n = countOf(viewOf(f, env), fx, ls); return n == null ? '…' : n; },
