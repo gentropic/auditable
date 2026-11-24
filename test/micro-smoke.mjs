@@ -88,7 +88,7 @@ const parquet = new Uint8Array(writeParquet({ columnData: (() => {
   return [{ name: 'XC', data: XC }, { name: 'YC', data: YC }, { name: 'ZC', data: ZC }, { name: 'FE', data: FE }, { name: 'LITO', data: LITO }];
 })(), rowGroupSize: 512 }));
 
-const b = await chromium.launch({ args: ['--use-gl=angle'] });
+const b = await chromium.launch({ args: [...(process.env.MICRO_CHROMIUM_ARGS || '--use-gl=angle').split(/\s+/).filter(Boolean)] });
 await installSmokeWaits(b);
 const ctx = await b.newContext({ viewport: { width: 1000, height: 700 } });
 await ctx.addInitScript(() => { try { if (localStorage.getItem('micro.autoPackMeshes') == null) localStorage.setItem('micro.autoPackMeshes', 'off'); } catch { /* opaque origin */ } });   // the .wfr store prompt stays out of the way unless a section opts in

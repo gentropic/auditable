@@ -26,7 +26,7 @@ const server = http.createServer(async (req, res) => {
 });
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const PORT = server.address().port;
-const b = await chromium.launch({ args: ['--use-gl=angle'] });
+const b = await chromium.launch({ args: [...(process.env.MICRO_CHROMIUM_ARGS || '--use-gl=angle').split(/\s+/).filter(Boolean)] });
 await installSmokeWaits(b);
 const ctx = await b.newContext({ viewport: { width: 1100, height: 750 } });
 await ctx.addInitScript(() => { try { if (localStorage.getItem('micro.autoPackMeshes') == null) localStorage.setItem('micro.autoPackMeshes', 'off'); } catch { /* opaque origin */ } });

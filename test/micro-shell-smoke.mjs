@@ -36,7 +36,7 @@ if (fs.existsSync(path.join(root, 'micro.html'))) {
     /"leadacid":/.test(built) && !/bench\.js/.test(built) && /connect-src 'none'/.test(built));
 } else chk('built micro.html exists (node build.js --target=micro)', false);
 
-const browser = await chromium.launch({ args: ['--use-gl=angle'] });
+const browser = await chromium.launch({ args: [...(process.env.MICRO_CHROMIUM_ARGS || '--use-gl=angle').split(/\s+/).filter(Boolean)] });
 await installSmokeWaits(browser);
 const p = await browser.newPage({ viewport: { width: 1280, height: 820 } });
 const errs = [];

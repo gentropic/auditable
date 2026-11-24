@@ -39,7 +39,7 @@ const chkLocal = (name, ok) => {
   if (!process.env.CI) return chk(name, ok);
   console.log(`skip  ${name} (local-only: ${ok ? 'would pass' : 'would fail'} here)`); skipped++; lastOk = true;
 };
-const browser = await chromium.launch({ args: ['--use-gl=angle'] });
+const browser = await chromium.launch({ args: [...(process.env.MICRO_CHROMIUM_ARGS || '--use-gl=angle').split(/\s+/).filter(Boolean)] });
 await installSmokeWaits(browser);
 const S24 = { viewport: { width: 384, height: 787 }, deviceScaleFactor: 2.8125, isMobile: true, hasTouch: true };
 

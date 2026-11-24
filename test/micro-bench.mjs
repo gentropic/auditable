@@ -152,7 +152,7 @@ const pct = (a, p) => { if (!a.length) return NaN; const s = a.slice().sort((x, 
 
 async function oneRun(runIdx, modelPath) {
   const res = { run: runIdx, metrics: {}, notes: [], errors: [] };
-  const browser = await chromium.launch({ headless: !has('headed'), args: ['--use-gl=angle', '--enable-precise-memory-info', '--disable-gpu-vsync', '--disable-frame-rate-limit'] });
+  const browser = await chromium.launch({ headless: !has('headed'), args: [...(process.env.MICRO_CHROMIUM_ARGS || '--use-gl=angle').split(/\s+/).filter(Boolean), '--enable-precise-memory-info', '--disable-gpu-vsync', '--disable-frame-rate-limit'] });
   try {
     const ctx = await browser.newContext({ viewport: { width: 1100, height: 750 } });
     await ctx.addInitScript(() => { try { localStorage.setItem('micro.autoPackMeshes', 'off'); } catch { /* opaque origin */ } });
