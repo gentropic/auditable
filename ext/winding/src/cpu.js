@@ -174,4 +174,56 @@ async function evaluateCPU(vertices, triangles, bvhNodes, triIndices, blockModel
   return { proportions, flags };
 }
 
-export { solidAngle, windingBrute, windingBVH, evaluateCPU, WINDING_BETA2 };
+// Evaluate a LIST of axis-aligned boxes — a model whose blocks don't share one size
+// (sub-blocked), so there is no lattice to sweep. boxes = { centres: Float64Array(3n),
+// halves: Float32Array|Float64Array(3n), count? }, in the MESH's coordinates (the
+// caller's frame). Each box is probed on its OWN rx×ry×rz cell-centred sub-grid —
+// the same probes evaluateCPU lays inside a lattice cell, scaled to the box — and
+// 'flag' tests its centre. A box (or a probe) outside the mesh's bounds is outside
+// without a winding call (it is, for a closed mesh; and the skirt closures are closed).
+// → { proportions?: Float32Array(n), flags: Uint8Array(n) }
+async function evaluateBoxesCPU(vertices, triangles, bvhNodes, triIndices, boxes, opts = {}) {
+  const { mode = 'proportion', resolution = [4, 4, 4], threshold = 0.5, onProgress } = opts;
+  const C = boxes.centres, H = boxes.halves;
+  const n = boxes.count != null ? boxes.count : C.length / 3;
+  const useBVH = bvhNodes && bvhNodes.length > 0;
+  let b0, b1, b2, b3, b4, b5;
+  if (useBVH) { b0 = bvhNodes[0]; b1 = bvhNodes[1]; b2 = bvhNodes[2]; b3 = bvhNodes[3]; b4 = bvhNodes[4]; b5 = bvhNodes[5]; }
+  else {
+    b0 = b1 = b2 = Infinity; b3 = b4 = b5 = -Infinity;
+    for (let i = 0; i < vertices.length; i += 3) {
+      const x = vertices[i], y = vertices[i + 1], z = vertices[i + 2];
+      if (x < b0) b0 = x; if (x > b3) b3 = x; if (y < b1) b1 = y; if (y > b4) b4 = y; if (z < b2) b2 = z; if (z > b5) b5 = z;
+    }
+  }
+  const inside = (px, py, pz) => px >= b0 && px <= b3 && py >= b1 && py <= b4 && pz >= b2 && pz <= b5
+    && (useBVH ? windingBVH(px, py, pz, vertices, triangles, bvhNodes, triIndices) : windingBrute(px, py, pz, vertices, triangles, triIndices)) >= threshold;
+  const flag = mode === 'flag';
+  const [sx, sy, sz] = flag ? [1, 1, 1] : resolution;
+  const subTotal = sx * sy * sz;
+  const flags = new Uint8Array(n), proportions = flag ? null : new Float32Array(n);
+  const step = 8192;
+  for (let s0 = 0; s0 < n; s0 += step) {
+    const s1 = Math.min(n, s0 + step);
+    for (let b = s0; b < s1; b++) {
+      const cx = C[b * 3], cy = C[b * 3 + 1], cz = C[b * 3 + 2];
+      const hx = H[b * 3], hy = H[b * 3 + 1], hz = H[b * 3 + 2];
+      if (cx + hx < b0 || cx - hx > b3 || cy + hy < b1 || cy - hy > b4 || cz + hz < b2 || cz - hz > b5) continue;   // the box misses the mesh
+      if (flag) { flags[b] = inside(cx, cy, cz) ? 1 : 0; continue; }
+      let ins = 0;
+      for (let k = 0; k < sz; k++) {
+        const pz = cz + hz * ((2 * k + 1) / sz - 1);
+        for (let j = 0; j < sy; j++) {
+          const py = cy + hy * ((2 * j + 1) / sy - 1);
+          for (let i = 0; i < sx; i++) if (inside(cx + hx * ((2 * i + 1) / sx - 1), py, pz)) ins++;
+        }
+      }
+      const p = ins / subTotal;
+      proportions[b] = p; flags[b] = p >= threshold ? 1 : 0;
+    }
+    if (onProgress) { onProgress(s1 / n); await new Promise((r) => setTimeout(r, 0)); }
+  }
+  return flag ? { flags } : { proportions, flags };
+}
+
+export { solidAngle, windingBrute, windingBVH, evaluateCPU, evaluateBoxesCPU, WINDING_BETA2 };

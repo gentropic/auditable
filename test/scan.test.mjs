@@ -172,3 +172,18 @@ test('scan: createScan names a missing dependency; an unknown kernel throws', as
   const S = await sources();
   await assert.rejects(scan.run({ ...filterJob(S.pq, 'AU > 1'), kernel: 'nope' }), /no kernel 'nope'/);
 });
+
+test('scan: positions with sizes — dimQ per record, the support rule (round(d / pitch), 1..255, a missing size one step)', async () => {
+  const P = [{ X: 1, Y: 2, Z: 3, DX: 2, DY: 3, DZ: 1 }, { X: NaN, Y: 0, Z: 0, DX: 1, DY: 1, DZ: 1 }, { X: 4, Y: 5, Z: 6, DX: 0, DY: 200, DZ: 0.74 }];
+  const names = ['X', 'Y', 'Z', 'DX', 'DY', 'DZ'];
+  const buf = parquet.writeParquet({ columnData: names.map((name) => ({ name, data: P.map((r) => r[name]), type: 'DOUBLE' })) });
+  const info = parquet.parquetInfo(buf);
+  const src = scan.sources.parquet({ buf, meta: info.meta, names, rowGroups: info.rowGroups }, names);
+  const sch = names.map((name) => ({ name, type: 'number' }));
+  const res = await scan.run({ source: src, kernel: 'positions', params: { schema: sch, coords: ['X', 'Y', 'Z'], sizes: ['DX', 'DY', 'DZ'], pitch: [0.5, 0.5, 0.5] }, spec: { base: names, paints: [] }, readCols: names });
+  const p = res.parts[0];
+  assert.deepEqual(Array.from(p.rec), [0, 2], 'a record without X is not a position');
+  assert.deepEqual(Array.from(p.dimQ), [4, 6, 2, 1, 255, 1]);
+  const bare = await scan.run({ source: src, kernel: 'positions', params: { schema: sch, coords: ['X', 'Y', 'Z'] }, spec: { base: names, paints: [] }, readCols: names });
+  assert.equal(bare.parts[0].dimQ, undefined, 'no sizes asked → none carried');
+});

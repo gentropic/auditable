@@ -2,9 +2,9 @@
 // Main API: Winding.create({ device?, worker?, gpu? }), setMesh(), evaluate()
 
 import { buildBVH } from '../../geometry/src/bvh.js';
-import { evaluateCPU } from './cpu.js';
+import { evaluateCPU, evaluateBoxesCPU } from './cpu.js';
 import { createGPUEvaluator, evaluateGPU } from './gpu.js';
-import { initWindingWorker, evaluateWorker } from './worker.js';
+import { initWindingWorker, evaluateWorker, evaluateBoxesWorker } from './worker.js';
 import { toLocal, toLocalCoords, frameEq } from '../../frame/src/frame.js';
 
 // ── Frame-awareness (@gcu/frame) ────────────────────────────────────────────────
@@ -122,6 +122,24 @@ class Winding {
       bvh.nodes, bvh.triIndices, bm, restOpts);
   }
 
+  // Evaluate a LIST of boxes, each its own size — a sub-blocked model, which has no
+  // lattice to sweep. boxes = { centres (world, or the mesh's frame when unframed),
+  // halves (per box, same units), count? }. Each box is probed on its own
+  // resolution sub-grid ('proportion') or at its centre ('flag'). Worker CPU, or the
+  // main-thread CPU; the GPU kernel dispatches lattices only.
+  // → { proportions?: Float32Array(n), flags: Uint8Array(n) }, in box order.
+  async evaluateBoxes(boxes, opts = {}) {
+    const meshName = opts.mesh || '_default';
+    const mesh = this._meshes.get(meshName) || this._defaultMesh;
+    if (!mesh) throw new Error('No mesh loaded. Call setMesh() first.');
+    const { frame: evalFrame = null, ...restOpts } = opts;
+    if (!!evalFrame !== !!mesh.frame || (evalFrame && !frameEq(evalFrame, mesh.frame))) throw new Error(`winding: box frame ≠ mesh '${meshName}' frame (frame rebases, never reprojects)`);
+    const centres = evalFrame ? toLocalCoords(boxes.centres, evalFrame, { stride: 3 }) : boxes.centres;
+    const bx = { centres, halves: boxes.halves, count: boxes.count != null ? boxes.count : boxes.centres.length / 3 };
+    if (this._worker) return evaluateBoxesWorker(this._worker, meshName, bx, restOpts);
+    return evaluateBoxesCPU(mesh.vertices, mesh.triangles, mesh.bvh.nodes, mesh.bvh.triIndices, bx, restOpts);
+  }
+
   // Evaluate multiple named surfaces against the same block model
   async evaluateMultiple(blockModel, opts = {}) {
     const { surfaces = [], ...evalOpts } = opts;
@@ -148,7 +166,7 @@ class Winding {
 
 export { Winding, buildBVH };
 // CPU math helpers — part of the curated public surface (matches the old footer).
-export { evaluateCPU, solidAngle, windingBrute, windingBVH } from './cpu.js';
+export { evaluateCPU, evaluateBoxesCPU, solidAngle, windingBrute, windingBVH } from './cpu.js';
 // Ray → mesh over the same BVH: the CPU half of mesh picking (the GPU ID-buffer
 // says WHICH mesh; this says which triangle, where, and which way it faces).
 export { raycastBVH } from '../../geometry/src/ray.js';

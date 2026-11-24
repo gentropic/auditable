@@ -376,3 +376,50 @@ describe('winding: robustness', () => {
       'Clean mesh should be closer to 1 than flipped');
   });
 });
+
+describe('winding: box lists (sub-blocked models)', () => {
+  it('a lattice given as boxes = the lattice sweep, proportion and flag', async () => {
+    await loadModules();
+    const { evaluateBoxesCPU } = await import('../ext/winding/src/cpu.js');
+    const { vertices, triangles } = boxMesh(0.37, 0.61, 0.23, 2.71, 3.13, 2.47);
+    const bvh = buildBVH(vertices, triangles);
+    const bm = { origin: [-0.5, -0.5, -0.5], size: [0.8, 0.9, 0.7], count: [5, 5, 5] };
+    const lat = await evaluateCPU(vertices, triangles, bvh.nodes, bvh.triIndices, bm, { mode: 'proportion', resolution: [3, 3, 3] });
+    const latF = await evaluateCPU(vertices, triangles, bvh.nodes, bvh.triIndices, bm, { mode: 'flag' });
+    const n = 125, centres = new Float64Array(3 * n), halves = new Float32Array(3 * n);
+    for (let k = 0; k < 5; k++) for (let j = 0; j < 5; j++) for (let i = 0; i < 5; i++) {
+      const b = i + 5 * j + 25 * k;
+      centres.set([-0.5 + (i + 0.5) * 0.8, -0.5 + (j + 0.5) * 0.9, -0.5 + (k + 0.5) * 0.7], 3 * b);
+      halves.set([0.4, 0.45, 0.35], 3 * b);
+    }
+    const bx = await evaluateBoxesCPU(vertices, triangles, bvh.nodes, bvh.triIndices, { centres, halves }, { mode: 'proportion', resolution: [3, 3, 3] });
+    const bxF = await evaluateBoxesCPU(vertices, triangles, bvh.nodes, bvh.triIndices, { centres, halves }, { mode: 'flag' });
+    assert.deepEqual(Array.from(bx.proportions), Array.from(lat.proportions));
+    assert.deepEqual(Array.from(bxF.flags), Array.from(latF.flags));
+    assert.ok(Array.from(bx.proportions).some((p) => p > 0 && p < 1), 'some partial blocks');
+  });
+  it('each box is probed in its own size; a box off the mesh is 0 without a probe', async () => {
+    await loadModules();
+    const { evaluateBoxesCPU } = await import('../ext/winding/src/cpu.js');
+    const { vertices, triangles } = boxMesh(0, 0, 0, 1, 1, 1);
+    const bvh = buildBVH(vertices, triangles);
+    // a 2 m box centred on the mesh's corner (1,1,1): one probe of 2×2×2 inside (1/8);
+    // a 1 m box fully inside; a box far away
+    const centres = Float64Array.from([1, 1, 1, 0.5, 0.5, 0.5, 50, 50, 50]);
+    const halves = Float32Array.from([1, 1, 1, 0.5, 0.5, 0.5, 1, 1, 1]);
+    const r = await evaluateBoxesCPU(vertices, triangles, bvh.nodes, bvh.triIndices, { centres, halves }, { mode: 'proportion', resolution: [2, 2, 2] });
+    assert.deepEqual(Array.from(r.proportions), [0.125, 1, 0]);
+  });
+  it('Winding.evaluateBoxes rebases world centres through the mesh\'s frame', async () => {
+    const { Winding } = await import('../ext/winding/src/main.js');
+    const O = [500000, 7000000, 300];
+    const { vertices, triangles } = boxMesh(O[0], O[1], O[2], O[0] + 10, O[1] + 10, O[2] + 10);
+    const W = await Winding.create({});
+    const frame = { origin: O, crs: null, units: 'm' };
+    W.setMesh(Float64Array.from(vertices, (v, i) => v), triangles, { frame, name: 'b' });
+    const centres = Float64Array.from([O[0] + 5, O[1] + 5, O[2] + 5, O[0] + 10, O[1] + 5, O[2] + 5]);
+    const r = await W.evaluateBoxes({ centres, halves: Float32Array.from([1, 1, 1, 1, 1, 1]) }, { mode: 'proportion', resolution: [2, 2, 2], frame, mesh: 'b' });
+    assert.deepEqual(Array.from(r.proportions), [1, 0.5]);
+    await assert.rejects(() => W.evaluateBoxes({ centres, halves: Float32Array.from([1, 1, 1, 1, 1, 1]) }, { mesh: 'b' }), /frame/);
+  });
+});

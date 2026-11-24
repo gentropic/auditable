@@ -588,24 +588,33 @@ export function valuesKernel(E, CV) {
 // params: { schema, coords: [x, y, z] (names) }. One chunk → the coordinates of
 // the records that HAVE them (finite x, y, z — the renderer's rule) + their
 // offsets in the chunk. A block with no X is not a block at the origin.
+// With params.sizes ([dx, dy, dz] names) + params.pitch (the fine pitch [3]) each
+// record's size in fine steps comes too — dimQ, u8 × 3, the block-support rule
+// (condenser support.js sizeQ: round(d / pitch) clamped 1..255; a missing or
+// non-positive size is one step) — for a by-geometry probe of a sub-blocked block.
 export function positionsKernel(E, CV) {
   return {
     init(params, calcs) {
-      const sch = params.schema;
-      return { params, calcFns: CV.compileCalcs(E, calcs, sch), c: params.coords.map((nm) => sch.findIndex((c) => c.name === nm)), scratch: {} };
+      const sch = params.schema, ix = (nm) => sch.findIndex((c) => c.name === nm);
+      const s = params.sizes && params.pitch ? params.sizes.map(ix) : null;
+      return { params, calcFns: CV.compileCalcs(E, calcs, sch), c: params.coords.map(ix), s: s && s.every((i) => i >= 0) ? s : null, scratch: {} };
     },
     group(ctx, view, n) {
       const sc = ctx.scratch;
       const num = (i, key) => CV.chunkNumbers({ buf: view[i] || [] }, n, sc[key] || (sc[key] = new Float64Array(n)));
       const X = num(ctx.c[0], 'x'), Y = num(ctx.c[1], 'y'), Z = num(ctx.c[2], 'z');
+      const D = ctx.s ? [num(ctx.s[0], 'dx'), num(ctx.s[1], 'dy'), num(ctx.s[2], 'dz')] : null, P = ctx.params.pitch;
       let k = 0;
       for (let i = 0; i < n; i++) if (Number.isFinite(X[i]) && Number.isFinite(Y[i]) && Number.isFinite(Z[i])) k++;
       const x = new Float64Array(k), y = new Float64Array(k), z = new Float64Array(k), rec = new Uint32Array(k);
+      const dimQ = D ? new Uint8Array(3 * k) : null;
       for (let i = 0, j = 0; i < n; i++) {
         if (!(Number.isFinite(X[i]) && Number.isFinite(Y[i]) && Number.isFinite(Z[i]))) continue;
-        x[j] = X[i]; y[j] = Y[i]; z[j] = Z[i]; rec[j] = i; j++;
+        x[j] = X[i]; y[j] = Y[i]; z[j] = Z[i]; rec[j] = i;
+        if (D) for (let a = 0; a < 3; a++) { const d = Math.abs(D[a][i]), q = d > 0 ? Math.round(d / P[a]) : 1; dimQ[3 * j + a] = q < 1 ? 1 : q > 255 ? 255 : q; }
+        j++;
       }
-      return { x, y, z, rec };
+      return dimQ ? { x, y, z, rec, dimQ } : { x, y, z, rec };
     },
   };
 }

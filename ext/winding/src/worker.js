@@ -2,7 +2,7 @@
 // Worker blob inlines all evaluation code via Function.toString() + JSON.stringify()
 
 import { NODE_SIZE } from '../../geometry/src/bvh.js';
-import { solidAngle, windingBrute, windingBVH, evaluateCPU, WINDING_BETA2 } from './cpu.js';
+import { solidAngle, windingBrute, windingBVH, evaluateCPU, evaluateBoxesCPU, WINDING_BETA2 } from './cpu.js';
 import { createGPUEvaluator, evaluateGPU, WGSL_SHADER, WGSL_FINALIZE } from './gpu.js';
 
 function createWindingWorker(opts = {}) {
@@ -16,6 +16,7 @@ ${solidAngle.toString()}
 ${windingBrute.toString()}
 ${windingBVH.toString()}
 ${evaluateCPU.toString()}
+${evaluateBoxesCPU.toString()}
 
 // -- GPU path --
 const WGSL_SHADER = ${JSON.stringify(WGSL_SHADER)};
@@ -83,6 +84,23 @@ self.onmessage = async function(e) {
       self.postMessage({ type: 'error', message: err.message });
     }
 
+  } else if (type === 'evaluateBoxes') {
+    // a list of boxes, each its own size (the CPU path — a box list has no lattice to dispatch)
+    const { name, boxes, mode, resolution, threshold } = e.data;
+    const mesh = _meshes.get(name);
+    if (!mesh) { self.postMessage({ type: 'error', message: 'Mesh not found: ' + name }); return; }
+    try {
+      const result = await evaluateBoxesCPU(mesh.vertices, mesh.triangles, mesh.bvhNodes, mesh.triIndices, boxes, {
+        mode: mode || 'proportion', resolution: resolution || [4, 4, 4], threshold: threshold != null ? threshold : 0.5,
+        onProgress: (frac) => self.postMessage({ type: 'progress', fraction: frac }),
+      });
+      const transfer = [result.flags.buffer];
+      if (result.proportions) transfer.push(result.proportions.buffer);
+      self.postMessage({ type: 'result', proportions: result.proportions || null, flags: result.flags }, transfer);
+    } catch (err) {
+      self.postMessage({ type: 'error', message: err.message });
+    }
+
   } else if (type === 'terminate') {
     self.close();
   }
@@ -115,8 +133,20 @@ async function initWindingWorker(opts = {}) {
 }
 
 function evaluateWorker(worker, meshName, blockModel, opts = {}) {
+  return callWorker(worker, {
+    type: 'evaluate', name: meshName, blockModel,
+    mode: opts.mode, resolution: opts.resolution, threshold: opts.threshold,
+  }, opts.onProgress);
+}
+// a box list (evaluateBoxesCPU) on the worker; the box arrays are copied, not transferred
+function evaluateBoxesWorker(worker, meshName, boxes, opts = {}) {
+  return callWorker(worker, {
+    type: 'evaluateBoxes', name: meshName, boxes,
+    mode: opts.mode, resolution: opts.resolution, threshold: opts.threshold,
+  }, opts.onProgress);
+}
+function callWorker(worker, msg, onProgress) {
   return new Promise((resolve, reject) => {
-    const { onProgress } = opts;
 
     function handler(e) {
       const { type } = e.data;
@@ -137,15 +167,8 @@ function evaluateWorker(worker, meshName, blockModel, opts = {}) {
     worker.addEventListener('message', handler);
     worker.addEventListener('error', reject, { once: true });
 
-    worker.postMessage({
-      type: 'evaluate',
-      name: meshName,
-      blockModel,
-      mode: opts.mode,
-      resolution: opts.resolution,
-      threshold: opts.threshold,
-    });
+    worker.postMessage(msg);
   });
 }
 
-export { initWindingWorker, evaluateWorker };
+export { initWindingWorker, evaluateWorker, evaluateBoxesWorker };
