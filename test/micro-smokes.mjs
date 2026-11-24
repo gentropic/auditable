@@ -45,6 +45,7 @@ job('structure', 'micro-structure-smoke.mjs');
 job('structure built', 'micro-structure-smoke.mjs', '--built');
 job('shell', 'micro-shell-smoke.mjs');
 job('wfr', 'micro-wfr-smoke.mjs');
+job('nl', 'micro-nl-smoke.mjs');               // the plain-language bar: wiring + propose-never-act (accuracy: test/micro-nl.test.mjs)
 const todo = ONLY.length ? jobs.filter((j) => ONLY.some((o) => j.name.includes(o))) : jobs;
 if (has('list')) { for (const j of todo) console.log(`${j.name.padEnd(20)} node ${j.argv.join(' ')}`); process.exit(0); }
 if (!todo.length) { console.error(`no job matches --only=${ONLY.join(',')}`); process.exit(1); }

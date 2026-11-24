@@ -108,7 +108,7 @@ import { openAttrTable, _attrTables } from './attrtable.js';
 import { layerShown, setActiveLayer, rendererDocBbox, removeLayerUI } from './layers.js';
 import { createView, setViewOffset, viewsOf, isView, canView, modelOf } from './layerviews.js';
 import { confirmRemoveLayer, layerMenu, layerMenuSections, convertMeshLayer, fitLayer } from './layermenu.js';
-import { nlSetEnabled, nlEnsureTrained, nlPropose, nlStats, nlHoldOut } from './nl.js';
+import { nlSetEnabled, nlEnsureTrained, nlPropose, nlStats, nlHoldOut, describeSession as nlDescribeSession } from './nl.js';
 import { applyLayerSelection, selectionStatus, selectVolume, selectByPolygon, selectionToColumn, filterToSelection, setSelStick, clearSelection, setSelThrough } from './selection.js';
 import { paintVolume, openPaintPalette, createPaintCol, addPaintValue, paintArm, paintDisarm, paintApply, paintUndo, paintColByName } from './paint.js';
 import { sectionWorld, setSectionWorld, applySection, knifeCut, currentSection } from './section.js';
@@ -239,7 +239,7 @@ window._micro = {
   recordPosition, pickHitPoint, pixelRay, blockHalfDims, meshHitAt, showMeshRecord, syncMeshPickable,
   openStructure, openStereonet, importPaintedSets, removeTrace, tracesToDxf, structureWins: _structWins,
   structureOf, prepareStructure, measurePlanes, traceNetwork, planesToTable, structureArmed, nlSetEnabled,
-  nlEnsureTrained, nlPropose, showAbout, nlStats, nlHoldOut, renderer, cam, get frame() { return S.frame; },
+  nlEnsureTrained, nlPropose, nlDescribeSession, showAbout, nlStats, nlHoldOut, renderer, cam, get frame() { return S.frame; },
   requestRender, docBbox: rendererDocBbox,
 };
 

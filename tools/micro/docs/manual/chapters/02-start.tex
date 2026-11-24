@@ -223,6 +223,36 @@ If an action you expect is missing from the palette, check which layer is active
 \end{enumerate}
 \end{tryit}
 
+\subsection{Asking in plain words}\label{sec:start-plain}\index{plain-language bar}
+Press \key{Alt}+\key{K} and type what you want, the way you would say it: \code{blocks above 55 Fe in hematite}, \code{select inside the ore shell}, \code{swath of FE along x}. Portuguese works in the same box: \code{seção na cota 1020}, \code{esconde a topografia}. This is the \term{plain-language bar}. The \key{⌘K} palette also falls back to it when nothing you typed matches a command name, so command names behave exactly as above.
+
+The bar \emph{proposes}; it never acts. It answers with one row that spells out the command it understood and its arguments, and nothing happens until you read the row and press \key{Enter}. A filter shows the very expression it will put in the filter box: \code{blocks above 55 Fe in hematite} becomes \code{FE > 55 and LITO == "HEMATITE"}, with the layer it will act on (\file{deposit.csv}). Chips under the row repeat the pieces: the column, the operator and value, the layer. If the row is wrong, rephrase, or press \key{Esc}.
+
+It understands these, in English and Portuguese:
+\begin{itemize}
+\item \textbf{filter} by conditions on columns and categories, and \textbf{clear} the filter;
+\item \textbf{select} by the same conditions (the matches become the 3D selection and your filter comes back), or \textbf{inside a solid} (\code{select inside the ore shell} opens \menu{Select>Select by solid / surface…} with that solid chosen);
+\item \textbf{color by} a column;
+\item a \textbf{section} at a position on X, Y or Z, its thickness, and clearing it; \textbf{vertical exaggeration}; the \textbf{background};
+\item the analyses: \textbf{grade–tonnage}, \textbf{swath} (a column and a direction), \textbf{stats} (\code{stats of FE by lithology} groups by \col{LITO}), the \textbf{contact plot} (on the drillholes), \textbf{reconciliation factors} and the \textbf{resource cross-tab}. Each opens its window set up from the phrase; \ui{Run} stays yours;
+\item a \textbf{projection} (max, min, mean, or off);
+\item \textbf{export rows}, which opens the export dialog;
+\item \textbf{show} or \textbf{hide} a layer or a group (\code{hide the mining phases}).
+\end{itemize}
+
+A phrase outside that list gets no row: \key{Alt}+\key{K} says \ui{not understood --- nothing proposed}. That is deliberate. A wrong guess costs you more than a refusal, so the bar refuses anything it does not recognize, and words that destroy (\emph{delete}, \emph{erase}, \emph{deleta}, \emph{exclui}) or ask for things micro does not do (\emph{krige}, \emph{variogram}) never produce a proposal at all.
+
+The bar learns \emph{this} project. When you first use it, it builds its vocabulary from your columns, your category values and your layer names, generates example sentences from them, and trains on them in your browser, in under a second. No model is downloaded and nothing leaves the machine; micro stays Sealed (\cref{ch:sealed}). Open a different project and it relearns. It is measured against a fixed set of real phrasings on the demo project, in both languages, by micro's tests, and it is on by default because it passed that test. \menu{Tools>Settings…}, section \ui{interaction}, row \ui{natural-language command bar} turns it off.
+
+\begin{tryit}
+\begin{enumerate}
+\item With the demo project open, press \key{Alt}+\key{K} and type \code{blocks above 55 Fe in hematite}. Read the row: \code{Filter: FE > 55 and LITO == "HEMATITE" on deposit.csv}. Nothing has changed in the view yet.
+\item Press \key{Enter}. The expression is in the filter box and the model shows only those blocks.
+\item Press \key{Alt}+\key{K} again and type \code{limpa o filtro}, then \key{Enter}.
+\item Type \code{delete the block model}. The bar answers \ui{not understood}.
+\end{enumerate}
+\end{tryit}
+
 \section{Windows}\label{sec:start-windows}
 Analysis windows, attribute tables and editors float over the view. Each belongs to the layer it was opened from, and you can have several open.
 

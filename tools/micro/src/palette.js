@@ -1,7 +1,9 @@
 // micro command palette (GCU noun-first model): one searchable list over every verb (the
 // registry in src/commands.js), context-aware via when(ctx) — the discoverability surface that
 // ties the menubar, the context menus and the keyboard together. Ctrl/⌘K or the ⌘K button;
-// Alt+K the experimental plain-language bar (src/nl.js). Carved from index.html (2026-11-24).
+// Alt+K the plain-language bar (src/nl.js — it PROPOSES one command, Enter runs it; ⌘K falls
+// back to it only when NO command name matches, so the command list itself never changes).
+// Carved from index.html (2026-11-24).
 import { setHTML, trusted } from './html.js';
 import { _isMobile } from './windows.js';
 import { t as tr, bothTongues } from './i18n.js';
@@ -23,7 +25,7 @@ export function openPalette(opts = {}) {
     $('#palInput').addEventListener('input', () => { _palSel = _isMobile() ? -1 : 0; renderPalette(); });
     $('#palInput').addEventListener('keydown', palKeydown);
   }
-  $('#palInput').placeholder = tr(_palNlMode ? 'Ask in plain language…  (dispatch — experimental)' : 'Type a command…  (↑↓ to move · Enter to run · Esc to close)');
+  $('#palInput').placeholder = tr(_palNlMode ? 'Ask in plain words (en / pt)…  it proposes · Enter runs · Esc closes' : 'Type a command…  (↑↓ to move · Enter to run · Esc to close)');
   ov.style.display = 'flex'; $('#palInput').value = ''; _palSel = _isMobile() ? -1 : 0; renderPalette(); $('#palInput').focus();
 }
 export function closePalette() { _palOpen = false; _palNlMode = false; const ov = $('#palOverlay'); if (ov) ov.style.display = 'none'; }
@@ -47,7 +49,11 @@ function renderPalette() {
     else {
       if (!_nlDispatcher && !_nlBusy) { nlEnsureTrained().then(() => { if (_palOpen) renderPalette(); }); }
       const prop = rq.length >= 4 ? nlPropose(raw) : null;
-      _palItems = [...(prop ? [prop] : []), ...nlComplete(raw)];
+      const comps = nlComplete(raw);
+      // the honest fallback: a phrase it does not know gets NO proposal, and says so
+      const miss = !prop && !comps.length && _nlDispatcher && rq.length >= 4
+        ? [{ id: 'nl:none', group: '', title: tr('not understood — nothing proposed'), hint: tr('rephrase, or ⌘K for commands'), fill: raw }] : [];
+      _palItems = [...(prop ? [prop] : []), ...miss, ...comps];
     }
   } else if (_nlOn && !_palItems.length && q.length >= 4) {
     if (!_nlDispatcher && !_nlBusy) { nlEnsureTrained().then(() => { if (_palOpen) renderPalette(); }); }

@@ -1592,9 +1592,10 @@ if (take()) {
   await pk.close();
 }
 
-// ── §33: the EXPERIMENTAL natural-language bar — the SAFETY properties ──
-// Its accuracy is allowed to be imperfect; these three are not:
-//   (a) it is OFF by default — a cold visitor never meets a box that guesses
+// ── §33: the plain-language bar — the SAFETY properties ──
+// Its accuracy is scored in test/micro-nl.test.mjs; these three are not negotiable:
+//   (a) it is ON by default (it passed that gate) yet LAZY — nothing trains, nothing is
+//       proposed, until the bar is actually used
 //   (b) it PROPOSES, it never ACTS — nothing happens until you read it and press Enter
 //   (c) nonsense is refused, not guessed at
 if (take()) {
@@ -1606,7 +1607,7 @@ if (take()) {
     await window._micro.openBlob(new Blob([t]), 'deposit.csv', 'replace');
     await new Promise((z) => setTimeout(z, 1200));
 
-    const offByDefault = { stored: localStorage.getItem('micro.nl'), proposes: !!window._micro.nlPropose('colour the model by FE') };
+    const offByDefault = { stored: localStorage.getItem('micro.nl'), proposes: !!window._micro.nlPropose('colour the model by FE'), trained: window._micro.nlStats() != null };
 
     window._micro.nlSetEnabled(true);
     await window._micro.nlEnsureTrained();
@@ -1636,8 +1637,8 @@ if (take()) {
     window._micro.nlSetEnabled(false);
     return { offByDefault, said: said && said.title, sym: sym && sym.title, cat: cat && cat.title, grp: grpProp && grpProp.title, grpHidden, nStarters, compHit, bdChips, junk: junk && junk.title, before, after };
   });
-  chk(`NL bar: OFF by default — nothing stored, nothing proposed (stored=${r.offByDefault.stored})`,
-    r.offByDefault.stored === null && r.offByDefault.proposes === false);
+  chk(`NL bar: on by default but lazy — nothing stored, nothing trained or proposed before use (stored=${r.offByDefault.stored})`,
+    r.offByDefault.stored === null && r.offByDefault.proposes === false && r.offByDefault.trained === false);
   chk(`NL bar: it PROPOSES ("${r.said}") and does NOT act — filter stayed "${r.before}" until run, then "${r.after}"`,
     /FE/.test(r.said || '') && r.before === '' && /FE/.test(r.after) && /60/.test(r.after));
   chk(`NL bar: SYMBOL operators dispatch to a filter, not colour-by (FE > 55 → "${r.sym}")`, /FE\s*>\s*55/.test(r.sym || ''));
