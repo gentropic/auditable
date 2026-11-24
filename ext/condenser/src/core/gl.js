@@ -10,6 +10,7 @@
 
 import { frustumPlanes, aabbInFrustum, mat4Inverse, translateState } from './camera.js';
 import { createBlocksPipeline, categoryPalettePixels } from './gl-blocks.js';
+import { createMipPipeline, PROJECTION_MODES } from './gl-mip.js';
 import { createSticksPipeline } from './gl-sticks.js';
 import { createMeshPipeline } from './gl-mesh.js';
 import { createSoupPipeline } from './gl-soup.js';
@@ -77,6 +78,7 @@ void main() {
     int rs = int(aRec);
     selHit = texelFetch(uSel, ivec2(rs & 8191, rs >> 13), 0).r;
   }
+  float mipT = 0.0; bool mipBlank = true;                 // the value a PROJECTION reads (gl-mip.js)
   if (uColorMode == 0) {
     float t = clamp((p.z - uZRange.x) / max(uZRange.y, 1e-6), 0.0, 1.0);
     vColor = texture(uRamp, vec2(t, 0.5));
@@ -90,6 +92,7 @@ void main() {
       blank = v < -1.0e37;                                 // the value texture's BLANK
       t = clamp((v - uChanDoc.x) / max(uChanDoc.y, 1e-6), 0.0, 1.0);
     } else t = clamp(aIntensity * uIntensityScale, 0.0, 1.0);
+    mipT = t; mipBlank = blank;
     if (blank && uNoDataOn > 0.5) {
       vColor = vec4(uNoData.rgb, 1.0);
       if (uNoData.a < 0.5) vCull = 1.0;
@@ -106,6 +109,12 @@ void main() {
   if (selHit > 0.5) vColor = vec4(mix(vColor.rgb, vec3(1.0, 0.85, 0.3), 0.55), vColor.a);   // selected: warm gold wash
   if (aRec == uPicked && uLayer == uPickedLayer) vColor = vec4(mix(vColor.rgb, vec3(1.0, 0.15, 0.7), 0.85) + 0.1, vColor.a);   // picked: hot magenta — the hue viridis doesn't have
   if ((uRepaint.x != 0xFFFFFFFFu || uRepaint.y != 0xFFFFFFFFu) && aRec != uRepaint.x && aRec != uRepaint.y) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);   // repaint pass: everything else clips out
+#ifdef MIP
+  // a PROJECTION (gl-mip.js): R = the normalized value, G = 1 (the mean's count) —
+  // or nothing: blanks and filtered-out points (dim or isolate) don't contribute
+  if (uColorMode != 1 || mipBlank || m < 0.5) vCull = 1.0;
+  vColor = vec4(mipT, 1.0, 0.0, 1.0);
+#endif
 }`;
 
 const FRAG = `#version 300 es
@@ -121,7 +130,7 @@ void main() {
 }`;
 
 export { makeProgram } from './gl-util.js';
-import { makeProgram } from './gl-util.js';
+import { makeProgram, withDefines } from './gl-util.js';
 
 // ── LUTs ──
 // A small viridis-ish ramp (Switchboard-friendly; perceptual enough for v0.1).
@@ -215,19 +224,29 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
   // the cost is one buffer copy per composite — negligible next to the splat pass.
   const gl = canvas.getContext('webgl2', { antialias: false, alpha: false, preserveDrawingBuffer: true });
   if (!gl) throw new Error('condenser: WebGL2 unavailable');
-  const prog = makeProgram(gl, VERT, FRAG);
-  const U = (n) => gl.getUniformLocation(prog, n);
-  const uni = {
-    viewProj: U('uViewProj'), boxMin: U('uBoxMin'), boxSpan: U('uBoxSpan'),
-    pointPx: U('uPointPx'), colorMode: U('uColorMode'), zRange: U('uZRange'),
-    intensityScale: U('uIntensityScale'), ramp: U('uRamp'), palette: U('uPalette'), picked: U('uPicked'), pickedLayer: U('uPickedLayer'), layer: U('uLayer'), repaint: U('uRepaint'),
-    secPlane: U('uSecPlane'), secCfg: U('uSecCfg'),
-    mask: U('uMask'), filterOn: U('uFilterOn'), isolate: U('uIsolate'), paletteN: U('uPaletteN'),
-    catVis: U('uCatVis'), catVisOn: U('uCatVisOn'),
-    sel: U('uSel'), selOn: U('uSelOn'),
-    rule: U('uRule'), ruleOn: U('uRuleOn'),
-    chanTex: U('uChanTex'), chanTexOn: U('uChanTexOn'), chanDoc: U('uChanDoc'), noData: U('uNoData'), noDataOn: U('uNoDataOn'),
+  // the points program — and its projection twin (gl-mip.js), built on first use
+  const ptsProgram = (defs) => {
+    const p = makeProgram(gl, withDefines(VERT, defs), withDefines(FRAG, defs));
+    const U = (n) => gl.getUniformLocation(p, n);
+    return { prog: p, uni: {
+      viewProj: U('uViewProj'), boxMin: U('uBoxMin'), boxSpan: U('uBoxSpan'),
+      pointPx: U('uPointPx'), colorMode: U('uColorMode'), zRange: U('uZRange'),
+      intensityScale: U('uIntensityScale'), ramp: U('uRamp'), palette: U('uPalette'), picked: U('uPicked'), pickedLayer: U('uPickedLayer'), layer: U('uLayer'), repaint: U('uRepaint'),
+      secPlane: U('uSecPlane'), secCfg: U('uSecCfg'),
+      mask: U('uMask'), filterOn: U('uFilterOn'), isolate: U('uIsolate'), paletteN: U('uPaletteN'),
+      catVis: U('uCatVis'), catVisOn: U('uCatVisOn'),
+      sel: U('uSel'), selOn: U('uSelOn'),
+      rule: U('uRule'), ruleOn: U('uRuleOn'),
+      chanTex: U('uChanTex'), chanTexOn: U('uChanTexOn'), chanDoc: U('uChanDoc'), noData: U('uNoData'), noDataOn: U('uNoDataOn'),
+    } };
   };
+  const ptsNormal = ptsProgram('');
+  let ptsMip = null;
+  const prog = ptsNormal.prog;
+  let uni = ptsNormal.uni;
+  let mipPipe = null;                                     // projection targets + composite (gl-mip.js), lazy
+  let lastMip = null;                                     // the last frame's projection: { mode, layers, … } — pick() reads it
+  let lastMipKey = '';                                    // which layers it projected (a change re-rasters)
   const ramp = lutTexture(gl, rampPixels(), 256);
   const palette = lutTexture(gl, palettePixels(), 32);   // LAS classification (points)
   let catPalette = null;                                  // category palette (blocks), lazy
@@ -354,7 +373,8 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
   // a pending re-raster (needClear) means what is clickable changed — a class eye,
   // a rule code under eyes, visibility — but the capture is only thrown away when
   // the next frame draws; until then it must not answer a pick
-  const capReady = (key) => !globalThis.__noPickCapture && !needClear && !!(idCapture && idCapture.complete && idCapture.key === key && idCapture.w === canvas.width && idCapture.h === canvas.height);
+  // (under a projection the picture isn't the front surface: picks render live)
+  const capReady = (key) => !globalThis.__noPickCapture && !needClear && !lastMip && !!(idCapture && idCapture.complete && idCapture.key === key && idCapture.w === canvas.width && idCapture.h === canvas.height);
   // every capture that is thrown away goes through here, so a fence still pending
   // on it is deleted rather than left to the collector
   const dropCapture = () => { if (idCapture && idCapture.fence) gl.deleteSync(idCapture.fence); idCapture = null; };
@@ -430,6 +450,14 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
     layerVramBytes(layer) { return chunks.reduce((s, c) => s + (c._layer === layer ? (c.bytes || 0) : 0), 0); },
     get accumulated() { return chunks.reduce((s, c) => s + (activeChunk(c) ? c.cursor : 0), 0); },   // elements in the current accumulation
     get resolveCount() { return resolves; },               // deferred re-shade passes run (harness observability)
+    // PROJECTIONS (gl-mip.js): what this GPU offers per mode ({ max, min, mean } →
+    // { format, bits, float } | null), the last frame's projection ({ mode, layers,
+    // drawn, total, exact } | null), and a layer's projected values as drawn —
+    // { data: Float32Array of normalized t per device pixel, rows bottom-up, NaN
+    // where nothing projected; w, h, format, mode } | null
+    get projectionSupport() { if (!mipPipe) mipPipe = createMipPipeline(gl); return mipPipe.support(); },
+    get projection() { return lastMip ? { ...lastMip, layers: [...lastMip.layers] } : null; },
+    projectionValues(layer) { return mipPipe ? mipPipe.read(layer) : null; },
     addChunk(chunk, set = 'base', layer = 0) {
       if (viewSrc.has(layer)) throw new Error(`renderer: layer ${layer} is a view — it draws its source's chunks, not its own`);
       const ls = layerOf(layer);
@@ -764,6 +792,7 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
       if (ls && ls.ruleTex) gl.deleteTexture(ls.ruleTex);
       layers.delete(layer);
       if (resolvePipe) resolvePipe.dropBake(layer);
+      if (mipPipe) mipPipe.drop(layer);
       layerMaxRec.delete(layer); bakeDirty.delete(layer);
       lastCosSig.delete(layer); cosmeticDirtyLayers.delete(layer);
       needClear = true;
@@ -823,7 +852,7 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
     // the camera, the geometry, a re-raster — throws the capture away and the
     // next idle frames rebuild it. → true when there is nothing (more) to do.
     idleCapture(cam, { pointPx = 2.5, blocksAsPoints = false, section = null, budget = 3_000_000 } = {}) {
-      if (!chunks.length || !lastConverged || needClear) return true;
+      if (!chunks.length || !lastConverged || needClear || lastMip) return true;
       if (!pickPipe) pickPipe = createPickPipeline(gl);
       const sec = section && section.on ? section : null, key = capKey(cam, pointPx, blocksAsPoints, sec);
       if (idCapture && idCapture.complete && idCapture.key === key && idCapture.w === canvas.width && idCapture.h === canvas.height) {   // complete — done once the GPU has caught up with it
@@ -855,6 +884,23 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
       const px = Math.round(cssX * dpr), py = Math.round(canvas.height - cssY * dpr - 1);
       if (px < 0 || py < 0 || px >= canvas.width || py >= canvas.height) return null;
       const sec = section && section.on ? section : null, key = capKey(cam, pointPx, blocksAsPoints, sec);
+      // a PROJECTION names the record that IS the pixel's value (gl-mip.js): the
+      // projected layer whose colour shows here (the last one composited that hit
+      // it), drawn once more with depth = how far each record's value is from the
+      // pixel's (max: 1 − t, min: t, mean: |t − mean|) — the depth test keeps the
+      // one the picture shows, exactly, with no float equality anywhere
+      if (lastMip && mipPipe && lastMip.w === canvas.width && lastMip.h === canvas.height) {   // (a figure render resized the canvas: until the next frame, no projection to read)
+        const pOpts = { pointPx, blocksAsPoints, layerStates: layers, section: sec, viewportW: canvas.width, viewportH: canvas.height };
+        for (const id of [...lastMip.layers].reverse()) {
+          const r = mipPipe.read(id, px, py, 1, 1);
+          const t = r ? r.data[0] : NaN;
+          if (!(t === t)) continue;                          // nothing projected here on this layer
+          const hit = pickPipe.pick(px, py, chunks.filter((c) => activeChunk(c) && c._layer === id), cam, { ...pOpts, mip: { mode: lastMip.mode, ref: t } });
+          if (hit) return { ...hit, projection: { mode: lastMip.mode, t } };
+        }
+        // no projection under the cursor: the rest of the scene, as usual
+        return pickPipe.pick(px, py, chunks.filter((c) => activeChunk(c) && !lastMip.layers.includes(c._layer)), cam, pOpts);
+      }
       if (capReady(key)) {                                 // the still frame's id buffer is complete: read it, no render
         pickFromCapture++;
         const o = pickPipe.readCaptured(px, py, 1, 1);
@@ -874,6 +920,8 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
       for (const ls of layers.values()) { if (ls.maskTex) gl.deleteTexture(ls.maskTex); if (ls.catVisTex) gl.deleteTexture(ls.catVisTex); if (ls.rampTex) gl.deleteTexture(ls.rampTex); if (ls.paletteTex) gl.deleteTexture(ls.paletteTex); if (ls.selTex) gl.deleteTexture(ls.selTex); if (ls.ruleTex) gl.deleteTexture(ls.ruleTex); }
       layers.clear(); viewSrc.clear();
       if (resolvePipe) resolvePipe.clear();
+      if (mipPipe) mipPipe.clear();
+      lastMip = null; lastMipKey = '';
       layerMaxRec.clear(); bakeDirty.clear(); dropCapture();
       lastCosSig.clear(); cosmeticDirtyLayers.clear();
     },
@@ -891,16 +939,23 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
     // opts.layerOpts = { [id]: { colorMode, clip } } overrides the global color
     // opts per layer (absent → the globals, so single-layer callers are unchanged).
     // Returns { drawn, converged, visible }.
-    draw(cam, { budget = 3_000_000, pointPx = 2.5, colorMode = 0, blocksAsPoints = false, blockEdges = false, section = null, clip = null, layerOpts = null } = {}) {
+    // opts.projection: 'max' | 'min' | 'mean' | null — the PROJECTION mode (gl-mip.js):
+    // every visible blocks/points layer coloured by a VALUE (colour mode 1) draws as
+    // the per-pixel max / min / mean of its normalized values along the line of
+    // sight, occlusion ignored; everything else draws as usual underneath. The
+    // result's `projection` says which layers and how much of them has been drawn
+    // ({ mode, layers, drawn, total, exact }) — approximate until exact.
+    draw(cam, { budget = 3_000_000, pointPx = 2.5, colorMode = 0, blocksAsPoints = false, blockEdges = false, section = null, clip = null, layerOpts = null, projection = null } = {}) {
       const vp = cam.state.viewProj;
       const camMemo = new Map();
       const camOf = (id) => camFor(cam, id, camMemo);      // a moved layer's camera (setLayerOffset)
       const sec = section && section.on ? section : null;
       const secKey = sec ? `${sec.n.join(',')}|${sec.d}|${sec.half}` : 'off';
+      const mipMode = PROJECTION_MODES.includes(projection) ? projection : null;
       // the old single draw key, SPLIT: structural changes re-raster; cosmetic
       // ones (color mode, clip, per-layer view opts — plus whatever the
       // cosmetic setters touched) can deferred-re-shade over the converged frame
-      const structKey = `${pointPx}|${blocksAsPoints ? 'P' : 'B'}${blockEdges ? 'E' : ''}|${secKey}|${canvas.width}x${canvas.height}`;
+      const structKey = `${pointPx}|${blocksAsPoints ? 'P' : 'B'}${blockEdges ? 'E' : ''}|${secKey}|${canvas.width}x${canvas.height}${mipMode ? '|' + mipMode : ''}`;
       let moving = vpChanged(vp) || structKey !== lastKey || needClear;
 
       const db = docBbox || Float64Array.of(0, 0, 0, 1, 1, 1);
@@ -929,6 +984,16 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
       // converged frame without its first chunk (a streamed layer arriving piece by piece)
       for (const id of kindBy.keys()) if (lastCosSig.has(id) && lastCosSig.get(id) !== sigOf(id)) dirty.add(id);
       for (const id of [...dirty]) { const k = kindBy.get(id); if (!k || k === 'mesh') dirty.delete(id); }
+      // the layers this frame PROJECTS: blocks/points coloured by a value, when the GPU offers the mode
+      const mipIds = new Set();
+      if (mipMode) {
+        if (!mipPipe) mipPipe = createMipPipeline(gl);
+        if (mipPipe.supports(mipMode)) for (const [id, k] of kindBy) if ((k === 'blocks' || k === 'points') && lopt(id).colorMode === 1) mipIds.add(id);
+      }
+      // a layer entering or leaving the projection changes what every pixel it covers
+      // means (a projected pixel isn't its front surface): start the frame over
+      const mipKey = [...mipIds].join(',');
+      if (mipKey !== lastMipKey) { moving = true; lastMipKey = mipKey; }
 
       // ── DEFERRED RE-SHADE (gl-resolve.js): cosmetic changes over a CONVERGED
       // frame become one fullscreen resolve pass per DIRTY layer — O(pixels) at
@@ -936,7 +1001,8 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
       // block ramp drags) keep their accumulated pixels; only a change to a
       // layer the id buffer can't express (sticks/soup recolor, culling,
       // opacity, edges) falls through to the re-raster. ──
-      if (!moving && dirty.size && lastConverged) {
+      // (not under a projection: the id buffer is the FRONT surface, a projection's pixel isn't)
+      if (!moving && dirty.size && lastConverged && !mipIds.size) {
         if (!resolvePipe) resolvePipe = createResolvePipeline(gl);
         resolveOk: if (resolvePipe.ok) {
           let bail = false;
@@ -1135,10 +1201,13 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
         gl.bindVertexArray(null);
       }
 
-      const pts = visible.filter((c) => c.kind === 'points');
-      if (pts.length) {
-        const ptsGroups = byLayer(pts);
-        gl.useProgram(prog);
+      // PROJECTED layers (gl-mip.js) leave the raster: they draw into their own
+      // targets after it, and composite over it
+      const isMip = (c) => mipIds.has(c._layer);
+      // the points program's per-frame state (the raster's, or the projection's)
+      const ptsFrame = (P) => {
+        uni = P.uni;
+        gl.useProgram(P.prog);
         gl.uniformMatrix4fv(uni.viewProj, false, vp);
         gl.uniform1f(uni.pointPx, pointPx * backingRatio(canvas));
         gl.uniform1ui(uni.picked, pickedRec);
@@ -1146,8 +1215,10 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
         gl.uniform2ui(uni.repaint, 0xFFFFFFFF, 0xFFFFFFFF);
         gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, ramp); gl.uniform1i(uni.ramp, 0);
         gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, palette); gl.uniform1i(uni.palette, 1);
-        // per-layer uniforms + slices (front-to-back preserved within each group)
-        const setupPtsLayer = (id) => {
+      };
+      const pts = visible.filter((c) => c.kind === 'points' && !isMip(c));
+      // per-layer uniforms (reads `uni`: whichever program ptsFrame set up)
+      const setupPtsLayer = (id) => {
           const ls = layerOf(id), o = lopt(id), zr = zRangeOf(o);
           gl.uniform1ui(uni.layer, id >>> 0);
           gl.uniform1f(uni.pointPx, pointPx * backingRatio(canvas) * (ls.pointScale || 1));   // a per-layer glyph size
@@ -1179,7 +1250,10 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
           gl.uniform1f(uni.noDataOn, ls.noData ? 1 : 0);
           if (ls.noData) gl.uniform4f(uni.noData, ls.noData[0], ls.noData[1], ls.noData[2], ls.noData[3]);
           gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, ls.rampTex || ramp); gl.uniform1i(uni.ramp, 0);
-        };
+      };
+      if (pts.length) {
+        const ptsGroups = byLayer(pts);
+        ptsFrame(ptsNormal);
         for (const [id, group] of ptsGroups) {
           setupPtsLayer(id);
           for (const c of group) {
@@ -1211,36 +1285,37 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
         }
       }
 
-      const blks = visible.filter((c) => c.kind === 'blocks');
+      const perspScale = (canvas.height / 2) / Math.tan(cam.state.fovY / 2);
+      const cheapOf = (c) => {
+        // the whole chunk below the demotion threshold → the cheap program
+        // (no gl_FragDepth → early-z stays on): the far-field perf lever
+        const b = c.bboxLocal;
+        const bboxR = Math.hypot(b[3] - b[0], b[4] - b[1], b[5] - b[2]) / 2;
+        // sub-blocked: fine grid.size is the fine step — use the chunk's largest box radius
+        const s = c.grid.size, q = c.sub ? c.dimQMax : null;
+        const rBlock = q
+          ? Math.hypot(q[0] * s[0], q[1] * s[1], q[2] * s[2]) / 2
+          : Math.hypot(s[0], s[1], s[2]) / 2;
+        const distNear = Math.max(cam.state.near, c._dist - bboxR);
+        return blocksAsPoints || rBlock * perspScale / distNear < 2.0;
+      };
+      const beginLayer = (id, projection = false) => {
+        const ls = layerOf(id), o = lopt(id);
+        blocksPipe.begin(camOf(id), {
+          pointPx, colorMode: o.colorMode, zRange: zRangeOf(o),
+          chanDoc: chanDocOf(ls, o),
+          ramp: ls.rampTex || ramp, palette: ls.paletteTex || catPalette || palette, viewportH: canvas.height,
+          maskTex: ls.maskTex, isolate: ls.isolate, pointsView: blocksAsPoints, picked: pickedRec, pickedLayer, layer: id,
+          section: layerSecOf(ls, sec),
+          catVisTex: ls.catVisTex, selTex: ls.selTex, ruleTex: ls.ruleOn ? ls.ruleTex : null,
+          chanTex: ls.chanTex, noData: ls.noData,
+          opacity: ls.opacity, edges: ls.edges != null ? ls.edges : blockEdges,   // per-layer override, else the View toggle
+          projection,
+        });
+      };
+      const blks = visible.filter((c) => c.kind === 'blocks' && !isMip(c));
       if (blks.length) {
         const blkGroups = byLayer(blks);
-        const perspScale = (canvas.height / 2) / Math.tan(cam.state.fovY / 2);
-        const cheapOf = (c) => {
-          // the whole chunk below the demotion threshold → the cheap program
-          // (no gl_FragDepth → early-z stays on): the far-field perf lever
-          const b = c.bboxLocal;
-          const bboxR = Math.hypot(b[3] - b[0], b[4] - b[1], b[5] - b[2]) / 2;
-          // sub-blocked: fine grid.size is the fine step — use the chunk's largest box radius
-          const s = c.grid.size, q = c.sub ? c.dimQMax : null;
-          const rBlock = q
-            ? Math.hypot(q[0] * s[0], q[1] * s[1], q[2] * s[2]) / 2
-            : Math.hypot(s[0], s[1], s[2]) / 2;
-          const distNear = Math.max(cam.state.near, c._dist - bboxR);
-          return blocksAsPoints || rBlock * perspScale / distNear < 2.0;
-        };
-        const beginLayer = (id) => {
-          const ls = layerOf(id), o = lopt(id);
-          blocksPipe.begin(camOf(id), {
-            pointPx, colorMode: o.colorMode, zRange: zRangeOf(o),
-            chanDoc: chanDocOf(ls, o),
-            ramp: ls.rampTex || ramp, palette: ls.paletteTex || catPalette || palette, viewportH: canvas.height,
-            maskTex: ls.maskTex, isolate: ls.isolate, pointsView: blocksAsPoints, picked: pickedRec, pickedLayer, layer: id,
-            section: layerSecOf(ls, sec),
-            catVisTex: ls.catVisTex, selTex: ls.selTex, ruleTex: ls.ruleOn ? ls.ruleTex : null,
-            chanTex: ls.chanTex, noData: ls.noData,
-            opacity: ls.opacity, edges: ls.edges != null ? ls.edges : blockEdges,   // per-layer override, else the View toggle
-          });
-        };
         for (const [id, group] of blkGroups) {
           beginLayer(id);
           for (const c of group) {
@@ -1312,9 +1387,55 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
         }
       }
       if (rp) repaintSet.clear();
+
+      // ── PROJECTION (gl-mip.js): each projected layer's next slices blend into its
+      // own target (the same allotment as the raster, so they converge together),
+      // then one fullscreen pass per layer maps the target through its ramp over
+      // the frame. Composited LAST, every frame: whatever the raster drew this
+      // frame under a projected pixel is painted over again. ──
+      let mipInfo = null;
+      if (mipIds.size) {
+        const target = gl.getParameter(gl.FRAMEBUFFER_BINDING);
+        let n = 0, m = 0;
+        for (const id of mipIds) {
+          const group = visible.filter((c) => c._layer === id);
+          mipPipe.begin(id, mipMode, canvas.width, canvas.height, moving);
+          if (kindBy.get(id) === 'blocks') {
+            beginLayer(id, true);
+            for (const c of group) {
+              const [first, k] = allot(c);
+              if (k > 0) { blocksPipe.drawSlice(c, first, k, cheapOf(c)); drawn += k; c.cursor = first + k; }
+            }
+          } else {
+            if (!ptsMip) ptsMip = ptsProgram('#define MIP 1');
+            ptsFrame(ptsMip);
+            setupPtsLayer(id);
+            for (const c of group) {
+              const [first, k] = allot(c);
+              if (k > 0) {
+                gl.uniform3f(uni.boxMin, c.bboxLocal[0], c.bboxLocal[1], c.bboxLocal[2]);
+                gl.uniform3f(uni.boxSpan, c.bboxLocal[3] - c.bboxLocal[0], c.bboxLocal[4] - c.bboxLocal[1], c.bboxLocal[5] - c.bboxLocal[2]);
+                gl.bindVertexArray(c.vao);
+                gl.drawArrays(gl.POINTS, first, k);
+                drawn += k; c.cursor = first + k;
+              }
+            }
+            uni = ptsNormal.uni;
+          }
+          for (const c of group) { n += c.cursor; m += c.count; if (c.cursor < c.count) converged = false; }
+        }
+        mipPipe.end();
+        gl.bindFramebuffer(gl.FRAMEBUFFER, target);
+        gl.viewport(0, 0, canvas.width, canvas.height);
+        for (const id of mipIds) mipPipe.composite(id, layerOf(id).rampTex || ramp);
+        gl.enable(gl.DEPTH_TEST);
+        mipInfo = { mode: mipMode, layers: [...mipIds], drawn: n, total: m, exact: n === m, w: canvas.width, h: canvas.height };
+      }
+      lastMip = mipInfo;
+
       lastConverged = converged;
       gl.bindVertexArray(null);
-      return { drawn, converged, visible: lastVisible };
+      return mipInfo ? { drawn, converged, visible: lastVisible, projection: mipInfo } : { drawn, converged, visible: lastVisible };
     },
   };
 }

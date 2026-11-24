@@ -14,5 +14,9 @@ export function makeProgram(gl, vsrc, fsrc) {
   return p;
 }
 
+// a shader with preprocessor defines ahead of everything but the #version line
+// (a projection's program twins, gl-mip.js, are the plain ones built with `#define MIP 1`)
+export const withDefines = (src, defs) => (defs ? src.replace('#version 300 es\n', `#version 300 es\n${defs}\n`) : src);
+
 // a block chunk's lattice rotation when it has none (axis-aligned), column-major mat3
 export const IDENTITY3 = new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1]);

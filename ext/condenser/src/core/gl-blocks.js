@@ -30,7 +30,7 @@
 
 import { backingRatio } from './ratio.js';
 import { chanDequant } from './chan.js';
-import { makeProgram, IDENTITY3 } from './gl-util.js';
+import { makeProgram, IDENTITY3, withDefines } from './gl-util.js';
 import { mat4Inverse } from './camera.js';
 
 const VERT = `#version 300 es
@@ -116,6 +116,7 @@ void main() {
   vec3 wp = center + (uRight * corner.x + uUp * corner.y) * quadR;
   gl_Position = uViewProj * vec4(wp, 1.0);
   vCenter = center; vHalf = half_; vMode = demoted; vCorner = corner; vWorldPos = wp; vPxR = pxR;
+  float mipT = 0.0; bool mipBlank = true;                 // the value a PROJECTION reads (gl-mip.js)
   if (uColorMode == 0) {
     float t = clamp((center.z - uZRange.x) / max(uZRange.y, 1e-6), 0.0, 1.0);
     vColor = texture(uRamp, vec2(t, 0.5));
@@ -126,11 +127,13 @@ void main() {
       ? texelFetch(uChanTex, ivec2(cr & 8191, cr >> 13), 0).r
       : uChanChunk.x + aChan * uChanChunk.y;
     bool blank = uChanTexOn > 0.5 ? v < -1.0e37 : aChan < 0.5 / 65535.0;
+    mipBlank = blank;
     if (blank && uNoDataOn > 0.5) {
       vColor = vec4(uNoData.rgb, 1.0);
       if (uNoData.a < 0.5) vCull = 1.0;
     } else {
       float t = clamp((v - uChanDoc.x) / max(uChanDoc.y, 1e-6), 0.0, 1.0);
+      mipT = t;
       vColor = texture(uRamp, vec2(t, 0.5));
       if (vColor.a < 0.5) vCull = 1.0;
     }
@@ -146,6 +149,13 @@ void main() {
   if (uFilterOn > 0.5 && m < 0.5) vColor = vec4(vColor.rgb * 0.3, vColor.a);   // context mode: dim non-matching (still legible)
   if (aRec == uPicked && uLayer == uPickedLayer) vColor = vec4(mix(vColor.rgb, vec3(1.0, 0.15, 0.7), 0.85) + 0.1, vColor.a);   // picked: hot magenta — the hue viridis doesn't have
   if ((uRepaint.x != 0xFFFFFFFFu || uRepaint.y != 0xFFFFFFFFu) && aRec != uRepaint.x && aRec != uRepaint.y) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);   // repaint pass: everything else clips out
+#ifdef MIP
+  // a PROJECTION (gl-mip.js): the record contributes its normalized value — R = t,
+  // G = 1 (the mean's count) — or nothing: a blank has no value, and a record the
+  // filter leaves out (dim or isolate) is out of the projection
+  if (uColorMode != 1 || mipBlank || m < 0.5) vCull = 1.0;
+  vColor = vec4(mipT, 1.0, 0.0, 1.0);
+#endif
 }`;
 
 // 4×4-Bayer screen-door opacity (same as gl-mesh): drops a fraction of pixels by a
@@ -182,10 +192,14 @@ out vec4 outColor;
 ${SCREENDOOR}
 void main() {
   if (vCull > 0.5) discard;             // isolate mode: filtered-out block
+#ifndef MIP
   if (_screendoor()) discard;           // per-layer opacity (screen-door)
+#endif
   if (vMode > 0.5) {                    // demoted splat: circular mask, rasterizer depth
     if (dot(vCorner, vCorner) > 1.0) discard;
+#ifndef MIP
     gl_FragDepth = gl_FragCoord.z;
+#endif
     outColor = vColor;
     return;
   }
@@ -240,6 +254,9 @@ void main() {
       if (tin > tout || tout < 0.0) discard;
     }
   }
+#ifdef MIP
+  outColor = vColor;                    // the ray crosses this box (inside the slab): it counts, once per pixel
+#else
   float t = tin > 0.0 ? tin : tout;     // inside the box → exit face
   bool onCut = cutFace != 0.0 && t == tin;
   if (onCut) n = uSecPlane.xyz * cutFace;
@@ -263,6 +280,7 @@ void main() {
     shade *= 1.0 - 0.4 * edge;
   }
   outColor = vec4(vColor.rgb * shade, vColor.a);
+#endif
 }`;
 
 // Far-field fragment: splat only, NO gl_FragDepth anywhere → early-z stays
@@ -283,7 +301,9 @@ out vec4 outColor;
 ${SCREENDOOR}
 void main() {
   if (vCull > 0.5) discard;
+#ifndef MIP
   if (_screendoor()) discard;
+#endif
   if (dot(vCorner, vCorner) > 1.0) discard;
   outColor = vColor;
 }`;
@@ -301,8 +321,8 @@ export function categoryPalettePixels(n = 256) {
 }
 
 export function createBlocksPipeline(gl) {
-  const mkProg = (frag) => {
-    const prog = makeProgram(gl, VERT, frag);
+  const mkProg = (frag, defs = '') => {
+    const prog = makeProgram(gl, withDefines(VERT, defs), withDefines(frag, defs));
     const U = (n) => gl.getUniformLocation(prog, n);
     return { prog, uni: {
       viewProj: U('uViewProj'), eye: U('uEye'), right: U('uRight'), up: U('uUp'),
@@ -319,8 +339,13 @@ export function createBlocksPipeline(gl) {
       ortho: U('uOrtho'), fwd: U('uFwd'), orthoRay: U('uOrthoRay'), backoff: U('uBackoff'), invVP: U('uInvVP'), vp: U('uVp'),
     } };
   };
-  const full = mkProg(FRAG), cheap = mkProg(FRAG_CHEAP);
-  let active = full;
+  // the program SETS: the raster, and (built on first use, so a scene that never
+  // projects never compiles them) the projection's — same geometry, same culling,
+  // the fragment writes the value instead of a lit colour (gl-mip.js)
+  const normal = { full: mkProg(FRAG), cheap: mkProg(FRAG_CHEAP) };
+  let mip = null;
+  let set = normal;
+  let active = normal.full;
 
   // Upload one BlockChunk → buffers + a VAO whose instance pointers get re-aimed
   // per slice. CPU arrays are free to die after this returns.
@@ -345,7 +370,7 @@ export function createBlocksPipeline(gl) {
   // useCheap: the whole chunk projects below the demotion threshold, so the
   // no-gl_FragDepth program (early-z enabled) draws it as forced splats.
   function drawSlice(c, first, k, useCheap = false) {
-    const pp = useCheap ? cheap : full;
+    const pp = useCheap ? set.cheap : set.full;
     if (pp !== active) { gl.useProgram(pp.prog); active = pp; }
     const uni = active.uni;
     gl.uniform1f(uni.forceSplat, useCheap ? 1 : 0);
@@ -390,9 +415,11 @@ export function createBlocksPipeline(gl) {
 
   // Per-frame program state (called once before the chunk loop) — set on BOTH
   // programs so drawSlice can switch freely between full and cheap.
-  function begin(cam, { pointPx, colorMode, zRange, chanDoc, ramp, palette, viewportH, maskTex = null, isolate = false, pointsView = false, picked = 0xFFFFFFFF, pickedLayer = 0xFFFFFFFF, layer = 0, section = null, catVisTex = null, selTex = null, ruleTex = null, chanTex = null, opacity = 1, edges = false, noData = null }) {
+  function begin(cam, { pointPx, colorMode, zRange, chanDoc, ramp, palette, viewportH, maskTex = null, isolate = false, pointsView = false, picked = 0xFFFFFFFF, pickedLayer = 0xFFFFFFFF, layer = 0, section = null, catVisTex = null, selTex = null, ruleTex = null, chanTex = null, opacity = 1, edges = false, noData = null, projection = false }) {
     const s = cam.state;
-    for (const pp of [full, cheap]) {
+    if (projection && !mip) mip = { full: mkProg(FRAG, '#define MIP 1'), cheap: mkProg(FRAG_CHEAP, '#define MIP 1') };
+    set = projection ? mip : normal;
+    for (const pp of [set.full, set.cheap]) {
       gl.useProgram(pp.prog);
       const uni = pp.uni;
       gl.uniformMatrix4fv(uni.viewProj, false, s.viewProj);
@@ -447,14 +474,14 @@ export function createBlocksPipeline(gl) {
       if (noData) gl.uniform4f(uni.noData, noData[0], noData[1], noData[2], noData[3]);
       if (chanTex) { gl.activeTexture(gl.TEXTURE8); gl.bindTexture(gl.TEXTURE_2D, chanTex); gl.uniform1i(uni.chanTex, 8); }
     }
-    active = full;
-    gl.useProgram(full.prog);
+    active = set.full;
+    gl.useProgram(set.full.prog);
   }
 
   // The pick-repaint pass (gl.js): both programs get the target pair, then the
   // lazily-tracked active program is restored so drawSlice's cache stays honest.
   function setRepaint(a, b) {
-    for (const pp of [full, cheap]) { gl.useProgram(pp.prog); gl.uniform2ui(pp.uni.repaint, a >>> 0, b >>> 0); }
+    for (const pp of [set.full, set.cheap]) { gl.useProgram(pp.prog); gl.uniform2ui(pp.uni.repaint, a >>> 0, b >>> 0); }
     if (active) gl.useProgram(active.prog);
   }
 

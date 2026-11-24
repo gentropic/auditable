@@ -4535,6 +4535,10 @@ function makeProgram(gl, vsrc, fsrc) {
   return p;
 }
 
+// a shader with preprocessor defines ahead of everything but the #version line
+// (a projection's program twins, gl-mip.js, are the plain ones built with `#define MIP 1`)
+const withDefines = (src, defs) => (defs ? src.replace('#version 300 es\n', `#version 300 es\n${defs}\n`) : src);
+
 // a block chunk's lattice rotation when it has none (axis-aligned), column-major mat3
 const IDENTITY3 = new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1]);
 
@@ -7192,6 +7196,7 @@ void main() {
   vec3 wp = center + (uRight * corner.x + uUp * corner.y) * quadR;
   gl_Position = uViewProj * vec4(wp, 1.0);
   vCenter = center; vHalf = half_; vMode = demoted; vCorner = corner; vWorldPos = wp; vPxR = pxR;
+  float mipT = 0.0; bool mipBlank = true;                 // the value a PROJECTION reads (gl-mip.js)
   if (uColorMode == 0) {
     float t = clamp((center.z - uZRange.x) / max(uZRange.y, 1e-6), 0.0, 1.0);
     vColor = texture(uRamp, vec2(t, 0.5));
@@ -7202,11 +7207,13 @@ void main() {
       ? texelFetch(uChanTex, ivec2(cr & 8191, cr >> 13), 0).r
       : uChanChunk.x + aChan * uChanChunk.y;
     bool blank = uChanTexOn > 0.5 ? v < -1.0e37 : aChan < 0.5 / 65535.0;
+    mipBlank = blank;
     if (blank && uNoDataOn > 0.5) {
       vColor = vec4(uNoData.rgb, 1.0);
       if (uNoData.a < 0.5) vCull = 1.0;
     } else {
       float t = clamp((v - uChanDoc.x) / max(uChanDoc.y, 1e-6), 0.0, 1.0);
+      mipT = t;
       vColor = texture(uRamp, vec2(t, 0.5));
       if (vColor.a < 0.5) vCull = 1.0;
     }
@@ -7222,6 +7229,13 @@ void main() {
   if (uFilterOn > 0.5 && m < 0.5) vColor = vec4(vColor.rgb * 0.3, vColor.a);   // context mode: dim non-matching (still legible)
   if (aRec == uPicked && uLayer == uPickedLayer) vColor = vec4(mix(vColor.rgb, vec3(1.0, 0.15, 0.7), 0.85) + 0.1, vColor.a);   // picked: hot magenta — the hue viridis doesn't have
   if ((uRepaint.x != 0xFFFFFFFFu || uRepaint.y != 0xFFFFFFFFu) && aRec != uRepaint.x && aRec != uRepaint.y) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);   // repaint pass: everything else clips out
+#ifdef MIP
+  // a PROJECTION (gl-mip.js): the record contributes its normalized value — R = t,
+  // G = 1 (the mean's count) — or nothing: a blank has no value, and a record the
+  // filter leaves out (dim or isolate) is out of the projection
+  if (uColorMode != 1 || mipBlank || m < 0.5) vCull = 1.0;
+  vColor = vec4(mipT, 1.0, 0.0, 1.0);
+#endif
 }`;
 
 // 4×4-Bayer screen-door opacity (same as gl-mesh): drops a fraction of pixels by a
@@ -7258,10 +7272,14 @@ out vec4 outColor;
 ${SCREENDOOR$gl_blocks}
 void main() {
   if (vCull > 0.5) discard;             // isolate mode: filtered-out block
+#ifndef MIP
   if (_screendoor()) discard;           // per-layer opacity (screen-door)
+#endif
   if (vMode > 0.5) {                    // demoted splat: circular mask, rasterizer depth
     if (dot(vCorner, vCorner) > 1.0) discard;
+#ifndef MIP
     gl_FragDepth = gl_FragCoord.z;
+#endif
     outColor = vColor;
     return;
   }
@@ -7316,6 +7334,9 @@ void main() {
       if (tin > tout || tout < 0.0) discard;
     }
   }
+#ifdef MIP
+  outColor = vColor;                    // the ray crosses this box (inside the slab): it counts, once per pixel
+#else
   float t = tin > 0.0 ? tin : tout;     // inside the box → exit face
   bool onCut = cutFace != 0.0 && t == tin;
   if (onCut) n = uSecPlane.xyz * cutFace;
@@ -7339,6 +7360,7 @@ void main() {
     shade *= 1.0 - 0.4 * edge;
   }
   outColor = vec4(vColor.rgb * shade, vColor.a);
+#endif
 }`;
 
 // Far-field fragment: splat only, NO gl_FragDepth anywhere → early-z stays
@@ -7359,7 +7381,9 @@ out vec4 outColor;
 ${SCREENDOOR$gl_blocks}
 void main() {
   if (vCull > 0.5) discard;
+#ifndef MIP
   if (_screendoor()) discard;
+#endif
   if (dot(vCorner, vCorner) > 1.0) discard;
   outColor = vColor;
 }`;
@@ -7377,8 +7401,8 @@ function categoryPalettePixels(n = 256) {
 }
 
 function createBlocksPipeline(gl) {
-  const mkProg = (frag) => {
-    const prog = makeProgram(gl, VERT$gl_blocks, frag);
+  const mkProg = (frag, defs = '') => {
+    const prog = makeProgram(gl, withDefines(VERT$gl_blocks, defs), withDefines(frag, defs));
     const U = (n) => gl.getUniformLocation(prog, n);
     return { prog, uni: {
       viewProj: U('uViewProj'), eye: U('uEye'), right: U('uRight'), up: U('uUp'),
@@ -7395,8 +7419,13 @@ function createBlocksPipeline(gl) {
       ortho: U('uOrtho'), fwd: U('uFwd'), orthoRay: U('uOrthoRay'), backoff: U('uBackoff'), invVP: U('uInvVP'), vp: U('uVp'),
     } };
   };
-  const full = mkProg(FRAG$gl_blocks), cheap = mkProg(FRAG_CHEAP$gl_blocks);
-  let active = full;
+  // the program SETS: the raster, and (built on first use, so a scene that never
+  // projects never compiles them) the projection's — same geometry, same culling,
+  // the fragment writes the value instead of a lit colour (gl-mip.js)
+  const normal = { full: mkProg(FRAG$gl_blocks), cheap: mkProg(FRAG_CHEAP$gl_blocks) };
+  let mip = null;
+  let set = normal;
+  let active = normal.full;
 
   // Upload one BlockChunk → buffers + a VAO whose instance pointers get re-aimed
   // per slice. CPU arrays are free to die after this returns.
@@ -7421,7 +7450,7 @@ function createBlocksPipeline(gl) {
   // useCheap: the whole chunk projects below the demotion threshold, so the
   // no-gl_FragDepth program (early-z enabled) draws it as forced splats.
   function drawSlice(c, first, k, useCheap = false) {
-    const pp = useCheap ? cheap : full;
+    const pp = useCheap ? set.cheap : set.full;
     if (pp !== active) { gl.useProgram(pp.prog); active = pp; }
     const uni = active.uni;
     gl.uniform1f(uni.forceSplat, useCheap ? 1 : 0);
@@ -7466,9 +7495,11 @@ function createBlocksPipeline(gl) {
 
   // Per-frame program state (called once before the chunk loop) — set on BOTH
   // programs so drawSlice can switch freely between full and cheap.
-  function begin(cam, { pointPx, colorMode, zRange, chanDoc, ramp, palette, viewportH, maskTex = null, isolate = false, pointsView = false, picked = 0xFFFFFFFF, pickedLayer = 0xFFFFFFFF, layer = 0, section = null, catVisTex = null, selTex = null, ruleTex = null, chanTex = null, opacity = 1, edges = false, noData = null }) {
+  function begin(cam, { pointPx, colorMode, zRange, chanDoc, ramp, palette, viewportH, maskTex = null, isolate = false, pointsView = false, picked = 0xFFFFFFFF, pickedLayer = 0xFFFFFFFF, layer = 0, section = null, catVisTex = null, selTex = null, ruleTex = null, chanTex = null, opacity = 1, edges = false, noData = null, projection = false }) {
     const s = cam.state;
-    for (const pp of [full, cheap]) {
+    if (projection && !mip) mip = { full: mkProg(FRAG$gl_blocks, '#define MIP 1'), cheap: mkProg(FRAG_CHEAP$gl_blocks, '#define MIP 1') };
+    set = projection ? mip : normal;
+    for (const pp of [set.full, set.cheap]) {
       gl.useProgram(pp.prog);
       const uni = pp.uni;
       gl.uniformMatrix4fv(uni.viewProj, false, s.viewProj);
@@ -7523,14 +7554,14 @@ function createBlocksPipeline(gl) {
       if (noData) gl.uniform4f(uni.noData, noData[0], noData[1], noData[2], noData[3]);
       if (chanTex) { gl.activeTexture(gl.TEXTURE8); gl.bindTexture(gl.TEXTURE_2D, chanTex); gl.uniform1i(uni.chanTex, 8); }
     }
-    active = full;
-    gl.useProgram(full.prog);
+    active = set.full;
+    gl.useProgram(set.full.prog);
   }
 
   // The pick-repaint pass (gl.js): both programs get the target pair, then the
   // lazily-tracked active program is restored so drawSlice's cache stays honest.
   function setRepaint(a, b) {
-    for (const pp of [full, cheap]) { gl.useProgram(pp.prog); gl.uniform2ui(pp.uni.repaint, a >>> 0, b >>> 0); }
+    for (const pp of [set.full, set.cheap]) { gl.useProgram(pp.prog); gl.uniform2ui(pp.uni.repaint, a >>> 0, b >>> 0); }
     if (active) gl.useProgram(active.prog);
   }
 
@@ -7642,6 +7673,11 @@ uniform sampler2D uRule;
 uniform float uRuleOn;
 flat out uint vRec;
 flat out float vCull;
+#ifdef MIP
+uniform int uMipMode;                   // 0 max · 1 min · 2 mean (gl-mip.js)
+uniform float uMipRef;                  // the pixel's mean (mode 2)
+flat out float vKey;                    // the depth the pick sorts by: the record that IS the pixel's value wins
+#endif
 void main() {
   vec3 p = uBoxMin + aPos * uBoxSpan;
   gl_Position = uViewProj * vec4(p, 1.0);
@@ -7668,11 +7704,24 @@ void main() {
     if (blank && uNoDataOn > 0.5) { if (uNoData.a < 0.5) vCull = 1.0; }
     else if (t >= 0.0 && texture(uRamp, vec2(t, 0.5)).a < 0.5) vCull = 1.0;
   }
+#ifdef MIP
+  {                                       // the projection's own contribution rule (gl.js VERT, MIP)
+    float t; bool blank = false;
+    if (uChanTexOn > 0.5) { int rc = int(aRec); float v = texelFetch(uChanTex, ivec2(rc & 8191, rc >> 13), 0).r; blank = v < -1.0e37; t = clamp((v - uChanDoc.x) / max(uChanDoc.y, 1e-6), 0.0, 1.0); }
+    else t = clamp(aIntensity * uIntensityScale, 0.0, 1.0);
+    if (uFilterOn > 0.5) { int rm = int(aRec); if (texelFetch(uMask, ivec2(rm & 8191, rm >> 13), 0).r < 0.5) vCull = 1.0; }
+    if (blank || uColorMode != 1) vCull = 1.0;
+    vKey = 0.5 * (uMipMode == 0 ? 1.0 - t : (uMipMode == 1 ? t : abs(t - uMipRef)));
+  }
+#endif
 }`;
 const PICK_FRAG_PTS = `#version 300 es
 precision highp float;
 flat in uint vRec;
 flat in float vCull;
+#ifdef MIP
+flat in float vKey;
+#endif
 uniform uint uLayer;                    // the layer is per-DRAW, not per-element
 out uvec4 outId;                        // R = record (full uint32), G = layer | face<<16
 ${PACK}
@@ -7680,6 +7729,9 @@ void main() {
   if (vCull > 0.5) discard;
   vec2 d = gl_PointCoord - 0.5;
   if (dot(d, d) > 0.25) discard;
+#ifdef MIP
+  gl_FragDepth = vKey;
+#endif
   outId = uvec4(vRec, packId(uLayer, NO_FACE), 0u, 0u);   // a splat has no face
 }`;
 
@@ -7718,6 +7770,11 @@ flat out float vMode;
 flat out float vCull;
 out vec2 vCorner;
 out vec3 vWorldPos;
+#ifdef MIP
+uniform int uMipMode;                   // 0 max · 1 min · 2 mean (gl-mip.js)
+uniform float uMipRef;                  // the pixel's mean (mode 2)
+flat out float vKey;                    // the depth the pick sorts by: the record that IS the pixel's value wins
+#endif
 void main() {
   vec3 center = uGridOrigin + uGridRot * (aIjk * uGridSize);
   vec3 half_ = uSubBlock > 0.5 ? vec3(aDimQ) * uGridSize * 0.5 : uGridSize * 0.5;
@@ -7758,6 +7815,15 @@ void main() {
     if (blank && uNoDataOn > 0.5) { if (uNoData.a < 0.5) vCull = 1.0; }
     else if (t >= 0.0 && texture(uRamp, vec2(t, 0.5)).a < 0.5) vCull = 1.0;
   }
+#ifdef MIP
+  {                                       // the projection's own contribution rule (gl-blocks VERT, MIP)
+    float t; bool blank;
+    if (uChanTexOn > 0.5) { int rc = int(aRec); float v = texelFetch(uChanTex, ivec2(rc & 8191, rc >> 13), 0).r; blank = v < -1.0e37; t = clamp((v - uChanDoc.x) / max(uChanDoc.y, 1e-6), 0.0, 1.0); }
+    else { float v = uChanChunk.x + aChan * uChanChunk.y; blank = aChan < 0.5 / 65535.0; t = clamp((v - uChanDoc.x) / max(uChanDoc.y, 1e-6), 0.0, 1.0); }
+    if (blank || uColorMode != 1 || m < 0.5) vCull = 1.0;
+    vKey = 0.5 * (uMipMode == 0 ? 1.0 - t : (uMipMode == 1 ? t : abs(t - uMipRef)));
+  }
+#endif
   vCenter = center; vHalf = half_; vRec = aRec; vMode = demoted; vCorner = corner; vWorldPos = wp;
 }`;
 const PICK_FRAG_BLK = `#version 300 es
@@ -7769,6 +7835,9 @@ flat in float vMode;
 flat in float vCull;
 in vec2 vCorner;
 in vec3 vWorldPos;
+#ifdef MIP
+flat in float vKey;
+#endif
 uniform vec3 uEye;
 uniform vec3 uFwd;
 uniform float uOrthoRay;
@@ -7787,6 +7856,9 @@ void main() {
   if (vMode > 0.5) {
     if (dot(vCorner, vCorner) > 1.0) discard;
     gl_FragDepth = gl_FragCoord.z;
+#ifdef MIP
+    gl_FragDepth = vKey;
+#endif
     outId = uvec4(vRec, packId(uLayer, NO_FACE), 0u, 0u);  // demoted to a splat: no box, no face
     return;
   }
@@ -7833,6 +7905,9 @@ void main() {
   float t = tin > 0.0 ? tin : tout;
   vec4 clip = uViewProj * vec4(ro + rd * t, 1.0);
   gl_FragDepth = clamp(clip.z / clip.w * 0.5 + 0.5, 0.0, 1.0);
+#ifdef MIP
+  gl_FragDepth = vKey;                                     // a projection: sort by value, not distance
+#endif
   // WHICH FACE the eye ray entered through: the axis that WON the box entry,
   // signed by the ray's direction along it (travelling +x → you hit the −X face).
   // If the slab clip pushed the entry past the box's own, you are looking at the
@@ -8097,10 +8172,13 @@ function createPickPipeline(gl) {
     fwd: gl.getUniformLocation(msh, 'uFwd'), ortho: gl.getUniformLocation(msh, 'uOrtho'),
     layer: gl.getUniformLocation(msh, 'uLayer'),
   };
-  const pts = makeProgram(gl, PICK_VERT_PTS, PICK_FRAG_PTS);
-  const blk = makeProgram(gl, PICK_VERT_BLK, PICK_FRAG_BLK);
   const stk = makeProgram(gl, PICK_VERT_STK, PICK_FRAG_STK);
   const U = (p, n) => gl.getUniformLocation(p, n);
+  // the points + blocks programs, as a SET: the plain pick, and (built on first use)
+  // the projection's — same geometry and gates, depth = the value key (gl-mip.js)
+  const mkSet = (defs) => {
+  const pts = makeProgram(gl, withDefines(PICK_VERT_PTS, defs), withDefines(PICK_FRAG_PTS, defs));
+  const blk = makeProgram(gl, withDefines(PICK_VERT_BLK, defs), withDefines(PICK_FRAG_BLK, defs));
   const uPts = { layer: U(pts, 'uLayer'), viewProj: U(pts, 'uViewProj'), boxMin: U(pts, 'uBoxMin'), boxSpan: U(pts, 'uBoxSpan'), pointPx: U(pts, 'uPointPx'), secPlane: U(pts, 'uSecPlane'), secCfg: U(pts, 'uSecCfg'), mask: U(pts, 'uMask'), filterOn: U(pts, 'uFilterOn'), isolate: U(pts, 'uIsolate'), catVis: U(pts, 'uCatVis'), catVisOn: U(pts, 'uCatVisOn'), rule: U(pts, 'uRule'), ruleOn: U(pts, 'uRuleOn'), valCullOn: U(pts, 'uValCullOn'), colorMode: U(pts, 'uColorMode'), zRange: U(pts, 'uZRange'), chanChunk: U(pts, 'uChanChunk'), chanDoc: U(pts, 'uChanDoc'), chanTexOn: U(pts, 'uChanTexOn'), noDataOn: U(pts, 'uNoDataOn'), intensityScale: U(pts, 'uIntensityScale'), noData: U(pts, 'uNoData'), chanTex: U(pts, 'uChanTex'), ramp: U(pts, 'uRamp') };
   const uBlk = {
     layer: U(blk, 'uLayer'),
@@ -8114,6 +8192,11 @@ function createPickPipeline(gl) {
     valCullOn: U(blk, 'uValCullOn'), colorMode: U(blk, 'uColorMode'), zRange: U(blk, 'uZRange'), chanChunk: U(blk, 'uChanChunk'), chanDoc: U(blk, 'uChanDoc'), chanTexOn: U(blk, 'uChanTexOn'), noDataOn: U(blk, 'uNoDataOn'), intensityScale: U(blk, 'uIntensityScale'), noData: U(blk, 'uNoData'), chanTex: U(blk, 'uChanTex'), ramp: U(blk, 'uRamp'),
     secPlane: U(blk, 'uSecPlane'), secCfg: U(blk, 'uSecCfg'),
   };
+  for (const [p, u] of [[pts, uPts], [blk, uBlk]]) { u.mipMode = U(p, 'uMipMode'); u.mipRef = U(p, 'uMipRef'); }
+  return { pts, blk, uPts, uBlk };
+  };
+  const plainSet = mkSet('');
+  let mipSet = null;
   const uStk = {
     layer: U(stk, 'uLayer'),
     viewProj: U(stk, 'uViewProj'), eye: U(stk, 'uEye'), radius: U(stk, 'uRadius'),
@@ -8158,7 +8241,21 @@ function createPickPipeline(gl) {
    */
   // the shared ID-buffer pass: scissored to (px,py,w,h), leaves the FBO bound
   // for the caller's readPixels. pick() reads 1px; pickRegion() reads the block.
-  function renderInto(px, py, w2, h2, chunks, cam, { pointPx, blocksAsPoints = false, layerStates = null, section = null, viewportW, viewportH, noClear = false }) {
+  function renderInto(px, py, w2, h2, chunks, cam, { pointPx, blocksAsPoints = false, layerStates = null, section = null, viewportW, viewportH, noClear = false, mip = null }) {
+    if (mip && !mipSet) mipSet = mkSet('#define MIP 1');
+    const { pts, blk, uPts, uBlk } = mip ? mipSet : plainSet;
+    // a projection pick (gl-mip.js): the value uniforms the key needs, whether or not the layer hides by value
+    const MIP_MODE = { max: 0, min: 1, mean: 2 };
+    const setMip = (u, st) => {
+      if (!mip) return;
+      const vp = st && st._valPick;
+      gl.uniform1i(u.mipMode, MIP_MODE[mip.mode] || 0);
+      gl.uniform1f(u.mipRef, mip.ref || 0);
+      gl.uniform1i(u.colorMode, vp ? vp.colorMode : 1);
+      if (vp) { gl.uniform2f(u.chanDoc, vp.chanDoc[0], vp.chanDoc[1]); gl.uniform1f(u.intensityScale, vp.intensityScale); }
+      gl.uniform1f(u.chanTexOn, st && st.chanTex ? 1 : 0);
+      if (st && st.chanTex) { gl.activeTexture(gl.TEXTURE8); gl.bindTexture(gl.TEXTURE_2D, st.chanTex); gl.uniform1i(u.chanTex, 8); }
+    };
     const stateOf = (id) => (layerStates && layerStates.get(id)) || { maskTex: null, isolate: false };
     const byLayer = (arr) => {
       const m = new Map();
@@ -8266,6 +8363,7 @@ function createPickPipeline(gl) {
       setCatVis(uPts, st);
       setRule(uPts, st);
       setVal(uPts, st);
+      setMip(uPts, st);
       gl.uniform1f(uPts.filterOn, st.maskTex ? 1 : 0);
       gl.uniform1f(uPts.isolate, st.isolate ? 1 : 0);
       if (st.maskTex) { gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, st.maskTex); gl.uniform1i(uPts.mask, 4); }
@@ -8312,6 +8410,7 @@ function createPickPipeline(gl) {
       setCatVis(uBlk, st);
       setRule(uBlk, st);
       setVal(uBlk, st);
+      setMip(uBlk, st);
       gl.uniform1f(uBlk.filterOn, st.maskTex ? 1 : 0);
       gl.uniform1f(uBlk.isolate, st.isolate ? 1 : 0);
       if (st.maskTex) { gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, st.maskTex); gl.uniform1i(uBlk.mask, 4); }
@@ -11065,6 +11164,204 @@ async function openDxfStream(blob, { as = null } = {}) {
   return { header, batches, summary };
 }
 
+// ── src/core/gl-mip.js ──
+
+// @gcu/condenser — PROJECTIONS: maximum / minimum / mean intensity along the line
+// of sight. Per pixel, the largest (smallest, average) NORMALIZED value of every
+// element the ray crosses — occlusion ignored — mapped through the layer's ramp.
+// "Where are the high grades, through the whole model."
+//
+// Mechanism: each projected layer draws its elements (the same programs as the
+// normal raster, built with `#define MIP`: same culling — section, filter, class
+// eyes, hidden ramp classes — but the fragment writes the record's normalized value
+// instead of a colour) into its OWN offscreen target, depth test off, blended:
+//   max   blendEquation(MAX)                 R16F, cleared to −1 (nothing hit)
+//   min   blendEquation(MIN)                 R16F, cleared to  2 (nothing hit)
+//   mean  additive (ONE, ONE): R = Σt, G = n RG32F (EXT_float_blend) or RG16F
+// Without float colour buffers (EXT_color_buffer_float), max/min fall back to RGBA8
+// — 256 levels, plenty for a 256-texel ramp — with ALPHA as the hit flag
+// (blendEquationSeparate(MIN, MAX) for min); mean is not offered there (8-bit sums
+// saturate at 255). "Nothing hit" is never value 0: the sentinel / flag says it.
+//
+// Then ONE fullscreen pass per projected layer maps the target through the ramp
+// into the frame being drawn (the EDL target); pixels nothing hit are left alone
+// (the rest of the scene — meshes, drillholes, layers coloured by category — drew
+// there normally). Targets ACCUMULATE across still frames exactly as the raster
+// does (each chunk's next slice blends in), so the projection converges with it;
+// a moving frame clears them.
+
+
+const PROJECTION_MODES = ['max', 'min', 'mean'];
+
+const QUAD_VERT$gl_mip = `#version 300 es
+precision highp float;
+void main() {                          // fullscreen triangle, no buffers
+  vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
+  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}`;
+
+// decode: 0 = float max (hit: R ≥ 0) · 1 = float min (hit: R ≤ 1) · 2 = 8-bit (hit: A) · 3 = mean (R / G)
+const COMPOSITE_FRAG = `#version 300 es
+precision highp float;
+uniform sampler2D uAcc;
+uniform sampler2D uRamp;
+uniform int uDecode;
+out vec4 outColor;
+void main() {
+  vec4 a = texelFetch(uAcc, ivec2(gl_FragCoord.xy), 0);
+  float t = a.r;
+  bool hit;
+  if (uDecode == 0) hit = a.r >= 0.0;
+  else if (uDecode == 1) hit = a.r <= 1.0;
+  else if (uDecode == 2) hit = a.a > 0.5;
+  else { hit = a.g > 0.5; t = hit ? a.r / a.g : 0.0; }
+  if (!hit) discard;
+  outColor = vec4(texture(uRamp, vec2(clamp(t, 0.0, 1.0), 0.5)).rgb, 1.0);
+}`;
+
+/** The JS side of the decode — one place, shared by the readbacks. → t in 0..1, or null (nothing hit). */
+function decodeProjection(decode, r, g, a) {
+  if (decode === 0) return r >= 0 ? r : null;
+  if (decode === 1) return r <= 1 ? r : null;
+  if (decode === 2) return a > 0.5 ? r : null;
+  return g > 0.5 ? r / g : null;
+}
+
+function createMipPipeline(gl) {
+  const cbf = !!gl.getExtension('EXT_color_buffer_float');
+  const floatBlend = !!gl.getExtension('EXT_float_blend');
+  const comp = makeProgram(gl, QUAD_VERT$gl_mip, COMPOSITE_FRAG);
+  const uAcc = gl.getUniformLocation(comp, 'uAcc'), uRamp = gl.getUniformLocation(comp, 'uRamp'), uDecode = gl.getUniformLocation(comp, 'uDecode');
+  const targets = new Map();                               // layer → { tex, fbo, w, h, fmt, mode }
+
+  // does this internal format render (and attach completely) here? probed once each
+  const probed = new Map();
+  function renders(fmt) {
+    if (probed.has(fmt.key)) return probed.get(fmt.key);
+    const t = gl.createTexture(), f = gl.createFramebuffer();
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texImage2D(gl.TEXTURE_2D, 0, fmt.ifmt, 4, 4, 0, fmt.fmt, fmt.type, null);
+    const prev = gl.getParameter(gl.FRAMEBUFFER_BINDING);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, f);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
+    const ok = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, prev);
+    gl.deleteFramebuffer(f); gl.deleteTexture(t);
+    probed.set(fmt.key, ok);
+    return ok;
+  }
+  const F = {
+    r16f: { key: 'r16f', ifmt: gl.R16F, fmt: gl.RED, type: gl.HALF_FLOAT, float: true, bits: 'half float (R16F)' },
+    rg16f: { key: 'rg16f', ifmt: gl.RG16F, fmt: gl.RG, type: gl.HALF_FLOAT, float: true, bits: 'half float (RG16F)' },
+    rg32f: { key: 'rg32f', ifmt: gl.RG32F, fmt: gl.RG, type: gl.FLOAT, float: true, bits: 'float (RG32F)' },
+    rgba8: { key: 'rgba8', ifmt: gl.RGBA8, fmt: gl.RGBA, type: gl.UNSIGNED_BYTE, float: false, bits: '8-bit (256 levels)' },
+  };
+  // the target format a mode uses here, or null (not offered on this GPU)
+  function formatFor(mode) {
+    if (mode === 'mean') {
+      if (cbf && floatBlend && renders(F.rg32f)) return F.rg32f;
+      if (cbf && renders(F.rg16f)) return F.rg16f;
+      return null;
+    }
+    if (cbf && renders(F.r16f)) return F.r16f;
+    return F.rgba8;
+  }
+  const decodeOf = (mode, fmt) => (mode === 'mean' ? 3 : !fmt.float ? 2 : mode === 'max' ? 0 : 1);
+
+  function drop(layer) {
+    const t = targets.get(layer);
+    if (!t) return;
+    gl.deleteFramebuffer(t.fbo); gl.deleteTexture(t.tex);
+    targets.delete(layer);
+  }
+
+  // Bind `layer`'s target for drawing in `mode`, at w×h: (re)allocated — and cleared —
+  // when new, resized or the mode changed; cleared too when `clear` (a moving frame).
+  // Leaves the blend state set for the mode; end() puts it back.
+  function begin(layer, mode, w, h, clear) {
+    const fmt = formatFor(mode);
+    if (!fmt) throw new Error(`condenser: the ${mode} projection needs float render targets, which this GPU does not offer`);
+    let t = targets.get(layer);
+    let fresh = false;
+    if (!t || t.w !== w || t.h !== h || t.fmt !== fmt) {
+      drop(layer);
+      const tex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, fmt.ifmt, w, h, 0, fmt.fmt, fmt.type, null);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      const fbo = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+      t = { tex, fbo, w, h, fmt, mode };
+      targets.set(layer, t);
+      fresh = true;
+    }
+    if (t.mode !== mode) { t.mode = mode; fresh = true; }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, t.fbo);
+    gl.viewport(0, 0, w, h);
+    if (fresh || clear) {
+      if (mode === 'max') gl.clearColor(fmt.float ? -1 : 0, 0, 0, 0);
+      else if (mode === 'min') gl.clearColor(fmt.float ? 2 : 1, 1, 1, 0);
+      else gl.clearColor(0, 0, 0, 0);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+    }
+    gl.disable(gl.DEPTH_TEST);
+    gl.enable(gl.BLEND);
+    if (mode === 'max') gl.blendEquation(gl.MAX);
+    else if (mode === 'min') gl.blendEquationSeparate(gl.MIN, gl.MAX);   // alpha (the 8-bit hit flag) only ever rises
+    else { gl.blendEquation(gl.FUNC_ADD); gl.blendFunc(gl.ONE, gl.ONE); }
+  }
+  function end() {
+    gl.disable(gl.BLEND);
+    gl.blendEquation(gl.FUNC_ADD);
+    gl.blendFunc(gl.ONE, gl.ZERO);
+  }
+  // map `layer`'s target through `ramp` into the CURRENT framebuffer (depth test off,
+  // nothing-hit pixels untouched). The caller restores its own depth state.
+  function composite(layer, ramp) {
+    const t = targets.get(layer);
+    if (!t) return;
+    gl.disable(gl.DEPTH_TEST);
+    gl.disable(gl.BLEND);
+    gl.useProgram(comp);
+    gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, t.tex); gl.uniform1i(uAcc, 2);
+    gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, ramp); gl.uniform1i(uRamp, 3);
+    gl.uniform1i(uDecode, decodeOf(t.mode, t.fmt));
+    gl.bindVertexArray(null);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, null);   // a later pass may render into it
+  }
+  // read a rect of `layer`'s target → decoded t per pixel (NaN = nothing hit), rows bottom-up
+  function read(layer, x = 0, y = 0, w = null, h = null) {
+    const t = targets.get(layer);
+    if (!t) return null;
+    w = w == null ? t.w : w; h = h == null ? t.h : h;
+    const prev = gl.getParameter(gl.FRAMEBUFFER_BINDING);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, t.fbo);
+    const n = w * h, out = new Float32Array(n), dec = decodeOf(t.mode, t.fmt);
+    if (t.fmt.float) {
+      const px = new Float32Array(n * 4);
+      gl.readPixels(x, y, w, h, gl.RGBA, gl.FLOAT, px);
+      for (let i = 0; i < n; i++) { const v = decodeProjection(dec, px[i * 4], px[i * 4 + 1], px[i * 4 + 3]); out[i] = v == null ? NaN : v; }
+    } else {
+      const px = new Uint8Array(n * 4);
+      gl.readPixels(x, y, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      for (let i = 0; i < n; i++) { const v = decodeProjection(dec, px[i * 4] / 255, px[i * 4 + 1] / 255, px[i * 4 + 3] / 255); out[i] = v == null ? NaN : v; }
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, prev);
+    return { data: out, w, h, format: t.fmt.key, mode: t.mode };
+  }
+  return {
+    begin, end, composite, read, drop,
+    clear() { for (const id of [...targets.keys()]) drop(id); },
+    has: (layer) => targets.has(layer),
+    // what this GPU offers: per mode, the target format (null = not offered)
+    support() { const o = {}; for (const m of PROJECTION_MODES) { const f = formatFor(m); o[m] = f ? { format: f.key, bits: f.bits, float: f.float } : null; } return o; },
+    supports: (mode) => !!formatFor(mode),
+  };
+}
+
 // ── src/core/gl-resolve.js ──
 
 // @gcu/condenser — DEFERRED RE-SHADE (render-paths spec §2). Once the scene
@@ -11609,6 +11906,7 @@ void main() {
     int rs = int(aRec);
     selHit = texelFetch(uSel, ivec2(rs & 8191, rs >> 13), 0).r;
   }
+  float mipT = 0.0; bool mipBlank = true;                 // the value a PROJECTION reads (gl-mip.js)
   if (uColorMode == 0) {
     float t = clamp((p.z - uZRange.x) / max(uZRange.y, 1e-6), 0.0, 1.0);
     vColor = texture(uRamp, vec2(t, 0.5));
@@ -11622,6 +11920,7 @@ void main() {
       blank = v < -1.0e37;                                 // the value texture's BLANK
       t = clamp((v - uChanDoc.x) / max(uChanDoc.y, 1e-6), 0.0, 1.0);
     } else t = clamp(aIntensity * uIntensityScale, 0.0, 1.0);
+    mipT = t; mipBlank = blank;
     if (blank && uNoDataOn > 0.5) {
       vColor = vec4(uNoData.rgb, 1.0);
       if (uNoData.a < 0.5) vCull = 1.0;
@@ -11638,6 +11937,12 @@ void main() {
   if (selHit > 0.5) vColor = vec4(mix(vColor.rgb, vec3(1.0, 0.85, 0.3), 0.55), vColor.a);   // selected: warm gold wash
   if (aRec == uPicked && uLayer == uPickedLayer) vColor = vec4(mix(vColor.rgb, vec3(1.0, 0.15, 0.7), 0.85) + 0.1, vColor.a);   // picked: hot magenta — the hue viridis doesn't have
   if ((uRepaint.x != 0xFFFFFFFFu || uRepaint.y != 0xFFFFFFFFu) && aRec != uRepaint.x && aRec != uRepaint.y) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);   // repaint pass: everything else clips out
+#ifdef MIP
+  // a PROJECTION (gl-mip.js): R = the normalized value, G = 1 (the mean's count) —
+  // or nothing: blanks and filtered-out points (dim or isolate) don't contribute
+  if (uColorMode != 1 || mipBlank || m < 0.5) vCull = 1.0;
+  vColor = vec4(mipT, 1.0, 0.0, 1.0);
+#endif
 }`;
 
 const FRAG$gl = `#version 300 es
@@ -11745,19 +12050,29 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
   // the cost is one buffer copy per composite — negligible next to the splat pass.
   const gl = canvas.getContext('webgl2', { antialias: false, alpha: false, preserveDrawingBuffer: true });
   if (!gl) throw new Error('condenser: WebGL2 unavailable');
-  const prog = makeProgram(gl, VERT$gl, FRAG$gl);
-  const U = (n) => gl.getUniformLocation(prog, n);
-  const uni = {
-    viewProj: U('uViewProj'), boxMin: U('uBoxMin'), boxSpan: U('uBoxSpan'),
-    pointPx: U('uPointPx'), colorMode: U('uColorMode'), zRange: U('uZRange'),
-    intensityScale: U('uIntensityScale'), ramp: U('uRamp'), palette: U('uPalette'), picked: U('uPicked'), pickedLayer: U('uPickedLayer'), layer: U('uLayer'), repaint: U('uRepaint'),
-    secPlane: U('uSecPlane'), secCfg: U('uSecCfg'),
-    mask: U('uMask'), filterOn: U('uFilterOn'), isolate: U('uIsolate'), paletteN: U('uPaletteN'),
-    catVis: U('uCatVis'), catVisOn: U('uCatVisOn'),
-    sel: U('uSel'), selOn: U('uSelOn'),
-    rule: U('uRule'), ruleOn: U('uRuleOn'),
-    chanTex: U('uChanTex'), chanTexOn: U('uChanTexOn'), chanDoc: U('uChanDoc'), noData: U('uNoData'), noDataOn: U('uNoDataOn'),
+  // the points program — and its projection twin (gl-mip.js), built on first use
+  const ptsProgram = (defs) => {
+    const p = makeProgram(gl, withDefines(VERT$gl, defs), withDefines(FRAG$gl, defs));
+    const U = (n) => gl.getUniformLocation(p, n);
+    return { prog: p, uni: {
+      viewProj: U('uViewProj'), boxMin: U('uBoxMin'), boxSpan: U('uBoxSpan'),
+      pointPx: U('uPointPx'), colorMode: U('uColorMode'), zRange: U('uZRange'),
+      intensityScale: U('uIntensityScale'), ramp: U('uRamp'), palette: U('uPalette'), picked: U('uPicked'), pickedLayer: U('uPickedLayer'), layer: U('uLayer'), repaint: U('uRepaint'),
+      secPlane: U('uSecPlane'), secCfg: U('uSecCfg'),
+      mask: U('uMask'), filterOn: U('uFilterOn'), isolate: U('uIsolate'), paletteN: U('uPaletteN'),
+      catVis: U('uCatVis'), catVisOn: U('uCatVisOn'),
+      sel: U('uSel'), selOn: U('uSelOn'),
+      rule: U('uRule'), ruleOn: U('uRuleOn'),
+      chanTex: U('uChanTex'), chanTexOn: U('uChanTexOn'), chanDoc: U('uChanDoc'), noData: U('uNoData'), noDataOn: U('uNoDataOn'),
+    } };
   };
+  const ptsNormal = ptsProgram('');
+  let ptsMip = null;
+  const prog = ptsNormal.prog;
+  let uni = ptsNormal.uni;
+  let mipPipe = null;                                     // projection targets + composite (gl-mip.js), lazy
+  let lastMip = null;                                     // the last frame's projection: { mode, layers, … } — pick() reads it
+  let lastMipKey = '';                                    // which layers it projected (a change re-rasters)
   const ramp = lutTexture(gl, rampPixels(), 256);
   const palette = lutTexture(gl, palettePixels(), 32);   // LAS classification (points)
   let catPalette = null;                                  // category palette (blocks), lazy
@@ -11884,7 +12199,8 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
   // a pending re-raster (needClear) means what is clickable changed — a class eye,
   // a rule code under eyes, visibility — but the capture is only thrown away when
   // the next frame draws; until then it must not answer a pick
-  const capReady = (key) => !globalThis.__noPickCapture && !needClear && !!(idCapture && idCapture.complete && idCapture.key === key && idCapture.w === canvas.width && idCapture.h === canvas.height);
+  // (under a projection the picture isn't the front surface: picks render live)
+  const capReady = (key) => !globalThis.__noPickCapture && !needClear && !lastMip && !!(idCapture && idCapture.complete && idCapture.key === key && idCapture.w === canvas.width && idCapture.h === canvas.height);
   // every capture that is thrown away goes through here, so a fence still pending
   // on it is deleted rather than left to the collector
   const dropCapture = () => { if (idCapture && idCapture.fence) gl.deleteSync(idCapture.fence); idCapture = null; };
@@ -11960,6 +12276,14 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
     layerVramBytes(layer) { return chunks.reduce((s, c) => s + (c._layer === layer ? (c.bytes || 0) : 0), 0); },
     get accumulated() { return chunks.reduce((s, c) => s + (activeChunk(c) ? c.cursor : 0), 0); },   // elements in the current accumulation
     get resolveCount() { return resolves; },               // deferred re-shade passes run (harness observability)
+    // PROJECTIONS (gl-mip.js): what this GPU offers per mode ({ max, min, mean } →
+    // { format, bits, float } | null), the last frame's projection ({ mode, layers,
+    // drawn, total, exact } | null), and a layer's projected values as drawn —
+    // { data: Float32Array of normalized t per device pixel, rows bottom-up, NaN
+    // where nothing projected; w, h, format, mode } | null
+    get projectionSupport() { if (!mipPipe) mipPipe = createMipPipeline(gl); return mipPipe.support(); },
+    get projection() { return lastMip ? { ...lastMip, layers: [...lastMip.layers] } : null; },
+    projectionValues(layer) { return mipPipe ? mipPipe.read(layer) : null; },
     addChunk(chunk, set = 'base', layer = 0) {
       if (viewSrc.has(layer)) throw new Error(`renderer: layer ${layer} is a view — it draws its source's chunks, not its own`);
       const ls = layerOf(layer);
@@ -12294,6 +12618,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
       if (ls && ls.ruleTex) gl.deleteTexture(ls.ruleTex);
       layers.delete(layer);
       if (resolvePipe) resolvePipe.dropBake(layer);
+      if (mipPipe) mipPipe.drop(layer);
       layerMaxRec.delete(layer); bakeDirty.delete(layer);
       lastCosSig.delete(layer); cosmeticDirtyLayers.delete(layer);
       needClear = true;
@@ -12353,7 +12678,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
     // the camera, the geometry, a re-raster — throws the capture away and the
     // next idle frames rebuild it. → true when there is nothing (more) to do.
     idleCapture(cam, { pointPx = 2.5, blocksAsPoints = false, section = null, budget = 3_000_000 } = {}) {
-      if (!chunks.length || !lastConverged || needClear) return true;
+      if (!chunks.length || !lastConverged || needClear || lastMip) return true;
       if (!pickPipe) pickPipe = createPickPipeline(gl);
       const sec = section && section.on ? section : null, key = capKey(cam, pointPx, blocksAsPoints, sec);
       if (idCapture && idCapture.complete && idCapture.key === key && idCapture.w === canvas.width && idCapture.h === canvas.height) {   // complete — done once the GPU has caught up with it
@@ -12385,6 +12710,23 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
       const px = Math.round(cssX * dpr), py = Math.round(canvas.height - cssY * dpr - 1);
       if (px < 0 || py < 0 || px >= canvas.width || py >= canvas.height) return null;
       const sec = section && section.on ? section : null, key = capKey(cam, pointPx, blocksAsPoints, sec);
+      // a PROJECTION names the record that IS the pixel's value (gl-mip.js): the
+      // projected layer whose colour shows here (the last one composited that hit
+      // it), drawn once more with depth = how far each record's value is from the
+      // pixel's (max: 1 − t, min: t, mean: |t − mean|) — the depth test keeps the
+      // one the picture shows, exactly, with no float equality anywhere
+      if (lastMip && mipPipe && lastMip.w === canvas.width && lastMip.h === canvas.height) {   // (a figure render resized the canvas: until the next frame, no projection to read)
+        const pOpts = { pointPx, blocksAsPoints, layerStates: layers, section: sec, viewportW: canvas.width, viewportH: canvas.height };
+        for (const id of [...lastMip.layers].reverse()) {
+          const r = mipPipe.read(id, px, py, 1, 1);
+          const t = r ? r.data[0] : NaN;
+          if (!(t === t)) continue;                          // nothing projected here on this layer
+          const hit = pickPipe.pick(px, py, chunks.filter((c) => activeChunk(c) && c._layer === id), cam, { ...pOpts, mip: { mode: lastMip.mode, ref: t } });
+          if (hit) return { ...hit, projection: { mode: lastMip.mode, t } };
+        }
+        // no projection under the cursor: the rest of the scene, as usual
+        return pickPipe.pick(px, py, chunks.filter((c) => activeChunk(c) && !lastMip.layers.includes(c._layer)), cam, pOpts);
+      }
       if (capReady(key)) {                                 // the still frame's id buffer is complete: read it, no render
         pickFromCapture++;
         const o = pickPipe.readCaptured(px, py, 1, 1);
@@ -12404,6 +12746,8 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
       for (const ls of layers.values()) { if (ls.maskTex) gl.deleteTexture(ls.maskTex); if (ls.catVisTex) gl.deleteTexture(ls.catVisTex); if (ls.rampTex) gl.deleteTexture(ls.rampTex); if (ls.paletteTex) gl.deleteTexture(ls.paletteTex); if (ls.selTex) gl.deleteTexture(ls.selTex); if (ls.ruleTex) gl.deleteTexture(ls.ruleTex); }
       layers.clear(); viewSrc.clear();
       if (resolvePipe) resolvePipe.clear();
+      if (mipPipe) mipPipe.clear();
+      lastMip = null; lastMipKey = '';
       layerMaxRec.clear(); bakeDirty.clear(); dropCapture();
       lastCosSig.clear(); cosmeticDirtyLayers.clear();
     },
@@ -12421,16 +12765,23 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
     // opts.layerOpts = { [id]: { colorMode, clip } } overrides the global color
     // opts per layer (absent → the globals, so single-layer callers are unchanged).
     // Returns { drawn, converged, visible }.
-    draw(cam, { budget = 3_000_000, pointPx = 2.5, colorMode = 0, blocksAsPoints = false, blockEdges = false, section = null, clip = null, layerOpts = null } = {}) {
+    // opts.projection: 'max' | 'min' | 'mean' | null — the PROJECTION mode (gl-mip.js):
+    // every visible blocks/points layer coloured by a VALUE (colour mode 1) draws as
+    // the per-pixel max / min / mean of its normalized values along the line of
+    // sight, occlusion ignored; everything else draws as usual underneath. The
+    // result's `projection` says which layers and how much of them has been drawn
+    // ({ mode, layers, drawn, total, exact }) — approximate until exact.
+    draw(cam, { budget = 3_000_000, pointPx = 2.5, colorMode = 0, blocksAsPoints = false, blockEdges = false, section = null, clip = null, layerOpts = null, projection = null } = {}) {
       const vp = cam.state.viewProj;
       const camMemo = new Map();
       const camOf = (id) => camFor(cam, id, camMemo);      // a moved layer's camera (setLayerOffset)
       const sec = section && section.on ? section : null;
       const secKey = sec ? `${sec.n.join(',')}|${sec.d}|${sec.half}` : 'off';
+      const mipMode = PROJECTION_MODES.includes(projection) ? projection : null;
       // the old single draw key, SPLIT: structural changes re-raster; cosmetic
       // ones (color mode, clip, per-layer view opts — plus whatever the
       // cosmetic setters touched) can deferred-re-shade over the converged frame
-      const structKey = `${pointPx}|${blocksAsPoints ? 'P' : 'B'}${blockEdges ? 'E' : ''}|${secKey}|${canvas.width}x${canvas.height}`;
+      const structKey = `${pointPx}|${blocksAsPoints ? 'P' : 'B'}${blockEdges ? 'E' : ''}|${secKey}|${canvas.width}x${canvas.height}${mipMode ? '|' + mipMode : ''}`;
       let moving = vpChanged(vp) || structKey !== lastKey || needClear;
 
       const db = docBbox || Float64Array.of(0, 0, 0, 1, 1, 1);
@@ -12459,6 +12810,16 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
       // converged frame without its first chunk (a streamed layer arriving piece by piece)
       for (const id of kindBy.keys()) if (lastCosSig.has(id) && lastCosSig.get(id) !== sigOf(id)) dirty.add(id);
       for (const id of [...dirty]) { const k = kindBy.get(id); if (!k || k === 'mesh') dirty.delete(id); }
+      // the layers this frame PROJECTS: blocks/points coloured by a value, when the GPU offers the mode
+      const mipIds = new Set();
+      if (mipMode) {
+        if (!mipPipe) mipPipe = createMipPipeline(gl);
+        if (mipPipe.supports(mipMode)) for (const [id, k] of kindBy) if ((k === 'blocks' || k === 'points') && lopt(id).colorMode === 1) mipIds.add(id);
+      }
+      // a layer entering or leaving the projection changes what every pixel it covers
+      // means (a projected pixel isn't its front surface): start the frame over
+      const mipKey = [...mipIds].join(',');
+      if (mipKey !== lastMipKey) { moving = true; lastMipKey = mipKey; }
 
       // ── DEFERRED RE-SHADE (gl-resolve.js): cosmetic changes over a CONVERGED
       // frame become one fullscreen resolve pass per DIRTY layer — O(pixels) at
@@ -12466,7 +12827,8 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
       // block ramp drags) keep their accumulated pixels; only a change to a
       // layer the id buffer can't express (sticks/soup recolor, culling,
       // opacity, edges) falls through to the re-raster. ──
-      if (!moving && dirty.size && lastConverged) {
+      // (not under a projection: the id buffer is the FRONT surface, a projection's pixel isn't)
+      if (!moving && dirty.size && lastConverged && !mipIds.size) {
         if (!resolvePipe) resolvePipe = createResolvePipeline(gl);
         resolveOk: if (resolvePipe.ok) {
           let bail = false;
@@ -12665,10 +13027,13 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
         gl.bindVertexArray(null);
       }
 
-      const pts = visible.filter((c) => c.kind === 'points');
-      if (pts.length) {
-        const ptsGroups = byLayer(pts);
-        gl.useProgram(prog);
+      // PROJECTED layers (gl-mip.js) leave the raster: they draw into their own
+      // targets after it, and composite over it
+      const isMip = (c) => mipIds.has(c._layer);
+      // the points program's per-frame state (the raster's, or the projection's)
+      const ptsFrame = (P) => {
+        uni = P.uni;
+        gl.useProgram(P.prog);
         gl.uniformMatrix4fv(uni.viewProj, false, vp);
         gl.uniform1f(uni.pointPx, pointPx * backingRatio(canvas));
         gl.uniform1ui(uni.picked, pickedRec);
@@ -12676,8 +13041,10 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
         gl.uniform2ui(uni.repaint, 0xFFFFFFFF, 0xFFFFFFFF);
         gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, ramp); gl.uniform1i(uni.ramp, 0);
         gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, palette); gl.uniform1i(uni.palette, 1);
-        // per-layer uniforms + slices (front-to-back preserved within each group)
-        const setupPtsLayer = (id) => {
+      };
+      const pts = visible.filter((c) => c.kind === 'points' && !isMip(c));
+      // per-layer uniforms (reads `uni`: whichever program ptsFrame set up)
+      const setupPtsLayer = (id) => {
           const ls = layerOf(id), o = lopt(id), zr = zRangeOf(o);
           gl.uniform1ui(uni.layer, id >>> 0);
           gl.uniform1f(uni.pointPx, pointPx * backingRatio(canvas) * (ls.pointScale || 1));   // a per-layer glyph size
@@ -12709,7 +13076,10 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
           gl.uniform1f(uni.noDataOn, ls.noData ? 1 : 0);
           if (ls.noData) gl.uniform4f(uni.noData, ls.noData[0], ls.noData[1], ls.noData[2], ls.noData[3]);
           gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, ls.rampTex || ramp); gl.uniform1i(uni.ramp, 0);
-        };
+      };
+      if (pts.length) {
+        const ptsGroups = byLayer(pts);
+        ptsFrame(ptsNormal);
         for (const [id, group] of ptsGroups) {
           setupPtsLayer(id);
           for (const c of group) {
@@ -12741,36 +13111,37 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
         }
       }
 
-      const blks = visible.filter((c) => c.kind === 'blocks');
+      const perspScale = (canvas.height / 2) / Math.tan(cam.state.fovY / 2);
+      const cheapOf = (c) => {
+        // the whole chunk below the demotion threshold → the cheap program
+        // (no gl_FragDepth → early-z stays on): the far-field perf lever
+        const b = c.bboxLocal;
+        const bboxR = Math.hypot(b[3] - b[0], b[4] - b[1], b[5] - b[2]) / 2;
+        // sub-blocked: fine grid.size is the fine step — use the chunk's largest box radius
+        const s = c.grid.size, q = c.sub ? c.dimQMax : null;
+        const rBlock = q
+          ? Math.hypot(q[0] * s[0], q[1] * s[1], q[2] * s[2]) / 2
+          : Math.hypot(s[0], s[1], s[2]) / 2;
+        const distNear = Math.max(cam.state.near, c._dist - bboxR);
+        return blocksAsPoints || rBlock * perspScale / distNear < 2.0;
+      };
+      const beginLayer = (id, projection = false) => {
+        const ls = layerOf(id), o = lopt(id);
+        blocksPipe.begin(camOf(id), {
+          pointPx, colorMode: o.colorMode, zRange: zRangeOf(o),
+          chanDoc: chanDocOf(ls, o),
+          ramp: ls.rampTex || ramp, palette: ls.paletteTex || catPalette || palette, viewportH: canvas.height,
+          maskTex: ls.maskTex, isolate: ls.isolate, pointsView: blocksAsPoints, picked: pickedRec, pickedLayer, layer: id,
+          section: layerSecOf(ls, sec),
+          catVisTex: ls.catVisTex, selTex: ls.selTex, ruleTex: ls.ruleOn ? ls.ruleTex : null,
+          chanTex: ls.chanTex, noData: ls.noData,
+          opacity: ls.opacity, edges: ls.edges != null ? ls.edges : blockEdges,   // per-layer override, else the View toggle
+          projection,
+        });
+      };
+      const blks = visible.filter((c) => c.kind === 'blocks' && !isMip(c));
       if (blks.length) {
         const blkGroups = byLayer(blks);
-        const perspScale = (canvas.height / 2) / Math.tan(cam.state.fovY / 2);
-        const cheapOf = (c) => {
-          // the whole chunk below the demotion threshold → the cheap program
-          // (no gl_FragDepth → early-z stays on): the far-field perf lever
-          const b = c.bboxLocal;
-          const bboxR = Math.hypot(b[3] - b[0], b[4] - b[1], b[5] - b[2]) / 2;
-          // sub-blocked: fine grid.size is the fine step — use the chunk's largest box radius
-          const s = c.grid.size, q = c.sub ? c.dimQMax : null;
-          const rBlock = q
-            ? Math.hypot(q[0] * s[0], q[1] * s[1], q[2] * s[2]) / 2
-            : Math.hypot(s[0], s[1], s[2]) / 2;
-          const distNear = Math.max(cam.state.near, c._dist - bboxR);
-          return blocksAsPoints || rBlock * perspScale / distNear < 2.0;
-        };
-        const beginLayer = (id) => {
-          const ls = layerOf(id), o = lopt(id);
-          blocksPipe.begin(camOf(id), {
-            pointPx, colorMode: o.colorMode, zRange: zRangeOf(o),
-            chanDoc: chanDocOf(ls, o),
-            ramp: ls.rampTex || ramp, palette: ls.paletteTex || catPalette || palette, viewportH: canvas.height,
-            maskTex: ls.maskTex, isolate: ls.isolate, pointsView: blocksAsPoints, picked: pickedRec, pickedLayer, layer: id,
-            section: layerSecOf(ls, sec),
-            catVisTex: ls.catVisTex, selTex: ls.selTex, ruleTex: ls.ruleOn ? ls.ruleTex : null,
-            chanTex: ls.chanTex, noData: ls.noData,
-            opacity: ls.opacity, edges: ls.edges != null ? ls.edges : blockEdges,   // per-layer override, else the View toggle
-          });
-        };
         for (const [id, group] of blkGroups) {
           beginLayer(id);
           for (const c of group) {
@@ -12842,9 +13213,55 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
         }
       }
       if (rp) repaintSet.clear();
+
+      // ── PROJECTION (gl-mip.js): each projected layer's next slices blend into its
+      // own target (the same allotment as the raster, so they converge together),
+      // then one fullscreen pass per layer maps the target through its ramp over
+      // the frame. Composited LAST, every frame: whatever the raster drew this
+      // frame under a projected pixel is painted over again. ──
+      let mipInfo = null;
+      if (mipIds.size) {
+        const target = gl.getParameter(gl.FRAMEBUFFER_BINDING);
+        let n = 0, m = 0;
+        for (const id of mipIds) {
+          const group = visible.filter((c) => c._layer === id);
+          mipPipe.begin(id, mipMode, canvas.width, canvas.height, moving);
+          if (kindBy.get(id) === 'blocks') {
+            beginLayer(id, true);
+            for (const c of group) {
+              const [first, k] = allot(c);
+              if (k > 0) { blocksPipe.drawSlice(c, first, k, cheapOf(c)); drawn += k; c.cursor = first + k; }
+            }
+          } else {
+            if (!ptsMip) ptsMip = ptsProgram('#define MIP 1');
+            ptsFrame(ptsMip);
+            setupPtsLayer(id);
+            for (const c of group) {
+              const [first, k] = allot(c);
+              if (k > 0) {
+                gl.uniform3f(uni.boxMin, c.bboxLocal[0], c.bboxLocal[1], c.bboxLocal[2]);
+                gl.uniform3f(uni.boxSpan, c.bboxLocal[3] - c.bboxLocal[0], c.bboxLocal[4] - c.bboxLocal[1], c.bboxLocal[5] - c.bboxLocal[2]);
+                gl.bindVertexArray(c.vao);
+                gl.drawArrays(gl.POINTS, first, k);
+                drawn += k; c.cursor = first + k;
+              }
+            }
+            uni = ptsNormal.uni;
+          }
+          for (const c of group) { n += c.cursor; m += c.count; if (c.cursor < c.count) converged = false; }
+        }
+        mipPipe.end();
+        gl.bindFramebuffer(gl.FRAMEBUFFER, target);
+        gl.viewport(0, 0, canvas.width, canvas.height);
+        for (const id of mipIds) mipPipe.composite(id, layerOf(id).rampTex || ramp);
+        gl.enable(gl.DEPTH_TEST);
+        mipInfo = { mode: mipMode, layers: [...mipIds], drawn: n, total: m, exact: n === m, w: canvas.width, h: canvas.height };
+      }
+      lastMip = mipInfo;
+
       lastConverged = converged;
       gl.bindVertexArray(null);
-      return { drawn, converged, visible: lastVisible };
+      return mipInfo ? { drawn, converged, visible: lastVisible, projection: mipInfo } : { drawn, converged, visible: lastVisible };
     },
   };
 }
@@ -12858,7 +13275,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
 // Mandatory in M1 (micro-spec §2.2): without it a point cloud reads as noise.
 
 
-const QUAD_VERT = `#version 300 es
+const QUAD_VERT$edl = `#version 300 es
 precision highp float;
 out vec2 vUv;
 void main() {                          // fullscreen triangle, no buffers
@@ -12902,7 +13319,7 @@ void main() {
 }`;
 
 function createEdl(gl) {
-  const prog = makeProgram(gl, QUAD_VERT, EDL_FRAG);
+  const prog = makeProgram(gl, QUAD_VERT$edl, EDL_FRAG);
   const U = (n) => gl.getUniformLocation(prog, n);
   const uni = { color: U('uColor'), depth: U('uDepth'), texel: U('uTexel'), nearFar: U('uNearFar'), ortho: U('uOrtho'), strength: U('uStrength'), radius: U('uRadius') };
   let fbo = null, colorTex = null, depthTex = null, w = 0, h = 0;

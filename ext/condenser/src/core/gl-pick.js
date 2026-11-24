@@ -9,7 +9,7 @@
 
 import { backingRatio } from './ratio.js';
 import { chanDequant } from './chan.js';
-import { makeProgram, IDENTITY3 } from './gl-util.js';
+import { makeProgram, IDENTITY3, withDefines } from './gl-util.js';
 import { translateState, mat4Inverse } from './camera.js';
 import { layerSection, meshSection } from './section.js';
 
@@ -56,6 +56,11 @@ uniform sampler2D uRule;
 uniform float uRuleOn;
 flat out uint vRec;
 flat out float vCull;
+#ifdef MIP
+uniform int uMipMode;                   // 0 max · 1 min · 2 mean (gl-mip.js)
+uniform float uMipRef;                  // the pixel's mean (mode 2)
+flat out float vKey;                    // the depth the pick sorts by: the record that IS the pixel's value wins
+#endif
 void main() {
   vec3 p = uBoxMin + aPos * uBoxSpan;
   gl_Position = uViewProj * vec4(p, 1.0);
@@ -82,11 +87,24 @@ void main() {
     if (blank && uNoDataOn > 0.5) { if (uNoData.a < 0.5) vCull = 1.0; }
     else if (t >= 0.0 && texture(uRamp, vec2(t, 0.5)).a < 0.5) vCull = 1.0;
   }
+#ifdef MIP
+  {                                       // the projection's own contribution rule (gl.js VERT, MIP)
+    float t; bool blank = false;
+    if (uChanTexOn > 0.5) { int rc = int(aRec); float v = texelFetch(uChanTex, ivec2(rc & 8191, rc >> 13), 0).r; blank = v < -1.0e37; t = clamp((v - uChanDoc.x) / max(uChanDoc.y, 1e-6), 0.0, 1.0); }
+    else t = clamp(aIntensity * uIntensityScale, 0.0, 1.0);
+    if (uFilterOn > 0.5) { int rm = int(aRec); if (texelFetch(uMask, ivec2(rm & 8191, rm >> 13), 0).r < 0.5) vCull = 1.0; }
+    if (blank || uColorMode != 1) vCull = 1.0;
+    vKey = 0.5 * (uMipMode == 0 ? 1.0 - t : (uMipMode == 1 ? t : abs(t - uMipRef)));
+  }
+#endif
 }`;
 const PICK_FRAG_PTS = `#version 300 es
 precision highp float;
 flat in uint vRec;
 flat in float vCull;
+#ifdef MIP
+flat in float vKey;
+#endif
 uniform uint uLayer;                    // the layer is per-DRAW, not per-element
 out uvec4 outId;                        // R = record (full uint32), G = layer | face<<16
 ${PACK}
@@ -94,6 +112,9 @@ void main() {
   if (vCull > 0.5) discard;
   vec2 d = gl_PointCoord - 0.5;
   if (dot(d, d) > 0.25) discard;
+#ifdef MIP
+  gl_FragDepth = vKey;
+#endif
   outId = uvec4(vRec, packId(uLayer, NO_FACE), 0u, 0u);   // a splat has no face
 }`;
 
@@ -132,6 +153,11 @@ flat out float vMode;
 flat out float vCull;
 out vec2 vCorner;
 out vec3 vWorldPos;
+#ifdef MIP
+uniform int uMipMode;                   // 0 max · 1 min · 2 mean (gl-mip.js)
+uniform float uMipRef;                  // the pixel's mean (mode 2)
+flat out float vKey;                    // the depth the pick sorts by: the record that IS the pixel's value wins
+#endif
 void main() {
   vec3 center = uGridOrigin + uGridRot * (aIjk * uGridSize);
   vec3 half_ = uSubBlock > 0.5 ? vec3(aDimQ) * uGridSize * 0.5 : uGridSize * 0.5;
@@ -172,6 +198,15 @@ void main() {
     if (blank && uNoDataOn > 0.5) { if (uNoData.a < 0.5) vCull = 1.0; }
     else if (t >= 0.0 && texture(uRamp, vec2(t, 0.5)).a < 0.5) vCull = 1.0;
   }
+#ifdef MIP
+  {                                       // the projection's own contribution rule (gl-blocks VERT, MIP)
+    float t; bool blank;
+    if (uChanTexOn > 0.5) { int rc = int(aRec); float v = texelFetch(uChanTex, ivec2(rc & 8191, rc >> 13), 0).r; blank = v < -1.0e37; t = clamp((v - uChanDoc.x) / max(uChanDoc.y, 1e-6), 0.0, 1.0); }
+    else { float v = uChanChunk.x + aChan * uChanChunk.y; blank = aChan < 0.5 / 65535.0; t = clamp((v - uChanDoc.x) / max(uChanDoc.y, 1e-6), 0.0, 1.0); }
+    if (blank || uColorMode != 1 || m < 0.5) vCull = 1.0;
+    vKey = 0.5 * (uMipMode == 0 ? 1.0 - t : (uMipMode == 1 ? t : abs(t - uMipRef)));
+  }
+#endif
   vCenter = center; vHalf = half_; vRec = aRec; vMode = demoted; vCorner = corner; vWorldPos = wp;
 }`;
 const PICK_FRAG_BLK = `#version 300 es
@@ -183,6 +218,9 @@ flat in float vMode;
 flat in float vCull;
 in vec2 vCorner;
 in vec3 vWorldPos;
+#ifdef MIP
+flat in float vKey;
+#endif
 uniform vec3 uEye;
 uniform vec3 uFwd;
 uniform float uOrthoRay;
@@ -201,6 +239,9 @@ void main() {
   if (vMode > 0.5) {
     if (dot(vCorner, vCorner) > 1.0) discard;
     gl_FragDepth = gl_FragCoord.z;
+#ifdef MIP
+    gl_FragDepth = vKey;
+#endif
     outId = uvec4(vRec, packId(uLayer, NO_FACE), 0u, 0u);  // demoted to a splat: no box, no face
     return;
   }
@@ -247,6 +288,9 @@ void main() {
   float t = tin > 0.0 ? tin : tout;
   vec4 clip = uViewProj * vec4(ro + rd * t, 1.0);
   gl_FragDepth = clamp(clip.z / clip.w * 0.5 + 0.5, 0.0, 1.0);
+#ifdef MIP
+  gl_FragDepth = vKey;                                     // a projection: sort by value, not distance
+#endif
   // WHICH FACE the eye ray entered through: the axis that WON the box entry,
   // signed by the ray's direction along it (travelling +x → you hit the −X face).
   // If the slab clip pushed the entry past the box's own, you are looking at the
@@ -511,10 +555,13 @@ export function createPickPipeline(gl) {
     fwd: gl.getUniformLocation(msh, 'uFwd'), ortho: gl.getUniformLocation(msh, 'uOrtho'),
     layer: gl.getUniformLocation(msh, 'uLayer'),
   };
-  const pts = makeProgram(gl, PICK_VERT_PTS, PICK_FRAG_PTS);
-  const blk = makeProgram(gl, PICK_VERT_BLK, PICK_FRAG_BLK);
   const stk = makeProgram(gl, PICK_VERT_STK, PICK_FRAG_STK);
   const U = (p, n) => gl.getUniformLocation(p, n);
+  // the points + blocks programs, as a SET: the plain pick, and (built on first use)
+  // the projection's — same geometry and gates, depth = the value key (gl-mip.js)
+  const mkSet = (defs) => {
+  const pts = makeProgram(gl, withDefines(PICK_VERT_PTS, defs), withDefines(PICK_FRAG_PTS, defs));
+  const blk = makeProgram(gl, withDefines(PICK_VERT_BLK, defs), withDefines(PICK_FRAG_BLK, defs));
   const uPts = { layer: U(pts, 'uLayer'), viewProj: U(pts, 'uViewProj'), boxMin: U(pts, 'uBoxMin'), boxSpan: U(pts, 'uBoxSpan'), pointPx: U(pts, 'uPointPx'), secPlane: U(pts, 'uSecPlane'), secCfg: U(pts, 'uSecCfg'), mask: U(pts, 'uMask'), filterOn: U(pts, 'uFilterOn'), isolate: U(pts, 'uIsolate'), catVis: U(pts, 'uCatVis'), catVisOn: U(pts, 'uCatVisOn'), rule: U(pts, 'uRule'), ruleOn: U(pts, 'uRuleOn'), valCullOn: U(pts, 'uValCullOn'), colorMode: U(pts, 'uColorMode'), zRange: U(pts, 'uZRange'), chanChunk: U(pts, 'uChanChunk'), chanDoc: U(pts, 'uChanDoc'), chanTexOn: U(pts, 'uChanTexOn'), noDataOn: U(pts, 'uNoDataOn'), intensityScale: U(pts, 'uIntensityScale'), noData: U(pts, 'uNoData'), chanTex: U(pts, 'uChanTex'), ramp: U(pts, 'uRamp') };
   const uBlk = {
     layer: U(blk, 'uLayer'),
@@ -528,6 +575,11 @@ export function createPickPipeline(gl) {
     valCullOn: U(blk, 'uValCullOn'), colorMode: U(blk, 'uColorMode'), zRange: U(blk, 'uZRange'), chanChunk: U(blk, 'uChanChunk'), chanDoc: U(blk, 'uChanDoc'), chanTexOn: U(blk, 'uChanTexOn'), noDataOn: U(blk, 'uNoDataOn'), intensityScale: U(blk, 'uIntensityScale'), noData: U(blk, 'uNoData'), chanTex: U(blk, 'uChanTex'), ramp: U(blk, 'uRamp'),
     secPlane: U(blk, 'uSecPlane'), secCfg: U(blk, 'uSecCfg'),
   };
+  for (const [p, u] of [[pts, uPts], [blk, uBlk]]) { u.mipMode = U(p, 'uMipMode'); u.mipRef = U(p, 'uMipRef'); }
+  return { pts, blk, uPts, uBlk };
+  };
+  const plainSet = mkSet('');
+  let mipSet = null;
   const uStk = {
     layer: U(stk, 'uLayer'),
     viewProj: U(stk, 'uViewProj'), eye: U(stk, 'uEye'), radius: U(stk, 'uRadius'),
@@ -572,7 +624,21 @@ export function createPickPipeline(gl) {
    */
   // the shared ID-buffer pass: scissored to (px,py,w,h), leaves the FBO bound
   // for the caller's readPixels. pick() reads 1px; pickRegion() reads the block.
-  function renderInto(px, py, w2, h2, chunks, cam, { pointPx, blocksAsPoints = false, layerStates = null, section = null, viewportW, viewportH, noClear = false }) {
+  function renderInto(px, py, w2, h2, chunks, cam, { pointPx, blocksAsPoints = false, layerStates = null, section = null, viewportW, viewportH, noClear = false, mip = null }) {
+    if (mip && !mipSet) mipSet = mkSet('#define MIP 1');
+    const { pts, blk, uPts, uBlk } = mip ? mipSet : plainSet;
+    // a projection pick (gl-mip.js): the value uniforms the key needs, whether or not the layer hides by value
+    const MIP_MODE = { max: 0, min: 1, mean: 2 };
+    const setMip = (u, st) => {
+      if (!mip) return;
+      const vp = st && st._valPick;
+      gl.uniform1i(u.mipMode, MIP_MODE[mip.mode] || 0);
+      gl.uniform1f(u.mipRef, mip.ref || 0);
+      gl.uniform1i(u.colorMode, vp ? vp.colorMode : 1);
+      if (vp) { gl.uniform2f(u.chanDoc, vp.chanDoc[0], vp.chanDoc[1]); gl.uniform1f(u.intensityScale, vp.intensityScale); }
+      gl.uniform1f(u.chanTexOn, st && st.chanTex ? 1 : 0);
+      if (st && st.chanTex) { gl.activeTexture(gl.TEXTURE8); gl.bindTexture(gl.TEXTURE_2D, st.chanTex); gl.uniform1i(u.chanTex, 8); }
+    };
     const stateOf = (id) => (layerStates && layerStates.get(id)) || { maskTex: null, isolate: false };
     const byLayer = (arr) => {
       const m = new Map();
@@ -680,6 +746,7 @@ export function createPickPipeline(gl) {
       setCatVis(uPts, st);
       setRule(uPts, st);
       setVal(uPts, st);
+      setMip(uPts, st);
       gl.uniform1f(uPts.filterOn, st.maskTex ? 1 : 0);
       gl.uniform1f(uPts.isolate, st.isolate ? 1 : 0);
       if (st.maskTex) { gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, st.maskTex); gl.uniform1i(uPts.mask, 4); }
@@ -726,6 +793,7 @@ export function createPickPipeline(gl) {
       setCatVis(uBlk, st);
       setRule(uBlk, st);
       setVal(uBlk, st);
+      setMip(uBlk, st);
       gl.uniform1f(uBlk.filterOn, st.maskTex ? 1 : 0);
       gl.uniform1f(uBlk.isolate, st.isolate ? 1 : 0);
       if (st.maskTex) { gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, st.maskTex); gl.uniform1i(uBlk.mask, 4); }

@@ -38,4 +38,5 @@ export { openDxfStream, peekDxfHead, DXF_STREAM_BYTES, createSceneStream } from 
 export { mat4Perspective, mat4Ortho, mat4LookAt, mat4Multiply, mat4Inverse, transformPoint, frustumPlanes, aabbInFrustum, translateState, createOrbitCamera, attachOrbitInput } from './core/camera.js';
 export { makeProgram, rampPixels, palettePixels, uploadChunk, createRenderer } from './core/gl.js';
 export { createEdl } from './core/edl.js';
+export { createMipPipeline, decodeProjection, PROJECTION_MODES } from './core/gl-mip.js';
 export { writeMSH, readMSHLayout } from '../../msh/msh.js';   // mesh export (micro): the ARANZ writer rides the already-inlined @gcu/msh
