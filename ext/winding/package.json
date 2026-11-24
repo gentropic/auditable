@@ -1,6 +1,6 @@
 {
   "name": "@gcu/winding",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Generalized winding number solid containment for triangle meshes. CPU + WebGPU evaluators with BVH acceleration and optional Web Worker offload.",
   "type": "module",
   "main": "src/main.js",
