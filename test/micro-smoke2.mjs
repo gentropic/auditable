@@ -1742,7 +1742,7 @@ if (take()) {
     return { title: win.querySelector('.fwin-head .t').textContent, sections: railBtns.length, stored, descs };
   });
   chk(`settings: ${setw.sections} sections on the rail, a choice persists (selStick → ${setw.stored})`,
-    setw.title === 'settings' && setw.sections === 6 && setw.stored === 'sticky');
+    setw.title === 'settings' && setw.sections === 5 && setw.stored === 'sticky');   // 'experimental' emptied when the plain-language bar graduated (d97eceb9)
 
   // ── the g-leader: save a view slot, move, recall; a bare digit does nothing ──
   await wp.evaluate(() => document.body.focus());
