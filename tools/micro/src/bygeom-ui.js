@@ -3,7 +3,7 @@
 // the run and cancel handlers, and the recipe side (state from params, run, open configured).
 // The evaluation itself is src/bygeom.js; the app wires the buttons.
 import { S, layerById } from './state.js';
-import { _windingGpu, assignDomains, flagBySolid, ratioBySolid, sbCancelActive, selectBySolid, setWindingGpu, solidOrientedMesh } from './bygeom.js';
+import { _windingGpu, assignDomains, bySupportOf, flagBySolid, ratioBySolid, sbCancelActive, selectBySolid, setWindingGpu, solidOrientedMesh } from './bygeom.js';
 import { ppNote } from './props.js';
 import { hasRecords, layerTableHeader } from './records.js';
 import { saveRecipe } from './recipes.js';
@@ -262,7 +262,10 @@ export function renderSolidDialog() {
       const Lg = layerById(d.ratioLid);
       const doc2 = Lg && Lg.docs.blockDoc;
       const gsz = doc2 && (doc2.grid || (doc2.header && doc2.header.grid));
-      const dims = gsz && gsz.size ? ` · ${gsz.size.map((v, k) => +(v / d.res[k]).toFixed(2)).join('×')} m blocklings` : '';
+      // a sub-blocked model: each block probed in its own box (winding per block — peel needs a lattice of whole blocks)
+      const bs = Lg && bySupportOf(Lg);
+      const dims = bs && bs.sub ? ` in each sub-block's own box${d.method === 'peel' ? ' (winding, per block — peel needs whole-block columns)' : ''}`
+        : gsz && gsz.size ? ` · ${gsz.size.map((v, k) => +(v / d.res[k]).toFixed(2)).join('×')} m blocklings` : '';
       return `= ${n2.toLocaleString()} probes/block${dims}`;
     };
     const ins = ['x', 'y', 'z'].map((ax, k) => {

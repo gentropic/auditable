@@ -125,7 +125,7 @@ The block is sampled at a small lattice of probe points, and the fraction is the
 \begin{table}[htbp]\small
 \begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
 setting & meaning & default \\ \midrule
-\ui{model} & The regular block model that gets the column. & the first one \\
+\ui{model} & The block model that gets the column. & the first one \\
 \ui{column} & The column's name. & as for a flag \\
 \ui{probes} & Probe points along x × y × z in each block. The tally beside it reads, for example, “= 18 probes/block · 3.33×3.33×2.5 m blocklings”. & 3 × 3 × 3 \\ \bottomrule
 \end{tabularx}
@@ -137,7 +137,11 @@ Probes are per axis because blocks are rarely cubes. A 10 × 10 × 5 m bench blo
 The column is numeric, wears a \% badge in the column lists, and is the natural weight for everything downstream. A grade–tonnage series weighted by \code{SG * IN\_ORE\_SHELL} reports the tonnage inside the shell with the edge blocks counted for the part that is in (\cref{ch:gt}).
 
 \begin{note}
-Fractions need a regular block model, axis-aligned or rotated. On a rotated model micro turns the geometry, not the model: it carries the solid or surface into the model's own lattice frame, where the rotated blocks line up with the axes again, and probes there. The probes are therefore laid out along the block's own edges, and a rotated copy of a model and its solid gives exactly the fractions the unrotated pair gives. A surface's skirt is dropped straight down (or up) in the world before the turn, so \ui{below} keeps meaning below. Select and flag on a rotated model take the same path, judging each block by its centroid as on any model.
+Fractions need a block model, axis-aligned or rotated, regular or sub-blocked. On a rotated model micro turns the geometry, not the model: it carries the solid or surface into the model's own lattice frame, where the rotated blocks line up with the axes again, and probes there. The probes are therefore laid out along the block's own edges, and a rotated copy of a model and its solid gives exactly the fractions the unrotated pair gives. A surface's skirt is dropped straight down (or up) in the world before the turn, so \ui{below} keeps meaning below. Select and flag on a rotated model take the same path, judging each block by its centroid as on any model.
+\end{note}
+
+\begin{note}
+A sub-blocked model has no lattice of whole blocks to sweep, so each block is probed in its own box: the same probe pattern, stretched to the block's own size. A 1~m sub-block and its 20~m parent each get 3~×~3~×~3 probes, and the tally beside \ui{probes} says \emph{in each sub-block's own box}. The work is one pass over the blocks whose box reaches the solid's bounding box; every other block is 0 without a probe. Peel needs whole columns of blocks, so on a sub-blocked model \ui{peel} is answered by \ui{winding}, block by block, and the tally says so. All of this holds for a rotated sub-blocked model too, such as an Isatis or Datamine export with sub-cells, which used to be refused: a rotated sub-blocked copy of a model gives the same fractions, flags, domains and factor tonnages as its axis-aligned twin. A gridded surface (\cref{sec:geometry-surfaces}) probes each sub-block's own box in the same way.
 \end{note}
 
 \begin{tryit}
@@ -225,7 +229,7 @@ The rule is “largest fraction”, not “first in the list” and not “any o
 \end{caution}
 
 \begin{note}
-Assign domains needs a regular block model. A rotated one works as for a fraction column.
+Assign domains needs a block model. A rotated or sub-blocked one works as for a fraction column.
 \end{note}
 
 \section{Recipes, and in a routine}\label{sec:geometry-routine}

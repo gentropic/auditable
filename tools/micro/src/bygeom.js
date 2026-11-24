@@ -12,6 +12,7 @@ import { S, requestRender } from './state.js';
 import { Peel } from '../../../ext/peel/index.js';
 import { canScanColumnar, scanColumnar, zoneKeeper } from './colscan.js';
 import { surfaceFromGrid } from './grid-ops.js';
+import { supportOfHeader, worldHalfExtent } from '../../../ext/condenser/src/main.js';
 import { gridWindowFromGTiff, windowForWorldBbox } from '../../../ext/gtiff/index.js';
 import { paintRecount } from './columns.js';
 import { mkLineage } from './lineage.js';
@@ -228,7 +229,7 @@ export async function meshPeel(meshL, lat = null) {
 // so an engine never serves a stale copy after the source mesh is rebuilt.
 let _latticeSeq = 0;
 export function latticeFrameOf(grid) {
-  const R = grid.rotD || Array.from(grid.rot);
+  const R = grid.rotD || (grid.rot ? Array.from(grid.rot) : [1, 0, 0, 0, 1, 0, 0, 0, 1]);   // identity: a model frame for an axis-aligned lattice
   const o = S.frame.origin, g0 = grid.originLocal;
   // frame-local first, then minus block 0: small numbers meet small numbers
   const toQ = (x, y, z) => {
@@ -273,13 +274,117 @@ export function etaStr(t0, frac) {
 
 export let _sbActive = null;   // { W, meshL, reject } while a dense run is up
 
+// ── the block SUPPORT a by-geometry query reads (condenser grid/support.js): the
+// frame (R, rotated), the fine pitch, whether blocks carry their own size (dimQ), and
+// the size columns' names (a columnar positions scan reads them). null = no blocks.
+export function bySupportOf(L) {
+  const doc = L && L.docs && L.docs.blockDoc, h = doc && doc.header;
+  const sup = h ? supportOfHeader(h) : null;
+  if (!sup) return null;
+  const dc = sup.sub && h.dimCols ? h.dimCols : null;
+  return { sup, sub: sup.sub, rotated: sup.frame.rotated, R: sup.frame.R, pitch: sup.lattice.pitch.map((p) => Math.abs(+p) || 1),
+    sizes: dc && h.columns ? [h.columns[dc.x], h.columns[dc.y], h.columns[dc.z]] : null };
+}
+// one block's half extents in its LATTICE frame, from a positions chunk's dimQ (a
+// sub-blocked model: size in fine steps × pitch / 2) — written into out. A chunk
+// without sizes can't describe a sub-block's box: refuse rather than guess one cell.
+export function chunkHalves(bs, ch, i, out) {
+  if (!bs.sub) { out[0] = bs.pitch[0] / 2; out[1] = bs.pitch[1] / 2; out[2] = bs.pitch[2] / 2; return out; }
+  const q = ch.dimQ;
+  if (!q) throw new Error('the block sizes did not come with the positions — a sub-blocked block has no box without them');
+  out[0] = (q[3 * i] || 1) * bs.pitch[0] / 2; out[1] = (q[3 * i + 1] || 1) * bs.pitch[1] / 2; out[2] = (q[3 * i + 2] || 1) * bs.pitch[2] / 2;
+  return out;
+}
+
+// SUB-BLOCKED models — no lattice of whole blocks to sweep (each block its own size),
+// so each block is probed in ITS OWN box: the same res³ cell-centred probes the dense
+// sweep lays in a lattice cell, scaled to the block (dimQ × pitch), in the MODEL's
+// frame — its lattice frame about block 0 (rotated or not: the mesh is carried there,
+// as for a rotated dense sweep), so probes and mesh are small numbers whatever the
+// scene's frame is (another model far away sets that one). @gcu/winding's box
+// list on its worker. One pass over the blocks the mesh's bbox can touch (the
+// pushdown); every other block is 0. → per-RECORD values; lookup(x, y, z, rec).
+async function evalSolidPerBlock(meshL, L, bs, { mode, resolution, onProgress, variant }) {
+  const doc = L.docs.blockDoc, grid = doc.grid;
+  const mw = await meshVariant(meshL, variant);
+  if (!mw) return null;
+  const lf = latticeFrameOf(grid);
+  const lat = latticeMesh(meshL, mw, variant, lf);
+  const eng = await meshWinding(meshL, variant, lat);
+  if (!eng) return null;
+  const meshName = lat.name;
+  const R = bs.R, P = bs.pitch;
+  const qm = bs.sup.sizeQMax || [255, 255, 255];
+  const hm = worldHalfExtent(R, qm[0] * P[0] / 2, qm[1] * P[1] / 2, qm[2] * P[2] / 2);
+  const mb = mw.bbox;
+  const worldBbox = [mb[0] - hm[0], mb[1] - hm[1], mb[2] - hm[2], mb[3] + hm[0], mb[4] + hm[1], mb[5] + hm[2]];
+  const n = attrRowCountOf(L);
+  const flag = mode === 'flag';
+  const values = flag ? new Uint8Array(n) : new Float32Array(n);
+  const res = flag ? [1, 1, 1] : resolution;
+  const run = { W: eng, meshL, reject: null };
+  const cancelled = new Promise((_, rej) => { run.reject = rej; });
+  cancelled.catch(() => {});
+  _sbActive = run;
+  const t0 = performance.now(), tag = eng.hasWorker ? 'worker' : 'CPU';
+  const h = [0, 0, 0], wh = [0, 0, 0];
+  let done = 0, probed = 0;
+  try {
+    for await (const ch of layerPositions(L, worldBbox)) {
+      // the blocks whose world box reaches the mesh's bbox: their centres in the probe frame + their halves
+      const cen = new Float64Array(3 * ch.count), hal = new Float32Array(3 * ch.count), rec = new Uint32Array(ch.count);
+      let k = 0;
+      for (let i = 0; i < ch.count; i++) {
+        const x = ch.x[i], y = ch.y[i], z = ch.z[i];
+        chunkHalves(bs, ch, i, h);
+        worldHalfExtent(R, h[0], h[1], h[2], wh);
+        if (x + wh[0] < mb[0] || x - wh[0] > mb[3] || y + wh[1] < mb[1] || y - wh[1] > mb[4] || z + wh[2] < mb[2] || z - wh[2] > mb[5]) continue;
+        const r = ch.recs ? ch.recs[i] : ch.base + i;
+        if (r >= n) continue;
+        const q = lf.toQ(x, y, z); cen[3 * k] = q[0]; cen[3 * k + 1] = q[1]; cen[3 * k + 2] = q[2];
+        hal[3 * k] = h[0]; hal[3 * k + 1] = h[1]; hal[3 * k + 2] = h[2];
+        rec[k++] = r;
+      }
+      if (k) {
+        const out = await Promise.race([
+          eng.evaluateBoxes({ centres: cen.subarray(0, 3 * k), halves: hal.subarray(0, 3 * k), count: k },
+            { mode: flag ? 'flag' : 'proportion', resolution: res, threshold: 0.5, mesh: meshName }),
+          cancelled,
+        ]);
+        const v = flag ? out.flags : out.proportions;
+        for (let j = 0; j < k; j++) values[rec[j]] = v[j];
+        probed += k;
+      }
+      done += ch.count;
+      const f = n ? Math.min(1, done / n) : 1;
+      if (onProgress) onProgress(f);
+      $('#meta').textContent = `winding, per block: ${done.toLocaleString()} blocks read · ${probed.toLocaleString()} probed${etaStr(t0, f)} (${tag})`;
+    }
+  } finally { if (_sbActive === run) _sbActive = null; }
+  return {
+    engine: `per-block:${eng.hasWorker ? 'worker' : 'cpu'}`,
+    bbox: worldBbox,
+    rotated: bs.rotated,
+    perRecord: true,
+    probed,
+    lookup(x, y, z, rec) {
+      if (rec == null) throw new Error('a sub-blocked answer is per record — lookup needs the record');
+      return rec < values.length ? values[rec] : 0;
+    },
+  };
+}
+
 export async function evalSolidOnGrid(meshL, L, { mode, resolution = [3, 3, 3], onProgress, variant = 'solid', method = 'winding' } = {}) {
   const doc = L.docs.blockDoc;
   const grid = doc && (doc.grid || (doc.header && doc.header.grid));
   if (!grid || !grid.size || !grid.count) return null;
+  // a sub-blocked model (axis-aligned or rotated): each block probed in its own box —
+  // the fine lattice's cell at the centroid is NOT the block (its fraction was the
+  // fine cell's, and the lattice clipped to a large solid could run to billions of cells).
+  // Peel casts one ray per lattice column, which a box list has none of: winding answers.
+  const bs = bySupportOf(L);
+  if (bs && bs.sub) return evalSolidPerBlock(meshL, L, bs, { mode, resolution, onProgress, variant });
   const rotated = !!grid.rot;
-  // rotated sub-blocks don't exist (detection refuses them): nothing to sweep honestly
-  if (rotated && doc.header && doc.header.subBlocked) return null;
   let usePeel = method === 'peel';
   if (usePeel && rotated) {
     // peel's OPEN-surface answer is "below along its ray"; in the lattice frame the ray
@@ -457,10 +562,12 @@ export async function* layerPositions(L, bbox = null) {
     // positions (they were read as 0,0,0 — inside or outside a solid at the origin).
     const P = d.blockDoc.parquet, hh = layerTableHeader(L), mm = hh.mapping;
     const coordNames = P ? P.coordNames : [hh.columns[mm.x], hh.columns[mm.y], hh.columns[mm.z]];
+    // a sub-blocked model's positions come with each block's size in fine steps (dimQ)
+    const bs = bySupportOf(L), sizes = bs && bs.sub && bs.sizes ? bs.sizes : null;
     const ac = new AbortController(), queue = [];
     let wake = null, finished = false, failure = null, skipped = 0;
     const poke = () => { if (wake) { const w = wake; wake = null; w(); } };
-    scanColumnar(L, { kernel: 'positions', params: { coords: coordNames }, exprs: [], extraCols: coordNames, signal: ac.signal,
+    scanColumnar(L, { kernel: 'positions', params: { coords: coordNames, ...(sizes ? { sizes, pitch: bs.pitch } : {}) }, exprs: [], extraCols: sizes ? [...coordNames, ...sizes] : coordNames, signal: ac.signal,
       skipGroup: (g, rg) => { const sk = !!bbox && !!P && !pqGroupBboxIntersects(rg, P.coordNames, bbox); if (sk) skipped++; return sk; },   // footer bboxes: Parquet
       keepZone: bbox ? zoneKeeper(L, { bbox }) : null,     // a CSV's zone bboxes
       onPart: (g, part, start) => new Promise((taken) => { if (ac.signal.aborted) { taken(); return; } queue.push({ part, start, taken }); poke(); }) })
@@ -471,7 +578,7 @@ export async function* layerPositions(L, bbox = null) {
           const { part, start, taken } = queue.shift();
           const recs = new Uint32Array(part.rec.length);
           for (let i = 0; i < recs.length; i++) recs[i] = start + part.rec[i];
-          yield { x: part.x, y: part.y, z: part.z, recs, base: start, count: recs.length };
+          yield { x: part.x, y: part.y, z: part.z, recs, base: start, count: recs.length, dimQ: part.dimQ || null };
           taken();                                         // the consumer came back for more → the next group may go
           continue;
         }
@@ -486,7 +593,7 @@ export async function* layerPositions(L, bbox = null) {
   const streamChunks = await docPositionStream(d);         // the ONE position-stream dispatch (records.js) — world, a rotated .dm's included
   if (!streamChunks) return;
   for await (const rc2 of streamChunks({ chunkPoints: 1 << 18 })) {
-    yield { x: rc2.x, y: rc2.y, z: rc2.z, recs: rc2.recIdx || null, base: rc2.recStart || 0, count: rc2.count };
+    yield { x: rc2.x, y: rc2.y, z: rc2.z, recs: rc2.recIdx || null, base: rc2.recStart || 0, count: rc2.count, dimQ: rc2.dimQ || null };
   }
 }
 
@@ -564,23 +671,21 @@ export function gridClassify(surfA, surfB, mode, hx, hy, hz, rx, ry) {
 // footprint sampler doesn't describe them (gridClassifyRotated does; the dense solid
 // engine runs in the lattice frame — see latticeMesh)
 export function rotatedModel(L) {
-  const doc = L && L.docs && L.docs.blockDoc;
-  if (!doc) return false;
-  const g = doc.grid, h = doc.header && doc.header.grid;
-  return !!((g && g.rot) || (h && h.rot));
+  const bs = bySupportOf(L);
+  return !!(bs && bs.rotated);
 }
 // the probe counts select / flag by surface use: a 2×2 plan footprint (and z analytic) on a
 // block, 2×2×2 on a rotated block, a step at the centroid for points
 export function gridSelectRes(L) {
-  const g = L.docs && L.docs.blockDoc && L.docs.blockDoc.grid;
-  if (g && g.rot && g.size) return [2, 2, 2];
-  return blockHalfExtents(L)[2] > 0 ? [2, 2, 1] : [1, 1, 1];
+  const bs = bySupportOf(L);
+  if (!bs) return [1, 1, 1];
+  return bs.rotated ? [2, 2, 2] : [2, 2, 1];
 }
+// a REGULAR block's half extents in its lattice frame (a sub-blocked block's come per
+// record — chunkHalves); [0, 0, 0] without blocks (points: a step at the centroid)
 export function blockHalfExtents(L) {
-  const doc = L.docs.blockDoc;
-  const g = doc && (doc.grid || (doc.header && doc.header.grid));
-  if (rotatedModel(L)) return [0, 0, 0];                   // not an axis box — rotated callers go through gridClassifyRotated
-  return g && g.size ? [g.size[0] / 2, g.size[1] / 2, g.size[2] / 2] : [0, 0, 0];
+  const bs = bySupportOf(L);
+  return bs ? bs.pitch.map((p) => p / 2) : [0, 0, 0];
 }
 
 // a gridded surface against a ROTATED block: the heightfield is NOT rotated with the
@@ -590,17 +695,20 @@ export function blockHalfExtents(L) {
 // axis-aligned path integrates z analytically down a vertical column; a tilted block
 // has no vertical column, so z is probed too. 'between' is tested per probe (below A
 // AND above B), exact for crossing surfaces where the column formula is conservative.
+// The block's half extents (lattice frame) come per call — a sub-block's own — or
+// default to size / 2.
 export function gridClassifyRotated(surfA, surfB, mode, R, size, rx, ry, rz) {
-  const np = rx * ry * rz, ox = new Float64Array(np), oy = new Float64Array(np), oz = new Float64Array(np);
+  const np = rx * ry * rz, ux = new Float64Array(np), uy = new Float64Array(np), uz = new Float64Array(np);
   let p = 0;
   for (let c = 0; c < rz; c++) for (let b = 0; b < ry; b++) for (let a = 0; a < rx; a++, p++) {
-    const u = size[0] * ((a + 0.5) / rx - 0.5), v = size[1] * ((b + 0.5) / ry - 0.5), w = size[2] * ((c + 0.5) / rz - 0.5);
-    ox[p] = R[0] * u + R[3] * v + R[6] * w; oy[p] = R[1] * u + R[4] * v + R[7] * w; oz[p] = R[2] * u + R[5] * v + R[8] * w;
+    ux[p] = (2 * a + 1) / rx - 1; uy[p] = (2 * b + 1) / ry - 1; uz[p] = (2 * c + 1) / rz - 1;   // unit offsets, ×half
   }
-  return (x, y, z) => {
+  const d0 = size[0] / 2, d1 = size[1] / 2, d2 = size[2] / 2;
+  return (x, y, z, hx = d0, hy = d1, hz = d2) => {
     let n = 0, ins = 0;
     for (let q = 0; q < np; q++) {
-      const px = x + ox[q], py = y + oy[q], pz = z + oz[q];
+      const u = hx * ux[q], v = hy * uy[q], w = hz * uz[q];
+      const px = x + R[0] * u + R[3] * v + R[6] * w, py = y + R[1] * u + R[4] * v + R[7] * w, pz = z + R[2] * u + R[5] * v + R[8] * w;
       const zA = surfA.sampleZ(px, py);
       if (Number.isNaN(zA)) continue;
       let hit;
@@ -621,14 +729,25 @@ export function gridClassifyRotated(surfA, surfB, mode, R, size, rx, ry, rz) {
 // lattice, the column integral otherwise. res = [rx, ry, rz]; rz is used only on a
 // rotated lattice (a z resolution of 1 there — the axis-aligned default, where z is
 // analytic — becomes max(rx, ry), so the default probes a tilted block in 3D too).
+// → cls(x, y, z, hx?, hy?, hz?): a SUB-BLOCKED model's blocks each give their own
+// half extents (lattice frame — chunkHalves / halfAt); a regular model's default.
 export function blockGridClassifier(L, surfA, surfB, mode, res) {
-  const g = L.docs && L.docs.blockDoc && L.docs.blockDoc.grid;
-  if (g && g.rot && g.size) {
+  const bs = bySupportOf(L);
+  const need = (hx) => { if (bs && bs.sub && hx === undefined) throw new Error('a sub-blocked block has no box without its size'); };
+  if (bs && bs.rotated) {
     const rz = res[2] > 1 ? res[2] : Math.max(res[0], res[1]);
-    return gridClassifyRotated(surfA, surfB, mode, g.rotD || Array.from(g.rot), g.size, res[0], res[1], rz);
+    const cls = gridClassifyRotated(surfA, surfB, mode, bs.R, bs.pitch, res[0], res[1], rz);
+    return bs.sub ? (x, y, z, hx, hy, hz) => { need(hx); return cls(x, y, z, hx, hy, hz); } : cls;
   }
-  const [hx, hy, hz] = blockHalfExtents(L);
-  return gridClassify(surfA, surfB, mode, hx, hy, hz, res[0], res[1]);
+  const [h0, h1, h2] = blockHalfExtents(L);
+  if (!(bs && bs.sub)) return gridClassify(surfA, surfB, mode, h0, h1, h2, res[0], res[1]);
+  return (x, y, z, hx, hy, hz) => { need(hx); return gridClassify(surfA, surfB, mode, hx, hy, hz, res[0], res[1])(x, y, z); };
+}
+// the classifier applied over a positions chunk: a sub-block's own box, else the layer's
+export function chunkClassify(bs, cls) {
+  if (!(bs && bs.sub)) return (ch, i) => cls(ch.x[i], ch.y[i], ch.z[i]);
+  const h = [0, 0, 0];
+  return (ch, i) => { chunkHalves(bs, ch, i, h); return cls(ch.x[i], ch.y[i], ch.z[i], h[0], h[1], h[2]); };
 }
 
 export async function selectByGridSurface(gridL, { mode = 'below', meshB = null, targets = null, combine = 'replace', onProgress = null } = {}) {
@@ -646,14 +765,14 @@ export async function selectByGridSurface(gridL, { mode = 'below', meshB = null,
     if (!n || L.kind === 'mesh' || L.docs.gridDoc) continue;
     if (!L._selMask || L._selMask.length !== n) L._selMask = new Uint8Array(n);
     const m = L._selMask;
-    const cls = blockGridClassifier(L, surfA, surfB, mode, gridSelectRes(L));
+    const cls = chunkClassify(bySupportOf(L), blockGridClassifier(L, surfA, surfB, mode, gridSelectRes(L)));
     let done = 0;
     $('#meta').textContent = `select by surface: sampling ${L.label || L.name}…`;
     try {
       for await (const ch of layerPositions(L)) {
         if (epoch !== selEpoch()) return;
         for (let i = 0; i < ch.count; i++) {
-          if (cls(ch.x[i], ch.y[i], ch.z[i]).hit) { const r = ch.recs ? ch.recs[i] : ch.base + i; if (r < n) m[r] = v; }
+          if (cls(ch, i).hit) { const r = ch.recs ? ch.recs[i] : ch.base + i; if (r < n) m[r] = v; }
           if ((i & 0x3FFF) === 0x3FFF) { if (onProgress) onProgress((li + (done + i) / n) / Ls.length, `sampling · ${L.label || L.name}`); await new Promise((r2) => setTimeout(r2)); if (epoch !== selEpoch()) return; }
         }
         done += ch.count;
@@ -679,13 +798,13 @@ export async function ratioByGridSurface(gridL, L, { name, res = [2, 2, 1], mode
   const epoch = ++_ratioEpoch;
   const col = createPaintCol(L, name, 'ratio'); if (!col) return null;
   const n = attrRowCountOf(L), codes = col.codes;
-  const cls = blockGridClassifier(L, surfA, surfB, mode, resolution);
+  const cls = chunkClassify(bySupportOf(L), blockGridClassifier(L, surfA, surfB, mode, resolution));
   let done = 0, touched = 0;
   try {
     for await (const ch of layerPositions(L)) {
       if (epoch !== _ratioEpoch) return null;
       for (let i = 0; i < ch.count; i++) {
-        const { frac } = cls(ch.x[i], ch.y[i], ch.z[i]);
+        const { frac } = cls(ch, i);
         if (Number.isNaN(frac) || !frac) continue;
         const r = ch.recs ? ch.recs[i] : ch.base + i;
         if (r < n) { codes[r] = Math.round(255 * frac); touched++; }
@@ -717,14 +836,14 @@ export async function flagByGridSurface(gridL, targets, { name, label = 'IN', mo
     const col = createPaintCol(L, name); if (!col) continue;
     const code = addPaintValue(L, col, label);
     const n = attrRowCountOf(L), codes = col.codes;
-    const cls = blockGridClassifier(L, surfA, surfB, mode, gridSelectRes(L));
+    const cls = chunkClassify(bySupportOf(L), blockGridClassifier(L, surfA, surfB, mode, gridSelectRes(L)));
     let done = 0, cnt = 0;
     $('#meta').textContent = `flag by surface: sampling ${L.label || L.name}…`;
     try {
       for await (const ch of layerPositions(L)) {
         if (epoch !== _ratioEpoch) return made;
         for (let i = 0; i < ch.count; i++) {
-          if (cls(ch.x[i], ch.y[i], ch.z[i]).hit) { const r = ch.recs ? ch.recs[i] : ch.base + i; if (r < n) { codes[r] = code; cnt++; } }
+          if (cls(ch, i).hit) { const r = ch.recs ? ch.recs[i] : ch.base + i; if (r < n) { codes[r] = code; cnt++; } }
           if ((i & 0x3FFF) === 0x3FFF) { if (onProgress) onProgress((li + (done + i) / n) / targets.length, `sampling · ${L.label || L.name}`); await new Promise((r2) => setTimeout(r2)); if (epoch !== _ratioEpoch) return made; }
         }
         done += ch.count;
@@ -769,12 +888,10 @@ export async function selectBySolid(meshL, { mode = 'inside', meshB = null, targ
         for await (const ch of layerPositions(L, want || between ? dense.bbox : null)) {
           if (epoch !== selEpoch()) return;
           for (let i = 0; i < ch.count; i++) {
-            const hitA = dense.lookup(ch.x[i], ch.y[i], ch.z[i]) >= 1;
-            const hit = between ? (hitA && denseB.lookup(ch.x[i], ch.y[i], ch.z[i]) >= 1) : (hitA === want);
-            if (hit) {
-              const r = ch.recs ? ch.recs[i] : ch.base + i;
-              if (r < n) m[r] = v;
-            }
+            const r = ch.recs ? ch.recs[i] : ch.base + i;
+            const hitA = dense.lookup(ch.x[i], ch.y[i], ch.z[i], r) >= 1;
+            const hit = between ? (hitA && denseB.lookup(ch.x[i], ch.y[i], ch.z[i], r) >= 1) : (hitA === want);
+            if (hit && r < n) m[r] = v;
           }
           done += ch.count;
           prog(0.8 + 0.2 * Math.min(1, done / n), 'mapping');
@@ -858,13 +975,13 @@ export async function ratioBySolid(meshL, L, { name, res = 3, mode = 'inside', m
   for await (const ch of layerPositions(L, mode === 'outside' ? null : dense.bbox)) {
     if (epoch !== _ratioEpoch) return null;
     for (let i = 0; i < ch.count; i++) {
-      let p2 = dense.lookup(ch.x[i], ch.y[i], ch.z[i]);
+      const r = ch.recs ? ch.recs[i] : ch.base + i;
+      let p2 = dense.lookup(ch.x[i], ch.y[i], ch.z[i], r);
       // between = fraction below A AND above B: exact for non-crossing
       // surfaces (probe columns are monotone), conservative when they cross
-      if (between) p2 = Math.max(0, p2 + denseB.lookup(ch.x[i], ch.y[i], ch.z[i]) - 1);
+      if (between) p2 = Math.max(0, p2 + denseB.lookup(ch.x[i], ch.y[i], ch.z[i], r) - 1);
       else if (mode === 'outside') p2 = 1 - p2;
       if (!p2) continue;
-      const r = ch.recs ? ch.recs[i] : ch.base + i;
       if (r < n) { codes[r] = Math.round(255 * p2); touched++; }
     }
     done += ch.count;
@@ -915,12 +1032,10 @@ export async function flagBySolid(meshL, targets, { name, label = 'IN', mode = '
         for await (const ch of layerPositions(L, want || between ? dense.bbox : null)) {
           if (epoch !== _ratioEpoch) return made;
           for (let i = 0; i < ch.count; i++) {
-            const hitA = dense.lookup(ch.x[i], ch.y[i], ch.z[i]) >= 1;
-            const hit = between ? (hitA && denseB.lookup(ch.x[i], ch.y[i], ch.z[i]) >= 1) : (hitA === want);
-            if (hit) {
-              const r = ch.recs ? ch.recs[i] : ch.base + i;
-              if (r < n) { codes[r] = code; cnt++; }
-            }
+            const r = ch.recs ? ch.recs[i] : ch.base + i;
+            const hitA = dense.lookup(ch.x[i], ch.y[i], ch.z[i], r) >= 1;
+            const hit = between ? (hitA && denseB.lookup(ch.x[i], ch.y[i], ch.z[i], r) >= 1) : (hitA === want);
+            if (hit && r < n) { codes[r] = code; cnt++; }
           }
           done += ch.count;
           prog(0.8 + 0.2 * Math.min(1, done / n), 'mapping');
@@ -1014,14 +1129,14 @@ export async function assignDomains(solids, L, { name = 'DOMAIN', res = [2, 2, 2
   for await (const ch of layerPositions(L, uBbox)) {
     if (epoch !== _ratioEpoch) return null;
     for (let i = 0; i < ch.count; i++) {
+      const r = ch.recs ? ch.recs[i] : ch.base + i;
       let best = 0, bi = -1;
       for (let k = 0; k < fields.length; k++) {
         if (!fields[k]) continue;
-        const p2 = fields[k].lookup(ch.x[i], ch.y[i], ch.z[i]);
+        const p2 = fields[k].lookup(ch.x[i], ch.y[i], ch.z[i], r);
         if (p2 > best) { best = p2; bi = k; }
       }
       if (bi < 0) continue;
-      const r = ch.recs ? ch.recs[i] : ch.base + i;
       if (r < n) { codes[r] = codeOf[bi]; assigned++; }
     }
     done += ch.count;

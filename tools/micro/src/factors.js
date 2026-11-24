@@ -22,7 +22,7 @@ import { layerRecords, layerTableHeader, numOf, schemaExt } from './records.js';
 import { compileBool, compileValue, quoteIdent, validate, deps as exprDeps } from '../../../ext/expr/index.js';
 import { convert as unitConvert } from '../../../ext/units/index.js';
 import { coordNum } from '../../../ext/condenser/src/main.js';
-import { numericColsOf, volumeContextOf, volumeAt, metalFactorOf, parseFactor } from './analysis.js';
+import { numericColsOf, volumeContextOf, volumeAt, halfAt, metalFactorOf, parseFactor } from './analysis.js';
 import { gridAxesOf, surfaceFromGrid } from './grid-ops.js';
 import { evalSolidOnGrid, meshSolidOf, solidHit, sbCancelActive, solidOrientedMesh, residentGridForEval, targetsXYBbox, blockGridClassifier } from './bygeom.js';
 import { ensureStoredValues } from './columns.js';
@@ -107,13 +107,14 @@ async function volumeLookup(L, meshL, side, res, cache) {
     if (cache.has(key)) return cache.get(key);
     const surf = surfaceFromGrid(await residentGridForEval(meshL, targetsXYBbox([L])));
     const cls = blockGridClassifier(L, surf, null, side, res);
-    const out = { fn: (x, y, z) => { const fr = cls(x, y, z).frac; return Number.isFinite(fr) ? fr : 0; }, how: 'fraction' };
+    // h: the block's own half extents (a sub-block's — halfAt), else the layer's
+    const out = { fn: (x, y, z, rec, h) => { const fr = (h ? cls(x, y, z, h[0], h[1], h[2]) : cls(x, y, z)).frac; return Number.isFinite(fr) ? fr : 0; }, how: 'fraction' };
     cache.set(key, out);
     return out;
   }
   if (side === 'outside') {                                   // the complement of the solid's inside
     const inn = await volumeLookup(L, meshL, 'inside', res, cache);
-    return { fn: (x, y, z) => 1 - (inn.fn(x, y, z) || 0), how: inn.how };
+    return { fn: (x, y, z, rec, h) => 1 - (inn.fn(x, y, z, rec, h) || 0), how: inn.how };
   }
   const variant = side === 'above' || side === 'below' ? side : 'solid';
   const key = `${L.id}|${meshL.id}|${variant}|${res.join('x')}`;
@@ -125,7 +126,7 @@ async function volumeLookup(L, meshL, side, res, cache) {
   if (held && held.mesh === meshL._solidMesh && held.doc === L.docs.blockDoc) { cache.set(key, held.out); return held.out; }
   let fn = null, how = 'fraction';
   const dense = await evalSolidOnGrid(meshL, L, { mode: 'proportion', resolution: res, variant });
-  if (dense) fn = dense.lookup;
+  if (dense) fn = dense.lookup;                               // (x, y, z, rec) — a sub-blocked model's answer is per record
   else {
     const SA = await meshSolidOf(meshL, variant);
     if (!SA) throw new Error(`${nameOf(meshL)}: no triangles to test against (a streamed soup keeps none — open it as a context mesh)`);
@@ -208,9 +209,11 @@ export async function scanFactors(st, onProgress, signal) {
       const ps = prepared.filter((p) => p.L === L), m = layerTableHeader(L).mapping, vc = volumeContextOf(L);
       const total = (L.docs.blockDoc.header && L.docs.blockDoc.header.count) || 0;
       let rows = 0;
+      const hbuf = [0, 0, 0];
       for await (const { f, rec } of layerRecords(L)) {
         if (((++rows) & 0x3fff) === 0) { checkAbort(signal); if (onProgress) onProgress(2 + 2 * (li + (total ? Math.min(1, rows / total) : 0)) / layers.length, 4, `${nameOf(L)} · ${rows.toLocaleString()} blocks`); await new Promise((z) => setTimeout(z)); }
         const vol = volumeAt(vc, f);
+        const hh = mode === 'volumes' && vc.dc ? halfAt(vc, f, hbuf) : null;   // a sub-block's own box (the gridded-surface probes)
         let x = NaN, y = NaN, z = NaN;
         if (mode === 'volumes') { x = coordNum(f[m.x]); y = coordNum(f[m.y]); z = coordNum(f[m.z]); if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue; }
         for (const p of ps) {
@@ -229,7 +232,7 @@ export async function scanFactors(st, onProgress, signal) {
           else {
             let prev = 0, any = false;
             for (let k = 0; k < vols.length; k++) {
-              const fr = p.looks[k].fn(x, y, z) || 0;
+              const fr = p.looks[k].fn(x, y, z, rec, hh) || 0;
               const w = st.nested ? Math.max(0, fr - prev) : fr;
               if (st.nested && fr > prev) prev = fr;
               if (w > 0) { p.acc.add(vols[k].name, t * w, g); any = true; }

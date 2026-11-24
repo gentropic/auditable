@@ -9324,6 +9324,139 @@ if (take()) {
   await pg.close();
 }
 
+// ── §130: the block-support contract, step 3 — BY GEOMETRY on sub-blocked models. A
+// sub-blocked model has no lattice of whole blocks, so each block is probed in ITS OWN
+// box (dimQ × pitch) — @gcu/winding's box list, in the lattice frame for a rotated
+// model. Before: a rotated sub-blocked model was refused (evalSolidOnGrid → null: no
+// fraction column, select fell back to centroids) and an axis-aligned one answered the
+// fraction of the FINE cell at the centroid, not of the block. A rotated .dm copy
+// (ANGLE1 −50 about Z, origin given) and its axis-aligned CSV twin, a solid carried with
+// it: fraction / flag / select / assign-domains / an open surface below / factors
+// volumes equal record for record; the twin's fraction = an analytic count (the solid
+// is an octahedron); a gridded surface's fraction / flag = a hand count over each
+// block's own box (rotated probes on the rotated copy, the column integral on the twin). ──
+if (take()) {
+  const pg = await mkPage('sm2step3');
+  const r = await pg.evaluate(async () => {
+    const M = window._micro, W = window.micro;
+    const F = await import('/test/subblock-make.mjs');
+    const { rows } = F.makeSubblockRows({ seed: 13, nx: 5, ny: 4, nz: 3 });
+    const O = [432820, 8522360, 300];
+    const t = (50 * Math.PI) / 180, c = Math.cos(t), s = Math.sin(t);
+    const Wp = (p) => [O[0] + c * p[0] - s * p[1], O[1] + s * p[0] + c * p[1], O[2] + p[2]];
+    const idR = await M.openBlob(new File([F.makeSubblockDm(rows, { angle1: -50 })], 'rot3.dm'), 'rot3.dm', 'replace', null, { throw: true, origin: O });
+    const idA = await M.openBlob(new File([F.makeSubblockCsv(rows)], 'twin3.csv'), 'twin3.csv', 'add', null, { throw: true });
+    const LR = M.layers().find((x) => x.id === idR), LA = M.layers().find((x) => x.id === idA);
+    const hR = LR.docs.blockDoc.header, hA = LA.docs.blockDoc.header;
+    const out = { n: rows.length, kinds: [LR.kind, LA.kind], sub: [!!hR.subBlocked, !!hA.subBlocked], rot: [!!(hR.grid && hR.grid.rot), !!(hA.grid && hA.grid.rot)] };
+    const mesh = async (name, V, T, world) => { const id = await W.addLayer({ kind: 'mesh', name, vertices: Float64Array.from((world ? V.map(Wp) : V).flat()), triangles: Uint32Array.from(T) }); return M.layers().find((l) => l.id === id); };
+    const codesOf = (col) => Array.from(col ? col.codes : []);
+    const same = (a, b) => a.length === b.length && a.length > 0 && a.every((v, i) => v === b[i]);
+    // an octahedron (local frame) with generic faces: |x−cx|/a + |y−cy|/b + |z−cz|/d ≤ 1
+    const oct = (cx, cy, cz, a, b, d) => ({
+      V: [[cx + a, cy, cz], [cx - a, cy, cz], [cx, cy + b, cz], [cx, cy - b, cz], [cx, cy, cz + d], [cx, cy, cz - d]],
+      T: [0, 2, 4, 2, 1, 4, 1, 3, 4, 3, 0, 4, 2, 0, 5, 1, 2, 5, 3, 1, 5, 0, 3, 5],
+      ins: (x, y, z) => Math.abs(x - cx) / a + Math.abs(y - cy) / b + Math.abs(z - cz) / d <= 1,
+    });
+    const o1 = oct(47.31, 38.17, 14.23, 37.71, 29.93, 12.87), o2 = oct(71.13, 52.07, 9.71, 21.37, 17.83, 9.13);
+    const SA = await mesh('octA', o1.V, o1.T, false), SR = await mesh('octR', o1.V, o1.T, true);
+    // (1) the fraction column — made on the rotated copy (was refused), = the twin's
+    const colR = await M.ratioBySolid(SR, LR, { name: 'FR', res: 3, mode: 'inside' });
+    const metaR = document.querySelector('#meta').textContent;
+    const fa = codesOf(await M.ratioBySolid(SA, LA, { name: 'FR', res: 3, mode: 'inside' })), fr = codesOf(colR);
+    // the definition, analytic: 3×3×3 cell-centred probes in each block's own box
+    const probe = (b, n, ins, half) => { let k = 0; const hx = half ? half[0] : b.XINC / 2, hy = half ? half[1] : b.YINC / 2, hz = half ? half[2] : b.ZINC / 2;
+      for (let w = 0; w < n; w++) for (let v = 0; v < n; v++) for (let u = 0; u < n; u++) if (ins(b.XC + hx * ((2 * u + 1) / n - 1), b.YC + hy * ((2 * v + 1) / n - 1), b.ZC + hz * ((2 * w + 1) / n - 1))) k++;
+      return Math.round(255 * k / (n * n * n)); };
+    const want = rows.map((b) => probe(b, 3, o1.ins));
+    const fine = rows.map((b) => probe(b, 3, o1.ins, [0.25, 0.25, 0.25]));   // the old answer: the 0.5 m fine cell at the centroid
+    const dev = fa.map((v, i) => Math.abs(v - want[i]));
+    out.ratio = { made: !!colR, same: same(fa, fr), exact: dev.filter((d) => d === 0).length, maxDev: Math.max(...dev), partial: fr.filter((v) => v > 0 && v < 255).length, whole: fr.filter((v) => v === 255).length,
+      vsFine: want.filter((v, i) => v !== fine[i]).length, meta: metaR };
+    // the same model as Parquet: its positions + sizes come from the columnar scan (row groups on workers)
+    const ex = await M.runExport(LA, { format: 'parquet', download: false, returnBlob: true });
+    const idP = await M.openBlob(new File([ex.blob], 'twin3.parquet'), 'twin3.parquet', 'add', null, { throw: true });
+    const LP = M.layers().find((x) => x.id === idP);
+    out.pq = { sub: !!LP.docs.blockDoc.header.subBlocked, columnar: M.canScanColumnar(LP), same: same(codesOf(await M.ratioBySolid(SA, LP, { name: 'FQ', res: 3, mode: 'inside' })), fa) };
+    // peel on a sub-blocked model answers by winding, per block (no whole-block columns to cast)
+    out.peel = same(codesOf(await M.ratioBySolid(SA, LA, { name: 'FP', res: 3, mode: 'inside', method: 'peel' })), fa);
+    // (2) flag + select: the centroid, record for record
+    await M.flagBySolid(SR, [LR], { name: 'FL', label: 'IN', mode: 'inside' });
+    await M.flagBySolid(SA, [LA], { name: 'FL', label: 'IN', mode: 'inside' });
+    const fl = (L) => { const cc = M.paintColByName(L, 'FL'), k = cc ? cc.dict.indexOf('IN') : -1; return cc ? Array.from(cc.codes, (v) => (v === k ? 1 : 0)) : []; };
+    await M.selectBySolid(SR, { targets: [LR], mode: 'inside' }); const sr = Array.from(LR._selMask || []);
+    await M.selectBySolid(SA, { targets: [LA], mode: 'inside' }); const sa = Array.from(LA._selMask || []);
+    await M.selectBySolid(SR, { targets: [LR], mode: 'outside' }); const so = Array.from(LR._selMask || []);
+    const cen = rows.map((b) => (o1.ins(b.XC, b.YC, b.ZC) ? 1 : 0));
+    out.flag = { same: same(fl(LR), fl(LA)), cen: same(fl(LA), cen), sel: same(sr, sa) && same(sa, cen), out: same(so, cen.map((v) => 1 - v)), n: cen.reduce((a, v) => a + v, 0) };
+    // (3) assign domains, two solids
+    const SA2 = await mesh('octA2', o2.V, o2.T, false), SR2 = await mesh('octR2', o2.V, o2.T, true);
+    const dR = await M.assignDomains([SR, SR2], LR, { name: 'DOM', res: [2, 2, 2] }), dA = await M.assignDomains([SA, SA2], LA, { name: 'DOM', res: [2, 2, 2] });
+    const lab = (col) => (col ? Array.from(col.codes, (v) => col.dict[v] || '') : []);
+    const dl = lab(dA);
+    const K = { octR: 1, octA: 1, octR2: 2, octA2: 2 }, key = (x) => K[x] || 0;
+    out.dom = { same: same(lab(dR).map(key), dl.map(key)), a: dl.filter((x) => x === 'octA').length, b: dl.filter((x) => x === 'octA2').length };
+    // (4) an open sheet, BELOW (skirt closure built in world, carried into the lattice frame)
+    const SV = [], ST = [], G = 9;
+    for (let j = 0; j < G; j++) for (let i = 0; i < G; i++) { const x = -30 + i * 20, y = -30 + j * 17.5; SV.push([x, y, 13.7 + 0.071 * x - 0.043 * y + 2.3 * Math.sin(i * 1.3 + j * 0.7)]); }
+    for (let j = 0; j < G - 1; j++) for (let i = 0; i < G - 1; i++) { const a = j * G + i; ST.push(a, a + 1, a + G, a + 1, a + G + 1, a + G); }
+    const UA = await mesh('sheetA', SV, ST, false), UR = await mesh('sheetR', SV, ST, true);
+    const ua = codesOf(await M.ratioBySolid(UA, LA, { name: 'BL', res: 3, mode: 'below' })), ur = codesOf(await M.ratioBySolid(UR, LR, { name: 'BL', res: 3, mode: 'below' }));
+    out.sheet = { same: same(ua, ur), partial: ur.filter((v) => v > 0 && v < 255).length, diff: ua.reduce((nn, v, i) => nn + (v !== ur[i]), 0) };
+    // (5) reconciliation factors by volume: the rotated copy's tonnages = the twin's
+    const fac = async (L, Sx) => (await M.runTool('factors', { model: L.name, grade: 'V', density: { const: 2.7 }, cutoff: 'none', gradeUnit: 'pct', modelUnit: 'pct', periods: 'volumes', volumes: [{ name: 'P', mesh: Sx.name, side: 'inside' }], probes: [3, 3, 3] }, { routine: true })).table.rows;
+    out.factors = { rot: await fac(LR, SR), twin: await fac(LA, SA) };
+    // (6) a GRIDDED surface: a tilted plane, one grid in world (the rotated copy), one in the
+    //     model frame (the twin) — each checked against a hand count over every block's own box
+    const asc = (xll, yll, nc, nr, z) => { let tt = `ncols ${nc}\nnrows ${nr}\nxllcorner ${xll}\nyllcorner ${yll}\ncellsize 5\nNODATA_value -9999\n`; for (let rr = 0; rr < nr; rr++) { const row = []; for (let cc = 0; cc < nc; cc++) row.push(z(xll + cc * 5, yll + (nr - 1 - rr) * 5).toFixed(5)); tt += row.join(' ') + '\n'; } return tt; };
+    const zl = (x, y) => 14.3 + 0.091 * x - 0.062 * y;
+    const zw = (X, Y) => { const u = c * (X - O[0]) + s * (Y - O[1]), v = -s * (X - O[0]) + c * (Y - O[1]); return O[2] + zl(u, v); };
+    await M.openBlob(new Blob([asc(O[0] - 110, O[1] - 40, 60, 50, zw)]), 'gw.asc', 'add');
+    await M.openBlob(new Blob([asc(-40, -40, 40, 36, zl)]), 'gl.asc', 'add');
+    const GW = M.layers().find((l) => l.name === 'gw.asc'), GL = M.layers().find((l) => l.name === 'gl.asc');
+    const sw = M.surfaceFromGrid(GW.docs.gridDoc.grid), sl = M.surfaceFromGrid(GL.docs.gridDoc.grid);
+    // rotated: n³ probes in the block's lattice box, carried to world, below the surface at their own x,y
+    const rotHand = (b, n, half) => { let k = 0, ins = 0; const hx = half ? half : b.XINC / 2, hy = half ? half : b.YINC / 2, hz = half ? half : b.ZINC / 2; const wc = Wp([b.XC, b.YC, b.ZC]);
+      for (let w = 0; w < n; w++) for (let v = 0; v < n; v++) for (let u = 0; u < n; u++) { const a = hx * ((2 * u + 1) / n - 1), bb = hy * ((2 * v + 1) / n - 1), d = hz * ((2 * w + 1) / n - 1);
+        const px = wc[0] + c * a - s * bb, py = wc[1] + s * a + c * bb, pz = wc[2] + d; const zs = sw.sampleZ(px, py); if (Number.isNaN(zs)) continue; k++; if (pz < zs) ins++; }
+      return k ? ins / k : NaN; };
+    // twin: the column integral — n×n plan probes, z analytic over the block's height
+    const colHand = (b, n, half) => { let sum = 0, k = 0; const hx = half ? half : b.XINC / 2, hy = half ? half : b.YINC / 2, hz = half ? half : b.ZINC / 2;
+      for (let a = 0; a < n; a++) for (let bb = 0; bb < n; bb++) { const zs = sl.sampleZ(b.XC - hx + 2 * hx * (a + 0.5) / n, b.YC - hy + 2 * hy * (bb + 0.5) / n); if (Number.isNaN(zs)) continue; sum += Math.max(0, Math.min(1, (zs - (b.ZC - hz)) / (2 * hz))); k++; }
+      return k ? sum / k : NaN; };
+    const code = (f) => (Number.isNaN(f) || !f ? 0 : Math.round(255 * f));
+    const grR = codesOf(await M.ratioByGridSurface(GW, LR, { name: 'GR', res: [3, 3, 3], mode: 'below' }));
+    const grA = codesOf(await M.ratioByGridSurface(GL, LA, { name: 'GR', res: [3, 3, 3], mode: 'below' }));
+    await M.flagByGridSurface(GW, [LR], { name: 'GF', label: 'B', mode: 'below' });
+    await M.flagByGridSurface(GL, [LA], { name: 'GF', label: 'B', mode: 'below' });
+    const gf = (L) => { const cc = M.paintColByName(L, 'GF'), k = cc ? cc.dict.indexOf('B') : -1; return cc ? Array.from(cc.codes, (v) => (v === k ? 1 : 0)) : []; };
+    const wR = rows.map((b) => code(rotHand(b, 3))), wA = rows.map((b) => code(colHand(b, 3)));
+    const wfR = rows.map((b) => (rotHand(b, 2) >= 0.5 ? 1 : 0)), wfA = rows.map((b) => (colHand(b, 2) >= 0.5 ? 1 : 0));
+    const oldR = rows.map((b) => code(rotHand(b, 3, 0.25))), oldA = rows.map((b) => code(colHand(b, 3, 0.25)));
+    out.grid = { ratioR: same(grR, wR), ratioA: same(grA, wA), flagR: same(gf(LR), wfR), flagA: same(gf(LA), wfA),
+      dR: grR.reduce((nn, v, i) => nn + (v !== wR[i]), 0), dA: grA.reduce((nn, v, i) => nn + (v !== wA[i]), 0),
+      partial: [grR.filter((v) => v > 0 && v < 255).length, grA.filter((v) => v > 0 && v < 255).length],
+      oldDiff: [wR.filter((v, i) => v !== oldR[i]).length, wA.filter((v, i) => v !== oldA[i]).length], nf: wfR.reduce((a, v) => a + v, 0) };
+    return out;
+  });
+  chk(`step 3: the rotated .dm copy and its twin are sub-blocked models (${r.kinds.join('/')}, sub ${r.sub.join('/')}, rotated ${r.rot.join('/')})`,
+    r.kinds[0] === 'blocks' && r.kinds[1] === 'blocks' && r.sub[0] && r.sub[1] && r.rot[0] && !r.rot[1]);
+  chk(`step 3: by-solid FRACTION on the rotated sub-blocked copy is made (it was refused) and equals the axis-aligned twin's record for record (${r.ratio.partial} partial, ${r.ratio.whole} whole of ${r.n}; “${r.ratio.meta.slice(0, 60)}…”)`,
+    r.ratio.made && r.ratio.same && r.ratio.partial > 20 && r.ratio.whole > 5);
+  chk(`step 3: the twin's fraction is each BLOCK's — an analytic 3×3×3 count over its own box: ${r.ratio.exact}/${r.n} exact, worst ${r.ratio.maxDev}/255; the old fine-cell-at-the-centroid answer differs on ${r.ratio.vsFine} blocks`,
+    r.ratio.exact >= r.n - 2 && r.ratio.maxDev <= 10 && r.ratio.vsFine > 20);
+  chk(`step 3: …and the twin stored as Parquet (sub-blocked ${r.pq.sub}, columnar ${r.pq.columnar}) gives the same fractions — positions and sizes through the columnar scan (${r.pq.same})`, r.pq.sub && r.pq.columnar && r.pq.same);
+  chk(`step 3: peel on a sub-blocked model answers per block (by winding) — the same fractions (${r.peel})`, r.peel);
+  chk(`step 3: flag (${r.flag.n} IN) and select (inside + outside) on the rotated copy = the twin = the centroid rule, record for record`, r.flag.same && r.flag.cen && r.flag.sel && r.flag.out && r.flag.n > 10);
+  chk(`step 3: assign domains — two solids, the rotated copy = the twin (${r.dom.a} + ${r.dom.b} blocks claimed)`, r.dom.same && r.dom.a > 0 && r.dom.b > 0);
+  chk(`step 3: an open sheet, BELOW — ${r.sheet.diff} fractions differ between the rotated copy and the twin, ${r.sheet.partial} partial`, r.sheet.same && r.sheet.partial > 10);
+  const fx = (rows) => JSON.stringify(rows.map((x) => x.map((v) => (typeof v === 'number' ? +v.toPrecision(10) : v))));
+  chk(`step 3: reconciliation factors by volume — the rotated copy's rows = the twin's (${r.factors.rot.length} rows)`, r.factors.rot.length > 0 && fx(r.factors.rot) === fx(r.factors.twin));
+  chk(`step 3: a gridded surface — the 3×3×3 fraction (rotated probes on the rotated copy, ${r.grid.dR} off; the column integral on the twin, ${r.grid.dA} off; ${r.grid.partial.join(' / ')} partial) and the flag (${r.grid.nf} below) are each block's own box; the fine-cell box would differ on ${r.grid.oldDiff.join(' / ')}`,
+    r.grid.ratioR && r.grid.ratioA && r.grid.flagR && r.grid.flagA && r.grid.partial[0] > 10 && r.grid.partial[1] > 10 && r.grid.oldDiff[0] > 10 && r.grid.oldDiff[1] > 10 && r.grid.nf > 0);
+  await pg.close();
+}
+
 // ── the LAYER CONTEXT MENU, regrouped (src/layermenu.js layerMenuSections). It had
 // grown to ~33 top-level entries on a block model; now the frequent verbs sit on top
 // and the rest in Analyse · Geometry · Select · Views · Display · Data & file · Move.
