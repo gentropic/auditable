@@ -40,7 +40,7 @@ await page.evaluate(async (bundled) => {
   C.addFrame(doc, { kind: 'scalebar', box: [200, 20, 60, 8], content: { of: img.id } });
   C.addFrame(doc, { kind: 'legend', box: [200, 40, 50, 30], content: { title: 'Au', entries: [{ color: '#c03030', label: 'high' }, { color: '#30a030', label: 'low' }] } });
   window.changes = 0;
-  window.ed = C.mountEditor(document.getElementById('ed'), doc, { onChange: () => window.changes++, toolbar: [{ label: 'host!', title: 'a host button', run: (e) => { window.hostRan = e.getDoc().frames.length; } }] });
+  window.ed = C.mountEditor(document.getElementById('ed'), doc, { onChange: () => window.changes++, toolbar: [{ label: 'host!', title: 'a host button', run: (e) => { window.hostRan = e.getDoc().frames.length; } }, { icon: 'image', label: 'host icon', title: 'a host icon button', run: () => { window.hostIconRan = true; } }] });
 }, bundled);
 await page.waitForTimeout(300);
 
@@ -96,7 +96,7 @@ chk('the inspector sets x', b[0] === 30, `${b[0]}`);
 // ── shift-select two, align left ──
 await (await elOf(2)).click({ position: { x: 5, y: 5 } });
 await (await elOf(3)).click({ position: { x: 5, y: 5 }, modifiers: ['Shift'] });
-await page.locator('.compo-bar button[title="align left"]').click();
+await page.locator('.compo-bar button[aria-label="Align left"]').click();
 const [s2, s3] = [await boxOf(2), await boxOf(3)];
 chk('shift-select + align left', s2[0] === s3[0] && s2[0] === 200, `${s2[0]},${s3[0]}`);
 
@@ -122,6 +122,15 @@ await page.locator('.compo-bar select[title="orientation"]').selectOption('lands
 // ── host toolbar, context menu, delete + undo ──
 await page.locator('.compo-bar button', { hasText: 'host!' }).click();
 chk('a host toolbar button runs with the editor', await page.evaluate(() => window.hostRan) === 4);
+await page.locator('.compo-bar button[aria-label="host icon"]').click();
+const icoBar = await page.evaluate(() => {
+  const ico = [...document.querySelectorAll('.compo-bar button.compo-ico')];
+  const hostB = document.querySelector('.compo-bar button[aria-label="host icon"]');
+  return { n: ico.length, named: ico.every((b) => b.getAttribute('aria-label') && b.title.startsWith(b.getAttribute('aria-label')) && b.querySelector('svg') && !b.textContent.trim()),
+    keys: document.querySelector('.compo-bar button[aria-label="Group"]').title.includes('⌘G'), hostIcon: !!(hostB && hostB.querySelector('svg')), hostRan: window.hostIconRan === true,
+    undoOn: !document.querySelector('.compo-bar button[aria-label="Undo"]').disabled };
+});
+chk(`the bar is icons: each with an aria-label, the words (and shortcut) as its tooltip, no text; a host item with an icon is one too (${JSON.stringify(icoBar)})`, icoBar.n >= 20 && icoBar.named && icoBar.keys && icoBar.hostIcon && icoBar.hostRan && icoBar.undoOn);
 await (await elOf(3)).click({ button: 'right', position: { x: 5, y: 5 } });
 chk('the context menu opens', await page.locator('.compo-menu').isVisible());
 await page.locator('.compo-menu div', { hasText: 'Duplicate' }).click();
@@ -178,7 +187,7 @@ await page.mouse.up();
 chk(`resizing snaps the dragged edge (bottom → the margin, 200) with a guide (${rg}): ${await page.evaluate(() => JSON.stringify(C.frameById(ed.getDoc(), 'K').box))}`, await page.evaluate(() => { const b = C.frameById(ed.getDoc(), 'K').box; return Math.abs(b[1] + b[3] - 200) < 1e-6 && b[1] === 165; }) && rg >= 1);
 // match size: K first (the key), then A
 await page.evaluate(() => ed.select(['K', 'A']));
-await page.locator('.compo-bar button[title="same size as the first selected"]').click();
+await page.locator('.compo-bar button[aria-label="Same size"]').click();
 chk('match size makes A the size of K (the first selected)', await page.evaluate(() => { const k = C.frameById(ed.getDoc(), 'K').box, a = C.frameById(ed.getDoc(), 'A').box; return a[2] === k[2] && a[3] === k[3]; }));
 // locks: a locked frame won't drag or delete, and wears a badge
 await page.evaluate(() => { C.frameById(ed.getDoc(), 'A').locked = true; ed.select([]); ed.render(); });
@@ -193,7 +202,7 @@ chk('Delete keeps the locked frame and says so', await page.evaluate(() => !!C.f
 chk('the inspector has a lock box for the frame', await page.evaluate(() => { const l = [...document.querySelectorAll('.compo-side label')].find((x) => /locked/.test(x.textContent)); return !!(l && l.querySelector('input').checked); }));
 // align with a locked reference: K aligns to A's left, A stays
 await page.evaluate(() => ed.select(['K', 'A']));
-await page.locator('.compo-bar button[title="align left"]').click();
+await page.locator('.compo-bar button[aria-label="Align left"]').click();
 chk('align treats a locked frame as the reference', await page.evaluate((a0) => { const a = C.frameById(ed.getDoc(), 'A').box, k = C.frameById(ed.getDoc(), 'K').box; return a[0] === a0[0] && k[0] === a0[0]; }, a0));
 // one-step z-order with ⌘] / ⌘[
 await page.evaluate(() => ed.select(['K']));
@@ -225,7 +234,7 @@ await page.evaluate(() => { C.removeFrames(ed.getDoc(), ['A', 'K']); ed.select([
   });
   await page.locator('.compo-side select.compo-ticks').selectOption('grid');
   chk('a projected view offers coordinates: grid set from the inspector', await page.evaluate(() => C.frameById(ed.getDoc(), 'PV').content.ticks === 'grid'));
-  await page.locator('.compo-bar button', { hasText: '+ label' }).click();
+  await page.locator('.compo-bar button[aria-label="Add label"]').click();
   const lb = await page.evaluate(() => { const f = ed.selected()[0]; return f && { kind: f.kind, at: f.content.at, of: f.content.of, inside: C.worldToPage(C.frameById(ed.getDoc(), 'PV'), f.content.at).inside }; });
   chk(`+ label pins the view's middle and refers to it (${JSON.stringify(lb)})`, lb && lb.kind === 'label' && lb.of === 'PV' && Math.abs(lb.at[0] - 512300) < 1e-6 && Math.abs(lb.at[1] - 7604000) < 1e-6 && lb.inside);
   await page.evaluate(() => { const L = ed.selected()[0]; C.removeFrames(ed.getDoc(), ['PV', L.id]); ed.select([]); ed.render(); });

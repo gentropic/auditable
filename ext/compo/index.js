@@ -2009,6 +2009,99 @@ async function exportPNG(doc, opts = {}) {
   return cv.convertToBlob ? cv.convertToBlob({ type: 'image/png' }) : new Promise((r) => cv.toBlob(r, 'image/png'));
 }
 
+// ── src/icons.js ──
+
+// The editor's icons: line drawings on a 24 × 24 grid, stroked in currentColor (2 px, round caps
+// and joins), so a light or a dark theme colours them with the text. Built with createElementNS —
+// no markup strings, nothing fetched, nothing that a strict CSP or Trusted Types would refuse.
+// A host can use them (and iconButton) for its own buttons, so one toolbar speaks one language.
+//
+// ICONS[name] = [[tag, attrs], …]. iconSvg(name | spec) → <svg>. iconButton({ icon, label, keys,
+// title, run, cls }) → a <button> holding the icon, with label as its aria-label and
+// "label · keys — title" as its tooltip.
+
+const P = (d) => ['path', { d }];
+const R = (x, y, width, height, rx = 1) => ['rect', { x, y, width, height, rx }];
+const FILL = { fill: 'currentColor', stroke: 'none' };
+const PAGE = P('M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z');
+const FOLD = P('M14 2v6h6');
+
+const ICONS = {
+  undo: [P('M9 14 4 9l5-5'), P('M4 9h10.5a5.5 5.5 0 0 1 0 11H11')],
+  redo: [P('m15 14 5-5-5-5'), P('M20 9H9.5a5.5 5.5 0 0 0 0 11H13')],
+  // the page's rulers: one along the top, one down the left, with ticks
+  rulers: [P('M3 3h18v5H8v13H3Z'), P('M12 3v2.5M16 3v2.5M20 3v2.5M3 12h2.5M3 16h2.5M3 20h2.5')],
+  // frames
+  view: [P('M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z'), P('M3.3 7 12 12l8.7-5'), P('M12 22V12')],
+  // a legend: three swatches and their words
+  legend: [['rect', { x: 2.5, y: 4, width: 5, height: 4, rx: 0.5, ...FILL }], ['rect', { x: 2.5, y: 10, width: 5, height: 4, rx: 0.5, ...FILL }], ['rect', { x: 2.5, y: 16, width: 5, height: 4, rx: 0.5, ...FILL }], P('M11 6h10M11 12h10M11 18h7')],
+  // a scale bar: a line with end ticks and divisions
+  scalebar: [P('M3 15h18'), P('M3 9v6M21 9v6M12 11v4M7.5 13v2M16.5 13v2')],
+  north: [['path', { d: 'M12 2.5 6.5 20.5 12 16.5Z', ...FILL }], P('M12 2.5l5.5 18-5.5-4-5.5 4Z')],
+  text: [P('M4 7V4h16v3'), P('M12 4v16'), P('M9 20h6')],
+  label: [R(11, 3, 10, 7), P('M14 6.5h4'), P('M11 10l-5 7'), ['circle', { cx: 5, cy: 18.5, r: 1.6, ...FILL }]],
+  image: [R(3, 3, 18, 18, 2), ['circle', { cx: 9, cy: 9, r: 2 }], P('m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21')],
+  titleblock: [R(3, 3, 18, 18), P('M10 21v-8h11'), P('M10 17h11'), P('M15.5 13v4')],
+  table: [R(3, 4, 18, 16), P('M3 9.5h18M3 15h18M9 9.5V20')],
+  // align: the line the frames line up on, and two frames
+  'align-left': [P('M3.5 3v18'), R(7, 5.5, 13, 5), R(7, 13.5, 8, 5)],
+  'align-hcenter': [P('M12 2.5v3M12 10.5v3M12 18.5v3'), R(4.5, 5.5, 15, 5), R(8, 13.5, 8, 5)],
+  'align-right': [P('M20.5 3v18'), R(4, 5.5, 13, 5), R(9, 13.5, 8, 5)],
+  'align-top': [P('M3 3.5h18'), R(5.5, 7, 5, 13), R(13.5, 7, 5, 8)],
+  'align-vcenter': [P('M2.5 12h3M10.5 12h3M18.5 12h3'), R(5.5, 4.5, 5, 15), R(13.5, 8, 5, 8)],
+  'align-bottom': [P('M3 20.5h18'), R(5.5, 4, 5, 13), R(13.5, 9, 5, 8)],
+  // distribute: equal gaps between the outer two
+  'dist-h': [P('M3.5 3v18M20.5 3v18'), R(9, 6, 6, 12), P('M5.5 12h1.5M17 12h1.5')],
+  'dist-v': [P('M3 3.5h18M3 20.5h18'), R(6, 9, 12, 6), P('M12 5.5V7M12 17v1.5')],
+  // match size: as wide / as tall / as big as the first
+  'same-w': [P('M3 5v14M21 5v14'), P('M6.5 12h11'), P('m9.5 9-3 3 3 3M14.5 9l3 3-3 3')],
+  'same-h': [P('M5 3h14M5 21h14'), P('M12 6.5v11'), P('m9 9.5 3-3 3 3M9 14.5l3 3 3-3')],
+  'same-wh': [R(3, 3, 18, 18), P('M8 16 16 8'), P('M11 8h5v5'), P('M13 16H8v-5')],
+  // groups: a dashed-cornered box round two frames / two frames apart
+  group: [P('M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2'), R(7, 7, 7, 5), R(10, 12, 7, 5)],
+  ungroup: [R(4, 4, 8, 6), R(12, 14, 8, 6)],
+  // stacking order
+  front: [R(8, 8, 8, 8, 2), P('M4 10a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2'), P('M14 20a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2v-4a2 2 0 0 0-2-2')],
+  forward: [P('M12 20V5'), P('m5.5 11.5 6.5-6.5 6.5 6.5')],
+  backward: [P('M12 4v15'), P('m5.5 12.5 6.5 6.5 6.5-6.5')],
+  back: [R(14, 14, 8, 8, 2), R(2, 2, 8, 8, 2), P('M7 14v1a2 2 0 0 0 2 2h1'), P('M14 7h1a2 2 0 0 1 2 2v1')],
+  trash: [P('M3 6h18'), P('M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6'), P('M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2'), P('M10 11v6M14 11v6')],
+  // the figure: new, rename, delete; make again; export
+  'file-new': [PAGE, FOLD, P('M12 12v6M9 15h6')],
+  'file-x': [PAGE, FOLD, P('m9.5 12.5 5 5M14.5 12.5l-5 5')],
+  rename: [P('M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z'), P('m15 5 4 4')],
+  refresh: [P('M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8'), P('M3 3v5h5'), P('M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16'), P('M16 16h5v5')],
+  download: [P('M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4'), P('m7 10 5 5 5-5'), P('M12 15V3')],
+};
+
+const NS = 'http://www.w3.org/2000/svg';
+function iconSvg(icon) {
+  const spec = typeof icon === 'string' ? ICONS[icon] : icon;
+  if (!spec) throw new Error(`compo: no icon “${icon}”`);
+  const s = document.createElementNS(NS, 'svg');
+  for (const [k, v] of Object.entries({ viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': 2, 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true', focusable: 'false' })) s.setAttribute(k, v);
+  for (const [tag, attrs] of spec) {
+    const e = document.createElementNS(NS, tag);
+    for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+    s.append(e);
+  }
+  return s;
+}
+
+// a button that is an icon: label → aria-label, "label · keys — title" → the tooltip. `text` puts a
+// short word beside the icon (an export's format, say) for where the icon alone can't tell.
+function iconButton({ icon, label, keys = '', title = '', text = '', run, cls = '' }) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = ('compo-ico ' + cls).trim();
+  b.setAttribute('aria-label', label);
+  b.title = label + (keys ? ' · ' + keys : '') + (title ? ' — ' + title : '');
+  b.append(iconSvg(icon));
+  if (text) { const t = document.createElement('span'); t.textContent = text; b.append(t); b.classList.add('with-text'); }
+  if (run) b.onclick = run;
+  return b;
+}
+
 // ── src/editor.js ──
 
 // The page editor — host-agnostic DOM. A toolbar (page size / orientation / custom mm, zoom, add
@@ -2032,6 +2125,13 @@ const CSS = `
 .compo-bar button, .compo-bar select, .compo-bar input, .compo-side input, .compo-side select, .compo-side textarea, .compo-side button { background: var(--compo-btn, var(--bg-btn, #2a2d31)); color: inherit; border: 1px solid var(--compo-border, var(--border, #3a3d42)); border-radius: 3px; font: inherit; padding: 2px 6px; }
 .compo-bar button:hover:not(:disabled) { border-color: var(--compo-accent, var(--accent, #fb9044)); }
 .compo-bar button:disabled { opacity: 0.4; }
+.compo-bar button, .compo-bar select { box-sizing: border-box; height: 24px; }
+.compo-bar .compo-grp-bar { display: inline-flex; gap: 3px; align-items: center; flex-wrap: wrap; min-width: 0; }   /* moves to the next line whole; wraps inside only when wider than the bar */
+.compo-bar button.compo-ico { display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-width: 26px; padding: 0 4px; cursor: pointer; }
+.compo-bar button.compo-ico svg { width: 16px; height: 16px; flex: none; display: block; }
+.compo-bar button.compo-ico.with-text { padding: 0 7px 0 5px; }
+.compo-bar button[aria-pressed=true] { border-color: var(--compo-accent, var(--accent, #fb9044)); color: var(--compo-accent, var(--accent, #fb9044)); }
+.compo-bar button:focus-visible, .compo-bar select:focus-visible, .compo-bar input:focus-visible { outline: 2px solid var(--compo-accent, var(--accent, #fb9044)); outline-offset: 1px; }
 .compo-bar .sep { width: 1px; align-self: stretch; background: var(--compo-border, var(--border, #3a3d42)); margin: 0 3px; }
 .compo-bar input[type=number] { width: 52px; }
 .compo-main { flex: 1; display: flex; min-height: 0; }
@@ -2169,29 +2269,35 @@ function mountEditor(el, doc, opts = {}) {
   const gridSel = h('select', { title: 'grid — shown and snapped to' });
   for (const [v, t] of [['0', 'no grid'], ['1', 'grid 1 mm'], ['2', 'grid 2 mm'], ['5', 'grid 5 mm'], ['10', 'grid 10 mm']]) gridSel.append(h('option', { value: v, textContent: t }));
   gridSel.onchange = () => commit(() => { const v = +gridSel.value; const p = { ...D.page }; if (v) p.grid = { size: v, show: true, snap: true }; else delete p.grid; D.page = p; });
-  const rulersBtn = btn('rulers', 'show / hide the rulers (drag a guide out of a ruler; drag it back to remove it)', () => { showRulers = !showRulers; try { localStorage.setItem('compo.rulers', showRulers ? 'on' : 'off'); } catch { /* private */ } render(); });
-  const alignBtns = [['⇤', 'left'], ['⇹', 'hcenter'], ['⇥', 'right'], ['⤒', 'top'], ['⇳', 'vcenter'], ['⤓', 'bottom']].map(([l, how]) => btn(l, `align ${how}`, () => commit(() => alignFrames(D, sel, how))));
-  const distBtns = [['↔', 'h'], ['↕', 'v']].map(([l, ax]) => btn(l, ax === 'h' ? 'distribute horizontally' : 'distribute vertically', () => commit(() => distributeFrames(D, sel, ax))));
-  const sizeBtns = [['W=', 'w', 'same width as the first selected'], ['H=', 'h', 'same height as the first selected'], ['▣=', 'both', 'same size as the first selected']].map(([l, what, t]) => btn(l, t, () => commit(() => matchSize(D, sel, what))));
-  const groupBtn = btn('group', 'group the selected frames (⌘G) — they select and move as one', () => doGroup());
-  const ungroupBtn = btn('ungroup', 'ungroup (⌘⇧G)', () => doUngroup());
-  const frontBtn = btn('front', 'bring to front (⌘⇧])', () => commit(() => bringToFront(D, sel)));
-  const fwdBtn = btn('↑', 'bring forward one step (⌘])', () => commit(() => bringForward(D, sel)));
-  const bwdBtn = btn('↓', 'send backward one step (⌘[)', () => commit(() => sendBackward(D, sel)));
-  const backBtn = btn('back', 'send to back (⌘⇧[)', () => commit(() => sendToBack(D, sel)));
-  const delBtn = btn('delete', 'delete the selected frames (locked ones stay)', () => del());
+  // an icon button: its words are the aria-label and the tooltip (with the shortcut, if any)
+  const ib = (icon, label, keys, title, run) => iconButton({ icon, label, keys, title, run: () => { run(); root.focus(); } });
+  const rulersBtn = ib('rulers', 'Rulers', '', 'show or hide them; drag a guide out of a ruler, drag it back to remove it', () => { showRulers = !showRulers; try { localStorage.setItem('compo.rulers', showRulers ? 'on' : 'off'); } catch { /* private */ } render(); });
+  const alignBtns = [['align-left', 'left', 'Align left'], ['align-hcenter', 'hcenter', 'Align centres'], ['align-right', 'right', 'Align right'], ['align-top', 'top', 'Align top'], ['align-vcenter', 'vcenter', 'Align middles'], ['align-bottom', 'bottom', 'Align bottom']]
+    .map(([icon, how, l]) => ib(icon, l, '', 'two or more frames; a locked one stays put and is the reference', () => commit(() => alignFrames(D, sel, how))));
+  const distBtns = [['dist-h', 'h', 'Distribute horizontally'], ['dist-v', 'v', 'Distribute vertically']].map(([icon, ax, l]) => ib(icon, l, '', 'equal gaps between three or more frames', () => commit(() => distributeFrames(D, sel, ax))));
+  const sizeBtns = [['same-w', 'w', 'Same width'], ['same-h', 'h', 'Same height'], ['same-wh', 'both', 'Same size']].map(([icon, what, l]) => ib(icon, l, '', 'as the first selected frame', () => commit(() => matchSize(D, sel, what))));
+  const groupBtn = ib('group', 'Group', '⌘G', 'the selected frames select and move as one', () => doGroup());
+  const ungroupBtn = ib('ungroup', 'Ungroup', '⌘⇧G', '', () => doUngroup());
+  const frontBtn = ib('front', 'Bring to front', '⌘⇧]', '', () => commit(() => bringToFront(D, sel)));
+  const fwdBtn = ib('forward', 'Bring forward', '⌘]', 'one step', () => commit(() => bringForward(D, sel)));
+  const bwdBtn = ib('backward', 'Send backward', '⌘[', 'one step', () => commit(() => sendBackward(D, sel)));
+  const backBtn = ib('back', 'Send to back', '⌘⇧[', '', () => commit(() => sendToBack(D, sel)));
+  const delBtn = ib('trash', 'Delete', 'Delete', 'the selected frames (locked ones stay)', () => del());
+  const undoBtn = ib('undo', 'Undo', '⌘Z', '', () => undo()), redoBtn = ib('redo', 'Redo', '⌘⇧Z', '', () => redo());
   const status = h('span', { className: 'status' });
   let _stT = 0;
   const say = (msg) => { status.textContent = msg; clearTimeout(_stT); _stT = setTimeout(() => { status.textContent = ''; }, 4000); if (opts.onStatus) opts.onStatus(msg); };
-  bar.append(sizeSel, oriSel, customSpan, h('span', { className: 'sep' }), zoomSel, gridSel, rulersBtn, h('span', { className: 'sep' }),
-    btn('+ label', 'a label pinned to a world point in a 3D view (the host may supply the point)', () => addLabel()),
-    btn('+ text', 'add a text frame (fields: {fig} {page} {date} ${…})', () => add({ kind: 'text', content: { md: '**Figure {fig}.** caption', size: 9 } })),
-    h('span', { className: 'sep' }), ...alignBtns, ...distBtns, ...sizeBtns, h('span', { className: 'sep' }), groupBtn, ungroupBtn, h('span', { className: 'sep' }), frontBtn, fwdBtn, bwdBtn, backBtn, delBtn);
-  if (opts.toolbar && opts.toolbar.length) {
-    bar.append(h('span', { className: 'sep' }));
-    for (const t of opts.toolbar) bar.append(btn(t.label, t.title || '', () => t.run(api)));
-  }
-  bar.append(status);
+  const sep = () => h('span', { className: 'sep' });
+  // undo · add frames (the host's first, then label and text) · align, distribute, match size ·
+  // group · stacking and delete · the page
+  // each group wraps as a whole on a narrow bar, never split in the middle
+  const grp = (...kids) => h('span', { className: 'compo-grp-bar' }, ...kids);
+  const hostBtns = (opts.toolbar || []).map((t) => { const run = () => t.run(api); return t.icon ? ib(t.icon, t.label, t.keys || '', t.title || '', run) : btn(t.label, t.title || '', run); });
+  bar.append(grp(undoBtn, redoBtn), sep(),
+    grp(...hostBtns, ib('label', 'Add label', '', 'a label pinned to a world point in a 3D view (the host may supply the point)', () => addLabel()),
+      ib('text', 'Add text', '', 'a text frame — a caption (fields: {fig} {page} {date} ${…})', () => add({ kind: 'text', content: { md: '**Figure {fig}.** caption', size: 9 } }))),
+    sep(), grp(...alignBtns, ...distBtns, ...sizeBtns), sep(), grp(groupBtn, ungroupBtn), sep(), grp(frontBtn, fwdBtn, bwdBtn, backBtn, delBtn),
+    sep(), grp(sizeSel, oriSel, customSpan, zoomSel, gridSel, rulersBtn), status);
 
   // ── rendering ──
   function render() { sel = sel.filter((id) => frameById(D, id)); renderCanvas(); syncBar(); renderSide(); }   // (a removed frame leaves the selection)
@@ -2276,7 +2382,8 @@ function mountEditor(el, doc, opts = {}) {
   function syncBar() {
     sizeSel.value = PAPER[D.page.size] ? D.page.size : 'custom';
     gridSel.value = D.page.grid && D.page.grid.size ? String(D.page.grid.size) : '0';
-    rulersBtn.style.opacity = showRulers ? '1' : '0.55';
+    rulersBtn.setAttribute('aria-pressed', String(showRulers));
+    undoBtn.disabled = !hist.length; redoBtn.disabled = !fut.length;
     oriSel.value = D.page.orientation || 'portrait'; oriSel.disabled = sizeSel.value === 'custom';
     customSpan.style.display = sizeSel.value === 'custom' ? 'inline-flex' : 'none';
     const [W, H] = pageDims(D.page); wIn.value = +W.toFixed(1); hIn.value = +H.toFixed(1);
@@ -2829,4 +2936,7 @@ export {
   exportPNG,
   figureFromPdf,
   mountEditor,
+  ICONS,
+  iconSvg,
+  iconButton,
 };

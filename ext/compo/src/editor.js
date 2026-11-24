@@ -17,6 +17,7 @@ import { renderPage, ensureImages } from './render.js';
 import { kindOf } from './kinds.js';
 import { fieldList, subjectFrame, refFrame } from './fields.js';
 import { hasProj, pageToWorld } from './world.js';
+import { iconButton } from './icons.js';
 
 const CSS = `
 .compo-root { display: flex; flex-direction: column; height: 100%; min-height: 0; font: 12px/1.35 var(--compo-font, system-ui, sans-serif); color: var(--compo-fg, var(--text, #ddd)); outline: none; }
@@ -24,6 +25,13 @@ const CSS = `
 .compo-bar button, .compo-bar select, .compo-bar input, .compo-side input, .compo-side select, .compo-side textarea, .compo-side button { background: var(--compo-btn, var(--bg-btn, #2a2d31)); color: inherit; border: 1px solid var(--compo-border, var(--border, #3a3d42)); border-radius: 3px; font: inherit; padding: 2px 6px; }
 .compo-bar button:hover:not(:disabled) { border-color: var(--compo-accent, var(--accent, #fb9044)); }
 .compo-bar button:disabled { opacity: 0.4; }
+.compo-bar button, .compo-bar select { box-sizing: border-box; height: 24px; }
+.compo-bar .compo-grp-bar { display: inline-flex; gap: 3px; align-items: center; flex-wrap: wrap; min-width: 0; }   /* moves to the next line whole; wraps inside only when wider than the bar */
+.compo-bar button.compo-ico { display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-width: 26px; padding: 0 4px; cursor: pointer; }
+.compo-bar button.compo-ico svg { width: 16px; height: 16px; flex: none; display: block; }
+.compo-bar button.compo-ico.with-text { padding: 0 7px 0 5px; }
+.compo-bar button[aria-pressed=true] { border-color: var(--compo-accent, var(--accent, #fb9044)); color: var(--compo-accent, var(--accent, #fb9044)); }
+.compo-bar button:focus-visible, .compo-bar select:focus-visible, .compo-bar input:focus-visible { outline: 2px solid var(--compo-accent, var(--accent, #fb9044)); outline-offset: 1px; }
 .compo-bar .sep { width: 1px; align-self: stretch; background: var(--compo-border, var(--border, #3a3d42)); margin: 0 3px; }
 .compo-bar input[type=number] { width: 52px; }
 .compo-main { flex: 1; display: flex; min-height: 0; }
@@ -161,29 +169,35 @@ export function mountEditor(el, doc, opts = {}) {
   const gridSel = h('select', { title: 'grid — shown and snapped to' });
   for (const [v, t] of [['0', 'no grid'], ['1', 'grid 1 mm'], ['2', 'grid 2 mm'], ['5', 'grid 5 mm'], ['10', 'grid 10 mm']]) gridSel.append(h('option', { value: v, textContent: t }));
   gridSel.onchange = () => commit(() => { const v = +gridSel.value; const p = { ...D.page }; if (v) p.grid = { size: v, show: true, snap: true }; else delete p.grid; D.page = p; });
-  const rulersBtn = btn('rulers', 'show / hide the rulers (drag a guide out of a ruler; drag it back to remove it)', () => { showRulers = !showRulers; try { localStorage.setItem('compo.rulers', showRulers ? 'on' : 'off'); } catch { /* private */ } render(); });
-  const alignBtns = [['⇤', 'left'], ['⇹', 'hcenter'], ['⇥', 'right'], ['⤒', 'top'], ['⇳', 'vcenter'], ['⤓', 'bottom']].map(([l, how]) => btn(l, `align ${how}`, () => commit(() => alignFrames(D, sel, how))));
-  const distBtns = [['↔', 'h'], ['↕', 'v']].map(([l, ax]) => btn(l, ax === 'h' ? 'distribute horizontally' : 'distribute vertically', () => commit(() => distributeFrames(D, sel, ax))));
-  const sizeBtns = [['W=', 'w', 'same width as the first selected'], ['H=', 'h', 'same height as the first selected'], ['▣=', 'both', 'same size as the first selected']].map(([l, what, t]) => btn(l, t, () => commit(() => matchSize(D, sel, what))));
-  const groupBtn = btn('group', 'group the selected frames (⌘G) — they select and move as one', () => doGroup());
-  const ungroupBtn = btn('ungroup', 'ungroup (⌘⇧G)', () => doUngroup());
-  const frontBtn = btn('front', 'bring to front (⌘⇧])', () => commit(() => bringToFront(D, sel)));
-  const fwdBtn = btn('↑', 'bring forward one step (⌘])', () => commit(() => bringForward(D, sel)));
-  const bwdBtn = btn('↓', 'send backward one step (⌘[)', () => commit(() => sendBackward(D, sel)));
-  const backBtn = btn('back', 'send to back (⌘⇧[)', () => commit(() => sendToBack(D, sel)));
-  const delBtn = btn('delete', 'delete the selected frames (locked ones stay)', () => del());
+  // an icon button: its words are the aria-label and the tooltip (with the shortcut, if any)
+  const ib = (icon, label, keys, title, run) => iconButton({ icon, label, keys, title, run: () => { run(); root.focus(); } });
+  const rulersBtn = ib('rulers', 'Rulers', '', 'show or hide them; drag a guide out of a ruler, drag it back to remove it', () => { showRulers = !showRulers; try { localStorage.setItem('compo.rulers', showRulers ? 'on' : 'off'); } catch { /* private */ } render(); });
+  const alignBtns = [['align-left', 'left', 'Align left'], ['align-hcenter', 'hcenter', 'Align centres'], ['align-right', 'right', 'Align right'], ['align-top', 'top', 'Align top'], ['align-vcenter', 'vcenter', 'Align middles'], ['align-bottom', 'bottom', 'Align bottom']]
+    .map(([icon, how, l]) => ib(icon, l, '', 'two or more frames; a locked one stays put and is the reference', () => commit(() => alignFrames(D, sel, how))));
+  const distBtns = [['dist-h', 'h', 'Distribute horizontally'], ['dist-v', 'v', 'Distribute vertically']].map(([icon, ax, l]) => ib(icon, l, '', 'equal gaps between three or more frames', () => commit(() => distributeFrames(D, sel, ax))));
+  const sizeBtns = [['same-w', 'w', 'Same width'], ['same-h', 'h', 'Same height'], ['same-wh', 'both', 'Same size']].map(([icon, what, l]) => ib(icon, l, '', 'as the first selected frame', () => commit(() => matchSize(D, sel, what))));
+  const groupBtn = ib('group', 'Group', '⌘G', 'the selected frames select and move as one', () => doGroup());
+  const ungroupBtn = ib('ungroup', 'Ungroup', '⌘⇧G', '', () => doUngroup());
+  const frontBtn = ib('front', 'Bring to front', '⌘⇧]', '', () => commit(() => bringToFront(D, sel)));
+  const fwdBtn = ib('forward', 'Bring forward', '⌘]', 'one step', () => commit(() => bringForward(D, sel)));
+  const bwdBtn = ib('backward', 'Send backward', '⌘[', 'one step', () => commit(() => sendBackward(D, sel)));
+  const backBtn = ib('back', 'Send to back', '⌘⇧[', '', () => commit(() => sendToBack(D, sel)));
+  const delBtn = ib('trash', 'Delete', 'Delete', 'the selected frames (locked ones stay)', () => del());
+  const undoBtn = ib('undo', 'Undo', '⌘Z', '', () => undo()), redoBtn = ib('redo', 'Redo', '⌘⇧Z', '', () => redo());
   const status = h('span', { className: 'status' });
   let _stT = 0;
   const say = (msg) => { status.textContent = msg; clearTimeout(_stT); _stT = setTimeout(() => { status.textContent = ''; }, 4000); if (opts.onStatus) opts.onStatus(msg); };
-  bar.append(sizeSel, oriSel, customSpan, h('span', { className: 'sep' }), zoomSel, gridSel, rulersBtn, h('span', { className: 'sep' }),
-    btn('+ label', 'a label pinned to a world point in a 3D view (the host may supply the point)', () => addLabel()),
-    btn('+ text', 'add a text frame (fields: {fig} {page} {date} ${…})', () => add({ kind: 'text', content: { md: '**Figure {fig}.** caption', size: 9 } })),
-    h('span', { className: 'sep' }), ...alignBtns, ...distBtns, ...sizeBtns, h('span', { className: 'sep' }), groupBtn, ungroupBtn, h('span', { className: 'sep' }), frontBtn, fwdBtn, bwdBtn, backBtn, delBtn);
-  if (opts.toolbar && opts.toolbar.length) {
-    bar.append(h('span', { className: 'sep' }));
-    for (const t of opts.toolbar) bar.append(btn(t.label, t.title || '', () => t.run(api)));
-  }
-  bar.append(status);
+  const sep = () => h('span', { className: 'sep' });
+  // undo · add frames (the host's first, then label and text) · align, distribute, match size ·
+  // group · stacking and delete · the page
+  // each group wraps as a whole on a narrow bar, never split in the middle
+  const grp = (...kids) => h('span', { className: 'compo-grp-bar' }, ...kids);
+  const hostBtns = (opts.toolbar || []).map((t) => { const run = () => t.run(api); return t.icon ? ib(t.icon, t.label, t.keys || '', t.title || '', run) : btn(t.label, t.title || '', run); });
+  bar.append(grp(undoBtn, redoBtn), sep(),
+    grp(...hostBtns, ib('label', 'Add label', '', 'a label pinned to a world point in a 3D view (the host may supply the point)', () => addLabel()),
+      ib('text', 'Add text', '', 'a text frame — a caption (fields: {fig} {page} {date} ${…})', () => add({ kind: 'text', content: { md: '**Figure {fig}.** caption', size: 9 } }))),
+    sep(), grp(...alignBtns, ...distBtns, ...sizeBtns), sep(), grp(groupBtn, ungroupBtn), sep(), grp(frontBtn, fwdBtn, bwdBtn, backBtn, delBtn),
+    sep(), grp(sizeSel, oriSel, customSpan, zoomSel, gridSel, rulersBtn), status);
 
   // ── rendering ──
   function render() { sel = sel.filter((id) => frameById(D, id)); renderCanvas(); syncBar(); renderSide(); }   // (a removed frame leaves the selection)
@@ -268,7 +282,8 @@ export function mountEditor(el, doc, opts = {}) {
   function syncBar() {
     sizeSel.value = PAPER[D.page.size] ? D.page.size : 'custom';
     gridSel.value = D.page.grid && D.page.grid.size ? String(D.page.grid.size) : '0';
-    rulersBtn.style.opacity = showRulers ? '1' : '0.55';
+    rulersBtn.setAttribute('aria-pressed', String(showRulers));
+    undoBtn.disabled = !hist.length; redoBtn.disabled = !fut.length;
     oriSel.value = D.page.orientation || 'portrait'; oriSel.disabled = sizeSel.value === 'custom';
     customSpan.style.display = sizeSel.value === 'custom' ? 'inline-flex' : 'none';
     const [W, H] = pageDims(D.page); wIn.value = +W.toFixed(1); hIn.value = +H.toFixed(1);

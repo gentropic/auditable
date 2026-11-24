@@ -114,7 +114,7 @@ const decoOff = (h, prev) => h.ev((pv) => {
 
 // ── composer: a figure on the demo, built with the composer's own buttons and functions ──
 // a scene names its figure uniquely and deletes it after; layers it hides come back
-const tb = (h, label) => h.ev((l) => { const b = [...document.querySelectorAll('.composer-win button')].find((x) => x.textContent.trim() === l); if (!b) throw new Error('no composer button ' + l); b.click(); }, label);
+const tb = (h, label) => h.ev((l) => { const b = [...document.querySelectorAll('.composer-win button')].find((x) => x.textContent.trim() === l || x.getAttribute('aria-label') === l); if (!b) throw new Error('no composer button ' + l); b.click(); }, label);
 const compoZoom = (h, v) => h.ev((z) => { const s = [...document.querySelectorAll('.composer-win select')].find((x) => x.title === 'zoom'); s.value = z; s.dispatchEvent(new Event('change')); }, v);
 async function compoStart(h, name, { hide = ['topography'], section = { axis: 'z', position: 640, thickness: 10 }, view = { look: 0, elevation: 90, ortho: true } } = {}) {
   const st = await h.ev(async ([nm, hd, sec, vw]) => {
@@ -157,7 +157,7 @@ async function compoPlanFigure(h, caption) {
     return { vf: vf.id };
   }, caption);
   await h.ev((id) => { const ed = window._micro.composerEditor(); ed.select([id]); }, ids.vf);
-  await tb(h, '+ legend'); await tb(h, '+ scale'); await tb(h, '+ north');
+  await tb(h, 'Add legend'); await tb(h, 'Add scale bar'); await tb(h, 'Add north arrow');
   await h.ev(([id, cap]) => {
     const ed = window._micro.composerEditor(), d = ed.getDoc();
     ed.addFrame({ kind: 'text', box: [12, 143, 168, 12], content: { md: cap, size: 9 } });
@@ -166,7 +166,7 @@ async function compoPlanFigure(h, caption) {
     const keep = legs.find((f) => f.source.layer === 'deposit.csv');
     if (keep) ed.update(keep.id, (fr) => { fr.box = [186, 14, 28, 44]; });
     ed.select(legs.filter((f) => f !== keep).map((f) => f.id));
-    [...document.querySelectorAll('.composer-win button')].find((b) => /delete the selected frames/.test(b.title)).click();
+    document.querySelector('.composer-win .compo-bar button[aria-label="Delete"]').click();
   }, [ids.vf, caption]);
   // the grade–tonnage window → ⇥ figure: its chart and table land on the page
   await h.ev(() => {
@@ -546,7 +546,7 @@ export const SCENES = {
       m.currentFigure().doc.props = { drawing: 'DD-001', revision: 'A' };
       m.addViewFrame(ed, { box: [12, 14, 180, 120] });
     });
-    await tb(h, '+ title block');
+    await tb(h, 'Add title block');
     await h.p.waitForTimeout(500);
     await compoZoom(h, '7.56');
     await h.p.waitForTimeout(800);
@@ -590,12 +590,12 @@ export const SCENES = {
     // the tryit's figure: plan, orthographic, a plan slab; view + legend + scale; the caption
     const st = await compoStart(h, 'bench plan', { hide: ['topography'], section: { axis: 'z', position: 640, thickness: 24, clip: 'slab' }, view: { look: 0, elevation: 90, ortho: true } });
     await h.ev(() => { const m = window._micro, ed = m.composerEditor(); const vf = m.addViewFrame(ed); ed.select([vf.id]); });
-    await tb(h, '+ legend'); await tb(h, '+ scale');
+    await tb(h, 'Add legend'); await tb(h, 'Add scale bar');
     await h.ev(() => {
       const ed = window._micro.composerEditor(), d = ed.getDoc(), vf = d.frames.find((f) => f.source && f.source.kind === 'view');
       const legs = d.frames.filter((f) => f.kind === 'legend'), keep = legs.find((f) => f.source.layer === 'deposit.csv');
       ed.select(legs.filter((f) => f !== keep).map((f) => f.id));
-      [...document.querySelectorAll('.composer-win button')].find((b) => /delete the selected frames/.test(b.title)).click();
+      document.querySelector('.composer-win .compo-bar button[aria-label="Delete"]').click();
       ed.addFrame({ kind: 'text', box: [vf.box[0], vf.box[1] + vf.box[3] + 11, vf.box[2], 8], content: { md: '**Figure {fig}.** Bench ${level} m RL — {count:deposit.csv:,} blocks. Page {page} of {pages}.', size: 9 } });
     });
     await h.p.waitForTimeout(600);

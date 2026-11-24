@@ -77,31 +77,34 @@ A \term{figure} is one page with its frames. In a project it is a file, \file{fi
 
 \subsection{The figure bar and the page bar}
 
-The top bar, the \emph{figure bar}, acts on the figure as a whole. The second, the \emph{page bar}, starts with the page itself and goes on with the buttons that add and arrange frames (\cref{sec:compo-frames,sec:compo-kinds}).
+The top bar, the \emph{figure bar}, acts on the figure as a whole. The second, the \emph{page bar}, holds undo and redo, the buttons that add frames, the ones that arrange them (\cref{sec:compo-frames,sec:compo-kinds}), and the page itself at its end. On a narrow window a group moves to the next line whole; on a phone each bar is one strip you swipe sideways.
+
+Most buttons are icons: a cube for a 3D view, a page with a plus for a new figure, the usual align and stacking pictures. Each says its name in a tooltip when you hover it, with its shortcut where it has one — \emph{Group · ⌘G} — and that name is what this book calls it: \ui{Add legend}, \ui{Align left}, \ui{Export PDF}. Where a picture would only make you guess, the button keeps its words: \ui{⇄ other data…}, \ui{☆ template}, \ui{properties…}, \ui{atlas…}, \ui{+ key plan}, and the lists. The export buttons show both: a download arrow and \ui{PDF} or \ui{PNG}.
 
 \begin{table}[htbp]\small
 \begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
 control & what it does \\ \midrule
 \multicolumn{2}{@{}l}{\emph{the figure bar}} \\
 the figure list & switch to another figure; a ★ marks a template \\
-\ui{new} & a new figure, named in a prompt, starting from whatever the list beside it says: \ui{blank}, or \ui{from} a template \\
-\ui{rename} / \ui{delete} & rename this figure (its file is renamed too), or delete it after a confirmation \\
-\ui{↻ refresh} & make the figure again with the data as it is now (\cref{sec:compo-refresh}) \\
+\ui{New figure} & a new figure, named in a prompt, starting from whatever the list beside it says: \ui{blank}, or \ui{from} a template \\
+\ui{Rename figure} / \ui{Delete figure} & rename this figure (its file is renamed too), or delete it after a confirmation. The pencil renames; the page with a cross deletes \\
+\ui{Refresh} (↻) & make the figure again with the data as it is now (\cref{sec:compo-refresh}) \\
 \ui{⇄ other data…} & make the figure with other layers (\cref{sec:compo-retarget}) \\
 \ui{☆ template} & mark this figure as a template; ★ when it is one (\cref{sec:compo-templates}) \\
 \ui{properties…} & the drawing number, revision and house properties (\cref{sec:compo-house}) \\
 \ui{atlas…} & write a routine that prints this figure once per section level (\cref{ch:atlas}) \\
 \ui{embed figure} & whether the PDF carries the figure inside it; on by default (\cref{sec:compo-pdf}) \\
 the dpi list & 150, 300 or 600 dpi for export; 300 by default \\
-\ui{⤓ pdf} / \ui{⤓ png} & export the page (\cref{sec:compo-pdf}) \\[3pt]
-\multicolumn{2}{@{}l}{\emph{the page bar}} \\
+\ui{Export PDF} / \ui{Export PNG} & export the page (\cref{sec:compo-pdf}) \\[3pt]
+\multicolumn{2}{@{}l}{\emph{the page bar: its start and its end}} \\
+\ui{Undo} / \ui{Redo} & the same as \key{⌘Z} and \key{⌘⇧Z}; greyed out when there is nothing to undo or redo \\
 paper size & A5, A4, A3, A2, Letter, Legal, Tabloid, or \ui{custom} with a width and height in mm; A4 by default \\
 orientation & \ui{portrait} or \ui{landscape} (not offered for a custom size); landscape by default \\
 zoom & \ui{fit}, or 50\% to 200\% \\
 grid & \ui{no grid} (the default), or a grid of 1, 2, 5 or 10 mm that is shown and snapped to \\
-\ui{rulers} & show or hide the rulers along the top and left; shown by default \\ \bottomrule
+\ui{Rulers} & show or hide the rulers along the top and left; shown by default, and the button is outlined while they are \\ \bottomrule
 \end{tabularx}
-\caption{The figure bar and the start of the page bar.}\label{tab:compo-figbar}\label{tab:compo-page}
+\caption{The figure bar and the page bar's undo and page controls.}\label{tab:compo-figbar}\label{tab:compo-page}
 \end{table}
 
 Drag down out of the top ruler, or right out of the left one, to pull a \term[composer!guide]{guide} onto the page. Frames snap to guides. Drag a guide to move it, and drag it off the page to remove it. The dashed rectangle is the margin; frames snap to that too.
@@ -119,7 +122,7 @@ The page behaves like a drawing program, and most of it will be familiar.
 \item \emph{Right-click} a frame for its menu: the frame kind's own items first, then duplicate, group, size, stacking order, lock and delete.
 \end{itemize}
 
-With two or more frames selected, the page bar's buttons come alive: six \emph{align} buttons (left, center, right, top, middle, bottom), two \emph{distribute} buttons (for three or more), and three \emph{match size} buttons — \ui{W=}, \ui{H=} and \ui{▣=} — that give every selected frame the width, height or both of the \emph{first} one you selected. \ui{group} makes the selection one unit that selects and moves together; \ui{ungroup} dissolves it. \ui{front}, \ui{↑}, \ui{↓} and \ui{back} change the stacking order.
+With two or more frames selected, the page bar's arranging buttons come alive: six \emph{align} buttons (\ui{Align left}, \ui{Align centres}, \ui{Align right}, \ui{Align top}, \ui{Align middles}, \ui{Align bottom} — each icon shows two frames against the line they meet), two \emph{distribute} buttons (\ui{Distribute horizontally}, \ui{Distribute vertically}, for three or more), and three \emph{match size} buttons — \ui{Same width}, \ui{Same height} and \ui{Same size} — that give every selected frame the width, height or both of the \emph{first} one you selected. \ui{Group} makes the selection one unit that selects and moves together; \ui{Ungroup} dissolves it. \ui{Bring to front}, \ui{Bring forward} (↑), \ui{Send backward} (↓) and \ui{Send to back} change the stacking order, and \ui{Delete} (the bin) removes the selection.
 
 \begin{table}[htbp]\small
 \begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
@@ -184,11 +187,11 @@ When nearest is wrong, set \ui{refers to} to a named frame. And inside a caption
 
 \section{The frame kinds}\label{sec:compo-kinds}
 
-Most frames are added with a \ui{+} button on the page bar — \ui{+ 3D view}, \ui{+ legend}, \ui{+ scale}, \ui{+ north}, \ui{+ text}, \ui{+ label}, \ui{+ image}, \ui{+ key plan}, \ui{+ resource} and \ui{+ title block}. Charts, tables and stereonets are sent from the windows that made them.
+Most frames are added with a button on the page bar — \ui{Add 3D view}, \ui{Add legend}, \ui{Add scale bar}, \ui{Add north arrow}, \ui{Add text}, \ui{Add label}, \ui{Add image}, \ui{+ key plan}, \ui{Add resource table} and \ui{Add title block}. Charts, tables and stereonets are sent from the windows that made them.
 
 \subsection{3D view}\label{sec:compo-view}
 
-\ui{+ 3D view} puts the current 3D view on the page. The frame is not a screenshot. It:
+\ui{Add 3D view} puts the current 3D view on the page. The frame is not a screenshot. It:
 
 \begin{itemize}
 \item \emph{remembers its scene} — the camera, the section, which layers are visible, how each is colored and filtered, and the background;
@@ -224,15 +227,15 @@ Every operation that renders a frame — an update, a refresh, an export, an atl
 
 These three follow a view frame. Select the view first (otherwise they take the topmost view on the page).
 
-\paragraph{\ui{+ legend}} adds one legend frame for each layer the view shows that has a legend — a ramp bar with its ends, or swatches for classes, categories, rules or painted values, exactly as the decorations draw them (\cref{ch:figures}). They are placed in a column to the right of the view. The inspector has one row, \ui{title}; a legend's menu has \ui{Update from the layer}, which re-reads the layer's current colors. A layer in a solid color has no legend, and the status line says so if none of the layers has one.
+\paragraph{\ui{Add legend}} adds one legend frame for each layer the view shows that has a legend — a ramp bar with its ends, or swatches for classes, categories, rules or painted values, exactly as the decorations draw them (\cref{ch:figures}). They are placed in a column to the right of the view. The inspector has one row, \ui{title}; a legend's menu has \ui{Update from the layer}, which re-reads the layer's current colors. A layer in a solid color has no legend, and the status line says so if none of the layers has one.
 
-\paragraph{\ui{+ scale}} adds a scale bar under the view: a four-part bar of a round length, labeled 0 and its length, in m or km. It is computed from the view's scale and the frame's size \emph{each time the page is drawn}, so it stays true when you resize the view. A perspective view has no single scale, and the bar says \emph{no scale (a perspective view)} instead of drawing a wrong one.
+\paragraph{\ui{Add scale bar}} adds a scale bar under the view: a four-part bar of a round length, labeled 0 and its length, in m or km. It is computed from the view's scale and the frame's size \emph{each time the page is drawn}, so it stays true when you resize the view. A perspective view has no single scale, and the bar says \emph{no scale (a perspective view)} instead of drawing a wrong one.
 
-\paragraph{\ui{+ north}} adds a north arrow on the view's top-right corner, on a light backing, rotated to the view's north. For a view looking horizontally along north–south it reads \emph{N · out of the page}.
+\paragraph{\ui{Add north arrow}} adds a north arrow on the view's top-right corner, on a light backing, rotated to the view's north. For a view looking horizontally along north–south it reads \emph{N · out of the page}.
 
 \subsection{Text}
 
-\ui{+ text} adds a text frame holding \code{**Figure \{fig\}.** caption}. Its inspector is a text box and three settings:
+\ui{Add text} adds a text frame holding \code{**Figure \{fig\}.** caption}. Its inspector is a text box and three settings:
 
 \begin{table}[htbp]\small
 \begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
@@ -249,7 +252,7 @@ The page updates as you type. Fields are what make a text frame worth having, an
 
 \subsection{Label}
 
-\ui{+ label} pins a short text to a \emph{point in the world}, in a view: the selected view frame, or the first one on the page. If you clicked a record in the 3D view in the last ten minutes, the label points at that record; otherwise at the middle of the view. Drag the label's box wherever it reads well: a thin leader runs from the box to the point, ending in a dot. Name a hole, a fault, a pit stage, and the leader stays on it.
+\ui{Add label} pins a short text to a \emph{point in the world}, in a view: the selected view frame, or the first one on the page. If you clicked a record in the 3D view in the last ten minutes, the label points at that record; otherwise at the middle of the view. Drag the label's box wherever it reads well: a thin leader runs from the box to the point, ending in a dot. Name a hole, a fault, a pit stage, and the leader stays on it.
 
 Because the label holds world coordinates, not page coordinates, the leader follows the point when the view is rendered again from another angle or at another scale — in a perspective view as well as an orthographic one. If the point falls outside the picture the leader stops at the picture's edge with an arrowhead pointing toward it. The inspector shows the text (fields work in it, as in a text frame), \ui{refers to} — the view the leader is drawn into — and \ui{points at}: the x, y and z, which you can type.
 
@@ -261,17 +264,17 @@ A \term{chart frame} is not an image. It holds the chart's description — its s
 
 A \term{table frame} is set as a book table: a rule above and below, a thin one under the header, no vertical lines, numbers right-aligned, light striping. The type shrinks to fit the frame's width, down to 4.5 pt; rows that do not fit are replaced by a line saying how many more there are, so a table never silently loses its end.
 
-Those from grade–tonnage, swath, stats, scatter and Q-Q remember the analysis that made them — its recipe — which is what lets \ui{↻ refresh} make them again (\cref{sec:compo-refresh}). A cross-tab or validation chart has no recipe behind it: it is kept as it was sent, and a refresh leaves it alone.
+Those from grade–tonnage, swath, stats, scatter and Q-Q remember the analysis that made them — its recipe — which is what lets \ui{Refresh} make them again (\cref{sec:compo-refresh}). A cross-tab or validation chart has no recipe behind it: it is kept as it was sent, and a refresh leaves it alone.
 
 \subsection{Resource table}\label{sec:compo-resource}
 
-\ui{+ resource} builds the table most reports are written around: tonnes, grade and metal above a list of cutoffs, by domain and by class. A dialog asks for the model, the grade and its cutoffs, the density, up to two grouping columns, the grade's unit and a metal factor — left blank, the unit gives it; \cref{sec:resource-table} describes every field, what the table computes, and how it differs from the cross-tab.
+\ui{Add resource table} builds the table most reports are written around: tonnes, grade and metal above a list of cutoffs, by domain and by class. A dialog asks for the model, the grade and its cutoffs, the density, up to two grouping columns, the grade's unit and a metal factor — left blank, the unit gives it; \cref{sec:resource-table} describes every field, what the table computes, and how it differs from the cross-tab.
 
-Press \ui{Add}. The table arrives titled with the model's name and \emph{resources}, with a note beneath stating the density used, the filter if any, and the number of records. Like a chart, it remembers its settings, so \ui{↻ refresh} makes it again (\cref{sec:compo-refresh}).
+Press \ui{Add}. The table arrives titled with the model's name and \emph{resources}, with a note beneath stating the density used, the filter if any, and the number of records. Like a chart, it remembers its settings, so \ui{Refresh} makes it again (\cref{sec:compo-refresh}).
 
 \subsection{Image}
 
-\ui{+ image} places a picture from a file — a logo, a photograph, a hand sketch. Its inspector has \ui{fit}.
+\ui{Add image} places a picture from a file — a logo, a photograph, a hand sketch. Its inspector has \ui{fit}.
 
 \subsection{Stereonet}
 
@@ -281,9 +284,9 @@ A stereonet sent from the structure window with its \ui{⇥ figure} arrives as a
 \begin{enumerate}
 \item Open the demo project.
 \item Press \key{d} for a plan view and switch the view to orthographic (\cref{ch:sections}).
-\item Choose \menu{File>Composer…}. Press \ui{+ 3D view}. The plan lands on the page.
-\item With the view selected, press \ui{+ legend}, then \ui{+ scale}, then \ui{+ north}.
-\item Press \ui{+ text}, drag the caption under the view and stretch it to the view's width.
+\item Choose \menu{File>Composer…}. Press \ui{Add 3D view}. The plan lands on the page.
+\item With the view selected, press \ui{Add legend}, then \ui{Add scale bar}, then \ui{Add north arrow}.
+\item Press \ui{Add text}, drag the caption under the view and stretch it to the view's width.
 \item In the inspector, replace the text with\\
 \code{**Figure \{fig\}.** \{layers\} — \{section\}. \{count:,\} of \{total:,\} records, at \{scale\}.}
 \item Rename the view: select it and type \code{plan} in \ui{id}.
@@ -376,7 +379,7 @@ The statistic fields are computed over the records the view shows, with its filt
 \code{\$\{…\}} computes. Inside it you can use the view's numbers — \code{count}, \code{total}, \code{section} (the section's position), \code{look}, \code{elevation} — and \code{page} and \code{pages}, in micro's expression language (\cref{ch:filter}). \code{\$\{count / total:.1\%\}} prints the share of the model the picture shows. In an atlas the same braces also read the page's own values, so \code{\$\{level\}} prints each page's bench (\cref{ch:atlas}).
 
 \begin{tryit}
-Continue with the figure from the last exercise. (If you skipped it: open the demo, press \key{d}, \menu{File>Composer…}, \ui{+ 3D view}, then \ui{+ text} under the view.)
+Continue with the figure from the last exercise. (If you skipped it: open the demo, press \key{d}, \menu{File>Composer…}, \ui{Add 3D view}, then \ui{Add text} under the view.)
 \begin{enumerate}
 \item In the 3D view, cut the model to one bench: in the toolbar's section controls choose \ui{plan} and \ui{slab}, leave the half-thickness at 5, and scrub the slider into the ore lens.
 \item Filter the model with \code{FE > 55}.
@@ -462,7 +465,7 @@ If one of these is missing, the frame stays a render and the status line says wh
 \begin{tryit}
 \begin{enumerate}
 \item In the demo project the model is cut by an E–W section. Press \key{l} to look along it, and switch the view to orthographic.
-\item In the composer, press \ui{+ 3D view}, then right-click the new frame → \ui{Vector section (blocks, drillholes, meshes as vectors)}.
+\item In the composer, press \ui{Add 3D view}, then right-click the new frame → \ui{Vector section (blocks, drillholes, meshes as vectors)}.
 \item Read the status line: 13856 cells from 15568 blocks, and a line each for the starter pit and the ore shell. The demo leaves its drillholes uncut by the section, so the line ends “raster: holes · demo\_assay.csv: not cut by the section”.
 \item The fans of holes cross this section, so set the drillholes to follow it (\menu{Cut by sections (off)>follow the section} on their menu, \cref{ch:sections}) and choose \ui{Update from the 3D view} on the frame: the holes become vector bands too, 808 of them from 847 intervals.
 \item In the inspector set \ui{coords} to \ui{ticks} and type \code{2000} in \ui{scale}.
@@ -520,7 +523,7 @@ Captions read them as \code{\{prop:key\}}, with the keys \code{drawing}, \code{r
 
 \subsection{Title block}
 
-\ui{+ title block} lays out a block at the bottom right of the page: six bordered rows, grouped.
+\ui{Add title block} lays out a block at the bottom right of the page: six bordered rows, grouped.
 
 \begin{lstlisting}
 **{prop:company}**
@@ -531,7 +534,7 @@ prepared {prop:prepared} · checked {prop:checked}
 scale {scale} · page {page} of {pages}
 \end{lstlisting}
 
-Each row is an ordinary text frame, so the block is yours to change: ungroup it, reword a row, delete one, add a logo with \ui{+ image}, then group it again. Fill in the properties and the block fills itself.
+Each row is an ordinary text frame, so the block is yours to change: ungroup it, reword a row, delete one, add a logo with \ui{Add image}, then group it again. Fill in the properties and the block fills itself.
 
 \shot[0.6\linewidth]{compo-titleblock}{A title block filled from the figure's and the project's properties.}
 
@@ -546,7 +549,7 @@ When a view frame renders, it records what it showed: each layer's name, its fil
 
 The same warning shows as ⚠ in the frame list.
 
-\ui{↻ refresh} makes the figure again with the data as it is now:
+\ui{Refresh} makes the figure again with the data as it is now:
 
 \begin{itemize}
 \item every 3D view is rendered from its own scene;
@@ -590,7 +593,7 @@ Columns are matched by \emph{name}, never by position: a view colored by \col{CU
 
 A template is the other half of reuse. Once a page looks the way your reports should — the page size, the title block, the logo, a caption style — press \ui{☆ template}. The button becomes \ui{★ template} and the figure is marked in the list.
 
-To start a figure from it, choose \ui{from} and its name in the list beside \ui{new}, then press \ui{new}. The new figure gets the template's page, frames and properties, with the drawing number and revision cleared for you to fill in. A template remains an ordinary figure; press the button again to unmark it.
+To start a figure from it, choose \ui{from} and its name in the list beside \ui{New figure}, then press \ui{New figure}. The new figure gets the template's page, frames and properties, with the drawing number and revision cleared for you to fill in. A template remains an ordinary figure; press the button again to unmark it.
 
 \begin{tip}
 A template's view frames carry over too, scenes and all. For a house template that should start empty, delete its views before marking it. For a \emph{report} template that should start full — the standard plan, the two standard sections — keep them, and point the copy at the new data with \ui{⇄ other data…}.
@@ -598,7 +601,7 @@ A template's view frames carry over too, scenes and all. For a house template th
 
 \section{Exporting: PDF and PNG}\label{sec:compo-pdf}
 
-Choose a resolution in the figure bar's dpi list (300 by default) and press \ui{⤓ pdf} or \ui{⤓ png}. The file is named after the figure. The dpi is the resolution of the rendered views in a PDF, and of the whole page in a PNG.
+Choose a resolution in the figure bar's dpi list (300 by default) and press \ui{Export PDF} or \ui{Export PNG}. The file is named after the figure. The dpi is the resolution of the rendered views in a PDF, and of the whole page in a PNG.
 
 Before writing, micro renders every view frame again from its scene at the chosen dpi — 150 for a draft, 300 for print, 600 for fine line work. A very large frame is capped at 6000 pixels on its longer side.
 
@@ -621,8 +624,8 @@ A PDF with no figure inside is a picture of a result. A PDF with its figure insi
 \begin{tryit}
 \begin{enumerate}
 \item With the figure from the earlier exercises open, press \ui{properties…}. Fill in a company, a client and a drawing number, and press \ui{Save}.
-\item Press \ui{+ title block}.
-\item Leave the resolution at 300 dpi and press \ui{⤓ pdf}.
+\item Press \ui{Add title block}.
+\item Leave the resolution at 300 dpi and press \ui{Export PDF}.
 \item Open the PDF in any reader. Select the caption's text: it is real text. Zoom into the chart: it stays sharp.
 \item Drop the PDF onto micro's window. It opens as a second figure with the same frames and no badges, because the demo data it was made from is still loaded.
 \end{enumerate}

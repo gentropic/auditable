@@ -26,7 +26,7 @@ import { attrRowCountOf, layerBlob, layerTableHeader, schemaExt, layerWorldBox, 
 import { figureRefs, retargetDoc, guessLayer, guessColumn } from './retarget.js';
 import { computeResourceTable, numericColsOf, parseFactor } from './analysis.js';
 import { sourceHash, sourceHashSync } from './identity.js';
-import { createDocument, parseDocument, serializeDocument, mountEditor, exportPDF, exportPNG, frameById, pageDims, tableFromTsv, removeFrames, groupFrames, subjectFrame, refFrame, figureFromPdf, registerKind, replayDrawList } from '../../../ext/compo/index.js';
+import { createDocument, parseDocument, serializeDocument, mountEditor, iconButton, exportPDF, exportPNG, frameById, pageDims, tableFromTsv, removeFrames, groupFrames, subjectFrame, refFrame, figureFromPdf, registerKind, replayDrawList } from '../../../ext/compo/index.js';
 import { chartFigure } from './analysis-ui.js';
 import { colorChoices, colorSelFor } from './color.js';
 import { rerunToolRecipe } from './tools.js';
@@ -266,7 +266,7 @@ export function staleOf(f) {
     if (!cur) { if (!_hashing.has(blob)) { _hashing.add(blob); sourceHash(blob).then(() => { if (_ed) _ed.render(); }, () => {}); } continue; }
     if (cur !== l.sha) changed.push({ l, cur });
   }
-  if (changed.length) return { text: 'older data', title: changed.map(({ l, cur }) => `${l.name}: rendered from ${l.file} ${l.sha.slice(0, 8)}, the layer is now ${cur.slice(0, 8)}`).join('\n') + '\n↻ refresh makes it again' };
+  if (changed.length) return { text: 'older data', title: changed.map(({ l, cur }) => `${l.name}: rendered from ${l.file} ${l.sha.slice(0, 8)}, the layer is now ${cur.slice(0, 8)}`).join('\n') + '\nRefresh (↻) makes it again' };
   if (missing.length) return { text: 'data not loaded', title: missing.map((l) => `${l.name} (${l.file}${l.sha ? ' ' + l.sha.slice(0, 8) : ''}) isn't loaded`).join('\n') };
   return null;
 }
@@ -379,7 +379,7 @@ export async function addResourceFrame(p) {
   const rows = Math.min(content.rows.length, 30), w = Math.min(160, 20 + 18 * content.columns.length), h = +(9 + 4.2 * (rows + 2.5)).toFixed(1);
   const f = ed.addFrame({ kind: 'table', box: [m[3] + 8, m[0] + 8, w, h], content, source: { app: 'micro', kind: 'resource', name: content.title, params: p } });
   await stampFacts(f, [p.layer]); ed.render();
-  $('#meta').textContent = `composer: a resource table (${content.rows.length} rows) went into “${_fig.name}” — ↻ refresh makes it again`;
+  $('#meta').textContent = `composer: a resource table (${content.rows.length} rows) went into “${_fig.name}” — Refresh (↻) makes it again`;
   return f;
 }
 function openResourceDialog() {
@@ -933,18 +933,35 @@ function persist(fig) {
 }
 const persistSoon = (fig) => { clearTimeout(_saveT); _saveT = setTimeout(() => persist(fig), 600); };
 
+// the composer's bars on a phone: finger-sized targets (the icons grow with them)
+const COMPOSER_CSS = `
+body.mobile .composer-win .compo-bar { gap: 6px; flex-wrap: nowrap; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: thin; }   /* one swipeable strip each: the page keeps the sheet */
+body.mobile .composer-win .compo-bar > *, body.mobile .composer-win .compo-bar .compo-grp-bar { flex: none; flex-wrap: nowrap; }
+body.mobile .composer-win .compo-bar .compo-grp-bar { gap: 6px; }
+body.mobile .composer-win .compo-bar button, body.mobile .composer-win .compo-bar select { height: 40px; }
+body.mobile .composer-win .compo-bar button.compo-ico { min-width: 40px; }
+body.mobile .composer-win .compo-bar button.compo-ico svg { width: 20px; height: 20px; }
+`;
+function injectComposerCss() {
+  if (document.getElementById('composer-css')) return;
+  const s = document.createElement('style'); s.id = 'composer-css'; s.textContent = COMPOSER_CSS; document.head.append(s);
+}
 export function openComposer(name) {
   let fig = name ? S.figures.find((f) => f.name === name) : _fig || S.figures[0];
   if (!fig) fig = newFigure(name || 'figure 1');
   if (composerOpen()) { showFigure(fig); _win.el.style.zIndex = String(+_win.el.style.zIndex + 1); return _ed; }
   _win = floatWin({ title: 'composer', sub: fig.name, x: 70, y: 70, w: Math.min(1180, innerWidth - 40), h: Math.min(820, innerHeight - 100), onClose: () => { if (_fig) persist(_fig); _ed = null; _win = null; } });
   _win.el.classList.add('composer-win');
+  injectComposerCss();
   const body = _win.body; body.style.cssText += 'display:flex;flex-direction:column;padding:0;overflow:hidden';
   const top = document.createElement('div'); top.className = 'compo-bar cmp-top';   // the editor bar's look: one toolbar language
   top.style.font = '12px/1.35 var(--compo-font, system-ui, sans-serif)';
   const sep = () => { const s = document.createElement('span'); s.className = 'sep'; return s; };
   const pick = document.createElement('select'); pick.title = 'figure';
   const btn = (t, title, fn, cls = '') => { const b = document.createElement('button'); b.className = cls; b.textContent = t; b.title = title; b.onclick = fn; return b; };
+  // an icon where the icon is obvious (compo's icons, so the two bars speak one language); words
+  // where it isn't — the template toggle, properties…, other data…, atlas…
+  const ib = (icon, label, title, fn, cls = '', text = '') => iconButton({ icon, label, title, run: fn, cls, text });
   const fromSel = document.createElement('select'); fromSel.title = 'what a new figure starts from: blank, or a template'; fromSel.className = 'cmp-from';
   const tplBtn = btn('☆ template', 'make this figure a template — new figures can start from it (its frames, page and properties)', () => { _fig.doc.template = !_fig.doc.template; if (!_fig.doc.template) delete _fig.doc.template; persist(_fig); fill(); });
   const fill = () => {
@@ -954,16 +971,16 @@ export function openComposer(name) {
   };
   pick.onchange = () => showFigure(S.figures.find((f) => f.name === pick.value));
   top.append(pick,
-    btn('new', 'a new figure — from the template chosen beside it, if any', async () => { const n = ((await microPrompt('figure name', `figure ${S.figures.length + 1}`)) || '').trim(); if (!n) return; const tpl = S.figures.find((f) => f.name === fromSel.value && f.doc.template) || null; showFigure(S.figures.find((f) => f.name === n) || newFigure(n, tpl)); fill(); }),
+    ib('file-new', 'New figure', 'from the template chosen beside it, if any', async () => { const n = ((await microPrompt('figure name', `figure ${S.figures.length + 1}`)) || '').trim(); if (!n) return; const tpl = S.figures.find((f) => f.name === fromSel.value && f.doc.template) || null; showFigure(S.figures.find((f) => f.name === n) || newFigure(n, tpl)); fill(); }),
     fromSel,
-    btn('rename', 'rename this figure', async () => {
+    ib('rename', 'Rename figure', 'its file is renamed too', async () => {
       const n = ((await microPrompt('rename figure', _fig.name)) || '').trim(); if (!n || n === _fig.name) return;
       if (S.figures.some((f) => f.name === n)) { $('#meta').textContent = `a figure “${n}” exists`; return; }
       const old = _fig.file; _fig.name = n; _fig.doc.title = n; _fig.file = 'figures/' + slug(n) + '.compo.json';
       if (S.project && old) { try { await removeFileAt(S.project.dir, old); } catch { /* not written yet */ } }
       persist(_fig); fill(); _win.sub.textContent = n;
     }),
-    btn('delete', 'delete this figure', async () => {
+    ib('file-x', 'Delete figure', 'after a confirmation', async () => {
       if (!(await microConfirm('delete figure', `Delete the figure “${_fig.name}”${S.project ? ` and its file ${_fig.file}` : ''}?`, 'Delete'))) return;
       if (S.project && _fig.file) { try { await removeFileAt(S.project.dir, _fig.file); } catch { /* not written */ } }
       S.figures = S.figures.filter((f) => f !== _fig);
@@ -979,11 +996,11 @@ export function openComposer(name) {
   embBox.onchange = () => { if (embBox.checked) delete _fig.doc.embedSource; else _fig.doc.embedSource = false; persist(_fig); };
   embLab.append(embBox, document.createTextNode('embed figure'));
   _win._syncEmbed = () => { embBox.checked = !(_fig && _fig.doc.embedSource === false); };
-  top.append(sep(), btn('↻ refresh', 'make this figure again with the data as it is now: every 3D view from its scene, every chart and table from its analysis, every resource table', () => refreshViews(_fig)));
+  top.append(sep(), ib('refresh', 'Refresh', 'make this figure again with the data as it is now: every 3D view from its scene, every chart and table from its analysis, every resource table', () => refreshViews(_fig)));
   top.append(btn('⇄ other data…', 'make this figure with other data: each layer it used → a layer loaded now, missing columns swapped, the views moved with the data — then everything made again', () => openRetargetDialog(_fig)));
   top.append(tplBtn, btn('properties…', 'the figure\'s drawing number and revision, and the project\'s house properties — {prop:key} in captions and the title block', () => openPropsDialog()));
   top.append(sep(), btn('atlas…', 'a routine that renders this figure once per section level into one PDF (Tools → Recipes)', () => makeAtlasRoutine(_fig)));
-  top.append(sp, embLab, dpiSel, btn('⤓ pdf', 'export the page as a vector PDF (the 3D views re-rendered at the dpi)', () => exportFigurePdf(+dpiSel.value), 'btn-p'), btn('⤓ png', 'export the page as a PNG at the dpi', () => exportFigurePng(+dpiSel.value)));
+  top.append(sp, embLab, dpiSel, ib('download', 'Export PDF', 'the page as a vector PDF (the 3D views re-rendered at the dpi)', () => exportFigurePdf(+dpiSel.value), 'btn-p', 'PDF'), ib('download', 'Export PNG', 'the page as a PNG at the dpi', () => exportFigurePng(+dpiSel.value), '', 'PNG'));
   const host = document.createElement('div'); host.style.cssText = 'flex:1;min-height:0';
   body.append(top, host);
   _win._fill = fill;
@@ -991,14 +1008,14 @@ export function openComposer(name) {
     env: envFor(),
     onChange: (d) => { if (_fig) { _fig.doc = d; persistSoon(_fig); } },
     toolbar: [
-      { label: '+ 3D view', title: 'the current 3D view as a frame (it remembers the scene)', run: (e) => addViewFrame(e) },
-      { label: '+ legend', title: 'a legend for each layer shown in the view frame', run: (e) => addLegendFrames(e) },
-      { label: '+ scale', title: 'a scale bar for the view frame (orthographic views have a scale)', run: (e) => addMarker(e, 'scalebar') },
-      { label: '+ north', title: 'a north arrow for the view frame', run: (e) => addMarker(e, 'north') },
-      { label: '+ title block', title: 'a title block, bottom-right: company, project, client, title, drawing, revision, date, prepared / checked, scale, page — fields from properties…', run: (e) => addTitleBlock(e) },
-      { label: '+ image', title: 'an image from a file — a logo, a photo, a sketch', run: (e) => addImageFromFile(e) },
+      { icon: 'view', label: 'Add 3D view', title: 'the current 3D view as a frame (it remembers the scene)', run: (e) => addViewFrame(e) },
+      { icon: 'legend', label: 'Add legend', title: 'a legend for each layer shown in the view frame', run: (e) => addLegendFrames(e) },
+      { icon: 'scalebar', label: 'Add scale bar', title: 'a scale bar for the view frame (orthographic views have a scale)', run: (e) => addMarker(e, 'scalebar') },
+      { icon: 'north', label: 'Add north arrow', title: 'a north arrow for the view frame', run: (e) => addMarker(e, 'north') },
+      { icon: 'titleblock', label: 'Add title block', title: 'bottom-right: company, project, client, title, drawing, revision, date, prepared / checked, scale, page — fields from properties…', run: (e) => addTitleBlock(e) },
+      { icon: 'image', label: 'Add image', title: 'an image from a file — a logo, a photo, a sketch', run: (e) => addImageFromFile(e) },
+      { icon: 'table', label: 'Add resource table', title: 'tonnes, grade and metal above cutoffs, by domain × class — made again on Refresh', run: () => openResourceDialog() },
       { label: '+ key plan', title: 'a whole-model plan that shows where the selected view’s section is — page by page in an atlas', run: (e) => addKeyPlan(e) },
-      { label: '+ resource', title: 'a resource table: tonnes, grade and metal above cutoffs, by domain × class — made again on ↻ refresh', run: () => openResourceDialog() },
     ],
     frameMenu: (f, e) => frameMenu(f, e),
     frameBadge: (f) => staleOf(f),

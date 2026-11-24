@@ -5,3 +5,4 @@ export { registerField, fieldList, formatNumber, formatDate, refFrame, subjectFr
 export { hasProj, isOrthoProj, imageRect, worldToPage, pageToWorld, worldTicks, drawTicks, niceStep, fmtCoord, planeTrace, drawOverlays, drawVector } from './world.js';
 export { renderPage, ensureImages, exportPDF, exportPNG, figureFromPdf } from './render.js';
 export { mountEditor } from './editor.js';
+export { ICONS, iconSvg, iconButton } from './icons.js';
