@@ -18,4 +18,4 @@ export { mat4Perspective, mat4Ortho, mat4LookAt, mat4Multiply, mat4Inverse, tran
 export { makeProgram, rampPixels, palettePixels, uploadChunk, createRenderer } from './core/gl.js';
 export { createEdl } from './core/edl.js';
 // the block-support contract (pure data + helpers; grid/support.js) — the engine draws by it
-export { SIZEQ_MAX, supportOf, supportOfHeader, volumeOf, toLattice as supportToLattice, toWorld as supportToWorld, worldHalfExtent, centreOf, sameLattice, sizeCollector, finePitch, sizeQ, putDimQ, pitchOf, datamineRotZ, dmLocalToWorld } from './grid/support.js';
+export { SIZEQ_MAX, supportOf, supportOfHeader, volumeOf, toLattice as supportToLattice, toWorld as supportToWorld, worldHalfExtent, centreOf, sameLattice, sizeCollector, finePitch, sizeQ, putDimQ, pitchOf, datamineRotZ, dmLocalToWorld, dmPlaceOf, placeDmColumns, placeDmRow, dmWorldToLocal, volumeOfSizes } from './grid/support.js';

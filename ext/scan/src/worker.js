@@ -60,7 +60,7 @@ export function serve(self, load) {
           // the needed columns of this unit → the chunk view → the kernel's partial
           let cols = {};
           if (p.readCols.length && p.source && p.source.kind === 'dm') {
-            const r = await CD.readDmRun(file, p.source.h, p.source.idx, data.run);
+            const r = await CD.readDmRun(file, p.source.h, p.source.idx, data.run, p.source.place || null);
             p.readCols.forEach((n, k) => { cols[n] = r.cols[p.source.idx[k]]; });
           } else if (p.readCols.length && p.source && p.source.kind === 'csv') {
             const r = await CD.readDelimitedRun(file, data.run, p.source.o);

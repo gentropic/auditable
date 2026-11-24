@@ -108,7 +108,50 @@ uniform float uEdgesOn, uOrtho, uPerspScale;
 uniform mat4 uInvVP;                     // inverse viewProj: (pixel, depth) → world hit point
 uniform vec2 uViewport;
 uniform vec3 uEyePos, uGridOrigin, uGridSize;   // the blocks layer's lattice (regular grids only)
+uniform mat3 uGridRot;                   // a rotated lattice (world ← lattice); uRotOn = 0 → identity, untouched path
+uniform float uRotOn;
 out vec4 outColor;
+// a ROTATED lattice's edge term: the same reconstruction as the axis-aligned
+// one below, done in the LATTICE frame (q = Rᵀ·(p − origin)): the face plane is
+// a lattice plane, the centre snaps on the lattice, and the 2×2 quad rays are
+// carried into the same frame. → vec2(e, fw) and the lattice-frame centre.
+vec3 rotEdge(vec3 p, vec3 ro, vec3 rd, uint face, vec3 half_, out vec3 cL) {
+  mat3 Rt = transpose(uGridRot);
+  vec3 pL = Rt * (p - uGridOrigin), roL = Rt * (ro - uGridOrigin), rdL = Rt * rd;
+  float pv = 0.0; int ax = 0;
+  if (face < 6u) {
+    ax = int(face >> 1);
+    float o0 = -half_[ax];
+    pv = o0 + round((pL[ax] - o0) / uGridSize[ax]) * uGridSize[ax];
+    if (abs(rdL[ax]) > 1e-12) pL = roL + rdL * ((pv - roL[ax]) / rdL[ax]);
+    pL[ax] = pv;
+  }
+  vec3 baseL = face < 6u ? pL - (Rt * uFaceN[face]) * half_ : pL;   // uFaceN holds R·n here: back to the lattice face
+  cL = round(baseL / uGridSize) * uGridSize;
+  vec3 a2 = abs(pL - cL) / half_;
+  float m1 = max(a2.x, max(a2.y, a2.z));
+  float m2 = max(min(a2.x, a2.y), min(max(a2.x, a2.y), a2.z));
+  float e = face == 6u ? m1 : m2;
+  vec3 cutNL = Rt * uCutNormal;
+  float cutD = dot(pL, cutNL);
+  vec2 qb = floor(gl_FragCoord.xy * 0.5) * 2.0 + 0.5;
+  float eq[3];
+  for (int k = 0; k < 3; k++) {
+    vec2 fxy = k == 0 ? qb : (k == 1 ? qb + vec2(1.0, 0.0) : qb + vec2(0.0, 1.0));
+    vec2 nxy = (fxy / uViewport) * 2.0 - 1.0;
+    vec4 qA = uInvVP * vec4(nxy, -1.0, 1.0);
+    vec4 qB = uInvVP * vec4(nxy, 1.0, 1.0);
+    vec3 qo = Rt * (qA.xyz / qA.w - uGridOrigin), qd = Rt * (qB.xyz / qB.w - qA.xyz / qA.w);
+    vec3 q;
+    if (face < 6u) { float den = qd[ax]; q = abs(den) > 1e-12 ? qo + qd * ((pv - qo[ax]) / den) : pL; }
+    else { float den = dot(qd, cutNL); q = abs(den) > 1e-9 ? qo + qd * ((cutD - dot(qo, cutNL)) / den) : pL; }
+    vec3 aq = abs(q - cL) / half_;
+    float q1 = max(aq.x, max(aq.y, aq.z));
+    float q2 = max(min(aq.x, aq.y), min(max(aq.x, aq.y), aq.z));
+    eq[k] = face == 6u ? q1 : q2;
+  }
+  return vec3(e, abs(eq[1] - eq[0]) + abs(eq[2] - eq[0]), 0.0);
+}
 void main() {
   ivec2 px = ivec2(gl_FragCoord.xy);
   uvec2 id = texelFetch(uId, px, 0).rg;
@@ -173,7 +216,22 @@ void main() {
     // + the regular lattice, and the box-local coords fall out. Sub-blocked
     // models (per-block half-dims) can't reconstruct the center this way and
     // fall back to the re-raster before we get here.
-    if (uEdgesOn > 0.5 && face < 7u) {
+    if (uEdgesOn > 0.5 && face < 7u && uRotOn > 0.5) {   // a rotated lattice: the same, in its own frame
+      float dz = texelFetch(uDepth, px, 0).r;
+      vec2 xy = (gl_FragCoord.xy / uViewport) * 2.0 - 1.0;
+      vec4 hp = uInvVP * vec4(xy, dz * 2.0 - 1.0, 1.0);
+      vec4 rA = uInvVP * vec4(xy, -1.0, 1.0);
+      vec4 rB = uInvVP * vec4(xy, 1.0, 1.0);
+      vec3 ro = rA.xyz / rA.w, rd = rB.xyz / rB.w - ro;
+      vec3 half_ = uGridSize * 0.5, cL;
+      vec3 ef = rotEdge(hp.xyz / hp.w, ro, rd, face, half_, cL);
+      float dpx = (1.0 - ef.x) / max(ef.y, 1e-6);
+      float edge = 1.0 - clamp(dpx * 0.7 - 0.3, 0.0, 1.0);
+      float distE = uOrtho > 0.5 ? 1.0 : max(distance(uEyePos, uGridOrigin + uGridRot * cL), 1e-3);
+      float pxR = length(half_) * uPerspScale / distE;
+      edge *= clamp((pxR - 5.0) / 8.0, 0.0, 1.0);
+      shade *= 1.0 - 0.4 * edge;
+    } else if (uEdgesOn > 0.5 && face < 7u) {
       float dz = texelFetch(uDepth, px, 0).r;
       vec2 xy = (gl_FragCoord.xy / uViewport) * 2.0 - 1.0;
       vec4 hp = uInvVP * vec4(xy, dz * 2.0 - 1.0, 1.0);
@@ -257,12 +315,12 @@ export function createResolvePipeline(gl) {
     lightDir: U(resolveProg, 'uLightDir'), cutNormal: U(resolveProg, 'uCutNormal'), faceN: U(resolveProg, 'uFaceN'),
     depth: U(resolveProg, 'uDepth'), edgesOn: U(resolveProg, 'uEdgesOn'), ortho: U(resolveProg, 'uOrtho'), perspScale: U(resolveProg, 'uPerspScale'),
     invVP: U(resolveProg, 'uInvVP'), viewport: U(resolveProg, 'uViewport'), eyePos: U(resolveProg, 'uEyePos'),
-    gridOrigin: U(resolveProg, 'uGridOrigin'), gridSize: U(resolveProg, 'uGridSize'),
+    gridOrigin: U(resolveProg, 'uGridOrigin'), gridSize: U(resolveProg, 'uGridSize'), gridRot: U(resolveProg, 'uGridRot'), rotOn: U(resolveProg, 'uRotOn'),
   };
   const IDENT4 = Float32Array.of(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
   const bakeFbo = gl.createFramebuffer();
   const bakes = new Map();                                 // layerId → { tex, h }
-  const faceFlat = new Float32Array(18);
+  const faceFlat = new Float32Array(18), faceRot = new Float32Array(18);
   for (let i = 0; i < 6; i++) { const n = FACE_NORMALS[i]; faceFlat[i * 3] = n[0]; faceFlat[i * 3 + 1] = n[1]; faceFlat[i * 3 + 2] = n[2]; }
 
   // one bake VAO per blocks chunk: the same buffers the instanced VAO uses, but
@@ -391,7 +449,19 @@ export function createResolvePipeline(gl) {
       if (u.noData) gl.uniform4f(uR.noData, u.noData[0], u.noData[1], u.noData[2], u.noData[3]);
       gl.uniform3f(uR.lightDir, u.lightDir[0], u.lightDir[1], u.lightDir[2]);
       gl.uniform3f(uR.cutNormal, u.cutNormal[0], u.cutNormal[1], u.cutNormal[2]);
-      gl.uniform3fv(uR.faceN, faceFlat);
+      // a ROTATED lattice's face ids name lattice faces: the shading normal is R·n,
+      // as gl-blocks computes it (n = uGridRot * n); the edge term runs in the
+      // lattice frame (rotEdge). Identity → the untouched axis-aligned path.
+      const R = u.grid && u.grid.rot;
+      if (R) {
+        for (let i = 0; i < 6; i++) {
+          const n = FACE_NORMALS[i];
+          for (let a = 0; a < 3; a++) faceRot[i * 3 + a] = R[a] * n[0] + R[3 + a] * n[1] + R[6 + a] * n[2];
+        }
+        gl.uniformMatrix3fv(uR.gridRot, false, R);
+      }
+      gl.uniform1f(uR.rotOn, R ? 1 : 0);
+      gl.uniform3fv(uR.faceN, R ? faceRot : faceFlat);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
       gl.depthMask(true);
       gl.enable(gl.DEPTH_TEST);

@@ -11,7 +11,7 @@ export { part1by2, mortonKey, mortonKeys, radixSortIndices } from './core/morton
 export { createMortonSorter } from './core/msort.js';
 export { makeBlockGrid, buildBlockChunk, blockLocalCenter, createBlockChunkBuilder, buildBlockBatch, batchSeed, dimQFromCodes } from './core/blocks.js';
 export { inferAxis, inferSubBlockLattice, axisDistinct } from './grid/infer.js';
-export { SIZEQ_MAX, supportOf, supportOfHeader, volumeOf, toLattice as supportToLattice, toWorld as supportToWorld, worldHalfExtent, centreOf, sameLattice, sizeCollector, finePitch, sizeQ, putDimQ, pitchOf, datamineRotZ, dmLocalToWorld } from './grid/support.js';
+export { SIZEQ_MAX, supportOf, supportOfHeader, volumeOf, toLattice as supportToLattice, toWorld as supportToWorld, worldHalfExtent, centreOf, sameLattice, sizeCollector, finePitch, sizeQ, putDimQ, pitchOf, datamineRotZ, dmLocalToWorld, dmPlaceOf, placeDmColumns, placeDmRow, dmWorldToLocal, volumeOfSizes } from './grid/support.js';
 export { basisFromVectors, basisAngles, inferLatticeBasis, fitLattice, detectRotatedLattice, detectRotatedOverAxisGrid, latticeMisfit, gridFromBasis, basisOfGrid, latticeMapOf, worldMapOf, cellOf, inFrameOf, sameBasis, isAxisAligned, toLattice, fromLattice } from './grid/basis.js';
 export { floatGcd, axisMap, gridsCompatible, makeResampler, makeBoxAggregator, commonLattice } from './grid/grid-join.js';
 export { sniffDelimited, mapColumns, findDimColumns, isDimColumn, openBlockModel, openTable, lineFields, fetchDelimitedRecord, readDelimitedRun, delimitedRuns } from './io/blockmodel.js';
@@ -30,7 +30,7 @@ export { createSoupPipeline } from './core/gl-soup.js';
 export { categoryPalettePixels, createBlocksPipeline } from './core/gl-blocks.js';
 export { createPickPipeline, layerOfId, faceOfId, isMiss, NO_FACE, FACE_CUT, FACE_NORMALS, FACE_NAMES } from './core/gl-pick.js';
 export { layerSection, meshSection, offsetSection } from './core/section.js';
-export { openDmModel, fetchDmRecord, peekDmColumns, dmWireframeRole, openDmWireframe, dmPageRuns, readDmRun } from './io/dm-provider.js';
+export { openDmModel, fetchDmRecord, peekDmColumns, peekDmRotation, dmWireframeRole, openDmWireframe, dmPageRuns, readDmRun } from './io/dm-provider.js';
 export { parsePlyHeader, openPly } from './io/ply.js';
 export { openDxf, peekDxfScene, DXF_RESIDENT_MAX } from './io/dxf-provider.js';
 export { write as writeDxf } from '../../dxf/src/write.js';   // @gcu/dxf's writer — micro exports traces as 3D polylines

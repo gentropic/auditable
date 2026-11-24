@@ -49,6 +49,16 @@ export const supportOfHeader = (h) => (h ? supportOf(h.grid, { subBlocked: !!h.s
 
 /** Volume of a block of sizeQ (sx, sy, sz) fine steps. */
 export const volumeOf = (sx, sy, sz, pitch) => sx * pitch[0] * sy * pitch[1] * sz * pitch[2];
+/**
+ * Volume of a block from its stated sizes (a record's XINC/YINC/ZINC, DX/DY/DZ),
+ * through the contract: each size snapped to whole fine steps, × the pitch — the
+ * same box the renderer draws (dimQ). null when a size is missing / not positive
+ * (the caller decides what that block weighs).
+ */
+export function volumeOfSizes(dx, dy, dz, pitch) {
+  if (!(dx > 0 && dy > 0 && dz > 0)) return null;
+  return volumeOf(sizeQ(dx, pitch[0]), sizeQ(dy, pitch[1]), sizeQ(dz, pitch[2]), pitch);
+}
 
 /** world → lattice: q = Rᵀ·(p − anchor). out is written and returned. */
 export function toLattice(frame, x, y, z, out = [0, 0, 0]) {
@@ -216,9 +226,53 @@ export function datamineRotZ(angle1Deg) {
   return [c, s, 0, -s, c, 0, 0, 0, 1];
 }
 /**
- * A rotated .dm placed in world keeps LOCAL XC/YC/ZC in its records; anything that
- * reads a position from a record (a pick's position, a filter's compact chunks)
- * maps it here. → (x, y, z) → [wx, wy, wz] for such a header, else null.
+ * A rotated .dm's PLACEMENT, as data (structured-cloneable, so a worker reading
+ * page runs applies the same one): the coordinate column indices + R + O.
+ * world = O + R·(XC, YC, ZC). null for a model that isn't placed.
+ */
+export const dmPlaceOf = (h) => (h && h.dmPlace) || null;
+/**
+ * Map a decoded column batch's coordinate columns local → world IN PLACE (cols is
+ * { [colIdx]: Float64Array }, fresh arrays from a run read). A missing coordinate
+ * (NaN) leaves the record's three NaN — there is no world position without all three.
+ */
+export function placeDmColumns(place, cols, count) {
+  if (!place) return cols;
+  const X = cols[place.x], Y = cols[place.y], Z = cols[place.z];
+  if (!X || !Y || !Z) return cols;
+  const R = place.R, O = place.O;
+  for (let k = 0; k < count; k++) {
+    const x = X[k], y = Y[k], z = Z[k];
+    X[k] = O[0] + R[0] * x + R[3] * y + R[6] * z;
+    Y[k] = O[1] + R[1] * x + R[4] * y + R[7] * z;
+    Z[k] = O[2] + R[2] * x + R[5] * y + R[8] * z;
+  }
+  return cols;
+}
+/** The same for one decoded record (positional values; null = missing). In place. */
+export function placeDmRow(place, row) {
+  if (!place || !row) return row;
+  const x = row[place.x], y = row[place.y], z = row[place.z];
+  if (typeof x !== 'number' || typeof y !== 'number' || typeof z !== 'number') return row;
+  const R = place.R, O = place.O;
+  row[place.x] = O[0] + R[0] * x + R[3] * y + R[6] * z;
+  row[place.y] = O[1] + R[1] * x + R[4] * y + R[7] * z;
+  row[place.z] = O[2] + R[2] * x + R[5] * y + R[8] * z;
+  return row;
+}
+/** world → the model's own (local) frame for a placed .dm: Rᵀ·(p − O). */
+export function dmWorldToLocal(place, x, y, z, out = [0, 0, 0]) {
+  const R = place.R, O = place.O, dx = x - O[0], dy = y - O[1], dz = z - O[2];
+  out[0] = R[0] * dx + R[1] * dy + R[2] * dz;
+  out[1] = R[3] * dx + R[4] * dy + R[5] * dz;
+  out[2] = R[6] * dx + R[7] * dy + R[8] * dz;
+  return out;
+}
+/**
+ * A rotated .dm placed in world keeps LOCAL XC/YC/ZC in its file; the provider's
+ * readers (columnBatches / recordBatches / fetchRecord, and readDmRun with the
+ * header's dmPlace) hand them over in WORLD. This maps one point the same way, for a
+ * caller holding raw local values. → (x, y, z) → [wx, wy, wz] for such a header, else null.
  */
 export function dmLocalToWorld(h) {
   if (!h || !h.dmRotationApplied) return null;

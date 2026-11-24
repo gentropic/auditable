@@ -3724,7 +3724,50 @@ uniform float uEdgesOn, uOrtho, uPerspScale;
 uniform mat4 uInvVP;                     // inverse viewProj: (pixel, depth) → world hit point
 uniform vec2 uViewport;
 uniform vec3 uEyePos, uGridOrigin, uGridSize;   // the blocks layer's lattice (regular grids only)
+uniform mat3 uGridRot;                   // a rotated lattice (world ← lattice); uRotOn = 0 → identity, untouched path
+uniform float uRotOn;
 out vec4 outColor;
+// a ROTATED lattice's edge term: the same reconstruction as the axis-aligned
+// one below, done in the LATTICE frame (q = Rᵀ·(p − origin)): the face plane is
+// a lattice plane, the centre snaps on the lattice, and the 2×2 quad rays are
+// carried into the same frame. → vec2(e, fw) and the lattice-frame centre.
+vec3 rotEdge(vec3 p, vec3 ro, vec3 rd, uint face, vec3 half_, out vec3 cL) {
+  mat3 Rt = transpose(uGridRot);
+  vec3 pL = Rt * (p - uGridOrigin), roL = Rt * (ro - uGridOrigin), rdL = Rt * rd;
+  float pv = 0.0; int ax = 0;
+  if (face < 6u) {
+    ax = int(face >> 1);
+    float o0 = -half_[ax];
+    pv = o0 + round((pL[ax] - o0) / uGridSize[ax]) * uGridSize[ax];
+    if (abs(rdL[ax]) > 1e-12) pL = roL + rdL * ((pv - roL[ax]) / rdL[ax]);
+    pL[ax] = pv;
+  }
+  vec3 baseL = face < 6u ? pL - (Rt * uFaceN[face]) * half_ : pL;   // uFaceN holds R·n here: back to the lattice face
+  cL = round(baseL / uGridSize) * uGridSize;
+  vec3 a2 = abs(pL - cL) / half_;
+  float m1 = max(a2.x, max(a2.y, a2.z));
+  float m2 = max(min(a2.x, a2.y), min(max(a2.x, a2.y), a2.z));
+  float e = face == 6u ? m1 : m2;
+  vec3 cutNL = Rt * uCutNormal;
+  float cutD = dot(pL, cutNL);
+  vec2 qb = floor(gl_FragCoord.xy * 0.5) * 2.0 + 0.5;
+  float eq[3];
+  for (int k = 0; k < 3; k++) {
+    vec2 fxy = k == 0 ? qb : (k == 1 ? qb + vec2(1.0, 0.0) : qb + vec2(0.0, 1.0));
+    vec2 nxy = (fxy / uViewport) * 2.0 - 1.0;
+    vec4 qA = uInvVP * vec4(nxy, -1.0, 1.0);
+    vec4 qB = uInvVP * vec4(nxy, 1.0, 1.0);
+    vec3 qo = Rt * (qA.xyz / qA.w - uGridOrigin), qd = Rt * (qB.xyz / qB.w - qA.xyz / qA.w);
+    vec3 q;
+    if (face < 6u) { float den = qd[ax]; q = abs(den) > 1e-12 ? qo + qd * ((pv - qo[ax]) / den) : pL; }
+    else { float den = dot(qd, cutNL); q = abs(den) > 1e-9 ? qo + qd * ((cutD - dot(qo, cutNL)) / den) : pL; }
+    vec3 aq = abs(q - cL) / half_;
+    float q1 = max(aq.x, max(aq.y, aq.z));
+    float q2 = max(min(aq.x, aq.y), min(max(aq.x, aq.y), aq.z));
+    eq[k] = face == 6u ? q1 : q2;
+  }
+  return vec3(e, abs(eq[1] - eq[0]) + abs(eq[2] - eq[0]), 0.0);
+}
 void main() {
   ivec2 px = ivec2(gl_FragCoord.xy);
   uvec2 id = texelFetch(uId, px, 0).rg;
@@ -3789,7 +3832,22 @@ void main() {
     // + the regular lattice, and the box-local coords fall out. Sub-blocked
     // models (per-block half-dims) can't reconstruct the center this way and
     // fall back to the re-raster before we get here.
-    if (uEdgesOn > 0.5 && face < 7u) {
+    if (uEdgesOn > 0.5 && face < 7u && uRotOn > 0.5) {   // a rotated lattice: the same, in its own frame
+      float dz = texelFetch(uDepth, px, 0).r;
+      vec2 xy = (gl_FragCoord.xy / uViewport) * 2.0 - 1.0;
+      vec4 hp = uInvVP * vec4(xy, dz * 2.0 - 1.0, 1.0);
+      vec4 rA = uInvVP * vec4(xy, -1.0, 1.0);
+      vec4 rB = uInvVP * vec4(xy, 1.0, 1.0);
+      vec3 ro = rA.xyz / rA.w, rd = rB.xyz / rB.w - ro;
+      vec3 half_ = uGridSize * 0.5, cL;
+      vec3 ef = rotEdge(hp.xyz / hp.w, ro, rd, face, half_, cL);
+      float dpx = (1.0 - ef.x) / max(ef.y, 1e-6);
+      float edge = 1.0 - clamp(dpx * 0.7 - 0.3, 0.0, 1.0);
+      float distE = uOrtho > 0.5 ? 1.0 : max(distance(uEyePos, uGridOrigin + uGridRot * cL), 1e-3);
+      float pxR = length(half_) * uPerspScale / distE;
+      edge *= clamp((pxR - 5.0) / 8.0, 0.0, 1.0);
+      shade *= 1.0 - 0.4 * edge;
+    } else if (uEdgesOn > 0.5 && face < 7u) {
       float dz = texelFetch(uDepth, px, 0).r;
       vec2 xy = (gl_FragCoord.xy / uViewport) * 2.0 - 1.0;
       vec4 hp = uInvVP * vec4(xy, dz * 2.0 - 1.0, 1.0);
@@ -3873,12 +3931,12 @@ function createResolvePipeline(gl) {
     lightDir: U(resolveProg, 'uLightDir'), cutNormal: U(resolveProg, 'uCutNormal'), faceN: U(resolveProg, 'uFaceN'),
     depth: U(resolveProg, 'uDepth'), edgesOn: U(resolveProg, 'uEdgesOn'), ortho: U(resolveProg, 'uOrtho'), perspScale: U(resolveProg, 'uPerspScale'),
     invVP: U(resolveProg, 'uInvVP'), viewport: U(resolveProg, 'uViewport'), eyePos: U(resolveProg, 'uEyePos'),
-    gridOrigin: U(resolveProg, 'uGridOrigin'), gridSize: U(resolveProg, 'uGridSize'),
+    gridOrigin: U(resolveProg, 'uGridOrigin'), gridSize: U(resolveProg, 'uGridSize'), gridRot: U(resolveProg, 'uGridRot'), rotOn: U(resolveProg, 'uRotOn'),
   };
   const IDENT4 = Float32Array.of(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
   const bakeFbo = gl.createFramebuffer();
   const bakes = new Map();                                 // layerId → { tex, h }
-  const faceFlat = new Float32Array(18);
+  const faceFlat = new Float32Array(18), faceRot = new Float32Array(18);
   for (let i = 0; i < 6; i++) { const n = FACE_NORMALS[i]; faceFlat[i * 3] = n[0]; faceFlat[i * 3 + 1] = n[1]; faceFlat[i * 3 + 2] = n[2]; }
 
   // one bake VAO per blocks chunk: the same buffers the instanced VAO uses, but
@@ -4007,7 +4065,19 @@ function createResolvePipeline(gl) {
       if (u.noData) gl.uniform4f(uR.noData, u.noData[0], u.noData[1], u.noData[2], u.noData[3]);
       gl.uniform3f(uR.lightDir, u.lightDir[0], u.lightDir[1], u.lightDir[2]);
       gl.uniform3f(uR.cutNormal, u.cutNormal[0], u.cutNormal[1], u.cutNormal[2]);
-      gl.uniform3fv(uR.faceN, faceFlat);
+      // a ROTATED lattice's face ids name lattice faces: the shading normal is R·n,
+      // as gl-blocks computes it (n = uGridRot * n); the edge term runs in the
+      // lattice frame (rotEdge). Identity → the untouched axis-aligned path.
+      const R = u.grid && u.grid.rot;
+      if (R) {
+        for (let i = 0; i < 6; i++) {
+          const n = FACE_NORMALS[i];
+          for (let a = 0; a < 3; a++) faceRot[i * 3 + a] = R[a] * n[0] + R[3 + a] * n[1] + R[6 + a] * n[2];
+        }
+        gl.uniformMatrix3fv(uR.gridRot, false, R);
+      }
+      gl.uniform1f(uR.rotOn, R ? 1 : 0);
+      gl.uniform3fv(uR.faceN, R ? faceRot : faceFlat);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
       gl.depthMask(true);
       gl.enable(gl.DEPTH_TEST);
@@ -4928,11 +4998,10 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
       // Hidden layers can't change pixels; meshes ignore color opts entirely
       // (their cosmetics go through setLayerMeshStyle → needClear).
       const sigOf = (id) => { const o = lopt(id); return `${o.colorMode}|${o.clip ? `${o.clip[0]}~${o.clip[1]}` : 'a'}`; };
-      const kindBy = new Map(), subBy = new Set(), rotBy = new Set();
+      const kindBy = new Map(), subBy = new Set();
       for (const c of chunks) if (activeChunk(c)) {
         if (!kindBy.has(c._layer)) kindBy.set(c._layer, c.kind);
         if (c.sub) subBy.add(c._layer);                    // sub-blocked: variable half-dims
-        if (c.grid && c.grid.rot) rotBy.add(c._layer);     // rotated lattice: face ids are lattice faces
       }
       const dirty = new Set(cosmeticDirtyLayers);
       // a layer with no signature yet was never rasterized: its chunks DRAW (cursor 0, into the
@@ -4960,9 +5029,8 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
             // the hit point, the lattice snaps the center); sub-blocked models
             // have per-block half-dims the depth alone can't recover
             if (k === 'blocks' && (ls.edges != null ? ls.edges : blockEdges) && subBy.has(id)) { bail = true; break; }
-            // a ROTATED model's face ids name lattice faces and its centers don't
-            // snap to world axes — the resolve's world-axis shading would lie
-            if (rotBy.has(id)) { bail = true; break; }
+            // a ROTATED model's face ids name lattice faces: the resolve shades them by
+            // R·n and reconstructs edge lines in the lattice frame (gl-resolve rotEdge)
             groups.set(id, []);
             // NOTE: isolate filters and class eyes (catVis) are FINE here even
             // though they cull — changing them goes through needClear, so at
@@ -5493,6 +5561,16 @@ const supportOfHeader = (h) => (h ? supportOf(h.grid, { subBlocked: !!h.subBlock
 
 /** Volume of a block of sizeQ (sx, sy, sz) fine steps. */
 const volumeOf = (sx, sy, sz, pitch) => sx * pitch[0] * sy * pitch[1] * sz * pitch[2];
+/**
+ * Volume of a block from its stated sizes (a record's XINC/YINC/ZINC, DX/DY/DZ),
+ * through the contract: each size snapped to whole fine steps, × the pitch — the
+ * same box the renderer draws (dimQ). null when a size is missing / not positive
+ * (the caller decides what that block weighs).
+ */
+function volumeOfSizes(dx, dy, dz, pitch) {
+  if (!(dx > 0 && dy > 0 && dz > 0)) return null;
+  return volumeOf(sizeQ(dx, pitch[0]), sizeQ(dy, pitch[1]), sizeQ(dz, pitch[2]), pitch);
+}
 
 /** world → lattice: q = Rᵀ·(p − anchor). out is written and returned. */
 function toLattice(frame, x, y, z, out = [0, 0, 0]) {
@@ -5660,9 +5738,53 @@ function datamineRotZ(angle1Deg) {
   return [c, s, 0, -s, c, 0, 0, 0, 1];
 }
 /**
- * A rotated .dm placed in world keeps LOCAL XC/YC/ZC in its records; anything that
- * reads a position from a record (a pick's position, a filter's compact chunks)
- * maps it here. → (x, y, z) → [wx, wy, wz] for such a header, else null.
+ * A rotated .dm's PLACEMENT, as data (structured-cloneable, so a worker reading
+ * page runs applies the same one): the coordinate column indices + R + O.
+ * world = O + R·(XC, YC, ZC). null for a model that isn't placed.
+ */
+const dmPlaceOf = (h) => (h && h.dmPlace) || null;
+/**
+ * Map a decoded column batch's coordinate columns local → world IN PLACE (cols is
+ * { [colIdx]: Float64Array }, fresh arrays from a run read). A missing coordinate
+ * (NaN) leaves the record's three NaN — there is no world position without all three.
+ */
+function placeDmColumns(place, cols, count) {
+  if (!place) return cols;
+  const X = cols[place.x], Y = cols[place.y], Z = cols[place.z];
+  if (!X || !Y || !Z) return cols;
+  const R = place.R, O = place.O;
+  for (let k = 0; k < count; k++) {
+    const x = X[k], y = Y[k], z = Z[k];
+    X[k] = O[0] + R[0] * x + R[3] * y + R[6] * z;
+    Y[k] = O[1] + R[1] * x + R[4] * y + R[7] * z;
+    Z[k] = O[2] + R[2] * x + R[5] * y + R[8] * z;
+  }
+  return cols;
+}
+/** The same for one decoded record (positional values; null = missing). In place. */
+function placeDmRow(place, row) {
+  if (!place || !row) return row;
+  const x = row[place.x], y = row[place.y], z = row[place.z];
+  if (typeof x !== 'number' || typeof y !== 'number' || typeof z !== 'number') return row;
+  const R = place.R, O = place.O;
+  row[place.x] = O[0] + R[0] * x + R[3] * y + R[6] * z;
+  row[place.y] = O[1] + R[1] * x + R[4] * y + R[7] * z;
+  row[place.z] = O[2] + R[2] * x + R[5] * y + R[8] * z;
+  return row;
+}
+/** world → the model's own (local) frame for a placed .dm: Rᵀ·(p − O). */
+function dmWorldToLocal(place, x, y, z, out = [0, 0, 0]) {
+  const R = place.R, O = place.O, dx = x - O[0], dy = y - O[1], dz = z - O[2];
+  out[0] = R[0] * dx + R[1] * dy + R[2] * dz;
+  out[1] = R[3] * dx + R[4] * dy + R[5] * dz;
+  out[2] = R[6] * dx + R[7] * dy + R[8] * dz;
+  return out;
+}
+/**
+ * A rotated .dm placed in world keeps LOCAL XC/YC/ZC in its file; the provider's
+ * readers (columnBatches / recordBatches / fetchRecord, and readDmRun with the
+ * header's dmPlace) hand them over in WORLD. This maps one point the same way, for a
+ * caller holding raw local values. → (x, y, z) → [wx, wy, wz] for such a header, else null.
  */
 function dmLocalToWorld(h) {
   if (!h || !h.dmRotationApplied) return null;
@@ -5755,4 +5877,9 @@ export {
   pitchOf,
   datamineRotZ,
   dmLocalToWorld,
+  dmPlaceOf,
+  placeDmColumns,
+  placeDmRow,
+  dmWorldToLocal,
+  volumeOfSizes,
 };

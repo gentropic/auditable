@@ -19,7 +19,7 @@
 
 import { detectDM, parseHeader, recordRange, decodeRecord, readField } from '../../../dm/src/dm.js';
 import { inferSubBlockLattice, axisDistinct } from '../grid/infer.js';
-import { sizeCollector, putDimQ, pitchOf, datamineRotZ } from '../grid/support.js';
+import { sizeCollector, putDimQ, pitchOf, datamineRotZ, placeDmColumns, placeDmRow } from '../grid/support.js';
 
 // PROJECTED batches over any .dm — decode only the requested column indices by
 // striding each field's fixed word-offset across records (no whole-record decode,
@@ -44,8 +44,10 @@ export function dmPageRuns(h) {
 }
 // ONE run's requested fields, by striding (only those fields are decoded):
 // → { recStart, count, cols: { [colIdx]: Float64Array (blank = NaN) | string[] (blank = '') } }
-export async function readDmRun(blob, h, colIdxs, run) {
-  const ids = [...new Set(colIdxs)];
+// place (a header's dmPlace — a rotated model placed in world): the coordinate
+// fields come back in WORLD (read even when not asked for — all three are needed).
+export async function readDmRun(blob, h, colIdxs, run, place = null) {
+  const ids = [...new Set(place && colIdxs.some((i) => i === place.x || i === place.y || i === place.z) ? [...colIdxs, place.x, place.y, place.z] : colIdxs)];
   const cols = ids.map((i) => h.columns[i]), alpha = cols.map((c) => c.type === 'A');
   const bytes = new Uint8Array(await blob.slice((run.page - 1) * h.pageSize, run.pEnd * h.pageSize).arrayBuffer());
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -61,16 +63,17 @@ export async function readDmRun(blob, h, colIdxs, run) {
     }
   }
   const cobj = {}; ids.forEach((idx, ci) => { cobj[idx] = out[ci]; });
+  if (place) placeDmColumns(place, cobj, total);
   return { recStart: run.start, count: total, cols: cobj };
 }
 // opts.shouldRead(recStart, count): PUSHDOWN hook — return false and the whole
 // page-run is skipped BEFORE any I/O (sidecar band stats prove no record in the run
 // can match a filter — parquet's row-group skip, retrofitted onto .dm).
-async function* dmColumnBatches(blob, h, colIdxs, { signal, shouldRead = null } = {}) {
+async function* dmColumnBatches(blob, h, colIdxs, { signal, shouldRead = null, place = null } = {}) {
   for (const run of dmPageRuns(h)) {
     if (signal && signal.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
     if (shouldRead && !shouldRead(run.start, run.count)) continue;
-    yield await readDmRun(blob, h, colIdxs, run);
+    yield await readDmRun(blob, h, colIdxs, run, place);
   }
 }
 
@@ -112,7 +115,7 @@ export async function openDmModel(blob, { mapping = null, forcePoints = false, o
         const nRec = pg === h.lastPage ? h.lastRec : h.recordsPerPage;
         const base = (pg - page) * h.pageSize;
         for (let r = 0; r < nRec; r++) {
-          rows.push(decodeRecord(bytes.subarray(base + r * h.maxLen * h.wordSize, base + (r + 1) * h.maxLen * h.wordSize), h));
+          rows.push(placeDmRow(place, decodeRecord(bytes.subarray(base + r * h.maxLen * h.wordSize, base + (r + 1) * h.maxLen * h.wordSize), h)));
         }
       }
       yield { recStart: (page - 2) * h.recordsPerPage, rows };
@@ -128,7 +131,15 @@ export async function openDmModel(blob, { mapping = null, forcePoints = false, o
   // opts.shouldRead(recStart, count): PUSHDOWN hook — return false and the whole
   // page-run is skipped BEFORE any I/O (sidecar band stats prove no record in
   // the run can match a filter — parquet's row-group skip, retrofitted onto .dm)
-  const columnBatches = (colIdxs, opts) => dmColumnBatches(blob, h, colIdxs, opts);
+  // These three READ FOR CONSUMERS and speak the model's placed frame: a rotated
+  // model's XC/YC/ZC come back in WORLD (`place`, set below once the rotation is
+  // known), like every other model's. The open's own sweeps (discovery, the render
+  // stream) read the file's local values through localColumns and place them
+  // themselves.
+  let place = null;
+  const localColumns = (colIdxs, opts) => dmColumnBatches(blob, h, colIdxs, opts);
+  const columnBatches = (colIdxs, opts) => dmColumnBatches(blob, h, colIdxs, { ...(opts || {}), place });
+  const fetchRecord = (rec) => fetchDmRecord(blob, h, rec, place);
 
   // the grid, straight from the DD (corner origin → centroid convention).
   // A regular model carries the grid as DD constants (XMORIG/XINC/NX…) → no sweep.
@@ -199,7 +210,7 @@ export async function openDmModel(blob, { mapping = null, forcePoints = false, o
     const ax = axc.map((c) => c.set);
     const sizes = sizeCollector();
     const sweepCols = perRecDims ? [xc, yc, zc, incIdx.x, incIdx.y, incIdx.z] : [xc, yc, zc];
-    for await (const { recStart, count, cols } of columnBatches(sweepCols)) {
+    for await (const { recStart, count, cols } of localColumns(sweepCols)) {
       if (onProgress) onProgress({ phase: 'discovery', done: recStart + count, total: h.recordCount });
       const X = cols[xc], Y = cols[yc], Z = cols[zc], DX = perRecDims ? cols[incIdx.x] : null, DY = perRecDims ? cols[incIdx.y] : null, DZ = perRecDims ? cols[incIdx.z] : null;
       for (let k = 0; k < count; k++) {
@@ -249,6 +260,7 @@ export async function openDmModel(blob, { mapping = null, forcePoints = false, o
     dmRotation: dmRotation.length ? dmRotation : null,
     dmRotationApplied: rotApplied,                          // true: placed in world (one rotation about Z)
     dmOrigin: rotApplied ? O : null,                        // the world position of the model's local origin
+    dmPlace: null,                                          // set below: the placement the readers apply (rotated only)
     lattice: rotApplied && grid ? { basis: 'declared', by: 'datamine' } : null,
     bbox, grid, subBlocked, sizeQMax, sizeShapes, subBlockRefused, dimCols: subBlocked ? incIdx : null,
     columns: names,
@@ -257,6 +269,8 @@ export async function openDmModel(blob, { mapping = null, forcePoints = false, o
     attributes: [...(chan != null ? [names[chan]] : []), ...(catIdx >= 0 ? [names[catIdx]] : [])],
     dm: h,                                                  // the @gcu/dm header: O(1) record fetch + the filter sweep
   };
+
+  if (rotApplied) place = header.dmPlace = { x: xc, y: yc, z: zc, R: Array.from(R), O: [...O] };
 
   async function* streamChunks({ chunkPoints = 1 << 18, signal, onProgress } = {}) {
     const alloc = () => ({
@@ -272,7 +286,7 @@ export async function openDmModel(blob, { mapping = null, forcePoints = false, o
     if (catIdx >= 0) streamCols.push(catIdx);
     if (pitchQ) streamCols.push(incIdx.x, incIdx.y, incIdx.z);
     let buf = alloc(), fill = 0, done = 0;
-    for await (const { recStart, count, cols } of columnBatches(streamCols, { signal })) {
+    for await (const { recStart, count, cols } of localColumns(streamCols, { signal })) {
       const X = cols[xc], Y = cols[yc], Z = cols[zc];
       const CH = chan != null ? cols[chan] : null, CA = catIdx >= 0 ? cols[catIdx] : null;
       const DX = pitchQ ? cols[incIdx.x] : null, DY = pitchQ ? cols[incIdx.y] : null, DZ = pitchQ ? cols[incIdx.z] : null;
@@ -314,14 +328,15 @@ export async function openDmModel(blob, { mapping = null, forcePoints = false, o
     }
   }
 
-  return { header, streamChunks, recordBatches, columnBatches };
+  return { header, streamChunks, recordBatches, columnBatches, fetchRecord };
 }
 
 // O(1) fetch of one record by RAW record number (the pick → inspector path).
-export async function fetchDmRecord(blob, h, rec) {
+// place (header.dmPlace): a rotated model's coordinates in WORLD; omitted → as stored.
+export async function fetchDmRecord(blob, h, rec, place = null) {
   const { offset, length } = recordRange(h, rec);
   const bytes = new Uint8Array(await blob.slice(offset, offset + length).arrayBuffer());
-  return decodeRecord(bytes, h);                           // positional values, h.columns order
+  return placeDmRow(place, decodeRecord(bytes, h));        // positional values, h.columns order
 }
 
 // ── Datamine WIREFRAME (triangulated surface / DTM / solid) ──────────────────
@@ -338,6 +353,26 @@ export async function peekDmColumns(blob) {
   const fmt = detectDM(head);
   if (!fmt) return null;
   try { return parseHeader(head, fmt).columns.map((c) => c.name); } catch { return null; }
+}
+
+// A .dm's rotation as its DD page states it, without opening the model: → null (not
+// rotated) or { applied, rotations: [{ n, axis, angle }], origin: [X0, Y0, Z0] } —
+// applied = the one case openDmModel places in world (ANGLE1 about Z alone); origin
+// = the file's X0/Y0/Z0 (0 where absent — an anonymised export carries none).
+export async function peekDmRotation(blob) {
+  const head = new Uint8Array(await blob.slice(0, Math.min(8192, blob.size)).arrayBuffer());
+  const fmt = detectDM(head);
+  if (!fmt) return null;
+  let h; try { h = parseHeader(head, fmt); } catch { return null; }
+  const cv = (n) => { const c = h.columns.find((x) => x.name === n); return c && c.isConstant ? c.constantValue : null; };
+  const rotations = [];
+  for (const n of [1, 2, 3]) {
+    const a = cv('ANGLE' + n), ax = cv('ROTAXIS' + n);
+    if (Number.isFinite(a) && Math.abs(a) > 1e-9) rotations.push({ n, axis: ({ 1: 'X', 2: 'Y', 3: 'Z' })[Math.round(ax)] || '?', angle: a });
+  }
+  if (!rotations.length) return null;
+  const applied = rotations.length === 1 && rotations[0].n === 1 && rotations[0].axis === 'Z';
+  return { applied, rotations, origin: ['X0', 'Y0', 'Z0'].map((n) => { const v = cv(n); return Number.isFinite(v) ? v : 0; }) };
 }
 
 // Classify a .dm by its fields: a wireframe points half, a triangle half, or null.

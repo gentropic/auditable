@@ -338,14 +338,22 @@ function swathMerge(parts, nSeries, nDirs) {
   return out;
 }
 
-// per-record block support (sub-block dims → volume), = analysis.js volumeAt;
-// null when every block has the constant volume
+// per-record block support (sub-block sizes → volume), = micro analysis.js volumeAt:
+// with params.vol.pitch (the fine pitch) each size snaps to whole fine steps and
+// the volume is Π steps·pitch — condenser support.js volumeOfSizes, the box the
+// renderer draws; without it, the raw product. null when every block has the
+// constant volume. A missing / non-positive size → base.
 function volumes(ctx, view, n, num) {
   if (!ctx.dimIdx) return null;
-  const sc = ctx.scratch, base = ctx.params.vol.base;
+  const sc = ctx.scratch, base = ctx.params.vol.base, P = ctx.params.vol.pitch || null;
   const dx = num(ctx.dimIdx[0], 'dx'), dy = num(ctx.dimIdx[1], 'dy'), dz = num(ctx.dimIdx[2], 'dz');
   const vol = sc.vol && sc.vol.length >= n ? sc.vol : (sc.vol = new Float64Array(n));
-  for (let i = 0; i < n; i++) { const v = Math.abs((dx[i] || 0) * (dy[i] || 0) * (dz[i] || 0)); vol[i] = v > 0 ? v : base; }
+  const q = (d, p) => { const s = Math.round(d / p); return s < 1 ? 1 : s > 255 ? 255 : s; };
+  for (let i = 0; i < n; i++) {
+    const a = Math.abs(dx[i]), b = Math.abs(dy[i]), c = Math.abs(dz[i]);
+    if (!(a > 0 && b > 0 && c > 0)) { vol[i] = base; continue; }
+    vol[i] = P ? q(a, P[0]) * P[0] * q(b, P[1]) * P[1] * q(c, P[2]) * P[2] : a * b * c;
+  }
   return vol;
 }
 
@@ -894,13 +902,15 @@ function delimitedSource(D, blob, h, o, readCols, { anchors = 64, keep = null } 
   };
 }
 
-// dmh = the .dm header (condenser), names = the model's columns
-function dmSource(D, blob, dmh, names, readCols) {
+// dmh = the .dm header (condenser), names = the model's columns; place = the
+// model's placement (condenser header.dmPlace: a rotated model's XC/YC/ZC come
+// back in WORLD) — carried in desc, so the workers place exactly as the page does
+function dmSource(D, blob, dmh, names, readCols, { place = null } = {}) {
   const idx = readCols.map((n) => names.indexOf(n));
   return {
-    names, file: blob, meta: null, desc: { kind: 'dm', h: dmh, idx },
+    names, file: blob, meta: null, desc: { kind: 'dm', h: dmh, idx, place },
     units: D.condenser.dmPageRuns(dmh).map((run) => ({ start: run.start, count: run.count, run })),
-    read: async (u) => { const r = await D.condenser.readDmRun(blob, dmh, idx, u.run); const out = {}; readCols.forEach((n, k) => { out[n] = r.cols[idx[k]]; }); return out; },
+    read: async (u) => { const r = await D.condenser.readDmRun(blob, dmh, idx, u.run, place); const out = {}; readCols.forEach((n, k) => { out[n] = r.cols[idx[k]]; }); return out; },
   };
 }
 
@@ -1210,7 +1220,7 @@ function createScan({ deps, urls = {} } = {}) {
     sources: {
       parquet: (P, readCols) => parquetSource(D, P, readCols),
       delimited: (blob, h, o, readCols, opts) => delimitedSource(D, blob, h, o, readCols, opts),
-      dm: (blob, dmh, names, readCols) => dmSource(D, blob, dmh, names, readCols),
+      dm: (blob, dmh, names, readCols, opts) => dmSource(D, blob, dmh, names, readCols, opts),
     },
     zoneKeep: (zs, opts) => zoneKeep(D, zs, opts),
     startPool: (opts) => startPool(urls, opts),

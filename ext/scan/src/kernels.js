@@ -241,14 +241,22 @@ export function swathMerge(parts, nSeries, nDirs) {
   return out;
 }
 
-// per-record block support (sub-block dims → volume), = analysis.js volumeAt;
-// null when every block has the constant volume
+// per-record block support (sub-block sizes → volume), = micro analysis.js volumeAt:
+// with params.vol.pitch (the fine pitch) each size snaps to whole fine steps and
+// the volume is Π steps·pitch — condenser support.js volumeOfSizes, the box the
+// renderer draws; without it, the raw product. null when every block has the
+// constant volume. A missing / non-positive size → base.
 function volumes(ctx, view, n, num) {
   if (!ctx.dimIdx) return null;
-  const sc = ctx.scratch, base = ctx.params.vol.base;
+  const sc = ctx.scratch, base = ctx.params.vol.base, P = ctx.params.vol.pitch || null;
   const dx = num(ctx.dimIdx[0], 'dx'), dy = num(ctx.dimIdx[1], 'dy'), dz = num(ctx.dimIdx[2], 'dz');
   const vol = sc.vol && sc.vol.length >= n ? sc.vol : (sc.vol = new Float64Array(n));
-  for (let i = 0; i < n; i++) { const v = Math.abs((dx[i] || 0) * (dy[i] || 0) * (dz[i] || 0)); vol[i] = v > 0 ? v : base; }
+  const q = (d, p) => { const s = Math.round(d / p); return s < 1 ? 1 : s > 255 ? 255 : s; };
+  for (let i = 0; i < n; i++) {
+    const a = Math.abs(dx[i]), b = Math.abs(dy[i]), c = Math.abs(dz[i]);
+    if (!(a > 0 && b > 0 && c > 0)) { vol[i] = base; continue; }
+    vol[i] = P ? q(a, P[0]) * P[0] * q(b, P[1]) * P[1] * q(c, P[2]) * P[2] : a * b * c;
+  }
   return vol;
 }
 

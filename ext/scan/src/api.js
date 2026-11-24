@@ -24,7 +24,7 @@ export function createScan({ deps, urls = {} } = {}) {
     sources: {
       parquet: (P, readCols) => parquetSource(D, P, readCols),
       delimited: (blob, h, o, readCols, opts) => delimitedSource(D, blob, h, o, readCols, opts),
-      dm: (blob, dmh, names, readCols) => dmSource(D, blob, dmh, names, readCols),
+      dm: (blob, dmh, names, readCols, opts) => dmSource(D, blob, dmh, names, readCols, opts),
     },
     zoneKeep: (zs, opts) => zoneKeep(D, zs, opts),
     startPool: (opts) => startPool(urls, opts),

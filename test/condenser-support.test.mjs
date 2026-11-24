@@ -171,3 +171,48 @@ test('dm: two rotations stay unapplied (the order convention is unverified)', as
   const { header } = await openDmModel(new Blob([makeDM(fields, [{ XC: 5, YC: 5, ZC: 2.5 }, { XC: 15, YC: 5, ZC: 2.5 }], { precision: 'ep' })]));
   assert.equal(header.dmRotationApplied, false, 'a rotation about X is reported, not applied');
 });
+
+// ── step 2: the readers speak the PLACED frame ─────────────────────────────────
+// A rotated model's rows must read where the view draws them: XC/YC/ZC in world
+// from every reader a consumer uses (recordBatches, columnBatches, fetchRecord,
+// readDmRun with the header's dmPlace — what @gcu/scan's workers call).
+test('dm: a placed model reads WORLD XC/YC/ZC from every reader; sizes + values untouched', async () => {
+  const { readDmRun, dmPageRuns, peekDmRotation, dmWorldToLocal, volumeOfSizes } = await import('../ext/condenser/src/main.js');
+  const blob = new Blob([makeSubblockDm(ROWS.rows, { angle1: -50, origin: [0, 0, 0] })]);
+  const m = await openDmModel(blob, { origin: O });
+  const h = m.header, pl = h.dmPlace;
+  assert.ok(pl && pl.x === 0 && pl.y === 1 && pl.z === 2, 'dmPlace states the coordinate columns');
+  const t = (50 * Math.PI) / 180, c = Math.cos(t), s = Math.sin(t);
+  const wOf = (r) => [O[0] + c * r.XC - s * r.YC, O[1] + s * r.XC + c * r.YC, O[2] + r.ZC];
+  const checkRow = (row, r, what) => {
+    const w = wOf(r);
+    for (let a = 0; a < 3; a++) near(row[a], w[a], 1e-6, `${what} coord ${a}`);
+    assert.equal(row[3], r.XINC, `${what} XINC untouched`); assert.equal(row[15], r.V, `${what} V untouched`);
+  };
+  let n = 0;
+  for await (const { recStart, rows } of m.recordBatches()) for (let k = 0; k < rows.length; k++) { checkRow(rows[k], ROWS.rows[recStart + k], 'recordBatches'); n++; }
+  assert.equal(n, ROWS.rows.length);
+  // columnBatches — asking for ONE coordinate still places it (the other two are read along)
+  for await (const { recStart, count, cols } of m.columnBatches([0, 15])) for (let k = 0; k < count; k++) near(cols[0][k], wOf(ROWS.rows[recStart + k])[0], 1e-6, 'columnBatches X');
+  checkRow(await m.fetchRecord(17), ROWS.rows[17], 'fetchRecord');
+  // readDmRun with the header's placement = what a scan worker reads
+  const run = dmPageRuns(h.dm)[0];
+  const r1 = await readDmRun(blob, h.dm, [1, 5], run, pl);
+  near(r1.cols[1][3], wOf(ROWS.rows[r1.recStart + 3])[1], 1e-6, 'readDmRun Y placed');
+  const r0 = await readDmRun(blob, h.dm, [1], run);
+  assert.equal(r0.cols[1][3], ROWS.rows[r0.recStart + 3].YC, 'no placement → the file as stored');
+  // the model's own frame comes back exactly
+  const q = dmWorldToLocal(pl, ...wOf(ROWS.rows[5]));
+  for (const [a, key] of [[0, 'XC'], [1, 'YC'], [2, 'ZC']]) near(q[a], ROWS.rows[5][key], 1e-6, `local ${key}`);
+  // peek: the dialog's view of the rotation
+  const pk = await peekDmRotation(blob);
+  assert.ok(pk.applied); assert.deepEqual(pk.origin, [0, 0, 0]); assert.equal(pk.rotations[0].angle, -50);
+  // an axis-aligned twin's readers are untouched (no placement)
+  const plain = await openDmModel(new Blob([makeSubblockDm(ROWS.rows, { angle1: 0 })]));
+  assert.equal(plain.header.dmPlace, null);
+  assert.equal((await plain.fetchRecord(17))[0], ROWS.rows[17].XC);
+  // volumes from the contract: sizes snapped to fine steps × pitch (= the raw product for on-lattice sizes)
+  for (const r of ROWS.rows.slice(0, 50)) assert.equal(volumeOfSizes(r.XINC, r.YINC, r.ZINC, [0.5, 0.5, 0.5]), r.XINC * r.YINC * r.ZINC);
+  assert.equal(volumeOfSizes(0.9999999963, 2.0000000071, 1, [0.5, 0.5, 0.5]), 2, 'f32 noise in a size snaps to its step');
+  assert.equal(volumeOfSizes(NaN, 1, 1, [0.5, 0.5, 0.5]), null);
+});

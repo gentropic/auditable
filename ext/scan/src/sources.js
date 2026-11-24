@@ -36,12 +36,14 @@ export function delimitedSource(D, blob, h, o, readCols, { anchors = 64, keep = 
   };
 }
 
-// dmh = the .dm header (condenser), names = the model's columns
-export function dmSource(D, blob, dmh, names, readCols) {
+// dmh = the .dm header (condenser), names = the model's columns; place = the
+// model's placement (condenser header.dmPlace: a rotated model's XC/YC/ZC come
+// back in WORLD) — carried in desc, so the workers place exactly as the page does
+export function dmSource(D, blob, dmh, names, readCols, { place = null } = {}) {
   const idx = readCols.map((n) => names.indexOf(n));
   return {
-    names, file: blob, meta: null, desc: { kind: 'dm', h: dmh, idx },
+    names, file: blob, meta: null, desc: { kind: 'dm', h: dmh, idx, place },
     units: D.condenser.dmPageRuns(dmh).map((run) => ({ start: run.start, count: run.count, run })),
-    read: async (u) => { const r = await D.condenser.readDmRun(blob, dmh, idx, u.run); const out = {}; readCols.forEach((n, k) => { out[n] = r.cols[idx[k]]; }); return out; },
+    read: async (u) => { const r = await D.condenser.readDmRun(blob, dmh, idx, u.run, place); const out = {}; readCols.forEach((n, k) => { out[n] = r.cols[idx[k]]; }); return out; },
   };
 }
