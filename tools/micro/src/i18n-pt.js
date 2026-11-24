@@ -28,7 +28,7 @@ export default {
   'Export as .wfr…': 'Exportar como .wfr…', 'Export grid…': 'Exportar grid…',
   'Convert files to .wfr…': 'Converter arquivos para .wfr…', 'Convert to .wfr…': 'Converter para .wfr…', 'convert to .wfr': 'converter para .wfr',
   'Store meshes in the project as .wfr': 'Guardar malhas no projeto como .wfr',
-  'Store as Parquet…': 'Guardar como Parquet…', 'store block models as Parquet': 'guardar modelos de blocos como Parquet',
+  'Store as Parquet…': 'Guardar como Parquet…', 'Opened in {s} s — store it as Parquet for fast reopens?': 'Aberto em {s} s — guardar como Parquet para reabrir rápido?', 'not for this file': 'não para este arquivo', 'dismiss': 'dispensar', 'store block models as Parquet': 'guardar modelos de blocos como Parquet',
   'Sample data': 'Dados de exemplo', 'Clear recents': 'Limpar recentes', 'open files': 'abrir arquivos', 'drop to open': 'solte para abrir',
   'New grid / block model…': 'Novo grid / modelo de blocos…', 'new grid / block model': 'novo grid / modelo de blocos',
   'opening project': 'abrindo projeto', 'open a project folder first': 'abra uma pasta de projeto primeiro',

@@ -18,6 +18,7 @@
 //   --timeout-scale=1   multiply every phase timeout (a slow machine / a huge file)
 //   --headed            show the browser
 //   --dm-origin=x,y,z   a rotated Datamine model's world origin (the open's `origin`) — a file that carries none
+//   --builders=4        the open's chunk-builder workers (window.__baseBuilders; default: micro's own choice)
 //   --projection=max    run the measures with the view in a projection (max | min | mean — View → Projection)
 //
 // Output: a table on stdout + JSON. Numbers are wall-clock in the page (performance.now()).
@@ -44,6 +45,7 @@ const ONLY = new Set(arg('only', 'open,orbit,recolour,colourby,gt,swath,stats,so
 const COMPARE = arg('compare', null);
 const FULLRES = !has('no-fullres');
 const PROJECTION = arg('projection', null);
+const BUILDERS = +arg('builders', 0) | 0;
 const APP = BUILT ? '/micro.html' : '/tools/micro/index.html';
 const isPath = MODEL !== 'demo' && MODEL !== 'regular5m';
 const modelTag = isPath ? path.basename(MODEL).replace(/[^A-Za-z0-9._-]/g, '_') : MODEL;
@@ -114,6 +116,10 @@ function installPageHelpers() {
     if (B.draws.length > 5000) B.draws.splice(0, 2500);
     return r;
   };
+  // chunk uploads: the time the page spends in addChunk (GPU buffer upload + bookkeeping), summed
+  B.upload = 0;
+  const origAdd = R.addChunk;
+  R.addChunk = function (...a) { const t = performance.now(); const r = origAdd.apply(this, a); B.upload += performance.now() - t; return r; };
   // settled = the last draw converged, the element count has not moved for `quiet` frames, nothing redrew since
   B.waitSettled = async (since, { quiet = 10, timeout = 600000 } = {}) => {
     const t0 = performance.now(); let n = -1, stable = 0, firstAt = null, iter = 0;
@@ -150,6 +156,7 @@ async function oneRun(runIdx, modelPath) {
   try {
     const ctx = await browser.newContext({ viewport: { width: 1100, height: 750 } });
     await ctx.addInitScript(() => { try { localStorage.setItem('micro.autoPackMeshes', 'off'); } catch { /* opaque origin */ } });
+    if (BUILDERS) await ctx.addInitScript((n) => { window.__baseBuilders = n; }, BUILDERS);
     const page = await ctx.newPage();
     page.on('pageerror', (e) => res.errors.push(`pageerror: ${e.message}`));
     await withTimeout(page.goto(`http://127.0.0.1:${PORT}${APP}`, { waitUntil: 'load' }), MIN, 'page load');
@@ -182,13 +189,21 @@ async function oneRun(runIdx, modelPath) {
         if (id == null) return { failed: document.querySelector('#meta').textContent };
         const tDrawn = await B.waitSettled(t0, { timeout });
         const L = B.layer();
-        return { resolvedMs: tResolved - t0, drawnMs: tDrawn - t0, kind: L.kind, grid: !!(L.docs.blockDoc && (L.docs.blockDoc.grid || L.docs.blockDoc.header.grid)),
+        const P = window.__openPhases || {};
+        const phases = P.provider != null && P.streamed != null && P.flushed != null
+          ? { provider: P.provider - P.t0, stream: P.streamed - P.provider, flush: P.flushed - P.streamed, upload: B.upload,
+              draw: B.draws.filter((d) => d.t >= P.t0 && d.t <= P.flushed).reduce((a, d) => a + d.ms, 0) } : null;
+        return { phases, resolvedMs: tResolved - t0, drawnMs: tDrawn - t0, kind: L.kind, grid: !!(L.docs.blockDoc && (L.docs.blockDoc.grid || L.docs.blockDoc.header.grid)),
           subBlocked: !!(L.docs.blockDoc && L.docs.blockDoc.header.subBlocked), elements: M.renderer.layerElementCount(L.id), chunks: M.renderer.chunkCount,
           meta: document.querySelector('#meta').textContent };
       }, { fileName, timeout: openTimeout * TSCALE, origin: DM_ORIGIN }), openTimeout + MIN, 'open');
       if (o.failed) throw new Error(`open failed: ${isPath ? '(message withheld for a private file)' : o.failed}`);
       res.metrics.open_resolved_ms = o.resolvedMs;
       res.metrics.open_drawn_ms = o.drawnMs;
+      if (o.phases) {                                     // the open's breakdown (micro's __openPhases hook): read+discover · stream · builder drain · GPU upload
+        res.metrics.open_provider_ms = o.phases.provider; res.metrics.open_stream_ms = o.phases.stream;
+        res.metrics.open_flush_ms = o.phases.flush; res.metrics.open_upload_ms = o.phases.upload; res.metrics.open_draw_ms = o.phases.draw;
+      }
       res.layer = { kind: o.kind, grid: o.grid, subBlocked: o.subBlocked, elements: o.elements, chunks: o.chunks };
       if (!isPath) res.layer.meta = o.meta;
       else {                                              // structural facts only — the meta line can carry column names
@@ -381,6 +396,8 @@ async function oneRun(runIdx, modelPath) {
 // ── aggregate, print, save, compare ──
 const LABELS = {
   open_resolved_ms: 'open → openBlob resolved', open_drawn_ms: 'open → settled frame',
+  open_provider_ms: '  open: header + discovery', open_stream_ms: '  open: stream (decode → builders)',
+  open_flush_ms: '  open: builders drain', open_upload_ms: '  open: GPU upload (addChunk Σ)', open_draw_ms: '  open: frames drawn meanwhile (Σ)',
   orbit_frame_p50_ms: 'orbit frame p50 (rAF)', orbit_frame_p95_ms: 'orbit frame p95 (rAF)', orbit_draw_cpu_p50_ms: 'orbit draw() CPU p50',
   orbit_gpu_synced_p50_ms: 'orbit draw+finish p50', orbit_gpu_synced_p95_ms: 'orbit draw+finish p95',
   orbit_full_frame_p50_ms: 'full-res orbit frame p50 (rAF)', orbit_full_frame_p95_ms: 'full-res orbit frame p95 (rAF)',

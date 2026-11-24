@@ -185,7 +185,11 @@ export async function meshWinding(meshL, variant = 'solid', lat = null) {
   if (!m) return null;
   if (!meshL._windingEngine) {
     let W = null;
-    try { W = await Winding.create({ worker: true, gpu: _windingGpu }); }
+    // a sub-blocked model's box list spreads over several workers (hardwareConcurrency − 1, at most 8;
+    // __boxWorkers: a smoke's override — 1 = the one-worker reference)
+    const hc = (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 4;
+    const boxWorkers = window.__boxWorkers || Math.max(1, Math.min(8, hc - 1));
+    try { W = await Winding.create({ worker: true, gpu: _windingGpu, boxWorkers }); }
     catch { W = await Winding.create({}); }
     meshL._windingEngine = W;
     meshL._windingMeshes = new Set();
@@ -326,7 +330,7 @@ async function evalSolidPerBlock(meshL, L, bs, { mode, resolution, onProgress, v
   const cancelled = new Promise((_, rej) => { run.reject = rej; });
   cancelled.catch(() => {});
   _sbActive = run;
-  const t0 = performance.now(), tag = eng.hasWorker ? 'worker' : 'CPU';
+  const t0 = performance.now(), tag = eng.hasWorker ? (eng.boxWorkers > 1 ? `${eng.boxWorkers} workers` : 'worker') : 'CPU';
   const h = [0, 0, 0], wh = [0, 0, 0];
   let done = 0, probed = 0;
   try {

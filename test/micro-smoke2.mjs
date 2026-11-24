@@ -9735,6 +9735,121 @@ if (take()) {
   await pg.close();
 }
 
+// ── §134: FAST .dm OPENS — the discovery sweep and the render decode cut into page runs
+// on @gcu/scan's worker pool (condenser dmDiscoverRun / dmDecodeRun), merged in run
+// order. The same sub-blocked .dm (a category, blank centroids) opened on ONE thread
+// (__dmPageOpen) and on the pool in small units (__dmUnitRecords) gives the same model:
+// header, grid, categories and their codes, the records drawn and their raw numbers,
+// every streamed value. And a slow open offers Parquet once per file (__pqOfferMs). ──
+if (take()) {
+  const pg = await mkPage('sm2dmfast');
+  const r = await pg.evaluate(async () => {
+    const M = window._micro;
+    const D = await import('/test/dm-make.mjs'), F = await import('/test/subblock-make.mjs');
+    const { rows } = F.makeSubblockRows({ seed: 17, nx: 7, ny: 6, nz: 4 });
+    const ROCK = ['OX', 'TR', 'FR', 'WS', ''];
+    const recs = rows.map((b, i) => ({ ...b, XC: i % 89 === 5 ? null : b.XC, ROCK: ROCK[(i * 5 + (i >> 4)) % ROCK.length] }));
+    const fields = [{ name: 'XC', type: 'N' }, { name: 'YC', type: 'N' }, { name: 'ZC', type: 'N' }, { name: 'XINC', type: 'N' }, { name: 'YINC', type: 'N' }, { name: 'ZINC', type: 'N' },
+      { name: 'V', type: 'N' }, { name: 'ROCK', type: 'A' }, { name: 'ROTAXIS1', type: 'N', constant: 3 }, { name: 'ANGLE1', type: 'N', constant: -35 }];
+    const bytes = new Uint8Array(D.makeDM(fields, recs, { precision: 'ep' }));
+    const O = [432820, 8522360, 300];
+    const digest = async (L) => {
+      const acc = { n: 0, rec: [], h: 0 };
+      const mix = (v) => { acc.h = (Math.imul(acc.h ^ (v | 0), 16777619) + ((v * 1e6) % 1e9 | 0)) | 0; };
+      for await (const c of L.docs.blockDoc.streamChunks({ chunkPoints: 1 << 18 })) {
+        for (let i = 0; i < c.count; i++) { acc.rec.push(c.recIdx[i]); mix(c.x[i]); mix(c.y[i]); mix(c.z[i]); mix(Number.isNaN(c.chan[i]) ? -7 : c.chan[i]); mix(c.cat ? c.cat[i] : 0); mix(c.dimQ[3 * i] * 65536 + c.dimQ[3 * i + 1] * 256 + c.dimQ[3 * i + 2]); }
+        acc.n += c.count;
+      }
+      return acc;
+    };
+    const facts = async (L) => { const h = L.docs.blockDoc.header, d = await digest(L);
+      return { head: JSON.stringify({ grid: h.grid, bbox: h.bbox, sub: h.subBlocked, q: h.sizeQMax, sh: h.sizeShapes, cats: h.categories }), drawn: L.docs.blockDoc.drawn, el: M.renderer.layerElementCount(L.id), d }; };
+    window.__dmPageOpen = true;
+    const id1 = await M.openBlob(new File([bytes], 'fast1.dm'), 'fast1.dm', 'replace', null, { throw: true, origin: O });
+    window.__dmPageOpen = false; window.__dmUnitRecords = 300; globalThis.__dmOpenWorkers = -1;
+    const id2 = await M.openBlob(new File([bytes], 'fast2.dm'), 'fast2.dm', 'add', null, { throw: true, origin: O });
+    const workers = globalThis.__dmOpenWorkers;
+    const a = await facts(M.layers().find((x) => x.id === id1)), b = await facts(M.layers().find((x) => x.id === id2));
+    window.__dmUnitRecords = 0;
+    const want = recs.map((x, i) => (x.XC == null ? -1 : i)).filter((i) => i >= 0);
+    const firstSeen = []; for (const i of want) if (!firstSeen.includes(recs[i].ROCK)) firstSeen.push(recs[i].ROCK);
+    const L2 = M.layers().find((x) => x.id === id2);
+    // a slow open offers Parquet — once per file
+    window.__pqOfferMs = 0;
+    const id3 = await M.openBlob(new File([bytes], 'slow.dm'), 'slow.dm', 'add', null, { origin: O });
+    const bar = document.querySelector('.pq-offer'), offered = !!bar, text = bar ? bar.textContent : '';
+    [...(bar ? bar.querySelectorAll('button') : [])].find((x) => x.textContent === 'not for this file')?.click();
+    const gone = !document.querySelector('.pq-offer');
+    await M.openBlob(new File([bytes], 'slow.dm'), 'slow.dm', 'add', null, { origin: O });
+    const again = !!document.querySelector('.pq-offer');
+    const csv = F.makeSubblockCsv(rows.slice(0, 400));
+    await M.openBlob(new File([csv], 'other.csv'), 'other.csv', 'add');
+    const other = document.querySelector('.pq-offer');
+    const otherOk = !!other;
+    [...other.querySelectorAll('button')].find((x) => x.textContent === 'Store as Parquet…').click();
+    await new Promise((z) => setTimeout(z, 50));
+    const dlg = document.querySelector('#opDlg').classList.contains('show');
+    document.querySelector('#opNot').click();
+    window.__pqOfferMs = 1e9;
+    await M.openBlob(new File([csv], 'fast.csv'), 'fast.csv', 'add');
+    const fastNone = !document.querySelector('.pq-offer');
+    void id3;
+    return { a, b, workers, want, firstSeen, kind: L2.kind, offered, text, gone, again, otherOk, dlg, fastNone };
+  });
+  chk(`fast .dm open: on the pool (${r.workers} workers, small units) and on one thread — the same header (grid, bbox, sizes, ${r.a.d.n} drawn, categories ${JSON.stringify(JSON.parse(r.a.head).cats)})`,
+    r.workers > 0 && r.kind === 'blocks' && r.a.head === r.b.head && JSON.parse(r.a.head).sub);
+  chk(`fast .dm open: the same records drawn (${r.b.el} = ${r.a.el} elements, ${r.b.drawn} = ${r.a.drawn}), with the same RAW numbers (blanks skipped, never reused) and the same values, codes and sizes record for record`,
+    r.a.el === r.b.el && r.a.drawn === r.b.drawn && r.a.d.n === r.want.length && JSON.stringify(r.a.d.rec) === JSON.stringify(r.want) && JSON.stringify(r.b.d.rec) === JSON.stringify(r.want) && r.a.d.h === r.b.d.h);
+  chk(`fast .dm open: category codes in first-appearance order on the pool too (${JSON.stringify(r.firstSeen)})`, JSON.stringify(JSON.parse(r.b.head).cats) === JSON.stringify(r.firstSeen));
+  chk(`a slow open OFFERS Parquet (“${r.text.slice(0, 60)}…”); “not for this file” is remembered (offered again: ${r.again}); another file is offered (${r.otherOk}) and its button opens Store as Parquet (${r.dlg}); a fast open isn't (${r.fastNone})`,
+    r.offered && r.gone && !r.again && r.otherOk && r.dlg && r.fastNone);
+  await pg.close();
+}
+
+// ── §135: by-solid on a sub-blocked model across a WORKER POOL — @gcu/winding's box list
+// cut into slices over several workers (Winding.create boxWorkers), each slice whole on
+// one worker, answers written back at its offset. The fraction and the flag on a rotated
+// .dm and on its axis-aligned twin, one worker (__boxWorkers = 1) vs the pool: identical
+// record for record. ──
+if (take()) {
+  const pg = await mkPage('sm2boxpool');
+  const r = await pg.evaluate(async () => {
+    const M = window._micro, W = window.micro;
+    const F = await import('/test/subblock-make.mjs');
+    const { rows } = F.makeSubblockRows({ seed: 19, nx: 12, ny: 10, nz: 5 });
+    const O = [432820, 8522360, 300];
+    const t = (50 * Math.PI) / 180, c = Math.cos(t), s = Math.sin(t);
+    const Wp = (p) => [O[0] + c * p[0] - s * p[1], O[1] + s * p[0] + c * p[1], O[2] + p[2]];
+    const idR = await M.openBlob(new File([F.makeSubblockDm(rows, { angle1: -50 })], 'rotp.dm'), 'rotp.dm', 'replace', null, { throw: true, origin: O });
+    const idA = await M.openBlob(new File([F.makeSubblockCsv(rows)], 'twinp.csv'), 'twinp.csv', 'add', null, { throw: true });
+    const LR = M.layers().find((x) => x.id === idR), LA = M.layers().find((x) => x.id === idA);
+    const V = [[120, 100, 25], [10, 100, 25], [65, 175, 25], [65, 25, 25], [65, 100, 49], [65, 100, 1]];
+    const T = [0, 2, 4, 2, 1, 4, 1, 3, 4, 3, 0, 4, 2, 0, 5, 1, 2, 5, 3, 1, 5, 0, 3, 5];
+    const mesh = async (name, world) => { const id = await W.addLayer({ kind: 'mesh', name, vertices: Float64Array.from((world ? V.map(Wp) : V).flat()), triangles: Uint32Array.from(T) }); return M.layers().find((l) => l.id === id); };
+    const codes = (col) => Array.from(col ? col.codes : []);
+    const fl = (L, nm) => { const cc = M.paintColByName(L, nm), k = cc ? cc.dict.indexOf('IN') : -1; return cc ? Array.from(cc.codes, (v) => (v === k ? 1 : 0)) : []; };
+    const run = async (tag) => {
+      const SR = await mesh('octR' + tag, true), SA = await mesh('octA' + tag, false);   // fresh meshes: fresh engines (one per mesh layer)
+      const fr = codes(await M.ratioBySolid(SR, LR, { name: 'F' + tag, res: 3, mode: 'inside' }));
+      const meta = document.querySelector('#meta').textContent;
+      const fa = codes(await M.ratioBySolid(SA, LA, { name: 'F' + tag, res: 3, mode: 'inside' }));
+      await M.flagBySolid(SR, [LR], { name: 'G' + tag, label: 'IN', mode: 'inside' });
+      await M.flagBySolid(SA, [LA], { name: 'G' + tag, label: 'IN', mode: 'inside' });
+      return { fr, fa, gr: fl(LR, 'G' + tag), ga: fl(LA, 'G' + tag), meta, workers: SR._windingEngine ? SR._windingEngine.boxWorkers : -1 };
+    };
+    window.__boxWorkers = 1; const one = await run('1');
+    window.__boxWorkers = 0; const pool = await run('P');
+    const same = (x, y) => x.length === y.length && x.length > 0 && x.every((v, i) => v === y[i]);
+    return { n: rows.length, oneW: one.workers, poolW: pool.workers, meta: pool.meta,
+      fr: same(one.fr, pool.fr), fa: same(one.fa, pool.fa), gr: same(one.gr, pool.gr), ga: same(one.ga, pool.ga), twin: same(pool.fr, pool.fa),
+      partial: pool.fr.filter((v) => v > 0 && v < 255).length, inside: pool.ga.reduce((a, v) => a + v, 0) };
+  });
+  chk(`by-solid box list on a pool: ${r.poolW} workers (vs ${r.oneW}) over ${r.n} sub-blocks (“${r.meta.slice(0, 70)}…”)`, r.oneW === 1 && r.poolW > 1 && r.n >= 4096);
+  chk(`by-solid box list on a pool: fraction (${r.partial} partial) and flag (${r.inside} IN) on the rotated .dm and its twin — identical to the one-worker answer record for record (${r.fr}/${r.fa}/${r.gr}/${r.ga}), and the copy = the twin (${r.twin})`,
+    r.fr && r.fa && r.gr && r.ga && r.twin && r.partial > 50 && r.inside > 50);
+  await pg.close();
+}
+
 // ── the LAYER CONTEXT MENU, regrouped (src/layermenu.js layerMenuSections). It had
 // grown to ~33 top-level entries on a block model; now the frequent verbs sit on top
 // and the rest in Analyse · Geometry · Select · Views · Display · Data & file · Move.

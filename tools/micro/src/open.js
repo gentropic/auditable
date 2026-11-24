@@ -10,6 +10,7 @@ import { syncNoData } from './ramp.js';
 import { createChunkBuilder, createStickChunkBuilder, mapColumns, openDrillholes, openLas, openPly, sniffDelimited } from '../../../ext/condenser/src/main.js';
 import { openLineage } from './lineage.js';
 import { isWfrName } from './wfr-io.js';
+import { maybeOfferParquet } from './pqoffer.js';
 import { isBackupName } from './backup.js';
 import { openPackFile } from './project-pack.js';
 import { openOmfBlob } from './omf.js';
@@ -34,7 +35,9 @@ export async function streamInto(cb, streamChunks, header, name, chunkPoints, li
       $('#meta').textContent = `${name} — streaming ${Math.round(100 * done / (header.count || 1))}%`;
       await new Promise((r) => setTimeout(r));            // yield to the render loop
     }
+    if (window.__openPhases) window.__openPhases.streamed = performance.now();
     doc = await cb.flush();
+    if (window.__openPhases) window.__openPhases.flushed = performance.now();
   } finally { if (cb.close) cb.close(); }                 // every chunk is in (or the read failed): the worker can go
   const L = layerById(lid);
   if (L) L.bboxLocal = doc.bboxLocal;
@@ -88,6 +91,7 @@ export async function openBlob(blob, name, mode = 'replace', at = null, over = {
   // delimited file with no coordinate columns
   const isTable = over.asKind === 'table' || /\.xlsx$/i.test(name)
     || (/\.(csv|txt|dat|tsv)$/i.test(name) && !over.mapping && !over.discovered && !isMesh && over.asKind == null && !await delimitedHasCoords(blob));
+  window.__openPhases = { t0: performance.now() };        // bench hook: where an open's time goes (provider · stream · flush)
   const lid = allocLayerId();
   if (lid == null) { const msg = `layer limit reached (${LAYER_CAP}) — remove one first`; $('#meta').textContent = msg; return layerFailed(name, new Error(msg), over); }
   const first = S.layers.length === 0;
@@ -129,6 +133,7 @@ export async function openBlob(blob, name, mode = 'replace', at = null, over = {
     renderLayers();
     dispatchEvent(new Event('micro:project-dirty'));
     dispatchEvent(new CustomEvent('micro:layer-added', { detail: { id: lid, name, kind: L ? L.kind : null } }));
+    if (!over.throw) maybeOfferParquet(lid, performance.now() - window.__openPhases.t0);   // a slow block-model open: offer Parquet (a host's addLayer — over.throw — is never offered)
     return lid;
   } catch (e) {
     $('#meta').textContent = `${name} — ${e.message}`;

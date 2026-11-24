@@ -293,6 +293,7 @@ export async function openBlocksBlob(blob, name, opts = {}) {
   const qualify = (layerById(lid) || {}).qualify || opts.qualify || null;
   const bmOpts = discovered ? { discovered, qualify } : { qualify, zones: !window.__noZones, ...(mapping ? { mapping } : {}), ...(opts.lattice ? { lattice: opts.lattice } : {}), ...(opts.dimCols ? { dims: opts.dimCols } : {}), rotated: !opts.forcePoints };
   const { header, streamChunks } = prov || await openBlockModel(blob, bmOpts);
+  if (window.__openPhases) window.__openPhases.provider = performance.now();
   if (opts.forcePoints) { header.grid = null; header.latticeCandidate = null; }
   await settleLatticeCandidate(header, name, opts);
   if (header.latticeRejected) dispatchEvent(new CustomEvent('micro:lattice-rejected', { detail: { name, reason: header.latticeRejected } }));
@@ -368,7 +369,8 @@ export async function openDmBlob(blob, name, opts = {}) {
   // a rotated model's world origin: the caller's, else the layer's remembered one (Reinterpret / project), else the file's
   const L0 = layerById(lid);
   const origin = opts.origin || (L0 && L0.dmOrigin) || (prevDoc && prevDoc.header && prevDoc.header.dmOrigin && prevDoc.header.dmOriginSet ? prevDoc.header.dmOrigin : null);
-  const { header, streamChunks, recordBatches, columnBatches, fetchRecord } = await openDmModel(blob, { ...(mapping ? { mapping } : {}), forcePoints: opts.forcePoints, onProgress, cached: opts.cached || null, origin });
+  const { header, streamChunks, recordBatches, columnBatches, fetchRecord } = await openDmModel(blob, { ...(mapping ? { mapping } : {}), forcePoints: opts.forcePoints, onProgress, cached: opts.cached || null, origin, runner: window.__dmPageOpen ? null : scan.dm, ...(window.__dmUnitRecords ? { unitRecords: window.__dmUnitRecords } : {}) });   // discovery + decode on @gcu/scan's pool (the page when workers can't run; __dmPageOpen: the smoke's one-thread reference; __dmUnitRecords: its small units)
+  if (window.__openPhases) window.__openPhases.provider = performance.now();
   if (origin) header.dmOriginSet = true;
   if (L0 && origin) L0.dmOrigin = [...origin];
   await settleLatticeCandidate(header, name, opts);        // an unrotated .dm on a rotated lattice: boxes or points, asked (as for CSV / Parquet)
