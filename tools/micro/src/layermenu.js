@@ -28,6 +28,7 @@ import { applyHoleFilter, dhSetGroupOf } from './drillholes.js';
 import { peekCollarCols } from './manifest.js';
 import { canCopyIntoProject, copyLayerIntoProject, markProjectDirty } from './project.js';
 import { openOptimizeDialog } from './optimize.js';
+import { setDmOrigin } from './open-blocks.js';
 import { convertLayerToParquet } from './export.js';
 import { scanColumns } from './columns.js';
 import { openSolidDialog } from './bygeom-ui.js';
@@ -113,6 +114,8 @@ export function layerMenu(L, x, y) {
       { label: 'New view beside it', action: () => createView(L, { beside: true }).catch((e) => { $('#meta').textContent = `view — ${e.message}`; }) }] : []),
     ...(!isView(L) && reinterpretOptions(L).length ? [{ label: 'Reinterpret as…', action: () => setTimeout(() => reinterpretMenu(L, x, y), 0) }] : []),
     ...(!isView(L) && canReloadLayer(L) ? [{ label: 'Reload from disk', action: () => reloadLayerFromDisk(L) }] : []),
+    // a rotated Datamine model placed in world: where its local origin sits (an anonymised file carries none)
+    ...(!isView(L) && L.docs && L.docs.blockDoc && L.docs.blockDoc.header.dmRotationApplied ? [{ label: 'Datamine origin…', action: async () => { if (await setDmOrigin(L)) markProjectDirty(); } }] : []),
     ...(canChangeFile(L) ? [{ label: 'Change file…', action: () => changeLayerFile(L) }] : []),
     { sep: true },                                          // ── inspect / analyze ──
     ...(hasRecords(L) ? [{ label: 'Attribute table…', kbd: 't', action: () => openAttrTable(L) }] : []),

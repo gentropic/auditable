@@ -121,13 +121,13 @@ async function run(url, label) {
     const dh = Ls.find((q) => q.id === did).docs.dhDoc.header;
     const obs = await m.fetchLayerRow(Ls.find((q) => q.id === did), 1);
     return {
-      sub: sh.subBlocked, pal: sh.dimPalette && sh.dimPalette.length, fine: sh.grid && sh.grid.x.pitch,
+      sub: sh.subBlocked, pal: sh.sizeShapes, fine: sh.grid && sh.grid.x.pitch,
       kinds: [kindOf(pid), kindOf(mid), kindOf(tid), kindOf(did)], dh: [dh.count, dh.placed, dh.holes],
       obs: obs && obs.includes('core loss\nnear 3 m, "soft"'),
       tableRows: (Ls.find((q) => q.id === tid).docs.tableDoc || {}).header.count,
     };
   });
-  chk(`A sizes → sub-blocked (palette ${s.pal}, fine pitch ${s.fine})`, s.sub === true && s.pal === 2 && s.fine === 2.5);
+  chk(`A sizes → sub-blocked (${s.pal} shapes, fine pitch ${s.fine})`, s.sub === true && s.pal === 2 && s.fine === 2.5);
   chk(`A points / mesh / table / drillholes → ${JSON.stringify(s.kinds)}`, s.kinds[0] === 'points' && s.kinds[1] === 'mesh' && s.kinds[3] === 'points' && s.tableRows === 2);
   chk(`A drillholes: ${JSON.stringify(s.dh)} (count/placed/holes); free text with a line break survives (${s.obs})`, s.dh[0] === 3 && s.dh[1] === 3 && s.dh[2] === 2 && s.obs);
 
@@ -142,11 +142,12 @@ async function run(url, label) {
     // (1) no micro:model — discovery finds the sub-blocks, by the CSV names
     const id1 = await m.openBlob(new Blob([cols([])]), 'foreign.parquet', 'add', null, { throw: true });
     const h1 = m.layers().find((L) => L.id === id1).docs.blockDoc.header;
-    // (2) a producer's micro:model — dims by NAME + palette, no discovery (palette order is the producer's)
+    // (2) a producer's micro:model — dims by NAME, no discovery (an older producer's
+    // dimPalette rides along unread: the fine grid's pitch is all the sizes need)
     const model = { v: 1, grid: { x: { origin: 5, pitch: 2.5, count: 9 }, y: { origin: 2.5, pitch: 2.5, count: 6 }, z: { origin: 2.5, pitch: 2.5, count: 3 } }, bbox: { min: [0, 0, 0], max: [30, 20, 10] }, categories: null, subBlocked: true, dims: { x: 'DX', y: 'DY', z: 'DZ' }, dimPalette: [[2.5, 2.5, 2.5], [5, 5, 5]] };
     const id2 = await m.openBlob(new Blob([cols([{ key: 'micro:model', value: JSON.stringify(model) }])]), 'declared.parquet', 'add', null, { throw: true });
     const h2 = m.layers().find((L) => L.id === id2).docs.blockDoc.header;
-    // (3) an old flag-only model (subBlocked, no dims/palette) is not trusted → rebuilt
+    // (3) an old flag-only model (subBlocked, no dims) is not trusted → rebuilt
     const id3 = await m.openBlob(new Blob([cols([{ key: 'micro:model', value: JSON.stringify({ grid: model.grid, bbox: model.bbox, categories: null, subBlocked: true }) }])]), 'oldkv.parquet', 'add', null, { throw: true });
     const h3 = m.layers().find((L) => L.id === id3).docs.blockDoc.header;
     // (4) micro's own export of a sub-blocked layer carries dims + palette
@@ -155,16 +156,16 @@ async function run(url, label) {
     const info = parquetInfo(await window._lastExport.arrayBuffer());
     const kv = JSON.parse((info.meta.key_value_metadata || []).find((e) => e.key === 'micro:model').value);
     return {
-      d1: [h1.subBlocked, h1.dimPalette && h1.dimPalette.length, h1.dimCols && h1.columns[h1.dimCols.x], h1.numericColumns.map((c) => c.name).join()],
-      d2: [h2.subBlocked, JSON.stringify(h2.dimPalette[0]), h2.dimCols && h2.columns[h2.dimCols.z]],
-      d3: [h3.subBlocked, h3.dimPalette && h3.dimPalette.length],
-      kv: [kv.subBlocked, kv.dims && kv.dims.x, kv.dimPalette && kv.dimPalette.length],
+      d1: [h1.subBlocked, h1.sizeShapes, h1.dimCols && h1.columns[h1.dimCols.x], h1.numericColumns.map((c) => c.name).join()],
+      d2: [h2.subBlocked, h2.grid && h2.grid.x.pitch, h2.dimCols && h2.columns[h2.dimCols.z]],
+      d3: [h3.subBlocked, h3.sizeShapes],
+      kv: [kv.subBlocked, kv.dims && kv.dims.x, kv.sizeShapes],
     };
   });
   chk(`§2 foreign sub-blocked Parquet discovered: ${JSON.stringify(q.d1)}`, q.d1[0] === true && q.d1[1] === 2 && q.d1[2] === 'DX' && q.d1[3] === 'AU');
-  chk(`§2 producer micro:model applied as written (palette[0] ${q.d2[1]}): ${JSON.stringify(q.d2)}`, q.d2[0] === true && q.d2[1] === '[2.5,2.5,2.5]' && q.d2[2] === 'DZ');
+  chk(`§2 producer micro:model applied as written (fine pitch ${q.d2[1]}): ${JSON.stringify(q.d2)}`, q.d2[0] === true && q.d2[1] === 2.5 && q.d2[2] === 'DZ');
   chk(`§2 flag-only micro:model rebuilt by discovery: ${JSON.stringify(q.d3)}`, q.d3[0] === true && q.d3[1] === 2);
-  chk(`§2 micro's export states dims + palette: ${JSON.stringify(q.kv)}`, q.kv[0] === true && q.kv[1] === 'DX' && q.kv[2] === 2);
+  chk(`§2 micro's export states dims (+ shapes): ${JSON.stringify(q.kv)}`, q.kv[0] === true && q.kv[1] === 'DX' && q.kv[2] === 2);
 
   // ── D: a quoted CSV block model (comma, line break, doubled quote in a field) ──
   const dq = await p.evaluate(async () => {
@@ -449,7 +450,7 @@ async function fileChecks(url, label) {
     const pqSub = new File([writeParquet({ columnData: [{ name: 'X', data: SX, type: 'DOUBLE' }, { name: 'Y', data: SY, type: 'DOUBLE' }, { name: 'Z', data: SZ, type: 'DOUBLE' }, { name: 'SIZE', data: S, type: 'DOUBLE' }], codec: 'UNCOMPRESSED' })], 'subs.parquet');
     const idS = await m.addLayer({ kind: 'blocks', file: pqSub, roles: { x: 'X', y: 'Y', z: 'Z' }, sizes: { dx: 'SIZE', dy: 'SIZE', dz: 'SIZE' } });
     const hS = m.layers().find((q) => q.id === idS).docs.blockDoc.header;
-    out.sub = { sub: hS.subBlocked, pal: hS.dimPalette && hS.dimPalette.length };
+    out.sub = { sub: hS.subBlocked, pal: hS.sizeShapes };
     // .dm whose centroid fields are NOT XC/YC/ZC: only stated roles can open it
     const { makeDM } = await import('/test/dm-make.mjs');
     const fields = [{ name: 'XCEN', type: 'N' }, { name: 'YCEN', type: 'N' }, { name: 'ZCEN', type: 'N' }, { name: 'FE', type: 'N' }, { name: 'LITO', type: 'A', width: 8 }];
@@ -483,7 +484,7 @@ async function fileChecks(url, label) {
   chk(`file: CSV opened IN PLACE (same Blob ${f.csv.sameBlob}), grid ${f.csv.grid}, value ${f.csv.chan}, no auto-category (${JSON.stringify(f.csv.cats)}), label “${f.csv.label}”`, f.csv.sameBlob && f.csv.grid === '4×3×2' && f.csv.chan === 'GRADE' && f.csv.cats === null && f.csv.label === 'from_file' && f.csv.n === 24);
   chk(`file: a File from another frame (cross-realm ${f.crossRealm}) opens; stated category ${JSON.stringify(f.foreign)}`, f.crossRealm && JSON.stringify(f.foreign) === '["BIF","CANGA"]');
   chk(`file: Parquet + a declared rotated basis → rotated, by ${f.rot.by}; a wrong one rejects (“${(f.rotBad || '').slice(0, 45)}…”)`, f.rot.rot && f.rot.by === 'host' && /declared lattice rejected/.test(f.rotBad));
-  chk(`file: Parquet sizes from a column named SIZE → sub-blocked (palette ${f.sub.pal})`, f.sub.sub === true && f.sub.pal === 2);
+  chk(`file: Parquet sizes from a column named SIZE → sub-blocked (${f.sub.pal} shapes)`, f.sub.sub === true && f.sub.pal === 2);
   chk(`file: .dm with XCEN/YCEN/ZCEN by stated roles → ${f.dm.n} records on ${f.dm.x}, no auto-category`, f.dm.n === 12 && f.dm.x === 'XCEN' && f.dm.cats === null);
   chk(`file: a FileSystemFileHandle opens and the layer keeps it (${f.handle})`, f.handle);
   chk(`file: drillholes from mixed sources (memory + files) → ${JSON.stringify(f.dh)}`, f.dh[0] === 2 && f.dh[1] === 2 && f.dh[2] === 1);
@@ -1072,7 +1073,7 @@ async function openChecks(url, label) {
     const add = window._micro.renderer.addChunk.bind(window._micro.renderer);
     window._micro.renderer.addChunk = (c, set, layer) => {
       const f = window.__fp;
-      for (const key of ['ijk', 'chan', 'cat', 'recIdx', 'dim']) {
+      for (const key of ['ijk', 'chan', 'cat', 'recIdx', 'dimQ']) {
         const a = c[key]; if (!a) continue;
         const u8 = new Uint8Array(a.buffer, a.byteOffset, a.byteLength);
         for (let i = 0; i < u8.length; i++) f.h = Math.imul(f.h ^ u8[i], 16777619) >>> 0;
@@ -1089,7 +1090,7 @@ async function openChecks(url, label) {
     await p.evaluate(build);
     const r = await p.evaluate(async () => {
       const m = window._micro, { reg, sub } = await window.__pqFiles(), out = {};
-      const hdr = (L) => { const h = L.docs.blockDoc.header; return JSON.stringify({ grid: h.grid, bbox: h.bbox, categories: h.categories, subBlocked: h.subBlocked, dimPalette: h.dimPalette, count: h.count }); };
+      const hdr = (L) => { const h = L.docs.blockDoc.header; return JSON.stringify({ grid: h.grid, bbox: h.bbox, categories: h.categories, subBlocked: h.subBlocked, sizeQMax: h.sizeQMax, sizeShapes: h.sizeShapes, count: h.count }); };
       const take = () => { const f = window.__fp, r = { h: f.h, n: f.n, chunks: f.chunks }; window.__fp = { h: 0x811c9dc5, n: 0, chunks: 0 }; return r; };
       const idR = await m.addLayer({ kind: 'blocks', file: reg, roles: { x: 'X', y: 'Y', z: 'Z', value: 'AU', category: 'ROCK' } });
       out.reg = { hdr: hdr(m.layers().find((q) => q.id === idR)), fp: take() };
@@ -1140,8 +1141,8 @@ async function openChecks(url, label) {
     g.grid && g.grid.x.count === 9 && g.grid.y.count === 11 && g.grid.z.count === 13 && JSON.stringify(g.categories) === '["BIF","CANGA","QTZ","SKARN"]' && W.reg.hdr === P.reg.hdr);
   chk(`open: …and on every block drawn (${W.reg.fp.n} blocks in ${W.reg.fp.chunks} chunks, hash ${W.reg.fp.h.toString(16)} vs ${P.reg.fp.h.toString(16)})`,
     W.reg.fp.n === 9 * 11 * 13 - 1 && W.reg.fp.h === P.reg.fp.h && W.reg.fp.n === P.reg.fp.n);
-  chk(`open: sub-blocked Parquet — ${gs.subBlocked ? `${gs.dimPalette.length} sizes` : 'NOT sub-blocked'}; workers and page agree (header, and hash ${W.sub.fp.h.toString(16)} vs ${P.sub.fp.h.toString(16)} over ${W.sub.fp.n})`,
-    gs.subBlocked && gs.dimPalette.length === 2 && W.sub.hdr === P.sub.hdr && W.sub.fp.h === P.sub.fp.h && W.sub.fp.n === P.sub.fp.n);
+  chk(`open: sub-blocked Parquet — ${gs.subBlocked ? `${gs.sizeShapes} shapes` : 'NOT sub-blocked'}; workers and page agree (header, and hash ${W.sub.fp.h.toString(16)} vs ${P.sub.fp.h.toString(16)} over ${W.sub.fp.n})`,
+    gs.subBlocked && gs.sizeShapes === 2 && W.sub.hdr === P.sub.hdr && W.sub.fp.h === P.sub.fp.h && W.sub.fp.n === P.sub.fp.n);
   chk(`open: a colour-by switch to CU builds no chunks (${W.texSwitch.fp.chunks} / ${P.texSwitch.fp.chunks}) — a value texture of ${W.texSwitch.tex}, range [${W.texSwitch.range}] = a fresh open on CU's [${W.freshCU.range}]`,
     W.texSwitch.fp.chunks === 0 && P.texSwitch.fp.chunks === 0 && W.texSwitch.tex === 'CU' && P.texSwitch.tex === 'CU'
     && JSON.stringify(W.texSwitch.range) === JSON.stringify(W.freshCU.range) && JSON.stringify(P.texSwitch.range) === JSON.stringify(W.freshCU.range));

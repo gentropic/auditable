@@ -58,10 +58,11 @@ export function showFileInfo() {
   if (S.frame) row('frame origin', html`${joinH(S.frame.origin.map(num), sep(', '))}${S.frame.crs ? html` ${sep('·')} ${V(S.frame.crs)}` : ''}`);
   if (AL0 && S.renderer.layerVramBytes(AL0.id)) row('vram (layer)', V(fmtSize(S.renderer.layerVramBytes(AL0.id))));
   if (h.grid) {
-    if (h.subBlocked && h.dimPalette) {
+    if (h.subBlocked) {
       row('grid (fine lattice)', joinH([h.grid.x.count, h.grid.y.count, h.grid.z.count].map(num), sep(' × ')));
-      const sizes = h.dimPalette.map((d) => joinH(d.map((v) => num(v * 2)), '×'));
-      row('sub-block sizes', html`${sizes.length} ${sizes.length === 1 ? 'size' : 'sizes'}${sep(': ')}${joinH(sizes.slice(0, 6), sep(' · '))}${sizes.length > 6 ? sep(' …') : ''}`);
+      row('fine step', joinH([h.grid.x.pitch, h.grid.y.pitch, h.grid.z.pitch].map(num), sep(' × ')));
+      const q = h.sizeQMax, big = q ? joinH([q[0] * h.grid.x.pitch, q[1] * h.grid.y.pitch, q[2] * h.grid.z.pitch].map(num), '×') : null;
+      row('sub-block sizes', html`${h.sizeShapes ? html`${num(h.sizeShapes)}${h.sizeShapes >= 65536 ? '+' : ''} shapes` : 'variable'}${big ? html`${sep(' · largest ')}${big}` : ''}`);
     } else {
       row('grid', joinH([h.grid.x.count, h.grid.y.count, h.grid.z.count].map(num), sep(' × ')));
       row('block size', joinH([h.grid.x.pitch, h.grid.y.pitch, h.grid.z.pitch].map(num), sep(' × ')));

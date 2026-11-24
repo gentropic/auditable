@@ -7,7 +7,7 @@ import { microModelOf, mkLineage } from './lineage.js';
 import { _fileHandles, layerById } from './state.js';
 import { addPaintColorOptions } from './paint.js';
 import { parquetInfoAsync, writeParquet } from '../../../ext/parquet/index.js';
-import { DIM_PALETTE_MAX, axisDistinct, coordNum, gridFromBasis, inferAxis, inferSubBlockLattice, detectRotatedOverAxisGrid, latticeMisfit, makeDimKeyer, peekDmColumns, sniffDelimited } from '../../../ext/condenser/src/main.js';
+import { axisDistinct, coordNum, gridFromBasis, inferAxis, inferSubBlockLattice, sizeCollector, detectRotatedOverAxisGrid, latticeMisfit, peekDmColumns, sniffDelimited } from '../../../ext/condenser/src/main.js';
 import { openBlob, openDrillholeLayer } from './open.js';
 import { colorHeaderOf, colorSelFor, setLayerColorBy, setLayerColorRange, setLayerPalette } from './color.js';
 import { fileLayersInGroup } from './tree.js';
@@ -285,23 +285,23 @@ export async function ingestColumnsLayer(spec, name, lineage) {
     if (!categories.includes('') && Array.prototype.some.call(c.data, blank)) c.labels ? categories.push('') : categories.unshift('');
     if (categories.length > 255) categories = null;        // past 255 the code is a u8 — no category colouring, as for a file
   }
-  let grid = null, subBlocked = false, dimPalette = null, rotatedBy = null;
+  let grid = null, subBlocked = false, sizeQMax = null, sizeShapes = 0, rotatedBy = null;
   if (spec.kind === 'blocks') {
     if (dims && spec.lattice) throw new Error('addLayer: give sizes OR a lattice — a declared SUB-BLOCK lattice isn\'t supported yet (the fine lattice is measured from the sizes)');
     if (dims) {
-      const axc = [axisDistinct(Infinity), axisDistinct(Infinity), axisDistinct(Infinity)], ax = axc.map((c) => c.set), minDim = [Infinity, Infinity, Infinity], keys = new Set(), dimKeyOf = makeDimKeyer();
+      const axc = [axisDistinct(Infinity), axisDistinct(Infinity), axisDistinct(Infinity)], ax = axc.map((c) => c.set), sizes = sizeCollector();
       const DX = t.cols[dims.x].data, DY = t.cols[dims.y].data, DZ = t.cols[dims.z].data;
       for (let i = 0; i < t.n; i++) {
         const xv = coordNum(X[i]), yv = coordNum(Y[i]), zv = coordNum(Z[i]);
         if (!(Number.isFinite(xv) && Number.isFinite(yv) && Number.isFinite(zv))) continue;   // as the regular branch: a NaN centroid would poison the lattice
         axc[0].add(xv); axc[1].add(yv); axc[2].add(zv);
-        const dx = +DX[i], dy = +DY[i], dz = +DZ[i];
-        if (dx > 0 && dy > 0 && dz > 0) { if (dx < minDim[0]) minDim[0] = dx; if (dy < minDim[1]) minDim[1] = dy; if (dz < minDim[2]) minDim[2] = dz; if (keys.size <= DIM_PALETTE_MAX) keys.add(dimKeyOf(dx, dy, dz)); }
+        sizes.add(+DX[i], +DY[i], +DZ[i]);
       }
-      const sb = inferSubBlockLattice(ax, minDim, keys);
-      if (sb) { grid = sb.grid; subBlocked = true; dimPalette = sb.dimPalette; }
-      else if (keys.size <= 1 && Number.isFinite(minDim[0])) dims = null;   // one size everywhere: a regular model — fall through
-      else throw new Error(`addLayer: sizes given, but the blocks don't sit on a power-of-2 sub-lattice${keys.size > DIM_PALETTE_MAX ? ` (more than ${DIM_PALETTE_MAX} distinct sizes)` : ''} — open as points, or check the sizes`);
+      const sb = inferSubBlockLattice(ax, sizes);
+      if (sb && sb.refused) throw new Error(`addLayer: ${sb.refused.replace(/ Shown as points\.$/, '')} — open as points, or check the sizes`);
+      if (sb) { grid = sb.grid; subBlocked = true; sizeQMax = sb.sizeQMax; sizeShapes = sb.shapes; }
+      else if (!sizes.varies && sizes.count) dims = null;   // one size everywhere: a regular model — fall through
+      else throw new Error('addLayer: sizes given, but the block centres don\'t sit on the lattice the sizes imply (each centre = a corner on the size step + half its size) — open as points, or check the sizes');
     }
     if (!grid && spec.lattice) {
       grid = normalizeLattice(spec.lattice);
@@ -330,7 +330,7 @@ export async function ingestColumnsLayer(spec, name, lineage) {
       }
     }
   }
-  const header = { grid, bbox: { min, max }, categories, subBlocked, dimPalette, columns: t.names, dimCols: dims ? { x: t.names.indexOf(dims.x), y: t.names.indexOf(dims.y), z: t.names.indexOf(dims.z) } : null, lattice: spec.lattice ? { basis: 'declared', by: 'host' } : rotatedBy };
+  const header = { grid, bbox: { min, max }, categories, subBlocked, sizeQMax, sizeShapes, columns: t.names, dimCols: dims ? { x: t.names.indexOf(dims.x), y: t.names.indexOf(dims.y), z: t.names.indexOf(dims.z) } : null, lattice: spec.lattice ? { basis: 'declared', by: 'host' } : rotatedBy };
   const model = { ...microModelOf(header), declared: spec.lattice ? 'host' : undefined };
   const kv = [
     { key: 'micro:model', value: JSON.stringify(model) },

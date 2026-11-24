@@ -1117,13 +1117,13 @@ addEventListener('micro:lattice-rejected', (e) => e.detail);   // { name, reason
   <tr><td><code>bbox</code></td><td>required</td><td><code>{ min: [x,y,z], max: [x,y,z] }</code>: the model's extent (it frames the view).</td></tr>
   <tr><td><code>grid</code></td><td>required</td><td>The lattice, or <code>null</code> for points. Axis-aligned: <code>{ x, y, z }</code>, each <code>{ origin, pitch, count }</code> with <code>origin</code> the <b>centroid of block 0</b> (not its corner). Rotated: <code>{ basis: { origin, U, V, W, counts, source? } }</code> (below).</td></tr>
   <tr><td><code>categories</code></td><td>optional</td><td>The category column's distinct values (≤255), in the code order you want.</td></tr>
-  <tr><td><code>subBlocked</code></td><td>optional</td><td><code>true</code> for variable-size blocks. Then <code>grid</code> is the <b>fine</b> lattice (pitch = the smallest block size ÷ 2) and you must also write <code>dims</code> and <code>dimPalette</code>.</td></tr>
+  <tr><td><code>subBlocked</code></td><td>optional</td><td><code>true</code> for variable-size blocks. Then <code>grid</code> is the <b>fine</b> lattice (pitch = half the size step per axis — the smallest size ÷ 2 when it divides the others) and you must also write <code>dims</code>. Every size must be a whole number of fine steps, at most 255.</td></tr>
   <tr><td><code>dims</code></td><td>with <code>subBlocked</code></td><td><code>{ x: 'DX', y: 'DY', z: 'DZ' }</code>: the size columns <b>by name</b>.</td></tr>
-  <tr><td><code>dimPalette</code></td><td>with <code>subBlocked</code></td><td>The distinct sizes as <b>half</b>-sizes, <code>[[hx,hy,hz], …]</code> (≤256).</td></tr>
+  <tr><td><code>sizeQMax</code>, <code>sizeShapes</code></td><td>optional</td><td>Descriptive: the largest size per axis in fine steps, and how many distinct shapes. Any number of shapes is fine (an older <code>dimPalette</code> is accepted and ignored).</td></tr>
   <tr><td><code>declared</code></td><td>optional</td><td>Who states the lattice (e.g. <code>"mm"</code>). A declared or rotated lattice is applied without asking, but <b>checked</b> (below).</td></tr>
   <tr><td><code>v</code></td><td>optional</td><td>Format version; <code>1</code> today.</td></tr>
 </table>
-<p>A sub-blocked model written <i>without</i> <code>dims</code> and <code>dimPalette</code> is not trusted: micro runs discovery and rebuilds them. Its size columns are found by the same names as in a CSV (<code>DX/DY/DZ</code>, <code>XINC…</code>, <code>DIMX…</code>), so sub-blocked Parquet also works with no <code>micro:model</code> at all. The <code>micro:frame</code> entry (<code>{ crs }</code>) carries the coordinate system.</p>
+<p>A sub-blocked model written <i>without</i> <code>dims</code> is not trusted: micro runs discovery and rebuilds it. Its size columns are found by the same names as in a CSV (<code>DX/DY/DZ</code>, <code>XINC…</code>, <code>DIMX…</code>), so sub-blocked Parquet also works with no <code>micro:model</code> at all. The <code>micro:frame</code> entry (<code>{ crs }</code>) carries the coordinate system.</p>
 
 <h3 id="rotated">Rotated block models</h3>
 <p>A model whose lattice axes aren't east/north/up is drawn as <b>true rotated boxes</b> with exact picking and true sections. The rotation is stored as a basis, never as angles:</p>

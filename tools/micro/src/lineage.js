@@ -30,9 +30,12 @@ export function microModelOf(h) {
   // rot/anchor, so the file reads the same to micro and to anyone else
   if (h.grid && h.grid.rot) m.grid = { ...h.grid, basis: basisOfGrid(h.grid) };
   if (h.lattice) m.lattice = h.lattice;
-  if (h.subBlocked && h.dimCols && h.dimPalette && h.columns) {
+  // sub-blocked: the size columns by name — the grid above is the FINE lattice, so
+  // each block's size in fine steps (dimQ) follows from its sizes and the pitch
+  if (h.subBlocked && h.dimCols && h.columns) {
     m.dims = { x: h.columns[h.dimCols.x], y: h.columns[h.dimCols.y], z: h.columns[h.dimCols.z] };
-    m.dimPalette = h.dimPalette;
+    if (h.sizeQMax) m.sizeQMax = h.sizeQMax;
+    if (h.sizeShapes) m.sizeShapes = h.sizeShapes;
   }
   return m;
 }

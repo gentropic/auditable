@@ -4448,28 +4448,34 @@ if (take()) {
   chk(`xtab: the TSV is long form, every measure (${r.tsv.length - 1} rows: ${r.tsv[0]}) · cutoffs parse ${r.cut}`, r.tsv.length - 1 === 4 * 5 && /^ROCK\tAU bin\ttonnage \(t\)\tgrade \(g\/t\)\tmetal \(t\)\tblocks$/.test(r.tsv[0]) && r.cut === '0.5 1 2 / 0.5 1 2 / 1 3');
 }
 
-// ── a ROTATED Datamine model (ANGLEn about ROTAXISn): micro doesn't convert the
-//     rotation yet (no rotated fixture verified against Datamine's convention), so
-//     it must SAY so — the status line, the layer's one-line description and its
-//     Properties — instead of placing the blocks plausibly wrong. An unrotated
-//     model with all-zero ANGLE fields says nothing. ──
+// ── a ROTATED Datamine model (ANGLEn about ROTAXISn). ONE rotation about Z is
+//     placed in world (the convention verified on a real Isatis.neo export) and the
+//     status line says how; TWO rotations are not converted (their order convention
+//     is unverified), so micro must SAY so — the status line, the layer's one-line
+//     description and its Properties — instead of placing the blocks plausibly
+//     wrong. An unrotated model with all-zero ANGLE fields says nothing. ──
 if (take()) {
   const pr = await mkPage('sm2dmrot');
   const r = await pr.evaluate(async () => {
     const { makeDM } = await import('/test/dm-make.mjs');
     const M = window._micro;
-    const fields = (angle) => [
+    const fields = (angle, angle2 = 0) => [
       { name: 'XC', type: 'N' }, { name: 'YC', type: 'N' }, { name: 'ZC', type: 'N' },
       { name: 'XINC', type: 'N', constant: 10 }, { name: 'YINC', type: 'N', constant: 10 }, { name: 'ZINC', type: 'N', constant: 5 },
       { name: 'XMORIG', type: 'N', constant: 1000 }, { name: 'YMORIG', type: 'N', constant: 2000 }, { name: 'ZMORIG', type: 'N', constant: 400 },
       { name: 'NX', type: 'N', constant: 4 }, { name: 'NY', type: 'N', constant: 3 }, { name: 'NZ', type: 'N', constant: 2 },
       { name: 'ROTAXIS1', type: 'N', constant: 3 }, { name: 'ANGLE1', type: 'N', constant: angle },
+      { name: 'ROTAXIS2', type: 'N', constant: 1 }, { name: 'ANGLE2', type: 'N', constant: angle2 },
       { name: 'FE', type: 'N' },
     ];
     const rows = [];
     for (let k = 0; k < 2; k++) for (let j = 0; j < 3; j++) for (let i = 0; i < 4; i++) rows.push({ XC: 1005 + i * 10, YC: 2005 + j * 10, ZC: 402.5 + k * 5, FE: 20 + i });
     const out = {};
-    const id = await M.openBlob(new Blob([makeDM(fields(35), rows, { precision: 'ep' })]), 'rot.dm', 'replace');
+    // one rotation about Z: applied — block (0,0,0)'s world centroid = R·(1005, 2005, 402.5) (X0/Y0/Z0 absent = 0)
+    const idZ = await M.openBlob(new Blob([makeDM(fields(35), rows, { precision: 'ep' })]), 'rotz.dm', 'replace');
+    const LZ = M.layers().find((q) => q.id === idZ), hZ = LZ.docs.blockDoc.header;
+    out.z = { meta: document.querySelector('#meta').textContent, kind: M.propKindLine(LZ), rot: !!(hZ.grid && hZ.grid.rot), applied: hZ.dmRotationApplied, p0: await M.recordPosition({ layer: idZ, rec: 0 }) };
+    const id = await M.openBlob(new Blob([makeDM(fields(35, 10), rows, { precision: 'ep' })]), 'rot.dm', 'replace');
     const L = M.layers().find((q) => q.id === id);
     out.meta = document.querySelector('#meta').textContent;
     out.kind = M.propKindLine(L);
@@ -4485,8 +4491,11 @@ if (take()) {
     return out;
   });
   await pr.close();
-  chk(`dm rotated: the status line says so (${r.meta.includes('ROTATED Datamine model (35° about Z)')}), the layer line (${r.kind}), Properties (${r.banner ? 'banner' : 'NO banner'}) · an all-zero ANGLE says nothing`,
-    r.meta.includes('ROTATED Datamine model (35° about Z)') && r.meta.includes('volumes, grades and tonnages are right') && r.kind.includes('rotated .dm, shown unrotated')
+  const t = (-35 * Math.PI) / 180, want0 = [Math.cos(t) * 1005 - Math.sin(t) * 2005, Math.sin(t) * 1005 + Math.cos(t) * 2005, 402.5];
+  chk(`dm rotated about Z: APPLIED — rotated boxes, block 0 at ${(r.z.p0 || []).map((v) => +v.toFixed(3)).join(', ')} (= R·local), the status line says how, no warning`,
+    r.z.applied && r.z.rot && r.z.p0 && r.z.p0.every((v, a) => Math.abs(v - want0[a]) < 1e-6) && /rotated 35° about Z \(Datamine ANGLE1\) into world/.test(r.z.meta) && !/ROTATED/.test(r.z.meta) && !/shown unrotated/.test(r.z.kind));
+  chk(`dm rotated twice: the status line says so (${r.meta.includes('ROTATED Datamine model (35° about Z, then 10° about X)')}), the layer line (${r.kind}), Properties (${r.banner ? 'banner' : 'NO banner'}) · an all-zero ANGLE says nothing`,
+    r.meta.includes('ROTATED Datamine model (35° about Z, then 10° about X)') && r.meta.includes('volumes, grades and tonnages are right') && r.kind.includes('rotated .dm, shown unrotated')
     && /35° about Z/.test(r.banner) && !/ROTATED/.test(r.flatMeta) && !/rotated/.test(r.flatKind));
 }
 
@@ -8918,6 +8927,106 @@ if (take()) {
   chk(`a colour-by that can't be honoured is reported, colour kept (“${ov.nope.meta}” · “${ov.chan.meta}”)`,
     /no ƒ column “NOPE”/.test(ov.nope.meta) && ov.nope.sel === 'calc:CLS' && /no numeric column/.test(ov.chan.meta) && ov.chan.sel === 'calc:CLS');
   await pr.close();
+}
+
+// ── §127: the block-support contract, step 1 — a ROTATED, SUB-BLOCKED Datamine model
+// (the Isatis.neo shape: ANGLE1 about Z, integer sub-blocks on a 1 m lattice, > 256
+// shapes, odd sizes) opens as rotated BOXES, not points; every sampled block picks
+// as ITSELF; its axis-aligned CSV twin picks the same records; a block past 255
+// fine steps is refused, said, and shown as points.
+if (take()) {
+  const pg = await mkPage('sm2support');
+  const r = await pg.evaluate(async () => {
+    const M = window._micro, R = M.renderer;
+    const F = await import('/test/subblock-make.mjs');
+    const { rows, shapes } = F.makeSubblockRows({ seed: 5, nx: 6, ny: 5, nz: 3 });
+    const O = [432820, 8522360, 300];
+    const settle = async () => {
+      for (let k = 0; k < 400; k++) { M.requestRender(); await new Promise((z) => requestAnimationFrame(z)); if (R.elementCount && R.accumulated === R.elementCount) break; }
+      await new Promise((z) => setTimeout(z, 300));
+    };
+    const topDown = async () => {
+      const st = M.cam.state; M.cam.orbit(0, (Math.PI / 2 - 0.02) - st.phi);
+      document.querySelector('#btnFit').click(); await settle();
+    };
+    // the top-level blocks wide enough to hit by their face centre, a sample of them
+    const top = Math.max(...rows.map((x) => x.ZC + x.ZINC / 2));
+    const cand = rows.map((x, rec) => ({ ...x, rec })).filter((x) => Math.abs(x.ZC + x.ZINC / 2 - top) < 1e-9 && x.XINC >= 4 && x.YINC >= 4);
+    const sample = cand.filter((_, i) => i % Math.max(1, Math.floor(cand.length / 30)) === 0).slice(0, 30);
+    // a world point → CSS pixels on the canvas, through the camera
+    const toScreen = (w) => {
+      const o = M.frame.origin, p = [w[0] - o[0], w[1] - o[1], w[2] - o[2]], m = M.cam.state.viewProj;
+      const cx = m[0] * p[0] + m[4] * p[1] + m[8] * p[2] + m[12], cy = m[1] * p[0] + m[5] * p[1] + m[9] * p[2] + m[13], cw = m[3] * p[0] + m[7] * p[1] + m[11] * p[2] + m[15];
+      const rc = document.querySelector('#cv').getBoundingClientRect();
+      return [(cx / cw + 1) / 2 * rc.width, (1 - cy / cw) / 2 * rc.height];
+    };
+    const picks = async (L, toWorld) => {
+      M.setActiveLayer(L.id); await topDown();
+      const out = [];
+      for (const b of sample) {
+        const [x, y] = toScreen(toWorld(b.XC, b.YC, b.ZC + b.ZINC / 2));
+        const h = R.pick(x, y, M.cam, { pointPx: 6, blocksAsPoints: false, section: null });
+        out.push(h && h.layer === L.id ? h.rec : -1);
+      }
+      return out;
+    };
+    const t = (50 * Math.PI) / 180, c = Math.cos(t), s = Math.sin(t);
+    // (1) the rotated .dm, its origin given (the file carries none, as the real one)
+    const idR = await M.openBlob(new Blob([F.makeSubblockDm(rows, { angle1: -50 })]), 'look-alike.dm', 'replace', null, { throw: true, origin: O });
+    const LR = M.layers().find((x) => x.id === idR), hR = LR.docs.blockDoc.header;
+    await settle();
+    const rot = { kind: LR.kind, sub: hR.subBlocked, rot: !!(hR.grid && hR.grid.rot), shapes: hR.sizeShapes, applied: hR.dmRotationApplied, origin: hR.dmOrigin, meta: document.querySelector('#meta').textContent, elements: R.layerElementCount(idR), bytes: R.layerVramBytes(idR) / R.layerElementCount(idR) };
+    const pr = await picks(LR, (x, y, z) => [O[0] + c * x - s * y, O[1] + s * x + c * y, O[2] + z]);
+    const row = await M.fetchLayerRow(LR, sample[0].rec);
+    const pos = await M.pick({ layer: idR, rec: sample[0].rec });   // the pick's position is WORLD (the record holds local XC/YC/ZC)
+    const posWant = [O[0] + c * sample[0].XC - s * sample[0].YC, O[1] + s * sample[0].XC + c * sample[0].YC, O[2] + sample[0].ZC];
+    // the origin is settable after the open ("Datamine origin…"): the model moves, nothing else changes
+    const b0 = LR.docs.blockDoc.header.bbox.min.slice();
+    await M.setDmOrigin(LR, [O[0] + 1000, O[1] - 500, O[2]]);
+    const LR2 = M.layers().find((x) => x.id === idR), b1 = LR2.docs.blockDoc.header.bbox.min.slice();
+    const moved = { dx: b1[0] - b0[0], dy: b1[1] - b0[1], dz: b1[2] - b0[2], remembered: LR2.dmOrigin, n: R.layerElementCount(idR) };
+    await M.setDmOrigin(LR2, O);
+    // (2) the axis-aligned CSV twin (the same records in the model's own frame)
+    // (replacing it: a fit over both would frame a 432 km gap, not the model)
+    const idA = await M.openBlob(new Blob([F.makeSubblockCsv(rows)]), 'twin.csv', 'replace', null, { throw: true });
+    const LA = M.layers().find((x) => x.id === idA);
+    await settle();
+    const pa = await picks(LA, (x, y, z) => [x, y, z]);
+    // (3) a block 200 m long on a 1 m step: 400 fine steps → refused, said, points
+    const big = F.makeSubblockRows({ seed: 3, nx: 2, ny: 2, nz: 1, maxOver: 200 });
+    const idB = await M.openBlob(new Blob([F.makeSubblockDm(big.rows)]), 'too-long.dm', 'add', null, { throw: true });
+    const LB = M.layers().find((x) => x.id === idB);
+    return { pos, posWant, moved, rot, shapes, want: sample.map((b) => b.rec), pr, pa, row: row && row.slice(0, 3), src: [sample[0].XC, sample[0].YC, sample[0].ZC], big: { kind: LB.kind, grid: LB.docs.blockDoc.header.grid, meta: LB.docs.blockDoc.metaLine } };
+  });
+  chk(`support: the rotated sub-blocked .dm (${r.shapes} shapes) opens as rotated BOXES — ${r.rot.kind}, sub-blocked ${r.rot.sub}, rotated ${r.rot.rot}, ${r.rot.elements} blocks, ${r.rot.bytes.toFixed(1)} B/block`,
+    r.rot.kind === 'blocks' && r.rot.sub && r.rot.rot && r.rot.applied && r.shapes > 256 && r.rot.shapes === r.shapes && Math.abs(r.rot.bytes - 16) < 0.5);   // 13 B regular + 3 B dimQ (+ each chunk's 48 B bbox)
+  chk(`support: the rotation and the origin are said (“${(r.rot.meta.match(/rotated[^·]*/) || [''])[0].trim()}”)`, /rotated -50° about Z/.test(r.rot.meta) && JSON.stringify(r.rot.origin) === '[432820,8522360,300]');
+  const hitR = r.pr.filter((x, i) => x === r.want[i]).length, hitA = r.pa.filter((x, i) => x === r.want[i]).length;
+  chk(`support: every sampled block picks as ITSELF on the rotated model (${hitR}/${r.want.length})`, hitR === r.want.length && r.want.length >= 10);
+  chk(`support: …and its picked record is its own row (${JSON.stringify(r.row)} = ${JSON.stringify(r.src)})`, r.row && r.row.map(Number).every((v, i) => Math.abs(v - r.src[i]) < 1e-9));
+  chk(`support: a pick's position is the WORLD centroid (${(r.pos || []).map((v) => +v.toFixed(3)).join(', ')})`, r.pos && r.pos.every((v, a) => Math.abs(v - r.posWant[a]) < 1e-6));
+  chk(`support: the axis-aligned twin picks the same records (${hitA}/${r.want.length}; identical: ${JSON.stringify(r.pa) === JSON.stringify(r.pr)})`, hitA === r.want.length && JSON.stringify(r.pa) === JSON.stringify(r.pr));
+  chk(`support: “Datamine origin…” moves the model by exactly the change (${[r.moved.dx, r.moved.dy, r.moved.dz].map((v) => +v.toFixed(6)).join(', ')}), remembered on the layer, every block still drawn (${r.moved.n})`,
+    Math.abs(r.moved.dx - 1000) < 1e-6 && Math.abs(r.moved.dy + 500) < 1e-6 && Math.abs(r.moved.dz) < 1e-9 && JSON.stringify(r.moved.remembered) === '[433820,8521860,300]' && r.moved.n === r.rot.elements);
+  chk(`support: a block past 255 fine steps is refused and said — ${r.big.kind}, “${(r.big.meta.match(/\(sub-block[^)]*\)/) || [r.big.meta])[0].slice(0, 90)}…”`, r.big.kind === 'points' && !r.big.grid && /255/.test(r.big.meta));
+  await pg.close();
+  // the origin rides in the project: saved, reopened, the model where it was put
+  const ps = await mkPage('sm2dmorigin');
+  await ps.evaluate(async () => {
+    const M = window._micro, F = await import('/test/subblock-make.mjs');
+    const { rows } = F.makeSubblockRows({ seed: 5, nx: 3, ny: 2, nz: 2 });
+    const id = await M.openBlob(new File([F.makeSubblockDm(rows, { angle1: -50 })], 'kept.dm'), 'kept.dm', 'replace', null, { throw: true });
+    await M.setDmOrigin(M.layers().find((x) => x.id === id), [500000, 7000000, 100]);
+  });
+  await saveProject(ps);
+  await ps.close();
+  const pr2 = await mkPage('sm2dmorigin');
+  await pr2.evaluate(async () => { const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2dmorigin'); await window._micro.openProjectDir(dir); });
+  await pr2.waitForFunction(() => { const L = window._micro.layers()[0]; return L && L.docs && L.docs.blockDoc && L.docs.blockDoc.header; }, null, { timeout: 60000 });
+  const re = await pr2.evaluate(() => { const L = window._micro.layers()[0], h = L.docs.blockDoc.header; return { origin: h.dmOrigin, kind: L.kind, rot: !!(h.grid && h.grid.rot) }; });
+  chk(`support: the origin is saved with the project and reapplied on reopen (${JSON.stringify(re.origin)}, ${re.kind}, rotated ${re.rot})`,
+    JSON.stringify(re.origin) === '[500000,7000000,100]' && re.kind === 'blocks' && re.rot);
+  await pr2.close();
 }
 
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));

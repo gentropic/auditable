@@ -198,6 +198,7 @@ export function projectManifest() {
       // indices are stable because the file rides in the project. .dm too:
       // its restore threads mapping through openDmBlob (chan + cat honored).
       mapping: L.docs.blockDoc ? L.docs.blockDoc.header.mapping : undefined,
+      dmOrigin: L.dmOrigin || undefined,                   // a rotated .dm's world origin, when the file doesn't carry it
     })),
     camera: captureCamera(),
     section: captureSection(),
@@ -460,12 +461,12 @@ async function saveProjectInner() {
         const meta = {
           v: isDmL || isPq ? 2 : 4, size: doc.blob.size, mtime: await cacheStamp(dir, L._relpath || relPathFor(L, L.name), doc.blob), hash: (await sourceHash(doc.blob)) || undefined,
           header: isDmL
-            ? { kind: 'dm', count: h.count, bbox: h.bbox, grid: h.grid, subBlocked: h.subBlocked || false, dimPalette: h.dimPalette || null, categories: h.categories || null }
+            ? { kind: 'dm', count: h.count, bbox: h.bbox, grid: h.grid, subBlocked: h.subBlocked || false, sizeQMax: h.sizeQMax || null, sizeShapes: h.sizeShapes || 0, categories: h.categories || null }
             : isPq
               ? { ...microModelOf(h), kind: 'parquet', count: h.count }
               : {
                 kind: h.kind, count: h.count, bbox: h.bbox, grid: h.grid, lattice: h.lattice || null,
-                subBlocked: h.subBlocked || false, dimPalette: h.dimPalette || null, dimCols: h.dimCols || null,
+                subBlocked: h.subBlocked || false, sizeQMax: h.sizeQMax || null, sizeShapes: h.sizeShapes || 0, dimCols: h.dimCols || null,
                 columns: h.columns, mapping: h.mapping, delim: h.delim, decimal: h.decimal || '.', hasHeaderRow: h.hasHeaderRow,
                 numericColumns: h.numericColumns, categories: h.categories, attributes: h.attributes,
                 index: h.index ? { k: h.index.k, offsets: [...h.index.offsets] } : undefined,
@@ -741,6 +742,7 @@ export async function openProjectDir(dir, { pack = null } = {}) {
               : (/\.ply$/i.test(ls.source) ? { forcePoints: true } : (ls.mapping ? { mapping: ls.mapping } : {}));
       if (ls.gridSurface) { overR.asKind = 'surface'; if (ls.flatZ != null) overR.flatZ = ls.flatZ; if (ls.faceted) overR.smooth = false; }   // a grid saved as a surface reopens as one (relief/flat, smooth/faceted; drape applied post-load)
       if (ls.band) overR.band = ls.band;                    // multi-band GeoTIFF: the chosen band
+      if (ls.dmOrigin) overR.origin = ls.dmOrigin;          // a rotated .dm's world origin (set by the user)
       if (ls.element != null) overR.element = ls.element;   // a .wfr layer: just its element
       // grid display-cache: matching source size → display from the sidecar,
       // skipping the re-decimation (eval still windows the source full res)

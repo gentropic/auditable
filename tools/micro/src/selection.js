@@ -231,7 +231,7 @@ function throughDrawnTest(L) {
   const o0 = S.frame ? S.frame.origin : [0, 0, 0];
   const o = [o0[0] - off[0], o0[1] - off[1], o0[2] - off[2]];   // n·(x + off − origin)
   // a block's reach along the section normal: its half-dims projected on n
-  // (rotated lattices through their U/V/W; sub-blocks by their size code)
+  // (rotated lattices through their U/V/W; sub-blocks by their size in fine steps)
   let reach = () => 0;
   const bh = !isDh && L.docs.blockDoc && L.docs.blockDoc.header;
   if (sec && bh && bh.grid && bh.grid.x) {
@@ -240,9 +240,10 @@ function throughDrawnTest(L) {
     const pr = ax.map((u) => Math.abs(n[0] * u[0] + n[1] * u[1] + n[2] * u[2]));
     const of = (h) => h[0] * pr[0] + h[1] * pr[1] + h[2] * pr[2];
     const reg = of([bh.grid.x.pitch / 2, bh.grid.y.pitch / 2, bh.grid.z.pitch / 2]);
-    const pal = bh.subBlocked && bh.dimPalette ? bh.dimPalette.map(of) : null;
-    const palMax = pal ? Math.max(reg, ...pal) : reg;
-    reach = (ch, i) => (pal ? (ch.dim ? (pal[ch.dim[i]] ?? palMax) : palMax) : reg);
+    const q = bh.subBlocked ? [pr[0] * bh.grid.x.pitch / 2, pr[1] * bh.grid.y.pitch / 2, pr[2] * bh.grid.z.pitch / 2] : null;
+    const qm = bh.subBlocked && bh.sizeQMax ? bh.sizeQMax : [255, 255, 255];
+    const subMax = q ? q[0] * qm[0] + q[1] * qm[1] + q[2] * qm[2] : reg;
+    reach = (ch, i) => (q ? (ch.dimQ ? q[0] * ch.dimQ[3 * i] + q[1] * ch.dimQ[3 * i + 1] + q[2] * ch.dimQ[3 * i + 2] : subMax) : reg);
   }
   const dot = (x, y, z) => sec.n[0] * (x - o[0]) + sec.n[1] * (y - o[1]) + sec.n[2] * (z - o[2]);
   return (ch, i, r) => {

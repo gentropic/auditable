@@ -5,10 +5,10 @@
 // (src/open.js) dispatches here.
 import { startChunkBuilder } from './chunkworker.js';
 import { layerById, S, requestRender } from './state.js';
-import { gridFromBasis, mapColumns, findDimColumns, DIM_PALETTE_MAX, inferAxis, inferSubBlockLattice, detectRotatedLattice, detectRotatedOverAxisGrid, isDimColumn, dimKey, basisAngles, openBlockModel, makeBlockGrid, createChunkBuilder, dmWireframeRole, peekDmColumns, openDmModel } from '../../../ext/condenser/src/main.js';
+import { gridFromBasis, mapColumns, findDimColumns, inferAxis, inferSubBlockLattice, sizeCollector, pitchOf, detectRotatedLattice, detectRotatedOverAxisGrid, isDimColumn, basisAngles, openBlockModel, makeBlockGrid, createChunkBuilder, dmWireframeRole, peekDmColumns, openDmModel } from '../../../ext/condenser/src/main.js';
 import { parquetInfoAsync, streamParquetColumns } from '../../../ext/parquet/index.js';
 import { scan } from './scanner.js';
-import { microConfirm } from './prompts.js';
+import { microConfirm, microPrompt } from './prompts.js';
 import { registerDocs, streamInto } from './open.js';
 import { fitFromHeader, recomputeUnion } from './layers.js';
 import { setColorLabels } from './color.js';
@@ -20,11 +20,11 @@ const $ = (s) => document.querySelector(s);
 // was most of a big open's stalls (~0.5 s a 2M-block batch, Morton sort and
 // packing). 128k/chunk, 16 chunks per Morton batch: tight bboxes are what give
 // the frustum test teeth. Where workers can't run, the page builds, as before.
-async function baseBlockBuilder(lid, { frame, grid, dimPalette }) {
+async function baseBlockBuilder(lid, { frame, grid }) {
   // several builders, a Morton batch each (every batch its own seed, so the
   // chunks — and their order — are the same however many build them, or the page)
   const hc = (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 4;
-  const cb = await startChunkBuilder({ frame, grid, dimPalette, chunkSize: 1 << 17, batchSize: 1 << 21, seed: 1, seedPerBatch: true,
+  const cb = await startChunkBuilder({ frame, grid, chunkSize: 1 << 17, batchSize: 1 << 21, seed: 1, seedPerBatch: true,
     workers: window.__baseBuilders || Math.max(1, Math.min(4, hc - 2)),
     onChunk: (c) => { if (layerById(lid)) { S.renderer.addChunk(c, 'base', lid); requestRender(); } } });
   window.__baseOffPage = cb.offPage; window.__baseBuilders_n = cb.workers;   // smoke hooks: where (and on how many) the open built its chunks
@@ -79,9 +79,9 @@ export async function openParquetBlocks(blob, name, opts = {}) {
   let kvModel = null;
   try { const e = (info.meta.key_value_metadata || []).find((x) => x.key === 'micro:model'); if (e) kvModel = JSON.parse(e.value); } catch { /* foreign file */ }
   // per-block size columns (DX/DY/DZ…) → maybe SUB-BLOCKED, as for CSV. A
-  // cached model that says sub-blocked must name its size columns and carry the
-  // palette (micro:model `dims` + `dimPalette`); one that doesn't (older micro
-  // exports wrote only the flag) is not trusted — discovery rebuilds it.
+  // cached model that says sub-blocked must name its size columns (micro:model
+  // `dims`) — the fine grid's pitch is all the sizes need; one that doesn't (older
+  // micro exports wrote only the flag) is not trusted — discovery rebuilds it.
   const dimIdx = opts.dimCols || findDimColumns(names);
   // a CALLER-declared lattice (addLayer on a file) outranks the footer: the
   // discovery sweep still runs (bbox, categories) and checks every record on it
@@ -92,8 +92,8 @@ export async function openParquetBlocks(blob, name, opts = {}) {
   // name it (catColumn), so they're trusted unless the caller changed the category;
   // a model cached with none can't serve one either. Untrusted → discovery sweeps.
   const catOk = (c) => (!c.categories ? catN == null : c.catColumn ? c.catColumn === catN : !opts.catChanged);
-  const cachedPq = cachedPq0 && catOk(cachedPq0) && (!cachedPq0.subBlocked || (cachedDims && Array.isArray(cachedPq0.dimPalette))) ? cachedPq0 : null;
-  let grid = null, categories = null, subBlocked = false, dimPalette = null, dimCols = null;
+  const cachedPq = cachedPq0 && catOk(cachedPq0) && (!cachedPq0.subBlocked || cachedDims) ? cachedPq0 : null;
+  let grid = null, categories = null, subBlocked = false, sizeQMax = null, sizeShapes = 0, subBlockRefused = null, dimCols = null;
   let latticeInfo = null, latticeCandidate = null, latticeRejected = null;
   // a colour-by switch on the SAME file: grid, bbox, categories and sizes don't
   // depend on the channel, so the live header serves them (CSV and .dm already
@@ -102,14 +102,14 @@ export async function openParquetBlocks(blob, name, opts = {}) {
   const reuseOk = reuse && reuse.mapping && ['x', 'y', 'z', 'cat'].every((k) => (reuse.mapping[k] ?? null) === (mapping[k] ?? null));
   if (reuseOk) {
     grid = reuse.grid || null; categories = reuse.categories || null;
-    subBlocked = !!reuse.subBlocked; dimPalette = reuse.dimPalette || null; dimCols = reuse.dimCols || null;
+    subBlocked = !!reuse.subBlocked; sizeQMax = reuse.sizeQMax || null; sizeShapes = reuse.sizeShapes || 0; dimCols = reuse.dimCols || null;
     var min = [...reuse.bbox.min], max = [...reuse.bbox.max];   // hoisted, as below
     latticeInfo = reuse.lattice || null; latticeRejected = reuse.latticeRejected || null;
   } else if (cachedPq && cachedPq.bbox && !opts.forcePoints) {
     // freshness = the caller's contract (sidecar) or intrinsic (kv rides the file)
     grid = microModelGrid(cachedPq);
     categories = cachedPq.categories || null;
-    if (cachedPq.subBlocked && grid) { subBlocked = true; dimPalette = cachedPq.dimPalette; dimCols = cachedDims; }
+    if (cachedPq.subBlocked && grid) { subBlocked = true; sizeQMax = cachedPq.sizeQMax || null; sizeShapes = cachedPq.sizeShapes || 0; dimCols = cachedDims; }
     var min = [...cachedPq.bbox.min], max = [...cachedPq.bbox.max];   // hoisted (used by header below)
     // a DECLARED lattice (a producer stated it) or any rotated one is the file's
     // statement, applied without a confirm — but checked against every centroid:
@@ -129,7 +129,7 @@ export async function openParquetBlocks(blob, name, opts = {}) {
   const ax = [new Set(), new Set(), new Set()];
   const catSet = catN ? new Set() : null;
   const dN = dimIdx ? [names[dimIdx.x], names[dimIdx.y], names[dimIdx.z]] : null;
-  const minDim = [Infinity, Infinity, Infinity], dimSet = new Set();
+  const sizes = sizeCollector();
   const RES = 50000, res = [];                              // reservoir: the first centroids (rotated-lattice inference)
   const discCols = [xN, yN, zN, ...(catN ? [catN] : []), ...(dN || [])];
   $('#meta').textContent = `${name} — discovering grid…`;
@@ -138,13 +138,13 @@ export async function openParquetBlocks(blob, name, opts = {}) {
   // sequential sweep gives (the grid, categories and reservoir)
   const groups = await scan.discoverParquet({
     file: blob, meta: info.meta, rowGroups: info.rowGroups, res: RES,
-    p: { cols: discCols, xN, yN, zN, catN, dN, cap: CAP, dimMax: DIM_PALETTE_MAX },
+    p: { cols: discCols, xN, yN, zN, catN, dN, cap: CAP },
     onProgress: (d) => { $('#meta').textContent = `${name} — discovering grid… ${Math.round(100 * d / N)}%`; },
   });
   for (const g of groups) {
     for (let a = 0; a < 3; a++) { if (g.min[a] < min[a]) min[a] = g.min[a]; if (g.max[a] > max[a]) max[a] = g.max[a]; for (const v of g.ax[a]) { if (ax[a].size >= CAP) break; ax[a].add(v); } }
     if (catSet && g.cats) for (const v of g.cats) { if (catSet.size > 256) break; catSet.add(v); }
-    if (g.dims) { for (let a = 0; a < 3; a++) if (g.minDim[a] < minDim[a]) minDim[a] = g.minDim[a]; for (const k of g.dims) { if (dimSet.size > DIM_PALETTE_MAX) break; dimSet.add(k); } }
+    if (g.sizes) sizes.merge(g.sizes);
     if (g.res) for (let k = 0; k < g.res.length && res.length < RES * 3; k++) res.push(g.res[k]);
   }
   // a declared lattice is checked against every centroid, as its own job
@@ -154,13 +154,14 @@ export async function openParquetBlocks(blob, name, opts = {}) {
   grid = opts.forcePoints ? null : declared ? { ...declared } : axes.every(Boolean) ? { x: axes[0], y: axes[1], z: axes[2] } : null;
   if (declared) latticeInfo = { basis: 'declared', by: opts.declaredBy || 'caller' };
   // the same sub-block rule as the CSV and .dm readers (condenser grid/infer.js)
-  const sb = !opts.forcePoints && !declared && dN ? inferSubBlockLattice(ax, minDim, dimSet, { cap: CAP }) : null;
-  if (sb) { grid = sb.grid; subBlocked = true; dimPalette = sb.dimPalette; dimCols = dimIdx; }
+  const sb = !opts.forcePoints && !declared && dN ? inferSubBlockLattice(ax, sizes, { cap: CAP }) : null;
+  if (sb && sb.refused) { subBlockRefused = sb.refused; grid = null; }
+  else if (sb) { grid = sb.grid; subBlocked = true; sizeQMax = sb.sizeQMax; sizeShapes = sb.shapes; dimCols = dimIdx; }
   // not an axis-aligned grid → maybe a ROTATED one: a candidate the opener confirms
   const coordSweep = () => (async function* () {
     for await (const { count, cols } of streamParquetColumns(blob, [xN, yN, zN], info.rowGroups, info.meta)) yield { x: cols[xN], y: cols[yN], z: cols[zN], count };
   })();
-  if (!grid && !subBlocked && !opts.forcePoints && res.length >= 24) {
+  if (!grid && !subBlocked && !subBlockRefused && !opts.forcePoints && res.length >= 24) {
     $('#meta').textContent = `${name} — trying a rotated lattice…`;
     latticeCandidate = await detectRotatedLattice(Float64Array.from(res), coordSweep);
   } else if (grid && !declared && !subBlocked && !opts.forcePoints) {
@@ -175,17 +176,16 @@ export async function openParquetBlocks(blob, name, opts = {}) {
   const attributes = names.filter((_, i) => i !== mapping.x && i !== mapping.y && i !== mapping.z);
   let crs = null;
   try { const e = (info.meta.key_value_metadata || []).find((x) => x.key === 'micro:frame'); if (e) crs = JSON.parse(e.value).crs || null; } catch { /* foreign file */ }
-  const header = { kind: 'blockmodel', count: N, bbox: { min, max }, grid, subBlocked, dimPalette, dimCols, columns: names, mapping, delim: ',', hasHeaderRow: true, numericColumns, categories, attributes, parquet: true, crs, lattice: latticeInfo, latticeCandidate, latticeRejected };
+  const header = { kind: 'blockmodel', count: N, bbox: { min, max }, grid, subBlocked, sizeQMax, sizeShapes, subBlockRefused, dimCols, columns: names, mapping, delim: ',', hasHeaderRow: true, numericColumns, categories, attributes, parquet: true, crs, lattice: latticeInfo, latticeCandidate, latticeRejected };
   // ── display: stream the coord + chan + cat (+ size) columns row-group by
   // row-group into the chunk builder; nothing decoded is retained after it. ──
-  const dimCode = subBlocked ? new Map(dimPalette.map((hd, i) => [dimKey(hd[0] * 2, hd[1] * 2, hd[2] * 2), i])) : null;
   const sizeN = subBlocked ? [names[dimCols.x], names[dimCols.y], names[dimCols.z]] : null;
   async function* streamChunks() {
     const cnames = [...new Set([xN, yN, zN, ...(chanN ? [chanN] : []), ...(catN ? [catN] : []), ...(sizeN || [])])];
     // each group as the builder's typed arrays, in order — decoded on the worker
     // pool when it can run, else on the page; here the page only builds chunks
     yield* scan.decodeParquet({ file: blob, meta: info.meta, rowGroups: info.rowGroups,
-      p: { cols: cnames, xN, yN, zN, chanN, catN, sizeN, categories, dimKeys: subBlocked ? dimPalette.map((hd) => dimKey(hd[0] * 2, hd[1] * 2, hd[2] * 2)) : null } });
+      p: { cols: cnames, xN, yN, zN, chanN, catN, sizeN, categories, pitch: subBlocked ? pitchOf(grid) : null } });
   }
   // the layer holds NO decoded columns — just the bytes, schema, and row-group
   // table; pick/filter/eval re-read the source, a group at a time (like CSV)
@@ -216,17 +216,48 @@ async function settleLatticeCandidate(header, name, opts = {}) {
 }
 // rows a delimited model dropped because they have no usable coordinates (blank
 // or not a number) — a data error, so it's said, never silent
-// A rotated Datamine model (ANGLEn about ROTAXISn) is shown in its own,
-// unrotated frame — micro does not yet convert Datamine's rotation (no
-// rotated fixture has been checked against its convention), so it SAYS so
-// everywhere the layer is described, rather than placing blocks plausibly wrong.
+// A rotated Datamine model (ANGLEn about ROTAXISn). ONE rotation about Z is placed
+// in world coordinates (condenser dm-provider: the convention verified on a real
+// Isatis.neo export) and described, with its origin. Two or three rotations are
+// shown in the model's own, unrotated frame — their order convention is unverified
+// — and micro SAYS so everywhere the layer is described, rather than placing
+// blocks plausibly wrong. dmRotationText is the UNAPPLIED rotation ('' once applied).
 export function dmRotationText(h) {
   const r = h && h.dmRotation;
-  return r && r.length ? r.map((x) => `${+x.angle.toFixed(3)}° about ${x.axis}`).join(', then ') : '';
+  if (!r || !r.length || h.dmRotationApplied) return '';
+  return r.map((x) => `${+x.angle.toFixed(3)}° about ${x.axis}`).join(', then ');
 }
 export function rotationNote(h) {
+  if (h && h.dmRotationApplied) {
+    const o = h.dmOrigin || [0, 0, 0];
+    return ` · rotated ${+h.dmRotation[0].angle.toFixed(3)}° about Z (Datamine ANGLE1) into world, origin ${o.map((v) => +(+v).toFixed(3)).join(', ')}${o.every((v) => v === 0) ? ' — the file carries none; set it with "Datamine origin…"' : ''}`;
+  }
   const t = dmRotationText(h);
   return t ? ` · ⚠ ROTATED Datamine model (${t}) — shown in the model's own frame, NOT rotated into world coordinates: volumes, grades and tonnages are right; positions against other layers are not` : '';
+}
+// A rotated .dm's WORLD ORIGIN — where the model's local (0, 0, 0) sits. A file may
+// not carry it (an anonymised export writes X0/Y0/Z0 = 0), so it is settable: the
+// layer remembers it (L.dmOrigin, saved with the project) and re-reads the model.
+// origin omitted → asked for. → the origin applied, or null (cancelled / not applicable).
+export async function setDmOrigin(L, origin = null) {
+  const doc = L && L.docs && L.docs.blockDoc, h = doc && doc.header;
+  if (!h || !h.dm || !h.dmRotationApplied) return null;
+  let o = origin;
+  if (!o) {
+    const ans = await microPrompt('Datamine origin — world X, Y, Z of the model\'s local origin', (h.dmOrigin || [0, 0, 0]).join(', '));
+    if (ans == null) return null;
+    o = String(ans).split(/[\s,;]+/).filter(Boolean).map(Number);
+  }
+  if (!Array.isArray(o) || o.length !== 3 || !o.every(Number.isFinite)) { $('#meta').textContent = 'Datamine origin: give three numbers — X, Y, Z'; return null; }
+  L.dmOrigin = o.map(Number);
+  await openDmBlob(doc.blob, doc.name, { layer: L.id, first: false, keepFilter: true, forcePoints: doc.forcePoints, mapping: h.mapping, origin: L.dmOrigin });
+  return L.dmOrigin;
+}
+// how a sub-blocked model's sizes read in the meta line
+export function sizesNote(h) {
+  const q = h && h.sizeQMax, p = h && h.grid;
+  const shapes = h && h.sizeShapes ? ` · ${h.sizeShapes >= 65536 ? '65,536+' : h.sizeShapes.toLocaleString()} shapes` : '';
+  return q && p ? `${shapes} · largest ${fmtPitch(q[0] * p.x.pitch)}×${fmtPitch(q[1] * p.y.pitch)}×${fmtPitch(q[2] * p.z.pitch)}` : shapes;
 }
 export function droppedNote(h) {
   const d = h && h.dropped;
@@ -268,12 +299,11 @@ export async function openBlocksBlob(blob, name, opts = {}) {
   if (header.grid) {
     const grid = makeBlockGrid([header.grid.x, header.grid.y, header.grid.z], S.frame, header.grid.rot || null, header.grid.anchor || null);
     blockDoc.grid = grid;
-    const dimPalette = header.subBlocked ? header.dimPalette : null;
-    const cb = await baseBlockBuilder(lid, { frame: S.frame, grid, dimPalette });   // 128k/chunk, 16 chunks per Morton batch: tight bboxes are what give the frustum test teeth
+    const cb = await baseBlockBuilder(lid, { frame: S.frame, grid });   // 128k/chunk, 16 chunks per Morton batch: tight bboxes are what give the frustum test teeth
     const doc = await streamInto(cb, streamChunks, header, name, 1 << 18, lid);
     blockDoc.drawn = doc.count;                            // how many records have a block (a value texture leaves the rest out of its range)
     blockDoc.metaLine = header.subBlocked
-      ? `${name} — ${doc.count.toLocaleString()} sub-blocks · fine ${header.grid.x.pitch}×${header.grid.y.pitch}×${header.grid.z.pitch} · ${header.dimPalette.length} sizes${header.attributes.length ? ' · ' + header.attributes.join(', ') : ''}`
+      ? `${name} — ${doc.count.toLocaleString()} sub-blocks · fine ${fmtPitch(header.grid.x.pitch)}×${fmtPitch(header.grid.y.pitch)}×${fmtPitch(header.grid.z.pitch)}${sizesNote(header)}${latticeNote(header.grid)}${header.attributes.length ? ' · ' + header.attributes.join(', ') : ''}`
       : `${name} — ${doc.count.toLocaleString()} blocks · grid ${header.grid.x.count}×${header.grid.y.count}×${header.grid.z.count} @ ${fmtPitch(header.grid.x.pitch)}×${fmtPitch(header.grid.y.pitch)}×${fmtPitch(header.grid.z.pitch)}${latticeNote(header.grid)}${header.attributes.length ? ' · ' + header.attributes.join(', ') : ''}`;
     blockDoc.metaLine += droppedNote(header);
     $('#meta').textContent = blockDoc.metaLine;
@@ -296,7 +326,7 @@ export async function openBlocksBlob(blob, name, opts = {}) {
     const doc = cb.flush();
     const L2 = layerById(lid); if (L2) L2.bboxLocal = doc.bboxLocal;
     recomputeUnion();
-    blockDoc.metaLine = `${name} — ${doc.count.toLocaleString()} centroids${header.latticeRejected ? ` (the declared lattice was REFUSED: ${header.latticeRejected} — points view)` : blockDoc.forcePoints ? '' : ' (no regular grid detected — points view)'}${header.attributes.length ? ' · ' + header.attributes.join(', ') : ''}`;
+    blockDoc.metaLine = `${name} — ${doc.count.toLocaleString()} centroids${header.latticeRejected ? ` (the declared lattice was REFUSED: ${header.latticeRejected} — points view)` : header.subBlockRefused ? ` (${header.subBlockRefused})` : blockDoc.forcePoints ? '' : ' (no regular grid detected — points view)'}${header.attributes.length ? ' · ' + header.attributes.join(', ') : ''}`;
     blockDoc.metaLine += droppedNote(header);
     $('#meta').textContent = blockDoc.metaLine;
     { const Lk = layerById(lid); if (opts.keepFilter && Lk && (Lk.filterExpr || "").trim()) applyBlockFilter(Lk.filterExpr, Lk); }   // THIS layer's filter (was the active one's)
@@ -325,21 +355,26 @@ export async function openDmBlob(blob, name, opts = {}) {
   // chunk (a 13 GB file reads silently for a minute otherwise) — show progress
   const gb = blob.size / 1073741824;
   const onProgress = (p) => { $('#meta').textContent = `${name} — discovery sweep ${Math.round(100 * p.done / (p.total || 1))}% of ${p.total.toLocaleString()} records${gb > 0.5 ? ` (${gb.toFixed(1)} GB)` : ''}…`; };
-  const { header, streamChunks } = await openDmModel(blob, { ...(mapping ? { mapping } : {}), forcePoints: opts.forcePoints, onProgress, cached: opts.cached || null });
+  // a rotated model's world origin: the caller's, else the layer's remembered one (Reinterpret / project), else the file's
+  const L0 = layerById(lid);
+  const origin = opts.origin || (L0 && L0.dmOrigin) || (prevDoc && prevDoc.header && prevDoc.header.dmOrigin && prevDoc.header.dmOriginSet ? prevDoc.header.dmOrigin : null);
+  const { header, streamChunks } = await openDmModel(blob, { ...(mapping ? { mapping } : {}), forcePoints: opts.forcePoints, onProgress, cached: opts.cached || null, origin });
+  if (origin) header.dmOriginSet = true;
+  if (L0 && origin) L0.dmOrigin = [...origin];
   const blockDoc = { blob, name, header, metaLine: '', forcePoints: opts.forcePoints, streamChunks };
   registerDocs(lid, header.grid ? 'blocks' : 'points', { blockDoc });
+  { const L1 = layerById(lid); if (L1 && L1.lineage && header.grid && header.grid.rot) L1.lineage.params = { ...(L1.lineage.params || {}), lattice: { rotated: true, ...basisAngles(header.grid.rot), ...(header.lattice || { basis: 'declared' }), origin: header.dmOrigin } }; }
   fitFromHeader(header, opts.first !== false && opts.chan == null);
   S.renderer.setCategories(header.categories ? 1 : 0);
   setColorLabels(header);
   if (header.grid) {
-    const grid = makeBlockGrid([header.grid.x, header.grid.y, header.grid.z], S.frame);
+    const grid = makeBlockGrid([header.grid.x, header.grid.y, header.grid.z], S.frame, header.grid.rot || null, header.grid.anchor || null);
     blockDoc.grid = grid;
-    const dimPalette = header.subBlocked ? header.dimPalette : null;
-    const cb = await baseBlockBuilder(lid, { frame: S.frame, grid, dimPalette });
+    const cb = await baseBlockBuilder(lid, { frame: S.frame, grid });
     const doc = await streamInto(cb, streamChunks, header, name, 1 << 18, lid);
     blockDoc.drawn = doc.count;
     blockDoc.metaLine = header.subBlocked
-      ? `${name} — ${doc.count.toLocaleString()} sub-blocks · .dm fine ${header.grid.x.pitch}×${header.grid.y.pitch}×${header.grid.z.pitch} · ${header.dimPalette.length} sizes${header.attributes.length ? ' · ' + header.attributes.join(', ') : ''}`
+      ? `${name} — ${doc.count.toLocaleString()} sub-blocks · .dm fine ${fmtPitch(header.grid.x.pitch)}×${fmtPitch(header.grid.y.pitch)}×${fmtPitch(header.grid.z.pitch)}${sizesNote(header)}${header.attributes.length ? ' · ' + header.attributes.join(', ') : ''}`
       : `${name} — ${doc.count.toLocaleString()} blocks · .dm grid ${header.grid.x.count}×${header.grid.y.count}×${header.grid.z.count} @ ${header.grid.x.pitch}×${header.grid.y.pitch}×${header.grid.z.pitch}${header.attributes.length ? ' · ' + header.attributes.join(', ') : ''}`;
     blockDoc.metaLine += rotationNote(header);
   } else {
@@ -360,7 +395,7 @@ export async function openDmBlob(blob, name, opts = {}) {
     const doc = cb.flush();
     const L2 = layerById(lid); if (L2) L2.bboxLocal = doc.bboxLocal;
     recomputeUnion();
-    blockDoc.metaLine = `${name} — ${doc.count.toLocaleString()} centroids (sub-blocked .dm — points view)${header.attributes.length ? ' · ' + header.attributes.join(', ') : ''}` + rotationNote(header);
+    blockDoc.metaLine = `${name} — ${doc.count.toLocaleString()} centroids (${header.subBlockRefused || 'sub-blocked .dm — points view'})${header.attributes.length ? ' · ' + header.attributes.join(', ') : ''}` + rotationNote(header);
   }
   $('#meta').textContent = blockDoc.metaLine;
   { const Lk = layerById(lid); if (opts.keepFilter && Lk && (Lk.filterExpr || "").trim()) applyBlockFilter(Lk.filterExpr, Lk); }   // THIS layer's filter (was the active one's)

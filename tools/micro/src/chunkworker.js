@@ -5,8 +5,9 @@
 // four times per filter on a big model).
 //
 // startChunkBuilder(opts) → { push(raw) → Promise?, flush() → Promise<doc>, close(), offPage, workers }
-// opts: createBlockChunkBuilder's { frame, grid, dimPalette, chunkSize, batchSize,
-// seed, seedPerBatch } + onChunk(chunk). With one worker, push() TRANSFERS raw's
+// opts: createBlockChunkBuilder's { frame, grid, chunkSize, batchSize, seed,
+// seedPerBatch } + onChunk(chunk) — a sub-blocked raw chunk carries dimQ (u8 × 3
+// per record), which rides along like any column. With one worker, push() TRANSFERS raw's
 // arrays (the caller must not reuse them). Where a worker can't start (file://, an
 // old browser), the page builds as before (offPage false), behind the same async face.
 //
@@ -34,7 +35,7 @@ let b = null, o = null;
 self.onmessage = ({ data }) => {
   try {
     if (data.type === 'batch') {                           // parallel mode: one whole batch → its chunks
-      const chunks = C.buildBlockBatch(data.cols, data.n, { grid: o.grid, frame: o.frame, dimPalette: o.dimPalette, chunkSize: o.chunkSize, rnd: C.mulberry32(C.batchSeed(o.seed, data.k)) });
+      const chunks = C.buildBlockBatch(data.cols, data.n, { grid: o.grid, frame: o.frame, chunkSize: o.chunkSize, rnd: C.mulberry32(C.batchSeed(o.seed, data.k)) });
       self.postMessage({ type: 'batch', k: data.k, chunks }, buffersOf(chunks));
     } else if (data.type === 'initBatch') { o = data.o; self.postMessage({ type: 'ready' }); }
     else if (data.type === 'init') {
@@ -116,14 +117,14 @@ async function startParallel(o, K, onChunk, onPage) {
     };
     w.onerror = (e) => { e.preventDefault(); failure = new Error(e.message || 'chunk worker failed'); wake(); };
   }
-  const concat = (Type, parts) => { const out = new Type(pendCount); let off = 0; for (const a of parts) { out.set(a, off); off += a.length; } return out; };
+  const concat = (Type, parts, per = 1) => { const out = new Type(pendCount * per); let off = 0; for (const a of parts) { out.set(a, off); off += a.length; } return out; };
   const cut = () => {                                      // the pending records → one batch (the builder's flushBatch, minus the build)
     if (!pendCount) return;
     const cols = {
       x: concat(Float64Array, pend.map((q) => q.x)), y: concat(Float64Array, pend.map((q) => q.y)), z: concat(Float64Array, pend.map((q) => q.z)),
       chan: concat(Float64Array, pend.map((q) => q.chan)),
       cat: pend.every((q) => q.cat) ? concat(Uint8Array, pend.map((q) => q.cat)) : null,
-      dim: o.dimPalette && pend.every((q) => q.dim) ? concat(Uint8Array, pend.map((q) => q.dim)) : null,
+      dimQ: pend.every((q) => q.dimQ) ? concat(Uint8Array, pend.map((q) => q.dimQ), 3) : null,
       recIdx: concat(Uint32Array, pend.map((q) => q.recIdx)),
     };
     queue.push({ k: k++, cols, n: pendCount });
@@ -141,7 +142,7 @@ async function startParallel(o, K, onChunk, onPage) {
       while (taken < raw.count) {                          // cut exactly where the builder would
         const n = Math.min(batchN - pendCount, raw.count - taken);
         const sl = (a) => (a ? a.subarray(taken, taken + n) : null);
-        pend.push({ x: sl(raw.x), y: sl(raw.y), z: sl(raw.z), chan: sl(raw.chan), cat: sl(raw.cat), dim: sl(raw.dim), recIdx: recIdx.subarray(taken, taken + n) });
+        pend.push({ x: sl(raw.x), y: sl(raw.y), z: sl(raw.z), chan: sl(raw.chan), cat: sl(raw.cat), dimQ: raw.dimQ ? raw.dimQ.subarray(taken * 3, (taken + n) * 3) : null, recIdx: recIdx.subarray(taken, taken + n) });
         pendCount += n; taken += n;
         if (pendCount >= batchN) cut();
       }
@@ -156,8 +157,8 @@ async function startParallel(o, K, onChunk, onPage) {
   };
 }
 
-export async function startChunkBuilder({ frame, grid, dimPalette = null, chunkSize, batchSize, seed, seedPerBatch = false, workers = 1, onChunk }) {
-  const o = { frame: { origin: Array.from(frame.origin) }, grid, dimPalette, chunkSize, batchSize, seed, seedPerBatch };
+export async function startChunkBuilder({ frame, grid, chunkSize, batchSize, seed, seedPerBatch = false, workers = 1, onChunk }) {
+  const o = { frame: { origin: Array.from(frame.origin) }, grid, chunkSize, batchSize, seed, seedPerBatch };
   let closed = false;
   const onPage = () => {
     const pb = createBlockChunkBuilder({ ...o, frame, onChunk: (c) => { if (!closed) onChunk(c); } });

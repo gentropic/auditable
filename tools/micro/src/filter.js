@@ -10,7 +10,7 @@ import { ensureStoredValues, expandedDeps, pinBudgetBytes, pinGet, pinPut, pinne
 import { startChunkBuilder } from './chunkworker.js';
 import { canScanColumnar, scanColumnar, zoneKeeper } from './colscan.js';
 import { readParquetRange } from '../../../ext/parquet/index.js';
-import { coordNum, lineFields, openDmModel } from '../../../ext/condenser/src/main.js';
+import { coordNum, lineFields, openDmModel, dmLocalToWorld } from '../../../ext/condenser/src/main.js';
 import { refreshLinkedWindows, rowsProgress } from './analysis-ui.js';
 import { syncHL } from './exprfield.js';
 import { pushDhMask } from './drillholes.js';
@@ -196,9 +196,13 @@ export async function applyBlockFilter(expr, L = activeLayer()) {
   const callocz = () => { cx = new Float64Array(CB); cy = new Float64Array(CB); czz = new Float64Array(CB); cch = new Float64Array(CB); cct = catCode ? new Uint8Array(CB) : null; crr = new Uint32Array(CB); cfill = 0; };
   if (cb2) callocz();
   const cflush = () => { if (cfill) { cb2.push({ count: cfill, x: cx, y: cy, z: czz, chan: cch, cat: cct, recIdx: crr }); callocz(); } };
+  // a rotated .dm placed in world: its records hold LOCAL XC/YC/ZC — the compact
+  // chunks must stand where the base chunks do (the reader's stream speaks world)
+  const toW = dmLocalToWorld(header);
   const collect = (xv, yv, zv, cv, code, r) => {
     if (!cb2) return;
     if (collected >= compactCap) { closeCompactBuilder(lid); S.renderer.clearCompact(lid); cb2 = null; return; }   // too many — the mask path wins
+    if (toW) [xv, yv, zv] = toW(xv, yv, zv);
     cx[cfill] = xv; cy[cfill] = yv; czz[cfill] = zv;
     cch[cfill] = Number.isFinite(cv) ? cv : 0;
     if (cct) cct[cfill] = code;
