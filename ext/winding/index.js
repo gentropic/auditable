@@ -1280,6 +1280,19 @@ function frameBlockModel(blockModel, evalFrame, meshFrame, meshName) {
   return { ...blockModel, origin: toLocal(blockModel.origin, evalFrame) };
 }
 
+// a box list shorter than this runs on one worker (a split's messages would cost more)
+const BOX_SPLIT_MIN = 4096;
+// a mesh's arrays to one worker (copies — every worker keeps its own)
+function postMesh(worker, name, mesh) {
+  worker.postMessage({
+    type: 'setMesh', name,
+    vertices: new Float32Array(mesh.vertices),
+    triangles: new Uint32Array(mesh.triangles),
+    bvhNodes: new Float32Array(mesh.bvh.nodes),
+    triIndices: new Uint32Array(mesh.bvh.triIndices),
+  });
+}
+
 class Winding {
   constructor() {
     this._gpu = null;       // main-thread GPU evaluator
@@ -1287,15 +1300,21 @@ class Winding {
     this._workerGPU = false; // whether worker has GPU
     this._meshes = new Map();
     this._defaultMesh = null;
+    this._boxWorkers = 1;   // workers a box list may spread over (the main worker + extra CPU ones)
+    this._extra = null;     // the extra workers, started on the first big box list: Promise<Worker[]>
   }
 
   // Create a Winding instance
   // opts.device: GPUDevice for main-thread WebGPU (e.g. Firefox, or shared with three.js)
   // opts.worker: true to run evaluation in a Web Worker
   // opts.gpu: true to let the worker request its own GPUDevice (requires worker: true)
+  // opts.boxWorkers: how many workers a BOX LIST (evaluateBoxes) spreads over, the
+  //   main one included (needs worker: true). The extra ones are CPU-only, started
+  //   on the first box list big enough to split, and hold their own copy of the meshes.
   static async create(opts = {}) {
     const { device, worker, gpu } = opts;
     const w = new Winding();
+    if (worker && opts.boxWorkers > 1) w._boxWorkers = Math.floor(opts.boxWorkers);
 
     if (device) {
       w._gpu = await createGPUEvaluator(device);
@@ -1324,16 +1343,8 @@ class Winding {
       this._defaultMesh = mesh;
     }
 
-    if (this._worker) {
-      this._worker.postMessage({
-        type: 'setMesh',
-        name,
-        vertices: new Float32Array(verts),
-        triangles: new Uint32Array(triangles),
-        bvhNodes: new Float32Array(bvh.nodes),
-        triIndices: new Uint32Array(bvh.triIndices),
-      });
-    }
+    if (this._worker) postMesh(this._worker, name, mesh);
+    if (this._extra) this._extra.then((ws) => { for (const x of ws) postMesh(x, name, mesh); });
 
     return {
       nodeCount: bvh.nodeCount,
@@ -1381,8 +1392,42 @@ class Winding {
     if (!!evalFrame !== !!mesh.frame || (evalFrame && !frameEq(evalFrame, mesh.frame))) throw new Error(`winding: box frame ≠ mesh '${meshName}' frame (frame rebases, never reprojects)`);
     const centres = evalFrame ? toLocalCoords(boxes.centres, evalFrame, { stride: 3 }) : boxes.centres;
     const bx = { centres, halves: boxes.halves, count: boxes.count != null ? boxes.count : boxes.centres.length / 3 };
+    if (this._worker && this._boxWorkers > 1 && bx.count >= BOX_SPLIT_MIN) return this._evaluateBoxesPool(meshName, bx, restOpts);
     if (this._worker) return evaluateBoxesWorker(this._worker, meshName, bx, restOpts);
     return evaluateBoxesCPU(mesh.vertices, mesh.triangles, mesh.bvh.nodes, mesh.bvh.triIndices, bx, restOpts);
+  }
+
+  // A box list SPREAD over the workers: cut into slices (several per worker, so a
+  // slice of boxes far from the mesh — no winding calls — doesn't leave a worker idle
+  // while another grinds through the ones inside), each slice evaluated whole by
+  // evaluateBoxesCPU on whichever worker is free, its answers written back at its
+  // offset. Every box's answer depends on that box and the mesh alone, so the result
+  // is bit-for-bit the one-worker answer, in box order.
+  async _evaluateBoxesPool(meshName, bx, opts) {
+    if (!this._extra) {
+      const n = this._boxWorkers - 1;
+      this._extra = Promise.all(Array.from({ length: n }, () => initWindingWorker({ gpu: false }).then((r) => r.worker, () => null)))
+        .then((ws) => { ws = ws.filter(Boolean); for (const x of ws) for (const [name, m] of this._meshes) postMesh(x, name, m); return ws; });
+    }
+    const ws = [this._worker, ...(await this._extra)];
+    if (ws.length < 2) return evaluateBoxesWorker(this._worker, meshName, bx, opts);
+    const n = bx.count, flag = opts.mode === 'flag';
+    const per = Math.max(1024, Math.ceil(n / (ws.length * 4)));
+    const flags = new Uint8Array(n), proportions = flag ? null : new Float32Array(n);
+    const C = bx.centres, H = bx.halves;
+    let next = 0, done = 0;
+    const { onProgress, ...rest } = opts;
+    const loop = async (w) => {
+      while (next < n) {
+        const s0 = next, s1 = Math.min(n, s0 + per); next = s1;
+        const r = await evaluateBoxesWorker(w, meshName, { centres: C.slice(3 * s0, 3 * s1), halves: H.slice(3 * s0, 3 * s1), count: s1 - s0 }, rest);
+        flags.set(r.flags, s0);
+        if (proportions) proportions.set(r.proportions, s0);
+        done += s1 - s0; if (onProgress) onProgress(done / n);
+      }
+    };
+    await Promise.all(ws.map(loop));
+    return flag ? { flags } : { proportions, flags };
   }
 
   // Evaluate multiple named surfaces against the same block model
@@ -1398,9 +1443,12 @@ class Winding {
   // true if any GPU path is active (main-thread or worker)
   get hasGPU() { return this._gpu !== null || this._workerGPU; }
   get hasWorker() { return this._worker !== null; }
+  // how many workers a box list may use (1 = the main one)
+  get boxWorkers() { return this._worker ? this._boxWorkers : 0; }
 
   // Terminate worker. Falls back to main-thread GPU or CPU.
   terminate() {
+    if (this._extra) { const ex = this._extra; this._extra = null; ex.then((ws) => { for (const x of ws) x.postMessage({ type: 'terminate' }); }); }
     if (this._worker) {
       this._worker.postMessage({ type: 'terminate' });
       this._worker = null;
