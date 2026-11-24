@@ -7,6 +7,7 @@
 import { attrRowCountOf, blockCaps, colIsNumeric, layerRecords, layerRows, layerTableHeader, numOf } from './records.js';
 import { cellOf, commonLattice, coordNum, latticeMapOf, makeBoxAggregator, makeResampler, worldMapOf, gridsCompatible } from '../../../ext/condenser/src/main.js';
 import { gridAxesOf } from './grid-ops.js';
+import { halfAt, volumeContextOf } from './analysis.js';
 import { mkLineage } from './lineage.js';
 import { matColSet, paintRecount } from './columns.js';
 import { persistElement } from './element-store.js';
@@ -43,9 +44,16 @@ export async function runSpatialJoin({ leftL, rightL, target, columns, derived =
     const h0 = layerTableHeader(L);
     // sub-blocked source: no source lattice — scatter each block as a volume-
     // overlap BOX onto the target (aggregates to the parent/target resolution).
+    // Its boxes are axis-aligned in its own lattice frame, so the target must share that
+    // orientation (rotated or not); a different one is refused by latticeMismatch, the
+    // one place (grid-join), with the reason.
     const sub = !!(h0 && h0.subBlocked && h0.dimCols);
-    if (sub && T.rot) throw new Error(`${side} is sub-blocked: scattering sub-blocks onto a ROTATED lattice isn't supported yet`);
-    if (sub) { perSource[side] = { L, sub: true, R: makeBoxAggregator(T), dimCols: h0.dimCols, cols: [] }; continue; }
+    if (sub) {
+      const R = makeBoxAggregator(T, { source: gridAxesOf(L) });
+      if (!R.ok) throw new Error(`${side}: ${R.reason}`);
+      perSource[side] = { L, sub: true, R, dimCols: h0.dimCols, vc: volumeContextOf(L), cols: [] };
+      continue;
+    }
     const sa = gridAxesOf(L); if (!sa) throw new Error(`${side} is not a regular block model`);
     const R = makeResampler(sa, T); if (!R.ok) throw new Error(`${side}: ${R.reason}`);
     perSource[side] = { L, sa, R, cols: [], toQ: latticeMapOf(sa) };   // a rotated source indexes in its OWN lattice frame
@@ -54,7 +62,8 @@ export async function runSpatialJoin({ leftL, rightL, target, columns, derived =
   // stream each source, scatter its columns
   for (const side of Object.keys(perSource)) {
     const ps = perSource[side]; if (!ps.cols.length) continue;
-    const { L, sa, R, sub, dimCols, toQ } = ps, h = layerTableHeader(L), m = h.mapping;
+    const { L, sa, R, sub, dimCols, vc, toQ } = ps, h = layerTableHeader(L), m = h.mapping;
+    const hb = [0, 0, 0];
     for (const c of ps.cols) {
       c._i = h.columns.indexOf(c.name); c._w = c.weight ? h.columns.indexOf(c.weight) : -1;
       if (c.num) c._acc = R.newAcc(); else { c._acc = R.newCatAcc(); c._dict = ['']; c._codeOf = new Map(); }
@@ -75,8 +84,8 @@ export async function runSpatialJoin({ leftL, rightL, target, columns, derived =
         if (selMask && !selMask[rAt]) continue;
         let si, sj, sk, hx, hy, hz;
         if (sub) {
-          hx = (+f[dimCols.x] || 0) / 2; hy = (+f[dimCols.y] || 0) / 2; hz = (+f[dimCols.z] || 0) / 2;
-          if (!(hx > 0 && hy > 0 && hz > 0)) continue;
+          if (!(+f[dimCols.x] > 0 && +f[dimCols.y] > 0 && +f[dimCols.z] > 0)) continue;   // a block without its sizes has no box
+          halfAt(vc, f, hb); hx = hb[0]; hy = hb[1]; hz = hb[2];   // the contract's box (sizes in whole fine steps × pitch, lattice frame)
         } else {
           const q = sa.rot ? toQ(wx, wy, wz) : [wx, wy, wz];
           si = Math.round((q[0] - sa.x.origin) / (sa.x.pitch || 1)); sj = Math.round((q[1] - sa.y.origin) / (sa.y.pitch || 1)); sk = sa.z.pitch ? Math.round((q[2] - sa.z.origin) / sa.z.pitch) : 0;

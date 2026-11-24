@@ -2,7 +2,7 @@
 // / aggregate / mixed / categorical / coverage), and the common lattice.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { floatGcd, axisMap, gridsCompatible, makeResampler, makeBoxAggregator, commonLattice } from '../ext/condenser/src/main.js';
+import { floatGcd, axisMap, gridsCompatible, makeResampler, makeBoxAggregator, commonLattice, latticeMismatch } from '../ext/condenser/src/main.js';
 
 const ax = (origin, pitch, count) => ({ origin, pitch, count });
 const grid = (x, y, z) => ({ x, y, z });
@@ -231,4 +231,42 @@ test('makeBoxAggregator — sum conserved: a coarse box split over finer targets
   assert.ok(Math.abs(s - 87) < 1e-9, `Σ ${s}`);
   assert.ok(Math.abs(out[A.idxOf(0, 0, 0)] - 20) < 1e-9);
   assert.ok(Math.abs(A.finalize(acc, 'mean').out[A.idxOf(0, 0, 0)] - 80) < 1e-9);
+});
+
+// ── block-support step 4: the box aggregator in a SHARED lattice frame ──
+// a rotated target: sub-blocks (world centroids, half-dims in the lattice frame)
+// scatter exactly as their axis-aligned twins do onto the axis-aligned twin target
+test('makeBoxAggregator — a rotated target aggregates the rotated boxes as the twin does', () => {
+  const t = 0.83, c = Math.cos(t), s = Math.sin(t), O = [500000, 7000000, 200];
+  const rot = [c, s, 0, -s, c, 0, 0, 0, 1];                // column-major, about Z
+  const W = (p) => [O[0] + c * p[0] - s * p[1], O[1] + s * p[0] + c * p[1], O[2] + p[2]];
+  // parents 20 × 20 × 10, centroids at 10, 30, … in the lattice frame; anchor = parent 0's centroid
+  const tgtA = grid(ax(10, 20, 3), ax(10, 20, 2), ax(5, 10, 2));
+  const anchor = W([10, 10, 5]);
+  const tgtR = { x: ax(0, 20, 3), y: ax(0, 20, 2), z: ax(0, 10, 2), rot, anchor };
+  const boxes = [];                                        // [cx, cy, cz, hx, hy, hz, v] in the model's own frame
+  let k = 0;
+  for (let i = 0; i < 12; i++) for (let j = 0; j < 8; j++) for (let l = 0; l < 4; l++) boxes.push([2.5 + 5 * i, 2.5 + 5 * j, 2.5 + 5 * l, 2.5, 2.5, 2.5, Math.sin(k++)]);
+  boxes.push([33, 27, 12, 3, 3, 2, 7.5]);                  // one box across two parents in x and y
+  const A = makeBoxAggregator(tgtA), R = makeBoxAggregator(tgtR, { source: { ...tgtR } });
+  assert.ok(A.ok && R.ok);
+  const accA = A.newAcc(), accR = R.newAcc();
+  for (const [x, y, z, hx, hy, hz, v] of boxes) { A.scatterBox(x, y, z, hx, hy, hz, v, 1, accA); const w = W([x, y, z]); R.scatterBox(w[0], w[1], w[2], hx, hy, hz, v, 1, accR); }
+  for (const op of ['mean', 'sum', 'volume']) {
+    const a = A.finalize(accA, op).out, r = R.finalize(accR, op).out;
+    for (let i = 0; i < a.length; i++) assert.ok(Math.abs(a[i] - r[i]) <= 1e-9 * Math.max(1, Math.abs(a[i])), `${op} cell ${i}: ${a[i]} vs ${r[i]}`);
+  }
+  assert.ok(A.finalize(accA, 'volume').out.every((v) => v > 0));
+});
+test('latticeMismatch — the one refusal: different orientations (box aggregator, resampler, common lattice)', () => {
+  const t = 0.4, c = Math.cos(t), s = Math.sin(t);
+  const rot = { x: ax(0, 20, 3), y: ax(0, 20, 2), z: ax(0, 10, 2), rot: [c, s, 0, -s, c, 0, 0, 0, 1], anchor: [0, 0, 0] };
+  const aa = grid(ax(10, 20, 3), ax(10, 20, 2), ax(5, 10, 2));
+  assert.equal(latticeMismatch(aa, aa), null);
+  assert.equal(latticeMismatch(rot, { ...rot, anchor: [5, 5, 5] }), null);
+  const why = latticeMismatch(aa, rot);
+  assert.match(why, /different lattice orientations/);
+  assert.deepEqual(makeBoxAggregator(rot, { source: aa }), { ok: false, reason: why });
+  assert.equal(makeResampler(aa, rot).reason, why);
+  assert.equal(commonLattice([aa, rot]).reason, latticeMismatch(aa, rot));
 });

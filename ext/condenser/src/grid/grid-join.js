@@ -14,18 +14,22 @@
 //   - non-nested but common-lattice (e.g. 10 & 12 on g=2) → exact mixed weights.
 // Incompatible (no small common lattice, or off-phase) → refused with a reason.
 //
-// v1: axis-aligned grids. Rotated grids must share azimuth (not modelled here).
+// Rotated grids compare in a shared lattice frame when they share a basis
+// (latticeMismatch below is the one refusal).
 
 const REL = 1e-6;                                          // relative tolerance
 
 // tolerant Euclidean gcd of two positive floats
-import { sameBasis, inFrameOf, basisAngles } from './basis.js';
+import { sameBasis, inFrameOf, basisAngles, latticeMapOf } from './basis.js';
 
 // ROTATED lattices (grid/basis.js): two grids are comparable only when they
 // share a basis — then both are expressed about ONE anchor (inFrameOf) and the
 // axis-wise machinery below runs unchanged on lattice coordinates. Different
 // orientations have no common lattice; the reason says so (cross-basis
-// oriented-box resampling is the v2 path).
+// oriented-box resampling is the v2 path). This is the ONE place that refuses a
+// cross-orientation join / reconcile / common lattice — the resampler, the box
+// aggregator (sub-blocked sources) and commonLattice all ask it. → reason | null.
+export function latticeMismatch(A, B) { return basisMismatch(A, B); }
 function basisMismatch(A, B) {
   if (!A.rot && !B.rot) return null;
   if (sameBasis(A.rot, B.rot)) return null;
@@ -167,15 +171,22 @@ export function makeResampler(srcAxes, tgtAxes, opts = {}) {
 }
 
 // Box → grid volume-weighted aggregator (sub-blocked reconcile). A sub-blocked
-// model has no source LATTICE — it's a set of variable-size axis-aligned boxes.
-// This scatters each box (world centroid + half-dims) onto a regular TARGET grid
-// weighted by geometric OVERLAP VOLUME, so a sub-blocked model aggregates up to
-// any compatible regular grid — the PARENT grid being the natural choice (each
-// sub-block lands wholly in its parent cell). Reuses the same acc/finalize shape
-// as makeResampler, so the reconcile Δ-map machinery is identical. The caller
-// controls WHICH boxes scatter (a selection/filter): just skip the ones it wants
-// excluded — volume weighting handles partial parent coverage correctly.
+// model has no source LATTICE — it's a set of variable-size boxes, axis-aligned in
+// its own lattice frame. This scatters each box (WORLD centroid + half-dims in the
+// lattice frame) onto a regular TARGET grid weighted by geometric OVERLAP VOLUME,
+// so a sub-blocked model aggregates up to any regular grid that shares its
+// orientation — the PARENT grid being the natural choice (each sub-block lands
+// wholly in its parent cell). A ROTATED target: the centroid is carried into the
+// target's lattice frame (latticeMapOf), where the boxes and the cells are both
+// axis-aligned. opts.source (the sub-blocked model's grid axes) is checked for the
+// orientation: a different one → { ok: false, reason } (latticeMismatch). Reuses
+// the same acc/finalize shape as makeResampler, so the reconcile Δ-map machinery
+// is identical. The caller controls WHICH boxes scatter (a selection/filter): just
+// skip the ones it wants excluded — volume weighting handles partial parent
+// coverage correctly.
 export function makeBoxAggregator(tgt, opts = {}) {
+  if (opts.source) { const bad = basisMismatch(opts.source, tgt); if (bad) return { ok: false, reason: bad }; }
+  const toQ = tgt.rot ? latticeMapOf(tgt) : null;
   const nx = tgt.x.count, ny = tgt.y.count, nz = tgt.z.count;
   const cells = nx * ny * nz;
   const idxOf = (ti, tj, tk) => ti + nx * (tj + ny * tk);
@@ -187,11 +198,15 @@ export function makeBoxAggregator(tgt, opts = {}) {
     const low0 = ax.origin - ax.pitch / 2;
     const first = Math.floor((lo - low0) / ax.pitch);
     const last = Math.floor((hi - low0) / ax.pitch - 1e-9);
+    // a sliver below 1e-7 of the pitch is a shared face seen through rounding (a rotated
+    // model's centroids come back from world coordinates, ~1e-9 m of noise at UTM
+    // magnitudes), not an overlap: it would hand a neighbour cell a weight of nothing
+    const sliver = ax.pitch * 1e-7;
     const out = [];
     for (let i = Math.max(0, first); i <= Math.min(ax.count - 1, last); i++) {
       const cLo = low0 + i * ax.pitch, cHi = cLo + ax.pitch;
       const ov = Math.min(hi, cHi) - Math.max(lo, cLo);
-      if (ov > 1e-12) out.push({ i, ov });
+      if (ov > sliver) out.push({ i, ov });
     }
     return out;
   };
@@ -205,6 +220,7 @@ export function makeBoxAggregator(tgt, opts = {}) {
     // A single-plane target axis measures overlap as 1, so the box's extent on it is 1 too.
     scatterBox(cx, cy, cz, hx, hy, hz, v, wt, acc) {
       if (!(wt > 0) || !Number.isFinite(v)) return;
+      if (toQ) [cx, cy, cz] = toQ(cx, cy, cz);
       const xs = axisCells(tgt.x, cx - hx, cx + hx);
       if (!xs.length) return;
       const ys = axisCells(tgt.y, cy - hy, cy + hy);
@@ -233,6 +249,7 @@ export function makeBoxAggregator(tgt, opts = {}) {
     newCatAcc: () => new Map(),                              // idx → Map(code → volume)
     scatterCatBox(cx, cy, cz, hx, hy, hz, code, wt, votes) {
       if (!(wt > 0)) return;
+      if (toQ) [cx, cy, cz] = toQ(cx, cy, cz);
       const xs = axisCells(tgt.x, cx - hx, cx + hx); if (!xs.length) return;
       const ys = axisCells(tgt.y, cy - hy, cy + hy); if (!ys.length) return;
       const zs = axisCells(tgt.z, cz - hz, cz + hz);

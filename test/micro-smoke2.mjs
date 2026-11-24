@@ -9457,6 +9457,80 @@ if (take()) {
   await pg.close();
 }
 
+// ── §131: the block-support contract, step 4 — JOINS and RECONCILE in the shared lattice
+// frame. A sub-blocked model's boxes scatter onto a regular target that shares its
+// orientation — now a ROTATED one too (it was refused: "scattering sub-blocks onto a
+// ROTATED lattice isn't supported yet"). A rotated pair (a sub-blocked .dm and a regular
+// .dm, ANGLE1 −50, one origin) against its axis-aligned twin pair (the same blocks as
+// CSV, in the model's own frame): the join's cells (mean / sum / count, a categorical
+// majority), the join → columns on the regular model, and reconcile's Δ equal the
+// twins'. A different orientation is refused in ONE place (grid-join latticeMismatch),
+// with the reason, by the join, the box aggregator and reconcile alike. ──
+if (take()) {
+  const pg = await mkPage('sm2step4');
+  const r = await pg.evaluate(async () => {
+    const M = window._micro;
+    const F = await import('/test/subblock-make.mjs');
+    const sub = F.makeSubblockRows({ seed: 21, nx: 4, ny: 3, nz: 2 }).rows;
+    const par = F.makeSubblockRows({ seed: 22, nx: 4, ny: 3, nz: 2, pWhole: 1 }).rows.map((b) => ({ ...b, V: +(b.V * 1.07 - 0.031).toFixed(4) }));
+    const O = [432820, 8522360, 300];
+    const open = async (bytes, name, mode, opts) => { const id = await M.openBlob(new File([bytes], name), name, mode, null, { throw: true, ...(opts || {}) }); return M.layers().find((x) => x.id === id); };
+    const SR = await open(F.makeSubblockDm(sub, { angle1: -50 }), 'subR.dm', 'replace', { origin: O });
+    const PR = await open(F.makeRegularDm(par, { angle1: -50, nx: 4, ny: 3, nz: 2 }), 'parR.dm', 'add', { origin: O });
+    const SA = await open(F.makeSubblockCsv(sub), 'subA.csv', 'add');
+    const PA = await open(['XC,YC,ZC,V', ...par.map((b) => `${b.XC},${b.YC},${b.ZC},${b.V}`), ''].join('\n'), 'parA.csv', 'add');
+    const hd = (L) => { const h = L.docs.blockDoc.header; return { sub: !!h.subBlocked, rot: !!(h.grid && h.grid.rot) }; };
+    const out = { kinds: [SR, PR, SA, PA].map(hd) };
+    // (1) the join's cells on each regular model: mean / sum / count of V, and a categorical majority
+    const cols = [{ src: 'right', name: 'V', out: 'Vm', num: true, op: 'mean' }, { src: 'right', name: 'V', out: 'Vs', num: true, op: 'sum' }, { src: 'right', name: 'V', out: 'Vv', num: true, op: 'volume' }, { src: 'right', name: 'XINC', out: 'XI', num: false }];
+    const cells = async (P, S2) => {
+      const res = await M.runSpatialJoin({ leftL: null, rightL: S2, target: M.gridAxesOf(P), columns: cols.map((c) => ({ ...c })), coverage: false, asCells: true });
+      return res.columns.map((c) => (c.num ? Array.from(c._out) : Array.from(c._codes, (k) => (k >= 0 ? c._dict[k] : null))));
+    };
+    let errR = null; let cR = null;
+    try { cR = await cells(PR, SR); } catch (e) { errR = e.message; }
+    const cA = await cells(PA, SA);
+    let worst = 0;
+    const close = (a, b, eps = 1e-9) => { if (a === b || (Number.isNaN(a) && Number.isNaN(b))) return true; if (!(Number.isFinite(a) && Number.isFinite(b))) return false; const d = Math.abs(a - b) / Math.max(1, Math.abs(a)); if (d > worst) worst = d; return d <= eps; };
+    out.cells = { errR, n: cA[0].length, present: cA[0].filter(Number.isFinite).length,
+      same: !!cR && cR.every((col, k) => col.length === cA[k].length && col.every((v, i) => close(v, cA[k][i]))),
+      vol: cA[2].reduce((a, v) => a + (Number.isFinite(v) ? v : 0), 0), subVol: sub.reduce((a, b) => a + b.XINC * b.YINC * b.ZINC, 0), worst };
+    // (2) join → columns on the regular model's own records
+    const jf = { target: 'left', cols: ['right:V'], ops: {}, weights: {}, useSel: false };
+    const oR = await M.spatialJoinToCols(PR, SR, jf), oA = await M.spatialJoinToCols(PA, SA, jf);
+    const vals = (L, nm) => { const c = M.matColGet(L, nm); return c ? Array.from(c.fvalues || c.values || []) : []; };
+    const vR = vals(PR, oR[0]), vA = vals(PA, oA[0]);
+    out.toCols = { names: [oR[0], oA[0]], n: vA.length, same: vR.length === vA.length && vR.length > 0 && vR.every((v, i) => close(v, vA[i])), finite: vA.filter(Number.isFinite).length };
+    // (3) reconcile: the sub-blocked side aggregated to the regular side's (parent) lattice
+    const rec = async (P, S2) => { const x = await M.runReconcile(P, S2, { weights: {}, useSel: false }, 'V'); const J = M.layers().find((l) => l.id === x.layer); const rows = []; for await (const { f } of M.layerRecords(J)) rows.push(f.slice(3, 6).map((v) => (v === '' || v == null ? null : +v))); return { x, rows }; };
+    const rR = await rec(PR, SR), rA = await rec(PA, SA);
+    out.rec = { matched: [rR.x.matched, rA.x.matched], mean: [rR.x.meanDelta, rA.x.meanDelta], n: [rR.rows.length, rA.rows.length],
+      same: rR.rows.length === rA.rows.length && rR.rows.every((row, i) => row.every((v, k) => (v == null ? rA.rows[i][k] == null : Math.abs(v - rA.rows[i][k]) <= 1.5e-6))) };   // the layer's CSV writes 6 decimals
+    // (4) a different orientation is refused, with the reason, in one place: the axis-aligned
+    //     sub-blocked twin onto the rotated regular model (join and reconcile), and the reverse
+    const why = async (f) => { try { await f(); return 'ran'; } catch (e) { return e.message; } };
+    out.refuse = {
+      join: await why(() => M.runSpatialJoin({ leftL: null, rightL: SA, target: M.gridAxesOf(PR), columns: [{ src: 'right', name: 'V', out: 'V', num: true, op: 'mean' }], asCells: true })),
+      back: await why(() => M.runSpatialJoin({ leftL: null, rightL: SR, target: M.gridAxesOf(PA), columns: [{ src: 'right', name: 'V', out: 'V', num: true, op: 'mean' }], asCells: true })),
+      rec: await (async () => { const before = M.layers().length; await M.runReconcile(PR, SA, { weights: {}, useSel: false }, 'V'); return { meta: document.querySelector('#meta').textContent, added: M.layers().length - before }; })(),
+      compat: M.gridsCompatible(M.gridAxesOf(PR), M.gridAxesOf(SA)).reason || 'compatible',
+    };
+    return out;
+  });
+  chk(`step 4: the rotated pair is rotated (sub-blocked + regular), the twins axis-aligned — ${JSON.stringify(r.kinds)}`,
+    r.kinds[0].sub && r.kinds[0].rot && !r.kinds[1].sub && r.kinds[1].rot && r.kinds[2].sub && !r.kinds[2].rot && !r.kinds[3].sub && !r.kinds[3].rot);
+  chk(`step 4: a rotated sub-blocked model joins onto a rotated regular one${r.cells.errR ? ` — REFUSED “${r.cells.errR}”` : ''}; every cell (mean / sum / volume / majority) = the twins' (${r.cells.present}/${r.cells.n} cells, worst ${r.cells.worst.toExponential(1)})`,
+    !r.cells.errR && r.cells.same && r.cells.present === r.cells.n && r.cells.n > 0);
+  chk(`step 4: the join's volume is the sub-blocks' volume, parent by parent (${r.cells.vol} = ${r.cells.subVol})`, Math.abs(r.cells.vol - r.cells.subVol) < 1e-6);
+  chk(`step 4: join → columns on the rotated regular model (${r.toCols.names[0]}) = the twin's (${r.toCols.finite}/${r.toCols.n} records)`, r.toCols.same && r.toCols.finite === r.toCols.n);
+  chk(`step 4: reconcile, sub-blocked vs regular at the parent lattice — the rotated pair = the twins (matched ${r.rec.matched.join(' = ')}, mean Δ ${r.rec.mean.map((v) => v.toPrecision(6)).join(' = ')}, ${r.rec.n[0]} cells)`,
+    r.rec.same && r.rec.matched[0] === r.rec.matched[1] && r.rec.matched[0] > 0 && Math.abs(r.rec.mean[0] - r.rec.mean[1]) < 1.5e-6);
+  chk(`step 4: a different orientation is refused with the reason, the same words everywhere — join “${r.refuse.join.slice(0, 70)}…”`,
+    /different lattice orientations/.test(r.refuse.join) && /different lattice orientations/.test(r.refuse.back)
+    && /different lattice orientations/.test(r.refuse.rec.meta) && r.refuse.rec.added === 0 && /different lattice orientations/.test(r.refuse.compat));
+  await pg.close();
+}
+
 // ── the LAYER CONTEXT MENU, regrouped (src/layermenu.js layerMenuSections). It had
 // grown to ~33 top-level entries on a block model; now the frequent verbs sit on top
 // and the rest in Analyse · Geometry · Select · Views · Display · Data & file · Move.

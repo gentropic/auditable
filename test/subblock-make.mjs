@@ -62,6 +62,23 @@ export function makeSubblockDm(rows, { angle1 = -50, origin = [0, 0, 0] } = {}) 
   return new Uint8Array(makeDM(fields, rows, { precision: 'ep' }));
 }
 
+/**
+ * A REGULAR rotated .dm the Datamine way: the lattice as DD constants (XMORIG…,
+ * XINC…, NX…) and the same single rotation — the parent model beside a sub-blocked
+ * one (rows from makeSubblockRows with pWhole = 1, local frame from 0, 0, 0).
+ */
+export function makeRegularDm(rows, { angle1 = -50, origin = [0, 0, 0], nx, ny, nz, px = 20, py = 20, pz = 10 } = {}) {
+  const k = (name, constant) => ({ name, type: 'N', constant });
+  const fields = [
+    { name: 'XC', type: 'N' }, { name: 'YC', type: 'N' }, { name: 'ZC', type: 'N' },
+    k('XMORIG', 0), k('YMORIG', 0), k('ZMORIG', 0), k('XINC', px), k('YINC', py), k('ZINC', pz), k('NX', nx), k('NY', ny), k('NZ', nz),
+    k('X0', origin[0]), k('Y0', origin[1]), k('Z0', origin[2]),
+    k('ROTAXIS1', 3), k('ANGLE1', angle1), k('ROTAXIS2', 1), k('ANGLE2', 0), k('ROTAXIS3', 3), k('ANGLE3', 0),
+    { name: 'V', type: 'N' },
+  ];
+  return new Uint8Array(makeDM(fields, rows.map((r) => ({ XC: r.XC, YC: r.YC, ZC: r.ZC, V: r.V })), { precision: 'ep' }));
+}
+
 /** The same blocks as CSV, in the model's own (axis-aligned) frame — the rotated model's twin. */
 export function makeSubblockCsv(rows) {
   return 'XC,YC,ZC,XINC,YINC,ZINC,V\n' + rows.map((r) => `${r.XC},${r.YC},${r.ZC},${r.XINC},${r.YINC},${r.ZINC},${r.V}`).join('\n') + '\n';
