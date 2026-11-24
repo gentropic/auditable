@@ -350,12 +350,13 @@ export const SCENES = {
     await h.p.waitForTimeout(3000);
     await h.ev(() => window._micro.openComposer('figure 1'));
     await h.p.waitForSelector(C);
-    for (const b of ['+ 3D view', '+ legend', '+ scale', '+ north', '+ text']) { await h.p.locator(`${C} button:text-is("${b}")`).click(); await h.p.waitForTimeout(600); }
+    // the composer's add buttons are icons; find them by their names (aria-label = the tooltip's words)
+    for (const b of ['Add 3D view', 'Add legend', 'Add scale bar', 'Add north arrow', 'Add text']) { await h.p.locator(`${C} button[aria-label="${b}"]`).click(); await h.p.waitForTimeout(600); }
     // + legend gives one per layer that has one (FE twice, "elevation" for the meshes and the
     // topography): keep the model's FE legend, as the chapter's figure does
     for (const id of ['legend-5', 'legend-4', 'legend-3', 'legend-2']) {
       if (!(await h.p.locator(`${C} b.id:text-is("${id}")`).count())) continue;
-      await cmpPick(h, id); await h.p.locator(`${C} button:text-is("delete")`).nth(1).click(); await h.p.waitForTimeout(200);
+      await cmpPick(h, id); await h.p.locator(`${C} .compo-bar button[aria-label="Delete"]`).click(); await h.p.waitForTimeout(200);
     }
     await cmpPick(h, 'text-1');
     await h.ev((w) => { const ta = document.querySelector(w + ' textarea'); ta.value = ta.value.replace('caption', 'E–W section through the ore lens.'); ta.dispatchEvent(new Event('input')); ta.dispatchEvent(new Event('change')); }, C);
