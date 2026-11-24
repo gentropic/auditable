@@ -30,7 +30,7 @@ So micro checks what draws the view when it starts. On a software renderer it sa
 \item \ui{EDL} shading starts off. You can turn it back on; each frame then costs more.
 \item A click on the view renders the one pixel under the cursor to find the record. On a graphics card micro instead keeps a picking buffer ready while the view is still.
 \end{itemize}
-The picture is less dense while you work and takes longer to settle; nothing else changes. On the lab machine used to test micro, the demo project assembled in 581~s on SwiftShader before this mode existed.
+The picture is less dense while you work and takes longer to settle; nothing else changes. On a test machine without a graphics card, the demo project took nearly ten minutes to open before this mode existed, and opens in about ten seconds with it; the complete picture then fills in over the next three minutes, while you can already work.
 
 \menu{Tools>Settings…}, section \ui{display}, row \ui{software rendering} turns the mode on or off by hand: \ui{automatic} follows what micro found, \ui{on} and \ui{off} override it. \menu{Help>About micro} shows what draws the view and whether the mode is on.
 
