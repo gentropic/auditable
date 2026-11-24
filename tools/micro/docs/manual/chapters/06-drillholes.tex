@@ -101,8 +101,8 @@ The two rows are not layers and have no eye, but they are live: click one for it
 where & commands \\ \midrule
 \ui{◈} collars row & \ui{Attribute table…} · \ui{Filter holes…} · \ui{Broadcast column to intervals} \\
 \ui{↧} survey row & \ui{Attribute table…} · \ui{Re-desurvey set…} · \ui{Show hole traces} · \ui{Show collars} \\
-the set group (right-click) & \ui{Show hole traces} · \ui{Show collars} · \ui{Add interval table…} · \ui{QA report…} · \ui{Composite…}, then the commands every group has \\
-an interval layer (right-click) & the ordinary layer menu, with \ui{Composite…}, \ui{Stick radius…} and the drillhole section modes \\
+the set group (right-click) & \ui{Show hole traces} · \ui{Show collars} · \ui{Add interval table…} · \menu{Analyse>QA report…} · \menu{Analyse>Composite…}, then the commands every group has \\
+an interval layer (right-click) & the ordinary layer menu, with \menu{Analyse>Composite…}, \menu{Display>Stick radius…} and the drillhole section modes \\
 \bottomrule
 \end{tabularx}
 \caption{Where the drillhole commands live.}\label{tab:dh-menus}
@@ -164,7 +164,7 @@ A numeric column is stored with the project's other derived columns; a text colu
 
 \subsection{Sticks}
 
-Each interval is drawn as a true cylinder along the desurveyed path, colored by a column of the interval table. \ui{Stick radius…} on the layer's menu sets the radius in meters. These are real meters in the model, not pixels, so sticks thin out as you zoom away. The demo uses 6~m so that twelve holes read against the whole deposit; real data usually wants less. \ui{Opacity} is on the same menu.
+Each interval is drawn as a true cylinder along the desurveyed path, colored by a column of the interval table. \menu{Display>Stick radius…} on the layer's menu sets the radius in meters. These are real meters in the model, not pixels, so sticks thin out as you zoom away. The demo uses 6~m so that twelve holes read against the whole deposit; real data usually wants less. \menu{Display>Opacity} is beside it.
 
 Color, classes and the legend work as for any layer (\cref{ch:color}). Coloring by a text column such as lithology gives each class an eye, so one click in the \ui{classes} tab hides the waste intervals.
 
@@ -174,11 +174,11 @@ Color, classes and the legend work as for any layer (\cref{ch:color}). Coloring 
 
 \subsection{Collars}
 
-\ui{Show collars} draws one glyph per hole at its collar, as a points layer nested in the set. That layer \emph{is} the collar file, so every collar column can color it, filter it, and fill the record panel when you click a collar. The glyphs start at three times the view's point size; \ui{Point size} on the layer's menu changes that. The hole filter thins them with everything else. Like the traces, the collars are not saved as a layer: the set remembers that they were shown, with their size and color.
+\ui{Show collars} draws one glyph per hole at its collar, as a points layer nested in the set. That layer \emph{is} the collar file, so every collar column can color it, filter it, and fill the record panel when you click a collar. The glyphs start at three times the view's point size; \menu{Display>Point size} on the layer's menu changes that. The hole filter thins them with everything else. Like the traces, the collars are not saved as a layer: the set remembers that they were shown, with their size and color.
 
 \subsection{Sections}\label{sec:dh-sections}
 
-A section cuts sticks true, like blocks. Right-click a drillhole layer and open \ui{Cut by sections} to set how \emph{this} layer responds (\cref{tab:dh-sections}); \cref{ch:sections} has the full account.
+A section cuts sticks true, like blocks. Right-click a drillhole layer and open \menu{Display>Cut by sections} to set how \emph{this} layer responds (\cref{tab:dh-sections}); \cref{ch:sections} has the full account.
 
 \begin{table}[htbp]
 \small
@@ -215,13 +215,13 @@ A blank in a drillhole table is never read as zero (\cref{sec:columns-blanks}). 
 
 File info (\key{i}) lists each kind, by hole. Assay values such as \code{<0.01} are handled as detection limits, per column (\cref{sec:columns-dl}).
 
-\ui{QA report…} on the set's menu covers everything else a reviewer should look at before estimating: orphan surveys, duplicate collars, doglegs, gaps and overlaps between intervals, depths past the end of hole, text in a grade column. It lists each problem at its table and row; click a finding to go to the hole. \Cref{ch:qa} covers it.
+\menu{Analyse>QA report…} on the set's menu covers everything else a reviewer should look at before estimating: orphan surveys, duplicate collars, doglegs, gaps and overlaps between intervals, depths past the end of hole, text in a grade column. It lists each problem at its table and row; click a finding to go to the hole. \Cref{ch:qa} covers it.
 
 \section{Composites}\label{sec:dh-composites}
 
 Samples come in the lengths they were cut in the core shed. An estimate, and any fair comparison with a block model, wants them on equal support. \term[compositing]{Compositing} re-cuts one interval table into equal lengths down each hole.
 
-Choose \ui{Composite…} on a drillhole layer's menu or on its set's menu, or press \key{⌘K} and type \code{composite}.
+Choose \menu{Analyse>Composite…} on a drillhole layer's menu or on its set's menu, or press \key{⌘K} and type \code{composite}.
 
 \begin{table}[htbp]
 \small
@@ -257,15 +257,15 @@ micro keeps \col{SUPPORT} on every composite instead of silently dropping the sh
 \begin{tryit}
 Composite the demo's assays.
 \begin{enumerate}
-\item Right-click the drillhole interval layer and choose \ui{Composite…}.
+\item Right-click the drillhole interval layer and choose \menu{Analyse>Composite…}.
 \item Leave \ui{length} blank and \ui{density} on \col{SG}, which the window chose itself, and click \ui{Composite}. The window reports \ui{951 composites of 5 from 12 holes}: the demo's samples are all 5~m long, so the commonest length is 5 and every sample becomes one composite.
 \item A new points layer, \file{demo\_assay-comp5m.csv}, appears. Click a point: the record panel shows \col{BHID}, \col{FROM}, \col{TO}, \col{SUPPORT}, \col{FE}, \col{SG} and \col{LITO}.
 \item Type \code{10} in \ui{length} and click \ui{Composite} again. A second layer, with 476 composites, appears beside the first.
-\item Open \ui{Stats…} on each composite layer and compare \col{FE}. The mean barely moves, and the standard deviation narrows a little: the variance falls as the support grows.
+\item Open \menu{Analyse>Stats…} on each composite layer and compare \col{FE}. The mean barely moves, and the standard deviation narrows a little: the variance falls as the support grows.
 \end{enumerate}
 \end{tryit}
 
-Composites are the sample side of the block-against-sample comparisons in \cref{ch:validation}. An interval layer also has a grade–tonnage curve of its own: right-click it and choose \ui{Grade-tonnage…} (or find it in the command palette, \key{⌘K}), and micro adds up interval \emph{length} above each cutoff instead of tonnes (\cref{ch:gt}).
+Composites are the sample side of the block-against-sample comparisons in \cref{ch:validation}. An interval layer also has a grade–tonnage curve of its own: right-click it and choose \menu{Analyse>Grade-tonnage…} (or find it in the command palette, \key{⌘K}), and micro adds up interval \emph{length} above each cutoff instead of tonnes (\cref{ch:gt}).
 
 \subsection{In a routine}
 

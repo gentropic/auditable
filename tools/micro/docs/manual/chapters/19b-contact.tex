@@ -48,12 +48,12 @@ A \term{soft boundary}\index{boundary!soft} is gradational: an alteration halo, 
 Real boundaries are rarely one or the other, and the bin width is part of the reading: a contact that looks soft in 10~m bins can be sharp at 1~m. Choose bins near the scale of the estimate's blocks or composites, since that is the scale at which the estimate will treat the boundary.
 
 \section{Down the holes: Contact plot…}\label{sec:contact-downhole}
-\ui{Contact plot…} is on the right-click menu of a drillhole layer with a numeric column. It needs a column of domains on the intervals — a lithology, a painted category column, a text ƒ column, or a numeric domain code — and it finds the contacts in that column, hole by hole.
+\menu{Analyse>Contact plot…} is on the right-click menu of a drillhole layer with a numeric column. It needs a column of domains on the intervals — a lithology, a painted category column, a text ƒ column, or a numeric domain code — and it finds the contacts in that column, hole by hole.
 
 \begin{tryit}
 In the demo project:
 \begin{enumerate}
-\item Right-click \ui{holes · demo\_assay.csv} in the layers panel and choose \ui{Contact plot…}. The window opens on the \ui{down-hole} flavor with \ui{column: LITO}, \ui{A: ITABIRITE} and \ui{B: any other}, in 2~m bins to 20~m.
+\item Right-click \ui{holes · demo\_assay.csv} in the layers panel and choose \menu{Analyse>Contact plot…}. The window opens on the \ui{down-hole} flavor with \ui{column: LITO}, \ui{A: ITABIRITE} and \ui{B: any other}, in 2~m bins to 20~m.
 \item Set \ui{B} to \ui{WASTE}. Under \ui{bins}, type \code{5} in \ui{width} and \code{50} in \ui{max dist}.
 \item Press \ui{Run}. The subtitle reads \emph{18 contacts in 10 holes · bins 5 m}; under the plot, \emph{FE 25.51 | 24.19 · step +1.32}.
 \item Change \ui{both directions (pooled)} to \ui{A above B (down the hole)} and press \ui{Run}: \emph{8 contacts in 8 holes}. \ui{A below B} finds the other 10. The profile keeps its shape either way.
@@ -202,7 +202,7 @@ Samples count at their interval's midpoint, weighted by length. Blocks count at 
 \begin{tryit}
 In the demo project:
 \begin{enumerate}
-\item Right-click \file{deposit.csv} and choose \ui{Distance to a surface…}. The surface is already \ui{ore shell}.
+\item Right-click \file{deposit.csv} and choose \menu{Analyse>Distance to a surface…}. The surface is already \ui{ore shell}.
 \item Under \ui{bins}, set \ui{width} to \code{10} and \ui{max dist} to \code{100}. In the series' weight field, type \code{SG}.
 \item Click \ui{+ add series}. The new series is \ui{holes · demo\_assay.csv}, column \col{FE}.
 \item Press \ui{Run}. The subtitle reads \emph{258,844 blocks · 687 intervals within 100 m of ore shell (closed: − inside) · bins 10 m}. The readout: \emph{deposit·FE 42.37 | 38.23 · step +4.13} and \emph{holes · demo\_assay·FE 42.92 | 37.43 · step +5.5 (133\% of the first)}.

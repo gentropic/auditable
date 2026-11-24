@@ -316,7 +316,7 @@ The record protects against accident and confusion, not against a determined for
 \section{Provenance of layers}\label{sec:records-lineage}
 A run record covers what a routine wrote. Layers have their own memory, whether or not a routine made them.
 
-Every derived layer carries its \term{lineage}: a tree of how it came to be. Opening a file is a leaf. A join, a reconcile or a conversion to Parquet wraps its source layers with the operation, its settings, the micro build and the time. \ui{Lineage…} on the layer's menu (or in the command palette, \key{⌘K}) shows the tree and exports it as a readable HTML report.
+Every derived layer carries its \term{lineage}: a tree of how it came to be. Opening a file is a leaf. A join, a reconcile or a conversion to Parquet wraps its source layers with the operation, its settings, the micro build and the time. \menu{Data \& file>Lineage…} on the layer's menu (or in the command palette, \key{⌘K}) shows the tree and exports it as a readable HTML report.
 
 The lineage travels with the data in two ways. A Parquet file that micro exports carries the lineage inside its metadata, so the provenance is in the file itself. And in a saved project, each data file has an \term{element manifest} beside it listing every derived column with the operation that made it: a calculation's expression, a join's inputs (\cref{ch:store}).
 

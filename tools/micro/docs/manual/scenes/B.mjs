@@ -137,7 +137,7 @@ export const SCENES = {
 
   'blocks-store-parquet': async (h) => {
     await setup(h);
-    await h.ev(async () => { const B = window.__B; await B.rowMenu(/^deposit\.csv/); await B.menuClick(/^Store as Parquet/); });
+    await h.ev(async () => { const B = window.__B; await B.rowMenu(/^deposit\.csv/); await B.menuClick(/^Data & file/); await B.menuClick(/^Store as Parquet/); });
     return { el: '#opDlg .box', blankOk: true };
   },
 

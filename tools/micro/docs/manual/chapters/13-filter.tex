@@ -225,7 +225,7 @@ A filter is a way of looking. Several tools take it further:
 \begin{itemize}
 \item \textbf{Analyze it.} The analysis windows have a \emph{filtered} scope, so a grade–tonnage curve or a swath can be computed for the matching rows only (\cref{ch:analysis}).
 \item \textbf{Export it.} \menu{Data>Export rows…} offers \emph{filter matches} as a scope.
-\item \textbf{Select it.} \menu{Filter → selection} on the layer's menu turns the matching rows into a selection, which you can then refine by hand or write to a column (\cref{sec:picking-selcol}).
+\item \textbf{Select it.} \menu{Select>Filter → selection} on the layer's menu turns the matching rows into a selection, which you can then refine by hand or write to a column (\cref{sec:picking-selcol}).
 \item \textbf{Keep it with the view.} A scene saves each layer's filter (\cref{sec:sections-scenes}).
 \item \textbf{Name it.} If you keep typing the same condition, make it a column (\cref{sec:filter-calc}).
 \end{itemize}
@@ -338,7 +338,7 @@ A\index{materializing} calculated column is computed on demand. Usually that is 
 \item the column is a result you are signing off, not a formula you are still tuning.
 \end{itemize}
 
-\ui{materialize → stored} in the Calculations window — or \menu{Materialize calc column} on the layer's right-click menu, which lists each \code{ƒ} as \emph{NAME → stored} — computes the column once and stores the values as a \term{stored column} of the same name, beside the source; the \code{ƒ} definition goes. The status line confirms how many values were stored (\emph{materialized “CLASS” — 1,786,620 values stored}), and the record panel marks the column \code{✎}, its mark for a stored column, number or text alike — the same mark painted columns get. From then on it scans like a source column, and it no longer depends on its inputs.
+\ui{materialize → stored} in the Calculations window — or \menu{Data \& file>Materialize calc column} on the layer's right-click menu, which lists each \code{ƒ} as \emph{NAME → stored} — computes the column once and stores the values as a \term{stored column} of the same name, beside the source; the \code{ƒ} definition goes. The status line confirms how many values were stored (\emph{materialized “CLASS” — 1,786,620 values stored}), and the record panel marks the column \code{✎}, its mark for a stored column, number or text alike — the same mark painted columns get. From then on it scans like a source column, and it no longer depends on its inputs.
 
 \begin{note}
 A text \code{ƒ} is stored as a \emph{category} column: a dictionary of its values and one small code per record, the way painted columns are kept, so it stays text to the filter, the styles and the exports. On the demo, \code{ORE} defined as \code{if(FE >= 55, "ore", "waste")} materializes with \emph{materialized “ORE” — 1,786,620 values stored as 2 categories}, and \code{ORE = "ore"} still finds its 38,452 blocks. A category column holds up to 255 different values. Past that micro refuses, with \emph{materialize: “…” has more than 255 different values — micro stores text as categories; keep it as a ƒ column}, and the \code{ƒ} column stays as it was. Class colors you chose while it was a \code{ƒ} carry over to the stored column.

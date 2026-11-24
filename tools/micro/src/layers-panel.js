@@ -142,14 +142,19 @@ export function groupMenu(nd, x, y) {
     items.push({ label: setHasTraces(nd) ? 'Hide hole traces' : 'Show hole traces', action: () => showHoleTraces(nd) });
     items.push({ label: setHasCollars(nd) ? 'Hide collars' : 'Show collars', action: () => showCollars(nd) });
     items.push({ label: 'Add interval table…', action: () => addIntervalToSet(nd) });
-    items.push({ label: 'QA report…', action: () => openDhQa(nd) });
-    items.push({ label: 'Composite…', action: () => openComposite(nd) });
+    // the set's analyses, under the same name as on a layer's menu
+    items.push({ label: 'Analyse', submenu: () => [
+      { label: 'QA report…', action: () => openDhQa(nd) },
+      { label: 'Composite…', action: () => openComposite(nd) },
+    ] });
     items.push({ sep: true });
   }
   menuXY(x, y, [
     ...items,
-    { label: 'Move up', action: () => treeMoveStep(nd, -1) },
-    { label: 'Move down', action: () => treeMoveStep(nd, 1) },
+    { label: 'Move', submenu: () => [
+      { label: 'Up', action: () => treeMoveStep(nd, -1) },
+      { label: 'Down', action: () => treeMoveStep(nd, 1) },
+    ] },
     { label: 'Rename group…', action: async () => { const v = await microPrompt('group name', nd.name); if (v && v.trim()) { nd.name = v.trim(); renderLayers(); markProjectDirty(); } } },
     ...(groupLayerIds(nd).length >= 2 ? [{ label: 'Rename layers…', action: () => openBatchRename(groupLayerIds(nd).map(layerById)) }] : []),
     ...(() => {

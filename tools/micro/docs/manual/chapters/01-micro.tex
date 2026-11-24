@@ -147,7 +147,7 @@ A number you cannot trace is a number you cannot sign. micro records each deriva
 
 \begin{itemize}
 \item \textbf{Columns.} Each element in a saved project has an \term{element manifest}, a JSON file beside the data: \file{deposit.csv.element.json}. A calculated column is there as its expression. A stored column is there with the operation that made it and its inputs.
-\item \textbf{Layers.} A layer made from other layers, such as a reconciliation or a model stored as Parquet, carries its \term{lineage}: the operation, its settings, its sources, the micro build and the time. \menu{Lineage…} on the layer shows the tree and exports a readable report. A Parquet export carries its lineage inside the file.
+\item \textbf{Layers.} A layer made from other layers, such as a reconciliation or a model stored as Parquet, carries its \term{lineage}: the operation, its settings, its sources, the micro build and the time. \menu{Data \& file>Lineage…} on the layer's menu shows the tree and exports a readable report. A Parquet export carries its lineage inside the file.
 \item \textbf{Runs.} Every run of a routine leaves a folder of its own, \file{runs/<date> <time> <routine>/}, holding its tables and a \file{run.json}: the SHA-256 of every input file and every output, each step's settings, and what each check concluded.
 \end{itemize}
 

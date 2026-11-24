@@ -138,7 +138,7 @@ The right end of the status line shows where the camera is looking as \emph{plun
 \section{What a section cuts, layer by layer}\label{sec:sections-layers}
 By default the section cuts every layer the same way. Often that is wrong: you want a thin slice of the model with the whole topography over it, or the drillholes near the section rather than only the pieces of them inside a 10\,m slab.
 
-Right-click a layer and open \menu{Cut by sections}:
+Right-click a layer and open \menu{Display>Cut by sections}:
 
 \begin{center}
 \begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
@@ -170,7 +170,7 @@ The demo shows why. Its holes are drilled north in fans from collars south of th
 In the demo project (it opens with the holes on \ui{don't cut}):
 \begin{enumerate}
 \item Change \ui{behind} to \ui{slab}, and set the number to \code{5}.
-\item Right-click the \ui{holes · demo\_assay.csv} layer, \menu{Cut by sections>keep holes that cross the slab, whole}. The menu item now reads \emph{Cut by sections (whole holes)}.
+\item Right-click the \ui{holes · demo\_assay.csv} layer, \menu{Display>Cut by sections>keep holes that cross the slab, whole}. The menu item now reads \emph{Cut by sections (whole holes)}.
 \item Press \key{⇧L} to face the section from the south, then orbit a little. Eight holes remain, complete; the four short ones have gone.
 \item Set the holes back to \ui{don't cut}.
 \end{enumerate}
@@ -204,7 +204,7 @@ For sections laid out on a page with a title block and a scale, the composer's a
 The rest of the chapter changes how the scene is laid out, never what it contains. A \emph{view} shows one model a second time with its own look (\cref{sec:sections-views}); an \emph{offset} or an \emph{exploded} group pulls layers apart (\cref{sec:sections-explode}); \emph{vertical exaggeration} stretches everything together (\cref{sec:sections-zexag}); and \emph{bookmarks} and \emph{scenes} take you back to a picture you have made (\cref{sec:sections-scenes}). Picks, measurements, analyses and exports keep reading the true coordinates throughout.
 
 \subsection{One model, shown twice: views}\label{sec:sections-views}
-To compare iron with density, or two filters of the same model, you do not open the file twice. Right-click a block model, a drillhole interval layer or a point cloud and choose \menu{New view of this layer}.
+To compare iron with density, or two filters of the same model, you do not open the file twice. Right-click a block model, a drillhole interval layer or a point cloud and choose \menu{Views>New view of this layer}.
 
 A \term{view} is a second layer that draws the \emph{same data}. The file is read once and the graphics card holds the model once. In the layers panel the view sits indented under its model with a \code{⧉} mark, named for what it shows.
 
@@ -234,19 +234,19 @@ the file; every column — stored, calculated, painted; the selection; the prove
 Because the columns are shared, a column you paint through a view lands on the model, and every view colored by it shows the stroke. Selecting through a view selects the model's records.
 
 \subsubsection{Beside its model}
-Two views in the same place hide each other. \menu{New view beside it} creates the view and places it just east of the model and its other views, in one step. For an existing view, \menu{Properties…>style} has an \ui{offset} row (dx, dy, dz in world units), a \ui{beside its model} button, and \ui{on its model} to put it back.
+Two views in the same place hide each other. \menu{Views>New view beside it} creates the view and places it just east of the model and its other views, in one step. For an existing view, \menu{Properties…>style} has an \ui{offset} row (dx, dy, dz in world units), a \ui{beside its model} button, and \ui{on its model} to put it back.
 
 The move is for display only. The record panel, exports and analyses read the true coordinates. Picking, measuring and lassoing work where the view is drawn, and the section cuts it there — so an E–W section through the model also cuts the view beside it, at the matching place.
 
 \subsubsection{What a view cannot do}
-Reload, reinterpret, \menu{Store as Parquet…} and the column operations act on the file, so they live on the model; a view's menu begins with \menu{View of “…” — select it} to take you there. A view can class by any text column of its own in \ui{categorized} mode without disturbing its model; past 255 different values, the rest share one gray class.
+Reload, reinterpret, \menu{Data \& file>Store as Parquet…} and the column operations act on the file, so they live on the model; a view's menu begins with \menu{View of “…” — select it} to take you there. A view can class by any text column of its own in \ui{categorized} mode without disturbing its model; past 255 different values, the rest share one gray class.
 
 Removing a view asks nothing. Removing a model asks first and names its views, which go with it. In a project a view is saved as display settings that name its model, never as a second copy of the file, and if the model re-reads its file its views follow.
 
 \begin{tryit}
 In the demo project:
 \begin{enumerate}
-\item Right-click the deposit and choose \menu{New view beside it}. A second deposit appears to the east, with a \code{⧉} row under the first in the layers panel.
+\item Right-click the deposit and choose \menu{Views>New view beside it}. A second deposit appears to the east, with a \code{⧉} row under the first in the layers panel.
 \item Make the view active and set the \ui{color} dropdown to \col{SG}. The original stays on \col{FE}.
 \item Scrub the section with \key{Ctrl}+wheel. Both are cut together: grade on the left, density on the right, the same slice.
 \item Click a block on the view. The record panel shows its true coordinates and notes that the layer is drawn displaced.

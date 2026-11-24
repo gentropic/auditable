@@ -39,7 +39,7 @@ A period's grade is never averaged from other grades. Each source's totals are k
 \end{why}
 
 \section{Opening the window}\label{sec:factors-open}
-Right-click the resource model — the long-range block model — and choose \ui{Reconciliation factors…}. It is also in the command palette (\key{⌘K}; type \code{factors} or \code{f1}). Both are offered only on a block model with a block grid (\cref{ch:blocks}).
+Right-click the resource model — the long-range block model — and choose \menu{Analyse>Reconciliation factors…}. It is also in the command palette (\key{⌘K}; type \code{factors} or \code{f1}). Both are offered only on a block model with a block grid (\cref{ch:blocks}).
 
 The window is built on the chassis of \cref{ch:analysis}: a rail of settings, \ui{Run}, manual ranges, the results row and \ui{save as recipe…}. It has no all~/ filtered~/ selection scopes. Its \ui{mined volume} section does that job, because here the volume \emph{is} the question. It opens reading \emph{configure, then Run}. The rail has five sections: \ui{models}, \ui{mined volume · periods}, \ui{production (mill)}, \ui{report} and \ui{chart}.
 
@@ -146,7 +146,7 @@ YEAR,DRY_T,FE_HEAD
 2029,80580000,51.08
 \end{lstlisting}
 Drag it onto micro. The open dialog finds no coordinate columns in its header and offers it as \ui{table (no coordinates)}; press \ui{Open}. It arrives as a table layer (▦) of three rows (\cref{ch:columns}).
-\item Right-click \file{deposit.csv} and choose \ui{Reconciliation factors…}. Both model boxes show \file{deposit.csv}; the period column is already \col{PERIOD}, and the production table \file{mill.csv} with \col{YEAR}, \col{DRY\_T} and \col{FE\_HEAD}.
+\item Right-click \file{deposit.csv} and choose \menu{Analyse>Reconciliation factors…}. Both model boxes show \file{deposit.csv}; the period column is already \col{PERIOD}, and the production table \file{mill.csv} with \col{YEAR}, \col{DRY\_T} and \col{FE\_HEAD}.
 \item In the \ui{grade control} box, set the grade to \col{FE\_GC} and the density column to \col{SG\_GC}.
 \item Type \code{LITO != "WASTE"} in \ui{domain}. Under \ui{report}, set \ui{unit} to \ui{\%} and \ui{tolerance} to \code{0.05}. Under \ui{chart}, set \ui{show} to \ui{F1 · F2 · F3 — tonnes}.
 \item Press \ui{Run}. In a few seconds the subtitle reads \emph{3 periods · no cutoff · deposit.csv 106,265 blocks mined · deposit.csv 106,265 · mill: mill.csv}.

@@ -114,22 +114,24 @@ A \term{group} is a folder of layers with an eye of its own. Hiding a group hide
 A drillhole set is a group with two extra rows. The row marked ◈ is the collar table and the row marked ↧ is the survey. They are not layers that draw; they are the other tables of the set, and clicking one opens a menu of what you can do with it.
 
 \subsection{A layer's menu}
-The right-click menu is the main way into micro's features. It lists only what applies to that layer, in the same order every time:
+The right-click menu is the main way into micro's features. It lists only what applies to that layer, in the same order every time. The things you reach for most are at the top; everything else is in a submenu, named like the menu bar's menus and the palette's groups:
 
 \begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
-group & items (for a block model) \\ \midrule
-Identity & \ui{Zoom to layer}, \ui{Rename layer…}, \ui{New view of this layer}, \ui{New view beside it}, \ui{Reinterpret as…}, \ui{Reload from disk}, \ui{Change file…} \\
-Inspect and analyze & \ui{Attribute table…}, \ui{Filter…}, \ui{Stats…}, \ui{Scatter / Q-Q…}, \ui{Grade-tonnage…}, \ui{Resource cross-tab…}, \ui{Swath plot…}, \ui{Model QA…}, \ui{Block vs sample…}, \ui{Grade shell…}, \ui{File info…}, \ui{Lineage…}, \ui{Export rows…} \\
-Derive and store & \ui{Materialize calc column}, \ui{Store as Parquet…}, \ui{Build index (stats + pushdown)…} \\
-Display & \ui{Opacity}, \ui{Block edges}, \ui{Cut by sections}, \ui{Hide layer} \\
-Arrange & \ui{Move}, \ui{Copy into project}, \ui{Remove layer} \\
-Look & \ui{Style} (copy, paste, save, load), \ui{Properties…} \\
+entry & items (for a block model) \\ \midrule
+top & \ui{Zoom to layer}, \ui{Rename layer…}, \ui{Hide layer}, \ui{Properties…}, \ui{Attribute table…}, \ui{Filter…} \\
+\ui{Analyse} & \ui{Stats…}, \ui{Scatter / Q-Q…}, \ui{Grade-tonnage…}, \ui{Resource cross-tab…}, \ui{Swath plot…}, \ui{Grade shell…}, \ui{Block vs sample…}, \ui{Distance to a surface…}, \ui{Reconciliation factors…}, \ui{Model QA…} \\
+\ui{Select} & \ui{Filter → selection}, \ui{Selection → column…} (while there is a filter or a selection) \\
+\ui{Views} & \ui{New view of this layer}, \ui{New view beside it} \\
+\ui{Display} & \ui{Opacity}, \ui{Block edges}, \ui{Cut by sections}, \ui{Style} (copy, paste, save, load) \\
+\ui{Data \& file} & \ui{Reinterpret as…}, \ui{Reload from disk}, \ui{Change file…}, \ui{Materialize calc column}, \ui{Store as Parquet…}, \ui{Build index (stats + pushdown)…}, \ui{Copy into project}, \ui{Export rows…}, \ui{File info…}, \ui{Lineage…} \\
+\ui{Move} & \ui{Up}, \ui{Down}, \ui{To group…} \\
+last & \ui{Remove layer} \\
 \bottomrule
 \end{tabularx}
 
-Some items appear only when they make sense: \ui{Reload from disk} on a layer read from a file on disk, \ui{Copy into project} on a layer that lives outside an open project, \ui{Materialize calc column} once the layer has a calculated column, \ui{Lineage…} on a layer that carries a lineage (an opened file has one that names its source; a derived layer's also names the operation that made it). A mesh, a grid or a drillhole layer has a different middle section, with its own tools.
+Some items appear only when they make sense: \ui{Reload from disk} on a layer read from a file on disk, \ui{Copy into project} on a layer that lives outside an open project, \ui{Materialize calc column} once the layer has a calculated column, \ui{Lineage…} on a layer that carries a lineage (an opened file has one that names its source; a derived layer's also names the operation that made it). A submenu with nothing in it for the layer is left out. A mesh, a grid or a drillhole layer fills the submenus with its own tools; a mesh and a grid also have a \ui{Geometry} submenu, for what a surface or a solid does to other layers.
 
-\shot[0.5\linewidth]{start-layer-menu}{The right-click menu of the demo block model. The demo's files are generated in memory and no project is open, so \ui{Reload from disk} and \ui{Copy into project} are not offered.}
+\shot[0.5\linewidth]{start-layer-menu}{The right-click menu of the demo block model, with \ui{Analyse} open. The demo's files are generated in memory and no project is open, so \ui{Data \& file} offers neither \ui{Reload from disk} nor \ui{Copy into project}.}
 
 A few keys work on the active layer without opening the menu:
 

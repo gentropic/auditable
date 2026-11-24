@@ -9324,6 +9324,83 @@ if (take()) {
   await pg.close();
 }
 
+// ── the LAYER CONTEXT MENU, regrouped (src/layermenu.js layerMenuSections). It had
+// grown to ~33 top-level entries on a block model; now the frequent verbs sit on top
+// and the rest in Analyse · Geometry · Select · Views · Display · Data & file · Move.
+// For a block model, a drillhole layer, a mesh and a grid (the demo's): the top level
+// stays short (≤ 14 entries, only the known ones), every submenu has something in it,
+// and every item the flat menu had for that layer is still reachable in some submenu —
+// so an item can't silently vanish in a later edit. Then the real thing: a right-click
+// on the row opens the menu and hovering Analyse opens its submenu.
+if (take()) {
+  const pg = await mkPage('sm2ctx');
+  const r = await pg.evaluate(async () => {
+    const M = window._micro;
+    await M.openDemoProject();
+    const Ls = M.layers();
+    const block = Ls.find((L) => L.name === 'deposit.csv');
+    const dh = Ls.find((L) => L.dh && L.docs.dhDoc && !L.trace);
+    const mesh = Ls.find((L) => L.label === 'ore shell');
+    const grid = Ls.find((L) => L.docs && L.docs.gridDoc);
+    await M.applyBlockFilter('FE > 50', block);            // → Select ▸ Filter → selection
+    const walk = (L) => {
+      const items = M.layerMenuSections(L, 100, 100);
+      const top = items.filter((x) => !x.sep);
+      const found = [];                                     // every label reachable: top level + one submenu down
+      const empty = [];
+      for (const it of top) {
+        found.push(it.label);
+        if (it.submenu) { const sub = it.submenu(); if (!sub.length) empty.push(it.label); for (const s of sub) if (!s.sep) found.push(s.label); }
+      }
+      return { top: top.map((x) => x.label), found, empty, lineage: !!L.lineage, records: M.hasRecords(L) };
+    };
+    return { block: walk(block), dh: walk(dh), mesh: walk(mesh), grid: walk(grid), names: [block, dh, mesh, grid].map((L) => L && (L.label || L.name)) };
+  });
+  const CTX_TOP = ['Zoom to layer', 'Rename layer…', 'Hide layer', 'Show layer', 'Properties…', 'Attribute table…', 'Filter…',
+    'Analyse', 'Geometry', 'Select', 'Views', 'Display', 'Data & file', 'Move', 'Remove layer'];
+  // what the flat menu offered each of these layers (labels by prefix: some carry a live part)
+  const common = ['Zoom to layer', 'Rename layer…', /^(Hide|Show) layer$/, 'Properties…', 'Cut by sections', 'Style', 'Move', 'Remove layer', 'File info…'];
+  const EXPECT = {
+    block: [...common, 'Attribute table…', 'Filter…', 'Stats…', 'Scatter / Q-Q…', 'Grade-tonnage…', 'Resource cross-tab…', 'Swath plot…', 'Grade shell…',
+      'Block vs sample…', 'Distance to a surface…', 'Reconciliation factors…', 'Model QA…', 'Filter → selection', 'New view of this layer', 'New view beside it',
+      'Opacity', 'Block edges', 'Reinterpret as…', 'Store as Parquet…', 'Build index (stats + pushdown)…', 'Export rows…'],
+    dh: [...common, 'Attribute table…', 'Filter…', 'Stats…', 'Scatter / Q-Q…', 'Grade-tonnage…', 'Contact plot…', 'Distance to a surface…', 'Composite…',
+      'Opacity', 'Stick radius…', 'Export rows…'],
+    mesh: [...common, 'Select by this solid…', 'Rasterize to grid…', 'Extend to footprint…', 'Combine surfaces…', 'Mesh QA / volume…', 'Structural analysis…',
+      'Tint…', 'Opacity', 'Convert to streamed', 'Export mesh…'],
+    grid: [...common, 'Flag / ratio by this surface…', 'Extend to footprint…', 'Combine surfaces…', 'Drape', 'Reinterpret as…', 'Export grid…'],
+  };
+  const has = (found, e) => found.some((l) => (e instanceof RegExp ? e.test(l) : l === e || l.startsWith(e + ' ') || l.startsWith(e + ':')));
+  for (const k of ['block', 'dh', 'mesh', 'grid']) {
+    const m = r[k];
+    const want = [...EXPECT[k], ...(m.lineage ? ['Lineage…'] : [])];
+    const missing = want.filter((e) => !has(m.found, e));
+    const stray = m.top.filter((l) => !CTX_TOP.includes(l));
+    chk(`layer menu (${k}: ${r.names[['block', 'dh', 'mesh', 'grid'].indexOf(k)]}): ${m.top.length} top-level entries (${m.top.join(' · ')}); ${m.found.length - m.top.length} in submenus; missing ${missing.length ? missing.join(', ') : 'none'}${m.empty.length ? `; EMPTY submenus ${m.empty.join(', ')}` : ''}${stray.length ? `; unknown top-level ${stray.join(', ')}` : ''}`,
+      m.top.length <= 14 && !missing.length && !m.empty.length && !stray.length);
+  }
+  // the real menu: right-click the row, hover Analyse → its submenu
+  const dom = await pg.evaluate(async () => {
+    const M = window._micro; M.toggleLayersPanel(true);
+    const row = [...document.querySelectorAll('#lpRows .lp-row')].find((x) => /^deposit\.csv/.test(x.textContent.trim()));
+    const b = row.getBoundingClientRect();
+    row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: b.left + 60, clientY: b.top + 8 }));
+    await new Promise((z) => setTimeout(z, 200));
+    const root = [...document.querySelectorAll('.menu .item')].map((d) => d.textContent);
+    const an = [...document.querySelectorAll('.menu .item')].find((d) => /^Analyse/.test(d.textContent));
+    an.dispatchEvent(new MouseEvent('mouseenter'));
+    await new Promise((z) => setTimeout(z, 200));
+    const menus = document.querySelectorAll('.menu');
+    const sub = menus.length > 1 ? [...menus[1].querySelectorAll('.item')].map((d) => d.textContent) : [];
+    document.body.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+    for (const m of document.querySelectorAll('.menu')) m.remove();
+    return { root: root.length, menus: menus.length, sub };
+  });
+  chk(`layer menu: a right-click opens ${dom.root} entries; hovering Analyse opens its submenu (${dom.sub.length} items: ${dom.sub.slice(0, 4).join(' · ')}…)`,
+    dom.root <= 14 && dom.menus === 2 && dom.sub.some((t) => /^Grade-tonnage/.test(t)));
+  await pg.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

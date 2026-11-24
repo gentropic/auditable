@@ -5,11 +5,11 @@
 
 Grade–tonnage, the cross-tab and the swath need a block grid, because they weigh by block volume. The three plain statistical views of this chapter need only a table, so they work on more than block models. Any layer with a table and a numeric column will do: a block model, a drillhole interval table, a point file, a result kept with \ui{⇥ layer}.
 
-\ui{Stats…} is a grouped summary table. \ui{Scatter / Q-Q…} is one window with two modes: a \emph{scatter} of two columns of one layer, and a \emph{Q-Q} plot of two distributions that may come from different layers. Both are on a layer's right-click menu; in the palette (\key{⌘K}) they are \ui{Stats…}, \ui{Scatter plot} and \ui{Q-Q plot}. Both work as \cref{ch:analysis} describes.
+\ui{Stats…} is a grouped summary table. \ui{Scatter / Q-Q…} is one window with two modes: a \emph{scatter} of two columns of one layer, and a \emph{Q-Q} plot of two distributions that may come from different layers. Both are on a layer's right-click menu, under \ui{Analyse}; in the palette (\key{⌘K}) they are \ui{Stats…}, \ui{Scatter plot} and \ui{Q-Q plot}. Both work as \cref{ch:analysis} describes.
 
 \section{The stats table}\label{sec:stats-table}
 \begin{tryit}
-In\index{stats table} the demo project, right-click \file{deposit.csv} and choose \ui{Stats…}.
+In\index{stats table} the demo project, right-click \file{deposit.csv} and choose \menu{Analyse>Stats…}.
 \begin{enumerate}
 \item Under \ui{columns}, the button names the chosen column, \col{FE}. Click it: a menu lists the numeric columns, with a ✓ on those chosen.
 \item Choose \col{SG}. The button now reads \emph{FE, SG}.
@@ -85,7 +85,7 @@ If a saved setup names a column the layer does not have, the window says \emph{n
 The\index{scatter plot} scatter plots one column of a layer against another: copper against gold, an estimate against its kriging variance, density against grade.
 
 \begin{tryit}
-Right-click \file{deposit.csv} and choose \ui{Scatter / Q-Q…}. The window opens in \ui{scatter} mode.
+Right-click \file{deposit.csv} and choose \menu{Analyse>Scatter / Q-Q…}. The window opens in \ui{scatter} mode.
 \begin{enumerate}
 \item Set \ui{x} to \col{FE} and \ui{y} to \col{SG}, and press \ui{Run}.
 \item The plot is a density — there are far more than 20,000 blocks — and it is a narrow line. The note under it reads \emph{n 1,786,620 · r 1.000 · density of 160×160 cells (log counts)}.
@@ -144,7 +144,7 @@ Each of the classic comparisons is then one setup:
 \end{itemize}
 
 \begin{tryit}
-Right-click \file{deposit.csv}, choose \ui{Scatter / Q-Q…} and click \ui{Q-Q} at the top of the rail.
+Right-click \file{deposit.csv}, choose \menu{Analyse>Scatter / Q-Q…} and click \ui{Q-Q} at the top of the rail.
 \begin{enumerate}
 \item On side \ui{x}, choose the drillhole layer, \ui{holes · demo\_assay.csv}, and the column \col{FE}.
 \item On side \ui{y}, choose \file{deposit.csv} and \col{FE}.

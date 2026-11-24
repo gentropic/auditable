@@ -215,12 +215,12 @@ A value that only \emph{means} blank is a different matter. A \code{-99} written
 A few display settings are not about color, yet they decide how well it reads.
 
 \begin{description}
-\item[Opacity] Right-click a layer, \menu{Opacity}, and pick 100, 75, 50 or 25\,\%; the style tab has a slider from 5 to 100\,\%. It works on block models, drillholes and meshes, and a group's menu sets it for all its members. micro draws transparency as a fine dither, so a see-through shell never hides what is behind it in the wrong order.
-\item[Block edges] \key{⇧B}, or \menu{View>Block edges}, outlines every block — and every cut block on a section. It is how you check sub-blocking and lattice alignment (\cref{sec:blocks-display}). A layer can override the global switch: right-click, \menu{Block edges}, and choose \ui{auto} (follow \ui{View}), \ui{on} or \ui{off}.
+\item[Opacity] Right-click a layer, \menu{Display>Opacity}, and pick 100, 75, 50 or 25\,\%; the style tab has a slider from 5 to 100\,\%. It works on block models, drillholes and meshes, and a group's menu sets it for all its members. micro draws transparency as a fine dither, so a see-through shell never hides what is behind it in the wrong order.
+\item[Block edges] \key{⇧B}, or \menu{View>Block edges}, outlines every block — and every cut block on a section. It is how you check sub-blocking and lattice alignment (\cref{sec:blocks-display}). A layer can override the global switch: right-click, \menu{Display>Block edges}, and choose \ui{auto} (follow \ui{View}), \ui{on} or \ui{off}.
 \item[Boxes or points] \menu{View>Blocks as boxes} draws true block faces; \menu{View>Blocks as points} draws each block as a splat, which is lighter on a slow machine.
-\item[Point size] A layer drawn as points — a cloud, a model opened as points — has its own \menu{Point size} (×1, ×2, ×3, ×5, ×8), a multiple of the global \ui{pt px} slider.
-\item[Stick radius] Drillholes draw as sticks; \menu{Stick radius…} or the \ui{stick radius (m)} row sets how fat (\cref{ch:drillholes}).
-\item[Tint] A mesh has no column to color by here; \menu{Tint…} gives it one color from a short geological palette (Grey, Sand, Rust, Green, Blue, Violet, Brown) or a custom hex value (\cref{ch:meshes}).
+\item[Point size] A layer drawn as points — a cloud, a model opened as points — has its own \menu{Display>Point size} (×1, ×2, ×3, ×5, ×8), a multiple of the global \ui{pt px} slider.
+\item[Stick radius] Drillholes draw as sticks; \menu{Display>Stick radius…} or the \ui{stick radius (m)} row sets how fat (\cref{ch:drillholes}).
+\item[Tint] A mesh has no column to color by here; \menu{Display>Tint…} gives it one color from a short geological palette (Grey, Sand, Rust, Green, Blue, Violet, Brown) or a custom hex value (\cref{ch:meshes}).
 \end{description}
 
 The \ui{EDL} checkbox and its \ui{strength} slider control the shading that makes a point cloud read as a surface, eye-dome lighting \parencite{boucheny2009}, and \ui{budget} sets how many elements are drawn per frame: lower is snappier while you move, and the picture converges when you stop.
@@ -280,7 +280,7 @@ With the demo project open:
 \end{tryit}
 
 \section{Reusing a look}\label{sec:color-copy}
-Once the classes, colors and no-data choices are right on one layer, you should not have to build them again. Right-click the layer and open \menu{Style}:
+Once the classes, colors and no-data choices are right on one layer, you should not have to build them again. Right-click the layer and open \menu{Display>Style}:
 
 \begin{center}
 \begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
@@ -293,13 +293,13 @@ Once the classes, colors and no-data choices are right on one layer, you should 
 
 Everything is matched \textbf{by column name}. The \col{FE} classes land on \col{FE} wherever \col{FE} sits in the other file; a \col{LITO} legend lands on a column called \col{LITO}. The status line then says what applied and what had no match, so a silent half-paste cannot happen.
 
-Three uses come up again and again: the drillholes in the model's grade classes; next month's model in this month's legend; a company standard kept as one \file{.microstyle.json} that every project loads. \menu{Change file…}, which points a layer at a new file, keeps the look by column name the same way.
+Three uses come up again and again: the drillholes in the model's grade classes; next month's model in this month's legend; a company standard kept as one \file{.microstyle.json} that every project loads. \menu{Data \& file>Change file…}, which points a layer at a new file, keeps the look by column name the same way.
 
 \begin{tryit}
 With the demo deposit classed as in the last exercise (if you skipped it, type \code{20, 40, 55, 60, 65} in the \ui{breaks} box and tick \ui{classed}):
 \begin{enumerate}
-\item Right-click the deposit, \menu{Style>Copy style}.
-\item In the layers panel, open the drillhole set and right-click its assay layer. Choose \menu{Style>Paste style}.
+\item Right-click the deposit, \menu{Display>Style>Copy style}.
+\item In the layers panel, open the drillhole set and right-click its assay layer. Choose \menu{Display>Style>Paste style}.
 \item Read the status line: \emph{style from deposit.csv → holes · demo\_assay.csv: FE, colour by FE}. The sticks now wear the model's classes, and where a hole crosses the cut face the colors agree — or show you where they don't. (In the demo they agree: the holes were sampled from the same rock as the blocks.)
 \end{enumerate}
 \end{tryit}

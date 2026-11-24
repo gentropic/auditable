@@ -148,12 +148,12 @@ In the demo the two lines agree below 550~m and above 800~m, and part company in
 \end{itemize}
 
 \section{Block vs sample}\label{sec:validation-pairing}
-\ui{Block vs sample…} is on a block model's right-click menu and in the palette. It pairs every sample with the block it falls in, the most direct check that an estimate honors its data.
+\menu{Analyse>Block vs sample…} is on a block model's right-click menu and in the palette. It pairs every sample with the block it falls in, the most direct check that an estimate honors its data.
 
 The\index{block vs sample} samples can be a drillhole layer, each interval taken at its midpoint, or a points layer: composites, or a sample file opened as points. The model must be a regular, unrotated block model; for a sub-blocked or rotated one the status line explains that pairing reads regular, axis-aligned lattices only.
 
 \begin{tryit}
-In the demo project, right-click \file{deposit.csv} and choose \ui{Block vs sample…}.
+In the demo project, right-click \file{deposit.csv} and choose \menu{Analyse>Block vs sample…}.
 \begin{enumerate}
 \item \ui{samples} is the drillhole layer, \ui{holes · demo\_assay.csv}; \ui{sample} and \ui{block} are both \col{FE}.
 \item Set \ui{by} to \col{LITO} and press \ui{Run}.
@@ -226,7 +226,7 @@ The samples in a block were used to estimate that block. These pairs are therefo
 The selection is an ordinary one (\cref{ch:picking}). Look at where the selected intervals lie in 3D — a cluster along one contact is a domain problem; a whole hole is a collar or survey problem (\cref{ch:qa}) — open the attribute table on the selection, or write it to a column. Nothing is written to either layer by the pairing itself.
 
 \begin{tip}
-Composite the drillholes to the block height before pairing (\ui{Composite…} on the drillhole layer, \cref{ch:drillholes}). A 1~m assay against a 10~m block compares across a large change of support. A composite of the block's height against the block is close to like for like, and the slope becomes much easier to interpret.
+Composite the drillholes to the block height before pairing (\menu{Analyse>Composite…} on the drillhole layer, \cref{ch:drillholes}). A 1~m assay against a 10~m block compares across a large change of support. A composite of the block's height against the block is close to like for like, and the slope becomes much easier to interpret.
 \end{tip}
 
 \section{In a routine}\label{sec:validation-routine}

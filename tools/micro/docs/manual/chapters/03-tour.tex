@@ -201,7 +201,7 @@ A hole filter answers a yes-or-no question per hole. Sometimes you want the coll
 \col{EOH} is now a real column of the interval layer. It appears in the record panel when you click an interval, in the attribute table, in the color choices and in an export. Nothing was written to \file{demo\_assay.csv}; the column is micro's own, kept beside the file once you save a project.
 
 \begin{note}
-The set's own menu (right-click the \ui{demo} group) has a \ui{QA report…}: every row to look at before the holes are used, from duplicate collars to overlapping intervals. \Cref{ch:qa} describes it, and \cref{ch:drillholes} the rest of the drillhole tools.
+The set's own menu (right-click the \ui{demo} group) has \menu{Analyse>QA report…}: every row to look at before the holes are used, from duplicate collars to overlapping intervals. \Cref{ch:qa} describes it, and \cref{ch:drillholes} the rest of the drillhole tools.
 \end{note}
 
 \section{Derive a column}\label{sec:tour-calc}
@@ -255,7 +255,7 @@ You can close the calculations window.
 \section{The curve: grade–tonnage}\label{sec:tour-gt}
 Grade–tonnage answers the question every model is asked first: how much is there above a given grade, and at what average grade?
 
-Bring the grade–tonnage window back. If you minimized it, click its chip above the status line. If you closed it, right-click \file{deposit.csv} and choose \ui{Grade-tonnage…}: the window comes back with the same setup, says \emph{restored — Run to compute}, and waits for you to click \ui{Run}.
+Bring the grade–tonnage window back. If you minimized it, click its chip above the status line. If you closed it, right-click \file{deposit.csv} and choose \menu{Analyse>Grade-tonnage…}: the window comes back with the same setup, says \emph{restored — Run to compute}, and waits for you to click \ui{Run}.
 
 Every analysis window has this shape. On the left is a rail of settings; on the right is the plot; \ui{Run} computes; a row of buttons below it takes the result somewhere else. \Cref{ch:analysis} describes the shape once for all of them.
 
@@ -356,7 +356,7 @@ Drawing every hole is a choice per layer, and often the wrong one for a real sec
 
 \begin{tryit}
 \begin{enumerate}
-\item In the layers panel, right-click \ui{holes · demo\_assay.csv} and open \ui{Cut by sections}.
+\item In the layers panel, right-click \ui{holes · demo\_assay.csv} and open \menu{Display>Cut by sections}.
 \item Choose \ui{follow the section}. Now only the intervals inside the slab are drawn. At the opening position that is a short stretch of four holes near 565~m elevation: the −60° hole of each fan, where it crosses the plane. The −45° holes stop at 150~m, south of here, and the −75° holes never reach this far north.
 \item Press \key{,} about ten times to step the slab south, toward the collars. The other holes of each fan come into the slab, each at its own depth.
 \item Compare the stick colors with the block colors around them. Both are colored by \col{FE}; where the model honors the data, they agree. (In the demo they always do: the holes were sampled from the same rock model as the blocks.)
@@ -381,7 +381,7 @@ The demo saved a bookmark of its opening view. A \term{bookmark} holds a camera 
 \begin{tryit}
 \begin{enumerate}
 \item Choose \menu{View>Bookmarks>Ore lens — E–W section}. The camera and the half-space section return.
-\item Right-click \ui{holes · demo\_assay.csv}, open \ui{Cut by sections} and choose \ui{don't cut}. The holes are whole again.
+\item Right-click \ui{holes · demo\_assay.csv}, open \menu{Display>Cut by sections} and choose \ui{don't cut}. The holes are whole again.
 \end{enumerate}
 \end{tryit}
 
@@ -426,7 +426,7 @@ The scale bar belongs to the view frame. Resize the frame and the bar stays true
 \subsection{Add the curve}
 \begin{tryit}
 \begin{enumerate}
-\item Go to the grade–tonnage window. If the composer covers it, use \menu{View>Windows…} to bring it forward. If you closed it, right-click \file{deposit.csv}, choose \ui{Grade-tonnage…} and click \ui{Run}.
+\item Go to the grade–tonnage window. If the composer covers it, use \menu{View>Windows…} to bring it forward. If you closed it, right-click \file{deposit.csv}, choose \menu{Analyse>Grade-tonnage…} and click \ui{Run}.
 \item Click \ui{⇥ figure}.
 \item Return to the composer. The chart is on the page as a frame of its own, with its table. Arrange them below or beside the section.
 \end{enumerate}

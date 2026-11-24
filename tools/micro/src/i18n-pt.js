@@ -46,6 +46,8 @@ export default {
   'Reinterpret as…': 'Reinterpretar como…', 'Source (mapping / desurvey)…': 'Origem (mapeamento / desurvey)…',
   'New view of this layer': 'Nova vista desta camada', 'New view beside it': 'Nova vista ao lado', 'New view beside this layer': 'Nova vista ao lado desta camada',
   'Select the layer this view shows': 'Selecionar a camada que esta vista mostra',
+  // the layer menu's submenus ('Analyse' → Análise and 'Select' → Seleção are shared with the palette's groups, below)
+  'Geometry': 'Geometria', 'Views': 'Vistas', 'Display': 'Exibição', 'Data & file': 'Dados e arquivo',
   'Explode…': 'Explodir…', 'explode': 'explodir', 'Point size': 'Tamanho do ponto', 'Tint…': 'Cor…',
   'Attribute table': 'Tabela de atributos', 'Attribute table…': 'Tabela de atributos…', 'File info…': 'Informações do arquivo…', 'file info': 'informações do arquivo',
   'Filter…': 'Filtro…', 'filter': 'filtro', 'Clear filter': 'Limpar filtro', 'clear the filter': 'limpar o filtro',

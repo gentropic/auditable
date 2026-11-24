@@ -7,11 +7,11 @@ Grade–tonnage and the cross-tab say how much there is; neither says \emph{wher
 
 Three things set micro's swath apart from a static plot. Band width and offset are free after one pass, so you can tune them by eye. The bands can be striped onto the model, so the bins of the plot are slabs you can see. And the plot is a selection tool: drag across a dip in the profile and the blocks that caused it are selected in 3D.
 
-Open it from a block model's right-click menu, \ui{Swath plot…}, or press \key{⌘K} (\key{Ctrl}+\key{K} on Windows and Linux) and type \code{swath}. The window needs a block model with a block grid — regular, sub-blocked or rotated; a model opened as points has no swath. The window works as \cref{ch:analysis} describes.
+Open it from a block model's right-click menu, \menu{Analyse>Swath plot…}, or press \key{⌘K} (\key{Ctrl}+\key{K} on Windows and Linux) and type \code{swath}. The window needs a block model with a block grid — regular, sub-blocked or rotated; a model opened as points has no swath. The window works as \cref{ch:analysis} describes.
 
 \section{A first swath}\label{sec:swath-first}
 \begin{tryit}
-In the demo project, right-click \file{deposit.csv} and choose \ui{Swath plot…}.
+In the demo project, right-click \file{deposit.csv} and choose \menu{Analyse>Swath plot…}.
 \begin{enumerate}
 \item The series is \col{FE} already. In its weight field — \emph{weight expr (blank = support)} — type \code{SG}.
 \item Press \ui{Run}. The line is the tonnage-weighted mean \col{FE} of each band along X; the gray bars behind it count the blocks per band. The subtitle reads \emph{20 bands · 100 m · 1,786,620 rows}, and the profile rises from about 23\,\% at the edges to 30\,\% over the ore lens.
@@ -158,10 +158,10 @@ Dismissing the menu keeps the ghost; a click on the plot releases it.
 Once the band is a selection, every selection tool applies (\cref{ch:picking}): scope a grade–tonnage or stats window to \ui{sel} for the numbers of those bands alone, write the selection to a 0/1 column, open the attribute table on it, export it.
 
 \begin{tryit}
-With the demo's swath on the \ui{X} tab (if you skipped the first exercise: right-click \file{deposit.csv}, \ui{Swath plot…}, weight \code{SG}, \ui{Run}):
+With the demo's swath on the \ui{X} tab (if you skipped the first exercise: right-click \file{deposit.csv}, \menu{Analyse>Swath plot…}, weight \code{SG}, \ui{Run}):
 \begin{enumerate}
 \item Drag across the three or four bands where the profile peaks, and choose \ui{Select rows in …}.
-\item Right-click \file{deposit.csv} and choose \ui{Stats…} (\cref{ch:stats}).
+\item Right-click \file{deposit.csv} and choose \menu{Analyse>Stats…} (\cref{ch:stats}).
 \item Set its \ui{scope} to \ui{sel} and choose \ui{group by} \col{LITO}.
 \item Press \ui{Run}. The table lists the rock types of the high-grade bands, with their grades.
 \item Clear the selection when you are done.
@@ -180,7 +180,7 @@ The demo's lens is a good case. Its center moves west as it deepens, about 0.7~m
 The horizontal axis reads \emph{distance along trend 270° / plunge 55°}: each block's position projected on the line, in world coordinates, so the numbers are large and negative, and they grow downward and westward. Read the profile from left to right as from shallow to deep. On the demo it climbs from about 23\,\% to 29\,\% where the bands cross the lens, and falls back to 24\,\% beyond it. The few blocks of the shallowest band, at the top eastern corner of the model, are canga, which is why the profile starts above 50\,\%: the bars show how few they are.
 
 \begin{tryit}
-In the demo project, right-click \file{deposit.csv} and choose \ui{Swath plot…} (if a swath window is already open, use it).
+In the demo project, right-click \file{deposit.csv} and choose \menu{Analyse>Swath plot…} (if a swath window is already open, use it).
 \begin{enumerate}
 \item Set the \ui{direction} menu to \ui{trend / plunge}. Type \code{270} in \ui{trend} and \code{55} in \ui{plunge}.
 \item If the weight field is empty, type \code{SG} in it. Press \ui{Run}. The subtitle reads \emph{16 bands · 100 m · 1,786,620 rows}.

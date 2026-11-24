@@ -88,89 +88,61 @@ export async function confirmRemoveLayer(id) {
   removeLayerUI(id);
 }
 
-export function layerMenu(L, x, y) {
+// The layer's right-click menu. The top level is short — what you reach for most
+// (zoom, rename, show/hide, properties, table, filter) — and everything else sits in
+// a submenu named like the menubar / palette groups: Analyse · Geometry · Select ·
+// Views, then Display · Data & file · Move. A submenu with nothing in it for this
+// layer is left out. layerMenuSections(L, x, y) builds the tree (the smoke walks it,
+// so an item can't silently vanish); layerMenu opens it.
+export function layerMenuSections(L, x, y) {
   const selN = _lpSel.size;
-  menuXY(x, y, [
-    ...(selN >= 2 && _lpSel.has(L.id) ? [
-      { label: `Group ${selN} selected…`, action: async () => {
-        const v = await microPrompt('group name', 'group');
-        if (!v || !v.trim()) return;
-        const ids = lpSelIds();
-        _lpSel.clear();
-        createLayerGroup(v.trim(), ids, { collapsed: false });
-      } },
-      { label: `Rename ${selN} selected…`, action: () => openBatchRename(lpSelIds().map(layerById)) },
-      ...(() => {
-        const meshSel = lpSelIds().map(layerById).filter((x) => x && x.kind === 'mesh' && x.docs.meshDoc);
-        return meshSel.length >= 2 ? [{ label: `Export ${meshSel.length} meshes…`, action: () => openMeshExportDialog(meshSel) }] : [];
-      })(),
-      { sep: true },
-    ] : []),
-    // a VIEW: what it is, and where its file's verbs live
-    ...(isView(L) ? [{ label: `View of “${(modelOf(L) || {}).label || (modelOf(L) || {}).name}” — select it`, action: () => setActiveLayer(L.viewOf) }, { sep: true }] : []),
-    ...(L.kind === 'table' ? [] : [{ label: 'Zoom to layer', action: () => fitLayer(L) }]),
-    { label: isView(L) ? 'Rename view…' : 'Rename layer…', kbd: 'F2', action: () => renameActiveLayer(L) },
-    ...(canView(L) ? [{ label: 'New view of this layer', action: () => createView(L).catch((e) => { $('#meta').textContent = `view — ${e.message}`; }) },
-      { label: 'New view beside it', action: () => createView(L, { beside: true }).catch((e) => { $('#meta').textContent = `view — ${e.message}`; }) }] : []),
-    ...(!isView(L) && reinterpretOptions(L).length ? [{ label: 'Reinterpret as…', action: () => setTimeout(() => reinterpretMenu(L, x, y), 0) }] : []),
-    ...(!isView(L) && canReloadLayer(L) ? [{ label: 'Reload from disk', action: () => reloadLayerFromDisk(L) }] : []),
-    // a rotated Datamine model placed in world: where its local origin sits (an anonymised file carries none)
-    ...(!isView(L) && L.docs && L.docs.blockDoc && L.docs.blockDoc.header.dmRotationApplied ? [{ label: 'Datamine origin…', action: async () => { if (await setDmOrigin(L)) markProjectDirty(); } }] : []),
-    ...(canChangeFile(L) ? [{ label: 'Change file…', action: () => changeLayerFile(L) }] : []),
-    { sep: true },                                          // ── inspect / analyze ──
-    ...(hasRecords(L) ? [{ label: 'Attribute table…', kbd: 't', action: () => openAttrTable(L) }] : []),
-    ...(hasRecords(L) ? [{ label: 'Filter…', kbd: '/', action: () => { setActiveLayer(L.id); $('#filter').focus(); } }] : []),
+  const view = isView(L);
+  const dh = !!(L.dh && L.docs.dhDoc && !L.trace);
+  const grid = gridAxesOf(L);
+  const opacity = () => ({ label: `Opacity (${Math.round((L.opacity != null ? L.opacity : 1) * 100)}%)`, submenu: () => opacityMenuItems(L) });
+  const h = L.kind === 'mesh' && L.docs.meshDoc && L.docs.meshDoc.header;   // a mesh's header (null while it loads)
+
+  // ── Analyse: the analyses that apply to this kind ──
+  const analyse = [
     ...(layerTableHeader(L) && numericColsOf(L).length ? [{ label: 'Stats…', action: () => openStats(L) }, { label: 'Scatter / Q-Q…', action: () => openXyPlot(L) }] : []),
-    ...(!gridAxesOf(L) && L.dh && L.docs.dhDoc && !L.trace ? [{ label: 'Grade-tonnage…', action: () => openGradeTonnage(L) }] : []),   // length-weighted (src/analysis.js supportContextOf)
-    ...(gridAxesOf(L) ? [{ label: 'Grade-tonnage…', action: () => openGradeTonnage(L) }, { label: 'Resource cross-tab…', action: () => openCrosstab(L) }, { label: 'Swath plot…', action: () => openSwath(L) }] : []),
-    ...(!isView(L) && L.docs && L.docs.blockDoc ? [{ label: 'Model QA…', action: () => openModelQa(L) }] : []),
-    ...(gridAxesOf(L) && !isView(L) ? [{ label: 'Block vs sample…', action: () => openPairing(L) }, { label: 'Grade shell…', action: () => openGradeShell(L) }] : []),
-    ...(!isView(L) && L.dh && L.docs.dhDoc && !L.trace ? [{ label: 'Composite…', action: () => openComposite(L) }] : []),
+    ...(!grid && dh ? [{ label: 'Grade-tonnage…', action: () => openGradeTonnage(L) }] : []),   // length-weighted (src/analysis.js supportContextOf)
+    ...(grid ? [{ label: 'Grade-tonnage…', action: () => openGradeTonnage(L) }, { label: 'Resource cross-tab…', action: () => openCrosstab(L) }, { label: 'Swath plot…', action: () => openSwath(L) }] : []),
+    ...(grid && !view ? [{ label: 'Grade shell…', action: () => openGradeShell(L) }, { label: 'Block vs sample…', action: () => openPairing(L) }] : []),
     // contact analysis: grade binned by distance to a domain boundary (down the holes, or to a wireframe)
-    ...(!isView(L) && isDhLayer(L) && numericColsOf(L).length ? [{ label: 'Contact plot…', action: () => openContact(L, { mode: 'downhole' }) }] : []),
-    ...(!isView(L) && (isDhLayer(L) || isBlockLayer(L)) && numericColsOf(L).length ? [{ label: 'Distance to a surface…', action: () => openContact(L, { mode: 'surface' }) }] : []),
+    ...(!view && isDhLayer(L) && numericColsOf(L).length ? [{ label: 'Contact plot…', action: () => openContact(L, { mode: 'downhole' }) }] : []),
+    ...(!view && (isDhLayer(L) || isBlockLayer(L)) && numericColsOf(L).length ? [{ label: 'Distance to a surface…', action: () => openContact(L, { mode: 'surface' }) }] : []),
     // reconciliation: F1 / F2 / F3 totals inside the mined volume, per period (this layer = the resource model)
-    ...(!isView(L) && factorsModel(L) ? [{ label: 'Reconciliation factors…', action: () => openFactors(L) }] : []),
+    ...(!view && factorsModel(L) ? [{ label: 'Reconciliation factors…', action: () => openFactors(L) }] : []),
+    ...(!view && L.docs && L.docs.blockDoc ? [{ label: 'Model QA…', action: () => openModelQa(L) }] : []),
+    ...(!view && dh ? [{ label: 'Composite…', action: () => openComposite(L) }] : []),
+    ...(h ? [{ label: 'Mesh QA / volume…', action: () => openMeshQa(L) }] : []),
+    ...(h && !L.derivedOf ? [{ label: 'Structural analysis…', action: () => openStructure(L) }] : []),
+  ];
+
+  // ── Geometry: a surface or a solid acting on other layers, or made into another one ──
+  const geometry = [
+    ...(L.docs.gridDoc ? [{ label: 'Flag / ratio by this surface…', action: () => openSolidDialog(L) }] : []),
+    ...(h && !h.soup ? [{ label: 'Select by this solid…', action: () => openSolidDialog(L) }, { label: 'Rasterize to grid…', action: () => openMeshGridDialog(L) }] : []),
+    ...(L.docs.gridDoc || (h && !h.soup) ? [{ label: 'Extend to footprint…', action: () => openSurfaceTools('extend', L) },
+      ...(surfaceableLayers().length >= 2 ? [{ label: 'Combine surfaces…', action: () => openSurfaceTools('combine', L) }] : [])] : []),
+  ];
+
+  // ── Select: the filter and the selection, turned into each other or into a column ──
+  const select = [
     ...(L._filterMask ? [{ label: 'Filter → selection', action: () => filterToSelection(L) }] : []),
     ...(L._selCount ? [{ label: `Selection → column… (${L._selCount.toLocaleString()} rows)`, action: () => selectionToColumn(L) }] : []),
-    { label: 'File info…', action: () => { setActiveLayer(L.id); showFileInfo(); } },
-    ...(L.lineage ? [{ label: 'Lineage…', action: () => openLineageWindow(L) }] : []),
-    ...(layerTableHeader(L) ? [{ label: 'Export rows…', action: () => openExportDialog(L) }] : []),
-    { sep: true },                                          // ── derive / store ──
-    ...(!isView(L) && (L.calcCols || []).length ? [{ label: 'Materialize calc column', submenu: () => (L.calcCols || []).map((c) => ({ label: `${c.name} → stored`, action: () => materializeCalcCol(L, c.name) })) }] : []),
-    ...(L.dh && L.docs.dhDoc && !dhSetGroupOf(L.id) ? [{ label: (L.holeFilter ? '✓ ' : '') + 'Filter holes…', action: () => filterHolesLayer(L) }] : []),
-    ...(isView(L) ? [] : L.docs.blockDoc && !(L.docs.blockDoc.parquet) ? [{ label: 'Store as Parquet…', action: async () => { const res = await openOptimizeDialog([L]); if (res && res.layers.length) await convertLayerToParquet(L, { keepOriginal: res.keepOriginal }); } }] : []),
-    ...(L.docs.blockDoc && !isView(L) ? [{ label: 'Build index (stats + pushdown)…', action: () => buildLayerIndex(L) }] : []),
-    ...(L.docs.gridDoc ? [{ label: 'Surface tools', submenu: () => [
-      { label: 'Flag / ratio by this surface…', action: () => openSolidDialog(L) },
-      { label: 'Extend to footprint…', action: () => openSurfaceTools('extend', L) },
-      ...(surfaceableLayers().length >= 2 ? [{ label: 'Combine surfaces…', action: () => openSurfaceTools('combine', L) }] : []),
-      { label: 'Export grid…', action: () => openGridExportDialog(L) },
-      ...(canBuildDisplayCache(L) ? [{ label: 'Build display cache', action: () => buildDisplayCache(L) }] : []),
-    ] }] : []),
-    ...(L.kind === 'mesh' ? (() => {
-      const items = [];
-      const h = L.docs.meshDoc && L.docs.meshDoc.header;
-      if (h && !h.soup) items.push({ label: 'Select by this solid…', action: () => openSolidDialog(L) });
-      if (h && !h.soup) items.push({ label: 'Rasterize to grid…', action: () => openMeshGridDialog(L) });
-      if (h && !h.soup) items.push({ label: 'Extend to footprint…', action: () => openSurfaceTools('extend', L) });
-      if (h && !h.soup && surfaceableLayers().length >= 2) items.push({ label: 'Combine surfaces…', action: () => openSurfaceTools('combine', L) });
-      if (h) items.push({ label: 'Mesh QA / volume…', action: () => openMeshQa(L) });
-      if (h && !L.derivedOf) items.push({ label: 'Structural analysis…', action: () => openStructure(L) });
-      if (h) items.push({ label: 'Export mesh…', action: () => openMeshExportDialog([L]) });
-      if (h) {
-        const now = S.renderer.layerVramBytes(L.id);
-        if (!h.soup) {
-          const est = h.triCount * 18;                     // u16 soup: 9 coords × 2 B
-          items.push({ label: `Convert to streamed (${fmtSize(now)} → ~${fmtSize(est)})`, action: () => convertMeshLayer(L, true) });
-        } else {
-          const est = exactMeshBytes(h);
-          items.push({ label: `Convert to exact (${fmtSize(now)} → ~${fmtSize(est)})${h.triCount > CONTEXT_TRI_CAP ? ' — over the usual cap' : ''}`, action: () => convertMeshLayer(L, false) });
-        }
-      }
-      return items;
-    })() : []),
-    { sep: true },                                          // ── display ──
+  ];
+
+  // ── Views: the same model shown again ──
+  const views = canView(L) ? [
+    { label: 'New view of this layer', action: () => createView(L).catch((e) => { $('#meta').textContent = `view — ${e.message}`; }) },
+    { label: 'New view beside it', action: () => createView(L, { beside: true }).catch((e) => { $('#meta').textContent = `view — ${e.message}`; }) },
+  ] : [];
+
+  // ── Display: how this layer draws ──
+  const display = [
+    ...(L.kind !== 'mesh' && (L.docs.blockDoc || L.dh) ? [opacity()] : []),
+    ...(drawnAsPointChunks(L) ? [{ label: `Point size (×${S.renderer.layerPointScale(L.id)})`, submenu: () => pointScaleMenuItems(L) }] : []),
     ...(L.dh ? [{ label: `Stick radius… (${S.renderer.layerStickRadius(L.id)} m)`, action: async () => {
       const v = await microPrompt('stick radius (metres)', String(S.renderer.layerStickRadius(L.id)));
       const r = parseFloat(v);
@@ -180,11 +152,9 @@ export function layerMenu(L, x, y) {
         markProjectDirty(); requestRender();
       }
     } }] : []),
-    ...(L.kind !== 'mesh' && (L.docs.blockDoc || L.dh) ? [{ label: `Opacity (${Math.round((L.opacity != null ? L.opacity : 1) * 100)}%)`, submenu: () => opacityMenuItems(L) }] : []),
-    ...(drawnAsPointChunks(L) ? [{ label: `Point size (×${S.renderer.layerPointScale(L.id)})`, submenu: () => pointScaleMenuItems(L) }] : []),
     ...(L.kind === 'mesh' ? [
       { label: 'Tint…', action: () => setTimeout(() => meshTintMenu(L, x, y), 0) },
-      { label: `Opacity (${Math.round((L.opacity != null ? L.opacity : 1) * 100)}%)`, submenu: () => opacityMenuItems(L) },
+      opacity(),
     ] : []),
     ...(L.gridSurface ? [{ label: 'Drape', submenu: () => {
       const grids = S.layers.filter((g) => g !== L && g.docs && g.docs.gridDoc && g.docs.gridDoc.grid);
@@ -199,19 +169,6 @@ export function layerMenu(L, x, y) {
       })),
     }] : []),
     { label: 'Cut by sections' + secModeLabel(S.renderer.layerSectioned(L.id)), submenu: () => sectionModeItems(L) },
-    { label: L.visible ? 'Hide layer' : 'Show layer', action: () => showNode(L.id, !L.visible) },
-    { sep: true },                                          // ── arrange / lifecycle ──
-    { label: 'Move', submenu: () => [
-      { label: 'Up', action: () => treeMoveStep(L.id, -1) },
-      { label: 'Down', action: () => treeMoveStep(L.id, 1) },
-      { label: 'To group…', action: () => setTimeout(() => moveLayerToGroupMenu(L, x, y), 0) },
-    ] },
-    ...(!isView(L) && canCopyIntoProject(L) ? [{
-      label: `Copy into project (${fmtSize(layerBytes(L))})`,
-      action: () => copyLayerIntoProject(L),
-    }] : []),
-    { label: isView(L) ? 'Remove view' : 'Remove layer', action: () => confirmRemoveLayer(L.id) },
-    { sep: true },
     // a style travels by NAME (src/style-clip.js): onto another layer, another model, another project
     { label: 'Style', submenu: () => [
       { label: 'Copy style', action: () => copyStyle(L) },
@@ -219,9 +176,76 @@ export function layerMenu(L, x, y) {
       { label: 'Save style…', action: () => saveStyleFile(L) },
       { label: 'Load style…', action: () => loadStyleFile(L) },
     ] },
+  ];
+
+  // ── Data & file: where the layer comes from, how it is stored, and what leaves it ──
+  const data = [
+    ...(!view && reinterpretOptions(L).length ? [{ label: 'Reinterpret as…', action: () => setTimeout(() => reinterpretMenu(L, x, y), 0) }] : []),
+    ...(!view && canReloadLayer(L) ? [{ label: 'Reload from disk', action: () => reloadLayerFromDisk(L) }] : []),
+    ...(canChangeFile(L) ? [{ label: 'Change file…', action: () => changeLayerFile(L) }] : []),
+    // a rotated Datamine model placed in world: where its local origin sits (an anonymised file carries none)
+    ...(!view && L.docs && L.docs.blockDoc && L.docs.blockDoc.header.dmRotationApplied ? [{ label: 'Datamine origin…', action: async () => { if (await setDmOrigin(L)) markProjectDirty(); } }] : []),
+    ...(L.dh && L.docs.dhDoc && !dhSetGroupOf(L.id) ? [{ label: (L.holeFilter ? '✓ ' : '') + 'Filter holes…', action: () => filterHolesLayer(L) }] : []),
+    ...(!view && (L.calcCols || []).length ? [{ label: 'Materialize calc column', submenu: () => (L.calcCols || []).map((c) => ({ label: `${c.name} → stored`, action: () => materializeCalcCol(L, c.name) })) }] : []),
+    ...(view ? [] : L.docs.blockDoc && !(L.docs.blockDoc.parquet) ? [{ label: 'Store as Parquet…', action: async () => { const res = await openOptimizeDialog([L]); if (res && res.layers.length) await convertLayerToParquet(L, { keepOriginal: res.keepOriginal }); } }] : []),
+    ...(L.docs.blockDoc && !view ? [{ label: 'Build index (stats + pushdown)…', action: () => buildLayerIndex(L) }] : []),
+    ...(h ? (() => {                                       // the mesh tier: exact (indexed f32) ⇄ streamed (u16 soup)
+      const now = S.renderer.layerVramBytes(L.id);
+      if (!h.soup) return [{ label: `Convert to streamed (${fmtSize(now)} → ~${fmtSize(h.triCount * 18)})`, action: () => convertMeshLayer(L, true) }];   // u16 soup: 9 coords × 2 B
+      return [{ label: `Convert to exact (${fmtSize(now)} → ~${fmtSize(exactMeshBytes(h))})${h.triCount > CONTEXT_TRI_CAP ? ' — over the usual cap' : ''}`, action: () => convertMeshLayer(L, false) }];
+    })() : []),
+    ...(L.docs.gridDoc && canBuildDisplayCache(L) ? [{ label: 'Build display cache', action: () => buildDisplayCache(L) }] : []),
+    ...(!view && canCopyIntoProject(L) ? [{ label: `Copy into project (${fmtSize(layerBytes(L))})`, action: () => copyLayerIntoProject(L) }] : []),
+    ...(layerTableHeader(L) ? [{ label: 'Export rows…', action: () => openExportDialog(L) }] : []),
+    ...(h ? [{ label: 'Export mesh…', action: () => openMeshExportDialog([L]) }] : []),
+    ...(L.docs.gridDoc ? [{ label: 'Export grid…', action: () => openGridExportDialog(L) }] : []),
+    { label: 'File info…', action: () => { setActiveLayer(L.id); showFileInfo(); } },
+    ...(L.lineage ? [{ label: 'Lineage…', action: () => openLineageWindow(L) }] : []),
+  ];
+
+  const sub = (label, items) => (items.length ? [{ label, submenu: () => items }] : []);
+  return [
+    ...(selN >= 2 && _lpSel.has(L.id) ? [
+      { label: `Group ${selN} selected…`, action: async () => {
+        const v = await microPrompt('group name', 'group');
+        if (!v || !v.trim()) return;
+        const ids = lpSelIds();
+        _lpSel.clear();
+        createLayerGroup(v.trim(), ids, { collapsed: false });
+      } },
+      { label: `Rename ${selN} selected…`, action: () => openBatchRename(lpSelIds().map(layerById)) },
+      ...(() => {
+        const meshSel = lpSelIds().map(layerById).filter((m) => m && m.kind === 'mesh' && m.docs.meshDoc);
+        return meshSel.length >= 2 ? [{ label: `Export ${meshSel.length} meshes…`, action: () => openMeshExportDialog(meshSel) }] : [];
+      })(),
+      { sep: true },
+    ] : []),
+    // a VIEW: what it is, and where its file's verbs live
+    ...(view ? [{ label: `View of “${(modelOf(L) || {}).label || (modelOf(L) || {}).name}” — select it`, action: () => setActiveLayer(L.viewOf) }, { sep: true }] : []),
+    ...(L.kind === 'table' ? [] : [{ label: 'Zoom to layer', action: () => fitLayer(L) }]),
+    { label: view ? 'Rename view…' : 'Rename layer…', kbd: 'F2', action: () => renameActiveLayer(L) },
+    { label: L.visible ? 'Hide layer' : 'Show layer', action: () => showNode(L.id, !L.visible) },
     { label: 'Properties…', action: () => { setActiveLayer(L.id); openProps(); } },
-  ]);
+    ...(hasRecords(L) ? [{ label: 'Attribute table…', kbd: 't', action: () => openAttrTable(L) }] : []),
+    ...(hasRecords(L) ? [{ label: 'Filter…', kbd: '/', action: () => { setActiveLayer(L.id); $('#filter').focus(); } }] : []),
+    { sep: true },
+    ...sub('Analyse', analyse),
+    ...sub('Geometry', geometry),
+    ...sub('Select', select),
+    ...sub('Views', views),
+    { sep: true },
+    ...sub('Display', display),
+    ...sub('Data & file', data),
+    { label: 'Move', submenu: () => [
+      { label: 'Up', action: () => treeMoveStep(L.id, -1) },
+      { label: 'Down', action: () => treeMoveStep(L.id, 1) },
+      { label: 'To group…', action: () => setTimeout(() => moveLayerToGroupMenu(L, x, y), 0) },
+    ] },
+    { label: view ? 'Remove view' : 'Remove layer', action: () => confirmRemoveLayer(L.id) },
+  ];
 }
+
+export function layerMenu(L, x, y) { menuXY(x, y, layerMenuSections(L, x, y)); }
 
 // tier conversion: re-open the SAME blob through the other tier, keeping the
 // layer's identity (id, label, style, visibility, section exemption). Exact

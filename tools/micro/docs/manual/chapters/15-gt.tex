@@ -5,13 +5,13 @@
 
 Grade–tonnage answers the first question anyone asks of a block model: \emph{how much is there above a given grade, and at what grade?} micro computes the curve exactly, at any model size, from the source file — every block weighted by its own volume and density.
 
-Open it from a block model's (or a drillhole layer's) right-click menu, \ui{Grade-tonnage…}, or press \key{⌘K} (\key{Ctrl}+\key{K} on Windows and Linux) and type \code{grade}. The window works as \cref{ch:analysis} describes; this chapter covers what is particular to grade–tonnage.
+Open it from a block model's (or a drillhole layer's) right-click menu, \menu{Analyse>Grade-tonnage…}, or press \key{⌘K} (\key{Ctrl}+\key{K} on Windows and Linux) and type \code{grade}. The window works as \cref{ch:analysis} describes; this chapter covers what is particular to grade–tonnage.
 
 \section{A first curve}\label{sec:gt-first}
 The demo project opens with a grade–tonnage window already run on \file{deposit.csv}, floating at the right of the view. It is set up the way a report needs it: \col{FE} as the grade, declared in \%, and \col{SG} as the density. So its left axis reads \emph{tonnage (t)}, and the subtitle \emph{tonnes · 40 cutoffs · 1,786,620 rows}.
 
 \begin{tryit}
-Open the demo project and find the grade–tonnage window at the right of the view. (If you closed it, right-click \file{deposit.csv}, choose \ui{Grade-tonnage…} and press \ui{Run}.)
+Open the demo project and find the grade–tonnage window at the right of the view. (If you closed it, right-click \file{deposit.csv}, choose \menu{Analyse>Grade-tonnage…} and press \ui{Run}.)
 \begin{enumerate}
 \item Read the series box: the layer \file{deposit.csv}, the grade column \col{FE} with its unit \ui{\%} beside it, and \col{SG} in the field below — \emph{density expr (blank = count)}. Under \ui{display}, the plot \ui{unit} is \ui{\%} too.
 \item Change \ui{cutoffs} from 40 to 20. The curve redraws at once — no new pass.
@@ -111,7 +111,7 @@ To read a single cutoff precisely in the window, copy the table (\ui{⧉ table})
 Each\index{grade–tonnage!comparing models} series picks its own layer, so you compare two models, or two domains of one, in a single window.
 
 \begin{tryit}
-With the demo's grade–tonnage window open (right-click \file{deposit.csv}, \ui{Grade-tonnage…}, if you closed it):
+With the demo's grade–tonnage window open (right-click \file{deposit.csv}, \menu{Analyse>Grade-tonnage…}, if you closed it):
 \begin{enumerate}
 \item Click \ui{+ add series}. A second series appears on the window's layer, with its first numeric column (\col{FE}) and an empty filter.
 \item In its density field type \code{SG}.
@@ -126,7 +126,7 @@ With two block models loaded — this estimate and the previous one, kriging and
 The two models need not share a lattice, a block size or even a format, because each series is weighed by its own layer's block volumes. So when a re-blocked model changes the curve, you are looking at the support effect — larger blocks, less variance, fewer tonnes above a high cutoff — not at an artifact of the tool.
 
 \section{On a drillhole layer}\label{sec:gt-holes}
-Grade–tonnage also runs on a drillhole interval table: right-click the drillhole layer and choose \ui{Grade-tonnage…}, or make it active, press \key{⌘K} and type \code{grade}. The window is the same; what it adds up is not.
+Grade–tonnage also runs on a drillhole interval table: right-click the drillhole layer and choose \menu{Analyse>Grade-tonnage…}, or make it active, press \key{⌘K} and type \code{grade}. The window is the same; what it adds up is not.
 
 A drillhole interval has no block volume. It weighs its length, TO − FROM, so the curve is \emph{meters of drilling above the cutoff}, on an axis labeled \emph{length (m)}, with the subtitle \emph{length-weighted (m)}. The mean grade is length-weighted, as a composite's would be, and the table's last column is the \term{accumulation}, grade × length (\%·m, g/t·m) — the number a drill intercept is quoted in.
 

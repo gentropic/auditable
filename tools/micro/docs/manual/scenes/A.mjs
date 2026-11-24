@@ -177,6 +177,9 @@ export const SCENES = {
     const r = await h.p.locator(rowSel('deposit.csv')).first().boundingBox();
     await h.p.mouse.click(r.x + 60, r.y + r.height / 2, { button: 'right' });
     await h.p.waitForSelector('.menu');
+    // with Analyse open: the top level and one submenu in the same shot
+    await h.p.locator('.menu .item:has-text("Analyse")').first().hover();
+    await h.p.waitForFunction(() => document.querySelectorAll('.menu').length >= 2);
     return {
       clip: await clipOf(h, ['#layersPanel .lp-head', '#lpRows', '.menu'], 6), blankOk: true, wait: 500,
       after: async () => { await h.p.keyboard.press('Escape'); await h.p.setViewportSize({ width: 1440, height: 900 }); await h.p.waitForTimeout(400); },

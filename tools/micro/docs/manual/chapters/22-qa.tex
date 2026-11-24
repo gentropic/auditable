@@ -15,7 +15,7 @@ The three share a design. Each reads the data once and changes nothing. Each lis
 
 \section{Model QA}\label{sec:qa-model}
 
-Right-click a block model and choose \menu{Model QA…}, or press \key{⌘K} and type \code{model QA}. The window opens and starts reading at once; its subtitle counts blocks as it goes, and ends as \emph{clean}, \emph{N to look at} or \emph{N errors}.
+Right-click a block model and choose \menu{Analyse>Model QA…}, or press \key{⌘K} and type \code{model QA}. The window opens and starts reading at once; its subtitle counts blocks as it goes, and ends as \emph{clean}, \emph{N to look at} or \emph{N errors}.
 
 \shot{qa-model}{Model QA on a deliberately damaged copy of the demo deposit — four grades set to −99, one block written twice, one density of zero and five blocks removed from the middle of two columns. The findings are above, worst first; the census of every column below; the model's summary on the rail.}
 
@@ -60,7 +60,7 @@ A sentinel is the most dangerous of these. A missing value written as \code{-99}
 
 \subsection{From a finding to its blocks}
 
-Click a finding. For most, the last cell of the row changes to a count — “212 selected” — and those blocks are now the selection: gold in the view, ready for the attribute table's selection view, for \menu{Selection → column…} to mark them permanently, or for a filter (\cref{ch:picking}).
+Click a finding. For most, the last cell of the row changes to a count — “212 selected” — and those blocks are now the selection: gold in the view, ready for the attribute table's selection view, for \menu{Select>Selection → column…} on the layer's menu to mark them permanently, or for a filter (\cref{ch:picking}).
 
 A gap has no blocks to select, because the blocks are not there. Clicking it steps the camera to an example instead, and the cell counts where you are — “3 / 200”. Click again for the next.
 
@@ -70,7 +70,7 @@ The rail summarizes the model — blocks, columns, the grid's dimensions, the pe
 
 \begin{tryit}
 \begin{enumerate}
-\item Open the demo project, right-click \file{deposit.csv} and choose \menu{Model QA…}.
+\item Open the demo project, right-click \file{deposit.csv} and choose \menu{Analyse>Model QA…}.
 \item Read the rail: 1,786,620 blocks on a 200×100×100 grid, 89.3\% of its cells filled. The demo deposit has a pit carved out of its top, so it does not fill its box.
 \item The subtitle and the verdict read \emph{clean}, and the findings say \emph{nothing to report}. The pit was cut bench by bench from the top down, so no vertical column of blocks has a gap inside it — a model that does not fill its box is not, by itself, a finding.
 \item Scroll to the census. Find \col{SG}, marked \emph{(density)}, and read its minimum and maximum; find \col{LITO} and read how many distinct values it has: four.
@@ -79,7 +79,7 @@ The rail summarizes the model — blocks, columns, the grid's dimensions, the pe
 
 \section{Drillhole QA}\label{sec:qa-dh}
 
-A drillhole set is three kinds of table that must agree with each other (\cref{ch:drillholes}), and most of what goes wrong is a disagreement: a survey for a hole that has no collar, an interval deeper than the hole. Right-click a drillhole set in the layers panel and choose \menu{QA report…}, or find \emph{Drillhole QA report} in the command palette.
+A drillhole set is three kinds of table that must agree with each other (\cref{ch:drillholes}), and most of what goes wrong is a disagreement: a survey for a hole that has no collar, an interval deeper than the hole. Right-click a drillhole set in the layers panel and choose \menu{Analyse>QA report…}, or find \emph{Drillhole QA report} in the command palette.
 
 The report reads the set's own files — the collar table, the survey table, and \emph{every} interval table in the set — and lists each problem at its table and row.
 
@@ -131,12 +131,12 @@ The second tab, \ui{values}, is a census of every interval column except the hol
 \begin{tryit}
 The demo's drillholes are clean, so this exercise breaks a copy of them on purpose.
 \begin{enumerate}
-\item In the demo project, right-click the drillhole set in the layers panel and choose \menu{QA report…}. The subtitle reads \emph{12 holes · 0 errors · 0 warnings · 0 notes}, and the rail says \emph{nothing to report}.
+\item In the demo project, right-click the drillhole set in the layers panel and choose \menu{Analyse>QA report…}. The subtitle reads \emph{12 holes · 0 errors · 0 warnings · 0 notes}, and the rail says \emph{nothing to report}.
 \item Open the \ui{values} tab and find \col{FE}: every row is a number, none blank.
 \item Save the project to a folder (\menu{File>Save project}, in Chrome or Edge; \cref{ch:projects}). Its \file{drillholes} folder now holds \file{demo\_collars.csv}, \file{demo\_survey.csv} and \file{demo\_assay.csv}.
 \item Outside micro, copy the three files and name the copies \file{broken\_collars.csv}, \file{broken\_survey.csv} and \file{broken\_assay.csv}. In a text editor or spreadsheet, make two mistakes: in \file{broken\_assay.csv}, change the \col{FROM} of DH005's interval from 40 to 38, so it overlaps the one above it; in \file{broken\_collars.csv}, delete DH012's row.
 \item Drag the three copies into micro. The open dialog recognizes them as a collar, a survey and an interval table; add them as a second drillhole set beside the demo's.
-\item Right-click the new set and choose \menu{QA report…}. The subtitle now reads \emph{11 holes · 106 errors}. One missing collar has orphaned all of DH012's rows — two survey stations and 103 intervals — and the overlap is a single row among them.
+\item Right-click the new set and choose \menu{Analyse>QA report…}. The subtitle now reads \emph{11 holes · 106 errors}. One missing collar has orphaned all of DH012's rows — two survey stations and 103 intervals — and the overlap is a single row among them.
 \item Under \ui{checks}, click \emph{intervals overlapping an earlier one in the same hole}. The table shows one row: \file{broken\_assay.csv}, DH005, 38–45, overlapping the row above. Click it: the camera goes to DH005 and its intervals are selected.
 \end{enumerate}
 A collar row that is present but cannot be placed is reported once, at its own row; a collar that is missing altogether leaves nothing to report it at, so every row of its hole is reported instead. Either way, one fix in the collar table clears them all.
@@ -144,7 +144,7 @@ A collar row that is present but cannot be placed is reported once, at its own r
 
 \section{Mesh QA \& volume}\label{sec:qa-mesh}
 
-A wireframe that is going to bound an estimate has to be a solid. Right-click a mesh and choose \menu{Mesh QA / volume…}, or use the command palette. The report answers four questions: is it closed, is it one piece, do its faces agree, and what does it hold.
+A wireframe that is going to bound an estimate has to be a solid. Right-click a mesh and choose \menu{Analyse>Mesh QA / volume…}, or use the command palette. The report answers four questions: is it closed, is it one piece, do its faces agree, and what does it hold.
 
 \shot{qa-mesh}{A box-shaped solid with one triangle missing: its three boundary edges make it not watertight, so the rail gives no volume. The issue row has been clicked once and reads “1 / 3”; each click steps the camera to the next edge.}
 
@@ -190,11 +190,11 @@ Many CAD exports write every triangle with three vertices of its own. Such a mes
 
 The window ends with the usual results row (\cref{sec:analysis-results}): \ui{⧉ table} copies the shell table, with each shell's bounding box, for a report or a spreadsheet; \ui{⇥ layer} keeps it as a table layer; \ui{⇥ figure} puts it on the composer page.
 
-Two limits. Self-intersections — faces that cross without sharing an edge — are not checked yet, and the window says so. And a mesh drawn streamed keeps no triangles on the page; the report asks you to \menu{Convert to exact} first (\cref{ch:meshes}).
+Two limits. Self-intersections — faces that cross without sharing an edge — are not checked yet, and the window says so. And a mesh drawn streamed keeps no triangles on the page; the report asks you to \menu{Data \& file>Convert to exact} first (\cref{ch:meshes}).
 
 \begin{tryit}
 \begin{enumerate}
-\item In the demo project, right-click \ui{ore shell} and choose \menu{Mesh QA / volume…}.
+\item In the demo project, right-click \ui{ore shell} and choose \menu{Analyse>Mesh QA / volume…}.
 \item Read the rail: \emph{watertight ✓ yes}, \emph{faces ✓ one way}, one shell of 728 triangles, and a volume of about 54.2 million cubic meters. That is more than the 81,552 blocks inside the shell hold (\cref{ch:geometry}) — 40.8 million at 500\,m³ a block — because the top of the shell reaches up into the pit the demo has already mined out, where there are no blocks.
 \item Type \code{4.2} in \ui{density}. The rail now shows the tonnes the shell would hold at 4.2 t/m³, about 228 million — a quick upper bound to hold against the grade–tonnage curve of the blocks inside it (\cref{ch:geometry,ch:gt}).
 \item Run the same report on \ui{phase 1 — starter pit}. A pit surface is an open sheet: 324 boundary edges all round its rim, \emph{watertight ✗ no}, and no volume.

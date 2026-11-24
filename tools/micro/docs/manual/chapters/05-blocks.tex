@@ -23,15 +23,15 @@ A row with a blank coordinate is not drawn, since it has nowhere to go, and is n
 
 Some files are not block models, or not regular ones: a model exported with rounded coordinates, a cloud of estimation points, a model whose sub-blocks follow no simple rule. micro does not force a grid onto them. The layer opens as \term{points}: one dot per row, colored, filterable and pickable like any model, with statistics and export available. Grade–tonnage, swath, the cross-tab and grade shells are not offered, because a dot has no volume.
 
-You can also choose points deliberately, for a quick look at a huge model or when you suspect the detected grid is wrong: \ui{Open as} \ui{points} in the open dialog, or \menu{Reinterpret as…>points} on the layer (\cref{sec:opening-openas,sec:opening-reinterpret}).
+You can also choose points deliberately, for a quick look at a huge model or when you suspect the detected grid is wrong: \ui{Open as} \ui{points} in the open dialog, or \menu{Data \& file>Reinterpret as…>points} on the layer's menu (\cref{sec:opening-openas,sec:opening-reinterpret}).
 
 \section{Looking at a model}\label{sec:blocks-display}
 
 Blocks are drawn as boxes with their real faces, so a model reads as a solid and a thin section reads as a painted wall. Four display choices belong to the model, not to its colors:
 
 \begin{itemize}
-\item \textbf{Block edges} outline every block, and every cut block on a section. \sidekey{⇧B}{block edges on or off, for every model} \key{⇧B} toggles them for the whole view; \ui{Block edges} on a layer's right-click menu overrides that for one model (\ui{auto}, \ui{on}, \ui{off}).
-\item \textbf{Opacity} on the layer's menu (100, 75, 50 or 25\,\%) makes a model see-through, for a shell or drillholes inside it.
+\item \textbf{Block edges} outline every block, and every cut block on a section. \sidekey{⇧B}{block edges on or off, for every model} \key{⇧B} toggles them for the whole view; \menu{Display>Block edges} on a layer's right-click menu overrides that for one model (\ui{auto}, \ui{on}, \ui{off}).
+\item \textbf{Opacity} (\menu{Display>Opacity} on the layer's menu: 100, 75, 50 or 25\,\%) makes a model see-through, for a shell or drillholes inside it.
 \item \textbf{Boxes or points} for all models at once is in the \ui{View} menu: \ui{Blocks as points} draws fixed splats and is snappier on a weak graphics card; \ui{Blocks as boxes} returns to true faces.
 \item \textbf{Point size} (×1 to ×8) appears on the menu of a model drawn as points.
 \end{itemize}
@@ -114,7 +114,7 @@ Five things are not available yet, and micro refuses each with a reason instead 
 \index{Datamine .dm!rotated}\index{rotated model!Datamine}
 A Datamine model states its rotation in its header: up to three angles \col{ANGLE1}–\col{ANGLE3}, each about an axis \col{ROTAXIS1}–\col{ROTAXIS3} (1 = X, 2 = Y, 3 = Z). Its \col{XC} \col{YC} \col{ZC} are stored in the model's own, unrotated frame. A model with \emph{one} rotation, \col{ANGLE1} about Z, is placed in world coordinates: \col{ANGLE1} turns the model's axes clockwise seen from above, so \code{ANGLE1 = -50} puts the model's X axis at N40°E, and a block's world position is the model's origin plus the rotated \col{XC} \col{YC} \col{ZC}. The convention was checked on a real export, whose block bounds it reproduces to the centimetre. The status line names the rotation and the origin.
 
-The origin is where the model's local (0, 0, 0) sits in the world. micro takes it from the header's \col{X0} \col{Y0} \col{Z0}. A file that carries none, as an anonymised export does, opens about (0, 0, 0), and the status line says so. Type the origin in the open dialog, where a rotated \file{.dm} row shows \ui{origin X Y Z} filled in from the file, or set it later with \ui{Datamine origin…} on the layer's right-click menu (or the command palette). The model moves; the origin is saved with the project.
+The origin is where the model's local (0, 0, 0) sits in the world. micro takes it from the header's \col{X0} \col{Y0} \col{Z0}. A file that carries none, as an anonymised export does, opens about (0, 0, 0), and the status line says so. Type the origin in the open dialog, where a rotated \file{.dm} row shows \ui{origin X Y Z} filled in from the file, or set it later with \menu{Data \& file>Datamine origin…} on the layer's right-click menu (or the command palette). The model moves; the origin is saved with the project.
 
 From then on the coordinate \emph{columns} mean what they mean for any other model: \col{XC} \col{YC} \col{ZC} read in world coordinates, everywhere. A filter \code{XC > 432900}, a swath, statistics, a selection by solid, the record panel, an export: all of them see the world value. The record panel also lists the model's own coordinates beside them, as \ui{XC · model frame} and so on. Volumes are unchanged, since a rotation keeps them.
 
@@ -147,7 +147,7 @@ Parquet\index{Parquet!block models} is a columnar file format: values are stored
 \subsection{Store as Parquet…}\label{sec:blocks-optimize}
 
 \index{Parquet!Store as Parquet}\index{optimize to spatial Parquet}
-Right-click a CSV or \file{.dm} model and choose \ui{Store as Parquet…}. The dialog, \ui{store block models as Parquet}, lists the model with its size and block count, and what will happen to it: \ui{→ Morton-sorted (spatial index)}.
+Right-click a CSV or \file{.dm} model and choose \menu{Data \& file>Store as Parquet…}. The dialog, \ui{store block models as Parquet}, lists the model with its size and block count, and what will happen to it: \ui{→ Morton-sorted (spatial index)}.
 
 \shot[0.75\linewidth]{blocks-store-parquet}{The \ui{store block models as Parquet} dialog for the demo deposit: what will be converted, how, and whether the original stays.}
 
@@ -175,7 +175,7 @@ The same conversion is offered when you save a project. Tick \ui{do this automat
 
 \subsection{Build index}
 
-A model you would rather keep as CSV or \file{.dm} can still be made quick to filter. \ui{Build index (stats + pushdown)…} on its menu streams the model once and records, for consecutive stretches of the file, each column's range. A later filter then skips the stretches that cannot match, as Parquet's footer allows. The index is written as a small file beside the model on the next project save (\cref{ch:store}); delete it and micro scans again.
+A model you would rather keep as CSV or \file{.dm} can still be made quick to filter. \menu{Data \& file>Build index (stats + pushdown)…} on its menu streams the model once and records, for consecutive stretches of the file, each column's range. A later filter then skips the stretches that cannot match, as Parquet's footer allows. The index is written as a small file beside the model on the next project save (\cref{ch:store}); delete it and micro scans again.
 
 \section{Which format to keep a model in}\label{sec:blocks-which}
 
@@ -201,7 +201,7 @@ Keep the original when it is the record of what you were sent. A project is a pl
 
 A \term{grade shell} is the surface that encloses every block at or above a cutoff: the three-dimensional equivalent of a contour line. It answers ``where is the material above 55\,\% Fe, as a shape?'', and it gives you that shape as a solid you can measure and reuse.
 
-Right-click a block model and choose \ui{Grade shell…} (or press \key{⌘K} and type \code{shell}). The window has four settings and one button.
+Right-click a block model and choose \menu{Analyse>Grade shell…} (or press \key{⌘K} and type \code{shell}). The window has four settings and one button.
 
 \begin{table}[htbp]
 \small
@@ -225,11 +225,11 @@ The surface passes between block centers where the grade crosses the cutoff; mic
 \begin{tryit}
 Make a high-grade shell in the demo.
 \begin{enumerate}
-\item Right-click \file{deposit.csv} and choose \ui{Grade shell…}.
+\item Right-click \file{deposit.csv} and choose \menu{Analyse>Grade shell…}.
 \item Leave \ui{column} on \col{FE}, type \code{60} for the cutoff, and click \ui{Make shell}.
 \item The window reports \ui{62,232 triangles around 11,029 blocks}: every block at or above 60\,\% Fe, which is the 11,013 of the demo's \code{HEMATITE} core and 16 itabirite blocks. A layer \ui{FE ≥ 60 shell} appears. Hide \file{deposit.csv} with its eye (or press \key{h} with it active) to see the shell by itself.
 \item Set \ui{smoothing} to \ui{light} and click \ui{Make shell} again. A second layer, \ui{FE ≥ 60 shell (smoothed ×1)}, appears with about half the triangles (32,212). Compare the two shells by toggling their eyes.
-\item Right-click a shell and choose \ui{Mesh QA / volume…}: it is watertight, and it has a volume.
+\item Right-click a shell and choose \menu{Analyse>Mesh QA / volume…}: it is watertight, and it has a volume.
 \end{enumerate}
 \end{tryit}
 
@@ -258,6 +258,6 @@ The tool is \code{shell}. A re-run replaces the shell an earlier run made instea
 
 Two tools that belong to block models are described elsewhere.
 
-\textbf{Model QA.} Before anyone reports from a model, run \ui{Model QA…} from its menu. It reads the model once and lists what a reviewer should see: duplicate blocks, centroids off the grid, gaps inside a column of blocks, blanks, sentinel codes such as \code{-99} read as numbers, densities outside a plausible range, and outliers. Click a finding to select its blocks; the report changes nothing in the model (\cref{ch:qa}).
+\textbf{Model QA.} Before anyone reports from a model, run \menu{Analyse>Model QA…} from its menu. It reads the model once and lists what a reviewer should see: duplicate blocks, centroids off the grid, gaps inside a column of blocks, blanks, sentinel codes such as \code{-99} read as numbers, densities outside a plausible range, and outliers. Click a finding to select its blocks; the report changes nothing in the model (\cref{ch:qa}).
 
 \textbf{Empty models and common grids.} \menu{Data>New grid / block model…} makes a model that does not exist yet: a blank lattice to paint domains into, or one that two models of different block sizes can both be compared on. It works from typed parameters, from the extent of a layer, or by covering several compatible models at once (\cref{sec:grids-new}; the reconciliation it serves is in \cref{ch:joins}).

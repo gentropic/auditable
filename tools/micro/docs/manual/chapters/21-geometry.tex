@@ -10,14 +10,14 @@ A wireframe says where something is. A block model, a set of composites or a dri
 \item \menu{Tools>Assign domains…} classifies a block model against \emph{several} solids at once and writes one domain column.
 \end{itemize}
 
-Both are also in the command palette (\key{⌘K}, type \code{solid} or \code{domains}), and the first opens from a layer's own menu with that layer already chosen: \menu{Select by this solid…} on a mesh, \menu{Surface tools>Flag / ratio by this surface…} on a grid.
+Both are also in the command palette (\key{⌘K}, type \code{solid} or \code{domains}), and the first opens from a layer's own menu with that layer already chosen: \menu{Geometry>Select by this solid…} on a mesh, \menu{Geometry>Flag / ratio by this surface…} on a grid.
 
 \section{What counts as geometry}\label{sec:geometry-kinds}
 
 The \ui{geometry} list at the top of the dialog holds every layer that can classify:
 
 \begin{description}
-\item[A mesh held exactly] — a wireframe from \file{.msh}, \file{.obj}, \file{.dxf}, a Datamine pair, a small \file{.ply} (\cref{ch:meshes}). A very large mesh drawn \emph{streamed} keeps no triangles on the page and is not offered; convert it first with \menu{Convert to exact} on its menu.
+\item[A mesh held exactly] — a wireframe from \file{.msh}, \file{.obj}, \file{.dxf}, a Datamine pair, a small \file{.ply} (\cref{ch:meshes}). A very large mesh drawn \emph{streamed} keeps no triangles on the page and is not offered; convert it first with \menu{Data \& file>Convert to exact} on its menu.
 \item[A grid] — a GeoTIFF, Surfer or ESRI ASCII surface (\cref{ch:grids}), marked ▦ in the list.
 \end{description}
 
@@ -37,7 +37,7 @@ the dialog says & the choices under \ui{which} \\ \midrule
 A mesh with any boundary edges — edges that belong to one triangle only — is treated as an open surface. That is right for topography and wrong for an ore shell with a few pinholes left by an export. For the second case a \ui{volume} row appears with one checkbox, \ui{treat as closed volume}. Tick it and the mesh is evaluated as a solid; the pinholes are bridged by the winding number, described next.
 
 \begin{tip}
-Not sure whether a wireframe is closed? \menu{Mesh QA / volume…} on its menu tells you, and steps the camera to each hole (\cref{ch:qa}).
+Not sure whether a wireframe is closed? \menu{Analyse>Mesh QA / volume…} on its menu tells you, and steps the camera to each hole (\cref{ch:qa}).
 \end{tip}
 
 \section{How “inside” is decided}\label{sec:geometry-winding}
@@ -142,7 +142,7 @@ Fractions need a regular block model, axis-aligned or rotated. On a rotated mode
 
 \begin{tryit}
 \begin{enumerate}
-\item Open the demo project. Right-click \ui{ore shell} in the layers panel and choose \menu{Select by this solid…}. The dialog reports \emph{closed solid — inside / outside apply}.
+\item Open the demo project. Right-click \ui{ore shell} in the layers panel and choose \menu{Geometry>Select by this solid…}. The dialog reports \emph{closed solid — inside / outside apply}.
 \item Leave \ui{do} on \ui{select} and \ui{which} on \ui{inside}. Under \ui{layers}, tick \file{deposit.csv} and the drillholes (\ui{holes · demo\_assay.csv}) and untick anything else.
 \item Press \ui{Run}. The blocks and intervals inside the shell turn gold — 81,552 blocks and 267 of the 951 intervals.
 \item Press \key{Esc} to clear the selection.
@@ -176,7 +176,7 @@ To reuse the winding number, micro closes the surface. From every boundary edge 
 \caption{An open surface closed for \ui{below}: vertical walls from its boundary down to a flat cap far below. A point under the surface is inside the closed body. A point outside the surface's footprint is on neither side, and is left unclassified.}\label{fig:geometry-skirt}
 \end{figure}
 
-A record that lies beyond the surface's footprint — east of where the topography was surveyed, say — is neither above nor below it. micro leaves such records unclassified instead of extending the surface by guesswork. If your surface is smaller than your model, extend it first: \menu{Extend to footprint…} on the surface's menu (\cref{ch:grids}).
+A record that lies beyond the surface's footprint — east of where the topography was surveyed, say — is neither above nor below it. micro leaves such records unclassified instead of extending the surface by guesswork. If your surface is smaller than your model, extend it first: \menu{Geometry>Extend to footprint…} on the surface's menu (\cref{ch:grids}).
 
 \ui{between} needs a second surface. Choosing it adds a \ui{lower} row listing the other open surfaces, and a note stating the meaning precisely: \emph{between = below the first surface and above this one}. Pick topography as the geometry and the base of oxidation as \ui{lower}, and the records flagged are the oxide zone. If no second surface is loaded, the dialog says so and \ui{Run} stays disabled.
 

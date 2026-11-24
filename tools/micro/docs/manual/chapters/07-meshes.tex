@@ -57,10 +57,10 @@ micro can hold a mesh in two forms. For a large mesh the choice decides whether 
 
 A mesh of up to two million triangles opens exact. A larger one opens streamed, so that a 30-million-triangle photogrammetric outcrop does not exhaust the machine before you have seen it. Very large \file{.obj}, \file{.lfm} and \file{.dxf} files likewise open as one streamed mesh, and the open dialog says so in the file's description.
 
-The layer's right-click menu converts between the two with \ui{Convert to streamed} and \ui{Convert to exact}, and states the cost before you commit: each item is followed by the memory the layer uses now and an estimate of what it will use after. Converting a mesh above the cap to exact asks for confirmation, with the triangle count and the memory it will take. There is no hard ceiling. On a workstation, loading a 20-million-triangle mesh exactly is a reasonable thing to want; on a phone it is not.
+The layer's right-click menu converts between the two with \menu{Data \& file>Convert to streamed} and \menu{Data \& file>Convert to exact}, and states the cost before you commit: each item is followed by the memory the layer uses now and an estimate of what it will use after. Converting a mesh above the cap to exact asks for confirmation, with the triangle count and the memory it will take. There is no hard ceiling. On a workstation, loading a 20-million-triangle mesh exactly is a reasonable thing to want; on a phone it is not.
 
 \begin{note}
-Commands that need the exact form are absent from a streamed mesh's menu: \ui{Select by this solid…}, \ui{Rasterize to grid…}, \ui{Extend to footprint…} and \ui{Combine surfaces…}. If you are looking for one of them and cannot find it, the mesh is streamed.
+Commands that need the exact form are absent from a streamed mesh's \ui{Geometry} menu: \ui{Select by this solid…}, \ui{Rasterize to grid…}, \ui{Extend to footprint…} and \ui{Combine surfaces…}. If you are looking for one of them and cannot find it, the mesh is streamed.
 \end{note}
 
 \section{DXF}\label{sec:meshes-dxf}
@@ -73,7 +73,7 @@ A DXF file is a drawing, and a drawing can hold several kinds of thing. micro so
 \item \textbf{Pegs.} Points become a points layer.
 \end{itemize}
 
-A DXF opens as its surfaces when it has any, otherwise as its strings, otherwise as its points. \ui{Open as} in the open dialog offers the other kinds the drawing contains (\ui{mesh (3DFACE surfaces)}, \ui{design strings (capsules)}, \ui{points (pegs)}), and \ui{Reinterpret as…} on the layer crosses between them afterwards.
+A DXF opens as its surfaces when it has any, otherwise as its strings, otherwise as its points. \ui{Open as} in the open dialog offers the other kinds the drawing contains (\ui{mesh (3DFACE surfaces)}, \ui{design strings (capsules)}, \ui{points (pegs)}), and \menu{Data \& file>Reinterpret as…} on the layer's menu crosses between them afterwards.
 
 A drawing too large to preview opens streamed, and its \ui{Open as} offers \ui{everything it holds (streamed)}, which reads all three kinds in one pass, or a single kind. Solids stored as ACIS bodies are not read.
 
@@ -139,11 +139,11 @@ Treating vertices as records looks like bookkeeping, but it is what lets everyth
 
 A mesh has one color, its \term[mesh!tint]{tint}, and an opacity.
 
-\ui{Tint…} on the layer's menu offers seven presets chosen to read as geology (\ui{Grey}, \ui{Sand}, \ui{Rust}, \ui{Green}, \ui{Blue}, \ui{Violet}, \ui{Brown}) and \ui{Custom…}, which takes a hex color. The \ui{style} tab of the layer's properties has a color picker for the same thing.
+\menu{Display>Tint…} on the layer's menu offers seven presets chosen to read as geology (\ui{Grey}, \ui{Sand}, \ui{Rust}, \ui{Green}, \ui{Blue}, \ui{Violet}, \ui{Brown}) and \ui{Custom…}, which takes a hex color. The \ui{style} tab of the layer's properties has a color picker for the same thing.
 
-\ui{Opacity} offers 100, 75, 50 and 25\,\% on the menu, and a slider from 5 to 100\,\% in the \ui{style} tab. A translucent mesh is drawn as a fine screen of dots, not blended, so what is behind it is always drawn correctly, whatever the order of the layers. A half-opaque shell drawn whole over a sectioned model reads well.
+\menu{Display>Opacity} offers 100, 75, 50 and 25\,\% on the menu, and a slider from 5 to 100\,\% in the \ui{style} tab. A translucent mesh is drawn as a fine screen of dots, not blended, so what is behind it is always drawn correctly, whatever the order of the layers. A half-opaque shell drawn whole over a sectioned model reads well.
 
-\textbf{Sections.} A mesh that follows the section is drawn as its \emph{trace}: the line where the plane meets it, laid on the cut face over the blocks, like a wireframe outline on a paper section. The surface itself is not drawn while it follows, so its tint shows only in that line and its opacity shows not at all. \ui{Cut by sections} on the layer's menu sets how this mesh responds: \ui{follow the section}, \ui{follow, with its own slab…}, \ui{keep front only}, \ui{keep behind only}, or \ui{don't cut}. Choose \ui{don't cut} to see the mesh whole, tinted and translucent, over the cut model: a topography for context, or an ore shell around its blocks (\cref{ch:sections}).
+\textbf{Sections.} A mesh that follows the section is drawn as its \emph{trace}: the line where the plane meets it, laid on the cut face over the blocks, like a wireframe outline on a paper section. The surface itself is not drawn while it follows, so its tint shows only in that line and its opacity shows not at all. \menu{Display>Cut by sections} on the layer's menu sets how this mesh responds: \ui{follow the section}, \ui{follow, with its own slab…}, \ui{keep front only}, \ui{keep behind only}, or \ui{don't cut}. Choose \ui{don't cut} to see the mesh whole, tinted and translucent, over the cut model: a topography for context, or an ore shell around its blocks (\cref{ch:sections}).
 
 \shot{meshes-demo}{Meshes in the demo project over the sectioned deposit. The ore shell is set to \ui{don't cut}, so it is drawn whole, tinted Green at 50\,\% opacity; phase~1 still follows the section and shows only as its trace, the dark line across the cut face.}
 
@@ -153,32 +153,32 @@ A grid shown as a surface is also a mesh layer, but it is colored by elevation o
 Style the demo's shapes.
 \begin{enumerate}
 \item Open the demo project. The ore shell shows only as an orange ring on the cut face: it follows the section, so only its trace is drawn.
-\item In the layers panel, right-click \ui{ore shell} and set \ui{Cut by sections} to \ui{don't cut}. The whole shell appears over the cut model.
-\item Right-click it again and choose \ui{Tint…}, then \ui{Green}.
-\item Right-click it once more and set \ui{Opacity} to \ui{50\%}. The blocks behind it show through.
+\item In the layers panel, right-click \ui{ore shell} and set \menu{Display>Cut by sections} to \ui{don't cut}. The whole shell appears over the cut model.
+\item Right-click it again and choose \menu{Display>Tint…}, then \ui{Green}.
+\item Right-click it once more and set \menu{Display>Opacity} to \ui{50\%}. The blocks behind it show through.
 \item A translucent mesh is picked only while it is the active layer, so click \ui{ore shell} in the layers panel, then click on the shell. The record panel gives the coordinates of the point you clicked.
 \item Open the \ui{mining phases} group. Only \ui{phase 1 — starter pit} is shown.
 \item Right-click the group and tick \ui{Mutually exclusive}.
 \item Click the phase to make it the active layer, then press \key{\}} repeatedly. The group shows each of the three phases in turn.
-\item Right-click the phase being shown and set \ui{Cut by sections} to \ui{don't cut}. The line on the cut face becomes the whole pit, drawn whatever the section through the model is doing.
+\item Right-click the phase being shown and set \menu{Display>Cut by sections} to \ui{don't cut}. The line on the cut face becomes the whole pit, drawn whatever the section through the model is doing.
 \end{enumerate}
 \end{tryit}
 
 \section{What you can do with a mesh}\label{sec:meshes-tools}
 
-The middle of a mesh's right-click menu holds the tools. Each has its own chapter; this is the map.
+A mesh's right-click menu holds its tools in three submenus, \ui{Geometry}, \ui{Analyse} and \ui{Data \& file}. Each tool has its own chapter; this is the map.
 
 \begin{table}[htbp]
 \small
 \begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
 command & what it does & see \\ \midrule
-\ui{Select by this solid…} & select, flag or measure the fraction of a model's blocks inside the solid, or above and below an open surface & \cref{ch:geometry} \\
-\ui{Rasterize to grid…} & turn the mesh into a gridded surface & \cref{sec:grids-rasterize} \\
-\ui{Extend to footprint…} & grow a surface to cover a model's extent & \cref{sec:grids-tools} \\
-\ui{Combine surfaces…} & merge two or more surfaces by a rule & \cref{sec:grids-tools} \\
-\ui{Mesh QA / volume…} & watertight or not, shells, flipped faces, slivers, volume and tonnage & \cref{ch:qa} \\
-\ui{Structural analysis…} & paint planes on an outcrop mesh and read their attitudes & \cref{ch:structure} \\
-\ui{Export mesh…} & write the mesh in another format & below \\
+\menu{Geometry>Select by this solid…} & select, flag or measure the fraction of a model's blocks inside the solid, or above and below an open surface & \cref{ch:geometry} \\
+\menu{Geometry>Rasterize to grid…} & turn the mesh into a gridded surface & \cref{sec:grids-rasterize} \\
+\menu{Geometry>Extend to footprint…} & grow a surface to cover a model's extent & \cref{sec:grids-tools} \\
+\menu{Geometry>Combine surfaces…} & merge two or more surfaces by a rule & \cref{sec:grids-tools} \\
+\menu{Analyse>Mesh QA / volume…} & watertight or not, shells, flipped faces, slivers, volume and tonnage & \cref{ch:qa} \\
+\menu{Analyse>Structural analysis…} & paint planes on an outcrop mesh and read their attitudes & \cref{ch:structure} \\
+\menu{Data \& file>Export mesh…} & write the mesh in another format & below \\
 \bottomrule
 \end{tabularx}
 \caption{The tools on a mesh layer's menu.}\label{tab:meshes-tools}
@@ -190,7 +190,7 @@ Before a wireframe bounds anything, whether a domain flag or a volume in a repor
 
 \section{Exporting meshes}\label{sec:meshes-export}
 
-Right-click a mesh and choose \ui{Export mesh…}. With several mesh layers selected in the panel (\key{⌘}-click), or on a group, the command becomes \ui{Export N meshes…} and writes them together.
+Right-click a mesh and choose \menu{Data \& file>Export mesh…}. With several mesh layers selected in the panel (\key{⌘}-click), or on a group, the command becomes \ui{Export N meshes…} and writes them together.
 
 \begin{table}[htbp]
 \small
@@ -212,4 +212,4 @@ The export re-reads the source geometry, so coordinates leave at full double pre
 
 Any mesh micro reads can be written in any of these formats, so micro is also a converter: a Datamine wireframe pair in, an \file{.lfm} out, with the layer names and tints you set.
 
-A grid is exported as a grid, not a mesh: \menu{Surface tools>Export grid…} on a grid layer, as ESRI ASCII, GeoTIFF, Surfer, ESRI binary or XYZ (\cref{sec:grids-export}).
+A grid is exported as a grid, not a mesh: \menu{Data \& file>Export grid…} on a grid layer, as ESRI ASCII, GeoTIFF, Surfer, ESRI binary or XYZ (\cref{sec:grids-export}).

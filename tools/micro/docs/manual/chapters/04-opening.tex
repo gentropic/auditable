@@ -115,7 +115,7 @@ See the dialog on real files, without leaving the demo. The first step saves a p
 \section{What micro detected: file info and the source tab}\label{sec:opening-fileinfo}
 
 \sidekey{i}{file info for the active layer}
-When a number in an analysis surprises you, look first at what micro made of the file. Press \key{i} (or choose \menu{File>File info…}, or \ui{File info…} on the layer's right-click menu). \term[file info]{File info} gives the kind micro read the file as, the number of records, the extent in X, Y and Z, and the column names.
+When a number in an analysis surprises you, look first at what micro made of the file. Press \key{i} (or choose \menu{File>File info…}, or \menu{Data \& file>File info…} on the layer's right-click menu). \term[file info]{File info} gives the kind micro read the file as, the number of records, the extent in X, Y and Z, and the column names.
 
 For a block model it adds the grid it found (the count of blocks along each axis), the block size, block 0's centroid, and the rotation or the sub-block sizes where there are any, then the columns micro colors by (\ui{channels}) and the classes of the category column. Two rows describe micro's side rather than the file: \ui{frame origin}, the local origin micro draws around, and \ui{vram (layer)}, the graphics memory the layer holds. For a drillhole set it adds the number of holes, how many intervals could be placed, and each failed check with the holes it concerns. Click a value to copy it.
 
@@ -143,7 +143,7 @@ What micro makes of awkward \emph{values} (\code{<0.01}, \code{-99}, a blank) is
 
 \section{Reinterpret as…}\label{sec:opening-reinterpret}
 
-The open dialog is not your last chance. Right-click a layer and choose \ui{Reinterpret as…} to re-open its source through a different reader, in place: the layer keeps its position in the panel, its name and its visibility. The menu offers only what makes sense for that layer (\cref{tab:opening-reinterpret}).
+The open dialog is not your last chance. Right-click a layer and choose \menu{Data \& file>Reinterpret as…} to re-open its source through a different reader, in place: the layer keeps its position in the panel, its name and its visibility. The menu offers only what makes sense for that layer (\cref{tab:opening-reinterpret}).
 
 \begin{table}[htbp]
 \small
@@ -164,16 +164,16 @@ Drillhole layers are not on the list. A drillhole set is three files bound toget
 
 \begin{tryit}
 \begin{enumerate}
-\item In the demo project, right-click \file{deposit.csv} and choose \menu{Reinterpret as…>points}. The boxes become dots; the grade colors and the filter are unchanged.
-\item Right-click it again and choose \menu{Reinterpret as…>block model}. The boxes return.
-\item Press \key{x} to turn the section off, so that the topography is drawn whole and not only as its line on the cut face (\cref{sec:meshes-style}). Right-click \ui{topography} and choose \menu{Reinterpret as…>points (elevation)}. The shaded relief becomes the cloud of grid nodes it is made from.
-\item Choose \menu{Reinterpret as…>surface (shaded relief)} on it to bring the relief back, and press \key{x} to turn the section on again.
+\item In the demo project, right-click \file{deposit.csv} and choose \menu{Data \& file>Reinterpret as…>points}. The boxes become dots; the grade colors and the filter are unchanged.
+\item Right-click it again and choose \menu{Data \& file>Reinterpret as…>block model}. The boxes return.
+\item Press \key{x} to turn the section off, so that the topography is drawn whole and not only as its line on the cut face (\cref{sec:meshes-style}). Right-click \ui{topography} and choose \menu{Data \& file>Reinterpret as…>points (elevation)}. The shaded relief becomes the cloud of grid nodes it is made from.
+\item Choose \menu{Data \& file>Reinterpret as…>surface (shaded relief)} on it to bring the relief back, and press \key{x} to turn the section on again.
 \end{enumerate}
 \end{tryit}
 
 \section{Reload from disk, and Change file…}\label{sec:opening-reload}
 
-Models get re-exported. Two commands on a layer's right-click menu deal with that without making you rebuild the layer.
+Models get re-exported. Two commands on a layer's right-click menu, under \ui{Data \& file}, deal with that without making you rebuild the layer.
 
 \ui{Reload from disk}\index{reload from disk} reads the same file again, fresh, and re-opens it through the layer's existing configuration. The column mapping, the styling, the filter, the calculated columns and, for a grid, its surface state all carry over. Use it after another program overwrites the file, or after you edit a parameter workbook in Excel.
 

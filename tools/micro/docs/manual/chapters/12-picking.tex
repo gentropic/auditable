@@ -47,7 +47,7 @@ In the demo project:
 \item Click a yellow block on the cut face. Read \col{FE}, \col{SG} and \col{LITO} in the record panel.
 \item Click \ui{fields ▾}, then \ui{none}, then tick \col{FE} and \col{LITO}. Close the picker with the same button. The panel now shows two lines for every pick on this layer.
 \item Click a drillhole interval. The panel changes to the assay row: \col{HOLEID}, \col{FROM}, \col{TO}, \col{FE}, \col{SG}, \col{LITO}. The deposit's field choice does not carry over; it is per layer.
-\item The section draws the ore shell as its trace only, so right-click \ui{ore shell} in the layers panel and choose \menu{Cut by sections>don't cut}: the whole shell comes back. It is drawn at 70\,\% opacity, and a translucent mesh is picked only while it is the active layer, so click \ui{ore shell} in the layers panel to make it active. Then click the shell away from the cut. The panel reports the point, its dip and dip direction.
+\item The section draws the ore shell as its trace only, so right-click \ui{ore shell} in the layers panel and choose \menu{Display>Cut by sections>don't cut}: the whole shell comes back. It is drawn at 70\,\% opacity, and a translucent mesh is picked only while it is the active layer, so click \ui{ore shell} in the layers panel to make it active. Then click the shell away from the cut. The panel reports the point, its dip and dip direction.
 \item Right-click a row of the deposit's panel and choose \menu{Show all fields}.
 \end{enumerate}
 \end{tryit}
@@ -153,7 +153,7 @@ On a solid model the difference is large: the tube takes the whole column of blo
 A selection can also come from a filter, and leave in a scene:
 
 \begin{itemize}
-\item \menu{Filter → selection} (a layer's right-click menu while it has a filter, or the command palette) selects every row the filter matches. Write the question as an expression (\cref{ch:filter}), then refine the answer by hand with \key{Alt}-lasso.
+\item \menu{Select>Filter → selection} (a layer's right-click menu while it has a filter, or the command palette) selects every row the filter matches. Write the question as an expression (\cref{ch:filter}), then refine the answer by hand with \key{Alt}-lasso.
 \item Selections are saved with the project, and \menu{View>Scenes>Save scene (with selection)…} pins one to a named scene (\cref{sec:sections-scenes}).
 \end{itemize}
 
@@ -171,7 +171,7 @@ In the demo project, with the deposit on its E–W section:
 \end{tryit}
 
 \section{Selection → column}\label{sec:picking-selcol}
-A selection is temporary. To keep it, and to use it everywhere a column works, right-click the layer and choose \menu{Selection → column…} (the item shows how many rows are selected; it is also in the command palette, \key{⌘K}).
+A selection is temporary. To keep it, and to use it everywhere a column works, right-click the layer and choose \menu{Select>Selection → column…} (the item shows how many rows are selected; it is also in the command palette, \key{⌘K}).
 
 micro asks for a name — \code{SEL} unless you type another — and writes a column where every row has an explicit value: \code{1} if it was selected, \code{0} if not. Because every row has a value, there are no blanks to reason about. The new column:
 

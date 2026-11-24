@@ -8,7 +8,7 @@ micro's analysis windows are built on one chassis. Once you can drive grade–to
 Everything here reads the source file. Nothing is sampled, and nothing is held in memory beyond small running sums, so a window behaves the same on the demo deposit as on a 60-million-block model — it only takes longer to \ui{Run}.
 
 \section{Ten windows, one design}\label{sec:analysis-windows}
-Every analysis is on a layer's right-click menu and in the command palette (\key{⌘K}, or \key{Ctrl}+\key{K} on Windows and Linux). The palette lists only what applies to the active layer, so a grade–tonnage entry appears for a block model and not for a mesh.\sidekey{⌘K}{type \code{swath}, \code{stats}, \code{cross}… — only actions that apply to the active layer are listed}
+Every analysis is on a layer's right-click menu, under \ui{Analyse}, and in the command palette (\key{⌘K}, or \key{Ctrl}+\key{K} on Windows and Linux). The palette lists only what applies to the active layer, so a grade–tonnage entry appears for a block model and not for a mesh.\sidekey{⌘K}{type \code{swath}, \code{stats}, \code{cross}… — only actions that apply to the active layer are listed}
 
 \medskip
 \begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
@@ -96,7 +96,7 @@ Scopes \ui{filt} and \ui{sel} follow their source. With grade–tonnage, swath o
 If the scope has nothing to follow, the window says so in its subtitle and does not fall back to everything: \emph{no selection — brush the 3D first}, or \emph{no active filter — run one in the filter box first}.
 
 \begin{tryit}
-Open the demo project (\emph{open the demo project} on the start screen). Its grade–tonnage window is already open on \file{deposit.csv}, at the right of the view. (If you closed it, right-click \file{deposit.csv}, choose \ui{Grade-tonnage…} and press \ui{Run}.)
+Open the demo project (\emph{open the demo project} on the start screen). Its grade–tonnage window is already open on \file{deposit.csv}, at the right of the view. (If you closed it, right-click \file{deposit.csv}, choose \menu{Analyse>Grade-tonnage…} and press \ui{Run}.)
 \begin{enumerate}
 \item In the filter box, type \code{LITO = "HEMATITE"} and press \key{Enter}. The view isolates the hematite.
 \item In the grade–tonnage rail, click \ui{filt} in the \ui{scope} row. The window runs at once; its subtitle now starts with \emph{filtered}, and the curve covers the hematite only: flat at about 24~Mt up to a cutoff of 60\,\%, then falling.

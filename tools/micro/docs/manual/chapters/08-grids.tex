@@ -49,7 +49,7 @@ For display, a grid above about eight million nodes is thinned. A GeoTIFF with o
 For evaluation (flagging a model above or below the surface, reading a value at a point, exporting) micro reads the full-resolution values, for only the area the calculation covers. The thinning you see has no effect on any number.
 
 \begin{tip}
-For a large GeoTIFF kept in a project, \menu{Surface tools>Build display cache} on the grid's menu writes the thinned display grid beside the file. The next time the project opens, the grid appears at once instead of being decimated again.
+For a large GeoTIFF kept in a project, \menu{Data \& file>Build display cache} on the grid's menu writes the thinned display grid beside the file. The next time the project opens, the grid appears at once instead of being decimated again.
 \end{tip}
 
 \subsection{Bands}
@@ -58,11 +58,11 @@ A GeoTIFF can hold several bands: a multi-element geochemical raster, or a stack
 
 \section{A grid as a surface}\label{sec:grids-surface}
 
-A cloud of nodes is the honest picture of a grid, but terrain should look like terrain. Right-click the grid and choose \menu{Reinterpret as…>surface (shaded relief)}. The nodes are joined into a solid, shaded surface. \menu{Reinterpret as…>points (elevation)} goes back.
+A cloud of nodes is the honest picture of a grid, but terrain should look like terrain. Right-click the grid and choose \menu{Data \& file>Reinterpret as…>surface (shaded relief)}. The nodes are joined into a solid, shaded surface. \menu{Data \& file>Reinterpret as…>points (elevation)} goes back.
 
 \shot{grids-relief}{The demo's topography, a grid shown as a translucent shaded-relief surface, over the final pit (a mesh) and the sectioned deposit. Both surfaces are set to \ui{don't cut}, so they are drawn whole.}
 
-As a surface, the layer behaves like any mesh (\cref{sec:meshes-style}). While it follows the section it is drawn only as its trace on the cut face; set \ui{Cut by sections} to \ui{don't cut} to see the relief whole over a sectioned model, as in the figure. It takes an opacity (the demo's topography is a 35\,\% veil), and can be picked for the point under the cursor. It gives up the pick of an individual node; reinterpret it as points when you need that.
+As a surface, the layer behaves like any mesh (\cref{sec:meshes-style}). While it follows the section it is drawn only as its trace on the cut face; set \menu{Display>Cut by sections} to \ui{don't cut} to see the relief whole over a sectioned model, as in the figure. It takes an opacity (the demo's topography is a 35\,\% veil), and can be picked for the point under the cursor. It gives up the pick of an individual node; reinterpret it as points when you need that.
 
 The \ui{style} tab of a surface's properties has four rows that a plain mesh does not (\cref{tab:grids-style}).
 
@@ -81,7 +81,7 @@ setting & meaning & default \\ \midrule
 
 \subsection{Drape}
 
-\term[draping]{Draping} colors a surface by a \emph{second} grid's values. The shape stays the topography; the color becomes the soil geochemistry, the magnetics, the slope. Choose the source in the \ui{drape} row, or from \ui{Drape} on the surface's right-click menu, which lists \ui{elevation} and every other loaded grid.
+\term[draping]{Draping} colors a surface by a \emph{second} grid's values. The shape stays the topography; the color becomes the soil geochemistry, the magnetics, the slope. Choose the source in the \ui{drape} row, or from \menu{Display>Drape} on the surface's right-click menu, which lists \ui{elevation} and every other loaded grid.
 
 The source is sampled by position, at each node of the surface, so the two grids need not share a cell size or an extent. The source must be another grid; load one first if the list offers only \ui{elevation}.
 
@@ -95,9 +95,9 @@ Surface, drape, flat level and band are all saved with the project.
 Work with the demo's topography. Start with the demo project open.
 \begin{enumerate}
 \item Press \key{x} to turn the section off; with it on, the topography shows only as its line on the cut face.
-\item Right-click \ui{topography} and choose \menu{Reinterpret as…>points (elevation)}. This is the grid as micro read it: nodes.
+\item Right-click \ui{topography} and choose \menu{Data \& file>Reinterpret as…>points (elevation)}. This is the grid as micro read it: nodes.
 \item Click a node. The record panel gives its elevation.
-\item Choose \menu{Reinterpret as…>surface (shaded relief)}. The relief returns.
+\item Choose \menu{Data \& file>Reinterpret as…>surface (shaded relief)}. The relief returns.
 \item Open the layer's properties (right-click, \ui{Properties…}) and go to the \ui{style} tab.
 \item Set \ui{shading} to \ui{faceted (flat)} and zoom in. The grid's cells show as flat facets. Set it back to \ui{smooth}.
 \item Tick \ui{flatten}. A \ui{flat @ z} box appears, starting at 0, which is far below the demo.
@@ -108,7 +108,7 @@ Work with the demo's topography. Start with the demo project open.
 
 \section{Surface tools: extend and combine}\label{sec:grids-tools}
 
-Surfaces from the real world stop short, overlap and disagree. Two tools repair that. Both are on the right-click menu of a surface: under \ui{Surface tools} for a grid, directly on the menu for a mesh. Both open the same dialog, titled \ui{extend surface} or \ui{combine surfaces} by its \ui{mode}, and both produce a new grid layer whose name and lineage record what was done.
+Surfaces from the real world stop short, overlap and disagree. Two tools repair that. Both are on the right-click menu of a surface, a grid or a mesh, under \ui{Geometry}. Both open the same dialog, titled \ui{extend surface} or \ui{combine surfaces} by its \ui{mode}, and both produce a new grid layer whose name and lineage record what was done.
 
 \subsection{Extend to footprint…}
 
@@ -157,7 +157,7 @@ Both tools produce grids, even when you start from meshes. The tools that consum
 
 \section{From a mesh to a grid}\label{sec:grids-rasterize}
 
-\ui{Rasterize to grid…} on a mesh's right-click menu turns a triangulated surface into a grid. The dialog is titled \ui{mesh → grid}.
+\menu{Geometry>Rasterize to grid…} on a mesh's right-click menu turns a triangulated surface into a grid. The dialog is titled \ui{mesh → grid}.
 
 \begin{table}[htbp]
 \small
@@ -181,13 +181,13 @@ The mesh must be in its exact form (\cref{sec:meshes-tiers}); the command is abs
 
 \section{Using a surface}\label{sec:grids-using}
 
-A grid is the fastest and most exact way to ask where a model sits relative to a surface. \menu{Surface tools>Flag / ratio by this surface…} on a grid's menu opens the by-geometry dialog with the grid as the surface. There you select or flag the blocks above or below it, or between it and a second surface, or compute the fraction of each block that lies below: the partial blocks along a topography, where counting whole blocks would misstate the tonnage. \Cref{ch:geometry} covers it.
+A grid is the fastest and most exact way to ask where a model sits relative to a surface. \menu{Geometry>Flag / ratio by this surface…} on a grid's menu opens the by-geometry dialog with the grid as the surface. There you select or flag the blocks above or below it, or between it and a second surface, or compute the fraction of each block that lies below: the partial blocks along a topography, where counting whole blocks would misstate the tonnage. \Cref{ch:geometry} covers it.
 
 Because the surface is a grid, the fraction is computed from the grid's own values under each block's footprint, without any of the searching a triangle mesh requires.
 
 \section{Exporting a grid}\label{sec:grids-export}
 
-\menu{Surface tools>Export grid…} on a grid's right-click menu, or \code{export grid} in the command palette, opens one dialog for every format micro writes. Its first line names the grid and its full size in nodes. Whatever the format, what leaves is the \emph{full-resolution} grid of the chosen band in world coordinates — never the thinned display of \cref{sec:grids-big} — and the note at the bottom of the dialog says so, with whatever else the chosen format needs you to know.
+\menu{Data \& file>Export grid…} on a grid's right-click menu, or \code{export grid} in the command palette, opens one dialog for every format micro writes. Its first line names the grid and its full size in nodes. Whatever the format, what leaves is the \emph{full-resolution} grid of the chosen band in world coordinates — never the thinned display of \cref{sec:grids-big} — and the note at the bottom of the dialog says so, with whatever else the chosen format needs you to know.
 
 \medskip
 \begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
@@ -228,7 +228,7 @@ A few behaviors are worth knowing before you hand the file on:
 \end{itemize}
 
 \begin{tryit}
-In the demo project, right-click \ui{topography} in the layers panel and choose \menu{Surface tools>Export grid…}. The dialog reads \emph{topography — 117×67 nodes}. Choose \ui{GeoTIFF, float32 (.tif)}: the note now says that no CRS is known for this layer, so none is written. Choose \ui{Surfer 7 binary (.grd)}, and the nodata field disappears — Surfer blanks with its own value. Press \ui{Export}; the status line names the file and its size.
+In the demo project, right-click \ui{topography} in the layers panel and choose \menu{Data \& file>Export grid…}. The dialog reads \emph{topography — 117×67 nodes}. Choose \ui{GeoTIFF, float32 (.tif)}: the note now says that no CRS is known for this layer, so none is written. Choose \ui{Surfer 7 binary (.grd)}, and the nodata field disappears — Surfer blanks with its own value. Press \ui{Export}; the status line names the file and its size.
 \end{tryit}
 
 In a routine the same producer is the \code{gridexport} tool: \code{layer}, \code{format} (\code{asc}, \code{tif}, \code{grd7}, \code{grd6}, \code{dsaa}, \code{flt}, \code{xyz}) and the options above, with \code{band} counted from 1. The file goes into the run folder (\cref{ch:records}), and its values are \code{nodes} and \code{bytes}. The settings are in \cref{tool:gridexport}.
@@ -275,7 +275,7 @@ Make a coarse copy of the demo's lattice.
 \item Set \ui{source} to \file{deposit.csv}.
 \item Type a block size several times larger than the deposit's. The count under the form falls as you type.
 \item Click \ui{Create}. A new, empty block model appears, covering the deposit.
-\item Choose \ui{Lineage…} on the new model's menu. It records the block size, the counts and the layer it covers.
+\item Choose \menu{Data \& file>Lineage…} on the new model's menu. It records the block size, the counts and the layer it covers.
 \end{enumerate}
 \end{tryit}
 
