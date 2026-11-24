@@ -592,29 +592,38 @@ export function valuesKernel(E, CV) {
 // record's size in fine steps comes too — dimQ, u8 × 3, the block-support rule
 // (condenser support.js sizeQ: round(d / pitch) clamped 1..255; a missing or
 // non-positive size is one step) — for a by-geometry probe of a sub-blocked block.
+// params.extra ([names]): more numeric columns, handed back as `ex` (Float64Array
+// each, NaN = blank) over the same records — model QA reads a .dm's IJK beside the
+// positions it checks it against.
 export function positionsKernel(E, CV) {
   return {
     init(params, calcs) {
       const sch = params.schema, ix = (nm) => sch.findIndex((c) => c.name === nm);
       const s = params.sizes && params.pitch ? params.sizes.map(ix) : null;
-      return { params, calcFns: CV.compileCalcs(E, calcs, sch), c: params.coords.map(ix), s: s && s.every((i) => i >= 0) ? s : null, scratch: {} };
+      return { params, calcFns: CV.compileCalcs(E, calcs, sch), c: params.coords.map(ix), s: s && s.every((i) => i >= 0) ? s : null,
+        e: (params.extra || []).map(ix), scratch: {} };
     },
     group(ctx, view, n) {
       const sc = ctx.scratch;
       const num = (i, key) => CV.chunkNumbers({ buf: view[i] || [] }, n, sc[key] || (sc[key] = new Float64Array(n)));
       const X = num(ctx.c[0], 'x'), Y = num(ctx.c[1], 'y'), Z = num(ctx.c[2], 'z');
       const D = ctx.s ? [num(ctx.s[0], 'dx'), num(ctx.s[1], 'dy'), num(ctx.s[2], 'dz')] : null, P = ctx.params.pitch;
+      const EX = ctx.e.map((i, k) => (i >= 0 ? num(i, 'e' + k) : null));
       let k = 0;
       for (let i = 0; i < n; i++) if (Number.isFinite(X[i]) && Number.isFinite(Y[i]) && Number.isFinite(Z[i])) k++;
       const x = new Float64Array(k), y = new Float64Array(k), z = new Float64Array(k), rec = new Uint32Array(k);
       const dimQ = D ? new Uint8Array(3 * k) : null;
+      const ex = EX.map(() => new Float64Array(k));
       for (let i = 0, j = 0; i < n; i++) {
         if (!(Number.isFinite(X[i]) && Number.isFinite(Y[i]) && Number.isFinite(Z[i]))) continue;
         x[j] = X[i]; y[j] = Y[i]; z[j] = Z[i]; rec[j] = i;
         if (D) for (let a = 0; a < 3; a++) { const d = Math.abs(D[a][i]), q = d > 0 ? Math.round(d / P[a]) : 1; dimQ[3 * j + a] = q < 1 ? 1 : q > 255 ? 255 : q; }
+        for (let e = 0; e < EX.length; e++) ex[e][j] = EX[e] ? EX[e][i] : NaN;
         j++;
       }
-      return dimQ ? { x, y, z, rec, dimQ } : { x, y, z, rec };
+      const out = dimQ ? { x, y, z, rec, dimQ } : { x, y, z, rec };
+      if (ex.length) out.ex = ex;
+      return out;
     },
   };
 }

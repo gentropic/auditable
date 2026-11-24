@@ -13,6 +13,7 @@ export { makeBlockGrid, buildBlockChunk, blockLocalCenter, createBlockChunkBuild
 export { inferAxis, inferSubBlockLattice, axisDistinct } from './grid/infer.js';
 export { SIZEQ_MAX, supportOf, supportOfHeader, volumeOf, toLattice as supportToLattice, toWorld as supportToWorld, worldHalfExtent, centreOf, sameLattice, sizeCollector, finePitch, sizeQ, putDimQ, pitchOf, datamineRotZ, dmLocalToWorld, dmPlaceOf, placeDmColumns, placeDmRow, dmWorldToLocal, volumeOfSizes } from './grid/support.js';
 export { basisFromVectors, basisAngles, inferLatticeBasis, fitLattice, detectRotatedLattice, detectRotatedOverAxisGrid, latticeMisfit, latticeChecker, gridFromBasis, basisOfGrid, latticeMapOf, worldMapOf, cellOf, inFrameOf, sameBasis, isAxisAligned, toLattice, fromLattice } from './grid/basis.js';
+export { tilingChecker } from './grid/tiling.js';
 export { MICRO_MODEL_KEY, microModelLine, parseMicroModelComment, gridOfMicroModel, dimColsOfMicroModel, declaredSubBlocks } from './grid/model.js';
 export { floatGcd, axisMap, gridsCompatible, makeResampler, makeBoxAggregator, commonLattice, latticeMismatch } from './grid/grid-join.js';
 export { sniffDelimited, mapColumns, findDimColumns, isDimColumn, openBlockModel, openTable, lineFields, fetchDelimitedRecord, readDelimitedRun, delimitedRuns } from './io/blockmodel.js';
