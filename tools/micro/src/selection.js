@@ -18,7 +18,7 @@ import { colorSelOf } from './ramp.js';
 import { viewCatData } from './viewcat.js';
 import { textCalcSel, calcCatCol, classHidden, layerClassInfo } from './categories.js';
 import { _isMobile } from './windows.js';
-import { isMiss, layerOfId, layerSection } from '../../../ext/condenser/src/main.js';
+import { isMiss, layerOfId, layerSection, supportOfHeader } from '../../../ext/condenser/src/main.js';
 import { layerShown } from './layers.js';
 import { PAINT, addPaintValue, createPaintCol, paintArmLabel, paintByPolygon, paintVolume, addPaintColorOptions, paintActiveCol } from './paint.js';
 import { currentSection } from './section.js';
@@ -232,18 +232,18 @@ function throughDrawnTest(L) {
   const o = [o0[0] - off[0], o0[1] - off[1], o0[2] - off[2]];   // n·(x + off − origin)
   // a block's reach along the section normal: its half-dims projected on n
   // (rotated lattices through their U/V/W; sub-blocks by their size in fine steps)
+  // (the block-support contract: the frame's U/V/W, the fine pitch, a sub-block's size in fine steps)
   let reach = () => 0;
-  const bh = !isDh && L.docs.blockDoc && L.docs.blockDoc.header;
-  if (sec && bh && bh.grid && bh.grid.x) {
-    const n = sec.n, R = bh.grid.rot;
-    const ax = R ? [[R[0], R[1], R[2]], [R[3], R[4], R[5]], [R[6], R[7], R[8]]] : [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
-    const pr = ax.map((u) => Math.abs(n[0] * u[0] + n[1] * u[1] + n[2] * u[2]));
-    const of = (h) => h[0] * pr[0] + h[1] * pr[1] + h[2] * pr[2];
-    const reg = of([bh.grid.x.pitch / 2, bh.grid.y.pitch / 2, bh.grid.z.pitch / 2]);
-    const q = bh.subBlocked ? [pr[0] * bh.grid.x.pitch / 2, pr[1] * bh.grid.y.pitch / 2, pr[2] * bh.grid.z.pitch / 2] : null;
-    const qm = bh.subBlocked && bh.sizeQMax ? bh.sizeQMax : [255, 255, 255];
-    const subMax = q ? q[0] * qm[0] + q[1] * qm[1] + q[2] * qm[2] : reg;
-    reach = (ch, i) => (q ? (ch.dimQ ? q[0] * ch.dimQ[3 * i] + q[1] * ch.dimQ[3 * i + 1] + q[2] * ch.dimQ[3 * i + 2] : subMax) : reg);
+  const sup = !isDh && L.docs.blockDoc ? supportOfHeader(L.docs.blockDoc.header) : null;
+  if (sec && sup) {
+    const n = sec.n, R = sup.frame.R, P = sup.lattice.pitch;
+    const q = [0, 1, 2].map((a) => Math.abs(n[0] * R[3 * a] + n[1] * R[3 * a + 1] + n[2] * R[3 * a + 2]) * P[a] / 2);   // one fine step's reach
+    const reg = q[0] + q[1] + q[2];
+    if (!sup.sub) reach = () => reg;
+    else {
+      const qm = sup.sizeQMax || [255, 255, 255], subMax = q[0] * qm[0] + q[1] * qm[1] + q[2] * qm[2];
+      reach = (ch, i) => (ch.dimQ ? q[0] * ch.dimQ[3 * i] + q[1] * ch.dimQ[3 * i + 1] + q[2] * ch.dimQ[3 * i + 2] : subMax);
+    }
   }
   const dot = (x, y, z) => sec.n[0] * (x - o[0]) + sec.n[1] * (y - o[1]) + sec.n[2] * (z - o[2]);
   return (ch, i, r) => {

@@ -9,7 +9,7 @@
 // bias). "select the disagreeing samples" marks the samples whose block differs by
 // more than a factor, on the samples' layer. Nothing is written to either layer.
 import { layerRecords, layerTableHeader, numOf, attrRowCountOf, schemaExt } from './records.js';
-import { qualifiedNumber } from '../../../ext/condenser/src/main.js';
+import { qualifiedNumber, supportOfHeader, supportToLattice } from '../../../ext/condenser/src/main.js';
 import { floatWin, focusWindow } from './windows.js';
 import { fmtStat } from './analysis-ui.js';
 import { drawXY } from './xyplot.js';
@@ -20,20 +20,23 @@ const $ = (s) => document.querySelector(s);
 export const _pairWins = new Map();
 const CELL_ARRAY_MAX = 16e6;                               // cells read into a typed array up to here, a Map beyond
 
-// the model's lattice, or why there isn't one to pair against
+// the model's lattice (the block-support contract), or why there isn't one to pair against.
+// A rotated lattice pairs in its own frame (frame: world → lattice before the cell lookup);
+// a sub-blocked model has no one cell per block to look a sample up in.
 function latticeOf(M) {
   const h = M.docs && M.docs.blockDoc && M.docs.blockDoc.header;
   if (!h) return { why: 'not a block model' };
+  const sup = supportOfHeader(h);
+  if (!sup) return { why: 'the model has no block grid (opened as points)' };
+  if (sup.sub) return { why: 'a sub-blocked model — pairing reads regular lattices only' };
   const g = h.grid;
-  if (!g) return { why: 'the model has no block grid (opened as points)' };
-  if (g.rot) return { why: 'a rotated model — pairing reads axis-aligned lattices only' };
-  if (h.subBlocked) return { why: 'a sub-blocked model — pairing reads regular lattices only' };
-  return { g, nx: g.x.count, ny: g.y.count, nz: g.z.count };
+  return { g, nx: g.x.count, ny: g.y.count, nz: g.z.count, frame: sup.frame.rotated ? sup.frame : null, q: [0, 0, 0] };
 }
 // a column's position in the rows layerRecords yields (file columns, then paint, then calc)
 const extIdx = (L, h, name) => schemaExt(L, h).map((c) => c.name).indexOf(name);
 const cellOf = (lt, x, y, z) => {
   const g = lt.g;
+  if (lt.frame) { const q = supportToLattice(lt.frame, x, y, z, lt.q); x = q[0]; y = q[1]; z = q[2]; }
   const i = Math.floor((x - g.x.origin) / g.x.pitch + 0.5), j = Math.floor((y - g.y.origin) / g.y.pitch + 0.5), k = Math.floor((z - g.z.origin) / g.z.pitch + 0.5);
   if (i < 0 || j < 0 || k < 0 || i >= lt.nx || j >= lt.ny || k >= lt.nz) return -1;
   return i + lt.nx * (j + lt.ny * k);

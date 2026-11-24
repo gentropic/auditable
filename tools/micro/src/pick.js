@@ -7,7 +7,8 @@ import { S, layerById, requestRender } from './state.js';
 import { FACE_CUT, FACE_NAMES, FACE_NORMALS, decodeLasRecords, faceOfId, dmWorldToLocal, isMiss, layerOfId, layerSection, mat4Inverse } from '../../../ext/condenser/src/main.js';
 import { recordPosition } from './overlay.js';
 import { currentSection } from './section.js';
-import { attrRowCountOf, extendRow, fetchCsvRecord, rawRecordOf, dmDocReader } from './records.js';
+import { attrRowCountOf, extendRow, fetchCsvRecord, fetchLayerRow, rawRecordOf, dmDocReader } from './records.js';
+import { halfAt, volumeContextOf } from './analysis.js';
 import { rendererDocBbox } from './layers.js';
 import { html, setHTML } from './html.js';
 import { _propOpen, closeProps } from './props.js';
@@ -100,24 +101,17 @@ export async function pickHitPoint(hit, cssX, cssY) {
   return [o[0] + d[0] * t + S.frame.origin[0], o[1] + d[1] * t + S.frame.origin[1], o[2] + d[2] * t + S.frame.origin[2]];
 }
 
-// half-extent of ONE block, in world units. A regular model reads the grid pitch;
-// a SUB-BLOCKED one reads the record's own dim columns — a sub-block's face is
-// its own, not its parent cell's.
+// half-extent of ONE block, in its lattice frame (world units). From the block-
+// support contract (analysis.js halfAt): a regular model's pitch, a SUB-BLOCKED
+// one's own sizes snapped to whole fine steps — the box the renderer draws (dimQ),
+// so the picked face is the drawn one, from any source (CSV, .dm, Parquet).
 export async function blockHalfDims(L, rec) {
-  const bd = L && L.docs && L.docs.blockDoc;
-  const g = bd && bd.header && bd.header.grid;              // { x: {origin,pitch,count}, y: …, z: … }
-  if (!g || !g.x || !g.y || !g.z) return null;
-  const h = [g.x.pitch / 2, g.y.pitch / 2, g.z.pitch / 2];  // sub-blocked → this is the FINE pitch (the fallback)
-  const dc = bd.header.subBlocked && bd.header.dimCols;    // { x, y, z } → column INDICES
-  if (!dc) return h;
+  const vc = volumeContextOf(L);
+  if (!vc.pitch) return null;
+  if (!vc.dc) return halfAt(vc, null);
   let f = null;
-  try {
-    if (bd.header.dm) f = await (await dmDocReader(bd)).fetchRecord(rec);   // sizes only — placement leaves them alone
-    else if (!bd.parquet) f = await fetchCsvRecord(rec, bd);
-  } catch { f = null; }
-  if (!f) return h;                                        // parquet sub-blocks: the parent pitch (honest, coarser)
-  const v = [+f[dc.x], +f[dc.y], +f[dc.z]];
-  return v.every((x) => Number.isFinite(x) && x > 0) ? [v[0] / 2, v[1] / 2, v[2] / 2] : h;
+  try { f = await fetchLayerRow(L, rec); } catch { f = null; }
+  return f ? halfAt(vc, f) : vc.pitch.map((p) => p / 2);   // an unreadable record: one fine cell
 }
 
 // A camera ray through a CSS pixel, intersected with the horizontal plane at the

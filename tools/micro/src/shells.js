@@ -12,20 +12,23 @@
 import { layerRecords, layerTableHeader, numOf, schemaExt } from './records.js';
 import { floatWin, raiseWindow } from './windows.js';
 import { numericColsOf } from './analysis.js';
+import { supportOfHeader, supportToLattice, supportToWorld } from '../../../ext/condenser/src/main.js';
 import { mkLineage } from './lineage.js';
 import { ingestMeshLayer } from './ingest.js';
 import { layerById } from './state.js';
 const $ = (s) => document.querySelector(s);
 const FIELD_MAX = 64e6;                                    // cells (incl. the padding) read into one Float32Array
 
+// the model's lattice (the block-support contract). A rotated lattice is read and contoured
+// in its own frame (rows world → lattice, the shell's vertices lattice → world: a rotation
+// keeps the winding); a sub-blocked model has no one cell per block to contour.
 function latticeOf(L) {
   const h = L.docs && L.docs.blockDoc && L.docs.blockDoc.header;
   if (!h) return { why: 'not a block model' };
-  const g = h.grid;
-  if (!g) return { why: 'the model has no block grid (opened as points)' };
-  if (g.rot) return { why: 'a rotated model — shells are drawn on axis-aligned lattices' };
-  if (h.subBlocked) return { why: 'a sub-blocked model — shells need a regular lattice' };
-  return { g };
+  const sup = supportOfHeader(h);
+  if (!sup) return { why: 'the model has no block grid (opened as points)' };
+  if (sup.sub) return { why: 'a sub-blocked model — shells need a regular lattice' };
+  return { g: h.grid, frame: sup.frame.rotated ? sup.frame : null };
 }
 
 /** Read `col` into a padded field: Float32Array (nx+2)(ny+2)(nz+2), NaN = no block / outside. */
@@ -36,19 +39,21 @@ export async function readField(L, col, { onlyFiltered = false, signal = null, o
   const h = layerTableHeader(L), m = h.mapping;
   const ci = schemaExt(L, h).map((c) => c.name).indexOf(col);
   if (ci < 0) throw new Error(`no column ${col}`);
-  const F = new Float32Array(nx * ny * nz).fill(NaN);
+  const F = new Float32Array(nx * ny * nz).fill(NaN), qb = [0, 0, 0];
   const mask = onlyFiltered && L._filterMask ? L._filterMask : null;
   let n = 0;
   for await (const { f, rec } of layerRecords(L)) {
     if (signal && signal.aborted) throw new Error('cancelled');
     if (mask && !mask[rec]) continue;
-    const i = Math.round((numOf(f[m.x]) - g.x.origin) / g.x.pitch) + 1, j = Math.round((numOf(f[m.y]) - g.y.origin) / g.y.pitch) + 1, k = Math.round((numOf(f[m.z]) - g.z.origin) / g.z.pitch) + 1;
+    let x = numOf(f[m.x]), y = numOf(f[m.y]), z = numOf(f[m.z]);
+    if (lt.frame) { supportToLattice(lt.frame, x, y, z, qb); x = qb[0]; y = qb[1]; z = qb[2]; }
+    const i = Math.round((x - g.x.origin) / g.x.pitch) + 1, j = Math.round((y - g.y.origin) / g.y.pitch) + 1, k = Math.round((z - g.z.origin) / g.z.pitch) + 1;
     if (!(i >= 1 && j >= 1 && k >= 1 && i < nx - 1 && j < ny - 1 && k < nz - 1)) continue;
     const v = numOf(f[ci]);
     if (Number.isFinite(v)) F[i + nx * (j + ny * k)] = v;
     if (onProgress && ++n % 100000 === 0) { onProgress(n); await new Promise((r) => setTimeout(r, 0)); }
   }
-  return { F, nx, ny, nz, g };
+  return { F, nx, ny, nz, g, frame: lt.frame };   // frame: a rotated lattice's (contourField carries the shell back to world)
 }
 
 /** 3×3×3 mean over the blocks that exist (missing stays missing). */
@@ -125,7 +130,9 @@ export function contourField(fd, cutoff) {
       }
     }
   }
-  return { vertices: Float64Array.from(verts), triangles: Uint32Array.from(tris), blocksInside };
+  const V = Float64Array.from(verts);
+  if (fd.frame) for (let v = 0; v < V.length; v += 3) { const w = supportToWorld(fd.frame, V[v], V[v + 1], V[v + 2]); V[v] = w[0]; V[v + 1] = w[1]; V[v + 2] = w[2]; }
+  return { vertices: V, triangles: Uint32Array.from(tris), blocksInside };
 }
 
 /** Read, smooth, contour and open as a mesh layer. Resolves to { id, triangles, blocksInside }. */

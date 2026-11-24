@@ -9531,6 +9531,82 @@ if (take()) {
   await pg.close();
 }
 
+// ── §132: the block-support contract, step 5 — the consumers that had their own rotated /
+// sub-blocked branches read the contract. A rotated REGULAR .dm (ANGLE1 −50, the lattice as
+// DD constants, one block left out) and its axis-aligned CSV twin: model QA checks the
+// lattice in the model's own frame (it said "not checked — a rotated lattice") and finds
+// the same gap; block vs sample pairs the same samples to the same blocks (it refused a
+// rotated model); a grade shell is the twin's turned into world (it refused). A sub-
+// blocked model's picked half-extents are its own size from Parquet too (they were the
+// fine pitch); the properties name its fine step and largest sub-block (they said "block"). ──
+if (take()) {
+  const pg = await mkPage('sm2step5');
+  const r = await pg.evaluate(async () => {
+    const M = window._micro;
+    const F = await import('/test/subblock-make.mjs');
+    const NX = 6, NY = 5, NZ = 4, O = [432820, 8522360, 300];
+    const t = (50 * Math.PI) / 180, c = Math.cos(t), s = Math.sin(t);
+    const Wp = (p) => [O[0] + c * p[0] - s * p[1], O[1] + s * p[0] + c * p[1], O[2] + p[2]];
+    // parents with a smooth V (a shell to contour), one block missing (a gap in its column)
+    const par = F.makeSubblockRows({ seed: 31, nx: NX, ny: NY, nz: NZ, pWhole: 1 }).rows
+      .map((b) => ({ ...b, V: +(10 - Math.hypot(b.XC - 60, b.YC - 50, (b.ZC - 20) * 2) / 6).toFixed(4) }))
+      .filter((b) => !(b.XC === 50 && b.YC === 50 && b.ZC === 15));
+    const open = async (bytes, name, mode, opts) => { const id = await M.openBlob(new File([bytes], name), name, mode, null, { throw: true, ...(opts || {}) }); return M.layers().find((x) => x.id === id); };
+    const R = await open(F.makeRegularDm(par, { angle1: -50, nx: NX, ny: NY, nz: NZ }), 'reg5.dm', 'replace', { origin: O });
+    const A = await open(['XC,YC,ZC,V', ...par.map((b) => `${b.XC},${b.YC},${b.ZC},${b.V}`), ''].join('\n'), 'reg5.csv', 'add');
+    const out = { rot: !!(R.docs.blockDoc.header.grid && R.docs.blockDoc.header.grid.rot), sub: [!!R.docs.blockDoc.header.subBlocked, !!A.docs.blockDoc.header.subBlocked] };
+    // (1) model QA
+    const qa = async (L) => { const q = await M.modelQa(L); return { lattice: q.lattice ? [q.lattice.nx, q.lattice.ny, q.lattice.nz, q.lattice.dups, q.lattice.off, q.lattice.gapCells, q.lattice.gapCols] : null, why: q.why, gapAt: q.lattice && q.lattice.gapAt[0] }; };
+    out.qa = { R: await qa(R), A: await qa(A) };
+    // (2) block vs sample: samples in the model frame (the twin) and the same ones in world
+    const smp = [];
+    for (let i = 0; i < 40; i++) smp.push([3 + (i * 7.3) % 114, 2 + (i * 5.1) % 96, 1 + (i * 3.7) % 38, +(i * 0.37 % 9).toFixed(3)]);
+    smp.push([500, 500, 500, 1]);                          // outside
+    const sCsv = (pts) => ['X,Y,Z,S', ...pts.map((p) => p.join(',')), ''].join('\n');
+    const SA = await open(sCsv(smp), 'sA.csv', 'add', { mapping: { x: 0, y: 1, z: 2, chan: 3, cat: null }, asKind: 'points' });
+    const SR = await open(sCsv(smp.map((p) => [...Wp(p), p[3]])), 'sR.csv', 'add', { mapping: { x: 0, y: 1, z: 2, chan: 3, cat: null }, asKind: 'points' });
+    const pair = async (L, Sx) => { try { const res = await M.pairBlocksSamples(L, Sx, { blockCol: 'V', sampleCol: 'S' }); return { n: res.n, outside: res.outside, noBlock: res.noBlock, st: res.stats.map((x) => [x.n, +x.bias.toFixed(9), +(x.slope || 0).toFixed(9), +(x.r || 0).toFixed(9)]) }; } catch (e) { return { err: e.message }; } };
+    out.pair = { R: await pair(R, SR), A: await pair(A, SA) };
+    // (3) a grade shell: the twin's vertices, turned into world, are the rotated model's
+    const sh = async (L) => { try { const fd = await M.readField(L, 'V'); const m = M.contourField(fd, 6.5); return { v: Array.from(m.vertices), t: m.triangles.length / 3, inside: m.blocksInside }; } catch (e) { return { err: e.message }; } };
+    const sR = await sh(R), sA = await sh(A);
+    let worst = sR.err || sA.err ? Infinity : 0;
+    if (!sR.err && !sA.err && sR.v.length === sA.v.length) for (let v = 0; v < sA.v.length; v += 3) { const w = Wp([sA.v[v], sA.v[v + 1], sA.v[v + 2]]); for (let a = 0; a < 3; a++) worst = Math.max(worst, Math.abs(w[a] - sR.v[v + a])); }
+    else if (!sR.err) worst = Infinity;
+    out.shell = { errR: sR.err || null, tris: [sR.t, sA.t], inside: [sR.inside, sA.inside], worst };
+    const made = await M.gradeShell(R, { col: 'V', cutoff: 6.5 }).then((x) => x.triangles, (e) => e.message);
+    out.shell.layer = made;
+    // (4) a sub-blocked model from Parquet: a picked block's half-extents are its own size
+    const sub = F.makeSubblockRows({ seed: 33, nx: 2, ny: 2, nz: 1 }).rows;
+    const SBc = await open(F.makeSubblockCsv(sub), 'sb5.csv', 'add');
+    const ex = await M.runExport(SBc, { format: 'parquet', download: false, returnBlob: true });
+    const SBp = await open(ex.blob, 'sb5.parquet', 'add');
+    const ks = [0, 7, 19, sub.length - 1];
+    out.halves = { pq: [], csv: [], want: ks.map((k) => [sub[k].XINC / 2, sub[k].YINC / 2, sub[k].ZINC / 2]), sub: !!SBp.docs.blockDoc.header.subBlocked, parquet: !!SBp.docs.blockDoc.parquet };
+    for (const k of ks) { out.halves.pq.push(await M.blockHalfDims(SBp, k)); out.halves.csv.push(await M.blockHalfDims(SBc, k)); }
+    // (5) the properties of a sub-blocked model: its fine step and largest sub-block, not a "block" size
+    M.setActiveLayer(SBc.id); M.openProps(SBc); await new Promise((z) => setTimeout(z, 200));
+    const tab = [...document.querySelectorAll('#propPanel .pp-tab')].find((b) => /source/i.test(b.textContent));
+    if (tab) tab.click();
+    await new Promise((z) => setTimeout(z, 300));
+    const txt = document.querySelector('#propPanel').innerText;
+    out.props = { tab: !!tab, fine: /fine step/.test(txt), largest: /largest sub-block/.test(txt), block: /^block \d/m.test(txt) };
+    return out;
+  });
+  chk(`step 5: the rotated regular .dm is rotated and regular, the twin axis-aligned (rotated ${r.rot}, sub ${r.sub.join('/')})`, r.rot && !r.sub[0] && !r.sub[1]);
+  chk(`step 5: model QA checks the rotated lattice in its own frame (${JSON.stringify(r.qa.R.lattice)}${r.qa.R.why ? `, “${r.qa.R.why}”` : ''}) — the twin's findings (${JSON.stringify(r.qa.A.lattice)}): one gap`,
+    r.qa.R.lattice && JSON.stringify(r.qa.R.lattice) === JSON.stringify(r.qa.A.lattice) && r.qa.A.lattice[5] === 1);
+  chk('step 5: …and the gap is shown where it is, in world', r.qa.R.gapAt && r.qa.A.gapAt && (() => { const t = (50 * Math.PI) / 180, w = [432820 + Math.cos(t) * r.qa.A.gapAt[0] - Math.sin(t) * r.qa.A.gapAt[1], 8522360 + Math.sin(t) * r.qa.A.gapAt[0] + Math.cos(t) * r.qa.A.gapAt[1], 300 + r.qa.A.gapAt[2]]; return w.every((v, a) => Math.abs(v - r.qa.R.gapAt[a]) < 1e-6); })());
+  chk(`step 5: block vs sample on the rotated model${r.pair.R.err ? ` — REFUSED “${r.pair.R.err}”` : ''} = the twin's (${r.pair.A.n} pairs, ${r.pair.A.outside} outside, ${r.pair.A.noBlock} in the missing block)`,
+    !r.pair.R.err && JSON.stringify(r.pair.R) === JSON.stringify(r.pair.A) && r.pair.A.n > 30 && r.pair.A.outside === 1);
+  chk(`step 5: a grade shell of the rotated model${r.shell.errR ? ` — REFUSED “${r.shell.errR}”` : ''} is the twin's turned into world (${r.shell.tris.join(' = ')} triangles, ${r.shell.inside.join(' = ')} blocks inside, worst ${r.shell.worst.toExponential(1)} m); the command makes the layer (${r.shell.layer} triangles)`,
+    !r.shell.errR && r.shell.tris[0] === r.shell.tris[1] && r.shell.tris[0] > 20 && r.shell.worst < 1e-6 && r.shell.layer === r.shell.tris[0]);
+  const hv = (a, b) => a.length === b.length && a.every((h, i) => h && h.every((v, k) => Math.abs(v - b[i][k]) < 1e-9));
+  chk(`step 5: a sub-blocked model's picked half-extents are each block's own size — from Parquet (${JSON.stringify(r.halves.pq)}) as from CSV`, r.halves.sub && r.halves.parquet && hv(r.halves.pq, r.halves.want) && hv(r.halves.csv, r.halves.want));
+  chk(`step 5: a sub-blocked model's properties give its fine step and largest sub-block (${JSON.stringify(r.props)})`, r.props.tab && r.props.fine && r.props.largest && !r.props.block);
+  await pg.close();
+}
+
 // ── the LAYER CONTEXT MENU, regrouped (src/layermenu.js layerMenuSections). It had
 // grown to ~33 top-level entries on a block model; now the frequent verbs sit on top
 // and the rest in Analyse · Geometry · Select · Views · Display · Data & file · Move.

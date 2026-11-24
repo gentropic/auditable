@@ -54,7 +54,9 @@ export async function sectionCells(L, sec, { max = 150000 } = {}) {
   if (!ax) throw new Error('vector sections need an axis section — plan, N–S or E–W');
   const ga = gridAxesOf(L);
   if (!ga) throw new Error(`${L.label || L.name} is not a block model on a lattice`);
-  if (ga.rot) throw new Error(`${L.label || L.name} is a rotated model — not yet as vectors`);
+  // a rotated lattice's blocks aren't rectangles in an axis section: sectionShapes cuts them (the
+  // composer routes a rotated model there) — this compact v1 form is for axis-aligned lattices only
+  if (ga.rot) throw new Error(`${L.label || L.name}: a rotated lattice — cut by sectionShapes, not as axis rectangles`);
   const col = colourerOf(L);
   if (!col) throw new Error(`${L.label || L.name}: vector sections colour by a ramp or by categories — not by this colour mode`);
   const h = layerTableHeader(L), m = h && h.mapping;

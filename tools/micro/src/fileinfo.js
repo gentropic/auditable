@@ -4,7 +4,7 @@ import { S, activeLayer } from './state.js';
 import { showHelp } from './help.js';
 import { html, joinH } from './html.js';
 import { fmtSize } from './paths.js';
-import { basisAngles, worldMapOf } from '../../../ext/condenser/src/main.js';
+import { basisAngles, supportOfHeader, supportToWorld } from '../../../ext/condenser/src/main.js';
 import { pinStats } from './columns.js';
 const $ = (s) => document.querySelector(s);
 
@@ -57,19 +57,21 @@ export function showFileInfo() {
   }
   if (S.frame) row('frame origin', html`${joinH(S.frame.origin.map(num), sep(', '))}${S.frame.crs ? html` ${sep('·')} ${V(S.frame.crs)}` : ''}`);
   if (AL0 && S.renderer.layerVramBytes(AL0.id)) row('vram (layer)', V(fmtSize(S.renderer.layerVramBytes(AL0.id))));
-  if (h.grid) {
-    if (h.subBlocked) {
-      row('grid (fine lattice)', joinH([h.grid.x.count, h.grid.y.count, h.grid.z.count].map(num), sep(' × ')));
-      row('fine step', joinH([h.grid.x.pitch, h.grid.y.pitch, h.grid.z.pitch].map(num), sep(' × ')));
-      const q = h.sizeQMax, big = q ? joinH([q[0] * h.grid.x.pitch, q[1] * h.grid.y.pitch, q[2] * h.grid.z.pitch].map(num), '×') : null;
+  const sup = h.grid ? supportOfHeader(h) : null;            // the block-support contract: frame, lattice, sizes
+  if (sup) {
+    const Lt = sup.lattice, P = Lt.pitch;
+    if (sup.sub) {
+      row('grid (fine lattice)', joinH(Lt.count.map(num), sep(' × ')));
+      row('fine step', joinH(P.map(num), sep(' × ')));
+      const q = sup.sizeQMax, big = q ? joinH([q[0] * P[0], q[1] * P[1], q[2] * P[2]].map(num), '×') : null;
       row('sub-block sizes', html`${h.sizeShapes ? html`${num(h.sizeShapes)}${h.sizeShapes >= 65536 ? '+' : ''} shapes` : 'variable'}${big ? html`${sep(' · largest ')}${big}` : ''}`);
     } else {
-      row('grid', joinH([h.grid.x.count, h.grid.y.count, h.grid.z.count].map(num), sep(' × ')));
-      row('block size', joinH([h.grid.x.pitch, h.grid.y.pitch, h.grid.z.pitch].map(num), sep(' × ')));
+      row('grid', joinH(Lt.count.map(num), sep(' × ')));
+      row('block size', joinH(P.map(num), sep(' × ')));
     }
-    const c0 = h.grid.rot ? worldMapOf(h.grid)(h.grid.x.origin, h.grid.y.origin, h.grid.z.origin) : [h.grid.x.origin, h.grid.y.origin, h.grid.z.origin];
+    const c0 = supportToWorld(sup.frame, Lt.originQ[0], Lt.originQ[1], Lt.originQ[2]);
     row('block 0 centroid', joinH(c0.map(num), sep(', ')));
-    if (h.grid.rot) { const ag = basisAngles(h.grid.rot); row('rotation', `azimuth ${ag.azimuth.toFixed(2)}°${ag.zOnly ? '' : ` · tilt ${ag.tilt.toFixed(2)}°`} · ${(h.lattice && h.lattice.basis) || 'declared'}${h.lattice && h.lattice.confirmed ? ` (confirmed by ${h.lattice.confirmed})` : ''}`); }
+    if (sup.frame.rotated) { const ag = basisAngles(sup.frame.R); row('rotation', `azimuth ${ag.azimuth.toFixed(2)}°${ag.zOnly ? '' : ` · tilt ${ag.tilt.toFixed(2)}°`} · ${(h.lattice && h.lattice.basis) || 'declared'}${h.lattice && h.lattice.confirmed ? ` (confirmed by ${h.lattice.confirmed})` : ''}`); }
   }
   if (h.scale) {
     row('scale', joinH(h.scale.map(num), sep(', ')));

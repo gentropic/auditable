@@ -14,6 +14,7 @@ import { zoomToPoint } from './camera.js';
 import { applyLayerSelection } from './selection.js';
 import { deliverBlob } from './hostio.js';
 import { S, requestRender } from './state.js';
+import { supportOfHeader, supportToLattice, supportToWorld } from '../../../ext/condenser/src/main.js';
 const $ = (s) => document.querySelector(s);
 export const _modelQaWins = new Map();
 
@@ -31,10 +32,13 @@ export async function modelQa(L, { onProgress = null, signal = null, keepRecords
   const nFile = (bd.header.columns || h.columns).length;
   const cols = h.columns.slice(0, nFile);
   const m = h.mapping || {};
-  const g = bd.header.grid || null;
-  const sub = !!bd.header.subBlocked;
-  const rot = !!(g && g.rot);
-  const lattice = g && !rot && !sub && g.x.pitch > 0 && g.y.pitch > 0 && g.z.pitch > 0;
+  // the block-support contract: a regular lattice is checked cell by cell in its OWN frame
+  // (a rotated model's world rows carried into it); a sub-blocked one has no cell per block
+  const g = bd.header.grid || null, sup = supportOfHeader(bd.header);
+  const sub = !!(sup && sup.sub);
+  const rot = !!(sup && sup.frame.rotated);
+  const lattice = !!sup && !sub && g.x.pitch > 0 && g.y.pitch > 0 && g.z.pitch > 0;
+  const qb = [0, 0, 0];
   const nx = lattice ? g.x.count : 0, ny = lattice ? g.y.count : 0, nz = lattice ? g.z.count : 0;
   const cells = nx * ny * nz;
   // occupancy: one bit a cell while that fits, a Set otherwise
@@ -74,7 +78,8 @@ export async function modelQa(L, { onProgress = null, signal = null, keepRecords
       c.seenN++;
     }
     if (lattice) {
-      const x = numOf(f[m.x]), y = numOf(f[m.y]), z = numOf(f[m.z]);
+      let x = numOf(f[m.x]), y = numOf(f[m.y]), z = numOf(f[m.z]);
+      if (rot) { supportToLattice(sup.frame, x, y, z, qb); x = qb[0]; y = qb[1]; z = qb[2]; }
       const fi = (x - g.x.origin) / g.x.pitch, fj = (y - g.y.origin) / g.y.pitch, fk = (z - g.z.origin) / g.z.pitch;
       const i = Math.round(fi), j = Math.round(fj), k = Math.round(fk);
       if (Math.abs(fi - i) > 1e-3 || Math.abs(fj - j) > 1e-3 || Math.abs(fk - k) > 1e-3 || i < 0 || j < 0 || k < 0 || i >= nx || j >= ny || k >= nz) {
@@ -101,7 +106,8 @@ export async function modelQa(L, { onProgress = null, signal = null, keepRecords
         gapCells += gap; gapCols++;
         if (gapAt.length < 200) {
           const i = cc % nx, j = (cc / nx) | 0;
-          gapAt.push([g.x.origin + i * g.x.pitch, g.y.origin + j * g.y.pitch, g.z.origin + ((kMin[cc] + kMax[cc]) / 2) * g.z.pitch]);
+          const q = [g.x.origin + i * g.x.pitch, g.y.origin + j * g.y.pitch, g.z.origin + ((kMin[cc] + kMax[cc]) / 2) * g.z.pitch];
+          gapAt.push(rot ? supportToWorld(sup.frame, q[0], q[1], q[2]) : q);
         }
       }
     }
@@ -115,7 +121,7 @@ export async function modelQa(L, { onProgress = null, signal = null, keepRecords
     c.res = null;
   }
   return { N, cols: C, lattice: lattice ? { nx, ny, nz, cells, dups, off, gapCells, gapCols, gapAt, dupRecs, offRecs } : null,
-    why: !g ? 'points (no block grid)' : rot ? 'a rotated lattice' : sub ? 'sub-blocked (variable sizes)' : null, count: attrRowCountOf(L) };
+    why: !sup ? 'points (no block grid)' : sub ? 'sub-blocked (variable sizes — no one cell per block)' : null, rotated: rot, count: attrRowCountOf(L) };
 }
 
 // the findings a reviewer reads, worst first; each knows how to show itself

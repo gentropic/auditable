@@ -12,7 +12,7 @@ import { appendHTML, html, joinH, setHTML, trusted } from './html.js';
 import { colStatsComplete, footerColStats, scanColumns } from './columns.js';
 import { fmtStat } from './analysis-ui.js';
 import { histogramFromCentroids } from '../../../ext/sluice/index.js';
-import { basisAngles, describeQualified, worldMapOf } from '../../../ext/condenser/src/main.js';
+import { basisAngles, describeQualified, supportOfHeader, supportToWorld } from '../../../ext/condenser/src/main.js';
 import { resetJoinForm, renderJoinTab } from './joins.js';
 import { pushUndo } from './undo.js';
 import { menuXY } from './menu.js';
@@ -420,12 +420,18 @@ function renderSourceTab(body, L) {
     line(html`<span class="v">${escS(h.kind === 'las' ? `LAS ${h.version} fmt ${h.format}` : 'PLY ' + escS(h.format))}</span> — positions from the file's own records`);
   }
   if (dmRotationText(h)) line(html`<span class="pp-banner bad" style="display:block">⚠ rotated Datamine model — ${dmRotationText(h)}. micro shows it in the model's own frame and does not rotate it into world coordinates yet: volumes, grades and tonnages are right, positions against other layers (drillholes, topography, solids) are not.</span>`);
-  if (h.grid) {
+  const sup = h.grid ? supportOfHeader(h) : null;            // the block-support contract: frame, lattice, sizes
+  if (sup) {
+    const L0 = sup.lattice, P = L0.pitch;
     sec('block grid');
-    line(html`count <span class="v">${h.grid.x.count} × ${h.grid.y.count} × ${h.grid.z.count}</span>`);
-    line(html`block <span class="v">${fm(h.grid.x.pitch)} × ${fm(h.grid.y.pitch)} × ${fm(h.grid.z.pitch)}</span> m`);
-    { const c0 = h.grid.rot ? worldMapOf(h.grid)(h.grid.x.origin, h.grid.y.origin, h.grid.z.origin) : [h.grid.x.origin, h.grid.y.origin, h.grid.z.origin]; line(html`block 0 centroid <span class="v">${fm(c0[0])}, ${fm(c0[1])}, ${fm(c0[2])}</span>`); }
-    if (h.grid.rot) { const ag = basisAngles(h.grid.rot); line(html`rotated <span class="v">azimuth ${ag.azimuth.toFixed(1)}°${ag.zOnly ? '' : `, tilt ${ag.tilt.toFixed(1)}°`}</span> · ${(h.lattice && h.lattice.basis) || 'declared'}`); }
+    line(html`${sup.sub ? 'fine lattice' : 'count'} <span class="v">${L0.count[0]} × ${L0.count[1]} × ${L0.count[2]}</span>`);
+    if (!sup.sub) line(html`block <span class="v">${fm(P[0])} × ${fm(P[1])} × ${fm(P[2])}</span> m`);
+    else {
+      line(html`fine step <span class="v">${fm(P[0])} × ${fm(P[1])} × ${fm(P[2])}</span> m`);
+      if (sup.sizeQMax) line(html`largest sub-block <span class="v">${fm(sup.sizeQMax[0] * P[0])} × ${fm(sup.sizeQMax[1] * P[1])} × ${fm(sup.sizeQMax[2] * P[2])}</span> m`);
+    }
+    { const c0 = supportToWorld(sup.frame, L0.originQ[0], L0.originQ[1], L0.originQ[2]); line(html`${sup.sub ? 'fine node 0' : 'block 0 centroid'} <span class="v">${fm(c0[0])}, ${fm(c0[1])}, ${fm(c0[2])}</span>`); }
+    if (sup.frame.rotated) { const ag = basisAngles(sup.frame.R); line(html`rotated <span class="v">azimuth ${ag.azimuth.toFixed(1)}°${ag.zOnly ? '' : `, tilt ${ag.tilt.toFixed(1)}°`}</span> · ${(h.lattice && h.lattice.basis) || 'declared'}`); }
   }
   if (h.bbox) {
     sec('extent — world');

@@ -21,7 +21,7 @@ import { layerPositions } from './bygeom.js';
 import { attrRowCountOf } from './records.js';
 import { syncWholeHoles } from './drillholes.js';
 import { currentSection } from './section.js';
-import { layerSection } from '../../../ext/condenser/src/main.js';
+import { layerSection, supportOfHeader } from '../../../ext/condenser/src/main.js';
 
 // the base mask a layer's records pass before any section: its filter (drillholes the same way the
 // composer's "shown" counts them)
@@ -51,13 +51,13 @@ export function sectionCutOf(L, cs = currentSection()) {
   const o = [o0[0] - off[0], o0[1] - off[1], o0[2] - off[2]];   // n·(x + off − origin): world → the section's frame
   // a block's reach along the normal (its half-dims projected on n; a rotated lattice through U/V/W):
   // the slab is at least one block thick, so a thin slab still holds the blocks its plane cuts
+  // (the block-support contract's frame + pitch — one lattice cell; a sub-blocked model's fine cell)
   let reach = 0;
-  const bh = !isDh && d.blockDoc && d.blockDoc.header;
-  if (bh && bh.grid && bh.grid.x) {
-    const n = sec.n, R = bh.grid.rot;
-    const ax = R ? [[R[0], R[1], R[2]], [R[3], R[4], R[5]], [R[6], R[7], R[8]]] : [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
-    const pr = ax.map((u) => Math.abs(n[0] * u[0] + n[1] * u[1] + n[2] * u[2]));
-    reach = (Math.abs(bh.grid.x.pitch) * pr[0] + Math.abs(bh.grid.y.pitch) * pr[1] + Math.abs(bh.grid.z.pitch) * pr[2]) / 2;
+  const sup = !isDh && d.blockDoc ? supportOfHeader(d.blockDoc.header) : null;
+  if (sup) {
+    const n = sec.n, R = sup.frame.R, P = sup.lattice.pitch;
+    const pr = [0, 1, 2].map((a) => Math.abs(n[0] * R[3 * a] + n[1] * R[3 * a + 1] + n[2] * R[3 * a + 2]));
+    reach = (Math.abs(P[0]) * pr[0] + Math.abs(P[1]) * pr[1] + Math.abs(P[2]) * pr[2]) / 2;
   }
   const h = Math.max(sec.half, reach);
   return { kind: 'slab', L, n: sec.n.slice(), o, lo: sec.d - h, hi: sec.d + h, clip: sec.clip, base };
