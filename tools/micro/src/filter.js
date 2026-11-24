@@ -152,6 +152,11 @@ export async function applyBlockFilter(expr, L = activeLayer()) {
   }
   { let ast0 = null; try { ast0 = parse(expr); } catch { /* the branches report */ }
     if (ast0) await ensureStoredValues(layerById(lid), expandedDeps(layerById(lid), ast0)); }   // evicted matcols re-fault before the sweep
+  // A SUPERSEDED filter must not touch what the newer one owns: after every await,
+  // it stops before any shared side effect (the layer's compact builder, its compact
+  // chunks — clearCompact also hands the layer back to its BASE set, so a late clear
+  // from a dead filter showed the whole model under a live filter's name).
+  if (!alive()) return;
   // drillholes: the interval table is in memory — the sweep is a plain loop
   if (fDhDoc) {
     const r = dhFilterSweep(AL, expr);
@@ -190,6 +195,7 @@ export async function applyBlockFilter(expr, L = activeLayer()) {
   let cb2 = isolate && fBlockDoc.grid && compactCap > 0 && !header.subBlocked && (layerById(lid) || {}).viewOf == null
     ? await startChunkBuilder({ frame: S.frame, grid: fBlockDoc.grid, chunkSize: 1 << 17, batchSize: 1 << 21, seed: 2, onChunk: (c) => { if (alive()) S.renderer.addChunk(c, 'compact', lid); } })
     : null;
+  if (!alive()) { if (cb2) cb2.close(); return; }          // superseded while the builder started: never registered, never drawn
   if (cb2) { _compactBuilders.set(lid, cb2); window.__compactOffPage = cb2.offPage; }   // smoke hook: where compaction ran
   const CB = 1 << 18;
   let cx, cy, czz, cch, cct, crr, cfill = 0, collected = 0;
@@ -200,7 +206,11 @@ export async function applyBlockFilter(expr, L = activeLayer()) {
   // compact chunks stand where the base chunks do with no mapping here)
   const collect = (xv, yv, zv, cv, code, r) => {
     if (!cb2) return;
-    if (collected >= compactCap) { closeCompactBuilder(lid); S.renderer.clearCompact(lid); cb2 = null; return; }   // too many — the mask path wins
+    if (!alive()) { if (_compactBuilders.get(lid) === cb2) _compactBuilders.delete(lid); cb2.close(); cb2 = null; return; }   // superseded mid-sweep: drop OUR builder, nothing of the newer filter's
+    if (collected >= compactCap) {                         // too many — the mask path wins (our builder, our chunks; we are the live filter)
+      if (_compactBuilders.get(lid) === cb2) _compactBuilders.delete(lid);
+      cb2.close(); S.renderer.clearCompact(lid); cb2 = null; return;
+    }
     cx[cfill] = xv; cy[cfill] = yv; czz[cfill] = zv;
     cch[cfill] = Number.isFinite(cv) ? cv : 0;
     if (cct) cct[cfill] = code;
@@ -507,11 +517,11 @@ export async function applyBlockFilter(expr, L = activeLayer()) {
     }
   }
 
-  if (!alive()) return;                      // superseded mid-scan by a newer filter
+  if (!alive()) { if (cb2) { if (_compactBuilders.get(lid) === cb2) _compactBuilders.delete(lid); cb2.close(); } return; }   // superseded mid-scan by a newer filter: our builder goes, nothing else
   if (cb2) {                                               // compacted: matches ARE the chunks — no mask needed
     cflush();
     try { await cb2.flush(); } catch { /* a closed / failed builder: superseded, or the mask path below */ }
-    if (!alive()) return;
+    if (!alive()) { cb2.close(); return; }                  // superseded while flushing: our builder goes
     if (_compactBuilders.get(lid) === cb2) closeCompactBuilder(lid);
     S.renderer.setFilter(null, {}, lid);
     S.renderer.setActiveSet('compact', lid);

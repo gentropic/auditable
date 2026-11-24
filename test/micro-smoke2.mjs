@@ -3554,6 +3554,28 @@ if (take()) {
     await Promise.all([p1, p2]);
     await new Promise((z2) => setTimeout(z2, 500));         // any late chunks from the superseded builder would have landed by now
     const b = { drawn: M.renderer.layerElementCount(L.id), want: count((v) => v > 3.8) };
+    // …the same race made DETERMINISTIC (it flaked under load): the superseded filter's
+    // builder worker answers 'ready' 400 ms late, so the newer filter finishes first and
+    // the dead one sweeps after it. It used to hit the compaction cap then and clear the
+    // layer's compact set — handing it back to the base set: the whole model drawn.
+    {
+      const RealW = window.Worker, desc = Object.getOwnPropertyDescriptor(RealW.prototype, 'onmessage');
+      let slow = 1;
+      window.Worker = class extends RealW {
+        constructor(...a) {
+          super(...a);
+          if (slow-- > 0) Object.defineProperty(this, 'onmessage', { configurable: true, get() { return desc.get.call(this); },
+            set(fn) { desc.set.call(this, fn && ((ev) => (ev.data && ev.data.type === 'ready' ? setTimeout(() => fn.call(this, ev), 400) : fn.call(this, ev)))); } });
+        }
+      };
+      try {
+        const q1 = M.applyBlockFilter('AU > 0.5', L);
+        const q2 = M.applyBlockFilter('AU > 3.6', L);
+        await Promise.all([q1, q2]);
+        await new Promise((z2) => setTimeout(z2, 800));
+      } finally { window.Worker = RealW; }
+      b.late = { drawn: M.renderer.layerElementCount(L.id), want: count((v) => v > 3.6), slowUsed: slow < 0 };
+    }
     // the tee: a budget too small for the scan's columns → nothing allocated or pinned
     M.setPinBudget('off'); M.setPinBudget(1);                // 1 MB
     await M.applyBlockFilter('AU > 2', L);
@@ -3607,6 +3629,7 @@ if (take()) {
   chk(`compaction off the page (${cp.a.offPage}): the compact set holds exactly the matches (${cp.a.drawn} = ${cp.a.want}; “${cp.a.meta.split('·').pop().trim()}”)`,
     cp.a.offPage === true && cp.a.drawn === cp.a.want && /compacted/.test(cp.a.meta));
   chk(`a superseded filter's late chunks never land: ${cp.b.drawn} drawn = the newer filter's ${cp.b.want}`, cp.b.drawn === cp.b.want);
+  chk(`…nor does a superseded filter whose builder would start LATE (a worker delayed 400 ms; reached: ${cp.b.late.slowUsed} — a dead filter now stops before starting one) clear the newer one's set: ${cp.b.late.drawn} drawn = ${cp.b.late.want}`, cp.b.late.drawn === cp.b.late.want);
   chk(`the builder off the page is byte-identical to on it (${cp.off.n} chunks, offPage ${cp.off.off} vs ${cp.on.off}, same: ${cp.off.sig === cp.on.sig}); closed mid-stream → ${cp.lateAfterClose} late chunks delivered`,
     cp.off.off === true && cp.on.off === false && cp.off.n > 10 && cp.off.sig === cp.on.sig && cp.lateAfterClose === 0);
   chk(`parallel builders, a batch each: page / 1 worker / ${cp.par.three.w} workers draw the same bytes in the same order (${cp.par.three.n} chunks, ${cp.par.three.count} blocks, hash ${cp.par.page.h.toString(16)} · ${cp.par.one.h.toString(16)} · ${cp.par.three.h.toString(16)})`,
