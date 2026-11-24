@@ -643,8 +643,10 @@ const sevCounts = (rows, sevOf, countOf = () => 1) => {
 };
 
 // a block model: lattice (duplicates, off-grid centroids, gaps) and every column (blanks, sentinels,
-// text in numbers, densities outside 1–6 t/m³, outliers). values: errors / warnings / info (record
-// counts over the findings of each severity), findings, blocks
+// text in numbers, densities outside 1–6 t/m³, outliers), and a sub-blocked model's tiling of its
+// parents. values: errors / warnings / info (record counts over the findings of each severity),
+// findings, blocks — + overlaps, crossings, offLattice, ijkMismatches, parents, underfilled,
+// missingVolume, overVolume on a sub-blocked model (tilingValues)
 registerTool('modelqa', {
   label: 'model QA',
   params: { layer: { type: 'layer', required: true, doc: 'the block model' } },
@@ -654,11 +656,19 @@ registerTool('modelqa', {
     const f = qaFindings(r);
     return {
       table: { columns: ['severity', 'check', 'column', 'count', 'note'], key: ['check', 'column'], rows: f.map((x) => [x.sev, x.check, x.column || '', x.count, x.note || '']), units: {} },
-      values: { ...sevCounts(f, (x) => x.sev, (x) => x.count), findings: f.length, blocks: r.N },
-      resolved: { ...p }, warnings: [],
+      values: { ...sevCounts(f, (x) => x.sev, (x) => x.count), findings: f.length, blocks: r.N, ...tilingValues(r.tiling) },
+      resolved: { ...p }, warnings: r.tiling && r.tiling.why && r.tiling.why !== 'not a sub-blocked model' ? [`sub-block tiling not checked: ${r.tiling.why}`] : [],
     };
   },
 });
+// a sub-blocked model's tiling, as counts a check can gate on ("mq.overlaps = 0"): sub-blocks
+// overlapping / crossing their parent / off its lattice / an IJK that disagrees (blocks), parents
+// not filled (parents) and the missing volume. Absent for a model that isn't sub-blocked.
+function tilingValues(t) {
+  if (!t || t.why) return {};
+  return { overlaps: t.overlap, crossings: t.crossing, offLattice: t.offLattice + t.offGrid, ijkMismatches: t.ijkBad,
+    parents: t.parents, underfilled: t.under, missingVolume: t.underVolume, overVolume: t.overVolume };
+}
 
 // a drillhole set (the layer and every interval table sharing its collar + survey): collars, surveys,
 // doglegs, gaps and overlaps, intervals past the survey. values: errors / warnings / info, findings

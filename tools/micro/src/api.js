@@ -33,7 +33,7 @@ import { openStats } from './stats.js';
 import { openCrosstab, _xtabWins, parseCutoffs } from './xtab.js';
 import { openXyPlot, _xyWins } from './xyplot.js';
 import { openMeshQa, _meshQaWins } from './meshqa.js';
-import { openModelQa, modelQa, qaFindings, selectFinding, _modelQaWins } from './modelqa.js';
+import { openModelQa, modelQa, qaFindings, selectFinding, subBlockTiling, _modelQaWins } from './modelqa.js';
 import { openComposite, compositeLayer, compositeToLayer } from './composite-ui.js';
 import { openPairing, pairBlocksSamples, selectDisagreeing, _pairWins } from './pairing.js';
 import { openSectionSeries, renderSectionSeries, seriesPositions, seriesExtent } from './section-series.js';
@@ -182,7 +182,7 @@ window._micro = {
   smoothField, recoverSession, recreateRenderer, createMemDir, openSectionSeries, renderSectionSeries,
   seriesPositions, seriesExtent, sectionWorld, setSectionWorld, openPairing, pairBlocksSamples,
   selectDisagreeing, pairWins: _pairWins, openComposite, compositeLayer, compositeToLayer, openModelQa,
-  modelQa, qaFindings, selectFinding, modelQaWins: _modelQaWins, measureClick, armMeasure,
+  modelQa, qaFindings, selectFinding, subBlockTiling, modelQaWins: _modelQaWins, measureClick, armMeasure,
   measureState: () => _measure, openExplode, explodeGroup, setLayerDisplayOffset, anyDisplaced, openTurntable,
   recordTurntable, turntableMime, openThemeEditor, customTheme, setCustomTheme, clearCustomTheme,
   parseThemeJson, themeJson, registerTokens, contrast, setTheme, sceneDefault, canChangeFile, viewsOf, isView,

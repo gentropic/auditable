@@ -48,10 +48,21 @@ export function makeSubblockRows({ seed = 7, nx = 8, ny = 6, nz = 4, px = 20, py
   return { rows, shapes: shapes.size };
 }
 
-/** The .dm bytes: ANGLE1 about Z (ROTAXIS1 = 3), origin X0/Y0/Z0 (0 = anonymised, as the real file). */
-export function makeSubblockDm(rows, { angle1 = -50, origin = [0, 0, 0] } = {}) {
+/**
+ * The .dm bytes: ANGLE1 about Z (ROTAXIS1 = 3), origin X0/Y0/Z0 (0 = anonymised, as the real file).
+ * parents ({ nx, ny, nz, px, py, pz }): also the parent lattice as the real file states it —
+ * XMORIG/YMORIG/ZMORIG = 0 + NX/NY/NZ constants + a per-record IJK = (I·NY + J)·NZ + K
+ * (Datamine order, K fastest), from each block's parent (a row's own IJK wins: a test can lie).
+ */
+export function makeSubblockDm(rows, { angle1 = -50, origin = [0, 0, 0], parents = null } = {}) {
+  const k = (name, constant) => ({ name, type: 'N', constant });
+  const P = parents ? { px: 20, py: 20, pz: 10, ...parents } : null;
+  if (P) rows = rows.map((r) => ({ ...r, IJK: r.IJK != null ? r.IJK
+    : (Math.floor((r.XC - r.XINC / 2) / P.px) * P.ny + Math.floor((r.YC - r.YINC / 2) / P.py)) * P.nz + Math.floor((r.ZC - r.ZINC / 2) / P.pz) }));
   const fields = [
+    ...(P ? [{ name: 'IJK', type: 'N' }] : []),
     { name: 'XC', type: 'N' }, { name: 'YC', type: 'N' }, { name: 'ZC', type: 'N' },
+    ...(P ? [k('XMORIG', 0), k('YMORIG', 0), k('ZMORIG', 0), k('NX', P.nx), k('NY', P.ny), k('NZ', P.nz)] : []),
     { name: 'XINC', type: 'N' }, { name: 'YINC', type: 'N' }, { name: 'ZINC', type: 'N' },
     { name: 'X0', type: 'N', constant: origin[0] }, { name: 'Y0', type: 'N', constant: origin[1] }, { name: 'Z0', type: 'N', constant: origin[2] },
     { name: 'ROTAXIS1', type: 'N', constant: 3 }, { name: 'ANGLE1', type: 'N', constant: angle1 },

@@ -9930,6 +9930,90 @@ if (take()) {
   await ps.close();
 }
 
+// ── §136: SUB-BLOCK QA — do the sub-blocks tile their parents (modelqa.js subBlockTiling over
+//    condenser grid/tiling.js). A rotated .dm stating its parents the Datamine way (XMORIG…, NX…,
+//    a per-record IJK) with three defects: a sub-block dropped (its parent under by exactly its
+//    volume), one duplicated (the later copy overlaps — selecting the finding selects it), one IJK
+//    that lies. Its axis-aligned CSV twin (no IJK, the parent corner found from a whole block)
+//    finds the same gap and overlap; the clean model reports nothing; the routine tool's values
+//    carry the counts and a check on them stops the run. ──
+if (take()) {
+  const p = await mkPage('sm2tiling');
+  await p.evaluate(async () => { try { await (await navigator.storage.getDirectory()).removeEntry('sm2tiling', { recursive: true }); } catch { } });
+  const r = await p.evaluate(async () => {
+    const M = window._micro, m = window.micro, F = await import('/test/subblock-make.mjs');
+    const NP = { nx: 6, ny: 5, nz: 3 };
+    const { rows } = F.makeSubblockRows({ seed: 23, ...NP });
+    // the defects: a sub-block of a split parent dropped, another duplicated right after itself, an IJK lie
+    const split = (i) => !(rows[i].XINC === 20 && rows[i].YINC === 20 && rows[i].ZINC === 10);
+    const di = rows.findIndex((x, i) => i > 40 && split(i));
+    const dropped = rows[di], dropVol = dropped.XINC * dropped.YINC * dropped.ZINC;
+    const bad = rows.filter((_, i) => i !== di);
+    const ei = bad.findIndex((x, i) => i > 200 && split(i));
+    bad.splice(ei + 1, 0, { ...bad[ei] });
+    const li = ei + 30; bad[li] = { ...bad[li], IJK: 12345 };
+    const O = [432820, 8522360, 300];
+    const out = { n: bad.length, dupRec: ei + 1, lieRec: li, dropVol };
+    const open = async (bytes, name, mode, opts = {}) => { const id = await M.openBlob(new File([bytes], name), name, mode, null, { throw: true, ...opts }); return M.layers().find((x) => x.id === id); };
+    const LD = await open(F.makeSubblockDm(bad, { angle1: -50, parents: NP }), 'tiled-bad.dm', 'replace', { origin: O });
+    const t = await M.subBlockTiling(LD);
+    out.dm = { overlap: t.overlap, overlapRecs: t.overlapRecs, under: t.under, underVolume: t.underVolume, ijkBad: t.ijkBad, ijkRecs: t.ijkRecs, crossing: t.crossing, offLattice: t.offLattice, offGrid: t.offGrid, parents: t.parents, phaseFrom: t.phaseFrom, ijkChecked: t.ijkChecked, ps: t.parentSize };
+    const LC = await open(F.makeSubblockCsv(bad), 'tiled-bad.csv', 'add');
+    const tc = await M.subBlockTiling(LC);
+    out.csv = { overlap: tc.overlap, overlapRecs: tc.overlapRecs, under: tc.under, underVolume: tc.underVolume, phaseFrom: tc.phaseFrom, ijkChecked: tc.ijkChecked };
+    const LG = await open(F.makeSubblockDm(rows, { angle1: -50, parents: NP }), 'tiled-good.dm', 'add', { origin: O });
+    // the QA window on the clean model: no sub-block finding, the rail says the tiling is exact
+    const eg = await M.openModelQa(LG); await eg.done;
+    out.goodChecks = M.qaFindings(eg.st.r).map((f) => f.check);
+    out.goodRail = eg.win.el.textContent.includes('✓ exact');
+    // …and on the dirty one: the overlap finding selects exactly the later copy
+    const eb = await M.openModelQa(LD); await eb.done;
+    const fs = M.qaFindings(eb.st.r);
+    out.badChecks = fs.map((f) => `${f.sev}:${f.check}:${f.count}`);
+    const fo = fs.find((f) => f.check === 'sub-blocks overlap');
+    out.selected = fo ? await M.selectFinding(LD, fo) : -1;
+    out.selRec = LD._selMask ? Array.from(LD._selMask).indexOf(1) : -1;
+    out.gapGo = !!(fs.find((f) => /parent not filled/.test(f.check)) || {}).show;
+    // the .dm census is read COLUMNAR now: its V column = the CSV twin's (row path), a DD constant counted per record
+    const qc = await M.modelQa(LC), pick = (q, nm) => { const c = q.cols.find((x) => x.name === nm); return c && [c.n, c.blank, c.negative, c.zero, c.min, c.max, +c.mean.toFixed(9), c.p50]; };
+    out.censusDm = pick(eb.st.r, 'V'); out.censusCsv = pick(qc, 'V');
+    const ang = eb.st.r.cols.find((x) => x.name === 'ANGLE1');
+    out.constCol = ang ? [ang.n, ang.min, ang.max, eb.st.r.N] : null;
+    // the tool's values, and a routine that gates on them
+    const mq = await m.runTool('modelqa', { layer: LD.name });
+    out.values = mq.values;
+    return out;
+  });
+  chk(`SUB-BLOCK QA (.dm, IJK): ${r.dm.parents} parents of ${r.dm.ps.join('×')}, corner ${r.dm.phaseFrom} — the dropped block's parent under by its ${r.dropVol} m³, the duplicate overlaps (rec ${r.dm.overlapRecs} = ${r.dupRec}), the lying IJK named (rec ${r.dm.ijkRecs} = ${r.lieRec}), nothing else (${JSON.stringify(r.dm)})`,
+    r.dm.parents === 90 && r.dm.phaseFrom === 'stated' && r.dm.ijkChecked && r.dm.ps.join() === '20,20,10'
+    && r.dm.under === 1 && Math.abs(r.dm.underVolume - r.dropVol) < 1e-6 && r.dm.overlap === 1 && r.dm.overlapRecs[0] === r.dupRec
+    && r.dm.ijkBad === 1 && r.dm.ijkRecs[0] === r.lieRec && r.dm.crossing === 0 && r.dm.offLattice === 0 && r.dm.offGrid === 0);
+  chk(`SUB-BLOCK QA (CSV twin, no IJK — the corner found from a whole block: ${r.csv.phaseFrom}): the same gap and overlap (${JSON.stringify(r.csv)})`,
+    r.csv.phaseFrom === 'block' && !r.csv.ijkChecked && r.csv.under === 1 && Math.abs(r.csv.underVolume - r.dropVol) < 1e-6 && r.csv.overlap === 1 && r.csv.overlapRecs[0] === r.dupRec);
+  chk(`SUB-BLOCK QA window: the clean model has no sub-block finding and reads “✓ exact” (${r.goodChecks.join(' · ')}); the dirty one lists them (${r.badChecks.join(' · ')}), the overlap selects its block (${r.selected} → rec ${r.selRec}), the gap steps the camera`,
+    r.goodRail && !r.goodChecks.some((c) => /sub-block|parent|IJK/.test(c))
+    && r.badChecks.includes('error:sub-blocks overlap:1') && r.badChecks.includes('error:IJK disagrees with the position:1') && r.badChecks.includes('warn:parent not filled by its sub-blocks:1')
+    && r.selected === 1 && r.selRec === r.dupRec && r.gapGo);
+  chk(`MODEL QA on a .dm reads its columns columnar: V's census = the CSV twin's row-path census (${JSON.stringify(r.censusDm)} vs ${JSON.stringify(r.censusCsv)}); a DD constant counts every record (${JSON.stringify(r.constCol)})`,
+    !!r.censusDm && JSON.stringify(r.censusDm) === JSON.stringify(r.censusCsv) && r.constCol && r.constCol[0] === r.constCol[3]);
+  chk(`SUB-BLOCK QA tool: the counts are values a check gates on (${JSON.stringify(r.values)})`,
+    r.values.overlaps === 1 && r.values.underfilled === 1 && r.values.ijkMismatches === 1 && r.values.crossings === 0 && r.values.offLattice === 0 && r.values.parents === 90 && Math.abs(r.values.missingVolume - r.dropVol) < 1e-6);
+  await saveProject(p);
+  const g = await p.evaluate(async () => {
+    const M = window._micro, m = window.micro;
+    const L = M.layers().find((x) => /tiled-bad\.dm/.test(x.name));
+    M._recipesList().push({ name: 'tiling gate', tool: 'routine', params: { steps: [
+      { tool: 'modelqa', with: { layer: L.name }, as: 'mq' },
+      { check: 'mq.overlaps = 0', say: 'the sub-blocks tile their parents' },
+    ] } });
+    const res = await m.runRoutine('tiling gate');
+    return { status: res.status, error: res.error, steps: res.record.steps.map((s) => s.status), observed: res.record.steps[1].observed };
+  });
+  chk(`SUB-BLOCK QA gate: a routine's check on mq.overlaps stops the run (${JSON.stringify(g)})`,
+    g.status === 'failed' && g.steps.join() === 'ok,fail' && /tile their parents/.test(g.error || '') && g.observed && g.observed['mq.overlaps'] === 1);
+  await p.close();
+}
+
 // ── the LAYER CONTEXT MENU, regrouped (src/layermenu.js layerMenuSections). It had
 // grown to ~33 top-level entries on a block model; now the frequent verbs sit on top
 // and the rest in Analyse · Geometry · Select · Views · Display · Data & file · Move.
