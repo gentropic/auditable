@@ -41,6 +41,9 @@ import { scanGTSeries, gtRows, gtChartSpec, gtHumanTSV } from './gt.js';
 import { statsScan } from './stats.js';
 import { scanSwath, swathRows, binSwath, swathChartSpec, swathHumanTSV } from './swath.js';
 import { validate, compileBool } from '../../../ext/expr/index.js';
+import { isPointCloud, pointsToGridLayer } from './pcgrid.js';
+import { cutFill, cutFillLayer, cutFillTable, cutFillValues, cutFillHumanTSV, cutFillChartSpec } from './cutfill.js';
+import { PC_STATS } from './grid-ops.js';
 
 export const TOOLS = new Map();
 export function registerTool(name, def) { TOOLS.set(name, { name, ...def }); }
@@ -454,9 +457,10 @@ registerTool('factors', {
     gcGrade: { type: 'column', of: ['gc', 'model'], doc: 'grade control’s grade column (default: grade)' },
     gcUnit: { type: 'string', doc: 'its grade unit (default: modelUnit)' },
     gcDensity: { type: 'any', doc: 'grade control’s density (default: what gc declares in grade-tonnage, else density)' },
-    periods: { type: 'enum', values: ['column', 'volumes', 'filter', 'selection'], default: 'column', routine: ['column', 'volumes', 'filter'], why: 'a selection isn’t saved with the routine — use a period column, volumes or a filter', doc: 'how the mined volume per period is known: a period column on the blocks · a mesh per period · a filter (one period) · the 3D selection (one period)' },
+    periods: { type: 'enum', values: ['column', 'volumes', 'surveys', 'filter', 'selection'], default: 'column', routine: ['column', 'volumes', 'surveys', 'filter'], why: 'a selection isn’t saved with the routine — use a period column, volumes, surveys or a filter', doc: 'how the mined volume per period is known: a period column on the blocks · a mesh per period · pit surveys in date order · a filter (one period) · the 3D selection (one period). Absent with surveys given: surveys' },
     periodCol: { type: 'column', of: 'model', doc: 'periods column: the column naming the period each block was mined in (blank = not mined) — on both models' },
     volumes: { type: 'list', item: { name: { type: 'string', required: true, doc: 'the period’s name (production rows match it)' }, mesh: { type: 'layer', required: true, kinds: ['mesh', 'grid'], doc: 'a closed solid, an open pit surface, or a gridded surface' }, side: { type: 'enum', values: ['inside', 'outside', 'above', 'below'], doc: 'by the volume’s topology — a closed solid: inside (default) · outside; an open surface or a grid: above (default — a pit, mined from it up) · below. A side that doesn’t fit is an error' } }, doc: 'periods volumes: one solid or surface per period, in order — blocks counted by the fraction inside' },
+    surveys: { type: 'list', min: 2, item: { name: { type: 'string', required: true, doc: 'the period this survey closes (production rows match it); the first survey’s name only labels the start' }, surface: { type: 'layer', required: true, kinds: ['grid', 'mesh'], doc: 'the survey: a DEM grid (e.g. gridded from the drone cloud — tool pcgrid) or an open pit surface' } }, doc: 'periods surveys: pit surfaces in DATE ORDER — the first is where mining starts (the topography, or the survey before the first period), each later one closes a period: period k = what lies above survey k and not above survey k − 1 (sugar for nested "above" volumes whose first is a baseline)' },
     nested: { type: 'bool', default: true, doc: 'periods volumes: each volume holds the ones before it (pit phases, cumulative shells) → period k = volume k minus volume k − 1; false = each volume counted whole' },
     probes: { type: 'any', default: [3, 3, 3], doc: 'periods volumes: probes per block along x, y, z for the fraction inside — [3, 3, 2] for benches; a single n means n × n × n; [1, 1, 1] tests the centroid' },
     periodFilter: { type: 'expr', of: 'model', doc: 'periods filter: the blocks mined (an expression; its names must exist on both models)' },
@@ -476,7 +480,9 @@ registerTool('factors', {
   outputs: { key: ['period', 'quantity'] },
   chart: (scan, raw) => factorsChartSpec(scan, { show: raw.show, cumulative: raw.cumulative, tolerance: raw.tolerance != null ? raw.tolerance : 0.1, ranges: raw.ranges ? rangesFromCfg(raw.ranges) : null }),
   human: (scan) => factorsHumanTSV(scan),
+  normalize(p) { if (p.periods == null && Array.isArray(p.surveys) && p.surveys.length) p.periods = 'surveys'; },   // `surveys:` alone says the mode
   check(p, errs) {
+    if (p.periods === 'surveys' && !(Array.isArray(p.surveys) && p.surveys.length >= 2)) errs.push('surveys: at least two { name, surface }, in date order (periods: surveys)');
     if (p.cutoff != null && p.cutoff !== 'none' && !(typeof p.cutoff === 'number' && Number.isFinite(p.cutoff))) errs.push('cutoff: a number (in gradeUnit) or "none"');
     densityShape(p.density, 'density', errs); densityShape(p.gcDensity, 'gcDensity', errs);
     if (p.density == null && !p.gcDensity) {
@@ -851,6 +857,62 @@ registerTool('reconcile', {
     return r;
   },
   shape(r, p) { return { table: null, values: { matched: r.matched ?? 0, mean_delta: r.meanDelta ?? NaN, mean_abs_delta: r.meanAbsDelta ?? NaN, this_only: r.thisOnly ?? 0, ref_only: r.refOnly ?? 0 }, layers: [r.name], resolved: { ...p }, warnings: [] }; },
+});
+
+// pcgrid: a point cloud → a DEM grid layer (each point on its nearest node; min / mean / max Z per node)
+registerTool('pcgrid', {
+  label: 'grid points (DEM)', cache: false, makes: 'layer',
+  params: {
+    layer: { type: 'layer', required: true, kinds: ['points'], doc: 'the point cloud (LAS, PLY, XYZ, a CSV of points)' },
+    cell: { type: 'number', routine: 'required', why: 'the default cell follows the cloud’s extent — a survey compared month to month needs one stated cell', doc: 'node spacing (blank outside a routine: ~500 nodes across the cloud)' },
+    stat: { type: 'enum', values: PC_STATS.slice(), default: 'mean', doc: 'what each node keeps of the points in its cell: min (ground under vegetation) · mean · max (crests, canopy) · count (point density)' },
+    anchor: { type: 'numbers', doc: 'a point [x, y] the nodes pass through (default [0, 0]: nodes at round multiples of the cell)' },
+    match: { type: 'layer', kinds: ['grid'], doc: 'fill an existing grid’s lattice instead (an earlier survey — node for node); cell and anchor are then ignored' },
+    filter: { type: 'expr', default: '', of: 'layer', doc: 'only the points this keeps (a LAS ground class: Classification == 2)' },
+    fill: { type: 'enum', values: ['none', 'nearest', 'trend'], default: 'none', doc: 'empty nodes: blank, or filled — nearest (flat) or planar trend' },
+    holesOnly: { type: 'bool', default: true, doc: 'fill only the gaps inside the cloud — beyond its edge stays blank' },
+    name: { type: 'string', doc: 'the grid layer’s name (default: <cloud>_<stat><cell>m.asc)' },
+  },
+  outputs: { key: [] },
+  check(p, errs) {
+    if (p.cell != null && !(p.cell > 0)) errs.push('cell: a positive number');
+    if (p.anchor != null && !(Array.isArray(p.anchor) && p.anchor.length === 2)) errs.push('anchor: [x, y]');
+  },
+  async scan(p, ctx) {
+    const L = layerNamed(p.layer);
+    if (!isPointCloud(L)) throw new Error(`${L.label || L.name} is not a point cloud`);
+    const r = await pointsToGridLayer(L, { cell: p.cell, stat: p.stat, anchor: p.anchor || [0, 0], match: p.match ? layerNamed(p.match) : null, filter: p.filter, fill: p.fill, holesOnly: p.holesOnly, name: p.name || null, signal: ctx.signal, onProgress: ctx.progress ? (f) => ctx.progress(Math.round(f * 100), 100) : null });
+    return r;
+  },
+  shape(r, p) {
+    return { table: null, values: { points: r.points, nodes: r.geom.nx * r.geom.ny, filled: r.filled, empty: r.empty, filled_by_fill: r.filledByFill, outside: r.outside, cell: r.geom.dx }, layers: [r.name], resolved: { ...p, cell: r.geom.dx }, warnings: r.outside ? [`${r.outside.toLocaleString()} point${r.outside === 1 ? '' : 's'} outside the lattice`] : [] };
+  },
+});
+
+// cutfill: the volume between two surfaces (after − before) — cut, fill, net — and the Δz grid layer
+registerTool('cutfill', {
+  label: 'cut / fill', cache: false, makes: 'layer',
+  params: {
+    before: { type: 'layer', required: true, kinds: ['grid', 'mesh'], doc: 'the earlier surface (last survey, or the topography before mining)' },
+    after: { type: 'layer', required: true, kinds: ['grid', 'mesh'], doc: 'the later surface (this survey)' },
+    cell: { type: 'number', doc: 'node spacing (default: the finer grid’s own nodes, over the overlap of the two)' },
+    match: { type: 'layer', kinds: ['grid'], doc: 'use this grid’s lattice instead' },
+    layer: { type: 'bool', default: true, doc: 'add the Δz grid as a layer (after − before; red = cut, blue = fill)' },
+    name: { type: 'string', doc: 'the Δz layer’s name (default dz_<after>_<before>.asc)' },
+  },
+  outputs: { key: ['quantity'] },
+  chart: (r) => cutFillChartSpec(r),
+  human: (r) => cutFillHumanTSV(r),
+  check(p, errs) { if (p.cell != null && !(p.cell > 0)) errs.push('cell: a positive number'); },
+  async scan(p, ctx) {
+    const B = layerNamed(p.before), A = layerNamed(p.after);
+    const r = await cutFill(B, A, { cell: p.cell || null, match: p.match ? layerNamed(p.match) : null, signal: ctx.signal, onProgress: ctx.progress ? (f) => ctx.progress(Math.round(f * 100), 100) : null });
+    if (p.layer) { const made = await cutFillLayer(r, B, A, { name: p.name || null }); r.layerName = made.name; }
+    return r;
+  },
+  shape(r, p) {
+    return { table: cutFillTable(r), values: cutFillValues(r), ...(r.layerName ? { layers: [r.layerName] } : {}), resolved: { ...p, cell: r.geom.dx }, warnings: [] };
+  },
 });
 
 // section series: a sheet per section position along the section's normal, as PNGs in a zip

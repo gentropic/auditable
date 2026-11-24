@@ -181,6 +181,114 @@ export function surfaceFromGrid(g) {
   };
   return { grid: g, sampleZ };
 }
+// ── AS-BUILT: point cloud → DEM, and cut / fill between two surfaces ──────────
+// A NODE lattice covering the XY bbox [minX, minY, maxX, maxY] at cell `dx`, its
+// nodes passing through `anchor` ([ax, ay]; default [0, 0] — nodes at round
+// multiples of the cell, so two surveys gridded at one cell share a lattice and
+// compare node for node). → { x0, y0 (the TOP row), dx, dy, nx, ny }
+export function latticeForBbox(bb, dx, anchor = [0, 0]) {
+  const X = alignAxis(+anchor[0] || 0, bb[0], bb[2], dx, dx / 2);   // a node owns the cell ±dx/2 about it
+  const Y = alignAxis(+anchor[1] || 0, bb[1], bb[3], dx, dx / 2);
+  return { x0: X.min, y0: Y.min + (Y.n - 1) * dx, dx, dy: dx, nx: X.n, ny: Y.n };
+}
+// The point → node binner: each point lands on its NEAREST node (the cell is
+// centred on the node — the ESRI convention micro reads and writes), and the node
+// keeps the statistic of the Z that landed there: min (ground under vegetation),
+// max (canopy, a stockpile's crest), mean, or count (point density). One pass,
+// O(1) per point and O(nodes) memory — the cloud itself is never held.
+//   const b = makePointBinner(geom, 'min'); b.add(x, y, z, n); … ; b.finish() → grid
+export const PC_STATS = ['min', 'mean', 'max', 'count'];
+export function makePointBinner(geom, stat = 'mean', { nodata = -9999 } = {}) {
+  if (!PC_STATS.includes(stat)) throw new Error(`statistic: one of ${PC_STATS.join(' / ')}`);
+  const { x0, y0, dx, nx, ny } = geom, dy = geom.dy || dx, N = nx * ny;
+  const cnt = new Uint32Array(N);
+  const acc = stat === 'mean' ? new Float64Array(N) : stat === 'count' ? null : new Float64Array(N).fill(stat === 'min' ? Infinity : -Infinity);
+  let points = 0, outside = 0, skipped = 0;
+  const ix = 1 / dx, iy = 1 / dy;
+  return {
+    geom,
+    // xs/ys/zs: typed arrays (or plain), n of them; keep(i) — optional, false skips point i
+    add(xs, ys, zs, n, keep = null) {
+      for (let i = 0; i < n; i++) {
+        if (keep && !keep(i)) { skipped++; continue; }
+        const x = xs[i], y = ys[i], z = zs[i];
+        if (!(Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z))) { skipped++; continue; }
+        const c = Math.round((x - x0) * ix), r = Math.round((y0 - y) * iy);
+        if (c < 0 || c >= nx || r < 0 || r >= ny) { outside++; continue; }
+        const k = r * nx + c;
+        cnt[k]++; points++;
+        if (stat === 'mean') acc[k] += z;
+        else if (stat === 'min') { if (z < acc[k]) acc[k] = z; }
+        else if (stat === 'max') { if (z > acc[k]) acc[k] = z; }
+      }
+    },
+    finish() {
+      const data = new Float32Array(N);
+      let filled = 0;
+      for (let k = 0; k < N; k++) {
+        const m = cnt[k];
+        if (!m) { data[k] = stat === 'count' ? 0 : nodata; continue; }
+        filled++;
+        data[k] = stat === 'count' ? m : stat === 'mean' ? acc[k] / m : acc[k];
+      }
+      return { grid: { nx, ny, x0, y0, dx, dy, data, nodata, crs: null, form: `points-${stat}` }, points, outside, skipped, filled, empty: N - filled };
+    },
+  };
+}
+// The common lattice of two surfaces for a cut / fill: over the OVERLAP of their XY
+// extents, at the finer one's cell and node phase (so the finer grid is sampled at
+// its own nodes, never re-interpolated), or at a stated cell (phase still the finer
+// grid's). a, b: { x0, y0, dx, nx, ny } (a mesh passes its bbox-derived pseudo
+// lattice). → geom | null (the extents don't overlap)
+export function commonSurfaceLattice(a, b, cell = null) {
+  const bbOf = (g) => [g.x0, g.y0 - (g.ny - 1) * (g.dy || g.dx), g.x0 + (g.nx - 1) * g.dx, g.y0];
+  const A = bbOf(a), B = bbOf(b);
+  const bb = [Math.max(A[0], B[0]), Math.max(A[1], B[1]), Math.min(A[2], B[2]), Math.min(A[3], B[3])];
+  if (!(bb[2] >= bb[0] && bb[3] >= bb[1])) return null;
+  const fine = a.dx <= b.dx ? a : b, dx = cell && cell > 0 ? cell : fine.dx;
+  // nodes INSIDE the overlap (a node outside one grid's extent has no value there)
+  const inward = (anchor, lo, hi) => {
+    let o = anchor + Math.ceil((lo - anchor) / dx - 1e-9) * dx;
+    let n = Math.floor((hi - o) / dx + 1e-9) + 1;
+    if (n < 1) { o = lo; n = 1; }
+    return { o, n };
+  };
+  const X = inward(fine.x0, bb[0], bb[2]), Y = inward(fine.y0, bb[1], bb[3]);
+  return { x0: X.o, y0: Y.o + (Y.n - 1) * dx, dx, dy: dx, nx: X.n, ny: Y.n };
+}
+// Cut / fill: two height grids ON ONE LATTICE (before, after) → the Δz grid
+// (after − before; negative = cut, material removed; positive = fill) and the
+// volumes, each node standing for a dx × dy cell (the midpoint rule — exact for a
+// Δz that is linear across each cell). Nodes where either surface is empty sit out.
+// → { dz: grid, cut, fill, net (fill − cut), area, cutArea, fillArea, nodes, hist }
+export function cutFillGrids(before, after, { bins = 40, nodata = -9999 } = {}) {
+  const { nx, ny, dx } = before, dy = before.dy || dx, N = nx * ny, cellA = dx * dy;
+  if (after.nx !== nx || after.ny !== ny) throw new Error('cut / fill: the two grids are on different lattices');
+  const bad = (g) => { const nd = g.nodata; return (v) => Number.isNaN(v) || (nd != null && v === nd); };
+  const badA = bad(before), badB = bad(after);
+  const data = new Float32Array(N).fill(nodata);
+  let cut = 0, fill = 0, n = 0, nCut = 0, nFill = 0, lo = Infinity, hi = -Infinity;
+  for (let k = 0; k < N; k++) {
+    const a = before.data[k], b = after.data[k];
+    if (badA(a) || badB(b)) continue;
+    const d = b - a;
+    data[k] = d; n++;
+    if (d < 0) { cut -= d; nCut++; } else if (d > 0) { fill += d; nFill++; }
+    if (d < lo) lo = d; if (d > hi) hi = d;
+  }
+  cut *= cellA; fill *= cellA;
+  // a histogram of Δz by VOLUME (what each Δz band moved) — symmetric about 0, so cut and fill read
+  // on one axis
+  const m = Math.max(Math.abs(lo), Math.abs(hi)) || 1, w = (2 * m) / bins;
+  const vol = new Float64Array(bins);
+  if (n) for (let k = 0; k < N; k++) { if (badA(before.data[k]) || badB(after.data[k])) continue; const d = data[k], i = Math.min(bins - 1, Math.max(0, Math.floor((d + m) / w))); vol[i] += Math.abs(d) * cellA; }
+  return {
+    dz: { nx, ny, x0: before.x0, y0: before.y0, dx, dy, data, nodata, crs: null, form: 'cutfill' },
+    cut, fill, net: fill - cut, area: n * cellA, cutArea: nCut * cellA, fillArea: nFill * cellA, nodes: n,
+    range: n ? [lo, hi] : [0, 0], hist: { lo: -m, w, vol: Array.from(vol) },
+  };
+}
+
 // a BLOCK MODEL's regular lattice (origin/pitch/count per axis), when it has one.
 // A ROTATED model's axes are LATTICE coordinates and carry rot + anchor
 // (condenser grid/basis.js) — the grid-join engine compares two such grids

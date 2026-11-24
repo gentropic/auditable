@@ -10,6 +10,10 @@
 //              by-geometry's dense winding sweep, on a rotated model in its own lattice frame, or the
 //              grid's footprint sample). `nested` (on by default): each volume holds the ones before
 //              it (pit phases, cumulative shells) → period k is the part of volume k outside volume k − 1
+//   surveys  — pit surveys in date order (DEM grids — src/pcgrid.js grids a drone cloud into one — or
+//              open pit surfaces): the first is where mining starts, each later one closes a period
+//              named after it; period k = above(survey k) − above(survey k − 1), i.e. nested "above"
+//              volumes whose first is a baseline that counts for nothing itself
 //   filter   — one period: the blocks an expression keeps
 //   selection— one period: each model's 3D selection (a window only)
 // production is a non-spatial TABLE layer (period, tonnes, grade and/or metal), matched by period name.
@@ -57,6 +61,12 @@ export function allColsOf(L) {
   return schemaExt(L, h).map((c) => c.name).filter((n) => !xyz.has(n));
 }
 const nameOf = (L) => (L ? L.label || L.name : '?');
+const baseName = (L) => nameOf(L).replace(/\.[^.]+$/, '');
+// the surveys a fresh "surveys" setup starts from: every grid layer, in name order (survey files are
+// usually named by date — 2026-01_pit.tif sorts before 2026-02_pit.tif), each named after its file
+export function surveyDefaults() {
+  return S.layers.filter(isGridSurface).sort((a, b) => String(a.name).localeCompare(String(b.name), undefined, { numeric: true })).map((L) => ({ name: baseName(L), meshId: L.id }));
+}
 const layerNamed = (name) => S.layers.find((x) => x.name === name) || S.layers.find((x) => (x.label || x.name) === name) || null;
 
 // a bare column name the layer lacks is refused loudly (an unknown name compiles to a blank closure
@@ -157,8 +167,19 @@ export async function scanFactors(st, onProgress, signal) {
   try {
     // the period definition, checked once
     let vols = [];
-    if (mode === 'volumes') {
-      vols = (st.volumes || []).map((v, i) => ({ name: String(v.name || '').trim() || `period ${i + 1}`, meshL: layerById(v.meshId), side: v.side || null }));
+    // SURVEYS: pit surfaces in date order. The first is where mining starts from (the topography, or
+    // the survey before the first period); each later one closes a period named after it. As nested
+    // "above" volumes with the first as a baseline that counts for nothing itself:
+    //   period k = above(survey k) − above(survey k − 1)
+    const volMode = mode === 'volumes' || mode === 'surveys';
+    if (mode === 'surveys') {
+      const sv = st.surveys || [];
+      if (sv.length < 2) throw new Error('surveys: at least two, in date order — the starting surface, then one per period');
+      vols = sv.map((v, i) => ({ name: String(v.name || '').trim() || (i ? `period ${i}` : 'start'), meshL: layerById(v.meshId), side: 'above', baseline: i === 0 }));
+      for (const v of vols) if (!v.meshL) throw new Error(`survey “${v.name}”: pick its surface (a grid or an open pit surface)`);
+    }
+    if (volMode) {
+      if (mode === 'volumes') vols = (st.volumes || []).map((v, i) => ({ name: String(v.name || '').trim() || `period ${i + 1}`, meshL: layerById(v.meshId), side: v.side || null }));
       if (!vols.length) throw new Error('volumes: one solid or surface per period — add one');
       for (const v of vols) {
         if (!v.meshL || !(isVolumeMesh(v.meshL) || isGridSurface(v.meshL))) throw new Error(`period “${v.name}”: pick its volume (a solid, a pit surface or a gridded surface)`);
@@ -168,7 +189,7 @@ export async function scanFactors(st, onProgress, signal) {
         const sides = volumeSides(v.meshL);
         if (!sides) throw new Error(`period “${v.name}”: ${nameOf(v.meshL)} has no triangles to test against`);
         if (!v.side) v.side = sides[0];
-        if (!sides.includes(v.side)) throw new Error(`period “${v.name}”: side “${v.side}” doesn't fit ${nameOf(v.meshL)} — ${isGridSurface(v.meshL) ? 'a gridded surface' : v.meshL._solidMesh.closed ? 'a closed solid' : 'an open surface'} takes ${sides.join(' or ')}`);
+        if (!sides.includes(v.side)) throw new Error(mode === 'surveys' ? `survey “${v.name}”: ${nameOf(v.meshL)} is a closed solid — a survey is a surface (a grid, or an open pit surface)` : `period “${v.name}”: side “${v.side}” doesn't fit ${nameOf(v.meshL)} — ${isGridSurface(v.meshL) ? 'a gridded surface' : v.meshL._solidMesh.closed ? 'a closed solid' : 'an open surface'} takes ${sides.join(' or ')}`);
       }
       const names = vols.map((v) => v.name); const dup = names.find((n, i) => names.indexOf(n) !== i);
       if (dup) throw new Error(`two periods are called “${dup}”`);
@@ -214,9 +235,9 @@ export async function scanFactors(st, onProgress, signal) {
       for await (const { f, rec } of layerRecords(L)) {
         if (((++rows) & 0x3fff) === 0) { checkAbort(signal); if (onProgress) onProgress(2 + 2 * (li + (total ? Math.min(1, rows / total) : 0)) / layers.length, 4, `${nameOf(L)} · ${rows.toLocaleString()} blocks`); await new Promise((z) => setTimeout(z)); }
         const vol = volumeAt(vc, f);
-        const hh = mode === 'volumes' && vc.dc ? halfAt(vc, f, hbuf) : null;   // a sub-block's own box (the gridded-surface probes)
+        const hh = volMode && vc.dc ? halfAt(vc, f, hbuf) : null;   // a sub-block's own box (the gridded-surface probes)
         let x = NaN, y = NaN, z = NaN;
-        if (mode === 'volumes') { x = coordNum(f[m.x]); y = coordNum(f[m.y]); z = coordNum(f[m.z]); if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue; }
+        if (volMode) { x = coordNum(f[m.x]); y = coordNum(f[m.y]); z = coordNum(f[m.z]); if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue; }
         for (const p of ps) {
           if (p.mask && !(rec < p.mask.length && p.mask[rec])) continue;
           if (p.filterFn && !p.filterFn(f)) continue;
@@ -232,10 +253,12 @@ export async function scanFactors(st, onProgress, signal) {
           else if (mode === 'selection') { p.acc.add(oneName, t, g); p.n++; }
           else {
             let prev = 0, any = false;
+            const nested = st.nested || mode === 'surveys';      // surveys are nested by their nature
             for (let k = 0; k < vols.length; k++) {
               const fr = p.looks[k].fn(x, y, z, rec, hh) || 0;
-              const w = st.nested ? Math.max(0, fr - prev) : fr;
-              if (st.nested && fr > prev) prev = fr;
+              const w = nested ? Math.max(0, fr - prev) : fr;
+              if (nested && fr > prev) prev = fr;
+              if (vols[k].baseline) continue;                   // the starting surface: what was already gone
               if (w > 0) { p.acc.add(vols[k].name, t * w, g); any = true; }
             }
             if (any) p.n++; else p.unmined++;
@@ -277,7 +300,7 @@ export async function scanFactors(st, onProgress, signal) {
       info.mill = { layer: P.name, label: nameOf(P), rows: [...acc.map.values()].reduce((s, e) => s + e.n, 0) };
     }
     // the periods: what the mined volume defines (a volume list in its own order, else naturally sorted)
-    const listed = mode === 'volumes' ? vols.map((v) => v.name) : mode === 'filter' || mode === 'selection' ? [oneName] : [];
+    const listed = volMode ? vols.filter((v) => !v.baseline).map((v) => v.name) : mode === 'filter' || mode === 'selection' ? [oneName] : [];
     const periods = periodOrder(listed, mode === 'column' ? accs.model : null, mode === 'column' ? accs.gc : null);
     if (mill) {
       const extra = [...mill.keys()].filter((k) => !periods.includes(k));
@@ -348,6 +371,7 @@ export function factorsCfgOf(st) {
     gc: nm(st.gc.layerId), gcGrade: st.gc.grade, gcUnit: st.gc.unit || '', gcDensity: st.gc.density,
     periods: st.periods, ...(st.periods === 'column' ? { periodCol: st.periodCol } : {}),
     ...(st.periods === 'volumes' ? { volumes: st.volumes.map((v) => ({ name: v.name, mesh: nm(v.meshId), ...(v.side ? { side: v.side } : {}) })), nested: !!st.nested, probes: probesOf(st.resolution) } : {}),
+    ...(st.periods === 'surveys' ? { surveys: (st.surveys || []).map((v) => ({ name: v.name, surface: nm(v.meshId) })), probes: probesOf(st.resolution) } : {}),
     ...(st.periods === 'filter' ? { periodFilter: st.periodFilter } : {}), ...(st.periods === 'filter' || st.periods === 'selection' ? { periodName: st.periodName || 'period' } : {}),
     ...(st.filter ? { filter: st.filter } : {}),
     ...(st.production && st.production.layerId != null ? { production: nm(st.production.layerId), prodPeriod: st.production.period, prodTonnes: st.production.tonnes, ...(st.production.grade ? { prodGrade: st.production.grade } : {}), ...(st.production.metal ? { prodMetal: st.production.metal } : {}), prodUnit: st.production.unit || '' } : {}),
@@ -367,7 +391,8 @@ export function factorsStOf(p, { lenient = false } = {}) {
   return {
     model: { layerId: modelId, grade: p.grade, unit: p.modelUnit || '', density: mDens },
     gc: { layerId: gcId, grade: p.gcGrade || p.grade, unit: p.gcUnit != null && p.gcUnit !== '' ? p.gcUnit : p.modelUnit || '', density: gDens },
-    periods: p.periods || 'column', periodCol: p.periodCol || '',
+    periods: p.periods || (Array.isArray(p.surveys) && p.surveys.length ? 'surveys' : 'column'), periodCol: p.periodCol || '',
+    surveys: (p.surveys || []).map((v, i) => ({ name: v.name || (i ? `period ${i}` : 'start'), meshId: lay(v.surface, `survey “${v.name || i + 1}”`) })),
     volumes: (p.volumes || []).map((v) => ({ name: v.name, meshId: lay(v.mesh, `period “${v.name}”`), side: v.side || null })),   // no side: the volume's topology decides (scan)
     nested: p.nested != null ? !!p.nested : true, resolution: probesOf(p.probes != null ? p.probes : 3), periodFilter: p.periodFilter || '', periodName: p.periodName || 'period', filter: p.filter || '',
     production: p.production ? { layerId: lay(p.production, 'production'), period: p.prodPeriod, tonnes: p.prodTonnes, grade: p.prodGrade || '', metal: p.prodMetal || '', unit: p.prodUnit != null && p.prodUnit !== '' ? p.prodUnit : p.gradeUnit || '' } : null,
@@ -408,7 +433,7 @@ export function openFactors(L, ropts) {
   const st = {
     model: mkSide(L, gGuess), gc: mkSide(gcL, numericColsOf(gcL).includes(gGuess) ? gGuess : guessCol(numericColsOf(gcL), GRADE_RE) || numericColsOf(gcL)[0]),
     periods: 'column', periodCol: guessCol(allColsOf(L), /^(period|mined|month|mm|qtr|quarter|year|phase|mine_?per)/i),
-    volumes: meshes.length ? [{ name: 'period 1', meshId: meshes[0].id, side: null }] : [], nested: true, resolution: [3, 3, 3],   // side null: by topology once the mesh is read
+    volumes: meshes.length ? [{ name: 'period 1', meshId: meshes[0].id, side: null }] : [], surveys: surveyDefaults(), nested: true, resolution: [3, 3, 3],   // side null: by topology once the mesh is read
     periodFilter: '', periodName: 'period', filter: '',
     production: prods.length ? (() => { const P = prods[prods.length - 1], cs = allColsOf(P); return { layerId: P.id, period: guessCol(cs, /^(period|month|mm|qtr|quarter|date|year|phase)/i) || cs[0] || '', tonnes: guessCol(cs, /^(t|tonnes|tons|tonnage|mass|dry)/i), grade: guessCol(cs, GRADE_RE), metal: guessCol(cs, /^(metal|oz|ounces|contained|recovered)/i), unit: '' }; })() : null,
     cutoff: null, gradeUnit: (L.gtUnits && L.gtUnits.grade) || '', metalFactor: '', metalUnit: '', tolerance: 0.1, show: 'metal', cumulative: false,
@@ -417,7 +442,7 @@ export function openFactors(L, ropts) {
   if (!st.periodCol) st.periods = meshes.length ? 'volumes' : 'filter';
   const saved = (ropts && ropts.cfg) || (L.analysis && L.analysis.factors);
   if (saved) {
-    try { const s2 = factorsStOf({ ...saved, model: saved.model || L.name }, { lenient: true }); for (const k of Object.keys(s2)) if (s2[k] != null) st[k] = s2[k]; if (st.model.layerId == null) st.model.layerId = L.id; if (st.gc.layerId == null) st.gc.layerId = gcL.id; st.volumes = st.volumes.filter((v) => v.meshId != null); }
+    try { const s2 = factorsStOf({ ...saved, model: saved.model || L.name }, { lenient: true }); for (const k of Object.keys(s2)) if (s2[k] != null) st[k] = s2[k]; if (st.model.layerId == null) st.model.layerId = L.id; if (st.gc.layerId == null) st.gc.layerId = gcL.id; st.volumes = st.volumes.filter((v) => v.meshId != null); st.surveys = (st.surveys || []).filter((v) => v.meshId != null); }
     catch { /* a stale saved setup: the defaults */ }
     if (saved.ranges) st.ranges = rangesFromCfg(saved.ranges);
   }
@@ -529,6 +554,23 @@ export function openFactors(L, ropts) {
     box.append(mid, densEl(s));
     return box;
   };
+  // probes per AXIS, free — as select-by-solid's fraction column (benches want 3×3×2, not a cube)
+  const probesRow = () => {
+    st.resolution = probesOf(st.resolution);
+    const wrap = document.createElement('span'); wrap.className = 'fac-probes';
+    const tally = document.createElement('span'); tally.style.color = 'var(--muted)';
+    const tallyText = () => { const n = st.resolution[0] * st.resolution[1] * st.resolution[2]; return n === 1 ? ' = the centroid' : ` = ${n.toLocaleString()} per block`; };
+    ['x', 'y', 'z'].forEach((ax, k) => {
+      if (k) { const sp = document.createElement('span'); sp.style.color = 'var(--muted)'; sp.textContent = '×'; wrap.append(sp); }
+      const inp = document.createElement('input'); inp.type = 'number'; inp.min = '1'; inp.step = '1'; inp.value = String(st.resolution[k]); inp.style.width = '44px';
+      inp.title = `probes along ${ax}`; inp.dataset.axis = ax;
+      inp.oninput = () => { st.resolution[k] = Math.max(1, Math.round(+inp.value || 1)); tally.textContent = tallyText(); markStale(); };
+      wrap.append(inp);
+    });
+    tally.textContent = tallyText(); wrap.append(tally);
+    wrap.title = 'probes per block along x × y × z for the fraction inside — partial blocks count partially; 1 × 1 × 1 tests the centroid'; wrap.style.display = 'flex'; wrap.style.alignItems = 'center'; wrap.style.gap = '3px';
+    return row('probes', wrap);
+  };
   function buildRail() {
     rail.textContent = '';
     // ── models ──
@@ -538,10 +580,32 @@ export function openFactors(L, ropts) {
     rail.append(mSec);
     // ── periods ──
     const pSec = document.createElement('div'); pSec.append(head('mined volume · periods'));
-    pSec.append(sel([['column', 'a period column'], ['volumes', 'a solid / surface per period'], ['filter', 'a filter (one period)'], ['selection', 'the 3D selection (one period)']], st.periods, (v) => { st.periods = v; markStale(); buildRail(); }, 'how the mined volume of each period is known'));
+    pSec.append(sel([['column', 'a period column'], ['volumes', 'a solid / surface per period'], ['surveys', 'surveys (pit surfaces in date order)'], ['filter', 'a filter (one period)'], ['selection', 'the 3D selection (one period)']], st.periods, (v) => { st.periods = v; markStale(); buildRail(); }, 'how the mined volume of each period is known'));
     if (st.periods === 'column') {
       const cols = [...new Set([...allColsOf(layerById(st.model.layerId) || L)])];
       pSec.append(row('column', sel([['', '—'], ...cols.map((c) => [c, c])], st.periodCol, (v) => { st.periodCol = v; markStale(); }, 'the column naming the period a block was mined in (blank = not mined) — on both models')));
+    } else if (st.periods === 'surveys') {
+      // pit surveys in DATE ORDER: the first is where mining starts from; each later one closes a
+      // period named after it (period k = what lies above survey k but not above survey k − 1)
+      const ms = factorMeshes().filter((m) => { const s = volumeSides(m); return !s || s.includes('above'); });
+      if (!(st.surveys || []).length) st.surveys = surveyDefaults();
+      if (ms.length < 2) pSec.append(Object.assign(document.createElement('div'), { className: 'sw-stale', textContent: 'open the surveys (DEM grids, or open pit surfaces) first — two at least: the start, then one per period' }));
+      st.surveys.forEach((v, i) => {
+        const box = document.createElement('div'); box.className = 'sw-ser'; box.dataset.survey = String(i);
+        const top = document.createElement('div'); top.className = 'sw-ser-top';
+        const tag = document.createElement('span'); tag.style.cssText = 'flex:0 0 auto;color:var(--dim);font-size:11px'; tag.textContent = i === 0 ? 'start' : `period ${i}`;
+        tag.title = i === 0 ? 'the surface mining starts from (the topography, or the survey before the first period) — not a period itself' : `the period closed by this survey: above it, not above “${st.surveys[i - 1].name}”`;
+        const nm = txt(v.name, i ? `period ${i}` : 'start', (x) => { v.name = x || (i ? `period ${i}` : 'start'); markStale(); }, i ? 'the period’s name — production rows match it' : 'a name for the starting surface');
+        const up = document.createElement('button'); up.className = 'sw-x'; up.textContent = '↑'; up.title = 'earlier'; up.disabled = i === 0; up.onclick = () => { [st.surveys[i - 1], st.surveys[i]] = [st.surveys[i], st.surveys[i - 1]]; markStale(); buildRail(); };
+        const x = document.createElement('button'); x.className = 'sw-x'; x.textContent = '×'; x.title = 'remove this survey'; x.onclick = () => { st.surveys.splice(i, 1); markStale(); buildRail(); };
+        top.append(tag, nm, up, x); box.append(top);
+        box.append(sel(ms.map((m) => [m.id, `${nameOf(m)}${isGridSurface(m) ? ' (grid)' : ''}`]), v.meshId, (y) => { v.meshId = +y; markStale(); }, 'the survey surface: a DEM grid (e.g. gridded from the drone cloud) or an open pit surface'));
+        pSec.append(box);
+      });
+      const add = document.createElement('button'); add.className = 'sw-add'; add.textContent = '+ add survey';
+      add.onclick = () => { const used = new Set(st.surveys.map((v) => v.meshId)); const m = ms.find((q) => !used.has(q.id)) || ms[0]; if (!m) return; st.surveys.push({ name: baseName(m), meshId: m.id }); markStale(); buildRail(); };
+      pSec.append(add);
+      pSec.append(probesRow());
     } else if (st.periods === 'volumes') {
       const ms = factorMeshes();
       if (!ms.length) pSec.append(Object.assign(document.createElement('div'), { className: 'sw-stale', textContent: 'open the period solids / pit surfaces (mesh or grid layers) first' }));
@@ -571,23 +635,7 @@ export function openFactors(L, ropts) {
       const nl = document.createElement('label'); nl.className = 'sw-row'; nl.title = 'each volume holds the ones before it (pit phases, cumulative shells): period k = volume k minus volume k − 1';
       const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = !!st.nested; cb.onchange = () => { st.nested = cb.checked; markStale(); };
       nl.append(cb, document.createTextNode(' nested (pit phases, shells)')); pSec.append(nl);
-      {
-        // probes per AXIS, free — as select-by-solid's fraction column (benches want 3×3×2, not a cube)
-        st.resolution = probesOf(st.resolution);
-        const wrap = document.createElement('span'); wrap.className = 'fac-probes';
-        const tally = document.createElement('span'); tally.style.color = 'var(--muted)';
-        const tallyText = () => { const n = st.resolution[0] * st.resolution[1] * st.resolution[2]; return n === 1 ? ' = the centroid' : ` = ${n.toLocaleString()} per block`; };
-        ['x', 'y', 'z'].forEach((ax, k) => {
-          if (k) { const sp = document.createElement('span'); sp.style.color = 'var(--muted)'; sp.textContent = '×'; wrap.append(sp); }
-          const inp = document.createElement('input'); inp.type = 'number'; inp.min = '1'; inp.step = '1'; inp.value = String(st.resolution[k]); inp.style.width = '44px';
-          inp.title = `probes along ${ax}`; inp.dataset.axis = ax;
-          inp.oninput = () => { st.resolution[k] = Math.max(1, Math.round(+inp.value || 1)); tally.textContent = tallyText(); markStale(); };
-          wrap.append(inp);
-        });
-        tally.textContent = tallyText(); wrap.append(tally);
-        wrap.title = 'probes per block along x × y × z for the fraction inside — partial blocks count partially; 1 × 1 × 1 tests the centroid'; wrap.style.display = 'flex'; wrap.style.alignItems = 'center'; wrap.style.gap = '3px';
-        pSec.append(row('probes', wrap));
-      }
+      pSec.append(probesRow());
     } else {
       if (st.periods === 'filter') pSec.append(row('filter', txt(st.periodFilter, 'e.g. MINED == 1', (v) => { st.periodFilter = v; markStale(); }, 'the blocks mined in this period (@gcu/expr; the names must exist on both models)')));
       pSec.append(row('name', txt(st.periodName, 'period', (v) => { st.periodName = v || 'period'; markStale(); }, 'the period’s name — the production row it is matched with')));

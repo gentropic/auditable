@@ -102,7 +102,9 @@ export function rebuildSurface(L) {
   let zmin = Infinity, zmax = -Infinity;                    // grid VALUE range (= colour range for elevation/value)
   for (let i = 0; i < hf.count; i++) { const z = hf.values[i]; if (z < zmin) zmin = z; if (z > zmax) zmax = z; }
   const drapeLayer = L.drapeSource ? S.layers.find((x) => x.name === L.drapeSource && x.docs && x.docs.gridDoc && x.docs.gridDoc.grid) : null;
-  const color = surfaceColorArray(hf, drapeLayer ? drapeLayer.docs.gridDoc.grid : null, (rampCfgOf(L) || {}).preset, zmin, zmax);
+  // a stated colour range (a cut / fill Δz: symmetric about 0, so white = no change) over the data's
+  const sr = Array.isArray(L.surfaceRange) && L.surfaceRange.every(Number.isFinite) ? L.surfaceRange : null;
+  const color = surfaceColorArray(hf, drapeLayer ? drapeLayer.docs.gridDoc.grid : null, (rampCfgOf(L) || {}).preset, sr ? sr[0] : zmin, sr ? sr[1] : zmax);
   const smooth = L.surfaceSmooth !== false;                 // faceted (no normals → flat per-triangle shading) reads the cell structure
   const vis = L.visible, sec = S.renderer.layerSectioned(L.id), op = L.opacity != null ? L.opacity : 1;
   S.renderer.removeLayer(L.id);
@@ -144,6 +146,7 @@ export function captureLayerSurface(L) {
     if (L.drapeSource) s.drape = L.drapeSource;
     if (L.surfaceFlatZ != null) s.flatZ = L.surfaceFlatZ;
     if (L.surfaceSmooth === false) s.faceted = true;
+    if (Array.isArray(L.surfaceRange)) s.range = L.surfaceRange.slice();
   }
   if (gd.grid.band) s.band = gd.grid.band;
   return s;
@@ -167,6 +170,8 @@ export async function applyLayerSurface(L, s) {
   if (L2 && L2.gridSurface) {                                // drape: in-place rebuild, no reopen
     const want = s.drape || null;
     if ((L2.drapeSource || null) !== want) { const g = want ? S.layers.find((x) => x.name === want && x.docs && x.docs.gridDoc && x.docs.gridDoc.grid) : null; recolorSurface(L2, g); }
+    const rg = Array.isArray(s.range) && s.range.length === 2 ? s.range.map(Number) : null;   // the colour range (a Δz sheet's ±m)
+    if (JSON.stringify(L2.surfaceRange || null) !== JSON.stringify(rg)) { L2.surfaceRange = rg; rebuildSurface(L2); }
   }
   return L2;
 }

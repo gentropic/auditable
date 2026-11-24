@@ -35,6 +35,7 @@ import { openSolidDialog } from './bygeom-ui.js';
 import { isView, canView, createView, viewsOf, modelOf } from './layerviews.js';
 import { openMeshGridDialog, openSurfaceTools, surfaceableLayers } from './gridtools.js';
 import { openMeshQa } from './meshqa.js';
+import { isPointCloud, openPcGridDialog } from './pcgrid.js';
 import { openModelQa } from './modelqa.js';
 import { openComposite } from './composite-ui.js';
 import { openPairing } from './pairing.js';
@@ -123,6 +124,7 @@ export function layerMenuSections(L, x, y) {
   const geometry = [
     ...(L.docs.gridDoc ? [{ label: 'Flag / ratio by this surface…', action: () => openSolidDialog(L) }] : []),
     ...(h && !h.soup ? [{ label: 'Select by this solid…', action: () => openSolidDialog(L) }, { label: 'Rasterize to grid…', action: () => openMeshGridDialog(L) }] : []),
+    ...(isPointCloud(L) && !view ? [{ label: 'Grid points to DEM…', action: () => openPcGridDialog(L) }] : []),
     ...(L.docs.gridDoc || (h && !h.soup) ? [{ label: 'Extend to footprint…', action: () => openSurfaceTools('extend', L) },
       ...(surfaceableLayers().length >= 2 ? [{ label: 'Combine surfaces…', action: () => openSurfaceTools('combine', L) }] : [])] : []),
   ];
