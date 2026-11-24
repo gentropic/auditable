@@ -9015,7 +9015,8 @@ if (take()) {
   chk(`support: the rotation and the origin are said (“${(r.rot.meta.match(/rotated[^·]*/) || [''])[0].trim()}”)`, /rotated -50° about Z/.test(r.rot.meta) && JSON.stringify(r.rot.origin) === '[432820,8522360,300]');
   const hitR = r.pr.filter((x, i) => x === r.want[i]).length, hitA = r.pa.filter((x, i) => x === r.want[i]).length;
   chk(`support: every sampled block picks as ITSELF on the rotated model (${hitR}/${r.want.length})`, hitR === r.want.length && r.want.length >= 10);
-  chk(`support: …and its picked record is its own row (${JSON.stringify(r.row)} = ${JSON.stringify(r.src)})`, r.row && r.row.map(Number).every((v, i) => Math.abs(v - r.src[i]) < 1e-9));
+  // (step 2: a rotated model's rows read in WORLD — the record's own XC/YC/ZC, placed)
+  chk(`support: …and its picked record is its own row, its XC/YC/ZC in WORLD (${JSON.stringify(r.row)} = ${JSON.stringify(r.src)} placed)`, r.row && r.row.map(Number).every((v, i) => Math.abs(v - r.posWant[i]) < 1e-6));
   chk(`support: the parallel chunk builder takes a rotated grid over many batches (${JSON.stringify(r.par)})`, r.par && !r.par.err && r.par.got === 3000 && r.par.n === 3000);
   chk(`support: a pick's position is the WORLD centroid (${(r.pos || []).map((v) => +v.toFixed(3)).join(', ')})`, r.pos && r.pos.every((v, a) => Math.abs(v - r.posWant[a]) < 1e-6));
   chk(`support: the axis-aligned twin picks the same records (${hitA}/${r.want.length}; identical: ${JSON.stringify(r.pa) === JSON.stringify(r.pr)})`, hitA === r.want.length && JSON.stringify(r.pa) === JSON.stringify(r.pr));
@@ -9040,6 +9041,122 @@ if (take()) {
   chk(`support: the origin is saved with the project and reapplied on reopen (${JSON.stringify(re.origin)}, ${re.kind}, rotated ${re.rot})`,
     JSON.stringify(re.origin) === '[500000,7000000,100]' && re.kind === 'blocks' && re.rot);
   await pr2.close();
+}
+
+// ── §128: the block-support contract, step 2 — a rotated .dm's ROWS read in WORLD,
+// volumes come from the contract, and its answers equal its axis-aligned twin's.
+// A rotated, sub-blocked copy (ANGLE1 = −50 about Z, origin given) of an axis-
+// aligned sub-blocked CSV: rows/filter/stats see world XC/YC/ZC (the old reads saw
+// the file's local values — a filter on world XC matched nothing); GT, the
+// resource table and stats on V equal the twin's; swath along the model's own axes
+// and along world X equal the twin's along the matching directions; the volume is
+// Σ XINC·YINC·ZINC; a Parquet export reopens as rotated sub-blocked boxes; the open
+// dialog takes the origin; a recolour on the rotated layer re-shades (no re-raster).
+if (take()) {
+  const pg = await mkPage('sm2step2');
+  const r = await pg.evaluate(async () => {
+    const M = window._micro, R = M.renderer;
+    const F = await import('/test/subblock-make.mjs');
+    const { rows } = F.makeSubblockRows({ seed: 9, nx: 5, ny: 4, nz: 3 });
+    const O = [432820, 8522360, 300];
+    const t = (50 * Math.PI) / 180, c = Math.cos(t), s = Math.sin(t);
+    const W = (b) => [O[0] + c * b.XC - s * b.YC, O[1] + s * b.XC + c * b.YC, O[2] + b.ZC];
+    const settle = async () => { for (let k = 0; k < 400; k++) { M.requestRender(); await new Promise((z) => requestAnimationFrame(z)); if (R.elementCount && R.accumulated === R.elementCount) break; } await new Promise((z) => setTimeout(z, 400)); };
+    const idR = await M.openBlob(new File([F.makeSubblockDm(rows, { angle1: -50 })], 'rot.dm'), 'rot.dm', 'replace', null, { throw: true, origin: O });
+    const idA = await M.openBlob(new File([F.makeSubblockCsv(rows)], 'twin.csv'), 'twin.csv', 'add', null, { throw: true });
+    const LR = M.layers().find((x) => x.id === idR), LA = M.layers().find((x) => x.id === idA);
+    await settle();
+    const out = { n: rows.length };
+    // (1) rows: every record's XC/YC/ZC in WORLD
+    let worst = 0, cnt = 0;
+    for await (const { f, rec } of M.layerRecords(LR)) { const w = W(rows[rec]); for (let a = 0; a < 3; a++) worst = Math.max(worst, Math.abs(+f[a] - w[a])); cnt++; }
+    out.rows = { worst, cnt };
+    // (2) a filter on WORLD XC (the median): the same records the hand computation keeps
+    const xs = rows.map((b) => W(b)[0]).sort((a, b) => a - b), mid = (xs.length / 2) | 0, cut = +((xs[mid] + xs[mid + 1]) / 2).toFixed(3);
+    await M.applyBlockFilter(`XC > ${cut}`, LR);
+    out.filter = { got: LR._filterMask ? LR._filterMask.reduce((a, v) => a + (v ? 1 : 0), 0) : -1, want: rows.filter((b) => W(b)[0] > cut).length, cut };
+    await M.applyBlockFilter('', LR);
+    // (3) the analysis tools — the rotated copy against its twin
+    const gtOf = async (L) => (await M.runTool('gt', { layer: L.name, series: [{ col: 'V' }], cutoffs: [-10, -0.5, 0, 0.5, 1, 1.5] })).table.rows.map((x) => x.slice(1));
+    out.gt = { rot: await gtOf(LR), twin: await gtOf(LA), vol: rows.reduce((a, b) => a + b.XINC * b.YINC * b.ZINC, 0) };
+    const resOf = async (L) => (await M.runTool('resource', { layer: L.name, grade: 'V', cutoffs: [0, 0.5, 1], density: { const: 2.7 } })).table.rows;
+    out.res = { rot: await resOf(LR), twin: await resOf(LA) };
+    const stOf = async (L, cols, filter = '') => (await M.runTool('stats', { layer: L.name, cols, filter })).table.rows.map((x) => x.slice(1));
+    // (the stats tool scans columnar — page runs on the workers: its filter on XC must read world too)
+    out.stats = { rot: await stOf(LR, ['V']), twin: await stOf(LA, ['V']), xc: (await stOf(LR, ['V'], `XC > ${cut}`))[0] };
+    // swath, exact bands (the row path): along the model's own axes and along world X
+    const sw = async (L, d, off) => (await M.computeSwath(L, ['V'], d, 7.31, off)).profile.map((p) => [p.count, p.tonnage, p.mean[0]]);
+    const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    const dX = M.dirTrendPlunge(40, 0), dY = M.dirTrendPlunge(310, 0), ex = [1, 0, 0], exL = [c, -s, 0];
+    out.swath = {
+      ownX: { rot: await sw(LR, dX, dot(O, dX)), twin: await sw(LA, ex, 0) },
+      ownY: { rot: await sw(LR, dY, dot(O, dY)), twin: await sw(LA, [0, 1, 0], 0) },
+      worldX: { rot: await sw(LR, ex, O[0]), twin: await sw(LA, exL, 0) },
+    };
+    // the swath TOOL (the columnar scan — page runs on the worker pool) along world X:
+    // bands span the WORLD extent, every block counted once
+    const st = await M.runTool('swath', { layer: 'rot.dm', series: [{ col: 'V' }], mode: 'trend', trend: 90, plunge: 0, bandW: [20], off: [0] });
+    const cs = st.table.rows.map((x) => x[2]);
+    out.tool = { n: st.table.rows.reduce((a, x) => a + x[3], 0), lo: Math.min(...cs), hi: Math.max(...cs), wlo: xs[0], whi: xs[xs.length - 1] };
+    // (4) the pick panel: world coordinates, and the model's own beside them
+    await M.showRecord({ layer: idR, rec: 7 });
+    await new Promise((z) => setTimeout(z, 300));
+    out.panel = /XC · model frame/.test(document.body.innerText);
+    // (5) a Parquet export reopens as rotated, sub-blocked boxes, its rows in world
+    const ex1 = await M.runExport(LR, { format: 'parquet', download: false, returnBlob: true });
+    const idP = await M.openBlob(new File([ex1.blob], 'rot-export.parquet'), 'rot-export.parquet', 'add', null, { throw: true });
+    const LP = M.layers().find((x) => x.id === idP), hP = LP.docs.blockDoc.header;
+    const rowP = await M.fetchLayerRow(LP, 11);
+    out.pq = { kind: LP.kind, rot: !!(hP.grid && hP.grid.rot), sub: !!hP.subBlocked, n: hP.count, rejected: hP.latticeRejected || null, row: [+rowP[0], +rowP[1], +rowP[2]], want: W(rows[11]), elements: R.layerElementCount(idP) };
+    const ex2 = await M.runExport(LR, { format: 'csv', download: false, returnBlob: true });
+    out.csvRow = (await ex2.blob.text()).split(/\r?\n/)[1].split(',').slice(0, 3).map(Number);
+    out.csvWant = W(rows[0]);
+    // (6) the recolour on the rotated layer RE-SHADES (one resolve pass, not a re-raster)
+    M.setActiveLayer(idR);
+    await settle();
+    const px = new Uint8Array(256 * 4); for (let q = 0; q < 256; q++) { px[q * 4] = 255; px[q * 4 + 1] = q; px[q * 4 + 3] = 255; }
+    const rc0 = R.resolveCount;
+    R.setLayerRamp(idR, px); M.requestRender();
+    await new Promise((z) => setTimeout(z, 500));
+    out.reshade = { rc0, rc1: R.resolveCount, gl: R.gl.getError() };
+    return out;
+  });
+  const close = (a, b, eps = 1e-9) => Math.abs(a - b) <= eps * Math.max(1, Math.abs(a), Math.abs(b));
+  const same = (A, B, eps) => A.length === B.length && A.every((row, i) => row.length === B[i].length && row.every((v, j) => (typeof v === 'number' ? close(v, B[i][j], eps) : v === B[i][j])));
+  chk(`step 2: every record of the rotated .dm reads its XC/YC/ZC in WORLD (${r.rows.cnt}/${r.n}, worst ${r.rows.worst.toExponential(1)} m)`, r.rows.cnt === r.n && r.rows.worst < 1e-6);
+  chk(`step 2: a filter on world XC keeps exactly the blocks the hand computation does (XC > ${r.filter.cut}: ${r.filter.got} = ${r.filter.want})`, r.filter.got === r.filter.want && r.filter.want > 0);
+  chk(`step 2: the columnar stats scan reads world XC (XC > ${r.filter.cut}: n ${r.stats.xc && r.stats.xc[0]} = ${r.filter.want})`, r.stats.xc && +r.stats.xc[0] === r.filter.want);
+  const vol = r.gt.rot[0] && r.gt.rot[0][1];
+  chk(`step 2: volume from the contract = Σ XINC·YINC·ZINC (${vol} = ${r.gt.vol}), the twin the same (${r.gt.twin[0] && r.gt.twin[0][1]})`, close(vol, r.gt.vol) && close(r.gt.twin[0][1], r.gt.vol));
+  chk(`step 2: grade-tonnage — the rotated copy = its axis-aligned twin (${r.gt.rot.length} cutoffs)`, same(r.gt.rot, r.gt.twin));
+  chk(`step 2: resource table — the rotated copy = its twin (${r.res.rot.length} rows)`, same(r.res.rot, r.res.twin));
+  chk(`step 2: stats on V — the rotated copy = its twin (${JSON.stringify(r.stats.rot[0] && r.stats.rot[0].slice(0, 3))})`, same(r.stats.rot, r.stats.twin));
+  for (const k of ['ownX', 'ownY', 'worldX']) chk(`step 2: swath along ${k === 'worldX' ? 'world X' : `the model's own ${k.slice(3)} axis`} — the rotated copy = its twin (${r.swath[k].rot.length} bands)`, r.swath[k].rot.length > 3 && same(r.swath[k].rot, r.swath[k].twin));
+  chk(`step 2: the swath tool (columnar, workers) bands the WORLD extent (${r.tool.lo}…${r.tool.hi} ⊇ ${r.tool.wlo.toFixed(1)}…${r.tool.whi.toFixed(1)}), every block once (${r.tool.n})`,
+    r.tool.n === r.n && r.tool.lo <= r.tool.wlo + 20 && r.tool.hi >= r.tool.whi - 20 && r.tool.lo > 432000);
+  chk('step 2: the pick panel shows the model frame beside the world coordinates', r.panel);
+  chk(`step 2: a Parquet export reopens as rotated sub-blocked boxes (${r.pq.kind}, rotated ${r.pq.rot}, sub ${r.pq.sub}, ${r.pq.elements} drawn${r.pq.rejected ? `, REJECTED ${r.pq.rejected}` : ''}), its rows in world`,
+    r.pq.kind === 'blocks' && r.pq.rot && r.pq.sub && r.pq.elements === r.n && r.pq.row.every((v, a) => Math.abs(v - r.pq.want[a]) < 1e-6));
+  chk(`step 2: a CSV export writes world XC/YC/ZC (${r.csvRow.join(', ')})`, r.csvRow.every((v, a) => Math.abs(v - r.csvWant[a]) < 1e-4));
+  chk(`step 2: a recolour on the rotated sub-blocked layer re-shades — no re-raster (${r.reshade.rc0}→${r.reshade.rc1}, GL ${r.reshade.gl})`, r.reshade.rc1 > r.reshade.rc0 && r.reshade.gl === 0);
+  await pg.close();
+  // the open dialog takes a rotated model's origin (prefilled from the file's X0/Y0/Z0)
+  const pd = await mkPage('sm2step2dlg');
+  const dl = await pd.evaluate(async () => {
+    const M = window._micro, F = await import('/test/subblock-make.mjs');
+    const { rows } = F.makeSubblockRows({ seed: 9, nx: 2, ny: 2, nz: 1 });
+    await M.openFilesDialog([new File([F.makeSubblockDm(rows, { angle1: -50, origin: [10, 20, 30] })], 'dlg.dm')]);
+    const xi = document.querySelector('.of-origin-x'), yi = document.querySelector('.of-origin-y'), zi = document.querySelector('.of-origin-z');
+    const pre = xi && [xi.value, yi.value, zi.value];
+    if (xi) { xi.value = '432820'; xi.onchange(); yi.value = '8522360'; yi.onchange(); zi.value = '300'; zi.onchange(); }
+    document.querySelector('#ofOpen').click();
+    for (let k = 0; k < 100 && !(M.layers()[0] && M.layers()[0].docs.blockDoc); k++) await new Promise((z) => setTimeout(z, 100));
+    const L = M.layers()[0];
+    return { pre, origin: L && L.docs.blockDoc.header.dmOrigin, kept: L && L.dmOrigin };
+  });
+  chk(`step 2: the open dialog offers a rotated .dm's origin, prefilled from X0/Y0/Z0 (${JSON.stringify(dl.pre)}), and opens with the one typed (${JSON.stringify(dl.origin)})`,
+    JSON.stringify(dl.pre) === '["10","20","30"]' && JSON.stringify(dl.origin) === '[432820,8522360,300]' && JSON.stringify(dl.kept) === '[432820,8522360,300]');
+  await pd.close();
 }
 
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));

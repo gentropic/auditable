@@ -4,6 +4,7 @@
 // re-reads a model for a new colour channel through the same three. openBlob
 // (src/open.js) dispatches here.
 import { startChunkBuilder } from './chunkworker.js';
+import { pinEvictLayer } from './columns.js';
 import { layerById, S, requestRender } from './state.js';
 import { gridFromBasis, mapColumns, findDimColumns, inferAxis, inferSubBlockLattice, sizeCollector, pitchOf, detectRotatedLattice, detectRotatedOverAxisGrid, isDimColumn, basisAngles, openBlockModel, makeBlockGrid, createChunkBuilder, dmWireframeRole, peekDmColumns, openDmModel } from '../../../ext/condenser/src/main.js';
 import { parquetInfoAsync, streamParquetColumns } from '../../../ext/parquet/index.js';
@@ -251,6 +252,10 @@ export async function setDmOrigin(L, origin = null) {
   if (!Array.isArray(o) || o.length !== 3 || !o.every(Number.isFinite)) { $('#meta').textContent = 'Datamine origin: give three numbers — X, Y, Z'; return null; }
   L.dmOrigin = o.map(Number);
   await openDmBlob(doc.blob, doc.name, { layer: L.id, first: false, keepFilter: true, forcePoints: doc.forcePoints, mapping: h.mapping, origin: L.dmOrigin });
+  // the coordinate columns read differently now (world = the new origin + R·local):
+  // anything computed from them — column stats, the filter's band index, pinned
+  // column values, compiled calcs — is recomputed, not served stale
+  L._colStats = null; L._bands = null; L._calcFns = null; pinEvictLayer(L.id);
   return L.dmOrigin;
 }
 // how a sub-blocked model's sizes read in the meta line
@@ -358,10 +363,12 @@ export async function openDmBlob(blob, name, opts = {}) {
   // a rotated model's world origin: the caller's, else the layer's remembered one (Reinterpret / project), else the file's
   const L0 = layerById(lid);
   const origin = opts.origin || (L0 && L0.dmOrigin) || (prevDoc && prevDoc.header && prevDoc.header.dmOrigin && prevDoc.header.dmOriginSet ? prevDoc.header.dmOrigin : null);
-  const { header, streamChunks } = await openDmModel(blob, { ...(mapping ? { mapping } : {}), forcePoints: opts.forcePoints, onProgress, cached: opts.cached || null, origin });
+  const { header, streamChunks, recordBatches, columnBatches, fetchRecord } = await openDmModel(blob, { ...(mapping ? { mapping } : {}), forcePoints: opts.forcePoints, onProgress, cached: opts.cached || null, origin });
   if (origin) header.dmOriginSet = true;
   if (L0 && origin) L0.dmOrigin = [...origin];
-  const blockDoc = { blob, name, header, metaLine: '', forcePoints: opts.forcePoints, streamChunks };
+  // the doc keeps the provider's READERS, not just its stream: a rotated model's
+  // records come back placed in world (records.js dmDocReader — the one way in)
+  const blockDoc = { blob, name, header, metaLine: '', forcePoints: opts.forcePoints, streamChunks, recordBatches, columnBatches, fetchRecord };
   registerDocs(lid, header.grid ? 'blocks' : 'points', { blockDoc });
   { const L1 = layerById(lid); if (L1 && L1.lineage && header.grid && header.grid.rot) L1.lineage.params = { ...(L1.lineage.params || {}), lattice: { rotated: true, ...basisAngles(header.grid.rot), ...(header.lattice || { basis: 'declared' }), origin: header.dmOrigin } }; }
   fitFromHeader(header, opts.first !== false && opts.chan == null);

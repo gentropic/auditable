@@ -5,7 +5,7 @@
 // Both end in the openers of src/open.js; the app wires the buttons.
 import { census as xlsxCensus } from '../../../ext/sheet/index.js';
 import { omfCensus } from './omf.js';
-import { DXF_STREAM_BYTES, classifyDrillholeHeader, dmWireframeRole, mapColumns, parseLasHeader, parsePlyHeader, peekDmColumns, peekDxfHead, peekDxfScene, sniffDelimited } from '../../../ext/condenser/src/main.js';
+import { DXF_STREAM_BYTES, classifyDrillholeHeader, dmWireframeRole, mapColumns, parseLasHeader, parsePlyHeader, peekDmColumns, peekDmRotation, peekDxfHead, peekDxfScene, sniffDelimited } from '../../../ext/condenser/src/main.js';
 import { isWfrName, openWfrBlob, summarizeElements } from './wfr-io.js';
 import { readGTiff } from '../../../ext/gtiff/index.js';
 import { openBlob, openDrillholeLayer } from './open.js';
@@ -153,7 +153,14 @@ export async function describeFile(f) {
     } else if (/\.dm$/i.test(name)) {
       const wf = dmWireframeRole(await peekDmColumns(f).catch(() => null));
       if (wf) { d.kind = 'dm-wireframe'; d.wfRole = wf; d.desc = `Datamine wireframe · ${wf} (pairs with its ${wf === 'points' ? 'triangles' : 'points'} file)`; }
-      else { d.kind = 'dm'; d.desc = 'Datamine .dm block model'; }
+      else {
+        d.kind = 'dm'; d.desc = 'Datamine .dm block model';
+        // a model rotated about Z is placed in world about an ORIGIN the file may not
+        // carry (an anonymised export writes 0): the row offers it, prefilled from X0/Y0/Z0
+        const rot = await peekDmRotation(f).catch(() => null);
+        if (rot && rot.applied) { d.dmRot = rot; d.origin = [...rot.origin]; d.desc += ` · rotated ${+rot.rotations[0].angle.toFixed(3)}° about Z`; }
+        else if (rot) d.desc += ` · rotated (${rot.rotations.length} rotations — shown in its own frame)`;
+      }
     } else if (/\.(parquet|pq)$/i.test(name)) {
       d.kind = 'blocks';
       // the footer alone (range-read from the tail) yields the census — no
@@ -323,6 +330,20 @@ export function renderOfDialog() {
       maps.append(mkSel('x', 'X'), mkSel('y', 'Y'), mkSel('z', 'Z'));
       row.appendChild(maps);
     }
+    // a rotated Datamine model: the world position of its local origin (X0/Y0/Z0 prefilled)
+    if (r.load && r.kind === 'dm' && r.dmRot) {
+      const og = document.createElement('div'); og.className = 'dh-maps of-dm-origin';
+      og.append('origin ');
+      ['X', 'Y', 'Z'].forEach((a, k) => {
+        const w = document.createElement('label'); w.append(a + ' ');
+        const inp = document.createElement('input'); inp.type = 'text'; inp.inputMode = 'decimal'; inp.size = 11; inp.className = 'of-origin-' + a.toLowerCase();
+        inp.value = String(r.origin[k]);
+        inp.onchange = () => { const v = Number(String(inp.value).trim().replace(',', '.')); if (Number.isFinite(v)) r.origin[k] = v; else inp.value = String(r.origin[k]); };
+        w.appendChild(inp); og.appendChild(w);
+      });
+      og.title = 'world X, Y, Z of the model’s local origin — world = origin + R(ANGLE1)·(XC, YC, ZC)';
+      row.appendChild(og);
+    }
     { const st2 = mkSplitToggle(r); if (st2) { const w2 = document.createElement('div'); w2.className = 'dh-maps'; w2.appendChild(st2); row.appendChild(w2); } }
     body.appendChild(row);
   }
@@ -398,6 +419,7 @@ export async function ofConfirm() {
     const over = {};
     if (r.mapping && r.kind === 'delimited' && r.asKind !== 'table') over.mapping = { x: r.mapping.x ?? 0, y: r.mapping.y ?? 1, z: r.mapping.z ?? 2, chan: r.mapping.chan ?? null, cat: r.mapping.cat ?? null };
     if (r.asKind) over.asKind = r.asKind;
+    if (r.kind === 'dm' && r.dmRot && r.origin) over.origin = [...r.origin];   // a rotated .dm's world origin
     if (r.objGroups && r.objGroups.length > 1 && r.split !== false) {
       if (/\.lfm$/i.test(r.name)) await openLfmSplit(r.file, r.name, first ? 'replace' : 'add');
       else await openObjSplit(r.file, r.name, first ? 'replace' : 'add');

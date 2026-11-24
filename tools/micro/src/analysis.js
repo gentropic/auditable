@@ -8,7 +8,7 @@ import { convert as unitConvert } from '../../../ext/units/index.js';
 import { layerTableHeader, colIsNumeric, schemaExt, layerRecords, attrRowCountOf, numOf, extendRow } from './records.js';
 import { ensureStoredValues } from './columns.js';
 import { gridAxesOf } from './grid-ops.js';
-import { coordNum } from '../../../ext/condenser/src/main.js';
+import { coordNum, supportOfHeader, volumeOf, volumeOfSizes, sizeQ } from '../../../ext/condenser/src/main.js';
 
 // ── the metal factor: ONE rule for every metal = tonnes × grade × factor (factors, the resource table) ──
 // A typed factor: a plain number or a simple fraction a/b ("1/31.1035" for g/t → oz). Blank → null
@@ -45,26 +45,49 @@ export function numericColsOf(L) {
   const paintNum = (L.paintCols || []).filter((c) => c.kind === 'ratio').map((c) => c.name);   // ratio incl. MATERIALIZED (estimated) columns
   return [...base, ...calc, ...paintNum];                                                       // GT/swath/stats read these via schemaExt + extendRow
 }
-export function blockVolumeOf(L) { const a = gridAxesOf(L); return a ? (Math.abs((a.x.pitch || 1) * (a.y.pitch || 1) * (a.z.pitch || 1)) || 1) : 1; }
-// A sub-blocked model's blocks are NOT all the fine-lattice size — each carries
-// its own DIMX/Y/Z. GT/swath weighted every block by the constant fine pitch, so
-// a big parent block counted as one fine cell: tonnage silently under-weighted.
-// This returns a per-record volume from the row when the model is sub-blocked
-// (the dim columns are indices into the same row layerRecords yields), and the
-// constant otherwise. `vc` is the precomputed {dc, base} so the hot path is a
-// multiply, not a header lookup per record.
+// ── block VOLUMES, from the block-support contract (condenser grid/support.js) ──
+// A block's volume is Π size · pitch: the lattice pitch (rotation-free — a rotated
+// model's pitch is in its own frame, and a rotation keeps volume), times the
+// block's size in fine steps — 1 for a regular model, the record's stated sizes
+// (XINC/YINC/ZINC, DX/DY/DZ) snapped to whole fine steps for a sub-blocked one:
+// the same box the renderer draws (dimQ). One rule, so GT, swath, stats, the
+// cross-tab, the resource table, factors and contact all weigh a block the same,
+// and none of them asks whether the model is rotated or sub-blocked itself.
+export function blockVolumeOf(L) { const vc = volumeContextOf(L); return vc.base; }
+// → { base, dc, pitch, dims }: base = a regular block's volume (Π pitch; 1 without a
+// grid), dc = the size columns' indices (sub-blocked) or null, dims = their names
+// (for a columnar scan), pitch = the fine pitch [3].
 export function volumeContextOf(L) {
   const bd = L.docs && L.docs.blockDoc, h = bd && bd.header;
-  const base = blockVolumeOf(L);
-  const dc = h && h.subBlocked && h.dimCols;               // { x, y, z } → column indices, or falsy
-  return { base, dc };
+  const sup = h ? supportOfHeader(h) : null;
+  if (!sup) return { base: 1, dc: null, pitch: null, dims: null };
+  const pitch = sup.lattice.pitch.map((p) => Math.abs(+p) || 1);
+  const base = Math.abs(volumeOf(1, 1, 1, pitch)) || 1;
+  const dc = sup.sub && h.dimCols ? h.dimCols : null;       // { x, y, z } → column indices
+  return { base, dc, pitch, dims: dc && h.columns ? [h.columns[dc.x], h.columns[dc.y], h.columns[dc.z]] : null };
 }
 export function volumeAt(vc, f) {
   if (!vc.dc) return vc.base;
-  const dx = +f[vc.dc.x], dy = +f[vc.dc.y], dz = +f[vc.dc.z];
-  const v = Math.abs(dx * dy * dz);
-  return v > 0 ? v : vc.base;                              // a missing/zero dim → the fine pitch, honest not zero
+  const v = volumeOfSizes(Math.abs(+f[vc.dc.x]), Math.abs(+f[vc.dc.y]), Math.abs(+f[vc.dc.z]), vc.pitch);
+  return v > 0 ? v : vc.base;                              // a missing/zero size → one fine cell, honest not zero
 }
+// half extents of one block in its own frame ([3]) — the box volumeAt weighs
+export function halfAt(vc, f, out = [0, 0, 0]) {
+  const ci = vc.dc ? [vc.dc.x, vc.dc.y, vc.dc.z] : null;
+  for (let a = 0; a < 3; a++) {
+    const p = vc.pitch ? vc.pitch[a] : 1, d = ci ? Math.abs(+f[ci[a]]) : 0;
+    out[a] = (d > 0 ? sizeQ(d, p) * p : p) / 2;             // regular (or a missing size): one cell of the pitch
+  }
+  return out;
+}
+// the same rule as an @gcu/expr expression over the size columns (null when regular):
+// for a tool that reads per-record values through an expression (contact)
+export function volumeExprOf(vc, quote) {
+  if (!vc.dims) return null;
+  return vc.dims.map((nm, a) => `clamp(round(abs(${quote(nm)}) / ${String(vc.pitch[a])}), 1, 255) * ${String(vc.pitch[a])}`).join(' * ');
+}
+// the same rule handed to a columnar scan kernel (@gcu/scan: params.vol)
+export const volParamsOf = (vc) => ({ base: vc.base, dims: vc.dims, pitch: vc.dims ? vc.pitch : null });
 // The SUPPORT a record stands for, for the accumulating tools (grade-tonnage,
 // cross-tab). A block stands for a VOLUME (m³; × density → tonnes). A drillhole
 // interval stands for a LENGTH of core: TO − FROM, in metres. There is no

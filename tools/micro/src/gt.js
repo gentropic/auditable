@@ -5,7 +5,7 @@
 // index.html (phase 3).
 import { gridAxesOf } from './grid-ops.js';
 import { floatWin, focusWindow } from './windows.js';
-import { numericColsOf, volumeContextOf, supportContextOf, supportAt, supportMeasure } from './analysis.js';
+import { numericColsOf, volumeContextOf, supportContextOf, supportAt, supportMeasure, volParamsOf } from './analysis.js';
 import { SERIES_COLORS, analysisSerCfg, analysisSerRestore, applyAnalysisGeo, checkAbort, gradeUnitFactor, gradeUnitSel, plotChart, plotExportBtns, rangesForCfg, rangesFromCfg, rangesOf, rangesRow, reconcilePairs, runCancellable, saveAnalysisCfg, scanProgressText, scopeMask, scopeMissing, seriesZoneKeep, setAnalysisOpen } from './analysis-ui.js';
 import { gtAbove, gtAccumulator, gtCuts, gtMerge } from './scanner.js';
 import { S, layerById } from './state.js';
@@ -65,8 +65,8 @@ export async function scanGTSeries(st, onProgress, signal) {   // st: { series: 
   const N = colL.reduce((t, Lx) => t + (attrRowCountOf(Lx) || 0), 0) + series.filter((se) => !colL.includes(se.L)).reduce((t, se) => t + (attrRowCountOf(se.L) || 0), 0);
   for (const Lx of colL) {
     const ses = series.filter((se) => se.L === Lx), vc = ses[0].vc, h = layerTableHeader(Lx);
-    const dims = vc.dc ? [h.columns[vc.dc.x], h.columns[vc.dc.y], h.columns[vc.dc.z]] : null;
-    const params = { series: ses.map((se) => ({ grade: quoteIdent(se.s.col), weight: (se.s.weight || '').trim() || null, filter: (se.s.filter || '').trim() || null })), dScale, vol: { base: vc.base, dims } };
+    const dims = vc.dims;                               // the size columns (sub-blocked), from the support contract
+    const params = { series: ses.map((se) => ({ grade: quoteIdent(se.s.col), weight: (se.s.weight || '').trim() || null, filter: (se.s.filter || '').trim() || null })), dScale, vol: volParamsOf(vc) };
     const base = total;
     const { parts } = await scanColumnar(Lx, { kernel: 'gt', params, exprs: params.series.flatMap((x) => [x.grade, x.weight, x.filter]), extraCols: dims || [], mask: scopeMask(st, Lx), signal,
       keepZone: seriesZoneKeep(Lx, params.series.map((x) => x.filter), scopeMask(st, Lx)),

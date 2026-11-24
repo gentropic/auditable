@@ -5,7 +5,7 @@
 // layout (tidy, scan for new data) is src/project-folder.js, and the remembered
 // projects are src/recents.js.
 import { S, _fileHandles, activeLayer, layerById, requestRender } from './state.js';
-import { applyColTypes, attrRowCountOf, layerHeaderOf, layerTableHeader } from './records.js';
+import { applyColTypes, attrRowCountOf, layerHeaderOf, layerTableHeader, coordFrameKey } from './records.js';
 import { basename, fmtSize, joinPath, kindDir, layerBytes, layerFiles, layerRelpath, relPathFor, resolveDhFile, resolveFileHandle } from './paths.js';
 import { microModelOf } from './lineage.js';
 import { _qualifyReopen, settleQualifyReopens } from './coltypes.js';
@@ -475,6 +475,7 @@ async function saveProjectInner() {
               },
           colStats: L._colStats || undefined,
           bands: L._bands || undefined,
+          coords: coordFrameKey(h),                         // the frame the stats/bands above were read in
         };
         const mh = await resolveFileHandle(dir, (L._relpath || relPathFor(L, L.name)) + '.meta.json', { create: true });
         const mw = await mh.createWritable();
@@ -787,8 +788,12 @@ export async function openProjectDir(dir, { pack = null } = {}) {
       const L = layerById(_got);
       if (!L) { plRow(i, 'failed to open', 'skip'); continue; }   // that open failed; its layer rolled back
       if (ls.drape && L.gridSurface) L._pendingDrape = ls.drape;   // apply after ALL layers land (the drape grid may come later)
-      if (sidecar && sidecar.colStats) L._colStats = sidecar.colStats;   // the styling/statistics UIs wake up scanned
-      if (sidecar && sidecar.bands) L._bands = sidecar.bands;            // .dm/CSV filter pushdown substrate
+      // stats + bands are only good in the coordinate frame they were read in: a rotated
+      // .dm's columns read in world now (another origin, or a sidecar from before
+      // placement, would serve local XC ranges — a filter on XC would skip real matches)
+      const _frameOk = !sidecar || (sidecar.coords || 'file') === coordFrameKey(L.docs && L.docs.blockDoc && L.docs.blockDoc.header);
+      if (sidecar && sidecar.colStats && _frameOk) L._colStats = sidecar.colStats;   // the styling/statistics UIs wake up scanned
+      if (sidecar && sidecar.bands && _frameOk) L._bands = sidecar.bands;            // .dm/CSV filter pushdown substrate
       if (ls.colTypes) { L.colTypes = ls.colTypes; applyColTypes(L); }
       if (ls.qualify) { L.qualify = ls.qualify; L._qualFn = undefined; _qualifyReopen.push(L.id); }
       try { await loadElement(L, dir); } catch (e) { (L._colsUnread || (L._colsUnread = [])).push({ name: 'columns', why: e && e.message || String(e) }); }   // ƒ + matcols BEFORE filter/color (both may reference them); never blocks the load, always reported

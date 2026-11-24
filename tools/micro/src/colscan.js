@@ -61,7 +61,7 @@ function sourceOf(L, readCols, keepZone = null) {
     });
     return scan.sources.delimited(bd.blob, h, { delim: h.delim, decimal: h.decimal, x: m.x, y: m.y, z: m.z, cols }, readCols, { anchors: csvAnchors, keep: keepZone });
   }
-  return scan.sources.dm(bd.blob, bd.header.dm, h.columns, readCols);
+  return scan.sources.dm(bd.blob, bd.header.dm, h.columns, readCols, { place: bd.header.dmPlace || null });   // a rotated model reads in WORLD (as the view)
 }
 
 // exprs: the expression TEXTS the job evaluates (their columns are what's read);

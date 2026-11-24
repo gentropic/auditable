@@ -5,7 +5,7 @@
 // changed column set are injected too (setColumnsChangedHook).
 import { parquetInfo, readParquetRange, createParquetBlobWriter } from '../../../ext/parquet/index.js';
 import { deps, parse } from '../../../ext/expr/index.js';
-import { layerBlob, attrRowCountOf, layerTableHeader, colIsNumeric, blockCaps, layerRows, extendRow, rowQualifier } from './records.js';
+import { layerBlob, attrRowCountOf, layerTableHeader, colIsNumeric, blockCaps, layerRows, extendRow, rowQualifier, dmDocReader } from './records.js';
 import { openDmModel, classifyQualified, coordNum } from '../../../ext/condenser/src/main.js';
 import { scan, STAT_SLICE, chunkView } from './scanner.js';   // @gcu/scan: the column accumulator, its Parquet pool job, the chunk view
 import { sourceHash, sourceHashSync, sameSource } from './identity.js';
@@ -472,7 +472,7 @@ async function* columnarBatches(L, colIdx, signal) {
     }
     return;
   }
-  const { columnBatches } = await openDmModel(doc.blob);
+  const { columnBatches } = await dmDocReader(doc);       // placed: a rotated model's XC/YC/ZC in world
   for await (const { recStart, count, cols } of columnBatches(colIdx)) {
     for (const i of colIdx) {
       if (signal && signal.aborted) throw abortError();

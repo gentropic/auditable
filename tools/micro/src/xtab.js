@@ -8,7 +8,7 @@
 import { attrRowCountOf, layerRecords, layerTableHeader, numOf, schemaExt } from './records.js';
 import { compileBool, compileValue, quoteIdent, validate } from '../../../ext/expr/index.js';
 import { convert as unitConvert } from '../../../ext/units/index.js';
-import { supportAt, supportContextOf, numericColsOf } from './analysis.js';
+import { supportAt, supportContextOf, numericColsOf, volParamsOf } from './analysis.js';
 import { applyAnalysisGeo, checkAbort, fmtStat, gradeUnitSel, plotExportBtns, runCancellable, saveAnalysisCfg, scanProgressText, scopeMask, scopeMissing, setAnalysisOpen } from './analysis-ui.js';
 import { floatWin, focusWindow } from './windows.js';
 import { canScanColumnar, scanColumnar, zoneKeeper } from './colscan.js';
@@ -87,8 +87,8 @@ export async function scanXtabOf(L, st, onProgress, signal) {   // st: { grade, 
   const mask = scopeMask(st, L), sc = supportContextOf(L), vc = sc.vc, N = attrRowCountOf(L) || 0;
   const base = { edges, grade: st.grade, group: st.group, grouped: !!groupX, weighted: !!weightX, gradeUnit: st.gradeUnit, support: sc.kind };
   if (sc.kind === 'volume' && canScanColumnar(L)) {
-    const dims = vc.dc ? [h.columns[vc.dc.x], h.columns[vc.dc.y], h.columns[vc.dc.z]] : null;
-    const params = { group: groupX, grade: gradeX, weight: weightX, filter: filterX, dScale, vol: { base: vc.base, dims }, edges };
+    const dims = vc.dims;                               // the size columns (sub-blocked), from the support contract
+    const params = { group: groupX, grade: gradeX, weight: weightX, filter: filterX, dScale, vol: volParamsOf(vc), edges };
     const { parts, where } = await scanColumnar(L, { kernel: 'crosstab', params, exprs: [groupX, gradeX, weightX, filterX], extraCols: dims || [], mask, signal,
       onProgress, keepZone: zoneKeeper(L, { mask }) });
     const merged = crosstabMerge(parts);

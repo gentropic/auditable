@@ -4,10 +4,10 @@
 // a host page sees it (micro:pick, worldAt, pick). The click / touch / magnifier
 // gestures that call it stay in the app.
 import { S, layerById, requestRender } from './state.js';
-import { FACE_CUT, FACE_NAMES, FACE_NORMALS, decodeLasRecords, faceOfId, fetchDmRecord, isMiss, layerOfId, layerSection, mat4Inverse } from '../../../ext/condenser/src/main.js';
+import { FACE_CUT, FACE_NAMES, FACE_NORMALS, decodeLasRecords, faceOfId, dmWorldToLocal, isMiss, layerOfId, layerSection, mat4Inverse } from '../../../ext/condenser/src/main.js';
 import { recordPosition } from './overlay.js';
 import { currentSection } from './section.js';
-import { attrRowCountOf, extendRow, fetchCsvRecord, rawRecordOf } from './records.js';
+import { attrRowCountOf, extendRow, fetchCsvRecord, rawRecordOf, dmDocReader } from './records.js';
 import { rendererDocBbox } from './layers.js';
 import { html, setHTML } from './html.js';
 import { _propOpen, closeProps } from './props.js';
@@ -112,7 +112,7 @@ export async function blockHalfDims(L, rec) {
   if (!dc) return h;
   let f = null;
   try {
-    if (bd.header.dm) f = await fetchDmRecord(bd.blob, bd.header.dm, rec);
+    if (bd.header.dm) f = await (await dmDocReader(bd)).fetchRecord(rec);   // sizes only — placement leaves them alone
     else if (!bd.parquet) f = await fetchCsvRecord(rec, bd);
   } catch { f = null; }
   if (!f) return h;                                        // parquet sub-blocks: the parent pitch (honest, coarser)
@@ -355,8 +355,14 @@ export async function showRecord(hit) {
     return;
   }
   if (bd && bd.header.dm) {
-    const vals = await fetchDmRecord(bd.blob, bd.header.dm, rec);
+    const vals = await (await dmDocReader(bd)).fetchRecord(rec);   // a rotated model's XC/YC/ZC read in WORLD (records.js)
     const rows = bd.header.columns.map((name, i) => [name, vals[i] == null ? '—' : vals[i]]);
+    // a placed (rotated) model: its own frame's coordinates — what the file stores — beside the world ones
+    const pl = bd.header.dmPlace, m = bd.header.mapping;
+    if (pl && [m.x, m.y, m.z].every((i) => typeof vals[i] === 'number')) {
+      const q = dmWorldToLocal(pl, vals[m.x], vals[m.y], vals[m.z]);
+      rows.splice(Math.max(m.x, m.y, m.z) + 1, 0, ...['x', 'y', 'z'].map((a, k) => [`${bd.header.columns[m[a]]} · model frame`, +q[k].toFixed(6)]));
+    }
     appendCalcRows(rows, L, vals, bd.header, rec);
     show(`${tag}block · record ${rec.toLocaleString()}`, rows);
     return;

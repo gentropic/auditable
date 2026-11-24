@@ -15,7 +15,7 @@ import { attrRowCountOf, layerRecords, layerTableHeader, numOf, schemaExt, colIs
 import { compileBool, compileValue, quoteIdent, validate, deps as exprDeps } from '../../../ext/expr/index.js';
 import { nearestBVH, orientTriangles, pseudoNormals, sideOf } from '../../../ext/geometry/index.js';
 import { windingBVH } from '../../../ext/winding/index.js';
-import { numericColsOf, volumeContextOf, blockVolumeOf } from './analysis.js';
+import { numericColsOf, volumeContextOf, volumeExprOf } from './analysis.js';
 import { canScanColumnar, scanColumnar } from './colscan.js';
 import { meshSolidOf, solidOrientedMesh, layerPositions, residentGridForEval, targetsXYBbox } from './bygeom.js';
 import { gridAxesOf, surfaceFromGrid } from './grid-ops.js';
@@ -272,14 +272,14 @@ export async function scanContact(st, onProgress, signal) {
     } else {                                               // blocks: centroids, weighed by their volume
       if (!isBlockLayer(L)) throw new Error(`series “${L.label || L.name}”: a block model (regular) or a drillhole layer`);
       const vc = volumeContextOf(L);
-      const dimExpr = vc.dc ? `abs(${quoteIdent(h.columns[vc.dc.x])} * ${quoteIdent(h.columns[vc.dc.y])} * ${quoteIdent(h.columns[vc.dc.z])})` : null;
+      const dimExpr = volumeExprOf(vc, quoteIdent);         // a sub-block's volume from its sizes (the support contract); null = regular
       const any = (dd) => { for (let i = 0; i < dd.length; i++) if (Number.isFinite(dd[i])) return true; return false; };
       if (any(dist)) {                                     // nothing within reach → no value scans at all
         const V = await recordValues(L, quoteIdent(vcol), { signal, onProgress: (d, N) => prog(0.6 + 0.15 * d / (N || 1), 'values') });
         const W = s.weight && String(s.weight).trim() ? await recordValues(L, `(${s.weight})`, { signal, onProgress: (d, N) => prog(0.75 + 0.1 * d / (N || 1), 'weights') }) : null;
         const F = s.filter && String(s.filter).trim() ? await recordValues(L, `(${s.filter})`, { bool: true, signal, onProgress: (d, N) => prog(0.85 + 0.05 * d / (N || 1), 'filter') }) : null;
         const D = dimExpr ? await recordValues(L, dimExpr, { signal, onProgress: (d, N) => prog(0.9 + 0.1 * d / (N || 1), 'block sizes') }) : null;
-        const base = blockVolumeOf(L);
+        const base = vc.base;
         for (let i = 0; i < n; i++) {
           const d = dist[i]; if (!Number.isFinite(d)) continue;
           if (mask && !(i < mask.length && mask[i])) continue;

@@ -2,9 +2,9 @@
 // distance, bearing and plunge, or trend & plunge), the outline of the section plane, the
 // swath band an analysis window pins onto the model, and the compass.
 import { S, layerById, requestRender } from './state.js';
-import { fetchCsvRecord, fetchLayerRow } from './records.js';
+import { fetchCsvRecord, fetchLayerRow, dmDocReader } from './records.js';
 import { parquetRow } from './rowworker.js';
-import { coordNum, decodeLasRecords, fetchDmRecord, dmLocalToWorld } from '../../../ext/condenser/src/main.js';
+import { coordNum, decodeLasRecords } from '../../../ext/condenser/src/main.js';
 import { _isMobile } from './windows.js';
 import { rendererDocBbox } from './layers.js';
 import { currentSection } from './section.js';
@@ -39,9 +39,8 @@ export async function recordPosition(hit) {
   const m = bd && bd.header.mapping;
   if (bd && bd.parquet) { const row = await parquetRow(bd.parquet, rec); const cn = bd.parquet.coordNames; return row ? [+row[cn[0]], +row[cn[1]], +row[cn[2]]] : null; }
   if (bd && bd.header.dm) {
-    const vals = await fetchDmRecord(bd.blob, bd.header.dm, rec);
-    const toW = dmLocalToWorld(bd.header);                 // a rotated .dm placed in world: the record is LOCAL
-    return toW ? toW(vals[m.x], vals[m.y], vals[m.z]) : [vals[m.x], vals[m.y], vals[m.z]];
+    const vals = await (await dmDocReader(bd)).fetchRecord(rec);   // placed: a rotated model's record reads in world
+    return [vals[m.x], vals[m.y], vals[m.z]];
   }
   if (bd) {
     const f = await fetchCsvRecord(rec, bd);

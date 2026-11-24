@@ -10,7 +10,7 @@
 // polygon (three to six sides). Everything is stored in the PLANE's coordinates — a basis
 // { origin, u, v } — and drawn through the view's projection.
 import { layerRecords, layerTableHeader, schemaExt, numOf, extendRow } from './records.js';
-import { volumeContextOf } from './analysis.js';
+import { volumeContextOf, halfAt } from './analysis.js';
 import { gridAxesOf } from './grid-ops.js';
 import { colorSelOf, rampCfgOf, classBreaks, classIndex, classColor, noDataOf } from './ramp.js';
 import { colorByName } from './color.js';
@@ -62,14 +62,14 @@ export async function sectionCells(L, sec, { max = 150000 } = {}) {
   const schema = schemaExt(L, h), vname = colorByName(L), vi = schema.findIndex((c) => c.name === vname);
   if (vi < 0) throw new Error(`${L.label || L.name}: no column “${vname}”`);
   const ci = [m.x, m.y, m.z], pitch = [ga.x.pitch, ga.y.pitch, ga.z.pitch].map((p) => Math.abs(+p) || 1);
-  const vc = volumeContextOf(L), dc = vc.dc ? [vc.dc.x, vc.dc.y, vc.dc.z] : null;
+  const vc = volumeContextOf(L);                           // each block's box from the support contract (halfAt)
   const mask = L.filterExpr && L._filterMask ? L._filterMask : null, d0 = +sec.position;
   const raw = [];                                           // u0, v0, u1, v1, colour
   const palette = [], pIdx = new Map();
   let blocks = 0;
   for await (const { f, rec } of layerRecords(L)) {
     if (mask && !(rec < mask.length && mask[rec])) continue;
-    const half = dc ? dc.map((c, i) => { const d = Math.abs(+f[c]); return (d > 0 ? d : pitch[i]) / 2; }) : [pitch[0] / 2, pitch[1] / 2, pitch[2] / 2];
+    const half = halfAt(vc, f);
     const cw = +f[ci[ax.w]];
     if (!(cw - half[ax.w] <= d0 && d0 < cw + half[ax.w])) continue;   // the plane cuts this block (half-open: a face on the plane counts once)
     const v = col.numeric ? numOf(f[vi]) : f[vi];
@@ -152,13 +152,13 @@ export async function sectionShapes(L, sec, near, { max = 150000 } = {}) {
     const su = dot(R[iu], P.u) < 0 ? -1 : 1, sv = dot(R[iv], P.v) < 0 ? -1 : 1;
     P = { ...P, u: R[iu].map((x) => r6(x * su)), v: R[iv].map((x) => r6(x * sv)), lattice: [iu, iv, su, sv] };
   }
-  const ci = [m.x, m.y, m.z], vc = volumeContextOf(L), dc = vc.dc ? [vc.dc.x, vc.dc.y, vc.dc.z] : null;
+  const ci = [m.x, m.y, m.z], vc = volumeContextOf(L);     // each block's box from the support contract (halfAt)
   const mask = L.filterExpr && L._filterMask ? L._filterMask : null;
   const raw = [], polys = [], palette = [], pIdx = new Map();
   let blocks = 0;
   for await (const { f, rec } of layerRecords(L)) {
     if (mask && !(rec < mask.length && mask[rec])) continue;
-    const half = dc ? dc.map((c, i) => { const d = Math.abs(+f[c]); return (d > 0 ? d : pitch[i]) / 2; }) : [pitch[0] / 2, pitch[1] / 2, pitch[2] / 2];
+    const half = halfAt(vc, f);
     const c = [+f[ci[0]], +f[ci[1]], +f[ci[2]]];
     const dist = dot(P.n, c) - P.pos, ext = half[0] * Math.abs(dot(P.n, R[0])) + half[1] * Math.abs(dot(P.n, R[1])) + half[2] * Math.abs(dot(P.n, R[2]));
     if (!(-ext <= -dist && -dist < ext)) continue;         // the plane cuts this block (half-open: a face on the plane counts once)

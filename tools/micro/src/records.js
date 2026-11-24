@@ -8,7 +8,7 @@
 // delimited text and how record numbering drifted (see the 2026-08 audit,
 // [[reference_micro_source_dispatch]]). This module is where those decisions
 // live now; a new source kind is added HERE, once.
-import { coordNum, openLas, decodeLasRecords, openPly, openBlockModel, openDmModel, fetchDmRecord, openDmWireframe, fetchDelimitedRecord, openMsh, openObj, openPlyMesh, openDxf, lineFields, soupVertexTable, soupTriBatcher, qualifiedNumber, QUALIFIED_DEFAULT } from '../../../ext/condenser/src/main.js';
+import { coordNum, openLas, decodeLasRecords, openPly, openBlockModel, openDmModel, openDmWireframe, fetchDelimitedRecord, openMsh, openObj, openPlyMesh, openDxf, lineFields, soupVertexTable, soupTriBatcher, qualifiedNumber, QUALIFIED_DEFAULT } from '../../../ext/condenser/src/main.js';
 import { streamParquetColumns } from '../../../ext/parquet/index.js';
 import { parquetRow } from './rowworker.js';            // a Parquet row off the page (it costs its row group)
 import { compileValue, deps } from '../../../ext/expr/index.js';
@@ -60,6 +60,15 @@ export function colIsNumeric(L, h, i) {
   const m = h.mapping || {};
   if (i === m.x || i === m.y || i === m.z) return true;
   return (h.numericColumns || []).some((c) => c.i === i);
+}
+// typed for a STORE (an export, Store as Parquet): a .dm's own field type wins — its
+// definition fields (XINC/YINC/ZINC, X0, ANGLE1…) aren't colour channels, so they're
+// not in numericColumns, but they ARE numbers, and a Parquet copy that typed them as
+// text lost the sub-block sizes (the reopen couldn't read them as sizes)
+export function colIsNumericForStore(L, h, i) {
+  if (colIsNumeric(L, h, i)) return true;
+  const dmc = h && h.dm && h.dm.columns && h.dm.columns[i];
+  return !!(dmc && dmc.type === 'N' && !(L.colTypes && L.colTypes[h.columns[i]] === 'string'));
 }
 export function blockSchema(header) {
   const numeric = new Set((header.numericColumns || []).map((c) => c.i));
@@ -185,6 +194,36 @@ export function extendRow(L, f, rec) {
 // as before (+v), so '12abc' stays NaN.
 export const numOf = (v) => (typeof v === 'number' ? v : v == null || (typeof v === 'string' && v.trim() === '') ? NaN : +v);
 
+// ── a .dm block doc's READERS — where a rotated model's coordinates become world ──
+// A Datamine model rotated about Z is drawn in world (step 1 of the block-support
+// spec), but its FILE keeps XC/YC/ZC in the model's own frame. Every reader of its
+// rows — filter, export, swath by direction, stats, by-solid, pairing, pick — used
+// to see those local values while the view spoke world. The provider now hands
+// its records over PLACED (condenser header.dmPlace: world = O + R·local), and this
+// is the one way micro reads a .dm doc: the readers the open kept, or — for a doc
+// built some other way — the file re-opened with the same placement. So the
+// coordinate COLUMNS of a rotated .dm mean what they mean for any other model:
+// world XC/YC/ZC, the frame the view, the other layers and an export share. The
+// model's own (local) coordinates are shown beside them on a pick (records panel).
+export async function dmDocReader(doc) {
+  if (!doc) return null;
+  if (doc.dmReader) return doc.dmReader;
+  if (doc.recordBatches && doc.columnBatches && doc.fetchRecord) return (doc.dmReader = { recordBatches: doc.recordBatches, columnBatches: doc.columnBatches, fetchRecord: doc.fetchRecord });
+  const h = doc.header;
+  const o = await openDmModel(doc.blob, { mapping: h.mapping, origin: h.dmOrigin || null, cached: h.bbox ? { grid: h.grid, bbox: h.bbox, subBlocked: h.subBlocked, sizeQMax: h.sizeQMax, categories: h.categories } : null });
+  return (doc.dmReader = { recordBatches: o.recordBatches, columnBatches: o.columnBatches, fetchRecord: o.fetchRecord });
+}
+
+// what frame a doc's coordinate COLUMNS are read in — a cache keyed on the file
+// alone (a project sidecar's column stats + filter bands) is only good for the
+// frame it was computed in: 'file' (as stored), or a placed model's world frame
+// (its origin + rotation). A sidecar from before placement (or another origin)
+// reads 'file' / another key and is not trusted for the coordinate columns.
+export function coordFrameKey(h) {
+  const p = h && h.dmPlace;
+  return p ? `world:${p.O.map((v) => +(+v).toPrecision(15)).join(',')}:${p.R.slice(0, 2).map((v) => +v.toPrecision(12)).join(',')}` : 'file';
+}
+
 // ── capabilities + record identity ────────────────────────────────────────────
 // What a block source CAN DO, asked instead of what it IS. One definition, so a
 // new source is right everywhere at once instead of in however many places
@@ -234,7 +273,7 @@ export async function* layerRows(L, onProgress, { raw = false } = {}) {
     for (let i = 0; i < dh.header.count; i++) rows.push(read(i));
     yield rows;
   } else if (d.blockDoc && d.blockDoc.header.dm) {
-    const { recordBatches } = await openDmModel(d.blockDoc.blob);
+    const { recordBatches } = await dmDocReader(d.blockDoc);   // placed: a rotated model's XC/YC/ZC in world
     let done = 0;
     for await (const { rows } of recordBatches()) {
       yield rows;
@@ -318,7 +357,7 @@ export async function* layerRecords(L, onProgress) {
 export async function docPositionStream(d) {
   if (!d) return null;
   if (d.blockDoc && d.blockDoc.streamChunks) return d.blockDoc.streamChunks;
-  if (d.blockDoc && d.blockDoc.header.dm) return (await openDmModel(d.blockDoc.blob)).streamChunks;
+  if (d.blockDoc && d.blockDoc.header.dm) { const h = d.blockDoc.header; return (await openDmModel(d.blockDoc.blob, { mapping: h.mapping, origin: h.dmOrigin || null })).streamChunks; }
   if (d.blockDoc) return (await openBlockModel(d.blockDoc.blob, { mapping: d.blockDoc.header.mapping })).streamChunks;
   if (d.lasDoc) return (await openLas(d.lasDoc.blob)).streamChunks;
   if (d.plyDoc) return (await openPly(d.plyDoc.blob)).streamChunks;
@@ -508,7 +547,7 @@ export async function fetchLayerRow(L, rec) {
   if (d.stringsDoc) return d.stringsDoc.fetchRecord(rec);  // a segment knows its DXF layer + string
   if (d.tracesDoc) return d.tracesDoc.fetchRecord(rec);    // pick a trace → its collar record
   if (d.blockDoc && d.blockDoc.parquet) { const row = await parquetRow(d.blockDoc.parquet, rec); return row ? d.blockDoc.parquet.names.map((n) => { const v = row[n]; return v == null ? '' : v; }) : null; }
-  if (d.blockDoc && d.blockDoc.header.dm) return await fetchDmRecord(d.blockDoc.blob, d.blockDoc.header.dm, rec);
+  if (d.blockDoc && d.blockDoc.header.dm) return await (await dmDocReader(d.blockDoc)).fetchRecord(rec);
   if (d.blockDoc) return await fetchCsvRecord(rec, d.blockDoc);
   if (d.plyDoc) return await d.plyDoc.fetchRecord(rec);
   if (d.lasDoc && d.lasDoc.fetchRecord) return await d.lasDoc.fetchRecord(rec);   // every column of the point
@@ -607,7 +646,7 @@ export async function sampleRow(L) {
   const d = L.docs || {};
   try {
     if (d.dhDoc) return d.dhDoc.fetchRecord(0);
-    if (d.blockDoc && d.blockDoc.header.dm) return await fetchDmRecord(d.blockDoc.blob, d.blockDoc.header.dm, 0);
+    if (d.blockDoc && d.blockDoc.header.dm) return await (await dmDocReader(d.blockDoc)).fetchRecord(0);
     if (d.blockDoc && d.blockDoc.parquet) return await fetchLayerRow(L, 0);   // NOT the delimited reader
     if (d.blockDoc) { const f = await fetchCsvRecord(0, d.blockDoc); const q = rowQualifier(L); return q ? q(f) : f; }
   } catch { /* no sample — type defaults */ }

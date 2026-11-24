@@ -4,13 +4,13 @@
 // to the renderer as a mask (or compacted chunks). Table and drillhole layers have their own
 // sweeps here too. Carved from index.html (phase 3 of the 2026-10-31 review).
 import { canMatch, compileBool, compileChunk, compileChunkBool, deps, parse, validate } from '../../../ext/expr/index.js';
-import { calcOrder, extendRow, layerRows, layerTableHeader, rowQualifier, schemaExt } from './records.js';
+import { calcOrder, extendRow, layerRows, layerTableHeader, rowQualifier, schemaExt, dmDocReader } from './records.js';
 import { S, activeLayer, layerById, requestRender } from './state.js';
 import { ensureStoredValues, expandedDeps, pinBudgetBytes, pinGet, pinPut, pinnedSweep } from './columns.js';
 import { startChunkBuilder } from './chunkworker.js';
 import { canScanColumnar, scanColumnar, zoneKeeper } from './colscan.js';
 import { readParquetRange } from '../../../ext/parquet/index.js';
-import { coordNum, lineFields, openDmModel, dmLocalToWorld } from '../../../ext/condenser/src/main.js';
+import { coordNum, lineFields } from '../../../ext/condenser/src/main.js';
 import { refreshLinkedWindows, rowsProgress } from './analysis-ui.js';
 import { syncHL } from './exprfield.js';
 import { pushDhMask } from './drillholes.js';
@@ -196,13 +196,11 @@ export async function applyBlockFilter(expr, L = activeLayer()) {
   const callocz = () => { cx = new Float64Array(CB); cy = new Float64Array(CB); czz = new Float64Array(CB); cch = new Float64Array(CB); cct = catCode ? new Uint8Array(CB) : null; crr = new Uint32Array(CB); cfill = 0; };
   if (cb2) callocz();
   const cflush = () => { if (cfill) { cb2.push({ count: cfill, x: cx, y: cy, z: czz, chan: cch, cat: cct, recIdx: crr }); callocz(); } };
-  // a rotated .dm placed in world: its records hold LOCAL XC/YC/ZC — the compact
-  // chunks must stand where the base chunks do (the reader's stream speaks world)
-  const toW = dmLocalToWorld(header);
+  // (a rotated .dm's rows arrive placed in world — records.js dmDocReader — so the
+  // compact chunks stand where the base chunks do with no mapping here)
   const collect = (xv, yv, zv, cv, code, r) => {
     if (!cb2) return;
     if (collected >= compactCap) { closeCompactBuilder(lid); S.renderer.clearCompact(lid); cb2 = null; return; }   // too many — the mask path wins
-    if (toW) [xv, yv, zv] = toW(xv, yv, zv);
     cx[cfill] = xv; cy[cfill] = yv; czz[cfill] = zv;
     cch[cfill] = Number.isFinite(cv) ? cv : 0;
     if (cct) cct[cfill] = code;
@@ -322,7 +320,7 @@ export async function applyBlockFilter(expr, L = activeLayer()) {
     // them by striding — not all N fields. Same RAW record numbering as recIdx.
     // Calc/painted columns → their formulas may reach any column, so fall back to
     // the full decode (matches the parquet column-prune rule).
-    const { columnBatches, recordBatches } = await openDmModel(blob);
+    const { columnBatches, recordBatches } = await dmDocReader(fBlockDoc);   // placed: a rotated model's XC/YC/ZC in world, as the view
     let ast = null; try { ast = parse(expr); } catch { ast = null; }
     let colIdxs = null;
     const needL = ast ? expandedDeps(AL, ast) : null;       // calc-expanded: projection works WITH derived columns now

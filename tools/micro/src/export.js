@@ -4,7 +4,7 @@
 // "Optimize to spatial Parquet" — the layer swapped in place for its sorted
 // Parquet, with everything kept per record permuted to match. Carved from
 // index.html (phase 3).
-import { blockCaps, colIsNumeric, extendRow, layerRows, layerTableHeader } from './records.js';
+import { blockCaps, colIsNumericForStore, extendRow, layerRows, layerTableHeader } from './records.js';
 import { ensureStoredValues, holdStoredValues } from './columns.js';
 import { microModelOf, mkLineage } from './lineage.js';
 import { createParquetBlobWriter } from '../../../ext/parquet/index.js';
@@ -31,7 +31,7 @@ const $ = (s) => document.querySelector(s);
 export function exportColumnsOf(L) {
   const h = layerTableHeader(L);
   if (!h) return null;
-  const cols = h.columns.map((name, i) => ({ name, num: colIsNumeric(L, h, i), badge: '' }));
+  const cols = h.columns.map((name, i) => ({ name, num: colIsNumericForStore(L, h, i), badge: '' }));
   for (const c of L.paintCols || []) cols.push({ name: c.name, num: c.kind === 'ratio', badge: c.kind === 'ratio' && !c.mat ? '%' : '✎' });   // census order: stored derived before calc (must match extendRow)
   for (const c of L.calcCols || []) cols.push({ name: c.name, num: (c.ty || 'number') === 'number', badge: 'ƒ' });
   return cols;
@@ -188,7 +188,7 @@ async function convertInner(L, cvOpts) {
   if (!h || (L.docs.blockDoc && L.docs.blockDoc.parquet)) { $('#meta').textContent = 'store as Parquet: needs a non-Parquet block model'; return; }
   const m = h.mapping || {};
   if (m.x == null || m.y == null || m.z == null) { $('#meta').textContent = 'store as Parquet: needs X/Y/Z columns'; return; }
-  const names = h.columns, isNum = names.map((_, k) => colIsNumeric(L, h, k));
+  const names = h.columns, isNum = names.map((_, k) => colIsNumericForStore(L, h, k));
   const isDm = !!(L.docs.blockDoc && L.docs.blockDoc.header.dm), isDelim = !!(L.docs.blockDoc && !isDm);
   const intern = names.map((_, k) => (isNum[k] ? null : new Map()));   // one string object per distinct value, not per row
   const kvOf = (lin) => [

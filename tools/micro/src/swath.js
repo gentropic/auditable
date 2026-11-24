@@ -6,7 +6,7 @@ import { dirTrendPlunge, frameDipDirDipRake } from './geom.js';
 import { S, layerById, requestRender } from './state.js';
 import { attrRowCountOf, layerRecords, layerTableHeader, numOf, schemaExt } from './records.js';
 import { compileBool, compileValue, quoteIdent, validate } from '../../../ext/expr/index.js';
-import { numericColsOf, volumeAt, volumeContextOf } from './analysis.js';
+import { numericColsOf, volumeAt, volumeContextOf, volParamsOf } from './analysis.js';
 import { canScanColumnar, scanColumnar } from './colscan.js';
 import { SERIES_COLORS, analysisSerCfg, analysisSerRestore, applyAnalysisGeo, checkAbort, fmtStat, gradeUnitFactor, gradeUnitSel, niceStep, plotChart, plotExportBtns, rangesForCfg, rangesFromCfg, rangesOf, rangesRow, reconcilePairs, runCancellable, saveAnalysisCfg, scanProgressText, scopeMask, scopeMissing, seriesZoneKeep, setAnalysisOpen } from './analysis-ui.js';
 import { swathMerge } from './scanner.js';
@@ -86,9 +86,9 @@ export async function scanSwath(st, onProgress, signal) {
   const N = colL.reduce((t, Lx) => t + (attrRowCountOf(Lx) || 0), 0) + series.filter((se) => !colL.includes(se.L)).reduce((t, se) => t + (attrRowCountOf(se.L) || 0), 0);
   for (const Lx of colL) {                                 // columnar + parallel (src/colscan.js): one pass per layer
     const ses = series.filter((se) => se.L === Lx), vc = ses[0].vc, h = layerTableHeader(Lx), m = ses[0].m;
-    const dims = vc.dc ? [h.columns[vc.dc.x], h.columns[vc.dc.y], h.columns[vc.dc.z]] : null;
+    const dims = vc.dims;                               // the size columns (sub-blocked), from the support contract
     const coords = [h.columns[m.x], h.columns[m.y], h.columns[m.z]];
-    const params = { series: ses.map((se) => ({ grade: quoteIdent(se.s.col), weight: (se.s.weight || '').trim() || null, filter: (se.s.filter || '').trim() || null })), dirs, fineOrigin, fineW, coords, vol: { base: vc.base, dims } };
+    const params = { series: ses.map((se) => ({ grade: quoteIdent(se.s.col), weight: (se.s.weight || '').trim() || null, filter: (se.s.filter || '').trim() || null })), dirs, fineOrigin, fineW, coords, vol: volParamsOf(vc) };
     const base = total;
     const { parts } = await scanColumnar(Lx, { kernel: 'swath', params, exprs: params.series.flatMap((x) => [x.grade, x.weight, x.filter]), extraCols: [...coords, ...(dims || [])], mask: scopeMask(st, Lx), signal,
       keepZone: seriesZoneKeep(Lx, params.series.map((x) => x.filter), scopeMask(st, Lx)),

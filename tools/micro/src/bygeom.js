@@ -7,11 +7,10 @@
 // winner. Carved from index.html (phase 3).
 import { Winding, buildBVH, windingBVH } from '../../../ext/winding/index.js';
 import { weldVertices } from '../../../ext/geometry/index.js';
-import { attrRowCountOf, hasRecords, layerTableHeader, meshVertexData } from './records.js';
+import { attrRowCountOf, hasRecords, layerTableHeader, meshVertexData, docPositionStream } from './records.js';
 import { S, requestRender } from './state.js';
 import { Peel } from '../../../ext/peel/index.js';
 import { canScanColumnar, scanColumnar, zoneKeeper } from './colscan.js';
-import { openBlockModel, openDmModel, openLas, openPly } from '../../../ext/condenser/src/main.js';
 import { surfaceFromGrid } from './grid-ops.js';
 import { gridWindowFromGTiff, windowForWorldBbox } from '../../../ext/gtiff/index.js';
 import { paintRecount } from './columns.js';
@@ -484,11 +483,7 @@ export async function* layerPositions(L, bbox = null) {
       if (!finished) { ac.abort(); for (const q of queue.splice(0)) q.taken(); }
     }
   }
-  let streamChunks = null;
-  if (d.blockDoc && d.blockDoc.header.dm) ({ streamChunks } = await openDmModel(d.blockDoc.blob));
-  else if (d.blockDoc) ({ streamChunks } = await openBlockModel(d.blockDoc.blob, { mapping: d.blockDoc.header.mapping }));
-  else if (d.lasDoc) ({ streamChunks } = await openLas(d.lasDoc.blob));
-  else if (d.plyDoc) ({ streamChunks } = await openPly(d.plyDoc.blob));
+  const streamChunks = await docPositionStream(d);         // the ONE position-stream dispatch (records.js) — world, a rotated .dm's included
   if (!streamChunks) return;
   for await (const rc2 of streamChunks({ chunkPoints: 1 << 18 })) {
     yield { x: rc2.x, y: rc2.y, z: rc2.z, recs: rc2.recIdx || null, base: rc2.recStart || 0, count: rc2.count };
