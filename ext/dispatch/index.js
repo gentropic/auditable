@@ -8,10 +8,18 @@
 // categories, layers), so the dispatcher speaks THIS project's language and
 // is rebuilt when the project changes. The locale bank carries the
 // language-level closed classes (operators, units, show/hide verbs,
-// word-numbers, refusal seeds); `pt-BR` is a future bank, not a feature.
+// word-numbers, refusal seeds) AND the sentence templates the built-in kinds
+// render their corpus from (`tpl`). Banks: `en`, `pt` (pt-BR). A host that
+// takes commands in both passes `locale: 'en+pt'` (or ['en', 'pt']): the
+// closed classes are UNIONED (so either language's words are understood at
+// inference), while each generated example is written in ONE sub-locale
+// (so a training sentence never mixes "filter … acima de").
+// Every word here is matched FOLDED (text.js fold: seção → secao), so banks
+// may be written with their accents.
 
 const LOCALES = {
   en: {
+    id: 'en',
     ops: {
       '>': ['above', 'over', 'greater than', 'more than', 'higher than', '>'],
       '>=': ['at least', 'no less than', '>='],
@@ -21,11 +29,13 @@ const LOCALES = {
     },
     opWord: { above: '>', over: '>', greater: '>', more: '>', higher: '>', least: '>=', below: '<', under: '<', less: '<', lower: '<', most: '<=', up: '<=', equal: '=', exactly: '=', different: '!=', '>': '>', '<': '<', '=': '=' },
     units: ['percent', '%', 'm', 'meter', 'meters', 'metre', 'metres'],
+    unitWords: ['percent', '%'],
     hideWords: ['hide', 'remove', 'off', 'rid', 'invisible', 'drop', 'take', 'switch'],
     showWords: ['show', 'back', 'unhide', 'visible', 'on', 'see', 'want'],
     negators: ['don', "don't", 'dont', 'not', 'no'],
     wordNums: { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9 },
     rangeWords: ['to', 'and', 'between', '-'],
+    orWords: ['or'],
     politeSuffixes: [' please', ' for me'],
     politePrefixes: ['can you '],
     refusals: [
@@ -34,8 +44,93 @@ const LOCALES = {
       'close the program', 'rename the project', 'delete everything',
       'make it prettier', 'help me', 'what can you do',
     ],
+    tpl: {
+      join: { and: 'and', or: 'or' },
+      // a numeric condition: {c} column synonym, {o} operator phrase, {v} value
+      num: ['{c} {o} {v}', '{c} is {o} {v}', 'the {c} {o} {v}', '{o} {v} {c}'],
+      // a categorical condition: {v} value synonym, {cc} column synonym
+      cat: ['{v}', 'in {v}', '{cc} is {v}', '{cc} = {v}', 'in the {v}'],
+      range: ['{c} between {a} and {b}', '{c} from {a} to {b}', '{c} is between {a} and {b}', 'the {c} between {a} and {b}'],
+      // the whole sentence around a condition ({noun} the host's noun, {cond})
+      filter: ['filter {noun} with {cond}', 'show {noun} where {cond}', 'only {noun} with {cond}', 'keep {cond}', 'filter {cond}', '{cond}', '{noun} with {cond}', 'show {noun} {cond}', 'just {noun} {cond}'],
+      // a categorical value alone
+      catOnly: ['filter {noun} to {v}', 'only {v} {noun}', 'keep just the {v}', '{cc} is {v}', '{cc} = {v}', 'only {v}', 'just the {v} {noun}'],
+      section: {
+        Z: ['section at elevation {p}{th}', 'horizontal section at {p}{th}', 'cut the model at elevation {p}{th}', 'slice at {p} elevation{th}', 'put a section on the {p} elevation{th}', 'give me a{th} section at elevation {p}', 'plan section at {p}{th}'],
+        X: ['north-south section at easting {p}{th}', 'section at easting {p}{th}', 'cut at easting {p}{th}', 'NS section on {p} east{th}'],
+        Y: ['east-west section at northing {p}{th}', 'section at northing {p}{th}', 'cut at northing {p}{th}', 'EW section on {p} north{th}'],
+      },
+      thick: [' {t} m thick', ' {t} meter thick', ', {t} meters thick'],
+      layerShow: ['show {x}', 'turn on {x}', 'bring {x} back', '{X} back on', 'make {x} visible', 'show {x} again'],
+      layerHide: ['hide {x}', 'turn off {x}', 'remove {x} from the view', '{X} off', "I don't want to see {x}", 'make {x} invisible'],
+      catShow: ['show {x}', 'bring back {x}', 'turn on {x}', 'make {x} visible', 'unhide {x}', 'put {x} back', 'I want to see {x} again', '{X} back on'],
+      catHide: ['hide {x}', 'take out {x}', 'remove the {x} blocks', 'turn off {x}', '{X} off', 'drop the {x} from the view', 'get rid of {x}', "I don't want to see {x}", 'make {x} invisible', 'switch off {x}'],
+    },
+  },
+  pt: {
+    id: 'pt',
+    ops: {
+      '>': ['acima de', 'maior que', 'maior do que', 'mais de', 'mais que', 'superior a', 'acima', '>'],
+      '>=': ['pelo menos', 'no mínimo', 'maior ou igual a', '>='],
+      '<': ['abaixo de', 'menor que', 'menor do que', 'menos de', 'inferior a', 'abaixo', '<'],
+      '<=': ['no máximo', 'até', 'menor ou igual a', '<='],
+      '=': ['igual a', 'exatamente', '=', '=='],
+    },
+    opWord: { acima: '>', maior: '>', mais: '>', superior: '>', abaixo: '<', menor: '<', menos: '<', inferior: '<', ate: '<=', igual: '=', exatamente: '=', diferente: '!=' },
+    units: ['por cento', '%', 'm', 'metro', 'metros'],
+    unitWords: ['por cento', '%'],
+    hideWords: ['esconde', 'esconda', 'esconder', 'oculta', 'oculte', 'ocultar', 'desliga', 'desligue', 'desligar', 'tira', 'tire', 'tirar', 'remove', 'remova', 'remover', 'some', 'sumir', 'apaga', 'apague'],
+    showWords: ['mostra', 'mostre', 'mostrar', 'exibe', 'exiba', 'exibir', 'liga', 'ligue', 'ligar', 'volta', 'volte', 'reexibe', 'ver', 'visivel', 'aparecer', 'traz', 'traga'],
+    negators: ['nao'],
+    wordNums: { um: 1, uma: 1, dois: 2, duas: 2, tres: 3, quatro: 4, cinco: 5, seis: 6, sete: 7, oito: 8, nove: 9, dez: 10 },
+    rangeWords: ['a', 'e', 'entre', 'ate', '-'],
+    orWords: ['ou'],
+    politeSuffixes: [' por favor', ' pra mim'],
+    politePrefixes: ['você pode '],
+    refusals: [
+      'qual é o teor médio', 'quantos registros tem', 'desfaz isso',
+      'salva tudo', 'o que significa essa coluna', 'manda isso por email para a equipe',
+      'fecha o programa', 'renomeia o projeto', 'apaga tudo',
+      'deixa mais bonito', 'me ajuda', 'o que você sabe fazer',
+    ],
+    tpl: {
+      join: { and: 'e', or: 'ou' },
+      num: ['{c} {o} {v}', 'o {c} {o} {v}', 'teor de {c} {o} {v}', '{c} com valor {o} {v}', '{o} {v} de {c}'],
+      cat: ['{v}', 'em {v}', 'de {v}', 'na {v}', 'no {v}', '{cc} {v}', '{cc} igual a {v}', '{cc} = {v}'],
+      range: ['{c} entre {a} e {b}', '{c} de {a} a {b}', 'teor de {c} entre {a} e {b}', 'o {c} entre {a} e {b}'],
+      filter: ['filtra {noun} com {cond}', 'filtrar {noun} com {cond}', 'filtre {noun} com {cond}', 'mostra {noun} com {cond}', 'mostrar {noun} onde {cond}', 'só {noun} com {cond}', 'somente {noun} com {cond}', 'apenas {noun} com {cond}', 'mantém {cond}', '{cond}', '{noun} com {cond}', 'filtro {cond}'],
+      catOnly: ['filtra {noun} de {v}', 'só {v}', 'somente {v}', 'apenas {noun} de {v}', 'só os {noun} de {v}', '{cc} igual a {v}', 'mostra só {v}', 'filtrar {v}'],
+      section: {
+        Z: ['seção na cota {p}{th}', 'seção horizontal na cota {p}{th}', 'corte na cota {p}{th}', 'planta na cota {p}{th}', 'seção em planta na elevação {p}{th}', 'fatia na cota {p}{th}', 'corta o modelo na cota {p}{th}', 'seção no nível {p}{th}'],
+        X: ['seção norte-sul em {p}{th}', 'seção na coordenada leste {p}{th}', 'corte norte-sul no leste {p}{th}', 'seção em x {p}{th}', 'seção norte-sul na este {p}{th}'],
+        Y: ['seção leste-oeste em {p}{th}', 'seção na coordenada norte {p}{th}', 'corte leste-oeste no norte {p}{th}', 'seção em y {p}{th}'],
+      },
+      thick: [' com {t} m de espessura', ', {t} metros de espessura', ' de {t} m'],
+      layerShow: ['mostra {x}', 'mostrar {x}', 'exibe {x}', 'liga {x}', 'volta {x}', 'traz {x} de volta', 'quero ver {x}', 'mostra {x} de novo', 'deixa {x} visível'],
+      layerHide: ['esconde {x}', 'esconder {x}', 'oculta {x}', 'desliga {x}', 'tira {x} da tela', 'some com {x}', 'não quero ver {x}', 'oculte {x}', 'deixa {x} invisível'],
+      catShow: ['mostra {x}', 'exibe {x}', 'liga {x}', 'volta {x}', 'quero ver {x} de novo'],
+      catHide: ['esconde {x}', 'oculta {x}', 'desliga {x}', 'tira {x}', 'não quero ver {x}'],
+    },
   },
 };
+
+// two (or more) banks as one: closed classes unioned, examples written per sub-locale
+function mergeLocales(ids) {
+  const subs = ids.map((id) => { const L = LOCALES[id]; if (!L) throw new Error(`unknown locale ${id}`); return L; });
+  if (subs.length === 1) return subs[0];
+  const uniq = (k) => [...new Set(subs.flatMap((L) => L[k] || []))];
+  const ops = {};
+  for (const L of subs) for (const [op, ws] of Object.entries(L.ops)) ops[op] = [...new Set([...(ops[op] || []), ...ws])];
+  return {
+    id: ids.join('+'), subs, ops,
+    opWord: Object.assign({}, ...subs.map((L) => L.opWord)),
+    wordNums: Object.assign({}, ...subs.map((L) => L.wordNums)),
+    units: uniq('units'), unitWords: uniq('unitWords'), hideWords: uniq('hideWords'), showWords: uniq('showWords'),
+    negators: uniq('negators'), rangeWords: uniq('rangeWords'), orWords: uniq('orWords'),
+    politeSuffixes: uniq('politeSuffixes'), politePrefixes: uniq('politePrefixes'), refusals: uniq('refusals'),
+    tpl: subs[0].tpl,
+  };
+}
 
 // element/assay lexicon — free synonyms hosts get for commonly named columns
 const ELEMENT_LEX = {
@@ -56,6 +151,23 @@ const ELEMENT_LEX = {
   SG: ['density', 'specific gravity', 'the density'],
   DENS: ['density', 'the density'],
 };
+// …and its pt-BR half, merged when the locale carries pt
+const ELEMENT_LEX_PT = {
+  FE: ['ferro'],
+  SIO2: ['sílica'],
+  P: ['fósforo'],
+  LOI: ['PPC', 'perda ao fogo'],
+  AL2O3: ['alumina'],
+  MN: ['manganês'],
+  AU: ['ouro'],
+  CU: ['cobre'],
+  S: ['enxofre'],
+  ZN: ['zinco'],
+  NI: ['níquel'],
+  AG: ['prata'],
+  SG: ['densidade', 'massa específica'],
+  DENS: ['densidade'],
+};
 
 // deriveVocab — the host's session → synonym pools.
 //   numCols:   ['FE', ...] or { FE: { syn?, lo?, hi?, dec? } }
@@ -63,31 +175,57 @@ const ELEMENT_LEX = {
 //   catValues: { LITO: { HEMATITE: ['hematite'], ... } }    (per-column value synonyms)
 //   layers:    { 'topo.tif': ['the topography', 'topo'], ... }
 //   idCols:    ['BHID']                                     (free-string id columns)
+//   locale:    'en' | 'pt' | 'en+pt' | ['en', 'pt']
+// Any synonym list may instead be given PER LOCALE ({ en: [...], pt: [...] }): inference
+// matches the union, while a generated sentence uses its own language's words
+// (vocab.synL). Column synonyms from the element lexicons are split that way automatically.
+const splitSyn = (x) => (Array.isArray(x) || x == null ? { all: x || [], by: null } : { all: Object.values(x).flat(), by: x });
 function deriveVocab({ numCols = [], catCols = {}, catValues = {}, layers = {}, idCols = [], locale = 'en', aliases = {} } = {}) {
-  const L = LOCALES[locale];
-  if (!L) throw new Error(`unknown locale ${locale}`);
+  const ids = Array.isArray(locale) ? locale : String(locale).split('+');
+  const L = mergeLocales(ids);
+  const withPt = ids.includes('pt');
+  const uniq = (a) => [...new Set(a)];
   const nc = {};
   const entries = Array.isArray(numCols) ? numCols.map((n) => [n, {}]) : Object.entries(numCols);
   for (const [name, cfg] of entries) {
-    const syn = [name, ...(cfg.syn || []), ...(ELEMENT_LEX[name.toUpperCase()] || []), ...(aliases[name] || [])];
-    nc[name] = { syn: [...new Set(syn)], lo: cfg.lo ?? 0.1, hi: cfg.hi ?? 100, dec: cfg.dec ?? 1 };
+    const up = name.toUpperCase(), al = aliases[name] || [];
+    const synL = { en: uniq([name, ...(cfg.syn || []), ...(ELEMENT_LEX[up] || []), ...al]) };
+    if (withPt) synL.pt = uniq([name, ...(cfg.syn || []), ...(ELEMENT_LEX_PT[up] || []), ...al]);
+    const syn = uniq([...synL.en, ...(synL.pt || [])]);
+    nc[name] = { syn, synL, lo: cfg.lo ?? 0.1, hi: cfg.hi ?? 100, dec: cfg.dec ?? 1 };
   }
+  const synL = { catCols: {}, catValues: {}, layers: {} };
   const cc = {};
-  for (const [name, syns] of Object.entries(catCols)) cc[name] = [...new Set([name, ...(syns || []), ...(aliases[name] || [])])];
+  for (const [name, syns] of Object.entries(catCols)) {
+    const { all, by } = splitSyn(syns);
+    cc[name] = uniq([name, ...all, ...(aliases[name] || [])]);
+    if (by) synL.catCols[name] = by;
+  }
   const cv = {};
   for (const [col, vals] of Object.entries(catValues)) {
     cv[col] = {};
-    for (const [v, syns] of Object.entries(vals)) cv[col][v] = [...new Set([...(syns && syns.length ? syns : [v.toLowerCase()]), ...(aliases[v] || [])])];
+    for (const [v, syns] of Object.entries(vals)) {
+      const { all, by } = splitSyn(syns);
+      cv[col][v] = uniq([...(all.length ? all : [v.toLowerCase()]), ...(aliases[v] || [])]);
+      if (by) (synL.catValues[col] = synL.catValues[col] || {})[v] = by;
+    }
   }
   const ly = {};
-  for (const [file, syns] of Object.entries(layers)) ly[file] = [...new Set([file, ...(syns || []), ...(aliases[file] || [])])];
-  return { numCols: nc, catCols: cc, catValues: cv, layers: ly, idCols, locale, L };
+  for (const [file, syns] of Object.entries(layers)) {
+    const { all, by } = splitSyn(syns);
+    ly[file] = uniq([file, ...all, ...(aliases[file] || [])]);
+    if (by) synL.layers[file] = by;
+  }
+  return { numCols: nc, catCols: cc, catValues: cv, layers: ly, idCols, locale: L.id, L, synL };
 }
 
 // ── src/text.js ──
 
 // @gcu/dispatch — text primitives: tokenizer, token shapes, gazetteer spans.
-const tokenize = (q) => (q.toLowerCase().match(/[a-z0-9][a-z0-9.\-]*|[^\sa-z0-9]/gi) || []).map((t) => t.replace(/[.,;!?]+$/, '') || t);
+// diacritics FOLD (seção → secao, cópia → copia): pt-BR is typed with and without accents, and the
+// gazetteers, banks and corpus all meet in the folded form.
+const fold = (s) => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+const tokenize = (q) => (fold(q).toLowerCase().match(/[a-z0-9][a-z0-9.\-]*|[^\sa-z0-9]/gi) || []).map((t) => t.replace(/[.,;!?]+$/, '') || t);
 
 const NUM_RE = /^[0-9]+(\.[0-9]+)?$/;
 const ID_RE = /^[a-z]+-?[0-9]+$/;
@@ -115,7 +253,7 @@ function gazSpans(toks, map) {
 // seeded rng (no Date.now/Math.random — everything reproducible)
 function mulberry32(a) { return () => { a |= 0; a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
 function shuffled(arr, seed) { const r = mulberry32(seed), out = [...arr]; for (let i = out.length - 1; i > 0; i--) { const j = (r() * (i + 1)) | 0; [out[i], out[j]] = [out[j], out[i]]; } return out; }
-const normText = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+const normText = (s) => fold(s).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
 // ── src/features.js ──
 
@@ -213,6 +351,19 @@ const politeWrap = (q, R, L) => {
 const numVal = (c, R) => { const v = c.lo + R.rnd() * (c.hi - c.lo); return +v.toFixed(c.dec === 1 && R.maybe(0.5) ? 0 : c.dec); };
 const pickNumCol = (vocab, R) => { const names = Object.keys(vocab.numCols); const col = R.pick(names); return { col, cfg: vocab.numCols[col] }; };
 const catColOf = (tool, vocab) => tool.column || Object.keys(vocab.catValues)[0];
+// a multi-locale bank ('en+pt') writes each example in ONE sub-locale; a single bank is its own
+const subOf = (L, R) => (L.subs ? R.pick(L.subs) : L);
+// a tool field given per locale ({ en: [...], pt: [...] }) or once for all (an array)
+const loc = (x, T) => (x == null ? null : Array.isArray(x) ? x : (x[T.id] || x.en || Object.values(x)[0]));
+// a synonym in THIS example's language: vocab.synL (per-locale pools, deriveVocab) when it
+// has one for T, else the union pool — so a pt sentence says "densidade", not "the density"
+const inLang = (byLang, T, pool) => { const p = byLang && byLang[T.id]; return p && p.length ? p : pool; };
+const numSyn = (cfg, T, R) => R.pick(inLang(cfg.synL, T, cfg.syn));
+const catValSyn = (vocab, col, v, T, R) => R.pick(inLang(vocab.synL && vocab.synL.catValues && vocab.synL.catValues[col] && vocab.synL.catValues[col][v], T, vocab.catValues[col][v]));
+const catColSyn = (vocab, col, T, R) => R.pick(inLang(vocab.synL && vocab.synL.catCols && vocab.synL.catCols[col], T, (vocab.catCols && vocab.catCols[col]) || [col]));
+const layerSyn = (vocab, file, T, R) => { const all = vocab.layers[file].filter((s) => s !== file); const p = inLang(vocab.synL && vocab.synL.layers && vocab.synL.layers[file], T, all).filter((s) => s !== file); return R.pick(p.length ? p : all); };
+// a lexicon value's synonyms: [..] | {syn:[..], frames} | {en:[..], pt:[..]}
+const lexSyns = (spec) => (Array.isArray(spec) ? spec : [...(spec.syn || []), ...(spec.en || []), ...(spec.pt || [])]);
 
 // ── shared align helpers ──
 const mkClaim = (toks, tags) => ({
@@ -249,6 +400,12 @@ const opFromGroup = (words, L) => {
   if (words.includes('up') && words.includes('to')) return '<=';
   if (words.includes('>') && words.includes('=')) return '>=';   // the tokenizer splits >= into '>' '='
   if (words.includes('<') && words.includes('=')) return '<=';
+  // pt: "pelo menos" / "no mínimo" (≥), "no máximo" (≤), "maior ou igual" / "menor ou igual"
+  if (words.includes('pelo') && words.includes('menos')) return '>=';
+  if (words.includes('minimo')) return '>=';
+  if (words.includes('maximo')) return '<=';
+  if (words.includes('igual') && words.includes('maior')) return '>=';
+  if (words.includes('igual') && words.includes('menor')) return '<=';
   for (const w of words) if (L.opWord[w]) return L.opWord[w];
   return null;
 };
@@ -265,7 +422,7 @@ const firstNum = (g, toks) => {
 };
 const lexFind = (toks, values) => {
   for (const [key, spec] of Object.entries(values)) {
-    const syns = Array.isArray(spec) ? spec : spec.syn || [];
+    const syns = lexSyns(spec);
     for (const s of [key, ...syns]) {
       const seq = tokenize(s);
       for (let i = 0; i + seq.length <= toks.length; i++) if (seq.every((w, k) => toks[i + k] === w)) return key;
@@ -280,29 +437,41 @@ const KINDS = {
   //  with numeric levels, e.g. BENCH), depthRange? ({from, to})}
   'comparison-filter': {
     defaultTarget: 120,
+    // {frames?: per-locale sentence frames with {noun} {cond} (a SELECT verb, say — default: the
+    //  bank's filter frames), catFrames?: frames for a categorical value alone ({v} {noun} {cc})}
     render(tool, ctx, R) {
-      const { vocab } = ctx, L = vocab.L;
-      const noun = R.pick(tool.nouns);
+      const { vocab } = ctx;
+      const T = subOf(vocab.L, R), L = T;                   // this example's language
+      const noun = R.pick(loc(tool.nouns, T));
       const catCol = Object.keys(vocab.catValues)[0];
       const cats = catCol ? vocab.catValues[catCol] : null;
       const opPhrase = (op) => R.pick(L.ops[op]);
-      const clPhrase = (syn, op, v) => R.pick([`${syn} ${opPhrase(op)} ${v}`, `${syn} is ${opPhrase(op)} ${v}`, `the ${syn} ${opPhrase(op)} ${v}`]);
+      const clPhrase = (syn, op, v) => fill(R.pick(T.tpl.num), { c: syn, o: opPhrase(op), v });
+      const catPhrase = (vsyn, csyn) => fill(R.pick(T.tpl.cat), { v: vsyn, cc: csyn });
+      const wrap = (cond) => fill(R.pick(loc(tool.frames, T) || T.tpl.filter), { noun, cond });
       const kind = R.rnd();
       if (tool.idColumn && kind < 0.12) {
         const id = `${tool.idPrefix || 'ID-'}${String(1 + ((R.rnd() * 120) | 0)).padStart(3, '0')}`;
         return { q: R.pick([`samples from hole ${id}`, `only hole ${id}`, `show the intervals of ${id}`, `rows from ${id}`]), args: { clauses: [{ column: tool.idColumn, op: '=', value: id }], join: 'and' } };
       }
+      // a numeric RANGE on one column ("fe between 50 and 60") → two clauses
+      if (T.tpl.range && kind < 0.08) {
+        const { col, cfg } = pickNumCol(vocab, R);
+        let a = numVal(cfg, R), b = numVal(cfg, R); if (a > b) [a, b] = [b, a]; if (a === b) b = +(a + 1).toFixed(2);
+        const q = wrap(fill(R.pick(T.tpl.range), { c: numSyn(cfg, T, R), a, b }));
+        return { q, args: { clauses: [{ column: col, op: '>=', value: a }, { column: col, op: '<=', value: b }], join: 'and' } };
+      }
       if (kind < 0.35) {
         const { col, cfg } = pickNumCol(vocab, R);
-        const syn = R.pick(cfg.syn), op = R.pick(Object.keys(L.ops)), v = numVal(cfg, R);
-        const unit = R.maybe(0.2) ? ' ' + R.pick(['percent', '%']) : '';
-        const q = R.pick([`filter ${noun} with ${clPhrase(syn, op, v)}${unit}`, `show ${noun} where ${clPhrase(syn, op, v)}${unit}`, `only ${noun} with ${clPhrase(syn, op, v)}${unit}`, `keep ${clPhrase(syn, op, v)}${unit}`, `filter the ${syn} ${opPhrase(op)} ${v}${unit}`, `${clPhrase(syn, op, v)}${unit}`]);
-        return { q, args: { clauses: [{ column: col, op, value: v }], join: 'and' } };
+        const syn = numSyn(cfg, T, R), op = R.pick(Object.keys(L.ops)), v = numVal(cfg, R);
+        const unit = R.maybe(0.2) ? ' ' + R.pick(T.unitWords || ['%']) : '';
+        return { q: wrap(clPhrase(syn, op, v) + unit), args: { clauses: [{ column: col, op, value: v }], join: 'and' } };
       }
       if (cats && kind < 0.5) {
-        const v = R.pick(Object.keys(cats)), syn = R.pick(cats[v]);
-        const colSyn = R.pick((vocab.catCols && vocab.catCols[catCol]) || [catCol]);
-        return { q: R.pick([`filter ${noun} to ${syn}`, `only ${syn} ${noun}`, `keep just the ${syn}`, `${colSyn} is ${syn}`, `${colSyn} = ${syn}`]), args: { clauses: [{ column: catCol, op: '=', value: v }], join: 'and' } };
+        const v = R.pick(Object.keys(cats)), syn = catValSyn(vocab, catCol, v, T, R);
+        const colSyn = catColSyn(vocab, catCol, T, R);
+        const q = R.maybe(0.5) ? fill(R.pick(loc(tool.catFrames, T) || T.tpl.catOnly), { v: syn, noun, cc: colSyn }) : wrap(catPhrase(syn, colSyn));
+        return { q, args: { clauses: [{ column: catCol, op: '=', value: v }], join: 'and' } };
       }
       if (kind < 0.68) {
         if (tool.depthRange) {
@@ -319,13 +488,16 @@ const KINDS = {
       const A = pickNumCol(vocab, R);
       let B = pickNumCol(vocab, R), guard = 0;
       while (B.col === A.col && guard++ < 5) B = pickNumCol(vocab, R);
-      const aOp = R.pick(Object.keys(L.ops)), aV = numVal(A.cfg, R), aSyn = R.pick(A.cfg.syn);
+      const aOp = R.pick(Object.keys(L.ops)), aV = numVal(A.cfg, R), aSyn = numSyn(A.cfg, T, R);
       const catB = cats && R.maybe(0.3);
       const bCl = catB ? { column: catCol, op: '=', value: R.pick(Object.keys(cats)) } : { column: B.col, op: R.pick(Object.keys(L.ops)), value: numVal(B.cfg, R) };
-      const bSyn = catB ? R.pick(cats[bCl.value]) : R.pick(B.cfg.syn);
-      const bPhrase = catB ? R.pick([`only ${bSyn} ${noun}`, `${bSyn} only`]) : clPhrase(bSyn, bCl.op, bCl.value);
-      const join = R.maybe(0.25) ? 'or' : 'and';
-      const q = R.pick([`show ${noun} with ${clPhrase(aSyn, aOp, aV)} ${join} ${bPhrase}`, `filter ${noun} with ${clPhrase(aSyn, aOp, aV)} ${join} ${bPhrase}`, `${clPhrase(aSyn, aOp, aV)} ${join} ${bPhrase}`, ...(catB ? [`only ${bSyn}${tool.rowRegister ? ' samples' : ' blocks'} with ${clPhrase(aSyn, aOp, aV)}`] : [])]);
+      const bSyn = catB ? catValSyn(vocab, catCol, bCl.value, T, R) : numSyn(B.cfg, T, R);
+      const join = catB ? 'and' : R.maybe(0.25) ? 'or' : 'and';
+      const aPhrase = clPhrase(aSyn, aOp, aV);
+      const bPhrase = catB ? catPhrase(bSyn, catColSyn(vocab, catCol, T, R)) : clPhrase(bSyn, bCl.op, bCl.value);
+      // a categorical value may also sit in front of the noun: "hematite blocks with fe above 60"
+      const q = catB && T.id === 'en' && R.maybe(0.3) ? `only ${bSyn}${tool.rowRegister ? ' samples' : ' blocks'} with ${aPhrase}`
+        : wrap(catB && R.maybe(0.5) ? `${aPhrase} ${bPhrase}` : `${aPhrase} ${T.tpl.join[join]} ${bPhrase}`);
       return { q, args: { clauses: [{ column: A.col, op: aOp, value: aV }, bCl], join } };
     },
     align(toks, tags, args, ctx, tool) {
@@ -379,6 +551,13 @@ const KINDS = {
         clauses.push({ at: c.start, column: col, op: (op && opFromGroup(op.words, L)) || '>', value: num(v.words[0]) });
       }
       for (const c of g('CAT')) { const hit = normFrom(ctx.gaz.lit)(c.words); if (hit) clauses.push({ at: c.start, column: hit.col, op: '=', value: hit.value }); }
+      // an EXACT category value the tagger left untagged ("canga only", "apenas hematita com …")
+      // is still that category — the gazetteer is the lexicon, not a guess
+      for (const sp of gazSpans(toks, ctx.gaz.lit)) {
+        if (tags.slice(sp.i, sp.i + sp.len).some((t) => t !== 'O')) continue;
+        if (clauses.some((cl) => cl.column === sp.val.col)) continue;
+        clauses.push({ at: sp.i, column: sp.val.col, op: '=', value: sp.val.value });
+      }
       if (tool.idColumn) for (const c of g('ID')) clauses.push({ at: c.start, column: tool.idColumn, op: '=', value: c.words[0].toUpperCase() });
       if (tool.depthRange && !clauses.length) {
         const rng = rngs.find((r) => !r.used);
@@ -394,7 +573,7 @@ const KINDS = {
       }
       if (!clauses.length) return null;
       clauses.sort((a, b) => a.at - b.at);
-      const out = { clauses: clauses.map(({ at, ...cl }) => cl), join: clauses.length > 1 && toks.includes('or') ? 'or' : 'and' };
+      const out = { clauses: clauses.map(({ at, ...cl }) => cl), join: clauses.length > 1 && toks.some((t) => (L.orWords || ['or']).includes(t)) ? 'or' : 'and' };
       return out;
     },
   },
@@ -405,12 +584,18 @@ const KINDS = {
     defaultTarget: 100,
     render(tool, ctx, R) {
       const { vocab } = ctx;
-      if (tool.optional && tool.emptyFrames && R.maybe(0.4)) return { q: R.pick(tool.emptyFrames), args: {} };
+      const T = subOf(vocab.L, R);
+      if (tool.optional && tool.emptyFrames && R.maybe(0.4)) return { q: R.pick(loc(tool.emptyFrames, T)), args: {} };
       const pools = tool.pools || ['numeric'];
       const names = [...(pools.includes('numeric') ? Object.keys(vocab.numCols) : []), ...(pools.includes('categorical') ? Object.keys(vocab.catCols) : [])];
       const col = R.pick(names);
-      const syn = vocab.numCols[col] ? R.pick(vocab.numCols[col].syn) : R.pick(vocab.catCols[col]);
-      return { q: fill(R.pick(tool.frames), { col: syn }), args: { [tool.argName || 'column']: col } };
+      const syn = vocab.numCols[col] ? numSyn(vocab.numCols[col], T, R) : catColSyn(vocab, col, T, R);
+      // {grp}: a categorical column named as a GROUPING ("stats of {col} by {grp}") — context
+      // the classifier learns from; the host reads the grouping itself (it is not an argument)
+      const cats = Object.keys(vocab.catCols);
+      const frames = cats.length ? loc(tool.frames, T) : loc(tool.frames, T).filter((f) => !f.includes('{grp}'));
+      const grp = cats.length ? catColSyn(vocab, R.pick(cats), T, R) : '';
+      return { q: fill(R.pick(frames), { col: syn, grp }), args: { [tool.argName || 'column']: col } };
     },
     align(toks, tags, args, ctx, tool) {
       const c = mkClaim(toks, tags);
@@ -421,7 +606,13 @@ const KINDS = {
     assemble(tool, ctx, toks, tags) {
       const g = groupTags(toks, tags);
       const c = g('COL')[0] || g('CAT')[0];
-      const col = c && (normFrom(ctx.gaz.col)(c.words) || normFrom(ctx.gaz.cat)(c.words));
+      let col = c && (normFrom(ctx.gaz.col)(c.words) || normFrom(ctx.gaz.cat)(c.words));
+      // an exact column name the tagger missed ("paint by lithology") — the first one said
+      if (!col) {
+        const pools = tool.pools || ['numeric'];
+        const sp = [...(pools.includes('numeric') ? gazSpans(toks, ctx.gaz.col) : []), ...(pools.includes('categorical') ? gazSpans(toks, ctx.gaz.cat) : [])].sort((x, y) => x.i - y.i)[0];
+        if (sp) col = sp.val;
+      }
       if (col) return { [tool.argName || 'column']: col };
       return tool.optional ? {} : null;
     },
@@ -431,21 +622,15 @@ const KINDS = {
   'axis-position': {
     defaultTarget: 120,
     render(tool, ctx, R) {
+      const T = subOf(ctx.vocab.L, R);
       const t = R.maybe(0.3) ? 5 * ((1 + R.rnd() * 10) | 0) : null;
-      const th = t ? R.pick([` ${t} m thick`, ` ${t} meter thick`, `, ${t} meters thick`]) : '';
+      const th = t ? fill(R.pick(T.tpl.thick), { t }) : '';
       const kind = R.rnd();
       const posArg = tool.posArg || 'position', thickArg = tool.thickArg || 'thickness';
-      const mk = (axis, position, q) => ({ q, args: { axis, [posArg]: position, ...(t ? { [thickArg]: t } : {}) } });
-      if (kind < 0.55) {
-        const z = 900 + 20 * ((R.rnd() * 13) | 0) + R.pick([0, 5, 10, -5]);
-        return mk('Z', z, R.pick([`section at elevation ${z}${th}`, `horizontal section at ${z}${th}`, `cut the model at elevation ${z}${th}`, `slice at ${z} elevation${th}`, `put a section on the ${z} elevation${th}`, `give me a${th} section at elevation ${z}`, `plan section at ${z}${th}`]));
-      }
-      if (kind < 0.8) {
-        const x = 100 * ((30 + R.rnd() * 30) | 0);
-        return mk('X', x, R.pick([`north-south section at easting ${x}${th}`, `section at easting ${x}${th}`, `cut at easting ${x}${th}`, `NS section on ${x} east${th}`]));
-      }
-      const y = 100 * ((70 + R.rnd() * 30) | 0);
-      return mk('Y', y, R.pick([`east-west section at northing ${y}${th}`, `section at northing ${y}${th}`, `cut at northing ${y}${th}`, `EW section on ${y} north${th}`]));
+      const mk = (axis, position) => ({ q: fill(R.pick(T.tpl.section[axis]), { p: position, th }), args: { axis, [posArg]: position, ...(t ? { [thickArg]: t } : {}) } });
+      if (kind < 0.55) return mk('Z', 900 + 20 * ((R.rnd() * 13) | 0) + R.pick([0, 5, 10, -5]));
+      if (kind < 0.8) return mk('X', 100 * ((30 + R.rnd() * 30) | 0));
+      return mk('Y', 100 * ((70 + R.rnd() * 30) | 0));
     },
     align(toks, tags, args, ctx, tool) {
       const c = mkClaim(toks, tags);
@@ -467,15 +652,21 @@ const KINDS = {
   },
 
   // {argName:'axis', axes:{X:[words],Y:[],Z:[]}, colArg?:'column',
-  //  frames:['swath along {ax}'], colFrames:['swath of {col} along {ax}']}
+  //  frames:['swath along {ax}'], colFrames:['swath of {col} along {ax}'],
+  //  axisOptional?:bool + colOnlyFrames?:['swath of {col}'] (no direction said → no axis arg)}
   'axis-pick': {
     defaultTarget: 90,
     render(tool, ctx, R) {
+      const T = subOf(ctx.vocab.L, R);
+      if (tool.axisOptional && tool.colArg && tool.colOnlyFrames && R.maybe(0.3)) {
+        const { col, cfg } = pickNumCol(ctx.vocab, R);
+        return { q: fill(R.pick(loc(tool.colOnlyFrames, T)), { col: numSyn(cfg, T, R) }), args: { [tool.colArg]: col } };
+      }
       const axis = R.pick(Object.keys(tool.axes));
-      const ax = R.pick(tool.axes[axis]);
-      if (!tool.colArg || R.maybe(0.45)) return { q: fill(R.pick(tool.frames), { ax }), args: { [tool.argName || 'axis']: axis } };
+      const ax = R.pick((tool.sayAxes && loc(tool.sayAxes, T) && loc(tool.sayAxes, T)[axis]) || tool.axes[axis]);   // sayAxes: the words to WRITE, per locale (axes stays the union the assembler reads)
+      if (!tool.colArg || R.maybe(0.45)) return { q: fill(R.pick(loc(tool.frames, T)), { ax }), args: { [tool.argName || 'axis']: axis } };
       const { col, cfg } = pickNumCol(ctx.vocab, R);
-      return { q: fill(R.pick(tool.colFrames), { ax, col: R.pick(cfg.syn) }), args: { [tool.argName || 'axis']: axis, [tool.colArg]: col } };
+      return { q: fill(R.pick(loc(tool.colFrames, T)), { ax, col: numSyn(cfg, T, R) }), args: { [tool.argName || 'axis']: axis, [tool.colArg]: col } };
     },
     align(toks, tags, args, ctx, tool) {
       const c = mkClaim(toks, tags);
@@ -485,8 +676,8 @@ const KINDS = {
     assemble(tool, ctx, toks, tags) {
       let axis = null;
       outer: for (const t of toks) for (const [ax, words] of Object.entries(tool.axes)) if (words.includes(t)) { axis = ax; break outer; }
-      if (!axis) return null;
-      const out = { [tool.argName || 'axis']: axis };
+      if (!axis && !tool.axisOptional) return null;
+      const out = axis ? { [tool.argName || 'axis']: axis } : {};
       if (tool.colArg) {
         const g = groupTags(toks, tags);
         const c = g('COL')[0];
@@ -504,10 +695,9 @@ const KINDS = {
       const col = catColOf(tool, ctx.vocab);
       const vals = ctx.vocab.catValues[col];
       const v = R.pick(Object.keys(vals)), syn = R.pick(vals[v]);
+      const T = subOf(ctx.vocab.L, R);
       const show = R.maybe(0.4);
-      const q = show
-        ? R.pick([`show ${syn}`, `bring back ${syn}`, `turn on ${syn}`, `make ${syn} visible`, `unhide ${syn}`, `put ${syn} back`, `I want to see ${syn} again`, `${cap(syn)} back on`])
-        : R.pick([`hide ${syn}`, `take out ${syn}`, `remove the ${syn} blocks`, `turn off ${syn}`, `${cap(syn)} off`, `drop the ${syn} from the view`, `get rid of ${syn}`, `I don't want to see ${syn}`, `make ${syn} invisible`, `switch off ${syn}`]);
+      const q = fill(R.pick(show ? T.tpl.catShow : T.tpl.catHide), { x: syn, X: cap(syn) });
       return { q, args: { column: col, value: v, visible: show } };
     },
     align(toks, tags, args, ctx) {
@@ -528,8 +718,9 @@ const KINDS = {
     defaultTarget: 70,
     render(tool, ctx, R) {
       const file = R.pick(Object.keys(ctx.vocab.layers));
-      const syn = R.pick(ctx.vocab.layers[file].filter((s) => s !== file));
-      return { q: fill(R.pick(tool.frames), { layer: syn }), args: { [tool.argName || 'layer']: file } };
+      const T = subOf(ctx.vocab.L, R);
+      const syn = layerSyn(ctx.vocab, file, T, R);
+      return { q: fill(R.pick(loc(tool.frames, T)), { layer: syn }), args: { [tool.argName || 'layer']: file } };
     },
     align(toks, tags, args, ctx, tool) {
       return mkClaim(toks, tags).claimGaz(ctx.gaz.layer, args[tool.argName || 'layer'], 'LAYER');
@@ -547,11 +738,10 @@ const KINDS = {
     defaultTarget: 80,
     render(tool, ctx, R) {
       const file = R.pick(Object.keys(ctx.vocab.layers));
-      const syn = R.pick(ctx.vocab.layers[file].filter((s) => s !== file));
+      const T = subOf(ctx.vocab.L, R);
+      const syn = layerSyn(ctx.vocab, file, T, R);
       const show = R.maybe(0.45);
-      const q = show
-        ? R.pick([`show ${syn}`, `turn on ${syn}`, `bring ${syn} back`, `${cap(syn)} back on`, `make ${syn} visible`, `show ${syn} again`])
-        : R.pick([`hide ${syn}`, `turn off ${syn}`, `remove ${syn} from the view`, `${cap(syn)} off`, `I don't want to see ${syn}`, `make ${syn} invisible`]);
+      const q = fill(R.pick(show ? T.tpl.layerShow : T.tpl.layerHide), { x: syn, X: cap(syn) });
       return { q, args: { layer: file, action: show ? 'show' : 'hide' } };
     },
     align(toks, tags, args, ctx) {
@@ -571,10 +761,11 @@ const KINDS = {
     render(tool, ctx, R) {
       const key = R.pick(Object.keys(tool.values));
       const spec = tool.values[key];
-      const syns = Array.isArray(spec) ? spec : spec.syn || [key];
+      const T = subOf(ctx.vocab.L, R);
+      const syns = Array.isArray(spec) ? spec : (loc(spec.en || spec.pt ? { en: spec.en, pt: spec.pt } : null, T) || spec.syn || [key]);
       const perValueFrames = !Array.isArray(spec) && spec.frames;
       if (perValueFrames) return { q: R.pick(spec.frames), args: { [tool.argName]: key } };
-      return { q: fill(R.pick(tool.frames), { val: R.pick(syns) }), args: { [tool.argName]: key } };
+      return { q: fill(R.pick(loc(tool.frames, T)), { val: R.pick(syns) }), args: { [tool.argName]: key } };
     },
     align() { return true; },                                // lexicon at assembly; no tags
     assemble(tool, ctx, toks) {
@@ -588,10 +779,10 @@ const KINDS = {
     defaultTarget: 45,
     render(tool, ctx, R) {
       const n = tool.values ? R.pick(tool.values) : +(0.5 + R.rnd() * 9.5).toFixed(1);
-      const L = ctx.vocab.L;
+      const L = subOf(ctx.vocab.L, R);
       const asWord = tool.wordNumbers && Number.isInteger(n) && n >= 1 && n <= 9 && R.maybe(0.3);
       const word = asWord ? Object.keys(L.wordNums).find((k) => L.wordNums[k] === n) : null;
-      return { q: fill(R.pick(tool.frames), { n: word || n }), args: { [tool.argName]: n } };
+      return { q: fill(R.pick(loc(tool.frames, L)), { n: word || n }), args: { [tool.argName]: n } };
     },
     align(toks, tags, args, ctx, tool) {
       const c = mkClaim(toks, tags);
@@ -615,7 +806,8 @@ const KINDS = {
   'no-arg': {
     defaultTarget: 30,
     render(tool, ctx, R) {
-      return { q: politeWrap(R.pick(tool.frames), R, ctx.vocab.L), args: {} };
+      const T = subOf(ctx.vocab.L, R);
+      return { q: politeWrap(R.pick(loc(tool.frames, T)), R, T), args: {} };
     },
     align() { return true; },
     assemble() { return {}; },
@@ -704,10 +896,15 @@ function trainModels(aligned, ctx, { epochs = 25, tagSet } = {}) {
     W.set('_bias', (W.get('_bias') || 0) + d); A.set('_bias', (A.get('_bias') || 0) + d * it);
     for (const [k, v] of f) { W.set(k, (W.get(k) || 0) + d * v); A.set(k, (A.get(k) || 0) + d * v * it); }
   };
+  // features are a pure function of the tokens — computed ONCE per example, not once per
+  // epoch (the gazetteer scans were most of the training time)
+  const fCache = new Map(), perCache = new Map();
+  const intentF = (ex) => { let f = fCache.get(ex); if (!f) { f = ctx.intentFeatures(ex.toks); fCache.set(ex, f); } return f; };
+  const tokenF = (ex) => { let f = perCache.get(ex); if (!f) { f = ctx.tokenFeatures(ex.toks); perCache.set(ex, f); } return f; };
   for (let e = 0; e < epochs; e++) {
     let errs = 0;
     for (const ex of shuffled(aligned, 1000 + e)) {
-      const f = ctx.intentFeatures(ex.toks);
+      const f = intentF(ex);
       let best = null, bs = -Infinity;
       for (const c of CLASSES) { const s = iscore(c, f); if (s > bs) { bs = s; best = c; } }
       if (best !== ex.intent) { ibump(ex.intent, f, 1); ibump(best, f, -1); errs++; }
@@ -726,14 +923,19 @@ function trainModels(aligned, ctx, { epochs = 25, tagSet } = {}) {
   for (const t of TAGS) { tw[t] = new Map(); tacc[t] = new Map(); }
   let tt = 1;
   const T = TAGS.length;
+  const TK = [], TK0 = TAGS.map((t) => `^>${t}`);
+  for (const p of TAGS) for (const t of TAGS) TK.push(`${p}>${t}`);
   function decode(per, n) {
     const dp = Array.from({ length: n }, () => new Float64Array(T).fill(-1e9));
     const bp = Array.from({ length: n }, () => new Int32Array(T));
     const emit = (i, t) => { let s = 0; const W = tw[TAGS[t]]; for (const k of per[i]) s += W.get(k) || 0; return s; };
-    for (let t = 0; t < T; t++) dp[0][t] = emit(0, t) + (tr.get(`^>${TAGS[t]}`) || 0);
+    // the transition table as numbers, once per decode — not a string key per (i, p, t)
+    const M = new Float64Array(T * T);
+    for (let p = 0; p < T; p++) for (let t = 0; t < T; t++) M[p * T + t] = tr.get(TK[p * T + t]) || 0;
+    for (let t = 0; t < T; t++) dp[0][t] = emit(0, t) + (tr.get(TK0[t]) || 0);
     for (let i = 1; i < n; i++) for (let t = 0; t < T; t++) {
       const e = emit(i, t);
-      for (let p = 0; p < T; p++) { const s = dp[i - 1][p] + (tr.get(`${TAGS[p]}>${TAGS[t]}`) || 0) + e; if (s > dp[i][t]) { dp[i][t] = s; bp[i][t] = p; } }
+      for (let p = 0; p < T; p++) { const s = dp[i - 1][p] + M[p * T + t] + e; if (s > dp[i][t]) { dp[i][t] = s; bp[i][t] = p; } }
     }
     let best = 0;
     for (let t = 1; t < T; t++) if (dp[n - 1][t] > dp[n - 1][best]) best = t;
@@ -745,7 +947,7 @@ function trainModels(aligned, ctx, { epochs = 25, tagSet } = {}) {
   for (let e = 0; e < epochs; e++) {
     let errs = 0;
     for (const ex of shuffled(tagged, 2000 + e)) {
-      const per = ctx.tokenFeatures(ex.toks);
+      const per = tokenF(ex);
       const pred = decode(per, ex.toks.length);
       for (let i = 0; i < ex.toks.length; i++) {
         if (pred[i] === ex.tags[i]) continue;
@@ -846,8 +1048,9 @@ function trainSession({ vocab, tools, seed = 42, targets, refusalTarget, extraRe
   const { aligned, dropped } = alignCorpus(corpus, ctx, toolsByName);
   const weights = trainModels(aligned, ctx, { epochs });
   const dispatcher = createDispatcher({ vocab, tools, weights });
-  return { dispatcher, weights, stats: { corpus: corpus.length, aligned: aligned.length, dropped, excluded } };
+  return { dispatcher, weights, corpus, stats: { corpus: corpus.length, aligned: aligned.length, dropped, excluded } };
 }
+
 
 // ── src/grammar/earley.js ──
 
@@ -2146,6 +2349,8 @@ export {
   deriveVocab,
   LOCALES,
   ELEMENT_LEX,
+  ELEMENT_LEX_PT,
+  mergeLocales,
   createContext,
   KINDS,
   generate,
@@ -2158,6 +2363,7 @@ export {
   tokenize,
   normText,
   mulberry32,
+  fold,
   createEngine,
   makeSession,
   DEMO_NOW,

@@ -38,10 +38,15 @@ export function trainModels(aligned, ctx, { epochs = 25, tagSet } = {}) {
     W.set('_bias', (W.get('_bias') || 0) + d); A.set('_bias', (A.get('_bias') || 0) + d * it);
     for (const [k, v] of f) { W.set(k, (W.get(k) || 0) + d * v); A.set(k, (A.get(k) || 0) + d * v * it); }
   };
+  // features are a pure function of the tokens — computed ONCE per example, not once per
+  // epoch (the gazetteer scans were most of the training time)
+  const fCache = new Map(), perCache = new Map();
+  const intentF = (ex) => { let f = fCache.get(ex); if (!f) { f = ctx.intentFeatures(ex.toks); fCache.set(ex, f); } return f; };
+  const tokenF = (ex) => { let f = perCache.get(ex); if (!f) { f = ctx.tokenFeatures(ex.toks); perCache.set(ex, f); } return f; };
   for (let e = 0; e < epochs; e++) {
     let errs = 0;
     for (const ex of shuffled(aligned, 1000 + e)) {
-      const f = ctx.intentFeatures(ex.toks);
+      const f = intentF(ex);
       let best = null, bs = -Infinity;
       for (const c of CLASSES) { const s = iscore(c, f); if (s > bs) { bs = s; best = c; } }
       if (best !== ex.intent) { ibump(ex.intent, f, 1); ibump(best, f, -1); errs++; }
@@ -60,14 +65,19 @@ export function trainModels(aligned, ctx, { epochs = 25, tagSet } = {}) {
   for (const t of TAGS) { tw[t] = new Map(); tacc[t] = new Map(); }
   let tt = 1;
   const T = TAGS.length;
+  const TK = [], TK0 = TAGS.map((t) => `^>${t}`);
+  for (const p of TAGS) for (const t of TAGS) TK.push(`${p}>${t}`);
   function decode(per, n) {
     const dp = Array.from({ length: n }, () => new Float64Array(T).fill(-1e9));
     const bp = Array.from({ length: n }, () => new Int32Array(T));
     const emit = (i, t) => { let s = 0; const W = tw[TAGS[t]]; for (const k of per[i]) s += W.get(k) || 0; return s; };
-    for (let t = 0; t < T; t++) dp[0][t] = emit(0, t) + (tr.get(`^>${TAGS[t]}`) || 0);
+    // the transition table as numbers, once per decode — not a string key per (i, p, t)
+    const M = new Float64Array(T * T);
+    for (let p = 0; p < T; p++) for (let t = 0; t < T; t++) M[p * T + t] = tr.get(TK[p * T + t]) || 0;
+    for (let t = 0; t < T; t++) dp[0][t] = emit(0, t) + (tr.get(TK0[t]) || 0);
     for (let i = 1; i < n; i++) for (let t = 0; t < T; t++) {
       const e = emit(i, t);
-      for (let p = 0; p < T; p++) { const s = dp[i - 1][p] + (tr.get(`${TAGS[p]}>${TAGS[t]}`) || 0) + e; if (s > dp[i][t]) { dp[i][t] = s; bp[i][t] = p; } }
+      for (let p = 0; p < T; p++) { const s = dp[i - 1][p] + M[p * T + t] + e; if (s > dp[i][t]) { dp[i][t] = s; bp[i][t] = p; } }
     }
     let best = 0;
     for (let t = 1; t < T; t++) if (dp[n - 1][t] > dp[n - 1][best]) best = t;
@@ -79,7 +89,7 @@ export function trainModels(aligned, ctx, { epochs = 25, tagSet } = {}) {
   for (let e = 0; e < epochs; e++) {
     let errs = 0;
     for (const ex of shuffled(tagged, 2000 + e)) {
-      const per = ctx.tokenFeatures(ex.toks);
+      const per = tokenF(ex);
       const pred = decode(per, ex.toks.length);
       for (let i = 0; i < ex.toks.length; i++) {
         if (pred[i] === ex.tags[i]) continue;

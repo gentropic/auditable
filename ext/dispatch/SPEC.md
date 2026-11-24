@@ -92,9 +92,31 @@ byte-reproducibility. `opts.extraRefusals` for host-domain negatives.
 
 ## Locale
 
-Banks, op-words, units, show/hide verbs, and word-numbers are keyed by
-locale (`en` shipped; `pt-BR` is the next bank, not the next feature —
-"esconde a canga", "seção na cota 1020" ride the same machinery).
+Banks, op-words, units, show/hide verbs, word-numbers AND the sentence
+templates the built-in kinds render from (`tpl`) are keyed by locale: `en`
+and `pt` (pt-BR) ship. `locale: 'en+pt'` (or `['en', 'pt']`) is a BILINGUAL
+session: the closed classes are unioned (either language is understood at
+inference), while each generated example is written in ONE sub-locale, so a
+training sentence never mixes "filter … acima de". To keep the synonyms
+monolingual too, any synonym list may be given per locale (`{ en: [...],
+pt: [...] }`) — `vocab.synL` holds those, the pools stay the union; column
+synonyms from the element lexicons split themselves (`ELEMENT_LEX` /
+`ELEMENT_LEX_PT`). Tool `frames` (and `emptyFrames`, `catFrames`,
+`colFrames`, `colOnlyFrames`, a lexicon value's synonyms, `nouns`) may be
+per-locale objects the same way; a plain array still means "any language".
+Text is matched FOLDED (`fold`: seção → secao), so accents are optional.
+
+Also new with the pt bank: `comparison-filter` renders numeric RANGES ("fe
+between 50 and 60" → `>=` and `<=`) and takes host `frames` with `{noun}`
+`{cond}` (a SELECT verb over the same conditions) plus `catFrames`;
+`column-pick` frames may carry `{grp}` (a categorical column named as a
+grouping — context for the classifier, read by the host); `axis-pick` takes
+`axisOptional` + `colOnlyFrames` + per-locale `sayAxes`; assemblers fall back
+to an EXACT gazetteer hit the tagger left untagged (a category value in a
+filter, a column in a column-pick). Training computes features once per
+example and decodes with a numeric transition table (≈3× faster).
+First consumer: micro's plain-language bar (`tools/micro/src/nl-core.js`,
+scored by `test/micro-nl.test.mjs`).
 
 ## MCP adoption (designed, not built)
 
@@ -412,7 +434,7 @@ number words, are done.)
 
 ## Roadmap
 
-- pt-BR banks; per-host extra synonyms (au → 'ouro'). (The grammar rung ships a pt-BR bank already; the perceptron banks do not.)
+- ~~pt-BR banks~~ (done 2026-11-24, above); the two locale banks still to merge with the grammar rung's (fold-in item 6).
 - Rung-1 exact layer: normalized-pattern hash of the training corpus
   checked before the classifier (explainable exact hits).
 - Gate calibration: margin thresholds fitted per session size.

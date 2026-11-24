@@ -106,3 +106,61 @@ test('weights are a JSON round-trippable table (the browser/store path)', () => 
 test('tokenize keeps ids and decimals whole', () => {
   assert.deepEqual(tokenize('QF-011 at 2.5'), ['qf-011', 'at', '2.5']);
 });
+
+// ── the pt-BR bank + a bilingual ('en+pt') session ──
+const biVocab = deriveVocab({
+  numCols: { FE: { lo: 45, hi: 68, dec: 1 }, SG: { lo: 2, hi: 4, dec: 2 } },
+  catCols: { LITO: { en: ['lithology'], pt: ['litologia'] } },
+  catValues: { LITO: { HEMATITE: { en: ['hematite'], pt: ['hematita'] }, WASTE: { en: ['waste'], pt: ['estéril'] } } },
+  layers: { 'topo.tif': { en: ['the topography'], pt: ['a topografia'] } },
+  locale: 'en+pt',
+});
+const BI_TOOLS = [
+  { name: 'micro.filterBlocks', kind: 'comparison-filter', nouns: { en: ['blocks', 'the model'], pt: ['blocos', 'o modelo'] } },
+  { name: 'micro.colorBy', kind: 'column-pick', argName: 'column', pools: ['numeric', 'categorical'],
+    frames: { en: ['color by {col}', 'paint the blocks by {col}', 'colour by {col}'], pt: ['colorir por {col}', 'pinta os blocos por {col}', 'cor por {col}'] } },
+  { name: 'micro.sectionAt', kind: 'axis-position', axes: { Z: ['elevation', 'cota'], X: ['easting', 'leste'], Y: ['northing', 'norte'] } },
+  { name: 'micro.setLayerVisibility', kind: 'layer-action' },
+];
+const bi = trainSession({ vocab: biVocab, tools: BI_TOOLS, seed: 7 }).dispatcher;
+const bone = (q) => { const r = bi.dispatch(q); return r.calls[0] || null; };
+
+test('tokenize folds diacritics (seção → secao), so accents are optional', () => {
+  assert.deepEqual(tokenize('Seção na cota 1020'), ['secao', 'na', 'cota', '1020']);
+  assert.equal(normText('Estéril'), 'esteril');
+});
+
+test('a bilingual vocabulary keeps per-language synonyms and unions them for matching', () => {
+  assert.equal(biVocab.L.id, 'en+pt');
+  assert.ok(biVocab.numCols.FE.synL.pt.includes('ferro') && biVocab.numCols.FE.syn.includes('iron'));
+  assert.deepEqual(biVocab.synL.catValues.LITO.WASTE.pt, ['estéril']);
+  assert.ok(biVocab.catValues.LITO.WASTE.includes('waste') && biVocab.catValues.LITO.WASTE.includes('estéril'));
+  assert.ok(biVocab.L.ops['>'].includes('acima de') && biVocab.L.ops['>'].includes('above'));
+});
+
+test('pt-BR: filter with operators, categories and "ou"', () => {
+  assert.deepEqual(bone('blocos com ferro acima de 60').arguments.clauses, [{ column: 'FE', op: '>', value: 60 }]);
+  assert.deepEqual(bone('ferro pelo menos 58').arguments.clauses, [{ column: 'FE', op: '>=', value: 58 }]);
+  const c = bone('ferro menor que 50 ou densidade maior que 3');
+  assert.equal(c.arguments.join, 'or');
+  assert.deepEqual(bone('só estéril').arguments.clauses, [{ column: 'LITO', op: '=', value: 'WASTE' }]);
+});
+
+test('pt-BR: section on the cota, colour by, show/hide', () => {
+  assert.deepEqual(bone('seção na cota 1020').arguments, { axis: 'Z', position: 1020 });
+  assert.deepEqual(bone('colorir por litologia').arguments, { column: 'LITO' });
+  assert.deepEqual(bone('esconde a topografia').arguments, { layer: 'topo.tif', action: 'hide' });
+  assert.deepEqual(bone('mostra a topografia').arguments, { layer: 'topo.tif', action: 'show' });
+});
+
+test('English still works in the bilingual session', () => {
+  assert.deepEqual(bone('section at elevation 980').arguments, { axis: 'Z', position: 980 });
+  assert.deepEqual(bone('color by iron').arguments, { column: 'FE' });
+  assert.deepEqual(bone('hide the topography').arguments, { layer: 'topo.tif', action: 'hide' });
+});
+
+test('comparison-filter: a numeric range is two clauses, in both languages', () => {
+  const d = trainSession({ vocab: biVocab, tools: [BI_TOOLS[0]], seed: 7 }).dispatcher;
+  const range = [{ column: 'FE', op: '>=', value: 50 }, { column: 'FE', op: '<=', value: 60 }];
+  for (const q of ['fe between 50 and 60', 'ferro entre 50 e 60', 'blocks with iron from 50 to 60']) assert.deepEqual(d.dispatch(q).calls[0].arguments.clauses, range, q);
+});

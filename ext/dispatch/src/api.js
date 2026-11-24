@@ -74,7 +74,7 @@ export function trainSession({ vocab, tools, seed = 42, targets, refusalTarget, 
   const { aligned, dropped } = alignCorpus(corpus, ctx, toolsByName);
   const weights = trainModels(aligned, ctx, { epochs });
   const dispatcher = createDispatcher({ vocab, tools, weights });
-  return { dispatcher, weights, stats: { corpus: corpus.length, aligned: aligned.length, dropped, excluded } };
+  return { dispatcher, weights, corpus, stats: { corpus: corpus.length, aligned: aligned.length, dropped, excluded } };
 }
 
 export { deriveVocab, createContext, KINDS, groupTags, generate, alignCorpus, trainModels };

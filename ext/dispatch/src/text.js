@@ -1,5 +1,8 @@
 // @gcu/dispatch — text primitives: tokenizer, token shapes, gazetteer spans.
-export const tokenize = (q) => (q.toLowerCase().match(/[a-z0-9][a-z0-9.\-]*|[^\sa-z0-9]/gi) || []).map((t) => t.replace(/[.,;!?]+$/, '') || t);
+// diacritics FOLD (seção → secao, cópia → copia): pt-BR is typed with and without accents, and the
+// gazetteers, banks and corpus all meet in the folded form.
+export const fold = (s) => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+export const tokenize = (q) => (fold(q).toLowerCase().match(/[a-z0-9][a-z0-9.\-]*|[^\sa-z0-9]/gi) || []).map((t) => t.replace(/[.,;!?]+$/, '') || t);
 
 export const NUM_RE = /^[0-9]+(\.[0-9]+)?$/;
 export const ID_RE = /^[a-z]+-?[0-9]+$/;
@@ -27,4 +30,4 @@ export function gazSpans(toks, map) {
 // seeded rng (no Date.now/Math.random — everything reproducible)
 export function mulberry32(a) { return () => { a |= 0; a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
 export function shuffled(arr, seed) { const r = mulberry32(seed), out = [...arr]; for (let i = out.length - 1; i > 0; i--) { const j = (r() * (i + 1)) | 0; [out[i], out[j]] = [out[j], out[i]]; } return out; }
-export const normText = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+export const normText = (s) => fold(s).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
