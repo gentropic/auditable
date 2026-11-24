@@ -2387,7 +2387,9 @@ if (take()) {
   await pq.close();
   const pq2 = await mkPage('sm2dmcat');
   await pq2.evaluate(async () => { const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2dmcat'); await window._micro.openProjectDir(dir); });
-  await pq2.waitForFunction(() => window._micro.layers().length && window._micro.renderer.layerElementCount(window._micro.layers()[0].id) === 64, null, { timeout: 60000 });
+  // the saved filter (DOMAIN == 200) comes back with it: this model is on a lattice (constant
+  // sizes, no DD lattice — found from the centroids), so the filter draws its 16 blocks
+  await pq2.waitForFunction(() => window._micro.layers().length && window._micro.renderer.layerElementCount(window._micro.layers()[0].id) === 16, null, { timeout: 60000 });
   const re2 = await pq2.evaluate(() => { const h = window._micro.layers()[0].docs.blockDoc.header; return { cat: h.columns[h.mapping.cat], cats: h.categories }; });
   chk(`the re-keyed category PERSISTS across save/reload (${re2.cat}: ${(re2.cats || []).join('/')})`, re2.cat === 'DOMAIN' && ['100', '200', '300'].every((v) => (re2.cats || []).includes(v)));
   await pq2.close();
@@ -7604,7 +7606,8 @@ if (take()) {
     let d = M_.project().dir; for (const s of (dir || '').split('/')) if (s) d = await d.getDirectoryHandle(s);
     const csv = await (await (await d.getFileHandle('hem.csv')).getFile()).text();
     const pq = await (await d.getFileHandle('m.parquet')).getFile();
-    out.csv = { header: csv.split(/\r?\n/)[0], lines: csv.trim().split(/\r?\n/).length - 1 };   // the CSV writer ends lines with CRLF
+    const csvLines = csv.trim().split(/\r?\n/), data = csvLines.filter((l) => l[0] !== '#');   // past the # micro:model line (a filtered subset keeps the lattice)
+    out.csv = { header: data[0], lines: data.length - 1, lattice: /^# micro:model \{.*"subset":"filter"/.test(csvLines[0]) };   // the CSV writer ends lines with CRLF
     out.pqBytes = pq.size;
     out.outs = rec.steps.filter((s) => s.tool === 'export').map((s) => ({ path: s.outputs[0].path, sha: !!s.outputs[0].sha256, rows: s.values.rows }));
     out.check = rec.steps.find((s) => s.kind === 'check').status;
@@ -7614,7 +7617,7 @@ if (take()) {
     return out;
   });
   chk(`EXPORT: a routine exports into the run's folder — the filtered CSV (${JSON.stringify(r.csv)}), a spatial Parquet (${r.pqBytes} B) — each hashed in the record (${JSON.stringify(r.outs)}); a check reads the row counts (${r.check})`,
-    r.status === 'ok' && r.csv.header === 'XC,YC,ZC,FE' && r.csv.lines === 160 && r.pqBytes > 1000 && r.outs.length === 2 && r.outs.every((o) => o.sha) && /\/hem\.csv$/.test(r.outs[0].path) && /\/m\.parquet$/.test(r.outs[1].path) && r.check === 'pass');
+    r.status === 'ok' && r.csv.header === 'XC,YC,ZC,FE' && r.csv.lines === 160 && r.csv.lattice && r.pqBytes > 1000 && r.outs.length === 2 && r.outs.every((o) => o.sha) && /\/hem\.csv$/.test(r.outs[0].path) && /\/m\.parquet$/.test(r.outs[1].path) && r.check === 'pass');
   chk(`EXPORT: a host gets the file as a Blob (${JSON.stringify(r.host)}); an unknown column is refused (“${r.bad}”)`, r.host.isBlob && r.host.name === 'm.csv' && r.host.rows === 64 && /no column “CU”/.test(r.bad || ''));
   await p.close();
 }
@@ -9126,7 +9129,7 @@ if (take()) {
     const rowP = await M.fetchLayerRow(LP, 11);
     out.pq = { kind: LP.kind, rot: !!(hP.grid && hP.grid.rot), sub: !!hP.subBlocked, n: hP.count, rejected: hP.latticeRejected || null, row: [+rowP[0], +rowP[1], +rowP[2]], want: W(rows[11]), elements: R.layerElementCount(idP) };
     const ex2 = await M.runExport(LR, { format: 'csv', download: false, returnBlob: true });
-    out.csvRow = (await ex2.blob.text()).split(/\r?\n/)[1].split(',').slice(0, 3).map(Number);
+    out.csvRow = (await ex2.blob.text()).split(/\r?\n/).filter((l) => l[0] !== '#')[1].split(',').slice(0, 3).map(Number);   // past the # micro:model line
     out.csvWant = W(rows[0]);
     // (6) the recolour on the rotated layer RE-SHADES (one resolve pass, not a re-raster)
     M.setActiveLayer(idR);
@@ -9604,6 +9607,108 @@ if (take()) {
   const hv = (a, b) => a.length === b.length && a.every((h, i) => h && h.every((v, k) => Math.abs(v - b[i][k]) < 1e-9));
   chk(`step 5: a sub-blocked model's picked half-extents are each block's own size — from Parquet (${JSON.stringify(r.halves.pq)}) as from CSV`, r.halves.sub && r.halves.parquet && hv(r.halves.pq, r.halves.want) && hv(r.halves.csv, r.halves.want));
   chk(`step 5: a sub-blocked model's properties give its fine step and largest sub-block (${JSON.stringify(r.props)})`, r.props.tab && r.props.fine && r.props.largest && !r.props.block);
+  await pg.close();
+}
+
+// ── §133: the lattice travels with every EXPORT (micro-block-support worklist). A rotated,
+// sub-blocked .dm (ANGLE1 −50, placed in world) exported to CSV reopens as the SAME rotated
+// boxes — the `# micro:model` line declares the lattice, checked on every row (a rotated
+// sub-blocked model can't be inferred); same via Parquet. A FILTERED subset keeps the lattice
+// (no longer dropped: its bbox/categories are left for the reader to find) and reopens as the
+// same placement holding only the subset. A tampered pitch is REFUSED with the reason
+// (points; non-vacuous — the untampered file is boxes). The placed .dm's ANGLE1/ROTAXIS1/X0…
+// don't ride next to world coordinates; "lattice as columns" writes a self-consistent set.
+// And a .dm with constant per-record sizes but no DD lattice opens as boxes, not points. ──
+if (take()) {
+  const pg = await mkPage('sm2latexp');
+  const r = await pg.evaluate(async () => {
+    const M = window._micro, Rn = M.renderer;
+    const F = await import('/test/subblock-make.mjs');
+    const { makeDM } = await import('/test/dm-make.mjs');
+    const O = [432820, 8522360, 300];
+    const rows = F.makeSubblockRows({ seed: 41, nx: 3, ny: 3, nz: 2 }).rows;
+    const rejected = []; addEventListener('micro:lattice-rejected', (e) => rejected.push(e.detail.reason));
+    const open = async (bytes, name, mode, opts) => { const id = await M.openBlob(new File([bytes], name), name, mode, null, { throw: true, ...(opts || {}) }); return M.layers().find((x) => x.id === id); };
+    const LR = await open(F.makeSubblockDm(rows, { angle1: -50 }), 'rotx.dm', 'replace', { origin: O });
+    const hR = LR.docs.blockDoc.header;
+    const recs = async (L) => { const out = []; for await (const { f } of M.layerRecords(L)) out.push(f); return out; };
+    const h0 = LR.docs.blockDoc.header, iV = h0.columns.indexOf('V'), iX = h0.mapping.x, iY = h0.mapping.y, iZ = h0.mapping.z;
+    const src = (await recs(LR)).map((f) => [+f[iX], +f[iY], +f[iZ], +f[iV]]);
+    const desc = (L) => { const h = L.docs.blockDoc.header; return { kind: L.kind, rot: !!(h.grid && h.grid.rot), sub: !!h.subBlocked, n: h.count, drawn: Rn.layerElementCount(L.id), by: h.lattice && h.lattice.by, rejected: h.latticeRejected || null, bbox: h.bbox, anchor: h.grid && h.grid.anchor, R: h.grid && h.grid.rot, pitch: h.grid && [h.grid.x.pitch, h.grid.y.pitch, h.grid.z.pitch] }; };
+    // the rows of a reopened file, matched to the source's by position (export order = record order)
+    const rowsOf = async (L, want) => {
+      const h = L.docs.blockDoc.header, jV = h.columns.indexOf('V');
+      const got = (await recs(L)).map((f) => [+f[h.mapping.x], +f[h.mapping.y], +f[h.mapping.z], +f[jV]]);
+      let worst = 0, valuesSame = got.length === want.length;
+      for (let i = 0; i < Math.min(got.length, want.length); i++) { for (let a = 0; a < 3; a++) worst = Math.max(worst, Math.abs(got[i][a] - want[i][a])); if (got[i][3] !== want[i][3]) valuesSame = false; }
+      return { n: got.length, worst, valuesSame };
+    };
+    const bboxOf = (P) => { const mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity]; for (const p of P) for (let a = 0; a < 3; a++) { mn[a] = Math.min(mn[a], p[a]); mx[a] = Math.max(mx[a], p[a]); } return { min: mn, max: mx }; };
+    const out = { src: desc(LR) };
+    // (1) full model → CSV → reopen
+    const exC = await M.runExport(LR, { format: 'csv', download: false, returnBlob: true });
+    const csvText = await exC.blob.text();
+    const lines = csvText.split(/\r?\n/);
+    out.csv = { first: lines[0].slice(0, 40), header: lines[1].split(','), stale: ['ANGLE1', 'ROTAXIS1', 'X0', 'Y0', 'Z0'].filter((n) => lines[1].split(',').includes(n)) };
+    const LC = await open(csvText, 'rotx-all.csv', 'add');
+    out.csv.re = desc(LC); out.csv.rows = await rowsOf(LC, src);
+    // (2) full model → Parquet → reopen
+    const exP = await M.runExport(LR, { format: 'parquet', download: false, returnBlob: true });
+    const LP = await open(exP.blob, 'rotx-all.parquet', 'add');
+    out.pq = { re: desc(LP), rows: await rowsOf(LP, src) };
+    // (3) a FILTERED subset → Parquet and CSV → reopen: the same lattice, only the subset
+    await M.applyBlockFilter('V > 1', LR);
+    const mask = LR._filterMask, subWant = src.filter((_, i) => mask[i]);
+    out.subN = subWant.length; out.subBbox = bboxOf(subWant);
+    const sp = await M.runExport(LR, { scope: 'matches', format: 'parquet', download: false, returnBlob: true });
+    const SP = await open(sp.blob, 'rotx-sub.parquet', 'add');
+    out.subPq = { re: desc(SP), rows: await rowsOf(SP, subWant) };
+    const sc = await M.runExport(LR, { scope: 'matches', format: 'csv', download: false, returnBlob: true });
+    const scText = await sc.blob.text();
+    const scModel = JSON.parse(scText.split(/\r?\n/)[0].replace(/^# micro:model /, ''));
+    const SC = await open(scText, 'rotx-sub.csv', 'add');
+    out.subCsv = { re: desc(SC), rows: await rowsOf(SC, subWant), model: { bbox: 'bbox' in scModel, categories: 'categories' in scModel, subset: scModel.subset, dims: scModel.dims } };
+    await M.applyBlockFilter('', LR);
+    // (4) a tampered pitch is refused, with the reason, as points
+    const tampered = csvText.replace(/^# micro:model (.*)$/m, (_, j) => { const m = JSON.parse(j); m.grid.x.pitch *= 1.5; delete m.grid.basis; return '# micro:model ' + JSON.stringify(m); });
+    const nRej = rejected.length;
+    const LT = await open(tampered, 'rotx-bad.csv', 'add');
+    out.bad = { re: desc(LT), event: rejected.slice(nRej), meta: LT.docs.blockDoc.metaLine };
+    // (5) the lattice as columns: a regular rotated .dm, Datamine-style constants + the local centroid
+    const par = F.makeSubblockRows({ seed: 42, nx: 3, ny: 2, nz: 2, pWhole: 1 }).rows;
+    const PR = await open(F.makeRegularDm(par, { angle1: -50, nx: 3, ny: 2, nz: 2 }), 'regx.dm', 'add', { origin: O });
+    const lc = await M.runExport(PR, { format: 'csv', download: false, returnBlob: true, latticeColumns: true });
+    const lcLines = (await lc.blob.text()).split(/\r?\n/).filter((l) => l && l[0] !== '#');
+    const head = lcLines[0].split(','), row0 = lcLines[1].split(',');
+    const val = (n) => +row0[head.indexOf(n)];
+    out.lc = { head, X0: [val('X0'), val('Y0'), val('Z0')], angle: val('ANGLE1'), axis: val('ROTAXIS1'), local: [val('XL'), val('YL'), val('ZL')], want: [par[0].XC, par[0].YC, par[0].ZC],
+      morig: [val('XMORIG'), val('YMORIG'), val('ZMORIG')], inc: [val('XINC'), val('YINC'), val('ZINC')], nn: [val('NX'), val('NY'), val('NZ')], dup: head.length - new Set(head).size };
+    const LL = await open(await lc.blob.text(), 'regx-cols.csv', 'add');
+    out.lc.re = desc(LL);
+    // (6) a .dm with constant per-record sizes and no DD lattice: boxes from the centroids
+    const fields = [{ name: 'XC', type: 'N' }, { name: 'YC', type: 'N' }, { name: 'ZC', type: 'N' }, { name: 'XINC', type: 'N' }, { name: 'YINC', type: 'N' }, { name: 'ZINC', type: 'N' }, { name: 'V', type: 'N' }];
+    const reg = par.filter((_, i) => i % 3).map((b) => ({ XC: b.XC, YC: b.YC, ZC: b.ZC, XINC: 20, YINC: 20, ZINC: 10, V: b.V }));
+    const LD = await open(new Uint8Array(makeDM(fields, reg, { precision: 'ep' })), 'nodd.dm', 'add');
+    out.dm = { re: desc(LD), want: reg.length, grid: LD.docs.blockDoc.header.grid && [LD.docs.blockDoc.header.grid.x.pitch, LD.docs.blockDoc.header.grid.y.pitch, LD.docs.blockDoc.header.grid.z.pitch] };
+    return out;
+  });
+  const near = (a, b, eps = 1e-6) => a && b && a.every((v, i) => Math.abs(v - b[i]) <= eps);
+  const sameBox = (a, b, eps = 1e-6) => near(a.min, b.min, eps) && near(a.max, b.max, eps);
+  const samePlace = (x) => near(x.anchor, r.src.anchor, 1e-9) && near(x.R, r.src.R, 1e-12) && near(x.pitch, r.src.pitch, 1e-12);
+  const boxes = (x) => x.kind === 'blocks' && x.rot && x.sub && !x.rejected;
+  chk(`export: the source is a rotated sub-blocked .dm (${r.src.n} blocks, drawn ${r.src.drawn})`, boxes({ ...r.src, rejected: null }) && r.src.drawn === r.src.n);
+  chk(`export → CSV: the first line states the lattice (“${r.csv.first}…”); no ANGLE1/ROTAXIS1/X0 next to world coordinates (${r.csv.stale.join(',') || 'none'})`, /^# micro:model \{/.test(r.csv.first) && !r.csv.stale.length);
+  chk(`export → CSV → reopen: rotated sub-blocked boxes, declared by the file (${r.csv.re.by}), ${r.csv.re.drawn}/${r.src.n} drawn, same bounds + placement`, boxes(r.csv.re) && r.csv.re.by === 'file' && r.csv.re.drawn === r.src.n && sameBox(r.csv.re.bbox, r.src.bbox) && samePlace(r.csv.re));
+  chk(`export → CSV → reopen: every record's position and value (${r.csv.rows.n} rows, worst ${r.csv.rows.worst.toExponential(1)} m)`, r.csv.rows.n === r.src.n && r.csv.rows.valuesSame && r.csv.rows.worst < 1e-6);
+  chk(`export → Parquet → reopen: rotated sub-blocked boxes, same bounds + placement, every record (${r.pq.rows.n}, worst ${r.pq.rows.worst.toExponential(1)})`, boxes(r.pq.re) && r.pq.re.drawn === r.src.n && sameBox(r.pq.re.bbox, r.src.bbox) && samePlace(r.pq.re) && r.pq.rows.valuesSame && r.pq.rows.worst < 1e-6);
+  chk(`a FILTERED subset → Parquet keeps the lattice: rotated boxes, the same placement, only the subset (${r.subPq.re.drawn}/${r.subN} of ${r.src.n}; by ${r.subPq.re.by})`, boxes(r.subPq.re) && r.subPq.re.drawn === r.subN && r.subN > 0 && r.subN < r.src.n && samePlace(r.subPq.re) && sameBox(r.subPq.re.bbox, r.subBbox) && r.subPq.rows.valuesSame && r.subPq.rows.worst < 1e-6);
+  chk(`a FILTERED subset → CSV keeps the lattice (${JSON.stringify(r.subCsv.model)}): the same placement, only the subset (${r.subCsv.re.drawn}/${r.subN}), its own bounds`, boxes(r.subCsv.re) && r.subCsv.re.drawn === r.subN && samePlace(r.subCsv.re) && sameBox(r.subCsv.re.bbox, r.subBbox) && r.subCsv.rows.valuesSame
+    && !r.subCsv.model.bbox && !r.subCsv.model.categories && r.subCsv.model.subset === 'matches' && r.subCsv.model.dims);
+  chk(`a tampered pitch in the header is REFUSED with the reason — points (${r.bad.re.kind}), “${(r.bad.re.rejected || '').slice(0, 80)}…”, event ${r.bad.event.length}`, r.bad.re.kind === 'points' && /doesn't fit/.test(r.bad.re.rejected || '') && r.bad.event.length === 1 && /REFUSED/.test(r.bad.meta));
+  chk(`lattice as columns: X0/Y0/Z0 = the origin (${r.lc.X0.join(', ')}), ANGLE1 ${r.lc.angle} about ROTAXIS1 ${r.lc.axis}, XL/YL/ZL = the local centroid (${r.lc.local.join(', ')}), XMORIG… ${r.lc.morig.join('/')}, XINC… ${r.lc.inc.join('/')}, NX… ${r.lc.nn.join('/')}, no duplicate names`,
+    near(r.lc.X0, [432820, 8522360, 300], 1e-6) && Math.abs(r.lc.angle + 50) < 1e-9 && r.lc.axis === 3 && near(r.lc.local, r.lc.want, 1e-6) && near(r.lc.morig, [0, 0, 0], 1e-6) && near(r.lc.inc, [20, 20, 10]) && near(r.lc.nn, [3, 2, 2]) && r.lc.dup === 0);
+  chk(`lattice as columns: the file still reopens as the rotated boxes (by its # micro:model line — the constants are written, not read back)`, r.lc.re.kind === 'blocks' && r.lc.re.rot && r.lc.re.by === 'file');
+  chk(`a .dm with constant per-record sizes and no DD lattice opens as boxes (${r.dm.re.kind}, pitch ${r.dm.grid}, ${r.dm.re.drawn}/${r.dm.want})`, r.dm.re.kind === 'blocks' && near(r.dm.grid, [20, 20, 10]) && r.dm.re.drawn === r.dm.want);
   await pg.close();
 }
 

@@ -8,7 +8,7 @@ import { blockCaps, colIsNumericForStore, extendRow, layerRows, layerTableHeader
 import { ensureStoredValues, holdStoredValues } from './columns.js';
 import { microModelOf, mkLineage } from './lineage.js';
 import { createParquetBlobWriter } from '../../../ext/parquet/index.js';
-import { coordNum, createMortonSorter } from '../../../ext/condenser/src/main.js';
+import { basisAngles, coordNum, createMortonSorter, latticeMapOf, microModelLine, MICRO_MODEL_KEY } from '../../../ext/condenser/src/main.js';
 import { fmtSize } from './paths.js';
 import { S } from './state.js';
 import { addPaintColorOptions } from './paint.js';
@@ -28,13 +28,56 @@ const $ = (s) => document.querySelector(s);
 // columns out — paint a DOMAIN by lasso, export, feed the estimator. CSV
 // streamed into Blob parts → download; no size cliff. .dm exports too
 // (@gcu/dm stays a reader — this is the .dm → CSV converter). ──
+// A rotated Datamine model placed in world (one rotation about Z) is read and
+// exported in WORLD coordinates, so the .dm's placement constants — ANGLEn / ROTAXISn
+// (the rotation), X0/Y0/Z0 (where the local origin sits) and XMORIG… (the lattice
+// corner in the LOCAL frame) — no longer describe the rows next to them: a package
+// that re-applied ANGLE1 to these XC/YC/ZC would rotate them twice. They are not
+// exported (`stale`); the lattice travels in micro:model (the Parquet kv, the CSV
+// `# micro:model` line), and "lattice as columns" writes a self-consistent set.
+// Counts (NX…) and sizes are frame-free and stay.
+const DM_PLACEMENT = new Set(['ANGLE1', 'ANGLE2', 'ANGLE3', 'ROTAXIS1', 'ROTAXIS2', 'ROTAXIS3', 'X0', 'Y0', 'Z0', 'XMORIG', 'YMORIG', 'ZMORIG']);
+export const STALE_PLACEMENT_NOTE = 'a Datamine placement constant — this model is exported in WORLD coordinates, which it no longer describes (re-applied, it would rotate them twice); the lattice travels in micro:model';
 export function exportColumnsOf(L) {
   const h = layerTableHeader(L);
   if (!h) return null;
-  const cols = h.columns.map((name, i) => ({ name, num: colIsNumericForStore(L, h, i), badge: '' }));
+  const placed = !!(h.dm && h.dmRotationApplied);
+  const cols = h.columns.map((name, i) => ({ name, num: colIsNumericForStore(L, h, i), badge: '', ...(placed && DM_PLACEMENT.has(String(name).toUpperCase()) ? { stale: STALE_PLACEMENT_NOTE } : {}) }));
   for (const c of L.paintCols || []) cols.push({ name: c.name, num: c.kind === 'ratio', badge: c.kind === 'ratio' && !c.mat ? '%' : '✎' });   // census order: stored derived before calc (must match extendRow)
   for (const c of L.calcCols || []) cols.push({ name: c.name, num: (c.ty || 'number') === 'number', badge: 'ƒ' });
   return cols;
+}
+
+// ── "lattice as columns": the Datamine habit — the model's lattice as CONSTANT
+// columns on every row, for a package that reads neither micro:model carrier. Wasteful
+// (the same numbers on every row) and off by default; the `# micro:model` line is the
+// compact, checked path. Self-consistent in Datamine's reading, world = (X0,Y0,Z0) +
+// R(ANGLE1 about Z)·(XL,YL,ZL), so the coordinates stay WORLD (XC/YC/ZC as written) and
+// the local ones ride beside them:
+//   rotated     X0 Y0 Z0 (world of the local origin) · ANGLE1 ROTAXIS1 (=3; a rotation
+//               about Z only — a tilted lattice gets none, said) · XL YL ZL (local centroid)
+//   regular     XMORIG YMORIG ZMORIG (lattice corner, local frame) · XINC YINC ZINC · NX NY NZ
+//   sub-blocked no parent lattice is known — the sizes ride in their own columns
+// → { cols: [{ name, value } | { name, local: 0|1|2 }], note } | null (no lattice)
+const r12 = (v) => +(+v).toPrecision(12);
+export function latticeConstantsOf(h) {
+  const g = h && h.grid;
+  if (!g || !g.x) return null;
+  const cols = [], notes = [];
+  const R = g.rot || null, A = g.anchor || [0, 0, 0];
+  if (R) {
+    cols.push({ name: 'X0', value: r12(A[0]) }, { name: 'Y0', value: r12(A[1]) }, { name: 'Z0', value: r12(A[2]) });
+    if (basisAngles(R).zOnly) cols.push({ name: 'ANGLE1', value: r12(-Math.atan2(R[1], R[0]) * 180 / Math.PI) }, { name: 'ROTAXIS1', value: 3 });
+    else notes.push('the lattice is tilted: no Datamine rotation is written (its three-rotation order is unverified) — the # micro:model line carries it');
+    cols.push({ name: 'XL', local: 0 }, { name: 'YL', local: 1 }, { name: 'ZL', local: 2 });
+  }
+  if (!h.subBlocked) {
+    const ax = [g.x, g.y, g.z];
+    ['X', 'Y', 'Z'].forEach((n, a) => cols.push({ name: `${n}MORIG`, value: r12(ax[a].origin - ax[a].pitch / 2) }));
+    ['X', 'Y', 'Z'].forEach((n, a) => cols.push({ name: `${n}INC`, value: r12(ax[a].pitch) }));
+    ['X', 'Y', 'Z'].forEach((n, a) => cols.push({ name: `N${n}`, value: ax[a].count }));
+  } else notes.push('sub-blocked: no parent lattice is known, so none is written — each block\'s size rides in its own columns');
+  return { cols, note: notes.join('; ') };
 }
 
 export let _exportEpoch = 0;
@@ -55,11 +98,24 @@ export async function runExport(L, opts = {}) {
   const bc = busyCancel();
   try { return await runExportInner(L, { ...opts, signal: opts.signal || bc.signal }); } finally { bc.done(); }
 }
-async function runExportInner(L, { scope = 'all', colIdx = null, delim = ',', decimalComma = false, filename = 'export.csv', download = true, format = 'csv', codec = 'SNAPPY', spatialSort = false, qualified = false, signal = null, mask: maskIn = null, returnBlob = false } = {}) {
+// latticeHeader: a CSV of a block model on a lattice starts with its `# micro:model`
+//   line (grid/model.js) — micro reopens it as the same boxes, declared not inferred;
+//   other readers skip `#` lines. Parquet always carries micro:model in its footer.
+// latticeColumns: also write the lattice as constant columns (latticeConstantsOf).
+async function runExportInner(L, { scope = 'all', colIdx = null, delim = ',', decimalComma = false, filename = 'export.csv', download = true, format = 'csv', codec = 'SNAPPY', spatialSort = false, qualified = false, signal = null, mask: maskIn = null, returnBlob = false, latticeHeader = true, latticeColumns = false } = {}) {
   const h = layerTableHeader(L); if (!h) return -1;
   await ensureStoredValues(L, null);                       // exports read every column
   const cols = exportColumnsOf(L);
   if (!colIdx) colIdx = cols.map((_, i) => i);
+  colIdx = colIdx.filter((i) => !cols[i].stale);           // a placed .dm's rotation/origin constants: they'd lie next to world coordinates
+  // the lattice as columns: they REPLACE any source column of the same name (a .dm's own
+  // XMORIG… / NX… — the same numbers, now consistent with the local coordinates beside them)
+  const lc = latticeColumns ? latticeConstantsOf(h) : null;
+  const lcCols = lc ? lc.cols : [];
+  if (lcCols.length) { const taken = new Set(lcCols.map((c) => c.name.toUpperCase())); colIdx = colIdx.filter((i) => !taken.has(String(cols[i].name).toUpperCase())); }
+  const outNames = [...colIdx.map((i) => cols[i].name), ...lcCols.map((c) => c.name)];
+  const nSrc = colIdx.length, nOut = outNames.length;
+  const toLocal = lcCols.some((c) => c.local != null) ? latticeMapOf(h.grid) : null;
   const epoch = ++_exportEpoch;
   // maskIn: the records to write, given (the export tool's filter expression); else the scope's
   const mask = maskIn || (scope === 'matches' ? L._filterMask : scope === 'selection' ? L._selMask : null);
@@ -67,7 +123,17 @@ async function runExportInner(L, { scope = 'all', colIdx = null, delim = ',', de
   const sep = delim === 'tab' ? '\t' : delim;
   const needQuote = new RegExp('["\\r\\n' + (sep === '\t' ? '\\t' : '\\' + sep) + ']');
   const esc = (s) => (needQuote.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s);
-  const numAt = colIdx.map((i) => cols[i].num);
+  const numAt = [...colIdx.map((i) => cols[i].num), ...lcCols.map(() => true)];
+  // micro:model for this file — the whole model's (discovery included) for a full
+  // export; a SUBSET's lattice part alone. Written only when the lattice can be read
+  // back from what's written: the coordinate columns, and a sub-blocked model's sizes.
+  const m0 = h.mapping || {};
+  const written_ = new Set(colIdx.map((i) => cols[i].name));
+  const latOk = !!(h.grid && [m0.x, m0.y, m0.z].every((k) => k != null && written_.has(h.columns[k]))
+    && (!h.subBlocked || (h.dimCols && ['x', 'y', 'z'].every((a) => written_.has(h.columns[h.dimCols[a]])))));
+  const isSubset = !!mask;
+  const model = isSubset ? (latOk ? microModelOf(h, { latticeOnly: true, subset: maskIn ? 'filter' : scope }) : null)
+    : (latOk || (format === 'parquet' && h.bbox) ? microModelOf(h) : null);
   const NUMRE = /^-?\d+(\.\d+)?([eE][+-]?\d+)?$/;
   const fmt = (v, isNum) => {
     if (v == null || v === '') return '';
@@ -91,18 +157,21 @@ async function runExportInner(L, { scope = 'all', colIdx = null, delim = ',', de
     const kv = [
       { key: 'micro:frame', value: JSON.stringify({ origin: S.frame ? [...S.frame.origin] : [0, 0, 0], crs: (h.crs || (L.docs.gridDoc && L.docs.gridDoc.grid.crs)) || null, spatial: doSort }) },
       { key: 'micro:lineage', value: JSON.stringify(expLin) },
-      // full-scope exports carry their discovery (self-describing on reopen);
-      // filtered/selection subsets don't — their bbox/categories would lie
-      ...(scope === 'all' && h.bbox ? [{ key: 'micro:model', value: JSON.stringify(microModelOf(h)) }] : []),
+      // a full export carries its discovery (self-describing on reopen); a filtered /
+      // selection subset its LATTICE alone (frame, rotation, pitch, size columns) —
+      // the whole model's bbox/categories would lie about the rows it holds
+      ...(model ? [{ key: MICRO_MODEL_KEY, value: JSON.stringify(model) }] : []),
     ];
-    const columnTypes = {}; colIdx.forEach((i, k) => { columnTypes[cols[i].name] = numAt[k] ? 'DOUBLE' : 'STRING'; });
+    const columnTypes = {}; outNames.forEach((nm, k) => { columnTypes[nm] = numAt[k] ? 'DOUBLE' : 'STRING'; });
     pqw = createParquetBlobWriter({ columnTypes, codec, kvMetadata: kv });
     if (doSort) sorter = createMortonSorter({ bbox: h.bbox, n: h.count || 0, kinds: numAt.map((x) => (x ? 'num' : 'str')), target: window.__msortTarget || undefined });
-    else grp = colIdx.map(() => []);
+    else grp = outNames.map(() => []);
   }
-  const flushGrp = () => { if (!grpN) return; pqw.write(colIdx.map((i, k) => ({ name: cols[i].name, data: grp[k] }))); grp = colIdx.map(() => []); grpN = 0; };
-  const one = isParquet ? new Array(colIdx.length) : null;
-  const parts = [colIdx.map((i) => esc(cols[i].name)).join(sep) + '\r\n'];
+  const flushGrp = () => { if (!grpN) return; pqw.write(outNames.map((nm, k) => ({ name: nm, data: grp[k] }))); grp = outNames.map(() => []); grpN = 0; };
+  const one = isParquet ? new Array(nOut) : null;
+  const lcVals = lcCols.map((c) => (c.local != null ? null : c.value));   // a row's lattice-column values (locals filled per row)
+  const parts = [outNames.map((nm) => esc(nm)).join(sep) + '\r\n'];
+  if (!isParquet && model && latticeHeader && h.grid) parts.unshift(microModelLine(model) + '\r\n');   // before the header row: a comment line other readers skip
   let buf = [];
   const isDelim = !blockCaps(L).rowIsRecord;
   const isDm = !!(L.docs.blockDoc && L.docs.blockDoc.header.dm);
@@ -118,18 +187,23 @@ async function runExportInner(L, { scope = 'all', colIdx = null, delim = ',', de
       const rAt = rec++;
       if (mask && !mask[rAt]) continue;
       const f = extendRow(L, isDm ? f0.map((v) => (v == null ? '' : v)) : f0, rAt);
+      if (toLocal) {                                       // the local centroid (lattice frame) beside the world one
+        const q = toLocal(coordNum(f[m.x]), coordNum(f[m.y]), coordNum(f[m.z]));
+        for (let k = 0; k < lcCols.length; k++) if (lcCols[k].local != null) lcVals[k] = r12(q[lcCols[k].local]);
+      }
+      const at = (k) => (k < nSrc ? f[colIdx[k]] : lcVals[k - nSrc]);
       if (isParquet) {
-        for (let k = 0; k < colIdx.length; k++) {
-          const v = f[colIdx[k]];
+        for (let k = 0; k < nOut; k++) {
+          const v = at(k);
           one[k] = numAt[k]
             ? (v == null || v === '' || Number.isNaN(+v) ? null : +v)
             : (v == null || v === '' ? null : String(v));
         }
         if (sorter) sorter.push(coordNum(f[m.x]), coordNum(f[m.y]), coordNum(f[m.z]), one, written);
-        else { for (let k = 0; k < colIdx.length; k++) grp[k].push(one[k]); if (++grpN === GROUP) flushGrp(); }
+        else { for (let k = 0; k < nOut; k++) grp[k].push(one[k]); if (++grpN === GROUP) flushGrp(); }
       } else {
         let line = '';
-        for (let k = 0; k < colIdx.length; k++) line += (k ? sep : '') + fmt(f[colIdx[k]], numAt[k]);
+        for (let k = 0; k < nOut; k++) line += (k ? sep : '') + fmt(at(k), numAt[k]);
         buf.push(line);
         if (buf.length >= 65536) { parts.push(buf.join('\r\n') + '\r\n'); buf = []; }
       }
@@ -147,14 +221,14 @@ async function runExportInner(L, { scope = 'all', colIdx = null, delim = ',', de
     if (sorter) {
       let at = 0;
       for await (const g of sorter.batches(GROUP)) {
-        pqw.write(colIdx.map((i, k) => ({ name: cols[i].name, data: g.cols[k] })));
+        pqw.write(outNames.map((nm, k) => ({ name: nm, data: g.cols[k] })));
         at += g.count; $('#meta').textContent = `export: spatial sort + write — ${at.toLocaleString()} / ${written.toLocaleString()}…`;
         await new Promise((r) => setTimeout(r));
         if (epoch !== _exportEpoch) return -1;             // superseded
         if (cancelled(signal)) { $('#meta').textContent = 'export cancelled — nothing written'; return -1; }
       }
     } else flushGrp();
-    if (!written) pqw.write(colIdx.map((i) => ({ name: cols[i].name, data: [] })));   // an empty export is still a file
+    if (!written) pqw.write(outNames.map((nm) => ({ name: nm, data: [] })));   // an empty export is still a file
     blob = new Blob([pqw.finish()], { type: 'application/octet-stream' });
   } else {
     if (buf.length) parts.push(buf.join('\r\n') + '\r\n');

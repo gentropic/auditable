@@ -3,7 +3,8 @@
 // wires the buttons.
 import { S, activeLayer, layerById } from './state.js';
 import { attrRowCountOf, layerTableHeader, rowQualifier } from './records.js';
-import { exportColumnsOf, runExport } from './export.js';
+import { exportColumnsOf, latticeConstantsOf, runExport } from './export.js';
+const fmtBytes = (b) => (b >= 1 << 30 ? `${(b / (1 << 30)).toFixed(1)} GB` : b >= 1 << 20 ? `${(b / (1 << 20)).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`);
 const $ = (s) => document.querySelector(s);
 
 // ── the export dialog ──
@@ -79,12 +80,14 @@ export function renderExportDialog() {
     shown = cols.map((_, i) => i).filter((i) => !q || cols[i].name.toLowerCase().includes(q));
     allA.textContent = q ? 'all shown' : 'all';
     noneA.textContent = q ? 'none shown' : 'none';
-    tally.textContent = `${cols.length - d.off.size} of ${cols.length} picked${q ? ` · ${shown.length} shown` : ''}`;
+    const live = cols.filter((c) => !c.stale).length;
+    tally.textContent = `${cols.filter((c, i) => !c.stale && !d.off.has(i)).length} of ${live} picked${q ? ` · ${shown.length} shown` : ''}`;
     grid.textContent = '';
     for (const i of shown) {
       const c = cols[i];
       const lab = document.createElement('label');
-      const cb2 = document.createElement('input'); cb2.type = 'checkbox'; cb2.checked = !d.off.has(i);
+      const cb2 = document.createElement('input'); cb2.type = 'checkbox'; cb2.checked = !d.off.has(i) && !c.stale;
+      if (c.stale) { cb2.disabled = true; lab.className = 'dis'; lab.title = c.stale; lab.appendChild(cb2); lab.append(`${c.name} (not exported)`); grid.appendChild(lab); continue; }
       cb2.onchange = () => { if (cb2.checked) d.off.delete(i); else d.off.add(i); rebuildCols(); };
       lab.appendChild(cb2);
       if (c.badge) { const b3 = document.createElement('span'); b3.className = 'bdg'; b3.textContent = c.badge; lab.appendChild(b3); }
@@ -134,6 +137,38 @@ export function renderExportDialog() {
       mkRow2('detection limits', qLab);
     }
   }
+  // the lattice: a block model on one travels with the file — Parquet in its footer
+  // (always), CSV in a `# micro:model` comment line (on by default); and, for packages
+  // that read neither, as constant columns on every row (off — it costs every row)
+  const th = layerTableHeader(L);
+  if (th && th.grid) {
+    const lc = latticeConstantsOf(th);
+    const els = [];
+    if (d.format !== 'parquet') {
+      const hLab = document.createElement('label');
+      const hCb = document.createElement('input'); hCb.type = 'checkbox'; hCb.checked = d.latHdr !== false;
+      hCb.onchange = () => { d.latHdr = hCb.checked; };
+      hLab.append(hCb, '# micro:model header');
+      hLab.title = 'one comment line above the header row stating the lattice (frame, rotation, pitch, size columns): micro reopens the file as the same boxes, checked against every row; other readers skip # lines (pandas: comment="#")';
+      els.push(hLab);
+    }
+    if (lc && lc.cols.length) {
+      const cLab = document.createElement('label');
+      const cCb = document.createElement('input'); cCb.type = 'checkbox'; cCb.checked = !!d.latCols;
+      const rows = attrRowCountOf(L) || 0;
+      // ~ the text each row gains: the constants as written, ~14 characters per local coordinate
+      const perRow = lc.cols.reduce((a, c) => a + 1 + (c.local != null ? 14 : String(c.value).length), 0);
+      const cost = d.format === 'parquet'
+        ? `+${lc.cols.length} columns; the constants compress to almost nothing in Parquet${lc.cols.some((c) => c.local != null) ? ', the local XL/YL/ZL cost 3 numbers a row' : ''}`
+        : `+${lc.cols.length} columns on every row ≈ ${perRow} bytes × ${rows.toLocaleString()} rows ≈ ${fmtBytes(perRow * rows)}`;
+      cCb.onchange = () => { d.latCols = cCb.checked; };
+      cLab.append(cCb, 'lattice as columns');
+      cLab.title = `Datamine-style: ${lc.cols.map((c) => c.name).join(' ')} written on every row (world = X0/Y0/Z0 + ANGLE1 about Z · XL/YL/ZL) — for a package that reads neither micro:model carrier. ${cost}.${lc.note ? ' ' + lc.note + '.' : ''}`;
+      const costEl = document.createElement('span'); costEl.style.color = 'var(--muted)'; costEl.textContent = cost;
+      els.push(cLab, costEl);
+    }
+    if (els.length) mkRow2('lattice', ...els);
+  }
   // filename
   const nameIn = document.createElement('input'); nameIn.type = 'text';
   nameIn.value = d.name != null ? d.name : exDefaultName(L, d.format);
@@ -148,13 +183,13 @@ export async function exGo() {
   const d = _exDlg; if (!d) return;
   const L = layerById(d.lid); if (!L) return;
   const cols = exportColumnsOf(L);
-  const colIdx = cols.map((_, i) => i).filter((i) => !d.off.has(i));
+  const colIdx = cols.map((_, i) => i).filter((i) => !d.off.has(i) && !cols[i].stale);
   if (!colIdx.length) { $('#exDlgMsg').textContent = 'pick at least one column'; return; }
   const btn = $('#exGo');
   btn.disabled = true;
   $('#exDlgMsg').textContent = 'sweeping…';
   try {
-    const n = await runExport(L, { scope: d.scope, colIdx, delim: d.delim, decimalComma: d.dec, format: d.format, codec: d.codec, spatialSort: d.spatialSort, qualified: d.qual, filename: (d.name || exDefaultName(L, d.format)).trim() || exDefaultName(L, d.format) });
+    const n = await runExport(L, { scope: d.scope, colIdx, delim: d.delim, decimalComma: d.dec, format: d.format, codec: d.codec, spatialSort: d.spatialSort, qualified: d.qual, latticeHeader: d.latHdr !== false, latticeColumns: !!d.latCols, filename: (d.name || exDefaultName(L, d.format)).trim() || exDefaultName(L, d.format) });
     if (n >= 0) { $('#exDlg').classList.remove('show'); _exDlg = null; }
   } finally { btn.disabled = false; }
 }

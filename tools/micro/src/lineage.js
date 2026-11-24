@@ -18,7 +18,20 @@ export function openLineage(name, blob) { return { op: 'open', at: Date.now(), b
 // from ANY Parquet file: a producer that knows its lattice may write it too.
 // The contract is in docs/index.html (#micro-model). Size columns ride as
 // NAMES (`dims`), never indices — a producer's column order is its own business.
-export function microModelOf(h) {
+// The SAME object goes in a CSV export's `# micro:model` comment line (condenser
+// grid/model.js microModelLine) — one writer, two carriers.
+// latticeOnly: a SUBSET's (filter / selection export) — the lattice part (frame,
+// rotation, pitch, size columns by name) without the whole model's discovery (bbox,
+// categories, shapes): those would describe rows the file doesn't hold. A reader
+// re-discovers them and applies the lattice as DECLARED (checked on every record).
+export function microModelOf(h, { latticeOnly = false, subset = null } = {}) {
+  if (latticeOnly) {
+    const full = microModelOf(h);
+    const m = { v: 1, by: 'micro', grid: full.grid, subBlocked: full.subBlocked };
+    for (const k of ['lattice', 'dims']) if (full[k]) m[k] = full[k];
+    if (subset) m.subset = subset;
+    return m;
+  }
   // by: 'micro' — micro inferred (or checked) this grid itself, so a reopen may
   // trust it; a grid any other producer states is checked against every centroid
   const m = { v: 1, by: 'micro', grid: h.grid || null, bbox: h.bbox, categories: h.categories || null, subBlocked: !!h.subBlocked };

@@ -6,7 +6,7 @@
 import { startChunkBuilder } from './chunkworker.js';
 import { pinEvictLayer } from './columns.js';
 import { layerById, S, requestRender } from './state.js';
-import { gridFromBasis, mapColumns, findDimColumns, inferAxis, inferSubBlockLattice, sizeCollector, pitchOf, detectRotatedLattice, detectRotatedOverAxisGrid, isDimColumn, basisAngles, openBlockModel, makeBlockGrid, createChunkBuilder, dmWireframeRole, peekDmColumns, openDmModel } from '../../../ext/condenser/src/main.js';
+import { gridOfMicroModel, dimColsOfMicroModel, declaredSubBlocks, mapColumns, findDimColumns, inferAxis, inferSubBlockLattice, sizeCollector, pitchOf, detectRotatedLattice, detectRotatedOverAxisGrid, isDimColumn, basisAngles, openBlockModel, makeBlockGrid, createChunkBuilder, dmWireframeRole, peekDmColumns, openDmModel } from '../../../ext/condenser/src/main.js';
 import { parquetInfoAsync, streamParquetColumns } from '../../../ext/parquet/index.js';
 import { scan } from './scanner.js';
 import { microConfirm, microPrompt } from './prompts.js';
@@ -38,22 +38,10 @@ async function baseBlockBuilder(lid, { frame, grid }) {
 // row-group streaming + the footer's per-group bbox as a spatial index are the
 // next step; this is the working opener.
 const _pqNum = (t) => /INT|FLOAT|DOUBLE|DECIMAL/.test(t || '');
-// micro:model's grid → micro's internal grid. Forms accepted: per-axis
-// { x, y, z } (axis-aligned), the internal rotated form (+ rot, anchor), or a
-// producer's { basis: { origin, U, V, W, counts, source? } } alone.
-function microModelGrid(m) {
-  const g = m && m.grid;
-  if (!g) return null;
-  if (g.rot && g.anchor && g.x) return { x: g.x, y: g.y, z: g.z, rot: g.rot, anchor: g.anchor, ...(g.source ? { source: g.source } : {}) };
-  if (g.basis) return gridFromBasis(g.basis);
-  return g.x ? { x: g.x, y: g.y, z: g.z } : null;
-}
-// micro:model `dims` (names) → column indices in THIS file, or null if absent/missing
-function microModelDimCols(m, names) {
-  if (!m || !m.dims) return null;
-  const d = { x: names.indexOf(m.dims.x), y: names.indexOf(m.dims.y), z: names.indexOf(m.dims.z) };
-  return d.x >= 0 && d.y >= 0 && d.z >= 0 ? d : null;
-}
+// micro:model's grid → micro's internal grid (condenser grid/model.js — the same
+// reading a CSV's `# micro:model` line gets); null on none OR a malformed one
+function microModelGrid(m) { try { return gridOfMicroModel(m); } catch { return null; } }
+const microModelDimCols = dimColsOfMicroModel;
 export async function openParquetBlocks(blob, name, opts = {}) {
   // the layer holds the BLOB, never the bytes: every read below range-reads
   // (toAsyncBuffer slices the blob), so a multi-GB parquet costs no residency.
@@ -83,7 +71,7 @@ export async function openParquetBlocks(blob, name, opts = {}) {
   // cached model that says sub-blocked must name its size columns (micro:model
   // `dims`) — the fine grid's pitch is all the sizes need; one that doesn't (older
   // micro exports wrote only the flag) is not trusted — discovery rebuilds it.
-  const dimIdx = opts.dimCols || findDimColumns(names);
+  let dimIdx = opts.dimCols || findDimColumns(names);
   // a CALLER-declared lattice (addLayer on a file) outranks the footer: the
   // discovery sweep still runs (bbox, categories) and checks every record on it
   const declared = opts.lattice || null;
@@ -94,6 +82,14 @@ export async function openParquetBlocks(blob, name, opts = {}) {
   // a model cached with none can't serve one either. Untrusted → discovery sweeps.
   const catOk = (c) => (!c.categories ? catN == null : c.catColumn ? c.catColumn === catN : !opts.catChanged);
   const cachedPq = cachedPq0 && catOk(cachedPq0) && (!cachedPq0.subBlocked || cachedDims) ? cachedPq0 : null;
+  // the footer's LATTICE alone, when its discovery can't be served (no bbox — a
+  // producer that states only its lattice; a category re-keyed): the discovery sweep
+  // runs, and the lattice is applied as DECLARED — checked on every record, and on a
+  // misfit REFUSED (points + the reason), never thrown: a file's claim, not an order
+  const kvLat = !declared && !(cachedPq && cachedPq.bbox) && !opts.cached && !opts.forcePoints && kvModel ? microModelGrid(kvModel) : null;
+  const kvLatDims = kvLat && kvModel.subBlocked ? microModelDimCols(kvModel, names) : null;
+  const fileDeclared = kvLat && (!kvModel.subBlocked || kvLatDims) ? kvLat : null;
+  if (fileDeclared && kvLatDims && !opts.dimCols) dimIdx = kvLatDims;
   let grid = null, categories = null, subBlocked = false, sizeQMax = null, sizeShapes = 0, subBlockRefused = null, dimCols = null;
   let latticeInfo = null, latticeCandidate = null, latticeRejected = null;
   // a colour-by switch on the SAME file: grid, bbox, categories and sizes don't
@@ -149,23 +145,32 @@ export async function openParquetBlocks(blob, name, opts = {}) {
     if (g.res) for (let k = 0; k < g.res.length && res.length < RES * 3; k++) res.push(g.res[k]);
   }
   // a declared lattice is checked against every centroid, as its own job
-  const declaredBad = declared ? (await scan.checkLattice({ file: blob, meta: info.meta, rowGroups: info.rowGroups, cols: [xN, yN, zN], grid: declared })).bad : null;
+  const decl = declared || fileDeclared;
+  const declaredBad = decl ? (await scan.checkLattice({ file: blob, meta: info.meta, rowGroups: info.rowGroups, cols: [xN, yN, zN], grid: decl })).bad : null;
   if (declared && declaredBad) throw new Error(`declared lattice rejected — ${declaredBad}`);
-  const axes = declared ? null : ax.map((set) => (set.size < CAP ? inferAxis([...set].sort((a, b) => a - b)) : null));
-  grid = opts.forcePoints ? null : declared ? { ...declared } : axes.every(Boolean) ? { x: axes[0], y: axes[1], z: axes[2] } : null;
+  if (fileDeclared && declaredBad) latticeRejected = `the file's micro:model lattice doesn't fit — ${declaredBad}`;
+  const axes = decl ? null : ax.map((set) => (set.size < CAP ? inferAxis([...set].sort((a, b) => a - b)) : null));
+  grid = opts.forcePoints ? null : declared ? { ...declared } : fileDeclared ? (latticeRejected ? null : { ...fileDeclared }) : axes.every(Boolean) ? { x: axes[0], y: axes[1], z: axes[2] } : null;
   if (declared) latticeInfo = { basis: 'declared', by: opts.declaredBy || 'caller' };
+  // the file's sub-blocks: its size columns, whole fine steps of its lattice
+  if (grid && fileDeclared && kvLatDims) {
+    const fs = declaredSubBlocks(sizes, pitchOf(grid));
+    if (fs.refused) { latticeRejected = `the file's micro:model sub-blocks don't fit — ${fs.refused}`; grid = null; }
+    else { subBlocked = true; sizeQMax = fs.sizeQMax; sizeShapes = fs.shapes; dimCols = kvLatDims; }
+  }
+  if (grid && fileDeclared) latticeInfo = { basis: 'declared', by: 'file' };
   // the same sub-block rule as the CSV and .dm readers (condenser grid/infer.js)
-  const sb = !opts.forcePoints && !declared && dN ? inferSubBlockLattice(ax, sizes, { cap: CAP }) : null;
+  const sb = !opts.forcePoints && !decl && dN ? inferSubBlockLattice(ax, sizes, { cap: CAP }) : null;
   if (sb && sb.refused) { subBlockRefused = sb.refused; grid = null; }
   else if (sb) { grid = sb.grid; subBlocked = true; sizeQMax = sb.sizeQMax; sizeShapes = sb.shapes; dimCols = dimIdx; }
   // not an axis-aligned grid → maybe a ROTATED one: a candidate the opener confirms
   const coordSweep = () => (async function* () {
     for await (const { count, cols } of streamParquetColumns(blob, [xN, yN, zN], info.rowGroups, info.meta)) yield { x: cols[xN], y: cols[yN], z: cols[zN], count };
   })();
-  if (!grid && !subBlocked && !subBlockRefused && !opts.forcePoints && res.length >= 24) {
+  if (!grid && !subBlocked && !subBlockRefused && !latticeRejected && !opts.forcePoints && res.length >= 24) {
     $('#meta').textContent = `${name} — trying a rotated lattice…`;
     latticeCandidate = await detectRotatedLattice(Float64Array.from(res), coordSweep);
-  } else if (grid && !declared && !subBlocked && !opts.forcePoints) {
+  } else if (grid && !decl && !subBlocked && !opts.forcePoints) {
     // a rotated model can ALSO read as a sparse, wrong axis grid (45°, 3-4-5…)
     const c = await detectRotatedOverAxisGrid(grid, N, Float64Array.from(res), coordSweep);
     if (c) { grid = null; latticeCandidate = c; }
@@ -366,6 +371,7 @@ export async function openDmBlob(blob, name, opts = {}) {
   const { header, streamChunks, recordBatches, columnBatches, fetchRecord } = await openDmModel(blob, { ...(mapping ? { mapping } : {}), forcePoints: opts.forcePoints, onProgress, cached: opts.cached || null, origin });
   if (origin) header.dmOriginSet = true;
   if (L0 && origin) L0.dmOrigin = [...origin];
+  await settleLatticeCandidate(header, name, opts);        // an unrotated .dm on a rotated lattice: boxes or points, asked (as for CSV / Parquet)
   // the doc keeps the provider's READERS, not just its stream: a rotated model's
   // records come back placed in world (records.js dmDocReader — the one way in)
   const blockDoc = { blob, name, header, metaLine: '', forcePoints: opts.forcePoints, streamChunks, recordBatches, columnBatches, fetchRecord };
