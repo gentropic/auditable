@@ -41,8 +41,10 @@ Parquet \file{.parquet} \file{.pq} & yes & yes & Read streamed, holding nothing 
   rotated or not, in \code{micro:model} (\cref{sec:host-model}). Written with Snappy or gzip
   compression. \\
 Datamine \file{.dm} & yes & — & Block models, with per-record \col{XINC}, \col{YINC}, \col{ZINC}
-  read as sub-blocks. Only the columns a query needs are read from each record. To convert, open
-  and export as CSV or Parquet. \\
+  read as sub-blocks. One rotation (\col{ANGLE1} about Z) is placed in world coordinates, about
+  the origin \col{X0} \col{Y0} \col{Z0} or one you give; its \col{XC} \col{YC} \col{ZC} then read
+  in world (\cref{sec:blocks-dm-rotated}). Only the columns a query needs are read from each
+  record. To convert, open and export as CSV or Parquet. \\
 OMF v1 \file{.omf} & yes & — & Block-model elements, with the lattice declared and rotated axes
   kept. Uneven block widths open as centroids. See \cref{sec:formats-meshes}. \\
 \bottomrule
@@ -53,12 +55,14 @@ OMF v1 \file{.omf} & yes & — & Block-model elements, with the lattice declared
   east/north/elevation-style names. Anything micro didn't guess, you map in the open dialog.
 \item[Sub-block sizes] are found by name too: \col{DX}\slash\col{DY}\slash\col{DZ},
   \col{XINC}\slash\col{YINC}\slash\col{ZINC}, \col{DIMX}\slash\col{DIMY}\slash\col{DIMZ}.
-\item[Limits of sub-blocked models:] at most 256 distinct block sizes, and sizes that subdivide the
-  parent block by powers of two. A model outside those limits opens as points
-  (\cref{ch:blocks}).
+\item[Limits of sub-blocked models:] any whole-number refinement and any number of shapes; a
+  block may span at most 255 steps of the fine lattice along an axis. A model past that opens as
+  points (\cref{ch:blocks}).
 \item[Rotated models] work for everything per record, and for joins between models on the same
-  rotated lattice. Resampling between different orientations, proportions by a solid, and rotated
-  sub-blocked models are not supported (\cref{ch:blocks}).
+  rotated lattice; a rotated model may be sub-blocked. Resampling between different orientations,
+  proportions by a solid on a rotated sub-blocked model, and joining sub-blocks onto a rotated
+  lattice are not supported
+  (\cref{ch:blocks}).
 \end{description}
 
 \begin{tip}

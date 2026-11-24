@@ -63,10 +63,10 @@ A\index{sub-blocked model}\index{block model!sub-blocked} sub-blocked model refi
 \node[text=muted, anchor=west] at (4.3,0.75) {sub-block 5 m};
 \node[text=amber, anchor=west] at (4.3,0.25) {the contact};
 \end{tikzpicture}
-\caption{A sub-blocked model in section. micro places every block on one fine lattice, at half the \emph{smallest} block size, and gives each its own dimensions, so a parent and its sub-blocks are each one record, drawn and weighed at their real volume.}\label{fig:blocks-subblocks}
+\caption{A sub-blocked model in section. micro places every block on one fine lattice (here at half the smallest block size) and gives each its own size in steps of that lattice, so a parent and its sub-blocks are each one record, drawn and weighed at their real volume.}\label{fig:blocks-subblocks}
 \end{figure}
 
-\shot{blocks-subblocked}{A sub-blocked model in micro: 20~m parent blocks away from a dipping contact, refined to 10~m and 5~m boxes along it, each drawn at its own size, with block edges on. The status line reads \ui{9,744 sub-blocks · fine 2.5×2.5×2.5 · 3 sizes}.}
+\shot{blocks-subblocked}{A sub-blocked model in micro: 20~m parent blocks away from a dipping contact, refined to 10~m and 5~m boxes along it, each drawn at its own size, with block edges on. The status line reads \ui{9,744 sub-blocks · fine 2.5×2.5×2.5 · 3 shapes · largest 20×20×20}.}
 
 Detection is automatic, from the columns that carry each block's size:
 
@@ -75,12 +75,14 @@ Detection is automatic, from the columns that carry each block's size:
 \item In a Datamine \file{.dm} model, \col{XINC} \col{YINC} \col{ZINC} that vary from record to record.
 \end{itemize}
 
-When those are present, micro builds a fine lattice whose pitch on each axis is half the smallest block size there: fine enough that the centroid of every block, parent or sub-block, lands on one of its nodes (\cref{fig:blocks-subblocks}). It collects the distinct block sizes into a short list. The status line reports both, as in \ui{fine 2.5×2.5×2.5 · 3 sizes} for a model of 20, 10 and 5~m blocks, and file info lists the sizes. Each block then needs only one small code to say which size it is, which is why a sub-blocked model costs about the same memory as a regular one.
+When those are present, micro builds a fine lattice whose pitch on each axis is half the largest step every block size there is a whole number of: half the smallest size when the smaller sizes divide the larger, as they usually do, and half of 1~m for a model with 3~m and 4~m blocks. That is fine enough that the centroid of every block, parent or sub-block, lands on one of its nodes (\cref{fig:blocks-subblocks}). Each block then carries its size as three small whole numbers, its length along each axis in steps of that lattice, so a sub-blocked model costs about a quarter more graphics memory than a regular one, whatever the number of shapes. The status line reports the lattice and the shapes, as in \ui{fine 2.5×2.5×2.5 · 3 shapes · largest 20×20×20} for a model of 20, 10 and 5~m cubes, and file info lists the sizes.
+
+A block's volume is its size in steps times the pitch on each axis: the box drawn on screen. Every analysis that weighs blocks (grade–tonnage, swath, the cross-tab, the resource table, statistics weighted by volume, the reconciliation factors, the contact profile) takes it from there, so they all weigh a block the same way.
 
 Everything that works record by record treats a sub-block as an ordinary block: filter, color, pick, statistics, export. The analyses that weigh blocks use each block's own volume, so grade–tonnage and swath do not mistake a 5~m sub-block for a 20~m parent. Join and reconcile aggregate sub-blocks onto a regular grid by the volume each one overlaps (\cref{ch:joins}).
 
 \begin{caution}
-Detection expects the standard export: sub-blocks that halve the parent, and halve again (power-of-two refinement), and at most 256 distinct block sizes. A model refined by odd ratios, or with more sizes than that, opens as points. The grades are all there; only the boxes are missing.
+Any whole-number refinement works, odd ratios included, and there is no limit on the number of distinct shapes (a real Isatis export has more than three thousand). The one limit is length: a block may span at most 255 steps of the fine lattice along an axis, so a model whose largest block is more than about 127 times its size step opens as points, and the status line says which axis and why. The grades are all there; only the boxes are missing.
 \end{caution}
 
 \section{Rotated models}\label{sec:blocks-rotated}
@@ -105,11 +107,24 @@ A file can also \emph{state} its lattice instead of leaving it to be inferred. A
 
 Everything that works record by record works on a rotated model: filters, statistics, grade–tonnage, swath, the cross-tab, export, and select or flag by a solid. Join and reconcile work between two models that share the same rotated lattice.
 
-Five things are not available yet, and micro refuses each with a reason instead of approximating: resampling between models of different orientation, proportions inside a solid, rotated models that are also sub-blocked, grade shells, and the empty-model creator.
+Five things are not available yet, and micro refuses each with a reason instead of approximating: resampling between models of different orientation, proportions inside a solid on a model that is both rotated and sub-blocked, joining a sub-blocked model onto a rotated one, grade shells, and the empty-model creator.
+
+\subsection{Rotated Datamine models}\label{sec:blocks-dm-rotated}
+
+\index{Datamine .dm!rotated}\index{rotated model!Datamine}
+A Datamine model states its rotation in its header: up to three angles \col{ANGLE1}–\col{ANGLE3}, each about an axis \col{ROTAXIS1}–\col{ROTAXIS3} (1 = X, 2 = Y, 3 = Z). Its \col{XC} \col{YC} \col{ZC} are stored in the model's own, unrotated frame. A model with \emph{one} rotation, \col{ANGLE1} about Z, is placed in world coordinates: \col{ANGLE1} turns the model's axes clockwise seen from above, so \code{ANGLE1 = -50} puts the model's X axis at N40°E, and a block's world position is the model's origin plus the rotated \col{XC} \col{YC} \col{ZC}. The convention was checked on a real export, whose block bounds it reproduces to the centimetre. The status line names the rotation and the origin.
+
+The origin is where the model's local (0, 0, 0) sits in the world. micro takes it from the header's \col{X0} \col{Y0} \col{Z0}. A file that carries none, as an anonymised export does, opens about (0, 0, 0), and the status line says so. Type the origin in the open dialog, where a rotated \file{.dm} row shows \ui{origin X Y Z} filled in from the file, or set it later with \ui{Datamine origin…} on the layer's right-click menu (or the command palette). The model moves; the origin is saved with the project.
+
+From then on the coordinate \emph{columns} mean what they mean for any other model: \col{XC} \col{YC} \col{ZC} read in world coordinates, everywhere. A filter \code{XC > 432900}, a swath, statistics, a selection by solid, the record panel, an export: all of them see the world value. The record panel also lists the model's own coordinates beside them, as \ui{XC · model frame} and so on. Volumes are unchanged, since a rotation keeps them.
+
+An export writes the world \col{XC} \col{YC} \col{ZC} with the sizes. A Parquet export carries the rotated lattice in its \code{micro:model} entry and reopens as rotated boxes, sub-blocked or not. A CSV has no place to state a lattice: a regular one is detected and offered again on reopening (\cref{sec:blocks-rotated}); a sub-blocked one reopens as points.
 
 \begin{caution}
-A \emph{Datamine} model with a rotation in its header is a separate case. micro does not yet convert Datamine's rotation, so it draws the model in the model's own unrotated frame and puts a warning on the status line. Volumes, grades and tonnages are right. Positions against other layers — drillholes, topography — are not.
+An export also carries the header's constant columns, \col{ANGLE1} and \col{ROTAXIS1} among them, but its \col{XC} \col{YC} \col{ZC} are already rotated. A package that reads those columns and applies the rotation again would rotate the model twice; leave them out of the export (\ui{Export rows…} lets you pick the columns) when the file goes to such a package.
 \end{caution}
+
+A model with two or three rotations is still drawn in its own, unrotated frame, with a warning on the status line: the order in which Datamine composes them has not been verified on a real file, and a placement that looks plausible and is wrong is worse than an honest frame. Its volumes, grades and tonnages are right; its positions against other layers are not.
 
 \section{Datamine \file{.dm} models}\label{sec:blocks-dm}
 
@@ -171,7 +186,7 @@ Each of the three formats wins somewhere (\cref{tab:blocks-formats}).
 \begin{tabularx}{\linewidth}{@{}lLL@{}}\toprule
 format & good at & weak at \\ \midrule
 CSV & read by everything; readable by eye; the lingua franca between packages & largest on disk; every number is parsed from text; types and blanks are guessed \\
-Datamine \file{.dm} & opens at once; one column read at a time; typed & micro cannot write it; a rotated model is not placed in world coordinates \\
+Datamine \file{.dm} & opens at once; one column read at a time; typed & micro cannot write it; a model with two or three rotations is not placed in world coordinates \\
 Parquet & smallest; typed; filters skip row groups, and regions of space once Morton-sorted; reopens without inference & not readable by eye; not every mining package reads it \\
 \bottomrule
 \end{tabularx}

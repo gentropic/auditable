@@ -593,19 +593,19 @@ key & & meaning \\
 \code{categories} & optional & The category column's distinct values (at most 255), in the code
   order you want. \\
 \code{subBlocked} & optional & \code{true} for blocks of varying size. \code{grid} is then the
-  \emph{fine} lattice, with a pitch of half the smallest block size, and \code{dims} and
-  \code{dimPalette} must be written too. \\
+  \emph{fine} lattice, its pitch half the step every block size is a whole number of, and
+  \code{dims} must be written too. \\
 \code{dims} & with \code{subBlocked} & \code{\{ x: 'DX', y: 'DY', z: 'DZ' \}}: the size columns,
-  by name. \\
-\code{dimPalette} & with \code{subBlocked} & The distinct sizes as \emph{half}-sizes,
-  \code{[[hx,hy,hz], …]} (at most 256). \\
+  by name. Each block's size in steps of the fine lattice follows from them. \\
+\code{sizeQMax} & optional & The largest block, in fine steps per axis, \code{[sx, sy, sz]}
+  (each at most 255). An older footer's \code{dimPalette} is read and not needed. \\
 \code{declared} & optional & Who states the lattice, as a short name. A declared or rotated
   lattice is applied without asking, and checked. \\
 \code{v} & optional & The format version; \code{1} today. \\
 \bottomrule
 \end{tabularx}
 
-A sub-blocked model written \emph{without} \code{dims} and \code{dimPalette} is not trusted: micro
+A sub-blocked model written \emph{without} \code{dims} is not trusted: micro
 runs its discovery and rebuilds them. The size columns are found by the same names as in a CSV
 (\col{DX}/\col{DY}/\col{DZ}, \col{XINC}…, \col{DIMX}…), so a sub-blocked Parquet file also works
 with no \code{micro:model} at all.
@@ -651,6 +651,7 @@ picking and true sections (\cref{ch:blocks}). The rotation is stored as a basis,
 \begin{note}
 On a rotated model, everything per record works — filters, statistics, grade–tonnage, swaths,
 export, select and flag by a solid per centroid — and so do joins and reconciles between models on
-the same rotated lattice. Not supported: resampling between different orientations, proportions by
-a solid, rotated sub-blocked models, and the empty-grid creator.
+the same rotated lattice; a rotated model may be sub-blocked. Not supported: resampling between
+different orientations, proportions by a solid on a rotated sub-blocked model, joining sub-blocks
+onto a rotated lattice, and the empty-grid creator.
 \end{note}
