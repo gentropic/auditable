@@ -179,6 +179,76 @@ setting & meaning \\ \midrule
 
 The mesh must be in its exact form (\cref{sec:meshes-tiers}); the command is absent from a streamed mesh's menu.
 
+\section{From a point cloud to a grid}\label{sec:grids-points}
+\index{point cloud!gridding}\index{DEM!from a point cloud}\index{survey!drone}
+A drone flight or a laser scan of the pit arrives as a point cloud: tens of millions of points, every one a measured height. \menu{Geometry>Grid points to DEM…} on a points layer's right-click menu (LAS, PLY, XYZ, a CSV of points), or \code{grid points} in the command palette, turns it into a grid — a DEM you can export, extend, compare with last month's (\cref{sec:grids-cutfill}) and count mined blocks against (\cref{sec:factors-surveys}). The window is titled \ui{grid points}.
+
+\begin{table}[htbp]
+\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+setting & meaning \\ \midrule
+\ui{points} & the point cloud \\
+\ui{lattice} & \ui{its own extent}, at a cell size, or \ui{match:} an existing grid layer, to fill that grid's nodes \\
+\ui{cell (m)} & the node spacing, with the resulting node count beside it; the default puts about 500 nodes across the cloud \\
+\ui{nodes} & on round multiples of the cell, or \ui{through a point} you give \\
+\ui{statistic} & what each node keeps of the points in its cell: \ui{min Z} (the ground under vegetation), \ui{mean Z}, \ui{max Z} (a crest, the canopy) or \ui{count} (point density) \\
+\ui{empties} & nodes no point fell on: \ui{leave blank}, \ui{nearest (flat)} or \ui{planar trend}, with \ui{holes only} to fill the gaps inside the cloud and leave beyond its edge blank \\
+\ui{only} & an expression keeping the points to grid — \code{Classification == 2} for a LAS file's ground class. Blank: the layer's filter box if it holds one, else every point \\
+\bottomrule
+\end{tabularx}
+\caption{The \ui{grid points} window. \ui{Grid} builds the DEM.}\label{tab:grids-points}
+\end{table}
+
+Each point goes to its \emph{nearest} node, so a node stands for the cell centred on it — the same reading micro gives every grid it opens. The cloud is read once, chunk by chunk, and never held: the memory is the grid's, not the cloud's. A 10-million-point LAS file grids onto a 1~m lattice of three million nodes in about two and a half seconds on a laptop.
+
+The lattice is the setting to think about. With nodes on round multiples of the cell, every survey you grid at that cell lands on the same nodes, so this month's DEM and last month's subtract node for node with nothing interpolated. \ui{match:} does the same against a grid you already have, a topography from another package.
+
+\begin{caution}
+A node with no point stays blank unless you fill it. A blank is not zero: it means \emph{not surveyed}. Fill \ui{holes only} to patch the gaps between flight lines, but think twice before filling out to the edge — a planar trend continued past the pit crest invents ground that was never measured.
+\end{caution}
+
+The DEM opens as a grid layer named after the cloud, the statistic and the cell (\file{flight\_min1m.asc}), with its lineage. Gridding again with the same settings replaces it. In a routine the tool is \code{pcgrid} (\cref{tool:pcgrid}); a routine must state the \code{cell}, since the automatic one follows the cloud's extent and two months would not share their nodes:
+
+\begin{lstlisting}[language=yaml]
+- tool: "pcgrid"
+  with:
+    layer: "flight_2026-02.las"
+    cell: 1
+    stat: "min"
+    filter: "Classification == 2"
+    fill: "nearest"
+    name: "pit_2026-02"
+\end{lstlisting}
+
+\section{Cut and fill}\label{sec:grids-cutfill}
+\index{cut and fill}\index{volume!between surfaces}
+Between two surfaces of the same ground — last month's survey and this month's, the pre-mining topography and today's pit — the volume moved is the question. \menu{Tools>Cut / fill between surfaces…}, or \code{cut fill} in the command palette, opens the \ui{cut / fill} window. Pick the earlier surface as \ui{before} and the later as \ui{after} (\ui{⇅ swap} turns them round), and press \ui{Run}. Either may be a grid or a mesh in its exact form.
+
+micro samples both surfaces on one lattice: the finer grid's own nodes over the area the two share, or the \ui{cell (m)} you give. At each node $\Delta z$ = after − before. \emph{Cut} is the volume where $\Delta z < 0$, ground removed; \emph{fill} where $\Delta z > 0$, ground added; each node counts for one cell. Nodes where either surface is blank sit out, so the result covers only ground surveyed both times.
+
+The readout gives \ui{cut}, \ui{fill}, \ui{net} (fill − cut) in m³ and the \ui{area} both surfaces cover in m²; hover a value for the area it covers. The chart is the volume moved in each band of $\Delta z$: cut in red to the left of zero, fill in blue to the right. A clean month of mining is one red hump; a dump or backfill shows as blue; a thin red-and-blue fringe about zero is the two surveys' noise.
+
+With \ui{Δz layer} ticked, the difference opens as a grid layer (\file{dz\_<after>\_<before>.asc}): a flat sheet just above the two surfaces, colored on a diverging ramp centred on zero, white where nothing changed. It is an ordinary grid — export it, drape it over the pit, select the blocks under its red patches.
+
+\begin{tip}
+Grid both surveys at one cell with nodes on round multiples (\cref{sec:grids-points}) and the cut and fill are exact sums over the nodes, with no interpolation between two lattices.
+\end{tip}
+
+The results row is the shared one (\cref{sec:analysis-results}): \ui{⇥ figure} puts the chart and the table on the composer page, and the composer's \ui{Refresh} runs the numbers again without making a second layer. In a routine the tool is \code{cutfill} (\cref{tool:cutfill}); its table is keyed by \col{quantity} (\code{cut}, \code{fill}, \code{net}) with \col{volume} and \col{area}, and its values are \code{cut}, \code{fill}, \code{net}, \code{area}, \code{cut\_area}, \code{fill\_area}, \code{nodes}, \code{cell}, \code{dz\_min} and \code{dz\_max}:
+
+\begin{lstlisting}[language=yaml]
+- tool: "cutfill"
+  with:
+    before: "pit_2026-01.asc"
+    after: "pit_2026-02.asc"
+  as: "cf"
+- check: "cf.fill < 500"
+  level: "warn"
+  say: "no more than 500 m³ of fill inside the pit"
+\end{lstlisting}
+
+The volume between the surveys is not yet tonnes or grade. For that, give the same surveys to the factors window, which counts the model's blocks between them (\cref{sec:factors-surveys}).
+
 \section{Using a surface}\label{sec:grids-using}
 
 A grid is the fastest and most exact way to ask where a model sits relative to a surface. \menu{Geometry>Flag / ratio by this surface…} on a grid's menu opens the by-geometry dialog with the grid as the surface. There you select or flag the blocks above or below it, or between it and a second surface, or compute the fraction of each block that lies below: the partial blocks along a topography, where counting whole blocks would misstate the tonnage. \Cref{ch:geometry} covers it.

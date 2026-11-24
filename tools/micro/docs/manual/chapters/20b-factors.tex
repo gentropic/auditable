@@ -65,6 +65,7 @@ The \ui{mined volume · periods} selector says how micro knows which blocks were
 \begin{description}
 \item[\ui{a period column}] A column on the blocks names the period each block was mined in, and a blank means not mined. It may be a painted column, a column joined from a schedule (\cref{ch:joins}), or a ƒ column (\cref{ch:filter}). It must exist on both models. The default, when the model has a column named like PERIOD, MINED, MONTH, QUARTER or PHASE.
 \item[\ui{a solid / surface per period}] One volume per period, each with a name: a mesh layer or a gridded surface (\cref{ch:grids}). The side menu offers what the volume's shape allows, as selecting by a solid does (\cref{ch:geometry}): a closed solid counts what is \ui{inside} it (the default) or \ui{outside}; an open surface — a pit surface as surveyed at the end of the period — or a grid counts what lies \ui{above} it (the default) or \ui{below}. \ui{+ add period} adds a row; \ui{×} removes one. The periods are reported in the order of the list.
+\item[\ui{surveys (pit surfaces in date order)}] \new{new} The month-end surveys themselves, as DEM grids (a drone cloud gridded as in \cref{sec:grids-points}) or open pit surfaces, oldest first. The first is where mining starts from — the topography, or the survey before the first period — and is not a period itself; each later survey closes a period named after it, and the period is what lies above it but not above the survey before. See \cref{sec:factors-surveys}.
 \item[\ui{a filter (one period)}] An expression that keeps the mined blocks, such as \code{MINED == 1}, and a \ui{name} for the period.
 \item[\ui{the 3D selection (one period)}] Each model's own selection, made in the view (\cref{ch:picking}), and a name. A window only: a selection is not saved with a routine.
 \end{description}
@@ -95,6 +96,22 @@ With volumes, a block counts by the \emph{fraction} of it inside, so a block cut
 \end{tikzpicture}
 \caption{Nested volumes in section. Each period's pit surface counts what lies above it; with \ui{nested} on, period 2 is what is above surface 2 but not above surface 1, and period 3 the same one phase down. A block cut by a surface counts by the fraction on the mined side.}\label{fig:factors-nested}
 \end{figure}
+
+\subsection{Surveys to periods}\label{sec:factors-surveys}
+\index{factors!surveys}\index{survey!periods from}
+Most mines do not draw a solid per month. They fly the pit, and the survey \emph{is} the record of what was mined. Pick \ui{surveys (pit surfaces in date order)} and the window lists every grid layer, sorted by name — survey files named by date (\file{pit\_2026-01.tif}, \file{pit\_2026-02.tif}) come out in date order — each row labelled \ui{start}, \ui{period 1}, \ui{period 2} and so on, with the layer's name as the period's name. Change a name to match the production table's periods, reorder with \ui{↑}, remove a row with \ui{×}, and \ui{+ add survey} adds another surface. A closed solid is not offered: a survey is a surface.
+
+Underneath, the list is nested \ui{above} volumes whose first one only sets the starting point:
+\[ \text{period } k = \text{above}(\text{survey } k) - \text{above}(\text{survey } k-1). \]
+A block counts by the fraction of it in that slice, so the bench half cut by the pit floor counts half, and the part of the top bench already gone before the first survey closed counts for nothing. Where a later survey stands \emph{higher} than the one before — a dump, backfill — nothing is counted negative; that ground is simply not mined in the period.
+
+\begin{tryit}
+With your own surveys: two month-end drone clouds and the pre-mining topography grid.
+\begin{enumerate}
+\item Grid each cloud at the same cell — \menu{Geometry>Grid points to DEM…}, \ui{cell} 1~m — so the surveys share their nodes (\cref{sec:grids-points}).
+\item Open \ui{Reconciliation factors…} on the resource model and pick \ui{surveys (pit surfaces in date order)}. Check that the topography is the \ui{start}, rename the two periods to the production table's months, and \ui{Run}.
+\end{enumerate}
+\end{tryit}
 
 \begin{note}
 On a rotated model the volumes are swept in the model's own lattice frame, so partial blocks count partially exactly as on an axis-aligned model; against a grid, each block's probes are turned with the lattice. A mesh kept in its streamed, display-only form has no triangles to test and is not offered (\cref{sec:meshes-tiers}).
@@ -202,7 +219,7 @@ The results row is the shared one (\cref{sec:analysis-results}). \ui{⇥ figure}
 \ui{save as recipe…} writes the setup as a recipe named after the model with \emph{factors} (\cref{ch:recipes}); running the recipe opens the window configured and runs it. The setup is also saved with the project on every \ui{Run}, and a window left open reopens with the project, reading \emph{restored — Run to compute}.
 
 \section{In a routine}\label{sec:factors-routine}
-The tool is \code{factors} (its settings: \cref{tool:factors}). A routine must state two things a window would let you leave: the \code{density} — tonnes are volume × density, and an automatic choice would move with the data; outside a routine, a tool call that leaves it out takes the density the layer declares in grade–tonnage — and the \code{cutoff}, a number or \code{"none"}, because a factor at another cutoff is another factor. The mined volume is a period column, volumes or a filter; a selection is refused, since it is not saved with the routine. Layers are named, and an absent \code{gc} means the model layer itself.
+The tool is \code{factors} (its settings: \cref{tool:factors}). A routine must state two things a window would let you leave: the \code{density} — tonnes are volume × density, and an automatic choice would move with the data; outside a routine, a tool call that leaves it out takes the density the layer declares in grade–tonnage — and the \code{cutoff}, a number or \code{"none"}, because a factor at another cutoff is another factor. The mined volume is a period column, volumes, surveys or a filter; a selection is refused, since it is not saved with the routine. Layers are named, and an absent \code{gc} means the model layer itself.
 
 \begin{lstlisting}[language=yaml]
 - tool: "factors"
@@ -251,6 +268,20 @@ Volumes are a list, one period each, in order:
 \end{lstlisting}
 
 The settings default as the window does: \code{nested} is on unless you write \code{nested: false}, and \code{probes} left out means 3 × 3 × 3. \code{probes} is a list of three, x, y and z, as for a fraction column (\cref{ch:geometry}); a single number $n$ means $n$ × $n$ × $n$. A \code{side} left out is the volume's default — \code{inside} for a closed solid, \code{above} for an open surface or a grid — and is written into the step's resolved settings; a side the volume can't take, \code{above} on a closed solid or \code{inside} on a pit surface, stops the step: \emph{period “2027-Q1”: side “inside” doesn't fit q1.obj — an open surface takes above or below}. A \code{mesh} may name a grid layer as well as a mesh. Each period's mesh counts among the step's inputs, so a changed surface makes the step run again rather than reuse a cached result (\cref{ch:records}).
+
+Surveys are a list too, oldest first; \code{surveys:} alone says the mode, so \code{periods} may be left out. The first survey's name only labels the start; each later one names its period. Fewer than two stops the step.
+
+\begin{lstlisting}[language=yaml]
+    surveys:
+      - name: "start"
+        surface: "topo_2025-12.tif"
+      - name: "2026-01"
+        surface: "pit_2026-01.asc"
+      - name: "2026-02"
+        surface: "pit_2026-02.asc"
+\end{lstlisting}
+
+Run a \code{pcgrid} step before it to grid the month's cloud (\cref{sec:grids-points}); the grid it makes is a layer the factors step names, like any other.
 
 The machine table is keyed by \col{period} and \col{quantity} (\code{tonnes}, \code{grade}, \code{metal}): \col{model}, \col{gc}, \col{mill}, \col{f1}, \col{f2}, \col{f3} for the period, and \col{c\_model} … \col{c\_f3} to date. The values a check reads are those of the \emph{last} period:
 
