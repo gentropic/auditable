@@ -73,7 +73,7 @@ export function serve(self, load) {
           const cols = await PQ.readParquetRange(file, p.cols, start, start + count, meta);
           const out = decodeGroup(CD, p, cols, start, count, codes);
           const tr = [out.x.buffer, out.y.buffer, out.z.buffer, out.chan.buffer, out.recIdx.buffer];
-          if (out.cat) tr.push(out.cat.buffer); if (out.dim) tr.push(out.dim.buffer);
+          if (out.cat) tr.push(out.cat.buffer); if (out.dimQ) tr.push(out.dimQ.buffer);
           self.postMessage({ type: 'result', id, out }, tr);
         }
       } else if (data.type === 'finish') {

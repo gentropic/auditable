@@ -200,10 +200,12 @@ test('basis: inFrameOf an axis-aligned grid against a near-identity rotation doe
   assert.ok(Math.abs(r.x.origin) < 0.01 && Math.abs(r.y.origin) < 0.01 && Math.abs(r.z.origin) < 0.01, 'same lattice, re-expressed about the anchor');
 });
 test('infer: the sub-block lattice tolerance stays under a tenth of the pitch at UTM magnitudes', async () => {
-  const { inferSubBlockLattice, dimKey } = await import('../ext/condenser/src/grid/infer.js');
+  const { inferSubBlockLattice } = await import('../ext/condenser/src/grid/infer.js');
+  const { sizeCollector } = await import('../ext/condenser/src/grid/support.js');
+  const sizes = sizeCollector(); sizes.add(2, 2, 2); sizes.add(4, 4, 4);
   const ys = [7700000, 7700001, 7700002, 7700003];
-  const ok = inferSubBlockLattice([new Set([0, 1, 2, 3]), new Set(ys), new Set([0, 1])], [2, 2, 2], new Set([dimKey(2, 2, 2), dimKey(4, 4, 4)]));
-  assert.ok(ok, 'on-lattice at a UTM northing');
-  const off = inferSubBlockLattice([new Set([0, 1, 2, 3]), new Set([...ys, 7700001.4]), new Set([0, 1])], [2, 2, 2], new Set([dimKey(2, 2, 2), dimKey(4, 4, 4)]));
+  const ok = inferSubBlockLattice([new Set([0, 1, 2, 3]), new Set(ys), new Set([0, 1])], sizes);
+  assert.ok(ok && ok.grid, 'on-lattice at a UTM northing');
+  const off = inferSubBlockLattice([new Set([0, 1, 2, 3]), new Set([...ys, 7700001.4]), new Set([0, 1])], sizes);
   assert.equal(off, null, 'a centroid 0.4 of a 1 m pitch off the lattice is refused (the old slack was ~7.7 m)');
 });

@@ -3,6 +3,8 @@
 // today and the rotated-basis inference tomorrow (micro-rotated-models spec:
 // cluster nearest-neighbour centroid displacements → U/V/W generators).
 
+import { finePitch } from './support.js';
+
 /**
  * Infer a regular grid from per-axis distinct centroid values (collected by a
  * provider's discovery sweep). Returns { origin (CENTROID of block 0 — i.e. the
@@ -35,35 +37,19 @@ export function inferAxis(values, { rel = 1e-6 } = {}) {
   return { origin: values[0], pitch, count };
 }
 
-// ── sub-blocked models: a fine lattice + a size palette ──────────────────────
+// ── sub-blocked models: a fine lattice + per-block sizes in fine steps ───────
 // A sub-blocked model carries per-block sizes (DX/DY/DZ, XINC…). Every provider
-// (delimited, Datamine, Parquet) collects the same three things in its discovery
-// sweep: per-axis distinct centroids, the smallest size per axis, and the
-// distinct size triples (as dimKey strings). This turns them into the fine
-// lattice (pitch = min size / 2, so every power-of-2 sub-block centre lands on
-// it) and the half-size palette the box shader reads. null = no sub-block
-// lattice: sizes don't vary, a centre is off the fine lattice (non-power-of-2
-// splits), an axis overflows u16, or there are more than 256 distinct sizes
-// (the per-block size code is a u8 — past that a code would be wrong, so the
-// caller falls back to points rather than drawing some blocks the wrong size).
+// (delimited, Datamine, Parquet) collects the same things in its discovery sweep:
+// per-axis distinct centroids and a size collector (grid/support.js). This turns
+// them into the FINE lattice (pitch = half the size step per axis, so any integer
+// combination of sizes centres on it — odd ones included) that per-block dimQ
+// (u8 × 3, fine steps) is measured on. No palette, no shape cap: 3,288 shapes are
+// as cheap as 2. null = no sub-block lattice (sizes don't vary, a centre is off
+// the fine lattice, an axis overflows u16); { refused } = a block spans more than
+// 255 fine steps (the caller says so, and shows points).
 
-export const DIM_PALETTE_MAX = 256;
+
 const r10 = (v) => Number(v.toPrecision(10));
-/** The canonical key of one (dx, dy, dz) size triple — full sizes, not halves. */
-export const dimKey = (dx, dy, dz) => `${r10(dx)},${r10(dy)},${r10(dz)}`;
-/**
- * dimKey with a memo: the same triple builds its string once. Distinct sizes are
- * few (≤ DIM_PALETTE_MAX on any model we draw), so the memo stays small.
- */
-export function makeDimKeyer() {
-  const memo = new Map();
-  return (dx, dy, dz) => {
-    let my = memo.get(dx); if (!my) memo.set(dx, my = new Map());
-    let mz = my.get(dy); if (!mz) my.set(dy, mz = new Map());
-    let k = mz.get(dz); if (k === undefined) mz.set(dz, k = dimKey(dx, dy, dz));
-    return k;
-  };
-}
 /**
  * One axis's distinct centroids, rounded to 10 significant digits. `add(v)` gives
  * exactly `if (set.size < cap) set.add(r10(v))`, but rounds each distinct RAW value
@@ -84,24 +70,22 @@ export function axisDistinct(cap) {
     },
   };
 }
-/** size key → palette code, rebuilt from a persisted half-size palette. */
-export function dimCodeFromPalette(dimPalette) {
-  return new Map(dimPalette.map((h, i) => [dimKey(h[0] * 2, h[1] * 2, h[2] * 2), i]));
-}
 
 /**
  * @param axisValues [Set|Array ×3] distinct centroid values per axis (any order)
- * @param minDim     [dx, dy, dz] the smallest positive size seen per axis
- * @param dimKeys    Set of dimKey strings (collect at least DIM_PALETTE_MAX + 1 to detect overflow)
- * @returns { grid: {x,y,z}, dimPalette: [[hx,hy,hz]…], dimCode: Map } | null
+ * @param sizes      a sizeCollector (grid/support.js) fed every block's (dx, dy, dz)
+ * @returns { grid: {x,y,z} (the FINE lattice), sizeQMax: [3], shapes } | { refused: message } | null
  */
-export function inferSubBlockLattice(axisValues, minDim, dimKeys, { cap = 300000 } = {}) {
-  if (!(dimKeys.size > 1) || dimKeys.size > DIM_PALETTE_MAX || !minDim.every((d) => Number.isFinite(d) && d > 0)) return null;
+export function inferSubBlockLattice(axisValues, sizes, { cap = 300000 } = {}) {
+  if (!sizes || !sizes.varies) return null;
+  const fp = finePitch(sizes);
+  if (!fp) return null;
+  if (fp.refused) return fp;
   const axes = [0, 1, 2].map((a) => {
     const set = axisValues[a], n = set.size != null ? set.size : set.length;
     if (!n || n >= cap) return null;
     const vals = [...set].sort((u, v) => u - v);
-    const origin = vals[0], pitch = minDim[a] / 2;
+    const origin = vals[0], pitch = fp.pitch[a];
     const count = Math.round((vals[vals.length - 1] - origin) / pitch) + 1;
     if (count > 65535) return null;
     // relative slack for float noise at big magnitudes, but never past a tenth of the pitch:
@@ -111,10 +95,5 @@ export function inferSubBlockLattice(axisValues, minDim, dimKeys, { cap = 300000
     return { origin, pitch, count };
   });
   if (!axes.every(Boolean)) return null;
-  const dims = [...dimKeys].map((k) => k.split(',').map(Number));
-  return {
-    grid: { x: axes[0], y: axes[1], z: axes[2] },
-    dimPalette: dims.map(([dx, dy, dz]) => [dx / 2, dy / 2, dz / 2]),
-    dimCode: new Map(dims.map((d, i) => [dimKey(d[0], d[1], d[2]), i])),
-  };
+  return { grid: { x: axes[0], y: axes[1], z: axes[2] }, sizeQMax: fp.sizeQMax, shapes: sizes.shapes };
 }

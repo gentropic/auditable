@@ -921,7 +921,7 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
       const kindBy = new Map(), subBy = new Set(), rotBy = new Set();
       for (const c of chunks) if (activeChunk(c)) {
         if (!kindBy.has(c._layer)) kindBy.set(c._layer, c.kind);
-        if (c.dimPalette) subBy.add(c._layer);             // sub-blocked: variable half-dims
+        if (c.sub) subBy.add(c._layer);                    // sub-blocked: variable half-dims
         if (c.grid && c.grid.rot) rotBy.add(c._layer);     // rotated lattice: face ids are lattice faces
       }
       const dirty = new Set(cosmeticDirtyLayers);
@@ -1222,10 +1222,11 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
           // (no gl_FragDepth → early-z stays on): the far-field perf lever
           const b = c.bboxLocal;
           const bboxR = Math.hypot(b[3] - b[0], b[4] - b[1], b[5] - b[2]) / 2;
-          // sub-blocked: fine grid.size is the min pitch — use the largest box radius
-          const rBlock = c.dimPalette
-            ? Math.max(...c.dimPalette.map((h) => Math.hypot(h[0], h[1], h[2])))
-            : Math.hypot(c.grid.size[0], c.grid.size[1], c.grid.size[2]) / 2;
+          // sub-blocked: fine grid.size is the fine step — use the chunk's largest box radius
+          const s = c.grid.size, q = c.sub ? c.dimQMax : null;
+          const rBlock = q
+            ? Math.hypot(q[0] * s[0], q[1] * s[1], q[2] * s[2]) / 2
+            : Math.hypot(s[0], s[1], s[2]) / 2;
           const distNear = Math.max(cam.state.near, c._dist - bboxR);
           return blocksAsPoints || rBlock * perspScale / distNear < 2.0;
         };

@@ -86,7 +86,7 @@ function toLocal(worldPt, frame) {
 }
 
 // Local → world: add the origin back. The inverse of `toLocal`.
-function toWorld(localPt, frame) {
+function toWorld$frame(localPt, frame) {
   const o = frame.origin, r = new Array(localPt.length);
   for (let i = 0; i < localPt.length; i++) r[i] = localPt[i] + (o[i] || 0);
   return r;
@@ -493,9 +493,10 @@ function chanDequant(range) {
 // block (0,0,0) — the centroid convention throughout. Chunks store raw uint16 IJK
 // (not bbox-normalized lattice positions), so reconstruction is EXACT — and IJK is
 // itself useful for the grid-view join. Half-dims are a chunk-level uniform (all
-// blocks one size) for a REGULAR grid. SUB-BLOCKED models use the same IJK scheme
-// against a FINE lattice (pitch = min dim /2) plus a per-block u8 size code into a
-// shared half-dim palette (chunk.dim + chunk.dimPalette); centroids stay exact.
+// blocks one size) for a REGULAR grid — 0 bytes per block. SUB-BLOCKED models use
+// the same IJK scheme against a FINE lattice (grid/support.js: pitch = half the size
+// step) plus each block's size in fine steps, chunk.dimQ = u8 × 3 per block (the
+// block-support contract); centroids stay exact, half = dimQ · pitch / 2.
 //
 // Attributes per block: one SCALAR channel (grade — f32 in, quantized u16 against
 // the chunk's min/max, range carried per chunk) + one CATEGORY channel (u8 codes
@@ -508,6 +509,7 @@ function chanDequant(range) {
 //   ijk: Uint16Array(3N), chan: Uint16Array(N), chanRange: [min,max],
 //   cat: Uint8Array(N), recIdx: Uint32Array(N),
 //   bboxLocal: Float64Array(6)                          — outer faces, for culling
+//   dimQ?: Uint8Array(3N), dimQMax?: [3]                — sub-blocked: sizes in fine steps
 // }
 
 
@@ -547,23 +549,24 @@ const isIdentity3 = (r) => Math.abs(r[0] - 1) < 1e-12 && Math.abs(r[4] - 1) < 1e
  * IJK is computed against the grid; anything off-lattice snaps to the nearest
  * cell (the provider validated regularity during discovery).
  */
-function buildBlockChunk({ x, y, z, chan, cat, recIdx, dim }, grid, frame, rnd, indices = null, dimPalette = null) {
+function buildBlockChunk({ x, y, z, chan, cat, recIdx, dimQ }, grid, frame, rnd, indices = null) {
   const n = indices ? indices.length : x.length;
   const o = frame.origin;
   const [gx, gy, gz] = grid.originLocal, [sx, sy, sz] = grid.size;
   const perm = indices ? shuffleInPlace(Uint32Array.from(indices), rnd) : shuffledIndices(n, rnd);
   const ijk = new Uint16Array(3 * n);
   const outChan = new Uint16Array(n), outCat = new Uint8Array(n), outR = new Uint32Array(n);
-  const sub = !!(dim && dimPalette);                        // sub-blocked → per-block size code
-  const outDim = sub ? new Uint8Array(n) : null;
+  const sub = !!dimQ;                                       // sub-blocked → per-block size in fine steps
+  const outDimQ = sub ? new Uint8Array(3 * n) : null;
+  let qmx = 0, qmy = 0, qmz = 0;
   // chan range over this chunk (quantize against it — per-chunk min/max, §2.1.2)
   let cMin = Infinity, cMax = -Infinity;
   for (let k = 0; k < n; k++) { const v = chan[perm[k]]; if (Number.isFinite(v)) { if (v < cMin) cMin = v; if (v > cMax) cMax = v; } }
   if (!Number.isFinite(cMin)) { cMin = 0; cMax = 0; }
   const cScale = chanScale(cMin, cMax);                   // code 0 = blank, 1..65535 = min..max (chan.js)
   let minI = 65535, minJ = 65535, minK = 65535, maxI = 0, maxJ = 0, maxK = 0;
-  // sub-blocked: track actual box faces (variable half-dims) for the cull bbox
-  let fx0 = Infinity, fy0 = Infinity, fz0 = Infinity, fx1 = -Infinity, fy1 = -Infinity, fz1 = -Infinity;
+  // sub-blocked: the box faces in LATTICE units (doubled, so centre ± size stays integer) for the cull bbox
+  let f0i = Infinity, f0j = Infinity, f0k = Infinity, f1i = -Infinity, f1j = -Infinity, f1k = -Infinity;
   const R = grid.rotD || null;                              // rotated lattice: IJK in the lattice frame
   for (let k = 0; k < n; k++) {
     const i = perm[k];
@@ -587,34 +590,32 @@ function buildBlockChunk({ x, y, z, chan, cat, recIdx, dim }, grid, frame, rnd, 
     outCat[k] = cat ? cat[i] : 0;
     outR[k] = recIdx[i];
     if (sub) {
-      const dc = dim[i]; outDim[k] = dc;
-      const h = dimPalette[dc] || [sx / 2, sy / 2, sz / 2];
-      const cx = gx + bi * sx, cy = gy + bj * sy, cz = gz + bk * sz;
-      if (cx - h[0] < fx0) fx0 = cx - h[0]; if (cx + h[0] > fx1) fx1 = cx + h[0];
-      if (cy - h[1] < fy0) fy0 = cy - h[1]; if (cy + h[1] > fy1) fy1 = cy + h[1];
-      if (cz - h[2] < fz0) fz0 = cz - h[2]; if (cz + h[2] > fz1) fz1 = cz + h[2];
+      const qx = dimQ[i * 3], qy = dimQ[i * 3 + 1], qz = dimQ[i * 3 + 2];
+      outDimQ[k * 3] = qx; outDimQ[k * 3 + 1] = qy; outDimQ[k * 3 + 2] = qz;
+      if (qx > qmx) qmx = qx; if (qy > qmy) qmy = qy; if (qz > qmz) qmz = qz;
+      const ci = 2 * bi, cj = 2 * bj, ck = 2 * bk;
+      if (ci - qx < f0i) f0i = ci - qx; if (ci + qx > f1i) f1i = ci + qx;
+      if (cj - qy < f0j) f0j = cj - qy; if (cj + qy > f1j) f1j = cj + qy;
+      if (ck - qz < f0k) f0k = ck - qz; if (ck + qz > f1k) f1k = ck + qz;
     }
   }
-  // culling bbox = outer faces of the extreme blocks (variable-size when sub-blocked).
-  // Rotated: the world AABB of the chunk's IJK box (its 8 corners through R).
+  // culling bbox = outer faces of the extreme blocks (variable-size when sub-blocked),
+  // as a box in lattice cells; rotated: the world AABB of its 8 corners through R.
+  const lo = sub ? [f0i / 2, f0j / 2, f0k / 2] : [minI - 0.5, minJ - 0.5, minK - 0.5];
+  const hi = sub ? [f1i / 2, f1j / 2, f1k / 2] : [maxI + 0.5, maxJ + 0.5, maxK + 0.5];
   let bboxLocal;
   if (R) {
     bboxLocal = Float64Array.of(Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity);
-    for (const ci of [minI - 0.5, maxI + 0.5]) for (const cj of [minJ - 0.5, maxJ + 0.5]) for (const ck of [minK - 0.5, maxK + 0.5]) {
+    for (const ci of [lo[0], hi[0]]) for (const cj of [lo[1], hi[1]]) for (const ck of [lo[2], hi[2]]) {
       const u = ci * sx, v = cj * sy, w = ck * sz;
       const p = [gx + R[0] * u + R[3] * v + R[6] * w, gy + R[1] * u + R[4] * v + R[7] * w, gz + R[2] * u + R[5] * v + R[8] * w];
       for (let a = 0; a < 3; a++) { if (p[a] < bboxLocal[a]) bboxLocal[a] = p[a]; if (p[a] > bboxLocal[a + 3]) bboxLocal[a + 3] = p[a]; }
     }
   } else {
-    bboxLocal = sub
-      ? Float64Array.of(fx0, fy0, fz0, fx1, fy1, fz1)
-      : Float64Array.of(
-          gx + minI * sx - sx / 2, gy + minJ * sy - sy / 2, gz + minK * sz - sz / 2,
-          gx + maxI * sx + sx / 2, gy + maxJ * sy + sy / 2, gz + maxK * sz + sz / 2,
-        );
+    bboxLocal = Float64Array.of(gx + lo[0] * sx, gy + lo[1] * sy, gz + lo[2] * sz, gx + hi[0] * sx, gy + hi[1] * sy, gz + hi[2] * sz);
   }
   const chunk = { kind: 'blocks', count: n, grid, ijk, chan: outChan, chanRange: [cMin, cMax], cat: outCat, recIdx: outR, bboxLocal };
-  if (sub) { chunk.dim = outDim; chunk.dimPalette = dimPalette; }
+  if (sub) { chunk.dimQ = outDimQ; chunk.dimQMax = [qmx, qmy, qmz]; }
   return chunk;
 }
 
@@ -633,20 +634,34 @@ function blockLocalCenter(chunk, k) {
 const batchSeed = (seed, k) => (Math.imul(k + 1, 0x9E3779B1) ^ seed) >>> 0;
 
 // ONE Morton batch → its chunks: sort the batch by Morton key, slice it into
-// chunkSize pieces, build (and shuffle) each. cols = { x, y, z, chan, cat, dim,
+// chunkSize pieces, build (and shuffle) each. cols = { x, y, z, chan, cat, dimQ,
 // recIdx } of n records. The builder's batch step, exported so a worker can run it.
-function buildBlockBatch(cols, n, { grid, frame, dimPalette = null, chunkSize, rnd }) {
+function buildBlockBatch(cols, n, { grid, frame, chunkSize, rnd }) {
   const order = radixSortIndices(mortonKeys(cols.x, cols.y, cols.z, n), n);
   const out = [];
-  for (let start = 0; start < n; start += chunkSize) out.push(buildBlockChunk(cols, grid, frame, rnd, order.subarray(start, Math.min(start + chunkSize, n)), dimPalette));
+  for (let start = 0; start < n; start += chunkSize) out.push(buildBlockChunk(cols, grid, frame, rnd, order.subarray(start, Math.min(start + chunkSize, n))));
+  return out;
+}
+
+/**
+ * Legacy size CODES (u8) + a half-dim palette — the Jupyter widget's wire format —
+ * → dimQ (u8 × 3, fine steps of the grid's pitch). The engine draws dimQ only.
+ */
+function dimQFromCodes(codes, palette, grid, n = codes.length) {
+  const s = grid.size, lut = new Uint8Array(palette.length * 3);
+  for (let c = 0; c < palette.length; c++) for (let a = 0; a < 3; a++) lut[c * 3 + a] = Math.max(1, Math.min(255, Math.round((2 * palette[c][a]) / s[a])));
+  const out = new Uint8Array(3 * n);
+  for (let i = 0; i < n; i++) { const c = codes[i] < palette.length ? codes[i] : 0; out[i * 3] = lut[c * 3]; out[i * 3 + 1] = lut[c * 3 + 1]; out[i * 3 + 2] = lut[c * 3 + 2]; }
   return out;
 }
 
 /**
  * BlockChunkBuilder — same shape as createChunkBuilder but for block RawChunks
  * ({ count, x, y, z, chan: Float32Array|Float64Array, cat: Uint8Array|null,
- * recStart }). Batch-Morton, sliced, shuffled. Tracks the document chan range
- * (for the color ramp) alongside the local bbox.
+ * dimQ: Uint8Array(3·count)|null, recStart }). Batch-Morton, sliced, shuffled.
+ * Tracks the document chan range (for the color ramp) alongside the local bbox.
+ * A sub-blocked raw chunk carries dimQ; `dimPalette` accepts the legacy code +
+ * palette form (raw.dim, the widget's wire) and converts it (dimQFromCodes).
  */
 function createBlockChunkBuilder({ frame, grid, dimPalette = null, chunkSize = 1 << 20, batchSize = 0, seed = 1, seedPerBatch = false, onChunk }) {
   let rnd = mulberry32(seed), batchNo = 0;
@@ -671,14 +686,14 @@ function createBlockChunkBuilder({ frame, grid, dimPalette = null, chunkSize = 1
       z: concat(Float64Array, pend.map((p) => p.z)),
       chan: concat(Float64Array, pend.map((p) => p.chan)),
       cat: pend.every((p) => p.cat) ? concat(Uint8Array, pend.map((p) => p.cat)) : null,
-      dim: dimPalette && pend.every((p) => p.dim) ? concat(Uint8Array, pend.map((p) => p.dim)) : null,
+      dimQ: pend.every((p) => p.dimQ) ? concat(Uint8Array, pend.map((p) => p.dimQ), 3) : null,
       recIdx: concat(Uint32Array, pend.map((p) => p.recIdx)),
     };
     const n = pendCount;
     pend = []; pendCount = 0;
     if (seedPerBatch) rnd = mulberry32(batchSeed(seed, batchNo));
     batchNo++;
-    for (const chunk of buildBlockBatch(cols, n, { grid, frame, dimPalette, chunkSize, rnd })) {
+    for (const chunk of buildBlockBatch(cols, n, { grid, frame, chunkSize, rnd })) {
       doc.count += chunk.count;
       const b = doc.bboxLocal, cb = chunk.bboxLocal;
       for (let i = 0; i < 3; i++) { if (cb[i] < b[i]) b[i] = cb[i]; if (cb[i + 3] > b[i + 3]) b[i + 3] = cb[i + 3]; }
@@ -697,12 +712,13 @@ function createBlockChunkBuilder({ frame, grid, dimPalette = null, chunkSize = 1
         recIdx = new Uint32Array(raw.count);
         for (let i = 0; i < raw.count; i++) recIdx[i] = raw.recStart + i;
       }
+      const dimQ = raw.dimQ || (raw.dim && dimPalette ? dimQFromCodes(raw.dim, dimPalette, grid, raw.count) : null);
       let taken = 0;
       while (taken < raw.count) {
         const room = batchN - pendCount;
         const n = Math.min(room, raw.count - taken);
         const s = (a) => (a ? a.subarray(taken, taken + n) : null);
-        pend.push({ x: s(raw.x), y: s(raw.y), z: s(raw.z), chan: s(raw.chan), cat: s(raw.cat), dim: s(raw.dim), recIdx: recIdx.subarray(taken, taken + n) });
+        pend.push({ x: s(raw.x), y: s(raw.y), z: s(raw.z), chan: s(raw.chan), cat: s(raw.cat), dimQ: dimQ ? dimQ.subarray(taken * 3, (taken + n) * 3) : null, recIdx: recIdx.subarray(taken, taken + n) });
         pendCount += n; taken += n;
         if (pendCount >= batchN) flushBatch();
       }
@@ -2208,13 +2224,12 @@ layout(location=0) in vec3 aIjk;        // uint16 raw (integer lattice)
 layout(location=1) in float aChan;      // uint16 normalized (per-chunk range)
 layout(location=2) in float aCat;       // uint8 raw
 layout(location=3) in uint aRec;        // uint32 record index (the join key)
-layout(location=4) in uint aDim;        // uint8 size code → uDimPalette (sub-blocked)
+layout(location=4) in uvec3 aDimQ;      // u8×3 size in FINE steps (sub-blocked; the block-support contract)
 uniform mat4 uViewProj;
 uniform vec3 uEye, uRight, uUp;
 uniform vec3 uGridOrigin, uGridSize;
 uniform mat3 uGridRot;                  // lattice rotation (identity = axis-aligned)
-uniform sampler2D uDimPalette;          // Nx1 RGBA32F: per-code half-dims (box radius)
-uniform float uSubBlock;                // 1 = variable-size boxes (read aDim → palette)
+uniform float uSubBlock;                // 1 = variable-size boxes: half = aDimQ · pitch / 2
 uniform float uPerspScale;              // persp: px/world at distance 1; ortho: px/world flat
 uniform float uOrtho;                   // 1 = orthographic (skip the /dist)
 uniform float uDemotePx, uPointPx;
@@ -2254,7 +2269,7 @@ out vec2 vCorner;
 out vec3 vWorldPos;
 void main() {
   vec3 center = uGridOrigin + uGridRot * (aIjk * uGridSize);
-  vec3 half_ = uSubBlock > 0.5 ? texelFetch(uDimPalette, ivec2(int(aDim), 0), 0).rgb : uGridSize * 0.5;
+  vec3 half_ = uSubBlock > 0.5 ? vec3(aDimQ) * uGridSize * 0.5 : uGridSize * 0.5;
   float r = length(half_);
   float dist = max(distance(uEye, center), 1e-3);
   float distEff = uOrtho > 0.5 ? 1.0 : dist;              // ortho: size is distance-free
@@ -2477,7 +2492,7 @@ function createBlocksPipeline(gl) {
     return { prog, uni: {
       viewProj: U('uViewProj'), eye: U('uEye'), right: U('uRight'), up: U('uUp'),
       gridOrigin: U('uGridOrigin'), gridSize: U('uGridSize'), gridRot: U('uGridRot'),
-      dimPalette: U('uDimPalette'), subBlock: U('uSubBlock'), opacity: U('uOpacity'),
+      subBlock: U('uSubBlock'), opacity: U('uOpacity'),
       perspScale: U('uPerspScale'), demotePx: U('uDemotePx'), pointPx: U('uPointPx'),
       colorMode: U('uColorMode'), zRange: U('uZRange'), chanChunk: U('uChanChunk'), chanDoc: U('uChanDoc'), noData: U('uNoData'), noDataOn: U('uNoDataOn'),
       ramp: U('uRamp'), palette: U('uPalette'), lightDir: U('uLightDir'),
@@ -2500,24 +2515,12 @@ function createBlocksPipeline(gl) {
     const mkBuf = (data) => { const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b); gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW); return b; };
     const bIjk = mkBuf(chunk.ijk), bChan = mkBuf(chunk.chan), bCat = mkBuf(chunk.cat);
     const bRec = mkBuf(chunk.recIdx);                      // filter-mask lookup + pick pass
-    const sub = !!(chunk.dim && chunk.dimPalette);
-    const bDim = sub ? mkBuf(chunk.dim) : null;            // per-block u8 size code
+    const sub = !!chunk.dimQ;
+    const bDim = sub ? mkBuf(chunk.dimQ) : null;           // per-block u8×3 size in fine steps (3 B/block)
     gl.bindVertexArray(null);
-    // sub-blocked: a small Nx1 RGBA32F palette of half-dims (box radii). NEAREST
-    // sampling of a float texture is core WebGL2 (only float RENDER needs an ext).
-    let dimTex = null;
-    if (sub) {
-      const pal = chunk.dimPalette, data = new Float32Array(pal.length * 4);
-      for (let i = 0; i < pal.length; i++) { data[i * 4] = pal[i][0]; data[i * 4 + 1] = pal[i][1]; data[i * 4 + 2] = pal[i][2]; }
-      dimTex = gl.createTexture();
-      gl.bindTexture(gl.TEXTURE_2D, dimTex);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, pal.length, 1, 0, gl.RGBA, gl.FLOAT, data);
-      for (const p of [gl.TEXTURE_MIN_FILTER, gl.TEXTURE_MAG_FILTER]) gl.texParameteri(gl.TEXTURE_2D, p, gl.NEAREST);
-      for (const p of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T]) gl.texParameteri(gl.TEXTURE_2D, p, gl.CLAMP_TO_EDGE);
-    }
     return {
       kind: 'blocks', vao, buffers: sub ? [bIjk, bChan, bCat, bRec, bDim] : [bIjk, bChan, bCat, bRec],
-      bIjk, bChan, bCat, bRec, bDim, dimTex, dimPalette: sub ? chunk.dimPalette : null,
+      bIjk, bChan, bCat, bRec, bDim, sub, dimQMax: sub ? chunk.dimQMax || [255, 255, 255] : null,
       count: chunk.count, bboxLocal: chunk.bboxLocal, cursor: 0,
       grid: chunk.grid, chanRange: chunk.chanRange,
     };
@@ -2548,18 +2551,17 @@ function createBlocksPipeline(gl) {
     gl.enableVertexAttribArray(3);
     gl.vertexAttribIPointer(3, 1, gl.UNSIGNED_INT, 0, first * 4);
     gl.vertexAttribDivisor(3, 1);
-    if (c.dimTex) {                                         // sub-blocked: per-block size code + palette
+    if (c.sub) {                                            // sub-blocked: per-block size in fine steps
       gl.bindBuffer(gl.ARRAY_BUFFER, c.bDim);
       gl.enableVertexAttribArray(4);
-      gl.vertexAttribIPointer(4, 1, gl.UNSIGNED_BYTE, 0, first);
+      gl.vertexAttribIPointer(4, 3, gl.UNSIGNED_BYTE, 3, first * 3);
       gl.vertexAttribDivisor(4, 1);
-      gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, c.dimTex);
       gl.uniform1f(uni.subBlock, 1);
     } else {
       gl.disableVertexAttribArray(4);
-      // A disabled `in uint aDim` reads the generic current value, which defaults to
+      // A disabled `in uvec3 aDimQ` reads the generic current value, which defaults to
       // FLOAT — a type mismatch vs the uint declaration (GL_INVALID_OPERATION at draw).
-      // Give it a valid uint default; aDim is unused when uSubBlock=0, so 0 is a no-op.
+      // Give it a valid uint default; aDimQ is unused when uSubBlock=0, so 0 is a no-op.
       gl.vertexAttribI4ui(4, 0, 0, 0, 0);
       gl.uniform1f(uni.subBlock, 0);
     }
@@ -2606,7 +2608,6 @@ function createBlocksPipeline(gl) {
       gl.uniform2f(uni.chanDoc, chanDoc[0], chanDoc[1]);
       gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, ramp); gl.uniform1i(uni.ramp, 0);
       gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, palette); gl.uniform1i(uni.palette, 1);
-      gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, palette); gl.uniform1i(uni.dimPalette, 2);   // unit 2 = per-chunk sub-block half-dims; a complete default so regular draws never sample incomplete
       gl.uniform1f(uni.subBlock, 0);
       gl.uniform1f(uni.opacity, Math.max(0.02, Math.min(1, opacity)));   // per-layer screen-door opacity
       gl.uniform1f(uni.fixedSplat, pointsView ? 1 : 0);
@@ -2798,12 +2799,11 @@ layout(location=0) in vec3 aIjk;
 layout(location=1) in float aChan;       // the visual VAO's, unchanged
 layout(location=2) in float aCat;
 layout(location=3) in uint aRec;
-layout(location=4) in uint aDim;
+layout(location=4) in uvec3 aDimQ;      // u8×3 size in fine steps (sub-blocked)
 uniform mat4 uViewProj;
 uniform vec3 uEye, uRight, uUp;
 uniform vec3 uGridOrigin, uGridSize;
 uniform mat3 uGridRot;
-uniform sampler2D uDimPalette;
 uniform float uSubBlock;
 uniform float uPerspScale, uDemotePx, uPointPx, uFixedSplat, uOrtho;
 uniform sampler2D uMask;
@@ -2829,7 +2829,7 @@ out vec2 vCorner;
 out vec3 vWorldPos;
 void main() {
   vec3 center = uGridOrigin + uGridRot * (aIjk * uGridSize);
-  vec3 half_ = uSubBlock > 0.5 ? texelFetch(uDimPalette, ivec2(int(aDim), 0), 0).rgb : uGridSize * 0.5;
+  vec3 half_ = uSubBlock > 0.5 ? vec3(aDimQ) * uGridSize * 0.5 : uGridSize * 0.5;
   float r = length(half_);
   float dist = max(distance(uEye, center), 1e-3);
   float distEff = uOrtho > 0.5 ? 1.0 : dist;
@@ -3215,7 +3215,7 @@ function createPickPipeline(gl) {
     layer: U(blk, 'uLayer'),
     viewProj: U(blk, 'uViewProj'), invVP: U(blk, 'uInvVP'), vp: U(blk, 'uVp'), eye: U(blk, 'uEye'), right: U(blk, 'uRight'), up: U(blk, 'uUp'),
     gridOrigin: U(blk, 'uGridOrigin'), gridSize: U(blk, 'uGridSize'), gridRot: U(blk, 'uGridRot'),
-    dimPalette: U(blk, 'uDimPalette'), subBlock: U(blk, 'uSubBlock'),
+    subBlock: U(blk, 'uSubBlock'),
     perspScale: U(blk, 'uPerspScale'), demotePx: U(blk, 'uDemotePx'), pointPx: U(blk, 'uPointPx'), fixedSplat: U(blk, 'uFixedSplat'),
     ortho: U(blk, 'uOrtho'), fwd: U(blk, 'uFwd'), orthoRay: U(blk, 'uOrthoRay'), backoff: U(blk, 'uBackoff'),
     mask: U(blk, 'uMask'), filterOn: U(blk, 'uFilterOn'), isolate: U(blk, 'uIsolate'),
@@ -3413,7 +3413,6 @@ function createPickPipeline(gl) {
       gl.uniform1f(uBlk.demotePx, 2.0);
       gl.uniform1f(uBlk.pointPx, dpp);
       gl.uniform1f(uBlk.fixedSplat, blocksAsPoints ? 1 : 0);
-      gl.uniform1i(uBlk.dimPalette, 2);                     // unit 2 = sub-block half-dims (per-chunk below)
       for (const [id, group] of byLayer(blkChunks)) {
         gl.uniform1ui(uBlk.layer, id >>> 0);
       const st = stateOf(id);
@@ -3440,16 +3439,15 @@ function createPickPipeline(gl) {
         gl.enableVertexAttribArray(3);
         gl.vertexAttribIPointer(3, 1, gl.UNSIGNED_INT, 0, 0);
         gl.vertexAttribDivisor(3, 1);
-        if (c.dimTex) {
+        if (c.sub) {
           gl.bindBuffer(gl.ARRAY_BUFFER, c.bDim);
           gl.enableVertexAttribArray(4);
-          gl.vertexAttribIPointer(4, 1, gl.UNSIGNED_BYTE, 0, 0);
+          gl.vertexAttribIPointer(4, 3, gl.UNSIGNED_BYTE, 3, 0);
           gl.vertexAttribDivisor(4, 1);
-          gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, c.dimTex);
           gl.uniform1f(uBlk.subBlock, 1);
         } else {
           gl.disableVertexAttribArray(4);
-          gl.vertexAttribI4ui(4, 0, 0, 0, 0);   // uint default for the disabled `in uint aDim` (see gl-blocks.js)
+          gl.vertexAttribI4ui(4, 0, 0, 0, 0);   // uint default for the disabled `in uvec3 aDimQ` (see gl-blocks.js)
           gl.uniform1f(uBlk.subBlock, 0);
         }
         gl.uniform3f(uBlk.gridOrigin, c.grid.originLocal[0], c.grid.originLocal[1], c.grid.originLocal[2]);
@@ -4933,7 +4931,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
       const kindBy = new Map(), subBy = new Set(), rotBy = new Set();
       for (const c of chunks) if (activeChunk(c)) {
         if (!kindBy.has(c._layer)) kindBy.set(c._layer, c.kind);
-        if (c.dimPalette) subBy.add(c._layer);             // sub-blocked: variable half-dims
+        if (c.sub) subBy.add(c._layer);                    // sub-blocked: variable half-dims
         if (c.grid && c.grid.rot) rotBy.add(c._layer);     // rotated lattice: face ids are lattice faces
       }
       const dirty = new Set(cosmeticDirtyLayers);
@@ -5234,10 +5232,11 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
           // (no gl_FragDepth → early-z stays on): the far-field perf lever
           const b = c.bboxLocal;
           const bboxR = Math.hypot(b[3] - b[0], b[4] - b[1], b[5] - b[2]) / 2;
-          // sub-blocked: fine grid.size is the min pitch — use the largest box radius
-          const rBlock = c.dimPalette
-            ? Math.max(...c.dimPalette.map((h) => Math.hypot(h[0], h[1], h[2])))
-            : Math.hypot(c.grid.size[0], c.grid.size[1], c.grid.size[2]) / 2;
+          // sub-blocked: fine grid.size is the fine step — use the chunk's largest box radius
+          const s = c.grid.size, q = c.sub ? c.dimQMax : null;
+          const rBlock = q
+            ? Math.hypot(q[0] * s[0], q[1] * s[1], q[2] * s[2]) / 2
+            : Math.hypot(s[0], s[1], s[2]) / 2;
           const distNear = Math.max(cam.state.near, c._dist - bboxR);
           return blocksAsPoints || rBlock * perspScale / distNear < 2.0;
         };
@@ -5441,12 +5440,243 @@ function createEdl(gl) {
   };
 }
 
+// ── src/grid/support.js ──
+
+// @gcu/condenser — the BLOCK-SUPPORT contract (micro-block-support spec §2).
+//
+// One description of a block model's support, filled by the readers and read by
+// every consumer, so a new kind of model is a new reader rather than a dozen edits:
+//
+//   frame    { anchor (world, f64), R (3×3 column-major, world ← lattice) }
+//            R = identity and anchor = 0 for an axis-aligned model.
+//   lattice  { pitch [3] — the FINE step per axis, lattice frame,
+//              originQ [3] — the centroid of fine cell (0,0,0), lattice coords,
+//              count [3] }
+//            regular model: pitch = the block size; sub-blocked: pitch = half the
+//            finest size step per axis, so odd sizes still centre on-lattice.
+//   extent   per-block size in FINE STEPS per axis:
+//            regular     → the constant sizeQ (1,1,1) — 0 bytes per block;
+//            sub-blocked → `dimQ`, u8 × 3 per block (any integer shape ≤ 255 steps).
+//
+// Derived, never stored: centre = anchor + R·(originQ + ijk·pitch); half = sizeQ·pitch/2
+// (lattice frame); volume = Π sizeQ·pitch; world AABB half = |R|·half.
+//
+// COLUMNAR, not per-record: the contract is data (constants + typed arrays) plus a
+// few pure helpers small enough to inline. No boxOf(record) returning an object —
+// hot loops read the support once and do the arithmetic themselves.
+
+const SIZEQ_MAX = 255;                              // dimQ is u8 per axis
+const I3 = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+
+/**
+ * The support of a header's grid. `grid` = { x, y, z: { origin, pitch, count },
+ * rot?, anchor? } (grid/basis.js form); subBlocked = the model carries per-block
+ * dimQ. → { frame, lattice, sub, sizeQ, sizeQMax } or null without a grid.
+ */
+function supportOf(grid, { subBlocked = false, sizeQMax = null } = {}) {
+  if (!grid || !grid.x) return null;
+  const rotated = !!grid.rot;
+  return {
+    frame: { anchor: rotated ? [...(grid.anchor || [0, 0, 0])] : [0, 0, 0], R: rotated ? Array.from(grid.rot) : I3.slice(), rotated },
+    lattice: {
+      pitch: [grid.x.pitch, grid.y.pitch, grid.z.pitch],
+      originQ: [grid.x.origin, grid.y.origin, grid.z.origin],
+      count: [grid.x.count, grid.y.count, grid.z.count],
+    },
+    sub: !!subBlocked,
+    sizeQ: subBlocked ? null : [1, 1, 1],                  // regular: one constant, no array
+    sizeQMax: subBlocked ? (sizeQMax ? [...sizeQMax] : null) : [1, 1, 1],
+  };
+}
+/** A header's support (grid + the sub-block facts it carries). */
+const supportOfHeader = (h) => (h ? supportOf(h.grid, { subBlocked: !!h.subBlocked, sizeQMax: h.sizeQMax || null }) : null);
+
+/** Volume of a block of sizeQ (sx, sy, sz) fine steps. */
+const volumeOf = (sx, sy, sz, pitch) => sx * pitch[0] * sy * pitch[1] * sz * pitch[2];
+
+/** world → lattice: q = Rᵀ·(p − anchor). out is written and returned. */
+function toLattice(frame, x, y, z, out = [0, 0, 0]) {
+  const R = frame.R, A = frame.anchor;
+  const dx = x - A[0], dy = y - A[1], dz = z - A[2];
+  out[0] = R[0] * dx + R[1] * dy + R[2] * dz;
+  out[1] = R[3] * dx + R[4] * dy + R[5] * dz;
+  out[2] = R[6] * dx + R[7] * dy + R[8] * dz;
+  return out;
+}
+/** lattice → world: p = anchor + R·q. */
+function toWorld$support(frame, u, v, w, out = [0, 0, 0]) {
+  const R = frame.R, A = frame.anchor;
+  out[0] = A[0] + R[0] * u + R[3] * v + R[6] * w;
+  out[1] = A[1] + R[1] * u + R[4] * v + R[7] * w;
+  out[2] = A[2] + R[2] * u + R[5] * v + R[8] * w;
+  return out;
+}
+/** The world-axis half extent of a lattice-frame half box: |R|·h. */
+function worldHalfExtent(R, hx, hy, hz, out = [0, 0, 0]) {
+  out[0] = Math.abs(R[0]) * hx + Math.abs(R[3]) * hy + Math.abs(R[6]) * hz;
+  out[1] = Math.abs(R[1]) * hx + Math.abs(R[4]) * hy + Math.abs(R[7]) * hz;
+  out[2] = Math.abs(R[2]) * hx + Math.abs(R[5]) * hy + Math.abs(R[8]) * hz;
+  return out;
+}
+/** World centroid of fine cell (i, j, k). */
+function centreOf(sup, i, j, k, out = [0, 0, 0]) {
+  const L = sup.lattice;
+  return toWorld$support(sup.frame, L.originQ[0] + i * L.pitch[0], L.originQ[1] + j * L.pitch[1], L.originQ[2] + k * L.pitch[2], out);
+}
+
+/**
+ * Do two supports share a lattice — the same orientation and pitch, and nodes that
+ * coincide (their origins differ by whole fine steps once expressed about one anchor)?
+ */
+function sameLattice(a, b, tol = 1e-6) {
+  if (!a || !b) return false;
+  for (let i = 0; i < 9; i++) if (Math.abs(a.frame.R[i] - b.frame.R[i]) > 1e-4) return false;
+  const pa = a.lattice.pitch, pb = b.lattice.pitch;
+  for (let i = 0; i < 3; i++) if (Math.abs(pa[i] - pb[i]) > tol * Math.max(1, Math.abs(pa[i]))) return false;
+  // b's node 0 in a's lattice coordinates
+  const w = toWorld$support(b.frame, b.lattice.originQ[0], b.lattice.originQ[1], b.lattice.originQ[2]);
+  const q = toLattice(a.frame, w[0], w[1], w[2]);
+  for (let i = 0; i < 3; i++) {
+    const s = (q[i] - a.lattice.originQ[i]) / pa[i];
+    if (Math.abs(s - Math.round(s)) > 1e-3) return false;
+  }
+  return true;
+}
+
+// ── sub-block sizes ───────────────────────────────────────────────────────────
+// Discovery collects per-axis DISTINCT sizes (a few dozen on any real model, however
+// many shapes they combine into — the Isatis file has 3,288 shapes from ~20 sizes
+// per axis), the per-axis min/max, and a capped count of distinct shapes for the
+// description. Mergeable, so a parallel discovery (row groups on workers) merges.
+
+const r10 = (v) => Number(v.toPrecision(10));
+const r7 = (v) => Number(v.toPrecision(7));
+const SIZES_CAP = 4096, SHAPES_CAP = 1 << 16;
+function sizeCollector() {
+  const axes = [new Set(), new Set(), new Set()];          // distinct sizes per axis (10 significant digits)
+  // a size's index = its 7-digit value's (so float noise in a file's sizes — 0.9999999963 vs
+  // 0.9999999935, f32 round trips — is one size, one shape); raw → index is memoized, the memo bounded apart from the cap
+  const idx = [new Map(), new Map(), new Map()], memo = [new Map(), new Map(), new Map()], raw = [[], [], []];
+  const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+  const shapes = new Set();                                // i·2²⁴ + j·2¹² + k over the size indices — no string per block
+  let overflow = false, any = 0;
+  const ixOf = (a, v) => {
+    let i = memo[a].get(v);
+    if (i !== undefined) return i;
+    if (v < min[a]) min[a] = v; if (v > max[a]) max[a] = v;
+    const k = r7(v);
+    i = idx[a].get(k);
+    if (i === undefined) {
+      if (raw[a].length >= SIZES_CAP) { overflow = true; return 0; }
+      i = raw[a].length; raw[a].push(v); idx[a].set(k, i); axes[a].add(r10(v));
+    }
+    if (memo[a].size < 65536) memo[a].set(v, i);
+    return i;
+  };
+  return {
+    axes, min, max,
+    get overflow() { return overflow; },
+    get count() { return any; },
+    get shapes() { return shapes.size; },
+    /** one block's (dx, dy, dz) — non-positive sizes are ignored */
+    add(dx, dy, dz) {
+      if (!(dx > 0 && dy > 0 && dz > 0)) return;
+      any++;
+      const key = ixOf(0, dx) * 16777216 + ixOf(1, dy) * 4096 + ixOf(2, dz);
+      if (shapes.size < SHAPES_CAP) shapes.add(key);
+    },
+    /** a partial collector's snapshot (toJSON form) merged in */
+    merge(s) {
+      if (!s) return;
+      for (const [dx, dy, dz] of s.shapes) this.add(dx, dy, dz);
+      any += (s.count || 0) - s.shapes.length;
+      for (let a = 0; a < 3; a++) for (const v of s.raw[a]) ixOf(a, v);   // sizes past the shape cap still count
+      if (s.overflow) overflow = true;
+    },
+    /** a structured-cloneable snapshot (a worker's partial) */
+    toJSON() {
+      const sh = [];
+      for (const key of shapes) sh.push([raw[0][Math.floor(key / 16777216)], raw[1][Math.floor(key / 4096) % 4096], raw[2][key % 4096]]);
+      return { raw: raw.map((r) => [...r]), shapes: sh, overflow, count: any };
+    },
+    /** do sizes vary at all? (one shape = a regular model in disguise) */
+    get varies() { return axes.some((x) => x.size > 1); },
+  };
+}
+
+// the GCD of positive reals, tolerant of float noise; NaN when there's none
+function realGcd(vals) {
+  const big = Math.max(...vals), tol = big * 1e-7;
+  let g = vals[0];
+  for (let k = 1; k < vals.length; k++) {
+    let a = Math.max(g, vals[k]), b = Math.min(g, vals[k]), it = 0;
+    while (b > tol && it++ < 200) { let r = a % b; if (b - r < tol) r = 0; a = b; b = r; }
+    g = a;
+  }
+  for (const v of vals) { const s = v / g; if (Math.abs(s - Math.round(s)) > 1e-4) return NaN; }
+  return g;
+}
+/**
+ * The fine pitch per axis for a collector's sizes: half the GCD of the distinct
+ * sizes, so every integer combination of them centres on-lattice (when the smallest
+ * divides the rest — the common case — that is half the smallest, as before).
+ * → { pitch: [3], sizeQMax: [3] } | { refused: message } | null (no usable sizes).
+ */
+function finePitch(sizes) {
+  if (!sizes || !sizes.count || sizes.overflow) return null;
+  const pitch = [0, 0, 0], sizeQMax = [0, 0, 0];
+  for (let a = 0; a < 3; a++) {
+    const vals = [...sizes.axes[a]];
+    if (!vals.length) return null;
+    const g = realGcd(vals);
+    if (!(g > 0)) return null;
+    pitch[a] = g / 2;
+    sizeQMax[a] = Math.round(sizes.max[a] / pitch[a]);
+    if (sizeQMax[a] > SIZEQ_MAX) {
+      const ax = 'XYZ'[a];
+      return { refused: `sub-block sizes along ${ax} run from ${r10(sizes.min[a])} to ${r10(sizes.max[a])} on a ${r10(g)} step — ${sizeQMax[a]} fine steps, past the ${SIZEQ_MAX} a block can span (largest more than ${Math.floor(SIZEQ_MAX / 2)}× the step). Shown as points.` };
+    }
+  }
+  return { pitch, sizeQMax };
+}
+/** One block's size in fine steps along an axis (clamped to 1..255). */
+const sizeQ = (d, pitch) => { const q = Math.round(d / pitch); return q < 1 ? 1 : q > SIZEQ_MAX ? SIZEQ_MAX : q; };
+/** Write one block's dimQ triple at k into a Uint8Array(3n). */
+function putDimQ(out, k, dx, dy, dz, pitch) {
+  out[k * 3] = sizeQ(dx, pitch[0]); out[k * 3 + 1] = sizeQ(dy, pitch[1]); out[k * 3 + 2] = sizeQ(dz, pitch[2]);
+}
+/** A header's fine pitch (the grid's per-axis pitch — for a sub-blocked model the fine step). */
+const pitchOf = (grid) => [grid.x.pitch, grid.y.pitch, grid.z.pitch];
+
+// ── Datamine rotation ─────────────────────────────────────────────────────────
+/**
+ * R for a single Datamine rotation about Z (ROTAXIS1 = 3): ANGLE1 turns the model
+ * axes CLOCKWISE seen from above, i.e. R rotates by −ANGLE1 in the math (CCW) sense.
+ * world = O + R·(XC, YC, ZC). ANGLE1 = −50 → model X at N40°E. Column-major.
+ * Verified on a real Isatis.neo export to 1 cm (memory: reference_datamine_rotation).
+ */
+function datamineRotZ(angle1Deg) {
+  const t = (-angle1Deg * Math.PI) / 180, c = Math.cos(t), s = Math.sin(t);
+  return [c, s, 0, -s, c, 0, 0, 0, 1];
+}
+/**
+ * A rotated .dm placed in world keeps LOCAL XC/YC/ZC in its records; anything that
+ * reads a position from a record (a pick's position, a filter's compact chunks)
+ * maps it here. → (x, y, z) → [wx, wy, wz] for such a header, else null.
+ */
+function dmLocalToWorld(h) {
+  if (!h || !h.dmRotationApplied) return null;
+  const O = h.dmOrigin || [0, 0, 0], R = h.grid && h.grid.rot ? h.grid.rot : datamineRotZ(h.dmRotation[0].angle);
+  return (x, y, z) => [O[0] + R[0] * x + R[3] * y + R[6] * z, O[1] + R[1] * x + R[4] * y + R[7] * z, O[2] + R[2] * x + R[5] * y + R[8] * z];
+}
+
 // ── src/core.js ──
 
 // @gcu/condenser/core — the render engine alone: chunk builders + GL pipelines
 // + camera + EDL + Morton. Zero I/O, zero providers; @gcu/frame is the one
 // inlined leaf (every chunk is frame-relative). The full package (main.js)
 // re-exports this same surface plus io/ + grid/.
+// the block-support contract (pure data + helpers; grid/support.js) — the engine draws by it
 
 export {
   mulberry32,
@@ -5466,6 +5696,7 @@ export {
   createBlockChunkBuilder,
   buildBlockBatch,
   batchSeed,
+  dimQFromCodes,
   buildStickChunk,
   stickLocalCenter,
   createStickChunkBuilder,
@@ -5508,4 +5739,20 @@ export {
   uploadChunk,
   createRenderer,
   createEdl,
+  SIZEQ_MAX,
+  supportOf,
+  supportOfHeader,
+  volumeOf,
+  toLattice as supportToLattice,
+  toWorld$support as supportToWorld,
+  worldHalfExtent,
+  centreOf,
+  sameLattice,
+  sizeCollector,
+  finePitch,
+  sizeQ,
+  putDimQ,
+  pitchOf,
+  datamineRotZ,
+  dmLocalToWorld,
 };

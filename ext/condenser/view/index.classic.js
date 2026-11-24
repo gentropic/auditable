@@ -358,7 +358,7 @@ function toLocal(worldPt, frame) {
 }
 
 // Local → world: add the origin back. The inverse of `toLocal`.
-function toWorld(localPt, frame) {
+function toWorld$frame(localPt, frame) {
   const o = frame.origin, r = new Array(localPt.length);
   for (let i = 0; i < localPt.length; i++) r[i] = localPt[i] + (o[i] || 0);
   return r;
@@ -865,9 +865,10 @@ function chanDequant(range) {
 // block (0,0,0) — the centroid convention throughout. Chunks store raw uint16 IJK
 // (not bbox-normalized lattice positions), so reconstruction is EXACT — and IJK is
 // itself useful for the grid-view join. Half-dims are a chunk-level uniform (all
-// blocks one size) for a REGULAR grid. SUB-BLOCKED models use the same IJK scheme
-// against a FINE lattice (pitch = min dim /2) plus a per-block u8 size code into a
-// shared half-dim palette (chunk.dim + chunk.dimPalette); centroids stay exact.
+// blocks one size) for a REGULAR grid — 0 bytes per block. SUB-BLOCKED models use
+// the same IJK scheme against a FINE lattice (grid/support.js: pitch = half the size
+// step) plus each block's size in fine steps, chunk.dimQ = u8 × 3 per block (the
+// block-support contract); centroids stay exact, half = dimQ · pitch / 2.
 //
 // Attributes per block: one SCALAR channel (grade — f32 in, quantized u16 against
 // the chunk's min/max, range carried per chunk) + one CATEGORY channel (u8 codes
@@ -880,6 +881,7 @@ function chanDequant(range) {
 //   ijk: Uint16Array(3N), chan: Uint16Array(N), chanRange: [min,max],
 //   cat: Uint8Array(N), recIdx: Uint32Array(N),
 //   bboxLocal: Float64Array(6)                          — outer faces, for culling
+//   dimQ?: Uint8Array(3N), dimQMax?: [3]                — sub-blocked: sizes in fine steps
 // }
 
 
@@ -919,23 +921,24 @@ const isIdentity3 = (r) => Math.abs(r[0] - 1) < 1e-12 && Math.abs(r[4] - 1) < 1e
  * IJK is computed against the grid; anything off-lattice snaps to the nearest
  * cell (the provider validated regularity during discovery).
  */
-function buildBlockChunk({ x, y, z, chan, cat, recIdx, dim }, grid, frame, rnd, indices = null, dimPalette = null) {
+function buildBlockChunk({ x, y, z, chan, cat, recIdx, dimQ }, grid, frame, rnd, indices = null) {
   const n = indices ? indices.length : x.length;
   const o = frame.origin;
   const [gx, gy, gz] = grid.originLocal, [sx, sy, sz] = grid.size;
   const perm = indices ? shuffleInPlace(Uint32Array.from(indices), rnd) : shuffledIndices(n, rnd);
   const ijk = new Uint16Array(3 * n);
   const outChan = new Uint16Array(n), outCat = new Uint8Array(n), outR = new Uint32Array(n);
-  const sub = !!(dim && dimPalette);                        // sub-blocked → per-block size code
-  const outDim = sub ? new Uint8Array(n) : null;
+  const sub = !!dimQ;                                       // sub-blocked → per-block size in fine steps
+  const outDimQ = sub ? new Uint8Array(3 * n) : null;
+  let qmx = 0, qmy = 0, qmz = 0;
   // chan range over this chunk (quantize against it — per-chunk min/max, §2.1.2)
   let cMin = Infinity, cMax = -Infinity;
   for (let k = 0; k < n; k++) { const v = chan[perm[k]]; if (Number.isFinite(v)) { if (v < cMin) cMin = v; if (v > cMax) cMax = v; } }
   if (!Number.isFinite(cMin)) { cMin = 0; cMax = 0; }
   const cScale = chanScale(cMin, cMax);                   // code 0 = blank, 1..65535 = min..max (chan.js)
   let minI = 65535, minJ = 65535, minK = 65535, maxI = 0, maxJ = 0, maxK = 0;
-  // sub-blocked: track actual box faces (variable half-dims) for the cull bbox
-  let fx0 = Infinity, fy0 = Infinity, fz0 = Infinity, fx1 = -Infinity, fy1 = -Infinity, fz1 = -Infinity;
+  // sub-blocked: the box faces in LATTICE units (doubled, so centre ± size stays integer) for the cull bbox
+  let f0i = Infinity, f0j = Infinity, f0k = Infinity, f1i = -Infinity, f1j = -Infinity, f1k = -Infinity;
   const R = grid.rotD || null;                              // rotated lattice: IJK in the lattice frame
   for (let k = 0; k < n; k++) {
     const i = perm[k];
@@ -959,34 +962,32 @@ function buildBlockChunk({ x, y, z, chan, cat, recIdx, dim }, grid, frame, rnd, 
     outCat[k] = cat ? cat[i] : 0;
     outR[k] = recIdx[i];
     if (sub) {
-      const dc = dim[i]; outDim[k] = dc;
-      const h = dimPalette[dc] || [sx / 2, sy / 2, sz / 2];
-      const cx = gx + bi * sx, cy = gy + bj * sy, cz = gz + bk * sz;
-      if (cx - h[0] < fx0) fx0 = cx - h[0]; if (cx + h[0] > fx1) fx1 = cx + h[0];
-      if (cy - h[1] < fy0) fy0 = cy - h[1]; if (cy + h[1] > fy1) fy1 = cy + h[1];
-      if (cz - h[2] < fz0) fz0 = cz - h[2]; if (cz + h[2] > fz1) fz1 = cz + h[2];
+      const qx = dimQ[i * 3], qy = dimQ[i * 3 + 1], qz = dimQ[i * 3 + 2];
+      outDimQ[k * 3] = qx; outDimQ[k * 3 + 1] = qy; outDimQ[k * 3 + 2] = qz;
+      if (qx > qmx) qmx = qx; if (qy > qmy) qmy = qy; if (qz > qmz) qmz = qz;
+      const ci = 2 * bi, cj = 2 * bj, ck = 2 * bk;
+      if (ci - qx < f0i) f0i = ci - qx; if (ci + qx > f1i) f1i = ci + qx;
+      if (cj - qy < f0j) f0j = cj - qy; if (cj + qy > f1j) f1j = cj + qy;
+      if (ck - qz < f0k) f0k = ck - qz; if (ck + qz > f1k) f1k = ck + qz;
     }
   }
-  // culling bbox = outer faces of the extreme blocks (variable-size when sub-blocked).
-  // Rotated: the world AABB of the chunk's IJK box (its 8 corners through R).
+  // culling bbox = outer faces of the extreme blocks (variable-size when sub-blocked),
+  // as a box in lattice cells; rotated: the world AABB of its 8 corners through R.
+  const lo = sub ? [f0i / 2, f0j / 2, f0k / 2] : [minI - 0.5, minJ - 0.5, minK - 0.5];
+  const hi = sub ? [f1i / 2, f1j / 2, f1k / 2] : [maxI + 0.5, maxJ + 0.5, maxK + 0.5];
   let bboxLocal;
   if (R) {
     bboxLocal = Float64Array.of(Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity);
-    for (const ci of [minI - 0.5, maxI + 0.5]) for (const cj of [minJ - 0.5, maxJ + 0.5]) for (const ck of [minK - 0.5, maxK + 0.5]) {
+    for (const ci of [lo[0], hi[0]]) for (const cj of [lo[1], hi[1]]) for (const ck of [lo[2], hi[2]]) {
       const u = ci * sx, v = cj * sy, w = ck * sz;
       const p = [gx + R[0] * u + R[3] * v + R[6] * w, gy + R[1] * u + R[4] * v + R[7] * w, gz + R[2] * u + R[5] * v + R[8] * w];
       for (let a = 0; a < 3; a++) { if (p[a] < bboxLocal[a]) bboxLocal[a] = p[a]; if (p[a] > bboxLocal[a + 3]) bboxLocal[a + 3] = p[a]; }
     }
   } else {
-    bboxLocal = sub
-      ? Float64Array.of(fx0, fy0, fz0, fx1, fy1, fz1)
-      : Float64Array.of(
-          gx + minI * sx - sx / 2, gy + minJ * sy - sy / 2, gz + minK * sz - sz / 2,
-          gx + maxI * sx + sx / 2, gy + maxJ * sy + sy / 2, gz + maxK * sz + sz / 2,
-        );
+    bboxLocal = Float64Array.of(gx + lo[0] * sx, gy + lo[1] * sy, gz + lo[2] * sz, gx + hi[0] * sx, gy + hi[1] * sy, gz + hi[2] * sz);
   }
   const chunk = { kind: 'blocks', count: n, grid, ijk, chan: outChan, chanRange: [cMin, cMax], cat: outCat, recIdx: outR, bboxLocal };
-  if (sub) { chunk.dim = outDim; chunk.dimPalette = dimPalette; }
+  if (sub) { chunk.dimQ = outDimQ; chunk.dimQMax = [qmx, qmy, qmz]; }
   return chunk;
 }
 
@@ -1005,20 +1006,34 @@ function blockLocalCenter(chunk, k) {
 const batchSeed = (seed, k) => (Math.imul(k + 1, 0x9E3779B1) ^ seed) >>> 0;
 
 // ONE Morton batch → its chunks: sort the batch by Morton key, slice it into
-// chunkSize pieces, build (and shuffle) each. cols = { x, y, z, chan, cat, dim,
+// chunkSize pieces, build (and shuffle) each. cols = { x, y, z, chan, cat, dimQ,
 // recIdx } of n records. The builder's batch step, exported so a worker can run it.
-function buildBlockBatch(cols, n, { grid, frame, dimPalette = null, chunkSize, rnd }) {
+function buildBlockBatch(cols, n, { grid, frame, chunkSize, rnd }) {
   const order = radixSortIndices(mortonKeys(cols.x, cols.y, cols.z, n), n);
   const out = [];
-  for (let start = 0; start < n; start += chunkSize) out.push(buildBlockChunk(cols, grid, frame, rnd, order.subarray(start, Math.min(start + chunkSize, n)), dimPalette));
+  for (let start = 0; start < n; start += chunkSize) out.push(buildBlockChunk(cols, grid, frame, rnd, order.subarray(start, Math.min(start + chunkSize, n))));
+  return out;
+}
+
+/**
+ * Legacy size CODES (u8) + a half-dim palette — the Jupyter widget's wire format —
+ * → dimQ (u8 × 3, fine steps of the grid's pitch). The engine draws dimQ only.
+ */
+function dimQFromCodes(codes, palette, grid, n = codes.length) {
+  const s = grid.size, lut = new Uint8Array(palette.length * 3);
+  for (let c = 0; c < palette.length; c++) for (let a = 0; a < 3; a++) lut[c * 3 + a] = Math.max(1, Math.min(255, Math.round((2 * palette[c][a]) / s[a])));
+  const out = new Uint8Array(3 * n);
+  for (let i = 0; i < n; i++) { const c = codes[i] < palette.length ? codes[i] : 0; out[i * 3] = lut[c * 3]; out[i * 3 + 1] = lut[c * 3 + 1]; out[i * 3 + 2] = lut[c * 3 + 2]; }
   return out;
 }
 
 /**
  * BlockChunkBuilder — same shape as createChunkBuilder but for block RawChunks
  * ({ count, x, y, z, chan: Float32Array|Float64Array, cat: Uint8Array|null,
- * recStart }). Batch-Morton, sliced, shuffled. Tracks the document chan range
- * (for the color ramp) alongside the local bbox.
+ * dimQ: Uint8Array(3·count)|null, recStart }). Batch-Morton, sliced, shuffled.
+ * Tracks the document chan range (for the color ramp) alongside the local bbox.
+ * A sub-blocked raw chunk carries dimQ; `dimPalette` accepts the legacy code +
+ * palette form (raw.dim, the widget's wire) and converts it (dimQFromCodes).
  */
 function createBlockChunkBuilder({ frame, grid, dimPalette = null, chunkSize = 1 << 20, batchSize = 0, seed = 1, seedPerBatch = false, onChunk }) {
   let rnd = mulberry32(seed), batchNo = 0;
@@ -1043,14 +1058,14 @@ function createBlockChunkBuilder({ frame, grid, dimPalette = null, chunkSize = 1
       z: concat(Float64Array, pend.map((p) => p.z)),
       chan: concat(Float64Array, pend.map((p) => p.chan)),
       cat: pend.every((p) => p.cat) ? concat(Uint8Array, pend.map((p) => p.cat)) : null,
-      dim: dimPalette && pend.every((p) => p.dim) ? concat(Uint8Array, pend.map((p) => p.dim)) : null,
+      dimQ: pend.every((p) => p.dimQ) ? concat(Uint8Array, pend.map((p) => p.dimQ), 3) : null,
       recIdx: concat(Uint32Array, pend.map((p) => p.recIdx)),
     };
     const n = pendCount;
     pend = []; pendCount = 0;
     if (seedPerBatch) rnd = mulberry32(batchSeed(seed, batchNo));
     batchNo++;
-    for (const chunk of buildBlockBatch(cols, n, { grid, frame, dimPalette, chunkSize, rnd })) {
+    for (const chunk of buildBlockBatch(cols, n, { grid, frame, chunkSize, rnd })) {
       doc.count += chunk.count;
       const b = doc.bboxLocal, cb = chunk.bboxLocal;
       for (let i = 0; i < 3; i++) { if (cb[i] < b[i]) b[i] = cb[i]; if (cb[i + 3] > b[i + 3]) b[i + 3] = cb[i + 3]; }
@@ -1069,12 +1084,13 @@ function createBlockChunkBuilder({ frame, grid, dimPalette = null, chunkSize = 1
         recIdx = new Uint32Array(raw.count);
         for (let i = 0; i < raw.count; i++) recIdx[i] = raw.recStart + i;
       }
+      const dimQ = raw.dimQ || (raw.dim && dimPalette ? dimQFromCodes(raw.dim, dimPalette, grid, raw.count) : null);
       let taken = 0;
       while (taken < raw.count) {
         const room = batchN - pendCount;
         const n = Math.min(room, raw.count - taken);
         const s = (a) => (a ? a.subarray(taken, taken + n) : null);
-        pend.push({ x: s(raw.x), y: s(raw.y), z: s(raw.z), chan: s(raw.chan), cat: s(raw.cat), dim: s(raw.dim), recIdx: recIdx.subarray(taken, taken + n) });
+        pend.push({ x: s(raw.x), y: s(raw.y), z: s(raw.z), chan: s(raw.chan), cat: s(raw.cat), dimQ: dimQ ? dimQ.subarray(taken * 3, (taken + n) * 3) : null, recIdx: recIdx.subarray(taken, taken + n) });
         pendCount += n; taken += n;
         if (pendCount >= batchN) flushBatch();
       }
@@ -1084,12 +1100,243 @@ function createBlockChunkBuilder({ frame, grid, dimPalette = null, chunkSize = 1
   };
 }
 
+// ── src/grid/support.js ──
+
+// @gcu/condenser — the BLOCK-SUPPORT contract (micro-block-support spec §2).
+//
+// One description of a block model's support, filled by the readers and read by
+// every consumer, so a new kind of model is a new reader rather than a dozen edits:
+//
+//   frame    { anchor (world, f64), R (3×3 column-major, world ← lattice) }
+//            R = identity and anchor = 0 for an axis-aligned model.
+//   lattice  { pitch [3] — the FINE step per axis, lattice frame,
+//              originQ [3] — the centroid of fine cell (0,0,0), lattice coords,
+//              count [3] }
+//            regular model: pitch = the block size; sub-blocked: pitch = half the
+//            finest size step per axis, so odd sizes still centre on-lattice.
+//   extent   per-block size in FINE STEPS per axis:
+//            regular     → the constant sizeQ (1,1,1) — 0 bytes per block;
+//            sub-blocked → `dimQ`, u8 × 3 per block (any integer shape ≤ 255 steps).
+//
+// Derived, never stored: centre = anchor + R·(originQ + ijk·pitch); half = sizeQ·pitch/2
+// (lattice frame); volume = Π sizeQ·pitch; world AABB half = |R|·half.
+//
+// COLUMNAR, not per-record: the contract is data (constants + typed arrays) plus a
+// few pure helpers small enough to inline. No boxOf(record) returning an object —
+// hot loops read the support once and do the arithmetic themselves.
+
+const SIZEQ_MAX = 255;                              // dimQ is u8 per axis
+const I3$support = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+
+/**
+ * The support of a header's grid. `grid` = { x, y, z: { origin, pitch, count },
+ * rot?, anchor? } (grid/basis.js form); subBlocked = the model carries per-block
+ * dimQ. → { frame, lattice, sub, sizeQ, sizeQMax } or null without a grid.
+ */
+function supportOf(grid, { subBlocked = false, sizeQMax = null } = {}) {
+  if (!grid || !grid.x) return null;
+  const rotated = !!grid.rot;
+  return {
+    frame: { anchor: rotated ? [...(grid.anchor || [0, 0, 0])] : [0, 0, 0], R: rotated ? Array.from(grid.rot) : I3$support.slice(), rotated },
+    lattice: {
+      pitch: [grid.x.pitch, grid.y.pitch, grid.z.pitch],
+      originQ: [grid.x.origin, grid.y.origin, grid.z.origin],
+      count: [grid.x.count, grid.y.count, grid.z.count],
+    },
+    sub: !!subBlocked,
+    sizeQ: subBlocked ? null : [1, 1, 1],                  // regular: one constant, no array
+    sizeQMax: subBlocked ? (sizeQMax ? [...sizeQMax] : null) : [1, 1, 1],
+  };
+}
+/** A header's support (grid + the sub-block facts it carries). */
+const supportOfHeader = (h) => (h ? supportOf(h.grid, { subBlocked: !!h.subBlocked, sizeQMax: h.sizeQMax || null }) : null);
+
+/** Volume of a block of sizeQ (sx, sy, sz) fine steps. */
+const volumeOf = (sx, sy, sz, pitch) => sx * pitch[0] * sy * pitch[1] * sz * pitch[2];
+
+/** world → lattice: q = Rᵀ·(p − anchor). out is written and returned. */
+function toLattice$support(frame, x, y, z, out = [0, 0, 0]) {
+  const R = frame.R, A = frame.anchor;
+  const dx = x - A[0], dy = y - A[1], dz = z - A[2];
+  out[0] = R[0] * dx + R[1] * dy + R[2] * dz;
+  out[1] = R[3] * dx + R[4] * dy + R[5] * dz;
+  out[2] = R[6] * dx + R[7] * dy + R[8] * dz;
+  return out;
+}
+/** lattice → world: p = anchor + R·q. */
+function toWorld$support(frame, u, v, w, out = [0, 0, 0]) {
+  const R = frame.R, A = frame.anchor;
+  out[0] = A[0] + R[0] * u + R[3] * v + R[6] * w;
+  out[1] = A[1] + R[1] * u + R[4] * v + R[7] * w;
+  out[2] = A[2] + R[2] * u + R[5] * v + R[8] * w;
+  return out;
+}
+/** The world-axis half extent of a lattice-frame half box: |R|·h. */
+function worldHalfExtent(R, hx, hy, hz, out = [0, 0, 0]) {
+  out[0] = Math.abs(R[0]) * hx + Math.abs(R[3]) * hy + Math.abs(R[6]) * hz;
+  out[1] = Math.abs(R[1]) * hx + Math.abs(R[4]) * hy + Math.abs(R[7]) * hz;
+  out[2] = Math.abs(R[2]) * hx + Math.abs(R[5]) * hy + Math.abs(R[8]) * hz;
+  return out;
+}
+/** World centroid of fine cell (i, j, k). */
+function centreOf(sup, i, j, k, out = [0, 0, 0]) {
+  const L = sup.lattice;
+  return toWorld$support(sup.frame, L.originQ[0] + i * L.pitch[0], L.originQ[1] + j * L.pitch[1], L.originQ[2] + k * L.pitch[2], out);
+}
+
+/**
+ * Do two supports share a lattice — the same orientation and pitch, and nodes that
+ * coincide (their origins differ by whole fine steps once expressed about one anchor)?
+ */
+function sameLattice(a, b, tol = 1e-6) {
+  if (!a || !b) return false;
+  for (let i = 0; i < 9; i++) if (Math.abs(a.frame.R[i] - b.frame.R[i]) > 1e-4) return false;
+  const pa = a.lattice.pitch, pb = b.lattice.pitch;
+  for (let i = 0; i < 3; i++) if (Math.abs(pa[i] - pb[i]) > tol * Math.max(1, Math.abs(pa[i]))) return false;
+  // b's node 0 in a's lattice coordinates
+  const w = toWorld$support(b.frame, b.lattice.originQ[0], b.lattice.originQ[1], b.lattice.originQ[2]);
+  const q = toLattice$support(a.frame, w[0], w[1], w[2]);
+  for (let i = 0; i < 3; i++) {
+    const s = (q[i] - a.lattice.originQ[i]) / pa[i];
+    if (Math.abs(s - Math.round(s)) > 1e-3) return false;
+  }
+  return true;
+}
+
+// ── sub-block sizes ───────────────────────────────────────────────────────────
+// Discovery collects per-axis DISTINCT sizes (a few dozen on any real model, however
+// many shapes they combine into — the Isatis file has 3,288 shapes from ~20 sizes
+// per axis), the per-axis min/max, and a capped count of distinct shapes for the
+// description. Mergeable, so a parallel discovery (row groups on workers) merges.
+
+const r10$support = (v) => Number(v.toPrecision(10));
+const r7 = (v) => Number(v.toPrecision(7));
+const SIZES_CAP = 4096, SHAPES_CAP = 1 << 16;
+function sizeCollector() {
+  const axes = [new Set(), new Set(), new Set()];          // distinct sizes per axis (10 significant digits)
+  // a size's index = its 7-digit value's (so float noise in a file's sizes — 0.9999999963 vs
+  // 0.9999999935, f32 round trips — is one size, one shape); raw → index is memoized, the memo bounded apart from the cap
+  const idx = [new Map(), new Map(), new Map()], memo = [new Map(), new Map(), new Map()], raw = [[], [], []];
+  const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+  const shapes = new Set();                                // i·2²⁴ + j·2¹² + k over the size indices — no string per block
+  let overflow = false, any = 0;
+  const ixOf = (a, v) => {
+    let i = memo[a].get(v);
+    if (i !== undefined) return i;
+    if (v < min[a]) min[a] = v; if (v > max[a]) max[a] = v;
+    const k = r7(v);
+    i = idx[a].get(k);
+    if (i === undefined) {
+      if (raw[a].length >= SIZES_CAP) { overflow = true; return 0; }
+      i = raw[a].length; raw[a].push(v); idx[a].set(k, i); axes[a].add(r10$support(v));
+    }
+    if (memo[a].size < 65536) memo[a].set(v, i);
+    return i;
+  };
+  return {
+    axes, min, max,
+    get overflow() { return overflow; },
+    get count() { return any; },
+    get shapes() { return shapes.size; },
+    /** one block's (dx, dy, dz) — non-positive sizes are ignored */
+    add(dx, dy, dz) {
+      if (!(dx > 0 && dy > 0 && dz > 0)) return;
+      any++;
+      const key = ixOf(0, dx) * 16777216 + ixOf(1, dy) * 4096 + ixOf(2, dz);
+      if (shapes.size < SHAPES_CAP) shapes.add(key);
+    },
+    /** a partial collector's snapshot (toJSON form) merged in */
+    merge(s) {
+      if (!s) return;
+      for (const [dx, dy, dz] of s.shapes) this.add(dx, dy, dz);
+      any += (s.count || 0) - s.shapes.length;
+      for (let a = 0; a < 3; a++) for (const v of s.raw[a]) ixOf(a, v);   // sizes past the shape cap still count
+      if (s.overflow) overflow = true;
+    },
+    /** a structured-cloneable snapshot (a worker's partial) */
+    toJSON() {
+      const sh = [];
+      for (const key of shapes) sh.push([raw[0][Math.floor(key / 16777216)], raw[1][Math.floor(key / 4096) % 4096], raw[2][key % 4096]]);
+      return { raw: raw.map((r) => [...r]), shapes: sh, overflow, count: any };
+    },
+    /** do sizes vary at all? (one shape = a regular model in disguise) */
+    get varies() { return axes.some((x) => x.size > 1); },
+  };
+}
+
+// the GCD of positive reals, tolerant of float noise; NaN when there's none
+function realGcd(vals) {
+  const big = Math.max(...vals), tol = big * 1e-7;
+  let g = vals[0];
+  for (let k = 1; k < vals.length; k++) {
+    let a = Math.max(g, vals[k]), b = Math.min(g, vals[k]), it = 0;
+    while (b > tol && it++ < 200) { let r = a % b; if (b - r < tol) r = 0; a = b; b = r; }
+    g = a;
+  }
+  for (const v of vals) { const s = v / g; if (Math.abs(s - Math.round(s)) > 1e-4) return NaN; }
+  return g;
+}
+/**
+ * The fine pitch per axis for a collector's sizes: half the GCD of the distinct
+ * sizes, so every integer combination of them centres on-lattice (when the smallest
+ * divides the rest — the common case — that is half the smallest, as before).
+ * → { pitch: [3], sizeQMax: [3] } | { refused: message } | null (no usable sizes).
+ */
+function finePitch(sizes) {
+  if (!sizes || !sizes.count || sizes.overflow) return null;
+  const pitch = [0, 0, 0], sizeQMax = [0, 0, 0];
+  for (let a = 0; a < 3; a++) {
+    const vals = [...sizes.axes[a]];
+    if (!vals.length) return null;
+    const g = realGcd(vals);
+    if (!(g > 0)) return null;
+    pitch[a] = g / 2;
+    sizeQMax[a] = Math.round(sizes.max[a] / pitch[a]);
+    if (sizeQMax[a] > SIZEQ_MAX) {
+      const ax = 'XYZ'[a];
+      return { refused: `sub-block sizes along ${ax} run from ${r10$support(sizes.min[a])} to ${r10$support(sizes.max[a])} on a ${r10$support(g)} step — ${sizeQMax[a]} fine steps, past the ${SIZEQ_MAX} a block can span (largest more than ${Math.floor(SIZEQ_MAX / 2)}× the step). Shown as points.` };
+    }
+  }
+  return { pitch, sizeQMax };
+}
+/** One block's size in fine steps along an axis (clamped to 1..255). */
+const sizeQ = (d, pitch) => { const q = Math.round(d / pitch); return q < 1 ? 1 : q > SIZEQ_MAX ? SIZEQ_MAX : q; };
+/** Write one block's dimQ triple at k into a Uint8Array(3n). */
+function putDimQ(out, k, dx, dy, dz, pitch) {
+  out[k * 3] = sizeQ(dx, pitch[0]); out[k * 3 + 1] = sizeQ(dy, pitch[1]); out[k * 3 + 2] = sizeQ(dz, pitch[2]);
+}
+/** A header's fine pitch (the grid's per-axis pitch — for a sub-blocked model the fine step). */
+const pitchOf = (grid) => [grid.x.pitch, grid.y.pitch, grid.z.pitch];
+
+// ── Datamine rotation ─────────────────────────────────────────────────────────
+/**
+ * R for a single Datamine rotation about Z (ROTAXIS1 = 3): ANGLE1 turns the model
+ * axes CLOCKWISE seen from above, i.e. R rotates by −ANGLE1 in the math (CCW) sense.
+ * world = O + R·(XC, YC, ZC). ANGLE1 = −50 → model X at N40°E. Column-major.
+ * Verified on a real Isatis.neo export to 1 cm (memory: reference_datamine_rotation).
+ */
+function datamineRotZ(angle1Deg) {
+  const t = (-angle1Deg * Math.PI) / 180, c = Math.cos(t), s = Math.sin(t);
+  return [c, s, 0, -s, c, 0, 0, 0, 1];
+}
+/**
+ * A rotated .dm placed in world keeps LOCAL XC/YC/ZC in its records; anything that
+ * reads a position from a record (a pick's position, a filter's compact chunks)
+ * maps it here. → (x, y, z) → [wx, wy, wz] for such a header, else null.
+ */
+function dmLocalToWorld(h) {
+  if (!h || !h.dmRotationApplied) return null;
+  const O = h.dmOrigin || [0, 0, 0], R = h.grid && h.grid.rot ? h.grid.rot : datamineRotZ(h.dmRotation[0].angle);
+  return (x, y, z) => [O[0] + R[0] * x + R[3] * y + R[6] * z, O[1] + R[1] * x + R[4] * y + R[7] * z, O[2] + R[2] * x + R[5] * y + R[8] * z];
+}
+
 // ── src/grid/infer.js ──
 
 // @gcu/condenser — grid inference (the grid layer): recover a regular lattice
 // from what a provider's discovery sweep observed. Home of the axis inference
 // today and the rotated-basis inference tomorrow (micro-rotated-models spec:
 // cluster nearest-neighbour centroid displacements → U/V/W generators).
+
 
 /**
  * Infer a regular grid from per-axis distinct centroid values (collected by a
@@ -1123,35 +1370,19 @@ function inferAxis(values, { rel = 1e-6 } = {}) {
   return { origin: values[0], pitch, count };
 }
 
-// ── sub-blocked models: a fine lattice + a size palette ──────────────────────
+// ── sub-blocked models: a fine lattice + per-block sizes in fine steps ───────
 // A sub-blocked model carries per-block sizes (DX/DY/DZ, XINC…). Every provider
-// (delimited, Datamine, Parquet) collects the same three things in its discovery
-// sweep: per-axis distinct centroids, the smallest size per axis, and the
-// distinct size triples (as dimKey strings). This turns them into the fine
-// lattice (pitch = min size / 2, so every power-of-2 sub-block centre lands on
-// it) and the half-size palette the box shader reads. null = no sub-block
-// lattice: sizes don't vary, a centre is off the fine lattice (non-power-of-2
-// splits), an axis overflows u16, or there are more than 256 distinct sizes
-// (the per-block size code is a u8 — past that a code would be wrong, so the
-// caller falls back to points rather than drawing some blocks the wrong size).
+// (delimited, Datamine, Parquet) collects the same things in its discovery sweep:
+// per-axis distinct centroids and a size collector (grid/support.js). This turns
+// them into the FINE lattice (pitch = half the size step per axis, so any integer
+// combination of sizes centres on it — odd ones included) that per-block dimQ
+// (u8 × 3, fine steps) is measured on. No palette, no shape cap: 3,288 shapes are
+// as cheap as 2. null = no sub-block lattice (sizes don't vary, a centre is off
+// the fine lattice, an axis overflows u16); { refused } = a block spans more than
+// 255 fine steps (the caller says so, and shows points).
 
-const DIM_PALETTE_MAX = 256;
-const r10 = (v) => Number(v.toPrecision(10));
-/** The canonical key of one (dx, dy, dz) size triple — full sizes, not halves. */
-const dimKey = (dx, dy, dz) => `${r10(dx)},${r10(dy)},${r10(dz)}`;
-/**
- * dimKey with a memo: the same triple builds its string once. Distinct sizes are
- * few (≤ DIM_PALETTE_MAX on any model we draw), so the memo stays small.
- */
-function makeDimKeyer() {
-  const memo = new Map();
-  return (dx, dy, dz) => {
-    let my = memo.get(dx); if (!my) memo.set(dx, my = new Map());
-    let mz = my.get(dy); if (!mz) my.set(dy, mz = new Map());
-    let k = mz.get(dz); if (k === undefined) mz.set(dz, k = dimKey(dx, dy, dz));
-    return k;
-  };
-}
+
+const r10$infer = (v) => Number(v.toPrecision(10));
 /**
  * One axis's distinct centroids, rounded to 10 significant digits. `add(v)` gives
  * exactly `if (set.size < cap) set.add(r10(v))`, but rounds each distinct RAW value
@@ -1168,28 +1399,26 @@ function axisDistinct(cap) {
       if (v === last || set.size >= cap) return;
       last = v;
       if (seen.size < RAW) { if (seen.has(v)) return; seen.add(v); }
-      set.add(r10(v));
+      set.add(r10$infer(v));
     },
   };
-}
-/** size key → palette code, rebuilt from a persisted half-size palette. */
-function dimCodeFromPalette(dimPalette) {
-  return new Map(dimPalette.map((h, i) => [dimKey(h[0] * 2, h[1] * 2, h[2] * 2), i]));
 }
 
 /**
  * @param axisValues [Set|Array ×3] distinct centroid values per axis (any order)
- * @param minDim     [dx, dy, dz] the smallest positive size seen per axis
- * @param dimKeys    Set of dimKey strings (collect at least DIM_PALETTE_MAX + 1 to detect overflow)
- * @returns { grid: {x,y,z}, dimPalette: [[hx,hy,hz]…], dimCode: Map } | null
+ * @param sizes      a sizeCollector (grid/support.js) fed every block's (dx, dy, dz)
+ * @returns { grid: {x,y,z} (the FINE lattice), sizeQMax: [3], shapes } | { refused: message } | null
  */
-function inferSubBlockLattice(axisValues, minDim, dimKeys, { cap = 300000 } = {}) {
-  if (!(dimKeys.size > 1) || dimKeys.size > DIM_PALETTE_MAX || !minDim.every((d) => Number.isFinite(d) && d > 0)) return null;
+function inferSubBlockLattice(axisValues, sizes, { cap = 300000 } = {}) {
+  if (!sizes || !sizes.varies) return null;
+  const fp = finePitch(sizes);
+  if (!fp) return null;
+  if (fp.refused) return fp;
   const axes = [0, 1, 2].map((a) => {
     const set = axisValues[a], n = set.size != null ? set.size : set.length;
     if (!n || n >= cap) return null;
     const vals = [...set].sort((u, v) => u - v);
-    const origin = vals[0], pitch = minDim[a] / 2;
+    const origin = vals[0], pitch = fp.pitch[a];
     const count = Math.round((vals[vals.length - 1] - origin) / pitch) + 1;
     if (count > 65535) return null;
     // relative slack for float noise at big magnitudes, but never past a tenth of the pitch:
@@ -1199,12 +1428,7 @@ function inferSubBlockLattice(axisValues, minDim, dimKeys, { cap = 300000 } = {}
     return { origin, pitch, count };
   });
   if (!axes.every(Boolean)) return null;
-  const dims = [...dimKeys].map((k) => k.split(',').map(Number));
-  return {
-    grid: { x: axes[0], y: axes[1], z: axes[2] },
-    dimPalette: dims.map(([dx, dy, dz]) => [dx / 2, dy / 2, dz / 2]),
-    dimCode: new Map(dims.map((d, i) => [dimKey(d[0], d[1], d[2]), i])),
-  };
+  return { grid: { x: axes[0], y: axes[1], z: axes[2] }, sizeQMax: fp.sizeQMax, shapes: sizes.shapes };
 }
 
 // ── src/grid/basis.js ──
@@ -1236,7 +1460,7 @@ function inferSubBlockLattice(axisValues, minDim, dimKeys, { cap = 300000 } = {}
 
 
 const ORTHO_TOL = 2e-3;                                    // |cos| between generators
-const I3 = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+const I3$basis = [1, 0, 0, 0, 1, 0, 0, 0, 1];
 
 const dot$index = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 const len = (a) => Math.hypot(a[0], a[1], a[2]);
@@ -1244,7 +1468,7 @@ const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a
 const unit = (a) => { const l = len(a); return [a[0] / l, a[1] / l, a[2] / l]; };
 
 /** a world offset d → lattice coords: Rᵀ·d */
-function toLattice(R, x, y, z) {
+function toLattice$basis(R, x, y, z) {
   return [R[0] * x + R[1] * y + R[2] * z, R[3] * x + R[4] * y + R[5] * z, R[6] * x + R[7] * y + R[8] * z];
 }
 /** lattice coords → a world offset: R·q */
@@ -1262,7 +1486,7 @@ function isAxisAligned(R, tol = 1e-9) {
  * a 10 m block — well inside the snap the resampler does.
  */
 function sameBasis(A, B, tol = 1e-4) {
-  const a = A || I3, b = B || I3;
+  const a = A || I3$basis, b = B || I3$basis;
   for (let i = 0; i < 9; i++) if (Math.abs(a[i] - b[i]) > tol) return false;
   return true;
 }
@@ -1270,7 +1494,7 @@ function sameBasis(A, B, tol = 1e-4) {
 function latticeMapOf(grid) {
   const R = grid && grid.rot, A = (grid && grid.anchor) || [0, 0, 0];
   if (!R) return (x, y, z) => [x, y, z];
-  return (x, y, z) => toLattice(R, x - A[0], y - A[1], z - A[2]);
+  return (x, y, z) => toLattice$basis(R, x - A[0], y - A[1], z - A[2]);
 }
 /**
  * a grid's world point → its cell: (x,y,z) → i + nx·(j + ny·k), or -1 outside.
@@ -1303,7 +1527,7 @@ function inFrameOf(G, ref) {
   // one side may be axis-aligned (no rot, anchor = the world origin) while the
   // other is a NEAR-identity rotation that sameBasis accepts as the same basis
   const ga = G.anchor || [0, 0, 0], ra = (ref && ref.anchor) || [0, 0, 0];
-  const d = toLattice(G.rot || (ref && ref.rot) || I3, ga[0] - ra[0], ga[1] - ra[1], ga[2] - ra[2]);
+  const d = toLattice$basis(G.rot || (ref && ref.rot) || I3$basis, ga[0] - ra[0], ga[1] - ra[1], ga[2] - ra[2]);
   return {
     x: { ...G.x, origin: G.x.origin + d[0] }, y: { ...G.y, origin: G.y.origin + d[1] }, z: { ...G.z, origin: G.z.origin + d[2] },
     rot: ref.rot, anchor: ref.anchor,
@@ -1439,7 +1663,7 @@ async function fitLattice(R0, sweep, { minStep, cap = 300000, tol = 0.05 } = {})
       const x = +b.x[i], y = +b.y[i], z = +b.z[i];
       if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
       if (!A) A = [x, y, z];
-      const q = toLattice(R, x - A[0], y - A[1], z - A[2]);
+      const q = toLattice$basis(R, x - A[0], y - A[1], z - A[2]);
       n++;
       for (let a = 0; a < 3; a++) { const key = Math.round(q[a] / tau), e = sets[a].get(key); if (e) { e[0] += q[a]; e[1]++; } else sets[a].set(key, [q[a], 1]); }
     }
@@ -1455,7 +1679,7 @@ async function fitLattice(R0, sweep, { minStep, cap = 300000, tol = 0.05 } = {})
     for (let r = 0; r < b.count; r++) {
       const x = +b.x[r], y = +b.y[r], z = +b.z[r];
       if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
-      const d = [x - A[0], y - A[1], z - A[2]], q = toLattice(R, d[0], d[1], d[2]);
+      const d = [x - A[0], y - A[1], z - A[2]], q = toLattice$basis(R, d[0], d[1], d[2]);
       const f = [0, 1, 2].map((a) => Math.round((q[a] - o[a]) / pit[a])).concat(1);
       for (let u = 0; u < 4; u++) { for (let v = 0; v < 4; v++) M[u * 4 + v] += f[u] * f[v]; for (let c = 0; c < 3; c++) B[u * 3 + c] += f[u] * d[c]; }
     }
@@ -1479,7 +1703,7 @@ async function fitLattice(R0, sweep, { minStep, cap = 300000, tol = 0.05 } = {})
     for (let r = 0; r < b.count; r++) {
       const x = +b.x[r], y = +b.y[r], z = +b.z[r];
       if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
-      const q = toLattice(R, x - A[0], y - A[1], z - A[2]);
+      const q = toLattice$basis(R, x - A[0], y - A[1], z - A[2]);
       for (let a = 0; a < 3; a++) {
         const kf = q[a] / pit2[a], e = Math.abs(kf - Math.round(kf));
         if (e > worst) worst = e;
@@ -1589,7 +1813,7 @@ function gridFromBasis(b) {
 }
 /** the internal grid → the producer's basis form (what micro writes in micro:model) */
 function basisOfGrid(g) {
-  const R = g.rot || I3;
+  const R = g.rot || I3$basis;
   const origin = g.rot ? worldMapOf(g)(g.x.origin, g.y.origin, g.z.origin) : [g.x.origin, g.y.origin, g.z.origin];
   const P = [g.x.pitch, g.y.pitch, g.z.pitch];
   return { origin, U: [R[0] * P[0], R[1] * P[0], R[2] * P[0]], V: [R[3] * P[1], R[4] * P[1], R[5] * P[1]], W: [R[6] * P[2], R[7] * P[2], R[8] * P[2]], counts: [g.x.count, g.y.count, g.z.count], ...(g.source ? { source: g.source } : {}) };
@@ -1708,10 +1932,18 @@ function makeResampler(srcAxes, tgtAxes, opts = {}) {
   const idxOf = (ti, tj, tk) => ti + nx * (tj + ny * tk);
   // full target-cell g-volume, for coverage (= tp_x·tp_y·tp_z)
   const fullW = X.tp * Y.tp * Z.tp;
+  // a SOURCE cell's own g-volume (= sp_x·sp_y·sp_z). 'sum' is a TRUE total: each source
+  // cell hands each target the FRACTION of itself that overlaps it (w / srcW), so a summed
+  // column (tonnes, metal) is conserved — Σ over targets = Σ over sources (restricted to
+  // the overlap) — at any pitch pair. Summing v·w alone was conserved only when fine
+  // blocks nest into coarse ones (sp = 1 on the g lattice): coarse → fine replicated the
+  // whole value into every child (×8 for 10 m → 5 m), mixed pitches inflated by srcW.
+  const srcW = X.sp * Y.sp * Z.sp;
   const nested = X.nested && Y.nested && Z.nested;
   return {
-    ok: true, nx, ny, nz, cells, idxOf, fullW, nested, X, Y, Z,
-    newAcc: () => ({ sum: new Float64Array(cells), w: new Float64Array(cells) }),
+    ok: true, nx, ny, nz, cells, idxOf, fullW, srcW, nested, X, Y, Z,
+    // sum/w → mean · w → count/coverage · tot → the conserved total ('sum')
+    newAcc: () => ({ sum: new Float64Array(cells), w: new Float64Array(cells), tot: new Float64Array(cells) }),
     // scatter one NUMERIC source cell (si,sj,sk index in the SOURCE lattice)
     scatter(si, sj, sk, v, wt, acc) {
       const xm = X.map[si], ym = Y.map[sj], zm = Z.map[sk];
@@ -1719,6 +1951,7 @@ function makeResampler(srcAxes, tgtAxes, opts = {}) {
       for (const { t: ti, w: wi } of xm) for (const { t: tj, w: wj } of ym) for (const { t: tk, w: wk } of zm) {
         const w = wi * wj * wk * wt; if (w <= 0) continue;
         const idx = idxOf(ti, tj, tk); acc.sum[idx] += v * w; acc.w[idx] += w;
+        if (acc.tot) acc.tot[idx] += v * w / srcW;
       }
     },
     // finalize numeric → { out: Float64Array(cells), coverage: Float32Array, present: Uint8Array }
@@ -1727,7 +1960,7 @@ function makeResampler(srcAxes, tgtAxes, opts = {}) {
       for (let i = 0; i < cells; i++) {
         const w = acc.w[i]; if (w <= 0) { out[i] = NaN; continue; }
         present[i] = 1; coverage[i] = Math.min(1, w / fullW);
-        out[i] = op === 'sum' ? acc.sum[i] : op === 'count' ? acc.w[i] : op === 'coverage' ? coverage[i] : acc.sum[i] / w;   // mean default
+        out[i] = op === 'sum' ? (acc.tot ? acc.tot[i] : acc.sum[i] / srcW) : op === 'count' ? acc.w[i] : op === 'coverage' ? coverage[i] : acc.sum[i] / w;   // mean default
       }
       return { out, coverage, present };
     },
@@ -1786,9 +2019,12 @@ function makeBoxAggregator(tgt, opts = {}) {
   };
   return {
     ok: true, nx, ny, nz, cells, idxOf, cellVol,
-    newAcc: () => ({ sum: new Float64Array(cells), w: new Float64Array(cells) }),
+    newAcc: () => ({ sum: new Float64Array(cells), w: new Float64Array(cells), tot: new Float64Array(cells) }),
     // scatter one box (world centroid cx,cy,cz + half-dims hx,hy,hz), value v,
-    // extra weight wt (e.g. 0 to exclude). Accumulates v·overlapVol and overlapVol.
+    // extra weight wt (e.g. 0 to exclude). Accumulates v·overlapVol and overlapVol,
+    // and — for 'sum' — v·(overlapVol / the box's OWN volume): the fraction of the box
+    // each target holds, so a summed column is conserved (same rule as makeResampler).
+    // A single-plane target axis measures overlap as 1, so the box's extent on it is 1 too.
     scatterBox(cx, cy, cz, hx, hy, hz, v, wt, acc) {
       if (!(wt > 0) || !Number.isFinite(v)) return;
       const xs = axisCells(tgt.x, cx - hx, cx + hx);
@@ -1796,9 +2032,12 @@ function makeBoxAggregator(tgt, opts = {}) {
       const ys = axisCells(tgt.y, cy - hy, cy + hy);
       if (!ys.length) return;
       const zs = axisCells(tgt.z, cz - hz, cz + hz);
+      const ext = (ax, h) => (ax.pitch > 0 ? 2 * h : 1);
+      const boxVol = ext(tgt.x, hx) * ext(tgt.y, hy) * ext(tgt.z, hz);
       for (const X of xs) for (const Y of ys) for (const Z of zs) {
         const w = X.ov * Y.ov * Z.ov * wt; if (w <= 0) continue;
         const idx = idxOf(X.i, Y.i, Z.i); acc.sum[idx] += v * w; acc.w[idx] += w;
+        if (acc.tot && boxVol > 0) acc.tot[idx] += v * w / boxVol;
       }
     },
     // → { out: Float64Array (NaN where empty), coverage: Float32Array (w/cellVol),
@@ -1808,7 +2047,7 @@ function makeBoxAggregator(tgt, opts = {}) {
       for (let i = 0; i < cells; i++) {
         const w = acc.w[i]; if (w <= 0) { out[i] = NaN; continue; }
         present[i] = 1; coverage[i] = cellVol > 0 ? Math.min(1, w / cellVol) : 1;
-        out[i] = op === 'sum' ? acc.sum[i] : op === 'volume' ? w : op === 'coverage' ? coverage[i] : acc.sum[i] / w;
+        out[i] = op === 'sum' ? (acc.tot ? acc.tot[i] : acc.sum[i]) : op === 'volume' ? w : op === 'coverage' ? coverage[i] : acc.sum[i] / w;
       }
       return { out, coverage, present };
     },
@@ -2555,9 +2794,8 @@ const CAP_DISTINCT = 300000;                               // per-axis discovery
 // came from a live discovery or a cached `discovered` payload (sidecars)
 function makeDelimitedStream(blob, delim, hasHeaderRow, map, catCol, catCode, dimInfo = null, chanPolicy = QUALIFIED_DEFAULT, decimal = '.') {
   return async function* streamChunks({ chunkPoints = 1 << 18, signal: s2, onProgress: op2 } = {}) {
-    const alloc = () => ({ x: new Float64Array(chunkPoints), y: new Float64Array(chunkPoints), z: new Float64Array(chunkPoints), chan: new Float64Array(chunkPoints), cat: catCode ? new Uint8Array(chunkPoints) : null, dim: dimInfo ? new Uint8Array(chunkPoints) : null });
+    const alloc = () => ({ x: new Float64Array(chunkPoints), y: new Float64Array(chunkPoints), z: new Float64Array(chunkPoints), chan: new Float64Array(chunkPoints), cat: catCode ? new Uint8Array(chunkPoints) : null, dimQ: dimInfo ? new Uint8Array(3 * chunkPoints) : null });
     let buf = alloc(), fill = 0, recStart = 0;
-    const dimKeyOf = makeDimKeyer();
     for await (const batch of lineFields(blob, delim, hasHeaderRow, { signal: s2, onProgress: op2, decimal })) {
       for (const f of batch) {
         const xv = coordNum(f[map.x]), yv = coordNum(f[map.y]), zv = coordNum(f[map.z]);
@@ -2565,15 +2803,15 @@ function makeDelimitedStream(blob, delim, hasHeaderRow, map, catCol, catCode, di
         buf.x[fill] = xv; buf.y[fill] = yv; buf.z[fill] = zv;
         buf.chan[fill] = map.chan != null ? qualifiedNumber(f[map.chan], chanPolicy) : 0;   // <0.001 → a number under the column's policy
         if (buf.cat) { const c = catCode.get((f[catCol] || '').trim()); buf.cat[fill] = c === undefined ? 0 : c; }
-        if (buf.dim) { const c = dimInfo.code.get(dimKeyOf(+f[dimInfo.cols.x], +f[dimInfo.cols.y], +f[dimInfo.cols.z])); buf.dim[fill] = c === undefined ? 0 : c; }
+        if (buf.dimQ) putDimQ(buf.dimQ, fill, +f[dimInfo.cols.x], +f[dimInfo.cols.y], +f[dimInfo.cols.z], dimInfo.pitch);
         fill++;
         if (fill === chunkPoints) {
-          yield { count: fill, x: buf.x, y: buf.y, z: buf.z, chan: buf.chan, cat: buf.cat, dim: buf.dim, recStart };
+          yield { count: fill, x: buf.x, y: buf.y, z: buf.z, chan: buf.chan, cat: buf.cat, dimQ: buf.dimQ, recStart };
           recStart += fill; buf = alloc(); fill = 0;
         }
       }
     }
-    if (fill) yield { count: fill, x: buf.x.subarray(0, fill), y: buf.y.subarray(0, fill), z: buf.z.subarray(0, fill), chan: buf.chan.subarray(0, fill), cat: buf.cat ? buf.cat.subarray(0, fill) : null, dim: buf.dim ? buf.dim.subarray(0, fill) : null, recStart };
+    if (fill) yield { count: fill, x: buf.x.subarray(0, fill), y: buf.y.subarray(0, fill), z: buf.z.subarray(0, fill), chan: buf.chan.subarray(0, fill), cat: buf.cat ? buf.cat.subarray(0, fill) : null, dimQ: buf.dimQ ? buf.dimQ.subarray(0, 3 * fill) : null, recStart };
   };
 }
 
@@ -2603,9 +2841,10 @@ async function openBlockModel(blob, { mapping = null, discovered = null, lattice
     };
     const map2 = header.mapping;
     const catCode2 = header.categories ? new Map(header.categories.map((v, i) => [v, i])) : null;
-    // sub-blocked: rebuild the size-code map from the persisted half-dim palette (×2)
-    const dimInfo2 = header.subBlocked && header.dimCols && header.dimPalette
-      ? { cols: header.dimCols, code: dimCodeFromPalette(header.dimPalette) }
+    // sub-blocked: sizes → fine steps of the cached fine lattice (an older cache's
+    // dimPalette is simply not needed — the grid's pitch says it all)
+    const dimInfo2 = header.subBlocked && header.dimCols && header.grid
+      ? { cols: header.dimCols, pitch: pitchOf(header.grid) }
       : null;
     return { header, streamChunks: makeDelimitedStream(blob, header.delim, header.hasHeaderRow, map2, map2.cat, catCode2, dimInfo2, policyOf(qualify, header.columns, map2.chan), header.decimal) };
   }
@@ -2646,12 +2885,11 @@ async function openBlockModel(blob, { mapping = null, discovered = null, lattice
   }
 
   // per-block dimension columns (DX/DY/DZ, XINC…) → the model may be SUB-BLOCKED
-  // (variable box size). Discovery tracks the fine pitch (min dim/axis) + the
-  // distinct (dx,dy,dz) triples that become the size-code palette.
+  // (variable box size). Discovery collects the sizes (grid/support.js) — the fine
+  // pitch and each block's size in fine steps come from them.
   const dimCols = dims || findDimColumns(sniff.header) || { x: -1, y: -1, z: -1 };
   const hasDims = dimCols.x >= 0;
-  const minDim = [Infinity, Infinity, Infinity];
-  const dimSet = new Set();
+  const sizes = sizeCollector();
 
   // every plausible scalar column (numeric in the head sample, not a coord/dim) —
   // the UI offers these as color channels; switching re-runs sweep 2 only.
@@ -2680,7 +2918,6 @@ async function openBlockModel(blob, { mapping = null, discovered = null, lattice
   const ax = axc.map((c) => c.set);
   const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
   const catCounts = new Map();
-  const dimKeyOf = makeDimKeyer();
   let count = 0;
   const hasHeaderRow = !!sniff.header && !sniff.generated;
   const anchors = [];                                      // sparse record index: byte offset of every indexEvery-th accepted row
@@ -2710,13 +2947,7 @@ async function openBlockModel(blob, { mapping = null, discovered = null, lattice
       if (zv < min[2]) min[2] = zv; if (zv > max[2]) max[2] = zv;
       axc[0].add(xv); axc[1].add(yv); axc[2].add(zv);
       if (catCol != null && catCounts.size <= 256) { const v = (f[catCol] || '').trim(); catCounts.set(v, (catCounts.get(v) || 0) + 1); }   // a blank is its own category, ''
-      if (hasDims) {
-        const dx = +f[dimCols.x], dy = +f[dimCols.y], dz = +f[dimCols.z];
-        if (dx > 0 && dy > 0 && dz > 0) {
-          if (dx < minDim[0]) minDim[0] = dx; if (dy < minDim[1]) minDim[1] = dy; if (dz < minDim[2]) minDim[2] = dz;
-          if (dimSet.size <= DIM_PALETTE_MAX) dimSet.add(dimKeyOf(dx, dy, dz));
-        }
-      }
+      if (hasDims) sizes.add(+f[dimCols.x], +f[dimCols.y], +f[dimCols.z]);
     }
   }
 
@@ -2724,16 +2955,18 @@ async function openBlockModel(blob, { mapping = null, discovered = null, lattice
   const axes = ax.map((s) => (s.size < CAP_DISTINCT ? inferAxis([...s].sort((a, b) => a - b)) : null));
   let grid = lattice ? { ...lattice } : axes.every(Boolean) ? { x: axes[0], y: axes[1], z: axes[2] } : null;
 
-  // ── sub-blocked detection ── dims vary → fine-lattice IJK (pitch = min dim /2,
-  // so every power-of-2 sub-block centroid lands on it) + a size-code palette.
-  // Off the fine lattice (non-power-of-2 splits) → leave it null → points fallback.
-  let subBlocked = false, dimPalette = null, dimInfo = null;
-  const sb = hasDims && !lattice ? inferSubBlockLattice(ax, minDim, dimSet, { cap: CAP_DISTINCT }) : null;
-  if (sb) {
+  // ── sub-blocked detection ── sizes vary → fine-lattice IJK (pitch = half the
+  // size step, so every integer combination centres on it) + per-block dimQ.
+  // Off the fine lattice → null → points fallback; a block past 255 fine steps →
+  // refused, said (header.subBlockRefused), and shown as points.
+  let subBlocked = false, sizeQMax = null, sizeShapes = 0, dimInfo = null, subBlockRefused = null;
+  const sb = hasDims && !lattice ? inferSubBlockLattice(ax, sizes, { cap: CAP_DISTINCT }) : null;
+  if (sb && sb.refused) { subBlockRefused = sb.refused; grid = null; }
+  else if (sb) {
     subBlocked = true;
-    dimPalette = sb.dimPalette;                                // half-dims (box radius)
-    dimInfo = { cols: dimCols, code: sb.dimCode };
+    sizeQMax = sb.sizeQMax; sizeShapes = sb.shapes;
     grid = sb.grid;                                            // fine lattice → IJK
+    dimInfo = { cols: dimCols, pitch: pitchOf(grid) };
   }
   // not an axis-aligned grid → maybe a ROTATED one (a candidate, for the caller to confirm)
   let latticeCandidate = null;
@@ -2744,7 +2977,7 @@ async function openBlockModel(blob, { mapping = null, discovered = null, lattice
         yield { x, y, z, count: n };
       }
     })();
-  if (!grid && !subBlocked && rotated && res.length >= 24) {
+  if (!grid && !subBlocked && !subBlockRefused && rotated && res.length >= 24) {
     latticeCandidate = await detectRotatedLattice(Float64Array.from(res), coordSweep);
   } else if (grid && !lattice && !subBlocked && rotated) {
     // a rotated model can ALSO read as a sparse, wrong axis grid (45°, 3-4-5…)
@@ -2761,7 +2994,7 @@ async function openBlockModel(blob, { mapping = null, discovered = null, lattice
     grid,                                                   // null → not a regular grid (points fallback)
     latticeCandidate,                                       // a detected ROTATED lattice, not applied (caller confirms) — or null
     lattice: lattice ? { basis: 'declared' } : null,
-    subBlocked, dimPalette, dimCols: subBlocked ? dimCols : null,   // variable-size boxes: half-dim palette + size-code per block
+    subBlocked, sizeQMax, sizeShapes, subBlockRefused, dimCols: subBlocked ? dimCols : null,   // variable-size boxes: per-block dimQ on the fine lattice
     columns: sniff.header, mapping: { ...map, cat: categories ? catCol : null },
     delim: sniff.delim, hasHeaderRow,                       // for external sweeps (the filter mask)
     decimal: sniff.decimal,                                 // ',' — every re-read normalizes 1,5 the same way
@@ -6833,13 +7066,12 @@ layout(location=0) in vec3 aIjk;        // uint16 raw (integer lattice)
 layout(location=1) in float aChan;      // uint16 normalized (per-chunk range)
 layout(location=2) in float aCat;       // uint8 raw
 layout(location=3) in uint aRec;        // uint32 record index (the join key)
-layout(location=4) in uint aDim;        // uint8 size code → uDimPalette (sub-blocked)
+layout(location=4) in uvec3 aDimQ;      // u8×3 size in FINE steps (sub-blocked; the block-support contract)
 uniform mat4 uViewProj;
 uniform vec3 uEye, uRight, uUp;
 uniform vec3 uGridOrigin, uGridSize;
 uniform mat3 uGridRot;                  // lattice rotation (identity = axis-aligned)
-uniform sampler2D uDimPalette;          // Nx1 RGBA32F: per-code half-dims (box radius)
-uniform float uSubBlock;                // 1 = variable-size boxes (read aDim → palette)
+uniform float uSubBlock;                // 1 = variable-size boxes: half = aDimQ · pitch / 2
 uniform float uPerspScale;              // persp: px/world at distance 1; ortho: px/world flat
 uniform float uOrtho;                   // 1 = orthographic (skip the /dist)
 uniform float uDemotePx, uPointPx;
@@ -6879,7 +7111,7 @@ out vec2 vCorner;
 out vec3 vWorldPos;
 void main() {
   vec3 center = uGridOrigin + uGridRot * (aIjk * uGridSize);
-  vec3 half_ = uSubBlock > 0.5 ? texelFetch(uDimPalette, ivec2(int(aDim), 0), 0).rgb : uGridSize * 0.5;
+  vec3 half_ = uSubBlock > 0.5 ? vec3(aDimQ) * uGridSize * 0.5 : uGridSize * 0.5;
   float r = length(half_);
   float dist = max(distance(uEye, center), 1e-3);
   float distEff = uOrtho > 0.5 ? 1.0 : dist;              // ortho: size is distance-free
@@ -7102,7 +7334,7 @@ function createBlocksPipeline(gl) {
     return { prog, uni: {
       viewProj: U('uViewProj'), eye: U('uEye'), right: U('uRight'), up: U('uUp'),
       gridOrigin: U('uGridOrigin'), gridSize: U('uGridSize'), gridRot: U('uGridRot'),
-      dimPalette: U('uDimPalette'), subBlock: U('uSubBlock'), opacity: U('uOpacity'),
+      subBlock: U('uSubBlock'), opacity: U('uOpacity'),
       perspScale: U('uPerspScale'), demotePx: U('uDemotePx'), pointPx: U('uPointPx'),
       colorMode: U('uColorMode'), zRange: U('uZRange'), chanChunk: U('uChanChunk'), chanDoc: U('uChanDoc'), noData: U('uNoData'), noDataOn: U('uNoDataOn'),
       ramp: U('uRamp'), palette: U('uPalette'), lightDir: U('uLightDir'),
@@ -7125,24 +7357,12 @@ function createBlocksPipeline(gl) {
     const mkBuf = (data) => { const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b); gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW); return b; };
     const bIjk = mkBuf(chunk.ijk), bChan = mkBuf(chunk.chan), bCat = mkBuf(chunk.cat);
     const bRec = mkBuf(chunk.recIdx);                      // filter-mask lookup + pick pass
-    const sub = !!(chunk.dim && chunk.dimPalette);
-    const bDim = sub ? mkBuf(chunk.dim) : null;            // per-block u8 size code
+    const sub = !!chunk.dimQ;
+    const bDim = sub ? mkBuf(chunk.dimQ) : null;           // per-block u8×3 size in fine steps (3 B/block)
     gl.bindVertexArray(null);
-    // sub-blocked: a small Nx1 RGBA32F palette of half-dims (box radii). NEAREST
-    // sampling of a float texture is core WebGL2 (only float RENDER needs an ext).
-    let dimTex = null;
-    if (sub) {
-      const pal = chunk.dimPalette, data = new Float32Array(pal.length * 4);
-      for (let i = 0; i < pal.length; i++) { data[i * 4] = pal[i][0]; data[i * 4 + 1] = pal[i][1]; data[i * 4 + 2] = pal[i][2]; }
-      dimTex = gl.createTexture();
-      gl.bindTexture(gl.TEXTURE_2D, dimTex);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, pal.length, 1, 0, gl.RGBA, gl.FLOAT, data);
-      for (const p of [gl.TEXTURE_MIN_FILTER, gl.TEXTURE_MAG_FILTER]) gl.texParameteri(gl.TEXTURE_2D, p, gl.NEAREST);
-      for (const p of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T]) gl.texParameteri(gl.TEXTURE_2D, p, gl.CLAMP_TO_EDGE);
-    }
     return {
       kind: 'blocks', vao, buffers: sub ? [bIjk, bChan, bCat, bRec, bDim] : [bIjk, bChan, bCat, bRec],
-      bIjk, bChan, bCat, bRec, bDim, dimTex, dimPalette: sub ? chunk.dimPalette : null,
+      bIjk, bChan, bCat, bRec, bDim, sub, dimQMax: sub ? chunk.dimQMax || [255, 255, 255] : null,
       count: chunk.count, bboxLocal: chunk.bboxLocal, cursor: 0,
       grid: chunk.grid, chanRange: chunk.chanRange,
     };
@@ -7173,18 +7393,17 @@ function createBlocksPipeline(gl) {
     gl.enableVertexAttribArray(3);
     gl.vertexAttribIPointer(3, 1, gl.UNSIGNED_INT, 0, first * 4);
     gl.vertexAttribDivisor(3, 1);
-    if (c.dimTex) {                                         // sub-blocked: per-block size code + palette
+    if (c.sub) {                                            // sub-blocked: per-block size in fine steps
       gl.bindBuffer(gl.ARRAY_BUFFER, c.bDim);
       gl.enableVertexAttribArray(4);
-      gl.vertexAttribIPointer(4, 1, gl.UNSIGNED_BYTE, 0, first);
+      gl.vertexAttribIPointer(4, 3, gl.UNSIGNED_BYTE, 3, first * 3);
       gl.vertexAttribDivisor(4, 1);
-      gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, c.dimTex);
       gl.uniform1f(uni.subBlock, 1);
     } else {
       gl.disableVertexAttribArray(4);
-      // A disabled `in uint aDim` reads the generic current value, which defaults to
+      // A disabled `in uvec3 aDimQ` reads the generic current value, which defaults to
       // FLOAT — a type mismatch vs the uint declaration (GL_INVALID_OPERATION at draw).
-      // Give it a valid uint default; aDim is unused when uSubBlock=0, so 0 is a no-op.
+      // Give it a valid uint default; aDimQ is unused when uSubBlock=0, so 0 is a no-op.
       gl.vertexAttribI4ui(4, 0, 0, 0, 0);
       gl.uniform1f(uni.subBlock, 0);
     }
@@ -7231,7 +7450,6 @@ function createBlocksPipeline(gl) {
       gl.uniform2f(uni.chanDoc, chanDoc[0], chanDoc[1]);
       gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, ramp); gl.uniform1i(uni.ramp, 0);
       gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, palette); gl.uniform1i(uni.palette, 1);
-      gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, palette); gl.uniform1i(uni.dimPalette, 2);   // unit 2 = per-chunk sub-block half-dims; a complete default so regular draws never sample incomplete
       gl.uniform1f(uni.subBlock, 0);
       gl.uniform1f(uni.opacity, Math.max(0.02, Math.min(1, opacity)));   // per-layer screen-door opacity
       gl.uniform1f(uni.fixedSplat, pointsView ? 1 : 0);
@@ -7423,12 +7641,11 @@ layout(location=0) in vec3 aIjk;
 layout(location=1) in float aChan;       // the visual VAO's, unchanged
 layout(location=2) in float aCat;
 layout(location=3) in uint aRec;
-layout(location=4) in uint aDim;
+layout(location=4) in uvec3 aDimQ;      // u8×3 size in fine steps (sub-blocked)
 uniform mat4 uViewProj;
 uniform vec3 uEye, uRight, uUp;
 uniform vec3 uGridOrigin, uGridSize;
 uniform mat3 uGridRot;
-uniform sampler2D uDimPalette;
 uniform float uSubBlock;
 uniform float uPerspScale, uDemotePx, uPointPx, uFixedSplat, uOrtho;
 uniform sampler2D uMask;
@@ -7454,7 +7671,7 @@ out vec2 vCorner;
 out vec3 vWorldPos;
 void main() {
   vec3 center = uGridOrigin + uGridRot * (aIjk * uGridSize);
-  vec3 half_ = uSubBlock > 0.5 ? texelFetch(uDimPalette, ivec2(int(aDim), 0), 0).rgb : uGridSize * 0.5;
+  vec3 half_ = uSubBlock > 0.5 ? vec3(aDimQ) * uGridSize * 0.5 : uGridSize * 0.5;
   float r = length(half_);
   float dist = max(distance(uEye, center), 1e-3);
   float distEff = uOrtho > 0.5 ? 1.0 : dist;
@@ -7840,7 +8057,7 @@ function createPickPipeline(gl) {
     layer: U(blk, 'uLayer'),
     viewProj: U(blk, 'uViewProj'), invVP: U(blk, 'uInvVP'), vp: U(blk, 'uVp'), eye: U(blk, 'uEye'), right: U(blk, 'uRight'), up: U(blk, 'uUp'),
     gridOrigin: U(blk, 'uGridOrigin'), gridSize: U(blk, 'uGridSize'), gridRot: U(blk, 'uGridRot'),
-    dimPalette: U(blk, 'uDimPalette'), subBlock: U(blk, 'uSubBlock'),
+    subBlock: U(blk, 'uSubBlock'),
     perspScale: U(blk, 'uPerspScale'), demotePx: U(blk, 'uDemotePx'), pointPx: U(blk, 'uPointPx'), fixedSplat: U(blk, 'uFixedSplat'),
     ortho: U(blk, 'uOrtho'), fwd: U(blk, 'uFwd'), orthoRay: U(blk, 'uOrthoRay'), backoff: U(blk, 'uBackoff'),
     mask: U(blk, 'uMask'), filterOn: U(blk, 'uFilterOn'), isolate: U(blk, 'uIsolate'),
@@ -8038,7 +8255,6 @@ function createPickPipeline(gl) {
       gl.uniform1f(uBlk.demotePx, 2.0);
       gl.uniform1f(uBlk.pointPx, dpp);
       gl.uniform1f(uBlk.fixedSplat, blocksAsPoints ? 1 : 0);
-      gl.uniform1i(uBlk.dimPalette, 2);                     // unit 2 = sub-block half-dims (per-chunk below)
       for (const [id, group] of byLayer(blkChunks)) {
         gl.uniform1ui(uBlk.layer, id >>> 0);
       const st = stateOf(id);
@@ -8065,16 +8281,15 @@ function createPickPipeline(gl) {
         gl.enableVertexAttribArray(3);
         gl.vertexAttribIPointer(3, 1, gl.UNSIGNED_INT, 0, 0);
         gl.vertexAttribDivisor(3, 1);
-        if (c.dimTex) {
+        if (c.sub) {
           gl.bindBuffer(gl.ARRAY_BUFFER, c.bDim);
           gl.enableVertexAttribArray(4);
-          gl.vertexAttribIPointer(4, 1, gl.UNSIGNED_BYTE, 0, 0);
+          gl.vertexAttribIPointer(4, 3, gl.UNSIGNED_BYTE, 3, 0);
           gl.vertexAttribDivisor(4, 1);
-          gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, c.dimTex);
           gl.uniform1f(uBlk.subBlock, 1);
         } else {
           gl.disableVertexAttribArray(4);
-          gl.vertexAttribI4ui(4, 0, 0, 0, 0);   // uint default for the disabled `in uint aDim` (see gl-blocks.js)
+          gl.vertexAttribI4ui(4, 0, 0, 0, 0);   // uint default for the disabled `in uvec3 aDimQ` (see gl-blocks.js)
           gl.uniform1f(uBlk.subBlock, 0);
         }
         gl.uniform3f(uBlk.gridOrigin, c.grid.originLocal[0], c.grid.originLocal[1], c.grid.originLocal[2]);
@@ -8518,8 +8733,12 @@ function readDM(buffer) {
 // any picked record. Categories (first alpha column) build their dictionary
 // incrementally during the single streaming sweep (≤255 distinct).
 //
-// v1 scope: regular uniform grids (INC as DD constants). Sub-blocked models
-// (per-record INC) and non-model .dm files are a later milestone.
+// Regular models (INC as DD constants) need no sweep; SUB-BLOCKED models (per-record
+// XINC/YINC/ZINC) get a discovery sweep → the fine lattice + per-block dimQ
+// (grid/support.js). A ROTATED model with a single rotation about Z (ANGLE1 about
+// ROTAXIS1 = 3) is placed in world coordinates (world = O + R·(XC,YC,ZC), the
+// convention verified on a real Isatis.neo export); two or three rotations are
+// reported, not applied (their order convention is unverified).
 
 
 // PROJECTED batches over any .dm — decode only the requested column indices by
@@ -8577,10 +8796,12 @@ async function* dmColumnBatches(blob, h, colIdxs, { signal, shouldRead = null } 
 
 const DEF_NAMES = new Set(['IJK', 'XC', 'YC', 'ZC', 'XINC', 'YINC', 'ZINC', 'XMORIG', 'YMORIG', 'ZMORIG', 'NX', 'NY', 'NZ', 'ANGLE1', 'ANGLE2', 'ANGLE3', 'ROTAXIS1', 'ROTAXIS2', 'ROTAXIS3']);
 
-// `cached` (a sidecar's discovery results: { grid, bbox, subBlocked, dimPalette,
-// categories }) skips the full-file discovery sweep — a 13 GB sub-blocked model
-// reopens straight to streaming. Callers own freshness (name+size match).
-async function openDmModel(blob, { mapping = null, forcePoints = false, onProgress = null, cached = null } = {}) {
+// `cached` (a sidecar's discovery results: { grid, bbox, subBlocked, categories })
+// skips the full-file discovery sweep — a 13 GB sub-blocked model reopens straight
+// to streaming. Callers own freshness (name+size match).
+// `origin` ([x, y, z]) — the world position of the model's local origin, for a
+// rotated model whose file doesn't carry it (X0/Y0/Z0 = 0, an anonymised export).
+async function openDmModel(blob, { mapping = null, forcePoints = false, onProgress = null, cached = null, origin = null } = {}) {
   const head = new Uint8Array(await blob.slice(0, Math.min(8192, blob.size)).arrayBuffer());
   const fmt = detectDM(head);
   if (!fmt) throw new Error('dm: not a recognizable .dm file');
@@ -8642,13 +8863,46 @@ async function openDmModel(blob, { mapping = null, forcePoints = false, onProgre
   const incIdx = { x: idx('XINC'), y: idx('YINC'), z: idx('ZINC') };
   const perRecDims = !regular && !forcePoints && incIdx.x >= 0 && incIdx.y >= 0 && incIdx.z >= 0
     && !h.columns[incIdx.x].isConstant && !h.columns[incIdx.y].isConstant && !h.columns[incIdx.z].isConstant;
-  let grid = null, bbox, subBlocked = false, dimPalette = null, dimCode = null;
-  if (cached && cached.bbox && !forcePoints) {
-    // sidecar-cached discovery: trust it wholesale (freshness is the caller's contract)
+
+  // A Datamine ROTATED model carries up to three successive rotations as DD
+  // constants: ANGLEn (degrees) about ROTAXISn (1 = X, 2 = Y, 3 = Z), and XC/YC/ZC
+  // in the model's own (unrotated) frame. ONE rotation, ANGLE1 about Z, is applied:
+  // ANGLE1 turns the model axes clockwise seen from above (R = −ANGLE1 in the math
+  // sense; ANGLE1 = −50 → model X at N40°E) — checked on a real Isatis.neo export,
+  // whose world centroid bounds it reproduces to 0.01 m. Anything else (a second or
+  // third rotation, another axis) is REPORTED, never applied: its order convention
+  // is unverified, and a plausible wrong placement is worse than an honest frame.
+  // header.dmRotation = null, or [{ n, axis: 'X'|'Y'|'Z'|'?', angle }] in file order.
+  const dmRotation = [];
+  for (const n of [1, 2, 3]) {
+    const a = constVal('ANGLE' + n), ax = constVal('ROTAXIS' + n);
+    if (Number.isFinite(a) && Math.abs(a) > 1e-9) dmRotation.push({ n, axis: ({ 1: 'X', 2: 'Y', 3: 'Z' })[Math.round(ax)] || '?', angle: a });
+  }
+  const rotApplied = dmRotation.length === 1 && dmRotation[0].n === 1 && dmRotation[0].axis === 'Z';
+  const R = rotApplied ? datamineRotZ(dmRotation[0].angle) : null;
+  // the world position of the local origin: the caller's, else the file's X0/Y0/Z0 (0 when absent)
+  const O = rotApplied ? (origin && origin.length === 3 ? origin.map(Number) : [constVal('X0'), constVal('Y0'), constVal('Z0')].map((v) => (Number.isFinite(v) ? v : 0))) : null;
+  // local → world for one point (rotated models only)
+  const toW = (x, y, z, out) => { out[0] = O[0] + R[0] * x + R[3] * y; out[1] = O[1] + R[1] * x + R[4] * y; out[2] = O[2] + z; return out; };
+  // a local bbox → its world AABB (the 8 corners through R)
+  const worldBox = (b) => {
+    const mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity], p = [0, 0, 0];
+    for (const x of [b.min[0], b.max[0]]) for (const y of [b.min[1], b.max[1]]) for (const z of [b.min[2], b.max[2]]) {
+      toW(x, y, z, p); for (let a = 0; a < 3; a++) { if (p[a] < mn[a]) mn[a] = p[a]; if (p[a] > mx[a]) mx[a] = p[a]; }
+    }
+    return { min: mn, max: mx };
+  };
+  // a cache written for another placement (an older, unrotated sidecar; another origin) is not trusted
+  const sameAnchor = (g) => !!(g && g.rot && g.anchor && O && g.anchor.every((v, a) => Math.abs(v - O[a]) < 1e-6));
+  const cacheOk = cached && cached.bbox && !forcePoints && (rotApplied ? sameAnchor(cached.grid) : !(cached.grid && cached.grid.rot));
+
+  let grid = null, bbox, subBlocked = false, sizeQMax = null, sizeShapes = 0, subBlockRefused = null;
+  if (cacheOk) {
+    // sidecar-cached discovery: trust it wholesale (freshness is the caller's contract);
+    // an older sidecar's dimPalette isn't needed — the fine grid's pitch says it all
     grid = cached.grid || null; bbox = cached.bbox;
-    subBlocked = !!cached.subBlocked;
-    dimPalette = cached.dimPalette || null;
-    if (subBlocked && dimPalette) dimCode = dimCodeFromPalette(dimPalette);
+    subBlocked = !!(cached.subBlocked && grid);
+    sizeQMax = cached.sizeQMax || null;
   } else if (regular) {
     grid = {
       x: { origin: mor[0] + inc[0] / 2, pitch: inc[0], count: Math.round(cnt[0]) },
@@ -8656,12 +8910,14 @@ async function openDmModel(blob, { mapping = null, forcePoints = false, onProgre
       z: { origin: mor[2] + inc[2] / 2, pitch: inc[2], count: Math.round(cnt[2]) },
     };
     bbox = { min: [mor[0], mor[1], mor[2]], max: [mor[0] + inc[0] * cnt[0], mor[1] + inc[1] * cnt[1], mor[2] + inc[2] * cnt[2]] };
+    if (rotApplied) bbox = worldBox(bbox);
   } else {
-    const CAP = 300000, dimKeyOf = makeDimKeyer();
+    const CAP = 300000;
     const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+    const wmin = [Infinity, Infinity, Infinity], wmax = [-Infinity, -Infinity, -Infinity], wp = [0, 0, 0];   // world centroid bounds (rotated)
     const axc = [axisDistinct(CAP), axisDistinct(CAP), axisDistinct(CAP)];   // axis distinct centroids (for the fine lattice)
     const ax = axc.map((c) => c.set);
-    const minDim = [Infinity, Infinity, Infinity], dimSet = new Set();
+    const sizes = sizeCollector();
     const sweepCols = perRecDims ? [xc, yc, zc, incIdx.x, incIdx.y, incIdx.z] : [xc, yc, zc];
     for await (const { recStart, count, cols } of columnBatches(sweepCols)) {
       if (onProgress) onProgress({ phase: 'discovery', done: recStart + count, total: h.recordCount });
@@ -8672,22 +8928,26 @@ async function openDmModel(blob, { mapping = null, forcePoints = false, onProgre
         if (xv < min[0]) min[0] = xv; if (xv > max[0]) max[0] = xv;
         if (yv < min[1]) min[1] = yv; if (yv > max[1]) max[1] = yv;
         if (zv < min[2]) min[2] = zv; if (zv > max[2]) max[2] = zv;
+        if (rotApplied) {
+          toW(xv, yv, zv, wp);
+          for (let a = 0; a < 3; a++) { if (wp[a] < wmin[a]) wmin[a] = wp[a]; if (wp[a] > wmax[a]) wmax[a] = wp[a]; }
+        }
         if (perRecDims) {
           axc[0].add(xv); axc[1].add(yv); axc[2].add(zv);
-          const dx = DX[k], dy = DY[k], dz = DZ[k];
-          if (dx > 0 && dy > 0 && dz > 0) {
-            if (dx < minDim[0]) minDim[0] = dx; if (dy < minDim[1]) minDim[1] = dy; if (dz < minDim[2]) minDim[2] = dz;
-            if (dimSet.size <= DIM_PALETTE_MAX) dimSet.add(dimKeyOf(dx, dy, dz));
-          }
+          sizes.add(DX[k], DY[k], DZ[k]);
         }
       }
     }
     if (!Number.isFinite(min[0])) throw new Error('dm: no finite XC/YC/ZC centroids');
-    bbox = { min, max };
-    // sub-blocked: fine lattice (pitch = minDim/2) + size palette — same rule as CSV
-    const sb = perRecDims ? inferSubBlockLattice(ax, minDim, dimSet, { cap: CAP }) : null;
-    if (sb) { subBlocked = true; dimPalette = sb.dimPalette; dimCode = sb.dimCode; grid = sb.grid; }
+    bbox = rotApplied ? { min: wmin, max: wmax } : { min, max };
+    // sub-blocked: the fine lattice + per-block dimQ — the same rule as CSV
+    const sb = perRecDims ? inferSubBlockLattice(ax, sizes, { cap: CAP }) : null;
+    if (sb && sb.refused) subBlockRefused = sb.refused;
+    else if (sb) { subBlocked = true; sizeQMax = sb.sizeQMax; sizeShapes = sb.shapes; grid = sb.grid; }
   }
+  // rotated: the local grid becomes a lattice about the world origin O (grid/basis.js form)
+  if (grid && rotApplied && !grid.rot) grid = { ...grid, rot: R, anchor: O };
+  const pitchQ = subBlocked && grid ? pitchOf(grid) : null;
 
   // channels: every per-record numeric non-definition column; first alpha = category
   const numericColumns = h.columns
@@ -8704,23 +8964,13 @@ async function openDmModel(blob, { mapping = null, forcePoints = false, onProgre
   const categories = catIdx >= 0 ? (cachedCats ? [...cachedCats] : []) : null;   // fills incrementally during the sweep (or prefilled from a sidecar)
   const catCode = catIdx >= 0 ? new Map(categories.map((v, i) => [v, i])) : null;
 
-  // A Datamine ROTATED model carries up to three successive rotations as DD
-  // constants: ANGLEn (degrees) about ROTAXISn (1 = X, 2 = Y, 3 = Z). The
-  // grid above is built in the model's own (unrotated) frame. Converting it to
-  // world needs Datamine's exact convention (order, sign, which frame XC/YC/ZC
-  // are stored in), and no rotated fixture has been checked against it yet —
-  // so the rotation is REPORTED, never silently applied or silently ignored.
-  // header.dmRotation = null, or [{ axis: 'X'|'Y'|'Z'|'?', angle }] in file order.
-  const dmRotation = [];
-  for (const n of [1, 2, 3]) {
-    const a = constVal('ANGLE' + n), ax = constVal('ROTAXIS' + n);
-    if (Number.isFinite(a) && Math.abs(a) > 1e-9) dmRotation.push({ axis: ({ 1: 'X', 2: 'Y', 3: 'Z' })[Math.round(ax)] || '?', angle: a });
-  }
-
   const header = {
     kind: 'blockmodel', count: h.recordCount,
     dmRotation: dmRotation.length ? dmRotation : null,
-    bbox, grid, subBlocked, dimPalette, dimCols: subBlocked ? incIdx : null,
+    dmRotationApplied: rotApplied,                          // true: placed in world (one rotation about Z)
+    dmOrigin: rotApplied ? O : null,                        // the world position of the model's local origin
+    lattice: rotApplied && grid ? { basis: 'declared', by: 'datamine' } : null,
+    bbox, grid, subBlocked, sizeQMax, sizeShapes, subBlockRefused, dimCols: subBlocked ? incIdx : null,
     columns: names,
     mapping: { x: xc, y: yc, z: zc, chan, cat: catIdx >= 0 ? catIdx : null },
     numericColumns, categories,
@@ -8732,7 +8982,7 @@ async function openDmModel(blob, { mapping = null, forcePoints = false, onProgre
     const alloc = () => ({
       x: new Float64Array(chunkPoints), y: new Float64Array(chunkPoints), z: new Float64Array(chunkPoints),
       chan: new Float64Array(chunkPoints), cat: catCode ? new Uint8Array(chunkPoints) : null,
-      dim: dimCode ? new Uint8Array(chunkPoints) : null,
+      dimQ: pitchQ ? new Uint8Array(3 * chunkPoints) : null,
       recIdx: new Uint32Array(chunkPoints),
     });
     // project ONLY the fields the render needs (coords + grade + category + dims)
@@ -8740,17 +8990,18 @@ async function openDmModel(blob, { mapping = null, forcePoints = false, onProgre
     const streamCols = [xc, yc, zc];
     if (chan != null) streamCols.push(chan);
     if (catIdx >= 0) streamCols.push(catIdx);
-    if (dimCode) streamCols.push(incIdx.x, incIdx.y, incIdx.z);
+    if (pitchQ) streamCols.push(incIdx.x, incIdx.y, incIdx.z);
     let buf = alloc(), fill = 0, done = 0;
-    const dimKeyOf = makeDimKeyer();
     for await (const { recStart, count, cols } of columnBatches(streamCols, { signal })) {
       const X = cols[xc], Y = cols[yc], Z = cols[zc];
       const CH = chan != null ? cols[chan] : null, CA = catIdx >= 0 ? cols[catIdx] : null;
-      const DX = dimCode ? cols[incIdx.x] : null, DY = dimCode ? cols[incIdx.y] : null, DZ = dimCode ? cols[incIdx.z] : null;
+      const DX = pitchQ ? cols[incIdx.x] : null, DY = pitchQ ? cols[incIdx.y] : null, DZ = pitchQ ? cols[incIdx.z] : null;
       for (let k = 0; k < count; k++) {
         const xv = X[k], yv = Y[k], zv = Z[k];
         if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;   // skipped, raw number NOT reused
-        buf.x[fill] = xv; buf.y[fill] = yv; buf.z[fill] = zv;
+        if (R) {                                           // rotated: the stream speaks WORLD coordinates
+          buf.x[fill] = O[0] + R[0] * xv + R[3] * yv; buf.y[fill] = O[1] + R[1] * xv + R[4] * yv; buf.z[fill] = O[2] + zv;
+        } else { buf.x[fill] = xv; buf.y[fill] = yv; buf.z[fill] = zv; }
         buf.chan[fill] = CH ? CH[k] : 0;                   // NaN already when missing
         if (buf.cat) {
           const raw = CA[k];                               // '' when missing; a NUMERIC cat column dict-encodes as strings
@@ -8762,11 +9013,11 @@ async function openDmModel(blob, { mapping = null, forcePoints = false, onProgre
           }
           buf.cat[fill] = code;
         }
-        if (buf.dim) { const c = dimCode.get(dimKeyOf(DX[k], DY[k], DZ[k])); buf.dim[fill] = c === undefined ? 0 : c; }
+        if (buf.dimQ) putDimQ(buf.dimQ, fill, DX[k], DY[k], DZ[k], pitchQ);
         buf.recIdx[fill] = recStart + k;                   // RAW record number — the join key
         fill++;
         if (fill === chunkPoints) {
-          yield { count: fill, x: buf.x, y: buf.y, z: buf.z, chan: buf.chan, cat: buf.cat, dim: buf.dim, recIdx: buf.recIdx, recStart: 0 };
+          yield { count: fill, x: buf.x, y: buf.y, z: buf.z, chan: buf.chan, cat: buf.cat, dimQ: buf.dimQ, recIdx: buf.recIdx, recStart: 0 };
           buf = alloc(); fill = 0;
         }
       }
@@ -8777,7 +9028,7 @@ async function openDmModel(blob, { mapping = null, forcePoints = false, onProgre
       yield {
         count: fill, x: buf.x.subarray(0, fill), y: buf.y.subarray(0, fill), z: buf.z.subarray(0, fill),
         chan: buf.chan.subarray(0, fill), cat: buf.cat ? buf.cat.subarray(0, fill) : null,
-        dim: buf.dim ? buf.dim.subarray(0, fill) : null,
+        dimQ: buf.dimQ ? buf.dimQ.subarray(0, 3 * fill) : null,
         recIdx: buf.recIdx.subarray(0, fill), recStart: 0,
       };
     }
@@ -9884,7 +10135,7 @@ const normDeg = (rad) => ((rad / DEG$write) % 360 + 360) % 360;
 const identity = (p) => p;
 
 function write(doc, opts = {}) {
-  const toW = (opts.fromLocal && doc.frame) ? (p) => toWorld(p, doc.frame) : identity;
+  const toW = (opts.fromLocal && doc.frame) ? (p) => toWorld$frame(p, doc.frame) : identity;
   const out = [];
   const push = (code, value) => out.push({ code, value });
 
@@ -12046,7 +12297,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
       const kindBy = new Map(), subBy = new Set(), rotBy = new Set();
       for (const c of chunks) if (activeChunk(c)) {
         if (!kindBy.has(c._layer)) kindBy.set(c._layer, c.kind);
-        if (c.dimPalette) subBy.add(c._layer);             // sub-blocked: variable half-dims
+        if (c.sub) subBy.add(c._layer);                    // sub-blocked: variable half-dims
         if (c.grid && c.grid.rot) rotBy.add(c._layer);     // rotated lattice: face ids are lattice faces
       }
       const dirty = new Set(cosmeticDirtyLayers);
@@ -12347,10 +12598,11 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
           // (no gl_FragDepth → early-z stays on): the far-field perf lever
           const b = c.bboxLocal;
           const bboxR = Math.hypot(b[3] - b[0], b[4] - b[1], b[5] - b[2]) / 2;
-          // sub-blocked: fine grid.size is the min pitch — use the largest box radius
-          const rBlock = c.dimPalette
-            ? Math.max(...c.dimPalette.map((h) => Math.hypot(h[0], h[1], h[2])))
-            : Math.hypot(c.grid.size[0], c.grid.size[1], c.grid.size[2]) / 2;
+          // sub-blocked: fine grid.size is the fine step — use the chunk's largest box radius
+          const s = c.grid.size, q = c.sub ? c.dimQMax : null;
+          const rBlock = q
+            ? Math.hypot(q[0] * s[0], q[1] * s[1], q[2] * s[2]) / 2
+            : Math.hypot(s[0], s[1], s[2]) / 2;
           const distNear = Math.max(cam.state.near, c._dist - bboxR);
           return blocksAsPoints || rBlock * perspScale / distNear < 2.0;
         };
@@ -17161,8 +17413,10 @@ class Axes {
     if (o.aspect != null) this._aspect = o.aspect;
     const trace = { type: 'imshow', data: D, nx, ny, opts: o };
     this._traces.push(trace);
-    // default to equal aspect for grid data (matches matplotlib)
-    if (this._aspect === 'auto') this._aspect = 'equal';
+    // default to equal aspect for grid data (matches matplotlib) — only when the caller didn't say:
+    // an explicit aspect: 'auto' set _aspect to 'auto' two lines up, and this used to turn it straight
+    // back into 'equal' (micro's FE-vs-SG density came out a flat strip)
+    if (o.aspect == null && this._aspect === 'auto') this._aspect = 'equal';
     return _result(this, [], { _trace: trace, norm: o.norm, cmap: o.cmap, __repr__: () => '<matplotlib.image.AxesImage>' });
   }
 

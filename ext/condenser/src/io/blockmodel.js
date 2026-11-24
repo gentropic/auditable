@@ -13,7 +13,8 @@
 //   RawChunk = { count, x, y, z: Float64Array, chan: Float64Array,
 //                cat: Uint8Array|null, recStart }
 
-import { inferAxis, inferSubBlockLattice, makeDimKeyer, axisDistinct, dimCodeFromPalette, DIM_PALETTE_MAX } from '../grid/infer.js';
+import { inferAxis, inferSubBlockLattice, axisDistinct } from '../grid/infer.js';
+import { sizeCollector, putDimQ, pitchOf } from '../grid/support.js';
 import { WS, splitFields, quotedFields, RecordJoiner, sampleRecords, coordNum } from './delimited.js';
 import { qualifiedNumber, censusQualified, classifyQualified, QUALIFIED_DEFAULT } from './qualified.js';
 import { detectRotatedLattice, detectRotatedOverAxisGrid, latticeMisfit } from '../grid/basis.js';
@@ -322,9 +323,8 @@ const CAP_DISTINCT = 300000;                               // per-axis discovery
 // came from a live discovery or a cached `discovered` payload (sidecars)
 function makeDelimitedStream(blob, delim, hasHeaderRow, map, catCol, catCode, dimInfo = null, chanPolicy = QUALIFIED_DEFAULT, decimal = '.') {
   return async function* streamChunks({ chunkPoints = 1 << 18, signal: s2, onProgress: op2 } = {}) {
-    const alloc = () => ({ x: new Float64Array(chunkPoints), y: new Float64Array(chunkPoints), z: new Float64Array(chunkPoints), chan: new Float64Array(chunkPoints), cat: catCode ? new Uint8Array(chunkPoints) : null, dim: dimInfo ? new Uint8Array(chunkPoints) : null });
+    const alloc = () => ({ x: new Float64Array(chunkPoints), y: new Float64Array(chunkPoints), z: new Float64Array(chunkPoints), chan: new Float64Array(chunkPoints), cat: catCode ? new Uint8Array(chunkPoints) : null, dimQ: dimInfo ? new Uint8Array(3 * chunkPoints) : null });
     let buf = alloc(), fill = 0, recStart = 0;
-    const dimKeyOf = makeDimKeyer();
     for await (const batch of lineFields(blob, delim, hasHeaderRow, { signal: s2, onProgress: op2, decimal })) {
       for (const f of batch) {
         const xv = coordNum(f[map.x]), yv = coordNum(f[map.y]), zv = coordNum(f[map.z]);
@@ -332,15 +332,15 @@ function makeDelimitedStream(blob, delim, hasHeaderRow, map, catCol, catCode, di
         buf.x[fill] = xv; buf.y[fill] = yv; buf.z[fill] = zv;
         buf.chan[fill] = map.chan != null ? qualifiedNumber(f[map.chan], chanPolicy) : 0;   // <0.001 → a number under the column's policy
         if (buf.cat) { const c = catCode.get((f[catCol] || '').trim()); buf.cat[fill] = c === undefined ? 0 : c; }
-        if (buf.dim) { const c = dimInfo.code.get(dimKeyOf(+f[dimInfo.cols.x], +f[dimInfo.cols.y], +f[dimInfo.cols.z])); buf.dim[fill] = c === undefined ? 0 : c; }
+        if (buf.dimQ) putDimQ(buf.dimQ, fill, +f[dimInfo.cols.x], +f[dimInfo.cols.y], +f[dimInfo.cols.z], dimInfo.pitch);
         fill++;
         if (fill === chunkPoints) {
-          yield { count: fill, x: buf.x, y: buf.y, z: buf.z, chan: buf.chan, cat: buf.cat, dim: buf.dim, recStart };
+          yield { count: fill, x: buf.x, y: buf.y, z: buf.z, chan: buf.chan, cat: buf.cat, dimQ: buf.dimQ, recStart };
           recStart += fill; buf = alloc(); fill = 0;
         }
       }
     }
-    if (fill) yield { count: fill, x: buf.x.subarray(0, fill), y: buf.y.subarray(0, fill), z: buf.z.subarray(0, fill), chan: buf.chan.subarray(0, fill), cat: buf.cat ? buf.cat.subarray(0, fill) : null, dim: buf.dim ? buf.dim.subarray(0, fill) : null, recStart };
+    if (fill) yield { count: fill, x: buf.x.subarray(0, fill), y: buf.y.subarray(0, fill), z: buf.z.subarray(0, fill), chan: buf.chan.subarray(0, fill), cat: buf.cat ? buf.cat.subarray(0, fill) : null, dimQ: buf.dimQ ? buf.dimQ.subarray(0, 3 * fill) : null, recStart };
   };
 }
 
@@ -370,9 +370,10 @@ export async function openBlockModel(blob, { mapping = null, discovered = null, 
     };
     const map2 = header.mapping;
     const catCode2 = header.categories ? new Map(header.categories.map((v, i) => [v, i])) : null;
-    // sub-blocked: rebuild the size-code map from the persisted half-dim palette (×2)
-    const dimInfo2 = header.subBlocked && header.dimCols && header.dimPalette
-      ? { cols: header.dimCols, code: dimCodeFromPalette(header.dimPalette) }
+    // sub-blocked: sizes → fine steps of the cached fine lattice (an older cache's
+    // dimPalette is simply not needed — the grid's pitch says it all)
+    const dimInfo2 = header.subBlocked && header.dimCols && header.grid
+      ? { cols: header.dimCols, pitch: pitchOf(header.grid) }
       : null;
     return { header, streamChunks: makeDelimitedStream(blob, header.delim, header.hasHeaderRow, map2, map2.cat, catCode2, dimInfo2, policyOf(qualify, header.columns, map2.chan), header.decimal) };
   }
@@ -413,12 +414,11 @@ export async function openBlockModel(blob, { mapping = null, discovered = null, 
   }
 
   // per-block dimension columns (DX/DY/DZ, XINC…) → the model may be SUB-BLOCKED
-  // (variable box size). Discovery tracks the fine pitch (min dim/axis) + the
-  // distinct (dx,dy,dz) triples that become the size-code palette.
+  // (variable box size). Discovery collects the sizes (grid/support.js) — the fine
+  // pitch and each block's size in fine steps come from them.
   const dimCols = dims || findDimColumns(sniff.header) || { x: -1, y: -1, z: -1 };
   const hasDims = dimCols.x >= 0;
-  const minDim = [Infinity, Infinity, Infinity];
-  const dimSet = new Set();
+  const sizes = sizeCollector();
 
   // every plausible scalar column (numeric in the head sample, not a coord/dim) —
   // the UI offers these as color channels; switching re-runs sweep 2 only.
@@ -447,7 +447,6 @@ export async function openBlockModel(blob, { mapping = null, discovered = null, 
   const ax = axc.map((c) => c.set);
   const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
   const catCounts = new Map();
-  const dimKeyOf = makeDimKeyer();
   let count = 0;
   const hasHeaderRow = !!sniff.header && !sniff.generated;
   const anchors = [];                                      // sparse record index: byte offset of every indexEvery-th accepted row
@@ -477,13 +476,7 @@ export async function openBlockModel(blob, { mapping = null, discovered = null, 
       if (zv < min[2]) min[2] = zv; if (zv > max[2]) max[2] = zv;
       axc[0].add(xv); axc[1].add(yv); axc[2].add(zv);
       if (catCol != null && catCounts.size <= 256) { const v = (f[catCol] || '').trim(); catCounts.set(v, (catCounts.get(v) || 0) + 1); }   // a blank is its own category, ''
-      if (hasDims) {
-        const dx = +f[dimCols.x], dy = +f[dimCols.y], dz = +f[dimCols.z];
-        if (dx > 0 && dy > 0 && dz > 0) {
-          if (dx < minDim[0]) minDim[0] = dx; if (dy < minDim[1]) minDim[1] = dy; if (dz < minDim[2]) minDim[2] = dz;
-          if (dimSet.size <= DIM_PALETTE_MAX) dimSet.add(dimKeyOf(dx, dy, dz));
-        }
-      }
+      if (hasDims) sizes.add(+f[dimCols.x], +f[dimCols.y], +f[dimCols.z]);
     }
   }
 
@@ -491,16 +484,18 @@ export async function openBlockModel(blob, { mapping = null, discovered = null, 
   const axes = ax.map((s) => (s.size < CAP_DISTINCT ? inferAxis([...s].sort((a, b) => a - b)) : null));
   let grid = lattice ? { ...lattice } : axes.every(Boolean) ? { x: axes[0], y: axes[1], z: axes[2] } : null;
 
-  // ── sub-blocked detection ── dims vary → fine-lattice IJK (pitch = min dim /2,
-  // so every power-of-2 sub-block centroid lands on it) + a size-code palette.
-  // Off the fine lattice (non-power-of-2 splits) → leave it null → points fallback.
-  let subBlocked = false, dimPalette = null, dimInfo = null;
-  const sb = hasDims && !lattice ? inferSubBlockLattice(ax, minDim, dimSet, { cap: CAP_DISTINCT }) : null;
-  if (sb) {
+  // ── sub-blocked detection ── sizes vary → fine-lattice IJK (pitch = half the
+  // size step, so every integer combination centres on it) + per-block dimQ.
+  // Off the fine lattice → null → points fallback; a block past 255 fine steps →
+  // refused, said (header.subBlockRefused), and shown as points.
+  let subBlocked = false, sizeQMax = null, sizeShapes = 0, dimInfo = null, subBlockRefused = null;
+  const sb = hasDims && !lattice ? inferSubBlockLattice(ax, sizes, { cap: CAP_DISTINCT }) : null;
+  if (sb && sb.refused) { subBlockRefused = sb.refused; grid = null; }
+  else if (sb) {
     subBlocked = true;
-    dimPalette = sb.dimPalette;                                // half-dims (box radius)
-    dimInfo = { cols: dimCols, code: sb.dimCode };
+    sizeQMax = sb.sizeQMax; sizeShapes = sb.shapes;
     grid = sb.grid;                                            // fine lattice → IJK
+    dimInfo = { cols: dimCols, pitch: pitchOf(grid) };
   }
   // not an axis-aligned grid → maybe a ROTATED one (a candidate, for the caller to confirm)
   let latticeCandidate = null;
@@ -511,7 +506,7 @@ export async function openBlockModel(blob, { mapping = null, discovered = null, 
         yield { x, y, z, count: n };
       }
     })();
-  if (!grid && !subBlocked && rotated && res.length >= 24) {
+  if (!grid && !subBlocked && !subBlockRefused && rotated && res.length >= 24) {
     latticeCandidate = await detectRotatedLattice(Float64Array.from(res), coordSweep);
   } else if (grid && !lattice && !subBlocked && rotated) {
     // a rotated model can ALSO read as a sparse, wrong axis grid (45°, 3-4-5…)
@@ -528,7 +523,7 @@ export async function openBlockModel(blob, { mapping = null, discovered = null, 
     grid,                                                   // null → not a regular grid (points fallback)
     latticeCandidate,                                       // a detected ROTATED lattice, not applied (caller confirms) — or null
     lattice: lattice ? { basis: 'declared' } : null,
-    subBlocked, dimPalette, dimCols: subBlocked ? dimCols : null,   // variable-size boxes: half-dim palette + size-code per block
+    subBlocked, sizeQMax, sizeShapes, subBlockRefused, dimCols: subBlocked ? dimCols : null,   // variable-size boxes: per-block dimQ on the fine lattice
     columns: sniff.header, mapping: { ...map, cat: categories ? catCol : null },
     delim: sniff.delim, hasHeaderRow,                       // for external sweeps (the filter mask)
     decimal: sniff.decimal,                                 // ',' — every re-read normalizes 1,5 the same way

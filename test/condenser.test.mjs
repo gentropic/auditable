@@ -277,7 +277,7 @@ test('blocks: provider round-trip — grid inferred, categories coded, IJK exact
   assert.ok(doc.chanRange[0] >= 50 && doc.chanRange[1] <= 61, `chan range ${doc.chanRange}`);
 });
 
-test('blocks: sub-blocked model → fine lattice + size-code palette, exact centroids', async () => {
+test('blocks: sub-blocked model → fine lattice + per-block dimQ, exact centroids', async () => {
   // parent grid 10×10×5. Four full parents (dx=10) + one parent split into 8
   // octants (dx=5,dy=5,dz=2.5). Fine pitch = minDim/2 = [2.5, 2.5, 1.25].
   const rows = [];
@@ -291,21 +291,18 @@ test('blocks: sub-blocked model → fine lattice + size-code palette, exact cent
   const { header, streamChunks } = await openBlockModel(new Blob([csv]));
   assert.equal(header.count, 12);
   assert.ok(header.subBlocked, 'sub-blocked detected');
-  assert.deepEqual([header.grid.x.pitch, header.grid.y.pitch, header.grid.z.pitch], [2.5, 2.5, 1.25], 'fine pitch = minDim/2');
-  assert.equal(header.dimPalette.length, 2, 'two distinct box sizes');
-  // palette carries half-dims; both [5,5,2.5] and [2.5,2.5,1.25] present
-  const halves = header.dimPalette.map((h) => h.join(','));
-  assert.ok(halves.includes('5,5,2.5') && halves.includes('2.5,2.5,1.25'), `palette ${JSON.stringify(header.dimPalette)}`);
+  assert.deepEqual([header.grid.x.pitch, header.grid.y.pitch, header.grid.z.pitch], [2.5, 2.5, 1.25], 'fine pitch = half the size step');
+  assert.equal(header.sizeShapes, 2, 'two distinct box sizes');
+  assert.deepEqual(header.sizeQMax, [4, 4, 4], 'the largest block spans 4 fine steps per axis');
   const frame = documentFrame(header);
   const grid = makeBlockGrid([header.grid.x, header.grid.y, header.grid.z], frame);
   const chunks = [];
-  const cb = createBlockChunkBuilder({ frame, grid, dimPalette: header.dimPalette, chunkSize: 8, seed: 1, onChunk: (c) => chunks.push(c) });
+  const cb = createBlockChunkBuilder({ frame, grid, chunkSize: 8, seed: 1, onChunk: (c) => chunks.push(c) });
   for await (const rc of streamChunks({ chunkPoints: 8 })) cb.push(rc);
   cb.flush();
   let checked = 0, total = 0;
   for (const c of chunks) {
-    assert.ok(c.dim, 'chunk carries per-block size codes');
-    assert.ok(c.dimPalette, 'chunk carries the palette');
+    assert.ok(c.dimQ && c.dimQ.length === 3 * c.count, 'chunk carries per-block dimQ (u8 × 3)');
     for (let k = 0; k < c.count; k++) {
       total++;
       const ctr = blockLocalCenter(c, k);
@@ -313,8 +310,8 @@ test('blocks: sub-blocked model → fine lattice + size-code palette, exact cent
       // match the source row exactly
       const src = rows.find((r) => Math.abs(r.x - world[0]) < 1e-9 && Math.abs(r.y - world[1]) < 1e-9 && Math.abs(r.z - world[2]) < 1e-9);
       assert.ok(src, `centroid ${world} matches a source block`);
-      const half = c.dimPalette[c.dim[k]];
-      assert.deepEqual(half, [src.dx / 2, src.dy / 2, src.dz / 2], 'size code → correct half-dims');
+      const half = [0, 1, 2].map((a) => c.dimQ[3 * k + a] * grid.size[a] / 2);
+      assert.deepEqual(half, [src.dx / 2, src.dy / 2, src.dz / 2], 'dimQ → correct half-dims');
       checked++;
     }
   }
@@ -346,7 +343,9 @@ test('dm provider: a ROTATED Datamine model reports its rotation (ANGLEn about R
     { name: 'ROTAXIS2', type: 'N', constant: 1 }, { name: 'ANGLE2', type: 'N', constant: -10 },
     { name: 'ROTAXIS3', type: 'N', constant: 3 }, { name: 'ANGLE3', type: 'N', constant: 0 }];
   const { header } = await openDmModel(new Blob([makeDM(rot, rows, { precision: 'ep' })]));
-  assert.deepEqual(header.dmRotation, [{ axis: 'Z', angle: 30 }, { axis: 'X', angle: -10 }], 'zero angles are not rotations');
+  assert.deepEqual(header.dmRotation, [{ n: 1, axis: 'Z', angle: 30 }, { n: 2, axis: 'X', angle: -10 }], 'zero angles are not rotations');
+  assert.equal(header.dmRotationApplied, false, 'two rotations: reported, NOT applied (order convention unverified)');
+  assert.ok(!header.grid.rot, 'the unapplied model stays in its own frame');
   assert.ok(!header.numericColumns.some((c) => /^(ANGLE|ROTAXIS)/.test(c.name)), 'rotation fields are not channels');
   // all-zero rotation fields = an unrotated model
   const flat = [...base, { name: 'ROTAXIS1', type: 'N', constant: 3 }, { name: 'ANGLE1', type: 'N', constant: 0 }];
@@ -408,7 +407,7 @@ function c0recPast30(chunks) {
   return true;
 }
 
-test('dm provider: sub-blocked (per-record XINC/YINC/ZINC) → fine lattice + size palette', async () => {
+test('dm provider: sub-blocked (per-record XINC/YINC/ZINC) → fine lattice + per-block dimQ', async () => {
   // no DD grid constants; XINC/YINC/ZINC are per-record → sub-block discovery
   const fields = [
     { name: 'XC', type: 'N' }, { name: 'YC', type: 'N' }, { name: 'ZC', type: 'N' },
@@ -420,24 +419,22 @@ test('dm provider: sub-blocked (per-record XINC/YINC/ZINC) → fine lattice + si
   const blob = new Blob([new Uint8Array(makeDM(fields, rows, { precision: 'ep' }))]);
   const { header, streamChunks } = await openDmModel(blob);
   assert.ok(header.subBlocked, 'sub-blocked .dm detected');
-  assert.deepEqual([header.grid.x.pitch, header.grid.y.pitch, header.grid.z.pitch], [2.5, 2.5, 1.25], 'fine pitch = minDim/2');
-  assert.equal(header.dimPalette.length, 2);
-  const halves = header.dimPalette.map((h) => h.join(','));
-  assert.ok(halves.includes('5,5,2.5') && halves.includes('2.5,2.5,1.25'), `palette ${JSON.stringify(header.dimPalette)}`);
+  assert.deepEqual([header.grid.x.pitch, header.grid.y.pitch, header.grid.z.pitch], [2.5, 2.5, 1.25], 'fine pitch = half the size step');
+  assert.equal(header.sizeShapes, 2);
   const frame = documentFrame(header);
   const grid = makeBlockGrid([header.grid.x, header.grid.y, header.grid.z], frame);
   const chunks = [];
-  const cb = createBlockChunkBuilder({ frame, grid, dimPalette: header.dimPalette, chunkSize: 8, seed: 1, onChunk: (c) => chunks.push(c) });
+  const cb = createBlockChunkBuilder({ frame, grid, chunkSize: 8, seed: 1, onChunk: (c) => chunks.push(c) });
   for await (const rc of streamChunks({ chunkPoints: 8 })) cb.push(rc);
   cb.flush();
   let checked = 0;
   for (const c of chunks) {
-    assert.ok(c.dim && c.dimPalette, 'chunk carries size codes + palette');
+    assert.ok(c.dimQ, 'chunk carries dimQ');
     for (let k = 0; k < c.count; k++) {
       const ctr = blockLocalCenter(c, k), world = [ctr[0] + frame.origin[0], ctr[1] + frame.origin[1], ctr[2] + frame.origin[2]];
       const src = rows.find((r) => Math.abs(r.XC - world[0]) < 1e-9 && Math.abs(r.YC - world[1]) < 1e-9 && Math.abs(r.ZC - world[2]) < 1e-9);
       assert.ok(src, `centroid ${world} matches a source block`);
-      assert.deepEqual(c.dimPalette[c.dim[k]], [src.XINC / 2, src.YINC / 2, src.ZINC / 2], 'size code → correct half-dims');
+      assert.deepEqual([0, 1, 2].map((a) => c.dimQ[3 * k + a] * grid.size[a] / 2), [src.XINC / 2, src.YINC / 2, src.ZINC / 2], 'dimQ → correct half-dims');
       checked++;
     }
   }
@@ -1469,10 +1466,10 @@ test('openDmWireframe reads both halves in page runs (no whole-file buffer)', as
   assert.equal(m.header.dropped, 1);
 });
 
-// ── axisDistinct / makeDimKeyer: the discovery sweep's memoized rounding ──
-// Each must give exactly what the per-value form gave (`if (size < cap)
-// set.add(r10(v))`, `dimKey(...)`) — including at the cap and past the raw memo.
-import { axisDistinct, makeDimKeyer, dimKey } from '../ext/condenser/src/main.js';
+// ── axisDistinct: the discovery sweep's memoized rounding ──
+// Must give exactly what the per-value form gave (`if (size < cap)
+// set.add(r10(v))`) — including at the cap and past the raw memo.
+import { axisDistinct } from '../ext/condenser/src/main.js';
 test('axisDistinct: same set as rounding every value, at and past the caps', () => {
   const r10 = (v) => Number(v.toPrecision(10));
   const rnd = mulberry32(7);
@@ -1490,10 +1487,7 @@ test('axisDistinct: same set as rounding every value, at and past the caps', () 
     assert.deepEqual([...c.set].sort((a, b) => a - b), [...want].sort((a, b) => a - b));
   }
 });
-test('makeDimKeyer: the same keys as dimKey', () => {
-  const k = makeDimKeyer();
-  for (const t of [[5, 5, 5], [2.5, 5, 10], [5, 5, 5], [0.1 + 0.2, 1, 1], [2.5, 5, 10]]) assert.equal(k(...t), dimKey(...t));
-});
+
 
 // the EXTERNAL Morton sort: many buckets, spilled as Blob parts, read back in key
 // order — every record once, its values with it, ties in input order

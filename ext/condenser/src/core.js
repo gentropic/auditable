@@ -4,7 +4,7 @@
 // re-exports this same surface plus io/ + grid/.
 export { mulberry32, shuffledIndices, shuffleInPlace, documentFrame, buildChunk, chunkLocalPosition, createChunkBuilder } from './core/chunks.js';
 export { part1by2, mortonKey, mortonKeys, radixSortIndices } from './core/morton.js';
-export { makeBlockGrid, buildBlockChunk, blockLocalCenter, createBlockChunkBuilder, buildBlockBatch, batchSeed } from './core/blocks.js';
+export { makeBlockGrid, buildBlockChunk, blockLocalCenter, createBlockChunkBuilder, buildBlockBatch, batchSeed, dimQFromCodes } from './core/blocks.js';
 export { buildStickChunk, stickLocalCenter, createStickChunkBuilder } from './core/sticks.js';
 export { buildMeshChunk, buildHeightfieldMesh } from './core/mesh-geom.js';
 export { buildSoupChunk, soupLocalCentroid, createSoupChunkBuilder, soupFromMesh } from './core/soup-geom.js';
@@ -17,3 +17,5 @@ export { layerSection, meshSection, offsetSection } from './core/section.js';
 export { mat4Perspective, mat4Ortho, mat4LookAt, mat4Multiply, mat4Inverse, transformPoint, frustumPlanes, aabbInFrustum, translateState, createOrbitCamera, attachOrbitInput } from './core/camera.js';
 export { makeProgram, rampPixels, palettePixels, uploadChunk, createRenderer } from './core/gl.js';
 export { createEdl } from './core/edl.js';
+// the block-support contract (pure data + helpers; grid/support.js) — the engine draws by it
+export { SIZEQ_MAX, supportOf, supportOfHeader, volumeOf, toLattice as supportToLattice, toWorld as supportToWorld, worldHalfExtent, centreOf, sameLattice, sizeCollector, finePitch, sizeQ, putDimQ, pitchOf, datamineRotZ, dmLocalToWorld } from './grid/support.js';

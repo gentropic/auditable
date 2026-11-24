@@ -10,11 +10,16 @@
 // any picked record. Categories (first alpha column) build their dictionary
 // incrementally during the single streaming sweep (≤255 distinct).
 //
-// v1 scope: regular uniform grids (INC as DD constants). Sub-blocked models
-// (per-record INC) and non-model .dm files are a later milestone.
+// Regular models (INC as DD constants) need no sweep; SUB-BLOCKED models (per-record
+// XINC/YINC/ZINC) get a discovery sweep → the fine lattice + per-block dimQ
+// (grid/support.js). A ROTATED model with a single rotation about Z (ANGLE1 about
+// ROTAXIS1 = 3) is placed in world coordinates (world = O + R·(XC,YC,ZC), the
+// convention verified on a real Isatis.neo export); two or three rotations are
+// reported, not applied (their order convention is unverified).
 
 import { detectDM, parseHeader, recordRange, decodeRecord, readField } from '../../../dm/src/dm.js';
-import { inferSubBlockLattice, makeDimKeyer, axisDistinct, dimCodeFromPalette, DIM_PALETTE_MAX } from '../grid/infer.js';
+import { inferSubBlockLattice, axisDistinct } from '../grid/infer.js';
+import { sizeCollector, putDimQ, pitchOf, datamineRotZ } from '../grid/support.js';
 
 // PROJECTED batches over any .dm — decode only the requested column indices by
 // striding each field's fixed word-offset across records (no whole-record decode,
@@ -71,10 +76,12 @@ async function* dmColumnBatches(blob, h, colIdxs, { signal, shouldRead = null } 
 
 const DEF_NAMES = new Set(['IJK', 'XC', 'YC', 'ZC', 'XINC', 'YINC', 'ZINC', 'XMORIG', 'YMORIG', 'ZMORIG', 'NX', 'NY', 'NZ', 'ANGLE1', 'ANGLE2', 'ANGLE3', 'ROTAXIS1', 'ROTAXIS2', 'ROTAXIS3']);
 
-// `cached` (a sidecar's discovery results: { grid, bbox, subBlocked, dimPalette,
-// categories }) skips the full-file discovery sweep — a 13 GB sub-blocked model
-// reopens straight to streaming. Callers own freshness (name+size match).
-export async function openDmModel(blob, { mapping = null, forcePoints = false, onProgress = null, cached = null } = {}) {
+// `cached` (a sidecar's discovery results: { grid, bbox, subBlocked, categories })
+// skips the full-file discovery sweep — a 13 GB sub-blocked model reopens straight
+// to streaming. Callers own freshness (name+size match).
+// `origin` ([x, y, z]) — the world position of the model's local origin, for a
+// rotated model whose file doesn't carry it (X0/Y0/Z0 = 0, an anonymised export).
+export async function openDmModel(blob, { mapping = null, forcePoints = false, onProgress = null, cached = null, origin = null } = {}) {
   const head = new Uint8Array(await blob.slice(0, Math.min(8192, blob.size)).arrayBuffer());
   const fmt = detectDM(head);
   if (!fmt) throw new Error('dm: not a recognizable .dm file');
@@ -136,13 +143,46 @@ export async function openDmModel(blob, { mapping = null, forcePoints = false, o
   const incIdx = { x: idx('XINC'), y: idx('YINC'), z: idx('ZINC') };
   const perRecDims = !regular && !forcePoints && incIdx.x >= 0 && incIdx.y >= 0 && incIdx.z >= 0
     && !h.columns[incIdx.x].isConstant && !h.columns[incIdx.y].isConstant && !h.columns[incIdx.z].isConstant;
-  let grid = null, bbox, subBlocked = false, dimPalette = null, dimCode = null;
-  if (cached && cached.bbox && !forcePoints) {
-    // sidecar-cached discovery: trust it wholesale (freshness is the caller's contract)
+
+  // A Datamine ROTATED model carries up to three successive rotations as DD
+  // constants: ANGLEn (degrees) about ROTAXISn (1 = X, 2 = Y, 3 = Z), and XC/YC/ZC
+  // in the model's own (unrotated) frame. ONE rotation, ANGLE1 about Z, is applied:
+  // ANGLE1 turns the model axes clockwise seen from above (R = −ANGLE1 in the math
+  // sense; ANGLE1 = −50 → model X at N40°E) — checked on a real Isatis.neo export,
+  // whose world centroid bounds it reproduces to 0.01 m. Anything else (a second or
+  // third rotation, another axis) is REPORTED, never applied: its order convention
+  // is unverified, and a plausible wrong placement is worse than an honest frame.
+  // header.dmRotation = null, or [{ n, axis: 'X'|'Y'|'Z'|'?', angle }] in file order.
+  const dmRotation = [];
+  for (const n of [1, 2, 3]) {
+    const a = constVal('ANGLE' + n), ax = constVal('ROTAXIS' + n);
+    if (Number.isFinite(a) && Math.abs(a) > 1e-9) dmRotation.push({ n, axis: ({ 1: 'X', 2: 'Y', 3: 'Z' })[Math.round(ax)] || '?', angle: a });
+  }
+  const rotApplied = dmRotation.length === 1 && dmRotation[0].n === 1 && dmRotation[0].axis === 'Z';
+  const R = rotApplied ? datamineRotZ(dmRotation[0].angle) : null;
+  // the world position of the local origin: the caller's, else the file's X0/Y0/Z0 (0 when absent)
+  const O = rotApplied ? (origin && origin.length === 3 ? origin.map(Number) : [constVal('X0'), constVal('Y0'), constVal('Z0')].map((v) => (Number.isFinite(v) ? v : 0))) : null;
+  // local → world for one point (rotated models only)
+  const toW = (x, y, z, out) => { out[0] = O[0] + R[0] * x + R[3] * y; out[1] = O[1] + R[1] * x + R[4] * y; out[2] = O[2] + z; return out; };
+  // a local bbox → its world AABB (the 8 corners through R)
+  const worldBox = (b) => {
+    const mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity], p = [0, 0, 0];
+    for (const x of [b.min[0], b.max[0]]) for (const y of [b.min[1], b.max[1]]) for (const z of [b.min[2], b.max[2]]) {
+      toW(x, y, z, p); for (let a = 0; a < 3; a++) { if (p[a] < mn[a]) mn[a] = p[a]; if (p[a] > mx[a]) mx[a] = p[a]; }
+    }
+    return { min: mn, max: mx };
+  };
+  // a cache written for another placement (an older, unrotated sidecar; another origin) is not trusted
+  const sameAnchor = (g) => !!(g && g.rot && g.anchor && O && g.anchor.every((v, a) => Math.abs(v - O[a]) < 1e-6));
+  const cacheOk = cached && cached.bbox && !forcePoints && (rotApplied ? sameAnchor(cached.grid) : !(cached.grid && cached.grid.rot));
+
+  let grid = null, bbox, subBlocked = false, sizeQMax = null, sizeShapes = 0, subBlockRefused = null;
+  if (cacheOk) {
+    // sidecar-cached discovery: trust it wholesale (freshness is the caller's contract);
+    // an older sidecar's dimPalette isn't needed — the fine grid's pitch says it all
     grid = cached.grid || null; bbox = cached.bbox;
-    subBlocked = !!cached.subBlocked;
-    dimPalette = cached.dimPalette || null;
-    if (subBlocked && dimPalette) dimCode = dimCodeFromPalette(dimPalette);
+    subBlocked = !!(cached.subBlocked && grid);
+    sizeQMax = cached.sizeQMax || null;
   } else if (regular) {
     grid = {
       x: { origin: mor[0] + inc[0] / 2, pitch: inc[0], count: Math.round(cnt[0]) },
@@ -150,12 +190,14 @@ export async function openDmModel(blob, { mapping = null, forcePoints = false, o
       z: { origin: mor[2] + inc[2] / 2, pitch: inc[2], count: Math.round(cnt[2]) },
     };
     bbox = { min: [mor[0], mor[1], mor[2]], max: [mor[0] + inc[0] * cnt[0], mor[1] + inc[1] * cnt[1], mor[2] + inc[2] * cnt[2]] };
+    if (rotApplied) bbox = worldBox(bbox);
   } else {
-    const CAP = 300000, dimKeyOf = makeDimKeyer();
+    const CAP = 300000;
     const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+    const wmin = [Infinity, Infinity, Infinity], wmax = [-Infinity, -Infinity, -Infinity], wp = [0, 0, 0];   // world centroid bounds (rotated)
     const axc = [axisDistinct(CAP), axisDistinct(CAP), axisDistinct(CAP)];   // axis distinct centroids (for the fine lattice)
     const ax = axc.map((c) => c.set);
-    const minDim = [Infinity, Infinity, Infinity], dimSet = new Set();
+    const sizes = sizeCollector();
     const sweepCols = perRecDims ? [xc, yc, zc, incIdx.x, incIdx.y, incIdx.z] : [xc, yc, zc];
     for await (const { recStart, count, cols } of columnBatches(sweepCols)) {
       if (onProgress) onProgress({ phase: 'discovery', done: recStart + count, total: h.recordCount });
@@ -166,22 +208,26 @@ export async function openDmModel(blob, { mapping = null, forcePoints = false, o
         if (xv < min[0]) min[0] = xv; if (xv > max[0]) max[0] = xv;
         if (yv < min[1]) min[1] = yv; if (yv > max[1]) max[1] = yv;
         if (zv < min[2]) min[2] = zv; if (zv > max[2]) max[2] = zv;
+        if (rotApplied) {
+          toW(xv, yv, zv, wp);
+          for (let a = 0; a < 3; a++) { if (wp[a] < wmin[a]) wmin[a] = wp[a]; if (wp[a] > wmax[a]) wmax[a] = wp[a]; }
+        }
         if (perRecDims) {
           axc[0].add(xv); axc[1].add(yv); axc[2].add(zv);
-          const dx = DX[k], dy = DY[k], dz = DZ[k];
-          if (dx > 0 && dy > 0 && dz > 0) {
-            if (dx < minDim[0]) minDim[0] = dx; if (dy < minDim[1]) minDim[1] = dy; if (dz < minDim[2]) minDim[2] = dz;
-            if (dimSet.size <= DIM_PALETTE_MAX) dimSet.add(dimKeyOf(dx, dy, dz));
-          }
+          sizes.add(DX[k], DY[k], DZ[k]);
         }
       }
     }
     if (!Number.isFinite(min[0])) throw new Error('dm: no finite XC/YC/ZC centroids');
-    bbox = { min, max };
-    // sub-blocked: fine lattice (pitch = minDim/2) + size palette — same rule as CSV
-    const sb = perRecDims ? inferSubBlockLattice(ax, minDim, dimSet, { cap: CAP }) : null;
-    if (sb) { subBlocked = true; dimPalette = sb.dimPalette; dimCode = sb.dimCode; grid = sb.grid; }
+    bbox = rotApplied ? { min: wmin, max: wmax } : { min, max };
+    // sub-blocked: the fine lattice + per-block dimQ — the same rule as CSV
+    const sb = perRecDims ? inferSubBlockLattice(ax, sizes, { cap: CAP }) : null;
+    if (sb && sb.refused) subBlockRefused = sb.refused;
+    else if (sb) { subBlocked = true; sizeQMax = sb.sizeQMax; sizeShapes = sb.shapes; grid = sb.grid; }
   }
+  // rotated: the local grid becomes a lattice about the world origin O (grid/basis.js form)
+  if (grid && rotApplied && !grid.rot) grid = { ...grid, rot: R, anchor: O };
+  const pitchQ = subBlocked && grid ? pitchOf(grid) : null;
 
   // channels: every per-record numeric non-definition column; first alpha = category
   const numericColumns = h.columns
@@ -198,23 +244,13 @@ export async function openDmModel(blob, { mapping = null, forcePoints = false, o
   const categories = catIdx >= 0 ? (cachedCats ? [...cachedCats] : []) : null;   // fills incrementally during the sweep (or prefilled from a sidecar)
   const catCode = catIdx >= 0 ? new Map(categories.map((v, i) => [v, i])) : null;
 
-  // A Datamine ROTATED model carries up to three successive rotations as DD
-  // constants: ANGLEn (degrees) about ROTAXISn (1 = X, 2 = Y, 3 = Z). The
-  // grid above is built in the model's own (unrotated) frame. Converting it to
-  // world needs Datamine's exact convention (order, sign, which frame XC/YC/ZC
-  // are stored in), and no rotated fixture has been checked against it yet —
-  // so the rotation is REPORTED, never silently applied or silently ignored.
-  // header.dmRotation = null, or [{ axis: 'X'|'Y'|'Z'|'?', angle }] in file order.
-  const dmRotation = [];
-  for (const n of [1, 2, 3]) {
-    const a = constVal('ANGLE' + n), ax = constVal('ROTAXIS' + n);
-    if (Number.isFinite(a) && Math.abs(a) > 1e-9) dmRotation.push({ axis: ({ 1: 'X', 2: 'Y', 3: 'Z' })[Math.round(ax)] || '?', angle: a });
-  }
-
   const header = {
     kind: 'blockmodel', count: h.recordCount,
     dmRotation: dmRotation.length ? dmRotation : null,
-    bbox, grid, subBlocked, dimPalette, dimCols: subBlocked ? incIdx : null,
+    dmRotationApplied: rotApplied,                          // true: placed in world (one rotation about Z)
+    dmOrigin: rotApplied ? O : null,                        // the world position of the model's local origin
+    lattice: rotApplied && grid ? { basis: 'declared', by: 'datamine' } : null,
+    bbox, grid, subBlocked, sizeQMax, sizeShapes, subBlockRefused, dimCols: subBlocked ? incIdx : null,
     columns: names,
     mapping: { x: xc, y: yc, z: zc, chan, cat: catIdx >= 0 ? catIdx : null },
     numericColumns, categories,
@@ -226,7 +262,7 @@ export async function openDmModel(blob, { mapping = null, forcePoints = false, o
     const alloc = () => ({
       x: new Float64Array(chunkPoints), y: new Float64Array(chunkPoints), z: new Float64Array(chunkPoints),
       chan: new Float64Array(chunkPoints), cat: catCode ? new Uint8Array(chunkPoints) : null,
-      dim: dimCode ? new Uint8Array(chunkPoints) : null,
+      dimQ: pitchQ ? new Uint8Array(3 * chunkPoints) : null,
       recIdx: new Uint32Array(chunkPoints),
     });
     // project ONLY the fields the render needs (coords + grade + category + dims)
@@ -234,17 +270,18 @@ export async function openDmModel(blob, { mapping = null, forcePoints = false, o
     const streamCols = [xc, yc, zc];
     if (chan != null) streamCols.push(chan);
     if (catIdx >= 0) streamCols.push(catIdx);
-    if (dimCode) streamCols.push(incIdx.x, incIdx.y, incIdx.z);
+    if (pitchQ) streamCols.push(incIdx.x, incIdx.y, incIdx.z);
     let buf = alloc(), fill = 0, done = 0;
-    const dimKeyOf = makeDimKeyer();
     for await (const { recStart, count, cols } of columnBatches(streamCols, { signal })) {
       const X = cols[xc], Y = cols[yc], Z = cols[zc];
       const CH = chan != null ? cols[chan] : null, CA = catIdx >= 0 ? cols[catIdx] : null;
-      const DX = dimCode ? cols[incIdx.x] : null, DY = dimCode ? cols[incIdx.y] : null, DZ = dimCode ? cols[incIdx.z] : null;
+      const DX = pitchQ ? cols[incIdx.x] : null, DY = pitchQ ? cols[incIdx.y] : null, DZ = pitchQ ? cols[incIdx.z] : null;
       for (let k = 0; k < count; k++) {
         const xv = X[k], yv = Y[k], zv = Z[k];
         if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;   // skipped, raw number NOT reused
-        buf.x[fill] = xv; buf.y[fill] = yv; buf.z[fill] = zv;
+        if (R) {                                           // rotated: the stream speaks WORLD coordinates
+          buf.x[fill] = O[0] + R[0] * xv + R[3] * yv; buf.y[fill] = O[1] + R[1] * xv + R[4] * yv; buf.z[fill] = O[2] + zv;
+        } else { buf.x[fill] = xv; buf.y[fill] = yv; buf.z[fill] = zv; }
         buf.chan[fill] = CH ? CH[k] : 0;                   // NaN already when missing
         if (buf.cat) {
           const raw = CA[k];                               // '' when missing; a NUMERIC cat column dict-encodes as strings
@@ -256,11 +293,11 @@ export async function openDmModel(blob, { mapping = null, forcePoints = false, o
           }
           buf.cat[fill] = code;
         }
-        if (buf.dim) { const c = dimCode.get(dimKeyOf(DX[k], DY[k], DZ[k])); buf.dim[fill] = c === undefined ? 0 : c; }
+        if (buf.dimQ) putDimQ(buf.dimQ, fill, DX[k], DY[k], DZ[k], pitchQ);
         buf.recIdx[fill] = recStart + k;                   // RAW record number — the join key
         fill++;
         if (fill === chunkPoints) {
-          yield { count: fill, x: buf.x, y: buf.y, z: buf.z, chan: buf.chan, cat: buf.cat, dim: buf.dim, recIdx: buf.recIdx, recStart: 0 };
+          yield { count: fill, x: buf.x, y: buf.y, z: buf.z, chan: buf.chan, cat: buf.cat, dimQ: buf.dimQ, recIdx: buf.recIdx, recStart: 0 };
           buf = alloc(); fill = 0;
         }
       }
@@ -271,7 +308,7 @@ export async function openDmModel(blob, { mapping = null, forcePoints = false, o
       yield {
         count: fill, x: buf.x.subarray(0, fill), y: buf.y.subarray(0, fill), z: buf.z.subarray(0, fill),
         chan: buf.chan.subarray(0, fill), cat: buf.cat ? buf.cat.subarray(0, fill) : null,
-        dim: buf.dim ? buf.dim.subarray(0, fill) : null,
+        dimQ: buf.dimQ ? buf.dimQ.subarray(0, 3 * fill) : null,
         recIdx: buf.recIdx.subarray(0, fill), recStart: 0,
       };
     }
