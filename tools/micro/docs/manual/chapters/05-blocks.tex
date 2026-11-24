@@ -107,7 +107,7 @@ A file can also \emph{state} its lattice instead of leaving it to be inferred. A
 
 Everything that works record by record works on a rotated model: filters, statistics, grade–tonnage, swath, the cross-tab, export, and select, flag or proportions by a solid or surface, sub-blocked or not (\cref{ch:geometry}). Join and reconcile work between two models that share the same rotated lattice, a sub-blocked model onto its rotated parent model included.
 
-Three things are not available yet, and micro refuses each with a reason instead of approximating: resampling between models of different orientation, grade shells, and the empty-model creator.
+Two things are not available yet, and micro refuses each with a reason instead of approximating: resampling between models of different orientation, and the empty-model creator. Grade shells, model QA's lattice checks and block vs sample work on a rotated model as on an axis-aligned one.
 
 \subsection{Rotated Datamine models}\label{sec:blocks-dm-rotated}
 
@@ -237,7 +237,7 @@ Make a high-grade shell in the demo.
 
 A shell is a mesh like any wireframe. You can select or flag the model, or the drillholes, against it (\cref{ch:geometry}), read its volume and tonnage in mesh QA (\cref{ch:qa}), restyle it, and export it (\cref{sec:meshes-export}). Its lineage records the column, the cutoff, the smoothing and, when used, the filter.
 
-Shells are built for regular, axis-aligned models. On a rotated or sub-blocked model the command says why it cannot run.
+Shells are built for regular models, axis-aligned or rotated: a rotated model is read and contoured in its own lattice frame and the shell is turned into world. On a sub-blocked model the command says why it cannot run.
 
 \subsection{In a routine}
 

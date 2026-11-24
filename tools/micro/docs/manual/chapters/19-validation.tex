@@ -150,7 +150,7 @@ In the demo the two lines agree below 550~m and above 800~m, and part company in
 \section{Block vs sample}\label{sec:validation-pairing}
 \menu{Analyse>Block vs sample…} is on a block model's right-click menu and in the palette. It pairs every sample with the block it falls in, the most direct check that an estimate honors its data.
 
-The\index{block vs sample} samples can be a drillhole layer, each interval taken at its midpoint, or a points layer: composites, or a sample file opened as points. The model must be a regular, unrotated block model; for a sub-blocked or rotated one the status line explains that pairing reads regular, axis-aligned lattices only.
+The\index{block vs sample} samples can be a drillhole layer, each interval taken at its midpoint, or a points layer: composites, or a sample file opened as points. The model must be a regular block model, axis-aligned or rotated; a rotated model looks each sample up in its own lattice frame, so a rotated copy pairs exactly as its twin does. For a sub-blocked model the status line explains that pairing reads regular lattices only.
 
 \begin{tryit}
 In the demo project, right-click \file{deposit.csv} and choose \menu{Analyse>Block vs sample…}.
