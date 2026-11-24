@@ -223,7 +223,7 @@ A few display settings are not about color, yet they decide how well it reads.
 \item[Tint] A mesh has no column to color by here; \menu{Display>Tint…} gives it one color from a short geological palette (Grey, Sand, Rust, Green, Blue, Violet, Brown) or a custom hex value (\cref{ch:meshes}).
 \end{description}
 
-The \ui{EDL} checkbox and its \ui{strength} slider control the shading that makes a point cloud read as a surface, eye-dome lighting \parencite{boucheny2009}, and \ui{budget} sets how many elements are drawn per frame: lower is snappier while you move, and the picture converges when you stop.
+The \ui{EDL} checkbox and its \ui{strength} slider control the shading that makes a point cloud read as a surface, eye-dome lighting \parencite{boucheny2009}, and \ui{budget} sets how many elements are drawn per frame: lower is snappier while you move, and the picture converges when you stop. On a machine without a graphics card both start lighter (\cref{sec:start-software}).
 
 \section{Projections: the highest grade through the model}\label{sec:color-projection}
 A block model drawn normally shows you its \emph{surface}: the blocks nearest the eye, with everything behind them hidden. A \term{maximum intensity projection}\index{projection!maximum (MIP)} (MIP) answers a different question: where are the high grades, \emph{anywhere} along the line of sight? For every pixel micro takes all the blocks the ray passes through, keeps the highest value, and colors the pixel with it through the layer's own ramp. Occlusion is ignored; a high-grade lens buried in the middle of the deposit shows through a low-grade cap.

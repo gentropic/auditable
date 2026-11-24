@@ -6,6 +6,7 @@ import { S } from './state.js';
 import { _nlOn, nlEnsureTrained, nlSetEnabled } from './nl.js';
 import { _isMobile } from './windows.js';
 import { registerCommands } from './commands.js';
+import { rendererSummary } from './software-mode.js';
 const $ = (s) => document.querySelector(s);
 
 export const HELP_KEYS = `
@@ -126,6 +127,17 @@ Everything here is on a layer's <b>right-click menu</b> (mostly under <b>Analyse
 // About + the experiments drawer. The NL command bar lives here, OFF by default:
 // a stranger's first minute must not contain a text box that guesses.
 export function showAbout() {
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+  const gfx = `
+  <h3 style="margin-top:1.2em" id="aboutGfx">Graphics</h3>
+  <p class="fi-note">${esc(rendererSummary())}</p>
+  <p class="fi-note"><b>Software rendering.</b> Without a usable GPU (a virtual machine, a remote desktop, a locked-down
+  laptop) the browser draws the 3D view on the CPU — SwiftShader, WARP (“Microsoft Basic Render Driver”), llvmpipe.
+  micro notices and switches to a lighter mode: about <b>100k elements a frame</b> (a budget you chose yourself is kept),
+  the view is drawn <b>only when something changes</b> and fills in slowly once data has finished arriving,
+  <b>eye-dome lighting</b> starts off, and a click renders the one pixel it needs instead of the view keeping a pick buffer.
+  The picture is less dense while you work; everything else is the same.
+  Settings → display → <b>software rendering</b> turns the mode on or off by hand.</p>`;
   const exp = `
   <h3 style="margin-top:1.2em">Experimental</h3>
   <p class="fi-note">Off by default, and rightly so — these are not finished.</p>
@@ -138,7 +150,7 @@ export function showAbout() {
     in this tab. No model file, no network, no WASM: micro stays Sealed, and it cannot be out of date.
     It will misread you. Nothing it proposes is destructive.</span></span>
   </label>`;
-  showHelp('about micro', trusted(HELP_ABOUT + exp));
+  showHelp('about micro', trusted(HELP_ABOUT + gfx + exp));
   const cb = $('#nlToggle');
   if (cb) cb.onchange = () => { nlSetEnabled(cb.checked); if (cb.checked) nlEnsureTrained(); };
 }

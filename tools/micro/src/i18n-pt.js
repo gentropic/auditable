@@ -139,6 +139,8 @@ export default {
   'store meshes as .wfr on save': 'guardar malhas como .wfr ao salvar', 'optimize models to spatial Parquet on save': 'otimizar modelos para Parquet espacial ao salvar',
   'natural-language command bar': 'barra de comandos em linguagem natural', 'forget window layouts': 'esquecer posições das janelas', 'reset all preferences': 'restaurar todas as preferências',
   'edit…': 'editar…', 'this machine': 'esta máquina',
+  'software rendering': 'renderização por software', 'automatic (software detected)': 'automático (software detectado)', 'automatic (GPU detected)': 'automático (GPU detectada)',
+  'for machines without a GPU (VMs, remote desktops): a smaller budget, drawing only on change, eye-dome lighting off, picks rendered on click — "automatic" turns it on when the browser draws in software': 'para máquinas sem GPU (VMs, áreas de trabalho remotas): orçamento menor, desenho só quando algo muda, iluminação eye-dome desligada, seleção renderizada no clique — "automático" liga quando o navegador desenha por software',
   // ── windows ──
   'theme': 'tema', 'turntable': 'vídeo girando', 'composite': 'compositagem', 'explode': 'explodir', 'model QA': 'QA do modelo', 'block vs sample': 'bloco × amostra',
   'grade-tonnage': 'teor-tonelagem', 'swath': 'swath', 'stats': 'estatísticas', 'scatter': 'dispersão', 'mesh QA': 'QA da malha', 'drillhole QA': 'QA dos furos',

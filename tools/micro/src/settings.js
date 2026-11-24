@@ -12,6 +12,7 @@ import { requestRender } from './state.js';
 import { _nlOn, nlEnsureTrained, nlSetEnabled } from './nl.js';
 import { _selStick, setSelStick } from './selection.js';
 import { _secFollow } from './section.js';
+import { _swPref, setSwPref, SW } from './software-mode.js';
 const $ = (s) => document.querySelector(s);
 // the app's side, passed in once (setSettingsHooks): _blockEdges, setBlockEdges
 let H = {};
@@ -32,6 +33,7 @@ export const PREFS = [
   { sec: 'display', label: 'background', desc: 'the scene clear colour — "match the theme" moves with it; white or paper for print-bound figures (decorations flip to dark ink)', kind: 'choice', opts: () => [['auto', 'match the theme'], ['#121212', 'basalt'], ['#000000', 'black'], ['#ffffff', 'white'], ['#f4f2ec', 'paper'], ...(/^#/.test(_bgPref) && !['#121212', '#000000', '#ffffff', '#f4f2ec'].includes(_bgPref.toLowerCase()) ? [[_bgPref, 'custom ' + _bgPref]] : [])], get: () => _bgPref.toLowerCase(), set: (v) => setBg(v) },
   { sec: 'display', label: 'block edges', desc: 'outline every block face — and every cut block on a section', kind: 'toggle', get: () => H._blockEdges, set: (v) => H.setBlockEdges(v) },
   { sec: 'display', label: 'render budget', desc: 'elements per frame — lower is snappier while orbiting; the picture converges when the camera rests', kind: 'choice', opts: () => [...$('#budget').options].map((o) => [o.value, o.textContent]), get: () => $('#budget').value, set: (v) => { $('#budget').value = v; $('#budget').dispatchEvent(new Event('change')); requestRender(); } },
+  { sec: 'display', label: 'software rendering', desc: 'for machines without a GPU (VMs, remote desktops): a smaller budget, drawing only on change, eye-dome lighting off, picks rendered on click — "automatic" turns it on when the browser draws in software', kind: 'choice', opts: () => [['auto', SW.detected ? 'automatic (software detected)' : 'automatic (GPU detected)'], ['on', 'on'], ['off', 'off']], get: () => _swPref, set: (v) => setSwPref(v) },
   { sec: 'interaction', label: 'selection tool stays armed', desc: 'after a rectangle / lasso: put the tool down, keep it while adding (shift/alt held on release), or keep it until Esc — middle-drag orbits either way', kind: 'choice', opts: [['oneshot', 'never (one shot)'], ['smart', 'with shift/alt held'], ['sticky', 'until Esc']], get: () => _selStick, set: (v) => setSelStick(v) },
   { sec: 'interaction', label: 'properties auto-apply', desc: 'style edits land as you make them; off = an explicit apply button', kind: 'toggle', get: () => _autoApply, set: (v) => { $('#ppAuto').checked = v; $('#ppAuto').dispatchEvent(new Event('change')); } },
   { sec: 'interaction', label: 'camera follows the section scrub', desc: 'scrubbing a section slab carries the camera along with it', kind: 'toggle', get: () => _secFollow, set: (v) => { $('#secFollow').checked = v; $('#secFollow').dispatchEvent(new Event('input')); } },
@@ -86,7 +88,7 @@ export function openSettingsWindow() {
         $('#meta').textContent = 'window layouts forgotten — windows open at their defaults again';
       });
       mk('reset all preferences', 'every setting back to its default (window layouts and recents stay)', () => {
-        try { for (const k of ['micro.bg', 'micro.scene', 'micro.theme', 'micro.themeCustom', 'micro.edges', 'micro.budget', 'micro.selStick', 'micro.autoApply', 'micro.secFollow', 'micro.windingCpu', 'micro.pinBudget', 'micro.autoOptimize', 'micro.nl']) localStorage.removeItem(k); } catch { /* private */ }
+        try { for (const k of ['micro.bg', 'micro.scene', 'micro.theme', 'micro.themeCustom', 'micro.edges', 'micro.budget', 'micro.selStick', 'micro.autoApply', 'micro.secFollow', 'micro.windingCpu', 'micro.pinBudget', 'micro.autoOptimize', 'micro.nl', 'micro.swRender']) localStorage.removeItem(k); } catch { /* private */ }
         $('#meta').textContent = 'preferences reset — reload micro to see every default again';
       });
       return;

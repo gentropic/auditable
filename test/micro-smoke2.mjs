@@ -9870,6 +9870,65 @@ if (take()) {
   await pe.close();
 }
 
+// ── SOFTWARE-RENDERER MODE (src/software-mode.js + src/swrender.js): on a CPU rasterizer micro
+//    draws ~100k a frame, only on change, no idle pick capture, EDL off, and says so. Forced ON
+//    through Settings on this (GPU) machine: the budget defaults to 100k, a still converged view
+//    draws NO frames and builds NO pick buffer, a click still picks (rendering its pixel), the
+//    status line says it. Forced OFF: the 1M default, EDL back, the idle capture builds again. ──
+if (take()) {
+  const ps = await mkPage('sm2swr');
+  await ps.evaluate(() => { localStorage.removeItem('micro.budget'); localStorage.removeItem('micro.swRender'); });
+  await ps.reload({ waitUntil: 'load' });
+  await ps.waitForFunction(() => window._micro, null, { timeout: 20000 });
+  const CSV = () => { let s = 'XC,YC,ZC,FE\n'; for (let k = 0; k < 20; k++) for (let j = 0; j < 20; j++) for (let i = 0; i < 20; i++) s += `${i * 10},${j * 10},${k * 5},${40 + (i % 8)}\n`; return s; };
+  await ps.evaluate((csv) => window._micro.openBlob(new Blob([csv]), 's.csv', 'replace'), CSV());
+  await ps.waitForFunction(() => window._micro.layers().length && window._micro.renderer.layerElementCount(window._micro.layers()[0].id) >= 8000, null, { timeout: 30000 });
+  const before = await ps.evaluate(() => ({ budget: document.querySelector('#budget').value, edl: document.querySelector('#edlOn').checked }));
+  const setSw = (v) => ps.evaluate((val) => {
+    window._micro.openSettingsWindow();
+    const win = [...document.querySelectorAll('.fwin')].pop();
+    [...win.querySelectorAll('button')].find((b2) => b2.textContent === 'display').click();
+    const sel = [...win.querySelectorAll('select')].find((s2) => [...s2.options].some((o) => /^automatic \(/.test(o.textContent)));
+    sel.value = val; sel.dispatchEvent(new Event('change'));
+    const meta = document.querySelector('#meta').textContent;
+    window._micro.closeAllWindows();
+    return { stored: localStorage.getItem('micro.swRender'), meta };
+  }, v);
+  // a still view: wait for convergence, then count the frames drawn and see whether the pick capture built
+  const idle = () => ps.evaluate(async () => {
+    const R = window._micro.renderer, until = Date.now() + 15000;
+    while (!/converged/.test(document.querySelector('#stats').textContent) && Date.now() < until) await new Promise((z) => setTimeout(z, 100));
+    await new Promise((z) => setTimeout(z, 600));          // past the convergence frame + any capture batches
+    let n = 0; const orig = R.draw; R.draw = function (...a) { n++; return orig.apply(this, a); };
+    await new Promise((z) => setTimeout(z, 2000));
+    R.draw = orig;
+    return { frames: n, capture: R.captureReady, stats: document.querySelector('#stats').textContent, budget: document.querySelector('#budget').value, edl: document.querySelector('#edlOn').checked };
+  });
+  const on = await setSw('on');
+  const swIdle = await idle();
+  chk(`software mode forced on (Settings → ${on.stored}): budget ${before.budget} → ${swIdle.budget}, EDL ${before.edl} → ${swIdle.edl}, status “${on.meta}”`,
+    on.stored === 'on' && before.budget === '1000000' && swIdle.budget === '100000' && before.edl === true && swIdle.edl === false
+    && /software rendering mode/.test(on.meta) && /^software · /.test(swIdle.stats));
+  chk(`software mode: a still, converged view draws no frames (${swIdle.frames} in 2 s) and builds no pick buffer (capture ${swIdle.capture})`,
+    swIdle.frames === 0 && swIdle.capture === false);
+  const cvs = await ps.$('#cv'); const box = await cvs.boundingBox(); let hit = 0;
+  const fromCap0 = await ps.evaluate(() => window._micro.renderer.picksFromCapture);
+  for (const [fx, fy] of [[0.5, 0.5], [0.45, 0.5], [0.55, 0.5], [0.5, 0.45], [0.5, 0.55]]) {
+    await ps.mouse.click(box.x + box.width * fx, box.y + box.height * fy); await ps.waitForTimeout(250);
+    hit = await ps.evaluate(() => { const rp = document.querySelector('#recPanel'); return rp && rp.classList.contains('show') ? rp.querySelectorAll('.rp-row').length : 0; });
+    if (hit) break;
+  }
+  const fromCap1 = await ps.evaluate(() => window._micro.renderer.picksFromCapture);
+  chk(`software mode: a click still picks a record (${hit} fields), rendered on the click, not read from a capture (${fromCap0} → ${fromCap1})`, hit > 0 && fromCap1 === fromCap0);
+  await ps.evaluate(() => { document.querySelector('#recPanel').classList.remove('show'); window._micro.renderer.setPicked(null); window._micro.requestRender(); });
+  const off = await setSw('off');
+  const gpuIdle = await idle();
+  chk(`software mode forced off: budget ${gpuIdle.budget}, EDL ${gpuIdle.edl}, no “software” on the status line, the idle pick capture builds again (${gpuIdle.capture}) and then the view rests (${gpuIdle.frames} frames)`,
+    off.stored === 'off' && gpuIdle.budget === '1000000' && gpuIdle.edl === true && !/software/.test(gpuIdle.stats) && gpuIdle.capture === true && gpuIdle.frames === 0);
+  await ps.evaluate(() => { localStorage.removeItem('micro.swRender'); localStorage.removeItem('micro.budget'); });
+  await ps.close();
+}
+
 // ── the LAYER CONTEXT MENU, regrouped (src/layermenu.js layerMenuSections). It had
 // grown to ~33 top-level entries on a block model; now the frequent verbs sit on top
 // and the rest in Analyse · Geometry · Select · Views · Display · Data & file · Move.

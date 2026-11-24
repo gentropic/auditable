@@ -20,6 +20,20 @@ micro runs in current Chrome, Edge and Firefox. One thing depends on the browser
 On a phone or a narrow tablet, micro rearranges itself into its \term{review layout}: a bar of large buttons at the bottom, and every panel as a sheet that slides up. Everything in this book is still there. \Cref{ch:sealed} describes the layout; this chapter assumes a desktop window.
 \end{note}
 
+\subsection{Software rendering}\label{sec:start-software}\index{software rendering}
+micro draws the 3D view with the graphics card, through WebGL~2. A machine without a usable one (a virtual machine, a remote desktop session, a locked-down laptop) still runs micro: the browser then draws on the processor instead, with a \term{software renderer} (SwiftShader in Chrome and Edge, WARP on Windows, which reports itself as the \enquote{Microsoft Basic Render Driver}, llvmpipe on Linux). That is many times slower, and micro's normal habits, drawing a million elements a frame and refining the picture on every frame until it settles, would leave little time for opening your data.
+
+So micro checks what draws the view when it starts. On a software renderer it says so once on the status line (\enquote{software rendering detected — reduced detail}) and changes four things:
+\begin{itemize}
+\item The render \ui{budget} starts at 0.1M elements a frame instead of 1M. A budget you chose yourself is kept.
+\item The view is drawn when something changes, not continuously. While data is still arriving it is not refined at all; once loading stops, the picture fills in a frame at a time. Orbiting and zooming still answer at once.
+\item \ui{EDL} shading starts off. You can turn it back on; each frame then costs more.
+\item A click on the view renders the one pixel under the cursor to find the record. On a graphics card micro instead keeps a picking buffer ready while the view is still.
+\end{itemize}
+The picture is less dense while you work and takes longer to settle; nothing else changes. On the lab machine used to test micro, the demo project assembled in 581~s on SwiftShader before this mode existed.
+
+\menu{Tools>Settings…}, section \ui{display}, row \ui{software rendering} turns the mode on or off by hand: \ui{automatic} follows what micro found, \ui{on} and \ui{off} override it. \menu{Help>About micro} shows what draws the view and whether the mode is on.
+
 \section{The screen}\label{sec:start-screen}
 The window has nine parts, and each kind of thing has one place: the data you opened on the left, the scene in the middle, the row you clicked on the right, what micro last did along the bottom.
 

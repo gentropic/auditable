@@ -31,6 +31,8 @@ import { setSelectionHooks } from './selection.js';
 import { setPaintHooks, addPaintColorOptions } from './paint.js';
 import { currentSection } from './section.js';
 import { setPickHooks, meshHitAt, pickHitPoint } from './pick.js';
+import { SW, initSoftwareMode } from './software-mode.js';
+import { swFrameGate, swNextAt } from './swrender.js';
 
 const $ = (s) => document.querySelector(s);
 
@@ -56,8 +58,10 @@ S.cv = cv;
 setColumnsChangedHook((L) => addPaintColorOptions(L));     // columns.js → the color-by select tracks the column set
 let lastDrawn = 0;
 const fpsBuf = [];
+initSoftwareMode(renderer.gl);                             // a CPU rasterizer? (src/software-mode.js) — before toolbar.js restores a stored budget
+let _lastInteract = -Infinity, _lastChunk = -Infinity, _chunkN = -1, _swNextAt = 0, _swFence = null;   // the software mode's pacing (src/swrender.js)
 
-attachOrbitInput(cv, cam, { onChange: requestRender });
+attachOrbitInput(cv, cam, { onChange: () => { _lastInteract = performance.now(); requestRender(); } });
 new ResizeObserver(() => { const [w, h] = renderer.resize(); cam.setAspect(w / h); requestRender(); }).observe(cv);
 // touch: a press held still opens the element's context menu (iOS has none of its
 // own). Not on the 3D view — a held finger there is the picking loupe's (roadmapped)
@@ -72,6 +76,7 @@ installLongPress({ exclude: 'input, textarea, select, [contenteditable], #cv' })
 export function recreateRenderer() {
   renderer = createRenderer(cv);
   edl = createEdl(renderer.gl);
+  _swFence = null;                                         // a fence of the lost context means nothing now
   S.renderer = renderer;
   if (window._micro) window._micro.renderer = renderer;
   renderer.setMaxPixelRatio(document.body.classList.contains('mobile') ? 2 : Infinity);
@@ -130,7 +135,19 @@ function edlEnabled() {
 let _idleCapDone = false;
 function loop(t) {
   if (renderer.gl.isContextLost() || _recovering) { requestAnimationFrame(loop); return; }   // nothing to draw on until the view is rebuilt (gpu-restore)
-  if (S.dirty || !converged) {                             // keep converging while still (progressive accumulation)
+  let swWait = false;
+  if (SW.on) {                                             // software rendering: draw on change, converge lazily, never while data arrives
+    const now = performance.now(), n = renderer.chunkCount;
+    if (n !== _chunkN) { _chunkN = n; _lastChunk = now; }
+    if (_swFence && renderer.gl.getSyncParameter(_swFence.sync, renderer.gl.SYNC_STATUS) === renderer.gl.SIGNALED) {   // the last frame is rasterized: rest in proportion to what it cost
+      renderer.gl.deleteSync(_swFence.sync);
+      _swNextAt = swNextAt({ done: now, cost: now - _swFence.at, lastInteract: _lastInteract, lastChunk: _lastChunk });
+      _swFence = null;
+    }
+    swWait = swFrameGate({ now, dirty: S.dirty, converged, pending: !!_swFence, lastInteract: _lastInteract, lastChunk: _lastChunk, nextAt: _swNextAt }) === 'wait';
+  }
+  if (swWait) { /* owed, not yet — the next frame asks again */ }
+  else if (S.dirty || !converged) {                        // keep converging while still (progressive accumulation)
     S.dirty = false; _idleCapDone = false;                 // (a drawn frame may have moved the camera: re-check the capture)
     const [w, h] = renderer.resize();
     cam.setAspect(w / h);
@@ -143,13 +160,15 @@ function loop(t) {
     const total = renderer.elementCount, acc = renderer.accumulated;
     const vram = renderer.vramBytes ? ` · vram ${fmtSize(renderer.vramBytes)}` : '';
     const heap = performance.memory ? ` · heap ${(performance.memory.usedJSHeapSize / 1048576).toFixed(0)} MB` : '';
-    $('#stats').textContent = `${projectionStatus(r)}${total.toLocaleString()} pts · ${renderer.chunkCount} chunks (${r.visible} vis) · ${converged ? `converged ${acc.toLocaleString()}` : `accumulating ${(100 * acc / (total || 1)).toFixed(0)}%`} · ${ms.toFixed(1)} ms${vram}${heap}`;
+    $('#stats').textContent = `${SW.on ? 'software · ' : ''}${projectionStatus(r)}${total.toLocaleString()} pts · ${renderer.chunkCount} chunks (${r.visible} vis) · ${converged ? `converged ${acc.toLocaleString()}` : `accumulating ${(100 * acc / (total || 1)).toFixed(0)}%`} · ${ms.toFixed(1)} ms${vram}${heap}`;
     drawMeasure();                                         // the overlay rides the camera
     drawSectionPlane();
     drawSwathBand();                                       // the swath hover/drag band ghost
     drawCompass();
     drawDecorations();                                     // scale bar / north / legend / title overlay
-  } else if (!_idleCapDone) {                              // still and converged: build the pick buffer, a batch a frame
+    if (SW.on && !_swFence) { const sync = renderer.gl.fenceSync(renderer.gl.SYNC_GPU_COMMANDS_COMPLETE, 0); if (sync) _swFence = { sync, at: t0 }; }
+  } else if (!_idleCapDone && !SW.on) {                    // still and converged: build the pick buffer, a batch a frame
+    // (not in software mode: there a click renders its own pixel instead)
     const o = currentDrawOpts();
     try { _idleCapDone = renderer.idleCapture(cam, { pointPx: o.pointPx, blocksAsPoints: o.blocksAsPoints, section: o.section, budget: o.budget }); }
     catch (e) { _idleCapDone = true; console.warn('pick capture:', e); }   // never let idle work stop the render loop
