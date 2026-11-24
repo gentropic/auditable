@@ -3577,6 +3577,41 @@ if (take()) {
       } finally { window.Worker = RealW; }
       b.late = { drawn: M.renderer.layerElementCount(L.id), want: count((v) => v > 3.6), slowUsed: slow < 0 };
     }
+    // …and a superseded filter closes its builder WORKER on every way out (its sweep returns
+    // early when superseded — those returns used to leave the worker running, one per race)
+    {
+      const RealW = window.Worker, live = new Set(), liveAt = [];
+      let made = 0;
+      window.Worker = class extends RealW {
+        constructor(...a) {
+          super(...a);
+          const pm = this.postMessage.bind(this), tm = this.terminate.bind(this);
+          this.postMessage = (d, t) => { if (d && d.type === 'init' && d.o && 'chunkSize' in d.o) { live.add(this); made++; } return pm(d, t); };
+          this.terminate = () => { live.delete(this); return tm(); };
+        }
+      };
+      // DETERMINISTIC: the newer filter arrives at the older one's first yield AFTER its builder is
+      // registered — its sweep's last window (every match already collected), so the older one
+      // finds itself superseded only on a `return` path. A typo as the newer filter returns before
+      // it would close the layer's builder itself, so nothing else would.
+      const RealST = window.setTimeout;
+      try {
+        for (let k = 0; k < 3; k++) {
+          window.__compactOffPage = null;
+          let q2 = null;
+          window.setTimeout = function (fn, ms, ...a) {
+            if (!q2 && window.__compactOffPage != null && !ms) q2 = M.applyBlockFilter(k === 1 ? 'AU >' : 'AU > 3.7', L);
+            return RealST.call(window, fn, ms, ...a);
+          };
+          const q1 = M.applyBlockFilter('AU > 2.5', L);      // under the compaction cap (half the model): its builder runs to the end
+          await q1; window.setTimeout = RealST;
+          await q2;
+          await new Promise((z2) => RealST(z2, 200));
+          liveAt.push(live.size + (q2 ? 0 : 100));         // after each race: nothing of either filter left running (100: the race never happened)
+        }
+      } finally { window.Worker = RealW; window.setTimeout = RealST; }
+      b.leak = { live: Math.max(...liveAt), at: liveAt.join(','), made, drawn: M.renderer.layerElementCount(L.id), want: count((v) => v > 3.7) };
+    }
     // the tee: a budget too small for the scan's columns → nothing allocated or pinned
     M.setPinBudget('off'); M.setPinBudget(1);                // 1 MB
     await M.applyBlockFilter('AU > 2', L);
@@ -3631,6 +3666,8 @@ if (take()) {
     cp.a.offPage === true && cp.a.drawn === cp.a.want && /compacted/.test(cp.a.meta));
   chk(`a superseded filter's late chunks never land: ${cp.b.drawn} drawn = the newer filter's ${cp.b.want}`, cp.b.drawn === cp.b.want);
   chk(`…nor does a superseded filter whose builder would start LATE (a worker delayed 400 ms; reached: ${cp.b.late.slowUsed} — a dead filter now stops before starting one) clear the newer one's set: ${cp.b.late.drawn} drawn = ${cp.b.late.want}`, cp.b.late.drawn === cp.b.late.want);
+  chk(`…and every superseded filter's builder worker is closed (${cp.b.leak.made} started over three races, still running after each: ${cp.b.leak.at}; ${cp.b.leak.drawn} drawn = ${cp.b.leak.want})`,
+    cp.b.leak.made >= 3 && cp.b.leak.live === 0 && cp.b.leak.drawn === cp.b.leak.want);
   chk(`the builder off the page is byte-identical to on it (${cp.off.n} chunks, offPage ${cp.off.off} vs ${cp.on.off}, same: ${cp.off.sig === cp.on.sig}); closed mid-stream → ${cp.lateAfterClose} late chunks delivered`,
     cp.off.off === true && cp.on.off === false && cp.off.n > 10 && cp.off.sig === cp.on.sig && cp.lateAfterClose === 0);
   chk(`parallel builders, a batch each: page / 1 worker / ${cp.par.three.w} workers draw the same bytes in the same order (${cp.par.three.n} chunks, ${cp.par.three.count} blocks, hash ${cp.par.page.h.toString(16)} · ${cp.par.one.h.toString(16)} · ${cp.par.three.h.toString(16)})`,

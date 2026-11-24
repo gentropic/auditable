@@ -204,12 +204,13 @@ export async function applyBlockFilter(expr, L = activeLayer()) {
   const cflush = () => { if (cfill) { cb2.push({ count: cfill, x: cx, y: cy, z: czz, chan: cch, cat: cct, recIdx: crr }); callocz(); } };
   // (a rotated .dm's rows arrive placed in world — records.js dmDocReader — so the
   // compact chunks stand where the base chunks do with no mapping here)
+  // OUR builder, closed and forgotten — never the newer filter's (the layer's map may hold theirs)
+  const dropOwn = () => { if (!cb2) return; if (_compactBuilders.get(lid) === cb2) _compactBuilders.delete(lid); cb2.close(); cb2 = null; };
   const collect = (xv, yv, zv, cv, code, r) => {
     if (!cb2) return;
-    if (!alive()) { if (_compactBuilders.get(lid) === cb2) _compactBuilders.delete(lid); cb2.close(); cb2 = null; return; }   // superseded mid-sweep: drop OUR builder, nothing of the newer filter's
+    if (!alive()) { dropOwn(); return; }                   // superseded mid-sweep: drop OUR builder, nothing of the newer filter's
     if (collected >= compactCap) {                         // too many — the mask path wins (our builder, our chunks; we are the live filter)
-      if (_compactBuilders.get(lid) === cb2) _compactBuilders.delete(lid);
-      cb2.close(); S.renderer.clearCompact(lid); cb2 = null; return;
+      dropOwn(); S.renderer.clearCompact(lid); return;
     }
     cx[cfill] = xv; cy[cfill] = yv; czz[cfill] = zv;
     cch[cfill] = Number.isFinite(cv) ? cv : 0;
@@ -274,6 +275,11 @@ export async function applyBlockFilter(expr, L = activeLayer()) {
       window.__dmBandsSkipped = skipped;                   // smoke hook (the .dm name)
       return true;
   };
+  // The sweeps below return early when superseded (or a branch's engine says so), and any
+  // of them can throw: the finally makes sure a dead or failed sweep's builder worker is
+  // closed — the early returns used to leave it running (one worker per superseded filter).
+  let swept = false;
+  try {
   if (fBlockDoc.parquet) {
     // parquet: the footer prunes work TWO ways —
     //  · row-group SKIP: per-group column min/max prove no match → never decode
@@ -516,12 +522,14 @@ export async function applyBlockFilter(expr, L = activeLayer()) {
     }
     }
   }
+  swept = true;
+  } finally { if (!swept) dropOwn(); }                       // an early return or a throw: our builder goes with it
 
-  if (!alive()) { if (cb2) { if (_compactBuilders.get(lid) === cb2) _compactBuilders.delete(lid); cb2.close(); } return; }   // superseded mid-scan by a newer filter: our builder goes, nothing else
+  if (!alive()) { dropOwn(); return; }                       // superseded mid-scan by a newer filter: our builder goes, nothing else
   if (cb2) {                                               // compacted: matches ARE the chunks — no mask needed
     cflush();
     try { await cb2.flush(); } catch { /* a closed / failed builder: superseded, or the mask path below */ }
-    if (!alive()) { cb2.close(); return; }                  // superseded while flushing: our builder goes
+    if (!alive()) { dropOwn(); return; }                    // superseded while flushing: our builder goes
     if (_compactBuilders.get(lid) === cb2) closeCompactBuilder(lid);
     S.renderer.setFilter(null, {}, lid);
     S.renderer.setActiveSet('compact', lid);
