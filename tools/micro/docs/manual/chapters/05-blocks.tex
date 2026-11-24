@@ -79,6 +79,8 @@ When those are present, micro builds a fine lattice whose pitch on each axis is 
 
 A block's volume is its size in steps times the pitch on each axis: the box drawn on screen. Every analysis that weighs blocks (grade–tonnage, swath, the cross-tab, the resource table, statistics weighted by volume, the reconciliation factors, the contact profile) takes it from there, so they all weigh a block the same way.
 
+Finding the fine lattice means reading every block's centroid and sizes before the first box is drawn, so a sub-blocked \file{.dm} file is read twice on opening. Both reads run on background workers, a run of the file's pages each, and the answers are merged in file order, so the lattice, the sizes and the record numbers are the ones a single reader would find (\cref{sec:opening-resident}).
+
 Everything that works record by record treats a sub-block as an ordinary block: filter, color, pick, statistics, export. The analyses that weigh blocks use each block's own volume, so grade–tonnage and swath do not mistake a 5~m sub-block for a 20~m parent. Join and reconcile aggregate sub-blocks onto a regular grid by the volume each one overlaps (\cref{ch:joins}).
 
 \begin{caution}
@@ -151,7 +153,7 @@ Parquet\index{Parquet!block models} is a columnar file format: values are stored
 \subsection{Store as Parquet…}\label{sec:blocks-optimize}
 
 \index{Parquet!Store as Parquet}\index{optimize to spatial Parquet}
-Right-click a CSV or \file{.dm} model and choose \menu{Data \& file>Store as Parquet…}. The dialog, \ui{store block models as Parquet}, lists the model with its size and block count, and what will happen to it: \ui{→ Morton-sorted (spatial index)}.
+Right-click a CSV or \file{.dm} model and choose \menu{Data \& file>Store as Parquet…}, or take the offer micro makes after a model has been slow to open (\cref{sec:opening-resident}). The dialog, \ui{store block models as Parquet}, lists the model with its size and block count, and what will happen to it: \ui{→ Morton-sorted (spatial index)}.
 
 \shot[0.75\linewidth]{blocks-store-parquet}{The \ui{store block models as Parquet} dialog for the demo deposit: what will be converted, how, and whether the original stays.}
 

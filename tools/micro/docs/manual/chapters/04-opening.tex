@@ -207,7 +207,7 @@ Both commands work on a file you already have open. For data that arrived since 
 
 A file is \term{resident} when a program holds all of it, decoded, in memory. Most desktop packages work that way, which is why a 20~GB model needs a 64~GB workstation. micro never does. It reads a file in pieces. From each piece it keeps, for display, only a position and one color value per record, packed small. Then it lets the piece go (\cref{fig:opening-stream}).
 
-Five things follow for you.
+Six things follow for you.
 
 \textbf{The first picture is early and coarse.} Chunks are drawn in an order that spreads them across the whole dataset \parencite{schutz2020}, so a few percent of a model already shows its full extent and shape. The view sharpens while you orbit.
 
@@ -216,6 +216,10 @@ Five things follow for you.
 \textbf{Filters and analyses are sweeps.} A filter on a column micro has not seen yet streams the file once to evaluate it. Formats that can prove a stretch of the file does not match, Parquet above all, let the sweep skip it (\cref{sec:blocks-parquet}). Columns you filter on repeatedly are kept in a budgeted cache, so the second filter is instant (\cref{ch:store}).
 
 \textbf{Big inputs are thinned for display, not for evaluation.} A grid larger than about eight million nodes is shown through one of its overviews or a decimated read, while every calculation against it reads the full resolution for the area it needs (\cref{ch:grids}). A mesh above two million triangles opens \emph{streamed}, for display only and light on memory, and you can convert it to the exact form when a query needs it (\cref{sec:meshes-tiers}).
+
+\textbf{A big file is read on several threads.} Opening a Datamine \file{.dm} file reads it twice: once to find the lattice, the block sizes and the extent, and once to send the blocks to the view. A \file{.dm} file is made of fixed-size pages and no record crosses a page, so micro hands runs of pages to background workers for both reads and puts their answers back together in file order. The model you get is the one a single reader would give, block for block and record number for record number; it just arrives sooner. Parquet files are read the same way, row group by row group. On a laptop an 18-million-block, 1.2~GB sub-blocked \file{.dm} that took 16~s to open on one thread opens in about 7~s.
+
+\index{Parquet!offered after a slow open}\textbf{A slow open offers Parquet.} When a block model from a \file{.dm} or a delimited file takes more than about eight seconds to open, a one-line offer appears at the bottom of the view: \ui{Opened in 12 s — store it as Parquet for fast reopens?} \ui{Store as Parquet…} opens the same dialog as the layer's \menu{Data \& file>Store as Parquet…} (\cref{sec:blocks-parquet}); a spatial Parquet copy reopens from its footer, with no discovery sweep, and lets filters skip whole row groups. \ui{not for this file} (or \ui{×}) puts the offer away and micro remembers, for that file name and size, not to ask again. Nothing is converted unless you say so.
 
 \textbf{The source file must stay reachable.} micro goes back to the file, so moving or deleting it while the layer is open leaves the layer unable to answer. Saving a project copies the sources or records where they are, by your choice, so that the project can find them again (\cref{ch:projects}).
 
