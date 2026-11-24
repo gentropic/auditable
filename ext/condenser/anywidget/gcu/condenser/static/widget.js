@@ -1797,15 +1797,25 @@ function solve4(M, B) {
  * null when it sits on a node, else a reason string. `grid` = { x,y,z, rot, anchor }.
  */
 function latticeMisfit(grid, x, y, z, i, { tol = 1e-3 } = {}) {
-  const q = latticeMapOf(grid)(+x, +y, +z);
-  for (let a = 0; a < 3; a++) {
-    const g = [grid.x, grid.y, grid.z][a];
-    if (!(g.pitch > 0)) { if (Math.abs(q[a] - g.origin) > 1e-6) return `record ${i} is off the single ${'UVW'[a]} plane`; continue; }
-    const kf = (q[a] - g.origin) / g.pitch, kr = Math.round(kf);
-    if (Math.abs(kf - kr) > tol) return `record ${i} is off the lattice along ${'UVW'[a]} by ${Math.abs(kf - kr).toFixed(3)} blocks`;
-    if (kr < 0 || kr >= g.count) return `record ${i} lies outside the lattice along ${'UVW'[a]} (index ${kr} of ${g.count})`;
-  }
-  return null;
+  return latticeChecker(grid, { tol })(x, y, z, i);
+}
+/**
+ * latticeMisfit with the grid's map built ONCE — (x, y, z, i) → reason | null. For a
+ * sweep that checks every record (a declared lattice on a file of millions of rows).
+ */
+function latticeChecker(grid, { tol = 1e-3 } = {}) {
+  const toQ = latticeMapOf(grid), G = [grid.x, grid.y, grid.z];
+  return (x, y, z, i) => {
+    const q = toQ(+x, +y, +z);
+    for (let a = 0; a < 3; a++) {
+      const g = G[a];
+      if (!(g.pitch > 0)) { if (Math.abs(q[a] - g.origin) > 1e-6) return `record ${i} is off the single ${'UVW'[a]} plane`; continue; }
+      const kf = (q[a] - g.origin) / g.pitch, kr = Math.round(kf);
+      if (Math.abs(kf - kr) > tol) return `record ${i} is off the lattice along ${'UVW'[a]} by ${Math.abs(kf - kr).toFixed(3)} blocks`;
+      if (kr < 0 || kr >= g.count) return `record ${i} lies outside the lattice along ${'UVW'[a]} (index ${kr} of ${g.count})`;
+    }
+    return null;
+  };
 }
 
 /**
@@ -1866,6 +1876,110 @@ function basisOfGrid(g) {
   const origin = g.rot ? worldMapOf(g)(g.x.origin, g.y.origin, g.z.origin) : [g.x.origin, g.y.origin, g.z.origin];
   const P = [g.x.pitch, g.y.pitch, g.z.pitch];
   return { origin, U: [R[0] * P[0], R[1] * P[0], R[2] * P[0]], V: [R[3] * P[1], R[4] * P[1], R[5] * P[1]], W: [R[6] * P[2], R[7] * P[2], R[8] * P[2]], counts: [g.x.count, g.y.count, g.z.count], ...(g.source ? { source: g.source } : {}) };
+}
+
+// ── src/grid/model.js ──
+
+// @gcu/condenser — `micro:model`, a block model's lattice stated by the file that
+// carries it. Parquet puts it in the footer kv (key `micro:model`); a delimited file
+// puts it in a COMMENT LINE at the top:
+//
+//   # micro:model {"v":1,"by":"micro","grid":{…},"subBlocked":true,"dims":{"x":"XINC",…},…}
+//   XC,YC,ZC,XINC,YINC,ZINC,V
+//   …
+//
+// One line, `#` first, before the header row — a reader that skips comment lines
+// (pandas `comment='#'`, R `comment.char`, micro's own) sees an ordinary CSV. The
+// JSON is the same object the Parquet kv carries (micro's microModelOf writes both).
+// A reader that finds it applies the grid as a DECLARED lattice: every centroid is
+// checked against it (latticeMisfit), and one off it refuses the declaration — the
+// model shows as points and says why. Nothing in it is trusted unchecked.
+//
+// Pure: no I/O, no DOM. The grid forms accepted are grid/basis.js's.
+
+
+const MICRO_MODEL_KEY = 'micro:model';
+const LINE_RE = /^#\s*micro:model(?:\s+(.*?))?\s*$/;     // a line that says micro:model IS the statement (malformed → said)
+
+/** The comment line for a micro:model object (no line ending). */
+function microModelLine(model) {
+  return '# micro:model ' + JSON.stringify(model);
+}
+
+/**
+ * The micro:model a delimited text states in its leading comment lines, or null.
+ * Only the comment block at the top is looked at (blank lines and `#` lines, up to
+ * the first data/header line). → { model } | { error } | null (none stated).
+ */
+function parseMicroModelComment(text) {
+  if (typeof text !== 'string') return null;
+  let at = 0;
+  while (at < text.length) {
+    let e = text.indexOf('\n', at); if (e < 0) e = text.length;
+    let l = text.slice(at, e); at = e + 1;
+    if (l.endsWith('\r')) l = l.slice(0, -1);
+    if (!l.trim()) continue;
+    if (l[0] !== '#') return null;
+    const m = LINE_RE.exec(l);
+    if (!m) continue;
+    try {
+      const o = JSON.parse(m[1] || '');
+      return o && typeof o === 'object' && !Array.isArray(o) ? { model: o } : { error: 'the # micro:model line is not a JSON object' };
+    } catch (err) { return { error: `the # micro:model line is not valid JSON (${err.message})` }; }
+  }
+  return null;
+}
+
+const finite = (v) => typeof v === 'number' && Number.isFinite(v);
+const axisOk = (a) => a && finite(a.origin) && finite(a.pitch) && a.pitch >= 0 && Number.isInteger(a.count) && a.count >= 1;
+
+/**
+ * micro:model's grid → the internal grid ({ x, y, z } axes, + rot/anchor when
+ * rotated), or null when it states none. Forms: per-axis { x, y, z } (axis-aligned),
+ * the internal rotated form (+ rot, anchor), or a producer's { basis: { origin, U, V,
+ * W, counts } } alone. Throws (with the reason) on a malformed grid.
+ */
+function gridOfMicroModel(m) {
+  const g = m && m.grid;
+  if (!g) return null;
+  if (g.rot && g.anchor && g.x) {
+    if (![g.x, g.y, g.z].every(axisOk)) throw new Error('grid axes need origin, pitch and count');
+    if (!Array.isArray(g.rot) || g.rot.length !== 9 || !g.rot.every(finite) || !Array.isArray(g.anchor) || g.anchor.length !== 3 || !g.anchor.every(finite)) throw new Error('a rotated grid needs rot (9 numbers) and anchor (3)');
+    return { x: { ...g.x }, y: { ...g.y }, z: { ...g.z }, rot: [...g.rot], anchor: [...g.anchor], ...(g.source ? { source: g.source } : {}) };
+  }
+  if (g.basis) return gridFromBasis(g.basis);
+  if (g.x) {
+    if (![g.x, g.y, g.z].every(axisOk)) throw new Error('grid axes need origin, pitch and count');
+    return { x: { ...g.x }, y: { ...g.y }, z: { ...g.z } };
+  }
+  return null;
+}
+
+/** micro:model `dims` (size columns by NAME) → indices in `names`, or null if absent / not all present. */
+function dimColsOfMicroModel(m, names) {
+  if (!m || !m.dims || !names) return null;
+  const at = (n) => names.findIndex((h) => String(h).trim() === n);
+  const d = { x: at(m.dims.x), y: at(m.dims.y), z: at(m.dims.z) };
+  return d.x >= 0 && d.y >= 0 && d.z >= 0 ? d : null;
+}
+
+/**
+ * A DECLARED sub-block lattice checked against the sizes a discovery sweep saw (a
+ * sizeCollector): every distinct size a whole number of fine steps, none past 255.
+ * → { sizeQMax: [3], shapes } | { refused: reason }.
+ */
+function declaredSubBlocks(sizes, pitch) {
+  if (!sizes || !sizes.count) return { refused: 'the size columns hold no positive sizes' };
+  const sizeQMax = [0, 0, 0];
+  for (let a = 0; a < 3; a++) {
+    for (const v of sizes.axes[a]) {
+      const q = v / pitch[a];
+      if (!(pitch[a] > 0) || Math.abs(q - Math.round(q)) > 1e-3) return { refused: `a ${'XYZ'[a]} size of ${v} is not a whole number of the declared fine step ${pitch[a]}` };
+      if (Math.round(q) > SIZEQ_MAX) return { refused: `a ${'XYZ'[a]} size of ${v} spans ${Math.round(q)} fine steps, past the ${SIZEQ_MAX} a block can` };
+      if (Math.round(q) > sizeQMax[a]) sizeQMax[a] = Math.round(q);
+    }
+  }
+  return { sizeQMax, shapes: sizes.shapes };
 }
 
 // ── src/grid/grid-join.js ──
@@ -2893,7 +3007,13 @@ function makeDelimitedStream(blob, delim, hasHeaderRow, map, catCol, catCode, di
 // opts.dims — { x, y, z } column indices of the per-block size columns, stated
 //   by the caller (otherwise found by name: DX/DY/DZ, XINC…).
 // mapping.cat = -1 — "no category" (no auto-pick from the text columns).
-async function openBlockModel(blob, { mapping = null, discovered = null, lattice = null, rotated = true, dims = null, qualify = null, sample = 512 * 1024, indexEvery = 1024, zones = false, signal, onProgress } = {}) {
+// opts.fileModel — false ignores a `# micro:model {…}` comment line at the top of
+//   the file (grid/model.js). Otherwise one found is the FILE's declared lattice:
+//   applied as stated (sub-blocked by its size columns, rotated by its basis), but
+//   every record is checked against it — one off it and the declaration is REFUSED
+//   (header.latticeRejected says why; no grid → the caller shows points). Never
+//   inferred over, never thrown: a file's header is a claim, not an order.
+async function openBlockModel(blob, { mapping = null, discovered = null, lattice = null, rotated = true, dims = null, qualify = null, sample = 512 * 1024, indexEvery = 1024, zones = false, fileModel = true, signal, onProgress } = {}) {
   // a cached discovery (project sidecars / channel re-streams): skip sweep 1
   // entirely — the header is rebuilt from the payload, sweep 2 streams as usual
   if (discovered) {
@@ -2950,10 +3070,24 @@ async function openBlockModel(blob, { mapping = null, discovered = null, lattice
     }
   }
 
+  // the file's own `# micro:model` line (a micro export, or any producer that
+  // knows its lattice): the lattice it states, checked below against every record
+  let fileGrid = null, fileDims = null, fileRejected = null, fileStated = null;
+  const stated = !lattice && fileModel !== false ? parseMicroModelComment(head) : null;
+  if (stated && stated.error) fileRejected = stated.error;
+  else if (stated) {
+    fileStated = stated.model;
+    try { fileGrid = gridOfMicroModel(fileStated); } catch (e) { fileRejected = `the # micro:model grid is unreadable — ${e.message}`; }
+    if (fileGrid && fileStated.subBlocked) {
+      fileDims = dimColsOfMicroModel(fileStated, sniff.header);
+      if (!fileDims) { fileRejected = `the # micro:model header names size columns ${fileStated.dims ? [fileStated.dims.x, fileStated.dims.y, fileStated.dims.z].join('/') : '(none)'} this file doesn't have`; fileGrid = null; }
+    }
+  }
+
   // per-block dimension columns (DX/DY/DZ, XINC…) → the model may be SUB-BLOCKED
   // (variable box size). Discovery collects the sizes (grid/support.js) — the fine
   // pitch and each block's size in fine steps come from them.
-  const dimCols = dims || findDimColumns(sniff.header) || { x: -1, y: -1, z: -1 };
+  const dimCols = dims || fileDims || findDimColumns(sniff.header) || { x: -1, y: -1, z: -1 };
   const hasDims = dimCols.x >= 0;
   const sizes = sizeCollector();
 
@@ -2989,6 +3123,9 @@ async function openBlockModel(blob, { mapping = null, discovered = null, lattice
   const anchors = [];                                      // sparse record index: byte offset of every indexEvery-th accepted row
   const RES = 50000, res = [];                             // reservoir: the first centroids (rotated-lattice inference)
   let declaredMisfit = null;
+  // a declared lattice — the caller's (throws) or the file's (refused) — checked on every record
+  const declaredGrid = lattice || fileGrid;
+  const check = declaredGrid ? latticeChecker(declaredGrid) : null;
   // rows that are no record, by reason — reported, never silent (the first one's
   // data-row number, to find it): a blank coordinate, or one that isn't a number
   const dropped = { blank: 0, text: 0, firstRow: -1 };
@@ -3005,8 +3142,8 @@ async function openBlockModel(blob, { mapping = null, discovered = null, lattice
       }
       if (count % indexEvery === 0) anchors.push(at[fi]);
       if (zb) zb.push(f, count);
-      if (lattice && declaredMisfit === null) declaredMisfit = latticeMisfit(lattice, xv, yv, zv, count);
-      else if (!lattice && res.length < RES * 3) res.push(xv, yv, zv);
+      if (check) { if (declaredMisfit === null) declaredMisfit = check(xv, yv, zv, count); }
+      else if (!fileRejected && res.length < RES * 3) res.push(xv, yv, zv);
       count++;
       if (xv < min[0]) min[0] = xv; if (xv > max[0]) max[0] = xv;
       if (yv < min[1]) min[1] = yv; if (yv > max[1]) max[1] = yv;
@@ -3018,16 +3155,28 @@ async function openBlockModel(blob, { mapping = null, discovered = null, lattice
   }
 
   if (lattice && declaredMisfit) throw new Error(`declared lattice rejected — ${declaredMisfit}`);
+  if (fileGrid && declaredMisfit) fileRejected = `the # micro:model lattice doesn't fit the file — ${declaredMisfit}`;
+  // the file's sub-block sizes must be whole fine steps of its lattice, none past 255
+  let fileSub = null;
+  if (fileGrid && !fileRejected && fileDims) {
+    fileSub = declaredSubBlocks(sizes, pitchOf(fileGrid));
+    if (fileSub.refused) { fileRejected = `the # micro:model sub-blocks don't fit — ${fileSub.refused}`; fileSub = null; }
+  }
+  const useFile = !!(fileGrid && !fileRejected);
   const axes = ax.map((s) => (s.size < CAP_DISTINCT ? inferAxis([...s].sort((a, b) => a - b)) : null));
-  let grid = lattice ? { ...lattice } : axes.every(Boolean) ? { x: axes[0], y: axes[1], z: axes[2] } : null;
+  // a REFUSED file declaration is not inferred over: points, and the reason said
+  let grid = lattice ? { ...lattice } : useFile ? { ...fileGrid } : fileRejected ? null : axes.every(Boolean) ? { x: axes[0], y: axes[1], z: axes[2] } : null;
 
   // ── sub-blocked detection ── sizes vary → fine-lattice IJK (pitch = half the
   // size step, so every integer combination centres on it) + per-block dimQ.
   // Off the fine lattice → null → points fallback; a block past 255 fine steps →
   // refused, said (header.subBlockRefused), and shown as points.
   let subBlocked = false, sizeQMax = null, sizeShapes = 0, dimInfo = null, subBlockRefused = null;
-  const sb = hasDims && !lattice ? inferSubBlockLattice(ax, sizes, { cap: CAP_DISTINCT }) : null;
-  if (sb && sb.refused) { subBlockRefused = sb.refused; grid = null; }
+  const sb = hasDims && !lattice && !fileGrid && !fileRejected ? inferSubBlockLattice(ax, sizes, { cap: CAP_DISTINCT }) : null;
+  if (fileSub) {                                             // the file's sub-block lattice, as stated (and checked)
+    subBlocked = true; sizeQMax = fileSub.sizeQMax; sizeShapes = fileSub.shapes;
+    dimInfo = { cols: dimCols, pitch: pitchOf(grid) };
+  } else if (sb && sb.refused) { subBlockRefused = sb.refused; grid = null; }
   else if (sb) {
     subBlocked = true;
     sizeQMax = sb.sizeQMax; sizeShapes = sb.shapes;
@@ -3043,9 +3192,9 @@ async function openBlockModel(blob, { mapping = null, discovered = null, lattice
         yield { x, y, z, count: n };
       }
     })();
-  if (!grid && !subBlocked && !subBlockRefused && rotated && res.length >= 24) {
+  if (!grid && !subBlocked && !subBlockRefused && !fileRejected && rotated && res.length >= 24) {
     latticeCandidate = await detectRotatedLattice(Float64Array.from(res), coordSweep);
-  } else if (grid && !lattice && !subBlocked && rotated) {
+  } else if (grid && !lattice && !useFile && !subBlocked && rotated) {
     // a rotated model can ALSO read as a sparse, wrong axis grid (45°, 3-4-5…)
     const c = await detectRotatedOverAxisGrid(grid, count, Float64Array.from(res), coordSweep);
     if (c) { grid = null; latticeCandidate = c; }
@@ -3059,7 +3208,8 @@ async function openBlockModel(blob, { mapping = null, discovered = null, lattice
     bbox: { min, max },
     grid,                                                   // null → not a regular grid (points fallback)
     latticeCandidate,                                       // a detected ROTATED lattice, not applied (caller confirms) — or null
-    lattice: lattice ? { basis: 'declared' } : null,
+    lattice: lattice ? { basis: 'declared' } : useFile ? { basis: 'declared', by: 'file' } : null,
+    latticeRejected: fileRejected,                          // the file's # micro:model lattice, refused (why) — the model shows as points
     subBlocked, sizeQMax, sizeShapes, subBlockRefused, dimCols: subBlocked ? dimCols : null,   // variable-size boxes: per-block dimQ on the fine lattice
     columns: sniff.header, mapping: { ...map, cat: categories ? catCol : null },
     delim: sniff.delim, hasHeaderRow,                       // for external sweeps (the filter mask)
@@ -9073,6 +9223,7 @@ async function openDmModel(blob, { mapping = null, forcePoints = false, onProgre
   const cacheOk = cached && cached.bbox && !forcePoints && (rotApplied ? sameAnchor(cached.grid) : !(cached.grid && cached.grid.rot));
 
   let grid = null, bbox, subBlocked = false, sizeQMax = null, sizeShapes = 0, subBlockRefused = null;
+  let latticeFrom = null, latticeCandidate = null, nFinite = 0;   // a regular lattice found from the centroids; a rotated candidate
   if (cacheOk) {
     // sidecar-cached discovery: trust it wholesale (freshness is the caller's contract);
     // an older sidecar's dimPalette isn't needed — the fine grid's pitch says it all
@@ -9094,6 +9245,8 @@ async function openDmModel(blob, { mapping = null, forcePoints = false, onProgre
     const axc = [axisDistinct(CAP), axisDistinct(CAP), axisDistinct(CAP)];   // axis distinct centroids (for the fine lattice)
     const ax = axc.map((c) => c.set);
     const sizes = sizeCollector();
+    // an UNROTATED model's first centroids (local = world): the rotated-lattice detector's reservoir
+    const RES = 50000, res = [], detect = !forcePoints && !dmRotation.length;
     const sweepCols = perRecDims ? [xc, yc, zc, incIdx.x, incIdx.y, incIdx.z] : [xc, yc, zc];
     for await (const { recStart, count, cols } of localColumns(sweepCols)) {
       if (onProgress) onProgress({ phase: 'discovery', done: recStart + count, total: h.recordCount });
@@ -9108,10 +9261,10 @@ async function openDmModel(blob, { mapping = null, forcePoints = false, onProgre
           toW(xv, yv, zv, wp);
           for (let a = 0; a < 3; a++) { if (wp[a] < wmin[a]) wmin[a] = wp[a]; if (wp[a] > wmax[a]) wmax[a] = wp[a]; }
         }
-        if (perRecDims) {
-          axc[0].add(xv); axc[1].add(yv); axc[2].add(zv);
-          sizes.add(DX[k], DY[k], DZ[k]);
-        }
+        axc[0].add(xv); axc[1].add(yv); axc[2].add(zv);
+        if (perRecDims) sizes.add(DX[k], DY[k], DZ[k]);
+        if (detect && res.length < RES * 3) res.push(xv, yv, zv);
+        nFinite++;
       }
     }
     if (!Number.isFinite(min[0])) throw new Error('dm: no finite XC/YC/ZC centroids');
@@ -9120,6 +9273,33 @@ async function openDmModel(blob, { mapping = null, forcePoints = false, onProgre
     const sb = perRecDims ? inferSubBlockLattice(ax, sizes, { cap: CAP }) : null;
     if (sb && sb.refused) subBlockRefused = sb.refused;
     else if (sb) { subBlocked = true; sizeQMax = sb.sizeQMax; sizeShapes = sb.shapes; grid = sb.grid; }
+    // REGULAR without the DD lattice (no XMORIG/NX constants — sizes, if any, constant
+    // per record): the lattice from the centroids, as CSV / Parquet find theirs. A
+    // block size the file states (one per-record value, or a DD constant) is the pitch
+    // to check against; else the centroids' own step (inferAxis). Local frame — a
+    // single Z rotation is applied below like any other grid.
+    if (!grid && !subBlockRefused && !forcePoints) {
+      const stated = perRecDims && sizes.count && !sizes.varies && !sizes.overflow ? [0, 1, 2].map((a) => [...sizes.axes[a]][0])
+        : inc.every((v) => Number.isFinite(v) && v > 0) ? inc : null;
+      const axes = ax.map((set, a) => {
+        if (!set.size || set.size >= CAP) return null;
+        const vals = [...set].sort((u, v) => u - v);
+        if (!stated) return inferAxis(vals);
+        const origin = vals[0], pitch = stated[a], count = Math.round((vals[vals.length - 1] - origin) / pitch) + 1;
+        if (count > 65535) return null;
+        const eps = Math.min(pitch / 10, Math.max(pitch * 1e-3, Math.abs(origin) * 1e-6));
+        for (const v of vals) if (Math.abs(origin + Math.round((v - origin) / pitch) * pitch - v) > eps) return null;
+        return { origin, pitch, count };
+      });
+      if (axes.every(Boolean)) { grid = { x: axes[0], y: axes[1], z: axes[2] }; latticeFrom = 'centroids'; }
+    }
+    // an unrotated .dm that isn't on an axis grid may be on a ROTATED one (or read as a
+    // sparse, wrong axis grid at 45°): a CANDIDATE, confirmed by the caller, never applied here
+    if (detect && !subBlocked && !subBlockRefused && res.length >= 24) {
+      const sweep = () => (async function* () { for await (const { count, cols } of localColumns([xc, yc, zc])) yield { x: cols[xc], y: cols[yc], z: cols[zc], count }; })();
+      if (!grid) latticeCandidate = await detectRotatedLattice(Float64Array.from(res), sweep);
+      else if (latticeFrom) { const c = await detectRotatedOverAxisGrid(grid, nFinite, Float64Array.from(res), sweep); if (c) { grid = null; latticeFrom = null; latticeCandidate = c; } }
+    }
   }
   // rotated: the local grid becomes a lattice about the world origin O (grid/basis.js form)
   if (grid && rotApplied && !grid.rot) grid = { ...grid, rot: R, anchor: O };
@@ -9146,7 +9326,8 @@ async function openDmModel(blob, { mapping = null, forcePoints = false, onProgre
     dmRotationApplied: rotApplied,                          // true: placed in world (one rotation about Z)
     dmOrigin: rotApplied ? O : null,                        // the world position of the model's local origin
     dmPlace: null,                                          // set below: the placement the readers apply (rotated only)
-    lattice: rotApplied && grid ? { basis: 'declared', by: 'datamine' } : null,
+    lattice: rotApplied && grid ? { basis: 'declared', by: 'datamine' } : latticeFrom && grid ? { basis: 'inferred', from: latticeFrom } : null,
+    latticeCandidate,                                       // an unrotated .dm on a ROTATED lattice: the caller confirms (never applied here)
     bbox, grid, subBlocked, sizeQMax, sizeShapes, subBlockRefused, dimCols: subBlocked ? incIdx : null,
     columns: names,
     mapping: { x: xc, y: yc, z: zc, chan, cat: catIdx >= 0 ? catIdx : null },

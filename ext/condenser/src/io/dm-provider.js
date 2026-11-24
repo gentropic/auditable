@@ -18,7 +18,8 @@
 // reported, not applied (their order convention is unverified).
 
 import { detectDM, parseHeader, recordRange, decodeRecord, readField } from '../../../dm/src/dm.js';
-import { inferSubBlockLattice, axisDistinct } from '../grid/infer.js';
+import { inferAxis, inferSubBlockLattice, axisDistinct } from '../grid/infer.js';
+import { detectRotatedLattice, detectRotatedOverAxisGrid } from '../grid/basis.js';
 import { sizeCollector, putDimQ, pitchOf, datamineRotZ, placeDmColumns, placeDmRow } from '../grid/support.js';
 
 // PROJECTED batches over any .dm — decode only the requested column indices by
@@ -188,6 +189,7 @@ export async function openDmModel(blob, { mapping = null, forcePoints = false, o
   const cacheOk = cached && cached.bbox && !forcePoints && (rotApplied ? sameAnchor(cached.grid) : !(cached.grid && cached.grid.rot));
 
   let grid = null, bbox, subBlocked = false, sizeQMax = null, sizeShapes = 0, subBlockRefused = null;
+  let latticeFrom = null, latticeCandidate = null, nFinite = 0;   // a regular lattice found from the centroids; a rotated candidate
   if (cacheOk) {
     // sidecar-cached discovery: trust it wholesale (freshness is the caller's contract);
     // an older sidecar's dimPalette isn't needed — the fine grid's pitch says it all
@@ -209,6 +211,8 @@ export async function openDmModel(blob, { mapping = null, forcePoints = false, o
     const axc = [axisDistinct(CAP), axisDistinct(CAP), axisDistinct(CAP)];   // axis distinct centroids (for the fine lattice)
     const ax = axc.map((c) => c.set);
     const sizes = sizeCollector();
+    // an UNROTATED model's first centroids (local = world): the rotated-lattice detector's reservoir
+    const RES = 50000, res = [], detect = !forcePoints && !dmRotation.length;
     const sweepCols = perRecDims ? [xc, yc, zc, incIdx.x, incIdx.y, incIdx.z] : [xc, yc, zc];
     for await (const { recStart, count, cols } of localColumns(sweepCols)) {
       if (onProgress) onProgress({ phase: 'discovery', done: recStart + count, total: h.recordCount });
@@ -223,10 +227,10 @@ export async function openDmModel(blob, { mapping = null, forcePoints = false, o
           toW(xv, yv, zv, wp);
           for (let a = 0; a < 3; a++) { if (wp[a] < wmin[a]) wmin[a] = wp[a]; if (wp[a] > wmax[a]) wmax[a] = wp[a]; }
         }
-        if (perRecDims) {
-          axc[0].add(xv); axc[1].add(yv); axc[2].add(zv);
-          sizes.add(DX[k], DY[k], DZ[k]);
-        }
+        axc[0].add(xv); axc[1].add(yv); axc[2].add(zv);
+        if (perRecDims) sizes.add(DX[k], DY[k], DZ[k]);
+        if (detect && res.length < RES * 3) res.push(xv, yv, zv);
+        nFinite++;
       }
     }
     if (!Number.isFinite(min[0])) throw new Error('dm: no finite XC/YC/ZC centroids');
@@ -235,6 +239,33 @@ export async function openDmModel(blob, { mapping = null, forcePoints = false, o
     const sb = perRecDims ? inferSubBlockLattice(ax, sizes, { cap: CAP }) : null;
     if (sb && sb.refused) subBlockRefused = sb.refused;
     else if (sb) { subBlocked = true; sizeQMax = sb.sizeQMax; sizeShapes = sb.shapes; grid = sb.grid; }
+    // REGULAR without the DD lattice (no XMORIG/NX constants — sizes, if any, constant
+    // per record): the lattice from the centroids, as CSV / Parquet find theirs. A
+    // block size the file states (one per-record value, or a DD constant) is the pitch
+    // to check against; else the centroids' own step (inferAxis). Local frame — a
+    // single Z rotation is applied below like any other grid.
+    if (!grid && !subBlockRefused && !forcePoints) {
+      const stated = perRecDims && sizes.count && !sizes.varies && !sizes.overflow ? [0, 1, 2].map((a) => [...sizes.axes[a]][0])
+        : inc.every((v) => Number.isFinite(v) && v > 0) ? inc : null;
+      const axes = ax.map((set, a) => {
+        if (!set.size || set.size >= CAP) return null;
+        const vals = [...set].sort((u, v) => u - v);
+        if (!stated) return inferAxis(vals);
+        const origin = vals[0], pitch = stated[a], count = Math.round((vals[vals.length - 1] - origin) / pitch) + 1;
+        if (count > 65535) return null;
+        const eps = Math.min(pitch / 10, Math.max(pitch * 1e-3, Math.abs(origin) * 1e-6));
+        for (const v of vals) if (Math.abs(origin + Math.round((v - origin) / pitch) * pitch - v) > eps) return null;
+        return { origin, pitch, count };
+      });
+      if (axes.every(Boolean)) { grid = { x: axes[0], y: axes[1], z: axes[2] }; latticeFrom = 'centroids'; }
+    }
+    // an unrotated .dm that isn't on an axis grid may be on a ROTATED one (or read as a
+    // sparse, wrong axis grid at 45°): a CANDIDATE, confirmed by the caller, never applied here
+    if (detect && !subBlocked && !subBlockRefused && res.length >= 24) {
+      const sweep = () => (async function* () { for await (const { count, cols } of localColumns([xc, yc, zc])) yield { x: cols[xc], y: cols[yc], z: cols[zc], count }; })();
+      if (!grid) latticeCandidate = await detectRotatedLattice(Float64Array.from(res), sweep);
+      else if (latticeFrom) { const c = await detectRotatedOverAxisGrid(grid, nFinite, Float64Array.from(res), sweep); if (c) { grid = null; latticeFrom = null; latticeCandidate = c; } }
+    }
   }
   // rotated: the local grid becomes a lattice about the world origin O (grid/basis.js form)
   if (grid && rotApplied && !grid.rot) grid = { ...grid, rot: R, anchor: O };
@@ -261,7 +292,8 @@ export async function openDmModel(blob, { mapping = null, forcePoints = false, o
     dmRotationApplied: rotApplied,                          // true: placed in world (one rotation about Z)
     dmOrigin: rotApplied ? O : null,                        // the world position of the model's local origin
     dmPlace: null,                                          // set below: the placement the readers apply (rotated only)
-    lattice: rotApplied && grid ? { basis: 'declared', by: 'datamine' } : null,
+    lattice: rotApplied && grid ? { basis: 'declared', by: 'datamine' } : latticeFrom && grid ? { basis: 'inferred', from: latticeFrom } : null,
+    latticeCandidate,                                       // an unrotated .dm on a ROTATED lattice: the caller confirms (never applied here)
     bbox, grid, subBlocked, sizeQMax, sizeShapes, subBlockRefused, dimCols: subBlocked ? incIdx : null,
     columns: names,
     mapping: { x: xc, y: yc, z: zc, chan, cat: catIdx >= 0 ? catIdx : null },

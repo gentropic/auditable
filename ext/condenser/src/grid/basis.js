@@ -314,15 +314,25 @@ function solve4(M, B) {
  * null when it sits on a node, else a reason string. `grid` = { x,y,z, rot, anchor }.
  */
 export function latticeMisfit(grid, x, y, z, i, { tol = 1e-3 } = {}) {
-  const q = latticeMapOf(grid)(+x, +y, +z);
-  for (let a = 0; a < 3; a++) {
-    const g = [grid.x, grid.y, grid.z][a];
-    if (!(g.pitch > 0)) { if (Math.abs(q[a] - g.origin) > 1e-6) return `record ${i} is off the single ${'UVW'[a]} plane`; continue; }
-    const kf = (q[a] - g.origin) / g.pitch, kr = Math.round(kf);
-    if (Math.abs(kf - kr) > tol) return `record ${i} is off the lattice along ${'UVW'[a]} by ${Math.abs(kf - kr).toFixed(3)} blocks`;
-    if (kr < 0 || kr >= g.count) return `record ${i} lies outside the lattice along ${'UVW'[a]} (index ${kr} of ${g.count})`;
-  }
-  return null;
+  return latticeChecker(grid, { tol })(x, y, z, i);
+}
+/**
+ * latticeMisfit with the grid's map built ONCE — (x, y, z, i) → reason | null. For a
+ * sweep that checks every record (a declared lattice on a file of millions of rows).
+ */
+export function latticeChecker(grid, { tol = 1e-3 } = {}) {
+  const toQ = latticeMapOf(grid), G = [grid.x, grid.y, grid.z];
+  return (x, y, z, i) => {
+    const q = toQ(+x, +y, +z);
+    for (let a = 0; a < 3; a++) {
+      const g = G[a];
+      if (!(g.pitch > 0)) { if (Math.abs(q[a] - g.origin) > 1e-6) return `record ${i} is off the single ${'UVW'[a]} plane`; continue; }
+      const kf = (q[a] - g.origin) / g.pitch, kr = Math.round(kf);
+      if (Math.abs(kf - kr) > tol) return `record ${i} is off the lattice along ${'UVW'[a]} by ${Math.abs(kf - kr).toFixed(3)} blocks`;
+      if (kr < 0 || kr >= g.count) return `record ${i} lies outside the lattice along ${'UVW'[a]} (index ${kr} of ${g.count})`;
+    }
+    return null;
+  };
 }
 
 /**
