@@ -31,7 +31,7 @@ export { createSoupPipeline } from './core/gl-soup.js';
 export { categoryPalettePixels, createBlocksPipeline } from './core/gl-blocks.js';
 export { createPickPipeline, layerOfId, faceOfId, isMiss, NO_FACE, FACE_CUT, FACE_NORMALS, FACE_NAMES } from './core/gl-pick.js';
 export { layerSection, meshSection, offsetSection } from './core/section.js';
-export { openDmModel, fetchDmRecord, peekDmColumns, peekDmRotation, dmWireframeRole, openDmWireframe, dmPageRuns, readDmRun } from './io/dm-provider.js';
+export { openDmModel, fetchDmRecord, peekDmColumns, peekDmRotation, dmWireframeRole, openDmWireframe, dmPageRuns, readDmRun, dmOpenRuns, dmDiscoverRun, dmDecodeRun, dmPageRunner } from './io/dm-provider.js';
 export { parsePlyHeader, openPly } from './io/ply.js';
 export { openDxf, peekDxfScene, DXF_RESIDENT_MAX } from './io/dxf-provider.js';
 export { write as writeDxf } from '../../dxf/src/write.js';   // @gcu/dxf's writer — micro exports traces as 3D polylines

@@ -6081,18 +6081,24 @@ function sizeCollector() {
       if (shapes.size < SHAPES_CAP) shapes.add(key);
     },
     /** a partial collector's snapshot (toJSON form) merged in */
+    // Merged IN ORDER (partials of consecutive record ranges, first to last), the
+    // result is the sequential sweep's: each axis's sizes go in first, in their
+    // first-appearance order (so a size's index and its representative value — the
+    // first raw value of its 7-digit class — are the sweep's), then the shapes, and
+    // the raw min/max (which see every noisy value, not just the representatives).
     merge(s) {
       if (!s) return;
+      for (let a = 0; a < 3; a++) for (const v of s.raw[a]) ixOf(a, v);   // sizes past the shape cap still count
       for (const [dx, dy, dz] of s.shapes) this.add(dx, dy, dz);
       any += (s.count || 0) - s.shapes.length;
-      for (let a = 0; a < 3; a++) for (const v of s.raw[a]) ixOf(a, v);   // sizes past the shape cap still count
+      if (s.min) for (let a = 0; a < 3; a++) { if (s.min[a] < min[a]) min[a] = s.min[a]; if (s.max[a] > max[a]) max[a] = s.max[a]; }
       if (s.overflow) overflow = true;
     },
     /** a structured-cloneable snapshot (a worker's partial) */
     toJSON() {
       const sh = [];
       for (const key of shapes) sh.push([raw[0][Math.floor(key / 16777216)], raw[1][Math.floor(key / 4096) % 4096], raw[2][key % 4096]]);
-      return { raw: raw.map((r) => [...r]), shapes: sh, overflow, count: any };
+      return { raw: raw.map((r) => [...r]), shapes: sh, overflow, count: any, min: [...min], max: [...max] };
     },
     /** do sizes vary at all? (one shape = a regular model in disguise) */
     get varies() { return axes.some((x) => x.size > 1); },

@@ -15,6 +15,7 @@ import { zoneKeep } from './zones.js';
 import { startPool } from './pool.js';
 import { discoverParquet, checkLattice, decodeParquet, parquetStats } from './parquet-jobs.js';
 import { makeColAcc } from './colacc.js';
+import { discoverDm, decodeDm } from './dm-jobs.js';
 
 export function createScan({ deps, urls = {} } = {}) {
   const D = deps || {};
@@ -33,6 +34,8 @@ export function createScan({ deps, urls = {} } = {}) {
     checkLattice: (opts) => checkLattice(urls, D, opts),
     decodeParquet: (opts) => decodeParquet(urls, D, opts),
     parquetStats: (opts) => parquetStats(urls, D.sluice, opts),
+    // a .dm open's RUNNER (condenser openDmModel's `runner`): discovery + decode on the pool
+    dm: { discover: (opts) => discoverDm(urls, D, opts), decode: (opts) => decodeDm(urls, D, opts) },
     colAcc: () => makeColAcc(D.sluice),
   };
 }

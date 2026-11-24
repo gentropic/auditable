@@ -867,7 +867,7 @@ function serve(self, load) {
         ({ file, meta, task, p } = data);
         const libs = data.libs;
         [PQ, SL] = await Promise.all([load(libs.parquet), load(libs.sluice)]);
-        const needCD = task === 'check' || task === 'discover' || task === 'decode' || (task === 'scan' && p.source && (p.source.kind === 'dm' || p.source.kind === 'csv'));
+        const needCD = task === 'check' || task === 'discover' || task === 'decode' || task === 'dmopen' || (task === 'scan' && p.source && (p.source.kind === 'dm' || p.source.kind === 'csv'));
         if (needCD) CD = await load(libs.condenser);
         if (task === 'stats') { acc = makeColAcc(SL); st = p.cols.map((c) => acc.create(c.num)); }
         if (task === 'scan') { const E = await load(libs.expr); kern = kernels[p.kernel + 'Kernel'](E, CV, SL); kctx = kern.init(p.params, p.calcs); }
@@ -903,6 +903,11 @@ function serve(self, load) {
           } else if (p.readCols.length) cols = await PQ.readParquetRange(file, p.readCols, start, start + count, meta);
           const view = CV.chunkView(p.spec, cols, data.page || [], count, kctx.calcFns);
           const out = kern.group(kctx, view, count, data.mask || null);
+          self.postMessage({ type: 'result', id, out }, buffersOf(out));
+        } else if (task === 'dmopen') {                    // a .dm open, one unit: its discovery summary or its render decode (condenser's kernels)
+          const out = data.op === 'discover'
+            ? await CD.dmDiscoverRun(file, p.h, data.res ? { ...data.k, res: data.res } : data.k, data.run)
+            : await CD.dmDecodeRun(file, p.h, data.k, data.run);
           self.postMessage({ type: 'result', id, out }, buffersOf(out));
         } else if (task === 'decode') {
           const cols = await PQ.readParquetRange(file, p.cols, start, start + count, meta);

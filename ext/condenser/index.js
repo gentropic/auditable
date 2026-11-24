@@ -1247,18 +1247,24 @@ function sizeCollector() {
       if (shapes.size < SHAPES_CAP) shapes.add(key);
     },
     /** a partial collector's snapshot (toJSON form) merged in */
+    // Merged IN ORDER (partials of consecutive record ranges, first to last), the
+    // result is the sequential sweep's: each axis's sizes go in first, in their
+    // first-appearance order (so a size's index and its representative value — the
+    // first raw value of its 7-digit class — are the sweep's), then the shapes, and
+    // the raw min/max (which see every noisy value, not just the representatives).
     merge(s) {
       if (!s) return;
+      for (let a = 0; a < 3; a++) for (const v of s.raw[a]) ixOf(a, v);   // sizes past the shape cap still count
       for (const [dx, dy, dz] of s.shapes) this.add(dx, dy, dz);
       any += (s.count || 0) - s.shapes.length;
-      for (let a = 0; a < 3; a++) for (const v of s.raw[a]) ixOf(a, v);   // sizes past the shape cap still count
+      if (s.min) for (let a = 0; a < 3; a++) { if (s.min[a] < min[a]) min[a] = s.min[a]; if (s.max[a] > max[a]) max[a] = s.max[a]; }
       if (s.overflow) overflow = true;
     },
     /** a structured-cloneable snapshot (a worker's partial) */
     toJSON() {
       const sh = [];
       for (const key of shapes) sh.push([raw[0][Math.floor(key / 16777216)], raw[1][Math.floor(key / 4096) % 4096], raw[2][key % 4096]]);
-      return { raw: raw.map((r) => [...r]), shapes: sh, overflow, count: any };
+      return { raw: raw.map((r) => [...r]), shapes: sh, overflow, count: any, min: [...min], max: [...max] };
     },
     /** do sizes vary at all? (one shape = a regular model in disguise) */
     get varies() { return axes.some((x) => x.size > 1); },
@@ -9108,6 +9114,122 @@ async function* dmColumnBatches(blob, h, colIdxs, { signal, shouldRead = null, p
   }
 }
 
+// ── the OPEN's units and per-unit kernels ────────────────────────────────────
+// The open reads the file twice: a DISCOVERY sweep (bbox, the lattice, the sizes)
+// and the render DECODE. A .dm is fixed-size pages with no record across a page
+// boundary, so both split into independent page runs: these two kernels are ONE
+// unit's work, run in run order on the page (the default runner below) or on a
+// worker pool (@gcu/scan's discoverDm / decodeDm) — the same code either way, and
+// the merge (in run order) gives exactly what one sequential sweep gives.
+// Units for the open: whole pages, ~`records` records each (bigger than the 4 MB
+// scan runs: fewer, larger messages and yields — an open's stream is ~70 of them
+// on an 18M model, not 4,000). recStart = the first page's first raw record.
+function dmOpenRuns(h, records = 1 << 18) {
+  const pagesPer = Math.max(1, Math.ceil(records / Math.max(1, h.recordsPerPage)));
+  const runs = [];
+  for (let page = 2; page <= h.lastPage; page += pagesPer) {
+    const pEnd = Math.min(page + pagesPer - 1, h.lastPage);
+    let count = 0;
+    for (let pg = page; pg <= pEnd; pg++) count += pg === h.lastPage ? h.lastRec : h.recordsPerPage;
+    runs.push({ page, pEnd, start: (page - 2) * h.recordsPerPage, count });
+  }
+  return runs;
+}
+// DISCOVERY of one unit. p = { xc, yc, zc, dims: [ix, iy, iz] | null, cap, R, O, res }
+// (R/O: a rotated model's placement — the WORLD bbox is collected beside the local
+// one; res: how many leading valid centroids to keep for the rotated-lattice
+// detector). → { valid, min, max, wmin, wmax, ax: [values ×3] (r10, distinct,
+// capped), sizes: a sizeCollector snapshot | null, res: Float64Array | null }
+async function dmDiscoverRun(blob, h, p, run) {
+  const cols = p.dims ? [p.xc, p.yc, p.zc, ...p.dims] : [p.xc, p.yc, p.zc];
+  const { count, cols: c } = await readDmRun(blob, h, cols, run);
+  const X = c[p.xc], Y = c[p.yc], Z = c[p.zc], DX = p.dims ? c[p.dims[0]] : null, DY = p.dims ? c[p.dims[1]] : null, DZ = p.dims ? c[p.dims[2]] : null;
+  const R = p.R, O = p.O;
+  const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+  const wmin = [Infinity, Infinity, Infinity], wmax = [-Infinity, -Infinity, -Infinity];
+  const axc = [axisDistinct(p.cap), axisDistinct(p.cap), axisDistinct(p.cap)];
+  const sizes = p.dims ? sizeCollector() : null;
+  const resOut = p.res > 0 ? new Float64Array(p.res * 3) : null;
+  let nres = 0, valid = 0;
+  for (let k = 0; k < count; k++) {
+    const xv = X[k], yv = Y[k], zv = Z[k];
+    if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;
+    if (xv < min[0]) min[0] = xv; if (xv > max[0]) max[0] = xv;
+    if (yv < min[1]) min[1] = yv; if (yv > max[1]) max[1] = yv;
+    if (zv < min[2]) min[2] = zv; if (zv > max[2]) max[2] = zv;
+    if (R) {
+      const wx = O[0] + R[0] * xv + R[3] * yv, wy = O[1] + R[1] * xv + R[4] * yv, wz = O[2] + zv;
+      if (wx < wmin[0]) wmin[0] = wx; if (wx > wmax[0]) wmax[0] = wx;
+      if (wy < wmin[1]) wmin[1] = wy; if (wy > wmax[1]) wmax[1] = wy;
+      if (wz < wmin[2]) wmin[2] = wz; if (wz > wmax[2]) wmax[2] = wz;
+    }
+    axc[0].add(xv); axc[1].add(yv); axc[2].add(zv);
+    if (sizes) sizes.add(DX[k], DY[k], DZ[k]);
+    if (nres < p.res) { resOut[nres * 3] = xv; resOut[nres * 3 + 1] = yv; resOut[nres * 3 + 2] = zv; nres++; }
+    valid++;
+  }
+  return { valid, min, max, wmin, wmax, ax: axc.map((a) => [...a.set]), sizes: sizes ? sizes.toJSON() : null, res: resOut ? resOut.slice(0, nres * 3) : null };
+}
+// DECODE of one unit into the chunk builder's arrays. p = { xc, yc, zc, chan, cat,
+// dims, pitch, R, O }. The category arrives as LOCAL codes (Uint16, first appearance
+// in this unit) + `dict` (the values in that order): the caller assigns the model's
+// codes in run order, which is exactly the first-appearance order one sweep gives.
+// A record without a finite centroid isn't drawn; its raw number is never reused.
+async function dmDecodeRun(blob, h, p, run) {
+  const want = [p.xc, p.yc, p.zc];
+  if (p.chan != null) want.push(p.chan);
+  if (p.cat != null) want.push(p.cat);
+  if (p.pitch) want.push(...p.dims);
+  const { count, cols } = await readDmRun(blob, h, [...new Set(want)], run);
+  const X = cols[p.xc], Y = cols[p.yc], Z = cols[p.zc];
+  const CH = p.chan != null ? cols[p.chan] : null, CA = p.cat != null ? cols[p.cat] : null;
+  const DX = p.pitch ? cols[p.dims[0]] : null, DY = p.pitch ? cols[p.dims[1]] : null, DZ = p.pitch ? cols[p.dims[2]] : null;
+  const R = p.R, O = p.O;
+  const x = new Float64Array(count), y = new Float64Array(count), z = new Float64Array(count), chan = new Float64Array(count);
+  const cat = CA ? new Uint16Array(count) : null, dimQ = p.pitch ? new Uint8Array(3 * count) : null, recIdx = new Uint32Array(count);
+  const dict = CA ? [] : null, local = CA ? new Map() : null;
+  let m = 0;
+  for (let k = 0; k < count; k++) {
+    const xv = X[k], yv = Y[k], zv = Z[k];
+    if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;
+    if (R) { x[m] = O[0] + R[0] * xv + R[3] * yv; y[m] = O[1] + R[1] * xv + R[4] * yv; z[m] = O[2] + zv; }
+    else { x[m] = xv; y[m] = yv; z[m] = zv; }
+    chan[m] = CH ? CH[k] : 0;                              // NaN already when missing
+    if (cat) {
+      const raw = CA[k];                                   // '' when missing; a NUMERIC cat column dict-encodes as strings
+      const v = raw == null || raw === '' || (typeof raw === 'number' && !Number.isFinite(raw)) ? '' : String(raw);
+      let c = local.get(v);
+      if (c === undefined) { c = dict.length < 65535 ? dict.length : 65535; if (c < 65535) { local.set(v, c); dict.push(v); } }
+      cat[m] = c;                                          // 65535 = past a unit's dictionary: the model's code 0 (its 255 are long full)
+    }
+    if (dimQ) putDimQ(dimQ, m, DX[k], DY[k], DZ[k], p.pitch);
+    recIdx[m++] = run.start + k;                           // RAW record number — the join key
+  }
+  const cut = (a) => (a && m < count ? a.slice(0, m) : a);
+  return { count: m, x: cut(x), y: cut(y), z: cut(z), chan: cut(chan), cat: cut(cat), dict, dimQ: dimQ && m < count ? dimQ.slice(0, 3 * m) : dimQ, recIdx: cut(recIdx), recStart: 0 };
+}
+// The default RUNNER: every unit on this thread, in order. A runner is
+// { discover({ file, h, p, units, onProgress, signal }) → summaries in unit order,
+//   decode({ file, h, p, units, signal }) → async iterable of decoded units in order }
+// — @gcu/scan's dm runner has the same face and runs them on a worker pool.
+const dmPageRunner = {
+  async discover({ file, h, p, units, onProgress, signal }) {
+    const out = []; let done = 0;
+    for (const u of units) {
+      if (signal && signal.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+      out.push(await dmDiscoverRun(file, h, u.res != null ? { ...p, res: u.res } : p, u));
+      done += u.count; if (onProgress) onProgress(done);
+    }
+    return out;
+  },
+  async *decode({ file, h, p, units, signal }) {
+    for (const u of units) {
+      if (signal && signal.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+      yield await dmDecodeRun(file, h, p, u);
+    }
+  },
+};
+
 const DEF_NAMES = new Set(['IJK', 'XC', 'YC', 'ZC', 'XINC', 'YINC', 'ZINC', 'XMORIG', 'YMORIG', 'ZMORIG', 'NX', 'NY', 'NZ', 'ANGLE1', 'ANGLE2', 'ANGLE3', 'ROTAXIS1', 'ROTAXIS2', 'ROTAXIS3']);
 
 // `cached` (a sidecar's discovery results: { grid, bbox, subBlocked, categories })
@@ -9115,7 +9237,11 @@ const DEF_NAMES = new Set(['IJK', 'XC', 'YC', 'ZC', 'XINC', 'YINC', 'ZINC', 'XMO
 // to streaming. Callers own freshness (name+size match).
 // `origin` ([x, y, z]) — the world position of the model's local origin, for a
 // rotated model whose file doesn't carry it (X0/Y0/Z0 = 0, an anonymised export).
-async function openDmModel(blob, { mapping = null, forcePoints = false, onProgress = null, cached = null, origin = null } = {}) {
+// `runner` — who reads the open's units (dmPageRunner: this thread, in order; a
+// caller with workers passes @gcu/scan's dm runner). The answer is the same.
+// `unitRecords` — the units' size, at most (tests cut a small file into many).
+async function openDmModel(blob, { mapping = null, forcePoints = false, onProgress = null, cached = null, origin = null, runner = null, unitRecords = 1 << 18 } = {}) {
+  const run = runner || dmPageRunner;
   const head = new Uint8Array(await blob.slice(0, Math.min(8192, blob.size)).arrayBuffer());
   const fmt = detectDM(head);
   if (!fmt) throw new Error('dm: not a recognizable .dm file');
@@ -9237,31 +9363,37 @@ async function openDmModel(blob, { mapping = null, forcePoints = false, onProgre
   } else {
     const CAP = 300000;
     const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
-    const wmin = [Infinity, Infinity, Infinity], wmax = [-Infinity, -Infinity, -Infinity], wp = [0, 0, 0];   // world centroid bounds (rotated)
-    const axc = [axisDistinct(CAP), axisDistinct(CAP), axisDistinct(CAP)];   // axis distinct centroids (for the fine lattice)
-    const ax = axc.map((c) => c.set);
+    const wmin = [Infinity, Infinity, Infinity], wmax = [-Infinity, -Infinity, -Infinity];   // world centroid bounds (rotated)
+    const ax = [new Set(), new Set(), new Set()];          // axis distinct centroids (for the fine lattice), r10, capped
     const sizes = sizeCollector();
     // an UNROTATED model's first centroids (local = world): the rotated-lattice detector's reservoir
     const RES = 50000, res = [], detect = !forcePoints && !dmRotation.length;
-    const sweepCols = perRecDims ? [xc, yc, zc, incIdx.x, incIdx.y, incIdx.z] : [xc, yc, zc];
-    for await (const { recStart, count, cols } of localColumns(sweepCols)) {
-      if (onProgress) onProgress({ phase: 'discovery', done: recStart + count, total: h.recordCount });
-      const X = cols[xc], Y = cols[yc], Z = cols[zc], DX = perRecDims ? cols[incIdx.x] : null, DY = perRecDims ? cols[incIdx.y] : null, DZ = perRecDims ? cols[incIdx.z] : null;
-      for (let k = 0; k < count; k++) {
-        const xv = X[k], yv = Y[k], zv = Z[k];
-        if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;
-        if (xv < min[0]) min[0] = xv; if (xv > max[0]) max[0] = xv;
-        if (yv < min[1]) min[1] = yv; if (yv > max[1]) max[1] = yv;
-        if (zv < min[2]) min[2] = zv; if (zv > max[2]) max[2] = zv;
-        if (rotApplied) {
-          toW(xv, yv, zv, wp);
-          for (let a = 0; a < 3; a++) { if (wp[a] < wmin[a]) wmin[a] = wp[a]; if (wp[a] > wmax[a]) wmax[a] = wp[a]; }
-        }
-        axc[0].add(xv); axc[1].add(yv); axc[2].add(zv);
-        if (perRecDims) sizes.add(DX[k], DY[k], DZ[k]);
-        if (detect && res.length < RES * 3) res.push(xv, yv, zv);
-        nFinite++;
+    // the units, each a unit's summary (dmDiscoverRun) — on the runner's threads —
+    // merged HERE in unit order: bounds, the distinct axis values (a union, clipped
+    // at the cap — an axis at the cap reads as no lattice either way), the sizes
+    // (sizeCollector.merge keeps first-appearance order) and the reservoir (asked of
+    // the leading units; topped up below if they held too few valid centroids)
+    const units = dmOpenRuns(h, unitRecords).map((u) => ({ ...u, res: detect && u.start < 4 * RES ? RES : 0 }));
+    const dp = { xc, yc, zc, dims: perRecDims ? [incIdx.x, incIdx.y, incIdx.z] : null, cap: CAP, R: rotApplied ? Array.from(R) : null, O: rotApplied ? O : null, res: 0 };
+    const parts = await run.discover({ file: blob, h, p: dp, units,
+      onProgress: onProgress ? (done) => onProgress({ phase: 'discovery', done, total: h.recordCount }) : null });
+    let resFrom = units.length;                            // the first unit whose reservoir wasn't asked for
+    for (let g = 0; g < parts.length; g++) {
+      const s = parts[g];
+      for (let a = 0; a < 3; a++) {
+        if (s.min[a] < min[a]) min[a] = s.min[a]; if (s.max[a] > max[a]) max[a] = s.max[a];
+        if (s.wmin[a] < wmin[a]) wmin[a] = s.wmin[a]; if (s.wmax[a] > wmax[a]) wmax[a] = s.wmax[a];
+        const set = ax[a];
+        for (const v of s.ax[a]) { if (set.size >= CAP) break; set.add(v); }
       }
+      if (s.sizes) sizes.merge(s.sizes);
+      if (detect && !units[g].res && resFrom === units.length) resFrom = g;
+      if (s.res && detect) for (let k = 0; k < s.res.length && res.length < RES * 3; k++) res.push(s.res[k]);
+      nFinite += s.valid;
+    }
+    for (let g = resFrom; detect && g < units.length && res.length < RES * 3; g++) {   // rare: the leading units were mostly blank
+      const s = await dmDiscoverRun(blob, h, { ...dp, dims: null, res: RES }, units[g]);
+      for (let k = 0; k < s.res.length && res.length < RES * 3; k++) res.push(s.res[k]);
     }
     if (!Number.isFinite(min[0])) throw new Error('dm: no finite XC/YC/ZC centroids');
     bbox = rotApplied ? { min: wmin, max: wmax } : { min, max };
@@ -9334,59 +9466,33 @@ async function openDmModel(blob, { mapping = null, forcePoints = false, onProgre
 
   if (rotApplied) place = header.dmPlace = { x: xc, y: yc, z: zc, R: Array.from(R), O: [...O] };
 
+  // the render stream: each unit decoded (dmDecodeRun — on the runner's threads),
+  // handed on IN UNIT ORDER. The category's codes are assigned here, in that order,
+  // from each unit's first-appearance dictionary: the codes one sweep gives.
+  // Units arrive whole (~chunkPoints records): the chunk builder cuts its batches
+  // wherever pushes end, so the chunks are the same as the old fixed-size stream's.
   async function* streamChunks({ chunkPoints = 1 << 18, signal, onProgress } = {}) {
-    const alloc = () => ({
-      x: new Float64Array(chunkPoints), y: new Float64Array(chunkPoints), z: new Float64Array(chunkPoints),
-      chan: new Float64Array(chunkPoints), cat: catCode ? new Uint8Array(chunkPoints) : null,
-      dimQ: pitchQ ? new Uint8Array(3 * chunkPoints) : null,
-      recIdx: new Uint32Array(chunkPoints),
-    });
-    // project ONLY the fields the render needs (coords + grade + category + dims)
-    // — not all N columns. On the real Leapfrog .dm that's ~6 of 14+.
-    const streamCols = [xc, yc, zc];
-    if (chan != null) streamCols.push(chan);
-    if (catIdx >= 0) streamCols.push(catIdx);
-    if (pitchQ) streamCols.push(incIdx.x, incIdx.y, incIdx.z);
-    let buf = alloc(), fill = 0, done = 0;
-    for await (const { recStart, count, cols } of localColumns(streamCols, { signal })) {
-      const X = cols[xc], Y = cols[yc], Z = cols[zc];
-      const CH = chan != null ? cols[chan] : null, CA = catIdx >= 0 ? cols[catIdx] : null;
-      const DX = pitchQ ? cols[incIdx.x] : null, DY = pitchQ ? cols[incIdx.y] : null, DZ = pitchQ ? cols[incIdx.z] : null;
-      for (let k = 0; k < count; k++) {
-        const xv = X[k], yv = Y[k], zv = Z[k];
-        if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;   // skipped, raw number NOT reused
-        if (R) {                                           // rotated: the stream speaks WORLD coordinates
-          buf.x[fill] = O[0] + R[0] * xv + R[3] * yv; buf.y[fill] = O[1] + R[1] * xv + R[4] * yv; buf.z[fill] = O[2] + zv;
-        } else { buf.x[fill] = xv; buf.y[fill] = yv; buf.z[fill] = zv; }
-        buf.chan[fill] = CH ? CH[k] : 0;                   // NaN already when missing
-        if (buf.cat) {
-          const raw = CA[k];                               // '' when missing; a NUMERIC cat column dict-encodes as strings
-          const v = raw == null || raw === '' || (typeof raw === 'number' && !Number.isFinite(raw)) ? '' : String(raw);
+    const dp = { xc, yc, zc, chan, cat: catIdx >= 0 ? catIdx : null, dims: pitchQ ? [incIdx.x, incIdx.y, incIdx.z] : null, pitch: pitchQ, R: R ? Array.from(R) : null, O: R ? O : null };
+    let done = 0;
+    for await (const u of run.decode({ file: blob, h, p: dp, units: dmOpenRuns(h, Math.min(chunkPoints, unitRecords)), signal })) {
+      let cat = null;
+      if (u.cat) {
+        const lut = new Uint8Array(65536);                 // local code → the model's (65535 and any overflow → 0)
+        for (let i = 0; i < u.dict.length; i++) {
+          const v = u.dict[i];
           let code = catCode.get(v);
           if (code === undefined) {
             if (catCode.size < 255) { code = catCode.size; catCode.set(v, code); categories.push(v); }
             else code = 0;
           }
-          buf.cat[fill] = code;
+          lut[i] = code;
         }
-        if (buf.dimQ) putDimQ(buf.dimQ, fill, DX[k], DY[k], DZ[k], pitchQ);
-        buf.recIdx[fill] = recStart + k;                   // RAW record number — the join key
-        fill++;
-        if (fill === chunkPoints) {
-          yield { count: fill, x: buf.x, y: buf.y, z: buf.z, chan: buf.chan, cat: buf.cat, dimQ: buf.dimQ, recIdx: buf.recIdx, recStart: 0 };
-          buf = alloc(); fill = 0;
-        }
-      }
-      done += count;
+        cat = new Uint8Array(u.count);
+        for (let i = 0; i < u.count; i++) cat[i] = lut[u.cat[i]];
+      } else if (catCode) cat = new Uint8Array(u.count);
+      done += u.count;
       if (onProgress) onProgress(done, h.recordCount);
-    }
-    if (fill) {
-      yield {
-        count: fill, x: buf.x.subarray(0, fill), y: buf.y.subarray(0, fill), z: buf.z.subarray(0, fill),
-        chan: buf.chan.subarray(0, fill), cat: buf.cat ? buf.cat.subarray(0, fill) : null,
-        dimQ: buf.dimQ ? buf.dimQ.subarray(0, 3 * fill) : null,
-        recIdx: buf.recIdx.subarray(0, fill), recStart: 0,
-      };
+      if (u.count) yield { count: u.count, x: u.x, y: u.y, z: u.z, chan: u.chan, cat, dimQ: u.dimQ, recIdx: u.recIdx, recStart: 0 };
     }
   }
 
@@ -13732,6 +13838,10 @@ export {
   openDmWireframe,
   dmPageRuns,
   readDmRun,
+  dmOpenRuns,
+  dmDiscoverRun,
+  dmDecodeRun,
+  dmPageRunner,
   parsePlyHeader,
   openPly,
   openDxf,
