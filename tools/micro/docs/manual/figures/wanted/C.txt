@@ -4,6 +4,7 @@
 # 10-color
 color-props-style | the demo project; deposit.csv active, colored by FE, clip empty (automatic), ramp viridis, breaks 20, 40, 55, 60, 65 with "classed" ticked, FE scanned so the histogram and per-class counts show; Properties panel open on the style tab | region (the properties panel, style tab, from "mode" down to the histogram and the quantiles / equal / log row)
 color-categories | the demo project; deposit.csv in Properties → style, mode "categorized", column LITO, counts filled (columns scanned), the WASTE class hidden via its eye | region (the properties panel: the column row and the class list)
+color-projection | the demo project; deposit.csv alone, colored by FE, section off, plan view orthographic, View → Projection → Max; the status line reads MIP (exact) | full
 
 # 11-sections
 sections-bar | the demo project as it opens (E–W slab on the deposit), camera facing the section (key l) | region (the second toolbar row from "Z×" to the "2D" checkbox, with a strip of the 3D view below it)

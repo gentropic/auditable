@@ -18,6 +18,7 @@
 //   --timeout-scale=1   multiply every phase timeout (a slow machine / a huge file)
 //   --headed            show the browser
 //   --dm-origin=x,y,z   a rotated Datamine model's world origin (the open's `origin`) — a file that carries none
+//   --projection=max    run the measures with the view in a projection (max | min | mean — View → Projection)
 //
 // Output: a table on stdout + JSON. Numbers are wall-clock in the page (performance.now()).
 // A private model file's results carry timings and counts only — never column names or values.
@@ -42,6 +43,7 @@ const DM_ORIGIN = arg('dm-origin', '') ? arg('dm-origin', '').split(',').map(Num
 const ONLY = new Set(arg('only', 'open,orbit,recolour,colourby,gt,swath,stats,solid').split(','));
 const COMPARE = arg('compare', null);
 const FULLRES = !has('no-fullres');
+const PROJECTION = arg('projection', null);
 const APP = BUILT ? '/micro.html' : '/tools/micro/index.html';
 const isPath = MODEL !== 'demo' && MODEL !== 'regular5m';
 const modelTag = isPath ? path.basename(MODEL).replace(/[^A-Za-z0-9._-]/g, '_') : MODEL;
@@ -129,6 +131,7 @@ function installPageHelpers() {
   };
   B.waitIdleCapture = async (timeout = 60000) => {
     const t0 = performance.now();
+    if (R.projection) return false;                       // a projection keeps no id capture (picks render live)
     while (!R.captureReady) { await raf(); if (performance.now() - t0 > timeout) return false; }
     return true;
   };
@@ -205,6 +208,12 @@ async function oneRun(runIdx, modelPath) {
     const [colA, colB] = [want[0] || cols.nums[0], want[1] || cols.nums[1] || cols.nums[0]];
     res.columns = isPath ? { numeric: cols.nums.length, used: ['#0', '#1'] } : { used: [colA, colB] };
     if (!colA) res.notes.push('no numeric column — analyses skipped');
+    // --projection: every measure below runs with the view in that projection (MIP etc.)
+    if (PROJECTION) {
+      const okP = await page.evaluate((m) => window._micro.setProjection(m), PROJECTION);
+      if (!okP) res.errors.push(`projection ${PROJECTION}: not offered by this GPU`);
+      res.projection = PROJECTION;
+    }
 
     // ── 2. orbit ──
     if (ONLY.has('orbit')) {

@@ -9159,6 +9159,154 @@ if (take()) {
   await pd.close();
 }
 
+// ── §129: PROJECTIONS — maximum / minimum / mean intensity along the line of sight
+// (View → Projection; condenser gl-mip.js). A small regular model seen ORTHOGRAPHIC
+// in plan: the projected value at each block column's centre pixel equals the
+// brute-force max / min / mean of that column's normalized grades (within the
+// target's quantization); a slab counts only its level; a filter excludes the rest;
+// a click names the record that IS the max (the min). Non-vacuous: the model's top
+// level is LOW, so the front surface and the projection disagree on most columns.
+// Then a ROTATED, SUB-BLOCKED .dm gives the same projected image as its axis-aligned
+// twin, the camera turned with it.
+if (take()) {
+  const pg = await mkPage('sm2mip');
+  const r = await pg.evaluate(async () => {
+    const M = window._micro, R = M.renderer, W = window.micro;
+    const NX = 12, NY = 8, NZ = 6, DX = 10, DY = 10, DZ = 5;
+    let s = 1234567;
+    const rnd = () => { s = (Math.imul(s, 1103515245) + 12345) >>> 0; return s / 4294967296; };
+    const val = [];                                          // record → FE (rows k, j, i: record = k·NY·NX + j·NX + i)
+    let csv = 'XC,YC,ZC,FE\n';
+    for (let k = 0; k < NZ; k++) for (let j = 0; j < NY; j++) for (let i = 0; i < NX; i++) {
+      const v = k === NZ - 1 ? +(1 + rnd() * 9).toFixed(3) : +(10 + rnd() * 90).toFixed(3);   // the top level is LOW
+      val.push(v); csv += `${1000 + i * DX + DX / 2},${2000 + j * DY + DY / 2},${300 + k * DZ + DZ / 2},${v}\n`;
+    }
+    const rec = (i, j, k) => k * NY * NX + j * NX + i;
+    const id = await M.openBlob(new Blob([csv]), 'mip.csv', 'replace', null, { throw: true });
+    const L = M.layers().find((x) => x.id === id);
+    M.setLayerColorSel(L, M.colorSelFor(L, 'FE'));
+    const settle = async () => {
+      for (let k = 0; k < 400; k++) {
+        M.requestRender(); await new Promise((z) => requestAnimationFrame(z));
+        const p = R.projection;
+        if (R.elementCount && R.accumulated === R.elementCount && (!M.projectionSupport || !p || p.exact)) break;
+      }
+      for (let k = 0; k < 3; k++) { M.requestRender(); await new Promise((z) => requestAnimationFrame(z)); }
+    };
+    await W.setView({ look: 0, elevation: 90, ortho: true, projection: null });
+    document.querySelector('#btnFit').click();
+    await settle();
+    const cv = document.querySelector('#cv'), rc = cv.getBoundingClientRect(), dpr = cv.width / rc.width;
+    // a world point → [css x, css y] and the device pixel pick() reads (GL rows, bottom-up)
+    const toCss = (w) => {
+      const o = M.frame.origin, p = [w[0] - o[0], w[1] - o[1], w[2] - o[2]], m = M.cam.state.viewProj;
+      const cx = m[0] * p[0] + m[4] * p[1] + m[8] * p[2] + m[12], cy = m[1] * p[0] + m[5] * p[1] + m[9] * p[2] + m[13], cw = m[3] * p[0] + m[7] * p[1] + m[11] * p[2] + m[15];
+      return [(cx / cw + 1) / 2 * rc.width, (1 - cy / cw) / 2 * rc.height];
+    };
+    const devOf = ([x, y]) => [Math.round(x * dpr), Math.round(cv.height - y * dpr - 1)];
+    const cols = [];
+    for (let j = 0; j < NY; j++) for (let i = 0; i < NX; i++) cols.push({ i, j, css: toCss([1000 + i * DX + DX / 2, 2000 + j * DY + DY / 2, 300 + NZ * DZ]) });
+    const [lo, hi] = R.layerChanRange(id), tOf = (v) => Math.min(1, Math.max(0, (v - lo) / (hi - lo)));
+    const screen = () => { const c = new OffscreenCanvas(cv.width, cv.height), g = c.getContext('2d'); g.drawImage(cv, 0, 0); return g.getImageData(0, 0, cv.width, cv.height).data; };
+    const rgbAt = (d, [x, y]) => { const k = ((cv.height - 1 - y) * cv.width + x) * 4; return [d[k], d[k + 1], d[k + 2]]; };
+    const front = screen();
+    const out = { support: R.projectionSupport, modes: {} };
+    for (const mode of ['max', 'min', 'mean']) {
+      if (!R.projectionSupport[mode]) { out.modes[mode] = { skipped: true }; continue; }
+      M.setProjection(mode); await settle();
+      const img = R.projectionValues(id), proj = R.projection;
+      let worst = 0, n = 0, picks = 0, pickN = 0, differ = 0;
+      const shot = screen();
+      for (const c of cols) {
+        const ts = []; for (let k = 0; k < NZ; k++) ts.push(tOf(val[rec(c.i, c.j, k)]));
+        const want = mode === 'max' ? Math.max(...ts) : mode === 'min' ? Math.min(...ts) : ts.reduce((a, b) => a + b, 0) / NZ;
+        const [x, y] = devOf(c.css), got = img.data[y * img.w + x];
+        worst = Math.max(worst, Math.abs(got - want)); n++;
+        const a = rgbAt(front, [x, y]), b = rgbAt(shot, [x, y]);
+        if (Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2]) > 30) differ++;
+        if (mode !== 'mean') {
+          const kk = ts.indexOf(want), h = R.pick(c.css[0], c.css[1], M.cam, { pointPx: +document.querySelector('#ptPx').value, blocksAsPoints: false, section: null });
+          pickN++; if (h && h.layer === id && h.rec === rec(c.i, c.j, kk)) picks++;
+        }
+      }
+      out.modes[mode] = { worst, n, picks, pickN, differ, format: img.format, exact: proj && proj.exact, status: document.querySelector('#stats').textContent.slice(0, 40) };
+    }
+    // the slab: a horizontal section around level 2 alone → that level's value, exactly
+    M.setProjection('max');
+    W.setSection({ axis: 'z', at: [1000, 2000, 300 + 2 * DZ + DZ / 2], thickness: DZ * 0.9 });
+    await settle();
+    { const img = R.projectionValues(id); let worst = 0; for (const c of cols) { const [x, y] = devOf(c.css); worst = Math.max(worst, Math.abs(img.data[y * img.w + x] - tOf(val[rec(c.i, c.j, 2)]))); } out.slab = { worst }; }
+    W.setSection(null);
+    // the filter: only 10 < FE < 50 counts — a column with none of them projects nothing
+    await M.applyBlockFilter('FE > 10 and FE < 50', L);
+    await settle();
+    { const img = R.projectionValues(id); let worst = 0, empty = 0, emptyOk = 0;
+      for (const c of cols) {
+        const ts = []; for (let k = 0; k < NZ; k++) { const v = val[rec(c.i, c.j, k)]; if (v > 10 && v < 50) ts.push(tOf(v)); }
+        const [x, y] = devOf(c.css), got = img.data[y * img.w + x];
+        if (!ts.length) { empty++; if (!(got === got)) emptyOk++; continue; }
+        worst = Math.max(worst, Math.abs(got - Math.max(...ts)));
+      }
+      out.filter = { worst, empty, emptyOk };
+    }
+    await M.applyBlockFilter('', L);
+    // the status line words, partial and exact
+    out.words = [M.projectionStatus({ projection: { mode: 'max', drawn: 5, total: 9, exact: false } }), M.projectionStatus({ projection: { mode: 'max', drawn: 9, total: 9, exact: true } })];
+    // it rides with the camera (bookmarks, scenes, the project)
+    out.view = W.view().projection;
+    M.setProjection(null); await settle();
+    out.off = { projection: R.projection, view: W.view().projection };
+    return out;
+  });
+  const fmt = (m) => (m.skipped ? 'not on this GPU' : `worst |Δt| ${m.worst.toExponential(2)} over ${m.n} columns (${m.format})${m.pickN ? `, picks ${m.picks}/${m.pickN}` : ''}, ${m.differ} columns differ from the front surface`);
+  const tolOf = (m) => (m.format === 'rgba8' ? 3e-3 : 1.5e-3);
+  for (const mode of ['max', 'min', 'mean']) {
+    const m = r.modes[mode];
+    if (mode === 'mean' && m.skipped) { console.log('note: the mean projection is not offered by this GPU (no float render targets)'); continue; }
+    chk(`projection ${mode}: per column = the brute-force ${mode} of its normalized grades — ${fmt(m)}; ${m.exact ? 'exact' : 'NOT exact'}`,
+      !m.skipped && m.n === 96 && m.worst < tolOf(m) && m.exact && (m.pickN === 0 || m.picks === m.pickN) && (mode !== 'max' || m.differ > 48));
+  }
+  chk(`projection: the status line names it (“${r.modes.max.status}…”), and says partial — N of M (“${r.words[0]}”) vs exact (“${r.words[1]}”)`,
+    /^MIP \(exact\)/.test(r.modes.max.status) && /partial — 5 of 9 drawn/.test(r.words[0]) && /exact/.test(r.words[1]));
+  chk(`projection: a slab counts only its own level (worst |Δt| ${r.slab.worst.toExponential(2)})`, r.slab.worst < 1.5e-3 * (r.modes.max.format === 'rgba8' ? 2 : 1));
+  chk(`projection: a filter excludes the rest (worst |Δt| ${r.filter.worst.toExponential(2)}; ${r.filter.emptyOk}/${r.filter.empty} columns with no match project nothing)`,
+    r.filter.worst < 3e-3 && r.filter.empty > 0 && r.filter.emptyOk === r.filter.empty);
+  chk(`projection: rides with the view (${r.view}) and goes off cleanly (${JSON.stringify(r.off)})`, r.view === 'max' && r.off.projection === null && r.off.view === null);
+  // the rotated, sub-blocked model and its axis-aligned twin: the same image, the camera turned with it
+  const tw = await pg.evaluate(async () => {
+    const M = window._micro, R = M.renderer, W = window.micro, F = await import('/test/subblock-make.mjs');
+    const { rows } = F.makeSubblockRows({ seed: 5, nx: 4, ny: 3, nz: 3 });
+    const O = [432820, 8522360, 300];
+    const settle = async () => {
+      for (let k = 0; k < 400; k++) { M.requestRender(); await new Promise((z) => requestAnimationFrame(z)); const p = R.projection; if (R.elementCount && R.accumulated === R.elementCount && p && p.exact) break; }
+      for (let k = 0; k < 3; k++) { M.requestRender(); await new Promise((z) => requestAnimationFrame(z)); }
+    };
+    const shoot = async (blob, name, look) => {
+      const id = await M.openBlob(blob, name, 'replace', null, name.endsWith('.dm') ? { throw: true, origin: O } : { throw: true });
+      const L = M.layers().find((x) => x.id === id);
+      M.setLayerColorSel(L, M.colorSelFor(L, 'V'));
+      const b = R.contentBbox(), o = M.frame.origin;
+      await W.setView({ target: [(b[0] + b[3]) / 2 + o[0], (b[1] + b[4]) / 2 + o[1], (b[2] + b[5]) / 2 + o[2]], look, elevation: 90, distance: 120, ortho: true, projection: 'max' });
+      await settle();
+      return { img: R.projectionValues(id), sub: L.docs.blockDoc.header.subBlocked, rot: !!(L.docs.blockDoc.header.grid && L.docs.blockDoc.header.grid.rot) };
+    };
+    const A = await shoot(new Blob([F.makeSubblockCsv(rows)]), 'twin.csv', 0);
+    const B = await shoot(new Blob([F.makeSubblockDm(rows, { angle1: -50 })]), 'rot.dm', 310);   // ANGLE1 −50 turns the model 50° counter-clockwise: so does the view
+    let both = 0, either = 0, agree = 0;
+    const seen = new Set();
+    for (let i = 0; i < A.img.data.length; i++) {
+      const a = A.img.data[i], b = B.img.data[i], ha = a === a, hb = b === b;
+      if (ha || hb) either++;
+      if (ha && hb) { both++; if (Math.abs(a - b) < 2e-3) agree++; seen.add(Math.round(a * 1000)); }
+    }
+    M.setProjection(null);
+    return { both, either, agree, distinct: seen.size, sub: [A.sub, B.sub], rot: [A.rot, B.rot], w: A.img.w, h: A.img.h };
+  });
+  chk(`projection: a rotated, sub-blocked model projects as its axis-aligned twin, the camera turned with it — ${tw.agree}/${tw.both} pixels agree (${tw.distinct} distinct values), ${tw.both}/${tw.either} hit by both, ${(100 * tw.either / (tw.w * tw.h)).toFixed(0)}% of the view (sub-blocked ${tw.sub}, rotated ${tw.rot})`,
+    tw.sub[0] && tw.sub[1] && !tw.rot[0] && tw.rot[1] && tw.both > 0.2 * tw.w * tw.h && tw.distinct > 50 && tw.both / tw.either > 0.98 && tw.agree / tw.both > 0.98);
+  await pg.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

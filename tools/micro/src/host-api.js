@@ -222,7 +222,8 @@ export function createHostApi(d) {
     setSection: verb((o) => d.setSectionWorld(o)),
 
     // ── view ──
-    // view() → { target: [x,y,z] world, look (bearing looked toward, °), elevation (°, 90 = plan), distance, ortho, zExag }
+    // view() → { target: [x,y,z] world, look (bearing looked toward, °), elevation (°, 90 = plan), distance, ortho, zExag,
+    //           projection: null | 'max' | 'min' | 'mean' } — setView takes the same (omitted parts keep their value)
     view: () => d.cameraWorld(),
     setView: verb((v) => d.setCameraWorld(v || {})),
     // a figure of the current view as a PNG Blob, rendered to convergence, with

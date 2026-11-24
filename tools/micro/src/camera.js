@@ -11,7 +11,9 @@ export const PHI_MAX = Math.PI / 2 - 0.02;
 // the view as plain data: where it looks (world), from how far and which way
 export function captureCamera() {
   const st = S.cam.state, o = S.frame ? S.frame.origin : [0, 0, 0];
-  return { target: [st.target[0] + o[0], st.target[1] + o[1], st.target[2] + o[2]], radius: st.radius, theta: st.theta, phi: st.phi, ortho: !!st.ortho, zExag: st.zExag || 1 };
+  const c = { target: [st.target[0] + o[0], st.target[1] + o[1], st.target[2] + o[2]], radius: st.radius, theta: st.theta, phi: st.phi, ortho: !!st.ortho, zExag: st.zExag || 1 };
+  if (S.projection) c.projection = S.projection;           // a max/min/mean projection (src/projection.js) is part of the view
+  return c;
 }
 export function applyCamera(c) {
   if (!c) return;
@@ -20,6 +22,10 @@ export function applyCamera(c) {
   st.radius = c.radius; st.theta = c.theta; st.phi = c.phi;
   S.cam.setOrtho(!!c.ortho);
   st.zExag = c.zExag || 1; if ($('#zExag')) $('#zExag').value = st.zExag;   // vertical exaggeration rides with the view (bookmarks/scenes/figure recipes)
+  // …and so does the projection: a view saved without one is the front surface
+  const pm = ['max', 'min', 'mean'].includes(c.projection) ? c.projection : null;
+  if (pm && S.renderer && !(S.renderer.projectionSupport || {})[pm]) S.projection = null;   // not on this GPU (a mean saved elsewhere)
+  else S.projection = pm;
   S.cam.update(); requestRender();
 }
 // vertical exaggeration — a GLOBAL scene z-scale (camera-level, all layers registered)

@@ -225,6 +225,60 @@ A few display settings are not about color, yet they decide how well it reads.
 
 The \ui{EDL} checkbox and its \ui{strength} slider control the shading that makes a point cloud read as a surface, eye-dome lighting \parencite{boucheny2009}, and \ui{budget} sets how many elements are drawn per frame: lower is snappier while you move, and the picture converges when you stop.
 
+\section{Projections: the highest grade through the model}\label{sec:color-projection}
+A block model drawn normally shows you its \emph{surface}: the blocks nearest the eye, with everything behind them hidden. A \term{maximum intensity projection}\index{projection!maximum (MIP)} (MIP) answers a different question: where are the high grades, \emph{anywhere} along the line of sight? For every pixel micro takes all the blocks the ray passes through, keeps the highest value, and colors the pixel with it through the layer's own ramp. Occlusion is ignored; a high-grade lens buried in the middle of the deposit shows through a low-grade cap.
+
+Turn it on with \menu{View>Projection}, or type \code{projection} in the palette (\key{⌘K}). There are three:
+
+\begin{description}
+\item[Max] the highest value along each line of sight (MIP). Where is the best rock?
+\item[Min] the lowest\index{projection!minimum}. Where is the waste, or a dilution problem, even behind good blocks?
+\item[Mean] the average of every block the ray crosses\index{projection!mean}. A quick, occlusion-free look at how a grade is spread through the volume. It needs floating-point render targets, which almost every graphics card has; where one doesn't, the menu says so and \ui{Mean} is not offered.
+\end{description}
+
+\shot{color-projection}{The demo deposit in plan, orthographic, under \menu{View>Projection>Max}. Every pixel is the highest \col{FE} of the blocks beneath it, so the ore lens shows through the low-grade rock above it.}
+
+\menu{View>Projection>Off} returns to the surface. The projection is part of the view: a bookmark, a scene, the project and a composer frame all remember it (\cref{sec:sections-scenes,ch:composer}).
+
+\subsection{What projects, and what counts}
+A projection applies to every visible block model and point cloud that is colored by a \emph{numeric} column — continuous or classed, the same ramp and the same clip. A layer colored by category, by rule, by RGB or by elevation draws normally: a lithology has no maximum, and the maximum elevation along a vertical ray is just the top of the model. Meshes and drillholes also draw normally, underneath the projection; hide a layer if you want to see what it covers.
+
+The projection respects everything that decides what is drawn:
+\begin{itemize}
+\item \textbf{A section slab} keeps only the blocks inside it. A horizontal slab one bench thick is the best grade \emph{on that bench}; step it with \key{,} and \key{.} (\cref{ch:sections}) and you walk the benches, each one a plan of its own best grade. A vertical slab is the best grade within that much of the section.
+\item \textbf{A filter} keeps only its matches, whether it isolates or dims (\cref{ch:filter}). \code{LITO = "HEMATITE"} with \ui{Max} is the best hematite grade through the model.
+\item \textbf{The clip} sets the ramp's range, as in the normal view: a value above the clip draws in the top color. A hidden class does not count.
+\item \textbf{Blanks} never count. A blank is unestimated (\cref{sec:color-nodata}), so it is not the minimum and it does not pull a mean down. A pixel where nothing counts stays empty, which is different from a value at the bottom of the ramp.
+\end{itemize}
+
+Eye-dome lighting is off while a projection is on, because the picture has no depth for it to shade. The selection's gold wash and the magenta highlight of a picked block are not drawn on a projected layer.
+
+\subsection{Picking in a projection}
+A click names the block that \emph{is} the pixel's value: under \ui{Max}, the block with the highest grade along that ray, wherever it sits — not the one in front. Under \ui{Min}, the lowest; under \ui{Mean}, the block whose value is nearest the mean, since no single block is the mean. The record panel opens on that block as usual. Rectangle and lasso selections still work on what is in front, or, with select-through, on everything inside the shape (\cref{ch:picking}).
+
+\subsection{Partial and exact}
+micro draws a large model a budget of blocks at a time and lets the picture converge when you stop moving (\cref{sec:color-draw}). A projection converges the same way. While you orbit, only part of the model has been drawn, so a pixel shows the highest value \emph{among the blocks drawn so far}: a good preview, but not yet the answer. The status line says which:
+
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+\code{MIP (partial — 412,000 of 1.8M drawn)} & still filling in \\
+\code{MIP (exact)} & every block on screen has counted \\ \bottomrule
+\end{tabularx}
+\end{center}
+
+Wait for \code{exact} before you read a value off the picture or export a figure from it; an exported figure is always rendered to convergence, so it is exact (\cref{ch:figures}). On most graphics cards the projected value is kept in half-precision floating point, a few parts in ten thousand of the ramp's range; a card without floating-point render targets keeps it in 256 levels, which the status line notes when you turn the projection on. Either is finer than the ramp has colors.
+
+\begin{tryit}
+With the demo project open:
+\begin{enumerate}
+\item In the layers panel, hide everything but \file{deposit.csv}, and color it by \col{FE}.
+\item Press \key{d} for a plan view and \key{o} for orthographic.
+\item Choose \menu{View>Projection>Max — the highest value along each line of sight}. The ore lens appears through the low-grade cap as a bright core; the status line reads \code{MIP (exact)} once the picture settles.
+\item Click the brightest pixel. The record panel shows the block holding that grade, and its \col{ZC} tells you how deep it is.
+\item Set \ui{section} to \ui{plan} with a thin slab, and press \key{.} a few times: each step is the best grade on one bench.
+\end{enumerate}
+\end{tryit}
+
 \section{Reusing a look}\label{sec:color-copy}
 Once the classes, colors and no-data choices are right on one layer, you should not have to build them again. Right-click the layer and open \menu{Style}:
 

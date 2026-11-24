@@ -207,4 +207,31 @@ export const SCENES = {
       m.closeAllWindows(); L.calcCols = (L.calcCols || []).filter((c) => c.name !== 'DENS'); L._calcFns = null;
     }, prev) };
   },
+
+  // the deposit alone, in plan, orthographic, under View → Projection → Max: the lens through the cap
+  'color-projection': async (h) => {
+    const v = await saveView(h);
+    const prev = await h.ev(() => {
+      const m = window._micro, keep = m.layers().find((x) => x.name === 'deposit.csv');
+      const vis = m.layers().map((L) => [L.id, L.visible !== false]);
+      for (const L of m.layers()) { const on = L === keep; L.visible = on; m.renderer.setLayerVisible(L.id, on); }
+      m.applyTreeVisibility(); m.renderLayers();
+      m.setActiveLayer(keep.id);
+      const ortho = !!m.cam.state.ortho;
+      return { vis, ortho };
+    });
+    await setSec(h, 'secMode', 'off');
+    await h.ev(() => window.micro.setView({ look: 0, elevation: 90, ortho: true }));
+    await h.fit(); await h.p.waitForTimeout(400);
+    await h.ev(() => window._micro.setProjection('max'));
+    return { wait: 2500, after: async () => {
+      await h.ev((pv) => {
+        const m = window._micro;
+        m.setProjection(null);
+        for (const [id, on] of pv.vis) { const L = m.layers().find((x) => x.id === id); if (L) { L.visible = on; m.renderer.setLayerVisible(id, on); } }
+        m.applyTreeVisibility(); m.renderLayers(); m.cam.setOrtho(pv.ortho);
+      }, prev);
+      await restoreView(h, v);
+    } };
+  },
 };
