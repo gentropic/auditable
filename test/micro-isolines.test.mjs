@@ -76,3 +76,38 @@ test('levels: base + k · interval across the range; a silly interval refused', 
   assert.deepEqual(contourLevels(3, 2, 1), []);
   assert.throws(() => contourLevels(0, 1e6, 1), /bigger interval/);
 });
+
+// ── slope and aspect (grid-ops.js slopeAspect: Horn's gradient, the downhill azimuth) ──
+import { slopeAspect } from '../tools/micro/src/grid-ops.js';
+const DEG = 180 / Math.PI;
+
+test('slope / aspect of a plane: the same at EVERY node, edges included (one-sided there, not halved)', () => {
+  const g = grid(11, 9, (x, y) => 500 + 0.04 * x + 0.02 * y, { x0: 0, y0: 80, dx: 10 });
+  const r = slopeAspect(g), slope = Math.atan(Math.hypot(0.04, 0.02)) * DEG, aspect = (Math.atan2(-0.04, -0.02) * DEG + 360) % 360;
+  for (let k = 0; k < g.nx * g.ny; k++) { near(r.slope[k], slope, 5e-4, `slope at node ${k}`); near(r.aspect[k], aspect, 5e-3, `aspect at node ${k}`); }
+});
+
+test('a plane dipping 45° due east: slope 45, aspect 90; due north-facing 30°: aspect 0', () => {
+  const e = slopeAspect(grid(7, 7, (x) => 500 - x));
+  near(e.slope[24], 45, 1e-9, 'slope'); near(e.aspect[24], 90, 1e-9, 'aspect');
+  const n = slopeAspect(grid(7, 7, (x, y) => 500 - Math.tan(30 / DEG) * y));
+  near(n.slope[24], 30, 1e-3, 'slope (float32 elevations)'); near(n.aspect[24] % 360, 0, 1e-9, 'aspect (downhill = north)');
+});
+
+test('flat ground: slope 0 and NO aspect; a nodata neighbour: nothing', () => {
+  const f = slopeAspect(grid(5, 5, () => 500));
+  assert.equal(f.slope[12], 0); assert.equal(f.aspect[12], f.nodata);
+  const g = grid(5, 5, (x) => x); g.data[12] = -9999;
+  const r = slopeAspect(g);
+  for (const k of [6, 7, 8, 11, 12, 13, 16, 17, 18]) assert.equal(r.slope[k], r.nodata, `node ${k} touches the hole`);
+  near(r.slope[0], 45, 1e-9, 'a corner far from it');
+});
+
+test('a ROTATED placed grid: the slope unchanged, the aspect turned by its rotation', () => {
+  const th = 30 / DEG, c = Math.cos(th), s = Math.sin(th);
+  // in its own frame the grid falls toward +u; u points 30° counter-clockwise from east = azimuth 60°
+  const g = { ...grid(7, 7, (u) => 500 - u), place: { R: [c, s, 0, -s, c, 0, 0, 0, 1], t: [600000, 7700000, 0], s: 1 } };
+  const r = slopeAspect(g);
+  near(r.slope[24], 45, 1e-9, 'slope');
+  near(r.aspect[24], 60, 1e-9, 'aspect: downhill along u = azimuth 60');
+});

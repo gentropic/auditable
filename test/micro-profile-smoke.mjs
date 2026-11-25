@@ -83,6 +83,10 @@ try {
     const meet = await M.runTool('intersection', { a: 'topo.asc', b: 'level505.asc' });
     const ML = M.layers().find((x) => x.name === meet.layers[0]);
     out.meet = { values: meet.values, lines: M.featuresOf(ML).map((f) => f.rings[0].map((q) => q.slice(0, 3))) };
+    // §6 slope and aspect of the topography plane: uniform, two surface layers on their ramps
+    const sa = await M.runTool('slopeaspect', { grid: 'topo.asc' });
+    const SL = sa.layers.map((n) => M.layers().find((x) => x.name === n));
+    out.slope = { values: sa.values, layers: sa.layers, surfaces: SL.map((x) => !!(x && x.gridSurface)), presets: SL.map((x) => x && x.ramps && Object.values(x.ramps)[0] && Object.values(x.ramps)[0].preset) };
     // the window, from the palette: Run → a chart
     M.COMMANDS.find((c) => c.id === 'profile').run({ L: null });
     const w = document.querySelector('.fwin[data-profile]');
@@ -131,6 +135,12 @@ try {
   const worstM5 = Math.max(...mpts.map((q) => Math.abs(0.04 * (q[0] - E0) + 0.02 * (q[1] - N0) - 5)), ...mpts.map((q) => Math.abs(q[2] - 505)));
   chk(`where the topography meets a flat grid at 505 m: ${r.meet.values.lines} line (${r.meet.values.length.toFixed(1)} m), every vertex on 0.04·x′ + 0.02·y′ = 5 at z 505 (worst ${worstM5.toExponential(2)})`,
     r.meet.values.lines === 1 && mpts.length >= 2 && worstM5 < 1e-3);
+  // §6 slope and aspect
+  const SLOPE = Math.atan(Math.hypot(0.04, 0.02)) * 180 / Math.PI, ASPECT = (Math.atan2(-0.04, -0.02) * 180 / Math.PI + 360) % 360;
+  const sv = r.slope.values;
+  chk(`slope and aspect of the topography plane: slope ${sv['slope min'].toFixed(4)}–${sv['slope max'].toFixed(4)}° (= ${SLOPE.toFixed(4)}), aspect ${sv['aspect min'].toFixed(3)}–${sv['aspect max'].toFixed(3)}° (= ${ASPECT.toFixed(3)}), as surfaces ${JSON.stringify(r.slope.surfaces)} on ${JSON.stringify(r.slope.presets)}`,
+    Math.abs(sv['slope min'] - SLOPE) < 1e-3 && Math.abs(sv['slope max'] - SLOPE) < 1e-3 && Math.abs(sv['aspect min'] - ASPECT) < 1e-2 && Math.abs(sv['aspect max'] - ASPECT) < 1e-2
+    && r.slope.layers.length === 2 && r.slope.surfaces.every(Boolean));
   // §3 the window
   chk(`the window (palette): Run → a chart of the surfaces (${r.win.spec}) and a readout (“${r.win.readout.slice(0, 70)}”); its recipe is the tool's (${r.win.recipe && r.win.recipe.tool})`,
     r.win.spec && /length/.test(r.win.readout) && r.win.recipe && r.win.recipe.tool === 'profile' && r.win.recipe.params.surfaces.length >= 2);

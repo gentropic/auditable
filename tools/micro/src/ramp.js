@@ -27,9 +27,12 @@ export const RAMP_PRESETS = {
   // ColorBrewer RdBu (7, reversed: low blue → high red). White sits exactly at
   // the middle, so a range symmetric about 0 centres a difference on zero
   rdbu: [[33, 102, 172], [103, 169, 207], [209, 229, 240], [247, 247, 247], [253, 219, 199], [239, 138, 98], [178, 24, 43]],
+  // CYCLIC — it ends on the colour it starts with, so 0° and 360° read the same (an aspect, a dip
+  // direction, a bearing): N red · E yellow · S teal / blue · W violet · N red
+  aspect: [[215, 48, 39], [253, 174, 97], [166, 217, 106], [43, 160, 160], [69, 117, 180], [140, 81, 160], [215, 48, 39]],
 };
 // what each palette is for, as the host API lists them (palettes())
-export const RAMP_KIND = { viridis: 'sequential', magma: 'sequential', turbo: 'sequential', greys: 'sequential', spectral: 'diverging', rdbu: 'diverging' };
+export const RAMP_KIND = { viridis: 'sequential', magma: 'sequential', turbo: 'sequential', greys: 'sequential', spectral: 'diverging', rdbu: 'diverging', aspect: 'cyclic' };
 export function rampSample(stops, t) {
   const x = Math.max(0, Math.min(1, t)) * (stops.length - 1);
   const k = Math.min(stops.length - 2, x | 0), f = x - k;

@@ -9,7 +9,11 @@
 // export as DXF / shapefile / WKT-CSV, to profile, or to use as a limit (a closed ring has an inside).
 //   contoursToLayer(L, { interval, base, index, min, max, name }) → { id, name, lines, levels, … }
 import { S, layerById } from './state.js';
-import { isolines, contourLevels, gridWorldBbox4, commonSurfaceLattice, surfaceFromGrid } from './grid-ops.js';
+import { isolines, contourLevels, gridWorldBbox4, commonSurfaceLattice, surfaceFromGrid, slopeAspect } from './grid-ops.js';
+import { gridLayerFile } from './grid-export.js';
+import { openBlob } from './open.js';
+import { setRampCfg } from './ramp.js';
+import { rebuildSurface } from './surfaces.js';
 import { gridOnLattice, surfaceableLayers } from './gridtools.js';
 import { latticeOf } from './cutfill.js';
 import { residentGridForEval } from './bygeom.js';
@@ -166,6 +170,36 @@ export function openIntersection(L0 = null) {
   return win;
 }
 
+// ── SLOPE and ASPECT grids (grid-ops.js slopeAspect: Horn's gradient; aspect = the downhill azimuth) ──
+// Two grid layers on the source grid's own nodes, shown as coloured sheets just above it — slope
+// in degrees (magma), aspect on the cyclic ramp (north and 360° the same colour), flat nodes empty.
+export async function slopeAspectLayers(L, { what = 'both', name = null } = {}) {
+  if (!isGridLayer(L)) throw new Error(`slope / aspect: “${nameOf(L)}” is not a grid`);
+  const g = await residentGridForEval(L, gridWorldBbox4(L.docs.gridDoc.grid));
+  const r = slopeAspect(g), rng = gridRange(g), out = [];
+  const base = (name || nameOf(L)).replace(/\.[^.]+$/, '').replace(/[\\/:*?"<>|\s]+/g, '_');
+  const flatZ = rng ? +(rng[1] + Math.max(1, g.dx * (g.place ? g.place.s : 1))).toFixed(3) : 0;
+  for (const [kind, data, preset, range] of [['slope', r.slope, 'magma', null], ['aspect', r.aspect, 'aspect', [0, 360]]]) {
+    if (what !== 'both' && what !== kind) continue;
+    const grid = { nx: g.nx, ny: g.ny, x0: g.x0, y0: g.y0, dx: g.dx, dy: g.dy || g.dx, data, nodata: r.nodata, crs: g.crs || null, form: kind, ...(g.place ? { place: g.place } : {}) };
+    const nm = `${kind}_${base}`;
+    const gf = await gridLayerFile(grid, nm);             // .asc, or a GeoTIFF keeping a rotated grid's rotation
+    replaceMade(gf.name);
+    const lin = mkLineage(kind, { grid: L.name, method: 'horn 3x3', units: kind === 'slope' ? 'degrees from horizontal' : 'degrees clockwise from north, downhill' }, [L.lineage].filter(Boolean));
+    const id = await openBlob(new File([gf.blob], gf.name), gf.name, 'add', null, { lineage: lin, asKind: 'surface', flatZ });
+    const G = id != null ? layerById(id) : null;
+    if (G) {
+      G.memoryOnly = true;
+      if (range) G.surfaceRange = range;                    // aspect: the whole circle, so the colours wrap
+      setRampCfg(G, { preset });
+      rebuildSurface(G);
+    }
+    let lo = Infinity, hi = -Infinity, n = 0; for (const v of data) if (v !== r.nodata) { n++; if (v < lo) lo = v; if (v > hi) hi = v; }
+    out.push({ kind, id, name: gf.name, nodes: n, min: n ? lo : null, max: n ? hi : null });
+  }
+  return { layers: out, grid: L.name };
+}
+
 // ── the dialog ──
 let _win = null;
 export function openContours(L0 = null) {
@@ -250,10 +284,27 @@ registerTool('intersection', {
   shape(r, p) { return { table: null, values: { lines: r.lines, closed: r.closed, length: r.length, cell: r.cell }, layers: [r.name], resolved: { ...p, cell: r.cell }, warnings: [] }; },
 });
 
+registerTool('slopeaspect', {
+  label: 'slope / aspect', cache: false, makes: 'layer',
+  params: {
+    grid: { type: 'layer', required: true, kinds: ['grid'], doc: 'the grid (a DEM)' },
+    what: { type: 'enum', values: ['both', 'slope', 'aspect'], default: 'both', doc: 'which grid(s) to make' },
+    name: { type: 'string', doc: 'the base of the new layers’ names (default the grid’s): slope_<name>, aspect_<name>' },
+  },
+  outputs: { key: ['kind'] },
+  async scan(p) { const L = layerNamed(p.grid); if (!L) throw new Error(`slope / aspect: no layer “${p.grid}”`); return slopeAspectLayers(L, { what: p.what || 'both', name: p.name || null }); },
+  shape(r, p) {
+    return { table: { columns: ['kind', 'nodes', 'min', 'max'], key: ['kind'], rows: r.layers.map((x) => [x.kind, x.nodes, x.min, x.max]), units: { min: '°', max: '°' } },
+      values: Object.fromEntries(r.layers.flatMap((x) => [[`${x.kind} min`, x.min], [`${x.kind} max`, x.max]])), layers: r.layers.map((x) => x.name), resolved: { ...p }, warnings: [] };
+  },
+});
+
 // ── palette + the grid's Geometry menu ──
 registerCommands([
   { id: 'intersection', group: 'Analyse', title: 'Intersection of two surfaces → strings…', kw: 'intersection meet daylight toe crest line where two surfaces cross pit design topography contact fault', when: () => surfaceableLayers().length >= 2, run: (c) => openIntersection(c.L) },
+  { id: 'slopeaspect', group: 'Analyse', title: 'Slope and aspect grids…', kw: 'slope aspect gradient steepness facing direction declividade orientacao dem terrain', when: () => contourableLayers().length > 0, run: (c) => { const L = c.L && isGridLayer(c.L) ? c.L : contourableLayers()[0]; slopeAspectLayers(L).then((r) => { $('#meta').textContent = `slope / aspect of ${nameOf(L)}: ${r.layers.map((x) => x.name).join(', ')}`; }).catch((e) => { $('#meta').textContent = e.message; }); } },
   { id: 'contours', group: 'Analyse', title: 'Contours → strings…', kw: 'contours contour isolines curvas de nivel topography elevation lines dem grid index', when: () => contourableLayers().length > 0, run: (c) => openContours(c.L) },
 ]);
-contributeLayerMenu('geometry', (L) => (isGridLayer(L) && !L.viewOf ? [{ label: 'Contours → strings…', action: () => openContours(L) }] : []));
+contributeLayerMenu('geometry', (L) => (isGridLayer(L) && !L.viewOf ? [{ label: 'Contours → strings…', action: () => openContours(L) },
+  { label: 'Slope and aspect grids', action: () => slopeAspectLayers(L).then((r) => { $('#meta').textContent = `slope / aspect of ${nameOf(L)}: ${r.layers.map((x) => x.name).join(', ')}`; }).catch((e) => { $('#meta').textContent = e.message; }) }] : []));
 contributeLayerMenu('geometry', (L) => (!L.viewOf && surfaceableLayers().includes(L) && surfaceableLayers().length >= 2 ? [{ label: 'Intersection with another surface → strings…', action: () => openIntersection(L) }] : []));

@@ -479,3 +479,34 @@ export function contourLevels(lo, hi, interval, base = 0) {
   for (let k = k0; k <= k1; k++) out.push(+(base + k * interval).toFixed(10));
   return out;
 }
+
+// ── SLOPE and ASPECT of a grid (src/contours.js makes them layers). Horn's 3 × 3 gradient on the
+// nodes (an edge node takes its own value for the neighbour it lacks); a node with a nodata
+// neighbour — or nodata itself — is nodata. slope: degrees from horizontal; aspect: the DOWNHILL
+// azimuth, degrees clockwise from north, nodata where the node is flat. A placed grid: computed in
+// its own frame (a similarity — the slope doesn't change), the aspect turned by its rotation.
+//   slopeAspect(g) → { slope: Float32Array, aspect: Float32Array, nodata }
+export function slopeAspect(g) {
+  const { nx, ny } = g, dx = g.dx, dy = g.dy || g.dx, nod = g.nodata != null ? g.nodata : -9999;
+  const isBad = (v) => Number.isNaN(v) || (g.nodata != null && (g.nodata >= 1.7e38 ? v >= 1.7014e38 : v === g.nodata));
+  const N = nx * ny, slope = new Float32Array(N).fill(nod), aspect = new Float32Array(N).fill(nod);
+  const turn = g.place ? Math.atan2(g.place.R[1], g.place.R[0]) * 180 / Math.PI : 0;   // the lattice's u axis, from east, counter-clockwise
+  const at = (r, c) => g.data[Math.min(ny - 1, Math.max(0, r)) * nx + Math.min(nx - 1, Math.max(0, c))];
+  for (let r = 0; r < ny; r++) for (let c = 0; c < nx; c++) {
+    const a = at(r - 1, c - 1), b = at(r - 1, c), cc = at(r - 1, c + 1), d = at(r, c - 1), e = at(r, c), f = at(r, c + 1), gg = at(r + 1, c - 1), h = at(r + 1, c), i = at(r + 1, c + 1);
+    if ([a, b, cc, d, e, f, gg, h, i].some(isBad)) continue;
+    // rows go SOUTH as r grows: north is the row above. The span is what the neighbours really cover —
+    // two cells inside, one on an edge (where the missing side is the node itself): a one-sided
+    // difference there, not a halved one
+    const spanX = (Math.min(nx - 1, c + 1) - Math.max(0, c - 1)) * dx, spanY = (Math.min(ny - 1, r + 1) - Math.max(0, r - 1)) * dy;
+    const dzdx = ((cc + 2 * f + i) - (a + 2 * d + gg)) / (4 * spanX);
+    const dzdn = ((a + 2 * b + cc) - (gg + 2 * h + i)) / (4 * spanY);
+    const k = r * nx + c;
+    slope[k] = Math.atan(Math.hypot(dzdx, dzdn)) * 180 / Math.PI;
+    if (dzdx === 0 && dzdn === 0) continue;                 // flat: no direction
+    // downhill = −gradient; azimuth from north, clockwise; then the lattice's own turn
+    const az = Math.atan2(-dzdx, -dzdn) * 180 / Math.PI - turn;
+    aspect[k] = ((az % 360) + 360) % 360;
+  }
+  return { slope, aspect, nodata: nod };
+}
