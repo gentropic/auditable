@@ -4256,10 +4256,14 @@ if (take()) {
     const id = await M.openBlob(new File([s], 'cx.csv'), 'cx.csv', 'replace');
     const L = M.layers().find((q) => q.id === id);
     const clickWhileRunning = async (start) => {
-      const p = start();
+      // click the moment the button shows: a MutationObserver fires as a microtask at the
+      // job's first await after unhiding it, where polling on timers could miss a fast job
       let seen = false;
-      for (let n = 0; n < 200 && !seen; n++) { await new Promise((z) => setTimeout(z, 1)); if (!b.hidden) { seen = true; b.click(); } }
+      const mo = new MutationObserver(() => { if (!seen && !b.hidden) { seen = true; b.click(); } });
+      mo.observe(b, { attributes: true, attributeFilter: ['hidden'] });
+      const p = start();
       const ret = await p;
+      mo.disconnect();
       return { seen, ret, meta: document.querySelector('#meta').textContent, hiddenAfter: b.hidden };
     };
     window._lastExport = null;
