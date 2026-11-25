@@ -53,6 +53,8 @@ job('polygons', 'micro-polygons-smoke.mjs');    // strings & polygons: readers (
 job('polygons built', 'micro-polygons-smoke.mjs', '--built');
 job('polylimit', 'micro-polylimit-smoke.mjs');  // polygons as limits (GT / stats / swath / cut-fill / DEM) + extrusion to solids (z-range, oriented, between surfaces) into by-solid
 job('polylimit built', 'micro-polylimit-smoke.mjs', '--built');
+job('wave6', 'micro-wave6-smoke.mjs');         // section lines as strings (meshes, grids, domain boundaries) + bench outlines from blocks (marching squares, rotated / sub-blocked), DXF / shapefile round trips
+job('wave6 built', 'micro-wave6-smoke.mjs', '--built');
 job('nl', 'micro-nl-smoke.mjs');               // the plain-language bar: wiring + propose-never-act (accuracy: test/micro-nl.test.mjs)
 const todo = ONLY.length ? jobs.filter((j) => ONLY.some((o) => j.name.includes(o))) : jobs;
 if (has('list')) { for (const j of todo) console.log(`${j.name.padEnd(20)} node ${j.argv.join(' ')}`); process.exit(0); }
