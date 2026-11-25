@@ -98,7 +98,8 @@ export async function rePlaceLayer(L) {
   const sel = L._selMask && L._selCount ? L._selMask : null, filterExpr = L.filterExpr, vis = L.visible;
   // a lone layer moved far (a mine grid → UTM) re-plants the scene's frame on its new place, so
   // nothing is drawn in float32 millions of metres from the origin
-  const alone = S.layers.filter((x) => x.viewOf == null).length === 1;
+  // (not a grid shown as a surface: its relief is built against the frame before the frame is planted)
+  const alone = S.layers.filter((x) => x.viewOf == null).length === 1 && !(d.gridDoc && L.gridSurface);
   if (alone) S.frame = null;
   const first = alone;
   if (d.blockDoc) {

@@ -89,6 +89,7 @@ export async function gridPointCloud(L, opts = {}) {
   const lim = opts.limit ? resolveLimit(opts.limit) : null;
   let geom = pcGridGeom(L, opts);
   if (lim) {
+    if (geom.place) throw new Error('a limit on a ROTATED matched lattice is not supported yet — leave "match" empty (the lattice is then axis-aligned)');
     const P0 = preparePolygons(lim.features);
     geom = clipGridLattice(geom, P0.bbox);
     if (!geom) throw new Error(`the limit (${limitLabel(opts.limit)}) doesn't overlap ${nameOf(L)}'s lattice`);
