@@ -309,6 +309,56 @@ try {
   chk(`ESRI ASCII refuses it with the reason (“${r4.ascErr.slice(0, 60)}…”), or resamples when asked (“${(r4.ascNotes.find((x) => /resampled/.test(x)) || '').slice(0, 50)}…”)`, /no rotation terms/.test(r4.ascErr) && r4.ascNotes.some((x) => /axis-aligned/.test(x)));
   await p4.close();
 
+  // ═══ §4b placement edges (commit 125f627a had no test — the 2026-11-25 sweep) ═══
+  // a polygon limit on a ROTATED matched lattice is refused with the reason; a lone layer moved far
+  // re-plants the scene's frame on its new place; a lone grid shown as a SURFACE keeps the frame
+  // (its relief is built against it) and is still picked where it is drawn after the move
+  const p4b = await mkPage();
+  const r4b = await evaluateSettled(p4b, async ({ TIF_ROT, TIF_TWIN, PTS_CSV_W }) => {
+    const M = window._micro, Pl = window._microPlacement, out = {};
+    await M.openBlob(new File([new Uint8Array(TIF_ROT)], 'rot.tif'), 'rot.tif', 'replace', null, { throw: true });
+    await M.openBlob(new File([PTS_CSV_W], 'pts.csv'), 'pts.csv', 'add', null, { throw: true, asKind: 'points' });
+    const LIM = 'NAME\tWKT\npit\tPOLYGON ((600050 7699900, 600150 7699900, 600150 7700000, 600050 7700000, 600050 7699900))\n';
+    await M.openBlob(new File([LIM], 'lim.csv'), 'lim.csv', 'add', null, { throw: true });
+    try { await M.runTool('pcgrid', { layer: 'pts.csv', match: 'rot.tif', limit: { layer: 'lim.csv' } }); out.limErr = 'ran'; } catch (e) { out.limErr = e.message; }
+    // a lone block model in mine-grid coordinates, placed into UTM
+    let csv = 'XC,YC,ZC,AU\n';
+    for (let j = 0; j < 10; j++) for (let i = 0; i < 10; i++) csv += `${5 + 10 * i},${5 + 10 * j},405,${i + j}\n`;
+    const bid = await M.openBlob(new File([csv], 'mine.csv'), 'mine.csv', 'replace', null, { throw: true });
+    const B = M.layers().find((x) => x.id === bid), f0 = M.frame.origin.slice();
+    await Pl.setLayerPlacement(B, { tx: 500000, ty: 7000000, source: 'typed' });
+    out.blocks = { before: f0, after: M.frame.origin.slice(), row0: (await M.fetchLayerRow(M.layers().find((x) => x.id === bid), 0)).slice(0, 2).map(Number) };
+    // a lone grid as a SURFACE, placed: the frame stays; a click where it is drawn lands on it
+    const sid = await M.openBlob(new File([new Uint8Array(TIF_TWIN)], 'surf.tif'), 'surf.tif', 'replace', null, { throw: true, asKind: 'surface' });
+    const G = M.layers().find((x) => x.id === sid), g0 = M.frame.origin.slice();
+    const cv = document.querySelector('#cv');
+    await window.micro.look('plan'); await window.micro.fit(); await new Promise((res) => setTimeout(res, 300));
+    out.control = await window.micro.worldAt((() => { const rect = cv.getBoundingClientRect(); return [rect.width / 2, rect.height / 2]; })());   // before the move: the middle of the view
+    await Pl.setLayerPlacement(G, { tx: 1000, ty: 2000, source: 'typed' });
+    await window.micro.look('plan'); await window.micro.fit();
+    await new Promise((res) => setTimeout(res, 300));
+    out.controlAfter = await window.micro.worldAt((() => { const rect = cv.getBoundingClientRect(); return [rect.width / 2, rect.height / 2]; })());
+    const proj = (w) => {
+      const rect = cv.getBoundingClientRect(), st = M.cam.state, o = M.frame.origin, q = [w[0] - o[0], w[1] - o[1], w[2] - o[2]], V = st.viewProj;
+      const xx = V[0] * q[0] + V[4] * q[1] + V[8] * q[2] + V[12], yy = V[1] * q[0] + V[5] * q[1] + V[9] * q[2] + V[13], ww = V[3] * q[0] + V[7] * q[1] + V[11] * q[2] + V[15];
+      return [(xx / ww + 1) / 2 * rect.width, (1 - yy / ww) / 2 * rect.height];
+    };
+    const c = [1000 + 100, 2000 - 75, 500];                  // the twin's middle (u 100, v −75), placed
+    const hit = await window.micro.worldAt(proj(c));
+    out.surf = { before: g0, after: M.frame.origin.slice(), hit: hit && hit.world, layer: hit && hit.layer === sid, control: out.control && out.control.world, controlAfter: out.controlAfter && out.controlAfter.world, bbox: M.layers().find((x) => x.id === sid).bboxLocal && Array.from(M.layers().find((x) => x.id === sid).bboxLocal) };
+    return out;
+  }, { TIF_ROT, TIF_TWIN, PTS_CSV_W });
+  chk(`a polygon limit on a ROTATED matched lattice is refused with the reason (“${r4b.limErr.slice(0, 70)}…”)`, /ROTATED matched lattice/.test(r4b.limErr));
+  chk(`a lone block model placed from mine grid into UTM re-plants the frame there (${r4b.blocks.before.map((v) => Math.round(v))} → ${r4b.blocks.after.map((v) => Math.round(v))}); its first block reads ${r4b.blocks.row0}`,
+    Math.abs(r4b.blocks.after[0] - 500050) < 1000 && Math.abs(r4b.blocks.after[1] - 7000050) < 1000 && Math.abs(r4b.blocks.row0[0] - 500005) < 1e-6 && Math.abs(r4b.blocks.row0[1] - 7000005) < 1e-6);
+  // where the RELIEF is drawn: its rendered bbox (frame-local) + the frame = the placed grid —
+  // u 2.5…197.5 → x 1002.5…1197.5, v −2.5…−147.5 → y 1852.5…1997.5 (worldAt doesn't pick surfaces)
+  const sb = r4b.surf.bbox, so = r4b.surf.after;
+  const wb = sb && [sb[0] + so[0], sb[1] + so[1], sb[3] + so[0], sb[4] + so[1]];
+  chk(`a lone SURFACE placed keeps its frame (${r4b.surf.before.map((v) => Math.round(v))} = ${so.map((v) => Math.round(v))}) and its relief is drawn at the placed grid (${wb && wb.map((v) => v.toFixed(1))} = 1002.5, 1852.5 … 1197.5, 1997.5)`,
+    r4b.surf.before.every((v, k) => v === so[k]) && wb && Math.abs(wb[0] - 1002.5) < 1e-3 && Math.abs(wb[1] - 1852.5) < 1e-3 && Math.abs(wb[2] - 1197.5) < 1e-3 && Math.abs(wb[3] - 1997.5) < 1e-3);
+  await p4b.close();
+
   // ═══ §5 the Datamine origin, an old project ═══
   const proj = 'place_proj_' + Date.now();
   const p5 = await mkPage();

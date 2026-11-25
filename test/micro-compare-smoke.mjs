@@ -130,12 +130,26 @@ try {
   // ═══ §2 the Δ map: categories counted on the layer itself ═══
   const m = await evaluateSettled(p, async (name) => {
     const M = window._micro, J = M.layers().find((q) => q.name === name), h = M.layerTableHeader(J), ci = h.columns.indexOf('change'), di = h.columns.findIndex((c) => c.startsWith('Δ'));
-    const cnt = {}; let dmax = 0;
-    for await (const { f } of M.layerRecords(J)) { cnt[f[ci]] = (cnt[f[ci]] || 0) + 1; if (f[di] !== '' && Math.abs(+f[di]) > dmax) dmax = Math.abs(+f[di]); }
-    return { cnt, dmax, lin: J.lineage && J.lineage.op, cat: h.columns[h.mapping.cat] };
+    const cnt = {}, at = {}; let dmax = 0;
+    const mp = h.mapping;
+    for await (const { f } of M.layerRecords(J)) {
+      cnt[f[ci]] = (cnt[f[ci]] || 0) + 1; if (f[di] !== '' && Math.abs(+f[di]) > dmax) dmax = Math.abs(+f[di]);
+      (at[f[ci]] = at[f[ci]] || []).push([+f[mp.x], +f[mp.y], +f[mp.z]]);
+    }
+    return { cnt, at, dmax, lin: J.lineage && J.lineage.op, cat: h.columns[h.mapping.cat] };
   }, t.layers[0]);
   chk(`the Δ layer ${t.layers[0]}: ${JSON.stringify(m.cnt)} = by hand added 4 · removed 4 · changed 200 (domain A) · unchanged 196 — and the values say the same (${v.added}/${v.removed}/${v.changed}/${v.unchanged})`,
     m.cnt.added === 4 && m.cnt.removed === 4 && m.cnt.changed === 200 && m.cnt.unchanged === 196 && v.added === 4 && v.removed === 4 && v.changed === 200 && v.unchanged === 196 && m.cat === 'change' && m.lin === 'reconcile');
+  // WHERE each class sits (sweep 2026-11-25: the classes were counted, never located — the right
+  // counts on the wrong blocks would pass): added = the four new blocks' centres, removed = the
+  // (9, 9) column, changed = all of domain A (west), unchanged = all of domain B (east)
+  const key = (q) => q.map((v) => v.toFixed(3)).join(',');
+  const wantAt = (cells) => cells.map(([i, j, k]) => key([E0 + 5 + 10 * i, N0 + 5 + 10 * j, Z0 + 5 + 10 * k])).sort().join(';');
+  const got = (cls) => (m.at[cls] || []).map(key).sort().join(';');
+  const addedAt = got('added') === wantAt(ADDED.map((b) => [b.i, b.j, b.k]));
+  const removedAt = got('removed') === wantAt([0, 1, 2, 3].map((k) => [9, 9, k]));
+  const westChanged = (m.at.changed || []).every((q) => q[0] < E0 + 50), eastSame = (m.at.unchanged || []).every((q) => q[0] > E0 + 50);
+  chk(`…and in the right places: added at the four new blocks (${addedAt}), removed at column (9, 9) (${removedAt}), every changed block in domain A (${westChanged}), every unchanged one in domain B (${eastSame})`, addedAt && removedAt && westChanged && eastSame);
   const amax = Math.max(...NEW.rows.filter((r) => r.dom === 'A' && r.k < 4).map((r) => Math.abs(r.au - auOf(r.i, r.j, r.k))));
   chk(`its Δ grade reaches ${m.dmax.toFixed(4)} = the largest +10 % by hand ${amax.toFixed(4)}`, Math.abs(m.dmax - amax) < 1e-5);
   // a lattice shifted by half a block: the table still compares, the map is refused with the check's reason
