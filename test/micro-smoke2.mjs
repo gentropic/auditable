@@ -9964,13 +9964,22 @@ if (take()) {
     swIdle.frames === 0 && swIdle.capture === false);
   const cvs = await ps.$('#cv'); const box = await cvs.boundingBox(); let hit = 0;
   const fromCap0 = await ps.evaluate(() => window._micro.renderer.picksFromCapture);
-  for (const [fx, fy] of [[0.5, 0.5], [0.45, 0.5], [0.55, 0.5], [0.5, 0.45], [0.5, 0.55]]) {
-    await ps.mouse.click(box.x + box.width * fx, box.y + box.height * fy); await ps.waitForTimeout(250);
-    hit = await ps.evaluate(() => { const rp = document.querySelector('#recPanel'); return rp && rp.classList.contains('show') ? rp.querySelectorAll('.rp-row').length : 0; });
-    if (hit) break;
-  }
+  // a KNOWN block (sweep 2026-11-25: any record passed): in plan, the top of column (10, 10) — XC 100,
+  // YC 100, ZC 95 — at its projected centre; the panel must show THAT block's coordinates
+  const at = await ps.evaluate(async () => {
+    const M = window._micro; await window.micro.look('plan'); await window.micro.fit(); await new Promise((z) => setTimeout(z, 400));
+    const cv = document.querySelector('#cv'), rect = cv.getBoundingClientRect(), st = M.cam.state, o = M.frame.origin, V = st.viewProj, w = [100, 100, 97.5];
+    const q = [w[0] - o[0], w[1] - o[1], w[2] - o[2]];
+    const xx = V[0] * q[0] + V[4] * q[1] + V[8] * q[2] + V[12], yy = V[1] * q[0] + V[5] * q[1] + V[9] * q[2] + V[13], ww = V[3] * q[0] + V[7] * q[1] + V[11] * q[2] + V[15];
+    return [(xx / ww + 1) / 2 * rect.width, (1 - yy / ww) / 2 * rect.height];
+  });
+  await ps.mouse.click(box.x + at[0], box.y + at[1]); await ps.waitForTimeout(400);
+  const picked = await ps.evaluate(() => { const rp = document.querySelector('#recPanel'); if (!rp || !rp.classList.contains('show')) return null;
+    const o = {}; for (const r of rp.querySelectorAll('.rp-row')) o[r.querySelector('.k').textContent] = r.querySelector('.v').textContent; return o; });
+  hit = picked ? Object.keys(picked).length : 0;
   const fromCap1 = await ps.evaluate(() => window._micro.renderer.picksFromCapture);
-  chk(`software mode: a click still picks a record (${hit} fields), rendered on the click, not read from a capture (${fromCap0} → ${fromCap1})`, hit > 0 && fromCap1 === fromCap0);
+  chk(`software mode: a click on block (10, 10)'s top picks THAT block (${picked ? `XC ${picked.XC}, YC ${picked.YC}, ZC ${picked.ZC}` : 'nothing'}), rendered on the click, not read from a capture (${fromCap0} → ${fromCap1})`,
+    picked && +picked.XC === 100 && +picked.YC === 100 && +picked.ZC === 95 && fromCap1 === fromCap0);
   await ps.evaluate(() => { document.querySelector('#recPanel').classList.remove('show'); window._micro.renderer.setPicked(null); window._micro.requestRender(); });
   const off = await setSw('off');
   const gpuIdle = await idle();
@@ -10389,21 +10398,24 @@ if (take()) {
     const shot = () => { const c = new OffscreenCanvas(cv.width, cv.height), g = c.getContext('2d'); g.drawImage(cv, 0, 0); return g.getImageData(0, 0, cv.width, cv.height).data; };
     const bg = R.background.slice(0, 3).map((v) => Math.round(v * 255));
     // each track pixel against the nearest interval midpoint on screen: right or left of its trace?
-    const dh = L.docs.dhDoc, mids = [];
+    const dh = L.docs.dhDoc, mids = [], feMid = [];
+    const hh = M.layerTableHeader(L), fei = hh.columns.indexOf('FE');
     { const m = M.cam.state.viewProj;
       for (let i = 0; i < dh.header.count; i++) { const p = dh.recordPosition(i); if (!p) continue; const q = [p[0] - o[0], p[1] - o[1], p[2] - o[2]];
         const cx = m[0] * q[0] + m[4] * q[1] + m[8] * q[2] + m[12], cy = m[1] * q[0] + m[5] * q[1] + m[9] * q[2] + m[13], cw = m[3] * q[0] + m[7] * q[1] + m[11] * q[2] + m[15];
-        mids.push([(cx / cw + 1) / 2 * cv.width, (1 - cy / cw) / 2 * cv.height]); } }
+        mids.push([(cx / cw + 1) / 2 * cv.width, (1 - cy / cw) / 2 * cv.height]);
+        feMid.push(+(await M.fetchLayerRow(L, i))[fei]); } }
+    let feMax = -Infinity; for (const v of feMid) if (v > feMax) feMax = v;
     const sideOf = (d, rgb) => {
-      let right = 0, left = 0, n = 0;
+      let right = 0, left = 0, n = 0, rich = 0;
       for (let y = 0; y < cv.height; y += 2) for (let x = 0; x < cv.width; x += 2) {
         const k = (y * cv.width + x) * 4;
         if (Math.abs(d[k] - rgb[0]) + Math.abs(d[k + 1] - rgb[1]) + Math.abs(d[k + 2] - rgb[2]) >= 40) continue;
         n++;
-        let best = null, bd = Infinity; for (const p of mids) { const dd = (p[0] - x) ** 2 + (p[1] - y) ** 2; if (dd < bd) { bd = dd; best = p; } }
-        if (best) { if (x > best[0]) right++; else left++; }
+        let best = null, bd = Infinity, bi = -1; for (let mi = 0; mi < mids.length; mi++) { const p = mids[mi]; const dd = (p[0] - x) ** 2 + (p[1] - y) ** 2; if (dd < bd) { bd = dd; best = p; bi = mi; } }
+        if (best) { if (x > best[0]) right++; else left++; if (feMid[bi] > 50) rich++; }
       }
-      return { right, left, n };
+      return { right, left, n, rich };
     };
     const orange = [0xe8, 0x91, 0x3a];
     await V.setLogTracks(L, [{ col: 'FE', kind: 'bar', side: 'right', color: '#e8913a' }]);
@@ -10421,6 +10433,7 @@ if (take()) {
     // three tracks, resolved clear of each other
     const res = await V.setLogTracks(L, [{ col: 'FE', kind: 'bar', side: 'right' }, { col: 'SG', kind: 'bar', side: 'left', color: '#4aa3df' }, { col: 'LITO', kind: 'strip', side: 'center' }]);
     out.resolved = res.map((t) => ({ col: t.col, off: +t._offset.toFixed(2), w: +t._width.toFixed(2), lo: t._lo, hi: +t._hi.toFixed(2), classes: t._dict ? t._dict.length - 1 : null }));
+    out.feMax = +feMax.toFixed(2);
     out.reach = R.layerLogs(L.id);
     L.legend = true; M.drawDecorations();
     out.legend = V.logLegendRows(L).map((x) => x.col);
@@ -10435,6 +10448,13 @@ if (take()) {
   chk(`logs: a RIGHT bar track draws right of the traces (${r.onRight.right} right / ${r.onRight.left} left of ${r.onRight.n} px), a LEFT one left of them (${r.onLeft.right} / ${r.onLeft.left})`,
     r.onRight.n > 100 && r.onRight.right > 0.9 * (r.onRight.right + r.onRight.left) && r.onLeft.left > 0.9 * (r.onLeft.right + r.onLeft.left));
   chk(`logs: a filter thins the ribbons with the sticks (${r.filtered.n} px of ${r.onLeft.n})`, r.filtered.n > 0 && r.filtered.n < 0.8 * r.onLeft.n);
+  // WHICH ribbons stay (sweep 2026-11-25: "fewer pixels" passed with the wrong ones kept). Each bar
+  // pixel is tagged by its nearest interval midpoint on screen — side-on, a fan's holes nearly overlap,
+  // so a pixel can be tagged with a neighbour's grade; hence the ratios: the FE > 50 intervals' pixels
+  // ALL stay, the others' mostly go
+  const poor0 = r.onLeft.n - r.onLeft.rich, poor1 = r.filtered.n - r.filtered.rich;
+  chk(`logs: …and the ribbons that stay are the FE > 50 intervals' (beside FE > 50: ${r.onLeft.rich} → ${r.filtered.rich} px kept; beside the rest: ${poor0} → ${poor1})`, r.onLeft.rich > 100 && r.filtered.rich >= 0.97 * r.onLeft.rich && poor1 <= 0.2 * poor0);
+  chk(`logs: the FE track's scale runs to the data's largest FE (${r.resolved[0] && r.resolved[0].hi} = ${r.feMax})`, r.resolved[0] && r.resolved[0].col === 'FE' && Math.abs(r.resolved[0].hi - r.feMax) < 0.01);
   chk(`logs: three tracks resolve clear of each other (${JSON.stringify(r.resolved)}, reach ${JSON.stringify(r.reach)})`,
     r.resolved.length === 3 && r.resolved[2].off === 0 && r.resolved[0].off >= r.resolved[2].w / 2 && r.resolved[1].off >= r.resolved[2].w / 2 && r.resolved[2].classes > 1 && r.reach && r.reach.reach > r.resolved[0].off);
   chk(`logs: the legend lists them (${r.legend.join(', ')}); cleared ${JSON.stringify(r.cleared)} → restored from the display state (${r.restored.join(' · ')}); the window has ${r.rows} rows`,
