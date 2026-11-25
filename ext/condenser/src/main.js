@@ -18,7 +18,7 @@ export { MICRO_MODEL_KEY, microModelLine, parseMicroModelComment, gridOfMicroMod
 export { floatGcd, axisMap, gridsCompatible, makeResampler, makeBoxAggregator, commonLattice, latticeMismatch } from './grid/grid-join.js';
 export { sniffDelimited, mapColumns, findDimColumns, isDimColumn, openBlockModel, openTable, lineFields, fetchDelimitedRecord, readDelimitedRun, delimitedRuns } from './io/blockmodel.js';
 export { splitFields as splitDelimitedRecord, sampleRecords as delimitedRecords, delimiterOfLine, coordNum } from './io/delimited.js';
-export { classifyDrillholeHeader, sniffDrillholeFiles, readDelimited, openDrillholes, openDrillholeTraces, desurveyHolePaths, drillholeQa, drillholeComposite } from './io/drillholes.js';
+export { classifyDrillholeHeader, sniffDrillholeFiles, readDelimited, parseCollars, openDrillholes, openDrillholeTraces, desurveyHolePaths, drillholeQa, drillholeComposite } from './io/drillholes.js';
 export { QUALIFIED_DEFAULT, classifyQualified, qualifiedNumber, censusQualified, describeQualified } from './io/qualified.js';
 export { createZoneBuilder, zoneRanges, zonesToJSON, zonesFromJSON } from './io/zones.js';
 export { buildStickChunk, stickLocalCenter, createStickChunkBuilder } from './core/sticks.js';

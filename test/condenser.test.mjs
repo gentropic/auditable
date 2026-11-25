@@ -797,6 +797,23 @@ test('drillholes: desurveyed midpoints — analytic positions, identity through 
   assert.equal(fetchRecord(5), null);
 });
 
+// a collar file recorded in another coordinate system: the host's collarTransform moves every
+// collar (the holes follow — the survey is relative), and the traces + composites take it too
+test('drillholes: opts.collarTransform reprojects the collars, the whole hole follows', async () => {
+  const { openDrillholeTraces, drillholeComposite } = await import('../ext/condenser/src/main.js');
+  const collar = new Blob(['BHID,X,Y,Z,EOH\nV1,1000,2000,500,20\n']);
+  const survey = new Blob(['BHID,AT,AZ,DIP\nV1,0,0,90\n']);
+  const intervals = new Blob(['BHID,FROM,TO,FE\nV1,0,10,40\nV1,10,20,50\n']);
+  const shift = (pts) => pts.map((p) => [p[0] + 65.5, p[1] - 41.25, p[2]]);
+  const { streamChunks } = await openDrillholes({ collar, survey, intervals }, { collarTransform: shift });
+  const xs = [];
+  for await (const rc of streamChunks({ chunkPoints: 8 })) for (let i = 0; i < rc.count; i++) xs.push([rc.x[i], rc.y[i], rc.z[i]]);
+  assert.ok(xs.length === 2 && xs.every((p) => Math.abs(p[0] - 1065.5) < 1e-9 && Math.abs(p[1] - 1958.75) < 1e-9));
+  const tr = await openDrillholeTraces({ collar, survey }, { collarTransform: shift });
+  assert.ok(Math.abs(tr.header.bbox.min[0] - 1065.5) < 1e-6);
+  const comp = await drillholeComposite({ collar, survey, intervals }, { collarTransform: shift, length: 10 });
+  assert.ok(comp.rows.length === 2 && Math.abs(comp.rows[0][1] - 1065.5) < 1e-9);
+});
 
 // a blank is no number in a drillhole table either: `+''` was 0 — a collar at the
 // origin, a survey bent horizontal at a blank dip, an interval from the collar

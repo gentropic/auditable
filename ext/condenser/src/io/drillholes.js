@@ -111,7 +111,10 @@ function blankCheck(checks, id, label, bhids) {
   if (!bhids.length) return;
   checks.push({ id, label, count: bhids.length, bhids: [...new Set(bhids.map((b) => String(b ?? '')))].slice(0, 200) });
 }
-export function parseCollars(t, mc) {
+// `collarTransform` (optional): a batch function [[x, y, z], …] → [[x, y, z], …] applied to
+// every kept collar — the host's reprojection of a collar file recorded in another
+// coordinate system (heights carried). Pure data in, pure data out; condenser knows no CRS.
+export function parseCollars(t, mc, collarTransform = null) {
   const collars = [], blank = [];
   t.rows.forEach((r, row) => {
     const x = coordNum(r[mc.x]), y = coordNum(r[mc.y]), z = coordNum(r[mc.z]);
@@ -119,6 +122,10 @@ export function parseCollars(t, mc) {
     const e = mc.eoh != null && mc.eoh >= 0 ? coordNum(r[mc.eoh]) : NaN;
     collars.push({ bhid: r[mc.bhid], x, y, z, eoh: Number.isFinite(e) ? e : undefined, row });
   });
+  if (collarTransform && collars.length) {
+    const out = collarTransform(collars.map((c) => [c.x, c.y, c.z]));
+    collars.forEach((c, i) => { c.x = +out[i][0]; c.y = +out[i][1]; if (out[i].length > 2 && Number.isFinite(+out[i][2])) c.z = +out[i][2]; });
+  }
   return { collars, blank };
 }
 export function parseSurveys(t, ms) {
@@ -144,7 +151,7 @@ export async function openDrillholes({ collar, survey, intervals }, opts = {}) {
   if (!m.intervals || m.intervals.from == null) throw new Error('drillholes: interval columns not identified (need BHID + FROM + TO)');
 
   // @gcu/drillhole table shapes — blanks dropped and reported (see parseCollars)
-  const { collars, blank: blankCollars } = parseCollars(tCollar, m.collar);
+  const { collars, blank: blankCollars } = parseCollars(tCollar, m.collar, opts.collarTransform || null);
   const { surveys, blank: blankSurveys } = parseSurveys(tSurvey, m.survey);
   const collarOfRow = new Map(collars.map((c) => [c.row, c]));
 
@@ -368,7 +375,7 @@ export async function openDrillholeTraces({ collar, survey }, opts = {}) {
   const ms = (opts.mappings && opts.mappings.survey) || (classifyDrillholeHeader(tSurvey.columns) || {}).mapping;
   if (!mc || mc.x == null) throw new Error('drillhole traces: collar columns not identified (need BHID + X/Y/Z)');
   if (!ms || ms.az == null) throw new Error('drillhole traces: survey columns not identified (need BHID + AZ + DIP)');
-  const { collars } = parseCollars(tCollar, mc);          // blanks dropped (openDrillholes reports them)
+  const { collars } = parseCollars(tCollar, mc, opts.collarTransform || null);          // blanks dropped (openDrillholes reports them)
   const { surveys } = parseSurveys(tSurvey, ms);
   const collarOfRow = new Map(collars.map((c) => [c.row, c]));
 
@@ -491,7 +498,7 @@ export async function drillholeComposite({ collar, survey, intervals }, opts = {
   if (!mc || mc.x == null) throw new Error('composite: collar columns not identified (need BHID + X/Y/Z)');
   if (!ms || ms.az == null) throw new Error('composite: survey columns not identified (need BHID + AZ + DIP)');
   if (!mi || mi.from == null || mi.to == null) throw new Error('composite: interval columns not identified (need BHID + FROM + TO)');
-  const { collars } = parseCollars(tCollar, mc);
+  const { collars } = parseCollars(tCollar, mc, opts.collarTransform || null);
   const { surveys } = parseSurveys(tSurvey, ms);
   const keys = new Set([mi.bhid, mi.from, mi.to]);
   const probe = tIv.rows.slice(0, 500);
