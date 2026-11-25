@@ -57,9 +57,9 @@ export const recipeSlug = (name) => (String(name).toLowerCase().replace(/[^\w.-]
 // the project). $var marks where each value lands. Expansion is a MACRO —
 // static, no expressions, enumerable before anything runs — so the opt-in
 // guard ({guard: "no-overwrites"}) can dry-pass every output first.
-// Analysis steps write reports/<date>/<slug>.tsv into the project (the
-// month-over-month diffable folder); params.output = {dir, prefix, suffix}
-// overrides. A failed step stops the routine visibly, window left open.
+// Analysis steps write <slug>.tsv into the run's own folder,
+// runs/<local date> <hhmm> <routine>/ (src/runrecord.js); params.output =
+// {dir, prefix, suffix} overrides. A failed step stops the routine visibly, window left open.
 export function routineEachRows(each) {
   if (Array.isArray(each)) return each.map((r) => ({ ...r }));         // rows
   if (each && each.from) return { from: String(each.from) };           // resolved async by the runner

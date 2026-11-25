@@ -48,15 +48,26 @@ file of only points opens as a points layer. A feature without a Z (a 2D shapefi
 digitized in plan) is drawn at $z=0$, and the status line says so; \menu{Geometry>Set elevation…}
 places the layer at a bench.
 
-\subsection{Longitude and latitude are refused}\index{CRS!geographic, refused}
+\subsection{Longitude and latitude}\index{CRS!geographic files}
 
-micro places coordinates where they say and never reprojects (\cref{ch:opening}). A file in
-degrees would land at $(-45, -20)$ on a metre grid, so it does not open. It is refused, with the
-reason on the status line and on the open dialog's row, when its \file{.prj} names a geographic
-system (\code{GEOGCS}), when a GeoJSON file has no projected \code{"crs"} (the GeoJSON standard is
-longitude and latitude), when its SRID is a geographic EPSG code, or when every coordinate fits
-within ±180 and ±90 over less than 20°. Reproject the file in your GIS (to UTM or your mine grid)
-and open it again. Reprojection on open is planned.
+A file says it is in degrees when its \file{.prj} names a geographic system (\code{GEOGCS}), when a
+GeoJSON file has no projected \code{"crs"} (the GeoJSON standard is longitude and latitude), when
+its SRID is a geographic EPSG code, when it is KML or KMZ (always WGS 84), or when every coordinate
+fits within ±180 and ±90 over less than 20°. What happens next depends on the project:
+
+\begin{itemize}
+\item \textbf{The project has a coordinate system.} The features are reprojected into it as they
+  are read, z carried; the layer's lineage records the move and its accuracy class
+  (\cref{sec:crs-reproject}).
+\item \textbf{It has none.} Degrees would land at $(-45, -20)$ on a metre grid, so micro asks
+  instead: \menu{Set coordinate system…} opens the selector with a system suggested from where the
+  data sits, and the file opens reprojected into the one you pick. \menu{Cancel} leaves it unopened,
+  with the reason on the status line. A routine or a host page gets the refusal as an error, never
+  the question.
+\end{itemize}
+
+A file in a projected system opens as it is when the project has no system yet, and its system
+becomes the project's (\cref{sec:crs-project}).
 
 \section{The layer}\label{sec:polygons-layer}
 
