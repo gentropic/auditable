@@ -8,7 +8,7 @@ import { layerRelpath, resolveFileHandle, removeFileAt, basename } from './paths
 import { sameSource, staleWhy } from './identity.js';
 import { ensureSourceHash, storedCols, matColLooseId, matColSourceHash, matColEncode, matColDecodeStr, matColDecode, matColSet, paintRecount, PAINT_BLANK, ruleDefaultColor, columnsChanged, setSidecarReader } from './columns.js';
 import { buildElementManifest, buildGridElementManifest, elementHydrate } from './manifest.js';
-import { layerBlob } from './records.js';
+import { layerBlob, ensureModelFrameCols } from './records.js';
 
 // a tiny IndexedDB kv (database 'micro', store 'kv') — the loose-layer fallback
 // for matcols/elements, and the app's recents/projects ledger
@@ -119,6 +119,7 @@ export async function loadElement(L, dir) {
     let lk = Object.keys(locs)[0];
     if (L.dh) { const me = basename(L.name); lk = Object.keys(locs).find((k) => locs[k].source && locs[k].source.file === me) || lk; }
     mats = elementHydrate(L, elem, lk);                    // derived ƒ restore even when materialized are stale
+    ensureModelFrameCols(L);                               // a placed .dm's XL/YL/ZL, also when the saved project predates them
     const hash = lk && locs[lk] && locs[lk].source && locs[lk].source.hash;
     if (hash && !sameSource(hash, cur)) { if (mats.length) { const why = staleWhy(hash, cur); unread(L, mats.map((c) => c.name).join(', '), `${why} — re-run to refresh`); const el = document.querySelector('#meta'); if (el) el.textContent = `${L.name}: stored columns not applied (${why}) — re-run to refresh`; } return 0; }
   } else if (man && man.cols) {

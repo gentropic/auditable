@@ -9996,7 +9996,22 @@ if (take()) {
     const LD = await open(F.makeSubblockDm(bad, { angle1: -50, parents: NP }), 'tiled-bad.dm', 'replace', { origin: O });
     const t = await M.subBlockTiling(LD);
     out.dm = { overlap: t.overlap, overlapRecs: t.overlapRecs, under: t.under, underVolume: t.underVolume, ijkBad: t.ijkBad, ijkRecs: t.ijkRecs, crossing: t.crossing, offLattice: t.offLattice, offGrid: t.offGrid, parents: t.parents, phaseFrom: t.phaseFrom, ijkChecked: t.ijkChecked, ps: t.parentSize };
+    // the placed model's own frame as columns: XL/YL/ZL ƒ = the file's local XC/YC/ZC, record for record
+    const frameCols = async (L) => {
+      const sch = M.schemaExt(L, M.layerTableHeader(L)).map((c) => c.name), ix = ['XL', 'YL', 'ZL'].map((n) => sch.indexOf(n));
+      let worst = 0, n = 0;
+      for await (const { f, rec } of M.layerRecords(L)) { const b = bad[rec]; worst = Math.max(worst, Math.abs(f[ix[0]] - b.XC), Math.abs(f[ix[1]] - b.YC), Math.abs(f[ix[2]] - b.ZC)); n++; }
+      return { ix, worst, n, exprs: (L.calcCols || []).filter((c) => /^[XYZ]L$/.test(c.name)).map((c) => c.expr) };
+    };
+    out.frame = await frameCols(LD);
+    await M.applyBlockFilter('XL > 60', LD);
+    out.frameFilter = { drawn: LD._filterMask ? LD._filterMask.reduce((a, v) => a + v, 0) : -1, want: bad.filter((b) => b.XC > 60).length };   // sub-blocked: the mask path (no compaction)
+    await M.applyBlockFilter('', LD);
+    await M.setDmOrigin(LD, [1000, 2000, 30]);               // a new origin: the world moves, the model frame doesn't
+    out.frame2 = await frameCols(LD);
+    await M.setDmOrigin(LD, O);
     const LC = await open(F.makeSubblockCsv(bad), 'tiled-bad.csv', 'add');
+    out.csvFrameCols = (LC.calcCols || []).length;
     const tc = await M.subBlockTiling(LC);
     out.csv = { overlap: tc.overlap, overlapRecs: tc.overlapRecs, under: tc.under, underVolume: tc.underVolume, phaseFrom: tc.phaseFrom, ijkChecked: tc.ijkChecked };
     const LG = await open(F.makeSubblockDm(rows, { angle1: -50, parents: NP }), 'tiled-good.dm', 'add', { origin: O });
@@ -10026,6 +10041,9 @@ if (take()) {
     r.dm.parents === 90 && r.dm.phaseFrom === 'stated' && r.dm.ijkChecked && r.dm.ps.join() === '20,20,10'
     && r.dm.under === 1 && Math.abs(r.dm.underVolume - r.dropVol) < 1e-6 && r.dm.overlap === 1 && r.dm.overlapRecs[0] === r.dupRec
     && r.dm.ijkBad === 1 && r.dm.ijkRecs[0] === r.lieRec && r.dm.crossing === 0 && r.dm.offLattice === 0 && r.dm.offGrid === 0);
+  chk(`MODEL FRAME: a placed .dm carries XL/YL/ZL ƒ columns = its file's local XC/YC/ZC (${r.frame.n} records, worst ${r.frame.worst.toExponential(2)}; ${r.frame.exprs.join(' | ')}); a filter on XL keeps the twin's count (${r.frameFilter.drawn} = ${r.frameFilter.want}); a new origin rewrites them, the values don't move (worst ${r.frame2.worst.toExponential(2)}: ${r.frame2.exprs[0]}); an unplaced CSV gets none (${r.csvFrameCols})`,
+    r.frame.ix.every((i) => i >= 0) && r.frame.n === r.n && r.frame.worst < 1e-6 && r.frameFilter.drawn === r.frameFilter.want && r.frameFilter.want > 0
+    && r.frame2.worst < 1e-6 && /1000/.test(r.frame2.exprs[0]) && !/432820/.test(r.frame2.exprs[0]) && r.csvFrameCols === 0);
   chk(`SUB-BLOCK QA (CSV twin, no IJK — the corner found from a whole block: ${r.csv.phaseFrom}): the same gap and overlap (${JSON.stringify(r.csv)})`,
     r.csv.phaseFrom === 'block' && !r.csv.ijkChecked && r.csv.under === 1 && Math.abs(r.csv.underVolume - r.dropVol) < 1e-6 && r.csv.overlap === 1 && r.csv.overlapRecs[0] === r.dupRec);
   chk(`SUB-BLOCK QA window: the clean model has no sub-block finding and reads “✓ exact” (${r.goodChecks.join(' · ')}); the dirty one lists them (${r.badChecks.join(' · ')}), the overlap selects its block (${r.selected} → rec ${r.selRec}), the gap steps the camera`,

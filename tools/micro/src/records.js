@@ -214,6 +214,55 @@ export async function dmDocReader(doc) {
   return (doc.dmReader = { recordBatches: o.recordBatches, columnBatches: o.columnBatches, fetchRecord: o.fetchRecord });
 }
 
+// ── a placed .dm's MODEL-FRAME coordinates as columns: XL, YL, ZL ─────────────
+// A rotated Datamine model's XC/YC/ZC read in WORLD (above); its own frame — the one
+// its parents, its IJK and its sub-block sizes are stated in — is local = Rᵀ·(world − O).
+// That is three ƒ columns over the world ones, so every reader that takes calc columns
+// (filter, colour, stats, swath, export, the scan workers) has them with no census
+// slots of their own: XL = R₀₀(XC − O₀) + R₁₀(YC − O₁) + …, the zero terms dropped.
+// → [{ name, expr, ty }] for a placed header, else [].
+export function modelFrameCalcs(h) {
+  const p = h && h.dmPlace;
+  if (!p || !h.columns) return [];
+  const R = p.R, O = p.O, nm = [h.columns[p.x], h.columns[p.y], h.columns[p.z]];
+  if (!nm.every((n) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(String(n)))) return [];   // a name the expression can't spell bare
+  const num = (v) => String(+v.toPrecision(17));
+  return ['XL', 'YL', 'ZL'].map((name, a) => {
+    const terms = [];
+    for (let b = 0; b < 3; b++) {
+      const c = R[3 * a + b];                               // Rᵀ row a = R column a
+      if (Math.abs(c) < 1e-15) continue;
+      const d = O[b] ? `(${nm[b]} - ${num(O[b])})` : nm[b];
+      terms.push(Math.abs(c - 1) < 1e-15 ? d : `${num(c)} * ${d}`);
+    }
+    return { name, expr: terms.join(' + ') || '0', ty: 'number' };
+  });
+}
+// is this calc micro's own model-frame column (any origin / angle), not one the user wrote?
+const MODEL_FRAME_RE = /^(-?[\d.e+-]+ \* )?(\(\w+ - -?[\d.e+-]+\)|\w+)( \+ (-?[\d.e+-]+ \* )?(\(\w+ - -?[\d.e+-]+\)|\w+)){0,2}$/;
+/**
+ * Give a placed .dm layer its XL/YL/ZL ƒ columns (or bring them up to date after a new
+ * origin). One the file already has, or a same-named ƒ the user wrote, is left alone.
+ * → true when the layer's calcs changed.
+ */
+export function ensureModelFrameCols(L) {
+  const bd = L && L.docs && L.docs.blockDoc, h = bd && bd.header;
+  if (!h || L.viewOf != null) return false;
+  const want = modelFrameCalcs(h);
+  if (!want.length) return false;
+  const file = new Set(h.columns.map((c) => String(c).toLowerCase()));
+  L.calcCols = L.calcCols || [];
+  let changed = false;
+  for (const w of want) {
+    if (file.has(w.name.toLowerCase())) continue;
+    const at = L.calcCols.findIndex((c) => String(c.name).toLowerCase() === w.name.toLowerCase());
+    if (at < 0) { L.calcCols.push(w); changed = true; }
+    else if (L.calcCols[at].expr !== w.expr && MODEL_FRAME_RE.test(String(L.calcCols[at].expr))) { L.calcCols[at] = w; changed = true; }
+  }
+  if (changed) { L._calcFns = null; L._colStats = null; }
+  return changed;
+}
+
 // what frame a doc's coordinate COLUMNS are read in — a cache keyed on the file
 // alone (a project sidecar's column stats + filter bands) is only good for the
 // frame it was computed in: 'file' (as stored), or a placed model's world frame

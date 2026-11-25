@@ -14,6 +14,7 @@ import { registerDocs, streamInto } from './open.js';
 import { fitFromHeader, recomputeUnion } from './layers.js';
 import { setColorLabels } from './color.js';
 import { applyBlockFilter } from './filter.js';
+import { ensureModelFrameCols } from './records.js';
 const $ = (s) => document.querySelector(s);
 
 // the open's block chunk builder: OFF the page (src/chunkworker.js — the same
@@ -378,6 +379,7 @@ export async function openDmBlob(blob, name, opts = {}) {
   // records come back placed in world (records.js dmDocReader — the one way in)
   const blockDoc = { blob, name, header, metaLine: '', forcePoints: opts.forcePoints, streamChunks, recordBatches, columnBatches, fetchRecord };
   registerDocs(lid, header.grid ? 'blocks' : 'points', { blockDoc });
+  { const Lf = layerById(lid); if (Lf) ensureModelFrameCols(Lf); }   // a placed model's own frame as XL/YL/ZL ƒ columns (records.js)
   { const L1 = layerById(lid); if (L1 && L1.lineage && header.grid && header.grid.rot) L1.lineage.params = { ...(L1.lineage.params || {}), lattice: { rotated: true, ...basisAngles(header.grid.rot), ...(header.lattice || { basis: 'declared' }), origin: header.dmOrigin } }; }
   fitFromHeader(header, opts.first !== false && opts.chan == null);
   S.renderer.setCategories(header.categories ? 1 : 0);
