@@ -304,6 +304,10 @@ export function blockCaps(L) {
 // opts.raw: the SOURCE text (<0.001), not the detection-limit substitute — a CSV export's default
 export async function* layerRows(L, onProgress, { raw = false } = {}) {
   const d = L.docs;
+  if (d.stringsDoc && d.stringsDoc.features) {             // strings & polygons: the attribute rows are resident, record = feature
+    yield d.stringsDoc.rows.map((r) => r.map((v) => (v === undefined || v == null ? '' : v)));
+    return;
+  }
   const cd = !d.blockDoc && !d.dhDoc && !d.tableDoc && !d.stringsDoc ? cloudDocOf(d) : null;
   if (cd && cloudTableHeader(cd)) {
     // a cloud: every column streamed from the file, a row of numbers per point
@@ -642,6 +646,7 @@ export function primaryLocationOf(L) {
   const d = (L && L.docs) || {};
   if (d.meshDoc) return 'vertices';
   if (d.gridDoc) return 'nodes';
+  if (d.stringsDoc && d.stringsDoc.features) return 'features';   // strings & polygons: one record per feature (src/polygons.js)
   if (d.stringsDoc) return 'segments';                     // design strings: one record per polyline span
   const h = layerHeaderOf(L);
   return (L && L.dh) || (h && h.kind === 'drillholes') ? 'intervals' : 'cells';

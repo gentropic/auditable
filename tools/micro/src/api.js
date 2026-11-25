@@ -118,6 +118,10 @@ import { renderViewCanvas, recreateRenderer, setBlockEdges, renderer, cam, camer
 import { openSample, makeSampleBlockCsv, openDemoProject, makeDemoBlockCsv, makeDemoDrillholes } from './samples.js';
 import { windowsMenu, cascadeWindows, closeAllWindows } from './menubar.js';
 import { COMMANDS } from './commands.js';
+import { isPolygonLayer, featuresOf, pointInPolygonXY, preparePolygons, polygonAreaXY, setFeatureFill, setFeatureCategory } from './polygons.js';
+import { buildFeatureExport, readFeatureFile } from './poly-io.js';
+import { exportFeatures, copyFeaturesText, pasteFeaturesText, editFeatures, newFeatureLayer, setFeatureElevation } from './poly-ui.js';
+import { DRAW as polyDraw, armDraw, armEditVertices, disarmPoly, addDraftVertex, finishDraw, moveVertex, insertVertex, deleteVertex, worldAt } from './poly-draw.js';
 import { openPalette, closePalette } from './palette.js';
 
 const $ = (s) => document.querySelector(s);
@@ -192,6 +196,10 @@ window._micro = {
   xyWins: _xyWins, openCrosstab, xtabWins: _xtabWins, parseCutoffs, openDhQa, qaWins: _qaWins, dhSetGroupOf,
   applySwathZebra, confirmRemoveLayer, undoLabel, startChunkBuilder, setCsvColumnar, canScanColumnar,
   zoneKeeper, paintVolume, layerShown, backupProject, restoreProject, openProjectPack, openPackFile,
+  isPolygonLayer, featuresOf, pointInPolygonXY, preparePolygons, polygonAreaXY, setFeatureFill, setFeatureCategory,
+  buildFeatureExport, readFeatureFile, exportFeatures, copyFeaturesText, pasteFeaturesText, editFeatures, newFeatureLayer,
+  setFeatureElevation, polyDraw, armDraw, armEditVertices, disarmPoly, addDraftVertex, finishDraw, moveVertex,
+  insertVertex, deleteVertex, worldAt,
   savePackAsFolder, addLayer, setColumnQualify, rowQualifier, rawRecordOf, pick: pickRecord, deliverBlob,
   toggleLayersPanel, closeProject, openWfrDialog, wfr: { runWfrJob, packLayers, partsSink, handleSink },
   packLayersToWfr, setAutoPack, renderEmptyProjects, attrRowCountOf, locationsOf, hasRecords,

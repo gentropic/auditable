@@ -18,6 +18,7 @@ import { setActiveLayer } from './layers.js';
 import { _nlOn } from './nl.js';
 import { armSelect, _selArm, disarmSelect, clearSelection } from './selection.js';
 import { undoAction, redoAction, openPaintPalette, PAINT, paintDisarm } from './paint.js';
+import { polyDraftUndo } from './poly-draw.js';
 import { _knifeArm, armKnife, viewAlongSection, scrubSection, toggleSection } from './section.js';
 import { setView, cam, setBlockEdges, _blockEdges } from './viewport.js';
 import { soloActiveLayer } from './command-list.js';
@@ -32,7 +33,7 @@ window.addEventListener('keydown', (e) => {
   // In a text field it stays the field's own text undo.
   else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'z' || e.key === 'Z') && !/^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) {
     e.preventDefault();
-    undoAction();
+    if (!polyDraftUndo()) undoAction();                    // a polygon being drawn takes its own last vertex back first
   }
   else if ((e.ctrlKey || e.metaKey) && ((e.shiftKey && (e.key === 'z' || e.key === 'Z')) || (!e.shiftKey && (e.key === 'y' || e.key === 'Y'))) && !/^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) {
     e.preventDefault();

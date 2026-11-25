@@ -1771,6 +1771,9 @@ if (target === 'micro') {
     '../../ext/compo/index.js': '#compo',           // @gcu/compo — the composer page (with @gcu/pdf inlined)
     '../../ext/plot/index.js': '#plot',             // @gcu/plot — the analysis windows' charts (on screen, and vector in the composer)
     '../../ext/archive/src/zipstream.js': '#zipstream', // @gcu/archive's ranged/streaming Zip64 module alone — project backups
+    '../../ext/shp/index.js': '#shp',               // @gcu/shp — shapefiles in and out (strings & polygons, src/poly-io.js)
+    '../../ext/wkt/index.js': '#wkt',               // @gcu/wkt — WKT / WKT-CSV / the QGIS clipboard
+    '../../ext/dxf/index.js': '#dxf',               // @gcu/dxf — features out to DXF, and DXF read as features
   };
   const libs = [
     ['condenser', 'ext/condenser/index.js'],
@@ -1800,6 +1803,9 @@ if (target === 'micro') {
     ['compo',     'ext/compo/index.js'],               // @gcu/compo — figure / page composer → PDF (src/composer.js)
     ['plot',      'ext/plot/index.js'],                // @gcu/plot — analysis charts (src/analysis-ui.js chartFigure)
     ['zipstream', 'ext/archive/src/zipstream.js'],     // zero-import module: the src file IS the shippable one (no fflate, no WASM)
+    ['shp',       'ext/shp/index.js'],                 // @gcu/shp — .shp/.shx/.dbf/.prj (node ext/shp/build.js)
+    ['wkt',       'ext/wkt/index.js'],                 // @gcu/wkt — OGC WKT (node ext/wkt/build.js)
+    ['dxf',       'ext/dxf/index.js'],                 // @gcu/dxf — DXF read/write (node ext/dxf/build.js)
   ];
   const modules = [];
   for (const [name, rel] of libs) {

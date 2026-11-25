@@ -24,6 +24,8 @@ import { detectDmWireframePairs, openDmWireframeBlob, plyHasFaces, openWfrFile, 
 import { openGridBlob, ascLooksLikeGrid } from './open-grid.js';
 import { openDmBlob, openParquetBlocks, openBlocksBlob } from './open-blocks.js';
 import { openXlsxBlob, openTableBlob } from './open-table.js';
+import { openFeaturesBlob } from './poly-ui.js';
+import { featureKindOf, FEATURE_EXT, groupShapefileParts, zipShapefileSet } from './poly-io.js';
 const $ = (s) => document.querySelector(s);
 
 export async function streamInto(cb, streamChunks, header, name, chunkPoints, lid = S.activeId) {
@@ -51,10 +53,13 @@ async function openBlobs(files, mode = 'replace', at = null) {
   // Detect them among the opened files (by fields — XP/YP/ZP+PID vs PID1/2/3) and
   // load each pair as ONE mesh; everything else opens normally. Pairs a points with
   // a triangles file, preferring the same <base>pt/<base>tr base name.
-  const { pairs, singles } = await detectDmWireframePairs(files);
+  const { pairs, singles: rest } = await detectDmWireframePairs(files);
+  // loose SHAPEFILE parts (.shp + .dbf + .prj + .cpg) open as one layer: one zip of the set
+  const { sets: shpSets, rest: singles } = groupShapefileParts(rest);
   let first = true;
   const openNext = async (fn) => { await fn(first && mode !== 'add' ? 'replace' : 'add', first ? at : null); first = false; };
   for (const [pt, tr] of pairs) await openNext((m, a) => openDmWireframeBlob(pt, tr, m, a));
+  for (const set of shpSets) { const z = await zipShapefileSet(set); await openNext((m, a) => openBlob(z, `${set.base}.zip`, m, a)); }
   for (const f of singles) await openNext((m, a) => openBlob(f, f.name, m, a));
 }
 
@@ -87,10 +92,17 @@ export async function openBlob(blob, name, mode = 'replace', at = null, over = {
   const isMesh = over.asKind === 'mesh'
     ? /\.(msh|obj|lfm|ply)$/i.test(name)
     : (over.asKind == null && (/\.(msh|obj|lfm)$/i.test(name) || (/\.ply$/i.test(name) && !forcePoints && await plyHasFaces(blob))));
+  // strings & polygons (src/poly-io.js): GeoJSON, WKT, a shapefile (zipped), a table with a WKT
+  // column or the ID + X/Y/Z string shape — by name and head; "Open as → features" asks for it
+  // (a DXF too). A shapefile PART alone is a helpful refusal, not "can't read .dbf".
+  let featKind = null;
+  if (over.asKind === 'features') featKind = /\.dxf$/i.test(name) ? 'dxf' : (await featureKindOf(blob, name)) || 'none';
+  else if (over.asKind == null && !over.mapping && !over.discovered && (FEATURE_EXT.test(name) || /\.(csv|txt|tsv|dat)$/i.test(name))) featKind = await featureKindOf(blob, name);
+  if (over.asKind == null && /\.(dbf|prj|shx|cpg)$/i.test(name)) featKind = 'part';
   // a table is decided before allocation: an explicit asKind, a workbook, or a
   // delimited file with no coordinate columns
-  const isTable = over.asKind === 'table' || /\.xlsx$/i.test(name)
-    || (/\.(csv|txt|dat|tsv)$/i.test(name) && !over.mapping && !over.discovered && !isMesh && over.asKind == null && !await delimitedHasCoords(blob));
+  const isTable = !featKind && (over.asKind === 'table' || /\.xlsx$/i.test(name)
+    || (/\.(csv|txt|dat|tsv)$/i.test(name) && !over.mapping && !over.discovered && !isMesh && over.asKind == null && !await delimitedHasCoords(blob)));
   window.__openPhases = { t0: performance.now() };        // bench hook: where an open's time goes (provider · stream · flush)
   const lid = allocLayerId();
   if (lid == null) { const msg = `layer limit reached (${LAYER_CAP}) — remove one first`; $('#meta').textContent = msg; return layerFailed(name, new Error(msg), over); }
@@ -100,7 +112,10 @@ export async function openBlob(blob, name, mode = 'replace', at = null, over = {
   $('#meta').textContent = `${name} — reading…`;
   $('#empty').style.display = 'none';
   try {
-    if (isWfrName(name)) { await openWfrFile(blob, name, { layer: lid, first, element: over.element, tint: over.tint, opacity: over.opacity, forceSoup: over.forceSoup, forceContext: over.forceContext }); }
+    if (featKind === 'part') throw new Error(`${name} is one part of a shapefile — open it together with its .shp (and .dbf / .prj), or the .zip that holds them`);
+    if (featKind === 'none') throw new Error(`${name}: no strings or polygons here — a table needs a WKT column (wkt_geom) or an ID column with X / Y (Z) rows`);
+    if (featKind) { await openFeaturesBlob(blob, name, { layer: lid, first, kind: featKind, parts: over.shpParts, poly: over.poly, z: over.z, assumeProjected: over.assumeProjected }); }
+    else if (isWfrName(name)) { await openWfrFile(blob, name, { layer: lid, first, element: over.element, tint: over.tint, opacity: over.opacity, forceSoup: over.forceSoup, forceContext: over.forceContext }); }
     else if (/\.dxf$/i.test(name)) { await openDxfBlob(blob, name, { layer: lid, first, as: over.asKind === 'lines' ? 'strings' : (over.asKind === 'mesh' || over.asKind === 'points') ? over.asKind : null, tint: over.tint, opacity: over.opacity, stream: !!over.streamDxf }); }
     else if (isMesh && /\.(msh|obj|lfm|ply)$/i.test(name)) { await openMeshDoc(blob, name, { layer: lid, first, tint: over.tint, opacity: over.opacity, forceSoup: over.forceSoup, forceContext: over.forceContext }); }
     else if (/\.dm$/i.test(name)) { await openDmBlob(blob, name, { layer: lid, first, forcePoints, cached: over.cached, mapping: over.mapping, origin: over.origin }); }
@@ -117,7 +132,7 @@ export async function openBlob(blob, name, mode = 'replace', at = null, over = {
     else if (/\.(csv|txt|dat|tsv|asc|xyz|pts)$/i.test(name)) { await openBlocksBlob(blob, name, { layer: lid, first, forcePoints, mapping: over.mapping, discovered: over.discovered, lattice: over.lattice, acceptLattice: over.acceptLattice, dimCols: over.dimCols }); }
     else if (/\.ply$/i.test(name)) { await openPlyBlob(blob, name, { layer: lid, first }); }
     else if (/\.laz$/i.test(name)) throw new Error('LAZ (compressed LAS) isn’t supported — export as .las, or use lasZip to convert');
-    else if (!/\.(las)$/i.test(name)) throw new Error(`micro doesn’t read ${(name.match(/\.[^.]+$/) || ['this file'])[0]} — it reads .csv .txt .dat .tsv .xlsx .dm .parquet .las .ply .xyz .pts .msh .obj .lfm .dxf .wfr .omf .tif .grd .asc`);
+    else if (!/\.(las)$/i.test(name)) throw new Error(`micro doesn’t read ${(name.match(/\.[^.]+$/) || ['this file'])[0]} — it reads .csv .txt .dat .tsv .xlsx .dm .parquet .las .ply .xyz .pts .msh .obj .lfm .dxf .wfr .omf .tif .grd .asc .geojson .wkt .shp .zip (a shapefile)`);
     else {
       const { header, streamChunks, columnBatches, fetchRecord } = await openLas(blob);
       registerDocs(lid, 'points', { lasDoc: { blob, header, columnBatches, fetchRecord } });

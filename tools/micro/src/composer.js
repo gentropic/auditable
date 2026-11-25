@@ -30,7 +30,7 @@ import { createDocument, parseDocument, serializeDocument, mountEditor, iconButt
 import { chartFigure } from './analysis-ui.js';
 import { colorChoices, colorSelFor } from './color.js';
 import { rerunToolRecipe } from './tools.js';
-import { SEC_AXES, sectionCells, sectionShapes, sectionDrillholes, sectionMesh, VEC_OUTLINES, _vecOutlines } from './vsection.js';
+import { SEC_AXES, sectionCells, sectionShapes, sectionDrillholes, sectionMesh, sectionFeatures, VEC_OUTLINES, _vecOutlines } from './vsection.js';
 import { gridAxesOf } from './grid-ops.js';
 import { xyFigure } from './xyplot.js';
 import { compareField, refreshCompareFrame, lineageMd as compareLineageMd, openCompareDialog } from './compare.js';
@@ -798,6 +798,10 @@ async function vectorLayer(L, sec, near, outlines = null) {   // outlines: the f
     c.pts = c.pts.map((v) => +v.toFixed(4));
     return { ...c, layer: name };
   }
+  if (L.docs && L.docs.stringsDoc && L.docs.stringsDoc.features) {   // strings & polygons: lines in the slab (+ fills on a plan)
+    if (mode === false) return { skip: `${name}: not cut by the section` };
+    return sectionFeatures(L, sec, near, { radius: S.renderer.layerStickRadius(L.id) || 1 }).map((c) => ({ ...c, pts: c.pts.map((v) => +v.toFixed(4)), layer: name }));
+  }
   return { skip: null };                                   // points, grids, …: the raster's
 }
 const vectorSummary = (l) => l.type === 'lines' ? `${l.layer}: ${l.starts.length} lines${l.intervals != null ? ` from ${l.intervals} intervals` : ''}` : `${l.layer}: ${l.colors.length} ${l.type === 'polys' ? 'polygons' : 'cells'} from ${l.blocks} blocks`;
@@ -806,14 +810,15 @@ async function buildVector(f) {
   if (why) throw new Error(why);
   const sec = fx.section;
   const shown = S.layers.filter((L) => fx.layers.some((l) => l.name === (L.label || L.name)));
-  if (!shown.some((L) => gridAxesOf(L) || L.dh || L.kind === 'mesh')) throw new Error('a vector section draws block models, drillholes and meshes — this view shows none');
+  if (!shown.some((L) => gridAxesOf(L) || L.dh || L.kind === 'mesh' || (L.docs && L.docs.stringsDoc && L.docs.stringsDoc.features))) throw new Error('a vector section draws block models, drillholes, meshes and strings & polygons — this view shows none');
   // the plane's stored coordinates are kept small: its origin sits near the data
   const P = f.content.meta.proj, near = P && Array.isArray(P.focus) ? P.focus : [0, 0, 0];
   const layers = [], vectored = [], notes = [];
   for (const L of shown) {
     const r = await vectorLayer(L, sec, near, f.content.vectorOutlines || null);
     if (r.skip !== undefined) { if (r.skip) notes.push(r.skip); continue; }
-    layers.push(r); vectored.push(L);
+    if (Array.isArray(r)) layers.push(...r); else layers.push(r);   // a feature layer brings its fills + its lines
+    vectored.push(L);
   }
   const blocks = vectored, others = shown.filter((L) => !vectored.includes(L));
   let overlay = null;

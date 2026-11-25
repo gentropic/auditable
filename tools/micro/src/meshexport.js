@@ -149,7 +149,7 @@ export function openMeshExportDialog(Ls) {
 // Sources stream through src/wfr-write.js into @gcu/wireframe's writer (bounded memory, spills to
 // OPFS past the budget). Output goes to a file handle (streamed, never resident), the project's
 // meshes/ folder, or a download / the shell's Downloads. "Open when done" loads the result.
-export const wfrExportable = (L) => !!(L && L.docs && (L.docs.meshDoc || L.docs.stringsDoc));
+export const wfrExportable = (L) => !!(L && L.docs && (L.docs.meshDoc || (L.docs.stringsDoc && !L.docs.stringsDoc.features)));   // features keep their attributes in their own formats (src/poly-io.js)
 
 export const WFR_STEPS = [['0.1 mm grid', 1e-4], ['1 mm grid', 1e-3], ['1 cm grid', 1e-2], ['lossless (float64)', null]];
 

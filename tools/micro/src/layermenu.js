@@ -49,6 +49,7 @@ import { CONTEXT_TRI_CAP, openMeshDoc } from './open-mesh.js';
 import { hexToRgb01 } from './color.js';
 import { recolorSurface } from './surfaces.js';
 import { filterToSelection, selectionToColumn } from './selection.js';
+import { polygonMenuItems } from './poly-ui.js';
 const $ = (s) => document.querySelector(s);
 // the app's side, passed in once (setLayermenuHooks): _blockEdges
 let H = {};
@@ -103,6 +104,7 @@ export function layerMenuSections(L, x, y) {
   const grid = gridAxesOf(L);
   const opacity = () => ({ label: `Opacity (${Math.round((L.opacity != null ? L.opacity : 1) * 100)}%)`, submenu: () => opacityMenuItems(L) });
   const h = L.kind === 'mesh' && L.docs.meshDoc && L.docs.meshDoc.header;   // a mesh's header (null while it loads)
+  const poly = polygonMenuItems(L);                     // strings & polygons: fill, classes, edit, export (src/poly-ui.js)
 
   // ── Analyse: the analyses that apply to this kind ──
   const analyse = [
@@ -130,6 +132,7 @@ export function layerMenuSections(L, x, y) {
     ...(isPointCloud(L) && !view ? [{ label: 'Grid points to DEM…', action: () => openPcGridDialog(L) }] : []),
     ...(L.docs.gridDoc || (h && !h.soup) ? [{ label: 'Extend to footprint…', action: () => openSurfaceTools('extend', L) },
       ...(surfaceableLayers().length >= 2 ? [{ label: 'Combine surfaces…', action: () => openSurfaceTools('combine', L) }] : [])] : []),
+    ...poly.geometry,
   ];
 
   // ── Select: the filter and the selection, turned into each other or into a column ──
@@ -146,7 +149,8 @@ export function layerMenuSections(L, x, y) {
 
   // ── Display: how this layer draws ──
   const display = [
-    ...(L.kind !== 'mesh' && (L.docs.blockDoc || L.dh) ? [opacity()] : []),
+    ...(L.kind !== 'mesh' && (L.docs.blockDoc || L.dh || poly.display.length) ? [opacity()] : []),
+    ...poly.display,
     ...(drawnAsPointChunks(L) ? [{ label: `Point size (×${S.renderer.layerPointScale(L.id)})`, submenu: () => pointScaleMenuItems(L) }] : []),
     ...(L.dh ? [{ label: `Stick radius… (${S.renderer.layerStickRadius(L.id)} m)`, action: async () => {
       const v = await microPrompt('stick radius (metres)', String(S.renderer.layerStickRadius(L.id)));
@@ -201,7 +205,8 @@ export function layerMenuSections(L, x, y) {
     })() : []),
     ...(L.docs.gridDoc && canBuildDisplayCache(L) ? [{ label: 'Build display cache', action: () => buildDisplayCache(L) }] : []),
     ...(!view && canCopyIntoProject(L) ? [{ label: `Copy into project (${fmtSize(layerBytes(L))})`, action: () => copyLayerIntoProject(L) }] : []),
-    ...(layerTableHeader(L) ? [{ label: 'Export rows…', action: () => openExportDialog(L) }] : []),
+    ...(layerTableHeader(L) && !poly.data.length ? [{ label: 'Export rows…', action: () => openExportDialog(L) }] : []),
+    ...poly.data,
     ...(h ? [{ label: 'Export mesh…', action: () => openMeshExportDialog([L]) }] : []),
     ...(L.docs.gridDoc ? [{ label: 'Export grid…', action: () => openGridExportDialog(L) }] : []),
     { label: 'File info…', action: () => { setActiveLayer(L.id); showFileInfo(); } },

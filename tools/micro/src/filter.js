@@ -16,6 +16,7 @@ import { syncHL } from './exprfield.js';
 import { pushDhMask } from './drillholes.js';
 import { attrTableFilterChanged } from './attrtable.js';
 import { compactsFilter, filterOptsOf } from './ghost.js';
+import { renderFeatureLayer } from './polygons.js';
 const $ = (s) => document.querySelector(s);
 
 // predicate pushdown: can the filter be true for SOME row whose NUMERIC columns
@@ -65,6 +66,40 @@ export async function applyTableFilter(L, expr) {
   L._filterMask = mask; L._filterCount = hits;
   attrTableFilterChanged(L.id);
   $('#meta').textContent = `${L.label || L.name} — ${hits.toLocaleString()} of ${h.count.toLocaleString()} rows match`;
+}
+
+// strings & polygons (src/polygons.js): the attribute rows are resident, a record is a feature —
+// one plain sweep → the feature mask → the renderer isolates those features' lines (and fills)
+export async function applyFeatureFilter(L, expr, inp = $('#filter')) {
+  L.filterExpr = expr;
+  dispatchEvent(new Event('micro:project-dirty'));
+  const d = L.docs.stringsDoc, h = d.header;
+  if (!expr.trim()) {
+    L._filterMask = null; L._filterCount = 0; inp.classList.remove('err');
+    S.renderer.setFilter(null, {}, L.id); if (L.polyFill) renderFeatureLayer(L); attrTableFilterChanged(L.id); refreshLinkedWindows(L, 'filtered'); requestRender();
+    $('#meta').textContent = d.metaLine || `${L.label || L.name}`;
+    return;
+  }
+  let fn;
+  try { fn = compileBool(expr, schemaExt(L, h), { decimal: '.' }); }
+  catch (e) { inp.classList.add('err'); $('#meta').textContent = `filter: ${e.message}`; return; }
+  inp.classList.remove('err');
+  const mask = new Uint8Array(h.count);
+  let hits = 0, rec = 0;
+  for await (const batch of layerRows(L, null)) {   /* rows ok: features — every row is a record */
+    for (const f0 of batch) {
+      let keep = false;
+      try { keep = !!fn(extendRow(L, f0, rec)); } catch { keep = false; }
+      if (keep) { mask[rec] = 1; hits++; }
+      rec++;
+    }
+  }
+  L._filterMask = mask; L._filterCount = hits;
+  S.renderer.setActiveSet('base', L.id);
+  S.renderer.setFilter(mask, { isolate: true }, L.id);
+  if (L.polyFill) renderFeatureLayer(L);
+  attrTableFilterChanged(L.id); refreshLinkedWindows(L, 'filtered'); requestRender();
+  $('#meta').textContent = `${L.label || L.name} — ${hits.toLocaleString()} of ${h.count.toLocaleString()} features match`;
 }
 
 // ── filter: lamina's expression language over EVERY column, evaluated in one
@@ -134,6 +169,7 @@ export async function applyBlockFilter(expr, L = activeLayer()) {
   // mask on a 1.8M-block layer
   const AL = L;
   if (AL && AL.kind === 'table') return applyTableFilter(AL, expr);   // no geometry to mask — the table view is the whole effect
+  if (AL && AL.docs.stringsDoc && AL.docs.stringsDoc.features) return applyFeatureFilter(AL, expr, inp);
   const fBlockDoc = AL ? AL.docs.blockDoc : null;
   const fDhDoc = AL ? AL.docs.dhDoc : null;
   { const cd = AL && !fBlockDoc && !fDhDoc && (AL.docs.lasDoc || AL.docs.plyDoc); if (cd && cd.columnBatches) return applyCloudFilter(AL, expr, inp, cd); }

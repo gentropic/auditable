@@ -43,7 +43,7 @@ export const _idb = (() => {
 // Drillhole members share their SET manifest instead, and are never suffixed.
 const kindTag = (L) => {
   const sd = L.docs && L.docs.stringsDoc;
-  if (!sd) return '';
+  if (!sd || sd.features) return '';                      // a strings & polygons layer is its file's one layer
   return sd.header && sd.header.kind === 'strings' ? '.strings' : '.pegs';
 };
 const fileKey = (L) => { const b = layerBlob(L); return `${L.name}:${(b && b.size) || 0}`; };

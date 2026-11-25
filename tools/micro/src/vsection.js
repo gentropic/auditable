@@ -15,6 +15,7 @@ import { gridAxesOf } from './grid-ops.js';
 import { colorSelOf, rampCfgOf, classBreaks, classIndex, classColor, noDataOf } from './ramp.js';
 import { colorByName } from './color.js';
 import { legendSpec } from './deco.js';
+import { triangulateRings } from '../../../ext/geometry/index.js';
 
 // the plane, in the section's own (u, v) — w is the axis it cuts across
 export const SEC_AXES = { plan: { w: 2, u: 0, v: 1 }, ns: { w: 0, u: 1, v: 2 }, ew: { w: 1, u: 0, v: 2 } };
@@ -340,6 +341,73 @@ export async function sectionDrillholes(L, sec, near, { mode = true, radius = 1,
   return { type: 'lines', plane: { origin: P.origin, u: P.u, v: P.v }, pts, starts, colors, palette, width: 2 * radius, intervals };
 }
 
+// strings & polygons (src/polygons.js): every feature segment in the slab (clipped to it, like a
+// drillhole interval), projected onto the plane, in the feature's colour — and, on a PLAN with the
+// layer's fill on, each polygon whose vertices lie in the slab as its fill (triangles, holes kept).
+// → one or two layers: [lines, polys?]. A layer coloured 'solid' draws in its fill colour.
+export function sectionFeatures(L, sec, near, { radius = 1, max = 400000 } = {}) {
+  const d = L.docs && L.docs.stringsDoc;
+  if (!d || !d.features) throw new Error(`${L.label || L.name}: no features`);
+  const col = colourerOf(L), solid = L.fillColor || '#c89b3c';
+  const h = d.header, schema = schemaExt(L, h), vname = col ? colorByName(L) : null, vi = vname ? schema.findIndex((c) => c.name === vname) : -1;
+  if (col && vi < 0) throw new Error(`${L.label || L.name}: no column “${vname}”`);
+  const drawn = (L.filterExpr && L._filterMask) || null;
+  const P = planeOf(sec, near), [lo, hi] = keepOf(sec), plan = Math.abs(P.n[2]) > 0.999;
+  const palette = [], pIdx = new Map(), pts = [], starts = [], colors = [];
+  const fpts = [], fstarts = [], fcolors = [];
+  let segs = 0;
+  const colourOf = (rec) => {
+    if (!col) return solid;
+    const f = extendRow(L, d.fetchRecord(rec), rec), v = col.numeric ? numOf(f[vi]) : f[vi];
+    return col.of(v);
+  };
+  const idx = (c) => { let k = pIdx.get(c); if (k == null) { k = palette.length; palette.push(c); pIdx.set(c, k); } return k; };
+  d.features.forEach((f, rec) => {
+    if (drawn && !(rec < drawn.length && drawn[rec])) return;
+    const colour = colourOf(rec); if (!colour) return;
+    const k = idx(colour);
+    let allIn = true;
+    for (const r of f.rings) {
+      const m = f.closed ? r.length : r.length - 1;
+      let last = null;
+      for (let i = 0; i < m; i++) {
+        const A = r[i], B = r[(i + 1) % r.length];
+        const dA = dot(P.n, A) - P.pos, dB = dot(P.n, B) - P.pos;
+        if (dA < lo || dA > hi) allIn = false;
+        let t0 = 0, t1 = 1;
+        for (const [bound, sgn] of [[lo, 1], [hi, -1]]) {
+          if (!Number.isFinite(bound)) continue;
+          const fa = sgn * (dA - bound), fb = sgn * (dB - bound);
+          if (fa < 0 && fb < 0) { t0 = 1; t1 = 0; break; }
+          if (fa < 0) t0 = Math.max(t0, fa / (fa - fb)); else if (fb < 0) t1 = Math.min(t1, fa / (fa - fb));
+        }
+        if (!(t1 > t0)) { last = null; continue; }
+        const at = (t) => toUV(P, [A[0] + t * (B[0] - A[0]), A[1] + t * (B[1] - A[1]), A[2] + t * (B[2] - A[2])]);
+        const a = at(t0), b = at(t1);
+        if (last && Math.hypot(a[0] - last[0], a[1] - last[1]) < 1e-6) pts.push(b[0], b[1]);
+        else { starts.push(pts.length / 2); pts.push(a[0], a[1], b[0], b[1]); colors.push(k); }
+        last = b;
+        if (++segs > max) throw new Error(`${segs.toLocaleString()}+ segments on this section — too many for vectors; keep it raster`);
+      }
+    }
+    if (plan && L.polyFill && f.closed && allIn) {
+      for (const part of f.parts) {
+        const t = triangulateRings(part.map((ri) => f.rings[ri]));
+        for (let q = 0; q < t.triangles.length; q += 3) {
+          fstarts.push(fpts.length / 2);
+          for (let c = 0; c < 3; c++) { const vtx = t.triangles[q + c] * 3; const uv = toUV(P, [t.vertices[vtx], t.vertices[vtx + 1], t.vertices[vtx + 2]]); fpts.push(uv[0], uv[1]); }
+          fcolors.push(k);
+        }
+      }
+    }
+  });
+  const plane = { origin: P.origin, u: P.u, v: P.v };
+  const out = [];
+  if (fcolors.length) out.push({ type: 'polys', plane, pts: fpts, starts: fstarts, colors: fcolors, palette: palette.slice(), blocks: fcolors.length });
+  out.push({ type: 'lines', plane, pts, starts, colors, palette, width: 2 * radius, intervals: segs });
+  return out;
+}
+
 // a mesh: where the plane cuts it — each triangle crossing the plane gives a segment, chained into
 // polylines by their shared edges. In the mesh's tint.
 export function sectionMesh(L, sec, near, mesh, { tint = '#9ea3a8', max = 2000000 } = {}) {
@@ -384,4 +452,4 @@ export function sectionMesh(L, sec, near, mesh, { tint = '#9ea3a8', max = 200000
   return { type: 'lines', plane: { origin: P.origin, u: P.u, v: P.v }, pts, starts, colors: starts.map(() => 0), palette: [tint], lw: 0.35, segments: segs.length / 2 };
 }
 
-try { window._microVis = Object.assign(window._microVis || {}, { sectionCells, sectionShapes, setVectorOutlines, vectorOutlines: () => _vecOutlines }); } catch { /* headless */ }
+try { window._microVis = Object.assign(window._microVis || {}, { sectionCells, sectionShapes, sectionFeatures, setVectorOutlines, vectorOutlines: () => _vecOutlines }); } catch { /* headless */ }

@@ -18,6 +18,14 @@ import { isBackupName } from './backup.js';
 import { openPackFile } from './project-pack.js';
 import { createLayerGroup } from './tree.js';
 import { closeAllLayers } from './layers.js';
+import { FEATURE_EXT, featureKindOf, readFeatureFile, groupShapefileParts, zipShapefileSet } from './poly-io.js';
+
+const describeFeatureKind = (k) => ({ geojson: 'GeoJSON', wkt: 'WKT', shp: 'Shapefile', 'zip-shp': 'Shapefile (zipped)', 'wkt-csv': 'WKT-CSV table', 'csv-strings': 'string file (ID + X/Y/Z)' }[k] || k);
+function featureCensus(m) {
+  if (!m.features.length && m.points) return `${m.points.length.toLocaleString()} points → a points layer`;
+  const pg = m.features.filter((x) => x.closed).length, ln = m.features.length - pg;
+  return [pg && `${pg.toLocaleString()} polygon${pg === 1 ? '' : 's'}`, ln && `${ln.toLocaleString()} line${ln === 1 ? '' : 's'}`, `${m.columns.length} attribute${m.columns.length === 1 ? '' : 's'}`, m.crs && m.crs.name].filter(Boolean).join(' · ') + ' → strings & polygons';
+}
 const $ = (s) => document.querySelector(s);
 
 // ── the OPEN dialog (every UI open lands here): a row per file — load toggle,
@@ -41,6 +49,25 @@ export async function describeFile(f) {
   }
   const d = { file: f, name, load: true, kind: 'unknown', desc: '', columns: null, mapping: null, forcePoints: /\.(xyz|pts)$/i.test(name), dhRole: null };
   try {
+    // strings & polygons (src/poly-io.js): a census by reading the file (a geographic one says so here)
+    const fk = /\.(dbf|prj|shx|cpg)$/i.test(name) ? 'part' : (FEATURE_EXT.test(name) || /\.(csv|txt|tsv|dat)$/i.test(name)) ? await featureKindOf(f, name) : null;
+    if (fk === 'part') { d.kind = 'shp-part'; d.desc = 'shapefile part — opens with its .shp'; d.interps = [['part', 'part of a shapefile']]; d.asKind = 'part'; return d; }
+    if (fk) {
+      d.kind = 'features'; d.featKind = fk;
+      d.desc = describeFeatureKind(fk);
+      if (fk !== 'shp' && f.size <= 32 * 1024 * 1024) {
+        try { const m = await readFeatureFile(f, name, { kind: fk }); d.desc += ' · ' + featureCensus(m); }
+        catch (e2) { d.desc += ' — ' + e2.message; if (e2.geographic) d.load = false; }
+      }
+      if (fk === 'wkt-csv' || fk === 'csv-strings') {      // still a table: the other readings stay on offer
+        const sniff = sniffDelimited(await f.slice(0, 64 * 1024).text());
+        d.columns = sniff.header ? sniff.header.map((c) => String(c).trim()) : null;
+        if (d.columns) { const map = mapColumns(d.columns); if (map) d.mapping = { ...map }; }
+      }
+      d.interps = fk === 'wkt-csv' || fk === 'csv-strings' ? [['features', 'strings & polygons'], ['points', 'points'], ['table', 'table (no coordinates)']] : [['features', 'strings & polygons']];
+      d.asKind = 'features';
+      return d;
+    }
     if (/\.omf$/i.test(name)) {
       d.kind = 'omf';
       try {
@@ -193,7 +220,7 @@ export async function describeFile(f) {
     : d.kind === 'las' ? [['points', 'points']]
     : d.kind === 'blocks' ? [['blocks', 'block model'], ['points', 'points']]
     : d.kind === 'delimited' ? [['blocks', 'block model'], ['points', 'points'], ['table', 'table (no coordinates)'], ['collar', 'DH collar'], ['survey', 'DH survey'], ['intervals', 'DH intervals']]
-    : d.kind === 'dxf' ? (d.dxfInterps && d.dxfInterps.length ? d.dxfInterps : [['mesh', 'mesh (3DFACE surfaces)'], ['lines', 'design strings (capsules)'], ['points', 'points (pegs)']])
+    : d.kind === 'dxf' ? [...(d.dxfInterps && d.dxfInterps.length ? d.dxfInterps : [['mesh', 'mesh (3DFACE surfaces)'], ['lines', 'design strings (capsules)'], ['points', 'points (pegs)']]), ...(f.size <= 32 * 1024 * 1024 ? [['features', 'strings & polygons (features + attributes)']] : [])]
     : [['points', 'points']];
   d.asKind = d.kind === 'xlsx' ? 'table'
     : d.kind === 'ply' ? (d.plyFaces ? 'mesh' : 'points')
@@ -411,10 +438,16 @@ export async function ofConfirm() {
   for (const s of sets) { inSet.add(s.collar.file); inSet.add(s.survey.file); for (const iv of s.intervals) inSet.add(iv.file); }
   const wire = assembleWireframePairs(st.rows);            // Datamine wireframe pt/tr pairs
   // non-compound rows: everything loaded that isn't a drillhole role or a wireframe half
-  const toLoad = st.rows.filter((r) => r.load && !inSet.has(r.file) && !wire.wfFiles.has(r.file) && !['collar', 'survey', 'intervals'].includes(r.asKind));
+  // loose shapefile parts: a .shp row and its siblings (by base name) open as ONE layer
+  const shpRows = st.rows.filter((r) => r.load && (r.kind === 'shp-part' || (r.kind === 'features' && r.featKind === 'shp')));
+  const shp = groupShapefileParts(shpRows.map((r) => r.file));
+  const shpFiles = new Set(shpRows.map((r) => r.file));
+  const toLoad = st.rows.filter((r) => r.load && !inSet.has(r.file) && !wire.wfFiles.has(r.file) && !shpFiles.has(r.file) && !['collar', 'survey', 'intervals'].includes(r.asKind));
   if (st.mode === 'replace') closeAllLayers();
   let first = st.mode === 'replace' || !S.layers.length;
   for (const { pt, tr } of wire.pairs) { await openDmWireframeBlob(pt.file, tr.file, first ? 'replace' : 'add'); first = false; }
+  for (const set of shp.sets) { const z = await zipShapefileSet(set); await openBlob(z, `${set.base}.zip`, first ? 'replace' : 'add'); first = false; }
+  if (shp.rest.length) $('#meta').textContent = `note: ${shp.rest.map((f) => f.name).join(', ')} — shapefile part${shp.rest.length === 1 ? '' : 's'} without a .shp, not opened`;
   for (const r of toLoad) {
     const over = {};
     if (r.mapping && r.kind === 'delimited' && r.asKind !== 'table') over.mapping = { x: r.mapping.x ?? 0, y: r.mapping.y ?? 1, z: r.mapping.z ?? 2, chan: r.mapping.chan ?? null, cat: r.mapping.cat ?? null };

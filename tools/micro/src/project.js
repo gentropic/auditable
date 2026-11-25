@@ -54,6 +54,7 @@ import { applySection, captureSection } from './section.js';
 import { rememberProject, PROJECTS_KEY } from './recents.js';
 import { savePackAsFolder } from './project-pack.js';
 import { maybeAutoOptimize, maybeAutoPackMeshes } from './optimize.js';
+import { polyStateOf } from './polygons.js';
 
 export function markProjectDirty() {
   if (!S.project) return;
@@ -160,7 +161,9 @@ export function projectManifest() {
       sectioned: (() => { const m = S.renderer.layerSectioned(L.id); return m === true ? undefined : m; })(),
       kind: (L.kind === 'mesh' && !L.gridSurface) ? 'mesh'
         : L.kind === 'table' ? 'table'
+          : L.docs.stringsDoc && L.docs.stringsDoc.features ? 'polygons'
           : L.docs.stringsDoc ? (L.docs.stringsDoc.header.kind === 'strings' ? 'strings' : 'dxf-points') : undefined,
+      poly: L.docs.stringsDoc && L.docs.stringsDoc.features ? polyStateOf(L) : undefined,   // category column, fill, line width (src/polygons.js)
       sheet: L._sheet || undefined,                        // an xlsx layer reopens THIS worksheet   // a grid-surface is kind 'mesh' but reopens as a grid (gridSurface flag)
       tint: L.kind === 'mesh' ? L.tint : undefined,
       opacity: (L.opacity != null && L.opacity !== 1) ? L.opacity : undefined,   // any kind (mesh/blocks/drillholes)
@@ -742,6 +745,7 @@ export async function openProjectDir(dir, { pack = null } = {}) {
         ? { tint: ls.tint, opacity: ls.opacity, forceSoup: !!ls.soup, forceContext: !!ls.exact, ...(/\.dxf$/i.test(ls.source) ? { asKind: 'mesh' } : {}) }
         : ls.kind === 'table'
           ? (ls.sheet ? { sheet: ls.sheet } : { asKind: 'table' })
+          : ls.kind === 'polygons' ? { asKind: 'features', poly: ls.poly || {} }
           : ls.kind === 'strings' ? { asKind: 'lines' }
             : ls.kind === 'dxf-points' ? { asKind: 'points' }
               : (/\.ply$/i.test(ls.source) ? { forcePoints: true } : (ls.mapping ? { mapping: ls.mapping } : {}));

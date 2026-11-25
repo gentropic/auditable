@@ -26,6 +26,7 @@ import { closeAttrTable } from './attrtable.js';
 import { sourceHash } from './identity.js';
 import { microConfirm } from './prompts.js';
 import { applyLayerSelection } from './selection.js';
+import { polyStateOf } from './polygons.js';
 const $ = (s) => document.querySelector(s);
 
 // ── identity that MUST survive a single-blob reopen ──
@@ -185,9 +186,10 @@ export function reinterpretOptions(L) {
   if (d.plyDoc) return [{ kind: 'mesh', label: 'mesh' }];
   if (d.meshDoc && /\.ply$/i.test(L.name)) return [{ kind: 'points', label: 'points' }];
   if (/\.dxf$/i.test(L.name)) {
-    const cur = d.stringsDoc ? (d.stringsDoc.header.kind === 'strings' ? 'lines' : 'points') : 'mesh';
+    const cur = d.stringsDoc ? (d.stringsDoc.features ? 'features' : d.stringsDoc.header.kind === 'strings' ? 'lines' : 'points') : 'mesh';
     const c = (d.stringsDoc ? d.stringsDoc.header.dxfCounts : d.meshDoc && d.meshDoc.header.dxfCounts) || {};
     return [
+      ...(cur !== 'features' && (c.strings || cur === 'lines') ? [{ kind: 'features', label: 'strings & polygons (features + attributes)' }] : []),
       ...(c.triangles && cur !== 'mesh' ? [{ kind: 'mesh', label: 'mesh (3DFACE surfaces)' }] : []),
       ...(c.strings && cur !== 'lines' ? [{ kind: 'lines', label: 'design strings (capsules)' }] : []),
       ...(c.points && cur !== 'points' ? [{ kind: 'points', label: 'points (pegs)' }] : []),
@@ -299,8 +301,9 @@ export async function reloadLayerFromDisk(L) {
     const sel = !changed && L._selMask && L._selCount ? L._selMask : null;
     // a DXF layer is ONE kind of what its file holds — reopen that kind, not the dominant one
     const sd = L.docs.stringsDoc;
-    const dxfAs = /\.dxf$/i.test(L.name) ? (sd ? (sd.header.kind === 'strings' ? 'lines' : 'points') : 'mesh') : null;
-    const L2 = await reopenReplacing(L, fresh, () => openBlob(fresh, L.name, 'add', null, dxfAs ? { asKind: dxfAs } : doc && doc.forcePoints ? { asKind: 'points' } : undefined));
+    const dxfAs = /\.dxf$/i.test(L.name) ? (sd ? (sd.features ? 'features' : sd.header.kind === 'strings' ? 'lines' : 'points') : 'mesh') : null;
+    const featOver = sd && sd.features ? { asKind: 'features', poly: polyStateOf(L) } : null;   // strings & polygons stay features (their category, fill)
+    const L2 = await reopenReplacing(L, fresh, () => openBlob(fresh, L.name, 'add', null, featOver || (dxfAs ? { asKind: dxfAs } : doc && doc.forcePoints ? { asKind: 'points' } : undefined)));
     if (L2) {
       applyLayerStyling(L2, style);
       await applyLayerSurface(L2, surf);
@@ -391,7 +394,7 @@ export async function changeLayerFile(L, picked = null) {
     over.mapping = mapping;
     if (L.docs.blockDoc.forcePoints) over.asKind = 'points';
   } else if (L.docs.blockDoc && L.docs.blockDoc.forcePoints) over.asKind = 'points';
-  if (/\.dxf$/i.test(name)) { const sd = L.docs.stringsDoc; over.asKind = sd ? (sd.header.kind === 'strings' ? 'lines' : 'points') : 'mesh'; }
+  if (/\.dxf$/i.test(name)) { const sd = L.docs.stringsDoc; over.asKind = sd ? (sd.features ? 'features' : sd.header.kind === 'strings' ? 'lines' : 'points') : 'mesh'; }
   if (L.gridSurface) over.asKind = 'surface';
   const perRecord = recordStateOf(L);
   const [hOld, hNew] = await Promise.all([sourceHash(layerBlob(L)), sourceHash(file)]);

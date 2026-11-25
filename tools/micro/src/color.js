@@ -18,6 +18,7 @@ import { markProjectDirty } from './project.js';
 import { followLayer } from './tree.js';
 import { setActiveLayer } from './layers.js';
 import { modelCatName, ensureViewCat, viewCatName, viewTextColumns } from './viewcat.js';
+import { setFeatureCategory } from './polygons.js';
 const $ = (s) => document.querySelector(s);
 
 // Color-by adapts to the document: for a block model the select lists EVERY
@@ -34,7 +35,7 @@ export function resolveColorMode() {
 
 export function setColorLabels(header) {
   const sel = $('#colorBy');
-  const blocks = header && (header.kind === 'blockmodel' || header.kind === 'drillholes');
+  const blocks = header && (header.kind === 'blockmodel' || header.kind === 'drillholes' || header.features);   // features: strings & polygons (src/polygons.js)
   if (!blocks) {
     // a cloud: its four drawn modes, then every other column of its points
     // (LAS: return number, GPS time, extra bytes…; PLY: its vertex properties),
@@ -59,7 +60,7 @@ export function setColorLabels(header) {
 // Every kind that draws a per-record value reads it: block models (boxes or
 // points) and drillhole intervals (sticks). A drillhole used to re-desurvey and
 // REPLACE its layer to change one number per interval.
-const valueDocOf = (L) => (L && L.docs && (L.docs.blockDoc || L.docs.dhDoc || cloudDocOf(L))) || null;
+const valueDocOf = (L) => (L && L.docs && (L.docs.blockDoc || L.docs.dhDoc || (L.docs.stringsDoc && L.docs.stringsDoc.features ? L.docs.stringsDoc : null) || cloudDocOf(L))) || null;
 // a point CLOUD's doc (LAS, or PLY points) — when its provider can stream a column
 export const cloudDocOf = (L) => { const d = (L && L.docs) || {}; const c = d.lasDoc || d.plyDoc; return c && c.columnBatches ? c : null; };
 // the columns a cloud can colour by beyond its four modes (coordinates aside)
@@ -180,8 +181,8 @@ export async function setLayerColorBy(L, v) {
       // re-keying the category re-reads the FILE — the model's, under every view;
       // a view takes the branch above instead
       L.colorSel = 'cat';
-      await useAsCategory(L, i);
-      L = layerById(followLayer(L.id)) || L;
+      if (L.docs.stringsDoc && L.docs.stringsDoc.features) { setFeatureCategory(L, name); setColorLabels(L.docs.stringsDoc.header); }   // resident features: a rebuild, no re-read
+      else { await useAsCategory(L, i); L = layerById(followLayer(L.id)) || L; }
     }
     v = 'cat';
   }
@@ -221,6 +222,11 @@ export async function setLayerColorBy(L, v) {
       if (ok === null && L.viewOf != null && ch !== d.blockDoc.header.mapping.chan) throw viewTooBig(L);
       if (ok === null && ch !== d.blockDoc.header.mapping.chan) { await reopenBlockChan(d.blockDoc, ch, { layer: L.id }); reread = true; }
     }
+    else if (d.stringsDoc && d.stringsDoc.features) {      // strings & polygons: a value per FEATURE, always the texture
+      if (L.id === S.activeId && [...$('#colorBy').options].some((o) => o.value === v)) $('#colorBy').value = v;
+      const ok = valueTexEligible(L) ? await ensureValueTex(L, v) : null;
+      if (ok === null) throw new Error(`“${L.label || L.name}”: can't colour by a column here (the GPU's float textures)`);
+    }
   }
   L.colorSel = v;                                          // (re)asserted on the successor
   // a re-read rewrites the dropdown from THAT layer's header — hand it back to the active one
@@ -250,7 +256,7 @@ export function setLayerColorSel(L, v) {
   return setLayerColorBy(L, v).catch((e) => { $('#meta').textContent = `color — ${e.message}`; });
 }
 
-export const colorHeaderOf = (L) => { const d = (L && L.docs) || {}; return d.blockDoc ? d.blockDoc.header : d.dhDoc ? d.dhDoc.header : null; };
+export const colorHeaderOf = (L) => { const d = (L && L.docs) || {}; return d.blockDoc ? d.blockDoc.header : d.dhDoc ? d.dhDoc.header : d.stringsDoc && d.stringsDoc.features ? d.stringsDoc.header : null; };
 
 export const POINT_MODES = { elevation: '0', elev: '0', intensity: '1', classification: '2', rgb: '3' };
 

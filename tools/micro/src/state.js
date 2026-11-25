@@ -39,6 +39,9 @@ export const S = {
 
 // ask for a redraw on the next animation frame
 export function requestRender() { S.dirty = true; }
+// 2D overlays that ride the camera: drawn after every rendered frame (the polygon draw/edit
+// tool registers here — a leaf registry, so a tool joins it without an import cycle)
+export const FRAME_DRAWERS = [];
 
 // File → FileSystemFileHandle (picker / recents / project opens)
 export const _fileHandles = new WeakMap();

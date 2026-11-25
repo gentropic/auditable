@@ -255,7 +255,7 @@ export function renderLayers() {
       : (L.label && L.label !== L.name ? `${L.label} (${L.name})` : L.name) + (L.storage === 'external' ? ' — linked from outside the project folder' : '');
     if (M) row.classList.add('lp-view');
     const n = document.createElement('span'); n.className = 'lp-n';
-    n.textContent = (L.kind === 'table' ? ((layerTableHeader(L) || {}).count || 0) : (S.renderer.layerElementCount(L.id) || 0)).toLocaleString();
+    n.textContent = (L.kind === 'table' || (L.docs && L.docs.stringsDoc && L.docs.stringsDoc.features) ? ((layerTableHeader(L) || {}).count || 0) : (S.renderer.layerElementCount(L.id) || 0)).toLocaleString();   // a table, or strings & polygons: its records (rows / features)
     armDrag(row, L.id);
     // every row carries the caret SLOT (leaves get it empty) so checkboxes
     // column-align per depth — a group's eye sits level with its siblings,

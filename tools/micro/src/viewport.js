@@ -7,7 +7,7 @@ import { createRenderer, createEdl, createOrbitCamera, attachOrbitInput } from '
 import { installLongPress } from './longpress.js';
 import { PHI_MAX, setZExag } from './camera.js';
 import { projectionStatus, setProjection } from './projection.js';
-import { S, requestRender, layerById } from './state.js';
+import { S, requestRender, layerById, FRAME_DRAWERS } from './state.js';
 import { setColumnsChangedHook } from './columns.js';
 import { fmtSize } from './paths.js';
 import { nextZ } from './windows.js';
@@ -190,6 +190,7 @@ function loop(t) {
     drawSwathBand();                                       // the swath hover/drag band ghost
     drawCompass();
     drawDecorations();                                     // scale bar / north / legend / title overlay
+    for (const f of FRAME_DRAWERS) { try { f(); } catch (e) { console.warn('overlay:', e); } }   // e.g. the polygon draw/edit tool (src/poly-draw.js)
     if (SW.on && !_swFence) { const sync = renderer.gl.fenceSync(renderer.gl.SYNC_GPU_COMMANDS_COMPLETE, 0); if (sync) _swFence = { sync, at: t0 }; }
   } else if (!_idleCapDone && !SW.on) {                    // still and converged: build the pick buffer, a batch a frame
     // (not in software mode: there a click renders its own pixel instead)

@@ -49,6 +49,8 @@ job('asbuilt built', 'micro-asbuilt-smoke.mjs', '--built');
 job('compare', 'micro-compare-smoke.mjs');      // two model versions → one composer page: the table = a hand computation, the Δ map's categories, the tool, refresh
 job('compare built', 'micro-compare-smoke.mjs', '--built');
 job('wfr', 'micro-wfr-smoke.mjs');
+job('polygons', 'micro-polygons-smoke.mjs');    // strings & polygons: readers (CSV strings, WKT, WKT-CSV, shapefile, GeoJSON), the CRS refusal, exports, QGIS clipboard, draw / edit, project
+job('polygons built', 'micro-polygons-smoke.mjs', '--built');
 job('nl', 'micro-nl-smoke.mjs');               // the plain-language bar: wiring + propose-never-act (accuracy: test/micro-nl.test.mjs)
 const todo = ONLY.length ? jobs.filter((j) => ONLY.some((o) => j.name.includes(o))) : jobs;
 if (has('list')) { for (const j of todo) console.log(`${j.name.padEnd(20)} node ${j.argv.join(' ')}`); process.exit(0); }
