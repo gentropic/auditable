@@ -131,6 +131,8 @@ try {
   // ═══ §2 the CRS rule ═══
   const r2 = await p.evaluate(async () => {
     const M = window._micro, fx = window.__fx, n0 = M.layers().length, out = {};
+    // §1's projected files gave the project its CRS (wave 5); the refusal is for a project WITHOUT one
+    if (window._microCrs) await window._microCrs.setProjectCrs(null);
     const tryOpen = async (data, name) => { try { await M.openBlob(new File([data], name), name, 'add', null, { throw: true }); return 'opened'; } catch (e) { return e.message; } };
     out.geojson = await tryOpen(fx.lonlat, 'wgs84.geojson');
     out.prj = await (async () => {
@@ -138,13 +140,20 @@ try {
       const desc = document.querySelector('#ofDlgBody').textContent;
       document.querySelector('#ofOpen').click();
       await new Promise((r) => setTimeout(r, 800));
-      return desc + ' || ' + document.querySelector('#meta').textContent;
+      // wave 5: the open offers to set the project's CRS — decline it, and the refusal stands
+      let offer = '';
+      if (document.querySelector('#pmDlg').classList.contains('show')) {
+        offer = document.querySelector('#pmTitle').textContent;
+        [...document.querySelectorAll('#pmFoot .pm-alt')].find((x) => x.textContent === 'Cancel').click();
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      return desc + ' || ' + offer + ' || ' + document.querySelector('#meta').textContent;
     })();
     out.wktcsv = await tryOpen('NAME,WKT\na,"POLYGON ((-45.1 -20.1, -45.0 -20.1, -45.0 -20.0, -45.1 -20.1))"\n', 'lonlat.csv');
     out.added = M.layers().length - n0;
     return out;
   });
-  chk('a GeoJSON without "crs" in lon/lat is refused — the reason names longitude/latitude and reprojection', /longitude\/latitude/.test(r2.geojson) && /reproject/i.test(r2.geojson) && /RFC 7946/.test(r2.geojson));
+  chk('with no project CRS, a GeoJSON without "crs" in lon/lat is refused — the reason names longitude/latitude and reprojection', /longitude\/latitude/.test(r2.geojson) && /reproject/i.test(r2.geojson) && /RFC 7946/.test(r2.geojson));
   chk('a shapefile with a GEOGCS .prj is refused (the dialog says so; nothing opens)', /geographic/.test(r2.prj));
   chk('a lon/lat WKT-CSV is refused; no layer was placed by any of the three', /longitude\/latitude/.test(r2.wktcsv) && r2.added === 0);
 
