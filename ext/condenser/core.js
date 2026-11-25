@@ -6759,12 +6759,13 @@ function placeDmRow(place, row) {
   row[place.z] = O[2] + R[2] * x + R[5] * y + R[8] * z;
   return row;
 }
-/** world → the model's own (local) frame for a placed .dm: Rᵀ·(p − O). */
+/** world → the model's own (local) frame for a placed .dm: Rᵀ·(p − O)/s² (R = s·rotation; s = 1 for Datamine's own). */
 function dmWorldToLocal(place, x, y, z, out = [0, 0, 0]) {
   const R = place.R, O = place.O, dx = x - O[0], dy = y - O[1], dz = z - O[2];
-  out[0] = R[0] * dx + R[1] * dy + R[2] * dz;
-  out[1] = R[3] * dx + R[4] * dy + R[5] * dz;
-  out[2] = R[6] * dx + R[7] * dy + R[8] * dz;
+  const k = 1 / (R[0] * R[0] + R[1] * R[1] + R[2] * R[2]);
+  out[0] = k * (R[0] * dx + R[1] * dy + R[2] * dz);
+  out[1] = k * (R[3] * dx + R[4] * dy + R[5] * dz);
+  out[2] = k * (R[6] * dx + R[7] * dy + R[8] * dz);
   return out;
 }
 /**

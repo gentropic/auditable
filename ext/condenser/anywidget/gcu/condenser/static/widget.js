@@ -91,6 +91,20 @@ function parseLasVlrs(header, bytes) {
   for (let k = 0; k < header.vlrCount && o + 54 <= dv.byteLength; k++) {
     const user = cstr(dv, o + 2, 16), id = dv.getUint16(o + 18, true), len = dv.getUint16(o + 20, true);
     const data = o + 54;
+    // the coordinate system (LAS 1.4 §2.5): "LASF_Projection" 2112 = OGC WKT text; 34735 = the
+    // GeoTIFF GeoKeyDirectory (inline SHORT keys: 3072 ProjectedCSType, 2048 GeographicType, …).
+    // Recorded on the header as header.crs = { wkt } | { geoKeys } — naming it is the host's job.
+    if (user === 'LASF_Projection' && data + len <= dv.byteLength) {
+      if (id === 2112) { let s = ''; for (let i = 0; i < len; i++) { const c = dv.getUint8(data + i); if (!c) break; s += String.fromCharCode(c); } if (s.trim()) header.crs = { ...(header.crs || {}), wkt: s.trim() }; }
+      else if (id === 34735 && len >= 8) {
+        const nk = dv.getUint16(data + 6, true), keys = {};
+        for (let k2 = 0; k2 < nk && data + 8 + 8 * k2 + 8 <= data + len; k2++) {
+          const e = data + 8 + 8 * k2, kid = dv.getUint16(e, true), loc = dv.getUint16(e + 2, true);
+          if (loc === 0) keys[kid] = dv.getUint16(e + 6, true);
+        }
+        header.crs = { ...(header.crs || {}), geoKeys: keys };
+      }
+    }
     if (user === 'LASF_Spec' && id === 4 && data + len <= dv.byteLength) {
       let at = RECLEN[header.format];
       for (let d = data; d + 192 <= data + len; d += 192) {
@@ -1380,12 +1394,13 @@ function placeDmRow(place, row) {
   row[place.z] = O[2] + R[2] * x + R[5] * y + R[8] * z;
   return row;
 }
-/** world → the model's own (local) frame for a placed .dm: Rᵀ·(p − O). */
+/** world → the model's own (local) frame for a placed .dm: Rᵀ·(p − O)/s² (R = s·rotation; s = 1 for Datamine's own). */
 function dmWorldToLocal(place, x, y, z, out = [0, 0, 0]) {
   const R = place.R, O = place.O, dx = x - O[0], dy = y - O[1], dz = z - O[2];
-  out[0] = R[0] * dx + R[1] * dy + R[2] * dz;
-  out[1] = R[3] * dx + R[4] * dy + R[5] * dz;
-  out[2] = R[6] * dx + R[7] * dy + R[8] * dz;
+  const k = 1 / (R[0] * R[0] + R[1] * R[1] + R[2] * R[2]);
+  out[0] = k * (R[0] * dx + R[1] * dy + R[2] * dz);
+  out[1] = k * (R[3] * dx + R[4] * dy + R[5] * dz);
+  out[2] = k * (R[6] * dx + R[7] * dy + R[8] * dz);
   return out;
 }
 /**
@@ -9494,7 +9509,7 @@ async function dmDecodeRun(blob, h, p, run) {
   for (let k = 0; k < count; k++) {
     const xv = X[k], yv = Y[k], zv = Z[k];
     if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;
-    if (R) { x[m] = O[0] + R[0] * xv + R[3] * yv; y[m] = O[1] + R[1] * xv + R[4] * yv; z[m] = O[2] + zv; }
+    if (R) { x[m] = O[0] + R[0] * xv + R[3] * yv + R[6] * zv; y[m] = O[1] + R[1] * xv + R[4] * yv + R[7] * zv; z[m] = O[2] + R[2] * xv + R[5] * yv + R[8] * zv; }
     else { x[m] = xv; y[m] = yv; z[m] = zv; }
     chan[m] = CH ? CH[k] : 0;                              // NaN already when missing
     if (cat) {
@@ -9539,10 +9554,15 @@ const DEF_NAMES = new Set(['IJK', 'XC', 'YC', 'ZC', 'XINC', 'YINC', 'ZINC', 'XMO
 // to streaming. Callers own freshness (name+size match).
 // `origin` ([x, y, z]) — the world position of the model's local origin, for a
 // rotated model whose file doesn't carry it (X0/Y0/Z0 = 0, an anonymised export).
+// `placement` ({ R: 3×3 column-major — a rotation times a uniform scale —, O: [3] }) — a layer's
+// rigid placement ON TOP of the file's own (micro's per-layer Helmert): world = O + R·(as read).
+// It composes into the readers' place (records, columns, single fetches, the workers via
+// header.dmPlace) and the render stream; the header's grid / bbox stay the FILE's (the caller
+// places those — boxes stay boxes, the pitch scales).
 // `runner` — who reads the open's units (dmPageRunner: this thread, in order; a
 // caller with workers passes @gcu/scan's dm runner). The answer is the same.
 // `unitRecords` — the units' size, at most (tests cut a small file into many).
-async function openDmModel(blob, { mapping = null, forcePoints = false, onProgress = null, cached = null, origin = null, runner = null, unitRecords = 1 << 18 } = {}) {
+async function openDmModel(blob, { mapping = null, forcePoints = false, onProgress = null, cached = null, origin = null, placement = null, runner = null, unitRecords = 1 << 18 } = {}) {
   const run = runner || dmPageRunner;
   const head = new Uint8Array(await blob.slice(0, Math.min(8192, blob.size)).arrayBuffer());
   const fmt = detectDM(head);
@@ -9766,7 +9786,9 @@ async function openDmModel(blob, { mapping = null, forcePoints = false, onProgre
     dm: h,                                                  // the @gcu/dm header: O(1) record fetch + the filter sweep
   };
 
-  if (rotApplied) place = header.dmPlace = { x: xc, y: yc, z: zc, R: Array.from(R), O: [...O] };
+  // the readers' place: the file's own rotation (when applied), then the caller's placement
+  const P = placement && placement.R && placement.O ? (rotApplied ? composeAffine(placement, { R: Array.from(R), O }) : { R: Array.from(placement.R), O: [...placement.O] }) : (rotApplied ? { R: Array.from(R), O: [...O] } : null);
+  if (P) place = header.dmPlace = { x: xc, y: yc, z: zc, R: P.R, O: P.O };
 
   // the render stream: each unit decoded (dmDecodeRun — on the runner's threads),
   // handed on IN UNIT ORDER. The category's codes are assigned here, in that order,
@@ -9774,7 +9796,7 @@ async function openDmModel(blob, { mapping = null, forcePoints = false, onProgre
   // Units arrive whole (~chunkPoints records): the chunk builder cuts its batches
   // wherever pushes end, so the chunks are the same as the old fixed-size stream's.
   async function* streamChunks({ chunkPoints = 1 << 18, signal, onProgress } = {}) {
-    const dp = { xc, yc, zc, chan, cat: catIdx >= 0 ? catIdx : null, dims: pitchQ ? [incIdx.x, incIdx.y, incIdx.z] : null, pitch: pitchQ, R: R ? Array.from(R) : null, O: R ? O : null };
+    const dp = { xc, yc, zc, chan, cat: catIdx >= 0 ? catIdx : null, dims: pitchQ ? [incIdx.x, incIdx.y, incIdx.z] : null, pitch: pitchQ, R: P ? P.R : null, O: P ? P.O : null };
     let done = 0;
     for await (const u of run.decode({ file: blob, h, p: dp, units: dmOpenRuns(h, Math.min(chunkPoints, unitRecords)), signal })) {
       let cat = null;
@@ -9799,6 +9821,14 @@ async function openDmModel(blob, { mapping = null, forcePoints = false, onProgre
   }
 
   return { header, streamChunks, recordBatches, columnBatches, fetchRecord };
+}
+
+// two affine places composed (a after b): world = Oa + Ra·(Ob + Rb·p)
+function composeAffine(a, b) {
+  const R = new Array(9);
+  for (let c = 0; c < 3; c++) for (let r = 0; r < 3; r++) R[c * 3 + r] = a.R[r] * b.R[c * 3] + a.R[3 + r] * b.R[c * 3 + 1] + a.R[6 + r] * b.R[c * 3 + 2];
+  const o = b.O;
+  return { R, O: [0, 1, 2].map((r) => a.O[r] + a.R[r] * o[0] + a.R[3 + r] * o[1] + a.R[6 + r] * o[2]) };
 }
 
 // O(1) fetch of one record by RAW record number (the pick → inspector path).
@@ -13580,6 +13610,23 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
       if (logsPipe) logsPipe.drop(layer);
       layerMaxRec.delete(layer); bakeDirty.delete(layer);
       lastCosSig.delete(layer); cosmeticDirtyLayers.delete(layer); lutDirtyLayers.delete(layer);
+      needClear = true;
+    },
+    // drop a layer's own chunks (optionally only those of `kinds`, e.g. ['mesh']) but KEEP
+    // its state — filter mask, selection, categories, ramp, stick radius, mesh style. For a
+    // layer whose geometry is rebuilt in place from resident data (an edited polygon layer,
+    // a fill toggled on and off); removeLayer is for a layer going away.
+    clearLayerChunks(layer, kinds = null) {
+      for (let i = chunks.length - 1; i >= 0; i--) {
+        const c = chunks[i];
+        if (c._layer !== layer || c._src) continue;
+        if (kinds && !kinds.includes(c.kind)) continue;
+        freeChunk(c);
+        chunks.splice(i, 1);
+      }
+      const ls = layers.get(layer);
+      if (ls && (!kinds || kinds.includes('sticks') || kinds.includes('blocks'))) ls.docChan = [Infinity, -Infinity];
+      dropCapture();
       needClear = true;
     },
     layerElementCount(layer) {

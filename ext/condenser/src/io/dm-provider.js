@@ -165,7 +165,7 @@ export async function dmDecodeRun(blob, h, p, run) {
   for (let k = 0; k < count; k++) {
     const xv = X[k], yv = Y[k], zv = Z[k];
     if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;
-    if (R) { x[m] = O[0] + R[0] * xv + R[3] * yv; y[m] = O[1] + R[1] * xv + R[4] * yv; z[m] = O[2] + zv; }
+    if (R) { x[m] = O[0] + R[0] * xv + R[3] * yv + R[6] * zv; y[m] = O[1] + R[1] * xv + R[4] * yv + R[7] * zv; z[m] = O[2] + R[2] * xv + R[5] * yv + R[8] * zv; }
     else { x[m] = xv; y[m] = yv; z[m] = zv; }
     chan[m] = CH ? CH[k] : 0;                              // NaN already when missing
     if (cat) {
@@ -210,10 +210,15 @@ const DEF_NAMES = new Set(['IJK', 'XC', 'YC', 'ZC', 'XINC', 'YINC', 'ZINC', 'XMO
 // to streaming. Callers own freshness (name+size match).
 // `origin` ([x, y, z]) — the world position of the model's local origin, for a
 // rotated model whose file doesn't carry it (X0/Y0/Z0 = 0, an anonymised export).
+// `placement` ({ R: 3×3 column-major — a rotation times a uniform scale —, O: [3] }) — a layer's
+// rigid placement ON TOP of the file's own (micro's per-layer Helmert): world = O + R·(as read).
+// It composes into the readers' place (records, columns, single fetches, the workers via
+// header.dmPlace) and the render stream; the header's grid / bbox stay the FILE's (the caller
+// places those — boxes stay boxes, the pitch scales).
 // `runner` — who reads the open's units (dmPageRunner: this thread, in order; a
 // caller with workers passes @gcu/scan's dm runner). The answer is the same.
 // `unitRecords` — the units' size, at most (tests cut a small file into many).
-export async function openDmModel(blob, { mapping = null, forcePoints = false, onProgress = null, cached = null, origin = null, runner = null, unitRecords = 1 << 18 } = {}) {
+export async function openDmModel(blob, { mapping = null, forcePoints = false, onProgress = null, cached = null, origin = null, placement = null, runner = null, unitRecords = 1 << 18 } = {}) {
   const run = runner || dmPageRunner;
   const head = new Uint8Array(await blob.slice(0, Math.min(8192, blob.size)).arrayBuffer());
   const fmt = detectDM(head);
@@ -437,7 +442,9 @@ export async function openDmModel(blob, { mapping = null, forcePoints = false, o
     dm: h,                                                  // the @gcu/dm header: O(1) record fetch + the filter sweep
   };
 
-  if (rotApplied) place = header.dmPlace = { x: xc, y: yc, z: zc, R: Array.from(R), O: [...O] };
+  // the readers' place: the file's own rotation (when applied), then the caller's placement
+  const P = placement && placement.R && placement.O ? (rotApplied ? composeAffine(placement, { R: Array.from(R), O }) : { R: Array.from(placement.R), O: [...placement.O] }) : (rotApplied ? { R: Array.from(R), O: [...O] } : null);
+  if (P) place = header.dmPlace = { x: xc, y: yc, z: zc, R: P.R, O: P.O };
 
   // the render stream: each unit decoded (dmDecodeRun — on the runner's threads),
   // handed on IN UNIT ORDER. The category's codes are assigned here, in that order,
@@ -445,7 +452,7 @@ export async function openDmModel(blob, { mapping = null, forcePoints = false, o
   // Units arrive whole (~chunkPoints records): the chunk builder cuts its batches
   // wherever pushes end, so the chunks are the same as the old fixed-size stream's.
   async function* streamChunks({ chunkPoints = 1 << 18, signal, onProgress } = {}) {
-    const dp = { xc, yc, zc, chan, cat: catIdx >= 0 ? catIdx : null, dims: pitchQ ? [incIdx.x, incIdx.y, incIdx.z] : null, pitch: pitchQ, R: R ? Array.from(R) : null, O: R ? O : null };
+    const dp = { xc, yc, zc, chan, cat: catIdx >= 0 ? catIdx : null, dims: pitchQ ? [incIdx.x, incIdx.y, incIdx.z] : null, pitch: pitchQ, R: P ? P.R : null, O: P ? P.O : null };
     let done = 0;
     for await (const u of run.decode({ file: blob, h, p: dp, units: dmOpenRuns(h, Math.min(chunkPoints, unitRecords)), signal })) {
       let cat = null;
@@ -470,6 +477,14 @@ export async function openDmModel(blob, { mapping = null, forcePoints = false, o
   }
 
   return { header, streamChunks, recordBatches, columnBatches, fetchRecord };
+}
+
+// two affine places composed (a after b): world = Oa + Ra·(Ob + Rb·p)
+function composeAffine(a, b) {
+  const R = new Array(9);
+  for (let c = 0; c < 3; c++) for (let r = 0; r < 3; r++) R[c * 3 + r] = a.R[r] * b.R[c * 3] + a.R[3 + r] * b.R[c * 3 + 1] + a.R[6 + r] * b.R[c * 3 + 2];
+  const o = b.O;
+  return { R, O: [0, 1, 2].map((r) => a.O[r] + a.R[r] * o[0] + a.R[3 + r] * o[1] + a.R[6 + r] * o[2]) };
 }
 
 // O(1) fetch of one record by RAW record number (the pick → inspector path).
