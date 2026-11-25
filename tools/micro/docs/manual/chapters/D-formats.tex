@@ -138,8 +138,10 @@ LFM \file{.lfm} & yes & yes & Leapfrog model files: several meshes with their co
   import and written from each layer's tint on export. \\
 Datamine wireframe & yes & — & A pair of files: points (\file{…pt.dm}) and triangles
   (\file{…tr.dm}). Open both together; a lone half says which half is missing. \\
-DXF \file{.dxf} & yes & — & ASCII DXF. 3D faces and polyface meshes open as a mesh; 3D polylines as
-  strings, categorized by DXF layer; points as pegs. ACIS solids are not read. \\
+DXF \file{.dxf} & yes & yes & ASCII DXF. 3D faces and polyface meshes open as a mesh; 3D polylines as
+  strings, categorized by DXF layer; points as pegs; or, with \ui{Open as}, the polylines as
+  features with attributes (\cref{sec:formats-polygons}). Written from a strings \& polygons layer.
+  ACIS solids are not read. \\
 \file{.wfr} & yes & yes & The open wireframe format: many surfaces, strings and point sets in one
   file, named, with attributes. micro converts other mesh files to it without loading them, and can
   store a project's meshes in it. \\
@@ -157,6 +159,47 @@ surfaces, vector and date data, textures, and data on surfaces.
 Exports re-read the source geometry, so coordinates leave in full double precision. That matters at
 UTM northings, where single precision costs about half a meter. A large mesh held in its streamed,
 display-only form is re-read from its file to be exported (\cref{ch:meshes}).
+
+\section{Strings and polygons}\label{sec:formats-polygons}
+
+A strings \& polygons layer's records are its features, each with its attributes
+(\cref{ch:polygons}). Every format here keeps the attributes, holes and multipart features in both
+directions, except DXF, which has no holes of its own (micro writes them with a note in each
+polyline's \code{MICRO} extended data and reads them back).
+
+\begin{tabularx}{\linewidth}{@{}p{27mm}p{9mm}p{9mm}L@{}}
+\toprule
+format & read & write & notes \\
+\midrule
+string file \file{.csv} & yes & — & An ID column (\col{STRING}, \col{ID}, \col{LINE}, \col{POLYGON}…)
+  and ordered \col{X}, \col{Y}, \col{Z} rows, the vertices of one string together: the Leapfrog and
+  Surpac export shape. A string that returns to its first vertex is a polygon. Other columns become
+  attributes, from each string's first row. \\
+WKT \file{.wkt} & yes & — & One geometry, or one per line. \code{SRID=…;} is read. \\
+WKT-CSV \file{.csv} & yes & yes & A table with a WKT column (\col{wkt\_geom}, \col{WKT},
+  \col{geometry}, \col{the\_geom}, \col{shape}) and attribute columns, comma, semicolon or
+  tab separated, quoted fields allowed: what QGIS writes and copies. Written comma-separated, the WKT
+  first; this is also how micro keeps a drawn or edited layer. \\
+Shapefile \file{.shp} & yes & yes & The \file{.shp}, \file{.dbf}, \file{.prj} and \file{.cpg} parts,
+  opened together (the open dialog makes them one layer) or as a \file{.zip}. Z is kept; M is
+  dropped. Written as a \file{.zip}; a layer with both polygons and lines writes two shapefiles in it,
+  because a shapefile holds one geometry type. \\
+GeoJSON \file{.geojson} & yes & yes & FeatureCollection, Feature or a bare geometry. A
+  \code{"crs"} member, from the 2008 specification, is honored. Written with one, so the file does not
+  read as longitude and latitude. \\
+DXF \file{.dxf} & yes & yes & Polylines, lines and circles, each a feature with its DXF layer as an
+  attribute. Written one polyline per ring, on the DXF layer named by the category column. \\
+\bottomrule
+\end{tabularx}
+
+\begin{note}
+\textbf{Longitude and latitude are refused.} A \file{.prj} that names a geographic system, a GeoJSON
+file without a projected \code{"crs"}, an EPSG 4000–4999 SRID, or coordinates that all fit within
+±180 and ±90 over less than 20° stop the open, and say why. micro places coordinates as it is given
+them and never reprojects, so degrees would land at $(-45, -20)$ on a metre grid. Reproject the file
+in your GIS first. Point geometries in a strings file are skipped with a note; a file of only points
+opens as a points layer.
+\end{note}
 
 \section{Grids and surfaces}\label{sec:formats-grids}
 
@@ -243,7 +286,7 @@ A project is a plain folder, readable without micro (\cref{ch:projects,ch:store}
 file & what it is \\
 \midrule
 \file{project.json} & The session: layers, styling, filters, camera, section, open windows. \\
-\file{models/} \file{drillholes/} \file{clouds/} \file{meshes/} \file{grids/} \file{tables/} &
+\file{models/} \file{drillholes/} \file{clouds/} \file{meshes/} \file{grids/} \file{tables/} \file{polygons/} &
   The data files, by kind. A file dropped into one of these by hand is picked up by
   \ui{Scan folder for new data}. \\
 \file{.element.json} & Beside each data file, its element manifest: the columns, the locations, and every recorded

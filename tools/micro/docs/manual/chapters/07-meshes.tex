@@ -73,7 +73,7 @@ A DXF file is a drawing, and a drawing can hold several kinds of thing. micro so
 \item \textbf{Pegs.} Points become a points layer.
 \end{itemize}
 
-A DXF opens as its surfaces when it has any, otherwise as its strings, otherwise as its points. \ui{Open as} in the open dialog offers the other kinds the drawing contains (\ui{mesh (3DFACE surfaces)}, \ui{design strings (capsules)}, \ui{points (pegs)}), and \menu{Data \& file>Reinterpret as…} on the layer's menu crosses between them afterwards.
+A DXF opens as its surfaces when it has any, otherwise as its strings, otherwise as its points. \ui{Open as} in the open dialog offers the other kinds the drawing contains (\ui{mesh (3DFACE surfaces)}, \ui{design strings (capsules)}, \ui{points (pegs)}), and \menu{Data \& file>Reinterpret as…} on the layer's menu crosses between them afterwards. A fourth reading, \ui{strings \& polygons (features + attributes)}, makes each polyline a feature with its DXF layer as an attribute: closed ones are polygons with an inside, and the layer exports, edits and pastes like a shapefile's (\cref{ch:polygons}).
 
 A drawing too large to preview opens streamed, and its \ui{Open as} offers \ui{everything it holds (streamed)}, which reads all three kinds in one pass, or a single kind. Solids stored as ACIS bodies are not read.
 

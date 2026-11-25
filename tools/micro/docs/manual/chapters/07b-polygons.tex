@@ -1,0 +1,163 @@
+\chapter{Strings and polygons}\label{ch:polygons}
+
+\begin{goals}
+\textbf{In this chapter} you open pit limits, lease boundaries, blast outlines and mapped contacts
+as features with their attributes, from CSV string files, WKT, shapefiles and GeoJSON; copy them to
+and from QGIS; draw and edit a polygon in plan; and export them back out.
+\end{goals}
+
+A \term{strings \& polygons} layer\index{polygons}\index{strings!with attributes} holds lines and
+closed polygons in 3D, and its records are the \emph{features}: one pit limit, one lease, one blast.
+Each feature carries its attributes, so the layer behaves like any other table in micro. Its
+attribute table lists one row per feature (\key{t}), the filter keeps the features that match
+(\cref{ch:filter}), the color list colors by any of its columns (\cref{ch:color}), and a click on a
+line shows that feature's record (\cref{ch:picking}). A polygon has an inside: holes and multipart
+features are kept, and the fill shows it.
+
+\side{A DXF's design strings open as the segment-by-segment strings layer of \cref{sec:meshes-dxf};
+\ui{Open as} reads the same drawing as features.}
+
+\section{Opening}\label{sec:polygons-open}
+
+Open the files like any other (\cref{ch:opening}). The open dialog names each one before it loads,
+with its feature count: \ui{Shapefile · 12 polygons · 4 attributes · SIRGAS 2000 / UTM zone 23S →
+strings \& polygons}.
+
+\begin{description}
+\item[A CSV string file] has an ID column (\col{STRING}, \col{ID}, \col{LINE}, \col{POLYGON},
+  \col{FEATURE}…) and one row per vertex, in order, with \col{X}, \col{Y} and \col{Z}. The rows of
+  one string sit together. This is how Leapfrog and Surpac export polylines. A string whose last
+  vertex returns to its first is a polygon; any other columns become the feature's attributes, read
+  from its first row. A table with an ID column whose values do not come in runs stays a block
+  model or a table.
+\item[A WKT-CSV table] has a column of well-known text (\col{wkt\_geom}, \col{WKT},
+  \col{geometry}, \col{the\_geom}) beside its attributes. QGIS writes it when you save a layer as CSV
+  with \code{GEOMETRY=AS\_WKT}, and its \menu{Edit>Copy Features} puts the same table on the
+  clipboard. A \file{.wkt} file holds one geometry, or one per line.
+\item[A shapefile] is several files: \file{.shp} (the shapes), \file{.dbf} (the attributes),
+  \file{.prj} (the coordinate system) and often \file{.cpg} (the text encoding). Select them
+  together; the open dialog makes them one layer. A \file{.zip} holding them opens directly.
+\item[GeoJSON] opens a FeatureCollection, one Feature, or a bare geometry.
+\item[A DXF] opens as features from \ui{Open as ▾} → \ui{strings \& polygons}: each polyline, line
+  and circle is a feature, its DXF layer an attribute (\col{LAYER}).
+\end{description}
+
+Point geometries are not strings: a file mixing them skips the points and says how many, and a
+file of only points opens as a points layer. A feature without a Z (a 2D shapefile, a WKT-CSV
+digitized in plan) is drawn at $z=0$, and the status line says so; \menu{Geometry>Set elevation…}
+places the layer at a bench.
+
+\subsection{Longitude and latitude are refused}\index{CRS!geographic, refused}
+
+micro places coordinates where they say and never reprojects (\cref{ch:opening}). A file in
+degrees would land at $(-45, -20)$ on a metre grid, so it does not open. It is refused, with the
+reason on the status line and on the open dialog's row, when its \file{.prj} names a geographic
+system (\code{GEOGCS}), when a GeoJSON file has no projected \code{"crs"} (the GeoJSON standard is
+longitude and latitude), when its SRID is a geographic EPSG code, or when every coordinate fits
+within ±180 and ±90 over less than 20°. Reproject the file in your GIS (to UTM or your mine grid)
+and open it again. Reprojection on open is planned.
+
+\section{The layer}\label{sec:polygons-layer}
+
+Lines draw as thin tubes in the feature's color, as design strings do. The right-click menu adds:
+
+\begin{description}
+\item[\menu{Display>Fill polygons}] shades each polygon's inside, holes left open, in its class
+  color (or a single color when the layer is \ui{solid}). The fill follows the filter. It is shading,
+  never picked: a click inside a polygon reaches what is behind.
+\item[\menu{Display>Classes by…}] makes any text column the category, without reading the file
+  again.
+\item[\menu{Display>Line width…}] sets the tubes' half-width in metres.
+\item[\menu{Geometry>Edit vertices}, \ui{Draw polygon into this layer}, \ui{Set elevation…}]
+  are in \cref{sec:polygons-draw}.
+\item[\menu{Data \& file>Export features…}, \ui{Copy features (WKT, for QGIS)}] are in
+  \cref{sec:polygons-export}.
+\end{description}
+
+A filter such as \code{BENCH >= 850 and STATUS = "approved"} keeps whole features. The rectangle and
+lasso select features (\cref{ch:picking}); the selection is what \ui{Copy features} and
+\ui{Export features…} take when there is one. A vector section draws the features in its slab and,
+on a plan, their fills (\cref{ch:composer}).
+
+\section{QGIS and the clipboard}\label{sec:polygons-qgis}\index{QGIS!clipboard}
+
+QGIS's clipboard is a table: a header row, tab-separated, the geometry as well-known text in a
+\col{wkt\_geom} column first. micro reads and writes exactly that.
+
+\begin{itemize}
+\item \textbf{From QGIS to micro.} Select features in QGIS and press \key{Ctrl}+\key{C}. In micro,
+  press \key{Ctrl}+\key{V} over the view (or \menu{File>Paste features (WKT from QGIS)}). The features
+  arrive as a new layer, attributes as columns. Features digitized in 2D ask for the elevation to
+  place them at; micro never guesses a Z.
+\item \textbf{From micro to QGIS.} Right-click the layer, \menu{Data \& file>Copy features (WKT, for
+  QGIS)}, and in QGIS \menu{Edit>Paste Features As>Temporary Scratch Layer}. The selected features go,
+  or all of them when nothing is selected.
+\end{itemize}
+
+Coordinates cross unchanged in both directions, so both sides must already use the same projected
+system.
+
+\section{Drawing and editing}\label{sec:polygons-draw}\index{polygons!drawing}
+
+\menu{Tools>Draw polygon…} and \menu{Tools>Draw line…} draw over whatever is open. Look from above
+first (\key{d}, the plan view): each click lands where the view ray meets the drawing
+plane, which is the plan section's elevation when a plan section is on, otherwise the top of the
+scene.
+
+\begin{itemize}
+\item Click to add a vertex. A vertex near an existing feature vertex snaps to it, within ten pixels;
+  hold \key{Alt} to place it freely.
+\item Close a polygon by clicking its first vertex, double-clicking or pressing \key{Enter}.
+  \key{Backspace} (or \key{Ctrl}+\key{Z}) takes the last vertex back; \key{Esc} stops.
+\item micro asks for a name and, optionally, attributes as \code{key=value} pairs:
+  \code{code=B12, bench=850}. Numbers stay numbers.
+\end{itemize}
+
+The first polygon starts a layer \ui{drawn polygons}; the next ones go into it while it is the active
+layer. \ui{Draw polygon into this layer} on any strings \& polygons layer adds to that one instead,
+with its columns.
+
+\menu{Geometry>Edit vertices} puts a square on every vertex of the layer (of its selected features,
+when there is a selection) and a small circle on every edge's midpoint. Drag a square to move a
+vertex; its elevation stays. Drag a circle to add a vertex there. \key{Alt}-click a square, or click
+it and press \key{Delete}, to remove it. Each edit is one step for \key{Ctrl}+\key{Z}. \key{Enter} or
+\key{Esc} ends.
+
+\begin{note}
+A drawn or edited layer is kept in micro's own form, a WKT-CSV table. It lives in memory until you
+save the project, which writes it into the project's \file{polygons/} folder (\cref{ch:projects});
+the next open reads it back with its attributes. Editing a layer opened from a shapefile or GeoJSON
+does not change that file: the layer becomes its WKT-CSV.
+\end{note}
+
+\begin{tryit}
+Draw a limit over the demo model.
+\begin{enumerate}
+\item Open the demo project and press \key{d} for the plan view.
+\item Choose \menu{Tools>Draw polygon…} and click five points around the high-grade core. Click the
+  first point again to close.
+\item Name it \code{pit limit}, with \code{phase=1} as its attribute.
+\item Right-click \ui{drawn polygons} and choose \menu{Display>Fill polygons}.
+\item Choose \menu{Geometry>Edit vertices}, drag one corner outward, then press \key{Ctrl}+\key{Z}
+  to put it back and \key{Enter} to finish.
+\end{enumerate}
+\end{tryit}
+
+\section{Exporting}\label{sec:polygons-export}
+
+\menu{Data \& file>Export features…} writes the layer (or its selection) with every attribute:
+
+\begin{description}
+\item[WKT-CSV] (\file{.csv}): for QGIS, PostGIS and spreadsheets.
+\item[GeoJSON] (\file{.geojson}): with a \code{"crs"} member, so the file is not read as longitude
+  and latitude.
+\item[Shapefile] (\file{.zip}): \file{.shp}, \file{.shx}, \file{.dbf}, \file{.cpg} and the
+  \file{.prj} the layer came with. A shapefile holds one geometry type, so a layer with both
+  polygons and lines writes two in the zip.
+\item[DXF] (\file{.dxf}): one polyline per ring, on the DXF layer named by the category column, the
+  attributes in each polyline's extended data under \code{MICRO}. micro reads them back, holes
+  included.
+\end{description}
+
+All four open again in micro with the same features, attributes and coordinates
+(\cref{sec:formats-polygons}).

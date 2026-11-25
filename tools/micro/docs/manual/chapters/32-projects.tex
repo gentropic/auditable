@@ -62,14 +62,15 @@ Data\index{project folder} files are filed by kind. The layout mirrors the layer
 \node[d] at (6,-30) {grids/};       \node[n] at (46,-30) {GeoTIFF, Surfer and ESRI grids};
 \node[d] at (6,-36) {clouds/};      \node[n] at (46,-36) {point clouds};
 \node[d] at (6,-42) {tables/};      \node[n] at (46,-42) {tables without coordinates};
-\node[d] at (6,-50) {recipes/};     \node[n] at (46,-50) {recipes and routines, as YAML (\cref{ch:recipes})};
-\node[d] at (6,-56) {runs/};        \node[n] at (46,-56) {one folder per routine run (\cref{ch:records})};
-\node[d] at (6,-62) {figures/};     \node[n] at (46,-62) {composer figures (\cref{ch:composer})};
-\node[d] at (6,-68) {bookmarks/ \ scenes/}; \node[n] at (46,-68) {one small JSON per saved view};
-\draw[tk] (2,-2.5) -- (2,-68);
-\foreach \y in {-6,-12,-18,-24,-30,-36,-42,-50,-56,-62,-68} \draw[tk] (2,\y) -- (5,\y);
-\draw[decorate, decoration={brace, amplitude=3pt}, amber, line width=0.6pt] (-1.5,-43.5) -- node[left=3pt, n, anchor=east, text=amber] {data} (-1.5,-10.5);
-\draw[decorate, decoration={brace, amplitude=3pt}, rule, line width=0.6pt] (-1.5,-69.5) -- node[left=3pt, n, anchor=east] {work} (-1.5,-48.5);
+\node[d] at (6,-48) {polygons/};    \node[n] at (46,-48) {strings \& polygons with attributes (\cref{ch:polygons})};
+\node[d] at (6,-56) {recipes/};     \node[n] at (46,-56) {recipes and routines, as YAML (\cref{ch:recipes})};
+\node[d] at (6,-62) {runs/};        \node[n] at (46,-62) {one folder per routine run (\cref{ch:records})};
+\node[d] at (6,-68) {figures/};     \node[n] at (46,-68) {composer figures (\cref{ch:composer})};
+\node[d] at (6,-74) {bookmarks/ \ scenes/}; \node[n] at (46,-74) {one small JSON per saved view};
+\draw[tk] (2,-2.5) -- (2,-74);
+\foreach \y in {-6,-12,-18,-24,-30,-36,-42,-48,-56,-62,-68,-74} \draw[tk] (2,\y) -- (5,\y);
+\draw[decorate, decoration={brace, amplitude=3pt}, amber, line width=0.6pt] (-1.5,-49.5) -- node[left=3pt, n, anchor=east, text=amber] {data} (-1.5,-10.5);
+\draw[decorate, decoration={brace, amplitude=3pt}, rule, line width=0.6pt] (-1.5,-75.5) -- node[left=3pt, n, anchor=east] {work} (-1.5,-54.5);
 \end{tikzpicture}\end{adjustbox}
 \caption{A project folder. Data is filed by kind; what you made with it sits beside.}\label{fig:projects-layout}
 \end{figure}
