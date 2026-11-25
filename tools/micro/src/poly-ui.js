@@ -126,6 +126,8 @@ export function editFeatures(L, label, fn) {
   const d = featureDocOf(L); if (!d) return false;
   const before = snap(d);
   fn(d);
+  // an edit moves vertices IN PLACE: drop each feature's cached bbox and parts (polygons.js)
+  for (const f of d.features || []) { if (f) { delete f._bbox; delete f._parts; } }
   const after = snap(d);
   materialize(L);
   pushUndo(label, () => { const Lx = layerById(L.id); if (Lx) restore(Lx, before); }, { redo: () => { const Lx = layerById(L.id); if (Lx) restore(Lx, after); } });

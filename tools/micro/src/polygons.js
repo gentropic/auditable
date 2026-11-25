@@ -37,7 +37,7 @@
 //       P.mask(xs, ys, n, out?) → Uint8Array         band (bbox → band → crossings). Holes and
 //       P.bbox → [x0, y0, x1, y1]                    multipolygons as above. `which` returns the
 //                                                    first containing feature in list order.
-//   polygonAreaXY(feature) → plan area (holes subtracted, parts summed)
+//   polygonAreaXY(feature) → plan area (holes subtracted, overlapping parts counted once — src/plan-union.js)
 //   ringArea(ring) → signed plan area (positive = counter-clockwise)
 // Everything is plan-view (x, y): the z of a ring is carried for drawing, export and extrusion,
 // never used by containment.
@@ -47,6 +47,7 @@
 import { S, layerById, requestRender } from './state.js';
 import { createStickChunkBuilder, buildMeshChunk, categoryPalettePixels } from '../../../ext/condenser/src/main.js';
 import { triangulateRings } from '../../../ext/geometry/index.js';
+import { featureParts, unionContains, unionArea } from './plan-union.js';
 
 // ── the API ────────────────────────────────────────────────────────────────────────────────
 export const isPolygonLayer = (L) => !!(L && L.docs && L.docs.stringsDoc && L.docs.stringsDoc.features);
@@ -71,11 +72,10 @@ export function ringArea(ring) {
   for (let i = 0, n = ring.length, j = n - 1; i < n; j = i++) s += (ring[j][0] - ring[i][0]) * (ring[j][1] + ring[i][1]);
   return s / 2;
 }
+// the plan area of a polygon feature: holes subtracted, overlapping parts counted ONCE (their union)
 export function polygonAreaXY(f) {
   if (!f.closed) return 0;
-  let a = 0;
-  for (const part of f.parts) part.forEach((ri, k) => { const v = Math.abs(ringArea(f.rings[ri])); a += k === 0 ? v : -v; });
-  return a;
+  return unionArea(featureParts(f));
 }
 export function featureBBox(f) {
   if (f._bbox) return f._bbox;
@@ -88,26 +88,23 @@ export function pointInPolygonXY(f, x, y) {
   if (!f || !f.closed) return false;
   const b = featureBBox(f);
   if (x < b[0] || x > b[2] || y < b[1] || y > b[3]) return false;
-  let inside = false;
-  for (const r of f.rings) {
-    for (let i = 0, n = r.length, j = n - 1; i < n; j = i++) {
-      const yi = r[i][1], yj = r[j][1];
-      if ((yi > y) !== (yj > y) && x < (r[j][0] - r[i][0]) * (y - yi) / (yj - yi) + r[i][0]) inside = !inside;
-    }
-  }
-  return inside;
+  return unionContains(featureParts(f), x, y);                     // overlapping parts: their UNION (src/plan-union.js)
 }
 
 // one polygon → its edges in horizontal bands: a query walks only its band's edges
 function prepareOne(f, bandsWanted) {
   const b = featureBBox(f);
+  // each edge knows its PART (an outer ring + its holes): a point is inside a part by even-odd over
+  // that part's edges, and inside the feature when inside ANY part — overlapping parts are a union
+  const groups = f.parts && f.parts.length ? f.parts : [f.rings.map((_, i) => i)];
   let ne = 0;
-  for (const r of f.rings) ne += r.length;
-  const ex0 = new Float64Array(ne), ey0 = new Float64Array(ne), ex1 = new Float64Array(ne), ey1 = new Float64Array(ne);
+  for (const g of groups) for (const ri of g) ne += f.rings[ri].length;
+  const ex0 = new Float64Array(ne), ey0 = new Float64Array(ne), ex1 = new Float64Array(ne), ey1 = new Float64Array(ne), epart = new Int32Array(ne);
   let e = 0;
-  for (const r of f.rings) for (let i = 0, n = r.length, j = n - 1; i < n; j = i++) {
-    ex0[e] = r[j][0]; ey0[e] = r[j][1]; ex1[e] = r[i][0]; ey1[e] = r[i][1]; e++;
-  }
+  groups.forEach((g, gi) => { for (const ri of g) { const r = f.rings[ri]; for (let i = 0, n = r.length, j = n - 1; i < n; j = i++) {
+    ex0[e] = r[j][0]; ey0[e] = r[j][1]; ex1[e] = r[i][0]; ey1[e] = r[i][1]; epart[e] = gi; e++;
+  } } });
+  const NP = groups.length, par = NP > 1 ? new Uint8Array(NP) : null;
   const B = Math.max(1, Math.min(bandsWanted || Math.ceil(Math.sqrt(ne)), 4096));
   const h = (b[3] - b[1]) / B || 1;
   const counts = new Int32Array(B + 1);
@@ -121,12 +118,21 @@ function prepareOne(f, bandsWanted) {
     contains(x, y) {
       if (x < b[0] || x > b[2] || y < b[1] || y > b[3]) return false;
       const q = bandOf(y);
-      let inside = false;
+      if (!par) {
+        let inside = false;
+        for (let s = counts[q], t = counts[q + 1]; s < t; s++) {
+          const k = list[s], yi = ey1[k], yj = ey0[k];
+          if ((yi > y) !== (yj > y) && x < (ex0[k] - ex1[k]) * (y - yi) / (yj - yi) + ex1[k]) inside = !inside;
+        }
+        return inside;
+      }
+      par.fill(0);
       for (let s = counts[q], t = counts[q + 1]; s < t; s++) {
         const k = list[s], yi = ey1[k], yj = ey0[k];
-        if ((yi > y) !== (yj > y) && x < (ex0[k] - ex1[k]) * (y - yi) / (yj - yi) + ex1[k]) inside = !inside;
+        if ((yi > y) !== (yj > y) && x < (ex0[k] - ex1[k]) * (y - yi) / (yj - yi) + ex1[k]) par[epart[k]] ^= 1;
       }
-      return inside;
+      for (let i = 0; i < NP; i++) if (par[i]) return true;
+      return false;
     },
   };
 }

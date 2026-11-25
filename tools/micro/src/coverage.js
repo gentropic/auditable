@@ -10,10 +10,13 @@
 //       features: polygon features ({ closed, rings, parts } — tools/micro/src/polygons.js); lines skip
 //       lat: { ox, oy, dx, dy, nx, ny } — cell (i, j)'s CENTRE is (ox + i·dx, oy + j·dy); dy may be
 //            negative (a grid stored top row first). Cell (i, j) is out[i + j·nx].
-//       Holes subtract, a multipolygon's parts add, overlapping features are capped at a full cell.
+//       Holes subtract; overlapping parts and overlapping features count ONCE — their union
+//       (src/plan-union.js), the same rule as the centroid test and the reported area.
 //   clipRectArea(ring, x0, y0, x1, y1) → the plan area of ring ∩ the rectangle (unsigned)
-//   pointInFeatureXY(f, x, y) → even-odd containment over every ring of the feature
+//   pointInFeatureXY(f, x, y) → inside any part (each part by even-odd over its own rings)
 //   ringAreaXY(ring) → signed plan area (positive = counter-clockwise)
+
+import { partsOf, featureParts, partContains, unionContains, unionArea, unionAreaInRect } from './plan-union.js';
 
 export function ringAreaXY(ring) {
   let s = 0;
@@ -30,14 +33,7 @@ export function featureBBoxXY(f) {
 export function pointInFeatureXY(f, x, y, bb = null) {
   if (!f || !f.closed) return false;
   if (bb && (x < bb[0] || x > bb[2] || y < bb[1] || y > bb[3])) return false;
-  let inside = false;
-  for (const r of f.rings) {
-    for (let i = 0, n = r.length, j = n - 1; i < n; j = i++) {
-      const yi = r[i][1], yj = r[j][1];
-      if ((yi > y) !== (yj > y) && x < (r[j][0] - r[i][0]) * (y - yi) / (yj - yi) + r[i][0]) inside = !inside;
-    }
-  }
-  return inside;
+  return unionContains(featureParts(f), x, y);
 }
 
 // one half-plane step of Sutherland–Hodgman. side(p) ≥ 0 keeps; cut(a, b) is where the edge crosses.
@@ -66,12 +62,26 @@ export function clipRectArea(ring, x0, y0, x1, y1) {
   return Math.abs(ringAreaXY(p));
 }
 
-// the covered area of ONE feature inside a rectangle: parts add, holes subtract
+// the covered area of ONE feature inside a rectangle: holes subtract, overlapping parts count once
 export function featureRectArea(f, x0, y0, x1, y1) {
+  return partsRectArea(featureParts(f), x0, y0, x1, y1);
+}
+// a set of parts inside a rectangle: one part (or parts whose boxes don't meet inside it) by
+// clipping each ring to the rectangle — exact and fast; parts that can overlap there by the union
+function partsRectArea(parts, x0, y0, x1, y1) {
+  const live = parts.filter((p) => p.bb[0] < x1 && p.bb[2] > x0 && p.bb[1] < y1 && p.bb[3] > y0);
+  if (!live.length) return 0;
+  const clipBB = (b) => [Math.max(b[0], x0), Math.max(b[1], y0), Math.min(b[2], x1), Math.min(b[3], y1)];
+  let meet = false;
+  for (let i = 0; i < live.length && !meet; i++) for (let j = i + 1; j < live.length; j++) {
+    const a = clipBB(live[i].bb), b = clipBB(live[j].bb);
+    if (a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3]) { meet = true; break; }
+  }
+  if (meet) return unionAreaInRect(live, x0, y0, x1, y1);
   let a = 0;
-  for (const part of f.parts) {
+  for (const p of live) {
     let pa = 0;
-    part.forEach((ri, k) => { const v = clipRectArea(f.rings[ri], x0, y0, x1, y1); pa += k === 0 ? v : -v; });
+    p.rings.forEach((r, k) => { const v = clipRectArea(r, x0, y0, x1, y1); pa += k === 0 ? v : -v; });
     if (pa > 0) a += pa;
   }
   return a;
@@ -109,36 +119,32 @@ export function planCoverage(features, lat, { out = null } = {}) {
       }
     }
   }
-  // 2. per feature, over the cells its bbox reaches: exact clip where an edge is near, the centre elsewhere
-  for (const f of polys) {
-    const bb = featureBBoxXY(f);
+  // 2. per part, over the cells its box reaches. A cell no edge comes near is wholly in or out of
+  //    EVERY part, so its union is any part containing its centre; a near cell is clipped exactly,
+  //    ONCE, against every part that reaches it (overlaps counted once — src/plan-union.js)
+  const parts = partsOf(polys), done = new Uint8Array(N);
+  for (const P of parts) {
+    const bb = P.bb;
     const [i0, i1] = cellRange(bb[0], bb[2], ox, dx, nx), [j0, j1] = cellRange(bb[1], bb[3], oy, dy, ny);
     for (let j = j0; j <= j1; j++) {
       const cy = oy + j * dy;
       for (let i = i0; i <= i1; i++) {
         const c = i + j * nx;
-        if (frac[c] >= 1) continue;
+        if (done[c] || frac[c] >= 1) continue;
         const cx = ox + i * dx;
-        let v;
-        if (near[c]) v = featureRectArea(f, cx - hx, cy - hy, cx + hx, cy + hy) / cellA;
-        else v = pointInFeatureXY(f, cx, cy, bb) ? 1 : 0;
-        if (v > 0) frac[c] = Math.min(1, frac[c] + v);
+        if (near[c]) { frac[c] = Math.min(1, partsRectArea(parts, cx - hx, cy - hy, cx + hx, cy + hy) / cellA); done[c] = 1; }
+        else if (partContains(P, cx, cy)) frac[c] = 1;
       }
     }
   }
   return frac;
 }
 
-// the plan area of a set of polygon features (holes subtracted, parts summed — overlaps NOT removed)
+// the plan area of a set of polygon features: holes subtracted, overlaps (between parts or
+// between features) counted ONCE — their union
 export function featuresAreaXY(features) {
-  let a = 0;
-  for (const f of features || []) {
-    if (!f || !f.closed) continue;
-    for (const part of f.parts) part.forEach((ri, k) => { const v = Math.abs(ringAreaXY(f.rings[ri])); a += k === 0 ? v : -v; });
-  }
-  return a;
+  return unionArea(partsOf(features));
 }
-
 // a lattice clipped to a plan bbox (grown by one cell), nodes kept on the same phase.
 // lat: { x0, y0, dx, dy, nx, ny } in the grid convention (y0 = the TOP row's y, rows go down by dy).
 export function clipGridLattice(g, bb) {

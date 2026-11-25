@@ -184,6 +184,12 @@ try {
     const mask = P.mask(xs, ys, N);
     for (let i = 0; i < N; i++) { const bf = all.some((q) => M.pointInPolygonXY(q, xs[i], ys[i])); if (!!mask[i] === bf) agree++; if (bf) inside++; }
     out.prep = { agree, N, inside, area: all.map((q) => M.polygonAreaXY(q)) };
+    // a MultiPolygon whose parts OVERLAP is their union for every consumer (sweep 2026-11-25): the
+    // fast prepared test, the plain test and the area all agree — [0,10]² ∪ [5,15]² = 175 m²
+    const sqr = (x0, y0, x1, y1) => [[x0, y0, 0], [x1, y0, 0], [x1, y1, 0], [x0, y1, 0]];
+    const mp = { kind: 'polygon', closed: true, rings: [sqr(612000, 7765000, 612010, 7765010), sqr(612005, 7765005, 612015, 7765015)], parts: [[0], [1]] };
+    const PM = M.preparePolygons([mp]);
+    out.overlap = { prep: PM.contains(612007, 7765007), plain: M.pointInPolygonXY(mp, 612007, 7765007), outside: PM.contains(612012, 7765002), area: M.polygonAreaXY(mp) };
     // a vector section: a plan slab at RL 850 ± 2 keeps pit A (lines + its fill, the hole open), not the 840 pits
     const vs = window._microVis.sectionFeatures(Ls, { normal: [0, 0, 1], position: 850, thickness: 4, clip: 'slab' }, [612000, 7765000, 850]);
     out.vs = vs.map((l) => [l.type, l.starts.length]);
@@ -194,6 +200,7 @@ try {
   chk('colour by a numeric column draws from the per-feature value texture', r3.color.sel === 'chan:1' && r3.color.tex);
   chk('fill toggles on; the layer menu offers fill, classes, edit vertices, draw, set elevation, export, copy', r3.fill.on && ['Fill polygons', 'Edit vertices', 'Draw polygon into this layer', 'Set elevation…', 'Export features…', 'Copy features (WKT, for QGIS)'].every((l) => r3.menu.some((m) => m.replace(/^✓ /, '') === l)) && r3.menu.some((m) => /^Classes by/.test(m)));
   chk('pointInPolygonXY: inside the ring → true, inside the HOLE → false, outside → false', JSON.stringify(r3.pip) === '[true,false,false]');
+  chk(`overlapping MultiPolygon parts are their union: the overlap is inside (prepared ${r3.overlap.prep}, plain ${r3.overlap.plain}), outside both is not (${r3.overlap.outside}), area ${r3.overlap.area} = 175`, r3.overlap.prep === true && r3.overlap.plain === true && r3.overlap.outside === false && Math.abs(r3.overlap.area - 175) < 1e-6);
   chk(`preparePolygons agrees with the brute force on ${r3.prep.agree}/${r3.prep.N} random points (${r3.prep.inside} inside); areas ${r3.prep.area}`, r3.prep.agree === r3.prep.N && r3.prep.inside > 1000 && near(r3.prep.area[0], 10000 - 400) && near(r3.prep.area[1], 5000));
 
   chk(`vector section (plan, RL 850 ± 2): pit A as 8 fill triangles (hole open) + 2 outlines (ring + hole); the 840 pits left out — ${JSON.stringify(r3.vs)}`, JSON.stringify(r3.vs) === '[["polys",8],["lines",2]]');
