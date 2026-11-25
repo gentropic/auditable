@@ -10481,6 +10481,17 @@ if (take()) {
     const dflt = await V.sectionCells(LT, sec);
     V.setVectorOutlines(was);
     out.dflt = dflt.outline && dflt.outline.mode;
+    // THROUGH THE COMPOSER: a plan view frame on the twin (the v1 cells path) made a vector section, its
+    // outline mode cycled from the frame menu to "parents" — the layer it draws carries the outline
+    M.layers().forEach((x) => { if (x.id !== LT.id) M.renderer.setLayerVisible(x.id, false); });
+    await window.micro.setSection({ axis: 'z', position: z, thickness: 0.5, clip: 'slab' });
+    await window.micro.setView({ look: 0, elevation: 90, ortho: true });
+    const ed = M.openComposer('vout'), vf = M.addViewFrame(ed);
+    const run = async (re) => { const it = M.composerFrameMenu(ed.getDoc().frames.find((x) => x.id === vf.id), ed).find((x) => re.test(x.label)); await it.run(); };
+    await run(/^Vector section \(/);
+    for (let k = 0; k < 3; k++) await run(/^Vector outlines/);   // default → none → sub-blocks → parents
+    const fr = ed.getDoc().frames.find((x) => x.id === vf.id), lay = fr.content.vector && fr.content.vector.layers.find((l) => l.type === 'cells');
+    out.composer = { mode: fr.content.vectorOutlines, layerType: lay && lay.type, outline: lay && lay.outline && lay.outline.mode, parents: lay && lay.outline && lay.outline.rects ? lay.outline.rects.length / 4 : null, err: fr.content.vectorError || null };
     return out;
   });
   chk(`vector outlines (sub-blocked plan): none merges (${r.v1.none} regions, no outline ${!r.v1.noneOutline}); sub-blocks keeps every one of ${r.v1.blocks} cuts (${r.v1.sub}, ${r.v1.subMode}); parents merges within parents (${r.v1.par} cells) and lists ${r.v1.parRects} parents tiling ${r.parArea} m² (of 4 × 3 × 400)`,
@@ -10488,6 +10499,8 @@ if (take()) {
   chk(`vector outlines: the drawer inks exactly those rings (none ${r.ink.none}, sub-blocks ${r.ink.sub}, parents ${r.ink.par})`, r.ink.none === 0 && r.ink.sub === r.v1.sub && r.ink.par === 12);
   chk(`vector outlines: the ROTATED .dm twin's plan lists the same 12 parents (${JSON.stringify(r.rot)}); an oblique cut outlines the ${r.oblique.want} parent boxes it crosses (${JSON.stringify(r.oblique)}); sub-blocks inks each polygon (${r.obliqueSub.ink} of ${r.obliqueSub.polys}); the setting is the default (${r.dflt})`,
     r.rot.type === 'cells' && r.rot.parents === 12 && r.rot.ink === 12 && r.oblique.type === 'polys' && r.oblique.parents === r.oblique.want && r.obliqueSub.ink === r.obliqueSub.polys && r.dflt === 'sub-blocks');
+  chk(`vector outlines THROUGH THE COMPOSER: a plan view frame's own mode (cycled from its menu) reaches the cells it draws (${JSON.stringify(r.composer)})`,
+    r.composer.mode === 'parents' && r.composer.layerType === 'cells' && r.composer.outline === 'parents' && r.composer.parents === 12 && !r.composer.err);
   await pg.close();
 }
 

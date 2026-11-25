@@ -30,7 +30,7 @@ import { createDocument, parseDocument, serializeDocument, mountEditor, iconButt
 import { chartFigure } from './analysis-ui.js';
 import { colorChoices, colorSelFor } from './color.js';
 import { rerunToolRecipe } from './tools.js';
-import { SEC_AXES, sectionCells, sectionShapes, sectionDrillholes, sectionMesh } from './vsection.js';
+import { SEC_AXES, sectionCells, sectionShapes, sectionDrillholes, sectionMesh, VEC_OUTLINES, _vecOutlines } from './vsection.js';
 import { gridAxesOf } from './grid-ops.js';
 import { xyFigure } from './xyplot.js';
 import { compareField, refreshCompareFrame, lineageMd as compareLineageMd, openCompareDialog } from './compare.js';
@@ -772,15 +772,15 @@ function vectorWhyNot(fx, proj) {
 // a layer in a vector section: blocks always; drillholes and meshes when they're cut by the section
 // the ordinary way (or, drillholes, as whole holes crossing it). Anything else stays in the raster
 // overlay, with the reason.
-async function vectorLayer(L, sec, near) {
+async function vectorLayer(L, sec, near, outlines = null) {   // outlines: the frame's own mode, else the Settings default
   const name = L.label || L.name, mode = S.renderer.layerSectioned(L.id);
   if (gridAxesOf(L)) {
     const ga = gridAxesOf(L);
     if (SEC_AXES[sec.mode] && !ga.rot) {                   // v1's form: compact, and what older figures hold
-      const c = await sectionCells(L, sec);
-      return { type: 'cells', layer: name, axis: SEC_AXES[sec.mode], position: sec.position, rects: c.rects.map((v) => +v.toFixed(4)), colors: c.colors, palette: c.palette, blocks: c.blocks };
+      const c = await sectionCells(L, sec, { outlines });
+      return { type: 'cells', layer: name, axis: SEC_AXES[sec.mode], position: sec.position, rects: c.rects.map((v) => +v.toFixed(4)), colors: c.colors, palette: c.palette, blocks: c.blocks, ...(c.outline ? { outline: c.outline } : {}) };
     }
-    const c = await sectionShapes(L, sec, near);
+    const c = await sectionShapes(L, sec, near, { outlines });
     if (c.rects) c.rects = c.rects.map((v) => +v.toFixed(4)); if (c.pts) c.pts = c.pts.map((v) => +v.toFixed(4));
     return { ...c, layer: name };
   }
@@ -811,7 +811,7 @@ async function buildVector(f) {
   const P = f.content.meta.proj, near = P && Array.isArray(P.focus) ? P.focus : [0, 0, 0];
   const layers = [], vectored = [], notes = [];
   for (const L of shown) {
-    const r = await vectorLayer(L, sec, near);
+    const r = await vectorLayer(L, sec, near, f.content.vectorOutlines || null);
     if (r.skip !== undefined) { if (r.skip) notes.push(r.skip); continue; }
     layers.push(r); vectored.push(L);
   }
@@ -1027,6 +1027,12 @@ function frameMenu(f, ed) {
       ed.update(f.id, (fr) => { if (on) fr.content.vectorOn = true; else { delete fr.content.vectorOn; delete fr.content.vector; delete fr.content.vectorError; } });
       if (on) { const fr = frameById(ed.getDoc(), f.id); await withScene(fr.source.scene, () => completeFacts(ed.getDoc(), fr)); ed.render(); $('#meta').textContent = fr.content.vectorError ? `composer: no vector section — ${fr.content.vectorError}` : `composer: ${f.id} is a vector section (${fr.content.vector.layers.map(vectorSummary).join(' · ')}${fr.content.vector.notes ? ' — raster: ' + fr.content.vector.notes.join('; ') : ''})`; }
     } },
+    ...(f.content.vectorOn ? [{ label: `Vector outlines: ${f.content.vectorOutlines || `default (${_vecOutlines})`} — click to change`, run: async () => {
+      const order = [null, ...VEC_OUTLINES], next = order[(order.indexOf(f.content.vectorOutlines || null) + 1) % order.length];
+      ed.update(f.id, (fr) => { if (next) fr.content.vectorOutlines = next; else delete fr.content.vectorOutlines; });
+      const fr = frameById(ed.getDoc(), f.id); await withScene(fr.source.scene, () => completeFacts(ed.getDoc(), fr)); ed.render();
+      $('#meta').textContent = fr.content.vectorError ? `composer: ${fr.content.vectorError}` : `composer: vector outlines — ${next || `default (${_vecOutlines})`}`;
+    } }] : []),
     { label: 'Small multiples…', run: () => openMultiplesDialog(ed, f) },
     { label: 'Key plan for this view', run: () => addKeyPlan(ed, f) },
   ];
