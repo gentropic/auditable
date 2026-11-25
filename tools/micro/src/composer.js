@@ -12,6 +12,7 @@
 //
 // Figures live in the project as figures/<name>.compo.json — plain JSON, the frames' last
 // renders inlined, so a figure opens without re-rendering anything.
+import { poiLabelFrames } from './poi.js';
 import { S, requestRender } from './state.js';
 import { floatWin } from './windows.js';
 import { deliverBlob } from './hostio.js';
@@ -249,6 +250,16 @@ function addLegendFrames(ed) {
     y += h + 4;
   }
 }
+// the points of interest as labels in a 3D-view frame (their leaders follow the points)
+function addPoiLabels(ed) {
+  const vf = viewFrameOf(ed.getDoc(), ed.selected());
+  if (!vf) { $('#meta').textContent = 'composer: points of interest label a 3D-view frame — add one first'; return; }
+  const fr = poiLabelFrames(vf);
+  if (!fr.length) { $('#meta').textContent = 'composer: no points of interest yet — Analyse → Points of interest… to pick some'; return; }
+  for (const f of fr) ed.addFrame(f);
+  $('#meta').textContent = `composer: ${fr.length} point-of-interest label${fr.length === 1 ? '' : 's'}`;
+}
+
 function addMarker(ed, kind) {
   const doc = ed.getDoc(), vf = viewFrameOf(doc, ed.selected());
   if (!vf) { $('#meta').textContent = `composer: a ${kind === 'north' ? 'north arrow' : 'scale bar'} refers to a 3D-view frame — add one first`; return; }
@@ -1003,6 +1014,7 @@ export function openComposer(name) {
       { icon: 'image', label: 'Add image', title: 'an image from a file — a logo, a photo, a sketch', run: (e) => addImageFromFile(e) },
       { icon: 'table', label: 'Add resource table', title: 'tonnes, grade and metal above cutoffs, by domain × class — made again on Refresh', run: () => openResourceDialog() },
       { label: '+ key plan', title: 'a whole-model plan that shows where the selected view’s section is — page by page in an atlas', run: (e) => addKeyPlan(e) },
+      { label: '+ points of interest', title: 'a label pinned to each point of interest (Analyse → Points of interest), in the selected 3D-view frame', run: (e) => addPoiLabels(e) },
     ],
     frameMenu: (f, e) => frameMenu(f, e),
     frameBadge: (f) => staleOf(f),

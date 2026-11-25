@@ -5,6 +5,7 @@
 //      each vertex = the cumulative plan length; the length exact; a polygon's ring walks closed
 //   §2 the routine tool: the same numbers, the table's columns, the values, a refused bad line
 //   §7 polyline measure: three points → the angle; a closed outline → its plan and 3D area
+//   §8 points of interest: clicked, listed, CSV round trip, a layer, composer labels, kept by the project
 //   §3 the window: opened from the palette, Run → a chart and the readout; save-as-recipe shape
 // Run: node test/micro-profile-smoke.mjs (dev tree) · --built (micro.html). MICRO_CHROMIUM_ARGS honoured.
 import { chromium } from 'playwright';
@@ -100,6 +101,22 @@ try {
       out.planes = { normals: ms.normals, res: ms.planeResult, txt: document.querySelector('#meta').textContent,
         unit: [M.planeAngle([0, 0, 1], [1, 0, 0]), M.planeAngle([1, 0, 1], [0, 0, -1]), M.planeAngle([0, 0, 1], [0, 0, 2])] };
       T.visible = true; SH.visible = false; M.applyTreeVisibility();
+      // §8 points of interest: two clicks on the plane (the view as it was for the outline)
+      await W.setView({ target: [E0 + 170, N0 + 80, 505], look: 20, elevation: 70, distance: 320 });
+      await new Promise((z) => setTimeout(z, 500));
+      M.clearPois(); M.armPoi();
+      const PA = Pz(160, 40), PB = Pz(185, 120);
+      await M.measureClick(...proj(PA)); await M.measureClick(...proj(PB));
+      const armed = M.measureState().arm && M.measureState().mode === 'poi';
+      M.addPoi(PA, { name: 'P1', note: 'collar "A", near the road' });   // a taken name gets a suffix
+      M.requestRender(); await new Promise((z) => setTimeout(z, 300));
+      const list = M.listPois(), csv = M.poisToCsv(), back = M.poisFromCsv(csv);
+      const win = document.querySelector('.fwin[data-poi]');
+      const lid = await M.poisToLayer();
+      const PL = M.layers().find((x) => x.id === lid);
+      const frames = M.poiLabelFrames({ id: 'view-1', box: [10, 10, 180, 120] });
+      out.poi = { list, want: [PA, PB], armed, csv, back, marks: document.querySelectorAll('#poiSvg text').length, rows: win ? win.querySelectorAll('tr[data-i]').length : -1,
+        layer: PL ? { kind: PL.kind, n: M.attrRowCountOf ? M.attrRowCountOf(PL) : null } : null, frames };
       M.clearMeasure && M.clearMeasure();
       for (const x of hide) x.visible = true; M.applyTreeVisibility();
     }
@@ -134,6 +151,28 @@ try {
     return out;
   }, { ASC, OBJ, LINES, E0, N0 });
 
+  // §8 the points of interest keep with the project (points-of-interest.csv at its root)
+  {
+    const PRJ = `poi${BUILT ? 'b' : 'd'}${Date.now() % 100000}`;
+    await p.evaluate((pr) => { window.showDirectoryPicker = async () => (await navigator.storage.getDirectory()).getDirectoryHandle(pr, { create: true }); window._micro.setAutoOptimize('off'); window._micro.setAutoPack('off'); }, PRJ);
+    p.evaluate(() => window._micro.saveProjectAs());
+    await p.waitForFunction(() => document.querySelector('#svDlg').classList.contains('show') || /project saved/.test(document.querySelector('#meta').textContent), null, { timeout: 30000 });
+    await p.evaluate(() => { const d = document.querySelector('#svDlg'); if (d.classList.contains('show')) document.querySelector('#svCopy').click(); });
+    await p.waitForFunction(() => /project saved/.test(document.querySelector('#meta').textContent), null, { timeout: 120000 });
+    const before = await p.evaluate(() => window._micro.listPois());
+    const p2 = await ctx.newPage(); p2.on('pageerror', (e) => { console.log('PAGEERROR', e.message); fail++; });
+    await p2.goto(`http://127.0.0.1:${PORT}${APP}`, { waitUntil: 'load' });
+    await p2.waitForFunction(() => window._micro && window._micro.runTool, null, { timeout: 30000 });
+    const after = await p2.evaluate(async (pr) => {
+      const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle(pr);
+      const file = await (await (await dir.getFileHandle('points-of-interest.csv')).getFile()).text();
+      await window._micro.openProjectDir(dir);
+      return { list: window._micro.listPois(), file };
+    }, PRJ);
+    chk(`points of interest keep with the project: ${after.list.length} back (${after.list.map((x) => x.name).join(', ')}) from points-of-interest.csv`,
+      after.list.length === before.length && after.list.every((x, i) => x.name === before[i].name && x.note === before[i].note && Math.hypot(...x.at.map((v, k) => v - before[i].at[k])) < 1e-3) && /^X,Y,Z,NAME,NOTE/.test(after.file));
+    await p2.close();
+  }
   try { await p.locator('.fwin[data-profile]').screenshot({ path: `experiments/profile-window${BUILT ? '-built' : ''}.png` }); } catch { /* for a person to look at */ }
   // §1 the numbers, station by station, against the planes themselves
   const ci = r.cols.indexOf('topo.asc'), mi = r.cols.indexOf('shell.obj');
@@ -206,6 +245,18 @@ try {
     const [u1, u2, u3] = r.planes.unit;
     chk(`plane angles by construction: horizontal vs vertical N–S = ${u1.angle}° meeting along ${u1.line.plunge}→${u1.line.trend}; 45° east-dipping vs horizontal = ${u2.angle.toFixed(6)}° (${u2.a.dip.toFixed(1)}/${u2.a.dipDir.toFixed(0)}); parallel = ${u3.angle}°, no line (${u3.line})`,
       Math.abs(u1.angle - 90) < 1e-9 && Math.abs(u1.line.plunge) < 1e-9 && Math.abs(u2.angle - 45) < 1e-9 && Math.abs(u2.a.dip - 45) < 1e-9 && Math.abs(u2.a.dipDir - 90) < 1e-9 && u3.angle === 0 && u3.line === null);
+  }
+  // §8 points of interest
+  {
+    const L = r.poi.list, near = (a, w) => Math.hypot(a[0] - w[0], a[1] - w[1], a[2] - w[2]);
+    chk(`points of interest: two clicks on the plane → ${L.slice(0, 2).map((x) => x.name).join(', ')} within ${Math.max(near(L[0].at, r.poi.want[0]), near(L[1].at, r.poi.want[1])).toExponential(1)} m of where they were clicked (world), the pick still armed (${r.poi.armed}); a third named “P1” by hand became “${L[2] && L[2].name}”; ${r.poi.marks} markers in the view, ${r.poi.rows} rows in the list`,
+      L.length === 3 && L[0].name === 'P1' && L[1].name === 'P2' && L[2].name === 'P1 (2)' && near(L[0].at, r.poi.want[0]) < 0.05 && near(L[1].at, r.poi.want[1]) < 0.05 && r.poi.armed && r.poi.marks === 3 && r.poi.rows === 3);
+    const b2 = r.poi.back;
+    chk(`their CSV (X,Y,Z,NAME,NOTE) reads back the same — a note with a comma and quotes survives (“${b2[2] && b2[2].note}”)`,
+      r.poi.csv.startsWith('X,Y,Z,NAME,NOTE\n') && b2.length === 3 && b2.every((x, i) => x.name === L[i].name && x.note === L[i].note && near(x.at, L[i].at) < 1e-4));
+    const f = r.poi.frames;
+    chk(`as a points layer (${r.poi.layer && r.poi.layer.kind}, ${r.poi.layer && r.poi.layer.n} records), and as composer labels pinned to their WORLD points (${f.length}, “${f.map((x) => x.content.text).join('”, “')}”)`,
+      r.poi.layer && r.poi.layer.kind === 'points' && r.poi.layer.n === 3 && f.length === 3 && f.every((x, i) => x.kind === 'label' && x.content.of === 'view-1' && near(x.content.at, L[i].at) < 1e-3));
   }
   // §3 the window
   chk(`the window (palette): Run → a chart of the surfaces (${r.win.spec}) and a readout (“${r.win.readout.slice(0, 70)}”); its recipe is the tool's (${r.win.recipe && r.win.recipe.tool})`,

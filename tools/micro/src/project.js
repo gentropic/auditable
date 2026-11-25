@@ -40,6 +40,7 @@ import { renderLayers } from './layers-panel.js';
 import { captureLayerSurface, recolorSurface } from './surfaces.js';
 import { ensureValueTex, valueTexEligible, valueTexWant } from './color.js';
 import { flushViewsScenes, loadViewsScenes } from './views.js';
+import { flushPois, loadPois } from './poi.js';
 import { flushFigures, loadFigures } from './composer.js';
 import { writeGridDisplayCache } from './meshexport.js';
 import { pickDirectory, rehydrateHandle } from './hostio.js';
@@ -497,6 +498,7 @@ async function saveProjectInner() {
     }
     await flushFigures(dir);                                 // figures/ — composer pages
     await flushViewsScenes(dir);                            // bookmarks/ + scenes/ — write any not yet persisted
+    await flushPois(dir);                                   // points-of-interest.csv
     const fh = await dir.getFileHandle('project.json', { create: true });
     const w = await fh.createWritable();
     await w.write(JSON.stringify(projectManifest(), null, 2) + '\n');
@@ -655,6 +657,7 @@ export async function openProjectDir(dir, { pack = null } = {}) {
     await loadProjectCrs(mf.crs || null);                   // BEFORE the layers: vectors reproject into it as they reopen
     await loadFigures(dir);                                // figures/ *.compo.json → the composer
     await loadViewsScenes(dir, mf.views);                   // bookmarks/ + scenes/ (legacy mf.views migrated)
+    await loadPois(dir);                                    // points-of-interest.csv
     closeAllLayers();
     $('#empty').style.display = 'none';
     let links = {};
@@ -907,7 +910,7 @@ export function unsavedWork() {
   return S.layers.some((L) => (L.paintCols || []).some((c) => c.name !== '_swath') || (L.calcCols || []).length > 0);
 }
 
-export function closeProject() { if (S.project && S.project.pack && S.project.pack.abort) S.project.pack.abort.abort(); S.project = null; S.views = []; S.scenes = []; setProjectCrs(null, { quiet: true }).catch(() => {}); updateProjectTitle(); }
+export function closeProject() { if (S.project && S.project.pack && S.project.pack.abort) S.project.pack.abort.abort(); S.project = null; S.views = []; S.scenes = []; S.pois = []; requestRender(); setProjectCrs(null, { quiet: true }).catch(() => {}); updateProjectTitle(); }
 
 // File → New project: back to the empty slate. Confirmed — it closes every
 // layer and drops the project link; nothing on disk is touched.

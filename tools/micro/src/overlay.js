@@ -9,7 +9,8 @@ import { _isMobile } from './windows.js';
 import { rendererDocBbox } from './layers.js';
 import { currentSection } from './section.js';
 import { pickHitPoint, meshHitAt, dipOfNormal } from './pick.js';
-import { sceneOrigin, worldToLocal } from './coords.js';
+import { sceneOrigin, worldToLocal, localToWorld } from './coords.js';
+import { overlayDrawers, poiSink } from './overlay-hooks.js';
 const $ = (s) => document.querySelector(s);
 // the app's side, passed in once (setOverlayHooks): _viewMode
 let H = {};
@@ -128,6 +129,15 @@ async function planeClick(cssX, cssY) {
   drawMeasure();
 }
 
+// POINTS OF INTEREST (poi.js) pick through the same click: mode 'poi' stays armed, and every
+// resolved point (TRUE world) goes to the sink poi.js registers — overlay never imports poi.js
+export function armPoiPick() {
+  _measure = NEW_MEASURE(1, 'poi');
+  $('#measureSvg').style.display = 'none';
+  $('#btnMeasure').classList.add('on');
+  S.cv.style.cursor = 'crosshair';
+}
+
 export function clearMeasure() {
   _measure = NEW_MEASURE(0);
   $('#measureSvg').style.display = 'none';
@@ -140,29 +150,42 @@ export function clearMeasure() {
 // on the first vertex (within 10 px) of three or more closes the outline: its area.
 export async function measureClick(cssX, cssY, { add = false } = {}) {
   if (_measure.mode === 'planes') return planeClick(cssX, cssY);
+  if (_measure.mode === 'poi') {
+    const p = await clickPoint(cssX, cssY, 'point of interest');
+    const sink = poiSink();
+    if (p && sink) sink(localToWorld(p.trueLocal));
+    return;
+  }
   if (_measure.pts.length >= 3) {
     const f = projectToCss(_measure.pts[0]);
     if (f && Math.hypot(f[0] - cssX, f[1] - cssY) <= 10) { _measure.closed = true; finishMeasure(); return; }
   }
-  const hit = S.renderer.pick(cssX, cssY, S.cam, { pointPx: +$('#ptPx').value, blocksAsPoints: H._viewMode === 'points', section: currentSection() });
-  if (hit == null) { $('#meta').textContent = `measure: nothing there — ${_measure.a ? 'the second point' : 'two points'} on the model`; return; }
-  // a MESH (a surface grid included) has no records to anchor on: it is met where the ray meets it,
-  // where it is DRAWN (meshHitAt) — the same point a pivot and worldAt use
-  const hitL = layerById(hit.layer);
-  const world = hitL && hitL.kind === 'mesh' ? ((await meshHitAt(hitL, cssX, cssY)) || {}).drawn || null
-    : await pickHitPoint(hit, cssX, cssY);                  // ON the face you clicked, not the centroid behind it
-  if (!world) { if (hitL && hitL.kind === 'mesh') $('#meta').textContent = `measure: no surface under the cursor on ${hitL.label || hitL.name}`; return; }
-  const local = worldToLocal(world);
-  // a layer drawn displaced (an exploded view, a view beside its model): the line is
-  // drawn where you clicked, the numbers are read from where the data really is
-  const off = S.renderer.layerOffset(hit.layer) || [0, 0, 0];
-  const trueLocal = [local[0] - off[0], local[1] - off[1], local[2] - off[2]];
-  const moved = off.some((v) => v !== 0);
+  const P = await clickPoint(cssX, cssY, 'measure');
+  if (!P) return;
+  const { local, trueLocal, moved } = P;
   _measure.pts.push(local); _measure.ptsT.push(trueLocal); _measure.moved = _measure.moved || moved;
   if (_measure.pts.length === 1) { _measure.a = local; _measure.aT = trueLocal; $('#meta').textContent = _isMobile() ? 'measure: now the second point' : 'measure: click the second point'; drawMeasure(); return; }
   if (add) { updateMeasureReadout(); drawMeasure(); return; }    // a vertex more: keep going
   finishMeasure();
 }
+// the point under a click: the pick, met ON the face (a mesh / a grid surface where the ray meets
+// it) → { local (where it is drawn), trueLocal (where the data is), moved } | null (said why)
+async function clickPoint(cssX, cssY, what) {
+  const hit = S.renderer.pick(cssX, cssY, S.cam, { pointPx: +$('#ptPx').value, blocksAsPoints: H._viewMode === 'points', section: currentSection() });
+  if (hit == null) { $('#meta').textContent = `${what}: nothing there — click on the model`; return null; }
+  // a MESH (a surface grid included) has no records to anchor on: it is met where the ray meets it,
+  // where it is DRAWN (meshHitAt) — the same point a pivot and worldAt use
+  const hitL = layerById(hit.layer);
+  const world = hitL && hitL.kind === 'mesh' ? ((await meshHitAt(hitL, cssX, cssY)) || {}).drawn || null
+    : await pickHitPoint(hit, cssX, cssY);                  // ON the face you clicked, not the centroid behind it
+  if (!world) { if (hitL && hitL.kind === 'mesh') $('#meta').textContent = `${what}: no surface under the cursor on ${hitL.label || hitL.name}`; return null; }
+  const local = worldToLocal(world);
+  // a layer drawn displaced (an exploded view, a view beside its model): the line is
+  // drawn where you clicked, the numbers are read from where the data really is
+  const off = S.renderer.layerOffset(hit.layer) || [0, 0, 0];
+  return { local, trueLocal: [local[0] - off[0], local[1] - off[1], local[2] - off[2]], moved: off.some((v) => v !== 0) };
+}
+
 function finishMeasure() {
   const n = _measure.pts.length;
   _measure.b = _measure.pts[n - 1]; _measure.bT = _measure.ptsT[n - 1];
@@ -264,6 +287,7 @@ function drawMeasurePoly(svg) {
 }
 
 export function drawMeasure() {
+  for (const fn of overlayDrawers) { try { fn(); } catch { /* an overlay never breaks the frame */ } }
   const svg = $('#measureSvg');
   if (!_measure.a) { svg.style.display = 'none'; return; }
   drawMeasurePoly(svg);

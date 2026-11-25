@@ -80,6 +80,7 @@ import { fileLayerByPath, ensureGroupPath, createLayerGroup, applyTreeVisibility
 import { renderLayers, toggleLayersPanel, groupMenu, setLayerSectionMode } from './layers-panel.js';
 import { saveViewAs, applyView, saveSceneAs, applyScene, captureScene, removeBookmark, removeScene } from './views.js';
 import { measureClick, armMeasure, armPlaneAngle, planeAngle, clearMeasure, _measure, setSwathBand, recordPosition } from './overlay.js';
+import { armPoi, addPoi, listPois, removePoi, clearPois, poisToCsv, poisFromCsv, poisToLayer, poiLabelFrames, openPoiWindow } from './poi.js';
 import { openWfrDialog, openMeshExportDialog, exportMeshes, writeGridDisplayCache } from './meshexport.js';
 import { exportGridAsc, exportGrid, buildGridExport, openGridExportDialog, gridForExport, GRID_EXPORT_FMTS } from './grid-export.js';
 import { openSurfaceTools, gridOnLattice, openMeshGridDialog, openNewDialog } from './gridtools.js';
@@ -195,6 +196,7 @@ window._micro = {
   seriesPositions, seriesExtent, sectionWorld, setSectionWorld, openPairing, pairBlocksSamples,
   selectDisagreeing, pairWins: _pairWins, openComposite, compositeLayer, compositeToLayer, openModelQa,
   modelQa, qaFindings, selectFinding, subBlockTiling, modelQaWins: _modelQaWins, measureClick, armMeasure, armPlaneAngle, planeAngle, clearMeasure,
+  armPoi, addPoi, listPois, removePoi, clearPois, poisToCsv, poisFromCsv, poisToLayer, poiLabelFrames, openPoiWindow,
   measureState: () => _measure, openExplode, explodeGroup, setLayerDisplayOffset, anyDisplaced, openTurntable,
   recordTurntable, turntableMime, openThemeEditor, customTheme, setCustomTheme, clearCustomTheme,
   parseThemeJson, themeJson, registerTokens, contrast, setTheme, sceneDefault, canChangeFile, viewsOf, isView,

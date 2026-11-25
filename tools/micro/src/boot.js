@@ -25,6 +25,7 @@ import './projectgrid.js';    // projection to grid (its tool + window + the Vie
 import './extrude.js';        // polygons → closed solids (its tool + window + the Tools menu row)
 import './sectionlines.js';   // section cuts → strings (its tool + window + menu rows)
 import './contours.js';      // a grid's isolines → strings (its tool + window + menu rows)
+import './poi.js';           // points of interest: clicked points as a labelled table (+ the 3D markers)
 import './profile.js';       // the elevation of surfaces along a line (its window + palette + Tools row)
 import './blockoutline.js';   // bench outlines → polygons (its tool + window + menu rows)
 import './api.js';            // window._micro + window.micro — last: announcing says micro is up
