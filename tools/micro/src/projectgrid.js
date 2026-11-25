@@ -28,6 +28,9 @@ import { writeEsriAsc } from './grid-io.js';
 import { floatWin } from './windows.js';
 import { registerCommands } from './commands.js';
 import { registerTool } from './tools.js';
+import { LIMIT_PARAM, normLimit } from './limit-param.js';
+import { limitMaskOf, resolveLimit, limitRow } from './polylimit.js';
+import { gridCoverage } from './coverage.js';
 import { GRID_NODE_CAP, replaceMade } from './pcgrid.js';
 import { setProjectionGridOpener } from './projection.js';
 import { compileBool, validate } from '../../../ext/expr/index.js';
@@ -179,6 +182,9 @@ export async function projectGrid(L, opts = {}) {
   let mask = null;
   if (opts.filter && String(opts.filter).trim()) { if (opts.onProgress) opts.onProgress(0, 'filtering…'); mask = await filterMaskOf(L, opts.filter, opts.signal); }
   else if (opts.scope !== 'all' && L.filterExpr && L._filterMask) mask = L._filterMask;
+  // a polygon limit: only the blocks whose centroid lies inside it (and, below, only the nodes inside it)
+  const lim = opts.limit ? resolveLimit(opts.limit) : null;
+  if (lim) { const lm = await limitMaskOf(L, opts.limit, { signal: opts.signal }); mask = mask ? Uint8Array.from(lm, (v, i) => (v && i < mask.length && mask[i] ? 1 : 0)) : lm; }
   const acc = makeColumnAccumulator(geom, { stat, cutoff, mf });
   const R = ga.rot ? [ga.rot.slice(0, 3), ga.rot.slice(3, 6), ga.rot.slice(6, 9)] : null;
   const total = attrRowCountOf(L) || 0;
@@ -231,7 +237,12 @@ export async function projectGrid(L, opts = {}) {
     }
   }
   const out = acc.finish();
-  if (!out.filled) throw new Error(`no block of ${nameOf(L)} crossed a node${mask ? ' (after the filter)' : ''} — a smaller cell?`);
+  if (lim && out.grid) {                                     // the map stops at the polygons: a node whose cell none of them reaches is blank
+    const cov = gridCoverage(lim.features, out.grid), g = out.grid;
+    for (let k = 0; k < g.data.length; k++) if (!(cov[k] > 0) && g.data[k] !== g.nodata) { if (out.total != null) out.total -= g.data[k]; g.data[k] = g.nodata; out.filled--; out.empty = (out.empty || 0) + 1; }
+    out.limit = normLimit(opts.limit);
+  }
+  if (!out.filled) throw new Error(`no block of ${nameOf(L)} crossed a node${mask ? ' (after the filter)' : ''}${lim ? ' inside the limit' : ''} — a smaller cell?`);
   const unit = stat === 'thickness' ? 'm' : stat === 'tonnes' ? (dConst === 1 && di < 0 && !opts.densityUnit ? 'm³ (no density)' : 't') : stat === 'metal' ? metalUnit : stat === 'accumulation' ? `${col}·m` : col;
   return { ...out, geom, where, unit, stat, cutoff, seen };
 }
@@ -243,7 +254,7 @@ export async function projectGridLayer(L, opts = {}) {
   const name = opts.name ? (/\.asc$/i.test(opts.name) ? opts.name : `${opts.name}.asc`) : `${baseOf(L)}_${stat}_${opts.col}${cut}_${+r.geom.dx.toPrecision(6)}m.asc`;
   const lin = mkLineage('projectgrid', { of: L.name, col: opts.col, stat, ...(r.cutoff != null ? { cutoff: r.cutoff } : {}), cell: r.geom.dx,
     ...(stat === 'tonnes' || stat === 'metal' ? { density: opts.density ?? 1 } : {}),
-    ...(opts.filter ? { filter: String(opts.filter) } : opts.scope !== 'all' && L.filterExpr && L._filterMask ? { filter: L.filterExpr } : {}) }, [L.lineage].filter(Boolean));
+    ...(opts.filter ? { filter: String(opts.filter) } : opts.scope !== 'all' && L.filterExpr && L._filterMask ? { filter: L.filterExpr } : {}), ...(r.limit ? { limit: r.limit } : {}) }, [L.lineage].filter(Boolean));
   replaceMade(name);
   const id = await openBlob(new File([writeEsriAsc(r.grid)], name), name, S.layers.length ? 'add' : 'replace', null, { lineage: lin });
   const NL = id != null ? layerById(id) : null;
@@ -259,7 +270,7 @@ export function openProjectGridDialog(L0) {
   if (_win && _win.el.isConnected) _win.close();
   const L1 = L0 && list.includes(L0) ? L0 : list[0];
   const firstNum = (L) => { const c = numericColsOf(L); const sel = String(L.colorSel || ''); const cur = sel.startsWith('chan:') ? (layerTableHeader(L).columns[+sel.slice(5)] || null) : null; return cur && c.includes(cur) ? cur : c[0] || ''; };
-  const d = { src: L1.id, col: firstNum(L1), stat: S.projection && ['max', 'min', 'mean'].includes(S.projection) ? S.projection : 'max', cutoff: '', density: '', cell: 0, scope: L1.filterExpr ? 'filtered' : 'all', gradeUnit: '' };
+  const d = { src: L1.id, col: firstNum(L1), stat: S.projection && ['max', 'min', 'mean'].includes(S.projection) ? S.projection : 'max', cutoff: '', density: '', cell: 0, scope: L1.filterExpr ? 'filtered' : 'all', gradeUnit: '', limit: null };
   try { d.cell = projectGridGeom(L1).dx; } catch { d.cell = 10; }
   const win = floatWin({ title: 'projection to grid', sub: 'column statistics → a plan grid', x: Math.max(12, innerWidth - 450), y: 96, w: 420, h: 470, onClose: () => { _win = null; } });
   _win = win;
@@ -292,6 +303,7 @@ export function openProjectGridDialog(L0) {
     if (d.stat === 'metal') row('grade unit', sel([['', 'as stated (metal in grade·t)'], ['pct', '% → t of metal'], ['g/t', 'g/t → t of metal'], ['ppm', 'ppm → t of metal']], d.gradeUnit, (v) => { d.gradeUnit = v; }), 'declared, metal comes out in tonnes of metal');
     const ci = row('cell (m)', inp(d.cell, (v) => { d.cell = v; updTally(); }, '', 90), 'node spacing — the default is the model’s finest plan pitch, nodes through a block centre');
     ci.parentElement.append(tally);
+    form.append(limitRow(d, () => build(), { label: 'inside', width: '84px' }));
     if (L.filterExpr) row('blocks', sel([['filtered', `the filter: ${L.filterExpr}`], ['all', 'every block']], d.scope, (v) => { d.scope = v; }), 'the layer’s filter box applies, or not');
     note.textContent = 'each node’s vertical line through the model: the blocks it crosses count by the length of line inside them (sub-blocks by their own size, a rotated model by its turned boxes). Every record is read — the picture is not the source. The grid opens as a layer: drape it, contour it, export it.';
     updTally();
@@ -301,7 +313,7 @@ export function openProjectGridDialog(L0) {
     go.disabled = true; msg.textContent = 'projecting…';
     const t0 = performance.now();
     try {
-      const r = await projectGridLayer(layerById(d.src), { col: d.col, stat: d.stat, cutoff: d.cutoff.trim ? d.cutoff.trim() : d.cutoff, density: String(d.density).trim(), gradeUnit: d.gradeUnit, cell: +d.cell > 0 ? +d.cell : null, scope: d.scope,
+      const r = await projectGridLayer(layerById(d.src), { col: d.col, stat: d.stat, cutoff: d.cutoff.trim ? d.cutoff.trim() : d.cutoff, density: String(d.density).trim(), gradeUnit: d.gradeUnit, cell: +d.cell > 0 ? +d.cell : null, scope: d.scope, limit: normLimit(d.limit),
         onProgress: (f, t) => { msg.textContent = `${Math.round(f * 100)}% · ${t}`; } });
       msg.textContent = `${r.seen.toLocaleString()} blocks → ${r.filled.toLocaleString()} of ${(r.geom.nx * r.geom.ny).toLocaleString()} nodes in ${((performance.now() - t0) / 1000).toFixed(1)} s${r.total != null ? ` · total ${+r.total.toPrecision(6)} ${r.unit}` : ''}`;
       $('#meta').textContent = `projection to grid: ${r.name} — ${msg.textContent}`;
@@ -327,6 +339,7 @@ registerTool('projectgrid', {
     anchor: { type: 'numbers', doc: 'a point [x, y] the nodes pass through (default: a block centre; a rotated model: [0, 0])' },
     filter: { type: 'expr', default: '', of: 'layer', doc: 'only the blocks this keeps (absent: the layer’s filter box, when it has one)' },
     scope: { type: 'enum', values: ['filtered', 'all'], default: 'filtered', doc: 'without a filter expression: the layer’s filter box (filtered) or every block (all)' },
+    limit: { ...LIMIT_PARAM, doc: 'only the blocks whose centroid lies inside these polygons in plan, and only the nodes inside them: { layer, feature?, where? }' },
     name: { type: 'string', doc: 'the grid layer’s name (default <model>_<stat>_<col>[_cutoff]_<cell>m.asc)' },
   },
   outputs: { key: [] },
@@ -339,7 +352,7 @@ registerTool('projectgrid', {
     const L = S.layers.find((x) => x.name === p.layer || (x.label || x.name) === p.layer);
     if (!L) throw new Error(`no layer “${p.layer}”`);
     return projectGridLayer(L, { col: p.col, stat: p.stat, cutoff: p.cutoff, density: p.density, densityUnit: p.densityUnit, gradeUnit: p.gradeUnit, metalFactor: p.metalFactor,
-      cell: p.cell, anchor: p.anchor || null, filter: p.filter, scope: p.scope, name: p.name || null, signal: ctx.signal, onProgress: ctx.progress ? (f) => ctx.progress(Math.round(f * 100), 100) : null });
+      cell: p.cell, anchor: p.anchor || null, filter: p.filter, scope: p.scope, limit: p.limit || null, name: p.name || null, signal: ctx.signal, onProgress: ctx.progress ? (f) => ctx.progress(Math.round(f * 100), 100) : null });
   },
   shape(r, p) {
     return { table: null, values: { blocks: r.blocks, nodes: r.geom.nx * r.geom.ny, filled: r.filled, empty: r.empty, cell: r.geom.dx, peak: r.peak, ...(r.total != null ? { total: r.total } : {}) },

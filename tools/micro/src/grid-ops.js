@@ -260,8 +260,10 @@ export function commonSurfaceLattice(a, b, cell = null) {
 // (after − before; negative = cut, material removed; positive = fill) and the
 // volumes, each node standing for a dx × dy cell (the midpoint rule — exact for a
 // Δz that is linear across each cell). Nodes where either surface is empty sit out.
+// weights (optional, per node, 0..1): the share of each node's cell that counts — a polygon
+// PERIMETER's coverage (src/coverage.js); a node with weight 0 sits out, a cut cell counts in part.
 // → { dz: grid, cut, fill, net (fill − cut), area, cutArea, fillArea, nodes, hist }
-export function cutFillGrids(before, after, { bins = 40, nodata = -9999 } = {}) {
+export function cutFillGrids(before, after, { bins = 40, nodata = -9999, weights = null } = {}) {
   const { nx, ny, dx } = before, dy = before.dy || dx, N = nx * ny, cellA = dx * dy;
   if (after.nx !== nx || after.ny !== ny) throw new Error('cut / fill: the two grids are on different lattices');
   const bad = (g) => { const nd = g.nodata; return (v) => Number.isNaN(v) || (nd != null && v === nd); };
@@ -271,9 +273,11 @@ export function cutFillGrids(before, after, { bins = 40, nodata = -9999 } = {}) 
   for (let k = 0; k < N; k++) {
     const a = before.data[k], b = after.data[k];
     if (badA(a) || badB(b)) continue;
+    const wk = weights ? weights[k] : 1;
+    if (!(wk > 0)) continue;
     const d = b - a;
-    data[k] = d; n++;
-    if (d < 0) { cut -= d; nCut++; } else if (d > 0) { fill += d; nFill++; }
+    data[k] = d; n += wk;
+    if (d < 0) { cut -= d * wk; nCut += wk; } else if (d > 0) { fill += d * wk; nFill += wk; }
     if (d < lo) lo = d; if (d > hi) hi = d;
   }
   cut *= cellA; fill *= cellA;
@@ -281,10 +285,10 @@ export function cutFillGrids(before, after, { bins = 40, nodata = -9999 } = {}) 
   // on one axis
   const m = Math.max(Math.abs(lo), Math.abs(hi)) || 1, w = (2 * m) / bins;
   const vol = new Float64Array(bins);
-  if (n) for (let k = 0; k < N; k++) { if (badA(before.data[k]) || badB(after.data[k])) continue; const d = data[k], i = Math.min(bins - 1, Math.max(0, Math.floor((d + m) / w))); vol[i] += Math.abs(d) * cellA; }
+  if (n) for (let k = 0; k < N; k++) { if (badA(before.data[k]) || badB(after.data[k])) continue; const wk = weights ? weights[k] : 1; if (!(wk > 0)) continue; const d = data[k], i = Math.min(bins - 1, Math.max(0, Math.floor((d + m) / w))); vol[i] += Math.abs(d) * cellA * wk; }
   return {
     dz: { nx, ny, x0: before.x0, y0: before.y0, dx, dy, data, nodata, crs: null, form: 'cutfill' },
-    cut, fill, net: fill - cut, area: n * cellA, cutArea: nCut * cellA, fillArea: nFill * cellA, nodes: n,
+    cut, fill, net: fill - cut, area: n * cellA, cutArea: nCut * cellA, fillArea: nFill * cellA, nodes: weights ? (() => { let c = 0; for (let k = 0; k < N; k++) if (data[k] !== nodata) c++; return c; })() : n,
     range: n ? [lo, hi] : [0, 0], hist: { lo: -m, w, vol: Array.from(vol) },
   };
 }

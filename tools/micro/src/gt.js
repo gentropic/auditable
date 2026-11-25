@@ -6,7 +6,8 @@
 import { gridAxesOf } from './grid-ops.js';
 import { floatWin, focusWindow } from './windows.js';
 import { numericColsOf, volumeContextOf, supportContextOf, supportAt, supportMeasure, volParamsOf } from './analysis.js';
-import { SERIES_COLORS, analysisSerCfg, analysisSerRestore, applyAnalysisGeo, checkAbort, gradeUnitFactor, gradeUnitSel, plotChart, plotExportBtns, rangesForCfg, rangesFromCfg, rangesOf, rangesRow, reconcilePairs, runCancellable, saveAnalysisCfg, scanProgressText, scopeMask, scopeMissing, seriesZoneKeep, setAnalysisOpen } from './analysis-ui.js';
+import { normLimit, limitRow, prepareScope } from './polylimit.js';
+import { scopeLabel, SERIES_COLORS, analysisSerCfg, analysisSerRestore, applyAnalysisGeo, checkAbort, gradeUnitFactor, gradeUnitSel, plotChart, plotExportBtns, rangesForCfg, rangesFromCfg, rangesOf, rangesRow, reconcilePairs, runCancellable, saveAnalysisCfg, scanProgressText, scopeMask, scopeMissing, seriesZoneKeep, setAnalysisOpen } from './analysis-ui.js';
 import { gtAbove, gtAccumulator, gtCuts, gtMerge } from './scanner.js';
 import { S, layerById } from './state.js';
 import { convert as unitConvert } from '../../../ext/units/index.js';
@@ -50,6 +51,7 @@ export async function scanGTSeries(st, onProgress, signal) {   // st: { series: 
     const sc = supportContextOf(Lx);                   // a block's volume, or an interval's LENGTH (drillholes)
     return Object.assign(gtAccumulator(), { s, L: Lx, vc: sc.kind === 'volume' ? sc.vc : volumeContextOf(Lx), sc, support: sc.kind, gradeFn, weightFn, filterFn, weighted: !!weightFn });
   }).filter(Boolean);
+  await prepareScope(st, [...new Set(series.map((se) => se.L))], signal);   // a polygon limit's mask, once per layer
   // blocks accumulate VOLUME (or tonnes), drillholes accumulate LENGTH (metres). Two
   // different measures on one tonnage axis would read as comparable and are not —
   // a 500 m intercept is not 500 m³ — so a mixed set of series is refused, by name.
@@ -187,12 +189,13 @@ export function openGradeTonnage(L, ropts) {
   if (saved) {
     if (saved.nCut) st.nCut = saved.nCut;
     if (saved.scope) st.scope = saved.scope;
+    if (saved.limit) st.limit = normLimit(saved.limit);
     if (saved.gradeUnit != null) st.gradeUnit = saved.gradeUnit;
     if (saved.densUnit) st.densUnit = saved.densUnit;
     if (saved.ranges) st.ranges = rangesFromCfg(saved.ranges);
     const ser = analysisSerRestore(saved.series, L); if (ser) { st.series = ser; if (ser.dropped.length) st.droppedNote = `left out (layer not loaded): ${ser.dropped.join(', ')}`; }
   }
-  const cfgOf = () => ({ series: analysisSerCfg(st.series), nCut: st.nCut, scope: st.scope, gradeUnit: st.gradeUnit, densUnit: st.densUnit, ranges: rangesForCfg(st.ranges) });
+  const cfgOf = () => ({ series: analysisSerCfg(st.series), nCut: st.nCut, scope: st.scope, ...(normLimit(st.limit) ? { limit: normLimit(st.limit) } : {}), gradeUnit: st.gradeUnit, densUnit: st.densUnit, ranges: rangesForCfg(st.ranges) });
   const persistUnits = () => { L.gtUnits = { ...(L.gtUnits || {}), grade: st.gradeUnit, densUnit: st.densUnit, weight: st.series[0] ? st.series[0].weight : '' }; markProjectDirty(); };
   const guLabel = () => (st.gradeUnit === 'pct' ? '%' : st.gradeUnit);
   const win = floatWin({ title: `grade-tonnage · ${L.label || L.name}`, sub: saved ? 'restored — Run to compute' : 'configure, then Run', x: Math.max(12, innerWidth - 680), y: 100, w: 640, h: 464,
@@ -217,7 +220,7 @@ export function openGradeTonnage(L, ropts) {
     const measure = gtMeasure(st.scan, st.gradeUnit);
     const spec = gtChartSpec(st.scan, st);
     if (!spec) { win.sub.textContent = 'no data'; plotChart(cv, { series: [] }); win._spec = null; win.el._gtSpec = null; return; }
-    win.sub.textContent = `${st.scope !== 'all' ? st.scope + ' · ' : ''}${measure.sub} · ${st.nCut} cutoffs · ${st.scan.series.reduce((s2, x) => s2 + x.n, 0).toLocaleString()} rows`;
+    win.sub.textContent = `${scopeLabel(st) ? scopeLabel(st) + ' · ' : ''}${measure.sub} · ${st.nCut} cutoffs · ${st.scan.series.reduce((s2, x) => s2 + x.n, 0).toLocaleString()} rows`;
     plotChart(cv, spec); win._spec = spec; win.el._gtSpec = spec;
   };
   win.el._onResized = () => { if (win._spec) plotChart(cv, win._spec); };
@@ -226,7 +229,7 @@ export function openGradeTonnage(L, ropts) {
   const scanGT = (onProgress, signal) => scanGTSeries(st, onProgress, signal);
   const run = async () => {
     if (st.running) return;
-    if (st.scope !== 'all' && !st.series.some((s) => { const Lx = layerById(s.layerId); return Lx && scopeMask(st, Lx); })) {
+    if (st.scope !== 'all' && !st.series.some((s) => { const Lx = layerById(s.layerId); return Lx && scopeMask({ scope: st.scope }, Lx); })) {
       win.el._runFailed = win.sub.textContent = scopeMissing(st, L) || `no layer carries a ${st.scope} mask`; return;
     }
     st.running = true; win.sub.textContent = 'scanning…';
@@ -290,6 +293,7 @@ export function openGradeTonnage(L, ropts) {
     const scRow = document.createElement('div'); scRow.className = 'sw-row'; const scL = document.createElement('span'); scL.textContent = 'scope'; scL.style.width = '44px';
     const seg = document.createElement('div'); seg.className = 'sw-seg'; seg.title = 'all rows · rows matching each layer\'s current filter · the 3D selection (re-runs as it changes)';
     for (const [v, t] of [['all', 'all'], ['filtered', 'filt'], ['selection', 'sel']]) { const bt = document.createElement('button'); bt.className = 'sw-segbtn' + (st.scope === v ? ' on' : ''); bt.textContent = t; bt.onclick = () => { st.scope = v; buildRail(); run(); }; seg.append(bt); } scRow.append(scL, seg); vSec.append(scRow);
+    vSec.append(limitRow(st, () => { buildRail(); run(); }));
     vSec.append(rangesRow(st, () => { if (st.scan) plot(); }, { x: 'cutoff', l: 't', r: 'grade' }));
     rail.append(vSec);
     // ── Footer: Run + save-as-recipe + stale + progress ──

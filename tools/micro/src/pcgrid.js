@@ -22,6 +22,9 @@ import { writeEsriAsc } from './grid-io.js';
 import { floatWin } from './windows.js';
 import { registerCommands } from './commands.js';
 import { compileBool, validate } from '../../../ext/expr/index.js';
+import { resolveLimit, normLimit, limitRow, limitLabel } from './polylimit.js';
+import { preparePolygons } from './polygons.js';
+import { gridCoverage, clipGridLattice } from './coverage.js';
 const $ = (s) => document.querySelector(s);
 
 export const GRID_NODE_CAP = 32e6;                           // as the surface tools: a grid past this wants a bigger cell
@@ -72,14 +75,23 @@ async function filterMaskOf(L, expr, signal) {
 /**
  * Grid a point cloud (no layer made). opts: cell, anchor [x, y], match (a grid LAYER whose lattice
  * to fill), stat (min | mean | max | count), fill (none | nearest | trend), holesOnly, filter (an
- * expression), scope ('all' | 'filtered' — the layer's filter box), onProgress(frac, text), signal.
+ * expression), scope ('all' | 'filtered' — the layer's filter box), limit (a polygon limit, src/polylimit.js —
+ * only the points inside count, the lattice is cut to the polygons' plan bbox, and a node whose cell the
+ * polygons don't reach at all is left blank, after any fill), onProgress(frac, text), signal.
  * → { grid, geom, points, outside, skipped, filled, empty, filledByFill }
  */
 export async function gridPointCloud(L, opts = {}) {
   if (!isPointCloud(L)) throw new Error(`${nameOf(L)} is not a point cloud (a points layer: LAS, PLY, XYZ, a CSV of points)`);
   const stat = opts.stat || 'mean';
   if (!PC_STATS.includes(stat)) throw new Error(`stat: one of ${PC_STATS.join(' / ')}`);
-  const geom = pcGridGeom(L, opts);
+  const lim = opts.limit ? resolveLimit(opts.limit) : null;
+  let geom = pcGridGeom(L, opts);
+  if (lim) {
+    const P0 = preparePolygons(lim.features);
+    geom = clipGridLattice(geom, P0.bbox);
+    if (!geom) throw new Error(`the limit (${limitLabel(opts.limit)}) doesn't overlap ${nameOf(L)}'s lattice`);
+  }
+  const P = lim ? preparePolygons(lim.features) : null;
   if (geom.nx * geom.ny > GRID_NODE_CAP) throw new Error(`${geom.nx.toLocaleString()} × ${geom.ny.toLocaleString()} nodes is over the ${GRID_NODE_CAP / 1e6}M cap — use a bigger cell`);
   let mask = null;
   if (opts.filter && String(opts.filter).trim()) { if (opts.onProgress) opts.onProgress(0, 'filtering…'); mask = await filterMaskOf(L, opts.filter, opts.signal); }
@@ -90,13 +102,15 @@ export async function gridPointCloud(L, opts = {}) {
   for await (const part of layerPositions(L)) {
     if (opts.signal && opts.signal.aborted) throw Object.assign(new Error('cancelled'), { name: 'AbortError' });
     const recs = part.recs, base = part.base || 0;
-    const keep = mask ? (i) => { const r = recs ? recs[i] : base + i; return r < mask.length && mask[r] === 1; } : null;
+    const px = part.x, py = part.y;
+    const keepM = mask ? (i) => { const r = recs ? recs[i] : base + i; return r < mask.length && mask[r] === 1; } : null;
+    const keep = P ? (keepM ? (i) => keepM(i) && P.contains(px[i], py[i]) : (i) => P.contains(px[i], py[i])) : keepM;
     b.add(part.x, part.y, part.z, part.count, keep);
     seen += part.count;
     if (opts.onProgress && ((++chunks) & 3) === 0) { opts.onProgress(total ? Math.min(1, seen / total) : 0, `${seen.toLocaleString()} points`); await new Promise((r) => setTimeout(r)); }
   }
   const out = b.finish();
-  if (!out.filled) throw new Error(`no point of ${nameOf(L)} fell on the lattice${mask ? ' (after the filter)' : ''}`);
+  if (!out.filled) throw new Error(`no point of ${nameOf(L)} fell on the lattice${mask ? ' (after the filter)' : ''}${P ? ' inside the limit' : ''}`);
   let filledByFill = 0;
   if (opts.fill && opts.fill !== 'none' && stat !== 'count') {
     if (opts.onProgress) opts.onProgress(1, `filling (${opts.fill})…`);
@@ -104,7 +118,13 @@ export async function gridPointCloud(L, opts = {}) {
     for (let k = 0; k < out.grid.data.length; k++) if (out.grid.data[k] !== out.grid.nodata) filledByFill++;
     filledByFill -= out.filled;
   }
-  return { ...out, geom, filledByFill };
+  let cutOff = 0;
+  if (lim) {                                                   // the DEM stops at the polygons: a node none of its cell is inside goes blank
+    const cov = gridCoverage(lim.features, out.grid), g = out.grid;
+    for (let k = 0; k < g.data.length; k++) if (!(cov[k] > 0) && g.data[k] !== g.nodata) { g.data[k] = g.nodata; cutOff++; }
+    if (filledByFill) { filledByFill = 0; for (let k = 0; k < g.data.length; k++) if (g.data[k] !== g.nodata) filledByFill++; filledByFill = Math.max(0, filledByFill - out.filled); }
+  }
+  return { ...out, geom, filledByFill, ...(lim ? { limit: normLimit(opts.limit), limitArea: lim.area, cutOff } : {}) };
 }
 
 // a re-run REPLACES what an earlier run made under the same name in this session (re-running is
@@ -117,7 +137,7 @@ export function replaceMade(name) {
 export async function pointsToGridLayer(L, opts = {}) {
   const r = await gridPointCloud(L, opts);
   const name = opts.name ? (/\.asc$/i.test(opts.name) ? opts.name : `${opts.name}.asc`) : `${baseOf(L)}_${r.grid.form.replace('points-', '')}${+r.geom.dx.toPrecision(6)}m.asc`;
-  const lin = mkLineage('pcgrid', { of: L.name, cell: r.geom.dx, stat: opts.stat || 'mean', ...(opts.match ? { match: opts.match.name } : { anchor: opts.anchor || [0, 0] }), fill: opts.fill || 'none', ...(opts.fill && opts.fill !== 'none' ? { holesOnly: opts.holesOnly !== false } : {}), ...(opts.filter ? { filter: String(opts.filter) } : opts.scope === 'filtered' ? { filter: L.filterExpr || '(the filter box)' } : {}) }, [L.lineage].filter(Boolean));
+  const lin = mkLineage('pcgrid', { of: L.name, cell: r.geom.dx, stat: opts.stat || 'mean', ...(opts.match ? { match: opts.match.name } : { anchor: opts.anchor || [0, 0] }), fill: opts.fill || 'none', ...(opts.fill && opts.fill !== 'none' ? { holesOnly: opts.holesOnly !== false } : {}), ...(opts.filter ? { filter: String(opts.filter) } : opts.scope === 'filtered' ? { filter: L.filterExpr || '(the filter box)' } : {}), ...(r.limit ? { limit: r.limit } : {}) }, [L.lineage].filter(Boolean));
   replaceMade(name);
   const id = await openBlob(new File([writeEsriAsc(r.grid)], name), name, S.layers.length ? 'add' : 'replace', null, { lineage: lin });
   const NL = id != null ? layerById(id) : null;
@@ -131,7 +151,7 @@ export function openPcGridDialog(L0) {
   const clouds = pointClouds();
   if (!clouds.length) { $('#meta').textContent = 'grid points: open a point cloud first (LAS, PLY, XYZ, a CSV of points)'; return null; }
   if (_win && _win.el.isConnected) _win.close();
-  const d = { src: (L0 && clouds.includes(L0) ? L0 : clouds[0]).id, cell: 0, stat: 'mean', anchorOn: false, ax: 0, ay: 0, match: '', fill: 'none', holesOnly: true, filter: '' };
+  const d = { src: (L0 && clouds.includes(L0) ? L0 : clouds[0]).id, cell: 0, stat: 'mean', anchorOn: false, ax: 0, ay: 0, match: '', fill: 'none', holesOnly: true, filter: '', limit: null };
   d.cell = defaultCellOf(layerById(d.src));
   const win = floatWin({ title: 'grid points', sub: 'point cloud → DEM', x: Math.max(12, innerWidth - 430), y: 100, w: 400, h: 440, onClose: () => { _win = null; } });
   _win = win;
@@ -179,6 +199,7 @@ export function openPcGridDialog(L0) {
     const fi = document.createElement('input'); fi.className = 'sw-in'; fi.style.flex = '1'; fi.value = d.filter; fi.placeholder = L && L.filterExpr ? `the filter box: ${L.filterExpr}` : 'all points (e.g. Classification == 2)';
     fi.oninput = () => { d.filter = fi.value; };
     row('only', fi, 'an expression keeping the points to grid (a LAS ground class: Classification == 2). Blank: the layer’s filter box if it has one, else every point');
+    form.append(limitRow(d, () => build(), { label: 'inside', width: '84px' }));
     note.textContent = 'each point lands on its nearest node; the node keeps the statistic of the Z that landed there. Read once, streamed — the cloud is never held. The DEM opens as a grid layer (export it, extend it, use it as a survey in cut / fill and the factors).';
     updTally();
   };
@@ -189,7 +210,7 @@ export function openPcGridDialog(L0) {
     try {
       const L = layerById(d.src);
       const filter = d.filter.trim() || '';
-      const r = await pointsToGridLayer(L, { cell: d.cell, anchor: d.anchorOn ? [d.ax, d.ay] : [0, 0], match: d.match ? layerById(+d.match) : null, stat: d.stat, fill: d.fill, holesOnly: d.holesOnly, filter, scope: !filter && L.filterExpr && L._filterMask ? 'filtered' : 'all', onProgress: (f, t) => { msg.textContent = `${Math.round(f * 100)}% · ${t}`; } });
+      const r = await pointsToGridLayer(L, { cell: d.cell, anchor: d.anchorOn ? [d.ax, d.ay] : [0, 0], match: d.match ? layerById(+d.match) : null, stat: d.stat, fill: d.fill, holesOnly: d.holesOnly, filter, limit: normLimit(d.limit), scope: !filter && L.filterExpr && L._filterMask ? 'filtered' : 'all', onProgress: (f, t) => { msg.textContent = `${Math.round(f * 100)}% · ${t}`; } });
       const s = ((performance.now() - t0) / 1000).toFixed(1);
       msg.textContent = `${r.points.toLocaleString()} points → ${r.filled.toLocaleString()} of ${(r.geom.nx * r.geom.ny).toLocaleString()} nodes${r.filledByFill ? ` (+${r.filledByFill.toLocaleString()} filled)` : ''} in ${s} s`;
       $('#meta').textContent = `grid points: ${r.name} — ${msg.textContent}`;

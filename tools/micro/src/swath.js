@@ -8,7 +8,8 @@ import { attrRowCountOf, layerRecords, layerTableHeader, numOf, schemaExt } from
 import { compileBool, compileValue, quoteIdent, validate } from '../../../ext/expr/index.js';
 import { numericColsOf, volumeAt, volumeContextOf, volParamsOf } from './analysis.js';
 import { canScanColumnar, scanColumnar } from './colscan.js';
-import { SERIES_COLORS, analysisSerCfg, analysisSerRestore, applyAnalysisGeo, checkAbort, fmtStat, gradeUnitFactor, gradeUnitSel, niceStep, plotChart, plotExportBtns, rangesForCfg, rangesFromCfg, rangesOf, rangesRow, reconcilePairs, runCancellable, saveAnalysisCfg, scanProgressText, scopeMask, scopeMissing, seriesZoneKeep, setAnalysisOpen } from './analysis-ui.js';
+import { normLimit, limitRow, prepareScope } from './polylimit.js';
+import { scopeLabel, SERIES_COLORS, analysisSerCfg, analysisSerRestore, applyAnalysisGeo, checkAbort, fmtStat, gradeUnitFactor, gradeUnitSel, niceStep, plotChart, plotExportBtns, rangesForCfg, rangesFromCfg, rangesOf, rangesRow, reconcilePairs, runCancellable, saveAnalysisCfg, scanProgressText, scopeMask, scopeMissing, seriesZoneKeep, setAnalysisOpen } from './analysis-ui.js';
 import { swathMerge } from './scanner.js';
 import { coordNum } from '../../../ext/condenser/src/main.js';
 import { gridAxesOf } from './grid-ops.js';
@@ -79,6 +80,7 @@ export async function scanSwath(st, onProgress, signal) {
     return { s, L, m, vc: volumeContextOf(L), gradeFn, weightFn, filterFn, fine: dirs.map(() => new Map()), n: 0 };
   }).filter(Boolean);
   if (!series.length) return null;
+  await prepareScope(st, [...new Set(series.map((se) => se.L))], signal);   // a polygon limit's mask, once per layer
   const range = dirs.map((dir) => { let lo = Infinity, hi = -Infinity; for (const se of series) { const [a, b] = projRange(se.L, dir); if (a < lo) lo = a; if (b > hi) hi = b; } return [lo, hi]; });
   const fineW = range.map(([lo, hi]) => Math.max(1e-6, (hi - lo) / 600 || 1));
   const fineOrigin = range.map(([lo]) => lo);
@@ -197,6 +199,7 @@ export function openSwath(L, ropts) {
   const saved = (ropts && ropts.cfg) || (L.analysis && L.analysis.swath);
   if (saved) {
     for (const k of ['mode', 'axis', 'dd', 'dip', 'rake', 'trend', 'plunge', 'bars', 'scope', 'gradeUnit']) if (saved[k] != null) st[k] = saved[k];
+    if (saved.limit) st.limit = normLimit(saved.limit);
     if (st.mode === 'direction') st.mode = 'trend';         // the window's old name for the trend/plunge mode (the tool's is "trend")
     if (saved.bandW) st.bandW = { ...saved.bandW };
     if (saved.off) st.off = { ...saved.off };
@@ -205,7 +208,7 @@ export function openSwath(L, ropts) {
     const ser = analysisSerRestore(saved.series, L); if (ser) { st.series = ser; if (ser.dropped.length) st.droppedNote = `left out (layer not loaded): ${ser.dropped.join(', ')}`; }
   }
   const cfgOf = () => ({ series: analysisSerCfg(st.series), mode: st.mode, axis: st.axis, dd: st.dd, dip: st.dip, rake: st.rake, trend: st.trend, plunge: st.plunge,
-    bandW: st.bandW, off: st.off, bars: st.bars, scope: st.scope, gradeUnit: st.gradeUnit, locate: st.locate, ranges: rangesForCfg(st.ranges) });
+    bandW: st.bandW, off: st.off, bars: st.bars, scope: st.scope, ...(normLimit(st.limit) ? { limit: normLimit(st.limit) } : {}), gradeUnit: st.gradeUnit, locate: st.locate, ranges: rangesForCfg(st.ranges) });
   const win = floatWin({ title: `swath · ${L.label || L.name}`, sub: saved ? 'restored — Run to compute' : 'configure, then Run', x: Math.max(12, innerWidth - 660), y: 120, w: 640, h: 440,
     onClose: () => { saveAnalysisCfg(L, 'swath', cfgOf(), win); setAnalysisOpen(L, 'swath', false); _swathWins.delete(L.id); if (st.zebra) clearSwathZebra(zebraL()); setSwathBand(null); removeEventListener('pointerup', onUp); } });
   setAnalysisOpen(L, 'swath', true);
@@ -250,7 +253,7 @@ export function openSwath(L, ropts) {
     const b = binSwath(st.scan, di, bw, off);
     if (!b.keys.length) { win.sub.textContent = 'no data in range'; st._plotSpec = null; renderChart(); return; }
     const spec = swathChartSpec(st.scan, b, { di, bw, off, bars: st.bars, gradeUnit: st.gradeUnit, ranges: st.ranges, multi: S.layers.length > 1 || st.series.length > 1 });
-    win.sub.textContent = `${st.scope !== 'all' ? st.scope + ' · ' : ''}${b.keys.length} bands · ${bw.toPrecision(3)} m · ${st.scan.series.reduce((s, x) => s + x.n, 0).toLocaleString()} rows`;
+    win.sub.textContent = `${scopeLabel(st) ? scopeLabel(st) + ' · ' : ''}${b.keys.length} bands · ${bw.toPrecision(3)} m · ${st.scan.series.reduce((s, x) => s + x.n, 0).toLocaleString()} rows`;
     st._plotSpec = spec; renderChart();
     if (st.zebra) applySwathZebra(zebraL(), curDir(), bw, off);
   };
@@ -348,7 +351,7 @@ export function openSwath(L, ropts) {
   const markStale = () => { st.stale = true; if (staleEl) staleEl.textContent = st.scan ? '↻ config changed — Run to update' : ''; };
   const run = async () => {
     if (st.running) return;
-    if (st.scope !== 'all' && !st.series.some((s) => { const Lx = layerById(s.layerId); return Lx && scopeMask(st, Lx); })) {
+    if (st.scope !== 'all' && !st.series.some((s) => { const Lx = layerById(s.layerId); return Lx && scopeMask({ scope: st.scope }, Lx); })) {
       win.el._runFailed = win.sub.textContent = scopeMissing(st, zebraL()) || `no layer carries a ${st.scope} mask`; return;
     }
     st.running = true; win.sub.textContent = 'scanning…';
@@ -452,6 +455,7 @@ export function openSwath(L, ropts) {
     const scRow = document.createElement('div'); scRow.className = 'sw-row'; const scL = document.createElement('span'); scL.textContent = 'scope';
     const seg = document.createElement('div'); seg.className = 'sw-seg'; seg.title = 'all rows · rows matching each layer\'s current filter · the 3D selection';
     for (const [v, t] of [['all', 'all'], ['filtered', 'filt'], ['selection', 'sel']]) { const bt = document.createElement('button'); bt.className = 'sw-segbtn' + (st.scope === v ? ' on' : ''); bt.textContent = t; bt.onclick = () => { st.scope = v; markStale(); buildRail(); }; seg.append(bt); } scRow.append(scL, seg); vSec.append(scRow);
+    vSec.append(limitRow(st, () => { markStale(); buildRail(); }));
     // manual plot ranges (display-only — re-plots from the scan)
     vSec.append(rangesRow(st, () => { if (st.scan) plot(); }, { x: 'x', l: 'grade', r: 'bars' }));
     rail.append(vSec);

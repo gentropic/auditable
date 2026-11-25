@@ -35,6 +35,7 @@ import { floatWin, focusWindow } from './windows.js';
 import { saveRecipe } from './recipes.js';
 import { periodKey, makeAcc, factorRows, factorTable, factorValues, periodOrder, identityError, metalMismatch, QUANTITIES } from './factors-core.js';
 import { registerCommands } from './commands.js';
+import { normLimit, limitMaskOf, limitRow, limitLabel } from './polylimit.js';
 const $ = (s) => document.querySelector(s);
 
 // ── what can take part ────────────────────────────────────────────────────────
@@ -214,6 +215,12 @@ export async function scanFactors(st, onProgress, signal) {
       if (mode === 'column') { perExpr = needColumn(L, st.periodCol, `period column (on ${nameOf(L)})`); perFn = valueFn(L, perExpr, schema); }
       if (mode === 'filter') { try { perFn = compileBool(String(st.periodFilter), schema, { decimal: '.' }); perExpr = String(st.periodFilter); } catch (e) { throw new Error(`period filter on ${nameOf(L)}: ${e.message}`); } }
       if (mode === 'selection') { mask = L._selMask && L._selCount ? L._selMask : null; if (!mask) throw new Error(`${nameOf(L)}: no selection — brush the mined volume in 3D first (or use a filter)`); }
+      // a polygon limit (a blast, a pit limit): only the blocks whose centroid lies inside it, on both models
+      if (normLimit(st.limit)) {
+        const lm = await limitMaskOf(L, st.limit, { signal });
+        mask = mask ? Uint8Array.from(lm, (v, i) => (v && i < mask.length && mask[i] ? 1 : 0)) : lm;
+        if (!warnings.some((w) => w.startsWith('limit:'))) warnings.push(`limit: ${limitLabel(st.limit)} — blocks counted by their centroid`);
+      }
       await residentFor(L, [isBare(gcol) ? quoteIdent(gcol) : gcol, dens.col ? (isBare(dens.col) ? quoteIdent(dens.col) : dens.col) : null, st.filter, perExpr && isBare(perExpr) ? quoteIdent(perExpr) : perExpr]);
       const looks = [];
       for (const [vi, v] of vols.entries()) {
@@ -374,6 +381,7 @@ export function factorsCfgOf(st) {
     ...(st.periods === 'surveys' ? { surveys: (st.surveys || []).map((v) => ({ name: v.name, surface: nm(v.meshId) })), probes: probesOf(st.resolution) } : {}),
     ...(st.periods === 'filter' ? { periodFilter: st.periodFilter } : {}), ...(st.periods === 'filter' || st.periods === 'selection' ? { periodName: st.periodName || 'period' } : {}),
     ...(st.filter ? { filter: st.filter } : {}),
+    ...(normLimit(st.limit) ? { limit: normLimit(st.limit) } : {}),
     ...(st.production && st.production.layerId != null ? { production: nm(st.production.layerId), prodPeriod: st.production.period, prodTonnes: st.production.tonnes, ...(st.production.grade ? { prodGrade: st.production.grade } : {}), ...(st.production.metal ? { prodMetal: st.production.metal } : {}), prodUnit: st.production.unit || '' } : {}),
     cutoff: st.cutoff == null ? 'none' : st.cutoff, gradeUnit: st.gradeUnit || '', ...(st.metalFactor != null && st.metalFactor !== '' ? { metalFactor: Number.isFinite(parseFactor(st.metalFactor)) ? parseFactor(st.metalFactor) : st.metalFactor, metalUnit: st.metalUnit || '' } : {}),
     tolerance: st.tolerance, show: st.show, cumulative: !!st.cumulative, ranges: rangesForCfg(st.ranges),
@@ -394,7 +402,7 @@ export function factorsStOf(p, { lenient = false } = {}) {
     periods: p.periods || (Array.isArray(p.surveys) && p.surveys.length ? 'surveys' : 'column'), periodCol: p.periodCol || '',
     surveys: (p.surveys || []).map((v, i) => ({ name: v.name || (i ? `period ${i}` : 'start'), meshId: lay(v.surface, `survey “${v.name || i + 1}”`) })),
     volumes: (p.volumes || []).map((v) => ({ name: v.name, meshId: lay(v.mesh, `period “${v.name}”`), side: v.side || null })),   // no side: the volume's topology decides (scan)
-    nested: p.nested != null ? !!p.nested : true, resolution: probesOf(p.probes != null ? p.probes : 3), periodFilter: p.periodFilter || '', periodName: p.periodName || 'period', filter: p.filter || '',
+    nested: p.nested != null ? !!p.nested : true, resolution: probesOf(p.probes != null ? p.probes : 3), periodFilter: p.periodFilter || '', periodName: p.periodName || 'period', filter: p.filter || '', limit: normLimit(p.limit),
     production: p.production ? { layerId: lay(p.production, 'production'), period: p.prodPeriod, tonnes: p.prodTonnes, grade: p.prodGrade || '', metal: p.prodMetal || '', unit: p.prodUnit != null && p.prodUnit !== '' ? p.prodUnit : p.gradeUnit || '' } : null,
     cutoff: p.cutoff == null || p.cutoff === 'none' || p.cutoff === '' ? null : +p.cutoff, gradeUnit: p.gradeUnit || '', metalFactor: p.metalFactor, metalUnit: p.metalUnit || '',
     tolerance: p.tolerance != null ? +p.tolerance : 0.1, show: p.show || 'metal', cumulative: !!p.cumulative,
@@ -641,6 +649,7 @@ export function openFactors(L, ropts) {
       pSec.append(row('name', txt(st.periodName, 'period', (v) => { st.periodName = v || 'period'; markStale(); }, 'the period’s name — the production row it is matched with')));
     }
     pSec.append(row('domain', txt(st.filter, 'all blocks (optional filter)', (v) => { st.filter = v; markStale(); }, 'an optional row filter on both models, any period mode — e.g. LITO == "ORE"')));
+    pSec.append(limitRow(st, () => { markStale(); buildRail(); }, { label: 'inside', width: 'auto' }));
     rail.append(pSec);
     // ── production ──
     const prSec = document.createElement('div'); prSec.append(head('production (mill)'));

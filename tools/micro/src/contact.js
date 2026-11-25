@@ -19,7 +19,8 @@ import { numericColsOf, volumeContextOf, volumeExprOf } from './analysis.js';
 import { canScanColumnar, scanColumnar } from './colscan.js';
 import { meshSolidOf, solidOrientedMesh, layerPositions, residentGridForEval, targetsXYBbox } from './bygeom.js';
 import { gridAxesOf, surfaceFromGrid } from './grid-ops.js';
-import { SERIES_COLORS, analysisSerCfg, analysisSerRestore, applyAnalysisGeo, checkAbort, fmtStat, gradeUnitFactor, gradeUnitSel, plotChart, plotExportBtns, rangesForCfg, rangesFromCfg, rangesOf, rangesRow, runCancellable, saveAnalysisCfg, scanProgressText, scopeMask, scopeMissing, setAnalysisOpen } from './analysis-ui.js';
+import { normLimit, limitRow, prepareScope } from './polylimit.js';
+import { scopeLabel, SERIES_COLORS, analysisSerCfg, analysisSerRestore, applyAnalysisGeo, checkAbort, fmtStat, gradeUnitFactor, gradeUnitSel, plotChart, plotExportBtns, rangesForCfg, rangesFromCfg, rangesOf, rangesRow, runCancellable, saveAnalysisCfg, scanProgressText, scopeMask, scopeMissing, setAnalysisOpen } from './analysis-ui.js';
 import { floatWin, focusWindow } from './windows.js';
 import { saveRecipe } from './recipes.js';
 import { matColSet, ensureStoredValues } from './columns.js';
@@ -207,6 +208,7 @@ export async function scanContact(st, onProgress, signal) {
   if (maxDist / bw > 2000) throw new Error(`max distance / bin width = ${Math.round(maxDist / bw)} bins a side — widen the bins`);
   const series = st.series.map((s) => ({ s, L: layerById(s.layerId) })).filter((x) => x.L);
   if (!series.length) throw new Error('no series — add one');
+  await prepareScope(st, [...new Set(series.map((x) => x.L))], signal);   // a polygon limit's mask, once per layer
   const out = { mode: st.mode, bw, maxDist, series: [], where: '' };
   if (st.mode === 'downhole') {
     const domA = String(st.domA || '').trim(); if (!domA) throw new Error('domain A: pick the domain whose contacts you are testing');
@@ -379,6 +381,7 @@ export function openContact(L, ropts) {
   const saved = (ropts && ropts.cfg) || (L.analysis && L.analysis.contact);
   if (saved) {
     for (const k of ['mode', 'domain', 'domA', 'domB', 'direction', 'minRun', 'maxGap', 'binWidth', 'maxDist', 'near', 'scope', 'gradeUnit']) if (saved[k] != null) st[k] = saved[k];
+    if (saved.limit) st.limit = normLimit(saved.limit);
     if (saved.binWidth != null || saved.maxDist != null) st.binsSet = true;   // a saved setup's bins are the user's
     if (saved.surface) { const m = surfs.find((x) => x.name === saved.surface || (x.label || x.name) === saved.surface); if (m) st.surfaceId = m.id; }
     if (saved.ranges) st.ranges = rangesFromCfg(saved.ranges);
@@ -391,7 +394,7 @@ export function openContact(L, ropts) {
   }
   const surfName = () => { const m = layerById(st.surfaceId); return m ? m.name : null; };
   const cfgOf = () => ({ mode: st.mode, series: analysisSerCfg(st.series), ...(st.mode === 'downhole' ? { domain: st.domain, domA: st.domA, domB: st.domB, direction: st.direction, minRun: +st.minRun || 0, ...(st.maxGap != null && st.maxGap !== '' ? { maxGap: +st.maxGap } : {}) } : { surface: surfName() }),
-    binWidth: +st.binWidth, maxDist: +st.maxDist, near: +st.near || 1, scope: st.scope, gradeUnit: st.gradeUnit || '', ranges: rangesForCfg(st.ranges) });
+    binWidth: +st.binWidth, maxDist: +st.maxDist, near: +st.near || 1, scope: st.scope, ...(normLimit(st.limit) ? { limit: normLimit(st.limit) } : {}), gradeUnit: st.gradeUnit || '', ranges: rangesForCfg(st.ranges) });
   const win = floatWin({ title: `contact · ${L.label || L.name}`, sub: saved ? 'restored — Run to compute' : 'configure, then Run', x: Math.max(12, innerWidth - 700), y: 110, w: 680, h: 460,
     onClose: () => { saveAnalysisCfg(L, 'contact', cfgOf(), win); setAnalysisOpen(L, 'contact', false); _contactWins.delete(L.id); } });
   setAnalysisOpen(L, 'contact', true);
@@ -421,12 +424,12 @@ export function openContact(L, ropts) {
     const s0 = st.scan.series[0];
     const what = st.scan.mode === 'downhole' ? `${s0 ? s0.contacts : 0} contacts in ${s0 ? s0.holes : 0} holes${s0 && (s0.skipped.short || s0.skipped.gap) ? ` (skipped: ${s0.skipped.short} slivers, ${s0.skipped.gap} across a gap)` : ''}`
       : `${st.scan.series.map((se) => `${se.counted.toLocaleString()} ${se.kind === 'length' ? 'intervals' : 'blocks'}`).join(' · ')} within ${fmtStat(st.scan.maxDist)} m of ${st.scan.surface.label} (${st.scan.surface.closed ? 'closed: − inside' : 'open: − ' + st.scan.sideNames[0]})`;
-    win.sub.textContent = `${st.scope !== 'all' ? st.scope + ' · ' : ''}${what} · bins ${fmtStat(st.scan.bw)} m`;
+    win.sub.textContent = `${scopeLabel(st) ? scopeLabel(st) + ' · ' : ''}${what} · bins ${fmtStat(st.scan.bw)} m`;
   };
   win.el._onResized = () => { if (win._spec) plotChart(cv, win._spec); };
   const run = async () => {
     if (st.running) return;
-    if (st.scope !== 'all' && !st.series.some((s) => { const Lx = layerById(s.layerId); return Lx && scopeMask(st, Lx); })) { win.el._runFailed = win.sub.textContent = scopeMissing(st, L) || `no layer carries a ${st.scope} mask`; return; }
+    if (st.scope !== 'all' && !st.series.some((s) => { const Lx = layerById(s.layerId); return Lx && scopeMask({ scope: st.scope }, Lx); })) { win.el._runFailed = win.sub.textContent = scopeMissing(st, L) || `no layer carries a ${st.scope} mask`; return; }
     st.running = true; win.sub.textContent = 'scanning…'; win.el._runFailed = null;
     const rc = runCancellable(runBtn);
     try { st.scan = await scanContact(st, (n, N, w) => { progEl.textContent = st.mode === 'downhole' ? (w || '') : scanProgressText(n, N, w).replace(/^[\d,.]+ of [\d,.]+ rows · /, ''); }, rc.signal); }
@@ -540,6 +543,7 @@ export function openContact(L, ropts) {
     const sg = document.createElement('div'); sg.className = 'sw-seg'; sg.title = 'all rows · rows matching each layer’s current filter · the 3D selection';
     for (const [v, t] of [['all', 'all'], ['filtered', 'filt'], ['selection', 'sel']]) { const bt = document.createElement('button'); bt.className = 'sw-segbtn' + (st.scope === v ? ' on' : ''); bt.textContent = t; bt.onclick = () => { st.scope = v; markStale(); buildRail(); }; sg.append(bt); }
     scRow.append(scL, sg); vSec.append(scRow);
+    vSec.append(limitRow(st, () => { markStale(); buildRail(); }));
     const guRow = document.createElement('div'); guRow.className = 'sw-row'; const guL = document.createElement('span'); guL.textContent = 'unit';
     const guS = gradeUnitSel(st.gradeUnit || '', (v) => { st.gradeUnit = v; if (st.scan) plot(); }, 'report unit — the mean axis; series with a declared unit convert into it (display-time, no re-scan)');
     guS.classList.add('sw-unit-plot'); guRow.append(guL, guS); vSec.append(guRow);

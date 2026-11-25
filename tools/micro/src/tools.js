@@ -46,6 +46,8 @@ import { validate, compileBool } from '../../../ext/expr/index.js';
 import { isPointCloud, pointsToGridLayer } from './pcgrid.js';
 import { cutFill, cutFillLayer, cutFillTable, cutFillValues, cutFillHumanTSV, cutFillChartSpec } from './cutfill.js';
 import { PC_STATS } from './grid-ops.js';
+import { LIMIT_PARAM, checkLimitValue } from './limit-param.js';
+import { prepareScope } from './polylimit.js';
 
 export const TOOLS = new Map();
 export function registerTool(name, def) { TOOLS.set(name, { name, ...def }); }
@@ -88,6 +90,7 @@ function checkValue(spec, v, path, errs) {
       if (!arr || arr.some((x) => x != null && (typeof x !== 'number' || !Number.isFinite(x)))) bad(`expects a list of numbers, got ${JSON.stringify(v)}`);
       break;
     }
+    case 'limit': checkLimitValue(v, path, errs); break;
     case 'enum': if (!spec.values.includes(v)) bad(`is one of ${spec.values.map((x) => JSON.stringify(x)).join(' / ')}, got ${JSON.stringify(v)}`); break;
     case 'list': {
       if (!Array.isArray(v)) { bad(`expects a list, got ${JSON.stringify(v)}`); break; }
@@ -125,6 +128,7 @@ export function checkParams(name, params, { routine = false } = {}) {
     const v = p[k] == null || p[k] === '' ? spec.default : p[k];
     if (v !== undefined) out[k] = v;
     if (routine && spec.routine === 'required' && (p[k] == null || (Array.isArray(p[k]) && !p[k].length))) errs.push(`${k}: a routine must state it (${spec.why || 'an automatic value moves with the data'})`);
+    if (routine && spec.type === 'limit' && v && v.selected) errs.push(`${k}.selected: a routine can't use the 3D selection (it isn't saved with the routine) — name the feature, or use where`);
     if (routine && Array.isArray(spec.routine) && v != null && !spec.routine.includes(v)) errs.push(`${k}: a routine allows ${spec.routine.map((x) => JSON.stringify(x)).join(' / ')} (${spec.why || ''})`);
   }
   if (!errs.length && def.check) def.check(out, errs, { routine });
@@ -215,6 +219,7 @@ registerTool('gt', {
     cutoffs: { type: 'numbers', routine: 'required', why: 'automatic cutoffs come from the data’s range and move with it', doc: 'the cutoffs, in gradeUnit' },
     nCut: { type: 'int', default: 40, doc: 'how many automatic cutoffs (when cutoffs is absent)' },
     scope: { type: 'enum', values: ['all', 'filtered', 'selection'], default: 'all', routine: ['all'], why: 'a selection isn’t saved with the routine — use a series filter' },
+    limit: LIMIT_PARAM,
     gradeUnit: { type: 'string', default: '', doc: 'the unit cutoffs and grades are shown in' },
     densUnit: { type: 'string', default: 't/m3', doc: 'the unit of the density expression' },
     ranges: { type: 'any', display: true },
@@ -228,7 +233,7 @@ registerTool('gt', {
   async scan(p, ctx) {
     const series = seriesSt(p);
     scopeCheck(p.scope, series.map((s) => layerById(s.layerId)));
-    return scanGTSeries({ series, scope: p.scope, densUnit: p.densUnit }, ctx.progress, ctx.signal);
+    return scanGTSeries({ series, scope: p.scope, limit: p.limit, densUnit: p.densUnit }, ctx.progress, ctx.signal);
   },
   shape(scan, p) {
     const warnings = [];
@@ -261,6 +266,7 @@ registerTool('stats', {
     weight: { type: 'expr', default: '', doc: 'a weight for mean and std (quantiles stay unweighted)' },
     filter: { type: 'expr', default: '', doc: 'a row filter' },
     scope: { type: 'enum', values: ['all', 'filtered', 'selection'], default: 'all', routine: ['all'], why: 'a selection isn’t saved with the routine — use filter' },
+    limit: LIMIT_PARAM,
   },
   outputs: { key: ['group', 'column'] },
   human: (scan, raw) => { const gb = raw.groupBy || ''; return [[...(gb ? [gb] : []), 'column', 'n', 'mean', 'std', 'min', 'q25', 'median', 'q75', 'max'].join('\t'), ...scan.rows.map((r) => [...(gb ? [r.group] : []), r.col, r.n, r.mean, r.std, r.min, r.q25, r.q50, r.q75, r.max].join('\t'))].join('\n'); },
@@ -270,7 +276,8 @@ registerTool('stats', {
     const missing = p.cols.filter((c) => !nums.includes(c));
     if (missing.length) throw new Error(`no numeric column ${missing.map((c) => `“${c}”`).join(', ')} on ${L.label || L.name}`);
     scopeCheck(p.scope, [L]);
-    return statsScan(L, { cols: p.cols, groupBy: p.groupBy, weight: p.weight, filter: p.filter }, scopeMask({ scope: p.scope }, L), ctx.progress, ctx.signal);
+    await prepareScope({ limit: p.limit }, [L], ctx.signal);
+    return statsScan(L, { cols: p.cols, groupBy: p.groupBy, weight: p.weight, filter: p.filter }, scopeMask({ scope: p.scope, limit: p.limit }, L), ctx.progress, ctx.signal);
   },
   shape(scan, p) {
     const g = p.groupBy ? [p.groupBy] : [];
@@ -292,6 +299,7 @@ registerTool('swath', {
     dd: { type: 'number', default: 90 }, dip: { type: 'number', default: 45 }, rake: { type: 'number', default: 0 },
     trend: { type: 'number', default: 0 }, plunge: { type: 'number', default: 0 },
     bandW: { type: 'numbers', routine: 'required', why: 'automatic band widths come from the extent and move with it', doc: 'band width per direction' },
+    limit: LIMIT_PARAM,
     off: { type: 'numbers', doc: 'band offset per direction (default 0 — a fixed lattice anchored at the origin; the window’s automatic offset is the data’s minimum, which moves with the data)' },
     scope: { type: 'enum', values: ['all', 'filtered', 'selection'], default: 'all', routine: ['all'], why: 'a selection isn’t saved with the routine — use a series filter' },
     gradeUnit: { type: 'string', default: '' },
@@ -308,7 +316,7 @@ registerTool('swath', {
     // a swath bands a block model's centroids — a drillhole layer has none to band (its intervals sit
     // on desurveyed traces), so it would come back empty; say so instead. Validation is the model-vs-samples swath.
     for (const s of series) { const Ls = layerById(s.layerId); if (Ls && !Ls.docs.blockDoc) throw new Error(`series “${Ls.label || Ls.name}”: a swath reads a block model; for model against drillhole samples use the validation tool`); }
-    const scan = await scanSwath({ series, mode: p.mode, dd: p.dd, dip: p.dip, rake: p.rake, trend: p.trend, plunge: p.plunge, scope: p.scope }, ctx.progress, ctx.signal);
+    const scan = await scanSwath({ series, mode: p.mode, dd: p.dd, dip: p.dip, rake: p.rake, trend: p.trend, plunge: p.plunge, scope: p.scope, limit: p.limit }, ctx.progress, ctx.signal);
     if (!scan) throw new Error('no series could be read');
     return scan;
   },
@@ -393,6 +401,7 @@ registerTool('contact', {
     maxDist: { type: 'number', routine: 'required', why: 'the reach decides which records count', doc: 'how far from the contact each side, m (default 10 × binWidth)' },
     near: { type: 'int', default: 1, doc: 'bins each side that make “just inside / just outside” for step and ratio' },
     scope: { type: 'enum', values: ['all', 'filtered', 'selection'], default: 'all', routine: ['all'], why: 'a selection isn’t saved with the routine — use a series filter' },
+    limit: LIMIT_PARAM,
     gradeUnit: { type: 'string', default: '', doc: 'the unit the means are reported in; a series with a declared unit converts into it (as grade-tonnage and swath)' },
     ranges: { type: 'any', display: true },
   },
@@ -410,7 +419,7 @@ registerTool('contact', {
     const series = seriesSt(p);
     scopeCheck(p.scope, series.map((s) => layerById(s.layerId)));
     const bw = p.binWidth || (p.mode === 'downhole' ? 2 : 5);   // the window's starting bins
-    const st = { mode: p.mode, series, binWidth: bw, maxDist: p.maxDist || 10 * bw, scope: p.scope, domain: p.domain, domA: p.domA, domB: p.domB, direction: p.direction, minRun: p.minRun, maxGap: p.maxGap,
+    const st = { mode: p.mode, series, binWidth: bw, maxDist: p.maxDist || 10 * bw, scope: p.scope, limit: p.limit, domain: p.domain, domA: p.domA, domB: p.domB, direction: p.direction, minRun: p.minRun, maxGap: p.maxGap,
       surfaceId: p.mode === 'surface' ? layerNamed(p.surface).id : null };
     return scanContact(st, ctx.progress, ctx.signal);
   },
@@ -468,6 +477,7 @@ registerTool('factors', {
     periodFilter: { type: 'expr', of: 'model', doc: 'periods filter: the blocks mined (an expression; its names must exist on both models)' },
     periodName: { type: 'string', default: 'period', doc: 'periods filter / selection: the period’s name' },
     filter: { type: 'expr', default: '', of: 'model', doc: 'an optional domain filter on both models, any period mode (e.g. LITO == "ORE")' },
+    limit: LIMIT_PARAM,
     production: { type: 'layer', kinds: ['table'], doc: 'the production (mill) table layer — no X/Y/Z, one or more rows per period; absent = F1 only' },
     prodPeriod: { type: 'column', of: 'production', doc: 'its period column' },
     prodTonnes: { type: 'column', of: 'production', doc: 'its tonnes column' },
@@ -929,6 +939,7 @@ registerTool('pcgrid', {
     anchor: { type: 'numbers', doc: 'a point [x, y] the nodes pass through (default [0, 0]: nodes at round multiples of the cell)' },
     match: { type: 'layer', kinds: ['grid'], doc: 'fill an existing grid’s lattice instead (an earlier survey — node for node); cell and anchor are then ignored' },
     filter: { type: 'expr', default: '', of: 'layer', doc: 'only the points this keeps (a LAS ground class: Classification == 2)' },
+    limit: { ...LIMIT_PARAM, doc: 'only the points inside these polygons count, and the DEM is cut to them: a node keeps its value by the share of its cell inside (blank when none) — { layer, feature?, where? }' },
     fill: { type: 'enum', values: ['none', 'nearest', 'trend'], default: 'none', doc: 'empty nodes: blank, or filled — nearest (flat) or planar trend' },
     holesOnly: { type: 'bool', default: true, doc: 'fill only the gaps inside the cloud — beyond its edge stays blank' },
     name: { type: 'string', doc: 'the grid layer’s name (default: <cloud>_<stat><cell>m.asc)' },
@@ -941,7 +952,7 @@ registerTool('pcgrid', {
   async scan(p, ctx) {
     const L = layerNamed(p.layer);
     if (!isPointCloud(L)) throw new Error(`${L.label || L.name} is not a point cloud`);
-    const r = await pointsToGridLayer(L, { cell: p.cell, stat: p.stat, anchor: p.anchor || [0, 0], match: p.match ? layerNamed(p.match) : null, filter: p.filter, fill: p.fill, holesOnly: p.holesOnly, name: p.name || null, signal: ctx.signal, onProgress: ctx.progress ? (f) => ctx.progress(Math.round(f * 100), 100) : null });
+    const r = await pointsToGridLayer(L, { cell: p.cell, stat: p.stat, anchor: p.anchor || [0, 0], match: p.match ? layerNamed(p.match) : null, filter: p.filter, limit: p.limit, fill: p.fill, holesOnly: p.holesOnly, name: p.name || null, signal: ctx.signal, onProgress: ctx.progress ? (f) => ctx.progress(Math.round(f * 100), 100) : null });
     return r;
   },
   shape(r, p) {
@@ -957,6 +968,7 @@ registerTool('cutfill', {
     after: { type: 'layer', required: true, kinds: ['grid', 'mesh'], doc: 'the later surface (this survey)' },
     cell: { type: 'number', doc: 'node spacing (default: the finer grid’s own nodes, over the overlap of the two)' },
     match: { type: 'layer', kinds: ['grid'], doc: 'use this grid’s lattice instead' },
+    limit: { ...LIMIT_PARAM, doc: 'the PERIMETER: only the ground inside these polygons counts — each node by the share of its cell inside, the cell clipped to the polygons exactly (so a volume is exact at the edges) — { layer, feature?, where? }' },
     layer: { type: 'bool', default: true, doc: 'add the Δz grid as a layer (after − before; red = cut, blue = fill)' },
     name: { type: 'string', doc: 'the Δz layer’s name (default dz_<after>_<before>.asc)' },
   },
@@ -966,7 +978,7 @@ registerTool('cutfill', {
   check(p, errs) { if (p.cell != null && !(p.cell > 0)) errs.push('cell: a positive number'); },
   async scan(p, ctx) {
     const B = layerNamed(p.before), A = layerNamed(p.after);
-    const r = await cutFill(B, A, { cell: p.cell || null, match: p.match ? layerNamed(p.match) : null, signal: ctx.signal, onProgress: ctx.progress ? (f) => ctx.progress(Math.round(f * 100), 100) : null });
+    const r = await cutFill(B, A, { cell: p.cell || null, match: p.match ? layerNamed(p.match) : null, limit: p.limit || null, signal: ctx.signal, onProgress: ctx.progress ? (f) => ctx.progress(Math.round(f * 100), 100) : null });
     if (p.layer) { const made = await cutFillLayer(r, B, A, { name: p.name || null }); r.layerName = made.name; }
     return r;
   },

@@ -19,6 +19,7 @@ import { recipeSlug } from './recipes.js';
 import { openBlob } from './open.js';
 import { mkLineage } from './lineage.js';
 import { fileLayerByPath } from './tree.js';
+import { applyLimit, limitLabel, normLimit, resolveLimit } from './polylimit.js';
 const $ = (s) => document.querySelector(s);
 
 // ── analysis windows (grade-tonnage, swath) ──────────────────────────────────
@@ -146,17 +147,25 @@ export function seriesZoneKeep(L, filters, mask) {
   return zoneKeeper(L, { ast, mask });
 }
 
+// st.limit (src/polylimit.js) ANDs a polygon limit onto the scope: "filtered" AND "inside the pit
+// limit". Its mask is computed by prepareScope before the scan; here it is only read.
 export function scopeMask(st, L) {
-  if (st.scope === 'selection') return L._selMask || null;
-  if (st.scope === 'filtered') return L._filterMask || null;
-  return null;
+  let m = null;
+  if (st.scope === 'selection') m = L._selMask || null;
+  else if (st.scope === 'filtered') m = L._filterMask || null;
+  if (!normLimit(st.limit)) return m;
+  if (st.scope && st.scope !== 'all' && !m) return null;  // the scope's own mask is missing — scopeMissing says so
+  return applyLimit(m, L, st.limit);
 }
 
 export function scopeMissing(st, L) {
   if (st.scope === 'selection' && !(L._selMask && L._selCount)) return 'no selection — brush the 3D first';
   if (st.scope === 'filtered' && !L._filterMask) return 'no active filter — run one in the filter box first';
+  if (normLimit(st.limit)) { try { resolveLimit(st.limit); } catch (e) { return e.message; } }
   return null;
 }
+// the scope as a subtitle: "filtered · inside pit_limit"
+export const scopeLabel = (st) => [st.scope && st.scope !== 'all' ? st.scope : '', limitLabel(st.limit)].filter(Boolean).join(' · ');
 
 // manual axis ranges: st.ranges = { x: [lo,hi], l: [lo,hi], r: [lo,hi] } with
 // null = auto per BOUND. A small aligned grid — one row per axis: label · min · max.

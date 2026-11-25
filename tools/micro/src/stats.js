@@ -7,7 +7,8 @@ import { compileBool, compileChunk, compileValue, parse, quoteIdent } from '../.
 import { censusChunkCols, ensureStoredValues, expandedDeps, pinGet, pinWindow } from './columns.js';
 import { quantileFromCentroids, tdigest } from '../../../ext/sluice/index.js';
 import { momentAdd, momentStd, statsMerge } from './scanner.js';
-import { applyAnalysisGeo, checkAbort, fmtStat, plotExportBtns, runCancellable, saveAnalysisCfg, scanProgressText, scopeMask, scopeMissing, setAnalysisOpen } from './analysis-ui.js';
+import { normLimit, limitRow, prepareScope } from './polylimit.js';
+import { scopeLabel, applyAnalysisGeo, checkAbort, fmtStat, plotExportBtns, runCancellable, saveAnalysisCfg, scanProgressText, scopeMask, scopeMissing, setAnalysisOpen } from './analysis-ui.js';
 import { floatWin, focusWindow } from './windows.js';
 import { numericColsOf } from './analysis.js';
 import { canScanColumnar, scanColumnar, zoneKeeper } from './colscan.js';
@@ -217,8 +218,9 @@ export function openStats(L, ropts) {
     if (saved.groupBy != null) st.groupBy = saved.groupBy;
     if (saved.weight != null) st.weight = saved.weight;
     if (saved.scope) st.scope = saved.scope;
+    if (saved.limit) st.limit = normLimit(saved.limit);
   }
-  const cfgOf = () => ({ layer: L.name, cols: st.cols.slice(), groupBy: st.groupBy, weight: st.weight, scope: st.scope });
+  const cfgOf = () => ({ layer: L.name, cols: st.cols.slice(), groupBy: st.groupBy, weight: st.weight, scope: st.scope, ...(normLimit(st.limit) ? { limit: normLimit(st.limit) } : {}) });
   const win = floatWin({ title: `stats · ${L.label || L.name}`, sub: saved ? 'restored — Run to compute' : 'configure, then Run', x: Math.max(12, innerWidth - 700), y: 110, w: 680, h: 400,
     onClose: () => { saveAnalysisCfg(L, 'stats', cfgOf(), win); setAnalysisOpen(L, 'stats', false); _statsWins.delete(L.id); } });
   setAnalysisOpen(L, 'stats', true);
@@ -247,7 +249,7 @@ export function openStats(L, ropts) {
       tbl.append(tr);
     }
     main.append(tbl);
-    win.sub.textContent = `${st.scope !== 'all' ? st.scope + ' · ' : ''}${st.scan.rows.length} row${st.scan.rows.length === 1 ? '' : 's'}${st.scan.weighted ? ' · weighted mean/std (quantiles unweighted)' : ''}${st.scan.overflow ? ' · ⚠ over 256 groups — extra groups dropped' : ''}`;
+    win.sub.textContent = `${scopeLabel(st) ? scopeLabel(st) + ' · ' : ''}${st.scan.rows.length} row${st.scan.rows.length === 1 ? '' : 's'}${st.scan.weighted ? ' · weighted mean/std (quantiles unweighted)' : ''}${st.scan.overflow ? ' · ⚠ over 256 groups — extra groups dropped' : ''}`;
     win.el._statsRows = st.scan.rows.map(({ centroids, count, ...r }) => r);   // the digests feed Q-Q, not this table
   };
   const tableTSV = () => {
@@ -257,10 +259,10 @@ export function openStats(L, ropts) {
     for (const r of st.scan.rows) lines.push([...(gb ? [r.group] : []), r.col, r.n, r.mean, r.std, r.min, r.q25, r.q50, r.q75, r.max].join('\t'));
     return lines.join('\n');
   };
-  const scanStats = (onProgress, signal) => statsScan(L, st, scopeMask(st, L), onProgress, signal);
+  const scanStats = async (onProgress, signal) => { await prepareScope(st, [L], signal); return statsScan(L, st, scopeMask(st, L), onProgress, signal); };
   const run = async () => {
     if (st.running) return;
-    if (st.scope !== 'all' && !scopeMask(st, L)) { win.el._runFailed = win.sub.textContent = scopeMissing(st, L) || `no ${st.scope} mask`; return; }
+    if (st.scope !== 'all' && !scopeMask({ scope: st.scope }, L)) { win.el._runFailed = win.sub.textContent = scopeMissing(st, L) || `no ${st.scope} mask`; return; }
     st.running = true; win.sub.textContent = 'scanning…';
     const rc = runCancellable(runBtn);
     try { st.scan = await scanStats((n, N, w) => { progEl.textContent = scanProgressText(n, N, w); }, rc.signal); }
@@ -294,6 +296,7 @@ export function openStats(L, ropts) {
     const seg = document.createElement('div'); seg.className = 'sw-seg'; seg.title = 'all rows · rows matching the current filter · the 3D selection';
     for (const [v, t] of [['all', 'all'], ['filtered', 'filt'], ['selection', 'sel']]) { const bt = document.createElement('button'); bt.className = 'sw-segbtn' + (st.scope === v ? ' on' : ''); bt.textContent = t; bt.onclick = () => { st.scope = v; markStale(); buildRail(); }; seg.append(bt); }
     scRow.append(scL, seg); vSec.append(scRow);
+    vSec.append(limitRow(st, () => { markStale(); buildRail(); }));
     rail.append(vSec);
     const foot = document.createElement('div'); foot.className = 'sw-foot';
     runBtn = document.createElement('button'); runBtn.className = 'sw-run'; runBtn.textContent = 'Run'; runBtn.onclick = run;
