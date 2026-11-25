@@ -12,6 +12,7 @@ import { scan } from './scanner.js';
 import { layerTableHeader, schemaExt, calcOrder, colIsNumeric, qualifyPolicy } from './records.js';
 import { chunkSpecOf, chunkPageOf, expandedDeps, ensureStoredValues } from './columns.js';
 import { delimitedRuns } from '../../../ext/condenser/src/main.js';
+import { scanPlaceOf } from './placement.js';
 import * as E from '../../../ext/expr/index.js';
 const { parse } = E;
 
@@ -35,10 +36,16 @@ export function zoneKeeper(L, { ast = null, bbox = null, mask = null } = {}) {
   const bd = L && L.docs && L.docs.blockDoc, zs = bd && !bd.parquet && !bd.header.dm && bd.header.zones;
   if (!zs || !zonesOn || !csvColumnar || !(ast || bbox || mask)) return null;
   const h = layerTableHeader(L), m = h.mapping;
+  // a PLACED model: the zones' coordinate statistics are the FILE's frame — no bbox from them,
+  // and no coordinate name in an expression is decided by them (unknown → read: sound)
+  const placed = !!(bd.header && bd.header.place);
+  if (placed) { bbox = null; if (!(ast || mask)) return null; }
+  const coordL = placed ? new Set([h.columns[m.x], h.columns[m.y], h.columns[m.z]].map((c) => String(c).toLowerCase())) : null;
   const type = new Map(schemaExt(L, h).map((c) => [String(c.name).toLowerCase(), c.type]));
   const names = [];
   if (ast) {
     for (const d of expandedDeps(L, ast)) {
+      if (coordL && coordL.has(d)) continue;
       const t = type.get(d);
       const nm = Object.keys(zs.num).find((x) => x.toLowerCase() === d) || Object.keys(zs.cat).find((x) => x.toLowerCase() === d);
       if (nm && ((zs.num[nm] && t === 'number') || (zs.cat[nm] && t === 'string'))) names.push(nm);
@@ -50,7 +57,7 @@ export function zoneKeeper(L, { ast = null, bbox = null, mask = null } = {}) {
 // the layer as a scan source
 function sourceOf(L, readCols, keepZone = null) {
   const bd = L.docs.blockDoc, h = layerTableHeader(L);
-  if (bd.parquet) return scan.sources.parquet(bd.parquet, readCols);
+  if (bd.parquet) return scan.sources.parquet(bd.parquet, readCols, { place: bd.parquet.place || null });   // a placed model reads in WORLD (src/placement.js)
   if (!bd.header.dm) {
     // each column as the row path sees it: the row qualifier's substitutes
     // (never on the coordinates), numbers as the pin cache holds them
@@ -59,7 +66,7 @@ function sourceOf(L, readCols, keepZone = null) {
       const i = h.columns.indexOf(n);
       return { i, num: (schema[i] || {}).type === 'number', policy: !coord.has(i) && colIsNumeric(L, h, i) ? qualifyPolicy(L, n) : null };
     });
-    return scan.sources.delimited(bd.blob, h, { delim: h.delim, decimal: h.decimal, x: m.x, y: m.y, z: m.z, cols }, readCols, { anchors: csvAnchors, keep: keepZone });
+    return scan.sources.delimited(bd.blob, h, { delim: h.delim, decimal: h.decimal, x: m.x, y: m.y, z: m.z, cols }, readCols, { anchors: csvAnchors, keep: keepZone, place: scanPlaceOf(bd.header) });
   }
   return scan.sources.dm(bd.blob, bd.header.dm, h.columns, readCols, { place: bd.header.dmPlace || null });   // a rotated model reads in WORLD (as the view)
 }
@@ -72,6 +79,10 @@ export async function scanColumnar(L, { kernel, params, exprs, extraCols = [], m
   const h = layerTableHeader(L);
   const needL = new Set(extraCols.map((c) => String(c).toLowerCase()));
   for (const x of exprs) { if (!x) continue; let ast; try { ast = parse(x); } catch { continue; } for (const d of expandedDeps(L, ast)) needL.add(d); }
+  { // a PLACED model: one coordinate is placed from all three — read them together (and the sizes)
+    const sp = scanPlaceOf(L.docs.blockDoc.header, L.docs.blockDoc.parquet ? L.docs.blockDoc.parquet.names : h.columns);
+    if (sp) { const all = [...sp.cols, ...(sp.dims || [])].map((c) => String(c).toLowerCase()); if (all.some((c) => needL.has(c))) for (const c of all) needL.add(c); }
+  }
   await ensureStoredValues(L, needL);                       // materialized inputs resident (evicted → blanks otherwise)
   const readCols = (L.docs.blockDoc.parquet ? L.docs.blockDoc.parquet.names : h.columns).filter((n) => needL.has(String(n).toLowerCase()));
   const schema = schemaExt(L, h);

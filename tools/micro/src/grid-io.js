@@ -461,13 +461,16 @@ export function gridXyzParts(grid, { delim = ',', header = true, names = ['x', '
   const emptyText = delim === ' ' ? (Number.isNaN(nd) ? 'nan' : String(nd)) : '';
   const parts = header ? [names.join(delim) + '\n'] : [];
   const xs = new Array(nx); for (let c = 0; c < nx; c++) xs[c] = coordText(x0 + c * dx);
+  const P = grid.place || null;                            // a rotated grid: each node's world x, y (rotation about Z)
   let buf = [], written = 0;
   for (let r = 0; r < ny; r++) {
     const y = coordText(y0 - r * dy);
     for (let c = 0; c < nx; c++) {
       const v = data[r * nx + c];
-      if (bad(v)) { if (skipEmpty) continue; buf.push(xs[c] + delim + y + delim + emptyText); }
-      else buf.push(xs[c] + delim + y + delim + fmt(v));
+      let xt = xs[c], yt = y;
+      if (P) { const u = x0 + c * dx, w = y0 - r * dy; xt = coordText(P.t[0] + P.s * (P.R[0] * u + P.R[3] * w)); yt = coordText(P.t[1] + P.s * (P.R[1] * u + P.R[4] * w)); }
+      if (bad(v)) { if (skipEmpty) continue; buf.push(xt + delim + yt + delim + emptyText); }
+      else buf.push(xt + delim + yt + delim + fmt(v));
       written++;
     }
     if (buf.length >= 65536) { parts.push(buf.join('\n') + '\n'); buf = []; }

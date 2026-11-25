@@ -336,7 +336,7 @@ export async function scanColumns(L, onTick, { bands = false, columns = null, si
   const qual = new Map();                                 // column → { below, above, code } substituted on read (the row scan fills it)
   // Parquet: a pool of workers, row groups handed out (null = can't run here → below)
   let via = 'page';
-  if (colIdx.length && doc.parquet && !bands && workers) {
+  if (colIdx.length && doc.parquet && !bands && workers && !doc.parquet.place) {   // a PLACED model's coordinates are placed on the way (the row-group path below)
     const P = doc.parquet;
     const got = await scan.parquetStats({ file: P.buf, meta: P.meta, rowGroups: P.rowGroups, cols: colIdx.map((i) => ({ name: h.columns[i], num: isNumAt(i) })), signal, onProgress: tick });
     if (got) { colIdx.forEach((i, k) => st.set(i, got[k])); rows = total; pass++; colIdx.length = 0; via = 'workers'; }
@@ -460,11 +460,18 @@ async function* columnarBatches(L, colIdx, signal) {
   if (doc.parquet) {
     const P = doc.parquet;
     let start = 0;
+    const sp = P.place || null, spAll = sp ? [...new Set([...sp.cols, ...(sp.dims || [])])] : null;
     for (const rg of P.rowGroups) {
       const count = rg.rowCount;
+      let placedCols = null;
       for (const i of colIdx) {
         if (signal && signal.aborted) throw abortError();
         const name = h.columns[i];
+        if (spAll && spAll.includes(name)) {               // placed: the coordinates (and sizes) read together, then placed
+          if (!placedCols) placedCols = scan.placeNamedCols(sp, await readParquetRange(P.buf, spAll, start, start + count, P.meta), count);
+          yield { start, count, i, arr: placedCols[name] };
+          continue;
+        }
         const got = await readParquetRange(P.buf, [name], start, start + count, P.meta);
         yield { start, count, i, arr: got[name] };
       }

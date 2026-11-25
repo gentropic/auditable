@@ -17,6 +17,7 @@ import { pushDhMask } from './drillholes.js';
 import { attrTableFilterChanged } from './attrtable.js';
 import { compactsFilter, filterOptsOf } from './ghost.js';
 import { renderFeatureLayer } from './polygons.js';
+import { placeRow } from './placement.js';
 const $ = (s) => document.querySelector(s);
 
 // predicate pushdown: can the filter be true for SOME row whose NUMERIC columns
@@ -27,10 +28,13 @@ const $ = (s) => document.querySelector(s);
 // matches `!=`, and min/max stats say nothing about blanks).
 export const pqGroupCanMatch = canMatch;
 
-// numeric {min,max} ranges from a row group's footer column stats
-export function pqGroupRanges(rg) {
+// numeric {min,max} ranges from a row group's footer column stats. P (the layer's
+// blockDoc.parquet) given and PLACED: the footer's coordinate (and size) stats are the FILE's
+// frame, not the world the filter reads — they are left out (no stats → keep: sound)
+export function pqGroupRanges(rg, P = null) {
   const ranges = {};
-  for (const nm in rg.columns) { const st = rg.columns[nm]; const mn = Number(st.min), mx = Number(st.max); if (Number.isFinite(mn) && Number.isFinite(mx)) ranges[nm.toLowerCase()] = { min: mn, max: mx }; }
+  const skip = P && P.place ? new Set([...P.place.cols, ...(P.place.dims || [])]) : null;
+  for (const nm in rg.columns) { if (skip && skip.has(nm)) continue; const st = rg.columns[nm]; const mn = Number(st.min), mx = Number(st.max); if (Number.isFinite(mn) && Number.isFinite(mx)) ranges[nm.toLowerCase()] = { min: mn, max: mx }; }
   return ranges;
 }
 
@@ -341,18 +345,19 @@ export async function applyBlockFilter(expr, L = activeLayer()) {
     if (pinned != null) {
       if (pinned < 0) return; hits += pinned; rec = header.count;
     } else if (chunkF) {
-      if (!(await engineFilter(readCols, (rg) => pqGroupCanMatch(ast, pqGroupRanges(rg)), 'row groups skipped by the footer'))) return;
+      if (!(await engineFilter(readCols, (rg) => pqGroupCanMatch(ast, pqGroupRanges(rg, P)), 'row groups skipped by the footer'))) return;
     } else {
     // no parseable expression: the ROW path, every column of every group
     let start = 0, skipped = 0;
     for (const rg of P.rowGroups) {
       const count = rg.rowCount;
-      if (ast && !pqGroupCanMatch(ast, pqGroupRanges(rg))) { start += count; skipped++; continue; }   // pushdown skip
+      if (ast && !pqGroupCanMatch(ast, pqGroupRanges(rg, P))) { start += count; skipped++; continue; }   // pushdown skip
       const cols = await readParquetRange(P.buf, readCols, start, start + count, P.meta);
       for (let i = 0; i < count; i++) {                     // no parseable ast — the row path
         const r = start + i;
         const f = new Array(P.names.length);
         for (let ci = 0; ci < P.names.length; ci++) { const c = cols[P.names[ci]]; f[ci] = c ? (c[i] ?? '') : ''; }
+        if (header.place) placeRow(header, f);              // a placed model: world
         const xv = coordNum(f[m.x]), yv = coordNum(f[m.y]), zv = coordNum(f[m.z]);
         if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;
         if (fn(extendRow(AL, f, r))) {
@@ -468,6 +473,7 @@ export async function applyBlockFilter(expr, L = activeLayer()) {
     let teeAcc = null; const pinNames = [];                 // pin-cache tee state (set up below)
     const qRow = rowQualifier(AL);                          // <0.001 → its substitute, as every other read
     const scanRow = (f0) => {
+      if (header.place) placeRow(header, f0);               // a placed model's coordinates in world (src/placement.js)
       const f = qRow ? qRow(f0) : f0;
       const xv = coordNum(f[m.x]), yv = coordNum(f[m.y]), zv = coordNum(f[m.z]);
       if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) return;   // same rows sweep 2 kept

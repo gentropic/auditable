@@ -48,9 +48,10 @@ export function meshPlaneSegments(V, T, n, pos, out = []) {
 export function gridToMesh(g) {
   const nod = g.nodata;
   const bad = (v) => !Number.isFinite(v) || (nod != null && (nod >= 1.7e38 ? v >= 1.7014e38 : v === nod));
-  const V = new Float64Array(g.nx * g.ny * 3);
+  const V = new Float64Array(g.nx * g.ny * 3), P = g.place || null;
   for (let r = 0; r < g.ny; r++) for (let c = 0; c < g.nx; c++) {
     const i = r * g.nx + c; V[i * 3] = g.x0 + c * g.dx; V[i * 3 + 1] = g.y0 - r * g.dy; V[i * 3 + 2] = g.data[i];
+    if (P) { const u = V[i * 3], v = V[i * 3 + 1], w = V[i * 3 + 2]; V[i * 3] = P.t[0] + P.s * (P.R[0] * u + P.R[3] * v + P.R[6] * w); V[i * 3 + 1] = P.t[1] + P.s * (P.R[1] * u + P.R[4] * v + P.R[7] * w); V[i * 3 + 2] = P.t[2] + P.s * (P.R[2] * u + P.R[5] * v + P.R[8] * w); }   // a rotated / placed grid: its nodes in world
   }
   const T = [];
   for (let r = 0; r < g.ny - 1; r++) for (let c = 0; c < g.nx - 1; c++) {

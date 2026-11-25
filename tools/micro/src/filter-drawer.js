@@ -23,7 +23,7 @@ export function fdBounds(L, col, v) {
   const e = pinGet(L, col);
   if (e && e.data) { let mn = Infinity, mx = -Infinity; const d = e.data; for (let i = 0; i < d.length; i++) { const x = d[i]; if (x === x) { if (x < mn) mn = x; if (x > mx) mx = x; } } if (mn <= mx) return [mn, mx]; }
   const P = L.docs.blockDoc && L.docs.blockDoc.parquet;
-  if (P) { let mn = Infinity, mx = -Infinity; for (const rg of P.rowGroups) { const r = pqGroupRanges(rg)[String(col).toLowerCase()]; if (r) { if (r.min < mn) mn = r.min; if (r.max > mx) mx = r.max; } } if (mn <= mx) return [mn, mx]; }
+  if (P) { let mn = Infinity, mx = -Infinity; for (const rg of P.rowGroups) { const r = pqGroupRanges(rg, P)[String(col).toLowerCase()]; if (r) { if (r.min < mn) mn = r.min; if (r.max > mx) mx = r.max; } } if (mn <= mx) return [mn, mx]; }
   const B = L._bands && L._bands.cols && L._bands.cols[String(col).toLowerCase()];
   if (B) { let mn = Infinity, mx = -Infinity; for (let b = 0; b * 2 < B.length; b++) { const v0 = B[b * 2], v1 = B[b * 2 + 1]; if (v0 != null) { if (v0 < mn) mn = v0; if (v1 > mx) mx = v1; } } if (mn <= mx) return [mn, mx]; }
   const sp = Math.max(1, Math.abs(v) * 2); return [v - sp, v + sp];

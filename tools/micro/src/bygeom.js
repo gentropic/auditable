@@ -11,7 +11,7 @@ import { attrRowCountOf, hasRecords, layerTableHeader, meshVertexData, docPositi
 import { S, requestRender } from './state.js';
 import { Peel } from '../../../ext/peel/index.js';
 import { canScanColumnar, scanColumnar, zoneKeeper } from './colscan.js';
-import { surfaceFromGrid } from './grid-ops.js';
+import { surfaceFromGrid, worldBbox4ToGridLocal } from './grid-ops.js';
 import { supportOfHeader, worldHalfExtent } from '../../../ext/condenser/src/main.js';
 import { gridWindowFromGTiff, windowForWorldBbox } from '../../../ext/gtiff/index.js';
 import { paintRecount } from './columns.js';
@@ -612,7 +612,7 @@ export async function* layerPositions(L, bbox = null) {
     let wake = null, finished = false, failure = null, skipped = 0;
     const poke = () => { if (wake) { const w = wake; wake = null; w(); } };
     scanColumnar(L, { kernel: 'positions', params: { coords: coordNames, ...(sizes ? { sizes, pitch: bs.pitch } : {}) }, exprs: [], extraCols: sizes ? [...coordNames, ...sizes] : coordNames, signal: ac.signal,
-      skipGroup: (g, rg) => { const sk = !!bbox && !!P && !pqGroupBboxIntersects(rg, P.coordNames, bbox); if (sk) skipped++; return sk; },   // footer bboxes: Parquet
+      skipGroup: (g, rg) => { const sk = !!bbox && !!P && !P.place && !pqGroupBboxIntersects(rg, P.coordNames, bbox); if (sk) skipped++; return sk; },   // footer bboxes: Parquet (a PLACED one's footer is the file's frame — not used)
       keepZone: bbox ? zoneKeeper(L, { bbox }) : null,     // a CSV's zone bboxes
       onPart: (g, part, start) => new Promise((taken) => { if (ac.signal.aborted) { taken(); return; } queue.push({ part, start, taken }); poke(); }) })
       .then(() => { finished = true; poke(); }, (e) => { failure = e; poke(); });
@@ -662,13 +662,18 @@ export async function residentGridForEval(gridL, bbox4) {
   const gd = gridL.docs.gridDoc;
   if (!gd || !gd.source || !gd.source.g || gd.fullRes || !bbox4) return gd.grid;
   try {
-    const win = windowForWorldBbox(gd.source.g, 0, bbox4, 2);
+    // a ROTATED / placed grid's source is windowed in its OWN frame (the world box's corners
+    // taken there); the window carries the same placement, so its samplers work in world
+    const pl = gd.grid.place || null;
+    const win = windowForWorldBbox(gd.source.g, 0, pl ? worldBbox4ToGridLocal(gd.grid, bbox4) : bbox4, 2);
     if (win.width <= 0 || win.height <= 0) return gd.grid;
     $('#meta').textContent = `${gridL.label || gridL.name} — reading full-res window ${win.width}×${win.height}…`;
     // the BAND is part of what is being evaluated: this is the sole eval path
     // for every by-surface query and surface-extend, and omitting it sampled
     // band 0's elevations whenever the user had picked another band
-    return await gridWindowFromGTiff(gd.source.g, 0, win, gd.source.band || 0);
+    const w = await gridWindowFromGTiff(gd.source.g, 0, win, gd.source.band || 0);
+    if (pl) w.place = pl;
+    return w;
   } catch (e) {
     // degrading to the DISPLAY grid changes the answer's resolution — say so
     // rather than silently serving coarse numbers (the display grid may be a

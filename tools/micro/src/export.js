@@ -304,7 +304,9 @@ async function convertInner(L, cvOpts) {
       if (cancelled(signal)) { $('#meta').textContent = 'optimize cancelled — the layer is unchanged'; return; }
     }
     if (!n) { $('#meta').textContent = 'store as Parquet: empty model'; return; }
-    optLineage = mkLineage('optimize', { morton: true, format: 'parquet', blocks: n }, [L.lineage]);
+    // a PLACED model's rows read in world: the Parquet is written in world, so the placement is
+    // BAKED into it (cleared on the layer below, stamped here) — never applied twice
+    optLineage = mkLineage('optimize', { morton: true, format: 'parquet', blocks: n, ...(L.placement ? { placementBaked: L.placement } : {}) }, [L.lineage]);
     const columnTypes = {}; names.forEach((nm, k) => { columnTypes[nm] = isNum[k] ? 'DOUBLE' : 'STRING'; });
     const w = createParquetBlobWriter({ columnTypes, kvMetadata: kvOf(optLineage) });
     order = new Uint32Array(n);
@@ -324,9 +326,11 @@ async function convertInner(L, cvOpts) {
   const base = (L.label || L.name).replace(/\.[^.]+$/, ''), keepLabel = L.label, keepColorSel = L.colorSel, keepFilter = L.filterExpr;
   const oldHandle = L.handle;                              // the PRE-optimize source file (CSV/.dm) — now stale + orphanable
   const savedActive = S.activeId; setActiveLayer(L.id);
+  const bakedPlacement = L.placement || null;
+  L.placement = null;                                      // baked (the file now holds world coordinates)
   try {
     await openParquetBlocks(outBlob, `${base}.parquet`, { layer: L.id, first: false });
-  } catch (e) { $('#meta').textContent = `store as Parquet: reopen — ${e.message}`; setActiveLayer(savedActive); return; }
+  } catch (e) { L.placement = bakedPlacement; $('#meta').textContent = `store as Parquet: reopen — ${e.message}`; setActiveLayer(savedActive); return; }
   L.name = `${base}.parquet`;                              // so save/reload routes to the parquet path
   L.lineage = optLineage;                                  // provenance: this layer was optimized in place
   if (keepLabel) L.label = keepLabel;

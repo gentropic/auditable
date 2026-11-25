@@ -628,6 +628,7 @@ registerTool('gridexport', {
     compression: { type: 'enum', values: ['deflate', 'none'], default: 'deflate', doc: 'tif' },
     predictor: { type: 'bool', default: true, doc: 'tif + deflate: floating-point predictor 3' },
     tiles: { type: 'bool', default: false, doc: 'tif: 256×256 tiles instead of strips' },
+    resample: { type: 'bool', default: false, doc: 'a ROTATED grid in a format with no rotation terms (asc, grd7, grd6, dsaa, flt): resample it to an axis-aligned lattice at the same cell (bilinear) instead of refusing; tif and xyz keep the rotation' },
   },
   outputs: { key: [] },
   check(p, errs) { if (p.decimals != null && !(p.decimals >= 0 && p.decimals <= 12)) errs.push('decimals: a whole number 0–12 (absent: float32-exact)'); },
@@ -639,7 +640,7 @@ registerTool('gridexport', {
     return buildGridExport(L, {
       format: p.format, band: p.band != null ? p.band - 1 : undefined, nodata: p.nodata, decimals: p.decimals == null ? null : p.decimals,
       name: toolDef('gridexport').writesFile(p), delim: p.delim === 'tab' ? '\t' : p.delim, header: p.header, valueName: p.valueName, skipEmpty: p.skipEmpty,
-      compression: p.compression, predictor: p.predictor ? 3 : 1, layout: p.tiles ? 'tiles' : 'strips',
+      compression: p.compression, predictor: p.predictor ? 3 : 1, layout: p.tiles ? 'tiles' : 'strips', resample: !!p.resample,
     });
   },
   shape(r, p) {

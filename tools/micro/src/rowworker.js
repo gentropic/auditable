@@ -14,6 +14,7 @@
 import { readParquetRow } from '../../../ext/parquet/index.js';
 import { libUrl } from './liburl.js';
 import { groupStarts } from './scanner.js';
+import { placeNamedRow } from './placement.js';
 
 const IDLE_MS = 60000;
 const CACHE_CELLS = 16_000_000;                             // rows × columns kept decoded at most (one group)
@@ -83,7 +84,9 @@ async function startReader(P) {
   return r;
 }
 
-export async function parquetRow(P, rec) {
+// a PLACED model's row comes back in world (P.place — src/placement.js scanPlaceOf)
+export async function parquetRow(P, rec) { return placeNamedRow(P.place || null, await parquetRowRaw(P, rec)); }
+async function parquetRowRaw(P, rec) {
   for (let attempt = 0; attempt < 2; attempt++) {
     let rp = _readers.get(P);
     if (!rp) { rp = startReader(P); _readers.set(P, rp); }

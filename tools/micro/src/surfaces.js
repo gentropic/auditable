@@ -14,6 +14,9 @@ import { buildHeightfieldMesh } from '../../../ext/condenser/src/main.js';
 import { markProjectDirty } from './project.js';
 import { renderLayers } from './layers-panel.js';
 import { reopenReplacing } from './reopen.js';
+import { gridBuildFrame, placeHeightfield } from './placement.js';
+import { applyP, invertP } from './placement-core.js';
+import { gridLayerFile } from './grid-export.js';
 const $ = (s) => document.querySelector(s);
 
 // A see-through context surface must not steal the click meant for the block
@@ -45,7 +48,10 @@ export async function meshToGridLayer(meshL, { cell, keep = 'top', extend = 'non
   const md = meshL.docs && meshL.docs.meshDoc;
   if (!md) { $('#meta').textContent = 'mesh → grid: needs a context-tier mesh'; return null; }
   $('#meta').textContent = `${meshL.label || meshL.name} — reading mesh…`;
-  const m = await reReadMesh(md);
+  let m = await reReadMesh(md);
+  // a matched ROTATED grid: the mesh rasterized in that grid's own frame (its nodes), the result placed like it
+  const P = geom && geom.place ? geom.place : null;
+  if (P) { const inv = invertP(P), V = new Float64Array(m.vertices.length), q = [0, 0, 0]; for (let i = 0; i < V.length; i += 3) { applyP(inv, m.vertices[i], m.vertices[i + 1], m.vertices[i + 2], q); V[i] = q[0]; V[i + 1] = q[1]; V[i + 2] = q[2]; } m = { ...m, vertices: V }; }
   const bb = m.header.bbox;
   const extent = Math.max(bb.max[0] - bb.min[0], bb.max[1] - bb.min[1]);
   const dx = geom ? geom.dx : (cell && cell > 0 ? cell : niceStep(extent / 400));
@@ -63,7 +69,9 @@ export async function meshToGridLayer(meshL, { cell, keep = 'top', extend = 'non
   // stamp lineage like the sibling surface tools do — a rasterized DEM reshapes
   // topology (z-buffered overhangs, dropped vertical faces) and had no provenance
   const lin = mkLineage('rasterize', { of: meshL.name, cell, keep, extend, holesOnly }, [meshL.lineage].filter(Boolean));
-  await openBlob(new Blob([writeEsriAsc(grid)]), `${base}.asc`, S.layers.length ? 'add' : 'replace', null, { lineage: lin });
+  if (P) grid.place = P;
+  const gf = P ? await gridLayerFile(grid, `${base}.asc`) : { blob: new Blob([writeEsriAsc(grid)]), name: `${base}.asc` };   // rotated: a GeoTIFF that keeps it
+  await openBlob(gf.blob, gf.name, S.layers.length ? 'add' : 'replace', null, { lineage: lin });
   return grid;
 }
 
@@ -91,6 +99,18 @@ export function surfaceColorArray(hf, drapeGrid, rampPreset, elevLo, elevHi) {
   return color;
 }
 
+// A grid's relief (or flat sheet) mesh in the project frame. A rotated / placed grid (grid.place)
+// is built about its OWN origin — its frame may sit at 0, 0 while the project is at UTM, and an f32
+// build against the project frame would round before the placement — then placed; a flat sheet's
+// world elevation goes in through the placement's inverse (z = t_z + s·value).
+export function gridHeightfield(grid, stride, flatZ = null) {
+  const P = grid.place || null;
+  if (!P) return buildHeightfieldMesh(grid, { stride, frame: S.frame, flatZ });
+  const bf = gridBuildFrame(grid, S.frame);
+  const hf = buildHeightfieldMesh(grid, { stride, frame: bf, flatZ: flatZ != null ? (flatZ - P.t[2]) / P.s : null });
+  return hf ? placeHeightfield(hf, P, bf.origin, S.frame) : hf;
+}
+
 // Rebuild a loaded surface in place from the in-memory grid (no re-read) — honours
 // its shape (relief heightfield, or a flat sheet at L.surfaceFlatZ) and its colour
 // (elevation/value, or draped from L.drapeSource). removeLayer wipes layer state,
@@ -98,7 +118,7 @@ export function surfaceColorArray(hf, drapeGrid, rampPreset, elevLo, elevHi) {
 export function rebuildSurface(L) {
   const gd = L.docs && L.docs.gridDoc; if (!gd || !L.gridSurface) return;
   const flatZ = L.surfaceFlatZ != null ? L.surfaceFlatZ : null;
-  const hf = buildHeightfieldMesh(gd.grid, { stride: gd.stride, frame: S.frame, flatZ }); if (!hf) return;
+  const hf = gridHeightfield(gd.grid, gd.stride, flatZ); if (!hf) return;
   let zmin = Infinity, zmax = -Infinity;                    // grid VALUE range (= colour range for elevation/value)
   for (let i = 0; i < hf.count; i++) { const z = hf.values[i]; if (z < zmin) zmin = z; if (z > zmax) zmax = z; }
   const drapeLayer = L.drapeSource ? S.layers.find((x) => x.name === L.drapeSource && x.docs && x.docs.gridDoc && x.docs.gridDoc.grid) : null;

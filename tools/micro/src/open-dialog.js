@@ -285,8 +285,15 @@ export async function openFilesDialog(files) {
   // a PDF the composer wrote opens as its figure (micro reads no other PDFs) — no dialog
   for (const f of files.filter((x) => /\.pdf$/i.test(x.name))) await openBlob(f, f.name, 'add');
   files = files.filter((x) => !/\.pdf$/i.test(x.name)); if (!files.length) return;
+  // a WORLD FILE (.tfw / .tifw / .wld — six numbers, rotation terms included) rides with the
+  // GeoTIFF of the same base name: it places that raster (src/open-grid.js), it is not a layer
+  const WF = /\.(tfw|tifw|tiffw|wld)$/i, base = (n) => n.replace(/\.[^.]+$/, '').toLowerCase();
+  const wfs = new Map();
+  for (const f of files.filter((x) => WF.test(x.name))) wfs.set(base(f.name), await f.text());
+  files = files.filter((x) => !WF.test(x.name));
+  if (!files.length) { $('#meta').textContent = 'a world file places the GeoTIFF of the same name — open them together'; return; }
   const rows = [];
-  for (const f of files) rows.push(await describeFile(f));
+  for (const f of files) { const r = await describeFile(f); if (/\.tiff?$/i.test(f.name) && wfs.has(base(f.name))) r.worldFile = wfs.get(base(f.name)); rows.push(r); }
   _ofDlg = { rows, dhCfg: {}, mode: S.layers.length ? 'add' : 'replace' };
   renderOfDialog();
   $('#ofDlg').classList.add('show');
@@ -454,6 +461,7 @@ export async function ofConfirm() {
     if (r.mapping && r.kind === 'delimited' && r.asKind !== 'table') over.mapping = { x: r.mapping.x ?? 0, y: r.mapping.y ?? 1, z: r.mapping.z ?? 2, chan: r.mapping.chan ?? null, cat: r.mapping.cat ?? null };
     if (r.asKind) over.asKind = r.asKind;
     if (r.kind === 'dm' && r.dmRot && r.origin) over.origin = [...r.origin];   // a rotated .dm's world origin
+    if (r.worldFile) over.worldFile = r.worldFile;           // a GeoTIFF's world file (rotation terms placed, not dropped)
     if (r.objGroups && r.objGroups.length > 1 && r.split !== false) {
       if (/\.lfm$/i.test(r.name)) await openLfmSplit(r.file, r.name, first ? 'replace' : 'add');
       else await openObjSplit(r.file, r.name, first ? 'replace' : 'add');

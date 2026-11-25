@@ -18,6 +18,7 @@ import { gridOnLattice, surfaceableLayers, surfCellOf, layerWorldBbox } from './
 import { mkLineage } from './lineage.js';
 import { openBlob } from './open.js';
 import { writeEsriAsc } from './grid-io.js';
+import { gridLayerFile } from './grid-export.js';
 import { setRampCfg } from './ramp.js';
 import { replaceMade } from './pcgrid.js';
 import { rebuildSurface } from './surfaces.js';
@@ -37,7 +38,7 @@ export const cutFillSurfaces = () => surfaceableLayers();
 // a surface's lattice (a grid's own; a mesh: its plan bbox at the surface tools' default cell)
 function latticeOf(L) {
   const g = L.docs.gridDoc && L.docs.gridDoc.grid;
-  if (g) return { x0: g.x0, y0: g.y0, dx: g.dx, dy: g.dy || g.dx, nx: g.nx, ny: g.ny };
+  if (g) return { x0: g.x0, y0: g.y0, dx: g.dx, dy: g.dy || g.dx, nx: g.nx, ny: g.ny, ...(g.place ? { place: g.place } : {}) };
   const bb = layerWorldBbox(L); if (!bb) throw new Error(`${nameOf(L)}: no extent yet`);
   const dx = surfCellOf(L);
   return { x0: bb[0], y0: bb[4], dx, dy: dx, nx: Math.max(2, Math.floor((bb[3] - bb[0]) / dx) + 1), ny: Math.max(2, Math.floor((bb[4] - bb[1]) / dx) + 1) };
@@ -57,7 +58,7 @@ export async function cutFill(before, after, opts = {}) {
   if (opts.match) {
     const g = opts.match.docs && opts.match.docs.gridDoc && opts.match.docs.gridDoc.grid;
     if (!g) throw new Error(`${nameOf(opts.match)} is not a grid`);
-    geom = { x0: g.x0, y0: g.y0, dx: g.dx, dy: g.dy || g.dx, nx: g.nx, ny: g.ny };
+    geom = { x0: g.x0, y0: g.y0, dx: g.dx, dy: g.dy || g.dx, nx: g.nx, ny: g.ny, ...(g.place ? { place: g.place } : {}) };   // a rotated grid's own lattice
   } else {
     geom = commonSurfaceLattice(latticeOf(before), latticeOf(after), +opts.cell > 0 ? +opts.cell : null);
     if (!geom) throw new Error(`${nameOf(before)} and ${nameOf(after)} don't overlap in plan`);
@@ -75,8 +76,10 @@ export async function cutFill(before, after, opts = {}) {
   checkAbort(opts.signal);
   const B = await gridOnLattice(after, geom, prog(1, `sampling ${nameOf(after)}`));
   checkAbort(opts.signal);
+  if (lim && geom.place) throw new Error('cut / fill: a perimeter on a ROTATED matched lattice is not supported yet — leave "match" empty (the common lattice is axis-aligned)');
   const weights = lim ? gridCoverage(lim.features, geom) : null;
   const r = cutFillGrids(A, B, { weights });
+  if (geom.place) { r.dz.place = geom.place; const s = geom.place.s; if (s !== 1) { r.cut *= s * s * s; r.fill *= s * s * s; r.net *= s * s * s; r.area *= s * s; r.cutArea *= s * s; r.fillArea *= s * s; } }   // the lattice's own frame → world volumes
   if (!r.nodes) throw new Error(`no node where both ${nameOf(before)} and ${nameOf(after)} have a value${lim ? ' inside the perimeter' : ''}`);
   if (lim) { r.limit = normLimit(opts.limit); r.limitLabel = limitLabel(opts.limit); r.limitArea = lim.area; }
   // the sheet's height: just above the higher of the two (a map hovering over the pit)
@@ -91,7 +94,8 @@ export async function cutFillLayer(res, beforeL, afterL, { name = null } = {}) {
   const lin = mkLineage('cutfill', { before: beforeL.name, after: afterL.name, cell: res.geom.dx, ...(res.limit ? { limit: res.limit, limitArea: +res.limitArea.toPrecision(10) } : {}), cut: +res.cut.toPrecision(8), fill: +res.fill.toPrecision(8) }, [beforeL.lineage, afterL.lineage].filter(Boolean));
   const flatZ = +(res.top + Math.max(1, res.geom.dx)).toFixed(3);
   replaceMade(nm);                                             // a re-run replaces its own earlier Δz layer
-  const id = await openBlob(new File([writeEsriAsc(res.dz, { decimals: 4 })], nm), nm, S.layers.length ? 'add' : 'replace', null, { lineage: lin, asKind: 'surface', flatZ });
+  const gf = res.dz.place ? await gridLayerFile(res.dz, nm) : { blob: new Blob([writeEsriAsc(res.dz, { decimals: 4 })]), name: nm };   // a rotated Δz: a GeoTIFF that keeps its rotation
+  const id = await openBlob(new File([gf.blob], gf.name), gf.name, S.layers.length ? 'add' : 'replace', null, { lineage: lin, asKind: 'surface', flatZ });
   const L = id != null ? layerById(id) : null;
   if (L) {
     L.memoryOnly = true;

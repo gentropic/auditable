@@ -49,7 +49,7 @@ import { checkAllRecipes, openCheckAllRecipes, saveRecipe, loadRecipes, runRecip
 import { openRoutineWindow, openInputsDialog } from './routine-ui.js';
 import { selectBySolid, ratioBySolid, flagBySolid, selectByGridSurface, ratioByGridSurface, flagByGridSurface, residentGridForEval, meshSolidOf, setWindingGpu, assignDomains } from './bygeom.js';
 import * as _modProps from './props.js';
-import { propKindLine, openProps } from './props.js';
+import { propKindLine, openProps, setPropTab } from './props.js';
 import * as _modStyleClip from './style-clip.js';
 import { copyStyle, pasteStyle, captureStyle, applyStyle } from './style-clip.js';
 import * as _modColtypes from './coltypes.js';
@@ -221,7 +221,7 @@ window._micro = {
   runFigureRecipe, captureFigureCfg, openSample, openBlocksBlob, setDmOrigin, makeSampleBlockCsv,
   openDemoProject, makeDemoBlockCsv, makeDemoDrillholes, setZExag, recolorSurface, setSurfaceFlatZ,
   setSurfaceSmooth, setGridBand, applyBlockFilter, showRecord, knifeCut, addRecent, fetchCsvRecord,
-  currentSection, convertMeshLayer, openProps, showMemoryInfo, setRampCfg, bakeRampPixels, rampRangeFor,
+  currentSection, convertMeshLayer, openProps, setPropTab, showMemoryInfo, setRampCfg, bakeRampPixels, rampRangeFor,
   applyCatLegend, runRules, syncRuleMode, applyRuleVisibility, openPaintPalette, createPaintCol, addPaintValue,
   paintArm, paintDisarm, paintApply, paintUndo, paintColByName, setLayerColorSel, runExport, openExportDialog,
   exportColumnsOf, selectBySolid, ratioBySolid, flagBySolid, selectByGridSurface, ratioByGridSurface,

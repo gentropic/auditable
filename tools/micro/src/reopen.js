@@ -45,7 +45,11 @@ export async function reopenReplacing(L, blob, open) {
   const keep = captureReopenIdentity(L);
   preregisterReopenHandle(blob, keep);
   let lid2 = null;
-  try { lid2 = await open(); } catch { lid2 = null; }      // openBlob reports its own failure on the status line
+  // what is about WHERE the data sits rides into the new layer: its placement (src/placement.js)
+  // and a grid's world file — openBlob reads S.reopenCarry when the caller's override says nothing
+  const gd = L.docs && L.docs.gridDoc;
+  S.reopenCarry = { placement: L.placement || null, worldFile: (gd && gd.worldFile) || null };
+  try { lid2 = await open(); } catch { lid2 = null; } finally { S.reopenCarry = null; }   // openBlob reports its own failure on the status line
   const L2 = lid2 != null ? layerById(lid2) : null;
   if (!L2 || L2 === L) return L2 === L ? L : null;
   S.renderer.removeLayer(L.id);

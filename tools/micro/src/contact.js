@@ -18,7 +18,7 @@ import { windingBVH } from '../../../ext/winding/index.js';
 import { numericColsOf, volumeContextOf, volumeExprOf } from './analysis.js';
 import { canScanColumnar, scanColumnar } from './colscan.js';
 import { meshSolidOf, solidOrientedMesh, layerPositions, residentGridForEval, targetsXYBbox } from './bygeom.js';
-import { gridAxesOf, surfaceFromGrid } from './grid-ops.js';
+import { gridAxesOf, surfaceFromGrid, gridWorldBbox4 } from './grid-ops.js';
 import { normLimit, limitRow, prepareScope } from './polylimit.js';
 import { scopeLabel, SERIES_COLORS, analysisSerCfg, analysisSerRestore, applyAnalysisGeo, checkAbort, fmtStat, gradeUnitFactor, gradeUnitSel, plotChart, plotExportBtns, rangesForCfg, rangesFromCfg, rangesOf, rangesRow, runCancellable, saveAnalysisCfg, scanProgressText, scopeMask, scopeMissing, setAnalysisOpen } from './analysis-ui.js';
 import { floatWin, focusWindow } from './windows.js';
@@ -125,7 +125,7 @@ async function gridDistanceOf(gridL, targets) {
   for (let i = 0; i < g.data.length; i++) { const v = g.data[i]; if (Number.isFinite(v) && !(g.nodata != null && (g.nodata >= 1.7e38 ? v >= 1.7014e38 : v === g.nodata))) { if (v < zlo) zlo = v; if (v > zhi) zhi = v; } }
   const out = {
     grid: gd.grid, band: gd.source && gd.source.band, bkey, closed: false, isGrid: true, label: gridL.label || gridL.name, sideNames: ['below', 'above'],
-    bbox: [g.x0, g.y0 - (g.ny - 1) * g.dy, zlo, g.x0 + (g.nx - 1) * g.dx, g.y0, zhi],
+    bbox: (() => { const b4 = gridWorldBbox4(g); return [b4[0], b4[1], zlo, b4[2], b4[3], zhi]; })(),   // a rotated grid's world box
     at(x, y, z, maxDist = Infinity) { return gridSignedDistance(surf.sampleZ, x, y, z, maxDist); },
   };
   gridL._contactDist = out;

@@ -28,6 +28,7 @@ import { openFeaturesBlob } from './poly-ui.js';
 import { featureKindOf, FEATURE_EXT, groupShapefileParts, zipShapefileSet } from './poly-io.js';
 import { lasCrsOf, reprojectLas } from './las-crs.js';
 import { setProjectCrs, sameCrs, crsLabel } from './crs.js';
+import { layerPlacementM, placeCloudProvider } from './placement.js';
 const $ = (s) => document.querySelector(s);
 
 export async function streamInto(cb, streamChunks, header, name, chunkPoints, lid = S.activeId) {
@@ -109,7 +110,7 @@ export async function openBlob(blob, name, mode = 'replace', at = null, over = {
   const lid = allocLayerId();
   if (lid == null) { const msg = `layer limit reached (${LAYER_CAP}) — remove one first`; $('#meta').textContent = msg; return layerFailed(name, new Error(msg), over); }
   const first = S.layers.length === 0;
-  S.layers.push({ id: lid, name, kind: 'points', docs: {}, bboxLocal: null, colorSel: null, clip: ['', ''], filterExpr: '', visible: true, handle: (blob && typeof blob === 'object' && _fileHandles.get(blob)) || null, storage: 'loose', lineage: over.lineage || openLineage(name, blob) });
+  S.layers.push({ id: lid, name, kind: 'points', docs: {}, bboxLocal: null, colorSel: null, clip: ['', ''], filterExpr: '', visible: true, handle: (blob && typeof blob === 'object' && _fileHandles.get(blob)) || null, storage: 'loose', lineage: over.lineage || openLineage(name, blob), ...((over.placement || (S.reopenCarry && S.reopenCarry.placement)) ? { placement: over.placement || S.reopenCarry.placement } : {}) });   // a placement (a project's, a host's) is on the layer BEFORE its open applies it
   S.activeId = lid;
   $('#meta').textContent = `${name} — reading…`;
   $('#empty').style.display = 'none';
@@ -122,7 +123,7 @@ export async function openBlob(blob, name, mode = 'replace', at = null, over = {
     else if (isMesh && /\.(msh|obj|lfm|ply)$/i.test(name)) { await openMeshDoc(blob, name, { layer: lid, first, tint: over.tint, opacity: over.opacity, forceSoup: over.forceSoup, forceContext: over.forceContext }); }
     else if (/\.dm$/i.test(name)) { await openDmBlob(blob, name, { layer: lid, first, forcePoints, cached: over.cached, mapping: over.mapping, origin: over.origin }); }
     // grid stays extension-driven (no table→grid provider yet); asKind only picks points↔surface.
-    else if ((over.asKind == null || over.asKind === 'surface' || over.asKind === 'points') && /\.(tif|tiff|grd)$/i.test(name)) { await openGridBlob(blob, name, { layer: lid, first, displayCache: over.displayCache, surface: over.asKind === 'surface', flatZ: over.flatZ != null ? over.flatZ : null, band: over.band || 0, smooth: over.smooth }); }
+    else if ((over.asKind == null || over.asKind === 'surface' || over.asKind === 'points') && /\.(tif|tiff|grd)$/i.test(name)) { await openGridBlob(blob, name, { layer: lid, first, displayCache: over.displayCache, surface: over.asKind === 'surface', flatZ: over.flatZ != null ? over.flatZ : null, band: over.band || 0, smooth: over.smooth, worldFile: over.worldFile || (S.reopenCarry && S.reopenCarry.worldFile) || null }); }
     else if ((over.asKind == null || over.asKind === 'surface' || over.asKind === 'points') && /\.asc$/i.test(name) && await ascLooksLikeGrid(blob)) { await openGridBlob(blob, name, { layer: lid, first, surface: over.asKind === 'surface', flatZ: over.flatZ != null ? over.flatZ : null, smooth: over.smooth }); }
     else if (/\.(parquet|pq)$/i.test(name)) { await openParquetBlocks(blob, name, { layer: lid, first, forcePoints, mapping: over.mapping, cached: over.cached, strictMapping: over.strictMapping, acceptLattice: over.acceptLattice, lattice: over.lattice, declaredBy: over.declaredBy, dimCols: over.dimCols }); }
     // .xyz/.pts default to POINTS (2-decimal coords form a fake lattice); a
@@ -133,27 +134,10 @@ export async function openBlob(blob, name, mode = 'replace', at = null, over = {
     else if (isTable && /\.(csv|txt|dat|tsv)$/i.test(name)) { await openTableBlob(blob, name, { layer: lid, first }); }
     else if (/\.(csv|txt|dat|tsv|asc|xyz|pts)$/i.test(name)) { await openBlocksBlob(blob, name, { layer: lid, first, forcePoints, mapping: over.mapping, discovered: over.discovered, lattice: over.lattice, acceptLattice: over.acceptLattice, dimCols: over.dimCols }); }
     else if (/\.ply$/i.test(name)) { await openPlyBlob(blob, name, { layer: lid, first }); }
+    else if (/\.las$/i.test(name)) { await openLasBlob(blob, name, { layer: lid, first }); }
     else if (/\.laz$/i.test(name)) throw new Error('LAZ (compressed LAS) isn’t supported — export as .las, or use lasZip to convert');
-    else if (!/\.(las)$/i.test(name)) throw new Error(`micro doesn’t read ${(name.match(/\.[^.]+$/) || ['this file'])[0]} — it reads .csv .txt .dat .tsv .xlsx .dm .parquet .las .ply .xyz .pts .msh .obj .lfm .dxf .wfr .omf .tif .grd .asc .geojson .wkt .shp .zip (a shapefile)`);
-    else {
-      let prov = await openLas(blob);
-      // its coordinate system (a LASF_Projection VLR): adopted as the project's when none is set,
-      // reprojected into the project's when it differs (src/las-crs.js); a geographic cloud with
-      // no project CRS is refused like a geographic vector file
-      const lcrs = await lasCrsOf(prov.header);
-      if (lcrs && !S.crs && lcrs.kind === 'geographic') throw new Error(`${name}: its coordinate system is ${crsLabel(lcrs)} — longitude/latitude, and the project has no coordinate system to reproject it into: set one (the CRS chip in the status bar) and open it again`);
-      if (lcrs && !S.crs) await setProjectCrs(lcrs, { why: `from ${name}` });
-      else if (lcrs && !sameCrs(lcrs, S.crs)) { prov = reprojectLas(prov, lcrs, S.crs); const Lr = layerById(lid); if (Lr && Lr.lineage) Lr.lineage.params = { ...(Lr.lineage.params || {}), reproject: prov.header.reprojected }; }
-      const { header, streamChunks, columnBatches, fetchRecord } = prov;
-      if (lcrs) header.crsName = crsLabel(lcrs);
-      registerDocs(lid, 'points', { lasDoc: { blob, header, columnBatches, fetchRecord, ...(header.reprojected ? { streamChunks } : {}) } });
-      fitFromHeader(header, first);
-      setColorLabels(header);
-      const cb = createChunkBuilder({ frame: S.frame, chunkSize: 1 << 18, batchSize: 1 << 22, seed: 1, onChunk: (c) => { S.renderer.addChunk(c, 'base', lid); requestRender(); } });
-      const doc = await streamInto(cb, streamChunks, header, name, 1 << 18, lid);
-      $('#meta').textContent = `${name} — ${doc.count.toLocaleString()} points · LAS ${header.version} fmt ${header.format}${S.frame.origin.some((v) => v) ? ` · origin ${S.frame.origin.map((v) => v.toLocaleString()).join(', ')}` : ''}`;
-      requestRender();
-    }
+    else throw new Error(`micro doesn’t read ${(name.match(/\.[^.]+$/) || ['this file'])[0]} — it reads .csv .txt .dat .tsv .xlsx .dm .parquet .las .ply .xyz .pts .msh .obj .lfm .dxf .wfr .omf .tif .grd .asc .geojson .wkt .shp .zip (a shapefile)`);
+
     const L = layerById(lid);
     if (L && L.colorSel == null) L.colorSel = $('#colorBy').value;   // a fallback — a branch that chose (DXF strings → 'cat') keeps its choice
     renderLayers();
@@ -193,13 +177,46 @@ export function registerDocs(lid, kind, docs = {}) {
   syncNoData(L);                                          // blanks draw as "no data", not the lowest grade (src/ramp.js)
 }
 
+// LAS path. Also the in-place re-read of a LAS layer (a new placement — src/placement-ui.js).
+export async function openLasBlob(blob, name, opts = {}) {
+  const lid = opts.layer != null ? opts.layer : S.activeId, first = opts.first !== false;
+  let prov = await openLas(blob);
+  // its coordinate system (a LASF_Projection VLR): adopted as the project's when none is set,
+  // reprojected into the project's when it differs (src/las-crs.js); a geographic cloud with
+  // no project CRS is refused like a geographic vector file
+  const lcrs = await lasCrsOf(prov.header);
+  if (lcrs && !S.crs && lcrs.kind === 'geographic') throw new Error(`${name}: its coordinate system is ${crsLabel(lcrs)} — longitude/latitude, and the project has no coordinate system to reproject it into: set one (the CRS chip in the status bar) and open it again`);
+  if (lcrs && !S.crs) await setProjectCrs(lcrs, { why: `from ${name}` });
+  else if (lcrs && !sameCrs(lcrs, S.crs)) { prov = reprojectLas(prov, lcrs, S.crs); const Lr = layerById(lid); if (Lr && Lr.lineage) Lr.lineage.params = { ...(Lr.lineage.params || {}), reproject: prov.header.reprojected }; }
+  // the layer's rigid placement (after any reprojection): every chunk, column batch and record placed
+  const PM = layerPlacementM(layerById(lid));
+  if (PM) prov = placeCloudProvider(prov, PM);
+  const { header, streamChunks, columnBatches, fetchRecord } = prov;
+  if (lcrs) header.crsName = crsLabel(lcrs);
+  S.renderer.removeLayer(lid);
+  registerDocs(lid, 'points', { lasDoc: { blob, name, header, columnBatches, fetchRecord, ...(header.reprojected || header.placed ? { streamChunks } : {}) } });
+  stampPlacementOf(layerById(lid));
+  fitFromHeader(header, first);
+  setColorLabels(header);
+  const cb = createChunkBuilder({ frame: S.frame, chunkSize: 1 << 18, batchSize: 1 << 22, seed: 1, onChunk: (c) => { S.renderer.addChunk(c, 'base', lid); requestRender(); } });
+  const doc = await streamInto(cb, streamChunks, header, name, 1 << 18, lid);
+  $('#meta').textContent = `${name} — ${doc.count.toLocaleString()} points · LAS ${header.version} fmt ${header.format}${S.frame.origin.some((v) => v) ? ` · origin ${S.frame.origin.map((v) => v.toLocaleString()).join(', ')}` : ''}`;
+  requestRender();
+}
+const stampPlacementOf = (L) => { if (!L || !L.lineage) return; const p = { ...(L.lineage.params || {}) }; if (L.placement) p.placement = L.placement; else delete p.placement; L.lineage.params = p; };
+
 // PLY path: discovery sweep (no header bbox) → the points pipeline. The
 // provider owns fetchRecord (O(1) binary / sweep ascii) for the pick join.
-async function openPlyBlob(blob, name, opts = {}) {
+export async function openPlyBlob(blob, name, opts = {}) {
   const lid = opts.layer != null ? opts.layer : S.activeId;
   $('#meta').textContent = `${name} — reading header…`;
-  const { header, streamChunks, columnBatches, fetchRecord } = await openPly(blob);
-  registerDocs(lid, 'points', { plyDoc: { blob, name, header, columnBatches, fetchRecord } });
+  let prov = await openPly(blob);
+  const PM = layerPlacementM(layerById(lid));
+  if (PM) prov = placeCloudProvider(prov, PM);
+  const { header, streamChunks, columnBatches, fetchRecord } = prov;
+  S.renderer.removeLayer(lid);
+  registerDocs(lid, 'points', { plyDoc: { blob, name, header, columnBatches, fetchRecord, ...(header.placed ? { streamChunks } : {}) } });
+  stampPlacementOf(layerById(lid));
   fitFromHeader(header, opts.first !== false);
   setColorLabels(header);
   const cb = createChunkBuilder({ frame: S.frame, chunkSize: 1 << 18, batchSize: 1 << 22, seed: 1, onChunk: (c) => { S.renderer.addChunk(c, 'base', lid); requestRender(); } });

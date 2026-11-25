@@ -28,6 +28,8 @@ import { applyCatVisibility, applyCatLegend } from './categories.js';
 import { runRules, ruleModeOf, rulesOf } from './rules.js';
 import { useAsCategory, setColType, qualifyMenuItems } from './coltypes.js';
 import { dropRampRepaint, renderClassesTab, renderStyleTab } from './props-style.js';
+import { canPlace, openPlacementDialog } from './placement-ui.js';
+import { placementLine, RESIDUAL_COLOR } from './placement.js';
 const $ = (s) => document.querySelector(s);
 
 // ── layer properties (§10 v1): follows the ACTIVE layer, live-apply, tabbed.
@@ -337,6 +339,16 @@ export function wireScanButton(btn, L, columns) {
 function renderSourceTab(body, L) {
   const d = L.docs || {};
   const h = layerHeaderOf(L);
+  // the layer's PLACEMENT (src/placement-ui.js): what it is, its residual against the tolerance, a door to change it
+  if (canPlace(L)) {
+    const ps = document.createElement('div'); ps.className = 'pp-sec'; ps.textContent = 'placement'; body.appendChild(ps);
+    const pl = placementLine(L);
+    const el = document.createElement('div'); el.className = 'pp-stats'; el.style.marginLeft = '0'; el.dataset.placementLine = '1';
+    el.textContent = pl ? pl.text : 'not placed — read in the file’s own coordinates';
+    if (pl && pl.cls !== 'none') { el.style.color = RESIDUAL_COLOR[pl.cls]; el.dataset.cls = pl.cls; }
+    const b = document.createElement('button'); b.textContent = 'Placement…'; b.onclick = () => openPlacementDialog(L);
+    body.append(el, b);
+  }
   if (!h) { body.appendChild(ppNote('no source metadata for this layer')); return; }
   const escS = (v) => (v == null ? '—' : String(v));      // text: html`…` escapes it
   const fm = (v) => (v == null || !Number.isFinite(v) ? '–' : Number.isInteger(v) ? v.toLocaleString() : +v.toFixed(3) + '');
@@ -351,7 +363,7 @@ function renderSourceTab(body, L) {
     line(html`project <span class="v">${S.crs ? crsLabel(S.crs) : 'none set'}</span>`);
     if (fc) line(html`file <span class="v">${fc}</span>${src && src.fileCrsBy ? html` <span class="fi-x">(${src.fileCrsBy})</span>` : ''}`);
     if (rp) line(html`reprojected on read · <span class="v">${rp.path}</span> <span class="fi-x">(${rp.accuracy.class}; heights unchanged)</span>`);
-    else if (d.blockDoc || d.gridDoc || d.meshDoc) line(trusted('<span class="fi-x">models, grids and meshes are not reprojected — they are read in their own coordinates</span>'));
+    else if (d.blockDoc || d.gridDoc || d.meshDoc) line(trusted('<span class="fi-x">models, grids and meshes are not reprojected — they are read in their own coordinates, and placed (the placement above) when those are not the project’s</span>'));
   }
   if (d.blockDoc && !d.blockDoc.header.dm) {
     sec('position — column mapping');

@@ -8,6 +8,7 @@ import { FACE_CUT, FACE_NAMES, FACE_NORMALS, decodeLasRecords, faceOfId, dmWorld
 import { recordPosition } from './overlay.js';
 import { currentSection } from './section.js';
 import { attrRowCountOf, extendRow, fetchCsvRecord, fetchLayerRow, rawRecordOf, dmDocReader } from './records.js';
+import { gridNodeWorld } from './grid-ops.js';
 import { halfAt, volumeContextOf } from './analysis.js';
 import { rendererDocBbox } from './layers.js';
 import { html, setHTML } from './html.js';
@@ -325,8 +326,8 @@ export async function showRecord(hit) {
     const i = gd.dispIdx ? gd.dispIdx[rec] : rec;
     const r = (i / g.nx) | 0, c = i % g.nx;
     show(`${tag}cell · ${r},${c}`, [
-      ['X', +(g.x0 + c * g.dx).toFixed(3)], ['Y', +(g.y0 - r * g.dy).toFixed(3)],
-      ['Z', +g.data[i].toFixed(3)], ['row', r], ['col', c],
+      ['X', +gridNodeWorld(g, r, c)[0].toFixed(3)], ['Y', +gridNodeWorld(g, r, c)[1].toFixed(3)],
+      ['Z', +gridNodeWorld(g, r, c)[2].toFixed(3)], ['row', r], ['col', c],
     ]);
     return;
   }

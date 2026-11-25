@@ -18,6 +18,8 @@ import { mkLineage } from './lineage.js';
 import { deliverBlob } from './hostio.js';
 import { fmtSize } from './paths.js';
 import { S } from './state.js';
+import { resampleAxisAligned, gridWorldBbox4 } from './grid-ops.js';
+import { gridAffine, worldFileText, zOnlyP } from './placement-core.js';
 const $ = (s) => document.querySelector(s);
 
 // id · label · extension · which options apply
@@ -56,6 +58,7 @@ export async function gridForExport(L, band = gridBandOf(L)) {
   const g = await gridFromGTiff(src, 0, band);
   if (g.x0 == null) { g.x0 = g.dx / 2; g.y0 = g.ny * g.dy - g.dy / 2; }   // an un-georeferenced TIFF: the same pixel frame the display uses
   g.crs = g.crs || gd.grid.crs || null;
+  if (gd.grid.place) g.place = gd.grid.place;              // a rotated / placed grid: the same frame as the display (src/open-grid.js)
   return g;
 }
 
@@ -89,8 +92,23 @@ async function zipOf(members) {
 export async function buildGridExport(L, opts = {}) {
   const f = fmtOf(opts.format);
   const band = opts.band != null ? opts.band | 0 : gridBandOf(L);
-  const g = await gridForExport(L, band);
+  let g = await gridForExport(L, band);
   const notes = [];
+  // A ROTATED (or placed) grid: GeoTIFF says it (ModelTransformation, plus a world file beside it)
+  // and XYZ writes every node where it is; ESRI ASCII / binary float and Surfer have no rotation
+  // terms, so they REFUSE it with the reason — or, asked (opts.resample), take an axis-aligned
+  // resample over its world extent at the same cell, and say so.
+  let worldFile = null;
+  if (g.place) {
+    if (!zOnlyP(g.place)) throw new Error(`${L.label || L.name} is tilted out of the horizontal — no grid format holds a tilted sheet; drop the tilt to export it`);
+    const scaled = Math.abs(g.place.s - 1) > 1e-12 || Math.abs(g.place.t[2]) > 1e-12;
+    if (f.id === 'tif' || f.id === 'xyz') {
+      if (scaled) { const d = new Float32Array(g.data.length), bad = gridBlankTest(g); for (let i = 0; i < d.length; i++) d[i] = bad(g.data[i]) ? g.data[i] : g.place.t[2] + g.place.s * g.data[i]; g = { ...g, data: d }; notes.push('values written as placed (z = t_z + s·value)'); }
+    } else if (opts.resample) {
+      g = resampleAxisAligned(g, { nodata: defaultNodata(g) });
+      notes.push(`resampled to an axis-aligned ${g.nx}×${g.ny} lattice at ${+g.dx.toPrecision(6)} (bilinear) — ${f.label.replace(/ \(.*$/, '')} has no rotation terms`);
+    } else throw new Error(`${f.label} has no rotation terms and ${L.label || L.name} is rotated — export it as GeoTIFF (it carries the rotation, plus a world file) or XYZ, or tick "resample to axis-aligned"`);
+  }
   const nd = f.nodata ? (parseNodata(opts.nodata) ?? defaultNodata(g)) : null;
   const decimals = opts.decimals === undefined ? null : opts.decimals;
   const square = Math.abs(g.dx - g.dy) <= Math.abs(g.dx) * 1e-9;
@@ -115,7 +133,7 @@ export async function buildGridExport(L, opts = {}) {
     case 'grd6': blob = new Blob([writeSurferGrd(g)], { type: 'application/octet-stream' }); break;
     case 'grd7': blob = new Blob([writeSurfer7Grd(g)], { type: 'application/octet-stream' }); break;
     case 'xyz': {
-      const parts = gridXyzParts(g, { delim: opts.delim || ',', header: opts.header !== false, names: ['x', 'y', (opts.valueName || 'z').trim() || 'z'], skipEmpty: opts.skipEmpty !== false, nodata: nd, decimals });
+      const parts = gridXyzParts(g.place ? { ...g, place: g.place } : g, { delim: opts.delim || ',', header: opts.header !== false, names: ['x', 'y', (opts.valueName || 'z').trim() || 'z'], skipEmpty: opts.skipEmpty !== false, nodata: nd, decimals });
       rows = parts.rows;
       blob = new Blob(parts, { type: opts.delim === ',' || !opts.delim ? 'text/csv' : 'text/plain' });
       break;
@@ -129,7 +147,9 @@ export async function buildGridExport(L, opts = {}) {
     }
     case 'tif': {
       const crs = gridExportCrs(L) || (g.crs && /^EPSG:\d+$/i.test(g.crs) ? g.crs : null);
+      if (g.place) { worldFile = worldFileText(g); notes.push('rotated: written as a GeoTIFF ModelTransformation; the world file (.tfw) rides beside it'); }
       const bytes = await writeGeoTiff(g, {
+        ...(g.place ? { transform: gridAffine(g) } : {}),
         compression: opts.compression === 'none' ? 'none' : 'deflate', predictor: opts.predictor === 1 ? 1 : 3,
         layout: opts.layout === 'tiles' ? 'tiles' : 'strips', tileSize: 256, nodata: nd, crs,
         description: JSON.stringify({ micro: { lineage } }), software: `micro ${S.build || ''}`.trim(),
@@ -139,13 +159,24 @@ export async function buildGridExport(L, opts = {}) {
       break;
     }
   }
-  return { blob, name, grid: g, notes, format: f.id, rows, lineage };
+  return { blob, name, grid: g, notes, format: f.id, rows, lineage, worldFile, worldFileName: worldFile ? name.replace(/\.tiff?$/i, '') + '.tfw' : null };
+}
+
+// a grid made in the session (a resample, a cut / fill, a gridded cloud) → the file its layer opens
+// from: ESRI ASCII when axis-aligned, a GeoTIFF with its ModelTransformation when it is rotated (the
+// rotation rides in the file, so the layer reopens rotated — ASCII would drop it)
+export async function gridLayerFile(grid, name) {
+  const base = String(name).replace(/\.(asc|tif|tiff)$/i, '');
+  if (!grid.place) return { blob: new Blob([esriAscParts(grid, {}).join('')], { type: 'text/plain' }), name: `${base}.asc` };
+  const bytes = await writeGeoTiff(grid, { transform: gridAffine(grid), nodata: defaultNodata(grid), compression: 'deflate' });
+  return { blob: new Blob([bytes], { type: 'image/tiff' }), name: `${base}.tif` };
 }
 
 // build + deliver + say what was written
 export async function exportGrid(L, opts = {}) {
   const r = await buildGridExport(L, opts);
   deliverBlob(r.blob, r.name);
+  if (r.worldFile) deliverBlob(new Blob([r.worldFile], { type: 'text/plain' }), r.worldFileName);   // the rotation also as a world file
   $('#meta').textContent = `exported ${r.name} (${r.grid.nx}×${r.grid.ny})${r.notes.length ? ' · ' + r.notes.join(' · ') : ''}`;
   return r;
 }
@@ -186,6 +217,9 @@ export function openGridExportDialog(L) {
   const checks = document.createElement('div'); checks.className = 'ge-checks';
   const cb = (label, on) => { const l = document.createElement('label'); const c = document.createElement('input'); c.type = 'checkbox'; c.checked = on; l.append(c, ' ' + label + '  '); checks.append(l); return c; };
   const header = cb('header row', true), skip = cb('skip empty nodes', true);
+  const rotChecks = document.createElement('div'); rotChecks.className = 'ge-checks';
+  const rs = document.createElement('label'), resample = document.createElement('input'); resample.type = 'checkbox'; resample.dataset.geResample = '1';
+  rs.append(resample, ' resample to axis-aligned (bilinear) — the format has no rotation terms'); rotChecks.append(rs);
   const note = document.createElement('div'); note.className = 'ge-note';
   const crs = gridExportCrs(L);
   const extOf = () => (fmt.value === 'xyz' ? XYZ_DELIMS[delim.value] : fmtOf(fmt.value).ext);
@@ -195,6 +229,7 @@ export function openGridExportDialog(L) {
     show('band', nb > 1); show('nodata', !!f.nodata); show('decimals', !!f.decimals);
     show('delim', f.id === 'xyz'); show('vname', f.id === 'xyz'); show('comp', f.id === 'tif'); show('layout', f.id === 'tif');
     checks.style.display = f.id === 'xyz' ? '' : 'none';
+    rotChecks.style.display = g0.place && f.id !== 'tif' && f.id !== 'xyz' ? '' : 'none';
     if (!nameIn.dataset.touched) nameIn.value = `${baseOf(L)}.${extOf()}`;
     else nameIn.value = nameIn.value.replace(/\.[^.]+$/, '') + '.' + extOf();
     const msg = ['the full-resolution grid' + (nb > 1 ? ' of the chosen band' : '') + (src && !gd.fullRes ? ' (not the thinned display)' : '') + ', world coordinates.'];
@@ -204,12 +239,13 @@ export function openGridExportDialog(L) {
     if (f.id === 'flt') msg.push('one .zip holding the .flt, its .hdr and the provenance (.lineage.json).');
     if (f.id === 'xyz') msg.push('one row per node, north row first; x and y at the node.');
     if ((f.id === 'asc' || f.id === 'flt') && Math.abs(g0.dx - g0.dy) > Math.abs(g0.dx) * 1e-9) msg.push('cells are not square: written in GDAL’s non-square form.');
+    if (g0.place) msg.push(f.id === 'tif' ? 'ROTATED: written as a ModelTransformation, with a .tfw world file beside it.' : f.id === 'xyz' ? 'ROTATED: every node at its true x, y.' : 'ROTATED: this format has no rotation terms — it refuses the grid unless you tick “resample to axis-aligned”.');
     note.textContent = msg.join(' ');
   };
   nameIn.oninput = () => { nameIn.dataset.touched = '1'; };
   fmt.oninput = delim.oninput = sync;
   sync();
-  body.append(head, grid, checks, note);
+  body.append(head, grid, checks, rotChecks, note);
   const msg = $('#geDlgMsg'); msg.textContent = '';
   const close = () => { $('#geDlg').classList.remove('show'); $('#geGo').onclick = $('#geNot').onclick = $('#geCancel').onclick = null; };
   $('#geGo').onclick = async () => {
@@ -220,6 +256,7 @@ export function openGridExportDialog(L) {
       decimals: Number.isNaN(decOf()) ? null : decOf(),
       delim: delim.value, valueName: vname.value, header: header.checked, skipEmpty: skip.checked,
       compression: comp.value === 'none' ? 'none' : 'deflate', predictor: comp.value === 'deflate3' ? 3 : 1, layout: layout.value,
+      resample: resample.checked,
     };
     $('#geGo').disabled = true; msg.textContent = 'writing…';
     try {

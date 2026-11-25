@@ -10,6 +10,8 @@ import { createLayerGroup } from './tree.js';
 import { renderLayers } from './layers-panel.js';
 import { openWfrBlob, wfrResidentMesh, wfrSoupDoc, wfrStringsDoc, wfrPointsDoc, summarizeElements, vertexColorOf } from './wfr-io.js';
 import { registerDocs, openBlob } from './open.js';
+import { layerPlacementM, placeMesh, placedSoupStream } from './placement.js';
+import { placeBbox } from './placement-core.js';
 import { setColorLabels, hexToRgb01 } from './color.js';
 import { applyCatLegend } from './categories.js';
 import { readLFM, writeLFM } from '../../../ext/lfm/lfm.js';
@@ -397,13 +399,16 @@ export async function openMeshDoc(blob, name, opts = {}) {
   const lid = opts.layer != null ? opts.layer : S.activeId;
   $('#meta').textContent = `${name} — reading mesh…`;
   const L = layerById(lid);
+  const PM = layerPlacementM(L);                           // the layer's rigid placement (src/placement.js): the vertices in world
   // over the cap → the streamed soup tier, unless forceContext: the user asked for the
   // exact tier knowing its cost (structural analysis and solid queries need CPU geometry)
   const overCap = (n) => !opts.forceContext && n > CONTEXT_TRI_CAP;
   const setupLayer = (header) => {
     if (!L) return;
     L.kind = 'mesh';
-    L.docs = { meshDoc: { blob, name, header, ptBlob: opts.ptBlob || null } };
+    L.docs = { meshDoc: { blob, name, header, ptBlob: opts.ptBlob || null, placeM: PM || null } };   // placeM: records.js reReadMesh places every re-parse
+    S.renderer.removeLayer(lid);
+    if (L.lineage) { const pp = { ...(L.lineage.params || {}) }; if (L.placement) pp.placement = L.placement; else delete pp.placement; L.lineage.params = pp; }
     L.tint = opts.tint || '#9ea3a8';
     L.opacity = opts.opacity != null ? opts.opacity : 1;
     S.renderer.setLayerMeshStyle(lid, { tint: hexToRgb01(L.tint), opacity: L.opacity });
@@ -428,12 +433,12 @@ export async function openMeshDoc(blob, name, opts = {}) {
     : null;
   if (streamDoc) {
     const doc = await streamDoc();
-    header = doc.header;
-    soupSrc = (o) => doc.streamChunks(o);
+    header = PM ? { ...doc.header, bbox: doc.header.bbox ? placeBbox(PM, doc.header.bbox) : doc.header.bbox, placed: true } : doc.header;
+    soupSrc = PM ? placedSoupStream((o) => doc.streamChunks(o), PM) : (o) => doc.streamChunks(o);
   } else {
     // prebuilt = an already-joined mesh (e.g. a Datamine pt/tr wireframe pair);
     // otherwise pick the single-file provider by extension.
-    const m = opts.prebuilt || await (/\.msh$/i.test(name) ? openMsh : /\.obj$/i.test(name) ? openObj : /\.lfm$/i.test(name) ? openLfmMesh : openPlyMesh)(blob);
+    const m = placeMesh(opts.prebuilt || await (/\.msh$/i.test(name) ? openMsh : /\.obj$/i.test(name) ? openObj : /\.lfm$/i.test(name) ? openLfmMesh : openPlyMesh)(blob), PM);
     header = m.header;
     if (opts.forceSoup || overCap(header.triCount)) {
       header = { ...header, soup: true };

@@ -15,6 +15,8 @@ import { compileValue, deps } from '../../../ext/expr/index.js';
 import { readLFM, readLFMLayout, verifyLFM, lfmBlockStream } from '../../../ext/lfm/lfm.js';
 import { S, activeDocs } from './state.js';
 import { isWfrName, rereadWfrMesh } from './wfr-io.js';
+import { gridNodeWorld, gridWorldBbox4 } from './grid-ops.js';
+import { fileHeader, dmPlacementArg, placedStream, placeRow, placeMesh, layerPlacementM } from './placement.js';
 
 // ── headers + schema ──────────────────────────────────────────────────────────
 export function layerHeaderOf(L) {
@@ -27,7 +29,7 @@ export function layerWorldBox(L) {
   const h = L && layerHeaderOf(L), b = h && h.bbox;
   if (b && b.min && b.max) return [Array.from(b.min).slice(0, 3), Array.from(b.max).slice(0, 3)];
   const g = L && L.docs && L.docs.gridDoc && L.docs.gridDoc.grid;
-  if (g && g.nx) return [[g.x0, g.y0 - (g.ny - 1) * g.dy, 0], [g.x0 + (g.nx - 1) * g.dx, g.y0, 0]];
+  if (g && g.nx) { const b4 = gridWorldBbox4(g); return [[b4[0], b4[1], 0], [b4[2], b4[3], 0]]; }   // a rotated grid's world box
   return null;
 }
 export const layerBlob = (L) => { const d = L.docs.blockDoc || L.docs.tableDoc || L.docs.plyDoc || L.docs.lasDoc || L.docs.meshDoc || L.docs.gridDoc || L.docs.stringsDoc; return d && d.blob || null; };
@@ -209,8 +211,8 @@ export async function dmDocReader(doc) {
   if (!doc) return null;
   if (doc.dmReader) return doc.dmReader;
   if (doc.recordBatches && doc.columnBatches && doc.fetchRecord) return (doc.dmReader = { recordBatches: doc.recordBatches, columnBatches: doc.columnBatches, fetchRecord: doc.fetchRecord });
-  const h = doc.header;
-  const o = await openDmModel(doc.blob, { mapping: h.mapping, origin: h.dmOrigin || null, cached: h.bbox ? { grid: h.grid, bbox: h.bbox, subBlocked: h.subBlocked, sizeQMax: h.sizeQMax, categories: h.categories } : null });
+  const h = doc.header, fh = fileHeader(h);
+  const o = await openDmModel(doc.blob, { mapping: h.mapping, placement: dmPlacementArg(h.placeM || null), cached: fh.bbox ? { grid: fh.grid, bbox: fh.bbox, subBlocked: fh.subBlocked, sizeQMax: fh.sizeQMax, categories: fh.categories } : null });
   return (doc.dmReader = { recordBatches: o.recordBatches, columnBatches: o.columnBatches, fetchRecord: o.fetchRecord });
 }
 
@@ -222,9 +224,11 @@ export async function dmDocReader(doc) {
 // slots of their own: XL = R₀₀(XC − O₀) + R₁₀(YC − O₁) + …, the zero terms dropped.
 // → [{ name, expr, ty }] for a placed header, else [].
 export function modelFrameCalcs(h) {
-  const p = h && h.dmPlace;
+  const p = h && (h.dmPlace || h.place);
   if (!p || !h.columns) return [];
-  const R = p.R, O = p.O, nm = [h.columns[p.x], h.columns[p.y], h.columns[p.z]];
+  const O = p.O, nm = [h.columns[p.x], h.columns[p.y], h.columns[p.z]];
+  const k2 = 1 / (p.R[0] * p.R[0] + p.R[1] * p.R[1] + p.R[2] * p.R[2]);   // a placement's R carries its scale: local = Rᵀ(world − O)/s²
+  const R = p.R.map((v) => v * k2);
   if (!nm.every((n) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(String(n)))) return [];   // a name the expression can't spell bare
   const num = (v) => String(+v.toPrecision(17));
   return ['XL', 'YL', 'ZL'].map((name, a) => {
@@ -249,7 +253,13 @@ export function ensureModelFrameCols(L) {
   const bd = L && L.docs && L.docs.blockDoc, h = bd && bd.header;
   if (!h || L.viewOf != null) return false;
   const want = modelFrameCalcs(h);
-  if (!want.length) return false;
+  if (!want.length) {                                       // not placed (any more): micro's own model-frame columns go
+    const before = (L.calcCols || []).length;
+    if (before) L.calcCols = L.calcCols.filter((c) => !(/^[XYZ]L$/.test(String(c.name)) && MODEL_FRAME_RE.test(String(c.expr))));
+    const changed0 = (L.calcCols || []).length !== before;
+    if (changed0) { L._calcFns = null; L._colStats = null; }
+    return changed0;
+  }
   const file = new Set(h.columns.map((c) => String(c).toLowerCase()));
   L.calcCols = L.calcCols || [];
   let changed = false;
@@ -269,8 +279,8 @@ export function ensureModelFrameCols(L) {
 // (its origin + rotation). A sidecar from before placement (or another origin)
 // reads 'file' / another key and is not trusted for the coordinate columns.
 export function coordFrameKey(h) {
-  const p = h && h.dmPlace;
-  return p ? `world:${p.O.map((v) => +(+v).toPrecision(15)).join(',')}:${p.R.slice(0, 2).map((v) => +v.toPrecision(12)).join(',')}` : 'file';
+  const p = h && (h.dmPlace || h.place);
+  return p ? `world:${p.O.map((v) => +(+v).toPrecision(15)).join(',')}:${(p.R.length === 9 && (p.R[2] || p.R[5] || p.R[8] !== 1) ? p.R : p.R.slice(0, 2)).map((v) => +v.toPrecision(12)).join(',')}` : 'file';
 }
 
 // ── capabilities + record identity ────────────────────────────────────────────
@@ -334,11 +344,12 @@ export async function* layerRows(L, onProgress, { raw = false } = {}) {
       if (onProgress) onProgress(done, d.blockDoc.header.count);
     }
   } else if (d.blockDoc && d.blockDoc.parquet) {
-    const P = d.blockDoc.parquet;
+    const P = d.blockDoc.parquet, ph = d.blockDoc.header.place ? d.blockDoc.header : null;
     let done = 0;
     for await (const { count, cols } of streamParquetColumns(P.buf, P.names, P.rowGroups, P.meta)) {
       const rows = [];
       for (let i = 0; i < count; i++) rows.push(P.names.map((n) => { const v = cols[n][i]; return v == null ? '' : v; }));
+      if (ph) for (const r of rows) placeRow(ph, r);
       yield rows;
       done += count;
       if (onProgress) onProgress(done, d.blockDoc.header.count);
@@ -362,8 +373,9 @@ export async function* layerRows(L, onProgress, { raw = false } = {}) {
   } else if (d.blockDoc) {
     const { blob, header } = d.blockDoc;
     let done = 0;
-    const q = raw ? null : rowQualifier(L);
+    const q = raw ? null : rowQualifier(L), ph = header.place ? header : null;
     for await (const batch of lineFields(blob, header.delim, header.hasHeaderRow !== undefined ? header.hasHeaderRow : !!header.columns, { decimal: header.decimal })) {
+      if (ph) for (const r of batch) placeRow(ph, r);      // the source text's coordinates → world (the qualifier never touches them)
       yield q ? batch.map(q) : batch;
       done += batch.length;
       if (onProgress) onProgress(done, header.count);
@@ -410,10 +422,11 @@ export async function* layerRecords(L, onProgress) {
 export async function docPositionStream(d) {
   if (!d) return null;
   if (d.blockDoc && d.blockDoc.streamChunks) return d.blockDoc.streamChunks;
-  if (d.blockDoc && d.blockDoc.header.dm) { const h = d.blockDoc.header; return (await openDmModel(d.blockDoc.blob, { mapping: h.mapping, origin: h.dmOrigin || null })).streamChunks; }
-  if (d.blockDoc) return (await openBlockModel(d.blockDoc.blob, { mapping: d.blockDoc.header.mapping })).streamChunks;
+  if (d.blockDoc && d.blockDoc.header.dm) { const h = d.blockDoc.header; return (await openDmModel(d.blockDoc.blob, { mapping: h.mapping, placement: dmPlacementArg(h.placeM || null) })).streamChunks; }
+  if (d.blockDoc) return placedStream((await openBlockModel(d.blockDoc.blob, { mapping: d.blockDoc.header.mapping })).streamChunks, d.blockDoc.header.placeM || null);
   if (d.lasDoc && d.lasDoc.streamChunks) return d.lasDoc.streamChunks;   // a reprojected cloud carries its own (src/las-crs.js)
   if (d.lasDoc) return (await openLas(d.lasDoc.blob)).streamChunks;
+  if (d.plyDoc && d.plyDoc.streamChunks) return d.plyDoc.streamChunks;   // a placed cloud carries its own
   if (d.plyDoc) return (await openPly(d.plyDoc.blob)).streamChunks;
   return null;
 }
@@ -513,7 +526,10 @@ export async function openLfmSoup(blob, { onProgress } = {}) {
 }
 // Re-derive a context mesh's { vertices, triangles } from its source(s). A Datamine
 // wireframe is a pt/tr PAIR (md.ptBlob + md.blob); everything else is single-file.
-export async function reReadMesh(md) {
+// a PLACED mesh (md.placeM — src/placement.js) re-reads with its vertices in world, so every
+// consumer (the vertex location, solids, sections, structure, export) sees the placed geometry
+export async function reReadMesh(md) { const m = await reReadMeshRaw(md); return md.placeM ? placeMesh(m, md.placeM) : m; }
+async function reReadMeshRaw(md) {
   if (md.header.format === 'dm-wireframe') return openDmWireframe(md.ptBlob, md.blob);
   if (md.header.format === 'wfr' || isWfrName(md.name)) return rereadWfrMesh(md.blob, md.header.element);
   if (md.header.format === 'dxf' || /\.dxf$/i.test(md.name)) return openDxf(md.blob, { as: 'mesh' });
@@ -560,6 +576,10 @@ export function meshVertexHeader(L) {
 
 // ── single-record fetch ───────────────────────────────────────────────────────
 export async function fetchCsvRecord(rec, doc = activeDocs().blockDoc) {
+  const f = await fetchCsvRecordRaw(rec, doc);
+  return doc.header.place ? placeRow(doc.header, f) : f;    // a placed model's record in world
+}
+async function fetchCsvRecordRaw(rec, doc) {
   const { blob, header } = doc;
   // sparse line-offset index (built during discovery): jump to the nearest
   // anchor + walk ≤k lines, instead of sweeping the file from byte 0
@@ -593,7 +613,8 @@ export async function fetchLayerRow(L, rec) {
     const g = d.gridDoc;
     const i = g.dispIdx ? g.dispIdx[rec] : rec;
     const r = (i / g.grid.nx) | 0, c = i % g.grid.nx;
-    return [+(g.grid.x0 + c * g.grid.dx).toFixed(3), +(g.grid.y0 - r * g.grid.dy).toFixed(3), +g.grid.data[i].toFixed(3), r, c];
+    const w = gridNodeWorld(g.grid, r, c);                  // a rotated / placed grid's node in world
+    return [+w[0].toFixed(3), +w[1].toFixed(3), +w[2].toFixed(3), r, c];
   }
   if (d.tableDoc && d.tableDoc.xlsx) return d.tableDoc.xlsx.at(rec);
   if (d.tableDoc) return await fetchDelimitedRecord(d.tableDoc.blob, d.tableDoc.header, rec);

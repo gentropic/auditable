@@ -19,6 +19,8 @@ import { mkLineage } from './lineage.js';
 import { openBlob } from './open.js';
 import { removeLayerUI } from './layers.js';
 import { writeEsriAsc } from './grid-io.js';
+import { gridLayerFile } from './grid-export.js';
+import { applyP, invertP } from './placement-core.js';
 import { floatWin } from './windows.js';
 import { registerCommands } from './commands.js';
 import { compileBool, validate } from '../../../ext/expr/index.js';
@@ -48,7 +50,7 @@ export function pcGridGeom(L, { cell, anchor = [0, 0], match = null } = {}) {
   if (match) {
     const g = match.docs && match.docs.gridDoc && match.docs.gridDoc.grid;
     if (!g) throw new Error(`${nameOf(match)} is not a grid`);
-    return { x0: g.x0, y0: g.y0, dx: g.dx, dy: g.dy || g.dx, nx: g.nx, ny: g.ny };
+    return { x0: g.x0, y0: g.y0, dx: g.dx, dy: g.dy || g.dx, nx: g.nx, ny: g.ny, ...(g.place ? { place: g.place } : {}) };   // a rotated grid's own lattice
   }
   const bb = layerWorldBbox(L);
   if (!bb) throw new Error(`${nameOf(L)}: no extent yet (still loading?)`);
@@ -105,11 +107,16 @@ export async function gridPointCloud(L, opts = {}) {
     const px = part.x, py = part.y;
     const keepM = mask ? (i) => { const r = recs ? recs[i] : base + i; return r < mask.length && mask[r] === 1; } : null;
     const keep = P ? (keepM ? (i) => keepM(i) && P.contains(px[i], py[i]) : (i) => P.contains(px[i], py[i])) : keepM;
-    b.add(part.x, part.y, part.z, part.count, keep);
+    if (geom.place) {                                          // a rotated lattice: the points in its own frame (z stored as its values)
+      const inv = invertP(geom.place), n = part.count, lx = new Float64Array(n), ly = new Float64Array(n), lz = new Float64Array(n), q = [0, 0, 0];
+      for (let i = 0; i < n; i++) { applyP(inv, part.x[i], part.y[i], part.z[i], q); lx[i] = q[0]; ly[i] = q[1]; lz[i] = q[2]; }
+      b.add(lx, ly, lz, n, keep);
+    } else b.add(part.x, part.y, part.z, part.count, keep);
     seen += part.count;
     if (opts.onProgress && ((++chunks) & 3) === 0) { opts.onProgress(total ? Math.min(1, seen / total) : 0, `${seen.toLocaleString()} points`); await new Promise((r) => setTimeout(r)); }
   }
   const out = b.finish();
+  if (geom.place) out.grid.place = geom.place;
   if (!out.filled) throw new Error(`no point of ${nameOf(L)} fell on the lattice${mask ? ' (after the filter)' : ''}${P ? ' inside the limit' : ''}`);
   let filledByFill = 0;
   if (opts.fill && opts.fill !== 'none' && stat !== 'count') {
@@ -139,10 +146,11 @@ export async function pointsToGridLayer(L, opts = {}) {
   const name = opts.name ? (/\.asc$/i.test(opts.name) ? opts.name : `${opts.name}.asc`) : `${baseOf(L)}_${r.grid.form.replace('points-', '')}${+r.geom.dx.toPrecision(6)}m.asc`;
   const lin = mkLineage('pcgrid', { of: L.name, cell: r.geom.dx, stat: opts.stat || 'mean', ...(opts.match ? { match: opts.match.name } : { anchor: opts.anchor || [0, 0] }), fill: opts.fill || 'none', ...(opts.fill && opts.fill !== 'none' ? { holesOnly: opts.holesOnly !== false } : {}), ...(opts.filter ? { filter: String(opts.filter) } : opts.scope === 'filtered' ? { filter: L.filterExpr || '(the filter box)' } : {}), ...(r.limit ? { limit: r.limit } : {}) }, [L.lineage].filter(Boolean));
   replaceMade(name);
-  const id = await openBlob(new File([writeEsriAsc(r.grid)], name), name, S.layers.length ? 'add' : 'replace', null, { lineage: lin });
+  const gf = r.grid.place ? await gridLayerFile(r.grid, name) : { blob: new Blob([writeEsriAsc(r.grid)]), name };   // a rotated lattice: a GeoTIFF that keeps it
+  const id = await openBlob(new File([gf.blob], gf.name), gf.name, S.layers.length ? 'add' : 'replace', null, { lineage: lin });
   const NL = id != null ? layerById(id) : null;
   if (NL) NL.memoryOnly = true;                              // made in the session: a save writes it into the project
-  return { id, name, ...r };
+  return { id, name: gf.name, ...r };
 }
 
 // ── the dialog ───────────────────────────────────────────────────────────────

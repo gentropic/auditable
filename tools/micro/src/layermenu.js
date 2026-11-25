@@ -51,6 +51,7 @@ import { hexToRgb01 } from './color.js';
 import { recolorSurface } from './surfaces.js';
 import { filterToSelection, selectionToColumn } from './selection.js';
 import { polygonMenuItems } from './poly-ui.js';
+import { canPlace, openPlacementDialog } from './placement-ui.js';
 const $ = (s) => document.querySelector(s);
 // the app's side, passed in once (setLayermenuHooks): _blockEdges
 let H = {};
@@ -194,7 +195,9 @@ export function layerMenuSections(L, x, y) {
     ...(!view && reinterpretOptions(L).length ? [{ label: 'Reinterpret as…', action: () => setTimeout(() => reinterpretMenu(L, x, y), 0) }] : []),
     ...(!view && canReloadLayer(L) ? [{ label: 'Reload from disk', action: () => reloadLayerFromDisk(L) }] : []),
     ...(canChangeFile(L) ? [{ label: 'Change file…', action: () => changeLayerFile(L) }] : []),
-    // a rotated Datamine model placed in world: where its local origin sits (an anonymised file carries none)
+    // the layer's rigid placement (shift / rotation / scale): typed, fitted to control points, or to a CRS change
+    ...(!view && canPlace(L) ? [{ label: (L.placement ? '✓ ' : '') + 'Placement…', action: () => openPlacementDialog(L) }] : []),
+    // a rotated Datamine model placed in world: where its local origin sits (an anonymised file carries none) — a shortcut to a shift placement
     ...(!view && L.docs && L.docs.blockDoc && L.docs.blockDoc.header.dmRotationApplied ? [{ label: 'Datamine origin…', action: async () => { if (await setDmOrigin(L)) markProjectDirty(); } }] : []),
     ...(L.dh && L.docs.dhDoc && !dhSetGroupOf(L.id) ? [{ label: (L.holeFilter ? '✓ ' : '') + 'Filter holes…', action: () => filterHolesLayer(L) }] : []),
     ...(!view && (L.calcCols || []).length ? [{ label: 'Materialize calc column', submenu: () => (L.calcCols || []).map((c) => ({ label: `${c.name} → stored`, action: () => materializeCalcCol(L, c.name) })) }] : []),

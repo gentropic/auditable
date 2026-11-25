@@ -55,6 +55,7 @@ import { openPaintPalette } from './paint.js';
 import { currentSection, toggleSection, viewAlongSection, scrubSection } from './section.js';
 import { setBlockEdges, _blockEdges, setView, cam } from './viewport.js';
 import { compassMenu } from './compass.js';
+import { canPlace, openPlacementDialog } from './placement-ui.js';
 import { windowsMenu, cascadeWindows, closeAllWindows, openPropsTab, clearFilter, bookmarksMenuItems, scenesMenuItems } from './menubar.js';
 
 const $ = (s) => document.querySelector(s);
@@ -124,6 +125,7 @@ registerCommands([
   { id: 'run-recipe', group: 'Analysis', title: 'Run recipe…', kw: 'saved yaml grade-tonnage swath analysis rerun', when: () => S.recipes.length > 0, run: () => setTimeout(() => menuXY(innerWidth / 2 - 130, innerHeight / 3, recipesMenuItems()), 0) },
   { id: 'new-routine', group: 'Analysis', title: 'New routine…', kw: 'recipes sequence batch each parameter table month-end', when: () => !!S.project, run: () => openRoutineWindow(null) },
   { id: 'reload-layer', group: 'Layers', title: 'Reload active layer from disk', kw: 'refresh re-read file changed external edit', when: () => canReloadLayer(activeLayer()), run: () => reloadLayerFromDisk(activeLayer()) },
+  { id: 'placement', group: 'Layers', title: 'Placement of the active layer…', kw: 'place helmert similarity shift rotate scale control points gcp mine grid local utm fit crs georeference transform move', when: () => canPlace(activeLayer()), run: () => openPlacementDialog(activeLayer()) },
   { id: 'dm-origin', group: 'Layers', title: 'Datamine origin of the active layer…', kw: 'rotated datamine dm world origin x0 y0 z0 place anonymised isatis', when: () => { const L = activeLayer(); return !!(L && L.docs && L.docs.blockDoc && L.docs.blockDoc.header.dmRotationApplied); }, run: async () => { if (await setDmOrigin(activeLayer())) markProjectDirty(); } },
   { id: 'change-file', group: 'Layers', title: 'Change file of the active layer…', kw: 'relink swap replace source new month model keep styling', when: () => canChangeFile(activeLayer()), run: () => changeLayerFile(activeLayer()) },
   { id: 'surf-extend', group: 'Layer', title: 'Extend surface to footprint…', kw: 'grow cover topo grid mesh fill trend', when: () => surfaceableLayers().length > 0, run: (cx) => openSurfaceTools('extend', cx.L) },

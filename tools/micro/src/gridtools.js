@@ -6,7 +6,8 @@ import { S, layerById } from './state.js';
 import { niceStep } from './analysis-ui.js';
 import { ppNote } from './props.js';
 import { meshToGridLayer } from './surfaces.js';
-import { applyGridExtend, buildEmptyBlockCsv, buildEmptyGrid, coverGeometry, gridAxesOf, rasterizeMeshToGrid, surfaceFromGrid } from './grid-ops.js';
+import { applyGridExtend, buildEmptyBlockCsv, buildEmptyGrid, coverGeometry, gridAxesOf, rasterizeMeshToGrid, surfaceFromGrid, gridWorldBbox4 } from './grid-ops.js';
+import { applyP, invertP } from './placement-core.js';
 import { residentGridForEval, targetsXYBbox } from './bygeom.js';
 import { reReadMesh } from './records.js';
 import { mkLineage } from './lineage.js';
@@ -96,7 +97,7 @@ export async function rgGo() {
   const btn = $('#rgGo'); btn.disabled = true;
   for (const el of $('#rgDlgBody').querySelectorAll('input, select')) el.disabled = true;
   try {
-    const geom = d.extentSrc === 'mesh' ? null : (() => { const L = layerById(+d.extentSrc.slice(1)); const g = L && L.docs.gridDoc && L.docs.gridDoc.grid; return g ? { x0: g.x0, y0: g.y0, dx: g.dx, nx: g.nx, ny: g.ny } : null; })();
+    const geom = d.extentSrc === 'mesh' ? null : (() => { const L = layerById(+d.extentSrc.slice(1)); const g = L && L.docs.gridDoc && L.docs.gridDoc.grid; return g ? { x0: g.x0, y0: g.y0, dx: g.dx, nx: g.nx, ny: g.ny, ...(g.place ? { place: g.place } : {}) } : null; })();   // a rotated grid's own lattice
     await meshToGridLayer(meshL, { cell: d.cell, keep: d.keep, extend: d.extend, holesOnly: d.holesOnly, geom });
     $('#rgDlg').classList.remove('show'); _rgDlg = null;
   } catch (e) { $('#rgDlgMsg').textContent = e.message; }
@@ -112,22 +113,28 @@ export const surfaceableLayers = () => S.layers.filter((L) => (L.kind === 'mesh'
 
 // any surface source (mesh or grid layer) → Float32 heights on a target lattice
 export async function gridOnLattice(L, geom, onProgress) {
+  const P = geom.place || null;                            // a ROTATED lattice: its nodes in world through the placement
   if (L.docs.gridDoc) {
-    const bbox4 = [geom.x0, geom.y0 - (geom.ny - 1) * geom.dx, geom.x0 + (geom.nx - 1) * geom.dx, geom.y0];
+    const bbox4 = P ? gridWorldBbox4({ ...geom, dy: geom.dx }) : [geom.x0, geom.y0 - (geom.ny - 1) * geom.dx, geom.x0 + (geom.nx - 1) * geom.dx, geom.y0];
     const surf = surfaceFromGrid(await residentGridForEval(L, bbox4));
-    const data = new Float32Array(geom.nx * geom.ny).fill(-9999);
+    const data = new Float32Array(geom.nx * geom.ny).fill(-9999), q = [0, 0, 0];
     for (let r = 0; r < geom.ny; r++) {
       const y = geom.y0 - r * geom.dx;
       for (let c = 0; c < geom.nx; c++) {
-        const z = surf.sampleZ(geom.x0 + c * geom.dx, y);
+        let z;
+        if (P) { applyP(P, geom.x0 + c * geom.dx, y, 0, q); z = (surf.sampleZ(q[0], q[1]) - P.t[2]) / P.s; }   // stored in the lattice's own frame (z = t_z + s·value)
+        else z = surf.sampleZ(geom.x0 + c * geom.dx, y);
         if (Number.isFinite(z)) data[r * geom.nx + c] = z;
       }
       if (onProgress && (r & 63) === 0) onProgress(r / geom.ny);
     }
-    return { nx: geom.nx, ny: geom.ny, x0: geom.x0, y0: geom.y0, dx: geom.dx, dy: geom.dx, data, nodata: -9999, crs: null, form: 'resample' };
+    return { nx: geom.nx, ny: geom.ny, x0: geom.x0, y0: geom.y0, dx: geom.dx, dy: geom.dx, data, nodata: -9999, crs: null, form: 'resample', ...(P ? { place: P } : {}) };
   }
-  const m = await reReadMesh(L.docs.meshDoc);
-  return rasterizeMeshToGrid(m.vertices, m.triangles, { x0: geom.x0, y0: geom.y0, dx: geom.dx, dy: geom.dx, nx: geom.nx, ny: geom.ny, keep: 'top', onProgress });
+  let m = await reReadMesh(L.docs.meshDoc);
+  if (P) { const inv = invertP(P), V = new Float64Array(m.vertices.length), q = [0, 0, 0]; for (let i = 0; i < V.length; i += 3) { applyP(inv, m.vertices[i], m.vertices[i + 1], m.vertices[i + 2], q); V[i] = q[0]; V[i + 1] = q[1]; V[i + 2] = q[2]; } m = { ...m, vertices: V }; }
+  const g = await rasterizeMeshToGrid(m.vertices, m.triangles, { x0: geom.x0, y0: geom.y0, dx: geom.dx, dy: geom.dx, nx: geom.nx, ny: geom.ny, keep: 'top', onProgress });
+  if (P) g.place = P;
+  return g;
 }
 
 export const surfCellOf = (L) => (L.docs.gridDoc ? L.docs.gridDoc.grid.dx : (L.bboxLocal ? niceStep(Math.max(L.bboxLocal[3] - L.bboxLocal[0], L.bboxLocal[4] - L.bboxLocal[1]) / 400) : 10));

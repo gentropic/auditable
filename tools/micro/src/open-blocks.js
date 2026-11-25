@@ -15,6 +15,9 @@ import { fitFromHeader, recomputeUnion } from './layers.js';
 import { setColorLabels } from './color.js';
 import { applyBlockFilter } from './filter.js';
 import { ensureModelFrameCols } from './records.js';
+import { layerPlacementM, placeBlockHeader, placedStream, scanPlaceOf, fileHeader, dmPlacementArg } from './placement.js';
+import { applyP } from './placement-core.js';
+import { peekDmRotation } from '../../../ext/condenser/src/main.js';
 const $ = (s) => document.querySelector(s);
 
 // the open's block chunk builder: OFF the page (src/chunkworker.js — the same
@@ -256,13 +259,19 @@ export async function setDmOrigin(L, origin = null) {
     o = String(ans).split(/[\s,;]+/).filter(Boolean).map(Number);
   }
   if (!Array.isArray(o) || o.length !== 3 || !o.every(Number.isFinite)) { $('#meta').textContent = 'Datamine origin: give three numbers — X, Y, Z'; return null; }
-  L.dmOrigin = o.map(Number);
-  await openDmBlob(doc.blob, doc.name, { layer: L.id, first: false, keepFilter: true, forcePoints: doc.forcePoints, mapping: h.mapping, origin: L.dmOrigin });
+  await openDmBlob(doc.blob, doc.name, { layer: L.id, first: false, keepFilter: true, forcePoints: doc.forcePoints, mapping: h.mapping, origin: o.map(Number), cached: fileHeader(h).bbox ? { ...fileHeader(h) } : null });
   // the coordinate columns read differently now (world = the new origin + R·local):
   // anything computed from them — column stats, the filter's band index, pinned
   // column values, compiled calcs — is recomputed, not served stale
   L._colStats = null; L._bands = null; L._calcFns = null; pinEvictLayer(L.id);
   return L.dmOrigin;
+}
+// the layer's lineage carries its placement (source, parameters, residual) — what an export inherits
+export function stampPlacement(L) {
+  if (!L || !L.lineage) return;
+  const params = { ...(L.lineage.params || {}) };
+  if (L.placement) params.placement = L.placement; else delete params.placement;
+  L.lineage.params = params;
 }
 // how a sub-blocked model's sizes read in the meta line
 export function sizesNote(h) {
@@ -284,7 +293,7 @@ export async function openBlocksBlob(blob, name, opts = {}) {
   const prevDoc = (layerById(lid) || {}).docs && layerById(lid).docs.blockDoc || null;
   const discovered = opts.discovered
     || (opts.chan != null && prevDoc && prevDoc.header && prevDoc.blob === blob
-      ? { ...prevDoc.header, mapping: { ...prevDoc.header.mapping, chan: opts.chan } }
+      ? { ...fileHeader(prevDoc.header), mapping: { ...prevDoc.header.mapping, chan: opts.chan } }
       : null);
   $('#meta').textContent = `${name} — ${discovered || opts.provider ? 'reading…' : 'discovering grid…'}`;   // a provider has already discovered
   const mapping = opts.mapping
@@ -298,13 +307,21 @@ export async function openBlocksBlob(blob, name, opts = {}) {
   if (opts.forcePoints) { header.grid = null; header.latticeCandidate = null; }
   await settleLatticeCandidate(header, name, opts);
   if (header.latticeRejected) dispatchEvent(new CustomEvent('micro:lattice-rejected', { detail: { name, reason: header.latticeRejected } }));
+  // the layer's PLACEMENT (src/placement.js): the lattice placed as a lattice, the bbox moved,
+  // the stream and every row reader handing over world coordinates
+  const PM = layerPlacementM(layerById(lid));
+  if (PM || (header && 'fileBbox' in header)) placeBlockHeader(header, PM);
+  const stream = PM ? placedStream(streamChunks, PM) : streamChunks;
   // keep the provider's STREAM, not just its data. It used to be used once at
   // open and discarded, so every later consumer re-derived how to read this
   // source from format flags — which is how Parquet kept landing in the
   // delimited branch. A doc that carries its own reader cannot be misread.
-  const blockDoc = { blob, name, header, metaLine: '', forcePoints: opts.forcePoints, parquet: prov ? prov.parquet : null, streamChunks };
+  const blockDoc = { blob, name, header, metaLine: '', forcePoints: opts.forcePoints, parquet: prov ? prov.parquet : null, streamChunks: stream, rawStream: streamChunks };   // rawStream: the file's frame (a re-placement re-streams it)
+  if (blockDoc.parquet) blockDoc.parquet.place = scanPlaceOf(header, blockDoc.parquet.names);
   registerDocs(lid, header.grid ? 'blocks' : 'points', { blockDoc });
+  { const Lf = layerById(lid); if (Lf) ensureModelFrameCols(Lf); }   // a placed model's own frame as XL/YL/ZL ƒ columns (gone again when unplaced)
   { const L0 = layerById(lid); if (L0 && L0.lineage && header.grid && header.grid.rot) L0.lineage.params = { ...(L0.lineage.params || {}), lattice: { rotated: true, ...basisAngles(header.grid.rot), ...(header.lattice || { basis: 'declared' }) } }; }
+  stampPlacement(layerById(lid));
   fitFromHeader(header, opts.first !== false && opts.chan == null);
   S.renderer.setCategories(header.categories ? header.categories.length : 0);
   setColorLabels(header);
@@ -312,7 +329,7 @@ export async function openBlocksBlob(blob, name, opts = {}) {
     const grid = makeBlockGrid([header.grid.x, header.grid.y, header.grid.z], S.frame, header.grid.rot || null, header.grid.anchor || null);
     blockDoc.grid = grid;
     const cb = await baseBlockBuilder(lid, { frame: S.frame, grid, total: header.count });   // 128k/chunk, 16 chunks per Morton batch: tight bboxes are what give the frustum test teeth
-    const doc = await streamInto(cb, streamChunks, header, name, 1 << 18, lid);
+    const doc = await streamInto(cb, stream, header, name, 1 << 18, lid);
     blockDoc.drawn = doc.count;                            // how many records have a block (a value texture leaves the rest out of its range)
     blockDoc.metaLine = header.subBlocked
       ? `${name} — ${doc.count.toLocaleString()} sub-blocks · fine ${fmtPitch(header.grid.x.pitch)}×${fmtPitch(header.grid.y.pitch)}×${fmtPitch(header.grid.z.pitch)}${sizesNote(header)}${latticeNote(header.grid)}${header.attributes.length ? ' · ' + header.attributes.join(', ') : ''}`
@@ -324,7 +341,7 @@ export async function openBlocksBlob(blob, name, opts = {}) {
     // centroids as points (sub-blocked / irregular): grade → the intensity slot
     const cb = createChunkBuilder({ frame: S.frame, chunkSize: 1 << 18, batchSize: 1 << 22, seed: 1, onChunk: (c) => { S.renderer.addChunk(c, 'base', lid); requestRender(); } });
     let done = 0;
-    for await (const rc of streamChunks({ chunkPoints: 1 << 18 })) {
+    for await (const rc of stream({ chunkPoints: 1 << 18 })) {
       let cMin = Infinity, cMax = -Infinity;
       for (let i = 0; i < rc.count; i++) { const v = rc.chan[i]; if (Number.isFinite(v)) { if (v < cMin) cMin = v; if (v > cMax) cMax = v; } }
       const s = cMax > cMin ? 65535 / (cMax - cMin) : 0;
@@ -367,19 +384,33 @@ export async function openDmBlob(blob, name, opts = {}) {
   // chunk (a 13 GB file reads silently for a minute otherwise) — show progress
   const gb = blob.size / 1073741824;
   const onProgress = (p) => { $('#meta').textContent = `${name} — discovery sweep ${Math.round(100 * p.done / (p.total || 1))}% of ${p.total.toLocaleString()} records${gb > 0.5 ? ` (${gb.toFixed(1)} GB)` : ''}…`; };
-  // a rotated model's world origin: the caller's, else the layer's remembered one (Reinterpret / project), else the file's
+  // A rotated model's WORLD ORIGIN is a PLACEMENT now (src/placement.js): a stated origin (the
+  // open dialog's, "Datamine origin…", an older project's L.dmOrigin) becomes a shift — the origin
+  // stated minus the file's own X0/Y0/Z0 — and the provider composes the layer's placement into
+  // its readers, its stream and its workers (header.dmPlace). L.dmOrigin is only a mirror now.
   const L0 = layerById(lid);
-  const origin = opts.origin || (L0 && L0.dmOrigin) || (prevDoc && prevDoc.header && prevDoc.header.dmOrigin && prevDoc.header.dmOriginSet ? prevDoc.header.dmOrigin : null);
-  const { header, streamChunks, recordBatches, columnBatches, fetchRecord } = await openDmModel(blob, { ...(mapping ? { mapping } : {}), forcePoints: opts.forcePoints, onProgress, cached: opts.cached || null, origin, runner: window.__dmPageOpen ? null : scan.dm, ...(window.__dmUnitRecords ? { unitRecords: window.__dmUnitRecords } : {}) });   // discovery + decode on @gcu/scan's pool (the page when workers can't run; __dmPageOpen: the smoke's one-thread reference; __dmUnitRecords: its small units)
+  if (opts.origin && L0) {
+    const o = opts.origin.map(Number), rot = await peekDmRotation(blob).catch(() => null);
+    if (rot && rot.applied && o.length === 3 && o.every(Number.isFinite)) {
+      const fo = rot.origin;
+      L0.placement = { tx: o[0] - fo[0], ty: o[1] - fo[1], tz: o[2] - fo[2], omega: 0, phi: 0, kappa: 0, scale: 1, source: 'datamine' };
+    }
+  }
+  const PM = layerPlacementM(L0);
+  const { header, streamChunks, recordBatches, columnBatches, fetchRecord } = await openDmModel(blob, { ...(mapping ? { mapping } : {}), forcePoints: opts.forcePoints, onProgress, cached: opts.cached || null, placement: dmPlacementArg(PM), runner: window.__dmPageOpen ? null : scan.dm, ...(window.__dmUnitRecords ? { unitRecords: window.__dmUnitRecords } : {}) });   // discovery + decode on @gcu/scan's pool (the page when workers can't run; __dmPageOpen: the smoke's one-thread reference; __dmUnitRecords: its small units)
   if (window.__openPhases) window.__openPhases.provider = performance.now();
-  if (origin) header.dmOriginSet = true;
-  if (L0 && origin) L0.dmOrigin = [...origin];
+  if (PM) {                                                 // the grid / bbox placed here (the provider placed the records)
+    placeBlockHeader(header, PM);
+    if (header.dmOrigin) { header.fileDmOrigin = header.dmOrigin; header.dmOrigin = applyP(PM, ...header.dmOrigin, [0, 0, 0]).map((v) => +v.toFixed(9)); }
+  }
+  if (L0) { if (header.dmRotationApplied && header.dmOrigin) L0.dmOrigin = [...header.dmOrigin]; else delete L0.dmOrigin; }
   await settleLatticeCandidate(header, name, opts);        // an unrotated .dm on a rotated lattice: boxes or points, asked (as for CSV / Parquet)
   // the doc keeps the provider's READERS, not just its stream: a rotated model's
   // records come back placed in world (records.js dmDocReader — the one way in)
   const blockDoc = { blob, name, header, metaLine: '', forcePoints: opts.forcePoints, streamChunks, recordBatches, columnBatches, fetchRecord };
   registerDocs(lid, header.grid ? 'blocks' : 'points', { blockDoc });
   { const Lf = layerById(lid); if (Lf) ensureModelFrameCols(Lf); }   // a placed model's own frame as XL/YL/ZL ƒ columns (records.js)
+  stampPlacement(layerById(lid));
   { const L1 = layerById(lid); if (L1 && L1.lineage && header.grid && header.grid.rot) L1.lineage.params = { ...(L1.lineage.params || {}), lattice: { rotated: true, ...basisAngles(header.grid.rot), ...(header.lattice || { basis: 'declared' }), origin: header.dmOrigin } }; }
   fitFromHeader(header, opts.first !== false && opts.chan == null);
   S.renderer.setCategories(header.categories ? 1 : 0);
@@ -431,7 +462,7 @@ export function reopenBlockChan(doc, chan, extra = {}) {
   if (doc.header.dm) return openDmBlob(doc.blob, doc.name, { ...o, chan }).then(done);
   if (doc.parquet) {
     const m = doc.header.mapping;
-    return openParquetBlocks(doc.blob, doc.name, { ...o, mapping: { x: m.x, y: m.y, z: m.z, chan, cat: m.cat }, reuse: doc.header }).then(done);
+    return openParquetBlocks(doc.blob, doc.name, { ...o, mapping: { x: m.x, y: m.y, z: m.z, chan, cat: m.cat }, reuse: fileHeader(doc.header) }).then(done);
   }
   return openBlocksBlob(doc.blob, doc.name, { ...o, chan }).then(done);
 }

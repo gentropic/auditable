@@ -5,18 +5,35 @@ import { readGTiff, pickOverviewForCap, stepForCap, gridDecimatedFromGTiff, grid
 import { openGridSource, SURFER_BLANK } from './grid-io.js';
 import { S, layerById, requestRender } from './state.js';
 import { buildHeightfieldMesh, createChunkBuilder } from '../../../ext/condenser/src/main.js';
-import { surfaceColorArray } from './surfaces.js';
+import { surfaceColorArray, gridHeightfield } from './surfaces.js';
 import { rampCfgOf } from './ramp.js';
 import { registerDocs } from './open.js';
 import { fitFromHeader, recomputeUnion } from './layers.js';
 import { setColorLabels } from './color.js';
+import { layerPlacementM, gridPlaceOf } from './placement.js';
+import { affineToGridPlace, parseWorldFile, compilePlacement, applyP, placeBbox, fmtLen } from './placement-core.js';
+import { gridWorldBbox4 } from './grid-ops.js';
 const $ = (s) => document.querySelector(s);
 
 // ── grids (§7.1): GeoTIFF / Surfer .grd / ESRI ASCII → ONE gridDoc shape ──
 // { nx, ny, data, x0, y0, dx, dy, nodata, crs, form } — row 0 is the NORTH
 // row, x0/y0 are SAMPLE CENTERS, dy positive (row r's centre = y0 − r·dy).
+// ROTATED rasters (a GeoTIFF ModelTransformation with rotation terms, a world file's B / D
+// terms): the nodes stay on the grid's OWN lattice (x0 … in its frame) and grid.filePlace
+// (a compiled placement, src/placement-core.js) takes that frame to world; the layer's own
+// placement composes on top (grid.place — what every sampler and the display use).
+// A shear (non-perpendicular pixel axes) has no rigid form: the nearest rotation is used and
+// how far it departs is SAID (grid.placeNote), never silently dropped.
+function rasterPlace(g, affine) {
+  const img = g.images[0];
+  const r = affineToGridPlace(affine, img.width, img.height);
+  g.geo.affine = affine; g.geo.origin = [0, 0]; g.geo.scale = [r.dx, r.dy];
+  const place = compilePlacement({ tx: r.corner[0], ty: r.corner[1], kappa: r.theta });
+  const note = `rotated ${+r.theta.toFixed(4)}°${Math.abs(r.shear) > 1e-9 ? ` · sheared ${+r.shear.toFixed(4)}° — taken as the nearest rotation, off by up to ${fmtLen(r.dev)}` : ''}`;
+  return { place, note };
+}
 export const ascLooksLikeGrid = async (blob) => /^\s*ncols\b/i.test(await blob.slice(0, 64).text());
-async function readAnyGrid(blob, name, displayCache = null, band = 0) {
+async function readAnyGrid(blob, name, displayCache = null, band = 0, worldFile = null) {
   {
     // ONE path for every grid format: a GeoTIFF parses its IFDs; .asc/.grd become
     // the same readGTiff-shaped SOURCE (grid-io.js openGridSource — text grids are
@@ -28,6 +45,11 @@ async function readAnyGrid(blob, name, displayCache = null, band = 0) {
       displayCap: DISPLAY_DECODE_CAP,
       onProgress: (a, t) => { $('#meta').textContent = `${name} — indexing ${Math.round(100 * a / t)}%…`; },
     });
+    // a rotated raster — the file's ModelTransformation, or a world file beside it (which wins:
+    // it is the one the user handed over) — is read in its own frame, then placed
+    let rp = null;
+    if (isTiff && worldFile) { try { rp = rasterPlace(g, parseWorldFile(worldFile)); rp.note = `world file · ${rp.note}`; } catch (e) { $('#meta').textContent = `${name} — the world file was not read (${e.message})`; } }
+    else if (isTiff && g.geo && g.geo.affine) rp = rasterPlace(g, g.geo.affine);
     if (displayCache && isTiff) {
       // a project display-cache sidecar: reuse the parsed IFDs for windowed
       // eval, but take the DISPLAY straight from the cache (no re-decimation)
@@ -36,6 +58,7 @@ async function readAnyGrid(blob, name, displayCache = null, band = 0) {
       grid.form = `GeoTIFF ${g.images[0].width}×${g.images[0].height} · display cache`;
       grid.band = band; grid.bands = g.images[0].samplesPerPixel;
       grid._src = { g, level: 0, name, step: 2, band };    // step>1 → not fullRes → eval windows; band rides along
+      if (rp) { grid.filePlace = rp.place; grid.placeNote = rp.note; }
       return grid;
     }
     // decode an OVERVIEW within a decode budget for the display — a big COG
@@ -55,6 +78,7 @@ async function readAnyGrid(blob, name, displayCache = null, band = 0) {
       `${level > 0 ? ` · overview ${lvl.width}×${lvl.height} of ${img.width}×${img.height}` : ''}` +
       `${step > 1 ? ` · display ÷${step} (${grid.nx}×${grid.ny})` : ''}`;
     grid.bands = img.samplesPerPixel; grid.band = band; grid._src = { g, level, name, step, band };                  // windowable full-res source (eval + export)
+    if (rp) { grid.filePlace = rp.place; grid.placeNote = rp.note; grid.form += ` · ${rp.note}`; }
     return grid;
   }
 }
@@ -65,7 +89,9 @@ const GRID_DISPLAY_CAP = 4_000_000;
 export async function openGridBlob(blob, name, opts = {}) {
   const lid = opts.layer != null ? opts.layer : S.activeId;
   $('#meta').textContent = `${name} — reading grid…`;
-  const grid = await readAnyGrid(blob, name, opts.displayCache || null, opts.band || 0);
+  const grid = await readAnyGrid(blob, name, opts.displayCache || null, opts.band || 0, opts.worldFile || null);
+  // the effective placement: the file's own rotation, then the layer's (a surface: about Z only)
+  grid.place = gridPlaceOf(grid, layerPlacementM(layerById(lid)), { surface: !!opts.surface });
   const { nx, ny, data, nodata } = grid;
   const stride = Math.max(1, Math.ceil(Math.sqrt((nx * ny) / GRID_DISPLAY_CAP)));
   // one sweep: z range + displayed-node census (nodata and NaN sit out)
@@ -79,21 +105,17 @@ export async function openGridBlob(blob, name, opts = {}) {
     shown++;
   }
   if (!shown) throw new Error('grid is all nodata');
-  const header = {
-    count: shown,
-    bbox: {
-      min: [grid.x0, grid.y0 - (ny - 1) * grid.dy, zmin],
-      max: [grid.x0 + (nx - 1) * grid.dx, grid.y0, zmax],
-    },
-  };
-  const gridDoc = { blob, name, grid, stride, source: grid._src || null, level: grid._src ? grid._src.level : 0, fullRes: !grid._src || (grid._src.level === 0 && grid._src.step === 1) };
+  const localBox = { min: [grid.x0, grid.y0 - (ny - 1) * grid.dy, zmin], max: [grid.x0 + (nx - 1) * grid.dx, grid.y0, zmax] };
+  const header = { count: shown, bbox: grid.place ? placeBbox(grid.place, localBox) : localBox };
+  const gridDoc = { blob, name, grid, stride, source: grid._src || null, level: grid._src ? grid._src.level : 0, fullRes: !grid._src || (grid._src.level === 0 && grid._src.step === 1), worldFile: opts.worldFile || null };
+  { const Lg0 = layerById(lid); if (Lg0 && Lg0.lineage) { const pp = { ...(Lg0.lineage.params || {}) }; if (Lg0.placement) pp.placement = Lg0.placement; else delete pp.placement; if (grid.placeNote) pp.rasterRotation = grid.placeNote; Lg0.lineage.params = pp; } }
   // "Show as surface": a grid IS a heightfield — triangulate it into a shaded
   // relief mesh coloured by elevation (§17 heightfield-drape Phase 1), instead of
   // the raw elevation point cloud. gridDoc stays for by-surface eval; per-cell
   // pick is traded for the solid surface (toggle back to points to pick).
   if (opts.surface) {
     const flatZ = opts.flatZ != null ? opts.flatZ : null;
-    const hf = buildHeightfieldMesh(grid, { stride, frame: S.frame, flatZ });
+    const hf = gridHeightfield(grid, stride, flatZ);
     if (!hf) throw new Error('grid is all nodata');
     const color = surfaceColorArray(hf, opts.drape || null, (rampCfgOf(layerById(lid)) || {}).preset, zmin, zmax);
     registerDocs(lid, 'mesh', { gridDoc });
@@ -117,6 +139,7 @@ export async function openGridBlob(blob, name, opts = {}) {
   const B = 1 << 18;
   let bx = new Float64Array(B), by = new Float64Array(B), bz = new Float64Array(B), bi = new Uint16Array(B), bcl = new Uint8Array(B), br = new Uint32Array(B);
   let fill = 0, rec = 0, pushed = 0;
+  const P = grid.place || null, q = [0, 0, 0];
   const flush = () => {
     if (!fill) return;
     cb.push({ count: fill, x: bx.subarray(0, fill), y: by.subarray(0, fill), z: bz.subarray(0, fill), intensity: bi.subarray(0, fill), classification: bcl.subarray(0, fill), recIdx: br.subarray(0, fill) });
@@ -127,9 +150,8 @@ export async function openGridBlob(blob, name, opts = {}) {
     for (let c = 0; c < nx; c += stride) {
       const v2 = data[r * nx + c];
       if (isBad(v2)) continue;
-      bx[fill] = grid.x0 + c * grid.dx;
-      by[fill] = grid.y0 - r * grid.dy;
-      bz[fill] = v2;
+      if (P) { applyP(P, grid.x0 + c * grid.dx, grid.y0 - r * grid.dy, v2, q); bx[fill] = q[0]; by[fill] = q[1]; bz[fill] = q[2]; }   // a rotated / placed grid's node in world
+      else { bx[fill] = grid.x0 + c * grid.dx; by[fill] = grid.y0 - r * grid.dy; bz[fill] = v2; }
       br[fill] = rec;
       dispIdx[rec++] = r * nx + c;
       if (++fill === B) flush();
@@ -145,7 +167,7 @@ export async function openGridBlob(blob, name, opts = {}) {
   const L = layerById(lid);
   if (L) L.bboxLocal = doc.bboxLocal;
   recomputeUnion();
-  $('#meta').textContent = `${name} — ${nx.toLocaleString()}×${ny.toLocaleString()} ${grid.form}${grid.crs ? ` · ${grid.crs}` : ''}` +
+  $('#meta').textContent = `${name} — ${nx.toLocaleString()}×${ny.toLocaleString()} ${grid.form}${grid.crs ? ` · ${grid.crs}` : ''}${layerById(lid) && layerById(lid).placement ? ' · placed' : ''}` +
     `${stride > 1 ? ` · showing every ${stride}ᵗʰ node (${shown.toLocaleString()})` : ` · ${shown.toLocaleString()} nodes`}`;
   requestRender();
 }

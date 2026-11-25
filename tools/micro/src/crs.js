@@ -10,7 +10,7 @@
 // format, KML, GeoJSON, shapefiles with a .prj, WKT with an SRID, LAS with a CRS): horizontal only —
 // a vertex's z is carried unchanged. Each reprojected layer records the transformation path and
 // its accuracy class (@gcu/proj describePath) in its source + lineage. Block models, grids and
-// meshes are NOT reprojected (a later wave gives them placements).
+// meshes are NOT reprojected: they take a rigid PLACEMENT instead (src/placement.js, placement-ui.js).
 //
 // API for the placements wave (5b) — what it builds on:
 //   projectCrs()                          → the project's CRS object | null
