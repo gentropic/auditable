@@ -14,13 +14,21 @@
 // Point geometries are not strings: a file of only points opens as a POINTS layer (a generated
 // X,Y,Z CSV); points mixed into a strings file are skipped with a note.
 //
-// THE CRS RULE (the frame contract — micro never reprojects): a file in GEOGRAPHIC coordinates
-// (degrees — a GEOGCS .prj, a GeoJSON without a projected "crs", an EPSG:4xxx SRID, or coordinates
-// that are lon/lat-shaped) is REFUSED with the reason, never silently placed at (−45, −20).
-// Reprojection is a later decision (ROADMAP wave 5). `opts.assumeProjected` (the host API) takes
-// a coordinates-only guess back.
+//   KML / KMZ          Placemarks (points, LineStrings, Polygons, MultiGeometry) with ExtendedData
+//                      attributes — always WGS 84 lon/lat (src/kml.js; a .kmz is a zip of one).
 //
-// WRITE: WKT-CSV (tab — the QGIS clipboard — or comma), GeoJSON (a "crs" member when one is
+// THE CRS RULE (wave 5 — reprojection on read): what a file says about its coordinate system (a
+// .prj, a GeoJSON "crs" — absent = WGS 84 lon/lat per RFC 7946 —, an SRID, KML = WGS 84, or
+// coordinates that are plainly lon/lat) is resolved to a CRS (@gcu/proj), and the features are
+// REPROJECTED into the project's CRS (`opts.target`) — horizontally, z carried. The model records
+// how (model.reprojected: from, to, path, accuracy class). With NO project CRS: a projected file is
+// read as it is (the caller may adopt its CRS as the project's), and a GEOGRAPHIC one is REFUSED
+// with the reason (GeographicError, carrying the data's lon/lat extent so the caller can offer to
+// set a CRS) — never silently placed at (−45, −20). A file that states nothing is taken as already
+// in the project's system. `opts.assumeProjected` (the host API) skips all of it.
+//
+// WRITE (also KML and lon/lat GeoJSON, both WGS 84 — reprojected from the layer's CRS on the way out):
+// WKT-CSV (tab — the QGIS clipboard — or comma), GeoJSON (a "crs" member when one is
 // known), Shapefile (a .zip: .shp/.shx/.dbf/.cpg/.prj — polygons and lines as two sets when mixed),
 // DXF (closed LWPOLYLINE / 3D POLYLINE per ring on the category's DXF layer, every attribute as
 // MICRO xdata, so micro reads them back). Attributes ride every format.
@@ -29,6 +37,8 @@ import { readShapefile, writeShapefile } from '../../../ext/shp/index.js';
 import { read as readDxf, write as writeDxf, explode as explodeDxf, polylineChords } from '../../../ext/dxf/index.js';
 import { openZipRanged, blobSource, createZipStreamWriter } from '../../../ext/archive/src/zipstream.js';
 import { geometryToFeature, featureToGeometry, featureDocOf, featuresOf } from './polygons.js';
+import { lookupEpsg, crsFromPrj, crsFromUrn, crsFromJSON, crsLabel, sameCrs, transformer, whereOf, describePath, crsToJSON, WGS84 } from '../../../ext/proj/index.js';
+import { readKml, kmlInZip, featuresToKml } from './kml.js';
 
 // ── small text helpers ──────────────────────────────────────────────────────────────────────
 // RFC 4180-ish: quoted fields may hold the delimiter, quotes ("") and newlines
@@ -77,10 +87,12 @@ const firstLine = (text) => { const k = text.search(/\r?\n/); return k < 0 ? tex
 
 // ── the CRS rule ────────────────────────────────────────────────────────────────────────────
 export class GeographicError extends Error {
-  constructor(why) {
-    super(`${why} — micro places data in the coordinates it was given and never reprojects, so longitude/latitude would land at (−45, −20) on a metre grid. Reproject it to a projected system (UTM, or your mine grid) and open it again; reprojection on open is on micro's roadmap.`);
+  constructor(why, { extent = null, fileCrs = null } = {}) {
+    super(`${why} — the project has no coordinate system yet, so longitude/latitude would land at (−45, −20) on a metre grid. Set the project's coordinate system (the CRS chip in the status bar, or ⌘K → Coordinate system…; it suggests one from where the data sits) and open it again: it will be reprojected into it.`);
     this.name = 'GeographicError';
     this.geographic = true;
+    this.extent = extent;                                  // the data's lon/lat extent [w, s, e, n] — to suggest a CRS
+    this.fileCrs = fileCrs;
   }
 }
 // EPSG 4000–4999 is the geographic-2D block (4326 WGS 84, 4674 SIRGAS 2000, 4269 NAD83, 4258 ETRS89, …)
@@ -101,17 +113,62 @@ export function lonLatShaped(features) {
   if (!any) return false;
   return x0 >= -180 && x1 <= 180 && y0 >= -90 && y1 <= 90 && (x1 - x0) < 20 && (y1 - y0) < 20;
 }
-export function checkCrs(model, name, { assumeProjected = false } = {}) {
-  const c = model.crs;
-  if (c && c.kind === 'geographic') throw new GeographicError(`${name}: its coordinate system is geographic${c.name ? ` (${c.name})` : ''}`);
-  if (assumeProjected) return;
-  if (c && (c.kind === 'projected' || c.kind === 'local')) return;
-  if (model.format === 'geojson' && !c) {
-    if (lonLatShaped(model.features.concat(model.points ? [{ rings: [model.points] }] : []))) throw new GeographicError(`${name}: a GeoJSON file without a "crs" is longitude/latitude (RFC 7946), and these coordinates are`);
-    model.warnings.push('no "crs" stated — the coordinates are not longitude/latitude, so they are taken as projected');
-    return;
+const allPoints = (model) => model.features.concat(model.points && model.points.length ? [{ rings: [model.points] }] : []);
+function lonLatExtent(model) {
+  let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
+  for (const f of allPoints(model)) for (const r of f.rings) for (const p of r) { if (p[0] < w) w = p[0]; if (p[0] > e) e = p[0]; if (p[1] < s) s = p[1]; if (p[1] > n) n = p[1]; }
+  return w <= e ? [w, s, e, n] : null;
+}
+// what the file says its CRS is → { crs, by } | null (by: how it was known, for the record)
+export async function fileCrsOf(model) {
+  if (model.format === 'kml') return { crs: WGS84, by: 'KML (always WGS 84)' };
+  if (model.prj) {
+    try { const c = await crsFromPrj(model.prj); if (c) return { crs: c, by: `.prj${c.matchedBy === 'name' ? ' (matched by name)' : ''}${c.kind === 'geographic' ? ' — geographic' : ''}` }; } catch { /* unreadable .prj: fall through to the one-word read */ }
   }
-  if (lonLatShaped(model.features.concat(model.points && model.points.length ? [{ rings: [model.points] }] : []))) throw new GeographicError(`${name}: these coordinates look like longitude/latitude (all within ±180 / ±90, spanning under 20°)`);
+  const mc = model.crs;
+  if (mc && mc.epsg) { const c = await lookupEpsg(mc.epsg); if (c) return { crs: c, by: model.srid != null ? `SRID ${model.srid}` : `"crs" EPSG:${mc.epsg}` }; }
+  if (mc && mc.name) { const c = await crsFromUrn(mc.name); if (c) return { crs: c, by: `"crs" ${mc.name}` }; }
+  if (mc && mc.kind === 'geographic') return { crs: WGS84, by: `${mc.name || 'a geographic system'} — geographic, taken as WGS 84` };
+  if (mc && (mc.kind === 'projected' || mc.kind === 'local')) return null;      // stated, but not a system the table names
+  const shaped = lonLatShaped(allPoints(model));
+  if (model.format === 'geojson' && shaped) return { crs: WGS84, by: 'a GeoJSON file without a "crs" is WGS 84 (RFC 7946)' };
+  if (shaped) return { crs: WGS84, by: 'no CRS stated, and these coordinates look like longitude/latitude (all within ±180 / ±90, spanning under 20°) — taken as WGS 84' };
+  return null;
+}
+// resolve the file's CRS against the project's (`target`) and reproject in place when they differ.
+// Sets model.fileCrs / model.fileCrsBy and, when it moved anything, model.reprojected.
+export async function resolveCrs(model, name, { target = null, assumeProjected = false } = {}) {
+  model.fileCrs = null; model.fileCrsBy = null; model.reprojected = null;
+  if (assumeProjected) return model;
+  const f = await fileCrsOf(model);
+  if (!f) {
+    if (model.format === 'geojson' && !model.crs) model.warnings.push('no "crs" stated — the coordinates are not longitude/latitude, so they are taken as the project\'s system');
+    return model;
+  }
+  model.fileCrs = f.crs; model.fileCrsBy = f.by;
+  if (!target) {
+    if (f.crs.kind === 'geographic') throw new GeographicError(`${name}: its coordinates are longitude/latitude — ${f.by}${f.crs.epsg !== 4326 ? ` (${crsLabel(f.crs)})` : ''}`, { extent: lonLatExtent(model), fileCrs: f.crs });
+    return model;                                          // projected, no project CRS: read as it is (the caller may adopt this CRS)
+  }
+  if (sameCrs(f.crs, target)) return model;
+  reprojectModel(model, f.crs, target);
+  return model;
+}
+// every vertex (and point) of a model from → to, in place; the record lands on model.reprojected
+export function reprojectModel(model, from, to) {
+  const pts = [];
+  for (const f of allPoints(model)) for (const r of f.rings) for (const p of r) pts.push(p);
+  const at = whereOf(from, pts);
+  const t = transformer(from, to, { at });
+  let bad = 0;
+  for (const p of pts) {
+    const q = t.forward(p);
+    if (Number.isFinite(q[0]) && Number.isFinite(q[1])) { p[0] = q[0]; p[1] = q[1]; } else bad++;
+  }
+  const path = describePath(from, to, { at });
+  model.reprojected = { from: crsLabel(from), to: crsLabel(to), fromCrs: crsToJSON(from), toCrs: crsToJSON(to), by: model.fileCrsBy || null, path: path.text, accuracy: path.accuracy, heights: 'unchanged (horizontal reprojection)', at, vertices: pts.length, failed: bad };
+  model.warnings.push(`reprojected ${model.reprojected.from} → ${model.reprojected.to} (${path.accuracy.class}: ${path.accuracy.text})${bad ? ` · ${bad} vertex${bad === 1 ? '' : 'es'} could not be transformed` : ''}`);
+  return model.reprojected;
 }
 
 // ── assembling a model from GeoJSON-shaped features ─────────────────────────────────────────
@@ -393,10 +450,12 @@ export function readDxfFeatures(text) {
 }
 
 // ── the dispatcher: what is this file, as features? ─────────────────────────────────────────
-export const FEATURE_EXT = /\.(geojson|json|wkt|shp|zip)$/i;
-// cheap, by name + a head read: 'geojson' | 'wkt' | 'shp' | 'zip-shp' | 'wkt-csv' | 'csv-strings' | null
+export const FEATURE_EXT = /\.(geojson|json|wkt|shp|zip|kml|kmz)$/i;
+// cheap, by name + a head read: 'geojson' | 'wkt' | 'shp' | 'zip-shp' | 'wkt-csv' | 'csv-strings' | 'kml' | 'kmz' | null
 export async function featureKindOf(blob, name) {
   if (/\.shp$/i.test(name)) return 'shp';
+  if (/\.kml$/i.test(name)) return 'kml';
+  if (/\.kmz$/i.test(name)) return 'kmz';
   if (/\.(geojson)$/i.test(name)) return 'geojson';
   if (/\.wkt$/i.test(name)) return 'wkt';
   if (/\.json$/i.test(name)) { const h = await blob.slice(0, 4096).text(); return looksGeoJson(h) ? 'geojson' : null; }
@@ -408,11 +467,13 @@ export async function featureKindOf(blob, name) {
   }
   return null;
 }
-// the whole file → a model (CRS checked). `parts` = loose shapefile siblings { dbf, prj, cpg }.
-export async function readFeatureFile(blob, name, { kind = null, parts = null, assumeProjected = false } = {}) {
+// the whole file → a model, its CRS resolved and reprojected into `target` (the project's CRS —
+// see resolveCrs). `parts` = loose shapefile siblings { dbf, prj, cpg }.
+export async function readFeatureFile(blob, name, { kind = null, parts = null, assumeProjected = false, target = null } = {}) {
   kind = kind || await featureKindOf(blob, name);
   let model;
   if (kind === 'geojson') model = readGeoJson(await blob.text());
+  else if (kind === 'kml' || kind === 'kmz') model = modelFromGeoFeatures(readKml(kind === 'kml' ? await blob.text() : await kmlInZip(blob, name)), { format: 'kml', crs: { kind: 'geographic', name: 'WGS 84', epsg: 4326 } });
   else if (kind === 'wkt') model = readWktText(await blob.text());
   else if (kind === 'wkt-csv') model = readWktCsv(await blob.text());
   else if (kind === 'csv-strings') model = readStringCsv(await blob.text());
@@ -429,7 +490,7 @@ export async function readFeatureFile(blob, name, { kind = null, parts = null, a
   } else if (/\.zip$/i.test(name)) throw new Error(`${name}: micro reads a .zip when it holds a shapefile (.shp + .dbf + .prj) — this one doesn't`);
   else if (/\.(dbf|prj|shx|cpg)$/i.test(name)) throw new Error(`${name} is one part of a shapefile — open it together with its .shp (and .dbf / .prj)`);
   else throw new Error(`${name}: not a strings / polygons file micro recognises`);
-  checkCrs(model, name, { assumeProjected });
+  await resolveCrs(model, name, { target, assumeProjected });
   if (!model.features.length && !(model.points && model.points.length)) throw new Error(`${name}: no lines or polygons in this file`);
   return model;
 }
@@ -449,9 +510,10 @@ export function featuresToWktCsv(feats, columns, { delim = '\t' } = {}) {
   }
   return lines.join('\n') + '\n';
 }
-export function featuresToGeoJson(feats, columns, { crs = null } = {}) {
+export function featuresToGeoJson(feats, columns, { crs = null, wgs84 = false } = {}) {
   const fc = { type: 'FeatureCollection', name: undefined };
-  if (crs && crs.epsg) fc.crs = { type: 'name', properties: { name: `urn:ogc:def:crs:EPSG::${crs.epsg}` } };
+  if (wgs84) { /* RFC 7946: longitude/latitude WGS 84, and no "crs" member */ }
+  else if (crs && crs.epsg) fc.crs = { type: 'name', properties: { name: `urn:ogc:def:crs:EPSG::${crs.epsg}` } };
   else fc.crs = { type: 'name', properties: { name: crs && crs.name ? String(crs.name) : 'urn:micro:projected' } };   // not WGS84: say so, or a reader assumes it
   fc.features = feats.map((f) => ({ type: 'Feature', id: f.id, properties: Object.fromEntries(columns.map((c) => [c, f.attrs[c] === '' ? null : f.attrs[c]])), geometry: featureToGeometry(f) }));
   delete fc.name;
@@ -490,20 +552,48 @@ export const FEATURE_EXPORTS = [
   { id: 'geojson', label: 'GeoJSON (.geojson)', ext: 'geojson' },
   { id: 'shp', label: 'Shapefile (.zip — .shp .shx .dbf .prj)', ext: 'zip' },
   { id: 'dxf', label: 'DXF (.dxf — CAD, mine design packages)', ext: 'dxf' },
+  { id: 'kml', label: 'KML (.kml — Google Earth, GPS; WGS 84 lon/lat)', ext: 'kml', lonlat: true },
+  { id: 'geojson-wgs84', label: 'GeoJSON in lon/lat (.geojson — WGS 84, RFC 7946)', ext: 'geojson', lonlat: true },
 ];
-export async function buildFeatureExport(L, format, { selectedOnly = false, name = null } = {}) {
+// the CRS a feature layer's coordinates are in now: the project's when it was reprojected on read
+// (or the file stated nothing), else what its file said
+export async function featureLayerCrs(d, projectCrs = null) {
+  const src = (d && d.source) || {};
+  if (src.reprojected) return projectCrs;
+  if (src.fileCrs) { try { return await crsFromJSON(src.fileCrs); } catch { return projectCrs; } }
+  return projectCrs;
+}
+// features → copies in WGS 84 lon/lat (z carried)
+export function featuresToLonLat(feats, from) {
+  const pts = [];
+  for (const f of feats) for (const r of f.rings) for (const p of r) pts.push(p);
+  const t = transformer(from, WGS84, { at: whereOf(from, pts) });
+  return feats.map((f) => ({ ...f, rings: f.rings.map((r) => r.map((p) => { const q = t.forward(p); return [q[0], q[1], p[2] || 0]; })) }));
+}
+export async function buildFeatureExport(L, format, { selectedOnly = false, name = null, projectCrs = null } = {}) {
   const d = featureDocOf(L);
   if (!d) throw new Error(`${L.label || L.name} is not a strings & polygons layer`);
   const records = selectedOnly && L._selMask && L._selCount ? L._selMask : null;
   const feats = featuresOf(L, { records });
   if (!feats.length) throw new Error('no features to export');
   const columns = d.header.columns;
-  const base = (name || (L.label || L.name)).replace(/\.(zip|shp|geojson|json|wkt|csv|txt|tsv|dxf)$/i, '').replace(/[^\w.-]+/g, '_') || 'features';
-  const crs = d.source && d.source.crs;
+  const base = (name || (L.label || L.name)).replace(/\.(zip|shp|geojson|json|wkt|csv|txt|tsv|dxf|kml|kmz)$/i, '').replace(/[^\w.-]+/g, '_') || 'features';
+  const lcrs = await featureLayerCrs(d, projectCrs);
+  const reproj = !!(d.source && d.source.reprojected);
+  const crs = lcrs && lcrs.epsg ? { epsg: lcrs.epsg, name: lcrs.name } : lcrs ? { name: lcrs.name } : (d.source && d.source.crs);
+  const needLonLat = () => { if (!lcrs) throw new Error('these coordinates have no coordinate system — set the project\'s (the CRS chip in the status bar) to export longitude/latitude'); return featuresToLonLat(feats, lcrs); };
   if (format === 'wkt-csv') return { blob: new Blob([featuresToWktCsv(feats, columns, { delim: ',' })], { type: 'text/csv' }), name: `${base}.csv` };
   if (format === 'wkt-tsv') return { blob: new Blob([featuresToWktCsv(feats, columns, { delim: '\t' })], { type: 'text/tab-separated-values' }), name: `${base}.tsv` };
   if (format === 'geojson') return { blob: new Blob([featuresToGeoJson(feats, columns, { crs })], { type: 'application/geo+json' }), name: `${base}.geojson` };
-  if (format === 'shp') return { blob: await featuresToShapefileZip(feats, columns, base, { prj: d.source && d.source.prj }), name: `${base}.zip` };
+  if (format === 'geojson-wgs84') return { blob: new Blob([featuresToGeoJson(needLonLat(), columns, { wgs84: true })], { type: 'application/geo+json' }), name: `${base}.wgs84.geojson` };
+  if (format === 'kml') {
+    const ll = needLonLat();
+    const items = ll.map((f) => ({ attrs: f.attrs, geometry: featureToGeometry(f) }));
+    return { blob: new Blob([featuresToKml(items, { name: L.label || L.name, z: d.header.bbox && (d.header.bbox.max[2] !== 0 || d.header.bbox.min[2] !== 0) })], { type: 'application/vnd.google-earth.kml+xml' }), name: `${base}.kml` };
+  }
+  // a reprojected layer's .prj would be the ORIGINAL file's — wrong now: none is written (micro
+  // carries EPSG codes, not WKT; the project's system is said in the note)
+  if (format === 'shp') return { blob: await featuresToShapefileZip(feats, columns, base, { prj: reproj ? null : d.source && d.source.prj }), name: `${base}.zip`, note: reproj && lcrs ? `no .prj written — the features were reprojected to ${crsLabel(lcrs)}; set that in the reading software` : null };
   if (format === 'dxf') {
     const cat = d.header.mapping.cat != null ? d.header.columns[d.header.mapping.cat] : null;
     return { blob: new Blob([featuresToDxf(feats, columns, { catCol: cat })], { type: 'application/dxf' }), name: `${base}.dxf` };

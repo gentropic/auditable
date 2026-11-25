@@ -55,6 +55,7 @@ import { rememberProject, PROJECTS_KEY } from './recents.js';
 import { savePackAsFolder } from './project-pack.js';
 import { maybeAutoOptimize, maybeAutoPackMeshes } from './optimize.js';
 import { polyStateOf } from './polygons.js';
+import { projectCrsJSON, loadProjectCrs, setProjectCrs } from './crs.js';
 
 export function markProjectDirty() {
   if (!S.project) return;
@@ -147,6 +148,7 @@ export function projectManifest() {
   const indexOf = new Map(listed.map((L, i) => [L.id, i]));
   return {
     app: 'micro', version: 1, name: S.project.name,
+    crs: projectCrsJSON() || undefined,                    // the project's coordinate system: { epsg, name } | { name, def } (src/crs.js)
     layers: listed.map((L) => L.viewOf != null ? viewEntry(L, indexOf) : ({
       source: L._relpath || L.name,
       dh: L.dh && L.docs.dhDoc ? (L._setPath ? { set: L._setPath, interval: L._intervalName } : {
@@ -646,7 +648,8 @@ export async function openProjectDir(dir, { pack = null } = {}) {
     const mf = JSON.parse(await (await (await dir.getFileHandle('project.json')).getFile()).text());
     if (mf.app !== 'micro') { $('#meta').textContent = 'not a micro project (project.json says otherwise)'; return; }
     S.project = { dir, name: dir.name, dirty: false, pack };
-    await loadFigures(dir);                                 // figures/ *.compo.json → the composer
+    await loadProjectCrs(mf.crs || null);                   // BEFORE the layers: vectors reproject into it as they reopen
+    await loadFigures(dir);                                // figures/ *.compo.json → the composer
     await loadViewsScenes(dir, mf.views);                   // bookmarks/ + scenes/ (legacy mf.views migrated)
     closeAllLayers();
     $('#empty').style.display = 'none';
@@ -898,7 +901,7 @@ export function unsavedWork() {
   return S.layers.some((L) => (L.paintCols || []).some((c) => c.name !== '_swath') || (L.calcCols || []).length > 0);
 }
 
-export function closeProject() { if (S.project && S.project.pack && S.project.pack.abort) S.project.pack.abort.abort(); S.project = null; S.views = []; S.scenes = []; updateProjectTitle(); }
+export function closeProject() { if (S.project && S.project.pack && S.project.pack.abort) S.project.pack.abort.abort(); S.project = null; S.views = []; S.scenes = []; setProjectCrs(null, { quiet: true }).catch(() => {}); updateProjectTitle(); }
 
 // File → New project: back to the empty slate. Confirmed — it closes every
 // layer and drops the project link; nothing on disk is touched.

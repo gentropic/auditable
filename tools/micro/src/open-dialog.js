@@ -20,11 +20,12 @@ import { createLayerGroup } from './tree.js';
 import { closeAllLayers } from './layers.js';
 import { FEATURE_EXT, featureKindOf, readFeatureFile, groupShapefileParts, zipShapefileSet } from './poly-io.js';
 
-const describeFeatureKind = (k) => ({ geojson: 'GeoJSON', wkt: 'WKT', shp: 'Shapefile', 'zip-shp': 'Shapefile (zipped)', 'wkt-csv': 'WKT-CSV table', 'csv-strings': 'string file (ID + X/Y/Z)' }[k] || k);
+const describeFeatureKind = (k) => ({ geojson: 'GeoJSON', wkt: 'WKT', shp: 'Shapefile', 'zip-shp': 'Shapefile (zipped)', 'wkt-csv': 'WKT-CSV table', 'csv-strings': 'string file (ID + X/Y/Z)', kml: 'KML', kmz: 'KMZ (zipped KML)' }[k] || k);
 function featureCensus(m) {
-  if (!m.features.length && m.points) return `${m.points.length.toLocaleString()} points → a points layer`;
+  const rp = m.reprojected ? ` · reprojected ${m.reprojected.from} → ${m.reprojected.to} (${m.reprojected.accuracy.class})` : m.fileCrs ? ` · ${m.fileCrs.epsg ? `EPSG:${m.fileCrs.epsg}` : m.fileCrs.name}` : '';
+  if (!m.features.length && m.points) return `${m.points.length.toLocaleString()} points → a points layer${rp}`;
   const pg = m.features.filter((x) => x.closed).length, ln = m.features.length - pg;
-  return [pg && `${pg.toLocaleString()} polygon${pg === 1 ? '' : 's'}`, ln && `${ln.toLocaleString()} line${ln === 1 ? '' : 's'}`, `${m.columns.length} attribute${m.columns.length === 1 ? '' : 's'}`, m.crs && m.crs.name].filter(Boolean).join(' · ') + ' → strings & polygons';
+  return [pg && `${pg.toLocaleString()} polygon${pg === 1 ? '' : 's'}`, ln && `${ln.toLocaleString()} line${ln === 1 ? '' : 's'}`, `${m.columns.length} attribute${m.columns.length === 1 ? '' : 's'}`, !m.fileCrs && m.crs && m.crs.name].filter(Boolean).join(' · ') + ' → strings & polygons' + rp;
 }
 const $ = (s) => document.querySelector(s);
 
@@ -56,7 +57,7 @@ export async function describeFile(f) {
       d.kind = 'features'; d.featKind = fk;
       d.desc = describeFeatureKind(fk);
       if (fk !== 'shp' && f.size <= 32 * 1024 * 1024) {
-        try { const m = await readFeatureFile(f, name, { kind: fk }); d.desc += ' · ' + featureCensus(m); }
+        try { const m = await readFeatureFile(f, name, { kind: fk, target: S.crs || null }); d.desc += ' · ' + featureCensus(m); }
         catch (e2) { d.desc += ' — ' + e2.message; if (e2.geographic) d.load = false; }
       }
       if (fk === 'wkt-csv' || fk === 'csv-strings') {      // still a table: the other readings stay on offer

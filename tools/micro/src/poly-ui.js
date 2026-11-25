@@ -5,7 +5,9 @@
 // readers and writers in src/poly-io.js; drawing in src/poly-draw.js.
 import { S, layerById, requestRender } from './state.js';
 import { makeFeatureDoc, renderFeatureLayer, refreshFeatureLayer, featureDocOf, isPolygonLayer, defaultStickRadius, setFeatureFill, setFeatureCategory } from './polygons.js';
-import { readFeatureFile, buildFeatureExport, FEATURE_EXPORTS, featuresToWktCsv, sniffWktCsv, readWktCsv, checkCrs } from './poly-io.js';
+import { readFeatureFile, buildFeatureExport, FEATURE_EXPORTS, featuresToWktCsv, sniffWktCsv, readWktCsv, resolveCrs } from './poly-io.js';
+import { projectCrs, crsLabel } from './crs.js';
+import { adoptFileCrs, offerProjectCrs } from './crs-ui.js';
 import { featuresOf } from './polygons.js';
 import { registerDocs } from './open.js';
 import { fitFromHeader, recomputeUnion, allocLayerId, LAYER_CAP, setActiveLayer } from './layers.js';
@@ -55,7 +57,25 @@ function placeFlat(model, z) {
 export async function openFeaturesBlob(blob, name, opts = {}) {
   const lid = opts.layer, first = opts.first;
   $('#meta').textContent = `${name} — reading features…`;
-  const model = await readFeatureFile(blob, name, { kind: opts.kind, parts: opts.parts, assumeProjected: !!opts.assumeProjected });
+  // the CRS (src/crs.js): reprojected into the project's on read; a projected file with no project
+  // CRS gives the project its CRS; a geographic one with none → the offer to set one (not when a
+  // host / routine asked to be told by an exception instead)
+  const ropts = { kind: opts.kind, parts: opts.parts, assumeProjected: !!opts.assumeProjected };
+  let model;
+  try { model = await readFeatureFile(blob, name, { ...ropts, target: projectCrs() }); }
+  catch (e) {
+    if (!e.geographic || opts.noAsk || projectCrs()) throw e;
+    const c = await offerProjectCrs(e, name);
+    if (!c) throw e;
+    model = await readFeatureFile(blob, name, { ...ropts, target: c });
+  }
+  if (!projectCrs() && model.fileCrs) await adoptFileCrs(model.fileCrs, name);
+  if (model.reprojected) {
+    const t = projectCrs();
+    model.crs = { kind: 'projected', name: crsLabel(t), epsg: t && t.epsg ? t.epsg : undefined };
+    const L0 = layerById(lid);
+    if (L0 && L0.lineage) L0.lineage.params = { ...(L0.lineage.params || {}), reproject: model.reprojected };
+  }
   if (!model.features.length && model.points && model.points.length) {
     // a file of points only: a points layer from a generated X,Y,Z table, the attributes as columns
     const cols = model.columns, esc = (v) => { const s = v === '' || v == null ? '' : String(v); return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
@@ -151,9 +171,9 @@ export async function exportFeatures(L, format = null, opts = {}) {
     if (!format) return null;
   }
   try {
-    const r = await buildFeatureExport(L, format, { selectedOnly: opts.selectedOnly != null ? opts.selectedOnly : sel });
+    const r = await buildFeatureExport(L, format, { selectedOnly: opts.selectedOnly != null ? opts.selectedOnly : sel, projectCrs: projectCrs() });
     if (opts.deliver !== false) await deliverBlob(r.blob, r.name);
-    $('#meta').textContent = `exported ${r.name}`;
+    $('#meta').textContent = `exported ${r.name}${r.note ? ' — ' + r.note : ''}`;
     return r;
   } catch (e) { $('#meta').textContent = `export features — ${e.message}`; return null; }
 }
@@ -180,7 +200,7 @@ export async function pasteFeaturesText(text, { z = null, name = null, assumePro
   const sn = sniffWktCsv(text || '');
   if (!sn) { $('#meta').textContent = 'paste features: the clipboard holds no features (a table with a wkt_geom column — QGIS: select features, Ctrl+C)'; return null; }
   const model = readWktCsv(text, sn);
-  try { checkCrs(model, 'the pasted features', { assumeProjected }); } catch (e) { $('#meta').textContent = e.message; throw e; }
+  try { await resolveCrs(model, 'the pasted features', { target: projectCrs(), assumeProjected }); } catch (e) { $('#meta').textContent = e.message; throw e; }   // lon/lat → reprojected into the project's CRS
   if (!model.features.length) { $('#meta').textContent = 'paste features: no lines or polygons in the clipboard (points paste into QGIS-style point layers — open them as a file)'; return null; }
   const flat = model.noZ ? model.noZ.filter(Boolean).length : 0;
   if (flat) {                                              // 2D geometry: a DECLARED z, never a silent guess

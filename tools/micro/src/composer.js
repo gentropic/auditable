@@ -1056,6 +1056,7 @@ function envFor(extra = {}) {
     ...extra,
     fields: MICRO_FIELDS, fieldHelp: MICRO_FIELD_HELP, overlaysFor,
     get props() { return (S.house && S.house.props) || {}; },
+    get crs() { return S.crs ? { name: S.crs.name, code: S.crs.epsg ? `EPSG:${S.crs.epsg}` : null } : null; },   // {crs} (compo's field; src/crs.js)
     // ${expr}: the atlas row's values (vars), then the nearest view's numbers (count, total,
     // section, look, elevation, page, pages), in the routine's expression language
     evalField: (expr, vars, frame, env) => {

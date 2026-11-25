@@ -6,6 +6,7 @@ import { html, joinH } from './html.js';
 import { fmtSize } from './paths.js';
 import { basisAngles, supportOfHeader, supportToWorld } from '../../../ext/condenser/src/main.js';
 import { pinStats } from './columns.js';
+import { crsLabel } from './crs.js';
 const $ = (s) => document.querySelector(s);
 
 // the header panel: everything the providers learned about the open file.
@@ -24,7 +25,8 @@ export function showFileInfo() {
   const AL0 = activeLayer();
   const d0 = (AL0 && AL0.docs) || {};
   const meshDoc = d0.meshDoc || null;
-  const doc = meshDoc || d0.blockDoc || d0.dhDoc || d0.plyDoc || d0.lasDoc;
+  const fdoc = d0.stringsDoc && d0.stringsDoc.features ? d0.stringsDoc : null;   // a strings & polygons layer
+  const doc = meshDoc || d0.blockDoc || d0.dhDoc || d0.plyDoc || d0.lasDoc || fdoc;
   if (!doc) { showHelp('file info', html`no file open`); return; }
   const h = doc.header;
   const fmtC = (v) => (Number.isInteger(v) ? v.toLocaleString() : v.toLocaleString(undefined, { maximumFractionDigits: 4 }));
@@ -38,7 +40,7 @@ export function showFileInfo() {
   // the nowrap key column and push every value off-screen
   const wide = (h2) => rows.push(html`<tr><td colspan="2" class="fi-w">${h2}</td></tr>`);
   row('file', V(meshDoc ? meshDoc.name : d0.blockDoc ? d0.blockDoc.name : d0.plyDoc ? d0.plyDoc.name : 'point cloud'));
-  row('kind', V(meshDoc ? `${h.soup ? 'streamed mesh' : 'context mesh'} (${h.format})` : d0.dhDoc ? `drillholes (${h.method === 'minimumCurvature' ? 'minimum curvature' : h.method}, dip ${h.dipConvention})` : d0.lasDoc ? `LAS ${h.version} · point format ${h.format}` : d0.plyDoc ? `PLY ${h.format === 'ascii' ? 'ascii' : 'binary (little-endian)'}` : h.dm ? 'Datamine .dm block model' : h.grid ? 'delimited block model' : 'delimited points'));
+  row('kind', V(fdoc ? `strings & polygons (${(fdoc.source && fdoc.source.format) || h.format})` : meshDoc ? `${h.soup ? 'streamed mesh' : 'context mesh'} (${h.format})` : d0.dhDoc ? `drillholes (${h.method === 'minimumCurvature' ? 'minimum curvature' : h.method}, dip ${h.dipConvention})` : d0.lasDoc ? `LAS ${h.version} · point format ${h.format}` : d0.plyDoc ? `PLY ${h.format === 'ascii' ? 'ascii' : 'binary (little-endian)'}` : h.dm ? 'Datamine .dm block model' : h.grid ? 'delimited block model' : 'delimited points'));
   if (meshDoc) {
     row('triangles', num(h.triCount)); row('vertices', num(h.vertexCount));
     const tp = AL0 && AL0._solidMesh;
@@ -56,6 +58,11 @@ export function showFileInfo() {
     }
   }
   if (S.frame) row('frame origin', html`${joinH(S.frame.origin.map(num), sep(', '))}${S.frame.crs ? html` ${sep('·')} ${V(S.frame.crs)}` : ''}`);
+  row('project CRS', V(S.crs ? crsLabel(S.crs) : null, S.crs ? crsLabel(S.crs) : 'none set'));
+  if (h.crsName) row('file CRS', V(h.crsName));
+  const rpj = h.reprojected || (fdoc && fdoc.source && fdoc.source.reprojected);
+  if (fdoc && fdoc.source && fdoc.source.fileCrs) row('file CRS', V(fdoc.source.fileCrs.epsg ? `${fdoc.source.fileCrs.name} · EPSG:${fdoc.source.fileCrs.epsg}` : fdoc.source.fileCrs.name));
+  if (rpj) wide(html`${sep('reprojected')} ${V(rpj.from)} ${sep('→')} ${V(rpj.to)} ${sep('·')} ${V(rpj.path)} ${sep('· heights unchanged')}`);
   if (AL0 && S.renderer.layerVramBytes(AL0.id)) row('vram (layer)', V(fmtSize(S.renderer.layerVramBytes(AL0.id))));
   const sup = h.grid ? supportOfHeader(h) : null;            // the block-support contract: frame, lattice, sizes
   if (sup) {

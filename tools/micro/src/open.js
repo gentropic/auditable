@@ -26,6 +26,8 @@ import { openDmBlob, openParquetBlocks, openBlocksBlob } from './open-blocks.js'
 import { openXlsxBlob, openTableBlob } from './open-table.js';
 import { openFeaturesBlob } from './poly-ui.js';
 import { featureKindOf, FEATURE_EXT, groupShapefileParts, zipShapefileSet } from './poly-io.js';
+import { lasCrsOf, reprojectLas } from './las-crs.js';
+import { setProjectCrs, sameCrs, crsLabel } from './crs.js';
 const $ = (s) => document.querySelector(s);
 
 export async function streamInto(cb, streamChunks, header, name, chunkPoints, lid = S.activeId) {
@@ -114,7 +116,7 @@ export async function openBlob(blob, name, mode = 'replace', at = null, over = {
   try {
     if (featKind === 'part') throw new Error(`${name} is one part of a shapefile — open it together with its .shp (and .dbf / .prj), or the .zip that holds them`);
     if (featKind === 'none') throw new Error(`${name}: no strings or polygons here — a table needs a WKT column (wkt_geom) or an ID column with X / Y (Z) rows`);
-    if (featKind) { await openFeaturesBlob(blob, name, { layer: lid, first, kind: featKind, parts: over.shpParts, poly: over.poly, z: over.z, assumeProjected: over.assumeProjected }); }
+    if (featKind) { await openFeaturesBlob(blob, name, { layer: lid, first, kind: featKind, parts: over.shpParts, poly: over.poly, z: over.z, assumeProjected: over.assumeProjected, noAsk: !!over.throw }); }
     else if (isWfrName(name)) { await openWfrFile(blob, name, { layer: lid, first, element: over.element, tint: over.tint, opacity: over.opacity, forceSoup: over.forceSoup, forceContext: over.forceContext }); }
     else if (/\.dxf$/i.test(name)) { await openDxfBlob(blob, name, { layer: lid, first, as: over.asKind === 'lines' ? 'strings' : (over.asKind === 'mesh' || over.asKind === 'points') ? over.asKind : null, tint: over.tint, opacity: over.opacity, stream: !!over.streamDxf }); }
     else if (isMesh && /\.(msh|obj|lfm|ply)$/i.test(name)) { await openMeshDoc(blob, name, { layer: lid, first, tint: over.tint, opacity: over.opacity, forceSoup: over.forceSoup, forceContext: over.forceContext }); }
@@ -134,8 +136,17 @@ export async function openBlob(blob, name, mode = 'replace', at = null, over = {
     else if (/\.laz$/i.test(name)) throw new Error('LAZ (compressed LAS) isn’t supported — export as .las, or use lasZip to convert');
     else if (!/\.(las)$/i.test(name)) throw new Error(`micro doesn’t read ${(name.match(/\.[^.]+$/) || ['this file'])[0]} — it reads .csv .txt .dat .tsv .xlsx .dm .parquet .las .ply .xyz .pts .msh .obj .lfm .dxf .wfr .omf .tif .grd .asc .geojson .wkt .shp .zip (a shapefile)`);
     else {
-      const { header, streamChunks, columnBatches, fetchRecord } = await openLas(blob);
-      registerDocs(lid, 'points', { lasDoc: { blob, header, columnBatches, fetchRecord } });
+      let prov = await openLas(blob);
+      // its coordinate system (a LASF_Projection VLR): adopted as the project's when none is set,
+      // reprojected into the project's when it differs (src/las-crs.js); a geographic cloud with
+      // no project CRS is refused like a geographic vector file
+      const lcrs = await lasCrsOf(prov.header);
+      if (lcrs && !S.crs && lcrs.kind === 'geographic') throw new Error(`${name}: its coordinate system is ${crsLabel(lcrs)} — longitude/latitude, and the project has no coordinate system to reproject it into: set one (the CRS chip in the status bar) and open it again`);
+      if (lcrs && !S.crs) await setProjectCrs(lcrs, { why: `from ${name}` });
+      else if (lcrs && !sameCrs(lcrs, S.crs)) { prov = reprojectLas(prov, lcrs, S.crs); const Lr = layerById(lid); if (Lr && Lr.lineage) Lr.lineage.params = { ...(Lr.lineage.params || {}), reproject: prov.header.reprojected }; }
+      const { header, streamChunks, columnBatches, fetchRecord } = prov;
+      if (lcrs) header.crsName = crsLabel(lcrs);
+      registerDocs(lid, 'points', { lasDoc: { blob, header, columnBatches, fetchRecord, ...(header.reprojected ? { streamChunks } : {}) } });
       fitFromHeader(header, first);
       setColorLabels(header);
       const cb = createChunkBuilder({ frame: S.frame, chunkSize: 1 << 18, batchSize: 1 << 22, seed: 1, onChunk: (c) => { S.renderer.addChunk(c, 'base', lid); requestRender(); } });

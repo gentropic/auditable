@@ -399,7 +399,11 @@ export function makeFeatureDoc(model, blob, name, opts = {}) {
   const doc = {
     blob, name, header,
     features: model.features, rows: model.rows,
-    source: { format: model.format || 'features', crs: model.crs || null, prj: model.prj || null, srid: model.srid || null },
+    // fileCrs: what the file said its CRS was (@gcu/proj JSON form); reprojected: how it was moved
+    // into the project's CRS on read (from, to, path, accuracy) — null when it wasn't (src/poly-io.js)
+    source: { format: model.format || 'features', crs: model.crs || null, prj: model.prj || null, srid: model.srid || null,
+      fileCrs: model.fileCrs ? (model.fileCrs.epsg ? { epsg: model.fileCrs.epsg, name: model.fileCrs.name } : { name: model.fileCrs.name, def: model.fileCrs.def }) : null,
+      fileCrsBy: model.fileCrsBy || null, reprojected: model.reprojected || null },
     fetchRecord: (rec) => (doc.rows[rec] ? doc.rows[rec].map((v) => (v === undefined ? '' : v)) : null),
     recordPosition: (rec) => (doc.features[rec] ? featureCentroid(doc.features[rec]) : [0, 0, 0]),
   };

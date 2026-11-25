@@ -22,6 +22,7 @@ import { reopenDh } from './drillholes.js';
 import { markProjectDirty } from './project.js';
 import { openCalcWindow } from './calc.js';
 import { reopenWithMapping } from './reopen.js';
+import { crsLabel } from './crs.js';
 import { applyRamp } from './ramp.js';
 import { applyCatVisibility, applyCatLegend } from './categories.js';
 import { runRules, ruleModeOf, rulesOf } from './rules.js';
@@ -341,6 +342,17 @@ function renderSourceTab(body, L) {
   const fm = (v) => (v == null || !Number.isFinite(v) ? '–' : Number.isInteger(v) ? v.toLocaleString() : +v.toFixed(3) + '');
   const sec = (t) => { const el = document.createElement('div'); el.className = 'pp-sec'; el.textContent = t; body.appendChild(el); };
   const line = (h2) => { const el = document.createElement('div'); el.className = 'pp-stats'; el.style.marginLeft = '0'; setHTML(el, h2); body.appendChild(el); };
+  // the coordinate system: the project's, what the file said, and how it was reprojected (src/crs.js)
+  {
+    const src = d.stringsDoc && d.stringsDoc.source;
+    const rp = (src && src.reprojected) || (d.lasDoc && d.lasDoc.header.reprojected);
+    const fc = src && src.fileCrs ? (src.fileCrs.epsg ? `${src.fileCrs.name} · EPSG:${src.fileCrs.epsg}` : src.fileCrs.name) : (d.lasDoc && d.lasDoc.header.crsName) || null;
+    sec('coordinate system');
+    line(html`project <span class="v">${S.crs ? crsLabel(S.crs) : 'none set'}</span>`);
+    if (fc) line(html`file <span class="v">${fc}</span>${src && src.fileCrsBy ? html` <span class="fi-x">(${src.fileCrsBy})</span>` : ''}`);
+    if (rp) line(html`reprojected on read · <span class="v">${rp.path}</span> <span class="fi-x">(${rp.accuracy.class}; heights unchanged)</span>`);
+    else if (d.blockDoc || d.gridDoc || d.meshDoc) line(trusted('<span class="fi-x">models, grids and meshes are not reprojected — they are read in their own coordinates</span>'));
+  }
   if (d.blockDoc && !d.blockDoc.header.dm) {
     sec('position — column mapping');
     const row = document.createElement('div'); row.className = 'pp-row';

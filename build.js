@@ -1774,6 +1774,7 @@ if (target === 'micro') {
     '../../ext/shp/index.js': '#shp',               // @gcu/shp — shapefiles in and out (strings & polygons, src/poly-io.js)
     '../../ext/wkt/index.js': '#wkt',               // @gcu/wkt — WKT / WKT-CSV / the QGIS clipboard
     '../../ext/dxf/index.js': '#dxf',               // @gcu/dxf — features out to DXF, and DXF read as features
+    '../../ext/proj/index.js': '#proj',             // @gcu/proj — CRS: proj4 (vendored) + the EPSG table + reprojection on read (src/crs.js)
   };
   const libs = [
     ['condenser', 'ext/condenser/index.js'],
@@ -1806,6 +1807,7 @@ if (target === 'micro') {
     ['shp',       'ext/shp/index.js'],                 // @gcu/shp — .shp/.shx/.dbf/.prj (node ext/shp/build.js)
     ['wkt',       'ext/wkt/index.js'],                 // @gcu/wkt — OGC WKT (node ext/wkt/build.js)
     ['dxf',       'ext/dxf/index.js'],                 // @gcu/dxf — DXF read/write (node ext/dxf/build.js)
+    ['proj',      'ext/proj/index.js'],                // @gcu/proj — proj4js 2.22.0 + the EPSG table (gzip+base64, inflated on first use) (node ext/proj/build.js)
   ];
   const modules = [];
   for (const [name, rel] of libs) {
@@ -1889,12 +1891,15 @@ if (target === 'micro') {
   // (same block as lamina's). @gcu/lfm is first-party (BSD-3-Clause, in-tree).
   const micNoticeLibs = [
     ['hyparquet + hyparquet-writer (© Hyperparam, via @gcu/parquet)', 'ext/parquet/vendor/LICENSE-hyparquet'],
-    ['fflate (via @gcu/parquet)', 'ext/archive/vendor/LICENSE-fflate'], ['fzstd (via @gcu/parquet)', 'ext/archive/vendor/LICENSE-fzstd']];
+    ['fflate (via @gcu/parquet)', 'ext/archive/vendor/LICENSE-fflate'], ['fzstd (via @gcu/parquet)', 'ext/archive/vendor/LICENSE-fzstd'],
+    ['proj4js 2.22.0 (via @gcu/proj)', 'ext/proj/vendor/LICENSE-proj4.md'], ['wkt-parser (inside proj4js)', 'ext/proj/vendor/LICENSE-wkt-parser.md'], ['mgrs (inside proj4js)', 'ext/proj/vendor/LICENSE-mgrs.md'],
+    ['epsg-index 2.0.0 — the EPSG table (via @gcu/proj; data: the EPSG Geodetic Parameter Dataset)', 'ext/proj/vendor/LICENSE-epsg-index.md'],
+    ['world-atlas 2.0.2 — the world outline (via @gcu/proj; data: Natural Earth, public domain)', 'ext/proj/vendor/LICENSE-world-atlas.md']];
   const micNotices = micNoticeLibs.map(([n, rel]) => {
     const p = path.join(__dirname, rel);
     return fs.existsSync(p) ? `\n===== ${n} =====\n${fs.readFileSync(p, 'utf8').trim()}\n` : `\n===== ${n} ===== (MIT — license file missing at build)\n`;
   }).join('');
-  html = html.replace('</head>', () => `<!-- THIRD-PARTY NOTICES\nmicro is MIT (© Arthur Endlein Correia / Geoscientific Chaos Union, gentropic.org).\nIt bundles, via @gcu/parquet:\n${micNotices}\n-->\n`
+  html = html.replace('</head>', () => `<!-- THIRD-PARTY NOTICES\nmicro is MIT (© Arthur Endlein Correia / Geoscientific Chaos Union, gentropic.org).\nIt bundles, via @gcu/parquet and @gcu/proj:\n${micNotices}\n-->\n`
     .replace(/--+(?=[^>])/g, '-') + '</head>');
 
   const outPath = path.join(__dirname, 'micro.html');

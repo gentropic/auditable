@@ -14,6 +14,8 @@ export const S = {
 
   // ── project (File menu): the open project folder, bookmarks, scenes
   project: null,                                            // { dir: FileSystemDirectoryHandle, name, dirty }
+  crs: null,                                                // the project's coordinate system — a @gcu/proj CRS object (src/crs.js), saved in project.json
+  crsWhy: null,                                             // how it was set: 'picked' | 'from <file>' | 'project'
   hasFSAA: false,                                           // project folders can be picked + written here (the File System Access API; inside the lead-acid shell, its tree plugin's answer)
   views: [],                                                // bookmarks (viewpoints): { name, camera, section, file? }
   scenes: [],                                               // scenes (full working state): { name, camera, section, layers:[…], file? }

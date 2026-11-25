@@ -412,6 +412,7 @@ export async function docPositionStream(d) {
   if (d.blockDoc && d.blockDoc.streamChunks) return d.blockDoc.streamChunks;
   if (d.blockDoc && d.blockDoc.header.dm) { const h = d.blockDoc.header; return (await openDmModel(d.blockDoc.blob, { mapping: h.mapping, origin: h.dmOrigin || null })).streamChunks; }
   if (d.blockDoc) return (await openBlockModel(d.blockDoc.blob, { mapping: d.blockDoc.header.mapping })).streamChunks;
+  if (d.lasDoc && d.lasDoc.streamChunks) return d.lasDoc.streamChunks;   // a reprojected cloud carries its own (src/las-crs.js)
   if (d.lasDoc) return (await openLas(d.lasDoc.blob)).streamChunks;
   if (d.plyDoc) return (await openPly(d.plyDoc.blob)).streamChunks;
   return null;
