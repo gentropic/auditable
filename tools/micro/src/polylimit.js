@@ -132,15 +132,16 @@ export async function prepareScope(st, layers, signal = null, onProgress = null)
   for (const L of layers) if (L) await limitMaskOf(L, lim, { signal, onProgress });
 }
 
-// base mask (scope) AND the limit mask → one mask (cached per pair, so a scan asking twice gets one)
-const _and = new WeakMap();
+// base mask (scope) AND the limit mask → one mask. Computed every call, NOT cached by the base
+// array: a selection is edited IN PLACE (add-mode rectangle/lasso, by-solid add/subtract, the
+// API's add/remove), so an identity-keyed cache handed back the old selection's answer (sweep
+// 2026-11-25). One pass over a byte array — ~2 ms per 2M records — a couple of times per scan.
 export function applyLimit(base, L, limit) {
   const lm = cachedLimitMask(L, limit);
   if (!lm) throw new Error(`limit ${limitLabel(limit)}: not prepared for ${nameOf(L)} (prepareScope before the scan)`);
   if (!base) return lm;
-  let per = _and.get(lm); if (!per) { per = new WeakMap(); _and.set(lm, per); }
-  let m = per.get(base);
-  if (!m) { m = new Uint8Array(lm.length); for (let i = 0; i < m.length; i++) m[i] = lm[i] && i < base.length && base[i] ? 1 : 0; per.set(base, m); }
+  const m = new Uint8Array(lm.length);
+  for (let i = 0; i < m.length; i++) m[i] = lm[i] && i < base.length && base[i] ? 1 : 0;
   return m;
 }
 

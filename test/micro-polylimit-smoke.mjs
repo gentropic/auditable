@@ -107,7 +107,7 @@ try {
     const fs2 = w.querySelector('select[data-role=limit-feature]');
     fs2.value = 'pit'; fs2.dispatchEvent(new Event('change'));
     for (let t = 0; t < 200 && !/inside/.test(w.querySelector('.fwin-sub, .sub, [class*=sub]') ? w.textContent : ''); t++) await new Promise((z) => setTimeout(z, 50));
-    for (let t = 0; t < 200 && !(w._tableTSV || w.querySelector('canvas')._chartSpec); t++) await new Promise((z) => setTimeout(z, 50));
+    for (let t = 0; t < 400 && !(w._tableTSV && w._tableTSV()); t++) await new Promise((z) => setTimeout(z, 50));   // the TABLE's text, not just its getter: under load the getter exists before Run fills it
     await new Promise((z) => setTimeout(z, 400));
     const tsv = w._tableTSV ? w._tableTSV() : '';
     out.win = { tsv, sub: w.textContent.match(/inside limits\.csv · pit/) ? 'inside limits.csv · pit' : '' };
@@ -123,6 +123,24 @@ try {
   chk(`routine contract: a selection-limit is refused in a routine (“${(r1.bad[0] || '').slice(0, 70)}…”), a misspelt key named, a where-limit passes`, r1.bad.some((e) => /selection/.test(e)) && r1.typo.some((e) => /wher/.test(e)) && !r1.okR.length);
   chk(`a limit that matches nothing says so: “${r1.none.slice(0, 70)}”`, /no polygon/.test(r1.none));
   chk(`GT window: the “inside” row lists the polygon layer (${r1.opts.join(' | ')}); picking pit + Run → the same tonnes`, r1.opts.some((o) => /limits\.csv/.test(o)) && r1.win.tsv.split('\n').some((l) => l.split('\t').some((c) => Math.abs(+c - t1) < 1e-3 * t1)));
+
+  // ═══ §1b a limit AND an edited selection (sweep 2026-11-25: applyLimit cached selection ∩ limit by
+  //     the selection ARRAY, and add-mode selections edit it in place → the old answer came back) ═══
+  {
+    const half = NX * NY * (NZ / 2);                                    // records are i + NX·j + NX·NY·k: benches 0–2 first
+    const want1 = inBlocks.filter(([, , k]) => k < NZ / 2).length, want2 = nIn;
+    const r1b = await evaluateSettled(p, async ({ half, n }) => {
+      const M = window._micro, L = M.layers().find((q) => (q.label || q.name) === 'resource');
+      const run = async () => (await M.runTool('stats', { layer: 'resource', cols: ['AU'], scope: 'selection', limit: { layer: 'limits.csv', feature: 'pit' } })).table.rows[0][1];
+      await window.micro.select(L.id, Array.from({ length: half }, (_, i) => i), { mode: 'replace' });
+      const a = await run();
+      await window.micro.select(L.id, Array.from({ length: n - half }, (_, i) => half + i), { mode: 'add' });   // edits the SAME selection array
+      const b2 = await run();
+      M.clearSelection();
+      return { a, b: b2 };
+    }, { half, n: NX * NY * NZ });
+    chk(`limit ∩ selection: benches 0–2 selected → n ${r1b.a} = hand ${want1}; add benches 3–5 to the same selection → n ${r1b.b} = hand ${want2}`, r1b.a === want1 && r1b.b === want2);
+  }
 
   // ═══ §2 cut / fill inside a perimeter ═══
   const r2 = await evaluateSettled(p, async ({ A, Bt }) => {
