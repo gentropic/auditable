@@ -1,0 +1,32 @@
+{
+  "name": "@gcu/shp",
+  "version": "0.1.0",
+  "description": "ESRI Shapefile reader/writer (.shp + .shx + .dbf + .prj) over GeoJSON-shaped features. Points, lines, polygons with holes, Z (M dropped), dBASE attributes with .cpg encodings, and a one-word read of the .prj (geographic / projected / local). Zero-dependency, first-party, never reprojects.",
+  "type": "module",
+  "main": "./src/main.js",
+  "exports": {
+    ".": "./src/main.js",
+    "./bundled": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "index.js",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "node build.js"
+  },
+  "keywords": ["shapefile", "shp", "dbf", "prj", "esri", "gis", "geojson", "auditable", "gcu"],
+  "license": "MIT",
+  "author": "Arthur Endlein Correia",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gentropic/auditable.git",
+    "directory": "ext/shp"
+  },
+  "homepage": "https://github.com/gentropic/auditable/tree/main/ext/shp",
+  "bugs": {
+    "url": "https://github.com/gentropic/auditable/issues"
+  }
+}

@@ -7,6 +7,7 @@
 //   topology   CSR vertex->vertex and vertex->face adjacency for triangle meshes
 //   mesh QA    weld, watertight / manifold / orientation, shells, area + volume
 //   nearest    point → mesh distance (closest point on a triangle + a BVH descent) and side
+//   earclip    polygon triangulation (ear clipping, holes bridged) — plan-view polygon fills + caps
 //
 // Consumers: @gcu/winding (generalized winding number ON @gcu/geometry), @gcu/clar
 // (structural geology ON @gcu/geometry), micro. @gcu/peel still carries its own BVH;
@@ -21,3 +22,4 @@ export { raycastBVH } from './ray.js';
 export { buildAdjacency, neighbors, incidentFaces, degree, components } from './topology.js';
 export { weldVertices, meshQa } from './meshqa.js';
 export { closestPointOnTriangle, nearestBVH, bvhSlack, orientTriangles, pseudoNormals, sideOf } from './nearest.js';
+export { earclip, triangulateRings } from './earclip.js';

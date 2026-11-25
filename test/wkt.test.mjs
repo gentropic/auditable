@@ -73,6 +73,24 @@ test('precision option + negative/decimal coords', () => {
   assert.equal(stringify(g, { precision: 2 }), 'POINT (-1.23 2.5)');
 });
 
+test('QGIS spellings: glued dimension tags (PolygonZ, MultiLineStringZM) + M dropped', () => {
+  const g = parse('PolygonZ ((0 0 5, 10 0 5, 10 10 5, 0 0 5))');
+  assert.equal(g.type, 'Polygon');
+  assert.deepEqual(g.coordinates[0][1], [10, 0, 5]);
+  const m = parse('MultiLineStringZM ((1 2 3 9, 4 5 6 9))');
+  assert.deepEqual(m.coordinates, [[[1, 2, 3], [4, 5, 6]]]);
+  assert.deepEqual(parse('POINT M (1 2 7)').coordinates, [1, 2]);   // a measure is not a z
+  assert.deepEqual(parse('PointM (1 2 7)').coordinates, [1, 2]);
+  assert.deepEqual(parse('Point Z (1 2 3)').coordinates, [1, 2, 3]);
+});
+
+test('3D output carries the Z tag and round-trips', () => {
+  const s = stringify({ type: 'Polygon', coordinates: [[[0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 0, 1]]] });
+  assert.equal(s, 'POLYGON Z ((0 0 1, 1 0 1, 1 1 1, 0 0 1))');
+  assert.deepEqual(parse(s).coordinates[0][2], [1, 1, 1]);
+  assert.equal(stringify({ type: 'Point', coordinates: [1, 2, 3] }), 'POINT Z (1 2 3)');
+});
+
 test('malformed input throws clearly', () => {
   assert.throws(() => parse('POINT (1)'), /coordinate|bad number|expected/);
   assert.throws(() => parse('WIBBLE (1 2)'), /unknown type/);
