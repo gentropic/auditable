@@ -51,6 +51,8 @@ job('compare built', 'micro-compare-smoke.mjs', '--built');
 job('wfr', 'micro-wfr-smoke.mjs');
 job('polygons', 'micro-polygons-smoke.mjs');    // strings & polygons: readers (CSV strings, WKT, WKT-CSV, shapefile, GeoJSON), the CRS refusal, exports, QGIS clipboard, draw / edit, project
 job('polygons built', 'micro-polygons-smoke.mjs', '--built');
+job('polylimit', 'micro-polylimit-smoke.mjs');  // polygons as limits (GT / stats / swath / cut-fill / DEM) + extrusion to solids (z-range, oriented, between surfaces) into by-solid
+job('polylimit built', 'micro-polylimit-smoke.mjs', '--built');
 job('nl', 'micro-nl-smoke.mjs');               // the plain-language bar: wiring + propose-never-act (accuracy: test/micro-nl.test.mjs)
 const todo = ONLY.length ? jobs.filter((j) => ONLY.some((o) => j.name.includes(o))) : jobs;
 if (has('list')) { for (const j of todo) console.log(`${j.name.padEnd(20)} node ${j.argv.join(' ')}`); process.exit(0); }
