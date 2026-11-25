@@ -263,7 +263,15 @@ export async function lineageMd(p) {
 
 // ── the map: the Δ layer alone, its unchanged blocks filtered out, from above (and in section) ──
 const MAP_FILTER = 'change != "unchanged"';
+// the change classes carry meaning, so their colours are fixed (added green, removed red, changed amber,
+// unchanged grey) — set once; a legend the user has restyled is left alone
+const CHANGE_COLORS = [['added', '#3a9a4b'], ['removed', '#c8413b'], ['changed', '#e0a32e'], ['unchanged', '#8d9399']];
+function changeLegend(J) {
+  if (J.catLegend && J.catLegend.col === 'change') return;
+  J.catLegend = { col: 'change', entries: CHANGE_COLORS.map(([v, color]) => ({ label: v, values: [v], color })), otherColor: '#555a5f' };
+}
 async function mapScene(J, { color = 'delta', section = false, aspect = 1 } = {}) {
+  changeLegend(J);
   const sc = captureScene('compare map');
   for (const sl of sc.layers) sl.visible = sl.name === J.name;
   const sl = sc.layers.find((q) => q.name === J.name);
@@ -317,7 +325,7 @@ export async function buildComparisonReport(p, { name = null, result = null } = 
       const boxes = p.section ? [[m, yv, wv, (hv - 3) / 2], [m, yv + (hv - 3) / 2 + 3, wv, (hv - 3) / 2]] : [[m, yv, wv, hv]];
       for (let i = 0; i < boxes.length; i++) {
         await mapScene(J, { color: p.mapColor || 'delta', section: i === 1, aspect: boxes[i][2] / boxes[i][3] });
-        const f = addViewFrame(ed, { box: boxes[i], border: true });
+        const f = addViewFrame(ed, { box: boxes[i], border: true, bg: '#ffffff' });   // a report's map on paper, whatever the 3D view's background
         if (f) views.push(f);
       }
       const lc = legendContentFor(J);

@@ -201,17 +201,21 @@ function afterFacts(ed, id) {
 }
 function viewFrameContent(f) {
   const scene = captureScene(f.source && f.source.name || 'view');
-  f.source = { app: 'micro', kind: 'view', scene, bg: _bgColor, ...(f.source && f.source.keyFor ? { keyFor: f.source.keyFor } : {}) };   // a key plan stays one
-  const r = renderInto(f, PREVIEW_PX_PER_MM, null);
+  // a frame given its own background (bgFixed — a report's map on paper) keeps it through re-captures;
+  // any other frame follows the 3D view's background
+  const fixed = f.source && f.source.bgFixed;
+  f.source = { app: 'micro', kind: 'view', scene, bg: fixed || _bgColor, ...(fixed ? { bgFixed: fixed } : {}), ...(f.source && f.source.keyFor ? { keyFor: f.source.keyFor } : {}) };   // a key plan stays one
+  const r = renderInto(f, PREVIEW_PX_PER_MM, fixed || null);
   storeImage(f, r.canvas, r.meta);
 }
-export function addViewFrame(ed, { box = null, border = true } = {}) {   // box: [x, y, w, h] mm — else sized to the canvas's aspect
+// bg: a background for THIS frame's renders (e.g. '#ffffff' — a report's map on paper), else the 3D view's own
+export function addViewFrame(ed, { box = null, border = true, bg = null } = {}) {   // box: [x, y, w, h] mm — else sized to the canvas's aspect
   if (!S.layers.length) { $('#meta').textContent = 'composer: open some data first — a view frame renders the 3D view'; return null; }
   const doc = ed.getDoc(), [W, H] = pageDims(doc.page), m = doc.page.margins || [10, 10, 10, 10];
   const r = S.cv.getBoundingClientRect(), aspect = r.width / Math.max(1, r.height);
   let w = Math.min(W - m[1] - m[3], 0.72 * (W - m[1] - m[3])), h = w / aspect;
   const hMax = H - m[0] - m[2] - 18; if (h > hMax) { h = hMax; w = h * aspect; }
-  const f = ed.addFrame({ kind: 'image', box: box || [m[3], m[0], +w.toFixed(1), +h.toFixed(1)], content: { photo: true }, source: { app: 'micro', kind: 'view' }, style: { border } });
+  const f = ed.addFrame({ kind: 'image', box: box || [m[3], m[0], +w.toFixed(1), +h.toFixed(1)], content: { photo: true }, source: { app: 'micro', kind: 'view', ...(bg ? { bgFixed: bg } : {}) }, style: { border } });
   ed.update(f.id, (fr) => viewFrameContent(fr));
   afterFacts(ed, f.id);
   $('#meta').textContent = 'composer: the 3D view went into a frame — resize it freely; "Update from the 3D view" re-captures it';
