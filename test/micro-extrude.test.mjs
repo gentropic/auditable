@@ -169,3 +169,23 @@ test('extrude between surfaces: holes on whole metres stay closed, volume = the 
   }
   assert.equal(bad, 0, `${bad} of 200 holed polygons came out non-manifold or with the wrong volume`);
 });
+
+// the conforming pass must not break what worked: the polylimit smoke's pit (a pentagon with a hole,
+// off-grid coordinates) between a sloping plane and a level. The first conform split the clipper's
+// SLIVERS (a vertex on its own opposite edge) at their own vertex and tangled the cap (caught by the
+// release gate). Volume = the integral of the linear thickness over the pentagon minus the hole.
+test('extrude between surfaces: a pentagon with a hole on off-grid coordinates stays closed', () => {
+  const P5 = [[12.3, 8.1], [150.2, 20.7], [180.9, 120.4], [90.5, 178.8], [20.1, 110.6]].map(([x, y]) => [E0 + x, N0 + y, 850]);
+  const H4 = [[70.4, 60.3], [105.6, 60.3], [105.6, 95.2], [70.4, 95.2]].map(([x, y]) => [E0 + x, N0 + y, 850]);
+  const f = poly(P5, H4);
+  const top = (x, y) => 840 + 0.05 * (x - E0) + 0.02 * (y - N0);
+  // ∫∫ (top − 818) dA = (840 − 818)·A + 0.05·Sx + 0.02·Sy, with A, Sx, Sy the area and first moments
+  const mom = (r) => { let a = 0, sx = 0, sy = 0; for (let i = 0, n = r.length, j = n - 1; i < n; j = i++) { const xi = r[i][0] - E0, yi = r[i][1] - N0, xj = r[j][0] - E0, yj = r[j][1] - N0, k = xj * yi - xi * yj; a += k / 2; sx += (xj + xi) * k / 6; sy += (yj + yi) * k / 6; } return a < 0 ? [-a, -sx, -sy] : [a, sx, sy]; };
+  const [a1, x1, y1] = mom(P5), [a2, x2, y2] = mom(H4);
+  const want = 22 * (a1 - a2) + 0.05 * (x1 - x2) + 0.02 * (y1 - y2);
+  for (const tol of [0.05, 0.5]) {
+    const m = extrudeBetween(f, { top, bottom: () => 818, tol });
+    watertight(m, `pit, tol ${tol}`);
+    near(meshVolume(m.vertices, m.triangles), want, 1e-6 * want, `pit volume, tol ${tol}`);
+  }
+});

@@ -90,13 +90,22 @@ function conform(P, T) {
   const cell = (x, y) => [Math.min(G - 1, Math.max(0, Math.floor((x - x0) / cw))), Math.min(G - 1, Math.max(0, Math.floor((y - y0) / ch)))];
   const grid = Array.from({ length: G * G }, () => []);
   P.forEach((p, i) => { const [cx, cy] = cell(p[0], p[1]); grid[cx + cy * G].push(i); });
-  // the vertex strictly inside segment a → b, if any
-  const onEdge = (a, b) => {
+  // is vertex v strictly inside segment a → b (to a relative 1e-9)?
+  const between = (v, a, b) => {
+    const A = P[a], B = P[b], ex = B[0] - A[0], ey = B[1] - A[1], L2 = ex * ex + ey * ey;
+    if (!(L2 > 0)) return false;
+    const V = P[v], vx = V[0] - A[0], vy = V[1] - A[1], t = (vx * ex + vy * ey) / L2;
+    if (t <= 1e-9 || t >= 1 - 1e-9) return false;
+    const cr = vx * ey - vy * ex;
+    return cr * cr <= 1e-18 * L2 * L2;
+  };
+  // the vertex strictly inside segment a → b, if any (never the triangle's own third vertex `own`)
+  const onEdge = (a, b, own) => {
     const A = P[a], B = P[b], ex = B[0] - A[0], ey = B[1] - A[1], L2 = ex * ex + ey * ey;
     if (!(L2 > 0)) return -1;
     const [ca, ra] = cell(Math.min(A[0], B[0]), Math.min(A[1], B[1])), [cb, rb] = cell(Math.max(A[0], B[0]), Math.max(A[1], B[1]));
     for (let r = ra; r <= rb; r++) for (let c = ca; c <= cb; c++) for (const v of grid[c + r * G]) {
-      if (v === a || v === b) continue;
+      if (v === a || v === b || v === own) continue;
       const V = P[v], vx = V[0] - A[0], vy = V[1] - A[1];
       const t = (vx * ex + vy * ey) / L2;
       if (t <= 1e-9 || t >= 1 - 1e-9) continue;
@@ -112,9 +121,13 @@ function conform(P, T) {
   while (stack.length) {
     if (++guard > 8 * (T.length + n) + 1000) throw new Error('extrude: the cap triangulation did not settle');
     const [a, b, c] = stack.pop();
+    // a SLIVER — one of its own vertices on its opposite edge (the clipper leaves these on the long
+    // straight runs the edge-splitting makes): no area, so it goes; the triangle across that edge
+    // then carries the vertex inside its edge and is split below, keeping the cap consistent
+    if (between(c, a, b) || between(a, b, c) || between(b, c, a)) continue;
     let split = false;
     for (const [p, q, r] of [[a, b, c], [b, c, a], [c, a, b]]) {
-      const v = onEdge(p, q);
+      const v = onEdge(p, q, r);
       if (v >= 0) { stack.push([p, v, r], [v, q, r]); split = true; break; }   // same winding as p, q, r
     }
     if (!split) out.push(a, b, c);
