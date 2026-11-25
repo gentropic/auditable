@@ -462,6 +462,16 @@ registerField('prop', (a, f, env) => {
   return own != null && own !== '' ? own : house != null && house !== '' ? house : '—';
 }, "a property — the figure's own (drawing, revision) over the project's (company, client, project, prepared, checked): {prop:client}");
 
+// {crs} — the coordinate reference system the host states (env.crs = { name, code } — code like
+// 'EPSG:31983', or null for a custom definition): {crs} = "name · code", {crs:name}, {crs:code}
+registerField('crs', (a, f, env) => {
+  const c = env.crs;
+  if (!c || !c.name) return '—';
+  if (a === 'name') return c.name;
+  if (a === 'code') return c.code || 'custom';
+  return c.code ? `${c.name} · ${c.code}` : c.name;
+}, 'the coordinate system: {crs} = “SIRGAS 2000 / UTM zone 23S · EPSG:31983” · {crs:name} · {crs:code}');
+
 // {name}  {name:arg}  {name:arg:spec}  … and @id last: {scale@plan}, {mean:AU:.2f@plan}
 const FIELD_RE = /\{([A-Za-z][\w-]*)(?::([^{}@]*))?(?:@([\w.-]+))?\}/g;
 function resolveFields(src, env = {}, frame = null) {

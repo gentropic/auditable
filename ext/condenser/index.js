@@ -87,6 +87,20 @@ function parseLasVlrs(header, bytes) {
   for (let k = 0; k < header.vlrCount && o + 54 <= dv.byteLength; k++) {
     const user = cstr(dv, o + 2, 16), id = dv.getUint16(o + 18, true), len = dv.getUint16(o + 20, true);
     const data = o + 54;
+    // the coordinate system (LAS 1.4 §2.5): "LASF_Projection" 2112 = OGC WKT text; 34735 = the
+    // GeoTIFF GeoKeyDirectory (inline SHORT keys: 3072 ProjectedCSType, 2048 GeographicType, …).
+    // Recorded on the header as header.crs = { wkt } | { geoKeys } — naming it is the host's job.
+    if (user === 'LASF_Projection' && data + len <= dv.byteLength) {
+      if (id === 2112) { let s = ''; for (let i = 0; i < len; i++) { const c = dv.getUint8(data + i); if (!c) break; s += String.fromCharCode(c); } if (s.trim()) header.crs = { ...(header.crs || {}), wkt: s.trim() }; }
+      else if (id === 34735 && len >= 8) {
+        const nk = dv.getUint16(data + 6, true), keys = {};
+        for (let k2 = 0; k2 < nk && data + 8 + 8 * k2 + 8 <= data + len; k2++) {
+          const e = data + 8 + 8 * k2, kid = dv.getUint16(e, true), loc = dv.getUint16(e + 2, true);
+          if (loc === 0) keys[kid] = dv.getUint16(e + 6, true);
+        }
+        header.crs = { ...(header.crs || {}), geoKeys: keys };
+      }
+    }
     if (user === 'LASF_Spec' && id === 4 && data + len <= dv.byteLength) {
       let at = RECLEN[header.format];
       for (let d = data; d + 192 <= data + len; d += 192) {
