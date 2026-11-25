@@ -121,6 +121,8 @@ import { COMMANDS } from './commands.js';
 import { isPolygonLayer, featuresOf, pointInPolygonXY, preparePolygons, polygonAreaXY, setFeatureFill, setFeatureCategory } from './polygons.js';
 import { resolveLimit, limitMaskOf, prepareScope, polygonLayers } from './polylimit.js';
 import { extrudeSolids, extrudeToLayers, openExtrude } from './extrude.js';
+import { sectionLines, sectionLinesToLayer, openSectionLines, resolvePlanes } from './sectionlines.js';
+import { blockOutlines, blockOutlinesToLayer, openBlockOutlines } from './blockoutline.js';
 import { manifoldCheck } from './extrude-core.js';
 import { planCoverage } from './coverage.js';
 import { buildFeatureExport, readFeatureFile } from './poly-io.js';
@@ -202,6 +204,7 @@ window._micro = {
   zoneKeeper, paintVolume, layerShown, backupProject, restoreProject, openProjectPack, openPackFile,
   isPolygonLayer, featuresOf, pointInPolygonXY, preparePolygons, polygonAreaXY, setFeatureFill, setFeatureCategory,
   resolveLimit, limitMaskOf, prepareScope, polygonLayers, extrudeSolids, extrudeToLayers, openExtrude, manifoldCheck, planCoverage,
+  sectionLines, sectionLinesToLayer, openSectionLines, resolvePlanes, blockOutlines, blockOutlinesToLayer, openBlockOutlines,
   buildFeatureExport, readFeatureFile, exportFeatures, copyFeaturesText, pasteFeaturesText, editFeatures, newFeatureLayer,
   setFeatureElevation, polyDraw, armDraw, armEditVertices, disarmPoly, addDraftVertex, finishDraw, moveVertex,
   insertVertex, deleteVertex, worldAt,

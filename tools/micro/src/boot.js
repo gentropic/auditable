@@ -23,4 +23,6 @@ import './dialogs.js';        // the dialog stack, Escape, Android Back
 import './panels.js';         // the side panels' widths and buttons
 import './projectgrid.js';    // projection to grid (its tool + window + the View menu row) — after the analysis stack it builds on
 import './extrude.js';        // polygons → closed solids (its tool + window + the Tools menu row)
+import './sectionlines.js';   // section cuts → strings (its tool + window + menu rows)
+import './blockoutline.js';   // bench outlines → polygons (its tool + window + menu rows)
 import './api.js';            // window._micro + window.micro — last: announcing says micro is up

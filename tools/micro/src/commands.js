@@ -41,3 +41,17 @@ export function menuContributions(menu) {
   for (const fn of _menus.get(menu) || []) out.push(...(typeof fn === 'function' ? fn() : fn));
   return out.length ? [{ sep: true }, ...out] : [];
 }
+
+// ── the layer context menu's extra rows: contributeLayerMenu('geometry', (L) => [ …items… ]) adds them
+// to that submenu (src/layermenu.js) for the layer the menu is open on — a feature module registers
+// here instead of being imported by the menu, so it stays out of the menu's import cycle ──
+const _layerMenus = new Map();
+export function contributeLayerMenu(section, fn) {
+  if (!_layerMenus.has(section)) _layerMenus.set(section, []);
+  _layerMenus.get(section).push(fn);
+}
+export function layerMenuContributions(section, L) {
+  const out = [];
+  for (const fn of _layerMenus.get(section) || []) { try { out.push(...(fn(L) || [])); } catch { /* a contributor that can't judge this layer adds nothing */ } }
+  return out;
+}

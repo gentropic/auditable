@@ -1,6 +1,7 @@
 // the layer context menu and the actions behind it: fit, remove, mesh tier, tint, opacity
 import { openCompareDialog, comparableLayers } from './compare.js';
 import { S, layerById, requestRender } from './state.js';
+import { layerMenuContributions } from './commands.js';
 import { microConfirm, microPrompt } from './prompts.js';
 import { removeLayerUI, setActiveLayer } from './layers.js';
 import { createLayerGroup, showNode, treeMoveStep } from './tree.js';
@@ -133,6 +134,7 @@ export function layerMenuSections(L, x, y) {
     ...(L.docs.gridDoc || (h && !h.soup) ? [{ label: 'Extend to footprint…', action: () => openSurfaceTools('extend', L) },
       ...(surfaceableLayers().length >= 2 ? [{ label: 'Combine surfaces…', action: () => openSurfaceTools('combine', L) }] : [])] : []),
     ...poly.geometry,
+    ...layerMenuContributions('geometry', L),           // section lines, bench outlines … (contributeLayerMenu, src/commands.js)
   ];
 
   // ── Select: the filter and the selection, turned into each other or into a column ──
