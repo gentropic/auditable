@@ -11,7 +11,7 @@
 // Every number is checked against an answer worked out independently of micro.
 // Run: node test/micro-compare-smoke.mjs (the dev tree) · --built (micro.html).
 import { chromium } from 'playwright';
-import { installSmokeWaits } from './smoke-wait.mjs';
+import { installSmokeWaits, evaluateSettled } from './smoke-wait.mjs';
 import http from 'http';
 import { readFile, mkdir } from 'fs/promises';
 import { extname } from 'path';
@@ -82,17 +82,17 @@ const chk = (n, c) => { console.log(`${c ? 'ok  ' : 'FAIL'}  ${n}`); c ? pass++ 
 const mkPage = async () => {
   const p = await ctx.newPage(); p.on('pageerror', (e) => { console.log('PAGEERROR', e.message); fail++; });
   await p.goto(`http://127.0.0.1:${PORT}${APP}`, { waitUntil: 'load' });
-  // after the first load, say WHY the page goes away if it does (a navigation, a renderer crash, a
-  // download) — an intermittent "execution context was destroyed" on one GPU, 2026-11-25
+  // after the first load, say WHY the page goes away if it does (a navigation, a renderer crash).
+  // The async page functions below go through evaluateSettled: an "execution context was
+  // destroyed" here on the Linux labs was no navigation but V8's inspector losing the evaluate's
+  // settled promise to a GC (see smoke-wait.mjs), 2026-11-25
   p.on('framenavigated', (fr) => { if (fr === p.mainFrame()) console.log('NAVIGATED', fr.url()); });
   p.on('crash', () => console.log('PAGE CRASHED (renderer)'));
-  p.on('download', (d) => console.log('DOWNLOAD', d.suggestedFilename()));
-  p.on('console', (m) => { if (/^STEP |context lost|CONTEXT_LOST|webgl/i.test(m.text()) || m.type() === 'error') console.log('CONSOLE', m.type(), m.text().slice(0, 160)); });
-  p.on('close', () => console.log('PAGE CLOSED'));
+  p.on('console', (m) => { if (/context lost|CONTEXT_LOST|webgl/i.test(m.text()) || m.type() === 'error') console.log('CONSOLE', m.type(), m.text().slice(0, 160)); });
   await p.waitForFunction(() => window._micro && window._micro.addLayer, null, { timeout: 30000 });
   return p;
 };
-const open = (p, files) => p.evaluate(async (fs) => { const M = window._micro; for (const [n, t] of fs) await M.openBlob(new File([t], n), n, 'add'); return M.layers().map((q) => q.name); }, files);
+const open = (p, files) => evaluateSettled(p, async (fs) => { const M = window._micro; for (const [n, t] of fs) await M.openBlob(new File([t], n), n, 'add'); return M.layers().map((q) => q.name); }, files);
 const P = { old: 'old.csv', new: 'new.csv', grade: 'AU', density: { const: 2.5 }, groupBy: ['DOMAIN', 'CLASS'], cutoffs: CUTS };
 
 try {
@@ -100,7 +100,7 @@ try {
   await open(p, [['old.csv', OLD.csv], ['new.csv', NEW.csv]]);
 
   // ═══ §1 + §3 the numbers, through the routine tool ═══
-  const t = await p.evaluate(async (P) => {
+  const t = await evaluateSettled(p, async (P) => {
     const M = window._micro, res = await M.runTool('comparemodels', P);
     const scope = { cmp: res.values };
     return { table: res.table, values: res.values, layers: res.layers, gate5: M.routineEval('abs(cmp.delta_metal_pct) < 2', scope), gate10: M.routineEval('abs(cmp.delta_metal_pct) < 5', scope),
@@ -127,7 +127,7 @@ try {
   chk(`routine rules: a routine must state cutoffs (“${(t.routine[0] || '').slice(0, 50)}”); “cutof” → did you mean “cutoffs”`, t.routine.some((e) => /^cutoffs: a routine must state it/.test(e)) && t.typo.some((e) => /did you mean “cutoffs”/.test(e)));
 
   // ═══ §2 the Δ map: categories counted on the layer itself ═══
-  const m = await p.evaluate(async (name) => {
+  const m = await evaluateSettled(p, async (name) => {
     const M = window._micro, J = M.layers().find((q) => q.name === name), h = M.layerTableHeader(J), ci = h.columns.indexOf('change'), di = h.columns.findIndex((c) => c.startsWith('Δ'));
     const cnt = {}; let dmax = 0;
     for await (const { f } of M.layerRecords(J)) { cnt[f[ci]] = (cnt[f[ci]] || 0) + 1; if (f[di] !== '' && Math.abs(+f[di]) > dmax) dmax = Math.abs(+f[di]); }
@@ -138,7 +138,7 @@ try {
   const amax = Math.max(...NEW.rows.filter((r) => r.dom === 'A' && r.k < 4).map((r) => Math.abs(r.au - auOf(r.i, r.j, r.k))));
   chk(`its Δ grade reaches ${m.dmax.toFixed(4)} = the largest +10 % by hand ${amax.toFixed(4)}`, Math.abs(m.dmax - amax) < 1e-5);
   // a lattice shifted by half a block: the table still compares, the map is refused with the check's reason
-  const sh = await p.evaluate(async (csv) => {
+  const sh = await evaluateSettled(p, async (csv) => {
     const M = window._micro; await M.openBlob(new File([csv], 'shifted.csv'), 'shifted.csv', 'add');
     const c = M.compareCompat(M.layers().find((q) => q.name === 'old.csv'), M.layers().find((q) => q.name === 'shifted.csv'));
     let err = null; try { await M.runTool('comparemodels', { old: 'old.csv', new: 'shifted.csv', grade: 'AU', density: { const: 2.5 }, cutoffs: [0] }); } catch (e) { err = e.message; }
@@ -149,7 +149,7 @@ try {
   chk(`a lattice shifted half a block: refused for the map (“${(sh.err || '').slice(0, 90)}”), the table alone still compares (Δ metal ${sh.delta} %, no layer)`, !sh.c.ok && sh.err && sh.err.includes(sh.c.reason) && sh.delta === 0 && !sh.layers);
 
   // ═══ §4 the page, through the dialog; then ↻ refresh after the new model changes ═══
-  const pg = await p.evaluate(async () => {
+  const pg = await evaluateSettled(p, async () => {
     const M = window._micro;
     const L = M.layers().find((q) => q.name === 'new.csv');
     const menu = (() => { const walk = (items) => items.flatMap((it) => [it.label, ...(Array.isArray(it.submenu) ? walk(it.submenu) : typeof it.submenu === 'function' ? walk(it.submenu()) : [])]); return walk(M.layerMenuSections(L, 100, 100)); })();
@@ -185,15 +185,11 @@ try {
   try { await mkdir('experiments', { recursive: true }); await p.locator('.composer-win').screenshot({ path: `experiments/compare-report${BUILT ? '-built' : ''}.png` }); console.log(`     screenshot: experiments/compare-report${BUILT ? '-built' : ''}.png`); } catch (e) { console.log('     (no screenshot: ' + e.message + ')'); }
 
   // ↻ refresh: domain B moves +5 % in a new version of new.csv — the table, its fields and the map follow
-  const rf = await p.evaluate(async (csv) => {
+  const rf = await evaluateSettled(p, async (csv) => {
     const M = window._micro, fig = M.currentFigure();
-    console.log('STEP remove');
     window.micro.removeLayer(M.layers().find((q) => q.name === 'new.csv').id);
-    console.log('STEP open');
     await M.openBlob(new File([csv], 'new.csv'), 'new.csv', 'add');
-    console.log('STEP refresh');
     const n = await M.refreshViews(fig);
-    console.log('STEP done');
     const doc = fig.doc, env = { ...M.composerEnv({}), doc };
     const tf = doc.frames.find((f) => f.source && f.source.kind === 'compare'), mv = doc.frames.find((f) => f.source && f.source.kind === 'compare-moves');
     return { n, dmp: env.fields.cmp('delta_metal_pct', mv, env), changed: env.fields.cmp('changed', mv, env), unchanged: env.fields.cmp('unchanged', mv, env), stale: !!M.staleOf(tf),
@@ -203,7 +199,7 @@ try {
   chk(`↻ refresh after the new model changed: {cmp:delta_metal_pct} ${rf.dmp} = by hand ${H2.tot.dmp} (was ${H1.tot.dmp}); the map recounted: ${rf.changed} changed, ${rf.unchanged} unchanged (by hand 396, 0); not stale`, close(rf.dmp, H2.tot.dmp) && rf.changed === 396 && rf.unchanged === 0 && !rf.stale && rf.n >= 3);
   chk(`… and the table row B · MEAS reads Δ grade ${rf.bmeas && rf.bmeas[8]} (by hand +${(100 * (bm.ng - bm.og) / bm.og).toFixed(1)} %)`, rf.bmeas && rf.bmeas[8] === `+${(100 * (bm.ng - bm.og) / bm.og).toFixed(1)} %`);
   // the routine tool makes the page too (figure:), with the map also in section; a second run makes it again, not twice
-  const rt = await p.evaluate(async (P) => {
+  const rt = await evaluateSettled(p, async (P) => {
     const M = window._micro, n0 = M.figures().length;
     await M.runTool('comparemodels', { ...P, figure: 'monthly', section: true });
     const fig = M.figures().find((f) => f.name === 'monthly'), views = fig.doc.frames.filter((f) => f.source && f.source.kind === 'view');

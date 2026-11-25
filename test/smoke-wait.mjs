@@ -33,3 +33,44 @@ export async function installSmokeWaits(browser) {
 }
 
 export const smokeTimeoutScale = SCALE;
+
+// page.evaluate of an ASYNC page function that does heavy work, without awaiting its promise
+// over the DevTools protocol.
+//
+// Playwright evaluates through CDP Runtime.callFunctionOn with awaitPromise, and V8's inspector
+// tracks that promise with a WEAK handle. Once the promise settles nothing else holds it; its
+// reaction (the inspector's own then-callback) is only a queued microtask. A garbage collection
+// in that gap clears the handle and CDP answers "Promise was collected", even though the page
+// function finished — and Playwright reports any such protocol error as "Execution context was
+// destroyed, most likely because of a navigation". No navigation happened. The gap is
+// dangerous when the promise settles in the middle of the app's own microtask cascade (the page
+// function's last awaits resolve among the app's promises, which allocate): a GC lands there
+// now and then, more often on some machines than others (micro-compare-smoke's refresh: never
+// on Windows, 2–7 in 15 on the Linux labs, 2026-11-25). Forcing a GC into the gap reproduces it
+// on any page, every time.
+//
+// Here the page function runs detached: a SYNC evaluate starts it and parks its outcome in a
+// window slot, sync evaluates poll the slot, and a sync evaluate reads the result. A sync
+// evaluate settles on its own protocol task with nothing else queued, so nothing allocates in
+// its gap. `arg` must be JSON (it is spliced into the expression); the function, as with
+// page.evaluate, sees no Node closure.
+let _settledSeq = 0;
+export async function evaluateSettled(page, fn, arg, { poll = 25, timeout = 600000 } = {}) {
+  const key = `__evaluateSettled${++_settledSeq}`, K = JSON.stringify(key);
+  // the function is compiled HERE, inside the protocol call (a CSP that forbids eval doesn't apply
+  // to the inspector); only calling it is deferred, out of the protocol call
+  await page.evaluate(`(() => {
+    const fn = (${fn.toString()}), slot = window[${K}] = { done: false };
+    Promise.resolve().then(() => fn(${arg === undefined ? '' : JSON.stringify(arg)})).then(
+      (value) => { slot.value = value; slot.done = true; },
+      (e) => { slot.error = (e && (e.stack || e.message)) || String(e); slot.done = true; });
+  })()`);
+  const t0 = Date.now(), limit = timeout * SCALE;
+  while (!(await page.evaluate((k) => window[k].done, key))) {
+    if (Date.now() - t0 > limit) throw new Error(`evaluateSettled: the page function did not finish in ${limit} ms`);
+    await new Promise((r) => setTimeout(r, poll));
+  }
+  const s = await page.evaluate((k) => { const s = window[k]; delete window[k]; return s; }, key);
+  if (s.error) throw new Error(`evaluateSettled: ${s.error}`);
+  return s.value;
+}
