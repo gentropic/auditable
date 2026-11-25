@@ -10,6 +10,7 @@ import { clearMeasure } from './overlay.js';
 import { renderLayers } from './layers-panel.js';
 import { syncMeshPickable } from './surfaces.js';
 import { addPaintColorOptions } from './paint.js';
+import { sceneOrigin, plantSceneFrame, clearSceneFrame } from './coords.js';
 const $ = (s) => document.querySelector(s);
 
 export const rendererDocBbox = () => S.docBbox || Float64Array.of(0, 0, 0, 1, 1, 1);
@@ -17,8 +18,8 @@ export const rendererDocBbox = () => S.docBbox || Float64Array.of(0, 0, 0, 1, 1,
 export function fitFromHeader(header, first = true) {
   // the FIRST dataset plants the document frame; later layers REBASE into it
   // (pure world-true translation — micro-layers spec §2). No reprojection ever.
-  if (!S.frame) S.frame = documentFrame(header, { crs: null });
-  const o = S.frame.origin, b = header.bbox;
+  plantSceneFrame(header);
+  const o = sceneOrigin(), b = header.bbox;
   const local = Float64Array.of(b.min[0] - o[0], b.min[1] - o[1], b.min[2] - o[2], b.max[0] - o[0], b.max[1] - o[1], b.max[2] - o[2]);
   if (first) { S.docBbox = local; S.cam.fit(local); }
   else if (S.docBbox) {
@@ -48,7 +49,7 @@ export function closeAllLayers() {
   for (const L of S.layers) { pinEvictLayer(L.id); closeCompactBuilder(L.id); dropValueTex(L); }   // nothing pinned (or still compacting, or a value texture) survives a clear
   for (const [lid] of _attrTables) closeAttrTable(lid);
   S.renderer.clearChunks(); S.renderer.setPicked(null);
-  S.layers = []; S.activeId = 0; S.frame = null; S.docBbox = null;
+  S.layers = []; S.activeId = 0; clearSceneFrame(); S.docBbox = null;
   resetFilterState();
   $('#filter').value = ''; syncFilterClear();
   $('#recPanel').classList.remove('show');

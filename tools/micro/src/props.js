@@ -30,6 +30,7 @@ import { useAsCategory, setColType, qualifyMenuItems } from './coltypes.js';
 import { dropRampRepaint, renderClassesTab, renderStyleTab } from './props-style.js';
 import { canPlace, openPlacementDialog } from './placement-ui.js';
 import { placementLine, RESIDUAL_COLOR } from './placement.js';
+import { hasSceneFrame, sceneOrigin } from './coords.js';
 const $ = (s) => document.querySelector(s);
 
 // ── layer properties (§10 v1): follows the ACTIVE layer, live-apply, tabbed.
@@ -463,5 +464,5 @@ function renderSourceTab(body, L) {
       line(html`${ax} <span class="v">${fm(h.bbox.min[i])}</span> – <span class="v">${fm(h.bbox.max[i])}</span> <span class="fi-x">· Δ</span> <span class="v">${fm(h.bbox.max[i] - h.bbox.min[i])}</span>`);
     }
   }
-  if (S.frame) { sec('frame'); line(html`origin <span class="v">${S.frame.origin.map(fm).join(', ')}</span>`); }
+  if (hasSceneFrame()) { sec('frame'); line(html`origin <span class="v">${sceneOrigin().map(fm).join(', ')}</span>`); }
 }

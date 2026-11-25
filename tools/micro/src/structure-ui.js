@@ -33,6 +33,7 @@ import { zoomToPoint } from './camera.js';
 import { addPaintValue, createPaintCol, paintApply } from './paint.js';
 import { meshHitAt, pixelRay } from './pick.js';
 import { registerCommands } from './commands.js';
+import { sceneOrigin, rayLocalToWorld } from './coords.js';
 const $ = (s) => document.querySelector(s);
 
 export const _structWins = new Map();                       // mesh layer id → handle
@@ -545,8 +546,8 @@ async function regionUnder(L, x, y, eraseKey) {
   // painting stays out of OTHER sets; erasing walks only paint
   const exclude = new Uint8Array(st.nv);
   for (let j = 0; j < st.nv; j++) exclude[j] = erase ? (codes[j] === 0 ? 1 : 0) : (codes[j] && codes[j] !== hd.active ? 1 : 0);
-  const { o, d } = pixelRay(x, y), org = S.frame.origin;
-  const ray = { origin: [o[0] + org[0], o[1] + org[1], o[2] + org[2]], direction: d };
+  const rw = rayLocalToWorld(pixelRay(x, y));
+  const ray = { origin: rw.o, direction: rw.d };
   const r = regionAt(st, hit, ray, shape, { angle: prefs.angle, distance: prefs.distance, radius: prefs.radius }, exclude);
   // the seed itself may sit in another set (painting) or be unpainted (erasing) — nothing to do there
   if (exclude[r.seed]) return { blocked: true, code: codes[r.seed], st, col, hd };
@@ -560,7 +561,7 @@ async function vertexUnder(L, x, y) {
   if (L.traces && L.traces.length) {
     // SNAP_PX on screen, as a distance in the world at the hit's depth
     const r0 = pixelRay(x, y), r1 = pixelRay(x + SNAP_PX, y);
-    const o = S.frame ? S.frame.origin : [0, 0, 0];
+    const o = sceneOrigin();
     const rel = [hit.point[0] - o[0] - r0.o[0], hit.point[1] - o[1] - r0.o[1], hit.point[2] - o[2] - r0.o[2]];
     const t = (rel[0] * r0.d[0] + rel[1] * r0.d[1] + rel[2] * r0.d[2]) / (r0.d[0] ** 2 + r0.d[1] ** 2 + r0.d[2] ** 2);
     const rad = Math.hypot(...[0, 1, 2].map((k) => (r1.o[k] - r0.o[k]) + (r1.d[k] - r0.d[k]) * t));

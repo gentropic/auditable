@@ -7,6 +7,7 @@ import { fmtSize } from './paths.js';
 import { basisAngles, supportOfHeader, supportToWorld } from '../../../ext/condenser/src/main.js';
 import { pinStats } from './columns.js';
 import { crsLabel } from './crs.js';
+import { hasSceneFrame, sceneOrigin } from './coords.js';
 const $ = (s) => document.querySelector(s);
 
 // the header panel: everything the providers learned about the open file.
@@ -57,7 +58,7 @@ export function showFileInfo() {
       row(ax, html`${num(h.bbox.min[i])} ${sep('–')} ${num(h.bbox.max[i])} ${sep('(Δ')} ${num(h.bbox.max[i] - h.bbox.min[i])}${sep(')')}`);
     }
   }
-  if (S.frame) row('frame origin', html`${joinH(S.frame.origin.map(num), sep(', '))}${S.frame.crs ? html` ${sep('·')} ${V(S.frame.crs)}` : ''}`);
+  if (hasSceneFrame()) row('frame origin', html`${joinH(sceneOrigin().map(num), sep(', '))}${S.frame.crs ? html` ${sep('·')} ${V(S.frame.crs)}` : ''}`);
   row('project CRS', V(S.crs ? crsLabel(S.crs) : null, S.crs ? crsLabel(S.crs) : 'none set'));
   if (h.crsName) row('file CRS', V(h.crsName));
   const rpj = h.reprojected || (fdoc && fdoc.source && fdoc.source.reprojected);

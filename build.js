@@ -1775,8 +1775,10 @@ if (target === 'micro') {
     '../../ext/wkt/index.js': '#wkt',               // @gcu/wkt — WKT / WKT-CSV / the QGIS clipboard
     '../../ext/dxf/index.js': '#dxf',               // @gcu/dxf — features out to DXF, and DXF read as features
     '../../ext/proj/index.js': '#proj',             // @gcu/proj — CRS: proj4 (vendored) + the EPSG table + reprojection on read (src/crs.js)
+    '../../ext/frame/index.js': '#frame',           // @gcu/frame — world ↔ local, through src/coords.js (the one place micro converts)
   };
   const libs = [
+    ['frame',     'ext/frame/index.js'],             // @gcu/frame — src/coords.js's conversions
     ['condenser', 'ext/condenser/index.js'],
     ['leadacid',  'ext/leadacid/index.js'],           // @gcu/leadacid — intake + fileBlob inside the Android shell
     ['dispatch',  'ext/dispatch/index.js'],           // session-trained NL → command (zero-dep, no WASM: Sealed holds)

@@ -21,6 +21,7 @@ import { markProjectDirty } from './project.js';
 import { pushUndo } from './undo.js';
 import { registerCommands, contributeMenu, COMMANDS, commandCtx } from './commands.js';
 import { armEditVertices, armDraw } from './poly-draw.js';
+import { hasSceneFrame, axisLocalToWorld } from './coords.js';
 const $ = (s) => document.querySelector(s);
 
 // ── opening ─────────────────────────────────────────────────────────────────────────────────
@@ -207,7 +208,7 @@ export async function pasteFeaturesText(text, { z = null, name = null, assumePro
   const flat = model.noZ ? model.noZ.filter(Boolean).length : 0;
   if (flat) {                                              // 2D geometry: a DECLARED z, never a silent guess
     if (z == null) {
-      const dz = S.docBbox && S.frame ? S.frame.origin[2] + S.docBbox[5] : 0;
+      const dz = S.docBbox && hasSceneFrame() ? axisLocalToWorld(S.docBbox[5], 2) : 0;
       const v = await microPrompt(`${flat === model.features.length ? 'these features have' : `${flat} of these features have`} no Z — place them at elevation`, String(+dz.toFixed(2)));
       if (v == null) return null;
       z = +v;

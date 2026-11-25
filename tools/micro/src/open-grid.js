@@ -13,6 +13,7 @@ import { setColorLabels } from './color.js';
 import { layerPlacementM, gridPlaceOf } from './placement.js';
 import { affineToGridPlace, parseWorldFile, compilePlacement, applyP, placeBbox, fmtLen } from './placement-core.js';
 import { gridWorldBbox4 } from './grid-ops.js';
+import { boxLocalToWorld } from './coords.js';
 const $ = (s) => document.querySelector(s);
 
 // ── grids (§7.1): GeoTIFF / Surfer .grd / ESRI ASCII → ONE gridDoc shape ──
@@ -124,7 +125,8 @@ export async function openGridBlob(blob, name, opts = {}) {
     if (!hf) throw new Error('grid is all nodata');
     const color = surfaceColorArray(hf, opts.drape || null, (rampCfgOf(layerById(lid)) || {}).preset, zmin, zmax);
     registerDocs(lid, 'mesh', { gridDoc });
-    fitFromHeader({ ...header, bbox: { min: hf.bboxLocal.slice(0, 3).map((v, i) => v + (S.frame ? S.frame.origin[i] : 0)), max: hf.bboxLocal.slice(3, 6).map((v, i) => v + (S.frame ? S.frame.origin[i] : 0)) } }, opts.first !== false);
+    const hw = boxLocalToWorld(Array.from(hf.bboxLocal));
+    fitFromHeader({ ...header, bbox: { min: hw.slice(0, 3), max: hw.slice(3, 6) } }, opts.first !== false);
     const smooth = opts.smooth !== false;
     S.renderer.setLayerMeshStyle(lid, { tint: [0.6, 0.63, 0.66], opacity: 1 });
     S.renderer.addChunk({ kind: 'mesh', pos: hf.pos, idx: hf.idx, color, normal: smooth ? hf.normal : null, count: hf.count, bboxLocal: hf.bboxLocal }, 'base', lid);

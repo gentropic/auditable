@@ -23,6 +23,7 @@ import { setLayerColorSel, colorHeaderOf } from './color.js';
 import { viewCatName, viewTextColumns } from './viewcat.js';
 import { menuXY } from './menu.js';
 import { currentSection } from './section.js';
+import { sceneOrigin } from './coords.js';
 const $ = (s) => document.querySelector(s);
 // the brush, shared with the selection tool (its gestures paint while a brush is armed)
 export const PAINT = {
@@ -259,7 +260,7 @@ export async function paintVolume(poly, code, isRect) {
   const col = L && paintColByName(L, t.colName);
   if (!col) return;
   const epoch = nextSelEpoch();                               // shares the gesture epoch — a newer stroke supersedes
-  const o = S.frame ? S.frame.origin : [0, 0, 0];
+  const o = sceneOrigin();
   const vp = S.cam.state.viewProj;
   const rc = S.cv.getBoundingClientRect();
   let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;

@@ -17,6 +17,7 @@ import { reopenReplacing } from './reopen.js';
 import { gridBuildFrame, placeHeightfield } from './placement.js';
 import { applyP, invertP } from './placement-core.js';
 import { gridLayerFile } from './grid-export.js';
+import { sceneOrigin } from './coords.js';
 const $ = (s) => document.querySelector(s);
 
 // A see-through context surface must not steal the click meant for the block
@@ -81,7 +82,7 @@ export async function meshToGridLayer(meshL, { cell, keep = 'top', extend = 'non
 // values. (Phase 2 of the heightfield-drape arc, §17.)
 export function surfaceColorArray(hf, drapeGrid, rampPreset, elevLo, elevHi) {
   const stops = RAMP_PRESETS[rampPreset] || RAMP_PRESETS.viridis;
-  const color = new Float32Array(hf.count * 3), o = S.frame ? S.frame.origin : [0, 0, 0];
+  const color = new Float32Array(hf.count * 3), o = sceneOrigin();
   if (drapeGrid) {
     const surf = surfaceFromGrid(drapeGrid), vals = new Float32Array(hf.count);
     let lo = Infinity, hi = -Infinity;

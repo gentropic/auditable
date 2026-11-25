@@ -10,6 +10,7 @@ import { _isMobile } from './windows.js';
 import { markProjectDirty } from './project.js';
 import { PHI_MAX } from './camera.js';
 import { unprojectToMidZ } from './pick.js';
+import { planeWorldToLocal, planeLocalToWorld } from './coords.js';
 const $ = (s) => document.querySelector(s);
 
 const SEC_N = { plan: [0, 0, 1], ns: [1, 0, 0], ew: [0, 1, 0] };
@@ -275,7 +276,7 @@ export function applySection(sec) {
   const n = Number.isFinite(sec.at) && S.renderer.chunkCount ? secNormal() : null;
   const rg = n ? secRange() : null;
   if (rg && rg[1] > rg[0]) {
-    const dl = sec.at - dot3(n, S.frame ? S.frame.origin : [0, 0, 0]);
+    const dl = planeWorldToLocal(n, sec.at);
     $('#secPos').value = Math.max(0, Math.min(1, (dl - rg[0]) / (rg[1] - rg[0])));
   }
   $('#secHalf').value = sec.half != null ? sec.half : 10;
@@ -291,11 +292,11 @@ export const dot3 = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 
 export function sectionWorld() {
   const s = currentSection(); if (!s) return null;
-  const mode = $('#secMode').value, n = s.n.slice(), off = dot3(n, S.frame ? S.frame.origin : [0, 0, 0]);
+  const mode = $('#secMode').value, n = s.n.slice();
   const axis = Object.keys(SEC_AXIS).find((k) => SEC_AXIS[k] === mode) || null;
   return {
     mode, axis, normal: n,
-    position: s.d0 + off,                                  // the plane: n·p = position, world units
+    position: planeLocalToWorld(n, s.d0),                                  // the plane: n·p = position, world units
     thickness: s.clip === 'slab' ? 2 * s.half : null, clip: s.clip,
     ...(mode === 'custom' ? { dipDir: +$('#secDipDir').value, dip: +$('#secDip').value } : {}),
   };
@@ -343,7 +344,7 @@ export function setSectionWorld(o) {
     let pw;
     if (o.at != null) { const a = [].concat(o.at).map(Number); if (a.length !== 3 || a.some((c) => !Number.isFinite(c))) throw new Error('section: at must be [x, y, z]'); pw = dot3(n, a); }
     else { pw = +o.position; if (!Number.isFinite(pw)) throw new Error('section: position must be a number'); }
-    const [lo, hi] = secRange(), dl = pw - dot3(n, S.frame ? S.frame.origin : [0, 0, 0]);
+    const [lo, hi] = secRange(), dl = planeWorldToLocal(n, pw);
     $('#secPos').value = hi > lo ? Math.max(0, Math.min(1, (dl - lo) / (hi - lo))) : 0.5;   // clamped to the data
   }
   syncSectionBtn();

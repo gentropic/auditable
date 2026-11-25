@@ -21,6 +21,7 @@
 //   dataExtentLonLat()                    → the open data's extent in lon/lat (needs a project CRS)
 import { S } from './state.js';
 import { t } from './i18n.js';
+import { sceneOrigin, nameSceneCrs } from './coords.js';
 import {
   lookupEpsg, crsFromDefinition, crsFromPrj, crsFromUrn, crsFromJSON, crsToJSON, crsLabel, sameCrs,
   transformPoints, describePath, extentLonLat, suggestCrs, WGS84,
@@ -43,7 +44,7 @@ export async function setProjectCrs(crs, { why = 'picked', quiet = false } = {})
   const before = S.crs;
   S.crs = crs || null;
   S.crsWhy = crs ? why : null;
-  if (S.frame) S.frame = { ...S.frame, crs: crs ? (crs.epsg ? `EPSG:${crs.epsg}` : crs.name) : null };
+  nameSceneCrs(crs ? (crs.epsg ? `EPSG:${crs.epsg}` : crs.name) : null);
   noteRecent(crs);
   updateCrsChip();
   if (!sameCrs(before, crs) || (!before) !== (!crs)) {
@@ -65,7 +66,7 @@ export async function loadProjectCrs(j) {
 // the open data's extent in longitude / latitude — for the selector's map and "fits my data"
 export function dataExtentLonLat() {
   if (!S.crs || !S.docBbox || !S.frame) return null;
-  const o = S.frame.origin, b = S.docBbox;
+  const o = sceneOrigin(), b = S.docBbox;
   return extentLonLat(S.crs, [o[0] + b[0], o[1] + b[1], o[0] + b[3], o[1] + b[4]]);
 }
 // best projected systems for a lon/lat extent (or for the open data)

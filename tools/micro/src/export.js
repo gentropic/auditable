@@ -20,6 +20,7 @@ import { setLayerColorSel } from './color.js';
 import { refilterLayer } from './filter.js';
 import { setActiveLayer } from './layers.js';
 import { applyLayerSelection } from './selection.js';
+import { sceneOrigin } from './coords.js';
 const $ = (s) => document.querySelector(s);
 
 // ── export tools (§16): data leaves micro the way it came in — as ROWS.
@@ -155,7 +156,7 @@ async function runExportInner(L, { scope = 'all', colIdx = null, delim = ',', de
     // stamp the document frame (origin + any CRS) so georeferencing round-trips
     const expLin = mkLineage('export', { format: 'parquet', codec, scope, spatial: doSort, filter: (scope === 'filtered' && L.filterExpr) || undefined }, [L.lineage]);
     const kv = [
-      { key: 'micro:frame', value: JSON.stringify({ origin: S.frame ? [...S.frame.origin] : [0, 0, 0], crs: (h.crs || (L.docs.gridDoc && L.docs.gridDoc.grid.crs)) || null, spatial: doSort }) },
+      { key: 'micro:frame', value: JSON.stringify({ origin: sceneOrigin(), crs: (h.crs || (L.docs.gridDoc && L.docs.gridDoc.grid.crs)) || null, spatial: doSort }) },
       { key: 'micro:lineage', value: JSON.stringify(expLin) },
       // a full export carries its discovery (self-describing on reopen); a filtered /
       // selection subset its LATTICE alone (frame, rotation, pitch, size columns) —
@@ -266,7 +267,7 @@ async function convertInner(L, cvOpts) {
   const isDm = !!(L.docs.blockDoc && L.docs.blockDoc.header.dm), isDelim = !!(L.docs.blockDoc && !isDm);
   const intern = names.map((_, k) => (isNum[k] ? null : new Map()));   // one string object per distinct value, not per row
   const kvOf = (lin) => [
-    { key: 'micro:frame', value: JSON.stringify({ origin: S.frame ? [...S.frame.origin] : [0, 0, 0], crs: (h.crs) || null, spatial: !(lin.params && lin.params.streaming) }) },
+    { key: 'micro:frame', value: JSON.stringify({ origin: sceneOrigin(), crs: (h.crs) || null, spatial: !(lin.params && lin.params.streaming) }) },
     { key: 'micro:lineage', value: JSON.stringify(lin) },
     // self-description: a micro-written parquet opens FOOTER-ONLY — the grid /
     // categories discovery is already done, so carry it in the file itself

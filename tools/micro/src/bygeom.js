@@ -24,6 +24,7 @@ import { _attrTables } from './attrtable.js';
 import { layerShown } from './layers.js';
 import { applyLayerSelection, clearSelection, nextSelEpoch, selEpoch, selectionStatus } from './selection.js';
 import { addPaintValue, createPaintCol, addPaintColorOptions } from './paint.js';
+import { sceneOrigin, localToWorld } from './coords.js';
 const $ = (s) => document.querySelector(s);
 
 // ── select by solid (§17): a closed context mesh classifies records by
@@ -235,7 +236,7 @@ export async function meshPeel(meshL, lat = null) {
 let _latticeSeq = 0;
 export function latticeFrameOf(grid) {
   const R = grid.rotD || (grid.rot ? Array.from(grid.rot) : [1, 0, 0, 0, 1, 0, 0, 0, 1]);   // identity: a model frame for an axis-aligned lattice
-  const o = S.frame.origin, g0 = grid.originLocal;
+  const o = sceneOrigin(), g0 = grid.originLocal;          // hot path: the translation inline (coords.js)
   // frame-local first, then minus block 0: small numbers meet small numbers
   const toQ = (x, y, z) => {
     const ex = (x - o[0]) - g0[0], ey = (y - o[1]) - g0[1], ez = (z - o[2]) - g0[2];
@@ -415,11 +416,7 @@ export async function evalSolidOnGrid(meshL, L, { mode, resolution = [3, 3, 3], 
   const [nx, ny, nz] = grid.count;
   const corner = rotated
     ? [-dx / 2, -dy / 2, -dz / 2]                          // lattice frame: block 0's centroid IS the origin
-    : [                                                    // world MIN corner (originLocal = block-0 CENTER, frame-local)
-      grid.originLocal[0] - dx / 2 + S.frame.origin[0],
-      grid.originLocal[1] - dy / 2 + S.frame.origin[1],
-      grid.originLocal[2] - dz / 2 + S.frame.origin[2],
-    ];
+    : localToWorld([grid.originLocal[0] - dx / 2, grid.originLocal[1] - dy / 2, grid.originLocal[2] - dz / 2]);   // world MIN corner (originLocal = block-0 CENTER, frame-local)
   // the world bbox handed back as the sweep's spatial pushdown: a rotated block reaches
   // past its centroid by its half-diagonal's world extent, so pad by that. An axis-aligned block
   // reaches past by its half-size: unpadded, a block whose CENTROID lies just outside the solid's
@@ -504,7 +501,7 @@ export async function evalSolidOnGrid(meshL, L, { mode, resolution = [3, 3, 3], 
 // flag mode: the block's centroid (in plan, and z0 ≤ z ≤ z1) — as winding's flag; proportion: exact.
 export function prismOnGrid(prism, grid, mode) {
   const [dx, dy, dz] = grid.size, [nx, ny, nz] = grid.count;
-  const o = S.frame.origin;
+  const o = sceneOrigin();                                 // hot path: the translation inline (coords.js)
   const corner = [grid.originLocal[0] - dx / 2 + o[0], grid.originLocal[1] - dy / 2 + o[1], grid.originLocal[2] - dz / 2 + o[2]];
   let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
   for (const f of prism.features) { const b = featureBBoxXY(f); bx0 = Math.min(bx0, b[0]); by0 = Math.min(by0, b[1]); bx1 = Math.max(bx1, b[2]); by1 = Math.max(by1, b[3]); }

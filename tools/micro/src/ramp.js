@@ -10,6 +10,7 @@ import { applyCatLegend, applyCatVisibility } from './categories.js';
 import { ensureValueTex } from './color.js';
 import { markProjectDirty } from './project.js';
 import { layerTableHeader } from './records.js';
+import { axisLocalToWorld } from './coords.js';
 const $ = (s) => document.querySelector(s);
 
 // ── per-layer color ramps (§10 breakpoints): presets + value BREAKPOINTS,
@@ -160,8 +161,7 @@ export function rampRangeFor(L) {
     return [Number.isFinite(clip[0]) ? clip[0] : (cd ? cd.min : 0), Number.isFinite(clip[1]) ? clip[1] : (cd ? cd.max : 1)];
   }
   const b = S.docBbox || [0, 0, 0, 1, 1, 1];
-  const o = S.frame ? S.frame.origin[2] : 0;
-  return [Number.isFinite(clip[0]) ? clip[0] : b[2] + o, Number.isFinite(clip[1]) ? clip[1] : b[5] + o];
+  return [Number.isFinite(clip[0]) ? clip[0] : axisLocalToWorld(b[2], 2), Number.isFinite(clip[1]) ? clip[1] : axisLocalToWorld(b[5], 2)];
 }
 // what a BLANK value draws as (condenser chan.js): micro's default is the neutral grey the
 // rules and painted columns use for "nothing", shown — a missing grade must not look like the

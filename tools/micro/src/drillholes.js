@@ -30,6 +30,7 @@ import { setLayerColorSel, setLayerColorBy, colorSelFor, colorByName } from './c
 import { filterHolesLayer } from './layermenu.js';
 import { registerCommands } from './commands.js';
 import { dhRunOpts, collarTransformFor } from './dh-crs.js';
+import { sceneOrigin } from './coords.js';
 const $ = (s) => document.querySelector(s);
 
 // re-open a drillhole layer with a patched config (method / dip / category —
@@ -83,7 +84,7 @@ export function wholeHolesSlab(L, sec) {
 // a path segment jumping across it)
 export function crossingHoles(L, slab) {
   const dh = L.docs.dhDoc; if (!dh || !dh.holePaths) return null;
-  const o = S.frame ? S.frame.origin : [0, 0, 0];
+  const o = sceneOrigin();
   const [nx, ny, nz] = slab.n;
   const off = nx * o[0] + ny * o[1] + nz * o[2];            // the paths are WORLD coordinates; the plane is frame-local
   const lo = slab.d0 - slab.half + off, hi = slab.d0 + slab.half + off;

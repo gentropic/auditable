@@ -11,6 +11,7 @@ import { floatWin, raiseWindow } from './windows.js';
 import { deliverBlob } from './hostio.js';
 import { _deco, setDecoTitle, saveDeco, drawDecorations } from './deco.js';
 import { createZipStreamWriter } from '../../../ext/archive/src/zipstream.js';
+import { sceneOrigin } from './coords.js';
 const $ = (s) => document.querySelector(s);
 
 let HK = {};
@@ -23,7 +24,7 @@ const MODE_WORD = { plan: 'plan', ew: 'E–W section', ns: 'N–S section', cust
 export function seriesExtent() {
   const s = currentSection(); if (!s) return null;
   const [lo, hi] = secRange();
-  const o = S.frame ? S.frame.origin : [0, 0, 0];
+  const o = sceneOrigin();
   const off = s.n[0] * o[0] + s.n[1] * o[1] + s.n[2] * o[2];
   return [lo + off, hi + off];
 }

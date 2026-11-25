@@ -65,6 +65,8 @@ jobs:
       - name: micro import cycles — no load-time use between modules that import each other
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: npm run test:micro:cycles
+      - name: micro frame lint — world ↔ local conversions only in src/coords.js
+        run: npm run test:micro:frames
       - name: micro boots — built micro.html + the dev tree
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: npm run test:micro:boot

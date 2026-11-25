@@ -9,6 +9,7 @@ import { _isMobile } from './windows.js';
 import { rendererDocBbox } from './layers.js';
 import { currentSection } from './section.js';
 import { pickHitPoint, meshHitAt } from './pick.js';
+import { sceneOrigin, worldToLocal } from './coords.js';
 const $ = (s) => document.querySelector(s);
 // the app's side, passed in once (setOverlayHooks): _viewMode
 let H = {};
@@ -87,7 +88,7 @@ export async function measureClick(cssX, cssY) {
   const world = hitL && hitL.kind === 'mesh' ? ((await meshHitAt(hitL, cssX, cssY)) || {}).drawn || null
     : await pickHitPoint(hit, cssX, cssY);                  // ON the face you clicked, not the centroid behind it
   if (!world) { if (hitL && hitL.kind === 'mesh') $('#meta').textContent = `measure: no surface under the cursor on ${hitL.label || hitL.name}`; return; }
-  const local = [world[0] - S.frame.origin[0], world[1] - S.frame.origin[1], world[2] - S.frame.origin[2]];
+  const local = worldToLocal(world);
   // a layer drawn displaced (an exploded view, a view beside its model): the line is
   // drawn where you clicked, the numbers are read from where the data really is
   const off = S.renderer.layerOffset(hit.layer) || [0, 0, 0];
@@ -222,7 +223,7 @@ export function drawSwathBand() {
   const svg = $('#bandSvg');
   const B = _swathBand;
   if (!B || !S.cam.state.viewProj) { if (svg) svg.style.display = 'none'; return; }
-  const o = S.frame ? S.frame.origin : [0, 0, 0];
+  const o = sceneOrigin();
   const dLoc = (t) => t - (B.dir[0] * o[0] + B.dir[1] * o[1] + B.dir[2] * o[2]);   // world t → frame-local plane offset
   const ptsA = planeBboxCssPts(B.dir, dLoc(B.a), B.bbox);
   const ptsB = planeBboxCssPts(B.dir, dLoc(B.b), B.bbox);

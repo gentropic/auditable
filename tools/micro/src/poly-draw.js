@@ -25,6 +25,7 @@ import { microPrompt } from './prompts.js';
 import { setActiveLayer } from './layers.js';
 import { currentSection } from './section.js';
 import { registerCommands, contributeMenu } from './commands.js';
+import { worldToLocal, localToWorld, axisWorldToLocal, axisLocalToWorld } from './coords.js';
 const $ = (s) => document.querySelector(s);
 
 const SNAP_PX = 10, HANDLE_PX = 8, EDIT_MAX = 20000;
@@ -32,22 +33,22 @@ const SNAP_PX = 10, HANDLE_PX = 8, EDIT_MAX = 20000;
 export const DRAW = { mode: null, L: null, closed: true, pts: [], z: 0, mouse: null, drag: null, picked: null, draftId: 0 };
 
 // ── screen ⇄ world ──────────────────────────────────────────────────────────────────────────
-const toLocal = (w) => [w[0] - S.frame.origin[0], w[1] - S.frame.origin[1], w[2] - S.frame.origin[2]];
+const toLocal = (w) => worldToLocal(w);
 const cssOf = (w) => projectToCss(toLocal(w));
 // a CSS pixel → the world point on the horizontal plane at `z` (null when the ray runs parallel)
 export function worldAt(cssX, cssY, z) {
   const { o, d } = pixelRay(cssX, cssY);
-  const zl = z - S.frame.origin[2];
+  const zl = axisWorldToLocal(z, 2);
   if (Math.abs(d[2]) < 1e-9) return null;
   const t = (zl - o[2]) / d[2];
-  return [o[0] + t * d[0] + S.frame.origin[0], o[1] + t * d[1] + S.frame.origin[1], z];
+  return [...localToWorld([o[0] + t * d[0], o[1] + t * d[1], zl]).slice(0, 2), z];
 }
 // the drawing elevation: a plan section's plane, else the top of what's open
 function drawZ() {
   const sec = currentSection();
-  if (sec && sec.n && Math.abs(sec.n[2]) > 0.99 && Number.isFinite(sec.d0)) return sec.d0 / sec.n[2] + S.frame.origin[2];
-  if (S.docBbox) return S.docBbox[5] + S.frame.origin[2];
-  return S.frame ? S.frame.origin[2] : 0;
+  if (sec && sec.n && Math.abs(sec.n[2]) > 0.99 && Number.isFinite(sec.d0)) return axisLocalToWorld(sec.d0 / sec.n[2], 2);
+  if (S.docBbox) return axisLocalToWorld(S.docBbox[5], 2);
+  return axisLocalToWorld(0, 2);
 }
 // snap: the nearest feature vertex (any visible feature layer) within SNAP_PX
 function snapTo(cssX, cssY) {

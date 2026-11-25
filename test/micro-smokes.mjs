@@ -36,6 +36,8 @@ const jobs = [];
 const job = (name, file, ...args) => jobs.push({ name, argv: [path.join('test', file), ...args] });
 // not a browser suite: a source check that takes under a second (tools/micro/dev/README.md, "cycles.mjs")
 jobs.push({ name: 'cycles', argv: [path.join('tools', 'micro', 'dev', 'cycles.mjs')] });
+// not a browser suite either: world ↔ local conversions only in src/coords.js (tools/micro/dev/frame-lint.mjs)
+jobs.push({ name: 'frames', argv: [path.join('tools', 'micro', 'dev', 'frame-lint.mjs')] });
 for (let i = 0; i < SHARDS; i++) job(`smoke2 ${i + 1}/${SHARDS}`, 'micro-smoke2.mjs', `--shard=${i}/${SHARDS}`);
 for (let i = 0; i < SHARDS; i++) job(`smoke2 built ${i + 1}/${SHARDS}`, 'micro-smoke2.mjs', '--built', `--shard=${i}/${SHARDS}`);
 job('smoke', 'micro-smoke.mjs');

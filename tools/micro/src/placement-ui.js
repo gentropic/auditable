@@ -39,6 +39,7 @@ import { projectCrs, transformPoints, describePath, crsLabel, crsToJSON, lookupE
 import { rebuildSurface } from './surfaces.js';
 import { layerWorldBbox } from './gridtools.js';
 import { recomputeUnion } from './layers.js';
+import { clearSceneFrame, worldToLocal } from './coords.js';
 const $ = (s) => document.querySelector(s);
 const nameOf = (L) => (L ? L.label || L.name : '?');
 
@@ -101,7 +102,7 @@ export async function rePlaceLayer(L) {
   // nothing is drawn in float32 millions of metres from the origin
   // (not a grid shown as a surface: its relief is built against the frame before the frame is planted)
   const alone = S.layers.filter((x) => x.viewOf == null).length === 1 && !(d.gridDoc && L.gridSurface);
-  if (alone) S.frame = null;
+  if (alone) clearSceneFrame();
   const first = alone;
   if (d.blockDoc) {
     const doc = d.blockDoc, h = doc.header, fh = fileHeader(h);
@@ -411,7 +412,7 @@ export function drawControlPoints() {
   const open = [..._open.values()].filter((st) => st.tab === 'gcp' && st.win && st.win.el && st.win.el.isConnected && st.pairs.length);
   if (!open.length || !S.frame || !S.cam || !S.cam.state.viewProj) { if (s.style.display !== 'none') { s.style.display = 'none'; s.textContent = ''; } return; }
   s.style.display = ''; s.textContent = '';
-  const o = S.frame.origin, css = (w) => (w ? projectToCss([w[0] - o[0], w[1] - o[1], w[2] - o[2]]) : null);
+  const css = (w) => (w ? projectToCss(worldToLocal(w)) : null);
   for (const st of open) {
     for (const m of controlPointMarkers(st)) {
       const a = css(m.local), b = css(m.true), col = RESIDUAL_COLOR[m.cls], dash = m.use ? '' : '4 3';

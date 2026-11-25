@@ -15,14 +15,14 @@ import { openBlob } from './open.js';
 import { writeEsriAsc } from './grid-io.js';
 import { groupLayerIds } from './tree.js';
 import { commonLattice } from '../../../ext/condenser/src/main.js';
+import { boxLocalToWorld, planBoxLocalToWorld } from './coords.js';
 const $ = (s) => document.querySelector(s);
 
 // ── an empty grid or block model — a canvas to domain / rasterize into, from
 // parameters or covering existing layers ──
 export function layerWorldBbox(L) {
   if (!L || !L.bboxLocal || !S.frame) return null;
-  const b = L.bboxLocal, o = S.frame.origin;
-  return [b[0] + o[0], b[1] + o[1], b[2] + o[2], b[3] + o[0], b[4] + o[1], b[5] + o[2]];
+  return boxLocalToWorld(Array.from(L.bboxLocal));
 }
 
 export function unionWorldBbox(list) {
@@ -43,7 +43,7 @@ export function openMeshGridDialog(meshL0) {
   const meshes = S.layers.filter((L) => L.kind === 'mesh' && L.docs.meshDoc && !L.docs.meshDoc.header.soup);
   if (!meshes.length) { $('#meta').textContent = 'mesh → grid: needs a context-tier mesh (.msh / .obj / small .ply)'; return; }
   const meshL = meshL0 && meshes.includes(meshL0) ? meshL0 : meshes[0];
-  const bb = meshL.bboxLocal ? { min: [meshL.bboxLocal[0] + S.frame.origin[0], meshL.bboxLocal[1] + S.frame.origin[1]], max: [meshL.bboxLocal[3] + S.frame.origin[0], meshL.bboxLocal[4] + S.frame.origin[1]] } : null;
+  const pb = meshL.bboxLocal ? planBoxLocalToWorld([meshL.bboxLocal[0], meshL.bboxLocal[1], meshL.bboxLocal[3], meshL.bboxLocal[4]]) : null, bb = pb ? { min: [pb[0], pb[1]], max: [pb[2], pb[3]] } : null;
   const ext = bb ? Math.max(bb.max[0] - bb.min[0], bb.max[1] - bb.min[1]) : 100;
   _rgDlg = { mesh: meshL.id, cell: niceStep(ext / 400), keep: 'top', extentSrc: 'mesh', extend: 'none', holesOnly: false, ext, meshes };
   renderMeshGridDialog();

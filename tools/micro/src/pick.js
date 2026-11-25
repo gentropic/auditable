@@ -19,6 +19,7 @@ import { meshSolidOf } from './bygeom.js';
 import { raycastBVH } from '../../../ext/winding/index.js';
 import { attrTableReveal } from './attrtable.js';
 import { parquetRow } from './rowworker.js';
+import { worldToLocal, localToWorld } from './coords.js';
 const $ = (s) => document.querySelector(s);
 // the app's side, passed in once (setPickHooks): _viewMode
 let H = {};
@@ -83,7 +84,7 @@ export async function pickHitPoint(hit, cssX, cssY) {
     const ts = [s.d - s.half, s.d + s.half].map((f) => (f - on) / dn).filter((t) => t > 0);
     if (!ts.length) return world;
     const t = Math.min(...ts);
-    return [o[0] + d[0] * t + S.frame.origin[0], o[1] + d[1] * t + S.frame.origin[1], o[2] + d[2] * t + S.frame.origin[2]];
+    return localToWorld([o[0] + d[0] * t, o[1] + d[1] * t, o[2] + d[2] * t]);
   } else {
     const L = layerById(hit.layer);
     const half = await blockHalfDims(L, hit.rec);          // sub-blocks carry their own size
@@ -92,14 +93,14 @@ export async function pickHitPoint(hit, cssX, cssY) {
     n = FACE_NORMALS[face];
     const R = L && L.docs.blockDoc && L.docs.blockDoc.header.grid && L.docs.blockDoc.header.grid.rot;
     if (R) n = [R[0] * n[0] + R[3] * n[1] + R[6] * n[2], R[1] * n[0] + R[4] * n[1] + R[7] * n[2], R[2] * n[0] + R[5] * n[1] + R[8] * n[2]];
-    const cLocal = [world[0] - S.frame.origin[0], world[1] - S.frame.origin[1], world[2] - S.frame.origin[2]];
+    const cLocal = worldToLocal(world);
     dist = n[0] * cLocal[0] + n[1] * cLocal[1] + n[2] * cLocal[2] + half[ax];   // the face plane: dot(n, centre) + half-extent
   }
   const den = n[0] * d[0] + n[1] * d[1] + n[2] * d[2];
   if (Math.abs(den) < 1e-9) return world;
   const t = (dist - (n[0] * o[0] + n[1] * o[1] + n[2] * o[2])) / den;
   if (!Number.isFinite(t) || t <= 0) return world;
-  return [o[0] + d[0] * t + S.frame.origin[0], o[1] + d[1] * t + S.frame.origin[1], o[2] + d[2] * t + S.frame.origin[2]];
+  return localToWorld([o[0] + d[0] * t, o[1] + d[1] * t, o[2] + d[2] * t]);
 }
 
 // half-extent of ONE block, in its lattice frame (world units). From the block-
@@ -313,7 +314,7 @@ export async function meshHitAt(L, cssX, cssY) {
   // control points) and `drawn` = where it shows on screen (a pivot, worldAt — as pickHitPoint)
   const { o, d } = pixelRay(cssX, cssY);
   const off = S.renderer.layerOffset ? S.renderer.layerOffset(L.id) : [0, 0, 0];
-  const ow = [o[0] + S.frame.origin[0] - off[0], o[1] + S.frame.origin[1] - off[1], o[2] + S.frame.origin[2] - off[2]];
+  const ow = localToWorld([o[0] - off[0], o[1] - off[1], o[2] - off[2]]);   // drawn → true, then local → world
   const hit = raycastBVH(bvh, ow, d);                      // world in → world out
   if (hit && hit.point) hit.drawn = [hit.point[0] + off[0], hit.point[1] + off[1], hit.point[2] + off[2]];
   return hit;
@@ -329,7 +330,7 @@ function surfaceHitAt(L, cssX, cssY) {
   let surf; try { surf = surfaceFromGrid(g); } catch { return null; }   // a tilted sheet has no z = f(x, y)
   const { o, d } = pixelRay(cssX, cssY);
   const off = S.renderer.layerOffset ? S.renderer.layerOffset(L.id) : [0, 0, 0];
-  const ow = [o[0] + S.frame.origin[0] - off[0], o[1] + S.frame.origin[1] - off[1], o[2] + S.frame.origin[2] - off[2]];
+  const ow = localToWorld([o[0] - off[0], o[1] - off[1], o[2] - off[2]]);   // drawn → true, then local → world
   const at = (t) => [ow[0] + d[0] * t, ow[1] + d[1] * t, ow[2] + d[2] * t];
   const flat = L.surfaceFlatZ != null && Number.isFinite(+L.surfaceFlatZ) ? +L.surfaceFlatZ : null;
   let tHit = null;
@@ -604,7 +605,7 @@ export async function pickRecord({ layer, rec, frame: center = false } = {}) {
   let world = null;
   try { const p = await recordPosition(hit); world = p && p.every(Number.isFinite) ? [+p[0], +p[1], +p[2]] : null; } catch { world = null; }
   if (center && world) {
-    S.cam.state.target = [world[0] - S.frame.origin[0], world[1] - S.frame.origin[1], world[2] - S.frame.origin[2]];
+    S.cam.state.target = worldToLocal(world);
     S.cam.update();
   }
   requestRender();

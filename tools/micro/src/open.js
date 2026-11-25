@@ -30,6 +30,7 @@ import { lasCrsOf, reprojectLas } from './las-crs.js';
 import { setProjectCrs, sameCrs, crsLabel } from './crs.js';
 import { dhRunOpts, dhReprojection } from './dh-crs.js';
 import { layerPlacementM, placeCloudProvider } from './placement.js';
+import { sceneOrigin } from './coords.js';
 const $ = (s) => document.querySelector(s);
 
 export async function streamInto(cb, streamChunks, header, name, chunkPoints, lid = S.activeId) {
@@ -201,7 +202,7 @@ export async function openLasBlob(blob, name, opts = {}) {
   setColorLabels(header);
   const cb = createChunkBuilder({ frame: S.frame, chunkSize: 1 << 18, batchSize: 1 << 22, seed: 1, onChunk: (c) => { S.renderer.addChunk(c, 'base', lid); requestRender(); } });
   const doc = await streamInto(cb, streamChunks, header, name, 1 << 18, lid);
-  $('#meta').textContent = `${name} — ${doc.count.toLocaleString()} points · LAS ${header.version} fmt ${header.format}${S.frame.origin.some((v) => v) ? ` · origin ${S.frame.origin.map((v) => v.toLocaleString()).join(', ')}` : ''}`;
+  $('#meta').textContent = `${name} — ${doc.count.toLocaleString()} points · LAS ${header.version} fmt ${header.format}${sceneOrigin().some((v) => v) ? ` · origin ${sceneOrigin().map((v) => v.toLocaleString()).join(', ')}` : ''}`;
   requestRender();
 }
 const stampPlacementOf = (L) => { if (!L || !L.lineage) return; const p = { ...(L.lineage.params || {}) }; if (L.placement) p.placement = L.placement; else delete p.placement; L.lineage.params = p; };

@@ -22,6 +22,7 @@ import { isMiss, layerOfId, layerSection, supportOfHeader } from '../../../ext/c
 import { layerShown } from './layers.js';
 import { PAINT, addPaintValue, createPaintCol, paintArmLabel, paintByPolygon, paintVolume, addPaintColorOptions, paintActiveCol } from './paint.js';
 import { currentSection } from './section.js';
+import { sceneOrigin } from './coords.js';
 const $ = (s) => document.querySelector(s);
 // the app's side, passed in once (setSelectionHooks): _viewMode
 let H = {};
@@ -228,7 +229,7 @@ function throughDrawnTest(L) {
   const sec = cs ? layerSection(cs, S.renderer.layerSectioned(L.id)) : null;
   if (!mask && !hidden && !sec) return null;
   const off = S.renderer.layerOffset(L.id);
-  const o0 = S.frame ? S.frame.origin : [0, 0, 0];
+  const o0 = sceneOrigin();
   const o = [o0[0] - off[0], o0[1] - off[1], o0[2] - off[2]];   // n·(x + off − origin)
   // a block's reach along the section normal: its half-dims projected on n
   // (rotated lattices through their U/V/W; sub-blocks by their size in fine steps)
@@ -299,7 +300,7 @@ export function selEpoch() { return _selEpoch; }
 
 export async function selectVolume(poly, mode, isRect, only = null) {
   const epoch = nextSelEpoch();
-  const o = S.frame ? S.frame.origin : [0, 0, 0];
+  const o = sceneOrigin();
   const vp = S.cam.state.viewProj;
   const rc = S.cv.getBoundingClientRect();
   let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;

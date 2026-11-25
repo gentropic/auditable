@@ -39,6 +39,7 @@ import { trainNl, interpret, sessionVocab } from './nl-core.js';
 import { layerHasColumn } from './calc.js';
 import { setActiveLayer } from './layers.js';
 import { secRange, setSectionWorld } from './section.js';
+import { axisLocalToWorld } from './coords.js';
 const $ = (s) => document.querySelector(s);
 
 const nlMsg = (m) => { $('#meta').textContent = m; };
@@ -180,9 +181,9 @@ function nlSectionAt(axis, position, thickness) {
   const s = setSectionWorld({ axis: String(axis).toLowerCase(), position: +position, ...(thickness ? { thickness: +thickness } : {}) });
   // the plane is clamped to the data; say so instead of silently moving it
   if (s && Math.abs(s.position - position) > 1e-6 * Math.max(1, Math.abs(position))) {
-    const [lo, hi] = secRange(), off = S.frame ? S.frame.origin[{ X: 0, Y: 1, Z: 2 }[axis]] : 0;
+    const [lo, hi] = secRange(), ax = { X: 0, Y: 1, Z: 2 }[axis];
     const f = (v) => (+v.toFixed(2)).toString();
-    $('#meta').textContent = `section: ${axis} ${f(position)} is outside the data (${f(lo + off)} to ${f(hi + off)}) — placed at ${f(s.position)}`;
+    $('#meta').textContent = `section: ${axis} ${f(position)} is outside the data (${f(axisLocalToWorld(lo, ax))} to ${f(axisLocalToWorld(hi, ax))}) — placed at ${f(s.position)}`;
   }
   requestRender();
 }
@@ -383,8 +384,8 @@ export function nlStarters() {
   if (col) s.push(`select ${col} > 60`);
   if (solid) s.push(`select inside ${solid.label || solid.name}`);
   if (grp || lay) s.push(`hide ${grp || lay}`);
-  { const b = S.docBbox, oz = S.frame ? S.frame.origin[2] : 0;                // the data's middle, rounded
-    const zm = b ? Math.round(((b[2] + b[5]) / 2 + oz) / 10) * 10 : null;
+  { const b = S.docBbox;                // the data's middle, rounded
+    const zm = b ? Math.round(axisLocalToWorld((b[2] + b[5]) / 2, 2) / 10) * 10 : null;
     if (Number.isFinite(zm)) s.push(`section at elevation ${zm}`); }
   if (col) { s.push(`swath of ${col} along x`); s.push(`stats for ${col}${catCol ? ' by ' + catCol : ''}`); s.push(`grade tonnage for ${col}`); }
   if (col) s.push(`colorir por ${col}`);

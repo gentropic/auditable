@@ -42,7 +42,8 @@ const REF = { name: 'ref.csv', text: 'XC,YC,ZC,AU\n' + REF_C.map((c, n) => `${c.
 
 // blocks (CSV), 8 × 6 × 3 of 10 m
 { const C = []; for (let k = 0; k < 3; k++) for (let j = 0; j < 6; j++) for (let i = 0; i < 8; i++) C.push([E0 + 15 + 10 * i, N0 + 25 + 10 * j, 455 + 10 * k]);
-  add({ kind: 'blocks (CSV)', name: 'blocks.csv', text: 'XC,YC,ZC,FE\n' + C.map((c, n) => `${c.join(',')},${30 + (n % 9)}`).join('\n') + '\n', ...ext(C), pad: 5 }); }
+  add({ kind: 'blocks (CSV)', name: 'blocks.csv', text: 'XC,YC,ZC,FE\n' + C.map((c, n) => `${c.join(',')},${30 + (n % 9)}`).join('\n') + '\n', ...ext(C), pad: 5,
+    probe: [E0 + 15 + 10 * 3, N0 + 25 + 10 * 2, 475 + 5] }); }   // the TOP face of block (3, 2), centre
 // blocks (Parquet)
 { const C = []; for (let k = 0; k < 2; k++) for (let j = 0; j < 5; j++) for (let i = 0; i < 6; i++) C.push([E0 + 45 + 10 * i, N0 + 135 + 10 * j, 425 + 10 * k]);
   const buf = writeParquet({ columnData: [{ name: 'XC', data: C.map((c) => c[0]) }, { name: 'YC', data: C.map((c) => c[1]) }, { name: 'ZC', data: C.map((c) => c[2]) }, { name: 'FE', data: C.map((_, n) => 40 + (n % 5)) }] });
@@ -65,7 +66,8 @@ const REF = { name: 'ref.csv', text: 'XC,YC,ZC,AU\n' + REF_C.map((c, n) => `${c.
   add({ kind: 'PLY points', name: 'pts.ply', text: ply, ...ext(P), pad: 0 }); }
 // a mesh (OBJ): a tilted quad
 { const V = [[E0 + 150, N0 + 20, 430], [E0 + 230, N0 + 25, 445], [E0 + 235, N0 + 90, 470], [E0 + 155, N0 + 85, 455]];
-  add({ kind: 'mesh (OBJ)', name: 'quad.obj', text: V.map((v) => `v ${v.join(' ')}`).join('\n') + '\nf 1 2 3\nf 1 3 4\n', ...ext(V), pad: 0 }); }
+  add({ kind: 'mesh (OBJ)', name: 'quad.obj', text: V.map((v) => `v ${v.join(' ')}`).join('\n') + '\nf 1 2 3\nf 1 3 4\n', ...ext(V), pad: 0,
+    probe: [0, 1, 2].map((a) => (V[0][a] + V[1][a] + V[2][a]) / 3) }); }   // triangle 1-2-3's centroid
 // a mesh (PLY, faces)
 { const V = [[E0 + 260, N0 + 160, 400], [E0 + 330, N0 + 160, 410], [E0 + 330, N0 + 230, 420], [E0 + 260, N0 + 230, 415]];
   const ply = `ply\nformat ascii 1.0\nelement vertex 4\nproperty double x\nproperty double y\nproperty double z\nelement face 2\nproperty list uchar int vertex_indices\nend_header\n` + V.map((v) => v.join(' ')).join('\n') + '\n3 0 1 2\n3 0 2 3\n';
@@ -77,7 +79,8 @@ const REF = { name: 'ref.csv', text: 'XC,YC,ZC,AU\n' + REF_C.map((c, n) => `${c.
   for (let r = 0; r < ny; r++) { const row = []; for (let c = 0; c < nx; c++) { const v = z(c, r); row.push(v.toFixed(3)); pts.push([x0 + c * dx, y0 + (ny - 1 - r) * dx, v]); } asc += row.join(' ') + '\n'; }
   const e = ext(pts);
   add({ kind: 'grid (nodes)', name: 'g_nodes.asc', text: asc, ...e, pad: 2.5 });
-  add({ kind: 'grid as SURFACE', name: 'g_surf.asc', text: asc, opts: { asKind: 'surface' }, ...e, pad: 2.5 }); }
+  add({ kind: 'grid as SURFACE', name: 'g_surf.asc', text: asc, opts: { asKind: 'surface' }, ...e, pad: 2.5,
+    probe: [x0 + 10 * dx, y0 + (ny - 1 - 8) * dx, z(10, 8)] }); }   // node (row 8, col 10)
 // drillholes: one vertical hole, 100 m
 { const collar = `HOLEID,X,Y,Z\nDH1,${E0 + 380},${N0 + 180},500\n`, survey = 'HOLEID,DEPTH,AZ,DIP\nDH1,0,0,-90\nDH1,100,0,-90\n';
   let assay = 'HOLEID,FROM,TO,FE\n'; for (let d = 0; d < 100; d += 10) assay += `DH1,${d},${d + 10},${40 + d / 10}\n`;
@@ -110,6 +113,15 @@ const OPEN = async (k, mode) => {
   const data = k.bytes ? new Uint8Array(k.bytes) : k.text;
   return M.openBlob(new File([data], k.name), k.name, mode, null, { throw: true, ...(k.opts || {}) });
 };
+// a world point ON the layer → the screen (the camera's own viewProj) → worldAt → back
+const PROBE = async (id, w) => {
+  const M = window._micro, W = window.micro, cv = document.querySelector('#cv');
+  await W.look('plan'); await W.fit(); await new Promise((z) => setTimeout(z, 400));
+  const rect = cv.getBoundingClientRect(), st = M.cam.state, o = M.frame.origin, V = st.viewProj, q = [w[0] - o[0], w[1] - o[1], w[2] - o[2]];
+  const xx = V[0] * q[0] + V[4] * q[1] + V[8] * q[2] + V[12], yy = V[1] * q[0] + V[5] * q[1] + V[9] * q[2] + V[13], ww = V[3] * q[0] + V[7] * q[1] + V[11] * q[2] + V[15];
+  const hit = await W.worldAt([(xx / ww + 1) / 2 * rect.width, (1 - yy / ww) / 2 * rect.height]);
+  return hit && hit.world ? { world: hit.world, own: hit.layer === id } : null;
+};
 // the two boxes of a layer, in world: its bboxLocal, and the renderer's drawn content box
 const BOXES = (id) => {
   const M = window._micro, L = M.layers().find((x) => x.id === id), o = M.frame.origin;
@@ -135,25 +147,32 @@ try {
   await p.waitForFunction(() => window._micro && window._micro.openBlob, null, { timeout: 30000 });
   await p.evaluate(() => { try { window._micro.setAutoOptimize('off'); window._micro.setAutoPack('off'); } catch { /* older builds */ } });
   for (const k of K) {
-    const r = await evaluateSettled(p, async ({ k, REF, OPEN, BOXES }) => {
-      const open = eval(OPEN), boxes = eval(BOXES), M = window._micro, out = {};
+    const r = await evaluateSettled(p, async ({ k, REF, OPEN, BOXES, PROBE }) => {
+      const open = eval(OPEN), boxes = eval(BOXES), probe = eval(PROBE), M = window._micro, out = {};
       // 1. the kind FIRST, into an empty scene; then the reference added
       const id1 = await open(k, 'replace');
       out.firstAlone = boxes(id1);
+      if (k.probe) out.probe1 = await probe(id1, k.probe);
       const ref1 = await open(REF, 'add');
       out.firstThen = boxes(id1); out.ref1 = boxes(ref1);
       // 2. the reference FIRST; the kind added
       const ref2 = await open(REF, 'replace');
       const id2 = await open(k, 'add');
       out.second = boxes(id2); out.ref2 = boxes(ref2);
+      if (k.probe) out.probe2 = await probe(id2, k.probe);
       return out;
-    }, { k, REF, OPEN: OPEN.toString(), BOXES: BOXES.toString() });
+    }, { k, REF, OPEN: OPEN.toString(), BOXES: BOXES.toString(), PROBE: PROBE.toString() });
     const probs = [];
     for (const [when, bx] of [['opened first', r.firstAlone], ['after the reference joined', r.firstThen], ['opened second', r.second]]) {
       for (const which of ['local', 'drawn']) { const e = inside(bx[which], k); if (e) probs.push(`${when}, ${which === 'local' ? 'its box' : 'as drawn'}: ${e}`); }
     }
     for (const [when, bx] of [['beside it', r.ref1], ['under it', r.ref2]]) {
       const e = inside(bx.local, REF) || inside(bx.drawn, REF); if (e) probs.push(`the reference ${when}: ${e}`);
+    }
+    if (k.probe) {
+      const off = (h) => (h && h.own ? Math.hypot(h.world[0] - k.probe[0], h.world[1] - k.probe[1], h.world[2] - k.probe[2]) : Infinity);
+      const e1 = off(r.probe1), e2 = off(r.probe2);
+      chk(`${k.kind}: a point on it, projected to the screen and picked back with worldAt, comes back as itself — opened first (off by ${e1.toFixed(3)} m), opened second (${e2.toFixed(3)} m)`, e1 < 0.1 && e2 < 0.1);
     }
     chk(`${k.kind}: drawn where its file says — opened first, with a layer added after, and opened second${probs.length ? ' — ' + probs.slice(0, 3).join(' | ') : ''}`, probs.length === 0);
   }

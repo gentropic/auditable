@@ -35,6 +35,7 @@ import { setPickHooks, meshHitAt, pickHitPoint } from './pick.js';
 import { SW, initSoftwareMode } from './software-mode.js';
 import { swFrameGate, swNextAt } from './swrender.js';
 import { registerCommands } from './commands.js';
+import { sceneOrigin, worldToLocal, rangeWorldToLocal } from './coords.js';
 
 const $ = (s) => document.querySelector(s);
 
@@ -128,8 +129,7 @@ function currentDrawOpts() {
   // an ELEVATION clip is typed (and legended, and reported to a host) in real z; the renderer
   // compares it with frame-LOCAL z — convert here, the one place the two meet (sweep 2026-11-25:
   // a 500–900 clip on the demo, frame z 648, drew the whole model as the ramp's bottom colour)
-  const oz = S.frame ? S.frame.origin[2] : 0;
-  const forRenderer = (mode, c) => (mode === 0 && oz ? c.map((v) => (v == null ? null : v - oz)) : c);
+  const forRenderer = (mode, c) => (mode === 0 ? rangeWorldToLocal(c, 2) : c);
   const layerOpts = {};
   for (const L of S.layers) { const mode = L.id === S.activeId ? resolveColorMode() : modeOf(L.colorSel); layerOpts[L.id] = { colorMode: mode, clip: forRenderer(mode, L.id === S.activeId ? [clipV('clipMin'), clipV('clipMax')] : clipOf(L)) }; };
   const section = currentSection();
@@ -212,12 +212,12 @@ drawCompass();
 // elevation = how far above the target the eye sits (90 = plan, looking down)
 const R2D = 180 / Math.PI;
 export function cameraWorld() {
-  const st = cam.state, o = S.frame ? S.frame.origin : [0, 0, 0];
+  const st = cam.state, o = sceneOrigin();
   const look = ((Math.atan2(-Math.cos(st.theta), -Math.sin(st.theta)) * R2D) % 360 + 360) % 360;
   return { target: [st.target[0] + o[0], st.target[1] + o[1], st.target[2] + o[2]], look, elevation: st.phi * R2D, distance: st.radius, ortho: !!st.ortho, zExag: st.zExag || 1, projection: S.projection || null };
 }
 export function setCameraWorld(v = {}) {
-  const st = cam.state, o = S.frame ? S.frame.origin : [0, 0, 0];
+  const st = cam.state, o = sceneOrigin();
   const num = (x, what) => { const n = +x; if (!Number.isFinite(n)) throw new Error(`view: ${what} must be a number`); return n; };
   if (v.target != null) {
     const t = [].concat(v.target).map(Number);
@@ -312,7 +312,7 @@ export async function pivotOn(hit, cssX, cssY) {
   const L = layerById(hit.layer);
   const w = L && L.kind === 'mesh' ? ((await meshHitAt(L, cssX, cssY)) || {}).drawn : await pickHitPoint(hit, cssX, cssY);   // pivot on what is DRAWN
   if (!w || !S.frame) return;
-  glideTarget([w[0] - S.frame.origin[0], w[1] - S.frame.origin[1], w[2] - S.frame.origin[2]]);
+  glideTarget(worldToLocal(w));
   $('#meta').textContent = 'orbiting about the tapped spot — double-tap empty space to fit';
 }
 

@@ -22,6 +22,7 @@ import { attrRowCountOf } from './records.js';
 import { syncWholeHoles } from './drillholes.js';
 import { currentSection } from './section.js';
 import { layerSection, supportOfHeader } from '../../../ext/condenser/src/main.js';
+import { sceneOrigin } from './coords.js';
 
 // the base mask a layer's records pass before any section: its filter (drillholes the same way the
 // composer's "shown" counts them)
@@ -47,7 +48,7 @@ export function sectionCutOf(L, cs = currentSection()) {
   const sec = layerSection(cs, mode);
   if (!sec) return null;
   const off = S.renderer.layerOffset ? S.renderer.layerOffset(L.id) : [0, 0, 0];
-  const o0 = S.frame ? S.frame.origin : [0, 0, 0];
+  const o0 = sceneOrigin();
   const o = [o0[0] - off[0], o0[1] - off[1], o0[2] - off[2]];   // n·(x + off − origin): world → the section's frame
   // a block's reach along the normal (its half-dims projected on n; a rotated lattice through U/V/W):
   // the slab is at least one block thick, so a thin slab still holds the blocks its plane cuts

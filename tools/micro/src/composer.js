@@ -34,6 +34,7 @@ import { SEC_AXES, sectionCells, sectionShapes, sectionDrillholes, sectionMesh, 
 import { gridAxesOf } from './grid-ops.js';
 import { xyFigure } from './xyplot.js';
 import { compareField, refreshCompareFrame, lineageMd as compareLineageMd, openCompareDialog } from './compare.js';
+import { sceneOrigin } from './coords.js';
 const $ = (s) => document.querySelector(s);
 
 // the app's side (setComposerHooks): renderViewCanvas(pxW, pxH) → a canvas rendered to convergence
@@ -57,7 +58,7 @@ function viewMeta(pxH, canvas) {
   // an orthographic view has ONE scale: its visible height (2·halfH, world units) over the image's
   // pixels. A perspective view has none — the scale bar says so rather than guess.
   if (st.ortho && st.halfH > 0) meta.worldPerPx = (2 * st.halfH) / pxH;
-  if (canvas && canvas._viewProj) meta.proj = { m: canvas._viewProj.map((v) => +(+v).toPrecision(9)), origin: S.frame ? S.frame.origin.slice() : [0, 0, 0], focus: (() => { const o = S.frame ? S.frame.origin : [0, 0, 0], t = S.cam.state.target; return [t[0] + o[0], t[1] + o[1], t[2] + o[2]]; })() };
+  if (canvas && canvas._viewProj) meta.proj = { m: canvas._viewProj.map((v) => +(+v).toPrecision(9)), origin: sceneOrigin(), focus: (() => { const o = sceneOrigin(), t = S.cam.state.target; return [t[0] + o[0], t[1] + o[1], t[2] + o[2]]; })() };
   meta.facts = viewFacts();
   return meta;
 }
@@ -669,7 +670,7 @@ export async function addKeyPlan(ed, target = null) {
   try {
     await applyScene(target.source.scene);                 // the same layers and colours as the view it keys …
     setSectionWorld(null);                                 // … but the whole model, from above, north up
-    const o = S.frame ? S.frame.origin : [0, 0, 0], st = S.cam.state;
+    const o = sceneOrigin(), st = S.cam.state;
     const halfH = Math.max(dy / 2, dx / 2 / (w / h)) * 1.06;
     HK.setCameraWorld({ look: 0, elevation: 90, ortho: true, target: [(bb[0] + bb[3]) / 2 + o[0], (bb[1] + bb[4]) / 2 + o[1], (bb[2] + bb[5]) / 2 + o[2]], distance: halfH / Math.tan(st.fovY / 2) });
     f = ed.addFrame({ kind: 'image', box, content: { photo: true }, source: { app: 'micro', kind: 'view', keyFor: (keys.length ? keys : [target]).map((x) => x.id) }, style: { border: true } });
@@ -1286,7 +1287,7 @@ export async function makeAtlasRoutine(fig = _fig, { save = true } = {}) {
   if (!vf) { $('#meta').textContent = 'composer: an atlas steps a 3D-view frame — add one first'; return null; }
   const sec = vf.source.scene.section;
   const axis = (sec && sec.mode === 'ns') ? 'x' : (sec && sec.mode === 'ew') ? 'y' : 'z';
-  const k = { x: 0, y: 1, z: 2 }[axis], b = rendererDocBbox(), o = S.frame ? S.frame.origin : [0, 0, 0];
+  const k = { x: 0, y: 1, z: 2 }[axis], b = rendererDocBbox(), o = sceneOrigin();
   const lo = b[k] + o[k], hi = b[k + 3] + o[k], n = 6, step = (hi - lo) / n;
   const levels = Array.from({ length: n }, (_, i) => +(lo + step * (i + 0.5)).toFixed(step < 10 ? 1 : 0));
   const name = `${fig.name} atlas`;

@@ -15,6 +15,7 @@ import { groupLayerIds } from './tree.js';
 import { applyLayerSelection } from './selection.js';
 import { dhSetGroupOf } from './drillholes.js';
 import { registerCommands } from './commands.js';
+import { sceneOrigin } from './coords.js';
 // the set's drillhole layers (its hole traces are a derived layer, not a member)
 const membersOf = (nd) => groupLayerIds(nd).map(layerById).filter((L) => L && L.dh && L.docs.dhDoc && !L.trace);
 const setNameOf = (nd) => nd.name || 'drillholes';
@@ -24,7 +25,7 @@ const zoomToHole = (L, bhid) => {
   let xyz = paths.get(bhid);
   if (!xyz) for (const [k, v] of paths) if (String(k).trim() === bhid) { xyz = v; break; }
   if (!xyz || !xyz.length) return false;
-  const o = S.frame ? S.frame.origin : [0, 0, 0], b = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+  const o = sceneOrigin(), b = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
   for (let k = 0; k < xyz.length; k += 3) for (let a = 0; a < 3; a++) { const v = xyz[k + a] - o[a]; if (v < b[a]) b[a] = v; if (v > b[a + 3]) b[a + 3] = v; }
   const pad = Math.max(10, 0.15 * Math.hypot(b[3] - b[0], b[4] - b[1], b[5] - b[2]));   // the hole plus some room around it
   for (let a = 0; a < 3; a++) { b[a] -= pad; b[a + 3] += pad; }
