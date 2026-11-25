@@ -9,7 +9,9 @@
 // export as DXF / shapefile / WKT-CSV, to profile, or to use as a limit (a closed ring has an inside).
 //   contoursToLayer(L, { interval, base, index, min, max, name }) → { id, name, lines, levels, … }
 import { S, layerById } from './state.js';
-import { isolines, contourLevels, gridWorldBbox4 } from './grid-ops.js';
+import { isolines, contourLevels, gridWorldBbox4, commonSurfaceLattice, surfaceFromGrid } from './grid-ops.js';
+import { gridOnLattice, surfaceableLayers } from './gridtools.js';
+import { latticeOf } from './cutfill.js';
 import { residentGridForEval } from './bygeom.js';
 import { newFeatureLayer } from './poly-ui.js';
 import { mkLineage } from './lineage.js';
@@ -74,6 +76,94 @@ export async function contoursToLayer(L, opts = {}) {
   C.memoryOnly = true;
   return { id: C.id, name: C.name, lines: r.features.length, levels: r.levels.length, interval: r.interval, closed: r.features.filter((f) => f.closed).length,
     length: r.features.reduce((s, f) => s + f.attrs.LENGTH, 0), range: r.range };
+}
+
+// ── INTERSECTION of two surfaces — where they meet, as strings (the daylight line where a pit design
+// meets the topography, a fault against a contact). Both are sampled on one common lattice (the cut /
+// fill machinery: grids at the finer one's nodes, meshes by their top); their difference is zero
+// where they meet, so the meeting line is the difference's zero contour (isolines), and its
+// elevation the first surface read there. Lines stop where either surface has no value.
+export async function intersectSurfaces(A, B, { cell = null } = {}) {
+  if (!A || !B) throw new Error('intersection: two surfaces');
+  if (A === B) throw new Error('intersection: the two surfaces are the same layer');
+  const geom = commonSurfaceLattice(latticeOf(A), latticeOf(B), +cell > 0 ? +cell : null);
+  if (!geom) throw new Error(`intersection: ${nameOf(A)} and ${nameOf(B)} don't overlap in plan`);
+  if (geom.nx * geom.ny > 32e6) throw new Error(`intersection: ${geom.nx.toLocaleString()} × ${geom.ny.toLocaleString()} nodes — give a bigger cell`);
+  const ga = await gridOnLattice(A, geom), gb = await gridOnLattice(B, geom);
+  const nod = -9999, bad = (g, v) => !Number.isFinite(v) || v === g.nodata;
+  const dz = { ...geom, dy: geom.dy || geom.dx, nodata: nod, data: new Float32Array(geom.nx * geom.ny) };
+  for (let k = 0; k < dz.data.length; k++) { const a = ga.data[k], b2 = gb.data[k]; dz.data[k] = bad(ga, a) || bad(gb, b2) ? nod : a - b2; }
+  if (geom.place) dz.place = geom.place;
+  const sa = surfaceFromGrid({ ...ga, dy: ga.dy || ga.dx });
+  const lines = isolines({ ...dz, place: null }, [0])[0].lines;     // in the lattice's own frame: z is set from A just below
+  const features = [];
+  for (const ln of lines) {
+    if (ln.pts.length < 2) continue;
+    // the lattice frame → world (a rotated matched lattice through its placement), z = A there
+    const pts = ln.pts.map(([u, v]) => { const z = sa.sampleLocal ? sa.sampleLocal(u, v) : NaN; return [u, v, z]; });
+    let world = pts;
+    if (geom.place) { const P = geom.place, o = [0, 0, 0]; world = pts.map(([u, v, z]) => { applyPlace(P, u, v, o); return [o[0], o[1], P.t[2] + P.s * z]; }); }
+    const keep = world.filter((q) => Number.isFinite(q[2]));
+    if (keep.length >= 2) features.push({ pts: keep, closed: ln.closed && keep.length === world.length && keep.length >= 3, attrs: { A: nameOf(A), B: nameOf(B), LENGTH: +planLen(keep, ln.closed).toFixed(3) } });
+  }
+  return { features, geom, a: A.name, b: B.name };
+}
+// a lattice-frame (u, v) → world x, y through a placement (z handled by the caller)
+function applyPlace(P, u, v, o) { const R = P.R, s = P.s, t = P.t; o[0] = t[0] + s * (R[0] * u + R[3] * v); o[1] = t[1] + s * (R[1] * u + R[4] * v); return o; }
+
+export async function intersectionToLayer(A, B, opts = {}) {
+  const r = await intersectSurfaces(A, B, opts);
+  if (!r.features.length) throw new Error(`intersection: ${nameOf(A)} and ${nameOf(B)} don't meet where both have a value`);
+  const nm = (opts.name || `meet_${nameOf(A).replace(/\.[^.]+$/, '')}_${nameOf(B).replace(/\.[^.]+$/, '')}`).replace(/[\\/:*?"<>|\s]+/g, '_').replace(/\.csv$/i, '');
+  const columns = ['A', 'B', 'LENGTH'];
+  const model = {
+    columns, crs: null, warnings: [],
+    features: r.features.map((f, i) => ({ id: i + 1, kind: f.closed ? 'polygon' : 'line', rings: [f.pts], parts: [[0]], closed: f.closed })),
+    rows: r.features.map((f) => columns.map((c) => f.attrs[c])),
+  };
+  replaceMade(`${nm}.csv`);
+  const C = newFeatureLayer(nm, model, { source: 'intersection' });
+  C.lineage = mkLineage('intersection', { a: A.name, b: B.name, cell: r.geom.dx }, [A.lineage, B.lineage].filter(Boolean));
+  C.memoryOnly = true;
+  return { id: C.id, name: C.name, lines: r.features.length, closed: r.features.filter((f) => f.closed).length, length: r.features.reduce((s2, f) => s2 + f.attrs.LENGTH, 0), cell: r.geom.dx };
+}
+
+let _iwin = null;
+export function openIntersection(L0 = null) {
+  const surfs = surfaceableLayers();
+  if (surfs.length < 2) { $('#meta').textContent = 'intersection: needs two surfaces (grids or context meshes)'; return null; }
+  if (_iwin && _iwin.el.isConnected) _iwin.close();
+  const d = { a: (L0 && surfs.includes(L0) ? L0 : surfs[0]).name, b: '', cell: '', name: '' };
+  d.b = (surfs.find((x) => x.name !== d.a) || surfs[1]).name;
+  const win = floatWin({ title: 'intersection', sub: 'where two surfaces meet → strings', x: Math.max(12, innerWidth - 440), y: 120, w: 400, h: 280, onClose: () => { _iwin = null; } });
+  _iwin = win;
+  win.el.dataset.intersection = '1';
+  win.body.style.cssText += 'display:flex;flex-direction:column;gap:8px;padding:10px 12px;font-family:var(--mono);font-size:12px;overflow-y:auto';
+  const form = document.createElement('div'); form.style.cssText = 'display:flex;flex-direction:column;gap:8px';
+  const note = document.createElement('div'); note.style.cssText = 'color:var(--dim);font-size:11px;line-height:1.5';
+  note.textContent = 'both surfaces are sampled on one lattice (the finer one’s nodes, or a stated cell); where their difference crosses zero is where they meet — 3D strings at the first surface’s elevation (the daylight line of a pit design on the topography).';
+  const bar = document.createElement('div'); bar.style.cssText = 'display:flex;gap:8px;align-items:center;margin-top:auto';
+  const go = document.createElement('button'); go.className = 'awin-btn btn-p'; go.textContent = 'Make lines'; go.dataset.go = '1';
+  const msg = document.createElement('span'); msg.style.cssText = 'flex:1;color:var(--muted)';
+  bar.append(go, msg); win.body.append(form, note, bar);
+  const row = (label, el, title) => { const r = document.createElement('label'); r.style.cssText = 'display:flex;align-items:center;gap:8px'; if (title) r.title = title; const s2 = document.createElement('span'); s2.style.cssText = 'width:74px;flex:0 0 auto;color:var(--muted)'; s2.textContent = label; r.append(s2, el); form.append(r); return r; };
+  const lsel = (val, onch, role) => { const s2 = document.createElement('select'); s2.className = 'sw-sel'; s2.style.flex = '1'; s2.dataset.role = role; for (const L of surfs) s2.append(new Option(`${nameOf(L)}${L.docs.gridDoc ? ' (grid)' : ' (mesh)'}`, L.name)); s2.value = val; s2.onchange = () => onch(s2.value); return s2; };
+  row('surface', lsel(d.a, (v) => { d.a = v; }, 'a'), 'the first surface — the lines take its elevation');
+  row('meets', lsel(d.b, (v) => { d.b = v; }, 'b'), 'the second surface');
+  const ci = document.createElement('input'); ci.className = 'sw-in'; ci.type = 'number'; ci.step = 'any'; ci.placeholder = 'auto (the finer grid’s)'; ci.style.flex = '1'; ci.oninput = () => { d.cell = ci.value; };
+  row('cell (m)', ci, 'the lattice both are sampled on; blank = the finer grid’s own nodes');
+  const nm = document.createElement('input'); nm.className = 'sw-in'; nm.style.flex = '1'; nm.placeholder = 'automatic'; nm.oninput = () => { d.name = nm.value.trim(); };
+  row('name', nm, 'the new layer’s name');
+  go.onclick = async () => {
+    go.disabled = true; msg.textContent = 'sampling…';
+    try {
+      const r = await intersectionToLayer(layerNamed(d.a), layerNamed(d.b), { cell: d.cell === '' ? null : +d.cell, name: d.name || null });
+      msg.textContent = `${r.lines} line${r.lines === 1 ? '' : 's'} · ${Math.round(r.length).toLocaleString()} m → ${r.name}`;
+      $('#meta').textContent = `intersection: ${msg.textContent}`;
+    } catch (e) { msg.textContent = e.message; }
+    finally { go.disabled = false; }
+  };
+  return win;
 }
 
 // ── the dialog ──
@@ -146,8 +236,24 @@ registerTool('contours', {
   },
 });
 
+registerTool('intersection', {
+  label: 'intersection of two surfaces', cache: false, makes: 'layer',
+  params: {
+    a: { type: 'layer', required: true, kinds: ['grid', 'mesh'], doc: 'the first surface (the lines take its elevation)' },
+    b: { type: 'layer', required: true, kinds: ['grid', 'mesh'], doc: 'the surface it meets' },
+    cell: { type: 'number', doc: 'the lattice both are sampled on (default: the finer grid’s own nodes, over their overlap)' },
+    name: { type: 'string', doc: 'the new layer’s name (default meet_<a>_<b>)' },
+  },
+  outputs: { key: [] },
+  check(p, errs) { if (p.cell != null && !(p.cell > 0)) errs.push('cell: a positive number'); },
+  async scan(p) { const A = layerNamed(p.a), B = layerNamed(p.b); if (!A) throw new Error(`intersection: no layer “${p.a}”`); if (!B) throw new Error(`intersection: no layer “${p.b}”`); return intersectionToLayer(A, B, { ...p }); },
+  shape(r, p) { return { table: null, values: { lines: r.lines, closed: r.closed, length: r.length, cell: r.cell }, layers: [r.name], resolved: { ...p, cell: r.cell }, warnings: [] }; },
+});
+
 // ── palette + the grid's Geometry menu ──
 registerCommands([
+  { id: 'intersection', group: 'Analyse', title: 'Intersection of two surfaces → strings…', kw: 'intersection meet daylight toe crest line where two surfaces cross pit design topography contact fault', when: () => surfaceableLayers().length >= 2, run: (c) => openIntersection(c.L) },
   { id: 'contours', group: 'Analyse', title: 'Contours → strings…', kw: 'contours contour isolines curvas de nivel topography elevation lines dem grid index', when: () => contourableLayers().length > 0, run: (c) => openContours(c.L) },
 ]);
 contributeLayerMenu('geometry', (L) => (isGridLayer(L) && !L.viewOf ? [{ label: 'Contours → strings…', action: () => openContours(L) }] : []));
+contributeLayerMenu('geometry', (L) => (!L.viewOf && surfaceableLayers().includes(L) && surfaceableLayers().length >= 2 ? [{ label: 'Intersection with another surface → strings…', action: () => openIntersection(L) }] : []));

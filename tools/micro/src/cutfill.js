@@ -36,7 +36,7 @@ const layerNamed = (name) => S.layers.find((x) => x.name === name) || S.layers.f
 export const cutFillSurfaces = () => surfaceableLayers();
 
 // a surface's lattice (a grid's own; a mesh: its plan bbox at the surface tools' default cell)
-function latticeOf(L) {
+export function latticeOf(L) {
   const g = L.docs.gridDoc && L.docs.gridDoc.grid;
   if (g) return { x0: g.x0, y0: g.y0, dx: g.dx, dy: g.dy || g.dx, nx: g.nx, ny: g.ny, ...(g.place ? { place: g.place } : {}) };
   const bb = layerWorldBbox(L); if (!bb) throw new Error(`${nameOf(L)}: no extent yet`);

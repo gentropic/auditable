@@ -56,7 +56,7 @@ try {
   const p = await ctx.newPage(); p.on('pageerror', (e) => { console.log('PAGEERROR', e.message); fail++; });
   await p.goto(`http://127.0.0.1:${PORT}${APP}`, { waitUntil: 'load' });
   await p.waitForFunction(() => window._micro && window._micro.runTool, null, { timeout: 30000 });
-  const r = await evaluateSettled(p, async ({ ASC, OBJ, LINES }) => {
+  const r = await evaluateSettled(p, async ({ ASC, OBJ, LINES, E0, N0 }) => {
     const M = window._micro, out = {};
     await M.openBlob(new File([ASC], 'topo.asc'), 'topo.asc', 'replace', null, { throw: true, asKind: 'surface' });
     await M.openBlob(new File([OBJ], 'shell.obj'), 'shell.obj', 'add', null, { throw: true });
@@ -75,6 +75,14 @@ try {
     const mid = fs[Math.floor(fs.length / 2)];
     const along = await M.runTool('profile', { line: { layer: CL.name, feature: mid.id }, surfaces: ['topo.asc'] });
     out.along = { elev: +mid.attrs.ELEV, zs: along.table.rows.map((row) => row[3]) };
+    // §5 where the topography plane meets a flat grid at 505 m: the line 0.04·x′ + 0.02·y′ = 5, at z 505
+    const NL = String.fromCharCode(10);
+    let flat = `ncols 31${NL}nrows 21${NL}xllcorner ${E0 - 2.5}${NL}yllcorner ${N0 - 2.5}${NL}cellsize 5${NL}NODATA_value -9999${NL}`;
+    for (let rr = 0; rr < 21; rr++) flat += Array(31).fill('505').join(' ') + NL;
+    await M.openBlob(new File([flat], 'level505.asc'), 'level505.asc', 'add', null, { throw: true });
+    const meet = await M.runTool('intersection', { a: 'topo.asc', b: 'level505.asc' });
+    const ML = M.layers().find((x) => x.name === meet.layers[0]);
+    out.meet = { values: meet.values, lines: M.featuresOf(ML).map((f) => f.rings[0].map((q) => q.slice(0, 3))) };
     // the window, from the palette: Run → a chart
     M.COMMANDS.find((c) => c.id === 'profile').run({ L: null });
     const w = document.querySelector('.fwin[data-profile]');
@@ -84,7 +92,7 @@ try {
     for (let t = 0; t < 100 && !/length/.test(w.querySelector('.pf-readout').textContent); t++) await new Promise((z) => setTimeout(z, 100));
     out.win = { readout: w.querySelector('.pf-readout').textContent, spec: !!(w.querySelector('canvas')._chartSpec && w.querySelector('canvas')._chartSpec.series.length >= 2), recipe: w._recipe && w._recipe() };
     return out;
-  }, { ASC, OBJ, LINES });
+  }, { ASC, OBJ, LINES, E0, N0 });
 
   try { await p.locator('.fwin[data-profile]').screenshot({ path: `experiments/profile-window${BUILT ? '-built' : ''}.png` }); } catch { /* for a person to look at */ }
   // §1 the numbers, station by station, against the planes themselves
@@ -118,9 +126,14 @@ try {
   chk(`INDEX on every 2nd level (${r.contours.feats.filter((f) => f.index).map((f) => f.elev).join(', ')})`, r.contours.feats.every((f) => f.index === (Math.round(f.elev / 2.5) % 2 === 0 ? 1 : 0)));
   const dev = Math.max(...r.along.zs.filter((z) => z != null).map((z) => Math.abs(z - r.along.elev)));
   chk(`a profile ALONG the ${r.along.elev} m contour reads ${r.along.elev} m all along it (worst ${dev.toExponential(2)} m over ${r.along.zs.length} stations)`, r.along.zs.length > 10 && dev < 1e-3);
+  // §5 intersection
+  const mpts = r.meet.lines.flat();
+  const worstM5 = Math.max(...mpts.map((q) => Math.abs(0.04 * (q[0] - E0) + 0.02 * (q[1] - N0) - 5)), ...mpts.map((q) => Math.abs(q[2] - 505)));
+  chk(`where the topography meets a flat grid at 505 m: ${r.meet.values.lines} line (${r.meet.values.length.toFixed(1)} m), every vertex on 0.04·x′ + 0.02·y′ = 5 at z 505 (worst ${worstM5.toExponential(2)})`,
+    r.meet.values.lines === 1 && mpts.length >= 2 && worstM5 < 1e-3);
   // §3 the window
   chk(`the window (palette): Run → a chart of the surfaces (${r.win.spec}) and a readout (“${r.win.readout.slice(0, 70)}”); its recipe is the tool's (${r.win.recipe && r.win.recipe.tool})`,
-    r.win.spec && /length/.test(r.win.readout) && r.win.recipe && r.win.recipe.tool === 'profile' && r.win.recipe.params.surfaces.length === 2);
+    r.win.spec && /length/.test(r.win.readout) && r.win.recipe && r.win.recipe.tool === 'profile' && r.win.recipe.params.surfaces.length >= 2);
   await p.close();
 } catch (e) { console.log('FAIL  threw:', e.stack || e.message); fail++; } finally {
   await b.close(); server.close();
