@@ -9,11 +9,13 @@
 //   node test/micro-nl.test.mjs --report    every miss, per language
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { trainNl, interpret, NL_TOOLS } from '../tools/micro/src/nl-core.js';
+import { trainNl, interpret, NL_TOOLS, normalizeDecimals, thicknessSaid } from '../tools/micro/src/nl-core.js';
 import { DEMO_SESSION, EN, PT, OUT_EN, OUT_PT, FRESH, FRESH_OUT } from './micro-nl-corpus.mjs';
 
 // the default-on gate (ROADMAP "plain-language bar, graduated")
-const GATE = { intent: 0.90, refusal: 0.80 };
+// slots: the ARGUMENTS right too (expression, column, axis, number) — a proposal with the right verb
+// and the wrong number is the dangerous kind, and it used to pass the gate (sweep 2026-11-25)
+const GATE = { intent: 0.90, refusal: 0.80, slots: 0.90 };
 
 const all = [...EN, ...PT, ...FRESH].map((r) => r[0]).concat(OUT_EN, OUT_PT, FRESH_OUT);
 const t0 = performance.now();
@@ -74,10 +76,12 @@ test('the corpus covers every declared verb, in both languages', () => {
   }
 });
 
-test(`default-on gate: intent ≥ ${pc(GATE.intent)} (en + pt), refusal ≥ ${pc(GATE.refusal)} — ${summary}`, () => {
+test(`default-on gate: intent ≥ ${pc(GATE.intent)} (en + pt), slots ≥ ${pc(GATE.slots)}, refusal ≥ ${pc(GATE.refusal)} — ${summary}`, () => {
   assert.ok(both.intent >= GATE.intent, `intent ${pc(both.intent)} < gate`);
   assert.ok(en.intent >= GATE.intent - 0.05 && pt.intent >= GATE.intent - 0.05, `a language fell behind: en ${pc(en.intent)} pt ${pc(pt.intent)}`);
   assert.ok(ref >= GATE.refusal, `refusal ${pc(ref)} < gate`);
+  assert.ok(both.slots >= GATE.slots && en.slots >= GATE.slots - 0.05 && pt.slots >= GATE.slots - 0.05, `slots: ${pc(both.slots)} (en ${pc(en.slots)} pt ${pc(pt.slots)}) < gate`);
+  assert.ok(fr.slots >= GATE.slots, `fresh set: slots ${pc(fr.slots)} < gate`);
   // …and on the FRESH set, written after tuning and scored as written
   assert.ok(fr.intent >= GATE.intent && fro.refusal >= GATE.refusal, `fresh set: intent ${pc(fr.intent)} refusal ${pc(fro.refusal)}`);
 });
@@ -90,4 +94,26 @@ test('the filter shows the expression it will apply (the headline phrase)', () =
 
 test('destructive verbs are refused, in both languages', () => {
   for (const q of ['delete the block model', 'erase the topography', 'apaga o modelo de blocos inteiro', 'exclui a topografia']) assert.equal(interpret(nl, q), null, q);
+});
+
+// sweep 2026-11-25: a Portuguese DECIMAL COMMA was read as the end of the number ("cu > 0,5" →
+// CU > 0; "exagero vertical de 2,5" → a section); a section's THICKNESS was dropped in most word
+// orders. Both are read from the phrase before / after the tagger now.
+test('decimal commas are decimals; n,ddd stays thousands', () => {
+  assert.equal(normalizeDecimals('fe acima de 0,5'), 'fe acima de 0.5');
+  assert.equal(normalizeDecimals('exagero vertical de 2,5'), 'exagero vertical de 2.5');
+  assert.equal(normalizeDecimals('fe > 0,125'), 'fe > 0.125');
+  assert.equal(normalizeDecimals('tonnage over 1,250'), 'tonnage over 1250');
+  const f = interpret(nl, 'blocos com fe acima de 55,5');
+  assert.ok(f && f.name === 'micro.filterBlocks' && f.expr === 'FE > 55.5', JSON.stringify(f && { name: f.name, expr: f.expr }));
+  const z = interpret(nl, 'exagero vertical de 2,5');
+  assert.ok(z && z.name === 'micro.setZExag' && z.args.factor === 2.5, JSON.stringify(z && { name: z.name, args: z.args }));
+});
+
+test('a section keeps the thickness however it is said', () => {
+  for (const [q, th] of [['section at z 500, 10 m thick', 10], ['20 m thick section at elevation 500', 20], ['section at elevation 500 with a 20 m slab', 20], ['seção na cota 500 com 10 m de espessura', 10]]) {
+    const p = interpret(nl, q);
+    assert.ok(p && p.name === 'micro.sectionAt' && p.args.position === 500 && p.args.thickness === th, `${q} → ${JSON.stringify(p && { name: p.name, args: p.args })}`);
+  }
+  assert.equal(thicknessSaid('section at easting 613000'), null, 'a position is not a thickness');
 });

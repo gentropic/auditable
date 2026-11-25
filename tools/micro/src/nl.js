@@ -81,23 +81,34 @@ const NL_RUN = {
       if (!L) return;
       nlFocus(L);
       const prev = L.filterExpr || '';
-      $('#filter').value = p.expr; await applyBlockFilter(p.expr, L);
-      filterToSelection(L, 'replace');
-      const said = $('#meta').textContent;
-      $('#filter').value = prev; await applyBlockFilter(prev, L);
-      $('#meta').textContent = said;
+      let said = null;
+      try {
+        $('#filter').value = p.expr; await applyBlockFilter(p.expr, L);
+        // a filter that didn't apply (an expression this layer can't read) leaves the box marked and
+        // the OLD mask in place — selecting then would select the previous filter's rows
+        if ($('#filter').classList.contains('err')) { said = `select: nothing selected — ${$('#meta').textContent.replace(/^filter: /, '')}`; return; }
+        filterToSelection(L, 'replace');
+        said = $('#meta').textContent;
+      } finally {
+        $('#filter').value = prev; await applyBlockFilter(prev, L);
+        if (said) $('#meta').textContent = said;
+      }
     } }),
   'micro.selectBySolid': (a) => {
     const M = nlLayerByName(a.layer);
-    if (!M || !(M.kind === 'mesh' || (M.docs && M.docs.gridDoc))) return null;     // not a solid or a surface → nothing to propose
+    if (!M || !((M.kind === 'mesh' && M.docs.meshDoc && !M.docs.meshDoc.header.soup) || (M.docs && M.docs.gridDoc))) return null;   // what the dialog can use: a context-tier mesh or a grid
     return { say: `Select by solid: ${a.layer}  (opens the dialog)`, run: () => openSolidDialog(M) };
   },
   'micro.clearFilter': (a, L) => ({ say: `Clear the block filter${nlOn(L)}`, run: () => { nlFocus(L); $('#filter').value = ''; return applyBlockFilter('', L); } }),
   'micro.sectionAt': (a) => ({ say: `Section on ${a.axis} at ${a.position}${a.thickness ? `, ${a.thickness} m thick` : ''}`, run: () => nlSectionAt(a.axis, a.position, a.thickness) }),
   'micro.clearSection': () => ({ say: 'Clear the section', run: () => { const m = $('#secMode'); m.value = 'off'; m.dispatchEvent(new Event('input')); } }),
-  'micro.setSectionThickness': (a) => ({ say: `Section thickness ${a.thickness} m`, run: () => { const h = $('#secHalf'); h.value = a.thickness / 2; h.dispatchEvent(new Event('input')); } }),
+  'micro.setSectionThickness': (a) => ({ say: `Section thickness ${a.thickness} m`, run: () => {
+    if ($('#secMode').value === 'off') return nlMsg(`section thickness: there is no section yet — say where (“section at elevation …, ${a.thickness} m thick”)`);
+    setSectionWorld({ thickness: +a.thickness, clip: 'slab' });   // a thickness means a slab: front / behind would ignore it
+    requestRender();
+  } }),
   'micro.setZExag': (a) => ({ say: `Vertical exaggeration ×${a.factor}`, run: () => setZExag(a.factor) }),
-  'micro.setBackground': (a) => ({ say: `Background: ${a.color}`, run: () => setBg(a.color) }),
+  'micro.setBackground': (a) => ({ say: `Background: ${a.color}`, run: () => { const hex = NL_BG[String(a.color).toLowerCase()] || (/^#[0-9a-f]{6}$/i.test(a.color) ? a.color : null); if (!hex) return nlMsg(`background: no colour “${a.color}”`); setBg(hex); } }),
   'micro.openGradeTonnage': (a, L) => ({ say: `Grade–tonnage${a.column ? ' of ' + a.column : ''}${nlOn(L)}  (opens the window)`,
     run: () => { if (!L) return; nlFocus(L); openGradeTonnage(L, a.column ? { cfg: nlSeriesCfg(L, 'gt', a.column) } : undefined); } }),
   'micro.openSwath': (a, L) => ({ say: `Swath${a.column ? ' of ' + a.column : ''}${a.axis ? ' along ' + a.axis : ''}${nlOn(L)}  (opens the window)`,
@@ -135,18 +146,29 @@ const NL_RUN = {
     run: () => {
       const vis = a.action !== 'hide';
       const L = nlLayerByName(a.layer);
-      if (L) { L.visible = vis; applyTreeVisibility(); renderLayers(); requestRender(); return; }   // renderLayers → the tree checkbox updates too
+      if (L) {
+        L.visible = vis; applyTreeVisibility(); renderLayers(); requestRender();   // renderLayers → the tree checkbox updates too
+        const hidden = vis ? nlHiddenAncestors(L.id) : [];
+        if (hidden.length) nlMsg(`${a.layer} is on, but its group ${hidden.map((g) => `“${g}”`).join(' › ')} is hidden — show the group to see it`);
+        return;
+      }
       const g = nlFindGroup(a.layer);
       if (g) { g.visible = vis; applyTreeVisibility(); renderLayers(); requestRender(); return; }
       nlMsg(`no layer or group "${a.layer}"`);
     } }),
 };
 
+// the background names the bar can say → Settings' scene colours (deco.js's list)
+const NL_BG = { basalt: '#121212', dark: '#121212', escuro: '#121212', black: '#000000', preto: '#000000', white: '#ffffff', branco: '#ffffff', paper: '#f4f2ec', papel: '#f4f2ec', auto: 'auto', theme: 'auto', default: 'auto', padrao: 'auto', 'padrão': 'auto' };
+
 // an analysis window's saved setup with its FIRST series pointed at a column — the window
 // opens configured (the "Run" stays yours, as for a recipe)
-function nlSeriesCfg(L, key, col) {
+export function nlSeriesCfg(L, key, col) {
   const saved = (L.analysis && L.analysis[key]) || {};
-  const s0 = (saved.series && saved.series[0]) || {};
+  let s0 = (saved.series && saved.series[0]) || {};
+  // the saved first series' FILTER and UNIT belong to its column: pointing the series at another
+  // column kept them ("grade tonnage for AU" after a CU series filtered to oxide: AU, oxide-only, in %)
+  if (s0.col && s0.col !== col) { const { filter, unit, ...rest } = s0; s0 = rest; }
   const gu = L.gtUnits || {};
   const w0 = gu.weight === '#const' ? (gu.densConst != null ? String(gu.densConst) : '') : (gu.weight || '');
   return { ...saved, series: [{ ...s0, layer: L.name, col, unit: s0.unit || gu.grade || '', weight: s0.weight != null ? s0.weight : (key === 'gt' ? w0 : '') }] };
@@ -175,14 +197,17 @@ function nlSectionAt(axis, position, thickness) {
 // active layer costs nothing (the target is resolved per phrase, not per model).
 function nlSessionKey() {
   const gs = []; const gw = (arr) => { for (const nd of arr || []) if (nd && typeof nd === 'object' && nd.group) { gs.push(nd.name); gw(nd.children); } }; gw(S.layerTree);
-  return S.layers.map((L) => `${L.id}:${L.label || L.name}:${(numericColsOf(L) || []).length}`).join('|') + '#' + gs.join(',');
+  const d = describeSession();
+  return d.layers.map((l) => `${l.name}:${l.label || ''}:${l.kind}:${l.numCols.join(',')}:${l.catCol || ''}:${l.categories.join(',')}`).join('|') + '#' + gs.join(',');
 }
 
+let _nlTraining = null;                                       // the in-flight training (callers wait on it, not on null)
 export async function nlEnsureTrained() {
   const key = nlSessionKey();
   if (_nlDispatcher && _nlKey === key) return _nlDispatcher;
-  if (_nlBusy) return null;
+  if (_nlBusy && _nlTraining) { await _nlTraining; return nlEnsureTrained(); }   // a newer key than the one training: go again
   _nlBusy = true;
+  let done; _nlTraining = new Promise((r) => { done = r; });
   try {
     await new Promise((r) => setTimeout(r));                              // let the palette paint "learning…"
     const t0 = performance.now();
@@ -196,7 +221,7 @@ export async function nlEnsureTrained() {
     console.warn('[nl] training failed', e);
     _nlDispatcher = null; _nl = null;
     return null;
-  } finally { _nlBusy = false; }
+  } finally { _nlBusy = false; _nlTraining = null; done(); }
 }
 
 // WHICH LAYER does a phrase mean? Commands act on ONE layer, but a project holds many.
@@ -214,16 +239,21 @@ function nlLayerFromTags(q, tags) {
   const span = [];
   for (let i = 0; i < toks.length && i < tags.length; i++) if (tags[i] === 'LAYER') span.push(toks[i]);
   if (!span.length) return null;
-  const text = span.join(' ').toLowerCase().trim();
-  // Match the SAME synonyms the vocabulary was built from — exactly. (Splitting names into
-  // fragments made "model" match every *_model.csv, so the first layer always won.)
-  const hits = [];
+  // Match the SAME synonyms the vocabulary was built from — exactly, as tokens (diacritics folded,
+  // a leading article dropped). Splitting names into fragments made "model" match every
+  // *_model.csv; matching only the label missed "the drillholes" / "os furos" (sweep 2026-11-25).
+  const ART = /^(the|a|an|o|os|a|as)\s+/;
+  const norm = (t) => nlTokenize(String(t)).join(' ').replace(ART, '').trim();
+  const text = norm(span.join(' '));
+  if (!text) return null;
+  const V = _nl && _nl.vocab && _nl.vocab.layers ? _nl.vocab.layers : {};
+  const hits = new Set();
   for (const L of S.layers) {
-    const nm = (L.label || L.name);
-    const syns = [nm.toLowerCase(), nm.toLowerCase().replace(/\.[a-z0-9]+$/, '')];
-    if (syns.some((sy) => sy === text) || text === nm.toLowerCase()) hits.push(L);
+    const nm = L.label || L.name;
+    const syns = [nm, nm.replace(/\.[a-z0-9]+$/i, ''), ...(V[nm] || [])];
+    if (syns.some((sy) => norm(sy) === text)) hits.add(L);
   }
-  return hits.length === 1 ? hits[0] : null;                  // 0 hits or AMBIGUOUS → don't guess
+  return hits.size === 1 ? [...hits][0] : null;                // 0 hits or AMBIGUOUS → don't guess
 }
 
 // what each tool can act on (a regular block model for the lattice analyses, the holes for
@@ -237,9 +267,9 @@ const NL_CAN = {
 };
 
 function nlResolveTarget(q, tags, column, name) {
-  const named = nlLayerFromTags(q, tags);
-  if (named) return named;
   const can = NL_CAN[name] || (() => true);
+  const named = nlLayerFromTags(q, tags);
+  if (named) return can(named) ? named : { cannot: named };   // NAMED but unable ("export the topography"): say so, don't switch layers
   const has = (L) => !column || layerHasColumn(column, L.label || L.name) || layerHasColumn(column, L.name);   // (column, layer) — that order
   const A = activeLayer();
   if (A && can(A) && has(A)) return A;
@@ -257,7 +287,21 @@ const nlOn = (L, always) => ((S.layers.length > 1 || always) && L ? ` on ${L.lab
 // act on the resolved layer: micro's controls follow the ACTIVE layer, so make it active first
 function nlFocus(L) { if (L && L.id !== S.activeId) setActiveLayer(L.id); }
 
+// is `col` a numeric column of L (the ones an analysis window can plot)?
+function nlIsNumeric(L, col) {
+  const c = String(col).toLowerCase();
+  return (numericColsOf(L) || []).some((x) => String(x.name || x).toLowerCase() === c);
+}
+
 function nlLayerByName(name) { return S.layers.find((x) => (x.label || x.name) === name || x.name === name) || null; }
+
+// the names of the hidden groups a layer sits inside (outermost first)
+function nlHiddenAncestors(id) {
+  const out = [];
+  const walk = (arr, path) => { for (const nd of arr || []) { if (nd && typeof nd === 'object' && nd.group) { if (walk(nd.children, [...path, nd])) return true; } else if (nd === id || (nd && nd.id === id)) { out.push(...path.filter((g) => g.visible === false).map((g) => g.name)); return true; } } return false; };
+  walk(S.layerTree, []);
+  return out;
+}
 
 // resolve a GROUP node by name (case-insensitive) — groups are visibility targets too
 function nlFindGroup(name) {
@@ -291,14 +335,27 @@ function nlBreakdown(name, args, L, p) {
 }
 
 // A phrase → ONE proposal row. NEVER runs anything.
+// the session the bar was trained on is still the project's? (a layer opened, closed, renamed,
+// a column added — the vocabulary is out of date and the bar retrains before it proposes)
+export const nlStale = () => !!_nlDispatcher && _nlKey !== nlSessionKey();
+
 export function nlPropose(q) {
   if (!_nlOn || !_nl || !_nlDispatcher || q.length < 3) return null;
+  if (nlStale()) { nlEnsureTrained(); return null; }                     // never propose from an old project's vocabulary
   const p = interpret(_nl, q);
   if (!p) return null;                                                   // refused / not understood → no row
   const mk = NL_RUN[p.name];
   if (!mk) return null;                                                  // declared but unwired → say nothing
   const col = p.args.column || (p.args.clauses && p.args.clauses[0] && p.args.clauses[0].column) || null;
-  const target = nlResolveTarget(q, p.tags, col, p.name);
+  let target = nlResolveTarget(p.q || q, p.tags, col, p.name);
+  if (target && target.cannot) return null;                              // the phrase named a layer this can't act on
+  // a CATEGORY column where the window needs a number: stats and the cross-tab GROUP by it
+  // ("stats by lithology" — en kept it as the column, pt as groupBy); grade–tonnage, swath and
+  // the contact plot can't use it, so they propose nothing rather than a broken window
+  if (p.args.column && target && !nlIsNumeric(target, p.args.column)) {
+    if (p.name === 'micro.openStats' || p.name === 'micro.openCrosstab') { p.groupBy = p.groupBy || p.args.column; p.args = { ...p.args }; delete p.args.column; }
+    else if (p.name === 'micro.openGradeTonnage' || p.name === 'micro.openSwath' || p.name === 'micro.openContact') return null;
+  }
   let act = null;
   try { act = mk(p.args, target, p); } catch { return null; }
   if (!act || !act.say) return null;
@@ -326,7 +383,9 @@ export function nlStarters() {
   if (col) s.push(`select ${col} > 60`);
   if (solid) s.push(`select inside ${solid.label || solid.name}`);
   if (grp || lay) s.push(`hide ${grp || lay}`);
-  s.push('section at elevation 1040');
+  { const b = S.docBbox, oz = S.frame ? S.frame.origin[2] : 0;                // the data's middle, rounded
+    const zm = b ? Math.round(((b[2] + b[5]) / 2 + oz) / 10) * 10 : null;
+    if (Number.isFinite(zm)) s.push(`section at elevation ${zm}`); }
   if (col) { s.push(`swath of ${col} along x`); s.push(`stats for ${col}${catCol ? ' by ' + catCol : ''}`); s.push(`grade tonnage for ${col}`); }
   if (col) s.push(`colorir por ${col}`);
   return s.map((t) => ({ id: 'nlstart:' + t, group: '', title: t, hint: 'example', fill: t }));

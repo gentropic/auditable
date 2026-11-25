@@ -44,6 +44,7 @@ export const KEYS = [
   { group: 'layers', keys: ['F2'], does: 'rename the active layer', bind: ['F2'], card: { group: 'layers', label: 'rename' } },
   { group: 'layers', keys: ['⇧B'], does: 'block edges on / off', bind: ['B'], card: { group: 'layers', label: 'block edges' } },
   { group: 'everything else', keys: ['⌘/Ctrl K'], does: 'command palette — every action, filtered to what applies', bind: null, card: { group: 'everything else', label: 'palette' } },
+  { group: 'everything else', keys: ['Alt K'], does: 'plain-language bar — type what you want (English or Portuguese); it proposes one command, Enter runs it', bind: null, card: { group: 'everything else', label: 'ask in words' } },
   { group: 'everything else', keys: ['⌘/Ctrl S'], does: 'save the project', bind: null, card: { group: 'everything else', label: 'save project' } },
   { group: 'everything else', keys: ['⌘/Ctrl Z'], does: 'undo — a paint stroke, a selection, a filter, a removed ƒ column or rule', bind: null, card: { group: 'everything else', label: 'undo' } },
   { group: 'everything else', keys: ['⌘/Ctrl Shift Z', 'Ctrl Y'], does: 'redo — what the last undo took back (a new edit clears it)', bind: null, card: { group: 'everything else', label: 'redo' } },

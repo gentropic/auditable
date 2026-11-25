@@ -159,6 +159,75 @@ for (const [tag, url] of targets) {
   chk(`[${tag}] out of scope / destructive → no proposal`, r.props.junk == null && r.props.destroy == null);
   chk(`[${tag}] Alt+K: an unknown phrase says "not understood"; a known one leads with its proposal ("${r.nlRow.slice(0, 60)}")`, r.notUnderstood && /Swath of FE along X/.test(r.nlRow));
   chk(`[${tag}] ⌘K with a command name lists commands, no proposal row (${r.cmdRows.length} rows)`, r.cmdRows.length > 0 && !r.cmdRows.some((t) => /Enter to run/.test(t)));
+
+  // ── the 2026-11-25 sweep: what the row says is what Enter does ──
+  const r2 = await p.evaluate(async () => {
+    const M = window._micro, H = window.micro, out = {}, meta = () => document.querySelector('#meta').textContent;
+    const byLabel = (t) => M.layers().find((L) => (L.label || L.name) === t);
+    const dep = byLabel('deposit.csv'), holes = byLabel('holes · demo_assay.csv');
+    M.setActiveLayer(dep.id);
+    // a background by NAME (setBg takes a hex: "white" did nothing)
+    const bg = M.nlPropose('white background'); out.bgTitle = bg && bg.title;
+    if (bg) await bg.run();
+    try { out.bg = localStorage.getItem('micro.scene'); } catch { out.bg = null; }
+    // "the drillholes" names the holes layer (it fell back to the active model)
+    const fh = M.nlPropose('filter the drillholes to fe above 60'); out.fh = fh && fh.title;
+    // a CATEGORY column: stats group by it; grade–tonnage proposes nothing
+    const sb = M.nlPropose('stats by lithology'); out.sb = sb && { title: sb.title, col: sb.args.column || null };
+    out.gtCat = M.nlPropose('grade tonnage of lithology');
+    // a named layer the verb can't act on: nothing, rather than another layer's export
+    out.expTopo = M.nlPropose('export the topography');
+    // the project changes → the bar relearns before it proposes
+    const X = [], Y = [], Z = [], CU = [];
+    for (let j = 0; j < 4; j++) for (let i = 0; i < 4; i++) { X.push(611900 + 10 * i); Y.push(7765000 + 10 * j); Z.push(700); CU.push(0.2 * (i + j)); }
+    await H.addLayer({ kind: 'blocks', name: 'cu_model.csv', columns: { X, Y, Z, CU }, roles: { x: 'X', y: 'Y', z: 'Z' } });
+    out.stale = M.nlStale();
+    out.cuBefore = M.nlPropose('colour by cu');                 // stale: no proposal from the old vocabulary
+    await M.nlEnsureTrained();
+    const cu = M.nlPropose('colour by cu'); out.cu = cu && cu.title;
+    // a select whose expression the named layer can't read selects NOTHING and puts the filter back
+    M.setActiveLayer(holes.id);
+    await H.filter(holes.id, 'FE > 60');
+    const sel = M.nlPropose('select the drillholes with cu above 1'); out.selTitle = sel && sel.title;
+    if (sel) await sel.run();
+    await new Promise((z) => setTimeout(z, 300));
+    out.sel = { count: holes._selCount || 0, filter: holes.filterExpr, meta: meta() };
+    await H.filter(holes.id, '');
+    // showing a layer whose group is hidden says why it stays hidden
+    const hg = M.nlPropose('hide mining phases'); if (hg) await hg.run();
+    const sp = M.nlPropose('show phase 1'); if (sp) await sp.run();
+    out.showMeta = meta();
+    const ug = M.nlPropose('show mining phases'); if (ug) await ug.run();
+    // the empty bar's section example lies inside the data
+    const st = M.nlStarters().map((x) => x.title).find((t) => /^section at elevation/.test(t));
+    out.starter = st || null;
+    // a thickness with no section says so; with a front half-space it becomes a slab of that thickness
+    H.setSectionWorld ? null : null;
+    M.setSectionWorld({ mode: 'off' });
+    const t0 = M.nlPropose('make the section 20 meters thick'); if (t0) await t0.run();
+    out.thickOff = meta();
+    M.setSectionWorld({ axis: 'z', position: 600, clip: 'front' });
+    const t1 = M.nlPropose('make the section 20 meters thick'); if (t1) await t1.run();
+    const sw = M.sectionWorld(); out.thick = { clip: sw && sw.clip, thickness: sw && sw.thickness };
+    M.setSectionWorld({ mode: 'off' });
+    // the grade–tonnage preset drops a saved series' filter and unit when the column changes
+    const keep = dep.analysis;
+    dep.analysis = { gt: { series: [{ layer: 'deposit.csv', col: 'SG', filter: 'LITO == "HEMATITE"', unit: 't/m3' }] } };
+    const cfg = M.nlSeriesCfg(dep, 'gt', 'FE').series[0];
+    out.cfg = { col: cfg.col, filter: cfg.filter || null, unit: cfg.unit };
+    dep.analysis = keep;
+    return out;
+  });
+  chk(`[${tag}] "white background" → the scene turns white (${r2.bgTitle} → ${r2.bg})`, /white/.test(r2.bgTitle || '') && r2.bg === '#ffffff');
+  chk(`[${tag}] "filter the drillholes to fe above 60" targets the holes ("${r2.fh}")`, /holes · demo_assay\.csv/.test(r2.fh || ''));
+  chk(`[${tag}] "stats by lithology" groups by LITO, not a stats of LITO ("${r2.sb && r2.sb.title}", column ${r2.sb && r2.sb.col}); grade tonnage of a category proposes nothing (${r2.gtCat === null})`, r2.sb && /by LITO/.test(r2.sb.title) && r2.sb.col == null && r2.gtCat === null);
+  chk(`[${tag}] "export the topography" (no table) proposes nothing, not another layer's export (${r2.expTopo === null})`, r2.expTopo === null);
+  chk(`[${tag}] a new layer with CU: the bar is stale (${r2.stale}), proposes nothing until it relearns (${r2.cuBefore === null}), then "colour by cu" → "${r2.cu}"`, r2.stale === true && r2.cuBefore === null && /CU/.test(r2.cu || ''));
+  chk(`[${tag}] "select the drillholes with cu above 1" (the holes have no CU) selects nothing and puts FE > 60 back (${JSON.stringify(r2.sel)})`, /CU > 1/.test(r2.selTitle || '') && r2.sel.count === 0 && r2.sel.filter === 'FE > 60' && /nothing selected/.test(r2.sel.meta));
+  chk(`[${tag}] "show phase 1" inside a hidden group says why it stays hidden ("${r2.showMeta}")`, /hidden/.test(r2.showMeta) && /mining phases/.test(r2.showMeta));
+  chk(`[${tag}] the empty bar's section example is inside the demo's data ("${r2.starter}")`, (() => { const z = r2.starter && +r2.starter.match(/(-?\d+(?:\.\d+)?)$/)[1]; return z >= 397.5 && z <= 912.05; })());
+  chk(`[${tag}] a thickness with no section says so ("${r2.thickOff}"); on a front half-space it makes a 20 m slab (${JSON.stringify(r2.thick)})`, /no section/.test(r2.thickOff) && r2.thick.clip === 'slab' && Math.abs(r2.thick.thickness - 20) < 1e-9);
+  chk(`[${tag}] the grade–tonnage preset for FE drops the saved SG series' filter and unit (${JSON.stringify(r2.cfg)})`, r2.cfg.col === 'FE' && r2.cfg.filter === null && r2.cfg.unit !== 't/m3');
   chk(`[${tag}] no page errors${errors.length ? ': ' + errors.slice(0, 3).join(' | ') : ''}`, errors.length === 0);
   await ctx.close();
 }

@@ -7,7 +7,7 @@
 import { setHTML, trusted } from './html.js';
 import { _isMobile } from './windows.js';
 import { t as tr, bothTongues } from './i18n.js';
-import { _nlOn, nlStarters, _nlDispatcher, _nlBusy, nlEnsureTrained, nlPropose, nlComplete } from './nl.js';
+import { _nlOn, nlStarters, _nlDispatcher, _nlBusy, nlEnsureTrained, nlPropose, nlComplete, nlStale } from './nl.js';
 import { COMMANDS, commandCtx } from './commands.js';
 
 const $ = (s) => document.querySelector(s);
@@ -47,7 +47,7 @@ function renderPalette() {
     const raw = $('#palInput').value, rq = raw.trim();
     if (!rq) _palItems = nlStarters();
     else {
-      if (!_nlDispatcher && !_nlBusy) { nlEnsureTrained().then(() => { if (_palOpen) renderPalette(); }); }
+      if ((!_nlDispatcher || nlStale()) && !_nlBusy) { nlEnsureTrained().then(() => { if (_palOpen) renderPalette(); }); }   // first use, or the project changed since training
       const prop = rq.length >= 4 ? nlPropose(raw) : null;
       const comps = nlComplete(raw);
       // the honest fallback: a phrase it does not know gets NO proposal, and says so
@@ -56,7 +56,7 @@ function renderPalette() {
       _palItems = [...(prop ? [prop] : []), ...miss, ...comps];
     }
   } else if (_nlOn && !_palItems.length && q.length >= 4) {
-    if (!_nlDispatcher && !_nlBusy) { nlEnsureTrained().then(() => { if (_palOpen) renderPalette(); }); }
+    if ((!_nlDispatcher || nlStale()) && !_nlBusy) { nlEnsureTrained().then(() => { if (_palOpen) renderPalette(); }); }
     const prop = nlPropose($('#palInput').value.trim());
     if (prop) _palItems = [prop];
   }
@@ -99,6 +99,8 @@ function palKeydown(e) {
 function runPalette(i) {
   const c = _palItems[i]; if (!c) return;
   if (c.fill != null) { const inp = $('#palInput'); inp.value = c.fill; _palSel = 0; renderPalette(); inp.focus(); return; }   // a completion / starter — fill the box, don't run
-  closePalette(); try { c.run(commandCtx()); } catch (err) { $('#meta').textContent = `${c.title}: ${err.message}`; }
+  // an async run (a filter, a select) fails AFTER this returns: catch the rejection too, or the
+  // status line stays on "scanning…" with the error lost
+  closePalette(); try { Promise.resolve(c.run(commandCtx())).catch((err) => { $('#meta').textContent = `${c.title}: ${err && err.message || err}`; }); } catch (err) { $('#meta').textContent = `${c.title}: ${err.message}`; }
 }
 $('#btnCmd').onclick = () => (_palOpen ? closePalette() : openPalette());

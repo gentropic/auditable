@@ -292,8 +292,32 @@ export function clausesToExpr(clauses, join = 'and') {
 
 // ONE phrase → ONE proposal, or null ("I didn't understand" — the honest answer).
 //   { name, args, expr?, groupBy?, tags, margin }
+// a DECIMAL COMMA ("0,5", "2,5" — how Portuguese writes them) becomes a point before the phrase
+// reaches the tagger, which read "cu > 0,5" as CU > 0 and "exagero vertical de 2,5" as a section
+// (sweep 2026-11-25). n,ddd with n ≠ 0 stays a THOUSANDS separator (en "1,250"); every other
+// digit,digit is a decimal.
+export function normalizeDecimals(q) {
+  return String(q).replace(/(\d+),(\d+)/g, (m, a, b) => (b.length === 3 && !/^0+$/.test(a) ? a + b : `${a}.${b}`));
+}
+// a section's THICKNESS read from the words that say it, wherever they sit in the phrase:
+// "10 m thick", "a 20 m slab", "slab of 20", "thickness 15", "com 10 m de espessura",
+// "espessura de 10". The tagger caught only a few word orders and dropped the rest.
+const THICK_RES = [
+  /(\d+(?:\.\d+)?)\s*(?:m|meters?|metres?)?\s*(?:thick|wide)\b/,
+  /(\d+(?:\.\d+)?)\s*(?:m|meters?|metres?)?\s+(?:slab|slice)\b/,
+  /\b(?:slab|slice|thickness)\s+(?:of\s+)?(\d+(?:\.\d+)?)/,
+  /(\d+(?:\.\d+)?)\s*(?:m|metros?)?\s*de\s+espessura\b/,
+  /\bespessura\s+(?:de\s+)?(\d+(?:\.\d+)?)/,
+];
+export function thicknessSaid(q) {
+  const t = String(q).toLowerCase();
+  for (const re of THICK_RES) { const m = t.match(re); if (m && +m[1] > 0) return +m[1]; }
+  return null;
+}
+
 export function interpret(nl, q) {
   if (!nl || !nl.dispatcher || !q || q.trim().length < 3) return null;
+  q = normalizeDecimals(q);
   const toks = tokenize(q);
   if (!toks.length) return null;
   let r;
@@ -311,7 +335,8 @@ export function interpret(nl, q) {
   // decides, deterministically, rather than a classifier weighing "show blocks with …"
   let name = call.name;
   if (name === 'micro.filterBlocks' || name === 'micro.selectBlocks') name = toks.some((t) => SELECT_WORDS.test(t)) ? 'micro.selectBlocks' : 'micro.filterBlocks';
-  const out = { name, args, tags: r.tags, margin: r.margin };
+  if (name === 'micro.sectionAt') { const th = thicknessSaid(q); if (th != null) args.thickness = th; }
+  const out = { name, args, tags: r.tags, margin: r.margin, q };     // q: the phrase AS TAGGED (decimals normalised) — tags index its tokens
   if (name === 'micro.filterBlocks' || name === 'micro.selectBlocks') {
     if (!args.clauses || !args.clauses.length) return null;
     out.expr = clausesToExpr(args.clauses, args.join);
