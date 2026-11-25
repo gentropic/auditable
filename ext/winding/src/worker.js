@@ -148,24 +148,30 @@ function evaluateBoxesWorker(worker, meshName, boxes, opts = {}) {
 function callWorker(worker, msg, onProgress) {
   return new Promise((resolve, reject) => {
 
+    // both listeners go when the call settles: the error listener used to stay on the
+    // worker for its life, and through `reject` it held this promise — and so its
+    // result arrays. A box list on a pool makes thousands of calls (micro: +1.8 MB of
+    // answers kept on the page after one by-solid fraction of an 18.7M-block model).
+    const done = () => { worker.removeEventListener('message', handler); worker.removeEventListener('error', onError); };
+    function onError(e) { done(); reject(e); }
     function handler(e) {
       const { type } = e.data;
       if (type === 'progress') {
         if (onProgress) onProgress(e.data.fraction);
       } else if (type === 'result') {
-        worker.removeEventListener('message', handler);
+        done();
         resolve({
           proportions: e.data.proportions,
           flags: e.data.flags,
         });
       } else if (type === 'error') {
-        worker.removeEventListener('message', handler);
+        done();
         reject(new Error(e.data.message));
       }
     }
 
     worker.addEventListener('message', handler);
-    worker.addEventListener('error', reject, { once: true });
+    worker.addEventListener('error', onError);
 
     worker.postMessage(msg);
   });
