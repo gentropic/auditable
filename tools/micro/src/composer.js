@@ -381,7 +381,7 @@ async function resourceContent(p) {
   const rows = r.rows.map((row) => row.map((v, i) => (r.columns[i] === 'tonnes' ? grp(v) : r.columns[i] === 'grade' ? sig(v, 4) : r.columns[i] === 'metal' ? (Math.abs(v) >= 1000 ? grp(v) : sig(v, 4)) : v)));
   const d = p.density || {};
   const dens = d.col ? `density ${d.col}${d.unit ? ` (${d.unit})` : ''}` : `density ${d.const != null ? d.const : 1}${d.unit ? ` ${d.unit}` : ' t/m³'}`;
-  return { columns, rows, title: p.title || `${L.label || L.name} — resources`, note: `${dens}${p.scope === 'filter' && L.filterExpr ? ` · filter ${L.filterExpr}` : ''} · ${r.records.toLocaleString('en-US')} records` };
+  return { columns, rows, title: p.title || `${L.label || L.name} — resources`, note: `${dens}${p.scope === 'filter' && L.filterExpr ? ` · filter ${L.filterExpr}` : ''} · ${r.records.toLocaleString('en-US')} records${r.noDens ? ` · ${r.noDens.toLocaleString('en-US')} with no density left out` : ''}` };
 }
 export async function addResourceFrame(p) {
   const ed = openComposer();

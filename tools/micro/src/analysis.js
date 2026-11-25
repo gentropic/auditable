@@ -263,14 +263,14 @@ export async function computeResourceTable(L, p, onProgress) {
   const vc = volumeContextOf(L), mask = p.mask || null;
   const { mf, unit: metalUnit, auto: mfAuto } = metalFactorOf(p);   // stated, or from the declared grade unit (as the factors tool)
   const acc = new Map();                                    // "cutoff|g1|g2" → { t, tg }
-  let rc = 0;
+  let rc = 0, noDens = 0;
   for await (const { f, rec } of layerRecords(L)) {
     rc++;
     if ((rc & 0xffff) === 0) { if (onProgress) onProgress(rc); await new Promise((r) => setTimeout(r)); }
     if (mask && !(rec < mask.length && mask[rec])) continue;
     const g = numOf(f[gi]); if (!Number.isFinite(g)) continue;
     const t = volumeAt(vc, f) * (di >= 0 ? (+f[di] || 0) : dConst) * dScale;
-    if (!(t > 0)) continue;
+    if (!(t > 0)) { if (di >= 0) noDens++; continue; }      // a graded block with no density: left out, and counted
     const key = ki.map((i) => { const v = f[i]; return v == null || v === '' ? '—' : String(v); }).join('|');
     for (const c of cutoffs) {
       if (g < c) break;
@@ -290,5 +290,6 @@ export async function computeResourceTable(L, p, onProgress) {
     if (groupBy.length && keys.length > 1) rows.push([c, 'total', ...groupBy.slice(1).map(() => ''), T, T > 0 ? TG / T : NaN, TG * mf]);
     if (!keys.length) rows.push([c, ...groupBy.map(() => '—'), 0, NaN, 0]);
   }
-  return { columns, rows, records: rc, mf, metalUnit, mfAuto };
+  const warnings = noDens ? [`${noDens.toLocaleString('en-US')} graded block${noDens === 1 ? '' : 's'} with no density (blank or ≤ 0) left out of the tonnes`] : [];
+  return { columns, rows, records: rc, mf, metalUnit, mfAuto, noDens, warnings };
 }

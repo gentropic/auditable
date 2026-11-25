@@ -210,6 +210,27 @@ try {
   }, P);
   try { await p.evaluate(() => window._micro.openComposer('monthly')); await p.locator('.composer-win').screenshot({ path: `experiments/compare-report-section${BUILT ? '-built' : ''}.png` }); } catch { /* the screenshot is for a person to look at */ }
   chk(`the tool with figure: “monthly” — one page (${rt.added} new, ${rt.again} after a second run), its map in plan and in section (${rt.secs.join(', ')})`, rt.added === 1 && rt.again === 1 && rt.secs.join() === 'none,ew' && rt.frames === 8);
+
+  // ═══ §5 honest units (sweep 2026-11-25): a 5 m re-block of the 10 m model reconciles on the
+  //     common 5 m lattice, so its Δ-map counts are CELLS, not blocks; graded blocks with a blank
+  //     density are left out of the tonnes AND said, as the factors tool already did ═══
+  {
+    const fine = [];
+    for (const r of OLD.rows) for (let di = 0; di < 2; di++) for (let dj = 0; dj < 2; dj++) for (let dk = 0; dk < 2; dk++)
+      fine.push([E0 + 10 * r.i + 2.5 + 5 * di, N0 + 10 * r.j + 2.5 + 5 * dj, Z0 + 10 * r.k + 2.5 + 5 * dk, r.au, r.dom, r.cls, r.i === 0 && di === 0 ? '' : 2.5]);
+    const blank = fine.filter((f) => f[6] === '').length;           // the west half of the first column: 4 per block × 40 blocks
+    const csv = 'XC,YC,ZC,AU,DOMAIN,CLASS,DENS\n' + fine.map((f) => f.join(',')).join('\n') + '\n';
+    const r5 = await evaluateSettled(p, async (csv) => {
+      const M = window._micro; await M.openBlob(new File([csv], 'fine.csv'), 'fine.csv', 'add');
+      const res = await M.runTool('comparemodels', { old: 'old.csv', new: 'fine.csv', grade: 'AU', densityOld: { const: 2.5 }, density: { col: 'DENS' }, cutoffs: [0] });
+      const rt = await M.runTool('resource', { layer: 'fine.csv', grade: 'AU', density: { col: 'DENS' }, cutoffs: [0] });
+      return { blocks: res.values.blocks_unit, warnings: res.warnings, rtWarn: rt.warnings, rtT: rt.table.rows[0][1] };
+    }, csv);
+    chk(`a 5 m re-block: the Δ-map counts say “common-lattice cells” (“${r5.blocks}”); ${blank} graded blocks with a blank density are named (${JSON.stringify(r5.warnings)})`,
+      r5.blocks === 'common-lattice cells' && r5.warnings.length === 1 && r5.warnings[0].startsWith(`fine.csv: ${blank.toLocaleString('en-US')} graded blocks with no density`));
+    chk(`the resource table says it too (${JSON.stringify(r5.rtWarn)}) and its tonnes leave them out (${r5.rtT} = ${(fine.length - blank)} × 125 m³ × 2.5)`,
+      r5.rtWarn.length === 1 && r5.rtWarn[0].startsWith(`${blank} graded blocks with no density`) && Math.abs(r5.rtT - (fine.length - blank) * 125 * 2.5) < 1e-6);
+  }
   await p.close();
 } finally {
   await b.close(); server.close();

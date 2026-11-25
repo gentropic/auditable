@@ -552,7 +552,7 @@ registerTool('resource', {
     const rows = r.rows.filter((row) => !(g.length && row[1] === 'total' && row.slice(2, 1 + g.length).every((x) => x === '')));
     return {
       table: { columns: r.columns, key: ['cutoff', ...g], rows, units: { tonnes: 't', grade: unitLabel(p.gradeUnit), metal: r.metalUnit } },
-      values: {}, resolved: { ...p, metalFactor: r.mf }, warnings: [],
+      values: {}, resolved: { ...p, metalFactor: r.mf }, warnings: r.warnings || [],
     };
   },
 });
@@ -926,7 +926,7 @@ registerTool('comparemodels', {
     return r;
   },
   shape(r, p) {
-    return { table: compareTable(r, p), values: compareValues(r), ...(r.mapLayer ? { layers: [r.mapLayer] } : {}), resolved: { ...p }, warnings: [], moves: r.moves };
+    return { table: compareTable(r, p), values: compareValues(r), ...(r.mapLayer ? { layers: [r.mapLayer] } : {}), resolved: { ...p }, warnings: r.warnings || [], moves: r.moves };
   },
 });
 

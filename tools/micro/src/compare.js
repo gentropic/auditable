@@ -77,13 +77,13 @@ async function scanSide(L, { grade, density, groupBy, cutoffs, bench }, onProgre
   const dScale = dens.unit ? unitConvert(1, dens.unit, 't/m3') : 1, dConst = dens.const != null && Number.isFinite(+dens.const) ? +dens.const : 1;
   const vc = volumeContextOf(L);
   const groups = new Map(), benches = new Map();             // "cutoff|g1|g2" → { t, tg } · bench index → { t, tg }
-  let rc = 0, blocks = 0;
+  let rc = 0, blocks = 0, noDens = 0;
   for await (const { f } of layerRecords(L)) {
     rc++;
     if ((rc & 0xffff) === 0) { if (onProgress) onProgress(rc); await new Promise((r) => setTimeout(r)); }
     const g = numOf(f[gi]); if (!Number.isFinite(g)) continue;
     const t = volumeAt(vc, f) * (di >= 0 ? (+f[di] || 0) : dConst) * dScale;
-    if (!(t > 0)) continue;
+    if (!(t > 0)) { if (di >= 0) noDens++; continue; }      // a graded block with no density: left out, and SAID (as factors does)
     blocks++;
     const key = ki.map((i) => { const v = f[i]; return v == null || v === '' ? '—' : String(v); }).join('|');
     for (const c of cutoffs) {
@@ -96,7 +96,7 @@ async function scanSide(L, { grade, density, groupBy, cutoffs, bench }, onProgre
       if (Number.isFinite(z)) { const b = Math.floor((z - bench.z0) / bench.h + 1e-9); let a = benches.get(b); if (!a) benches.set(b, (a = { t: 0, tg: 0 })); a.t += t; a.tg += t * g; }
     }
   }
-  return { groups, benches, records: rc, blocks };
+  return { groups, benches, records: rc, blocks, noDens };
 }
 
 const pct = (d, o) => (o !== 0 && Number.isFinite(o) && Number.isFinite(d) ? (100 * d) / o : NaN);
@@ -154,9 +154,12 @@ export async function compareModels(p, { onProgress = null } = {}) {
     if (!r) throw new Error('compare: the Δ map was not made');
     mapLayer = r.name;
     const changed = r.changed || 0;
-    blocks = { added: r.thisOnly || 0, removed: r.refOnly || 0, changed, unchanged: (r.matched || 0) - changed, matched: r.matched || 0, meanDelta: r.meanDelta, meanAbsDelta: r.meanAbsDelta, how: c.how };
+    blocks = { unit: c.how === 'same' ? 'blocks' : c.how === 'parent' ? 'parent cells' : 'common-lattice cells', added: r.thisOnly || 0, removed: r.refOnly || 0, changed, unchanged: (r.matched || 0) - changed, matched: r.matched || 0, meanDelta: r.meanDelta, meanAbsDelta: r.meanAbsDelta, how: c.how };
   }
+  const warnings = [];
+  for (const [side, L] of [[so, O], [sn, N]]) if (side.noDens) warnings.push(`${nameOf(L)}: ${side.noDens.toLocaleString('en-US')} graded block${side.noDens === 1 ? '' : 's'} with no density (blank or ≤ 0) left out`);
   return {
+    warnings,
     params: { ...p }, cutoffs, groupBy, rows, totals, benches, moves, blocks, mapLayer, mf, metalUnit: P.mf.unit,
     gradeOld: P.gradeOld, gradeNew: P.gradeNew, bench: P.bench,
     old: { layer: O.name, label: nameOf(O), records: so.records, blocks: so.blocks }, new: { layer: N.name, label: nameOf(N), records: sn.records, blocks: sn.blocks },
@@ -174,7 +177,7 @@ export function compareValues(r) {
     groups: new Set(r.rows.map((x) => x.key.join('|'))).size, benches: r.benches.length,
     max_group_delta_metal: r.moves.groups.length ? r.moves.groups[0].dm : 0, max_bench_delta_metal: r.moves.benches.length ? r.moves.benches[0].dm : 0,
   };
-  if (r.blocks) Object.assign(v, { added: r.blocks.added, removed: r.blocks.removed, changed: r.blocks.changed, unchanged: r.blocks.unchanged, matched: r.blocks.matched, mean_delta_grade: num(r.blocks.meanDelta) });
+  if (r.blocks) Object.assign(v, { added: r.blocks.added, removed: r.blocks.removed, changed: r.blocks.changed, unchanged: r.blocks.unchanged, matched: r.blocks.matched, blocks_unit: r.blocks.unit || 'blocks', mean_delta_grade: num(r.blocks.meanDelta) });
   return v;
 }
 // the machine table: one row per cutoff × group (no totals — they're the sum of their cutoff's rows)
@@ -218,7 +221,8 @@ export function compareContent(r, p = r.params) {
     ...v, old: r.old.label, new: r.new.label, grade: r.gradeNew === r.gradeOld ? r.gradeNew : `${r.gradeOld} → ${r.gradeNew}`, cutoff: r.cutoffs[0], cutoffs: r.cutoffs.join(', '),
     metal_unit: mu || '', map: r.mapLayer || '',
     summary: `metal ${pctTxt(t0.dmp)} (${dMetalTxt(t0.dm)}${mu ? ' ' + mu : ''}) · tonnes ${pctTxt(t0.dtp)} · grade ${pctTxt(t0.dgp)}`,
-    blocks: r.blocks ? `${r.blocks.added.toLocaleString('en-US')} added · ${r.blocks.removed.toLocaleString('en-US')} removed · ${r.blocks.changed.toLocaleString('en-US')} changed · ${r.blocks.unchanged.toLocaleString('en-US')} unchanged` : 'no Δ map',
+    // the Δ map's counts are of the lattice it was reconciled on: blocks only when both models share one
+    blocks: r.blocks ? `${r.blocks.added.toLocaleString('en-US')} added · ${r.blocks.removed.toLocaleString('en-US')} removed · ${r.blocks.changed.toLocaleString('en-US')} changed · ${r.blocks.unchanged.toLocaleString('en-US')} unchanged${r.blocks.unit && r.blocks.unit !== 'blocks' ? ` (${r.blocks.unit})` : ''}` : 'no Δ map',
   };
   r.moves.groups.forEach((x, i) => { values['group' + (i + 1)] = moveText(x, x.key.join(' · '), mu); });
   r.moves.benches.forEach((x, i) => { values['bench' + (i + 1)] = moveText(x, `bench ${sig(x.z, 6)}`, mu); });
@@ -331,10 +335,10 @@ export async function buildComparisonReport(p, { name = null, result = null } = 
       const lc = legendContentFor(J);
       if (lc) ed.addFrame({ kind: 'legend', box: [xm, y0 + hb * 0.66 + 2, 42, Math.min(hb * 0.34 - 2, lc.kind === 'ramp' ? 30 : 7 + 4.4 * (lc.entries.length + 1))], content: lc, source: { app: 'micro', kind: 'legend', layer: J.name } });
     } finally { await applyScene(mine); }
-    ed.addFrame({ kind: 'text', box: [m, y0, wv, 5], content: { md: `**Changed blocks** — ${(p.mapColor || 'delta') === 'change' ? 'added / removed / changed' : `Δ ${r.gradeNew} (new − old)`}${p.section ? ' · plan, E–W section' : ' · plan'}`, size: 7 }, source: { app: 'micro', kind: 'compare-maptitle' } });
+    ed.addFrame({ kind: 'text', box: [m, y0, wv, 5], content: { md: `**Changed ${r.blocks && r.blocks.unit && r.blocks.unit !== 'blocks' ? r.blocks.unit : 'blocks'}** — ${(p.mapColor || 'delta') === 'change' ? 'added / removed / changed' : `Δ ${r.gradeNew} (new − old)`}${p.section ? ' · plan, E–W section' : ' · plan'}`, size: 7 }, source: { app: 'micro', kind: 'compare-maptitle' } });
   }
   ed.render();
-  $('#meta').textContent = `compare: “${nm}” — ${content.rows.length} table rows, metal ${content.values.summary}${r.blocks ? ` · ${content.values.blocks}` : ''}`;
+  $('#meta').textContent = `compare: “${nm}” — ${content.rows.length} table rows, metal ${content.values.summary}${r.blocks ? ` · ${content.values.blocks}` : ''}${r.warnings && r.warnings.length ? ` — ⚠ ${r.warnings.join('; ')}` : ''}`;
   return { figure: currentFigure(), table: tf, views, result: r };
 }
 // make the comparison again for a refresh (the composer's ↻): the table's content, the Δ layer again
