@@ -29,6 +29,7 @@ const b = await chromium.launch({ args: [...(process.env.MICRO_CHROMIUM_ARGS || 
 await installSmokeWaits(b);
 const ctx = await b.newContext({ viewport: { width: 1100, height: 750 } });
 await ctx.addInitScript(() => { try { if (localStorage.getItem('micro.autoPackMeshes') == null) localStorage.setItem('micro.autoPackMeshes', 'off'); } catch { /* opaque origin */ } });   // the .wfr store prompt stays out of the way unless a section opts in
+await ctx.addInitScript(() => { try { if (localStorage.getItem('micro.swRender') == null) localStorage.setItem('micro.swRender', 'off'); } catch { /* opaque origin */ } });   // CI's runner draws on SwiftShader, where micro would switch to software-rendering mode by itself (draw on change, no idle pick capture, no deferred re-shade); these smokes test the GPU paths, so the mode is pinned off unless a section opts in
 let ok = true; const chk = (n, c) => { console.log(`${c ? 'ok ' : 'FAIL'} ${n}`); ok = ok && c; };
 // --shard=i/n: run every nth section, starting at the ith (0-based), so the runner
 // (test/micro-smokes.mjs) can spread this file over n processes. Each `if (take())`
