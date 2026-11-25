@@ -186,7 +186,7 @@ export async function openLasBlob(blob, name, opts = {}) {
   // reprojected into the project's when it differs (src/las-crs.js); a geographic cloud with
   // no project CRS is refused like a geographic vector file
   const lcrs = await lasCrsOf(prov.header);
-  if (lcrs && !S.crs && lcrs.kind === 'geographic') throw new Error(`${name}: its coordinate system is ${crsLabel(lcrs)} — longitude/latitude, and the project has no coordinate system to reproject it into: set one (the CRS chip in the status bar) and open it again`);
+  if (lcrs && !S.crs && lcrs.kind === 'geographic') throw new Error(`${name}: its coordinate system is ${crsLabel(lcrs)} — longitude/latitude, and the project has no coordinate system to reproject it into: set one (the CRS chip in the top bar) and open it again`);
   if (lcrs && !S.crs) await setProjectCrs(lcrs, { why: `from ${name}` });
   else if (lcrs && !sameCrs(lcrs, S.crs)) { prov = reprojectLas(prov, lcrs, S.crs); const Lr = layerById(lid); if (Lr && Lr.lineage) Lr.lineage.params = { ...(Lr.lineage.params || {}), reproject: prov.header.reprojected }; }
   // the layer's rigid placement (after any reprojection): every chunk, column batch and record placed

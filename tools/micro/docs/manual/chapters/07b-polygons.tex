@@ -21,8 +21,8 @@ features are kept, and the fill shows it.
 \section{Opening}\label{sec:polygons-open}
 
 Open the files like any other (\cref{ch:opening}). The open dialog names each one before it loads,
-with its feature count: \ui{Shapefile · 12 polygons · 4 attributes · SIRGAS 2000 / UTM zone 23S →
-strings \& polygons}.
+with its feature count: \ui{Shapefile (zipped) · 12 polygons · 4 attributes → strings \& polygons ·
+EPSG:31983}. A loose \file{.shp} is named \ui{Shapefile} only; it is counted as it opens.
 
 \begin{description}
 \item[A CSV string file] has an ID column (\col{STRING}, \col{ID}, \col{LINE}, \col{POLYGON},
@@ -60,7 +60,8 @@ fits within ±180 and ±90 over less than 20°. What happens next depends on the
   are read, z carried; the layer's lineage records the move and its accuracy class
   (\cref{sec:crs-reproject}).
 \item \textbf{It has none.} Degrees would land at $(-45, -20)$ on a metre grid, so micro asks
-  instead: \menu{Set coordinate system…} opens the selector with a system suggested from where the
+  instead. In the open dialog the row arrives unticked, with the reason; tick it to be asked.
+  \menu{Set coordinate system…} opens the selector with a system suggested from where the
   data sits, and the file opens reprojected into the one you pick. \menu{Cancel} leaves it unopened,
   with the reason on the status line. A routine or a host page gets the refusal as an error, never
   the question.

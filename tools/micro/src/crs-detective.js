@@ -34,7 +34,7 @@ export async function checkSetCrs(nd, { dem = null, tol = 2, margin = 2 } = {}) 
   const members = membersOf(nd);
   if (!members.length) throw new Error('not a drillhole set');
   const base = projectCrs();
-  if (!base) throw new Error('the project has no coordinate system — set one first (the CRS chip in the status bar): the collars are compared as read in it and in its datum twins');
+  if (!base) throw new Error('the project has no coordinate system — set one first (the CRS chip in the top bar): the collars are compared as read in it and in its datum twins');
   const d0 = members[0].docs.dhDoc, mc = d0.header.collarMapping;
   if (!mc || mc.x == null || mc.y == null || mc.z == null) throw new Error('the collar X / Y / Z columns are not identified');
   const demL = dem != null ? layerById(dem) : demLayers()[0];

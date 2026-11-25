@@ -203,8 +203,10 @@ DXF \file{.dxf} & yes & yes & Polylines, lines and circles, each a feature with 
 \textbf{Files in another coordinate system are reprojected.} A \file{.prj}, a GeoJSON
 \code{"crs"}, an SRID, KML, or coordinates that all fit within ±180 and ±90 over less than 20° say
 what system a file is in; micro reprojects it into the project's (\cref{ch:crs}) and records how. A
-file in longitude and latitude while the project has \emph{no} system yet is refused — it would land
-at $(-45, -20)$ on a metre grid — with an offer to set one. Point geometries in a strings file are
+file in longitude and latitude while the project has \emph{no} system yet would land at $(-45, -20)$ on
+a metre grid, so micro asks first: the open dialog lists it unticked with the reason, and ticking it
+offers to set the project's system and opens the file reprojected into it (a LAS cloud in degrees is
+refused until a system is set). Point geometries in a strings file are
 skipped with a note; a file of only points opens as a points layer.
 \end{note}
 

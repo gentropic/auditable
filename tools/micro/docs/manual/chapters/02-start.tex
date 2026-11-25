@@ -43,7 +43,7 @@ The window has nine parts, and each kind of thing has one place: the data you op
  & part & what it is for \\ \midrule
 1 & Menu bar & \ui{File}, \ui{Data}, \ui{Tools}, \ui{View}, \ui{Help}, then the \ui{⌘K} button for the command palette. The \ui{Sealed} badge sits at its left. \\
 2 & Filter box & An expression over the active layer's columns. \key{/} puts the cursor in it. \\
-3 & Tools & At the right of the top bar, from the left: the knife, select by rectangle, select by lasso, select through, paint, measure, section on or off, save the view as a PNG, and fit. \\
+3 & Tools & At the right of the top bar, from the left: select by rectangle, select by lasso, select through, paint, measure, section on or off, the knife, save the view as a PNG, and fit. \\
 4 & Instrument rail & The second row. On the left, how the active layer is drawn: \ui{color}, the \ui{min} and \ui{max} of the color scale, \ui{EDL} shading and its \ui{strength}, point size (\ui{pt px}) and the render \ui{budget}. On the right, \ui{Z×} (vertical exaggeration) and the section controls. \\
 5 & Layers panel & Every open dataset, as a tree. \key{p} shows and hides it. \\
 6 & The view & The 3D scene. The compass in the corner shows north; click it for a plan view. \\
@@ -137,13 +137,14 @@ top & \ui{Zoom to layer}, \ui{Rename layer…}, \ui{Hide layer}, \ui{Properties�
 \ui{Select} & \ui{Filter → selection}, \ui{Selection → column…} (while there is a filter or a selection) \\
 \ui{Views} & \ui{New view of this layer}, \ui{New view beside it} \\
 \ui{Display} & \ui{Opacity}, \ui{Block edges}, \ui{Cut by sections}, \ui{Style} (copy, paste, save, load) \\
-\ui{Data \& file} & \ui{Reinterpret as…}, \ui{Reload from disk}, \ui{Change file…}, \ui{Materialize calc column}, \ui{Store as Parquet…}, \ui{Build index (stats + pushdown)…}, \ui{Copy into project}, \ui{Export rows…}, \ui{File info…}, \ui{Lineage…} \\
+\ui{Geometry} & \ui{Domain boundaries on a section → strings…}, \ui{Bench outlines → polygons…} \\
+\ui{Data \& file} & \ui{Reinterpret as…}, \ui{Reload from disk}, \ui{Change file…}, \ui{Placement…}, \ui{Materialize calc column}, \ui{Store as Parquet…}, \ui{Build index (stats + pushdown)…}, \ui{Copy into project}, \ui{Export rows…}, \ui{File info…}, \ui{Lineage…} \\
 \ui{Move} & \ui{Up}, \ui{Down}, \ui{To group…} \\
 last & \ui{Remove layer} \\
 \bottomrule
 \end{tabularx}
 
-Some items appear only when they make sense: \ui{Reload from disk} on a layer read from a file on disk, \ui{Copy into project} on a layer that lives outside an open project, \ui{Materialize calc column} once the layer has a calculated column, \ui{Lineage…} on a layer that carries a lineage (an opened file has one that names its source; a derived layer's also names the operation that made it). A submenu with nothing in it for the layer is left out. A mesh, a grid or a drillhole layer fills the submenus with its own tools; a mesh and a grid also have a \ui{Geometry} submenu, for what a surface or a solid does to other layers.
+Some items appear only when they make sense: \ui{Reload from disk} on a layer read from a file on disk, \ui{Copy into project} on a layer that lives outside an open project, \ui{Materialize calc column} once the layer has a calculated column, \ui{Lineage…} on a layer that carries a lineage (an opened file has one that names its source; a derived layer's also names the operation that made it). A submenu with nothing in it for the layer is left out. A mesh, a grid or a drillhole layer fills the submenus with its own tools; for a mesh or a grid, \ui{Geometry} holds what a surface or a solid does to other layers.
 
 \shot[0.5\linewidth]{start-layer-menu}{The right-click menu of the demo block model, with \ui{Analyse} open. The demo's files are generated in memory and no project is open, so \ui{Data \& file} offers neither \ui{Reload from disk} nor \ui{Copy into project}.}
 
@@ -252,7 +253,7 @@ You do not need the command's name. The bar maps your words onto the tool and on
 
 A phrase outside that list gets no row: \key{Alt}+\key{K} says \ui{not understood --- nothing proposed}. That is deliberate. A wrong guess costs you more than a refusal, so the bar refuses anything it does not recognize, and words that destroy (\emph{delete}, \emph{erase}, \emph{deleta}, \emph{exclui}) or ask for things micro does not do (\emph{krige}, \emph{variogram}) never produce a proposal at all.
 
-The bar learns \emph{this} project. When you first use it, it builds its vocabulary from your columns, your category values and your layer names, generates example sentences from them, and trains on them in your browser, in under a second. No model is downloaded and nothing leaves the machine; micro stays Sealed (\cref{ch:sealed}). Open a different project and it relearns. micro's tests measure it on the demo project against a fixed set of test phrasings, each held out of training: about 98\% understood in both languages, and nine in ten out-of-scope requests refused. It is on by default because it passes that test. A project whose column names are cryptic codes gives it less to work with; if it misreads one, rephrase with the column's own name. \menu{Tools>Settings…}, section \ui{interaction}, row \ui{natural-language command bar} turns it off.
+The bar learns \emph{this} project. When you first use it, it builds its vocabulary from your columns, your category values and your layer names, generates example sentences from them, and trains on them in your browser, in about a second. No model is downloaded and nothing leaves the machine; micro stays Sealed (\cref{ch:sealed}). Open a different project and it relearns. micro's tests measure it on the demo project against a fixed set of test phrasings, each held out of training: about 98\% understood in both languages, and nine in ten out-of-scope requests refused. It is on by default because it passes that test. A project whose column names are cryptic codes gives it less to work with; if it misreads one, rephrase with the column's own name. \menu{Tools>Settings…}, section \ui{interaction}, row \ui{natural-language command bar} turns it off.
 
 \begin{tryit}
 \begin{enumerate}

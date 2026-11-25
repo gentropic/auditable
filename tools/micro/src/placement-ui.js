@@ -188,7 +188,7 @@ export function parseControlPoints(text) {
  * deviation), hMax, vMax, … } — whatever the deviation.
  */
 export function fitLayerToCrs(L, fromCrs, toCrs = projectCrs()) {
-  if (!toCrs) throw new Error('the project has no coordinate system — set one first (the CRS chip in the status bar)');
+  if (!toCrs) throw new Error('the project has no coordinate system — set one first (the CRS chip in the top bar)');
   if (!fromCrs) throw new Error('give the layer\'s coordinate system');
   const bb = layerLocalBbox(L);
   if (!bb) throw new Error(`${nameOf(L)}: no extent yet`);

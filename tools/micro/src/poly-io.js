@@ -88,7 +88,7 @@ const firstLine = (text) => { const k = text.search(/\r?\n/); return k < 0 ? tex
 // ── the CRS rule ────────────────────────────────────────────────────────────────────────────
 export class GeographicError extends Error {
   constructor(why, { extent = null, fileCrs = null } = {}) {
-    super(`${why} — the project has no coordinate system yet, so longitude/latitude would land at (−45, −20) on a metre grid. Set the project's coordinate system (the CRS chip in the status bar, or ⌘K → Coordinate system…; it suggests one from where the data sits) and open it again: it will be reprojected into it.`);
+    super(`${why} — the project has no coordinate system yet, so longitude/latitude would land at (−45, −20) on a metre grid. Set the project's coordinate system (the CRS chip in the top bar, or ⌘K → Coordinate system…; it suggests one from where the data sits) and open it again: it will be reprojected into it.`);
     this.name = 'GeographicError';
     this.geographic = true;
     this.extent = extent;                                  // the data's lon/lat extent [w, s, e, n] — to suggest a CRS
@@ -578,7 +578,7 @@ export function featuresToLonLat(feats, from) {
 export function shapefilePrj(d, lcrs) {
   const src = (d && d.source) || {};
   if (!src.reprojected && src.prj) return { prj: src.prj, from: 'file', note: null };
-  if (!lcrs) return { prj: null, from: null, note: 'no .prj written — these coordinates have no coordinate system (set the project\'s: the CRS chip in the status bar)' };
+  if (!lcrs) return { prj: null, from: null, note: 'no .prj written — these coordinates have no coordinate system (set the project\'s: the CRS chip in the top bar)' };
   const r = crsToPrj(lcrs);
   if (r.text) return { prj: r.text, from: 'written', note: `.prj: ${crsLabel(lcrs)}` };
   return { prj: null, from: null, note: `no .prj written — ${r.why}; the coordinates are in ${crsLabel(lcrs)}, set that in the reading software` };
@@ -594,7 +594,7 @@ export async function buildFeatureExport(L, format, { selectedOnly = false, name
   const lcrs = await featureLayerCrs(d, projectCrs);
   const reproj = !!(d.source && d.source.reprojected);
   const crs = lcrs && lcrs.epsg ? { epsg: lcrs.epsg, name: lcrs.name } : lcrs ? { name: lcrs.name } : (d.source && d.source.crs);
-  const needLonLat = () => { if (!lcrs) throw new Error('these coordinates have no coordinate system — set the project\'s (the CRS chip in the status bar) to export longitude/latitude'); return featuresToLonLat(feats, lcrs); };
+  const needLonLat = () => { if (!lcrs) throw new Error('these coordinates have no coordinate system — set the project\'s (the CRS chip in the top bar) to export longitude/latitude'); return featuresToLonLat(feats, lcrs); };
   if (format === 'wkt-csv') return { blob: new Blob([featuresToWktCsv(feats, columns, { delim: ',' })], { type: 'text/csv' }), name: `${base}.csv` };
   if (format === 'wkt-tsv') return { blob: new Blob([featuresToWktCsv(feats, columns, { delim: '\t' })], { type: 'text/tab-separated-values' }), name: `${base}.tsv` };
   if (format === 'geojson') return { blob: new Blob([featuresToGeoJson(feats, columns, { crs })], { type: 'application/geo+json' }), name: `${base}.geojson` };

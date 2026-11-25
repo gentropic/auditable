@@ -162,16 +162,16 @@ Three combinations cover most work:
 \item \textbf{Context that stays.} Set the topography to \ui{don't cut} to keep the whole surface over a sectioned model. With the model on \ui{keep behind only} you have the classic cutaway.
 \end{itemize}
 
-The demo shows why. Its holes are drilled north in fans from collars south of the lens, so the E–W section it opens on is crossed by eight of them — the MERIDIAN holes, two from each fan. PIONEER's four scout holes stopped at 150\,m, short of the section, and drop out of the picture.
+The demo shows why. Its holes are drilled north in fans from collars south of the lens, so the E–W section it opens on is crossed by four of them — the −60° MERIDIAN hole of each fan. PIONEER's four scout holes stopped at 150\,m, short of the section, and the −75° holes are too steep to reach that far north; both drop out of the picture.
 
-\shot{sections-whole-holes}{The demo deposit on its own E–W section, a ± 5\,m slab, seen obliquely from the collars' side, with the drillholes set to \ui{keep holes that cross the slab, whole}. Each of the four drill lines shows its MERIDIAN holes complete, from the collar on the topography down through the cut face (the two holes of a fan nearly overlap from here); the short PIONEER holes, which never reach the section, are hidden.}
+\shot{sections-whole-holes}{The demo deposit on its own E–W section, a ± 5\,m slab, seen obliquely from the collars' side, with the drillholes set to \ui{keep holes that cross the slab, whole}. Each of the four drill lines shows its −60° hole complete, from the collar on the topography down through the cut face; the holes that never reach the section — the short PIONEER holes and the steep −75° ones — are hidden.}
 
 \begin{tryit}
 In the demo project (it opens with the holes on \ui{don't cut}):
 \begin{enumerate}
 \item Change \ui{behind} to \ui{slab}, and set the number to \code{5}.
 \item Right-click the \ui{holes · demo\_assay.csv} layer, \menu{Display>Cut by sections>keep holes that cross the slab, whole}. The menu item now reads \emph{Cut by sections (whole holes)}.
-\item Press \key{⇧L} to face the section from the south, then orbit a little. Eight holes remain, complete; the four short ones have gone.
+\item Press \key{⇧L} to face the section from the south, then orbit a little. Four holes remain, complete; the other eight, which never reach the slab, have gone.
 \item Set the holes back to \ui{don't cut}.
 \end{enumerate}
 \end{tryit}
@@ -205,7 +205,7 @@ A series steps a \ui{slab}. With the section on \ui{front} or \ui{behind} the wi
 For sections laid out on a page with a title block and a scale, the composer's atlas does the same job at print quality (\cref{ch:atlas}); as a routine step it is in \cref{ch:routines}.
 
 \subsection{Block outlines on a vector section}\label{sec:sections-outlines}\index{vector section!outlines}
-A composer vector section (\cref{sec:compo-vector}) draws every block the plane cuts in its legend color, and merges neighbors of the same color, so the page shows color \emph{regions}: the smallest file, and a clean figure. When the figure is about the blocking itself — a sub-blocked model received from another package, a check that the sub-blocks follow the contact — \menu{Settings>display>vector-section outlines} draws it:
+A composer vector section (\cref{sec:compo-vector}) draws every block the plane cuts in its legend color, and merges neighbors of the same color, so the page shows color \emph{regions}: the smallest file, and a clean figure. When the figure is about the blocking itself — a sub-blocked model received from another package, a check that the sub-blocks follow the contact — \menu{Tools>Settings…}, section \ui{display}, row \ui{vector-section outlines} draws it:
 
 \begin{center}
 \begin{tabularx}{\linewidth}{@{}lL@{}}\toprule

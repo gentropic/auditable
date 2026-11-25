@@ -3,7 +3,7 @@
 // The project has ONE coordinate reference system (S.crs — a @gcu/proj CRS object, or null while
 // none is stated). It is set from a file's .prj on open (when unset), suggested from where the data
 // sits, picked in the selector (src/crs-picker.js), or typed (an EPSG code, a proj4 string, a WKT);
-// it is saved in project.json as { epsg, name } or { name, def }, and shown in the status bar chip,
+// it is saved in project.json as { epsg, name } or { name, def }, and shown in the top bar chip,
 // file info and the layer properties.
 //
 // VECTORS AND POINTS are reprojected into it when they are read (strings / polygons in every

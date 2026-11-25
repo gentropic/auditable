@@ -12,8 +12,8 @@ moved and how far the result can be trusted.
 
 \section{The project's coordinate system}\label{sec:crs-project}
 
-A project has one \term{coordinate reference system} (CRS). The chip at the right of the status bar,
-beside \ui{Sealed}, shows it — \code{EPSG:31983}, or \code{no CRS} — and a click on it opens the selector
+A project has one \term{coordinate reference system} (CRS). The chip in the top bar, just left of
+\ui{Sealed}, shows it — \code{EPSG:31983}, or \code{no CRS} — and a click on it opens the selector
 (\cref{sec:crs-selector}). The same command is \menu{File>Coordinate system…} and, in the palette,
 \key{⌘K} → \code{coordinate system}.
 
@@ -30,7 +30,7 @@ The system is set in one of four ways:
 
 A project's system must be \emph{projected}: micro works in metres, so a geographic system (degrees) is
 refused with that reason. The system is saved in \file{project.json} and set again before any layer
-reopens. The layer properties' \ui{source} tab and \menu{Data>File info} show it, beside what the file
+reopens. The layer properties' \ui{source} tab and \menu{File>File info…} show it, beside what the file
 itself said.
 
 \section{The selector}\label{sec:crs-selector}
@@ -60,7 +60,7 @@ Double-click a row, or press \key{Enter} in the search box, to use it.
 \begin{tryit}
 Find a system by name and by code.
 \begin{enumerate}
-\item Click the CRS chip in the status bar.
+\item Click the CRS chip in the top bar.
 \item Type \code{sirgas utm 23s}: the list narrows to SIRGAS 2000 / UTM zone 23S.
 \item Select it. Its area of use — Brazil between 48°W and 42°W — shows in amber on the map.
 \item Type \code{31983} instead: the same system, found by its code.
@@ -92,15 +92,17 @@ The move is horizontal. Each vertex's z is carried unchanged: elevations in mine
 level, and the change in ellipsoidal height a datum shift implies is not a change of elevation.
 
 \begin{caution}
-A longitude/latitude file opened while the project has no system is refused, with an offer to set one
-(the selector opens with suggestions for where the file sits). micro never places degrees on a metre
-grid.
+A longitude/latitude file opened while the project has no system is never placed on a metre grid as
+it is. Strings and polygons (GeoJSON, KML, a shapefile in degrees): the open dialog lists the row
+unticked, with the reason; tick it and micro offers to set the project's system (the selector opens
+with suggestions for where the file sits), then opens the file reprojected into it --- Cancel leaves it
+unopened. A LAS cloud in degrees is refused: set the system first (the CRS chip), then open it again.
 \end{caution}
 
 \section{How accurate the move is}\label{sec:crs-accuracy}
 
 Every reprojected layer records the path its coordinates took, in the layer's \ui{source} tab, in
-\menu{Data>File info}, in its lineage (\code{reproject}) and in the open dialog's line for the file:
+\menu{File>File info…}, in its lineage (\code{reproject}) and in the open dialog's line for the file:
 
 \begin{lstlisting}
 SAD69 → SIRGAS 2000 by 3-parameter Helmert
