@@ -18,7 +18,10 @@ export function setOverlayHooks(h) { H = h; }
 // ── measure (m): two picks -> distance. Endpoints come from the SOURCE RECORDS
 // (block centroids / point coordinates) — exact, not screen unprojections. The
 // overlay re-projects each drawn frame, so it rides orbits. Esc clears. ──
-export let _measure = { arm: 0, a: null, b: null, mouse: null };   // a/b = frame-local [x,y,z]; mouse = css px rubber-band end
+// a/b = the first / last point (frame-local [x,y,z]); pts / ptsT every vertex, drawn / true (a moved
+// layer); closed: the polyline closed back on its first vertex; mouse = css px rubber-band end
+const NEW_MEASURE = (arm) => ({ arm, a: null, b: null, mouse: null, pts: [], ptsT: [], closed: false });
+export let _measure = NEW_MEASURE(0);
 
 export async function recordPosition(hit) {
   const lid = hit.layer, rec = hit.rec;                    // measure works ACROSS layers
@@ -64,22 +67,28 @@ export async function recordPosition(hit) {
 }
 
 export function armMeasure() {
-  _measure = { arm: 1, a: null, b: null, mouse: null };
+  _measure = NEW_MEASURE(1);
   $('#measureSvg').style.display = 'none';
   $('#btnMeasure').classList.add('on');
   S.cv.style.cursor = 'crosshair';
-  $('#meta').textContent = _isMobile() ? 'measure: tap two points — hold and slide for a crosshair' : 'measure: click two points/blocks';
+  $('#meta').textContent = _isMobile() ? 'measure: tap two points — hold and slide for a crosshair' : 'measure: click two points/blocks — ⇧-click to add a vertex (a polyline; back on the first closes it)';
 }
 
 export function clearMeasure() {
-  _measure = { arm: 0, a: null, b: null, mouse: null };
+  _measure = NEW_MEASURE(0);
   $('#measureSvg').style.display = 'none';
   $('#btnMeasure').classList.remove('on');
   S.cv.style.cursor = '';
   requestRender();
 }
 
-export async function measureClick(cssX, cssY) {
+// a click: the first point, a vertex more (add: ⇧), or the last (a plain click ends it). Clicking back
+// on the first vertex (within 10 px) of three or more closes the outline: its area.
+export async function measureClick(cssX, cssY, { add = false } = {}) {
+  if (_measure.pts.length >= 3) {
+    const f = projectToCss(_measure.pts[0]);
+    if (f && Math.hypot(f[0] - cssX, f[1] - cssY) <= 10) { _measure.closed = true; finishMeasure(); return; }
+  }
   const hit = S.renderer.pick(cssX, cssY, S.cam, { pointPx: +$('#ptPx').value, blocksAsPoints: H._viewMode === 'points', section: currentSection() });
   if (hit == null) { $('#meta').textContent = `measure: nothing there — ${_measure.a ? 'the second point' : 'two points'} on the model`; return; }
   // a MESH (a surface grid included) has no records to anchor on: it is met where the ray meets it,
@@ -94,14 +103,44 @@ export async function measureClick(cssX, cssY) {
   const off = S.renderer.layerOffset(hit.layer) || [0, 0, 0];
   const trueLocal = [local[0] - off[0], local[1] - off[1], local[2] - off[2]];
   const moved = off.some((v) => v !== 0);
-  if (!_measure.a) { _measure.a = local; _measure.aT = trueLocal; _measure.moved = moved; $('#meta').textContent = _isMobile() ? 'measure: now the second point' : 'measure: click the second point'; drawMeasure(); }
-  else {
-    _measure.b = local; _measure.bT = trueLocal; _measure.moved = _measure.moved || moved; _measure.arm = 0; _measure.mouse = null;
-    S.cv.style.cursor = '';
-    $('#btnMeasure').classList.remove('on');
-    updateMeasureReadout();
-    drawMeasure();
+  _measure.pts.push(local); _measure.ptsT.push(trueLocal); _measure.moved = _measure.moved || moved;
+  if (_measure.pts.length === 1) { _measure.a = local; _measure.aT = trueLocal; $('#meta').textContent = _isMobile() ? 'measure: now the second point' : 'measure: click the second point'; drawMeasure(); return; }
+  if (add) { updateMeasureReadout(); drawMeasure(); return; }    // a vertex more: keep going
+  finishMeasure();
+}
+function finishMeasure() {
+  const n = _measure.pts.length;
+  _measure.b = _measure.pts[n - 1]; _measure.bT = _measure.ptsT[n - 1];
+  _measure.arm = 0; _measure.mouse = null;
+  S.cv.style.cursor = '';
+  $('#btnMeasure').classList.remove('on');
+  updateMeasureReadout();
+  drawMeasure();
+}
+
+// the polyline's numbers, from its TRUE positions: total 3D and plan length, the last segment, the
+// angle at the middle of three, a closed outline's area in plan and in 3D (its vector area)
+export function measureFigures(P = _measure.ptsT.length ? _measure.ptsT : _measure.pts, closed = _measure.closed) {
+  const n = P.length, segs = [];
+  const ring = closed && n >= 3 ? [...P, P[0]] : P;
+  let len = 0, plan = 0;
+  for (let i = 1; i < ring.length; i++) { const d = [0, 1, 2].map((k) => ring[i][k] - ring[i - 1][k]); const l = Math.hypot(...d), pl = Math.hypot(d[0], d[1]); segs.push({ d, l, pl }); len += l; plan += pl; }
+  const out = { n, segs, length: len, plan, closed: closed && n >= 3 };
+  if (n === 3 && !out.closed) {
+    const u = [0, 1, 2].map((k) => P[0][k] - P[1][k]), v = [0, 1, 2].map((k) => P[2][k] - P[1][k]);
+    const c = (u[0] * v[0] + u[1] * v[1] + u[2] * v[2]) / (Math.hypot(...u) * Math.hypot(...v) || 1);
+    out.angle = Math.acos(Math.max(-1, Math.min(1, c))) * 180 / Math.PI;
   }
+  if (out.closed) {
+    let a = 0, vx = 0, vy = 0, vz = 0;
+    for (let i = 0; i < n; i++) {
+      const p = P[i], q = P[(i + 1) % n];
+      a += p[0] * q[1] - q[0] * p[1];
+      vx += p[1] * q[2] - p[2] * q[1]; vy += p[2] * q[0] - p[0] * q[2]; vz += p[0] * q[1] - p[1] * q[0];
+    }
+    out.areaPlan = Math.abs(a) / 2; out.area3d = Math.hypot(vx, vy, vz) / 2;
+  }
+  return out;
 }
 
 // trend & plunge of the A→B line (structural convention: plunge positive
@@ -115,6 +154,7 @@ export function toggleMeasureTP() {
 }
 
 export function updateMeasureReadout() {
+  if (_measure.pts.length > 2 || _measure.closed || (_measure.arm && _measure.pts.length === 2)) return updatePolyReadout();
   const A = _measure.aT || _measure.a, B = _measure.bT || _measure.b;
   const d = [0, 1, 2].map((i) => B[i] - A[i]);
   const d3 = Math.hypot(...d), plan = Math.hypot(d[0], d[1]);
@@ -128,6 +168,19 @@ export function updateMeasureReadout() {
   _measure.label = `${d3.toFixed(1)} m${tp}`;
 }
 
+const tpOf = (d) => { const plan = Math.hypot(d[0], d[1]); return ` · ${Math.round(Math.atan2(-d[2], plan) * 180 / Math.PI)}°→${String(Math.round(((Math.atan2(d[0], d[1]) * 180 / Math.PI) + 360) % 360)).padStart(3, '0')}°`; };
+function updatePolyReadout() {
+  const F = measureFigures(), last = F.segs[F.segs.length - 1];
+  const parts = [`measure: ${F.length.toFixed(2)} m along ${F.segs.length} segment${F.segs.length === 1 ? '' : 's'}`, `plan ${F.plan.toFixed(2)} m`];
+  if (last) parts.push(`last ${last.l.toFixed(2)} m${_measureTP ? tpOf(last.d) : ''}`);
+  if (F.angle != null) parts.push(`angle at the middle ${F.angle.toFixed(1)}°`);
+  if (F.closed) parts.push(`closed: area ${F.areaPlan.toFixed(1)} m² in plan, ${F.area3d.toFixed(1)} m² in 3D`);
+  if (_measure.arm) parts.push('⇧-click a vertex more, click to end');
+  if (_measure.moved) parts.push('true positions (a layer is drawn displaced)');
+  $('#meta').textContent = parts.join(' · ');
+  _measure.label = F.closed ? `${F.areaPlan.toFixed(0)} m²` : `${F.length.toFixed(1)} m`;
+}
+
 export function projectToCss(local) {
   const m = S.cam.state.viewProj;
   const w = m[3] * local[0] + m[7] * local[1] + m[11] * local[2] + m[15];
@@ -137,9 +190,41 @@ export function projectToCss(local) {
   return [(x + 1) / 2 * S.cv.clientWidth, (1 - y) / 2 * S.cv.clientHeight];
 }
 
+// the polyline before the last segment (or the rubber band), and its inner vertices
+function drawMeasurePoly(svg) {
+  let poly = svg.querySelector('#mPoly'), dots = svg.querySelector('#mDots');
+  if (!poly) {
+    const NS = 'http://www.w3.org/2000/svg';
+    poly = document.createElementNS(NS, 'polyline'); poly.id = 'mPoly'; poly.setAttribute('fill', 'none'); poly.setAttribute('stroke', '#ff26b3'); poly.setAttribute('stroke-width', '1.5');
+    dots = document.createElementNS(NS, 'g'); dots.id = 'mDots';
+    svg.insertBefore(dots, svg.firstChild); svg.insertBefore(poly, svg.firstChild);
+  }
+  const P = _measure.pts, done = !_measure.arm;
+  const ring = _measure.closed ? [...P, P[0]] : P;
+  const upto = done ? ring.length : P.length;                // done: the whole line; drawing: up to the last vertex
+  const css = ring.slice(0, upto).map(projectToCss);
+  poly.setAttribute('points', css.length > 1 && css.every(Boolean) ? css.map((c) => c.join(',')).join(' ') : '');
+  dots.textContent = '';
+  for (const c of css.slice(1, done && !_measure.closed ? -1 : undefined)) if (c) { const d = document.createElementNS('http://www.w3.org/2000/svg', 'circle'); d.setAttribute('cx', c[0]); d.setAttribute('cy', c[1]); d.setAttribute('r', 3); d.setAttribute('fill', '#ff26b3'); d.setAttribute('stroke', '#121212'); d.setAttribute('stroke-width', 1); dots.appendChild(d); }
+}
+
 export function drawMeasure() {
   const svg = $('#measureSvg');
   if (!_measure.a) { svg.style.display = 'none'; return; }
+  drawMeasurePoly(svg);
+  if (_measure.pts.length > 1) {                           // a polyline: mLine is the rubber band from the last vertex (or nothing)
+    svg.style.display = '';
+    const a0 = projectToCss(_measure.a); if (a0) { $('#mA').setAttribute('cx', a0[0]); $('#mA').setAttribute('cy', a0[1]); }
+    const last = projectToCss(_measure.pts[_measure.pts.length - 1]), B = $('#mB'), T = $('#mLabel'), L = $('#mLine'), C = $('#mLineCase');
+    const seg = (x1, y1, x2, y2) => { for (const el of [C, L]) { el.setAttribute('x1', x1); el.setAttribute('y1', y1); el.setAttribute('x2', x2); el.setAttribute('y2', y2); } };
+    if (_measure.arm && _measure.mouse && last) { seg(last[0], last[1], _measure.mouse[0], _measure.mouse[1]); L.setAttribute('stroke-dasharray', '5 4'); C.setAttribute('stroke-dasharray', '5 4'); }
+    else if (last) seg(last[0], last[1], last[0], last[1]);
+    if (last && !_measure.closed) { B.style.display = ''; B.setAttribute('cx', last[0]); B.setAttribute('cy', last[1]); } else B.style.display = 'none';
+    const anchor = last || a0;
+    if (anchor) { T.setAttribute('x', anchor[0] + 8); T.setAttribute('y', anchor[1] - 8); }
+    T.textContent = _measure.arm ? '' : (_measure.label || '');
+    return;
+  }
   const a = projectToCss(_measure.a);
   const pending = !_measure.b;                             // rubber-band: A picked, B follows the mouse
   const b = pending ? _measure.mouse : projectToCss(_measure.b);

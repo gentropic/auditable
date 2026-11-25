@@ -26,7 +26,7 @@ cv.addEventListener('pointerdown', (e) => {
   e.stopImmediatePropagation(); e.preventDefault();
   const r = cv.getBoundingClientRect();
   if (e.pointerType === 'touch') { measureAim(e); return; }
-  measureClick(e.clientX - r.left, e.clientY - r.top);
+  measureClick(e.clientX - r.left, e.clientY - r.top, { add: e.shiftKey });   // ⇧: a vertex more (a polyline)
 }, { capture: true });
 // a FINGER covers what it measures. A quick tap measures where it lands (with the touch
 // pick's 16 px allowance); press and slide (or hold) and a crosshair rides 64 px above the
