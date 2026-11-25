@@ -113,7 +113,7 @@
 <header class="hero">
   <h1>micro</h1>
   <div class="sub">A streaming, offline workbench for massive point clouds and block models.</div>
-  <div class="badges"><b>🔒 Sealed</b> — no network, nothing leaves your machine · single self-contained HTML file · <a href="../micro.html" download>download micro.html</a> · <a href="../">open the app ↗</a><span class="no-print"> · <a href="micro-manual.pdf">download this manual (PDF) ↓</a> · <a href="card.html">printable shortcut card ✂</a></span></div>
+  <div class="badges"><b>🔒 Sealed</b> — no network, nothing leaves your machine · single self-contained HTML file · <a href="../micro.html" download>download micro.html</a> · <a href="../">open the app ↗</a><span class="no-print"> · <a href="micro-manual.pdf">download the full manual (PDF, ~570 pages) ↓</a> · <a href="card.html">printable shortcut card ✂</a></span></div>
 </header>
 
 <p class="lead">micro opens a point cloud, block model, grid, or set of drillholes — however large — in about a second, with no import step. From there you view, query, derive, join, reconcile, validate, and produce report-ready figures. Every derived column and layer carries a provenance trail, and nothing ever touches the network.</p>
@@ -138,33 +138,42 @@
   <a href="#blocks"><span class="n">9</span>Block models — regular, sub-blocked, rotated</a>
   <a href="#dh"><span class="n">10</span>Drillholes</a>
   <a href="#meshes"><span class="n">11</span>Meshes, wireframes &amp; CAD</a>
-  <a href="#grids"><span class="n">12</span>Grids &amp; surfaces</a>
-  <a href="#tables"><span class="n">13</span>Tables &amp; spreadsheets</a>
-  <a href="#domain"><span class="n">14</span>Selection &amp; domaining</a>
+  <a href="#polygons"><span class="n">12</span>Strings &amp; polygons</a>
+  <a href="#crs"><span class="n">13</span>Coordinate systems &amp; placements</a>
+  <a href="#grids"><span class="n">14</span>Grids &amp; surfaces</a>
+  <a href="#tables"><span class="n">15</span>Tables &amp; spreadsheets</a>
+  <a href="#domain"><span class="n">16</span>Selection &amp; domaining</a>
   <div class="toc-part">Analysis</div>
-  <a href="#awin"><span class="n">15</span>How the analysis windows work</a>
-  <a href="#gt"><span class="n">16</span>Grade–tonnage</a>
-  <a href="#xtab"><span class="n">17</span>Resource cross-tab</a>
-  <a href="#swath"><span class="n">18</span>Swath / drift</a>
-  <a href="#stats"><span class="n">19</span>Stats, scatter &amp; Q-Q</a>
-  <a href="#join"><span class="n">20</span>Join &amp; reconcile</a>
+  <a href="#awin"><span class="n">17</span>How the analysis windows work</a>
+  <a href="#gt"><span class="n">18</span>Grade–tonnage</a>
+  <a href="#xtab"><span class="n">19</span>Resource cross-tab</a>
+  <a href="#swath"><span class="n">20</span>Swath / drift</a>
+  <a href="#stats"><span class="n">21</span>Stats, scatter &amp; Q-Q</a>
+  <a href="#contact"><span class="n">22</span>Contact analysis</a>
+  <a href="#join"><span class="n">23</span>Join &amp; reconcile</a>
+  <a href="#factors"><span class="n">24</span>Reconciliation factors</a>
+  <a href="#structure"><span class="n">25</span>Structure on an outcrop mesh</a>
   <div class="toc-part">QA &amp; provenance</div>
-  <a href="#dhqa"><span class="n">21</span>Drillhole QA report</a>
-  <a href="#validate"><span class="n">22</span>Validate vs drillholes</a>
-  <a href="#meshqa"><span class="n">23</span>Mesh QA &amp; volume</a>
-  <a href="#lineage"><span class="n">24</span>Lineage &amp; provenance</a>
+  <a href="#dhqa"><span class="n">26</span>Drillhole QA report</a>
+  <a href="#validate"><span class="n">27</span>Validate vs drillholes</a>
+  <a href="#meshqa"><span class="n">28</span>Mesh QA &amp; volume</a>
+  <a href="#lineage"><span class="n">29</span>Lineage &amp; provenance</a>
   <div class="toc-part">Automation</div>
-  <a href="#recipes"><span class="n">25</span>Recipes</a>
-  <a href="#routines"><span class="n">26</span>Routines — recipes that run recipes</a>
+  <a href="#recipes"><span class="n">30</span>Recipes</a>
+  <a href="#routines"><span class="n">31</span>Routines — recipes that run recipes</a>
+  <a href="#checks"><span class="n">32</span>Checks, comparisons &amp; run records</a>
+  <a href="#library"><span class="n">33</span>The library</a>
   <div class="toc-part">Output &amp; projects</div>
-  <a href="#figures"><span class="n">27</span>Figures &amp; decorations</a>
-  <a href="#projects"><span class="n">28</span>Projects</a>
-  <a href="#backups"><span class="n">29</span>Backups &amp; project packs</a>
-  <a href="#parquet"><span class="n">30</span>The project store, inside</a>
+  <a href="#figures"><span class="n">34</span>Figures &amp; decorations</a>
+  <a href="#composer"><span class="n">35</span>The composer</a>
+  <a href="#atlas"><span class="n">36</span>Atlases</a>
+  <a href="#projects"><span class="n">37</span>Projects</a>
+  <a href="#backups"><span class="n">38</span>Backups &amp; project packs</a>
+  <a href="#parquet"><span class="n">39</span>The project store, inside</a>
   <div class="toc-part">The tool itself</div>
-  <a href="#sealed"><span class="n">31</span>Security: Sealed</a>
-  <a href="#install"><span class="n">32</span>Install, offline &amp; phones</a>
-  <a href="#faq"><span class="n">33</span>Questions &amp; troubleshooting</a>
+  <a href="#sealed"><span class="n">40</span>Security: Sealed</a>
+  <a href="#install"><span class="n">41</span>Install, offline &amp; phones</a>
+  <a href="#faq"><span class="n">42</span>Questions &amp; troubleshooting</a>
   <div class="toc-part">Appendices</div>
   <a href="#ref"><span class="n">A</span>Reference — keys &amp; the expression language</a>
   <a href="#formats"><span class="n">B</span>Formats</a>
@@ -182,6 +191,7 @@
   <li><b>Block models</b> — CSV / TXT, Datamine <code>.dm</code>, and <b>Parquet</b>, sub-blocked included</li>
   <li><b>Grids</b> — GeoTIFF, Surfer <code>.grd</code>, ESRI ASCII <code>.asc</code></li>
   <li><b>Meshes &amp; CAD</b> — <code>.msh</code> (Leapfrog), OBJ, PLY-with-faces, LFM, Datamine wireframe pairs, <b>DXF</b>, <code>.wfr</code> — see <a href="#meshes">Meshes</a></li>
+  <li><b>Strings &amp; polygons</b> — pit limits, leases, blast outlines as features with their attributes: CSV string files, WKT, shapefiles, GeoJSON, KML / KMZ, DXF, and the QGIS clipboard — see <a href="#polygons">Strings &amp; polygons</a></li>
   <li><b>Projects from other software</b> — <b>OMF</b> (<code>.omf</code>) block models, points, and surfaces, a layer each</li>
   <li><b>Tables</b> — CSVs without coordinates and <b>Excel</b> workbooks, a sheet each — see <a href="#tables">Tables</a></li>
   <li><b>Drillholes</b> — collar + survey + interval tables (desurveyed on load); a set can carry <b>several interval tables</b> (assays, lithology, geotech) sharing one geometry — see <a href="#dh">Drillholes</a></li>
@@ -193,10 +203,10 @@
 <ul>
   <li><b>A dataset is an element.</b> A block model, a drillhole set, a grid — each is a table (or several, for drillholes) plus an interpretation of its geometry. The records are positional: row 173 of the file is block 173 everywhere, forever.</li>
   <li><b>Columns are the atoms.</b> Source columns come from the file; derived columns — calculated, materialized, painted, joined, broadcast — behave identically once they exist. Everything downstream (filter, color, analysis, export) consumes columns and doesn't care where they came from.</li>
-  <li><b>Operations are recorded, not just run.</b> Every derivation is written down as data — the expression, the method and parameters, the inputs — in the project's element manifests (§30). What was done is always readable, and re-runnable.</li>
+  <li><b>Operations are recorded, not just run.</b> Every derivation is written down as data — the expression, the method and parameters, the inputs — in the project's element manifests (<a href="#parquet">§39</a>). What was done is always readable, and re-runnable.</li>
   <li><b>Nothing is imported.</b> micro reads your files where they are, streams them, and keeps its own additions <i>beside</i> them — sidecar columns, manifests, caches. Delete micro's files and your data is exactly as it was.</li>
 </ul>
-<p><b>Tools → Settings…</b> holds the machine preferences — the <b>theme</b> (dark basalt, light equipment gray, or follow the system; also <b>View → Theme</b> and <code>⌘K</code> “theme”), background (by default it matches the theme), render budget, selection-tool stickiness, GPU/CPU compute, auto-optimize-on-save, the experimental command bar — stored in this browser only. View state (camera, sections, pinned windows) travels with the <i>project</i>; data decisions live in its manifests.</p>
+<p><b>Tools → Settings…</b> holds the machine preferences — the <b>theme</b> (dark basalt, light equipment gray, or follow the system; also <b>View → Theme</b> and <code>⌘K</code> “theme”), background (by default it matches the theme), render budget, selection-tool stickiness, GPU/CPU compute, auto-optimize-on-save, ambient occlusion, software rendering, the natural-language command bar — stored in this browser only. View state (camera, sections, pinned windows) travels with the <i>project</i>; data decisions live in its manifests.</p>
 <p><b>Language.</b> Settings → display → <b>language</b> (or <code>⌘K</code> “language” / “idioma”) switches the interface between English and <b>Português (Brasil)</b>, live. It covers the menus and every right-click menu, the window titles, the command palette — which searches in both languages whichever is showing, so “envoltória” and “grade shell” find the same command — the toolbar and these settings. Status messages, the in-app Help and this manual are in English for now. micro starts in English and never switches by itself: in a browser set to Portuguese, the start screen offers “Interface em português” once. The choice is remembered on this machine.</p>
 <p><b>Custom themes.</b> Theme → <b>custom…</b> (or Settings → display → custom theme → <b>edit…</b>) opens the theme editor: a swatch for every colour the panels use — surfaces, text, accents — over the dark or light register you start from, applied as you pick. A contrast line reads every ink people actually read against the surface it sits on and flags any pair below 4.5:1. <b>start from…</b> offers dark, light and a shipped <b>high contrast</b> theme. A theme can carry its own 3D background, used while Settings → background is “match the theme”. <b>export .json</b> saves it as a small file (only the colours that differ from its base) and <b>import…</b> loads one, so a team can share a look. Like every preference, the theme stays on this machine; it never travels inside a project.</p>
 <p class="tip"><b>Tip —</b> The fastest way to reach anything is the <b>command palette</b>: <span class="kbd">Ctrl/⌘K</span> (or the <span class="kbd">⌘K</span> button). It searches every action and shows only what applies to the layer you have selected.</p>
@@ -211,12 +221,18 @@
 <p>No data handy? The empty state offers <b>▸ open the demo project</b> — one click generates a full scene locally: a 1.8M-block iron model with realistic bimodal grades, a drillhole set threading the ore, pre-mining <b>topography</b>, three <b>pit-phase shells</b>, and the <b>ore-shell</b> mesh the holes chase — sectioned open on the lens, with a grade–tonnage curve already computed. Every workflow in this manual can be tried on it, and <b>File → Save project as…</b> writes it to a real folder you can inspect: plain CSVs, JSON manifests, no black box.</p>
 <h3>The layers panel</h3>
 <p><span class="kbd">p</span> toggles the layers panel. Each opened dataset is a layer with its own color, filter, and visibility. Layers can be grouped and reordered by dragging; <span class="kbd">[</span> <span class="kbd">]</span> step the active layer, <span class="kbd">h</span> hides/shows it, <span class="kbd">⇧H</span> <b>solos</b> it (press again to restore what was visible). Drillhole sets appear as their own group with collar and survey rows — see <a href="#dh">Drillholes</a>.</p>
-<p>Right-click a layer for its menu, organized top to bottom: <b>identity</b> (zoom, rename, reinterpret) · <b>inspect &amp; analyze</b> (attribute table, filter, stats, grade–tonnage, swath, file info, lineage, export rows) · <b>derive &amp; store</b> (materialize, store as Parquet, index) · <b>display</b> (opacity, edges, sections, hide) · <b>arrange</b> (move, copy into project, remove) · <b>Properties…</b>.</p>
+<p>Right-click a layer for its menu. It lists only what applies to that layer, always in the same order: the things you reach for most at the top — <b>Zoom to layer</b>, <b>Rename layer…</b>, <b>Hide layer</b>, <b>Properties…</b>, <b>Attribute table…</b>, <b>Filter…</b> — and everything else in submenus named like the menu bar's: <b>Analyse</b> (stats, grade–tonnage, swath, QA, factors…), <b>Select</b>, <b>Views</b>, <b>Display</b> (opacity, edges, sections, style), <b>Data &amp; file</b> (reinterpret, reload, change file, Store as Parquet, export, file info, lineage), <b>Move</b>, and <b>Remove layer</b> last. A mesh and a grid add a <b>Geometry</b> submenu, for what a surface or a solid does to other layers. A submenu with nothing in it for that layer is left out.</p>
 <p><b>Mutually exclusive groups.</b> Right-click a group → <b>Mutually exclusive</b> and it shows one child at a time, like a radio group in QGIS: the children get round eyes, and turning one on turns the others off. That holds however you turn it on (the eye, <span class="kbd">h</span>, the palette, the context menu). Showing none is fine. A subgroup counts as one child. <span class="kbd">{</span> <span class="kbd">}</span> step through the group around the active layer, and the active layer follows, so you can flip through pit phases without the mouse. Flagging a group keeps its topmost shown child. Scenes and bookmarks restore exactly what they saved.</p>
 <p><span class="kbd">F2</span> renames the active layer. <b>Rename layers…</b> (on a group, a multi-selection, or the palette) batch-renames: one-click <b>strip the common prefix/suffix</b>, or find→replace with optional <b>regex</b>, with a live before→after table.</p>
 <h3>Getting around</h3>
 <p>Drag to orbit, right-drag (or shift-drag) to pan, wheel to zoom. <span class="kbd">f</span> fits the data. <span class="kbd">n s e w</span> look level that way, <span class="kbd">d</span> is plan, <span class="kbd">o</span> toggles orthographic (needed for a true scale bar). Click a block or point to <b>pick</b> it — the record panel shows its full source row, calculated and derived columns included, with a <b>fields</b> picker to trim it to the columns you care about.</p>
 <p><b>Vertical exaggeration</b> — the <b>Z×</b> box on the instrument rail (or View → Vertical exaggeration) stretches the whole scene vertically so subtle relief or a flat-lying ore lens reads. It's a property of the <i>view</i>, not one layer: every layer stretches together and stays registered, and it's display-only — picking, measuring, and section cutting all stay in true coordinates. It travels with bookmarks and scenes.</p>
+<h3 id="plain">Asking in plain words</h3>
+<p><span class="kbd">Alt+K</span> opens the <b>plain-language bar</b>: type what you want the way you would say it — <code>blocks above 55 Fe in hematite</code>, <code>select inside the ore shell</code>, <code>swath of FE along x</code> — in English or Portuguese (<code>seção na cota 1020</code>, <code>esconde a topografia</code>). The <span class="kbd">⌘K</span> palette falls back to it when nothing you typed matches a command name.</p>
+<p>The bar <b>proposes; it never acts</b>. It answers with one row that spells out the command it understood — a filter shows the very expression it will put in the box, <code>FE &gt; 55 and LITO == "HEMATITE"</code>, and the layer it will act on — and nothing happens until you read it and press <span class="kbd">Enter</span>. It understands filters (and clearing them), selecting by conditions or inside a solid, colour by a column, a section at a position and its thickness, vertical exaggeration, the background, the analysis windows (each opens set up from the phrase; <b>Run</b> stays yours), projections, export rows, and showing or hiding a layer or group. Anything else gets <i>not understood — nothing proposed</i>, on purpose: a wrong guess costs more than a refusal, and words that destroy (<i>delete</i>, <i>exclui</i>) never produce a proposal at all.</p>
+<p>The bar learns <i>this</i> project: on first use it builds its vocabulary from your columns, category values and layer names and trains on them in the browser, in under a second. No model is downloaded and nothing leaves the machine. Settings → interaction → <b>natural-language command bar</b> turns it off.</p>
+<h3 id="software">Without a graphics card</h3>
+<p>On a machine with no usable graphics card — a virtual machine, a remote desktop, a locked-down laptop — the browser draws on the processor instead, many times slower. micro notices at start (<i>software rendering detected — reduced detail</i>) and adapts: a render budget of 0.1M elements a frame instead of 1M (unless you set your own), the view drawn when something changes rather than continuously, eye-dome lighting off, ambient occlusion off, and picks rendered on click. The picture is less dense and takes longer to settle; nothing else changes. Settings → display → <b>software rendering</b> overrides the detection (automatic · on · off), and <b>Help → About micro</b> says what draws the view.</p>
 
 <h2 id="tour"><span class="n">3</span>A guided tour</h2>
 <p>Twenty minutes, no data needed, every major idea once. Open <a href="../">micro</a> and click <b>&#9656; open the demo project</b> on the empty state &mdash; it generates a small mining scene locally: a 1.8M-block iron deposit (cut open on an E&ndash;W section), a twelve-hole drilling program threading it, pre-mining topography, three pit-phase shells, and the orange ore-shell mesh. A grade&ndash;tonnage window is already computed on the right.</p>
@@ -266,6 +282,10 @@
 <p><span class="kbd">m</span> arms the tape: click two records and read <b>3D distance · plan distance · Δz</b> in the status bar — bench heights, hole spacing, the plan width of a zone. The measurement anchors to picked records (not screen pixels), so it is exact in world coordinates and unaffected by vertical exaggeration. Press <span class="kbd">m</span> again or <span class="kbd">Esc</span> to put the tape away.</p>
 <h3>Block edges</h3>
 <p><span class="kbd">⇧B</span> (or View → block edges) outlines every block — the classic wireframe-over-solid look for checking sub-blocking or lattice alignment. Each layer can override the global toggle from its context menu (always / never / follow).</p>
+<p><b>Ambient occlusion.</b> Eye-dome lighting darkens where the depth jumps — a silhouette, a pit rim — but not where two surfaces meet at an angle. Settings → display → <b>ambient occlusion</b> (soft · medium · strong) adds that shade along every inner corner: the foot of a pit wall, the step between benches. It is mostly for figures, which render with it; it is off by default, off under a projection and off in software rendering.</p>
+<h3 id="projection">Projections — the highest grade through the model</h3>
+<p>A model drawn normally shows its surface. <b>View → Projection</b> (or <code>⌘K</code> “projection”) answers a different question: for every pixel micro takes every block the line of sight passes through and keeps one value, coloured through the layer's own ramp. <b>Max</b> is where the best rock is, anywhere along the ray — a high-grade lens shows through a low-grade cap; <b>Min</b> is the waste behind good blocks; <b>Mean</b> the average along the ray. It applies to block models and clouds coloured by a numeric column, and respects the section slab (a one-bench plan slab is the best grade on that bench — step it with <span class="kbd">,</span> <span class="kbd">.</span>), the filter, the clip and hidden classes; blanks never count. A click picks the block that <i>is</i> the pixel's value. While the picture fills in, the status line reads <code>MIP (partial …)</code>; wait for <code>MIP (exact)</code> before reading a value off it (an exported figure is always exact).</p>
+<p><b>Projection to grid…</b> (same menu) asks the same question of every record and writes the answer as a <b>grid layer</b> you can contour, drape or export: per plan node, the max, min or thickness-weighted mean along the column, or — above a cutoff — the ore <b>thickness</b>, the <b>accumulation</b> (grade × thickness), <b>tonnes</b> or <b>metal</b>. A block counts by the length of the vertical line inside it, so sub-blocks and rotated models count true. The filter applies, and an <b>inside</b> row limits it to <a href="#polygons">polygons</a>; the routine tool is <code>projectgrid</code>.</p>
 <h3 id="views">Views — one model, shown again</h3>
 <p>To see one block model two ways at once — copper on one side, gold on the other, or two filters over regions that don't overlap — you don't load it twice. Right-click the layer → <b>New view of this layer</b> (or <b>New view beside it</b>). A view is a second layer that draws the <b>same data</b>: the file is read once and the GPU holds the model once. It works on block models, drillhole interval layers and point clouds.</p>
 <p>The view sits indented under its model with a <b>⧉</b> mark, named after what it shows (<i>bacaba.csv · CU</i>). What is <b>its own</b>: colour by, ramp, min/max, category column and legend, hidden classes, filter, opacity, block edges, visibility, and where it is drawn. What it <b>shares</b> with its model: the file, every column (stored, ƒ, painted), the selection, and the provenance. A column you paint through a view lands on the model, and every view coloured by it shows the stroke; selecting through a view selects the model's records.</p>
@@ -302,6 +322,8 @@ AU_OK between 0.5 and 3  or  DOMAIN in ("ORE", "HALO")
 SIO2 &gt; 10 and not (LITO = "CANGA")   # comments are fine</pre>
 <p>Matching elements isolate; everything else drops out of the render, the table, and any analysis. <span class="kbd">Enter</span> applies, <span class="kbd">Esc</span> clears. The box is <b>syntax-highlighted</b> as you type, autocomplete offers columns, functions, and category values, and unknown names get a <i>did-you-mean</i>. The full language — operators, functions, quoting, comments — is in the <a href="#ref">reference</a>.</p>
 <p>On big files the filter stays fast for three reasons: Parquet models skip whole row-groups their footers prove can't match; CSV and <code>.dm</code> files skip stretches via the project's band index; and after one complete scan the touched columns stay <b>pinned in memory</b> (see <a href="#parquet">the project store</a>). The result is that dragging a widget re-filters millions of blocks in milliseconds.</p>
+<h3 id="ghost">What happens to the rest — isolate, dim, ghost, outline</h3>
+<p>By default the rows a filter leaves out leave the view. <b>View → Filter display</b> (or <code>⌘K</code> “filter display”) offers three other ways for a block model or a cloud: <b>dim</b> keeps the rest, darkened and opaque; <b>ghost</b> draws it as one flat, faint shape <i>behind</i> the matches — it never covers a match, so the kept blocks read whole in the shape of the model around them; <b>outline</b> draws only the ghost's silhouette, a thin line round the envelope of what was left out. <b>isolate</b> stays the fastest, since the render budget runs over the matches alone. The ghost's colour follows the background, so it reads in a figure too; the choice is saved with the layer. A drillhole filter always isolates.</p>
 <h3>The filter drawer — the expression as live controls</h3>
 <p>The <b>▾</b> button glued to the filter box opens the <b>drawer</b>: your current expression projected as widgets. The expression stays the single source of truth — every control rewrites its own span of the text, so the box updates as you drag and your formatting survives.</p>
 <ul>
@@ -374,14 +396,15 @@ SIO2 &gt; 10 and not (LITO = "CANGA")   # comments are fine</pre>
 <h3>Rotated models</h3>
 <p>A model whose lattice axes aren't east/north/up — a deposit modelled along its strike — draws as <b>true rotated boxes</b>, with exact picking and true sections. When a model's centroids sit on a rotated lattice, micro finds it, and <b>asks</b> before applying it: <i>rotated boxes, or points?</i> An inferred rotation is never applied silently. A Parquet file can instead <b>declare</b> its lattice (written by micro, by an OMF project, or by any producer — App. D); a declared lattice is applied without asking, but checked against every centroid, and refused, loudly, if one falls off it.</p>
 <p>On a rotated model everything that works record by record works — filters, stats, grade–tonnage, swath, the cross-tab, export, select, flag and proportions by solid or surface, model QA, block vs sample, grade shells — and joins and reconciles work between models on the <b>same</b> rotated lattice, a sub-blocked model onto its rotated parent included. A rotated model may be sub-blocked: by-geometry queries probe each sub-block in its own box. Not yet: resampling between different orientations (the join panel says so) and the empty-grid creator.</p>
-<p>A <b>Datamine</b> <code>.dm</code> with one rotation (<code>ANGLE1</code> about Z) is placed in world coordinates: <code>ANGLE1</code> turns the model axes clockwise seen from above, about the origin <code>X0/Y0/Z0</code> — or one you give in the open dialog or with <b>Datamine origin…</b> (an anonymised export carries none). Its <code>XC/YC/ZC</code> then read in <b>world</b> coordinates everywhere — filters, stats, swath, selection, the record panel (which also shows the model's own frame), export. A Parquet export carries the rotated lattice and reopens as rotated boxes. Two or three rotations stay in the model's own frame, with a warning.</p>
+<p>A <b>Datamine</b> <code>.dm</code> with one rotation (<code>ANGLE1</code> about Z) is placed in world coordinates: <code>ANGLE1</code> turns the model axes clockwise seen from above, about the origin <code>X0/Y0/Z0</code> — or one you give in the open dialog or with <b>Datamine origin…</b> (an anonymised export carries none). Its <code>XC/YC/ZC</code> then read in <b>world</b> coordinates everywhere — filters, stats, swath, selection, the record panel (which also shows the model's own frame), export. A Parquet export carries the rotated lattice and reopens as rotated boxes. Two or three rotations stay in the model's own frame, with a warning. <b>Datamine origin…</b> is a shortcut to a <a href="#placement">placement</a>: a shift that puts the model's local origin where you say.</p>
 <h3>Which format to keep a model in</h3>
 <p>A CSV is the most portable; a Datamine <code>.dm</code> opens instantly and reads one column at a time; a <b>Parquet</b> file is the smallest and the fastest to query — micro's own store, Morton-sorted so the filter skips whole stretches of the file it can prove don't match. <b>Store as Parquet…</b> (right-click the model) converts one; saving a project offers to do it for you. See <a href="#parquet">the project store</a>.</p>
 
 <h3 id="modelqa">Model QA</h3>
 <p><b>Model QA…</b> (right-click a block model, or <code>⌘K</code> “model QA”) reads the whole model once and reports what a reviewer should see before anyone reports from it, errors first:</p>
 <ul>
-  <li><b>The lattice</b> — two blocks in one cell, a centroid off the grid, and gaps inside a column (missing blocks between a column's lowest and highest block). Checked on regular models; a rotated or sub-blocked model says it was not.</li>
+  <li><b>The lattice</b> — two blocks in one cell, a centroid off the grid, and gaps inside a column (missing blocks between a column's lowest and highest block). Checked on regular models, axis-aligned or rotated (a rotated one in its own lattice frame).</li>
+  <li><b>Sub-blocks tile their parents</b> — on a sub-blocked model, each parent's sub-blocks must fill it exactly: sub-blocks that <b>overlap</b> (with the volume counted twice), a sub-block that <b>crosses</b> its parent, one <b>off its parent's lattice</b> or off the fine lattice, a Datamine <code>IJK</code> that disagrees with the position (all errors), and a parent <b>not filled</b> by its sub-blocks (a warning — often deliberate, above the topography or outside a domain). The check streams parent by parent and never builds the fine grid: an 18.7-million-block model takes about four seconds.</li>
   <li><b>Every column</b> — blank values (an error for a coordinate), sentinel codes such as −99, −999 or −1e30 read as numbers, text in a numeric column, negative values, a constant or empty column.</li>
   <li><b>Density</b> (a column named DENSITY, SG, BD, …) — zeros, and anything outside 1–6 t/m³.</li>
   <li><b>Top cut</b> — a maximum more than ten times the 99.9th percentile.</li>
@@ -389,7 +412,7 @@ SIO2 &gt; 10 and not (LITO = "CANGA")   # comments are fine</pre>
 <p>Click a finding to <b>select</b> its blocks (then Selection → column, or the attribute table's selection view); a gap has no blocks to select, so a click steps the camera through examples. Below the findings is a census of every column (values, blanks, min, median, 99.9th percentile, max, mean). <b>export .tsv</b> saves both. Nothing in the model is changed.</p>
 <h3 id="shells">Grade shells</h3>
 <p><b>Grade shell…</b> (a block model's menu, or <code>⌘K</code> “shell”) draws the surface around every block at or above a cutoff — contouring a volume — and adds it as a closed <b>mesh layer</b>: <code>AU ≥ 0.8 shell</code>. The surface passes between block centres where the grade crosses the cutoff, and closes on the block faces where the model ends or a block is missing, so a shell is always a solid. <b>Smoothing</b> (light / medium / strong) averages each block with its neighbours first; it is off by default, so the shell shows the blockiness the model has. <b>Only the filtered blocks</b> counts just the blocks matching the layer's filter as inside — a shell within one domain.</p>
-<p>The shell is a solid like any wireframe: select, flag or measure the model against it (Select by solid), read its volume and tonnage in <b>Mesh QA</b>, export it as OBJ, PLY, DXF, .msh or .wfr. Its lineage records the column, cutoff and smoothing. Regular, axis-aligned models only for now; a rotated or sub-blocked model says so.</p>
+<p>The shell is a solid like any wireframe: select, flag or measure the model against it (Select by solid), read its volume and tonnage in <b>Mesh QA</b>, export it as OBJ, PLY, DXF, .msh or .wfr. Its lineage records the column, cutoff and smoothing. Shells are built for regular models, axis-aligned or rotated (a rotated one is contoured in its own lattice frame); on a sub-blocked model the command says why it can't run.</p>
 <h2 id="dh"><span class="n">10</span>Drillholes</h2>
 <p>A drillhole set is <b>three tables bound by the hole id</b> — collars (one row per hole), survey (deviation stations), intervals (from/to samples) — and micro keeps that structure first-class rather than flattening it away.</p>
 <h3>The set in the layers panel</h3>
@@ -414,6 +437,8 @@ SIO2 &gt; 10 and not (LITO = "CANGA")   # comments are fine</pre>
 <h3>Display</h3>
 <p>Intervals render as true cylinders (<b>Stick radius…</b> sets the world-space radius). Color by any interval column; sections cut the sticks true, and the set usually reads best with the model sectioned and the holes set to <b>don't cut</b>, threading whole through the opened deposit — which is exactly how the demo project arranges itself.</p>
 <p><b>Keep holes that cross the slab.</b> A drillhole layer's <b>Cut by sections</b> menu has one more mode: the holes aren't cut, but only the ones whose path, collar to end of hole, crosses the section's slab are drawn, whole; the rest are hidden. It's the path that counts, not the samples, so a hole that passes through the slab in an unsampled stretch still shows. It follows the section as you scrub, and works together with the interval filter and the hole filter. It only decides what's drawn, though: it isn't a filter. Exporting the filter's matches, <b>Filter → selection</b>, the analyses' filtered scope and the attribute table's matches still get every interval the filter matched, wherever the section happens to be. <b>Holes test their own slab…</b> makes the test band wider (or narrower) than the section's, so a ±5 m model section can show the holes within ±50 m.</p>
+<h3 id="logs">Log tracks</h3>
+<p>A stick shows one column, as colour. <b>View → Drillhole logs…</b> (or <code>⌘K</code> “drillhole logs”) gives every hole as many <b>tracks</b> as you want, each a ribbon running beside the hole interval by interval: a <b>bar</b>, whose width is the value on the track's scale (FE on the right, SG on the left), or a <b>strip</b> of constant width coloured by the value (LITO by its classes, a number through a ramp). Each track has a side — right, left, or centre on the trace — and a width and offset in metres, automatic when left blank. The sides are the <i>screen's</i>, so a right track stays on your right however the hole runs, and a section through a fan of holes reads like a sheet of logs. The tracks follow the hole filter, the layer's filter and the section, appear under the layer's legend in a figure, and are saved with the project.</p>
 <h3>Collars</h3>
 <p><b>Show collars</b> on the set draws one glyph per hole at its collar, as a points layer nested in the set (<i>holes · collars</i>). It is the collar file itself, so <b>every collar column</b> — hole id, end of hole, campaign, rig, company — can colour it, filter it, and fill the record panel when you click a collar. The glyphs start at three times the point size; <b>Point size</b> in the layer's menu changes that. The hole filter thins them along with everything else in the set. They aren't saved as a layer of their own: the set remembers they were shown, with their size and colour, and a reopen brings them back (and the hole traces too, if they were on).</p>
 <h3>Blanks, and the QA report</h3>
@@ -441,8 +466,52 @@ SIO2 &gt; 10 and not (LITO = "CANGA")   # comments are fine</pre>
 <p><b>Export mesh…</b> (right-click a mesh layer; multi-selections and groups get <b>Export N meshes…</b>) writes <b>OBJ</b>, <b>PLY</b>, <b>MSH</b> (Leapfrog/ARANZ), or <b>LFM</b>. OBJ and LFM are multi-mesh — one named object per layer, with each layer's tint carried as the LFM colour — while PLY and MSH merge several layers into one mesh. Exports re-read the source geometry, so coordinates leave in <b>full double precision</b> (the PLY writer uses <code>double</code> — at UTM northings, float32 would cost half a metre). A Datamine wireframe pair in, an LFM out: micro is also a mesh-format converter.</p>
 <p class="tip"><b>Tip —</b> Before a wireframe bounds anything, check it: <b>Mesh QA / volume…</b> on its menu — see <a href="#meshqa">Mesh QA</a>.</p>
 
-<h2 id="grids"><span class="n">12</span>Grids &amp; surfaces</h2>
-<p>GeoTIFF / Surfer <code>.grd</code> / ESRI <code>.asc</code> open as heightfield layers — an elevation point cloud where cells are pickable records (huge DEMs decimate for display while the full grid stays for evaluation). A mesh right-click → <b>Rasterize to grid…</b> renders it onto a DEM (the surface↔grid converter, with fill / extrapolation for gaps). <b>New… → grid / block model</b> creates empty grids from parameters, covering a layer's bounds, or — <b>cover compatible models</b> — on a lattice that covers and is compatible with several models at once (the reconcile target). Grid layers export as ESRI ASCII.</p>
+<h2 id="polygons"><span class="n">12</span>Strings &amp; polygons</h2>
+<p>Pit limits, lease boundaries, blast outlines and mapped contacts open as a <b>strings &amp; polygons</b> layer: lines and closed polygons in 3D, whose records are the <b>features</b>. Each feature carries its attributes, so the layer is a table like any other — the attribute table lists one row per feature, the filter keeps whole features (<code>BENCH &gt;= 850 and STATUS = "approved"</code>), the colour list colours by any column, and a click on a line shows that feature's record. Holes and multipart features are kept.</p>
+<ul>
+  <li><b>What opens</b> — a <b>CSV string file</b> (an ID column such as <code>STRING</code> or <code>LINE</code> and one row per vertex, the way Leapfrog and Surpac export polylines; a string that returns to its first vertex is a polygon), <b>WKT</b> and <b>WKT-CSV</b> (a <code>wkt_geom</code> column — QGIS's shape), a <b>shapefile</b> (<code>.shp</code> + <code>.dbf</code> + <code>.prj</code> + <code>.cpg</code> selected together, or zipped), <b>GeoJSON</b>, <b>KML / KMZ</b>, and a <b>DXF</b> through <b>Open as ▾ → strings &amp; polygons</b>. A feature with no Z is drawn at z = 0 and the status line says so; <b>Geometry → Set elevation…</b> places the layer at a bench.</li>
+  <li><b>QGIS and the clipboard</b> — copy features in QGIS and press <span class="kbd">Ctrl+V</span> over micro's view (or <b>File → Paste features (WKT from QGIS)</b>): they arrive as a new layer, attributes as columns, and features digitized in 2D ask for an elevation — micro never guesses a Z. The other way, <b>Data &amp; file → Copy features (WKT, for QGIS)</b>, then <b>Paste Features As → Temporary Scratch Layer</b> in QGIS.</li>
+  <li><b>Display</b> — <b>Display → Fill polygons</b> shades each inside (holes left open; the fill is never picked, so a click reaches what is behind), <b>Classes by…</b> makes any text column the category, <b>Line width…</b> sets the tubes' half-width.</li>
+</ul>
+<h3>Drawing and editing</h3>
+<p><b>Tools → Draw polygon…</b> and <b>Draw line…</b> draw over whatever is open; look from above first (<span class="kbd">d</span>). Click to add a vertex — it snaps to an existing feature vertex within ten pixels, <b>Alt</b> places it freely — and close on the first vertex, with a double-click or <span class="kbd">Enter</span>; <span class="kbd">Backspace</span> takes a vertex back. micro then asks for a name and optional <code>key=value</code> attributes (<code>code=B12, bench=850</code>). <b>Geometry → Edit vertices</b> puts a handle on every vertex and edge midpoint: drag to move, drag a midpoint to add, <b>Alt</b>-click or <span class="kbd">Delete</span> to remove — each edit one undo step. A drawn or edited layer is saved as WKT-CSV in the project's <code>polygons/</code> folder; editing a layer opened from a shapefile never changes that file.</p>
+<h3 id="limit">A polygon as a limit</h3>
+<p>Any analysis can be limited to what lies inside polygons in plan: the tonnes inside the pit limit, the cut and fill inside a stockpile toe, a DEM of the lease only. Grade–tonnage, swath, stats, contact analysis and the factors have an <b>inside</b> row under the scope (cut and fill calls it <b>perimeter</b>; the point-cloud DEM and the projection to grid have it in their dialogs): pick the layer, then all polygons, one feature, or the ones selected in 3D. It adds to the scope — <b>filt</b> and <b>inside pit</b> keep the filtered blocks inside the pit. A record counts by its plan position, a block by its <b>centroid</b>; a grid node counts by the exact share of its cell inside the outline, so a volume inside a perimeter is exact at the edges. In a routine the setting is <code>limit: { layer, feature, where }</code>, recorded in the lineage.</p>
+<h3>Extruding to a solid</h3>
+<p><b>Tools → Extrude polygons to a solid…</b> turns polygons into a closed solid that every by-solid tool takes (select, flag, fraction, assign domains, the factors): <b>between two levels</b> (a blast from floor to crest), <b>along a direction</b> (a trend and plunge for a length), or <b>between two surfaces</b> (walls on the outline, caps following a grid or mesh, refined within a tolerance). <b>one per polygon</b> makes a layer per feature, as assign domains wants. Every solid is checked watertight before it opens. On a regular model, a between-two-levels prism's fraction inside is exact, not sampled. Routine tool <code>extrude</code>.</p>
+<h3>Section lines and bench outlines</h3>
+<p><b>Tools → Section lines → strings…</b> keeps where a plane cuts meshes, gridded surfaces, or a block model's <b>domain boundaries</b> (<b>Geometry → Domain boundaries on a section → strings…</b> on a model) as features in world coordinates — a pit shell cut on a plan gives the bench toe, a lithology model on a cross-section the ore/waste contact, ready for CAD as DXF or a shapefile. The plane is the current section or one you state, and <b>series</b> cuts several positions into one layer. Domain lines follow the block faces exactly (a staircase, not a smoothed contour), each naming its two domains; a closed line on a plan becomes a polygon, so a bench toe can serve as a limit. Routine tool <code>sectionlines</code>.</p>
+<p><b>Tools → Bench outlines → polygons…</b> traces the plan outline of a set of blocks bench by bench — the drill-and-blast dig line. Choose the blocks (all, filtered, selected, plus an expression such as <code>FE &gt;= 60</code>) and what is outlined (all as one, each category value on its own, or one value). The tracing runs on the model's own lattice, so every vertex lies on a block corner; holes are kept, two blocks touching at a corner make two polygons, and <b>simplify</b> drops corners within a tolerance. Each polygon carries its bench, levels, block count, area, volume and — given a density — tonnes. Routine tool <code>blockoutlines</code>.</p>
+<h3>Exporting</h3>
+<p><b>Data &amp; file → Export features…</b> writes the layer (or its selection) with every attribute as <b>WKT-CSV</b>, <b>GeoJSON</b> (with a <code>"crs"</code>), a <b>shapefile</b> zip, or <b>DXF</b> (a polyline per ring, on a DXF layer named by the category, attributes in extended data micro reads back). A shapefile carries a <b>.prj</b>: the one the layer came with, or one written for the project's system; two more formats export in WGS 84 degrees — see <a href="#crs">Coordinate systems</a>. All of them open again in micro with the same features, attributes and coordinates.</p>
+<p class="tip"><b>In the book —</b> chapter “Strings and polygons”, in <a href="micro-manual.pdf">the full manual</a>.</p>
+
+<h2 id="crs"><span class="n">13</span>Coordinate systems &amp; placements</h2>
+<p>Survey pickups arrive in SIRGAS 2000, an old lease map in SAD69, a GPS track in WGS 84 longitude and latitude, the block model in the mine's UTM zone. micro keeps <b>one coordinate system for the project</b> and brings everything into it as it opens — saying each time how, and how far the result can be trusted.</p>
+<h3>The project's system</h3>
+<p>The <b>CRS chip</b> at the right of the status bar, beside <b>Sealed</b>, shows the project's system — <code>EPSG:31983</code>, or <code>no CRS</code>; a click opens the selector (also <b>File → Coordinate system…</b>, <code>⌘K</code> “coordinate system”). The first vector file or point cloud that states a projected system sets it if the project has none; otherwise pick one or paste an EPSG code, a proj4 string or a WKT (a <code>.prj</code>'s contents). It must be <b>projected</b> — micro works in metres — and it is saved in <code>project.json</code>.</p>
+<p>The <b>selector</b> carries the whole EPSG table — 6,983 systems with names and areas of use — inside micro.html; nothing is fetched. Search by words in any order (<code>sirgas utm 23s</code>) or by code, filter to <b>fits my data</b>, take a <b>suggested</b> system for where the data sits, and check it on the world map: the system's area of use in amber, your data's extent in violet. An ESRI <code>.prj</code> without a code is matched by name.</p>
+<h3>Reprojection on read</h3>
+<p>Strings and polygons in every format micro reads (KML and KMZ included), and LAS point clouds whose coordinate-system record names another system, are <b>reprojected as they open</b>. The file's system is its <code>.prj</code>, SRID or <code>"crs"</code>; GeoJSON without one and KML are WGS 84 longitude and latitude, as are unlabelled coordinates that all fit within ±180 / ±90; an unlabelled file in metres is taken to be in the project's system already. The move is horizontal — elevations are carried unchanged. A longitude/latitude file opened while the project has <i>no</i> system is refused, with an offer to set one: micro never places degrees on a metre grid.</p>
+<p>Every reprojected layer records the path its coordinates took — in its source tab, file info, lineage and the open dialog — with an <b>accuracy class</b>: <b>exact</b> (same datum, projection maths only), <b>sub-metre</b> (WGS 84 / SIRGAS 2000 / ETRS89-class frames taken as identical), <b>metre</b> (a Helmert datum shift, with its source — for SAD69 and Córrego Alegre in Brazil, IBGE's R.PR 1/2005 parameters), <b>grid</b> (an NTv2 grid; none is bundled), or <b>unknown</b> (no shift applied — possibly tens to hundreds of metres out).</p>
+<h3 id="placement">Placements — models, grids and meshes in a frame of their own</h3>
+<p>Block models, grids and meshes are <b>not</b> reprojected: moving each vertex would bend a model's boxes. A model in the mine's local grid, a drone mesh in its own arbitrary frame, an anonymised export about (0, 0, 0) takes a <b>placement</b> instead: one rigid similarity for the whole layer — a shift, three rotations and one uniform scale, never a shear — applied as the layer is read, so picks, analyses, sections, exports and lineage all see the placed coordinates. The file is never rewritten. Open it with <b>Data &amp; file → Placement…</b> (or <code>⌘K</code> “placement”), in three ways:</p>
+<ul>
+  <li><b>typed</b> — the shift, rotations ω φ κ about X, Y, Z, a scale and a pivot (<b>pivot = the layer's centre</b> turns it in place);</li>
+  <li><b>control points</b> — pairs of local and true coordinates, typed, <b>picked</b> on the layer in the 3D view, or pasted as a table; two pairs fix a 2D fit (shift, turn, scale — a mine grid on UTM), three or more with heights a full 3D one. Every pair shows its <b>residual</b>, green, amber or red against a tolerance; untick a bad pair and it still says how far off it is. While the tab is open the pairs are drawn in the view — a ring at the local point, a square at the true one, a line between them in the residual's colour;</li>
+  <li><b>CRS change</b> — the layer's own system: micro samples the true reprojection through the layer's extent, fits the best similarity, and states the <b>maximum deviation</b> from it (a datum shift within one zone: a fraction of a millimetre; a change of UTM zone over five kilometres: centimetres — read the number before trusting it).</li>
+</ul>
+<p>A large residual is never refused — it is shown, in the window, the source tab, the status line and the lineage. <b>Georeferencing a drone outcrop</b> is the control-points tab with three or more surveyed targets picked on the mesh; once applied, structural measurements on it are refitted with true dip directions (see <a href="#structure">Structure</a>). Drillholes and strings don't take a placement: their coordinates are survey data, reprojected on read. A grid shown as a surface takes a rotation about Z only. <b>Store as Parquet</b> bakes the placement into the new file.</p>
+<h3 id="crscheck">Checking collars against the topography</h3>
+<p>A collar CSV doesn't say which system its coordinates are in, and in Brazil SAD69 or Córrego Alegre coordinates sit 60–70 m from SIRGAS 2000 in the same UTM zone — enough to put every hole on the wrong bench and still look plausible. The topography gives it away: <b>Analyse → Check CRS against topography…</b> on a drillhole set reads the collars as the project's system and as each <b>datum twin</b> (same projection and zone, another datum), samples each reading on the DEM, and ranks them by the median |Δz|, with spread, the share within tolerance and how far each reading moves the collars. The verdict is a sentence — <i>collars fit the topography 17× better as SAD69 / UTM zone 23S …</i> — and nothing changes until you press <b>reproject the collars as …</b> (undoable). On flat ground it refuses to name a datum, and a constant vertical offset everywhere is reported as such.</p>
+<h3>Exporting, and captions</h3>
+<p>A strings &amp; polygons layer also exports in WGS 84 degrees: <b>KML</b> for Google Earth and a GPS, and <b>GeoJSON in lon/lat</b>. A shapefile carries the <code>.prj</code> of the system its coordinates are in now — the file's own, word for word, or an ESRI-style one written for the project's system with the EPSG code inside (written for the common projections; otherwise the status line says which system to set). In the <a href="#composer">composer</a>, <code>{crs}</code> prints the project's system, <code>{crs:name}</code> and <code>{crs:code}</code> its halves.</p>
+<p class="tip"><b>In the book —</b> chapter “Coordinate systems”, in <a href="micro-manual.pdf">the full manual</a>.</p>
+
+<h2 id="grids"><span class="n">14</span>Grids &amp; surfaces</h2>
+<p>GeoTIFF / Surfer <code>.grd</code> / ESRI <code>.asc</code> open as heightfield layers — an elevation point cloud where cells are pickable records (huge DEMs decimate for display while the full grid stays for evaluation). A mesh right-click → <b>Rasterize to grid…</b> renders it onto a DEM (the surface↔grid converter, with fill / extrapolation for gaps). <b>New… → grid / block model</b> creates empty grids from parameters, covering a layer's bounds, or — <b>cover compatible models</b> — on a lattice that covers and is compatible with several models at once (the reconcile target).</p>
+<p><b>Rotated grids.</b> A GeoTIFF whose georeference rotates the raster, or one opened together with a world file (<code>.tfw</code>, <code>.wld</code>) that does, keeps its nodes on its own lattice and is placed rotated in the world, like a rotated block model; the status line says <i>rotated 30°</i>. Everything that reads a grid reads a rotated one in its own frame.</p>
+<p><b>Export grid…</b> (a grid's <b>Data &amp; file</b> menu, or <code>⌘K</code> “export grid”) always writes the <b>full-resolution</b> grid, never the thinned display, as ESRI ASCII, a float32 <b>GeoTIFF</b> (with the provenance in its description, and a CRS only when micro knows its EPSG code), <b>Surfer 7</b> or <b>6</b> binary, Surfer 6 ASCII, <b>ESRI binary float</b> (zipped with its header), or an <b>XYZ / CSV</b> of nodes. A rotated grid keeps its rotation in GeoTIFF and XYZ; the formats with no rotation terms refuse it unless you tick <b>resample to axis-aligned</b>. Routine tool <code>gridexport</code>.</p>
 <h3>Show a grid as a surface — relief, flat, and draped</h3>
 <p>Right-click a grid → <b>Reinterpret as → surface</b> renders it as a solid, smooth-shaded <b>relief</b> mesh — a DEM reads as terrain, not a gappy point cloud. In <b>Properties → Style</b> a surface then offers:</p>
 <ul>
@@ -456,9 +525,14 @@ SIO2 &gt; 10 and not (LITO = "CANGA")   # comments are fine</pre>
   <figcaption>Relief surfaces in the demo: the pre-mining topography and the pit-phase shells over the opened deposit, each an ordinary layer with its own eye, opacity, and section behavior.</figcaption>
 </figure>
 <h3>Surface tools: extend &amp; combine</h3>
-<p><b>Extend to footprint…</b> (right-click a surface — mesh or grid) grows it to cover a chosen extent: <b>nearest</b> holds the boundary z flat (the "extend the outer ring" move), <b>trend</b> continues the fitted dip. A topo that stops short of the model no longer leaves blocks unclassified — extend it, then flag above/below covers everything. <b>Combine surfaces…</b> rasterizes two or more surfaces onto one lattice and resolves the overlap by a rule: <b>min</b> (topo ∧ weathering base — take the lower), <b>max</b>, <b>first</b> (list order is priority — patch an end-of-month survey into the original topo), or <b>mean</b>. Both produce <b>grid layers</b> — exact and fast for flags and reconcile — with the rule recorded in the layer name and its lineage; export .asc anytime.</p>
+<p><b>Extend to footprint…</b> (right-click a surface — mesh or grid) grows it to cover a chosen extent: <b>nearest</b> holds the boundary z flat (the "extend the outer ring" move), <b>trend</b> continues the fitted dip. A topo that stops short of the model no longer leaves blocks unclassified — extend it, then flag above/below covers everything. <b>Combine surfaces…</b> rasterizes two or more surfaces onto one lattice and resolves the overlap by a rule: <b>min</b> (topo ∧ weathering base — take the lower), <b>max</b>, <b>first</b> (list order is priority — patch an end-of-month survey into the original topo), or <b>mean</b>. Both produce <b>grid layers</b> — exact and fast for flags and reconcile — with the rule recorded in the layer name and its lineage; export them anytime.</p>
+<h3 id="dem">As-built: from a point cloud to a DEM</h3>
+<p>A drone flight or a laser scan of the pit is tens of millions of measured heights. <b>Geometry → Grid points to DEM…</b> on a points layer (LAS, PLY, XYZ, a CSV of points), or <code>⌘K</code> “grid points”, turns it into a grid: a lattice over the cloud's extent at a cell size (or <b>match:</b> an existing grid's nodes), and per node a <b>statistic</b> of the points in its cell — <b>min Z</b> (the ground under vegetation), mean, max, or count. <b>only</b> keeps the points an expression keeps (<code>Classification == 2</code>, a LAS file's ground class), <b>inside</b> limits it to <a href="#limit">polygons</a>, and <b>empties</b> leaves unsurveyed nodes blank or fills them (nearest or planar trend, optionally holes only). The cloud is read once and never held: 10 million points grid onto a 1 m lattice in about two and a half seconds.</p>
+<p class="tip"><b>Tip —</b> Put the nodes on <b>round multiples of the cell</b> (the default) and every survey gridded at that cell lands on the same nodes, so this month's DEM and last month's subtract node for node with nothing interpolated. A blank node means <i>not surveyed</i> — think twice before filling past the pit crest.</p>
+<h3 id="cutfill">Cut and fill</h3>
+<p><b>Tools → Cut / fill between surfaces…</b> (or <code>⌘K</code> “cut fill”) gives the volume moved between two surfaces of the same ground — last month's survey and this month's, the pre-mining topography and today's pit. Pick <b>before</b> and <b>after</b> (grids or exact meshes) and <b>Run</b>: both are sampled on one lattice, and the readout gives <b>cut</b>, <b>fill</b>, <b>net</b> in m³ and the <b>area</b> both cover; nodes blank in either surface sit out. The chart is the volume in each band of Δz — cut in red, fill in blue — and <b>Δz layer</b> keeps the difference as a grid on a diverging ramp. A <b>perimeter</b> limits it to polygons, exact at the edges. Routine tool <code>cutfill</code>, whose values a check can gate on. For tonnes and grade between the surveys, give the same surveys to the <a href="#factors">reconciliation factors</a>.</p>
 
-<h2 id="tables"><span class="n">13</span>Tables &amp; spreadsheets</h2>
+<h2 id="tables"><span class="n">15</span>Tables &amp; spreadsheets</h2>
 <p>Not everything in a project is spatial. Drop a CSV with <b>no X/Y/Z columns</b> — a cut-off table, a density lookup, a price deck, a routine's parameter table, a report you exported earlier — and micro opens it as a <b>table layer</b>: rows and columns, no geometry. It sits in the layers panel with a <b>▦</b> mark instead of an eye (there is nothing to show or hide), and it never enters the 3D budget.</p>
 <p>Everything that is about <i>data</i> works on it: the <b>attribute table</b>, the <b>filter</b> (the same expression language — the matches drive the table view and the export), <b>ƒ calc columns</b>, <b>stats</b>, and <b>Export rows</b>. Everything that is about <i>space</i> is simply not offered — no grade–tonnage, no swath — because there are no coordinates to work with, not because a rule forbids it. Table files live in <code>tables/</code> in the project folder and reopen as tables.</p>
 <p>A spatial layer can be <b>reinterpreted as a table</b> (drop the geometry) from its context menu, and a table whose file <i>does</i> carry coordinates can go the other way. Before this, a coordinate-less CSV was simply an error.</p>
@@ -467,7 +541,7 @@ SIO2 &gt; 10 and not (LITO = "CANGA")   # comments are fine</pre>
 <p><b>A workbook is not a coordinate system.</b> A sheet whose columns happen to be called X, Y and Z might be a block model, or it might be a table about something else entirely, so micro never assumes: every sheet opens as a table, and promoting one to geometry is your explicit act — <b>Reinterpret as → block model / points</b>, offered only when the columns actually support it. The workbook stays the layer's source file, so the project remembers which sheet a layer came from and re-reads it on load.</p>
 <p>This makes the spreadsheet a first-class citizen of a project: keep the quarter's run matrix, cut-off tables, or density lookups where they were already maintained. A routine can read its parameter table straight from one — <code>from: "params.xlsx#Bench targets"</code> — so you can edit the workbook in Excel, <b>Reload from disk</b>, and run the routine again without leaving micro.</p>
 
-<h2 id="domain"><span class="n">14</span>Selection &amp; domaining</h2>
+<h2 id="domain"><span class="n">16</span>Selection &amp; domaining</h2>
 <p><b>Select</b> with <span class="kbd">r</span> (rectangle) or <span class="kbd">v</span> (lasso): what you <i>see</i> gets selected (occlusion-honest, all visible layers), tinted gold — <b>shift</b> adds, <b>alt</b> subtracts, <span class="kbd">Esc</span> clears. A plain release puts the tool down (left-drag orbits again); release <b>with shift or alt held</b> and the tool stays armed for the next gesture — you're clearly accumulating. Middle-drag orbits and right-drag pans either way, so navigation never leaves; Settings → interaction offers one-shot and always-armed instead. The <b>select-through</b> toolbar toggle flips to the extruded tube: everything whose position falls inside the shape, occluded included.</p>
 
 <p><b>Select by solid / surface</b> (Tools menu, or right-click a mesh) classifies records against a closed mesh by winding number: <b>select</b> inside/outside, write a <b>flag column</b>, or a <b>fraction-inside</b> 0–1 column. Open surfaces (topo, weathering horizons) classify <b>above / below / between</b>. <b>Assign domains</b> runs the whole coded-model loop — pick the domain solids and a column name, and every block goes to the solid holding its largest fraction.</p>
@@ -476,20 +550,20 @@ SIO2 &gt; 10 and not (LITO = "CANGA")   # comments are fine</pre>
 <p><b>Selection → column…</b> (right-click the layer, or the palette) materializes the current selection as an explicit <b>0/1 column</b> — every row gets a value, so it filters (<code>SEL = 1</code>), edits like any painted column, and rides every export. Selections themselves also persist in the project.</p>
 
 <div class="part-h" id="part-awin">Analysis</div>
-<h2 id="awin"><span class="n">15</span>How the analysis windows work</h2>
-<p>Grade–tonnage, the cross-tab, swath, stats, scatter / Q-Q, and validation share one design, so learning one teaches them all.</p>
+<h2 id="awin"><span class="n">17</span>How the analysis windows work</h2>
+<p>Grade–tonnage, the cross-tab, swath, stats, scatter / Q-Q, contact analysis, validation and the reconciliation factors share one design, so learning one teaches them all. Each is on a layer's right-click <b>Analyse</b> menu and in the palette, which lists only what applies to the active layer.</p>
 <ul>
   <li><b>A rail and a plot.</b> Settings on the left, the result on the right. Configure, then <b>Run</b>: one streamed pass over the data. While it runs the button cancels it; the previous result stays until a new one replaces it.</li>
   <li><b>Display is free after Run.</b> Cutoff counts, units, bands, axis ranges, measures, flips — whatever a window can change without re-reading the data, it changes instantly. A setting that needs a new pass marks the window <i>config changed — Run to update</i>.</li>
-  <li><b>Scope: all · filt · sel.</b> <b>all</b> is every record; <b>filt</b> follows the layer's <b>filter box</b> — type <code>LITO = "HEMATITE"</code> and every window scoped to it re-runs; <b>sel</b> follows the <b>3D selection</b> — rubber-band a bench, a domain, or a suspect zone and the result recomputes for just those blocks, live, as you brush. That is <b>linked brushing</b>: the analysis becomes regional exploration, not a whole-model summary.</li>
+  <li><b>Scope: all · filt · sel.</b> <b>all</b> is every record; <b>filt</b> follows the layer's <b>filter box</b> — type <code>LITO = "HEMATITE"</code> and every window scoped to it re-runs; <b>sel</b> follows the <b>3D selection</b> — rubber-band a bench, a domain, or a suspect zone and the result recomputes for just those blocks, live, as you brush. That is <b>linked brushing</b>: the analysis becomes regional exploration, not a whole-model summary. Under the scope, an <b>inside</b> row limits the pass to <a href="#limit">polygons</a> in plan, on top of the scope.</li>
   <li><b>Where it runs.</b> On a Parquet, <code>.dm</code>, or indexed CSV model the pass runs in background workers, reading only the columns it needs; elsewhere it runs on the page, a slice at a time, and the window stays responsive either way.</li>
-  <li><b>The results row.</b> Every window's footer has the same actions in the same place: <b>⤓ png</b> and <b>⧉ copy</b> for the plot, <b>⇥ layer</b> to keep the result as a table layer (filter it, join it against another run), <b>⧉ table</b> to copy the numbers as TSV for a spreadsheet.</li>
+  <li><b>The results row.</b> Every window's footer has the same actions in the same place: <b>⤓ png</b> and <b>⧉ copy</b> for the plot, <b>⇥ figure</b> to send the plot and its table to the <a href="#composer">composer</a> page as a vector chart that remembers the analysis behind it, <b>⇥ layer</b> to keep the result as a table layer (filter it, join it against another run), <b>⧉ table</b> to copy the numbers as TSV for a spreadsheet.</li>
   <li><b>Recipes.</b> <b>save as recipe…</b> writes the setup as a re-runnable YAML file — see <a href="#recipes">Recipes</a>.</li>
   <li><b>Saved with the project.</b> Every setting is snapshotted on each Run and on close, and a window left open when you save is <b>pinned</b>: reopening the project brings it back in place, configured, reading <i>restored — Run to compute</i>. Run stays manual, so a huge project never surprise-scans on open.</li>
 </ul>
 <p><b>Units are declarations.</b> Where a window takes a grade unit (%, g/t, ppm, oz/t) or a density unit (t/m³, kg/m³, lb/ft³), you are stating what the data <i>is</i>, not choosing a display: series convert onto a shared axis honestly, tonnage is in tonnes, and metal comes out in tonnes when the grade unit is set. Density is a free expression — <code>SG</code>, <code>2.7</code>, <code>SG * PARTIAL</code> — and tonnage is density × block volume, each sub-block weighted by its own size.</p>
 
-<h2 id="gt"><span class="n">16</span>Grade–tonnage</h2>
+<h2 id="gt"><span class="n">18</span>Grade–tonnage</h2>
 <p><b>Grade-tonnage…</b> (right-click a model, or the palette) draws tonnage and mean grade above cutoff. It shares the swath's interface: a config rail of <b>series</b>, each one a <b>layer + grade column + declared unit + density expression + optional row filter</b> — configure, then <b>Run</b>. Because series pick their own layer, model-vs-model curves (this estimate against the last one) are one window; on a reconcile layer the reference/new pair is pre-seeded. Derived columns — calculated, materialized, joined — are all offerable as the grade or the density.</p>
 <ul>
   <li><b>Density</b> is a free expression (<code>SG</code>, <code>2.7</code>, <code>SG * PARTIAL</code>) — tonnage = density × block volume, with a declared density unit converted to t/m³ so tonnes are tonnes. Blank = count/volume.</li>
@@ -502,7 +576,7 @@ SIO2 &gt; 10 and not (LITO = "CANGA")   # comments are fine</pre>
   <figcaption>Grade–tonnage: tonnage (left axis) falls and mean grade (right axis) rises as the cutoff climbs — the recoverable-resource trade-off at a glance. The rail holds the series, units, density expression, scope, and manual ranges.</figcaption>
 </figure>
 
-<h2 id="xtab"><span class="n">17</span>Resource cross-tab</h2>
+<h2 id="xtab"><span class="n">19</span>Resource cross-tab</h2>
 <p><b>Resource cross-tab…</b> (right-click a block model, or the palette) tabulates the model the way a resource table is laid out: a <b>group</b> down the side — a category or painted column, so domains or classes — and <b>grade bins</b> across, between the cutoffs you type, with a total row and a total column. It is a checking table, not a resource statement: micro tabulates what the model holds; classifying and reporting a resource is the estimator's job.</p>
 <figure>
   <img src="shots/xtab.png" alt="The cross-tab window: rock type down the side, gold grade bins across, tonnage in each cell, totals on the right and at the bottom.">
@@ -516,8 +590,9 @@ SIO2 &gt; 10 and not (LITO = "CANGA")   # comments are fine</pre>
   <li><b>No grade</b> — a block with a blank grade keeps its tonnage in its own column, never silently dropped, so the table adds up to the model.</li>
   <li><b>⧉ table</b> copies every measure in long form — group · bin · tonnage · grade · metal · blocks — ready to pivot in a spreadsheet.</li>
 </ul>
+<p><b>The resource table on a page.</b> When the numbers are settled, the <a href="#composer">composer</a>'s <b>Add resource table</b> builds the table most reports are written around: tonnes, grade and metal above a list of cutoffs, by up to two category columns (domain, then class), always cumulative, with a note stating the density, the filter and the records read. A declared grade unit gives the metal factor (% → 0.01, so metal in tonnes), or state one such as <code>1/31.1035</code> for troy ounces. It remembers its settings, so the composer's <b>Refresh</b> makes it again from the current model.</p>
 
-<h2 id="swath"><span class="n">18</span>Swath / drift</h2>
+<h2 id="swath"><span class="n">20</span>Swath / drift</h2>
 <p><b>Swath plot…</b> shows mean grade per band along a direction — the classic drift check for local bias. The direction can be the grid <b>axes</b> X/Y/Z, an oriented trio from <b>dip-direction / dip / rake</b> (across-structure · along-strike · down-dip), or a single <b>trend / plunge</b>. Series work exactly like grade–tonnage's: layer + column + declared unit + a free <b>weight expression</b> (blank = block volume) + an optional per-series row filter — so kriging vs nearest-neighbour vs declustered samples overlay in one plot.</p>
 <p>One <b>Run</b> streams everything once into fine bins; after that, <b>band width and offset re-bin instantly</b> — and they are <b>per direction</b>, so your E–W drift keeps its 25 m bands while the bench-by-bench Z profile keeps 10 m. Manual axis ranges, ⤓ png / ⧉ copy / <b>⧉ table</b> (band · count · weight · per-series mean, TSV) match grade–tonnage.</p>
 <p><b>Zebra</b> paints the alternate bands onto the 3D, so the slabs you see in space <i>are</i> the bins in the plot.</p>
@@ -532,7 +607,7 @@ SIO2 &gt; 10 and not (LITO = "CANGA")   # comments are fine</pre>
   <figcaption>The band ghost: the bin under the cursor (shaded in the plot) is the slab outlined on the model. Drag a range and the menu offers <i>Select rows in…</i> — the plot becomes a selection tool.</figcaption>
 </figure>
 
-<h2 id="stats"><span class="n">19</span>Stats, scatter &amp; Q-Q</h2>
+<h2 id="stats"><span class="n">21</span>Stats, scatter &amp; Q-Q</h2>
 <h3>The stats table</h3>
 <p><b>Stats…</b> (right-click a layer, or the palette) is the grouped summary: pick columns, an optional <b>group by</b> (the category channel or any painted column — <i>assign domains, then stats by domain</i>), and an optional <b>weight expression</b> (<code>SG</code> for density-weighted means — quantiles stay unweighted and the window says so).</p>
 <h3>Scatter</h3>
@@ -549,7 +624,16 @@ SIO2 &gt; 10 and not (LITO = "CANGA")   # comments are fine</pre>
 </figure>
 <p class="note"><b>Note —</b> Quantiles are unweighted, and the window says so. Drillhole intervals of different lengths, or clustered drilling, weigh the sample side; for a declustered comparison of the means, and model-vs-sample swaths, use <a href="#validate">Validate</a>.</p>
 
-<h2 id="join"><span class="n">20</span>Join &amp; reconcile</h2>
+<h2 id="contact"><span class="n">22</span>Contact analysis</h2>
+<p>Every domain has a boundary, and every boundary asks: does the grade <b>jump</b> across it, or change <b>gradually</b>? Before the estimate, the answer decides whether each domain is estimated with its own samples only; after it, whether the model kept the boundary the way the samples have it. A <b>contact plot</b> answers both: mean grade in bins of distance from the boundary, negative on one side, positive on the other. A <b>hard</b> boundary is a step at zero with flat sides; a <b>soft</b> one is a ramp, and the ramp's width is how far its influence reaches. The bin width is part of the reading — choose it near the scale of your blocks or composites.</p>
+<ul>
+  <li><b>Contact plot…</b> (a drillhole layer's <b>Analyse</b> menu, or <code>⌘K</code> “contact”) finds the boundaries in the logging: every place a hole passes from domain A to domain B in a column you name (a lithology, a painted or ƒ column, a numeric code), measured <b>down the hole</b> — pooled, or A above B, or A below B.</li>
+  <li><b>Distance to a surface…</b> (on a drillhole layer or a block model) measures every record's <b>signed distance</b> to a wireframe: to the nearest point of a closed solid (inside is negative) or an open surface (below is negative), or vertically to a gridded surface. Its series can mix <b>samples and the model</b> on one chart, against the same surface: if the samples step and the model ramps, the estimate has smeared grade across a boundary its data call hard.</li>
+</ul>
+<p>The readout gives each series' weighted mean just inside and just outside, and the <b>step</b> between them (a second series' step also as a percentage of the first's). Read the counts before the curve: the far bins hold fewer metres. In the surface flavour, <b>⇥ column</b> writes every record's signed distance as a stored column — <code>abs(DIST_ORE_SHELL) &lt; 10</code> is then a filter for the contact zone. The window is built on the shared chassis (rail, <b>Run</b>, scopes, an <b>inside</b> limit, the results row, recipes), and the routine tool is <code>contact</code>, whose values a check can gate on.</p>
+<p class="tip"><b>In the book —</b> chapter “Contact analysis”, in <a href="micro-manual.pdf">the full manual</a>.</p>
+
+<h2 id="join"><span class="n">23</span>Join &amp; reconcile</h2>
 <p>Two model versions, or a lookup table? The <b>join tab</b> (Properties → <b>join</b>) brings data across — and it follows one rule: <b>if the operation keeps this layer's records, the result lands as columns on it; only an operation that changes the record set makes a new layer.</b></p>
 <p><b>Only the 3D selection</b> — a toggle above the run buttons scopes any join or reconcile to the rubber-banded zone: lasso the pit area, reconcile <i>just it</i>. Each side uses its own selection where it has one, and a scoped run is stamped <code>selection: true</code> in the lineage.</p>
 <ul>
@@ -564,9 +648,36 @@ SIO2 &gt; 10 and not (LITO = "CANGA")   # comments are fine</pre>
   <figcaption>Reconciling two model versions. Global mean Δ is ≈ 0, but the Δ map exposes a clear <b>conditional bias</b> — the new estimate runs low in the north (blue) and high in the south (red). A global check would have missed it entirely.</figcaption>
 </figure>
 <p class="tip"><b>Tip —</b> The Δ ramp auto-clips to the full range, which extreme blocks can widen. Tighten the <b>min/max</b> boxes (e.g. ±2× the mean|Δ|) to make the local pattern read, as above.</p>
+<h3 id="compare">A comparison report</h3>
+<p>Reconcile shows <i>where</i> a model changed. The month-end question is wider: how many tonnes, how much grade and metal moved, in which domain and class, and from which version of which file. Right-click the <b>new</b> model → <b>Analyse → Compare model versions…</b> (also in the palette, the Tools menu, and the composer's <b>comparison report…</b>). Name the old and new models (a banner says how they map, or why they can't), each side's grade (two versions may spell it apart), a unit or metal factor, a density, up to two grouping columns and one or more cutoffs, then <b>Make the page</b>. A <a href="#composer">composer</a> page opens with a <b>comparison table</b> (old and new tonnes, grade and metal per cutoff and group, with the changes), a <b>map of the changed blocks</b> (a Δ layer with a <code>change</code> column: added · removed · changed · unchanged), the <b>biggest moves</b> as caption fields, and both models' <b>lineage</b> with their content hashes. The table needs no common lattice; the map does. <b>Refresh</b> makes the whole page again next month.</p>
+
+<h2 id="factors"><span class="n">24</span>Reconciliation factors</h2>
+<p>At a month-end close the question is not where two models differ but whether the <b>totals agree inside the volume that was actually mined</b>. The resource model promised so many tonnes at such a grade, grade control found something else, the mill weighed and assayed what it received. The factors are the ratios between those three totals, per period: <b>F1</b> = grade control ÷ resource model, <b>F2</b> = mill ÷ grade control, <b>F3</b> = mill ÷ resource model = F1 × F2 — each for <b>tonnes</b>, <b>grade</b> and <b>metal</b>. A tonnage factor above 1 with a grade factor below it is the familiar signature of dilution; reading the three together is the point.</p>
+<p>Right-click the resource model → <b>Analyse → Reconciliation factors…</b> (or <code>⌘K</code> “factors”). The rail has five sections:</p>
+<ul>
+  <li><b>models</b> — the resource model and grade control, each a layer, a grade with its declared unit, and a density. The two may sit on any lattices (only totals are compared), and grade control may be other columns of the same layer (<code>FE</code> and <code>FE_GC</code>).</li>
+  <li><b>mined volume · periods</b> — how micro knows what was mined when: a <b>period column</b> on the blocks; <b>a solid / surface per period</b> (inside or outside a solid, above or below a surface; <b>nested</b> for pit phases, so each period is the difference); <b>surveys</b> — the month-end pit surfaces in date order, the first one the starting ground, each later one closing a period; a <b>filter</b>; or the 3D <b>selection</b>. With volumes a block counts by the <b>fraction</b> of it on the mined side. An optional <b>domain</b> filter applies to both models.</li>
+  <li><b>production (mill)</b> — a table layer with period, tonnes and a grade and/or metal, matched to the periods by name (several rows for one period are summed). Without one, F1 alone.</li>
+  <li><b>report</b> — a cutoff (each model judged by its own grade), the report unit, the metal factor, and the <b>tolerance</b> band about 1.0 past which a factor is marked.</li>
+  <li><b>chart</b> — which factors to draw, period by period or <b>cumulative (to date)</b>.</li>
+</ul>
+<p>A period's grade is never averaged from other grades: each source keeps tonnes and metal, and its grade follows, so to-date grades are true tonnage-weighted ones and <i>metal = tonnes × grade</i> and <i>F3 = F1 × F2</i> hold exactly — micro checks both identities on every run. A missing ratio is blank, never infinity. The window has the shared rail, <b>Run</b>, ranges, results row and recipes, but no scopes: the mined volume is the scope. Routine tool <code>factors</code>, made for gating a month-end on its values.</p>
+<p class="tip"><b>In the book —</b> chapter “Reconciliation factors”, with a worked demo whose built-in bias the factors recover exactly, in <a href="micro-manual.pdf">the full manual</a>.</p>
+
+<h2 id="structure"><span class="n">25</span>Structure on an outcrop mesh</h2>
+<p>A drone gives you an outcrop or a pit wall as a mesh of millions of triangles in real coordinates, and every joint face on it is an orientation measurement waiting to be taken — including the ones no one can reach with a compass. Right-click a mesh → <b>Analyse → Structural analysis…</b> (or <code>⌘K</code> “structural”). A streamed mesh offers to load exact first; the first time, micro prepares the mesh (topology, vertex normals) once.</p>
+<p>You <b>paint</b> the patch of mesh that is one joint face, into a <b>set</b> (J1, J2, bedding…), and micro fits a plane through the painted vertices by total least squares — a fit to where the rock <i>is</i>, area-weighted, so the roughness of a photogrammetric surface averages out. Each plane reports <b>dip direction / dip</b> (<code>270/60</code>), its size, its flatness <i>e₂/e₁</i> and Fisher's κ, and a quality flag when it is <i>rough</i>, <i>elongated</i> (strike sure, dip much less), <i>few</i> vertices, or a <i>straight</i> trace. Nothing else is stored: the planes are measured again from the paint, so the table never disagrees with the rock.</p>
+<ul>
+  <li><b>wand</b> — one click takes the whole face, walking outward until the surface turns away by more than an <b>angle</b> (12° by default); <b>brush</b> paints along a stroke without bleeding round an edge (<span class="kbd">⇧</span> wheel resizes it); <b>erase</b> unpaints. With the mouse at rest micro previews what a click would take and its attitude, before you commit. Every paint step is one undo.</li>
+  <li><b>trace</b> — click along a fracture that shows only as a line; the trace follows the mesh surface and yields a plane where it crosses relief. Several traces form a network, with its <b>I, Y and X nodes</b> counted.</li>
+  <li><b>◎ stereonet</b> — the poles on a lower-hemisphere equal-area net, each set's Fisher mean and α95 cone, density contours. Lasso a cluster of poles and <b>move</b> it to a set: paint every face into one set, then sort them on the net.</li>
+  <li><b>⇩ sets from paint</b> — a mesh painted the ply2atti way, one pure colour per set, becomes sets directly; photographic colour never does.</li>
+</ul>
+<p><b>→ table layer</b> makes the planes a table (attitude, centre, the unit normal pointing out of the rock, fit statistics, quality) to filter and export; <b>⇥ figure</b> sends the stereonet or the table to the <a href="#composer">composer</a>, where <b>Refresh</b> re-measures from the current paint; <b>⇥ traces .dxf</b> writes the traces as 3D polylines. The paint is saved with the project as a <code>SET</code> column on the mesh's vertices. To work in true coordinates, <a href="#placement">georeference</a> the mesh first.</p>
+<p class="tip"><b>In the book —</b> chapter “Structural geology on an outcrop mesh”, in <a href="micro-manual.pdf">the full manual</a>.</p>
 
 <div class="part-h" id="part-dhqa">QA &amp; provenance</div>
-<h2 id="dhqa"><span class="n">21</span>Drillhole QA report</h2>
+<h2 id="dhqa"><span class="n">26</span>Drillhole QA report</h2>
 <p>Before holes go into an estimate, someone has to look at every row that is wrong. <b>QA report…</b> on a drillhole set's menu (or <b>Drillhole QA report</b> in the palette) reads the set's own files — collars, surveys, and every interval table — and lists each problem <b>at its table and row</b>.</p>
 <figure>
   <img src="shots/dhqa.png" alt="The drillhole QA window: the checks that fired listed on the left with counts, the findings table on the right with table, row, hole, depths and detail.">
@@ -588,7 +699,7 @@ SIO2 &gt; 10 and not (LITO = "CANGA")   # comments are fine</pre>
 </ul>
 <p>A collar that can't be placed is reported once, at its own row; its surveys and intervals aren't reported again as orphans. Nothing in the report changes a table.</p>
 
-<h2 id="validate"><span class="n">22</span>Validate vs drillholes</h2>
+<h2 id="validate"><span class="n">27</span>Validate vs drillholes</h2>
 <p>Is the model consistent with the samples it was built from? <b>Validate vs drillholes…</b> (in the palette, with a block model active and a drillhole set loaded) takes a block model and a drillhole layer, <b>declusters</b> the sample grades (spatial sampling over-drills high grade, so a naïve sample mean is inflated), and reports the <b>global bias</b> (model mean vs declustered sample mean) plus a <b>model-vs-sample swath</b> along X/Y/Z.</p>
 <figure>
   <img src="shots/validation.png" alt="The validation window: model vs declustered-sample swath, with a global bias readout.">
@@ -597,9 +708,9 @@ SIO2 &gt; 10 and not (LITO = "CANGA")   # comments are fine</pre>
 <p class="note"><b>Note —</b> Samples are point support, blocks are block support, so a <i>global</i> grade offset between them can be real (change of support), not an error. The swaths are what flag <i>local</i>, conditional bias.</p>
 
 <h3 id="pairing">Block vs sample</h3>
-<p><b>Block vs sample…</b> (a block model's menu, or <code>⌘K</code>) pairs every sample with the block it falls in — the most direct check that an estimate honours its data. The samples are any points layer (composites, a sample file) or a drillhole layer (each interval at its midpoint). Pick the samples' column, the model's column and, optionally, a domain column of the model to split by. The window plots the pairs as a <b>scatter</b> or a <b>Q–Q</b> plot (log axes on request) with the 1:1 line, and tabulates, overall and per domain: the pairs, both means, the <b>bias</b> of the blocks against the samples, the correlation <b>r</b>, and the <b>slope</b> of block on sample — below 1 the estimate is smoother than its data (conditional bias). A bias beyond ±10 % or a slope outside 0.8–1.2 is highlighted. Samples outside the model, in a missing block or without a value are counted, not paired. <b>select the disagreeing samples</b> marks, on the samples' layer, those whose block differs by more than a factor you choose. Rotated and sub-blocked models aren't paired yet; the window says so.</p>
+<p><b>Block vs sample…</b> (a block model's menu, or <code>⌘K</code>) pairs every sample with the block it falls in — the most direct check that an estimate honours its data. The samples are any points layer (composites, a sample file) or a drillhole layer (each interval at its midpoint). Pick the samples' column, the model's column and, optionally, a domain column of the model to split by. The window plots the pairs as a <b>scatter</b> or a <b>Q–Q</b> plot (log axes on request) with the 1:1 line, and tabulates, overall and per domain: the pairs, both means, the <b>bias</b> of the blocks against the samples, the correlation <b>r</b>, and the <b>slope</b> of block on sample — below 1 the estimate is smoother than its data (conditional bias). A bias beyond ±10 % or a slope outside 0.8–1.2 is highlighted. Samples outside the model, in a missing block or without a value are counted, not paired. <b>select the disagreeing samples</b> marks, on the samples' layer, those whose block differs by more than a factor you choose. A rotated model looks each sample up in its own lattice frame; a sub-blocked model isn't paired yet, and the window says so.</p>
 <p class="tip"><b>Tip —</b> Composite the drillholes first (see <a href="#composites">Composites</a>) so samples and blocks are compared at a like support.</p>
-<h2 id="meshqa"><span class="n">23</span>Mesh QA &amp; volume</h2>
+<h2 id="meshqa"><span class="n">28</span>Mesh QA &amp; volume</h2>
 <p><b>Mesh QA / volume…</b> (right-click a mesh, or the palette) answers what you ask of a wireframe before it bounds an estimate: is it a solid, is it one piece, do its faces agree, and what does it hold.</p>
 <figure>
   <img src="shots/meshqa.png" alt="The mesh QA window: watertight no, one shell, a boundary-edges issue with a count, the shells table.">
@@ -615,7 +726,7 @@ SIO2 &gt; 10 and not (LITO = "CANGA")   # comments are fine</pre>
 <p>Click an issue to step the camera through where it occurs. Coincident vertices are <b>welded</b> first — a per-face mesh from some CAD exports shares no edge otherwise, and would read as a pile of loose triangles; untick it to see the file as it is. <b>⧉ table</b> copies the shells.</p>
 <p class="note"><b>Note —</b> Self-intersections (faces crossing without sharing an edge) aren't checked yet. A mesh held <b>streamed</b> keeps no triangles on the page; convert it to exact first.</p>
 
-<h2 id="lineage"><span class="n">24</span>Lineage &amp; provenance</h2>
+<h2 id="lineage"><span class="n">29</span>Lineage &amp; provenance</h2>
 <p>Every derived layer <i>and every derived column</i> remembers <i>how it was made</i>. Opening a file is a leaf; a join, reconcile, or optimize wraps its source layers with the operation, its parameters, the build, and a timestamp — a tree. An estimated, broadcast, or joined column records its operation and inputs the same way, in the project's element manifests (see <a href="#parquet">the project store</a>). <b>Lineage…</b> shows the layer tree and exports a readable HTML <b>report</b> you can attach to a sign-off. Parquet exports carry the lineage embedded in the file, so the provenance travels <i>inside</i> the data.</p>
 <figure>
   <img src="shots/lineage.png" alt="The lineage window showing a derivation tree.">
@@ -623,7 +734,7 @@ SIO2 &gt; 10 and not (LITO = "CANGA")   # comments are fine</pre>
 </figure>
 
 <div class="part-h" id="part-recipes">Automation</div>
-<h2 id="recipes"><span class="n">25</span>Recipes</h2>
+<h2 id="recipes"><span class="n">30</span>Recipes</h2>
 <p><b>save as recipe…</b> (next to Run in the grade–tonnage, swath, and stats windows, in the Calculations window, in the <b>select by solid / surface</b> dialog, and in the decorations panel) writes the current setup as a named YAML file in <code>recipes/</code> — every series, unit, weight expression, band, scope, and range; for calculations, the whole column set. A <b>figure recipe</b> captures the view + <b>section</b> + decorations + background + export scale; running it re-renders, exports the PNG, and restores everything it touched — the monthly plan-view figure regenerates itself. <b>Tools → Recipes</b> lists them; picking one opens the tool configured <b>and runs it</b>. Recipes are plain, commented, hand-editable files — copy one between projects, keep an office standard set, drop one into the folder and <b>Scan folder</b> picks it up. Series reference layers <b>by name</b>; if the named layer isn't loaded, one question asks which loaded model to use instead — that's the whole parameter system. A recipe is data, never code: the strict YAML subset can't carry a script.</p>
 <pre># micro recipe — grade-tonnage. Hand-edit freely; series reference layers by NAME.
 name: "Monthly GT"
@@ -636,15 +747,15 @@ params:
       col: "FE"
       weight: "SG"</pre>
 
-<h2 id="routines"><span class="n">26</span>Routines — recipes that run recipes</h2>
-<p>A <b>routine</b> chains saved recipes into one runnable document: refresh the calc columns, then a drift check for each grade of interest, every table filed under <code>reports/</code>. It is the month-end close as a file — and you don't have to write it. <b>Tools → Recipes → New routine…</b> opens the routine editor; what it saves is a small YAML file you can read back in one glance.</p>
+<h2 id="routines"><span class="n">31</span>Routines — recipes that run recipes</h2>
+<p>A <b>routine</b> chains saved recipes into one runnable document: refresh the calc columns, then a drift check for each grade of interest, every table filed in the run's own folder under <code>runs/</code>. It is the month-end close as a file — and you don't have to write it. <b>Tools → Recipes → New routine…</b> opens the routine editor; what it saves is a small YAML file you can read back in one glance.</p>
 <figure>
   <img src="shots/routineeditor.png" alt="The routine editor: name, guard checkbox, report naming, a step list, and a for-each parameter table with grade rows FE and SIO2, with the Preview pane listing every step and its report path.">
   <figcaption>The routine editor. The <b>for each row</b> table is the heart of it — variables are columns, runs are rows. <b>Preview</b> lists every step and every report path before anything runs.</figcaption>
 </figure>
 <p>Steps come in two shapes. A plain step runs one recipe, optionally layering <b>overrides</b> on top (a different cutoff count, a series pointed at another column — the <b>⋯</b> button on a step). A <b>for-each block</b> runs its steps once per <b>row of a parameter table</b>: add a variable for each thing that changes, a row for each run, and write <code>"$grade"</code> in a step wherever the value should land. <b>+ row</b> duplicates the last run so you only edit what differs. There is no scripting here — expansion is plain substitution, so the whole run is knowable before anything executes. That is exactly what <b>Preview</b> shows, and what the optional <b>guard</b> checks: stop before step one if any report it would write already exists.</p>
 <p>The preview is not just a listing — each line is <b>clickable</b>. Every for-each row expands to its own line, so clicking one opens that step's tool window <i>configured</i> with exactly that row's values baked in, and nothing runs: tune a drift check against one grade, save it back under the same recipe name, and the whole routine picks up the change. (Calc-column and figure steps act immediately, so those lines don't open.)</p>
-<p>A step doesn't have to point at a saved recipe at all. Give it <code>tool:</code> instead (<b>+ inline step</b> in the editor: <code>gt</code>, <code>swath</code>, <code>stats</code>, <code>figure</code>, <code>calccols</code>, or <code>solid</code>) and its whole setup lives right in the step — so a batch can be written from scratch, with nothing recorded first. Name a recipe when you'll reuse the setup elsewhere; inline it when it belongs to this routine alone.</p>
+<p>A step doesn't have to point at a saved recipe at all. Give it <code>tool:</code> instead (<b>+ inline step</b> in the editor) and its whole setup lives right in the step, under <code>with:</code>. The analyses run without their windows — <code>gt</code>, <code>stats</code>, <code>swath</code>, <code>xy</code>, <code>xtab</code>, <code>resource</code>, <code>validation</code>, <code>pairing</code>, <code>contact</code>, <code>factors</code>, the three QA reports — and so do the producers: <code>export</code>, <code>sections</code>, <code>composite</code>, <code>shell</code>, <code>join</code>, <code>reconcile</code>, <code>pcgrid</code>, <code>cutfill</code>, <code>gridexport</code>, <code>projectgrid</code>, <code>extrude</code>, <code>sectionlines</code>, <code>blockoutlines</code>, plus <code>calccols</code>, <code>solid</code>, <code>figure</code> and the composer's <code>compo</code>. Each computes with the same code as its window, so a step's numbers are the window's numbers — so a batch can be written from scratch, with nothing recorded first. Name a recipe when you'll reuse the setup elsewhere; inline it when it belongs to this routine alone.</p>
 <p>The editor writes a file like this (block style, strings quoted — hand-edit or write them from scratch if you prefer):</p>
 <pre># micro recipe — routine. Hand-edit freely; series reference layers by NAME.
 name: "month-end"
@@ -660,9 +771,11 @@ params:
         - grade: "SIO2"
       steps:
         - recipe: "drift check"
-          series:
-            - layer: "model_A.csv"
-              col: "$grade"</pre>
+          with:
+            series:
+              - layer: "model_A.csv"
+                col: "$grade"</pre>
+<p><b>Settings go under <code>with:</code>.</b> A step has a few keywords of its own — <code>as</code>, <code>emit</code>, <code>cache</code> — and everything that belongs to the <i>tool</i> goes under <code>with:</code>: the whole setup for a <code>tool:</code> step, a set of overrides on the saved settings for a <code>recipe:</code> step. An override replaces a setting whole, so give the full <code>series</code> list, not one field of it. Keeping the two apart means one can never be mistaken for the other: a <code>filter:</code> at a step's top level stops the routine before it runs and says to move it under <code>with:</code>. Older files with settings mixed into the step still run; <b>Tools → Recipes → Check all recipes…</b> flags them and rewrites them.</p>
 <h3>Which rows run — <code>filter</code></h3>
 <p>A parameter table usually outlives any one run: benches that are finished, domains you're not reporting this month, a scratch row someone left behind. Rather than maintaining a second copy of the table, give the <code>each</code> block a <b>filter</b> — the same expression language again, deciding which rows fan out:</p>
 <pre>- each: { from: "params.xlsx#Benches" }
@@ -673,8 +786,9 @@ params:
 <h3>Computed values — <code>${…}</code></h3>
 <p>A <code>$name</code> substitutes a value as it stands. Wrap it in <code>${…}</code> and you get an <b>expression</b> — the <i>same</i> language as the filter box and the ƒ columns, so there is nothing new to learn:</p>
 <pre>- recipe: "grade tonnage"
-  nCut: ${g.cutoff * 1.1}                    # arithmetic
-  floor: ${if(b.grade = "FE", 55, 45)}       # if(), the same one you use in ƒ
+  with:
+    nCut: ${g.cutoff * 1.1}                  # arithmetic
+    floor: ${if(b.grade = "FE", 55, 45)}     # if(), the same one you use in ƒ
   as: "bench ${b.bench} · ${b.grade}"        # inside text, it interpolates</pre>
 <p>Expressions compute <b>values</b>, never <b>structure</b>. They can say what a cutoff <i>is</i>; they cannot decide how many runs there are, which recipes exist, or what a report is called. That is deliberate, and it is what keeps a routine honest: the step list is still fully enumerable before anything executes, so <b>Preview</b> still lists every step and the <b>guard</b> still checks every output. A routine remains a document you can read, not a program you have to run to understand.</p>
 <p>A mistyped name fails loudly rather than quietly becoming empty — <code>${b.bnch}</code> reports <i>unknown column: b.bnch — did you mean b.bench?</i> — and dotted names are just names, so <code>$g.cutoff</code> and a real assay column called <code>Fe.pct</code> are spelled the same way.</p>
@@ -688,8 +802,9 @@ params:
         as: g                              # → $g.grade
         steps:
           - recipe: "grade tonnage"        # runs once per (bench × grade)
-            series: [{ layer: "model.parquet", col: $g.grade }]
-            bench: $b.bench</pre>
+            with:
+              series: [{ layer: "model.parquet", col: $g.grade }]
+              bench: $b.bench</pre>
 <p>Two benches and two grades give <b>four</b> runs, and each report's name carries both values (<code>gt-1040-fe</code>). Contrast that with a <i>single</i> <code>each</code> whose columns are two equal-length lists: that is a <b>zip</b> — the columns are paired, giving <b>two</b> runs, not four. Both are useful and they are easy to confuse, so <b>Preview</b> lists the expansion either way: count the lines and you know which one you wrote.</p>
 <h3>Parameters that don't fan out</h3>
 <p>A real parameter workbook holds two kinds of sheet: <b>run tables</b> (one row per run — that's <code>each</code>) and a <b>key&rarr;value sheet</b>, usually called <i>General</i>, with a <code>parameter</code> column and a <code>value</code> column. That second kind is a <i>series</i>, not a fan-out: you want its numbers available to every step, not a run per row. That is what <b>params</b> is.</p>
@@ -704,12 +819,14 @@ params:
       fill: 0                        # what an empty cell means
   steps:
     - recipe: "drift check"
-      nCut: $g.cutoff                # a scalar, everywhere
+      with:
+        nCut: $g.cutoff              # a scalar, everywhere
     - each: { from: "params.xlsx#Benches" }
       steps:
         - recipe: "grade tonnage"
-          series: [{ layer: "model.parquet", col: $grade }]
-          floor: $g.cutoff           # scalars reach inside each blocks too</pre>
+          with:
+            series: [{ layer: "model.parquet", col: $grade }]
+            floor: $g.cutoff         # scalars reach inside each blocks too</pre>
 <p><code>params</code> is also a <b>step</b>, not only a header: written in the step list it binds its names <i>forward</i>, for the steps that follow — and written <i>inside</i> an each block it is scoped to that block. Same for the report names: <code>as</code> on a <code>recipe</code> or <code>tool</code> step names its report, while <code>as</code> on an <code>each</code> or <code>params</code> step names a scope.</p>
 <p>If the sheet has <b>more than two columns</b> and you don't name a <code>value</code>, the whole row stays reachable: a <i>Domains</i> sheet keyed by domain gives you <code>$d.hem.cutoff</code> and <code>$d.hem.price</code>. Keys are made safe for use as names — <i>dilution factor</i> becomes <code>$g.dilution_factor</code>. A variable from an <code>each</code> row <b>shadows</b> a scalar of the same name, so a run table can override a global. And <b>Preview</b> lists what the params resolved to, so the scope is never invisible.</p>
 <p>One Excel quirk worth knowing: a value column with a single blank cell is typed as <i>text</i> by Excel, so micro coerces numeric-looking parameters back to numbers when it reads a routine's tables — <code>55</code> stays a number even if the sheet has a gap.</p>
@@ -723,7 +840,7 @@ params:
 <p><b>Preview</b> now says what every step <i>writes</i> — a report path, a <b>column</b> on a layer (marked <i>(replaces)</i> if it is already there), a figure, or <i>(opens only)</i> if it writes nothing. The <b>guard</b> checks all of it: a calc-column step that would overwrite an existing column stops the routine before anything runs, exactly as a report file does. Producing operations replace by name rather than refusing, so running a routine twice leaves the same project as running it once.</p>
 <h3>When a run stops</h3>
 <p>A long routine that fails at step nine should not cost you the first eight. A stopped run offers <b>Retry step</b> and <b>Skip &amp; continue</b>; a cancelled one offers <b>Resume</b>; and right-clicking any line in <b>Preview</b> runs the routine <i>from</i> that step. Steps that were not run are marked with a dash in the tracker, and the summary says <i>&ldquo;1 step run (2 skipped)&rdquo;</i> rather than claiming credit for the whole thing.</p>
-<p>Analysis steps (grade–tonnage, swath, stats) write their tables to <code>reports/&lt;date&gt;/&lt;step&gt;.tsv</code> — dated folders diff month over month — and <code>output:</code> takes <code>dir</code>, <code>prefix</code>, and <code>suffix</code> to steer the naming. Calc-column and figure steps run their engines directly. Routines never prompt mid-run: every referenced recipe and layer is checked up front and missing ones are named before anything starts; a failed step stops the routine visibly, its window left open for inspection.</p>
+<p>Every run writes into a folder of its own, <code>runs/&lt;date&gt; &lt;time&gt; &lt;routine&gt;/</code>: one table per analysis step and the run's record, <code>run.json</code> (see <a href="#checks">Checks &amp; run records</a>). <code>output:</code> takes <code>dir</code>, <code>prefix</code>, and <code>suffix</code> to steer the naming — a fixed <code>dir</code> means the next run writes over this one's reports, so leave it out unless something outside micro needs a stable path. Calc-column and figure steps run their engines directly. Routines never prompt mid-run: every referenced recipe and layer is checked up front and missing ones are named before anything starts; a failed step stops the routine visibly, its window left open for inspection.</p>
 <figure>
   <img src="shots/routinetracker.png" alt="The run tracker window: five steps listed with green check marks on the finished ones, an arrow on the running one, step 4 of 5 in the title, and a Cancel button.">
   <figcaption>The run tracker — the same expanded list, live. ✓ done, ▶ running, ✗ failed with its message in place; <b>Cancel</b> stops cleanly between steps.</figcaption>
@@ -757,9 +874,38 @@ params:
 <p>Five input types: <code>text</code> (the default), <code>number</code>, <code>choice</code> (with <code>options:</code>), <code>layer</code> (a picker over the loaded layers), and <code>column</code> (a picker over the columns of the layer named by <code>of:</code> — it re-fills live when that layer changes). A marker that is exactly <code>"$name"</code> lands <b>typed</b> — a number input arrives as a number — while markers embedded in longer text become text. Answers are remembered for the session, so the next <b>Run…</b> starts from where you left it.</p>
 <p>Routines ask too: declare <code>inputs:</code> on the routine itself — the editor's <b>+ ask first</b> section adds them without touching YAML — and the answers substitute everywhere in the steps <i>before</i> the parameter tables expand. Keep input names distinct from the tables' variable names; the questions come first, the table fans out after.</p>
 
+<h2 id="checks"><span class="n">32</span>Checks, comparisons &amp; run records</h2>
+<p>A routine that writes seven tables still leaves the reading to you: was the bias inside five percent, did any tonnage move by more than a tenth since last month, did the model QA find errors? A <b>check</b> writes such a question into the routine; a <b>compare</b> sets this run's table beside the previous one's. Both are steps, run where they stand, and go into the run's record with what they read and what they concluded.</p>
+<pre>    - tool: "modelqa"
+      with:
+        layer: "deposit.csv"
+      as: "mq"
+    - check: "mq.errors = 0"
+      say: "the model has no QA errors"
+    - check: "abs(val.bias_pct) &lt; 5"
+      level: "warn"
+    - compare: "gt"
+      tolerance: 0.1</pre>
+<ul>
+  <li><b>On one number</b> — a step's <b>values</b> (the validation's bias, the QA's error count, cut and fill's volumes) are known by its <code>as</code> name and a dot, and the check is an expression in the usual language. A pass carries on; a fail stops the run, or with <code>level: "warn"</code> is recorded and the run carries on. A check can also test <b>every row</b> of a table, or a value <b>against the previous run</b>. A check that couldn't be evaluated is <i>not evaluated</i>, never a pass.</li>
+  <li><b>Compare</b> — joins a table from this run to the baseline's on its key and writes the two side by side (<code>gt-compare.tsv</code>: each value, <code>_prev</code>, <code>_delta</code>, <code>_pct</code> as a fraction, and where the row was found). With a <code>tolerance</code> it is also a check, naming the offenders (<i>FE · 65: tonnes -11.8%</i>).</li>
+  <li><b>Baselines and Accept</b> — the baseline is the most recently <b>accepted</b> run of the same routine, else its latest run that finished ok, and is written into the record. When a run finishes the tracker offers <b>Accept as baseline…</b>: your name goes into an <code>accepted.json</code> beside the record. <b>Tools → Recipes → Runs…</b> lists every run with its status, what it was compared with, and who accepted it.</li>
+</ul>
+<h3>The run record</h3>
+<p>Every run gets a folder of its own, <code>runs/2026-11-22 1432 month-end/</code>, holding its tables and <code>run.json</code>: what was read (each input file with its <b>SHA-256</b>), every step's settings — automatic values pinned to what was used — its outputs with their hashes, every check and its verdict, the baseline, and the micro build. A table of tonnages is a claim; the record is what lets you, or a reviewer, check it against the files.</p>
+<p><b>The cache.</b> Run a routine twice and the second run finishes almost at once: a step whose inputs and settings are provably unchanged is <b>reused</b> from an earlier run (its output checked intact and copied), and the tracker and record say where from. Reuse looks across every run in the project. <b>Run fresh (reuse nothing)</b> in the routine's submenu, or <code>cache: false</code> on a step or a routine, turns it off — for a final sign-off, say. Layers keep their own memory: see <a href="#lineage">Lineage</a>.</p>
+<p class="tip"><b>In the book —</b> chapters “Checks &amp; comparisons” and “Run records, the cache &amp; provenance”, in <a href="micro-manual.pdf">the full manual</a>.</p>
+
+<h2 id="library"><span class="n">33</span>The library</h2>
+<p>A routine in a project's <code>recipes/</code> belongs to that deposit. Your standard model QA, your month-end, the validation you always run belong to you: the <b>library</b> keeps them in this browser, apart from every project. Open it with <b>Tools → Recipes → Library…</b>, with or without a project (without one the menu reads <b>Library… (routines without a project)</b>).</p>
+<p>Each entry is a <b>pack</b>: a recipe or routine with everything it needs — the recipes its steps name and the parameter tables they read. <b>To library</b> copies a project recipe in; <b>Into project</b> writes a pack into the open project, never overwriting a file of yours that differs. Both are copies.</p>
+<p>A library routine runs on whatever layers are loaded, using its own recipes and tables: <b>Run in project</b> (into the project's <code>runs/</code>), <b>Run → folder…</b> (into a folder you pick, treated like a project), or <b>Run → zip</b> — no project at all: at the end you tick which outputs to download as one zip, and <code>run.json</code> always goes, because the outputs mean little without their record. After zip runs the library keeps the last records, so the next run still compares with a baseline and reuses unchanged steps. A library routine is most useful when it asks for its layer with <code>inputs</code> rather than naming one.</p>
+<p>A pack leaves micro as one file: <b>YAML</b> (one self-contained, diffable text file with the recipes and CSV tables bundled in) or <b>zip</b> (the same as separate files, Excel workbooks included) — an office standard you can e-mail and import. The library lives in this browser profile's storage: clearing the site data clears it, so export what you can't afford to lose.</p>
+<p class="tip"><b>In the book —</b> chapter “The library”, in <a href="micro-manual.pdf">the full manual</a>.</p>
+
 <div class="part-h" id="part-figures">Output &amp; projects</div>
-<h2 id="figures"><span class="n">27</span>Figures &amp; decorations</h2>
-<p><b>View → Decorations &amp; figure…</b> toggles a <b>scale bar</b>, <b>north arrow</b>, color <b>legend</b>, and <b>title</b> onto the viewport — they show live and are captured verbatim by <b>Export figure</b> (at 1× / 2× / 3× scale for print). Legends are <b>per layer</b> — stack one per model when several share the view, each with its own title. Set a <b>background</b> (white or paper for print; the decorations flip to dark ink to stay readable). The exported PNG is what you see, ready for a report — and it pairs with the lineage report for a fully auditable figure. The analysis plots have their own <b>⤓ png / ⧉ copy / ⧉ table</b> buttons.</p>
+<h2 id="figures"><span class="n">34</span>Figures &amp; decorations</h2>
+<p><b>View → Decorations &amp; figure…</b> toggles a <b>scale bar</b>, <b>north arrow</b>, color <b>legend</b>, and <b>title</b> onto the viewport — they show live and are captured verbatim by <b>Export figure</b> (at 1× / 2× / 3× scale for print). Legends are <b>per layer</b> — stack one per model when several share the view, each with its own title. Set a <b>background</b> (white or paper for print; the decorations flip to dark ink to stay readable). The exported PNG is what you see, ready for a report — and it pairs with the lineage report for a fully auditable figure. The analysis plots have their own <b>⤓ png / ⧉ copy / ⧉ table</b> buttons. For a laid-out page — a stated scale, a caption that fills itself in, a title block, a vector PDF — use <a href="#composer">the composer</a>.</p>
 <figure>
   <img src="shots/figure.png" alt="The model on a white background with a scale bar, north arrow, legend, and title.">
   <figcaption>A report-ready figure: white background, scale bar, north arrow, grade legend, and title — composited onto the export exactly as shown.</figcaption>
@@ -767,21 +913,72 @@ params:
 <p><b>Section series.</b> With a section on, <b>View → Section series…</b> (or <code>⌘K</code> “section series”) renders the section again and again across the data — from, to, every so many metres, with the slab you have set — each sheet a figure rendered to convergence with the decorations on and titled with its position (“N–S section 1075 ± 5”, after your own title if there is one). The camera moves with the plane, so every sheet is framed alike. The result is one <b>.zip</b>: a PNG per section, numbered in order, and an <code>index.html</code> that lays them out one to a page for printing. The section, the camera and the title are put back afterwards.</p>
 <p><b>Turntable video.</b> <b>View → Turntable video…</b> (also in the decorations panel, and <code>⌘K</code> “turntable”) orbits the camera around the current view and saves it as a video — a full turn, the other way, half or a quarter turn; 4 to 20 seconds; 24, 30 or 60 frames a second; screen or 2× resolution; decorations on or off. Every frame is rendered to convergence like a figure, so a big model takes longer to record, but the video still plays at an even speed. The camera returns to where it was, and the video plays in the window to check before you <b>Save video</b>. The file is WebM, each frame encoded with its exact time, so it plays at the chosen rate however slowly the frames rendered (a browser without WebCodecs records in real time instead, which can drop frames on a busy machine). Nothing leaves the machine.</p>
 
-<h2 id="projects"><span class="n">28</span>Projects</h2>
+<h2 id="composer"><span class="n">35</span>The composer</h2>
+<p><b>Export figure</b> is the quick way out: the view you see, dressed. A figure in a report is more — a plan at a stated scale with coordinates on its border, a legend that matches it, the grade–tonnage curve beside it, a caption that says which section and how many blocks, a title block with a drawing number. The <b>composer</b> is micro's page for that, and its output is a <b>vector PDF</b>. Each frame on the page knows where its content came from, so a figure can be made again — with new data, at another resolution, once per bench — without being redrawn.</p>
+<p>Open it with <b>File → Composer…</b> (or <code>⌘K</code> “composer”). A <b>figure</b> is one page (A4 landscape by default; A5 to A2, Letter, Legal, Tabloid or custom) with its frames, saved in the project as <code>figures/&lt;name&gt;.compo.json</code> as you edit; <b>File → Figures</b> lists them. The page bar adds frames, aligns and stacks them, and sets paper, zoom, an optional snapping grid and rulers you pull guides from.</p>
+<ul>
+  <li><b>3D view</b> — not a screenshot: it remembers its scene (camera, section, layers, colours, filters, background), renders at its own size and shape, and is rendered again at export. <b>Double-click</b> it to edit the scene in place in the 3D view, inside a dashed outline in the frame's proportions; <b>Update from the 3D view</b> and <b>Show in the 3D view</b> go either way. Making a figure never disturbs your own view.</li>
+  <li><b>Legend, scale bar, north arrow</b> — follow a view frame; the scale bar is recomputed each time the page draws, and a perspective view says <i>no scale</i> rather than drawing a wrong one.</li>
+  <li><b>Text</b> and <b>Label</b> — a caption, or a short text pinned to a <i>world</i> point with a leader that stays on it from any angle.</li>
+  <li><b>Chart and table</b> — sent from any analysis window's <b>⇥ figure</b>: a chart re-flows when resized and is vector line work in the PDF; a table is set as a book table, and never silently loses its end. <b>Add resource table</b> builds the report table (<a href="#xtab">§19</a>); a stereonet arrives from the structure window; <b>Add image</b> places a logo or a photo.</li>
+</ul>
+<h3>Captions that fill themselves in</h3>
+<p>A <b>field</b> is a word in braces the page replaces when it draws: <code>{fig}</code>, <code>{date}</code>, <code>{section}</code>, <code>{layers}</code>, <code>{scale}</code>, <code>{page}</code> of <code>{pages}</code>, <code>{crs}</code>, a house property <code>{prop:client}</code>, and statistics of what the view shows — <code>{count:,}</code> of <code>{total:,}</code> records, <code>{mean:FE:.1f}</code> — counted inside the view's section by default. <b>insert field…</b> lists them all. A caption written with fields describes the figure as it is, not as it was when you typed it.</p>
+<h3>Drawings, not pictures</h3>
+<ul>
+  <li><b>A locked scale</b> — type <code>2500</code> in an orthographic view's <b>scale</b> row and it stays 1:2500 however you resize the frame, on export and on every atlas page. <b>coords</b> adds coordinate <b>ticks</b> (or a <b>grid</b>) on the border, as vectors.</li>
+  <li><b>Vector sections</b> — right-click a view → <b>Vector section (blocks, drillholes, meshes as vectors)</b> prints the section as line work: each block the plane cuts as the exact shape the plane makes of it (same-coloured neighbours merged), drillholes as bands, meshes as their cut lines. It needs a section, an orthographic camera and a view square to the plane (<span class="kbd">l</span>); otherwise the status line says which is missing. Settings → display → <b>vector-section outlines</b> draws the blocking itself — every <b>sub-block</b> outlined in ink, or each <b>parent</b> block's cut in a heavier line — for checking a sub-blocked model received from another package.</li>
+  <li><b>Key plans</b> — <b>+ key plan</b> adds a small plan of the whole model with the section's line and slab across it, labelled with its figure number; on every atlas page the line moves with the section.</li>
+  <li><b>Small multiples</b> — one view repeated, varying the colour column, the section level or the filter, each copy captioned.</li>
+</ul>
+<h3>House style, data, templates</h3>
+<p><b>properties…</b> holds the figure's drawing number and revision and the project's company, client, project, prepared / checked by and disclaimer, which <b>Add title block</b> lays out as an editable ruled block. Every frame records the layers, files and content hashes it was made from: a badge says <i>older data</i> when a layer is now a different file, and <b>Refresh</b> (↻) makes the whole figure again — views re-rendered, charts and resource and comparison tables recomputed, stereonets re-measured (<b>File → Figures → Refresh all figures</b> for every one). A refresh recomputes; it doesn't approve, so read it before you sign it. <b>⇄ other data…</b> points a figure at different layers and columns, matched by name; <b>☆ template</b> makes it a starting point for new figures.</p>
+<p><b>Export PDF</b> or <b>Export PNG</b> at 150, 300 or 600 dpi re-renders every view at that resolution. In the PDF, text is text and charts, legends, scale bars, ticks, labels and vector sections are line work. By default the PDF <b>carries its figure inside it</b>: drop it on micro a year later and it opens as an editable figure, its badges saying whether the loaded data is the data it was made from. Untick <b>embed figure</b> for a deliverable that should hold only the page. In a routine, the <code>compo</code> tool prints a page with the data loaded at that moment.</p>
+<p class="tip"><b>In the book —</b> chapter “The composer”, in <a href="micro-manual.pdf">the full manual</a>.</p>
+
+<h2 id="atlas"><span class="n">36</span>Atlases</h2>
+<p>A set of bench plans is forty figures that differ in one number. An <b>atlas</b> is one composed figure printed once per row of a table: the figure supplies everything that stays the same, the table what changes — a section position, a filter, a camera — and the pages are bound into one PDF. Its machinery is a <a href="#routines">routine</a>, so an atlas is a file you can read, rerun and keep with the project.</p>
+<p>Build one good page first: a 3D view showing the section you want to step, its legend, scale and north, a caption. Then press <b>atlas…</b> in the composer's figure bar (the project must be saved). micro writes a starter routine and opens it in the routine editor: it steps along the axis of the view's own section, across the extent of what is loaded, gives each page a slab, collects the pages into <code>atlas/&lt;figure&gt;.pdf</code>, and hands each page its position as <code>level</code>. Write <code>${level}</code> in a caption, check the levels (the first guess spreads them over the bounding box, not over your benches — list your bench midpoints and set the thickness to match), press <b>Preview</b>, then <b>Run</b>.</p>
+<pre>- each:
+    level:
+      - 575
+      - 585
+      - 595
+      - 605
+  steps:
+    - tool: "compo"
+      with:
+        figure: "bench plan"
+        view:
+          section:
+            axis: "z"
+            position: "$level"
+            thickness: 10
+            clip: "slab"
+        vars:
+          level: "$level"
+        book: "atlas/bench_plan.pdf"
+        dpi: 200</pre>
+<p>A page can change its <b>section</b>, its <b>camera</b> or its <b>filter</b> — a page per bench, per cross-section, or per domain — and two at once by nesting or zipping the tables. Everything that depends on the view follows on every page: captions (counted inside that page's section, so the benches' block counts add up to the model's), <code>{page}</code> of <code>{pages}</code> and running figure numbers, legends, the locked scale and ticks, the key plan's line, and vector sections rebuilt per page.</p>
+<p class="note"><b>Note —</b> Charts and tables on an atlas figure are printed as they stand, the same on every page. Statistics that should change with the page belong in caption fields.</p>
+<p>The run's record lists each book with its page count and SHA-256, and the book carries its figure inside it like any composer PDF. <code>book</code> binds the pages into one PDF; <code>out</code> writes a file per page (put the row's value in its name). Because an atlas is a routine, it sits naturally at the end of a longer one: check the model, recompute the columns, then print.</p>
+<p class="tip"><b>In the book —</b> chapter “Atlases”, in <a href="micro-manual.pdf">the full manual</a>.</p>
+
+<h2 id="projects"><span class="n">37</span>Projects</h2>
 <p>In a Chromium browser, <b>File → Open project folder</b> keeps your layers, styling, filters, selections, camera, section, bookmarks &amp; scenes — and your open <b>analysis windows</b> (see <a href="#windows">Windows</a>) — in a plain folder (<code>project.json</code> + the data files). <span class="kbd">Ctrl+S</span> saves.</p>
-<p>The folder is organized <b>by data kind</b> — <code>models/</code> <code>drillholes/</code> <code>clouds/</code> <code>meshes/</code> <code>grids/</code> <code>tables/</code> — with each file's manifest and sidecars beside it (see <a href="#parquet">the project store</a>). <b>Tidy project folder</b> migrates an older flat project in place, and <b>Scan folder for new data</b> treats the folder as an inbox: drop a file in by hand (or from another tool) and micro picks it up. A loose layer (opened from outside the folder) offers <b>Copy into project</b> from its context menu — always with a sized consent step, never silently.</p>
+<p>The folder is organized <b>by data kind</b> — <code>models/</code> <code>drillholes/</code> <code>clouds/</code> <code>meshes/</code> <code>grids/</code> <code>tables/</code> <code>polygons/</code> — beside <code>figures/</code>, <code>recipes/</code> and <code>runs/</code>, with each file's manifest and sidecars beside it (see <a href="#parquet">the project store</a>). <b>Tidy project folder</b> migrates an older flat project in place, and <b>Scan folder for new data</b> treats the folder as an inbox: drop a file in by hand (or from another tool) and micro picks it up. A loose layer (opened from outside the folder) offers <b>Copy into project</b> from its context menu — always with a sized consent step, never silently.</p>
 <p>The inbox handles <i>new</i> files; <b>Reload from disk</b> (a layer's context menu) handles <i>changed</i> ones. If a file was edited outside micro — a model re-run, a parameter table updated in another tool — reload re-reads the fresh bytes through the layer's existing setup: column mapping, styling, calc columns, filter, and surface state all ride through. Edit a routine's parameter CSV, reload it, run the routine again — the whole loop without reopening anything. Drag-dropped files can't reload (they're snapshots with no path), and if the file's size changed, micro notes that painted and materialized columns — which attach by row position — may be stale.</p>
 <p><b>Change file…</b> (same menu, and the palette) points a layer at a <i>different</i> file and keeps everything else: next month's model drops in under last month's setup. The layer keeps its place in the tree, its label, colour, ramps, calculated columns, filter and its views; its <i>name</i> becomes the new file's (the name is the file, the label is yours). A delimited file keeps the old coordinate, grade and category columns <b>by name</b>, so a re-ordered header is fine, and sniffs whatever is missing. Painted columns and the selection were made record by record on the old file, so micro asks before dropping them. The new file must hold the same kind of data — a block model for a block model, a grid for a grid; anything else opens as a new layer instead. Drillhole sets change their tables from the set's own menu.</p>
 <p><b>Export rows…</b> writes any layer back out — scope <b>all</b> / <b>filter matches</b> / <b>selection</b>, every column including calculated, painted, estimated, and joined ones, as CSV or Parquet. Opening a <code>.dm</code> and exporting <i>is</i> the <code>.dm</code>→CSV (or →Parquet) converter.</p>
 <h3>Bookmarks &amp; scenes — save where you were looking</h3>
 <p>Two ways to save a view, under <b>View → Bookmarks</b> and <b>View → Scenes</b>. A <b>bookmark</b> is a <i>viewpoint</i> — camera + section — the quick nav aid: drop a few (<b>Save bookmark…</b>), or press <span class="kbd">g</span> then <span class="kbd">Shift</span>+<span class="kbd">1</span>–<span class="kbd">9</span> to save the current view into a numbered <b>slot</b> — and <span class="kbd">g</span> then the digit jumps back to it (a bare digit deliberately does nothing, so a stray keystroke can't teleport the camera). A <b>scene</b> is the full <i>working state</i> — camera + section <i>plus</i> each layer's visibility, color-by, and filter, so applying one puts the whole scene back the way it was (<b>Save scene…</b>, or <b>Save scene (with selection)…</b> to also pin the 3D selection). Applying a scene names any layer it wanted that isn't loaded, and skips it. Both live as small JSON files in the project folder — <code>bookmarks/</code> and <code>scenes/</code>, one per entry — so they travel with the project, are hand-editable, and get picked up by <b>Scan folder for new data</b>. There is no fly-through: applying a view snaps straight there.</p>
 
-<h2 id="backups"><span class="n">29</span>Backups &amp; project packs</h2>
+<h2 id="backups"><span class="n">38</span>Backups &amp; project packs</h2>
 <p><b>File → Back up project…</b> writes the project folder into a single <code>&lt;project&gt;-&lt;date&gt;.zip.micro</code>: to move a project to another machine, hand it to a colleague, or keep a dated copy before a big change. It's an ordinary zip (rename it <code>.zip</code> and any tool opens it), streamed to disk as it's written, so a project with multi-GB models never has to fit in memory. Everything in the folder goes in, including files you dropped there yourself. <b>Lean</b> leaves out the caches micro rebuilds by itself (the discovery and display caches), at the price of re-reading a big model once when the restored project first opens; <b>Full</b> keeps them. The backup is made from the folder, so with unsaved changes micro offers to save first. Layers <i>linked</i> from outside the folder aren't in it: the dialog names them. To include them, save the project and choose <b>Copy into project</b> when it asks.</p>
 <p><b>A backup is also a project pack: you can open it without unpacking it.</b> <b>File → Open project pack…</b>, or opening a <code>.zip.micro</code> like any other file and choosing <b>Open (read-only)</b>, opens the project straight from the one file: every model, hole set, bookmark, scene and recipe, the filters and styles as they were saved. Nothing is unpacked, because micro reads each file where it sits inside the pack, so a pack of several gigabytes opens as quickly as the folder it came from. It doesn't need folder access either, so it works in browsers that can't open project folders at all, which makes a pack the way to hand someone a project to look at. You can still work in it — filter, paint, bookmark — and those changes are kept for the session beside the pack, which itself never changes. To keep them, <b>Save</b> asks for an empty folder, writes the whole project there with your changes, and carries on in that folder as a normal project. Because files read straight from a pack skip the checksum, micro reads the whole pack through once in the background after it opens and says in the status line whether every file is intact; a damaged one is named.</p>
 <p><b>File → Restore project from backup…</b> (or <b>Unpack to a folder…</b> when you open a <code>.zip.micro</code>) shows what the backup holds, asks for an <b>empty</b> folder, unpacks into it and opens it as the project. Every file is checked against the checksum it was written with, so a damaged backup stops with the file's name instead of restoring wrong data. micro won't restore into a folder that already holds a project, or over a file that's already there.</p>
 
-<h2 id="parquet"><span class="n">30</span>The project store, inside</h2>
+<h2 id="parquet"><span class="n">39</span>The project store, inside</h2>
 <p>A micro project is a plain folder, readable without micro. This section is its anatomy, because auditability means being able to open the hood:</p>
 <pre class="tree">my-project/
 ├─ project.json                  <i>view state — layers, styling, camera, windows</i>
@@ -796,7 +993,9 @@ params:
 │  ├─ collars.csv · survey.csv · assay.csv
 │  └─ dh.element.json            <i>the SET: locations, hole relation, desurvey op</i>
 ├─ grids/  ·  meshes/  ·  clouds/  ·  tables/
-├─ reports/                      <i>what routines write — reports/&lt;date&gt;/&lt;step&gt;.tsv</i>
+├─ runs/                         <i>one folder per routine run — its tables and run.json</i>
+├─ figures/                      <i>composer figures — one .compo.json each</i>
+├─ polygons/                     <i>drawn and edited strings &amp; polygons, as WKT-CSV</i>
 ├─ bookmarks/  ·  scenes/        <i>one small JSON per saved view</i>
 └─ recipes/                      <i>analysis setups as commented YAML</i></pre>
 <h3>Parquet — the model store</h3>
@@ -810,7 +1009,7 @@ params:
 <p>In memory, scanned columns <b>pin</b> into a budgeted cache (View → <b>Filter column cache</b>: off / auto / a size in MB — auto scales with your machine) so repeat filters and widget drags run with no file reads; derived-column values share the same budget and quietly reload from their sidecars when evicted. The memory panel (Help → memory) shows what's held.</p>
 
 <div class="part-h" id="part-sealed">The tool itself</div>
-<h2 id="sealed"><span class="n">31</span>Security: Sealed</h2>
+<h2 id="sealed"><span class="n">40</span>Security: Sealed</h2>
 <p>micro is <b>Sealed</b>: it makes <b>no network requests</b> — a browser security policy (<code>connect-src 'none'</code>) blocks every connection, so there is no telemetry, no cloud, and no auto-update. Your data — point clouds, block models, drillholes — stays on your device. The build is <b>WASM-free</b> with the runtime in the clear, so the code is readable and auditable rather than opaque binary.</p>
 <figure>
   <img src="shots/sealed.png" alt="The Sealed badge popover explaining the no-network posture.">
@@ -818,7 +1017,7 @@ params:
 </figure>
 <p>Verify the build and read how to bring it through approval at <a href="https://gentropic.org/security" target="_blank" rel="noopener noreferrer">gentropic.org/security</a>.</p>
 
-<h2 id="install"><span class="n">32</span>Install, offline &amp; phones</h2>
+<h2 id="install"><span class="n">41</span>Install, offline &amp; phones</h2>
 <p>micro runs at <a href="../">gentropic.org/micro</a> — install it as an app from the browser, or <a href="../micro.html" download>download <code>micro.html</code></a>: one file, no installer, that you can keep, e-mail, drop on a shared drive, or run fully offline by double-clicking. There is nothing to set up and nothing that phones home. It works in current Chrome, Edge, and Firefox; project folders and Save as need a Chromium browser (Chrome or Edge) — elsewhere, a <a href="#backups">project pack</a> opens anyway.</p>
 <h3>On a phone</h3>
 <p>Below a tablet's width micro switches to a <b>review layout</b>: one top bar (menu · filter · palette), a bottom bar of large targets (layers · properties · select · section · measure · fit), and every panel and window as a <b>bottom sheet</b> you drag between a peek, half, and tall height — the view shrinks to stay visible above it, and one sheet is open at a time (the others wait as chips). A section gets a full-width scrub strip. Everything is still there; the defaults are for looking and checking rather than building. Orbit with one finger, pinch to zoom, two fingers to pan and twist.</p>
@@ -826,8 +1025,10 @@ params:
   <img src="shots/mobile.png" alt="micro on a phone: a block model above a grade-tonnage sheet, the bottom toolbar below.">
   <figcaption>The review layout on a phone: the grade–tonnage window as a sheet, plot above its settings, the model still visible above it.</figcaption>
 </figure>
+<p><b>Inside the Android shell.</b> Where it is provided to you, the same <code>micro.html</code> also runs inside a thin Android app shell that gives it what a phone's browser tab lacks: a file chosen with <i>open with</i> micro, or shared to it, arrives as a layer (read in place, in ranges, so a large model needn't fit in memory); exports are written to <b>Downloads</b> as a stream, with a <b>share…</b> button; and project folders work through Android's folder picker, remembered between sessions. Inside the shell the page talks to the shell to read and write files and to nothing else; the shell holds no internet permission.</p>
+<p><b>Updates.</b> <b>Help → Check for updates…</b> asks the installed app's service worker whether a newer build exists; a reload applies it, and micro never updates under you mid-session. The downloaded file has no service worker and says so: to update it, download a new one.</p>
 
-<h2 id="faq"><span class="n">33</span>Questions &amp; troubleshooting</h2>
+<h2 id="faq"><span class="n">42</span>Questions &amp; troubleshooting</h2>
 <p><b>“The system reset the 3D graphics.”</b> A phone short of memory, a laptop waking from sleep or a graphics-driver reset can take the 3D context away; every layer's copy on the graphics card goes with it, but the session itself is untouched. When the browser hands the graphics back, micro rebuilds the view on its own — it saves the session into a folder in memory (files linked, never copied) and reopens it, so layers, styling, filters, calculated and painted columns, selections, views, the section and the camera come back as a project reopen brings them. Your project folder, if one is open, stays the project, marked as having unsaved changes. If the graphics never come back, the bar offers <b>save project</b> and <b>reload</b>.</p>
 <p><b>Which browsers work?</b> Current Chrome, Edge, and Firefox all run micro. Project folders, disk mounts, and Save-as need a <b>Chromium</b> browser (Chrome/Edge) &mdash; Firefox opens and analyzes everything but can't hold a folder connection.</p>
 <p><b>How big is too big?</b> There isn't a hard limit &mdash; micro streams, so opening is near-instant at any size and memory stays bounded. The practical costs are per-<i>scan</i>: the first filter or analysis over a huge CSV reads the file once (a 13&nbsp;GB Datamine file is a few tens of seconds), after which sidecars, push-down, and the pin cache make repeats fast. For models you'll work with daily, <b>Store as Parquet&hellip;</b> is the single biggest speedup.</p>
@@ -838,7 +1039,7 @@ params:
 <p><b>Rotated block models?</b> They draw as true rotated boxes. When micro finds a rotated lattice it asks first — boxes or points — and a file that declares its lattice is checked against every block. See <a href="#blocks">Block models</a>.</p>
 <p><b>My CSV uses commas for decimals.</b> A <code>;</code>-separated file with <code>1,5</code>-style numbers is detected and read as numbers; <b>file info</b> says which decimal mark it found. See <a href="#columns">Columns</a>.</p>
 <p><b>I removed something by mistake.</b> <span class="kbd">Ctrl/⌘Z</span> brings back a selection, a filter, a ƒ column, a rule, or a paint stroke — see <a href="#windows">Windows, undo &amp; safety nets</a>.</p>
-<p><b>Sub-blocks come up as points.</b> Detection needs per-block dimension columns (<code>dX/dY/dZ</code> or <code>XINC/YINC/ZINC</code>) and power-of-two refinement. Odd ratios fall back to centroids &mdash; everything still works, blocks just draw as points.</p>
+<p><b>Sub-blocks come up as points.</b> Detection needs per-block dimension columns (<code>dX/dY/dZ</code> or <code>XINC/YINC/ZINC</code>). Any whole-number refinement works, odd ratios included, but a block may span at most 255 fine steps along an axis; a model past that falls back to centroids and says why &mdash; everything still works, blocks just draw as points. See <a href="#blocks">Block models</a>.</p>
 <p><b>Can I run it fully offline / air-gapped?</b> Yes &mdash; that's the design. Download <code>micro.html</code>, copy it anywhere, double-click. Nothing phones home either way; the offline copy just makes it visible.</p>
 <p><b>Something looks wrong / a file won't open.</b> <span class="kbd">i</span> (file info) shows what micro detected &mdash; column mapping, grid inference, parse warnings. Most import surprises are visible there, and the mapping can be corrected in place.</p>
 
@@ -890,6 +1091,7 @@ params:
   <tr><td><span class="kbd">F1</span></td><td>keyboard &amp; mouse help</td></tr>
 </table>
 <!-- /keys:manual -->
+<p>Two more work over the view: <span class="kbd">Alt+K</span> opens the <a href="#plain">plain-language bar</a>, and <span class="kbd">Ctrl+V</span> pastes features copied in QGIS as a new <a href="#polygons">strings &amp; polygons</a> layer. While drawing a polygon or a trace, <span class="kbd">Enter</span> finishes, <span class="kbd">Backspace</span> takes the last point back and <span class="kbd">Esc</span> stops.</p>
 <p class="no-print">A credit-card and A6 <a href="card.html">printable shortcut card</a> covers the same keys, laid out for a laminator. All three — this table, the card, and the in-app Help — are made from one list in micro's source.</p>
 <h3>The expression language</h3>
 <p>One language everywhere — the filter, calculated columns, density and weight expressions, per-series filters, the hole filter. It is <b>total</b>: an expression can compare and compute but never loop, call out, or crash a scan — a blank input gives a blank result.</p>
@@ -898,8 +1100,10 @@ params:
   <tr><th>Boolean</th><td><code>and</code> · <code>or</code> · <code>not</code> — with parentheses for grouping</td></tr>
   <tr><th>Arithmetic</th><td><code>+ - * /</code> · <code>^</code> (power, Python-style precedence)</td></tr>
   <tr><th>Numeric fns</th><td><code>round int abs floor ceil mod log log10 exp sqrt pow min max clamp bin</code></td></tr>
-  <tr><th>Blank handling</th><td><code>coalesce(a, b, …)</code> (first filled) · <code>nullif(x, v)</code> (sentinel → blank: <code>nullif(AU, -99)</code>) · <code>ifnum isnum isblank isfilled</code> · the <code>blank</code> literal</td></tr>
+  <tr><th>Curves</th><td><code>lerp(a, b, t)</code> · <code>remap(x, a1, b1, a2, b2)</code> · <code>interp(x, x1, y1, x2, y2, …)</code> (straight lines through the points: density from grade) · <code>smoothstep(a, b, x)</code></td></tr>
+  <tr><th>Blank handling</th><td><code>coalesce(a, b, …)</code> (first filled) · <code>nullif(x, v)</code> (sentinel → blank: <code>nullif(AU, -99)</code>) · <code>ifnum isnum isnan isblank isfilled</code> (<code>isnan</code>: filled but not a number — a stray <code>n/a</code>) · the <code>blank</code> literal</td></tr>
   <tr><th>Text fns</th><td><code>upper lower trim len left right substr replace concat</code></td></tr>
+  <tr><th>Dates</th><td><code>year(d) month(d) day(d)</code> — the parts of a <code>YYYY-MM-DD</code> date</td></tr>
   <tr><th>Conditional</th><td><code>if(cond, then, else)</code> — nests into case ladders</td></tr>
   <tr><th>Names</th><td>plain column names as-is (case-insensitive); anything with spaces or symbols in backticks: <code>`Assay Au ppm`</code> (the pandas convention)</td></tr>
   <tr><th>Text values</th><td>in double quotes: <code>LITO = "HEMATITE"</code></td></tr>
@@ -923,6 +1127,9 @@ params:
   <tr><td>Log-scale color for a skewed grade</td><td><code>log10(clamp(AU, 0.01, 100))</code></td></tr>
   <tr><td>Flag suspicious duplicates of a cap value</td><td><code>FE = 68  # exactly at the clamp</code></td></tr>
   <tr><td>Bench index from elevation (10 m benches)</td><td><code>floor(ZC / 10)</code></td></tr>
+  <tr><td>Density from grade, along a curve</td><td><code>interp(FE, 20, 2.7, 45, 3.4, 65, 4.3)</code></td></tr>
+  <tr><td>Junk in a grade column</td><td><code>isnan(AU)</code></td></tr>
+  <tr><td>The contact zone (after <b>⇥ column</b> in contact analysis)</td><td><code>abs(DIST_ORE_SHELL) &lt; 10</code></td></tr>
 </table>
 <p>Each of these works anywhere an expression is accepted: the filter box, a ƒ column, a density or weight slot, a per-series filter, the hole filter (over collar columns).</p>
 
@@ -932,21 +1139,32 @@ params:
   <tr><td>CSV / TXT / DAT</td><td>✓</td><td>✓</td><td>delimiter sniffed (, ; tab); RFC 4180 quoting (a quoted field may hold the delimiter, a line break or a doubled quote); block models need coordinate columns; per-block <code>dX/dY/dZ</code> → sub-blocked; a rotated lattice is detected and offered (App. D)</td></tr>
   <tr><td>Parquet</td><td>✓</td><td>✓</td><td>streamed with predicate + spatial push-down; micro's own store (Morton-sorted, self-describing metadata); per-block <code>DX/DY/DZ</code> → sub-blocked; a file may <b>declare</b> its lattice, rotated or not, in <code>micro:model</code> (App. D)</td></tr>
   <tr><td>Datamine <code>.dm</code></td><td>✓</td><td>—</td><td>block models + wireframe pairs (<code>…pt.dm</code>/<code>…tr.dm</code>); per-record <code>XINC/YINC/ZINC</code> → sub-blocked; export via CSV/Parquet</td></tr>
-  <tr><td>LAS</td><td>✓</td><td>—</td><td>point clouds; LAZ is not read (needs a compiled decoder — see §31)</td></tr>
+  <tr><td>LAS</td><td>✓</td><td>—</td><td>point clouds; LAZ is not read (needs a compiled decoder — see <a href="#sealed">§40</a>); a LAS coordinate-system record is read and the cloud reprojected</td></tr>
   <tr><td>PLY</td><td>✓</td><td>✓</td><td>points or mesh; writes <code>double</code> coordinates</td></tr>
   <tr><td>XYZ / PTS</td><td>✓</td><td>—</td><td>plain point dumps</td></tr>
   <tr><td>OBJ</td><td>✓</td><td>✓</td><td>meshes; multi-object on export</td></tr>
   <tr><td>MSH (Leapfrog/ARANZ)</td><td>✓</td><td>✓</td><td>single mesh</td></tr>
   <tr><td>LFM</td><td>✓</td><td>✓</td><td>multi-mesh with colors</td></tr>
-  <tr><td>GeoTIFF</td><td>✓</td><td>—</td><td>grids incl. multi-band + overviews (COG-friendly); no compiled codecs — LZW/deflate/PackBits</td></tr>
-  <tr><td>Surfer <code>.grd</code></td><td>✓</td><td>—</td><td>ASCII + binary</td></tr>
-  <tr><td>ESRI ASCII <code>.asc</code></td><td>✓</td><td>✓</td><td>the grid export</td></tr>
-  <tr><td>DXF</td><td>✓</td><td>—</td><td>3D faces / polyface meshes → mesh; 3D polylines → strings by DXF layer; points → pegs (<a href="#meshes">§11</a>)</td></tr>
+  <tr><td>GeoTIFF</td><td>✓</td><td>✓</td><td>grids incl. multi-band + overviews (COG-friendly), rotated ones and world files; no compiled codecs — LZW/deflate/PackBits. Written: one float32 band, the CRS only for a known EPSG code (<a href="#grids">§14</a>)</td></tr>
+  <tr><td>Surfer <code>.grd</code></td><td>✓</td><td>✓</td><td>Surfer 7 binary, Surfer 6 binary and ASCII (DSAA); an unrotated grid</td></tr>
+  <tr><td>ESRI ASCII <code>.asc</code></td><td>✓</td><td>✓</td><td>the surface tools write their results in it</td></tr>
+  <tr><td>ESRI binary float <code>.flt</code></td><td>—</td><td>✓</td><td>one <code>.zip</code>: the <code>.flt</code>, its <code>.hdr</code> and the lineage</td></tr>
+  <tr><td>XYZ / CSV of grid nodes</td><td>—</td><td>✓</td><td>one row per node, every node at its true x and y</td></tr>
+  <tr><td>DXF</td><td>✓</td><td>✓</td><td>3D faces / polyface meshes → mesh; 3D polylines → strings by DXF layer; points → pegs (<a href="#meshes">§11</a>); with <b>Open as</b>, polylines as features with attributes. Written from a strings &amp; polygons layer</td></tr>
+  <tr><td>String file <code>.csv</code></td><td>✓</td><td>—</td><td>an ID column and ordered X/Y/Z rows (the Leapfrog and Surpac shape); a string back at its first vertex is a polygon (<a href="#polygons">§12</a>)</td></tr>
+  <tr><td>WKT <code>.wkt</code>, WKT-CSV</td><td>✓</td><td>✓ (CSV)</td><td>a WKT column (<code>wkt_geom</code>…) beside the attributes — what QGIS writes and copies; how micro keeps a drawn layer</td></tr>
+  <tr><td>Shapefile <code>.shp .dbf .prj .cpg</code></td><td>✓</td><td>✓</td><td>opened together or zipped; written as a <code>.zip</code> with a <code>.prj</code> for the system its coordinates are in (<a href="#crs">§13</a>)</td></tr>
+  <tr><td>GeoJSON</td><td>✓</td><td>✓</td><td>a <code>"crs"</code> member is honoured; without one, WGS 84 longitude/latitude, reprojected on read. Written with a <code>"crs"</code>, or in lon/lat</td></tr>
+  <tr><td>KML / KMZ</td><td>✓</td><td>✓ (KML)</td><td>placemarks with their ExtendedData as attributes; always WGS 84, reprojected on read; written for Google Earth and a GPS</td></tr>
   <tr><td><code>.wfr</code></td><td>✓</td><td>✓</td><td>compact multi-element wireframes; convert, export, or store a project's meshes as <code>.wfr</code></td></tr>
   <tr><td>OMF v1 (<code>.omf</code>)</td><td>✓</td><td>—</td><td>a layer per element: block models (lattice declared, rotated kept), points, triangulated surfaces; line sets and gridded surfaces not yet</td></tr>
   <tr><td>Excel <code>.xlsx</code></td><td>✓</td><td>—</td><td>each sheet a table layer, Excel's own column types</td></tr>
-  <tr><td>Project pack <code>.zip.micro</code></td><td>✓</td><td>✓</td><td>a whole project in one file; opens read-only without unpacking (<a href="#backups">§29</a>)</td></tr>
-  <tr><td>TSV reports</td><td>—</td><td>✓</td><td>every analysis table (⧉ table, routines' <code>reports/</code>), the drillhole QA report</td></tr>
+  <tr><td>Project pack <code>.zip.micro</code></td><td>✓</td><td>✓</td><td>a whole project in one file; opens read-only without unpacking (<a href="#backups">§38</a>)</td></tr>
+  <tr><td>PDF</td><td>own</td><td>✓</td><td>the <a href="#composer">composer</a>'s export; it carries its figure, so micro reopens a PDF it wrote as an editable figure</td></tr>
+  <tr><td>PNG · WebM</td><td>—</td><td>✓</td><td>Export figure and composer pages · the turntable video</td></tr>
+  <tr><td>Recipe, routine, pack <code>.yaml</code> <code>.zip</code></td><td>✓</td><td>✓</td><td>block-style YAML, strings quoted; a library pack bundles a routine's recipes and tables (<a href="#library">§33</a>)</td></tr>
+  <tr><td>Layer style <code>.microstyle.json</code></td><td>✓</td><td>✓</td><td>a look, carried to another layer by column name</td></tr>
+  <tr><td>TSV reports</td><td>—</td><td>✓</td><td>every analysis table (⧉ table, routines' <code>runs/</code>), the drillhole QA report</td></tr>
 </table>
 <p><b>Column conventions the sniffers look for</b> — coordinates: <code>XC/YC/ZC</code>, <code>X/Y/Z</code>, <code>EAST/NORTH/ELEV</code>-style names; sub-block sizes: <code>dX/dY/dZ</code>, <code>XINC/YINC/ZINC</code>, <code>DIMX/DIMY/DIMZ</code>; drillholes: a hole id (<code>BHID/HOLEID</code>-style), <code>FROM/TO</code> on intervals, <code>DEPTH/AT · AZ/BRG · DIP</code> on surveys. Everything the sniff decides is shown in <b>file info</b> (<span class="kbd">i</span>) and correctable there.</p>
 
@@ -980,6 +1198,28 @@ params:
   <tr><td><b>watertight</b></td><td>a mesh whose every edge is shared by exactly two triangles — a closed solid, with a volume</td></tr>
   <tr><td><b>dogleg</b></td><td>how sharply a hole bends between two survey stations, in degrees per 30 m</td></tr>
   <tr><td><b>scope</b></td><td>which records an analysis reads: all, the filter's matches, or the 3D selection</td></tr>
+  <tr><td><b>feature</b></td><td>one record of a strings &amp; polygons layer: a line or polygon with its attributes</td></tr>
+  <tr><td><b>limit (inside)</b></td><td>polygons in plan that an analysis is restricted to, on top of its scope; records count by centroid, grid nodes by the share of their cell</td></tr>
+  <tr><td><b>CRS</b></td><td>coordinate reference system; a project has one, projected (in metres), shown on the status-bar chip</td></tr>
+  <tr><td><b>reprojection</b></td><td>moving every coordinate of a vector file or point cloud into the project's system on read, recorded with an accuracy class</td></tr>
+  <tr><td><b>placement</b></td><td>one rigid similarity (shift, rotation, uniform scale) applied to a whole model, grid or mesh as it is read — typed, fitted to control points, or fitted to a CRS change</td></tr>
+  <tr><td><b>residual</b></td><td>how far a fitted placement puts a control point's local position from its true one</td></tr>
+  <tr><td><b>datum twin</b></td><td>the same projection and zone on another datum (SAD69 beside SIRGAS 2000); what the collar CRS check tries</td></tr>
+  <tr><td><b>projection (MIP)</b></td><td>a view that colours each pixel by the max, min or mean value along its line of sight, occlusion ignored</td></tr>
+  <tr><td><b>ghost</b></td><td>a filter display: what the filter left out, drawn as a faint flat shape behind the matches</td></tr>
+  <tr><td><b>contact plot</b></td><td>mean grade against distance from a domain boundary; a step at zero is a hard boundary, a ramp a soft one</td></tr>
+  <tr><td><b>signed distance</b></td><td>a record's distance to a surface, negative inside a solid or below a surface</td></tr>
+  <tr><td><b>F1 · F2 · F3</b></td><td>reconciliation factors: grade control ÷ resource model, mill ÷ grade control, mill ÷ resource model — for tonnes, grade and metal</td></tr>
+  <tr><td><b>cut / fill</b></td><td>the volume removed / added between two surfaces of the same ground</td></tr>
+  <tr><td><b>attitude</b></td><td>a plane's orientation, written dip direction / dip (<code>270/60</code>)</td></tr>
+  <tr><td><b>check</b></td><td>a routine step that judges a result — a value, every row, or a change since the baseline — and passes, warns or stops</td></tr>
+  <tr><td><b>baseline</b></td><td>the run a routine's checks and compares are judged against: the last accepted run, else the last that finished ok</td></tr>
+  <tr><td><b>run record</b></td><td><code>run.json</code>: what a routine run read and wrote, with SHA-256 hashes, settings, checks and baseline</td></tr>
+  <tr><td><b>pack (library)</b></td><td>a recipe or routine with the recipes and tables it needs, kept in the library or passed on as one file</td></tr>
+  <tr><td><b>composer · frame</b></td><td>micro's page for figures · one box on it (a view, legend, chart, caption…) that knows where its content came from</td></tr>
+  <tr><td><b>field</b></td><td>a word in braces in a caption — <code>{scale}</code>, <code>{count}</code>, <code>{crs}</code> — replaced when the page draws</td></tr>
+  <tr><td><b>vector section</b></td><td>a section printed as line work: each cut block as its exact shape, drillholes as bands, meshes as cut lines</td></tr>
+  <tr><td><b>atlas</b></td><td>one composer figure printed once per row of a table — per bench, section or domain — into one PDF</td></tr>
 </table>
 
 <h2 id="dev"><span class="n">D</span>For developers — hosting micro, and <code>micro:model</code></h2>
@@ -1139,118 +1379,167 @@ addEventListener('micro:lattice-rejected', (e) => e.detail);   // { name, reason
   <li><b>A declared lattice is your statement, not micro's guess</b>, so no confirmation is asked. micro still maps every centroid through it. If one falls off the lattice (more than a thousandth of a block), the declaration is <b>refused</b>, the model opens as points, and the status line says which record and by how much. <code>addLayer</code> with a wrong lattice rejects in the same way.</li>
   <li><b>No declaration?</b> micro tries to infer one: nearest-neighbour displacements give the directions, then a fit over every record measures the sizes and checks the lattice. An inferred rotation is <b>never applied silently</b>. micro asks “rotated boxes or points?”. Hosts can answer in advance with <code>openBlob(…, { acceptLattice: true | false })</code>.</li>
   <li>Exports write the lattice back (the internal form plus this basis form), so a rotated model round-trips through Parquet and project save. The layer's lineage and element manifest record whether the lattice was inferred or declared, and who confirmed it.</li>
-  <li><b>What works on a rotated model:</b> everything per-record (filters, stats, grade–tonnage, swath, export, select/flag by solid per centroid) and <b>joins and reconciles between models on the same rotated lattice</b>. <b>Not yet:</b> resampling between different orientations (the join panel says so), proportions by solid, rotated sub-blocked models, and the empty-grid creator.</li>
+  <li><b>What works on a rotated model:</b> everything per-record (filters, stats, grade–tonnage, swath, export, select/flag by solid per centroid) and <b>joins and reconciles between models on the same rotated lattice</b>. <b>Not yet:</b> resampling between different orientations (the join panel says so) and the empty-grid creator.</li>
 </ul>
 
 <h2 id="idx"><span class="n">E</span>Index</h2>
 <div style="column-count:2;column-gap:2em;font-size:.88em">
+<p style="margin:.15em 0">accuracy class (reprojection) — <a href="#crs">§13</a></p>
 <p style="margin:.15em 0">addLayer (host API) — <a href="#dev">App. D</a></p>
-<p style="margin:.15em 0">analysis windows (how they work) — <a href="#awin">§15</a></p>
+<p style="margin:.15em 0">ambient occlusion — <a href="#view">§4</a>, <a href="#software">§2</a></p>
+<p style="margin:.15em 0">analysis windows (how they work) — <a href="#awin">§17</a></p>
+<p style="margin:.15em 0">as-built: DEM from a point cloud — <a href="#dem">§14</a></p>
+<p style="margin:.15em 0">atlases — <a href="#atlas">§36</a></p>
 <p style="margin:.15em 0">attribute table — <a href="#columns">§8</a></p>
 <p style="margin:.15em 0">autocomplete — <a href="#filter">§6</a>, <a href="#ref">App. A</a></p>
-<p style="margin:.15em 0">background (figure) — <a href="#figures">§27</a></p>
-<p style="margin:.15em 0">backups (.zip.micro) — <a href="#backups">§29</a></p>
-<p style="margin:.15em 0">band ghost — <a href="#swath">§18</a></p>
-<p style="margin:.15em 0">band index (filter push-down) — <a href="#parquet">§30</a>, <a href="#faq">§33</a></p>
+<p style="margin:.15em 0">background (figure) — <a href="#figures">§34</a></p>
+<p style="margin:.15em 0">backups (.zip.micro) — <a href="#backups">§38</a></p>
+<p style="margin:.15em 0">band ghost — <a href="#swath">§20</a></p>
+<p style="margin:.15em 0">band index (filter push-down) — <a href="#parquet">§39</a>, <a href="#faq">§42</a></p>
+<p style="margin:.15em 0">baselines &amp; Accept — <a href="#checks">§32</a></p>
+<p style="margin:.15em 0">bench outlines (dig lines) — <a href="#polygons">§12</a></p>
 <p style="margin:.15em 0">blanks — <a href="#columns">§8</a>, <a href="#dh">§10</a></p>
 <p style="margin:.15em 0">block edges — <a href="#view">§4</a></p>
 <p style="margin:.15em 0">block models — <a href="#blocks">§9</a></p>
-<p style="margin:.15em 0">block vs sample — <a href="#pairing">§22</a></p>
-<p style="margin:.15em 0">bookmarks — <a href="#projects">§28</a></p>
+<p style="margin:.15em 0">block vs sample — <a href="#pairing">§27</a></p>
+<p style="margin:.15em 0">bookmarks — <a href="#projects">§37</a></p>
 <p style="margin:.15em 0">breakpoints / classed ramp — <a href="#view">§4</a></p>
 <p style="margin:.15em 0">broadcast (collar → intervals) — <a href="#dh">§10</a>, <a href="#glossary">App. C</a></p>
+<p style="margin:.15em 0">cache (routine steps) — <a href="#checks">§32</a></p>
 <p style="margin:.15em 0">calculated (ƒ) columns — <a href="#calc">§7</a>, <a href="#ref">App. A</a></p>
-<p style="margin:.15em 0">cancel a long job — <a href="#windows">§5</a>, <a href="#awin">§15</a></p>
+<p style="margin:.15em 0">cancel a long job — <a href="#windows">§5</a>, <a href="#awin">§17</a></p>
 <p style="margin:.15em 0">case table (if-ladder) — <a href="#calc">§7</a></p>
-<p style="margin:.15em 0">change file (relink a layer) — <a href="#projects">§28</a></p>
+<p style="margin:.15em 0">change file (relink a layer) — <a href="#projects">§37</a></p>
+<p style="margin:.15em 0">checks &amp; compares (routines) — <a href="#checks">§32</a></p>
+<p style="margin:.15em 0">collars vs topography (CRS check) — <a href="#crscheck">§13</a></p>
 <p style="margin:.15em 0">column types — <a href="#columns">§8</a></p>
 <p style="margin:.15em 0">command palette — <a href="#what">§1</a></p>
 <p style="margin:.15em 0">comments (#) — <a href="#filter">§6</a>, <a href="#ref">App. A</a></p>
+<p style="margin:.15em 0">comparison report (model versions) — <a href="#compare">§23</a></p>
+<p style="margin:.15em 0">composer — <a href="#composer">§35</a></p>
 <p style="margin:.15em 0">composites (down-hole) — <a href="#composites">§10</a></p>
-<p style="margin:.15em 0">cross-tab (resource) — <a href="#xtab">§17</a></p>
-<p style="margin:.15em 0">cutoffs — <a href="#gt">§16</a>, <a href="#xtab">§17</a></p>
-<p style="margin:.15em 0">decimal comma — <a href="#columns">§8</a>, <a href="#faq">§33</a></p>
-<p style="margin:.15em 0">declustering — <a href="#validate">§22</a>, <a href="#glossary">App. C</a></p>
+<p style="margin:.15em 0">contact analysis — <a href="#contact">§22</a></p>
+<p style="margin:.15em 0">coordinate systems (CRS) — <a href="#crs">§13</a></p>
+<p style="margin:.15em 0">cross-tab (resource) — <a href="#xtab">§19</a></p>
+<p style="margin:.15em 0">cut and fill — <a href="#cutfill">§14</a></p>
+<p style="margin:.15em 0">cutoffs — <a href="#gt">§18</a>, <a href="#xtab">§19</a></p>
+<p style="margin:.15em 0">decimal comma — <a href="#columns">§8</a>, <a href="#faq">§42</a></p>
+<p style="margin:.15em 0">declustering — <a href="#validate">§27</a>, <a href="#glossary">App. C</a></p>
 <p style="margin:.15em 0">demo project — <a href="#start">§2</a>, <a href="#tour">§3</a></p>
-<p style="margin:.15em 0">density expression — <a href="#awin">§15</a>, <a href="#gt">§16</a></p>
+<p style="margin:.15em 0">density expression — <a href="#awin">§17</a>, <a href="#gt">§18</a></p>
 <p style="margin:.15em 0">desurvey — <a href="#dh">§10</a></p>
 <p style="margin:.15em 0">detection limits (<x, >x) — <a href="#columns">§8</a></p>
-<p style="margin:.15em 0">dogleg — <a href="#dhqa">§21</a>, <a href="#glossary">App. C</a></p>
-<p style="margin:.15em 0">drillhole QA report — <a href="#dhqa">§21</a></p>
+<p style="margin:.15em 0">distance to a surface — <a href="#contact">§22</a></p>
+<p style="margin:.15em 0">dogleg — <a href="#dhqa">§26</a>, <a href="#glossary">App. C</a></p>
+<p style="margin:.15em 0">drawing &amp; editing polygons — <a href="#polygons">§12</a></p>
+<p style="margin:.15em 0">drillhole QA report — <a href="#dhqa">§26</a></p>
 <p style="margin:.15em 0">drillholes — <a href="#dh">§10</a></p>
 <p style="margin:.15em 0">DXF — <a href="#meshes">§11</a>, <a href="#formats">App. B</a></p>
-<p style="margin:.15em 0">each blocks / parameter tables — <a href="#routines">§26</a></p>
-<p style="margin:.15em 0">element manifest — <a href="#parquet">§30</a>, <a href="#glossary">App. C</a></p>
-<p style="margin:.15em 0">Excel (.xlsx) workbooks — <a href="#tables">§13</a></p>
-<p style="margin:.15em 0">export (rows / mesh / grid) — <a href="#projects">§28</a>, <a href="#meshes">§11</a>, <a href="#grids">§12</a></p>
+<p style="margin:.15em 0">each blocks / parameter tables — <a href="#routines">§31</a></p>
+<p style="margin:.15em 0">element manifest — <a href="#parquet">§39</a>, <a href="#glossary">App. C</a></p>
+<p style="margin:.15em 0">Excel (.xlsx) workbooks — <a href="#tables">§15</a></p>
 <p style="margin:.15em 0">exploded views — <a href="#explode">§4</a></p>
-<p style="margin:.15em 0">figures &amp; decorations — <a href="#figures">§27</a></p>
-<p style="margin:.15em 0">file info — <a href="#start">§2</a>, <a href="#faq">§33</a></p>
-<p style="margin:.15em 0">filter — <a href="#filter">§6</a></p>
+<p style="margin:.15em 0">export (rows / mesh / grid) — <a href="#projects">§37</a>, <a href="#meshes">§11</a>, <a href="#grids">§14</a></p>
+<p style="margin:.15em 0">extrude polygons to a solid — <a href="#polygons">§12</a></p>
+<p style="margin:.15em 0">F1 · F2 · F3 — <a href="#factors">§24</a></p>
+<p style="margin:.15em 0">fields (captions) — <a href="#composer">§35</a></p>
+<p style="margin:.15em 0">figures &amp; decorations — <a href="#figures">§34</a></p>
+<p style="margin:.15em 0">file info — <a href="#start">§2</a>, <a href="#faq">§42</a></p>
+<p style="margin:.15em 0">filter display (ghost / outline) — <a href="#ghost">§6</a></p>
 <p style="margin:.15em 0">filter drawer (widgets) — <a href="#filter">§6</a></p>
-<p style="margin:.15em 0">flag / fraction by solid — <a href="#domain">§14</a></p>
+<p style="margin:.15em 0">filter — <a href="#filter">§6</a></p>
+<p style="margin:.15em 0">flag / fraction by solid — <a href="#domain">§16</a></p>
+<p style="margin:.15em 0">georeferencing a mesh — <a href="#placement">§13</a></p>
 <p style="margin:.15em 0">grade shells — <a href="#shells">§9</a></p>
-<p style="margin:.15em 0">grade–tonnage — <a href="#gt">§16</a></p>
-<p style="margin:.15em 0">grids — <a href="#grids">§12</a>, <a href="#formats">App. B</a></p>
+<p style="margin:.15em 0">grade–tonnage — <a href="#gt">§18</a></p>
+<p style="margin:.15em 0">grid export (formats) — <a href="#grids">§14</a>, <a href="#formats">App. B</a></p>
+<p style="margin:.15em 0">grids — <a href="#grids">§14</a>, <a href="#formats">App. B</a></p>
 <p style="margin:.15em 0">hole filter — <a href="#dh">§10</a></p>
-<p style="margin:.15em 0">join (key / spatial) — <a href="#join">§20</a></p>
+<p style="margin:.15em 0">join (key / spatial) — <a href="#join">§23</a></p>
+<p style="margin:.15em 0">key plan — <a href="#composer">§35</a></p>
 <p style="margin:.15em 0">keyboard — <a href="#ref">App. A</a></p>
-<p style="margin:.15em 0">lineage — <a href="#lineage">§24</a></p>
-<p style="margin:.15em 0">linked brushing — <a href="#awin">§15</a></p>
-<p style="margin:.15em 0">materialized columns — <a href="#calc">§7</a>, <a href="#parquet">§30</a></p>
+<p style="margin:.15em 0">KML / KMZ — <a href="#polygons">§12</a>, <a href="#crs">§13</a></p>
+<p style="margin:.15em 0">library (recipes &amp; routines) — <a href="#library">§33</a></p>
+<p style="margin:.15em 0">limit (inside polygons) — <a href="#limit">§12</a>, <a href="#awin">§17</a></p>
+<p style="margin:.15em 0">lineage — <a href="#lineage">§29</a></p>
+<p style="margin:.15em 0">linked brushing — <a href="#awin">§17</a></p>
+<p style="margin:.15em 0">log tracks (drillholes) — <a href="#logs">§10</a></p>
+<p style="margin:.15em 0">materialized columns — <a href="#calc">§7</a>, <a href="#parquet">§39</a></p>
 <p style="margin:.15em 0">measure — <a href="#view">§4</a></p>
-<p style="margin:.15em 0">memory budget / pin cache — <a href="#parquet">§30</a>, <a href="#faq">§33</a></p>
+<p style="margin:.15em 0">memory budget / pin cache — <a href="#parquet">§39</a>, <a href="#faq">§42</a></p>
 <p style="margin:.15em 0">mesh export — <a href="#meshes">§11</a></p>
-<p style="margin:.15em 0">mesh QA / volume — <a href="#meshqa">§23</a></p>
+<p style="margin:.15em 0">mesh QA / volume — <a href="#meshqa">§28</a></p>
 <p style="margin:.15em 0">meshes — <a href="#meshes">§11</a></p>
 <p style="margin:.15em 0">micro:model — <a href="#dev">App. D</a></p>
 <p style="margin:.15em 0">model QA — <a href="#modelqa">§9</a></p>
 <p style="margin:.15em 0">mutually exclusive groups — <a href="#start">§2</a></p>
-<p style="margin:.15em 0">offline / install — <a href="#install">§32</a></p>
+<p style="margin:.15em 0">offline / install — <a href="#install">§41</a></p>
 <p style="margin:.15em 0">OMF (.omf) — <a href="#meshes">§11</a>, <a href="#formats">App. B</a></p>
-<p style="margin:.15em 0">opacity — <a href="#view">§4</a>, <a href="#grids">§12</a></p>
+<p style="margin:.15em 0">opacity — <a href="#view">§4</a>, <a href="#grids">§14</a></p>
 <p style="margin:.15em 0">open dialog / Open as — <a href="#start">§2</a></p>
-<p style="margin:.15em 0">painting a column — <a href="#domain">§14</a></p>
-<p style="margin:.15em 0">Parquet — <a href="#blocks">§9</a>, <a href="#parquet">§30</a>, <a href="#dev">App. D</a></p>
-<p style="margin:.15em 0">phone (review layout) — <a href="#install">§32</a></p>
+<p style="margin:.15em 0">painting a column — <a href="#domain">§16</a></p>
+<p style="margin:.15em 0">Parquet — <a href="#blocks">§9</a>, <a href="#parquet">§39</a>, <a href="#dev">App. D</a></p>
+<p style="margin:.15em 0">phone (review layout) — <a href="#install">§41</a></p>
 <p style="margin:.15em 0">picking / record panel — <a href="#view">§4</a></p>
-<p style="margin:.15em 0">project packs — <a href="#backups">§29</a></p>
-<p style="margin:.15em 0">projects (folders) — <a href="#projects">§28</a></p>
-<p style="margin:.15em 0">Q-Q plot — <a href="#stats">§19</a></p>
+<p style="margin:.15em 0">placement (models, grids, meshes) — <a href="#placement">§13</a></p>
+<p style="margin:.15em 0">plain-language bar (Alt+K) — <a href="#plain">§2</a></p>
+<p style="margin:.15em 0">point cloud → DEM — <a href="#dem">§14</a></p>
+<p style="margin:.15em 0">project packs — <a href="#backups">§38</a></p>
+<p style="margin:.15em 0">projection (max / min / mean) — <a href="#projection">§4</a></p>
+<p style="margin:.15em 0">projection to grid — <a href="#projection">§4</a></p>
+<p style="margin:.15em 0">projects (folders) — <a href="#projects">§37</a></p>
+<p style="margin:.15em 0">Q-Q plot — <a href="#stats">§21</a></p>
+<p style="margin:.15em 0">QGIS clipboard — <a href="#polygons">§12</a></p>
 <p style="margin:.15em 0">ramps — <a href="#view">§4</a></p>
-<p style="margin:.15em 0">recipes — <a href="#recipes">§25</a></p>
-<p style="margin:.15em 0">reconcile (Δ map) — <a href="#join">§20</a></p>
-<p style="margin:.15em 0">reload from disk — <a href="#projects">§28</a></p>
+<p style="margin:.15em 0">recipes — <a href="#recipes">§30</a></p>
+<p style="margin:.15em 0">reconcile (Δ map) — <a href="#join">§23</a></p>
+<p style="margin:.15em 0">reconciliation factors — <a href="#factors">§24</a></p>
+<p style="margin:.15em 0">reload from disk — <a href="#projects">§37</a></p>
 <p style="margin:.15em 0">rename (batch) — <a href="#start">§2</a></p>
-<p style="margin:.15em 0">results row (png · copy · layer · table) — <a href="#awin">§15</a></p>
+<p style="margin:.15em 0">reprojection on read — <a href="#crs">§13</a></p>
+<p style="margin:.15em 0">resource table (composer) — <a href="#xtab">§19</a>, <a href="#composer">§35</a></p>
+<p style="margin:.15em 0">results row (png · copy · layer · table) — <a href="#awin">§17</a></p>
 <p style="margin:.15em 0">rotated block models — <a href="#blocks">§9</a>, <a href="#dev">App. D</a></p>
-<p style="margin:.15em 0">routine editor / run tracker — <a href="#routines">§26</a></p>
-<p style="margin:.15em 0">routines — <a href="#routines">§26</a></p>
-<p style="margin:.15em 0">scatter plot — <a href="#stats">§19</a></p>
-<p style="margin:.15em 0">scenes — <a href="#projects">§28</a></p>
-<p style="margin:.15em 0">scope (all / filt / sel) — <a href="#awin">§15</a></p>
-<p style="margin:.15em 0">Sealed — <a href="#sealed">§31</a>, <a href="#glossary">App. C</a></p>
-<p style="margin:.15em 0">section series — <a href="#figures">§27</a></p>
+<p style="margin:.15em 0">rotated grids — <a href="#grids">§14</a></p>
+<p style="margin:.15em 0">routine editor / run tracker — <a href="#routines">§31</a></p>
+<p style="margin:.15em 0">routines — <a href="#routines">§31</a></p>
+<p style="margin:.15em 0">run records (run.json) — <a href="#checks">§32</a></p>
+<p style="margin:.15em 0">scatter plot — <a href="#stats">§21</a></p>
+<p style="margin:.15em 0">scenes — <a href="#projects">§37</a></p>
+<p style="margin:.15em 0">scope (all / filt / sel) — <a href="#awin">§17</a></p>
+<p style="margin:.15em 0">Sealed — <a href="#sealed">§40</a>, <a href="#glossary">App. C</a></p>
+<p style="margin:.15em 0">section lines → strings — <a href="#polygons">§12</a></p>
+<p style="margin:.15em 0">section series — <a href="#figures">§34</a></p>
 <p style="margin:.15em 0">sections — <a href="#view">§4</a></p>
-<p style="margin:.15em 0">selection (rectangle / lasso / through) — <a href="#domain">§14</a></p>
-<p style="margin:.15em 0">selection → column — <a href="#domain">§14</a></p>
-<p style="margin:.15em 0">sidecars — <a href="#parquet">§30</a>, <a href="#glossary">App. C</a></p>
-<p style="margin:.15em 0">stats table — <a href="#stats">§19</a></p>
-<p style="margin:.15em 0">sub-blocked models — <a href="#blocks">§9</a>, <a href="#join">§20</a>, <a href="#faq">§33</a></p>
-<p style="margin:.15em 0">surfaces (relief / drape / flat) — <a href="#grids">§12</a></p>
-<p style="margin:.15em 0">swath / drift — <a href="#swath">§18</a></p>
-<p style="margin:.15em 0">tables (no geometry) — <a href="#tables">§13</a></p>
-<p style="margin:.15em 0">trace (section) — <a href="#view">§4</a>, <a href="#glossary">App. C</a></p>
+<p style="margin:.15em 0">selection (rectangle / lasso / through) — <a href="#domain">§16</a></p>
+<p style="margin:.15em 0">selection → column — <a href="#domain">§16</a></p>
+<p style="margin:.15em 0">shapefiles — <a href="#polygons">§12</a>, <a href="#crs">§13</a></p>
+<p style="margin:.15em 0">sidecars — <a href="#parquet">§39</a>, <a href="#glossary">App. C</a></p>
+<p style="margin:.15em 0">small multiples — <a href="#composer">§35</a></p>
+<p style="margin:.15em 0">software rendering — <a href="#software">§2</a></p>
+<p style="margin:.15em 0">stats table — <a href="#stats">§21</a></p>
+<p style="margin:.15em 0">stereonet — <a href="#structure">§25</a></p>
+<p style="margin:.15em 0">strings &amp; polygons — <a href="#polygons">§12</a></p>
+<p style="margin:.15em 0">structural analysis (outcrop mesh) — <a href="#structure">§25</a></p>
+<p style="margin:.15em 0">sub-block QA (tiling) — <a href="#modelqa">§9</a></p>
+<p style="margin:.15em 0">sub-blocked models — <a href="#blocks">§9</a>, <a href="#join">§23</a>, <a href="#faq">§42</a></p>
+<p style="margin:.15em 0">surfaces (relief / drape / flat) — <a href="#grids">§14</a></p>
+<p style="margin:.15em 0">swath / drift — <a href="#swath">§20</a></p>
+<p style="margin:.15em 0">tables (no geometry) — <a href="#tables">§15</a></p>
+<p style="margin:.15em 0">templates (figures) — <a href="#composer">§35</a></p>
 <p style="margin:.15em 0">theme (custom) — <a href="#what">§1</a></p>
-<p style="margin:.15em 0">turntable video — <a href="#figures">§27</a></p>
+<p style="margin:.15em 0">title block — <a href="#composer">§35</a></p>
+<p style="margin:.15em 0">trace (section) — <a href="#view">§4</a>, <a href="#glossary">App. C</a></p>
+<p style="margin:.15em 0">turntable video — <a href="#figures">§34</a></p>
 <p style="margin:.15em 0">undo — <a href="#windows">§5</a></p>
-<p style="margin:.15em 0">units (declared) — <a href="#awin">§15</a>, <a href="#gt">§16</a></p>
-<p style="margin:.15em 0">validation vs drillholes — <a href="#validate">§22</a></p>
+<p style="margin:.15em 0">units (declared) — <a href="#awin">§17</a>, <a href="#gt">§18</a></p>
+<p style="margin:.15em 0">validation vs drillholes — <a href="#validate">§27</a></p>
+<p style="margin:.15em 0">vector sections — <a href="#composer">§35</a></p>
 <p style="margin:.15em 0">vertical exaggeration — <a href="#start">§2</a></p>
 <p style="margin:.15em 0">.wfr wireframes — <a href="#meshes">§11</a></p>
 <p style="margin:.15em 0">widgets (filter) — <a href="#filter">§6</a></p>
 <p style="margin:.15em 0">windows — <a href="#windows">§5</a></p>
-<p style="margin:.15em 0">zebra — <a href="#swath">§18</a></p>
+<p style="margin:.15em 0">zebra — <a href="#swath">§20</a></p>
 </div>
 
 
