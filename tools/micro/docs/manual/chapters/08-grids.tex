@@ -194,6 +194,7 @@ setting & meaning \\ \midrule
 \ui{statistic} & what each node keeps of the points in its cell: \ui{min Z} (the ground under vegetation), \ui{mean Z}, \ui{max Z} (a crest, the canopy) or \ui{count} (point density) \\
 \ui{empties} & nodes no point fell on: \ui{leave blank}, \ui{nearest (flat)} or \ui{planar trend}, with \ui{holes only} to fill the gaps inside the cloud and leave beyond its edge blank \\
 \ui{only} & an expression keeping the points to grid — \code{Classification == 2} for a LAS file's ground class. Blank: the layer's filter box if it holds one, else every point \\
+\ui{inside} & a polygon limit (\cref{sec:polygons-limit}): only the points inside are gridded, the lattice shrinks to the polygons' extent, and a node whose cell the polygons do not reach stays blank, even after a fill — a DEM of the lease, not of the whole flight \\
 \bottomrule
 \end{tabularx}
 \caption{The \ui{grid points} window. \ui{Grid} builds the DEM.}\label{tab:grids-points}
@@ -233,6 +234,9 @@ With \ui{Δz layer} ticked, the difference opens as a grid layer (\file{dz\_<aft
 \begin{tip}
 Grid both surveys at one cell with nodes on round multiples (\cref{sec:grids-points}) and the cut and fill are exact sums over the nodes, with no interpolation between two lattices.
 \end{tip}
+
+\subsection{Inside a perimeter}\index{cut and fill!perimeter}
+The \ui{perimeter} row limits the volume to the ground inside polygons: a pit limit, a stockpile toe, this month's mining polygon (\cref{sec:polygons-limit}). micro samples only the polygons' plan extent, and each node counts for the share of its cell inside the outline, the cell clipped to the polygon exactly. So the volume is exact at the edges, not stepped by the cell: a constant $\Delta z$ times the polygon's area, to the last digit. The readout adds \ui{perimeter}, the polygons' own plan area, beside \ui{area}, the part of it both surfaces cover; when the two differ, part of the perimeter was not surveyed both times. The $\Delta z$ layer is cut to the perimeter too. In a routine the setting is \code{limit}, and the values gain \code{perimeter\_area}.
 
 The results row is the shared one (\cref{sec:analysis-results}): \ui{⇥ figure} puts the chart and the table on the composer page, and the composer's \ui{Refresh} runs the numbers again without making a second layer. In a routine the tool is \code{cutfill} (\cref{tool:cutfill}); its table is keyed by \col{quantity} (\code{cut}, \code{fill}, \code{net}) with \col{volume} and \col{area}, and its values are \code{cut}, \code{fill}, \code{net}, \code{area}, \code{cut\_area}, \code{fill\_area}, \code{nodes}, \code{cell}, \code{dz\_min} and \code{dz\_max}:
 

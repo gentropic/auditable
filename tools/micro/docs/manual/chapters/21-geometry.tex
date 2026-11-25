@@ -19,6 +19,7 @@ The \ui{geometry} list at the top of the dialog holds every layer that can class
 \begin{description}
 \item[A mesh held exactly] — a wireframe from \file{.msh}, \file{.obj}, \file{.dxf}, a Datamine pair, a small \file{.ply} (\cref{ch:meshes}). A very large mesh drawn \emph{streamed} keeps no triangles on the page and is not offered; convert it first with \menu{Data \& file>Convert to exact} on its menu.
 \item[A grid] — a GeoTIFF, Surfer or ESRI ASCII surface (\cref{ch:grids}), marked ▦ in the list.
+\item[An extruded polygon] — a pit limit, lease or blast outline made a closed solid by \menu{Tools>Extrude polygons to a solid…} (\cref{sec:polygons-extrude}): a prism between two levels, along a direction, or between two surfaces. It is checked watertight and outward before it opens, so it always reads as a closed solid.
 \end{description}
 
 When you pick a mesh, micro reads its topology and a line under the list tells you what it found. That line decides the vocabulary of the rest of the dialog:
@@ -133,6 +134,10 @@ setting & meaning & default \\ \midrule
 \end{table}
 
 Probes are per axis because blocks are rarely cubes. A 10 × 10 × 5 m bench block is well served by 3 × 3 × 2; a model that must resolve a thin dyke may want 10 × 10 × 10, at a proportional cost in time. With a closed solid the fraction is always the part \emph{inside}, so the \ui{which} row disappears; with a surface you still choose below, above or between.
+
+\begin{note}
+A \emph{vertical prism} --- a polygon extruded between two levels in this session --- is not probed. Its inside factorizes: the share of a block inside it is the share of the block's column inside the polygon in plan, times the share of the block's height between the two levels. micro clips each column of an axis-aligned regular model to the polygon outline and multiplies, so every fraction is exact rather than sampled, and the \ui{probes} setting does not apply; the status line names the engine \ui{prism:exact}. A blast polygon extruded over its bench gives the blocks on its edge exactly the part of them in the shot. The column stores each fraction to 1/255 (the same as every fraction column), so the tonnage inside agrees with area × height × density to that storage step. A prism along a direction, a solid between surfaces, a rotated or sub-blocked model, and a prism reopened from a saved project are probed as above.
+\end{note}
 
 The column is numeric, wears a \% badge in the column lists, and is the natural weight for everything downstream. A grade–tonnage series weighted by \code{SG * IN\_ORE\_SHELL} reports the tonnage inside the shell with the edge blocks counted for the part that is in (\cref{ch:gt}).
 

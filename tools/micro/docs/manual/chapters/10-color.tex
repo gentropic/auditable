@@ -299,7 +299,7 @@ For every node of a plan lattice micro takes the node's vertical line through th
 \end{tabularx}
 \end{center}
 
-The density is a column or one value in t/m³; without one, \ui{tonnes} is a volume in m³. The lattice defaults to the model's finest plan pitch with nodes on the block centres, so for a regular model every node is one column of blocks; a rotated model gets nodes on round multiples of the cell. The layer's filter applies when it has one, and blanks never count. The tool is \code{projectgrid} in routines, with the same settings (\cref{ch:routines}); the totals of a \ui{tonnes} or \ui{metal} grid are on the status line, and in the tool's values.
+The density is a column or one value in t/m³; without one, \ui{tonnes} is a volume in m³. The lattice defaults to the model's finest plan pitch with nodes on the block centres, so for a regular model every node is one column of blocks; a rotated model gets nodes on round multiples of the cell. The layer's filter applies when it has one, and blanks never count. An \ui{inside} row limits it to polygons (\cref{sec:polygons-limit}): only the blocks whose centroid lies inside count, and the nodes outside the polygons stay blank. The tool is \code{projectgrid} in routines, with the same settings (\cref{ch:routines}); the totals of a \ui{tonnes} or \ui{metal} grid are on the status line, and in the tool's values.
 
 \section{Reusing a look}\label{sec:color-copy}
 Once the classes, colors and no-data choices are right on one layer, you should not have to build them again. Right-click the layer and open \menu{Display>Style}:

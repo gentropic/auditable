@@ -111,6 +111,9 @@ In grade–tonnage, the cross-tab and scatter, clicking a scope button runs imme
 
 A scope belongs to the session, not to the data: a selection is not saved with a recipe. So routines accept only scope \code{all} (\cref{sec:analysis-routine}); to restrict a routine step, give it a filter expression.
 
+\subsection{Inside a polygon}\label{sec:analysis-limit}\index{limit (polygon)}
+Under the scope row, \ui{inside} limits the pass to what lies inside polygons in plan: pick a strings \& polygons layer (\cref{ch:polygons}), then all its polygons, one of them, or the ones selected in 3D. It adds to the scope rather than replacing it: \ui{filt} with \ui{inside pit limit} counts the filtered blocks inside the pit. A block counts by its centroid; for the share of the blocks the outline cuts, extrude the polygon and weight by its fraction (\cref{sec:polygons-extrude}). The subtitle names the limit with the scope, as in \emph{filtered · inside pit\_limits.shp · phase 2}. Grade–tonnage, swath, stats, contact analysis and the factors have the row; in a routine the setting is \code{limit}, which unlike a selection \emph{is} part of the file (\cref{sec:polygons-limit}).
+
 \section{Series}\label{sec:analysis-series}
 Grade–tonnage and swath plot \term{series}. One series is one curve, and it is defined by five things:
 

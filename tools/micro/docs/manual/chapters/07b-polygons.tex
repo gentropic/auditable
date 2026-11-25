@@ -3,7 +3,8 @@
 \begin{goals}
 \textbf{In this chapter} you open pit limits, lease boundaries, blast outlines and mapped contacts
 as features with their attributes, from CSV string files, WKT, shapefiles and GeoJSON; copy them to
-and from QGIS; draw and edit a polygon in plan; and export them back out.
+and from QGIS; draw and edit a polygon in plan; limit any analysis to what lies inside a polygon;
+extrude a polygon to a closed solid; and export them back out.
 \end{goals}
 
 A \term{strings \& polygons} layer\index{polygons}\index{strings!with attributes} holds lines and
@@ -140,6 +141,103 @@ Draw a limit over the demo model.
 \item Right-click \ui{drawn polygons} and choose \menu{Display>Fill polygons}.
 \item Choose \menu{Geometry>Edit vertices}, drag one corner outward, then press \key{Ctrl}+\key{Z}
   to put it back and \key{Enter} to finish.
+\end{enumerate}
+\end{tryit}
+
+\section{A polygon as a limit}\label{sec:polygons-limit}\index{polygons!as a limit}\index{limit (polygon)}
+
+Any analysis can be limited to what lies inside polygons in plan: the tonnes inside the pit limit,
+the cut and fill inside a stockpile toe, a DEM of the lease only. The windows of grade--tonnage,
+swath, statistics, contact analysis and the factors have an \ui{inside} row under the scope; cut and
+fill calls it \ui{perimeter}; the point-cloud DEM and the projection to grid have it in their dialogs.
+Pick a strings \& polygons layer, then \ui{all polygons}, one feature, or \ui{the selected} (the
+features you selected in 3D). The limit adds to the scope: \ui{filt} and \ui{inside pit} together
+keep the filtered blocks inside the pit.
+
+What counts as inside depends on what the analysis reads, and micro is exact about which:
+
+\begin{itemize}
+\item A \textbf{record} --- a block, a point, a drillhole interval --- is inside when its plan $x, y$
+  is. A block counts by its \emph{centroid}: a block the boundary cuts counts whole or not at all. For
+  the share of a cut block, extrude the polygon (\cref{sec:polygons-extrude}) and take the fraction
+  inside the solid (\cref{ch:geometry}).
+\item A \textbf{grid node} (cut and fill, the DEM) counts by the share of its cell the polygons cover.
+  The cell is clipped to the polygon outline exactly, so a volume inside a perimeter is exact at the
+  edges: a constant $\Delta z$ of 15~m over a 18\,793.525~m² pit gives 281\,902.875~m³, to the
+  last digit.
+\end{itemize}
+
+Holes are left out and multipart features count every part. In a recipe or a routine the setting is
+\code{limit}:
+
+\begin{lstlisting}[language=yaml]
+- tool: "gt"
+  with:
+    layer: "deposit.csv"
+    series:
+      - col: "FE"
+        weight: "SG"
+    cutoffs:
+      - 50
+      - 60
+    limit:
+      layer: "pit_limits.shp"
+      feature: "phase 2"
+\end{lstlisting}
+
+\code{feature} matches a feature's id or the value of any of its attributes; \code{where} keeps the
+features an expression over their attributes keeps (\code{where: "BENCH == 850"}). A routine cannot
+use \code{selected: true}, because a selection is not saved with it. Lineage records the limit.
+
+\section{Extruding to a solid}\label{sec:polygons-extrude}\index{polygons!extruding}\index{extrude}
+
+\menu{Tools>Extrude polygons to a solid…} (also on the layer's \menu{Geometry} menu) turns polygons
+into a closed solid mesh layer. The by-solid tools of \cref{ch:geometry} take it like any other
+solid: select, flag, fraction, assign domains, and the factors' volumes. Three modes:
+
+\begin{description}
+\item[Between two levels] (a z-range prism): the polygon from $z_0$ to $z_1$, walls straight up. A
+  blast from the bench floor to its crest, a lease to a depth.
+\item[Along a direction] (an oriented prism): the polygon at its own vertices' elevations, swept along
+  a trend and plunge (or a vector) for a length.
+\item[Between two surfaces]: the walls follow the polygon and the caps follow a top and a bottom
+  surface --- a grid, a mesh (its top), or a level. The cap is refined until it stays within the
+  \ui{tolerance} of its surface; the deviation reached goes into the layer's lineage. Where the two
+  surfaces cross, the solid pinches to nothing there.
+\end{description}
+
+\ui{one per polygon} makes a layer per feature, which is what assign domains wants. Every solid is
+checked before it opens: each edge shared by exactly two triangles, all of them facing out. A solid
+that fails (an outline that crosses itself) is refused with the count of bad edges. A re-run replaces
+the solid it made before.
+
+A z-range prism has a further property. On a regular block model, its \ui{fraction inside} is not
+sampled: micro clips each block column to the polygon and multiplies by the block's overlap in $z$, so
+every block's fraction is exact. This holds for the session; a solid reopened from a project is
+sampled like any mesh. The routine tool is \code{extrude}:
+
+\begin{lstlisting}[language=yaml]
+- tool: "extrude"
+  with:
+    polygons: "blasts.csv"
+    feature: "B12"
+    mode: "zrange"
+    z0: 840
+    z1: 850
+    name: "shot B12"
+\end{lstlisting}
+
+\begin{tryit}
+Grade and tonnes in a shot.
+\begin{enumerate}
+\item With the demo project open, draw a polygon over part of the model (\cref{sec:polygons-draw}) and
+  name it \code{B12}.
+\item Choose \menu{Tools>Extrude polygons to a solid…}, keep \ui{between two levels}, set the levels
+  to one bench, and press \ui{Extrude}.
+\item Right-click the new solid, choose \menu{Geometry>Select by this solid…}, set \ui{do} to
+  \ui{fraction column} for \file{deposit.csv}, and name the column \col{SHOT}.
+\item Open grade--tonnage with the density \code{SG * SHOT}: the curve is the shot's tonnes and
+  grade, the blocks on its edge counted by their share.
 \end{enumerate}
 \end{tryit}
 
