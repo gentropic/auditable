@@ -1,0 +1,33 @@
+{
+  "name": "@gcu/proj",
+  "version": "0.1.0",
+  "description": "Coordinate reference systems for Sealed (offline, no-network) tools: proj4js vendored and pinned, the full EPSG table (every projected and geographic-2D CRS with a proj4 definition, names and areas of use) inflated on first use, published datum-shift overrides, a Natural Earth world outline, and transforms that state their path and accuracy.",
+  "type": "module",
+  "main": "./src/main.js",
+  "exports": {
+    ".": "./src/main.js",
+    "./bundled": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "index.js",
+    "vendor",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "node build.js"
+  },
+  "keywords": ["crs", "epsg", "proj4", "reprojection", "datum", "helmert", "sirgas", "utm", "gis", "auditable", "gcu"],
+  "license": "MIT",
+  "author": "Arthur Endlein Correia",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gentropic/auditable.git",
+    "directory": "ext/proj"
+  },
+  "homepage": "https://github.com/gentropic/auditable/tree/main/ext/proj",
+  "bugs": {
+    "url": "https://github.com/gentropic/auditable/issues"
+  }
+}

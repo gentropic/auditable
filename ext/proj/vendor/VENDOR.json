@@ -1,0 +1,27 @@
+{
+  "proj4": {
+    "version": "2.22.0",
+    "file": "dist/proj4.js",
+    "sha256": "e1313a6b743e8a1aca0da60b4e0b781db67c04736a4c2a65eea15d638412f799",
+    "bytes": 129729,
+    "licence": "MIT",
+    "bundles": [
+      "proj4",
+      "wkt-parser",
+      "mgrs"
+    ]
+  },
+  "epsg-index": {
+    "version": "2.0.0",
+    "file": "all.json",
+    "sha256": "205251acf718ff94d02c831b39f81a1048c2bddccead1905f735c5f4a26662f2",
+    "licence": "ISC",
+    "count": 6983
+  },
+  "world-atlas": {
+    "version": "2.0.2",
+    "file": "land-110m.json",
+    "sha256": "ead5f68119c49a9250902e7da303bcb209341bbb8fefe7369a439b48b704658a",
+    "licence": "ISC (packaging); data public domain"
+  }
+}
