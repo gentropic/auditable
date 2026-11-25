@@ -1,9 +1,14 @@
 name: CI
 
-# Launch-window insurance: every push/PR runs the committed suites so a deploy
-# is never guarded by discipline alone. Fast library layer first (Node's test
-# runner, no browser), then the built-artifact smokes (Playwright + headless
-# Chromium WebGL via SwiftShader). The slow examples-smoke (~9 min) stays manual.
+# Every push/PR: the library layer (Node's test runner, no browser) plus the
+# cheap built-artifact checks (does micro boot, is lamina still Sealed).
+#
+# The DRAWING smokes (micro-smoke, micro-smoke2, host, mobile, shell, wfr,
+# structure, lamina host, condenser offsets) are NOT run here: the runner has no
+# GPU, draws on SwiftShader, and micro switches itself into software-rendering
+# mode there, so CI was testing the wrong path in ~2 h a run. They are a
+# release gate run on a real GPU (a dev machine or the lab) before every
+# release — see the release runbook. examples-smoke stays manual too.
 
 on:
   push:
@@ -39,15 +44,12 @@ jobs:
       - name: library + engine tests (node --test)
         run: node --no-warnings --test --test-concurrency=1 "test/!(adder-wasm).test.*"
 
-  # ── the app-integration smokes: built artifacts in headless Chromium ──
-  smoke:
+  # ── the built artifacts boot (packaging breaks), no drawing ──
+  artifacts:
     # pinned: ubuntu-latest became 26.04, which Playwright's Chromium install
     # doesn't support yet (2026-10-28). Unpin when Playwright catches up.
     runs-on: ubuntu-24.04
-    # the healthy job runs ~45 min on the 2-core software-GL runner, and every
-    # smoke runs even after a failure; a stalled job should fail within two
-    # hours, not hit GitHub's 6 h default
-    timeout-minutes: 120
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v4
@@ -57,44 +59,15 @@ jobs:
       - run: npm ci
       - name: install Chromium (+ system deps)
         run: npx playwright install --with-deps chromium
-      - name: build micro.html (the smoke boots the deploy artifact)
+      - name: build micro.html
         id: build
         run: node build.js --target=micro
-      # every smoke runs even when an earlier one failed (the job still fails), so one
-      # run reports every failure instead of stopping at the first
       - name: micro import cycles — no load-time use between modules that import each other
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: npm run test:micro:cycles
-      - name: micro smoke — features
+      - name: micro boots — built micro.html + the dev tree
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        run: npm run test:micro
-      - name: micro smoke 2 — data-integrity + persistence
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        run: npm run test:micro2
-      - name: micro smoke 2 against the BUILT micro.html (the registry bundle)
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        run: npm run test:micro2:built
-      - name: micro mobile smoke — review mode (dev tree + built)
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        run: npm run test:micro:mobile
-      - name: micro shell smoke — lead-acid intake / export / tree
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        run: npm run test:micro:shell
-      - name: micro wfr smoke — .wfr convert / pack / export
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        run: npm run test:micro:wfr
-      - name: micro host smoke — addLayer, load results, quoted CSV, Parquet sub-blocks, rotated models
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        run: npm run test:micro:host
-      - name: micro structure smoke — capivaras (promote, wand, planes) (dev tree + built)
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        run: npm run test:micro:structure
+        run: npm run test:micro:boot
       - name: lamina built smoke — ship artifact + Sealed net gate
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        if: ${{ !cancelled() }}
         run: node test/lamina-built-smoke.mjs
-      - name: lamina host smoke — Parquet tables + window.lamina (dev tree + the built file)
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        run: npm run test:lamina:host
-      - name: condenser layer offsets — every pipeline, pick, section, resolve
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        run: npm run test:condenser:offset
