@@ -108,6 +108,40 @@ export function toWorldCoords(coords, frame, { stride = 3 } = {}) {
   return out;
 }
 
+// ── Axis values, boxes, planes, rays ────────────────────────────────────────────
+// The other shapes a coordinate takes once it leaves a point. A frame is a pure
+// translation, so each is the origin subtracted (or added) where it belongs — and the
+// PLANE is the one that is not obvious: n·p = d becomes n·p' = d − n·origin, whatever
+// the normal. Directions (a ray's, a normal) never change. Every function is pure and
+// returns a new value; `null` / non-finite entries pass through untouched (an unset clip
+// bound stays unset).
+
+// one coordinate along axis 0 / 1 / 2 (x / y / z): an elevation, an easting, a section's
+// position along an axis
+export function axisToLocal(v, axis, frame) { return v == null || !Number.isFinite(+v) ? v : +v - (frame.origin[axis] || 0); }
+export function axisToWorld(v, axis, frame) { return v == null || !Number.isFinite(+v) ? v : +v + (frame.origin[axis] || 0); }
+
+// a [lo, hi] range along one axis (a colour clip on elevation, a z-range); either end may be null
+export const rangeToLocal = (r, axis, frame) => [axisToLocal(r[0], axis, frame), axisToLocal(r[1], axis, frame)];
+export const rangeToWorld = (r, axis, frame) => [axisToWorld(r[0], axis, frame), axisToWorld(r[1], axis, frame)];
+
+// a 3D box as a flat [minX, minY, minZ, maxX, maxY, maxZ] (what renderers and bboxes use)
+export function boxToLocal(b, frame) { const o = frame.origin; return [b[0] - (o[0] || 0), b[1] - (o[1] || 0), b[2] - (o[2] || 0), b[3] - (o[0] || 0), b[4] - (o[1] || 0), b[5] - (o[2] || 0)]; }
+export function boxToWorld(b, frame) { const o = frame.origin; return [b[0] + (o[0] || 0), b[1] + (o[1] || 0), b[2] + (o[2] || 0), b[3] + (o[0] || 0), b[4] + (o[1] || 0), b[5] + (o[2] || 0)]; }
+
+// a plan box [minX, minY, maxX, maxY] (a grid's or a polygon's extent)
+export function planBoxToLocal(b, frame) { const o = frame.origin; return [b[0] - (o[0] || 0), b[1] - (o[1] || 0), b[2] - (o[0] || 0), b[3] - (o[1] || 0)]; }
+export function planBoxToWorld(b, frame) { const o = frame.origin; return [b[0] + (o[0] || 0), b[1] + (o[1] || 0), b[2] + (o[0] || 0), b[3] + (o[1] || 0)]; }
+
+// a plane n·p = d (n need not be unit): the normal is unchanged, the offset moves by n·origin
+const dotO = (n, o) => n[0] * (o[0] || 0) + n[1] * (o[1] || 0) + (n.length > 2 ? n[2] * (o[2] || 0) : 0);
+export function planeToLocal(n, d, frame) { return d - dotO(n, frame.origin); }
+export function planeToWorld(n, d, frame) { return d + dotO(n, frame.origin); }
+
+// a ray { o, d }: its origin moves, its direction does not
+export function rayToLocal(ray, frame) { return { o: toLocal(ray.o, frame), d: ray.d.slice() }; }
+export function rayToWorld(ray, frame) { return { o: toWorld(ray.o, frame), d: ray.d.slice() }; }
+
 // ── Choosing an origin ──────────────────────────────────────────────────────────
 
 // Pick a sticky origin from world-coordinate bounds. Default strategy 'centroid'

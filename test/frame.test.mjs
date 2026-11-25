@@ -155,3 +155,44 @@ test('canonCrs / sameProjection: EPSG codes compare by identity, not spelling', 
   assert.equal(frameEq(a, c), true);                      // same projection + origin + units
   assert.equal(sameProjection(a, makeFrame({ origin: [0, 0, 0], crs: 'EPSG:32723' })), false);  // genuinely different still blocks
 });
+
+// ── axis values, ranges, boxes, planes, rays (0.2.0) ──
+test('axis values and ranges move by their axis\'s origin; unset ends stay unset', async () => {
+  const F = await import('../ext/frame/src/frame.js');
+  const f = F.makeFrame({ origin: [612000, 7765000, 650] });
+  assert.equal(F.axisToLocal(500, 2, f), -150);
+  assert.equal(F.axisToWorld(-150, 2, f), 500);
+  assert.equal(F.axisToLocal(null, 2, f), null);
+  assert.deepEqual(F.rangeToLocal([500, null], 2, f), [-150, null]);
+  assert.deepEqual(F.rangeToWorld(F.rangeToLocal([400, 900], 2, f), 2, f), [400, 900]);
+});
+
+test('boxes: 3D and plan, round trip exactly at UTM magnitude', async () => {
+  const F = await import('../ext/frame/src/frame.js');
+  const f = F.makeFrame({ origin: [612000, 7765000, 650] });
+  const b = [612010.5, 7765020.25, 400, 612200, 7765150, 912.05];
+  assert.deepEqual(F.boxToLocal(b, f), [10.5, 20.25, -250, 200, 150, 262.04999999999995]);
+  assert.deepEqual(F.boxToWorld(F.boxToLocal(b, f), f), b);
+  assert.deepEqual(F.planBoxToLocal([612010, 7765020, 612200, 7765150], f), [10, 20, 200, 150]);
+  assert.deepEqual(F.planBoxToWorld([10, 20, 200, 150], f), [612010, 7765020, 612200, 7765150]);
+});
+
+test('a plane keeps its normal and moves its offset by n·origin — any normal, not just an axis', async () => {
+  const F = await import('../ext/frame/src/frame.js');
+  const f = F.makeFrame({ origin: [612000, 7765000, 650] });
+  const p = [612030, 7765040, 500];                                   // a world point ON the plane
+  for (const n of [[0, 0, 1], [1, 0, 0], [Math.SQRT1_2, Math.SQRT1_2, 0], [0.3, -0.4, 0.866]]) {
+    const dW = n[0] * p[0] + n[1] * p[1] + n[2] * p[2];
+    const dL = F.planeToLocal(n, dW, f), q = F.toLocal(p, f);
+    assert.ok(Math.abs(n[0] * q[0] + n[1] * q[1] + n[2] * q[2] - dL) < 1e-6, `normal ${n}: the local point is on the local plane`);
+    assert.ok(Math.abs(F.planeToWorld(n, dL, f) - dW) < 1e-6, `normal ${n}: round trip`);
+  }
+});
+
+test('a ray: the origin moves, the direction does not', async () => {
+  const F = await import('../ext/frame/src/frame.js');
+  const f = F.makeFrame({ origin: [612000, 7765000, 650] });
+  const r = F.rayToLocal({ o: [612100, 7765050, 900], d: [0, 0.6, -0.8] }, f);
+  assert.deepEqual(r, { o: [100, 50, 250], d: [0, 0.6, -0.8] });
+  assert.deepEqual(F.rayToWorld(r, f), { o: [612100, 7765050, 900], d: [0, 0.6, -0.8] });
+});

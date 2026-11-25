@@ -1,6 +1,6 @@
 {
   "name": "@gcu/frame",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "The coordinate-frame contract for the GCU geometry stack: a tiny zero-dependency value type (origin offset + CRS descriptor + units) plus pure world↔local transforms. Keeps math and rendering off large projected coordinates (the float32 wall and catastrophic-cancellation failures at UTM magnitudes) by working in a small local frame with the offset held as explicit, inspectable provenance. Names a CRS; deliberately never reprojects.",
   "type": "module",
   "main": "./src/frame.js",

@@ -51,6 +51,12 @@ to avoid clashing with a reprojection layer's *working CRS* — a different axis
 | `WORLD` | identity frame (origin at world zero) |
 | `toLocal(pt, f)` / `toWorld(pt, f)` | single point `[x,y]` or `[x,y,z]` |
 | `toLocalCoords(buf, f, {stride})` / `toWorldCoords(...)` | bulk flat `x,y,z,…` buffer → new `Float64Array` |
+| `axisToLocal(v, axis, f)` / `axisToWorld(...)` | one coordinate on axis 0/1/2 (an elevation, an easting); `null` passes through |
+| `rangeToLocal([lo, hi], axis, f)` / `rangeToWorld(...)` | a range on one axis (a colour clip, a z-range); either end may be `null` |
+| `boxToLocal(b, f)` / `boxToWorld(...)` | a 3D box `[minX, minY, minZ, maxX, maxY, maxZ]` |
+| `planBoxToLocal(b, f)` / `planBoxToWorld(...)` | a plan box `[minX, minY, maxX, maxY]` |
+| `planeToLocal(n, d, f)` / `planeToWorld(...)` | a plane `n·p = d`: the normal is unchanged, `d` moves by `n·origin` (any normal) |
+| `rayToLocal({o, d}, f)` / `rayToWorld(...)` | a ray: the origin moves, the direction doesn't |
 | `originFromBounds(bounds, {round, strategy})` | sticky origin from `{min, max}` (centroid/floor, rounded) |
 | `frameFromBounds(bounds, opts)` | a Frame straight from bounds |
 | `extentTolerance(f, extent, {rel})` | frame-relative ε for constructed-geometry tests |

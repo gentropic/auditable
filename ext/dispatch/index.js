@@ -1051,7 +1051,6 @@ function trainSession({ vocab, tools, seed = 42, targets, refusalTarget, extraRe
   return { dispatcher, weights, corpus, stats: { corpus: corpus.length, aligned: aligned.length, dropped, excluded } };
 }
 
-
 // ── src/grammar/earley.js ──
 
 // earley.mjs — Earley recogniser + packed semantic evaluation, with optional error-correcting repairs.
