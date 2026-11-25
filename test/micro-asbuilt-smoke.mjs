@@ -71,6 +71,40 @@ const mkPage = async () => {
   await p.waitForFunction(() => window._micro && window._micro.addLayer, null, { timeout: 30000 });
   return p;
 };
+// a single-IFD float32 GeoTIFF with separate column / row spacing (PixelIsPoint: the tiepoint is
+// node (0,0) at x0, y0; rows go south by dy)
+function geoTiffDxDy(W, H, dx, dy, x0, y0, val) {
+  const f32le = (vals) => { const b = new Uint8Array(vals.length * 4), v = new DataView(b.buffer); vals.forEach((x, i) => v.setFloat32(i * 4, x, true)); return b; };
+  const dblle = (vals) => { const b = new Uint8Array(vals.length * 8), v = new DataView(b.buffer); vals.forEach((x, i) => v.setFloat64(i * 8, x, true)); return b; };
+  const img = f32le(Array.from({ length: W * H }, (_, i) => val((i / W) | 0, i % W)));
+  // GeoKeyDirectory: version 1.1.0, 1 key — GTRasterTypeGeoKey (1025) = 2 (RasterPixelIsPoint)
+  const keys = [1, 1, 0, 1, 1025, 0, 1, 2];
+  const defs = [
+    [256, 3, 1, [W]], [257, 3, 1, [H]], [258, 3, 1, [32]], [259, 3, 1, [1]], [262, 3, 1, [1]],
+    [273, 4, 1, 'IMG'], [277, 3, 1, [1]], [278, 3, 1, [H]], [279, 4, 1, [img.length]], [339, 3, 1, [3]],
+    [33550, 12, 3, dblle([dx, dy, 0])], [33922, 12, 6, dblle([0, 0, 0, x0, y0, 0])], [34735, 3, keys.length, keys],
+  ].sort((a, b) => a[0] - b[0]);
+  const headLen = 8 + 2 + defs.length * 12 + 4;
+  const u16 = (a, v) => a.push(v & 255, v >> 8), u32 = (a, v) => a.push(v & 255, (v >>> 8) & 255, (v >>> 16) & 255, (v >>> 24) & 255);
+  let tailOff = headLen; const body = [], tails = [];
+  u16(body, defs.length);
+  for (const [tag, type, count, v] of defs) {
+    u16(body, tag); u16(body, type); u32(body, count);
+    if (v === 'IMG') { u32(body, 0); continue; }
+    let vb = v;
+    if (Array.isArray(v)) { const a = []; for (const x of v) (type === 3 ? u16 : u32)(a, x); vb = new Uint8Array(a); }
+    if (vb.length <= 4) body.push(...vb, ...new Array(4 - vb.length).fill(0));
+    else { u32(body, tailOff); tails.push(vb); tailOff += vb.length; }
+  }
+  u32(body, 0);
+  const imgOff = tailOff;
+  const file = new Uint8Array(8 + body.length + tails.reduce((t, b) => t + b.length, 0) + img.length);
+  file.set([0x49, 0x49, 42, 0, 8, 0, 0, 0]); file.set(body, 8);
+  let o = headLen; for (const t of tails) { file.set(t, o); o += t.length; } file.set(img, o);
+  const dv = new DataView(file.buffer);
+  for (let i = 0; i < defs.length; i++) { const e = 8 + 2 + i * 12; if (dv.getUint16(e, true) === 273) dv.setUint32(e + 8, imgOff, true); }
+  return file;
+}
 // an ESRI ASCII grid as text (node-centred: xllcorner = x0 − cell/2)
 const ascOf = (g) => [`ncols ${g.nx}`, `nrows ${g.ny}`, `xllcorner ${g.x0 - g.dx / 2}`, `yllcorner ${g.y0 - (g.ny - 1) * g.dx - g.dx / 2}`, `cellsize ${g.dx}`, 'NODATA_value -9999',
   ...Array.from({ length: g.ny }, (_, r) => Array.from({ length: g.nx }, (_, c) => +g.z(g.x0 + c * g.dx, g.y0 - r * g.dx).toFixed(4)).join(' '))].join('\n') + '\n';
@@ -170,6 +204,36 @@ try {
       return { before: names(before), after: names(after), readout: el.querySelector('.cf-readout').textContent, spec: !!(cv._chartSpec && cv._chartSpec.series && cv._chartSpec.series.length === 3), recipe: el._recipe && el._recipe(), added: M.layers().length - n0, dzCount: M.layers().filter((q) => q.name.startsWith("dz_")).length };
     });
     chk(`the window: before ${w.before} · after ${w.after}; Run → “${w.readout.slice(0, 60)}…”, a chart for ⇥ figure, a re-runnable recipe (layer: false)`, /survey_2026-01/.test(w.before) && /survey_2026-02/.test(w.after) && /cut 7,200 m³/.test(w.readout) && /fill 600 m³/.test(w.readout) && w.spec && w.recipe && w.recipe.tool === 'cutfill' && w.recipe.params.layer === false && w.added === 0 && w.dzCount === 1);
+    await p.close();
+  }
+
+  // ═══ §2b cut / fill: a "match" lattice with NON-SQUARE cells, and two MESH surfaces ═══
+  // (sweep 2026-11-25: gridOnLattice stepped rows by dx → a 2 × 4 m match grid gave HALF the volume;
+  //  a mesh's edge nodes counted a full cell past its edge → +21 % at a 10 m cell)
+  {
+    const p = await mkPage();
+    const flat = (z) => ({ nx: 61, ny: 61, x0: E0, y0: N0 + 120, dx: 2, z: () => z });   // 120 × 120 m, both flat, 1 m apart
+    // the match grid: a GeoTIFF with 2 m columns and 4 m rows, 10 × 15 nodes inside the overlap
+    const tif = geoTiffDxDy(10, 15, 2, 4, E0 + 20 - 1, N0 + 100 + 2, () => 0);
+    // two flat 100 × 100 m meshes 2 m apart (OBJ, two triangles each) — volume 20,000 m³ exactly
+    const sq = (z) => [`v ${E0} ${N0} ${z}`, `v ${E0 + 100} ${N0} ${z}`, `v ${E0 + 100} ${N0 + 100} ${z}`, `v ${E0} ${N0 + 100} ${z}`, 'f 1 2 3', 'f 1 3 4'].join('\n') + '\n';
+    const r = await p.evaluate(async ({ A, B, T, MA, MB }) => {
+      const M = window._micro;
+      await M.openBlob(new File([A], 'flatA.asc'), 'flatA.asc', 'add');
+      await M.openBlob(new File([B], 'flatB.asc'), 'flatB.asc', 'add');
+      await M.openBlob(new File([new Uint8Array(T)], 'match24.tif'), 'match24.tif', 'add');
+      const g = M.layers().find((q) => q.name === 'match24.tif').docs.gridDoc.grid;
+      const m = await M.runTool('cutfill', { before: 'flatA.asc', after: 'flatB.asc', match: 'match24.tif' });
+      await M.openBlob(new File([MA], 'meshA.obj'), 'meshA.obj', 'add');
+      await M.openBlob(new File([MB], 'meshB.obj'), 'meshB.obj', 'add');
+      const mesh = {};
+      for (const cell of [1, 2.5, 10]) mesh[cell] = (await M.runTool('cutfill', { before: 'meshA.obj', after: 'meshB.obj', cell })).values;
+      return { grid: { dx: g.dx, dy: g.dy, nx: g.nx, ny: g.ny }, match: m.values, mesh };
+    }, { A: ascOf(flat(500)), B: ascOf(flat(499)), T: Array.from(tif), MA: sq(500), MB: sq(498) });
+    const want = r.grid.nx * r.grid.ny * r.grid.dx * r.grid.dy;          // every node a dx × dy cell, Δz = −1
+    chk(`cut / fill on a match grid with 2 × 4 m cells (${r.grid.dx} × ${r.grid.dy}, ${r.grid.nx} × ${r.grid.ny} nodes): cut ${r.match.cut} = nodes × 8 m² × 1 m = ${want}`, r.grid.dx === 2 && r.grid.dy === 4 && Math.abs(r.match.cut - want) < 1e-6 * want && r.match.nodes === r.grid.nx * r.grid.ny);
+    const mv = Object.entries(r.mesh).map(([c, v]) => `${c} m → ${(+v.cut).toFixed(1)}`).join(', ');
+    chk(`cut / fill between two 100 × 100 m meshes 2 m apart = 20,000 m³ at any cell (edge nodes weighted by the cell share the mesh covers): ${mv}`, Object.values(r.mesh).every((v) => Math.abs(v.cut - 20000) < 1e-3 * 20000 && Math.abs(v.area - 10000) < 1e-3 * 10000));
     await p.close();
   }
 

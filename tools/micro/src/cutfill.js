@@ -13,7 +13,7 @@
 // exactly (src/coverage.js), so a volume is exact at the edges and the report states both areas — the
 // perimeter's own and the part of it the two surfaces cover.
 import { S, layerById } from './state.js';
-import { commonSurfaceLattice, cutFillGrids } from './grid-ops.js';
+import { commonSurfaceLattice, cutFillGrids, coverWeights } from './grid-ops.js';
 import { gridOnLattice, surfaceableLayers, surfCellOf, layerWorldBbox } from './gridtools.js';
 import { mkLineage } from './lineage.js';
 import { openBlob } from './open.js';
@@ -72,12 +72,18 @@ export async function cutFill(before, after, opts = {}) {
   }
   if (geom.nx * geom.ny > 32e6) throw new Error(`${geom.nx.toLocaleString()} × ${geom.ny.toLocaleString()} nodes — over 32M; give a bigger cell`);
   const prog = (k, label) => (f) => { if (opts.onProgress) opts.onProgress((k + f) / 2, label); };
-  const A = await gridOnLattice(before, geom, prog(0, `sampling ${nameOf(before)}`));
+  const A = await gridOnLattice(before, geom, prog(0, `sampling ${nameOf(before)}`), { cover: true });
   checkAbort(opts.signal);
-  const B = await gridOnLattice(after, geom, prog(1, `sampling ${nameOf(after)}`));
+  const B = await gridOnLattice(after, geom, prog(1, `sampling ${nameOf(after)}`), { cover: true });
   checkAbort(opts.signal);
   if (lim && geom.place) throw new Error('cut / fill: a perimeter on a ROTATED matched lattice is not supported yet — leave "match" empty (the common lattice is axis-aligned)');
-  const weights = lim ? gridCoverage(lim.features, geom) : null;
+  // per-node weights: a perimeter's coverage × the share of each edge node's cell a MESH surface
+  // really spans (a mesh's boundary nodes otherwise count a full cell past its edge)
+  const pw = lim ? gridCoverage(lim.features, geom) : null;
+  const mw = coverWeights([A.cover, B.cover], geom.nx, geom.ny);
+  let weights = pw || mw;
+  if (pw && mw) { weights = new Float32Array(pw.length); for (let k = 0; k < pw.length; k++) weights[k] = pw[k] * mw[k]; }
+  delete A.cover; delete B.cover;
   const r = cutFillGrids(A, B, { weights });
   if (geom.place) { r.dz.place = geom.place; const s = geom.place.s; if (s !== 1) { r.cut *= s * s * s; r.fill *= s * s * s; r.net *= s * s * s; r.area *= s * s; r.cutArea *= s * s; r.fillArea *= s * s; } }   // the lattice's own frame → world volumes
   if (!r.nodes) throw new Error(`no node where both ${nameOf(before)} and ${nameOf(after)} have a value${lim ? ' inside the perimeter' : ''}`);

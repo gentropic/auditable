@@ -6,7 +6,7 @@ import { S, layerById } from './state.js';
 import { niceStep } from './analysis-ui.js';
 import { ppNote } from './props.js';
 import { meshToGridLayer } from './surfaces.js';
-import { applyGridExtend, buildEmptyBlockCsv, buildEmptyGrid, coverGeometry, gridAxesOf, rasterizeMeshToGrid, surfaceFromGrid, gridWorldBbox4 } from './grid-ops.js';
+import { applyGridExtend, buildEmptyBlockCsv, buildEmptyGrid, coverGeometry, gridAxesOf, rasterizeMeshToGrid, meshCoverSamples, surfaceFromGrid, gridWorldBbox4 } from './grid-ops.js';
 import { applyP, invertP } from './placement-core.js';
 import { residentGridForEval, targetsXYBbox } from './bygeom.js';
 import { reReadMesh } from './records.js';
@@ -111,15 +111,21 @@ export async function rgGo() {
 // waits on CDT; grid→simplified-TIN is a separate roadmapped verb.
 export const surfaceableLayers = () => S.layers.filter((L) => (L.kind === 'mesh' && L.docs.meshDoc && !L.docs.meshDoc.header.soup) || L.docs.gridDoc);
 
-// any surface source (mesh or grid layer) → Float32 heights on a target lattice
-export async function gridOnLattice(L, geom, onProgress) {
+// any surface source (mesh or grid layer) → Float32 heights on a target lattice.
+// geom.dy (rows) may differ from geom.dx (columns); absent, the cells are square.
+// opts.cover: for a MESH, also return `cover` = { sub, hits } — the mesh's plan footprint sampled
+// sub × sub times inside each node's cell (hits: Uint8Array over the (nx·sub) × (ny·sub) samples),
+// so a volume can count only the part of an edge node's cell the mesh really spans. A grid covers
+// its node cells whole (the ESRI node-cell convention) and returns no cover.
+export async function gridOnLattice(L, geom, onProgress, opts = {}) {
   const P = geom.place || null;                            // a ROTATED lattice: its nodes in world through the placement
+  const dy = geom.dy || geom.dx;
   if (L.docs.gridDoc) {
-    const bbox4 = P ? gridWorldBbox4({ ...geom, dy: geom.dx }) : [geom.x0, geom.y0 - (geom.ny - 1) * geom.dx, geom.x0 + (geom.nx - 1) * geom.dx, geom.y0];
+    const bbox4 = P ? gridWorldBbox4({ ...geom, dy }) : [geom.x0, geom.y0 - (geom.ny - 1) * dy, geom.x0 + (geom.nx - 1) * geom.dx, geom.y0];
     const surf = surfaceFromGrid(await residentGridForEval(L, bbox4));
     const data = new Float32Array(geom.nx * geom.ny).fill(-9999), q = [0, 0, 0];
     for (let r = 0; r < geom.ny; r++) {
-      const y = geom.y0 - r * geom.dx;
+      const y = geom.y0 - r * dy;
       for (let c = 0; c < geom.nx; c++) {
         let z;
         if (P) { applyP(P, geom.x0 + c * geom.dx, y, 0, q); z = (surf.sampleZ(q[0], q[1]) - P.t[2]) / P.s; }   // stored in the lattice's own frame (z = t_z + s·value)
@@ -128,14 +134,16 @@ export async function gridOnLattice(L, geom, onProgress) {
       }
       if (onProgress && (r & 63) === 0) onProgress(r / geom.ny);
     }
-    return { nx: geom.nx, ny: geom.ny, x0: geom.x0, y0: geom.y0, dx: geom.dx, dy: geom.dx, data, nodata: -9999, crs: null, form: 'resample', ...(P ? { place: P } : {}) };
+    return { nx: geom.nx, ny: geom.ny, x0: geom.x0, y0: geom.y0, dx: geom.dx, dy, data, nodata: -9999, crs: null, form: 'resample', ...(P ? { place: P } : {}) };
   }
   let m = await reReadMesh(L.docs.meshDoc);
   if (P) { const inv = invertP(P), V = new Float64Array(m.vertices.length), q = [0, 0, 0]; for (let i = 0; i < V.length; i += 3) { applyP(inv, m.vertices[i], m.vertices[i + 1], m.vertices[i + 2], q); V[i] = q[0]; V[i + 1] = q[1]; V[i + 2] = q[2]; } m = { ...m, vertices: V }; }
-  const g = await rasterizeMeshToGrid(m.vertices, m.triangles, { x0: geom.x0, y0: geom.y0, dx: geom.dx, dy: geom.dx, nx: geom.nx, ny: geom.ny, keep: 'top', onProgress });
+  const g = await rasterizeMeshToGrid(m.vertices, m.triangles, { x0: geom.x0, y0: geom.y0, dx: geom.dx, dy, nx: geom.nx, ny: geom.ny, keep: 'top', onProgress });
   if (P) g.place = P;
+  if (opts.cover) g.cover = await meshCoverSamples(m.vertices, m.triangles, { ...geom, dy });
   return g;
 }
+
 
 export const surfCellOf = (L) => (L.docs.gridDoc ? L.docs.gridDoc.grid.dx : (L.bboxLocal ? niceStep(Math.max(L.bboxLocal[3] - L.bboxLocal[0], L.bboxLocal[4] - L.bboxLocal[1]) / 400) : 10));
 

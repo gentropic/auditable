@@ -289,6 +289,41 @@ export function makePointBinner(geom, stat = 'mean', { nodata = -9999 } = {}) {
     },
   };
 }
+// a mesh's plan footprint sampled sub × sub times inside each node's cell (the cell centred on
+// the node): sub = 4, or 2 / none on big lattices (≤ 16M samples). → { sub, hits } | null
+export async function meshCoverSamples(V, T, geom) {
+  const N = geom.nx * geom.ny, dy = geom.dy || geom.dx;
+  const sub = N * 16 <= 16e6 ? 4 : N * 4 <= 16e6 ? 2 : 0;
+  if (!sub) return null;
+  const f = await rasterizeMeshToGrid(V, T, {
+    x0: geom.x0 - geom.dx / 2 + geom.dx / (2 * sub), y0: geom.y0 + dy / 2 - dy / (2 * sub),
+    dx: geom.dx / sub, dy: dy / sub, nx: geom.nx * sub, ny: geom.ny * sub, keep: 'top',
+  });
+  const hits = new Uint8Array(f.data.length);
+  for (let i = 0; i < hits.length; i++) hits[i] = f.data[i] !== f.nodata ? 1 : 0;
+  return { sub, hits };
+}
+
+// combine surfaces' covers (AND per sample — the part of each node's cell where EVERY surface
+// exists) into per-node weights 0..1; null when no surface brought a cover (all grids)
+export function coverWeights(covers, nx, ny) {
+  const cs = covers.filter(Boolean);
+  if (!cs.length) return null;
+  const sub = cs[0].sub;
+  if (cs.some((c) => c.sub !== sub)) return null;
+  const w = new Float32Array(nx * ny), fnx = nx * sub, s2 = sub * sub;
+  for (let r = 0; r < ny; r++) for (let c = 0; c < nx; c++) {
+    let n = 0;
+    for (let i = 0; i < sub; i++) for (let j = 0; j < sub; j++) {
+      const k = (r * sub + i) * fnx + c * sub + j;
+      let all = 1; for (const cv of cs) if (!cv.hits[k]) { all = 0; break; }
+      n += all;
+    }
+    w[r * nx + c] = n / s2;
+  }
+  return w;
+}
+
 // The common lattice of two surfaces for a cut / fill: over the OVERLAP of their XY
 // extents, at the finer one's cell and node phase (so the finer grid is sampled at
 // its own nodes, never re-interpolated), or at a stated cell (phase still the finer
