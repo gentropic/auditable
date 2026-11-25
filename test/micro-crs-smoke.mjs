@@ -133,6 +133,39 @@ try {
   chk(`the layer records how: ${r1.rp && r1.rp.from} → ${r1.rp && r1.rp.to}, "${r1.rp && r1.rp.accuracy.class}" (WGS 84 ≡ SIRGAS 2000, stated), file CRS EPSG:${r1.fileCrs && r1.fileCrs.epsg}`, r1.rp && r1.rp.accuracy.class === 'sub-metre' && /taken as identical/.test(r1.rp.path) && r1.fileCrs.epsg === 4326 && /RFC 7946/.test(r1.rp.by));
   chk('… and so does its lineage (params.reproject)', r1.lin && r1.lin.to === 'SIRGAS 2000 / UTM zone 23S · EPSG:31983');
 
+  // ═══ §1c the same lon/lat pentagon through every other door (sweep 2026-11-25: only GeoJSON,
+  //     the shapefile and the LAS stream were checked) — WKT with an SRID, a WKT-CSV table, a CSV
+  //     of string vertices, a DXF and a file of only points must all land on the same oracle ═══
+  const r1c = await evaluateSettled(p, async ({ LL }) => {
+    const M = window._micro, out = {};
+    const ringTxt = [...LL, LL[0]].map(([x, y]) => `${x} ${y} 850`).join(', ');
+    const tryOpen = async (name, text, opts = {}) => {
+      try {
+        const id = await M.openBlob(new File([text], name), name, 'add', null, { throw: true, ...opts });
+        const L = M.layers().find((x) => x.id === id);
+        const fs = L.docs && L.docs.stringsDoc ? M.featuresOf(L) : null;
+        if (fs && fs.length) return { kind: 'features', ring: fs[0].rings[0].map((q) => q.slice(0, 2)), rp: !!(L.docs.stringsDoc.source && L.docs.stringsDoc.source.reprojected) };
+        const n = Math.min(5, M.attrRowCountOf ? M.attrRowCountOf(L) : 5), rows = [];
+        for (let i = 0; i < n; i++) { const r = await M.fetchLayerRow(L, i); rows.push(r.slice(0, 2).map(Number)); }
+        return { kind: L.kind, ring: rows };
+      } catch (e) { return { err: e.message }; }
+    };
+    out.wkt = await tryOpen('pit_srid.wkt', `SRID=4326;POLYGON Z ((${ringTxt}))\n`);
+    out.wktcsv = await tryOpen('pit_wkt.csv', `NAME,WKT\npit,"POLYGON Z ((${ringTxt}))"\n`);
+    out.strings = await tryOpen('pit_strings.csv', 'STRING,X,Y,Z\n' + [...LL, LL[0]].map(([x, y]) => `1,${x},${y},850`).join('\n') + '\n', { asKind: 'features' });
+    const dxf = ['0', 'SECTION', '2', 'ENTITIES', '0', 'LWPOLYLINE', '8', 'PIT', '90', String(LL.length), '70', '1', '38', '850',
+      ...LL.flatMap(([x, y]) => ['10', String(x), '20', String(y)]), '0', 'ENDSEC', '0', 'EOF'].join('\n') + '\n';
+    out.dxf = await tryOpen('pit.dxf', dxf, { asKind: 'features' });
+    out.points = await tryOpen('pegs.geojson', JSON.stringify({ type: 'FeatureCollection', features: LL.map(([x, y], i) => ({ type: 'Feature', properties: { ID: i }, geometry: { type: 'Point', coordinates: [x, y, 850] } })) }));
+    return out;
+  }, { LL });
+  for (const [k, what] of [['wkt', 'WKT with SRID=4326'], ['wktcsv', 'a WKT-CSV table'], ['strings', 'a CSV of string vertices'], ['dxf', 'a DXF polyline'], ['points', 'a GeoJSON of points (→ a points layer)']]) {
+    const r = r1c[k];
+    const ring = r && r.ring ? r.ring : [];
+    const err = ring.length >= 5 ? Math.max(...UTM_EXPECT.map((e, i) => Math.hypot(ring[i][0] - e[0], ring[i][1] - e[1]))) : Infinity;
+    chk(`${what} in lon/lat lands on the same oracle (${r && r.err ? 'error: ' + r.err : `${r.kind}, worst ${(err * 1000).toFixed(3)} mm`})`, err < 0.001);
+  }
+
   // ═══ §2 a shapefile with a SAD69 .prj ═══
   const r2 = await evaluateSettled(p, async ({ shpB, dbfB, prj }) => {
     const M = window._micro;
@@ -167,18 +200,37 @@ try {
     r2c.from === 'written' && /^PROJCS\["SIRGAS_2000_UTM_zone_23S"/.test(r2c.prj || '') && /AUTHORITY\["EPSG","31983"\]\]$/.test(r2c.prj || '') && r2c.fileCrs && r2c.fileCrs.epsg === 31983 && !r2c.rp && errC < 0.001);
 
   // ═══ §2b a LAS cloud in SAD69 (a GeoKeys VLR) ═══
-  const r2b = await evaluateSettled(p, async ({ LAS }) => {
+  // the oracle's middle x: points east of it are counted by a filter on the reprojected cloud
+  // half a metre WEST of the middle point (sorted by x): the datum shift moves each point by far more
+  // in x (checked below), so a column path that skipped the reprojection would count differently
+  const MIDX = SAD_EXPECT.map((e) => e[0]).sort((a, b) => a - b)[1] - 0.5;
+  const SHIFT_X = Math.min(...SAD_EXPECT.map((e, i) => Math.abs(e[0] - SADUTM[i][0])));
+  const r2b = await evaluateSettled(p, async ({ LAS, MIDX }) => {
     const M = window._micro;
     const id = await M.openBlob(new File([new Uint8Array(LAS)], 'cloud_sad69.las'), 'cloud_sad69.las', 'add', null, { throw: true });
     const L = M.layers().find((x) => x.id === id);
     const h = L.docs.lasDoc.header;
     const rows = []; for (let i = 0; i < 3; i++) rows.push(await M.fetchLayerRow(L, i));
     const stream = []; for await (const c of L.docs.lasDoc.streamChunks()) for (let i = 0; i < c.count; i++) stream.push([c.x[i], c.y[i], c.z[i]]);
-    return { crsName: h.crsName, rp: h.reprojected, bbox: h.bbox, rows: rows.map((r) => r.slice(0, 3)), stream, lin: L.lineage && L.lineage.params && L.lineage.params.reproject };
-  }, { LAS });
+    // the COLUMN path (filter, export) reads the cloud in batches, not point by point — reprojected too?
+    // (sweep 2026-11-25: only the stream and the row reads were checked)
+    const cols = h.columns || [];
+    const xName = cols.find((c) => /^x$/i.test(c)) || 'X';
+    await M.applyBlockFilter(`${xName} > ${MIDX}`, L);
+    for (let t = 0; t < 100 && !(L._filterMask && L.filterExpr); t++) await new Promise((r) => setTimeout(r, 50));
+    let hits = 0; if (L._filterMask) for (const v of L._filterMask) hits += v;
+    await M.applyBlockFilter('', L);
+    await M.runExport(L, { scope: 'all', format: 'csv', download: false });
+    const lines = (await window._lastExport.text()).trim().split(/\r?\n/), head = lines[0].split(','), xi = head.findIndex((c) => /^x$/i.test(c)), yi = head.findIndex((c) => /^y$/i.test(c));
+    const exported = lines.slice(1).map((l) => { const f = l.split(','); return [+f[xi], +f[yi]]; });
+    return { crsName: h.crsName, rp: h.reprojected, bbox: h.bbox, rows: rows.map((r) => r.slice(0, 3)), stream, lin: L.lineage && L.lineage.params && L.lineage.params.reproject, hits, exported, head };
+  }, { LAS, MIDX });
   const errL = Math.max(...SAD_EXPECT.map((e, i) => Math.max(Math.hypot(r2b.stream[i][0] - e[0], r2b.stream[i][1] - e[1]), Math.hypot(r2b.rows[i][0] - e[0], r2b.rows[i][1] - e[1]))));
   chk(`a LAS cloud whose VLR says ${r2b.crsName}: its points (streamed and read one by one) land on the IBGE oracle (worst ${(errL * 1000).toFixed(2)} mm), z kept, the bbox moved with them`,
     /29193/.test(r2b.crsName || '') && errL < 0.002 && r2b.stream.every((q, i) => Math.abs(q[2] - (800 + i)) < 1e-6) && Math.abs(r2b.bbox.min[0] - Math.min(...SAD_EXPECT.map((e) => e[0]))) < 0.01 && r2b.rp && /IBGE/.test(r2b.rp.path) && r2b.lin);
+  const wantHits = SAD_EXPECT.filter((e) => e[0] > MIDX).length;
+  const errX = r2b.exported.length === SAD_EXPECT.length ? Math.max(...SAD_EXPECT.map((e, i) => Math.hypot(r2b.exported[i][0] - e[0], r2b.exported[i][1] - e[1]))) : Infinity;
+  chk(`…and through its COLUMN path: a filter on x counts ${r2b.hits} points east of half a metre short of the middle point (${wantHits}; the datum shift moves x by ≥ ${SHIFT_X.toFixed(1)} m); a CSV export writes them on the oracle (worst ${(errX * 1000).toFixed(2)} mm; columns ${r2b.head.join(',')})`, r2b.hits === wantHits && SHIFT_X > 0.5 && errX < 0.002);
 
   // ═══ §3 KML in / out, GeoJSON out in lon/lat, KMZ ═══
   const r3 = await evaluateSettled(p, async ({ KML, KMZ }) => {
