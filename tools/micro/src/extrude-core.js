@@ -72,7 +72,54 @@ function planPart(rings, maxEdge = 0) {
     T.push(a, b, c);
   }
   if (!T.length) return null;
-  return { P, T };
+  return { P, T: conform(P, T) };
+}
+
+// The ear clipper drops collinear vertices (it must, to find ears), so a ring vertex — one the
+// edge-splitting put on a straight run, or a hole's bridge vertex — can lie INSIDE another
+// triangle's edge: a T-junction. The walls are read from the cap's boundary edges, so a
+// T-junction became a wall on an interior bridge and a non-manifold solid ("self-intersecting
+// outline?" — sweep 2026-11-25, 1 in 6 random holed polygons between surfaces). Split every
+// triangle whose edge carries a vertex, until none does: the cap is then conforming.
+function conform(P, T) {
+  const n = P.length;
+  if (n < 4) return T;
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const p of P) { if (p[0] < x0) x0 = p[0]; if (p[0] > x1) x1 = p[0]; if (p[1] < y0) y0 = p[1]; if (p[1] > y1) y1 = p[1]; }
+  const G = Math.max(1, Math.ceil(Math.sqrt(n))), cw = (x1 - x0) / G || 1, ch = (y1 - y0) / G || 1;
+  const cell = (x, y) => [Math.min(G - 1, Math.max(0, Math.floor((x - x0) / cw))), Math.min(G - 1, Math.max(0, Math.floor((y - y0) / ch)))];
+  const grid = Array.from({ length: G * G }, () => []);
+  P.forEach((p, i) => { const [cx, cy] = cell(p[0], p[1]); grid[cx + cy * G].push(i); });
+  // the vertex strictly inside segment a → b, if any
+  const onEdge = (a, b) => {
+    const A = P[a], B = P[b], ex = B[0] - A[0], ey = B[1] - A[1], L2 = ex * ex + ey * ey;
+    if (!(L2 > 0)) return -1;
+    const [ca, ra] = cell(Math.min(A[0], B[0]), Math.min(A[1], B[1])), [cb, rb] = cell(Math.max(A[0], B[0]), Math.max(A[1], B[1]));
+    for (let r = ra; r <= rb; r++) for (let c = ca; c <= cb; c++) for (const v of grid[c + r * G]) {
+      if (v === a || v === b) continue;
+      const V = P[v], vx = V[0] - A[0], vy = V[1] - A[1];
+      const t = (vx * ex + vy * ey) / L2;
+      if (t <= 1e-9 || t >= 1 - 1e-9) continue;
+      const cr = vx * ey - vy * ex;
+      if (cr * cr <= 1e-18 * L2 * L2) return v;              // on the line, to a relative 1e-9
+    }
+    return -1;
+  };
+  const out = [];
+  const stack = [];
+  for (let i = 0; i < T.length; i += 3) stack.push([T[i], T[i + 1], T[i + 2]]);
+  let guard = 0;
+  while (stack.length) {
+    if (++guard > 8 * (T.length + n) + 1000) throw new Error('extrude: the cap triangulation did not settle');
+    const [a, b, c] = stack.pop();
+    let split = false;
+    for (const [p, q, r] of [[a, b, c], [b, c, a], [c, a, b]]) {
+      const v = onEdge(p, q);
+      if (v >= 0) { stack.push([p, v, r], [v, q, r]); split = true; break; }   // same winding as p, q, r
+    }
+    if (!split) out.push(a, b, c);
+  }
+  return out;
 }
 
 const ekey = (a, b) => (a < b ? a * 4294967296 + b : b * 4294967296 + a);

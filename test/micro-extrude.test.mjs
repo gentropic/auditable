@@ -127,3 +127,23 @@ test('between: surfaces that cross pinch the solid instead of turning it inside 
   assert.ok(m.stats.crossed > 0);
   assert.throws(() => extrudeBetween(f, { top: (x) => (x > 8 ? NaN : 10), bottom: () => 0 }), /no value/);
 });
+
+// sweep 2026-11-25: between two surfaces, a hole on whole-metre coordinates often left a T-junction
+// in the cap (the ear clipper drops collinear vertices; the walls are read from the cap's boundary
+// edges), so the solid came out non-manifold and was refused — 35 of these 200 before the fix.
+test('extrude between surfaces: holes on whole metres stay closed, volume = the integral', () => {
+  const sq = (x, y, w, h) => [[x, y, 0], [x + w, y, 0], [x + w, y + h, 0], [x, y + h, 0]];
+  const X0 = 612000, Y0 = 7765000;
+  let seed = 3; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  let bad = 0;
+  for (let i = 0; i < 200; i++) {
+    const hx = 5 + Math.round(25 * rnd()), hy = 3 + Math.round(20 * rnd()), w = 2 + Math.round(5 * rnd()), h = 2 + Math.round(4 * rnd());
+    const f = poly(sq(X0, Y0, 40, 30), sq(X0 + hx, Y0 + hy, w, h).reverse());
+    const m = extrudeBetween(f, { top: (x) => 900 + 0.01 * (x - X0), bottom: () => 850 });
+    const chk = manifoldCheck(m.vertices, m.triangles);
+    // ∫∫ (50 + 0.01·x') dA over the rectangle minus the hole (x' = x − X0); the top is linear, so exact
+    const want = 50 * 1200 + 0.01 * (40 * 40 / 2) * 30 - (50 * w * h + 0.01 * h * ((hx + w) ** 2 - hx ** 2) / 2);
+    if (!chk.ok || Math.abs(meshVolume(m.vertices, m.triangles) - want) > 1e-6 * want) bad++;
+  }
+  assert.equal(bad, 0, `${bad} of 200 holed polygons came out non-manifold or with the wrong volume`);
+});
