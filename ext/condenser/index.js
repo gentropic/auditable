@@ -7553,6 +7553,7 @@ uniform float uNoDataOn;                // off: a blank clamps to the lowest col
 uniform sampler2D uPalette;
 uniform sampler2D uMask;                // filter bitmask by record index (8192-wide)
 uniform float uFilterOn, uIsolate;
+uniform float uGhost;                   // the GHOST pass (gl-ghost.js): only the records the filter leaves out
 uniform sampler2D uSel;
 uniform float uSelOn;
 uniform sampler2D uCatVis;              // 256x1 per-class visibility
@@ -7601,6 +7602,7 @@ void main() {
   float secSupp = demoted > 0.5 ? 0.0 : dot(half_, abs(transpose(uGridRot) * uSecPlane.xyz));   // the normal in the box's frame
   float secCull = (uSecCfg.x > 0.5 && abs(dot(center, uSecPlane.xyz) - uSecPlane.w) > uSecCfg.y + secSupp * 0.99) ? 1.0 : 0.0;   // 0.99: a box that only TOUCHES the slab (a face on its boundary — the level below a one-block slab) is out, not drawn as a zero-thick face
   vCull = max((uIsolate > 0.5 && m < 0.5) ? 1.0 : 0.0, secCull);
+  if (uGhost > 0.5 && m > 0.5) vCull = 1.0;
   float cls = aCat;
   if (uRuleOn > 0.5) {
     int rr = int(aRec);
@@ -7833,7 +7835,7 @@ function createBlocksPipeline(gl) {
       perspScale: U('uPerspScale'), demotePx: U('uDemotePx'), pointPx: U('uPointPx'),
       colorMode: U('uColorMode'), zRange: U('uZRange'), chanChunk: U('uChanChunk'), chanDoc: U('uChanDoc'), noData: U('uNoData'), noDataOn: U('uNoDataOn'),
       ramp: U('uRamp'), palette: U('uPalette'), lightDir: U('uLightDir'),
-      mask: U('uMask'), filterOn: U('uFilterOn'), isolate: U('uIsolate'), forceSplat: U('uForceSplat'), fixedSplat: U('uFixedSplat'), picked: U('uPicked'), pickedLayer: U('uPickedLayer'), layer: U('uLayer'), repaint: U('uRepaint'),
+      mask: U('uMask'), filterOn: U('uFilterOn'), isolate: U('uIsolate'), ghost: U('uGhost'), forceSplat: U('uForceSplat'), fixedSplat: U('uFixedSplat'), picked: U('uPicked'), pickedLayer: U('uPickedLayer'), layer: U('uLayer'), repaint: U('uRepaint'),
       catVis: U('uCatVis'), catVisOn: U('uCatVisOn'), sel: U('uSel'), selOn: U('uSelOn'),
       rule: U('uRule'), ruleOn: U('uRuleOn'),
       chanTex: U('uChanTex'), chanTexOn: U('uChanTexOn'),
@@ -7918,7 +7920,7 @@ function createBlocksPipeline(gl) {
 
   // Per-frame program state (called once before the chunk loop) — set on BOTH
   // programs so drawSlice can switch freely between full and cheap.
-  function begin(cam, { pointPx, colorMode, zRange, chanDoc, ramp, palette, viewportH, maskTex = null, isolate = false, pointsView = false, picked = 0xFFFFFFFF, pickedLayer = 0xFFFFFFFF, layer = 0, section = null, catVisTex = null, selTex = null, ruleTex = null, chanTex = null, opacity = 1, edges = false, noData = null, projection = false, mipCodes = false }) {
+  function begin(cam, { pointPx, colorMode, zRange, chanDoc, ramp, palette, viewportH, maskTex = null, isolate = false, pointsView = false, picked = 0xFFFFFFFF, pickedLayer = 0xFFFFFFFF, layer = 0, section = null, catVisTex = null, selTex = null, ruleTex = null, chanTex = null, opacity = 1, edges = false, noData = null, projection = false, mipCodes = false, ghost = false }) {
     const s = cam.state;
     if (projection && !mip) mip = { full: mkProg(FRAG$gl_blocks, '#define MIP 1'), cheap: mkProg(FRAG_CHEAP$gl_blocks, '#define MIP 1') };
     set = projection ? mip : normal;
@@ -7965,7 +7967,8 @@ function createBlocksPipeline(gl) {
       gl.uniform1f(uni.edges, edges ? 1 : 0);
       if (uni.mipCodes) gl.uniform1f(uni.mipCodes, mipCodes ? 1 : 0);
       gl.uniform1f(uni.filterOn, maskTex ? 1 : 0);
-      gl.uniform1f(uni.isolate, isolate ? 1 : 0);
+      gl.uniform1f(uni.isolate, isolate && !ghost ? 1 : 0);
+      gl.uniform1f(uni.ghost, ghost ? 1 : 0);
       if (maskTex) { gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, maskTex); gl.uniform1i(uni.mask, 4); }
       gl.uniform1f(uni.catVisOn, catVisTex ? 1 : 0);
       if (catVisTex) { gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, catVisTex); gl.uniform1i(uni.catVis, 5); }
@@ -11796,7 +11799,7 @@ void main() {                          // fullscreen triangle, no buffers
 }`;
 
 // decode: 0 = float max (hit: R ≥ 0) · 1 = float min (hit: R ≤ 1) · 2 = 8-bit (hit: A) · 3 = mean (R / G)
-const COMPOSITE_FRAG = `#version 300 es
+const COMPOSITE_FRAG$gl_mip = `#version 300 es
 precision highp float;
 uniform sampler2D uAcc;
 uniform sampler2D uRamp;
@@ -11828,7 +11831,7 @@ function decodeProjection(decode, r, g, a) {
 function createMipPipeline(gl) {
   const cbf = !!gl.getExtension('EXT_color_buffer_float');
   const floatBlend = !!gl.getExtension('EXT_float_blend');
-  const comp = makeProgram(gl, QUAD_VERT$gl_mip, COMPOSITE_FRAG);
+  const comp = makeProgram(gl, QUAD_VERT$gl_mip, COMPOSITE_FRAG$gl_mip);
   const uAcc = gl.getUniformLocation(comp, 'uAcc'), uRamp = gl.getUniformLocation(comp, 'uRamp'), uDecode = gl.getUniformLocation(comp, 'uDecode'), uCodes = gl.getUniformLocation(comp, 'uCodes');
   const targets = new Map();                               // layer → { tex, fbo, w, h, fmt, mode }
 
@@ -11963,6 +11966,124 @@ function createMipPipeline(gl) {
     support() { const o = {}; for (const m of PROJECTION_MODES) { const f = formatFor(m); o[m] = f ? { format: f.key, bits: f.bits, float: f.float } : null; } return o; },
     supports: (mode) => !!formatFor(mode),
   };
+}
+
+// ── src/core/gl-ghost.js ──
+
+// @gcu/condenser — GHOST filter display: the records a filter leaves OUT, drawn as a flat
+// shape BEHIND the ones it keeps — never covering them — so the kept blocks read in context
+// without the dim mode's muddy, opaque 30 % copy of everything in front of them.
+//
+// Mechanism: the ghost layer's FILTERED-OUT records draw (the same programs, `uGhost`: keep
+// only m < 0.5) into the layer's OWN depth target, slice for slice with the raster, so it
+// accumulates and converges with it. Every element the main raster draws (points, blocks,
+// sticks — not meshes) marks the stencil 1; one fullscreen pass per ghost layer then draws
+// the ghost over the frame where
+//   · the ghost target has coverage there,
+//   · the stencil is NOT 1 — no kept element is drawn at that pixel, in front or behind,
+//   · the ghost is in FRONT of what the frame holds there (depth test, no depth write) —
+//     a surface in front of the ghost still hides it; the background never does.
+// Two styles:
+//   tint    — one flat colour over the ghost's coverage (a faint silhouette fill)
+//   outline — only the coverage's BOUNDARY: a thin line round the filtered-out envelope
+//             (an edge detect on the ghost depth's coverage, as EDL reads depth). Drawn once
+//             the layer has converged — a partial coverage's boundary isn't the envelope's.
+// Both write an opaque colour, so a still frame that composites again changes nothing.
+
+
+const GHOST_STYLES = ['tint', 'outline'];
+
+const QUAD_VERT$gl_ghost = `#version 300 es
+precision highp float;
+void main() {
+  vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
+  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}`;
+
+const COMPOSITE_FRAG$gl_ghost = `#version 300 es
+precision highp float;
+uniform highp sampler2D uGDepth;        // the ghost's depth (1 = nothing there)
+uniform int uStyle;                     // 0 tint · 1 outline
+uniform vec3 uColor;
+uniform int uWidth;                     // outline half-width in pixels
+out vec4 outColor;
+void main() {
+  ivec2 p = ivec2(gl_FragCoord.xy);
+  ivec2 sz = textureSize(uGDepth, 0);
+  float d = texelFetch(uGDepth, p, 0).r;
+  if (d >= 1.0) discard;
+  if (uStyle == 1) {
+    bool edge = false;
+    const ivec2 DIRS[8] = ivec2[8](ivec2(1, 0), ivec2(-1, 0), ivec2(0, 1), ivec2(0, -1), ivec2(1, 1), ivec2(-1, 1), ivec2(1, -1), ivec2(-1, -1));
+    for (int k = 1; k <= 4; k++) {
+      if (k > uWidth) break;
+      for (int i = 0; i < 8; i++) {
+        ivec2 o = DIRS[i] * k;
+        ivec2 q = clamp(p + o, ivec2(0), sz - 1);
+        if (q != p + o || texelFetch(uGDepth, q, 0).r >= 1.0) edge = true;
+      }
+    }
+    if (!edge) discard;
+  }
+  gl_FragDepth = d;
+  outColor = vec4(uColor, 1.0);
+}`;
+
+function createGhostPipeline(gl) {
+  const comp = makeProgram(gl, QUAD_VERT$gl_ghost, COMPOSITE_FRAG$gl_ghost);
+  const U = (n) => gl.getUniformLocation(comp, n);
+  const u = { depth: U('uGDepth'), style: U('uStyle'), color: U('uColor'), width: U('uWidth') };
+  const targets = new Map();                                 // layer → { fbo, depth, w, h }
+
+  function drop(layer) {
+    const t = targets.get(layer); if (!t) return;
+    gl.deleteFramebuffer(t.fbo); gl.deleteTexture(t.depth);
+    targets.delete(layer);
+  }
+  // bind `layer`'s ghost target at w×h for drawing — (re)allocated and cleared when new or
+  // resized, cleared when `clear` (a moving frame). Depth test + write on.
+  function begin(layer, w, h, clear) {
+    let t = targets.get(layer), fresh = false;
+    if (!t || t.w !== w || t.h !== h) {
+      drop(layer);
+      const depth = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, depth);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.DEPTH_COMPONENT24, w, h, 0, gl.DEPTH_COMPONENT, gl.UNSIGNED_INT, null);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      const fbo = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, depth, 0);
+      gl.drawBuffers([gl.NONE]);                             // depth only: the coverage IS the depth
+      gl.readBuffer(gl.NONE);
+      t = { fbo, depth, w, h };
+      targets.set(layer, t);
+      fresh = true;
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, t.fbo);
+    gl.viewport(0, 0, w, h);
+    if (fresh || clear) { gl.depthMask(true); gl.clear(gl.DEPTH_BUFFER_BIT); }
+    gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LESS); gl.depthMask(true);
+  }
+  // draw `layer`'s ghost over the CURRENT framebuffer: not where the stencil is 1 (a kept
+  // element), only in front of what is there. style 'tint' | 'outline'; color [r, g, b] 0..1;
+  // width: the outline's half-width in px. The caller restores its own GL state.
+  function composite(layer, { style = 'tint', color = [0.5, 0.5, 0.5], width = 1 } = {}) {
+    const t = targets.get(layer); if (!t) return;
+    gl.useProgram(comp);
+    gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, t.depth); gl.uniform1i(u.depth, 2);
+    gl.uniform1i(u.style, style === 'outline' ? 1 : 0);
+    gl.uniform3f(u.color, color[0], color[1], color[2]);
+    gl.uniform1i(u.width, Math.max(1, Math.min(4, Math.round(width))));
+    gl.disable(gl.BLEND);
+    gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LESS); gl.depthMask(false);
+    gl.enable(gl.STENCIL_TEST); gl.stencilFunc(gl.NOTEQUAL, 1, 0xff); gl.stencilOp(gl.KEEP, gl.KEEP, gl.KEEP);
+    gl.bindVertexArray(null);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.disable(gl.STENCIL_TEST); gl.depthMask(true);
+    gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, null);   // a later pass may render into it
+  }
+  return { begin, composite, drop, has: (layer) => targets.has(layer), clear() { for (const id of [...targets.keys()]) drop(id); } };
 }
 
 // ── src/core/gl-resolve.js ──
@@ -12476,6 +12597,7 @@ uniform sampler2D uPalette;             // classification / category palette
 uniform float uPaletteN;                // its width (32 = LAS classes, 256 = category dict)
 uniform sampler2D uMask;                // filter bitmask by record index (8192-wide)
 uniform float uFilterOn, uIsolate;
+uniform float uGhost;                   // the GHOST pass (gl-ghost.js): only the records the filter leaves out
 uniform sampler2D uCatVis;              // 256x1 per-class visibility (layer properties)
 uniform float uCatVisOn;
 uniform sampler2D uSel;                 // selection bitmask by record index (8192-wide)
@@ -12500,6 +12622,7 @@ void main() {
     int rec = int(aRec);
     m = texelFetch(uMask, ivec2(rec & 8191, rec >> 13), 0).r > 0.5 ? 1.0 : 0.0;
     if (uIsolate > 0.5 && m < 0.5) vCull = 1.0;
+    if (uGhost > 0.5 && m > 0.5) vCull = 1.0;
   }
   float cls = aClass;
   if (uRuleOn > 0.5) {
@@ -12669,7 +12792,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
       pointPx: U('uPointPx'), colorMode: U('uColorMode'), zRange: U('uZRange'),
       intensityScale: U('uIntensityScale'), ramp: U('uRamp'), palette: U('uPalette'), picked: U('uPicked'), pickedLayer: U('uPickedLayer'), layer: U('uLayer'), repaint: U('uRepaint'),
       secPlane: U('uSecPlane'), secCfg: U('uSecCfg'),
-      mask: U('uMask'), filterOn: U('uFilterOn'), isolate: U('uIsolate'), paletteN: U('uPaletteN'),
+      mask: U('uMask'), filterOn: U('uFilterOn'), isolate: U('uIsolate'), ghost: U('uGhost'), paletteN: U('uPaletteN'),
       catVis: U('uCatVis'), catVisOn: U('uCatVisOn'),
       sel: U('uSel'), selOn: U('uSelOn'),
       rule: U('uRule'), ruleOn: U('uRuleOn'),
@@ -12684,6 +12807,8 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
   let mipPipe = null;                                     // projection targets + composite (gl-mip.js), lazy
   let lastMip = null;                                     // the last frame's projection: { mode, layers, … } — pick() reads it
   let lastMipKey = '';                                    // which layers it projected (a change re-rasters)
+  let ghostPipe = null;                                   // ghost filter display targets + composite (gl-ghost.js), lazy
+  let lightweight = false;                                // a software rasterizer: the heavy optional passes stand down (setLightweight)
   const ramp = lutTexture(gl, rampPixels(), 256);
   const palette = lutTexture(gl, palettePixels(), 32);   // LAS classification (points)
   let catPalette = null;                                  // category palette (blocks), lazy
@@ -12729,7 +12854,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
       l = { visible: true, set: 'base', maskTex: null, maskH: 0, isolate: false,
             intensityMax: 1, docChan: [Infinity, -Infinity], catN: 0, stickRadius: 1, sectioned: true,
             meshTint: [0.62, 0.64, 0.66], meshOpacity: 1, opacity: 1, catVisTex: null, rampTex: null, rampHides: false, rampAlphaSig: '', noData: null, paletteTex: null, paletteW: 0, selTex: null, selH: 0,
-            ruleTex: null, ruleH: 0, ruleOn: false, projCodes: false,
+            ruleTex: null, ruleH: 0, ruleOn: false, projCodes: false, ghost: null, ghostColor: null,
             chanTex: null, chanTexRange: null, offset: null };
       layers.set(id, l);
     }
@@ -12969,10 +13094,16 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
     // Filter bitmask by RECORD INDEX within the layer (micro-spec section 4).
     // mask = Uint8Array (0|1 per source row) or null to clear; isolate: true
     // discards non-matching, false dims them.
-    setFilter(mask, { isolate = false } = {}, layer = 0) {
+    // ghost: null | 'tint' | 'outline' — the GHOST display (gl-ghost.js): the matches drawn as
+    // with isolate, the rest as a flat shape behind them (never covering them); ghostColor
+    // [r, g, b] 0..1 (null: a faint ink of the background's opposite)
+    setFilter(mask, { isolate = false, ghost = null, ghostColor = null } = {}, layer = 0) {
       const ls = layerOf(layer);
-      const culled = isolate || (ls.isolate && !!ls.maskTex);   // isolate CULLS (now or before) → geometry changes
+      const g = mask && GHOST_STYLES.includes(ghost) ? ghost : null;
+      if (g) isolate = true;                                 // a ghost layer's matches draw as isolate's
+      const culled = isolate || (ls.isolate && !!ls.maskTex) || g !== ls.ghost;   // isolate CULLS (now or before) → geometry changes
       ls.isolate = isolate;
+      ls.ghost = g; ls.ghostColor = g && ghostColor ? [+ghostColor[0], +ghostColor[1], +ghostColor[2]] : null;
       if (!mask) {
         if (ls.maskTex) { gl.deleteTexture(ls.maskTex); ls.maskTex = null; }
       } else {
@@ -13126,6 +13257,11 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
       if (!prev !== !next || shown(prev) !== shown(next)) { needClear = true; dropCapture(); } else cosmeticDirtyLayers.add(layer);
     },
     // what a layer hides or recolours by VALUE (introspection for hosts and tests)
+    // LIGHTWEIGHT (a software rasterizer — the host decides): the optional passes that cost a
+    // full-screen neighbourhood read stand down — a ghost OUTLINE draws as the flat tint
+    setLightweight(on) { if (lightweight !== !!on) { lightweight = !!on; needClear = true; } },
+    get lightweight() { return lightweight; },
+    layerGhost(layer) { const ls = layers.get(layer); return ls && ls.ghost ? { style: ls.ghost, color: ls.ghostColor ? ls.ghostColor.slice() : null } : null; },
     layerValueState(layer) { const ls = layers.get(layer); return ls ? { noData: ls.noData ? ls.noData.slice() : null, rampHides: !!ls.rampHides } : null; },
     setLayerChanTex(layer, tex, range = null) {
       const ls = layerOf(layer);
@@ -13243,6 +13379,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
       layers.delete(layer);
       if (resolvePipe) resolvePipe.dropBake(layer);
       if (mipPipe) mipPipe.drop(layer);
+      if (ghostPipe) ghostPipe.drop(layer);
       layerMaxRec.delete(layer); bakeDirty.delete(layer);
       lastCosSig.delete(layer); cosmeticDirtyLayers.delete(layer); lutDirtyLayers.delete(layer);
       needClear = true;
@@ -13386,6 +13523,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
       layers.clear(); viewSrc.clear();
       if (resolvePipe) resolvePipe.clear();
       if (mipPipe) mipPipe.clear();
+      if (ghostPipe) ghostPipe.clear();
       lastMip = null; lastMipKey = '';
       layerMaxRec.clear(); bakeDirty.clear(); dropCapture();
       lastCosSig.clear(); cosmeticDirtyLayers.clear(); lutDirtyLayers.clear();
@@ -13467,6 +13605,10 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
       for (const id of [...dirty]) { const k = kindBy.get(id); if (!k || k === 'mesh') dirty.delete(id); }
       // a layer entering or leaving the projection changes what every pixel it covers
       // means (a projected pixel isn't its front surface): start the frame over
+      // the GHOST layers (gl-ghost.js): a filtered blocks / points layer shown as ghost (not projected)
+      const ghostIds = new Set();
+      for (const [id, k] of kindBy) { const ls = layers.get(id); if (ls && ls.ghost && ls.maskTex && (k === 'blocks' || k === 'points') && !mipIds.has(id)) ghostIds.add(id); }
+      const ghostSlices = ghostIds.size ? [] : null;         // [chunk, first, k] the raster drew of a ghost layer — the ghost pass draws them too
       const mipKey = [...mipIds].join(',');
       if (mipKey !== lastMipKey) { moving = true; lastMipKey = mipKey; }
 
@@ -13619,7 +13761,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
       gl.enable(gl.DEPTH_TEST);
       if (moving) {
         gl.clearColor(background[0], background[1], background[2], background[3]);
-        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT | (ghostIds.size ? gl.STENCIL_BUFFER_BIT : 0));
         for (const c of visible) c.cursor = 0;
       }
 
@@ -13692,6 +13834,9 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
         gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, palette); gl.uniform1i(uni.palette, 1);
       };
       const pts = visible.filter((c) => c.kind === 'points' && !isMip(c));
+      // under a GHOST, every element drawn marks the stencil 1 — a ghost never covers a kept
+      // element (meshes and soups above stay unmarked: a ghost in front of a surface shows)
+      if (ghostIds.size) { gl.enable(gl.STENCIL_TEST); gl.stencilFunc(gl.ALWAYS, 1, 0xff); gl.stencilOp(gl.KEEP, gl.KEEP, gl.REPLACE); gl.stencilMask(0xff); }
       // per-layer uniforms (reads `uni`: whichever program ptsFrame set up)
       const setupPtsLayer = (id) => {
           const ls = layerOf(id), o = lopt(id), zr = zRangeOf(o);
@@ -13710,6 +13855,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
           gl.uniform1i(uni.palette, 1);
           gl.uniform1f(uni.filterOn, ls.maskTex ? 1 : 0);
           gl.uniform1f(uni.isolate, ls.isolate ? 1 : 0);
+          gl.uniform1f(uni.ghost, 0);
           if (ls.maskTex) { gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, ls.maskTex); gl.uniform1i(uni.mask, 4); }
           gl.uniform1f(uni.catVisOn, ls.catVisTex ? 1 : 0);
           if (ls.catVisTex) { gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, ls.catVisTex); gl.uniform1i(uni.catVis, 5); }
@@ -13739,6 +13885,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
               gl.bindVertexArray(c.vao);
               gl.drawArrays(gl.POINTS, first, k);
               drawn += k; c.cursor = first + k;
+              if (ghostSlices && ghostIds.has(id)) ghostSlices.push([c, first, k]);
             }
             if (c.cursor < c.count) converged = false;
           }
@@ -13774,7 +13921,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
         const distNear = Math.max(cam.state.near, c._dist - bboxR);
         return blocksAsPoints || rBlock * perspScale / distNear < 2.0;
       };
-      const beginLayer = (id, projection = false, mipCodes = false) => {
+      const beginLayer = (id, projection = false, mipCodes = false, ghost = false) => {
         const ls = layerOf(id), o = lopt(id);
         blocksPipe.begin(camOf(id), {
           pointPx, colorMode: o.colorMode, zRange: zRangeOf(o),
@@ -13784,8 +13931,8 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
           section: layerSecOf(ls, sec),
           catVisTex: ls.catVisTex, selTex: ls.selTex, ruleTex: ls.ruleOn ? ls.ruleTex : null,
           chanTex: ls.chanTex, noData: ls.noData,
-          opacity: ls.opacity, edges: ls.edges != null ? ls.edges : blockEdges,   // per-layer override, else the View toggle
-          projection, mipCodes,
+          opacity: ghost ? 1 : ls.opacity, edges: ls.edges != null ? ls.edges : blockEdges,   // per-layer override, else the View toggle
+          projection, mipCodes, ghost,
         });
       };
       const blks = visible.filter((c) => c.kind === 'blocks' && !isMip(c));
@@ -13798,6 +13945,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
             if (k > 0) {
               blocksPipe.drawSlice(c, first, k, cheapOf(c));
               drawn += k; c.cursor = first + k;
+              if (ghostSlices && ghostIds.has(id)) ghostSlices.push([c, first, k]);
             }
             if (c.cursor < c.count) converged = false;
           }
@@ -13862,6 +14010,47 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
         }
       }
       if (rp) repaintSet.clear();
+
+      // ── GHOST (gl-ghost.js): each ghost layer's filtered-OUT records, the slices the raster
+      // just drew of it, into the layer's own depth target (accumulating as the raster does);
+      // then one pass per layer draws the ghost over the frame — not over a kept element (the
+      // stencil), only in front of what is there. An outline waits for the whole layer. ──
+      if (ghostIds.size) {
+        gl.disable(gl.STENCIL_TEST);
+        if (!ghostPipe) ghostPipe = createGhostPipeline(gl);
+        const target = gl.getParameter(gl.FRAMEBUFFER_BINDING);
+        for (const id of ghostIds) {
+          ghostPipe.begin(id, canvas.width, canvas.height, moving);
+          const sl = ghostSlices.filter((x) => x[0]._layer === id);
+          if (!sl.length) continue;
+          if (kindBy.get(id) === 'blocks') {
+            beginLayer(id, false, false, true);
+            for (const [c, first, k] of sl) blocksPipe.drawSlice(c, first, k, cheapOf(c));
+          } else {
+            ptsFrame(ptsNormal);
+            setupPtsLayer(id);
+            gl.uniform1f(uni.isolate, 0); gl.uniform1f(uni.ghost, 1);
+            for (const [c, first, k] of sl) {
+              gl.uniform3f(uni.boxMin, c.bboxLocal[0], c.bboxLocal[1], c.bboxLocal[2]);
+              gl.uniform3f(uni.boxSpan, c.bboxLocal[3] - c.bboxLocal[0], c.bboxLocal[4] - c.bboxLocal[1], c.bboxLocal[5] - c.bboxLocal[2]);
+              gl.bindVertexArray(c.vao);
+              gl.drawArrays(gl.POINTS, first, k);
+            }
+            gl.uniform1f(uni.ghost, 0);
+          }
+        }
+        gl.bindFramebuffer(gl.FRAMEBUFFER, target);
+        gl.viewport(0, 0, canvas.width, canvas.height);
+        // the default colour: a faint ink of the background's opposite (an outline: a firmer one)
+        const lum = 0.2126 * background[0] + 0.7152 * background[1] + 0.0722 * background[2], ink = lum < 0.5 ? 1 : 0;
+        const mixBg = (a) => [0, 1, 2].map((i) => background[i] + (ink - background[i]) * a);
+        for (const id of ghostIds) {
+          const ls = layerOf(id), style = ls.ghost === 'outline' && !lightweight ? 'outline' : 'tint';
+          if (style === 'outline' && visible.some((c) => c._layer === id && c.cursor < c.count)) continue;   // not the envelope yet
+          ghostPipe.composite(id, { style, color: ls.ghostColor || mixBg(style === 'outline' ? 0.6 : 0.2), width: Math.max(1, Math.round(backingRatio(canvas))) });
+        }
+        gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LESS); gl.depthMask(true);
+      }
 
       // ── PROJECTION (gl-mip.js): each projected layer's next slices blend into its
       // own target (the same allotment as the raster, so they converge together),
@@ -13994,11 +14183,13 @@ function createEdl(gl) {
       return t;
     };
     colorTex = tex(gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE);
-    depthTex = tex(gl.DEPTH_COMPONENT24, gl.DEPTH_COMPONENT, gl.UNSIGNED_INT);
+    // depth + STENCIL: the ghost filter display (gl-ghost.js) marks kept elements in the stencil;
+    // the depth half reads exactly as a DEPTH_COMPONENT24 texture did
+    depthTex = tex(gl.DEPTH24_STENCIL8, gl.DEPTH_STENCIL, gl.UNSIGNED_INT_24_8);
     fbo = gl.createFramebuffer();
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, colorTex, 0);
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, depthTex, 0);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.TEXTURE_2D, depthTex, 0);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
 
@@ -14229,6 +14420,8 @@ export {
   createMipPipeline,
   decodeProjection,
   PROJECTION_MODES,
+  createGhostPipeline,
+  GHOST_STYLES,
   writeMSH,
   readMSHLayout,
 };

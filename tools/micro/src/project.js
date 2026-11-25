@@ -5,6 +5,7 @@
 // layout (tidy, scan for new data) is src/project-folder.js, and the remembered
 // projects are src/recents.js.
 import { S, _fileHandles, activeLayer, layerById, requestRender } from './state.js';
+import { displayStateOf, restoreDisplayState } from './layer-display.js';
 import { applyColTypes, attrRowCountOf, layerHeaderOf, layerTableHeader, coordFrameKey } from './records.js';
 import { basename, fmtSize, joinPath, kindDir, layerBytes, layerFiles, layerRelpath, relPathFor, resolveDhFile, resolveFileHandle } from './paths.js';
 import { microModelOf } from './lineage.js';
@@ -122,6 +123,7 @@ function viewEntry(L, indexOf) {
     sectioned: (() => { const m = S.renderer.layerSectioned(L.id); return m === true ? undefined : m; })(),
     opacity: (L.opacity != null && L.opacity !== 1) ? L.opacity : undefined,
     edges: L.edges != null ? L.edges : undefined,
+    display: displayStateOf(L),                            // filter display, log tracks (src/layer-display.js)
     legend: L.legend || undefined, legendTitle: (L.legendTitle && L.legendTitle.trim()) || undefined,
     recHide: (L._recHide && L._recHide.size) ? [...L._recHide] : undefined,
     gtUnits: L.gtUnits || undefined, analysis: L.analysis || undefined,
@@ -166,6 +168,7 @@ export function projectManifest() {
       recHide: (L._recHide && L._recHide.size) ? [...L._recHide] : undefined,   // record-panel hidden fields (view pref)
       legend: L.legend || undefined, legendTitle: (L.legendTitle && L.legendTitle.trim()) || undefined,   // per-layer figure legend
       edges: L.edges != null ? L.edges : undefined,        // per-layer block-edge override (tri-state; absent = follow View)
+      display: displayStateOf(L),                          // filter display, log tracks (src/layer-display.js)
       gtUnits: L.gtUnits || undefined,                     // grade-tonnage unit declarations (grade unit, density col/const + unit)
       analysis: L.analysis || undefined,                   // GT/swath window setups (series by layer NAME) + pinned-open state + geometry
       ...captureLayerSurface(L),   // gridSurface · drape · flatZ · faceted · band — the ONE surface-state source (shared with scenes; parity-tested)
@@ -547,6 +550,7 @@ export async function restoreStyleExtras(L, ls) {
     if (ls.recHide) L._recHide = ls.recHide;
   }
   if (ls.analysis) L.analysis = ls.analysis;               // GT/swath setups (windows reopen after all layers land — series may span them)
+  if (ls.display) await restoreDisplayState(L, ls.display);   // filter display, log tracks (src/layer-display.js)
   if (ls.rules) {
     L.rules = ls.rules;
     L.ruleHidden = new Set(ls.ruleHidden || []);

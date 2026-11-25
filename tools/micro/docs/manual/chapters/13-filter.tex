@@ -28,6 +28,20 @@ and press \key{Enter}. The active layer reduces to the rows where that is true. 
 
 A filter belongs to a \emph{layer}. Each layer keeps its own; the box shows the active layer's, and changes as you step between layers with \key{[} and \key{]}. Block models, drillholes, point clouds and tables can all be filtered.
 
+\subsection{What happens to the rest}\label{sec:filter-ghost}
+By default the rows a filter leaves out simply leave the view. A block model or a point cloud can show them in three other ways — \menu{View>Filter display}, or \code{filter display} in the palette, for the active layer:\index{filter!ghost}\index{ghost (filter display)}
+
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+\ui{isolate} & the rest drops out (the default). The fastest: the render budget runs over the matches alone \\
+\ui{dim} & the rest stays, darkened. It is opaque, so it hides what lies behind it \\
+\ui{ghost} & the rest is drawn as one flat, faint shape \emph{behind} the matches. It never covers a match — not even one lying behind it — so you see the kept blocks whole, in the shape of the model around them \\
+\ui{outline} & only the ghost's silhouette: a thin line round the envelope of what the filter left out \\ \bottomrule
+\end{tabularx}
+\end{center}
+
+The ghost's color is a faint shade of the background's opposite, so it reads on a dark or a light background, and in a figure. A surface in front of the ghost still hides it. The outline appears once the picture has settled, since a half-drawn model has no envelope yet; in software rendering mode it is drawn as the flat ghost (\cref{sec:start-software}). The choice is saved with the layer in the project. A drillhole filter always isolates.
+
 \subsection{Help while you type}
 The box colors the expression as you type — columns, numbers, text and keywords each in their own color — so a missing quote shows before you press \key{Enter}. Autocomplete offers what fits at the cursor: column names, functions, and after \code{LITO =} the values that column actually holds.
 

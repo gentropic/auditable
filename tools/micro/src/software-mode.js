@@ -8,6 +8,8 @@
 //   · skips the idle pick capture — a click renders its one pixel instead of every idle frame
 //     building a full id buffer,
 //   · starts with eye-dome lighting off (two more full-screen passes a frame),
+//   · stands the heavy optional passes down: ambient occlusion off, a ghost filter's outline drawn
+//     as its flat tint (renderer.setLightweight),
 // and says so once on the status line. Settings → display → "software rendering" forces it on or
 // off (micro.swRender = auto | on | off) — on a GPU machine that is how the mode is tried.
 import { S, requestRender } from './state.js';
@@ -59,6 +61,8 @@ function apply(announce) {
     _budgetByUs = false; _edlOffByUs = false;
   }
   document.body.classList.toggle('sw-render', on);
+  // the heavy optional passes stand down (a ghost outline draws as its tint; ambient occlusion off — src/viewport.js)
+  if (S.renderer && S.renderer.setLightweight) S.renderer.setLightweight(on);
   if (on && announce && (!_said || !was)) {
     const m = $('#meta');
     if (m) m.textContent = SW.detected ? `software rendering detected (${SW.name}) — reduced detail; see Help → About` : 'software rendering mode (forced in Settings) — reduced detail; see Help → About';

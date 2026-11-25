@@ -80,6 +80,7 @@ export function recreateRenderer() {
   S.renderer = renderer;
   if (window._micro) window._micro.renderer = renderer;
   renderer.setMaxPixelRatio(document.body.classList.contains('mobile') ? 2 : Infinity);
+  renderer.setLightweight(SW.on);                          // a software rasterizer: the heavy optional passes stand down
   { const [w, h] = renderer.resize(); cam.setAspect(w / h); }
   applyBg();
   requestRender();

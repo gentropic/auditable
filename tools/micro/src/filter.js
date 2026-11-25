@@ -15,6 +15,7 @@ import { refreshLinkedWindows, rowsProgress } from './analysis-ui.js';
 import { syncHL } from './exprfield.js';
 import { pushDhMask } from './drillholes.js';
 import { attrTableFilterChanged } from './attrtable.js';
+import { compactsFilter, filterOptsOf } from './ghost.js';
 const $ = (s) => document.querySelector(s);
 
 // predicate pushdown: can the filter be true for SOME row whose NUMERIC columns
@@ -192,7 +193,7 @@ export async function applyBlockFilter(expr, L = activeLayer()) {
   // the builder runs OFF the page (src/chunkworker.js): a 2M-match batch's Morton
   // sort + packing froze the page ~0.5 s, several times per filter on a big model
   // a VIEW draws its model's chunks and owns none: it filters by the mask only
-  let cb2 = isolate && fBlockDoc.grid && compactCap > 0 && !header.subBlocked && (layerById(lid) || {}).viewOf == null
+  let cb2 = isolate && compactsFilter(layerById(lid)) && fBlockDoc.grid && compactCap > 0 && !header.subBlocked && (layerById(lid) || {}).viewOf == null
     ? await startChunkBuilder({ frame: S.frame, grid: fBlockDoc.grid, chunkSize: 1 << 17, batchSize: 1 << 21, seed: 2, onChunk: (c) => { if (alive()) S.renderer.addChunk(c, 'compact', lid); } })
     : null;
   if (!alive()) { if (cb2) cb2.close(); return; }          // superseded while the builder started: never registered, never drawn
@@ -535,7 +536,7 @@ export async function applyBlockFilter(expr, L = activeLayer()) {
     S.renderer.setActiveSet('compact', lid);
   } else {
     S.renderer.setActiveSet('base', lid);
-    S.renderer.setFilter(mask, { isolate }, lid);         // default = isolate; context = dim the rest
+    S.renderer.setFilter(mask, filterOptsOf(layerById(lid)), lid);   // isolate (default) · dim · ghost · outline (src/ghost.js)
   }
   // the attribute table's only-matches mode needs the mask EITHER WAY — the
   // compact path renders matches as chunks, but the table reads rows
@@ -589,7 +590,7 @@ async function applyCloudFilter(L, expr, inp, cd) {
   }
   if (!alive()) return;
   S.renderer.setActiveSet('base', lid);
-  S.renderer.setFilter(mask, { isolate: true }, lid);
+  S.renderer.setFilter(mask, filterOptsOf(L), lid);         // isolate (default) · dim · ghost · outline (src/ghost.js)
   L._filterMask = mask; attrTableFilterChanged(lid); refreshLinkedWindows(L, 'filtered');
   requestRender();
   $('#meta').textContent = `${name} · filter: ${hits.toLocaleString()} of ${N.toLocaleString()} points match`;

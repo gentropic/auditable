@@ -58,6 +58,7 @@ uniform float uNoDataOn;                // off: a blank clamps to the lowest col
 uniform sampler2D uPalette;
 uniform sampler2D uMask;                // filter bitmask by record index (8192-wide)
 uniform float uFilterOn, uIsolate;
+uniform float uGhost;                   // the GHOST pass (gl-ghost.js): only the records the filter leaves out
 uniform sampler2D uSel;
 uniform float uSelOn;
 uniform sampler2D uCatVis;              // 256x1 per-class visibility
@@ -106,6 +107,7 @@ void main() {
   float secSupp = demoted > 0.5 ? 0.0 : dot(half_, abs(transpose(uGridRot) * uSecPlane.xyz));   // the normal in the box's frame
   float secCull = (uSecCfg.x > 0.5 && abs(dot(center, uSecPlane.xyz) - uSecPlane.w) > uSecCfg.y + secSupp * 0.99) ? 1.0 : 0.0;   // 0.99: a box that only TOUCHES the slab (a face on its boundary — the level below a one-block slab) is out, not drawn as a zero-thick face
   vCull = max((uIsolate > 0.5 && m < 0.5) ? 1.0 : 0.0, secCull);
+  if (uGhost > 0.5 && m > 0.5) vCull = 1.0;
   float cls = aCat;
   if (uRuleOn > 0.5) {
     int rr = int(aRec);
@@ -338,7 +340,7 @@ export function createBlocksPipeline(gl) {
       perspScale: U('uPerspScale'), demotePx: U('uDemotePx'), pointPx: U('uPointPx'),
       colorMode: U('uColorMode'), zRange: U('uZRange'), chanChunk: U('uChanChunk'), chanDoc: U('uChanDoc'), noData: U('uNoData'), noDataOn: U('uNoDataOn'),
       ramp: U('uRamp'), palette: U('uPalette'), lightDir: U('uLightDir'),
-      mask: U('uMask'), filterOn: U('uFilterOn'), isolate: U('uIsolate'), forceSplat: U('uForceSplat'), fixedSplat: U('uFixedSplat'), picked: U('uPicked'), pickedLayer: U('uPickedLayer'), layer: U('uLayer'), repaint: U('uRepaint'),
+      mask: U('uMask'), filterOn: U('uFilterOn'), isolate: U('uIsolate'), ghost: U('uGhost'), forceSplat: U('uForceSplat'), fixedSplat: U('uFixedSplat'), picked: U('uPicked'), pickedLayer: U('uPickedLayer'), layer: U('uLayer'), repaint: U('uRepaint'),
       catVis: U('uCatVis'), catVisOn: U('uCatVisOn'), sel: U('uSel'), selOn: U('uSelOn'),
       rule: U('uRule'), ruleOn: U('uRuleOn'),
       chanTex: U('uChanTex'), chanTexOn: U('uChanTexOn'),
@@ -423,7 +425,7 @@ export function createBlocksPipeline(gl) {
 
   // Per-frame program state (called once before the chunk loop) — set on BOTH
   // programs so drawSlice can switch freely between full and cheap.
-  function begin(cam, { pointPx, colorMode, zRange, chanDoc, ramp, palette, viewportH, maskTex = null, isolate = false, pointsView = false, picked = 0xFFFFFFFF, pickedLayer = 0xFFFFFFFF, layer = 0, section = null, catVisTex = null, selTex = null, ruleTex = null, chanTex = null, opacity = 1, edges = false, noData = null, projection = false, mipCodes = false }) {
+  function begin(cam, { pointPx, colorMode, zRange, chanDoc, ramp, palette, viewportH, maskTex = null, isolate = false, pointsView = false, picked = 0xFFFFFFFF, pickedLayer = 0xFFFFFFFF, layer = 0, section = null, catVisTex = null, selTex = null, ruleTex = null, chanTex = null, opacity = 1, edges = false, noData = null, projection = false, mipCodes = false, ghost = false }) {
     const s = cam.state;
     if (projection && !mip) mip = { full: mkProg(FRAG, '#define MIP 1'), cheap: mkProg(FRAG_CHEAP, '#define MIP 1') };
     set = projection ? mip : normal;
@@ -470,7 +472,8 @@ export function createBlocksPipeline(gl) {
       gl.uniform1f(uni.edges, edges ? 1 : 0);
       if (uni.mipCodes) gl.uniform1f(uni.mipCodes, mipCodes ? 1 : 0);
       gl.uniform1f(uni.filterOn, maskTex ? 1 : 0);
-      gl.uniform1f(uni.isolate, isolate ? 1 : 0);
+      gl.uniform1f(uni.isolate, isolate && !ghost ? 1 : 0);
+      gl.uniform1f(uni.ghost, ghost ? 1 : 0);
       if (maskTex) { gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, maskTex); gl.uniform1i(uni.mask, 4); }
       gl.uniform1f(uni.catVisOn, catVisTex ? 1 : 0);
       if (catVisTex) { gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, catVisTex); gl.uniform1i(uni.catVis, 5); }

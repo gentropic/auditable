@@ -70,11 +70,13 @@ export function createEdl(gl) {
       return t;
     };
     colorTex = tex(gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE);
-    depthTex = tex(gl.DEPTH_COMPONENT24, gl.DEPTH_COMPONENT, gl.UNSIGNED_INT);
+    // depth + STENCIL: the ghost filter display (gl-ghost.js) marks kept elements in the stencil;
+    // the depth half reads exactly as a DEPTH_COMPONENT24 texture did
+    depthTex = tex(gl.DEPTH24_STENCIL8, gl.DEPTH_STENCIL, gl.UNSIGNED_INT_24_8);
     fbo = gl.createFramebuffer();
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, colorTex, 0);
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, depthTex, 0);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.TEXTURE_2D, depthTex, 0);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
 

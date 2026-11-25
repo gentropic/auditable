@@ -10272,6 +10272,81 @@ if (take()) {
   await pg.close();
 }
 
+// ── §139: GHOST filter display (src/ghost.js · condenser gl-ghost.js). A 3-level model in plan,
+// orthographic, filtered: under ISOLATE the columns with no match show the background; under
+// GHOST they show one flat tint, while every pixel of a kept block is exactly as isolate drew it —
+// including a kept block BELOW a left-out one (a ghost never covers a kept block, even in front).
+// OUTLINE: only the left-out envelope's boundary is inked, its interior stays background. DIM
+// darkens instead. Software rendering draws the outline as the tint. Saved with the project.
+if (take()) {
+  const pg = await mkPage('sm2ghost');
+  const r = await pg.evaluate(async () => {
+    const M = window._micro, R = M.renderer, W = window.micro, V = window._microVis;
+    const NX = 16, NY = 12, NZ = 3, D = 10;
+    let csv = 'XC,YC,ZC,FE\n';
+    const fe = (i, j, k) => (i < 6 && j < 6 ? (k === 0 ? 80 : 20) : i >= 10 && j >= 6 ? 70 : 20);   // a kept block UNDER a left-out top · a kept patch · the rest out
+    for (let k = 0; k < NZ; k++) for (let j = 0; j < NY; j++) for (let i = 0; i < NX; i++) csv += `${1000 + i * D + D / 2},${2000 + j * D + D / 2},${300 + k * D + D / 2},${fe(i, j, k)}\n`;
+    const id = await M.openBlob(new Blob([csv]), 'ghost.csv', 'replace', null, { throw: true });
+    const L = M.layers().find((x) => x.id === id);
+    M.setLayerColorSel(L, M.colorSelFor(L, 'FE'));
+    const frame = () => new Promise((z) => requestAnimationFrame(z));
+    const settle = async () => { for (let k = 0; k < 300; k++) { M.requestRender(); await frame(); if (R.elementCount && R.accumulated === R.elementCount) break; } for (let k = 0; k < 4; k++) { M.requestRender(); await frame(); } };
+    await W.setView({ look: 0, elevation: 90, ortho: true });
+    document.querySelector('#btnFit').click();
+    await M.applyBlockFilter('FE > 50', L);
+    await settle();
+    const cv = document.querySelector('#cv'), rc = cv.getBoundingClientRect(), dpr = cv.width / rc.width;
+    const toDev = (x, y) => {
+      const o = M.frame.origin, p = [x - o[0], y - o[1], 300 + NZ * D - o[2]], m = M.cam.state.viewProj;
+      const cx = m[0] * p[0] + m[4] * p[1] + m[8] * p[2] + m[12], cy = m[1] * p[0] + m[5] * p[1] + m[9] * p[2] + m[13], cw = m[3] * p[0] + m[7] * p[1] + m[11] * p[2] + m[15];
+      return [Math.round((cx / cw + 1) / 2 * cv.width), Math.round((1 - cy / cw) / 2 * cv.height)];   // canvas rows top-down
+    };
+    const shot = () => { const c = new OffscreenCanvas(cv.width, cv.height), g = c.getContext('2d'); g.drawImage(cv, 0, 0); return g.getImageData(0, 0, cv.width, cv.height).data; };
+    const at = (d, [x, y]) => { const k = (y * cv.width + x) * 4; return [d[k], d[k + 1], d[k + 2]]; };
+    const same = (a, b, tol = 6) => Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2]) <= tol;
+    const cells = { under: [], kept: [], out: [] };              // block-column centres by what they hold
+    for (let j = 0; j < NY; j++) for (let i = 0; i < NX; i++) {
+      const p = toDev(1000 + i * D + D / 2, 2000 + j * D + D / 2);
+      if (i < 6 && j < 6) cells.under.push(p); else if (i >= 10 && j >= 6) cells.kept.push(p); else cells.out.push(p);
+    }
+    const bg = R.background.slice(0, 3).map((v) => Math.round(v * 255));
+    const iso = shot();
+    const out = { bg };
+    const grade = (d, list) => list.map((p) => at(d, p));
+    out.isolate = { outBg: grade(iso, cells.out).filter((c) => same(c, bg)).length, n: cells.out.length };
+    V.setFilterShow(L, 'ghost'); await settle();
+    const gh = shot();
+    const tints = grade(gh, cells.out);
+    out.ghost = { tint: tints[0], flat: tints.filter((c) => same(c, tints[0])).length, notBg: tints.filter((c) => !same(c, bg, 12)).length, n: tints.length,
+      underKept: cells.under.filter((p) => same(at(gh, p), at(iso, p))).length, keptKept: cells.kept.filter((p) => same(at(gh, p), at(iso, p))).length, nu: cells.under.length, nk: cells.kept.length,
+      layerGhost: R.layerGhost(id) };
+    V.setFilterShow(L, 'outline'); await settle();
+    const ol = shot();
+    // the out region's interior (a column whose 8 neighbours are out too) stays background; its boundary is inked
+    let interiorBg = 0, interior = 0, inked = 0;
+    for (let y = 0; y < cv.height; y++) for (let x = 0; x < cv.width; x++) { const k = (y * cv.width + x) * 4; if (!same([ol[k], ol[k + 1], ol[k + 2]], [iso[k], iso[k + 1], iso[k + 2]], 12)) inked++; }
+    for (let j = 1; j < NY - 1; j++) for (let i = 7; i < 9; i++) { interior++; if (same(at(ol, toDev(1000 + i * D + D / 2, 2000 + j * D + D / 2)), bg)) interiorBg++; }
+    out.outline = { inked, interiorBg, interior, keptKept: cells.kept.filter((p) => same(at(ol, p), at(iso, p))).length };
+    // software rendering: the outline draws as the tint
+    R.setLightweight(true); await settle();
+    const lw = shot(); out.lightweight = { tintLike: grade(lw, cells.out).filter((c) => same(c, tints[0])).length };
+    R.setLightweight(false);
+    V.setFilterShow(L, 'dim'); await settle();
+    const dm = shot(); out.dim = { darker: cells.out.filter((p) => { const a = at(dm, p); return !same(a, bg, 12) && a[0] + a[1] + a[2] < 0.6 * 255 * 3; }).length };
+    V.setFilterShow(L, 'ghost'); await settle();
+    out.saved = (await import('/tools/micro/src/layer-display.js')).displayStateOf(L);
+    return out;
+  });
+  chk(`ghost: isolate shows the background where nothing matches (${r.isolate.outBg}/${r.isolate.n} columns)`, r.isolate.outBg === r.isolate.n);
+  chk(`ghost: the left-out columns are ONE flat tint (${r.ghost.flat}/${r.ghost.n} alike, ${r.ghost.notBg} not background, rgb ${r.ghost.tint}); every kept pixel is isolate's — the kept block UNDER a left-out top ${r.ghost.underKept}/${r.ghost.nu}, the kept patch ${r.ghost.keptKept}/${r.ghost.nk} (${JSON.stringify(r.ghost.layerGhost)})`,
+    r.ghost.flat === r.ghost.n && r.ghost.notBg === r.ghost.n && r.ghost.underKept === r.ghost.nu && r.ghost.keptKept === r.ghost.nk && r.ghost.layerGhost && r.ghost.layerGhost.style === 'tint');
+  chk(`ghost outline: the envelope's interior stays background (${r.outline.interiorBg}/${r.outline.interior}), its boundary is inked (${r.outline.inked} px), the kept patch untouched (${r.outline.keptKept})`,
+    r.outline.interiorBg === r.outline.interior && r.outline.inked > 50 && r.outline.keptKept === r.ghost.nk);
+  chk(`ghost: software rendering draws the outline as the tint (${r.lightweight.tintLike}/${r.ghost.n}); dim darkens instead (${r.dim.darker} columns); saved as ${JSON.stringify(r.saved)}`,
+    r.lightweight.tintLike === r.ghost.n && r.dim.darker > r.ghost.n / 2 && r.saved && r.saved.filterShow === 'ghost');
+  await pg.close();
+}
+
 // ── the LAYER CONTEXT MENU, regrouped (src/layermenu.js layerMenuSections). It had
 // grown to ~33 top-level entries on a block model; now the frequent verbs sit on top
 // and the rest in Analyse · Geometry · Select · Views · Display · Data & file · Move.
