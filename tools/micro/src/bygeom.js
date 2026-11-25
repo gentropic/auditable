@@ -16,6 +16,7 @@ import { supportOfHeader, worldHalfExtent } from '../../../ext/condenser/src/mai
 import { gridWindowFromGTiff, windowForWorldBbox } from '../../../ext/gtiff/index.js';
 import { paintRecount } from './columns.js';
 import { mkLineage } from './lineage.js';
+import { planCoverage, pointInFeatureXY, featureBBoxXY } from './coverage.js';
 import { layerWorldBbox } from './gridtools.js';
 import { markProjectDirty } from './project.js';
 import { setLayerColorSel } from './color.js';
@@ -389,6 +390,10 @@ export async function evalSolidOnGrid(meshL, L, { mode, resolution = [3, 3, 3], 
   const bs = bySupportOf(L);
   if (bs && bs.sub) return evalSolidPerBlock(meshL, L, bs, { mode, resolution, onProgress, variant });
   const rotated = !!grid.rot;
+  // a VERTICAL PRISM (an extruded z-range polygon, src/extrude.js tags it) on an axis-aligned lattice
+  // factorises exactly: fraction = the plan area of the block's column inside the polygon (the cell
+  // clipped to it) × the block's z overlap with [z0, z1]. No winding, no sampling — exact at the edges.
+  if (meshL._prism && !rotated && variant === 'solid') return prismOnGrid(meshL._prism, grid, mode);
   let usePeel = method === 'peel';
   if (usePeel && rotated) {
     // peel's OPEN-surface answer is "below along its ray"; in the lattice frame the ray
@@ -491,6 +496,41 @@ export async function evalSolidOnGrid(meshL, L, { mode, resolution = [3, 3, 3], 
       const kk = Math.round((z - corner[2]) / dz - 0.5);
       if (ii < i0 || ii > i1 || jj < j0 || jj > j1 || kk < k0 || kk > k1) return 0;
       return values[(ii - i0) + (jj - j0) * cnx + (kk - k0) * cnx * cny];
+    },
+  };
+}
+
+// the vertical-prism answer on a regular lattice (see evalSolidOnGrid). prism: { features, z0, z1 }.
+// flag mode: the block's centroid (in plan, and z0 ≤ z ≤ z1) — as winding's flag; proportion: exact.
+export function prismOnGrid(prism, grid, mode) {
+  const [dx, dy, dz] = grid.size, [nx, ny, nz] = grid.count;
+  const o = S.frame.origin;
+  const corner = [grid.originLocal[0] - dx / 2 + o[0], grid.originLocal[1] - dy / 2 + o[1], grid.originLocal[2] - dz / 2 + o[2]];
+  let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
+  for (const f of prism.features) { const b = featureBBoxXY(f); bx0 = Math.min(bx0, b[0]); by0 = Math.min(by0, b[1]); bx1 = Math.max(bx1, b[2]); by1 = Math.max(by1, b[3]); }
+  const { z0, z1 } = prism;
+  const span = (lo, hi, c, d, n) => [Math.max(0, Math.floor((lo - c) / d)), Math.min(n - 1, Math.ceil((hi - c) / d) - 1)];
+  const [i0, i1] = span(bx0, bx1, corner[0], dx, nx), [j0, j1] = span(by0, by1, corner[1], dy, ny), [k0, k1] = span(z0, z1, corner[2], dz, nz);
+  const worldBbox = [bx0 - dx / 2, by0 - dy / 2, z0 - dz / 2, bx1 + dx / 2, by1 + dy / 2, z1 + dz / 2];
+  if (i1 < i0 || j1 < j0 || k1 < k0) return { engine: 'prism:exact', bbox: worldBbox, rotated: false, lookup: () => 0 };
+  const cnx = i1 - i0 + 1, cny = j1 - j0 + 1;
+  const ox = corner[0] + (i0 + 0.5) * dx, oy = corner[1] + (j0 + 0.5) * dy;
+  let plan;
+  if (mode === 'flag') {
+    plan = new Float32Array(cnx * cny);
+    for (let j = 0; j < cny; j++) for (let i = 0; i < cnx; i++) { const x = ox + i * dx, y = oy + j * dy; if (prism.features.some((f) => pointInFeatureXY(f, x, y))) plan[i + j * cnx] = 1; }
+  } else plan = planCoverage(prism.features, { ox, oy, dx, dy, nx: cnx, ny: cny });
+  const zf = new Float32Array(k1 - k0 + 1);
+  for (let k = k0; k <= k1; k++) {
+    const a = corner[2] + k * dz, b = a + dz;
+    zf[k - k0] = mode === 'flag' ? (a + dz / 2 >= z0 && a + dz / 2 <= z1 ? 1 : 0) : Math.max(0, Math.min(z1, b) - Math.max(z0, a)) / dz;
+  }
+  return {
+    engine: 'prism:exact', bbox: worldBbox, rotated: false,
+    lookup(x, y, z) {
+      const ii = Math.round((x - corner[0]) / dx - 0.5), jj = Math.round((y - corner[1]) / dy - 0.5), kk = Math.round((z - corner[2]) / dz - 0.5);
+      if (ii < i0 || ii > i1 || jj < j0 || jj > j1 || kk < k0 || kk > k1) return 0;
+      return plan[(ii - i0) + (jj - j0) * cnx] * zf[kk - k0];
     },
   };
 }

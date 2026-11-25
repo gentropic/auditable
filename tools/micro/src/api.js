@@ -119,6 +119,10 @@ import { openSample, makeSampleBlockCsv, openDemoProject, makeDemoBlockCsv, make
 import { windowsMenu, cascadeWindows, closeAllWindows } from './menubar.js';
 import { COMMANDS } from './commands.js';
 import { isPolygonLayer, featuresOf, pointInPolygonXY, preparePolygons, polygonAreaXY, setFeatureFill, setFeatureCategory } from './polygons.js';
+import { resolveLimit, limitMaskOf, prepareScope, polygonLayers } from './polylimit.js';
+import { extrudeSolids, extrudeToLayers, openExtrude } from './extrude.js';
+import { manifoldCheck } from './extrude-core.js';
+import { planCoverage } from './coverage.js';
 import { buildFeatureExport, readFeatureFile } from './poly-io.js';
 import { exportFeatures, copyFeaturesText, pasteFeaturesText, editFeatures, newFeatureLayer, setFeatureElevation } from './poly-ui.js';
 import { DRAW as polyDraw, armDraw, armEditVertices, disarmPoly, addDraftVertex, finishDraw, moveVertex, insertVertex, deleteVertex, worldAt } from './poly-draw.js';
@@ -197,6 +201,7 @@ window._micro = {
   applySwathZebra, confirmRemoveLayer, undoLabel, startChunkBuilder, setCsvColumnar, canScanColumnar,
   zoneKeeper, paintVolume, layerShown, backupProject, restoreProject, openProjectPack, openPackFile,
   isPolygonLayer, featuresOf, pointInPolygonXY, preparePolygons, polygonAreaXY, setFeatureFill, setFeatureCategory,
+  resolveLimit, limitMaskOf, prepareScope, polygonLayers, extrudeSolids, extrudeToLayers, openExtrude, manifoldCheck, planCoverage,
   buildFeatureExport, readFeatureFile, exportFeatures, copyFeaturesText, pasteFeaturesText, editFeatures, newFeatureLayer,
   setFeatureElevation, polyDraw, armDraw, armEditVertices, disarmPoly, addDraftVertex, finishDraw, moveVertex,
   insertVertex, deleteVertex, worldAt,

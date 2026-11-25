@@ -17,7 +17,7 @@ import { deliverBlob } from './hostio.js';
 import { microChoose, microPrompt } from './prompts.js';
 import { markProjectDirty } from './project.js';
 import { pushUndo } from './undo.js';
-import { registerCommands, contributeMenu } from './commands.js';
+import { registerCommands, contributeMenu, COMMANDS, commandCtx } from './commands.js';
 import { armEditVertices, armDraw } from './poly-draw.js';
 const $ = (s) => document.querySelector(s);
 
@@ -233,6 +233,7 @@ export function polygonMenuItems(L) {
       { label: 'Edit vertices', action: () => armEditVertices(L) },
       { label: 'Draw polygon into this layer', action: () => armDraw({ into: L, closed: true }) },
       { label: 'Set elevation…', action: () => setFeatureElevation(L) },
+      ...(d.header.polygons ? [{ label: 'Extrude polygons to a solid…', action: () => { const c = COMMANDS.find((x) => x.id === 'extrude'); if (c) c.run({ ...commandCtx(), L }); } }] : []),
     ],
     data: [
       { label: 'Export features…', action: () => exportFeatures(L) },
