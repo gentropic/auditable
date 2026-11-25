@@ -56,13 +56,19 @@ export function projectionStatus(r) {
   return p.exact ? `${PROJ_NAME[m]} (exact) · ` : `${PROJ_NAME[m]} (partial — ${p.drawn.toLocaleString()} of ${p.total.toLocaleString()} drawn) · `;
 }
 
+// the grid twin (src/projectgrid.js — the same per-column question asked of the records) hands
+// its window opener in here, so this early module needn't import the analysis stack
+let _gridOpener = null;
+export function setProjectionGridOpener(fn) { _gridOpener = fn; }
 // the View menu's submenu
 export function projectionMenuItems() {
   const sup = projectionSupport();
-  return PROJ_MENU.map(([v, t]) => ({
+  const items = PROJ_MENU.map(([v, t]) => ({
     label: (S.projection === v ? '✓ ' : '') + t + (v && !sup[v] ? ' (not on this GPU)' : ''),
     action: () => setProjection(v),
   }));
+  if (_gridOpener) items.push({ sep: true }, { label: 'Projection to grid…', action: () => _gridOpener(null) });
+  return items;
 }
 
 // ── its palette commands (src/commands.js; the palette order is src/command-list.js) ──

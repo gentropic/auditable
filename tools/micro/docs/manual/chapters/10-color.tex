@@ -281,6 +281,24 @@ With the demo project open:
 \end{enumerate}
 \end{tryit}
 
+\subsection{Projection to grid: the same question, as numbers}\label{sec:color-projgrid}
+The projection is a \emph{picture}: it is drawn a budget at a time, and its value per pixel depends on the zoom. When you want the answer as data — a map you can contour, drape on the topography, export, or put in a figure — use \menu{View>Projection>Projection to grid…} (or \code{projection to grid} in the palette). It asks the same per-column question of the \emph{records}, every one of them, and writes the answer as a grid layer (\cref{ch:grids}).
+
+For every node of a plan lattice micro takes the node's vertical line through the model and the blocks it passes through. A block counts by the \emph{length of line inside it}, so a sub-block counts by its own size and a rotated model by its turned boxes, exactly as they are drawn. Of those blocks a node keeps one statistic:
+
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+\ui{max}, \ui{min} & the highest or lowest grade along the column — the projection's numbers \\
+\ui{mean} & the thickness-weighted mean grade along the column \\
+\ui{thickness} & the length of column at or above the cutoff (m) — an isopach of ore \\
+\ui{accumulation} & grade × thickness above the cutoff (\code{FE·m}) \\
+\ui{tonnes} & the tonnes above the cutoff under the node's cell (thickness × cell area × density) \\
+\ui{metal} & those tonnes × grade × the metal factor — the same rule as the resource table (\cref{ch:resources}) \\ \bottomrule
+\end{tabularx}
+\end{center}
+
+The density is a column or one value in t/m³; without one, \ui{tonnes} is a volume in m³. The lattice defaults to the model's finest plan pitch with nodes on the block centres, so for a regular model every node is one column of blocks; a rotated model gets nodes on round multiples of the cell. The layer's filter applies when it has one, and blanks never count. The tool is \code{projectgrid} in routines, with the same settings (\cref{ch:routines}); the totals of a \ui{tonnes} or \ui{metal} grid are on the status line, and in the tool's values.
+
 \section{Reusing a look}\label{sec:color-copy}
 Once the classes, colors and no-data choices are right on one layer, you should not have to build them again. Right-click the layer and open \menu{Display>Style}:
 

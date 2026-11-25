@@ -10184,6 +10184,94 @@ if (take()) {
   await pg.close();
 }
 
+// ── §138: PROJECTIONS AS GRIDS (src/projectgrid.js). A regular model: per node (= a block column)
+// the max / min / mean grade, the thickness / accumulation / tonnes / metal above a cutoff equal the
+// brute force over the column's blocks; the columnar engine and the row path agree to the bit; the
+// filter applies; the grid opens as a grid layer. A sub-blocked model and its ROTATED .dm twin: the
+// tonnes grid (density 1) totals each model's volume — exactly on the twin's fine lattice, within a
+// sampling error on the rotated one. The routine tool returns the same numbers.
+if (take()) {
+  const pg = await mkPage('sm2pgrid');
+  const r = await pg.evaluate(async () => {
+    const M = window._micro, V = window._microVis;
+    const NX = 9, NY = 7, NZ = 6, DX = 10, DY = 10, DZ = 5;
+    let s = 4242;
+    const rnd = () => { s = (Math.imul(s, 1103515245) + 12345) >>> 0; return s / 4294967296; };
+    const fe = [], sg = []; let csv = 'XC,YC,ZC,FE,SG\n';
+    for (let k = 0; k < NZ; k++) for (let j = 0; j < NY; j++) for (let i = 0; i < NX; i++) {
+      const v = +(10 + rnd() * 60).toFixed(3), d = +(2.5 + rnd()).toFixed(3);
+      fe.push(v); sg.push(d); csv += `${1000 + i * DX + DX / 2},${2000 + j * DY + DY / 2},${300 + k * DZ + DZ / 2},${v},${d}\n`;
+    }
+    const rec = (i, j, k) => k * NY * NX + j * NX + i;
+    const id = await M.openBlob(new Blob([csv]), 'pgrid.csv', 'replace', null, { throw: true });
+    const L = M.layers().find((x) => x.id === id);
+    const nodeOf = (g, x, y) => { const c = Math.round((x - g.x0) / g.dx), rr = Math.round((g.y0 - y) / g.dy); return rr * g.nx + c; };
+    const brute = (stat, i, j, cut = -Infinity) => {
+      const ks = [...Array(NZ).keys()], g = ks.map((k) => fe[rec(i, j, k)]), d = ks.map((k) => sg[rec(i, j, k)]);
+      if (stat === 'max') return Math.max(...g);
+      if (stat === 'min') return Math.min(...g);
+      if (stat === 'mean') return g.reduce((a, b) => a + b, 0) / NZ;
+      let t = 0; for (const k of ks) if (g[k] >= cut) t += stat === 'thickness' ? DZ : stat === 'accumulation' ? DZ * g[k] : stat === 'tonnes' ? DZ * DX * DY * d[k] : DZ * DX * DY * d[k] * g[k] * 0.01;
+      return t;
+    };
+    const out = { stats: {} };
+    for (const stat of ['max', 'min', 'mean', 'thickness', 'accumulation', 'tonnes', 'metal']) {
+      const o = { col: 'FE', stat, cutoff: ['thickness', 'accumulation', 'tonnes', 'metal'].includes(stat) ? 40 : null, density: 'SG', gradeUnit: stat === 'metal' ? 'pct' : '' };
+      const res = await V.projectGrid(L, o);                  // the default lattice: the model's pitch, nodes on block centres
+      let worst = 0, n = 0;
+      for (let j = 0; j < NY; j++) for (let i = 0; i < NX; i++) {
+        const want = brute(stat, i, j, 40), k = nodeOf(res.grid, 1000 + i * DX + DX / 2, 2000 + j * DY + DY / 2), got = res.grid.data[k];
+        worst = Math.max(worst, Math.abs(got - want) / Math.max(1, Math.abs(want))); n++;
+      }
+      window.__pgRowPath = true;
+      const row = await V.projectGrid(L, o);
+      window.__pgRowPath = false;
+      let same = row.grid.data.length === res.grid.data.length;
+      for (let k = 0; same && k < row.grid.data.length; k++) if (Math.abs(row.grid.data[k] - res.grid.data[k]) > 1e-6 * Math.max(1, Math.abs(res.grid.data[k]))) same = false;
+      out.stats[stat] = { worst, n, where: res.where, same, nodes: res.geom.nx * res.geom.ny, filled: res.filled };
+    }
+    // the filter box applies: FE < 50 → no node's max reaches 50
+    await M.applyBlockFilter('FE < 50', L);
+    { const res = await V.projectGrid(L, { col: 'FE', stat: 'max', cell: DX }); let mx = -Infinity; for (const v of res.grid.data) if (v !== res.grid.nodata && v > mx) mx = v; out.filtered = { mx }; }
+    { const res = await V.projectGrid(L, { col: 'FE', stat: 'max', cell: DX, scope: 'all' }); let mx = -Infinity; for (const v of res.grid.data) if (v !== res.grid.nodata && v > mx) mx = v; out.unfiltered = { mx }; }
+    await M.applyBlockFilter('', L);
+    // the layer
+    const made = await V.projectGridLayer(L, { col: 'FE', stat: 'max' });
+    const G = M.layers().find((x) => x.id === made.id);
+    out.layer = { name: made.name, grid: !!(G && G.docs && G.docs.gridDoc), lineage: G && G.lineage && G.lineage.op, nx: G && G.docs.gridDoc && G.docs.gridDoc.grid.nx, cell: made.geom.dx };
+    // the tool
+    const tr = await M.runTool('projectgrid', { layer: 'pgrid.csv', col: 'FE', stat: 'thickness', cutoff: 40, cell: DX });
+    out.tool = { values: tr.values, layers: tr.layers };
+    // the window: Make grid → a layer, said on the status line
+    { const w = V.openProjectGridDialog(L); w.el.querySelector('[data-go]').click();
+      for (let k = 0; k < 200 && !/^projection to grid: /.test(document.querySelector('#meta').textContent); k++) await new Promise((z) => setTimeout(z, 25));
+      out.dialog = document.querySelector('#meta').textContent.slice(0, 120); w.close(); }
+    // sub-blocked twin + rotated .dm: Σ tonnes (density 1) = the model's volume
+    const F = await import('/test/subblock-make.mjs');
+    const { rows } = F.makeSubblockRows({ seed: 9, nx: 4, ny: 3, nz: 3 });
+    const vol = () => { let v = 0; for (const rw of rows) v += rw.XINC * rw.YINC * rw.ZINC; return v; };
+    const twin = await M.openBlob(new Blob([F.makeSubblockCsv(rows)]), 'pgtwin.csv', 'add', null, { throw: true });
+    const LT = M.layers().find((x) => x.id === twin);
+    const rt = await V.projectGrid(LT, { col: 'V', stat: 'tonnes' });
+    const rot = await M.openBlob(new Blob([F.makeSubblockDm(rows, { angle1: -50 })]), 'pgrot.dm', 'add', null, { throw: true, origin: [432820, 8522360, 300] });
+    const LR = M.layers().find((x) => x.id === rot);
+    const rr = await V.projectGrid(LR, { col: 'V', stat: 'tonnes', cell: 1 });
+    out.sub = { vol: vol(), twin: rt.total, twinCell: rt.geom.dx, twinSub: !!LT.docs.blockDoc.header.subBlocked, rot: rr.total, rotated: !!(LR.docs.blockDoc.header.grid && LR.docs.blockDoc.header.grid.rot), rotCell: rr.geom.dx, rotWhere: rr.where };
+    return out;
+  });
+  for (const [stat, m] of Object.entries(r.stats)) {
+    chk(`projection to grid — ${stat}: each of ${m.n} columns = the brute force over its blocks (worst rel ${m.worst.toExponential(2)}), ${m.filled}/${m.nodes} nodes; columnar (${m.where}) = row path: ${m.same}`,
+      m.n === 63 && m.worst < 1e-5 && m.same && m.filled === m.nodes);
+  }
+  chk(`projection to grid: the filter box applies (max ${r.filtered.mx.toFixed(2)} < 50; scope all → ${r.unfiltered.mx.toFixed(2)})`, r.filtered.mx < 50 && r.unfiltered.mx >= 50);
+  chk(`projection to grid: the grid opens as a layer (${JSON.stringify(r.layer)})`, r.layer.grid && r.layer.lineage === 'projectgrid' && r.layer.nx === 9 && r.layer.cell === 10);
+  chk(`projection to grid: the window makes the grid (“${r.dialog}”)`, /^projection to grid: pgrid_max_FE_10m\.asc — 378 blocks → 63 of 63 nodes/.test(r.dialog));
+  chk(`projection to grid: the routine tool (${JSON.stringify(r.tool)})`, r.tool.values && r.tool.values.filled === 63 && r.tool.values.total > 0 && r.tool.layers.length === 1);
+  chk(`projection to grid: a sub-blocked model's tonnes (density 1) total its volume exactly on its fine lattice (${r.sub.twin} vs ${r.sub.vol}, cell ${r.sub.twinCell}, sub-blocked ${r.sub.twinSub}); the ROTATED .dm twin within sampling (${r.sub.rot.toFixed(0)}, cell ${r.sub.rotCell}, rotated ${r.sub.rotated}, ${r.sub.rotWhere})`,
+    r.sub.twinSub && r.sub.rotated && Math.abs(r.sub.twin - r.sub.vol) < 1e-6 * r.sub.vol && Math.abs(r.sub.rot - r.sub.vol) < 0.02 * r.sub.vol);
+  await pg.close();
+}
+
 // ── the LAYER CONTEXT MENU, regrouped (src/layermenu.js layerMenuSections). It had
 // grown to ~33 top-level entries on a block model; now the frequent verbs sit on top
 // and the rest in Analyse · Geometry · Select · Views · Display · Data & file · Move.
