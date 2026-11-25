@@ -920,6 +920,8 @@
   body.mobile.sel-on { --sel-h: 44px; }
   html:has(body.mobile) { overscroll-behavior: none; }
   body.mobile #bar .title, body.mobile #bar .mb, body.mobile #bar .spacer { display: none; }
+  #crsChip { display: inline-flex; flex-shrink: 0; align-items: center; gap: 4px; background: none; border: 1px solid var(--bd2); color: var(--muted); border-radius: 10px; padding: 1px 8px; font: 11px/1 var(--mono); cursor: pointer; margin-right: 6px; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  body.mobile #crsChip { display: none; }   /* the phone's one top bar has no room; the CRS stays in Properties + file info */
   body.mobile #btnBurger, body.mobile #bar #btnCmd { display: inline-flex; }   /* outranks the .mb hide */
   /* undo by touch — Ctrl+Z is the desktop's; a phone has no keyboard for it */
   #btnUndo, #btnRedo { display: none; }

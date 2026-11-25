@@ -87,7 +87,7 @@ export function updateCrsChip() {
     if (!seal || !seal.parentElement) return;
     el = document.createElement('button');
     el.id = 'crsChip';
-    el.style.cssText = 'display:inline-flex;flex-shrink:0;align-items:center;gap:4px;background:none;border:1px solid var(--bd2);color:var(--muted);border-radius:10px;padding:1px 8px;font:11px/1 var(--mono);cursor:pointer;margin-right:6px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+    // its look lives in index.html's stylesheet (#crsChip), so the phone layout can hide it
     el.onclick = () => { if (_chipClick) _chipClick(); };
     seal.parentElement.insertBefore(el, seal);
   }
