@@ -224,6 +224,13 @@ export function drawVector(ctx, frame, x, y, w, h) {
   const onPlane = (pl) => (u, v) => worldToPage(frame, [pl.origin[0] + u * pl.u[0] + v * pl.v[0], pl.origin[1] + u * pl.u[1] + v * pl.v[1], pl.origin[2] + u * pl.u[2] + v * pl.v[2]]);
   const seam = (c) => { ctx.fillStyle = c; ctx.strokeStyle = c; ctx.lineWidth = 0.12; };   // a hairline of the fill closes anti-aliased seams
   const shape = (ps) => { ctx.beginPath(); ps.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y))); ctx.closePath(); ctx.fill(); ctx.stroke(); };
+  // BLOCK OUTLINES (Ly.outline = { mode: 'sub-blocks' | 'parents', color, width (mm), rects? |
+  // pts + starts? }): ink over the fills — every cell's own edge (sub-blocks), or the listed parent
+  // cells (rects / polygons in the layer's own coordinates)
+  const ink = (o) => { ctx.strokeStyle = o.color || '#1a1a1a'; ctx.lineWidth = +o.width > 0 ? +o.width : 0.1; ctx.lineJoin = 'miter'; };
+  const ring = (ps) => { if (ps.length < 3 || !ps.every(Boolean)) return; ctx.beginPath(); ps.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y))); ctx.closePath(); ctx.stroke(); };
+  const outlineRects = (o, R, corners) => { ink(o); for (let i = 0; i + 3 < R.length; i += 4) ring(corners(R[i], R[i + 1], R[i + 2], R[i + 3])); };
+  const outlinePolys = (o, Pt, St, page) => { ink(o); for (let i = 0; i < St.length; i++) { const end = i + 1 < St.length ? St[i + 1] : Pt.length / 2, ps = []; for (let k = St[i]; k < end; k++) ps.push(page(Pt[k * 2], Pt[k * 2 + 1])); ring(ps); } };
   const lines = [];
   for (const Ly of V.layers || []) {
     if (Ly.type === 'lines') { lines.push(Ly); continue; }
@@ -234,6 +241,9 @@ export function drawVector(ctx, frame, x, y, w, h) {
         for (let k = St[i]; k < end; k++) { const p = page(Pt[k * 2], Pt[k * 2 + 1]); if (p) ps.push(p); }
         if (ps.length >= 3) { seam(Ly.palette[C[i]]); shape(ps); }
       }
+      const O = Ly.outline;
+      if (O && O.mode === 'sub-blocks') outlinePolys(O, Pt, St, page);
+      else if (O && O.pts && O.starts) outlinePolys(O, O.pts, O.starts, page);
       continue;
     }
     if (Ly.type !== 'cells') continue;
@@ -244,6 +254,9 @@ export function drawVector(ctx, frame, x, y, w, h) {
         const ps = [page(u0, v0), page(u1, v0), page(u1, v1), page(u0, v1)];
         if (ps.every(Boolean)) { seam(Ly.palette[C[i]]); shape(ps); }
       }
+      const O = Ly.outline, corners = (u0, v0, u1, v1) => [page(u0, v0), page(u1, v0), page(u1, v1), page(u0, v1)];
+      if (O && O.mode === 'sub-blocks') outlineRects(O, R, corners);
+      else if (O && O.rects) outlineRects(O, O.rects, corners);
       continue;
     }
     const ax = Ly.axis, R = Ly.rects, C = Ly.colors, P = Ly.palette, pt = [0, 0, 0];
@@ -256,6 +269,9 @@ export function drawVector(ctx, frame, x, y, w, h) {
       ctx.fillStyle = P[C[i]]; ctx.strokeStyle = P[C[i]]; ctx.lineWidth = 0.12;   // a hairline of the same colour closes the seams viewers anti-alias between cells
       ctx.beginPath(); ctx.rect(x0, y0, x1 - x0, y1 - y0); ctx.fill(); ctx.stroke();
     }
+    const O = Ly.outline, corners = (u0, v0, u1, v1) => [page(u0, v0), page(u1, v0), page(u1, v1), page(u0, v1)].map((p) => p && { x: p.x, y: p.y });
+    if (O && O.mode === 'sub-blocks') outlineRects(O, R, corners);
+    else if (O && O.rects) outlineRects(O, O.rects, corners);
   }
   if (frame._vimg) ctx.drawImage(frame._vimg, x, y, w, h);
   // line work on top: drillholes (width in world units — the 3D sticks' diameter) and mesh cut

@@ -19,6 +19,49 @@ import { legendSpec } from './deco.js';
 // the plane, in the section's own (u, v) — w is the axis it cuts across
 export const SEC_AXES = { plan: { w: 2, u: 0, v: 1 }, ns: { w: 0, u: 1, v: 2 }, ew: { w: 1, u: 0, v: 2 } };
 
+// ── BLOCK OUTLINES: a section shows colour regions (same-colour neighbours merge, each cell
+// stroked only with a hairline of its own fill) unless asked for the blocking itself —
+//   none       colour regions (the default; the smallest file)
+//   sub-blocks every block's cut drawn on its own and stroked in ink (no merging)
+//   parents    fills merged within each parent, and each PARENT cell's cut stroked in ink
+//              (a regular model: a parent is a block)
+// The default here (Settings → display → vector-section outlines); a caller may pass its own. Ink
+// and line widths ride in the layer's `outline` for the drawer (@gcu/compo world.js). ──
+export const VEC_OUTLINES = ['none', 'sub-blocks', 'parents'];
+export let _vecOutlines = (() => { try { const v = localStorage.getItem('micro.vecOutlines'); return VEC_OUTLINES.includes(v) ? v : 'none'; } catch { return 'none'; } })();
+export function setVectorOutlines(v) { _vecOutlines = VEC_OUTLINES.includes(v) ? v : 'none'; try { localStorage.setItem('micro.vecOutlines', _vecOutlines); } catch { /* private */ } }
+const OUTLINE_INK = { color: '#1a1a1a', subWidth: 0.08, parentWidth: 0.2 };   // mm on the page
+const outlineMode = (o) => (VEC_OUTLINES.includes(o) ? o : _vecOutlines);
+// the parent cells of a section's blocks, along two in-plane axes: each block's cut rect
+// [u0, v0, u1, v1] → its parent's [i, j]; parent size P [2] (world), the phase from a block that
+// spans a whole parent along the axis, else the lowest corner — the support contract's sub-block rule
+function parentGrid(raw, P) {
+  const ph = [0, 1].map((a) => {
+    const full = raw.find((r) => Math.abs((r[a + 2] - r[a]) - P[a]) < 1e-6 * P[a]);
+    return full ? full[a] : Math.min(...raw.map((r) => r[a]));
+  });
+  const idx = (r, a) => Math.floor((r[a] - ph[a]) / P[a] + 1e-6);
+  return { key: (r) => `${idx(r, 0)},${idx(r, 1)}`, rect: (r) => { const i = idx(r, 0), j = idx(r, 1); return [ph[0] + i * P[0], ph[1] + j * P[1], ph[0] + (i + 1) * P[0], ph[1] + (j + 1) * P[1]]; } };
+}
+// the cells with outlines: raw [u0, v0, u1, v1, colour] + mode → { rects, colors, outline }
+function outlinedCells(raw, mode, P, max) {
+  if (mode === 'sub-blocks') {                             // every block its own cell, stroked
+    if (raw.length > max) throw new Error(`${raw.length.toLocaleString()} cells on this section with sub-block outlines — too many for vectors; outlines off, or keep it raster`);
+    const rects = [], colors = [];
+    for (const r of raw) { rects.push(r[0], r[1], r[2], r[3]); colors.push(r[4]); }
+    return { rects, colors, outline: { mode, color: OUTLINE_INK.color, width: OUTLINE_INK.subWidth } };
+  }
+  // parents: merge within each parent only (the key joins the colour), stroke each parent once
+  const pg = parentGrid(raw, P), keyIdx = new Map(), prect = [];
+  const tagged = raw.map((r) => { const k = pg.key(r); let ki = keyIdx.get(k); if (ki == null) { ki = keyIdx.size; keyIdx.set(k, ki); prect.push(...pg.rect(r)); } return [r[0], r[1], r[2], r[3], r[4] * 1e7 + ki]; });
+  const m = mergeRects(tagged);
+  const colors = m.colors.map((c) => Math.floor(c / 1e7));
+  if (colors.length + keyIdx.size > max) throw new Error(`${(colors.length + keyIdx.size).toLocaleString()} cells and parent outlines on this section — too many for vectors; outlines off, or keep it raster`);
+  return { rects: m.rects, colors, outline: { mode, color: OUTLINE_INK.color, width: OUTLINE_INK.parentWidth, rects: prect } };
+}
+// a model's parent size in fine steps per axis (sub-blocked: the largest sub-block; regular: 1)
+const parentSizeQ = (L) => { const h = L.docs && L.docs.blockDoc && L.docs.blockDoc.header; return h && h.subBlocked && h.sizeQMax ? h.sizeQMax.map((q) => Math.max(1, Math.round(q))) : [1, 1, 1]; };
+
 // a record's colour, the way the legend paints it — null: not drawn (no data hidden, or a mode
 // this can't paint)
 export function colourerOf(L) {
@@ -49,7 +92,8 @@ export function colourerOf(L) {
 
 // the cells one block layer makes on the section → { rects: [u0, v0, u1, v1, …], colors: [i…],
 // palette: ['#…'], blocks, merged } — or throws saying why it can't
-export async function sectionCells(L, sec, { max = 150000 } = {}) {
+export async function sectionCells(L, sec, { max = 150000, outlines = null } = {}) {
+  const om = outlineMode(outlines);
   const ax = SEC_AXES[sec && sec.mode];
   if (!ax) throw new Error('vector sections need an axis section — plan, N–S or E–W');
   const ga = gridAxesOf(L);
@@ -80,6 +124,10 @@ export async function sectionCells(L, sec, { max = 150000 } = {}) {
     const cu = +f[ci[ax.u]], cv = +f[ci[ax.v]];
     raw.push([cu - half[ax.u], cv - half[ax.v], cu + half[ax.u], cv + half[ax.v], k]);
     if (++blocks > max * 4) throw new Error(`${blocks.toLocaleString()}+ blocks on this section — too many for vectors; keep it raster`);
+  }
+  if (om !== 'none') {
+    const q = parentSizeQ(L), o = outlinedCells(raw, om, [q[ax.u] * pitch[ax.u], q[ax.v] * pitch[ax.v]], max);
+    return { rects: o.rects, colors: o.colors, palette, blocks, merged: o.colors.length, outline: o.outline };
   }
   // merge runs along u: same row (v0, v1), same colour, touching
   raw.sort((a, b) => a[1] - b[1] || a[3] - b[3] || a[0] - b[0]);
@@ -131,7 +179,8 @@ function keepOf(sec) {
 }
 
 // blocks on any plane → cells (rectangles in a lattice-square plane, merged) or polygons
-export async function sectionShapes(L, sec, near, { max = 150000 } = {}) {
+export async function sectionShapes(L, sec, near, { max = 150000, outlines = null } = {}) {
+  const om = outlineMode(outlines);
   const ga = gridAxesOf(L);
   if (!ga) throw new Error(`${L.label || L.name} is not a block model on a lattice`);
   const col = colourerOf(L);
@@ -157,6 +206,8 @@ export async function sectionShapes(L, sec, near, { max = 150000 } = {}) {
   const ci = [m.x, m.y, m.z], vc = volumeContextOf(L);     // each block's box from the support contract (halfAt)
   const mask = L.filterExpr && L._filterMask ? L._filterMask : null;
   const raw = [], polys = [], palette = [], pIdx = new Map();
+  const pq = parentSizeQ(L), PS = [0, 1, 2].map((a) => pq[a] * pitch[a]);
+  const lows = om === 'parents' && !P.lattice ? [] : null; // an oblique cut: each block's lattice-frame low corner + half
   let blocks = 0;
   for await (const { f, rec } of layerRecords(L)) {
     if (mask && !(rec < mask.length && mask[rec])) continue;
@@ -172,24 +223,16 @@ export async function sectionShapes(L, sec, near, { max = 150000 } = {}) {
       raw.push([cu - hu, cv - hv, cu + hu, cv + hv, k]);
       continue;
     }
-    // the polygon: the box's edges that cross the plane, ordered around their centre
-    const pts = [];
-    const corner = (s) => [0, 1, 2].map((a) => c[a] + s[0] * half[0] * R[0][a] + s[1] * half[1] * R[1][a] + s[2] * half[2] * R[2][a]);
-    for (let e = 0; e < 3; e++) for (const s1 of [-1, 1]) for (const s2 of [-1, 1]) {
-      const sA = [0, 0, 0], sB = [0, 0, 0]; const [o1, o2] = [0, 1, 2].filter((a) => a !== e);
-      sA[e] = -1; sB[e] = 1; sA[o1] = sB[o1] = s1; sA[o2] = sB[o2] = s2;
-      const A = corner(sA), B = corner(sB), dA = dot(P.n, A) - P.pos, dB = dot(P.n, B) - P.pos;
-      if ((dA < 0) === (dB < 0) && dA !== 0 && dB !== 0) continue;
-      const t = dA === dB ? 0 : dA / (dA - dB);
-      pts.push(toUV(P, [A[0] + t * (B[0] - A[0]), A[1] + t * (B[1] - A[1]), A[2] + t * (B[2] - A[2])]));
-    }
-    const mu = pts.reduce((s, p) => s + p[0], 0) / pts.length, mv = pts.reduce((s, p) => s + p[1], 0) / pts.length;
-    pts.sort((p, q) => Math.atan2(p[1] - mv, p[0] - mu) - Math.atan2(q[1] - mv, q[0] - mu));
-    const uniq = pts.filter((p, i) => { const q = pts[(i + pts.length - 1) % pts.length]; return i === 0 || Math.hypot(p[0] - q[0], p[1] - q[1]) > 1e-6; });
+    const uniq = cutPolygon(P, c, half, R);
     if (uniq.length >= 3) polys.push(uniq, k);
+    if (lows) lows.push([0, 1, 2].map((a) => dot(R[a], c) - half[a]), half.slice());
   }
   const plane = { origin: P.origin, u: P.u, v: P.v };
   if (P.lattice) {
+    if (om !== 'none') {
+      const [iu, iv] = P.lattice, o = outlinedCells(raw, om, [PS[iu], PS[iv]], max);
+      return { type: 'cells', plane, rects: o.rects, colors: o.colors, palette, blocks, outline: o.outline };
+    }
     const merged = mergeRects(raw);
     if (merged.colors.length > max) throw new Error(`${merged.colors.length.toLocaleString()} cells on this section — too many for vectors; keep it raster`);
     return { type: 'cells', plane, rects: merged.rects, colors: merged.colors, palette, blocks };
@@ -197,7 +240,43 @@ export async function sectionShapes(L, sec, near, { max = 150000 } = {}) {
   const pts = [], starts = [], colors = [];
   for (let i = 0; i < polys.length; i += 2) { starts.push(pts.length / 2); for (const p of polys[i]) pts.push(p[0], p[1]); colors.push(polys[i + 1]); }
   if (colors.length > max) throw new Error(`${colors.length.toLocaleString()} cells on this section — too many for vectors; keep it raster`);
-  return { type: 'polys', plane, pts, starts, colors, palette, blocks };
+  const out = { type: 'polys', plane, pts, starts, colors, palette, blocks };
+  if (om === 'sub-blocks') out.outline = { mode: om, color: OUTLINE_INK.color, width: OUTLINE_INK.subWidth };
+  else if (om === 'parents' && lows.length) {
+    // each parent box (in the lattice frame: a low corner on the parent lattice, the parent size) cut by the plane
+    const ph = [0, 1, 2].map((a) => { let full = null, lo = Infinity; for (let i = 0; i < lows.length; i += 2) { const l = lows[i][a], hh = lows[i + 1][a]; if (l < lo) lo = l; if (full == null && Math.abs(2 * hh - PS[a]) < 1e-6 * PS[a]) full = l; } return full != null ? full : lo; });
+    const seen = new Set(), opts = [], ost = [];
+    for (let i = 0; i < lows.length; i += 2) {
+      const id = [0, 1, 2].map((a) => Math.floor((lows[i][a] - ph[a]) / PS[a] + 1e-6)), key = id.join(',');
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const cl = [0, 1, 2].map((a) => ph[a] + (id[a] + 0.5) * PS[a]);   // the parent's centre in the lattice frame → world
+      const cw = [0, 1, 2].map((x) => R[0][x] * cl[0] + R[1][x] * cl[1] + R[2][x] * cl[2]);
+      const poly = cutPolygon(P, cw, PS.map((v) => v / 2), R);
+      if (poly.length >= 3) { ost.push(opts.length / 2); for (const p of poly) opts.push(p[0], p[1]); }
+    }
+    if (colors.length + ost.length > max) throw new Error(`${(colors.length + ost.length).toLocaleString()} cells and parent outlines on this section — too many for vectors; outlines off, or keep it raster`);
+    out.outline = { mode: om, color: OUTLINE_INK.color, width: OUTLINE_INK.parentWidth, pts: opts, starts: ost };
+  }
+  return out;
+}
+// one box (centre c, half extents h [3], axes R) cut by the plane → its polygon in (u, v): the box's
+// edges that cross the plane, ordered around their centre
+function cutPolygon(P, c, half, R) {
+  const pts = [];
+  const corner = (s) => [0, 1, 2].map((a) => c[a] + s[0] * half[0] * R[0][a] + s[1] * half[1] * R[1][a] + s[2] * half[2] * R[2][a]);
+  for (let e = 0; e < 3; e++) for (const s1 of [-1, 1]) for (const s2 of [-1, 1]) {
+    const sA = [0, 0, 0], sB = [0, 0, 0]; const [o1, o2] = [0, 1, 2].filter((a) => a !== e);
+    sA[e] = -1; sB[e] = 1; sA[o1] = sB[o1] = s1; sA[o2] = sB[o2] = s2;
+    const A = corner(sA), B = corner(sB), dA = dot(P.n, A) - P.pos, dB = dot(P.n, B) - P.pos;
+    if ((dA < 0) === (dB < 0) && dA !== 0 && dB !== 0) continue;
+    const t = dA === dB ? 0 : dA / (dA - dB);
+    pts.push(toUV(P, [A[0] + t * (B[0] - A[0]), A[1] + t * (B[1] - A[1]), A[2] + t * (B[2] - A[2])]));
+  }
+  if (!pts.length) return pts;
+  const mu = pts.reduce((s, p) => s + p[0], 0) / pts.length, mv = pts.reduce((s, p) => s + p[1], 0) / pts.length;
+  pts.sort((p, q) => Math.atan2(p[1] - mv, p[0] - mu) - Math.atan2(q[1] - mv, q[0] - mu));
+  return pts.filter((p, i) => { const q = pts[(i + pts.length - 1) % pts.length]; return i === 0 || Math.hypot(p[0] - q[0], p[1] - q[1]) > 1e-6; });
 }
 // v1's two passes, as one function: runs along u, then identical runs stacked along v
 function mergeRects(raw) {
@@ -304,3 +383,5 @@ export function sectionMesh(L, sec, near, mesh, { tint = '#9ea3a8', max = 200000
   }
   return { type: 'lines', plane: { origin: P.origin, u: P.u, v: P.v }, pts, starts, colors: starts.map(() => 0), palette: [tint], lw: 0.35, segments: segs.length / 2 };
 }
+
+try { window._microVis = Object.assign(window._microVis || {}, { sectionCells, sectionShapes, setVectorOutlines, vectorOutlines: () => _vecOutlines }); } catch { /* headless */ }

@@ -10334,7 +10334,7 @@ if (take()) {
     V.setFilterShow(L, 'dim'); await settle();
     const dm = shot(); out.dim = { darker: cells.out.filter((p) => { const a = at(dm, p); return !same(a, bg, 12) && a[0] + a[1] + a[2] < 0.6 * 255 * 3; }).length };
     V.setFilterShow(L, 'ghost'); await settle();
-    out.saved = (await import('/tools/micro/src/layer-display.js')).displayStateOf(L);
+    out.saved = V.displayStateOf(L);
     return out;
   });
   chk(`ghost: isolate shows the background where nothing matches (${r.isolate.outBg}/${r.isolate.n} columns)`, r.isolate.outBg === r.isolate.n);
@@ -10406,11 +10406,10 @@ if (take()) {
     out.reach = R.layerLogs(L.id);
     L.legend = true; M.drawDecorations();
     out.legend = V.logLegendRows(L).map((x) => x.col);
-    const LD = await import('/tools/micro/src/layer-display.js');
-    const saved = LD.displayStateOf(L);
+    const saved = V.displayStateOf(L);
     await V.setLogTracks(L, []);
     out.cleared = R.layerLogs(L.id);
-    await LD.restoreDisplayState(L, JSON.parse(JSON.stringify(saved)));
+    await V.restoreDisplayState(L, JSON.parse(JSON.stringify(saved)));
     out.restored = V.logTracksOf(L).map((t) => `${t.col}:${t.kind}:${t.side}`);
     const w = V.openLogsWindow(L); out.rows = w.el.querySelectorAll('[data-track]').length; w.close();
     return out;
@@ -10422,6 +10421,70 @@ if (take()) {
     r.resolved.length === 3 && r.resolved[2].off === 0 && r.resolved[0].off >= r.resolved[2].w / 2 && r.resolved[1].off >= r.resolved[2].w / 2 && r.resolved[2].classes > 1 && r.reach && r.reach.reach > r.resolved[0].off);
   chk(`logs: the legend lists them (${r.legend.join(', ')}); cleared ${JSON.stringify(r.cleared)} → restored from the display state (${r.restored.join(' · ')}); the window has ${r.rows} rows`,
     r.legend.join() === 'FE,SG,LITO' && r.cleared === null && r.restored.join() === 'FE:bar:right,SG:bar:left,LITO:strip:center' && r.rows === 3);
+  await pg.close();
+}
+
+// ── §141: BLOCK OUTLINES on vector sections (src/vsection.js · @gcu/compo world.js). A sub-blocked
+// model on a plan section: none = merged colour regions; sub-blocks = one cell per block cut,
+// each stroked in ink; parents = fills merged within each parent, every parent the plane cuts
+// stroked once (12 on a 4 × 3 parent plan). Its ROTATED .dm twin on the same plan gives the same
+// parent count (the lattice path); an oblique plane on the twin outlines the parent boxes it cuts
+// (= the brute-force count). The drawer inks exactly those rings. The setting is the default.
+if (take()) {
+  const pg = await mkPage('sm2vout');
+  const r = await pg.evaluate(async () => {
+    const M = window._micro, V = window._microVis;
+    const F = await import('/test/subblock-make.mjs'), Wd = await import('/ext/compo/src/world.js');
+    const { rows } = F.makeSubblockRows({ seed: 9, nx: 4, ny: 3, nz: 3 });
+    const twin = await M.openBlob(new Blob([F.makeSubblockCsv(rows)]), 'vout.csv', 'replace', null, { throw: true });
+    const LT = M.layers().find((x) => x.id === twin);
+    M.setLayerColorSel(LT, M.colorSelFor(LT, 'V'));
+    const z = 15.25;                                          // through the middle parent level (10–20), off any sub-block face
+    const sec = { mode: 'plan', normal: [0, 0, 1], position: z, thickness: 0 };
+    const cutBlocks = rows.filter((rw) => rw.ZC - rw.ZINC / 2 <= z && z < rw.ZC + rw.ZINC / 2).length;
+    const out = { cutBlocks };
+    const none = await V.sectionCells(LT, sec, { outlines: 'none' });
+    const sub = await V.sectionCells(LT, sec, { outlines: 'sub-blocks' });
+    const par = await V.sectionCells(LT, sec, { outlines: 'parents' });
+    out.v1 = { none: none.colors.length, noneOutline: !!none.outline, sub: sub.colors.length, subMode: sub.outline && sub.outline.mode, par: par.colors.length, parRects: par.outline && par.outline.rects.length / 4, blocks: sub.blocks };
+    // the parent rects tile the 4 × 3 plan of 20 m parents
+    out.parArea = par.outline.rects.reduce((a, _, i, R) => (i % 4 ? a : a + (R[i + 2] - R[i]) * (R[i + 3] - R[i + 1])), 0);
+    // the drawer: a recording context counts the ink rings
+    const rec = () => { const c = { strokes: [], strokeStyle: '', fillStyle: '', lineWidth: 1 }; for (const k of ['save', 'restore', 'beginPath', 'rect', 'clip', 'fillRect', 'moveTo', 'lineTo', 'closePath', 'fill', 'drawImage', 'setLineDash']) c[k] = () => {}; c.stroke = () => c.strokes.push(c.strokeStyle); return c; };
+    const frameFor = (Ly) => ({ box: [0, 0, 100, 100], content: { meta: { proj: { m: [1 / 60, 0, 0, 0, 0, 1 / 60, 0, 0, 0, 0, 0, 0, -40 / 60, -30 / 60, 0, 1], origin: [0, 0, 0] } }, vector: { layers: [Ly] }, fit: 'fill' } });
+    const inkOf = (lay) => { const c = rec(); Wd.drawVector(c, frameFor(lay), 0, 0, 100, 100); return c.strokes.filter((s) => s === '#1a1a1a').length; };
+    const asLayer = (c) => ({ type: 'cells', axis: { w: 2, u: 0, v: 1 }, position: z, rects: c.rects, colors: c.colors, palette: c.palette, outline: c.outline });
+    out.ink = { none: inkOf(asLayer(none)), sub: inkOf(asLayer(sub)), par: inkOf(asLayer(par)) };
+    // the rotated .dm twin, the same plan: the lattice path
+    const rot = await M.openBlob(new Blob([F.makeSubblockDm(rows, { angle1: -50 })]), 'vout.dm', 'add', null, { throw: true, origin: [1000, 2000, 300] });
+    const LR = M.layers().find((x) => x.id === rot);
+    M.setLayerColorSel(LR, M.colorSelFor(LR, 'V'));
+    const rpar = await V.sectionShapes(LR, { normal: [0, 0, 1], position: 300 + z, thickness: 0 }, [1000, 2000, 300], { outlines: 'parents' });
+    out.rot = { type: rpar.type, parents: rpar.outline && rpar.outline.rects ? rpar.outline.rects.length / 4 : null, ink: inkOf(rpar) };
+    // an oblique plane on the twin: the parent boxes it cuts
+    const n = [0.3, 0.2, 1], nl = Math.hypot(...n), nu = n.map((x) => x / nl), pos = nu[0] * 40 + nu[1] * 30 + nu[2] * 15;
+    const obl = await V.sectionShapes(LT, { normal: nu, position: pos, thickness: 0 }, [40, 30, 15], { outlines: 'parents' });
+    let want = 0;
+    for (let k = 0; k < 3; k++) for (let j = 0; j < 3; j++) for (let i = 0; i < 4; i++) {
+      let lo = Infinity, hi = -Infinity;
+      for (const cx of [i * 20, i * 20 + 20]) for (const cy of [j * 20, j * 20 + 20]) for (const cz of [k * 10, k * 10 + 10]) { const d = nu[0] * cx + nu[1] * cy + nu[2] * cz - pos; lo = Math.min(lo, d); hi = Math.max(hi, d); }
+      if (lo < 0 && hi > 0) want++;
+    }
+    out.oblique = { type: obl.type, parents: obl.outline && obl.outline.starts ? obl.outline.starts.length : null, want };
+    const osub = await V.sectionShapes(LT, { normal: nu, position: pos, thickness: 0 }, [40, 30, 15], { outlines: 'sub-blocks' });
+    out.obliqueSub = { polys: osub.colors.length, ink: inkOf(osub) };
+    // the setting is the default
+    const was = V.vectorOutlines(); V.setVectorOutlines('sub-blocks');
+    const dflt = await V.sectionCells(LT, sec);
+    V.setVectorOutlines(was);
+    out.dflt = dflt.outline && dflt.outline.mode;
+    return out;
+  });
+  chk(`vector outlines (sub-blocked plan): none merges (${r.v1.none} regions, no outline ${!r.v1.noneOutline}); sub-blocks keeps every one of ${r.v1.blocks} cuts (${r.v1.sub}, ${r.v1.subMode}); parents merges within parents (${r.v1.par} cells) and lists ${r.v1.parRects} parents tiling ${r.parArea} m² (of 4 × 3 × 400)`,
+    !r.v1.noneOutline && r.v1.none < r.v1.blocks && r.v1.sub === r.v1.blocks && r.v1.blocks === r.cutBlocks && r.v1.subMode === 'sub-blocks' && r.v1.parRects === 12 && Math.abs(r.parArea - 4800) < 1e-6 && r.v1.par <= r.v1.blocks && r.v1.par >= 12);
+  chk(`vector outlines: the drawer inks exactly those rings (none ${r.ink.none}, sub-blocks ${r.ink.sub}, parents ${r.ink.par})`, r.ink.none === 0 && r.ink.sub === r.v1.sub && r.ink.par === 12);
+  chk(`vector outlines: the ROTATED .dm twin's plan lists the same 12 parents (${JSON.stringify(r.rot)}); an oblique cut outlines the ${r.oblique.want} parent boxes it crosses (${JSON.stringify(r.oblique)}); sub-blocks inks each polygon (${r.obliqueSub.ink} of ${r.obliqueSub.polys}); the setting is the default (${r.dflt})`,
+    r.rot.type === 'cells' && r.rot.parents === 12 && r.rot.ink === 12 && r.oblique.type === 'polys' && r.oblique.parents === r.oblique.want && r.obliqueSub.ink === r.obliqueSub.polys && r.dflt === 'sub-blocks');
   await pg.close();
 }
 

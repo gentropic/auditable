@@ -23,7 +23,8 @@ import { syncWholeHoles } from './drillholes.js';
 import { resolveColorMode } from './color.js';
 import { applyBg, drawDecorations, renderDeco, setDecoHooks } from './deco.js';
 import { setOverlayHooks, drawMeasure, drawSectionPlane, drawSwathBand, drawCompass } from './overlay.js';
-import { setSettingsHooks } from './settings.js';
+import { setSettingsHooks, PREFS } from './settings.js';
+import { VEC_OUTLINES, _vecOutlines, setVectorOutlines } from './vsection.js';
 import { openTurntable, setTurntableHooks } from './turntable.js';
 import { openFigurePdf, setComposerHooks } from './composer.js';
 import { setLayermenuHooks } from './layermenu.js';
@@ -46,6 +47,12 @@ setSelectionHooks({ get _viewMode() { return _viewMode; } });
 setLayermenuHooks({ get _blockEdges() { return _blockEdges; } });
 // src/settings.js reaches back into the app through these
 setSettingsHooks({ get _blockEdges() { return _blockEdges; }, setBlockEdges });
+// display preferences owned here and beside (Settings → display renders the rows)
+{
+  const at = PREFS.findIndex((p) => p.label === 'block edges') + 1 || PREFS.length;
+  PREFS.splice(at, 0,
+    { sec: 'display', label: 'vector-section outlines', desc: 'a composer vector section draws colour regions (none) — or every block’s cut outlined in ink (sub-blocks), or each parent block’s (parents); outlines add cells, so a large section may then be too many for vectors', kind: 'choice', opts: VEC_OUTLINES.map((v) => [v, v]), get: () => _vecOutlines, set: (v) => setVectorOutlines(v) });
+}
 // src/overlay.js reaches back into the app through these
 setOverlayHooks({ get _viewMode() { return _viewMode; } });
 export const cv = $('#cv');

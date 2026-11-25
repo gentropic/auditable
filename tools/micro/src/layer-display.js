@@ -19,3 +19,5 @@ export async function restoreDisplayState(L, d) {
   if (d.filterShow) setFilterShow(L, d.filterShow, { quiet: true });
   if (Array.isArray(d.logs) && d.logs.length) { try { await setLogTracks(L, d.logs, { quiet: true }); } catch (e) { (L._colsUnread || (L._colsUnread = [])).push({ name: 'log tracks', why: e.message }); } }
 }
+
+try { window._microVis = Object.assign(window._microVis || {}, { displayStateOf, restoreDisplayState }); } catch { /* headless */ }

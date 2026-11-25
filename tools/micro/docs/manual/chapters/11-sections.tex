@@ -200,6 +200,19 @@ A series steps a \ui{slab}. With the section on \ui{front} or \ui{behind} the wi
 
 For sections laid out on a page with a title block and a scale, the composer's atlas does the same job at print quality (\cref{ch:atlas}); as a routine step it is in \cref{ch:routines}.
 
+\subsection{Block outlines on a vector section}\label{sec:sections-outlines}\index{vector section!outlines}
+A composer vector section (\cref{sec:compo-vector}) draws every block the plane cuts in its legend color, and merges neighbors of the same color, so the page shows color \emph{regions}: the smallest file, and a clean figure. When the figure is about the blocking itself — a sub-blocked model received from another package, a check that the sub-blocks follow the contact — \menu{Settings>display>vector-section outlines} draws it:
+
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+\ui{none} & color regions (the default) \\
+\ui{sub-blocks} & every block's cut drawn on its own and outlined in a thin ink line \\
+\ui{parents} & the fills merged within each parent block, and each parent's cut outlined in a heavier line; on a regular model a parent is a block \\ \bottomrule
+\end{tabularx}
+\end{center}
+
+It applies to any plane — a plan, a vertical section, an inclined or knife cut — and to rotated models: the outline is the shape the plane cuts from the block (or the parent), as the fill is. Outlines stop the merging, so a large section has more cells; past the vector limit the frame says so and stays raster, as it does without them.
+
 \section{Arranging the picture}\label{sec:sections-arrange}
 The rest of the chapter changes how the scene is laid out, never what it contains. A \emph{view} shows one model a second time with its own look (\cref{sec:sections-views}); an \emph{offset} or an \emph{exploded} group pulls layers apart (\cref{sec:sections-explode}); \emph{vertical exaggeration} stretches everything together (\cref{sec:sections-zexag}); and \emph{bookmarks} and \emph{scenes} take you back to a picture you have made (\cref{sec:sections-scenes}). Picks, measurements, analyses and exports keep reading the true coordinates throughout.
 
