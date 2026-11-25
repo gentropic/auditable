@@ -125,11 +125,16 @@ function currentDrawOpts() {
   const clipV = (id) => { const v = $('#' + id).value.trim(); return v === '' ? null : +v; };
   const clipOf = (L) => { const c = [L.clip[0].trim(), L.clip[1].trim()]; return [c[0] === '' ? null : +c[0], c[1] === '' ? null : +c[1]]; };
   const modeOf = (v) => (v === 'elev' ? 0 : v && v.startsWith('chan:') ? 1 : v === 'cat' || v === 'rules' || (v && (v.startsWith('paint:') || v.startsWith('calc:'))) ? 2 : v === 'solid' ? 3 : +v || 0);
+  // an ELEVATION clip is typed (and legended, and reported to a host) in real z; the renderer
+  // compares it with frame-LOCAL z — convert here, the one place the two meet (sweep 2026-11-25:
+  // a 500–900 clip on the demo, frame z 648, drew the whole model as the ramp's bottom colour)
+  const oz = S.frame ? S.frame.origin[2] : 0;
+  const forRenderer = (mode, c) => (mode === 0 && oz ? c.map((v) => (v == null ? null : v - oz)) : c);
   const layerOpts = {};
-  for (const L of S.layers) layerOpts[L.id] = { colorMode: L.id === S.activeId ? resolveColorMode() : modeOf(L.colorSel), clip: L.id === S.activeId ? [clipV('clipMin'), clipV('clipMax')] : clipOf(L) };
+  for (const L of S.layers) { const mode = L.id === S.activeId ? resolveColorMode() : modeOf(L.colorSel); layerOpts[L.id] = { colorMode: mode, clip: forRenderer(mode, L.id === S.activeId ? [clipV('clipMin'), clipV('clipMax')] : clipOf(L)) }; };
   const section = currentSection();
   syncWholeHoles(section);                                 // whole-holes layers: which holes cross the slab (cheap unless it moved)
-  return { budget: +$('#budget').value, pointPx: +$('#ptPx').value, colorMode: resolveColorMode(), blocksAsPoints: _viewMode === 'points', blockEdges: _blockEdges, section, clip: [clipV('clipMin'), clipV('clipMax')], layerOpts: S.layers.length ? layerOpts : null, projection: S.projection };
+  return { budget: +$('#budget').value, pointPx: +$('#ptPx').value, colorMode: resolveColorMode(), blocksAsPoints: _viewMode === 'points', blockEdges: _blockEdges, section, clip: forRenderer(resolveColorMode(), [clipV('clipMin'), clipV('clipMax')]), layerOpts: S.layers.length ? layerOpts : null, projection: S.projection };
 }
 // eye-dome lighting reads depth — under a projection (src/projection.js) depth means nothing, so it's off
 function edlEnabled() {

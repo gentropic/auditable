@@ -1223,6 +1223,37 @@ async function colourChecks(url, label) {
   chk(`colour: addLayer takes palette + colorRange (${JSON.stringify(r3.added)}); a wrong range rejects and leaves no layer (“${r3.addBad}”, +${r3.layersAfter})`,
     r3.added.palette === 'rdbu' && r3.added.range.min === -2 && r3.added.range.max === 2 && /min < max/.test(r3.addBad) && r3.layersAfter === 1);
   await A.close(); await B.close();
+
+  // an ELEVATION range is real z (sweep 2026-11-25: the renderer compared it with frame-local z, so a
+  // range on a model whose frame sits at z ≈ 650 drew everything as the ramp's bottom colour while
+  // the legend read the range). Blocks rise 400 → 900 across the pane; the range set to exactly the
+  // automatic one must change nothing, and a narrower one must change the middle.
+  const E = await ctx.newPage(); E.on('pageerror', (e) => { console.log('PAGEERROR', e.message); ok = false; });
+  await E.setViewportSize({ width: 600, height: 480 });
+  await E.goto(`http://127.0.0.1:${PORT}${url}`, { waitUntil: 'load' });
+  await E.waitForFunction(() => window.micro && window._micro && window._micro.addLayer, null, { timeout: 30000 });
+  const el = await E.evaluate(async () => {
+    const X = [], Y = [], Z = [];
+    for (let j = 0; j < 11; j++) for (let i = 0; i < 11; i++) { X.push(5 + 10 * i); Y.push(5 + 10 * j); Z.push(400 + 50 * i); }
+    const id = await window.micro.addLayer({ kind: 'blocks', name: 'steps', columns: { X, Y, Z }, roles: { x: 'X', y: 'Y', z: 'Z' } });
+    await window.micro.look('plan'); await window.micro.fit();
+    await window.micro.setColorBy(id, 'elevation');
+    const px = async () => { await new Promise((r) => setTimeout(r, 300)); const b = await window.micro.snapshot({ decorations: false }), bmp = await createImageBitmap(b);
+      const c = new OffscreenCanvas(bmp.width, bmp.height), g = c.getContext('2d'); g.drawImage(bmp, 0, 0);
+      return [...g.getImageData(bmp.width >> 1, bmp.height >> 1, 1, 1).data.slice(0, 3)]; };
+    const auto = await px(), range = window.micro.colorRange(id);
+    await window.micro.setColorRange(id, { min: range.min, max: range.max });
+    const same = await px();
+    await window.micro.setColorRange(id, { min: 600, max: 700 });   // the centre column (z 650) at mid-ramp, not the bottom
+    const narrow = await px();
+    await window.micro.setColorRange(id, { min: 700, max: 900 });   // now below the range: the bottom colour
+    const below = await px();
+    return { auto, same, narrow, below, range };
+  });
+  const sameRGB = (a, b, t = 3) => a.every((v, i) => Math.abs(v - b[i]) <= t);
+  chk(`colour: an elevation range is in real z — the automatic ${el.range.min}…${el.range.max} set explicitly keeps the centre colour (${el.auto} → ${el.same}); 600…700 puts z 650 mid-ramp (${el.narrow}), unlike 700…900 below it (${el.below})`,
+    el.range.min === 375 && el.range.max === 925 && sameRGB(el.auto, el.same) && !sameRGB(el.narrow, el.below, 20) && !sameRGB(el.auto, el.below, 20));
+  await E.close();
 }
 
 // presenting (setChrome) + decorations — MineMind's presentation mode: only the
