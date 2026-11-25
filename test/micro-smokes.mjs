@@ -59,6 +59,8 @@ job('crs', 'micro-crs-smoke.mjs');              // coordinate systems: the proje
 job('crs built', 'micro-crs-smoke.mjs', '--built');
 job('placement', 'micro-placement-smoke.mjs');  // placements: typed / control points / CRS change on blocks, meshes, clouds; rotated GeoTIFFs (sampling = the unrotated twin), their exports; the Datamine origin migration
 job('placement built', 'micro-placement-smoke.mjs', '--built');
+job('crsdetective', 'micro-crsdetective-smoke.mjs');  // wave 6b: GCP markers drawn in 3D, structure attitudes follow a placement, the CRS detective (datum twins vs a DEM, flat-ground refusal, vertical offset, reproject on read)
+job('crsdetective built', 'micro-crsdetective-smoke.mjs', '--built');
 job('nl', 'micro-nl-smoke.mjs');               // the plain-language bar: wiring + propose-never-act (accuracy: test/micro-nl.test.mjs)
 const todo = ONLY.length ? jobs.filter((j) => ONLY.some((o) => j.name.includes(o))) : jobs;
 if (has('list')) { for (const j of todo) console.log(`${j.name.padEnd(20)} node ${j.argv.join(' ')}`); process.exit(0); }

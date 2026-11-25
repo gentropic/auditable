@@ -17,6 +17,7 @@ import { groupLayerIds } from './tree.js';
 import { openBlob } from './open.js';
 import { deliverBlob } from './hostio.js';
 import { registerCommands } from './commands.js';
+import { collarTransformFor } from './dh-crs.js';
 const $ = (s) => document.querySelector(s);
 
 const dhMembers = (Lorg) => {
@@ -46,7 +47,8 @@ const csvCell = (v) => { if (v == null) return ''; if (typeof v === 'number') re
  */
 export async function compositeLayer(L, opts = {}) {
   const inp = inputsOf(L);
-  const r = await drillholeComposite(inp.files, { ...inp.opts, length: opts.length, splitCols: opts.splitCols || null, densityCol: opts.densityCol || null, minSupport: opts.minSupport || null });
+  const xf = await collarTransformFor(L.docs.dhDoc.config);   // collars recorded in another system: reprojected (src/dh-crs.js)
+  const r = await drillholeComposite(inp.files, { ...inp.opts, ...(xf ? { collarTransform: xf } : {}), length: opts.length, splitCols: opts.splitCols || null, densityCol: opts.densityCol || null, minSupport: opts.minSupport || null });
   r.csv = [r.header.map(csvCell).join(','), ...r.rows.map((row) => row.map(csvCell).join(','))].join('\n') + '\n';
   return r;
 }

@@ -28,6 +28,7 @@ import { openFeaturesBlob } from './poly-ui.js';
 import { featureKindOf, FEATURE_EXT, groupShapefileParts, zipShapefileSet } from './poly-io.js';
 import { lasCrsOf, reprojectLas } from './las-crs.js';
 import { setProjectCrs, sameCrs, crsLabel } from './crs.js';
+import { dhRunOpts, dhReprojection } from './dh-crs.js';
 import { layerPlacementM, placeCloudProvider } from './placement.js';
 const $ = (s) => document.querySelector(s);
 
@@ -239,9 +240,14 @@ export async function openDrillholeLayer(files, opts = {}, mode = 'add', over = 
   $('#meta').textContent = `${name} — desurveying…`;
   $('#empty').style.display = 'none';
   try {
+    // a set whose collars were recorded in another system (config.srcCrs): reprojected on read (src/dh-crs.js)
     const { header, streamChunks, fetchRecord, recordPosition, holePaths } = await openDrillholes(
-      { collar: files.collar, survey: files.survey, intervals: files.intervals }, opts);
+      { collar: files.collar, survey: files.survey, intervals: files.intervals }, await dhRunOpts(opts));
     const dhDoc = { blobs: { ...files }, header, streamChunks, fetchRecord, recordPosition, holePaths, config: { ...opts } };   // streamChunks: the placed intervals (vector sections)
+    if (opts.srcCrs) {
+      const b = header.bbox, rp = await dhReprojection(opts, b ? [(b.min[0] + b.max[0]) / 2, (b.min[1] + b.max[1]) / 2] : null);
+      if (rp) { header.reprojected = rp; const Lr = layerById(lid); if (Lr && Lr.lineage) Lr.lineage.params = { ...(Lr.lineage.params || {}), reproject: rp }; }
+    }
     peekCollarCols(dhDoc);                                 // warm the collar-column cache (menu + manifest)
     registerDocs(lid, 'points', { dhDoc });
     qualifyDhDoc(layerById(lid));                          // <0.001 → a number for every interval reader; rawRecord keeps the text
@@ -260,7 +266,7 @@ export async function openDrillholeLayer(files, opts = {}, mode = 'add', over = 
     if (L) { L.bboxLocal = doc.bboxLocal; L.colorSel = $('#colorBy').value; }
     recomputeUnion();
     const warn = header.report.checks.reduce((t, c) => t + c.count, 0);
-    dhDoc.metaLine = `${name} — ${header.placed.toLocaleString()}/${header.count.toLocaleString()} intervals · ${header.holes} holes · ${header.method === 'minimumCurvature' ? 'min curvature' : header.method} · dip ${header.dipConvention}${warn ? ` · ⚠ ${warn} check${warn > 1 ? 's' : ''} (File info)` : ''}`;
+    dhDoc.metaLine = `${name} — ${header.placed.toLocaleString()}/${header.count.toLocaleString()} intervals · ${header.holes} holes · ${header.method === 'minimumCurvature' ? 'min curvature' : header.method} · dip ${header.dipConvention}${header.reprojected ? ` · collars reprojected ${header.reprojected.from} → ${header.reprojected.to}` : ''}${warn ? ` · ⚠ ${warn} check${warn > 1 ? 's' : ''} (File info)` : ''}`;
     $('#meta').textContent = dhDoc.metaLine;
     ensureDhSetGroups();                                   // every dh layer lives in its SET group (the group IS the element)
     renderLayers();

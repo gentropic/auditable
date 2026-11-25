@@ -7,7 +7,7 @@ import { S, _fileHandles, layerById, requestRender } from './state.js';
 import { openDrillholeLayer, openBlob } from './open.js';
 import { refreshProps, renderProps } from './props.js';
 import { dhFilterMeta, dhFilterSweep, refilterLayer } from './filter.js';
-import { createStickChunkBuilder, delimitedRecords, delimiterOfLine, openDrillholeTraces, splitDelimitedRecord } from '../../../ext/condenser/src/main.js';
+import { coordNum, createStickChunkBuilder, delimitedRecords, delimiterOfLine, openDrillholeTraces, splitDelimitedRecord } from '../../../ext/condenser/src/main.js';
 import { markProjectDirty } from './project.js';
 import { peekCollarCols } from './manifest.js';
 import { compileBool, validate } from '../../../ext/expr/index.js';
@@ -29,6 +29,7 @@ import { createPaintCol, addPaintValue } from './paint.js';
 import { setLayerColorSel, setLayerColorBy, colorSelFor, colorByName } from './color.js';
 import { filterHolesLayer } from './layermenu.js';
 import { registerCommands } from './commands.js';
+import { dhRunOpts, collarTransformFor } from './dh-crs.js';
 const $ = (s) => document.querySelector(s);
 
 // re-open a drillhole layer with a patched config (method / dip / category —
@@ -412,7 +413,7 @@ export async function showHoleTraces(nd) {
   S.layers.push({ id: lid, name, label: name, kind: 'points', trace: true, docs: {}, bboxLocal: null, colorSel: 'solid', clip: ['', ''], filterExpr: '', visible: true, handle: null, storage: 'volatile', lineage: null });
   $('#meta').textContent = `${name} — desurveying…`;
   try {
-    const { header, streamChunks, fetchRecord } = await openDrillholeTraces({ collar: info.blobs.collar, survey: info.blobs.survey }, { ...info.config });
+    const { header, streamChunks, fetchRecord } = await openDrillholeTraces({ collar: info.blobs.collar, survey: info.blobs.survey }, await dhRunOpts(info.config));
     const L = layerById(lid); if (L) L.docs = { tracesDoc: { header, fetchRecord, config: info.config } };
     S.renderer.setLayerStickRadius(lid, 0.4);   // thin
     const cb = createStickChunkBuilder({ frame: S.frame, chunkSize: 1 << 16, batchSize: 1 << 20, seed: 1, onChunk: (c) => { S.renderer.addChunk(c, 'base', lid); requestRender(); } });
@@ -435,6 +436,22 @@ async function keptCollarFile(nd, info) {
   const ki = collarKeyIndex(memb.docs.dhDoc, low);
   const kept = [lines[0], ...lines.slice(1).filter((ln) => memb._holeIds.has(String(cells2(ln)[ki] ?? '').trim()))];
   return new File([kept.join('\n')], basename(info.blobs.collar.name || 'collars.csv'), { type: 'text/csv' });
+}
+
+// a collar file recorded in another system (the set's config.srcCrs): the same rows with X / Y
+// reprojected, so the glyphs sit where the holes do (src/dh-crs.js); the file itself as is otherwise
+async function reprojectedCollarFile(file, mc, cfg) {
+  const xf = await collarTransformFor(cfg);
+  if (!xf) return file;
+  const lines = csvRecords(await file.text());
+  const delim = delimiterOfLine(lines[0]), cells = (ln) => splitDelimitedRecord(ln, delim);
+  const q = (v) => (/["\r\n]/.test(v) || v.includes(delim) ? `"${v.replace(/"/g, '""')}"` : v);
+  const rows = lines.slice(1).map(cells);
+  const idx = [], pts = [];
+  rows.forEach((r, i) => { const x = coordNum(r[mc.x]), y = coordNum(r[mc.y]), z = coordNum(r[mc.z]); if (Number.isFinite(x) && Number.isFinite(y)) { idx.push(i); pts.push([x, y, Number.isFinite(z) ? z : 0]); } });
+  const moved = pts.length ? xf(pts) : [];
+  idx.forEach((i, k) => { rows[i][mc.x] = String(+moved[k][0].toFixed(4)); rows[i][mc.y] = String(+moved[k][1].toFixed(4)); });
+  return new File([[lines[0], ...rows.map((r) => r.map((v) => q(String(v ?? ''))).join(delim))].join('\n') + '\n'], file.name, { type: 'text/csv' });
 }
 
 // ── COLLARS as glyphs: the set's collar table drawn as a POINTS layer, one
@@ -462,7 +479,7 @@ export async function showCollars(nd, keep = null) {
   const memb = groupLayerIds(nd).map(layerById).find((L2) => L2 && L2.dh && L2.docs.dhDoc);
   const mc = memb && memb.docs.dhDoc.header.collarMapping;
   if (!mc || mc.x == null || mc.y == null || mc.z == null) { $('#meta').textContent = 'collars: the collar X/Y/Z columns are not identified'; return null; }
-  const file = await keptCollarFile(nd, info);
+  const file = await reprojectedCollarFile(await keptCollarFile(nd, info), mc, memb.docs.dhDoc.config);
   const fname = basename(file.name || info.blobs.collar.name || 'collars.csv');
   if (!/\.(csv|txt|tsv|dat)$/i.test(fname)) { $('#meta').textContent = `collars: ${fname} — a delimited collar file is needed`; return null; }
   const prev = S.activeId;

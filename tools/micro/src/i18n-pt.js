@@ -65,6 +65,7 @@ export default {
   'Show hole traces': 'Mostrar traços dos furos', 'Hide hole traces': 'Ocultar traços dos furos', 'Show collars': 'Mostrar bocas de furo', 'Hide collars': 'Ocultar bocas de furo',
   'Add interval table…': 'Adicionar tabela de intervalos…', 'Re-desurvey set…': 'Refazer desurvey do conjunto…', 'QA report…': 'Relatório de QA…', 'Drillhole QA report': 'Relatório de QA dos furos',
   'Composite…': 'Compositar…', 'Composite drillholes…': 'Compositar furos…', 'composite': 'compositagem',
+  'Check CRS against topography…': 'Verificar o SRC contra a topografia…', 'Placement…': 'Posicionamento…', 'Placement of the active layer…': 'Posicionamento da camada ativa…',
   'method: minimum curvature': 'método: curvatura mínima', 'method: balanced tangential': 'método: tangencial balanceado', 'method: tangential': 'método: tangencial',
   'dip: auto-detect': 'mergulho: detectar', 'dip: positive down': 'mergulho: positivo para baixo', 'dip: negative down': 'mergulho: negativo para baixo',
   // ── analysis ──

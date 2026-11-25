@@ -13,6 +13,7 @@ import { markProjectDirty } from './project.js';
 import { applyLayerOpacity, fitLayer, layerMenu } from './layermenu.js';
 import { setHasTraces, showHoleTraces, setHasCollars, showCollars, addIntervalToSet, dhSetInfo, collarsRowMenu, surveyRowMenu } from './drillholes.js';
 import { openDhQa } from './dhqa.js';
+import { openCrsDetective } from './crs-detective.js';
 import { openBatchRename } from './rename.js';
 import { openMeshExportDialog } from './meshexport.js';
 import { layerTableHeader } from './records.js';
@@ -145,6 +146,7 @@ export function groupMenu(nd, x, y) {
     // the set's analyses, under the same name as on a layer's menu
     items.push({ label: 'Analyse', submenu: () => [
       { label: 'QA report…', action: () => openDhQa(nd) },
+      { label: 'Check CRS against topography…', action: () => openCrsDetective(nd) },
       { label: 'Composite…', action: () => openComposite(nd) },
     ] });
     items.push({ sep: true });
