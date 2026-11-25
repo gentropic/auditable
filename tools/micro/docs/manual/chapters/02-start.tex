@@ -240,15 +240,27 @@ It understands these, in English and Portuguese:
 \item \textbf{show} or \textbf{hide} a layer or a group (\code{hide the mining phases}).
 \end{itemize}
 
+You do not need the command's name. The bar maps your words onto the tool and onto this project's columns and layers:
+\begin{itemize}
+\item \code{is the fe contact hard or soft} opens the contact plot on \col{FE};
+\item \code{drift of density along elevation} opens a swath of \col{SG} along Z: \emph{drift} is a swath, \emph{elevation} is Z, \emph{density} is the \col{SG} column;
+\item \code{north-south section at easting 611200} cuts across X at 611200, and \code{section on bench 1040} is a plan section at 1040;
+\item \code{reconcile the model against grade control} opens the reconciliation factors;
+\item \code{select blocks in the ore body} chooses the solid named \file{ore shell}, and \code{hide the drillholes} finds the layer named \file{holes · demo\_assay.csv};
+\item in Portuguese, \code{abre a curva de parametrização} is grade--tonnage, \code{tabela cruzada do ferro por litologia} is the cross-tab of \col{FE} grouped by \col{LITO}, and \code{deixa a seção com 50 metros de espessura} sets the slab thickness.
+\end{itemize}
+
 A phrase outside that list gets no row: \key{Alt}+\key{K} says \ui{not understood --- nothing proposed}. That is deliberate. A wrong guess costs you more than a refusal, so the bar refuses anything it does not recognize, and words that destroy (\emph{delete}, \emph{erase}, \emph{deleta}, \emph{exclui}) or ask for things micro does not do (\emph{krige}, \emph{variogram}) never produce a proposal at all.
 
-The bar learns \emph{this} project. When you first use it, it builds its vocabulary from your columns, your category values and your layer names, generates example sentences from them, and trains on them in your browser, in under a second. No model is downloaded and nothing leaves the machine; micro stays Sealed (\cref{ch:sealed}). Open a different project and it relearns. It is measured against a fixed set of real phrasings on the demo project, in both languages, by micro's tests, and it is on by default because it passed that test. \menu{Tools>Settings…}, section \ui{interaction}, row \ui{natural-language command bar} turns it off.
+The bar learns \emph{this} project. When you first use it, it builds its vocabulary from your columns, your category values and your layer names, generates example sentences from them, and trains on them in your browser, in under a second. No model is downloaded and nothing leaves the machine; micro stays Sealed (\cref{ch:sealed}). Open a different project and it relearns. micro's tests measure it on the demo project against a fixed set of test phrasings, each held out of training: about 98\% understood in both languages, and nine in ten out-of-scope requests refused. It is on by default because it passes that test. A project whose column names are cryptic codes gives it less to work with; if it misreads one, rephrase with the column's own name. \menu{Tools>Settings…}, section \ui{interaction}, row \ui{natural-language command bar} turns it off.
 
 \begin{tryit}
 \begin{enumerate}
 \item With the demo project open, press \key{Alt}+\key{K} and type \code{blocks above 55 Fe in hematite}. Read the row: \code{Filter: FE > 55 and LITO == "HEMATITE" on deposit.csv}. Nothing has changed in the view yet.
 \item Press \key{Enter}. The expression is in the filter box and the model shows only those blocks.
 \item Press \key{Alt}+\key{K} again and type \code{limpa o filtro}, then \key{Enter}.
+\item Type \code{drift of density along elevation}. The row proposes a swath of \col{SG} along Z; \key{Enter} opens the window set up, and \ui{Run} draws it.
+\item Type \code{section on bench 1040}, then \key{Enter}, and \code{remove the slice} to clear it.
 \item Type \code{delete the block model}. The bar answers \ui{not understood}.
 \end{enumerate}
 \end{tryit}
