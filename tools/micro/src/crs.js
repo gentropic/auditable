@@ -20,6 +20,7 @@
 //   await crsFromDefinition(text) / lookupEpsg(code) / crsFromPrj(text) → CRS objects
 //   dataExtentLonLat()                    → the open data's extent in lon/lat (needs a project CRS)
 import { S } from './state.js';
+import { t } from './i18n.js';
 import {
   lookupEpsg, crsFromDefinition, crsFromPrj, crsFromUrn, crsFromJSON, crsToJSON, crsLabel, sameCrs,
   transformPoints, describePath, extentLonLat, suggestCrs, WGS84,
@@ -90,10 +91,11 @@ export function updateCrsChip() {
     // its look lives in index.html's stylesheet (#crsChip), so the phone layout can hide it
     el.onclick = () => { if (_chipClick) _chipClick(); };
     seal.parentElement.insertBefore(el, seal);
+    window.addEventListener('micro:lang', updateCrsChip);   // 'no CRS' is chrome: it follows the interface language
   }
   const c = S.crs;
-  el.textContent = c ? (c.epsg ? `EPSG:${c.epsg}` : c.name) : 'no CRS';
-  el.title = c ? `the project's coordinate system: ${crsLabel(c)}${S.crsWhy ? ` (${S.crsWhy})` : ''} — click to change` : 'the project has no coordinate system — click to set one (vectors in another system are reprojected into it on read)';
+  el.textContent = c ? (c.epsg ? `EPSG:${c.epsg}` : c.name) : t('no CRS');
+  el.title = c ? `the project's coordinate system: ${crsLabel(c)}${S.crsWhy ? ` (${S.crsWhy})` : ''} — click to change` : t('the project has no coordinate system — click to set one (vectors in another system are reprojected into it on read)');
   el.style.color = c ? 'var(--text)' : 'var(--dim)';
 }
 
