@@ -88,6 +88,18 @@ try {
       const mid = snap();
       await M.measureClick(...P[0].c);                       // back on the first: closes
       out.m4 = { ...snap(), midArm: mid.arm, midTxt: mid.txt, want: P.map((q) => q.w) };
+      // the angle between two planes: the topography (a grid surface), then the mesh quad under it
+      M.armPlaneAngle();
+      await M.measureClick(...proj(Pz(170, 80)));
+      const T = M.layers().find((x) => x.name === 'topo.asc'), SH = M.layers().find((x) => x.name === 'shell.obj');
+      T.visible = false; SH.visible = true; M.applyTreeVisibility();
+      await W.setView({ target: [E0 + 100, N0 + 70, 450], look: 20, elevation: 70, distance: 320 });
+      await new Promise((z) => setTimeout(z, 500));
+      await M.measureClick(...proj([E0 + 100, N0 + 70, 450 - 0.1 * 100 + 0.05 * 70]));
+      const ms = M.measureState();
+      out.planes = { normals: ms.normals, res: ms.planeResult, txt: document.querySelector('#meta').textContent,
+        unit: [M.planeAngle([0, 0, 1], [1, 0, 0]), M.planeAngle([1, 0, 1], [0, 0, -1]), M.planeAngle([0, 0, 1], [0, 0, 2])] };
+      T.visible = true; SH.visible = false; M.applyTreeVisibility();
       M.clearMeasure && M.clearMeasure();
       for (const x of hide) x.visible = true; M.applyTreeVisibility();
     }
@@ -181,6 +193,19 @@ try {
       r.m4.midArm && r.m4.closed && !r.m4.arm && Q.length === 4 && near(r.m4) < 0.05 && Math.abs(AP - 4000) < 5 && Math.abs(A3 / AP - TILT) < 1e-6
       && Math.abs(num(/area ([\d.]+) m² in plan/, r.m4.txt) - AP) < 0.051 && Math.abs(num(/m² in plan, ([\d.]+) m² in 3D/, r.m4.txt) - A3) < 0.051
       && Math.abs(num(/measure: ([\d.]+) m along 4 segments/, r.m4.txt) - per) < 0.006 && r.m4.poly.split(' ').length === 5);
+  }
+  // §7 the angle between two planes, against the planes' own normals
+  {
+    const n1 = [-0.04, -0.02, 1], n2 = [0.1, -0.05, 1], U = (n) => { const l = Math.hypot(...n); return n.map((v) => v / l); };
+    const a = U(n1), c = U(n2), ANG = Math.acos(Math.abs(a[0] * c[0] + a[1] * c[1] + a[2] * c[2])) * 180 / Math.PI;
+    let x = [a[1] * c[2] - a[2] * c[1], a[2] * c[0] - a[0] * c[2], a[0] * c[1] - a[1] * c[0]]; const xl = Math.hypot(...x); x = x.map((v) => v / xl); if (x[2] > 0) x = x.map((v) => -v);
+    const PL = Math.atan2(-x[2], Math.hypot(x[0], x[1])) * 180 / Math.PI, TR = ((Math.atan2(x[0], x[1]) * 180 / Math.PI) + 360) % 360;
+    const R2 = r.planes.res, nOk = r.planes.normals.length === 2 && r.planes.normals.every((n, i) => { const u = U(n), w = U([n1, n2][i]); return Math.abs(Math.abs(u[0] * w[0] + u[1] * w[1] + u[2] * w[2]) - 1) < 1e-6; });
+    chk(`the angle between two planes (⇧M): the grid surface then the mesh — ${R2 && R2.angle.toFixed(3)}° (= ${ANG.toFixed(3)}), meeting along ${R2 && R2.line && R2.line.plunge.toFixed(2)}→${R2 && R2.line && R2.line.trend.toFixed(2)} (= ${PL.toFixed(2)}→${TR.toFixed(2)}) · “${r.planes.txt.slice(0, 120)}”`,
+      nOk && R2 && Math.abs(R2.angle - ANG) < 1e-3 && Math.abs(R2.line.plunge - PL) < 1e-2 && Math.abs(R2.line.trend - TR) < 1e-2 && /angle between planes: [\d.]+°/.test(r.planes.txt));
+    const [u1, u2, u3] = r.planes.unit;
+    chk(`plane angles by construction: horizontal vs vertical N–S = ${u1.angle}° meeting along ${u1.line.plunge}→${u1.line.trend}; 45° east-dipping vs horizontal = ${u2.angle.toFixed(6)}° (${u2.a.dip.toFixed(1)}/${u2.a.dipDir.toFixed(0)}); parallel = ${u3.angle}°, no line (${u3.line})`,
+      Math.abs(u1.angle - 90) < 1e-9 && Math.abs(u1.line.plunge) < 1e-9 && Math.abs(u2.angle - 45) < 1e-9 && Math.abs(u2.a.dip - 45) < 1e-9 && Math.abs(u2.a.dipDir - 90) < 1e-9 && u3.angle === 0 && u3.line === null);
   }
   // §3 the window
   chk(`the window (palette): Run → a chart of the surfaces (${r.win.spec}) and a readout (“${r.win.readout.slice(0, 70)}”); its recipe is the tool's (${r.win.recipe && r.win.recipe.tool})`,

@@ -9,7 +9,7 @@ import { openProps } from './props.js';
 import { showNode, stepExclusive } from './tree.js';
 import { toggleLayersPanel } from './layers-panel.js';
 import { _gotoArm, gotoDisarm, saveViewSlot, recallViewSlot, armGoto } from './views.js';
-import { armMeasure, _measure, clearMeasure } from './overlay.js';
+import { armMeasure, armPlaneAngle, _measure, clearMeasure } from './overlay.js';
 import { showHelp, HELP_KEYS } from './help.js';
 import { showFileInfo } from './fileinfo.js';
 import { renameActiveLayer } from './rename.js';
@@ -71,6 +71,7 @@ window.addEventListener('keydown', (e) => {
   else if (k === '/') { e.preventDefault(); $('#filter').focus(); }
   else if (k === 'i') showFileInfo();
   else if (k === 'm') armMeasure();
+  else if (k === 'M') armPlaneAngle();                    // ⇧M: the angle between two planes (two surface clicks)
   else if (k === 'p') toggleLayersPanel();
   else if (k === 'P') { const Lp = activeLayer(); if (Lp) { setActiveLayer(Lp.id); openProps(); } }   // ⇧P: layer Properties (pairs with p = layers panel)
   else if (k === 'B') { setBlockEdges(!_blockEdges); $('#meta').textContent = `block edges ${_blockEdges ? 'on' : 'off'}`; }   // ⇧B: block edges (the View toggle)

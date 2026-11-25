@@ -8,7 +8,7 @@ import { coordNum, decodeLasRecords } from '../../../ext/condenser/src/main.js';
 import { _isMobile } from './windows.js';
 import { rendererDocBbox } from './layers.js';
 import { currentSection } from './section.js';
-import { pickHitPoint, meshHitAt } from './pick.js';
+import { pickHitPoint, meshHitAt, dipOfNormal } from './pick.js';
 import { sceneOrigin, worldToLocal } from './coords.js';
 const $ = (s) => document.querySelector(s);
 // the app's side, passed in once (setOverlayHooks): _viewMode
@@ -20,7 +20,8 @@ export function setOverlayHooks(h) { H = h; }
 // overlay re-projects each drawn frame, so it rides orbits. Esc clears. ──
 // a/b = the first / last point (frame-local [x,y,z]); pts / ptsT every vertex, drawn / true (a moved
 // layer); closed: the polyline closed back on its first vertex; mouse = css px rubber-band end
-const NEW_MEASURE = (arm) => ({ arm, a: null, b: null, mouse: null, pts: [], ptsT: [], closed: false });
+// mode 'planes': two clicks on surfaces, each keeping its face normal → the angle between the planes
+const NEW_MEASURE = (arm, mode = 'line') => ({ arm, mode, a: null, b: null, mouse: null, pts: [], ptsT: [], closed: false, normals: [] });
 export let _measure = NEW_MEASURE(0);
 
 export async function recordPosition(hit) {
@@ -74,6 +75,59 @@ export function armMeasure() {
   $('#meta').textContent = _isMobile() ? 'measure: tap two points — hold and slide for a crosshair' : 'measure: click two points/blocks — ⇧-click to add a vertex (a polyline; back on the first closes it)';
 }
 
+// the angle between two PLANES: click two surfaces (a mesh, a grid shown as a surface); each click
+// keeps the face it met. → both attitudes, the angle between them, and their line of intersection
+export function armPlaneAngle() {
+  _measure = NEW_MEASURE(1, 'planes');
+  $('#measureSvg').style.display = 'none';
+  $('#btnMeasure').classList.add('on');
+  S.cv.style.cursor = 'crosshair';
+  $('#meta').textContent = 'angle between planes: click a surface, then another (a mesh face, a grid surface)';
+}
+
+// two normals → { a: {dip, dipDir}, b, angle (0–90°, between the planes), line: {trend, plunge} | null
+// (parallel planes meet nowhere) }. The line of intersection is n₁ × n₂, pointed down.
+export function planeAngle(n1, n2) {
+  const u = (n) => { const l = Math.hypot(...n) || 1; return n.map((v) => v / l); };
+  const a = u(n1), b = u(n2);
+  const c = Math.abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2]);
+  const angle = Math.acos(Math.min(1, c)) * 180 / Math.PI;
+  let x = [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  const xl = Math.hypot(...x);
+  let line = null;
+  if (xl > 1e-9) {
+    x = x.map((v) => v / xl); if (x[2] > 0) x = x.map((v) => -v);
+    const h = Math.hypot(x[0], x[1]);
+    line = { plunge: Math.atan2(-x[2], h) * 180 / Math.PI, trend: h < 1e-12 ? 0 : ((Math.atan2(x[0], x[1]) * 180 / Math.PI) + 360) % 360 };
+  }
+  return { a: dipOfNormal(a), b: dipOfNormal(b), angle, line };
+}
+const att = (o) => `${Math.round(o.dip).toString().padStart(2, '0')}/${Math.round(o.dipDir).toString().padStart(3, '0')}`;
+
+async function planeClick(cssX, cssY) {
+  const hit = S.renderer.pick(cssX, cssY, S.cam, { pointPx: +$('#ptPx').value, section: currentSection() });
+  const hitL = hit != null ? layerById(hit.layer) : null;
+  const h = hitL && hitL.kind === 'mesh' ? await meshHitAt(hitL, cssX, cssY) : null;
+  if (!h || !h.normal || (h.grid && h.grid.flat)) { $('#meta').textContent = `angle between planes: ${hitL ? `${hitL.label || hitL.name} has no face there` : 'no surface there'} — click a mesh or a grid surface`; return; }
+  const local = worldToLocal(h.drawn || h.point);
+  _measure.pts.push(local); _measure.ptsT.push(local); _measure.normals.push(Array.from(h.normal));
+  if (_measure.pts.length === 1) {
+    _measure.a = local;
+    $('#meta').textContent = `angle between planes: the first is ${att(dipOfNormal(h.normal))} (dip/dip direction) — now click the second`;
+    drawMeasure(); return;
+  }
+  _measure.b = local;
+  const r = planeAngle(_measure.normals[0], _measure.normals[1]);
+  _measure.planeResult = r;
+  _measure.arm = 0; _measure.mouse = null;
+  S.cv.style.cursor = '';
+  $('#btnMeasure').classList.remove('on');
+  $('#meta').textContent = `angle between planes: ${r.angle.toFixed(1)}° · ${att(r.a)} and ${att(r.b)} (dip/dip direction)`
+    + (r.line ? ` · they meet along ${Math.round(r.line.plunge).toString().padStart(2, '0')}→${Math.round(r.line.trend).toString().padStart(3, '0')} (plunge→trend)` : ' · parallel: they never meet');
+  _measure.label = `${r.angle.toFixed(1)}°`;
+  drawMeasure();
+}
+
 export function clearMeasure() {
   _measure = NEW_MEASURE(0);
   $('#measureSvg').style.display = 'none';
@@ -85,6 +139,7 @@ export function clearMeasure() {
 // a click: the first point, a vertex more (add: ⇧), or the last (a plain click ends it). Clicking back
 // on the first vertex (within 10 px) of three or more closes the outline: its area.
 export async function measureClick(cssX, cssY, { add = false } = {}) {
+  if (_measure.mode === 'planes') return planeClick(cssX, cssY);
   if (_measure.pts.length >= 3) {
     const f = projectToCss(_measure.pts[0]);
     if (f && Math.hypot(f[0] - cssX, f[1] - cssY) <= 10) { _measure.closed = true; finishMeasure(); return; }

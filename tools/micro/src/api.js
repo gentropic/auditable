@@ -79,7 +79,7 @@ import { runFigureRecipe, captureFigureCfg, setDeco, setDecoTitle, setLayerLegen
 import { fileLayerByPath, ensureGroupPath, createLayerGroup, applyTreeVisibility, treeMove, followLayer, fileLayersInGroup, groupPathOf, groupsList, ungroupAt, setGroupVisible, showNode, groupAt, setGroupExclusive, stepExclusive } from './tree.js';
 import { renderLayers, toggleLayersPanel, groupMenu, setLayerSectionMode } from './layers-panel.js';
 import { saveViewAs, applyView, saveSceneAs, applyScene, captureScene, removeBookmark, removeScene } from './views.js';
-import { measureClick, armMeasure, _measure, setSwathBand, recordPosition } from './overlay.js';
+import { measureClick, armMeasure, armPlaneAngle, planeAngle, clearMeasure, _measure, setSwathBand, recordPosition } from './overlay.js';
 import { openWfrDialog, openMeshExportDialog, exportMeshes, writeGridDisplayCache } from './meshexport.js';
 import { exportGridAsc, exportGrid, buildGridExport, openGridExportDialog, gridForExport, GRID_EXPORT_FMTS } from './grid-export.js';
 import { openSurfaceTools, gridOnLattice, openMeshGridDialog, openNewDialog } from './gridtools.js';
@@ -194,7 +194,7 @@ window._micro = {
   smoothField, recoverSession, recreateRenderer, createMemDir, openSectionSeries, renderSectionSeries,
   seriesPositions, seriesExtent, sectionWorld, setSectionWorld, openPairing, pairBlocksSamples,
   selectDisagreeing, pairWins: _pairWins, openComposite, compositeLayer, compositeToLayer, openModelQa,
-  modelQa, qaFindings, selectFinding, subBlockTiling, modelQaWins: _modelQaWins, measureClick, armMeasure,
+  modelQa, qaFindings, selectFinding, subBlockTiling, modelQaWins: _modelQaWins, measureClick, armMeasure, armPlaneAngle, planeAngle, clearMeasure,
   measureState: () => _measure, openExplode, explodeGroup, setLayerDisplayOffset, anyDisplaced, openTurntable,
   recordTurntable, turntableMime, openThemeEditor, customTheme, setCustomTheme, clearCustomTheme,
   parseThemeJson, themeJson, registerTokens, contrast, setTheme, sceneDefault, canChangeFile, viewsOf, isView,

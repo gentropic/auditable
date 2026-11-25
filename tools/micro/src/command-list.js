@@ -24,7 +24,7 @@ import { exportFigure, openDecoPanel, setDeco, _deco, setLayerLegend, saveDeco, 
 import { applyTreeVisibility, showNode, groupAt, groupPathOf, groupLayerIds } from './tree.js';
 import { renderLayers, _lpSel, lpSelIds, toggleLayersPanel, moveLayerToGroupMenu } from './layers-panel.js';
 import { saveViewAs, saveSceneAs } from './views.js';
-import { armMeasure } from './overlay.js';
+import { armMeasure, armPlaneAngle } from './overlay.js';
 import { microPrompt } from './prompts.js';
 import { menuXY } from './menu.js';
 import { openWfrDialog, wfrExportable, openMeshExportDialog } from './meshexport.js';
@@ -168,7 +168,8 @@ registerCommands([
   { id: 'table', group: 'Analyse', title: 'Attribute table…', kw: 'rows data grid', when: (c) => c.L && hasRecords(c.L), run: (c) => openAttrTable(c.L) },
   { id: 'filter', group: 'Analyse', title: 'Filter…', kw: 'query where expression', when: (c) => c.L && layerTableHeader(c.L), run: (c) => { setActiveLayer(c.L.id); $('#filter').focus(); } },
   { id: 'scancols', group: 'Analyse', title: 'Scan columns (stats)', kw: 'histogram quantiles mean', when: (c) => c.L && layerTableHeader(c.L), run: (c) => scanColumns(c.L).then(() => { if (_propOpen) renderProps(); }).catch((e) => { $('#meta').textContent = `scan columns: ${e.message}`; }) },
-  { id: 'measure', group: 'Analyse', title: 'Measure…', kw: 'distance ruler', run: () => armMeasure() },
+  { id: 'measure', group: 'Analyse', title: 'Measure…', kw: 'distance ruler polyline length area angle perimeter', run: () => armMeasure() },
+  { id: 'planeangle', group: 'Analyse', title: 'Angle between two planes…', kw: 'dihedral angle planes intersection lineation trend plunge dip faces surfaces measure', run: () => armPlaneAngle() },
   { id: 'props', group: 'Layer', title: 'Properties…', kw: 'style colour clip', when: (c) => c.L, run: (c) => { setActiveLayer(c.L.id); openProps(); } },
   { id: 'lineage', group: 'Layer', title: 'Lineage…', kw: 'provenance audit report history derivation', when: (c) => c.L && c.L.lineage, run: (c) => openLineageWindow(c.L) },
   { id: 'optimize', group: 'Layer', title: 'Store as Parquet…', kw: 'optimize morton index materialize convert spatial', when: (c) => c.L && !isView(c.L) && c.L.docs.blockDoc && !c.L.docs.blockDoc.parquet, run: async (c) => { const res = await openOptimizeDialog([c.L]); if (res && res.layers.length) await convertLayerToParquet(c.L, { keepOriginal: res.keepOriginal }); } },
