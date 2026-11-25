@@ -33,11 +33,13 @@ import { rerunToolRecipe } from './tools.js';
 import { SEC_AXES, sectionCells, sectionShapes, sectionDrillholes, sectionMesh } from './vsection.js';
 import { gridAxesOf } from './grid-ops.js';
 import { xyFigure } from './xyplot.js';
+import { compareField, refreshCompareFrame, lineageMd as compareLineageMd, openCompareDialog } from './compare.js';
 const $ = (s) => document.querySelector(s);
 
 // the app's side (setComposerHooks): renderViewCanvas(pxW, pxH) → a canvas rendered to convergence
 let HK = {};
 export function setComposerHooks(h) { HK = h; }
+export const composerCamera = (v) => HK.setCameraWorld(v);   // the camera, in world terms, for a page builder (compare.js) — through the hooks, not viewport.js
 
 const PREVIEW_PX_PER_MM = 6;                               // ≈150 dpi on screen; export re-renders at the print dpi
 const MAX_PX = 6000;
@@ -350,6 +352,11 @@ export async function refreshData(fig = _fig) {
       } else if (src.kind === 'resource' && src.params) {
         f.content = { ...f.content, ...(await resourceContent(src.params)) };
         await stampFacts(f, [src.params.layer]); f.produced = new Date().toISOString(); n++;
+      } else if (src.kind === 'compare' && src.params) {      // a comparison (compare.js): the table, its values, the Δ layer — all again
+        f.content = { ...f.content, ...(await refreshCompareFrame(f)) };
+        await stampFacts(f, [src.params.old, src.params.new]); f.produced = new Date().toISOString(); n++;
+      } else if (src.kind === 'compare-lineage' && src.params) {
+        f.content = { ...f.content, md: await compareLineageMd(src.params) }; f.produced = new Date().toISOString(); n++;
       }
     } catch (e) { $('#meta').textContent = `composer: ${f.id} not made again — ${e.message}`; }
   }
@@ -934,12 +941,14 @@ export function openComposer(name) {
   const tplBtn = btn('☆ template', 'make this figure a template — new figures can start from it (its frames, page and properties)', () => { setTemplate(_fig.doc, !_fig.doc.template); persist(_fig); fill(); });
   const fill = () => {
     pick.replaceChildren(...S.figures.map((f) => { const o = document.createElement('option'); o.value = f.name; o.textContent = f.name + (f.doc.template ? ' ★' : ''); return o; })); pick.value = _fig ? _fig.name : '';
-    const keep = fromSel.value; fromSel.replaceChildren(...[['', 'blank'], ...S.figures.filter((f) => f.doc.template).map((f) => [f.name, 'from ' + f.name])].map(([v, t]) => { const o = document.createElement('option'); o.value = v; o.textContent = t; return o; })); fromSel.value = [...fromSel.options].some((o) => o.value === keep) ? keep : '';
+    const keep = fromSel.value; fromSel.replaceChildren(...[['', 'blank'], ['@compare', 'comparison report…'], ...S.figures.filter((f) => f.doc.template).map((f) => [f.name, 'from ' + f.name])].map(([v, t]) => { const o = document.createElement('option'); o.value = v; o.textContent = t; return o; })); fromSel.value = [...fromSel.options].some((o) => o.value === keep) ? keep : '';
     tplBtn.textContent = _fig && _fig.doc.template ? '★ template' : '☆ template';
   };
   pick.onchange = () => showFigure(S.figures.find((f) => f.name === pick.value));
   top.append(pick,
-    ib('file-new', 'New figure', 'from the template chosen beside it, if any', async () => { const n = ((await microPrompt('figure name', `figure ${S.figures.length + 1}`)) || '').trim(); if (!n) return; const tpl = S.figures.find((f) => f.name === fromSel.value && f.doc.template) || null; showFigure(S.figures.find((f) => f.name === n) || newFigure(n, tpl)); fill(); }),
+    ib('file-new', 'New figure', 'from the template chosen beside it, if any — or a comparison report of two model versions', async () => {
+      if (fromSel.value === '@compare') { const n = ((await microPrompt('report name', 'model comparison')) || '').trim(); if (n) openCompareDialog({ name: n }); return; }
+      const n = ((await microPrompt('figure name', `figure ${S.figures.length + 1}`)) || '').trim(); if (!n) return; const tpl = S.figures.find((f) => f.name === fromSel.value && f.doc.template) || null; showFigure(S.figures.find((f) => f.name === n) || newFigure(n, tpl)); fill(); }),
     fromSel,
     ib('rename', 'Rename figure', 'its file is renamed too', async () => {
       const n = ((await microPrompt('rename figure', _fig.name)) || '').trim(); if (!n || n === _fig.name) return;
@@ -1100,6 +1109,7 @@ const MICRO_FIELDS = {
   },
   project: () => (S.project && S.project.name) || 'no project',
   micro: () => S.build || 'dev',
+  cmp: (a, f, env) => compareField(a, f, env),               // a value of the page's comparison table (compare.js)
 };
 for (const k of ['mean', 'median', 'min', 'max', 'std', 'n']) MICRO_FIELDS[k] = (a, f, env) => {
   if (!a) return `⟨which column? {${k}:AU}⟩`;
@@ -1126,6 +1136,7 @@ const MICRO_FIELD_HELP = [
   { name: 'max', help: 'a column’s maximum: {max:AU}' },
   { name: 'std', help: 'a column’s standard deviation: {std:AU}' },
   { name: 'n', help: 'how many of the records {count} counts have a value: {n:AU}' },
+  { name: 'cmp', help: 'a value of the page’s comparison table (Compare model versions…): {cmp:delta_metal_pct:.1f} · {cmp:summary} · {cmp:blocks} · {cmp:group1} (the biggest move) · {cmp:bench1} · {cmp:old} / {cmp:new}' },
 ];
 // the ${…} scope: the nearest view's numbers
 function scopeOf(frame, env) {

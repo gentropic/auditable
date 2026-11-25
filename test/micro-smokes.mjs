@@ -46,6 +46,8 @@ job('structure built', 'micro-structure-smoke.mjs', '--built');
 job('shell', 'micro-shell-smoke.mjs');
 job('asbuilt', 'micro-asbuilt-smoke.mjs');      // surveys → mined volumes → factors: point cloud → DEM, cut / fill, factors by surveys
 job('asbuilt built', 'micro-asbuilt-smoke.mjs', '--built');
+job('compare', 'micro-compare-smoke.mjs');      // two model versions → one composer page: the table = a hand computation, the Δ map's categories, the tool, refresh
+job('compare built', 'micro-compare-smoke.mjs', '--built');
 job('wfr', 'micro-wfr-smoke.mjs');
 job('nl', 'micro-nl-smoke.mjs');               // the plain-language bar: wiring + propose-never-act (accuracy: test/micro-nl.test.mjs)
 const todo = ONLY.length ? jobs.filter((j) => ONLY.some((o) => j.name.includes(o))) : jobs;

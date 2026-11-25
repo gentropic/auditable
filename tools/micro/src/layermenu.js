@@ -1,4 +1,5 @@
 // the layer context menu and the actions behind it: fit, remove, mesh tier, tint, opacity
+import { openCompareDialog, comparableLayers } from './compare.js';
 import { S, layerById, requestRender } from './state.js';
 import { microConfirm, microPrompt } from './prompts.js';
 import { removeLayerUI, setActiveLayer } from './layers.js';
@@ -115,6 +116,8 @@ export function layerMenuSections(L, x, y) {
     // reconciliation: F1 / F2 / F3 totals inside the mined volume, per period (this layer = the resource model)
     ...(!view && factorsModel(L) ? [{ label: 'Reconciliation factors…', action: () => openFactors(L) }] : []),
     ...(!view && L.docs && L.docs.blockDoc ? [{ label: 'Model QA…', action: () => openModelQa(L) }] : []),
+    // two versions of a model → one composer page (this layer = the new one)
+    ...(!view && grid && L.docs && L.docs.blockDoc && comparableLayers().length >= 2 ? [{ label: 'Compare model versions…', action: () => openCompareDialog({ newLayer: L }) }] : []),
     ...(!view && dh ? [{ label: 'Composite…', action: () => openComposite(L) }] : []),
     ...(h ? [{ label: 'Mesh QA / volume…', action: () => openMeshQa(L) }] : []),
     ...(h && !L.derivedOf ? [{ label: 'Structural analysis…', action: () => openStructure(L) }] : []),

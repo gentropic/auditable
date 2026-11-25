@@ -24,6 +24,8 @@ import { compositeToLayer } from './composite-ui.js';
 import { pairBlocksSamples } from './pairing.js';
 import { gradeShell } from './shells.js';
 import { spatialJoinToCols, reconcileModels } from './joins.js';
+import { compareModels, compareTable, compareValues, buildComparisonReport } from './compare.js';
+import { refreshViews } from './composer.js';
 import { renderSectionSeries } from './section-series.js';
 import { setSectionWorld } from './section.js';
 import { removeLayerUI } from './layers.js';
@@ -867,6 +869,54 @@ registerTool('reconcile', {
     return r;
   },
   shape(r, p) { return { table: null, values: { matched: r.matched ?? 0, mean_delta: r.meanDelta ?? NaN, mean_abs_delta: r.meanAbsDelta ?? NaN, this_only: r.thisOnly ?? 0, ref_only: r.refOnly ?? 0 }, layers: [r.name], resolved: { ...p }, warnings: [] }; },
+});
+
+// comparemodels: two versions of a block model → old vs new tonnes / grade / metal per cutoff × group,
+// the Δ (new − old) and Δ% of old, and (map) the Δ layer with a change category per block. values
+// at the LOWEST cutoff's totals — a check: "abs(cmp.delta_metal_pct) < 5"; figure: the composer page
+// of that name is made (or, if it exists, made again)
+registerTool('comparemodels', {
+  label: 'compare model versions', cache: false, makes: 'layer',
+  params: {
+    old: { type: 'layer', required: true, kinds: ['blocks'], doc: 'the earlier model (last month’s estimate)' },
+    new: { type: 'layer', required: true, kinds: ['blocks'], doc: 'the later one' },
+    grade: { type: 'column', required: true, of: 'new', doc: 'the grade column (the new model’s name for it)' },
+    gradeOld: { type: 'column', of: 'old', doc: 'the old model’s name for the grade, when it differs' },
+    density: { type: 'any', doc: '{ col } a density column, or { const } a value; unit (t/m3, g/cm3, kg/m3, lb/ft3) — both models' },
+    densityOld: { type: 'any', doc: 'the old model’s own density, when it differs ({ col } / { const })' },
+    groupBy: { type: 'any', doc: 'up to two category columns both models carry (domain, class)' },
+    cutoffs: { type: 'numbers', routine: 'required', why: 'a comparison month to month needs the same stated cutoffs', doc: 'the cutoffs (each model’s own grade at each); values read the lowest' },
+    gradeUnit: { type: 'string', default: '', doc: 'the grade’s unit (pct, g/t, ppm …) — declared, metal is in tonnes (as the resource table)' },
+    metalFactor: { type: 'number', doc: 'metal = tonnes × grade × this (absent: from gradeUnit, or 1)' },
+    benchHeight: { type: 'number', doc: 'the bench height for the moves by bench (default: the model’s z pitch)' },
+    map: { type: 'bool', default: true, doc: 'make the Δ layer (new − old on the common lattice, a change category per block) — needs compatible lattices' },
+    tolerance: { type: 'number', default: 0, doc: 'a block counts as changed when |Δ grade| is above this' },
+    mapColor: { type: 'enum', values: ['delta', 'change'], default: 'delta', doc: 'the page’s map: coloured by Δ grade, or by added / removed / changed' },
+    section: { type: 'bool', default: false, doc: 'the page’s map also as an E–W section' },
+    figure: { type: 'string', doc: 'a composer page of this name: made, or made again if it exists' },
+    metalUnit: { type: 'string', display: true },
+  },
+  outputs: { key: ['cutoff'] },
+  check(p, errs) {
+    if (p.groupBy != null && (!Array.isArray(p.groupBy) || p.groupBy.length > 2 || p.groupBy.some((g) => typeof g !== 'string'))) errs.push('groupBy: a list of up to two column names');
+    for (const k of ['density', 'densityOld']) {
+      const d = p[k];
+      if (d != null && (typeof d !== 'object' || Array.isArray(d) || Object.keys(d).some((x) => !['col', 'const', 'unit'].includes(x)))) errs.push(`${k}: { col } or { const }, with an optional unit`);
+    }
+    if (p.old != null && p.old === p.new) errs.push('new: the same layer as old');
+  },
+  async scan(p, ctx) {
+    const r = await compareModels(p, { onProgress: ctx.progress || null });
+    if (p.figure) {
+      const fig = S.figures.find((f) => f.name === p.figure);
+      if (fig && fig.doc.frames.some((f) => f.source && f.source.kind === 'compare')) await refreshViews(fig);
+      else await buildComparisonReport(p, { name: p.figure, result: r });
+    }
+    return r;
+  },
+  shape(r, p) {
+    return { table: compareTable(r, p), values: compareValues(r), ...(r.mapLayer ? { layers: [r.mapLayer] } : {}), resolved: { ...p }, warnings: [], moves: r.moves };
+  },
 });
 
 // pcgrid: a point cloud → a DEM grid layer (each point on its nearest node; min / mean / max Z per node)

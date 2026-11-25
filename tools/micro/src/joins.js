@@ -331,7 +331,10 @@ export async function runReconcile(L, R, jf, grade) {
   try { return await reconcileModels(L, R, jf, grade); } catch (e) { $('#meta').textContent = `reconcile: ${e.message}`; return null; }
 }
 // → { layer, name, matched, meanDelta, meanAbsDelta, thisOnly, refOnly } (the reconcile tool reads it)
-export async function reconcileModels(L, R, jf, grade, { replace = false } = {}) {
+// refGrade: the reference's own name for the grade (two versions of a model may spell it apart);
+// change: also a text column `change` — added (only here) · removed (only in the reference) ·
+// changed (|Δ| > tol) · unchanged — the categories a comparison map colours by (+ changed in the result)
+export async function reconcileModels(L, R, jf, grade, { replace = false, refGrade = null, change = false, tol = 0, name: asName = null } = {}) {
   {
     // reconcile on the COMMON lattice (finest) so it captures matched AND
     // added/removed cells even when the two models' extents differ. When ONE side
@@ -346,25 +349,26 @@ export async function reconcileModels(L, R, jf, grade, { replace = false } = {})
     const aName = `ref_${grade}`, bName = `this_${grade}`, dName = `Δ${grade}`;
     const columns = [
       { src: 'left', name: grade, out: bName, num: true, op: 'mean', weight: jf.weights['left:' + grade] || null },
-      { src: 'right', name: grade, out: aName, num: true, op: 'mean', weight: jf.weights['right:' + grade] || null },
+      { src: 'right', name: refGrade || grade, out: aName, num: true, op: 'mean', weight: jf.weights['right:' + (refGrade || grade)] || null },
     ];
     const derived = [{ out: dName, num: true, compute: (g) => { const a = g(aName), b = g(bName); return a != null && b != null ? b - a : null; } }];
-    const name = `reconcile_${shortName(L)}_vs_${shortName(R)}.csv`;
+    if (change) derived.push({ out: 'change', num: false, compute: (g) => { const a = g(aName), b = g(bName); return a == null ? (b == null ? null : 'added') : b == null ? 'removed' : Math.abs(b - a) > tol ? 'changed' : 'unchanged'; } });
+    const name = asName || `reconcile_${shortName(L)}_vs_${shortName(R)}.csv`;
     if (replace) for (const old of S.layers.filter((x) => x.name === name)) removeLayerUI(old.id);   // a re-run replaces its own result
     const { blob } = await runSpatialJoin({ leftL: L, rightL: R, target: T, columns, derived, label: 'reconcile', useSelection: !!jf.useSel });
     // open ALREADY coloured by Δ (chan = the Δ column) — heads are
     // XC,YC,ZC, ...columns, ...derived, so Δ is at 3 + columns.length
     const dIdx = 3 + columns.length;
-    const lin = mkLineage('reconcile', { grade, target: 'common-finest', ...(jf.useSel ? { selection: true } : {}), of: `${shortName(L)}−${shortName(R)}` }, [L.lineage, R.lineage]);
-    await openBlob(blob, name, 'add', null, { mapping: { x: 0, y: 1, z: 2, chan: dIdx, cat: null }, lineage: lin, ...(T.rot ? { lattice: T } : {}) });
+    const lin = mkLineage('reconcile', { grade, ...(refGrade && refGrade !== grade ? { refGrade } : {}), target: 'common-finest', ...(jf.useSel ? { selection: true } : {}), of: `${shortName(L)}−${shortName(R)}` }, [L.lineage, R.lineage]);
+    await openBlob(blob, name, 'add', null, { mapping: { x: 0, y: 1, z: 2, chan: dIdx, cat: change ? dIdx + 1 : null }, lineage: lin, ...(T.rot ? { lattice: T } : {}) });
     const J = activeLayer();
     if (J) {
       const jh = layerTableHeader(J);
       const ai = jh.columns.indexOf(aName), bi = jh.columns.indexOf(bName);
-      let sum = 0, sumAbs = 0, n = 0, refOnly = 0, thisOnly = 0, mx = 0;
+      let sum = 0, sumAbs = 0, n = 0, refOnly = 0, thisOnly = 0, mx = 0, changed = 0;
       for await (const batch of layerRows(J, null)) for (const f of batch) {   /* rows ok: reconcile summary over the derived layer: counts, not numbered */
         const aP = f[ai] !== '' && Number.isFinite(+f[ai]), bP = f[bi] !== '' && Number.isFinite(+f[bi]);
-        if (aP && bP) { const dv = +f[bi] - +f[ai]; sum += dv; sumAbs += Math.abs(dv); if (Math.abs(dv) > mx) mx = Math.abs(dv); n++; }
+        if (aP && bP) { const dv = +f[bi] - +f[ai]; sum += dv; sumAbs += Math.abs(dv); if (Math.abs(dv) > mx) mx = Math.abs(dv); if (Math.abs(dv) > tol) changed++; n++; }
         else if (aP) refOnly++; else if (bP) thisOnly++;
       }
       // the diverging spectral ramp, symmetric about 0 → yellow=no change, blue=under, red=over
@@ -372,7 +376,7 @@ export async function reconcileModels(L, R, jf, grade, { replace = false } = {})
       setRampCfg(J, { preset: 'spectral' });
       applyRamp(J, true); requestRender();
       const mean = n ? sum / n : 0, mabs = n ? sumAbs / n : 0;
-      J._reconcile = { matched: n, meanDelta: mean, meanAbsDelta: mabs, thisOnly, refOnly };
+      J._reconcile = { matched: n, meanDelta: mean, meanAbsDelta: mabs, thisOnly, refOnly, changed };
       $('#meta').textContent = `reconcile ${shortName(L)}−${shortName(R)} (${dName}): ${n.toLocaleString()} matched · mean Δ ${mean >= 0 ? '+' : ''}${mean.toPrecision(3)} · mean|Δ| ${mabs.toPrecision(3)}${thisOnly ? ` · ${thisOnly.toLocaleString()} added` : ''}${refOnly ? ` · ${refOnly.toLocaleString()} removed` : ''} → ${name}`;
     }
     renderLayers();

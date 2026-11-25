@@ -101,6 +101,7 @@ import { listRuns, acceptRun, findBaseline } from './runrecord.js';
 import { openRunsWindow } from './runs-ui.js';
 import { openComposer, retargetFigure, openRetargetDialog, setHouseProps, addTitleBlock, composerFrameMenu, composerEnv, addKeyPlan, smallMultiples, refreshViews, refreshData, addResourceFrame, refreshAllFigures, staleOf, openFigurePdf, addViewFrame, addCanvasFrame, addTableFrame, legendContentFor, figurePdfBytes, composerEditor, currentFigure, compoPage, writePages, makeAtlasRoutine } from './composer.js';
 import { openLineageWindow, exportLineageReport, lineageReportHtml } from './lineage-ui.js';
+import { compareModels, compareCompat, buildComparisonReport, openCompareDialog, compareContent } from './compare.js';
 import { renderEmptyProjects, addRecent } from './recents.js';
 import { openBatchRename } from './rename.js';
 import { deliverBlob } from './hostio.js';
@@ -169,6 +170,7 @@ async function hostSelectInPolygon(lid, poly, { mode = 'replace', through = fals
 window._micro = {
   get hasFSAA() { return S.hasFSAA; },
   mod: async (n) => { if (!_MODS[n]) throw new Error(`_micro.mod: ${n} is not exposed (add it to _MODS)`); return _MODS[n]; },
+  compareModels, compareCompat, buildComparisonReport, openCompareDialog, compareContent,
   openComposer, retargetFigure, openRetargetDialog, colorSelFor, colorByName, runTool, checkParams,
   validationRun, listRuns, acceptRun, findBaseline, openRunsWindow, openRecipeForm, checkAllRecipes,
   openCheckAllRecipes, openLibraryWindow, libraryList, libraryPut, libraryGet, libraryDelete, packFromProject,
