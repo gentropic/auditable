@@ -1035,9 +1035,23 @@ function dimQFromCodes(codes, palette, grid, n = codes.length) {
  * A sub-blocked raw chunk carries dimQ; `dimPalette` accepts the legacy code +
  * palette form (raw.dim, the widget's wire) and converts it (dimQFromCodes).
  */
-function createBlockChunkBuilder({ frame, grid, dimPalette = null, chunkSize = 1 << 20, batchSize = 0, seed = 1, seedPerBatch = false, onChunk }) {
-  let rnd = mulberry32(seed), batchNo = 0;
-  const batchN = batchSize || chunkSize * 4;
+// The size of the Morton batch that starts at record `start`. batchN everywhere, unless
+// the builder knows the stream's `total`: then its last 2–3 batches' worth is cut into
+// `tailPieces` equal smaller batches. A batch is built whole, after its last record
+// arrives, so the open's tail — the time from the stream's end to the last chunk — is
+// one batch's build; at 2M records that was ~1.2 s on a worker, a piece is a fraction
+// of it, and several pieces build at once on a parallel builder. Deterministic (it
+// depends on total alone), and the same rule here and in micro's parallel builder.
+function batchSizeAt(start, batchN, total = 0, tailPieces = 8) {
+  if (!(total > 0) || !(tailPieces > 1)) return batchN;
+  const tailStart = Math.max(0, Math.floor(total / batchN) - 2) * batchN;
+  if (start < tailStart) return batchN;
+  return Math.max(1, Math.ceil((total - tailStart) / tailPieces));
+}
+function createBlockChunkBuilder({ frame, grid, dimPalette = null, chunkSize = 1 << 20, batchSize = 0, seed = 1, seedPerBatch = false, total = 0, tailPieces = 8, onChunk }) {
+  let rnd = mulberry32(seed), batchNo = 0, cutAt = 0;
+  const batchN0 = batchSize || chunkSize * 4;
+  let batchN = batchSizeAt(0, batchN0, total, tailPieces);
   let pend = [], pendCount = 0;
   const doc = {
     count: 0,
@@ -1063,6 +1077,7 @@ function createBlockChunkBuilder({ frame, grid, dimPalette = null, chunkSize = 1
     };
     const n = pendCount;
     pend = []; pendCount = 0;
+    cutAt += n; batchN = batchSizeAt(cutAt, batchN0, total, tailPieces);
     if (seedPerBatch) rnd = mulberry32(batchSeed(seed, batchNo));
     batchNo++;
     for (const chunk of buildBlockBatch(cols, n, { grid, frame, chunkSize, rnd })) {
@@ -1256,18 +1271,24 @@ function sizeCollector() {
       if (shapes.size < SHAPES_CAP) shapes.add(key);
     },
     /** a partial collector's snapshot (toJSON form) merged in */
+    // Merged IN ORDER (partials of consecutive record ranges, first to last), the
+    // result is the sequential sweep's: each axis's sizes go in first, in their
+    // first-appearance order (so a size's index and its representative value — the
+    // first raw value of its 7-digit class — are the sweep's), then the shapes, and
+    // the raw min/max (which see every noisy value, not just the representatives).
     merge(s) {
       if (!s) return;
+      for (let a = 0; a < 3; a++) for (const v of s.raw[a]) ixOf(a, v);   // sizes past the shape cap still count
       for (const [dx, dy, dz] of s.shapes) this.add(dx, dy, dz);
       any += (s.count || 0) - s.shapes.length;
-      for (let a = 0; a < 3; a++) for (const v of s.raw[a]) ixOf(a, v);   // sizes past the shape cap still count
+      if (s.min) for (let a = 0; a < 3; a++) { if (s.min[a] < min[a]) min[a] = s.min[a]; if (s.max[a] > max[a]) max[a] = s.max[a]; }
       if (s.overflow) overflow = true;
     },
     /** a structured-cloneable snapshot (a worker's partial) */
     toJSON() {
       const sh = [];
       for (const key of shapes) sh.push([raw[0][Math.floor(key / 16777216)], raw[1][Math.floor(key / 4096) % 4096], raw[2][key % 4096]]);
-      return { raw: raw.map((r) => [...r]), shapes: sh, overflow, count: any };
+      return { raw: raw.map((r) => [...r]), shapes: sh, overflow, count: any, min: [...min], max: [...max] };
     },
     /** do sizes vary at all? (one shape = a regular model in disguise) */
     get varies() { return axes.some((x) => x.size > 1); },
@@ -1881,6 +1902,237 @@ function basisOfGrid(g) {
   const origin = g.rot ? worldMapOf(g)(g.x.origin, g.y.origin, g.z.origin) : [g.x.origin, g.y.origin, g.z.origin];
   const P = [g.x.pitch, g.y.pitch, g.z.pitch];
   return { origin, U: [R[0] * P[0], R[1] * P[0], R[2] * P[0]], V: [R[3] * P[1], R[4] * P[1], R[5] * P[1]], W: [R[6] * P[2], R[7] * P[2], R[8] * P[2]], counts: [g.x.count, g.y.count, g.z.count], ...(g.source ? { source: g.source } : {}) };
+}
+
+// ── src/grid/tiling.js ──
+
+// @gcu/condenser — do a sub-blocked model's blocks TILE their parents?
+//
+// A sub-blocked model is a parent lattice (the cells a regular model would have)
+// with each parent split into sub-blocks. Received from another package, the split
+// is worth checking before anyone reports from it: every parent's sub-blocks should
+// fill it exactly — no gap (volume under the parent's), no two sub-blocks claiming
+// the same space (an overlap — volume over), none reaching out of its parent.
+//
+// Streaming, one pass, never a whole-model fine grid (a real 18.7M-block file has
+// ~9 billion fine cells): each block lands in its parent by its LOW corner; a parent
+// keeps a volume sum (one number) and — while it is OPEN — an occupancy bitmap of
+// its own fine cells. Blocks of a parent arrive together in every exporter we have
+// seen (Datamine sorts by IJK), so a small FIFO of open parents is enough; a parent
+// whose blocks come back after it was closed is COUNTED (revisited), and overlaps
+// between its two visits are not seen — said, never guessed.
+//
+// Coordinates: the block-support contract (grid/support.js). Positions arrive in
+// WORLD; each is carried into the model's lattice frame (q = Rᵀ(p − anchor)) and
+// read in HALF fine steps from the lattice origin, so a centroid is an even integer
+// and a corner (centroid ∓ size) an integer — exact arithmetic, no tolerance past
+// the one rounding of the centroid.
+
+/**
+ * A tiling checker for a support (sup.sub must be true).
+ * opts:
+ *   parentSize [3] — a parent's size in FINE steps (the largest sub-block, by default the header's sizeQMax)
+ *   phase      [3] | null — the lattice-frame coordinate of a parent CORNER (Datamine XMORIG…: local frame);
+ *                  null → found from the first block that spans a whole parent along an axis
+ *   unit       [3] — the occupancy cell in fine steps (2 when the pitch is half the sizes' GCD — every
+ *                  valid sub-block corner then lands on it; 1 always works, 4–8× the work)
+ *   ijk        { nx, ny, nz } | null — check a Datamine IJK column: IJK = (I·NY + J)·NZ + K, parents from the phase
+ *   keep       how many offending record numbers each finding keeps (the count is always exact)
+ *   openBytes  the budget for open parents' bitmaps
+ * → { add(chunk), finish() }; chunk = { x, y, z, dimQ (u8 ×3 fine steps), recs, count, ijk? (Float64Array) }
+ */
+function tilingChecker(sup, { parentSize, phase = null, unit = [1, 1, 1], ijk = null, keep = 200000, openBytes = 32 << 20, maxBuffered = 1 << 20 } = {}) {
+  if (!sup || !sup.sub) throw new Error('tiling: needs a sub-blocked support');
+  const R = sup.frame.R, A = sup.frame.anchor, rot = sup.frame.rotated;
+  const P = sup.lattice.pitch, OQ = sup.lattice.originQ, NF = sup.lattice.count;
+  const Pq = parentSize.map((v) => Math.max(1, Math.round(v)));
+  const U = [0, 1, 2].map((a) => (unit[a] > 1 && Pq[a] % unit[a] === 0 ? unit[a] : 1));
+  const P2 = Pq.map((v) => 2 * v), U2 = U.map((v) => 2 * v);
+  const C = [0, 1, 2].map((a) => Pq[a] / U[a]);           // occupancy cells per parent, per axis
+  const W = Math.ceil(C[0] / 32), words = W * C[1] * C[2];
+  const maxOpen = Math.max(4, Math.min(4096, Math.floor(openBytes / (4 * words))));
+  const fullVol = P2[0] * P2[1] * P2[2];                  // in half-step³ (exact integers)
+  // the parent corner in half fine steps from the lattice origin (stated, or found below)
+  let phi2 = phase ? phase.map((v, a) => 2 * (v - OQ[a]) / P[a]) : null;
+  let phaseFrom = phase ? 'stated' : null;
+  if (phi2 && phi2.some((v) => Math.abs(v - Math.round(v)) > 1e-3)) { phi2 = null; phaseFrom = null; }   // a stated corner off the fine lattice: find it instead
+  if (phi2) phi2 = phi2.map(Math.round);
+  const found = [null, null, null];                       // the corner, per axis, from a block spanning a whole parent
+
+  // parent index bounds: a corner (centroid − size) is ≥ −Pq half steps and ≤ 2(NF−1)
+  let pmin, pn, NP, vol, state;
+  // the hot loop's scalars (one block = a few dozen flops; no small arrays in it)
+  const oqx = OQ[0], oqy = OQ[1], oqz = OQ[2], k2x = 2 / P[0], k2y = 2 / P[1], k2z = 2 / P[2];
+  const p2x = P2[0], p2y = P2[1], p2z = P2[2], u2x = U2[0], u2y = U2[1], u2z = U2[2], cy_ = C[1];
+  const pow2 = U2.every((u) => (u & (u - 1)) === 0), mkx = u2x - 1, mky = u2y - 1, mkz = u2z - 1;   // a cell a power of two half steps: a mask, not a %
+  let phx = 0, phy = 0, phz = 0, pminx = 0, pminy = 0, pminz = 0, pnx = 0, pny = 0, pnz = 0;
+  const setup = () => {
+    pmin = [0, 1, 2].map((a) => Math.floor((-Pq[a] - phi2[a]) / P2[a]) - 1);
+    pn = [0, 1, 2].map((a) => Math.floor((2 * (NF[a] - 1) + Pq[a] - phi2[a]) / P2[a]) + 2 - pmin[a]);
+    [phx, phy, phz] = phi2; [pminx, pminy, pminz] = pmin; [pnx, pny, pnz] = pn;
+    NP = pn[0] * pn[1] * pn[2];
+    if (!(NP <= 1 << 27)) throw new Error(`tiling: ${NP.toLocaleString()} parent cells — too many to check`);
+    vol = new Float64Array(NP); state = new Uint8Array(NP);   // 0 unseen · 1 open · 2 closed · |4 revisited
+  };
+  if (phi2) setup();
+
+  const out = {
+    blocks: 0, offGrid: 0, offLattice: 0, crossing: 0, overlap: 0, ijkBad: 0, revisited: 0,
+    offGridRecs: [], offLatticeRecs: [], crossingRecs: [], overlapRecs: [], ijkRecs: [],
+  };
+  const push = (arr, r) => { if (arr.length < keep) arr.push(r); };
+  // the open parents: FIFO, with a pool of cleared bitmaps
+  const open = new Map(), fifo = [], pool = [];
+  let fifoHead = 0, lastP = -1, lastBits = null;
+  const bitsOf = (pi) => {
+    if (pi === lastP) return lastBits;
+    let b = open.get(pi);
+    if (!b) {
+      if (open.size >= maxOpen) {                          // close the oldest
+        const old = fifo[fifoHead++];
+        const ob = open.get(old); open.delete(old); state[old] = (state[old] & 4) | 2;
+        ob.fill(0); pool.push(ob);
+        if (fifoHead > 4096) { fifo.splice(0, fifoHead); fifoHead = 0; }
+      }
+      if (state[pi] & 2) { if (!(state[pi] & 4)) out.revisited++; state[pi] |= 4; }
+      b = pool.pop() || new Uint32Array(words);
+      open.set(pi, b); fifo.push(pi); state[pi] = (state[pi] & 4) | 1;
+    }
+    lastP = pi; lastBits = b;
+    return b;
+  };
+
+  const [r0, r1, r2, r3, r4, r5, r6, r7, r8] = R, ax = A[0], ay = A[1], az = A[2];
+  function one(x, y, z, s0, s1, s2, rec, ij) {
+    out.blocks++;
+    let qx = x, qy = y, qz = z;
+    if (rot) {
+      const dx = x - ax, dy = y - ay, dz = z - az;
+      qx = r0 * dx + r1 * dy + r2 * dz; qy = r3 * dx + r4 * dy + r5 * dz; qz = r6 * dx + r7 * dy + r8 * dz;
+    }
+    // per axis, unrolled (this runs once per block — 18.7M times on a real model): the centroid
+    // in half steps (even when on the fine lattice), the low corner from the parent lattice's
+    // corner, the parent, the block's span inside it (clipped: a block reaching out crosses)
+    const tx = (qx - oqx) * k2x, ty = (qy - oqy) * k2y, tz = (qz - oqz) * k2z;
+    const ix = Math.round(tx), iy = Math.round(ty), iz = Math.round(tz);
+    if (Math.abs(tx - ix) > 2e-3 || Math.abs(ty - iy) > 2e-3 || Math.abs(tz - iz) > 2e-3 || ((ix | iy | iz) & 1)) { out.offGrid++; push(out.offGridRecs, rec); return; }   // a centroid between fine nodes
+    const rx = ix - s0 - phx, ry = iy - s1 - phy, rz = iz - s2 - phz;
+    const px = Math.floor(rx / p2x), py = Math.floor(ry / p2y), pz = Math.floor(rz / p2z);
+    const lx = rx - px * p2x, ly = ry - py * p2y, lz = rz - pz * p2z;
+    let hx = lx + 2 * s0, hy = ly + 2 * s1, hz = lz + 2 * s2, cross = false;
+    if (hx > p2x) { cross = true; hx = p2x; }
+    if (hy > p2y) { cross = true; hy = p2y; }
+    if (hz > p2z) { cross = true; hz = p2z; }
+    const i0 = px - pminx, i1 = py - pminy, i2 = pz - pminz;
+    if (i0 < 0 || i1 < 0 || i2 < 0 || i0 >= pnx || i1 >= pny || i2 >= pnz) { out.crossing++; push(out.crossingRecs, rec); return; }
+    const pi = i0 + pnx * (i1 + pny * i2);
+    if (cross) { out.crossing++; push(out.crossingRecs, rec); }
+    vol[pi] += (hx - lx) * (hy - ly) * (hz - lz);
+    if (ij !== null && ijk) {
+      const e = (px * ijk.ny + py) * ijk.nz + pz;
+      if (!(ij === e)) { out.ijkBad++; push(out.ijkRecs, rec); }
+    }
+    if (pow2 ? (((lx | hx) & mkx) | ((ly | hy) & mky) | ((lz | hz) & mkz)) !== 0
+      : (lx % u2x !== 0 || hx % u2x !== 0 || ly % u2y !== 0 || hy % u2y !== 0 || lz % u2z !== 0 || hz % u2z !== 0)) { out.offLattice++; push(out.offLatticeRecs, rec); bitsOf(pi); return; }
+    // occupancy: rows along X, a word per 32 cells; a cell already set → this block overlaps another
+    const b = bitsOf(pi);
+    const cx0 = lx / u2x, cx1 = hx / u2x, cy0 = ly / u2y, cy1 = hy / u2y, cz0 = lz / u2z, cz1 = hz / u2z;
+    let hit = 0;
+    if (W === 1) {                                         // the common case: a parent's row fits one word
+      const n = cx1 - cx0, m = n === 32 ? 0xffffffff : ((1 << n) - 1) << cx0;
+      for (let cz = cz0; cz < cz1; cz++) {
+        let at = cz * cy_ + cy0;
+        for (let cy = cy0; cy < cy1; cy++, at++) { const v = b[at]; hit |= v & m; b[at] = v | m; }
+      }
+    } else {
+      const w0 = cx0 >>> 5, w1 = (cx1 - 1) >>> 5;
+      for (let cz = cz0; cz < cz1; cz++) {
+        for (let cy = cy0; cy < cy1; cy++) {
+          const base = (cz * cy_ + cy) * W;
+          for (let w = w0; w <= w1; w++) {
+            const a = w === w0 ? cx0 & 31 : 0, e = w === w1 ? ((cx1 - 1) & 31) + 1 : 32;
+            const m = e - a === 32 ? 0xffffffff : (((1 << (e - a)) - 1) << a) >>> 0;
+            const v = b[base + w];
+            hit |= v & m;
+            b[base + w] = v | m;
+          }
+        }
+      }
+    }
+    if (hit) { out.overlap++; push(out.overlapRecs, rec); }
+  }
+  function run(ch) {
+    const { x, y, z, dimQ, count } = ch, recs = ch.recs, base = ch.base || 0, IJ = ch.ijk || null;
+    for (let i = 0; i < count; i++) {
+      one(x[i], y[i], z[i], dimQ[3 * i], dimQ[3 * i + 1], dimQ[3 * i + 2], recs ? recs[i] : base + i, IJ ? IJ[i] : null);
+    }
+  }
+  // no stated corner: hold the first chunks until each axis has a block spanning a whole parent
+  let held = [], heldN = 0;
+  const look = (ch) => {
+    const { x, y, z, dimQ, count } = ch;
+    for (let i = 0; i < count; i++) {
+      for (let a = 0; a < 3; a++) {
+        if (found[a] != null || dimQ[3 * i + a] !== Pq[a]) continue;
+        const v = a === 0 ? x[i] : a === 1 ? y[i] : z[i];
+        let qa;
+        if (rot) { const dx = x[i] - A[0], dy = y[i] - A[1], dz = z[i] - A[2]; qa = R[3 * a] * dx + R[3 * a + 1] * dy + R[3 * a + 2] * dz; } else qa = v;
+        const t = Math.round((2 * (qa - OQ[a])) / P[a]);
+        found[a] = t - Pq[a];
+      }
+      if (found[0] != null && found[1] != null && found[2] != null) return true;
+    }
+    return false;
+  };
+  const release = (guess) => {
+    phi2 = found.map((v, a) => (v != null ? v : guess[a]));
+    phaseFrom = found.every((v) => v != null) ? 'block' : 'guess';
+    setup();
+    for (const ch of held) run(ch);
+    held = null;
+  };
+  let guessLo = [Infinity, Infinity, Infinity];
+  return {
+    add(ch) {
+      if (!ch || !ch.count) return;
+      if (phi2) { run(ch); return; }
+      held.push(ch); heldN += ch.count;
+      // the lowest corner seen — the guess when no block spans a whole parent
+      for (let i = 0; i < ch.count; i++) for (let a = 0; a < 3; a++) {
+        const v = a === 0 ? ch.x[i] : a === 1 ? ch.y[i] : ch.z[i];
+        let qa;
+        if (rot) { const dx = ch.x[i] - A[0], dy = ch.y[i] - A[1], dz = ch.z[i] - A[2]; qa = R[3 * a] * dx + R[3 * a + 1] * dy + R[3 * a + 2] * dz; } else qa = v;
+        const c = Math.round((2 * (qa - OQ[a])) / P[a]) - ch.dimQ[3 * i + a];
+        if (c < guessLo[a]) guessLo[a] = c;
+      }
+      if (look(ch) || heldN >= maxBuffered) release(guessLo);
+    },
+    finish() {
+      if (!phi2) { if (!held || !held.length) return { ...out, empty: true }; release(guessLo); }
+      // per parent: the filled volume against the parent's
+      let parents = 0, under = 0, over = 0, underVol = 0, overVol = 0;
+      const underAt = [];
+      for (let pi = 0; pi < NP; pi++) {
+        if (!state[pi]) continue;
+        parents++;
+        const v = vol[pi];
+        if (v < fullVol) {
+          under++; underVol += fullVol - v;
+          if (underAt.length < 200) {
+            const i0 = pi % pn[0], i1 = Math.floor(pi / pn[0]) % pn[1], i2 = Math.floor(pi / (pn[0] * pn[1]));
+            const c = [0, 1, 2].map((a) => OQ[a] + ((phi2[a] + ([i0, i1, i2][a] + pmin[a]) * P2[a] + Pq[a]) / 2) * P[a]);
+            underAt.push(rot ? [A[0] + R[0] * c[0] + R[3] * c[1] + R[6] * c[2], A[1] + R[1] * c[0] + R[4] * c[1] + R[7] * c[2], A[2] + R[2] * c[0] + R[5] * c[1] + R[8] * c[2]] : c);
+          }
+        } else if (v > fullVol) { over++; overVol += v - fullVol; }
+      }
+      const cellVol = (P[0] * P[1] * P[2]) / 8;            // a half-step³ in model units
+      return {
+        ...out, parents, under, over, underVolume: underVol * cellVol, overVolume: overVol * cellVol, underAt,
+        parentSize: [0, 1, 2].map((a) => Pq[a] * P[a]), parentVolume: fullVol * cellVol,
+        phaseFrom, unit: U.slice(), ijkChecked: !!ijk,
+      };
+    },
+  };
 }
 
 // ── src/grid/model.js ──
@@ -9117,6 +9369,131 @@ async function* dmColumnBatches(blob, h, colIdxs, { signal, shouldRead = null, p
   }
 }
 
+// ── the OPEN's units and per-unit kernels ────────────────────────────────────
+// The open reads the file twice: a DISCOVERY sweep (bbox, the lattice, the sizes)
+// and the render DECODE. A .dm is fixed-size pages with no record across a page
+// boundary, so both split into independent page runs: these two kernels are ONE
+// unit's work, run in run order on the page (the default runner below) or on a
+// worker pool (@gcu/scan's discoverDm / decodeDm) — the same code either way, and
+// the merge (in run order) gives exactly what one sequential sweep gives.
+// Why TWICE (measured 2026-11-24 on an 18.7M-block Isatis export, 1.2 GB): the decode
+// can't start before discovery ends — the fine pitch is the GCD of EVERY size and the
+// lattice origin the smallest centroid, and both shape every block's dimQ and chunk.
+// Fusing the reads means holding each decoded unit until then: coordinates (24 B),
+// grade (8), sizes (≥6), record number (4) ≈ 42 B a block ≈ 0.8 GB resident, against
+// a 12.6 MB page-heap peak today; what it would save is the discovery pass (~2.5–2.9 s
+// of a ~7 s open, the file then warm in the OS cache). Not a trade worth making: a
+// project reopen skips discovery from its sidecar, and a model opened often is offered
+// as spatial Parquet (micro src/pqoffer.js), whose footer carries it.
+// Units for the open: whole pages, ~`records` records each (bigger than the 4 MB
+// scan runs: fewer, larger messages and yields — an open's stream is ~70 of them
+// on an 18M model, not 4,000). recStart = the first page's first raw record.
+function dmOpenRuns(h, records = 1 << 18) {
+  const pagesPer = Math.max(1, Math.ceil(records / Math.max(1, h.recordsPerPage)));
+  const runs = [];
+  for (let page = 2; page <= h.lastPage; page += pagesPer) {
+    const pEnd = Math.min(page + pagesPer - 1, h.lastPage);
+    let count = 0;
+    for (let pg = page; pg <= pEnd; pg++) count += pg === h.lastPage ? h.lastRec : h.recordsPerPage;
+    runs.push({ page, pEnd, start: (page - 2) * h.recordsPerPage, count });
+  }
+  return runs;
+}
+// DISCOVERY of one unit. p = { xc, yc, zc, dims: [ix, iy, iz] | null, cap, R, O, res }
+// (R/O: a rotated model's placement — the WORLD bbox is collected beside the local
+// one; res: how many leading valid centroids to keep for the rotated-lattice
+// detector). → { valid, min, max, wmin, wmax, ax: [values ×3] (r10, distinct,
+// capped), sizes: a sizeCollector snapshot | null, res: Float64Array | null }
+async function dmDiscoverRun(blob, h, p, run) {
+  const cols = p.dims ? [p.xc, p.yc, p.zc, ...p.dims] : [p.xc, p.yc, p.zc];
+  const { count, cols: c } = await readDmRun(blob, h, cols, run);
+  const X = c[p.xc], Y = c[p.yc], Z = c[p.zc], DX = p.dims ? c[p.dims[0]] : null, DY = p.dims ? c[p.dims[1]] : null, DZ = p.dims ? c[p.dims[2]] : null;
+  const R = p.R, O = p.O;
+  const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+  const wmin = [Infinity, Infinity, Infinity], wmax = [-Infinity, -Infinity, -Infinity];
+  const axc = [axisDistinct(p.cap), axisDistinct(p.cap), axisDistinct(p.cap)];
+  const sizes = p.dims ? sizeCollector() : null;
+  const resOut = p.res > 0 ? new Float64Array(p.res * 3) : null;
+  let nres = 0, valid = 0;
+  for (let k = 0; k < count; k++) {
+    const xv = X[k], yv = Y[k], zv = Z[k];
+    if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;
+    if (xv < min[0]) min[0] = xv; if (xv > max[0]) max[0] = xv;
+    if (yv < min[1]) min[1] = yv; if (yv > max[1]) max[1] = yv;
+    if (zv < min[2]) min[2] = zv; if (zv > max[2]) max[2] = zv;
+    if (R) {
+      const wx = O[0] + R[0] * xv + R[3] * yv, wy = O[1] + R[1] * xv + R[4] * yv, wz = O[2] + zv;
+      if (wx < wmin[0]) wmin[0] = wx; if (wx > wmax[0]) wmax[0] = wx;
+      if (wy < wmin[1]) wmin[1] = wy; if (wy > wmax[1]) wmax[1] = wy;
+      if (wz < wmin[2]) wmin[2] = wz; if (wz > wmax[2]) wmax[2] = wz;
+    }
+    axc[0].add(xv); axc[1].add(yv); axc[2].add(zv);
+    if (sizes) sizes.add(DX[k], DY[k], DZ[k]);
+    if (nres < p.res) { resOut[nres * 3] = xv; resOut[nres * 3 + 1] = yv; resOut[nres * 3 + 2] = zv; nres++; }
+    valid++;
+  }
+  return { valid, min, max, wmin, wmax, ax: axc.map((a) => [...a.set]), sizes: sizes ? sizes.toJSON() : null, res: resOut ? resOut.slice(0, nres * 3) : null };
+}
+// DECODE of one unit into the chunk builder's arrays. p = { xc, yc, zc, chan, cat,
+// dims, pitch, R, O }. The category arrives as LOCAL codes (Uint16, first appearance
+// in this unit) + `dict` (the values in that order): the caller assigns the model's
+// codes in run order, which is exactly the first-appearance order one sweep gives.
+// A record without a finite centroid isn't drawn; its raw number is never reused.
+async function dmDecodeRun(blob, h, p, run) {
+  const want = [p.xc, p.yc, p.zc];
+  if (p.chan != null) want.push(p.chan);
+  if (p.cat != null) want.push(p.cat);
+  if (p.pitch) want.push(...p.dims);
+  const { count, cols } = await readDmRun(blob, h, [...new Set(want)], run);
+  const X = cols[p.xc], Y = cols[p.yc], Z = cols[p.zc];
+  const CH = p.chan != null ? cols[p.chan] : null, CA = p.cat != null ? cols[p.cat] : null;
+  const DX = p.pitch ? cols[p.dims[0]] : null, DY = p.pitch ? cols[p.dims[1]] : null, DZ = p.pitch ? cols[p.dims[2]] : null;
+  const R = p.R, O = p.O;
+  const x = new Float64Array(count), y = new Float64Array(count), z = new Float64Array(count), chan = new Float64Array(count);
+  const cat = CA ? new Uint16Array(count) : null, dimQ = p.pitch ? new Uint8Array(3 * count) : null, recIdx = new Uint32Array(count);
+  const dict = CA ? [] : null, local = CA ? new Map() : null;
+  let m = 0;
+  for (let k = 0; k < count; k++) {
+    const xv = X[k], yv = Y[k], zv = Z[k];
+    if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;
+    if (R) { x[m] = O[0] + R[0] * xv + R[3] * yv; y[m] = O[1] + R[1] * xv + R[4] * yv; z[m] = O[2] + zv; }
+    else { x[m] = xv; y[m] = yv; z[m] = zv; }
+    chan[m] = CH ? CH[k] : 0;                              // NaN already when missing
+    if (cat) {
+      const raw = CA[k];                                   // '' when missing; a NUMERIC cat column dict-encodes as strings
+      const v = raw == null || raw === '' || (typeof raw === 'number' && !Number.isFinite(raw)) ? '' : String(raw);
+      let c = local.get(v);
+      if (c === undefined) { c = dict.length < 65535 ? dict.length : 65535; if (c < 65535) { local.set(v, c); dict.push(v); } }
+      cat[m] = c;                                          // 65535 = past a unit's dictionary: the model's code 0 (its 255 are long full)
+    }
+    if (dimQ) putDimQ(dimQ, m, DX[k], DY[k], DZ[k], p.pitch);
+    recIdx[m++] = run.start + k;                           // RAW record number — the join key
+  }
+  const cut = (a) => (a && m < count ? a.slice(0, m) : a);
+  return { count: m, x: cut(x), y: cut(y), z: cut(z), chan: cut(chan), cat: cut(cat), dict, dimQ: dimQ && m < count ? dimQ.slice(0, 3 * m) : dimQ, recIdx: cut(recIdx), recStart: 0 };
+}
+// The default RUNNER: every unit on this thread, in order. A runner is
+// { discover({ file, h, p, units, onProgress, signal }) → summaries in unit order,
+//   decode({ file, h, p, units, signal }) → async iterable of decoded units in order }
+// — @gcu/scan's dm runner has the same face and runs them on a worker pool.
+const dmPageRunner = {
+  async discover({ file, h, p, units, onProgress, signal }) {
+    const out = []; let done = 0;
+    for (const u of units) {
+      if (signal && signal.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+      out.push(await dmDiscoverRun(file, h, u.res != null ? { ...p, res: u.res } : p, u));
+      done += u.count; if (onProgress) onProgress(done);
+    }
+    return out;
+  },
+  async *decode({ file, h, p, units, signal }) {
+    for (const u of units) {
+      if (signal && signal.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+      yield await dmDecodeRun(file, h, p, u);
+    }
+  },
+};
+
 const DEF_NAMES = new Set(['IJK', 'XC', 'YC', 'ZC', 'XINC', 'YINC', 'ZINC', 'XMORIG', 'YMORIG', 'ZMORIG', 'NX', 'NY', 'NZ', 'ANGLE1', 'ANGLE2', 'ANGLE3', 'ROTAXIS1', 'ROTAXIS2', 'ROTAXIS3']);
 
 // `cached` (a sidecar's discovery results: { grid, bbox, subBlocked, categories })
@@ -9124,7 +9501,11 @@ const DEF_NAMES = new Set(['IJK', 'XC', 'YC', 'ZC', 'XINC', 'YINC', 'ZINC', 'XMO
 // to streaming. Callers own freshness (name+size match).
 // `origin` ([x, y, z]) — the world position of the model's local origin, for a
 // rotated model whose file doesn't carry it (X0/Y0/Z0 = 0, an anonymised export).
-async function openDmModel(blob, { mapping = null, forcePoints = false, onProgress = null, cached = null, origin = null } = {}) {
+// `runner` — who reads the open's units (dmPageRunner: this thread, in order; a
+// caller with workers passes @gcu/scan's dm runner). The answer is the same.
+// `unitRecords` — the units' size, at most (tests cut a small file into many).
+async function openDmModel(blob, { mapping = null, forcePoints = false, onProgress = null, cached = null, origin = null, runner = null, unitRecords = 1 << 18 } = {}) {
+  const run = runner || dmPageRunner;
   const head = new Uint8Array(await blob.slice(0, Math.min(8192, blob.size)).arrayBuffer());
   const fmt = detectDM(head);
   if (!fmt) throw new Error('dm: not a recognizable .dm file');
@@ -9246,31 +9627,37 @@ async function openDmModel(blob, { mapping = null, forcePoints = false, onProgre
   } else {
     const CAP = 300000;
     const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
-    const wmin = [Infinity, Infinity, Infinity], wmax = [-Infinity, -Infinity, -Infinity], wp = [0, 0, 0];   // world centroid bounds (rotated)
-    const axc = [axisDistinct(CAP), axisDistinct(CAP), axisDistinct(CAP)];   // axis distinct centroids (for the fine lattice)
-    const ax = axc.map((c) => c.set);
+    const wmin = [Infinity, Infinity, Infinity], wmax = [-Infinity, -Infinity, -Infinity];   // world centroid bounds (rotated)
+    const ax = [new Set(), new Set(), new Set()];          // axis distinct centroids (for the fine lattice), r10, capped
     const sizes = sizeCollector();
     // an UNROTATED model's first centroids (local = world): the rotated-lattice detector's reservoir
     const RES = 50000, res = [], detect = !forcePoints && !dmRotation.length;
-    const sweepCols = perRecDims ? [xc, yc, zc, incIdx.x, incIdx.y, incIdx.z] : [xc, yc, zc];
-    for await (const { recStart, count, cols } of localColumns(sweepCols)) {
-      if (onProgress) onProgress({ phase: 'discovery', done: recStart + count, total: h.recordCount });
-      const X = cols[xc], Y = cols[yc], Z = cols[zc], DX = perRecDims ? cols[incIdx.x] : null, DY = perRecDims ? cols[incIdx.y] : null, DZ = perRecDims ? cols[incIdx.z] : null;
-      for (let k = 0; k < count; k++) {
-        const xv = X[k], yv = Y[k], zv = Z[k];
-        if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;
-        if (xv < min[0]) min[0] = xv; if (xv > max[0]) max[0] = xv;
-        if (yv < min[1]) min[1] = yv; if (yv > max[1]) max[1] = yv;
-        if (zv < min[2]) min[2] = zv; if (zv > max[2]) max[2] = zv;
-        if (rotApplied) {
-          toW(xv, yv, zv, wp);
-          for (let a = 0; a < 3; a++) { if (wp[a] < wmin[a]) wmin[a] = wp[a]; if (wp[a] > wmax[a]) wmax[a] = wp[a]; }
-        }
-        axc[0].add(xv); axc[1].add(yv); axc[2].add(zv);
-        if (perRecDims) sizes.add(DX[k], DY[k], DZ[k]);
-        if (detect && res.length < RES * 3) res.push(xv, yv, zv);
-        nFinite++;
+    // the units, each a unit's summary (dmDiscoverRun) — on the runner's threads —
+    // merged HERE in unit order: bounds, the distinct axis values (a union, clipped
+    // at the cap — an axis at the cap reads as no lattice either way), the sizes
+    // (sizeCollector.merge keeps first-appearance order) and the reservoir (asked of
+    // the leading units; topped up below if they held too few valid centroids)
+    const units = dmOpenRuns(h, unitRecords).map((u) => ({ ...u, res: detect && u.start < 4 * RES ? RES : 0 }));
+    const dp = { xc, yc, zc, dims: perRecDims ? [incIdx.x, incIdx.y, incIdx.z] : null, cap: CAP, R: rotApplied ? Array.from(R) : null, O: rotApplied ? O : null, res: 0 };
+    const parts = await run.discover({ file: blob, h, p: dp, units,
+      onProgress: onProgress ? (done) => onProgress({ phase: 'discovery', done, total: h.recordCount }) : null });
+    let resFrom = units.length;                            // the first unit whose reservoir wasn't asked for
+    for (let g = 0; g < parts.length; g++) {
+      const s = parts[g];
+      for (let a = 0; a < 3; a++) {
+        if (s.min[a] < min[a]) min[a] = s.min[a]; if (s.max[a] > max[a]) max[a] = s.max[a];
+        if (s.wmin[a] < wmin[a]) wmin[a] = s.wmin[a]; if (s.wmax[a] > wmax[a]) wmax[a] = s.wmax[a];
+        const set = ax[a];
+        for (const v of s.ax[a]) { if (set.size >= CAP) break; set.add(v); }
       }
+      if (s.sizes) sizes.merge(s.sizes);
+      if (detect && !units[g].res && resFrom === units.length) resFrom = g;
+      if (s.res && detect) for (let k = 0; k < s.res.length && res.length < RES * 3; k++) res.push(s.res[k]);
+      nFinite += s.valid;
+    }
+    for (let g = resFrom; detect && g < units.length && res.length < RES * 3; g++) {   // rare: the leading units were mostly blank
+      const s = await dmDiscoverRun(blob, h, { ...dp, dims: null, res: RES }, units[g]);
+      for (let k = 0; k < s.res.length && res.length < RES * 3; k++) res.push(s.res[k]);
     }
     if (!Number.isFinite(min[0])) throw new Error('dm: no finite XC/YC/ZC centroids');
     bbox = rotApplied ? { min: wmin, max: wmax } : { min, max };
@@ -9343,59 +9730,33 @@ async function openDmModel(blob, { mapping = null, forcePoints = false, onProgre
 
   if (rotApplied) place = header.dmPlace = { x: xc, y: yc, z: zc, R: Array.from(R), O: [...O] };
 
+  // the render stream: each unit decoded (dmDecodeRun — on the runner's threads),
+  // handed on IN UNIT ORDER. The category's codes are assigned here, in that order,
+  // from each unit's first-appearance dictionary: the codes one sweep gives.
+  // Units arrive whole (~chunkPoints records): the chunk builder cuts its batches
+  // wherever pushes end, so the chunks are the same as the old fixed-size stream's.
   async function* streamChunks({ chunkPoints = 1 << 18, signal, onProgress } = {}) {
-    const alloc = () => ({
-      x: new Float64Array(chunkPoints), y: new Float64Array(chunkPoints), z: new Float64Array(chunkPoints),
-      chan: new Float64Array(chunkPoints), cat: catCode ? new Uint8Array(chunkPoints) : null,
-      dimQ: pitchQ ? new Uint8Array(3 * chunkPoints) : null,
-      recIdx: new Uint32Array(chunkPoints),
-    });
-    // project ONLY the fields the render needs (coords + grade + category + dims)
-    // — not all N columns. On the real Leapfrog .dm that's ~6 of 14+.
-    const streamCols = [xc, yc, zc];
-    if (chan != null) streamCols.push(chan);
-    if (catIdx >= 0) streamCols.push(catIdx);
-    if (pitchQ) streamCols.push(incIdx.x, incIdx.y, incIdx.z);
-    let buf = alloc(), fill = 0, done = 0;
-    for await (const { recStart, count, cols } of localColumns(streamCols, { signal })) {
-      const X = cols[xc], Y = cols[yc], Z = cols[zc];
-      const CH = chan != null ? cols[chan] : null, CA = catIdx >= 0 ? cols[catIdx] : null;
-      const DX = pitchQ ? cols[incIdx.x] : null, DY = pitchQ ? cols[incIdx.y] : null, DZ = pitchQ ? cols[incIdx.z] : null;
-      for (let k = 0; k < count; k++) {
-        const xv = X[k], yv = Y[k], zv = Z[k];
-        if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;   // skipped, raw number NOT reused
-        if (R) {                                           // rotated: the stream speaks WORLD coordinates
-          buf.x[fill] = O[0] + R[0] * xv + R[3] * yv; buf.y[fill] = O[1] + R[1] * xv + R[4] * yv; buf.z[fill] = O[2] + zv;
-        } else { buf.x[fill] = xv; buf.y[fill] = yv; buf.z[fill] = zv; }
-        buf.chan[fill] = CH ? CH[k] : 0;                   // NaN already when missing
-        if (buf.cat) {
-          const raw = CA[k];                               // '' when missing; a NUMERIC cat column dict-encodes as strings
-          const v = raw == null || raw === '' || (typeof raw === 'number' && !Number.isFinite(raw)) ? '' : String(raw);
+    const dp = { xc, yc, zc, chan, cat: catIdx >= 0 ? catIdx : null, dims: pitchQ ? [incIdx.x, incIdx.y, incIdx.z] : null, pitch: pitchQ, R: R ? Array.from(R) : null, O: R ? O : null };
+    let done = 0;
+    for await (const u of run.decode({ file: blob, h, p: dp, units: dmOpenRuns(h, Math.min(chunkPoints, unitRecords)), signal })) {
+      let cat = null;
+      if (u.cat) {
+        const lut = new Uint8Array(65536);                 // local code → the model's (65535 and any overflow → 0)
+        for (let i = 0; i < u.dict.length; i++) {
+          const v = u.dict[i];
           let code = catCode.get(v);
           if (code === undefined) {
             if (catCode.size < 255) { code = catCode.size; catCode.set(v, code); categories.push(v); }
             else code = 0;
           }
-          buf.cat[fill] = code;
+          lut[i] = code;
         }
-        if (buf.dimQ) putDimQ(buf.dimQ, fill, DX[k], DY[k], DZ[k], pitchQ);
-        buf.recIdx[fill] = recStart + k;                   // RAW record number — the join key
-        fill++;
-        if (fill === chunkPoints) {
-          yield { count: fill, x: buf.x, y: buf.y, z: buf.z, chan: buf.chan, cat: buf.cat, dimQ: buf.dimQ, recIdx: buf.recIdx, recStart: 0 };
-          buf = alloc(); fill = 0;
-        }
-      }
-      done += count;
+        cat = new Uint8Array(u.count);
+        for (let i = 0; i < u.count; i++) cat[i] = lut[u.cat[i]];
+      } else if (catCode) cat = new Uint8Array(u.count);
+      done += u.count;
       if (onProgress) onProgress(done, h.recordCount);
-    }
-    if (fill) {
-      yield {
-        count: fill, x: buf.x.subarray(0, fill), y: buf.y.subarray(0, fill), z: buf.z.subarray(0, fill),
-        chan: buf.chan.subarray(0, fill), cat: buf.cat ? buf.cat.subarray(0, fill) : null,
-        dimQ: buf.dimQ ? buf.dimQ.subarray(0, 3 * fill) : null,
-        recIdx: buf.recIdx.subarray(0, fill), recStart: 0,
-      };
+      if (u.count) yield { count: u.count, x: u.x, y: u.y, z: u.z, chan: u.chan, cat, dimQ: u.dimQ, recIdx: u.recIdx, recStart: 0 };
     }
   }
 

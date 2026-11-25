@@ -9,7 +9,7 @@ export { LasFormatError, parseLasHeader, decodeLasRecords, openLas } from './io/
 export { mulberry32, shuffledIndices, shuffleInPlace, documentFrame, buildChunk, chunkLocalPosition, createChunkBuilder } from './core/chunks.js';
 export { part1by2, mortonKey, mortonKeys, radixSortIndices } from './core/morton.js';
 export { createMortonSorter } from './core/msort.js';
-export { makeBlockGrid, buildBlockChunk, blockLocalCenter, createBlockChunkBuilder, buildBlockBatch, batchSeed, dimQFromCodes } from './core/blocks.js';
+export { makeBlockGrid, buildBlockChunk, blockLocalCenter, createBlockChunkBuilder, buildBlockBatch, batchSeed, batchSizeAt, dimQFromCodes } from './core/blocks.js';
 export { inferAxis, inferSubBlockLattice, axisDistinct } from './grid/infer.js';
 export { SIZEQ_MAX, supportOf, supportOfHeader, volumeOf, toLattice as supportToLattice, toWorld as supportToWorld, worldHalfExtent, centreOf, sameLattice, sizeCollector, finePitch, sizeQ, putDimQ, pitchOf, datamineRotZ, dmLocalToWorld, dmPlaceOf, placeDmColumns, placeDmRow, dmWorldToLocal, volumeOfSizes } from './grid/support.js';
 export { basisFromVectors, basisAngles, inferLatticeBasis, fitLattice, detectRotatedLattice, detectRotatedOverAxisGrid, latticeMisfit, latticeChecker, gridFromBasis, basisOfGrid, latticeMapOf, worldMapOf, cellOf, inFrameOf, sameBasis, isAxisAligned, toLattice, fromLattice } from './grid/basis.js';

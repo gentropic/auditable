@@ -663,9 +663,23 @@ function dimQFromCodes(codes, palette, grid, n = codes.length) {
  * A sub-blocked raw chunk carries dimQ; `dimPalette` accepts the legacy code +
  * palette form (raw.dim, the widget's wire) and converts it (dimQFromCodes).
  */
-function createBlockChunkBuilder({ frame, grid, dimPalette = null, chunkSize = 1 << 20, batchSize = 0, seed = 1, seedPerBatch = false, onChunk }) {
-  let rnd = mulberry32(seed), batchNo = 0;
-  const batchN = batchSize || chunkSize * 4;
+// The size of the Morton batch that starts at record `start`. batchN everywhere, unless
+// the builder knows the stream's `total`: then its last 2–3 batches' worth is cut into
+// `tailPieces` equal smaller batches. A batch is built whole, after its last record
+// arrives, so the open's tail — the time from the stream's end to the last chunk — is
+// one batch's build; at 2M records that was ~1.2 s on a worker, a piece is a fraction
+// of it, and several pieces build at once on a parallel builder. Deterministic (it
+// depends on total alone), and the same rule here and in micro's parallel builder.
+function batchSizeAt(start, batchN, total = 0, tailPieces = 8) {
+  if (!(total > 0) || !(tailPieces > 1)) return batchN;
+  const tailStart = Math.max(0, Math.floor(total / batchN) - 2) * batchN;
+  if (start < tailStart) return batchN;
+  return Math.max(1, Math.ceil((total - tailStart) / tailPieces));
+}
+function createBlockChunkBuilder({ frame, grid, dimPalette = null, chunkSize = 1 << 20, batchSize = 0, seed = 1, seedPerBatch = false, total = 0, tailPieces = 8, onChunk }) {
+  let rnd = mulberry32(seed), batchNo = 0, cutAt = 0;
+  const batchN0 = batchSize || chunkSize * 4;
+  let batchN = batchSizeAt(0, batchN0, total, tailPieces);
   let pend = [], pendCount = 0;
   const doc = {
     count: 0,
@@ -691,6 +705,7 @@ function createBlockChunkBuilder({ frame, grid, dimPalette = null, chunkSize = 1
     };
     const n = pendCount;
     pend = []; pendCount = 0;
+    cutAt += n; batchN = batchSizeAt(cutAt, batchN0, total, tailPieces);
     if (seedPerBatch) rnd = mulberry32(batchSeed(seed, batchNo));
     batchNo++;
     for (const chunk of buildBlockBatch(cols, n, { grid, frame, chunkSize, rnd })) {
@@ -6241,6 +6256,7 @@ export {
   createBlockChunkBuilder,
   buildBlockBatch,
   batchSeed,
+  batchSizeAt,
   dimQFromCodes,
   buildStickChunk,
   stickLocalCenter,

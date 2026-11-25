@@ -18,7 +18,7 @@
 // in BATCH ORDER — so the chunks, and their order, are the page builder's. push()
 // then returns a promise while enough batches are in flight (backpressure: a few
 // batches held, never the model).
-import { createBlockChunkBuilder } from '../../../ext/condenser/src/main.js';
+import { createBlockChunkBuilder, batchSizeAt } from '../../../ext/condenser/src/main.js';
 import { libUrl } from './liburl.js';
 
 const buffersOf = (o, out = []) => {
@@ -73,7 +73,8 @@ async function spawn(type, o) {
 async function startParallel(o, K, onChunk, onPage) {
   const ws = (await Promise.all(Array.from({ length: K }, () => spawn('initBatch', o)))).filter(Boolean);
   if (!ws.length) return onPage();
-  const batchN = o.batchSize || o.chunkSize * 4;
+  const batchN0 = o.batchSize || o.chunkSize * 4;
+  let cutAt = 0, batchN = batchSizeAt(0, batchN0, o.total, o.tailPieces);   // the stream's last batches cut smaller (condenser batchSizeAt — the page builder's rule)
   const doc = { count: 0, bboxLocal: Float64Array.of(Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity), chanRange: [Infinity, -Infinity] };
   let pend = [], pendCount = 0, k = 0, next = 0, closed = false, failure = null;
   const done = new Map(), free = [...ws], queue = [];
@@ -132,6 +133,7 @@ async function startParallel(o, K, onChunk, onPage) {
       recIdx: concat(Uint32Array, pend.map((q) => q.recIdx)),
     };
     queue.push({ k: k++, cols, n: pendCount });
+    cutAt += pendCount; batchN = batchSizeAt(cutAt, batchN0, o.total, o.tailPieces);
     pend = []; pendCount = 0;
     pump();
   };
@@ -161,8 +163,8 @@ async function startParallel(o, K, onChunk, onPage) {
   };
 }
 
-export async function startChunkBuilder({ frame, grid, chunkSize, batchSize, seed, seedPerBatch = false, workers = 1, onChunk }) {
-  const o = { frame: { origin: Array.from(frame.origin) }, grid, chunkSize, batchSize, seed, seedPerBatch };
+export async function startChunkBuilder({ frame, grid, chunkSize, batchSize, seed, seedPerBatch = false, workers = 1, total = 0, tailPieces = 8, onChunk }) {
+  const o = { frame: { origin: Array.from(frame.origin) }, grid, chunkSize, batchSize, seed, seedPerBatch, total, tailPieces };
   let closed = false;
   const onPage = () => {
     const pb = createBlockChunkBuilder({ ...o, frame, onChunk: (c) => { if (!closed) onChunk(c); } });

@@ -1026,9 +1026,23 @@ function dimQFromCodes(codes, palette, grid, n = codes.length) {
  * A sub-blocked raw chunk carries dimQ; `dimPalette` accepts the legacy code +
  * palette form (raw.dim, the widget's wire) and converts it (dimQFromCodes).
  */
-function createBlockChunkBuilder({ frame, grid, dimPalette = null, chunkSize = 1 << 20, batchSize = 0, seed = 1, seedPerBatch = false, onChunk }) {
-  let rnd = mulberry32(seed), batchNo = 0;
-  const batchN = batchSize || chunkSize * 4;
+// The size of the Morton batch that starts at record `start`. batchN everywhere, unless
+// the builder knows the stream's `total`: then its last 2–3 batches' worth is cut into
+// `tailPieces` equal smaller batches. A batch is built whole, after its last record
+// arrives, so the open's tail — the time from the stream's end to the last chunk — is
+// one batch's build; at 2M records that was ~1.2 s on a worker, a piece is a fraction
+// of it, and several pieces build at once on a parallel builder. Deterministic (it
+// depends on total alone), and the same rule here and in micro's parallel builder.
+function batchSizeAt(start, batchN, total = 0, tailPieces = 8) {
+  if (!(total > 0) || !(tailPieces > 1)) return batchN;
+  const tailStart = Math.max(0, Math.floor(total / batchN) - 2) * batchN;
+  if (start < tailStart) return batchN;
+  return Math.max(1, Math.ceil((total - tailStart) / tailPieces));
+}
+function createBlockChunkBuilder({ frame, grid, dimPalette = null, chunkSize = 1 << 20, batchSize = 0, seed = 1, seedPerBatch = false, total = 0, tailPieces = 8, onChunk }) {
+  let rnd = mulberry32(seed), batchNo = 0, cutAt = 0;
+  const batchN0 = batchSize || chunkSize * 4;
+  let batchN = batchSizeAt(0, batchN0, total, tailPieces);
   let pend = [], pendCount = 0;
   const doc = {
     count: 0,
@@ -1054,6 +1068,7 @@ function createBlockChunkBuilder({ frame, grid, dimPalette = null, chunkSize = 1
     };
     const n = pendCount;
     pend = []; pendCount = 0;
+    cutAt += n; batchN = batchSizeAt(cutAt, batchN0, total, tailPieces);
     if (seedPerBatch) rnd = mulberry32(batchSeed(seed, batchNo));
     batchNo++;
     for (const chunk of buildBlockBatch(cols, n, { grid, frame, chunkSize, rnd })) {
@@ -1940,6 +1955,7 @@ function tilingChecker(sup, { parentSize, phase = null, unit = [1, 1, 1], ijk = 
   // the hot loop's scalars (one block = a few dozen flops; no small arrays in it)
   const oqx = OQ[0], oqy = OQ[1], oqz = OQ[2], k2x = 2 / P[0], k2y = 2 / P[1], k2z = 2 / P[2];
   const p2x = P2[0], p2y = P2[1], p2z = P2[2], u2x = U2[0], u2y = U2[1], u2z = U2[2], cy_ = C[1];
+  const pow2 = U2.every((u) => (u & (u - 1)) === 0), mkx = u2x - 1, mky = u2y - 1, mkz = u2z - 1;   // a cell a power of two half steps: a mask, not a %
   let phx = 0, phy = 0, phz = 0, pminx = 0, pminy = 0, pminz = 0, pnx = 0, pny = 0, pnz = 0;
   const setup = () => {
     pmin = [0, 1, 2].map((a) => Math.floor((-Pq[a] - phi2[a]) / P2[a]) - 1);
@@ -2007,7 +2023,8 @@ function tilingChecker(sup, { parentSize, phase = null, unit = [1, 1, 1], ijk = 
       const e = (px * ijk.ny + py) * ijk.nz + pz;
       if (!(ij === e)) { out.ijkBad++; push(out.ijkRecs, rec); }
     }
-    if (lx % u2x !== 0 || hx % u2x !== 0 || ly % u2y !== 0 || hy % u2y !== 0 || lz % u2z !== 0 || hz % u2z !== 0) { out.offLattice++; push(out.offLatticeRecs, rec); bitsOf(pi); return; }
+    if (pow2 ? (((lx | hx) & mkx) | ((ly | hy) & mky) | ((lz | hz) & mkz)) !== 0
+      : (lx % u2x !== 0 || hx % u2x !== 0 || ly % u2y !== 0 || hy % u2y !== 0 || lz % u2z !== 0 || hz % u2z !== 0)) { out.offLattice++; push(out.offLatticeRecs, rec); bitsOf(pi); return; }
     // occupancy: rows along X, a word per 32 cells; a cell already set → this block overlaps another
     const b = bitsOf(pi);
     const cx0 = lx / u2x, cx1 = hx / u2x, cy0 = ly / u2y, cy1 = hy / u2y, cz0 = lz / u2z, cz1 = hz / u2z;
@@ -9350,6 +9367,15 @@ async function* dmColumnBatches(blob, h, colIdxs, { signal, shouldRead = null, p
 // unit's work, run in run order on the page (the default runner below) or on a
 // worker pool (@gcu/scan's discoverDm / decodeDm) — the same code either way, and
 // the merge (in run order) gives exactly what one sequential sweep gives.
+// Why TWICE (measured 2026-11-24 on an 18.7M-block Isatis export, 1.2 GB): the decode
+// can't start before discovery ends — the fine pitch is the GCD of EVERY size and the
+// lattice origin the smallest centroid, and both shape every block's dimQ and chunk.
+// Fusing the reads means holding each decoded unit until then: coordinates (24 B),
+// grade (8), sizes (≥6), record number (4) ≈ 42 B a block ≈ 0.8 GB resident, against
+// a 12.6 MB page-heap peak today; what it would save is the discovery pass (~2.5–2.9 s
+// of a ~7 s open, the file then warm in the OS cache). Not a trade worth making: a
+// project reopen skips discovery from its sidecar, and a model opened often is offered
+// as spatial Parquet (micro src/pqoffer.js), whose footer carries it.
 // Units for the open: whole pages, ~`records` records each (bigger than the 4 MB
 // scan runs: fewer, larger messages and yields — an open's stream is ~70 of them
 // on an 18M model, not 4,000). recStart = the first page's first raw record.
@@ -13939,6 +13965,7 @@ export {
   createBlockChunkBuilder,
   buildBlockBatch,
   batchSeed,
+  batchSizeAt,
   dimQFromCodes,
   inferAxis,
   inferSubBlockLattice,

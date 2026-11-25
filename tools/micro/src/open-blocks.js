@@ -22,11 +22,11 @@ const $ = (s) => document.querySelector(s);
 // was most of a big open's stalls (~0.5 s a 2M-block batch, Morton sort and
 // packing). 128k/chunk, 16 chunks per Morton batch: tight bboxes are what give
 // the frustum test teeth. Where workers can't run, the page builds, as before.
-async function baseBlockBuilder(lid, { frame, grid }) {
+async function baseBlockBuilder(lid, { frame, grid, total = 0 }) {
   // several builders, a Morton batch each (every batch its own seed, so the
   // chunks — and their order — are the same however many build them, or the page)
   const hc = (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 4;
-  const cb = await startChunkBuilder({ frame, grid, chunkSize: 1 << 17, batchSize: 1 << 21, seed: 1, seedPerBatch: true,
+  const cb = await startChunkBuilder({ frame, grid, chunkSize: 1 << 17, batchSize: 1 << 21, seed: 1, seedPerBatch: true, total,   // total: the stream's last batches cut smaller — a shorter tail
     workers: window.__baseBuilders || Math.max(1, Math.min(4, hc - 2)),
     onChunk: (c) => { if (layerById(lid)) { S.renderer.addChunk(c, 'base', lid); requestRender(); } } });
   window.__baseOffPage = cb.offPage; window.__baseBuilders_n = cb.workers;   // smoke hooks: where (and on how many) the open built its chunks
@@ -311,7 +311,7 @@ export async function openBlocksBlob(blob, name, opts = {}) {
   if (header.grid) {
     const grid = makeBlockGrid([header.grid.x, header.grid.y, header.grid.z], S.frame, header.grid.rot || null, header.grid.anchor || null);
     blockDoc.grid = grid;
-    const cb = await baseBlockBuilder(lid, { frame: S.frame, grid });   // 128k/chunk, 16 chunks per Morton batch: tight bboxes are what give the frustum test teeth
+    const cb = await baseBlockBuilder(lid, { frame: S.frame, grid, total: header.count });   // 128k/chunk, 16 chunks per Morton batch: tight bboxes are what give the frustum test teeth
     const doc = await streamInto(cb, streamChunks, header, name, 1 << 18, lid);
     blockDoc.drawn = doc.count;                            // how many records have a block (a value texture leaves the rest out of its range)
     blockDoc.metaLine = header.subBlocked
@@ -387,7 +387,7 @@ export async function openDmBlob(blob, name, opts = {}) {
   if (header.grid) {
     const grid = makeBlockGrid([header.grid.x, header.grid.y, header.grid.z], S.frame, header.grid.rot || null, header.grid.anchor || null);
     blockDoc.grid = grid;
-    const cb = await baseBlockBuilder(lid, { frame: S.frame, grid });
+    const cb = await baseBlockBuilder(lid, { frame: S.frame, grid, total: header.count });
     const doc = await streamInto(cb, streamChunks, header, name, 1 << 18, lid);
     blockDoc.drawn = doc.count;
     blockDoc.metaLine = header.subBlocked

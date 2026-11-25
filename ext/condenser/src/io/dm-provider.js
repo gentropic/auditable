@@ -85,6 +85,15 @@ async function* dmColumnBatches(blob, h, colIdxs, { signal, shouldRead = null, p
 // unit's work, run in run order on the page (the default runner below) or on a
 // worker pool (@gcu/scan's discoverDm / decodeDm) — the same code either way, and
 // the merge (in run order) gives exactly what one sequential sweep gives.
+// Why TWICE (measured 2026-11-24 on an 18.7M-block Isatis export, 1.2 GB): the decode
+// can't start before discovery ends — the fine pitch is the GCD of EVERY size and the
+// lattice origin the smallest centroid, and both shape every block's dimQ and chunk.
+// Fusing the reads means holding each decoded unit until then: coordinates (24 B),
+// grade (8), sizes (≥6), record number (4) ≈ 42 B a block ≈ 0.8 GB resident, against
+// a 12.6 MB page-heap peak today; what it would save is the discovery pass (~2.5–2.9 s
+// of a ~7 s open, the file then warm in the OS cache). Not a trade worth making: a
+// project reopen skips discovery from its sidecar, and a model opened often is offered
+// as spatial Parquet (micro src/pqoffer.js), whose footer carries it.
 // Units for the open: whole pages, ~`records` records each (bigger than the 4 MB
 // scan runs: fewer, larger messages and yields — an open's stream is ~70 of them
 // on an 18M model, not 4,000). recStart = the first page's first raw record.

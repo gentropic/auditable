@@ -1541,3 +1541,23 @@ test('delimited: a decimal comma is read as a decimal point, everywhere', async 
   assert.equal(sniffDelimited('X;Y;AU\n1.5;2;3,7\n2.5;3;4\n').decimal, '.');
   assert.equal(sniffDelimited('X,Y,AU\n1,2,3\n').decimal, '.');
 });
+
+test('batchSizeAt: full batches, then the stream tail cut into equal pieces that end exactly at the total', async () => {
+  const { batchSizeAt, createBlockChunkBuilder, makeBlockGrid } = await import('../ext/condenser/src/main.js');
+  assert.equal(batchSizeAt(0, 100), 100);                              // no total: the old rule
+  const walk = (total, B, P = 8) => { const out = []; for (let at = 0; at < total;) { const n = Math.min(batchSizeAt(at, B, total, P), total - at); out.push(n); at += n; } return out; };
+  const w = walk(1000, 100);
+  assert.deepEqual(w.slice(0, 8), Array(8).fill(100));                  // floor(1000/100) − 2 = 8 full batches
+  assert.deepEqual(w.slice(8), Array(8).fill(25));                      // the last 200 in 8 pieces
+  assert.equal(w.reduce((a, b) => a + b, 0), 1000);
+  assert.deepEqual(walk(150, 100), Array(8).fill(19).slice(0, 7).concat([17]));   // smaller than two batches: all tail
+  // the builder follows it: chunks per batch, every record once
+  const grid = makeBlockGrid([{ origin: 0, pitch: 1, count: 64 }, { origin: 0, pitch: 1, count: 64 }, { origin: 0, pitch: 1, count: 1 }], { origin: [0, 0, 0] });
+  const n = 4096, raw = { count: n, x: new Float64Array(n), y: new Float64Array(n), z: new Float64Array(n), chan: new Float64Array(n), cat: null, recStart: 0 };
+  for (let i = 0; i < n; i++) { raw.x[i] = i % 64; raw.y[i] = Math.floor(i / 64); }
+  const got = [];
+  const b = createBlockChunkBuilder({ frame: { origin: [0, 0, 0] }, grid, chunkSize: 256, batchSize: 512, total: n, onChunk: (c) => got.push(c) });
+  b.push(raw); b.flush();
+  assert.equal(got.reduce((a, c) => a + c.count, 0), n);
+  assert.equal(got.length, 6 * 2 + 8 * 1);                              // 6 full batches of 2 chunks, then 8 pieces of 128
+});

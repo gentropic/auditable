@@ -3639,10 +3639,10 @@ if (take()) {
     const on = await build(false), off = await build(true);
     // PARALLEL builders (the open's): every batch its own seed → page, one worker and
     // three workers give the same bytes in the same order (a full hash, every chunk)
-    const buildP = async (workers) => {
+    const buildP = async (workers, total = 0) => {
       const Wk = window.Worker; if (!workers) window.Worker = undefined;
       const got = [];
-      const cb = await M.startChunkBuilder({ frame, grid, chunkSize: 4096, batchSize: 16384, seed: 1, seedPerBatch: true, workers: workers || 1, onChunk: (c) => got.push(c) });
+      const cb = await M.startChunkBuilder({ frame, grid, chunkSize: 4096, batchSize: 16384, seed: 1, seedPerBatch: true, workers: workers || 1, total, onChunk: (c) => got.push(c) });
       if (!workers) window.Worker = Wk;
       for (let at = 0; at < 100000; at += 25000) {
         const n = 25000, o = { count: n, x: new Float64Array(n), y: new Float64Array(n), z: new Float64Array(n), chan: new Float64Array(n), cat: null, recIdx: new Uint32Array(n) };
@@ -3655,6 +3655,8 @@ if (take()) {
       return { h, n: got.length, count: doc.count, w: cb.workers };
     };
     const par = { page: await buildP(0), one: await buildP(1), three: await buildP(3) };
+    // the open's TAIL cut smaller (total known): page / 1 worker / 3 workers still the same bytes
+    par.tail = { page: await buildP(0, 100000), one: await buildP(1, 100000), three: await buildP(3, 100000) };
     const late = [];
     const cl = await M.startChunkBuilder({ frame, grid, chunkSize: 4096, batchSize: 8192, seed: 2, onChunk: (c) => late.push(c) });
     for (let k = 0; k < 6; k++) { const n = 20000, o = { count: n, x: new Float64Array(n), y: new Float64Array(n), z: new Float64Array(n), chan: new Float64Array(n), cat: null, recIdx: new Uint32Array(n) }; for (let i = 0; i < n; i++) { o.x[i] = x[i]; o.y[i] = y[i]; o.z[i] = z[i]; o.recIdx[i] = i; } cl.push(o); }
@@ -3670,6 +3672,8 @@ if (take()) {
     cp.b.leak.made >= 3 && cp.b.leak.live === 0 && cp.b.leak.drawn === cp.b.leak.want);
   chk(`the builder off the page is byte-identical to on it (${cp.off.n} chunks, offPage ${cp.off.off} vs ${cp.on.off}, same: ${cp.off.sig === cp.on.sig}); closed mid-stream → ${cp.lateAfterClose} late chunks delivered`,
     cp.off.off === true && cp.on.off === false && cp.off.n > 10 && cp.off.sig === cp.on.sig && cp.lateAfterClose === 0);
+  chk(`…and with the stream's total known (its last batches cut into 8 pieces — a shorter open tail): page / 1 / 3 workers still identical (${cp.par.tail.page.n} chunks vs ${cp.par.page.n}, hash ${cp.par.tail.page.h.toString(16)} · ${cp.par.tail.one.h.toString(16)} · ${cp.par.tail.three.h.toString(16)})`,
+    cp.par.tail.page.h === cp.par.tail.one.h && cp.par.tail.one.h === cp.par.tail.three.h && cp.par.tail.page.count === 100000 && cp.par.tail.page.n > cp.par.page.n);
   chk(`parallel builders, a batch each: page / 1 worker / ${cp.par.three.w} workers draw the same bytes in the same order (${cp.par.three.n} chunks, ${cp.par.three.count} blocks, hash ${cp.par.page.h.toString(16)} · ${cp.par.one.h.toString(16)} · ${cp.par.three.h.toString(16)})`,
     cp.par.three.w === 3 && cp.par.page.w === 0 && cp.par.page.n > 10 && cp.par.page.h === cp.par.one.h && cp.par.one.h === cp.par.three.h && cp.par.three.count === 100000 && cp.par.page.count === 100000);
   chk(`the pin tee only runs when it fits: 1 MB budget → ${cp.pinnedSmall} pinned; 256 MB → ${cp.pinnedBig}`, cp.pinnedSmall === 0 && cp.pinnedBig > 0);
