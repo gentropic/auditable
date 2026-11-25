@@ -10,7 +10,7 @@
 // package registry- and file://-friendly, and testable in Node by injection.
 // Without urls.worker (or without Worker) every job runs on the page.
 import { run } from './run.js';
-import { parquetSource, delimitedSource, dmSource } from './sources.js';
+import { parquetSource, delimitedSource, dmSource, placeNamedCols } from './sources.js';
 import { zoneKeep } from './zones.js';
 import { startPool } from './pool.js';
 import { discoverParquet, checkLattice, decodeParquet, parquetStats } from './parquet-jobs.js';
@@ -23,10 +23,11 @@ export function createScan({ deps, urls = {} } = {}) {
   return {
     run: (job) => run(D, urls, job),
     sources: {
-      parquet: (P, readCols) => parquetSource(D, P, readCols),
+      parquet: (P, readCols, opts) => parquetSource(D, P, readCols, opts),
       delimited: (blob, h, o, readCols, opts) => delimitedSource(D, blob, h, o, readCols, opts),
       dm: (blob, dmh, names, readCols, opts) => dmSource(D, blob, dmh, names, readCols, opts),
     },
+    placeNamedCols,
     zoneKeep: (zs, opts) => zoneKeep(D, zs, opts),
     startPool: (opts) => startPool(urls, opts),
     // these three never resolve null: without workers they run on the page

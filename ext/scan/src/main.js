@@ -2,6 +2,7 @@
 // resident. The page bundle (index.js). The worker bundle is worker-main.js →
 // worker.js. Both have zero imports: libraries are injected (createScan).
 export { createScan } from './api.js';
+export { placeNamedCols } from './sources.js';
 export { defaultPoolSize, groupStarts } from './pool.js';
 export { makeColAcc, STAT_SLICE } from './colacc.js';
 export { chunkView, compileCalcs, chunkNumbers } from './chunkview.js';

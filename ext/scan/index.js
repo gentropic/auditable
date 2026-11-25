@@ -900,23 +900,52 @@ async function run(D, urls, { source: src, kernel, params, calcs = [], spec, rea
 //             (keep(z) false → that zone's bytes are never read)
 // All three number every record from 0, so a unit's start is its first record.
 
-function parquetSource(D, P, readCols) {
+// A model's PLACEMENT for the parquet and delimited sources (a .dm carries its own,
+// index-based, in readDmRun): { cols: [xName, yName, zName], dims?: [dxName, dyName, dzName],
+// R (3×3 column-major, the scale folded in), O: [3], s }. world = O + R·file; the size columns
+// scale by s. Applied to the decoded columns of a unit, page and worker alike (desc.place),
+// into FRESH Float64Arrays (a column may decode as Int32 / BigInt). A record missing any of
+// the three coordinates keeps NaN — it has no position.
+function placeNamedCols(place, cols, count) {
+  if (!place || !cols) return cols;
+  const [xn, yn, zn] = place.cols, X = cols[xn], Y = cols[yn], Z = cols[zn];
+  if (X && Y && Z) {
+    const R = place.R, O = place.O, ox = new Float64Array(count), oy = new Float64Array(count), oz = new Float64Array(count);
+    for (let k = 0; k < count; k++) {
+      const x = Number(X[k]), y = Number(Y[k]), z = Number(Z[k]);
+      if (X[k] == null || X[k] === '' || Y[k] == null || Y[k] === '' || Z[k] == null || Z[k] === '' || !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) { ox[k] = oy[k] = oz[k] = NaN; continue; }
+      ox[k] = O[0] + R[0] * x + R[3] * y + R[6] * z;
+      oy[k] = O[1] + R[1] * x + R[4] * y + R[7] * z;
+      oz[k] = O[2] + R[2] * x + R[5] * y + R[8] * z;
+    }
+    cols[xn] = ox; cols[yn] = oy; cols[zn] = oz;
+  }
+  if (place.dims && place.s !== 1) for (const dn of place.dims) {
+    const D = cols[dn]; if (!D) continue;
+    const o = new Float64Array(count);
+    for (let k = 0; k < count; k++) { const v = D[k] == null || D[k] === '' ? NaN : Number(D[k]); o[k] = v * place.s; }
+    cols[dn] = o;
+  }
+  return cols;
+}
+
+function parquetSource(D, P, readCols, { place = null } = {}) {
   const starts = []; let a = 0; for (const rg of P.rowGroups) { starts.push(a); a += rg.rowCount; }
   return {
-    names: P.names, file: P.buf, meta: P.meta, desc: { kind: 'parquet' },
+    names: P.names, file: P.buf, meta: P.meta, desc: { kind: 'parquet', place },
     units: P.rowGroups.map((rg, g) => ({ start: starts[g], count: rg.rowCount, rg })),
-    read: (u) => D.parquet.readParquetRange(P.buf, readCols, u.start, u.start + u.count, P.meta),
+    read: async (u) => placeNamedCols(place, await D.parquet.readParquetRange(P.buf, readCols, u.start, u.start + u.count, P.meta), u.count),
   };
 }
 
 // h = the delimited header (columns, delim, index, zones); o = the run reader's
 // options { delim, x, y, z, cols: [{ i, num, policy }] } — each column read as
 // the row path reads it (qualifier substitutes; numbers as the pin cache holds them)
-function delimitedSource(D, blob, h, o, readCols, { anchors = 64, keep = null } = {}) {
+function delimitedSource(D, blob, h, o, readCols, { anchors = 64, keep = null, place = null } = {}) {
   return {
-    names: h.columns, file: blob, meta: null, desc: { kind: 'csv', o }, zones: keep ? h.zones : null,
+    names: h.columns, file: blob, meta: null, desc: { kind: 'csv', o, place }, zones: keep ? h.zones : null,
     units: D.condenser.delimitedRuns(h, blob.size, anchors, keep).map((run) => ({ start: run.start, count: run.count, run })),
-    read: async (u) => { const r = await D.condenser.readDelimitedRun(blob, u.run, o); const out = {}; readCols.forEach((n, k) => { out[n] = r[k]; }); return out; },
+    read: async (u) => { const r = await D.condenser.readDelimitedRun(blob, u.run, o); const out = {}; readCols.forEach((n, k) => { out[n] = r[k]; }); return placeNamedCols(place, out, u.count); },
   };
 }
 
@@ -1306,10 +1335,11 @@ function createScan({ deps, urls = {} } = {}) {
   return {
     run: (job) => run(D, urls, job),
     sources: {
-      parquet: (P, readCols) => parquetSource(D, P, readCols),
+      parquet: (P, readCols, opts) => parquetSource(D, P, readCols, opts),
       delimited: (blob, h, o, readCols, opts) => delimitedSource(D, blob, h, o, readCols, opts),
       dm: (blob, dmh, names, readCols, opts) => dmSource(D, blob, dmh, names, readCols, opts),
     },
+    placeNamedCols,
     zoneKeep: (zs, opts) => zoneKeep(D, zs, opts),
     startPool: (opts) => startPool(urls, opts),
     // these three never resolve null: without workers they run on the page
@@ -1331,6 +1361,7 @@ function createScan({ deps, urls = {} } = {}) {
 
 export {
   createScan,
+  placeNamedCols,
   defaultPoolSize,
   groupStarts,
   makeColAcc,

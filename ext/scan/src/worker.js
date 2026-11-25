@@ -12,6 +12,7 @@ import * as kernels from './kernels.js';
 import * as CV from './chunkview.js';
 import { makeColAcc } from './colacc.js';
 import { discoverGroup, decodeGroup, checkGroup, decodeCodes } from './tasks.js';
+import { placeNamedCols } from './sources.js';
 
 // every ArrayBuffer under a result, for the transfer list (a scan partial's bins)
 function buffersOf(o, out = []) {
@@ -66,6 +67,7 @@ export function serve(self, load) {
             const r = await CD.readDelimitedRun(file, data.run, p.source.o);
             p.readCols.forEach((n, k) => { cols[n] = r[k]; });
           } else if (p.readCols.length) cols = await PQ.readParquetRange(file, p.readCols, start, start + count, meta);
+          if (p.readCols.length && p.source && p.source.place && p.source.kind !== 'dm') cols = placeNamedCols(p.source.place, cols, count);   // a placed model: world, as the page reads it
           const view = CV.chunkView(p.spec, cols, data.page || [], count, kctx.calcFns);
           const out = kern.group(kctx, view, count, data.mask || null);
           self.postMessage({ type: 'result', id, out }, buffersOf(out));
