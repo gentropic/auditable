@@ -8,7 +8,7 @@ import { FACE_CUT, FACE_NAMES, FACE_NORMALS, decodeLasRecords, faceOfId, dmWorld
 import { recordPosition } from './overlay.js';
 import { currentSection } from './section.js';
 import { attrRowCountOf, extendRow, fetchCsvRecord, fetchLayerRow, rawRecordOf, dmDocReader } from './records.js';
-import { gridNodeWorld } from './grid-ops.js';
+import { gridNodeWorld, surfaceFromGrid, gridWorldBbox4, gridLocalXY } from './grid-ops.js';
 import { halfAt, volumeContextOf } from './analysis.js';
 import { rendererDocBbox } from './layers.js';
 import { html, setHTML } from './html.js';
@@ -184,6 +184,17 @@ function renderRecCfg() {
 
 let _recFace = null;                                        // the face of the current block pick (null = n/a)
 
+// a normal → dip (from horizontal) and dip direction (the azimuth DOWN-dip, clockwise from north).
+// Turned to face up first: an upward normal's horizontal part points down the slope, so its
+// azimuth IS the dip direction — no half-turn (the panel added 180° to an upward normal and read
+// every slope backwards, 270 for a plane dipping due east — found 2026-11-25)
+export function dipOfNormal(n) {
+  const u = n[2] < 0 ? [-n[0], -n[1], -n[2]] : n;
+  const dip = Math.acos(Math.min(1, Math.abs(u[2]) / (Math.hypot(u[0], u[1], u[2]) || 1))) * 180 / Math.PI;
+  const dd = Math.hypot(u[0], u[1]) < 1e-12 ? 0 : ((Math.atan2(u[0], u[1]) * 180 / Math.PI) % 360 + 360) % 360;
+  return { dip, dipDir: dd };
+}
+
 // What a mesh hit IS: a triangle, a point on it, and the way it faces. Dip/dip-dir
 // come free from the normal — on a pit shell or a vein wall that is the number a
 // geologist actually wants.
@@ -192,12 +203,17 @@ export async function showMeshRecord(L, cssX, cssY) {
   const h = await meshHitAt(L, cssX, cssY);
   const tag = L.label || L.name;
   if (!h) { showRecPanel(`${tag} · surface`, [], 'no triangle under the cursor'); return null; }
+  if (h.grid) {                                            // a grid shown as a surface: its node, its value, its slope
+    const w2 = h.point, { dip: dip2, dipDir: dd2 } = dipOfNormal(h.normal);
+    showRecPanel(`${tag} · surface · node ${h.grid.r},${h.grid.c}`, [
+      ['X', +w2[0].toFixed(3)], ['Y', +w2[1].toFixed(3)], [h.grid.flat ? 'value' : 'Z', +h.grid.value.toFixed(3)],
+      ...(h.grid.flat ? [['Z (sheet)', +w2[2].toFixed(3)]] : [['slope', +dip2.toFixed(1)], ['slope dir', +dd2.toFixed(1)]]),
+      ['row', h.grid.r], ['col', h.grid.c],
+    ]);
+    return h;
+  }
   const w = h.point;                                        // already world (the BVH is world-space)
-  const n = h.normal;
-  const dip = Math.acos(Math.min(1, Math.abs(n[2]))) * 180 / Math.PI;          // from horizontal
-  let dipDir = Math.atan2(n[0], n[1]) * 180 / Math.PI;                          // azimuth of the down-dip vector
-  if (n[2] > 0) dipDir += 180;
-  dipDir = ((dipDir % 360) + 360) % 360;
+  const { dip, dipDir } = dipOfNormal(h.normal);
   showRecPanel(`${tag} · triangle ${h.tri.toLocaleString()}`, [
     ['X', +w[0].toFixed(3)], ['Y', +w[1].toFixed(3)], ['Z', +w[2].toFixed(3)],
     ['dip', +dip.toFixed(1)], ['dip dir', +dipDir.toFixed(1)],
@@ -281,6 +297,9 @@ function appendCalcRows(rows, L, f, h, rec) {
 // The mesh has no rows, so there is nothing to look up — the geometry IS the record.
 export async function meshHitAt(L, cssX, cssY) {
   if (!L || L.kind !== 'mesh') return null;
+  // a GRID shown as a surface draws as a mesh but has no mesh document — no triangles for a BVH;
+  // it is met through its own height function (v0.7.3: a click on one said "no triangle")
+  if (L.docs && L.docs.gridDoc && L.docs.gridDoc.grid && !L.docs.meshDoc) return surfaceHitAt(L, cssX, cssY);
   const bvh = await meshSolidOf(L).catch(() => null);      // the same BVH the solid queries build (cached)
   if (!bvh) return null;
   // The solid BVH is built from the mesh's SOURCE blob, so it lives in WORLD
@@ -298,6 +317,77 @@ export async function meshHitAt(L, cssX, cssY) {
   const hit = raycastBVH(bvh, ow, d);                      // world in → world out
   if (hit && hit.point) hit.drawn = [hit.point[0] + off[0], hit.point[1] + off[1], hit.point[2] + off[2]];
   return hit;
+}
+
+// The pixel's ray against a grid shown as a SURFACE (z = f(x, y), placed or not) or as a flat
+// sheet at a fixed z. The ray is clipped to the grid's box and elevation range, marched at half a
+// cell, and the crossing bisected. → { point (true world), drawn (+ the layer's display offset),
+// normal, t, grid: { r, c, value } } | null. Like meshHitAt, a moved layer is met where it's drawn.
+function surfaceHitAt(L, cssX, cssY) {
+  const g = L.docs.gridDoc.grid;
+  if (!g || !g.data) return null;
+  let surf; try { surf = surfaceFromGrid(g); } catch { return null; }   // a tilted sheet has no z = f(x, y)
+  const { o, d } = pixelRay(cssX, cssY);
+  const off = S.renderer.layerOffset ? S.renderer.layerOffset(L.id) : [0, 0, 0];
+  const ow = [o[0] + S.frame.origin[0] - off[0], o[1] + S.frame.origin[1] - off[1], o[2] + S.frame.origin[2] - off[2]];
+  const at = (t) => [ow[0] + d[0] * t, ow[1] + d[1] * t, ow[2] + d[2] * t];
+  const flat = L.surfaceFlatZ != null && Number.isFinite(+L.surfaceFlatZ) ? +L.surfaceFlatZ : null;
+  let tHit = null;
+  if (flat != null) {                                      // a flat sheet: the plane, valued where the grid has data
+    if (Math.abs(d[2]) < 1e-12) return null;
+    const t = (flat - ow[2]) / d[2];
+    if (!(t > 0)) return null;
+    const q = at(t);
+    if (!Number.isFinite(surf.sampleZ(q[0], q[1]))) return null;
+    tHit = t;
+  } else {
+    // the elevation range, once per grid (the place's z scale and shift included)
+    if (!g._zr) {
+      let lo = Infinity, hi = -Infinity; const nod = g.nodata;
+      for (const v of g.data) if (Number.isFinite(v) && v !== nod && Math.abs(v) < 1.7e38) { if (v < lo) lo = v; if (v > hi) hi = v; }
+      const zs = g.place ? g.place.s : 1, zt = g.place ? g.place.t[2] : 0;
+      Object.defineProperty(g, '_zr', { value: [zt + zs * lo, zt + zs * hi], enumerable: false, configurable: true });
+    }
+    const bb = gridWorldBbox4(g), zr = g._zr, pad = 1e-6 + 1e-9 * Math.abs(zr[1]);
+    // slab clip of the ray to [x] × [y] × [z ± pad]
+    let t0 = 0, t1 = Infinity;
+    for (const [lo, hi, a, da] of [[bb[0], bb[2], ow[0], d[0]], [bb[1], bb[3], ow[1], d[1]], [zr[0] - pad, zr[1] + pad, ow[2], d[2]]]) {
+      if (Math.abs(da) < 1e-15) { if (a < lo || a > hi) return null; continue; }
+      let ta = (lo - a) / da, tb = (hi - a) / da; if (ta > tb) { const x = ta; ta = tb; tb = x; }
+      if (ta > t0) t0 = ta; if (tb < t1) t1 = tb;
+    }
+    if (!(t1 > t0)) return null;
+    const cell = Math.min(g.dx, g.dy || g.dx) * (g.place ? g.place.s : 1);
+    const f = (t) => { const q = at(t); return q[2] - surf.sampleZ(q[0], q[1]); };
+    const dxy = Math.hypot(d[0], d[1]);
+    const n = Math.max(1, Math.min(200000, dxy > 1e-12 ? Math.ceil((t1 - t0) * dxy / (cell / 2)) : 1));
+    let ta = t0, fa = f(t0);
+    for (let i = 1; i <= n && tHit == null; i++) {
+      const tb = t0 + (t1 - t0) * i / n, fb = f(tb);
+      if (Number.isFinite(fa) && Number.isFinite(fb) && fa * fb <= 0) {
+        let a = ta, b = tb, va = fa;
+        for (let k = 0; k < 60; k++) { const m = (a + b) / 2, vm = f(m); if (!Number.isFinite(vm)) break; if (va * vm <= 0) b = m; else { a = m; va = vm; } }
+        tHit = (a + b) / 2;
+      }
+      ta = tb; fa = fb;
+    }
+    if (tHit == null) return null;
+  }
+  const point = at(tHit);
+  const value = surf.sampleZ(point[0], point[1]);
+  if (flat == null) point[2] = value;                      // ON the surface (the bisection's last 1e-12 of slack)
+  // the slope, from the height function either side (half a cell)
+  const e = Math.min(g.dx, g.dy || g.dx) * (g.place ? g.place.s : 1) / 2;
+  const zx = (surf.sampleZ(point[0] + e, point[1]) - surf.sampleZ(point[0] - e, point[1])) / (2 * e);
+  const zy = (surf.sampleZ(point[0], point[1] + e) - surf.sampleZ(point[0], point[1] - e)) / (2 * e);
+  let normal = [-zx, -zy, 1];
+  if (!normal.every(Number.isFinite)) normal = [0, 0, 1];
+  { const l = Math.hypot(...normal); normal = normal.map((v) => v / l); }
+  if (flat != null) normal = [0, 0, 1];
+  // the nearest node, in the grid's own frame
+  const toLocal = gridLocalXY(g), uv = toLocal ? toLocal(point[0], point[1]) : [point[0], point[1]];
+  const c = Math.round((uv[0] - g.x0) / g.dx), r = Math.round((g.y0 - uv[1]) / (g.dy || g.dx));
+  return { point, drawn: [point[0] + off[0], point[1] + off[1], point[2] + off[2]], normal, t: tHit, grid: { r, c, value, flat: flat != null } };
 }
 
 let _recSeq = 0;

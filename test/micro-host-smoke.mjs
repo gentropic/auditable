@@ -1257,6 +1257,75 @@ async function knifeChecks(url, label) {
   await p.close();
 }
 
+// a grid shown as a SURFACE (v0.7.3): opened FIRST it is built in the scene's frame (its relief was
+// built in world numbers, then a frame planted around it — a model added later sat ~600 km away);
+// it is picked — worldAt, the record panel, measure — through its height function (a click said
+// "no triangle"); and a slope reads its dip direction DOWN-dip (the panel read every slope
+// backwards: 270 for a plane dipping due east, meshes included)
+async function surfaceChecks(url, label) {
+  const p = await ctx.newPage(); p.on('pageerror', (e) => { console.log('PAGEERROR', e.message); ok = false; });
+  await p.setViewportSize({ width: 1000, height: 700 });
+  await p.goto(`http://127.0.0.1:${PORT}${url}`, { waitUntil: 'load' });
+  await p.waitForFunction(() => window.micro && window._micro && window._micro.addLayer, null, { timeout: 30000 });
+  const X0 = 612000, Y0 = 7765000, NX = 41, NY = 31, D = 5;
+  const zOf = (x, y) => 500 + 0.04 * (x - X0) + 0.02 * (y - Y0);       // a plane: bilinear sampling is exact on it
+  let asc = `ncols ${NX}\nnrows ${NY}\nxllcorner ${X0 - D / 2}\nyllcorner ${Y0 - D / 2}\ncellsize ${D}\nNODATA_value -9999\n`;
+  for (let r = 0; r < NY; r++) { const row = []; for (let c = 0; c < NX; c++) row.push(zOf(X0 + D * c, Y0 + D * (NY - 1 - r)).toFixed(4)); asc += row.join(' ') + '\n'; }
+  let csv = 'XC,YC,ZC,AU\n'; for (let j = 0; j < 4; j++) for (let i = 0; i < 4; i++) csv += `${X0 + 50 + 10 * i},${Y0 + 50 + 10 * j},480,1\n`;
+  const PROJ = `(w) => { const m = window._micro, cv = document.querySelector('#cv'), rect = cv.getBoundingClientRect(), st = m.cam.state, o = m.frame.origin, q = [w[0] - o[0], w[1] - o[1], w[2] - o[2]], V = st.viewProj;
+    const xx = V[0] * q[0] + V[4] * q[1] + V[8] * q[2] + V[12], yy = V[1] * q[0] + V[5] * q[1] + V[9] * q[2] + V[13], ww = V[3] * q[0] + V[7] * q[1] + V[11] * q[2] + V[15];
+    return [(xx / ww + 1) / 2 * rect.width, (1 - yy / ww) / 2 * rect.height]; }`;
+  const r = await p.evaluate(async ({ asc, csv, PROJ, X0, Y0 }) => {
+    const M = window._micro, W = window.micro, proj = eval(PROJ), out = {};
+    const sid = await M.openBlob(new File([asc], 'topo.asc'), 'topo.asc', 'replace', null, { throw: true, asKind: 'surface' });
+    const S0 = M.layers().find((x) => x.id === sid);
+    out.surfBox = Array.from(S0.bboxLocal).map((v, i) => v + M.frame.origin[i % 3]);
+    const bid = await M.openBlob(new File([csv], 'blocks.csv'), 'blocks.csv', 'add', null, { throw: true });
+    const B = M.layers().find((x) => x.id === bid);
+    out.blocksBox = Array.from(B.bboxLocal).map((v, i) => v + M.frame.origin[i % 3]);
+    B.visible = false; M.applyTreeVisibility();
+    // an oblique view: worldAt at two surface points' screen positions
+    await W.setView({ target: [X0 + 100, Y0 + 75, 504], look: 30, elevation: 40, distance: 450 });
+    await new Promise((z) => setTimeout(z, 400));
+    const A = [X0 + 60, Y0 + 40], Bp = [X0 + 140, Y0 + 110];
+    const zA = 500 + 0.04 * 60 + 0.02 * 40, zB = 500 + 0.04 * 140 + 0.02 * 110;
+    const pa = proj([A[0], A[1], zA]), pb = proj([Bp[0], Bp[1], zB]);
+    const w = await W.worldAt([pa, pb]);
+    out.worldAt = w.map((h) => h && h.world);
+    // measure between them (the drawn points, in the frame) → the true distance
+    M.armMeasure();
+    await M.measureClick(pa[0], pa[1]); await M.measureClick(pb[0], pb[1]);
+    const ms = M.measureState();
+    out.measure = ms && ms.a && ms.b ? Math.hypot(ms.b[0] - ms.a[0], ms.b[1] - ms.a[1], ms.b[2] - ms.a[2]) : null;
+    out.measureWant = Math.hypot(Bp[0] - A[0], Bp[1] - A[1], zB - zA);
+    // the record panel on a click: the node, its Z, the slope and its DOWN-dip direction
+    await M.showMeshRecord(S0, pa[0], pa[1]);
+    const rows = {}; for (const rr of document.querySelectorAll('#recPanel .rp-row')) rows[rr.querySelector('.k').textContent] = rr.querySelector('.v').textContent;
+    out.panel = { title: document.querySelector('#recPanel').textContent.slice(0, 60), rows };
+    // a plane dipping 45° due EAST as a mesh, both windings: dip direction 90
+    const zE = (x) => 500 - (x - X0), V = [[X0, Y0], [X0 + 100, Y0], [X0 + 100, Y0 + 100], [X0, Y0 + 100]].map(([x, y]) => `v ${x} ${y} ${zE(x)}`).join('\n');
+    out.east = {};
+    for (const [nm, f] of [['up.obj', '\nf 1 2 3\nf 1 3 4\n'], ['down.obj', '\nf 1 3 2\nf 1 4 3\n']]) {
+      const id = await M.openBlob(new File([V + f], nm), nm, 'replace', null, { throw: true });
+      await W.look('plan'); await W.fit(); await new Promise((z) => setTimeout(z, 300));
+      const c = proj([X0 + 50, Y0 + 50, 450]);
+      await M.showMeshRecord(M.layers().find((x) => x.id === id), c[0], c[1]);
+      for (const rr of document.querySelectorAll('#recPanel .rp-row')) if (rr.querySelector('.k').textContent === 'dip dir') out.east[nm] = +rr.querySelector('.v').textContent;
+    }
+    return out;
+  }, { asc, csv, PROJ, X0, Y0 });
+  const near3 = (a, b, t) => a && b && a.every((v, i) => Math.abs(v - b[i]) <= t);
+  chk(`surface (${label}): opened first it is built in the frame — its box ${r.surfBox.slice(0, 2).map((v) => v.toFixed(1))}…${r.surfBox.slice(3, 5).map((v) => v.toFixed(1))} is the grid's, and a model added after sits inside it (${r.blocksBox.slice(0, 2).map((v) => v.toFixed(1))})`,
+    near3(r.surfBox.slice(0, 2), [X0, Y0], 1e-6) && near3(r.surfBox.slice(3, 5), [X0 + 200, Y0 + 150], 1e-6) && r.blocksBox[0] > X0 && r.blocksBox[3] < X0 + 200 && r.blocksBox[1] > Y0 && r.blocksBox[4] < Y0 + 150);
+  chk(`surface (${label}): worldAt at two surface points' screen positions, oblique → ${r.worldAt.map((w) => w && w.map((v) => v.toFixed(2)).join(',')).join(' · ')}`,
+    near3(r.worldAt[0], [X0 + 60, Y0 + 40, 500 + 2.4 + 0.8], 0.05) && near3(r.worldAt[1], [X0 + 140, Y0 + 110, 500 + 5.6 + 2.2], 0.05));
+  chk(`surface (${label}): measure between them = ${r.measure && r.measure.toFixed(3)} m (true ${r.measureWant.toFixed(3)})`, r.measure != null && Math.abs(r.measure - r.measureWant) < 0.1);
+  chk(`surface (${label}): the record panel shows the node and its Z (${r.panel.rows.row},${r.panel.rows.col} · Z ${r.panel.rows.Z}), slope ${r.panel.rows.slope}° toward ${r.panel.rows['slope dir']}° (it rises to the NE: down-dip ≈ 243.4)`,
+    +r.panel.rows.row === 22 && +r.panel.rows.col === 12 && Math.abs(+r.panel.rows.Z - 503.2) < 0.01 && Math.abs(+r.panel.rows['slope dir'] - 243.4) < 0.2 && Math.abs(+r.panel.rows.slope - Math.atan(Math.hypot(0.04, 0.02)) * 180 / Math.PI) < 0.1);
+  chk(`mesh dip direction (${label}): a plane dipping due east reads ${r.east['up.obj']} and ${r.east['down.obj']} (either winding) = 90`, r.east['up.obj'] === 90 && r.east['down.obj'] === 90);
+  await p.close();
+}
+
 async function colourChecks(url, label) {
   console.log(`── colour range and palette (${label})`);
   const pane = async (hi) => {
@@ -1430,9 +1499,16 @@ try {
     await presentChecks('/micro.html', 'built micro.html');
     console.log(ok ? 'PASS' : 'FAIL'); await b.close(); server.close(); process.exit(ok ? 0 : 1);
   }
+  if (process.env.ONLY === 'surface') {                  // ONLY=surface: a grid shown as a surface
+    await surfaceChecks('/tools/micro/index.html', 'dev tree');
+    await surfaceChecks('/micro.html', 'built micro.html');
+    console.log(ok ? 'PASS' : 'FAIL'); await b.close(); server.close(); process.exit(ok ? 0 : 1);
+  }
   if (process.env.ONLY === 'knife') {                    // ONLY=knife: the knife under exaggeration
     await knifeChecks('/tools/micro/index.html', 'dev tree');
+  await surfaceChecks('/tools/micro/index.html', 'dev tree');
     await knifeChecks('/micro.html', 'built micro.html');
+  await surfaceChecks('/micro.html', 'built micro.html');
     console.log(ok ? 'PASS' : 'FAIL'); await b.close(); server.close(); process.exit(ok ? 0 : 1);
   }
   if (process.env.ONLY === 'meshpick') {                 // ONLY=meshpick: a moved mesh is picked where it is drawn

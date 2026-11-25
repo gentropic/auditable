@@ -8,7 +8,7 @@ import { coordNum, decodeLasRecords } from '../../../ext/condenser/src/main.js';
 import { _isMobile } from './windows.js';
 import { rendererDocBbox } from './layers.js';
 import { currentSection } from './section.js';
-import { pickHitPoint } from './pick.js';
+import { pickHitPoint, meshHitAt } from './pick.js';
 const $ = (s) => document.querySelector(s);
 // the app's side, passed in once (setOverlayHooks): _viewMode
 let H = {};
@@ -81,8 +81,12 @@ export function clearMeasure() {
 export async function measureClick(cssX, cssY) {
   const hit = S.renderer.pick(cssX, cssY, S.cam, { pointPx: +$('#ptPx').value, blocksAsPoints: H._viewMode === 'points', section: currentSection() });
   if (hit == null) { $('#meta').textContent = `measure: nothing there — ${_measure.a ? 'the second point' : 'two points'} on the model`; return; }
-  const world = await pickHitPoint(hit, cssX, cssY);       // ON the face you clicked, not the centroid behind it
-  if (!world) return;
+  // a MESH (a surface grid included) has no records to anchor on: it is met where the ray meets it,
+  // where it is DRAWN (meshHitAt) — the same point a pivot and worldAt use
+  const hitL = layerById(hit.layer);
+  const world = hitL && hitL.kind === 'mesh' ? ((await meshHitAt(hitL, cssX, cssY)) || {}).drawn || null
+    : await pickHitPoint(hit, cssX, cssY);                  // ON the face you clicked, not the centroid behind it
+  if (!world) { if (hitL && hitL.kind === 'mesh') $('#meta').textContent = `measure: no surface under the cursor on ${hitL.label || hitL.name}`; return; }
   const local = [world[0] - S.frame.origin[0], world[1] - S.frame.origin[1], world[2] - S.frame.origin[2]];
   // a layer drawn displaced (an exploded view, a view beside its model): the line is
   // drawn where you clicked, the numbers are read from where the data really is

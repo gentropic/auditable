@@ -115,6 +115,11 @@ export async function openGridBlob(blob, name, opts = {}) {
   // pick is traded for the solid surface (toggle back to points to pick).
   if (opts.surface) {
     const flatZ = opts.flatZ != null ? opts.flatZ : null;
+    // the relief is built in the scene's frame — so the FIRST layer plants it before building, as
+    // the points path does. Built first, a lone surface's relief stayed in world numbers while the
+    // frame was then planted around it: every later layer, section, pick and measure was off by the
+    // frame's origin (v0.7.3: a model added to a topography opened as a surface sat ~600 km away)
+    if (!S.frame) fitFromHeader(header, false);
     const hf = gridHeightfield(grid, stride, flatZ);
     if (!hf) throw new Error('grid is all nodata');
     const color = surfaceColorArray(hf, opts.drape || null, (rampCfgOf(layerById(lid)) || {}).preset, zmin, zmax);
