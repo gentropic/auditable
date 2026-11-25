@@ -116,22 +116,17 @@ export async function blockHalfDims(L, rec) {
 }
 
 // A camera ray through a CSS pixel, intersected with the horizontal plane at the
-// document's mid-elevation → a frame-local world point (no picking needed).
+// document's mid-elevation → a frame-local world point (no picking needed). The knife's ray:
+// pixelRay, so vertical exaggeration and an orthographic camera are honoured (sweep 2026-11-25:
+// this built its own perspective ray from eye/fov, which pixelRay had already retired for measure).
 export function unprojectToMidZ(cssX, cssY) {
-  const st = S.cam.state, r = S.cv.getBoundingClientRect();
-  const ndcX = (2 * cssX / r.width) - 1, ndcY = 1 - (2 * cssY / r.height);
-  const v = st.view;
-  const right = [v[0], v[4], v[8]], up = [v[1], v[5], v[9]];
-  const fwd = [st.target[0] - st.eye[0], st.target[1] - st.eye[1], st.target[2] - st.eye[2]];
-  const fl = Math.hypot(...fwd) || 1;
-  const tanF = Math.tan(st.fovY / 2);
-  const dir = [0, 1, 2].map((i) => fwd[i] / fl + right[i] * ndcX * tanF * st.aspect + up[i] * ndcY * tanF);
+  const { o, d } = pixelRay(cssX, cssY);
   const b = rendererDocBbox();
   const zMid = (b[2] + b[5]) / 2;
-  if (Math.abs(dir[2]) < 1e-9) return null;
-  const t = (zMid - st.eye[2]) / dir[2];
-  if (t <= 0) return null;
-  return [st.eye[0] + dir[0] * t, st.eye[1] + dir[1] * t, zMid];
+  if (Math.abs(d[2]) < 1e-12) return null;
+  const t = (zMid - o[2]) / d[2];
+  if (!(t > 0)) return null;
+  return [o[0] + d[0] * t, o[1] + d[1] * t, zMid];
 }
 
 // ── pick → record inspector: a CLICK (not a drag) GPU-picks the element under

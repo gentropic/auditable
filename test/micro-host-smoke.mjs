@@ -1222,6 +1222,41 @@ async function meshPickChecks(url, label) {
   await p.close();
 }
 
+// the KNIFE cuts through what was drawn under it (sweep 2026-11-25: it built its own perspective ray
+// from eye/fov, ignoring vertical exaggeration). Oblique view, z×3: a knife dragged between the
+// screen positions of two points at the data's mid elevation cuts the vertical plane through both.
+async function knifeChecks(url, label) {
+  const p = await ctx.newPage(); p.on('pageerror', (e) => { console.log('PAGEERROR', e.message); ok = false; });
+  await p.setViewportSize({ width: 900, height: 700 });
+  await p.goto(`http://127.0.0.1:${PORT}${url}`, { waitUntil: 'load' });
+  await p.waitForFunction(() => window.micro && window._micro && window._micro.addLayer, null, { timeout: 30000 });
+  const r = await p.evaluate(async () => {
+    const m = window._micro, M = window.micro, X = [], Y = [], Z = [];
+    for (let k = 0; k < 6; k++) for (let j = 0; j < 10; j++) for (let i = 0; i < 10; i++) { X.push(612005 + 10 * i); Y.push(7765005 + 10 * j); Z.push(405 + 10 * k); }
+    await M.addLayer({ kind: 'blocks', name: 'box', columns: { X, Y, Z }, roles: { x: 'X', y: 'Y', z: 'Z' } });
+    m.setZExag(3);
+    await M.setView({ target: [612050, 7765050, 400], look: 30, elevation: 35, distance: 400 });   // the target BELOW mid z: exaggeration (about the target) moves the mid plane on screen
+    await new Promise((res) => setTimeout(res, 200));
+    const cv = document.querySelector('#cv');
+    const proj = (w) => {
+      const rect = cv.getBoundingClientRect(), st = m.cam.state, o = m.frame.origin, q = [w[0] - o[0], w[1] - o[1], w[2] - o[2]], V = st.viewProj;
+      const xx = V[0] * q[0] + V[4] * q[1] + V[8] * q[2] + V[12], yy = V[1] * q[0] + V[5] * q[1] + V[9] * q[2] + V[13], ww = V[3] * q[0] + V[7] * q[1] + V[11] * q[2] + V[15];
+      return [(xx / ww + 1) / 2 * rect.width, (1 - yy / ww) / 2 * rect.height];
+    };
+    const zMid = 430, A = [612020, 7765030, zMid], B = [612080, 7765060, zMid];      // the data spans z 400…460
+    const a = proj(A), b2 = proj(B);
+    const sel = document.querySelector('#secMode'); sel.value = 'knife'; sel.dispatchEvent(new Event('input'));   // arm the knife, as the UI does
+    const okCut = m.knifeCut(a[0], a[1], b2[0], b2[1]);
+    const w = m.sectionWorld();
+    const res = (P) => w.normal[0] * P[0] + w.normal[1] * P[1] + w.normal[2] * P[2] - w.position;
+    m.setZExag(1);
+    return { okCut, mode: w.mode, ra: res(A), rb: res(B) };
+  });
+  chk(`knife (${label}): at z×3, oblique, a cut drawn between two points' screen positions passes through both (off by ${r.ra.toFixed(3)} m and ${r.rb.toFixed(3)} m)`,
+    r.okCut && Math.abs(r.ra) < 0.05 && Math.abs(r.rb) < 0.05);
+  await p.close();
+}
+
 async function colourChecks(url, label) {
   console.log(`── colour range and palette (${label})`);
   const pane = async (hi) => {
@@ -1395,9 +1430,16 @@ try {
     await presentChecks('/micro.html', 'built micro.html');
     console.log(ok ? 'PASS' : 'FAIL'); await b.close(); server.close(); process.exit(ok ? 0 : 1);
   }
+  if (process.env.ONLY === 'knife') {                    // ONLY=knife: the knife under exaggeration
+    await knifeChecks('/tools/micro/index.html', 'dev tree');
+    await knifeChecks('/micro.html', 'built micro.html');
+    console.log(ok ? 'PASS' : 'FAIL'); await b.close(); server.close(); process.exit(ok ? 0 : 1);
+  }
   if (process.env.ONLY === 'meshpick') {                 // ONLY=meshpick: a moved mesh is picked where it is drawn
     await meshPickChecks('/tools/micro/index.html', 'dev tree');
+  await knifeChecks('/tools/micro/index.html', 'dev tree');
     await meshPickChecks('/micro.html', 'built micro.html');
+  await knifeChecks('/micro.html', 'built micro.html');
     console.log(ok ? 'PASS' : 'FAIL'); await b.close(); server.close(); process.exit(ok ? 0 : 1);
   }
   if (process.env.ONLY === 'section') {                  // ONLY=section: a saved section's world plane
