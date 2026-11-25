@@ -65,6 +65,9 @@ function applyPredictor3(bytes, rowWidth, rows) {
  *   opts.crs          'EPSG:n' — GeoKeys only for a known EPSG code; anything else → none
  *   opts.description  ImageDescription text (e.g. provenance JSON)
  *   opts.software     Software tag
+ *   opts.transform    [a, b, c, d, e, f] — a ROTATED raster's affine over pixel corners
+ *                     (X = a·i + b·j + c, Y = d·i + e·j + f): written as ModelTransformation
+ *                     (34264) in place of ModelPixelScale + ModelTiepoint
  * The result's `.info` = { crs, geoKeys, compression, layout, segments }.
  */
 export async function writeGeoTiff(grid, opts = {}) {
@@ -123,7 +126,11 @@ export async function writeGeoTiff(grid, opts = {}) {
   if (predictor === 3) T(317, 3, [3]);
   if (tiled) { T(322, 3, [tile]); T(323, 3, [tile]); T(324, 4, segs.map(() => 0)); T(325, 4, encoded.map((e) => e.length)); }
   T(339, 3, [3]);                                           // IEEE float
-  if (x0 != null && y0 != null && dx && dy) {
+  const xf = Array.isArray(opts.transform) && opts.transform.length === 6 && opts.transform.every(Number.isFinite) ? opts.transform : null;
+  if (xf) {
+    const [a, b, c, d, e, f] = xf;
+    T(34264, 12, [a, b, 0, c, d, e, 0, f, 0, 0, 0, 0, 0, 0, 0, 1]);
+  } else if (x0 != null && y0 != null && dx && dy) {
     T(33550, 12, [dx, dy, 0]);
     T(33922, 12, [0, 0, 0, x0 - dx / 2, y0 + dy / 2, 0]);   // PixelIsArea: raster (0,0) = the NW corner
   }

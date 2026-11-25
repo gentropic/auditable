@@ -118,8 +118,15 @@ function parseGeo(tags, warnings) {
     // tiepoint maps raster (i,j) → model (X,Y); normalize to raster (0,0)
     geo.origin = [tie[3] - tie[0] * scale[0], tie[4] + tie[1] * scale[1]];
   } else if (xf) {
-    if (xf[1] !== 0 || xf[4] !== 0) warnings.push('rotated ModelTransformation — axis-aligned reading only, geo dropped');
-    else { geo.origin = [xf[3], xf[7]]; geo.scale = [xf[0], -xf[5]]; }
+    if (xf[1] !== 0 || xf[4] !== 0) {
+      // a ROTATED raster: X = a·i + b·j + c, Y = d·i + e·j + f over pixel corners. The grid is read
+      // in the raster's OWN frame (origin 0,0 at its first corner, north-up nodes, the pixel sizes as
+      // the scale) and geo.affine carries the rotation for the caller to place it (never dropped)
+      geo.affine = [xf[0], xf[1], xf[3], xf[4], xf[5], xf[7]];
+      geo.origin = [0, 0];
+      geo.scale = [Math.hypot(xf[0], xf[4]), Math.hypot(xf[1], xf[5])];
+      warnings.push('rotated ModelTransformation — read in the raster\'s own frame; geo.affine carries the rotation');
+    } else { geo.origin = [xf[3], xf[7]]; geo.scale = [xf[0], -xf[5]]; }
   }
   const dir = tags.get(34735);                             // GeoKeyDirectory
   if (dir && dir.length >= 4) {
