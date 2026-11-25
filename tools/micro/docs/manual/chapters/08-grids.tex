@@ -25,7 +25,17 @@ ESRI ASCII (\file{.asc}) & the text grid; the surface tools write their results 
 
 A grid opens as a cloud of its nodes, each at its position with its value as elevation, colored by that value. Every node is a record: click one and the record panel gives its coordinates and value. Blank nodes, those holding the file's no-data value, are not drawn.
 
-The coordinate system named in a GeoTIFF is shown, and kept with the layer as a statement of what the coordinates are. micro does not reproject. A grid in one system and a model in another will not line up; make them agree in a GIS before the file reaches micro.
+The coordinate system named in a GeoTIFF is shown, and kept with the layer as a statement of what the coordinates are. micro does not reproject a grid; a grid in another system takes a placement instead, fitted to that change of system with its deviation stated (\cref{sec:crs-placement-crs}).
+
+\subsection{Rotated grids}\label{sec:grids-rotated}\index{grid!rotated}
+
+A grid need not run north–south. A GeoTIFF can carry its georeference as a \emph{ModelTransformation}, whose terms can rotate the raster, and a world file (\file{.tfw}, \file{.tifw}, \file{.wld}) states the same rotation in its second and third lines (the \emph{B} and \emph{D} terms). micro reads both: the grid keeps its nodes on its own lattice, and the rotation places that lattice in the world, exactly as a rotated block model's is (\cref{sec:blocks-rotated}). The status line and the open dialog say \emph{rotated 30°}. To use a world file, open it together with its GeoTIFF (same name, dropped together); the world file wins over the GeoTIFF's own georeference, since it is the one you handed over, and it is saved with the project.
+
+A raster whose two pixel axes are not at right angles (a \term{sheared} transformation) has no rigid form: micro takes the nearest rotation and says how far it departs, in metres, on the status line. A grid also takes a placement of your own (\cref{sec:crs-placement}), on top of its file's rotation.
+
+Everything that reads a grid reads a rotated one in its own frame: flagging and selecting blocks above or below it (\cref{ch:geometry}), sampling it under a model or a drape, extending and combining surfaces, cut and fill, gridding a point cloud onto its lattice (\ui{match}), section lines across it, contacts. A rotated surface samples the same surface its unrotated twin does at the same point of the grid's frame.
+
+A grid used as a surface is $z = f(x, y)$, so it takes a rotation about Z only. A tilted placement on a surface is refused with that reason; a grid shown as points or as a flat sheet may take any.
 
 \subsection{Big grids: display and evaluation}\label{sec:grids-big}
 
@@ -298,6 +308,8 @@ A few behaviors are worth knowing before you hand the file on:
 \begin{itemize}
 \item \textbf{A GeoTIFF states a coordinate system only when micro knows its EPSG code} — the grid's own, from the GeoTIFF it was opened from, or the project's. Otherwise none is written; the coordinates are, and the note asks you to set the system in your GIS. micro never invents a CRS (\cref{sec:grids-open}).
 \item \textbf{Rectangular cells.} ESRI's formats were made for square cells. A grid whose cells are not square is written in the form GDAL reads — separate X and Y sizes — and the status line notes that ArcGIS proper reads square cells only.
+\item \textbf{A rotated grid} (\cref{sec:grids-rotated}) keeps its rotation in GeoTIFF — written as a ModelTransformation, with a world file (\file{.tfw}) beside it — and in XYZ, where every node is written at its true x and y. ESRI ASCII, ESRI binary float and the Surfer formats have no rotation terms: they refuse a rotated grid, saying so, unless you tick \ui{resample to axis-aligned}, which samples it (bilinear) onto a north-up lattice over its extent at the same cell, and the note says that too. In a routine that is the tool's \code{resample} setting.
+
 \item \textbf{A value equal to the nodata} would read back as empty. If any node holds it, the status line counts them and asks you to pick another nodata.
 \end{itemize}
 

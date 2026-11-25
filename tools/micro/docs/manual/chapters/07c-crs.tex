@@ -1,7 +1,8 @@
 \chapter{Coordinate systems}\label{ch:crs}
 \begin{goals}
 \textbf{In this chapter} you give a project its coordinate system, open vector files and point clouds that
-were saved in another one, and read what micro did to them and how accurately.
+were saved in another one, read what micro did to them and how accurately, and place models, grids and
+meshes that sit in a frame of their own (\cref{sec:crs-placement}).
 \end{goals}
 
 Survey pickups arrive in SIRGAS 2000, an old lease map in SAD69, a GPS track from the field in WGS 84
@@ -79,7 +80,8 @@ coordinate is the right answer:
 \end{itemize}
 
 Block models, grids and meshes are \emph{not} reprojected: moving each block of a model would break its
-boxes. They are read in their own coordinates.
+boxes. They are read in their own coordinates and, when those are not the project's, take a rigid
+placement instead (\cref{sec:crs-placement}).
 
 What counts as the file's system: its \file{.prj} or SRID or \code{"crs"}; for GeoJSON without a
 \code{"crs"} and for KML, WGS 84 longitude and latitude (both formats say so); for a file that says
@@ -126,6 +128,124 @@ Resolução R.PR 1/2005 (SAD69: ΔX −67.35, ΔY +3.88, ΔZ −38.22 m; Córreg
 continent-wide mean (−57, +1, −41 m, stated as ~19 m), and for Córrego Alegre in place of a grid it
 does not carry. Outside Brazil, SAD69 takes EPSG's default — the record says which.
 \end{why}
+
+\section{Placing models, grids and meshes}\label{sec:crs-placement}
+
+A block model in the mine's local grid, a photogrammetry mesh of a bench face in the drone software's
+own frame, a model exported \enquote{anonymised} about (0, 0, 0), a DEM from the previous owner in last
+decade's datum: none of them is wrong, they are in another place. Moving each vertex the way a vector is
+reprojected would bend a block model's boxes. Instead, a model, a grid, a mesh or a point cloud takes a
+\term{placement}: one rigid move for the whole layer.
+
+A placement is a \term{similarity} (a 7-parameter \term{Helmert} transformation): a shift, three
+rotations and \emph{one} uniform scale. It is never a shear and never a stretch along one axis, so a block
+stays a box (its size scales with the scale), a mesh keeps its angles, a surface stays a surface. It is
+applied as the layer is read, like a Datamine model's rotation (\cref{sec:blocks-dm-rotated}): the
+records, the picks, the position streams of the geometry tools, grade–tonnage, sections, exports and the
+lineage all see the placed coordinates. The file is never rewritten.
+
+Open it with \menu{Data \& file>Placement…} on the layer's right-click menu, the \ui{Placement…}
+button in the properties' \ui{source} tab, or \key{⌘K} → \code{placement}. The window has three tabs —
+three ways to say where the layer is — and, above them, the placement the layer has now.
+
+\subsection{Typed}
+
+Type the shift (\ui{shift X Y Z}), the rotations about X, Y and Z (\ui{ω} \ui{φ} \ui{κ}, in degrees), the
+\ui{scale} and the \ui{pivot} the rotation and the scale turn about:
+\[ \text{world} = \text{pivot} + \text{shift} + \text{scale} \cdot R\,(\text{local} - \text{pivot}) \]
+with $R = R_z(\kappa)\,R_y(\varphi)\,R_x(\omega)$.
+The angles are counter-clockwise looking down each axis toward the origin, so \ui{κ} turns the layer
+counter-clockwise seen from above. \ui{pivot = the layer's centre} fills the pivot from the layer's
+extent, so a turn of 12° leaves the layer where it is, turned. \ui{apply typed} places the layer.
+
+\subsection{From control points}\label{sec:crs-gcp}
+
+The usual case: a handful of points known in both frames — survey control, drillhole collars, a fence
+corner in the photogrammetry. The \ui{control points} tab takes pairs of \emph{local} coordinates (where
+the point is in the layer's own frame) and \emph{true} ones (where it really is), and fits the similarity
+by least squares, in closed form.\index{placement!control points}
+
+\begin{description}
+\item[2D] two pairs or more fix a shift, a rotation about Z and a scale — a mine grid on UTM;
+\item[3D] three pairs or more, not in a line, fix all seven — a mesh in an arbitrary photogrammetric
+  frame;
+\item[auto] 3D when there are three or more pairs and they carry heights, else 2D.
+\end{description}
+
+A pair can be typed into its row, \emph{picked} — press the row's pick button (a target sign) and click the layer in the 3D
+view: the local coordinates under the cursor fill the row (on a mesh, the exact point on its surface) —
+or \emph{pasted}: a table of lines \code{lx ly lz X Y Z} (or \code{lx ly X Y} for 2D), separated by tabs,
+commas, semicolons or spaces, a leading point-name column and a header line skipped. \ui{add pasted}
+adds them.
+
+Every pair shows its \term{residual}: how far the fitted placement puts its local point from its true
+one. The fit is redone at every change. A residual is colored against the \ui{tolerance} at the top of the
+window: green within it, amber within three times, red beyond. A bad point stands out at once. Untick its
+\ui{use} box: the fit no longer uses it, and the row still says how far off it is, so you can see whether
+it was a typing slip or a point that moved. \ui{apply fit} places the layer and stores the pairs with it,
+so the window shows them again next time.
+
+\begin{why}
+micro never refuses a placement because its residuals are large. A fit that misses by 40 cm may still be
+the best information you have; what matters is that nobody forgets it misses by 40 cm. The residual is
+applied and shown: in the window, in the properties' \ui{source} tab (colored against the tolerance), on
+the status line when it is applied, and in the layer's lineage, which every export inherits.
+\end{why}
+
+\subsection{To a coordinate-system change}\label{sec:crs-placement-crs}
+
+A model in SAD69 / UTM 23S belongs in a SIRGAS 2000 / UTM 23S project. The true move is a reprojection,
+which bends — but over the few kilometres a model spans it is very nearly a similarity. The \ui{CRS
+change} tab takes the layer's system (an EPSG code, a proj4 string or a WKT), samples the true
+reprojection on a 9 × 9 grid through the layer's extent at its floor and its roof, fits the best
+similarity, and checks it at 17 × 17 points it never saw. What you are told is the \emph{maximum}
+deviation of the placement from the true reprojection:
+
+\begin{lstlisting}
+SAD69 / UTM zone 23S · EPSG:29193 → SIRGAS 2000 / UTM zone 23S · EPSG:31983
+  by best-fit similarity: max deviation 0.1 mm (plan 0.03 mm, heights 0.1 mm)
+\end{lstlisting}
+
+A datum shift within one zone fits to a fraction of a millimetre. A change of UTM zone does not: the two
+projections stretch differently, and the similarity's single scale is the average. Over a kilometre near
+a zone edge that is millimetres; over five kilometres it is \emph{centimetres} (about 10~cm in plan,
+measured between zones 23S and 24S at the boundary). The fit also states the vertical part: the uniform
+scale stretches heights about the layer's mid height (the reprojection carries them unchanged), so a
+model 400~m deep under a scale of 1.0006 moves its floor and roof by about 13~cm. Read the number before
+you trust the result; for a large model across a zone change, reproject the source data instead.
+
+\subsection{The Datamine origin}
+
+\menu{Data \& file>Datamine origin…} (\cref{sec:blocks-dm-rotated}) is a shortcut to a placement: a
+shift that puts the model's local origin where you say. It replaces whatever placement the layer had. A
+project saved before placements existed, whose rotated \file{.dm} remembered its origin, opens with that
+origin turned into the same shift: the model is where it was.
+
+\subsection{What a placement applies to}
+
+Block models (CSV, Parquet, \file{.dm} — composed with a Datamine file's own rotation), meshes, grids
+and point clouds (LAS, PLY) take a placement. Drillholes and strings do not: their coordinates are survey
+data, reprojected on read (\cref{sec:crs-reproject}). A grid shown as a surface takes a rotation about Z
+only — a tilted surface is no longer $z = f(x, y)$ — and refuses ω and φ with that reason; show it as
+points first if it really is a tilted sheet.
+
+\begin{caution}
+\emph{Store as Parquet} (\cref{sec:blocks-optimize}) writes the placed coordinates, so the placement is
+baked into the new file and cleared on the layer; the lineage says so. A layer moved far from the rest of
+the scene is drawn with the precision of the scene's frame; placing the only layer re-centres the frame
+on it, but when several layers are open, a project reopen re-centres it on everything.
+\end{caution}
+
+\begin{tryit}
+Place the demo's block model. Start with the demo project open.
+\begin{enumerate}
+\item Right-click \ui{deposit.csv} and choose \menu{Data \& file>Placement…}.
+\item In \ui{typed}, press \ui{pivot = the layer's centre}, type \code{15} in \ui{κ} and press \ui{apply typed}. The model turns in place. Click a block: its \col{XC} \col{YC} are the turned centroid, and the ƒ columns \col{XL} \col{YL} \col{ZL} beside them are what the file holds.
+\item Open the \ui{control points} tab and paste three lines: \code{611000 7766000 0 611100 7766050 0}, \code{612000 7766000 0 612100 7766050 0} and \code{611500 7767000 0 611600 7767050 0}. Press \ui{add pasted}. The fit is a pure shift of (100, 50) with zero residuals.
+\item Change the first row's true X by 0.5. Every residual moves, and the largest turns red against the 5~cm tolerance. Untick that row's \ui{use}: the other two fit exactly again, and the dropped row still says how far off it is.
+\item Press \ui{clear placement}. The model is back in its file's coordinates.
+\end{enumerate}
+\end{tryit}
 
 \section{Exporting in longitude and latitude}\label{sec:crs-export}
 
