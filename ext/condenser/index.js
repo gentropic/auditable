@@ -13578,6 +13578,23 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
       lastCosSig.delete(layer); cosmeticDirtyLayers.delete(layer); lutDirtyLayers.delete(layer);
       needClear = true;
     },
+    // drop a layer's own chunks (optionally only those of `kinds`, e.g. ['mesh']) but KEEP
+    // its state — filter mask, selection, categories, ramp, stick radius, mesh style. For a
+    // layer whose geometry is rebuilt in place from resident data (an edited polygon layer,
+    // a fill toggled on and off); removeLayer is for a layer going away.
+    clearLayerChunks(layer, kinds = null) {
+      for (let i = chunks.length - 1; i >= 0; i--) {
+        const c = chunks[i];
+        if (c._layer !== layer || c._src) continue;
+        if (kinds && !kinds.includes(c.kind)) continue;
+        freeChunk(c);
+        chunks.splice(i, 1);
+      }
+      const ls = layers.get(layer);
+      if (ls && (!kinds || kinds.includes('sticks') || kinds.includes('blocks'))) ls.docChan = [Infinity, -Infinity];
+      dropCapture();
+      needClear = true;
+    },
     layerElementCount(layer) {
       const ls = layers.get(layer);
       if (!ls) return 0;
