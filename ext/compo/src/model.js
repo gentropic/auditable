@@ -50,7 +50,7 @@ export function serializeDocument(doc) {
 // every reference to it (content.of, @id in fields). ──
 export const ID_RE = /^[A-Za-z0-9_][\w.-]*$/;
 export const sanitizeId = (s) => String(s == null ? '' : s).trim().replace(/\s+/g, '-').replace(/[^\w.-]/g, '').replace(/^[.-]+/, '');
-const PREFIX = { image: 'image', text: 'text', legend: 'legend', scalebar: 'scale', north: 'north', table: 'table', drawlist: 'chart' };
+const PREFIX = { image: 'image', text: 'text', legend: 'legend', scalebar: 'scale', north: 'north', table: 'table', drawlist: 'chart', titleblock: 'titleblock' };
 export const idPrefix = (frame) => (frame && frame.source && frame.source.kind === 'view' ? 'view' : (frame && frame.source && frame.source.kind === 'plot') ? 'plot' : PREFIX[frame && frame.kind] || (frame && frame.kind) || 'frame');
 export function newId(doc, prefix) {
   const used = new Set((doc.frames || []).map((f) => f.id));
@@ -67,6 +67,7 @@ function rewriteRefs(doc, from, to) {
     const c = f.content; if (!c) continue;
     if (c.of === from) c.of = to;
     for (const k of FIELD_KEYS) if (typeof c[k] === 'string') c[k] = c[k].replace(at, '@' + to);
+    if (Array.isArray(c.rows)) for (const r of c.rows) if (Array.isArray(r) && typeof r[0] === 'string') r[0] = r[0].replace(at, '@' + to);   // a title block's rows
   }
 }
 // rename a frame → null, or the reason it can't be
@@ -94,7 +95,11 @@ function migrate(d) {
     if (want && ID_RE.test(want) && !named.some((x) => x.id === want)) { const old = f.id; f.id = want; rewriteRefs(d, old, want); if (f.name !== want) rewriteRefs(d, f.name, want); }
     delete f.name;
   }
+  for (const hook of LOAD_MIGRATIONS) hook(d);
 }
+// migrations a module registers for itself (house.js: an old title block → the titleblock kind),
+// run on every load after the ones above — so model.js needn't know what they migrate
+export const LOAD_MIGRATIONS = [];
 
 // add a frame: { kind, box?, content, source?, style? } → the frame (placed in the margins, or
 // centred, when no box is given)

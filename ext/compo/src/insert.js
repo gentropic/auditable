@@ -3,12 +3,11 @@
 // frames, selects them and returns their ids. The host keeps what is its own: what goes IN a
 // frame (a render, a scene), and where things are kept.
 import { groupFrames, removeFrames } from './model.js';
-import { titleBlockFrames } from './house.js';
+import { titleBlockFrame } from './house.js';
 
-// the title block (house.js) as one group, bottom-right
+// the title block (house.js): one titleblock frame, bottom-right → [its id]
 export function addTitleBlock(ed, opts = {}) {
-  const ids = titleBlockFrames(ed.getDoc(), opts).map((fr) => ed.addFrame(fr).id);
-  ed.update(ids[0], () => groupFrames(ed.getDoc(), ids));
+  const ids = [ed.addFrame(titleBlockFrame(ed.getDoc(), opts)).id];
   ed.select(ids); ed.render();
   return ids;
 }

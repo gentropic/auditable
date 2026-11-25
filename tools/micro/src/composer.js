@@ -860,7 +860,7 @@ function openPropsDialog() {
     w.close();
   };
 }
-// the title block (compo's: bordered rows of fields, bottom-right, a group)
+// the title block (compo's titleblock kind: ruled rows of fields, bottom-right, one frame)
 export function addTitleBlock(ed) {
   const ids = compoTitleBlock(ed);
   $('#meta').textContent = 'composer: a title block — its fields read the figure\'s and the project\'s properties (properties…)';

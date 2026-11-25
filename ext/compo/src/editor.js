@@ -109,7 +109,7 @@ function injectCss() { if (_css || typeof document === 'undefined') return; _css
 const h = (tag, props = {}, ...kids) => { const e = document.createElement(tag); for (const [k, v] of Object.entries(props)) { if (k === 'style') e.style.cssText = v; else if (k.startsWith('on')) e[k] = v; else if (k in e) e[k] = v; else e.setAttribute(k, v); } for (const c of kids) e.append(c); return e; };
 
 // frames that refer to another (captions, scale bars, north arrows) and frames that can be referred to (views: they state a scale)
-const canRefer = (f) => f.kind === 'text' || f.kind === 'scalebar' || f.kind === 'north' || f.kind === 'label';
+const canRefer = (f) => f.kind === 'text' || f.kind === 'scalebar' || f.kind === 'north' || f.kind === 'label' || f.kind === 'titleblock';
 const isReferable = (f) => !!(f.content && f.content.meta);
 export function mountEditor(el, doc, opts = {}) {
   injectCss();
@@ -405,6 +405,21 @@ export function mountEditor(el, doc, opts = {}) {
       const xyz = ['x', 'y', 'z'].map((k, i) => { const inp = h('input', { type: 'number', step: 'any', value: +(+at[i]).toFixed(3), title: `the point, world ${k}` }); inp.onchange = () => commit(() => { const a = (f.content.at || [0, 0, 0]).slice(); a[i] = +inp.value || 0; f.content.at = a; }); return h('span', { className: 'pair' }, h('i', { textContent: k }), inp); });   // world coordinates are long: one per line
       insp.append(tx, h('div', { className: 'row' }, h('span', { textContent: 'points at' }), h('span', { className: 'ctl stack' }, ...xyz)), h('div', { className: 'hint', textContent: 'the leader follows this world point in the view it refers to' }));
     }
+    if (f.kind === 'titleblock') {
+      // its rows, one a line — each a text frame's markdown with fields; a row keeps its type
+      // size and height by position (a new row: 6.5 pt, 5 mm), the frame's height follows
+      const rows = () => (f.content.rows || []).map((r) => r.slice());
+      const ta = h('textarea', { value: rows().map((r) => r[0]).join('\n'), spellcheck: true, title: 'one row a line: **bold** · {title} {date} {scale} {page} {pages} · {prop:company} {prop:drawing} …' });
+      ta.onchange = () => commit(() => {
+        const old = rows(), lines = ta.value.split('\n').map((l) => l.trimEnd()).filter((l, i, a) => l || i < a.length - 1);
+        const next = lines.map((md, i) => [md, old[i] ? old[i][1] : 6.5, old[i] ? old[i][2] : 5]);
+        const h0 = old.reduce((s2, r) => s2 + r[2], 0) || 1, h1 = next.reduce((s2, r) => s2 + r[2], 0);
+        f.content = { ...f.content, rows: next };
+        f.box[1] += f.box[3] - f.box[3] * (h1 / h0); f.box[3] = +(f.box[3] * (h1 / h0)).toFixed(2);   // grows upward: the block's bottom stays on the margin
+      });
+      ta.onkeydown = (e) => e.stopPropagation();
+      insp.append(h('div', { className: 'row' }, h('span', { textContent: 'rows' })), ta, h('div', { className: 'hint', textContent: 'one row a line — fields as in a text frame; the values come from properties…' }));
+    }
     if (f.kind === 'legend') {
       const t = h('input', { value: f.content.title || '' });
       t.onchange = () => commit(() => { f.content.title = t.value; });
@@ -592,6 +607,7 @@ export function mountEditor(el, doc, opts = {}) {
     if (f.kind === 'legend') return `legend${c.title ? ' · ' + c.title : ''}`;
     if (f.kind === 'table') return `table${c.title ? ' · ' + c.title : (src.name ? ' · ' + src.name : '')}`;
     if (f.kind === 'drawlist') return 'chart';
+    if (f.kind === 'titleblock') return `title block · ${(c.rows || []).length} rows`;
     return (k && k.label) || f.kind;
   }
   let _dragItem = null, _keepItems = false;

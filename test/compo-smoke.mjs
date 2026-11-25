@@ -323,8 +323,9 @@ chk('rulers show by default', await page.evaluate(() => [...document.querySelect
     const tb = C.addTitleBlock(ed);
     const tbFrames = tb.map((id) => C.frameById(ed.getDoc(), id));
     const env = { doc: ed.getDoc(), title: 'Smoke', props: { company: 'Acme Mining' } };
-    const tbText = C.resolveFields(tbFrames[0].content.md, env, tbFrames[0]);
-    const tbGroup = new Set(tbFrames.map((f) => f.group)).size === 1 && !!tbFrames[0].group;
+    const tbText = C.resolveFields(tbFrames[0].content.rows[0][0], env, tbFrames[0]);
+    const tbGroup = tb.length === 1 && tbFrames[0].kind === 'titleblock';   // ONE frame of its own kind
+    const tbRows = tbFrames[0].content.rows.length;
     const tbSel = JSON.stringify(ed.selected().map((f) => f.id).sort()) === JSON.stringify(tb.slice().sort());
     // an image: a 40×20 PNG as a data: URL → 35 mm wide, its aspect kept, a bitmap ready to draw
     const cv = Object.assign(document.createElement('canvas'), { width: 40, height: 20 });
@@ -340,9 +341,9 @@ chk('rulers show by default', await page.evaluate(() => [...document.querySelect
       && caps.every((c, i) => c.content.of === made[2 * i]) && fr[2].box[0] > fr[0].box[0] && fr[4].box[1] > fr[0].box[1];
     const n = ed.getDoc().frames.length;
     C.removeFrames(ed.getDoc(), [...tb, im.id, ...made]); C.pruneGroups && C.pruneGroups(ed.getDoc()); ed.select([]); ed.render();
-    return { tbText, tbGroup, tbSel, n: tb.length, imOk, mOk, added: n - before, back: ed.getDoc().frames.length === before };
+    return { tbText, tbGroup, tbSel, n: tbRows, imOk, mOk, added: n - before, back: ed.getDoc().frames.length === before };
   });
-  chk(`title block: ${ins.n} rows, one group, selected, fields from the host's props ("${ins.tbText}")`, ins.n === 6 && ins.tbGroup && ins.tbSel && ins.tbText === '**Acme Mining**');
+  chk(`title block: ${ins.n} rows in one titleblock frame, selected, fields from the host's props ("${ins.tbText}")`, ins.n === 6 && ins.tbGroup && ins.tbSel && ins.tbText === '**Acme Mining**');
   chk('image from a src: 35 mm wide at its own aspect, bitmap decoded, the host\'s source kept', ins.imOk);
   chk('small multiples: 4 copies + 4 captions (each refers to its copy), across then down, one group, the original gone', ins.mOk, `${ins.added} added`);
   chk('the insertions cleaned up', ins.back);

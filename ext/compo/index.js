@@ -55,7 +55,7 @@ function serializeDocument(doc) {
 // every reference to it (content.of, @id in fields). ──
 const ID_RE = /^[A-Za-z0-9_][\w.-]*$/;
 const sanitizeId = (s) => String(s == null ? '' : s).trim().replace(/\s+/g, '-').replace(/[^\w.-]/g, '').replace(/^[.-]+/, '');
-const PREFIX = { image: 'image', text: 'text', legend: 'legend', scalebar: 'scale', north: 'north', table: 'table', drawlist: 'chart' };
+const PREFIX = { image: 'image', text: 'text', legend: 'legend', scalebar: 'scale', north: 'north', table: 'table', drawlist: 'chart', titleblock: 'titleblock' };
 const idPrefix = (frame) => (frame && frame.source && frame.source.kind === 'view' ? 'view' : (frame && frame.source && frame.source.kind === 'plot') ? 'plot' : PREFIX[frame && frame.kind] || (frame && frame.kind) || 'frame');
 function newId(doc, prefix) {
   const used = new Set((doc.frames || []).map((f) => f.id));
@@ -72,6 +72,7 @@ function rewriteRefs(doc, from, to) {
     const c = f.content; if (!c) continue;
     if (c.of === from) c.of = to;
     for (const k of FIELD_KEYS) if (typeof c[k] === 'string') c[k] = c[k].replace(at, '@' + to);
+    if (Array.isArray(c.rows)) for (const r of c.rows) if (Array.isArray(r) && typeof r[0] === 'string') r[0] = r[0].replace(at, '@' + to);   // a title block's rows
   }
 }
 // rename a frame → null, or the reason it can't be
@@ -99,7 +100,11 @@ function migrate(d) {
     if (want && ID_RE.test(want) && !named.some((x) => x.id === want)) { const old = f.id; f.id = want; rewriteRefs(d, old, want); if (f.name !== want) rewriteRefs(d, f.name, want); }
     delete f.name;
   }
+  for (const hook of LOAD_MIGRATIONS) hook(d);
 }
+// migrations a module registers for itself (house.js: an old title block → the titleblock kind),
+// run on every load after the ones above — so model.js needn't know what they migrate
+const LOAD_MIGRATIONS = [];
 
 // add a frame: { kind, box?, content, source?, style? } → the frame (placed in the margins, or
 // centred, when no box is given)
@@ -1047,8 +1052,27 @@ registerKind('north', {
   draw(ctx, box, frame, env) {
     const meta = metaOf(frame, env.doc);
     if (meta.north === null) {                             // a view looking along north: no arrow to draw
-      ctx.fillStyle = INK; ctx.font = fontMm(7); ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillText('N · out of the page', box[0] + box[2] / 2, box[1] + box[3] / 2);
+      // the axis-out-of-the-page sign (⊙) under its N, and the words under it — their type
+      // shrunk, and broken onto two lines, until they fit the frame (it used to read “out of the p”)
+      const x = box[0] + box[2] / 2, W = box[2] * 0.94;
+      let size = 7, lines = ['out of the page'];
+      ctx.font = fontMm(size);
+      if (ctx.measureText(lines[0]).width > W) {
+        lines = ['out of', 'the page'];
+        const w = Math.max(...lines.map((l) => ctx.measureText(l).width));
+        if (w > W) size = Math.max(3.5, size * (W / w));
+      }
+      const lh = size * PT * 1.15, nh = 8 * PT;            // a text line · the N's height
+      const r = Math.max(0.8, Math.min(box[2] * 0.22, (box[3] - nh - lines.length * lh - 1.2) / 2));
+      const top = box[1] + Math.max(0, (box[3] - (nh + 2 * r + lines.length * lh + 1.2)) / 2);
+      const cy = top + nh + 0.4 + r;
+      ctx.fillStyle = INK; ctx.font = fontMm(8, { bold: true }); ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+      ctx.fillText('N', x, cy - r - 0.3);
+      ctx.strokeStyle = INK; ctx.lineWidth = 0.2;
+      ctx.beginPath(); ctx.arc(x, cy, r, 0, 2 * Math.PI); ctx.stroke();
+      ctx.beginPath(); ctx.arc(x, cy, Math.max(0.25, r * 0.22), 0, 2 * Math.PI); ctx.fill();
+      ctx.font = fontMm(size); ctx.textBaseline = 'top';
+      lines.forEach((l, i) => ctx.fillText(l, x, cy + r + 0.8 + i * lh));
       return;
     }
     const bearing = Number.isFinite(+meta.north) ? +meta.north : 0;   // degrees clockwise from page-up to north
@@ -2048,23 +2072,79 @@ function docFromTemplate(tpl, title = '', { clear = FIGURE_KEYS.map(([k]) => k) 
   return doc;
 }
 
-// ── the title block: a stack of bordered text rows, bottom-right inside the margins, every row
-// made of fields — [md, type size pt, row height mm] ──
+// ── the title block: a stack of bordered rows, bottom-right inside the margins, every row made of
+// fields — [md, type size pt, row height mm] ──
 const TITLE_BLOCK_ROWS = [
   ['**{prop:company}**', 9, 7], ['{prop:project} · {prop:client}', 7, 5.5], ['**{title}**', 8, 6.5],
   ['drawing {prop:drawing} · rev {prop:revision} · {date}', 6.5, 5], ['prepared {prop:prepared} · checked {prop:checked}', 6.5, 5], ['scale {scale} · page {page} of {pages}', 6.5, 5],
 ];
-// the frames of a title block on this page (not yet added): [{ kind, box, content, style }]
+const RULE = 0.2;                                          // the block's ruling, mm
+// the title block on this page as ONE frame (not yet added): kind 'titleblock', content.rows
+function titleBlockFrame(doc, { rows = TITLE_BLOCK_ROWS, width = 95 } = {}) {
+  const [W, H] = pageDims(doc.page), m = doc.page.margins || [10, 10, 10, 10];
+  const hTot = rows.reduce((s, r) => s + r[2], 0);
+  return { kind: 'titleblock', box: [W - m[1] - width, +(H - m[2] - hTot).toFixed(2), width, +hTot.toFixed(2)], content: { rows: rows.map((r) => r.slice()) } };
+}
+// the OLD form, a group of bordered text frames — kept for a host that wants loose rows
 function titleBlockFrames(doc, { rows = TITLE_BLOCK_ROWS, width = 95 } = {}) {
   const [W, H] = pageDims(doc.page), m = doc.page.margins || [10, 10, 10, 10];
   const hTot = rows.reduce((s, r) => s + r[2], 0);
   let y = H - m[2] - hTot; const x = W - m[1] - width, out = [];
   for (const [md, size, h] of rows) {
-    out.push({ kind: 'text', box: [x, +y.toFixed(2), width, h], content: { md, size, pad: 1 }, style: { border: true, borderWidth: 0.2 } });
+    out.push({ kind: 'text', box: [x, +y.toFixed(2), width, h], content: { md, size, pad: 1 }, style: { border: true, borderWidth: RULE } });
     y += h;
   }
   return out;
 }
+// The kind: the rows stacked in the box (their heights scaled to fill it), each ruled, each drawn
+// by the text kind — so its fields resolve exactly as a text frame's do, about this frame.
+registerKind('titleblock', {
+  label: 'title block',
+  draw(ctx, box, frame, env) {
+    const rows = (frame.content && frame.content.rows) || TITLE_BLOCK_ROWS;
+    const hTot = rows.reduce((s, r) => s + (+r[2] || 5), 0) || 1, k = box[3] / hTot, text = kindOf('text');
+    let y = box[1];
+    for (const [md, size, h0] of rows) {
+      const h = (+h0 || 5) * k, rb = [box[0], y, box[2], h];
+      ctx.save();
+      ctx.beginPath(); ctx.rect(rb[0], rb[1], rb[2], rb[3]); ctx.clip();
+      text.draw(ctx, rb, { ...frame, box: rb, content: { md: String(md || ''), size: +size || 6.5, pad: 1 } }, env);
+      ctx.restore();
+      ctx.strokeStyle = INK; ctx.lineWidth = RULE; ctx.strokeRect(rb[0], rb[1], rb[2], rb[3]);
+      y += h;
+    }
+  },
+});
+// A title block saved by an older compo (a group of text frames laid out by titleBlockFrames,
+// rows unchanged) becomes ONE titleblock frame on load: the same rows, sizes and heights, the
+// same place. A group anyone edited (a row's text changed, a frame moved off the stack) stays
+// as it was — text frames still open; nothing is lost either way.
+function migrateTitleBlocks(doc) {
+  const want = TITLE_BLOCK_ROWS.map((r) => r[0]);
+  const groups = new Map();
+  for (const f of doc.frames) if (f.group) { if (!groups.has(f.group)) groups.set(f.group, []); groups.get(f.group).push(f); }
+  for (const fs of groups.values()) {
+    if (fs.length !== want.length || !fs.every((f) => f.kind === 'text' && f.style && f.style.border)) continue;
+    const st = fs.slice().sort((a, b) => a.box[1] - b.box[1]);
+    if (st.some((f, i) => (f.content && f.content.md) !== want[i])) continue;
+    const x = st[0].box[0], w = st[0].box[2];
+    let flush = true;
+    for (let i = 0; i < st.length; i++) {
+      const b = st[i].box;
+      if (Math.abs(b[0] - x) > 0.01 || Math.abs(b[2] - w) > 0.01 || (i && Math.abs(st[i - 1].box[1] + st[i - 1].box[3] - b[1]) > 0.02)) { flush = false; break; }
+    }
+    if (!flush) continue;
+    const drop = new Set(fs), last = st[st.length - 1].box;
+    let at = 0;                                             // where the group sat in the stacking order: before its first member
+    for (const f of doc.frames) { if (drop.has(f)) break; at++; }
+    const tb = { id: newId(doc, 'titleblock'), kind: 'titleblock', box: [x, st[0].box[1], w, +(last[1] + last[3] - st[0].box[1]).toFixed(2)],
+      content: { rows: st.map((f) => [f.content.md, f.content.size || 6.5, f.box[3]]) }, ...(st[0].locked ? { locked: true } : {}), ...(st[0].produced ? { produced: st[0].produced } : {}) };
+    doc.frames = doc.frames.filter((f) => !drop.has(f));
+    doc.frames.splice(at, 0, tb);
+  }
+  return doc;
+}
+LOAD_MIGRATIONS.push(migrateTitleBlocks);
 
 // ── src/insert.js ──
 
@@ -2073,10 +2153,9 @@ function titleBlockFrames(doc, { rows = TITLE_BLOCK_ROWS, width = 95 } = {}) {
 // frames, selects them and returns their ids. The host keeps what is its own: what goes IN a
 // frame (a render, a scene), and where things are kept.
 
-// the title block (house.js) as one group, bottom-right
+// the title block (house.js): one titleblock frame, bottom-right → [its id]
 function addTitleBlock(ed, opts = {}) {
-  const ids = titleBlockFrames(ed.getDoc(), opts).map((fr) => ed.addFrame(fr).id);
-  ed.update(ids[0], () => groupFrames(ed.getDoc(), ids));
+  const ids = [ed.addFrame(titleBlockFrame(ed.getDoc(), opts)).id];
   ed.select(ids); ed.render();
   return ids;
 }
@@ -2336,7 +2415,7 @@ function injectCss() { if (_css || typeof document === 'undefined') return; _css
 const h = (tag, props = {}, ...kids) => { const e = document.createElement(tag); for (const [k, v] of Object.entries(props)) { if (k === 'style') e.style.cssText = v; else if (k.startsWith('on')) e[k] = v; else if (k in e) e[k] = v; else e.setAttribute(k, v); } for (const c of kids) e.append(c); return e; };
 
 // frames that refer to another (captions, scale bars, north arrows) and frames that can be referred to (views: they state a scale)
-const canRefer = (f) => f.kind === 'text' || f.kind === 'scalebar' || f.kind === 'north' || f.kind === 'label';
+const canRefer = (f) => f.kind === 'text' || f.kind === 'scalebar' || f.kind === 'north' || f.kind === 'label' || f.kind === 'titleblock';
 const isReferable = (f) => !!(f.content && f.content.meta);
 function mountEditor(el, doc, opts = {}) {
   injectCss();
@@ -2632,6 +2711,21 @@ function mountEditor(el, doc, opts = {}) {
       const xyz = ['x', 'y', 'z'].map((k, i) => { const inp = h('input', { type: 'number', step: 'any', value: +(+at[i]).toFixed(3), title: `the point, world ${k}` }); inp.onchange = () => commit(() => { const a = (f.content.at || [0, 0, 0]).slice(); a[i] = +inp.value || 0; f.content.at = a; }); return h('span', { className: 'pair' }, h('i', { textContent: k }), inp); });   // world coordinates are long: one per line
       insp.append(tx, h('div', { className: 'row' }, h('span', { textContent: 'points at' }), h('span', { className: 'ctl stack' }, ...xyz)), h('div', { className: 'hint', textContent: 'the leader follows this world point in the view it refers to' }));
     }
+    if (f.kind === 'titleblock') {
+      // its rows, one a line — each a text frame's markdown with fields; a row keeps its type
+      // size and height by position (a new row: 6.5 pt, 5 mm), the frame's height follows
+      const rows = () => (f.content.rows || []).map((r) => r.slice());
+      const ta = h('textarea', { value: rows().map((r) => r[0]).join('\n'), spellcheck: true, title: 'one row a line: **bold** · {title} {date} {scale} {page} {pages} · {prop:company} {prop:drawing} …' });
+      ta.onchange = () => commit(() => {
+        const old = rows(), lines = ta.value.split('\n').map((l) => l.trimEnd()).filter((l, i, a) => l || i < a.length - 1);
+        const next = lines.map((md, i) => [md, old[i] ? old[i][1] : 6.5, old[i] ? old[i][2] : 5]);
+        const h0 = old.reduce((s2, r) => s2 + r[2], 0) || 1, h1 = next.reduce((s2, r) => s2 + r[2], 0);
+        f.content = { ...f.content, rows: next };
+        f.box[1] += f.box[3] - f.box[3] * (h1 / h0); f.box[3] = +(f.box[3] * (h1 / h0)).toFixed(2);   // grows upward: the block's bottom stays on the margin
+      });
+      ta.onkeydown = (e) => e.stopPropagation();
+      insp.append(h('div', { className: 'row' }, h('span', { textContent: 'rows' })), ta, h('div', { className: 'hint', textContent: 'one row a line — fields as in a text frame; the values come from properties…' }));
+    }
     if (f.kind === 'legend') {
       const t = h('input', { value: f.content.title || '' });
       t.onchange = () => commit(() => { f.content.title = t.value; });
@@ -2819,6 +2913,7 @@ function mountEditor(el, doc, opts = {}) {
     if (f.kind === 'legend') return `legend${c.title ? ' · ' + c.title : ''}`;
     if (f.kind === 'table') return `table${c.title ? ' · ' + c.title : (src.name ? ' · ' + src.name : '')}`;
     if (f.kind === 'drawlist') return 'chart';
+    if (f.kind === 'titleblock') return `title block · ${(c.rows || []).length} rows`;
     return (k && k.label) || f.kind;
   }
   let _dragItem = null, _keepItems = false;
@@ -3027,6 +3122,7 @@ export {
   moveInStack,
   snapBox,
   snapResize,
+  LOAD_MIGRATIONS,
   SANS,
   MONO,
   fontMm,
@@ -3070,7 +3166,9 @@ export {
   setTemplate,
   docFromTemplate,
   TITLE_BLOCK_ROWS,
+  titleBlockFrame,
   titleBlockFrames,
+  migrateTitleBlocks,
   addTitleBlock,
   addImageSrc,
   addImageFromFile,

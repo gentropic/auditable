@@ -290,8 +290,27 @@ registerKind('north', {
   draw(ctx, box, frame, env) {
     const meta = metaOf(frame, env.doc);
     if (meta.north === null) {                             // a view looking along north: no arrow to draw
-      ctx.fillStyle = INK; ctx.font = fontMm(7); ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillText('N · out of the page', box[0] + box[2] / 2, box[1] + box[3] / 2);
+      // the axis-out-of-the-page sign (⊙) under its N, and the words under it — their type
+      // shrunk, and broken onto two lines, until they fit the frame (it used to read “out of the p”)
+      const x = box[0] + box[2] / 2, W = box[2] * 0.94;
+      let size = 7, lines = ['out of the page'];
+      ctx.font = fontMm(size);
+      if (ctx.measureText(lines[0]).width > W) {
+        lines = ['out of', 'the page'];
+        const w = Math.max(...lines.map((l) => ctx.measureText(l).width));
+        if (w > W) size = Math.max(3.5, size * (W / w));
+      }
+      const lh = size * PT * 1.15, nh = 8 * PT;            // a text line · the N's height
+      const r = Math.max(0.8, Math.min(box[2] * 0.22, (box[3] - nh - lines.length * lh - 1.2) / 2));
+      const top = box[1] + Math.max(0, (box[3] - (nh + 2 * r + lines.length * lh + 1.2)) / 2);
+      const cy = top + nh + 0.4 + r;
+      ctx.fillStyle = INK; ctx.font = fontMm(8, { bold: true }); ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+      ctx.fillText('N', x, cy - r - 0.3);
+      ctx.strokeStyle = INK; ctx.lineWidth = 0.2;
+      ctx.beginPath(); ctx.arc(x, cy, r, 0, 2 * Math.PI); ctx.stroke();
+      ctx.beginPath(); ctx.arc(x, cy, Math.max(0.25, r * 0.22), 0, 2 * Math.PI); ctx.fill();
+      ctx.font = fontMm(size); ctx.textBaseline = 'top';
+      lines.forEach((l, i) => ctx.fillText(l, x, cy + r + 0.8 + i * lh));
       return;
     }
     const bearing = Number.isFinite(+meta.north) ? +meta.north : 0;   // degrees clockwise from page-up to north

@@ -58,7 +58,8 @@ const bytes = await exportPDF(ed.getDoc(), { env: { evalField: (expr, vars) => v
 | `legend` | `title`, then either `entries: [{color, label}]` or `kind: 'ramp'` with `stops`, `hiLabel`/`loLabel`, optional `tail` |
 | `scalebar` | `worldPerMm` + `units`, or `of: <frame id>` → that frame's `content.meta`. A view frame states `meta.worldPerPx` (world units per image pixel) so the bar follows the frame's drawn size: resize it and the scale stays true (`frameWorldPerMm(frame)`) |
 | `table` | `columns`, `rows`, `title`, `note`, `size` (pt), `align` (per column `l`/`r`/`c`), `zebra`. Book style: rules above and below, numbers right-aligned, light striping; the type shrinks to fit the width (down to 4.5 pt); rows that don't fit are counted (`… N more rows`). `tableFromTsv(tsv, title)` builds one |
-| `north` | `north` (degrees clockwise from page-up; `null` = the view looks along north), or `of` as above |
+| `north` | `north` (degrees clockwise from page-up; `null` = the view looks along north: the out-of-the-page sign ⊙ and the words, wrapped and shrunk to the frame), or `of` as above |
+| `titleblock` | `rows: [[md, size pt, height mm], …]` — ruled rows stacked in the box (heights scaled to fill it), each drawn as a `text` frame's `md` with its fields, about this frame. Default `TITLE_BLOCK_ROWS` |
 
 `registerKind(name, { label, draw(ctx, box, frame, env) })` adds one. The context is in **mm**, y down.
 
@@ -111,7 +112,7 @@ Also exported: `formatNumber`, `formatDate`, `fieldList`, and the small formatte
 ## House style and templates
 
 - **Properties** are what `{prop:key}` reads. `HOUSE_KEYS` names the shared ones (company, client, project, prepared, checked, disclaimer — every figure of a project; the host passes them as `env.props` and keeps them where it likes), `FIGURE_KEYS` a figure's own (drawing, revision — in `doc.props`). Each is `[key, label]`.
-- **The title block:** `addTitleBlock(ed)` adds six bordered text rows, bottom-right inside the margins, as one group — company; project · client; title; drawing · revision · date; prepared · checked; scale · page. Every row is fields. `titleBlockFrames(doc, { rows, width })` gives the frames without adding them; `TITLE_BLOCK_ROWS` is the default `[md, size pt, height mm]` list.
+- **The title block:** `addTitleBlock(ed)` adds ONE `titleblock` frame, bottom-right inside the margins — six ruled rows: company; project · client; title; drawing · revision · date; prepared · checked; scale · page. Every row is fields; the inspector edits them one a line. `titleBlockFrame(doc, { rows, width })` gives the frame without adding it; `TITLE_BLOCK_ROWS` is the default `[md, size pt, height mm]` list. A document saved by an older compo (the block as six bordered text frames in a group, rows unchanged) becomes one `titleblock` frame on load (`migrateTitleBlocks`, registered in `LOAD_MIGRATIONS`); an edited one stays as its text frames. `titleBlockFrames` still gives the old loose rows.
 - **Templates:** `setTemplate(doc, on)` marks a document as one. `docFromTemplate(tpl, title, { clear })` starts a new document from it: its frames, page and properties, a title of its own, not a template, and the per-drawing properties (`FIGURE_KEYS` unless `clear` says otherwise) gone. Which templates exist is the host's catalogue.
 
 ## Inserting

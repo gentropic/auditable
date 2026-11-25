@@ -231,7 +231,7 @@ These three follow a view frame. Select the view first (otherwise they take the 
 
 \paragraph{\ui{Add scale bar}} adds a scale bar under the view: a four-part bar of a round length, labeled 0 and its length, in m or km. It is computed from the view's scale and the frame's size \emph{each time the page is drawn}, so it stays true when you resize the view. A perspective view has no single scale, and the bar says \emph{no scale (a perspective view)} instead of drawing a wrong one.
 
-\paragraph{\ui{Add north arrow}} adds a north arrow on the view's top-right corner, on a light backing, rotated to the view's north. For a view looking horizontally along north–south it reads \emph{N · out of the page}.
+\paragraph{\ui{Add north arrow}} adds a north arrow on the view's top-right corner, on a light backing, rotated to the view's north. For a view looking horizontally along north–south there is no direction to point: it draws the cartographer's sign for an axis out of the page — a circle with a dot, under its \emph{N} — with the words \emph{out of the page} beneath, broken onto two lines and set smaller until they fit the frame.
 
 \subsection{Text}
 
@@ -523,7 +523,7 @@ Captions read them as \code{\{prop:key\}}, with the keys \code{drawing}, \code{r
 
 \subsection{Title block}
 
-\ui{Add title block} lays out a block at the bottom right of the page: six bordered rows, grouped.
+\ui{Add title block} lays out a block at the bottom right of the page: one frame of its own kind, six ruled rows.
 
 \begin{lstlisting}
 **{prop:company}**
@@ -534,7 +534,9 @@ prepared {prop:prepared} · checked {prop:checked}
 scale {scale} · page {page} of {pages}
 \end{lstlisting}
 
-Each row is an ordinary text frame, so the block is yours to change: ungroup it, reword a row, delete one, add a logo with \ui{Add image}, then group it again. Fill in the properties and the block fills itself.
+Each row is written like a text frame — the same bold, the same fields — and the block is yours to change: select it, and the inspector lists its rows, one a line; reword a row, delete one or add one, and the block grows or shrinks upward from the bottom margin. It moves, resizes and locks as one frame; resized, its rows keep their proportions. Fill in the properties and the block fills itself, and add a logo beside it with \ui{Add image}.
+
+A figure saved before the title block became its own kind holds it as six text frames in a group. If the rows are unchanged it opens as one title block, in the same place; if a row had been reworded it opens as the text frames it was, and nothing is lost.
 
 \shot[0.6\linewidth]{compo-titleblock}{A title block filled from the figure's and the project's properties.}
 

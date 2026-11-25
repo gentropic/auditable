@@ -400,3 +400,52 @@ test('small multiples: the grid over a frame’s box — reading order, caption 
   assert.equal(C.multiplesGrid([0, 0, 200, 120], 4, { cols: 4 }).rows, 1);
   assert.throws(() => C.multiplesGrid([0, 0, 30, 30], 9), /too small/);
 });
+
+test('the title block is ONE frame of its own kind: rows drawn as text with their fields, ruled; an old group migrates on load', async () => {
+  const C = await import('../ext/compo/src/main.js');
+  const doc = createDocument({ title: 'Pit A', page: { size: 'A4', orientation: 'landscape', margins: [12, 12, 12, 12] } });
+  const f = C.titleBlockFrame(doc);
+  assert.equal(f.kind, 'titleblock');
+  const hTot = C.TITLE_BLOCK_ROWS.reduce((s, r) => s + r[2], 0);
+  assert.deepEqual(f.box, [297 - 12 - 95, +(210 - 12 - hTot).toFixed(2), 95, hTot]);
+  addFrame(doc, f);
+  const pdf = new PdfDocument({ compress: false, created: '2026-11-22T00:00:00Z' });
+  const ctx = pdf.addPage({ width: 297 * 72 / 25.4, height: 210 * 72 / 25.4 }).getContext('2d', { units: 'mm' });
+  renderPage(doc, ctx, { title: 'Pit A', props: { company: 'Acme Mining', drawing: 'D-7' } });
+  const s = new TextDecoder('latin1').decode(await pdf.save());
+  assert.match(s, /\(Acme Mining\) Tj/);
+  assert.match(s, /\(Pit A\) Tj/);
+  assert.match(s, /drawing D-7/);
+  // an OLD figure: the six bordered text frames in a group — one titleblock frame after a load, same box
+  const old = createDocument({ title: 'Pit A', page: { size: 'A4', orientation: 'landscape', margins: [12, 12, 12, 12] } });
+  addFrame(old, { kind: 'text', box: [10, 10, 50, 10], content: { md: 'a note' } });
+  const ids = C.titleBlockFrames(old).map((fr) => addFrame(old, fr).id);
+  C.groupFrames(old, ids);
+  addFrame(old, { kind: 'text', box: [10, 30, 50, 10], content: { md: 'on top' } });
+  const back = parseDocument(serializeDocument(old));
+  assert.deepEqual(back.frames.map((x) => x.kind), ['text', 'titleblock', 'text']);   // in the group's place in the stack
+  const tb = back.frames[1];
+  assert.deepEqual(tb.box, f.box);
+  assert.deepEqual(tb.content.rows, C.TITLE_BLOCK_ROWS.map(([md, size, h]) => [md, size, h]));
+  // an EDITED old block (a row's text changed) stays as its text frames
+  const ed = createDocument({ title: 'x' });
+  const ids2 = C.titleBlockFrames(ed).map((fr) => addFrame(ed, fr).id);
+  C.groupFrames(ed, ids2);
+  ed.frames[2].content.md = 'my own row';
+  assert.equal(parseDocument(serializeDocument(ed)).frames.filter((x) => x.kind === 'text').length, 6);
+});
+
+test('a north arrow on a view looking along north fits its frame: the sign, the N, the words wrapped to the width', async () => {
+  const d = createDocument();
+  const view = addFrame(d, { kind: 'image', box: [10, 40, 150, 100], content: { meta: { worldPerMm: 10, north: null } } });
+  const nb = [170, 150, 13, 17];                              // micro's default north frame
+  addFrame(d, { kind: 'north', box: nb, content: { of: view.id } });
+  const pdf = new PdfDocument({ compress: false, created: '2026-11-22T00:00:00Z' });
+  const ctx = pdf.addPage({ width: 297 * 72 / 25.4, height: 210 * 72 / 25.4 }).getContext('2d', { units: 'mm' });
+  const texts = [];
+  const spy = new Proxy(ctx, { get(t, k) { const v = t[k]; if (k === 'fillText') return (s, x, y) => { texts.push({ s, x, w: t.measureText(s).width, align: t.textAlign }); return v.call(t, s, x, y); }; return typeof v === 'function' ? v.bind(t) : v; }, set(t, k, v) { t[k] = v; return true; } });
+  renderPage(d, spy, {});
+  const mine = texts.filter((t) => /^(N|out|the)/.test(t.s));
+  assert.deepEqual(mine.map((t) => t.s), ['N', 'out of', 'the page']);
+  for (const t of mine) assert.ok(t.x - t.w / 2 >= nb[0] && t.x + t.w / 2 <= nb[0] + nb[2], `${t.s}: ${t.w.toFixed(2)} mm in a ${nb[2]} mm frame`);
+});

@@ -6902,7 +6902,7 @@ if (take()) {
 }
 
 // ── §105: HOUSE STYLE — the project's properties (company, client, …) and a figure's own (drawing,
-//     revision) feed {prop:key}; + title block lays them out bottom-right; a figure marked as a
+//     revision) feed {prop:key}; + title block (one titleblock frame) lays them out bottom-right; a figure marked as a
 //     template starts a new one (its frames and properties, the drawing number cleared); the house
 //     style saves with the project (figures/house.json) and comes back. ──
 if (take()) {
@@ -6917,8 +6917,9 @@ if (take()) {
     M_.currentFigure().doc.props = { drawing: 'D-101', revision: 'B' };
     const ids = M_.addTitleBlock(ed);
     const env = { ...M_.composerEnv(), doc: ed.getDoc(), title: 'house A' };
-    out.rows = ids.map((id) => C.resolveFields(ed.getDoc().frames.find((x) => x.id === id).content.md, env, ed.getDoc().frames.find((x) => x.id === id)).replace(/\*\*/g, ''));
-    out.grouped = new Set(ids.map((id) => ed.getDoc().frames.find((x) => x.id === id).group)).size === 1;
+    const tb = ed.getDoc().frames.find((x) => x.id === ids[0]);
+    out.rows = tb.content.rows.map((row) => C.resolveFields(row[0], env, tb).replace(/\*\*/g, ''));
+    out.grouped = ids.length === 1 && tb.kind === 'titleblock';      // ONE frame of its own kind (it was a group of text frames)
     // a template, and a new figure from it
     [...document.querySelectorAll('.cmp-top button')].find((b) => /template/.test(b.textContent)).click();
     out.marked = !!M_.currentFigure().doc.template;
@@ -6940,9 +6941,9 @@ if (take()) {
   await p.evaluate(async () => { const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2house'); await window._micro.openProjectDir(dir); });
   await p.waitForFunction(() => window._micro.layers().length, null, { timeout: 60000 });
   const back = await p.evaluate(() => ({ house: window._micro.house().props, figs: window._micro.figures().map((f) => f.name + (f.doc.template ? '★' : '')) }));
-  chk(`HOUSE: the title block reads the figure's and the project's properties (${JSON.stringify(r.rows)}), a group (${r.grouped})`,
+  chk(`HOUSE: the title block reads the figure's and the project's properties (${JSON.stringify(r.rows)}), one titleblock frame (${r.grouped})`,
     r.rows[0] === 'GCU Mining' && r.rows[1] === 'Pit A · ACME' && r.rows[2] === 'house A' && /^drawing D-101 · rev B · \d{4}-\d\d-\d\d$/.test(r.rows[3]) && r.rows[4] === 'prepared AE · checked JS' && /^scale .* · page 1 of 1$/.test(r.rows[5]) && r.grouped);
-  chk(`HOUSE: a template starts a new figure — its frames, its properties, the drawing number cleared (${JSON.stringify(r2)})`, r.marked && r2.name === 'house B' && r2.frames === 6 && !r2.template && r2.props && r2.props.drawing === undefined);
+  chk(`HOUSE: a template starts a new figure — its frames, its properties, the drawing number cleared (${JSON.stringify(r2)})`, r.marked && r2.name === 'house B' && r2.frames === 1 && !r2.template && r2.props && r2.props.drawing === undefined);
   chk(`HOUSE: the house style saves with the project and comes back (${JSON.stringify(back)})`, back.house.company === 'GCU Mining' && back.house.client === 'ACME' && back.figs.includes('house A★') && back.figs.includes('house B'));
   await p.close();
 }
