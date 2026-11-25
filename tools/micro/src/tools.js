@@ -45,6 +45,7 @@ import { scanSwath, swathRows, binSwath, swathChartSpec, swathHumanTSV } from '.
 import { validate, compileBool } from '../../../ext/expr/index.js';
 import { isPointCloud, pointsToGridLayer } from './pcgrid.js';
 import { cutFill, cutFillLayer, cutFillTable, cutFillValues, cutFillHumanTSV, cutFillChartSpec } from './cutfill.js';
+import { profileAlong, resolveProfileLine, profileTable, profileValues, profileChartSpec, profileHumanTSV } from './profile.js';
 import { PC_STATS } from './grid-ops.js';
 import { LIMIT_PARAM, checkLimitValue } from './limit-param.js';
 import { prepareScope } from './polylimit.js';
@@ -985,6 +986,33 @@ registerTool('cutfill', {
   },
   shape(r, p) {
     return { table: cutFillTable(r), values: cutFillValues(r), ...(r.layerName ? { layers: [r.layerName] } : {}), resolved: { ...p, cell: r.geom.dx }, warnings: [] };
+  },
+});
+
+// profile: the elevation of surfaces along a line (src/profile.js)
+registerTool('profile', {
+  label: 'profile along a line', cache: false,
+  params: {
+    line: { type: 'any', required: true, doc: 'the line: { layer, feature } — a strings & polygons layer, and one of its lines (or a polygon’s ring) by its id or NAME' },
+    surfaces: { type: 'any', required: true, doc: 'the surfaces sampled along it: a list of grid / mesh layer names' },
+    step: { type: 'number', doc: 'the distance between stations (default: the line’s length / 400); every vertex is a station too' },
+  },
+  outputs: { key: ['chainage'] },
+  chart: (r) => profileChartSpec(r),
+  human: (r) => profileHumanTSV(r),
+  check(p, errs) {
+    if (!p.line || typeof p.line !== 'object' || Array.isArray(p.line) || !p.line.layer) errs.push('line: a map { layer, feature? }');
+    else for (const k of Object.keys(p.line)) if (!['layer', 'feature'].includes(k)) errs.push(`line: no setting “${k}” (settings: layer, feature)`);
+    if (!Array.isArray(p.surfaces) || !p.surfaces.length || p.surfaces.some((x) => typeof x !== 'string')) errs.push('surfaces: a list of layer names');
+    if (p.step != null && !(p.step > 0)) errs.push('step: a positive number');
+  },
+  async scan(p, ctx) {
+    const ln = resolveProfileLine(p.line);
+    const surfs = p.surfaces.map((n) => { const L = layerNamed(n); if (!L) throw new Error(`profile: no layer “${n}”`); return L; });
+    return profileAlong(ln.pts, surfs, { step: p.step || null, signal: ctx.signal, onProgress: ctx.progress ? (f) => ctx.progress(Math.round(f * 100), 100) : null });
+  },
+  shape(r, p) {
+    return { table: profileTable(r), values: profileValues(r), resolved: { ...p, step: r.step }, warnings: r.series.filter((se) => !se.z.some(Number.isFinite)).map((se) => `${se.label}: no value anywhere along the line`) };
   },
 });
 

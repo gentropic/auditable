@@ -57,6 +57,8 @@ job('polylimit', 'micro-polylimit-smoke.mjs');  // polygons as limits (GT / stat
 job('polylimit built', 'micro-polylimit-smoke.mjs', '--built');
 job('wave6', 'micro-wave6-smoke.mjs');         // section lines as strings (meshes, grids, domain boundaries) + bench outlines from blocks (marching squares, rotated / sub-blocked), DXF / shapefile round trips
 job('wave6 built', 'micro-wave6-smoke.mjs', '--built');
+job('profile', 'micro-profile-smoke.mjs');      // the elevation of surfaces along a line: planes exact, gaps where a surface doesn't reach, vertices at their chainage, the tool + the window
+job('profile built', 'micro-profile-smoke.mjs', '--built');
 job('coreg', 'micro-coreg-smoke.mjs');          // every layer kind, opened FIRST into an empty scene and opened second, is drawn where its file says (the world vs frame-local class)
 job('coreg built', 'micro-coreg-smoke.mjs', '--built');
 job('crs', 'micro-crs-smoke.mjs');              // coordinate systems: the project's CRS, reprojection on read (GeoJSON lon/lat, a SAD69 .prj by IBGE's parameters), KML / KMZ in + out, the selector, {crs}, Sealed

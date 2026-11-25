@@ -64,7 +64,7 @@ export function chartFigure(spec, { width = 400, height = 240, theme = 'paper', 
       const twin = s.axis === 'right' && spec.series.some((o) => o !== s && o.axis !== 'right' && o.color === s.color);
       h = a.plot(xs, ys, { color: s.color, linewidth: 1.6, linestyle: s.dash || twin ? '--' : '-', label: s.name, ...(s.marker ? { marker: s.marker, markersize: 4 } : {}) });
     }
-    handles.push(Array.isArray(h) ? h[0] : h); labels.push(s.name);
+    if (s.name) { handles.push(Array.isArray(h) ? h[0] : h); labels.push(s.name); }   // an unnamed series (a marker line) stays out of the legend
   }
   if (R) {
     ax.set_xlim(R.xr[0], R.xr[1]); ax.set_ylim(R.lr[0], R.lr[1]);
@@ -86,7 +86,7 @@ export function chartFigure(spec, { width = 400, height = 240, theme = 'paper', 
   if (spec.leftLabel) ax.set_ylabel(spec.leftLabel, { fontsize: fontSize });
   if (ax2 && spec.rightLabel) ax2.set_ylabel(spec.rightLabel, { fontsize: fontSize });
   if (spec.title) ax.set_title(spec.title, { fontsize: fontSize + 1 });
-  if (spec.series.length > 1) ax.legend(handles, labels, { loc: 'best', fontsize: fontSize - 1, frameon: false });
+  if (handles.length > 1) ax.legend(handles, labels, { loc: 'best', fontsize: fontSize - 1, frameon: false });
   return { fig, ax, ax2, ranges: R };
 }
 // the window's chart: the figure above, drawn on the window's canvas in micro's own colours.
