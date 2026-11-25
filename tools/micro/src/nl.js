@@ -38,7 +38,7 @@ import { tokenize as nlTokenize, normText as nlNormText } from '../../../ext/dis
 import { trainNl, interpret, sessionVocab } from './nl-core.js';
 import { layerHasColumn } from './calc.js';
 import { setActiveLayer } from './layers.js';
-import { secRange } from './section.js';
+import { secRange, setSectionWorld } from './section.js';
 const $ = (s) => document.querySelector(s);
 
 const nlMsg = (m) => { $('#meta').textContent = m; };
@@ -153,12 +153,15 @@ function nlSeriesCfg(L, key, col) {
 }
 
 function nlSectionAt(axis, position, thickness) {
-  const mode = axis === 'Z' ? 'plan' : axis === 'X' ? 'ns' : 'ew';       // X → an east-facing (N–S) plane
-  const m = $('#secMode'); m.value = mode; m.dispatchEvent(new Event('input'));
-  const [lo, hi] = secRange();
-  $('#secPos').value = hi > lo ? Math.max(0, Math.min(1, (position - lo) / (hi - lo))) : 0.5;
-  $('#secPos').dispatchEvent(new Event('input'));
-  if (thickness) { const h = $('#secHalf'); h.value = thickness / 2; h.dispatchEvent(new Event('input')); }
+  // WORLD coordinates, like the host API: the slider is frame-local, so going
+  // through setSectionWorld (not #secPos directly) keeps "z 500" at z 500.
+  const s = setSectionWorld({ axis: String(axis).toLowerCase(), position: +position, ...(thickness ? { thickness: +thickness } : {}) });
+  // the plane is clamped to the data; say so instead of silently moving it
+  if (s && Math.abs(s.position - position) > 1e-6 * Math.max(1, Math.abs(position))) {
+    const [lo, hi] = secRange(), off = S.frame ? S.frame.origin[{ X: 0, Y: 1, Z: 2 }[axis]] : 0;
+    const f = (v) => (+v.toFixed(2)).toString();
+    $('#meta').textContent = `section: ${axis} ${f(position)} is outside the data (${f(lo + off)} to ${f(hi + off)}) — placed at ${f(s.position)}`;
+  }
   requestRender();
 }
 

@@ -224,7 +224,7 @@ If an action you expect is missing from the palette, check which layer is active
 \end{tryit}
 
 \subsection{Asking in plain words}\label{sec:start-plain}\index{plain-language bar}
-Press \key{Alt}+\key{K} and type what you want, the way you would say it: \code{blocks above 55 Fe in hematite}, \code{select inside the ore shell}, \code{swath of FE along x}. Portuguese works in the same box: \code{seção na cota 1020}, \code{esconde a topografia}. This is the \term{plain-language bar}. The \key{⌘K} palette also falls back to it when nothing you typed matches a command name, so command names behave exactly as above.
+Press \key{Alt}+\key{K} and type what you want, the way you would say it: \code{blocks above 55 Fe in hematite}, \code{select inside the ore shell}, \code{swath of FE along x}. Portuguese works in the same box: \code{seção na cota 600}, \code{esconde a topografia}. This is the \term{plain-language bar}. The \key{⌘K} palette also falls back to it when nothing you typed matches a command name, so command names behave exactly as above.
 
 The bar \emph{proposes}; it never acts. It answers with one row that spells out the command it understood and its arguments, and nothing happens until you read the row and press \key{Enter}. A filter shows the very expression it will put in the filter box: \code{blocks above 55 Fe in hematite} becomes \code{FE > 55 and LITO == "HEMATITE"}, with the layer it will act on (\file{deposit.csv}). Chips under the row repeat the pieces: the column, the operator and value, the layer. If the row is wrong, rephrase, or press \key{Esc}.
 
@@ -244,7 +244,7 @@ You do not need the command's name. The bar maps your words onto the tool and on
 \begin{itemize}
 \item \code{is the fe contact hard or soft} opens the contact plot on \col{FE};
 \item \code{drift of density along elevation} opens a swath of \col{SG} along Z: \emph{drift} is a swath, \emph{elevation} is Z, \emph{density} is the \col{SG} column;
-\item \code{north-south section at easting 611200} cuts across X at 611200, and \code{section on bench 1040} is a plan section at 1040;
+\item \code{north-south section at easting 613000} cuts across X at 613000, and \code{section on bench 700} is a plan section at 700. Positions are real coordinates; one outside the data is placed at its edge, and the status bar says so;
 \item \code{reconcile the model against grade control} opens the reconciliation factors;
 \item \code{select blocks in the ore body} chooses the solid named \file{ore shell}, and \code{hide the drillholes} finds the layer named \file{holes · demo\_assay.csv};
 \item in Portuguese, \code{abre a curva de parametrização} is grade--tonnage, \code{tabela cruzada do ferro por litologia} is the cross-tab of \col{FE} grouped by \col{LITO}, and \code{deixa a seção com 50 metros de espessura} sets the slab thickness.
@@ -260,7 +260,7 @@ The bar learns \emph{this} project. When you first use it, it builds its vocabul
 \item Press \key{Enter}. The expression is in the filter box and the model shows only those blocks.
 \item Press \key{Alt}+\key{K} again and type \code{limpa o filtro}, then \key{Enter}.
 \item Type \code{drift of density along elevation}. The row proposes a swath of \col{SG} along Z; \key{Enter} opens the window set up, and \ui{Run} draws it.
-\item Type \code{section on bench 1040}, then \key{Enter}, and \code{remove the slice} to clear it.
+\item Type \code{section on bench 700}, then \key{Enter}, and \code{remove the slice} to clear it.
 \item Type \code{delete the block model}. The bar answers \ui{not understood}.
 \end{enumerate}
 \end{tryit}

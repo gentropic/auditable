@@ -118,6 +118,16 @@ for (const [tag, url] of targets) {
     const topo = M.layers().find((L) => L.label === 'topography');
     props.hidePt.run(); const topoHidden = topo && topo.visible === false;
 
+    // a section lands where it was ASKED, in world coordinates (the slider is
+    // frame-local: the bar once wrote world z into it and a cut at z 500 landed near 912, the top of the demo)
+    const secIn = P('section at elevation 500'); await secIn.run(); await new Promise((z) => setTimeout(z, 200));
+    const sec = { world: M.sectionWorld(), frameZ: (typeof M.frame === 'function' ? M.frame() : M.frame || {}).origin?.[2] ?? null };
+    const secOut = P('section at elevation 1040'); await secOut.run(); await new Promise((z) => setTimeout(z, 200));
+    sec.outMeta = document.querySelector('#meta').textContent; sec.outWorld = M.sectionWorld();
+    const secX = P('north-south section at easting 613000'); await secX.run(); await new Promise((z) => setTimeout(z, 200));
+    sec.x = M.sectionWorld(); sec.xMeta = document.querySelector('#meta').textContent;
+    M.setSectionWorld({ mode: 'off' });
+
     // the palette: Alt+K says "not understood"; ⌘K with a command NAME is untouched
     M.openPalette({ nl: true });
     const typ = (v) => { const inp = document.querySelector('#palInput'); inp.value = v; inp.dispatchEvent(new Event('input')); };
@@ -128,7 +138,7 @@ for (const [tag, url] of targets) {
     M.openPalette();
     typ('grade'); const cmdRows = rows(); M.closePalette();
     const strip = (o) => { const x = {}; for (const [k, v] of Object.entries(o)) x[k] = v && { title: v.title, name: v.name, expr: v.expr, args: v.args }; return x; };
-    return { ms, before, after, head: head && { title: head.title, expr: head.expr }, props: strip(props), filtered, selected, opened, solidDlg, exDlg, topoHidden, notUnderstood, nlRow, cmdRows, projOn };
+    return { ms, before, after, head: head && { title: head.title, expr: head.expr }, props: strip(props), filtered, selected, opened, solidDlg, exDlg, topoHidden, sec, notUnderstood, nlRow, cmdRows, projOn };
   });
   chk(`[${tag}] trains on the demo in ${r.ms.toFixed(0)} ms`, r.ms < 15000);
   chk(`[${tag}] the headline row shows the expression: "${r.head && r.head.title}"`, r.head && r.head.expr === 'FE > 55 and LITO == "HEMATITE"' && r.head.title.includes('FE > 55 and LITO == "HEMATITE"'));
@@ -142,6 +152,9 @@ for (const [tag, url] of targets) {
   chk(`[${tag}] select inside the ore shell → the select-by-solid dialog opens`, r.solidDlg);
   chk(`[${tag}] export the rows → the export dialog opens (nothing written)`, r.exDlg);
   chk(`[${tag}] pt: "esconde a topografia" hides the topography`, r.topoHidden);
+  chk(`[${tag}] "section at elevation 500" cuts at z = 500 in world coordinates (got ${r.sec.world && r.sec.world.axis} ${r.sec.world && r.sec.world.position}; frame z origin ${r.sec.frameZ})`, r.sec.world && r.sec.world.axis === 'z' && Math.abs(r.sec.world.position - 500) < 0.01);
+  chk(`[${tag}] "north-south section at easting 613000" cuts across X at 613000 (got ${r.sec.x && r.sec.x.axis} ${r.sec.x && r.sec.x.position}; ${r.sec.xMeta})`, r.sec.x && r.sec.x.axis === 'x' && Math.abs(r.sec.x.position - 613000) < 0.01);
+  chk(`[${tag}] a section outside the data says so ("${r.sec.outMeta}") and sits at the data's edge (${r.sec.outWorld && r.sec.outWorld.position})`, /outside the data/.test(r.sec.outMeta) && r.sec.outWorld && r.sec.outWorld.position < 1040 && r.sec.outWorld.position > 800);
   chk(`[${tag}] pt: "colorir por litologia" → colour by LITO`, r.props.colour && r.props.colour.args.column === 'LITO');
   chk(`[${tag}] out of scope / destructive → no proposal`, r.props.junk == null && r.props.destroy == null);
   chk(`[${tag}] Alt+K: an unknown phrase says "not understood"; a known one leads with its proposal ("${r.nlRow.slice(0, 60)}")`, r.notUnderstood && /Swath of FE along X/.test(r.nlRow));
