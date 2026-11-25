@@ -10253,10 +10253,13 @@ if (take()) {
     const twin = await M.openBlob(new Blob([F.makeSubblockCsv(rows)]), 'pgtwin.csv', 'add', null, { throw: true });
     const LT = M.layers().find((x) => x.id === twin);
     const rt = await V.projectGrid(LT, { col: 'V', stat: 'tonnes' });
-    const rot = await M.openBlob(new Blob([F.makeSubblockDm(rows, { angle1: -50 })]), 'pgrot.dm', 'add', null, { throw: true, origin: [432820, 8522360, 300] });
+    const rot = await M.openBlob(new Blob([F.makeSubblockDm(rows, { angle1: -50 })]), 'pgrot.dm', 'add', null, { throw: true, origin: [432820, 8522360, 300] });   // world = origin + the local point turned 50° CCW
     const LR = M.layers().find((x) => x.id === rot);
     const rr = await V.projectGrid(LR, { col: 'V', stat: 'tonnes', cell: 1 });
-    out.sub = { vol: vol(), twin: rt.total, twinCell: rt.geom.dx, twinSub: !!LT.docs.blockDoc.header.subBlocked, rot: rr.total, rotated: !!(LR.docs.blockDoc.header.grid && LR.docs.blockDoc.header.grid.rot), rotCell: rr.geom.dx, rotWhere: rr.where };
+    // WHERE the rotated grid's tonnes sit: their centroid = the twin's, turned 50° CCW about the origin and moved to it
+    const cen = (res) => { const g = res.grid; let w = 0, sx = 0, sy = 0; for (let r2 = 0; r2 < g.ny; r2++) for (let c = 0; c < g.nx; c++) { const v = g.data[r2 * g.nx + c]; if (v === g.nodata || !(v > 0)) continue; w += v; sx += v * (g.x0 + c * g.dx); sy += v * (g.y0 - r2 * g.dy); } return [sx / w, sy / w]; };
+    const ct = cen(rt), cr = cen(rr), a = 50 * Math.PI / 180, want = [432820 + ct[0] * Math.cos(a) - ct[1] * Math.sin(a), 8522360 + ct[0] * Math.sin(a) + ct[1] * Math.cos(a)];
+    out.sub = { vol: vol(), twin: rt.total, twinCell: rt.geom.dx, twinSub: !!LT.docs.blockDoc.header.subBlocked, rot: rr.total, rotated: !!(LR.docs.blockDoc.header.grid && LR.docs.blockDoc.header.grid.rot), rotCell: rr.geom.dx, rotWhere: rr.where, placed: Math.hypot(cr[0] - want[0], cr[1] - want[1]) };
     return out;
   });
   for (const [stat, m] of Object.entries(r.stats)) {
@@ -10267,8 +10270,8 @@ if (take()) {
   chk(`projection to grid: the grid opens as a layer (${JSON.stringify(r.layer)})`, r.layer.grid && r.layer.lineage === 'projectgrid' && r.layer.nx === 9 && r.layer.cell === 10);
   chk(`projection to grid: the window makes the grid (“${r.dialog}”)`, /^projection to grid: pgrid_max_FE_10m\.asc — 378 blocks → 63 of 63 nodes/.test(r.dialog));
   chk(`projection to grid: the routine tool (${JSON.stringify(r.tool)})`, r.tool.values && r.tool.values.filled === 63 && r.tool.values.total > 0 && r.tool.layers.length === 1);
-  chk(`projection to grid: a sub-blocked model's tonnes (density 1) total its volume exactly on its fine lattice (${r.sub.twin} vs ${r.sub.vol}, cell ${r.sub.twinCell}, sub-blocked ${r.sub.twinSub}); the ROTATED .dm twin within sampling (${r.sub.rot.toFixed(0)}, cell ${r.sub.rotCell}, rotated ${r.sub.rotated}, ${r.sub.rotWhere})`,
-    r.sub.twinSub && r.sub.rotated && Math.abs(r.sub.twin - r.sub.vol) < 1e-6 * r.sub.vol && Math.abs(r.sub.rot - r.sub.vol) < 0.02 * r.sub.vol);
+  chk(`projection to grid: a sub-blocked model's tonnes (density 1) total its volume exactly on its fine lattice (${r.sub.twin} vs ${r.sub.vol}, cell ${r.sub.twinCell}, sub-blocked ${r.sub.twinSub}); the ROTATED .dm twin within sampling (${r.sub.rot.toFixed(0)}, cell ${r.sub.rotCell}, rotated ${r.sub.rotated}, ${r.sub.rotWhere}), its tonnes where the twin's turn to (centroid off by ${r.sub.placed.toFixed(2)} m)`,
+    r.sub.twinSub && r.sub.rotated && Math.abs(r.sub.twin - r.sub.vol) < 1e-6 * r.sub.vol && Math.abs(r.sub.rot - r.sub.vol) < 0.02 * r.sub.vol && r.sub.placed < 1);
   await pg.close();
 }
 
