@@ -193,6 +193,44 @@ The ramp spans the full range of Δ, and one extreme block can flatten the rest 
 
 A reconcile layer is an ordinary block model. Filter it (\code{abs(ΔFE) > 2}), section it, select a zone and read its statistics, or send it to grade–tonnage, which recognizes a reconcile layer and offers the reference and the new grade as two series (\cref{ch:gt}).
 
+\section{A comparison report}\label{sec:joins-compare}
+
+Reconcile answers \emph{where} a model changed. The month-end question is usually wider: how many tonnes, how much grade and how much metal moved, in which domain and class, and which version of which file each number came from. \term{Compare model versions} answers it on one composer page (\cref{ch:composer}) you can print, send, and make again next month.\index{reconcile!comparison report}\index{model versions, comparing}
+
+Right-click the \emph{new} model and choose \menu{Analyse>Compare model versions…} — it is also in the palette and in the \menu{Tools} menu, and, in the composer, as \ui{comparison report…} in the list beside \ui{New figure}. The dialog asks for:
+
+\begin{table}[htbp]\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+field & meaning \\ \midrule
+\ui{old model} · \ui{new model} & The two versions. The banner under them says how they will be mapped: \emph{the same lattice}, \emph{compatible lattices} (the map is on the finest common one), \emph{sub-blocked vs regular} (at the regular model's blocks) — or why there can be no map, in the words the join tab uses. \\
+\ui{grade (old)} · \ui{grade (new)} & The grade, on each side. Two versions sometimes spell it apart (\col{FE} and \col{FE\_OK}); each side is read with its own name. \\
+\ui{grade unit} · \ui{metal factor} & As in the resource table (\cref{sec:resource-table}): a declared unit puts metal in tonnes; a stated factor wins. \\
+\ui{density} · \ui{… or constant} & A density column both models carry, or one value, with its unit. \\
+\ui{domain} · \ui{class} & Up to two columns to group by. micro proposes the likely ones among the columns \emph{both} models have. \\
+\ui{cutoffs} & One or more. Each model is cut on its own grade. The page's summary, its biggest moves and a routine's checks read the lowest. \\
+\ui{map colour} & The map of changed blocks colored by \ui{Δ grade (new − old)}, or by \ui{added / removed / changed}. \\
+\ui{also an E–W section} & A second map: a vertical section through the middle row of blocks, looking north. \\ \bottomrule
+\end{tabularx}
+\caption{The comparison dialog.}\label{tab:joins-compare}
+\end{table}
+
+\ui{Make the page} adds a figure named \emph{new vs old} and opens it in the composer, with:
+
+\begin{itemize}
+\item a \textbf{comparison table}: for each cutoff and each domain × class, old and new tonnes, grade and metal, the change in metal, and each change as a percentage of the old value; a total row per cutoff. A group only one model has shows the other side as zero tonnes and its percentages as —.
+\item a \textbf{map of the changed blocks}: the comparison's own Δ layer, \file{compare\_}\emph{new}\file{\_vs\_}\emph{old}\file{.csv}, seen from above with the unchanged blocks filtered out, and its legend. It is a reconcile layer with one more column, \col{change}: \code{added} (only in the new model), \code{removed} (only in the old), \code{changed}, \code{unchanged}.
+\item the \textbf{biggest moves}: the groups and the benches with the largest change in metal, with the overall change and the block counts. They are fields (\code{\{cmp:group1\}}, \code{\{cmp:summary\}}, \cref{sec:compo-fields}) that read the table, so they follow it.
+\item both models' \textbf{lineage}: each file, its size, the start of its content hash and its date, and how the layer was made.
+\end{itemize}
+
+Every frame is an ordinary frame: move it, resize it, edit the text, add a title block. \ui{Refresh} (↻) computes the comparison again — the table, the fields and the Δ layer — and renders the map, so the same page serves next month once the new file is loaded under the same name (\cref{sec:compo-refresh}).
+
+The table needs no common lattice: each model is summed over its own blocks, with the block volumes every tool uses (sub-blocks by their own size). The map does. For two models that cannot be mapped, the dialog says why and the page is made without it.
+
+\begin{tryit}
+Make a second version of the demo model: on \file{deposit.csv} add a calculated column \code{FE2 = if(LITO = "HEMATITE", FE * 1.05, FE)}, materialize it, export the layer as \file{deposit\_v2.csv} and open that file. Right-click it, choose \menu{Analyse>Compare model versions…}, pick \col{FE} on the old side and \col{FE2} on the new, group by \col{LITO}, cutoffs \code{0, 55}, and press \ui{Make the page}. HEMATITE's grade is up 5~\%; the other lithologies read ±0.0~\%, and the map shows the hematite blocks alone.
+\end{tryit}
+
 \section{Scoping a join to the selection}\label{sec:joins-selection}
 
 To reconcile one pit phase, or resample only the blocks inside a lease, select those blocks first — a rectangle or a lasso in the view (\cref{ch:picking}) — and tick \ui{only the 3D selection}, above the run buttons. The join or the reconcile then reads only the selected blocks. Each side uses its own selection where it has one; a side with nothing selected contributes all of its blocks. The checkbox is disabled, with a hint, until a selection exists, and it is offered in spatial mode only: a key join has no such scope.
@@ -248,5 +286,29 @@ Reconcile takes the two models and the grade:
 \end{lstlisting}
 
 The step adds the Δ layer to the session — replacing the one an earlier run made — and gives a check five values to judge: \code{matched}, \code{mean\_delta}, \code{mean\_abs\_delta}, \code{this\_only} and \code{ref\_only} (\cref{ch:checks}). Because both tools make something in the session rather than a table, they are run every time and never reused from the cache (\cref{ch:records}).
+
+The comparison report is a routine tool too, \code{comparemodels} (\cref{tool:comparemodels}). Its table is keyed by cutoff and the grouping columns; its values are the lowest cutoff's totals — \code{old\_tonnes}, \code{new\_tonnes}, \code{delta\_tonnes\_pct}, \code{old\_grade}, \code{new\_grade}, \code{delta\_grade\_pct}, \code{old\_metal}, \code{new\_metal}, \code{delta\_metal}, \code{delta\_metal\_pct} — and, with the map, the block counts \code{added}, \code{removed}, \code{changed} and \code{unchanged}. With \code{figure:} the step also makes the page of that name, or makes it again when it exists:
+
+\begin{lstlisting}[language=yaml]
+- tool: "comparemodels"
+  with:
+    old: "model_2026_10.csv"
+    new: "model_2026_11.csv"
+    grade: "FE"
+    density:
+      col: "SG"
+    groupBy:
+      - "DOMAIN"
+      - "CLASS"
+    cutoffs:
+      - 0
+      - 55
+    figure: "monthly model change"
+  as: "cmp"
+- check: "abs(cmp.delta_metal_pct) < 5"
+  say: "metal moved less than 5 % between the two versions"
+\end{lstlisting}
+
+A routine must state the cutoffs: an automatic one would move with the data, and two months would be compared at different grades.
 
 A key join has no routine tool. For a lookup that must repeat, keep the lookup table in the project and express it as a calculated column, or run the key join once and save the project: the brought columns are stored with the layer.

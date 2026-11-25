@@ -340,6 +340,8 @@ field & prints \\ \midrule
 \code{\{mean:FE\}} \code{\{median:FE\}} & a column's mean, median… \\
 \code{\{min:FE\}} \code{\{max:FE\}} \code{\{std:FE\}} & …minimum, maximum, standard deviation… \\
 \code{\{n:FE\}} & …and how many of the records counted have a value. Each reads the first shown layer that has the column; name the layer when two share one: \code{\{mean:deposit.csv:FE\}} \\[3pt]
+\multicolumn{2}{@{}l}{\emph{a comparison report} (\cref{sec:joins-compare})} \\
+\code{\{cmp:key\}} & a value of the page's comparison table: \code{\{cmp:delta\_metal\_pct:.1f\}}, \code{\{cmp:summary\}} (the change in metal, tonnes and grade, in words), \code{\{cmp:blocks\}} (added, removed, changed, unchanged), \code{\{cmp:group1\}} … and \code{\{cmp:bench1\}} … (the biggest moves), \code{\{cmp:old\}} · \code{\{cmp:new\}}; and any of the routine tool's values by name \\[3pt]
 \multicolumn{2}{@{}l}{\emph{the making}} \\
 \code{\{project\}} · \code{\{micro\}} & the project's name · the build of micro that made the page \\ \bottomrule
 \end{tabularx}
@@ -557,6 +559,7 @@ The same warning shows as ⚠ in the frame list.
 \item every 3D view is rendered from its own scene;
 \item every chart and table is recomputed from the analysis that made it — grade–tonnage, swath, stats, scatter and Q-Q — without opening a window;
 \item every resource table is recomputed from its settings;
+\item every comparison table is recomputed, with its Δ layer, from the two models loaded under the names it was made with (\cref{sec:joins-compare});
 \item every stereonet is measured again from the painted sets.
 \end{itemize}
 
@@ -596,6 +599,8 @@ Columns are matched by \emph{name}, never by position: a view colored by \col{CU
 A template is the other half of reuse. Once a page looks the way your reports should — the page size, the title block, the logo, a caption style — press \ui{☆ template}. The button becomes \ui{★ template} and the figure is marked in the list.
 
 To start a figure from it, choose \ui{from} and its name in the list beside \ui{New figure}, then press \ui{New figure}. The new figure gets the template's page, frames and properties, with the drawing number and revision cleared for you to fill in. A template remains an ordinary figure; press the button again to unmark it.
+
+One entry in that list is not a figure: \ui{comparison report…} asks for a name and opens the comparison dialog, which builds a page from two versions of a model — a table, a map of the changed blocks, the biggest moves and both lineages (\cref{sec:joins-compare}).
 
 \begin{tip}
 A template's view frames carry over too, scenes and all. For a house template that should start empty, delete its views before marking it. For a \emph{report} template that should start full — the standard plan, the two standard sections — keep them, and point the copy at the new data with \ui{⇄ other data…}.
