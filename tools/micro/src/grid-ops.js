@@ -399,3 +399,83 @@ export function gridAxesOf(L) {
   if (g.rot) { out.rot = g.rot; out.anchor = g.anchor; }
   return out;
 }
+
+// ── CONTOURS: a grid's isolines as polylines (src/contours.js makes them a strings layer) ──
+// Marching squares on the NODES: a level crosses a cell edge where one end is ≥ it and the other
+// below, at the linear interpolation. A saddle (all four edges crossed) is resolved by the cell
+// centre's average — the corners on the other side of it from the centre are cut off — the rule
+// @gcu/plot's contour uses. A cell with a nodata corner is left out (the line stops at the data's
+// edge). Segments are chained through the edges they share into polylines: open where they reach
+// the grid's edge or nodata, closed rings otherwise.
+//   isolines(g, levels) → [{ level, lines: [{ pts: [[x, y, z], …], closed }] }]  — WORLD x, y (a
+//   placed grid through its placement), z = the level in world (its z scale and shift applied)
+export function isolines(g, levels) {
+  const { nx, ny } = g, dy = g.dy || g.dx, nod = g.nodata;
+  const isBad = (v) => Number.isNaN(v) || (nod != null && (nod >= 1.7e38 ? v >= 1.7014e38 : v === nod));
+  const val = (r, c) => g.data[r * nx + c];
+  const P = g.place || null, o = [0, 0, 0];
+  const out = [];
+  for (const level of levels) {
+    // edge ids: H(r, c) = 2·(r·nx + c) joins (r, c)–(r, c+1); V(r, c) = 2·(r·nx + c) + 1 joins (r, c)–(r+1, c)
+    const pt = new Map();
+    const cross = (id, ra, ca, rb, cb) => {
+      if (!pt.has(id)) { const a = val(ra, ca), b = val(rb, cb), t = (level - a) / (b - a); pt.set(id, [ca + t * (cb - ca), ra + t * (rb - ra)]); }
+      return id;
+    };
+    const segs = [];
+    for (let r = 0; r + 1 < ny; r++) for (let c = 0; c + 1 < nx; c++) {
+      const tl = val(r, c), tr = val(r, c + 1), br = val(r + 1, c + 1), bl = val(r + 1, c);
+      if (isBad(tl) || isBad(tr) || isBad(br) || isBad(bl)) continue;
+      const A = [tl >= level, tr >= level, br >= level, bl >= level];
+      const top = A[0] !== A[1] ? cross(2 * (r * nx + c), r, c, r, c + 1) : -1;
+      const right = A[1] !== A[2] ? cross(2 * (r * nx + c + 1) + 1, r, c + 1, r + 1, c + 1) : -1;
+      const bottom = A[3] !== A[2] ? cross(2 * ((r + 1) * nx + c), r + 1, c, r + 1, c + 1) : -1;
+      const left = A[0] !== A[3] ? cross(2 * (r * nx + c) + 1, r, c, r + 1, c) : -1;
+      const es = [top, right, bottom, left].filter((e) => e >= 0);
+      if (es.length === 2) segs.push([es[0], es[1]]);
+      else if (es.length === 4) {
+        const centre = (tl + tr + br + bl) / 4 >= level;
+        if (A[0] !== centre) segs.push([top, left]);
+        if (A[1] !== centre) segs.push([top, right]);
+        if (A[2] !== centre) segs.push([right, bottom]);
+        if (A[3] !== centre) segs.push([left, bottom]);
+      }
+    }
+    // chain the segments through their shared edges
+    const at = new Map();
+    segs.forEach((s, i) => { for (const e of s) { const l = at.get(e); if (l) l.push(i); else at.set(e, [i]); } });
+    const used = new Uint8Array(segs.length), lines = [];
+    const walk = (startSeg, startEdge) => {
+      const ids = [startEdge]; let seg = startSeg, edge = startEdge;
+      for (;;) {
+        used[seg] = 1;
+        const next = segs[seg][0] === edge ? segs[seg][1] : segs[seg][0];
+        ids.push(next);
+        const cand = (at.get(next) || []).find((k) => !used[k]);
+        if (cand == null) break;
+        seg = cand; edge = next;
+      }
+      return ids;
+    };
+    for (const [e, l] of at) if (l.length === 1 && !used[l[0]]) lines.push({ ids: walk(l[0], e), closed: false });   // open ends first
+    for (let i = 0; i < segs.length; i++) if (!used[i]) { const ids = walk(i, segs[i][0]); lines.push({ ids, closed: ids[0] === ids[ids.length - 1] }); }
+    const zW = P ? P.t[2] + P.s * level : level;
+    out.push({ level, lines: lines.map(({ ids, closed }) => {
+      const pts = (closed ? ids.slice(0, -1) : ids).map((id) => {
+        const [fc, fr] = pt.get(id), u = g.x0 + fc * g.dx, v = g.y0 - fr * dy;
+        if (P) { applyP(P, u, v, 0, o); return [o[0], o[1], zW]; }
+        return [u, v, zW];
+      });
+      return { pts, closed };
+    }) });
+  }
+  return out;
+}
+// contour levels: every `interval` from `base`, across [lo, hi]
+export function contourLevels(lo, hi, interval, base = 0) {
+  if (!(interval > 0) || !(hi >= lo)) return [];
+  const out = [], k0 = Math.ceil((lo - base) / interval - 1e-9), k1 = Math.floor((hi - base) / interval + 1e-9);
+  if (k1 - k0 > 5000) throw new Error(`contours: ${(k1 - k0 + 1).toLocaleString()} levels — give a bigger interval`);
+  for (let k = k0; k <= k1; k++) out.push(+(base + k * interval).toFixed(10));
+  return out;
+}

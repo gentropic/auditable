@@ -67,6 +67,14 @@ try {
     out.ring = { rows: ring.table.rows.length, first: ring.table.rows[0], last: ring.table.rows[ring.table.rows.length - 1], length: ring.values.length };
     try { await M.runTool('profile', { line: { layer: 'lines.csv', feature: 'nope' }, surfaces: ['topo.asc'] }); out.bad = 'ran'; } catch (e) { out.bad = e.message; }
     try { await M.runTool('profile', { line: { layer: 'lines.csv' }, surfaces: ['topo.asc'] }); out.ambiguous = 'ran'; } catch (e) { out.ambiguous = e.message; }
+    // §4 contours of the topography plane, then a profile ALONG one of them (it reads its own ELEV)
+    const ct = await M.runTool('contours', { grid: 'topo.asc', interval: 2.5, index: 2 });
+    const CL = M.layers().find((x) => x.name === ct.layers[0]);
+    const fs = M.featuresOf(CL);
+    out.contours = { values: ct.values, n: fs.length, feats: fs.map((f) => ({ elev: +f.attrs.ELEV, index: +f.attrs.INDEX, pts: f.rings[0].map((q) => q.slice(0, 3)) })) };
+    const mid = fs[Math.floor(fs.length / 2)];
+    const along = await M.runTool('profile', { line: { layer: CL.name, feature: mid.id }, surfaces: ['topo.asc'] });
+    out.along = { elev: +mid.attrs.ELEV, zs: along.table.rows.map((row) => row[3]) };
     // the window, from the palette: Run → a chart
     M.COMMANDS.find((c) => c.id === 'profile').run({ L: null });
     const w = document.querySelector('.fwin[data-profile]');
@@ -99,6 +107,17 @@ try {
   // §2 the tool's shape
   chk(`the table: ${r.cols.join(', ')}; values: length, stations, per surface min / max / covered`, r.cols.join() === 'chainage,x,y,topo.asc,shell.obj' && 'topo.asc min' in r.values && r.values['shell.obj covered'] > 0 && r.values['shell.obj covered'] < 1);
   chk(`a line that isn't there is refused (“${r.bad.slice(0, 50)}”), and a layer of several lines asks which (“${r.ambiguous.slice(0, 60)}”)`, /no line/.test(r.bad) && /say which/.test(r.ambiguous));
+  // §4 contours
+  const GZ_ = (x, y) => 500 + 0.04 * (x - E0) + 0.02 * (y - N0);
+  let worstC = 0; for (const f of r.contours.feats) for (const q of f.pts) worstC = Math.max(worstC, Math.abs(GZ_(q[0], q[1]) - f.elev), Math.abs(q[2] - f.elev));
+  const elevs = [...new Set(r.contours.feats.map((f) => f.elev))].sort((a, b) => a - b);
+  // the grid runs 500 (its SW node) … 511 (its NE node): a line forms at every level strictly between
+  const wantLevels = []; for (let k = Math.floor(500 / 2.5) + 1; k * 2.5 < 511; k++) wantLevels.push(k * 2.5);
+  chk(`contours of the topography: one straight line per level ${elevs.join(', ')} (= every 2.5 m across its range), each vertex on the plane at its ELEV, z = ELEV (worst ${worstC.toExponential(2)} m)`,
+    JSON.stringify(elevs) === JSON.stringify(wantLevels) && r.contours.n === wantLevels.length && worstC < 1e-3);
+  chk(`INDEX on every 2nd level (${r.contours.feats.filter((f) => f.index).map((f) => f.elev).join(', ')})`, r.contours.feats.every((f) => f.index === (Math.round(f.elev / 2.5) % 2 === 0 ? 1 : 0)));
+  const dev = Math.max(...r.along.zs.filter((z) => z != null).map((z) => Math.abs(z - r.along.elev)));
+  chk(`a profile ALONG the ${r.along.elev} m contour reads ${r.along.elev} m all along it (worst ${dev.toExponential(2)} m over ${r.along.zs.length} stations)`, r.along.zs.length > 10 && dev < 1e-3);
   // §3 the window
   chk(`the window (palette): Run → a chart of the surfaces (${r.win.spec}) and a readout (“${r.win.readout.slice(0, 70)}”); its recipe is the tool's (${r.win.recipe && r.win.recipe.tool})`,
     r.win.spec && /length/.test(r.win.readout) && r.win.recipe && r.win.recipe.tool === 'profile' && r.win.recipe.params.surfaces.length === 2);
