@@ -310,7 +310,7 @@ function glideTarget(to, ms = 260) {
 }
 export async function pivotOn(hit, cssX, cssY) {
   const L = layerById(hit.layer);
-  const w = L && L.kind === 'mesh' ? ((await meshHitAt(L, cssX, cssY)) || {}).point : await pickHitPoint(hit, cssX, cssY);
+  const w = L && L.kind === 'mesh' ? ((await meshHitAt(L, cssX, cssY)) || {}).drawn : await pickHitPoint(hit, cssX, cssY);   // pivot on what is DRAWN
   if (!w || !S.frame) return;
   glideTarget([w[0] - S.frame.origin[0], w[1] - S.frame.origin[1], w[2] - S.frame.origin[2]]);
   $('#meta').textContent = 'orbiting about the tapped spot — double-tap empty space to fit';

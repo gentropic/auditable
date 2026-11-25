@@ -1188,6 +1188,40 @@ async function sectionChecks(url, label) {
   await p.close();
 }
 
+// a MOVED mesh (an exploded group, a view with an offset) is picked where it is DRAWN (sweep
+// 2026-11-25: meshHitAt cast the pixel's ray against the mesh's BVH at its TRUE position, so the
+// click answered for the undisplaced mesh — or nothing). Plan view, a flat 100 m square at z 500
+// moved by [30, 20, 50]: worldAt at the drawn centre must be the drawn centre.
+async function meshPickChecks(url, label) {
+  const p = await ctx.newPage(); p.on('pageerror', (e) => { console.log('PAGEERROR', e.message); ok = false; });
+  await p.setViewportSize({ width: 900, height: 700 });
+  await p.goto(`http://127.0.0.1:${PORT}${url}`, { waitUntil: 'load' });
+  await p.waitForFunction(() => window.micro && window._micro && window._micro.addLayer, null, { timeout: 30000 });
+  const r = await p.evaluate(async () => {
+    const m = window._micro, M = window.micro, X0 = 612000, Y0 = 7765000;
+    const obj = [`v ${X0} ${Y0} 500`, `v ${X0 + 100} ${Y0} 500`, `v ${X0 + 100} ${Y0 + 100} 500`, `v ${X0} ${Y0 + 100} 500`, 'f 1 2 3', 'f 1 3 4'].join(String.fromCharCode(10)) + String.fromCharCode(10);
+    await m.openBlob(new File([obj], 'sheet.obj'), 'sheet.obj', 'replace');
+    const L = m.layers().find((q) => q.name === 'sheet.obj');
+    await M.look('plan'); await M.fit();
+    const cv = document.querySelector('#cv');
+    const proj = (w) => {
+      const rect = cv.getBoundingClientRect(), st = m.cam.state, o = m.frame.origin, q = [w[0] - o[0], w[1] - o[1], w[2] - o[2]], V = st.viewProj;
+      const xx = V[0] * q[0] + V[4] * q[1] + V[8] * q[2] + V[12], yy = V[1] * q[0] + V[5] * q[1] + V[9] * q[2] + V[13], ww = V[3] * q[0] + V[7] * q[1] + V[11] * q[2] + V[15];
+      return [(xx / ww + 1) / 2 * rect.width, (1 - yy / ww) / 2 * rect.height];
+    };
+    const still = await M.worldAt(proj([X0 + 50, Y0 + 50, 500]));
+    m.setLayerDisplayOffset(L, [30, 20, 50]);
+    await new Promise((res) => setTimeout(res, 300));
+    const drawn = [X0 + 80, Y0 + 70, 550];
+    const moved = await M.worldAt(proj(drawn));
+    return { still: still && still.world, moved: moved && moved.world, layer: moved && moved.layer === L.id };
+  });
+  const near3 = (a, b, t) => a && a.every((v, i) => Math.abs(v - b[i]) <= t);
+  chk(`mesh pick (${label}): a flat sheet at z 500 picks at ${r.still && r.still.map((v) => v.toFixed(2))}; moved by [30, 20, 50] it picks where it is DRAWN — ${r.moved && r.moved.map((v) => v.toFixed(2))} = 612080, 7765070, 550`,
+    near3(r.still, [612050, 7765050, 500], 0.5) && near3(r.moved, [612080, 7765070, 550], 0.5) && r.layer);
+  await p.close();
+}
+
 async function colourChecks(url, label) {
   console.log(`── colour range and palette (${label})`);
   const pane = async (hi) => {
@@ -1361,9 +1395,16 @@ try {
     await presentChecks('/micro.html', 'built micro.html');
     console.log(ok ? 'PASS' : 'FAIL'); await b.close(); server.close(); process.exit(ok ? 0 : 1);
   }
+  if (process.env.ONLY === 'meshpick') {                 // ONLY=meshpick: a moved mesh is picked where it is drawn
+    await meshPickChecks('/tools/micro/index.html', 'dev tree');
+    await meshPickChecks('/micro.html', 'built micro.html');
+    console.log(ok ? 'PASS' : 'FAIL'); await b.close(); server.close(); process.exit(ok ? 0 : 1);
+  }
   if (process.env.ONLY === 'section') {                  // ONLY=section: a saved section's world plane
     await sectionChecks('/tools/micro/index.html', 'dev tree');
+  await meshPickChecks('/tools/micro/index.html', 'dev tree');
     await sectionChecks('/micro.html', 'built micro.html');
+  await meshPickChecks('/micro.html', 'built micro.html');
     console.log(ok ? 'PASS' : 'FAIL'); await b.close(); server.close(); process.exit(ok ? 0 : 1);
   }
   if (process.env.ONLY === 'colour') {                   // ONLY=colour: the colour range + palette

@@ -292,9 +292,17 @@ export async function meshHitAt(L, cssX, cssY) {
   // coordinates (that is the space the winding queries feed it). The camera ray
   // is frame-local. Lift the origin; the direction is unaffected — a frame is a
   // pure translation, never a rotation (@gcu/frame's whole contract).
+  // A MOVED layer (an exploded group, a view with an offset) is DRAWN displaced by its offset while
+  // its BVH stays where the data is: shift the ray back by the offset before casting (sweep
+  // 2026-11-25: the cast ignored it, so a click on a moved mesh missed or hit the wrong one).
+  // → the hit with `point` TRUE (the mesh's own geometry: the record panel, the structure brush,
+  // control points) and `drawn` = where it shows on screen (a pivot, worldAt — as pickHitPoint)
   const { o, d } = pixelRay(cssX, cssY);
-  const ow = [o[0] + S.frame.origin[0], o[1] + S.frame.origin[1], o[2] + S.frame.origin[2]];
-  return raycastBVH(bvh, ow, d);                           // world in → world out
+  const off = S.renderer.layerOffset ? S.renderer.layerOffset(L.id) : [0, 0, 0];
+  const ow = [o[0] + S.frame.origin[0] - off[0], o[1] + S.frame.origin[1] - off[1], o[2] + S.frame.origin[2] - off[2]];
+  const hit = raycastBVH(bvh, ow, d);                      // world in → world out
+  if (hit && hit.point) hit.drawn = [hit.point[0] + off[0], hit.point[1] + off[1], hit.point[2] + off[2]];
+  return hit;
 }
 
 let _recSeq = 0;
@@ -485,7 +493,7 @@ export async function worldAtPoints(points) {
     if (!L) continue;
     if (L.kind === 'mesh') {
       const mh = await meshHitAt(L, x, y).catch(() => null);
-      if (mh && mh.point) out[k] = { world: [+mh.point[0], +mh.point[1], +mh.point[2]], layer: hit.layer, rec: null, face: null };
+      if (mh && mh.drawn) out[k] = { world: [+mh.drawn[0], +mh.drawn[1], +mh.drawn[2]], layer: hit.layer, rec: null, face: null };   // where it is DRAWN, as pickHitPoint
       continue;
     }
     const p = await pickHitPoint(hit, x, y).catch(() => null);
