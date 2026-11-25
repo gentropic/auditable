@@ -279,6 +279,24 @@ export const SCENES = {
     return { wait: 2500, after: () => h.ev(() => window.__B.undo()) };
   },
 
+  // ── 07c-crs ──
+  // the selector as the CRS chip opens it (fits = the data's extent), 31983 found by name and picked;
+  // the picker stays open for the capture and is cancelled afterwards (the project CRS untouched
+  // beyond what the scene set)
+  'crs-picker': async (h) => {
+    await setup(h);
+    await h.ev(async () => {
+      const C = window._microCrs, B = window.__B;
+      await C.setProjectCrs(await C.lookupEpsg(31983));
+      document.querySelector('#crsChip').click();
+      for (let i = 0; i < 100 && !document.querySelector('[data-crs-search]'); i++) await B.sleep(50);
+    });
+    await h.p.fill('[data-crs-search]', 'sirgas 2000 utm 23s');
+    await h.p.waitForFunction(() => { const r = document.querySelector('[data-crs-list] [data-code]'); return r && r.dataset.code === '31983'; }, null, { timeout: 15000 });
+    await h.p.click('[data-crs-list] [data-code="31983"]');
+    return { el: '.fwin[data-crs-picker]', blankOk: true, after: () => h.ev(() => { const w = document.querySelector('.fwin[data-crs-picker]'); const c = w && [...w.querySelectorAll('button')].find((b) => b.textContent === 'Cancel'); if (c) c.click(); }) };
+  },
+
   // ── 08-grids ──
   'grids-relief': async (h) => {
     await setup(h);
