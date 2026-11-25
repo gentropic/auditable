@@ -212,6 +212,7 @@ tools/micro/docs/micro-card.pdf
 # the LaTeX manual: generated outputs (node tools/micro/docs/manual/build.mjs remakes them) + working notes
 tools/micro/docs/manual/build/
 tools/micro/docs/manual/figures/shots/
+tools/micro/docs/manual/figures/print/
 tools/micro/docs/manual/figures/data/
 tools/micro/docs/manual/chapters/C-tools.tex
 tools/micro/docs/manual/MICRO-BUGS.md

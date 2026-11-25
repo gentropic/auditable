@@ -10,11 +10,13 @@
 // tools — chapters/C-tools.tex, the tool reference, from window.micro.tools()
 // shots — every screenshot named in figures/wanted/*.txt that scenes.mjs knows how to stage →
 //         figures/shots/<name>.png; a name with no scene is listed, and the book shows a placeholder
+// print — each shot's print copy (≤1800 px, JPEG or PNG, whichever is smaller) → figures/print/;
+//         runs before every pdf, so the book never carries the 2× captures
 // pdf   — latexmk (LuaLaTeX, biber for references.bib) → build/micro-manual.pdf
 import { chromium } from 'playwright';
 import http from 'http';
 import { readFile, writeFile, mkdir, readdir } from 'fs/promises';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, statSync, unlinkSync } from 'fs';
 import { extname, join, dirname, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { spawnSync } from 'child_process';
@@ -241,6 +243,52 @@ function makeHelpers(p) {
   return h;
 }
 
+// ── print ──
+// The shots are captured at 2× device pixels (2880 px wide), about 570 dpi across the 128 mm text
+// block: that was 24 MB of a 27 MB book. The PDF takes a print copy of each instead, at most
+// PRINT_MAX_W px wide (~320 dpi on the text block), as JPEG or PNG, whichever comes out smaller,
+// so flat UI shots stay crisp PNGs and 3D renders become JPEGs. Chromium does the resampling and
+// encoding, so the build needs nothing beyond Playwright. A print copy newer than its shot is kept.
+const PRINT_MAX_W = 1800, PRINT_JPEG_Q = 0.88;
+async function phasePrint() {
+  const src = join(HERE, 'figures', 'shots'), out = join(HERE, 'figures', 'print');
+  if (!existsSync(src)) return;
+  await mkdir(out, { recursive: true });
+  const names = (await readdir(src)).filter((f) => f.endsWith('.png')).map((f) => f.slice(0, -4));
+  const todo = [];
+  for (const n of names) {
+    const s = statSync(join(src, n + '.png')).mtimeMs;
+    const have = ['.jpg', '.png'].map((e) => join(out, n + e)).find((f) => existsSync(f));
+    if (!have || statSync(have).mtimeMs < s) todo.push(n);
+  }
+  // a shot removed from the book leaves no print copy behind
+  for (const f of await readdir(out)) if (!names.includes(f.replace(/\.(jpg|png)$/, ''))) unlinkSync(join(out, f));
+  if (!todo.length) { console.log(`print: ${names.length} copies up to date`); return; }
+  const browser = await chromium.launch();
+  try {
+    const p = await browser.newPage();
+    let before = 0, after = 0;
+    for (const n of todo) {
+      const png = await readFile(join(src, n + '.png'));
+      const r = await p.evaluate(async ({ b64, maxW, q }) => {
+        const img = new Image(); img.src = 'data:image/png;base64,' + b64; await img.decode();
+        const k = Math.min(1, maxW / img.naturalWidth), w = Math.round(img.naturalWidth * k), h = Math.round(img.naturalHeight * k);
+        const c = document.createElement('canvas'); c.width = w; c.height = h;
+        const g = c.getContext('2d'); g.imageSmoothingQuality = 'high';
+        g.fillStyle = '#fff'; g.fillRect(0, 0, w, h);          // JPEG has no alpha: flatten onto the page colour
+        g.drawImage(img, 0, 0, w, h);
+        return { jpg: c.toDataURL('image/jpeg', q).split(',')[1], png: c.toDataURL('image/png').split(',')[1] };
+      }, { b64: png.toString('base64'), maxW: PRINT_MAX_W, q: PRINT_JPEG_Q });
+      const jpg = Buffer.from(r.jpg, 'base64'), small = Buffer.from(r.png, 'base64');
+      const [ext, bytes] = jpg.length < small.length * 0.8 ? ['.jpg', jpg] : ['.png', small];
+      for (const e of ['.jpg', '.png']) { const f = join(out, n + e); if (existsSync(f)) unlinkSync(f); }
+      await writeFile(join(out, n + ext), bytes);
+      before += png.length; after += bytes.length;
+    }
+    console.log(`print: ${todo.length} copies, ${(before / 1048576).toFixed(1)} MB → ${(after / 1048576).toFixed(1)} MB`);
+  } finally { await browser.close(); }
+}
+
 // ── pdf ──
 function phasePdf() {
   const r = spawnSync('latexmk', ['-lualatex', '-interaction=nonstopmode', '-halt-on-error', '-file-line-error', '-outdir=build', 'micro-manual.tex'], { cwd: HERE, stdio: 'inherit', shell: true, env: { ...process.env, TTFONTS: './fonts//;', OSFONTDIR: './fonts' } });   // the fallback symbol font ships in fonts/
@@ -269,4 +317,5 @@ if (want('data') || want('tools') || want('shots')) {
     if (want('shots')) await phaseShots(m.p, shots);
   } finally { await m.close(); }
 }
+if (want('print') || want('pdf')) await phasePrint();
 if (want('pdf')) phasePdf();

@@ -205,10 +205,15 @@
 
 % ── figures ──
 % a tall screenshot is capped at 0.8 of the text height, so it and its caption always fit one page
+% the build's print copy (figures/print/, JPEG or PNG at print resolution) wins over the 2× capture
+\newcommand\shotfile{}
 \newcommand\shot[3][\linewidth]{% \shot[width]{file}{caption}
   \begin{figure}[htbp]\centering
-  \IfFileExists{figures/shots/#2.png}{%
-  \begin{tikzpicture}\node[inner sep=0pt, drop shadow={opacity=0.22, shadow xshift=0.6mm, shadow yshift=-0.8mm}]{\includegraphics[width=#1, height=0.8\textheight, keepaspectratio]{#2}};\end{tikzpicture}}{%
+  \IfFileExists{figures/print/#2.jpg}{\renewcommand\shotfile{figures/print/#2.jpg}}{%
+  \IfFileExists{figures/print/#2.png}{\renewcommand\shotfile{figures/print/#2.png}}{%
+  \renewcommand\shotfile{figures/shots/#2.png}}}%
+  \IfFileExists{\shotfile}{%
+  \begin{tikzpicture}\node[inner sep=0pt, drop shadow={opacity=0.22, shadow xshift=0.6mm, shadow yshift=-0.8mm}]{\includegraphics[width=#1, height=0.8\textheight, keepaspectratio]{\shotfile}};\end{tikzpicture}}{%
   \begin{tikzpicture}\node[draw=rule, dashed, fill=tint, minimum width=#1, minimum height=0.5\dimexpr#1\relax, font=\sffamily\small\color{muted}, align=center]{screenshot pending\\\texttt{#2}};\end{tikzpicture}\typeout{(screenshot #2 pending)}}%
   \caption{#3}\label{fig:#2}\end{figure}}
 \captionsetup{format=plain, labelsep=quad, justification=raggedright, singlelinecheck=false, skip=6pt}
