@@ -1160,6 +1160,34 @@ async function openChecks(url, label) {
 // micro pages, two models with the same grade at the centre block but different
 // data ranges. Per-pane scaling colours that block differently; one range makes
 // the centre pixels match. Plus the palette, the reasons, and addLayer.
+// a SAVED section (bookmark / project / figure recipe / composer frame — all go through
+// captureSection → applySection) comes back at the same WORLD plane after the data's extent
+// changed (sweep 2026-11-25: it was stored as a fraction of the extent, so adding a taller
+// layer moved a bookmarked z 600 cut to ~674)
+async function sectionChecks(url, label) {
+  const p = await ctx.newPage(); p.on('pageerror', (e) => { console.log('PAGEERROR', e.message); ok = false; });
+  await p.goto(`http://127.0.0.1:${PORT}${url}`, { waitUntil: 'load' });
+  await p.waitForFunction(() => window.micro && window._micro && window._micro.addLayer, null, { timeout: 30000 });
+  const r = await p.evaluate(async () => {
+    const M = window._micro, X = [], Y = [], Z = [];
+    for (let j = 0; j < 11; j++) for (let i = 0; i < 11; i++) { X.push(612005 + 10 * i); Y.push(7765005 + 10 * j); Z.push(400 + 50 * i); }
+    await window.micro.addLayer({ kind: 'blocks', name: 'steps', columns: { X, Y, Z }, roles: { x: 'X', y: 'Y', z: 'Z' } });
+    M.setSectionWorld({ axis: 'z', position: 600 });
+    const saved = M.captureSection();
+    // a taller layer: the extent along z grows from 375…925 to 375…1500
+    await window.micro.addLayer({ kind: 'points', name: 'tall', columns: { X: [612010, 612090], Y: [7765010, 7765090], Z: [450, 1500] }, roles: { x: 'X', y: 'Y', z: 'Z' } });
+    M.setSectionWorld({ mode: 'off' });
+    M.applySection(saved);
+    const back = M.sectionWorld();
+    const legacy = { ...saved }; delete legacy.at;            // an older file: the fraction only
+    M.applySection(legacy);
+    return { saved, back: back && back.position, legacy: M.sectionWorld().position };
+  });
+  chk(`section memory (${label}): a cut at z 600 is saved with its world plane (at ${r.saved.at}) and comes back at ${r.back} after a taller layer widens the extent; a fraction-only (older) save still opens (at ${r.legacy.toFixed(1)})`,
+    Math.abs(r.saved.at - 600) < 1e-6 && Math.abs(r.back - 600) < 1e-6 && Number.isFinite(r.legacy));
+  await p.close();
+}
+
 async function colourChecks(url, label) {
   console.log(`── colour range and palette (${label})`);
   const pane = async (hi) => {
@@ -1333,6 +1361,11 @@ try {
     await presentChecks('/micro.html', 'built micro.html');
     console.log(ok ? 'PASS' : 'FAIL'); await b.close(); server.close(); process.exit(ok ? 0 : 1);
   }
+  if (process.env.ONLY === 'section') {                  // ONLY=section: a saved section's world plane
+    await sectionChecks('/tools/micro/index.html', 'dev tree');
+    await sectionChecks('/micro.html', 'built micro.html');
+    console.log(ok ? 'PASS' : 'FAIL'); await b.close(); server.close(); process.exit(ok ? 0 : 1);
+  }
   if (process.env.ONLY === 'colour') {                   // ONLY=colour: the colour range + palette
     await colourChecks('/tools/micro/index.html', 'dev tree');
     await colourChecks('/micro.html', 'built micro.html');
@@ -1377,6 +1410,7 @@ try {
   await statsChecks('/tools/micro/index.html', 'dev tree');
   await openChecks('/tools/micro/index.html', 'dev tree');
   await colourChecks('/tools/micro/index.html', 'dev tree');
+  await sectionChecks('/tools/micro/index.html', 'dev tree');
   await presentChecks('/tools/micro/index.html', 'dev tree');
   await run('/micro.html', 'built micro.html');
   await rotatedChecks('/micro.html', 'built micro.html');
@@ -1389,6 +1423,7 @@ try {
   await statsChecks('/micro.html', 'built micro.html');
   await openChecks('/micro.html', 'built micro.html');
   await colourChecks('/micro.html', 'built micro.html');
+  await sectionChecks('/micro.html', 'built micro.html');
   await presentChecks('/micro.html', 'built micro.html');
 } finally {
   await b.close(); server.close();

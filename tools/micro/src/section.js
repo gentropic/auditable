@@ -244,8 +244,13 @@ export function installSectionTool() {
   }, { passive: false, capture: true });
 }
 
+// at: the plane's WORLD position (n·p, real coordinates). pos (a 0..1 fraction of the data's
+// extent along the normal) is kept for older readers, but it moves whenever the set of layers —
+// hence the extent — changes, so a bookmark / project / figure / composer frame restores by `at`
+// (sweep 2026-11-25: a bookmarked cut at z 600 reopened at ~674 once a taller DEM was added).
 export function captureSection() {
-  return { mode: $('#secMode').value, pos: +$('#secPos').value, half: +$('#secHalf').value, knifeN: _knife ? _knife.n : null,
+  const w = $('#secMode').value !== 'off' ? sectionWorld() : null;
+  return { mode: $('#secMode').value, pos: +$('#secPos').value, ...(w ? { at: w.position } : {}), half: +$('#secHalf').value, knifeN: _knife ? _knife.n : null,
            clip: $('#secClip').value, dipDir: +$('#secDipDir').value, dip: +$('#secDip').value, plane: $('#secPlaneVis').checked || undefined };
 }
 
@@ -266,6 +271,13 @@ export function applySection(sec) {
     sel.dispatchEvent(new Event('input'));
   }
   $('#secPos').value = sec.pos != null ? sec.pos : 0.5;
+  // the world plane wins over the fraction when there is one and the data's extent is known
+  const n = Number.isFinite(sec.at) && S.renderer.chunkCount ? secNormal() : null;
+  const rg = n ? secRange() : null;
+  if (rg && rg[1] > rg[0]) {
+    const dl = sec.at - dot3(n, S.frame ? S.frame.origin : [0, 0, 0]);
+    $('#secPos').value = Math.max(0, Math.min(1, (dl - rg[0]) / (rg[1] - rg[0])));
+  }
   $('#secHalf').value = sec.half != null ? sec.half : 10;
   syncSectionBtn(); requestRender();
 }

@@ -112,7 +112,7 @@ import { confirmRemoveLayer, layerMenu, layerMenuSections, convertMeshLayer, fit
 import { nlSetEnabled, nlEnsureTrained, nlPropose, nlStats, nlHoldOut, describeSession as nlDescribeSession } from './nl.js';
 import { applyLayerSelection, selectionStatus, selectVolume, selectByPolygon, selectionToColumn, filterToSelection, setSelStick, clearSelection, setSelThrough } from './selection.js';
 import { paintVolume, openPaintPalette, createPaintCol, addPaintValue, paintArm, paintDisarm, paintApply, paintUndo, paintColByName } from './paint.js';
-import { sectionWorld, setSectionWorld, applySection, knifeCut, currentSection } from './section.js';
+import { sectionWorld, setSectionWorld, applySection, captureSection, knifeCut, currentSection } from './section.js';
 import { pickRecord, showRecord, pickHitPoint, pixelRay, blockHalfDims, meshHitAt, showMeshRecord, worldAtPoints } from './pick.js';
 import { renderViewCanvas, recreateRenderer, setBlockEdges, renderer, cam, cameraWorld, setCameraWorld, renderFigureCanvas, setView } from './viewport.js';
 import { openSample, makeSampleBlockCsv, openDemoProject, makeDemoBlockCsv, makeDemoDrillholes } from './samples.js';
@@ -198,7 +198,7 @@ window._micro = {
   measureState: () => _measure, openExplode, explodeGroup, setLayerDisplayOffset, anyDisplaced, openTurntable,
   recordTurntable, turntableMime, openThemeEditor, customTheme, setCustomTheme, clearCustomTheme,
   parseThemeJson, themeJson, registerTokens, contrast, setTheme, sceneDefault, canChangeFile, viewsOf, isView,
-  canView, modelOf, renderLayers, applySection, openMeshQa, meshQaWins: _meshQaWins, openXyPlot,
+  canView, modelOf, renderLayers, applySection, captureSection, openMeshQa, meshQaWins: _meshQaWins, openXyPlot,
   xyWins: _xyWins, openCrosstab, xtabWins: _xtabWins, parseCutoffs, openDhQa, qaWins: _qaWins, dhSetGroupOf,
   applySwathZebra, confirmRemoveLayer, undoLabel, startChunkBuilder, setCsvColumnar, canScanColumnar,
   zoneKeeper, paintVolume, layerShown, backupProject, restoreProject, openProjectPack, openPackFile,
