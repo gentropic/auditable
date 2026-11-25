@@ -43,6 +43,7 @@ if (!process.argv.includes('--dev-only') && fs.existsSync(path.join(root, 'micro
 
 for (const [tag, url] of targets) {
   const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } });
+  await ctx.addInitScript(() => { try { if (localStorage.getItem('micro.swRender') == null) localStorage.setItem('micro.swRender', 'off'); } catch { /* opaque origin */ } });   // CI draws on SwiftShader: keep software-rendering mode off
   const p = await ctx.newPage();
   const errors = [];
   p.on('pageerror', (e) => errors.push(String(e.message || e)));

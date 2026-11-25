@@ -83,6 +83,7 @@ const TIMELINE = () => {
 
 async function drive(url, tag) {
   const ctx = await browser.newContext(S24);
+  await ctx.addInitScript(() => { try { if (localStorage.getItem('micro.swRender') == null) localStorage.setItem('micro.swRender', 'off'); } catch { /* opaque origin */ } });   // CI draws on SwiftShader: keep software-rendering mode off
   await ctx.addInitScript(ID_MAP);
   await ctx.addInitScript(TIMELINE);
   const p = await ctx.newPage();
@@ -752,6 +753,7 @@ async function drive(url, tag) {
 // media query decides), widened to desktop and back
 async function modeSwitch(url, tag) {
   const ctx = await browser.newContext(S24);
+  await ctx.addInitScript(() => { try { if (localStorage.getItem('micro.swRender') == null) localStorage.setItem('micro.swRender', 'off'); } catch { /* opaque origin */ } });   // CI draws on SwiftShader: keep software-rendering mode off
   await ctx.addInitScript(ID_MAP);
   const p = await ctx.newPage();
   await p.goto(url, { waitUntil: 'load' });
@@ -786,6 +788,7 @@ async function modeSwitch(url, tag) {
 // gives up width, not height; a swipe right closes it; rotating back restores the portrait shape
 async function landscape(url, tag) {
   const ctx = await browser.newContext({ ...S24, viewport: { width: S24.viewport.height, height: S24.viewport.width } });
+  await ctx.addInitScript(() => { try { if (localStorage.getItem('micro.swRender') == null) localStorage.setItem('micro.swRender', 'off'); } catch { /* opaque origin */ } });   // CI draws on SwiftShader: keep software-rendering mode off
   const p = await ctx.newPage();
   await p.goto(url, { waitUntil: 'load' });
   await p.waitForFunction(() => window._micro && document.body.classList.contains('mobile'), null, { timeout: 30000 });

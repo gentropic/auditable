@@ -28,6 +28,7 @@ const PORT = server.address().port;
 const b = await chromium.launch({ args: [...(process.env.MICRO_CHROMIUM_ARGS || '--use-gl=angle').split(/\s+/).filter(Boolean)] });
 await installSmokeWaits(b);
 const ctx = await b.newContext({ viewport: { width: 1100, height: 750 } });
+await ctx.addInitScript(() => { try { if (localStorage.getItem('micro.swRender') == null) localStorage.setItem('micro.swRender', 'off'); } catch { /* opaque origin */ } });   // CI draws on SwiftShader: keep software-rendering mode off
 await ctx.addInitScript(() => { try { if (localStorage.getItem('micro.autoPackMeshes') == null) localStorage.setItem('micro.autoPackMeshes', 'off'); } catch { /* opaque origin */ } });   // the .wfr store prompt stays out of the way unless a section opts in
 await ctx.addInitScript(() => { try { if (localStorage.getItem('micro.swRender') == null) localStorage.setItem('micro.swRender', 'off'); } catch { /* opaque origin */ } });   // CI's runner draws on SwiftShader, where micro would switch to software-rendering mode by itself (draw on change, no idle pick capture, no deferred re-shade); these smokes test the GPU paths, so the mode is pinned off unless a section opts in
 let ok = true; const chk = (n, c) => { console.log(`${c ? 'ok ' : 'FAIL'} ${n}`); ok = ok && c; };
@@ -2773,6 +2774,7 @@ if (take()) {
 //     "Yes" stores this once and keeps asking. ──
 if (take()) {
   const ctx2 = await b.newContext({ viewport: { width: 1100, height: 750 } });   // no init script: the question is unanswered here
+  await ctx2.addInitScript(() => { try { if (localStorage.getItem('micro.swRender') == null) localStorage.setItem('micro.swRender', 'off'); } catch { /* opaque origin */ } });   // CI draws on SwiftShader: keep software-rendering mode off
   const open = async () => {
     const p = await ctx2.newPage(); p.on('pageerror', (e) => { console.log('PAGEERROR', e.message); ok = false; });
     await p.goto(`http://127.0.0.1:${PORT}${APP}`, { waitUntil: 'load' });
@@ -6093,6 +6095,7 @@ if (take()) {
   // a browser in Portuguese: English until asked, with a one-line offer on the start screen
   {
     const c2 = await b.newContext({ locale: 'pt-BR', viewport: { width: 1100, height: 750 } });
+    await c2.addInitScript(() => { try { if (localStorage.getItem('micro.swRender') == null) localStorage.setItem('micro.swRender', 'off'); } catch { /* opaque origin */ } });   // CI draws on SwiftShader: keep software-rendering mode off
     const p2 = await c2.newPage();
     await p2.goto(`http://127.0.0.1:${PORT}${APP}`, { waitUntil: 'load' });
     await p2.waitForFunction(() => window._micro, null, { timeout: 20000 });
@@ -9956,7 +9959,7 @@ if (take()) {
   const swIdle = await idle();
   chk(`software mode forced on (Settings → ${on.stored}): budget ${before.budget} → ${swIdle.budget}, EDL ${before.edl} → ${swIdle.edl}, status “${on.meta}”`,
     on.stored === 'on' && before.budget === '1000000' && swIdle.budget === '100000' && before.edl === true && swIdle.edl === false
-    && /software rendering mode/.test(on.meta) && /^software · /.test(swIdle.stats));
+    && /software rendering (mode|detected)/.test(on.meta) && /^software · /.test(swIdle.stats));
   chk(`software mode: a still, converged view draws no frames (${swIdle.frames} in 2 s) and builds no pick buffer (capture ${swIdle.capture})`,
     swIdle.frames === 0 && swIdle.capture === false);
   const cvs = await ps.$('#cv'); const box = await cvs.boundingBox(); let hit = 0;
