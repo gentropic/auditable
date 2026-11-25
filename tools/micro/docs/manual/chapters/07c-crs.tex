@@ -185,6 +185,14 @@ window: green within it, amber within three times, red beyond. A bad point stand
 it was a typing slip or a point that moved. \ui{apply fit} places the layer and stores the pairs with it,
 so the window shows them again next time.
 
+While the \ui{control points} tab is open, the pairs are also drawn in the 3D view: a ring at each local
+point, a square at its true point, a line between them in the residual's color (dashed for a pair you
+untick), and the row's number beside it. They are drawn where the layer is drawn. Before the fit is
+applied, the layer still sits in its own frame and its true points may be kilometres away, so each
+square is the true point brought back onto the layer by the current fit: a good pair's ring and square
+coincide, and a bad one shows its miss on the model itself. Once the fit is applied, the squares are
+the true points. Another tab hides them, and closing the window removes them.\index{placement!residual markers}
+
 \begin{why}
 micro never refuses a placement because its residuals are large. A fit that misses by 40 cm may still be
 the best information you have; what matters is that nobody forgets it misses by 40 cm. The residual is
@@ -225,7 +233,10 @@ origin turned into the same shift: the model is where it was.
 
 Block models (CSV, Parquet, \file{.dm} — composed with a Datamine file's own rotation), meshes, grids
 and point clouds (LAS, PLY) take a placement. Drillholes and strings do not: their coordinates are survey
-data, reprojected on read (\cref{sec:crs-reproject}). A grid shown as a surface takes a rotation about Z
+data, reprojected on read (\cref{sec:crs-reproject}); a drillhole set's collars take their system from
+the CRS check (\cref{sec:crs-detective}). What is measured on a placed layer is measured where it now
+is: structure planes on an outcrop (\cref{ch:structure}) are fitted again on the placed mesh, so a
+rotation turns their dip directions with it and leaves the dips alone. A grid shown as a surface takes a rotation about Z
 only — a tilted surface is no longer $z = f(x, y)$ — and refuses ω and φ with that reason; show it as
 points first if it really is a tilted sheet.
 
@@ -246,6 +257,69 @@ Place the demo's block model. Start with the demo project open.
 \item Press \ui{clear placement}. The model is back in its file's coordinates.
 \end{enumerate}
 \end{tryit}
+
+\begin{tryit}
+Georeference a drone outcrop. You need an outcrop model straight from the photogrammetry software
+(OBJ or PLY, in its own arbitrary frame) and three or more targets on it whose coordinates the
+surveyors measured.
+\begin{enumerate}
+\item Open the model and set the project's system (the CRS chip). Right-click the model and choose
+  \menu{Data \& file>Placement…}, then the \ui{control points} tab.
+\item Press \ui{+ pair} once per target. In each row press the pick button and click the target's
+  center on the mesh: the local coordinates fill in, and a ring marks the point in the view.
+\item Type each target's surveyed E, N and RL into its row's true X, Y, Z. With three pairs the fit
+  is 3D; a square appears beside each ring and the residuals fill in.
+\item Look at the view: where a ring and its square sit apart, that target misses by the length of
+  the line. A red one is usually a target picked on the wrong marker or a typing slip. Fix it or
+  untick it.
+\item Press \ui{apply fit}. The outcrop moves into the project's coordinates, and the squares now sit
+  on the surveyed points. If the structure window is open, its planes are measured again on the
+  placed mesh: their dip directions are now true ones.
+\end{enumerate}
+\end{tryit}
+
+\section{Checking collars against the topography}\label{sec:crs-detective}\index{CRS check}\index{datum!detecting a shift}
+
+A collar file is a CSV: it does not say which system its coordinates are in, and micro reads them as
+the project's. A database exported from an old system may hold SAD69 or Córrego Alegre coordinates in
+a column headed \col{X}, and in Brazil those sit 60–70~m from SIRGAS 2000 in the same UTM zone: enough
+to put every hole in the wrong bench and still look plausible.
+
+The topography gives the game away. A collar is surveyed on the ground, so its elevation should match
+the DEM at its position. Right-click a drillhole set and choose \menu{Analyse>Check CRS against
+topography…} (also in the command palette). micro reads the collar file as the project's system
+(\ui{as is}) and as each of its \term{datum twins}: the same projection, same zone, on another datum,
+found in the EPSG table (for SIRGAS 2000 / UTM 23S: SAD69, SAD69(96), Córrego Alegre, WGS 84 and a few
+others). Each reading is reprojected into the project's system, its collars are sampled on the DEM, and
+the readings are ranked by the median of $|\Delta z|$, collar minus DEM. Readings that land within
+0.5~m of each other cannot be told apart and share a row (WGS 84 and SIRGAS 2000 do).
+
+\begin{description}
+\item[median |Δz|] how far the collars sit from the DEM, typically, in this reading;
+\item[spread] the scatter about the typical offset (1.4826 × the median absolute deviation);
+\item[within ±tol] the share of collars within the tolerance (2~m unless you change it);
+\item[used / off DEM] collars sampled, and collars outside the DEM (left out and counted);
+\item[moves them] how far this reading moves the collars sideways from \ui{as is}.
+\end{description}
+
+The verdict on top is a sentence: \emph{collars fit the topography 17× better as SAD69 / UTM zone 23S
+than any other reading … they were probably recorded in SAD69. Reproject?} The factor compares the
+winner with the runner-up. When \ui{as is} wins, it says so: that is the good outcome. Nothing changes
+until you press \ui{reproject the collars as …}: the set is read again with its collars stated in that
+system and reprojected into the project's on read, the hole traces, collar glyphs and composites with
+it. The reprojection path and its accuracy go to the layer's lineage, the project remembers the
+collars' system, and \ui{read the collars as the project's system again} undoes it.
+
+\begin{caution}
+The test needs relief. On flat ground a sideways shift changes no height, and micro refuses to name a
+datum: it computes, from the DEM's slope under the collars, how much each reading's shift would change
+the heights, and when that is under the tolerance it says the test cannot discriminate. The DEM must be
+in the right system itself: this checks the collars against the DEM, not the DEM against the world.
+And collars may truly sit off today's surface, on pre-strip topography or surveyed before mining. A
+large offset of the same sign everywhere is reported as such (\emph{collars sit about 25~m above the
+DEM everywhere — a vertical datum difference or a stale DEM?}) and the readings are then ranked by
+their spread about it, not by the offset.
+\end{caution}
 
 \section{Exporting in longitude and latitude}\label{sec:crs-export}
 
