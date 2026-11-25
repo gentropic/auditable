@@ -185,20 +185,27 @@ Shapefile \file{.shp} & yes & yes & The \file{.shp}, \file{.dbf}, \file{.prj} an
   dropped. Written as a \file{.zip}; a layer with both polygons and lines writes two shapefiles in it,
   because a shapefile holds one geometry type. \\
 GeoJSON \file{.geojson} & yes & yes & FeatureCollection, Feature or a bare geometry. A
-  \code{"crs"} member, from the 2008 specification, is honored. Written with one, so the file does not
-  read as longitude and latitude. \\
+  \code{"crs"} member, from the 2008 specification, is honored; without one the file is longitude and
+  latitude in WGS 84 (RFC 7946) and is reprojected into the project's system. Written with a
+  \code{"crs"} naming the layer's system, or — \ui{GeoJSON in lon/lat} — in WGS 84 degrees without one. \\
+KML \file{.kml}, KMZ \file{.kmz} & yes & yes (KML) & Placemarks: points, LineStrings, Polygons with
+  their holes, MultiGeometry. The name, the Folder it sits in, and its ExtendedData
+  (\code{<Data>} and \code{<SimpleData>}) become attributes. Always WGS 84 longitude and latitude:
+  reprojected into the project's system on read. An altitude counts as z only for an
+  \code{absolute} altitude mode. A \file{.kmz} is a zip holding \file{doc.kml}. Written in WGS 84,
+  every attribute as ExtendedData — for Google Earth, a GPS, the field. \\
 DXF \file{.dxf} & yes & yes & Polylines, lines and circles, each a feature with its DXF layer as an
   attribute. Written one polyline per ring, on the DXF layer named by the category column. \\
 \bottomrule
 \end{tabularx}
 
 \begin{note}
-\textbf{Longitude and latitude are refused.} A \file{.prj} that names a geographic system, a GeoJSON
-file without a projected \code{"crs"}, an EPSG 4000–4999 SRID, or coordinates that all fit within
-±180 and ±90 over less than 20° stop the open, and say why. micro places coordinates as it is given
-them and never reprojects, so degrees would land at $(-45, -20)$ on a metre grid. Reproject the file
-in your GIS first. Point geometries in a strings file are skipped with a note; a file of only points
-opens as a points layer.
+\textbf{Files in another coordinate system are reprojected.} A \file{.prj}, a GeoJSON
+\code{"crs"}, an SRID, KML, or coordinates that all fit within ±180 and ±90 over less than 20° say
+what system a file is in; micro reprojects it into the project's (\cref{ch:crs}) and records how. A
+file in longitude and latitude while the project has \emph{no} system yet is refused — it would land
+at $(-45, -20)$ on a metre grid — with an offer to set one. Point geometries in a strings file are
+skipped with a note; a file of only points opens as a points layer.
 \end{note}
 
 \section{Grids and surfaces}\label{sec:formats-grids}

@@ -27,3 +27,5 @@ grids-new-dialog | the demo project; Data → New grid / block model…; type "b
 # ── 09-columns ──
 columns-tab | the demo project, deposit.csv active, ⇧P → columns tab, after pressing "scan columns — one pass, every column" and waiting for it to finish (types, n · mean, histograms for FE and SG; LITO as text) | region (the properties panel)
 attr-table | the demo project, deposit.csv active; filter FE > 64 and LITO = "HEMATITE"; press t; tick "matches" in the table's title bar; click a row so the block is picked (magenta) in the view and the record panel shows it; table window placed lower-left so the picked block stays visible | full
+# ── 07c-crs ──
+crs-picker | the demo project; set the project CRS to SIRGAS 2000 / UTM zone 23S; click the CRS chip in the status bar; type "sirgas 2000 utm 23s" and select EPSG:31983 so the map shows its area of use (amber) beside the data extent (violet) | window

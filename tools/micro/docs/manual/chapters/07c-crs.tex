@@ -1,0 +1,144 @@
+\chapter{Coordinate systems}\label{ch:crs}
+\begin{goals}
+\textbf{In this chapter} you give a project its coordinate system, open vector files and point clouds that
+were saved in another one, and read what micro did to them and how accurately.
+\end{goals}
+
+Survey pickups arrive in SIRGAS 2000, an old lease map in SAD69, a GPS track from the field in WGS 84
+longitude and latitude, and the block model in the mine's UTM zone. micro keeps one coordinate system
+for the project and moves vectors and points into it as they open, saying each time how they were
+moved and how far the result can be trusted.
+
+\section{The project's coordinate system}\label{sec:crs-project}
+
+A project has one \term{coordinate reference system} (CRS). The chip at the right of the status bar,
+beside \ui{Sealed}, shows it — \code{EPSG:31983}, or \code{no CRS} — and a click on it opens the selector
+(\cref{sec:crs-selector}). The same command is \menu{File>Coordinate system…} and, in the palette,
+\key{⌘K} → \code{coordinate system}.
+
+The system is set in one of four ways:
+\begin{description}
+\item[from a file] the first vector file or point cloud you open with a stated \emph{projected} system (a
+  \file{.prj}, a GeoJSON \code{"crs"}, an SRID, a LAS coordinate-system record) gives the project its
+  system, when the project has none yet;
+\item[suggested] the selector proposes systems whose area of use holds your data;
+\item[picked] in the selector, by name or EPSG code;
+\item[typed] pasted into the selector: an EPSG code, a proj4 string (\code{+proj=tmerc …}) or a WKT
+  definition — what a \file{.prj} holds.
+\end{description}
+
+A project's system must be \emph{projected}: micro works in metres, so a geographic system (degrees) is
+refused with that reason. The system is saved in \file{project.json} and set again before any layer
+reopens. The layer properties' \ui{source} tab and \menu{Data>File info} show it, beside what the file
+itself said.
+
+\section{The selector}\label{sec:crs-selector}
+
+\shot{crs-picker}{The coordinate-system selector: SIRGAS 2000 / UTM zone 23S found by name, its area of use (amber) on the world map beside the data's extent (violet), the details below.}
+
+The selector carries the \emph{whole} EPSG table: every projected and geographic system that has a proj4
+definition — 6,983 of them, with their names and areas of use. It is part of micro.html and is unpacked
+the first time the selector opens; nothing is fetched.
+
+\begin{description}
+\item[search] words of the name in any order (\code{sirgas utm 23s}) or a code (\code{31983});
+\item[filters] \ui{all}, \ui{projected}, \ui{geographic}, \ui{recent} (the systems you have used), and
+  \ui{fits my data} — only systems whose area of use holds the data's extent;
+\item[suggested] a row of systems for where the data sits: modern datums, UTM zones and metres first,
+  then the tightest area of use;
+\item[the map] the world (Natural Earth, 1:110 million) with the selected system's area of use in amber
+  and your data's extent in violet;
+\item[details] name, code, kind, units, datum, the area of use in words and degrees, the stated accuracy
+  of its datum shift to WGS 84, the proj4 definition — and whether your data lies inside its area;
+\item[paste] a definition read by \ui{Read}: an ESRI \file{.prj} is matched to its EPSG code by name
+  when it carries none (\code{SAD\_1969\_UTM\_Zone\_23S} is EPSG:29193).
+\end{description}
+
+Double-click a row, or press \key{Enter} in the search box, to use it.
+
+\begin{tryit}
+Find a system by name and by code.
+\begin{enumerate}
+\item Click the CRS chip in the status bar.
+\item Type \code{sirgas utm 23s}: the list narrows to SIRGAS 2000 / UTM zone 23S.
+\item Select it. Its area of use — Brazil between 48°W and 42°W — shows in amber on the map.
+\item Type \code{31983} instead: the same system, found by its code.
+\end{enumerate}
+\end{tryit}
+
+\section{Reprojection on read}\label{sec:crs-reproject}
+
+\term{Reprojection} happens when a file opens, and only for the kinds of data where moving every
+coordinate is the right answer:
+
+\begin{itemize}
+\item strings and polygons in every format micro reads (\cref{ch:polygons}) — CSV string files, WKT,
+  WKT-CSV, shapefiles, GeoJSON, KML and KMZ, DXF as features — and points files read from them;
+\item point clouds: a LAS file whose coordinate-system record (an OGC WKT, or GeoTIFF keys) names a
+  system other than the project's.
+\end{itemize}
+
+Block models, grids and meshes are \emph{not} reprojected: moving each block of a model would break its
+boxes. They are read in their own coordinates.
+
+What counts as the file's system: its \file{.prj} or SRID or \code{"crs"}; for GeoJSON without a
+\code{"crs"} and for KML, WGS 84 longitude and latitude (both formats say so); for a file that says
+nothing but whose coordinates all fit within ±180 and ±90 over less than 20°, WGS 84 too. A file that
+says nothing and is in metres is taken to be in the project's system already.
+
+The move is horizontal. Each vertex's z is carried unchanged: elevations in mine data are above sea
+level, and the change in ellipsoidal height a datum shift implies is not a change of elevation.
+
+\begin{caution}
+A longitude/latitude file opened while the project has no system is refused, with an offer to set one
+(the selector opens with suggestions for where the file sits). micro never places degrees on a metre
+grid.
+\end{caution}
+
+\section{How accurate the move is}\label{sec:crs-accuracy}
+
+Every reprojected layer records the path its coordinates took, in the layer's \ui{source} tab, in
+\menu{Data>File info}, in its lineage (\code{reproject}) and in the open dialog's line for the file:
+
+\begin{lstlisting}
+SAD69 → SIRGAS 2000 by 3-parameter Helmert
+  (-67.35, +3.88, -38.22 m, IBGE R.PR 1/2005) — ~1–5 m
+\end{lstlisting}
+
+The record carries one of five \term{accuracy classes}:
+
+\begin{table}[htbp]\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+class & meaning \\ \midrule
+\code{exact} & the same datum: projection maths only, millimetres (SIRGAS 2000 degrees → SIRGAS 2000 / UTM) \\
+\code{sub-metre} & WGS 84, SIRGAS 2000, ETRS89 and NAD83-class frames taken as identical — they agree to centimetres; no shift is applied \\
+\code{metre} & a Helmert datum shift, three or seven parameters, with its source and stated accuracy (SAD69, Córrego Alegre, older national datums) \\
+\code{grid} & a datum shift by an NTv2 grid — none is bundled \\
+\code{unknown} & the shift needs a grid that is not loaded, or a system states no datum: no shift was applied, and the error may be tens to hundreds of metres \\ \bottomrule
+\end{tabularx}
+\caption{Accuracy classes of a reprojection.}\label{tab:crs-accuracy}
+\end{table}
+
+\begin{why}
+Inside Brazil, the national standard for SAD69 and Córrego Alegre is IBGE's: the parameters of
+Resolução R.PR 1/2005 (SAD69: ΔX −67.35, ΔY +3.88, ΔZ −38.22 m; Córrego Alegre: ΔX −206.05,
+ΔY +168.28, ΔZ −3.82 m). micro uses them for SAD69 data that sits in Brazil, in place of EPSG's
+continent-wide mean (−57, +1, −41 m, stated as ~19 m), and for Córrego Alegre in place of a grid it
+does not carry. Outside Brazil, SAD69 takes EPSG's default — the record says which.
+\end{why}
+
+\section{Exporting in longitude and latitude}\label{sec:crs-export}
+
+A strings and polygons layer exports, besides its own system's formats, two in WGS 84 degrees
+(\menu{Export features…}): \ui{KML}, for Google Earth and a GPS, every attribute as ExtendedData; and
+\ui{GeoJSON in lon/lat}, the RFC 7946 shape, with no \code{"crs"} member. Both are reprojected from the
+layer's system on the way out, so a layer needs one: the project's, or the one its file stated.
+
+A shapefile from a layer that was reprojected on read is written without a \file{.prj}: the original
+one names the old system. The status line names the project's system to set in the reading software.
+
+\section{Captions}\label{sec:crs-captions}
+
+Captions and title blocks print the project's system with \code{\{crs\}} —
+\code{SIRGAS 2000 / UTM zone 23S · EPSG:31983} — or its halves, \code{\{crs:name\}} and
+\code{\{crs:code\}} (\cref{sec:compo-fields}).

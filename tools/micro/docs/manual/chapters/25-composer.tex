@@ -343,7 +343,8 @@ field & prints \\ \midrule
 \multicolumn{2}{@{}l}{\emph{a comparison report} (\cref{sec:joins-compare})} \\
 \code{\{cmp:key\}} & a value of the page's comparison table: \code{\{cmp:delta\_metal\_pct:.1f\}}, \code{\{cmp:summary\}} (the change in metal, tonnes and grade, in words), \code{\{cmp:blocks\}} (added, removed, changed, unchanged), \code{\{cmp:group1\}} … and \code{\{cmp:bench1\}} … (the biggest moves), \code{\{cmp:old\}} · \code{\{cmp:new\}}; and any of the routine tool's values by name \\[3pt]
 \multicolumn{2}{@{}l}{\emph{the making}} \\
-\code{\{project\}} · \code{\{micro\}} & the project's name · the build of micro that made the page \\ \bottomrule
+\code{\{project\}} · \code{\{micro\}} & the project's name · the build of micro that made the page \\
+\code{\{crs\}} & the project's coordinate system, as \code{SIRGAS 2000 / UTM zone 23S · EPSG:31983}; \code{\{crs:name\}} and \code{\{crs:code\}} print the halves (\cref{ch:crs}). A dash when none is set \\ \bottomrule
 \end{tabularx}
 \caption{The fields. The date format understands \code{YYYY YY MMMM MMM MM M DD D HH mm ss}.}\label{tab:compo-fields}
 \end{table}
