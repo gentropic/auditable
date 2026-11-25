@@ -13,11 +13,12 @@
 //
 // setLayerPlacement(L, placement | null) is the one door: it stores the placement and re-reads the
 // layer IN PLACE (same layer, same records — paint, selection, calc columns, styling all stay).
-import { S, layerById, requestRender } from './state.js';
+import { S, layerById, requestRender, FRAME_DRAWERS } from './state.js';
+import { projectToCss } from './overlay.js';
 import { floatWin, focusWindow } from './windows.js';
 import {
   compilePlacement, fitSimilarity, placementFromFit, placementFromM, crsSamplePoints, fitCrsChange, invertP, applyP, placeBbox,
-  anglesFromR, residualClass, RESIDUAL_COLOR, fmtLen, describePlacement, zOnlyP,
+  anglesFromR, residualClass, RESIDUAL_COLOR, fmtLen, describePlacement, zOnlyP, composeP,
 } from './placement-core.js';
 import { layerPlacementM, placementTolerance, setPlacementTolerance, fileHeader } from './placement.js';
 import { openBlocksBlob, openDmBlob } from './open-blocks.js';
@@ -107,6 +108,9 @@ export async function rePlaceLayer(L) {
     if (h.dm) await openDmBlob(doc.blob, doc.name, { layer: L.id, first, keepFilter: true, forcePoints: doc.forcePoints, mapping: h.mapping, cached: fh.bbox ? { ...fh } : null });
     else await openBlocksBlob(doc.blob, doc.name, { layer: L.id, first, keepFilter: true, forcePoints: doc.forcePoints, provider: async () => ({ header: fh, streamChunks: doc.rawStream || doc.streamChunks, parquet: doc.parquet }) });
   } else if (d.meshDoc) {
+    // the mesh's CPU geometry caches live on the LAYER (the by-solid topology, its BVH, the
+    // variants): built from the old coordinates, they would keep answering in the old place
+    L._solidMesh = null; L._solidBVH = null; L._variants = null;
     const md = d.meshDoc, prebuiltKinds = /^(dm-wireframe|dxf|wfr)$/.test(md.header.format || '');
     if (md.header.soup && !prebuiltKinds) await openMeshDoc(md.blob, md.name, { layer: L.id, first, forceSoup: true, tint: L.tint, opacity: L.opacity });
     else await openMeshDoc(md.blob, md.name, { layer: L.id, first, prebuilt: await reReadMesh({ ...md, placeM: null }), ptBlob: md.ptBlob, tint: L.tint, opacity: L.opacity, forceSoup: !!md.header.soup });
@@ -219,7 +223,7 @@ export function openPlacementDialog(L, { tab = null } = {}) {
   if (!canPlace(L)) { $('#meta').textContent = `${nameOf(L)} can't take a placement`; return null; }
   if (_open.has(L.id)) { const st = _open.get(L.id); focusWindow(st.win.el); if (tab) st.show(tab); return st; }
   const p0 = L.placement || null, a0 = p0 ? anglesFromR(compilePlacement(p0) ? compilePlacement(p0).R : [1, 0, 0, 0, 1, 0, 0, 0, 1]) : { omega: 0, phi: 0, kappa: 0 };
-  const win = floatWin({ title: `placement · ${nameOf(L)}`, sub: '', w: 640, h: 520, onClose: () => _open.delete(L.id) });
+  const win = floatWin({ title: `placement · ${nameOf(L)}`, sub: '', w: 640, h: 520, onClose: () => { _open.delete(L.id); requestRender(); } });
   win.el.dataset.placement = String(L.id);
   const st = { L, win, pairs: (p0 && p0.source === 'gcp' && Array.isArray(p0.pairs) ? p0.pairs : []).map((q) => ({ from: q.from.slice(), to: q.to.slice(), use: q.use !== false })), fit: null, crsFit: null, mode: (p0 && p0.mode) || 'auto' };
   _open.set(L.id, st);
@@ -232,7 +236,7 @@ export function openPlacementDialog(L, { tab = null } = {}) {
   tol.onchange = () => { setPlacementTolerance(nOr(tol.value, 0.05)); paintCurrent(); renderFit(); };
   tolRow.append('tolerance (m)', tol, div('color:var(--muted, #888)', 'residuals: green within · amber within 3× · red beyond — always applied, always shown'));
   const tabs = div('display:flex;gap:4px'), panes = {};
-  const show = (k) => { for (const [n, pn] of Object.entries(panes)) { pn.style.display = n === k ? '' : 'none'; } for (const b of tabs.children) b.classList.toggle('on', b.dataset.tab === k); st.tab = k; };
+  const show = (k) => { for (const [n, pn] of Object.entries(panes)) { pn.style.display = n === k ? '' : 'none'; } for (const b of tabs.children) b.classList.toggle('on', b.dataset.tab === k); st.tab = k; requestRender(); };
   st.show = show;
   for (const [k, t] of [['typed', 'typed'], ['gcp', 'control points'], ['crs', 'CRS change']]) { const b = btn(t, () => show(k)); b.dataset.tab = k; tabs.append(b); }
   const surf = isSurfaceGrid(L);
@@ -271,13 +275,14 @@ export function openPlacementDialog(L, { tab = null } = {}) {
   const renderPairs = () => {
     tbl.textContent = '';
     const hr = document.createElement('tr');
-    for (const h of ['use', 'local x', 'y', 'z', '', 'true X', 'Y', 'Z', 'residual', '']) { const th = document.createElement('th'); th.textContent = h; th.style.cssText = 'text-align:left;font-weight:normal;color:var(--muted, #888)'; hr.append(th); }
+    for (const h of ['#', 'use', 'local x', 'y', 'z', '', 'true X', 'Y', 'Z', 'residual', '']) { const th = document.createElement('th'); th.textContent = h; th.style.cssText = 'text-align:left;font-weight:normal;color:var(--muted, #888)'; hr.append(th); }
     tbl.append(hr);
     st.pairs.forEach((q, i) => {
       const tr = document.createElement('tr'); tr.dataset.pair = String(i);
       const cell = (el) => { const td = document.createElement('td'); td.append(el); tr.append(td); return td; };
       const use = document.createElement('input'); use.type = 'checkbox'; use.checked = q.use; use.onchange = () => { q.use = use.checked; refit(); };
       use.dataset.pairUse = String(i);
+      cell(div('color:var(--muted, #888)', String(i + 1)));
       cell(use);
       for (let a = 0; a < 3; a++) { const e = inp(q.from[a], '90px'); e.onchange = () => { q.from[a] = nOr(e.value); refit(); }; cell(e); }
       cell(btn('⌖', async () => {
@@ -301,6 +306,7 @@ export function openPlacementDialog(L, { tab = null } = {}) {
     renderFit();
   };
   const renderFit = () => {
+    requestRender();                                       // the control points drawn in 3D follow the table
     const tolV = placementTolerance();
     if (st.fit) {
       st.fit.residuals.forEach((r, i) => {
@@ -361,4 +367,65 @@ export function openPlacementDialog(L, { tab = null } = {}) {
   return st;
 }
 
-try { window._microPlacement = { setLayerPlacement, openPlacementDialog, fitLayerToCrs, parseControlPoints, pickWorldPoint, layerLocalPoint, layerLocalBbox, canPlace, statusOf, fitSimilarity, placementFromFit, dialogs: _open }; } catch { /* headless */ }
+// ── the control points drawn in 3D, while a placement window's control-points tab is open ──
+// Per pair: a ring at its LOCAL point, a filled square at its TRUE point, a line between them
+// coloured like its residual (green / amber / red; grey with no fit; dashed when the pair is
+// dropped), and its table row number. SVG over the canvas, re-projected every frame.
+// Drawn where the layer IS drawn: the local point through the layer's present placement (where it
+// was picked, on the mesh), the true point taken back onto the layer by the current fit and out
+// through that same placement (Mdisp · Mfit⁻¹ · true) — so before the fit is applied the residuals
+// show ON the mesh (a drone model in its own frame, its true points kilometres away), and once it
+// is applied (Mdisp = Mfit) the ring is the local point placed by the fit and the square IS the
+// true point. With no fit yet, the true point is drawn only when the layer is already placed.
+const SVGNS = 'http://www.w3.org/2000/svg';
+const mkSvg = (tag, attrs) => { const e = document.createElementNS(SVGNS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; };
+const unsetTrue = (q) => !q.to || (q.to[0] === 0 && q.to[1] === 0 && q.to[2] === 0);
+/** the 3D markers of one open window's pairs, in WORLD (the scene's coordinates): [{ i, local, true, cls, use }] */
+export function controlPointMarkers(st) {
+  const L = st.L, out = [];
+  const Md = layerPlacementM(L);
+  let back = null;                                         // true → where the layer is drawn
+  try { if (st.fit) { const Mf = compilePlacement(placementFromFit(st.fit, 'gcp')); back = Md ? composeP(Md, invertP(Mf)) : invertP(Mf); } } catch { back = null; }
+  const tolV = placementTolerance();
+  st.pairs.forEach((q, i) => {
+    const local = Md ? applyP(Md, q.from[0], q.from[1], q.from[2], [0, 0, 0]) : [q.from[0], q.from[1], q.from[2]];
+    let tru = null;
+    if (!unsetTrue(q)) tru = back ? applyP(back, q.to[0], q.to[1], q.to[2], [0, 0, 0]) : Md ? [q.to[0], q.to[1], q.to[2]] : null;
+    const r = st.fit && st.fit.residuals[i];
+    out.push({ i, local, true: tru, cls: r ? residualClass(r.d, tolV) : 'none', use: q.use !== false });
+  });
+  return out;
+}
+function gcpSvg() {
+  let s = document.getElementById('gcpSvg');
+  if (!s) {
+    const view = document.getElementById('view'); if (!view) return null;
+    s = document.createElementNS(SVGNS, 'svg'); s.id = 'gcpSvg';
+    s.setAttribute('style', 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;display:none;z-index:2');
+    view.appendChild(s);
+  }
+  return s;
+}
+export function drawControlPoints() {
+  const s = gcpSvg(); if (!s) return;
+  const open = [..._open.values()].filter((st) => st.tab === 'gcp' && st.win && st.win.el && st.win.el.isConnected && st.pairs.length);
+  if (!open.length || !S.frame || !S.cam || !S.cam.state.viewProj) { if (s.style.display !== 'none') { s.style.display = 'none'; s.textContent = ''; } return; }
+  s.style.display = ''; s.textContent = '';
+  const o = S.frame.origin, css = (w) => (w ? projectToCss([w[0] - o[0], w[1] - o[1], w[2] - o[2]]) : null);
+  for (const st of open) {
+    for (const m of controlPointMarkers(st)) {
+      const a = css(m.local), b = css(m.true), col = RESIDUAL_COLOR[m.cls], dash = m.use ? '' : '4 3';
+      if (a && b) {
+        s.append(mkSvg('line', { x1: a[0], y1: a[1], x2: b[0], y2: b[1], style: 'stroke:#121212;stroke-width:4;stroke-linecap:round' }));
+        s.append(mkSvg('line', { x1: a[0], y1: a[1], x2: b[0], y2: b[1], style: `stroke:${col};stroke-width:1.6`, 'stroke-dasharray': dash, 'data-gcp-line': m.i, 'data-cls': m.cls }));
+      }
+      if (a) s.append(mkSvg('circle', { cx: a[0], cy: a[1], r: 4.5, style: `fill:none;stroke:${col};stroke-width:2`, 'data-gcp-local': m.i, 'data-layer': st.L.id }));
+      if (b) s.append(mkSvg('rect', { x: b[0] - 4, y: b[1] - 4, width: 8, height: 8, style: `fill:${col};stroke:#121212;stroke-width:1.2`, 'data-gcp-true': m.i, 'data-cls': m.cls }));
+      const at = b || a;
+      if (at) { const t = mkSvg('text', { x: at[0] + 7, y: at[1] - 6, style: 'fill:#fff;font:11px monospace;paint-order:stroke;stroke:#121212;stroke-width:3', 'data-gcp-label': m.i }); t.textContent = String(m.i + 1); s.append(t); }
+    }
+  }
+}
+try { FRAME_DRAWERS.push(drawControlPoints); } catch { /* headless */ }
+
+try { window._microPlacement = { setLayerPlacement, openPlacementDialog, fitLayerToCrs, parseControlPoints, pickWorldPoint, layerLocalPoint, layerLocalBbox, canPlace, statusOf, fitSimilarity, placementFromFit, controlPointMarkers, drawControlPoints, dialogs: _open }; } catch { /* headless */ }

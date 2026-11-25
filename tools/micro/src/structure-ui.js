@@ -735,6 +735,17 @@ export function installStructurePointer(cv) {
     }
     if (e.key === 'Escape') disarm();
   }, true);
+  // the outcrop re-read in place (a placement: rotated, shifted, scaled into world) → the planes are
+  // re-measured from the paint on the new coordinates: attitudes are computed in world, so a
+  // georeferenced outcrop's dip directions turn with it (nothing is re-painted)
+  addEventListener('micro:layer-reread', async (e) => {
+    const L = layerById(e.detail && e.detail.id);
+    if (!L || L.kind !== 'mesh' || !setColOf(L) || !(_structWins.has(L.id) || L._structView)) return;
+    if (_armed && _armed.L.id === L.id) disarm();
+    const md = L.docs.meshDoc;
+    if (md && !md.header.soup) { try { await prepareStructure(L); } catch { /* the window says so on its next render */ } }
+    await structureAfterEdit(L);
+  });
   // the outcrop goes → its window, discs and arming go with it
   addEventListener('micro:layer-removed', (e) => {
     const id = e.detail && e.detail.id;

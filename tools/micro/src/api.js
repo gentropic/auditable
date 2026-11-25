@@ -40,7 +40,7 @@ import { openSectionSeries, renderSectionSeries, seriesPositions, seriesExtent }
 import { recoverSession, createMemDir } from './gpu-restore.js';
 import { setLang, translateDom } from './i18n.js';
 import { openGradeShell, gradeShell, readField, contourField, smoothField } from './shells.js';
-import { openStructure, openStereonet, importPaintedSets, removeTrace, tracesToDxf, _structWins, planesToTable, structureArmed } from './structure-ui.js';
+import { openStructure, openStereonet, importPaintedSets, removeTrace, tracesToDxf, _structWins, planesToTable, structureArmed, structureAfterEdit } from './structure-ui.js';
 import { structureOf, prepareStructure, measurePlanes, traceNetwork } from './structure.js';
 import { validationRun, openValidation } from './validation.js';
 import { openContact, scanContact, meshDistanceOf, writeDistanceColumn, _contactWins } from './contact.js';
@@ -255,7 +255,7 @@ window._micro = {
   views: () => S.views, scenes: () => S.scenes, toggleFilterDrawer, renderFilterDrawer, saveViewAs, applyView,
   saveSceneAs, applyScene, captureScene, removeBookmark, removeScene, importDrillholes: openDrillholeLayer,
   recordPosition, pickHitPoint, pixelRay, blockHalfDims, meshHitAt, showMeshRecord, syncMeshPickable,
-  openStructure, openStereonet, importPaintedSets, removeTrace, tracesToDxf, structureWins: _structWins,
+  openStructure, structureAfterEdit, openStereonet, importPaintedSets, removeTrace, tracesToDxf, structureWins: _structWins,
   structureOf, prepareStructure, measurePlanes, traceNetwork, planesToTable, structureArmed, nlSetEnabled,
   nlEnsureTrained, nlPropose, nlDescribeSession, showAbout, nlStats, nlHoldOut, renderer, cam, get frame() { return S.frame; },
   requestRender, docBbox: rendererDocBbox,
