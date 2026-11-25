@@ -10347,6 +10347,84 @@ if (take()) {
   await pg.close();
 }
 
+// ── §140: DRILLHOLE LOG TRACKS (src/logs.js · condenser gl-logs.js). The demo's holes, alone,
+// seen side-on: an FE bar track on the RIGHT draws its colour right of the traces, moved LEFT it
+// draws left of them (the screen's side, whichever way a hole runs); a filter thins the ribbons
+// with the sticks; three tracks (bars left + right, a LITO class strip on the trace) resolve
+// clear of each other; the decorations legend lists them; the display state saves and restores
+// them; the window shows a row per track.
+if (take()) {
+  const pg = await mkPage('sm2logs');
+  const r = await pg.evaluate(async () => {
+    const M = window._micro, R = M.renderer, W = window.micro, V = window._microVis;
+    await M.openDemoProject();
+    M.closeAllWindows();
+    for (const x of M.layers()) if (!(x.dh && x.docs.dhDoc && !x.trace)) x.visible = false;
+    M.applyTreeVisibility();
+    await W.setSection(null);
+    const L = M.layers().find((x) => x.dh && x.docs.dhDoc && !x.trace);
+    const frame = () => new Promise((z) => requestAnimationFrame(z));
+    const settle = async () => { for (let k = 0; k < 300; k++) { M.requestRender(); await frame(); if (R.elementCount && R.accumulated === R.elementCount) break; } for (let k = 0; k < 4; k++) { M.requestRender(); await frame(); } };
+    const b = R.contentBbox({ layers: [L.id] }), o = M.frame.origin;
+    await W.setView({ target: [(b[0] + b[3]) / 2 + o[0], (b[1] + b[4]) / 2 + o[1], (b[2] + b[5]) / 2 + o[2]], look: 0, elevation: 0, distance: Math.hypot(b[3] - b[0], b[4] - b[1], b[5] - b[2]) * 1.2, ortho: true });
+    const cv = document.querySelector('#cv');
+    const shot = () => { const c = new OffscreenCanvas(cv.width, cv.height), g = c.getContext('2d'); g.drawImage(cv, 0, 0); return g.getImageData(0, 0, cv.width, cv.height).data; };
+    const bg = R.background.slice(0, 3).map((v) => Math.round(v * 255));
+    // each track pixel against the nearest interval midpoint on screen: right or left of its trace?
+    const dh = L.docs.dhDoc, mids = [];
+    { const m = M.cam.state.viewProj;
+      for (let i = 0; i < dh.header.count; i++) { const p = dh.recordPosition(i); if (!p) continue; const q = [p[0] - o[0], p[1] - o[1], p[2] - o[2]];
+        const cx = m[0] * q[0] + m[4] * q[1] + m[8] * q[2] + m[12], cy = m[1] * q[0] + m[5] * q[1] + m[9] * q[2] + m[13], cw = m[3] * q[0] + m[7] * q[1] + m[11] * q[2] + m[15];
+        mids.push([(cx / cw + 1) / 2 * cv.width, (1 - cy / cw) / 2 * cv.height]); } }
+    const sideOf = (d, rgb) => {
+      let right = 0, left = 0, n = 0;
+      for (let y = 0; y < cv.height; y += 2) for (let x = 0; x < cv.width; x += 2) {
+        const k = (y * cv.width + x) * 4;
+        if (Math.abs(d[k] - rgb[0]) + Math.abs(d[k + 1] - rgb[1]) + Math.abs(d[k + 2] - rgb[2]) >= 40) continue;
+        n++;
+        let best = null, bd = Infinity; for (const p of mids) { const dd = (p[0] - x) ** 2 + (p[1] - y) ** 2; if (dd < bd) { bd = dd; best = p; } }
+        if (best) { if (x > best[0]) right++; else left++; }
+      }
+      return { right, left, n };
+    };
+    const orange = [0xe8, 0x91, 0x3a];
+    await V.setLogTracks(L, [{ col: 'FE', kind: 'bar', side: 'right', color: '#e8913a' }]);
+    await settle();
+    const out = { onRight: sideOf(shot(), orange) };
+    await V.setLogTracks(L, [{ col: 'FE', kind: 'bar', side: 'left', color: '#e8913a' }]);
+    await settle();
+    out.onLeft = sideOf(shot(), orange);
+    // a filter thins the ribbons with the sticks
+    M.setActiveLayer(L.id);
+    await M.applyBlockFilter('FE > 50', L);
+    await settle();
+    out.filtered = sideOf(shot(), orange);
+    await M.applyBlockFilter('', L);
+    // three tracks, resolved clear of each other
+    const res = await V.setLogTracks(L, [{ col: 'FE', kind: 'bar', side: 'right' }, { col: 'SG', kind: 'bar', side: 'left', color: '#4aa3df' }, { col: 'LITO', kind: 'strip', side: 'center' }]);
+    out.resolved = res.map((t) => ({ col: t.col, off: +t._offset.toFixed(2), w: +t._width.toFixed(2), lo: t._lo, hi: +t._hi.toFixed(2), classes: t._dict ? t._dict.length - 1 : null }));
+    out.reach = R.layerLogs(L.id);
+    L.legend = true; M.drawDecorations();
+    out.legend = V.logLegendRows(L).map((x) => x.col);
+    const LD = await import('/tools/micro/src/layer-display.js');
+    const saved = LD.displayStateOf(L);
+    await V.setLogTracks(L, []);
+    out.cleared = R.layerLogs(L.id);
+    await LD.restoreDisplayState(L, JSON.parse(JSON.stringify(saved)));
+    out.restored = V.logTracksOf(L).map((t) => `${t.col}:${t.kind}:${t.side}`);
+    const w = V.openLogsWindow(L); out.rows = w.el.querySelectorAll('[data-track]').length; w.close();
+    return out;
+  });
+  chk(`logs: a RIGHT bar track draws right of the traces (${r.onRight.right} right / ${r.onRight.left} left of ${r.onRight.n} px), a LEFT one left of them (${r.onLeft.right} / ${r.onLeft.left})`,
+    r.onRight.n > 100 && r.onRight.right > 0.9 * (r.onRight.right + r.onRight.left) && r.onLeft.left > 0.9 * (r.onLeft.right + r.onLeft.left));
+  chk(`logs: a filter thins the ribbons with the sticks (${r.filtered.n} px of ${r.onLeft.n})`, r.filtered.n > 0 && r.filtered.n < 0.8 * r.onLeft.n);
+  chk(`logs: three tracks resolve clear of each other (${JSON.stringify(r.resolved)}, reach ${JSON.stringify(r.reach)})`,
+    r.resolved.length === 3 && r.resolved[2].off === 0 && r.resolved[0].off >= r.resolved[2].w / 2 && r.resolved[1].off >= r.resolved[2].w / 2 && r.resolved[2].classes > 1 && r.reach && r.reach.reach > r.resolved[0].off);
+  chk(`logs: the legend lists them (${r.legend.join(', ')}); cleared ${JSON.stringify(r.cleared)} → restored from the display state (${r.restored.join(' · ')}); the window has ${r.rows} rows`,
+    r.legend.join() === 'FE,SG,LITO' && r.cleared === null && r.restored.join() === 'FE:bar:right,SG:bar:left,LITO:strip:center' && r.rows === 3);
+  await pg.close();
+}
+
 // ── the LAYER CONTEXT MENU, regrouped (src/layermenu.js layerMenuSections). It had
 // grown to ~33 top-level entries on a block model; now the frequent verbs sit on top
 // and the rest in Analyse · Geometry · Select · Views · Display · Data & file · Move.

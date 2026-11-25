@@ -19,5 +19,6 @@ export { makeProgram, rampPixels, palettePixels, uploadChunk, createRenderer } f
 export { createEdl } from './core/edl.js';
 export { createMipPipeline, decodeProjection, PROJECTION_MODES } from './core/gl-mip.js';
 export { createGhostPipeline, GHOST_STYLES } from './core/gl-ghost.js';
+export { createLogsPipeline, LOG_KINDS } from './core/gl-logs.js';
 // the block-support contract (pure data + helpers; grid/support.js) — the engine draws by it
 export { SIZEQ_MAX, supportOf, supportOfHeader, volumeOf, toLattice as supportToLattice, toWorld as supportToWorld, worldHalfExtent, centreOf, sameLattice, sizeCollector, finePitch, sizeQ, putDimQ, pitchOf, datamineRotZ, dmLocalToWorld, dmPlaceOf, placeDmColumns, placeDmRow, dmWorldToLocal, volumeOfSizes } from './grid/support.js';

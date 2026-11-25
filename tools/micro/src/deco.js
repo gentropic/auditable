@@ -253,9 +253,16 @@ export function drawOneLegend(g, L, bx, by) {
   return (y - by) + 4;
 }
 
+// a layer's EXTRA legend rows under its colour legend (src/logs.js: its log tracks) — a drawer
+// (g, L, bx, by) → the height it used; registered by the feature, so this module imports none
+const _legendExtras = [];
+export function addLegendExtra(fn) { _legendExtras.push(fn); }
 export function drawLegendsDeco(g, W, H) {
   const bx = W - 148 - _rightInset(); let by = 84;
-  for (const L of legendLayers()) { const used = drawOneLegend(g, L, bx, by); if (used) by += used + 16; }
+  for (const L of S.layers.filter((x) => x.legend && x.visible)) {
+    if (legendAvailable(L)) { const used = drawOneLegend(g, L, bx, by); if (used) by += used + 16; }
+    for (const fn of _legendExtras) { const used = fn(g, L, bx, by) || 0; if (used) by += used + 12; }
+  }
 }
 
 export function renderDeco(g, W, H) {

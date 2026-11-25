@@ -202,6 +202,28 @@ That mode decides what is \emph{drawn}. It is not a filter. Exporting the filter
 
 The demo project sections the model and leaves the holes uncut, threading whole through the opened deposit.
 
+\subsection{Log tracks}\label{sec:dh-logs}\index{drillholes!log tracks}\index{log tracks}
+A stick shows one column at a time, as color. A downhole log shows several side by side. \menu{View>Drillhole logs…} (or \code{drillhole logs} in the palette) gives every hole as many \emph{tracks} as you want: each one a ribbon running beside the hole, interval by interval.
+
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+\ui{bar} & the ribbon's width \emph{is} the value, on the track's scale (\ui{min}–\ui{max}; blank: from zero, or the column's minimum if that is negative, to its maximum), in the track's color \\
+\ui{strip} & a ribbon of constant width, colored by the value: a text column such as \col{LITO} by its classes (the layer's own class colors when its class legend is on that column), a number through a ramp \\ \bottomrule
+\end{tabularx}
+\end{center}
+
+Each track has a \emph{side} — \ui{right}, \ui{left}, or \ui{center} on the trace — a \ui{width} and an \ui{offset} from the trace, both in meters. Left blank, they are automatic: a centered strip is a band a little wider than the stick, so it shows on both sides of it, and the side tracks start clear of the stick (and of the band), stacking outward in the order you add them. The sides are the \emph{screen's}: a right track stays on your right however the hole runs and however you turn the view. The ribbons face you in 3D and face the screen in a section, so a section through a fan of holes reads like a sheet of logs. A blank value draws no ribbon.
+
+The tracks follow the sticks: the hole filter and the layer's filter thin them, and a section cuts them as it cuts the sticks. With the layer's legend on (\cref{sec:figures-legends}), the tracks are listed under its color legend — swatch, column, side and scale — and so appear in an exported figure. They are saved with the layer in the project.
+
+\begin{tryit}
+\begin{enumerate}
+\item Open the demo project, hide everything but the holes, and choose \menu{View>Drillhole logs…}.
+\item Press \ui{+ track} three times: \col{FE} as a bar on the right, \col{SG} as a bar on the left, \col{LITO} as a strip on the center.
+\item Press \key{n} for a section-like view from the south, and \key{o}: the holes read as logs, the grades on either side of the lithology.
+\end{enumerate}
+\end{tryit}
+
 \section{Blanks and bad rows}\label{sec:dh-blanks}
 
 A blank in a drillhole table is never read as zero (\cref{sec:columns-blanks}). What micro does instead depends on where the blank is:

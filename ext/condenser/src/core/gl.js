@@ -12,6 +12,7 @@ import { frustumPlanes, aabbInFrustum, mat4Inverse, translateState } from './cam
 import { createBlocksPipeline, categoryPalettePixels } from './gl-blocks.js';
 import { createMipPipeline, PROJECTION_MODES } from './gl-mip.js';
 import { createGhostPipeline, GHOST_STYLES } from './gl-ghost.js';
+import { createLogsPipeline } from './gl-logs.js';
 import { createSticksPipeline } from './gl-sticks.js';
 import { createMeshPipeline } from './gl-mesh.js';
 import { createSoupPipeline } from './gl-soup.js';
@@ -259,6 +260,7 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
   let lastMip = null;                                     // the last frame's projection: { mode, layers, … } — pick() reads it
   let lastMipKey = '';                                    // which layers it projected (a change re-rasters)
   let ghostPipe = null;                                   // ghost filter display targets + composite (gl-ghost.js), lazy
+  let logsPipe = null;                                    // drillhole log tracks (gl-logs.js), lazy
   let lightweight = false;                                // a software rasterizer: the heavy optional passes stand down (setLightweight)
   const ramp = lutTexture(gl, rampPixels(), 256);
   const palette = lutTexture(gl, palettePixels(), 32);   // LAS classification (points)
@@ -360,7 +362,7 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
     if (set !== 'base' || !viewSrc.size) return;
     for (const [v, s] of viewSrc) if (s === layer) { addProxy(up, v); syncViewData(v); }
   };
-  const freeChunk = (c) => { if (c._src) return; gl.deleteVertexArray(c.vao); if (c._bakeVao) gl.deleteVertexArray(c._bakeVao); c.buffers.forEach((b) => gl.deleteBuffer(b)); };
+  const freeChunk = (c) => { if (logsPipe) logsPipe.forget(c); if (c._src) return; gl.deleteVertexArray(c.vao); if (c._bakeVao) gl.deleteVertexArray(c._bakeVao); c.buffers.forEach((b) => gl.deleteBuffer(b)); };
   const byLayer = (arr) => {
     const m = new Map();
     for (const c of arr) { let g = m.get(c._layer); if (!g) m.set(c._layer, g = []); g.push(c); }
@@ -712,6 +714,17 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
     // full-screen neighbourhood read stand down — a ghost OUTLINE draws as the flat tint
     setLightweight(on) { if (lightweight !== !!on) { lightweight = !!on; needClear = true; } },
     get lightweight() { return lightweight; },
+    // LOG TRACKS on a drillhole (sticks) layer (gl-logs.js): value ribbons beside each hole, as
+    // many as you like — tracks = [{ values: Float32Array by record (NaN = blank), kind 'bar' |
+    // 'strip', side 'left' | 'right' | 'center', offset, width (world), range [lo, hi], color
+    // [r, g, b], ramp | palette: Uint8Array(256·4) | null }], or null / [] for none
+    setLayerLogs(layer, tracks) {
+      if (!logsPipe && (!tracks || !tracks.length)) return;
+      if (!logsPipe) logsPipe = createLogsPipeline(gl);
+      logsPipe.set(layer, tracks);
+      needClear = true;
+    },
+    layerLogs(layer) { return logsPipe && logsPipe.has(layer) ? { reach: logsPipe.reach(layer) } : null; },
     layerGhost(layer) { const ls = layers.get(layer); return ls && ls.ghost ? { style: ls.ghost, color: ls.ghostColor ? ls.ghostColor.slice() : null } : null; },
     layerValueState(layer) { const ls = layers.get(layer); return ls ? { noData: ls.noData ? ls.noData.slice() : null, rampHides: !!ls.rampHides } : null; },
     setLayerChanTex(layer, tex, range = null) {
@@ -831,6 +844,7 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
       if (resolvePipe) resolvePipe.dropBake(layer);
       if (mipPipe) mipPipe.drop(layer);
       if (ghostPipe) ghostPipe.drop(layer);
+      if (logsPipe) logsPipe.drop(layer);
       layerMaxRec.delete(layer); bakeDirty.delete(layer);
       lastCosSig.delete(layer); cosmeticDirtyLayers.delete(layer); lutDirtyLayers.delete(layer);
       needClear = true;
@@ -975,6 +989,7 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
       if (resolvePipe) resolvePipe.clear();
       if (mipPipe) mipPipe.clear();
       if (ghostPipe) ghostPipe.clear();
+      if (logsPipe) logsPipe.clear();
       lastMip = null; lastMipKey = '';
       layerMaxRec.clear(); bakeDirty.clear(); dropCapture();
       lastCosSig.clear(); cosmeticDirtyLayers.clear(); lutDirtyLayers.clear();
@@ -1188,7 +1203,7 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
         const b = drawnBox(c, movedBox);                   // where it's drawn (layer offset applied)
         let cullBox = b;
         if (c.kind === 'sticks') {
-          const r = layerOf(c._layer).stickRadius;
+          const r = Math.max(layerOf(c._layer).stickRadius, logsPipe ? logsPipe.reach(c._layer) : 0);   // log ribbons reach past the stick
           for (let i = 0; i < 3; i++) { padBox[i] = b[i] - r; padBox[i + 3] = b[i + 3] + r; }
           cullBox = padBox;
         }
@@ -1438,16 +1453,24 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
             opacity: ls.opacity,
           });
         };
+        const logSlices = logsPipe ? new Map() : null;      // the slices each logged layer's sticks drew: its tracks draw them too
         for (const [id, group] of stkGroups) {
           beginStkLayer(id);
+          const sl = logSlices && logsPipe.has(id) ? [] : null;
+          if (sl) logSlices.set(id, sl);
           for (const c of group) {
             const [first, k] = allot(c);
             if (k > 0) {
               sticksPipe.drawSlice(c, first, k, cheapOf2(c));
               drawn += k; c.cursor = first + k;
+              if (sl) sl.push([c, first, k]);
             }
             if (c.cursor < c.count) converged = false;
           }
+        }
+        if (logSlices) for (const [id, sl] of logSlices) {
+          const ls = layerOf(id);
+          logsPipe.draw(id, sl, camOf(id).state, { maskTex: ls.maskTex, isolate: ls.isolate, section: layerSecOf(ls, sec) });
         }
         if (rp) {
           gl.depthFunc(gl.LEQUAL);
