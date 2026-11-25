@@ -34,6 +34,7 @@ import { currentSection } from './section.js';
 import { setPickHooks, meshHitAt, pickHitPoint } from './pick.js';
 import { SW, initSoftwareMode } from './software-mode.js';
 import { swFrameGate, swNextAt } from './swrender.js';
+import { registerCommands } from './commands.js';
 
 const $ = (s) => document.querySelector(s);
 
@@ -47,12 +48,6 @@ setSelectionHooks({ get _viewMode() { return _viewMode; } });
 setLayermenuHooks({ get _blockEdges() { return _blockEdges; } });
 // src/settings.js reaches back into the app through these
 setSettingsHooks({ get _blockEdges() { return _blockEdges; }, setBlockEdges });
-// display preferences owned here and beside (Settings → display renders the rows)
-{
-  const at = PREFS.findIndex((p) => p.label === 'block edges') + 1 || PREFS.length;
-  PREFS.splice(at, 0,
-    { sec: 'display', label: 'vector-section outlines', desc: 'a composer vector section draws colour regions (none) — or every block’s cut outlined in ink (sub-blocks), or each parent block’s (parents); outlines add cells, so a large section may then be too many for vectors', kind: 'choice', opts: VEC_OUTLINES.map((v) => [v, v]), get: () => _vecOutlines, set: (v) => setVectorOutlines(v) });
-}
 // src/overlay.js reaches back into the app through these
 setOverlayHooks({ get _viewMode() { return _viewMode; } });
 export const cv = $('#cv');
@@ -140,6 +135,27 @@ function currentDrawOpts() {
 function edlEnabled() {
   return $('#edlOn').checked && !S.projection;
 }
+// AMBIENT OCCLUSION (Settings → display): a soft shade where surfaces meet at an angle — inner
+// corners, the foot of a pit wall, between benches (condenser edl.js, the same pass as EDL). A
+// machine preference, off by default; off under a projection (no depth) and in software rendering
+export const AO_LEVELS = [['off', 'off'], ['0.5', 'soft'], ['1', 'medium'], ['1.6', 'strong']];
+let _ao = (() => { try { const v = localStorage.getItem('micro.ao'); return AO_LEVELS.some(([k]) => k === v) ? v : 'off'; } catch { return 'off'; } })();
+export function setAmbientOcclusion(v) {
+  _ao = AO_LEVELS.some(([k]) => k === String(v)) ? String(v) : 'off';
+  try { if (_ao === 'off') localStorage.removeItem('micro.ao'); else localStorage.setItem('micro.ao', _ao); } catch { /* private */ }
+  requestRender();
+}
+export const ambientOcclusion = () => _ao;
+const aoStrength = () => (_ao === 'off' || SW.on || S.projection ? 0 : +_ao);
+// the EDL + AO options at a pixel scale s (a figure renders bigger: the radii grow with it)
+const postOpts = (s = 1) => ({ enabled: edlEnabled(), strength: +$('#edlStr').value, radius: 1.4 * s, ao: aoStrength(), aoRadius: 9 * s * Math.min(2, window.devicePixelRatio || 1) });
+// display preferences owned here and beside (Settings → display renders the rows)
+{
+  const at = PREFS.findIndex((p) => p.label === 'block edges') + 1 || PREFS.length;
+  PREFS.splice(at, 0,
+    { sec: 'display', label: 'ambient occlusion', desc: 'a soft shade where surfaces meet at an angle — inner corners, the foot of a pit wall, between benches; mostly for figures. Off under a projection and in software rendering', kind: 'choice', opts: AO_LEVELS, get: () => _ao, set: (v) => setAmbientOcclusion(v) },
+    { sec: 'display', label: 'vector-section outlines', desc: 'a composer vector section draws colour regions (none) — or every block’s cut outlined in ink (sub-blocks), or each parent block’s (parents); outlines add cells, so a large section may then be too many for vectors', kind: 'choice', opts: VEC_OUTLINES.map((v) => [v, v]), get: () => _vecOutlines, set: (v) => setVectorOutlines(v) });
+}
 let _idleCapDone = false;
 function loop(t) {
   if (renderer.gl.isContextLost() || _recovering) { requestAnimationFrame(loop); return; }   // nothing to draw on until the view is rebuilt (gpu-restore)
@@ -161,7 +177,7 @@ function loop(t) {
     cam.setAspect(w / h);
     const opts = currentDrawOpts();
     const t0 = performance.now();
-    const r = edl.render(w, h, cam, () => renderer.draw(cam, opts), { enabled: edlEnabled(), strength: +$('#edlStr').value });
+    const r = edl.render(w, h, cam, () => renderer.draw(cam, opts), postOpts());
     converged = r.converged;
     fpsBuf.push(performance.now() - t0); if (fpsBuf.length > 30) fpsBuf.shift();
     const ms = fpsBuf.reduce((a, b) => a + b, 0) / fpsBuf.length;
@@ -221,7 +237,7 @@ export function renderFigureCanvas(scale = 1, { decorations = true } = {}) {
   const r = cv.getBoundingClientRect();
   const bw = cv.width, bh = cv.height, tw = bw * scale, th = bh * scale;
   const opts = currentDrawOpts(); opts.pointPx = opts.pointPx * scale;
-  const edlOpts = { enabled: edlEnabled(), strength: +$('#edlStr').value, radius: 1.4 * scale };
+  const edlOpts = postOpts(scale);
   if (scale !== 1) cv.width = tw, cv.height = th;
   renderer.invalidate();
   let res, guard = 0;
@@ -240,7 +256,7 @@ export function renderViewCanvas(pw, ph) {
   pw = Math.max(16, Math.min(8192, Math.round(pw))); ph = Math.max(16, Math.min(8192, Math.round(ph)));
   const bw = cv.width, bh = cv.height, s = Math.max(1, ph / Math.max(1, bh));
   const opts = currentDrawOpts(); opts.pointPx = opts.pointPx * s;
-  const edlOpts = { enabled: edlEnabled(), strength: +$('#edlStr').value, radius: 1.4 * s };
+  const edlOpts = postOpts(s);
   cv.width = pw; cv.height = ph; cam.setAspect(pw / ph);
   renderer.invalidate();
   let res, guard = 0;
@@ -293,3 +309,9 @@ export async function pivotOn(hit, cssX, cssY) {
   glideTarget([w[0] - S.frame.origin[0], w[1] - S.frame.origin[1], w[2] - S.frame.origin[2]]);
   $('#meta').textContent = 'orbiting about the tapped spot — double-tap empty space to fit';
 }
+
+registerCommands([
+  { id: 'ao-on', group: 'View', title: 'Ambient occlusion: on', kw: 'ssao shading corners creases benches figure quality depth shade', when: () => _ao === 'off', run: () => setAmbientOcclusion('1') },
+  { id: 'ao-off', group: 'View', title: 'Ambient occlusion: off', kw: 'ssao shading', when: () => _ao !== 'off', run: () => setAmbientOcclusion('off') },
+]);
+try { window._microVis = Object.assign(window._microVis || {}, { setAmbientOcclusion, ambientOcclusion }); } catch { /* headless */ }

@@ -10488,6 +10488,60 @@ if (take()) {
   await pg.close();
 }
 
+// ── §142: AMBIENT OCCLUSION (condenser edl.js · Settings → display). A floor of blocks with a
+// wall standing on half of it, one colour, seen obliquely: with occlusion on, the pixels along
+// the foot of the wall (an inner corner) darken clearly, a stretch of open floor and the wall's
+// own face hardly change. Off under a projection and in software rendering; off is the default.
+if (take()) {
+  const pg = await mkPage('sm2ao');
+  const r = await pg.evaluate(async () => {
+    const M = window._micro, R = M.renderer, W = window.micro, V = window._microVis;
+    const N = 24, D = 10;
+    let csv = 'XC,YC,ZC,V\n';
+    for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+      csv += `${i * D + D / 2},${j * D + D / 2},${D / 2},1\n`;
+      if (i >= N / 2) for (let k = 1; k < 6; k++) csv += `${i * D + D / 2},${j * D + D / 2},${k * D + D / 2},1\n`;
+    }
+    const id = await M.openBlob(new Blob([csv]), 'ao.csv', 'replace', null, { throw: true });
+    const L = M.layers().find((x) => x.id === id);
+    M.setLayerColorSel(L, 'solid');
+    const frame = () => new Promise((z) => requestAnimationFrame(z));
+    const settle = async () => { for (let k = 0; k < 300; k++) { M.requestRender(); await frame(); if (R.elementCount && R.accumulated === R.elementCount) break; } for (let k = 0; k < 4; k++) { M.requestRender(); await frame(); } };
+    const o = M.frame.origin;
+    await W.setView({ target: [N * D / 2, N * D / 2, 20], look: 90, elevation: 35, distance: 380, ortho: false });   // world coordinates
+    const cv = document.querySelector('#cv');
+    const px = (w) => {
+      const p = [w[0] - o[0], w[1] - o[1], w[2] - o[2]], m = M.cam.state.viewProj;
+      const cx = m[0] * p[0] + m[4] * p[1] + m[8] * p[2] + m[12], cy = m[1] * p[0] + m[5] * p[1] + m[9] * p[2] + m[13], cw = m[3] * p[0] + m[7] * p[1] + m[11] * p[2] + m[15];
+      return [Math.round((cx / cw + 1) / 2 * cv.width), Math.round((1 - cy / cw) / 2 * cv.height)];
+    };
+    const shot = () => { const c = new OffscreenCanvas(cv.width, cv.height), g = c.getContext('2d'); g.drawImage(cv, 0, 0); return g.getImageData(0, 0, cv.width, cv.height).data; };
+    const lum = (d, [x, y]) => { const k = (y * cv.width + x) * 4; return d[k] + d[k + 1] + d[k + 2]; };
+    // sample points along y: the crease (floor just before the wall), open floor, the wall's face
+    const ys = [60, 90, 120, 150, 180];
+    const crease = ys.map((y) => px([N * D / 2 - 1.5, y, D])), floor = ys.map((y) => px([N * D / 2 - 70, y, D])), wall = ys.map((y) => px([N * D / 2, y, 35]));
+    const mean = (d, pts) => pts.reduce((a, p) => a + lum(d, p), 0) / pts.length;
+    V.setAmbientOcclusion('off'); await settle();
+    const off = shot();
+    V.setAmbientOcclusion('1'); await settle();
+    const on = shot();
+    const out = { crease: [mean(off, crease), mean(on, crease)], floor: [mean(off, floor), mean(on, floor)], wall: [mean(off, wall), mean(on, wall)] };
+    // under a projection there is no depth to shade: the picture is the projection's alone (colour by V, a value)
+    M.setLayerColorSel(L, M.colorSelFor(L, 'V'));
+    V.setAmbientOcclusion('off'); M.setProjection('max'); await settle(); const pjOff = shot();
+    V.setAmbientOcclusion('1'); await settle(); const pj = shot(); M.setProjection(null);
+    out.projection = [mean(pjOff, crease), mean(pj, crease)];
+    V.setAmbientOcclusion('off');
+    out.level = V.ambientOcclusion();
+    return out;
+  });
+  const d = (a) => (a[0] - a[1]) / Math.max(1, a[0]);
+  chk(`ambient occlusion: the foot of the wall darkens ${(100 * d(r.crease)).toFixed(0)}% (${r.crease.map((v) => v.toFixed(0)).join(' → ')}); open floor ${(100 * d(r.floor)).toFixed(1)}%, the wall's face ${(100 * d(r.wall)).toFixed(1)}%`,
+    d(r.crease) > 0.15 && Math.abs(d(r.floor)) < 0.03 && Math.abs(d(r.wall)) < 0.05);
+  chk(`ambient occlusion: none under a projection (${r.projection.map((v) => v.toFixed(0)).join(' = ')}); back off (${r.level})`, Math.abs(r.projection[0] - r.projection[1]) < 1 && r.level === 'off');
+  await pg.close();
+}
+
 // ── the LAYER CONTEXT MENU, regrouped (src/layermenu.js layerMenuSections). It had
 // grown to ~33 top-level entries on a block model; now the frequent verbs sit on top
 // and the rest in Analyse · Geometry · Select · Views · Display · Data & file · Move.

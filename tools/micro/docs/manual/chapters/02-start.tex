@@ -23,11 +23,11 @@ On a phone or a narrow tablet, micro rearranges itself into its \term{review lay
 \subsection{Software rendering}\label{sec:start-software}\index{software rendering}
 micro draws the 3D view with the graphics card, through WebGL~2. A machine without a usable one (a virtual machine, a remote desktop session, a locked-down laptop) still runs micro: the browser then draws on the processor instead, with a \term{software renderer} (SwiftShader in Chrome and Edge, WARP on Windows, which reports itself as the \enquote{Microsoft Basic Render Driver}, llvmpipe on Linux). That is many times slower, and micro's normal habits, drawing a million elements a frame and refining the picture on every frame until it settles, would leave little time for opening your data.
 
-So micro checks what draws the view when it starts. On a software renderer it says so once on the status line (\enquote{software rendering detected — reduced detail}) and changes four things:
+So micro checks what draws the view when it starts. On a software renderer it says so once on the status line (\enquote{software rendering detected — reduced detail}) and changes these things:
 \begin{itemize}
 \item The render \ui{budget} starts at 0.1M elements a frame instead of 1M. A budget you chose yourself is kept.
 \item The view is drawn when something changes, not continuously. While data is still arriving it is not refined at all; once loading stops, the picture fills in a frame at a time. Orbiting and zooming still answer at once.
-\item \ui{EDL} shading starts off. You can turn it back on; each frame then costs more.
+\item \ui{EDL} shading starts off. You can turn it back on; each frame then costs more. Ambient occlusion stays off (\cref{ch:color}), and a filter shown as an outline is drawn as its flat ghost instead (\cref{sec:filter-ghost}): both read the whole screen's depth every frame.
 \item A click on the view renders the one pixel under the cursor to find the record. On a graphics card micro instead keeps a picking buffer ready while the view is still.
 \end{itemize}
 The picture is less dense while you work and takes longer to settle; nothing else changes. On a test machine without a graphics card, the demo project took nearly ten minutes to open before this mode existed, and opens in about ten seconds with it; the complete picture then fills in over the next three minutes, while you can already work.

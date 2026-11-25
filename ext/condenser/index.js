@@ -14320,6 +14320,14 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
 // fullscreen pass compares each pixel's log-linear depth against its neighbors
 // and darkens where neighbors are closer — unlit points read as a surface.
 // Mandatory in M1 (micro-spec §2.2): without it a point cloud reads as noise.
+//
+// AMBIENT OCCLUSION (opt-in, `ao` > 0): EDL darkens at depth JUMPS — silhouettes, rims. The
+// occlusion term darkens where surfaces meet at an angle — inner corners, the foot of a pit
+// wall, between stacked benches — from the same depth target, in the same pass: pairs of
+// opposite samples on a disc around the pixel; where the pair's mean depth is NEARER than the
+// pixel's (a concave crease — a flat face, however tilted, gives none), the pixel darkens in
+// proportion, within a world-space radius (occluders far in front don't halo). Off, the pass
+// is unchanged (one uniform branch).
 
 
 const QUAD_VERT$edl = `#version 300 es
@@ -14341,6 +14349,9 @@ uniform vec2 uNearFar;
 uniform float uOrtho;                  // 1 = orthographic (depth is already linear)
 uniform float uStrength;               // 0 = off-look, ~1 default
 uniform float uRadius;                 // sample radius in pixels
+uniform float uAo;                     // ambient occlusion strength (0 = off)
+uniform float uAoRadius;               // its disc radius in pixels
+uniform vec2 uPxWorld;                 // world size of a pixel: x · (perspective: linear depth) + y
 out vec4 outColor;
 
 float linDepth(float d) {              // depth buffer -> linear eye-space z
@@ -14362,13 +14373,31 @@ void main() {
     ob += max(0.0, zc - zn);
   }
   float shade = exp(-uStrength * 60.0 * ob / 8.0);
+  if (uAo > 0.0) {
+    float zl = linDepth(d);
+    float rw = max((uPxWorld.x * zl + uPxWorld.y) * uAoRadius, 1e-6);   // the disc's radius in world units
+    float occ = 0.0;
+    const int PAIRS = 8;
+    for (int i = 0; i < PAIRS; i++) {
+      float a = float(i) * 2.39996323 + 0.7;             // golden-angle directions
+      float r = uAoRadius * (0.35 + 0.65 * fract(float(i) * 0.618034));
+      vec2 o = vec2(cos(a), sin(a)) * r * uTexel;
+      float d1 = texture(uDepth, vUv + o).r, d2 = texture(uDepth, vUv - o).r;
+      if (d1 >= 1.0 || d2 >= 1.0) continue;               // the background is no occluder
+      float dz = zl - 0.5 * (linDepth(d1) + linDepth(d2));   // > 0: the pair's mean is nearer — a crease
+      float w = 1.0 - smoothstep(rw * 1.5, rw * 3.0, abs(zl - min(linDepth(d1), linDepth(d2))));   // far in front: another object
+      occ += clamp((dz - 0.04 * rw) / rw, 0.0, 1.0) * w;    // a hair of bias: a curved or splatted surface's noise isn't a crease
+    }
+    shade *= 1.0 - min(0.85, uAo * 1.6 * occ / float(PAIRS));
+  }
   outColor = vec4(col.rgb * shade, col.a);
 }`;
 
 function createEdl(gl) {
   const prog = makeProgram(gl, QUAD_VERT$edl, EDL_FRAG);
   const U = (n) => gl.getUniformLocation(prog, n);
-  const uni = { color: U('uColor'), depth: U('uDepth'), texel: U('uTexel'), nearFar: U('uNearFar'), ortho: U('uOrtho'), strength: U('uStrength'), radius: U('uRadius') };
+  const uni = { color: U('uColor'), depth: U('uDepth'), texel: U('uTexel'), nearFar: U('uNearFar'), ortho: U('uOrtho'), strength: U('uStrength'), radius: U('uRadius'),
+    ao: U('uAo'), aoRadius: U('uAoRadius'), pxWorld: U('uPxWorld') };
   let fbo = null, colorTex = null, depthTex = null, w = 0, h = 0;
 
   function ensure(width, height) {
@@ -14401,7 +14430,8 @@ function createEdl(gl) {
     // ALWAYS goes via the FBO — progressive accumulation (§2.2) needs a persistent
     // depth buffer, which the default framebuffer doesn't guarantee; EDL-disabled
     // is strength 0 (exp(0) ≡ passthrough), so there's exactly one path.
-    render(width, height, cam, sceneDraw, { enabled = true, strength = 1.0, radius = 1.4 } = {}) {
+    // ao: ambient occlusion strength (0 = off, ~1 a clear crease shade), aoRadius its disc in px
+    render(width, height, cam, sceneDraw, { enabled = true, strength = 1.0, radius = 1.4, ao = 0, aoRadius = 10 } = {}) {
       ensure(width, height);
       gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
       gl.viewport(0, 0, w, h);
@@ -14417,6 +14447,14 @@ function createEdl(gl) {
       gl.uniform1f(uni.ortho, cam.state.ortho ? 1 : 0);
       gl.uniform1f(uni.strength, enabled ? strength : 0);
       gl.uniform1f(uni.radius, radius);
+      gl.uniform1f(uni.ao, ao > 0 ? ao : 0);
+      if (ao > 0) {
+        const st = cam.state;
+        gl.uniform1f(uni.aoRadius, aoRadius);
+        // a pixel's world size: ortho — the view height over the pixels; perspective — ∝ the depth
+        if (st.ortho) gl.uniform2f(uni.pxWorld, 0, (2 * st.halfH) / h);
+        else gl.uniform2f(uni.pxWorld, (2 * Math.tan(st.fovY / 2)) / h, 0);
+      }
       gl.drawArrays(gl.TRIANGLES, 0, 3);
       gl.enable(gl.DEPTH_TEST);
       return result;
