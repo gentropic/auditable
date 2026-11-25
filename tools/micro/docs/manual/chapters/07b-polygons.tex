@@ -241,6 +241,119 @@ Grade and tonnes in a shot.
 \end{enumerate}
 \end{tryit}
 
+\section{Section lines as strings}\label{sec:polygons-sectionlines}\index{section lines}\index{strings!from a section}
+
+A section shows where a plane cuts a solid, a surface or the domains of a model. \menu{Tools>Section
+lines → strings…} (also \menu{Geometry>Section lines → strings…} on a mesh or a grid, and
+\menu{Geometry>Domain boundaries on a section → strings…} on a block model) keeps those cuts as a
+strings \& polygons layer: one feature per line, in world coordinates, ready to export as DXF or a
+shapefile for the CAD or survey package. A pit shell cut on a plan gives the bench toe; a lithology
+model cut on a cross-section gives the ore/waste contact.
+
+\begin{description}
+\item[The plane] is the section you have on (any axis, a dip and dip direction, a knife cut), or one
+  you state: a plan at a level, an N--S section at an easting, an E--W section at a northing, or a dip
+  and dip direction with its offset. \ui{series} takes several positions (\code{800, 810, 820}) and
+  cuts each into the same layer, one bench after another.
+\item[Meshes] are cut triangle by triangle, a closed solid giving closed lines. A streamed mesh keeps
+  no triangles to cut; convert it to exact first (\cref{ch:meshes}).
+\item[Gridded surfaces] are cut as their own node lattice, two triangles per cell, nodata cells left
+  out. A plan through a topography gives its contour at that level; a vertical section gives its
+  profile.
+\item[Domain boundaries] come from a block model and the column you name (by default its category):
+  the boundary between two blocks whose values differ is their shared face, and the plane cuts each
+  such face into a segment. The lines follow the block faces exactly --- a staircase, not a
+  smoothed contour --- and each line is one pair of domains, named in \col{CAT\_A} and \col{CAT\_B}.
+  \ui{model edge} adds the boundary between a domain and no block. The layer's filter applies.
+  Rotated and sub-blocked models are cut on their own lattice.
+\end{description}
+
+The pieces are joined end to end where they share a point, so a closed solid gives one closed line,
+not a heap of segments. Where three domains meet, each line ends at the junction. On a plan, a closed
+line becomes a polygon, so a bench's toe can serve as a limit (\cref{sec:polygons-limit}); on any other
+plane it stays a closed string. Each feature carries \col{SOURCE} (the layer cut), \col{KIND}
+(\code{mesh}, \code{grid} or \code{domain}), \col{BOUNDARY}, \col{CAT\_A}, \col{CAT\_B}, \col{PLANE},
+\col{POSITION} (the plane's offset along its normal) and \col{LENGTH} in metres. A re-run with the
+same name replaces the layer it made before.
+
+\begin{lstlisting}[language=yaml]
+- tool: "sectionlines"
+  with:
+    plane:
+      axis: "z"
+      position: 820
+    sources:
+      - "ore_shell.obj"
+      - "deposit.csv"
+    column: "LITO"
+    name: "bench 820 lines"
+\end{lstlisting}
+
+\begin{tryit}
+The ore contact on the demo's section.
+\begin{enumerate}
+\item With the demo project open, right-click \file{deposit.csv} and choose
+  \menu{Geometry>Domain boundaries on a section → strings…}.
+\item Keep \ui{the current section}, leave \ui{domain by} on the category (\col{LITO}), and press
+  \ui{Make lines}.
+\item The new layer draws the contacts between the lithologies on the section's plane, one line per
+  pair. Open its attribute table (\key{t}) to see the pairs and their lengths, then
+  \menu{Data \& file>Export features…} as DXF.
+\end{enumerate}
+\end{tryit}
+
+\section{Bench outlines from blocks}\label{sec:polygons-outlines}\index{bench outlines}\index{dig lines}\index{polygons!from blocks}
+
+The plan outline of a set of blocks, bench by bench, is the drill-and-blast engineer's dig line.
+\menu{Tools>Bench outlines → polygons…} (also \menu{Geometry>Bench outlines → polygons…} on a block
+model) traces it. Choose the blocks: every block, the filtered ones, the 3D selection, and optionally
+an expression on top (\code{FE >= 60}). Then choose what is outlined: all of them as one set, each
+category value on its own (\ui{each category on its own}, by a column), or a single value.
+
+Each bench is traced on the model's own lattice. A plan cell is \emph{in} when the chosen blocks fill
+at least half of it through the bench (\ui{rule} \code{half}), or any of it (\code{any}). For a regular
+model, where a bench is one block high, both rules give exactly the chosen blocks. A sub-blocked
+model is traced on its fine lattice, a bench being one parent block high unless you set the
+\code{bench} height; a rotated model is traced in its own frame and placed in world.
+
+The tracing is marching squares on that occupancy. Each patch of cells connected through their
+sides is one polygon, and an empty area it encloses is a hole. Two blocks that touch only at a corner
+make two polygons, so an outline never pinches through a point. Every vertex lies on a block corner:
+the staircase is kept, because it is the truth of the model. \ui{simplify} drops the corners that lie
+within the tolerance you give (in metres) of a straighter line; it keeps or drops a vertex, never moves
+one, so the area changes and the layer says so in its \col{AREA}.
+
+Each polygon carries \col{BENCH}, its level \col{Z} (the bench's middle, floor or crest, as
+\ui{at} says), \col{Z\_BOT} and \col{Z\_TOP}, \col{CATEGORY}, \col{BLOCKS} (blocks whose centre lies
+inside it), \col{CELLS}, \col{AREA} in square metres, \col{VOLUME} in cubic metres of the chosen blocks
+inside it and, given a density (a number or a column), \col{TONNES}. Export the layer as DXF or a
+shapefile (\cref{sec:polygons-export}), or extrude a polygon between the bench's floor and crest to
+check the tonnes in the shot (\cref{sec:polygons-extrude}).
+
+\begin{lstlisting}[language=yaml]
+- tool: "blockoutlines"
+  with:
+    layer: "deposit.csv"
+    where: "FE >= 60"
+    column: "LITO"
+    value: "HEMATITE"
+    density: "SG"
+    level: "bottom"
+    name: "hematite dig lines"
+\end{lstlisting}
+
+\begin{tryit}
+Ore outlines for the demo's benches.
+\begin{enumerate}
+\item With the demo project open, right-click \file{deposit.csv} and choose
+  \menu{Geometry>Bench outlines → polygons…}.
+\item Set \ui{outline} to \ui{one category value}, \ui{column} to \col{LITO} and \ui{value} to
+  \code{HEMATITE}; type \code{SG} as the density.
+\item Press \ui{Outline}. A polygon appears on each bench the hematite reaches; its attribute table
+  lists each one's area, volume and tonnes.
+\end{enumerate}
+\end{tryit}
+
 \section{Exporting}\label{sec:polygons-export}
 
 \menu{Data \& file>Export features…} writes the layer (or its selection) with every attribute:
