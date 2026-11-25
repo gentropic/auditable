@@ -74,6 +74,9 @@ uniform uint uLayer;                    // this draw's layer (per-draw, not per-
 uniform uvec2 uRepaint;                 // repaint pass: draw ONLY these two records (both 0xFFFFFFFF = off)
 uniform vec4 uSecPlane;                 // section plane: xyz = unit normal, w = offset (frame-local)
 uniform vec2 uSecCfg;                   // x: 0 = off, 1 = slab; y: slab half-thickness
+#ifdef MIP
+uniform float uMipCodes;                // 1 = project the rule CODE (a numeric ƒ / painted column)
+#endif
 flat out vec3 vCenter;
 flat out vec3 vHalf;
 flat out vec4 vColor;
@@ -152,8 +155,12 @@ void main() {
 #ifdef MIP
   // a PROJECTION (gl-mip.js): the record contributes its normalized value — R = t,
   // G = 1 (the mean's count) — or nothing: a blank has no value, and a record the
-  // filter leaves out (dim or isolate) is out of the projection
-  if (uColorMode != 1 || mipBlank || m < 0.5) vCull = 1.0;
+  // filter leaves out (dim or isolate) is out of the projection. A NUMERIC CODE
+  // layer (a ƒ / painted column — codes rise with the value, 0 = blank) projects
+  // its code, composited back through its palette
+  if (uMipCodes > 0.5) { mipT = cls / 255.0; mipBlank = uColorMode != 2 || cls < 0.5; }
+  else if (uColorMode != 1) mipBlank = true;
+  if (mipBlank || m < 0.5) vCull = 1.0;
   vColor = vec4(mipT, 1.0, 0.0, 1.0);
 #endif
 }`;
@@ -337,6 +344,7 @@ export function createBlocksPipeline(gl) {
       chanTex: U('uChanTex'), chanTexOn: U('uChanTexOn'),
       secPlane: U('uSecPlane'), secCfg: U('uSecCfg'), edges: U('uEdges'),
       ortho: U('uOrtho'), fwd: U('uFwd'), orthoRay: U('uOrthoRay'), backoff: U('uBackoff'), invVP: U('uInvVP'), vp: U('uVp'),
+      mipCodes: U('uMipCodes'),
     } };
   };
   // the program SETS: the raster, and (built on first use, so a scene that never
@@ -415,7 +423,7 @@ export function createBlocksPipeline(gl) {
 
   // Per-frame program state (called once before the chunk loop) — set on BOTH
   // programs so drawSlice can switch freely between full and cheap.
-  function begin(cam, { pointPx, colorMode, zRange, chanDoc, ramp, palette, viewportH, maskTex = null, isolate = false, pointsView = false, picked = 0xFFFFFFFF, pickedLayer = 0xFFFFFFFF, layer = 0, section = null, catVisTex = null, selTex = null, ruleTex = null, chanTex = null, opacity = 1, edges = false, noData = null, projection = false }) {
+  function begin(cam, { pointPx, colorMode, zRange, chanDoc, ramp, palette, viewportH, maskTex = null, isolate = false, pointsView = false, picked = 0xFFFFFFFF, pickedLayer = 0xFFFFFFFF, layer = 0, section = null, catVisTex = null, selTex = null, ruleTex = null, chanTex = null, opacity = 1, edges = false, noData = null, projection = false, mipCodes = false }) {
     const s = cam.state;
     if (projection && !mip) mip = { full: mkProg(FRAG, '#define MIP 1'), cheap: mkProg(FRAG_CHEAP, '#define MIP 1') };
     set = projection ? mip : normal;
@@ -460,6 +468,7 @@ export function createBlocksPipeline(gl) {
       gl.uniform4f(uni.secPlane, section ? section.n[0] : 0, section ? section.n[1] : 0, section ? section.n[2] : 1, section ? section.d : 0);
       gl.uniform2f(uni.secCfg, section ? 1 : 0, section ? section.half : 0);
       gl.uniform1f(uni.edges, edges ? 1 : 0);
+      if (uni.mipCodes) gl.uniform1f(uni.mipCodes, mipCodes ? 1 : 0);
       gl.uniform1f(uni.filterOn, maskTex ? 1 : 0);
       gl.uniform1f(uni.isolate, isolate ? 1 : 0);
       if (maskTex) { gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, maskTex); gl.uniform1i(uni.mask, 4); }

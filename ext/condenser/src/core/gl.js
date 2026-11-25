@@ -54,6 +54,9 @@ uniform float uRuleOn;                  // rule mode: the code REPLACES the clas
 uniform sampler2D uChanTex;             // OPT-IN: raw f32 VALUE by record (8192-wide) — replaces the
 uniform float uChanTexOn;               // intensity slot in mode 1, normalized over uChanDoc (the
 uniform vec2 uChanDoc;                  // document's range + clip), as gl-blocks does
+#ifdef MIP
+uniform float uMipCodes;                // 1 = project the rule CODE (a numeric ƒ / painted column)
+#endif
 out vec4 vColor;
 flat out float vCull;
 void main() {
@@ -111,8 +114,12 @@ void main() {
   if ((uRepaint.x != 0xFFFFFFFFu || uRepaint.y != 0xFFFFFFFFu) && aRec != uRepaint.x && aRec != uRepaint.y) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);   // repaint pass: everything else clips out
 #ifdef MIP
   // a PROJECTION (gl-mip.js): R = the normalized value, G = 1 (the mean's count) —
-  // or nothing: blanks and filtered-out points (dim or isolate) don't contribute
-  if (uColorMode != 1 || mipBlank || m < 0.5) vCull = 1.0;
+  // or nothing: blanks and filtered-out points (dim or isolate) don't contribute.
+  // A NUMERIC CODE layer (a ƒ / painted column: rule codes rise with the value,
+  // 0 = blank) projects its code, composited back through its palette
+  if (uMipCodes > 0.5) { mipT = cls / 255.0; mipBlank = uColorMode != 2 || cls < 0.5; }
+  else if (uColorMode != 1) mipBlank = true;
+  if (mipBlank || m < 0.5) vCull = 1.0;
   vColor = vec4(mipT, 1.0, 0.0, 1.0);
 #endif
 }`;
@@ -238,6 +245,7 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
       sel: U('uSel'), selOn: U('uSelOn'),
       rule: U('uRule'), ruleOn: U('uRuleOn'),
       chanTex: U('uChanTex'), chanTexOn: U('uChanTexOn'), chanDoc: U('uChanDoc'), noData: U('uNoData'), noDataOn: U('uNoDataOn'),
+      mipCodes: U('uMipCodes'),
     } };
   };
   const ptsNormal = ptsProgram('');
@@ -292,7 +300,7 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
       l = { visible: true, set: 'base', maskTex: null, maskH: 0, isolate: false,
             intensityMax: 1, docChan: [Infinity, -Infinity], catN: 0, stickRadius: 1, sectioned: true,
             meshTint: [0.62, 0.64, 0.66], meshOpacity: 1, opacity: 1, catVisTex: null, rampTex: null, rampHides: false, rampAlphaSig: '', noData: null, paletteTex: null, paletteW: 0, selTex: null, selH: 0,
-            ruleTex: null, ruleH: 0, ruleOn: false,
+            ruleTex: null, ruleH: 0, ruleOn: false, projCodes: false,
             chanTex: null, chanTexRange: null, offset: null };
       layers.set(id, l);
     }
@@ -364,6 +372,10 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
   // their accumulated pixels, and only a change to an UNRESOLVABLE layer
   // falls back to the re-raster.
   const cosmeticDirtyLayers = new Set();                  // layers a cosmetic setter touched
+  // layers whose RAMP or PALETTE changed (and nothing else, unless they are also in
+  // the set above): under a projection that is a re-composite of the layer's
+  // accumulated target, not a re-raster — the target holds values, not colours
+  const lutDirtyLayers = new Set();
   const lastCosSig = new Map();                           // layer → view-opts signature last rastered/resolved
   let idCapture = null;                                   // { tex, depth, w, h, key, complete } — the converged frame's id buffer
   // what an id buffer depends on besides the geometry: the camera, the point
@@ -656,7 +668,14 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
         gl.bindTexture(gl.TEXTURE_2D, ls.paletteTex);
         gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
       }
-      cosmeticDirtyLayers.add(layer);
+      lutDirtyLayers.add(layer);                                     // a colour LUT: re-shade (or, projected, re-composite)
+    },
+    // a CODE layer whose codes are a NUMERIC scale (a ƒ / painted column: code 1..255
+    // rises with the value, 0 = blank) — under a projection it projects its code and
+    // composites back through its palette. Off: codes are classes (no maximum).
+    setLayerProjectCodes(layer, on) {
+      const ls = layerOf(layer);
+      if (ls.projCodes !== !!on) { ls.projCodes = !!on; if (lastMip) needClear = true; }
     },
     // per-layer color ramp LUT (layer properties: presets + baked breakpoints).
     // pixels = Uint8Array(256*4) RGBA, or null to fall back to the built-in ramp.
@@ -681,9 +700,11 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
     layerValueState(layer) { const ls = layers.get(layer); return ls ? { noData: ls.noData ? ls.noData.slice() : null, rampHides: !!ls.rampHides } : null; },
     setLayerChanTex(layer, tex, range = null) {
       const ls = layerOf(layer);
+      const nr = (tex && range) ? [range[0], Math.max(1e-9, range[1] - range[0])] : null;
+      const same = ls.chanTex === (tex || null) && JSON.stringify(ls.chanTexRange) === JSON.stringify(nr);
       ls.chanTex = tex || null;
-      ls.chanTexRange = (tex && range) ? [range[0], Math.max(1e-9, range[1] - range[0])] : null;
-      cosmeticDirtyLayers.add(layer);
+      ls.chanTexRange = nr;
+      if (!same) cosmeticDirtyLayers.add(layer);               // the same texture handed back (a ramp re-apply) changes nothing
     },
     // opts.nearest: sample the LUT texel-exact — a CLASSED ramp, whose colours must not blend at
     // a class boundary into a colour no legend shows (LINEAR suits a continuous ramp)
@@ -707,7 +728,7 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
         gl.bindTexture(gl.TEXTURE_2D, ls.rampTex);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, f); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, f);
       }
-      cosmeticDirtyLayers.add(layer);
+      lutDirtyLayers.add(layer);                                     // a colour LUT: re-shade (or, projected, re-composite)
     },
     // per-CLASS visibility (layer properties): vis = Uint8Array(256) of 0|1, or
     // null to clear. GPU-side — the class code already rides every element as
@@ -794,7 +815,7 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
       if (resolvePipe) resolvePipe.dropBake(layer);
       if (mipPipe) mipPipe.drop(layer);
       layerMaxRec.delete(layer); bakeDirty.delete(layer);
-      lastCosSig.delete(layer); cosmeticDirtyLayers.delete(layer);
+      lastCosSig.delete(layer); cosmeticDirtyLayers.delete(layer); lutDirtyLayers.delete(layer);
       needClear = true;
     },
     layerElementCount(layer) {
@@ -837,6 +858,21 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
       const y = Math.max(0, canvas.height - yTop - h);
       if (w <= 0 || h <= 0) return null;
       const sec = section && section.on ? section : null, key = capKey(cam, pointPx, blocksAsPoints, sec);
+      // under a PROJECTION a marquee / lasso takes the records the picture shows: where a
+      // projected layer composited, the record that IS the pixel's value (max / min: the
+      // highest / lowest; mean: the one nearest the pixel's mean, keyed per pixel from the
+      // projection's own target); elsewhere the scene's front surface, as usual
+      if (lastMip && mipPipe && lastMip.w === canvas.width && lastMip.h === canvas.height) {
+        const pOpts = { pointPx, blocksAsPoints, layerStates: layers, section: sec, viewportW: canvas.width, viewportH: canvas.height };
+        const data = pickPipe.pickRegion(x, y, w, h, chunks.filter((c) => activeChunk(c) && !lastMip.layers.includes(c._layer)), cam, pOpts);
+        const refTex = lastMip.mode === 'mean' ? (id) => { const t = mipPipe.target(id); return t ? t.tex : null; } : null;
+        for (const id of lastMip.layers) {                   // composite order: a later layer's pixel wins, as on screen
+          const d = pickPipe.pickRegion(x, y, w, h, chunks.filter((c) => activeChunk(c) && c._layer === id), cam, { ...pOpts, mip: { mode: lastMip.mode, ref: 0, refTex } });
+          for (let i = 0; i < w * h; i++) if (d[i * 4 + 1] !== pickPipe.NO_LAYER) { data[i * 4] = d[i * 4]; data[i * 4 + 1] = d[i * 4 + 1]; }
+        }
+        gl.activeTexture(gl.TEXTURE10); gl.bindTexture(gl.TEXTURE_2D, null);
+        return { data, w, h, dpr, projection: lastMip.mode };
+      }
       if (capReady(key)) { pickFromCapture++; return { data: pickPipe.readCaptured(x, y, w, h), w, h, dpr }; }
       if (idCapture && idCapture.key !== key) dropCapture();   // the scissored pass below draws into the same target
       const data = pickPipe.pickRegion(x, y, w, h, chunks.filter(activeChunk), cam, {
@@ -923,7 +959,7 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
       if (mipPipe) mipPipe.clear();
       lastMip = null; lastMipKey = '';
       layerMaxRec.clear(); bakeDirty.clear(); dropCapture();
-      lastCosSig.clear(); cosmeticDirtyLayers.clear();
+      lastCosSig.clear(); cosmeticDirtyLayers.clear(); lutDirtyLayers.clear();
     },
     // cap the backing ratio (Infinity = the device's own). A phone at DPR 2.8 fills
     // ~2× the pixels of DPR 2 for no visible gain; the next resize() applies it.
@@ -973,23 +1009,33 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
       // Hidden layers can't change pixels; meshes ignore color opts entirely
       // (their cosmetics go through setLayerMeshStyle → needClear).
       const sigOf = (id) => { const o = lopt(id); return `${o.colorMode}|${o.clip ? `${o.clip[0]}~${o.clip[1]}` : 'a'}`; };
+      // what a layer projects: 'chan' (its value, colour mode 1) · 'codes' (a numeric code scale) · null
+      const projOf = (id) => {
+        const o = lopt(id); if (o.colorMode === 1) return 'chan';
+        const ls = layers.get(id);
+        return o.colorMode === 2 && ls && ls.projCodes && ls.ruleOn && ls.ruleTex ? 'codes' : null;
+      };
       const kindBy = new Map(), subBy = new Set();
       for (const c of chunks) if (activeChunk(c)) {
         if (!kindBy.has(c._layer)) kindBy.set(c._layer, c.kind);
         if (c.sub) subBy.add(c._layer);                    // sub-blocked: variable half-dims
       }
+      // the layers this frame PROJECTS: blocks/points coloured by a value — or by the codes of a
+      // numeric ƒ / painted column (setLayerProjectCodes) — when the GPU offers the mode
+      const mipIds = new Set();
+      if (mipMode) {
+        if (!mipPipe) mipPipe = createMipPipeline(gl);
+        if (mipPipe.supports(mipMode)) for (const [id, k] of kindBy) if ((k === 'blocks' || k === 'points') && projOf(id)) mipIds.add(id);
+      }
       const dirty = new Set(cosmeticDirtyLayers);
+      // a ramp / palette change on a PROJECTED layer only re-composites (every frame does):
+      // its target holds values, not colours — no re-raster, nothing redrawn
+      for (const id of lutDirtyLayers) if (!mipIds.has(id)) dirty.add(id);
       // a layer with no signature yet was never rasterized: its chunks DRAW (cursor 0, into the
       // accumulation) — it is not a cosmetic change to re-shade, and treating it as one returned a
       // converged frame without its first chunk (a streamed layer arriving piece by piece)
       for (const id of kindBy.keys()) if (lastCosSig.has(id) && lastCosSig.get(id) !== sigOf(id)) dirty.add(id);
       for (const id of [...dirty]) { const k = kindBy.get(id); if (!k || k === 'mesh') dirty.delete(id); }
-      // the layers this frame PROJECTS: blocks/points coloured by a value, when the GPU offers the mode
-      const mipIds = new Set();
-      if (mipMode) {
-        if (!mipPipe) mipPipe = createMipPipeline(gl);
-        if (mipPipe.supports(mipMode)) for (const [id, k] of kindBy) if ((k === 'blocks' || k === 'points') && lopt(id).colorMode === 1) mipIds.add(id);
-      }
       // a layer entering or leaving the projection changes what every pixel it covers
       // means (a projected pixel isn't its front surface): start the frame over
       const mipKey = [...mipIds].join(',');
@@ -1098,7 +1144,7 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
           }
           resolves++;
           for (const id of kindBy.keys()) lastCosSig.set(id, sigOf(id));
-          cosmeticDirtyLayers.clear();
+          cosmeticDirtyLayers.clear(); lutDirtyLayers.clear();
           // repaintSet stays: a pending pick highlight on a NON-resolved layer
           // is repainted by the next still frame's repaint pass
           return { drawn: 0, converged: true, visible: lastVisible, resolved: true };
@@ -1107,7 +1153,7 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
       if (dirty.size) moving = true;                       // no resolve → a cosmetic change re-rasters
       lastKey = structKey; needClear = false;
       for (const id of kindBy.keys()) lastCosSig.set(id, sigOf(id));
-      cosmeticDirtyLayers.clear();
+      cosmeticDirtyLayers.clear(); lutDirtyLayers.clear();
       if (moving) { repaintSet.clear(); dropCapture(); }   // full redraw covers pending repaint; the capture is stale
 
       // frustum-cull + front-to-back over chunk bboxes (tight, thanks to Morton)
@@ -1299,7 +1345,7 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
         const distNear = Math.max(cam.state.near, c._dist - bboxR);
         return blocksAsPoints || rBlock * perspScale / distNear < 2.0;
       };
-      const beginLayer = (id, projection = false) => {
+      const beginLayer = (id, projection = false, mipCodes = false) => {
         const ls = layerOf(id), o = lopt(id);
         blocksPipe.begin(camOf(id), {
           pointPx, colorMode: o.colorMode, zRange: zRangeOf(o),
@@ -1310,7 +1356,7 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
           catVisTex: ls.catVisTex, selTex: ls.selTex, ruleTex: ls.ruleOn ? ls.ruleTex : null,
           chanTex: ls.chanTex, noData: ls.noData,
           opacity: ls.opacity, edges: ls.edges != null ? ls.edges : blockEdges,   // per-layer override, else the View toggle
-          projection,
+          projection, mipCodes,
         });
       };
       const blks = visible.filter((c) => c.kind === 'blocks' && !isMip(c));
@@ -1400,8 +1446,9 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
         for (const id of mipIds) {
           const group = visible.filter((c) => c._layer === id);
           mipPipe.begin(id, mipMode, canvas.width, canvas.height, moving);
+          const codes = projOf(id) === 'codes';
           if (kindBy.get(id) === 'blocks') {
-            beginLayer(id, true);
+            beginLayer(id, true, codes);
             for (const c of group) {
               const [first, k] = allot(c);
               if (k > 0) { blocksPipe.drawSlice(c, first, k, cheapOf(c)); drawn += k; c.cursor = first + k; }
@@ -1410,6 +1457,7 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
             if (!ptsMip) ptsMip = ptsProgram('#define MIP 1');
             ptsFrame(ptsMip);
             setupPtsLayer(id);
+            gl.uniform1f(uni.mipCodes, codes ? 1 : 0);
             for (const c of group) {
               const [first, k] = allot(c);
               if (k > 0) {
@@ -1427,9 +1475,13 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
         mipPipe.end();
         gl.bindFramebuffer(gl.FRAMEBUFFER, target);
         gl.viewport(0, 0, canvas.width, canvas.height);
-        for (const id of mipIds) mipPipe.composite(id, layerOf(id).rampTex || ramp);
+        for (const id of mipIds) {
+          const ls = layerOf(id);                          // a code layer composites through its PALETTE (the code is the index)
+          if (projOf(id) === 'codes') mipPipe.composite(id, ls.paletteTex || catPalette || palette, { codes: true, width: ls.paletteTex ? ls.paletteW : 256 });
+          else mipPipe.composite(id, ls.rampTex || ramp);
+        }
         gl.enable(gl.DEPTH_TEST);
-        mipInfo = { mode: mipMode, layers: [...mipIds], drawn: n, total: m, exact: n === m, w: canvas.width, h: canvas.height };
+        mipInfo = { mode: mipMode, layers: [...mipIds], codes: [...mipIds].filter((id) => projOf(id) === 'codes'), drawn: n, total: m, exact: n === m, w: canvas.width, h: canvas.height };
       }
       lastMip = mipInfo;
 

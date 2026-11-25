@@ -39,6 +39,7 @@ precision highp float;
 uniform sampler2D uAcc;
 uniform sampler2D uRamp;
 uniform int uDecode;
+uniform float uCodes;                   // > 0: t is a CODE / 255 — sample the palette (uCodes = its width) at the code
 out vec4 outColor;
 void main() {
   vec4 a = texelFetch(uAcc, ivec2(gl_FragCoord.xy), 0);
@@ -49,7 +50,9 @@ void main() {
   else if (uDecode == 2) hit = a.a > 0.5;
   else { hit = a.g > 0.5; t = hit ? a.r / a.g : 0.0; }
   if (!hit) discard;
-  outColor = vec4(texture(uRamp, vec2(clamp(t, 0.0, 1.0), 0.5)).rgb, 1.0);
+  t = clamp(t, 0.0, 1.0);
+  vec2 uv = uCodes > 0.5 ? vec2((t * 255.0 + 0.5) / uCodes, 0.5) : vec2(t, 0.5);
+  outColor = vec4(texture(uRamp, uv).rgb, 1.0);
 }`;
 
 /** The JS side of the decode — one place, shared by the readbacks. → t in 0..1, or null (nothing hit). */
@@ -64,7 +67,7 @@ export function createMipPipeline(gl) {
   const cbf = !!gl.getExtension('EXT_color_buffer_float');
   const floatBlend = !!gl.getExtension('EXT_float_blend');
   const comp = makeProgram(gl, QUAD_VERT, COMPOSITE_FRAG);
-  const uAcc = gl.getUniformLocation(comp, 'uAcc'), uRamp = gl.getUniformLocation(comp, 'uRamp'), uDecode = gl.getUniformLocation(comp, 'uDecode');
+  const uAcc = gl.getUniformLocation(comp, 'uAcc'), uRamp = gl.getUniformLocation(comp, 'uRamp'), uDecode = gl.getUniformLocation(comp, 'uDecode'), uCodes = gl.getUniformLocation(comp, 'uCodes');
   const targets = new Map();                               // layer → { tex, fbo, w, h, fmt, mode }
 
   // does this internal format render (and attach completely) here? probed once each
@@ -152,7 +155,8 @@ export function createMipPipeline(gl) {
   }
   // map `layer`'s target through `ramp` into the CURRENT framebuffer (depth test off,
   // nothing-hit pixels untouched). The caller restores its own depth state.
-  function composite(layer, ramp) {
+  // codes: the target holds CODE / 255 — `ramp` is then the layer's palette, `width` wide
+  function composite(layer, ramp, { codes = false, width = 256 } = {}) {
     const t = targets.get(layer);
     if (!t) return;
     gl.disable(gl.DEPTH_TEST);
@@ -161,6 +165,7 @@ export function createMipPipeline(gl) {
     gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, t.tex); gl.uniform1i(uAcc, 2);
     gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, ramp); gl.uniform1i(uRamp, 3);
     gl.uniform1i(uDecode, decodeOf(t.mode, t.fmt));
+    gl.uniform1f(uCodes, codes ? width : 0);
     gl.bindVertexArray(null);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, null);   // a later pass may render into it
@@ -185,8 +190,11 @@ export function createMipPipeline(gl) {
     gl.bindFramebuffer(gl.FRAMEBUFFER, prev);
     return { data: out, w, h, format: t.fmt.key, mode: t.mode };
   }
+  // the accumulated target itself (texture + how to decode it): a region pick reads a mean
+  // projection's per-pixel value from it (gl-pick.js uMipAcc)
+  function target(layer) { const t = targets.get(layer); return t ? { tex: t.tex, decode: decodeOf(t.mode, t.fmt), w: t.w, h: t.h, mode: t.mode } : null; }
   return {
-    begin, end, composite, read, drop,
+    begin, end, composite, read, drop, target,
     clear() { for (const id of [...targets.keys()]) drop(id); },
     has: (layer) => targets.has(layer),
     // what this GPU offers: per mode, the target format (null = not offered)

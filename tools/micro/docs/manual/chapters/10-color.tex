@@ -241,7 +241,7 @@ Turn it on with \menu{View>Projection}, or type \code{projection} in the palette
 \menu{View>Projection>Off} returns to the surface. The projection is part of the view: a bookmark, a scene, the project and a composer frame all remember it (\cref{sec:sections-scenes,ch:composer}).
 
 \subsection{What projects, and what counts}
-A projection applies to every visible block model and point cloud that is colored by a \emph{numeric} column — continuous or classed, the same ramp and the same clip. A layer colored by category, by rule, by RGB or by elevation draws normally: a lithology has no maximum, and the maximum elevation along a vertical ray is just the top of the model. Meshes and drillholes also draw normally, underneath the projection; hide a layer if you want to see what it covers.
+A projection applies to every visible block model and point cloud that is colored by a \emph{numeric} column — continuous or classed, the same ramp and the same clip. That includes a numeric \ui{ƒ} column and a stored or painted numeric column (\cref{ch:columns}): those are drawn through a 256-step code that rises with the value, and the projection takes the highest (lowest, mean) code and colors it through the same palette. A layer colored by category, by rule, by RGB or by elevation draws normally: a lithology has no maximum, and the maximum elevation along a vertical ray is just the top of the model. Meshes and drillholes also draw normally, underneath the projection; hide a layer if you want to see what it covers.
 
 The projection respects everything that decides what is drawn:
 \begin{itemize}
@@ -253,8 +253,10 @@ The projection respects everything that decides what is drawn:
 
 Eye-dome lighting is off while a projection is on, because the picture has no depth for it to shade. The selection's gold wash and the magenta highlight of a picked block are not drawn on a projected layer.
 
+Changing the ramp while a projection is on — a preset, a breakpoint drag, the classes' colors — is instant at any model size: the projected values are kept, and only their colors are drawn again. Changing the clip, the column or the filter changes the values themselves, so the projection fills in again.
+
 \subsection{Picking in a projection}
-A click names the block that \emph{is} the pixel's value: under \ui{Max}, the block with the highest grade along that ray, wherever it sits — not the one in front. Under \ui{Min}, the lowest; under \ui{Mean}, the block whose value is nearest the mean, since no single block is the mean. The record panel opens on that block as usual. Rectangle and lasso selections still work on what is in front, or, with select-through, on everything inside the shape (\cref{ch:picking}).
+A click names the block that \emph{is} the pixel's value: under \ui{Max}, the block with the highest grade along that ray, wherever it sits — not the one in front. Under \ui{Min}, the lowest; under \ui{Mean}, the block whose value is nearest the mean, since no single block is the mean. The record panel opens on that block as usual. Rectangle and lasso selections take the same blocks: under \ui{Max}, every pixel inside the shape selects the block holding its highest value, so a rectangle over a plan selects the best block of each column inside it; under \ui{Mean}, the block nearest each pixel's own mean. Where nothing projects, the shape selects what is in front, as usual. Select-through still takes everything inside the shape (\cref{ch:picking}).
 
 \subsection{Partial and exact}
 micro draws a large model a budget of blocks at a time and lets the picture converge when you stop moving (\cref{sec:color-draw}). A projection converges the same way. While you orbit, only part of the model has been drawn, so a pixel shows the highest value \emph{among the blocks drawn so far}: a good preview, but not yet the answer. The status line says which:

@@ -10074,6 +10074,116 @@ if (take()) {
   await p.close();
 }
 
+// ── §137: PROJECTION LEFTOVERS (after §129). (1) A ramp change while projecting only
+// RE-COMPOSITES — the targets hold values, not colours: every frame after the change draws
+// 0 elements, and the picture's colour changes. (2) A numeric ƒ column (rule codes rising
+// with its value) PROJECTS: its codes' max per column = the brute-force max of the column's
+// codes, a click names the record that is the max. (3) A marquee under a projection takes
+// the PROJECTED records: max → each column's argmax record; mean → the record nearest the
+// pixel's own mean (keyed per pixel from the projection's target).
+if (take()) {
+  const pg = await mkPage('sm2mipleft');
+  const r = await pg.evaluate(async () => {
+    const M = window._micro, R = M.renderer, W = window.micro;
+    const NX = 10, NY = 6, NZ = 5, DX = 10, DY = 10, DZ = 5;
+    let s = 777;
+    const rnd = () => { s = (Math.imul(s, 1103515245) + 12345) >>> 0; return s / 4294967296; };
+    const val = []; let csv = 'XC,YC,ZC,FE\n';
+    for (let k = 0; k < NZ; k++) for (let j = 0; j < NY; j++) for (let i = 0; i < NX; i++) {
+      const v = k === NZ - 1 ? +(1 + rnd() * 9).toFixed(3) : +(10 + rnd() * 90).toFixed(3);
+      val.push(v); csv += `${1000 + i * DX + DX / 2},${2000 + j * DY + DY / 2},${300 + k * DZ + DZ / 2},${v}\n`;
+    }
+    const rec = (i, j, k) => k * NY * NX + j * NX + i;
+    const id = await M.openBlob(new Blob([csv]), 'mipleft.csv', 'replace', null, { throw: true });
+    const L = M.layers().find((x) => x.id === id);
+    M.setLayerColorSel(L, M.colorSelFor(L, 'FE'));
+    const frame = () => new Promise((z) => requestAnimationFrame(z));
+    const settle = async () => {
+      for (let k = 0; k < 400; k++) { M.requestRender(); await frame(); const p = R.projection; if (R.elementCount && R.accumulated === R.elementCount && (!p || p.exact)) break; }
+      for (let k = 0; k < 3; k++) { M.requestRender(); await frame(); }
+    };
+    await W.setView({ look: 0, elevation: 90, ortho: true, projection: null });
+    document.querySelector('#btnFit').click();
+    await settle();
+    const cv = document.querySelector('#cv'), rc = cv.getBoundingClientRect(), dpr = cv.width / rc.width;
+    const toCss = (w) => {
+      const o = M.frame.origin, p = [w[0] - o[0], w[1] - o[1], w[2] - o[2]], m = M.cam.state.viewProj;
+      const cx = m[0] * p[0] + m[4] * p[1] + m[8] * p[2] + m[12], cy = m[1] * p[0] + m[5] * p[1] + m[9] * p[2] + m[13], cw = m[3] * p[0] + m[7] * p[1] + m[11] * p[2] + m[15];
+      return [(cx / cw + 1) / 2 * rc.width, (1 - cy / cw) / 2 * rc.height];
+    };
+    const devOf = ([x, y]) => [Math.round(x * dpr), Math.round(cv.height - y * dpr - 1)];
+    const cols = [];
+    for (let j = 0; j < NY; j++) for (let i = 0; i < NX; i++) cols.push({ i, j, css: toCss([1000 + i * DX + DX / 2, 2000 + j * DY + DY / 2, 300 + NZ * DZ]) });
+    const screen = () => { const c = new OffscreenCanvas(cv.width, cv.height), g = c.getContext('2d'); g.drawImage(cv, 0, 0); return g.getImageData(0, 0, cv.width, cv.height).data; };
+    const rgbAt = (d, [x, y]) => { const k = ((cv.height - 1 - y) * cv.width + x) * 4; return [d[k], d[k + 1], d[k + 2]]; };
+    const out = {};
+    // (1) the ramp: max projection, converged; then a palette change → every later frame draws 0
+    M.setProjection('max'); await settle();
+    const before = screen();
+    const draws = []; const orig = R.draw;
+    R.draw = function (...a) { const res = orig.apply(this, a); draws.push(res.drawn); return res; };
+    const C = await M.mod('color.js');
+    C.setLayerPalette(L, 'magma');
+    for (let k = 0; k < 4; k++) { M.requestRender(); await frame(); }
+    R.draw = orig;
+    const after = screen();
+    let changed = 0;
+    for (const c of cols) { const a = rgbAt(before, devOf(c.css)), b = rgbAt(after, devOf(c.css)); if (Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2]) > 30) changed++; }
+    out.ramp = { draws, changed, n: cols.length };
+    C.setLayerPalette(L, 'viridis');
+    // (3) the marquee: the whole view, max then mean
+    const pr = R.projectionSupport;
+    const region = (mode) => {
+      const hit = R.pickRegion({ x: 0, y: 0, w: rc.width, h: rc.height }, M.cam, { pointPx: +document.querySelector('#ptPx').value, blocksAsPoints: false, section: null });
+      let good = 0, n = 0;
+      const img = R.projectionValues(id);
+      for (const c of cols) {
+        const [x, y] = devOf(c.css), k = (y - hit.h + hit.h) * hit.w + x;   // (the rect is the whole canvas: rows bottom-up)
+        const got = hit.data[k * 4];
+        const ts = []; for (let kk = 0; kk < NZ; kk++) ts.push(val[rec(c.i, c.j, kk)]);
+        let want;
+        if (mode === 'max') want = rec(c.i, c.j, ts.indexOf(Math.max(...ts)));
+        else {
+          const [lo, hi] = R.layerChanRange(id), tt = ts.map((v) => (v - lo) / (hi - lo)), ref = img.data[y * img.w + x];
+          let best = 0; for (let kk = 1; kk < NZ; kk++) if (Math.abs(tt[kk] - ref) < Math.abs(tt[best] - ref)) best = kk;
+          want = rec(c.i, c.j, best);
+        }
+        n++; if (got === want) good++;
+      }
+      return { good, n, projection: hit.projection };
+    };
+    await settle();
+    out.regionMax = region('max');
+    if (pr.mean) { M.setProjection('mean'); await settle(); out.regionMean = region('mean'); }
+    // (2) a numeric ƒ column: F2 = FE * 2, coloured by it (codes through the palette)
+    M.setProjection(null); await settle();
+    M.applyCalcCols(L, [{ name: 'F2', expr: 'FE * 2', ty: 'number' }]);
+    M.setLayerColorSel(L, 'calc:F2');
+    for (let k = 0; k < 100 && !M.calcDisplayColOf?.(L) && !(L._calcDisplay && L._calcDisplay.col); k++) await new Promise((z) => setTimeout(z, 30));
+    M.setProjection('max'); await settle();
+    const p = R.projection, img = R.projectionValues(id), col = L._calcDisplay && L._calcDisplay.col;
+    let worst = 0, picks = 0;
+    const lo = Math.min(...val) * 2, hi = Math.max(...val) * 2;
+    for (const c of cols) {
+      const ts = []; for (let k = 0; k < NZ; k++) ts.push(val[rec(c.i, c.j, k)] * 2);
+      const mx = Math.max(...ts), code = col && Number.isFinite(col.min) ? 1 + Math.max(0, Math.min(254, Math.round(254 * (mx - col.min) / ((col.max - col.min) || 1)))) : 1 + Math.round(254 * (mx - lo) / (hi - lo));
+      const [x, y] = devOf(c.css); worst = Math.max(worst, Math.abs(img.data[y * img.w + x] * 255 - code));
+      const h = R.pick(c.css[0], c.css[1], M.cam, { pointPx: +document.querySelector('#ptPx').value, blocksAsPoints: false, section: null });
+      if (h && h.rec === rec(c.i, c.j, ts.indexOf(mx))) picks++;
+    }
+    out.codes = { projected: !!(p && p.layers.includes(id)), codes: !!(p && p.codes && p.codes.includes(id)), worst, picks, n: cols.length, exact: p && p.exact };
+    M.setProjection(null);
+    return out;
+  });
+  chk(`projection leftovers: a palette change while projecting re-composites only — frames after it drew ${JSON.stringify(r.ramp.draws)} elements, ${r.ramp.changed}/${r.ramp.n} columns changed colour`,
+    r.ramp.draws.length >= 1 && r.ramp.draws.every((d) => d === 0) && r.ramp.changed > r.ramp.n / 2);
+  chk(`projection leftovers: a numeric ƒ column projects its codes (${JSON.stringify(r.codes)}) — the max code per column within one code, a click names the max record`,
+    r.codes.projected && r.codes.codes && r.codes.exact && r.codes.worst <= 1.01 && r.codes.picks === r.codes.n);
+  chk(`projection leftovers: a marquee under max takes each column's max record (${r.regionMax.good}/${r.regionMax.n}, ${r.regionMax.projection})${r.regionMean ? `; under mean the record nearest the pixel's mean (${r.regionMean.good}/${r.regionMean.n})` : ' (mean not on this GPU)'}`,
+    r.regionMax.good === r.regionMax.n && r.regionMax.projection === 'max' && (!r.regionMean || r.regionMean.good >= r.regionMean.n - 1));
+  await pg.close();
+}
+
 // ── the LAYER CONTEXT MENU, regrouped (src/layermenu.js layerMenuSections). It had
 // grown to ~33 top-level entries on a block model; now the frequent verbs sit on top
 // and the rest in Analyse · Geometry · Select · Views · Display · Data & file · Move.

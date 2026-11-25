@@ -54,6 +54,9 @@ export function syncRuleMode(L) {
   if (!L) return;
   const pc = paintActiveCol(L) || calcDisplayCol(L);
   if (!pc && calcSelOf(L)) ensureCalcDisplay(L);           // realize lazily; it re-syncs on completion
+  // a NUMERIC ƒ / painted column's codes rise with its value (0 = blank): a projection
+  // (src/projection.js) takes the max / min / mean of the codes, through the palette
+  S.renderer.setLayerProjectCodes(L.id, !!(pc && !pc.cat && pc.kind === 'ratio' && !ruleModeOf(L)));
   if (ruleModeOf(L)) {
     S.renderer.setLayerRuleMode(L.id, true);
     applyRulePalette(L, true); applyRuleVisibility(L, true);
