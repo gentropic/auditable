@@ -263,6 +263,58 @@ The results row is the shared one (\cref{sec:analysis-results}): \ui{⇥ figure}
 
 The volume between the surveys is not yet tonnes or grade. For that, give the same surveys to the factors window, which counts the model's blocks between them (\cref{sec:factors-surveys}).
 
+\section{Reading a surface}\label{sec:grids-reading}
+\index{surface!reading}
+Four tools turn a surface into something you can read off or draw with: the elevation along a line, the contour lines, the slope and the direction it faces, and the line where two surfaces meet. Each works on a grid, and the profile and the intersection work on a mesh too. Each makes either a chart or a layer, and each is a routine tool, so a monthly survey can run them unattended.
+
+\subsection{Profile along a line}\label{sec:grids-profile}\index{profile}
+\menu{Tools>Profile along a line…}, or \code{profile} in the palette, opens the \ui{profile} window. Choose the \ui{line}: any string or polygon in a strings \& polygons layer (\cref{ch:polygons}), or \ui{✎ draw a line} to click one on the view (\key{Enter} finishes it, and it becomes a line in a \file{drawn} layer). Tick the surfaces to sample, set the \ui{step (m)} between stations, and press \ui{Run}.
+
+The chart is elevation against \term{chainage}, the plan distance along the line, one curve per surface. Every vertex of the line is a station of its own, at its own chainage, and dashed verticals mark them, so a bend in the line is never smoothed over. A grid is sampled through its own height function (bilinear between its nodes). A mesh is sampled by a vertical ray from above, so it gives its top. Where a surface does not reach, its curve has a gap: a blank is not a zero. A polygon is walked all the way round and back to where it began.
+
+The readout gives the line's \ui{length} and, per surface, its lowest and highest elevation and how much of the line it \ui{covered}. The table (\ui{⧉}) has one row per station: \col{chainage}, \col{x}, \col{y} and one column per surface.
+
+\begin{tryit}
+\begin{enumerate}
+\item Open the demo project and draw a line across the pit with \ui{✎ draw a line}.
+\item Tick the topography and the pit phases, set \ui{step (m)} to 5, and press \ui{Run}.
+\item Read off where each phase cuts below the topography: the gap between the curves is the depth mined along that line.
+\end{enumerate}
+\end{tryit}
+
+In a routine the tool is \code{profile} (\cref{tool:profile}). Name the line by its layer and the feature, by its id or by a value in one of its columns; a layer that holds several lines must say which:
+
+\begin{lstlisting}[language=yaml]
+- tool: "profile"
+  with:
+    line: { layer: "sections.csv", feature: "XS-04" }
+    surfaces: ["topography.tif", "pit_phase3.msh"]
+    step: 5
+\end{lstlisting}
+
+\subsection{Contours}\label{sec:grids-contours}\index{contours}
+\menu{Geometry>Contours → strings…} on a grid's menu, or \code{contours} in the palette, opens the \ui{contours} window. Set the \ui{interval} between levels (it starts at about twenty levels across the grid's range, rounded), the \ui{base} the levels count from (levels are base + k · interval, so a base of 0 gives round numbers), \ui{index every} for the index contours, and optionally \ui{between} two levels. \ui{Make contours} adds a strings \& polygons layer, \file{contours\_<grid>\_<interval>m} by default.
+
+Each level becomes 3D lines at its own elevation; a contour that closes on itself is a closed ring. Every line carries \col{ELEV}, \col{INDEX} (1 on every nth level, 0 otherwise) and \col{LENGTH}, its plan length. The layer is colored by \col{INDEX}, so the index contours stand out, and it exports like any strings layer: DXF for a CAD drawing, a shapefile, WKT-CSV (\cref{sec:polygons-export}).
+
+The lines are traced cell by cell over the grid's own nodes, so a contour lies exactly on the surface it came from: a profile along it reads its \col{ELEV} all the way. Blank nodes stop a contour, they do not bend it. A grid that is rotated or placed (\cref{sec:grids-rotated}) is contoured in its own frame and the lines come out in world coordinates.
+
+In a routine the tool is \code{contours} (\cref{tool:contours}), and there the \code{interval} must be stated: an automatic interval follows the data's range, and a monthly contour set needs the same interval every month.
+
+\subsection{Slope and aspect}\label{sec:grids-slope}\index{slope}\index{aspect}
+\menu{Geometry>Slope and aspect grids} on a grid's menu, or \code{slope} in the palette, makes two grid layers on the source grid's own nodes. \file{slope\_<grid>} is the steepness in degrees from horizontal, on the \code{magma} ramp. \file{aspect\_<grid>} is the direction the ground falls toward, in degrees clockwise from north, on the cyclic \code{aspect} ramp (\cref{sec:color-ramp}), so north reads the same color at 0° and at 360°. A flat node has no aspect and is left blank. Both open as flat sheets just above the surface, ready to drape back over it (\cref{sec:grids-surface}).
+
+The gradient is Horn's: each node's slope comes from its eight neighbors, weighted toward the nearest, using the actual distances, so a node on the grid's edge is measured one-sided, over the span it has. A rotated grid's aspect is turned with it.
+
+In a routine the tool is \code{slopeaspect} (\cref{tool:slopeaspect}); \code{what} chooses \code{slope}, \code{aspect} or \code{both}.
+
+\subsection{Where two surfaces meet}\label{sec:grids-intersection}\index{intersection of surfaces}\index{daylight line}
+\menu{Geometry>Intersection with another surface → strings…} on a surface's menu, or \code{intersection} in the palette, opens the \ui{intersection} window. Choose the \ui{surface} and the one it \ui{meets}, and press \ui{Make lines}. The answer is the line where they cross: a pit design's \term{daylight line} on the topography, the toe where a dump meets the ground, the trace of a fault surface on a contact.
+
+micro samples both surfaces on one lattice, the finer grid's own nodes over the area they share or the \ui{cell (m)} you give, and traces where their difference crosses zero. The lines take the first surface's elevation. They land in a strings \& polygons layer, \file{meet\_<a>\_<b>} by default, with \col{A}, \col{B} and \col{LENGTH} on every line. Either surface may be a grid or a mesh.
+
+In a routine the tool is \code{intersection} (\cref{tool:intersection}), with \code{a}, \code{b} and an optional \code{cell}.
+
 \section{Using a surface}\label{sec:grids-using}
 
 A grid is the fastest and most exact way to ask where a model sits relative to a surface. \menu{Geometry>Flag / ratio by this surface…} on a grid's menu opens the by-geometry dialog with the grid as the surface. There you select or flag the blocks above or below it, or between it and a second surface, or compute the fraction of each block that lies below: the partial blocks along a topography, where counting whole blocks would misstate the tonnage. \Cref{ch:geometry} covers it.

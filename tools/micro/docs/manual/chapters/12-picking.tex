@@ -53,7 +53,7 @@ In the demo project:
 \end{tryit}
 
 \section{Measuring}\label{sec:picking-measure}
-Press \key{m}, or click the ruler on the toolbar, and click two records.\sidekey{m}{measure: then two clicks} After the first click a line follows the cursor; after the second the status line reads
+Press \key{m}, or click the ruler on the toolbar, and click two records (hold \key{⇧} to keep adding points: \cref{sec:picking-polyline}).\sidekey{m}{measure: then two clicks} After the first click a line follows the cursor; after the second the status line reads
 
 \begin{lstlisting}
 measure: 212.47 m · plan 180.00 m · Δz 112.88 m
@@ -81,6 +81,39 @@ Plunge is positive downward, the mining convention. Click the top and bottom of 
 \begin{tip}
 For measuring on a section, turn on \ui{2D} (\cref{sec:sections-walk}). The view is square to the section and orthographic, drags pan instead of orbit, and you can work across it like a sheet of paper.
 \end{tip}
+
+\subsection{A polyline: lengths, an angle, an area}\label{sec:picking-polyline}\index{measure!polyline}\index{area!measured}
+Hold \key{⇧} as you click and each click adds a vertex instead of ending the measurement: the tape becomes a polyline. A plain click adds the last vertex and ends it. While you draw, the status line keeps the running totals:
+
+\begin{lstlisting}
+measure: 140.03 m along 2 segments · plan 139.97 m · last 100.00 m · angle at the middle 90.0°
+\end{lstlisting}
+
+The first number is the length along the polyline in 3D, then the same in plan, then the last segment (with its plunge and trend when \menu{Tools>Measure trend \& plunge} is on). With exactly three points the reading adds the \emph{angle at the middle} one, in 3D: the angle between a drillhole and a contact, or between two walls of a pit.
+
+Click back on the first vertex, once there are three or more, and the outline closes. The reading then gives its area twice:
+
+\begin{lstlisting}
+measure: 280.05 m along 4 segments · plan 279.95 m · last 100.00 m · closed: area 3998.5 m² in plan, 4002.5 m² in 3D
+\end{lstlisting}
+
+The \emph{plan} area is the outline's footprint, what a map would show. The \emph{3D} area is the area of the outline as it lies in space; on a slope it is the larger of the two, by one over the cosine of the slope. An outline that is not flat is measured on the plane it best spans. Outline a bench face, a stockpile's top or an outcrop face, and read both. Like every measurement, the figures come from the true positions of what you clicked.
+
+\subsection{The angle between two planes}\label{sec:picking-planes}\index{measure!angle between planes}\index{intersection lineation}
+Press \key{⇧M}, or \code{angle between two planes} in the palette, and click two surfaces: a mesh, or a grid drawn as a surface.\sidekey{⇧M}{the angle between two planes} Each click keeps the face it met. After the second the status line reads
+
+\begin{lstlisting}
+angle between planes: 8.2° · 03/243 and 06/117 (dip/dip direction) · they meet along 02→192 (plunge→trend)
+\end{lstlisting}
+
+It gives the two attitudes as dip and dip direction, the angle between the planes (from 0° for parallel planes to 90°), and the line they meet along, pointing down, as plunge and trend: the intersection lineation of a vein on a fault, or the direction a wedge between two joint sets slides out along. Parallel planes meet nowhere, and the reading says so. Each plane is the triangle (or the grid cell) under the cursor, so click where the surface is representative; to fit a plane to a whole patch of an outcrop, use structural analysis (\cref{ch:structure}).
+
+\section{Points of interest}\label{sec:picking-poi}\index{points of interest}
+A \term{point of interest} is a named point you clicked: a sample site, a collar to be drilled, a spot where the model and a hole disagree. \code{points of interest} in the palette arms the pick: each click on the model adds a point, named \ui{P1}, \ui{P2} and so on, until you press \key{Esc}. A click lands where the measure tape would: on the face of the block, interval or surface under the cursor, at its true position.
+
+Every point shows in the view as a yellow marker with its name, and in the \ui{points of interest} window, one row each: its name and note (both editable), its X, Y and Z in world coordinates, \ui{◎} to center the view on it and \ui{×} to remove it. Under the list, \ui{+ pick} arms the pick again, \ui{export CSV} writes \file{points-of-interest.csv} (\col{X}, \col{Y}, \col{Z}, \col{NAME}, \col{NOTE}), \ui{as a points layer} opens them as a points layer, and \ui{clear} removes them all.
+
+They belong to the project, not to a layer: it keeps them as \file{points-of-interest.csv} at its root, a plain table any other tool can read, and they come back when the project opens (\cref{ch:projects}). In a figure, the composer's \ui{+ points of interest} pins a label to each of them in the selected view frame (\cref{sec:compo-kinds}).
 
 \section{Selecting}\label{sec:picking-select}
 A pick is one record. A \term{selection} is a set of them, and it is the handle most other tools take: the analysis windows have a \emph{selection} scope (\cref{ch:analysis}), the attribute table has a \ui{selected} view, exports can write only the selected rows, and the brush can stamp a value onto them.

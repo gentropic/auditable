@@ -200,6 +200,12 @@ export default {
   'section lines': 'linhas de seção', 'cuts → strings & polygons': 'cortes → strings e polígonos', 'Section lines → strings…': 'Linhas de seção → strings…',
   'Domain boundaries on a section → strings…': 'Limites de domínio numa seção → strings…',
   // ── surfaces, grids, the as-built ──
+  'profile': 'perfil', 'pick a line and the surfaces, then Run': 'escolha uma linha e as superfícies, depois Executar', 'Profile along a line…': 'Perfil ao longo de uma linha…', '✎ draw a line': '✎ desenhar uma linha',
+  'contours': 'curvas de nível', 'a grid → strings & polygons': 'um grid → strings e polígonos', 'Contours → strings…': 'Curvas de nível → strings…', 'Make contours': 'Gerar curvas', 'index every': 'mestra a cada',
+  'intersection': 'interseção', 'where two surfaces meet → strings': 'onde duas superfícies se encontram → strings', 'Intersection of two surfaces → strings…': 'Interseção de duas superfícies → strings…', 'Intersection with another surface → strings…': 'Interseção com outra superfície → strings…', 'Make lines': 'Gerar linhas',
+  'Slope and aspect grids…': 'Grids de declividade e orientação…', 'Slope and aspect grids': 'Grids de declividade e orientação',
+  'Angle between two planes…': 'Ângulo entre dois planos…',
+  'points of interest': 'pontos de interesse', 'Points of interest…': 'Pontos de interesse…', 'Points of interest: the list': 'Pontos de interesse: a lista', '+ pick': '+ marcar', 'as a points layer': 'como camada de pontos', '+ points of interest': '+ pontos de interesse',
   'cut / fill': 'corte / aterro', 'pick before and after, then Run': 'escolha o antes e o depois, depois Executar', 'Cut / fill between surfaces…': 'Corte / aterro entre superfícies…',
   'grid points': 'gridar pontos', 'point cloud → DEM': 'nuvem de pontos → MDE', 'Grid points to DEM…': 'Gridar pontos em MDE…', 'grid points (DEM)': 'gridar pontos (MDE)',
   'projection to grid': 'projeção para grid', 'column statistics → a plan grid': 'estatísticas por coluna → um grid em planta', 'Projection to grid…': 'Projeção para grid…',

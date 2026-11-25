@@ -163,7 +163,7 @@ export function openPoiWindow() {
   const list = document.createElement('div'); list.className = 'poi-list'; list.style.cssText = 'overflow:auto;flex:1;font:12px var(--mono, monospace)';
   const bar = document.createElement('div'); bar.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;padding-top:6px';
   const btn = (label, title, fn) => { const b = document.createElement('button'); b.textContent = label; b.title = title; b.onclick = fn; bar.appendChild(b); return b; };
-  btn('＋ pick', 'click points in the 3D view (Esc stops)', () => armPoi());
+  btn('+ pick', 'click points in the 3D view (Esc stops)', () => armPoi());
   btn('export CSV', 'X,Y,Z,NAME,NOTE in world coordinates', () => deliverBlob(new Blob([poisToCsv()], { type: 'text/csv' }), POI_FILE));
   btn('as a points layer', 'a points layer of them (NAME as the category)', () => poisToLayer().catch((e) => { $('#meta').textContent = e.message; }));
   btn('clear', 'remove every point of interest', () => clearPois());
@@ -172,7 +172,7 @@ export function openPoiWindow() {
   _win._fill = () => {
     list.textContent = '';
     const sub = _win.querySelector('.fwin-head .sub'); if (sub) sub.textContent = `${pois().length} point${pois().length === 1 ? '' : 's'}`;
-    if (!pois().length) { list.textContent = 'none yet — ＋ pick, then click in the 3D view'; return; }
+    if (!pois().length) { list.textContent = 'none yet — + pick, then click in the 3D view'; return; }
     const tbl = document.createElement('table'); tbl.style.cssText = 'width:100%;border-collapse:collapse';
     tbl.innerHTML = '<tr style="text-align:left;color:var(--dim)"><th>name</th><th>X</th><th>Y</th><th>Z</th><th>note</th><th></th></tr>';
     pois().forEach((p, i) => {
