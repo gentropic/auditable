@@ -33,6 +33,12 @@ describePath(sad, sirgas, { at: [-44, -20] }).text;
   default (IBGE's SAD69 parameters inside Brazil; Córrego Alegre, whose EPSG default needs a grid).
   `loadGrid(name, buffer)` — an NTv2 grid a definition names (none bundled; a missing grid is
   reported as `unknown`, never shifted silently).
+- **.prj out:** `crsToPrj(crs)` → `{ text, why }` — ESRI-flavoured WKT1 (ESRI names; a top-level
+  `AUTHORITY["EPSG", n]` for a table system) generated from the proj4 definition: geographic, TM /
+  UTM, LCC (1SP / 2SP), Albers, polar stereographic, Mercator, Polyconic, LAEA, Cassini, Equidistant
+  Cylindrical — 6,730 of the table's 6,983, each verified to read back (`test/proj-wkt.test.mjs`).
+  Anything else, a non-east/north axis, or a custom system with a grid shift: `text` null and
+  `why` says so.
 - **World:** `worldRings()` → lon/lat rings.
 
 ## Regenerating
@@ -49,4 +55,4 @@ node ext/proj/build.js
 ```
 
 Licences: proj4js, wkt-parser, mgrs (MIT), epsg-index (ISC; the EPSG Geodetic Parameter Dataset),
-world-atlas (ISC; Natural Earth data is public domain) — in `vendor/`. Tests: `test/proj.test.mjs`.
+world-atlas (ISC; Natural Earth data is public domain) — in `vendor/`. Tests: `test/proj.test.mjs`, `test/proj-wkt.test.mjs`.

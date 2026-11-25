@@ -8,3 +8,4 @@ export { EPSG_SOURCE, loadEpsgTable, epsgTable, lookupEpsg, lookupEpsgSync, sear
 export { WGS84_DEF, looksWkt, customCrs, crsFromCode, crsFromPrj, crsFromDefinition, crsFromUrn, crsFromGeoKeys, crsLabel, crsToJSON, crsFromJSON, sameCrs } from './crs.js';
 export { BRAZIL, DATUM_SHIFTS, registerDatumShift, loadGrid, effectiveDef, describePath, transformer, transformPoints, transformFlat, whereOf, toLonLat, fromLonLat, extentLonLat, WGS84 } from './transform.js';
 export { worldRings, WORLD_SOURCE } from './world.js';
+export { crsToPrj, parseProj4 } from './wkt.js';

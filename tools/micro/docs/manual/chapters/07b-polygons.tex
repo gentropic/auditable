@@ -362,8 +362,9 @@ Ore outlines for the demo's benches.
 \item[WKT-CSV] (\file{.csv}): for QGIS, PostGIS and spreadsheets.
 \item[GeoJSON] (\file{.geojson}): with a \code{"crs"} member, so the file is not read as longitude
   and latitude.
-\item[Shapefile] (\file{.zip}): \file{.shp}, \file{.shx}, \file{.dbf}, \file{.cpg} and the
-  \file{.prj} the layer came with. A shapefile holds one geometry type, so a layer with both
+\item[Shapefile] (\file{.zip}): \file{.shp}, \file{.shx}, \file{.dbf}, \file{.cpg} and a
+  \file{.prj}: the one the layer came with, or one written for the system its coordinates are in
+  now (\cref{sec:crs-export}). A shapefile holds one geometry type, so a layer with both
   polygons and lines writes two in the zip.
 \item[DXF] (\file{.dxf}): one polyline per ring, on the DXF layer named by the category column, the
   attributes in each polyline's extended data under \code{MICRO}. micro reads them back, holes

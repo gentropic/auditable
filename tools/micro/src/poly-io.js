@@ -37,7 +37,7 @@ import { readShapefile, writeShapefile } from '../../../ext/shp/index.js';
 import { read as readDxf, write as writeDxf, explode as explodeDxf, polylineChords } from '../../../ext/dxf/index.js';
 import { openZipRanged, blobSource, createZipStreamWriter } from '../../../ext/archive/src/zipstream.js';
 import { geometryToFeature, featureToGeometry, featureDocOf, featuresOf } from './polygons.js';
-import { lookupEpsg, crsFromPrj, crsFromUrn, crsFromJSON, crsLabel, sameCrs, transformer, whereOf, describePath, crsToJSON, WGS84 } from '../../../ext/proj/index.js';
+import { lookupEpsg, crsFromPrj, crsFromUrn, crsFromJSON, crsLabel, sameCrs, transformer, whereOf, describePath, crsToJSON, crsToPrj, WGS84 } from '../../../ext/proj/index.js';
 import { readKml, kmlInZip, featuresToKml } from './kml.js';
 
 // ── small text helpers ──────────────────────────────────────────────────────────────────────
@@ -570,6 +570,19 @@ export function featuresToLonLat(feats, from) {
   const t = transformer(from, WGS84, { at: whereOf(from, pts) });
   return feats.map((f) => ({ ...f, rings: f.rings.map((r) => r.map((p) => { const q = t.forward(p); return [q[0], q[1], p[2] || 0]; })) }));
 }
+// the .prj a shapefile export carries, from the layer's CRS lineage: the file's own .prj while
+// the coordinates are still the file's (verbatim — it's what the author wrote); otherwise the
+// system they are in now (reprojected to the project's, drawn or derived in it) written as WKT1
+// by @gcu/proj — or none, with the reason, when that system can't be said in WKT1.
+// → { prj, from: 'file' | 'written' | null, note }
+export function shapefilePrj(d, lcrs) {
+  const src = (d && d.source) || {};
+  if (!src.reprojected && src.prj) return { prj: src.prj, from: 'file', note: null };
+  if (!lcrs) return { prj: null, from: null, note: 'no .prj written — these coordinates have no coordinate system (set the project\'s: the CRS chip in the status bar)' };
+  const r = crsToPrj(lcrs);
+  if (r.text) return { prj: r.text, from: 'written', note: `.prj: ${crsLabel(lcrs)}` };
+  return { prj: null, from: null, note: `no .prj written — ${r.why}; the coordinates are in ${crsLabel(lcrs)}, set that in the reading software` };
+}
 export async function buildFeatureExport(L, format, { selectedOnly = false, name = null, projectCrs = null } = {}) {
   const d = featureDocOf(L);
   if (!d) throw new Error(`${L.label || L.name} is not a strings & polygons layer`);
@@ -591,9 +604,10 @@ export async function buildFeatureExport(L, format, { selectedOnly = false, name
     const items = ll.map((f) => ({ attrs: f.attrs, geometry: featureToGeometry(f) }));
     return { blob: new Blob([featuresToKml(items, { name: L.label || L.name, z: d.header.bbox && (d.header.bbox.max[2] !== 0 || d.header.bbox.min[2] !== 0) })], { type: 'application/vnd.google-earth.kml+xml' }), name: `${base}.kml` };
   }
-  // a reprojected layer's .prj would be the ORIGINAL file's — wrong now: none is written (micro
-  // carries EPSG codes, not WKT; the project's system is said in the note)
-  if (format === 'shp') return { blob: await featuresToShapefileZip(feats, columns, base, { prj: reproj ? null : d.source && d.source.prj }), name: `${base}.zip`, note: reproj && lcrs ? `no .prj written — the features were reprojected to ${crsLabel(lcrs)}; set that in the reading software` : null };
+  if (format === 'shp') {
+    const sh = shapefilePrj(d, lcrs);
+    return { blob: await featuresToShapefileZip(feats, columns, base, { prj: sh.prj }), name: `${base}.zip`, note: sh.note, prjFrom: sh.from };
+  }
   if (format === 'dxf') {
     const cat = d.header.mapping.cat != null ? d.header.columns[d.header.mapping.cat] : null;
     return { blob: new Blob([featuresToDxf(feats, columns, { catCol: cat })], { type: 'application/dxf' }), name: `${base}.dxf` };

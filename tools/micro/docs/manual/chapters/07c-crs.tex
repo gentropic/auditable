@@ -328,8 +328,14 @@ A strings and polygons layer exports, besides its own system's formats, two in W
 \ui{GeoJSON in lon/lat}, the RFC 7946 shape, with no \code{"crs"} member. Both are reprojected from the
 layer's system on the way out, so a layer needs one: the project's, or the one its file stated.
 
-A shapefile from a layer that was reprojected on read is written without a \file{.prj}: the original
-one names the old system. The status line names the project's system to set in the reading software.
+A shapefile carries the \file{.prj} of the system its coordinates are in now. A layer still in its
+file's system keeps that file's \file{.prj}, word for word. A layer reprojected on read, drawn, or
+made by micro gets one written for the project's system: ESRI-style WKT, the form ArcGIS writes and
+QGIS reads, with the EPSG code inside so a reader that knows codes gets the system exactly. micro
+writes the common projections (Transverse Mercator and UTM, Lambert conic, Albers, polar
+stereographic, Mercator, polyconic and a few more, which covers 6,730 of the 6,983 systems in its
+table). For any other system it writes no \file{.prj}, and the status line says why and names the
+system to set in the reading software.
 
 \section{Captions}\label{sec:crs-captions}
 

@@ -150,6 +150,21 @@ try {
   chk(`SAD69 → SIRGAS 2000 by IBGE's parameters: vertices land on the oracle (worst ${(err2 * 1000).toFixed(3)} mm), moved ${moved.toFixed(2)} m`, err2 < 0.001 && moved > 30 && moved < 80);
   chk(`the path is stated: "${r2.rp && r2.rp.path}"`, r2.rp && r2.rp.accuracy.class === 'metre' && /IBGE R\.PR 1\/2005/.test(r2.rp.path) && /-67\.35, \+3\.88, -38\.22/.test(r2.rp.path) && /1–5 m/.test(r2.rp.path));
 
+  // ═══ §2c the reprojected layer exported as a shapefile carries a .prj of the system it is in NOW ═══
+  const r2c = await evaluateSettled(p, async () => {
+    const M = window._micro, C = window._microCrs;
+    const L = M.layers().find((x) => x.docs.stringsDoc && x.docs.stringsDoc.source.fileCrs && x.docs.stringsDoc.source.fileCrs.epsg === 29193);
+    const before = M.featuresOf(L)[0].rings[0].map((q) => q.slice());
+    const out = await M.buildFeatureExport(L, 'shp', { projectCrs: C.projectCrs() });
+    const id = await M.openBlob(new File([out.blob], out.name), out.name, 'add', null, { throw: true });
+    const B = M.layers().find((x) => x.id === id);
+    const src = B.docs.stringsDoc.source;
+    return { note: out.note, from: out.prjFrom, prj: src.prj, fileCrs: src.fileCrs, rp: !!src.reprojected, before, after: M.featuresOf(B)[0].rings[0].map((q) => q.slice()) };
+  });
+  const errC = Math.max(...r2c.before.map((e) => r2c.after.reduce((m, q) => Math.min(m, Math.hypot(q[0] - e[0], q[1] - e[1])), Infinity)));
+  chk(`shapefile out of the reprojected layer: a .prj written for the project's system (${r2c.note}) — read back as EPSG:${r2c.fileCrs && r2c.fileCrs.epsg}, not reprojected again, vertices where they were (worst ${(errC * 1000).toFixed(3)} mm)`,
+    r2c.from === 'written' && /^PROJCS\["SIRGAS_2000_UTM_zone_23S"/.test(r2c.prj || '') && /AUTHORITY\["EPSG","31983"\]\]$/.test(r2c.prj || '') && r2c.fileCrs && r2c.fileCrs.epsg === 31983 && !r2c.rp && errC < 0.001);
+
   // ═══ §2b a LAS cloud in SAD69 (a GeoKeys VLR) ═══
   const r2b = await evaluateSettled(p, async ({ LAS }) => {
     const M = window._micro;
