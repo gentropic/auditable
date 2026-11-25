@@ -283,12 +283,18 @@ try {
     const M = window._micro, feats = eval(FEATS);
     const L = M.layers().find((x) => /drawn polygons/.test(x.label || ''));
     const want = clicks.map(([x, y]) => M.worldAt(x, y, M.polyDraw.z));
+    const cv = document.querySelector('#cv'), rect = cv.getBoundingClientRect(), st = M.cam.state, o = M.frame.origin, V = st.viewProj;
+    const proj = (w) => { const q2 = [w[0] - o[0], w[1] - o[1], w[2] - o[2]];
+      const xx = V[0] * q2[0] + V[4] * q2[1] + V[8] * q2[2] + V[12], yy = V[1] * q2[0] + V[5] * q2[1] + V[9] * q2[2] + V[13], ww = V[3] * q2[0] + V[7] * q2[1] + V[11] * q2[2] + V[15];
+      return [(xx / ww + 1) / 2 * rect.width, (1 - yy / ww) / 2 * rect.height]; };
+    const onScreen = (feats(L)[0] ? feats(L)[0].rings[0] : []).map((v) => proj(v));
     M.disarmPoly(true);
-    return { f: feats(L), want, name: L.name, z: M.polyDraw.z, mem: L.memoryOnly };
+    return { f: feats(L), want, onScreen, name: L.name, z: M.polyDraw.z, mem: L.memoryOnly };
   }, { clicks, FEATS });
   const dv = r6.f[0] && r6.f[0].rings[0];
   chk(`draw: 4 synthetic clicks + Enter → “blast 12” (bench 850, code B12) in a new layer ${r6.name}`, r6.f.length === 1 && r6.f[0].closed && dv.length === 4 && r6.f[0].attrs.NAME === 'blast 12' && r6.f[0].attrs.bench === 850 && r6.f[0].attrs.code === 'B12' && /\.csv$/.test(r6.name) && r6.mem);
   chk('draw: each vertex is where its click meets the drawing plane (to 1 mm)', dv && dv.every((p, i) => Math.hypot(p[0] - r6.want[i][0], p[1] - r6.want[i][1]) < 1e-3 && Math.abs(p[2] - r6.z) < 1e-6));
+  chk(`draw: projected back through the camera, each stored vertex sits on the pixel that was clicked (${r6.onScreen.map((q2) => q2.map((v) => v.toFixed(1)).join(',')).join(' · ')})`, r6.onScreen.length === 4 && r6.onScreen.every((q2, i) => Math.hypot(q2[0] - clicks[i][0], q2[1] - clicks[i][1]) < 0.75));
   // edit: drag vertex 2's handle
   await q.evaluate(() => { const M = window._micro; M.armEditVertices(M.layers().find((x) => /drawn polygons/.test(x.label || ''))); });
   await q.waitForTimeout(300);
@@ -313,7 +319,7 @@ try {
     M.disarmPoly(true);
     return { before, undone, redone: feats(L)[0].rings[0][2].slice() };
   }, FEATS);
-  chk('undo puts the vertex back; redo moves it again', Math.hypot(r8.undone[0] - r8.before[0], r8.undone[1] - r8.before[1]) > 0.5 && Math.hypot(r8.redone[0] - r8.before[0], r8.redone[1] - r8.before[1]) < 1e-6);
+  chk(`undo puts the vertex back EXACTLY where it was before the drag (${r8.undone.slice(0, 2).map((v) => v.toFixed(3))} = ${dv[2].slice(0, 2).map((v) => (+v).toFixed(3))}); redo moves it again`, Math.hypot(r8.undone[0] - dv[2][0], r8.undone[1] - dv[2][1]) < 1e-9 && Math.abs(r8.undone[2] - dv[2][2]) < 1e-9 && Math.hypot(r8.redone[0] - r8.before[0], r8.redone[1] - r8.before[1]) < 1e-6);
   // save the project → polygons/*.csv; reopen it
   const saved = await q.evaluate(async (FEATS) => { const M = window._micro, feats = eval(FEATS); return M.layers().map((L) => [L.label || L.name, feats(L)]); }, FEATS);
   q.evaluate(() => window._micro.saveProjectAs());

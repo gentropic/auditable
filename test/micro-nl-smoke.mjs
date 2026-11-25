@@ -98,6 +98,10 @@ for (const [tag, url] of targets) {
     // select: filter → selection, the previous filter comes back
     await props.sel.run(); await new Promise((z) => setTimeout(z, 800));
     const selected = { n: dep._selCount || 0, box: document.querySelector('#filter').value };
+    { // the selection is EXACTLY the blocks with FE > 60 (it was checked for "more than none")
+      const h = M.layerTableHeader(dep), fi = h.columns.indexOf('FE'); let want = 0;
+      for await (const { f } of M.layerRecords(dep)) if (+f[fi] > 60) want++;
+      selected.want = want; }
     M.clearSelection && M.clearSelection();
 
     const wn = () => [...document.querySelectorAll('.fwin')].filter((w) => w.style.display !== 'none').map((w) => (w.querySelector('.fwin-head') || w).textContent);
@@ -108,7 +112,7 @@ for (const [tag, url] of targets) {
       opened[k + 'New'] = wn().length > n0;
     }
     M.closeAllWindows && M.closeAllWindows();
-    props.proj.run(); const projOn = !!document.body && (M.renderer && true);
+    props.proj.run(); const projOn = M.projectionStatus() !== ''; M.setProjection(null, { quiet: true });   // the projection really went on (this was a constant)
     props.solid.run(); await new Promise((z) => setTimeout(z, 300));
     const solidDlg = !!document.querySelector('#sbDlg.show');
     if (solidDlg) document.querySelector('#sbDlg').classList.remove('show');
@@ -144,9 +148,10 @@ for (const [tag, url] of targets) {
   chk(`[${tag}] the headline row shows the expression: "${r.head && r.head.title}"`, r.head && r.head.expr === 'FE > 55 and LITO == "HEMATITE"' && r.head.title.includes('FE > 55 and LITO == "HEMATITE"'));
   chk(`[${tag}] PROPOSING does not act — filter / selection / windows unchanged by 13 proposals`, JSON.stringify(r.before) === JSON.stringify(r.after));
   chk(`[${tag}] Enter on the filter row → the box holds that expression and the model is masked`, r.filtered.box === 'FE > 55 and LITO == "HEMATITE"' && r.filtered.mask);
-  chk(`[${tag}] select → a selection (${r.selected.n} blocks), the earlier filter back in the box ("${r.selected.box}")`, r.selected.n > 0 && r.selected.box === 'FE > 55 and LITO == "HEMATITE"');
+  chk(`[${tag}] select → exactly the ${r.selected.want} blocks with FE > 60 (${r.selected.n}), the earlier filter back in the box ("${r.selected.box}")`, r.selected.n > 0 && r.selected.n === r.selected.want && r.selected.box === 'FE > 55 and LITO == "HEMATITE"');
   for (const [k, want] of [['swath', /swath/], ['stats', /stats/], ['contact', /contact/], ['factors', /factor|reconcil/i], ['xtab', /cross-tab/]])
     chk(`[${tag}] ${k}: "${r.props[k] && r.props[k].title}" opens its window ("${r.opened[k]}")`, !!r.props[k] && want.test(r.opened[k]));
+  chk(`[${tag}] "maximum intensity projection" turns the projection on (${r.projOn})`, r.projOn === true);
   chk(`[${tag}] stats preset from pt: column FE, by LITO`, r.props.stats && r.props.stats.args.column === 'FE' && /by LITO/.test(r.props.stats.title));
   chk(`[${tag}] contact plot targets the drillholes ("${r.props.contact && r.props.contact.title}")`, r.props.contact && /demo_assay/.test(r.props.contact.title));
   chk(`[${tag}] select inside the ore shell → the select-by-solid dialog opens`, r.solidDlg);

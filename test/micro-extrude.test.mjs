@@ -81,6 +81,28 @@ test('oriented prism: volume = plan area × length × |sin plunge|, either sense
     watertight(m, `${trend}/${plunge}`);
     near(m.volume, 1870 * len * Math.abs(Math.sin(plunge * Math.PI / 180)), 1e-6, `${trend}/${plunge}`);
   }
+  // the DIRECTION (sweep 2026-11-25: volume and watertightness don't depend on it, so a prism
+  // pointing the wrong way passed): the solid's centroid = the base polygon's + half the push
+  const solidCentroid = (m) => {
+    const V = m.vertices, T = m.triangles, ox = V[0], oy = V[1], oz = V[2];
+    let vol = 0, cx = 0, cy = 0, cz = 0;
+    for (let t = 0; t < T.length; t += 3) {
+      const a = T[t] * 3, b = T[t + 1] * 3, c = T[t + 2] * 3;
+      const ax = V[a] - ox, ay = V[a + 1] - oy, az = V[a + 2] - oz, bx = V[b] - ox, by = V[b + 1] - oy, bz = V[b + 2] - oz, qx = V[c] - ox, qy = V[c + 1] - oy, qz = V[c + 2] - oz;
+      const v6 = ax * (by * qz - bz * qy) + ay * (bz * qx - bx * qz) + az * (bx * qy - by * qx);
+      vol += v6; cx += v6 * (ax + bx + qx) / 4; cy += v6 * (ay + by + qy) / 4; cz += v6 * (az + bz + qz) / 4;
+    }
+    return [ox + cx / vol, oy + cy / vol, oz + cz / vol];
+  };
+  // the base's plan centroid: L shape (1950 m²) minus the hole (80 m²), at z 850
+  const ringC = (r) => { let a = 0, x = 0, y = 0; for (let i = 0, n = r.length, j = n - 1; i < n; j = i++) { const k = (r[j][0] - E0) * (r[i][1] - N0) - (r[i][0] - E0) * (r[j][1] - N0); a += k; x += (r[j][0] - E0 + r[i][0] - E0) * k; y += (r[j][1] - N0 + r[i][1] - N0) * k; } return { a: a / 2, x: x / (3 * a), y: y / (3 * a) }; };
+  const cL = ringC(L_SHAPE), cH = ringC(HOLE), A = Math.abs(cL.a) - Math.abs(cH.a);
+  const base = [E0 + (Math.abs(cL.a) * cL.x - Math.abs(cH.a) * cH.x) / A, N0 + (Math.abs(cL.a) * cL.y - Math.abs(cH.a) * cH.y) / A, 850];
+  for (const [trend, plunge, len] of [[90, 60, 40], [215, 35, 25], [10, -50, 30]]) {
+    const m = extrudeOriented(f, { direction: { trend, plunge }, length: len }), dir = directionOf({ trend, plunge });
+    const c = solidCentroid(m), want = base.map((v, k) => v + dir[k] * len / 2);
+    for (let k = 0; k < 3; k++) near(c[k], want[k], 1e-6, `${trend}/${plunge} centroid axis ${k}`);
+  }
   const d = directionOf({ trend: 90, plunge: 30 });
   near(d[0], Math.cos(Math.PI / 6), 1e-12); near(d[2], -0.5, 1e-12);
   const v = extrudeOriented(f, { direction: [0, 0, -1], length: 30 });

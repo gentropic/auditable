@@ -218,7 +218,10 @@ try {
     const M = window._micro, out = {};
     const Lo = M.layers().find((q) => q.name === 'ore_outlines.csv');
     const src = M.featuresOf(Lo);
-    const sum = (fs) => ({ n: fs.length, rings: fs.map((x) => x.rings.length).join(','), area: fs.reduce((s, x) => s + M.polygonAreaXY(x), 0), verts: fs.reduce((s, x) => s + x.rings.reduce((t, r) => t + r.length, 0), 0) });
+    // the VERTICES themselves (sweep 2026-11-25: area and counts survive a translation, so an exporter
+    // writing frame-local or shifted coordinates passed): every x, y to the millimetre, as a multiset
+    const pts = (fs) => fs.flatMap((x) => x.rings.flatMap((r) => r.map((q) => `${(+q[0]).toFixed(3)},${(+q[1]).toFixed(3)}`))).sort().join(' ');
+    const sum = (fs) => ({ n: fs.length, rings: fs.map((x) => x.rings.length).join(','), area: fs.reduce((s, x) => s + M.polygonAreaXY(x), 0), verts: fs.reduce((s, x) => s + x.rings.reduce((t, r) => t + r.length, 0), 0), pts: pts(fs) });
     out.src = sum(src);
     for (const fmt of ['dxf', 'shp']) {
       const ex = await M.buildFeatureExport(Lo, fmt);
@@ -233,12 +236,13 @@ try {
     const ed = await M.buildFeatureExport(Ld, 'dxf');
     const idd = await M.openBlob(new File([ed.blob], 'dom815_rt.dxf'), 'dom815_rt.dxf', 'add', null, { asKind: 'features' });
     const fd = M.featuresOf(M.layers().find((q) => q.id === idd));
-    out.dom = { n: fd.length, verts: fd[0].rings[0].length, closed: fd[0].closed };
+    out.dom = { n: fd.length, verts: fd[0].rings[0].length, closed: fd[0].closed, same: pts(fd) === pts(M.featuresOf(Ld)) };
     return out;
   });
   chk(`DXF round trip of the outlines (${r6.dxf.name}): ${r6.dxf.n} polygons, rings ${r6.dxf.rings} (src ${r6.src.rings}), ${r6.dxf.verts} vertices (${r6.src.verts}), ${r6.dxf.area} m² (${r6.src.area}); attributes ${r6.dxf.attrs.join(' | ')}`, r6.dxf.n === r6.src.n && r6.dxf.rings === r6.src.rings && r6.dxf.verts === r6.src.verts && near(r6.dxf.area, r6.src.area, 1e-3) && r6.dxf.attrs.join('|') === r6.srcAttrs.join('|'));
   chk(`shapefile round trip (${r6.shp.name}): ${r6.shp.n} polygons, rings ${r6.shp.rings}, ${r6.shp.area} m², attributes ${r6.shp.attrs.join(' | ')}`, r6.shp.n === r6.src.n && r6.shp.rings === r6.src.rings && near(r6.shp.area, r6.src.area, 1e-3) && r6.shp.attrs.join('|') === r6.srcAttrs.join('|'));
-  chk(`the domain boundary out as DXF and back: ${r6.dom.n} open line of ${r6.dom.verts} corners`, r6.dom.n === 1 && r6.dom.verts === 39 && !r6.dom.closed);
+  chk(`the domain boundary out as DXF and back: ${r6.dom.n} open line of ${r6.dom.verts} corners, at the same coordinates (${r6.dom.same})`, r6.dom.n === 1 && r6.dom.verts === 39 && !r6.dom.closed && r6.dom.same);
+  chk(`…and both outline round trips put every vertex back where it was, to the millimetre (DXF ${r6.dxf.pts === r6.src.pts}, shapefile ${r6.shp.pts === r6.src.pts})`, r6.dxf.pts === r6.src.pts && r6.shp.pts === r6.src.pts);
 
   // ═══ §7 the layer menu + the palette ═══
   const r7 = await evaluateSettled(p, async () => {
