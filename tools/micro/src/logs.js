@@ -132,7 +132,9 @@ export function logLegendRows(L) {
 // drawn under the layer's colour legend in the decorations (and so in the quick figure): one row
 // per track — its swatch (the bar's colour, the strip's ramp, or its first classes), the column,
 // the side and the scale
-addLegendExtra((g, L, bx, by) => {
+// registered after the module graph has loaded: deco.js sits in the same import cycle, so its
+// export may not be initialised while this module evaluates (tools/micro/dev/cycles.mjs)
+queueMicrotask(() => addLegendExtra((g, L, bx, by) => {
   const rows = logLegendRows(L); if (!rows.length) return 0;
   g.font = '11px monospace'; g.textAlign = 'left'; g.textBaseline = 'alphabetic';
   _label(g, `logs · ${nameOf(L)}`.slice(0, 22), bx, by + 4);
@@ -152,7 +154,7 @@ addLegendExtra((g, L, bx, by) => {
     y += 17;
   }
   return y - by;
-});
+}));
 
 // ── the window ──
 let _win = null;

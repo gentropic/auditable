@@ -82,6 +82,13 @@ const chk = (n, c) => { console.log(`${c ? 'ok  ' : 'FAIL'}  ${n}`); c ? pass++ 
 const mkPage = async () => {
   const p = await ctx.newPage(); p.on('pageerror', (e) => { console.log('PAGEERROR', e.message); fail++; });
   await p.goto(`http://127.0.0.1:${PORT}${APP}`, { waitUntil: 'load' });
+  // after the first load, say WHY the page goes away if it does (a navigation, a renderer crash, a
+  // download) — an intermittent "execution context was destroyed" on one GPU, 2026-11-25
+  p.on('framenavigated', (fr) => { if (fr === p.mainFrame()) console.log('NAVIGATED', fr.url()); });
+  p.on('crash', () => console.log('PAGE CRASHED (renderer)'));
+  p.on('download', (d) => console.log('DOWNLOAD', d.suggestedFilename()));
+  p.on('console', (m) => { if (/^STEP |context lost|CONTEXT_LOST|webgl/i.test(m.text()) || m.type() === 'error') console.log('CONSOLE', m.type(), m.text().slice(0, 160)); });
+  p.on('close', () => console.log('PAGE CLOSED'));
   await p.waitForFunction(() => window._micro && window._micro.addLayer, null, { timeout: 30000 });
   return p;
 };
@@ -180,9 +187,13 @@ try {
   // ↻ refresh: domain B moves +5 % in a new version of new.csv — the table, its fields and the map follow
   const rf = await p.evaluate(async (csv) => {
     const M = window._micro, fig = M.currentFigure();
+    console.log('STEP remove');
     window.micro.removeLayer(M.layers().find((q) => q.name === 'new.csv').id);
+    console.log('STEP open');
     await M.openBlob(new File([csv], 'new.csv'), 'new.csv', 'add');
+    console.log('STEP refresh');
     const n = await M.refreshViews(fig);
+    console.log('STEP done');
     const doc = fig.doc, env = { ...M.composerEnv({}), doc };
     const tf = doc.frames.find((f) => f.source && f.source.kind === 'compare'), mv = doc.frames.find((f) => f.source && f.source.kind === 'compare-moves');
     return { n, dmp: env.fields.cmp('delta_metal_pct', mv, env), changed: env.fields.cmp('changed', mv, env), unchanged: env.fields.cmp('unchanged', mv, env), stale: !!M.staleOf(tf),
