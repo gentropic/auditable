@@ -72,7 +72,7 @@ A cloud of nodes is the honest picture of a grid, but terrain should look like t
 
 \shot{grids-relief}{The demo's topography, a grid shown as a translucent shaded-relief surface, over the final pit (a mesh) and the sectioned deposit. Both surfaces are set to \ui{don't cut}, so they are drawn whole.}
 
-As a surface, the layer behaves like any mesh (\cref{sec:meshes-style}). While it follows the section it is drawn only as its trace on the cut face; set \menu{Display>Cut by sections} to \ui{don't cut} to see the relief whole over a sectioned model, as in the figure. It takes an opacity (the demo's topography is a 35\,\% veil), and can be picked for the point under the cursor. It gives up the pick of an individual node; reinterpret it as points when you need that.
+As a surface, the layer behaves like any mesh (\cref{sec:meshes-style}). While it follows the section it is drawn only as its trace on the cut face; set \menu{Display>Cut by sections} to \ui{don't cut} to see the relief whole over a sectioned model, as in the figure. It takes an opacity (the demo's topography is a 35\,\% veil), and can be picked: the record panel shows the point under the cursor, the nearest node (row and column) with its elevation, and the slope with the direction it falls toward. \ui{Measure} works on it too. Reinterpret it as points to see every node as its own record.
 
 The \ui{style} tab of a surface's properties has four rows that a plain mesh does not (\cref{tab:grids-style}).
 
