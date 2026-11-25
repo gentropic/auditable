@@ -94,7 +94,9 @@ export function updateCrsChip() {
     window.addEventListener('micro:lang', updateCrsChip);   // 'no CRS' is chrome: it follows the interface language
   }
   const c = S.crs;
-  el.textContent = c ? (c.epsg ? `EPSG:${c.epsg}` : c.name) : t('no CRS');
+  const text = c ? (c.epsg ? `EPSG:${c.epsg}` : c.name) : t('no CRS');
+  // the text node is kept and rewritten, not replaced: translateDom holds on to it across a switch
+  if (el.firstChild && el.firstChild.nodeType === 3 && !el.firstChild.nextSibling) el.firstChild.nodeValue = text; else el.textContent = text;
   el.title = c ? `the project's coordinate system: ${crsLabel(c)}${S.crsWhy ? ` (${S.crsWhy})` : ''} — click to change` : t('the project has no coordinate system — click to set one (vectors in another system are reprojected into it on read)');
   el.style.color = c ? 'var(--text)' : 'var(--dim)';
 }
