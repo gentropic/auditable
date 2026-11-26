@@ -16,7 +16,7 @@
 import { chromium } from 'playwright';
 import http from 'http';
 import { readFile, writeFile, mkdir, readdir } from 'fs/promises';
-import { existsSync, readFileSync, statSync, unlinkSync } from 'fs';
+import { existsSync, readFileSync, readdirSync, statSync, unlinkSync } from 'fs';
 import { extname, join, dirname, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { spawnSync } from 'child_process';
@@ -316,6 +316,27 @@ if (want('data') || want('tools') || want('shots')) {
     if (want('data')) await phaseData(m.p, data);
     if (want('shots')) await phaseShots(m.p, shots);
   } finally { await m.close(); }
+}
+// plates — the cover: cover/plates-data.mjs draws Site C's geological map and three serial-section glass plates
+// from one implicit model (cover/deposit.mjs), then Blender lays them on a desk and renders (cover/plates.py).
+// Opt-in only (`node build.mjs plates`): it needs Blender and takes minutes. Blender is $BLENDER, else Blender
+// Foundation's default Windows install, else on PATH. --res= --samples= to taste.
+if (PHASES.includes('plates')) {
+  const hdri = join(HERE, 'cover', 'assets', 'brown_photostudio_02_2k.hdr');   // Poly Haven, CC0; gitignored
+  if (!existsSync(hdri)) {
+    await mkdir(dirname(hdri), { recursive: true });
+    const res = await fetch('https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/2k/brown_photostudio_02_2k.hdr');
+    if (res.ok) await writeFile(hdri, Buffer.from(await res.arrayBuffer())); else console.log(`plates: no HDRI (${res.status}) — a plain dim world instead`);
+  }
+  const d = spawnSync(process.execPath, [join(HERE, 'cover', 'plates-data.mjs')], { stdio: 'inherit' });
+  const pf = 'C:/Program Files/Blender Foundation';
+  const found = existsSync(pf) ? readdirSync(pf).map((v) => join(pf, v, 'blender.exe')).find((p) => existsSync(p)) : null;
+  const blender = process.env.BLENDER || found || 'blender';
+  const res = argv.find((a) => a.startsWith('--res='))?.split('=')[1] || '2800', samples = argv.find((a) => a.startsWith('--samples='))?.split('=')[1] || '256';
+  const r = d.status === 0 && spawnSync(blender, ['-b', '-P', join(HERE, 'cover', 'plates.py'), '--', '--res', res, '--samples', samples, '--out', join(HERE, 'cover', 'plates.png')], { stdio: 'inherit' });
+  if (!r || r.status !== 0) { console.log('plates: FAILED (is Blender installed? set BLENDER=path/to/blender)'); process.exitCode = 1; }
+  // onto the page's basalt (the shadow catcher's faint alpha would otherwise show its frame on the cover)
+  else spawnSync(process.execPath, [join(HERE, 'cover', 'on-basalt.mjs'), join(HERE, 'cover', 'plates.png'), join(HERE, 'cover', 'plates-cover.jpg')], { stdio: 'inherit' });
 }
 if (want('print') || want('pdf')) await phasePrint();
 if (want('pdf')) phasePdf();

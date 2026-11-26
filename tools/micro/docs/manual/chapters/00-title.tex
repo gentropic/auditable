@@ -1,10 +1,35 @@
-% the title page: basalt, the name large, a thin amber rule
+% THE COVER — a GCU field manual (the series style: wuffle's cover is the first, tools/wuffle/docs/manual).
+% Basalt ground, the kicker, the name in the display face, the amber rule, the subtitle; the figure rising out
+% of the lower right so the page crops it, captioned at the foot like any figure in the book. micro's figure:
+% Site C — an imaginary deposit's geological map and three serial-section glass plates, all drawn from one
+% implicit model (cover/deposit.mjs, cover/plates-data.mjs) and rendered in Cycles (cover/plates.py).
+% Without a render (`node build.mjs plates`), the page is the plain title it was.
 \begin{titlepage}
 \begin{tikzpicture}[remember picture, overlay]
   \fill[basalt] (current page.south west) rectangle (current page.north east);
-  \node[anchor=north west, inner sep=0pt, text=white, font=\displayfont\fontsize{96}{96}\selectfont] at ([xshift=24mm, yshift=-70mm]current page.north west) {micro};
-  \fill[amberlight] ([xshift=24mm, yshift=-104mm]current page.north west) rectangle ([xshift=60mm, yshift=-105.6mm]current page.north west);
-  \node[anchor=north west, inner sep=0pt, text=basalttext, text width=140mm, font=\displaylight\fontsize{20}{26}\selectfont] at ([xshift=24mm, yshift=-114mm]current page.north west) {a streaming workbench for resource geology\\[2mm]\textcolor{amberlight}{the manual}};
-  \node[anchor=south west, inner sep=0pt, text=basalttext, font=\sffamily\small, text width=150mm] at ([xshift=24mm, yshift=24mm]current page.south west) {Geoscientific Chaos Union\enskip·\enskip gentropic.org/micro\\[1mm]\textcolor{faint}{\today}};
+  \IfFileExists{cover/plates-cover.jpg}{%
+    \node[inner sep=0pt, anchor=center] at ([xshift=23mm, yshift=70mm]current page.south east)
+      {\includegraphics[width=300mm]{cover/plates-cover.jpg}};
+  }{}
+  % the kicker, the name, the rule, the subtitle
+  \node[anchor=north west, inner sep=0pt, text=amberlight, font=\displayfont\small\addfontfeatures{LetterSpace=18}]
+    at ([xshift=24mm, yshift=-40mm]current page.north west) {A GCU FIELD MANUAL};
+  \node[anchor=north west, inner sep=0pt, text=white, font=\displayfont\fontsize{110}{110}\selectfont]
+    at ([xshift=21mm, yshift=-52mm]current page.north west) {micro};
+  \fill[amberlight] ([xshift=24mm, yshift=-93mm]current page.north west) rectangle ([xshift=64mm, yshift=-94.4mm]current page.north west);
+  \node[anchor=north west, inner sep=0pt, text=basalttext, text width=118mm, font=\displaylight\fontsize{19}{25}\selectfont]
+    at ([xshift=24mm, yshift=-101mm]current page.north west) {a streaming workbench\\for resource geology};
+  % the foot: the caption of the figure, then who and where
+  \IfFileExists{cover/plates-cover.jpg}{%
+    \node[anchor=south west, inner sep=0pt, text=basalttext!80!basalt, text width=50mm, font=\sffamily\scriptsize, align=left]
+      at ([xshift=24mm, yshift=42mm]current page.south west)
+      {\textcolor{amberlight}{Cover.} Site C, an imaginary deposit: its geological map at 1\,:\,5\,000 and three
+       serial sections, painted on glass at 1\,:\,10\,000 through the drill fences. Every contact, bedding symbol,
+       trace and ore envelope is computed from one implicit model of the deposit. Rendered in Cycles.};
+  }{}
+  % (stacked, not on one line: the figure's sheet reaches in from the right this low on the page)
+  \node[anchor=south west, inner sep=0pt, text=basalttext, font=\sffamily\small, text width=56mm]
+    at ([xshift=24mm, yshift=20mm]current page.south west)
+    {Geoscientific Chaos Union\\gentropic.org/micro\\[1mm]\textcolor{faint}{\today}};
 \end{tikzpicture}
 \end{titlepage}
