@@ -110,7 +110,7 @@ export async function foldAxis(ev) {
 export const SCENES = {
   // the log opened: two datasets drawn on Net 1, the table of the planes, the status line's verdict
   'wf-opened': {
-    viewport: VP,
+    viewport: { width: 780, height: 560 },   // small enough that the tree, table heading and status line can be read
     async stage({ ev }) {
       await openLog(ev);
       await ev(async () => { const W = window.__wuffleDesk; W.rails.activateTab('table'); });
@@ -180,7 +180,7 @@ export const SCENES = {
     async stage({ p, ev }) {
       await openLog(ev); await makeSets(ev); await setsNet(ev); await foldAxis(ev);
       await p.mouse.move(5, 5);
-      return { el: '.wn-stage >> visible=true', wait: 800 };
+      return { el: '.wn-stage >> visible=true >> svg', wait: 800 };   // the net alone, square
     },
   },
   // the figure from the Sets net (the fold-axis estimates hidden, so the page shows the sets)
@@ -195,7 +195,7 @@ export const SCENES = {
   },
   // the routine: written to /home, run, its report kept in /home
   'wf-routine': {
-    viewport: VP,
+    viewport: { width: 680, height: 640 },   // a narrow console: its text fills the frame
     async stage({ ev }) {
       await openLog(ev); await makeSets(ev); await setsNet(ev);
       await ev(async () => {

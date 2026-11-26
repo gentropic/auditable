@@ -17,7 +17,7 @@ A direction is a unit vector $(x, y, z)$ with $x$ east, $y$ north and $z$ \emph{
 have $z < 0$.
 
 A \textbf{line} with trend $\theta$ and plunge $\varphi$ (plunge positive downward) is
-\[ \mathbf{l} = (\cos\varphi \sin\theta,\; \cos\varphi \cos\theta,\; -\sin\varphi). \]
+\[ \mathbf{t} = (\cos\varphi \sin\theta,\; \cos\varphi \cos\theta,\; -\sin\varphi). \]
 
 A \textbf{plane} with dip direction $\alpha$ and dip $\delta$ is represented by its \term{pole}, the
 downward normal:
@@ -87,8 +87,8 @@ same distance from the center.
 
 A rotated net applies a rotation matrix $\mathbf{R}$ to every direction before projecting it.
 \begin{itemize}
-\item \code{rotate 120→40} builds the shortest rotation that takes the direction $\mathbf{l}$ of
-\code{120→40} to the center of the net, $(0, 0, -1)$: about the axis $\mathbf{l} \times (0,0,-1)$, by the
+\item \code{rotate 120→40} builds the shortest rotation that takes the direction $\mathbf{t}$ of
+\code{120→40} to the center of the net, $(0, 0, -1)$: about the axis $\mathbf{t} \times (0,0,-1)$, by the
 angle between them.
 \item A drag is an \emph{arcball}: the points under the pointer at the start and end of each movement
 are taken back onto the sphere (through the inverse projection; a point outside the primitive is put on
@@ -260,10 +260,9 @@ For Tocher's 200 planes the $\beta$ diagram has 19\,900 lines.
 Every shape is a test on the sphere, applied to a plane's pole or a line, and every test is axial
 (\cref{sec:shapes}).
 \begin{description}
-\item[Cone] of half-angle $\vartheta$ about $\mathbf{a}$: selected when $|\mathbf{d}\cdot\mathbf{a}| \ge
-\cos\vartheta$. A plane given as the cone's center stands for its pole.
+\item[Cone] of half-angle $\vartheta$ about $\mathbf{a}$: selected when \mbox{$|\mathbf{d}\cdot\mathbf{a}| \ge \cos\vartheta$}. A plane given as the cone's center stands for its pole.
 \item[Band] of half-width $w$ about the great circle with pole $\mathbf{n}$: selected when
-$|\mathbf{d}\cdot\mathbf{n}| \le \sin w$.
+\mbox{$|\mathbf{d}\cdot\mathbf{n}| \le \sin w$}.
 \item[Lasso] with vertices $\mathbf{v}_j$ joined by great-circle arcs. The test is made in a
 \term{gnomonic projection} centered on $\mathbf{c} = \sum\mathbf{v}_j / |\sum\mathbf{v}_j|$, which
 turns great circles into straight lines: with $\mathbf{u}, \mathbf{w}$ two unit vectors perpendicular to
@@ -291,7 +290,7 @@ The area of a sector grows as $r^2$, so the area-true petal's area is proportion
 
 \subsection{The sense, and the slip}
 
-A fault row gives a plane (its pole $\mathbf{p}$), a slickenline $\mathbf{l}$ and a sense. Senses are
+A fault row gives a plane (its pole $\mathbf{p}$), a slickenline $\mathbf{t}$ and a sense. Senses are
 read as words or single characters:
 \begin{center}\small
 \begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
@@ -303,7 +302,7 @@ sinistral & \code{sinistral}, \code{left-lateral}, \code{s}, \code{l}, \code{4} 
 unknown & anything else, \code{unknown}, empty \\
 \bottomrule\end{tabularx}
 \end{center}
-The sense picks the \emph{slip} $\mathbf{s}$, the hanging wall's direction of motion, from $\pm\mathbf{l}$:
+The sense picks the \emph{slip} $\mathbf{s}$, the hanging wall's direction of motion, from $\pm\mathbf{t}$:
 \begin{itemize}
 \item normal: the one pointing down ($s_z \le 0$); reverse: the one pointing up;
 \item dextral: the one opposite the strike vector, sinistral: the one along it. The strike vector is
@@ -354,7 +353,7 @@ The dihedra are computed in the unrotated projection, so they are not drawn on a
 
 \subsection{The stress inversion}\label{sec:m-michael}
 
-\textcite{michael1984}'s inversion assumes that each fault slipped along the shear traction the stress
+The inversion of \textcite{michael1984} assumes that each fault slipped along the shear traction the stress
 puts on it, and that the shear tractions are of similar size on all the faults. The deviatoric stress
 tensor has five unknowns, $\sigma_{11}, \sigma_{12}, \sigma_{13}, \sigma_{22}, \sigma_{23}$, with
 $\sigma_{33} = -(\sigma_{11} + \sigma_{22})$. With compression counted positive and the downward normal

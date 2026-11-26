@@ -79,7 +79,14 @@ async function phaseShots(shots) {
         if (scene.query !== '?field') await p.evaluate(() => window.__wuffleDesk.restored);
         const r = (await scene.stage({ p, ev: (fn, arg) => p.evaluate(fn, arg) })) || {};
         await p.waitForTimeout(r.wait || 800);
-        await (r.el ? p.locator(r.el).first() : p).screenshot({ path: join(out, name + '.png') });
+        // r.el: one element; r.els: the box around several (e.g. the tree and an open menu), padded by r.pad px
+        if (r.els) {
+          const boxes = (await Promise.all(r.els.map((s) => p.locator(s).first().boundingBox()))).filter(Boolean);
+          const pad = r.pad ?? 6, vp = p.viewportSize();
+          const x = Math.max(0, Math.min(...boxes.map((b) => b.x)) - pad), y = Math.max(0, Math.min(...boxes.map((b) => b.y)) - pad);
+          const x2 = Math.min(vp.width, Math.max(...boxes.map((b) => b.x + b.width)) + pad), y2 = Math.min(vp.height, Math.max(...boxes.map((b) => b.y + b.height)) + pad);
+          await p.screenshot({ path: join(out, name + '.png'), clip: { x, y, width: x2 - x, height: y2 - y } });
+        } else await (r.el ? p.locator(r.el).first() : p).screenshot({ path: join(out, name + '.png') });
         console.log('shot:', name);
       } catch (e) { console.log(`shot: ${name} FAILED — ${e.message.split('\n')[0]}`); process.exitCode = 1; }
       finally { await ctx.close(); }
@@ -100,11 +107,30 @@ async function phaseCommands() {
   const help = cmds.run('help');
   if (!help.ok) throw new Error('commands: help failed — ' + help.text);
   // "syntax — meaning"; a line with no " — " (select, theme) IS its syntax: the name, then the line as code
-  const rows = help.text.split('\n').filter(Boolean).map((line) => {
+  // Each alternative of a syntax gets a line of its own in the first column (a run of monospace alternatives
+  // wrapped mid-token in a narrow column): "show … / hide …" splits at " / ", and "select cone … | band … |
+  // all | none | invert" at " | " outside <…>, its single-word alternatives kept on one line.
+  const alts = (syn, sep) => {
+    const out = []; let depth = 0, cur = '';
+    for (let k = 0; k < syn.length; k++) {
+      const c = syn[k]; depth += c === '<' ? 1 : c === '>' ? -1 : 0;
+      if (depth === 0 && syn.startsWith(sep, k)) { out.push(cur); cur = ''; k += sep.length - 1; } else cur += c;
+    }
+    return [...out, cur].map((s) => s.trim()).filter(Boolean);
+  };
+  const lines = (parts) => parts.map(tex).join(' \\newline ');
+  // a help line may carry two commands ("diagrams — list them;  use <name> — make one active"): one row each.
+  // A syntax with no meaning after it (theme) gets one from here, so the table has no empty cell.
+  const MEANING = { theme: 'the color theme' };
+  const rows = help.text.split('\n').filter(Boolean).flatMap((l) => l.split(/;\s{2,}/)).map((line) => {
     const i = line.indexOf(' — ');
-    if (i >= 0) return [tex(line.slice(0, i)), tex(line.slice(i + 3))];
-    const name = line.split(' ')[0];
-    return [tex(name), `\\code{${tex(line.replace(/\s{2,}/g, ' '))}}`];
+    if (i >= 0) return [lines(alts(line.slice(0, i), ' / ')), tex(line.slice(i + 3))];
+    // no meaning after a dash (select, theme): the syntax, and any trailing (note) as the meaning
+    const m = /^(.*?)\s{2,}\((.*)\)\s*$/.exec(line), syn = m ? m[1] : line, note = m ? m[2] : '';
+    const name = syn.split(' ')[0], parts = alts(syn, ' | ');
+    const words = parts.slice(1).filter((s) => !/\s/.test(s)), long = parts.slice(1).filter((s) => /\s/.test(s));
+    const col = [parts[0], ...long.map((s) => `${name} ${s}`), ...(words.length ? [`${name} ${words.join(' | ')}`] : [])];
+    return [lines(col), tex(note || MEANING[name] || '')];
   });
   // help <name> answers only the names that head a line: the second of a pair (hide, use…) gets the list
   const headed = help.text.split('\n').filter(Boolean).map((l) => l.split(' ')[0]);
@@ -119,7 +145,7 @@ async function phaseCommands() {
   L.push('\\begin{goals}\\textbf{This appendix} lists every command the console knows: wuffle\'s own, which act on the project, and the shell\'s. It is generated from wuffle itself, so it is exact for this version.\\end{goals}');
   L.push('wuffle\'s commands act on the active diagram and its visible layers; a layer is named by its name or its dataset\'s, and the start of the name is enough (\\cref{sec:commands}). In the console, quote an attitude written with \\code{>}, or the shell reads it as a redirect.');
   L.push('\\section{wuffle\'s commands}\\label{sec:command-list}');
-  L.push('\\begin{center}\\small\\begin{tabularx}{\\linewidth}{@{}>{\\ttfamily\\raggedright}p{0.4\\linewidth}L@{}}\\toprule');
+  L.push('\\begin{center}\\small\\begin{tabularx}{\\linewidth}{@{}>{\\ttfamily\\raggedright}p{0.46\\linewidth}L@{}}\\toprule');
   L.push('\\normalfont\\sffamily\\bfseries command & \\sffamily\\bfseries what it does \\\\\\midrule');
   for (const [syn, what] of [...rows, ...CONSOLE_EXTRAS.map(([s, w]) => [tex(s), tex(w)])]) L.push(`${syn} & ${what} \\\\`);
   L.push('\\bottomrule\\end{tabularx}\\end{center}');

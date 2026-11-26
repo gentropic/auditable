@@ -81,7 +81,7 @@ Two fallbacks cover files without those names. Both are \emph{guesses}, and the 
 \begin{itemize}
 \item \textbf{One column of attitudes.}\index{quadrant notation} A column whose values look like \code{045/30} or
 \code{N30E 40SE} is read as planes, with quadrant letters honored: \code{N30E 40SE} is a strike of
-N30°E dipping 40° to the south-east, the plane \code{120/40}. A file with one attitude per line and
+N30°E dipping 40° to the southeast, the plane \code{120/40}. A file with one attitude per line and
 nothing else is read this way, even though its values contain spaces.
 \item \textbf{The first two numeric columns} are read as dip direction and dip. If the second column has
 values over 90 and the first doesn't, they are swapped, since a dip can't pass 90.
@@ -131,7 +131,7 @@ file had no header, so the reading is marked as a guess.
 \section{The table}\label{sec:table}
 
 \shot{data-table}{A file with a quoted field and an unreadable row: the attitude column shows \ui{—} for row 4,
-which isn't drawn. Row 3 is selected, so it is washed in the table and violet on the net.}
+which isn't drawn. Row 3 is selected, so it is highlighted here and violet on every net.}
 
 Click a dataset in the tree's \ui{data} section, or a layer, and the \ui{table} tab\index{table tab}
 shows its rows.

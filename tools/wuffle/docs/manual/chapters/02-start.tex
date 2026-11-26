@@ -29,9 +29,6 @@ sensor to read, so it takes typed measurements instead (\cref{sec:manual-entry})
 
 \section{The desk}\label{sec:desk}
 
-\shot{desk-tour}{The desk with the Tocher sample open: the layers tree on the left, the net in the middle,
-and the table, statistics and console tabs below.}
-
 The desk is one window in three regions, each made of tabs you can drag and rearrange:
 
 \begin{description}
@@ -46,6 +43,9 @@ statistics of the active diagram's layers (\cref{sec:stats-card}), and the shell
 
 A net carries its own tool strip at the top left (\ui{pick}, \ui{lasso}, \ui{cone}, \ui{band}) for
 selecting (\cref{ch:select}).
+
+\shot{desk-tour}{The desk with the Tocher sample open: the layers tree on the left, the net in the middle,
+and the table, statistics and console tabs below.}
 
 \subsection{The menus}
 
@@ -125,7 +125,7 @@ back as it was before the step (\cref{sec:select-data}).
 
 \begin{tryit}
 \begin{enumerate}
-\item Choose \ui{cone} in the net's tool strip, press on the dense cluster in the south-west of the net
+\item Choose \ui{cone} in the net's tool strip, press on the dense cluster in the southwest of the net
 and drag outward until the status line reads about 20°. Let go: the poles inside turn violet.
 \item Open the \ui{statistics} tab. The card for \code{tocher} gives its mean, $\kappa$ and $\alpha_{95}$
 and its eigenvalues (\cref{ch:stats}).
@@ -163,8 +163,15 @@ now, try this:
 \begin{enumerate}
 \item With the Tocher sample open, type \code{stats} and press \key{Enter}. The count, the mean as a plane
 and as its pole, $\kappa$, $\alpha_{95}$ and the eigenvalues of the first visible layer print:
-\code{mean 027/89 · pole 207→01 · κ 3.1 · α95 6.8°}.
-\item Type \code{ls data} to list the datasets as files, then \code{head -3 data/tocher.csv} to read the
-first rows: the header \code{dip direction,dip}, then \code{147.704,64.813}.
+\begin{codeblock}
+tocher · n 200
+mean 027/89 · pole 207→01 · κ 3.1 · α95 6.8°
+S 0.548 0.383 0.069 · K 0.21 · C 2.07
+\end{codeblock}
+\item Type \code{ls data} to list the datasets as files, then read the first rows:
+\begin{codeblock}
+head -3 data/tocher.csv
+\end{codeblock}
+The header \code{dip direction,dip}, then \code{147.704,64.813}.
 \end{enumerate}
 \end{tryit}

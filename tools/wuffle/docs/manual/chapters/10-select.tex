@@ -6,7 +6,7 @@ data is drawn, and keep it as a dataset of its own.
 \end{goals}
 
 A selection answers \enquote{which of these measurements are those?}: the poles in the cluster to the
-south-west, the planes within 20° of the regional foliation, the lineations near a fold axis. wuffle draws
+southwest, the planes within 20° of the regional foliation, the lineations near a fold axis. wuffle draws
 the chosen rows violet on every net and highlights them in the table. You can then read their statistics,
 make them a dataset, or hand them on to the console.
 
@@ -48,8 +48,8 @@ other three tools use the drag for their shape, so you rotate with \ui{pick} and
 
 \section{Shapes}\label{sec:shapes}
 
-\shot{select-cone}{A cone of 20° about the pole to \code{040/50}: the dashed outline, the 18 poles inside
-it violet, and the status line counting them.}
+\shot[0.7\linewidth]{select-cone}{A cone of 20° about the pole to \code{040/50}: the dashed outline, and the 18 poles inside
+it violet. (The status line counts them: \ui{cone: 18 of 200 measurements}.)}
 
 The \ui{lasso}, \ui{cone} and \ui{band} draw a shape and select what is inside it when you let go:
 
@@ -82,8 +82,8 @@ The status line at the foot of the window says which it was: \ui{band: 58 of 200
 \ui{cone: 16 of 200 measurements removed}. That count is what the shape caught; to its left the window
 keeps the total, \ui{1 dataset · 200 measurements · 56 selected}.
 
-\shot{select-band}{The band tool chosen, with its half-width field. A band of ±10° about \code{040/50}
-added to the cone of \cref{fig:select-cone} (\code{select + band 040/50 10}, the same as a \key{Shift} drag): 45 selected.}
+\shot[0.85\linewidth]{select-band}{The band tool chosen, with its half-width field. A band of ±10° about \code{040/50}
+added to the cone of \cref{fig:select-cone} (\code{select + band 040/50 10}, the same as a \key{Shift} drag): 45 selected in all.}
 
 \section{On the sphere, not the screen}\label{sec:select-sphere}
 
@@ -134,14 +134,14 @@ split a dataset into domains: select the measurements of each, make each a datas
 
 \section{From the console}\label{sec:select-console}
 
-The console's \code{select}\index{select (command)} draws the same shapes from typed attitudes (\cref{sec:commands}), on every
+The console's \code{select}\index{commands!select} draws the same shapes from typed attitudes (\cref{sec:commands}), on every
 visible layer of the active net, and draws the outline too:
 
 \begin{codeblock}
-select cone 040/50 20       # within 20 degrees of the pole to 040/50
-select + band 040/50 10     # add those within 10 degrees of the plane 040/50
-select - cone 040/50 10     # take out the inner 10 degrees
-select invert               # everything that wasn't, and nothing that was
+select cone 040/50 20     # 20° about the pole of 040/50
+select + band 040/50 10   # add ±10° about that plane
+select - cone 040/50 10   # take out the inner 10°
+select invert             # what wasn't, and not what was
 select none
 \end{codeblock}
 
@@ -157,7 +157,7 @@ counting from 1; write numbers to it to select those rows, \code{rm} it to clear
 \item Open the Tocher sample and type \code{select cone 040/50 20} in the console. 18 poles turn violet,
 inside a dashed circle.
 \item Choose \ui{band} on the net, check the field says \ui{10}, then hold \key{Shift} and drag from
-the south-west edge of the net toward the north-west. A band joins the selection and the status line's
+the southwest edge of the net toward the northwest. A band joins the selection and the status line's
 count grows.
 \item Click the \ui{Net 1} tab (so the keys aren't going to the console) and press \key{Esc}. The
 outlines go; the selection stays.

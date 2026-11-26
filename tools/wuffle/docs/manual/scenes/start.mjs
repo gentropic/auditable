@@ -42,7 +42,7 @@ export const SCENES = {
 
   // ch. 2 — the status line: counts, the pointer's reading, the theme
   'status-line': {
-    viewport: VP,
+    viewport: { width: 640, height: 480 },   // a narrow window: the status line's text fills the strip
     async stage({ p, ev }) {
       await tocher(ev);
       await ev(() => { const P = window.__wuffleDesk.project; P.select(P.datasets[0].id, [3, 12, 40]); });
@@ -77,7 +77,7 @@ export const SCENES = {
 
   // ch. 4 — the console after a few commands
   'console': {
-    viewport: VP,
+    viewport: { width: 820, height: 640 },   // smaller than the overviews, so the shell's text can be read
     async stage({ ev }) {
       await ev(async () => {
         const W = window.__wuffleDesk;
@@ -90,7 +90,7 @@ export const SCENES = {
 
   // ch. 4 — a routine written into /home and run
   'console-routine': {
-    viewport: VP,
+    viewport: { width: 680, height: 600 },   // a narrow console: its text fills the frame
     async stage({ ev }) {
       await tocher(ev, { console: true });
       await typed(ev, ["printf 'contour kamb 3\\nshow mean\\nstats\\n' > /home/fabric.sh", 'clear', 'cat /home/fabric.sh', '. /home/fabric.sh']);
@@ -100,7 +100,7 @@ export const SCENES = {
 
   // ch. 5 — /project read as files: a layer is a symlink, the diagram's settings are JSON
   'project-ls': {
-    viewport: VP,
+    viewport: { width: 680, height: 600 },
     async stage({ ev }) {
       await tocher(ev, { console: true });
       await typed(ev, ['ls', 'ls -l "diagrams/Net 1/layers"']);
@@ -122,7 +122,7 @@ export const SCENES = {
 
   // ch. 6 — a signed field log opened: the original's verdict in the status line, its data in the tree
   'fieldlog-open': {
-    viewport: VP,
+    viewport: { width: 780, height: 560 },   // small enough that the tree and the status line can be read
     async stage({ ev }) {
       await ev(async () => {
         const W = window.__wuffleDesk, enc = new TextEncoder();
@@ -193,7 +193,7 @@ export const SCENES = {
       await settle(900);
       await p.click('#snap');
       await settle(600);
-      return { el: 'body', wait: 400 };
+      return { els: ['.actions', '.log', '#msg'], wait: 400 };   // the log with its camera mark, and the message
     },
   },
 };

@@ -108,10 +108,10 @@ drop)}. Photos opened on their own are ignored, with the same advice in the stat
 
 What the net couldn't draw, it says, in yellow at the bottom left:
 
-\shot{it-note}{Two layers of one dataset, both with contours on: the net draws one set, and says
+\shot[0.75\linewidth]{it-note}{Two layers of one dataset, both with contours on: the net draws one set, and says
 whose.}
 
-\begin{description}
+\begin{description}[style=nextline]
 \item[\ui{contours: one set per net — “…” isn’t contoured; the contours are “…”’s}] A net draws the
 contours of the first contoured layer only. Contour the other dataset on a net of its own
 (\menu{Diagram>New net}). When both layers show the same dataset, the note names it twice; a layer
@@ -157,7 +157,7 @@ dataset (\cref{sec:select-dataset}), draw that, and label only it (\cref{sec:lab
 
 \section{The console}\label{sec:trouble-console}
 
-\shot{it-redirect}{The redirect trap: in \file{/home}, \code{select cone 150>60 10} made an empty file
+\shot[0.85\linewidth]{it-redirect}{The redirect trap: in \file{/home}, \code{select cone 150>60 10} made an empty file
 called \file{60} and the command failed; quoted, the same attitude reaches the command.}
 
 \subsection{A command with \code{>} failed, or made a file}
@@ -225,7 +225,8 @@ wuffle opens the log anyway, keeps it exactly as it came, and says:
 \begin{codeblock}
 wuffle-log.csv: the signature does not match.
 
-the bytes are NOT what the key signed — the log was changed after signing,
+the bytes are NOT what the key signed —
+the log was changed after signing,
 or the .sig belongs to another log
 \end{codeblock}
 

@@ -21,7 +21,7 @@ export const SCENES = {
 
   // ch. trouble — what the net couldn't draw, said in its corner: two contoured layers of one dataset
   'it-note': {
-    viewport: VP,
+    viewport: { width: 720, height: 520 },   // a smaller net, so the corner note prints at a readable size
     async stage({ p, ev }) {
       await ev(async () => {
         const W = window.__wuffleDesk, P = W.project;
@@ -38,7 +38,7 @@ export const SCENES = {
 
   // ch. trouble — the console's `>` trap, and the quoted form that works
   'it-redirect': {
-    viewport: VP,
+    viewport: { width: 680, height: 640 },   // a narrow console: its text fills the frame
     async stage({ ev }) {
       await ev(async () => {
         const W = window.__wuffleDesk;

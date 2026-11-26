@@ -22,12 +22,12 @@ export const SCENES = {
   // the fault net: great circles, slip arrows (Angelier), P and T axes
   'faults-net': {
     viewport: { width: 1180, height: 760 },
-    async stage({ p, ev }) { await openFaults(ev, ['ptAxes']); await p.mouse.move(5, 5); return { el: '.wn-host', wait: 600 }; },
+    async stage({ p, ev }) { await openFaults(ev, ['ptAxes']); await p.mouse.move(5, 5); return { el: '.wn-stage svg', wait: 600 }; },   // the net alone, square
   },
   // the right dihedra drawn over the slip lines
   'faults-dihedra': {
     viewport: { width: 1180, height: 760 },
-    async stage({ p, ev }) { await openFaults(ev, ['dihedra']); await p.mouse.move(5, 5); return { el: '.wn-host', wait: 800 }; },
+    async stage({ p, ev }) { await openFaults(ev, ['dihedra']); await p.mouse.move(5, 5); return { el: '.wn-stage svg', wait: 800 }; },
   },
   // the statistics card of a fault layer: mean, eigen, σ1 σ2 σ3 and φ
   'faults-stats': {
@@ -35,6 +35,8 @@ export const SCENES = {
     async stage({ ev }) {
       await openFaults(ev);
       await ev(async () => { window.__wuffleDesk.rails.activateTab('stats'); });
+      // lift the panel out of its short stack (as stats-card does) so the card shows whole, with no clipped bar under it
+      await ev(() => { const el = document.querySelector('.wst-panel'); Object.assign(el.style, { position: 'fixed', inset: '0', zIndex: 9999, overflow: 'visible', padding: '16px', background: getComputedStyle(document.body).backgroundColor, width: '620px', height: 'auto' }); });
       return { el: '.wst-card', wait: 500 };
     },
   },

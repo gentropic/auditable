@@ -10,7 +10,7 @@ is a real shell, \code{geas}\index{geas}, and wuffle's commands are part of it, 
 files like any other command. A sequence of commands saved in a file is a \term{routine}: run it again
 tomorrow, on another project, and it does the same thing.
 
-\shot{console}{The console after \code{sample tocher}, \code{contour kamb 3}, \code{select cone 040/50 20}
+\shot[0.85\linewidth]{console}{The console after \code{sample tocher}, \code{contour kamb 3}, \code{select cone 040/50 20}
 and \code{stats}: the commands draw on the net and answer in the shell.}
 
 \section{Opening it}\label{sec:console-open}
@@ -64,15 +64,15 @@ dataset's, and the start of the name is enough (\code{stats toch}). With no name
 first visible layer. \cref{app:commands} lists every command with its help line.
 
 \begin{center}\small
-\begin{tabularx}{\linewidth}{@{}>{\ttfamily\raggedright}p{0.36\linewidth}L@{}}\toprule
+\begin{tabularx}{\linewidth}{@{}>{\ttfamily\raggedright}p{0.44\linewidth}L@{}}\toprule
 \normalfont\sffamily\bfseries command & \sffamily\bfseries what it does \\\midrule
-sample tocher & open the Tocher sample \\
+sample tocher & open the Tocher sample\index{commands!sample} \\
 diagrams & list the diagrams; \code{●} marks the active one \\
 use \emph{name} & make a diagram active \\
 new net|rose|fabric & a new diagram showing the active one's layers \\
 layers & the active diagram's layers, \code{☑} visible \\
 show|hide \emph{element} [\emph{layer}] & poles, circles, contours, mean, eigen, labels, v1, v2, v3 \\
-contour kamb [\emph{k}] | fisher & contours on, by Kamb's method \parencite{kamb1959} at \emph{k}\,$\sigma$, or with a Fisher kernel \\
+contour kamb [\emph{k}] | fisher & contours on\index{commands!contour}, by Kamb's method \parencite{kamb1959} at \emph{k}\,$\sigma$, or with a Fisher kernel \\
 select cone \emph{att} \emph{angle} & the poles within \emph{angle} of a direction (a plane's pole, or a line) \\
 select band \emph{plane} \emph{width} & the poles within \emph{width} of a great circle \\
 select all|none|invert & on every layer of the active diagram \\
@@ -80,9 +80,9 @@ stats [\emph{layer}] & n, the Fisher mean with $\kappa$ and $\alpha_{95}$ \paren
 mean|eigen|beta [\emph{layer}] & keep the result as a dataset, drawn on this diagram \\
 intersect \emph{a} \emph{b} & where two layers' mean planes meet, as a dataset \\
 rotate \emph{tr→pl} | off & center the net on a direction, or back to normal \\
-undo | redo & the last change, whoever made it (\cref{sec:undo}) \\
+undo | redo & the last change, whoever made it\index{commands!undo}\index{commands!redo} (\cref{sec:undo}) \\
 verify [\emph{name}] & check field originals' signatures (\cref{sec:field-logs}) \\
-theme dark|light|system & the color theme \\
+theme dark|light|system & the color theme\index{commands!theme} \\
 history & the lines typed so far \\
 help [\emph{command}] & all of this, or one command \\
 \bottomrule\end{tabularx}
@@ -165,7 +165,7 @@ summary tocher
 \subsection{Where you can write}\label{sec:home}
 
 Two places are yours. \file{/home}\index{/home} is saved with the project (\cref{sec:project-file}), so notes,
-routines and exported drawings travel with it. \file{/tmp} is scratch, gone when the page closes. In
+routines and exported drawings travel with it. \file{/tmp}\index{/tmp} is scratch, gone when the page closes. In
 \file{/project}, a write is an action on the project and follows its rules (\cref{sec:project-write}).
 
 \subsection{What the shell doesn't have}
@@ -178,7 +178,7 @@ odd \ui{no such file or directory} usually means that.
 
 \section{Routines}\label{sec:routines}
 
-\shot{console-routine}{A routine: three commands in \file{/home/fabric.sh}, then run with \code{.}, each
+\shot[0.85\linewidth]{console-routine}{A routine: three commands in \file{/home/fabric.sh}, then run with \code{.}, each
 answering in turn.}
 
 A routine is a shell script. Write it into \file{/home} and run it with \code{.} (dot):
@@ -189,7 +189,7 @@ cat /home/fabric.sh
 . /home/fabric.sh
 \end{codeblock}
 
-\code{history}\index{history (command)} prints what you have typed this session, numbered, which is the quickest way to start one:
+\code{history}\index{commands!history} prints what you have typed this session, numbered, which is the quickest way to start one:
 copy the lines you want into the file. Because \file{/home} travels in the project file, the routine goes
 wherever the project goes, and runs the same on whatever data you open into it.
 
@@ -200,11 +200,11 @@ A failed command stops nothing by itself: as in any shell, the script goes on. C
 
 \subsection{A check before a report}
 
-\code{verify}\index{verify (command)} fails (exit status 1) when an original's signature doesn't match, and also when the
+\code{verify}\index{commands!verify} fails (exit status 1) when an original's signature doesn't match, and also when the
 project has no field originals at all. A routine can stop on it:
 
 \begin{codeblock}
-verify && echo "the field logs are the phones' own" || echo "check the field logs"
+verify && echo "field logs ok" || echo "check the field logs"
 \end{codeblock}
 
 On a project with no originals, \code{verify} answers \ui{no field originals in this project (open a field
@@ -212,7 +212,10 @@ log with its .sig)} and the line prints \ui{check the field logs}.
 
 \begin{tryit}
 \begin{enumerate}
-\item Open the Tocher sample, then type \code{printf 'contour kamb 3\textbackslash nshow mean\textbackslash nstats\textbackslash n' > /home/fabric.sh}.
+\item Open the Tocher sample, then type
+\begin{codeblock}
+printf 'contour kamb 3\nshow mean\nstats\n' > /home/fabric.sh
+\end{codeblock}
 \item Type \code{. /home/fabric.sh}. The net is contoured, the mean drawn, and the statistics print.
 \item Choose \menu{File>New project}, open the Tocher sample again and run \code{. /home/fabric.sh}: it
 answers \ui{source: /home/fabric.sh: no such file or directory: /home/fabric.sh}, because a new

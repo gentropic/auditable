@@ -16,7 +16,7 @@ export const SCENES = {
         W.rails.activateTab('table'); W.table.show(id); P.select(id, [2]);
       }, MESSY);
       await wait(500);
-      return { wait: 600 };
+      return { el: '.wt-host', wait: 600 };   // the table pane: its rows are the subject
     },
   },
 
@@ -36,7 +36,7 @@ export const SCENES = {
       await p.locator('.wtree .wlayer').first().click({ button: 'right' });
       await wait(300);
       await p.locator('[role=menuitem]', { hasText: 'Add a view to' }).hover();
-      return { wait: 700 };
+      return { els: ['.wtree .wrow >> nth=0', '.gcu-menu', '.gcu-menu >> nth=1', '.wtree .wdata'], pad: 10, wait: 700 };   // the tree, the menu and its submenu
     },
   },
 
@@ -55,7 +55,7 @@ export const SCENES = {
       });
       await wait(500);
       await p.mouse.move(5, 5);
-      return { wait: 700 };
+      return { els: ['.wtree .wrow >> nth=0', '.wtree .wdata'], pad: 10, wait: 700 };   // the tree's rows: whole-window, its checkboxes printed at 3 pt   // the tree is the subject: whole-window, its checkboxes printed at 3 pt
     },
   },
 
@@ -86,7 +86,7 @@ export const SCENES = {
         P.setDiagramProps(g.id, { projection: 'equal-angle', hemisphere: 'upper' });
         P.setElement(L.id, 'poles', false); P.setElement(L.id, 'greatCircles', true);
       });
-      return { el: '.wn-stage', wait: 700 };
+      return { el: '.wn-stage svg', wait: 700 };   // the net itself, square
     },
   },
 };

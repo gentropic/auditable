@@ -59,6 +59,11 @@
 \newfontfamily\displaylight{BarlowSemiCondensed}[Path=\fontdir, Extension=.ttf, RawFeature={fallback=wufflefallback}, UprightFont=*-Light, BoldFont=*-Medium]
 \newfontfamily\numfont{Barlow}[Path=\fontdir, Extension=.ttf, UprightFont=*-Light, Numbers={Lining,Monospaced}]
 \setmathfont{latinmodern-math.otf}[Scale=MatchLowercase]
+% function names (cos, sin, atan2, exp) and \mathrm in the math face, not Barlow: set beside Latin Modern
+% italic variables, the text face read as a font mix
+\setmathrm{lmroman10-regular.otf}[BoldFont=lmroman10-bold.otf, ItalicFont=lmroman10-italic.otf, Scale=MatchLowercase]
+% a display needs room under it before the text goes on (tall fractions crowded the next line)
+\AddToHook{cmd/normalsize/after}{\setlength{\abovedisplayskip}{0.9em plus 0.3em minus 0.2em}\setlength{\belowdisplayskip}{0.9em plus 0.3em minus 0.2em}}
 \linespread{1.12}
 \setlength{\parindent}{0pt}
 \setlength{\parskip}{0.55em plus 0.15em minus 0.1em}
@@ -279,11 +284,21 @@
 \seq_new:N \l__wuffle_rows_seq
 \tl_new:N \l__wuffle_body_tl
 \int_new:N \l__wuffle_rows_int
+% the separator after row i: \\* (no break) for the first rows and the last two, else \\
+\cs_new_protected:Npn \__wuffle_sep:n #1
+  {
+    \bool_lazy_or:nnTF { \int_compare_p:nNn {#1} < { 3 } }
+        { \int_compare_p:nNn {#1} > { \l__wuffle_rows_int - 2 } }
+      { \tl_put_right:Nn \l__wuffle_body_tl { \\* } }
+      { \tl_put_right:Nn \l__wuffle_body_tl { \\ } }
+  }
 \cs_new_protected:Npn \wuffle@lt@end
   {
     \exp_args:NNno \seq_set_split_keep_spaces:Nnn \l__wuffle_rows_seq { \\ } { \the\toks@ }
     \int_set:Nn \l__wuffle_rows_int { \seq_count:N \l__wuffle_rows_seq - 1 }
-    \int_compare:nNnTF { \l__wuffle_rows_int } < { 6 }
+    % up to 16 rows a table stays whole (one unbreakable tabularx): broken, a short table's second half
+    % sat on the next page without its column names. Longer ones break, keeping their ends together.
+    \int_compare:nNnTF { \l__wuffle_rows_int } < { 17 }
       { \wuffleLTfalse \XLT@i@TX@endtabularx }
       {
         \tl_clear:N \l__wuffle_body_tl
@@ -291,12 +306,7 @@
           {
             \tl_put_right:Nx \l__wuffle_body_tl { \seq_item:Nn \l__wuffle_rows_seq {##1} }
             \int_compare:nNnT {##1} < { \seq_count:N \l__wuffle_rows_seq }
-              {
-                \bool_lazy_or:nnTF { \int_compare_p:nNn {##1} < { 3 } }
-                    { \int_compare_p:nNn {##1} > { \l__wuffle_rows_int - 2 } }
-                  { \tl_put_right:Nn \l__wuffle_body_tl { \\* } }
-                  { \tl_put_right:Nn \l__wuffle_body_tl { \\ } }
-              }
+              { \__wuffle_sep:n {##1} }
           }
         \toks@ \exp_after:wN { \l__wuffle_body_tl }
         \XLT@ii@TX@endtabularx
@@ -330,7 +340,8 @@
 % bibliography: the text face, a size down; a DOI is the link and a URL is dropped where there is
 % one; DOIs and URLs in Barlow, not the code face
 \DeclareSourcemap{\maps[datatype=bibtex]{\map[overwrite]{\step[fieldsource=doi, final]\step[fieldset=url, null]}}}
-\renewcommand*{\bibfont}{\small\urlstyle{same}}
+% ragged right: a justified entry stretched a DOI into letter-spaced pieces (10 . 1029 / JB089…)
+\renewcommand*{\bibfont}{\small\urlstyle{same}\raggedright}
 \setlength{\bibitemsep}{0.45em}
 \setlength{\bibhang}{1.4em}
 \DeclareFieldFormat{doi}{DOI\addcolon\space\ifhyperref{\href{https://doi.org/#1}{\nolinkurl{#1}}}{\nolinkurl{#1}}}
@@ -359,9 +370,18 @@
 \AddToHook{env/goals/before}{\wuffleneed{5}}
 \AddToHook{env/tip/before}{\wuffleneed{4}}
 \AddToHook{env/note/before}{\wuffleneed{4}}
-\AddToHook{env/caution/before}{\wuffleneed{4}}
+\AddToHook{env/caution/before}{\wuffleneed{8}}   % a warning read in two halves loses its point
 \AddToHook{env/why/before}{\wuffleneed{4}}
 \AddToHook{env/codeblock/before}{\wuffleneed{4}}
+% a section heading needs its first few lines with it: a heading and "Two methods:" alone at a page foot
+% read as a broken page (\wuffleneed only acts on the main page, never inside a box)
+\AddToHook{cmd/section/before}{\wuffleneed{7}}
+\AddToHook{cmd/subsection/before}{\wuffleneed{5}}
+% a centered table sits like a box: the center environment's own top/bottom space was half again a
+% paragraph's, on top of the table's
+\AddToHook{env/center/begin}{\setlength{\topsep}{0.35em}\setlength{\partopsep}{0pt}}
+% a description list whose labels are long sets each label on its own line (\begin{description}[style=nextline])
+% — set inline, a long label left its line stretched with huge word gaps
 \brokenpenalty=500
 % floats: a book of large screenshots. Let a page carry up to two of them at the top and keep at least
 % a few lines of text with them; a float page only when it is mostly full, so a screenshot that can't

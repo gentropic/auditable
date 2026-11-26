@@ -7,13 +7,9 @@ outcrop photos, read every message the compass gives, and publish the log, signe
 On a phone, wuffle reads the device's orientation and turns it into an attitude. The net fills as you
 work, so you see the fabric take shape at the outcrop instead of that evening.
 
-\shot[0.5\linewidth]{field-net}{The compass: the mode switch, the net, typed entry, the log's buttons and
-the log, newest first. (Opened on a computer, so the subtitle says \ui{stereonet · manual} and there is no
-live reading.)}
-
 \section{The screen}\label{sec:field-screen}
 
-From the top:
+From the top (\cref{fig:field-net}):
 
 \begin{description}
 \item[The title.] \ui{wuffle} and a subtitle saying where the reading comes from (\cref{sec:field-msgs}).
@@ -35,6 +31,10 @@ thumb: it keeps the reading.
 photo is attached. The \ui{×} on a row deletes it.
 \item[The message] line under the log (\cref{sec:field-msgs}).
 \end{description}
+
+\shot[0.5\linewidth]{field-net}{The compass: the mode switch, the net, typed entry, the log's buttons and
+the log, newest first. (Opened on a computer, so the subtitle says \ui{stereonet · manual} and there is no
+live reading.)}
 
 \section{Measuring}\label{sec:measuring}
 
@@ -115,7 +115,7 @@ its \ui{×} and type the right one.
 
 \section{Photos}\label{sec:photos}
 
-\shot[0.5\linewidth]{field-photo}{A photo attached to the last measurement: the camera mark on its row,
+\shot[0.6\linewidth]{field-photo}{A photo attached to the last measurement: the camera mark on its row,
 and the message line giving the picture's size.}
 
 \ui{photo} opens the camera's viewfinder. \ui{capture} takes a picture and attaches it to the \emph{last}
@@ -126,7 +126,7 @@ Measure first, then photograph.
 
 The messages you may see instead:
 
-\begin{description}
+\begin{description}[style=nextline]
 \item[\ui{measure first — the photo attaches to the last measurement}] the log is empty.
 \item[\ui{camera denied}] inside the shell, the camera permission was refused (on Android: Settings,
 Apps, the shell, Permissions).
@@ -143,7 +143,7 @@ has no camera to offer.
 \begin{itemize}
 \item \file{wuffle-log.csv}\index{wuffle-log.csv} to \file{Downloads}: one row per measurement, with its kind, attitude,
 strike, time, position and accuracy, north, declination and photo (\cref{sec:format-log});
-\item \file{wuffle-log.csv.sig} beside it, the phone's \term{signature} over the exact bytes of the CSV,
+\item \file{wuffle-log.csv.sig} beside it, the phone's \term[field log!signature]{signature} over the exact bytes of the CSV,
 when the phone has a hardware key (\cref{sec:format-sig});
 \item each photo to \file{Pictures}.
 \end{itemize}
@@ -214,7 +214,7 @@ phone's browser the compass still reads live from the browser's orientation (\cr
 
 And the message line under the log, besides the ones above:
 
-\begin{description}
+\begin{description}[style=nextline]
 \item[\ui{lead-acid ready · lay the phone on a surface to measure}] the compass has started in the shell.
 \item[\ui{compass calibrated · lay the phone on a surface to measure}] the magnetometer reports high accuracy.
 \item[\ui{compass medium — a figure-8 would sharpen it}] usable; a figure eight would improve it.

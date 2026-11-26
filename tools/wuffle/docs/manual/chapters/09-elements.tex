@@ -10,15 +10,15 @@ is set once in the layer's properties, and then you go back to looking at the ne
 
 \section{The nested checkboxes}\label{sec:checkboxes}
 
-\shot{elements-tree}{\code{tocher} opened into its elements: contours (Kamb, 3\,$\sigma$), the mean with its
-95\,\% cone, and the eigenvector group partly on (V1 with its great circle, and V3). The statistics tab
-below gives the numbers.}
+\shot[0.42\linewidth]{elements-tree}{\code{tocher} opened in the tree into its elements: contours (Kamb, 3\,$\sigma$), the mean with
+its 95\,\% cone, and the eigenvector group partly on (V1 with its great circle, and V3), its box showing
+a dash.}
 
 Click the small arrow beside a layer to open it. Each row is an \term{element}; its checkbox shows or hides
 it, and is an undo step (\ui{show / hide elements}). Some rows carry their setting at the right:
 \ui{Kamb 3σ} beside contours, \ui{95 \%} beside the mean.
 
-\term[eigenvectors!group]{The eigenvectors} are a group with a checkbox of its own. Ticking it switches all six
+\term[elements!eigenvectors]{The eigenvectors} are a group with a checkbox of its own. Ticking it switches all six
 of its children on, unticking switches them off, and when only some are on its box shows a dash: it is
 \emph{partly} on. Open the group to tick its children one by one.
 
@@ -45,11 +45,11 @@ The console reaches the same switches: \code{show contours}, \code{hide poles}, 
 
 \section{Poles, points and great circles}
 
-\term[poles]{Poles} are drawn as dots, in the layer's color and symbol size; a selected row's pole is
-violet and larger, on every diagram that draws it. \term[points]{Points} are the same for lines.
-\term[great circles]{Great circles} draw each plane in full, in a thin line of the layer's color, violet
-when selected. A small-circle dataset draws its \term[circles (element)]{circles}, and
-\term[axes (element)]{axes} adds a point at each circle's axis.
+\term[elements!poles]{Poles} are drawn as dots, in the layer's color and symbol size; a selected row's pole is
+violet and larger, on every diagram that draws it. \term[elements!points]{Points} are the same for lines.
+\term[elements!great circles]{Great circles} draw each plane in full, in a thin line of the layer's color, violet
+when selected. A small-circle dataset draws its \term[elements!circles]{circles}, and
+\term[elements!axes]{axes} adds a point at each circle's axis.
 
 Clicking a pole or a point picks its row; \cref{ch:select} covers picking and the other selection tools.
 
@@ -84,7 +84,7 @@ The contour levels themselves are a setting with no dialog yet: write a \code{"l
 
 \section{Mean and cone}\label{sec:mean}
 
-\term{Mean + cone} draws the layer's Fisher mean \parencite{fisher1953} as an open ring, and around it the
+\term[elements!mean and cone]{Mean + cone} draws the layer's Fisher mean \parencite{fisher1953} as an open ring, and around it the
 confidence cone at 95\,\% (or 90 or 99\,\%: properties). Poles and lines are treated as \emph{axes}: a pole
 and its opposite are the same direction, so the poles of steep planes dipping both ways, near the rim on
 opposite sides of the net, are one cluster with one mean, not two halves that cancel. The numbers
@@ -127,7 +127,7 @@ On 200 measurements labels are a blur. Select the few you want to name, make the
 
 \section{Properties}\label{sec:properties}
 
-\shot[0.8\linewidth]{layer-props}{A layer's properties: its color and symbol size, and the settings of its contours,
+\shot[0.6\linewidth]{layer-props}{A layer's properties: its color and symbol size, and the settings of its contours,
 mean cone and labels.}
 
 Double-click a layer in the tree, or choose \ui{Properties…} from its menu. The dialog's first line says

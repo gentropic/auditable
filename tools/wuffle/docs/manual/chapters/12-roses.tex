@@ -22,9 +22,6 @@ Rotation, projection and hemisphere belong to nets and don't apply here.
 
 \section{Rose diagrams}\label{sec:rose}
 
-\shot[0.6\linewidth]{rose-strike}{A rose of the Tocher sample's strikes in 10° sectors, area-true. Strike is
-an axis, so each petal has its twin opposite.}
-
 A rose bins the azimuths of every visible layer together, in one color (the first layer's), with four
 reference rings. What it bins is the diagram's \ui{Quantity}:
 
@@ -35,6 +32,9 @@ ends: the petals come in opposite pairs. This is the default.
 \item[\ui{dip direction (planes)}] the dip direction of each plane.
 \item[\ui{trend (lines)}] the trend of each line.
 \end{description}
+
+\shot[0.6\linewidth]{rose-strike}{A rose of the Tocher sample's strikes in 10° sectors, area-true. Strike is
+an axis, so each petal has its twin opposite.}
 
 Planes have no trend and lines no strike, so a quantity skips the measurements it doesn't apply to. If
 none are left, the diagram says so instead of drawing: \ui{no lines to bin by trend — choose another

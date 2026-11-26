@@ -11,11 +11,12 @@ diagrams beside \ui{table} and \ui{console}, describes each visible layer of the
 layer, in the layer's color. Show or hide a layer, edit its rows, or switch to another net, and the cards
 follow.
 
-\shot[0.8\linewidth]{stats-card}{The statistics card for the Tocher sample: an axial mean that means
+\shot[0.75\linewidth]{stats-card}{The statistics card for the Tocher sample: an axial mean that means
 little, a strong girdle (G~0.63, K~0.21), and its axis V3.}
 
 \section{The card}\label{sec:stats-card}
 
+\wuffleneed{18}% the lead-in below and its table go together
 The heading names the net and how many layers it shows (\ui{Net 1 · 1 layer}). Each card heads with the
 layer's name and \ui{n}, the number of measurements wuffle could read. When some rows couldn't be read it
 says so, as \ui{n 190 of 200}. Then, for the Tocher sample:
@@ -68,8 +69,8 @@ perfect girdle has S1 and S2 near ½ and S3 near 0; a random spread has all thre
 \item[\ui{V1 V2 V3}] the eigenvectors, as lines. V1 is the direction of greatest concentration. For a
 girdle of poles, V3 is the girdle's pole: the axis about which the planes turn, a cylindrical fold's
 axis. The card gives the girdle itself too, the plane whose pole is V3 (Tocher's \code{293/42}).
-\item[\ui{K · C}] shape and strength after \textcite{woodcock1977}\index{Woodcock's K and C}: $K = \ln(S_1/S_2) / \ln(S_2/S_3)$ and
-$C = \ln(S_1/S_3)$. $K > 1$ is a cluster and $K < 1$ a girdle; a larger $C$ is a stronger fabric. Tocher's
+\item[\ui{K · C}] shape and strength after \textcite{woodcock1977}\index{Woodcock's K and C}:
+\[ K = \frac{\ln(S_1/S_2)}{\ln(S_2/S_3)}, \qquad C = \ln(S_1/S_3). \] $K > 1$ is a cluster and $K < 1$ a girdle; a larger $C$ is a stronger fabric. Tocher's
 0.21 is a girdle, and its 2.07 a well-defined one.
 \item[\ui{P G R}] the fractions of \textcite{vollmer1990}\index{Vollmer's P, G and R}: $P = S_1 - S_2$, $G = 2(S_2 - S_3)$ and $R = 3S_3$.
 They sum to 1 and place the fabric in a triangle of point, girdle and random. Tocher's G of 0.63 says the
@@ -78,7 +79,7 @@ same as its K: mostly girdle.
 
 \section{Results as datasets}\label{sec:derived}
 
-\shot{derived-net}{The mean (a ring with its cone of confidence, near \code{207→01}) and the
+\shot[0.7\linewidth]{derived-net}{The mean (a ring with its cone of confidence, near \code{207→01}) and the
 eigenvectors kept as a dataset, drawn in blue on the contoured Tocher poles.}
 
 Each card has buttons that keep a result as a \term{derived dataset}:
@@ -124,7 +125,7 @@ read as perfectly random). Hide the layer, or ignore its card.
 
 \section{An intersection}\label{sec:stats-intersect}
 
-\shot{intersect}{Tocher split into two sets by dip direction, \code{east} and \code{west}, with their
+\shot[0.7\linewidth]{intersect}{Tocher split into two sets by dip direction, \code{east} and \code{west}, with their
 means and cones, and the line where the mean planes meet (violet, near \code{123→33}).}
 
 To intersect two sets, they have to be two datasets drawn on one net. Split one with a selection
@@ -143,16 +144,16 @@ and \ui{∩ intersect with… › west} on the \code{east} card keeps \code{east
 \code{123→33}, the mean planes 56° apart.
 
 \section{From the console}\label{sec:stats-console}
-\index{stats (command)}\index{mean (command)}\index{eigen (command)}\index{beta (command)}%
-\index{intersect (command)}%
+\index{commands!stats}\index{commands!mean}\index{commands!eigen}\index{commands!beta}%
+\index{commands!intersect}%
 
 \begin{codeblock}
-stats                   # the first visible layer's card, as text
+stats                 # the first visible layer's card
 stats tocher | grep mean
-mean                    # mean → dataset, for the first visible layer
-eigen tocher            # eigenvectors → dataset
-beta                    # the beta diagram
-intersect east west     # where two layers' mean planes meet
+mean                  # mean → dataset (first visible layer)
+eigen tocher          # eigenvectors → dataset
+beta                  # the beta diagram
+intersect east west   # where two mean planes meet
 \end{codeblock}
 
 \code{stats} prints three lines: the count, the mean with $\kappa$ and $\alpha_{95}$, and the eigenvalues

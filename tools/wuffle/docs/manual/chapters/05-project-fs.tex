@@ -11,7 +11,7 @@ know about files (listing, reading, piping, copying) works on your measurements.
 
 \section{The tree}\label{sec:project-tree}
 
-\shot{project-ls}{\file{/project} listed: the six entries at its root, and a layer that is a symbolic link
+\shot[0.85\linewidth]{project-ls}{\file{/project} listed: the six entries at its root, and a layer that is a symbolic link
 to its dataset.}
 
 \begin{center}\small
@@ -87,8 +87,10 @@ is drawn:
 {
   "name": "Net 1",
   "kind": "net",
-  "props": { "projection": "equal-area", "hemisphere": "lower",
-             "rotation": null, "matrix": null, "graticule": 10 },
+  "props": { "projection": "equal-area",
+             "hemisphere": "lower",
+             "rotation": null, "matrix": null,
+             "graticule": 10 },
   "layers": ["tocher"]
 }
 \end{codeblock}
@@ -128,8 +130,10 @@ until you draw it (below).
 \item[A diagram's settings.] Writing \file{diagram.json} changes the diagram. Write only what you change,
 under \code{props} for its settings or \code{name} to rename it:
 \begin{codeblock}
-echo '{"props":{"projection":"equal-angle"}}' > "diagrams/Net 1/diagram.json"
-echo '{"name":"Tocher net"}' > "diagrams/Net 1/diagram.json"
+cd "diagrams/Net 1"
+echo '{"props":{"projection":"equal-angle"}}' > diagram.json
+echo '{"name":"Tocher net"}' > diagram.json
+cd /project
 \end{codeblock}
 The undo step is \ui{diagram settings}.
 \item[A layer's settings.] Writing a layer's \file{.json} shows or hides it (\code{visible}), restyles it
@@ -153,7 +157,7 @@ method (\cref{sec:contours}).
 
 And the directory operations mean what they look like:
 
-\begin{description}
+\begin{description}[style=nextline]
 \item[\code{mkdir diagrams/Joints}] makes a new net called \ui{Joints}.
 \item[\code{ln -s ../../../data/tocher.csv diagrams/Joints/layers/}] draws \code{tocher} on it. The
 link's name is the layer's name, so linking to \file{diagrams/Joints/layers/west.csv} makes a layer called
@@ -186,7 +190,7 @@ wraps each answer with the command and the path, as Unix tools do:
 1/net.svg}. The table gives the middle part, wuffle's own:
 
 \begin{center}\small
-\begin{tabularx}{\linewidth}{@{}>{\raggedright}p{0.36\linewidth}L@{}}\toprule
+\begin{tabularx}{\linewidth}{@{}>{\raggedright}p{0.46\linewidth}L@{}}\toprule
 \sffamily\bfseries you type & \sffamily\bfseries wuffle answers \\\midrule
 \code{rm data/tocher.csv} & \ui{“tocher” is drawn on Net 1, Joints — remove those layers first} \\
 \code{echo x > "diagrams/Net 1/net.svg"} & \ui{read-only} (computed files: \file{net.svg}, \file{.pdf}, \file{selection/<name>.csv}) \\

@@ -98,17 +98,18 @@ hyphens made one underscore: \file{Serra\_do\_Mar.zip.wuffle}.
 The files \emph{are} the project. There is no second, hidden copy of it inside, so unzip one and every
 dataset is a plain CSV any program reads; edit one by hand, zip it back, and wuffle opens it as edited.
 Here is a saved project of the Tocher sample, with a note and an exported net in \file{/home}, listed by
-Python's own zip module (\code{python -m zipfile -l untitled.zip.wuffle}):
+Python's own zip module (\code{python -m zipfile -l untitled.zip.wuffle}; its \code{Modified}
+column, the same on every line, left out):
 
 \begin{codeblock}
-File Name                                     Modified             Size
-project.json                           1980-01-01 00:00:00          164
-data/tocher.csv                        1980-01-01 00:00:00         2883
-data/tocher.json                       1980-01-01 00:00:00          390
-diagrams/Net 1/diagram.json            1980-01-01 00:00:00          211
-diagrams/Net 1/layers/tocher.json      1980-01-01 00:00:00          761
-home/net-1.svg                         1980-01-01 00:00:00       940145
-home/tocher-stats.txt                  1980-01-01 00:00:00          109
+File Name                                Size
+project.json                              164
+data/tocher.csv                          2883
+data/tocher.json                          390
+diagrams/Net 1/diagram.json               211
+diagrams/Net 1/layers/tocher.json         761
+home/net-1.svg                         940145
+home/tocher-stats.txt                     109
 \end{codeblock}
 
 Every member is dated 1980-01-01, the earliest date a zip can hold: wuffle writes no times, so saving
@@ -185,15 +186,12 @@ send is a standalone file.
 
 \section{Field logs}\label{sec:field-logs}
 
-\shot{fieldlog-open}{A signed field log opened: two datasets in the tree (the arrow marks them as read from
-an original) and the signature's verdict in the status line.}
-
 The compass publishes three kinds of file (\cref{sec:publish}): \file{wuffle-log.csv}, its signature
 \file{wuffle-log.csv.sig}, and a JPEG per photographed station. Open them together, by selecting them all
 in \menu{File>Open data or a project…} or dropping them on the window at once, and wuffle gathers them:
 
 \begin{itemize}
-\item the CSV and its \file{.sig} go into the project as an \term{original}, kept byte for byte under
+\item the CSV and its \file{.sig} go into the project as an \term[field log!original]{original}, kept byte for byte under
 \file{/project/field/<name>/}, with the photos the log names in a \file{photos/} directory beside them;
 \item the measurements are read into two ordinary datasets, \code{<name> · planes} and
 \code{<name> · lines}, drawn on the active net. The name is the log's day: \code{field 2026-11-20}. A
@@ -203,6 +201,9 @@ second log from the same day becomes \code{field 2026-11-20 2}.
 Edit the datasets as you like. The original never changes, and it travels in the project file under
 \file{field/} exactly as it came. The datasets' lineage names it: hover one in the tree.
 
+\shot{fieldlog-open}{A signed field log opened: two datasets in the tree (the arrow marks them as read from
+an original) and the signature's verdict in the status line.}
+
 A \file{.sig} is matched to its log by name (\file{wuffle-log.csv.sig} goes with \file{wuffle-log.csv}; a
 browser that renamed both to \file{wuffle-log (1).csv} and \file{wuffle-log (1).csv.sig} keeps them
 paired). Photos are matched by the names in the log's \col{photo} column. A \file{.sig} or a photo opened
@@ -211,7 +212,7 @@ the field log they belong to}.
 
 \subsection{The signature}
 
-\index{signature!checking}On opening, wuffle checks the signature against the CSV's bytes, and the status line says what it found:
+\index{field log!signature, checking}On opening, wuffle checks the signature against the CSV's bytes, and the status line says what it found:
 
 \begin{description}
 \item[Verified.] \ui{opened field log wuffle-log.csv — signature verified — key 6d80 2a8d f427 b4e4,

@@ -30,19 +30,20 @@ shares it, and a figure made from the net (\cref{ch:figures}) is drawn as rotate
 
 \section{Naming the center}\label{sec:rotate-centre}
 
-The console's \code{rotate} brings a direction to the center of the active net:\index{rotate (command)}
+The console's \code{rotate} brings a direction to the center of the active net:\index{commands!rotate}
 
 \begin{codeblock}
-rotate 120→40       # Net 1: centered on 120→40
-rotate '120>40'     # the same, typed without the arrow (quoted: > is the shell's)
-rotate off          # Net 1: not rotated
+rotate 120→40      # Net 1: centered on 120→40
+# the same, without the arrow (quoted: > is the shell's)
+rotate '120>40'
+rotate off         # Net 1: not rotated
 \end{codeblock}
 
 The direction is a line. \code{rotate 045/30} refuses with \ui{rotate 045→30 (the direction to put at the
 center)}; to look down a plane's pole, give the pole as a line. Only a net rotates: with a rose or a
 fabric plot active, \code{rotate} says \ui{only a net rotates}.
 
-\shot{rotated-net}{The Tocher net centered on \code{120→40} (the cardinal letters have moved with it) and
+\shot[0.7\linewidth]{rotated-net}{The Tocher net centered on \code{120→40} (the cardinal letters have moved with it) and
 the same cone selection as \cref{fig:select-cone}, the same 18 poles, drawn where they now fall.}
 
 \section{Undoing and resetting}\label{sec:rotate-reset}
@@ -52,8 +53,7 @@ moving. A pause of most of a second starts a new step, so a drag in two movement
 at a time. \code{rotate} is one step too; and as with a drag, \code{rotate} lines run within a moment
 of each other on one net (as in a routine) merge into one step.
 
-To go back to the plain net, right-click the net in the tree and choose \ui{Reset rotation}\index{Reset
-rotation} (grayed out when the net isn't rotated), or type \code{rotate off}. Either clears a dragged
+To go back to the plain net, right-click the net in the tree and choose \ui{Reset rotation}\index{rotation, reset} (grayed out when the net isn't rotated), or type \code{rotate off}. Either clears a dragged
 rotation or a named center.
 
 \section{What a rotation doesn't change}\label{sec:rotation-true}
