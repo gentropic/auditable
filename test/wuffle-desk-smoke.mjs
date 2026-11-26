@@ -205,6 +205,17 @@ for (const [label, url] of [['dev', '/tools/wuffle/index.html'], ['built', '/wuf
   chk(`${label}: \` opens the console (${focused}); “select cone 150/60 20” selects (${con.sel}) and draws its cone (${con.shape}); “stats” answers; a bad line says so`,
     focused && con.sel > 0 && con.shape && con.lines.some((l) => /^out:.*n 200/.test(l)) && con.lines.some((l) => /^err:unknown command/.test(l)));
 
+  // ── rotating: a drag on the net (pick tool) turns it; a click afterwards still picks ──
+  await p.evaluate(() => { const W = window.__wuffleDesk; W.select.setTool('pick'); W.project.setActive(W.project.diagrams[0].id); W.rails.activateTab('diag:' + W.project.diagrams[0].id); });
+  await p.waitForTimeout(250);
+  await p.mouse.move(cx - 0.3 * R, cy); await p.mouse.down(); await p.mouse.move(cx + 0.2 * R, cy - 0.1 * R, { steps: 8 }); await p.mouse.up();
+  await p.waitForTimeout(300);
+  const rot2 = await p.evaluate(() => { const W = window.__wuffleDesk, P = W.project, g = P.diagrams[0], v = W.views.get(g.id); const k = v.picks[3]; const svg = v.stage.querySelector('svg'), rc = svg.getBoundingClientRect(), s = v.net.size / rc.width; return { m: g.props.matrix, at: [rc.left + k.x / s, rc.top + k.y / s], row: k.ref.row }; });
+  await p.mouse.click(rot2.at[0], rot2.at[1]); await p.waitForTimeout(250);
+  const rot3 = await p.evaluate(() => { const W = window.__wuffleDesk, P = W.project; const sel = P.selected(P.datasets[0].id); P.setDiagramProps(P.diagrams[0].id, { matrix: null }); return sel; });
+  chk(`${label}: a drag on the net rotates it (a matrix ${rot2.m ? 'kept on the diagram' : 'MISSING'}); a click afterwards still picks the pole under it (row ${JSON.stringify(rot3)} = ${rot2.row})`,
+    Array.isArray(rot2.m) && rot2.m.length === 9 && Math.abs(rot2.m[0] - 1) > 1e-3 && rot3.length === 1 && rot3[0] === rot2.row);
+
   // ── a figure: Figure → New figure from the active net → compo's editor in a tab, the page drawn ──
   const fig = await p.evaluate(async () => {
     const W = window.__wuffleDesk, P = W.project, wait = (ms) => new Promise((z) => setTimeout(z, ms));

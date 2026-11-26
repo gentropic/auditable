@@ -123,9 +123,9 @@ export function createCommands(ctx) {
     intersect([a, b]) { if (!a || !b) throw new Error('intersect <layer> <layer>'); return derived(deriveIntersection(p, layerNamed(a).datasetId, layerNamed(b).datasetId)); },
     rotate([att]) {
       const g = active(); if (g.kind !== 'net') throw new Error('only a net rotates');
-      if (att === 'off' || att == null) { p.setDiagramProps(g.id, { rotation: null }); return `${g.name}: not rotated`; }
+      if (att === 'off' || att == null) { p.setDiagramProps(g.id, { rotation: null, matrix: null }); return `${g.name}: not rotated`; }
       const a = parseAttitude(att); if (!a || !a.line) throw new Error('rotate 045→30 (the direction to put at the centre)');
-      p.setDiagramProps(g.id, { rotation: a.line }); return `${g.name}: centred on ${formatLine(a.line)}`;
+      p.setDiagramProps(g.id, { rotation: a.line, matrix: null }); return `${g.name}: centred on ${formatLine(a.line)}`;
     },
     theme([t]) { if (!['dark', 'light', 'system'].includes(t)) throw new Error('theme dark|light|system'); ctx.setTheme?.(t); return `theme ${t}`; },
     history() { return history.join('\n') || '(empty)'; },

@@ -153,6 +153,7 @@ export class TreeView {
     ] : [
       { label: 'Projection', children: [{ label: 'equal-area (Schmidt)', action: 'proj:equal-area', checked: g.props.projection === 'equal-area', group: 'p' }, { label: 'equal-angle (Wulff)', action: 'proj:equal-angle', checked: g.props.projection === 'equal-angle', group: 'p' }] },
       { label: 'Hemisphere', children: [{ label: 'lower', action: 'hemi:lower', checked: g.props.hemisphere === 'lower', group: 'h' }, { label: 'upper', action: 'hemi:upper', checked: g.props.hemisphere === 'upper', group: 'h' }] },
+      { label: 'Reset rotation', action: 'unrotate', disabled: !g.props.matrix && !g.props.rotation },
     ];
     const a = await Menu.show([
       { label: 'Rename…', action: 'rename' },
@@ -164,6 +165,7 @@ export class TreeView {
     if (a === 'rename') { const n = await prompt('Name of the diagram', { defaultValue: g.name }); if (n) this.p.renameDiagram(g.id, n); }
     else if (a.startsWith('proj:')) this.p.setDiagramProps(g.id, { projection: a.slice(5) });
     else if (a.startsWith('hemi:')) this.p.setDiagramProps(g.id, { hemisphere: a.slice(5) });
+    else if (a === 'unrotate') this.p.setDiagramProps(g.id, { matrix: null, rotation: null });
     else if (a.startsWith('q:')) this.p.setDiagramProps(g.id, { quantity: a.slice(2) });
     else if (a.startsWith('bins:')) this.p.setDiagramProps(g.id, { bins: +a.slice(5) });
     else if (a.startsWith('scale:')) this.p.setDiagramProps(g.id, { scale: a.slice(6) });

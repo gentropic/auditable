@@ -43,7 +43,7 @@ export class NetView {
     this.scene = core.buildScene({ layers: sceneLayers(this.p, this.id),
       colors: { selected: tok('--w-violet'), ink: tok('--w-text'), inkMid: tok('--w-text-mid'), halo: tok('--w-net-bg') } });
     const out = core.renderScene(this.scene, { size, projection: g.props.projection, hemisphere: g.props.hemisphere,
-      graticule: g.props.graticule, center: g.props.rotation || null, classPrefix: 'wn', theme: netTheme() });
+      graticule: g.props.graticule, rotation: g.props.matrix || null, center: g.props.rotation || null, classPrefix: 'wn', theme: netTheme() });
     this.net = out.net; this.picks = out.picks;
     this.stage.replaceChildren(out.svg);
     for (const fn of this.drawn) fn(this);

@@ -28,7 +28,7 @@ const DEFAULT_SETTINGS = {
   labels: { column: null },
 };
 export const DIAGRAM_DEFAULTS = {
-  net: { projection: 'equal-area', hemisphere: 'lower', rotation: null, graticule: 10 },
+  net: { projection: 'equal-area', hemisphere: 'lower', rotation: null, matrix: null, graticule: 10 },   // rotation: a centre [tr, pl]; matrix: a dragged rotation
   rose: { bins: 10, axial: true, scale: 'area', quantity: 'strike', column: null },
   fabric: { plot: 'vollmer' },
 };

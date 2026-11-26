@@ -7,6 +7,7 @@
 //   desk-layout.js   @gcu/rails: tree · one tab per diagram · table; diagram ↔ tab bookkeeping
 //   desk-net.js      one net, drawn by @gcu/stereonet's core; pick + hover
 //   desk-select.js   lasso / cone / band on a net, in attitude space (rotation-proof)
+//   desk-rotate.js   drag a net to rotate it (arcball)
 //   desk-tree.js     the tree: diagrams, layers, nested checkboxes, data; drag, menus, properties
 //   desk-table.js    the table (@gcu/loom over a dataset's rows)
 //   stats.js         statistics + derived datasets (pure)  ·  desk-stats.js  the statistics panel
@@ -26,6 +27,7 @@ import { createFigures } from './desk-figure.js';
 import { TOCHER } from './samples.js';
 import { createLayout } from './desk-layout.js';
 import { createSelectTools } from './desk-select.js';
+import { createRotate } from './desk-rotate.js';
 import { createFiles } from './desk-files.js';
 import { createMenus } from './desk-menus.js';
 
@@ -55,12 +57,13 @@ export function mountDesk() {
   const stats = new StatsView(p, { onDerived: (id) => table.show(id) });
   const status = (s) => { $('.wst-hover').textContent = s; };
   const select = createSelectTools({ project: p, onStatus: status });
+  const rotate = createRotate({ project: p, isActive: () => select.tool === 'pick' });
   let files = null;
   const consoleView = new ConsoleView({ project: p,
     // a typed selection goes through the active net's tool, so its shape is drawn too
     applyShape: (shape, mode) => { const v = layout.views.get(p.activeDiagram); return v && v.net ? select.apply(v, shape, mode) : null; },
     setTheme: (t) => theme.set(t), focusDiagram: (id) => layout.focusDiagram(id), openSample: () => files.addData(TOCHER, 'tocher.csv') });
-  layout = createLayout($('.wwork'), { project: p, tree, table, stats, consoleView, select, onStatus: status });
+  layout = createLayout($('.wwork'), { project: p, tree, table, stats, consoleView, select, rotate, onStatus: status });
   const figures = createFigures({ project: p, layout, onStatus: status });
   files = createFiles(root, { project: p, dropHost: $('.wwork'), onOpened: (id) => table.show(id) });
   const menus = createMenus($('.wmenus'), { project: p, files, layout, theme, figures });
