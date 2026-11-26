@@ -414,6 +414,30 @@ describe('Terminal resize', () => {
     assert.equal(String.fromCodePoint(t.scrollback[1][0].ch), 'b');
   });
 
+  // like xterm: the empty rows below the cursor go first; the top scrolls only as far as the cursor needs.
+  // (Dropping from the top always pushed a fresh shell's banner into scrollback and left the cursor a row
+  // below its prompt — wuffle's console "starting with a blank line".)
+  test('height shrinks with the cursor near the top: the empty bottom goes, nothing scrolls', () => {
+    const t = new Terminal(10, 5);
+    t.write('a\r\nb');                        // cursor on row 1
+    t.resize(10, 3);
+    assert.equal(t.scrollback.length, 0);
+    assert.equal(rowText(t, 0), 'a');
+    assert.equal(rowText(t, 1), 'b');
+    assert.equal(t.cursor.y, 1);              // still on b's row
+  });
+
+  test('height shrinks past the cursor: the bottom first, then just enough of the top', () => {
+    const t = new Terminal(10, 5);
+    t.write('a\r\nb\r\nc\r\nd');              // cursor on row 3; one empty row below
+    t.resize(10, 3);                          // drop 2: the empty row, then 'a'
+    assert.equal(t.scrollback.length, 1);
+    assert.equal(String.fromCodePoint(t.scrollback[0][0].ch), 'a');
+    assert.equal(rowText(t, 0), 'b');
+    assert.equal(rowText(t, 2), 'd');
+    assert.equal(t.cursor.y, 2);              // on d's row, as before the resize
+  });
+
   test('height shrinks on alt buffer: top rows are discarded (not scrollback)', () => {
     const t = new Terminal(10, 5);
     t.write('\x1b[?1049h');

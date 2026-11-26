@@ -825,8 +825,17 @@ export class Terminal {
           buf.push(row);
         }
       } else if (rows < oldRows) {
+        // like xterm: the rows below the cursor go first — the screen's (empty) bottom — and the top
+        // scrolls into scrollback only by what the cursor needs to stay on screen. Dropping from the top
+        // always (as this did) pushed live output away and left the cursor a row below its prompt.
         const drop = oldRows - rows;
-        const removed = buf.splice(0, drop);
+        const active = buf === (this.usingAlt ? this.altBuffer : this.buffer);
+        const below = active ? Math.max(0, oldRows - 1 - this.cursor.y) : 0;
+        const fromBottom = Math.min(drop, below);
+        if (fromBottom) buf.splice(buf.length - fromBottom, fromBottom);
+        const fromTop = drop - fromBottom;
+        if (active) this.cursor.y -= fromTop;
+        const removed = buf.splice(0, fromTop);
         if (pushToScrollback) {
           for (const r of removed) {
             this.scrollback.push(r);

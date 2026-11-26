@@ -60,7 +60,12 @@ export class ConsoleView {
       readLine: (o) => this.edit(o),   // `read` asks on the terminal
     });
     this._queue = Promise.resolve();
+    // ready = the shell and its filesystems are up (run() needs only that). The banner and the prompt wait for
+    // the console's FIRST real size: written at the constructed 80 × 12, the banner wrapped at 80 in a wider
+    // panel and the resize to the panel shifted it, so the console seemed to start on a blank line
+    this._sized = new Promise((r) => { this._onSized = r; });
     this.ready = this._boot();
+    this.ready.then(() => this._start());
   }
 
   // ── the terminal ──
@@ -81,8 +86,8 @@ export class ConsoleView {
     // is in the page, so that measured 0 × 0 (and pinned the screen to 0 × 0). Measure again once it shows.
     if (!this.renderer.cellW || !this.renderer.cellH) { this.renderer._measure(); if (!this.renderer.cellW) return; }
     const cols = Math.max(20, Math.floor((W - 16) / this.renderer.cellW)), rows = Math.max(4, Math.floor((H - 12) / this.renderer.cellH));
-    if (cols === this.term.cols && rows === this.term.rows) return;
-    this.term.resize(cols, rows); this.renderer.resize(); this.adapter.notifyResize(cols, rows);
+    if (cols !== this.term.cols || rows !== this.term.rows) { this.term.resize(cols, rows); this.renderer.resize(); this.adapter.notifyResize(cols, rows); }
+    if (this._onSized) { this._onSized(); this._onSized = null; }   // the first real size: the banner can be written
   }
   focus() { this.hidden.focus(); }
   _write(t, colour) {
@@ -162,6 +167,9 @@ export class ConsoleView {
       renderSvg: (id) => diagramSvg(this.p, id),
       figurePdf: async (id) => { const f = this.p.figure(id); return exportPDF(f.doc, { title: f.name, creator: 'wuffle' }); },
     }));
+  }
+  async _start() {
+    await this._sized;
     this._write('\x1b[33mwuffle\x1b[0m \x1b[2m— the console is a shell, and /project is the project: try ls, help, cat data/*.csv. Tab completes, ↑ recalls\x1b[0m\n');
     this._loop();
   }

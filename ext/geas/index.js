@@ -18550,8 +18550,10 @@ function describeEffect(effect) {
 const indent = (text, pad = '    ') => String(text).split('\n').map((l) => (l ? pad + l : l)).join('\n');
 
 // `man <command>` — render the op descriptor as a man page (NAME · SYNOPSIS? · EFFECT · DESCRIPTION · …).
+// argv is the executor's: argv[0] is the command itself ('man'), like every builtin's (echo reads
+// argv.slice(1)). It used to read argv[0] as the page — so `man ls` showed man's own page, every time.
 async function manCmd(argv, ctx) {
-  const name = argv[0];
+  const name = argv[1];
   if (!name) { await ctx.stderr('usage: man <command>\n'); return 1; }
   const op = GEAS_OPS[name];
   if (!op) { await ctx.stderr(`man: no manual entry for ${name}\n`); return 1; }
@@ -18571,9 +18573,9 @@ async function manCmd(argv, ctx) {
 
 // `op` / `op list [--effect=|--writes=|--gate=]` — the registry as a queryable catalog; `op <name>` → man.
 async function opCmd(argv, ctx) {
-  const head = argv[0];
-  if (head && head !== 'list' && GEAS_OPS[head]) return manCmd([head], ctx);   // `op rm` → man rm
-  const rest = head === 'list' ? argv.slice(1) : argv;
+  const args = argv.slice(1), head = args[0];                     // argv[0] is 'op' (see manCmd)
+  if (head && head !== 'list' && GEAS_OPS[head]) return manCmd(['man', head], ctx);   // `op rm` → man rm
+  const rest = head === 'list' ? args.slice(1) : args;
   const filters = {};
   for (const a of rest) { const m = /^--(effect|writes|gate)=(.+)$/.exec(a); if (m) filters[m[1]] = m[2]; }
   const rows = [];
