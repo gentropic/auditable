@@ -28,6 +28,7 @@ export function createMenus(host, { project: p, files, layout, theme }) {
     rmnet: () => { if (p.activeDiagram) p.removeDiagram(p.activeDiagram); },
     field: () => { const u = new URL(location.href); u.searchParams.delete('desk'); u.searchParams.set('field', ''); location.href = u.toString(); },
     about: () => alert(ABOUT),
+    console: () => { layout.focusConsole(); document.querySelector('.wcon-in')?.focus(); },
   };
   const bar = new MenuBar(host, () => [
     { label: 'File', items: () => [
@@ -45,6 +46,7 @@ export function createMenus(host, { project: p, files, layout, theme }) {
     ] },
     { label: 'View', items: () => [
       { label: 'Theme', children: THEMES.map(([k, t]) => ({ label: t, action: 'theme:' + k, checked: theme.pref === k, group: 'theme' })) },
+      { label: 'Console', action: 'console', shortcut: '`' },
       '---',
       { label: 'Field mode (the compass)', action: 'field' },
     ] },
@@ -59,6 +61,12 @@ export function createMenus(host, { project: p, files, layout, theme }) {
   addEventListener('keydown', (e) => {
     if (!(e.ctrlKey || e.metaKey) || !document.body.classList.contains('desk')) return;
     if (e.key === 'o') { e.preventDefault(); run('open'); } else if (e.key === 's') { e.preventDefault(); run('save'); }
+  });
+  // ` opens the console (not while typing somewhere)
+  addEventListener('keydown', (e) => {
+    if (e.key !== '`' || e.ctrlKey || e.metaKey || !document.body.classList.contains('desk')) return;
+    if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName)) return;
+    e.preventDefault(); run('console');
   });
   return { bar, run, commands };
 }

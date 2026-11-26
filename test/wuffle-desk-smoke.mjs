@@ -186,14 +186,33 @@ for (const [label, url] of [['dev', '/tools/wuffle/index.html'], ['built', '/wuf
   chk(`${label}: a rose diagram of the net's layers (${dg.r.layers} layers, ${dg.r.n} azimuths, then by dip direction ${dg.r.n2}); a fabric plot on paper (${dg.f.n} point${dg.f.n === '1' ? '' : 's'})`,
     dg.r.kind === 'rose' && dg.r.layers >= 2 && dg.r.svg && +dg.r.n >= 200 && dg.r.n2 === dg.r.n && dg.f.kind === 'fabric' && dg.f.svg && +dg.f.n >= 1);
 
+  // ── the console: typed commands act like the menus and the gestures ──
+  await p.keyboard.press('Escape');
+  await p.evaluate(() => { document.activeElement?.blur(); });
+  await p.keyboard.press('`');
+  await p.waitForTimeout(200);
+  const focused = await p.evaluate(() => document.activeElement?.classList.contains('wcon-in'));
+  const typed = async (line) => { await p.fill('.wcon-in', line); await p.press('.wcon-in', 'Enter'); await p.waitForTimeout(150); };
+  await p.evaluate(() => { const W = window.__wuffleDesk; W.project.setActive(W.project.diagrams[0].id); });
+  await typed('select cone 150/60 20');
+  await typed('stats tocher');
+  await typed('nonsense');
+  const con = await p.evaluate(() => {
+    const W = window.__wuffleDesk, P = W.project, ds = P.datasets.find((d) => d.name === 'tocher');
+    return { sel: P.selected(ds.id).length, lines: [...document.querySelectorAll('.wcon-line')].map((l) => l.className.split(' ').pop() + ':' + l.textContent.slice(0, 60)),
+      shape: !!W.views.get(P.diagrams[0].id)?.stage.querySelector('.wsel-shape') };
+  });
+  chk(`${label}: \` opens the console (${focused}); “select cone 150/60 20” selects (${con.sel}) and draws its cone (${con.shape}); “stats” answers; a bad line says so`,
+    focused && con.sel > 0 && con.shape && con.lines.some((l) => /^out:.*n 200/.test(l)) && con.lines.some((l) => /^err:unknown command/.test(l)));
+
   try { await p.screenshot({ path: path.join(root, `experiments/wuffle-desk-${label}.png`) }); } catch { /* for a person */ }
-  chk(`${label}: the desk opens with layers · Net 1 · table · statistics, the field page hidden (${s && JSON.stringify(r.tabs)})`, r.tabs && r.tabs.join() === 'layers,Net 1,table,statistics' && r.fieldHidden);
+  chk(`${label}: the desk opens with layers · Net 1 · table · statistics, the field page hidden (${s && JSON.stringify(r.tabs)})`, r.tabs && r.tabs.join() === 'layers,Net 1,table,statistics,console' && r.fieldHidden);
   chk(`${label}: File → Open the tocher sample → ${s.ds && s.ds.n} planes (not guessed: ${s.ds && !s.ds.guessed}), ${s.svgCircles} circles drawn`, s.ds && s.ds.n === 200 && !s.ds.guessed && s.svgCircles >= 200);
   chk(`${label}: the tree's nested checkbox switches contours on (${s.contourOn}, ${s.contourPaths} paths); one eigenvector child makes the group partial (${s.eigenState})`, s.contourOn && s.contourPaths > 0 && /partial/.test(s.eigenState));
   chk(`${label}: a second net gets a VIEW of the same data (${s.viewShares}); its tab appears (${JSON.stringify(s.tabs2)}); the tree marks the link (${JSON.stringify(s.linkBadge)})`, s.viewShares && s.tabs2.includes('Net 2') && s.linkBadge.length >= 1);
   chk(`${label}: a click on a pole selects its row (${JSON.stringify(t.selected)}), drawn violet on BOTH nets (${JSON.stringify(t.violetOn)}); the table shows the dataset (“${(t.tableTitle || '').slice(0, 50)}”)`, t.selected.length === 1 && t.violetOn[0] >= 1 && t.violetOn[1] >= 1 && /tocher/.test(t.tableTitle || ''));
   chk(`${label}: the theme switches (${JSON.stringify(t.theme)})`, t.theme[0] !== t.theme[1] && t.theme[2] === 'light');
-  chk(`${label}: a project round-trips (${JSON.stringify(t.reload)})`, t.reload.diagrams === 2 && t.reload.layers === 2 && t.reload.rows === 200 && t.reload.selected.length === 1 && t.reload.tabs === 5);
+  chk(`${label}: a project round-trips (${JSON.stringify(t.reload)})`, t.reload.diagrams === 2 && t.reload.layers === 2 && t.reload.rows === 200 && t.reload.selected.length === 1 && t.reload.tabs === 6);
   chk(`${label}: no page errors (${errs.length ? errs.join(' ; ').slice(0, 200) : 'none'})`, errs.length === 0);
   await p.close();
 }

@@ -111,6 +111,19 @@ body.desk > [hidden] { display:none !important; }   /* the field page's own disp
 .wst-acts button:disabled { opacity:.45; cursor:default; }
 .wst-acts button:focus-visible, .wst-acts select:focus-visible { outline:2px solid var(--w-blue); outline-offset:1px; }
 
+/* the console */
+.wcon { flex:1; min-height:0; display:flex; flex-direction:column; background:var(--w-bg-deep); font:12px var(--w-mono); }
+.wcon-log { flex:1; min-height:0; overflow:auto; padding:6px 10px; white-space:pre-wrap; }
+.wcon-line { color:var(--w-text-mid); line-height:1.45; }
+.wcon-line.echo { color:var(--w-text); }
+.wcon-line.out { color:var(--w-text-mid); padding-left:14px; }
+.wcon-line.err { color:var(--w-red); padding-left:14px; }
+.wcon-line.note { color:var(--w-text-soft); }
+.wcon-row { display:flex; align-items:center; gap:6px; padding:4px 10px; border-top:1px solid var(--w-border); }
+.wcon-prompt { color:var(--w-blue); }
+.wcon-in { flex:1; font:12px var(--w-mono); background:transparent; color:var(--w-text); border:0; outline:none; }
+.wcon-in::placeholder { color:var(--w-text-soft); }
+
 /* the properties dialog */
 .wprow { display:grid; grid-template-columns:130px 1fr; align-items:center; gap:10px; margin:6px 0; color:var(--w-text-mid); }
 .wprow input, .wprow select { font:12px var(--w-mono); background:var(--w-bg-bright); color:var(--w-text); border:1px solid var(--w-border); border-radius:3px; padding:2px 6px; }

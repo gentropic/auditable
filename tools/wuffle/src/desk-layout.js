@@ -8,7 +8,7 @@ import { RoseView, FabricView } from './desk-diagrams.js';
 
 const tabOf = (g) => ({ id: 'diag:' + g.id, title: g.name, closeable: false, diagramId: g.id });
 
-export function createLayout(host, { project: p, tree, table, stats, select, onStatus }) {
+export function createLayout(host, { project: p, tree, table, stats, consoleView, select, onStatus }) {
   const views = new Map();   // diagramId → NetView
   if (!p.diagrams.length) p.addDiagram('net');
   const rails = createRails(host, {
@@ -16,13 +16,14 @@ export function createLayout(host, { project: p, tree, table, stats, select, onS
       { id: 'sTree', tabs: [{ id: 'tree', title: 'layers', closeable: false }], active: 'tree', size: 270 },
       { id: 'cMain', dir: 'col', flex: 1, children: [
         { id: 'sNets', tabs: p.diagrams.map(tabOf), active: 'diag:' + (p.activeDiagram || p.diagrams[0].id), flex: 3 },
-        { id: 'sTable', tabs: [{ id: 'table', title: 'table', closeable: false }, { id: 'stats', title: 'statistics', closeable: false }], active: 'table', size: 230 },
+        { id: 'sTable', tabs: [{ id: 'table', title: 'table', closeable: false }, { id: 'stats', title: 'statistics', closeable: false }, { id: 'console', title: 'console', closeable: false }], active: 'table', size: 230 },
       ] },
     ] }, floats: [] },
     renderPanel(tab) {
       if (tab.id === 'tree') return tree.el;
       if (tab.id === 'table') return table.el;
       if (tab.id === 'stats') return stats.el;
+      if (tab.id === 'console') return consoleView.el;
       if (tab.diagramId) {
         const kind = p.diagram(tab.diagramId)?.kind;
         const v = kind === 'rose' ? new RoseView(p, tab.diagramId) : kind === 'fabric' ? new FabricView(p, tab.diagramId) : new NetView(p, tab.diagramId, { onStatus });
@@ -56,6 +57,7 @@ export function createLayout(host, { project: p, tree, table, stats, select, onS
     focusDiagram: (id) => rails.activateTab('diag:' + id),
     focusTable: () => rails.activateTab('table'),
     focusStats: () => rails.activateTab('stats'),
+    focusConsole: () => rails.activateTab('console'),
     redrawAll: () => { for (const v of views.values()) v.draw(); },
   };
 }
