@@ -110,7 +110,7 @@ export function stereonetCore(B) {
    * @returns {{ net: object, svg: SVGSVGElement | null, picks: Array<{ x: number, y: number, ref: { layer, row } }> }}
    *   svg is null where there is no DOM (net.svg() gives the markup string)
    */
-  function renderScene(scene, options) {
+  function makeNet(scene, options) {
     const t = options.theme || {};
     const net = new Stereonet({
       size: options.size, padding: options.padding ?? 26, projection: options.projection || 'equal-area',
@@ -124,7 +124,7 @@ export function stereonetCore(B) {
       },
     });
     const picks = [];
-    for (const p of scene.primitives) {
+    for (const p of scene.primitives || []) {
       if (p.type === 'contour') net.contour(p.dcos, p.options);
       else if (p.type === 'plane') net.plane(p.dd, p.dip, p.style);
       else if (p.type === 'cone') net.cone(p.trend, p.plunge, p.angle, p.style);
@@ -132,10 +132,46 @@ export function stereonetCore(B) {
       else if (p.type === 'line') net.line(p.trend, p.plunge, p.style);
       if (p.ref && p.dcos && (p.type === 'pole' || p.type === 'line')) { const q = net.project(p.dcos); picks.push({ x: q.x, y: q.y, ref: p.ref }); }
     }
+    return { net, picks };
+  }
+
+  function renderScene(scene, options) {
+    const { net, picks } = makeNet(scene, options);
     let svg = null;
     if (typeof document !== 'undefined') { svg = net.element(); net.render(); }
     return { net, svg, picks };
   }
 
-  return { buildScene, renderScene, nearestPick };
+  /**
+   * A scene onto any Canvas-2D-shaped context (a canvas, compo's vector PDF page) at (x, y), size `size`
+   * in that context's units. The net is laid out at a nominal 400 units and scaled, so its line weights
+   * keep their proportions on paper.
+   */
+  function drawScene(ctx, scene, { x = 0, y = 0, size, ...options }) {
+    const N = 400, { net } = makeNet(scene, { ...options, size: N });
+    ctx.save(); ctx.translate(x, y); ctx.scale(size / N, size / N);
+    net.draw(ctx, { x: 0, y: 0, size: N });
+    ctx.restore();
+  }
+
+  /**
+   * A frame kind for @gcu/compo (compo.registerKind('stereonet', core.compoKind())). The frame carries its
+   * scene as plain data — content: { scene, net: { projection, hemisphere, center, graticule }, theme? } —
+   * so a saved figure redraws exactly what was on the net, as vectors in the PDF.
+   */
+  function compoKind({ theme = PAPER } = {}) {
+    return {
+      label: 'stereonet',
+      describe: (f) => `stereonet${f.content?.title ? ' · ' + f.content.title : ''}`,
+      draw(ctx, box, frame) {
+        const c = frame.content || {}, size = Math.min(box[2], box[3]);
+        drawScene(ctx, c.scene || { primitives: [] }, { x: box[0] + (box[2] - size) / 2, y: box[1] + (box[3] - size) / 2, size, ...(c.net || {}), theme: { ...theme, ...(c.theme || {}) } });
+      },
+    };
+  }
+
+  return { buildScene, renderScene, drawScene, compoKind, nearestPick };
 }
+
+/** a net's look on paper (figures): white ground, dark ink */
+export const PAPER = { background: '#FFFFFF', rim: '#232322', grid: '#D3D1CD', cardinals: '#232322', font: 'sans-serif' };

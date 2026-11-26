@@ -70,6 +70,31 @@ describe('render and pick', () => {
   });
 });
 
+describe('figures: drawScene and the compo frame kind', () => {
+  // a recording context: every call is a [name, …args] entry — enough to see the net was drawn, scaled and placed
+  const recorder = () => {
+    const ops = []; const handler = { get: (t, k) => (k === 'ops' ? ops : (...a) => { ops.push([k, ...a]); }), set: (t, k, v) => { ops.push(['set', k, v]); return true; } };
+    return new Proxy({}, handler);
+  };
+  it('drawScene draws the net (its contours and poles too) scaled into the given box', () => {
+    const scene = core.buildScene({ layers: [layer({ elements: { poles: { on: true }, contours: { on: true } } })] });
+    const ctx = recorder();
+    core.drawScene(ctx, scene, { x: 10, y: 20, size: 60 });
+    const ops = ctx.ops;
+    assert.deepEqual(ops.find((o) => o[0] === 'translate'), ['translate', 10, 20]);
+    assert.deepEqual(ops.find((o) => o[0] === 'scale'), ['scale', 60 / 400, 60 / 400]);
+    assert.ok(ops.filter((o) => o[0] === 'arc').length >= 200, 'a circle per pole (+ the primitive)');
+    assert.ok(ops.filter((o) => o[0] === 'stroke').length > 20, 'grid, contours, rim');
+  });
+  it('the compo kind centres a square net in its frame and draws on paper colours', () => {
+    const k = core.compoKind(), ctx = recorder();
+    k.draw(ctx, [0, 0, 100, 60], { content: { scene: core.buildScene({ layers: [layer()] }), net: { projection: 'equal-area' } } });
+    assert.deepEqual(ctx.ops.find((o) => o[0] === 'translate'), ['translate', 20, 0]);
+    assert.ok(ctx.ops.some((o) => o[0] === 'set' && o[1] === 'fillStyle' && String(o[2]).toUpperCase() === '#FFFFFF'), 'the paper ground');
+    assert.equal(k.label, 'stereonet');
+  });
+});
+
 describe('attitudes as text', () => {
   it('planes as dip direction/dip, lines as trend→plunge, zero-padded and wrapped', () => {
     assert.equal(formatPlane([45.4, 7.6]), '045/08');
