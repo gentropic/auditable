@@ -10670,6 +10670,38 @@ if (take()) {
   await pg.close();
 }
 
+// ── SITE C (src/samples.js openSiteC · src/site-c.js): the sample the manual's cover is drawn from.
+// It builds blocks by rock in the map's own palette (no regolith lid: the top blocks are bedrock), the
+// three drill fences, the topography; it opens cut across the fold through the middle fence, seen from
+// the SW; and the model micro opened is the cover's: a block's rock and grade are site-c.js's at that
+// block's centre, and a hole's assay sits in the rock the model puts there.
+if (take()) {
+  const pg = await mkPage('sm2sitec');
+  const r = await pg.evaluate(async () => {
+    const M = window._micro, SC = await import(new URL('src/site-c.js', location.href.replace(/[^/]*$/, '')).href).catch(() => null);
+    await M.openSiteC();
+    const Ls = M.layers(), bm = Ls.find((L) => L.kind === 'blocks'), dh = Ls.find((L) => L.dh && L.docs.dhDoc && !L.trace);
+    const topo = Ls.find((L) => L.label === 'topography');
+    const h = M.layerTableHeader(bm), iu = h.columns.indexOf('UNIT'), ia = h.columns.indexOf('AU');
+    const units = new Set(), rows = [];
+    for (let i = 0; i < bm.docs.blockDoc.header.count; i += 997) { const row = await M.fetchLayerRow(bm, i); units.add(row[iu]); rows.push(row); }
+    // the block model IS site-c.js: rock and grade at sampled block centres (dev tree only: the built page has no src/)
+    let agree = null;
+    if (SC) { agree = 0; for (const row of rows) { const x = row[0] - SC.ORIGIN.E, y = row[1] - SC.ORIGIN.N, z = +row[2]; let u = SC.lith(x, y, z); if (u === 1) u = SC.lithT(x, y, z - 12, SC.topo(x, y)); if (SC.UNITS[u].short === row[iu] && Math.abs(SC.gradeU(x, y, z, u) - row[ia]) < 0.002) agree++; } }
+    const sec = M.currentSection(), th = M.cam.state.theta, look = ((Math.atan2(-Math.cos(th), -Math.sin(th)) * 180 / Math.PI) % 360 + 360) % 360;   // as viewport.js cameraWorld
+    return { blocks: bm && bm.docs.blockDoc.header.count, colorSel: bm && bm.colorSel, legend: bm && bm.catLegend && bm.catLegend.entries.length, units: [...units],
+      holes: dh && dh.docs.dhDoc.holes ? dh.docs.dhDoc.holes.length : null, intervals: dh && dh.docs.dhDoc.header.count, topo: !!topo && topo.kind,
+      secOn: sec && sec.on, secN: sec && sec.n, look, sampled: rows.length, agree };
+  });
+  chk(`Site C: ${r.blocks} blocks by rock (${r.colorSel}, a ${r.legend}-entry legend), ${r.units.length} units at the sampled blocks and no regolith lid`,
+    r.blocks > 200000 && r.colorSel === 'cat' && r.legend === 9 && r.units.includes('BIF') && r.units.includes('GRANITE') && !r.units.includes('REGOLITH'));
+  chk(`Site C: the drill fences (${r.intervals} intervals) and the topography (${r.topo}) land beside the blocks`, r.intervals > 4000 && r.topo === 'mesh');
+  chk(`Site C opens cut across the fold (normal ${r.secN && r.secN.map((v) => v.toFixed(2)).join(', ')}) and looks up the plunge (toward ${Math.round(r.look)}°)`,
+    r.secOn && r.secN && Math.abs(r.secN[0] + Math.sin(40 * Math.PI / 180)) < 1e-6 && Math.abs(r.secN[1] + Math.cos(40 * Math.PI / 180)) < 1e-6 && Math.abs(r.look - 40) < 1);
+  if (r.agree != null) chk(`Site C's blocks are site-c.js: ${r.agree} of ${r.sampled} sampled block centres carry the model's rock and grade`, r.agree === r.sampled);
+  await pg.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

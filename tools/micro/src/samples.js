@@ -1,21 +1,24 @@
 // micro samples — everything made locally for a first look: the streamed bench scan (2M–50M
 // points), the 2M-block sample model, and the demo project (a deposit, drillholes, topography,
-// mining phases, the ore shell — sectioned, with grade–tonnage). Nothing is downloaded. Carved
-// from index.html (2026-11-24).
+// mining phases, the ore shell — sectioned, with grade–tonnage), and Site C (gold in a folded
+// banded iron formation: the deposit the manual's cover is drawn from). Nothing is downloaded.
+// Carved from index.html (2026-11-24).
 import { mulberry32, createChunkBuilder } from '../../../ext/condenser/src/main.js';
 import { captureCamera } from './camera.js';
 import { writeEsriAsc } from './grid-io.js';
 import { requestRender, S, layerById, activeLayer } from './state.js';
 import { openGradeTonnage } from './gt.js';
 import { openBlob, openDrillholeLayer } from './open.js';
-import { setColorLabels } from './color.js';
+import { setColorLabels, colorSelFor, setLayerColorBy } from './color.js';
+import { applyCatLegend } from './categories.js';
+import * as SC from './site-c.js';
 import { reopenAs } from './reopen.js';
 import { followLayer, createLayerGroup, applyTreeVisibility } from './tree.js';
 import { renderLayers } from './layers-panel.js';
 import { closeAllLayers, allocLayerId, fitFromHeader, recomputeUnion, setActiveLayer } from './layers.js';
 import { setMeshTint } from './layermenu.js';
 import { applySection, captureSection } from './section.js';
-import { renderer } from './viewport.js';
+import { renderer, setCameraWorld } from './viewport.js';
 
 const $ = (s) => document.querySelector(s);
 
@@ -370,3 +373,105 @@ export async function openDemoProject() {
   $('#meta').textContent = 'demo project — a deposit, drillholes, topography, mining phases and the ore shell, sectioned, with grade–tonnage. File → Save project as… writes it all to a folder.';
 }
 $('#sampleDemo').onclick = () => openDemoProject();
+
+// ── Site C: gold in a folded banded iron formation ────────────────────────────────────────────────────────
+// An imaginary deposit as one implicit model (src/site-c.js): a shelf sequence folded into a plunging
+// antiform, faulted, intruded by a granite stock with skarn; gold where the BIF thickens in the fold hinge.
+// The manual's cover is its geological map and three serial sections, drawn from the same functions — open
+// it here and cut those sections yourself. Coordinates are the map's (imaginary UTM 23S).
+const SITE_C_SG = { REGOLITH: 1.9, GNEISS: 2.7, QUARTZITE: 2.65, BIF: 3.3, MARBLE: 2.8, PHYLLITE: 2.75, METAVOLCANICS: 2.9, GRANITE: 2.65, SKARN: 3.2 };
+const SITE_C_BLOCK = { dx: 20, dy: 20, dz: 10 };
+const scShort = (u) => SC.UNITS[u].short;
+// the block model: every block centre under the topography, its rock and grade (≈ 218k blocks, under a second)
+export function makeSiteCBlockCsv() {
+  const B = SC.BOX, { dx, dy, dz } = SITE_C_BLOCK, O = SC.ORIGIN, parts = ['XC,YC,ZC,AU,SG,UNIT\n'];
+  for (let x = B.x0 + dx / 2; x < B.x1; x += dx) {
+    const rows = [];
+    for (let y = B.y0 + dy / 2; y < B.y1; y += dy) {
+      const t = SC.topo(x, y);                                 // once per column: it's the costly part
+      for (let z = B.z0 + dz / 2; z < t; z += dz) {
+        let u = SC.lithT(x, y, z, t); if (!u) continue;
+        if (u === 1) u = SC.lithT(x, y, z - 12, t);            // the regolith (8–12 m) is thinner than a block: the bedrock
+        const s = scShort(u);
+        rows.push(`${x + O.E},${y + O.N},${z},${SC.gradeU(x, y, z, u).toFixed(3)},${SITE_C_SG[s]},${s}`);
+      }
+    }
+    parts.push(rows.join('\n') + '\n');
+  }
+  return new Blob(parts, { type: 'text/csv' });
+}
+// the drilling: three fences across the fold hinge, seven holes each at −60° toward 310°; 2 m assays from the
+// SAME model the blocks are, with a lognormal sampling scatter (a drillhole is a sample, the block an estimate)
+export function makeSiteCDrillholes() {
+  const O = SC.ORIGIN, rnd = mulberry32(2026);
+  const gauss = () => { let u = 0; while (!u) u = rnd(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * rnd()); };
+  const collar = ['HOLEID,X,Y,Z,EOH'], survey = ['HOLEID,DEPTH,AZ,DIP'], assay = ['HOLEID,FROM,TO,AU,UNIT'];
+  for (const h of SC.drillholes()) {
+    let eoh = 0;
+    for (let d = 0; d + 2 <= h.length; d += 2) {
+      const [x, y, z] = h.at(d + 1), u = SC.lith(x, y, z);
+      if (!u) continue;                                        // (never, below the collar — but a hole is no place to guess)
+      const au = SC.gradeU(x, y, z, u) * Math.exp(0.35 * gauss() - 0.06);
+      assay.push(`${h.id},${d},${d + 2},${au.toFixed(3)},${scShort(u)}`);
+      eoh = d + 2;
+    }
+    collar.push(`${h.id},${(h.x + O.E).toFixed(1)},${(h.y + O.N).toFixed(1)},${h.z.toFixed(1)},${eoh}`);
+    survey.push(`${h.id},0,${h.azimuth},${h.dip}`, `${h.id},${eoh},${h.azimuth},${h.dip}`);
+  }
+  return {
+    collar: new File([collar.join('\n') + '\n'], 'sitec_collars.csv'),
+    survey: new File([survey.join('\n') + '\n'], 'sitec_survey.csv'),
+    intervals: new File([assay.join('\n') + '\n'], 'sitec_assay.csv'),
+  };
+}
+// the topography, on a 10 m lattice over the mapped ground
+function makeSiteCTopo() {
+  const B = SC.BOX, O = SC.ORIGIN, dx = 10;
+  const nx = Math.round((B.x1 - B.x0) / dx) + 1, ny = Math.round((B.y1 - B.y0) / dx) + 1, data = new Float32Array(nx * ny);
+  for (let r = 0; r < ny; r++) for (let c = 0; c < nx; c++) data[r * nx + c] = SC.topo(B.x0 + c * dx, B.y1 - r * dx);
+  return { nx, ny, dx, dy: dx, x0: B.x0 + O.E, y0: B.y1 + O.N, data, nodata: -9999 };
+}
+export async function openSiteC() {
+  $('#empty').style.display = 'none';
+  $('#meta').textContent = 'Site C — building the block model…';
+  await new Promise((r) => setTimeout(r));
+  await openBlob(makeSiteCBlockCsv(), 'site-c.csv', 'replace');
+  const bm = activeLayer();
+  if (bm) {
+    bm.label = 'Site C — blocks';
+    // coloured by rock, in the map's own palette (the cover's legend)
+    try {
+      await setLayerColorBy(bm, colorSelFor(bm, 'UNIT'));
+      bm.catLegend = { col: 'UNIT', entries: SC.UNITS.filter((u) => u.short).map((u) => ({ label: u.name, values: [u.short], color: u.color })), otherColor: '#555a5f' };
+      applyCatLegend(bm, true);
+    } catch { /* stays grade-coloured */ }
+  }
+  $('#meta').textContent = 'Site C — desurveying the drill fences…';
+  let dh = null;
+  try { await openDrillholeLayer(makeSiteCDrillholes(), { radius: 5 }, 'add'); dh = activeLayer(); if (dh) dh.label = 'Site C — drillholes'; }
+  catch (e) { $('#meta').textContent = `Site C drillholes failed — ${e.message}`; }
+  try {
+    const got = await openBlob(new Blob([writeEsriAsc(makeSiteCTopo())]), 'site-c-topo.asc', 'add');
+    const g = layerById(got);
+    if (g) await reopenAs(g, 'surface');
+    const L = layerById(followLayer(got));
+    if (L) { L.label = 'topography'; L.opacity = 0.35; renderer.setLayerOpacity(L.id, 0.35); }
+  } catch (e) { $('#meta').textContent = `Site C topography — ${e.message}`; }
+  // cut like plate B of the cover: vertical, striking 130° (across the fold), through the middle drill fence;
+  // keep the NE side, so the view from the SW looks up the plunge onto the cut face
+  const C = SC.FRAME.centre, nrm = [-Math.sin(40 * Math.PI / 180), -Math.cos(40 * Math.PI / 180), 0];
+  applySection({ mode: 'custom', dipDir: 40, dip: 90, clip: 'behind', at: nrm[0] * (C.x + SC.ORIGIN.E) + nrm[1] * (C.y + SC.ORIGIN.N) });
+  if (dh) renderer.setLayerSectioned(dh.id, false);
+  $('#btnFit').click();
+  try { setCameraWorld({ look: 40, elevation: 28 }); } catch { /* the fitted view stands */ }   // from the SW, up the plunge, onto the cut
+  try { S.views = S.views.filter((v) => v.name !== 'Site C — section B–B′').concat([{ name: 'Site C — section B–B′', camera: captureCamera(), section: captureSection() }]); } catch { /* best-effort */ }
+  if (bm) {
+    setActiveLayer(bm.id);
+    try {
+      openGradeTonnage(bm, { run: true, cfg: { series: [{ layer: bm.name, col: 'AU', unit: 'g/t', weight: 'SG' }], gradeUnit: 'g/t', densUnit: 't/m3', nCut: 40 } });
+      const gtWin = [...document.querySelectorAll('.fwin')].pop();
+      if (gtWin) { gtWin.style.left = Math.max(0, innerWidth - gtWin.offsetWidth - 14) + 'px'; gtWin.style.top = '70px'; }
+    } catch { /* window optional */ }
+  }
+  $('#meta').textContent = 'Site C — gold in a folded banded iron formation: blocks by rock, the drill fences, the topography, cut across the fold, with grade–tonnage. The manual’s cover is drawn from this same model.';
+}

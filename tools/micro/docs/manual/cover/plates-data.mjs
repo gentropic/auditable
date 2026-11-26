@@ -1,4 +1,4 @@
-// micro's cover, the drawings: from deposit.mjs, (1) the geological map as a printed A3 sheet at 1 : 5 000 and
+// micro's cover, the drawings: from micro's Site C model (src/site-c.js), (1) the geological map as a printed A3 sheet at 1 : 5 000 and
 // (2) three serial-section glass plates at 1 : 10 000, painted — then plates.py lays them on a desk in Blender.
 //
 //   node plates-data.mjs            → textures/map.png, textures/plate-{A,B,C}.png, plates.json
@@ -10,7 +10,7 @@ import { mkdir, readFile, writeFile } from 'fs/promises';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { chromium } from 'playwright';
-import { BOX, UNITS, lith, grade, topo, drillholes, FRAME, faultSide, hingeAt, bedding } from './deposit.mjs';
+import { BOX, ORIGIN, UNITS, lith, grade, topo, drillholes, FRAME, faultSide, hingeAt, bedding } from '../../../src/site-c.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const NAME = 'Site C';   // the imaginary prospect: the sheet's title and the plates' captions
@@ -23,7 +23,7 @@ const t0 = Date.now(); const lap = (s) => console.log(`  ${s} (${((Date.now() - 
 const PX = 16, SCALE = 5000;
 const MAP = { x: 16, y: 22, w: (BOX.x1 - BOX.x0) / SCALE * 1000, h: (BOX.y1 - BOX.y0) / SCALE * 1000 };   // mm
 const MW = Math.round(MAP.w * PX), MH = Math.round(MAP.h * PX), MPP = (BOX.x1 - BOX.x0) / MW;          // m per px
-const E0 = 612000, N0 = 7784000;                                                                          // imaginary UTM
+const E0 = ORIGIN.E, N0 = ORIGIN.N;                                                                       // imaginary UTM
 const toMap = (x, y) => [(x - BOX.x0) / MPP, (BOX.y1 - y) / MPP];                                       // → map px
 const inBox = (x, y) => x >= BOX.x0 && x <= BOX.x1 && y >= BOX.y0 && y <= BOX.y1;
 const DEPTH = 12;   // the map shows the bedrock just under the regolith

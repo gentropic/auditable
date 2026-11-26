@@ -1,5 +1,5 @@
-# micro's cover: the Morro Miúdo field sheet on a desk, three painted glass section plates put down on it,
-# a pencil. The sheet and the plates are drawn by plates-data.mjs from deposit.mjs; this lays them out and
+# micro's cover: the Site C field sheet on a desk, three painted glass section plates put down on it.
+# The sheet and the plates are drawn by plates-data.mjs from micro's Site C model (src/site-c.js); this lays them out and
 # renders them in Cycles.
 #
 #   blender -b -P tools/micro/docs/manual/cover/plates.py -- [--res 1400] [--samples 256] [--out path.png]
@@ -16,6 +16,7 @@ SAMPLES = arg('--samples', 128)
 OUT = arg('--out', os.path.join(HERE, 'plates.png'))
 LAMP_W = arg('--lamp', 42.0); FILL_W = arg('--fill', 0.7); STRIP_W = arg('--strip', 5.0); WORLD = arg('--world', 0.07); CARD_W = arg('--card', 6.0)
 EXPOSURE = arg('--exposure', -0.6)
+BASALT_EMIT = arg('--basalt', 0.052)     # the floor seen through glass: basalt at this EXPOSURE (basalt-calib.py)
 HDRI = os.path.join(HERE, 'assets', 'brown_photostudio_02_2k.hdr')   # Poly Haven, CC0 (build.mjs fetches it)
 
 cfg = json.load(open(os.path.join(HERE, 'plates.json')))
@@ -110,7 +111,7 @@ T = [os.path.join(HERE, t) for t in cfg['plate']['textures']]
 # put down one after another, carelessly: each dropped a few millimetres and left to settle where it lands (rigid
 # bodies) — A on the paper, B partly over A, C across both. Placed left of centre: the cover shows the render's
 # left half, and the sheet's title block stays out of it.
-DROPS = [((-0.115, -0.040), -7, 0.003), ((-0.072, 0.010), 6, 0.009), ((-0.040, 0.056), 15, 0.015)]   # (x, y), turn°, height
+DROPS = [((-0.128, -0.040), -7, 0.003), ((-0.097, 0.010), 6, 0.009), ((-0.065, 0.056), 15, 0.015)]   # (x, y), turn°, height
 plates = [plate(i, T[i], (x, y, h), rz) for i, ((x, y), rz, h) in enumerate(DROPS)]
 
 def rigid(ob, kind, **props):
@@ -141,6 +142,14 @@ for g in plates:
 # ── ground: a shadow catcher, so the sheet lands on the cover's basalt ──
 bpy.ops.mesh.primitive_plane_add(size=4, location=(0, 0, 0))
 ground = bpy.context.active_object; ground.is_shadow_catcher = True
+# the camera sees only its shadows, but rays through the glass see the catcher as an ordinary surface — with
+# the default grey material, glass hanging off the paper showed a pale floor. Basalt instead: an unlit surface
+# that renders to #161616 under this file's AgX + exposure — MEASURED by basalt-calib.py (AgX crushes the darks:
+# linear 0.008 comes out at 2/255), 0.048 → 22/255, ÷ the glass's ~0.92 transmission. Re-run it if EXPOSURE moves.
+gm = bpy.data.materials.new('basalt'); gm.use_nodes = True; gn = nodes_of(gm); gn.remove(gn['Principled BSDF'])
+em = gn.new('ShaderNodeEmission'); em.inputs['Color'].default_value = (BASALT_EMIT, BASALT_EMIT, BASALT_EMIT, 1); em.inputs['Strength'].default_value = 1.0
+link(gm, em.outputs['Emission'], gn['Material Output'].inputs['Surface'])
+ground.data.materials.append(gm)
 
 # ── light: a dim warm studio for the ambient and the glass's reflections; a desk lamp's soft key from the upper
 #    left; a long strip behind, which only the glass sees, to draw its edges ──
@@ -187,7 +196,7 @@ strip.visible_camera = False; strip.visible_diffuse = False
 # ── camera: from the front, looking down at the sheet like a person standing at the desk ──
 cam_d = bpy.data.cameras.new('cam'); cam_d.lens = 70
 cam = bpy.data.objects.new('cam', cam_d); scene.collection.objects.link(cam); scene.camera = cam
-el, dist, look = math.radians(52), 0.80, (-0.02, 0.0, 0.0)
+el, dist, look = math.radians(52), 0.80, (-0.09, 0.0, 0.0)   # the whole sheet inside the frame, basalt round it
 cam.location = (look[0] + 0.12, look[1] - dist * math.cos(el), dist * math.sin(el)); aim(cam, look)
 cam_d.dof.use_dof = True; cam_d.dof.focus_object = bpy.data.objects['plate1']; cam_d.dof.aperture_fstop = 7.0
 

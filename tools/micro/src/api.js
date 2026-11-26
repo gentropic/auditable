@@ -116,7 +116,7 @@ import { paintVolume, openPaintPalette, createPaintCol, addPaintValue, paintArm,
 import { sectionWorld, setSectionWorld, applySection, captureSection, knifeCut, currentSection } from './section.js';
 import { pickRecord, showRecord, pickHitPoint, pixelRay, blockHalfDims, meshHitAt, showMeshRecord, worldAtPoints } from './pick.js';
 import { renderViewCanvas, recreateRenderer, setBlockEdges, renderer, cam, cameraWorld, setCameraWorld, renderFigureCanvas, setView } from './viewport.js';
-import { openSample, makeSampleBlockCsv, openDemoProject, makeDemoBlockCsv, makeDemoDrillholes } from './samples.js';
+import { openSample, makeSampleBlockCsv, openDemoProject, makeDemoBlockCsv, makeDemoDrillholes, openSiteC, makeSiteCBlockCsv, makeSiteCDrillholes } from './samples.js';
 import { windowsMenu, cascadeWindows, closeAllWindows } from './menubar.js';
 import { COMMANDS } from './commands.js';
 import { isPolygonLayer, featuresOf, pointInPolygonXY, preparePolygons, polygonAreaXY, setFeatureFill, setFeatureCategory } from './polygons.js';
@@ -221,7 +221,7 @@ window._micro = {
   routineTargets, layerHasColumn, resultToLayer, fileLayerByPath, ensureGroupPath, openRoutineWindow,
   openInputsDialog, openRoutineTracker, recipesMenuItems, _recipesList: () => S.recipes, openStats,
   runFigureRecipe, captureFigureCfg, openSample, openBlocksBlob, setDmOrigin, makeSampleBlockCsv,
-  openDemoProject, makeDemoBlockCsv, makeDemoDrillholes, setZExag, recolorSurface, setSurfaceFlatZ,
+  openDemoProject, makeDemoBlockCsv, makeDemoDrillholes, openSiteC, makeSiteCBlockCsv, makeSiteCDrillholes, setZExag, recolorSurface, setSurfaceFlatZ,
   setSurfaceSmooth, setGridBand, applyBlockFilter, showRecord, knifeCut, addRecent, fetchCsvRecord,
   currentSection, convertMeshLayer, openProps, setPropTab, showMemoryInfo, setRampCfg, bakeRampPixels, rampRangeFor,
   applyCatLegend, runRules, syncRuleMode, applyRuleVisibility, openPaintPalette, createPaintCol, addPaintValue,

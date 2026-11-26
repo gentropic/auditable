@@ -44,7 +44,7 @@ import { openPaintPalette } from './paint.js';
 import { toggleSection, viewAlongSection, scrubSection } from './section.js';
 import { setView, cam, _viewMode, setViewMode, _blockEdges, setBlockEdges } from './viewport.js';
 import { compassMenu } from './compass.js';
-import { openSample } from './samples.js';
+import { openSample, openSiteC } from './samples.js';
 import { menuContributions } from './commands.js';
 
 const $ = (s) => document.querySelector(s);
@@ -84,6 +84,8 @@ $('#mFile').onclick = () => {
       { label: 'Bench scan — 10M points', action: () => openSample(10_000_000) },
       { label: 'Bench scan — 50M points', action: () => openSample(50_000_000) },
       { label: 'Block model — 2M', action: () => $('#sampleBlocks').onclick() },
+      { sep: true },
+      { label: 'Site C — gold in a folded BIF (the cover)', action: () => openSiteC() },
     ] },
     { sep: true },
     { label: 'Composer…', action: () => openComposer() },

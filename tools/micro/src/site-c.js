@@ -1,5 +1,7 @@
-// An imagined deposit for micro's cover (and, later, its demo project): an implicit geological model —
-// every point of the box answers "which rock, what grade". Pure functions, seeded, no state.
+// Site C — an imaginary deposit, as an implicit geological model: every point answers "which rock, what
+// grade". Pure functions, seeded, no state, no imports. micro opens it as a sample (File → Sample data →
+// Site C: samples.js builds its blocks, drillholes and topography from these functions) and the manual's
+// cover draws its map and serial sections from the very same functions (docs/manual/cover).
 //
 // The story, oldest first:
 //   1. a shelf sequence on a gneiss basement — quartzite, banded iron formation (the ore host), marble,
@@ -14,19 +16,21 @@
 // Local metres: x east −100…1300, y north −95…1080, z up (sea level 0; the surface near 330 m).
 
 export const BOX = { x0: -100, x1: 1300, y0: -95, y1: 1080, z0: -200, z1: 400 };   // the mapped ground
+// where local (0, 0) sits in the world: imaginary UTM zone 23S coordinates (the map's grid, the sample's layers)
+export const ORIGIN = { E: 612000, N: 7784000 };
 
 export const UNITS = [
   // code, name, colour (the plates' paint palette — basalt-friendly, distinct, not a rainbow)
-  { code: 0, name: 'air', color: null },
-  { code: 1, name: 'regolith', color: '#8a7a5c' },
-  { code: 2, name: 'gneiss basement', color: '#5d6470' },
-  { code: 3, name: 'quartzite', color: '#d9cfb4' },
-  { code: 4, name: 'banded iron formation', color: '#5b2f52' },
-  { code: 5, name: 'marble', color: '#b9c4c9' },
-  { code: 6, name: 'phyllite', color: '#4f6b58' },
-  { code: 7, name: 'metavolcanics', color: '#3d4a63' },
-  { code: 8, name: 'granite', color: '#c98f6b' },
-  { code: 9, name: 'skarn', color: '#6f8a3a' },
+  { code: 0, name: 'air', short: '', color: null },
+  { code: 1, name: 'regolith', short: 'REGOLITH', color: '#8a7a5c' },
+  { code: 2, name: 'gneiss basement', short: 'GNEISS', color: '#5d6470' },
+  { code: 3, name: 'quartzite', short: 'QUARTZITE', color: '#d9cfb4' },
+  { code: 4, name: 'banded iron formation', short: 'BIF', color: '#5b2f52' },
+  { code: 5, name: 'marble', short: 'MARBLE', color: '#b9c4c9' },
+  { code: 6, name: 'phyllite', short: 'PHYLLITE', color: '#4f6b58' },
+  { code: 7, name: 'metavolcanics', short: 'METAVOLCANICS', color: '#3d4a63' },
+  { code: 8, name: 'granite', short: 'GRANITE', color: '#c98f6b' },
+  { code: 9, name: 'skarn', short: 'SKARN', color: '#6f8a3a' },
 ];
 
 const D = Math.PI / 180;
@@ -119,8 +123,10 @@ export function topo(x, y) {
 }
 
 // ── the queries ─────────────────────────────────────────────────────────────────────────────────────────
-export function lith(x, y, z) {
-  const t = topo(x, y);
+export function lith(x, y, z) { return lithT(x, y, z, topo(x, y)); }
+// the same, with the column's topography `t` already known (a block column, a drillhole interval: the surface
+// is the costliest part of the query, and it doesn't change down a column)
+export function lithT(x, y, z, t) {
   if (z > t) return 0;
   if (z > t - 8 - 4 * fbm(x / 60, y / 60, 0, 5)) return 1;      // regolith
   const gd = graniteDistance(x, y, z);
@@ -132,8 +138,9 @@ export function lith(x, y, z) {
   return u;
 }
 
-export function grade(x, y, z) {                  // g/t Au-equivalent, say
-  const u = lith(x, y, z);
+export function grade(x, y, z) { return gradeU(x, y, z, lith(x, y, z)); }   // g/t Au
+// the same, with the rock `u` already known
+export function gradeU(x, y, z, u) {
   if (u === 4) {
     const zf = faultSide(x, y, z) > 0 ? z + F.throw : z;
     const hinge = hingeDistance(x, y, zf);

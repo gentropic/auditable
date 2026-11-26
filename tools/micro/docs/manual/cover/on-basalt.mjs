@@ -7,9 +7,10 @@ import { chromium } from 'playwright';
 // page that frame's edge showed as a faint rectangle. Composited onto the page's own basalt (#161616 =
 // micro.sty's basalt), the render has no edge left to see — except where the soft shadow round the subject
 // reaches the frame: micro's cover shows the render's LEFT edge on the page, so the render's alpha fades in
-// over the left `feather` of its width (default 0.12; 0 = off). An out path ending .jpg writes a JPEG.
+// over the left `feather` of its width (default 0.03, bare background only — the camera keeps the sheet
+// clear of it; 0 = off). An out path ending .jpg writes a JPEG.
 const [, , inp, out, featherArg] = process.argv;
-const feather = featherArg === undefined ? 0.12 : +featherArg;
+const feather = featherArg === undefined ? 0.03 : +featherArg;
 const jpeg = /\.jpe?g$/i.test(out);
 const b64 = (await readFile(inp)).toString('base64');
 const browser = await chromium.launch();

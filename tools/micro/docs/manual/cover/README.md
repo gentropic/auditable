@@ -9,8 +9,9 @@ serial sections — A–A′, B–B′, C–C′, cut across the fold through th
 glass plates at 1 : 10 000 and put down on the map. The way deposits were modelled before computers, and the
 thing micro does now: sections through a body of data.
 
-Every line comes from one implicit model, `deposit.mjs` — plain functions answering "which rock, what grade"
-at any point:
+Every line comes from one implicit model, micro's **Site C** sample (`tools/micro/src/site-c.js`, opened under
+File → Sample data by `samples.js openSiteC`): plain functions answering "which rock, what grade" at any point,
+so the cover and the sample are provably the same deposit:
 - a shelf sequence (quartzite, banded iron formation, marble, phyllite, metavolcanics) on a gneiss basement;
 - folded into an antiform trending 040°, plunging 11° NE, its axial plane inclined (vergence SE);
 - cut by a normal fault (strike 120°, dip 65° SW, 70 m throw);
@@ -30,6 +31,6 @@ a desk lamp's warm pool, a dim fill, a strip and a card that only the glass sees
     node tools/micro/docs/manual/build.mjs pdf
 
 Quick looks without Blender: `node sketch.mjs out.png` (the map and two sections, flat, in seconds).
-Files: `deposit.mjs` (the model) → `plates-data.mjs` + `plates-draw.js` → `textures/`, `plates.json` →
+Files: `../../../src/site-c.js` (the model) → `plates-data.mjs` + `plates-draw.js` → `textures/`, `plates.json` →
 `plates.py` → `plates.png` → `on-basalt.mjs` → `plates-cover.jpg` (all outputs gitignored).
 The studio HDRI is Poly Haven's *brown_photostudio_02* (CC0), fetched into `assets/` by the build.

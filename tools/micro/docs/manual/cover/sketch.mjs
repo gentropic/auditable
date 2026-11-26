@@ -1,8 +1,8 @@
-// A flat sketch of deposit.mjs — the geological map and two sections — to judge the geology before any render.
+// A flat sketch of Site C (src/site-c.js) — the geological map and two sections — to judge the geology before any render.
 //   node sketch.mjs [out.png]
 import { writeFile } from 'fs/promises';
 import { chromium } from 'playwright';
-import { BOX, UNITS, lith, grade, topo, drillholes, FRAME } from './deposit.mjs';
+import { BOX, UNITS, lith, grade, topo, drillholes, FRAME } from '../../../src/site-c.js';
 
 const out = process.argv[2] || 'deposit-sketch.png';
 const hex = (h) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
@@ -28,7 +28,7 @@ function panel(w, h, at) {
 
 const S = 2;   // metres per pixel
 // the map: surface geology, sampled just under the topography
-const map = panel((BOX.x1 - BOX.x0) / S, (BOX.y1 - BOX.y0) / S, (i, j) => {
+const map = panel(Math.round((BOX.x1 - BOX.x0) / S), Math.round((BOX.y1 - BOX.y0) / S), (i, j) => {
   const x = BOX.x0 + i * S, y = BOX.y1 - j * S; return [x, y, topo(x, y) - 16];
 });
 // sections: through the axis point, A across the axis (looking NE, 310°→130°), B along it (looking NW, 220°→040°)

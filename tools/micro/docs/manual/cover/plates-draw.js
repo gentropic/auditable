@@ -263,7 +263,7 @@
     y = MY + MH - mm(11);
     g.fillStyle = '#7a4b1c'; g.fillRect(CX, y - mm(6), mm(26), mm(0.4));
     for (const t of ['An imaginary deposit. Every line on this sheet was computed from',
-      'one implicit model (deposit.mjs): the contacts, the bedding, the',
+      'one implicit model (micro’s Site C sample): the contacts, the bedding, the',
       'traces of the fault and the fold, the contours, the drillholes.',
       'micro  ·  a GCU field manual  ·  2026']) { text(t, CX, y, `${mm(2.2)}px BarlowLight`, '#4a443d'); y += mm(3.6); }
     return c.toDataURL('image/png').split(',')[1];

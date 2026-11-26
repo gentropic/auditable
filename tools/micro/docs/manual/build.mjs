@@ -318,7 +318,7 @@ if (want('data') || want('tools') || want('shots')) {
   } finally { await m.close(); }
 }
 // plates — the cover: cover/plates-data.mjs draws Site C's geological map and three serial-section glass plates
-// from one implicit model (cover/deposit.mjs), then Blender lays them on a desk and renders (cover/plates.py).
+// from one implicit model (micro's Site C sample, src/site-c.js), then Blender lays them on a desk and renders (cover/plates.py).
 // Opt-in only (`node build.mjs plates`): it needs Blender and takes minutes. Blender is $BLENDER, else Blender
 // Foundation's default Windows install, else on PATH. --res= --samples= to taste.
 if (PHASES.includes('plates')) {
