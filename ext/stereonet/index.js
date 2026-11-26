@@ -235,6 +235,19 @@ function stereonetCore(B) {
    * scene as plain data — content: { scene, net: { projection, hemisphere, center, graticule }, theme? } —
    * so a saved figure redraws exactly what was on the net, as vectors in the PDF.
    */
+  // Labels pin to a DIRECTION on the net (direction cosines: x east, y north, z up): compo's label kind asks
+  // project() where one lands on the page, its editor asks unproject() which direction a page point shows.
+  // Axial, like the net's own poles and lines: an upper-hemisphere direction shows as its antipode. The net
+  // for a frame is laid out exactly as drawScene lays it out (nominal NOMINAL units, scaled into the box);
+  // an empty one per set of net options is kept, so a label's every redraw doesn't build a net.
+  const NOMINAL = 400, _bare = new Map();
+  function bareNet(frame) {
+    const c = frame.content || {}, key = JSON.stringify(c.net || {});
+    let n = _bare.get(key);
+    if (!n) { if (_bare.size > 32) _bare.clear(); n = makeNet({ primitives: [] }, { ...(c.net || {}), size: NOMINAL }).net; _bare.set(key, n); }
+    const b = frame.box, size = Math.min(b[2], b[3]);
+    return { net: n, x0: b[0] + (b[2] - size) / 2, y0: b[1] + (b[3] - size) / 2, k: size / NOMINAL };
+  }
   function compoKind({ theme = PAPER } = {}) {
     return {
       label: 'stereonet',
@@ -242,6 +255,18 @@ function stereonetCore(B) {
       draw(ctx, box, frame) {
         const c = frame.content || {}, size = Math.min(box[2], box[3]);
         drawScene(ctx, c.scene || { primitives: [] }, { x: box[0] + (box[2] - size) / 2, y: box[1] + (box[3] - size) / 2, size, ...(c.net || {}), theme: { ...theme, ...(c.theme || {}) } });
+      },
+      project(frame, p) {
+        const len = Math.hypot(p[0], p[1], p[2]); if (!(len > 0)) return null;
+        const { net, x0, y0, k } = bareNet(frame);
+        let d = p.map((v) => v / len), q = net.project(d);
+        if (q.upper) { d = d.map((v) => -v); q = net.project(d); }
+        return { x: x0 + q.x * k, y: y0 + q.y * k, inside: true };
+      },
+      unproject(frame, x, y) {
+        const { net, x0, y0, k } = bareNet(frame);
+        const d = net.unproject((x - x0) / k, (y - y0) / k);
+        return d ? d.map((v) => +v.toFixed(6)) : null;
       },
     };
   }

@@ -30,6 +30,9 @@ body.desk {
   --ui-bg:var(--w-bg-raised); --ui-bg-raised:var(--w-bg-raised); --ui-bg-hover:var(--w-bg-bright); --ui-bg-selected:var(--w-violet-soft);
   --ui-fg:var(--w-text); --ui-fg-muted:var(--w-text-mid); --ui-fg-error:var(--w-red); --ui-fg-accent:var(--w-orange);
   --ui-border:var(--w-border); --ui-border-focus:var(--w-blue); --ui-font:var(--w-sans); --ui-font-size:13px;
+  /* compo (the figure editor) — unmapped, it fell back to its dark defaults: near-white text on the light theme */
+  --compo-fg:var(--w-text); --compo-dim:var(--w-text-mid); --compo-border:var(--w-border); --compo-btn:var(--w-bg-bright);
+  --compo-accent:var(--w-orange); --compo-font:var(--w-sans); --compo-mono:var(--w-mono);
   margin:0; max-width:none; padding:0; height:100vh; background:var(--w-bg); color:var(--w-text); font:13px/1.4 var(--w-sans); overflow:hidden;
 }
 body.desk > [hidden] { display:none !important; }   /* the field page's own display rules would beat [hidden] */

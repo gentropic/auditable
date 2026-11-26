@@ -3,8 +3,8 @@
 // page opened with units:'mm' for PDF — one drawing path for all three. Font sizes are given in
 // points and converted. A host may register more kinds (registerKind).
 
-import { SANS, MONO, PT, INK, fontMm } from './type.js';
-export { SANS, MONO, fontMm };
+import { SANS, MONO, SERIF, PT, INK, fontMm } from './type.js';
+export { SANS, MONO, SERIF, fontMm };
 
 const KINDS = new Map();
 export function registerKind(kind, impl) { KINDS.set(kind, impl); }
@@ -12,59 +12,118 @@ export const kindOf = (k) => KINDS.get(k) || null;
 
 // ── fields live in fields.js; resolveFields is re-exported from here for the kinds' sake ──
 import { resolveFields, registerField, subjectFrame, formatNumber } from './fields.js';
-import { hasProj, worldToPage, drawTicks, imageRect, drawOverlays, drawVector } from './world.js';
+import { hasProj, worldToPage, pageToWorld, drawTicks, imageRect, drawOverlays, drawVector } from './world.js';
 export { resolveFields };
 
+// ── PINS: what a label can point at. A picture of 3D space (content.meta.proj, the camera's matrix —
+// world.js) or a frame whose KIND knows its own projection: kind.project(frame, p) → { x, y, inside } |
+// null (page mm) and kind.unproject(frame, x, y) → p | null. A stereonet is the second: its points are
+// DIRECTIONS on the sphere, and a label pins to one. The matrix-only things (border ticks, overlays,
+// vector sections) keep asking hasProj. ──
+export function canPin(f) { if (hasProj(f)) return true; const k = f && kindOf(f.kind); return !!(k && typeof k.project === 'function'); }
+export function pinToPage(f, p) {
+  if (hasProj(f)) return worldToPage(f, p);
+  const k = kindOf(f.kind); try { return k && k.project ? k.project(f, p) : null; } catch { return null; }
+}
+export function pageToPin(f, x, y) {
+  if (hasProj(f)) return pageToWorld(f, x, y, 0);
+  const k = kindOf(f.kind); try { return k && k.unproject ? k.unproject(f, x, y) : null; } catch { return null; }
+}
+// the part of a pinnable frame its points can land in (an off-picture point's leader stops at its edge)
+const pinRect = (f) => (hasProj(f) ? imageRect(f) : f.box);
+
 // ── text: paragraphs (blank-line or newline separated), **bold** runs, word wrap to the box ──
+// ── MARKDOWN, the part a figure needs. Blocks, one per line: '# ', '## ', '### ' headings · '- ' / '* '
+// bullets and '1. ' numbered items (hanging indent) · '---' a rule · anything else a paragraph line (a blank
+// line a gap). Inline: **bold**, *italic* or _italic_, `code`. Fields ({date} …) are resolved before this. ──
+const HEAD = { 1: 1.6, 2: 1.3, 3: 1.12 };
 function runsOf(line) {
   const out = [];
-  const re = /\*\*([^*]+)\*\*/g;
+  const re = /\*\*([^*]+)\*\*|\*([^*\s][^*]*?)\*|(?<![\w])_([^_\s][^_]*?)_(?![\w])|`([^`]+)`/g;
   let at = 0, m;
-  while ((m = re.exec(line))) { if (m.index > at) out.push({ t: line.slice(at, m.index), b: false }); out.push({ t: m[1], b: true }); at = m.index + m[0].length; }
-  if (at < line.length) out.push({ t: line.slice(at), b: false });
+  while ((m = re.exec(line))) {
+    if (m.index > at) out.push({ t: line.slice(at, m.index) });
+    if (m[1] != null) out.push({ t: m[1], b: true });
+    else if (m[2] != null || m[3] != null) out.push({ t: m[2] != null ? m[2] : m[3], i: true });
+    else out.push({ t: m[4], m: true });
+    at = m.index + m[0].length;
+  }
+  if (at < line.length) out.push({ t: line.slice(at) });
   return out;
 }
-export function layoutText(ctx, text, width, { size = 9, mono = false, lineHeight = 1.25 } = {}) {
-  const lines = [];
-  const lh = size * PT * lineHeight;
-  for (const para of String(text).split('\n')) {
+const styleOf = (w, mono, serif, size) => fontMm(w.size || size, { mono: mono || !!w.m, serif: serif && !w.m, bold: !!w.b, italic: !!w.i });
+// text → lines, each an array of measured words ({ t, b, i, m, size, w }) carrying its block's look:
+// line.size, line.lh (its height, mm), line.indent (mm), line.marker ({ t, w } on a list item's first
+// line), line.gap (space above, mm), line.rule (a horizontal rule). lineHeight is the body's.
+export function layoutText(ctx, text, width, { size = 9, mono = false, serif = false, lineHeight = 1.25 } = {}) {
+  const lines = [], body = size * PT * lineHeight;
+  let prevBlock = null;
+  for (const raw of String(text).split('\n')) {
+    let para = raw, lsize = size, bold = false, marker = null, kind = 'p';
+    const hd = /^(#{1,3})\s+(.*)$/.exec(para), li = /^\s*([-*•])\s+(.*)$/.exec(para), ol = /^\s*(\d{1,3})[.)]\s+(.*)$/.exec(para);
+    if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(para)) {
+      const r = []; r.rule = true; r.lh = body * 0.8; r.gap = 0; r.size = size; r.indent = 0; lines.push(r); prevBlock = 'rule'; continue;
+    }
+    if (hd) { kind = 'h'; lsize = size * HEAD[hd[1].length]; bold = true; para = hd[2]; }
+    else if (li) { kind = 'li'; marker = '•'; para = li[2]; }
+    else if (ol) { kind = 'li'; marker = ol[1] + '.'; para = ol[2]; }
+    const lh = lsize * PT * lineHeight;
+    // a heading gets air above it (not at the very top); list items sit together
+    const gap = kind === 'h' && lines.length ? body * 0.45 : 0;
+    let mk = null, indent = 0;
+    if (marker) { ctx.font = fontMm(lsize, { mono, serif }); const mw = ctx.measureText(marker + ' ').width; mk = { t: marker, w: mw }; indent = Math.max(mw, lsize * PT * 1.1); }
     const words = [];
-    for (const r of runsOf(para)) for (const w of r.t.split(/(\s+)/)) if (w) words.push({ t: w, b: r.b });
-    let line = [], lw = 0;
-    const flush = () => { while (line.length && /^\s+$/.test(line[line.length - 1].t)) line.pop(); lines.push(line); line = []; lw = 0; };
+    for (const r of runsOf(para)) for (const t of r.t.split(/(\s+)/)) if (t) words.push({ t, b: r.b || bold, i: r.i, m: r.m, size: lsize });
+    let line = [], lw = 0, first = true;
+    const flush = () => {
+      while (line.length && /^\s+$/.test(line[line.length - 1].t)) line.pop();
+      line.size = lsize; line.lh = lh; line.indent = indent; line.gap = first ? gap : 0;
+      if (first && mk) line.marker = mk;
+      lines.push(line); line = []; lw = 0; first = false;
+    };
     for (const w of words) {
-      ctx.font = fontMm(size, { mono, bold: w.b });
+      ctx.font = styleOf(w, mono, serif, lsize);
       const ww = ctx.measureText(w.t).width;
-      if (lw + ww > width && line.length && !/^\s+$/.test(w.t)) flush();
+      if (lw + ww > width - indent && line.length && !/^\s+$/.test(w.t)) flush();
       if (!line.length && /^\s+$/.test(w.t)) continue;
       line.push({ ...w, w: ww }); lw += ww;
     }
     flush();
+    prevBlock = kind;
   }
-  return { lines, lineHeight: lh };
+  return { lines, lineHeight: body };
+}
+// lay out and draw markdown into a box (text frames, labels): { size, mono, serif, pad, align, color, lineHeight }
+export function drawText(ctx, text, box, { size = 9, mono = false, serif = false, pad = 1, align = 'left', color = INK, lineHeight = 1.25 } = {}) {
+  const { lines } = layoutText(ctx, text, box[2] - 2 * pad, { size, mono, serif, lineHeight });
+  ctx.fillStyle = color; ctx.strokeStyle = color; ctx.textBaseline = 'top'; ctx.textAlign = 'left';
+  let y = box[1] + pad;
+  for (const line of lines) {
+    y += line.gap || 0;
+    if (line.rule) { ctx.lineWidth = 0.2; ctx.beginPath(); ctx.moveTo(box[0] + pad, y + line.lh / 2); ctx.lineTo(box[0] + box[2] - pad, y + line.lh / 2); ctx.stroke(); y += line.lh; continue; }
+    const tw = line.reduce((s, w) => s + w.w, 0) + (line.indent || 0);
+    const x0 = align === 'center' ? box[0] + (box[2] - tw) / 2 : align === 'right' ? box[0] + box[2] - pad - tw : box[0] + pad;
+    if (line.marker) { ctx.font = fontMm(line.size, { mono, serif }); ctx.fillText(line.marker.t, x0, y); }
+    let x = x0 + (line.indent || 0);
+    // one string per run of the same look (a PDF gets one text object per run, not per word)
+    for (let i = 0; i < line.length;) {
+      const k = styleOf(line[i], mono, serif, line.size);
+      let j = i, t = '', w = 0;
+      while (j < line.length && styleOf(line[j], mono, serif, line.size) === k) { t += line[j].t; w += line[j].w; j++; }
+      ctx.font = k; ctx.fillText(t, x, y); x += w; i = j;
+    }
+    y += line.lh;
+  }
+  return y - box[1];                                        // the height used (mm)
 }
 
 registerKind('text', {
   label: 'text',
   draw(ctx, box, frame, env) {
     const c = frame.content || {};
-    const size = +c.size || 9, mono = !!c.mono, pad = c.pad ?? 1;
     const text = resolveFields(c.md || '', env, frame);
-    const { lines, lineHeight } = layoutText(ctx, text, box[2] - 2 * pad, { size, mono });
-    ctx.fillStyle = c.color || INK; ctx.textBaseline = 'top';
-    let y = box[1] + pad;
-    for (const line of lines) {
-      const tw = line.reduce((s, w) => s + w.w, 0);
-      let x = c.align === 'center' ? box[0] + (box[2] - tw) / 2 : c.align === 'right' ? box[0] + box[2] - pad - tw : box[0] + pad;
-      ctx.textAlign = 'left';
-      // one string per same-weight run (a PDF gets one text object per run, not per word)
-      for (let i = 0; i < line.length;) {
-        let j = i, t = '', w = 0;
-        while (j < line.length && line[j].b === line[i].b) { t += line[j].t; w += line[j].w; j++; }
-        ctx.font = fontMm(size, { mono, bold: line[i].b }); ctx.fillText(t, x, y); x += w; i = j;
-      }
-      y += lineHeight;
-    }
+    drawText(ctx, text, box, { size: +c.size || 9, mono: !!c.mono || c.font === 'mono', serif: c.font === 'serif', pad: c.pad ?? 1,
+      align: c.align || 'left', color: c.color || INK, lineHeight: +c.lineHeight || 1.25 });
   },
 });
 
@@ -104,8 +163,9 @@ registerKind('image', {
 });
 
 // ── label: text pinned to a WORLD point. The box holds the text, wherever you put it; a leader runs
-// to where content.at lands in the view it refers to (content.of, else the nearest view with a
-// projection) — so the label follows its point when the view is rendered again. ──
+// to where content.at lands in the view it refers to (content.of, else the nearest frame it can pin
+// to) — so the label follows its point when the view is rendered again. On a stereonet the point is a
+// direction (see PINS above). ──
 registerKind('label', {
   label: 'label',
   overflow: true,                                          // the leader leaves the box: not clipped to it
@@ -114,13 +174,13 @@ registerKind('label', {
     const text = resolveFields(c.text != null ? c.text : (c.md || ''), env, frame);
     let anc = null, off = false;
     if (Array.isArray(c.at) && c.at.length === 3 && env.doc) {
-      const v = subjectFrame(env, frame, hasProj);
-      if (v && hasProj(v)) {
-        const p = worldToPage(v, c.at.map(Number));
+      const v = subjectFrame(env, frame, canPin);
+      if (v && canPin(v)) {
+        const p = pinToPage(v, c.at.map(Number));
         if (p && p.inside) anc = p;
         else if (p) {
           // the point is outside the picture: the leader stops at the picture's edge, toward it, with an arrowhead
-          const r = imageRect(v), cx = box[0] + box[2] / 2, cy = box[1] + box[3] / 2, dx = p.x - cx, dy = p.y - cy;
+          const r = pinRect(v), cx = box[0] + box[2] / 2, cy = box[1] + box[3] / 2, dx = p.x - cx, dy = p.y - cy;
           let t = 1;
           for (const [d, lo, hi, o] of [[dx, r[0], r[0] + r[2], cx], [dy, r[1], r[1] + r[3], cy]]) if (d) { const tt = ((d > 0 ? hi : lo) - o) / d; if (tt > 0) t = Math.min(t, tt); }
           if (t > 0 && t < 1) { anc = { x: cx + dx * t, y: cy + dy * t }; off = true; }
@@ -141,14 +201,7 @@ registerKind('label', {
     ctx.save();
     ctx.beginPath(); ctx.rect(box[0], box[1], box[2], box[3]); ctx.clip();
     if (c.backing !== false) { ctx.fillStyle = 'rgba(255,255,255,0.85)'; ctx.fillRect(box[0], box[1], box[2], box[3]); }
-    const { lines, lineHeight } = layoutText(ctx, text, box[2] - 2 * pad, { size });
-    ctx.fillStyle = c.color || INK; ctx.textBaseline = 'top'; ctx.textAlign = 'left';
-    let y = box[1] + pad;
-    for (const line of lines) {
-      let x = box[0] + pad;
-      for (const w of line) { ctx.font = fontMm(size, { bold: w.b }); ctx.fillText(w.t, x, y); x += w.w; }
-      y += lineHeight;
-    }
+    drawText(ctx, text, box, { size, pad, color: c.color || INK, mono: c.font === 'mono', serif: c.font === 'serif', align: c.align || 'left' });
     ctx.restore();
   },
 });
@@ -191,14 +244,36 @@ registerKind('drawlist', {
 });
 
 // ── legend: classes (swatch + label) or a ramp (bar + ends), with a title ──
+// A legend's DATA (entries, the ramp) is the host's: a refresh replaces it. What you SET lives beside it and
+// survives a refresh — content.edit (per entry, by its key: { label, color, hidden }), content.order (keys),
+// columns, swatch ('square' | 'circle' | 'line'), size, textColor, and the title once you've typed one
+// (titleUser). refreshLegend is the merge every host uses.
+export const LEGEND_USER_KEYS = ['edit', 'order', 'columns', 'swatch', 'size', 'textColor', 'titleUser'];
+export function refreshLegend(old = {}, fresh = {}) {
+  const out = { ...fresh };
+  for (const k of LEGEND_USER_KEYS) if (old[k] !== undefined) out[k] = old[k];
+  if (old.titleUser) out.title = old.title;
+  return out;
+}
+export const legendKey = (e) => String(e.key != null ? e.key : e.label);
+// the entries as drawn: the host's, with your edits, in your order (hidden ones included, flagged)
+export function legendEntries(c) {
+  const edit = c.edit || {};
+  let es = (c.entries || []).map((e, i) => ({ ...e, ...(edit[legendKey(e)] || {}), _key: legendKey(e), _i: i }));
+  if (Array.isArray(c.order) && c.order.length) {
+    const pos = new Map(c.order.map((k, i) => [k, i]));
+    es.sort((a, b) => (pos.has(a._key) ? pos.get(a._key) : 1e6 + a._i) - (pos.has(b._key) ? pos.get(b._key) : 1e6 + b._i));
+  }
+  return es;
+}
 registerKind('legend', {
   label: 'legend',
   draw(ctx, box, frame, env) {
-    const c = frame.content || {};
+    const c = frame.content || {}, ink = c.textColor || INK;
     const title = c.title ? resolveFields(c.title, env, frame) : '';
     const size = +c.size || 8, row = size * PT * 1.55, sw = size * PT * 1.1;
     let y = box[1] + 0.5;
-    ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.fillStyle = INK;
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.fillStyle = ink;
     if (title) { ctx.font = fontMm(size + 1, { bold: true }); ctx.fillText(title, box[0] + 0.5, y); y += row * 1.1; }
     ctx.font = fontMm(size);
     if (c.kind === 'ramp' && Array.isArray(c.stops) && c.stops.length) {
@@ -206,22 +281,27 @@ registerKind('legend', {
       const n = c.stops.length;
       for (let i = 0; i < n; i++) { ctx.fillStyle = c.stops[n - 1 - i]; ctx.fillRect(box[0] + 0.5, y + (i * bh) / n, bw, (bh / n) * (i < n - 1 ? 1.6 : 1)); }   // each step tucks under the next: no seams
       ctx.strokeStyle = '#555'; ctx.lineWidth = 0.15; ctx.strokeRect(box[0] + 0.5, y, bw, bh);
-      ctx.fillStyle = INK; ctx.textBaseline = 'middle';
-      ctx.fillText(c.hiLabel ?? String(c.hi ?? ''), box[0] + bw + 1.5, y + size * PT * 0.4);
-      ctx.fillText(c.loLabel ?? String(c.lo ?? ''), box[0] + bw + 1.5, y + bh - size * PT * 0.4);
+      ctx.fillStyle = ink; ctx.textBaseline = 'middle';
+      const ed = c.edit || {};
+      ctx.fillText(ed.hiLabel ?? c.hiLabel ?? String(c.hi ?? ''), box[0] + bw + 1.5, y + size * PT * 0.4);
+      ctx.fillText(ed.loLabel ?? c.loLabel ?? String(c.lo ?? ''), box[0] + bw + 1.5, y + bh - size * PT * 0.4);
       y += bh + 1;
-      if (c.tail) { ctx.fillStyle = c.tail.color; ctx.fillRect(box[0] + 0.5, y, sw, sw); ctx.fillStyle = INK; ctx.fillText(c.tail.label, box[0] + sw + 2, y + sw / 2); }
+      if (c.tail) { ctx.fillStyle = c.tail.color; ctx.fillRect(box[0] + 0.5, y, sw, sw); ctx.fillStyle = ink; ctx.fillText(c.tail.label, box[0] + sw + 2, y + sw / 2); }
       return;
     }
-    const entries = (c.entries || []).concat(c.tail ? [c.tail] : []);
+    const entries = legendEntries(c).filter((e) => !e.hidden).concat(c.tail ? [c.tail] : []);
+    const cols = Math.max(1, Math.min(6, Math.round(+c.columns || 1))), colW = (box[2] - 0.5) / cols;
     ctx.textBaseline = 'middle';
-    for (const e of entries) {
-      if (y + row > box[1] + box[3] + 0.5) break;
-      ctx.fillStyle = e.color; ctx.fillRect(box[0] + 0.5, y, sw, sw);
-      ctx.strokeStyle = 'rgba(0,0,0,0.45)'; ctx.lineWidth = 0.12; ctx.strokeRect(box[0] + 0.5, y, sw, sw);
-      ctx.fillStyle = INK; ctx.fillText(String(e.label), box[0] + sw + 2, y + sw / 2);
-      y += row;
-    }
+    entries.forEach((e, i) => {
+      const cx = box[0] + 0.5 + (i % cols) * colW, cy = y + Math.floor(i / cols) * row;
+      if (cy + row > box[1] + box[3] + 0.5) return;
+      const shape = e.swatch || c.swatch || 'square';
+      ctx.fillStyle = e.color; ctx.strokeStyle = e.color;
+      if (shape === 'circle') { ctx.beginPath(); ctx.arc(cx + sw / 2, cy + sw / 2, sw * 0.42, 0, Math.PI * 2); ctx.fill(); ctx.strokeStyle = 'rgba(0,0,0,0.45)'; ctx.lineWidth = 0.12; ctx.stroke(); }
+      else if (shape === 'line') { ctx.lineWidth = Math.max(0.3, sw * 0.18); ctx.beginPath(); ctx.moveTo(cx, cy + sw / 2); ctx.lineTo(cx + sw * 1.4, cy + sw / 2); ctx.stroke(); }
+      else { ctx.fillRect(cx, cy, sw, sw); ctx.strokeStyle = 'rgba(0,0,0,0.45)'; ctx.lineWidth = 0.12; ctx.strokeRect(cx, cy, sw, sw); }
+      ctx.fillStyle = ink; ctx.fillText(String(e.label), cx + (shape === 'line' ? sw * 1.4 : sw) + 2, cy + sw / 2);
+    });
   },
 });
 

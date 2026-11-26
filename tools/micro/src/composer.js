@@ -27,7 +27,7 @@ import { attrRowCountOf, layerBlob, layerTableHeader, schemaExt, layerWorldBox, 
 import { figureRefs, retargetDoc, guessLayer, guessColumn } from './retarget.js';
 import { computeResourceTable, numericColsOf, parseFactor } from './analysis.js';
 import { sourceHash, sourceHashSync } from './identity.js';
-import { createDocument, parseDocument, serializeDocument, mountEditor, iconButton, exportPDF, exportPNG, frameById, pageDims, tableFromTsv, subjectFrame, refFrame, figureFromPdf, registerKind, replayDrawList, HOUSE_KEYS, FIGURE_KEYS, setTemplate, docFromTemplate, addTitleBlock as compoTitleBlock, addImageFromFile as compoImageFromFile, multiplesGrid, smallMultiples as compoMultiples, groupDigits, significant, fmtBearing } from '../../../ext/compo/index.js';
+import { createDocument, parseDocument, serializeDocument, mountEditor, iconButton, exportPDF, exportPNG, frameById, pageDims, tableFromTsv, subjectFrame, refFrame, figureFromPdf, registerKind, replayDrawList, HOUSE_KEYS, FIGURE_KEYS, setTemplate, docFromTemplate, addTitleBlock as compoTitleBlock, addImageFromFile as compoImageFromFile, multiplesGrid, smallMultiples as compoMultiples, groupDigits, significant, fmtBearing, refreshLegend } from '../../../ext/compo/index.js';
 import { chartFigure } from './analysis-ui.js';
 import { colorChoices, colorSelFor } from './color.js';
 import { rerunToolRecipe } from './tools.js';
@@ -1054,7 +1054,7 @@ function frameMenu(f, ed) {
     { label: 'Small multiples…', run: () => openMultiplesDialog(ed, f) },
     { label: 'Key plan for this view', run: () => addKeyPlan(ed, f) },
   ];
-  if (f.source && f.source.kind === 'legend') return [{ label: 'Update from the layer', run: () => { const L = S.layers.find((x) => x.name === f.source.layer); const c = L && legendContentFor(L); if (c) ed.update(f.id, (fr) => { fr.content = c; }); else $('#meta').textContent = `composer: layer “${f.source.layer}” has no legend now`; } }];
+  if (f.source && f.source.kind === 'legend') return [{ label: 'Update from the layer', run: () => { const L = S.layers.find((x) => x.name === f.source.layer); const c = L && legendContentFor(L); if (c) ed.update(f.id, (fr) => { fr.content = refreshLegend(fr.content, c); }); else $('#meta').textContent = `composer: layer “${f.source.layer}” has no legend now`; } }];   // refreshLegend: your labels, colours, order kept
   return [];
 }
 async function rerender(f, pxPerMm) {
@@ -1275,7 +1275,7 @@ export async function compoPage(params, evalField) {
         if (!(lf.source && lf.source.kind === 'legend')) continue;
         const L = S.layers.find((x) => x.name === lf.source.layer);
         const c = L && legendContentFor(L);
-        if (c) lf.content = { ...c, title: lf.content.title || c.title };
+        if (c) lf.content = refreshLegend(lf.content, { ...c, title: lf.content.title || c.title });   // the data again, your edits kept
       }
     }
   } finally { await applyScene(mine); requestRender(); $('#meta').textContent = ''; }

@@ -6,6 +6,8 @@ import * as bearing from '../../../ext/bearing/index.js';
 import { mountEditor, registerKind, exportPDF, exportPNG } from '../../../ext/compo/index.js';
 import { stereonetCore } from '../../../ext/stereonet/index.js';
 import { buildFigure, refreshFigure } from './figure.js';
+import { sceneLayers } from './layers.js';
+import { formatPlane, formatLine } from '../../../ext/stereonet/index.js';
 
 registerKind('stereonet', stereonetCore(bearing).compoKind());
 
@@ -26,6 +28,19 @@ export function createFigures({ project: p, layout, onStatus = () => {} }) {
       const ed = mountEditor(host, f.doc, {
         onChange: (doc) => p.setFigureDoc(f.id, doc),
         onStatus,
+        // Add label on a net: pinned to the selected datum (its pole or line), reading its attitude; with nothing
+        // selected compo pins it to the net's centre — no data point needed, drag the box where it should read
+        labelPoint: (v) => {
+          if (v.kind !== 'stereonet') return null;
+          const dId = (v.source && v.source.diagram) || f.from;
+          for (const L of (p.diagram(dId) ? sceneLayers(p, dId) : [])) {
+            if (!L.selected || !L.selected.length) continue;
+            const d = L.data.find((o) => o.row === L.selected[0]); if (!d) continue;
+            if (d.pole) return { at: d.pole, text: formatPlane(d.plane) };
+            if (d.dcos) return { at: d.dcos, text: formatLine(d.line) };
+          }
+          return null;
+        },
         toolbar: [
           { label: '↻ from the net', title: 'make the net, legend, statistics and caption again from the diagram as it is now (your layout stays)', run: (e) => {
             if (!p.diagram(f.from)) { onStatus('the diagram this figure was made from is gone'); return; }

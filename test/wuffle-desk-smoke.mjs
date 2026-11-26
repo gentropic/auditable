@@ -293,6 +293,61 @@ for (const [label, url] of [['dev', '/tools/wuffle/index.html'], ['built', '/wuf
   chk(`${label}: a figure from the net opens compo's editor in a tab (“${fig.tab}”), frames ${JSON.stringify(fig.kinds)}, page drawn (${fig.canvases} canvas), host buttons ${JSON.stringify(fig.btns)}; listed in the tree`,
     fig.n === 1 && !!fig.tab && fig.kinds && fig.kinds.includes('stereonet') && fig.canvases >= 1 && fig.btns.length === 2 && fig.treeHas);
 
+  // ── Add label on a figure pins to the NET (compo's pins: a stereonet frame knows its own projection; it once
+  //    did nothing — labels pinned only to a 3D view's camera matrix). With a pole selected it pins there,
+  //    reading the plane's attitude; with nothing selected, at the net's centre — no data point needed ──
+  const lab = await p.evaluate(async () => {
+    const W = window.__wuffleDesk, P = W.project, wait = (ms) => new Promise((z) => setTimeout(z, ms));
+    const host = document.querySelector('.wfig-host'), btn = host && [...host.querySelectorAll('button')].find((b) => b.getAttribute('aria-label') === 'Add label');
+    const ds = P.datasets.find((d) => d.name === 'tocher'), labels = () => P.figures[0].doc.frames.filter((x) => x.kind === 'label');
+    if (!btn || !ds) return { btn: !!btn };
+    P.clearSelection(); btn.click(); await wait(300);
+    const centre = labels().at(-1);
+    P.select(ds.id, [0]); btn.click(); await wait(300);
+    const onPole = labels().at(-1), net = P.figures[0].doc.frames.find((x) => x.kind === 'stereonet');
+    const unit = (a) => a && Math.abs(Math.hypot(...a) - 1) < 1e-4;
+    return { btn: true, n: labels().length, centre: centre && { at: centre.content.at, of: centre.content.of, text: centre.content.text },
+      pole: onPole && { at: onPole.content.at, text: onPole.content.text, of: onPole.content.of }, net: net && net.id, unitC: unit(centre && centre.content.at), unitP: unit(onPole && onPole.content.at),
+      row0: ds.rows[0], errs: (document.querySelector('.compo-status') || {}).textContent || '' };
+  });
+  chk(`${label}: Add label on a figure pins to its net — at the centre (${lab.centre && JSON.stringify(lab.centre.at)}), and at the selected pole reading “${lab.pole && lab.pole.text}” (${lab.pole && JSON.stringify(lab.pole.at)})`,
+    lab.btn && lab.n === 2 && lab.centre && lab.centre.of === lab.net && lab.unitC   // (an earlier step rotated the net: its centre needn't be the vertical)
+      && lab.pole && lab.pole.of === lab.net && lab.unitP && /^\d{3}\/\d{2}$/.test(lab.pole.text) && lab.pole.at[2] < 0);
+
+  // ── "↻ from the net" refreshes the figure WITHOUT undoing your edits: a renamed, recoloured legend entry and
+  //    a rewritten caption stay; the legend still follows the data (a new layer's entry arrives) ──
+  const keep = await p.evaluate(async () => {
+    const W = window.__wuffleDesk, P = W.project, wait = (ms) => new Promise((z) => setTimeout(z, ms));
+    const f = P.figures[0], doc = JSON.parse(JSON.stringify(f.doc));
+    const leg = doc.frames.find((x) => x.kind === 'legend'), cap = doc.frames.find((x) => x.id === 'wuffle-caption');
+    const k0 = leg.content.entries[0].key;
+    leg.content.edit = { [k0]: { label: 'joints (field)', color: '#b0302a' } }; leg.content.columns = 2;
+    cap.content.md = '# My caption\nwritten by hand';
+    // through the editor, as an edit in its inspector would land (the refresh works on the editor's document)
+    W.rails.activateTab('fig:' + f.id); await wait(200);
+    const ed = W.figures.editors.get(f.id); if (ed) ed.setDoc(doc);
+    P.setFigureDoc(f.id, doc);
+    const n0 = leg.content.entries.length;
+    await W.console.run('mean tocher');                                 // a new layer on the net → a new legend entry
+    const btn = [...document.querySelectorAll('.wfig-host button')].find((b) => /from the net/.test(b.textContent));
+    W.rails.activateTab('fig:' + f.id); await wait(200); btn && btn.click(); await wait(300);
+    const d2 = P.figure(f.id).doc, L2 = d2.frames.find((x) => x.kind === 'legend'), C2 = d2.frames.find((x) => x.id === 'wuffle-caption');
+    return { btn: !!btn, n0, n1: L2.content.entries.length, edit: L2.content.edit && L2.content.edit[k0], cols: L2.content.columns, cap: C2.content.md };
+  });
+  chk(`${label}: “↻ from the net” keeps your legend edits (${JSON.stringify(keep.edit)}, ${keep.cols} columns) and your caption, while the legend follows the data (${keep.n0} → ${keep.n1} entries)`,
+    keep.btn && keep.edit && keep.edit.label === 'joints (field)' && keep.cols === 2 && keep.cap === '# My caption\nwritten by hand' && keep.n1 === keep.n0 + 1);
+
+  // ── the console's own man, and a banner that starts the screen (it once started on a blank-looking row:
+  //    written at 80 × 12 before the panel's size was known, then shifted by the resize) ──
+  const manLs = await p.evaluate(async () => {
+    const W = window.__wuffleDesk, T = W.console.term, r = await W.console.run('man ls');
+    const first = T.scrollback.length ? T.scrollback[0] : T.buffer[0];   // the first line ever written, wherever it scrolled
+    const row0 = first.map((c) => String.fromCodePoint(c.ch)).join('').trim();
+    return { text: r.text, row0, scrollback: T.scrollback.length };
+  });
+  chk(`${label}: console — “man ls” shows ls's page, not man's (${JSON.stringify(manLs.text.split('\n')[1] || '').trim()}); the screen began with the banner (“${manLs.row0.slice(0, 30)}…”)`,
+    /NAME\n\s+ls —/.test(manLs.text) && !/NAME\n\s+man —/.test(manLs.text) && /^wuffle — the console/.test(manLs.row0));
+
   // ── the compass's published log, signed by a key the page makes: File → Open of log + .sig + photo together
   //    keeps an ORIGINAL (verified), reads its data; a changed byte is caught; the original survives the zip ──
   const flog = await p.evaluate(async () => {

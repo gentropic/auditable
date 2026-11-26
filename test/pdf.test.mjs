@@ -107,6 +107,12 @@ test('text: standard fonts from CSS stacks, WinAnsi encoding with substitutions,
   assert.equal(parseFont('bold 16px sans-serif').name, 'Helvetica-Bold');
   assert.equal(parseFont('12px Georgia, serif').name, 'Times-Roman');
   assert.equal(parseFont("10px 'Barlow', system-ui, sans-serif").name, 'Helvetica');
+  // italic / oblique pick the standard slanted faces (compo's *italic* markdown); widths as the uprights'
+  assert.equal(parseFont('italic 10px sans-serif').name, 'Helvetica-Oblique');
+  assert.equal(parseFont('italic bold 10px Barlow, sans-serif').name, 'Helvetica-BoldOblique');
+  assert.equal(parseFont('italic 12px Georgia, serif').name, 'Times-Italic');
+  assert.equal(parseFont("oblique 11px 'Space Mono', monospace").name, 'Courier-Oblique');
+  assert.equal(textWidth('Helvetica-BoldOblique', 10, 'W'), textWidth('Helvetica-Bold', 10, 'W'));
   assert.equal(textWidth('Courier', 10, 'abc'), 18, "Courier is 0.6 em — @gcu/plot's layout advance");
   assert.equal(Math.round(textWidth('Helvetica', 10, 'W') * 100), 944);
   const e = encodeWinAnsi('≥ 65 − é σ');

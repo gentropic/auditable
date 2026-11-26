@@ -14,9 +14,9 @@
 
 import { renameFrame, sanitizeId, PAPER, pageDims, addFrame, frameById, removeFrames, bringToFront, sendToBack, bringForward, sendBackward, alignFrames, distributeFrames, matchSize, groupFrames, ungroupFrames, expandGroups, unitsOf, boundsOf, moveInStack, snapBox, snapResize, serializeDocument } from './model.js';
 import { renderPage, ensureImages } from './render.js';
-import { kindOf } from './kinds.js';
+import { kindOf, canPin, pageToPin, legendEntries, legendKey } from './kinds.js';
 import { fieldList, subjectFrame, refFrame } from './fields.js';
-import { hasProj, pageToWorld } from './world.js';
+import { hasProj } from './world.js';
 import { iconButton } from './icons.js';
 
 const CSS = `
@@ -60,6 +60,11 @@ const CSS = `
 .compo-side .row:has(.stack) { align-items: start; }
 .compo-side .row:has(.stack) > span:first-child { line-height: 22px; }
 .compo-side .pair { flex: 1 1 0; display: flex; gap: 4px; align-items: center; min-width: 0; }
+.compo-side .leg { display: flex; gap: 4px; align-items: center; min-height: 24px; }
+.compo-side .leg input:not([type]), .compo-side .leg input[type=text] { flex: 1 1 auto; min-width: 0; }
+.compo-side .leg input[type=color] { width: 26px; padding: 0; flex: 0 0 auto; }
+.compo-side .leg button { min-width: 22px; padding: 0 3px; }
+.compo-side .leg.off input:not([type=color]) { opacity: 0.45; }
 .compo-side .pair > i { font-style: normal; color: var(--compo-dim, var(--dim, #9a9a9a)); width: 8px; text-align: center; }
 .compo-side .pair > input { flex: 1 1 0; min-width: 0; width: auto; }
 .compo-side .row input:not([type=checkbox]), .compo-side .row select { box-sizing: border-box; height: 22px; }
@@ -109,6 +114,19 @@ function injectCss() { if (_css || typeof document === 'undefined') return; _css
 const h = (tag, props = {}, ...kids) => { const e = document.createElement(tag); for (const [k, v] of Object.entries(props)) { if (k === 'style') e.style.cssText = v; else if (k.startsWith('on')) e[k] = v; else if (k in e) e[k] = v; else e.setAttribute(k, v); } for (const c of kids) e.append(c); return e; };
 
 // frames that refer to another (captions, scale bars, north arrows) and frames that can be referred to (views: they state a scale)
+// any CSS colour → #rrggbb for an <input type=color> (which takes nothing else)
+let _cc = null;
+function toHex(css, dflt = '#1a1a1a') {
+  if (!css) return dflt;
+  if (/^#[0-9a-f]{6}$/i.test(css)) return css.toLowerCase();
+  try {
+    if (!_cc) _cc = document.createElement('canvas').getContext('2d');
+    _cc.fillStyle = '#000'; _cc.fillStyle = css; const v = _cc.fillStyle;
+    if (/^#[0-9a-f]{6}$/i.test(v)) return v;
+    const m = /rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(v);
+    return m ? '#' + [m[1], m[2], m[3]].map((n) => (+n).toString(16).padStart(2, '0')).join('') : dflt;
+  } catch { return dflt; }
+}
 const canRefer = (f) => f.kind === 'text' || f.kind === 'scalebar' || f.kind === 'north' || f.kind === 'label' || f.kind === 'titleblock';
 const isReferable = (f) => !!(f.content && f.content.meta);
 export function mountEditor(el, doc, opts = {}) {
@@ -194,7 +212,7 @@ export function mountEditor(el, doc, opts = {}) {
   const grp = (...kids) => h('span', { className: 'compo-grp-bar' }, ...kids);
   const hostBtns = (opts.toolbar || []).map((t) => { const run = () => t.run(api); return t.icon ? ib(t.icon, t.label, t.keys || '', t.title || '', run) : btn(t.label, t.title || '', run); });
   bar.append(grp(undoBtn, redoBtn), sep(),
-    grp(...hostBtns, ib('label', 'Add label', '', 'a label pinned to a world point in a 3D view (the host may supply the point)', () => addLabel()),
+    grp(...hostBtns, ib('label', 'Add label', '', 'a label pinned to a point in a 3D view, or a direction on a stereonet (the host may supply the point)', () => addLabel()),
       ib('text', 'Add text', '', 'a text frame — a caption (fields: {fig} {page} {date} ${…})', () => add({ kind: 'text', content: { md: '**Figure {fig}.** caption', size: 9 } }))),
     sep(), grp(...alignBtns, ...distBtns, ...sizeBtns), sep(), grp(groupBtn, ungroupBtn), sep(), grp(frontBtn, fwdBtn, bwdBtn, backBtn, delBtn),
     sep(), grp(sizeSel, oriSel, customSpan, zoomSel, gridSel, rulersBtn), status);
@@ -336,7 +354,8 @@ export function mountEditor(el, doc, opts = {}) {
     insp.append(h('div', { className: 'row' }, h('span', { textContent: 'id' }), h('span', { className: 'ctl' }, idIn)));
     if (canRefer(f)) {
       // refers to: the nearest view (the default — it says which), or a fixed one
-      const near = refFrame(D, f, null, isReferable), cands = D.frames.filter((x) => x !== f && isReferable(x));
+      const refOK = f.kind === 'label' ? canPin : isReferable;   // a label refers to what it can pin to: a 3D view or a net
+      const near = refFrame(D, f, null, refOK), cands = D.frames.filter((x) => x !== f && refOK(x));
       const rs = h('select', { title: 'the frame this one is about: its fields ({scale} {section} …), or the view a scale bar / north arrow measures' },
         h('option', { value: '', textContent: near ? `nearest → ${near.id}` : 'nearest (none yet)' }),
         ...cands.map((x) => h('option', { value: x.id, textContent: x.id })));
@@ -351,9 +370,21 @@ export function mountEditor(el, doc, opts = {}) {
     };
     insp.append(h('div', { className: 'row' }, h('span', { textContent: 'position' }), h('span', { className: 'ctl' }, num('x', 0), num('y', 1))));
     insp.append(h('div', { className: 'row' }, h('span', { textContent: 'size' }), h('span', { className: 'ctl' }, num('w', 2), num('h', 3))));
-    const bd = h('input', { type: 'checkbox', checked: !!(f.style && f.style.border) });
-    bd.onchange = () => commit(() => { f.style = { ...(f.style || {}), border: bd.checked }; });
-    insp.append(h('label', { className: 'row' }, h('span', { textContent: 'border' }), h('span', { className: 'ctl' }, bd)));
+    const st = f.style || {};
+    const setStyle = (k, v) => commit(() => { f.style = { ...(f.style || {}) }; if (v == null || v === '' || v === false) delete f.style[k]; else f.style[k] = v; });
+    const bd = h('input', { type: 'checkbox', checked: !!st.border });
+    bd.onchange = () => setStyle('border', bd.checked);
+    const bc = h('input', { type: 'color', value: toHex(st.borderColor), title: 'border colour' });
+    bc.onchange = () => setStyle('borderColor', bc.value);
+    const bw = h('input', { type: 'number', min: 0.05, max: 3, step: 0.05, value: st.borderWidth || 0.25, title: 'border width (mm)', style: 'width:56px' });
+    bw.onchange = () => setStyle('borderWidth', +bw.value || null);
+    insp.append(h('div', { className: 'row' }, h('span', { textContent: 'border' }), h('span', { className: 'ctl' }, bd, bc, bw)));
+    // a fill behind the frame: a panel, a band, a highlight (empty = none)
+    const fillOn = h('input', { type: 'checkbox', checked: !!st.background, title: 'a fill behind the frame' });
+    const fillC = h('input', { type: 'color', value: toHex(st.background, '#f2f2f0'), title: 'fill colour' });
+    fillOn.onchange = () => setStyle('background', fillOn.checked ? fillC.value : null);
+    fillC.onchange = () => { if (fillOn.checked) setStyle('background', fillC.value); };
+    insp.append(h('div', { className: 'row' }, h('span', { textContent: 'fill' }), h('span', { className: 'ctl' }, fillOn, fillC)));
     const lk = h('input', { type: 'checkbox', checked: !!f.locked });
     lk.onchange = () => commit(() => { f.locked = lk.checked; });
     insp.append(h('label', { className: 'row', title: 'a locked frame won’t move, resize or delete' }, h('span', { textContent: 'locked' }), h('span', { className: 'ctl' }, lk)));
@@ -369,8 +400,15 @@ export function mountEditor(el, doc, opts = {}) {
       const align = h('select', {}, ...['left', 'center', 'right'].map((v) => h('option', { value: v, textContent: v })));
       align.value = f.content.align || 'left';
       align.onchange = () => commit(() => { f.content.align = align.value; });
-      const mono = h('input', { type: 'checkbox', checked: !!f.content.mono });
-      mono.onchange = () => commit(() => { f.content.mono = mono.checked; });
+      const fontSel = h('select', { title: 'the typeface' }, ...[['sans', 'sans'], ['serif', 'serif'], ['mono', 'monospace']].map(([v, t]) => h('option', { value: v, textContent: t })));
+      fontSel.value = f.content.font || (f.content.mono ? 'mono' : 'sans');
+      fontSel.onchange = () => commit(() => { f.content.font = fontSel.value; delete f.content.mono; });
+      const col = h('input', { type: 'color', value: toHex(f.content.color), title: 'text colour' });
+      col.onchange = () => commit(() => { f.content.color = col.value; });
+      const lh = h('input', { type: 'number', min: 0.8, max: 3, step: 0.05, value: f.content.lineHeight || 1.25, title: 'line spacing (× the size)', style: 'width:56px' });
+      lh.onchange = () => commit(() => { f.content.lineHeight = +lh.value || 1.25; });
+      const pad = h('input', { type: 'number', min: 0, max: 20, step: 0.5, value: f.content.pad ?? 1, title: 'padding inside the frame (mm)', style: 'width:56px' });
+      pad.onchange = () => commit(() => { f.content.pad = Math.max(0, +pad.value || 0); });
       // insert a field at the caret (compo's own and the host's, each with its help as the tooltip)
       const fl = fieldList(opts.env || {});
       const fsel = h('select', { title: 'insert a field at the caret', className: 'compo-fields' }, h('option', { value: '', textContent: 'insert field…' }),
@@ -381,9 +419,11 @@ export function mountEditor(el, doc, opts = {}) {
         commit(() => { f.content.md = ta.value.slice(0, a) + tok + ta.value.slice(b); });
         requestAnimationFrame(() => { const t2 = side.querySelector('textarea'); if (t2) { t2.focus(); t2.selectionStart = t2.selectionEnd = a + tok.length; } });
       };
-      insp.append(ta, h('div', { className: 'row' }, h('span', { textContent: 'size (pt)' }), h('span', { className: 'ctl' }, size, align)), h('label', { className: 'row' }, h('span', { textContent: 'monospace' }), h('span', { className: 'ctl' }, mono)),
+      insp.append(ta, h('div', { className: 'row' }, h('span', { textContent: 'size (pt)' }), h('span', { className: 'ctl' }, size, align)),
+        h('div', { className: 'row' }, h('span', { textContent: 'type' }), h('span', { className: 'ctl' }, fontSel, col)),
+        h('div', { className: 'row' }, h('span', { textContent: 'spacing' }), h('span', { className: 'ctl' }, h('span', { className: 'pair' }, h('i', { textContent: '↕' }), lh), h('span', { className: 'pair' }, h('i', { textContent: '▢' }), pad))),
         h('div', { className: 'row' }, h('span', { textContent: 'fields' }), h('span', { className: 'ctl' }, fsel)),
-        h('div', { className: 'hint', textContent: '**bold** · {name} or {name:arg} · a number format at the end, {count:,} · ${expr:,.2f}' }));
+        h('div', { className: 'hint', textContent: '# title · ## subtitle · - list · 1. list · --- rule · **bold** · *italic* · `code` · {name} fields, {count:,} · ${expr:,.2f}' }));
       api._focusText = () => ta.focus();
     }
     if (f.kind === 'image') {
@@ -398,12 +438,88 @@ export function mountEditor(el, doc, opts = {}) {
         insp.append(h('div', { className: 'row' }, h('span', { textContent: 'coords' }), h('span', { className: 'ctl' }, tk)));
       }
     }
+    if (f.kind === 'legend') {
+      // the look, then each entry: show/hide, colour, label, order. Your edits sit beside the host's data
+      // (content.edit / order — kinds.js), so refreshing the legend from the data keeps them
+      const c = f.content || (f.content = {});
+      const ttl = h('input', { value: c.title || '', placeholder: 'no title', title: 'the legend’s title (fields work: {name})' });
+      ttl.onchange = () => commit(() => { f.content.title = ttl.value; f.content.titleUser = true; });
+      const gsz = h('input', { type: 'number', min: 4, max: 24, step: 0.5, value: c.size || 8, title: 'text size (pt)', style: 'width:56px' });
+      gsz.onchange = () => commit(() => { f.content.size = +gsz.value || 8; });
+      const tcol = h('input', { type: 'color', value: toHex(c.textColor), title: 'text colour' });
+      tcol.onchange = () => commit(() => { f.content.textColor = tcol.value; });
+      insp.append(h('div', { className: 'row' }, h('span', { textContent: 'title' }), h('span', { className: 'ctl' }, ttl)),
+        h('div', { className: 'row' }, h('span', { textContent: 'type' }), h('span', { className: 'ctl' }, gsz, tcol)));
+      const setEdit = (key, patch) => commit(() => {
+        const ed = { ...(f.content.edit || {}) }, cur = { ...(ed[key] || {}), ...patch };
+        for (const k of Object.keys(cur)) if (cur[k] == null) delete cur[k];
+        if (Object.keys(cur).length) ed[key] = cur; else delete ed[key];
+        if (Object.keys(ed).length) f.content.edit = ed; else delete f.content.edit;
+      });
+      if (c.kind === 'ramp') {
+        const hiL = h('input', { value: (c.edit && c.edit.hiLabel) ?? c.hiLabel ?? String(c.hi ?? ''), title: 'the top label' });
+        const loL = h('input', { value: (c.edit && c.edit.loLabel) ?? c.loLabel ?? String(c.lo ?? ''), title: 'the bottom label' });
+        hiL.onchange = () => commit(() => { f.content.edit = { ...(f.content.edit || {}), hiLabel: hiL.value }; });
+        loL.onchange = () => commit(() => { f.content.edit = { ...(f.content.edit || {}), loLabel: loL.value }; });
+        insp.append(h('div', { className: 'row' }, h('span', { textContent: 'top' }), h('span', { className: 'ctl' }, hiL)),
+          h('div', { className: 'row' }, h('span', { textContent: 'bottom' }), h('span', { className: 'ctl' }, loL)));
+      } else {
+        const cols = h('input', { type: 'number', min: 1, max: 6, step: 1, value: c.columns || 1, title: 'columns', style: 'width:56px' });
+        cols.onchange = () => commit(() => { const n = Math.max(1, Math.min(6, Math.round(+cols.value || 1))); if (n === 1) delete f.content.columns; else f.content.columns = n; });
+        const shape = h('select', { title: 'the swatch: a square (areas), a dot (points), a line (curves)' }, ...['square', 'circle', 'line'].map((v) => h('option', { value: v, textContent: v })));
+        shape.value = c.swatch || 'square';
+        shape.onchange = () => commit(() => { if (shape.value === 'square') delete f.content.swatch; else f.content.swatch = shape.value; });
+        insp.append(h('div', { className: 'row' }, h('span', { textContent: 'layout' }), h('span', { className: 'ctl' }, h('span', { className: 'pair' }, h('i', { textContent: '▥' }), cols), shape)));
+        const es = legendEntries(c), keys = es.map((e) => e._key);
+        const orig = (k) => (c.entries || []).find((x) => legendKey(x) === k) || {};
+        es.forEach((e, i) => {
+          const eye = h('button', { textContent: e.hidden ? '◌' : '◉', title: e.hidden ? 'show this entry' : 'hide this entry (not drawn)', onclick: () => setEdit(e._key, { hidden: e.hidden ? null : true }) });
+          const sw = h('input', { type: 'color', value: toHex(e.color, '#888888'), title: 'its colour' });
+          sw.onchange = () => setEdit(e._key, { color: toHex(orig(e._key).color) === sw.value ? null : sw.value });
+          const lb = h('input', { value: String(e.label ?? ''), title: 'its label' });
+          lb.onchange = () => setEdit(e._key, { label: lb.value === String(orig(e._key).label ?? '') ? null : lb.value });
+          const move = (d) => () => { const j = i + d; if (j < 0 || j >= keys.length) return; const k = keys.slice(); [k[i], k[j]] = [k[j], k[i]]; commit(() => { f.content.order = k; }); };
+          const up = h('button', { textContent: '↑', title: 'move up', disabled: i === 0, onclick: move(-1) });
+          const dn = h('button', { textContent: '↓', title: 'move down', disabled: i === es.length - 1, onclick: move(1) });
+          insp.append(h('div', { className: 'leg' + (e.hidden ? ' off' : '') }, eye, sw, lb, up, dn));
+        });
+      }
+      const edited = c.edit || c.order || c.titleUser;
+      if (edited) insp.append(h('div', { className: 'row' }, h('span', {}), h('span', { className: 'ctl' }, h('button', { textContent: 'reset edits', title: 'back to the data’s own labels, colours and order', onclick: () => commit(() => { delete f.content.edit; delete f.content.order; delete f.content.titleUser; }) }))));
+      insp.append(h('div', { className: 'hint', textContent: 'your edits stay when the legend is refreshed from the data' }));
+    }
     if (f.kind === 'label') {
       const tx = h('textarea', { value: f.content.text || '', style: 'min-height:40px' });
       tx.onchange = () => commit(() => { f.content.text = tx.value; });
+      const lsz = h('input', { type: 'number', min: 4, max: 48, step: 0.5, value: f.content.size || 7, title: 'size (pt)', style: 'width:56px' });
+      lsz.onchange = () => commit(() => { f.content.size = +lsz.value || 7; });
+      const lfont = h('select', { title: 'the typeface' }, ...[['sans', 'sans'], ['serif', 'serif'], ['mono', 'monospace']].map(([v, t]) => h('option', { value: v, textContent: t })));
+      lfont.value = f.content.font || 'sans';
+      lfont.onchange = () => commit(() => { f.content.font = lfont.value; });
+      const lcol = h('input', { type: 'color', value: toHex(f.content.color), title: 'text, leader and dot colour' });
+      lcol.onchange = () => commit(() => { f.content.color = lcol.value; });
+      const back = h('input', { type: 'checkbox', checked: f.content.backing !== false, title: 'a white backing behind the words, so they read over the picture' });
+      back.onchange = () => commit(() => { f.content.backing = back.checked; });
+      insp.append(h('div', { className: 'row' }, h('span', { textContent: 'type' }), h('span', { className: 'ctl' }, lsz, lfont, lcol)),
+        h('label', { className: 'row' }, h('span', { textContent: 'backing' }), h('span', { className: 'ctl' }, back)));
       const at = f.content.at || [0, 0, 0];
-      const xyz = ['x', 'y', 'z'].map((k, i) => { const inp = h('input', { type: 'number', step: 'any', value: +(+at[i]).toFixed(3), title: `the point, world ${k}` }); inp.onchange = () => commit(() => { const a = (f.content.at || [0, 0, 0]).slice(); a[i] = +inp.value || 0; f.content.at = a; }); return h('span', { className: 'pair' }, h('i', { textContent: k }), inp); });   // world coordinates are long: one per line
-      insp.append(tx, h('div', { className: 'row' }, h('span', { textContent: 'points at' }), h('span', { className: 'ctl stack' }, ...xyz)), h('div', { className: 'hint', textContent: 'the leader follows this world point in the view it refers to' }));
+      const tgt = f.content.of ? frameById(D, f.content.of) : refFrame(D, f, null, canPin);
+      if (tgt && !hasProj(tgt)) {
+        // pinned to a net: the point is a DIRECTION — shown and typed as a line, trend → plunge (axial, lower hemisphere)
+        const len = Math.hypot(at[0], at[1], at[2]) || 1, s = at[2] > 0 ? -1 : 1, d = at.map((v) => (s * v) / len);
+        const tr = ((Math.atan2(d[0], d[1]) * 180 / Math.PI) + 360) % 360, pl = Math.asin(Math.min(1, -d[2])) * 180 / Math.PI;
+        const inp = h('input', { value: `${String(Math.round(tr)).padStart(3, '0')}→${Math.round(pl)}`, title: 'the direction it points at: trend → plunge (also 328/25 or 328 25)' });
+        inp.onchange = () => {
+          const m = /^\s*(-?[\d.]+)\s*(?:→|->|\/|,|\s)\s*(-?[\d.]+)\s*$/.exec(inp.value);
+          if (!m) { say('a direction is trend → plunge, e.g. 328→25'); return; }
+          const t = +m[1] * Math.PI / 180, p = +m[2] * Math.PI / 180;
+          commit(() => { f.content.at = [Math.sin(t) * Math.cos(p), Math.cos(t) * Math.cos(p), -Math.sin(p)].map((v) => +v.toFixed(6)); });
+        };
+        insp.append(tx, h('div', { className: 'row' }, h('span', { textContent: 'points at' }), h('span', { className: 'ctl' }, inp)), h('div', { className: 'hint', textContent: 'the leader follows this direction on the net it refers to' }));
+      } else {
+        const xyz = ['x', 'y', 'z'].map((k, i) => { const inp = h('input', { type: 'number', step: 'any', value: +(+at[i]).toFixed(3), title: `the point, world ${k}` }); inp.onchange = () => commit(() => { const a = (f.content.at || [0, 0, 0]).slice(); a[i] = +inp.value || 0; f.content.at = a; }); return h('span', { className: 'pair' }, h('i', { textContent: k }), inp); });   // world coordinates are long: one per line
+        insp.append(tx, h('div', { className: 'row' }, h('span', { textContent: 'points at' }), h('span', { className: 'ctl stack' }, ...xyz)), h('div', { className: 'hint', textContent: 'the leader follows this world point in the view it refers to' }));
+      }
     }
     if (f.kind === 'titleblock') {
       // its rows, one a line — each a text frame's markdown with fields; a row keeps its type
@@ -580,15 +696,19 @@ export function mountEditor(el, doc, opts = {}) {
     if (!opts.frameBadge) return null;
     try { const b = opts.frameBadge(f); return !b ? null : typeof b === 'string' ? { text: b } : b; } catch { return null; }
   }
-  // a label: at the host's point (opts.labelPoint(view) → [x,y,z]) or the middle of the view, beside it
+  // a label: at the host's point (opts.labelPoint(view) → [x,y,z]) or the middle of the view, beside it.
+  // Any frame it can pin to: a 3D view (a world point) or a stereonet (a direction) — see kinds.js PINS
   function addLabel() {
     const sv = sel.length === 1 ? frameById(D, sel[0]) : null;
-    const v = (sv && hasProj(sv)) ? sv : D.frames.find((x) => hasProj(x) && !x.hidden);
-    if (!v) { say('a label points at a 3D view — add one first'); return; }
-    let at = opts.labelPoint ? opts.labelPoint(v) : null;
-    if (!at) at = pageToWorld(v, v.box[0] + v.box[2] / 2, v.box[1] + v.box[3] / 2, 0);
+    const v = (sv && canPin(sv)) ? sv : D.frames.find((x) => canPin(x) && !x.hidden);
+    if (!v) { say('a label points at something in a 3D view or on a stereonet — add one first'); return; }
+    // the host's point: [x, y, z], or { at, text } to suggest the words too (wuffle: a selected plane's attitude)
+    let at = opts.labelPoint ? opts.labelPoint(v) : null, text = 'label';
+    if (at && !Array.isArray(at)) { if (at.text) text = String(at.text); at = at.at || null; }
+    if (!at) at = pageToPin(v, v.box[0] + v.box[2] / 2, v.box[1] + v.box[3] / 2);
+    if (!at) { say('could not find a point in that frame to pin the label to'); return; }
     const box = [v.box[0] + v.box[2] * 0.62, v.box[1] + v.box[3] * 0.12, 30, 7];
-    add({ kind: 'label', box, content: { text: 'label', at: at.map((n) => +(+n).toFixed(3)), of: v.id } });
+    add({ kind: 'label', box, content: { text, at: at.map((n) => +(+n).toFixed(hasProj(v) ? 3 : 6)), of: v.id } });   // a direction keeps 6 places
   }
   // a rename → true; refused (and said why) → false
   function doRename(f, raw) {

@@ -449,3 +449,65 @@ test('a north arrow on a view looking along north fits its frame: the sign, the 
   assert.deepEqual(mine.map((t) => t.s), ['N', 'out of', 'the page']);
   for (const t of mine) assert.ok(t.x - t.w / 2 >= nb[0] && t.x + t.w / 2 <= nb[0] + nb[2], `${t.s}: ${t.w.toFixed(2)} mm in a ${nb[2]} mm frame`);
 });
+
+// ── markdown in text frames and labels (kinds.js layoutText / drawText) ──
+import { layoutText, refreshLegend, legendEntries, canPin, pinToPage, pageToPin } from '../ext/compo/src/main.js';
+// a context that measures every character as 1 mm per point of the font's size, and remembers the fonts
+const fakeCtx = () => { const fonts = []; return { fonts, set font(f) { fonts.push(f); this._f = f; }, get font() { return this._f; },
+  measureText: (t) => ({ width: [...t].length * 0.3 }) }; };
+
+test('markdown: headings are bigger and bold, lists hang their marker, inline italic / code pick their faces, --- is a rule', () => {
+  const ctx = fakeCtx();
+  const { lines } = layoutText(ctx, '# Title\n## Sub\nplain *slanted* and `code`\n- one\n2. two\n---\nlast', 200, { size: 10 });
+  const txt = (l) => l.map((w) => w.t).join('');
+  assert.equal(txt(lines[0]), 'Title'); assert.equal(lines[0].size, 16); assert.ok(lines[0].every((w) => w.b));
+  assert.equal(txt(lines[1]), 'Sub'); assert.equal(lines[1].size, 13); assert.ok(lines[1].gap > 0, 'a heading below text gets air');
+  assert.equal(lines[0].gap, 0, 'not at the very top');
+  assert.equal(txt(lines[2]), 'plain slanted and code');
+  assert.ok(lines[2].find((w) => w.t === 'slanted').i, '*slanted* is italic');
+  assert.ok(lines[2].find((w) => w.t === 'code').m, '`code` is monospace');
+  assert.equal(lines[3].marker.t, '•'); assert.ok(lines[3].indent > 0); assert.equal(txt(lines[3]), 'one');
+  assert.equal(lines[4].marker.t, '2.'); assert.equal(txt(lines[4]), 'two');
+  assert.ok(lines[5].rule); assert.equal(txt(lines[6]), 'last');
+  assert.ok(ctx.fonts.some((f) => /^italic /.test(f)) && ctx.fonts.some((f) => /Space Mono/.test(f)), 'the italic and mono faces were measured');
+});
+
+test('markdown: a list item wraps under its text, not under its marker; snake_case words stay plain', () => {
+  const { lines } = layoutText(fakeCtx(), '- a list item long enough to wrap twice in this narrow box\nfile_name_here', 12, { size: 10 });
+  const items = lines.filter((l) => l.indent > 0);
+  assert.ok(items.length >= 2, 'it wrapped'); assert.ok(items[0].marker && !items[1].marker, 'the marker only on the first line');
+  assert.ok(!lines.at(-1).some((w) => w.i), '_name_ inside a word is not emphasis');
+});
+
+// ── legends: your edits sit beside the data, and a refresh keeps them ──
+test('legend: edits (label, colour, hidden), order and look survive a refresh; new entries arrive', () => {
+  const made = { title: 'layers', entries: [{ key: 'a', label: 'A (10)', color: '#f00' }, { key: 'b', label: 'B (5)', color: '#0f0' }] };
+  const edited = { ...made, edit: { a: { label: 'granite' }, b: { hidden: true } }, order: ['b', 'a'], columns: 2, swatch: 'circle', title: 'rocks', titleUser: true };
+  const fresh = { title: 'layers', entries: [{ key: 'a', label: 'A (12)', color: '#f00' }, { key: 'b', label: 'B (5)', color: '#00f' }, { key: 'c', label: 'C (1)', color: '#999' }] };
+  const r = refreshLegend(edited, fresh);
+  assert.equal(r.title, 'rocks'); assert.equal(r.columns, 2); assert.equal(r.swatch, 'circle');
+  const es = legendEntries(r);
+  assert.deepEqual(es.map((e) => e._key), ['b', 'a', 'c'], 'your order, then what is new');
+  assert.equal(es[1].label, 'granite', 'your label wins');
+  assert.equal(es[0].color, '#00f', 'an un-edited colour follows the data');
+  assert.ok(es[0].hidden && !es[2].hidden);
+  assert.equal(refreshLegend(made, fresh).title, 'layers', 'an un-typed title follows the data');
+});
+
+// ── pins: a kind that knows its own projection (a stereonet) — labels pin to it ──
+test('pins: a kind with project/unproject is pinnable; a label leader lands where it says', () => {
+  registerKind('test-dial', {
+    label: 'dial', draw() {},
+    project: (f, p) => ({ x: f.box[0] + 10 * (1 + p[0]), y: f.box[1] + 10 * (1 - p[1]), inside: true }),
+    unproject: (f, x, y) => [(x - f.box[0]) / 10 - 1, 1 - (y - f.box[1]) / 10, 0],
+  });
+  const dial = { id: 'd', kind: 'test-dial', box: [20, 30, 20, 20], content: {} }, txt = { id: 't', kind: 'text', box: [0, 0, 5, 5], content: {} };
+  assert.ok(canPin(dial)); assert.ok(!canPin(txt));
+  assert.deepEqual(pinToPage(dial, [0, 0, 1]), { x: 30, y: 40, inside: true });
+  assert.deepEqual(pageToPin(dial, 30, 40), [0, 0, 0]);
+  // and the label kind draws its leader to that point
+  const d = createDocument(); d.frames.push(dial, { id: 'L', kind: 'label', box: [60, 60, 20, 6], content: { text: 'here', at: [0.5, 0.5, 0], of: 'd' } });
+  const segs = []; const spy = new Proxy({}, { get: (o, k) => (k === 'lineTo' ? (x, y) => segs.push([x, y]) : k === 'measureText' ? (t) => ({ width: t.length }) : typeof k === 'string' && /^(fill|stroke|save|restore|clip|rect|beginPath|moveTo|arc|fillRect|strokeRect|fillText|closePath|translate|scale|setLineDash)$/.test(k) ? () => {} : o[k]), set: (o, k, v) => { o[k] = v; return true; } });
+  renderPage(d, spy, {});
+  assert.ok(segs.some(([x, y]) => Math.abs(x - 35) < 1e-9 && Math.abs(y - 35) < 1e-9), `the leader ends on the pinned point (35, 35): ${JSON.stringify(segs)}`);
+});

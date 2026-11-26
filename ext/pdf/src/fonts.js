@@ -27,29 +27,35 @@ const WIN_HIGH = { '€': 128, '‚': 130, 'ƒ': 131, '„': 132, '…': 133, '�
 // characters the encoding lacks, written as their plain forms
 const SUBST = { '−': '-', '≥': '>=', '≤': '<=', '→': '->', '←': '<-', '≠': '!=', '≈': '~', '′': "'", '″': '"', 'μ': 'µ', '∙': '·', '⋅': '·', ' ': ' ', ' ': ' ', ' ': ' ' };
 
-export const STANDARD_FONTS = ['Helvetica', 'Helvetica-Bold', 'Courier', 'Courier-Bold', 'Times-Roman', 'Times-Bold'];
+// (the italics come after the uprights, so a page's F1…F6 tags stay what they were)
+export const STANDARD_FONTS = ['Helvetica', 'Helvetica-Bold', 'Courier', 'Courier-Bold', 'Times-Roman', 'Times-Bold',
+  'Helvetica-Oblique', 'Helvetica-BoldOblique', 'Courier-Oblique', 'Courier-BoldOblique', 'Times-Italic', 'Times-BoldItalic'];
 
-// a CSS font string → { name (a standard font), size (px of the user space), mono, serif, bold }
+// a CSS font string → { name (a standard font), size (px of the user space), mono, serif, bold, italic }
 export function parseFont(css) {
   const s = String(css || '10px sans-serif');
   const m = /(\d+(?:\.\d+)?)px/.exec(s);
   const size = m ? +m[1] : 10;
-  const bold = /\b(bold|bolder|[6-9]00)\b/.test(s.slice(0, m ? m.index : s.length));
+  const pre = s.slice(0, m ? m.index : s.length);
+  const bold = /\b(bold|bolder|[6-9]00)\b/.test(pre), italic = /\b(italic|oblique)\b/.test(pre);
   const fam = (m ? s.slice(m.index + m[0].length) : s).replace(/^\s*\/\s*[\d.]+\w*/, '').toLowerCase();
   // the FIRST family decides (a stack's fallbacks don't): 'Space Mono', … monospace → mono
   const first = (fam.split(',')[0] || '').trim();
   const mono = /mono|courier|consol|menlo|code|fixed|typewriter/.test(first) || (/\bmonospace\b/.test(fam) && !/sans|serif|helvetica|arial|barlow|system-ui/.test(first));
   const serif = !mono && (/(^|[^-])\bserif\b|times|georgia|garamond|cambria|book/.test(first) && !/sans/.test(first));
-  const name = mono ? (bold ? 'Courier-Bold' : 'Courier') : serif ? (bold ? 'Times-Bold' : 'Times-Roman') : (bold ? 'Helvetica-Bold' : 'Helvetica');
-  return { name, size, mono, serif, bold };
+  const name = mono ? (bold ? (italic ? 'Courier-BoldOblique' : 'Courier-Bold') : (italic ? 'Courier-Oblique' : 'Courier'))
+    : serif ? (bold ? (italic ? 'Times-BoldItalic' : 'Times-Bold') : (italic ? 'Times-Italic' : 'Times-Roman'))
+      : (bold ? (italic ? 'Helvetica-BoldOblique' : 'Helvetica-Bold') : (italic ? 'Helvetica-Oblique' : 'Helvetica'));
+  return { name, size, mono, serif, bold, italic };
 }
 
 const baseLetter = (ch) => { const d = ch.normalize('NFD'); return d.length > 1 && d.charCodeAt(0) < 128 ? d[0] : null; };
 
-// the width of ONE (already encodable) character in 1/1000 em
+// the width of ONE (already encodable) character in 1/1000 em. The obliques share their upright's metrics
+// exactly (Helvetica, Courier); Times-Italic's are close to Times-Roman's, which stand in for them
 function charWidth(name, ch) {
   if (name.startsWith('Courier')) return 600;
-  const tbl = name === 'Helvetica-Bold' ? HELVB : name.startsWith('Times') ? TIMES : HELV;
+  const tbl = name.startsWith('Helvetica-Bold') ? HELVB : name.startsWith('Times') ? TIMES : HELV;
   const c = ch.charCodeAt(0);
   if (c >= 32 && c <= 126) return tbl[c - 32];
   const e = EXTRA[ch];

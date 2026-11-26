@@ -334,9 +334,13 @@ function snapResize(doc, box, [hx, hy], { ignore = [], tol = 1.5, onlyX = false 
 // type: the page's fonts, sized in points on a millimetre context (a leaf: kinds and world both use it)
 const SANS = "'Barlow', 'Helvetica Neue', Helvetica, Arial, sans-serif";
 const MONO = "'Space Mono', 'JetBrains Mono', Consolas, monospace";
+const SERIF = "Georgia, 'Times New Roman', Times, serif";
 const PT = 25.4 / 72;                                      // mm per point
 const INK = '#1a1a1a';
-const fontMm = (pt, { mono = false, bold = false } = {}) => `${bold ? 'bold ' : ''}${(pt * PT).toFixed(3)}px ${mono ? MONO : SANS}`;
+// a CSS font for the canvas — and for @gcu/pdf, which reads the same string: italic / bold pick the standard
+// face (Helvetica-Oblique, Times-BoldItalic …), the first family picks sans / mono / serif
+const fontMm = (pt, { mono = false, serif = false, bold = false, italic = false } = {}) =>
+  `${italic ? 'italic ' : ''}${bold ? 'bold ' : ''}${(pt * PT).toFixed(3)}px ${mono ? MONO : serif ? SERIF : SANS}`;
 
 // ── src/fields.js ──
 
@@ -803,56 +807,115 @@ const kindOf = (k) => KINDS.get(k) || null;
 
 // ── fields live in fields.js; resolveFields is re-exported from here for the kinds' sake ──
 
+// ── PINS: what a label can point at. A picture of 3D space (content.meta.proj, the camera's matrix —
+// world.js) or a frame whose KIND knows its own projection: kind.project(frame, p) → { x, y, inside } |
+// null (page mm) and kind.unproject(frame, x, y) → p | null. A stereonet is the second: its points are
+// DIRECTIONS on the sphere, and a label pins to one. The matrix-only things (border ticks, overlays,
+// vector sections) keep asking hasProj. ──
+function canPin(f) { if (hasProj(f)) return true; const k = f && kindOf(f.kind); return !!(k && typeof k.project === 'function'); }
+function pinToPage(f, p) {
+  if (hasProj(f)) return worldToPage(f, p);
+  const k = kindOf(f.kind); try { return k && k.project ? k.project(f, p) : null; } catch { return null; }
+}
+function pageToPin(f, x, y) {
+  if (hasProj(f)) return pageToWorld(f, x, y, 0);
+  const k = kindOf(f.kind); try { return k && k.unproject ? k.unproject(f, x, y) : null; } catch { return null; }
+}
+// the part of a pinnable frame its points can land in (an off-picture point's leader stops at its edge)
+const pinRect = (f) => (hasProj(f) ? imageRect(f) : f.box);
+
 // ── text: paragraphs (blank-line or newline separated), **bold** runs, word wrap to the box ──
+// ── MARKDOWN, the part a figure needs. Blocks, one per line: '# ', '## ', '### ' headings · '- ' / '* '
+// bullets and '1. ' numbered items (hanging indent) · '---' a rule · anything else a paragraph line (a blank
+// line a gap). Inline: **bold**, *italic* or _italic_, `code`. Fields ({date} …) are resolved before this. ──
+const HEAD = { 1: 1.6, 2: 1.3, 3: 1.12 };
 function runsOf(line) {
   const out = [];
-  const re = /\*\*([^*]+)\*\*/g;
+  const re = /\*\*([^*]+)\*\*|\*([^*\s][^*]*?)\*|(?<![\w])_([^_\s][^_]*?)_(?![\w])|`([^`]+)`/g;
   let at = 0, m;
-  while ((m = re.exec(line))) { if (m.index > at) out.push({ t: line.slice(at, m.index), b: false }); out.push({ t: m[1], b: true }); at = m.index + m[0].length; }
-  if (at < line.length) out.push({ t: line.slice(at), b: false });
+  while ((m = re.exec(line))) {
+    if (m.index > at) out.push({ t: line.slice(at, m.index) });
+    if (m[1] != null) out.push({ t: m[1], b: true });
+    else if (m[2] != null || m[3] != null) out.push({ t: m[2] != null ? m[2] : m[3], i: true });
+    else out.push({ t: m[4], m: true });
+    at = m.index + m[0].length;
+  }
+  if (at < line.length) out.push({ t: line.slice(at) });
   return out;
 }
-function layoutText(ctx, text, width, { size = 9, mono = false, lineHeight = 1.25 } = {}) {
-  const lines = [];
-  const lh = size * PT * lineHeight;
-  for (const para of String(text).split('\n')) {
+const styleOf = (w, mono, serif, size) => fontMm(w.size || size, { mono: mono || !!w.m, serif: serif && !w.m, bold: !!w.b, italic: !!w.i });
+// text → lines, each an array of measured words ({ t, b, i, m, size, w }) carrying its block's look:
+// line.size, line.lh (its height, mm), line.indent (mm), line.marker ({ t, w } on a list item's first
+// line), line.gap (space above, mm), line.rule (a horizontal rule). lineHeight is the body's.
+function layoutText(ctx, text, width, { size = 9, mono = false, serif = false, lineHeight = 1.25 } = {}) {
+  const lines = [], body = size * PT * lineHeight;
+  let prevBlock = null;
+  for (const raw of String(text).split('\n')) {
+    let para = raw, lsize = size, bold = false, marker = null, kind = 'p';
+    const hd = /^(#{1,3})\s+(.*)$/.exec(para), li = /^\s*([-*•])\s+(.*)$/.exec(para), ol = /^\s*(\d{1,3})[.)]\s+(.*)$/.exec(para);
+    if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(para)) {
+      const r = []; r.rule = true; r.lh = body * 0.8; r.gap = 0; r.size = size; r.indent = 0; lines.push(r); prevBlock = 'rule'; continue;
+    }
+    if (hd) { kind = 'h'; lsize = size * HEAD[hd[1].length]; bold = true; para = hd[2]; }
+    else if (li) { kind = 'li'; marker = '•'; para = li[2]; }
+    else if (ol) { kind = 'li'; marker = ol[1] + '.'; para = ol[2]; }
+    const lh = lsize * PT * lineHeight;
+    // a heading gets air above it (not at the very top); list items sit together
+    const gap = kind === 'h' && lines.length ? body * 0.45 : 0;
+    let mk = null, indent = 0;
+    if (marker) { ctx.font = fontMm(lsize, { mono, serif }); const mw = ctx.measureText(marker + ' ').width; mk = { t: marker, w: mw }; indent = Math.max(mw, lsize * PT * 1.1); }
     const words = [];
-    for (const r of runsOf(para)) for (const w of r.t.split(/(\s+)/)) if (w) words.push({ t: w, b: r.b });
-    let line = [], lw = 0;
-    const flush = () => { while (line.length && /^\s+$/.test(line[line.length - 1].t)) line.pop(); lines.push(line); line = []; lw = 0; };
+    for (const r of runsOf(para)) for (const t of r.t.split(/(\s+)/)) if (t) words.push({ t, b: r.b || bold, i: r.i, m: r.m, size: lsize });
+    let line = [], lw = 0, first = true;
+    const flush = () => {
+      while (line.length && /^\s+$/.test(line[line.length - 1].t)) line.pop();
+      line.size = lsize; line.lh = lh; line.indent = indent; line.gap = first ? gap : 0;
+      if (first && mk) line.marker = mk;
+      lines.push(line); line = []; lw = 0; first = false;
+    };
     for (const w of words) {
-      ctx.font = fontMm(size, { mono, bold: w.b });
+      ctx.font = styleOf(w, mono, serif, lsize);
       const ww = ctx.measureText(w.t).width;
-      if (lw + ww > width && line.length && !/^\s+$/.test(w.t)) flush();
+      if (lw + ww > width - indent && line.length && !/^\s+$/.test(w.t)) flush();
       if (!line.length && /^\s+$/.test(w.t)) continue;
       line.push({ ...w, w: ww }); lw += ww;
     }
     flush();
+    prevBlock = kind;
   }
-  return { lines, lineHeight: lh };
+  return { lines, lineHeight: body };
+}
+// lay out and draw markdown into a box (text frames, labels): { size, mono, serif, pad, align, color, lineHeight }
+function drawText(ctx, text, box, { size = 9, mono = false, serif = false, pad = 1, align = 'left', color = INK, lineHeight = 1.25 } = {}) {
+  const { lines } = layoutText(ctx, text, box[2] - 2 * pad, { size, mono, serif, lineHeight });
+  ctx.fillStyle = color; ctx.strokeStyle = color; ctx.textBaseline = 'top'; ctx.textAlign = 'left';
+  let y = box[1] + pad;
+  for (const line of lines) {
+    y += line.gap || 0;
+    if (line.rule) { ctx.lineWidth = 0.2; ctx.beginPath(); ctx.moveTo(box[0] + pad, y + line.lh / 2); ctx.lineTo(box[0] + box[2] - pad, y + line.lh / 2); ctx.stroke(); y += line.lh; continue; }
+    const tw = line.reduce((s, w) => s + w.w, 0) + (line.indent || 0);
+    const x0 = align === 'center' ? box[0] + (box[2] - tw) / 2 : align === 'right' ? box[0] + box[2] - pad - tw : box[0] + pad;
+    if (line.marker) { ctx.font = fontMm(line.size, { mono, serif }); ctx.fillText(line.marker.t, x0, y); }
+    let x = x0 + (line.indent || 0);
+    // one string per run of the same look (a PDF gets one text object per run, not per word)
+    for (let i = 0; i < line.length;) {
+      const k = styleOf(line[i], mono, serif, line.size);
+      let j = i, t = '', w = 0;
+      while (j < line.length && styleOf(line[j], mono, serif, line.size) === k) { t += line[j].t; w += line[j].w; j++; }
+      ctx.font = k; ctx.fillText(t, x, y); x += w; i = j;
+    }
+    y += line.lh;
+  }
+  return y - box[1];                                        // the height used (mm)
 }
 
 registerKind('text', {
   label: 'text',
   draw(ctx, box, frame, env) {
     const c = frame.content || {};
-    const size = +c.size || 9, mono = !!c.mono, pad = c.pad ?? 1;
     const text = resolveFields(c.md || '', env, frame);
-    const { lines, lineHeight } = layoutText(ctx, text, box[2] - 2 * pad, { size, mono });
-    ctx.fillStyle = c.color || INK; ctx.textBaseline = 'top';
-    let y = box[1] + pad;
-    for (const line of lines) {
-      const tw = line.reduce((s, w) => s + w.w, 0);
-      let x = c.align === 'center' ? box[0] + (box[2] - tw) / 2 : c.align === 'right' ? box[0] + box[2] - pad - tw : box[0] + pad;
-      ctx.textAlign = 'left';
-      // one string per same-weight run (a PDF gets one text object per run, not per word)
-      for (let i = 0; i < line.length;) {
-        let j = i, t = '', w = 0;
-        while (j < line.length && line[j].b === line[i].b) { t += line[j].t; w += line[j].w; j++; }
-        ctx.font = fontMm(size, { mono, bold: line[i].b }); ctx.fillText(t, x, y); x += w; i = j;
-      }
-      y += lineHeight;
-    }
+    drawText(ctx, text, box, { size: +c.size || 9, mono: !!c.mono || c.font === 'mono', serif: c.font === 'serif', pad: c.pad ?? 1,
+      align: c.align || 'left', color: c.color || INK, lineHeight: +c.lineHeight || 1.25 });
   },
 });
 
@@ -892,8 +955,9 @@ registerKind('image', {
 });
 
 // ── label: text pinned to a WORLD point. The box holds the text, wherever you put it; a leader runs
-// to where content.at lands in the view it refers to (content.of, else the nearest view with a
-// projection) — so the label follows its point when the view is rendered again. ──
+// to where content.at lands in the view it refers to (content.of, else the nearest frame it can pin
+// to) — so the label follows its point when the view is rendered again. On a stereonet the point is a
+// direction (see PINS above). ──
 registerKind('label', {
   label: 'label',
   overflow: true,                                          // the leader leaves the box: not clipped to it
@@ -902,13 +966,13 @@ registerKind('label', {
     const text = resolveFields(c.text != null ? c.text : (c.md || ''), env, frame);
     let anc = null, off = false;
     if (Array.isArray(c.at) && c.at.length === 3 && env.doc) {
-      const v = subjectFrame(env, frame, hasProj);
-      if (v && hasProj(v)) {
-        const p = worldToPage(v, c.at.map(Number));
+      const v = subjectFrame(env, frame, canPin);
+      if (v && canPin(v)) {
+        const p = pinToPage(v, c.at.map(Number));
         if (p && p.inside) anc = p;
         else if (p) {
           // the point is outside the picture: the leader stops at the picture's edge, toward it, with an arrowhead
-          const r = imageRect(v), cx = box[0] + box[2] / 2, cy = box[1] + box[3] / 2, dx = p.x - cx, dy = p.y - cy;
+          const r = pinRect(v), cx = box[0] + box[2] / 2, cy = box[1] + box[3] / 2, dx = p.x - cx, dy = p.y - cy;
           let t = 1;
           for (const [d, lo, hi, o] of [[dx, r[0], r[0] + r[2], cx], [dy, r[1], r[1] + r[3], cy]]) if (d) { const tt = ((d > 0 ? hi : lo) - o) / d; if (tt > 0) t = Math.min(t, tt); }
           if (t > 0 && t < 1) { anc = { x: cx + dx * t, y: cy + dy * t }; off = true; }
@@ -929,14 +993,7 @@ registerKind('label', {
     ctx.save();
     ctx.beginPath(); ctx.rect(box[0], box[1], box[2], box[3]); ctx.clip();
     if (c.backing !== false) { ctx.fillStyle = 'rgba(255,255,255,0.85)'; ctx.fillRect(box[0], box[1], box[2], box[3]); }
-    const { lines, lineHeight } = layoutText(ctx, text, box[2] - 2 * pad, { size });
-    ctx.fillStyle = c.color || INK; ctx.textBaseline = 'top'; ctx.textAlign = 'left';
-    let y = box[1] + pad;
-    for (const line of lines) {
-      let x = box[0] + pad;
-      for (const w of line) { ctx.font = fontMm(size, { bold: w.b }); ctx.fillText(w.t, x, y); x += w.w; }
-      y += lineHeight;
-    }
+    drawText(ctx, text, box, { size, pad, color: c.color || INK, mono: c.font === 'mono', serif: c.font === 'serif', align: c.align || 'left' });
     ctx.restore();
   },
 });
@@ -979,14 +1036,36 @@ registerKind('drawlist', {
 });
 
 // ── legend: classes (swatch + label) or a ramp (bar + ends), with a title ──
+// A legend's DATA (entries, the ramp) is the host's: a refresh replaces it. What you SET lives beside it and
+// survives a refresh — content.edit (per entry, by its key: { label, color, hidden }), content.order (keys),
+// columns, swatch ('square' | 'circle' | 'line'), size, textColor, and the title once you've typed one
+// (titleUser). refreshLegend is the merge every host uses.
+const LEGEND_USER_KEYS = ['edit', 'order', 'columns', 'swatch', 'size', 'textColor', 'titleUser'];
+function refreshLegend(old = {}, fresh = {}) {
+  const out = { ...fresh };
+  for (const k of LEGEND_USER_KEYS) if (old[k] !== undefined) out[k] = old[k];
+  if (old.titleUser) out.title = old.title;
+  return out;
+}
+const legendKey = (e) => String(e.key != null ? e.key : e.label);
+// the entries as drawn: the host's, with your edits, in your order (hidden ones included, flagged)
+function legendEntries(c) {
+  const edit = c.edit || {};
+  let es = (c.entries || []).map((e, i) => ({ ...e, ...(edit[legendKey(e)] || {}), _key: legendKey(e), _i: i }));
+  if (Array.isArray(c.order) && c.order.length) {
+    const pos = new Map(c.order.map((k, i) => [k, i]));
+    es.sort((a, b) => (pos.has(a._key) ? pos.get(a._key) : 1e6 + a._i) - (pos.has(b._key) ? pos.get(b._key) : 1e6 + b._i));
+  }
+  return es;
+}
 registerKind('legend', {
   label: 'legend',
   draw(ctx, box, frame, env) {
-    const c = frame.content || {};
+    const c = frame.content || {}, ink = c.textColor || INK;
     const title = c.title ? resolveFields(c.title, env, frame) : '';
     const size = +c.size || 8, row = size * PT * 1.55, sw = size * PT * 1.1;
     let y = box[1] + 0.5;
-    ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.fillStyle = INK;
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.fillStyle = ink;
     if (title) { ctx.font = fontMm(size + 1, { bold: true }); ctx.fillText(title, box[0] + 0.5, y); y += row * 1.1; }
     ctx.font = fontMm(size);
     if (c.kind === 'ramp' && Array.isArray(c.stops) && c.stops.length) {
@@ -994,22 +1073,27 @@ registerKind('legend', {
       const n = c.stops.length;
       for (let i = 0; i < n; i++) { ctx.fillStyle = c.stops[n - 1 - i]; ctx.fillRect(box[0] + 0.5, y + (i * bh) / n, bw, (bh / n) * (i < n - 1 ? 1.6 : 1)); }   // each step tucks under the next: no seams
       ctx.strokeStyle = '#555'; ctx.lineWidth = 0.15; ctx.strokeRect(box[0] + 0.5, y, bw, bh);
-      ctx.fillStyle = INK; ctx.textBaseline = 'middle';
-      ctx.fillText(c.hiLabel ?? String(c.hi ?? ''), box[0] + bw + 1.5, y + size * PT * 0.4);
-      ctx.fillText(c.loLabel ?? String(c.lo ?? ''), box[0] + bw + 1.5, y + bh - size * PT * 0.4);
+      ctx.fillStyle = ink; ctx.textBaseline = 'middle';
+      const ed = c.edit || {};
+      ctx.fillText(ed.hiLabel ?? c.hiLabel ?? String(c.hi ?? ''), box[0] + bw + 1.5, y + size * PT * 0.4);
+      ctx.fillText(ed.loLabel ?? c.loLabel ?? String(c.lo ?? ''), box[0] + bw + 1.5, y + bh - size * PT * 0.4);
       y += bh + 1;
-      if (c.tail) { ctx.fillStyle = c.tail.color; ctx.fillRect(box[0] + 0.5, y, sw, sw); ctx.fillStyle = INK; ctx.fillText(c.tail.label, box[0] + sw + 2, y + sw / 2); }
+      if (c.tail) { ctx.fillStyle = c.tail.color; ctx.fillRect(box[0] + 0.5, y, sw, sw); ctx.fillStyle = ink; ctx.fillText(c.tail.label, box[0] + sw + 2, y + sw / 2); }
       return;
     }
-    const entries = (c.entries || []).concat(c.tail ? [c.tail] : []);
+    const entries = legendEntries(c).filter((e) => !e.hidden).concat(c.tail ? [c.tail] : []);
+    const cols = Math.max(1, Math.min(6, Math.round(+c.columns || 1))), colW = (box[2] - 0.5) / cols;
     ctx.textBaseline = 'middle';
-    for (const e of entries) {
-      if (y + row > box[1] + box[3] + 0.5) break;
-      ctx.fillStyle = e.color; ctx.fillRect(box[0] + 0.5, y, sw, sw);
-      ctx.strokeStyle = 'rgba(0,0,0,0.45)'; ctx.lineWidth = 0.12; ctx.strokeRect(box[0] + 0.5, y, sw, sw);
-      ctx.fillStyle = INK; ctx.fillText(String(e.label), box[0] + sw + 2, y + sw / 2);
-      y += row;
-    }
+    entries.forEach((e, i) => {
+      const cx = box[0] + 0.5 + (i % cols) * colW, cy = y + Math.floor(i / cols) * row;
+      if (cy + row > box[1] + box[3] + 0.5) return;
+      const shape = e.swatch || c.swatch || 'square';
+      ctx.fillStyle = e.color; ctx.strokeStyle = e.color;
+      if (shape === 'circle') { ctx.beginPath(); ctx.arc(cx + sw / 2, cy + sw / 2, sw * 0.42, 0, Math.PI * 2); ctx.fill(); ctx.strokeStyle = 'rgba(0,0,0,0.45)'; ctx.lineWidth = 0.12; ctx.stroke(); }
+      else if (shape === 'line') { ctx.lineWidth = Math.max(0.3, sw * 0.18); ctx.beginPath(); ctx.moveTo(cx, cy + sw / 2); ctx.lineTo(cx + sw * 1.4, cy + sw / 2); ctx.stroke(); }
+      else { ctx.fillRect(cx, cy, sw, sw); ctx.strokeStyle = 'rgba(0,0,0,0.45)'; ctx.lineWidth = 0.12; ctx.strokeRect(cx, cy, sw, sw); }
+      ctx.fillStyle = ink; ctx.fillText(String(e.label), cx + (shape === 'line' ? sw * 1.4 : sw) + 2, cy + sw / 2);
+    });
   },
 });
 
@@ -1257,29 +1341,35 @@ const WIN_HIGH = { '€': 128, '‚': 130, 'ƒ': 131, '„': 132, '…': 133, '�
 // characters the encoding lacks, written as their plain forms
 const SUBST = { '−': '-', '≥': '>=', '≤': '<=', '→': '->', '←': '<-', '≠': '!=', '≈': '~', '′': "'", '″': '"', 'μ': 'µ', '∙': '·', '⋅': '·', ' ': ' ', ' ': ' ', ' ': ' ' };
 
-const STANDARD_FONTS = ['Helvetica', 'Helvetica-Bold', 'Courier', 'Courier-Bold', 'Times-Roman', 'Times-Bold'];
+// (the italics come after the uprights, so a page's F1…F6 tags stay what they were)
+const STANDARD_FONTS = ['Helvetica', 'Helvetica-Bold', 'Courier', 'Courier-Bold', 'Times-Roman', 'Times-Bold',
+  'Helvetica-Oblique', 'Helvetica-BoldOblique', 'Courier-Oblique', 'Courier-BoldOblique', 'Times-Italic', 'Times-BoldItalic'];
 
-// a CSS font string → { name (a standard font), size (px of the user space), mono, serif, bold }
+// a CSS font string → { name (a standard font), size (px of the user space), mono, serif, bold, italic }
 function parseFont(css) {
   const s = String(css || '10px sans-serif');
   const m = /(\d+(?:\.\d+)?)px/.exec(s);
   const size = m ? +m[1] : 10;
-  const bold = /\b(bold|bolder|[6-9]00)\b/.test(s.slice(0, m ? m.index : s.length));
+  const pre = s.slice(0, m ? m.index : s.length);
+  const bold = /\b(bold|bolder|[6-9]00)\b/.test(pre), italic = /\b(italic|oblique)\b/.test(pre);
   const fam = (m ? s.slice(m.index + m[0].length) : s).replace(/^\s*\/\s*[\d.]+\w*/, '').toLowerCase();
   // the FIRST family decides (a stack's fallbacks don't): 'Space Mono', … monospace → mono
   const first = (fam.split(',')[0] || '').trim();
   const mono = /mono|courier|consol|menlo|code|fixed|typewriter/.test(first) || (/\bmonospace\b/.test(fam) && !/sans|serif|helvetica|arial|barlow|system-ui/.test(first));
   const serif = !mono && (/(^|[^-])\bserif\b|times|georgia|garamond|cambria|book/.test(first) && !/sans/.test(first));
-  const name = mono ? (bold ? 'Courier-Bold' : 'Courier') : serif ? (bold ? 'Times-Bold' : 'Times-Roman') : (bold ? 'Helvetica-Bold' : 'Helvetica');
-  return { name, size, mono, serif, bold };
+  const name = mono ? (bold ? (italic ? 'Courier-BoldOblique' : 'Courier-Bold') : (italic ? 'Courier-Oblique' : 'Courier'))
+    : serif ? (bold ? (italic ? 'Times-BoldItalic' : 'Times-Bold') : (italic ? 'Times-Italic' : 'Times-Roman'))
+      : (bold ? (italic ? 'Helvetica-BoldOblique' : 'Helvetica-Bold') : (italic ? 'Helvetica-Oblique' : 'Helvetica'));
+  return { name, size, mono, serif, bold, italic };
 }
 
 const baseLetter = (ch) => { const d = ch.normalize('NFD'); return d.length > 1 && d.charCodeAt(0) < 128 ? d[0] : null; };
 
-// the width of ONE (already encodable) character in 1/1000 em
+// the width of ONE (already encodable) character in 1/1000 em. The obliques share their upright's metrics
+// exactly (Helvetica, Courier); Times-Italic's are close to Times-Roman's, which stand in for them
 function charWidth(name, ch) {
   if (name.startsWith('Courier')) return 600;
-  const tbl = name === 'Helvetica-Bold' ? HELVB : name.startsWith('Times') ? TIMES : HELV;
+  const tbl = name.startsWith('Helvetica-Bold') ? HELVB : name.startsWith('Times') ? TIMES : HELV;
   const c = ch.charCodeAt(0);
   if (c >= 32 && c <= 126) return tbl[c - 32];
   const e = EXTRA[ch];
@@ -2392,6 +2482,11 @@ const CSS = `
 .compo-side .row:has(.stack) { align-items: start; }
 .compo-side .row:has(.stack) > span:first-child { line-height: 22px; }
 .compo-side .pair { flex: 1 1 0; display: flex; gap: 4px; align-items: center; min-width: 0; }
+.compo-side .leg { display: flex; gap: 4px; align-items: center; min-height: 24px; }
+.compo-side .leg input:not([type]), .compo-side .leg input[type=text] { flex: 1 1 auto; min-width: 0; }
+.compo-side .leg input[type=color] { width: 26px; padding: 0; flex: 0 0 auto; }
+.compo-side .leg button { min-width: 22px; padding: 0 3px; }
+.compo-side .leg.off input:not([type=color]) { opacity: 0.45; }
 .compo-side .pair > i { font-style: normal; color: var(--compo-dim, var(--dim, #9a9a9a)); width: 8px; text-align: center; }
 .compo-side .pair > input { flex: 1 1 0; min-width: 0; width: auto; }
 .compo-side .row input:not([type=checkbox]), .compo-side .row select { box-sizing: border-box; height: 22px; }
@@ -2441,6 +2536,19 @@ function injectCss() { if (_css || typeof document === 'undefined') return; _css
 const h = (tag, props = {}, ...kids) => { const e = document.createElement(tag); for (const [k, v] of Object.entries(props)) { if (k === 'style') e.style.cssText = v; else if (k.startsWith('on')) e[k] = v; else if (k in e) e[k] = v; else e.setAttribute(k, v); } for (const c of kids) e.append(c); return e; };
 
 // frames that refer to another (captions, scale bars, north arrows) and frames that can be referred to (views: they state a scale)
+// any CSS colour → #rrggbb for an <input type=color> (which takes nothing else)
+let _cc = null;
+function toHex(css, dflt = '#1a1a1a') {
+  if (!css) return dflt;
+  if (/^#[0-9a-f]{6}$/i.test(css)) return css.toLowerCase();
+  try {
+    if (!_cc) _cc = document.createElement('canvas').getContext('2d');
+    _cc.fillStyle = '#000'; _cc.fillStyle = css; const v = _cc.fillStyle;
+    if (/^#[0-9a-f]{6}$/i.test(v)) return v;
+    const m = /rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(v);
+    return m ? '#' + [m[1], m[2], m[3]].map((n) => (+n).toString(16).padStart(2, '0')).join('') : dflt;
+  } catch { return dflt; }
+}
 const canRefer = (f) => f.kind === 'text' || f.kind === 'scalebar' || f.kind === 'north' || f.kind === 'label' || f.kind === 'titleblock';
 const isReferable = (f) => !!(f.content && f.content.meta);
 function mountEditor(el, doc, opts = {}) {
@@ -2526,7 +2634,7 @@ function mountEditor(el, doc, opts = {}) {
   const grp = (...kids) => h('span', { className: 'compo-grp-bar' }, ...kids);
   const hostBtns = (opts.toolbar || []).map((t) => { const run = () => t.run(api); return t.icon ? ib(t.icon, t.label, t.keys || '', t.title || '', run) : btn(t.label, t.title || '', run); });
   bar.append(grp(undoBtn, redoBtn), sep(),
-    grp(...hostBtns, ib('label', 'Add label', '', 'a label pinned to a world point in a 3D view (the host may supply the point)', () => addLabel()),
+    grp(...hostBtns, ib('label', 'Add label', '', 'a label pinned to a point in a 3D view, or a direction on a stereonet (the host may supply the point)', () => addLabel()),
       ib('text', 'Add text', '', 'a text frame — a caption (fields: {fig} {page} {date} ${…})', () => add({ kind: 'text', content: { md: '**Figure {fig}.** caption', size: 9 } }))),
     sep(), grp(...alignBtns, ...distBtns, ...sizeBtns), sep(), grp(groupBtn, ungroupBtn), sep(), grp(frontBtn, fwdBtn, bwdBtn, backBtn, delBtn),
     sep(), grp(sizeSel, oriSel, customSpan, zoomSel, gridSel, rulersBtn), status);
@@ -2668,7 +2776,8 @@ function mountEditor(el, doc, opts = {}) {
     insp.append(h('div', { className: 'row' }, h('span', { textContent: 'id' }), h('span', { className: 'ctl' }, idIn)));
     if (canRefer(f)) {
       // refers to: the nearest view (the default — it says which), or a fixed one
-      const near = refFrame(D, f, null, isReferable), cands = D.frames.filter((x) => x !== f && isReferable(x));
+      const refOK = f.kind === 'label' ? canPin : isReferable;   // a label refers to what it can pin to: a 3D view or a net
+      const near = refFrame(D, f, null, refOK), cands = D.frames.filter((x) => x !== f && refOK(x));
       const rs = h('select', { title: 'the frame this one is about: its fields ({scale} {section} …), or the view a scale bar / north arrow measures' },
         h('option', { value: '', textContent: near ? `nearest → ${near.id}` : 'nearest (none yet)' }),
         ...cands.map((x) => h('option', { value: x.id, textContent: x.id })));
@@ -2683,9 +2792,21 @@ function mountEditor(el, doc, opts = {}) {
     };
     insp.append(h('div', { className: 'row' }, h('span', { textContent: 'position' }), h('span', { className: 'ctl' }, num('x', 0), num('y', 1))));
     insp.append(h('div', { className: 'row' }, h('span', { textContent: 'size' }), h('span', { className: 'ctl' }, num('w', 2), num('h', 3))));
-    const bd = h('input', { type: 'checkbox', checked: !!(f.style && f.style.border) });
-    bd.onchange = () => commit(() => { f.style = { ...(f.style || {}), border: bd.checked }; });
-    insp.append(h('label', { className: 'row' }, h('span', { textContent: 'border' }), h('span', { className: 'ctl' }, bd)));
+    const st = f.style || {};
+    const setStyle = (k, v) => commit(() => { f.style = { ...(f.style || {}) }; if (v == null || v === '' || v === false) delete f.style[k]; else f.style[k] = v; });
+    const bd = h('input', { type: 'checkbox', checked: !!st.border });
+    bd.onchange = () => setStyle('border', bd.checked);
+    const bc = h('input', { type: 'color', value: toHex(st.borderColor), title: 'border colour' });
+    bc.onchange = () => setStyle('borderColor', bc.value);
+    const bw = h('input', { type: 'number', min: 0.05, max: 3, step: 0.05, value: st.borderWidth || 0.25, title: 'border width (mm)', style: 'width:56px' });
+    bw.onchange = () => setStyle('borderWidth', +bw.value || null);
+    insp.append(h('div', { className: 'row' }, h('span', { textContent: 'border' }), h('span', { className: 'ctl' }, bd, bc, bw)));
+    // a fill behind the frame: a panel, a band, a highlight (empty = none)
+    const fillOn = h('input', { type: 'checkbox', checked: !!st.background, title: 'a fill behind the frame' });
+    const fillC = h('input', { type: 'color', value: toHex(st.background, '#f2f2f0'), title: 'fill colour' });
+    fillOn.onchange = () => setStyle('background', fillOn.checked ? fillC.value : null);
+    fillC.onchange = () => { if (fillOn.checked) setStyle('background', fillC.value); };
+    insp.append(h('div', { className: 'row' }, h('span', { textContent: 'fill' }), h('span', { className: 'ctl' }, fillOn, fillC)));
     const lk = h('input', { type: 'checkbox', checked: !!f.locked });
     lk.onchange = () => commit(() => { f.locked = lk.checked; });
     insp.append(h('label', { className: 'row', title: 'a locked frame won’t move, resize or delete' }, h('span', { textContent: 'locked' }), h('span', { className: 'ctl' }, lk)));
@@ -2701,8 +2822,15 @@ function mountEditor(el, doc, opts = {}) {
       const align = h('select', {}, ...['left', 'center', 'right'].map((v) => h('option', { value: v, textContent: v })));
       align.value = f.content.align || 'left';
       align.onchange = () => commit(() => { f.content.align = align.value; });
-      const mono = h('input', { type: 'checkbox', checked: !!f.content.mono });
-      mono.onchange = () => commit(() => { f.content.mono = mono.checked; });
+      const fontSel = h('select', { title: 'the typeface' }, ...[['sans', 'sans'], ['serif', 'serif'], ['mono', 'monospace']].map(([v, t]) => h('option', { value: v, textContent: t })));
+      fontSel.value = f.content.font || (f.content.mono ? 'mono' : 'sans');
+      fontSel.onchange = () => commit(() => { f.content.font = fontSel.value; delete f.content.mono; });
+      const col = h('input', { type: 'color', value: toHex(f.content.color), title: 'text colour' });
+      col.onchange = () => commit(() => { f.content.color = col.value; });
+      const lh = h('input', { type: 'number', min: 0.8, max: 3, step: 0.05, value: f.content.lineHeight || 1.25, title: 'line spacing (× the size)', style: 'width:56px' });
+      lh.onchange = () => commit(() => { f.content.lineHeight = +lh.value || 1.25; });
+      const pad = h('input', { type: 'number', min: 0, max: 20, step: 0.5, value: f.content.pad ?? 1, title: 'padding inside the frame (mm)', style: 'width:56px' });
+      pad.onchange = () => commit(() => { f.content.pad = Math.max(0, +pad.value || 0); });
       // insert a field at the caret (compo's own and the host's, each with its help as the tooltip)
       const fl = fieldList(opts.env || {});
       const fsel = h('select', { title: 'insert a field at the caret', className: 'compo-fields' }, h('option', { value: '', textContent: 'insert field…' }),
@@ -2713,9 +2841,11 @@ function mountEditor(el, doc, opts = {}) {
         commit(() => { f.content.md = ta.value.slice(0, a) + tok + ta.value.slice(b); });
         requestAnimationFrame(() => { const t2 = side.querySelector('textarea'); if (t2) { t2.focus(); t2.selectionStart = t2.selectionEnd = a + tok.length; } });
       };
-      insp.append(ta, h('div', { className: 'row' }, h('span', { textContent: 'size (pt)' }), h('span', { className: 'ctl' }, size, align)), h('label', { className: 'row' }, h('span', { textContent: 'monospace' }), h('span', { className: 'ctl' }, mono)),
+      insp.append(ta, h('div', { className: 'row' }, h('span', { textContent: 'size (pt)' }), h('span', { className: 'ctl' }, size, align)),
+        h('div', { className: 'row' }, h('span', { textContent: 'type' }), h('span', { className: 'ctl' }, fontSel, col)),
+        h('div', { className: 'row' }, h('span', { textContent: 'spacing' }), h('span', { className: 'ctl' }, h('span', { className: 'pair' }, h('i', { textContent: '↕' }), lh), h('span', { className: 'pair' }, h('i', { textContent: '▢' }), pad))),
         h('div', { className: 'row' }, h('span', { textContent: 'fields' }), h('span', { className: 'ctl' }, fsel)),
-        h('div', { className: 'hint', textContent: '**bold** · {name} or {name:arg} · a number format at the end, {count:,} · ${expr:,.2f}' }));
+        h('div', { className: 'hint', textContent: '# title · ## subtitle · - list · 1. list · --- rule · **bold** · *italic* · `code` · {name} fields, {count:,} · ${expr:,.2f}' }));
       api._focusText = () => ta.focus();
     }
     if (f.kind === 'image') {
@@ -2730,12 +2860,88 @@ function mountEditor(el, doc, opts = {}) {
         insp.append(h('div', { className: 'row' }, h('span', { textContent: 'coords' }), h('span', { className: 'ctl' }, tk)));
       }
     }
+    if (f.kind === 'legend') {
+      // the look, then each entry: show/hide, colour, label, order. Your edits sit beside the host's data
+      // (content.edit / order — kinds.js), so refreshing the legend from the data keeps them
+      const c = f.content || (f.content = {});
+      const ttl = h('input', { value: c.title || '', placeholder: 'no title', title: 'the legend’s title (fields work: {name})' });
+      ttl.onchange = () => commit(() => { f.content.title = ttl.value; f.content.titleUser = true; });
+      const gsz = h('input', { type: 'number', min: 4, max: 24, step: 0.5, value: c.size || 8, title: 'text size (pt)', style: 'width:56px' });
+      gsz.onchange = () => commit(() => { f.content.size = +gsz.value || 8; });
+      const tcol = h('input', { type: 'color', value: toHex(c.textColor), title: 'text colour' });
+      tcol.onchange = () => commit(() => { f.content.textColor = tcol.value; });
+      insp.append(h('div', { className: 'row' }, h('span', { textContent: 'title' }), h('span', { className: 'ctl' }, ttl)),
+        h('div', { className: 'row' }, h('span', { textContent: 'type' }), h('span', { className: 'ctl' }, gsz, tcol)));
+      const setEdit = (key, patch) => commit(() => {
+        const ed = { ...(f.content.edit || {}) }, cur = { ...(ed[key] || {}), ...patch };
+        for (const k of Object.keys(cur)) if (cur[k] == null) delete cur[k];
+        if (Object.keys(cur).length) ed[key] = cur; else delete ed[key];
+        if (Object.keys(ed).length) f.content.edit = ed; else delete f.content.edit;
+      });
+      if (c.kind === 'ramp') {
+        const hiL = h('input', { value: (c.edit && c.edit.hiLabel) ?? c.hiLabel ?? String(c.hi ?? ''), title: 'the top label' });
+        const loL = h('input', { value: (c.edit && c.edit.loLabel) ?? c.loLabel ?? String(c.lo ?? ''), title: 'the bottom label' });
+        hiL.onchange = () => commit(() => { f.content.edit = { ...(f.content.edit || {}), hiLabel: hiL.value }; });
+        loL.onchange = () => commit(() => { f.content.edit = { ...(f.content.edit || {}), loLabel: loL.value }; });
+        insp.append(h('div', { className: 'row' }, h('span', { textContent: 'top' }), h('span', { className: 'ctl' }, hiL)),
+          h('div', { className: 'row' }, h('span', { textContent: 'bottom' }), h('span', { className: 'ctl' }, loL)));
+      } else {
+        const cols = h('input', { type: 'number', min: 1, max: 6, step: 1, value: c.columns || 1, title: 'columns', style: 'width:56px' });
+        cols.onchange = () => commit(() => { const n = Math.max(1, Math.min(6, Math.round(+cols.value || 1))); if (n === 1) delete f.content.columns; else f.content.columns = n; });
+        const shape = h('select', { title: 'the swatch: a square (areas), a dot (points), a line (curves)' }, ...['square', 'circle', 'line'].map((v) => h('option', { value: v, textContent: v })));
+        shape.value = c.swatch || 'square';
+        shape.onchange = () => commit(() => { if (shape.value === 'square') delete f.content.swatch; else f.content.swatch = shape.value; });
+        insp.append(h('div', { className: 'row' }, h('span', { textContent: 'layout' }), h('span', { className: 'ctl' }, h('span', { className: 'pair' }, h('i', { textContent: '▥' }), cols), shape)));
+        const es = legendEntries(c), keys = es.map((e) => e._key);
+        const orig = (k) => (c.entries || []).find((x) => legendKey(x) === k) || {};
+        es.forEach((e, i) => {
+          const eye = h('button', { textContent: e.hidden ? '◌' : '◉', title: e.hidden ? 'show this entry' : 'hide this entry (not drawn)', onclick: () => setEdit(e._key, { hidden: e.hidden ? null : true }) });
+          const sw = h('input', { type: 'color', value: toHex(e.color, '#888888'), title: 'its colour' });
+          sw.onchange = () => setEdit(e._key, { color: toHex(orig(e._key).color) === sw.value ? null : sw.value });
+          const lb = h('input', { value: String(e.label ?? ''), title: 'its label' });
+          lb.onchange = () => setEdit(e._key, { label: lb.value === String(orig(e._key).label ?? '') ? null : lb.value });
+          const move = (d) => () => { const j = i + d; if (j < 0 || j >= keys.length) return; const k = keys.slice(); [k[i], k[j]] = [k[j], k[i]]; commit(() => { f.content.order = k; }); };
+          const up = h('button', { textContent: '↑', title: 'move up', disabled: i === 0, onclick: move(-1) });
+          const dn = h('button', { textContent: '↓', title: 'move down', disabled: i === es.length - 1, onclick: move(1) });
+          insp.append(h('div', { className: 'leg' + (e.hidden ? ' off' : '') }, eye, sw, lb, up, dn));
+        });
+      }
+      const edited = c.edit || c.order || c.titleUser;
+      if (edited) insp.append(h('div', { className: 'row' }, h('span', {}), h('span', { className: 'ctl' }, h('button', { textContent: 'reset edits', title: 'back to the data’s own labels, colours and order', onclick: () => commit(() => { delete f.content.edit; delete f.content.order; delete f.content.titleUser; }) }))));
+      insp.append(h('div', { className: 'hint', textContent: 'your edits stay when the legend is refreshed from the data' }));
+    }
     if (f.kind === 'label') {
       const tx = h('textarea', { value: f.content.text || '', style: 'min-height:40px' });
       tx.onchange = () => commit(() => { f.content.text = tx.value; });
+      const lsz = h('input', { type: 'number', min: 4, max: 48, step: 0.5, value: f.content.size || 7, title: 'size (pt)', style: 'width:56px' });
+      lsz.onchange = () => commit(() => { f.content.size = +lsz.value || 7; });
+      const lfont = h('select', { title: 'the typeface' }, ...[['sans', 'sans'], ['serif', 'serif'], ['mono', 'monospace']].map(([v, t]) => h('option', { value: v, textContent: t })));
+      lfont.value = f.content.font || 'sans';
+      lfont.onchange = () => commit(() => { f.content.font = lfont.value; });
+      const lcol = h('input', { type: 'color', value: toHex(f.content.color), title: 'text, leader and dot colour' });
+      lcol.onchange = () => commit(() => { f.content.color = lcol.value; });
+      const back = h('input', { type: 'checkbox', checked: f.content.backing !== false, title: 'a white backing behind the words, so they read over the picture' });
+      back.onchange = () => commit(() => { f.content.backing = back.checked; });
+      insp.append(h('div', { className: 'row' }, h('span', { textContent: 'type' }), h('span', { className: 'ctl' }, lsz, lfont, lcol)),
+        h('label', { className: 'row' }, h('span', { textContent: 'backing' }), h('span', { className: 'ctl' }, back)));
       const at = f.content.at || [0, 0, 0];
-      const xyz = ['x', 'y', 'z'].map((k, i) => { const inp = h('input', { type: 'number', step: 'any', value: +(+at[i]).toFixed(3), title: `the point, world ${k}` }); inp.onchange = () => commit(() => { const a = (f.content.at || [0, 0, 0]).slice(); a[i] = +inp.value || 0; f.content.at = a; }); return h('span', { className: 'pair' }, h('i', { textContent: k }), inp); });   // world coordinates are long: one per line
-      insp.append(tx, h('div', { className: 'row' }, h('span', { textContent: 'points at' }), h('span', { className: 'ctl stack' }, ...xyz)), h('div', { className: 'hint', textContent: 'the leader follows this world point in the view it refers to' }));
+      const tgt = f.content.of ? frameById(D, f.content.of) : refFrame(D, f, null, canPin);
+      if (tgt && !hasProj(tgt)) {
+        // pinned to a net: the point is a DIRECTION — shown and typed as a line, trend → plunge (axial, lower hemisphere)
+        const len = Math.hypot(at[0], at[1], at[2]) || 1, s = at[2] > 0 ? -1 : 1, d = at.map((v) => (s * v) / len);
+        const tr = ((Math.atan2(d[0], d[1]) * 180 / Math.PI) + 360) % 360, pl = Math.asin(Math.min(1, -d[2])) * 180 / Math.PI;
+        const inp = h('input', { value: `${String(Math.round(tr)).padStart(3, '0')}→${Math.round(pl)}`, title: 'the direction it points at: trend → plunge (also 328/25 or 328 25)' });
+        inp.onchange = () => {
+          const m = /^\s*(-?[\d.]+)\s*(?:→|->|\/|,|\s)\s*(-?[\d.]+)\s*$/.exec(inp.value);
+          if (!m) { say('a direction is trend → plunge, e.g. 328→25'); return; }
+          const t = +m[1] * Math.PI / 180, p = +m[2] * Math.PI / 180;
+          commit(() => { f.content.at = [Math.sin(t) * Math.cos(p), Math.cos(t) * Math.cos(p), -Math.sin(p)].map((v) => +v.toFixed(6)); });
+        };
+        insp.append(tx, h('div', { className: 'row' }, h('span', { textContent: 'points at' }), h('span', { className: 'ctl' }, inp)), h('div', { className: 'hint', textContent: 'the leader follows this direction on the net it refers to' }));
+      } else {
+        const xyz = ['x', 'y', 'z'].map((k, i) => { const inp = h('input', { type: 'number', step: 'any', value: +(+at[i]).toFixed(3), title: `the point, world ${k}` }); inp.onchange = () => commit(() => { const a = (f.content.at || [0, 0, 0]).slice(); a[i] = +inp.value || 0; f.content.at = a; }); return h('span', { className: 'pair' }, h('i', { textContent: k }), inp); });   // world coordinates are long: one per line
+        insp.append(tx, h('div', { className: 'row' }, h('span', { textContent: 'points at' }), h('span', { className: 'ctl stack' }, ...xyz)), h('div', { className: 'hint', textContent: 'the leader follows this world point in the view it refers to' }));
+      }
     }
     if (f.kind === 'titleblock') {
       // its rows, one a line — each a text frame's markdown with fields; a row keeps its type
@@ -2912,15 +3118,19 @@ function mountEditor(el, doc, opts = {}) {
     if (!opts.frameBadge) return null;
     try { const b = opts.frameBadge(f); return !b ? null : typeof b === 'string' ? { text: b } : b; } catch { return null; }
   }
-  // a label: at the host's point (opts.labelPoint(view) → [x,y,z]) or the middle of the view, beside it
+  // a label: at the host's point (opts.labelPoint(view) → [x,y,z]) or the middle of the view, beside it.
+  // Any frame it can pin to: a 3D view (a world point) or a stereonet (a direction) — see kinds.js PINS
   function addLabel() {
     const sv = sel.length === 1 ? frameById(D, sel[0]) : null;
-    const v = (sv && hasProj(sv)) ? sv : D.frames.find((x) => hasProj(x) && !x.hidden);
-    if (!v) { say('a label points at a 3D view — add one first'); return; }
-    let at = opts.labelPoint ? opts.labelPoint(v) : null;
-    if (!at) at = pageToWorld(v, v.box[0] + v.box[2] / 2, v.box[1] + v.box[3] / 2, 0);
+    const v = (sv && canPin(sv)) ? sv : D.frames.find((x) => canPin(x) && !x.hidden);
+    if (!v) { say('a label points at something in a 3D view or on a stereonet — add one first'); return; }
+    // the host's point: [x, y, z], or { at, text } to suggest the words too (wuffle: a selected plane's attitude)
+    let at = opts.labelPoint ? opts.labelPoint(v) : null, text = 'label';
+    if (at && !Array.isArray(at)) { if (at.text) text = String(at.text); at = at.at || null; }
+    if (!at) at = pageToPin(v, v.box[0] + v.box[2] / 2, v.box[1] + v.box[3] / 2);
+    if (!at) { say('could not find a point in that frame to pin the label to'); return; }
     const box = [v.box[0] + v.box[2] * 0.62, v.box[1] + v.box[3] * 0.12, 30, 7];
-    add({ kind: 'label', box, content: { text: 'label', at: at.map((n) => +(+n).toFixed(3)), of: v.id } });
+    add({ kind: 'label', box, content: { text, at: at.map((n) => +(+n).toFixed(hasProj(v) ? 3 : 6)), of: v.id } });   // a direction keeps 6 places
   }
   // a rename → true; refused (and said why) → false
   function doRename(f, raw) {
@@ -3151,11 +3361,20 @@ export {
   LOAD_MIGRATIONS,
   SANS,
   MONO,
+  SERIF,
   fontMm,
   registerKind,
   kindOf,
+  canPin,
+  pinToPage,
+  pageToPin,
   resolveFields,
   layoutText,
+  drawText,
+  refreshLegend,
+  legendEntries,
+  legendKey,
+  LEGEND_USER_KEYS,
   replayDrawList,
   niceBelow,
   frameWorldPerMm,

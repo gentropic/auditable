@@ -5,7 +5,7 @@
 // frames' boxes (the page layout the user arranged) and anything they added.
 
 import * as bearing from '../../../ext/bearing/index.js';
-import { createDocument } from '../../../ext/compo/index.js';
+import { createDocument, refreshLegend } from '../../../ext/compo/index.js';
 import { stereonetCore, formatPlane, formatLine } from '../../../ext/stereonet/index.js';
 import { sceneLayers } from './layers.js';
 import { layerStats } from './stats.js';
@@ -31,7 +31,7 @@ function contents(p, diagramId) {
   return {
     title: { md: `**${g.name}**`, size: 13 },
     net: { scene, net: { projection: g.props.projection, hemisphere: g.props.hemisphere, rotation: g.props.matrix || null, center: g.props.rotation || null, graticule: g.props.graticule || 10 }, title: g.name },
-    legend: { title: 'layers', size: 8, entries: layers.map((L) => ({ color: L.color || '#232322', label: `${named(L)} (${L.data.length})` })) },
+    legend: { title: 'layers', size: 8, entries: layers.map((L) => ({ key: L.id, color: L.color || '#232322', label: `${named(L)} (${L.data.length})` })) },   // key: an edit follows its layer
     stats: { title: 'statistics (axial Fisher mean)', columns: ['layer', 'n', 'mean', 'κ', 'α95 °', 'K'], rows, size: 7.5 },
     caption: { md: `${proj}, ${g.props.hemisphere} hemisphere${g.props.rotation ? `, centered on ${formatLine(g.props.rotation)}` : g.props.matrix ? ', rotated' : ''}${contourTxt}. `
       + `Planes as dip direction/dip, lines as trend→plunge.${lineage.length ? ` Derived: ${lineage.join('; ')}.` : ''} Made with wuffle, {date:DD/MM/YYYY}.`, size: 8 },
@@ -47,13 +47,22 @@ export function buildFigure(p, diagramId) {
   if (g.kind !== 'net') throw new Error(`${g.name} is a ${g.kind} — figures are made from nets for now`);
   const doc = createDocument({ title: g.name });
   const c = contents(p, diagramId);
-  for (const k of Object.keys(BOXES)) doc.frames.push({ id: `wuffle-${k}`, kind: KIND[k], box: BOXES[k].slice(), content: c[k], source: { wuffle: k, diagram: diagramId } });
+  for (const k of Object.keys(BOXES)) doc.frames.push({ id: `wuffle-${k}`, kind: KIND[k], box: BOXES[k].slice(), content: c[k], source: { wuffle: k, diagram: diagramId, ...(KIND[k] === 'text' ? { made: c[k].md } : {}) } });
   return doc;
 }
 
-/** the frames made again from the diagram as it is now; boxes, styles and the user's own frames kept */
+/** the frames made again from the diagram as it is now; boxes, styles and the user's own frames kept — and
+ *  their own edits: a legend keeps its labels, colours, order and look (compo's refreshLegend); a title or
+ *  caption you have rewritten stays yours (only text still reading what wuffle wrote is made again) */
 export function refreshFigure(p, doc, diagramId) {
   const c = contents(p, diagramId), next = JSON.parse(JSON.stringify(doc));
-  for (const f of next.frames) { const k = f.source && f.source.wuffle; if (k && c[k] && f.source.diagram === diagramId) f.content = c[k]; }
+  for (const f of next.frames) {
+    const k = f.source && f.source.wuffle; if (!k || !c[k] || f.source.diagram !== diagramId) continue;
+    if (f.kind === 'legend') f.content = refreshLegend(f.content, c[k]);
+    else if (f.kind === 'text') {
+      const mine = f.source.made != null && f.content && f.content.md !== f.source.made;
+      if (!mine) { f.content = { ...c[k], ...f.content, md: c[k].md }; f.source.made = c[k].md; }   // the words again; its size, typeface, colour stay
+    } else f.content = { ...c[k], ...(f.content && f.content.theme ? { theme: f.content.theme } : {}) };
+  }
   return next;
 }
