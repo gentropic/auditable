@@ -6,7 +6,7 @@ formula here was recomputed independently against wuffle's own code on the Toche
 synthetic data, and the two agreed.
 \end{goals}
 
-The maths lives in \code{@gcu/bearing} and \code{@gcu/stereonet}; wuffle's own modules only arrange
+The math lives in \code{@gcu/bearing} and \code{@gcu/stereonet}; wuffle's own modules only arrange
 it. Angles are in degrees unless a formula says otherwise.
 
 \section{Conventions}\label{sec:m-conventions}
@@ -22,8 +22,8 @@ A \textbf{line} with trend $\theta$ and plunge $\varphi$ (plunge positive downwa
 A \textbf{plane} with dip direction $\alpha$ and dip $\delta$ is represented by its \term{pole}, the
 downward normal:
 \[ \mathbf{p} = (-\sin\delta \sin\alpha,\; -\sin\delta \cos\alpha,\; -\cos\delta), \]
-which plunges $90^\circ - \delta$ towards $\alpha + 180^\circ$. The pole of \code{120/40} plunges 50°
-towards 300.
+which plunges $90^\circ - \delta$ toward $\alpha + 180^\circ$. The pole of \code{120/40} plunges 50°
+toward 300.
 
 Going back, a vector is first folded onto the lower hemisphere (if $z > 0$, every component changes
 sign), then
@@ -54,7 +54,7 @@ slip is the one directed quantity (\cref{sec:m-faults}).
 A vector is folded onto the lower hemisphere, then projected. The equal-area (Lambert, Schmidt) and
 equal-angle (stereographic, Wulff) projections are
 \[ (X, Y)_{\mathrm{area}} = \sqrt{\frac{2}{1 - z}}\,(x, y), \qquad (X, Y)_{\mathrm{angle}} = \frac{1}{1 - z}\,(x, y). \]
-For a line plunging $\varphi$ the distance from the centre is
+For a line plunging $\varphi$ the distance from the center is
 \[ r_{\mathrm{area}} = 2 \sin\frac{90^\circ - \varphi}{2}, \qquad r_{\mathrm{angle}} = \tan\frac{90^\circ - \varphi}{2}, \]
 so the primitive circle has radius $\sqrt{2}$ in the first and 1 in the second, and wuffle scales either
 to the drawn net. The point sits at azimuth $\theta$ from north, clockwise: $X = r\sin\theta$,
@@ -81,19 +81,19 @@ $Y = r\cos\theta$ \parencite{snyder1987}.
 
 An upper-hemisphere net draws each axis at its upper end, seen from above. wuffle reflects the vector
 through the horizontal ($z \to -z$) and projects that, so a line plots at its trend plus 180°, at the
-same distance from the centre.
+same distance from the center.
 
 \subsection{Rotation}\label{sec:m-rotation}
 
 A rotated net applies a rotation matrix $\mathbf{R}$ to every direction before projecting it.
 \begin{itemize}
 \item \code{rotate 120→40} builds the shortest rotation that takes the direction $\mathbf{l}$ of
-\code{120→40} to the centre of the net, $(0, 0, -1)$: about the axis $\mathbf{l} \times (0,0,-1)$, by the
+\code{120→40} to the center of the net, $(0, 0, -1)$: about the axis $\mathbf{l} \times (0,0,-1)$, by the
 angle between them.
 \item A drag is an \emph{arcball}: the points under the pointer at the start and end of each movement
 are taken back onto the sphere (through the inverse projection; a point outside the primitive is put on
 it), and the shortest rotation between them is multiplied onto the current one. The product is
-re-orthonormalised after every step, so a long drag never drifts away from a rotation. The matrix is
+re-orthonormalized after every step, so a long drag never drifts away from a rotation. The matrix is
 what the diagram stores.
 \end{itemize}
 Selections, statistics and the data are unaffected: they live in the unrotated frame, and only the
@@ -107,7 +107,7 @@ $\alpha$ about $z$, then $\beta$ about the new $x$, then $\gamma$ about the new 
 rotation matrix and reads two of its columns:
 \begin{itemize}
 \item for a \textbf{plane}, the device's $z$ axis (the normal to the screen) is the plane's normal;
-\item for a \textbf{line}, the device's $y$ axis (along the long edge, towards the top) is the line.
+\item for a \textbf{line}, the device's $y$ axis (along the long edge, toward the top) is the line.
 \end{itemize}
 Each is converted as in \cref{sec:m-conventions}, which folds it onto the lower hemisphere. The azimuth
 (dip direction or trend) is then corrected for declination, $\mathrm{true} = \mathrm{magnetic} + D$, east
@@ -116,7 +116,7 @@ positive.
 \subsection{Declination}\label{sec:m-wmm}
 
 $D$ comes from the World Magnetic Model 2025 \parencite{chulliat2025}, evaluated in the page: a
-spherical-harmonic expansion of the main field to degree 12, with Schmidt semi-normalised Legendre
+spherical-harmonic expansion of the main field to degree 12, with Schmidt semi-normalized Legendre
 functions. The position is converted from geodetic (WGS84, $a = 6378.137$\,km, $f = 1/298.257223563$) to
 geocentric coordinates, the field is evaluated there at the reference radius 6371.2\,km, and rotated
 back to north, east and down components $X, Y, Z$; then $D = \mathrm{atan2}(Y, X)$. The height is the
@@ -128,8 +128,8 @@ of a degree (\cref{sec:true-north}).
 \section{Contours}\label{sec:m-contours}
 
 Densities are evaluated on a square grid laid over the projected net, 40 nodes a side, each node taken
-back to a direction by the inverse projection. Nodes more than about 1\% outside the primitive are left out.
-Each contour level is traced by marching squares, and the segments are joined into lines.
+back to a direction by the inverse projection. Nodes more than about 1\% outside the primitive are left
+out. Each contour level is traced by marching squares, and the segments are joined into lines.
 
 \subsection{Kamb}
 
@@ -154,7 +154,7 @@ wuffle's level $L$ is their level $k + L$: with $k = 3$, wuffle's 2\,$\sigma$ li
 
 \subsection{Fisher kernel}
 
-Each axis contributes a Fisher density of concentration $\kappa$ centred on it. The kernel's width is
+Each axis contributes a Fisher density of concentration $\kappa$ centered on it. The kernel's width is
 $s = 90^\circ/\sqrt{N}$ (6.36° for Tocher), and
 \[ \kappa = \frac{1}{1 - \cos s}, \qquad f(\mathbf{g}) = \frac{\kappa}{N}\sum_{i=1}^{N} \exp\!\bigl(\kappa\,(|\mathbf{g}\cdot\mathbf{d}_i| - 1)\bigr). \]
 For uniformly spread axes the expected value of $f$ is $1 - e^{-\kappa} \approx 1$, so $f$ is in
@@ -179,8 +179,7 @@ so the grid is evaluated on the data transformed by the rotation \emph{and} the 
 $Z R$ with $Z = \mathrm{diag}(1, 1, -1)$. The right dihedra are reflected the same way: the field's sign,
 $\mathrm{sign}((\mathbf{g}\cdot\mathbf{n})(\mathbf{g}\cdot\mathbf{s}))$, is unchanged when the grid
 direction $\mathbf{g}$, the pole $\mathbf{n}$ and the slip $\mathbf{s}$ are all reflected, so reflecting
-the faults gives the field at the drawn spot. (Before bearing 0.3.2 the grid had the rotation alone, and
-on an upper-hemisphere net the contours sat mirrored through the centre from their points.)
+the faults gives the field at the drawn spot.
 
 \section{The mean}\label{sec:m-mean}
 
@@ -201,7 +200,7 @@ For the Tocher sample: $R = 136.02$, $\kappa = 3.09$, $\alpha_{95} = 6.85^\circ$
 the plane 026.7/89.2.
 
 \begin{note}
-Turning every axis towards $\mathbf{v}_1$ first is wuffle's way of making Fisher's mean work on axes. On a
+Turning every axis toward $\mathbf{v}_1$ first is wuffle's way of making Fisher's mean work on axes. On a
 cluster it gives the textbook answer. On a girdle, such as Tocher's, the axes have no one side to be
 turned to, and the mean and its cone describe little; the eigenvectors are the description to use there
 (\cref{sec:mean}).
@@ -243,7 +242,7 @@ with $P$, $G$ and $R$ as the weights (\cref{sec:fabric}).
 
 \section{Intersections}\label{sec:m-derived}
 
-The line common to two planes is the cross product of their poles, normalised and folded onto the lower
+The line common to two planes is the cross product of their poles, normalized and folded onto the lower
 hemisphere:
 \[ \mathbf{b} = \frac{\mathbf{p}_1 \times \mathbf{p}_2}{|\mathbf{p}_1 \times \mathbf{p}_2|}. \]
 \begin{itemize}
@@ -262,11 +261,11 @@ Every shape is a test on the sphere, applied to a plane's pole or a line, and ev
 (\cref{sec:shapes}).
 \begin{description}
 \item[Cone] of half-angle $\vartheta$ about $\mathbf{a}$: selected when $|\mathbf{d}\cdot\mathbf{a}| \ge
-\cos\vartheta$. A plane given as the cone's centre stands for its pole.
+\cos\vartheta$. A plane given as the cone's center stands for its pole.
 \item[Band] of half-width $w$ about the great circle with pole $\mathbf{n}$: selected when
 $|\mathbf{d}\cdot\mathbf{n}| \le \sin w$.
 \item[Lasso] with vertices $\mathbf{v}_j$ joined by great-circle arcs. The test is made in a
-\term{gnomonic projection} centred on $\mathbf{c} = \sum\mathbf{v}_j / |\sum\mathbf{v}_j|$, which
+\term{gnomonic projection} centered on $\mathbf{c} = \sum\mathbf{v}_j / |\sum\mathbf{v}_j|$, which
 turns great circles into straight lines: with $\mathbf{u}, \mathbf{w}$ two unit vectors perpendicular to
 $\mathbf{c}$ and to each other, a direction goes to
 \[ \left(\frac{\mathbf{d}\cdot\mathbf{u}}{\mathbf{d}\cdot\mathbf{c}},\; \frac{\mathbf{d}\cdot\mathbf{w}}{\mathbf{d}\cdot\mathbf{c}}\right). \]
@@ -278,9 +277,9 @@ projected.
 
 \section{Roses}\label{sec:m-rose}
 
-The sectors are centred on multiples of the sector width $w$: an azimuth $a$ falls in sector
-$\lfloor (a + w/2)/w \rfloor \bmod (360/w)$, so with 10° sectors, 4.9° counts in the sector centred on
-0 and 5.0° in the one centred on 10. A strike is the dip direction plus 270. With \ui{Count both ends}
+The sectors are centered on multiples of the sector width $w$: an azimuth $a$ falls in sector
+$\lfloor (a + w/2)/w \rfloor \bmod (360/w)$, so with 10° sectors, 4.9° counts in the sector centered on
+0 and 5.0° in the one centered on 10. A strike is the dip direction plus 270. With \ui{Count both ends}
 each azimuth is also counted at $a + 180^\circ$, which a strike rose always does
 (\cref{ch:roses}).
 
@@ -320,11 +319,11 @@ dihedra and the inversion.
 
 The arrow is drawn at the slickenline's plotted point $\mathbf{q}$ (plunge $\varphi_0$, trend
 $\theta_0$) along the horizontal part of the slip, the azimuth $\psi = \mathrm{atan2}(s_x, s_y)$. That
-direction splits into a part away from the centre and a part round it,
+direction splits into a part away from the center and a part around it,
 \[ h_r = \cos(\psi - \theta_0), \qquad h_t = \sin(\psi - \theta_0), \]
 and a step of $k$ degrees along the arrow moves the point to plunge $\varphi_0 - h_r k$ and trend
 $\theta_0 + h_t k/\cos\varphi_0$, the plunge kept within 0–90° and $\cos\varphi_0$ not taken below 0.15, so
-an arrow near the centre stays short. The shaft is 7° long and the head's barbs sit at 55\% of it, 2.4° to
+an arrow near the center stays short. The shaft is 7° long and the head's barbs sit at 55\% of it, 2.4° to
 either side. Where the arrow would leave the lower hemisphere ($\varphi_0 - 7 h_r < 0$, pointing outward
 near the rim) it is drawn ending at $\mathbf{q}$ instead of starting there. A vertical slip has no
 horizontal part and no arrow (\cref{sec:slip-arrows}).
@@ -358,8 +357,8 @@ The dihedra are computed in the unrotated projection, so they are not drawn on a
 \textcite{michael1984}'s inversion assumes that each fault slipped along the shear traction the stress
 puts on it, and that the shear tractions are of similar size on all the faults. The deviatoric stress
 tensor has five unknowns, $\sigma_{11}, \sigma_{12}, \sigma_{13}, \sigma_{22}, \sigma_{23}$, with
-$\sigma_{33} = -(\sigma_{11} + \sigma_{22})$. With compression counted positive and the downward normal $\mathbf{n} = (n_1, n_2, n_3)$,
-each fault adds the three equations
+$\sigma_{33} = -(\sigma_{11} + \sigma_{22})$. With compression counted positive and the downward normal
+$\mathbf{n} = (n_1, n_2, n_3)$, each fault adds the three equations
 \[ \sigma\mathbf{n} - (\mathbf{n}\cdot\sigma\mathbf{n})\,\mathbf{n} = \mathbf{s}, \]
 linear in the unknowns, to a least-squares system, solved through its normal equations. The principal
 axes are the eigenvectors of the result: $\sigma_1$ (the most compressive), $\sigma_2$ and $\sigma_3$,
@@ -367,12 +366,12 @@ with the stress ratio
 \[ \phi = \frac{\sigma_2 - \sigma_3}{\sigma_1 - \sigma_3}, \qquad 0 \le \phi \le 1. \]
 It needs at least four faults of known sense (\cref{sec:stress}).
 
-\begin{why}
+\begin{note}
 On 60 synthetic faults cut through a stress with $\sigma_1$ east--west and horizontal, $\sigma_3$
 vertical and $\phi = 0.4$, wuffle's inversion returns $\sigma_1$ at 090→00 and $\sigma_3$ vertical, to a
 tenth of a degree, and $\phi = 0.43$. The axes come back exactly; $\phi$ carries the method's assumption
 of equal shear stress, which synthetic faults through one tensor don't meet.
-\end{why}
+\end{note}
 
 \section{The signature}\label{sec:m-signature}
 

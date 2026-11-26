@@ -6,7 +6,7 @@ you can save and run again on another project.
 
 Most of what you do with the mouse on the desk you can also type, and some things only typing does well:
 the same analysis on ten datasets, a check before a report, a record of exactly what was done. The console
-is a real shell, \code{geas}, and wuffle's commands are part of it, so they work with pipes, loops and
+is a real shell, \code{geas}\index{geas}, and wuffle's commands are part of it, so they work with pipes, loops and
 files like any other command. A sequence of commands saved in a file is a \term{routine}: run it again
 tomorrow, on another project, and it does the same thing.
 
@@ -79,10 +79,10 @@ select all|none|invert & on every layer of the active diagram \\
 stats [\emph{layer}] & n, the Fisher mean with $\kappa$ and $\alpha_{95}$ \parencite{fisher1953}, the eigenvalues, and Woodcock's K and C \parencite{woodcock1977} \\
 mean|eigen|beta [\emph{layer}] & keep the result as a dataset, drawn on this diagram \\
 intersect \emph{a} \emph{b} & where two layers' mean planes meet, as a dataset \\
-rotate \emph{tr→pl} | off & centre the net on a direction, or back to normal \\
+rotate \emph{tr→pl} | off & center the net on a direction, or back to normal \\
 undo | redo & the last change, whoever made it (\cref{sec:undo}) \\
 verify [\emph{name}] & check field originals' signatures (\cref{sec:field-logs}) \\
-theme dark|light|system & the colour theme \\
+theme dark|light|system & the color theme \\
 history & the lines typed so far \\
 help [\emph{command}] & all of this, or one command \\
 \bottomrule\end{tabularx}
@@ -152,7 +152,7 @@ for m in fisher kamb; do contour $m; done
 for f in data/*.csv; do echo "$f"; done
 \end{lstlisting}
 
-The first prints just \code{mean 027/89 · pole 207→01 · κ 3.1 · α95 6.8°}; the second keeps all of
+The first prints only \code{mean 027/89 · pole 207→01 · κ 3.1 · α95 6.8°}; the second keeps all of
 \code{stats}' answer in a file that travels with the project.
 
 A function names a step you repeat:
@@ -164,7 +164,7 @@ summary tocher
 
 \subsection{Where you can write}\label{sec:home}
 
-Two places are yours. \file{/home} is saved with the project (\cref{sec:project-file}), so notes,
+Two places are yours. \file{/home}\index{/home} is saved with the project (\cref{sec:project-file}), so notes,
 routines and exported drawings travel with it. \file{/tmp} is scratch, gone when the page closes. In
 \file{/project}, a write is an action on the project and follows its rules (\cref{sec:project-write}).
 
@@ -173,8 +173,8 @@ routines and exported drawings travel with it. \file{/tmp} is scratch, gone when
 geas is a shell written for the browser, and it covers the common ground rather than all of it. There is
 no \code{sed} or \code{awk} yet, no \code{readlink} (use \code{ls -l}), and the tools take their usual
 options but not every one: \code{grep -A}, \code{head -c} and \code{sort}'s field options \code{-t} and
-\code{-k}, for example, are missing. An option a tool
-doesn't know may be read as a file name, so an odd \ui{no such file or directory} usually means that.
+\code{-k}, for example, are missing. An option a tool doesn't know may be read as a file name, so an
+odd \ui{no such file or directory} usually means that.
 
 \section{Routines}\label{sec:routines}
 
@@ -189,18 +189,18 @@ cat /home/fabric.sh
 . /home/fabric.sh
 \end{lstlisting}
 
-\code{history} prints what you have typed this session, numbered, which is the quickest way to start one:
+\code{history}\index{history (command)} prints what you have typed this session, numbered, which is the quickest way to start one:
 copy the lines you want into the file. Because \file{/home} travels in the project file, the routine goes
 wherever the project goes, and runs the same on whatever data you open into it.
 
 \begin{note}
-A failed command stops nothing by itself: as in any shell, the script carries on. Chain steps with
+A failed command stops nothing by itself: as in any shell, the script goes on. Chain steps with
 \code{\&\&} when a later one makes no sense without an earlier one.
 \end{note}
 
 \subsection{A check before a report}
 
-\code{verify} fails (exit status 1) when an original's signature doesn't match, and also when the
+\code{verify}\index{verify (command)} fails (exit status 1) when an original's signature doesn't match, and also when the
 project has no field originals at all. A routine can stop on it:
 
 \begin{lstlisting}
@@ -215,8 +215,8 @@ log with its .sig)} and the line prints \ui{check the field logs}.
 \item Open the Tocher sample, then type \code{printf 'contour kamb 3\textbackslash nshow mean\textbackslash nstats\textbackslash n' > /home/fabric.sh}.
 \item Type \code{. /home/fabric.sh}. The net is contoured, the mean drawn, and the statistics print.
 \item Choose \menu{File>New project}, open the Tocher sample again and run \code{. /home/fabric.sh}: it
-answers \ui{source: /home/fabric.sh: no such file or directory: /home/fabric.sh}, because a new project starts with an
-empty \file{/home}. Save the routine in a
-project (or keep a copy of the file) to carry it on.
+answers \ui{source: /home/fabric.sh: no such file or directory: /home/fabric.sh}, because a new
+project starts with an empty \file{/home}. Save the routine in a project (or keep a copy of the file)
+to carry it on.
 \end{enumerate}
 \end{tryit}

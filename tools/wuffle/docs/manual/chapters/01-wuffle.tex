@@ -53,13 +53,13 @@ only one set of rows to be right or wrong.
 \end{why}
 
 Results are datasets too. A mean, the eigenvectors, a $\beta$ intersection, or a selection made into a
-set becomes a new dataset that records where it came from, its \term{lineage}, so it can be drawn,
+set becomes a new dataset that records where it came from, its \emph{lineage}, so it can be drawn,
 styled, saved and questioned like the measurements it was computed from (\cref{sec:lineage}).
 
 \section{If you have used OpenStereo}\label{sec:openstereo}
 
-wuffle grew up in the same tradition as OpenStereo, and much of it will feel familiar. The ideas map
-like this:
+wuffle grew up in the same tradition as OpenStereo\index{OpenStereo}, and much of it will feel
+familiar. The ideas map like this:
 
 \begin{center}\small
 \begin{tabularx}{\linewidth}{@{}>{\raggedright}p{0.34\linewidth}L@{}}\toprule
@@ -86,7 +86,7 @@ CSV to a GIS for that.
 electronics nearby, and its calibration drifts. Treat the compass as a fast notebook that knows north,
 check it against a clinometer on a few planes a day, and keep the readings it can't support out of the
 analysis.
-\item \textbf{Not a modelling package.} wuffle analyses orientations: means, fabrics, intersections,
+\item \textbf{Not a modeling package.} wuffle analyzes orientations: means, fabrics, intersections,
 fault-slip inversion. It doesn't build 3D surfaces or fold models.
 \item \textbf{Not a cloud service.} There is no account and no server holding your data. A project lives in
 your browser and in the files you save (\cref{sec:local}).
@@ -95,9 +95,10 @@ your browser and in the files you save (\cref{sec:local}).
 \section{Local, and honest about it}\label{sec:local}
 
 wuffle fetches nothing when it opens. (The website's copy has a service worker that checks for a newer
-version in the background; that is the site, not wuffle, \cref{sec:run-site}.) Your data stays in the browser tab, and between saves wuffle keeps
-a copy of the project in the browser's own storage, on your machine (\cref{sec:autosave}). The only
-things that can reach the network are things you type in the console, such as a package install.
+version in the background; that is the site, not wuffle: \cref{sec:run-site}.) Your data stays in the
+browser tab, and between saves wuffle keeps a copy of the project in the browser's own storage, on your
+machine (\cref{sec:autosave}). Only what you type in the console, such as a package install, can reach
+the network.
 
 The badge in the corner says \ui{● local}. Hover over it and it says so in full: \ui{Runs entirely in
 this page. Nothing is fetched when it loads; only commands you type may reach the network (pkg install, a
@@ -107,9 +108,10 @@ policy, so it makes the smaller claim.
 
 \section{What it is built on}
 
-wuffle's maths is \code{@gcu/bearing}, a library of orientation geometry: projections, the Fisher and
+wuffle's math is \code{@gcu/bearing}, a library of orientation geometry: projections, the Fisher and
 eigen statistics, contouring, rotations and fault-slip inversion. The compass's true north comes from
-\code{@gcu/wmm}, the World Magnetic Model. The nets, selections and figure frames come from \code{@gcu/stereonet}, which the
-GCU notebook's stereonet cell also uses. Figures are \code{@gcu/compo} pages. The console is \code{geas},
-a shell written for the browser. All of it ships inside the one file. \menu{Help>About wuffle} names its maths and its nets, gives the
-source of the sample data, and the build.
+\code{@gcu/wmm}, the World Magnetic Model. The nets, selections and figure frames come from
+\code{@gcu/stereonet}, which the GCU notebook's stereonet cell also uses. Figures are \code{@gcu/compo}
+pages. The console is \code{geas}, a shell written for the browser. All of it ships inside the one file.
+\menu{Help>About wuffle}\index{About wuffle} names its math and its nets, the source of the sample
+data, and the build.

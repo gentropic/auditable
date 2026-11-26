@@ -8,8 +8,8 @@ zip, so other programs can read and write it too.
 \section{The field log}\label{sec:format-log}
 
 \ui{publish →} on the compass writes \file{wuffle-log.csv}: UTF-8, comma-separated, one header line, one
-row per measurement in the order they were taken, every line ending in a single line feed (\code{\textbackslash n}),
-the last one included. No field is quoted. The columns, always all eleven and in this order:
+row per measurement in the order they were taken, every line ending in a single line feed
+(\code{\textbackslash n}), the last one included. No field is quoted. The columns, always all eleven and in this order:
 
 \begin{center}\small
 \begin{tabularx}{\linewidth}{@{}>{\ttfamily\raggedright}p{0.27\linewidth}L@{}}\toprule
@@ -20,7 +20,7 @@ dip\_or\_plunge & a plane's dip or a line's plunge: a whole number of degrees, 0
 strike & a plane's strike by the right-hand rule (dip direction − 90°); empty for a line \\
 timestamp & when it was measured, ISO 8601 in UTC (\code{2026-11-20T14:02:11.000Z}) \\
 lat, lon & the position in decimal degrees, rounded to six places with trailing zeros dropped (\code{-30.0712}), empty with no GNSS fix \\
-acc\_m & the position's accuracy in whole metres, empty with no fix \\
+acc\_m & the position's accuracy in whole meters, empty with no fix \\
 north & \code{true}, \code{magnetic}, \code{as-typed}, or \code{none} (a browser whose compass has no north): what the azimuths are referred to (\cref{sec:true-north}) \\
 declination\_deg & the declination applied, east positive, rounded to two places with trailing zeros dropped (\code{-17.8}); empty unless \col{north} is \code{true} \\
 photo & the file name of the station's photo, or empty \\
@@ -55,8 +55,8 @@ bytes of the SHA-256 of the SPKI, in hex, in groups of four digits.
 
 \section{The project file}\label{sec:format-zip}
 
-\file{<name>.zip.wuffle} is an ordinary zip. Paths use
-\file{/}; a name containing a \file{/} is written with \file{∕} (U+2215, the division slash) in its place.
+\file{<name>.zip.wuffle}\index{project file (.zip.wuffle)} is an ordinary zip. Paths use \file{/}; a
+name containing a \file{/} is written with \file{∕} (U+2215, the division slash) in its place.
 Everything is UTF-8.
 
 \subsection{\file{project.json}}
@@ -113,7 +113,7 @@ archive tool still opens.
 \normalfont\sffamily\bfseries key & \sffamily\bfseries value \\\midrule
 name & the diagram's name \\
 kind & \code{net}, \code{rose} or \code{fabric} \\
-props & its settings. A net: \code{projection}, \code{hemisphere}, \code{rotation} (a centre, \code{[trend, plunge]}), \code{matrix} (a dragged rotation, nine numbers), \code{graticule}. A rose: \code{bins}, \code{axial}, \code{scale}, \code{quantity}, \code{column}. A fabric plot: \code{plot}. \\
+props & its settings. A net: \code{projection}, \code{hemisphere}, \code{rotation} (a center, \code{[trend, plunge]}), \code{matrix} (a dragged rotation, nine numbers), \code{graticule}. A rose: \code{bins}, \code{axial}, \code{scale}, \code{quantity}, \code{column}. A fabric plot: \code{plot}. \\
 layers & the layers' file names, in draw order (the last on top) \\
 \bottomrule\end{tabularx}
 \end{center}

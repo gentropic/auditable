@@ -45,10 +45,11 @@ The console reaches the same switches: \code{show contours}, \code{hide poles}, 
 
 \section{Poles, points and great circles}
 
-\term{Poles} are drawn as dots, in the layer's colour and symbol size; a selected row's pole is violet and
-larger, on every diagram that draws it. \term{Points} are the same for lines. \term{Great circles} draw
-each plane in full, in a thin line of the layer's colour, violet when selected. A small-circle dataset
-draws its \term{circles}, and \term{axes} adds a point at each circle's axis.
+\term[poles]{Poles} are drawn as dots, in the layer's color and symbol size; a selected row's pole is
+violet and larger, on every diagram that draws it. \term[points]{Points} are the same for lines.
+\term[great circles]{Great circles} draw each plane in full, in a thin line of the layer's color, violet
+when selected. A small-circle dataset draws its \term[circles (element)]{circles}, and
+\term[axes (element)]{axes} adds a point at each circle's axis.
 
 Clicking a pole or a point picks its row; \cref{ch:select} covers picking and the other selection tools.
 
@@ -57,16 +58,16 @@ Clicking a pole or a point picks its row; \cref{ch:select} covers picking and th
 Contours show the density of the poles (or lines) on the sphere. Two methods:
 
 \begin{description}
-\item[Kamb] \parencite{kamb1959}, the default. Measurements are counted inside a circle on the sphere whose
+\item[Kamb]\index{contours!Kamb} \parencite{kamb1959}, the default. Measurements are counted inside a circle on the sphere whose
 size is set so that the count expected from a uniform distribution is $k$ standard deviations of it:
 $E = k\sigma$, with $k = 3$ unless you change it. The contours are in $\sigma$ above that expectation, at
 2, 4, 6, 8, 10 and 12\,$\sigma$.
-\item[Fisher kernel] each measurement contributes a smooth Fisher bump, and the result is expressed in
+\item[Fisher kernel]\index{contours!Fisher kernel} each measurement contributes a smooth Fisher bump, and the result is expressed in
 \term[multiples of uniform density]{multiples of uniform density} (MUD): contours at 2, 4, 6 and 8 times
 what a uniform spread would give.
 \end{description}
 
-Contours are drawn under the layer's circles and points, in its colour. They need at least three readable
+Contours are drawn under the layer's circles and points, in its color. They need at least three readable
 measurements.
 
 \begin{caution}
@@ -86,8 +87,9 @@ The contour levels themselves are a setting with no dialog yet: write a \code{"l
 \term{Mean + cone} draws the layer's Fisher mean \parencite{fisher1953} as an open ring, and around it the
 confidence cone at 95\,\% (or 90 or 99\,\%: properties). Poles and lines are treated as \emph{axes}: a pole
 and its opposite are the same direction, so the poles of steep planes dipping both ways, near the rim on
-opposite sides of the net, are one cluster with one mean, not two halves that cancel. The numbers ($\kappa$, $\alpha_{95}$, the mean as a plane and as a
-line) are on the statistics tab (\cref{ch:stats}). It needs two readable measurements.
+opposite sides of the net, are one cluster with one mean, not two halves that cancel. The numbers
+($\kappa$, $\alpha_{95}$, the mean as a plane and as a line) are on the statistics tab
+(\cref{ch:stats}). It needs two readable measurements.
 
 \begin{note}
 A Fisher mean describes a cluster. On a girdle, such as the Tocher sample's, it lands somewhere
@@ -100,11 +102,12 @@ The orientation tensor of the poles (or lines) has three eigenvectors, \term{V1}
 from the largest eigenvalue to the smallest. Each can be drawn two ways:
 
 \begin{itemize}
-\item \ui{V1}, \ui{V2}, \ui{V3}: the eigenvector as a point in the net's ink colour (dark on paper, light on basalt);
+\item \ui{V1}, \ui{V2}, \ui{V3}: the eigenvector as a point in the net's ink color (dark on paper,
+light on basalt);
 \item \ui{V1 great circle} and the others: the plane perpendicular to it, as a dashed great circle.
 \end{itemize}
 
-For a cluster, V1 is its centre. For a girdle, V3 is the axis of the girdle and \ui{V3 great circle} is
+For a cluster, V1 is its center. For a girdle, V3 is the axis of the girdle and \ui{V3 great circle} is
 the best-fit girdle itself: on a set of folded bedding poles, that is the $\pi$ circle and V3 the fold axis.
 Eigenvectors need three readable measurements; the eigenvalues and the fabric shape parameters are on the
 statistics tab (\cref{ch:stats}).
@@ -112,10 +115,10 @@ statistics tab (\cref{ch:stats}).
 \section{Labels}\label{sec:labels}
 
 Every kind has a \ui{labels} element: a small label beside each measurement's point (the pole of a
-plane, the line itself, a fault's slickenline), in the layer's colour, violet when the row is selected.
+plane, the line itself, a fault's slickenline), in the layer's color, violet when the row is selected.
 The properties dialog's \ui{labels from} chooses what it says: the row number (the default), or any
 column, such as a station name. Labels are drawn whether or not the points are, so a net of great
-circles can be labelled too, and they go into figures with the rest of the net.
+circles can be labeled too, and they go into figures with the rest of the net.
 
 \begin{tip}
 On 200 measurements labels are a blur. Select the few you want to name, make them a dataset
@@ -124,7 +127,7 @@ On 200 measurements labels are a blur. Select the few you want to name, make the
 
 \section{Properties}\label{sec:properties}
 
-\shot[0.8\linewidth]{layer-props}{A layer's properties: its colour and symbol size, and the settings of its contours,
+\shot[0.8\linewidth]{layer-props}{A layer's properties: its color and symbol size, and the settings of its contours,
 mean cone and labels.}
 
 Double-click a layer in the tree, or choose \ui{Properties…} from its menu. The dialog's first line says
@@ -134,7 +137,7 @@ what it is reading: \ui{tocher · planes · 200 of 200 rows read}. Unreadable ro
 \begin{center}\small
 \begin{tabularx}{\linewidth}{@{}>{\raggedright}p{0.24\linewidth}L>{\raggedright\arraybackslash}p{0.16\linewidth}@{}}\toprule
 \sffamily\bfseries setting & \sffamily\bfseries meaning & \sffamily\bfseries default \\\midrule
-\ui{colour} & the layer's colour: its points, circles, contours and cone & the next palette colour \\
+\ui{color} & the layer's color: its points, circles, contours and cone & the next palette color \\
 \ui{symbol size} & the size of its points, 1 to 12 & 4 \\
 \ui{contours} & \ui{Kamb (σ)} or \ui{Fisher kernel (MUD)} & Kamb \\
 \ui{Kamb k (E = kσ)} & the $k$ that sets Kamb's counting circle, 1 to 6 & 3 \\

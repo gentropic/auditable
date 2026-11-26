@@ -6,7 +6,7 @@ statistics and a caption, laid out as you like and exported as PDF or PNG.
 
 A net on the desk is drawn for working: it follows the theme, shows the selection, and changes as you
 change things. A \term{figure} is a page made \emph{from} a net, for someone else to read. wuffle builds it
-with compo, the GCU page compositor, and keeps it in the project like a dataset or a diagram.
+with compo\index{compo}, the GCU page compositor, and keeps it in the project like a dataset or a diagram.
 
 \section{Making one}\label{sec:new-figure}
 
@@ -16,9 +16,9 @@ Make the net you want active, then choose \menu{Figure>New figure from the activ
 \begin{description}
 \item[The title] the net's name.
 \item[The net] drawn as vectors, not as a picture, so it stays sharp at any size and in the PDF. It is
-drawn on a white page whatever the desk's theme (the layers keep their colours, the graticule and
+drawn on a white page whatever the desk's theme (the layers keep their colors, the graticule and
 arrows are ink), and it shows the data, not the selection.
-\item[The legend] each visible layer with its colour and its count, \ui{tocher (200)}.
+\item[The legend] each visible layer with its color and its count, \ui{tocher (200)}.
 \item[The statistics] a table: for each layer, n, the axial Fisher mean, $\kappa$, $\alpha_{95}$ and
 Woodcock's K (\cref{ch:stats}).
 \item[The caption] what the reader is looking at, in words: the projection and hemisphere, the rotation if
@@ -27,7 +27,7 @@ lines as trend→plunge}), the lineage of any derived dataset on the net, and \e
 the date.
 \end{description}
 
-Only nets make figures. The menu item is greyed out while a rose diagram or a fabric plot is active.
+Only nets make figures. The menu item is grayed out while a rose diagram or a fabric plot is active.
 
 \shot{figure-editor}{A figure from the contoured Tocher net. The tree lists it under \ui{figures}; the
 frames panel on the right lists the page's five frames.}
@@ -42,10 +42,10 @@ direction/dip, lines as trend→plunge. Made with wuffle, 26/11/2026.
 
 \section{Laying out the page}
 
-The figure tab is compo's editor. Click a frame to edit it, drag it to move it (it snaps to edges, centres
+The figure tab is compo's editor. Click a frame to edit it, drag it to move it (it snaps to edges, centers
 and equal gaps), and pull its handles to resize it; the arrow keys nudge. A right-click on a frame offers
-duplicate, group (when two or more frames are selected), the stacking order, lock and delete. The bar above the page sets the paper size,
-orientation, zoom and grid, and adds new frames, such as text.
+duplicate, group (when two or more frames are selected), the stacking order, lock and delete. The bar
+above the page sets the paper size, orientation, zoom and grid, and adds new frames, such as text.
 
 Inside the figure tab \key{Ctrl}+\key{Z} is compo's own undo, step by step through your edits to the
 page. Outside it, the figure's changes are part of the project's history like any other (\cref{sec:undo}).
@@ -63,12 +63,12 @@ nothing.
 \section{Export}\label{sec:figure-export}
 
 \begin{description}
-\item[\ui{Export PDF}] the page as a vector PDF, \file{<name>.pdf}. The net is vectors in it too.
-\item[\ui{Export PNG}] the page as a picture at 200 dpi, \file{<name>.png}.
+\item[\ui{Export PDF}\index{Export PDF}] the page as a vector PDF, \file{<name>.pdf}.
+\item[\ui{Export PNG}\index{Export PNG}] the page as a picture at 200 dpi, \file{<name>.png}.
 \end{description}
 
-In the file name, each run of characters other than letters, digits, underscores, dots and hyphens becomes one \code{\_}: the figure
-\ui{Net 1 · figure} exports as \file{Net\_1\_figure.pdf}.
+In the file name, each run of characters other than letters, digits, underscores, dots and hyphens
+becomes one \code{\_}: the figure \ui{Net 1 · figure} exports as \file{Net\_1\_figure.pdf}.
 
 \section{Figures in the project}\label{sec:figures-project}
 

@@ -79,7 +79,7 @@ read the first two numeric columns as dip direction and dip, and says so in the 
 The guess is the first two numeric columns, as dip direction then dip, swapped when the second runs past
 90. If that is wrong for your file, rename its header to names wuffle knows and open it again:
 \col{dipdir} and \col{dip} for planes, \col{strike} and \col{dip} for the right-hand rule, \col{trend}
-and \col{plunge} for lines (\cref{sec:data-roles} lists every name it recognises). A pair that mixes
+and \col{plunge} for lines (\cref{sec:data-roles} lists every name it recognizes). A pair that mixes
 kinds, such as \col{azimuth} (a trend) with \col{inclination} (a dip), is no pair, and falls to the
 guess.
 
@@ -133,15 +133,16 @@ layer in the tree, and the rows it couldn't read (\cref{sec:data-read}).
 
 On a girdle (the Tocher sample is one) the Fisher mean of the poles lands wherever the spread happens to
 balance, which need not be where the poles gather, and its cone is wide: on Tocher, $\kappa$ is 3.1 and
-$\alpha_{95}$ 6.8°. That is the mean of a distribution a mean doesn't describe. Turn on the eigenvectors: V3, the girdle's axis, and the V3 great
-circle, the girdle itself, describe it (\cref{sec:eigen}).
+$\alpha_{95}$ 6.8°. That is the mean of a distribution a mean doesn't describe. Turn on the eigenvectors
+instead: V3, the girdle's axis, and the V3 great circle, the girdle itself, describe it
+(\cref{sec:eigen}).
 
 \subsection{A cone selected nothing, or the wrong poles}
 
 \code{select cone 040/50 20} is a cone about the \emph{pole} of the plane 040/50, which is
 \code{220→40}: on the Tocher sample both select 18 poles. \code{040→50} is a different direction
 altogether (6 poles). Type a plane when you mean \enquote{planes like this one}, a line when you mean
-\enquote{poles near this direction}. The cone tool on the net, dragged from the centre you want, has no
+\enquote{poles near this direction}. The cone tool on the net, dragged from the center you want, has no
 such ambiguity (\cref{sec:shapes}).
 
 \subsection{A rose has petals at both ends}
@@ -166,15 +167,15 @@ cone 150>60 10} the shell takes \code{150>} as a redirection (\code{150} as a fi
 as any Unix shell does) into a file called \file{60}, so the command sees only \code{select cone 10} and
 answers \ui{“10” — a plane 045/30 or a line 045→30}. In \file{/project} the shell can't make the file and
 also says \ui{geas: redirect: nothing can be made here: /60}; in \file{/home} it leaves an empty
-\file{60}. Either way the command saw the wrong words. Type the arrow (\code{150→60}) or
-quote the attitude (\code{'150>60'}), and \code{rm 60} the stray file.
+\file{60}. Either way the command saw the wrong words. Type the arrow (\code{150→60}) or quote the
+attitude (\code{'150>60'}), and \code{rm 60} the stray file.
 
 \subsection{\code{rm} refuses to delete data}
 
-\ui{rm: data/tocher.csv: “tocher” is drawn on Net 1 — remove those layers first: /data/tocher.csv}, naming every
-diagram that draws it. A dataset that a
-diagram draws can't be removed from the console: remove its layers (\code{rm "diagrams/Net 1/layers/tocher.csv"})
-and then the data. The tree's \ui{Delete dataset} asks you instead, and removes both.
+\ui{rm: data/tocher.csv: “tocher” is drawn on Net 1 — remove those layers first: /data/tocher.csv},
+naming every diagram that draws it. A dataset that a diagram draws can't be removed from the console:
+remove its layers (\code{rm "diagrams/Net 1/layers/tocher.csv"}) and then the data. The tree's
+\ui{Delete dataset} asks you instead, and removes both.
 
 \subsection{Ctrl+Z does nothing in the console}
 
@@ -206,7 +207,7 @@ wuffle's;
 
 The kept copy is a convenience. Save the project for anything you mean to keep.
 
-\subsection{Save as page is greyed out}
+\subsection{Save as page is grayed out}
 
 It works from the published \file{wuffle.html}, which carries the page it copies. A wuffle run from its
 source folder, as developers do, has no single page to copy (\cref{sec:save-page}).

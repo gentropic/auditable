@@ -116,9 +116,9 @@ field/field 2026-11-20/wuffle-log.csv} (\cref{sec:lineage}).
 \subsection{A first look}
 
 Look at the net before doing anything to it. The poles of the planes fall into three groups. Some trail
-in an arc from the north round to the southwest: a spread like that, along a great circle, is what
+in an arc from the north around to the southwest: a spread like that, along a great circle, is what
 the poles of folded beds do. Eight sit in a tight knot near the east of the primitive, and seven in
-another near the north. The six lines, in their own colour, sit just inside the east-southeast rim.
+another near the north. The six lines, in their own color, sit just inside the east-southeast rim.
 
 The table confirms what the net suggests. Its first column, \col{dip dir/dip}, is wuffle's reading of
 each row as an attitude (\cref{sec:table}); the planes read cleanly, and the heading says
@@ -130,9 +130,8 @@ The three groups are three different things: bedding, and two joint sets. Mixed 
 statistics mean nothing: the \code{stats} of all 31 planes is a mean of \code{146/63} with
 $\kappa$~2.8, a description of no surface in the outcrop. Each set needs to be a dataset of its own.
 
-Split them with selections (\cref{ch:select}). Selections are drawn on the sphere, so a cone means the
-same rows whatever the net's projection or rotation, and a selection made into a dataset keeps a record
-of where it came from.
+Split them with selections (\cref{ch:select}). A selection made into a dataset keeps a record of where
+it came from, so each set will say how it was cut.
 
 \begin{tryit}
 \begin{enumerate}
@@ -176,7 +175,7 @@ The data stays.
 \item From the \ui{data} section, draw \code{bedding}, \code{J1}, \code{J2} and the log's lines on
 \ui{Sets}, in that order: right-click each and choose \menu{Draw on>Sets}, or drag it onto the net's
 name in the tree.
-\item Give each a colour you can tell apart in the layer's properties (double-click it,
+\item Give each a color you can tell apart in the layer's properties (double-click it,
 \cref{sec:properties}). The figures here use blue for the bedding, orange for J1, green for J2 and brown
 for the lines.
 \end{enumerate}
@@ -194,8 +193,9 @@ show mean field
 \end{lstlisting}
 
 The bedding is contoured (with 16 poles the contours are patches along the girdle rather than a band),
-and its third eigenvector, V3, is drawn as a point. Each joint set and the lines get their Fisher mean with its cone of confidence. (\code{field} is
-enough to name the lines layer: a layer is found by the start of its name, \cref{sec:commands}.)
+and its third eigenvector, V3, is drawn as a point. Each joint set and the lines get their Fisher mean
+with its cone of confidence. (\code{field} is enough to name the lines layer: a layer is found by the
+start of its name, \cref{sec:commands}.)
 
 \shot{wf-sets}{The \ui{Sets} net: the bedding contoured with its V3, the means and cones of J1, J2 and
 the hinge lines; the statistics tab below shows a card per layer.}
@@ -238,7 +238,7 @@ active diagram's layers, and by default it bins strikes, which skips the lines b
 
 The longest pair of petals, toward 020 and 200, is J1, whose eight strikes all lie between 198 and 206.
 J2's strikes, 069 to 082, make the petals toward the east-northeast and west-southwest. The bedding's
-strikes are spread round the rest of the rose: the two limbs strike apart, and between them they fill
+strikes are spread around the rest of the rose: the two limbs strike apart, and between them they fill
 it. A rose is a good summary of the joints for a report, and a poor one of folded beds, which the net
 shows better.
 
@@ -296,7 +296,7 @@ Read the spread of the points instead.
 \end{note}
 
 \paragraph{The limbs' intersection.} Split the bedding into its two limbs. On \ui{Sets}, choose the
-\ui{lasso} tool and draw round the eight bedding poles in the southwest of the net; make them a
+\ui{lasso} tool and draw around the eight bedding poles in the southwest of the net; make them a
 dataset from the bedding layer's menu and call it \code{NE limb}. Lasso the eight poles near the north
 and call them \code{SW limb}. Draw both on \ui{Sets}. Their cards give the two limbs' mean planes,
 \code{056/46} and \code{190/53}. On the \code{NE limb} card, choose \ui{SW limb} from \ui{∩ intersect
@@ -320,12 +320,12 @@ wuffle /project $ mean field
 \end{lstlisting}
 
 \shot[0.8\linewidth]{wf-axis}{The fold axis four ways. The bedding poles lie on their best-fit girdle;
-in the east-southeast, the grey $\beta$ points, the hinge lines with their mean and cone, the bedding's
-V3 and the limbs' intersection all crowd round \code{120→25}. (The joint sets are hidden, and the limbs'
+in the east-southeast, the gray $\beta$ points, the hinge lines with their mean and cone, the bedding's
+V3 and the limbs' intersection all crowd around \code{120→25}. (The joint sets are hidden, and the limbs'
 layers too, since their poles are the bedding's.)}
 
 To draw that picture, untick \code{J1} and \code{J2} and the two limb layers, untick the bedding's
-contours and tick its \ui{V3 great circle}, and give the $\beta$ layer a small grey symbol in its
+contours and tick its \ui{V3 great circle}, and give the $\beta$ layer a small gray symbol in its
 properties so it doesn't hide the rest.
 
 All four agree within a degree:
@@ -354,12 +354,12 @@ saved under that name.
 \menu{File>Save project (.zip.wuffle)} (\key{Ctrl}+\key{S}) writes the whole day as one file,
 \file{serra-2026-11-20.zip.wuffle} (\cref{sec:project-file}). Inside it are the log, byte for byte, with
 its signature and photos under \file{field/}; every dataset as a plain CSV, the sets and the derived ones
-with their lineage; both nets, the rose, the fabric plot and the figure. After the whole day, β and the limbs and
-the routine included, it comes to about 75~KB.
+with their lineage; both nets, the rose, the fabric plot and the figure. After the whole day, β and the
+limbs and the routine included, it comes to about 75~KB.
 
 To send the day to someone who doesn't have wuffle, choose \menu{File>Save as page (one .html, the
-project inside)} (\cref{sec:save-page}). It writes \file{serra-2026-11-20.wuffle.html}, about 800~KB: wuffle
-itself with the project inside. Whoever opens it lands on the desk with your nets, sets and figure in
+project inside)} (\cref{sec:save-page}). It writes \file{serra-2026-11-20.wuffle.html}, about 800~KB:
+wuffle itself with the project inside. Whoever opens it lands on the desk with your nets, sets and figure in
 front of them, offline, with nothing to install, and their changes are kept in their own browser, apart
 from yours. The signed log travels inside it too, so they can run \code{verify} themselves.
 
@@ -404,8 +404,8 @@ limbs are drawn, \code{contour kamb 3 bedding}, \code{verify} at the top to put 
 report. \cref{ch:console} has the commands and \cref{app:commands} every one of them.
 
 \begin{why}
-The selections that make the sets are judgement: where one set ends and the next begins is a call you
-make looking at the net. What follows from them is arithmetic. Keeping the judgement in the open (each
+The selections that make the sets are judgment: where one set ends and the next begins is a call you
+make looking at the net. What follows from them is arithmetic. Keeping the judgment in the open (each
 set's lineage names its cone) and the arithmetic in a routine means tomorrow's numbers come out the same
 way as today's, and anyone you send the project to can see both.
 \end{why}

@@ -14,7 +14,7 @@ mistake (undo), between sessions (the kept copy), on disk (the project file), an
 \shot[0.5\linewidth]{edit-menu}{The Edit menu names the step it would undo: here ticking contours on a
 layer.}
 
-Every change to a project can be undone, whoever made it: a menu, a drag on the tree, a rotation of the
+\index{undo}Every change to a project can be undone, whoever made it: a menu, a drag on the tree, a rotation of the
 net, a command or a file written in the console. \menu{Edit} names the step: \ui{Undo show / hide
 elements}, \ui{Redo rename}. The console's \code{undo} and \code{redo} say the same in their answer,
 \ui{undid derive}, and the status line does for the keys.
@@ -26,7 +26,7 @@ type in a field or the console, the keys belong to what you are typing; use \men
 undo for the page (\cref{ch:figures}).
 \item A change made of several parts is one step: opening a file is one step even though it adds a
 dataset, perhaps a net, and a layer; so is one \ui{Apply} in a layer's properties.
-\item Quick repeats of one setting on one thing (dragging the net round, typing in a figure) merge into
+\item Quick repeats of one setting on one thing (dragging the net around, typing in a figure) merge into
 one step, as long as each follows the last within a moment.
 \item What you look at is not a step. Choosing rows and switching tabs change nothing in the project,
 though undoing a step puts the selection back as it was then. The theme isn't part of the project either.
@@ -57,7 +57,7 @@ The name says what kind of change a step was:
 
 \section{The project file}\label{sec:project-file}
 
-\menu{File>Save project (.zip.wuffle)} (\key{Ctrl}+\key{S}) writes \file{untitled.zip.wuffle}, and the
+\menu{File>Save project (.zip.wuffle)}\index{project file (.zip.wuffle)} (\key{Ctrl}+\key{S}) writes \file{untitled.zip.wuffle}, and the
 status line says \ui{saved untitled.zip.wuffle}. It is an ordinary zip of the \file{/project} tree
 (\cref{ch:project-fs}) and your \file{/home}:
 
@@ -91,8 +91,7 @@ Only the name can be written there; the rest of \file{project.json} is counted, 
 else is refused with \ui{write \{"name": "…"\} — the rest of project.json is counted, not set}. The name
 is an undo step (\ui{rename project}), the browser tab's title follows it (\ui{Serra do Mar — wuffle}),
 and files are saved under it, each run of characters other than letters, digits, underscores, dots and
-hyphens made one underscore:
-\file{Serra\_do\_Mar.zip.wuffle}.
+hyphens made one underscore: \file{Serra\_do\_Mar.zip.wuffle}.
 
 \subsection{Opened by another program}
 
@@ -133,7 +132,7 @@ the project you have, \file{/home} included, and the undo list starts afresh.
 
 \section{Kept between saves}\label{sec:autosave}
 
-A second after each change (to the project, or to a file in \file{/home}), wuffle copies the whole project
+\index{kept copy}A second after each change (to the project, or to a file in \file{/home}), wuffle copies the whole project
 into the browser's own storage, on your machine. Close the tab, open \file{wuffle.html} again, and your
 session is back; the status line says when that copy was made: \ui{restored your last session
 (11/26/2026, 12:38:03 PM)}.
@@ -151,7 +150,7 @@ kept copy.
 
 \section{A project inside a page}\label{sec:save-page}
 
-\menu{File>Save as page (one .html, the project inside)} writes \file{untitled.wuffle.html}: wuffle itself,
+\menu{File>Save as page (one .html, the project inside)}\index{Save as page} writes \file{untitled.wuffle.html}: wuffle itself,
 with your project inside it, about 770~KB for the Tocher sample. The status line says \ui{saved
 untitled.wuffle.html — one file, the project inside}. Send that one file to someone and it opens straight
 into your data, on any computer with a browser, with nothing to install: the status line says \ui{opened
@@ -179,7 +178,7 @@ pick the page. Its project opens into this wuffle.
 
 \begin{note}
 Save as page works from the published \file{wuffle.html}. A copy run from the source tree, as
-developers do, has no single page to copy, and the menu item is greyed out there. A page saved from the
+developers do, has no single page to copy, and the menu item is grayed out there. A page saved from the
 web site leaves the site's own pieces (the install manifest and the offline worker) behind, so what you
 send is a standalone file.
 \end{note}
@@ -212,7 +211,7 @@ the field log they belong to}.
 
 \subsection{The signature}
 
-On opening, wuffle checks the signature against the CSV's bytes, and the status line says what it found:
+\index{signature!checking}On opening, wuffle checks the signature against the CSV's bytes, and the status line says what it found:
 
 \begin{description}
 \item[Verified.] \ui{opened field log wuffle-log.csv — signature verified — key 6d80 2a8d f427 b4e4,

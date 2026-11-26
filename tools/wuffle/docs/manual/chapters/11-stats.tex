@@ -5,9 +5,11 @@ eigen analysis and the fabric shape), and keep results as datasets: the mean, th
 $\beta$ diagram, and the line where two sets of planes meet.
 \end{goals}
 
-The \ui{statistics} tab, under the diagrams beside \ui{table} and \ui{console}, describes each visible
-layer of the active net: one card per layer, in the layer's colour. It changes as you work. Show or hide a
-layer, edit its rows, or switch to another net, and the cards follow.
+The statistics answer the first questions you ask of a set of orientations: where it points, how
+tightly, and whether it is a cluster or a girdle. The \ui{statistics} tab\index{statistics tab}, under the
+diagrams beside \ui{table} and \ui{console}, describes each visible layer of the active net: one card per
+layer, in the layer's color. Show or hide a layer, edit its rows, or switch to another net, and the cards
+follow.
 
 \shot[0.8\linewidth]{stats-card}{The statistics card for the Tocher sample: an axial mean that means
 little, a strong girdle (G~0.63, K~0.21), and its axis V3.}
@@ -38,7 +40,7 @@ analysis three; until then the card says \ui{needs ≥ 2}. A fault layer adds th
 
 \section{The mean}\label{sec:stats-mean}
 
-The mean is Fisher's mean \parencite{fisher1953} of the poles (or of the lines), taken \emph{axially}: a pole that
+The mean is \term[Fisher mean]{Fisher's mean} \parencite{fisher1953} of the poles (or of the lines), taken \emph{axially}: a pole that
 points down and the same axis pointing up count as one direction. wuffle reports it as an attitude, a plane
 \emph{and} its pole for planes, a line for lines.
 
@@ -58,7 +60,7 @@ analysis first; the fabric plot (\cref{ch:roses}) shows the same thing at a glan
 
 \section{The eigen analysis}\label{sec:stats-eigen}
 
-wuffle builds the orientation tensor of the poles (or lines) and finds its eigenvalues and eigenvectors:
+wuffle builds the \term{orientation tensor} of the poles (or lines) and finds its eigenvalues and eigenvectors:
 
 \begin{description}
 \item[\ui{S1 S2 S3}] the eigenvalues, largest first, scaled to sum to 1. A tight cluster has S1 near 1; a
@@ -66,10 +68,10 @@ perfect girdle has S1 and S2 near ½ and S3 near 0; a random spread has all thre
 \item[\ui{V1 V2 V3}] the eigenvectors, as lines. V1 is the direction of greatest concentration. For a
 girdle of poles, V3 is the girdle's pole: the axis about which the planes turn, a cylindrical fold's
 axis. The card gives the girdle itself too, the plane whose pole is V3 (Tocher's \code{293/42}).
-\item[\ui{K · C}] shape and strength after \textcite{woodcock1977}: $K = \ln(S_1/S_2) / \ln(S_2/S_3)$ and
+\item[\ui{K · C}] shape and strength after \textcite{woodcock1977}\index{Woodcock's K and C}: $K = \ln(S_1/S_2) / \ln(S_2/S_3)$ and
 $C = \ln(S_1/S_3)$. $K > 1$ is a cluster and $K < 1$ a girdle; a larger $C$ is a stronger fabric. Tocher's
 0.21 is a girdle, and its 2.07 a well-defined one.
-\item[\ui{P G R}] the fractions of \textcite{vollmer1990}: $P = S_1 - S_2$, $G = 2(S_2 - S_3)$ and $R = 3S_3$.
+\item[\ui{P G R}] the fractions of \textcite{vollmer1990}\index{Vollmer's P, G and R}: $P = S_1 - S_2$, $G = 2(S_2 - S_3)$ and $R = 3S_3$.
 They sum to 1 and place the fabric in a triangle of point, girdle and random. Tocher's G of 0.63 says the
 same as its K: mostly girdle.
 \end{description}
@@ -87,7 +89,7 @@ beside it. A plane for planes, a line for lines.
 \item[\ui{eigenvectors → dataset}] three lines, V1 to V3, each with its \col{axis} name and
 \col{eigenvalue}.
 \item[\ui{β → dataset}] for planes: the line of intersection of every pair of planes, the classic
-$\beta$ diagram. Its \col{a} and \col{b} columns give the row numbers of the two planes each line came
+$\beta$ diagram\index{beta diagram}. Its \col{a} and \col{b} columns give the row numbers of the two planes each line came
 from. 200 planes make 19\,900 lines; wuffle refuses past 600 planes (179\,700 lines) and asks you to select
 fewer first.
 \item[\ui{∩ intersect with…}] for planes, when another layer of planes is drawn on the same net: choose
@@ -97,7 +99,7 @@ them. Two limbs of a fold give its axis this way.
 
 A derived dataset is drawn on the active net at once and opens in the table. Making it is one undo step,
 \ui{Undo derive}. It is an ordinary dataset from then on: style it, draw it on other nets, select it,
-save it. What makes it derived is its \term{lineage}. The tree marks it with an arrow, and hovering it
+save it. What makes it derived is its lineage (\cref{sec:lineage}). The tree marks it with an arrow, and hovering it
 says how it was made (\ui{made by mean from tocher}). The lineage is kept in the project:
 
 \begin{lstlisting}
@@ -141,6 +143,8 @@ and \ui{∩ intersect with… › west} on the \code{east} card keeps \code{east
 \code{123→33}, the mean planes 56° apart.
 
 \section{From the console}\label{sec:stats-console}
+\index{stats (command)}\index{mean (command)}\index{eigen (command)}\index{beta (command)}%
+\index{intersect (command)}%
 
 \begin{lstlisting}
 stats                   # the first visible layer's card, as text
@@ -169,7 +173,7 @@ S 0.548 0.383 0.069 · K 0.21 · C 2.07
 \item Open the Tocher sample and click the \ui{statistics} tab. Read K and G: is this a cluster or a
 girdle?
 \item Press \ui{eigenvectors → dataset}. Three blue points appear on the net; V3 sits in the gap the girdle
-of poles wraps round.
+of poles wraps around.
 \item In the console, type \code{beta}. 19\,900 intersection lines are drawn. Type
 \code{stats "tocher · β"}: their mean is \code{114→48}, a degree from V3. Two ways to a fold axis, one
 answer.

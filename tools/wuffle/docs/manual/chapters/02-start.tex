@@ -4,6 +4,9 @@
 theme, and spend a first ten minutes with real data.
 \end{goals}
 
+This chapter is the quick tour: enough to open data, find the controls, and know where to look when
+something happens. Each section points to the chapter that covers its subject in full.
+
 \section{Opening wuffle}\label{sec:opening}
 
 wuffle is the file \file{wuffle.html}. Open it in a current browser (Chrome, Edge, Firefox or Safari)
@@ -36,7 +39,7 @@ The desk is one window in three regions, each made of tabs you can drag and rear
 draws: poles, great circles, contours, the mean, eigenvectors, labels. A \ui{data} section at the foot
 lists every dataset, whether or not it is drawn. Double-click a layer for its properties.
 \item[The diagrams] (middle). One tab per net, rose diagram, fabric plot or figure. The tab in front is
-the \term{active diagram}: the menus and the console act on it (\cref{sec:active}).
+the \emph{active diagram}: the menus and the console act on it (\cref{sec:active}).
 \item[Table, statistics, console] (below). The rows of the dataset you clicked (\cref{sec:table}), the
 statistics of the active diagram's layers (\cref{sec:stats-card}), and the shell (\cref{ch:console}).
 \end{description}
@@ -47,14 +50,14 @@ selecting (\cref{ch:select}).
 \subsection{The menus}
 
 \begin{description}
-\item[\menu{File}] new project, open data or a project, the Tocher sample, rename the project, save,
+\item[\menu{File}]\index{menus!File} new project, open data or a project, the Tocher sample, rename the project, save,
 save as page (\cref{ch:projects}).
-\item[\menu{Edit}] undo and redo, each naming its step (\cref{sec:undo}).
-\item[\menu{Diagram}] a new net, rose diagram or fabric plot; remove the active diagram
+\item[\menu{Edit}]\index{menus!Edit} undo and redo, each naming its step (\cref{sec:undo}).
+\item[\menu{Diagram}]\index{menus!Diagram} a new net, rose diagram or fabric plot; remove the active diagram
 (\cref{ch:diagrams}).
-\item[\menu{Figure}] a new figure from the active net, and the figures already made (\cref{ch:figures}).
-\item[\menu{View}] the theme, the console, field mode.
-\item[\menu{Help}] \ui{About wuffle}: what it is built on, where the sample data comes from, and the
+\item[\menu{Figure}]\index{menus!Figure} a new figure from the active net, and the figures already made (\cref{ch:figures}).
+\item[\menu{View}]\index{menus!View} the theme, the console, field mode.
+\item[\menu{Help}]\index{menus!Help} \ui{About wuffle}: what it is built on, where the sample data comes from, and the
 build.
 \end{description}
 
@@ -68,12 +71,12 @@ On a Mac, \key{⌘} stands in for \key{Ctrl} in every shortcut in this book.
 \shot{status-line}{The status line: the project's counts on the left, then what the pointer is over, and
 the theme on the right.}
 
-The strip along the foot of the window has three parts:
+The \term{status line}, the strip along the foot of the window, has three parts:
 
 \begin{description}
 \item[Counts.] How many datasets the project holds, how many measurements in all, and how many are
-selected: \ui{1 dataset · 200 measurements · 3 selected}. A desk that has just opened says
-\ui{0 datasets}; after \menu{File>New project} it says \ui{0 datasets · 0 measurements}.
+selected: \ui{1 dataset · 200 measurements · 3 selected}. An empty desk says
+\ui{0 datasets · 0 measurements}.
 \item[The message.] What the pointer is over, or what just happened. Over a net it reads the direction
 under the pointer and the measurement nearest to it: \ui{cursor · pole of 055/39 · line 235→51 · tocher
 \#184 053/37} (\cref{sec:pick}). After an action it says what was done: \ui{undid add layer},
@@ -103,8 +106,8 @@ the same as the menu.
 
 \section{Your first ten minutes}\label{sec:first-data}
 
-The Tocher sample is 200 planes from \textcite{tocher1979}, which wuffle carries. Everything below works
-on it.
+The Tocher sample\index{Tocher sample} is 200 planes from \textcite{tocher1979}, which wuffle carries.
+Everything below works on it.
 
 \begin{tryit}
 \begin{enumerate}
@@ -135,7 +138,7 @@ status line says so (\cref{sec:project-file}).
 
 \section{Your own data}
 
-To open your own data, choose \menu{File>Open data or a project…} (\key{Ctrl}+\key{O}) or drop files on
+Choose \menu{File>Open data or a project…} (\key{Ctrl}+\key{O}) or drop files on
 the window. A delimited text file (CSV, TSV, or columns separated by spaces or semicolons) becomes a
 dataset, drawn on the active net. wuffle reads the header to find the attitude:
 

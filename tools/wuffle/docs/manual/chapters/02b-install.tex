@@ -7,8 +7,8 @@ Android shell), learn where your work is kept, and what each browser can and can
 wuffle is one file, \file{wuffle.html}, about 770~KB. Everything it needs is inside it: the program, the
 World Magnetic Model, the Tocher sample, the shell. wuffle itself fetches nothing when it opens
 (\cref{sec:local}); the website's copy has a service worker that checks for a newer version in the
-background (\cref{sec:run-site}). There is no installer, so \enquote{installing} wuffle means only choosing where the
-file comes from.
+background (\cref{sec:run-site}). There is no installer, so \enquote{installing} wuffle means choosing
+where the file comes from.
 
 \section{Three ways to run it}\label{sec:run-ways}
 
@@ -16,7 +16,7 @@ file comes from.
 
 Save \file{wuffle.html} anywhere and open it: double-click it, or drag it onto a browser window. It runs
 offline from the first moment, because it never needed the network. You can copy it to a USB stick,
-attach it to an e-mail, or keep one beside each project; every copy is the whole program.
+attach it to an email, or keep one beside each project; every copy is the whole program.
 
 A file is also the simplest way to keep a version: the copy you used for a report still opens, years
 later, exactly as it was.
@@ -29,12 +29,12 @@ with two additions:
 \begin{description}
 \item[It keeps working offline.] On the first visit the browser stores the page (a \term{service
 worker} does this; it is part of the site, not of wuffle). After that, the address opens with no
-network, in the field included.
-\item[It can be installed as an app.] Browsers that install web apps offer it for this one: in Chrome
-and Edge on a computer, an install button at the right of the address bar or an install item in the
-browser's menu (its wording changes between versions); in Chrome on Android, \ui{Add to Home screen} or
-\ui{Install app} in the menu. The
-installed wuffle opens in a window of its own, with its own icon, and still works offline.
+network, in the field too.
+\item[It can be installed as an app.]\index{installing as an app} Browsers that install web apps offer
+it for this one: in Chrome and Edge on a computer, an install button at the right of the address bar or
+an install item in the browser's menu (its wording changes between versions); in Chrome on Android,
+\ui{Add to Home screen} or \ui{Install app} in the menu. The installed wuffle opens in a window of its
+own, with its own icon, and still works offline.
 \end{description}
 
 \begin{note}
@@ -46,8 +46,8 @@ from the system's app list on Android.
 \subsection{Inside the lead-acid shell}\label{sec:run-shell}
 
 On Android, wuffle also runs inside \term{lead-acid}, a small Android app that hosts single-file GCU
-instruments and lends them what a browser can't. wuffle notices the shell and uses it; nothing changes
-in how you work, but the compass gains:
+instruments and lends them what a browser can't. wuffle notices the shell and uses it. You work the same
+way, but the compass gains:
 
 \begin{itemize}
 \item \textbf{The fused orientation sensor}, read directly, with the magnetometer's own calibration
@@ -67,7 +67,7 @@ read back into the log.
 Outside the shell, in an ordinary phone browser, the compass still measures, but without a position (so
 readings stay magnetic), without a signature, and publishing downloads the files instead.
 
-\section{Updating}\label{sec:updating}
+\section{Updating}\label{sec:updating}\index{updating}
 
 \begin{description}
 \item[A file] is updated by replacing it with a newer \file{wuffle.html}. Your projects are files of
@@ -83,8 +83,9 @@ the \emph{next} time. There is no prompt and nothing to click.
 To use a new version straight away, open the site, wait a few seconds, and reload it.
 \end{tip}
 
-The compass page names the build it is at its foot, as in \ui{wuffle · 0.1.0 · d772489 · 2026-11-26}: the version, a fingerprint of the build, and its date.
-On the desk, \menu{Help>About wuffle} gives the same line under its description.
+The foot of the compass page names the build\index{version and build}, as in
+\ui{wuffle · 0.1.0 · d772489 · 2026-11-26}: the version, a fingerprint of the build, and its date. On
+the desk, \menu{Help>About wuffle} gives the same line under its description.
 
 \section{Where your work is kept}\label{sec:where-kept}
 
@@ -105,9 +106,8 @@ are yours, in your folders, and nothing in the browser can take them away.
 \begin{caution}
 The kept copy belongs to the browser and to where the page opened from. A file on your disk and the
 website keep separate copies, and so do two copies of the file in different folders; moving or renaming
-the file starts it afresh. A private window keeps none past its closing, and clearing the browser's data
-deletes it. It is a convenience between saves. Save the project
-for anything you mean to keep.
+the file starts a new one. A private window keeps none past its closing, and clearing the browser's data
+deletes it. It is a convenience between saves: save the project for anything you mean to keep.
 \end{caution}
 
 \subsection{Moving to another computer}

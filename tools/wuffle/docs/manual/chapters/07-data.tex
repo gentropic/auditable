@@ -4,7 +4,7 @@
 decides what each column means, and work with a dataset's rows in the table.
 \end{goals}
 
-A dataset is where everything starts. wuffle reads the files geologists actually have: a spreadsheet
+A dataset is where everything starts. wuffle reads the files geologists have: a spreadsheet
 exported as CSV, a column of attitudes typed into a notebook, a log from another program with its own
 column names. It never refuses one. What it can't read it counts, and what it had to guess it tells you.
 
@@ -31,7 +31,7 @@ doesn't make the file unreadable, even a short one: in \code{dd,dip} / \code{10,
 lines equally well, the one whose fields read as numbers wins. With none of them, wuffle splits on
 spaces.
 \item Fields in double quotes may hold the delimiter: \code{"open, iron-stained"} is one field.
-\item A \term{decimal comma} is recognised when the comma isn't the delimiter: \code{120,5;40,2}
+\item A \term{decimal comma} is recognized when the comma isn't the delimiter: \code{120,5;40,2}
 reads as 120.5 and 40.2, with or without a header line. (It splits evenly on the comma too, but there
 \code{5;40} is no number, so the semicolon wins.)
 \item The first line is a \term{header} when it holds a word, something that isn't a number or an
@@ -47,7 +47,7 @@ wuffle then looks for columns by name. Case, spaces and punctuation don't matter
 
 \begin{center}\small
 \begin{tabularx}{\linewidth}{@{}>{\raggedright}p{0.24\linewidth}L@{}}\toprule
-\sffamily\bfseries role & \sffamily\bfseries names wuffle recognises \\\midrule
+\sffamily\bfseries role & \sffamily\bfseries names wuffle recognizes \\\midrule
 dip direction & dipdir, dip direction, dip azimuth, dipaz, ddir, dd, dipdirn, azimuth of dip \\
 strike & strike, str, rhr, strike rhr, strike dir \\
 dip & dip, dip angle, inclination, incl \\
@@ -79,8 +79,8 @@ Two fallbacks cover files without those names. Both are \emph{guesses}, and the 
 (\cref{sec:table}):
 
 \begin{itemize}
-\item \textbf{One column of attitudes.} A column whose values look like \code{045/30} or
-\code{N30E 40SE} is read as planes, with quadrant letters honoured: \code{N30E 40SE} is a strike of
+\item \textbf{One column of attitudes.}\index{quadrant notation} A column whose values look like \code{045/30} or
+\code{N30E 40SE} is read as planes, with quadrant letters honored: \code{N30E 40SE} is a strike of
 N30°E dipping 40° to the south-east, the plane \code{120/40}. A file with one attitude per line and
 nothing else is read this way, even though its values contain spaces.
 \item \textbf{The first two numeric columns} are read as dip direction and dip. If the second column has
@@ -92,7 +92,7 @@ In a one-column file the arrow decides. Attitudes written with an arrow (\code{0
 column that mixes both opens as two datasets, \code{<name> · planes} and \code{<name> · lines}, the way a
 field log does (\cref{sec:field-logs}).
 
-Columns that are named, but not as a recognised pair, also fall to the numeric guess. A file with
+Columns that are named, but not as a recognized pair, also fall to the numeric guess. A file with
 \col{azimuth} and \col{inclination} reads as dip direction and dip, and the table's heading says so:
 \ui{no column names wuffle knows: azimuth / inclination read as dip direction / dip}. A file with no
 header at all says \ui{no named columns} instead.
@@ -112,7 +112,7 @@ wuffle saw, and nothing is silently dropped.
 
 \subsection{Field logs}
 
-The compass's own log (\cref{sec:publish}) is recognised by its \col{type} and
+The compass's own log (\cref{sec:publish}) is recognized by its \col{type} and
 \col{dip\_dir\_or\_trend} columns. Its planes and lines become two datasets,
 \code{<name> · planes} and \code{<name> · lines}, both drawn on the active net. The log itself is
 kept as it came, as an \emph{original}, with its \file{.sig} and photos if they are opened with it (\cref{sec:field-logs}).
@@ -123,7 +123,7 @@ kept as it came, as an \emph{original}, with its \file{.sig} and photos if they 
 \code{S10W 30W}, and open it.
 \item Click \ui{quadrant} in the tree's \ui{data} section and look at the table. The first column reads
 \code{120/40}, \code{120/40}, \code{280/30}: the quadrant notation converted to dip direction and dip.
-\item The heading ends with \ui{read as “c1” read as dip direction / dip (quadrant letters honoured)}: the
+\item The heading ends with \ui{“c1” read as dip direction / dip (quadrant letters honored)}: the
 file had no header, so the reading is marked as a guess.
 \end{enumerate}
 \end{tryit}
@@ -133,7 +133,8 @@ file had no header, so the reading is marked as a guess.
 \shot{data-table}{A file with a quoted field and an unreadable row: the attitude column shows \ui{—} for row 4,
 which isn't drawn. Row 3 is selected, so it is washed in the table and violet on the net.}
 
-Click a dataset in the tree's \ui{data} section, or a layer, and the \ui{table} tab shows its rows.
+Click a dataset in the tree's \ui{data} section, or a layer, and the \ui{table} tab\index{table tab}
+shows its rows.
 
 \begin{itemize}
 \item The heading names the dataset, its kind and its row count, and when the column roles were guessed,
@@ -147,9 +148,9 @@ couldn't read.
 
 \subsection{Editing}
 
-Double-click a cell (or select it and press \key{F2}, or just start typing), type, and press
-\key{Enter}. The edit goes into the dataset, so every layer of it, on
-every diagram, redraws, and the attitude column follows. A number typed is stored as a number; anything
+Double-click a cell (or select it and press \key{F2}, or start typing), type, and press \key{Enter}.
+The edit goes into the dataset, so every layer of it, on every diagram, redraws, and the attitude column
+follows. A number typed is stored as a number; anything
 else is kept as text. Each edit is an undo step, \ui{edit rows}.
 
 \subsection{Selecting}
