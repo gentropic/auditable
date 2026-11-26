@@ -206,15 +206,22 @@ export function makeLineEditor(adapter) {
             return;
           }
           // Tab: completion, when the caller offers it. onComplete(buffer) →
-          // { buffer?, list? }: a new buffer replaces the typed one; a list of
-          // candidates prints below and the prompt comes back with the buffer.
+          // { buffer?, list? } (or a Promise of it — a filesystem listing is
+          // async): a new buffer replaces the typed one; a list of candidates
+          // prints below and the prompt comes back with the buffer. An async
+          // answer applies only if nothing was typed while it was coming.
           if (ch === '\t' && typeof onComplete === 'function' && !silent) {
             i++;
+            const asked = buffer;
+            const apply = (r) => {
+              if (done || buffer !== asked || !r) return;
+              if (Array.isArray(r.list) && r.list.length) {
+                try { adapter.write('\r\n' + r.list.join('  ') + '\r\n' + (prompt || '') + buffer); } catch { /* ignore */ }
+              }
+              if (typeof r.buffer === 'string' && r.buffer !== buffer) replaceBuffer(r.buffer);
+            };
             let r = null; try { r = onComplete(buffer); } catch { r = null; }
-            if (r && Array.isArray(r.list) && r.list.length) {
-              try { adapter.write('\r\n' + r.list.join('  ') + '\r\n' + (prompt || '') + buffer); } catch { /* ignore */ }
-            }
-            if (r && typeof r.buffer === 'string' && r.buffer !== buffer) replaceBuffer(r.buffer);
+            if (r && typeof r.then === 'function') r.then(apply, () => {}); else apply(r);
             continue;
           }
           // Skip other control chars.

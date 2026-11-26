@@ -43,6 +43,17 @@ describe('the built geas bundle', () => {
     assert.equal(rmCalls, 1); assert.equal(await vfs.exists('/d'), false);
     out = ''; await sh.exec('ln /e/f.txt /x\n'); assert.match(out, /only symbolic links/);
   });
+  it('Tab completion may answer later (a Promise) — and is dropped if the line changed meanwhile', async () => {
+    const subs = new Set();
+    const adapter = { write: () => {}, onInput: (cb) => { subs.add(cb); return () => subs.delete(cb); } };
+    const send = (t) => { for (const cb of subs) cb(t); };
+    const read = makeLineEditor(adapter)({ onComplete: async (b) => ({ buffer: b === 'ca' ? 'cat data/' : b + 'X' }) });
+    send('ca\t'); await new Promise((r) => setTimeout(r, 0));
+    send('z\t'); send('!');                       // typed before the second answer came: it must not apply
+    await new Promise((r) => setTimeout(r, 0));
+    send('\r');
+    assert.deepEqual(await read, { line: 'cat data/z!' });
+  });
   it('the line editor completes on Tab when asked to', async () => {
     const subs = new Set(); let shown = '';
     const adapter = { write: (t) => { shown += t; }, onInput: (cb) => { subs.add(cb); return () => subs.delete(cb); } };
