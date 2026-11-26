@@ -14,7 +14,7 @@
 import { chromium } from 'playwright';
 import http from 'http';
 import { readFile, writeFile, mkdir, readdir } from 'fs/promises';
-import { existsSync, readFileSync, statSync, unlinkSync } from 'fs';
+import { existsSync, readFileSync, statSync, unlinkSync, readdirSync } from 'fs';
 import { extname, join, dirname, resolve } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { spawnSync } from 'child_process';
@@ -214,6 +214,20 @@ if (want('commands')) await phaseCommands();
 if (want('cover') || (want('pdf') && !existsSync(join(HERE, 'cover', 'art.png')))) {
   const r = spawnSync(process.execPath, [join(HERE, 'cover', 'art.mjs')], { stdio: 'inherit' });
   if (r.status !== 0) { console.log('cover: FAILED'); process.exitCode = 1; }
+}
+// waffle — THE WUFFLE: cover/waffle-data.mjs exports the net's geometry from wuffle's maths, then Blender
+// renders it (cover/waffle.py). Opt-in only (`node build.mjs waffle`): it needs Blender and takes minutes.
+// Blender is $BLENDER, else on PATH, else Blender Foundation's default Windows install.
+if (PHASES.includes('waffle')) {
+  const d = spawnSync(process.execPath, [join(HERE, 'cover', 'waffle-data.mjs')], { stdio: 'inherit' });
+  const pf = 'C:/Program Files/Blender Foundation';
+  const found = existsSync(pf) ? readdirSync(pf).map((v) => join(pf, v, 'blender.exe')).find((p) => existsSync(p)) : null;
+  const blender = process.env.BLENDER || found || 'blender';
+  const res = argv.find((a) => a.startsWith('--res='))?.split('=')[1] || '2800', samples = argv.find((a) => a.startsWith('--samples='))?.split('=')[1] || '384';
+  const r = d.status === 0 && spawnSync(blender, ['-b', '-P', join(HERE, 'cover', 'waffle.py'), '--', '--res', res, '--samples', samples, '--out', join(HERE, 'cover', 'waffle.png')], { stdio: 'inherit' });
+  if (!r || r.status !== 0) { console.log('waffle: FAILED (is Blender installed? set BLENDER=path/to/blender)'); process.exitCode = 1; }
+  // onto the page's basalt (the shadow catcher's faint alpha would otherwise show its frame on the cover)
+  else spawnSync(process.execPath, [join(HERE, 'cover', 'on-basalt.mjs'), join(HERE, 'cover', 'waffle.png'), join(HERE, 'cover', 'waffle-cover.jpg')], { stdio: 'inherit' });
 }
 if (want('shots')) await phaseShots(await readWanted());
 if (want('print') || want('pdf')) await phasePrint();

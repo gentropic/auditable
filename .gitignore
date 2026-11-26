@@ -226,6 +226,10 @@ tools/wuffle/docs/manual/chapters/B-commands.tex
 tools/wuffle/docs/manual/cover/art.png
 tools/wuffle/docs/manual/cover/art.svg
 tools/wuffle/docs/manual/cover/preview-*.png
+tools/wuffle/docs/manual/cover/waffle.png
+tools/wuffle/docs/manual/cover/waffle-cover.jpg
+tools/wuffle/docs/manual/cover/waffle.json
+tools/wuffle/docs/manual/cover/waffle-test*.png
 # Personal PhD documents (not part of the bands.gpu tool — never commit to the public repo)
 tools/bands/phd-notes*
 tools/bands/PHD-NOTES*

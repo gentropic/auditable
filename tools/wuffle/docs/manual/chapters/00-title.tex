@@ -5,9 +5,15 @@
 \begin{titlepage}
 \begin{tikzpicture}[remember picture, overlay]
   \fill[basalt] (current page.south west) rectangle (current page.north east);
-  % the figure: the Tocher net, a disc 250 mm across, centred off the lower right so the page crops it
-  \node[inner sep=0pt, anchor=center] at ([xshift=6mm, yshift=72mm]current page.south east)
-    {\IfFileExists{cover/art.png}{\includegraphics[width=250mm]{cover/art.png}}{}};
+  % the figure, rising out of the lower right so the page crops it: THE WUFFLE when it has been rendered
+  % (cover/waffle.py, Blender), else the density net (cover/art.mjs) — each with its own caption below
+  \IfFileExists{cover/waffle-cover.jpg}{%
+    \node[inner sep=0pt, anchor=center] at ([xshift=8mm, yshift=70mm]current page.south east)
+      {\includegraphics[width=300mm]{cover/waffle-cover.jpg}};
+  }{%
+    \node[inner sep=0pt, anchor=center] at ([xshift=6mm, yshift=72mm]current page.south east)
+      {\IfFileExists{cover/art.png}{\includegraphics[width=250mm]{cover/art.png}}{}};
+  }
   % the kicker, the name, the rule, the subtitle
   \node[anchor=north west, inner sep=0pt, text=amberlight, font=\displayfont\small\addfontfeatures{LetterSpace=18}]
     at ([xshift=24mm, yshift=-40mm]current page.north west) {A GCU FIELD MANUAL};
@@ -19,9 +25,13 @@
   % the foot: the caption of the figure, then who and where
   \node[anchor=south west, inner sep=0pt, text=basalttext!80!basalt, text width=64mm, font=\sffamily\scriptsize, align=left]
     at ([xshift=24mm, yshift=36mm]current page.south west)
-    {\textcolor{amberlight}{Cover.} The Tocher (1979) sample, 200 planes, drawn by wuffle on a lower-hemisphere
-     equal-area net: a Fisher-kernel density field, Kamb contours at 2$\sigma$ intervals ($k = 3$), every
-     great circle and every pole.};
+    {\IfFileExists{cover/waffle-cover.jpg}%
+      {\textcolor{amberlight}{Cover.} The Tocher (1979) sample on a lower-hemisphere equal-area waffle: the
+       net's 10° graticule baked in as the grid, a chocolate chip at each of the 200 poles, and maple syrup
+       wherever their Kamb density reaches 4$\sigma$ ($k = 3$). Geometry by wuffle; rendered in Cycles.}%
+      {\textcolor{amberlight}{Cover.} The Tocher (1979) sample, 200 planes, drawn by wuffle on a lower-hemisphere
+       equal-area net: a Fisher-kernel density field, Kamb contours at 2$\sigma$ intervals ($k = 3$), every
+       great circle and every pole.}};
   \node[anchor=south west, inner sep=0pt, text=basalttext, font=\sffamily\small, text width=84mm]
     at ([xshift=24mm, yshift=20mm]current page.south west)
     {Geoscientific Chaos Union\enskip·\enskip gentropic.org/wuffle\\[1mm]\textcolor{faint}{\today}};

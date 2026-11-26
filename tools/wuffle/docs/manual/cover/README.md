@@ -19,5 +19,21 @@ Individual (each book): the figure, and its palette.
 - lamina — its own heat-mapped table of a real file's columns; gslib — a kriged map with its variogram;
   moncad — a drawing at the frame's true coordinates.
 
-Files: `art.mjs` draws `art.png` (transparent, 2800 px); `chapters/00-title.tex` composes the page.
-`node build.mjs cover` redraws it (and `pdf` does when the art is missing).
+## wuffle's cover: THE WUFFLE
+
+A waffle whose grid is a lower-hemisphere equal-area stereonet — the net's 10° graticule baked in as the
+ridges — with a chocolate chip at each of Tocher's 200 poles and maple syrup wherever their Kamb density
+reaches 4σ (its edge IS the 4σ contour; it runs deeper where the poles crowd). Every position is wuffle's:
+`waffle-data.mjs` exports the projected graticule, the poles and the Kamb field from bearing into
+`waffle.json`; `waffle.py` builds the waffle, chips and syrup from that in Blender and renders it in Cycles
+(transmissive syrup with real absorption, subsurface dough, a low sun raking the ridges, a softbox only the
+wet surfaces see, a shadow catcher so it lands on the cover's basalt). Not a generated image: a figure.
+
+    node tools/wuffle/docs/manual/build.mjs waffle      # ~15 min on a laptop GPU; --res= --samples= to taste
+    node tools/wuffle/docs/manual/build.mjs pdf
+
+Without a render, the cover falls back to `art.png`, the density net (`art.mjs`, `node build.mjs cover`).
+`on-basalt.mjs` composites a transparent render onto the cover's ground, to judge it as it will print.
+
+Files: `art.mjs` → `art.png`; `waffle-data.mjs` → `waffle.json`; `waffle.py` → `waffle.png`;
+`chapters/00-title.tex` composes the page and picks the caption that matches the figure.
