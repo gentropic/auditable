@@ -2062,7 +2062,7 @@ if (target === 'wuffle') {
     // src/ modules import ext packages by relative path (so Node tests resolve them): the same bundled copy
     '../../../ext/bearing/index.js': '#bearing', '../../../ext/leadacid/index.js': '#leadacid', '../../../ext/wmm/index.js': '#wmm',
     // the desk workbench's GCU components
-    '../../../ext/rails/index.js': '#rails', '../../../ext/menu/index.js': '#menu', '../../../ext/dialog/index.js': '#dialog', '../../../ext/loom/index.js': '#loom' };
+    '../../../ext/rails/index.js': '#rails', '../../../ext/menu/index.js': '#menu', '../../../ext/dialog/index.js': '#dialog', '../../../ext/loom/index.js': '#loom', '../../../ext/stereonet/index.js': '#stereonet' };
   const libs = [
     ['bearing', 'ext/bearing/index.js'],
     ['leadacid', 'ext/leadacid/index.js'],
@@ -2071,6 +2071,7 @@ if (target === 'wuffle') {
     ['menu', 'ext/menu/index.js'],
     ['dialog', 'ext/dialog/index.js'],
     ['loom', 'ext/loom/index.js'],
+    ['stereonet', 'ext/stereonet/index.js'],
   ];
   const modules = [];
   for (const [name, rel] of libs) {
@@ -2123,8 +2124,8 @@ if (target === 'wuffle') {
   const wfStamp = `0.1.0 · ${wfBuildId} · ${buildDateFromGit()}`;
 
   html = html.replace(/<script type="importmap">[\s\S]*?<\/script>\s*/, '');
-  html = html.replace(/<link rel="stylesheet" href="\.\.\/\.\.\/(ext\/[\w/.-]+\.css)">/g, (_, rel) => {
-    const cp = path.join(__dirname, rel);
+  html = html.replace(/<link rel="stylesheet" href="((?:\.\.\/\.\.\/ext|\.\/src)\/[\w/.-]+\.css)">/g, (_, rel) => {
+    const cp = path.join(dir, rel);
     if (!fs.existsSync(cp)) { console.error(`Error: ${rel} not found`); process.exit(1); }
     return `<style data-from="${rel}">\n${fs.readFileSync(cp, 'utf8').trim()}\n</style>`;
   });

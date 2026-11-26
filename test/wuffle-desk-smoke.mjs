@@ -70,7 +70,7 @@ for (const [label, url] of [['dev', '/tools/wuffle/index.html'], ['built', '/wuf
     // click the first pole on net 1: its row is selected — on net 2 too, and in the table
     W.rails.activateTab('diag:' + net1); await wait(200);
     const v = W.views.get(net1), k = v.picks[0], svg = host().querySelector('svg'), rc = svg.getBoundingClientRect();
-    const sx = rc.left + k.x / (v.sn.size / rc.width), sy = rc.top + k.y / (v.sn.size / rc.height);
+    const sx = rc.left + k.x / (v.net.size / rc.width), sy = rc.top + k.y / (v.net.size / rc.height);
     out.clickAt = [sx, sy];
     return out;
   });
@@ -90,9 +90,9 @@ for (const [label, url] of [['dev', '/tools/wuffle/index.html'], ['built', '/wuf
     out.tableTitle = document.querySelector('.wt-head')?.textContent;
     // theme
     const bg0 = getComputedStyle(document.body).getPropertyValue('--w-net-bg').trim();
-    W.theme('light'); await wait(200);
+    W.setTheme('light'); await wait(200);
     out.theme = [bg0, getComputedStyle(document.body).getPropertyValue('--w-net-bg').trim(), document.documentElement.dataset.resolvedTheme];
-    W.theme('system');
+    W.setTheme('system');
     // a project round trip (save → load) through the same shapes
     const j = JSON.parse(JSON.stringify(P.toJSON()));
     W.loadProject(j); await wait(300);

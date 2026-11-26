@@ -1,0 +1,89 @@
+/* wuffle DESK — the workbench's styles. Everything is scoped under body.desk: the field compass shares the
+   page and must not notice. Switchboard tokens (ext/switchboard/SPEC.md): basalt first, equipment gray on
+   prefers-color-scheme: light or [data-theme="light"]. Linked in the dev page, inlined by the build. */
+
+body.desk {
+  --w-bg-deep:#0E1012; --w-bg:#15171A; --w-bg-raised:#1D2024; --w-bg-bright:#25282D;
+  --w-text:#DDDCDA; --w-text-mid:#9E9C98; --w-text-soft:#83817E; --w-border:#2F3338; --w-border-soft:#24272B; --w-rule:#3A3E44;
+  --w-orange:#FB9044; --w-blue:#008CD1; --w-green:#5CCB80; --w-yellow:#FFD73A; --w-red:#E75A51; --w-violet:#EC9FFF; --w-violet-soft:#2A212C; --w-orange-soft:#2E2119;
+  --w-net-bg:#101215; --w-net-grid:#2A2E33; --w-net-rim:#8A8884;
+  --w-mono:'Space Mono','JetBrains Mono',Consolas,monospace; --w-sans:'Barlow',system-ui,sans-serif;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) body.desk {
+  --w-bg-deep:#C2C1BE; --w-bg:#D2D1CE; --w-bg-raised:#E4E3E1; --w-bg-bright:#EDECEB;
+  --w-text:#232322; --w-text-mid:#504F4C; --w-text-soft:#5A5856; --w-border:#B3B1AD; --w-border-soft:#C6C4C1; --w-rule:#A5A3A0;
+  --w-orange:#8B3F00; --w-blue:#005C97; --w-green:#00602B; --w-yellow:#6F5700; --w-red:#99191E; --w-violet:#793A8D; --w-violet-soft:#F2DFF7; --w-orange-soft:#FDE0CF;
+  --w-net-bg:#F4F3F1; --w-net-grid:#D3D1CD; --w-net-rim:#5A5856; color-scheme: light; } }
+:root[data-theme="light"] body.desk {
+  --w-bg-deep:#C2C1BE; --w-bg:#D2D1CE; --w-bg-raised:#E4E3E1; --w-bg-bright:#EDECEB;
+  --w-text:#232322; --w-text-mid:#504F4C; --w-text-soft:#5A5856; --w-border:#B3B1AD; --w-border-soft:#C6C4C1; --w-rule:#A5A3A0;
+  --w-orange:#8B3F00; --w-blue:#005C97; --w-green:#00602B; --w-yellow:#6F5700; --w-red:#99191E; --w-violet:#793A8D; --w-violet-soft:#F2DFF7; --w-orange-soft:#FDE0CF;
+  --w-net-bg:#F4F3F1; --w-net-grid:#D3D1CD; --w-net-rim:#5A5856; color-scheme: light; }
+
+/* the GCU components read their own variables: map them onto ours (on body.desk, so they win over the
+   defaults' :root blocks) */
+body.desk {
+  --rails-bg:var(--w-bg-deep); --rails-surface:var(--w-bg-raised); --rails-chrome:var(--w-bg-bright); --rails-border:var(--w-border);
+  --rails-border-strong:var(--w-rule); --rails-text:var(--w-text); --rails-text-dim:var(--w-text-mid); --rails-text-faint:var(--w-text-soft);
+  --rails-accent:var(--w-orange); --rails-accent-bg:var(--w-orange-soft); --rails-danger:var(--w-red); --rails-font-mono:var(--w-mono);
+  --ui-bg:var(--w-bg-raised); --ui-bg-raised:var(--w-bg-raised); --ui-bg-hover:var(--w-bg-bright); --ui-bg-selected:var(--w-violet-soft);
+  --ui-fg:var(--w-text); --ui-fg-muted:var(--w-text-mid); --ui-fg-error:var(--w-red); --ui-fg-accent:var(--w-orange);
+  --ui-border:var(--w-border); --ui-border-focus:var(--w-blue); --ui-font:var(--w-sans); --ui-font-size:13px;
+  margin:0; max-width:none; padding:0; height:100vh; background:var(--w-bg); color:var(--w-text); font:13px/1.4 var(--w-sans); overflow:hidden;
+}
+body.desk > [hidden] { display:none !important; }   /* the field page's own display rules would beat [hidden] */
+
+/* the shell */
+#wdesk { height:100vh; display:grid; grid-template-rows:30px 1fr 22px; }
+#wdesk .wbar { display:flex; align-items:center; gap:6px; padding:0 8px; background:var(--w-bg-raised); border-bottom:1px solid var(--w-border); }
+#wdesk .wbrand { font:700 12px var(--w-mono); color:var(--w-orange); margin-right:8px; }
+#wdesk .wmenus { flex:1; min-width:0; }
+#wdesk .wsealed { font:11px var(--w-mono); color:var(--w-green); border:1px solid var(--w-border); border-radius:3px; padding:0 6px; }
+#wdesk .wwork { min-height:0; position:relative; }
+#wdesk .wstatus { display:flex; gap:18px; align-items:center; padding:0 10px; font:11px var(--w-mono); color:var(--w-text-soft); background:var(--w-bg-raised); border-top:1px solid var(--w-border); white-space:nowrap; overflow:hidden; }
+#wdesk .wstatus .wst-hover { flex:1; overflow:hidden; text-overflow:ellipsis; }
+.wdrop { position:absolute; inset:0; display:grid; place-items:center; background:color-mix(in srgb, var(--w-bg-deep) 70%, transparent); border:2px dashed var(--w-violet); color:var(--w-text); font:14px var(--w-sans); z-index:50; pointer-events:none; }
+
+/* a net */
+.wn-host { flex:1; min-height:0; display:grid; place-items:center; background:var(--w-net-bg); outline:none; }
+.wn-host svg { display:block; cursor:crosshair; }
+
+/* the tree */
+.wtree { flex:1; min-height:0; overflow:auto; padding:6px 4px; font:13px var(--w-sans); background:var(--w-bg-raised); }
+.wtree .wrow { display:flex; align-items:center; gap:6px; padding:3px 6px; border-radius:3px; cursor:default; user-select:none; }
+.wtree .wrow:hover { background:var(--w-bg-bright); }
+.wtree .wdiag { font-weight:500; margin-top:4px; }
+.wtree .wdiag.active { font-weight:700; color:var(--w-text); box-shadow:inset 2px 0 0 var(--w-orange); }
+.wtree .wdiag.drop { outline:1px dashed var(--w-violet); background:var(--w-violet-soft); }
+.wtree .wlayer { padding-left:16px; }
+.wtree .wel { padding-left:44px; color:var(--w-text-mid); padding-block:1px; }
+.wtree .wel2 { padding-left:62px; }
+.wtree .wname { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.wtree .wn { font:10.5px var(--w-mono); color:var(--w-text-soft); }
+.wtree .wlink { font:10.5px var(--w-mono); color:var(--w-violet); }
+.wtree .wico { color:var(--w-text-mid); width:12px; text-align:center; }
+.wtree .wtw { width:12px; flex:0 0 auto; border:0; background:none; color:var(--w-text-soft); font-size:10px; padding:0; cursor:pointer; }
+.wtree .wsw { width:10px; height:10px; border-radius:50%; flex:0 0 auto; }
+.wtree .wsec { font:10.5px var(--w-mono); letter-spacing:.08em; text-transform:uppercase; color:var(--w-text-soft); padding:12px 6px 4px; border-top:1px solid var(--w-border-soft); margin-top:10px; }
+.wtree .wempty { color:var(--w-text-soft); padding:4px 8px; font-size:12px; }
+.wtree .wdata { padding-left:6px; }
+.wcb { width:13px; height:13px; flex:0 0 auto; border:1px solid var(--w-text-mid); border-radius:2px; background:transparent; padding:0; position:relative; cursor:pointer; }
+.wcb.on { background:var(--w-orange); border-color:var(--w-orange); }
+.wcb.on::after { content:""; position:absolute; left:3.5px; top:0.5px; width:3px; height:7px; border:solid var(--w-bg-deep); border-width:0 2px 2px 0; transform:rotate(45deg); }
+.wcb.partial::after { content:""; position:absolute; left:2px; right:2px; top:5px; height:2px; background:var(--w-orange); }
+.wcb:focus-visible, .wtw:focus-visible { outline:2px solid var(--w-blue); outline-offset:1px; }
+
+/* the table */
+.wt-host { flex:1; min-height:0; display:flex; flex-direction:column; background:var(--w-bg-raised); }
+.wt-head { font:11px var(--w-mono); color:var(--w-text-mid); padding:3px 8px; border-bottom:1px solid var(--w-border); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.wt-body { flex:1; min-height:0; position:relative; }
+
+/* the properties dialog */
+.wprow { display:grid; grid-template-columns:130px 1fr; align-items:center; gap:10px; margin:6px 0; color:var(--w-text-mid); }
+.wprow input, .wprow select { font:12px var(--w-mono); background:var(--w-bg-bright); color:var(--w-text); border:1px solid var(--w-border); border-radius:3px; padding:2px 6px; }
+.wprow input[type=color] { padding:0; height:24px; width:60px; }
+.wpnote { margin:0 0 8px; font:11px var(--w-mono); color:var(--w-text-soft); }
+.wpbar { display:flex; justify-content:flex-end; gap:8px; margin-top:12px; }
+.wpbar button { font:12px var(--w-sans); padding:3px 12px; border-radius:3px; border:1px solid var(--w-border); background:var(--w-bg-bright); color:var(--w-text); cursor:pointer; }
+.wpbar button.primary { background:var(--w-orange); border-color:var(--w-orange); color:var(--w-bg-deep); font-weight:600; }
