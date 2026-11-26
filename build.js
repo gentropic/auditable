@@ -2073,9 +2073,25 @@ if (target === 'wuffle') {
   let html = fs.readFileSync(path.join(dir, 'index.html'), 'utf8');
   const appMatch = html.match(/<script type="module">([\s\S]*?)<\/script>\s*<\/body>/);
   if (!appMatch) { console.error('Error: tools/wuffle/index.html — inline module script not found.'); process.exit(1); }
+  // ./src/<name>.js modules (and their ./ siblings) → registry modules '#<name>'; bare @gcu specifiers → SPEC
+  const wfRewrite = (src) => {
+    for (const [from, to] of Object.entries(SPEC)) src = src.split(`from '${from}'`).join(`from '${to}'`);
+    return src.replace(/(from\s+|import\s+|import\()'\.\/(?:src\/)?([\w-]+)\.js'/g, (_, k, n) => `${k}'#wf-${n}'`);
+  };
+  const wfSeen = new Set();
+  const wfCollect = (src) => {
+    for (const mm of src.matchAll(/(?:from\s+|import\s+|import\()'\.\/(?:src\/)?([\w-]+)\.js'/g)) {
+      const n = mm[1]; if (wfSeen.has(n)) continue; wfSeen.add(n);
+      const fp = path.join(dir, 'src', n + '.js');
+      if (!fs.existsSync(fp)) { console.error(`Error: tools/wuffle/src/${n}.js not found`); process.exit(1); }
+      const s = fs.readFileSync(fp, 'utf8');
+      wfCollect(s);
+      modules.push({ name: 'wf-' + n, source: wfRewrite(s).trim() });
+    }
+  };
   let appSrc = appMatch[1];
-  for (const [from, to] of Object.entries(SPEC)) appSrc = appSrc.split(`from '${from}'`).join(`from '${to}'`);
-  modules.push({ name: 'app', source: appSrc.trim() });
+  wfCollect(appSrc);
+  modules.push({ name: 'app', source: wfRewrite(appSrc).trim() });
 
   const entries = modules.map((m) =>
     JSON.stringify(m.name) + ': ' + JSON.stringify(m.source).replace(/<\/script>/gi, '<\\/script>'));
