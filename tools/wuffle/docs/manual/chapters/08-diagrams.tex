@@ -1,0 +1,122 @@
+\chapter{Diagrams and layers}\label{ch:diagrams}
+\begin{goals}
+\textbf{In this chapter} you make nets, rose diagrams and fabric plots, set a net's projection and
+hemisphere, and draw the same data on several diagrams as views that stay in step.
+\end{goals}
+
+A diagram is a way of looking; a layer is one dataset looked at that way. Keeping the two apart is what
+lets you put the same joints on a contoured net, a net of great circles and a rose without copying a
+single row (\cref{sec:data-once}).
+
+\section{Kinds of diagram}\label{sec:diagram-kinds}
+
+\begin{description}
+\item[Net.] An equal-area or equal-angle stereonet, lower or upper hemisphere. Planes draw as poles or
+great circles, lines as points; contours, means, eigenvectors and faults draw here too.
+\item[Rose diagram.] The azimuths of the visible layers in sectors: strikes, dip directions or trends
+(\cref{ch:roses}).
+\item[Fabric plot.] One point per visible layer on a Vollmer or a Woodcock diagram, placing each
+dataset's eigenvalues: cluster, girdle or random (\cref{ch:roses}).
+\end{description}
+
+\menu{Diagram>New net}, \menu{Diagram>New rose diagram} and \menu{Diagram>New fabric plot} make one. The
+new diagram starts with the \emph{active} diagram's layers, as views of the same data, so a rose of the
+sets you have on your net is one menu choice. It is named for its kind and number (\ui{Net 2},
+\ui{Rose 1}), gets a tab beside the others and becomes active. \menu{Diagram>Remove the active diagram}
+removes the one in front; undo brings it back.
+
+\section{The active diagram}\label{sec:active}
+
+The diagram in front, the \term{active diagram}, is the one menus and console commands act on. Clicking
+its tab or its name in the tree makes a diagram active, and so does a click on a net; the tree shows its name in bold.
+Tabs can be dragged to sit side by side, as with any of the desk's tabs.
+
+Moving the pointer over a net reports, in the status line, what is under it: the plane whose pole that
+is and the line through it, and when the pointer is on a measurement, the dataset, row and attitude:
+\ui{cursor · pole of 327/19 · line 147→71}.
+
+\section{A net's settings}\label{sec:net-settings}
+
+\shot[0.62\linewidth]{net-equal-angle}{The Tocher planes as great circles, in equal-angle projection, upper hemisphere.}
+
+Right-click a net's name in the tree:
+
+\begin{description}
+\item[\ui{Rename…}] a new name; the tab follows.
+\item[\ui{Projection}] \ui{equal-area (Schmidt)}, the default and the right one for counting and
+contouring, or \ui{equal-angle (Wulff)}, which keeps angles true and draws every circle as a circle.
+\item[\ui{Hemisphere}] \ui{lower}, the structural-geology default, or \ui{upper}.
+\item[\ui{Reset rotation}] back to north up, when the net has been rotated (\cref{ch:rotation}).
+\item[\ui{Remove diagram}] asks first. \ui{Its layers go; the data stays.}
+\end{description}
+
+Rose diagrams and fabric plots have their own settings in the same menu (\cref{ch:roses}). Every setting
+is an undo step (\ui{diagram settings}).
+
+The \term{graticule} is drawn every 10°. There is no menu for it; set \code{"graticule"} in the diagram's
+\file{diagram.json} from the console if you need another spacing (\cref{sec:project-write}).
+
+\section{Layers}\label{sec:layers}
+
+Under each diagram in the tree are its layers, one row each: a checkbox that shows or hides it, its
+colour, its name (the dataset's, unless you gave the layer its own), and the dataset's row count. Click a
+layer to show its dataset in the table; double-click it for its properties (\cref{sec:properties}).
+
+A new layer takes the next colour of wuffle's palette, so the tree's swatch and the net always agree; the
+properties dialog changes it. Layers are drawn in the order they were added, the last on top. The tree
+can't reorder them yet.
+
+\section{Views: the same data on several diagrams}\label{sec:views}
+
+\shot{views-menu}{\code{tocher} on two nets: the badge beside the layer counts the other diagrams it is drawn
+on. The layer's menu adds a view to, or moves it to, any other diagram.}
+
+A \term{view} is another layer of the same dataset. There are three ways to make one:
+
+\begin{itemize}
+\item \textbf{Drag a layer} onto another diagram's name in the tree: a view there, with the layer's style
+and what it draws copied. From then on the two are styled independently; the rows stay shared.
+\item \textbf{Drag a dataset} from the \ui{data} section onto a diagram's name: a new layer with the
+defaults.
+\item \textbf{The layer's menu}, \menu{Add a view to>…}, or \menu{Draw on>…} on a dataset.
+\end{itemize}
+
+Hold \key{Shift} while dropping a layer and it \emph{moves} instead: it leaves its diagram for the other
+one. \menu{Move to>…} in the layer's menu does the same.
+
+A layer whose data is drawn elsewhere too carries a badge, \ui{⧉1}, counting the \emph{other} diagrams;
+hover it for \ui{also drawn on 1 other diagram — the same data}. Edit a row, select a pole, and every one
+of them follows.
+
+\begin{tryit}
+\begin{enumerate}
+\item Open the Tocher sample. Choose \menu{Diagram>New net}. \ui{Net 2} appears with \code{tocher} already
+on it, and both layers show \ui{⧉1}.
+\item Right-click \ui{Net 2} in the tree, choose \menu{Projection>equal-angle (Wulff)}. Only \ui{Net 2}
+changes: the setting belongs to the diagram, not the data.
+\item Click a pole on \ui{Net 2}. The same pole is violet on \ui{Net 1}: the selection belongs to the data.
+\item Drag \code{tocher} from \ui{Net 2} onto \ui{Net 1} with \key{Shift} held. \ui{Net 2} is empty now and
+\ui{Net 1} has two layers of \code{tocher}. Press \key{Ctrl}+\key{Z} to put it back.
+\end{enumerate}
+\end{tryit}
+
+\section{The layer's menu}\label{sec:layer-menu}
+
+Right-click a layer:
+
+\begin{description}
+\item[\ui{Properties…}] its colour, symbol size and element settings (\cref{sec:properties}).
+\item[\ui{Show the table}] its dataset in the table.
+\item[\ui{Add a view to}, \ui{Move to}] as above.
+\item[\ui{Selection → new dataset}] the selected rows of its dataset as a dataset of their own, with
+lineage (\cref{ch:select}). Greyed out when nothing is selected.
+\item[\ui{Remove from this diagram}] this layer only. The data stays, and any other views of it.
+\item[\ui{Remove from everywhere}] every layer of this dataset, on every diagram. It asks first, naming
+them: \ui{Remove “tocher” from Net 1, Net 2? The data stays in the project.}
+\end{description}
+
+The menu item counts diagrams, not layers: \ui{Remove from everywhere (2 diagrams)} for a dataset drawn
+three times on one net and once on another. It goes from all four.
+
+Removing a layer never removes data. The dataset stays in the \ui{data} section, marked \ui{· not drawn}
+when nothing draws it, until you delete it there (\cref{sec:data-section}).

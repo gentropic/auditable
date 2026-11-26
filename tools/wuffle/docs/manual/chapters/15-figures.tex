@@ -1,0 +1,97 @@
+\chapter{Figures}\label{ch:figures}
+\begin{goals}
+\textbf{In this chapter} you turn a net into a page for a report: the net as vectors, a legend, the
+statistics and a caption, laid out as you like and exported as PDF or PNG.
+\end{goals}
+
+A net on the desk is drawn for working: it follows the theme, shows the selection, and changes as you
+change things. A \term{figure} is a page made \emph{from} a net, for someone else to read. wuffle builds it
+with compo, the GCU page compositor, and keeps it in the project like a dataset or a diagram.
+
+\section{Making one}\label{sec:new-figure}
+
+Make the net you want active, then choose \menu{Figure>New figure from the active net}. A tab called
+\ui{<net> · figure} opens with an A4 landscape page holding five frames:
+
+\begin{description}
+\item[The title] the net's name.
+\item[The net] drawn as vectors, not as a picture, so it stays sharp at any size and in the PDF. It is
+drawn on a white page whatever the desk's theme (the layers keep their colours, the graticule and
+arrows are ink), and it shows the data, not the selection.
+\item[The legend] each visible layer with its colour and its count, \ui{tocher (200)}.
+\item[The statistics] a table: for each layer, n, the axial Fisher mean, $\kappa$, $\alpha_{95}$ and
+Woodcock's K (\cref{ch:stats}).
+\item[The caption] what the reader is looking at, in words: the projection and hemisphere, the rotation if
+any (\cref{ch:rotation}), how the contours were made, the notation (\enquote{Planes as dip direction/dip,
+lines as trend→plunge}), the lineage of any derived dataset on the net, and \enquote{Made with wuffle} with
+the date.
+\end{description}
+
+Only nets make figures. The menu item is greyed out while a rose diagram or a fabric plot is active.
+
+\shot{figure-editor}{A figure from the contoured Tocher net. The tree lists it under \ui{figures}; the
+frames panel on the right lists the page's five frames.}
+
+The caption is generated, so it can't disagree with the net. For the Tocher net contoured by Kamb's
+method it reads:
+
+\begin{quote}\small
+Equal-area (Schmidt), lower hemisphere · Kamb contours at 2σ intervals (k = 3). Planes as dip
+direction/dip, lines as trend→plunge. Made with wuffle, 26/11/2026.
+\end{quote}
+
+\section{Laying out the page}
+
+The figure tab is compo's editor. Click a frame to edit it, drag it to move it (it snaps to edges, centres
+and equal gaps), and pull its handles to resize it; the arrow keys nudge. A right-click on a frame offers
+duplicate, group, the stacking order, lock and delete. The bar above the page sets the paper size,
+orientation, zoom and grid, and adds new frames, such as text.
+
+Inside the figure tab \key{Ctrl}+\key{Z} is compo's own undo, step by step through your edits to the
+page. Outside it, the figure's changes are part of the project's history like any other (\cref{sec:undo}).
+
+\section{Keeping it in step with the net}\label{sec:figure-refresh}
+
+A figure is a copy of the net at the moment you made it. When the net changes (more data, a different
+contour method, a rotation), click \ui{↻ from the net} in the figure's bar. The five frames are made again
+from the diagram as it is now; where you put them, how big you made them and any frames you added are
+kept.
+
+If the diagram the figure was made from has been removed, \ui{↻ from the net} says so and changes
+nothing.
+
+\section{Export}\label{sec:figure-export}
+
+\begin{description}
+\item[\ui{Export PDF}] the page as a vector PDF, \file{<name>.pdf}. The net is vectors in it too.
+\item[\ui{Export PNG}] the page as a picture at 200 dpi, \file{<name>.png}.
+\end{description}
+
+In the file name, anything that isn't a letter, a digit, a dot or a dash becomes \code{\_}: the figure
+\ui{Net 1 · figure} exports as \file{Net\_1\_figure.pdf}.
+
+\section{Figures in the project}\label{sec:figures-project}
+
+Figures are saved with the project (\cref{sec:project-file}). The tree lists them under \ui{figures}: click
+one to open its tab, or right-click to rename or delete it. The \menu{Figure} menu lists them too.
+
+In the console each figure is a file under \file{/project/figures} (\cref{ch:project-fs}):
+
+\begin{description}
+\item[\file{<name>.compo.json}] the page itself, as compo's JSON. Writing it replaces the page; a new name
+is a new figure; \code{mv} renames it and \code{rm} deletes it.
+\item[\file{<name>.pdf}] the page as a PDF, made when you read it. \code{cp} it to \file{/home} to keep a
+copy in the project.
+\end{description}
+
+\begin{tryit}
+\begin{enumerate}
+\item Open the Tocher sample and, in the tree, tick \ui{contours} and \ui{mean + cone} on \ui{tocher}.
+\item Choose \menu{Figure>New figure from the active net}. The figure opens in its own tab.
+\item Drag the legend frame down the page.
+\item In the console, type \code{contour fisher}. The net on the desk changes; the figure doesn't.
+\item Back in the figure, click \ui{↻ from the net}. The contours change and the caption now reads
+\enquote{Fisher-kernel density contours}; the legend stays where you put it.
+\item Click \ui{Export PDF}.
+\end{enumerate}
+\end{tryit}

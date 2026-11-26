@@ -38,4 +38,8 @@ Every console line and try-it in the book has been run against the built page (t
 gitignored `experiments/wuffle-manual-probe.mjs`). Writing the first six chapters that way found:
 `ls -l` hid symlinks, `150>60` in the shell is a redirect, the compass took `200>20` as a plane, the
 declination never updated after the first fix, the README claimed a `sed` and `awk` geas doesn't have,
-and an undo puts the selection back. Keep doing it: a claim that hasn't run is a guess.
+and an undo puts the selection back. The desk part found eight more: labels drew nothing, a column of
+`045→30` lines opened as planes, dip-direction and trend roses were drawn mirrored (axial by default), a
+second contour set was skipped without a word, "remove from everywhere (N diagrams)" counted layers,
+Properties → Apply took several undos, a CSV added to a zip by hand drew nothing, and photo names lost
+their seconds. Keep doing it: a claim that hasn't run is a guess.

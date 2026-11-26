@@ -1,0 +1,6 @@
+# ch. 7–9: data, diagrams and layers, what a layer draws
+data-table | the table: a file with an unreadable row and a selected row
+views-menu | tocher on two nets (⧉ badges), the layer menu's Add a view to open
+elements-tree | a layer opened into its elements, eigen group partial, contours + mean on the net
+layer-props | the layer properties dialog
+net-equal-angle | the Tocher planes as great circles, equal-angle, upper hemisphere

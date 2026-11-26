@@ -1,0 +1,188 @@
+\chapter{Data}\label{ch:data}
+\begin{goals}
+\textbf{In this chapter} you open measurements from any delimited text file, learn exactly how wuffle
+decides what each column means, and work with a dataset's rows in the table.
+\end{goals}
+
+A dataset is where everything starts. wuffle reads the files geologists actually have: a spreadsheet
+exported as CSV, a column of attitudes typed into a notebook, a log from another program with its own
+column names. It never refuses one. What it can't read it counts, and what it had to guess it tells you.
+
+\section{Opening a file}\label{sec:data-open}
+
+Choose \menu{File>Open data or a project…} (\key{Ctrl}+\key{O}) or drop files on the window. Each
+text file becomes a dataset named after the file, without its extension, and is drawn as a layer on the
+active diagram. If the project has no diagram yet, wuffle makes \ui{Net 1} first. Opening a file is one
+undo step, however many things it adds (\cref{sec:undo}).
+
+Several files can be opened at once. A name already in the project gets a number: a second
+\file{joints.csv} becomes \code{joints (2)}.
+
+\section{How wuffle reads a file}\label{sec:data-read}
+
+\subsection{Lines, delimiters and numbers}
+
+\begin{itemize}
+\item Blank lines are skipped, and so are comment lines starting with \code{\#} or \code{//}.
+\item The \term{delimiter} is the one most lines agree on, out of comma, semicolon, tab and
+\code{|}: the one that splits at least four lines in five into the same number of fields. One odd line
+doesn't make the file unreadable. With none of them, wuffle splits on spaces.
+\item Fields in double quotes may hold the delimiter: \code{"open, iron-stained"} is one field.
+\item A \term{decimal comma} is recognised when the comma isn't the delimiter: \code{120,5;40,2}
+reads as 120.5 and 40.2.
+\item The first line is a \term{header} when it holds a word, something that isn't a number or an
+attitude. Without one, the columns are called \col{c1}, \col{c2}, and so on.
+\item A line that can't be split into at least two fields (a stray word in a numeric file) is not a row;
+it is counted as skipped.
+\end{itemize}
+
+\subsection{Which columns hold the attitude}\label{sec:data-roles}
+
+wuffle then looks for columns by name. Case, spaces and punctuation don't matter: \col{Dip Direction},
+\col{dip\_direction} and \col{DIPDIR} are the same name.
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}>{\raggedright}p{0.24\linewidth}L@{}}\toprule
+\sffamily\bfseries role & \sffamily\bfseries names wuffle recognises \\\midrule
+dip direction & dipdir, dip direction, dip azimuth, dipaz, ddir, dd, dipdirn, azimuth of dip \\
+strike & strike, str, rhr, strike rhr, strike dir \\
+dip & dip, dip angle, inclination, incl \\
+trend & trend, tr, trd, lineation trend, azimuth, az, bearing \\
+plunge & plunge, pl, plg, lineation plunge \\
+sense (faults) & sense, slip sense, kinematics, kin, movement \\
+angle (small circles) & angle, opening, semiangle, cone, half angle \\
+set & set, family, group, class, domain \\
+\bottomrule\end{tabularx}
+\end{center}
+
+The columns it finds decide the kind of dataset, in this order:
+
+\begin{description}
+\item[Faults.] A plane (dip direction or strike, and dip) \emph{and} a line (trend and plunge) on the
+same row, with a sense column if there is one. \cref{ch:faults} is about them.
+\item[Small circles.] A trend, a plunge and an angle: the axis and the half-angle of a cone.
+\item[Planes.] Dip direction and dip, or strike and dip. A strike is read by the
+\term[right-hand rule]{right-hand rule}: the plane dips to the right of the strike direction, so strike
+\code{030} with dip \code{40} is the plane \code{120/40}.
+\item[Lines.] Trend and plunge.
+\end{description}
+
+A \col{set} column is kept with the roles, so a later step can group by it.
+
+\subsection{When nothing is named}\label{sec:data-guess}
+
+Two fallbacks cover files without those names. Both are \emph{guesses}, and the table's heading says so
+(\cref{sec:table}):
+
+\begin{itemize}
+\item \textbf{One column of attitudes.} A column whose values look like \code{045/30} or
+\code{N30E 40SE} is read as planes, with quadrant letters honoured: \code{N30E 40SE} is a strike of
+N30°E dipping 40° to the south-east, the plane \code{120/40}. A file with one attitude per line and
+nothing else is read this way, even though its values contain spaces.
+\item \textbf{The first two numeric columns} are read as dip direction and dip. If the second column has
+values over 90 and the first doesn't, they are swapped, since a dip can't pass 90.
+\end{itemize}
+
+In a one-column file the arrow decides. Attitudes written with an arrow (\code{045→30}, or
+\code{045>30}) are lines, and the rest are planes. A column of only lines opens as a lines dataset; a
+column that mixes both opens as two datasets, \code{<name> · planes} and \code{<name> · lines}, the way a
+field log does (\cref{sec:field-logs}).
+
+Columns that are named, but not as a recognised pair, also fall to the numeric guess. A file with
+\col{azimuth} and \col{inclination} reads as dip direction and dip, and the table's heading says so:
+\ui{no column names wuffle knows: azimuth / inclination read as dip direction / dip}. A file with no
+header at all says \ui{no named columns} instead.
+
+\subsection{Rows that can't be read}
+
+A row whose attitude can't be read (a dip of \code{abc}, a dip over 90, an empty cell) stays in the
+dataset as it is. It is not drawn, its attitude column in the table shows \ui{—}, and it takes no part
+in statistics. Fix it in the table and it is drawn at once. A layer's properties dialog says how many
+rows were read: \ui{tocher · planes · 200 of 200 rows read}.
+
+\begin{why}
+Refusing a file because one row in two hundred is odd would make you fix the file in another program
+first, and lose the row's other columns on the way. Keeping the row and marking it means you see what
+wuffle saw, and nothing is silently dropped.
+\end{why}
+
+\subsection{Field logs}
+
+The compass's own log (\cref{sec:publish}) is recognised by its \col{type} and
+\col{dip\_dir\_or\_trend} columns. Its planes and lines become two datasets,
+\code{<name> · planes} and \code{<name> · lines}, both drawn on the active net. Opened with its
+\file{.sig} and photos, it is also kept as a signed original (\cref{sec:field-logs}).
+
+\begin{tryit}
+\begin{enumerate}
+\item Make a text file \file{quadrant.txt} with three lines: \code{N30E 40SE}, \code{N30E 40SE} and
+\code{S10W 30W}, and open it.
+\item Click \ui{quadrant} in the tree's \ui{data} section and look at the table. The first column reads
+\code{120/40}, \code{120/40}, \code{280/30}: the quadrant notation converted to dip direction and dip.
+\item The heading ends with \ui{read as “c1” read as dip direction / dip (quadrant letters honoured)}: the
+file had no header, so the reading is marked as a guess.
+\end{enumerate}
+\end{tryit}
+
+\section{The table}\label{sec:table}
+
+\shot{data-table}{A file with a quoted field and an unreadable row: the attitude column shows \ui{—} for row 4,
+which isn't drawn. Row 3 is selected, so it is washed in the table and violet on the net.}
+
+Click a dataset in the tree's \ui{data} section, or a layer, and the \ui{table} tab shows its rows.
+
+\begin{itemize}
+\item The heading names the dataset, its kind and its row count, and when the column roles were guessed,
+how they were read.
+\item The first column is the \term{attitude} wuffle read from the row: dip direction and dip for planes,
+trend and plunge for lines. It is computed, not stored, and can't be edited. \ui{—} marks a row it
+couldn't read.
+\item The other columns are the file's, as they came.
+\end{itemize}
+
+\subsection{Editing}
+
+Double-click a cell (or select it and press \key{F2}, or just start typing), type, and press
+\key{Enter}. The edit goes into the dataset, so every layer of it, on
+every diagram, redraws, and the attitude column follows. A number typed is stored as a number; anything
+else is kept as text. Each edit is an undo step, \ui{edit rows}.
+
+\subsection{Selecting}
+
+Click a row, or drag down several, and they are selected everywhere: violet on every net that draws the
+dataset, counted in the status line. Rows selected on a net are washed in the table the same way.
+\cref{ch:select} is about selections.
+
+\section{The data section}\label{sec:data-section}
+
+The foot of the layers tree lists every dataset in the project, with its row count. A dataset that no
+diagram draws says \ui{· not drawn}; a derived one has an arrow instead of the table icon, and hovering
+it says what made it (\cref{sec:lineage}).
+
+You can drag a dataset from here onto a diagram's name in the tree to draw it there. Its right-click menu
+has:
+
+\begin{description}
+\item[\ui{Show the table}] the table tab, with this dataset.
+\item[\ui{Draw on}] a diagram to draw it on, as a new layer.
+\item[\ui{Rename…}] a new name. Layers that use the dataset's name follow it.
+\item[\ui{Delete dataset}] asks first, naming the diagrams it is drawn on, then removes the dataset
+and every layer of it. Undo brings both back.
+\end{description}
+
+\begin{note}
+In the console the same delete is stricter: \code{rm data/<name>.csv} refuses while the data is drawn
+anywhere (\cref{sec:project-write}). The menu can ask you; a script can't, so it has to remove the layers
+first.
+\end{note}
+
+\section{Lineage}\label{sec:lineage}
+
+A dataset made by wuffle rather than read from a file carries its \term{lineage}: what made it, from
+which datasets, with which settings and when. A mean, the eigenvectors, a $\beta$ axis, an intersection
+(\cref{ch:stats}), a selection made into a dataset (\cref{ch:select}), and a field log's data all have
+one. In the tree it shows as the hover text, \ui{made by selection from tocher}; in the project it is in
+\file{data/<name>.json} (\cref{ch:project-fs}).
+
+The lineage names its sources by name as well as by identity, so it still reads correctly after the
+source is renamed or deleted.

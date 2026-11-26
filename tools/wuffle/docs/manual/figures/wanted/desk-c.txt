@@ -1,0 +1,5 @@
+# name | what the shot shows (scenes/desk-c.mjs stages each)
+faults-net | twelve normal faults: great circles, slip arrows, P and T axes
+faults-dihedra | the same faults with the right dihedra
+faults-stats | a fault layer's statistics card, with σ1 σ2 σ3 and φ
+figure-editor | a figure from the contoured Tocher net, in compo's editor

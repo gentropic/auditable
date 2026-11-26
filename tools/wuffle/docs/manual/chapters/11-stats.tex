@@ -1,0 +1,178 @@
+\chapter{Statistics and derived data}\label{ch:stats}
+\begin{goals}
+\textbf{In this chapter} you read the statistics card (the mean, its concentration and confidence, the
+eigen analysis and the fabric shape), and keep results as datasets: the mean, the eigenvectors, a
+$\beta$ diagram, and the line where two sets of planes meet.
+\end{goals}
+
+The \ui{statistics} tab, under the diagrams beside \ui{table} and \ui{console}, describes each visible
+layer of the active net: one card per layer, in the layer's colour. It changes as you work. Show or hide a
+layer, edit its rows, or switch to another net, and the cards follow.
+
+\shot[0.8\linewidth]{stats-card}{The statistics card for the Tocher sample: an axial mean that means
+little, a strong girdle (G~0.63, K~0.21), and its axis V3.}
+
+\section{The card}\label{sec:stats-card}
+
+The heading names the net and how many layers it shows (\ui{Net 1 · 1 layer}). Each card heads with the
+layer's name and \ui{n}, the number of measurements wuffle could read. When some rows couldn't be read it
+says so, as \ui{n 190 of 200}. Then, for the Tocher sample:
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}>{\raggedright}p{0.17\linewidth}>{\raggedright}p{0.3\linewidth}L@{}}\toprule
+\sffamily\bfseries line & \sffamily\bfseries Tocher & \sffamily\bfseries what it is \\\midrule
+\ui{mean} & \code{027/89 · pole 207→01} & the axial Fisher mean; for planes, the mean plane and its pole \\
+\ui{κ} & \code{3.1} & Fisher's concentration: larger is tighter about the mean \\
+\ui{α95} & \code{6.8°} & the half-angle of the 95\,\% cone of confidence about the mean \\
+\ui{S1 S2 S3} & \code{0.548 0.383 0.069} & the eigenvalues of the orientation tensor, scaled to sum to 1 \\
+\ui{V1}, \ui{V2}, \ui{V3} & \code{205→01}, \code{295→42}, \code{113→48} & the eigenvectors, as lines \\
+& \code{girdle 293/42} & for planes, the plane whose pole is V3: the best-fit great circle \\
+\ui{K · C} & \code{0.21 · 2.07} & Woodcock's shape and strength \\
+\ui{P G R} & \code{0.16 0.63 0.21} & Vollmer's point, girdle and random fractions \\
+\bottomrule\end{tabularx}
+\end{center}
+
+Hover over a line's label for a reminder of what it is. A mean needs two measurements and the eigen
+analysis three; until then the card says \ui{needs ≥ 2}. A fault layer adds the principal stresses,
+\ui{σ1 σ2 σ3} and \ui{φ} (\cref{ch:faults}).
+
+\section{The mean}\label{sec:stats-mean}
+
+The mean is Fisher's mean \parencite{fisher1953} of the poles (or of the lines), taken \emph{axially}: a pole that
+points down and the same axis pointing up count as one direction. wuffle reports it as an attitude, a plane
+\emph{and} its pole for planes, a line for lines.
+
+\begin{description}
+\item[\ui{κ}] is Fisher's concentration parameter, estimated from how closely the measurements gather.
+Values of a few, like Tocher's 3.1, mean a loose spread; a tight cluster of joints runs to tens or
+hundreds.
+\item[\ui{α95}] is the half-angle of the cone that holds the true mean with 95\,\% confidence. It shrinks
+as you add measurements, even when they are scattered: Tocher's 200 loose poles give 6.8°.
+\end{description}
+
+\begin{caution}
+A mean is only a summary of a cluster. Tocher's poles lie on a girdle, not about a point, so the mean
+plane \code{027/89} is an average of very different planes and describes none of them. Read the eigen
+analysis first; the fabric plot (\cref{ch:roses}) shows the same thing at a glance.
+\end{caution}
+
+\section{The eigen analysis}\label{sec:stats-eigen}
+
+wuffle builds the orientation tensor of the poles (or lines) and finds its eigenvalues and eigenvectors:
+
+\begin{description}
+\item[\ui{S1 S2 S3}] the eigenvalues, largest first, scaled to sum to 1. A tight cluster has S1 near 1; a
+perfect girdle has S1 and S2 near ½ and S3 near 0; a random spread has all three near ⅓.
+\item[\ui{V1 V2 V3}] the eigenvectors, as lines. V1 is the direction of greatest concentration. For a
+girdle of poles, V3 is the girdle's pole: the axis about which the planes turn, a cylindrical fold's
+axis. The card gives the girdle itself too, the plane whose pole is V3 (Tocher's \code{293/42}).
+\item[\ui{K · C}] shape and strength after \textcite{woodcock1977}: $K = \ln(S_1/S_2) / \ln(S_2/S_3)$ and
+$C = \ln(S_1/S_3)$. $K > 1$ is a cluster and $K < 1$ a girdle; a larger $C$ is a stronger fabric. Tocher's
+0.21 is a girdle, and its 2.07 a well-defined one.
+\item[\ui{P G R}] the fractions of \textcite{vollmer1990}: $P = S_1 - S_2$, $G = 2(S_2 - S_3)$ and $R = 3S_3$.
+They sum to 1 and place the fabric in a triangle of point, girdle and random. Tocher's G of 0.63 says the
+same as its K: mostly girdle.
+\end{description}
+
+\section{Results as datasets}\label{sec:derived}
+
+\shot{derived-net}{The mean (a ring with its cone of confidence, near \code{207→01}) and the
+eigenvectors kept as a dataset, drawn in blue on the contoured Tocher poles.}
+
+Each card has buttons that keep a result as a \term{derived dataset}:
+
+\begin{description}
+\item[\ui{mean → dataset}] one row: the mean's attitude, with \col{kappa}, \col{alpha95} and \col{n}
+beside it. A plane for planes, a line for lines.
+\item[\ui{eigenvectors → dataset}] three lines, V1 to V3, each with its \col{axis} name and
+\col{eigenvalue}.
+\item[\ui{β → dataset}] for planes: the line of intersection of every pair of planes, the classic
+$\beta$ diagram. Its \col{a} and \col{b} columns give the row numbers of the two planes each line came
+from. 200 planes make 19\,900 lines; wuffle refuses past 600 planes (179\,700 lines) and asks you to select
+fewer first.
+\item[\ui{∩ intersect with…}] for planes, when another layer of planes is drawn on the same net: choose
+it, and wuffle keeps the line where the two layers' \emph{mean} planes meet, with the \col{angle} between
+them. Two limbs of a fold give its axis this way.
+\end{description}
+
+A derived dataset is drawn on the active net at once and opens in the table. Making it is one undo step,
+\ui{Undo derive}. It is an ordinary dataset from then on: style it, draw it on other nets, select it,
+save it. What makes it derived is its \term{lineage}. The tree marks it with an arrow, and hovering it
+says how it was made (\ui{made by mean from tocher}). The lineage is kept in the project:
+
+\begin{lstlisting}
+$ cat "data/tocher · mean.json"
+  ...
+  "lineage": {
+    "op": "mean",
+    "params": { "axial": true, "confidence": 0.95 },
+    "sources": [ { "id": "d1", "name": "tocher" } ],
+    "at": "2026-11-26T14:33:05.163Z"
+  },
+\end{lstlisting}
+
+A derived dataset is a snapshot, not a live formula. Edit \code{tocher} afterwards and \code{tocher · mean}
+keeps the mean it was made with; make it again for the new one.
+
+\begin{note}
+A derived dataset that is drawn gets a statistics card of its own, like any layer. The card of three
+eigenvectors, or of a single mean, describes those few lines and means little (three perpendicular axes
+read as perfectly random). Hide the layer, or ignore its card.
+\end{note}
+
+\section{An intersection}\label{sec:stats-intersect}
+
+\shot{intersect}{Tocher split into two sets by dip direction, \code{east} and \code{west}, with their
+means and cones, and the line where the mean planes meet (violet, near \code{123→33}).}
+
+To intersect two sets, they have to be two datasets drawn on one net. Split one with a selection
+(\cref{sec:select-dataset}), or open two files. The Tocher sample split at a dip direction of 180°
+gives:
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}lrlrrL@{}}\toprule
+\sffamily\bfseries set & \sffamily\bfseries n & \sffamily\bfseries mean & \sffamily\bfseries κ & \sffamily\bfseries α95 & \sffamily\bfseries K \\\midrule
+\code{east} & 151 & \code{051/63} & 3.1 & 7.9° & 0.12 \\
+\code{west} & 49 & \code{199/70} & 7.8 & 7.7° & 1.46 \\
+\bottomrule\end{tabularx}
+\end{center}
+
+and \ui{∩ intersect with… › west} on the \code{east} card keeps \code{east ∩ west}: the line
+\code{123→33}, the mean planes 56° apart.
+
+\section{From the console}\label{sec:stats-console}
+
+\begin{lstlisting}
+stats                   # the first visible layer's card, as text
+stats tocher | grep mean
+mean                    # mean → dataset, for the first visible layer
+eigen tocher            # eigenvectors → dataset
+beta                    # the beta diagram
+intersect east west     # where two layers' mean planes meet
+\end{lstlisting}
+
+\code{stats} prints three lines: the count, the mean with $\kappa$ and $\alpha_{95}$, and the eigenvalues
+with K and C:
+
+\begin{lstlisting}
+tocher · n 200
+mean 027/89 · pole 207→01 · κ 3.1 · α95 6.8°
+S 0.548 0.383 0.069 · K 0.21 · C 2.07
+\end{lstlisting}
+
+\code{mean}, \code{eigen}, \code{beta} and \code{intersect} answer with the new dataset's name and size,
+\ui{→ tocher · β (19900 rows), drawn on Net 1}, so a routine can make all of them in a few lines
+(\cref{sec:routines}).
+
+\begin{tryit}
+\begin{enumerate}
+\item Open the Tocher sample and click the \ui{statistics} tab. Read K and G: is this a cluster or a
+girdle?
+\item Press \ui{eigenvectors → dataset}. Three blue points appear on the net; V3 sits in the gap the girdle
+of poles wraps round.
+\item In the console, type \code{beta}. 19\,900 intersection lines are drawn. Type
+\code{stats "tocher · β"}: their mean is \code{114→48}, a degree from V3. Two ways to a fold axis, one
+answer.
+\item Type \code{cat "data/tocher · β.json"} and find the lineage that says where the lines came from.
+\end{enumerate}
+\end{tryit}

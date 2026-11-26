@@ -1,0 +1,118 @@
+\chapter{Roses and fabric plots}\label{ch:roses}
+\begin{goals}
+\textbf{In this chapter} you draw rose diagrams of strikes, dip directions and trends, and fabric plots
+that place whole datasets on Vollmer's or Woodcock's diagram, and you choose how each is binned and drawn.
+\end{goals}
+
+A net shows every measurement. Two other kinds of diagram summarize: a \term{rose diagram} counts azimuths
+in sectors, and a \term{fabric plot} reduces each dataset to one point by the shape of its fabric. They are
+diagrams like a net: each has its own tab, its own layers and its own settings, and they show the same
+datasets as everything else (\cref{sec:data-once}).
+
+\section{Making one}
+
+Choose \menu{Diagram>New rose diagram} or \menu{Diagram>New fabric plot}, or type \code{new rose} or
+\code{new fabric} in the console. The new diagram starts with views of every layer on the active diagram,
+and opens in a tab of its own: \ui{Rose 1}, \ui{Fabric 1}. To add more data later, drag a dataset or a
+layer onto it in the tree, as for a net (\cref{ch:diagrams}).
+
+A rose or a fabric plot draws only its \emph{visible} layers, so tick and untick layers in the tree to
+change what it counts. The settings are in the diagram's own menu: right-click its name in the tree.
+Rotation, projection and hemisphere belong to nets and don't apply here.
+
+\section{Rose diagrams}\label{sec:rose}
+
+\shot[0.6\linewidth]{rose-strike}{A rose of the Tocher sample's strikes in 10° sectors, area-true. Strike is
+an axis, so each petal has its twin opposite.}
+
+A rose bins the azimuths of every visible layer together, in one colour (the first layer's), with four
+reference rings. What it bins is the diagram's \ui{Quantity}:
+
+\begin{description}
+\item[\ui{strike (planes, axial)}] the strike of each plane, by the right-hand rule (dip direction less
+90°). A strike of 030 and one of 210 are the same line on the map, so the rose counts each strike at both
+ends: the petals come in opposite pairs. This is the default.
+\item[\ui{dip direction (planes)}] the dip direction of each plane.
+\item[\ui{trend (lines)}] the trend of each line.
+\end{description}
+
+Planes have no trend and lines no strike, so a quantity skips the measurements it doesn't apply to. If
+none are left, the diagram says so instead of drawing: \ui{no lines to bin by trend — choose another
+quantity in the diagram's menu}.
+
+A dip direction or a trend points one way, so their roses count each azimuth once: a set dipping to 120
+has a petal at 120 and none at 300. When you want them read as axes anyway (lineations whose sense means
+nothing, say), tick \ui{Count both ends (axial)} in the diagram's menu. A strike rose is always axial,
+and the item is greyed out there.
+
+Two more settings, also in the diagram's menu:
+
+\begin{description}
+\item[\ui{Sector}] the width of each sector: 5°, 10° (the default), 15°, 20° or 30°.
+\item[\ui{Scale}] \ui{area-true (√)}, the default, makes a petal's \emph{area} proportional to its count,
+so the radius grows as the square root. \ui{linear} makes the radius proportional to the count, which
+exaggerates the larger petals.
+\end{description}
+
+\begin{why}
+A petal's area is what the eye compares. On a linear rose a sector with four times the count has sixteen
+times the area, and the largest petal dominates the picture far beyond its share. Area-true scaling keeps
+what you see in proportion to what was measured.
+\end{why}
+
+\section{Fabric plots}\label{sec:fabric}
+
+\shot[0.6\linewidth]{fabric-vollmer}{A Vollmer plot of the Tocher sample and the two sets it splits into by
+dip direction (\cref{sec:stats-intersect}): \code{west} is a cluster, \code{east} and the whole a girdle.}
+
+A fabric plot places each visible layer with at least three measurements as one point, in its own colour
+and labelled with its name. The point comes from the layer's eigenvalues, the same ones the statistics card
+shows (\cref{sec:stats-eigen}). The diagram's \ui{Plot} setting chooses the diagram:
+
+\begin{description}
+\item[\ui{Vollmer P–G–R}] (the default) a triangle with corners for a perfect point (cluster), girdle and
+random fabric \parencite{vollmer1990}. A dataset sits at its P, G and R fractions: Tocher's 0.16, 0.63,
+0.21 puts it near the girdle corner.
+\item[\ui{Woodcock K–C}] $\ln(S_2/S_3)$ across and $\ln(S_1/S_2)$ up \parencite{woodcock1977}. Clusters
+fall above the line $K = 1$ and girdles below it; the further from the origin, the stronger the fabric.
+\end{description}
+
+The fabric plot is drawn in dark ink on a light card in either theme, as it would be on paper.
+
+For the three sets of \cref{fig:fabric-vollmer}:
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}lrrrrL@{}}\toprule
+\sffamily\bfseries set & \sffamily\bfseries P & \sffamily\bfseries G & \sffamily\bfseries R & \sffamily\bfseries K & \sffamily\bfseries reads as \\\midrule
+\code{tocher} & 0.16 & 0.63 & 0.21 & 0.21 & a girdle \\
+\code{east} & 0.15 & 0.75 & 0.11 & 0.12 & a stronger girdle \\
+\code{west} & 0.64 & 0.21 & 0.15 & 1.46 & a cluster \\
+\bottomrule\end{tabularx}
+\end{center}
+
+\begin{tip}
+A fabric plot is the quickest way to compare domains. Split a dataset into structural domains with
+selections (\cref{sec:select-dataset}), draw them all on one fabric plot, and the ones that behave
+differently stand apart.
+\end{tip}
+
+\section{In the files}
+
+A rose or a fabric plot is a diagram like a net, so \file{/project} has it as a directory
+(\cref{ch:project-fs}): \file{diagrams/Rose 1/diagram.json} holds its settings
+(\code{"quantity": "strike"}, \code{"bins": 10}, \code{"scale": "area"}, or \code{"plot": "vollmer"}), and
+\file{diagrams/Rose 1/rose.svg} or \file{diagrams/Fabric 1/fabric.svg} is the diagram as drawn, ready to
+copy out. Writing \file{diagram.json} changes the settings, as the menu does.
+
+\begin{tryit}
+\begin{enumerate}
+\item Open the Tocher sample and choose \menu{Diagram>New rose diagram}. A rose of strikes opens in a new
+tab.
+\item In the tree, right-click \ui{Rose 1} and choose \ui{Sector › 30°}. The petals widen; choose
+\ui{Scale › linear} and see the largest ones grow.
+\item In the console, type \code{new fabric}. A Vollmer triangle opens with one point, \code{tocher},
+near the girdle corner.
+\item Type \code{ls "diagrams/Fabric 1"} and \code{head -3 "diagrams/Fabric 1/fabric.svg"}: the plot as a
+file.
+\end{enumerate}
+\end{tryit}

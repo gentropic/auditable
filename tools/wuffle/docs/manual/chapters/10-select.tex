@@ -1,0 +1,168 @@
+\chapter{Selections}\label{ch:select}
+\begin{goals}
+\textbf{In this chapter} you select measurements on a net: one at a time, round a cluster, within a cone of
+a direction or a band about a great circle. You add to a selection and take from it, see it everywhere the
+data is drawn, and keep it as a dataset of its own.
+\end{goals}
+
+A selection answers \enquote{which of these measurements are those?}: the poles in the cluster to the
+south-west, the planes within 20° of the regional foliation, the lineations near a fold axis. wuffle draws
+the chosen rows violet on every net and highlights them in the table. You can then read their statistics,
+make them a dataset, or hand them on to the console.
+
+\section{The tool strip}\label{sec:select-tools}
+
+Every net carries a strip of four tools at its top left:
+
+\begin{description}
+\item[\ui{pick}] a click selects the measurement under the pointer. This is the tool a net starts with.
+\item[\ui{lasso}] drag round the measurements you want.
+\item[\ui{cone}] press on a direction and drag outwards: everything within that angle of it.
+\item[\ui{band}] drag along a great circle: everything within a band either side of it. Choosing it shows
+a field, \ui{±~10~°}, for the band's half-width, from 1° to 45°.
+\end{description}
+
+Hover over a tool for a reminder of what it does. A gesture selects in every \emph{visible} layer on that
+net, so hide a layer in the tree to leave it out of a selection.
+
+\section{Picking}\label{sec:pick}
+
+With \ui{pick}, click a pole or a line. wuffle takes the nearest measurement within a few pixels of the
+pointer:
+
+\begin{itemize}
+\item a click replaces the selection with that one measurement;
+\item \key{Shift}+click adds it to the selection;
+\item \key{Ctrl}+click (\key{⌘}+click on a Mac) toggles it: in if it was out, out if it was in;
+\item a click on empty space clears the selection.
+\end{itemize}
+
+While you move over the net, the status line reads the direction under the pointer and the measurement
+nearest to it: \ui{cursor · pole of 117/54 · line 297→36 · tocher \#152 117/54}. The \code{\#} is the
+row number in the table.
+
+\begin{note}
+With \ui{pick} chosen, a press and drag turns the net instead of selecting (\cref{ch:rotation}). The
+other three tools use the drag for their shape, so you rotate with \ui{pick} and select with the rest.
+\end{note}
+
+\section{Shapes}\label{sec:shapes}
+
+\shot{select-cone}{A cone of 20° about the pole to \code{040/50}: the dashed outline, the 18 poles inside
+it violet, and the status line counting them.}
+
+The \ui{lasso}, \ui{cone} and \ui{band} draw a shape and select what is inside it when you let go:
+
+\begin{description}
+\item[Lasso.] Hold the button down and draw round the measurements. Letting go closes the loop. The status
+line reports it as a \ui{polygon}, for example \ui{polygon: 38 of 200 measurements}.
+\item[Cone.] Press on the direction the cone is about (a cluster's centre, a fold axis) and drag away from
+it. The status line shows the cone's half-angle as you drag (\ui{cone: 20.0° about the axis}); everything
+within that angle is selected when you let go. A cone smaller than about 0.2° is ignored, so a stray click
+selects nothing.
+\item[Band.] Press on one point of the great circle you mean and drag to another: the band follows the
+great circle through both. Set its half-width first, in the field beside the tools. A band of ±10° about
+a girdle picks the measurements that belong to it.
+\end{description}
+
+The last shape stays on the net, dashed, so you can see what made the selection. It goes when you draw
+another shape or press \key{Esc}. \key{Esc} clears only the outline; the selection stays.
+
+\subsection{Adding and taking away}
+
+Hold a key as you start a shape:
+
+\begin{itemize}
+\item no key: the shape's measurements \emph{replace} the selection;
+\item \key{Shift}: they are \emph{added} to it;
+\item \key{Alt} (\key{⌥} on a Mac): they are \emph{taken out} of it.
+\end{itemize}
+
+The status line at the foot of the window says which it was: \ui{band: 58 of 200 measurements added},
+\ui{cone: 16 of 200 measurements removed}. That count is what the shape caught; to its left the window
+keeps the total, \ui{1 dataset · 200 measurements · 56 selected}.
+
+\shot{select-band}{The band tool chosen, with its half-width field. A band of ±10° about \code{040/50}
+added to the cone of \cref{fig:select-cone} with \key{Shift}: 45 selected.}
+
+\section{On the sphere, not the screen}\label{sec:select-sphere}
+
+A shape is not drawn on the picture of the net; it is drawn on the sphere of directions. A cone is an
+axis and an angle, a band a great circle and a half-width, and a lasso a spherical polygon whose edges are
+great-circle arcs. wuffle tests each measurement against the shape in three dimensions.
+
+\begin{why}
+A shape on the screen would select different measurements on an equal-angle net than on an equal-area
+one, and different ones again once the net is turned. A shape on the sphere means the same measurements
+whatever the projection, the hemisphere or the rotation, so a selection made on a rotated net is the one you
+would have made on the plain net (\cref{sec:rotation-true}).
+\end{why}
+
+Every test is \emph{axial}: a pole and the opposite end of the same line are one measurement. A cone about
+a shallow direction near the edge of the net catches the poles just inside the opposite edge too, which
+is why its outline can show as two arcs on opposite sides of the primitive. A lasso has to fit inside a
+hemisphere, which any lasso drawn on one net does.
+
+\section{The selection belongs to the data}\label{sec:select-data}
+
+A selection is a set of \emph{rows} of a dataset, not marks on a net. So:
+
+\begin{itemize}
+\item the same rows are violet on every net that draws the dataset, and every layer that shows them;
+\item the table highlights them, and selecting rows in the table selects them on the nets;
+\item it is saved with the project (\file{selection/<name>.rows} in the project file, \cref{ch:projects}).
+\end{itemize}
+
+Choosing rows does not change the project, so it is never an undo step of its own. Undoing a change puts
+the selection back as it was before that change (\cref{sec:undo}).
+
+\begin{note}
+The statistics card is for the whole dataset, not the selection: selecting rows leaves its numbers as
+they were. To see the statistics of a selection, make it a dataset (\cref{sec:select-dataset}).
+\end{note}
+
+\section{A selection as a dataset}\label{sec:select-dataset}
+
+Right-click a layer in the tree and choose \ui{Selection → new dataset} (greyed out while nothing of that
+dataset is selected). The selected rows become a new dataset, \code{tocher · selection}, with the same
+columns, kind and reading of the attitude. It appears in the tree's \ui{data} section with an arrow, and
+it remembers where it came from: its lineage names \code{tocher} and the rows it took. It is one undo step,
+\ui{Undo selection → dataset}.
+
+Draw it on a net and its statistics card appears beside the full set's (\cref{ch:stats}). This is how you
+split a dataset into domains: select the measurements of each, make each a dataset, and compare.
+
+\section{From the console}\label{sec:select-console}
+
+The console's \code{select} draws the same shapes from typed attitudes (\cref{sec:commands}), on every
+visible layer of the active net, and draws the outline too:
+
+\begin{lstlisting}
+select cone 040/50 20       # within 20 degrees of the pole to 040/50
+select + band 040/50 10     # add those within 10 degrees of the plane 040/50
+select - cone 040/50 10     # take out the inner 10 degrees
+select invert               # everything that wasn't, and nothing that was
+select none
+\end{lstlisting}
+
+A plane's cone is about its pole; a line's (\code{'150>60'}, quoted, or \code{150→60}) about the line.
+Each command answers with what its shape caught: \ui{cone: 18 selected}.
+
+The selection is also a file. \file{selection/tocher.rows} lists the selected row numbers, one per line,
+counting from 1; write numbers to it to select those rows, \code{rm} it to clear
+(\cref{sec:project-write}). \file{selection/tocher.csv} holds the selected rows themselves.
+
+\begin{tryit}
+\begin{enumerate}
+\item Open the Tocher sample and type \code{select cone 040/50 20} in the console. 18 poles turn violet,
+inside a dashed circle.
+\item Choose \ui{band} on the net, check the field says \ui{10}, then hold \key{Shift} and drag from
+the south-west edge of the net towards the north-west. A band joins the selection and the status bar's
+count grows.
+\item Click the \ui{Net 1} tab (so the keys aren't going to the console) and press \key{Esc}. The
+outlines go; the selection stays.
+\item Right-click \ui{tocher} in the tree and choose \ui{Selection → new dataset}. The table shows the new
+dataset, the rows you chose and nothing else.
+\item Type \code{cat selection/tocher.rows} in the console to see their row numbers.
+\end{enumerate}
+\end{tryit}

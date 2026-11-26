@@ -1,0 +1,164 @@
+\chapter{Faults}\label{ch:faults}
+\begin{goals}
+\textbf{In this chapter} you open fault-slip data, draw it with slip arrows, P and T axes and right
+dihedra, and read the stress tensor wuffle inverts from it.
+\end{goals}
+
+A fault measurement is a plane and a line on it: the fault plane, the slickenline (striation) on it, and,
+when you know it, the sense in which the hanging wall moved. wuffle keeps the three together as one row of
+a \term[fault dataset]{fault dataset}, draws the slip on the net, and inverts a set of faults for the stress
+that would drive them.
+
+\section{Fault data}\label{sec:fault-data}
+
+A file reads as faults when it has the columns of a plane \emph{and} the columns of a line
+(\cref{ch:data}):
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}>{\raggedright}p{0.24\linewidth}L@{}}\toprule
+\sffamily\bfseries holds & \sffamily\bfseries column names wuffle recognises (case, spaces and punctuation ignored) \\\midrule
+the plane & \col{dip direction} (\col{dipdir}, \col{dd}, \col{dip azimuth}…) and \col{dip}; or \col{strike} and \col{dip}, read by the right-hand rule \\
+the slickenline & \col{trend} (\col{tr}, \col{azimuth}, \col{bearing}…) and \col{plunge} (\col{pl}, \col{plg}…) \\
+the sense & \col{sense}, \col{slip sense}, \col{kinematics}, \col{kin} or \col{movement} (optional) \\
+\bottomrule\end{tabularx}
+\end{center}
+
+The sense column takes words or the one-character codes common in fault-slip files:
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}>{\raggedright}p{0.2\linewidth}L@{}}\toprule
+\sffamily\bfseries sense & \sffamily\bfseries written as \\\midrule
+normal & \code{normal}, \code{N}, \code{2}, \code{-} \\
+reverse & \code{reverse}, \code{inverse}, \code{thrust}, \code{R}, \code{I}, \code{1}, \code{+} \\
+dextral & \code{dextral}, \code{right-lateral}, \code{D}, \code{3} \\
+sinistral & \code{sinistral}, \code{left-lateral}, \code{S}, \code{L}, \code{4} \\
+unknown & anything else, or empty: \code{unknown}, \code{?} \\
+\bottomrule\end{tabularx}
+\end{center}
+
+Case doesn't matter. A row whose sense is unknown is still a fault: it is drawn, and it counts in the
+statistics of its planes, but it carries no arrow and stays out of everything that needs the sense (P and
+T axes, right dihedra, the stress inversion).
+
+\begin{tip}
+The trend and plunge only need to name the slickenline; the sense says which way along it the hanging
+wall moved. Write the line as you measured it, lower-hemisphere as always, and let the sense column carry
+the direction.
+\end{tip}
+
+\section{What a fault layer draws}\label{sec:fault-elements}
+
+A fault layer opens in the layers tree into five elements (\cref{ch:elements}). A new one shows the first
+two:
+
+\begin{description}
+\item[great circles] the fault planes;
+\item[slip lines] the slickenline of each fault as a point, with an arrow for the hanging wall's motion;
+\item[P and T axes] the shortening and extension axes of each fault;
+\item[right dihedra] the boundary of the compressional and extensional fields the faults agree on;
+\item[labels] a column's values beside each fault.
+\end{description}
+
+\shot{faults-net}{Twelve normal faults: their planes, the slickenlines with arrows pointing away from the
+centre (the hanging walls went down), and the P (hollow) and T (filled) axes. The fault whose sense is
+\code{?} has a point and no arrow, and no P or T.}
+
+\subsection{Slip arrows}\label{sec:slip-arrows}
+
+Each slickenline is drawn where its lower-hemisphere end plots, and the arrow on it follows
+\term[Angelier's convention]{Angelier's convention}: it shows the motion of the hanging wall.
+
+\begin{itemize}
+\item An arrow pointing \emph{away from the centre} is a hanging wall that went down: a normal component.
+\item An arrow pointing \emph{toward the centre} is a hanging wall that went up: a reverse component.
+\end{itemize}
+
+% BUG: stereonet core.js slipArrow only moves along the plunge, so a horizontal slickenline (plunge 0)
+% gets a zero-length shaft and no visible arrow, and the strike-slip sense of a shallow slickenline is
+% never drawn (a dextral and a sinistral fault on the same line look the same). The sense IS used for
+% P/T, dihedra and the inversion. Book written to what happens.
+The arrow shows only that up-or-down component. A purely strike-slip fault (a horizontal slickenline) gets
+no arrow, and dextral and sinistral faults with the same slickenline look the same on the net; their sense
+still counts for the P and T axes, the dihedra and the inversion. A vertical slickenline has no direction
+on the net either, so it gets no arrow.
+
+\subsection{P and T axes}
+
+Each fault with a known sense gives a \term{P axis} and a \term{T axis}: the directions at 45° to the
+fault plane, in the plane that holds the slickenline and the pole, on the shortening and the extension
+side. The P axis is drawn hollow, the T axis filled. For a set of compatible faults the P axes cluster
+round the direction of greatest compression and the T axes round the least.
+
+\subsection{Right dihedra}\label{sec:dihedra}
+
+\shot{faults-dihedra}{The same faults with \ui{right dihedra} on: the line where the faults' compressional
+and extensional quadrants balance. Here it rings the centre, round the vertical shortening of these normal
+faults.}
+
+Each fault divides the sphere into four quadrants, two compressional and two extensional, by its plane
+and the plane normal to its slip. The \term{right dihedra} element adds the faults' quadrants up over the
+whole sphere and draws the line where compression and extension balance. The side holding the P axes is
+where the most compressive stress can lie for every fault at once; switch \ui{P and T axes} on with it to
+see which side that is.
+
+\begin{caution}
+On a rotated net (\cref{ch:rotation}) the right dihedra are not drawn: the field is computed in the
+net's own unrotated frame. Turn the rotation off to see them.
+\end{caution}
+
+\section{The stress inversion}\label{sec:stress}
+
+With four or more faults of known sense, the statistics card of a fault layer adds two lines from
+the inversion of \textcite{michael1984}, which finds the stress tensor whose resolved shear direction on each
+fault plane best matches its slip, assuming the shear stress has about the same magnitude on every fault:
+
+\begin{description}
+\item[\ui{σ1 σ2 σ3}] the principal stresses as lines: σ1 the most compressive, σ3 the least;
+\item[\ui{φ}] the stress ratio $\phi = (\sigma_2 - \sigma_3)/(\sigma_1 - \sigma_3)$, from 0 (σ2 = σ3) to 1
+(σ2 = σ1).
+\end{description}
+
+Hovering over \ui{σ1 σ2 σ3} tells you how many faults went in. With fewer than four of known sense, the
+card says \ui{needs ≥ 4 faults with a known sense}.
+
+\shot[0.7\linewidth]{faults-stats}{The statistics card of the twelve faults: the axial mean and eigen analysis
+of their poles, then σ1 vertical and the stress ratio. The fault with sense \code{?} counts in the first
+lines and not in the last two.}
+
+The lines above them are those of any planes dataset (\cref{ch:stats}): the axial Fisher mean of the
+fault poles, the eigen analysis, Woodcock's K and C \parencite{woodcock1977} and Vollmer's P, G and R
+\parencite{vollmer1990}. The buttons under the card
+work as for planes, so \ui{mean → dataset} keeps the mean fault plane as a dataset.
+
+\begin{note}
+The console's \code{stats} prints the n, the mean and the eigenvalues of a fault layer, not the stress;
+the stress is on the card.
+\end{note}
+
+\begin{tryit}
+\begin{enumerate}
+\item Save these lines as \file{faults.csv}:
+\begin{lstlisting}
+dip direction,dip,trend,plunge,sense
+000,60,000,60,normal
+030,60,030,60,normal
+060,60,060,60,normal
+090,55,090,55,normal
+120,60,120,60,normal
+150,65,150,65,normal
+180,60,180,60,normal
+210,60,210,60,normal
+240,50,240,50,normal
+270,60,270,60,normal
+300,60,300,60,normal
+330,60,330,60,?
+\end{lstlisting}
+\item Open it (\menu{File>Open data or a project…}). It reads as faults: twelve great circles and their
+slickenlines, eleven with arrows pointing outward.
+\item In the tree, open the \ui{faults} layer and tick \ui{P and T axes}. The P axes gather near the
+centre, the T axes near the rim: vertical shortening, horizontal extension.
+\item Open the \ui{statistics} tab. σ1 is vertical (plunge 90) and $\phi$ is close to 0: a radial,
+uniaxial extension, as twelve faults dipping away from one point should give.
+\item Tick \ui{right dihedra}. A ring appears round the centre, with the P axes inside it.
+\end{enumerate}
+\end{tryit}

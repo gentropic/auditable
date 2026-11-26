@@ -1,0 +1,92 @@
+\chapter{Rotating the net}\label{ch:rotation}
+\begin{goals}
+\textbf{In this chapter} you turn a net by dragging it or by naming a direction for its centre, and learn
+what a rotation changes (the picture) and what it doesn't (the measurements, the selections, the
+statistics).
+\end{goals}
+
+A net normally looks straight down: the centre is vertical, north at the top. Turning it brings another
+direction to the centre, which is how you look along a fold axis, straighten a girdle into a great circle
+through the middle, or check that a cluster near the primitive is one cluster and not two halves.
+
+\section{Dragging}\label{sec:rotate-drag}
+
+With the \ui{pick} tool chosen (\cref{sec:select-tools}), press on the net and drag. The net turns as if
+you were rolling a ball under your hand: the point you pressed follows the pointer, and the cardinal
+letters, the graticule, the contours and every layer turn with it. A press that moves less than a few
+pixels is still a click, so picking works as before; the click that ends a drag doesn't pick.
+
+The other tools use a drag for their shapes, so switch back to \ui{pick} to turn the net.
+
+\begin{why}
+wuffle turns the net with an \term{arcball}: each small movement of the pointer adds a small rotation to
+the one the net already has. Unlike turning by two angles (a trend and a plunge for the centre), it has no
+direction where the drag suddenly flips or stops responding, so you can roll the net as far as you like in
+any direction.
+\end{why}
+
+The rotation belongs to the diagram. It is kept with the project, every view of every layer on that net
+shares it, and a figure made from the net (\cref{ch:figures}) is drawn as rotated.
+
+\section{Naming the centre}\label{sec:rotate-centre}
+
+The console's \code{rotate} brings a direction to the centre of the active net:
+
+\begin{lstlisting}
+rotate 120→40       # Net 1: centred on 120→40
+rotate '120>40'     # the same, typed without the arrow (quoted: > is the shell's)
+rotate off          # Net 1: not rotated
+\end{lstlisting}
+
+The direction is a line. \code{rotate 045/30} refuses with \ui{rotate 045→30 (the direction to put at the
+centre)}; to look down a plane's pole, give the pole as a line. Only a net rotates: with a rose or a
+fabric plot active, \code{rotate} says \ui{only a net rotates}.
+
+\shot{rotated-net}{The Tocher net centred on \code{120→40} (the cardinal letters have moved with it) and
+the same cone selection as \cref{fig:select-cone}, the same 18 poles, drawn where they now fall.}
+
+\section{Undoing and resetting}\label{sec:rotate-reset}
+
+A drag is one undo step, \ui{Undo diagram settings}, however long you roll the net, as long as you keep
+moving. A pause of most of a second starts a new step, so a drag in two movements can be undone one movement
+at a time. \code{rotate} is one step too.
+
+To go back to the plain net, right-click the net in the tree and choose \ui{Reset rotation} (greyed out
+when the net isn't rotated), or type \code{rotate off}. Both clear a dragged rotation and a named centre
+alike.
+
+\section{What a rotation doesn't change}\label{sec:rotation-true}
+
+A rotation changes the picture only. Everything wuffle computes is in geographic directions:
+
+\begin{itemize}
+\item \textbf{Selections.} A shape is on the sphere (\cref{sec:select-sphere}), so a cone drawn on a
+rotated net is a cone about the same direction as on the plain one. \code{select cone 040/50 20} selects
+the same 18 Tocher poles whether the net is plain, centred on \code{120→40} or rolled by hand.
+\item \textbf{Picking and hovering.} The status line reads the direction under the pointer in the real
+world, not in the net's turned frame. Hover a pole and it reads the attitude in the table.
+\item \textbf{Statistics and derived data.} The card, the mean, the eigenvectors and the $\beta$ diagram
+describe the measurements, which don't move.
+\item \textbf{The data.} Nothing in the tables changes.
+\end{itemize}
+
+\section{In the files}
+
+A rotation is one of the diagram's settings, under \code{"props"} in \file{diagrams/<name>/diagram.json}
+(\cref{ch:project-fs}). A named centre is stored as \code{"rotation": [120, 40]}; a dragged rotation as
+\code{"matrix"}, the nine numbers of the rotation matrix. Writing \code{"rotation": null} and
+\code{"matrix": null} there resets the net, as \ui{Reset rotation} does. The net's \file{net.svg} is drawn
+as rotated.
+
+\begin{tryit}
+\begin{enumerate}
+\item Open the Tocher sample, type \code{contour kamb 3}, then \code{select cone 040/50 20}. Note where the
+18 violet poles are.
+\item Make sure \ui{pick} is chosen, and drag the net slowly from its centre towards the east. The net
+rolls; the violet poles move with everything else and stay violet.
+\item Type \code{select cone 040/50 20} again. It still selects 18.
+\item Type \code{rotate 113→48}, Tocher's V3 (\cref{sec:stats-eigen}). You are looking down the axis of
+the girdle, which now runs round the primitive.
+\item Type \code{rotate off}.
+\end{enumerate}
+\end{tryit}

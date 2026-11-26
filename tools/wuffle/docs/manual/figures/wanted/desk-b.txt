@@ -1,0 +1,9 @@
+# name | what the shot shows (scenes/desk-b.mjs stages each)
+select-cone | a typed cone: the dashed outline, 18 poles violet, the table brushed
+select-band | the band tool chosen (width field), a band added to the cone
+stats-card | the statistics card for Tocher
+derived-net | the mean with its cone and the eigenvectors drawn on the net
+intersect | two limbs (great circles), their means, and the line where they meet
+rose-strike | a rose of Tocher's strikes
+fabric-vollmer | a Vollmer P–G–R plot: Tocher and two limbs
+rotated-net | the net centred on 120→40, contoured, the same cone as select-cone

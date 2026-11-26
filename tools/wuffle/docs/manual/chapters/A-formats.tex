@@ -1,0 +1,162 @@
+\chapter{File formats}\label{app:formats}
+\begin{goals}
+\textbf{This appendix} describes every file wuffle writes: the field log and its signature, the project
+file, and the block that carries a project inside a page. Everything here is plain text, CSV, JSON or a
+zip, so other programs can read and write it too.
+\end{goals}
+
+\section{The field log}\label{sec:format-log}
+
+\ui{publish →} on the compass writes \file{wuffle-log.csv}: UTF-8, comma-separated, one header line, one
+row per measurement in the order they were taken, every line ending in a single line feed (\code{\textbackslash n}),
+the last one included. No field is quoted. The columns, always all eleven and in this order:
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}>{\ttfamily\raggedright}p{0.27\linewidth}L@{}}\toprule
+\normalfont\sffamily\bfseries column & \sffamily\bfseries holds \\\midrule
+type & \code{plane} or \code{line} \\
+dip\_dir\_or\_trend & a plane's dip direction or a line's trend: a whole number of degrees, 0–359 \\
+dip\_or\_plunge & a plane's dip or a line's plunge: a whole number of degrees, 0–90 \\
+strike & a plane's strike by the right-hand rule (dip direction − 90°); empty for a line \\
+timestamp & when it was measured, ISO 8601 in UTC (\code{2026-11-20T14:02:11.000Z}) \\
+lat, lon & the position in decimal degrees (six places), empty with no GNSS fix \\
+acc\_m & the position's accuracy in whole metres, empty with no fix \\
+north & \code{true}, \code{magnetic} or \code{as-typed}: what the azimuths are referred to (\cref{sec:true-north}) \\
+declination\_deg & the declination applied, east positive (two places); empty unless \col{north} is \code{true} \\
+photo & the file name of the station's photo, or empty \\
+\bottomrule\end{tabularx}
+\end{center}
+
+A photo is a JPEG named \file{wuffle-<number>-<time>.jpg}: the measurement's number, three digits, and
+its timestamp to the second with the colons left out, as in \file{wuffle-002-2026-11-20T140540.jpg}.
+
+\section{The signature}\label{sec:format-sig}
+
+Inside the lead-acid shell, \file{wuffle-log.csv.sig} sits beside the log: a JSON object, indented by one
+space.
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}>{\ttfamily\raggedright}p{0.17\linewidth}L@{}}\toprule
+\normalfont\sffamily\bfseries key & \sffamily\bfseries value \\\midrule
+file & the name of the file signed, \code{wuffle-log.csv} \\
+alg & \code{ECDSA-P256-SHA256}: ECDSA on the P-256 curve over the SHA-256 of the bytes \\
+sig & the signature, base64, as the raw 64 bytes r‖s (IEEE P1363, not DER) \\
+pub & the public key, base64 of its SubjectPublicKeyInfo (SPKI) \\
+hash & the SHA-256 of the bytes, base64 \\
+security & where the phone says the key lives, as it reported it (\code{strongbox}, say) \\
+signedAt & when it was signed, ISO 8601 in UTC \\
+\bottomrule\end{tabularx}
+\end{center}
+
+The signature is over the exact bytes of \file{wuffle-log.csv}: change one and it no longer verifies. Any
+WebCrypto, OpenSSL or similar library checks it with \code{pub} and \code{sig} alone; wuffle's check
+(\cref{sec:field-logs}) does exactly that. The fingerprint wuffle shows for a key is the first eight
+bytes of the SHA-256 of the SPKI, in hex, in groups of four digits.
+
+\section{The project file}\label{sec:format-zip}
+
+\file{<name>.zip.wuffle} is an ordinary zip. Paths use
+\file{/}; a name containing a \file{/} is written with \file{∕} (U+2215, the division slash) in its place.
+Everything is UTF-8.
+
+\subsection{\file{project.json}}
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}>{\ttfamily\raggedright}p{0.17\linewidth}L@{}}\toprule
+\normalfont\sffamily\bfseries key & \sffamily\bfseries value \\\midrule
+format & \code{"wuffle"}: a zip without it isn't opened as a project \\
+version & \code{1} \\
+name & the project's name \\
+active & the active diagram's name, or \code{null} \\
+data & the datasets' names, in the order of the tree's data section \\
+diagrams & the diagrams' names, in tree order \\
+figures & \code{[\{ "name", "from" \}]}: each figure and the diagram it was made from (\code{null} if gone) \\
+field & \code{[\{ "name", "file" \}]}: each field original and its log's file name (only when there are any) \\
+\bottomrule\end{tabularx}
+\end{center}
+
+The lists give order only. A dataset, diagram or figure found in the zip but missing from its list is
+read too, after the listed ones, in name order; one listed but missing is skipped.
+
+\subsection{Data}
+
+\file{data/<name>.csv} holds the rows: RFC 4180 CSV, every column of the dataset, a field quoted only when
+it contains a comma, a quote or a line break. \file{data/<name>.json} beside it holds what a CSV can't:
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}>{\ttfamily\raggedright}p{0.17\linewidth}L@{}}\toprule
+\normalfont\sffamily\bfseries key & \sffamily\bfseries value \\\midrule
+name & the dataset's name \\
+kind & \code{planes}, \code{lines}, \code{faults} or \code{smallcircles} \\
+columns & the columns in order \\
+roles & which column holds what: \code{dipDir}, \code{strike}, \code{dip}, \code{trend}, \code{plunge}, \code{sense}, \code{angle}, \code{attitude}, \code{set} \\
+notation & \code{dd} (dip direction), \code{rhr} (strike, right-hand rule) or \code{text} (one attitude column) \\
+lineage & for a derived dataset, how it was made: \code{op}, its \code{params}, its \code{sources} and \code{at}; for data read from a field log, \code{op: "field log"}, the \code{original} and its \code{file}; otherwise \code{null} \\
+meta & how the file was read (\code{read}: the delimiter, decimal comma, header, rows skipped, whether the roles were guessed and why) \\
+\bottomrule\end{tabularx}
+\end{center}
+
+A CSV added to the zip by hand, without a \file{.json}, is read the way \menu{File>Open data or a
+project…} reads a file: its header decides what it is (\cref{ch:data}). It is in the project but not
+drawn until you draw it, unless a layer file names it.
+
+wuffle writes every member stored, not compressed (the page format gzips the whole thing,
+\cref{sec:format-page}). It reads deflated members too, so a project unzipped and zipped again by any
+archive tool still opens.
+
+\subsection{Diagrams and layers}
+
+\file{diagrams/<name>/diagram.json}:
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}>{\ttfamily\raggedright}p{0.17\linewidth}L@{}}\toprule
+\normalfont\sffamily\bfseries key & \sffamily\bfseries value \\\midrule
+name & the diagram's name \\
+kind & \code{net}, \code{rose} or \code{fabric} \\
+props & its settings. A net: \code{projection}, \code{hemisphere}, \code{rotation} (a centre, \code{[trend, plunge]}), \code{matrix} (a dragged rotation, nine numbers), \code{graticule}. A rose: \code{bins}, \code{axial}, \code{scale}, \code{quantity}, \code{column}. A fabric plot: \code{plot}. \\
+layers & the layers' file names, in draw order (the last on top) \\
+\bottomrule\end{tabularx}
+\end{center}
+
+\file{diagrams/<name>/layers/<layer>.json}, one per layer. The file name is the layer's own name, or its
+dataset's, with \code{(2)}, \code{(3)}… added when one diagram shows the same name twice.
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}>{\ttfamily\raggedright}p{0.17\linewidth}L@{}}\toprule
+\normalfont\sffamily\bfseries key & \sffamily\bfseries value \\\midrule
+data & the path of its dataset in the zip, \code{"data/tocher.csv"} \\
+name & the layer's own name, or \code{null} to use the dataset's \\
+visible & \code{true} or \code{false} \\
+style & \code{color}, \code{symbol}, \code{size} \\
+elements & each element (\code{poles}, \code{greatCircles}, \code{contours}, \code{mean}, \code{v1Pole}…, \code{slip}, \code{ptAxes}, \code{dihedra}, \code{labels}…) as \code{\{ "on": … \}} with its settings: contours \code{method}, \code{sigma}, \code{levels}; mean \code{axial}, \code{confidence}; labels \code{column} \\
+\bottomrule\end{tabularx}
+\end{center}
+
+\subsection{Figures, selections, field originals, home}
+
+\begin{description}
+\item[\file{figures/<name>.compo.json}] a figure page as a compo document (\cref{ch:figures}).
+\item[\file{selection/<dataset>.rows}] the selected rows of one dataset, numbered from 1, one per line.
+Only datasets with a selection have one.
+\item[\file{field/<name>/<log>.csv}, \file{<log>.csv.sig}, \file{photos/*.jpg}] a field original, the bytes
+exactly as they arrived (\cref{sec:field-logs}).
+\item[\file{home/…}] the files under \file{/home} in the console, at the same paths.
+\end{description}
+
+Not stored: the SVG and PDF renderings, the selected rows as CSV, and the undo history.
+
+\section{A project inside a page}\label{sec:format-page}
+
+A page saved with \menu{File>Save as page (one .html, the project inside)} is the wuffle page plus one
+element before the program block:
+
+\begin{lstlisting}
+<script type="application/zip" id="wuffle-project" data-encoding="gzip" data-name="Serra study">
+H4sIAAAAAAAA…
+</script>
+\end{lstlisting}
+
+The text inside is the \file{.zip.wuffle}, gzipped, then base64 in lines of 100 characters. A browser never
+runs a script of that type, so a program that wants the project reads that element, decodes the base64,
+gunzips it and has the zip. \code{data-name} is the project's name, with \code{\&}, \code{"}, \code{<} and
+\code{>} escaped. A page holds one project; saving again replaces it.
