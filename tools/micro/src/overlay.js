@@ -103,7 +103,11 @@ export function planeAngle(n1, n2) {
   }
   return { a: dipOfNormal(a), b: dipOfNormal(b), angle, line };
 }
-const att = (o) => `${Math.round(o.dip).toString().padStart(2, '0')}/${Math.round(o.dipDir).toString().padStart(3, '0')}`;
+// attitudes as text, the GCU way (@gcu/stereonet's formatter): planes dip direction/dip (243/03), lines and
+// directions trend→plunge (192→02; plunge positive down). One helper each, so no readout drifts.
+const az3 = (v) => String(((Math.round(v) % 360) + 360) % 360).padStart(3, '0');
+const att = (o) => `${az3(o.dipDir)}/${Math.round(o.dip).toString().padStart(2, '0')}`;
+const fmtTP = (trend, plunge) => `${az3(trend)}°→${Math.round(plunge)}°`;
 
 async function planeClick(cssX, cssY) {
   const hit = S.renderer.pick(cssX, cssY, S.cam, { pointPx: +$('#ptPx').value, section: currentSection() });
@@ -114,7 +118,7 @@ async function planeClick(cssX, cssY) {
   _measure.pts.push(local); _measure.ptsT.push(local); _measure.normals.push(Array.from(h.normal));
   if (_measure.pts.length === 1) {
     _measure.a = local;
-    $('#meta').textContent = `angle between planes: the first is ${att(dipOfNormal(h.normal))} (dip/dip direction) — now click the second`;
+    $('#meta').textContent = `angle between planes: the first is ${att(dipOfNormal(h.normal))} (dip direction/dip) — now click the second`;
     drawMeasure(); return;
   }
   _measure.b = local;
@@ -123,8 +127,8 @@ async function planeClick(cssX, cssY) {
   _measure.arm = 0; _measure.mouse = null;
   S.cv.style.cursor = '';
   $('#btnMeasure').classList.remove('on');
-  $('#meta').textContent = `angle between planes: ${r.angle.toFixed(1)}° · ${att(r.a)} and ${att(r.b)} (dip/dip direction)`
-    + (r.line ? ` · they meet along ${Math.round(r.line.plunge).toString().padStart(2, '0')}→${Math.round(r.line.trend).toString().padStart(3, '0')} (plunge→trend)` : ' · parallel: they never meet');
+  $('#meta').textContent = `angle between planes: ${r.angle.toFixed(1)}° · ${att(r.a)} and ${att(r.b)} (dip direction/dip)`
+    + (r.line ? ` · they meet along ${az3(r.line.trend)}→${Math.round(r.line.plunge).toString().padStart(2, '0')} (trend→plunge)` : ' · parallel: they never meet');
   _measure.label = `${r.angle.toFixed(1)}°`;
   drawMeasure();
 }
@@ -240,13 +244,13 @@ export function updateMeasureReadout() {
   if (_measureTP) {
     const trend = ((Math.atan2(d[0], d[1]) * 180 / Math.PI) + 360) % 360;
     const plunge = Math.atan2(-d[2], plan) * 180 / Math.PI;   // positive DOWN (mining convention)
-    tp = ` · ${Math.round(plunge)}°→${String(Math.round(trend)).padStart(3, '0')}°`;
+    tp = ` · ${fmtTP(trend, plunge)}`;
   }
   $('#meta').textContent = `measure: ${d3.toFixed(2)} m · plan ${plan.toFixed(2)} m · Δz ${Math.abs(d[2]).toFixed(2)} m${tp}${_measure.moved ? ' · true positions (a layer is drawn displaced)' : ''}`;
   _measure.label = `${d3.toFixed(1)} m${tp}`;
 }
 
-const tpOf = (d) => { const plan = Math.hypot(d[0], d[1]); return ` · ${Math.round(Math.atan2(-d[2], plan) * 180 / Math.PI)}°→${String(Math.round(((Math.atan2(d[0], d[1]) * 180 / Math.PI) + 360) % 360)).padStart(3, '0')}°`; };
+const tpOf = (d) => { const plan = Math.hypot(d[0], d[1]); return ` · ${fmtTP((Math.atan2(d[0], d[1]) * 180 / Math.PI + 360) % 360, Math.atan2(-d[2], plan) * 180 / Math.PI)}`; };
 function updatePolyReadout() {
   const F = measureFigures(), last = F.segs[F.segs.length - 1];
   const parts = [`measure: ${F.length.toFixed(2)} m along ${F.segs.length} segment${F.segs.length === 1 ? '' : 's'}`, `plan ${F.plan.toFixed(2)} m`];
@@ -405,13 +409,13 @@ export function drawSwathBand() {
 export function drawCompass() {
   const v = S.cam.state.view;
   if (!v) return;                                          // camera not updated yet (first paint comes with the loop)
-  { // camera plunge → trend, far right of the footer (mining convention, positive down)
+  { // camera trend → plunge, far right of the footer (plunge positive down)
     const st = S.cam.state;
     const f = [st.target[0] - st.eye[0], st.target[1] - st.eye[1], st.target[2] - st.eye[2]];
     const plan = Math.hypot(f[0], f[1]);
     const trend = ((Math.atan2(f[0], f[1]) * 180 / Math.PI) + 360) % 360;
     const plunge = Math.atan2(-f[2], plan) * 180 / Math.PI;
-    $('#camTP').textContent = `${String(Math.round(plunge)).padStart(3)}°→${String(Math.round(trend)).padStart(3, '0')}°`;
+    $('#camTP').textContent = fmtTP(trend, plunge);
   }
   const R = [v[0], v[4], v[8]], U = [v[1], v[5], v[9]];    // camera basis (world → screen)
   const SC = 27, cxp = 37, cyp = 37;

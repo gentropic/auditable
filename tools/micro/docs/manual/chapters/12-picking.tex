@@ -70,10 +70,10 @@ Three things make the tape trustworthy:
 \end{itemize}
 
 \subsection{Trend and plunge}
-Tick \menu{Tools>Measure trend \& plunge} and every measurement also reports the direction from the first point to the second, as \emph{plunge → trend}:
+Tick \menu{Tools>Measure trend \& plunge} and every measurement also reports the direction from the first point to the second, as \emph{trend → plunge}:
 
 \begin{lstlisting}
-measure: 212.47 m · plan 180.00 m · Δz 112.88 m · 32°→045°
+measure: 212.47 m · plan 180.00 m · Δz 112.88 m · 045°→32°
 \end{lstlisting}
 
 Plunge is positive downward, the mining convention. Click the top and bottom of a shoot to read its plunge, or two points along a contact on a section to read an apparent dip. The setting is remembered between sessions.
@@ -103,10 +103,10 @@ The \emph{plan} area is the outline's footprint, what a map would show. The \emp
 Press \key{⇧M}, or \code{angle between two planes} in the palette, and click two surfaces: a mesh, or a grid drawn as a surface.\sidekey{⇧M}{the angle between two planes} Each click keeps the face it met. After the second the status line reads
 
 \begin{lstlisting}
-angle between planes: 8.2° · 03/243 and 06/117 (dip/dip direction) · they meet along 02→192 (plunge→trend)
+angle between planes: 8.2° · 243/03 and 117/06 (dip direction/dip) · they meet along 192→02 (trend→plunge)
 \end{lstlisting}
 
-It gives the two attitudes as dip and dip direction, the angle between the planes (from 0° for parallel planes to 90°), and the line they meet along, pointing down, as plunge and trend: the intersection lineation of a vein on a fault, or the direction a wedge between two joint sets slides out along. Parallel planes meet nowhere, and the reading says so. Each plane is the triangle (or the grid cell) under the cursor, so click where the surface is representative; to fit a plane to a whole patch of an outcrop, use structural analysis (\cref{ch:structure}).
+It gives the two attitudes as dip direction and dip, the angle between the planes (from 0° for parallel planes to 90°), and the line they meet along, pointing down, as trend and plunge: the intersection lineation of a vein on a fault, or the direction a wedge between two joint sets slides out along. Parallel planes meet nowhere, and the reading says so. Each plane is the triangle (or the grid cell) under the cursor, so click where the surface is representative; to fit a plane to a whole patch of an outcrop, use structural analysis (\cref{ch:structure}).
 
 \section{Points of interest}\label{sec:picking-poi}\index{points of interest}
 A \term{point of interest} is a named point you clicked: a sample site, a collar to be drilled, a spot where the model and a hole disagree. \code{points of interest} in the palette arms the pick: each click on the model adds a point, named \ui{P1}, \ui{P2} and so on, until you press \key{Esc}. A click lands where the measure tape would: on the face of the block, interval or surface under the cursor, at its true position.
