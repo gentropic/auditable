@@ -15,12 +15,15 @@ export class NetView {
   constructor(project, diagramId, { onStatus } = {}) {
     this.p = project; this.id = diagramId; this.onStatus = onStatus || (() => {});
     this.el = document.createElement('div'); this.el.className = 'wn-host'; this.el.tabIndex = 0;
+    this.stage = document.createElement('div'); this.stage.className = 'wn-stage';   // the drawing; tools sit beside it
+    this.el.append(this.stage);
     this.net = null; this.picks = []; this.scene = null;
+    this.drawn = new Set();   // hooks run after every draw (a tool's overlay, …): fn(view)
     this._ro = new ResizeObserver(() => this.draw());
     this._ro.observe(this.el);
     this._off = project.on((e) => { if (this._concerns(e)) this.draw(); });
-    this.el.addEventListener('click', (e) => this._click(e));
-    this.el.addEventListener('mousemove', (e) => this._hover(e));
+    this.stage.addEventListener('click', (e) => this._click(e));
+    this.stage.addEventListener('mousemove', (e) => this._hover(e));
     this.el.addEventListener('mouseleave', () => this.onStatus(''));
   }
   destroy() { this._ro.disconnect(); this._off(); }
@@ -42,11 +45,14 @@ export class NetView {
     const out = core.renderScene(this.scene, { size, projection: g.props.projection, hemisphere: g.props.hemisphere,
       graticule: g.props.graticule, center: g.props.rotation || null, classPrefix: 'wn', theme: netTheme() });
     this.net = out.net; this.picks = out.picks;
-    this.el.replaceChildren(out.svg);
+    this.stage.replaceChildren(out.svg);
+    for (const fn of this.drawn) fn(this);
   }
 
+  /** a pointer event → svg units on the net (and the scale from css px) */
+  svgPoint(e) { return this._svgPoint(e); }
   _svgPoint(e) {
-    const svg = this.el.querySelector('svg'); if (!svg) return null;
+    const svg = this.stage.querySelector('svg'); if (!svg) return null;
     const r = svg.getBoundingClientRect(), s = this.net.size / r.width;
     return { x: (e.clientX - r.left) * s, y: (e.clientY - r.top) * s, scale: s };
   }

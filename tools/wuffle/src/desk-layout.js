@@ -7,7 +7,7 @@ import { NetView } from './desk-net.js';
 
 const tabOf = (g) => ({ id: 'diag:' + g.id, title: g.name, closeable: false, diagramId: g.id });
 
-export function createLayout(host, { project: p, tree, table, onStatus }) {
+export function createLayout(host, { project: p, tree, table, select, onStatus }) {
   const views = new Map();   // diagramId → NetView
   if (!p.diagrams.length) p.addDiagram('net');
   const rails = createRails(host, {
@@ -21,10 +21,10 @@ export function createLayout(host, { project: p, tree, table, onStatus }) {
     renderPanel(tab) {
       if (tab.id === 'tree') return tree.el;
       if (tab.id === 'table') return table.el;
-      if (tab.diagramId) { const v = new NetView(p, tab.diagramId, { onStatus }); views.set(tab.diagramId, v); return v.el; }
+      if (tab.diagramId) { const v = new NetView(p, tab.diagramId, { onStatus }); views.set(tab.diagramId, v); select?.attach(v); return v.el; }
       return document.createElement('div');
     },
-    onPanelDestroy(tab) { if (tab.diagramId) { views.get(tab.diagramId)?.destroy(); views.delete(tab.diagramId); } },
+    onPanelDestroy(tab) { if (tab.diagramId) { const v = views.get(tab.diagramId); if (v) { select?.detach(v); v.destroy(); } views.delete(tab.diagramId); } },
   });
   rails.on('tab:activate', ({ tab }) => { if (tab.diagramId && p.activeDiagram !== tab.diagramId && p.diagram(tab.diagramId)) p.setActive(tab.diagramId); });
 

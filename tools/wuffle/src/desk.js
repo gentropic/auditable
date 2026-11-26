@@ -6,6 +6,7 @@
 //   desk-theme.js    system / basalt / equipment gray, and the net's look from the tokens
 //   desk-layout.js   @gcu/rails: tree · one tab per diagram · table; diagram ↔ tab bookkeeping
 //   desk-net.js      one net, drawn by @gcu/stereonet's core; pick + hover
+//   desk-select.js   lasso / cone / band on a net, in attitude space (rotation-proof)
 //   desk-tree.js     the tree: diagrams, layers, nested checkboxes, data; drag, menus, properties
 //   desk-table.js    the table (@gcu/loom over a dataset's rows)
 //   desk-files.js    open / drop / save, the project file
@@ -17,6 +18,7 @@ import { createTheme } from './desk-theme.js';
 import { TreeView } from './desk-tree.js';
 import { TableView } from './desk-table.js';
 import { createLayout } from './desk-layout.js';
+import { createSelectTools } from './desk-select.js';
 import { createFiles } from './desk-files.js';
 import { createMenus } from './desk-menus.js';
 
@@ -43,7 +45,9 @@ export function mountDesk() {
     onFocusDiagram: (id) => layout.focusDiagram(id),
     colorOf: (L) => L.style.color,
   });
-  layout = createLayout($('.wwork'), { project: p, tree, table, onStatus: (s) => { $('.wst-hover').textContent = s; } });
+  const status = (s) => { $('.wst-hover').textContent = s; };
+  const select = createSelectTools({ project: p, onStatus: status });
+  layout = createLayout($('.wwork'), { project: p, tree, table, select, onStatus: status });
   const files = createFiles(root, { project: p, dropHost: $('.wwork'), onOpened: (id) => table.show(id) });
   const menus = createMenus($('.wmenus'), { project: p, files, layout, theme });
 
@@ -56,7 +60,7 @@ export function mountDesk() {
   theme.onChange(() => { $('.wst-theme').textContent = theme.label(); layout.redrawAll(); table.applyTheme(); });
   theme.apply();
 
-  const api = { project: p, rails: layout.rails, views: layout.views, table, tree, menus, theme,
+  const api = { project: p, rails: layout.rails, views: layout.views, table, tree, menus, theme, select,
     addData: files.addData, loadProject: files.loadProject, open: files.open, setTheme: (t) => theme.set(t) };
   window.__wuffleDesk = api;
   return api;

@@ -99,6 +99,62 @@ for (const [label, url] of [['dev', '/tools/wuffle/index.html'], ['built', '/wuf
     out.reload = { diagrams: P.diagrams.length, layers: P.layers.length, rows: P.datasets[0].rows.length, selected: P.selected(P.datasets[0].id), tabs: [...document.querySelectorAll('.rails-tab')].length };
     return out;
   });
+  // ── the selection tools: real drags on net 1 ──
+  const geo = await p.evaluate(() => {
+    const W = window.__wuffleDesk, P = W.project, net1 = P.diagrams[0].id;
+    W.rails.activateTab('diag:' + net1);
+    return new Promise((res) => setTimeout(() => {
+      const v = W.views.get(net1), svg = v.stage.querySelector('svg'), rc = svg.getBoundingClientRect(), k = v.net.size / rc.width;
+      const toPx = (q) => [rc.left + q.x / k, rc.top + q.y / k];
+      res({ c: toPx({ x: v.net.size / 2, y: v.net.size / 2 }), r: (v.net.size / 2 - 30) / k, pole: toPx(v.picks[17]) });
+    }, 300));
+  });
+  const drag = async (pts, mods = []) => {
+    for (const m of mods) await p.keyboard.down(m);
+    await p.mouse.move(...pts[0]); await p.mouse.down();
+    for (const q of pts.slice(1)) await p.mouse.move(...q, { steps: 4 });
+    await p.mouse.up();
+    for (const m of mods) await p.keyboard.up(m);
+    await p.waitForTimeout(250);
+  };
+  const [cx, cy] = geo.c, R = geo.r;
+  await p.click('.wsel-bar >> text=cone');
+  await drag([geo.pole, [geo.pole[0] + 0.25 * R, geo.pole[1]]]);   // a cone started on a pole: never empty
+  const cone = await p.evaluate(() => {
+    const W = window.__wuffleDesk, P = W.project, v = W.views.get(P.diagrams[0].id), sh = W.select.shapeOf(v), ds = P.datasets[0];
+    const D = Math.PI / 180, pole = (dd, dip) => [-Math.sin(dip * D) * Math.sin(dd * D), -Math.sin(dip * D) * Math.cos(dd * D), -Math.cos(dip * D)];
+    const ax = sh.axis, n = Math.hypot(...ax), c = Math.cos(sh.angle * D);
+    const want = ds.rows.map((r, i) => [i, pole(r['dip direction'], r.dip)]).filter(([, q]) => Math.abs(q[0] * ax[0] + q[1] * ax[1] + q[2] * ax[2]) / n >= c - 1e-9).map(([i]) => i);
+    return { type: sh.type, angle: sh.angle, got: P.selected(ds.id), want, status: document.querySelector('.wst-hover').textContent };
+  });
+  await p.click('.wsel-bar >> text=lasso');
+  const before = cone.got.length;
+  await drag([[cx - 0.7 * R, cy - 0.2 * R], [cx - 0.2 * R, cy - 0.7 * R], [cx + 0.2 * R, cy - 0.7 * R], [cx + 0.1 * R, cy - 0.1 * R], [cx - 0.6 * R, cy + 0.1 * R]], ['Shift']);
+  const lasso = await p.evaluate(() => { const W = window.__wuffleDesk, P = W.project, v = W.views.get(P.diagrams[0].id); return { type: W.select.shapeOf(v).type, n: P.selected(P.datasets[0].id).length, outline: !!v.stage.querySelector('.wsel-shape') }; });
+  await p.click('.wsel-bar >> text=band');
+  await drag([[cx - 0.8 * R, cy], [cx + 0.8 * R, cy + 0.05 * R]]);
+  const band = await p.evaluate(() => { const W = window.__wuffleDesk, P = W.project, v = W.views.get(P.diagrams[0].id); const sh = W.select.shapeOf(v); return { type: sh.type, width: sh.width, n: P.selected(P.datasets[0].id).length }; });
+  // a ROTATED net: a cone started exactly on a pole must have that pole (its true direction) as its axis
+  const rot = await p.evaluate(() => {
+    const W = window.__wuffleDesk, P = W.project, net1 = P.diagrams[0].id;
+    P.setDiagramProps(net1, { rotation: [60, 40] });
+    return new Promise((res) => setTimeout(() => {
+      const v = W.views.get(net1), svg = v.stage.querySelector('svg'), rc = svg.getBoundingClientRect(), k = v.net.size / rc.width;
+      const pk = v.picks.find((q) => q.ref.row === 5), ds = P.datasets[0], r = ds.rows[5], D = Math.PI / 180;
+      res({ at: [rc.left + pk.x / k, rc.top + pk.y / k], want: [-Math.sin(r.dip * D) * Math.sin(r['dip direction'] * D), -Math.sin(r.dip * D) * Math.cos(r['dip direction'] * D), -Math.cos(r.dip * D)] });
+    }, 300));
+  });
+  await p.click('.wsel-bar >> text=cone');
+  await drag([rot.at, [rot.at[0] + 25, rot.at[1] + 10]]);
+  const rotGot = await p.evaluate(() => { const W = window.__wuffleDesk, P = W.project, v = W.views.get(P.diagrams[0].id); const a = W.select.shapeOf(v).axis; return a; });
+  const rotErr = Math.acos(Math.min(1, Math.abs(rotGot[0] * rot.want[0] + rotGot[1] * rot.want[1] + rotGot[2] * rot.want[2]) / Math.hypot(...rotGot))) * 180 / Math.PI;
+  await p.evaluate(() => { const W = window.__wuffleDesk; W.project.setDiagramProps(W.project.diagrams[0].id, { rotation: null }); W.select.setTool('pick'); });
+  chk(`${label}: a cone dragged on the net (${cone.angle.toFixed(1)}°) selects exactly the poles within it (${cone.got.length}, counted independently ${cone.want.length}) · “${cone.status}”`,
+    cone.type === 'cone' && cone.got.length > 0 && JSON.stringify(cone.got) === JSON.stringify(cone.want));
+  chk(`${label}: ⇧-lasso adds (${before} → ${lasso.n}), its outline drawn`, lasso.type === 'polygon' && lasso.n > before && lasso.outline);
+  chk(`${label}: a band along a great circle (±${band.width}°) selects ${band.n}`, band.type === 'band' && band.n > 0 && band.width === 10);
+  chk(`${label}: on a ROTATED net, a cone started on a pole has that pole's true direction as its axis (off by ${rotErr.toFixed(2)}°)`, rotErr < 1.5);
+
   try { await p.screenshot({ path: path.join(root, `experiments/wuffle-desk-${label}.png`) }); } catch { /* for a person */ }
   chk(`${label}: the desk opens with layers · Net 1 · table, the field page hidden (${s && JSON.stringify(r.tabs)})`, r.tabs && r.tabs.join() === 'layers,Net 1,table' && r.fieldHidden);
   chk(`${label}: File → Open the tocher sample → ${s.ds && s.ds.n} planes (not guessed: ${s.ds && !s.ds.guessed}), ${s.svgCircles} circles drawn`, s.ds && s.ds.n === 200 && !s.ds.guessed && s.svgCircles >= 200);

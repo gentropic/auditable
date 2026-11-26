@@ -46,8 +46,20 @@ body.desk > [hidden] { display:none !important; }   /* the field page's own disp
 .wdrop { position:absolute; inset:0; display:grid; place-items:center; background:color-mix(in srgb, var(--w-bg-deep) 70%, transparent); border:2px dashed var(--w-violet); color:var(--w-text); font:14px var(--w-sans); z-index:50; pointer-events:none; }
 
 /* a net */
-.wn-host { flex:1; min-height:0; display:grid; place-items:center; background:var(--w-net-bg); outline:none; }
-.wn-host svg { display:block; cursor:crosshair; }
+.wn-host { flex:1; min-height:0; position:relative; background:var(--w-net-bg); outline:none; }
+.wn-stage { position:absolute; inset:0; display:grid; place-items:center; }
+.wn-stage svg { display:block; cursor:crosshair; touch-action:none; }
+/* the selection tools, top-left of each net */
+.wsel-bar { position:absolute; left:8px; top:8px; display:flex; gap:2px; align-items:center; background:var(--w-bg-raised); border:1px solid var(--w-border); border-radius:4px; padding:2px; z-index:5; font:11px var(--w-mono); }
+.wsel-bar button { font:11px var(--w-mono); color:var(--w-text-mid); background:transparent; border:1px solid transparent; border-radius:3px; padding:2px 8px; cursor:pointer; }
+.wsel-bar button:hover { background:var(--w-bg-bright); color:var(--w-text); }
+.wsel-bar button[aria-pressed="true"] { color:var(--w-violet); border-color:var(--w-violet); background:var(--w-violet-soft); }
+.wsel-bar button:focus-visible { outline:2px solid var(--w-blue); outline-offset:1px; }
+.wsel-bar label[hidden] { display:none; }
+.wsel-bar label { display:flex; align-items:center; gap:4px; color:var(--w-text-soft); padding:0 4px; }
+.wsel-bar input { width:3.5em; font:11px var(--w-mono); background:var(--w-bg-bright); color:var(--w-text); border:1px solid var(--w-border); border-radius:3px; padding:1px 4px; }
+.wsel-shape { fill:none; stroke:var(--w-violet); stroke-width:1.4; stroke-dasharray:5 4; pointer-events:none; }
+.wsel-shape.live { stroke-dasharray:none; }
 
 /* the tree */
 .wtree { flex:1; min-height:0; overflow:auto; padding:6px 4px; font:13px var(--w-sans); background:var(--w-bg-raised); }
