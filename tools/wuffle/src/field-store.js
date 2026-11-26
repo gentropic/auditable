@@ -3,7 +3,10 @@
 // Now the log and its photos go into IndexedDB after every change and come back when the page opens.
 // Every access may fail (private window, blocked storage): the compass then works as before, in memory.
 
-const DB = 'wuffle-field', STORE = 'kept', KEY = 'log';
+// one log per page: a compass opened from disk keeps its log under its own path (every file:// page shares
+// one origin, so a single key would mix the logs of two copies)
+const DB = 'wuffle-field', STORE = 'kept';
+const KEY = typeof location !== 'undefined' && location.protocol === 'file:' ? `log:${decodeURIComponent(location.pathname)}` : 'log';
 
 function open() {
   return new Promise((res, rej) => {

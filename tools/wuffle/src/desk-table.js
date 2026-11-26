@@ -14,9 +14,10 @@ function providerFor(p, datasetId) {
   return {
     refreshOrientations: refresh,
     dims: () => ({ rows: ds().rows.length, cols: cols().length }),
-    header: (c) => (c === 0 ? { label: ds().kind === 'lines' ? 'trend→plunge' : 'dip dir/dip' } : { label: cols()[c] }),
+    header: (c) => (c === 0 ? { label: ds().kind === 'lines' ? 'trend→plunge' : ds().kind === 'smallcircles' ? 'axis trend→plunge' : 'dip dir/dip' } : { label: cols()[c] }),
     cellAt(r, c) {
-      const d = ds(); if (!d || r >= d.rows.length) return null;
+      // (a grid that drew a longer dataset a moment ago may still ask for a row that is gone: no row, no cell)
+      const d = ds(); if (!d || r >= d.rows.length || !d.rows[r]) return null;
       const hi = p.selection.get(datasetId)?.has(r) ? { highlight: true } : undefined;
       if (c === 0) {
         const x = o[r];

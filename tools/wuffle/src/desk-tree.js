@@ -52,8 +52,10 @@ export class TreeView {
         const sw = h('span', 'wsw'); sw.style.background = this.colorOf(L, i) || 'var(--w-text-mid)';
         lr.append(this._twisty(key), this._check(L.visible ? 'on' : 'off', (on) => p.setLayerVisible(L.id, on), 'show / hide'), sw,
           h('span', 'wname', L.name || ds.name), h('span', 'wn', String(ds.rows.length)));
-        const others = p.usesOf(ds.id).length - 1;
-        if (others > 0) lr.append(h('span', 'wlink', `⧉${others}`)); lr.lastChild.title = others > 0 ? `also drawn on ${others} other diagram${others > 1 ? 's' : ''} — the same data` : '';
+        // the badge counts the OTHER DIAGRAMS this dataset is drawn on (it counted layers: a second view on the
+        // same net read as another diagram)
+        const others = new Set(p.usesOf(ds.id).map((u) => u.diagram).filter((d) => d !== g.id)).size;
+        if (others > 0) { const b = h('span', 'wlink', `⧉${others}`); b.title = `also drawn on ${others} other diagram${others > 1 ? 's' : ''} — the same data`; lr.append(b); }
         lr.addEventListener('click', () => { p.setActive(g.id); this.onShowDataset(ds.id); });
         lr.addEventListener('dblclick', () => this.properties(L.id));
         lr.addEventListener('contextmenu', (e) => this._layerMenu(e, L));

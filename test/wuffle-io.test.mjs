@@ -127,3 +127,15 @@ describe('one attitude column: the arrow decides', () => {
     assert.match(readTable('10,20\n30,40\n', 'x')[0].meta.read.why, /^no named columns/);
   });
 });
+
+describe('delimiters, from the review', () => {
+  it('a headerless semicolon file with decimal commas reads as numbers, not as comma-split words', () => {
+    const t = parseDelimited('120,5;40,2\n130,1;35,7\n140,0;30,9\n');
+    assert.equal(t.delimiter, ';'); assert.equal(t.decimalComma, true);
+    assert.deepEqual(t.rows[0], { c1: 120.5, c2: 40.2 });
+  });
+  it('one odd line in a four-line file: the delimiter still found, the odd line counted as skipped', () => {
+    const t = parseDelimited('dd,dip\n10,20\nhello\n30,40\n');
+    assert.equal(t.delimiter, ','); assert.equal(t.rows.length, 2); assert.equal(t.skipped, 1);
+  });
+});

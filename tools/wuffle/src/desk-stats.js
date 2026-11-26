@@ -43,7 +43,8 @@ export class StatsView {
       } else row('mean', 'needs ≥ 2');
       if (s.eigen) {
         row('S1 S2 S3', s.eigen.values.map((v) => f(v, 3)).join('  '), 'normalised eigenvalues of the orientation tensor');
-        s.eigen.vectors.forEach((v, i) => row(`V${i + 1}`, `${formatLine(v.line)}${i === 2 && isPlane ? ` · girdle ${formatPlane(v.plane)}` : ''}`));
+        const VT = ['the largest eigenvalue’s axis: a cluster’s centre', 'the intermediate axis', 'the smallest eigenvalue’s axis: a girdle’s pole (on folded beds, the fold axis)'];
+        s.eigen.vectors.forEach((v, i) => row(`V${i + 1}`, `${formatLine(v.line)}${i === 2 && isPlane ? ` · girdle ${formatPlane(v.plane)}` : ''}`, VT[i]));
         row('K · C', `${f(s.eigen.K)} · ${f(s.eigen.C)}`, 'Woodcock: K > 1 cluster, K < 1 girdle; C strength');
         row('P G R', [s.eigen.P, s.eigen.G, s.eigen.R].map((v) => f(v)).join('  '), 'Vollmer point, girdle, random');
       }

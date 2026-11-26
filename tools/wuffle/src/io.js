@@ -42,15 +42,21 @@ export function parseDelimited(text) {
   const probe = lines.slice(0, 20);
   // a file of attitudes ("045/30", "N30E 40SE"), one per line, is ONE column — its spaces aren't delimiters
   let delimiter = probe.filter((l) => ATTITUDE.test(l)).length >= Math.max(1, probe.length - 1) ? 'line' : 'ws';
-  // otherwise the delimiter most lines agree on (the most common field count, > 1, on ≥ 80 % of lines):
-  // one odd line doesn't make the whole file unreadable
+  // otherwise the delimiter most lines agree on (the most common field count, > 1, on ≥ 75 % of lines, so
+  // one odd line in four doesn't make even a short file unreadable). Two delimiters that split equally well
+  // — "120,5;40,2" splits evenly on the comma AND the semicolon — are told apart by which gives numbers:
+  // here the semicolon (120,5 and 40,2 are numbers with a decimal comma; "5;40" is not a number at all).
   let best = 0;
+  const numberish = (v) => NUM.test(v) || NUM_COMMA.test(v);
   if (delimiter === 'ws') for (const d of [',', ';', '\t', '|']) {
-    const counts = probe.map((l) => splitRecord(l, d).length), freq = new Map();
+    const split = probe.map((l) => splitRecord(l, d)), counts = split.map((r) => r.length), freq = new Map();
     for (const c of counts) freq.set(c, (freq.get(c) || 0) + 1);
     const [mode, k] = [...freq].sort((a, b) => b[1] - a[1])[0];
     const share = k / counts.length;
-    if (mode > 1 && share >= 0.8 && share > best) { best = share; delimiter = d; }
+    if (mode < 2 || share < 0.75) continue;
+    const fields = split.flat().filter((v) => v !== ''), nums = fields.filter(numberish).length / (fields.length || 1);
+    const score = share + 0.01 * nums;               // agreement first; numbers break a tie
+    if (score > best) { best = score; delimiter = d; }
   }
   const recs = lines.map((l) => splitRecord(l, delimiter));
   // a decimal comma: only possible when the comma isn't the delimiter

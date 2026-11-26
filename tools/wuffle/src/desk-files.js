@@ -17,7 +17,12 @@ const DB = 'wuffle', STORE = 'autosave';
 // the slot: a page that CARRIES a project autosaves under that project's identity, so edits to a page
 // someone sent survive a reload, and a different page never inherits them
 const embedded = () => (typeof document !== 'undefined' ? document.getElementById('wuffle-project') : null);
-const KEY = (() => { const b = embedded(); return b ? `page:${hashText(b.textContent.replace(/\s/g, ''))}` : 'project'; })();
+// A page opened from disk keeps its session under its own path: every file:// page shares one origin, so
+// with a single 'project' slot a copy of wuffle.html beside each project overwrote the others' sessions.
+const KEY = (() => {
+  const b = embedded(); if (b) return `page:${hashText(b.textContent.replace(/\s/g, ''))}`;
+  return typeof location !== 'undefined' && location.protocol === 'file:' ? `file:${decodeURIComponent(location.pathname)}` : 'project';
+})();
 function idb() {
   return new Promise((res, rej) => {
     let r; try { r = indexedDB.open(DB, 1); } catch (e) { rej(e); return; }
