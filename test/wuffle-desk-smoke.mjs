@@ -11,8 +11,10 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css' };
+const served = new Map();   // pages made during the run (a saved wuffle page), served from memory
 const server = http.createServer((req, res) => {
   const p = decodeURIComponent(new URL(req.url, 'http://x').pathname);
+  if (served.has(p)) { res.writeHead(200, { 'content-type': 'text/html' }); res.end(served.get(p)); return; }
   fs.readFile(path.join(root, p), (err, data) => {
     if (err) { res.writeHead(404); res.end(); return; }
     res.writeHead(200, { 'content-type': MIME[path.extname(p)] || 'application/octet-stream' }); res.end(data);
@@ -311,6 +313,36 @@ for (const [label, url] of [['dev', '/tools/wuffle/index.html'], ['built', '/wuf
   chk(`${label}: autosave — after a reload the session is back (${as.ok}: ${JSON.stringify(as.names)}, ${as.n} datasets, /home/note.txt “${as.note}”), with a fresh history`,
     as.ok === true && as.names.includes('Autosaved net') && as.n >= 1 && as.note === 'kept' && !as.undo);
   chk(`${label}: no page errors (${errs.length ? errs.join(' ; ').slice(0, 200) : 'none'})`, errs.length === 0);
+
+  // ── save as page (the built file only — the dev tree has no page to copy): the saved page opens on the
+  //    desk INTO its project, with no autosave to lean on (a fresh context), and is smaller than it looks ──
+  if (label === 'built') {
+    const saved = await p.evaluate(async () => {
+      const W = window.__wuffleDesk;
+      W.project.renameDiagram(W.project.diagrams[0].id, 'Sent net');
+      return { can: W.files.canSavePage(), html: await W.files.pageHtml(), names: W.project.diagrams.map((g) => g.name), n: W.project.datasets.length };
+    });
+    served.set('/sent.wuffle.html', saved.html);
+    const ctx2 = await b.newContext({ viewport: { width: 1360, height: 860 } });
+    const p2 = await ctx2.newPage(); const errs2 = []; p2.on('pageerror', (e) => errs2.push(e.message));
+    await p2.goto(`http://127.0.0.1:${PORT}/sent.wuffle.html`, { waitUntil: 'load' }); await p2.waitForTimeout(800);
+    const got = await p2.evaluate(async () => {
+      const W = window.__wuffleDesk; if (!W) return { desk: false };
+      const ok = await W.restored;
+      const r = await W.console.run('cat /home/note.txt');
+      return { desk: true, ok, names: W.project.diagrams.map((g) => g.name), n: W.project.datasets.length, note: r.text, title: document.title };
+    });
+    // and File → Open of the page from ANOTHER wuffle reads only its project
+    const opened = await p.evaluate(async (html) => {
+      const W = window.__wuffleDesk; await W.files.newProject();
+      await W.open([new File([html], 'sent.wuffle.html', { type: 'text/html' })]);
+      return W.project.diagrams.map((g) => g.name);
+    }, saved.html);
+    chk(`built: Save as page → a ${(saved.html.length / 1024).toFixed(0)} KB page; opened fresh it goes to the desk (${got.desk}) INTO its project (${JSON.stringify(got.names)}, ${got.n} datasets, /home kept: “${got.note}”, title “${got.title}”); File → Open of that page in another wuffle reads its project (${JSON.stringify(opened)})`,
+      saved.can && got.desk && got.ok && JSON.stringify(got.names) === JSON.stringify(saved.names) && got.n === saved.n && got.note === 'kept'
+      && /Sent|untitled/.test(got.title) && opened.includes('Sent net') && errs2.length === 0);
+    await ctx2.close();
+  }
   await p.close();
 }
 await b.close(); server.close();

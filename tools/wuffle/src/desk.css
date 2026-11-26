@@ -39,7 +39,7 @@ body.desk > [hidden] { display:none !important; }   /* the field page's own disp
 #wdesk .wbar { display:flex; align-items:center; gap:6px; padding:0 8px; background:var(--w-bg-raised); border-bottom:1px solid var(--w-border); }
 #wdesk .wbrand { font:700 12px var(--w-mono); color:var(--w-orange); margin-right:8px; }
 #wdesk .wmenus { flex:1; min-width:0; }
-#wdesk .wsealed { font:11px var(--w-mono); color:var(--w-green); border:1px solid var(--w-border); border-radius:3px; padding:0 6px; }
+#wdesk .wposture { font:11px var(--w-mono); color:var(--w-blue); cursor:help; border:1px solid var(--w-border); border-radius:3px; padding:0 6px; }
 #wdesk .wwork { min-height:0; position:relative; }
 #wdesk .wstatus { display:flex; gap:18px; align-items:center; padding:0 10px; font:11px var(--w-mono); color:var(--w-text-soft); background:var(--w-bg-raised); border-top:1px solid var(--w-border); white-space:nowrap; overflow:hidden; }
 #wdesk .wstatus .wst-hover { flex:1; overflow:hidden; text-overflow:ellipsis; }

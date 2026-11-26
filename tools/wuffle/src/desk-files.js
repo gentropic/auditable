@@ -2,14 +2,21 @@
 // datasets drawn on the active net. A project is a `.zip.wuffle` (project-file.js: the /project tree zipped,
 // plus /home): opening one replaces the current project IN PLACE (the views keep their listeners), Save
 // writes one. Between saves the project is kept quietly in this browser (IndexedDB) and comes back when the
-// page reopens. Opening is by picker, by drop on the window, or the built-in sample.
+// page reopens. Save as page writes a wuffle.html with the project INSIDE (page.js) — a page that carries
+// one opens it, and File → Open takes any wuffle page and reads just its project. Opening is by picker,
+// by drop on the window, or the built-in sample.
 
 import { alert } from '../../../ext/dialog/index.js';
 import { readTable } from './io.js';
 import { writeProject, readProject, isZip } from './project-file.js';
+import { projectBlock, projectFromPage, pageWithProject, blockText, isPage, hashText } from './page.js';
 
 // ── the autosave: one key in one IndexedDB store; every access may fail (private window, blocked storage) ──
-const DB = 'wuffle', STORE = 'autosave', KEY = 'project';
+const DB = 'wuffle', STORE = 'autosave';
+// the slot: a page that CARRIES a project autosaves under that project's identity, so edits to a page
+// someone sent survive a reload, and a different page never inherits them
+const embedded = () => (typeof document !== 'undefined' ? document.getElementById('wuffle-project') : null);
+const KEY = (() => { const b = embedded(); return b ? `page:${hashText(b.textContent.replace(/\s/g, ''))}` : 'project'; })();
 function idb() {
   return new Promise((res, rej) => {
     let r; try { r = indexedDB.open(DB, 1); } catch (e) { rej(e); return; }
@@ -69,6 +76,16 @@ export function createFiles(root, { project: p, dropHost, onOpened, home = null,
   const open = async (files) => {
     for (const f of files) {
       const bytes = new Uint8Array(await f.arrayBuffer());
+      const head = new TextDecoder().decode(bytes.subarray(0, 200));
+      if (isPage(head)) {                                   // a wuffle page: its project, never its code
+        try {
+          const zip = await projectFromPage(new TextDecoder().decode(bytes));
+          if (!zip) { await alert(`${f.name} is a page without a wuffle project in it`); continue; }
+          const w = await loadProject(zip);
+          onStatus(`opened the project inside ${f.name}${w.length ? ` — ${w.length} skipped` : ''}`);
+        } catch (e) { await alert(`${f.name}: ${e.message}`); }
+        continue;
+      }
       if (isZip(bytes)) {
         try {
           const w = await loadProject(bytes);
@@ -86,6 +103,15 @@ export function createFiles(root, { project: p, dropHost, onOpened, home = null,
     onStatus(`saved ${safeName(p.name)}.zip.wuffle`);
   };
 
+  /** a wuffle.html with this project inside — needs the built page (the loader keeps it; the dev tree has none) */
+  const pageHtml = async () => pageWithProject(window.__wufflePage, await projectBlock(await bytesOf(), p.name), p.name);
+  const canSavePage = () => typeof window !== 'undefined' && !!window.__wufflePage;
+  const savePage = async () => {
+    if (!canSavePage()) { await alert('Save as page works from the built wuffle.html (the development tree has no page to copy).'); return; }
+    download(new Blob([await pageHtml()], { type: 'text/html' }), `${safeName(p.name)}.wuffle.html`);
+    onStatus(`saved ${safeName(p.name)}.wuffle.html — one file, the project inside`);
+  };
+
   // ── autosave: a second after the last change (the model's or /home's), the whole project into IndexedDB ──
   let timer = null, restoring = false;
   const schedule = () => { if (restoring) return; clearTimeout(timer); timer = setTimeout(async () => { await autosaveStore.put({ at: Date.now(), name: p.name, bytes: await bytesOf() }); }, 1000); };
@@ -94,7 +120,13 @@ export function createFiles(root, { project: p, dropHost, onOpened, home = null,
   /** on boot: the last session back, if there is one → true */
   const restore = async () => {
     const s = await autosaveStore.get();
-    if (!s?.bytes) return false;
+    if (!s?.bytes) {                                        // nothing autosaved: the project this page carries, if any
+      const b = embedded(); if (!b) return false;
+      restoring = true;
+      try { await loadProject(await projectFromPage(b.outerHTML)); onStatus('opened the project inside this page'); return true; }
+      catch (e) { onStatus(`the project inside this page didn't open: ${e.message}`); return false; }
+      finally { restoring = false; }
+    }
     restoring = true;
     try { await loadProject(s.bytes); onStatus(`restored your last session (${new Date(s.at).toLocaleString()})`); return true; }
     catch { return false; }
@@ -108,7 +140,7 @@ export function createFiles(root, { project: p, dropHost, onOpened, home = null,
   };
 
   const picker = document.createElement('input');
-  picker.type = 'file'; picker.multiple = true; picker.accept = '.csv,.txt,.tsv,.dat,.wuffle,.zip'; picker.hidden = true;
+  picker.type = 'file'; picker.multiple = true; picker.accept = '.csv,.txt,.tsv,.dat,.wuffle,.zip,.html'; picker.hidden = true;
   picker.onchange = () => { open([...picker.files]); picker.value = ''; };
   root.append(picker);
 
@@ -117,10 +149,10 @@ export function createFiles(root, { project: p, dropHost, onOpened, home = null,
   root.addEventListener('dragover', (e) => {
     if (![...e.dataTransfer.types].includes('Files')) return;
     e.preventDefault();
-    if (!veil) { veil = document.createElement('div'); veil.className = 'wdrop'; veil.textContent = 'drop measurements or a .zip.wuffle project'; dropHost.append(veil); }
+    if (!veil) { veil = document.createElement('div'); veil.className = 'wdrop'; veil.textContent = 'drop measurements, a .zip.wuffle project or a wuffle page'; dropHost.append(veil); }
   });
   root.addEventListener('dragleave', (e) => { if (!root.contains(e.relatedTarget)) hide(); });
   root.addEventListener('drop', (e) => { if (!e.dataTransfer.files.length) return; e.preventDefault(); hide(); open([...e.dataTransfer.files]); });
 
-  return { addData, loadProject, adopt, open, save, bytesOf, restore, newProject, pick: () => picker.click() };
+  return { addData, loadProject, adopt, open, save, savePage, pageHtml, canSavePage, bytesOf, restore, newProject, pick: () => picker.click() };
 }

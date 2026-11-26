@@ -24,7 +24,9 @@ The desk opens that log as it is (planes and lines become two datasets).
 
 One window, laid out by `@gcu/rails`: the **layers** tree on the left, one tab per
 **diagram** in the middle (nets, roses, fabric plots, figures), and **table · statistics ·
-console** below. Everything runs offline in the one file.
+console** below. Everything runs offline in the one file: nothing is fetched when it loads, and
+only commands you type in the console may reach the network (`pkg install`, a URL). The badge
+says *local*, not *sealed* — there is no CSP enforcing it, so it doesn't claim one.
 
 - **Data once, layers per diagram.** A dataset lives once in the project; a diagram shows
   it through *layers*, and every layer of a dataset is a view of the same rows (styling per
@@ -77,6 +79,10 @@ console** below. Everything runs offline in the one file.
   The files are the project (no hidden copy beside them), so unzipping one gives plain CSV any
   tool reads, and a zip edited by hand opens as edited. Between saves the project is kept in
   this browser and comes back when the page reopens; File → New project starts over.
+- **Save as page**: one `.wuffle.html` with the project INSIDE — send it to someone and it opens
+  straight into the data (and their edits survive a reload, kept apart from any other page's).
+  The project is a block of its own, apart from the (gzipped) runtime, so File → Open takes any
+  wuffle page and reads just its project, never running the other page.
 
 Text everywhere: planes as dip direction/dip (`045/72`), lines as trend→plunge (`045→32`).
 Sample data: Tocher, F. E. (1979), *The computer contouring of fabric diagrams*, Computers &
@@ -114,7 +120,7 @@ node build.js --target=wuffle     # → wuffle.html (registry build: bearing, le
                                   #   menu, dialog, loom, stereonet, compo + the src/ modules)
 npm run test:wuffle               # the compass, over the built file (?field)
 npm run test:wuffle:bench         # the compass in the mocked lead-acid shell
-npm run test:wuffle:desk          # the desk, dev tree AND built file (42 checks: real drags, the shell, /project, undo, figures…)
+npm run test:wuffle:desk          # the desk, dev tree AND built file (45 checks: real drags, the shell, /project, undo, figures, autosave, save as page…)
 node --test test/wuffle-*.test.mjs test/stereonet-*.test.mjs   # the pure modules (in npm test)
 node tools/wuffle/dev/gen-samples.mjs                          # after changing samples/*.csv
 ```

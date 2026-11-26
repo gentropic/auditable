@@ -22,6 +22,7 @@ export function createMenus(host, { project: p, files, layout, theme, figures, o
     undo: () => { const l = p.undo(); onStatus?.(l ? `undid ${l}` : 'nothing to undo'); },
     redo: () => { const l = p.redo(); onStatus?.(l ? `redid ${l}` : 'nothing to redo'); },
     open: () => files.pick(),
+    savepage: () => files.savePage(),
     newproject: async () => { if (p.datasets.length && !(await confirm('Start a new, empty project? This one is gone unless you saved it (Undo can’t bring it back).', { okLabel: 'New project', danger: true }))) return; await files.newProject(); },
     tocher: () => files.addData(TOCHER, 'tocher.csv'),
     save: () => files.save(),
@@ -41,6 +42,7 @@ export function createMenus(host, { project: p, files, layout, theme, figures, o
       { label: 'Open the tocher sample', action: 'tocher' },
       '---',
       { label: 'Save project (.zip.wuffle)', action: 'save', shortcut: 'Ctrl+S' },
+      { label: 'Save as page (one .html, the project inside)', action: 'savepage', disabled: !files.canSavePage() },
     ] },
     { label: 'Edit', items: () => [
       { label: p.canUndo() ? `Undo ${p.undoLabel()}` : 'Undo', action: 'undo', shortcut: 'Ctrl+Z', disabled: !p.canUndo() },

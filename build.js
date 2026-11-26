@@ -2148,12 +2148,27 @@ if (target === 'wuffle') {
     return `<style data-from="${rel}">\n${fs.readFileSync(cp, 'utf8').trim()}\n</style>`;
   });
   html = html.replace(/<!-- dev bench[\s\S]*?<script src="[^"]*bench\.js"><\/script>\s*/, '');   // dev-only bench
-  html = html.replace(/<script type="module">[\s\S]*?<\/script>\s*(?=<\/body>)/, () => `<script>\n${boot}\n</script>\n`);
+  // The runtime ships gzipped: a text/plain payload + a small loader that inflates it (DecompressionStream)
+  // and runs it. FIRST the loader keeps the page exactly as it arrived (window.__wufflePage) — "Save as
+  // page" writes that again with a project block in it (src/page.js), so the page never needs its own
+  // source. The payload stays in the DOM for the same reason. A project block, when a saved page has one,
+  // sits before the payload and is read by the app, not the loader.
+  const zlib = require('zlib');
+  const wfPayload = zlib.gzipSync(Buffer.from(boot, 'utf8'), { level: 9 }).toString('base64').replace(/.{1,100}/g, '$&\n');
+  const wfLoader =
+    '(function () {\n' +
+    "  window.__wufflePage = '<!doctype html>\\n' + document.documentElement.outerHTML;   // pristine: nothing has run yet\n" +
+    "  var b = document.getElementById('wuffle-rt').textContent.replace(/\\s/g, '');\n" +
+    '  var d = Uint8Array.from(atob(b), function (c) { return c.charCodeAt(0); });\n' +
+    "  new Response(new Blob([d]).stream().pipeThrough(new DecompressionStream('gzip'))).text().then(function (s) { (0, eval)(s); });\n" +
+    '})();\n';
+  html = html.replace(/<script type="module">[\s\S]*?<\/script>\s*(?=<\/body>)/,
+    () => `<script type="text/plain" id="wuffle-rt">\n${wfPayload}</script>\n<script id="wuffle-boot">\n${wfLoader}</script>\n`);
   html = html.replace('__WUFFLE_BUILD__', wfStamp);
 
   const outPath = path.join(__dirname, 'wuffle.html');
   fs.writeFileSync(outPath, html);
-  console.log(`Built wuffle.html (${(fs.statSync(outPath).size / 1024).toFixed(1)} KB in the clear, ${modules.length} modules) — build ${wfStamp}`);
+  console.log(`Built wuffle.html (${(fs.statSync(outPath).size / 1024).toFixed(1)} KB, the runtime gzipped from ${(Buffer.byteLength(boot) / 1024).toFixed(1)} KB; ${modules.length} modules) — build ${wfStamp}`);
   return;
 }
 

@@ -37,7 +37,7 @@ export function mountDesk() {
   document.body.classList.add('desk');
 
   const root = document.createElement('div'); root.id = 'wdesk';
-  root.innerHTML = '<div class="wbar"><span class="wbrand">wuffle</span><div class="wmenus"></div><span class="wsealed" title="no network: nothing leaves this page">● sealed</span></div>'
+  root.innerHTML = '<div class="wbar"><span class="wbrand">wuffle</span><div class="wmenus"></div><span class="wposture" title="Runs entirely in this page. Nothing is fetched when it loads; only commands you type may reach the network (pkg install, a URL). Your project stays in this browser and in the files you save.">● local</span></div>'
     + '<div class="wwork"></div><div class="wstatus"><span class="wst-count"></span><span class="wst-hover"></span><span class="wst-theme"></span></div>';
   document.body.append(root);
   const $ = (s) => root.querySelector(s);

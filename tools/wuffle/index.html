@@ -177,7 +177,9 @@
 // ?field and ?desk choose explicitly.
 import { shell } from '@gcu/leadacid';
 const q = new URLSearchParams(location.search);
-const field = q.has('field') || (!q.has('desk') && (shell.present || matchMedia('(max-width: 720px)').matches));
+// a page that carries a project (Save as page) opens on the desk, where the project is
+const carries = !!document.getElementById('wuffle-project');
+const field = q.has('field') || (!q.has('desk') && !carries && (shell.present || matchMedia('(max-width: 720px)').matches));
 if (field) await import('./src/field.js');
 else { const { mountDesk } = await import('./src/desk.js'); mountDesk(); }
 </script>
