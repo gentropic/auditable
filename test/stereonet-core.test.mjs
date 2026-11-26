@@ -69,6 +69,21 @@ describe('faults', () => {
     assert.ok(n1 < n0, `normal: the tip is shallower, nearer the primitive (${n0} → ${n1})`);
     assert.ok(r1 > r0, `reverse: the tip is steeper, nearer the centre (${r0} → ${r1})`);
   });
+  it('a strike-slip arrow shows its sense: dextral and sinistral point opposite ways, and neither is zero length', () => {
+    // an E–W fault dipping south (strike 090), slickenline horizontal along strike, plotted at the east rim.
+    // Dextral: the hanging wall (south) moves WEST, so the arrow points west (into the net from the point);
+    // sinistral: EAST, outward at the rim, so it ends at the point with its head there.
+    const net = core.renderScene({ primitives: [] }, { size: 400 }).net;
+    const arrow = (sense) => {
+      const s = core.buildScene({ layers: [fl({ slip: { on: true } }, [F(180, 60, 90, 0, sense)])] });
+      const [a, b] = s.primitives.find((p) => p.type === 'curve').points.map((d) => net.project(d));
+      return { dx: b.x - a.x, len: Math.hypot(b.x - a.x, b.y - a.y) };
+    };
+    const dx = arrow('dextral'), sx = arrow('sinistral');
+    assert.ok(dx.len > 5 && sx.len > 5, `both drawn (${dx.len.toFixed(1)}, ${sx.len.toFixed(1)} px)`);
+    assert.ok(dx.dx < 0, `dextral points west (dx ${dx.dx.toFixed(1)})`);
+    assert.ok(sx.dx > 0, `sinistral points east (dx ${sx.dx.toFixed(1)})`);
+  });
   it('P and T axes: P steep for a normal fault; the dihedra primitive carries planes and slips', () => {
     const s = core.buildScene({ layers: [fl({ ptAxes: { on: true }, dihedra: { on: true } }, [F(90, 60, 90, 60, 'N')])] });
     const P = s.primitives.find((p) => p.role === 'P');

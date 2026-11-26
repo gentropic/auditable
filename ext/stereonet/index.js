@@ -50,16 +50,24 @@ function stereonetCore(B) {
   if (!B || !B.statistics || !B.conversions || !B.Stereonet) throw new Error('stereonetCore: pass the @gcu/bearing module');
   const { statistics, conversions, Stereonet, fault } = B;
   const unit = (v) => { const l = Math.hypot(v[0], v[1], v[2]) || 1; return [v[0] / l, v[1] / l, v[2] / l]; };
-  // the hanging wall's motion as an arrow at the slickenline's point (Angelier's convention): the point is the
-  // slip vector's lower-hemisphere end; the arrow points away from the centre when that end IS the slip (a
-  // downward, normal component) and toward it when it is the slip's antipode (an upward, reverse component)
-  const slipArrow = (s, len = 7) => {
-    const down = s[2] <= 1e-9, p = down ? unit(s) : unit(s.map((x) => -x));
-    const h = Math.hypot(p[0], p[1]); if (h < 1e-6) return null;                 // a vertical slip: no direction on the net
-    const pl = Math.asin(Math.min(1, -p[2])), tr = Math.atan2(p[0], p[1]), d = (down ? -1 : 1) * len * Math.PI / 180;
-    const at = (x) => { const q = Math.max(0, Math.min(Math.PI / 2, pl + x)); return [Math.cos(q) * Math.sin(tr), Math.cos(q) * Math.cos(tr), -Math.sin(q)]; };
-    const tip = at(d), side = (w) => { const q = Math.max(0, Math.min(Math.PI / 2, pl + d * 0.55)), t = tr + w; return [Math.cos(q) * Math.sin(t), Math.cos(q) * Math.cos(t), -Math.sin(q)]; };
-    return { shaft: [p, tip], head: [side(0.06), tip, side(-0.06)] };
+  // The hanging wall's motion as an arrow at the slickenline's plotted point (Angelier's convention): a MAP
+  // arrow, along the horizontal component of the slip. On the net that reads as: away from the centre for a
+  // normal component, toward it for a reverse one, and — for a strike-slip — along the rim one way or the
+  // other, so dextral and sinistral differ. The arrow starts at the point; where it would leave the lower
+  // hemisphere (outward at the rim) it ENDS at the point instead, its head on it. (It used to move only along
+  // the plunge, so a horizontal slickenline got a zero-length arrow and no sense at all.)
+  const slipArrow = (s, at, len = 7) => {
+    const hl = Math.hypot(s[0], s[1]); if (hl < 1e-6) return null;               // a vertical slip: no direction on the net
+    const D = Math.PI / 180, [tr0, pl0] = conversions.dcosToLine(at);
+    const az = Math.atan2(s[0], s[1]), hr = Math.cos(az - tr0 * D), ht = Math.sin(az - tr0 * D);   // radial (outward) and clockwise parts
+    // a point k° along the arrow and w° to its right, on the lower hemisphere (outward = shallower)
+    const pt = (k, w = 0) => {
+      const rad = hr * k - ht * w, tan = ht * k + hr * w;
+      const pl = Math.max(0, Math.min(90, pl0 - rad)), tr = tr0 + tan / Math.max(Math.cos(pl0 * D), 0.15);
+      return [Math.cos(pl * D) * Math.sin(tr * D), Math.cos(pl * D) * Math.cos(tr * D), -Math.sin(pl * D)];
+    };
+    const k0 = pl0 - hr * len < 0 ? -len : 0, tip = pt(k0 + len);
+    return { shaft: [pt(k0), tip], head: [pt(k0 + len * 0.55, 2.4), tip, pt(k0 + len * 0.55, -2.4)] };
   };
 
   /**
@@ -104,9 +112,9 @@ function stereonetCore(B) {
           primitives.push({ type: 'dihedra', planes: D.map((f) => f.d.pole), slips: D.map((f) => f.slip), layer: L.id, style: { stroke: col, strokeWidth: 1.2 } });
         }
         if (on('slip')) for (const f of F) {
-          const s = chosen.has(f.d.row), a = f.defined ? slipArrow(f.slip) : null, st = { stroke: s ? C.selected : C.ink, strokeWidth: 1.1, fill: 'none' };
-          if (a) { primitives.push({ type: 'curve', points: a.shaft, style: st }); primitives.push({ type: 'curve', points: a.head, style: st }); }
           const [tr, pl] = conversions.dcosToLine(f.d.lineDcos);
+          const s = chosen.has(f.d.row), a = f.defined ? slipArrow(f.slip, conversions.lineToDcos(tr, pl)) : null, st = { stroke: s ? C.selected : C.ink, strokeWidth: 1.1, fill: 'none' };
+          if (a) { primitives.push({ type: 'curve', points: a.shaft, style: st }); primitives.push({ type: 'curve', points: a.head, style: st }); }
           primitives.push({ type: 'line', trend: tr, plunge: pl, dcos: f.d.lineDcos, style: { fill: s ? C.selected : col, r: s ? size / 2 + 2 : size / 2 + 0.5, stroke: s ? C.halo : 'none', strokeWidth: 1 }, ref: { layer: L.id, row: f.d.row } });
         }
         if (on('ptAxes')) for (const f of F) if (f.defined) {

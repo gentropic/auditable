@@ -66,21 +66,29 @@ centre (the hanging walls went down), and the P (hollow) and T (filled) axes. Th
 \subsection{Slip arrows}\label{sec:slip-arrows}
 
 Each slickenline is drawn where its lower-hemisphere end plots, and the arrow on it follows
-\term[Angelier's convention]{Angelier's convention}: it shows the motion of the hanging wall.
+\term[Angelier's convention]{Angelier's convention}: it shows the motion of the hanging wall as it
+would look on a map, the horizontal part of the slip.
 
 \begin{itemize}
 \item An arrow pointing \emph{away from the centre} is a hanging wall that went down: a normal component.
 \item An arrow pointing \emph{toward the centre} is a hanging wall that went up: a reverse component.
+\item An arrow along the rim, near a slickenline that plunges little, is a strike-slip: it points the way
+the hanging wall moved. On a fault striking 090 and dipping south, a dextral slip points west and a
+sinistral one east.
+\item An oblique slip points between the two.
 \end{itemize}
 
-% BUG: stereonet core.js slipArrow only moves along the plunge, so a horizontal slickenline (plunge 0)
-% gets a zero-length shaft and no visible arrow, and the strike-slip sense of a shallow slickenline is
-% never drawn (a dextral and a sinistral fault on the same line look the same). The sense IS used for
-% P/T, dihedra and the inversion. Book written to what happens.
-The arrow shows only that up-or-down component. A purely strike-slip fault (a horizontal slickenline) gets
-no arrow, and dextral and sinistral faults with the same slickenline look the same on the net; their sense
-still counts for the P and T axes, the dihedra and the inversion. A vertical slickenline has no direction
-on the net either, so it gets no arrow.
+The arrow normally starts at the slickenline's point. Where it would run off the net (pointing outward
+from a point on the rim), it ends at the point instead, with its head on it. A vertical slickenline has
+no horizontal motion, so it gets no arrow; its sense still counts for the P and T axes, the dihedra and
+the inversion.
+
+\begin{why}
+Drawing the arrow up and down the plunge alone, as wuffle once did, gives a horizontal slickenline an
+arrow of no length, and makes dextral and sinistral faults on the same line look identical. The map
+arrow is what a geologist means by \enquote{the hanging wall moved that way}, and it keeps the sense of
+every fault that has one.
+\end{why}
 
 \subsection{P and T axes}
 
