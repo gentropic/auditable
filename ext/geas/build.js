@@ -133,6 +133,10 @@ for (const entry of importEntries) {
   // those names are already in scope, so the import becomes the bundle's own
   // namespace object (defined once, at the end).
   src = src.replace(/await import\(\s*'\.\/(parser|executor|word-parts)\.js'\s*\)/g, '__geasSelf');
+  // builtins-archive.js falls back to importing @gcu/archive when it isn't in scope (tests on src/). The
+  // bundle prepends archive, so the fallback never runs — and a relative path has no meaning in a bundle
+  // (a host that checks for unresolvable imports rightly refuses it). It becomes an honest failure.
+  src = src.replace(/await import\(\s*'\.\.\/\.\.\/archive\/index\.js'\s*\)/g, "await Promise.reject(new Error('@gcu/archive is bundled with geas'))");
 
   // Trim leading/trailing blank lines
   src = src.replace(/^\n+/, '').replace(/\n+$/, '');
@@ -143,7 +147,7 @@ for (const entry of importEntries) {
 const header = '// ⚠ GENERATED FILE — DO NOT EDIT. Source: ext/geas/src/  Build: node ext/geas/build.js\n'
   + '// @gcu/geas — the GCU shell. POSIX-syntax with typed-pipe extensions.\n';
 
-const leftover = chunks.join('\n').match(/import\(\s*'\.\/[^']+'\s*\)/g);
+const leftover = chunks.join('\n').match(/import\(\s*'\.\.?\/[^']+'\s*\)/g);
 if (leftover) { console.error(`geas build: a relative dynamic import would not resolve in the bundle: ${[...new Set(leftover)].join(', ')}`); process.exit(1); }
 
 const output = header + '\n' + chunks.join('\n\n')

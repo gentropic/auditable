@@ -16683,7 +16683,7 @@ async function _resolveArchive() {
   if (_archive && _walk) return;
   // Fallback for test / standalone usage: dynamic import.
   try {
-    const mod = await import('../../archive/index.js');
+    const mod = await Promise.reject(new Error('@gcu/archive is bundled with geas'));
     if (!_archive && mod.archive && typeof mod.archive.list === 'function') _archive = mod.archive;
     if (!_walk && typeof mod.walkVfsTree === 'function') _walk = mod.walkVfsTree;
   } catch { /* ignore — surfaces as a clear error below */ }
