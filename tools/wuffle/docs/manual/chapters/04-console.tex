@@ -1,0 +1,112 @@
+\chapter{The console}\label{ch:console}
+\begin{goals}
+\textbf{In this chapter} you drive wuffle by typing: its commands, the shell around them, and routines
+you can save and run again.
+\end{goals}
+
+Everything you do with the mouse on the desk, you can also type. The console is a real shell,
+\code{geas}, and wuffle's commands are part of it, so they work with pipes, loops and files like any
+other command. A sequence of commands saved in a file is a \term{routine}: run it again tomorrow, on
+another project, and it does the same thing.
+
+\shot{console}{The console after \code{sample tocher}, \code{contour kamb 3} and \code{stats}: the commands
+draw on the net and answer in the shell.}
+
+\section{Opening it}
+
+Press \key{`} (backquote), choose \menu{View>Console}, or click the \ui{console} tab under the diagrams.
+The prompt shows the working directory, which starts at \file{/project}: the project itself, as files
+(\cref{ch:project-fs}).
+
+\key{↑} and \key{↓} recall earlier lines. \key{Tab} completes: at the start of a line it completes a
+command; after one, a dataset, layer or diagram name, then a path. A name with spaces comes back quoted.
+
+\section{wuffle's commands}\label{sec:commands}
+
+Commands act on the \emph{active diagram}, the tab in front. A layer is named by its own name or its
+dataset's, and the start of the name is enough (\code{stats toch}). With no name, a command takes the
+first visible layer.
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}>{\ttfamily\raggedright}p{0.36\linewidth}L@{}}\toprule
+\normalfont\sffamily\bfseries command & \sffamily\bfseries what it does \\\midrule
+sample tocher & open the Tocher sample \\
+diagrams & list the diagrams; \code{●} marks the active one \\
+use \emph{name} & make a diagram active \\
+new net|rose|fabric & a new diagram showing the active one's layers \\
+layers & the active diagram's layers, \code{☑} visible \\
+show|hide \emph{element} [\emph{layer}] & poles, circles, contours, mean, eigen, labels, v1, v2, v3 \\
+contour kamb [\emph{k}] | fisher & contours on, by Kamb's method \parencite{kamb1959} at \emph{k}\,$\sigma$, or with a Fisher kernel \\
+select cone \emph{att} \emph{angle} & the poles within \emph{angle} of a direction (a plane's pole, or a line) \\
+select band \emph{plane} \emph{width} & the poles within \emph{width} of a great circle \\
+select all|none|invert & on every layer of the active diagram \\
+stats [\emph{layer}] & n, the Fisher mean with $\kappa$ and $\alpha_{95}$ \parencite{fisher1953}, the eigenvalues, and Woodcock's K and C \parencite{woodcock1977} \\
+mean|eigen|beta [\emph{layer}] & keep the result as a dataset, drawn on this diagram \\
+intersect \emph{a} \emph{b} & where two layers' mean planes meet, as a dataset \\
+rotate \emph{tr→pl} | off & centre the net on a direction, or back to normal \\
+undo | redo & the last change, whoever made it (\cref{sec:undo}) \\
+verify [\emph{name}] & check field originals' signatures (\cref{sec:field-logs}) \\
+theme dark|light|system & the colour theme \\
+history & the lines typed so far \\
+help [\emph{command}] & all of this, or one command \\
+\bottomrule\end{tabularx}
+\end{center}
+
+A selection command adds to the selection with \code{+} and takes from it with \code{-}:
+\code{select + cone 150/60 20}. Attitudes are typed as everywhere else: \code{150/60} a plane,
+\code{150→60} a line.
+
+\begin{caution}
+In the console, \code{>} is the shell's: it sends output to a file. \code{select cone 150>60 10} is
+read as \enquote{\code{select cone 150}, output into a file called \file{60}}, and in \file{/home} it
+would make that file. Type the arrow, or quote the attitude: \code{select cone '150>60' 10}. (The
+compass's typed entry, which is not a shell, takes \code{150>60} as it is.)
+\end{caution}
+
+\begin{tryit}
+\begin{enumerate}
+\item Type \code{sample tocher}, then \code{contour kamb 3}. The net is contoured at 3\,$\sigma$.
+\item Type \code{select cone 040/50 20}. The poles within 20° of the pole to \code{040/50} turn violet;
+the console says how many.
+\item Type \code{mean}. A new dataset, the mean of the layer, is drawn on the net, and the tree lists it
+with an arrow: it remembers it was derived.
+\end{enumerate}
+\end{tryit}
+
+\section{The shell around them}\label{sec:shell}
+
+Besides wuffle's commands the console has a Unix toolbox: \code{ls}, \code{cat}, \code{head},
+\code{tail}, \code{grep}, \code{sort}, \code{uniq}, \code{wc}, \code{cut}, \code{tr}, \code{find},
+\code{xargs}, \code{tee}, \code{mkdir}, \code{mv}, \code{cp}, \code{rm}, \code{ln}, \code{tar},
+\code{zip} and more; \code{help} lists them all. There is no \code{sed} or \code{awk} yet. Pipes,
+\code{\$(…)}, variables, \code{for} and \code{while} loops, \code{if} and functions work the way they do
+in a Unix shell.
+
+wuffle's commands write to the pipe like the rest:
+
+\begin{lstlisting}
+stats tocher | grep mean
+for m in fisher kamb; do contour $m; done
+wc -l data/tocher.csv
+\end{lstlisting}
+
+Two places are yours. \file{/home} is saved with the project; \file{/tmp} is scratch, gone when the page
+closes. Anything else outside \file{/project} is the shell's own.
+
+\section{Routines}\label{sec:routines}
+
+A routine is a shell script. Write it into \file{/home} and run it with \code{.} (dot):
+
+\begin{lstlisting}
+printf 'sample tocher\ncontour kamb 3\nshow mean\nstats\n' > /home/fabric.sh
+cat /home/fabric.sh
+. /home/fabric.sh
+\end{lstlisting}
+
+\code{history} prints what you have typed this session, which is the quickest way to start one. Because
+\file{/home} travels in the project file, the routine goes wherever the project goes.
+
+\begin{note}
+A failed command stops nothing by itself: as in any shell, the script carries on. Chain steps with
+\code{\&\&} when a later one makes no sense without an earlier one.
+\end{note}

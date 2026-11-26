@@ -1,0 +1,130 @@
+\chapter{Projects and files}\label{ch:projects}
+\begin{goals}
+\textbf{In this chapter} you undo, save and reopen projects, send a whole project as one page, and bring
+a signed field log home with its signature checked.
+\end{goals}
+
+\section{Undo}\label{sec:undo}
+
+Every change to a project can be undone, whoever made it: a menu, a drag on the tree, a rotation of the
+net, a command or a file written in the console. \menu{Edit} names the step: \ui{Undo add layer},
+\ui{Redo rename}.
+
+\begin{itemize}
+\item \key{Ctrl}+\key{Z} undoes, \key{Ctrl}+\key{Shift}+\key{Z} (or \key{Ctrl}+\key{Y}) redoes. While you
+type in a field or the console, the keys belong to what you are typing; use \menu{Edit} or the console's
+\code{undo} and \code{redo}.
+\item A change made of several parts is one step: opening a file is one step even though it adds a
+dataset, perhaps a net, and a layer.
+\item Quick repeats of one setting on one thing (dragging the net round, typing in a figure) merge into
+one step, as long as each follows the last within a moment.
+\item What you look at is not a step. Choosing rows and switching tabs change nothing in the project,
+though undoing a step puts the selection back as it was then.
+\end{itemize}
+
+wuffle remembers the last 200 steps. Opening a project starts the list afresh.
+
+\section{The project file}\label{sec:project-file}
+
+\menu{File>Save project (.zip.wuffle)} (\key{Ctrl}+\key{S}) writes \file{<name>.zip.wuffle}. It is an
+ordinary zip of the \file{/project} tree (\cref{ch:project-fs}) and your \file{/home}:
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}>{\raggedright}p{0.46\linewidth}L@{}}\toprule
+\sffamily\bfseries in the zip & \sffamily\bfseries what it holds \\\midrule
+\file{project.json} & the order of things, and the active diagram \\
+\file{data/<name>.csv} & each dataset's rows \\
+\file{data/<name>.json} & its kind, columns, roles and lineage \\
+\file{diagrams/<name>/diagram.json} & each diagram's settings, and its layers in order \\
+\file{diagrams/<name>/layers/<l>.json} & each layer, naming its data (\code{"data": "data/<name>.csv"}: a zip has no portable links) \\
+\file{figures/<name>.compo.json} & each figure page \\
+\file{selection/<name>.rows} & the selected rows, numbered from 1 \\
+\file{field/<name>/} & field originals, byte for byte (\cref{sec:field-logs}) \\
+\file{home/} & your files \\
+\bottomrule\end{tabularx}
+\end{center}
+
+The files \emph{are} the project. There is no second, hidden copy of it inside, so unzip one and every
+dataset is a plain CSV any program reads; edit one by hand, zip it back, and wuffle opens it as edited.
+A file wuffle can't use is skipped, and wuffle tells you what it skipped.
+
+Not stored: what is computed (the SVG, the PDFs, the selected rows as CSV) and the undo history.
+
+\begin{why}
+A zip is the least surprising container there is: every system opens it, and a CSV inside it is still a
+CSV. A project that hid its data inside one opaque document would put it out of reach of the next
+program, and of you, the day wuffle wasn't there.
+\end{why}
+
+To open a project, use \menu{File>Open data or a project…} or drop the file on the window. It replaces
+the project you have.
+
+\section{Kept between saves}\label{sec:autosave}
+
+A second after each change, wuffle copies the whole project into the browser's own storage, on your
+machine. Close the tab, open \file{wuffle.html} again, and your session is back; the status line says
+when that copy was made.
+
+This is a convenience, not a save: clearing the browser's data, or a private window, loses it. Save the
+project file for anything you mean to keep. \menu{File>New project} starts over and forgets the kept copy.
+
+\section{A project inside a page}\label{sec:save-page}
+
+\menu{File>Save as page (one .html, the project inside)} writes \file{<name>.wuffle.html}: wuffle itself,
+with your project inside it. Send that one file to someone and it opens straight into your data, on any
+computer with a browser, with nothing to install. Their edits are kept between visits like yours, kept
+apart from any other page's.
+
+The project rides in the page as a block of its own, apart from wuffle's program. So
+\menu{File>Open data or a project…} also takes a saved page and reads only its project; the other page's
+program never runs.
+
+\begin{note}
+Save as page works from the published \file{wuffle.html}. A copy run from the source tree, as
+developers do, has no single page to copy, and the menu item is greyed out there.
+\end{note}
+
+\section{Field logs}\label{sec:field-logs}
+
+The compass publishes three kinds of file (\cref{sec:publish}): \file{wuffle-log.csv}, its signature
+\file{wuffle-log.csv.sig}, and a JPEG per photographed station. Open them together, by selecting them all
+in \menu{File>Open data or a project…} or dropping them on the window at once, and wuffle gathers them:
+
+\begin{itemize}
+\item the CSV and its \file{.sig} go into the project as an \term{original}, kept byte for byte under
+\file{/project/field/<name>/}, with the photos the log names in a \file{photos/} directory beside them;
+\item the measurements are read into two ordinary datasets, \code{<name> · planes} and
+\code{<name> · lines}, drawn on the active net. The name is the log's day: \code{field 2026-11-20}.
+\end{itemize}
+
+Edit the datasets as you like. The original never changes, and it travels in the project file under
+\file{field/} exactly as it came.
+
+\subsection{The signature}
+
+On opening, wuffle checks the signature against the CSV's bytes and says what it found:
+
+\begin{description}
+\item[\ui{signature verified}] the bytes are exactly what the key signed. The status line names the key
+by a short fingerprint (\code{b2eb 7f10 \ldots}), what kind of key the phone said it was, and when it
+signed.
+\item[\ui{SIGNATURE DOES NOT MATCH}] the CSV was changed after signing, or the \file{.sig} belongs to
+another log. wuffle still opens it, and tells you plainly not to treat it as the phone's record.
+\item[\ui{unsigned}] no \file{.sig} came with it.
+\end{description}
+
+The console's \code{verify} checks every original in the project again, at any time; it fails (exit
+status 1) if one doesn't match, so a routine can stop on it.
+
+\begin{caution}
+A verified signature proves the bytes come from \emph{that key}. Whether that key is your phone's is for
+you to know: compare the fingerprint with the one your phone shows. The kind of key it reports
+(\code{strongbox}, say) is the phone's own statement, which wuffle passes on and can't check.
+\end{caution}
+
+\begin{why}
+A field log is evidence: where you stood, what you measured, when. Opening it into an editable table is
+what you want for the work, and it is exactly what would let a number change unnoticed. Keeping the
+signed bytes untouched beside the working copy gives you both: edit freely, and the original can still
+be checked against the phone years later.
+\end{why}

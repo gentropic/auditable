@@ -1,0 +1,36 @@
+\chapter*{About this book}
+\addcontentsline{toc}{chapter}{About this book}
+\markboth{About this book}{About this book}
+
+This is the manual for wuffle, a stereonet program in one HTML file. On a phone it is a
+compass--clinometer that throws each measurement onto an equal-area net as you take it. On a computer it
+is a workbench for orientation data: nets, roses and fabric plots, selections, statistics, a shell, and
+figures for a report.
+
+It is written for a geologist who knows what a pole, a great circle and a lower-hemisphere projection
+are, and who does not know wuffle. The geology is not explained; wuffle is.
+
+\section*{How to read it}
+
+The first part is the field: what wuffle is, how to open it, and how to measure with the compass. The
+console part is the shell and the project as a filesystem. The projects part is about files: undo, the
+project file, a project inside a page, and bringing a signed field log home. Read \cref{ch:wuffle}
+first; after that, the chapters stand on their own.
+
+The examples use the Tocher sample: 200 planes from \textcite{tocher1979}, which wuffle carries. It opens
+from \menu{File>Open the tocher sample}, so you can follow every \emph{Try it} box as you read.
+
+\begin{note}
+This book is being written. The desk itself (diagrams, layers, selections, statistics, figures) is the
+next part; the outline in \file{OUTLINE.md} beside
+the book lists what is still to come.
+\end{note}
+
+\section*{Conventions}
+
+A plane is written as dip direction and dip, \code{045/72}. A line is written as trend and plunge with
+an arrow, \code{045→32}. wuffle writes them this way everywhere: the compass, the tables, the console
+and the files.
+
+A menu path looks like \menu{File>Save project (.zip.wuffle)}, a key like \key{Ctrl}+\key{Z}, a column
+like \col{dip}, and a file like \file{data/tocher.csv}.

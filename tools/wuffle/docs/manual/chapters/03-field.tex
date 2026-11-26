@@ -1,0 +1,117 @@
+\chapter{In the field}\label{ch:field}
+\begin{goals}
+\textbf{In this chapter} you measure planes and lines with the phone, refer them to true north, attach
+outcrop photos, and publish the log, signed, for the desk.
+\end{goals}
+
+On a phone, wuffle reads the device's orientation and turns it into an attitude. The net fills as you
+work, so you see the fabric take shape at the outcrop instead of that evening.
+
+\shot[0.5\linewidth]{field-net}{The compass: the mode switch, the live reading over the net, the measure
+button, and the log below.}
+
+\section{The screen}\label{sec:field-screen}
+
+From the top:
+
+\begin{description}
+\item[Mode.] \ui{plane} or \ui{line}: what the next measurement is.
+\item[The strip.] The position's accuracy (\ui{±4 m}) and which north the readings use
+(\ui{true N · decl −15.2°}).
+\item[The net.] An equal-area, lower-hemisphere net. The live reading is a dashed ghost: a great circle
+for a plane, a point for a line. In the corners: the reading as numbers (dip direction and dip, or trend
+and plunge), a bar that fills with the dip, and the measure button \ui{◎}.
+\item[Typed entry.] A field for measurements you type (\cref{sec:manual-entry}).
+\item[The log.] The count, \ui{photo}, \ui{clear} and \ui{publish →}, then every measurement, newest
+first. A plane shows its strike too. The \ui{×} on a row deletes it.
+\end{description}
+
+\section{Measuring}\label{sec:measuring}
+
+For a \textbf{plane}, lay the phone flat on the surface, screen up. wuffle reads the plane the phone lies
+in: its dip direction and dip.
+
+For a \textbf{line}, choose \ui{line} and lay the phone's long edge along the lineation, top edge pointing
+down the plunge. The trend and plunge are those of the phone's long axis, toward its top.
+
+Tap \ui{◎} to keep the reading. The phone buzzes, the measurement is drawn in place of the ghost and it
+joins the log.
+
+\begin{tip}
+Inside the lead-acid shell, wuffle reads the phone's fused orientation sensor, which also reports how
+well the magnetometer is calibrated. When it says \ui{compass low} or \ui{unreliable}, wave the phone in a
+figure of eight until it says \ui{calibrated}, then measure.
+\end{tip}
+
+\section{True north}\label{sec:true-north}
+
+A phone's compass points to magnetic north. wuffle corrects each reading to \term{true north} with the
+\term{declination} at your position, from the World Magnetic Model (WMM2025) that ships inside it. It
+needs a position for that, so the correction starts with the first GNSS fix:
+
+\begin{itemize}
+\item before a fix, readings are magnetic, and the strip shows no declination;
+\item after it, they are true, and the strip shows the declination in use. It is recomputed when you have
+moved about a tenth of a degree (some 10~km).
+\end{itemize}
+
+Every measurement records which it was. The log's \col{north} column says \code{true} or
+\code{magnetic}, and \col{declination\_deg} gives the correction applied. A typed measurement says
+\code{as-typed}: it is referred to whatever north you used when you wrote it down.
+
+\begin{caution}
+Outside the shell (wuffle in an ordinary phone browser) there is no position, so readings stay magnetic.
+The \col{north} column says so on every row; correct them before comparing with true-north data.
+\end{caution}
+
+\section{Typing measurements}\label{sec:manual-entry}
+
+The field under the net takes typed measurements: \code{045/30} is a plane, \code{310→70} a line, and
+\code{310>70} is the same line without hunting for the arrow. You can also type \code{310-70 line}; and
+with the \ui{line} mode on, \code{310/70} is taken as a line.
+Press \key{Enter} or \ui{add}. This is how the compass works on a computer, and how you correct a reading
+in the field: delete it and type the right one.
+
+\section{Photos}\label{sec:photos}
+
+\ui{photo} opens the camera. \ui{capture} takes a picture and attaches it to the \emph{last}
+measurement: the row gets a camera mark and the log's \col{photo} column names the file
+(\file{wuffle-002-20261120T140540.jpg}: the measurement's number and time). Measure first, then
+photograph.
+
+\section{Publishing the log}\label{sec:publish}
+
+\ui{publish →} writes the log out:
+
+\begin{itemize}
+\item \file{wuffle-log.csv} to \file{Downloads}: one row per measurement, with its kind, attitude,
+strike, time, position and accuracy, north, declination and photo;
+\item \file{wuffle-log.csv.sig} beside it, the phone's \term{signature} over the exact bytes of the CSV
+(inside the shell, when the phone has a hardware key);
+\item each photo to \file{Pictures}.
+\end{itemize}
+
+The signature is made by a key that lives in the phone's secure hardware and never leaves it. It lets
+anyone check later that the CSV is byte for byte what this phone wrote, and the desk does exactly that
+when it opens the log (\cref{sec:field-logs}).
+
+On a computer, \ui{publish →} downloads the CSV and the photos; there is no hardware key there, so there
+is no signature.
+
+\begin{tryit}
+\begin{enumerate}
+\item On a computer, open wuffle with \code{?field} at the end of the address.
+\item Type \code{120/45}, \key{Enter}; \code{118/47}, \key{Enter}; \code{200>20}, \key{Enter}. Two
+planes and a line are drawn.
+\item Press \ui{publish →}. \file{wuffle-log.csv} downloads.
+\item Open it on the desk (\menu{File>Open data or a project…}). The planes and the line become two
+datasets, \code{field … · planes} and \code{field … · lines}, named for the log's day, and the CSV
+itself is kept as it came (\cref{sec:field-logs}).
+\end{enumerate}
+\end{tryit}
+
+\section{Taking a log back}
+
+Inside the shell, a CSV shared to wuffle (or opened with it from a file manager) is read back into the
+log, as long as it has the log's \col{type}, \col{dip\_dir\_or\_trend} and \col{dip\_or\_plunge}
+columns. That is how you carry on a log another day, or on another phone.

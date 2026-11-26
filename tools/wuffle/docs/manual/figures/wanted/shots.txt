@@ -1,0 +1,4 @@
+# name | what the shot shows (scenes.mjs stages each)
+desk-tour | the desk, Tocher open, contoured, one pole selected
+console | the console after sample tocher, contour kamb 3, select cone, stats
+field-net | the compass on a phone, three typed measurements

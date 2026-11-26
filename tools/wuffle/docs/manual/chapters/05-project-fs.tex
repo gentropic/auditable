@@ -1,0 +1,93 @@
+\chapter{The project as files}\label{ch:project-fs}
+\begin{goals}
+\textbf{In this chapter} you read and change a project through \file{/project}, where every dataset,
+diagram, layer and figure is a file.
+\end{goals}
+
+The console starts in \file{/project}. It is not a copy of the project: it \emph{is} the project, shown
+as files. Read a file and you read the project as it is now; write one and you change the project,
+through the same rules as the menus, and the change can be undone like any other.
+
+\section{The tree}\label{sec:project-tree}
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}>{\raggedright}p{0.5\linewidth}L@{}}\toprule
+\sffamily\bfseries path & \sffamily\bfseries what it is \\\midrule
+\file{project.json} & the project in brief \\
+\file{data/tocher.csv} & the rows \\
+\file{data/tocher.json} & kind, columns, roles, lineage, where it is drawn \\
+\file{diagrams/Net 1/diagram.json} & the diagram's settings \\
+\file{diagrams/Net 1/net.svg} & the diagram as drawn \\
+\file{diagrams/Net 1/layers/tocher.csv} & a link: \file{-> ../../../data/tocher.csv} \\
+\file{diagrams/Net 1/layers/tocher.json} & visible, style, what it draws \\
+\file{figures/<name>.compo.json} & a figure page; \file{<name>.pdf} is the page as a PDF \\
+\file{selection/tocher.rows} & the selected rows, numbered from 1 \\
+\file{selection/tocher.csv} & the selected rows themselves \\
+\file{field/<name>/} & an original field log, as it came \\
+\bottomrule\end{tabularx}
+\end{center}
+
+A layer is a \term[symbolic link]{symbolic link} to its dataset. That is the \enquote{data once, layers
+per diagram} rule of \cref{sec:data-once} made visible: \code{ls -l} shows every layer pointing at the
+one file that holds the rows.
+
+\section{Reading}
+
+Everything reads with the usual tools. \file{net.svg} is the diagram as vector graphics, ready to copy
+out; \file{.pdf} files render the figure when you read them.
+
+\begin{lstlisting}
+head -5 data/tocher.csv
+cat diagrams/Net\ 1/layers/tocher.json
+grep -c . selection/tocher.rows
+\end{lstlisting}
+
+\section{Writing}\label{sec:project-write}
+
+A write is an action on the project:
+
+\begin{description}
+\item[A dataset's CSV.] Writing \file{data/<name>.csv} replaces its rows; every layer redraws. A new
+name in \file{data/} is a new dataset, read the way \menu{File>Open} reads a file.
+\item[A settings file.] Writing \file{diagram.json} changes the diagram (its name, projection,
+rotation); writing a layer's \file{.json} shows, hides or restyles what it draws.
+\item[A selection.] Writing row numbers to \file{selection/<name>.rows} selects those rows; \code{rm}
+clears the selection.
+\item[A figure.] Writing \file{figures/<name>.compo.json} replaces the page; a new name is a new figure.
+\end{description}
+
+And the directory operations mean what they look like:
+
+\begin{description}
+\item[\code{mkdir diagrams/Joints}] makes a new net called \ui{Joints}.
+\item[\code{ln -s ../../../data/tocher.csv diagrams/Joints/layers/}] draws \code{tocher} on it. The
+link's name is the layer's name.
+\item[\code{mv}] renames a dataset, a diagram or a figure; moving a layer's file into another diagram's
+\file{layers/} moves the layer there.
+\item[\code{rm -r diagrams/Joints}] removes the net.
+\end{description}
+
+\begin{why}
+The rules don't loosen because you are typing. \code{rm data/tocher.csv} refuses while \code{tocher}
+is drawn somewhere, as deleting it from the tree asks first; remove its layers, then the data. Files
+that are computed (\file{net.svg}, \file{.pdf}, \file{selection/<name>.csv}) are read-only and say so.
+\end{why}
+
+\begin{tryit}
+\begin{enumerate}
+\item With the Tocher sample open, type \code{mkdir diagrams/Second}. A new tab, \ui{Second}, appears.
+\item Type \code{ln -s ../../../data/tocher.csv diagrams/Second/layers/}. The Tocher poles are drawn on
+it, and the tree marks the dataset as drawn twice.
+\item Type \code{echo 1 2 3 > selection/tocher.rows}. Three poles turn violet on both nets.
+\item Type \code{undo} twice. The layer goes, then the net. The selection goes back to what it was
+before them: choosing rows is never an undo step of its own, but each step puts back the selection it
+found (\cref{sec:undo}).
+\end{enumerate}
+\end{tryit}
+
+\section{Field originals}
+
+\file{field/} holds the field logs brought into the project, each in a directory of its own: the CSV
+as the phone wrote it, its \file{.sig}, and a \file{photos/} directory. They are read-only. An original
+goes whole (\code{rm -r field/<name>}) or not at all, and nothing can be written into one, because its
+signature is over exactly those bytes. \cref{sec:field-logs} explains why.

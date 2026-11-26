@@ -1,0 +1,72 @@
+\chapter{wuffle}\label{ch:wuffle}
+\begin{goals}
+\textbf{In this chapter} you learn what wuffle is: one file with two homes, a project that keeps each
+dataset once and shows it through layers, and a posture that keeps your data on your machine.
+\end{goals}
+
+wuffle is a stereonet program in a single HTML file. It has no installer and no server, and it needs no
+account. You open the file in a browser and it runs there, offline.
+
+The name puns on the Wulff net. Orientation data belongs on an \term[equal-area net]{equal-area}
+(Schmidt) net, though, so that is what wuffle draws unless you ask for another projection.
+
+\section{Two homes, one file}\label{sec:two-homes}
+
+The same file is two programs, chosen by where it opens:
+
+\begin{description}
+\item[The field.] On a phone, wuffle is a \term[compass]{compass--clinometer}. Lay the phone on a
+bedding plane and it reads dip direction and dip; point it along a lineation and it reads trend and
+plunge. Each measurement lands on a live net and goes into a log you can publish
+(\cref{ch:field}).
+\item[The desk.] On a computer, wuffle is a \term{workbench}: nets, rose diagrams and fabric plots,
+selections drawn on the sphere, statistics, a shell, and figures for a report.
+\end{description}
+
+The two meet in the project. A log published from the phone opens on the desk with its signature
+checked, and its original bytes are kept untouched beside the data read from them
+(\cref{sec:field-logs}).
+
+\section{Data once, layers per diagram}\label{sec:data-once}
+
+A wuffle project holds three kinds of thing:
+
+\begin{description}
+\item[Datasets.] A \term{dataset} is a table of measurements: rows, columns, and which columns hold the
+attitude. It lives in the project once, whatever draws it.
+\item[Diagrams.] A \term{diagram} is a net, a rose diagram or a fabric plot. Each has its own settings
+(projection, hemisphere, rotation) and its own tab.
+\item[Layers.] A \term{layer} is one dataset drawn on one diagram, with its own style: poles or great
+circles, contours, a mean, eigenvectors.
+\end{description}
+
+Every layer of a dataset is a view of the same rows. Edit a row and every view changes. Select poles
+on one net and the same rows are selected on every other net and in the table, because the selection
+belongs to the data, not to the drawing.
+
+\begin{why}
+A dataset copied into each diagram goes out of step the first time one copy is edited, and then you
+can no longer tell which net shows the data you mean. One dataset with many views can't drift: there is
+only one set of rows to be right or wrong.
+\end{why}
+
+Results are datasets too. A mean, the eigenvectors, a $\beta$ intersection, or a selection made into a
+set becomes a new dataset that records where it came from, its \term{lineage}, so it can be drawn,
+styled, saved and questioned like the measurements it was computed from.
+
+\section{Local, and honest about it}\label{sec:local}
+
+wuffle fetches nothing when it opens. Your data stays in the browser tab, and between saves wuffle keeps
+a copy of the project in the browser's own storage, on your machine (\cref{sec:autosave}). The only
+things that can reach the network are things you type in the console, such as a package install.
+
+The badge in the corner says \ui{● local}. It does not say \emph{sealed}: a sealed page is one whose
+browser policy forbids the network outright, and wuffle doesn't carry that policy, so it makes the
+smaller claim.
+
+\section{What it is built on}
+
+wuffle's maths is \code{@gcu/bearing}, a library of orientation geometry: projections, the Fisher and
+eigen statistics, contouring, rotations. The nets, selections and figure frames come from
+\code{@gcu/stereonet}, which the GCU notebook's stereonet cell also uses. The console is
+\code{geas}, a shell written for the browser. All of it ships inside the one file.

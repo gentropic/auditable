@@ -218,6 +218,10 @@ tools/micro/docs/manual/chapters/C-tools.tex
 tools/micro/docs/manual/MICRO-BUGS.md
 tools/micro/docs/manual/REVIEW-NOTES.md
 tools/micro/docs/manual/REVIEW-BRIEF.md
+# the wuffle manual: generated outputs (node tools/wuffle/docs/manual/build.mjs remakes them)
+tools/wuffle/docs/manual/build/
+tools/wuffle/docs/manual/figures/shots/
+tools/wuffle/docs/manual/figures/print/
 # Personal PhD documents (not part of the bands.gpu tool — never commit to the public repo)
 tools/bands/phd-notes*
 tools/bands/PHD-NOTES*

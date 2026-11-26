@@ -1,0 +1,7 @@
+% wuffle.ist — makeindex style for the wuffle manual: a letter heading in the display face above
+% each group (\wuffleidxhead, defined in wuffle.sty)
+headings_flag     1
+heading_prefix    "\\wuffleidxhead{"
+heading_suffix    "}\n"
+symhead_positive  "Symbols"
+numhead_positive  "Numbers"

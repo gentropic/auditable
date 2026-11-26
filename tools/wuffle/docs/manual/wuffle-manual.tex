@@ -1,0 +1,22 @@
+% The wuffle manual — LuaLaTeX. Build: node build.mjs (figures, then latexmk -lualatex).
+\documentclass[11pt, twoside, open=right, parskip=false, headings=standardclasses, numbers=noendperiod, toc=index]{scrbook}
+\usepackage{style/wuffle}
+
+\title{wuffle}
+\subtitle{a stereonet workbench and a geological compass}
+\author{Geoscientific Chaos Union}
+\date{\today}
+
+\begin{document}
+\frontmatter
+\input{chapters/00-title}
+\tableofcontents
+\input{chapters/00-preface}
+
+\mainmatter
+\input{chapters/index}
+
+\backmatter
+\printbibliography[heading=wuffle, title=References]
+\printindex
+\end{document}
