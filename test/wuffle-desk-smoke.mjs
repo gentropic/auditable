@@ -93,9 +93,10 @@ for (const [label, url] of [['dev', '/tools/wuffle/index.html'], ['built', '/wuf
     W.setTheme('light'); await wait(200);
     out.theme = [bg0, getComputedStyle(document.body).getPropertyValue('--w-net-bg').trim(), document.documentElement.dataset.resolvedTheme];
     W.setTheme('system');
-    // a project round trip (save → load) through the same shapes
-    const j = JSON.parse(JSON.stringify(P.toJSON()));
-    W.loadProject(j); await wait(300);
+    // a project round trip through the real file: the .zip.wuffle bytes Save writes, opened again
+    const bytes = await W.files.bytesOf();
+    out.zip = bytes[0] === 0x50 && bytes[1] === 0x4b;
+    await W.loadProject(bytes); await wait(300);
     out.reload = { diagrams: P.diagrams.length, layers: P.layers.length, rows: P.datasets[0].rows.length, selected: P.selected(P.datasets[0].id), tabs: [...document.querySelectorAll('.rails-tab')].length };
     return out;
   });
@@ -297,7 +298,18 @@ for (const [label, url] of [['dev', '/tools/wuffle/index.html'], ['built', '/wuf
   chk(`${label}: a second net gets a VIEW of the same data (${s.viewShares}); its tab appears (${JSON.stringify(s.tabs2)}); the tree marks the link (${JSON.stringify(s.linkBadge)})`, s.viewShares && s.tabs2.includes('Net 2') && s.linkBadge.length >= 1);
   chk(`${label}: a click on a pole selects its row (${JSON.stringify(t.selected)}), drawn violet on BOTH nets (${JSON.stringify(t.violetOn)}); the table shows the dataset (“${(t.tableTitle || '').slice(0, 50)}”)`, t.selected.length === 1 && t.violetOn[0] >= 1 && t.violetOn[1] >= 1 && /tocher/.test(t.tableTitle || ''));
   chk(`${label}: the theme switches (${JSON.stringify(t.theme)})`, t.theme[0] !== t.theme[1] && t.theme[2] === 'light');
-  chk(`${label}: a project round-trips (${JSON.stringify(t.reload)})`, t.reload.diagrams === 2 && t.reload.layers === 2 && t.reload.rows === 200 && t.reload.selected.length === 1 && t.reload.tabs === 6);
+  chk(`${label}: a project round-trips through a .zip.wuffle (${JSON.stringify(t.reload)})`, t.zip && t.reload.diagrams === 2 && t.reload.layers === 2 && t.reload.rows === 200 && t.reload.selected.length === 1 && t.reload.tabs === 6);
+  // ── autosave: a file in /home and the data, then the page reloads — the session comes back ──
+  await p.evaluate(async () => { const W = window.__wuffleDesk; await W.console.run('echo kept > /home/note.txt'); W.project.renameDiagram(W.project.diagrams[0].id, 'Autosaved net'); });
+  await p.waitForTimeout(1800);
+  await p.reload({ waitUntil: 'load' }); await p.waitForTimeout(600);
+  const as = await p.evaluate(async () => {
+    const W = window.__wuffleDesk, ok = await W.restored;
+    const r = await W.console.run('cat /home/note.txt');
+    return { ok, names: W.project.diagrams.map((g) => g.name), n: W.project.datasets.length, note: r.text, undo: W.project.canUndo() };
+  });
+  chk(`${label}: autosave — after a reload the session is back (${as.ok}: ${JSON.stringify(as.names)}, ${as.n} datasets, /home/note.txt “${as.note}”), with a fresh history`,
+    as.ok === true && as.names.includes('Autosaved net') && as.n >= 1 && as.note === 'kept' && !as.undo);
   chk(`${label}: no page errors (${errs.length ? errs.join(' ; ').slice(0, 200) : 'none'})`, errs.length === 0);
   await p.close();
 }

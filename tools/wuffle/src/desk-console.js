@@ -111,6 +111,35 @@ export class ConsoleView {
     return out;
   }
 
+  // ── /home travels with the project (project-file.js stores it under home/) ──
+  get home() {
+    return {
+      list: async () => {
+        await this.ready;
+        const out = [];
+        const walk = async (d) => {
+          for (const n of await this.vfs.readdir(d)) {
+            const q = `${d}/${n}`, st = await this.vfs.lstat(q);
+            if (st.type === 'directory') await walk(q);
+            else if (st.type === 'file') out.push({ path: q, bytes: await this.vfs.readFile(q, 'bytes') });
+          }
+        };
+        await walk('/home');
+        return out;
+      },
+      restore: async (files) => {
+        await this.ready;
+        await this.vfs.rm('/home', { recursive: true }); await this.vfs.mkdir('/home');
+        for (const f of files) {
+          const dir = f.path.slice(0, f.path.lastIndexOf('/'));
+          if (dir && dir !== '/home') await this.vfs.mkdir(dir, { recursive: true });
+          await this.vfs.writeFile(f.path, f.bytes);
+        }
+      },
+      onChange: (fn) => { for (const ev of ['write', 'delete', 'mkdir', 'rename']) this.vfs.on(ev, (e) => { if (/^\/home(\/|$)/.test(String(e?.path || e?.from || ''))) fn(); }); },
+    };
+  }
+
   // ── the read → run loop ──
   async _boot() {
     await this.vfs.mount('/', { type: 'memory' });

@@ -2064,7 +2064,9 @@ if (target === 'wuffle') {
     // the desk workbench's GCU components
     '../../../ext/rails/index.js': '#rails', '../../../ext/menu/index.js': '#menu', '../../../ext/dialog/index.js': '#dialog', '../../../ext/loom/index.js': '#loom', '../../../ext/stereonet/index.js': '#stereonet', '../../../ext/compo/index.js': '#compo',
     // the console: a terminal, the geas shell, its filesystem
-    '../../../ext/term/index.js': '#term', '../../../ext/geas/index.js': '#geas', '../../../ext/vfs/index.js': '#vfs' };
+    '../../../ext/term/index.js': '#term', '../../../ext/geas/index.js': '#geas', '../../../ext/vfs/index.js': '#vfs',
+    // the project file: archive's self-contained streaming zip (not all of @gcu/archive — geas carries its own copy)
+    '../../../ext/archive/src/zipstream.js': '#zipstream' };
   const libs = [
     ['bearing', 'ext/bearing/index.js'],
     ['leadacid', 'ext/leadacid/index.js'],
@@ -2078,6 +2080,7 @@ if (target === 'wuffle') {
     ['term', 'ext/term/index.js'],
     ['geas', 'ext/geas/index.js'],
     ['vfs', 'ext/vfs/index.js'],
+    ['zipstream', 'ext/archive/src/zipstream.js'],
   ];
   const modules = [];
   for (const [name, rel] of libs) {
@@ -2107,6 +2110,15 @@ if (target === 'wuffle') {
   let appSrc = appMatch[1];
   wfCollect(appSrc);
   modules.push({ name: 'app', source: wfRewrite(appSrc).trim() });
+  // every module runs from a blob: URL, where a relative import has nothing to resolve against — one that
+  // survived the rewrite (an ext path missing from SPEC) would break the WHOLE app at load. Refuse to build.
+  for (const m of modules) {
+    for (const line of m.source.split('\n')) {
+      if (/^\s*(\/\/|\/?\*)/.test(line)) continue;                       // a comment that mentions an import
+      const raw = line.match(/(?:^\s*(?:import|export)\b[^'"]*\bfrom\s+|^\s*import\s+|\bimport\s*\(\s*)['"]\.\.?\/[^'"]+['"]/);
+      if (raw) { console.error(`Error: wuffle module "${m.name}" still imports ${raw[0].replace(/^.*?['"]/, "'")} — add it to the wuffle target's SPEC and libs.`); process.exit(1); }
+    }
+  }
 
   const entries = modules.map((m) =>
     JSON.stringify(m.name) + ': ' + JSON.stringify(m.source).replace(/<\/script>/gi, '<\\/script>'));

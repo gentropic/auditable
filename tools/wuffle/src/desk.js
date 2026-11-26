@@ -65,7 +65,7 @@ export function mountDesk() {
     setTheme: (t) => theme.set(t), focusDiagram: (id) => layout.focusDiagram(id), openSample: () => files.addData(TOCHER, 'tocher.csv') });
   layout = createLayout($('.wwork'), { project: p, tree, table, stats, consoleView, select, rotate, onStatus: status });
   const figures = createFigures({ project: p, layout, onStatus: status });
-  files = createFiles(root, { project: p, dropHost: $('.wwork'), onOpened: (id) => table.show(id) });
+  files = createFiles(root, { project: p, dropHost: $('.wwork'), onOpened: (id) => table.show(id), home: consoleView.home, onStatus: status });
   const menus = createMenus($('.wmenus'), { project: p, files, layout, theme, figures, onStatus: status });
   tree.onOpenFigure = (id) => figures.open(id);
 
@@ -78,8 +78,9 @@ export function mountDesk() {
   theme.onChange(() => { $('.wst-theme').textContent = theme.label(); layout.redrawAll(); table.applyTheme(); });
   theme.apply();
 
-  const api = { project: p, rails: layout.rails, views: layout.views, table, tree, menus, theme, select, stats, console: consoleView, figures,
-    addData: files.addData, loadProject: files.loadProject, open: files.open, setTheme: (t) => theme.set(t) };
+  const api = { project: p, rails: layout.rails, views: layout.views, table, tree, menus, theme, select, stats, console: consoleView, figures, files,
+    addData: files.addData, loadProject: files.loadProject, open: files.open, setTheme: (t) => theme.set(t),
+    restored: files.restore() };                       // the last session, from this browser's autosave (a promise → true / false)
   window.__wuffleDesk = api;
   return api;
 }

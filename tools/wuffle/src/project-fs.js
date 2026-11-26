@@ -27,6 +27,20 @@ const F = (name) => String(name).replace(/\//g, '∕');
 const err = (code, p, msg) => new VFSError(code, p, msg ? `${msg}: ${p}` : undefined);
 const json = (v) => JSON.stringify(v, null, 2) + '\n';
 
+/** a name as a path segment: "/" shows as "∕" (U+2215) */
+export const fileName = F;
+
+/** a diagram's layers with their file base names — the layer's own name, else its data's; repeats numbered.
+ *  ONE definition: /project and the .zip.wuffle must name the same layer the same way. */
+export function layerBases(p, g) {
+  const used = new Map();
+  return p.layersOf(g.id).map((l) => {
+    const base = F(l.name || p.dataset(l.datasetId)?.name || l.id);
+    const k = (used.get(base) || 0) + 1; used.set(base, k);
+    return { l, base: k === 1 ? base : `${base} (${k})` };
+  });
+}
+
 /** RFC 4180 CSV of rows over columns */
 export function toCsv(columns, rows) {
   const cell = (v) => { const s = v == null ? '' : String(v); return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
@@ -47,14 +61,7 @@ export function projectFs(p, { renderSvg = null, figurePdf = null, mount = '/pro
   const gByFile = (f) => p.diagrams.find((g) => F(g.name) === f) || null;
   const figByFile = (f) => p.figures.find((x) => F(x.name) === f) || null;
   /** a diagram's layers with their file base names (the layer's own name, else its data's; repeats numbered) */
-  const layerFiles = (g) => {
-    const used = new Map();
-    return p.layersOf(g.id).map((l) => {
-      const base = F(l.name || p.dataset(l.datasetId)?.name || l.id);
-      const k = (used.get(base) || 0) + 1; used.set(base, k);
-      return { l, base: k === 1 ? base : `${base} (${k})` };
-    });
-  };
+  const layerFiles = (g) => layerBases(p, g);
   const split = (sub) => String(sub).split('/').filter(Boolean);
 
   /** what a path names: { kind, …objects } or null */

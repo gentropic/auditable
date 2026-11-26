@@ -3,7 +3,7 @@
 // call the same thing later.
 
 import { MenuBar } from '../../../ext/menu/index.js';
-import { alert } from '../../../ext/dialog/index.js';
+import { alert, confirm } from '../../../ext/dialog/index.js';
 import { THEMES } from './desk-theme.js';
 import { TOCHER } from './samples.js';
 
@@ -22,6 +22,7 @@ export function createMenus(host, { project: p, files, layout, theme, figures, o
     undo: () => { const l = p.undo(); onStatus?.(l ? `undid ${l}` : 'nothing to undo'); },
     redo: () => { const l = p.redo(); onStatus?.(l ? `redid ${l}` : 'nothing to redo'); },
     open: () => files.pick(),
+    newproject: async () => { if (p.datasets.length && !(await confirm('Start a new, empty project? This one is gone unless you saved it (Undo can’t bring it back).', { okLabel: 'New project', danger: true }))) return; await files.newProject(); },
     tocher: () => files.addData(TOCHER, 'tocher.csv'),
     save: () => files.save(),
     newnet: () => newDiagram('net'),
@@ -35,10 +36,11 @@ export function createMenus(host, { project: p, files, layout, theme, figures, o
   };
   const bar = new MenuBar(host, () => [
     { label: 'File', items: () => [
-      { label: 'Open data…', action: 'open', shortcut: 'Ctrl+O' },
+      { label: 'New project', action: 'newproject' },
+      { label: 'Open data or a project…', action: 'open', shortcut: 'Ctrl+O' },
       { label: 'Open the tocher sample', action: 'tocher' },
       '---',
-      { label: 'Save project', action: 'save', shortcut: 'Ctrl+S' },
+      { label: 'Save project (.zip.wuffle)', action: 'save', shortcut: 'Ctrl+S' },
     ] },
     { label: 'Edit', items: () => [
       { label: p.canUndo() ? `Undo ${p.undoLabel()}` : 'Undo', action: 'undo', shortcut: 'Ctrl+Z', disabled: !p.canUndo() },

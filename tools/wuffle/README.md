@@ -69,10 +69,14 @@ console** below. Everything runs offline in the one file.
   project, whoever made it — the menus, a drag, the console.
 - **Figures**: Figure → *New figure from the active net* opens a @gcu/compo page (the net
   as vectors, a legend, the statistics, a caption saying what is drawn); export PDF or PNG;
-  *↻ from the net* redraws it after changes. Figures are kept in the `.wuffle` project.
+  *↻ from the net* redraws it after changes. Figures are kept in the project.
 - **Files**: any delimited text (dip direction/dip, right-hand-rule strike/dip, trend/plunge,
   faults, small circles, single attitude columns like `N30E 40SE`) — never refused: what
-  couldn't be read is counted, and a guessed column mapping says so. Save/open `.wuffle`.
+  couldn't be read is counted, and a guessed column mapping says so.
+- **Projects** are `<name>.zip.wuffle`: the `/project` tree, zipped, plus your `/home` files.
+  The files are the project (no hidden copy beside them), so unzipping one gives plain CSV any
+  tool reads, and a zip edited by hand opens as edited. Between saves the project is kept in
+  this browser and comes back when the page reopens; File → New project starts over.
 
 Text everywhere: planes as dip direction/dip (`045/72`), lines as trend→plunge (`045→32`).
 Sample data: Tocher, F. E. (1979), *The computer contouring of fabric diagrams*, Computers &

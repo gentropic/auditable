@@ -131,15 +131,14 @@ describe('selection belongs to the data', () => {
 });
 
 describe('figures', () => {
-  it('a figure keeps its compo document with the project, and round-trips', () => {
+  it('a figure keeps its compo document with the project (the file round trip: wuffle-file.test.mjs)', () => {
     const { p, n1 } = mk();
     const f = p.addFigure({ doc: { format: 'compo', frames: [{ id: 'x' }] }, from: n1 });
     assert.equal(p.figure(f).name, 'Figure 1');
     p.setFigureDoc(f, { format: 'compo', frames: [] });
-    const q = Project.fromJSON(JSON.parse(JSON.stringify(p.toJSON())));
-    assert.deepEqual(q.figure(f).doc, { format: 'compo', frames: [] });
-    assert.notEqual(q.addFigure({ doc: {} }), f, 'ids continue');
-    p.removeFigure(f); assert.equal(p.figures.length, 0);
+    assert.deepEqual(p.figure(f).doc, { format: 'compo', frames: [] });
+    assert.notEqual(p.addFigure({ doc: {} }), f, 'ids continue');
+    p.removeFigure(f); assert.equal(p.figures.length, 1);
   });
 });
 
@@ -214,19 +213,5 @@ describe('events and the project file', () => {
     p.on((e) => seen.push(e.type));
     p.setElement(l1, 'contours', true); p.select(d, [1]); p.renameDataset(d, 'joints J1');
     assert.deepEqual(seen, ['layer-changed', 'selection-changed', 'dataset-changed']);
-  });
-  it('round-trips through JSON; new ids keep counting; a dangling layer is dropped, not fatal', () => {
-    const { p, d, n2, l1 } = mk();
-    p.addView(l1, n2); p.select(d, [1]); p.setElement(l1, 'v2Circle', true);
-    const j = JSON.parse(JSON.stringify(p.toJSON()));
-    const q = Project.fromJSON(j);
-    assert.deepEqual(q.toJSON().layers, p.toJSON().layers);
-    assert.deepEqual(q.selected(d), [1]);
-    assert.equal(q.elementState(l1, 'eigen'), 'partial');
-    const nd = q.addDataset({ name: 'new', rows: [] });
-    assert.ok(!p.datasets.some((x) => x.id === nd), 'ids continue after the saved ones');
-    j.layers.push({ id: 'l99', diagramId: 'n404', datasetId: d, elements: {}, style: {} });
-    assert.equal(Project.fromJSON(j).layers.length, 2);
-    assert.throws(() => Project.fromJSON({ app: 'other' }), /not a wuffle project/);
   });
 });
