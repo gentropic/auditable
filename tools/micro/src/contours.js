@@ -301,7 +301,7 @@ registerTool('slopeaspect', {
 
 // ── palette + the grid's Geometry menu ──
 registerCommands([
-  { id: 'intersection', group: 'Analyse', title: 'Intersection of two surfaces → strings…', kw: 'intersection meet daylight toe crest line where two surfaces cross pit design topography contact fault', when: () => surfaceableLayers().length >= 2, run: (c) => openIntersection(c.L) },
+  { id: 'intersection', group: 'Analyse', title: 'Intersection with another surface → strings…', kw: 'intersection meet daylight toe crest line where two surfaces cross pit design topography contact fault', when: () => surfaceableLayers().length >= 2, run: (c) => openIntersection(c.L) },
   { id: 'slopeaspect', group: 'Analyse', title: 'Slope and aspect grids…', kw: 'slope aspect gradient steepness facing direction declividade orientacao dem terrain', when: () => contourableLayers().length > 0, run: (c) => { const L = c.L && isGridLayer(c.L) ? c.L : contourableLayers()[0]; slopeAspectLayers(L).then((r) => { $('#meta').textContent = `slope / aspect of ${nameOf(L)}: ${r.layers.map((x) => x.name).join(', ')}`; }).catch((e) => { $('#meta').textContent = e.message; }); } },
   { id: 'contours', group: 'Analyse', title: 'Contours → strings…', kw: 'contours contour isolines curvas de nivel topography elevation lines dem grid index', when: () => contourableLayers().length > 0, run: (c) => openContours(c.L) },
 ]);

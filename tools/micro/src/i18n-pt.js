@@ -202,7 +202,7 @@ export default {
   // ── surfaces, grids, the as-built ──
   'profile': 'perfil', 'pick a line and the surfaces, then Run': 'escolha uma linha e as superfícies, depois Executar', 'Profile along a line…': 'Perfil ao longo de uma linha…', '✎ draw a line': '✎ desenhar uma linha',
   'contours': 'curvas de nível', 'a grid → strings & polygons': 'um grid → strings e polígonos', 'Contours → strings…': 'Curvas de nível → strings…', 'Make contours': 'Gerar curvas', 'index every': 'mestra a cada',
-  'intersection': 'interseção', 'where two surfaces meet → strings': 'onde duas superfícies se encontram → strings', 'Intersection of two surfaces → strings…': 'Interseção de duas superfícies → strings…', 'Intersection with another surface → strings…': 'Interseção com outra superfície → strings…', 'Make lines': 'Gerar linhas',
+  'intersection': 'interseção', 'where two surfaces meet → strings': 'onde duas superfícies se encontram → strings', 'Intersection with another surface → strings…': 'Interseção com outra superfície → strings…', 'Make lines': 'Gerar linhas',
   'Slope and aspect grids…': 'Grids de declividade e orientação…', 'Slope and aspect grids': 'Grids de declividade e orientação',
   'Angle between two planes…': 'Ângulo entre dois planos…',
   'points of interest': 'pontos de interesse', 'Points of interest…': 'Pontos de interesse…', 'Points of interest: the list': 'Pontos de interesse: a lista', '+ pick': '+ marcar', 'as a points layer': 'como camada de pontos', '+ points of interest': '+ pontos de interesse',

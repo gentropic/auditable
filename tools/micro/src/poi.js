@@ -174,7 +174,9 @@ export function openPoiWindow() {
     const sub = _win.querySelector('.fwin-head .sub'); if (sub) sub.textContent = `${pois().length} point${pois().length === 1 ? '' : 's'}`;
     if (!pois().length) { list.textContent = 'none yet — + pick, then click in the 3D view'; return; }
     const tbl = document.createElement('table'); tbl.style.cssText = 'width:100%;border-collapse:collapse';
-    tbl.innerHTML = '<tr style="text-align:left;color:var(--dim)"><th>name</th><th>X</th><th>Y</th><th>Z</th><th>note</th><th></th></tr>';
+    const hr = document.createElement('tr'); hr.style.cssText = 'text-align:left;color:var(--dim)';
+    for (const h of ['name', 'X', 'Y', 'Z', 'note', '']) { const th = document.createElement('th'); th.textContent = h; hr.appendChild(th); }
+    tbl.appendChild(hr);
     pois().forEach((p, i) => {
       const tr = document.createElement('tr'); tr.dataset.i = i;
       const inp = (v, key, wpx) => { const td = document.createElement('td'); const x = document.createElement('input'); x.value = v; x.style.width = wpx; x.dataset.key = key; x.onchange = () => updatePoi(i, { [key]: x.value }); td.appendChild(x); return td; };
