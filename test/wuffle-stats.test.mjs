@@ -30,6 +30,22 @@ describe('statistics', () => {
   });
 });
 
+describe('faults: Michael (1984)', () => {
+  it('normal faults all round → σ1 vertical, σ3 horizontal, a stress ratio between 0 and 1', () => {
+    const rows = ['dd,dip,trend,plunge,sense'];
+    for (const dd of [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330, 90, 270, 90, 270]) rows.push(`${dd},60,${dd},60,N`);
+    const { p, id } = mk(rows.join('\n') + '\n', 'normal');
+    const s = layerStats(p.dataset(id)).stress;
+    assert.equal(s.n, 16);
+    assert.ok(s.axes[0][1] > 80, `σ1 ${s.axes[0]}`); assert.ok(s.axes[2][1] < 10, `σ3 ${s.axes[2]}`);
+    assert.ok(s.phi >= 0 && s.phi <= 1, `φ ${s.phi}`);
+  });
+  it('unknown senses are left out; too few faults give no inversion', () => {
+    const { p, id } = mk('dd,dip,trend,plunge,sense\n90,60,90,60,N\n80,60,80,60,U\n100,60,100,60,N\n', 'few');
+    assert.equal(layerStats(p.dataset(id)).stress, null);
+  });
+});
+
 describe('derived datasets', () => {
   it('the mean → a one-row planes dataset, lineage pointing at its source', () => {
     const { p, id } = mk('dd,dip\n90,60\n92,61\n88,59\n');

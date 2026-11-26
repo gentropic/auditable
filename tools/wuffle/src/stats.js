@@ -6,7 +6,7 @@
 //   deriveBeta(p, dsId)       a β diagram: every pairwise intersection of a planes dataset, as lines
 //   deriveIntersection(p, a, b)  the line where two datasets' mean planes meet
 
-import { statistics, conversions } from '../../../ext/bearing/index.js';
+import { statistics, conversions, fault } from '../../../ext/bearing/index.js';
 import { orientations } from './io.js';
 
 const LINE_ROLES = { trend: 'trend', plunge: 'plunge' };
@@ -15,6 +15,19 @@ const r2 = (v) => Math.round(v * 100) / 100;
 const axesOf = (ds) => orientations(ds).filter(Boolean).map((o) => o.pole || o.dcos);
 const planeRow = (d) => { const [dd, dip] = conversions.dcosToPlane(d); return { 'dip direction': r2(dd), dip: r2(dip) }; };
 const lineRow = (d) => { const [tr, pl] = conversions.dcosToLine(d); return { trend: r2(tr), plunge: r2(pl) }; };
+
+/**
+ * Michael (1984) for a fault dataset: σ1 (most compressive), σ2, σ3 as lines and the stress ratio
+ * φ = (σ2 − σ3)/(σ1 − σ3); faults with an unknown sense are left out. → null with fewer than 4.
+ */
+export function faultStress(ds) {
+  if (ds.kind !== 'faults') return null;
+  const F = orientations(ds).filter((o) => o && o.lineDcos).map((o) => ({ o, ...fault.resolveSense(o.pole, o.lineDcos, o.sense) })).filter((f) => f.defined);
+  if (F.length < 4) return null;
+  const m = fault.michael(F.map((f) => f.o.pole), F.map((f) => f.slip)), ps = fault.principalStresses(m.stress);
+  const [v1, v2, v3] = ps.values;
+  return { n: F.length, axes: ps.axes.map((a) => conversions.dcosToLine(a)), phi: Math.abs(v1 - v3) > 1e-12 ? (v2 - v3) / (v1 - v3) : null, residual: m.residual };
+}
 
 /** @returns {{ n, mean?, eigen? }} — mean and eigen need ≥ 2 and ≥ 3 measurements */
 export function layerStats(ds, { confidence = 0.95 } = {}) {
@@ -28,6 +41,7 @@ export function layerStats(ds, { confidence = 0.95 } = {}) {
     out.eigen = { values: pa.eigenvalues, vectors: pa.eigenvectors.map((v) => ({ dcos: v, line: conversions.dcosToLine(v), plane: conversions.dcosToPlane(v) })),
       K: pa.K, C: pa.C, P: pa.P, G: pa.G, R: pa.R };
   }
+  if (ds.kind === 'faults') out.stress = faultStress(ds);
   return out;
 }
 

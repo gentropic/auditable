@@ -47,6 +47,10 @@ export class StatsView {
         row('K · C', `${f(s.eigen.K)} · ${f(s.eigen.C)}`, 'Woodcock: K > 1 cluster, K < 1 girdle; C strength');
         row('P G R', [s.eigen.P, s.eigen.G, s.eigen.R].map((v) => f(v)).join('  '), 'Vollmer point, girdle, random');
       }
+      if (s.stress) {
+        row('σ1 σ2 σ3', s.stress.axes.map((a) => formatLine(a)).join('  '), `Michael (1984), ${s.stress.n} faults with a known sense`);
+        row('φ', f(s.stress.phi), 'stress ratio (σ2 − σ3)/(σ1 − σ3)');
+      } else if (ds.kind === 'faults') row('stress', 'needs ≥ 4 faults with a known sense');
       card.append(dl);
       const acts = h('div', 'wst-acts');
       const btn = (label, title, fn, on = true) => { const b = h('button', null, label); b.type = 'button'; b.title = title; b.disabled = !on; b.onclick = () => this._derive(fn); acts.append(b); };

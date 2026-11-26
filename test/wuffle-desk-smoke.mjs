@@ -216,6 +216,24 @@ for (const [label, url] of [['dev', '/tools/wuffle/index.html'], ['built', '/wuf
   chk(`${label}: a drag on the net rotates it (a matrix ${rot2.m ? 'kept on the diagram' : 'MISSING'}); a click afterwards still picks the pole under it (row ${JSON.stringify(rot3)} = ${rot2.row})`,
     Array.isArray(rot2.m) && rot2.m.length === 9 && Math.abs(rot2.m[0] - 1) > 1e-3 && rot3.length === 1 && rot3[0] === rot2.row);
 
+  // ── faults: a file of normal faults → slickenlines with arrows; the statistics card inverts for stress ──
+  const fl = await p.evaluate(async () => {
+    const W = window.__wuffleDesk, P = W.project, wait = (ms) => new Promise((z) => setTimeout(z, ms));
+    const net = P.addDiagram('net'); P.setActive(net); W.rails.activateTab('diag:' + net); await wait(200);
+    const rows = ['dip direction,dip,trend,plunge,sense'];
+    for (const dd of [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330, 90, 270]) rows.push(`${dd},60,${dd},60,N`);
+    W.addData(rows.join(String.fromCharCode(10)), 'normal_faults.csv'); await wait(300);
+    const v = W.views.get(net), L = P.layersOf(net)[0];
+    const arrows = v.scene.primitives.filter((x) => x.type === 'curve').length;
+    W.rails.activateTab('stats'); await wait(250);
+    const card = [...document.querySelectorAll('.wst-card')].find((c) => /normal_faults/.test(c.textContent));
+    const out = { kind: P.dataset(L.datasetId).kind, arrows, stress: card ? /σ1 σ2 σ3/.test(card.textContent) && /φ/.test(card.textContent) : false };
+    P.removeDiagram(net); W.rails.activateTab('diag:' + P.diagrams[0].id); P.setActive(P.diagrams[0].id); await wait(100);
+    return out;
+  });
+  chk(`${label}: a fault file reads as faults (${fl.kind}), draws each slickenline with an arrow (${fl.arrows / 2} arrows), and the statistics card inverts for σ1 σ2 σ3 and φ (${fl.stress})`,
+    fl.kind === 'faults' && fl.arrows === 28 && fl.stress);
+
   // ── a figure: Figure → New figure from the active net → compo's editor in a tab, the page drawn ──
   const fig = await p.evaluate(async () => {
     const W = window.__wuffleDesk, P = W.project, wait = (ms) => new Promise((z) => setTimeout(z, ms));
