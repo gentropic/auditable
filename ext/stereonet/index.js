@@ -48,7 +48,19 @@ function nearestPick(picks, x, y, radius = 8) {
  */
 function stereonetCore(B) {
   if (!B || !B.statistics || !B.conversions || !B.Stereonet) throw new Error('stereonetCore: pass the @gcu/bearing module');
-  const { statistics, conversions, Stereonet } = B;
+  const { statistics, conversions, Stereonet, fault } = B;
+  const unit = (v) => { const l = Math.hypot(v[0], v[1], v[2]) || 1; return [v[0] / l, v[1] / l, v[2] / l]; };
+  // the hanging wall's motion as an arrow at the slickenline's point (Angelier's convention): the point is the
+  // slip vector's lower-hemisphere end; the arrow points away from the centre when that end IS the slip (a
+  // downward, normal component) and toward it when it is the slip's antipode (an upward, reverse component)
+  const slipArrow = (s, len = 7) => {
+    const down = s[2] <= 1e-9, p = down ? unit(s) : unit(s.map((x) => -x));
+    const h = Math.hypot(p[0], p[1]); if (h < 1e-6) return null;                 // a vertical slip: no direction on the net
+    const pl = Math.asin(Math.min(1, -p[2])), tr = Math.atan2(p[0], p[1]), d = (down ? -1 : 1) * len * Math.PI / 180;
+    const at = (x) => { const q = Math.max(0, Math.min(Math.PI / 2, pl + x)); return [Math.cos(q) * Math.sin(tr), Math.cos(q) * Math.cos(tr), -Math.sin(q)]; };
+    const tip = at(d), side = (w) => { const q = Math.max(0, Math.min(Math.PI / 2, pl + d * 0.55)), t = tr + w; return [Math.cos(q) * Math.sin(t), Math.cos(q) * Math.cos(t), -Math.sin(q)]; };
+    return { shaft: [p, tip], head: [side(0.06), tip, side(-0.06)] };
+  };
 
   /**
    * @param {{ layers: object[], colors?: { selected?, ink?, inkMid?, halo? } }} input
@@ -85,6 +97,25 @@ function stereonetCore(B) {
       if (L.kind === 'smallcircles' && on('circles')) for (const d of data) if (d.line && d.angle > 0) {
         primitives.push({ type: 'cone', trend: d.line[0], plunge: d.line[1], angle: d.angle, style: { stroke: chosen.has(d.row) ? C.selected : col, strokeWidth: 1, fill: 'none', strokeDasharray: 'none' }, ref: { layer: L.id, row: d.row } });
       }
+      if (L.kind === 'faults') {
+        const F = data.filter((d) => d.pole && d.lineDcos).map((d) => ({ d, ...fault.resolveSense(d.pole, d.lineDcos, d.sense) }));
+        if (on('dihedra') && F.some((f) => f.defined)) {
+          const D = F.filter((f) => f.defined);
+          primitives.push({ type: 'dihedra', planes: D.map((f) => f.d.pole), slips: D.map((f) => f.slip), layer: L.id, style: { stroke: col, strokeWidth: 1.2 } });
+        }
+        if (on('slip')) for (const f of F) {
+          const s = chosen.has(f.d.row), a = f.defined ? slipArrow(f.slip) : null, st = { stroke: s ? C.selected : C.ink, strokeWidth: 1.1, fill: 'none' };
+          if (a) { primitives.push({ type: 'curve', points: a.shaft, style: st }); primitives.push({ type: 'curve', points: a.head, style: st }); }
+          const [tr, pl] = conversions.dcosToLine(f.d.lineDcos);
+          primitives.push({ type: 'line', trend: tr, plunge: pl, dcos: f.d.lineDcos, style: { fill: s ? C.selected : col, r: s ? size / 2 + 2 : size / 2 + 0.5, stroke: s ? C.halo : 'none', strokeWidth: 1 }, ref: { layer: L.id, row: f.d.row } });
+        }
+        if (on('ptAxes')) for (const f of F) if (f.defined) {
+          const { p, t } = fault.ptAxes(f.d.pole, f.slip);
+          const [ptr, ppl] = conversions.dcosToLine(p), [ttr, tpl] = conversions.dcosToLine(t);
+          primitives.push({ type: 'line', trend: ptr, plunge: ppl, style: { fill: C.halo, stroke: C.ink, strokeWidth: 1, r: 3 }, role: 'P', layer: L.id });
+          primitives.push({ type: 'line', trend: ttr, plunge: tpl, style: { fill: C.ink, stroke: 'none', r: 3 }, role: 'T', layer: L.id });
+        }
+      }
       // statistics on the axes (axial: poles and lines without sense), only when asked for
       if (axes.length >= 2 && (on('mean') || EIGEN.some(on))) {
         const st = stats[L.id] = { n: axes.length };
@@ -108,7 +139,7 @@ function stereonetCore(B) {
         }
       }
       // the measurements themselves, on top of the layer's circles
-      const points = L.kind === 'lines' ? on('points') : L.kind === 'smallcircles' ? on('axes') : (on('poles') || (L.kind === 'faults' && on('slip')));
+      const points = L.kind === 'lines' ? on('points') : L.kind === 'smallcircles' ? on('axes') : L.kind === 'faults' ? false : on('poles');   // a fault's point is its slickenline, drawn above
       if (points) for (const d of data) {
         const s = chosen.has(d.row), style = { fill: s ? C.selected : col, r: s ? size / 2 + 2 : size / 2 + 0.5, stroke: s ? C.halo : 'none', strokeWidth: 1 };
         if (d.plane) primitives.push({ type: 'pole', dd: d.plane[0], dip: d.plane[1], dcos: d.pole || conversions.planeToDcos(d.plane[0], d.plane[1]), style, ref: { layer: L.id, row: d.row } });
@@ -149,6 +180,10 @@ function stereonetCore(B) {
       else if (p.type === 'cone') net.cone(p.trend, p.plunge, p.angle, p.style);
       else if (p.type === 'pole') net.pole(p.dd, p.dip, p.style);
       else if (p.type === 'line') net.line(p.trend, p.plunge, p.style);
+      else if (p.type === 'curve') net.curve(p.points, p.style);
+      else if (p.type === 'dihedra' && !options.rotation && !options.center) {   // the field is computed in the unrotated projection
+        net.contour(p.planes, { grid: fault.dihedraGrid(p.planes, p.slips, { projection: options.projection || 'equal-area', gridSize: 64 }), levels: [0], stroke: p.style.stroke, strokeWidth: p.style.strokeWidth });
+      }
       if (p.ref && p.dcos && (p.type === 'pole' || p.type === 'line')) { const q = net.project(p.dcos); picks.push({ x: q.x, y: q.y, ref: p.ref }); }
     }
     return { net, picks };

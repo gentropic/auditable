@@ -55,6 +55,29 @@ describe('the scene', () => {
   });
 });
 
+describe('faults', () => {
+  const F = (dd, dip, tr, pl, sense) => ({ pole: B.conversions.planeToDcos(dd, dip), plane: [dd, dip], lineDcos: B.conversions.lineToDcos(tr, pl), line: [tr, pl], sense });
+  const fl = (elements, rows) => ({ id: 'F', kind: 'faults', color: '#000', elements, data: rows.map((r, row) => ({ row, ...r })) });
+  it('slip: the slickenline as a pickable point, with an arrow (shaft + head) for a defined sense', () => {
+    const s = core.buildScene({ layers: [fl({ slip: { on: true } }, [F(90, 60, 90, 60, 'N'), F(90, 60, 90, 60, 'U')])] });
+    assert.equal(s.primitives.filter((p) => p.type === 'line' && p.ref).length, 2);
+    assert.equal(s.primitives.filter((p) => p.type === 'curve').length, 2, 'one arrow (shaft + head): the unknown sense gets none');
+  });
+  it('the arrow points away from the centre for a normal fault, toward it for a reverse one', () => {
+    const plungeOfTip = (sense) => { const s = core.buildScene({ layers: [fl({ slip: { on: true } }, [F(90, 60, 90, 60, sense)])] }); const shaft = s.primitives.find((p) => p.type === 'curve').points; return [B.conversions.dcosToLine(shaft[0])[1], B.conversions.dcosToLine(shaft[1])[1]]; };
+    const [n0, n1] = plungeOfTip('N'), [r0, r1] = plungeOfTip('R');
+    assert.ok(n1 < n0, `normal: the tip is shallower, nearer the primitive (${n0} → ${n1})`);
+    assert.ok(r1 > r0, `reverse: the tip is steeper, nearer the centre (${r0} → ${r1})`);
+  });
+  it('P and T axes: P steep for a normal fault; the dihedra primitive carries planes and slips', () => {
+    const s = core.buildScene({ layers: [fl({ ptAxes: { on: true }, dihedra: { on: true } }, [F(90, 60, 90, 60, 'N')])] });
+    const P = s.primitives.find((p) => p.role === 'P');
+    assert.ok(P.plunge > 60, `P plunges ${P.plunge}`);
+    assert.equal(s.primitives.find((p) => p.type === 'dihedra').planes.length, 1);
+    assert.ok(core.renderScene(s, { size: 300 }).net, 'renders (the dihedra field contoured at 0)');
+  });
+});
+
 describe('render and pick', () => {
   it('without a DOM: no svg, but a pick per measurement; the nearest pick finds a drawn pole', () => {
     const scene = core.buildScene({ layers: [layer()] });
