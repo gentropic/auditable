@@ -91,6 +91,21 @@ body.desk > [hidden] { display:none !important; }   /* the field page's own disp
 .wt-head { font:11px var(--w-mono); color:var(--w-text-mid); padding:3px 8px; border-bottom:1px solid var(--w-border); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .wt-body { flex:1; min-height:0; position:relative; }
 
+/* the statistics panel */
+.wst-panel { flex:1; min-height:0; overflow:auto; padding:8px 10px; background:var(--w-bg-raised); display:flex; flex-wrap:wrap; gap:10px; align-content:flex-start; }
+.wst-title { width:100%; font:11px var(--w-mono); color:var(--w-text-soft); }
+.wst-empty { color:var(--w-text-soft); margin:0; }
+.wst-card { border:1px solid var(--w-border); border-radius:4px; padding:6px 10px; min-width:280px; flex:1 1 300px; max-width:460px; background:var(--w-bg); }
+.wst-head { display:flex; align-items:center; gap:8px; margin-bottom:4px; }
+.wst-sw { width:10px; height:10px; border-radius:50%; }
+.wst-n { margin-left:auto; font:11px var(--w-mono); color:var(--w-text-soft); }
+.wst-dl { display:grid; grid-template-columns:auto 1fr; gap:1px 12px; margin:0; font:11.5px var(--w-mono); font-variant-numeric:tabular-nums; }
+.wst-dl dt { color:var(--w-text-soft); } .wst-dl dd { margin:0; color:var(--w-text); }
+.wst-acts { display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; }
+.wst-acts button, .wst-acts select { font:11px var(--w-sans); padding:2px 8px; border-radius:3px; border:1px solid var(--w-border); background:var(--w-bg-bright); color:var(--w-text); cursor:pointer; }
+.wst-acts button:disabled { opacity:.45; cursor:default; }
+.wst-acts button:focus-visible, .wst-acts select:focus-visible { outline:2px solid var(--w-blue); outline-offset:1px; }
+
 /* the properties dialog */
 .wprow { display:grid; grid-template-columns:130px 1fr; align-items:center; gap:10px; margin:6px 0; color:var(--w-text-mid); }
 .wprow input, .wprow select { font:12px var(--w-mono); background:var(--w-bg-bright); color:var(--w-text); border:1px solid var(--w-border); border-radius:3px; padding:2px 6px; }

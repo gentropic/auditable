@@ -155,14 +155,29 @@ for (const [label, url] of [['dev', '/tools/wuffle/index.html'], ['built', '/wuf
   chk(`${label}: a band along a great circle (±${band.width}°) selects ${band.n}`, band.type === 'band' && band.n > 0 && band.width === 10);
   chk(`${label}: on a ROTATED net, a cone started on a pole has that pole's true direction as its axis (off by ${rotErr.toFixed(2)}°)`, rotErr < 1.5);
 
+  // ── the statistics panel: numbers for the active net; a mean kept as a dataset, drawn, with lineage ──
+  const st = await p.evaluate(async () => {
+    const W = window.__wuffleDesk, P = W.project, wait = (ms) => new Promise((z) => setTimeout(z, ms));
+    W.rails.activateTab('stats'); await wait(200);
+    const card = document.querySelector('.wst-card');
+    const txt = card?.textContent || '';
+    const n0 = P.datasets.length, l0 = P.layersOf(P.diagrams[0].id).length;
+    [...card.querySelectorAll('button')].find((b) => /mean → dataset/.test(b.textContent)).click(); await wait(200);
+    const d = P.datasets[P.datasets.length - 1];
+    return { hasMean: /mean\s*\d{3}\/\d{2}/.test(txt), hasK: /K · C/.test(txt), added: P.datasets.length - n0, drawn: P.layersOf(P.diagrams[0].id).length - l0,
+      lineage: d.lineage && d.lineage.op, rows: d.rows.length };
+  });
+  chk(`${label}: the statistics panel shows the mean, κ, α and the eigen analysis; “mean → dataset” adds a dataset (${st.added}) drawn on the net (${st.drawn}) with lineage “${st.lineage}”`,
+    st.hasMean && st.hasK && st.added === 1 && st.drawn === 1 && st.lineage === 'mean' && st.rows === 1);
+
   try { await p.screenshot({ path: path.join(root, `experiments/wuffle-desk-${label}.png`) }); } catch { /* for a person */ }
-  chk(`${label}: the desk opens with layers · Net 1 · table, the field page hidden (${s && JSON.stringify(r.tabs)})`, r.tabs && r.tabs.join() === 'layers,Net 1,table' && r.fieldHidden);
+  chk(`${label}: the desk opens with layers · Net 1 · table · statistics, the field page hidden (${s && JSON.stringify(r.tabs)})`, r.tabs && r.tabs.join() === 'layers,Net 1,table,statistics' && r.fieldHidden);
   chk(`${label}: File → Open the tocher sample → ${s.ds && s.ds.n} planes (not guessed: ${s.ds && !s.ds.guessed}), ${s.svgCircles} circles drawn`, s.ds && s.ds.n === 200 && !s.ds.guessed && s.svgCircles >= 200);
   chk(`${label}: the tree's nested checkbox switches contours on (${s.contourOn}, ${s.contourPaths} paths); one eigenvector child makes the group partial (${s.eigenState})`, s.contourOn && s.contourPaths > 0 && /partial/.test(s.eigenState));
   chk(`${label}: a second net gets a VIEW of the same data (${s.viewShares}); its tab appears (${JSON.stringify(s.tabs2)}); the tree marks the link (${JSON.stringify(s.linkBadge)})`, s.viewShares && s.tabs2.includes('Net 2') && s.linkBadge.length >= 1);
   chk(`${label}: a click on a pole selects its row (${JSON.stringify(t.selected)}), drawn violet on BOTH nets (${JSON.stringify(t.violetOn)}); the table shows the dataset (“${(t.tableTitle || '').slice(0, 50)}”)`, t.selected.length === 1 && t.violetOn[0] >= 1 && t.violetOn[1] >= 1 && /tocher/.test(t.tableTitle || ''));
   chk(`${label}: the theme switches (${JSON.stringify(t.theme)})`, t.theme[0] !== t.theme[1] && t.theme[2] === 'light');
-  chk(`${label}: a project round-trips (${JSON.stringify(t.reload)})`, t.reload.diagrams === 2 && t.reload.layers === 2 && t.reload.rows === 200 && t.reload.selected.length === 1 && t.reload.tabs === 4);
+  chk(`${label}: a project round-trips (${JSON.stringify(t.reload)})`, t.reload.diagrams === 2 && t.reload.layers === 2 && t.reload.rows === 200 && t.reload.selected.length === 1 && t.reload.tabs === 5);
   chk(`${label}: no page errors (${errs.length ? errs.join(' ; ').slice(0, 200) : 'none'})`, errs.length === 0);
   await p.close();
 }

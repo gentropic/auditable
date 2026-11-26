@@ -7,7 +7,7 @@ import { NetView } from './desk-net.js';
 
 const tabOf = (g) => ({ id: 'diag:' + g.id, title: g.name, closeable: false, diagramId: g.id });
 
-export function createLayout(host, { project: p, tree, table, select, onStatus }) {
+export function createLayout(host, { project: p, tree, table, stats, select, onStatus }) {
   const views = new Map();   // diagramId → NetView
   if (!p.diagrams.length) p.addDiagram('net');
   const rails = createRails(host, {
@@ -15,12 +15,13 @@ export function createLayout(host, { project: p, tree, table, select, onStatus }
       { id: 'sTree', tabs: [{ id: 'tree', title: 'layers', closeable: false }], active: 'tree', size: 270 },
       { id: 'cMain', dir: 'col', flex: 1, children: [
         { id: 'sNets', tabs: p.diagrams.map(tabOf), active: 'diag:' + (p.activeDiagram || p.diagrams[0].id), flex: 3 },
-        { id: 'sTable', tabs: [{ id: 'table', title: 'table', closeable: false }], active: 'table', size: 230 },
+        { id: 'sTable', tabs: [{ id: 'table', title: 'table', closeable: false }, { id: 'stats', title: 'statistics', closeable: false }], active: 'table', size: 230 },
       ] },
     ] }, floats: [] },
     renderPanel(tab) {
       if (tab.id === 'tree') return tree.el;
       if (tab.id === 'table') return table.el;
+      if (tab.id === 'stats') return stats.el;
       if (tab.diagramId) { const v = new NetView(p, tab.diagramId, { onStatus }); views.set(tab.diagramId, v); select?.attach(v); return v.el; }
       return document.createElement('div');
     },
@@ -49,6 +50,7 @@ export function createLayout(host, { project: p, tree, table, select, onStatus }
     rails, views,
     focusDiagram: (id) => rails.activateTab('diag:' + id),
     focusTable: () => rails.activateTab('table'),
+    focusStats: () => rails.activateTab('stats'),
     redrawAll: () => { for (const v of views.values()) v.draw(); },
   };
 }
