@@ -19,7 +19,7 @@ export class StatsView {
     this.render();
   }
   async _derive(fn) {
-    try { const id = fn(); const g = this.p.activeDiagram; if (g) this.p.addLayer(g, id); this.onDerived(id); }
+    try { const id = this.p.batch('derive', () => { const x = fn(); const g = this.p.activeDiagram; if (g) this.p.addLayer(g, x); return x; }); this.onDerived(id); }
     catch (e) { await alert(e.message); }
   }
   render() {

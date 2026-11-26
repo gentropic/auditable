@@ -143,6 +143,70 @@ describe('figures', () => {
   });
 });
 
+describe('undo / redo — every change, whoever made it', () => {
+  it('a layer added and a style changed undo in turn, and redo', () => {
+    const { p, n2, l1 } = mk();
+    const v = p.addView(l1, n2);
+    p.setLayerStyle(v, { color: '#000' });
+    assert.equal(p.undoLabel(), 'style');
+    p.undo(); assert.equal(p.layer(v).style.color, '#e8836b', 'the view had its source’s colour');
+    p.undo(); assert.equal(p.layer(v), null, 'the view is gone');
+    p.redo(); assert.ok(p.layer(v));
+    p.redo(); assert.equal(p.layer(v).style.color, '#000');
+    assert.equal(p.canRedo(), false);
+  });
+  it('edits are copy-on-write: undo restores the rows, and the old object was never touched', () => {
+    const { p, d } = mk();
+    const before = p.dataset(d);
+    p.editRows(d, (rows) => { rows[0].DIP = 1; });
+    assert.equal(before.rows[0].DIP, 72, 'the old dataset object is untouched');
+    p.undo(); assert.equal(p.dataset(d).rows[0].DIP, 72);
+    p.renameDataset(d, 'J1 renamed'); p.undo(); assert.equal(p.dataset(d).name, 'J1');
+  });
+  it('deleting drawn data (forced) undoes with its layers and its selection', () => {
+    const { p, d, n2, l1 } = mk();
+    p.addView(l1, n2); p.select(d, [1]);
+    p.removeDataset(d, { force: true });
+    p.undo();
+    assert.equal(p.layers.length, 2); assert.ok(p.dataset(d)); assert.deepEqual(p.selected(d), [1]);
+  });
+  it('a refused change records nothing and changes nothing', () => {
+    const { p, d } = mk();
+    const n = p._undo.length;
+    assert.throws(() => p.removeDataset(d));
+    assert.equal(p._undo.length, n); assert.ok(p.dataset(d));
+  });
+  it('a derived dataset is one step (derive → addDataset inside it); a batch is one step', () => {
+    const { p, d, n1 } = mk();
+    p.select(d, [0]); const s = p.selectionToDataset(d);
+    assert.equal(p.undoLabel(), 'selection → dataset');
+    p.undo(); assert.equal(p.dataset(s), null);
+    p.batch('open and draw', () => { const x = p.addDataset({ name: 'X', rows: [] }); p.addLayer(n1, x); });
+    assert.equal(p.undoLabel(), 'open and draw');
+    p.undo(); assert.equal(p.datasets.length, 1); assert.equal(p.layers.length, 1);
+  });
+  it('rapid repeats of one setting merge into one step; selection is not a step', () => {
+    const { p, n1, d } = mk();
+    const n = p._undo.length;
+    for (let i = 0; i < 20; i++) p.setDiagramProps(n1, { graticule: i + 1 });
+    assert.equal(p._undo.length, n + 1);
+    p.select(d, [0, 1]); assert.equal(p._undo.length, n + 1);
+    p.undo(); assert.equal(p.diagram(n1).props.graticule, 10);
+  });
+  it('a new change after an undo drops the redo; an unchanged call is not a step', () => {
+    const { p, n1, l1 } = mk();
+    p.setLayerVisible(l1, false); p.undo(); assert.ok(p.canRedo());
+    p.renameDiagram(n1, 'A'); assert.equal(p.canRedo(), false);
+    const k = p._undo.length; p.setLayerVisible(l1, true); assert.equal(p._undo.length, k, 'already visible: nothing changed');
+  });
+  it('undo and redo announce themselves', () => {
+    const { p, l1 } = mk(); const seen = [];
+    p.on((e) => { if (e.type === 'history') seen.push(`${e.dir}:${e.label}`); });
+    p.setLayerVisible(l1, false); p.undo(); p.redo();
+    assert.deepEqual(seen, ['undo:show / hide', 'redo:show / hide']);
+  });
+});
+
 describe('events and the project file', () => {
   it('every change is announced on one stream', () => {
     const { p, d, l1 } = mk();

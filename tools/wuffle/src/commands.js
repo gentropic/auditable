@@ -46,6 +46,7 @@ const HELP = {
   rotate: 'rotate <tr→pl> | rotate off — centre the net on a direction',
   theme: 'theme dark|light|system',
   history: 'history — the lines typed so far (a routine is just these lines)',
+  undo: 'undo / redo — the last change, whoever made it',
 };
 
 export function createCommands(ctx) {
@@ -60,7 +61,7 @@ export function createCommands(ctx) {
     return L;
   };
   const dsName = (L) => L.name || p.dataset(L.datasetId).name;
-  const derived = (id) => { p.addLayer(active().id, id); const d = p.dataset(id); return `→ ${d.name} (${d.rows.length} row${d.rows.length === 1 ? '' : 's'}), drawn on ${active().name}`; };
+  const derived = (make) => { const id = p.batch('derive', () => { const x = make(); p.addLayer(active().id, x); return x; }); const d = p.dataset(id); return `→ ${d.name} (${d.rows.length} row${d.rows.length === 1 ? '' : 's'}), drawn on ${active().name}`; };
   const applyShape = (shape, mode) => {
     if (ctx.applyShape) return ctx.applyShape(shape, mode);
     let n = 0; const per = new Map();
@@ -76,7 +77,7 @@ export function createCommands(ctx) {
     use([...name]) { const n = name.join(' ').toLowerCase(); const g = p.diagrams.find((x) => x.name.toLowerCase() === n) || p.diagrams.find((x) => x.name.toLowerCase().startsWith(n)); if (!g) throw new Error(`no diagram “${name.join(' ')}”`); p.setActive(g.id); ctx.focusDiagram?.(g.id); return `● ${g.name}`; },
     new([kind = 'net']) {
       if (!['net', 'rose', 'fabric'].includes(kind)) throw new Error('new net|rose|fabric');
-      const from = p.activeDiagram, id = p.addDiagram(kind); if (from) for (const L of p.layersOf(from)) p.addView(L.id, id);
+      const from = p.activeDiagram, id = p.batch(`new ${kind}`, () => { const g = p.addDiagram(kind); if (from) for (const L of p.layersOf(from)) p.addView(L.id, g); return g; });
       p.setActive(id); ctx.focusDiagram?.(id); return `● ${p.diagram(id).name}`;
     },
     layers() { const g = active(); return p.layersOf(g.id).map((L) => `${L.visible ? '☑' : '☐'} ${dsName(L)} · ${p.dataset(L.datasetId).kind} · ${p.dataset(L.datasetId).rows.length}`).join('\n') || `${g.name} is empty`; },
@@ -117,10 +118,12 @@ export function createCommands(ctx) {
       if (s.eigen) out.push(`S ${s.eigen.values.map((x) => x.toFixed(3)).join(' ')} · K ${s.eigen.K.toFixed(2)} · C ${s.eigen.C.toFixed(2)}`);
       return out.join('\n');
     },
-    mean([...name]) { return derived(deriveMean(p, layerNamed(name.join(' '), { required: true }).datasetId)); },
-    eigen([...name]) { return derived(deriveEigen(p, layerNamed(name.join(' '), { required: true }).datasetId)); },
-    beta([...name]) { return derived(deriveBeta(p, layerNamed(name.join(' '), { required: true }).datasetId)); },
-    intersect([a, b]) { if (!a || !b) throw new Error('intersect <layer> <layer>'); return derived(deriveIntersection(p, layerNamed(a).datasetId, layerNamed(b).datasetId)); },
+    mean([...name]) { const L = layerNamed(name.join(' '), { required: true }); return derived(() => deriveMean(p, L.datasetId)); },
+    eigen([...name]) { const L = layerNamed(name.join(' '), { required: true }); return derived(() => deriveEigen(p, L.datasetId)); },
+    beta([...name]) { const L = layerNamed(name.join(' '), { required: true }); return derived(() => deriveBeta(p, L.datasetId)); },
+    intersect([a, b]) { if (!a || !b) throw new Error('intersect <layer> <layer>'); const A = layerNamed(a).datasetId, Bd = layerNamed(b).datasetId; return derived(() => deriveIntersection(p, A, Bd)); },
+    undo() { const l = p.undo(); return l ? `undid ${l}` : 'nothing to undo'; },
+    redo() { const l = p.redo(); return l ? `redid ${l}` : 'nothing to redo'; },
     rotate([att]) {
       const g = active(); if (g.kind !== 'net') throw new Error('only a net rotates');
       if (att === 'off' || att == null) { p.setDiagramProps(g.id, { rotation: null, matrix: null }); return `${g.name}: not rotated`; }

@@ -11,14 +11,16 @@ export const ABOUT = 'wuffle — a stereonet workbench and a field compass, one 
   + 'nets by @gcu/stereonet. In the line of OpenStereo (Grohmann & Campanha, 2009/10) and its 2016 rewrite. Sample data: '
   + 'Tocher, F. E. (1979), The computer contouring of fabric diagrams, Computers & Geosciences 5, 73–126.';
 
-export function createMenus(host, { project: p, files, layout, theme, figures }) {
+export function createMenus(host, { project: p, files, layout, theme, figures, onStatus }) {
   // a new diagram shows what the active one shows (views of the same data), so a rose of the net's sets is one click
   const newDiagram = (kind) => {
-    const from = p.activeDiagram, id = p.addDiagram(kind);
-    if (from) for (const L of p.layersOf(from)) p.addView(L.id, id);
+    const from = p.activeDiagram;
+    const id = p.batch(`new ${kind}`, () => { const g = p.addDiagram(kind); if (from) for (const L of p.layersOf(from)) p.addView(L.id, g); return g; });
     p.setActive(id); layout.focusDiagram(id);
   };
   const commands = {
+    undo: () => { const l = p.undo(); onStatus?.(l ? `undid ${l}` : 'nothing to undo'); },
+    redo: () => { const l = p.redo(); onStatus?.(l ? `redid ${l}` : 'nothing to redo'); },
     open: () => files.pick(),
     tocher: () => files.addData(TOCHER, 'tocher.csv'),
     save: () => files.save(),
@@ -37,6 +39,10 @@ export function createMenus(host, { project: p, files, layout, theme, figures })
       { label: 'Open the tocher sample', action: 'tocher' },
       '---',
       { label: 'Save project', action: 'save', shortcut: 'Ctrl+S' },
+    ] },
+    { label: 'Edit', items: () => [
+      { label: p.canUndo() ? `Undo ${p.undoLabel()}` : 'Undo', action: 'undo', shortcut: 'Ctrl+Z', disabled: !p.canUndo() },
+      { label: p.canRedo() ? `Redo ${p.redoLabel()}` : 'Redo', action: 'redo', shortcut: 'Ctrl+Shift+Z', disabled: !p.canRedo() },
     ] },
     { label: 'Diagram', items: () => [
       { label: 'New net', action: 'newnet' },
@@ -67,6 +73,10 @@ export function createMenus(host, { project: p, files, layout, theme, figures })
   addEventListener('keydown', (e) => {
     if (!(e.ctrlKey || e.metaKey) || !document.body.classList.contains('desk')) return;
     if (e.key === 'o') { e.preventDefault(); run('open'); } else if (e.key === 's') { e.preventDefault(); run('save'); }
+    // undo / redo — not while typing, and not inside a figure (compo has its own undo there)
+    else if (/^[zy]$/i.test(e.key) && !/^(INPUT|TEXTAREA|SELECT)$/.test(e.target?.tagName) && !e.target?.closest?.('.wfig-host')) {
+      e.preventDefault(); run(e.key.toLowerCase() === 'y' || e.shiftKey ? 'redo' : 'undo');
+    }
   });
   // ` opens the console (not while typing somewhere)
   addEventListener('keydown', (e) => {

@@ -46,6 +46,7 @@ export class TableView {
     project.on((e) => {
       if (!this.datasetId) return;
       if (e.type === 'dataset-removed' && e.id === this.datasetId) { this.show(null); return; }
+      if (e.type === 'history') { if (!this.p.dataset(this.datasetId)) this.show(null); else { this.provider.refreshOrientations(); this._title(); this.grid?.refresh(); } return; }
       if (e.type === 'selection-changed' && !e.datasetId) { this.grid?.refresh(); return; }   // everything cleared
       const ds = e.datasetId || e.id;
       if (ds !== this.datasetId) return;

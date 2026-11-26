@@ -53,6 +53,9 @@ export function createFigures({ project: p, layout, onStatus = () => {} }) {
     if (!layout.hasTab(tabId(id))) layout.addTab({ id: tabId(id), title: f.name, closeable: true, figureId: id });
     layout.rails.activateTab(tabId(id));
   }
-  p.on((e) => { if (e.type === 'figure-removed' || e.type === 'project-loaded') for (const id of [...editors.keys()]) if (!p.figure(id)) layout.closeTab(tabId(id)); });
+  p.on((e) => {
+    if (['figure-removed', 'project-loaded', 'history'].includes(e.type)) for (const id of [...editors.keys()]) if (!p.figure(id)) layout.closeTab(tabId(id));
+    if (e.type === 'history') for (const [id, ed] of editors) { const f = p.figure(id); if (f && JSON.stringify(f.doc) !== JSON.stringify(ed.getDoc())) ed.setDoc(f.doc); }   // an undone figure edit shows
+  });
   return { newFigure, open, editors };
 }

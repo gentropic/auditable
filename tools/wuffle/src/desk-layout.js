@@ -52,7 +52,7 @@ export function createLayout(host, { project: p, tree, table, stats, consoleView
     }
   };
   p.on((e) => {
-    if (['diagram-added', 'diagram-removed', 'diagram-changed', 'project-loaded'].includes(e.type)) sync();
+    if (['diagram-added', 'diagram-removed', 'diagram-changed', 'project-loaded', 'history'].includes(e.type)) sync();
     if (e.type === 'project-loaded') for (const v of views.values()) v.draw();
   });
 

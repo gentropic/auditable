@@ -9,7 +9,7 @@ import { orientations } from './io.js';
 import { tok, netTheme } from './desk-theme.js';
 
 const core = stereonetCore(bearing);
-const REDRAW = new Set(['layer-added', 'layer-removed', 'layer-changed', 'layer-moved', 'layers-removed']);
+const REDRAW = new Set(['layer-added', 'layer-removed', 'layer-changed', 'layer-moved', 'layers-removed', 'history']);
 
 export class NetView {
   constructor(project, diagramId, { onStatus } = {}) {

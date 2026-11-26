@@ -59,6 +59,12 @@ describe('commands', () => {
     p.addLayer(p.activeDiagram, p.addDataset(readTable('dd,dip\n270,40\n', 'west')[0]));
     assert.match(c.run('intersect tocher west').text, /tocher ∩ west/);
   });
+  it('undo / redo: a derived dataset and its layer are one step', () => {
+    const { p, c } = mk(); c.run('sample tocher');
+    c.run('mean'); assert.equal(p.datasets.length, 2);
+    assert.match(c.run('undo').text, /undid derive/); assert.equal(p.datasets.length, 1); assert.equal(p.layers.length, 1);
+    assert.match(c.run('redo').text, /redid derive/); assert.equal(p.layers.length, 2);
+  });
   it('new / use / diagrams / rotate', () => {
     const { p, c } = mk(); c.run('sample tocher');
     assert.match(c.run('new rose').text, /Rose 1/);

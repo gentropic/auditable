@@ -12,11 +12,13 @@ export function createFiles(root, { project: p, dropHost, onOpened }) {
   const addData = (text, name) => {
     const specs = readTable(text, String(name).replace(/\.[^.]+$/, ''));
     let first = null;
-    for (const s of specs) {
-      const id = p.addDataset(s); first = first || id;
-      if (!p.activeDiagram) p.addDiagram('net');
-      p.addLayer(p.activeDiagram, id);
-    }
+    p.batch(`open ${name}`, () => {                         // the data and its layer: one undo step
+      for (const s of specs) {
+        const id = p.addDataset(s); first = first || id;
+        if (!p.activeDiagram) p.addDiagram('net');
+        p.addLayer(p.activeDiagram, id);
+      }
+    });
     if (first && onOpened) onOpened(first);
     return first;
   };
@@ -24,6 +26,7 @@ export function createFiles(root, { project: p, dropHost, onOpened }) {
   const loadProject = (j) => {
     const q = Project.fromJSON(j);
     Object.assign(p, { name: q.name, datasets: q.datasets, diagrams: q.diagrams, layers: q.layers, figures: q.figures, selection: q.selection, activeDiagram: q.activeDiagram, _seq: q._seq });
+    p.clearHistory();
     p._emit('project-loaded');
   };
   const open = async (files) => {

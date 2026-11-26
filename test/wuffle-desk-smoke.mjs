@@ -234,6 +234,18 @@ for (const [label, url] of [['dev', '/tools/wuffle/index.html'], ['built', '/wuf
   chk(`${label}: a fault file reads as faults (${fl.kind}), draws each slickenline with an arrow (${fl.arrows / 2} arrows), and the statistics card inverts for σ1 σ2 σ3 and φ (${fl.stress})`,
     fl.kind === 'faults' && fl.arrows === 28 && fl.stress);
 
+  // ── undo / redo from the keyboard: a new net (one step, its views included) goes and comes back ──
+  await p.evaluate(() => { document.activeElement?.blur(); const W = window.__wuffleDesk; W.menus.run('newnet'); });
+  await p.waitForTimeout(300);
+  const u0 = await p.evaluate(() => ({ n: window.__wuffleDesk.project.diagrams.length, label: window.__wuffleDesk.project.undoLabel(), tabs: document.querySelectorAll('.rails-tab').length }));
+  await p.evaluate(() => document.activeElement?.blur());
+  await p.keyboard.press('Control+z'); await p.waitForTimeout(300);
+  const u1 = await p.evaluate(() => ({ n: window.__wuffleDesk.project.diagrams.length, tabs: document.querySelectorAll('.rails-tab').length }));
+  await p.keyboard.press('Control+Shift+z'); await p.waitForTimeout(300);
+  const u2 = await p.evaluate(() => ({ n: window.__wuffleDesk.project.diagrams.length, tabs: document.querySelectorAll('.rails-tab').length }));
+  chk(`${label}: Ctrl+Z undoes “${u0.label}” (${u0.n} → ${u1.n} diagrams, its tab gone: ${u0.tabs} → ${u1.tabs}); Ctrl+Shift+Z brings it back (${u2.n}, ${u2.tabs} tabs)`,
+    u0.label === 'new net' && u1.n === u0.n - 1 && u1.tabs === u0.tabs - 1 && u2.n === u0.n && u2.tabs === u0.tabs);
+
   // ── a figure: Figure → New figure from the active net → compo's editor in a tab, the page drawn ──
   const fig = await p.evaluate(async () => {
     const W = window.__wuffleDesk, P = W.project, wait = (ms) => new Promise((z) => setTimeout(z, ms));

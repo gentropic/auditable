@@ -52,6 +52,7 @@ export class Project {
     this.activeDiagram = null;
     this._seq = { d: 0, n: 0, l: 0, f: 0 };
     this._listeners = new Set();
+    this._undo = []; this._redo = []; this._depth = 0;   // the journal (see below)
   }
 
   // ── events: one 'change' stream, { type, ...detail } ──
@@ -84,10 +85,14 @@ export class Project {
     let k = 2; while (used.has(`${name} (${k})`)) k++;
     return `${name} (${k})`;
   }
-  renameDataset(id, name) { const d = this._need(id); d.name = this._uniqueName(String(name).trim() || d.name); this._emit('dataset-changed', { id }); }
+  // datasets are COPY-ON-WRITE: a change replaces the object (and its rows array), never edits it — so the
+  // undo journal can hold references to past datasets instead of copies of their rows
+  _replaceDataset(d, next) { this.datasets = this.datasets.map((x) => (x === d ? next : x)); return next; }
+  renameDataset(id, name) { const d = this._need(id); this._replaceDataset(d, { ...d, name: this._uniqueName(String(name).trim() || d.name) }); this._emit('dataset-changed', { id }); }
   /** edit rows in place: fn(rows) may mutate them or return a new array; every layer redraws */
   editRows(id, fn) {
-    const d = this._need(id), out = fn(d.rows);
+    const old = this._need(id), d = this._replaceDataset(old, { ...old, rows: old.rows.map((r) => ({ ...r })), columns: [...old.columns] });
+    const out = fn(d.rows);
     if (Array.isArray(out)) d.rows = out;
     for (const r of d.rows) for (const k of Object.keys(r)) if (!d.columns.includes(k)) d.columns.push(k);
     const sel = this.selection.get(id);
@@ -250,6 +255,7 @@ export class Project {
   }
   setFigureDoc(id, doc) { const f = this.figure(id); if (!f) throw new Error(`no figure ${id}`); f.doc = clone(doc); this._emit('figure-changed', { id }); }
   removeFigure(id) { this.figures = this.figures.filter((f) => f.id !== id); this._emit('figure-removed', { id }); }
+  renameFigure(id, name) { const f = this.figure(id); if (!f) throw new Error(`no figure ${id}`); f.name = String(name).trim() || f.name; this._emit('figure-changed', { id }); }
 
   // ── the project file ──
   toJSON() {
@@ -273,4 +279,73 @@ export class Project {
   _need(id) { const d = this.dataset(id); if (!d) throw new Error(`no dataset ${id}`); return d; }
   _needDiagram(id) { const g = this.diagram(id); if (!g) throw new Error(`no diagram ${id}`); return g; }
   _needLayer(id) { const l = this.layer(id); if (!l) throw new Error(`no layer ${id}`); return l; }
+}
+
+// ── THE JOURNAL: undo / redo for every change, whoever made it (the UI, the console, an agent) ──
+// Each changing method runs inside _journal: the project's state is snapshotted before and after, and the
+// pair is one undo step. Snapshots are cheap by construction: datasets are copy-on-write (a snapshot keeps
+// references), and the rest — diagrams, layers, figures, the selection — is small. A change made inside
+// another (derive → addDataset, a batch) is part of the outer step. Rapid repeats of the same setting on the
+// same thing (a rotation drag, typing in a figure) merge into one step. Selection and the active diagram are
+// view state: restored with a step, never steps of their own.
+
+const JOURNALED = {
+  addDataset: 'open data', renameDataset: 'rename', editRows: 'edit rows', removeDataset: 'delete data',
+  derive: 'derive', selectionToDataset: 'selection → dataset',
+  addDiagram: 'new diagram', setDiagramProps: 'diagram settings', renameDiagram: 'rename diagram', removeDiagram: 'remove diagram',
+  addLayer: 'add layer', addView: 'add view', moveLayer: 'move layer', removeLayer: 'remove layer', removeEverywhere: 'remove from everywhere',
+  setLayerVisible: 'show / hide', setLayerStyle: 'style', setElement: 'show / hide elements', setElementSettings: 'element settings',
+  addFigure: 'new figure', setFigureDoc: 'edit figure', renameFigure: 'rename figure', removeFigure: 'delete figure',
+};
+const COALESCE = new Set(['setDiagramProps', 'setLayerStyle', 'setElementSettings', 'setFigureDoc', 'editRows']);
+const COALESCE_MS = 800;
+
+Project.prototype._snap = function () {
+  return { datasets: this.datasets.slice(), diagrams: clone(this.diagrams), layers: clone(this.layers), figures: clone(this.figures),
+    selection: new Map([...this.selection].map(([k, v]) => [k, new Set(v)])), active: this.activeDiagram };
+};
+Project.prototype._restore = function (s) {
+  this.datasets = s.datasets.slice(); this.diagrams = clone(s.diagrams); this.layers = clone(s.layers); this.figures = clone(s.figures);
+  this.selection = new Map([...s.selection].map(([k, v]) => [k, new Set(v)]));
+  this.activeDiagram = this.diagram(s.active) ? s.active : (this.diagrams[0]?.id || null);
+};
+const sameState = (a, b) => a.datasets.length === b.datasets.length && a.datasets.every((d, i) => d === b.datasets[i])
+  && JSON.stringify([a.diagrams, a.layers, a.figures]) === JSON.stringify([b.diagrams, b.layers, b.figures]);
+
+Project.prototype._journal = function (label, method, args, run) {
+  if (this._depth > 0) return run();                    // part of an outer step
+  this._depth++;
+  const before = this._snap();
+  let out;
+  try { out = run(); } catch (e) { this._depth--; this._restore(before); throw e; }   // a refused change leaves nothing half-done
+  this._depth--;
+  const after = this._snap();
+  if (sameState(before, after)) return out;              // nothing changed: no step
+  const last = this._undo[this._undo.length - 1], now = Date.now(), key = args && typeof args[0] !== 'object' ? args[0] : null;
+  if (last && COALESCE.has(method) && last.method === method && last.key === key && now - last.at < COALESCE_MS) { last.after = after; last.at = now; }
+  else { this._undo.push({ label, method, key, before, after, at: now }); if (this._undo.length > 200) this._undo.shift(); }
+  this._redo = [];
+  return out;
+};
+/** several changes as ONE undo step: p.batch('open tocher', () => { … }) */
+Project.prototype.batch = function (label, fn) { return this._journal(label, 'batch', [], fn); };
+Project.prototype.canUndo = function () { return this._undo.length > 0; };
+Project.prototype.canRedo = function () { return this._redo.length > 0; };
+Project.prototype.undoLabel = function () { return this._undo.at(-1)?.label || null; };
+Project.prototype.redoLabel = function () { return this._redo.at(-1)?.label || null; };
+Project.prototype.undo = function () {
+  const e = this._undo.pop(); if (!e) return null;
+  this._restore(e.before); this._redo.push(e);
+  this._emit('history', { label: e.label, dir: 'undo' }); return e.label;
+};
+Project.prototype.redo = function () {
+  const e = this._redo.pop(); if (!e) return null;
+  this._restore(e.after); this._undo.push(e);
+  this._emit('history', { label: e.label, dir: 'redo' }); return e.label;
+};
+Project.prototype.clearHistory = function () { this._undo = []; this._redo = []; };
+
+for (const [m, label] of Object.entries(JOURNALED)) {
+  const f = Project.prototype[m];
+  Project.prototype[m] = function (...args) { return this._journal(label, m, args, () => f.apply(this, args)); };
 }

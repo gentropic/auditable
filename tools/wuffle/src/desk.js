@@ -66,7 +66,7 @@ export function mountDesk() {
   layout = createLayout($('.wwork'), { project: p, tree, table, stats, consoleView, select, rotate, onStatus: status });
   const figures = createFigures({ project: p, layout, onStatus: status });
   files = createFiles(root, { project: p, dropHost: $('.wwork'), onOpened: (id) => table.show(id) });
-  const menus = createMenus($('.wmenus'), { project: p, files, layout, theme, figures });
+  const menus = createMenus($('.wmenus'), { project: p, files, layout, theme, figures, onStatus: status });
   tree.onOpenFigure = (id) => figures.open(id);
 
   p.on((e) => {

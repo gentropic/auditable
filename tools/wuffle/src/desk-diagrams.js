@@ -11,7 +11,7 @@ import { orientations } from './io.js';
 import { tok } from './desk-theme.js';
 
 export const ROSE_QUANTITIES = [['strike', 'strike (planes)'], ['dipDirection', 'dip direction (planes)'], ['trend', 'trend (lines)']];
-const REDRAW = new Set(['layer-added', 'layer-removed', 'layer-changed', 'layer-moved', 'layers-removed', 'rows-changed', 'project-loaded']);
+const REDRAW = new Set(['layer-added', 'layer-removed', 'layer-changed', 'layer-moved', 'layers-removed', 'rows-changed', 'project-loaded', 'history']);
 
 /** a dataset's azimuths for a rose */
 export function roseAzimuths(ds, quantity) {
