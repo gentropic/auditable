@@ -12,9 +12,9 @@ export const TOOLS = [['pick', 'pick', 'click a measurement (⇧ adds, Ctrl togg
   ['cone', 'cone', 'drag from an axis: everything within that angle'], ['band', 'band', 'drag along a great circle: everything within the band']];
 const NS = 'http://www.w3.org/2000/svg';
 
-// bearing's net.unproject already returns a WORLD direction (it undoes the net's rotation itself, despite
-// its doc comment saying "view frame") — so a picked direction is used as it comes. Guarded by the desk smoke's
-// rotated-net check, which caught a second rotation here.
+// bearing's net.unproject returns a WORLD direction (its doc says so: it undoes the net's rotation itself),
+// so a picked direction is used as it comes. Guarded by the desk smoke's rotated-net check, which caught a
+// second rotation here.
 
 export function createSelectTools({ project: p, onStatus = () => {} }) {
   let tool = 'pick', bandWidth = 10;

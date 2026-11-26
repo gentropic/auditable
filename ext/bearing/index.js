@@ -1,4 +1,4 @@
-// ⚠ VENDORED — DO NOT EDIT. @gcu/bearing v0.3.0, built ESM bundle.
+// ⚠ VENDORED — DO NOT EDIT. @gcu/bearing v0.3.1, built ESM bundle.
 // Source of truth: gentropic/bearing.js (dist/bearing.mjs). Update with:
 //   node ext/bearing/sync.mjs
 // See ext/bearing/README.md.
@@ -844,12 +844,14 @@ var defaults = {
 var DEG2 = Math.PI / 180;
 function rimInverse(inverseFn, px, py, projR) {
   const r23 = px * px + py * py, R2 = projR * projR;
-  if (r23 > R2) {
-    const k = projR / Math.sqrt(r23);
-    px *= k;
-    py *= k;
+  if (r23 <= R2) return inverseFn(px, py);
+  if (projR > 1) {
+    if (r23 >= 4) return null;
+    const s = Math.sqrt(1 - r23 / 4);
+    return [px * s, py * s, r23 / 2 - 1];
   }
-  return inverseFn(px, py);
+  const d = 1 + r23;
+  return [2 * px / d, 2 * py / d, (r23 - 1) / d];
 }
 function densityGrid(dcos, options = {}) {
   if (options.grid) return options.grid;
@@ -3355,12 +3357,14 @@ function principalStresses(stress) {
 }
 function rimInverse2(inverseFn, px, py, projR) {
   const r23 = px * px + py * py, R2 = projR * projR;
-  if (r23 > R2) {
-    const k = projR / Math.sqrt(r23);
-    px *= k;
-    py *= k;
+  if (r23 <= R2) return inverseFn(px, py);
+  if (projR > 1) {
+    if (r23 >= 4) return null;
+    const s = Math.sqrt(1 - r23 / 4);
+    return [px * s, py * s, r23 / 2 - 1];
   }
-  return inverseFn(px, py);
+  const d = 1 + r23;
+  return [2 * px / d, 2 * py / d, (r23 - 1) / d];
 }
 function dihedraGrid(planes, slips, options = {}) {
   const projection = options.projection || "equal-area";
