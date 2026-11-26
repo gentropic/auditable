@@ -1,10 +1,29 @@
-% the title page: basalt, the name large, a thin amber rule (the micro manual's, renamed)
+% THE COVER — a GCU field manual: the tool's own figure, drawn from its own sample data at build time
+% (cover/art.mjs), rising out of the page like the subject of a plate, with a caption saying exactly what
+% it is. Shared across the series: basalt ground, the kicker, the name in the display face, the amber rule,
+% the caption at the foot. Individual: the figure and its palette.
 \begin{titlepage}
 \begin{tikzpicture}[remember picture, overlay]
   \fill[basalt] (current page.south west) rectangle (current page.north east);
-  \node[anchor=north west, inner sep=0pt, text=white, font=\displayfont\fontsize{96}{96}\selectfont] at ([xshift=24mm, yshift=-70mm]current page.north west) {wuffle};
-  \fill[amberlight] ([xshift=24mm, yshift=-104mm]current page.north west) rectangle ([xshift=60mm, yshift=-105.6mm]current page.north west);
-  \node[anchor=north west, inner sep=0pt, text=basalttext, text width=140mm, font=\displaylight\fontsize{20}{26}\selectfont] at ([xshift=24mm, yshift=-114mm]current page.north west) {a stereonet workbench and a geological compass\\[2mm]\textcolor{amberlight}{the manual}};
-  \node[anchor=south west, inner sep=0pt, text=basalttext, font=\sffamily\small, text width=150mm] at ([xshift=24mm, yshift=24mm]current page.south west) {Geoscientific Chaos Union\enskip·\enskip gentropic.org/wuffle\\[1mm]\textcolor{faint}{\today}};
+  % the figure: the Tocher net, a disc 250 mm across, centred off the lower right so the page crops it
+  \node[inner sep=0pt, anchor=center] at ([xshift=6mm, yshift=72mm]current page.south east)
+    {\IfFileExists{cover/art.png}{\includegraphics[width=250mm]{cover/art.png}}{}};
+  % the kicker, the name, the rule, the subtitle
+  \node[anchor=north west, inner sep=0pt, text=amberlight, font=\displayfont\small\addfontfeatures{LetterSpace=18}]
+    at ([xshift=24mm, yshift=-40mm]current page.north west) {A GCU FIELD MANUAL};
+  \node[anchor=north west, inner sep=0pt, text=white, font=\displayfont\fontsize{110}{110}\selectfont]
+    at ([xshift=21mm, yshift=-52mm]current page.north west) {wuffle};
+  \fill[amberlight] ([xshift=24mm, yshift=-93mm]current page.north west) rectangle ([xshift=64mm, yshift=-94.4mm]current page.north west);
+  \node[anchor=north west, inner sep=0pt, text=basalttext, text width=118mm, font=\displaylight\fontsize{19}{25}\selectfont]
+    at ([xshift=24mm, yshift=-101mm]current page.north west) {a stereonet workbench and\\a geological compass, in one file};
+  % the foot: the caption of the figure, then who and where
+  \node[anchor=south west, inner sep=0pt, text=basalttext!80!basalt, text width=64mm, font=\sffamily\scriptsize, align=left]
+    at ([xshift=24mm, yshift=36mm]current page.south west)
+    {\textcolor{amberlight}{Cover.} The Tocher (1979) sample, 200 planes, drawn by wuffle on a lower-hemisphere
+     equal-area net: a Fisher-kernel density field, Kamb contours at 2$\sigma$ intervals ($k = 3$), every
+     great circle and every pole.};
+  \node[anchor=south west, inner sep=0pt, text=basalttext, font=\sffamily\small, text width=84mm]
+    at ([xshift=24mm, yshift=20mm]current page.south west)
+    {Geoscientific Chaos Union\enskip·\enskip gentropic.org/wuffle\\[1mm]\textcolor{faint}{\today}};
 \end{tikzpicture}
 \end{titlepage}

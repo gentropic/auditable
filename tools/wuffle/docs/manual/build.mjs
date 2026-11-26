@@ -209,6 +209,12 @@ function phasePdf() {
 }
 
 if (want('commands')) await phaseCommands();
+// cover — the cover's figure, drawn by wuffle's maths from its own sample (cover/art.mjs → cover/art.png);
+// also run before a pdf when the art is missing, so a fresh checkout's cover isn't blank
+if (want('cover') || (want('pdf') && !existsSync(join(HERE, 'cover', 'art.png')))) {
+  const r = spawnSync(process.execPath, [join(HERE, 'cover', 'art.mjs')], { stdio: 'inherit' });
+  if (r.status !== 0) { console.log('cover: FAILED'); process.exitCode = 1; }
+}
 if (want('shots')) await phaseShots(await readWanted());
 if (want('print') || want('pdf')) await phasePrint();
 if (want('pdf')) phasePdf();
