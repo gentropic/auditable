@@ -2062,7 +2062,9 @@ if (target === 'wuffle') {
     // src/ modules import ext packages by relative path (so Node tests resolve them): the same bundled copy
     '../../../ext/bearing/index.js': '#bearing', '../../../ext/leadacid/index.js': '#leadacid', '../../../ext/wmm/index.js': '#wmm',
     // the desk workbench's GCU components
-    '../../../ext/rails/index.js': '#rails', '../../../ext/menu/index.js': '#menu', '../../../ext/dialog/index.js': '#dialog', '../../../ext/loom/index.js': '#loom', '../../../ext/stereonet/index.js': '#stereonet', '../../../ext/compo/index.js': '#compo' };
+    '../../../ext/rails/index.js': '#rails', '../../../ext/menu/index.js': '#menu', '../../../ext/dialog/index.js': '#dialog', '../../../ext/loom/index.js': '#loom', '../../../ext/stereonet/index.js': '#stereonet', '../../../ext/compo/index.js': '#compo',
+    // the console: a terminal, the geas shell, its filesystem
+    '../../../ext/term/index.js': '#term', '../../../ext/geas/index.js': '#geas', '../../../ext/vfs/index.js': '#vfs' };
   const libs = [
     ['bearing', 'ext/bearing/index.js'],
     ['leadacid', 'ext/leadacid/index.js'],
@@ -2073,6 +2075,9 @@ if (target === 'wuffle') {
     ['loom', 'ext/loom/index.js'],
     ['stereonet', 'ext/stereonet/index.js'],
     ['compo', 'ext/compo/index.js'],
+    ['term', 'ext/term/index.js'],
+    ['geas', 'ext/geas/index.js'],
+    ['vfs', 'ext/vfs/index.js'],
   ];
   const modules = [];
   for (const [name, rel] of libs) {

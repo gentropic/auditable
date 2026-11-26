@@ -130,7 +130,7 @@ export function createSelectTools({ project: p, onStatus = () => {} }) {
   function setTool(t) { tool = t; refreshBars(); }
   function clearShapes() { shapes.clear(); for (const v of views) drawShape(v, null); }
   function detach(view) { views.delete(view); shapes.delete(view); }
-  addEventListener('keydown', (e) => { if (e.key === 'Escape' && document.body.classList.contains('desk')) clearShapes(); });
+  addEventListener('keydown', (e) => { if (e.key === 'Escape' && document.body.classList.contains('desk') && !/^(INPUT|TEXTAREA)$/.test(e.target?.tagName)) clearShapes(); });
 
   return { attach, detach, setTool, get tool() { return tool; }, apply, clearShapes, setBandWidth: (w) => { bandWidth = w; }, shapeOf: (v) => shapes.get(v) || null };
 }

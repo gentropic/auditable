@@ -114,18 +114,16 @@ body.desk > [hidden] { display:none !important; }   /* the field page's own disp
 /* a figure (compo's editor brings its own styles) */
 .wfig-host { flex:1; min-height:0; display:flex; flex-direction:column; }
 
-/* the console */
-.wcon { flex:1; min-height:0; display:flex; flex-direction:column; background:var(--w-bg-deep); font:12px var(--w-mono); }
-.wcon-log { flex:1; min-height:0; overflow:auto; padding:6px 10px; white-space:pre-wrap; }
-.wcon-line { color:var(--w-text-mid); line-height:1.45; }
-.wcon-line.echo { color:var(--w-text); }
-.wcon-line.out { color:var(--w-text-mid); padding-left:14px; }
-.wcon-line.err { color:var(--w-red); padding-left:14px; }
-.wcon-line.note { color:var(--w-text-soft); }
-.wcon-row { display:flex; align-items:center; gap:6px; padding:4px 10px; border-top:1px solid var(--w-border); }
-.wcon-prompt { color:var(--w-blue); }
-.wcon-in { flex:1; font:12px var(--w-mono); background:transparent; color:var(--w-text); border:0; outline:none; }
-.wcon-in::placeholder { color:var(--w-text-soft); }
+/* the console: @gcu/term (structure in term.css), coloured from wuffle's tokens so both themes follow */
+.wcon { flex:1; min-height:0; overflow:hidden; padding:6px 8px; background:var(--w-net-bg); cursor:text; }
+.wcon .screen { font:12px/1.4 var(--w-mono); color:var(--gcu-term-fg); background:var(--gcu-term-bg);
+  --gcu-term-fg:var(--w-text); --gcu-term-bg:var(--w-net-bg); --gcu-term-cursor:var(--w-orange);
+  --gcu-term-color-0:var(--w-bg-bright); --gcu-term-color-1:var(--w-red); --gcu-term-color-2:var(--w-green); --gcu-term-color-3:var(--w-orange);
+  --gcu-term-color-4:var(--w-blue); --gcu-term-color-5:var(--w-violet); --gcu-term-color-6:var(--w-blue); --gcu-term-color-7:var(--w-text-mid);
+  --gcu-term-color-8:var(--w-text-soft); --gcu-term-color-9:var(--w-red); --gcu-term-color-10:var(--w-green); --gcu-term-color-11:var(--w-yellow);
+  --gcu-term-color-12:var(--w-blue); --gcu-term-color-13:var(--w-violet); --gcu-term-color-14:var(--w-blue); --gcu-term-color-15:var(--w-text); }
+.wcon .screen .row { height:1.4em; }
+.wcon .screen .cur { background:var(--gcu-term-cursor); }
 
 /* the properties dialog */
 .wprow { display:grid; grid-template-columns:130px 1fr; align-items:center; gap:10px; margin:6px 0; color:var(--w-text-mid); }

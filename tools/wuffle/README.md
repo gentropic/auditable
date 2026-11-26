@@ -42,8 +42,14 @@ console** below. Everything runs offline in the one file.
   lineage: the mean, the eigenvectors, a β diagram, the intersection of two layers.
 - **Rose diagrams** (strike, dip direction or trend) and **fabric plots** (Vollmer, Woodcock).
 - **Drag a net to rotate it** (arcball); the console's `rotate 045→30` centres it.
-- **Console** (`` ` ``): `sample tocher`, `contour kamb 3`, `select cone 150/60 20`, `stats`,
-  `mean`, `beta`, `intersect a b`, `rotate`, `history` — a routine is just lines.
+- **Console** (`` ` ``) — a real shell: [geas](../../ext/geas/) on [@gcu/term](../../ext/term/),
+  with wuffle's commands as builtins (`sample tocher`, `contour kamb 3`, `select cone 150/60 20`,
+  `stats`, `mean`, `beta`, `intersect a b`, `rotate`, `undo`, `history`) beside `ls`, `cat`,
+  `grep`, `sed`, `awk`, `tar`… Pipes, `$(…)`, loops and functions work around them
+  (`stats tocher | grep mean`, `for m in fisher kamb; do contour $m; done`); a routine is a
+  shell script (`. /home/routine.sh`). Tab completes, ↑ recalls. Files live in `/home` and `/tmp`.
+- **Undo / redo** (Ctrl+Z, Ctrl+Shift+Z, Edit menu, `undo` in the console): every change to the
+  project, whoever made it — the menus, a drag, the console.
 - **Figures**: Figure → *New figure from the active net* opens a @gcu/compo page (the net
   as vectors, a legend, the statistics, a caption saying what is drawn); export PDF or PNG;
   *↻ from the net* redraws it after changes. Figures are kept in the `.wuffle` project.
@@ -87,7 +93,7 @@ node build.js --target=wuffle     # → wuffle.html (registry build: bearing, le
                                   #   menu, dialog, loom, stereonet, compo + the src/ modules)
 npm run test:wuffle               # the compass, over the built file (?field)
 npm run test:wuffle:bench         # the compass in the mocked lead-acid shell
-npm run test:wuffle:desk          # the desk, dev tree AND built file (36 checks: real drags, console, figures…)
+npm run test:wuffle:desk          # the desk, dev tree AND built file (40 checks: real drags, the shell, undo, figures…)
 node --test test/wuffle-*.test.mjs test/stereonet-*.test.mjs   # the pure modules (in npm test)
 node tools/wuffle/dev/gen-samples.mjs                          # after changing samples/*.csv
 ```

@@ -31,7 +31,7 @@ export function createMenus(host, { project: p, files, layout, theme, figures, o
     field: () => { const u = new URL(location.href); u.searchParams.delete('desk'); u.searchParams.set('field', ''); location.href = u.toString(); },
     about: () => alert(ABOUT),
     figure: async () => { try { figures.newFigure(); } catch (e) { await alert(e.message); } },
-    console: () => { layout.focusConsole(); document.querySelector('.wcon-in')?.focus(); },
+    console: () => { layout.focusConsole(); setTimeout(() => document.querySelector('.wcon textarea')?.focus(), 0); },
   };
   const bar = new MenuBar(host, () => [
     { label: 'File', items: () => [

@@ -191,19 +191,32 @@ for (const [label, url] of [['dev', '/tools/wuffle/index.html'], ['built', '/wuf
   await p.evaluate(() => { document.activeElement?.blur(); });
   await p.keyboard.press('`');
   await p.waitForTimeout(200);
-  const focused = await p.evaluate(() => document.activeElement?.classList.contains('wcon-in'));
-  const typed = async (line) => { await p.fill('.wcon-in', line); await p.press('.wcon-in', 'Enter'); await p.waitForTimeout(150); };
-  await p.evaluate(() => { const W = window.__wuffleDesk; W.project.setActive(W.project.diagrams[0].id); });
+  const focused = await p.evaluate(() => !!document.activeElement?.closest?.('.wcon'));
+  const typed = async (line) => { await p.keyboard.type(line); await p.keyboard.press('Enter'); await p.waitForTimeout(250); };
+  await p.evaluate(() => { const W = window.__wuffleDesk; W.project.setActive(W.project.diagrams[0].id); return W.console.ready; });
   await typed('select cone 150/60 20');
   await typed('stats tocher');
   await typed('nonsense');
   const con = await p.evaluate(() => {
     const W = window.__wuffleDesk, P = W.project, ds = P.datasets.find((d) => d.name === 'tocher');
-    return { sel: P.selected(ds.id).length, lines: [...document.querySelectorAll('.wcon-line')].map((l) => l.className.split(' ').pop() + ':' + l.textContent.slice(0, 60)),
-      shape: !!W.views.get(P.diagrams[0].id)?.stage.querySelector('.wsel-shape') };
+    return { sel: P.selected(ds.id).length, tr: W.console.transcript, shape: !!W.views.get(P.diagrams[0].id)?.stage.querySelector('.wsel-shape'),
+      screen: document.querySelector('.wcon .screen')?.textContent || '' };
   });
-  chk(`${label}: \` opens the console (${focused}); “select cone 150/60 20” selects (${con.sel}) and draws its cone (${con.shape}); “stats” answers; a bad line says so`,
-    focused && con.sel > 0 && con.shape && con.lines.some((l) => /^out:.*n 200/.test(l)) && con.lines.some((l) => /^err:unknown command/.test(l)));
+  chk(`${label}: \` opens the console (${focused}); typed “select cone 150/60 20” selects (${con.sel}) and draws its cone (${con.shape}); “stats” answers; a bad line says so; the terminal shows it`,
+    focused && con.sel > 0 && con.shape && /n 200/.test(con.tr) && /nonsense: command not found/.test(con.tr) && /n 200/.test(con.screen));
+
+  // ── it is a shell: pipes, loops and $(…) around wuffle's commands; Tab completes ──
+  await typed('stats tocher | grep -c mean');
+  await typed('for m in fisher kamb; do contour $m; done');
+  await typed('echo "$(layers | wc -l) layer lines" > /home/n.txt; cat /home/n.txt');
+  await p.keyboard.type('sam'); await p.keyboard.press('Tab'); await p.waitForTimeout(100); await p.keyboard.type('tocher'); await p.keyboard.press('Enter'); await p.waitForTimeout(250);
+  const sh = await p.evaluate(async () => {
+    const W = window.__wuffleDesk, P = W.project, L = P.layersOf(P.diagrams[0].id)[0];
+    const r = await W.console.run('undo');
+    return { tr: W.console.transcript, method: L && P.layer(L.id)?.elements.contours.method, hist: W.console.history.slice(-5), run: r };
+  });
+  chk(`${label}: a pipe (stats | grep -c), a for loop (contour → ${sh.method}), $(…) into a file in /home, Tab completed “sam” → sample; run() answers ${JSON.stringify(sh.run).slice(0, 60)}`,
+    /^1$/m.test(sh.tr) && sh.method === 'kamb' && /\d+ layer lines/.test(sh.tr) && sh.hist.includes('sample tocher') && sh.run.ok && /undid/.test(sh.run.text));
 
   // ── rotating: a drag on the net (pick tool) turns it; a click afterwards still picks ──
   await p.evaluate(() => { const W = window.__wuffleDesk; W.select.setTool('pick'); W.project.setActive(W.project.diagrams[0].id); W.rails.activateTab('diag:' + W.project.diagrams[0].id); });
