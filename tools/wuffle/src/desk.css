@@ -91,6 +91,11 @@ body.desk > [hidden] { display:none !important; }   /* the field page's own disp
 .wt-head { font:11px var(--w-mono); color:var(--w-text-mid); padding:3px 8px; border-bottom:1px solid var(--w-border); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .wt-body { flex:1; min-height:0; position:relative; }
 
+/* rose and fabric diagrams */
+.wdg-plain svg, .wdg-paper svg { display:block; max-width:100%; height:auto; }
+.wdg-paper { background:#FBFAF8; border-radius:4px; padding:10px; box-shadow:0 2px 12px rgba(0,0,0,.3); }
+.wdg-note { color:var(--w-text-soft); font:12px var(--w-sans); text-align:center; max-width:40ch; }
+
 /* the statistics panel */
 .wst-panel { flex:1; min-height:0; overflow:auto; padding:8px 10px; background:var(--w-bg-raised); display:flex; flex-wrap:wrap; gap:10px; align-content:flex-start; }
 .wst-title { width:100%; font:11px var(--w-mono); color:var(--w-text-soft); }

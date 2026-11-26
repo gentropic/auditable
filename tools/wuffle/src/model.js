@@ -29,7 +29,7 @@ const DEFAULT_SETTINGS = {
 };
 export const DIAGRAM_DEFAULTS = {
   net: { projection: 'equal-area', hemisphere: 'lower', rotation: null, graticule: 10 },
-  rose: { bins: 10, axial: true, scale: 'area', column: null },
+  rose: { bins: 10, axial: true, scale: 'area', quantity: 'strike', column: null },
   fabric: { plot: 'vollmer' },
 };
 

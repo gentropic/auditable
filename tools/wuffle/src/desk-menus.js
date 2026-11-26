@@ -12,11 +12,19 @@ export const ABOUT = 'wuffle — a stereonet workbench and a field compass, one 
   + 'Tocher, F. E. (1979), The computer contouring of fabric diagrams, Computers & Geosciences 5, 73–126.';
 
 export function createMenus(host, { project: p, files, layout, theme }) {
+  // a new diagram shows what the active one shows (views of the same data), so a rose of the net's sets is one click
+  const newDiagram = (kind) => {
+    const from = p.activeDiagram, id = p.addDiagram(kind);
+    if (from) for (const L of p.layersOf(from)) p.addView(L.id, id);
+    p.setActive(id); layout.focusDiagram(id);
+  };
   const commands = {
     open: () => files.pick(),
     tocher: () => files.addData(TOCHER, 'tocher.csv'),
     save: () => files.save(),
-    newnet: () => { const id = p.addDiagram('net'); p.setActive(id); layout.focusDiagram(id); },
+    newnet: () => newDiagram('net'),
+    newrose: () => newDiagram('rose'),
+    newfabric: () => newDiagram('fabric'),
     rmnet: () => { if (p.activeDiagram) p.removeDiagram(p.activeDiagram); },
     field: () => { const u = new URL(location.href); u.searchParams.delete('desk'); u.searchParams.set('field', ''); location.href = u.toString(); },
     about: () => alert(ABOUT),
@@ -30,7 +38,10 @@ export function createMenus(host, { project: p, files, layout, theme }) {
     ] },
     { label: 'Diagram', items: () => [
       { label: 'New net', action: 'newnet' },
-      { label: 'Remove the active net', action: 'rmnet', disabled: !p.activeDiagram, danger: true },
+      { label: 'New rose diagram', action: 'newrose' },
+      { label: 'New fabric plot', action: 'newfabric' },
+      '---',
+      { label: 'Remove the active diagram', action: 'rmnet', disabled: !p.activeDiagram, danger: true },
     ] },
     { label: 'View', items: () => [
       { label: 'Theme', children: THEMES.map(([k, t]) => ({ label: t, action: 'theme:' + k, checked: theme.pref === k, group: 'theme' })) },

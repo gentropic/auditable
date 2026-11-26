@@ -4,6 +4,7 @@
 
 import { createRails, findTab } from '../../../ext/rails/index.js';
 import { NetView } from './desk-net.js';
+import { RoseView, FabricView } from './desk-diagrams.js';
 
 const tabOf = (g) => ({ id: 'diag:' + g.id, title: g.name, closeable: false, diagramId: g.id });
 
@@ -22,7 +23,11 @@ export function createLayout(host, { project: p, tree, table, stats, select, onS
       if (tab.id === 'tree') return tree.el;
       if (tab.id === 'table') return table.el;
       if (tab.id === 'stats') return stats.el;
-      if (tab.diagramId) { const v = new NetView(p, tab.diagramId, { onStatus }); views.set(tab.diagramId, v); select?.attach(v); return v.el; }
+      if (tab.diagramId) {
+        const kind = p.diagram(tab.diagramId)?.kind;
+        const v = kind === 'rose' ? new RoseView(p, tab.diagramId) : kind === 'fabric' ? new FabricView(p, tab.diagramId) : new NetView(p, tab.diagramId, { onStatus });
+        views.set(tab.diagramId, v); if (kind === 'net') select?.attach(v); return v.el;
+      }
       return document.createElement('div');
     },
     onPanelDestroy(tab) { if (tab.diagramId) { const v = views.get(tab.diagramId); if (v) { select?.detach(v); v.destroy(); } views.delete(tab.diagramId); } },

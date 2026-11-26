@@ -170,6 +170,22 @@ for (const [label, url] of [['dev', '/tools/wuffle/index.html'], ['built', '/wuf
   chk(`${label}: the statistics panel shows the mean, κ, α and the eigen analysis; “mean → dataset” adds a dataset (${st.added}) drawn on the net (${st.drawn}) with lineage “${st.lineage}”`,
     st.hasMean && st.hasK && st.added === 1 && st.drawn === 1 && st.lineage === 'mean' && st.rows === 1);
 
+  // ── a rose and a fabric plot: new diagrams inherit the active net's layers (views of the same data) ──
+  const dg = await p.evaluate(async () => {
+    const W = window.__wuffleDesk, P = W.project, wait = (ms) => new Promise((z) => setTimeout(z, ms));
+    W.rails.activateTab('diag:' + P.diagrams[0].id); P.setActive(P.diagrams[0].id); await wait(100);
+    W.menus.run('newrose'); await wait(400);
+    const rose = P.diagrams[P.diagrams.length - 1], rv = W.views.get(rose.id);
+    const r = { kind: rose.kind, layers: P.layersOf(rose.id).length, n: rv?.el.dataset.n, svg: !!rv?.el.querySelector('svg path') };
+    P.setDiagramProps(rose.id, { quantity: 'dipDirection', bins: 20 }); await wait(200);
+    r.n2 = rv.el.dataset.n;
+    W.menus.run('newfabric'); await wait(400);
+    const fab = P.diagrams[P.diagrams.length - 1], fv = W.views.get(fab.id);
+    return { r, f: { kind: fab.kind, svg: !!fv?.el.querySelector('.wdg-paper svg'), n: fv?.el.dataset.n } };
+  });
+  chk(`${label}: a rose diagram of the net's layers (${dg.r.layers} layers, ${dg.r.n} azimuths, then by dip direction ${dg.r.n2}); a fabric plot on paper (${dg.f.n} point${dg.f.n === '1' ? '' : 's'})`,
+    dg.r.kind === 'rose' && dg.r.layers >= 2 && dg.r.svg && +dg.r.n >= 200 && dg.r.n2 === dg.r.n && dg.f.kind === 'fabric' && dg.f.svg && +dg.f.n >= 1);
+
   try { await p.screenshot({ path: path.join(root, `experiments/wuffle-desk-${label}.png`) }); } catch { /* for a person */ }
   chk(`${label}: the desk opens with layers · Net 1 · table · statistics, the field page hidden (${s && JSON.stringify(r.tabs)})`, r.tabs && r.tabs.join() === 'layers,Net 1,table,statistics' && r.fieldHidden);
   chk(`${label}: File → Open the tocher sample → ${s.ds && s.ds.n} planes (not guessed: ${s.ds && !s.ds.guessed}), ${s.svgCircles} circles drawn`, s.ds && s.ds.n === 200 && !s.ds.guessed && s.svgCircles >= 200);

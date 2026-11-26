@@ -132,10 +132,19 @@ export class TreeView {
   }
   async _diagramMenu(e, g) {
     e.preventDefault();
-    const a = await Menu.show([
-      { label: 'Rename…', action: 'rename' },
+    const kindItems = g.kind === 'rose' ? [
+      { label: 'Quantity', children: [['strike', 'strike (planes, axial)'], ['dipDirection', 'dip direction (planes)'], ['trend', 'trend (lines)']].map(([k, t]) => ({ label: t, action: 'q:' + k, checked: (g.props.quantity || 'strike') === k, group: 'q' })) },
+      { label: 'Sector', children: [5, 10, 15, 20, 30].map((b) => ({ label: `${b}°`, action: 'bins:' + b, checked: g.props.bins === b, group: 'b' })) },
+      { label: 'Scale', children: [['area', 'area-true (√)'], ['linear', 'linear']].map(([k, t]) => ({ label: t, action: 'scale:' + k, checked: (g.props.scale || 'area') === k, group: 's' })) },
+    ] : g.kind === 'fabric' ? [
+      { label: 'Plot', children: [['vollmer', 'Vollmer P–G–R'], ['woodcock', 'Woodcock K–C']].map(([k, t]) => ({ label: t, action: 'plot:' + k, checked: g.props.plot === k, group: 'f' })) },
+    ] : [
       { label: 'Projection', children: [{ label: 'equal-area (Schmidt)', action: 'proj:equal-area', checked: g.props.projection === 'equal-area', group: 'p' }, { label: 'equal-angle (Wulff)', action: 'proj:equal-angle', checked: g.props.projection === 'equal-angle', group: 'p' }] },
       { label: 'Hemisphere', children: [{ label: 'lower', action: 'hemi:lower', checked: g.props.hemisphere === 'lower', group: 'h' }, { label: 'upper', action: 'hemi:upper', checked: g.props.hemisphere === 'upper', group: 'h' }] },
+    ];
+    const a = await Menu.show([
+      { label: 'Rename…', action: 'rename' },
+      ...kindItems,
       '---',
       { label: 'Remove diagram', action: 'remove', danger: true },
     ], { x: e.clientX, y: e.clientY });
@@ -143,6 +152,10 @@ export class TreeView {
     if (a === 'rename') { const n = await prompt('Name of the diagram', { defaultValue: g.name }); if (n) this.p.renameDiagram(g.id, n); }
     else if (a.startsWith('proj:')) this.p.setDiagramProps(g.id, { projection: a.slice(5) });
     else if (a.startsWith('hemi:')) this.p.setDiagramProps(g.id, { hemisphere: a.slice(5) });
+    else if (a.startsWith('q:')) this.p.setDiagramProps(g.id, { quantity: a.slice(2) });
+    else if (a.startsWith('bins:')) this.p.setDiagramProps(g.id, { bins: +a.slice(5) });
+    else if (a.startsWith('scale:')) this.p.setDiagramProps(g.id, { scale: a.slice(6) });
+    else if (a.startsWith('plot:')) this.p.setDiagramProps(g.id, { plot: a.slice(5) });
     else if (a === 'remove') { if (await confirm(`Remove “${g.name}”? Its layers go; the data stays.`, { okLabel: 'Remove', danger: true })) this.p.removeDiagram(g.id); }
   }
   async _dataMenu(e, ds) {
