@@ -110,3 +110,20 @@ describe('parseDelimited', () => {
     assert.equal(parseDelimited('x|y\n1|2\n').delimiter, '|');
   });
 });
+
+describe('one attitude column: the arrow decides', () => {
+  it('a column of trend→plunge (or >) is lines, read as lines', () => {
+    const [d] = readTable('att\n045→30\n310→70\n200>20\n', 'x');
+    assert.equal(d.kind, 'lines');
+    assert.deepEqual(orientations(d).map((o) => o.line), [[45, 30], [310, 70], [200, 20]]);
+  });
+  it('a column mixing planes and lines splits into two datasets', () => {
+    const r = readTable('att\n045/30\n310→70\n120/40\n', 'x');
+    assert.deepEqual(r.map((d) => [d.name, d.kind, d.rows.length]), [['x · planes', 'planes', 2], ['x · lines', 'lines', 1]]);
+    assert.deepEqual(orientations(r[1]).map((o) => o.line), [[310, 70]]);
+  });
+  it('a guess over named columns says they are names wuffle doesn\'t know, not "no named columns"', () => {
+    assert.match(readTable('azimuth,inclination\n10,20\n30,40\n', 'x')[0].meta.read.why, /^no column names wuffle knows/);
+    assert.match(readTable('10,20\n30,40\n', 'x')[0].meta.read.why, /^no named columns/);
+  });
+});

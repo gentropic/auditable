@@ -125,3 +125,16 @@ describe('attitudes as text', () => {
     assert.equal(formatLine([-15, 5]), '345→05');
   });
 });
+
+describe('labels', () => {
+  it('a label per measurement, at its pole: d.label, else the row number; selected rows in the selection colour', () => {
+    const data = tocher.slice(0, 3).map((d, i) => ({ ...d, label: i === 1 ? 'S2' : undefined }));
+    const s = core.buildScene({ layers: [layer({ data, selected: [2], elements: { poles: { on: false }, labels: { on: true } } })], colors: { selected: '#abcdef' } });
+    const t = s.primitives.filter((p) => p.type === 'text');
+    assert.deepEqual(t.map((x) => x.content), ['1', 'S2', '3']);
+    assert.equal(t[2].style.fill, '#abcdef');
+    const [tr, pl] = B.conversions.dcosToLine(tocher[0].pole);
+    assert.ok(Math.abs(t[0].trend - tr) < 1e-9 && Math.abs(t[0].plunge - pl) < 1e-9);
+    assert.match(core.renderScene(s, { size: 300 }).net.svg(), />S2</);
+  });
+});

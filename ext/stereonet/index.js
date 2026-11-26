@@ -80,7 +80,7 @@ function stereonetCore(B) {
       const on = (n) => !!E[n]?.on;
 
       if (on('contours') && axes.length > 2) {
-        if (contoured) notes.push(`contours: one set per net — “${L.id}” is under “${contoured}”'s`);
+        if (contoured) notes.push(`contours: one set per net — “${L.id}” isn’t contoured; the contours are “${contoured}”’s`);
         else {
           contoured = L.id;
           const kamb = (E.contours.method || 'kamb') === 'kamb';
@@ -145,6 +145,14 @@ function stereonetCore(B) {
         if (d.plane) primitives.push({ type: 'pole', dd: d.plane[0], dip: d.plane[1], dcos: d.pole || conversions.planeToDcos(d.plane[0], d.plane[1]), style, ref: { layer: L.id, row: d.row } });
         else if (d.line) primitives.push({ type: 'line', trend: d.line[0], plunge: d.line[1], dcos: d.dcos || conversions.lineToDcos(d.line[0], d.line[1]), style, ref: { layer: L.id, row: d.row } });
       }
+      // labels beside each measurement's point (the pole, the line, a fault's slickenline): d.label, else the row
+      // number. Drawn whether or not the points are, so a net of great circles can still be read off.
+      if (on('labels')) for (const d of data) {
+        const at = L.kind === 'faults' && d.lineDcos ? conversions.dcosToLine(d.lineDcos) : d.plane ? conversions.dcosToLine(d.pole || conversions.planeToDcos(d.plane[0], d.plane[1])) : d.line;
+        if (!at) continue;
+        primitives.push({ type: 'text', trend: at[0], plunge: at[1], content: d.label ?? String(d.row + 1),
+          style: { fill: chosen.has(d.row) ? C.selected : col, fontSize: 9, dx: 5, dy: -4, textAnchor: 'start' }, layer: L.id });
+      }
     }
     return { primitives, stats, notes };
   }
@@ -181,6 +189,7 @@ function stereonetCore(B) {
       else if (p.type === 'pole') net.pole(p.dd, p.dip, p.style);
       else if (p.type === 'line') net.line(p.trend, p.plunge, p.style);
       else if (p.type === 'curve') net.curve(p.points, p.style);
+      else if (p.type === 'text') net.text(p.trend, p.plunge, p.content, p.style);
       else if (p.type === 'dihedra' && !options.rotation && !options.center) {   // the field is computed in the unrotated projection
         net.contour(p.planes, { grid: fault.dihedraGrid(p.planes, p.slips, { projection: options.projection || 'equal-area', gridSize: 64 }), levels: [0], stroke: p.style.stroke, strokeWidth: p.style.strokeWidth });
       }

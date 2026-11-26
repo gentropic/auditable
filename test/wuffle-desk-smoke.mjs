@@ -317,6 +317,27 @@ for (const [label, url] of [['dev', '/tools/wuffle/index.html'], ['built', '/wuf
   chk(`${label}: a signed field log opens as an original + ${flog.added} datasets (lineage “${flog.lineage}”); verify says “${flog.verify.split('\n')[0].slice(0, 90)}”; /project/field holds ${JSON.stringify(flog.ls.replace(/\s+/g, ' ').slice(0, 90))}; appending to it is refused (${!flog.roOk}); after a .zip.wuffle round trip it still verifies`,
     flog.added === 2 && flog.lineage === 'field log' && /verified/.test(flog.verify) && /wuffle-log\.csv\.sig/.test(flog.ls) && /wuffle-001-x\.jpg/.test(flog.ls) && !flog.roOk && /verified/.test(flog.verify2) && flog.kept);
 
+  // ── found writing the manual: labels draw, a skipped second contour set is SAID on the net, one Apply is one
+  //    undo step, and "remove from everywhere" counts diagrams, not layers ──
+  const man = await p.evaluate(async () => {
+    const W = window.__wuffleDesk, P = W.project, wait = (ms) => new Promise((z) => setTimeout(z, ms));
+    const g = P.addDiagram('net', { name: 'Manual net' }); P.setActive(g); W.rails.activateTab('diag:' + g); await wait(200);
+    const ds = P.datasets.find((d) => d.name === 'tocher') || P.datasets[0];
+    const a = P.addLayer(g, ds.id), b = P.addLayer(g, ds.id);
+    P.setElement(a, 'contours', true); P.setElement(b, 'contours', true); await wait(250);
+    const view = document.querySelector(`.wn-host:has(svg)`) && [...document.querySelectorAll('.wn-host')].find((h) => h.offsetParent);
+    const note = view?.querySelector('.wn-notes'), noteText = note && !note.hidden ? note.textContent : '';
+    const texts0 = view.querySelectorAll('svg text').length;
+    P.setElement(a, 'labels', true); await wait(200);
+    const texts1 = view.querySelectorAll('svg text').length;
+    const n0 = P._undo.length;
+    P.batch('layer properties', () => { P.setLayerStyle(a, { color: '#112233' }); P.setElementSettings(a, 'contours', { method: 'fisher' }); });
+    const steps = P._undo.length - n0;
+    return { noteText, texts0, texts1, steps, rows: ds.rows.length };
+  });
+  chk(`${label}: labels draw (${man.texts0} → ${man.texts1} text marks for ${man.rows} rows); a second contour set is said on the net (“${man.noteText.slice(0, 80)}”); Apply is one undo step (${man.steps})`,
+    man.texts1 - man.texts0 === man.rows && /isn’t contoured/.test(man.noteText) && /tocher/.test(man.noteText) && man.steps === 1);
+
   try { await p.screenshot({ path: path.join(root, `experiments/wuffle-desk-${label}.png`) }); } catch { /* for a person */ }
   chk(`${label}: the desk opens with layers · Net 1 · table · statistics, the field page hidden (${s && JSON.stringify(r.tabs)})`, r.tabs && r.tabs.join() === 'layers,Net 1,table,statistics,console' && r.fieldHidden);
   chk(`${label}: File → Open the tocher sample → ${s.ds && s.ds.n} planes (not guessed: ${s.ds && !s.ds.guessed}), ${s.svgCircles} circles drawn`, s.ds && s.ds.n === 200 && !s.ds.guessed && s.svgCircles >= 200);

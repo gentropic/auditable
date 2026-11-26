@@ -20,7 +20,7 @@
 
 import { createZipStreamWriter, openZipRanged, bytesSource } from '../../../ext/archive/src/zipstream.js';
 import { Project } from './model.js';
-import { parseDelimited } from './io.js';
+import { parseDelimited, readTable } from './io.js';
 import { toCsv, layerBases, fileName as F } from './project-fs.js';
 
 const json = (v) => JSON.stringify(v, null, 2) + '\n';
@@ -94,9 +94,13 @@ export async function readProject(bytes) {
     const meta = JSON.parse((await text(`data/${f}.json`)) || '{}');
     const t = parseDelimited(await text(`data/${f}.csv`));
     const columns = meta.columns && meta.columns.every((c) => t.columns.includes(c)) ? [...meta.columns, ...t.columns.filter((c) => !meta.columns.includes(c))] : t.columns;
+    // a CSV added by hand, with no .json beside it: read its header the way File → Open does (one dataset —
+    // a file the reader would split keeps its first reading here, so a layer naming it still finds it)
+    const sniffed = meta.kind ? null : readTable(await text(`data/${f}.csv`), f.replace(/∕/g, '/'))[0];
     try {
-      dsByFile.set(f, p.addDataset({ name: meta.name || f.replace(/∕/g, '/'), kind: meta.kind || 'planes', rows: t.rows, columns, roles: meta.roles || {},
-        notation: meta.notation || null, lineage: meta.lineage || null, meta: meta.meta || {} }));
+      dsByFile.set(f, p.addDataset(sniffed ? { ...sniffed, name: f.replace(/∕/g, '/'), rows: t.rows, columns: t.columns }
+        : { name: meta.name || f.replace(/∕/g, '/'), kind: meta.kind, rows: t.rows, columns, roles: meta.roles || {},
+          notation: meta.notation || null, lineage: meta.lineage || null, meta: meta.meta || {} }));
     } catch (e) { warnings.push(`data/${f}.csv: ${e.message}`); }
   }
   const gByName = new Map();

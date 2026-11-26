@@ -16,7 +16,10 @@ export class NetView {
     this.p = project; this.id = diagramId; this.onStatus = onStatus || (() => {});
     this.el = document.createElement('div'); this.el.className = 'wn-host'; this.el.tabIndex = 0;
     this.stage = document.createElement('div'); this.stage.className = 'wn-stage';   // the drawing; tools sit beside it
-    this.el.append(this.stage);
+    // what the net could NOT draw, said on the net (a second contour set, dihedra on a rotated net): skipped
+    // silently, it looked like the drawing was all there was
+    this.notesEl = document.createElement('div'); this.notesEl.className = 'wn-notes'; this.notesEl.hidden = true;
+    this.el.append(this.stage, this.notesEl);
     this.net = null; this.picks = []; this.scene = null;
     this.drawn = new Set();   // hooks run after every draw (a tool's overlay, …): fn(view)
     this._ro = new ResizeObserver(() => this.draw());
@@ -46,8 +49,15 @@ export class NetView {
       graticule: g.props.graticule, rotation: g.props.matrix || null, center: g.props.rotation || null, classPrefix: 'wn', theme: netTheme() });
     this.net = out.net; this.picks = out.picks;
     this.stage.replaceChildren(out.svg);
+    const rotated = !!(g.props.matrix || g.props.rotation);
+    const notes = this.scene.notes.map((n) => n.replace(/“(l\d+)”/g, (m, id) => `“${this._layerName(id)}”`));
+    if (rotated && this.scene.primitives.some((q) => q.type === 'dihedra')) notes.push('right dihedra aren’t drawn on a rotated net (Reset rotation to see them)');
+    this.notesEl.replaceChildren(...notes.map((n) => { const d = document.createElement('div'); d.textContent = n; return d; }));
+    this.notesEl.hidden = !notes.length;
     for (const fn of this.drawn) fn(this);
   }
+
+  _layerName(id) { const L = this.p.layer(id); return L ? (L.name || this.p.dataset(L.datasetId)?.name || id) : id; }
 
   /** a pointer event → svg units on the net (and the scale from css px) */
   svgPoint(e) { return this._svgPoint(e); }

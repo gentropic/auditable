@@ -69,14 +69,18 @@ describe('.zip.wuffle', () => {
     const { p } = mk();
     const entries = projectEntries(p);
     entries.set('data/tocher.csv', entries.get('data/tocher.csv').split('\n').slice(0, 11).join('\n') + '\n');   // keep 10 rows
-    entries.set('data/extra.csv', 'dd,dip\n100,20\n');                                                       // a file added by hand
+    entries.set('data/extra.csv', 'dd,dip\n100,20\n');                                                       // files added by hand,
+    entries.set('data/lin.csv', 'trend,plunge\n250,12\n');                                                     // with no .json beside them
     const chunks = []; const zw = createZipStreamWriter({ write: async (b) => { chunks.push(b.slice()); } });
     for (const [k, v] of entries) await zw.add(k, v);
     await zw.finish();
     const bytes = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0)); let o = 0; for (const c of chunks) { bytes.set(c, o); o += c.length; }
     const { project: q } = await readProject(bytes);
     assert.equal(q.datasets.find((x) => x.name === 'tocher').rows.length, 10);
-    assert.ok(q.datasets.find((x) => x.name === 'extra'), 'a csv added by hand is data');
+    // read the way File → Open reads them (their headers sniffed), not as planes with no roles that draw nothing
+    const extra = q.datasets.find((x) => x.name === 'extra'), lin = q.datasets.find((x) => x.name === 'lin');
+    assert.equal(extra.kind, 'planes'); assert.deepEqual(extra.roles, { dipDir: 'dd', dip: 'dip' });
+    assert.equal(lin.kind, 'lines'); assert.deepEqual(lin.roles, { trend: 'trend', plunge: 'plunge' });
   });
   it('a layer whose data is missing is skipped with a warning; a non-project zip is refused clearly', async () => {
     const { p } = mk();

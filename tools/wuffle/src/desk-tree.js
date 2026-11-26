@@ -128,7 +128,8 @@ export class TreeView {
       { label: 'Selection → new dataset', action: 'selds', disabled: !p.selected(ds.id).length },
       '---',
       { label: 'Remove from this diagram', action: 'remove' },
-      { label: `Remove from everywhere${uses.length > 1 ? ` (${uses.length} diagrams)` : ''}`, action: 'everywhere', danger: true },
+      // (counted in DIAGRAMS: a dataset drawn twice on one net is still one diagram)
+      { label: `Remove from everywhere${new Set(uses.map((u) => u.diagramName)).size > 1 ? ` (${new Set(uses.map((u) => u.diagramName)).size} diagrams)` : ''}`, action: 'everywhere', danger: true },
     ], { x: e.clientX, y: e.clientY });
     if (!a) return;
     if (a === 'props') this.properties(L.id);
@@ -148,6 +149,7 @@ export class TreeView {
       { label: 'Quantity', children: [['strike', 'strike (planes, axial)'], ['dipDirection', 'dip direction (planes)'], ['trend', 'trend (lines)']].map(([k, t]) => ({ label: t, action: 'q:' + k, checked: (g.props.quantity || 'strike') === k, group: 'q' })) },
       { label: 'Sector', children: [5, 10, 15, 20, 30].map((b) => ({ label: `${b}°`, action: 'bins:' + b, checked: g.props.bins === b, group: 'b' })) },
       { label: 'Scale', children: [['area', 'area-true (√)'], ['linear', 'linear']].map(([k, t]) => ({ label: t, action: 'scale:' + k, checked: (g.props.scale || 'area') === k, group: 's' })) },
+      { label: 'Count both ends (axial)', action: 'axial', checked: (g.props.quantity || 'strike') === 'strike' || !!g.props.axial, disabled: (g.props.quantity || 'strike') === 'strike' },
     ] : g.kind === 'fabric' ? [
       { label: 'Plot', children: [['vollmer', 'Vollmer P–G–R'], ['woodcock', 'Woodcock K–C']].map(([k, t]) => ({ label: t, action: 'plot:' + k, checked: g.props.plot === k, group: 'f' })) },
     ] : [
@@ -169,6 +171,7 @@ export class TreeView {
     else if (a.startsWith('q:')) this.p.setDiagramProps(g.id, { quantity: a.slice(2) });
     else if (a.startsWith('bins:')) this.p.setDiagramProps(g.id, { bins: +a.slice(5) });
     else if (a.startsWith('scale:')) this.p.setDiagramProps(g.id, { scale: a.slice(6) });
+    else if (a === 'axial') this.p.setDiagramProps(g.id, { axial: !g.props.axial });
     else if (a.startsWith('plot:')) this.p.setDiagramProps(g.id, { plot: a.slice(5) });
     else if (a === 'remove') { if (await confirm(`Remove “${g.name}”? Its layers go; the data stays.`, { okLabel: 'Remove', danger: true })) this.p.removeDiagram(g.id); }
   }
@@ -218,9 +221,11 @@ export class TreeView {
       },
     }).show();
     if (!res) return;
-    p.setLayerStyle(layerId, { color: res.color, size: res.size });
-    if (res.cm) p.setElementSettings(layerId, 'contours', { method: res.cm, sigma: res.cs });
-    if (res.mc) p.setElementSettings(layerId, 'mean', { confidence: res.mc });
-    if (res.lab != null && E.labels) p.setElementSettings(layerId, 'labels', { column: res.lab || null });
+    p.batch('layer properties', () => {                 // one Apply, one undo step
+      p.setLayerStyle(layerId, { color: res.color, size: res.size });
+      if (res.cm) p.setElementSettings(layerId, 'contours', { method: res.cm, sigma: res.cs });
+      if (res.mc) p.setElementSettings(layerId, 'mean', { confidence: res.mc });
+      if (res.lab != null && E.labels) p.setElementSettings(layerId, 'labels', { column: res.lab || null });
+    });
   }
 }

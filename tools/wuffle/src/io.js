@@ -90,6 +90,9 @@ function findRole(columns, role) { return columns.find((c) => ROLE_PATTERNS[role
  * Which columns mean what. → { kind, roles, notation, guessed, why }.
  * kind: 'planes' | 'lines' | 'faults' | 'smallcircles' | 'fieldlog'
  */
+const LINE_TEXT = /^\s*(\d+(?:\.\d+)?)\s*[→>]\s*(\d+(?:\.\d+)?)\s*$/;
+const isLineText = (v) => LINE_TEXT.test(v);
+
 export function sniffRoles(columns, rows) {
   const n = (c) => norm(c);
   if (columns.some((c) => n(c) === 'type') && columns.some((c) => n(c) === 'dipdirortrend')) {
@@ -106,13 +109,20 @@ export function sniffRoles(columns, rows) {
   if (r.trend && r.plunge) return { kind: 'lines', roles: { trend: r.trend, plunge: r.plunge, ...set }, notation: 'dd', guessed: false, why: `${r.trend} → ${r.plunge}` };
   // a single attitude-string column
   const att = columns.find((c) => rows.slice(0, 20).filter((o) => typeof o[c] === 'string' && ATTITUDE.test(o[c])).length >= Math.min(3, rows.length));
-  if (att) return { kind: 'planes', roles: { attitude: att, ...set }, notation: 'text', guessed: true, why: `“${att}” read as dip direction / dip (quadrant letters honoured)` };
+  if (att) {
+    // an arrow makes a line (045→30, or 045>30 typed); a column of only lines is lines, a mix splits in readTable
+    const vals = rows.map((o) => String(o[att] ?? '')).filter((v) => v.trim());
+    const lines = vals.filter(isLineText).length;
+    if (lines && lines === vals.length) return { kind: 'lines', roles: { attitude: att, ...set }, notation: 'text', guessed: true, why: `“${att}” read as trend → plunge` };
+    return { kind: 'planes', roles: { attitude: att, ...set }, notation: 'text', guessed: true, mixed: lines > 0, why: `“${att}” read as dip direction / dip (quadrant letters honoured)${lines ? '; the rows with an arrow as trend → plunge' : ''}` };
+  }
   // the first two numeric columns, as dip direction / dip — unless the second runs past 90
   const numeric = columns.filter((c) => rows.slice(0, 50).every((o) => typeof o[c] === 'number' || o[c] === ''));
   if (numeric.length >= 2) {
     const [a, b] = numeric, past = rows.some((o) => o[b] > 90), aOk = !rows.some((o) => o[a] > 90);
     const [dd, dip] = past && aOk ? [b, a] : [a, b];
-    return { kind: 'planes', roles: { dipDir: dd, dip, ...set }, notation: 'dd', guessed: true, why: `no named columns: ${dd} / ${dip} read as dip direction / dip${past && aOk ? ' (swapped — the second column passes 90)' : ''}` };
+    const named = columns.some((c) => !/^c\d+$/.test(c));   // c1, c2… are the names parseDelimited makes up
+    return { kind: 'planes', roles: { dipDir: dd, dip, ...set }, notation: 'dd', guessed: true, why: `${named ? 'no column names wuffle knows' : 'no named columns'}: ${dd} / ${dip} read as dip direction / dip${past && aOk ? ' (swapped — the second column passes 90)' : ''}` };
   }
   return { kind: 'planes', roles: {}, notation: 'dd', guessed: true, why: 'no orientation columns found' };
 }
@@ -132,6 +142,11 @@ export function readTable(text, name = 'data') {
       if (rows.length) out.push({ name: `${name} · ${kind}`, kind, rows, columns: t.columns, roles, notation: 'dd', meta: { read } });
     }
     return out;
+  }
+  if (s.mixed) {                                          // one attitude column holding planes AND lines → two datasets
+    const isLine = (o) => isLineText(String(o[s.roles.attitude] ?? ''));
+    return [['planes', t.rows.filter((o) => !isLine(o))], ['lines', t.rows.filter(isLine)]]
+      .map(([kind, rows]) => ({ name: `${name} · ${kind}`, kind, rows, columns: t.columns, roles: s.roles, notation: 'text', meta: { read } }));
   }
   return [{ name, kind: s.kind, rows: t.rows, columns: t.columns, roles: s.roles, notation: s.notation, meta: { read } }];
 }
@@ -161,6 +176,13 @@ function planeOf(row, roles, notation) {
 export function orientations(ds) {
   const { roles, notation } = ds;
   return ds.rows.map((row) => {
+    if (ds.kind === 'lines' && roles.attitude) {          // "045→30" in one column
+      const m = String(row[roles.attitude] ?? '').match(LINE_TEXT);
+      if (!m) return null;
+      const tr = +m[1], pl = +m[2];
+      if (pl > 90) return null;
+      return { line: [((tr % 360) + 360) % 360, pl], dcos: conversions.lineToDcos(tr, pl) };
+    }
     if (ds.kind === 'lines' || ds.kind === 'smallcircles') {
       const tr = +row[roles.trend], pl = +row[roles.plunge];
       if (row[roles.trend] === '' || !Number.isFinite(tr) || !Number.isFinite(pl) || pl < -90 || pl > 90) return null;

@@ -213,7 +213,7 @@ async function snapPhoto() {
     c.toBlob((blob) => {
       if (!blob) { resolve(null); return; }
       const m = log[log.length - 1];
-      m.photo = 'wuffle-' + String(m.i).padStart(3, '0') + '-' + m.ts.replace(/[:.]/g, '').slice(0, 15) + '.jpg';
+      m.photo = 'wuffle-' + String(m.i).padStart(3, '0') + '-' + m.ts.replace(/[:.]/g, '').slice(0, 17) + '.jpg';
       photos.set(m.i, blob);
       lastShot = { width: c.width, height: c.height, size: blob.size };
       renderLog();
