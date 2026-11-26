@@ -205,6 +205,22 @@ for (const [label, url] of [['dev', '/tools/wuffle/index.html'], ['built', '/wuf
   chk(`${label}: \` opens the console (${focused}); “select cone 150/60 20” selects (${con.sel}) and draws its cone (${con.shape}); “stats” answers; a bad line says so`,
     focused && con.sel > 0 && con.shape && con.lines.some((l) => /^out:.*n 200/.test(l)) && con.lines.some((l) => /^err:unknown command/.test(l)));
 
+  // ── a figure: Figure → New figure from the active net → compo's editor in a tab, the page drawn ──
+  const fig = await p.evaluate(async () => {
+    const W = window.__wuffleDesk, P = W.project, wait = (ms) => new Promise((z) => setTimeout(z, ms));
+    P.setActive(P.diagrams[0].id); W.rails.activateTab('diag:' + P.diagrams[0].id); await wait(100);
+    W.menus.run('figure'); await wait(800);
+    const f = P.figures[0], tab = [...document.querySelectorAll('.rails-tab')].map((t) => t.textContent.trim()).find((t) => /figure/.test(t));
+    const host = document.querySelector('.wfig-host');
+    const kinds = f && f.doc.frames.map((x) => x.kind);
+    const canvases = host ? host.querySelectorAll('canvas').length : 0;
+    const btns = host ? [...host.querySelectorAll('button')].map((b) => b.textContent.trim()).filter((t) => /Export PDF|from the net/.test(t)) : [];
+    const treeHas = [...document.querySelectorAll('.wtree .wsec')].some((e) => /figures/i.test(e.textContent));
+    return { n: P.figures.length, tab, kinds, canvases, btns, treeHas };
+  });
+  chk(`${label}: a figure from the net opens compo's editor in a tab (“${fig.tab}”), frames ${JSON.stringify(fig.kinds)}, page drawn (${fig.canvases} canvas), host buttons ${JSON.stringify(fig.btns)}; listed in the tree`,
+    fig.n === 1 && !!fig.tab && fig.kinds && fig.kinds.includes('stereonet') && fig.canvases >= 1 && fig.btns.length === 2 && fig.treeHas);
+
   try { await p.screenshot({ path: path.join(root, `experiments/wuffle-desk-${label}.png`) }); } catch { /* for a person */ }
   chk(`${label}: the desk opens with layers · Net 1 · table · statistics, the field page hidden (${s && JSON.stringify(r.tabs)})`, r.tabs && r.tabs.join() === 'layers,Net 1,table,statistics,console' && r.fieldHidden);
   chk(`${label}: File → Open the tocher sample → ${s.ds && s.ds.n} planes (not guessed: ${s.ds && !s.ds.guessed}), ${s.svgCircles} circles drawn`, s.ds && s.ds.n === 200 && !s.ds.guessed && s.svgCircles >= 200);

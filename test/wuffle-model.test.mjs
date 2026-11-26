@@ -130,6 +130,19 @@ describe('selection belongs to the data', () => {
   });
 });
 
+describe('figures', () => {
+  it('a figure keeps its compo document with the project, and round-trips', () => {
+    const { p, n1 } = mk();
+    const f = p.addFigure({ doc: { format: 'compo', frames: [{ id: 'x' }] }, from: n1 });
+    assert.equal(p.figure(f).name, 'Figure 1');
+    p.setFigureDoc(f, { format: 'compo', frames: [] });
+    const q = Project.fromJSON(JSON.parse(JSON.stringify(p.toJSON())));
+    assert.deepEqual(q.figure(f).doc, { format: 'compo', frames: [] });
+    assert.notEqual(q.addFigure({ doc: {} }), f, 'ids continue');
+    p.removeFigure(f); assert.equal(p.figures.length, 0);
+  });
+});
+
 describe('events and the project file', () => {
   it('every change is announced on one stream', () => {
     const { p, d, l1 } = mk();

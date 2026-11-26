@@ -11,7 +11,7 @@ export const ABOUT = 'wuffle — a stereonet workbench and a field compass, one 
   + 'nets by @gcu/stereonet. In the line of OpenStereo (Grohmann & Campanha, 2009/10) and its 2016 rewrite. Sample data: '
   + 'Tocher, F. E. (1979), The computer contouring of fabric diagrams, Computers & Geosciences 5, 73–126.';
 
-export function createMenus(host, { project: p, files, layout, theme }) {
+export function createMenus(host, { project: p, files, layout, theme, figures }) {
   // a new diagram shows what the active one shows (views of the same data), so a rose of the net's sets is one click
   const newDiagram = (kind) => {
     const from = p.activeDiagram, id = p.addDiagram(kind);
@@ -28,6 +28,7 @@ export function createMenus(host, { project: p, files, layout, theme }) {
     rmnet: () => { if (p.activeDiagram) p.removeDiagram(p.activeDiagram); },
     field: () => { const u = new URL(location.href); u.searchParams.delete('desk'); u.searchParams.set('field', ''); location.href = u.toString(); },
     about: () => alert(ABOUT),
+    figure: async () => { try { figures.newFigure(); } catch (e) { await alert(e.message); } },
     console: () => { layout.focusConsole(); document.querySelector('.wcon-in')?.focus(); },
   };
   const bar = new MenuBar(host, () => [
@@ -44,6 +45,10 @@ export function createMenus(host, { project: p, files, layout, theme }) {
       '---',
       { label: 'Remove the active diagram', action: 'rmnet', disabled: !p.activeDiagram, danger: true },
     ] },
+    { label: 'Figure', items: () => [
+      { label: 'New figure from the active net', action: 'figure', disabled: p.diagram(p.activeDiagram)?.kind !== 'net' },
+      ...(p.figures.length ? ['---', ...p.figures.map((f) => ({ label: f.name, action: 'openfig:' + f.id }))] : []),
+    ] },
     { label: 'View', items: () => [
       { label: 'Theme', children: THEMES.map(([k, t]) => ({ label: t, action: 'theme:' + k, checked: theme.pref === k, group: 'theme' })) },
       { label: 'Console', action: 'console', shortcut: '`' },
@@ -54,6 +59,7 @@ export function createMenus(host, { project: p, files, layout, theme }) {
   ]);
   const run = async (a) => {
     if (a.startsWith('theme:')) theme.set(a.slice(6));
+    else if (a.startsWith('openfig:')) figures.open(a.slice(8));
     else await commands[a]?.();
     bar.refresh();
   };

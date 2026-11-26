@@ -23,7 +23,7 @@ export function createFiles(root, { project: p, dropHost, onOpened }) {
   /** a project file replaces the current project IN PLACE, so every listener stays attached */
   const loadProject = (j) => {
     const q = Project.fromJSON(j);
-    Object.assign(p, { name: q.name, datasets: q.datasets, diagrams: q.diagrams, layers: q.layers, selection: q.selection, activeDiagram: q.activeDiagram, _seq: q._seq });
+    Object.assign(p, { name: q.name, datasets: q.datasets, diagrams: q.diagrams, layers: q.layers, figures: q.figures, selection: q.selection, activeDiagram: q.activeDiagram, _seq: q._seq });
     p._emit('project-loaded');
   };
   const open = async (files) => {

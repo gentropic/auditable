@@ -74,6 +74,18 @@ export class TreeView {
         }
       });
     }
+    if (p.figures.length) {
+      root.append(h('div', 'wsec', 'figures'));
+      for (const f of p.figures) {
+        const r = h('div', 'wrow wdata'); r.append(h('span', 'wtw'), h('span', 'wico', '▭'), h('span', 'wname', f.name));
+        r.addEventListener('click', () => this.onOpenFigure?.(f.id));
+        r.addEventListener('contextmenu', async (e) => { e.preventDefault(); const a = await Menu.show([{ label: 'Open', action: 'open' }, { label: 'Rename…', action: 'rename' }, '---', { label: 'Delete figure', action: 'del', danger: true }], { x: e.clientX, y: e.clientY });
+          if (a === 'open') this.onOpenFigure?.(f.id);
+          else if (a === 'rename') { const n = await prompt('Name of the figure', { defaultValue: f.name }); if (n) { f.name = n.trim() || f.name; p._emit('figure-changed', { id: f.id }); } }
+          else if (a === 'del' && await confirm(`Delete “${f.name}”?`, { okLabel: 'Delete', danger: true })) p.removeFigure(f.id); });
+        root.append(r);
+      }
+    }
     root.append(h('div', 'wsec', 'data'));
     if (!p.datasets.length) root.append(h('div', 'wempty', 'File → Open data…, or File → Open the tocher sample'));
     for (const ds of p.datasets) {

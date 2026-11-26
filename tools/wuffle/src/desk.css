@@ -111,6 +111,9 @@ body.desk > [hidden] { display:none !important; }   /* the field page's own disp
 .wst-acts button:disabled { opacity:.45; cursor:default; }
 .wst-acts button:focus-visible, .wst-acts select:focus-visible { outline:2px solid var(--w-blue); outline-offset:1px; }
 
+/* a figure (compo's editor brings its own styles) */
+.wfig-host { flex:1; min-height:0; display:flex; flex-direction:column; }
+
 /* the console */
 .wcon { flex:1; min-height:0; display:flex; flex-direction:column; background:var(--w-bg-deep); font:12px var(--w-mono); }
 .wcon-log { flex:1; min-height:0; overflow:auto; padding:6px 10px; white-space:pre-wrap; }

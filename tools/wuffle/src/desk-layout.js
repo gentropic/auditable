@@ -10,6 +10,7 @@ const tabOf = (g) => ({ id: 'diag:' + g.id, title: g.name, closeable: false, dia
 
 export function createLayout(host, { project: p, tree, table, stats, consoleView, select, onStatus }) {
   const views = new Map();   // diagramId → NetView
+  const panels = new Map();  // tab-id prefix → { render(tab), destroy(tab) } — other modules' tabs (figures)
   if (!p.diagrams.length) p.addDiagram('net');
   const rails = createRails(host, {
     initialState: { root: { id: 'root', dir: 'row', children: [
@@ -24,6 +25,7 @@ export function createLayout(host, { project: p, tree, table, stats, consoleView
       if (tab.id === 'table') return table.el;
       if (tab.id === 'stats') return stats.el;
       if (tab.id === 'console') return consoleView.el;
+      for (const [pre, pn] of panels) if (tab.id.startsWith(pre)) return pn.render(tab);
       if (tab.diagramId) {
         const kind = p.diagram(tab.diagramId)?.kind;
         const v = kind === 'rose' ? new RoseView(p, tab.diagramId) : kind === 'fabric' ? new FabricView(p, tab.diagramId) : new NetView(p, tab.diagramId, { onStatus });
@@ -31,7 +33,9 @@ export function createLayout(host, { project: p, tree, table, stats, consoleView
       }
       return document.createElement('div');
     },
-    onPanelDestroy(tab) { if (tab.diagramId) { const v = views.get(tab.diagramId); if (v) { select?.detach(v); v.destroy(); } views.delete(tab.diagramId); } },
+    onPanelDestroy(tab) {
+      for (const [pre, pn] of panels) if (tab.id.startsWith(pre)) { pn.destroy?.(tab); return; }
+      if (tab.diagramId) { const v = views.get(tab.diagramId); if (v) { select?.detach(v); v.destroy(); } views.delete(tab.diagramId); } },
   });
   rails.on('tab:activate', ({ tab }) => { if (tab.diagramId && p.activeDiagram !== tab.diagramId && p.diagram(tab.diagramId)) p.setActive(tab.diagramId); });
 
@@ -59,5 +63,10 @@ export function createLayout(host, { project: p, tree, table, stats, consoleView
     focusStats: () => rails.activateTab('stats'),
     focusConsole: () => rails.activateTab('console'),
     redrawAll: () => { for (const v of views.values()) v.draw(); },
+    registerPanel: (prefix, pn) => panels.set(prefix, pn),
+    hasTab: (id) => !!findTab(rails.state, id),
+    /** a tab beside the diagrams (a figure) */
+    addTab: (tab) => { const s = netStack(); rails.addTab(tab, s ? { to: 'stack', stackId: s } : { to: 'split', nodeId: 'sTable', side: 'top' }); },
+    closeTab: (id) => { const hit = findTab(rails.state, id); if (hit) { hit.tab.closeable = true; rails.closeTab(id); } },
   };
 }

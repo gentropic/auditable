@@ -48,8 +48,9 @@ export class Project {
     this.diagrams = [];            // ordered: the tree's top level
     this.layers = [];              // each knows its diagram; order within a diagram = draw order (last on top)
     this.selection = new Map();    // datasetId → Set(row index)
+    this.figures = [];             // compo pages: { id, name, doc, from } — `from` the diagram a figure was made of
     this.activeDiagram = null;
-    this._seq = { d: 0, n: 0, l: 0 };
+    this._seq = { d: 0, n: 0, l: 0, f: 0 };
     this._listeners = new Set();
   }
 
@@ -241,17 +242,26 @@ export class Project {
     this._emit('selection-changed', { datasetId });
   }
 
+  // ── figures (compo documents, kept with the project) ──
+  figure(id) { return this.figures.find((f) => f.id === id) || null; }
+  addFigure({ name, doc, from = null }) {
+    const f = { id: this._id('f'), name: name || `Figure ${this.figures.length + 1}`, doc: clone(doc), from };
+    this.figures.push(f); this._emit('figure-added', { id: f.id }); return f.id;
+  }
+  setFigureDoc(id, doc) { const f = this.figure(id); if (!f) throw new Error(`no figure ${id}`); f.doc = clone(doc); this._emit('figure-changed', { id }); }
+  removeFigure(id) { this.figures = this.figures.filter((f) => f.id !== id); this._emit('figure-removed', { id }); }
+
   // ── the project file ──
   toJSON() {
     return { app: 'wuffle', v: 1, name: this.name, seq: { ...this._seq }, activeDiagram: this.activeDiagram,
-      datasets: clone(this.datasets), diagrams: clone(this.diagrams), layers: clone(this.layers),
+      datasets: clone(this.datasets), diagrams: clone(this.diagrams), layers: clone(this.layers), figures: clone(this.figures),
       selection: Object.fromEntries([...this.selection].map(([k, v]) => [k, [...v]])) };
   }
   static fromJSON(j) {
     if (!j || j.app !== 'wuffle') throw new Error('not a wuffle project');
     const p = new Project({ name: j.name });
-    p._seq = { d: 0, n: 0, l: 0, ...(j.seq || {}) };
-    p.datasets = clone(j.datasets || []); p.diagrams = clone(j.diagrams || []); p.layers = clone(j.layers || []);
+    p._seq = { d: 0, n: 0, l: 0, f: 0, ...(j.seq || {}) };
+    p.datasets = clone(j.datasets || []); p.diagrams = clone(j.diagrams || []); p.layers = clone(j.layers || []); p.figures = clone(j.figures || []);
     // a layer whose dataset or diagram is missing is dropped (a file edited by hand), never a crash
     const ds = new Set(p.datasets.map((d) => d.id)), gs = new Set(p.diagrams.map((g) => g.id));
     p.layers = p.layers.filter((l) => ds.has(l.datasetId) && gs.has(l.diagramId));
