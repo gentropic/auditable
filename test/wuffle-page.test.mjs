@@ -24,6 +24,12 @@ describe('page.js — a project inside a page', () => {
     assert.deepEqual([...await projectFromPage(twice)], [1, 2, 3]);
     assert.notEqual(blockText(once), blockText(twice)); assert.notEqual(hashText(blockText(once)), hashText(blockText(twice)));
   });
+  it('the deployed site\'s PWA tags stay behind: a saved page is a standalone file', async () => {
+    const site = PAGE.replace('</head>', '<!--wuffle-pwa--><link rel="manifest" href="manifest.webmanifest">\n<script>navigator.serviceWorker.register("sw.js")</script><!--/wuffle-pwa-->\n</head>');
+    const saved = pageWithProject(site, await projectBlock(zip, 'a'), 'a');
+    assert.doesNotMatch(saved, /manifest|serviceWorker|wuffle-pwa/);
+    assert.deepEqual([...await projectFromPage(saved)], [...zip]);
+  });
   it('a page without a project, or not a built wuffle page', async () => {
     assert.equal(await projectFromPage(PAGE), null);
     assert.throws(() => pageWithProject('<html><body></body></html>', '<script id="wuffle-project"></script>'), /not a built wuffle page/);

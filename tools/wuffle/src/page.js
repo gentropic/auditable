@@ -34,7 +34,9 @@ export const blockText = (html) => BLOCK.exec(String(html))?.[1].replace(/\s/g, 
 
 /** the pristine page + a project → the page to save (an old block replaced; the title names the project) */
 export function pageWithProject(pageHtml, block, name) {
-  let html = String(pageHtml).replace(BLOCK, '');
+  // the deployed site wraps its PWA tags (manifest, service worker) in these markers: a page someone saves
+  // and sends is a standalone file, not an install of gentropic.org/wuffle, so they don't travel with it
+  let html = String(pageHtml).replace(BLOCK, '').replace(/<!--wuffle-pwa-->[\s\S]*?<!--\/wuffle-pwa-->\n?/g, '');
   if (!RUNTIME.test(html)) throw new Error('this is not a built wuffle page (no runtime block) — Save as page works from wuffle.html');
   html = html.replace(RUNTIME, (m) => block + m);
   if (name) html = html.replace(/<title>[\s\S]*?<\/title>/, `<title>${esc(name)} — wuffle</title>`);
