@@ -36,7 +36,7 @@ const errs = [];
 p.on('console', (m) => { if (m.type() === 'error') errs.push(m.text()); });
 p.on('pageerror', (e) => errs.push(String(e)));
 
-await p.goto(`http://127.0.0.1:${PORT}/wuffle.html`, { waitUntil: 'load' });
+await p.goto(`http://127.0.0.1:${PORT}/wuffle.html?field`, { waitUntil: 'load' });   // ?field: the compass (a desktop window opens the desk)
 
 // 1. boots — the registry bundle wired @gcu/bearing + @gcu/leadacid without errors
 const booted = await p.waitForFunction(() => !!window.__wuffle, null, { timeout: 15000 }).then(() => true).catch(() => false);

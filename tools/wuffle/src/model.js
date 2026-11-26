@@ -19,7 +19,9 @@ export const ELEMENTS = {
   faults: ['greatCircles', 'slip', 'ptAxes', 'dihedra', 'labels'],
   smallcircles: ['circles', 'axes', 'labels'],
 };
-const DEFAULT_ON = new Set(['poles', 'points', 'greatCircles', 'slip', 'circles']);
+// what a new layer shows: poles (or points) — great circles too only for faults, where they're the point;
+// 200 great circles bury a net (OpenStereo's default is poles only too)
+const DEFAULT_ON = { planes: ['poles'], lines: ['points'], faults: ['greatCircles', 'slip'], smallcircles: ['circles'] };
 const DEFAULT_SETTINGS = {
   contours: { method: 'kamb', sigma: 3, levels: null },
   mean: { axial: true, confidence: 0.95 },
@@ -35,7 +37,7 @@ const clone = (o) => (o == null ? o : JSON.parse(JSON.stringify(o)));
 const leafNames = (kind) => ELEMENTS[kind].flatMap((e) => (typeof e === 'string' ? [e] : Object.values(e)[0]));
 function defaultElements(kind) {
   const out = {};
-  for (const name of leafNames(kind)) out[name] = { on: DEFAULT_ON.has(name), ...clone(DEFAULT_SETTINGS[name] || {}) };
+  for (const name of leafNames(kind)) out[name] = { on: DEFAULT_ON[kind].includes(name), ...clone(DEFAULT_SETTINGS[name] || {}) };
   return out;
 }
 

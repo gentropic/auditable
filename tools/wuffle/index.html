@@ -11,6 +11,13 @@
   "@gcu/wmm": "../../ext/wmm/index.js"
 } }
 </script>
+<!-- the desk workbench's components (inlined at build) -->
+<link rel="stylesheet" href="../../ext/rails/rails.css">
+<link rel="stylesheet" href="../../ext/rails/rails-default.css">
+<link rel="stylesheet" href="../../ext/menu/menu.css">
+<link rel="stylesheet" href="../../ext/menu/menu-default.css">
+<link rel="stylesheet" href="../../ext/dialog/dialog.css">
+<link rel="stylesheet" href="../../ext/dialog/dialog-default.css">
 <!-- dev bench: load with ?bench to run shell-style on the desktop (mocks /native). Stripped at build. -->
 <script src="../../ext/leadacid/bench.js"></script>
 <style>
@@ -164,7 +171,13 @@
 <div class="vfoot">wuffle · __WUFFLE_BUILD__</div>
 
 <script type="module">
-import './src/field.js';
+// ONE file, two homes: the FIELD compass on a phone / in the lead-acid shell, the DESK workbench otherwise.
+// ?field and ?desk choose explicitly.
+import { shell } from '@gcu/leadacid';
+const q = new URLSearchParams(location.search);
+const field = q.has('field') || (!q.has('desk') && (shell.present || matchMedia('(max-width: 720px)').matches));
+if (field) await import('./src/field.js');
+else { const { mountDesk } = await import('./src/desk.js'); mountDesk(); }
 </script>
 </body>
 </html>

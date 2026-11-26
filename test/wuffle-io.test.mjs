@@ -27,6 +27,13 @@ describe('the tocher sample (Tocher 1979)', () => {
   });
 });
 
+describe('the shipped samples', () => {
+  it('src/samples.js carries samples/tocher.csv byte for byte (regenerate: node tools/wuffle/dev/gen-samples.mjs)', async () => {
+    const { TOCHER } = await import('../tools/wuffle/src/samples.js');
+    assert.equal(TOCHER, readFileSync(new URL('../tools/wuffle/samples/tocher.csv', import.meta.url), 'utf8'));
+  });
+});
+
 describe('sniffing', () => {
   it('headerless, whitespace: the first two numbers as dip direction / dip, flagged as a guess', () => {
     const s = read1('147.7 64.8\n113.6 50.4\n126.5 44.6\n');

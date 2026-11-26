@@ -2060,11 +2060,17 @@ if (target === 'wuffle') {
   const dir = path.join(__dirname, 'tools/wuffle');
   const SPEC = { '@gcu/bearing': '#bearing', '@gcu/leadacid': '#leadacid', '@gcu/wmm': '#wmm',
     // src/ modules import ext packages by relative path (so Node tests resolve them): the same bundled copy
-    '../../../ext/bearing/index.js': '#bearing', '../../../ext/leadacid/index.js': '#leadacid', '../../../ext/wmm/index.js': '#wmm' };
+    '../../../ext/bearing/index.js': '#bearing', '../../../ext/leadacid/index.js': '#leadacid', '../../../ext/wmm/index.js': '#wmm',
+    // the desk workbench's GCU components
+    '../../../ext/rails/index.js': '#rails', '../../../ext/menu/index.js': '#menu', '../../../ext/dialog/index.js': '#dialog', '../../../ext/loom/index.js': '#loom' };
   const libs = [
     ['bearing', 'ext/bearing/index.js'],
     ['leadacid', 'ext/leadacid/index.js'],
     ['wmm', 'ext/wmm/index.js'],
+    ['rails', 'ext/rails/index.js'],
+    ['menu', 'ext/menu/index.js'],
+    ['dialog', 'ext/dialog/index.js'],
+    ['loom', 'ext/loom/index.js'],
   ];
   const modules = [];
   for (const [name, rel] of libs) {
@@ -2107,7 +2113,9 @@ if (target === 'wuffle') {
     "const _m = document.createElement('script'); _m.type = 'importmap';\n" +
     'const _im = {}; for (const n of _O) _im["#" + n] = _U[n];\n' +
     "_m.textContent = JSON.stringify({ imports: _im }); document.body.appendChild(_m);\n" +
-    'for (const n of _O) await import(_U[n]);\n' +
+    // only the page's entry: it imports what it needs. Importing every module eagerly would RUN src/field.js
+    // (top-level code) on the desk too — the field compass and the desk workbench are alternatives.
+    "await import(_U['app']);\n" +
     '_m.remove();\n' +
     '})();\n';
 
@@ -2115,6 +2123,11 @@ if (target === 'wuffle') {
   const wfStamp = `0.1.0 · ${wfBuildId} · ${buildDateFromGit()}`;
 
   html = html.replace(/<script type="importmap">[\s\S]*?<\/script>\s*/, '');
+  html = html.replace(/<link rel="stylesheet" href="\.\.\/\.\.\/(ext\/[\w/.-]+\.css)">/g, (_, rel) => {
+    const cp = path.join(__dirname, rel);
+    if (!fs.existsSync(cp)) { console.error(`Error: ${rel} not found`); process.exit(1); }
+    return `<style data-from="${rel}">\n${fs.readFileSync(cp, 'utf8').trim()}\n</style>`;
+  });
   html = html.replace(/<!-- dev bench[\s\S]*?<script src="[^"]*bench\.js"><\/script>\s*/, '');   // dev-only bench
   html = html.replace(/<script type="module">[\s\S]*?<\/script>\s*(?=<\/body>)/, () => `<script>\n${boot}\n</script>\n`);
   html = html.replace('__WUFFLE_BUILD__', wfStamp);

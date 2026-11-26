@@ -73,11 +73,13 @@ describe('datasets, diagrams, layers', () => {
 });
 
 describe('the nested elements', () => {
-  it('a planes layer opens into its elements; poles and great circles start on', () => {
+  it('a planes layer opens into its elements; only the poles start on (faults start with their great circles)', () => {
     const { p, l1 } = mk();
     const t = p.elementTree(l1);
     assert.deepEqual(t.map((e) => e.name), ['poles', 'greatCircles', 'contours', 'mean', 'eigen', 'labels']);
-    assert.equal(t[0].state, 'on');
+    assert.deepEqual(t.filter((e) => e.state === 'on').map((e) => e.name), ['poles']);
+    const n = p.addDiagram('net'), f = p.addLayer(n, p.addDataset({ name: 'F', kind: 'faults', rows: [] }));
+    assert.deepEqual(p.elementTree(f).filter((e) => e.state === 'on').map((e) => e.name), ['greatCircles', 'slip']);
     assert.equal(t[4].children.length, 6);
   });
   it('a group is tri-state: some children on → partial; switching the group sets them all', () => {
