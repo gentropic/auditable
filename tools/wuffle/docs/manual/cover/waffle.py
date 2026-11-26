@@ -87,9 +87,12 @@ bub = np.real(np.fft.ifft2(np.fft.fft2(bub) * np.exp(-(kx ** 2 + ky ** 2) * (0.0
 bub /= (np.abs(bub).max() + 1e-12)
 
 Z = (floor + 0.006 * bub) + (top * crest_round - (floor + 0.006 * bub)) * ridge
-edge = smooth(1.03, 1.08, Rw)
-Z = Z * (1 - edge) + (0.05 + 0.0015 * n_fine) * edge
-INSIDE = Rw <= L - 2 * pix
+# the edge: the top rounds down and DIPS INSIDE the side wall (the bevelled cylinder below, top at z 0.047)
+# before it ends — the heightfield's boundary is a staircase of grid cells, and as the silhouette it showed
+# as jaggies; tucked inside the wall, the silhouette is the wall's smooth circle
+edge = smooth(1.03, 1.058, Rw)
+Z = Z * (1 - edge) + (0.03 + 0.0015 * n_fine) * edge
+INSIDE = R <= 1.052        # ends INSIDE the side wall (radius 1.06), under its top: no stair-stepped lip outside it
 
 # browning: the iron browns crests and rim hardest; pockets stay batter-pale; a slow blotch over it all
 BROWN = np.clip(0.18 + 0.55 * ridge ** 0.7 + 0.3 * crest + 0.3 * smooth(0.96, 1.04, Rw)
