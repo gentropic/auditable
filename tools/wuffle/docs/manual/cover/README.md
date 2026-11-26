@@ -25,9 +25,17 @@ A waffle whose grid is a lower-hemisphere equal-area stereonet — the net's 10�
 ridges — with a chocolate chip at each of Tocher's 200 poles and maple syrup wherever their Kamb density
 reaches 4σ (its edge IS the 4σ contour; it runs deeper where the poles crowd). Every position is wuffle's:
 `waffle-data.mjs` exports the projected graticule, the poles and the Kamb field from bearing into
-`waffle.json`; `waffle.py` builds the waffle, chips and syrup from that in Blender and renders it in Cycles
-(transmissive syrup with real absorption, subsurface dough, a low sun raking the ridges, a softbox only the
-wet surfaces see, a shadow catcher so it lands on the cover's basalt). Not a generated image: a figure.
+`waffle.json`; `waffle.py` builds the waffle, chips and syrup from that in Blender and renders it in Cycles.
+Not a generated image: a figure. What is placed comes from the data (every ridge, every chip, the syrup's
+extent); what is merely *food* is seeded noise, identical every run:
+- the batter: crests that rise and fall, uneven pocket floors, batter bubbles, an irregular rim, crumbs;
+  browned by height (crests and rim darkest) with multi-scale mottling, toasted speckle, pores, subsurface;
+- the chips: six chip shapes (flat base, irregular sides, a curled tip), sizes varied, one in ten tipped
+  over; tempered chocolate with a little bloom — and, where they sit in the syrup, sunk a little and glossy;
+- the syrup: transmissive amber with absorption (darker where deeper), drips running over the rim and down
+  the side where the pool reaches the edge (metaballs);
+- the light: a warm studio HDRI — Poly Haven's *brown_photostudio_02* (CC0, fetched into `assets/`) — a low
+  sun raking the ridges, a softbox only the wet surfaces see, a shadow catcher onto the cover's basalt.
 
     node tools/wuffle/docs/manual/build.mjs waffle      # ~15 min on a laptop GPU; --res= --samples= to taste
     node tools/wuffle/docs/manual/build.mjs pdf

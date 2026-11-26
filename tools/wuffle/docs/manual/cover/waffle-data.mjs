@@ -29,7 +29,9 @@ for (let dip = 10; dip <= 90; dip += 10) for (const side of dip === 90 ? [1] : [
   const c = Math.cos(dip * Math.PI / 180), s = Math.sin(dip * Math.PI / 180);
   graticule.push(sample((t) => { const a = Math.PI * t; return rnd(proj([side * Math.sin(a) * c, Math.cos(a), -Math.sin(a) * s])); }));
 }
-for (let ang = 10; ang < 90; ang += 10) for (const end of [1, -1]) {
+// (90° included, once: that cone is the vertical E–W plane, the net's E–W diameter — leaving it out left the
+// waffle without its equator)
+for (let ang = 10; ang <= 90; ang += 10) for (const end of ang === 90 ? [1] : [1, -1]) {
   // the cone of half-angle `ang` about the horizontal N (end 1) or S axis, its lower half
   const ca = Math.cos(ang * Math.PI / 180), sa = Math.sin(ang * Math.PI / 180);
   graticule.push(sample((t) => { const b = Math.PI * t; return rnd(proj([sa * Math.cos(b), end * ca, -sa * Math.sin(b)])); }));

@@ -219,6 +219,13 @@ if (want('cover') || (want('pdf') && !existsSync(join(HERE, 'cover', 'art.png'))
 // renders it (cover/waffle.py). Opt-in only (`node build.mjs waffle`): it needs Blender and takes minutes.
 // Blender is $BLENDER, else on PATH, else Blender Foundation's default Windows install.
 if (PHASES.includes('waffle')) {
+  // the studio light: Poly Haven's brown_photostudio_02 (CC0), fetched once into cover/assets (gitignored)
+  const hdri = join(HERE, 'cover', 'assets', 'brown_photostudio_02_2k.hdr');
+  if (!existsSync(hdri)) {
+    await mkdir(dirname(hdri), { recursive: true });
+    const res = await fetch('https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/2k/brown_photostudio_02_2k.hdr');
+    if (res.ok) await writeFile(hdri, Buffer.from(await res.arrayBuffer())); else console.log(`waffle: no HDRI (${res.status}) — a plain dim world instead`);
+  }
   const d = spawnSync(process.execPath, [join(HERE, 'cover', 'waffle-data.mjs')], { stdio: 'inherit' });
   const pf = 'C:/Program Files/Blender Foundation';
   const found = existsSync(pf) ? readdirSync(pf).map((v) => join(pf, v, 'blender.exe')).find((p) => existsSync(p)) : null;
