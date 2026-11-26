@@ -21,6 +21,14 @@ describe('the built geas bundle', () => {
     await sh.exec('echo x >> /ro.txt && echo landed || echo refused\n');
     assert.match(out, /redirect: EACCES/); assert.match(out, /refused/); assert.doesNotMatch(out, /landed/);
   });
+  it('ls -l shows a symlink as a link, with its target', async () => {
+    const { VFS } = await import('../ext/vfs/index.js');
+    const vfs = new VFS(); await vfs.mount('/', { type: 'memory' });
+    await vfs.mkdir('/d'); await vfs.writeFile('/d/f.txt', 'x');
+    let out = ''; const sh = createShell({ vfs, cwd: '/', stdout: (t) => { out += t; }, stderr: (t) => { out += t; } });
+    await sh.exec('ln -s f.txt /d/g.txt; ls -l /d\n');
+    assert.match(out, /^-\s+1\s+f\.txt$/m); assert.match(out, /^l\s+\d+\s+g\.txt -> f\.txt$/m);
+  });
   it('command substitution', async () => assert.equal(await run('echo $(echo sub)'), 'sub\n'));
   it('eval', async () => assert.equal(await run('eval echo ev'), 'ev\n'));
   it('nested substitution in a string', async () => assert.equal(await run('x=$(echo a); echo "[$x $(echo b)]"'), '[a b]\n'));

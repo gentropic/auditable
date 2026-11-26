@@ -292,10 +292,13 @@ async function _ls(argv, ctx) {
           let line = n;
           try {
             const childPath = path.endsWith('/') ? path + n : path + '/' + n;
-            const cst = await ctx.vfs.stat(childPath);
-            const flag = cst.type === 'directory' ? 'd' : '-';
+            // lstat, so a symlink shows as one (`l … name -> target`), as Unix ls -l does
+            const cst = ctx.vfs.lstat ? await ctx.vfs.lstat(childPath) : await ctx.vfs.stat(childPath);
+            const flag = cst.type === 'directory' ? 'd' : cst.type === 'symlink' ? 'l' : '-';
             const size = cst.size ?? 0;
-            line = `${flag} ${String(size).padStart(8)}  ${n}`;
+            let target = '';
+            if (cst.type === 'symlink') { try { target = ' -> ' + (cst.target ?? await ctx.vfs.readlink(childPath)); } catch { /* a link we can't read: name only */ } }
+            line = `${flag} ${String(size).padStart(8)}  ${n}${target}`;
           } catch { /* fall through with bare name */ }
           await ctx.stdout(line + '\n');
         }
