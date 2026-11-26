@@ -46,8 +46,8 @@ says *local*, not *sealed* — there is no CSP enforcing it, so it doesn't claim
 - **Drag a net to rotate it** (arcball); the console's `rotate 045→30` centres it.
 - **Console** (`` ` ``) — a real shell: [geas](../../ext/geas/) on [@gcu/term](../../ext/term/),
   with wuffle's commands as builtins (`sample tocher`, `contour kamb 3`, `select cone 150/60 20`,
-  `stats`, `mean`, `beta`, `intersect a b`, `rotate`, `undo`, `history`) beside `ls`, `cat`,
-  `grep`, `sed`, `awk`, `tar`… Pipes, `$(…)`, loops and functions work around them
+  `stats`, `mean`, `beta`, `intersect a b`, `rotate`, `undo`, `verify`, `history`) beside `ls`,
+  `cat`, `grep`, `sort`, `cut`, `tr`, `tar`… (no `sed` or `awk` yet). Pipes, `$(…)`, loops and functions work around them
   (`stats tocher | grep mean`, `for m in fisher kamb; do contour $m; done`); a routine is a
   shell script (`. /home/routine.sh`). Tab completes commands, names and paths; ↑ recalls.
 - **`/project` — the project is a filesystem.** The shell starts in it, and it is the model itself,

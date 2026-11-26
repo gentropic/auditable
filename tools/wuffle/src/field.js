@@ -136,7 +136,9 @@ let lastFix = null;
 // true north: the WMM declination at the fix (east positive; true = magnetic + decl).
 // null until a fix arrives → readings stay magnetic and the label says so.
 let decl = null;
+let declAt = null;                 // the fix the declination was computed at (recomputed after ~0.1° of travel)
 function updateDeclination(f) {
+  declAt = f;
   decl = wmmDeclination(f.lat, f.lon, new Date(), (f.alt || 0) / 1000);
   $('north').textContent = 'true N · decl ' + (decl >= 0 ? '+' : '') + decl.toFixed(1) + '°';
 }
@@ -147,7 +149,8 @@ async function startGnss() {
     g.on('fix', (f) => {
       const first = !lastFix;
       lastFix = f;
-      if (first || Math.abs(f.lat - (decl == null ? 999 : lastFix.lat)) > 0.1) updateDeclination(f);
+      // (this compared the fix with itself — lastFix was already f — so the declination never moved on)
+      if (!declAt || Math.abs(f.lat - declAt.lat) > 0.1 || Math.abs(f.lon - declAt.lon) > 0.1) updateDeclination(f);
       $('pos').textContent = '±' + (f.acc == null ? '?' : Math.round(f.acc)) + ' m';
       if (first) msg('position ' + f.lat.toFixed(5) + ', ' + f.lon.toFixed(5) + ' (±' + (f.acc == null ? '?' : Math.round(f.acc)) + ' m)');
     });
@@ -319,7 +322,7 @@ function addManual(text) {
   if (!mm) { msg('type e.g. 045/30 (plane) or 310→70 line', true); return false; }
   const d1 = +mm[1], d2 = +mm[2];
   if (d2 > 90) { msg('dip/plunge must be 0–90', true); return false; }
-  const kind = (mm[3] || (t.includes('→') ? 'line' : mode === 'line' ? 'line' : 'plane')).toLowerCase().startsWith('l') ? 'line' : 'plane';
+  const kind = (mm[3] || (/[→>]/.test(t) ? 'line' : mode === 'line' ? 'line' : 'plane')).toLowerCase().startsWith('l') ? 'line' : 'plane';
   record(d1, d2, kind, 'manual');   // typed by the user — referred to whatever north they used
   msg('added ' + String(fmt(d1)).padStart(3, '0') + (kind === 'plane' ? '/' : '→') + d2);
   return true;
