@@ -102,7 +102,7 @@ A derived dataset is drawn on the active net at once and opens in the table. Mak
 save it. What makes it derived is its lineage (\cref{sec:lineage}). The tree marks it with an arrow, and hovering it
 says how it was made (\ui{made by mean from tocher}). The lineage is kept in the project:
 
-\begin{lstlisting}
+\begin{codeblock}
 $ cat "data/tocher · mean.json"
   ...
   "lineage": {
@@ -111,7 +111,7 @@ $ cat "data/tocher · mean.json"
     "sources": [ { "id": "d1", "name": "tocher" } ],
     "at": "2026-11-26T14:33:05.163Z"
   },
-\end{lstlisting}
+\end{codeblock}
 
 A derived dataset is a snapshot, not a live formula. Edit \code{tocher} afterwards and \code{tocher · mean}
 keeps the mean it was made with; make it again for the new one.
@@ -146,23 +146,23 @@ and \ui{∩ intersect with… › west} on the \code{east} card keeps \code{east
 \index{stats (command)}\index{mean (command)}\index{eigen (command)}\index{beta (command)}%
 \index{intersect (command)}%
 
-\begin{lstlisting}
+\begin{codeblock}
 stats                   # the first visible layer's card, as text
 stats tocher | grep mean
 mean                    # mean → dataset, for the first visible layer
 eigen tocher            # eigenvectors → dataset
 beta                    # the beta diagram
 intersect east west     # where two layers' mean planes meet
-\end{lstlisting}
+\end{codeblock}
 
 \code{stats} prints three lines: the count, the mean with $\kappa$ and $\alpha_{95}$, and the eigenvalues
 with K and C:
 
-\begin{lstlisting}
+\begin{codeblock}
 tocher · n 200
 mean 027/89 · pole 207→01 · κ 3.1 · α95 6.8°
 S 0.548 0.383 0.069 · K 0.21 · C 2.07
-\end{lstlisting}
+\end{codeblock}
 
 \code{mean}, \code{eigen}, \code{beta} and \code{intersect} answer with the new dataset's name and size,
 \ui{→ tocher · β (19900 rows), drawn on Net 1}, so a routine can make all of them in a few lines

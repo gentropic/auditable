@@ -83,9 +83,9 @@ status line says \ui{saved untitled.zip.wuffle}. It is an ordinary zip of the \f
 A new project is called \code{untitled}. Name it with \menu{File>Rename project…}, or from the console
 by writing the name into \file{project.json}:
 
-\begin{lstlisting}
+\begin{codeblock}
 echo '{"name": "Serra do Mar"}' > /project/project.json
-\end{lstlisting}
+\end{codeblock}
 
 Only the name can be written there; the rest of \file{project.json} is counted, not set, and anything
 else is refused with \ui{write \{"name": "…"\} — the rest of project.json is counted, not set}. The name
@@ -100,7 +100,7 @@ dataset is a plain CSV any program reads; edit one by hand, zip it back, and wuf
 Here is a saved project of the Tocher sample, with a note and an exported net in \file{/home}, listed by
 Python's own zip module (\code{python -m zipfile -l untitled.zip.wuffle}):
 
-\begin{lstlisting}
+\begin{codeblock}
 File Name                                     Modified             Size
 project.json                           1980-01-01 00:00:00          164
 data/tocher.csv                        1980-01-01 00:00:00         2883
@@ -109,7 +109,7 @@ diagrams/Net 1/diagram.json            1980-01-01 00:00:00          211
 diagrams/Net 1/layers/tocher.json      1980-01-01 00:00:00          761
 home/net-1.svg                         1980-01-01 00:00:00       940145
 home/tocher-stats.txt                  1980-01-01 00:00:00          109
-\end{lstlisting}
+\end{codeblock}
 
 Every member is dated 1980-01-01, the earliest date a zip can hold: wuffle writes no times, so saving
 the same project twice gives the same bytes, and a changed file means a changed project.
@@ -228,10 +228,10 @@ drop)}: open them again together, or keep going without it.
 
 The console's \code{verify} checks every original in the project again, at any time, one line each:
 
-\begin{lstlisting}
+\begin{codeblock}
 field 2026-11-20  (field/field 2026-11-20/wuffle-log.csv): signature verified — key 10ef 13b6 8b38 2479, strongbox, signed 2026-11-20T15:00:00Z
 field 2026-11-20 2  (field/field 2026-11-20 2/wuffle-log.csv): unsigned
-\end{lstlisting}
+\end{codeblock}
 
 It fails (exit status 1) if one doesn't match or can't be read, so a routine can stop on it
 (\cref{sec:routines}).

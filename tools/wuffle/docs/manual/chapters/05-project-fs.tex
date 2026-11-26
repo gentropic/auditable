@@ -39,11 +39,11 @@ A layer is a \term[symbolic link]{symbolic link} to its dataset. That is the \en
 per diagram} rule of \cref{sec:data-once} made visible: \code{ls -l} shows every layer pointing at the one
 file that holds the rows.
 
-\begin{lstlisting}
+\begin{codeblock}
 wuffle /project $ ls -l "diagrams/Net 1/layers"
 l       24  tocher.csv -> ../../../data/tocher.csv
 -      752  tocher.json
-\end{lstlisting}
+\end{codeblock}
 
 \section{Reading}\label{sec:project-read}
 
@@ -51,7 +51,7 @@ Everything reads with the usual tools. The files you will read most:
 
 \paragraph{\file{project.json}}\index{project.json} the project in brief:
 
-\begin{lstlisting}
+\begin{codeblock}
 {
   "name": "untitled",
   "datasets": 1,
@@ -61,12 +61,12 @@ Everything reads with the usual tools. The files you will read most:
   "originals": 0,
   "active": "Net 1"
 }
-\end{lstlisting}
+\end{codeblock}
 
 \paragraph{\file{data/tocher.json}} what wuffle knows about a dataset beyond its rows, including where it
 is drawn:
 
-\begin{lstlisting}
+\begin{codeblock}
 {
   "name": "tocher",
   "kind": "planes",
@@ -77,13 +77,13 @@ is drawn:
   "lineage": null,
   "drawnOn": ["Net 1"]
 }
-\end{lstlisting}
+\end{codeblock}
 
 (The console prints JSON one value to a line; it is condensed here.)
 
 \paragraph{\file{diagram.json}}\index{diagram.json} a diagram's settings and its layers, in draw order:
 
-\begin{lstlisting}
+\begin{codeblock}
 {
   "name": "Net 1",
   "kind": "net",
@@ -91,14 +91,14 @@ is drawn:
              "rotation": null, "matrix": null, "graticule": 10 },
   "layers": ["tocher"]
 }
-\end{lstlisting}
+\end{codeblock}
 
 \paragraph{\file{net.svg}}\index{net.svg} the diagram as vector graphics, drawn on paper (white ground, dark ink)
 whatever the desk's theme. Copy it out to keep it with the project, or to take it to a drawing program:
 
-\begin{lstlisting}
+\begin{codeblock}
 cp "diagrams/Net 1/net.svg" /home/net-1.svg
-\end{lstlisting}
+\end{codeblock}
 
 It is an ordinary SVG, but not a small one: every contour and great circle is a path, so 200 great
 circles make a file of about 900~KB. For a page in a report, make a figure (\cref{ch:figures}).
@@ -110,10 +110,10 @@ net of the Tocher sample).
 \paragraph{The selection} \file{selection/tocher.rows} lists the selected rows by number (from 1), one to
 a line, and \file{selection/tocher.csv} gives those rows themselves, ready to pipe:
 
-\begin{lstlisting}
+\begin{codeblock}
 grep -c . selection/tocher.rows
 cat selection/tocher.csv
-\end{lstlisting}
+\end{codeblock}
 
 \section{Writing}\label{sec:project-write}
 
@@ -127,22 +127,22 @@ makes \code{joints}, two planes, in one step called \ui{new data joints}. It is 
 until you draw it (below).
 \item[A diagram's settings.] Writing \file{diagram.json} changes the diagram. Write only what you change,
 under \code{props} for its settings or \code{name} to rename it:
-\begin{lstlisting}
+\begin{codeblock}
 echo '{"props":{"projection":"equal-angle"}}' > "diagrams/Net 1/diagram.json"
 echo '{"name":"Tocher net"}' > "diagrams/Net 1/diagram.json"
-\end{lstlisting}
+\end{codeblock}
 The undo step is \ui{diagram settings}.
 \item[A layer's settings.] Writing a layer's \file{.json} shows or hides it (\code{visible}), restyles it
 (\code{style}: \code{color}, \code{size}) and switches what it draws (\code{elements}). Again, write only
 what changes:
-\begin{lstlisting}
+\begin{codeblock}
 cd "diagrams/Net 1/layers"
 echo '{"elements":{"greatCircles":{"on":true}}}' > tocher.json
 echo '{"elements":{"poles":{"on":false}}}' > tocher.json
 echo '{"style":{"color":"#3a7bd5","size":6}}' > tocher.json
 echo '{"visible":false}' > tocher.json
 cd /project
-\end{lstlisting}
+\end{codeblock}
 Each is one undo step, \ui{layer settings}. An element's own settings go the same way, such as a contour
 method (\cref{sec:contours}).
 \item[A selection.] Writing row numbers to \file{selection/<name>.rows} selects those rows:

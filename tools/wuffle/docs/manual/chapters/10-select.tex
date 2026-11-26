@@ -137,13 +137,13 @@ split a dataset into domains: select the measurements of each, make each a datas
 The console's \code{select}\index{select (command)} draws the same shapes from typed attitudes (\cref{sec:commands}), on every
 visible layer of the active net, and draws the outline too:
 
-\begin{lstlisting}
+\begin{codeblock}
 select cone 040/50 20       # within 20 degrees of the pole to 040/50
 select + band 040/50 10     # add those within 10 degrees of the plane 040/50
 select - cone 040/50 10     # take out the inner 10 degrees
 select invert               # everything that wasn't, and nothing that was
 select none
-\end{lstlisting}
+\end{codeblock}
 
 A plane's cone is about its pole; a line's (\code{'150>60'}, quoted, or \code{150→60}) about the line.
 Each command answers with what its shape caught: \ui{cone: 18 selected}.

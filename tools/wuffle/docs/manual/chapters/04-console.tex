@@ -18,9 +18,9 @@ and \code{stats}: the commands draw on the net and answer in the shell.}
 Press \key{`} (backquote) when no text field has the focus, choose \menu{View>Console}, or click the
 \ui{console} tab under the diagrams. The prompt shows the working directory:
 
-\begin{lstlisting}
+\begin{codeblock}
 wuffle /project $
-\end{lstlisting}
+\end{codeblock}
 
 It starts at \file{/project}, the project itself as files (\cref{ch:project-fs}). \code{pwd} says where
 you are, and \code{cd} moves as in any shell.
@@ -105,7 +105,7 @@ compass's typed entry, which is not a shell, takes \code{150>60} as it is.)
 
 A command says what it did, in a line you can read and a script can grep:
 
-\begin{lstlisting}
+\begin{codeblock}
 wuffle /project $ sample tocher
 opened tocher (200 planes)
 wuffle /project $ contour kamb 3
@@ -114,14 +114,14 @@ wuffle /project $ select cone 040/50 20
 cone: 18 selected
 wuffle /project $ mean
 → tocher · mean (1 row), drawn on Net 1
-\end{lstlisting}
+\end{codeblock}
 
 When it can't, it says why and fails (exit status 1), changing nothing:
 
-\begin{lstlisting}
+\begin{codeblock}
 wuffle /project $ stats nosuch
 no layer “nosuch” on Net 1 — layers: tocher
-\end{lstlisting}
+\end{codeblock}
 
 \begin{tryit}
 \begin{enumerate}
@@ -145,22 +145,22 @@ shell.
 
 wuffle's commands write to the pipe and to files like the rest:
 
-\begin{lstlisting}
+\begin{codeblock}
 stats tocher | grep mean
 stats > /home/tocher-stats.txt
 for m in fisher kamb; do contour $m; done
 for f in data/*.csv; do echo "$f"; done
-\end{lstlisting}
+\end{codeblock}
 
 The first prints only \code{mean 027/89 · pole 207→01 · κ 3.1 · α95 6.8°}; the second keeps all of
 \code{stats}' answer in a file that travels with the project.
 
 A function names a step you repeat:
 
-\begin{lstlisting}
+\begin{codeblock}
 summary() { stats "$1" | head -2; }
 summary tocher
-\end{lstlisting}
+\end{codeblock}
 
 \subsection{Where you can write}\label{sec:home}
 
@@ -183,11 +183,11 @@ answering in turn.}
 
 A routine is a shell script. Write it into \file{/home} and run it with \code{.} (dot):
 
-\begin{lstlisting}
+\begin{codeblock}
 printf 'contour kamb 3\nshow mean\nstats\n' > /home/fabric.sh
 cat /home/fabric.sh
 . /home/fabric.sh
-\end{lstlisting}
+\end{codeblock}
 
 \code{history}\index{history (command)} prints what you have typed this session, numbered, which is the quickest way to start one:
 copy the lines you want into the file. Because \file{/home} travels in the project file, the routine goes
@@ -203,9 +203,9 @@ A failed command stops nothing by itself: as in any shell, the script goes on. C
 \code{verify}\index{verify (command)} fails (exit status 1) when an original's signature doesn't match, and also when the
 project has no field originals at all. A routine can stop on it:
 
-\begin{lstlisting}
+\begin{codeblock}
 verify && echo "the field logs are the phones' own" || echo "check the field logs"
-\end{lstlisting}
+\end{codeblock}
 
 On a project with no originals, \code{verify} answers \ui{no field originals in this project (open a field
 log with its .sig)} and the line prints \ui{check the field logs}.

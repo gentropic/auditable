@@ -21,7 +21,7 @@ In the field the log comes from the compass: \ui{publish →} writes \file{wuffl
 into a plain-text file and save it as \file{wuffle-log.csv}. It is printed small so that each row stays
 on one line; copy it exactly as it is.
 
-\begin{lstlisting}[basicstyle=\ttfamily\tiny\color{ink}]
+\begin{codeblocktiny}
 type,dip_dir_or_trend,dip_or_plunge,strike,timestamp,lat,lon,acc_m,north,declination_deg,photo
 plane,164,75,74,2026-11-20T13:02:10.000Z,-30.0712,-51.1203,4,true,-17.8,
 plane,44,63,314,2026-11-20T13:04:21.000Z,-30.07122,-51.12027,5,true,-17.8,
@@ -60,7 +60,7 @@ plane,296,84,206,2026-11-20T14:14:13.000Z,-30.07186,-51.11931,4,true,-17.8,
 plane,160,77,70,2026-11-20T14:16:24.000Z,-30.07188,-51.11928,5,true,-17.8,
 plane,175,39,85,2026-11-20T14:18:35.000Z,-30.0719,-51.11925,6,true,-17.8,
 plane,291,83,201,2026-11-20T14:20:46.000Z,-30.07192,-51.11922,4,true,-17.8,
-\end{lstlisting}
+\end{codeblocktiny}
 
 Each row is one reading as the compass recorded it: its kind, its attitude (dip direction and dip for a
 plane, trend and plunge for a line), the strike, the time, where you stood and how well the phone knew
@@ -75,10 +75,10 @@ Open the desk (\cref{sec:opening}) and choose \menu{File>Open data or a project�
 \file{.sig} and the two photos together, in one go, or drop all of them on the window at once. wuffle
 gathers them into one field log and says what it found in the status line at the foot of the window:
 
-\begin{lstlisting}
+\begin{codeblock}
 opened field log wuffle-log.csv — signature verified — key 3032 58b6 adb2 2e2f,
 strongbox, signed 2026-11-20T18:40:02.311Z · 2 photos
-\end{lstlisting}
+\end{codeblock}
 
 The key's fingerprint is yours, not this one: it is your phone's key, and it is the same on every log
 that phone signs. Compare it once with the fingerprint your phone shows, and after that the line tells
@@ -86,9 +86,9 @@ you at a glance that the file is your phone's record, byte for byte (\cref{sec:f
 
 The copy you typed from the listing has no \file{.sig} and no photos, so for it the line says instead:
 
-\begin{lstlisting}
+\begin{codeblock}
 opened field log wuffle-log.csv — unsigned (2 named in the log weren't in the drop)
-\end{lstlisting}
+\end{codeblock}
 
 That is the honest answer for a file nobody signed. Everything else in this chapter works the same.
 
@@ -100,14 +100,14 @@ The log becomes two datasets, \code{field 2026-11-20 · planes} (31 rows) and
 \ui{Net 1}. The file itself is kept as it came, under \file{/project/field/field 2026-11-20/}, with its
 signature and a \file{photos/} folder. In the console:
 
-\begin{lstlisting}
+\begin{codeblock}
 wuffle /project $ verify
 field 2026-11-20  (field/field 2026-11-20/wuffle-log.csv): signature verified — key 3032 58b6 adb2 2e2f, strongbox, signed 2026-11-20T18:40:02.311Z
 wuffle /project $ ls -l "/project/field/field 2026-11-20"
 d        0  photos
 -     2915  wuffle-log.csv
 -      374  wuffle-log.csv.sig
-\end{lstlisting}
+\end{codeblock}
 
 The datasets are yours to edit; the original never changes. In the tree's \ui{data} section both have
 the arrow of a derived dataset, and hovering one says where it came from: \ui{made by field log from
@@ -183,14 +183,14 @@ for the lines.
 Now choose what each layer draws (\cref{ch:elements}). The tree's checkboxes do it, or, in the console,
 with \ui{Sets} active:
 
-\begin{lstlisting}
+\begin{codeblock}
 use Sets
 contour kamb 3 bedding
 show v3 bedding
 show mean J1
 show mean J2
 show mean field
-\end{lstlisting}
+\end{codeblock}
 
 The bedding is contoured (with 16 poles the contours are patches along the girdle rather than a band),
 and its third eigenvector, V3, is drawn as a point. Each joint set and the lines get their Fisher mean
@@ -310,14 +310,14 @@ its \ui{mean → dataset} to keep it as a dataset with the others.
 
 The same in the console, with \ui{Sets} active (and the limbs drawn there):
 
-\begin{lstlisting}
+\begin{codeblock}
 wuffle /project $ beta bedding
 → bedding · β (120 rows), drawn on Sets
 wuffle /project $ intersect NE SW
 → NE limb ∩ SW limb (1 row), drawn on Sets
 wuffle /project $ mean field
 → field 2026-11-20 · lines · mean (1 row), drawn on Sets
-\end{lstlisting}
+\end{codeblock}
 
 \shot[0.8\linewidth]{wf-axis}{The fold axis four ways. The bedding poles lie on their best-fit girdle;
 in the east-southeast, the gray $\beta$ points, the hinge lines with their mean and cone, the bedding's
@@ -372,13 +372,13 @@ a look at the net, but the description of them is the same every time. Keep it a
 \begin{tryit}
 \begin{enumerate}
 \item In the console, write the routine:
-\begin{lstlisting}
+\begin{codeblock}
 printf 'use Sets\nfor s in bedding J1 J2 field; do stats $s; done\n' > /home/sets.sh
-\end{lstlisting}
+\end{codeblock}
 \item Run it, keeping what it prints in a report:
-\begin{lstlisting}
+\begin{codeblock}
 . /home/sets.sh > /home/report.txt
-\end{lstlisting}
+\end{codeblock}
 \item Read the report back with \code{cat /home/report.txt}. It has 13 lines: the active diagram, then
 the count, mean and eigenvalues of each set.
 \end{enumerate}
@@ -389,14 +389,14 @@ the report read back.}
 
 The report starts like this:
 
-\begin{lstlisting}
+\begin{codeblock}
 ● Sets
 bedding · n 16
 mean 152/29 · pole 332→61 · κ 2.6 · α95 27.3°
 S 0.516 0.483 0.001 · K 0.01 · C 6.80
 J1 · n 8
 mean 293/84 · pole 113→06 · κ 557.7 · α95 2.2°
-\end{lstlisting}
+\end{codeblock}
 
 The routine and its report are files in \file{/home}, so they go into the next save and into a page you
 send. Grow the routine as the work settles: \code{beta bedding} and \code{intersect NE SW} when the

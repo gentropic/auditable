@@ -150,11 +150,11 @@ Not stored: the SVG and PDF renderings, the selected rows as CSV, and the undo h
 A page saved with \menu{File>Save as page (one .html, the project inside)} is the wuffle page plus one
 element before the program block:
 
-\begin{lstlisting}
+\begin{codeblock}
 <script type="application/zip" id="wuffle-project" data-encoding="gzip" data-name="Serra study">
 H4sIAAAAAAAA…
 </script>
-\end{lstlisting}
+\end{codeblock}
 
 The text inside is the \file{.zip.wuffle}, gzipped, then base64 in lines of 100 characters. A browser never
 runs a script of that type, so a program that wants the project reads that element, decodes the base64,

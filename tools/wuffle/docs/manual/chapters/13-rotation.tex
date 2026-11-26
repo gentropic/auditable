@@ -32,11 +32,11 @@ shares it, and a figure made from the net (\cref{ch:figures}) is drawn as rotate
 
 The console's \code{rotate} brings a direction to the center of the active net:\index{rotate (command)}
 
-\begin{lstlisting}
+\begin{codeblock}
 rotate 120→40       # Net 1: centered on 120→40
 rotate '120>40'     # the same, typed without the arrow (quoted: > is the shell's)
 rotate off          # Net 1: not rotated
-\end{lstlisting}
+\end{codeblock}
 
 The direction is a line. \code{rotate 045/30} refuses with \ui{rotate 045→30 (the direction to put at the
 center)}; to look down a plane's pole, give the pole as a line. Only a net rotates: with a rose or a

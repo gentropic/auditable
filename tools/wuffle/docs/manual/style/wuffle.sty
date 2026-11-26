@@ -202,6 +202,23 @@
 % ── code (listings: builds on any TeX install; Unicode is native under LuaLaTeX) ──
 \lstdefinestyle{wuffle}{basicstyle=\ttfamily\small\color{ink}, backgroundcolor=\color{tint}, frame=single, rulecolor=\color{tint}, framesep=2.2mm, xleftmargin=2.4mm, xrightmargin=2.4mm, aboveskip=1em, belowskip=0.8em, breaklines=true, breakatwhitespace=true, columns=fullflexible, keepspaces=true, showstringspaces=false, upquote=true, tabsize=2,
   keywordstyle=\color{info}\bfseries, stringstyle=\color{ok}, commentstyle=\color{faint}\itshape, identifierstyle=\color{ink}, extendedchars=true}
+% CODE BLOCKS are NOT listings: listings gathers letters and digits into tokens and emits a non-ASCII
+% character before the pending token, so `pole 207→01` printed as `pole →20701` and `● Sets` lost its
+% bullet to the line before — wrong numbers in a manual. (A `literate` map doesn't help: the replacement
+% is emitted early too.) fancyvrb + fvextra set the text as it is, Unicode and all, under LuaLaTeX, and
+% break long lines at spaces. \begin{codeblock} … \end{codeblock}; codeblocktiny for a wide table of
+% data. (No optional argument: its look-ahead eats the line end, and Verbatim then reads the first code
+% line as junk after \begin.)
+\RequirePackage{fvextra}
+\newtcolorbox{wufflecodebox}{enhanced, breakable, boxrule=0pt, colback=tint, arc=1.5pt, left=2.4mm, right=2.4mm, top=1.8mm, bottom=1.8mm, before skip=1em, after skip=0.8em}
+\fvset{formatcom=\color{ink}, breaklines=true, breaksymbolleft={}, breakindent=1.6em}
+\newenvironment{codeblock}
+  {\VerbatimEnvironment\begin{wufflecodebox}\begin{Verbatim}[fontsize=\small]}
+  {\end{Verbatim}\end{wufflecodebox}}
+\newenvironment{codeblocktiny}
+  {\VerbatimEnvironment\begin{wufflecodebox}\begin{Verbatim}[fontsize=\tiny]}
+  {\end{Verbatim}\end{wufflecodebox}}
+\AddToHook{env/codeblocktiny/before}{\wuffleneed{4}}
 \lstdefinelanguage{yaml}{morekeywords={true,false,null}, sensitive=true, morecomment=[l]{\#}, morestring=[b]", morestring=[b]', alsoletter={-_}}
 \lstdefinelanguage{expr}{morekeywords={and,or,not,in,between,like,is,null,true,false,if,then,else}, sensitive=false, morestring=[b]", morestring=[b]', morecomment=[l]{--}}
 \lstdefinelanguage{js}{morekeywords={const,let,var,await,async,function,return,new,if,else,for,of,in,true,false,null,undefined}, sensitive=true, morecomment=[l]{//}, morestring=[b]", morestring=[b]'}
@@ -344,7 +361,7 @@
 \AddToHook{env/note/before}{\wuffleneed{4}}
 \AddToHook{env/caution/before}{\wuffleneed{4}}
 \AddToHook{env/why/before}{\wuffleneed{4}}
-\AddToHook{env/lstlisting/before}{\wuffleneed{4}}
+\AddToHook{env/codeblock/before}{\wuffleneed{4}}
 \brokenpenalty=500
 % floats: a book of large screenshots. Let a page carry up to two of them at the top and keep at least
 % a few lines of text with them; a float page only when it is mostly full, so a screenshot that can't
