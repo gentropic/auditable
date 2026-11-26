@@ -120,7 +120,7 @@ export function sniffRoles(columns, rows) {
     const vals = rows.map((o) => String(o[att] ?? '')).filter((v) => v.trim());
     const lines = vals.filter(isLineText).length;
     if (lines && lines === vals.length) return { kind: 'lines', roles: { attitude: att, ...set }, notation: 'text', guessed: true, why: `“${att}” read as trend → plunge` };
-    return { kind: 'planes', roles: { attitude: att, ...set }, notation: 'text', guessed: true, mixed: lines > 0, why: `“${att}” read as dip direction / dip (quadrant letters honoured)${lines ? '; the rows with an arrow as trend → plunge' : ''}` };
+    return { kind: 'planes', roles: { attitude: att, ...set }, notation: 'text', guessed: true, mixed: lines > 0, why: `“${att}” read as dip direction / dip (quadrant letters honored)${lines ? '; the rows with an arrow as trend → plunge' : ''}` };
   }
   // the first two numeric columns, as dip direction / dip — unless the second runs past 90
   const numeric = columns.filter((c) => rows.slice(0, 50).every((o) => typeof o[c] === 'number' || o[c] === ''));

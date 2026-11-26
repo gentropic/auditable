@@ -61,7 +61,7 @@ export class TableView {
   _colors() { return document.documentElement.dataset.resolvedTheme === 'light' ? LIGHT_COLORS : DARK_COLORS; }
   _title() {
     const d = this.datasetId && this.p.dataset(this.datasetId);
-    this.head.textContent = d ? `${d.name} · ${d.kind} · ${d.rows.length} rows${d.meta?.read?.guessed ? ` · read as ${d.meta.read.why}` : ''}` : 'no dataset — click a layer or a dataset in the tree';
+    this.head.textContent = d ? `${d.name} · ${d.kind} · ${d.rows.length} rows${d.meta?.read?.guessed ? ` · ${d.meta.read.why}` : ''}` : 'no dataset — click a layer or a dataset in the tree';
   }
   show(datasetId) {
     this.grid?.destroy(); this.grid = null;

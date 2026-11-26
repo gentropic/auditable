@@ -43,7 +43,7 @@ const HELP = {
   stats: 'stats [layer] — n, mean, κ, α95, eigenvalues',
   mean: 'mean [layer] / eigen [layer] / beta [layer] — keep the result as a dataset, drawn on this diagram',
   intersect: 'intersect <layer> <layer> — where their mean planes meet, as a dataset',
-  rotate: 'rotate <tr→pl> | rotate off — centre the net on a direction',
+  rotate: 'rotate <tr→pl> | rotate off — center the net on a direction',
   theme: 'theme dark|light|system',
   history: 'history — the lines typed so far (a routine is just these lines)',
   undo: 'undo / redo — the last change, whoever made it',
@@ -127,8 +127,8 @@ export function createCommands(ctx) {
     rotate([att]) {
       const g = active(); if (g.kind !== 'net') throw new Error('only a net rotates');
       if (att === 'off' || att == null) { p.setDiagramProps(g.id, { rotation: null, matrix: null }); return `${g.name}: not rotated`; }
-      const a = parseAttitude(att); if (!a || !a.line) throw new Error('rotate 045→30 (the direction to put at the centre)');
-      p.setDiagramProps(g.id, { rotation: a.line, matrix: null }); return `${g.name}: centred on ${formatLine(a.line)}`;
+      const a = parseAttitude(att); if (!a || !a.line) throw new Error('rotate 045→30 (the direction to put at the center)');
+      p.setDiagramProps(g.id, { rotation: a.line, matrix: null }); return `${g.name}: centered on ${formatLine(a.line)}`;
     },
     theme([t]) { if (!['dark', 'light', 'system'].includes(t)) throw new Error('theme dark|light|system'); ctx.setTheme?.(t); return `theme ${t}`; },
     history() { return history.join('\n') || '(empty)'; },

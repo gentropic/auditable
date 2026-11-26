@@ -77,7 +77,7 @@ export function mountDesk() {
     const n = p.datasets.reduce((a, d) => a + d.rows.length, 0), s = [...p.selection.values()].reduce((a, x) => a + x.size, 0);
     $('.wst-count').textContent = `${p.datasets.length} dataset${p.datasets.length === 1 ? '' : 's'} · ${n} measurements${s ? ` · ${s} selected` : ''}`;
   });
-  $('.wst-count').textContent = '0 datasets';
+  $('.wst-count').textContent = '0 datasets · 0 measurements';
   theme.onChange(() => { $('.wst-theme').textContent = theme.label(); layout.redrawAll(); table.applyTheme(); });
   theme.apply();
 

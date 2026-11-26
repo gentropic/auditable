@@ -33,7 +33,7 @@ function contents(p, diagramId) {
     net: { scene, net: { projection: g.props.projection, hemisphere: g.props.hemisphere, rotation: g.props.matrix || null, center: g.props.rotation || null, graticule: g.props.graticule || 10 }, title: g.name },
     legend: { title: 'layers', size: 8, entries: layers.map((L) => ({ color: L.color || '#232322', label: `${named(L)} (${L.data.length})` })) },
     stats: { title: 'statistics (axial Fisher mean)', columns: ['layer', 'n', 'mean', 'κ', 'α95 °', 'K'], rows, size: 7.5 },
-    caption: { md: `${proj}, ${g.props.hemisphere} hemisphere${g.props.rotation ? `, centred on ${formatLine(g.props.rotation)}` : g.props.matrix ? ', rotated' : ''}${contourTxt}. `
+    caption: { md: `${proj}, ${g.props.hemisphere} hemisphere${g.props.rotation ? `, centered on ${formatLine(g.props.rotation)}` : g.props.matrix ? ', rotated' : ''}${contourTxt}. `
       + `Planes as dip direction/dip, lines as trend→plunge.${lineage.length ? ` Derived: ${lineage.join('; ')}.` : ''} Made with wuffle, {date:DD/MM/YYYY}.`, size: 8 },
   };
 }

@@ -209,7 +209,7 @@ export class TreeView {
         const inp = (type, value, attrs = {}) => { const i = h('input'); i.type = type; i.value = value; Object.assign(i, attrs); return i; };
         const sel = (opts, v) => { const s = h('select'); for (const [k, t] of opts) { const o = h('option', null, t); o.value = k; s.append(o); } s.value = v; return s; };
         body.append(h('p', 'wpnote', `${ds.name} · ${ds.kind} · ${n} of ${ds.rows.length} rows read`));
-        const color = row('colour', inp('color', L.style.color || '#e8836b'));
+        const color = row('color', inp('color', L.style.color || '#e8836b'));
         const size = row('symbol size', inp('number', L.style.size || 4, { min: 1, max: 12, step: 0.5 }));
         let cm, cs, mc;
         if (E.contours) { cm = row('contours', sel([['kamb', 'Kamb (σ)'], ['fisher', 'Fisher kernel (MUD)']], E.contours.method)); cs = row('Kamb k (E = kσ)', inp('number', E.contours.sigma ?? 3, { min: 1, max: 6, step: 0.5 })); }

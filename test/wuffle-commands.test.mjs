@@ -70,7 +70,7 @@ describe('commands', () => {
     assert.match(c.run('new rose').text, /Rose 1/);
     assert.equal(p.layersOf(p.activeDiagram).length, 1, 'the new diagram carries the views');
     c.run('use net'); assert.equal(p.diagram(p.activeDiagram).kind, 'net');
-    assert.match(c.run('rotate 045→30').text, /centred on 045→30/);
+    assert.match(c.run('rotate 045→30').text, /centered on 045→30/);
     assert.deepEqual(p.diagram(p.activeDiagram).props.rotation, [45, 30]);
     assert.match(c.run('diagrams').text, /● Net 1/);
   });
