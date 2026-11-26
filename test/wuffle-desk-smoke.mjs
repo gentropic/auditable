@@ -218,6 +218,21 @@ for (const [label, url] of [['dev', '/tools/wuffle/index.html'], ['built', '/wuf
   chk(`${label}: a pipe (stats | grep -c), a for loop (contour → ${sh.method}), $(…) into a file in /home, Tab completed “sam” → sample; run() answers ${JSON.stringify(sh.run).slice(0, 60)}`,
     /^1$/m.test(sh.tr) && sh.method === 'kamb' && /\d+ layer lines/.test(sh.tr) && sh.hist.includes('sample tocher') && sh.run.ok && /undid/.test(sh.run.text));
 
+  // ── /project: the model as a filesystem — mkdir makes a net (its tab appears), ln -s draws data on it, Tab completes paths ──
+  await typed('mkdir "diagrams/Shell net"');
+  await typed('ln -s ../../../data/tocher.csv "diagrams/Shell net/layers/"');
+  await p.keyboard.type('cat da'); await p.keyboard.press('Tab'); await p.waitForTimeout(250);
+  await p.keyboard.type('tocher.c'); await p.keyboard.press('Tab'); await p.waitForTimeout(250);   // 'toch' alone stops at 'tocher' — an earlier step opened tocher (2)
+  await p.keyboard.press('Enter'); await p.waitForTimeout(300);
+  const pf = await p.evaluate(() => {
+    const W = window.__wuffleDesk, P = W.project, g = P.diagrams.find((x) => x.name === 'Shell net');
+    return { g: !!g, layers: g ? P.layersOf(g.id).length : 0, tab: [...document.querySelectorAll('.rails-tab')].some((t) => t.textContent.includes('Shell net')),
+      last: W.console.history.at(-1), tr: W.console.transcript.slice(-400) };
+  });
+  chk(`${label}: /project — mkdir made “Shell net” (tab: ${pf.tab}), ln -s drew the data on it (${pf.layers} layer), Tab completed the path → “${pf.last}”`,
+    pf.g && pf.tab && pf.layers === 1 && pf.last === 'cat data/tocher.csv' && /\d+,\d+/.test(pf.tr) && !/no such|not found/i.test(pf.tr));
+  await p.evaluate(() => { const W = window.__wuffleDesk, P = W.project, g = P.diagrams.find((x) => x.name === 'Shell net'); if (g) P.removeDiagram(g.id); });
+
   // ── rotating: a drag on the net (pick tool) turns it; a click afterwards still picks ──
   await p.evaluate(() => { const W = window.__wuffleDesk; W.select.setTool('pick'); W.project.setActive(W.project.diagrams[0].id); W.rails.activateTab('diag:' + W.project.diagrams[0].id); });
   await p.waitForTimeout(250);

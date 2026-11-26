@@ -47,7 +47,24 @@ console** below. Everything runs offline in the one file.
   `stats`, `mean`, `beta`, `intersect a b`, `rotate`, `undo`, `history`) beside `ls`, `cat`,
   `grep`, `sed`, `awk`, `tar`… Pipes, `$(…)`, loops and functions work around them
   (`stats tocher | grep mean`, `for m in fisher kamb; do contour $m; done`); a routine is a
-  shell script (`. /home/routine.sh`). Tab completes, ↑ recalls. Files live in `/home` and `/tmp`.
+  shell script (`. /home/routine.sh`). Tab completes commands, names and paths; ↑ recalls.
+- **`/project` — the project is a filesystem.** The shell starts in it, and it is the model itself,
+  live (nothing is copied; every write goes through the same rules as the UI, and undoes):
+
+  ```
+  data/tocher.csv                     the rows (write: replace them · a new name: new data)
+  data/tocher.json                    kind, roles, lineage, where it is drawn
+  diagrams/Net 1/diagram.json         settings (write: change them)
+  diagrams/Net 1/net.svg              the diagram as drawn, on paper
+  diagrams/Net 1/layers/tocher.csv -> ../../../data/tocher.csv     a layer IS a link to its data
+  diagrams/Net 1/layers/tocher.json   visible, style, elements (write: show / hide / style)
+  figures/<name>.compo.json · .pdf    a figure page, and the page as a PDF
+  selection/tocher.rows · .csv        the selected rows: write numbers to select, rm to clear
+  ```
+
+  `mkdir diagrams/X` makes a net, `ln -s ../../../data/tocher.csv diagrams/X/layers/` draws
+  data on it, `mv` a layer to another diagram moves it, `rm -r diagrams/X` removes it — and
+  `rm data/tocher.csv` refuses while the data is drawn somewhere. `/home` is yours, `/tmp` scratch.
 - **Undo / redo** (Ctrl+Z, Ctrl+Shift+Z, Edit menu, `undo` in the console): every change to the
   project, whoever made it — the menus, a drag, the console.
 - **Figures**: Figure → *New figure from the active net* opens a @gcu/compo page (the net
@@ -93,7 +110,7 @@ node build.js --target=wuffle     # → wuffle.html (registry build: bearing, le
                                   #   menu, dialog, loom, stereonet, compo + the src/ modules)
 npm run test:wuffle               # the compass, over the built file (?field)
 npm run test:wuffle:bench         # the compass in the mocked lead-acid shell
-npm run test:wuffle:desk          # the desk, dev tree AND built file (40 checks: real drags, the shell, undo, figures…)
+npm run test:wuffle:desk          # the desk, dev tree AND built file (42 checks: real drags, the shell, /project, undo, figures…)
 node --test test/wuffle-*.test.mjs test/stereonet-*.test.mjs   # the pure modules (in npm test)
 node tools/wuffle/dev/gen-samples.mjs                          # after changing samples/*.csv
 ```

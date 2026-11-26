@@ -4,15 +4,19 @@
 // `stats tocher | grep mean`, `for c in kamb fisher; do contour $c; done` and a routine that is just a
 // shell script (`. /home/routine.sh`) all work, and an agent later gets the same shell.
 //
-// The filesystem is an in-memory @gcu/vfs: /home (yours) and /tmp. /project — the model as a live tree —
-// mounts here next (see spec_inbox/wuffle-desk-spec.md "Phase 2").
+// The filesystem is a @gcu/vfs: /project is the model itself as a live tree (project-fs.js — `ls`, `cat
+// data/tocher.csv`, `ln -s` a layer, `rm -r` a diagram, all through the model's own rules), /home is yours
+// and /tmp is scratch. The shell starts in /project.
 //
 // run(line) runs a line as if typed and resolves { ok, text } (what it printed, colour codes stripped).
 
 import { Terminal, DomRenderer, Input } from '../../../ext/term/index.js';
 import { createShell, createTermAdapter, makeLineEditor } from '../../../ext/geas/index.js';
 import { VFS } from '../../../ext/vfs/index.js';
+import { exportPDF } from '../../../ext/compo/index.js';
 import { createCommands } from './commands.js';
+import { projectFs } from './project-fs.js';
+import { diagramSvg } from './diagram-svg.js';
 
 const h = (tag, cls) => { const e = document.createElement(tag); if (cls) e.className = cls; return e; };
 const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;
@@ -48,7 +52,7 @@ export class ConsoleView {
     this.shell = createShell({
       vfs: this.vfs,
       env: { HOME: '/home', PWD: '/home', USER: 'wuffle', TERM: 'geas' },
-      cwd: '/home',
+      cwd: '/project',
       stdout: (t) => this._write(t),
       stderr: (t) => this._write(t, '\x1b[31m'),
       builtins: this._builtins(),
@@ -111,7 +115,11 @@ export class ConsoleView {
   async _boot() {
     await this.vfs.mount('/', { type: 'memory' });
     for (const d of ['/home', '/tmp']) await this.vfs.mkdir(d);
-    this._write('\x1b[33mwuffle\x1b[0m \x1b[2m— the console is a shell: help lists the commands, Tab completes, ↑ recalls\x1b[0m\n');
+    await this.vfs.mount('/project', projectFs(this.p, {
+      renderSvg: (id) => diagramSvg(this.p, id),
+      figurePdf: async (id) => { const f = this.p.figure(id); return exportPDF(f.doc, { title: f.name, creator: 'wuffle' }); },
+    }));
+    this._write('\x1b[33mwuffle\x1b[0m \x1b[2m— the console is a shell, and /project is the project: try ls, help, cat data/*.csv. Tab completes, ↑ recalls\x1b[0m\n');
     this._loop();
   }
   _prompt() { return `\x1b[33mwuffle\x1b[0m \x1b[36m${this.shell.cwd}\x1b[0m $ `; }
@@ -158,12 +166,24 @@ export class ConsoleView {
     const words = buffer.split(/\s+/), last = words.at(-1), head = buffer.slice(0, buffer.length - last.length);
     let pool;
     if (words.length === 1) pool = [...this.shell.builtins.keys(), ...this.shell.functions.keys()];
-    else if (last.includes('/') && !/^\d/.test(last)) return this._completePath(head, last);
+    else if ((last.includes('/') && !/^\d/.test(last)) || /^(cat|ls|cd|rm|ln|mv|cp|head|tail|grep|wc|less|sed|awk|mkdir|rmdir|stat|readlink|\.|source)$/.test(words[0])) return this._completePath(head, last);
     else pool = [...new Set([...this.p.layers.map((l) => this.p.dataset(l.datasetId)?.name), ...this.p.datasets.map((d) => d.name), ...this.p.diagrams.map((g) => g.name)].filter(Boolean))].map(quote);
     const m = pool.filter((n) => n.startsWith(last)).sort();
     if (m.length === 1) return { buffer: head + m[0] + ' ' };
     if (m.length > 1) { const c = commonPrefix(m); return c.length > last.length ? { buffer: head + c } : { list: m }; }
     return null;
   }
-  _completePath() { return null; }   // the VFS is async and Tab is not: paths complete once /project lands
+  /** a path, against the filesystem (async — geas's editor waits for it). Names with spaces come back quoted. */
+  async _completePath(head, last) {
+    const bare = last.replace(/^"/, ''), cut = bare.lastIndexOf('/'), dir = cut < 0 ? '' : bare.slice(0, cut + 1), stem = bare.slice(cut + 1);
+    const abs = dir.startsWith('/') ? dir : `${this.shell.cwd.replace(/\/$/, '')}/${dir}`;
+    let names; try { names = await this.vfs.readdir(abs || '/'); } catch { return null; }
+    const m = names.filter((n) => n.startsWith(stem)).sort();
+    if (!m.length) return null;
+    const isDir = async (n) => { try { return (await this.vfs.stat(`${abs.replace(/\/$/, '')}/${n}`)).type === 'directory'; } catch { return false; } };
+    const q = (s, closed) => (/[\s"]/.test(s) || last.startsWith('"') ? `"${s}${closed ? '"' : ''}` : s);
+    if (m.length === 1) { const d = await isDir(m[0]); return { buffer: head + q(dir + m[0] + (d ? '/' : ''), !d) + (d ? '' : ' ') }; }
+    const c = m.reduce((a, b) => { let i = 0; while (i < a.length && a[i] === b[i]) i++; return a.slice(0, i); });
+    return c.length > stem.length ? { buffer: head + q(dir + c, false) } : { list: m };
+  }
 }

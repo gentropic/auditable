@@ -6,23 +6,11 @@
 //   fabric: one point per visible layer, in its colour
 // Fabric plots draw their ink in fixed dark strokes, so they sit on a paper card in either theme.
 
-import { rose, fabricplot } from '../../../ext/bearing/index.js';
-import { orientations } from './io.js';
+import { roseMarkup, fabricMarkup } from './diagram-svg.js';
 import { tok } from './desk-theme.js';
 
 export const ROSE_QUANTITIES = [['strike', 'strike (planes)'], ['dipDirection', 'dip direction (planes)'], ['trend', 'trend (lines)']];
 const REDRAW = new Set(['layer-added', 'layer-removed', 'layer-changed', 'layer-moved', 'layers-removed', 'rows-changed', 'project-loaded', 'history']);
-
-/** a dataset's azimuths for a rose */
-export function roseAzimuths(ds, quantity) {
-  const out = [];
-  for (const o of orientations(ds)) {
-    if (!o) continue;
-    if (o.plane) { if (quantity === 'trend') continue; out.push(quantity === 'strike' ? (o.plane[0] + 270) % 360 : o.plane[0]); }
-    else if (o.line) { if (quantity !== 'trend') continue; out.push(o.line[0]); }
-  }
-  return out;
-}
 
 class DiagramView {
   constructor(project, diagramId) {
@@ -48,27 +36,19 @@ class DiagramView {
 export class RoseView extends DiagramView {
   draw() {
     const g = this.p.diagram(this.id), size = this.size(); if (!g || !size) return;
-    const q = g.props.quantity || 'strike', layers = this.p.layersOf(this.id).filter((L) => L.visible);
-    const az = layers.flatMap((L) => roseAzimuths(this.p.dataset(L.datasetId), q));
-    if (!az.length) { this.note(layers.length ? `no ${q === 'trend' ? 'lines' : 'planes'} to bin by ${q} — choose another quantity in the diagram's menu` : 'drag a dataset or a layer here'); return; }
-    const axial = q === 'strike' ? true : !!g.props.axial;
-    const svg = rose.roseSVG(az, { size, binWidth: g.props.bins || 10, axial, scale: g.props.scale === 'linear' ? 'linear' : 'sqrt', rings: 4,
-      fill: layers[0].style.color || tok('--w-orange'), fillOpacity: 0.75, petalStroke: tok('--w-bg-deep'), frameStroke: tok('--w-net-rim'), background: 'none' });
-    this.show(svg);
-    this.el.dataset.n = String(az.length);
+    const r = roseMarkup(this.p, g, { size, fill: tok('--w-orange'), petalStroke: tok('--w-bg-deep'), frameStroke: tok('--w-net-rim') });
+    if (r.note) { this.note(r.note); return; }
+    this.show(r.svg);
+    this.el.dataset.n = String(r.n);
   }
 }
 
 export class FabricView extends DiagramView {
   draw() {
     const g = this.p.diagram(this.id), size = this.size(); if (!g || !size) return;
-    const sets = this.p.layersOf(this.id).filter((L) => L.visible).map((L) => {
-      const ds = this.p.dataset(L.datasetId);
-      return { dcos: orientations(ds).filter(Boolean).map((o) => o.pole || o.dcos), color: L.style.color, label: L.name || ds.name };
-    }).filter((s) => s.dcos.length >= 3);
-    if (!sets.length) { this.note('drag a dataset or a layer here (three measurements or more)'); return; }
-    const fn = g.props.plot === 'woodcock' ? fabricplot.woodcockSVG : fabricplot.vollmerSVG;
-    this.show(fn(sets, { size: Math.min(size, 520) }), true);
-    this.el.dataset.n = String(sets.length);
+    const r = fabricMarkup(this.p, g, { size });
+    if (r.note) { this.note(r.note); return; }
+    this.show(r.svg, true);
+    this.el.dataset.n = String(r.n);
   }
 }
