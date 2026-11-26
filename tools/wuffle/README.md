@@ -1,6 +1,6 @@
 # wuffle
 
-**A geological compass — a single-file GCU tool with two homes.**
+**A stereonet workbench and a geological compass — one single-file GCU tool, two homes.**
 
 > A wuffle throws its planes and lines straight onto a stereonet. The name puns
 > on the *Wulff net*, but orientation data belongs on an **equal-area (Schmidt)**
@@ -13,12 +13,50 @@ wuffle is a structural-geology compass/clinometer. Two homes, one file:
   direction / dip**; sight a lineation → **trend / plunge**, live off the device
   orientation. It was lead-acid's first *original* instrument — the artifact that
   exists *because* of the shell, dogfooding `keepAwake`, `fs/publish`, `share`.
-- **On the desktop** (gentropic.org/wuffle, or the raw file): the same tool as a
-  **stereonet + manual entry** — type `045/30` (plane) or `310→70` (line) to plot,
-  read the net, download the log. No device orientation, but a real analysis surface.
+- **On the desktop**: the **desk**, a stereonet workbench (below). `?field` opens the
+  compass on a desktop too, with manual entry — type `045/30` (plane) or `310→70` (line).
 
-Each measurement lands live on the Schmidt net and appends to a log you delete
-from, clear, and publish (Downloads CSV in the shell; a file download on desktop).
+In the field each measurement lands live on the Schmidt net and appends to a log you
+delete from, clear, and publish (Downloads CSV in the shell; a file download on desktop).
+The desk opens that log as it is (planes and lines become two datasets).
+
+## The desk
+
+One window, laid out by `@gcu/rails`: the **layers** tree on the left, one tab per
+**diagram** in the middle (nets, roses, fabric plots, figures), and **table · statistics ·
+console** below. Everything runs offline in the one file.
+
+- **Data once, layers per diagram.** A dataset lives once in the project; a diagram shows
+  it through *layers*, and every layer of a dataset is a view of the same rows (styling per
+  layer, data shared). Drag a layer onto another diagram to add a view (⇧ moves it); a ⧉
+  badge marks data drawn in more than one place; *remove from everywhere* asks first.
+- **OpenStereo's nested checkboxes**: a layer opens into what it draws — poles, great
+  circles, contours (Kamb or Fisher), mean + cone, eigenvectors V1–V3 (pole and great
+  circle each), labels; faults: slip with sense arrows, P/T axes, right dihedra. The
+  properties dialog (double-click) sets how they draw.
+- **Selections in attitude space**: pick, lasso, cone and band on the net, built on the
+  sphere so they keep meaning the same measurements when the net rotates. The selection
+  belongs to the data: it shows on every diagram and in the table; *selection → new dataset*.
+- **Statistics**: axial Fisher mean with κ and α95, eigen analysis (S1–S3, Woodcock K/C,
+  Vollmer P/G/R), Michael's (1984) stress inversion for faults. Results become datasets with
+  lineage: the mean, the eigenvectors, a β diagram, the intersection of two layers.
+- **Rose diagrams** (strike, dip direction or trend) and **fabric plots** (Vollmer, Woodcock).
+- **Drag a net to rotate it** (arcball); the console's `rotate 045→30` centres it.
+- **Console** (`` ` ``): `sample tocher`, `contour kamb 3`, `select cone 150/60 20`, `stats`,
+  `mean`, `beta`, `intersect a b`, `rotate`, `history` — a routine is just lines.
+- **Figures**: Figure → *New figure from the active net* opens a @gcu/compo page (the net
+  as vectors, a legend, the statistics, a caption saying what is drawn); export PDF or PNG;
+  *↻ from the net* redraws it after changes. Figures are kept in the `.wuffle` project.
+- **Files**: any delimited text (dip direction/dip, right-hand-rule strike/dip, trend/plunge,
+  faults, small circles, single attitude columns like `N30E 40SE`) — never refused: what
+  couldn't be read is counted, and a guessed column mapping says so. Save/open `.wuffle`.
+
+Text everywhere: planes as dip direction/dip (`045/72`), lines as trend→plunge (`045→32`).
+Sample data: Tocher, F. E. (1979), *The computer contouring of fabric diagrams*, Computers &
+Geosciences 5, 73–126 (`samples/tocher.csv`).
+
+The nets, selections, statistics drawing and the figure frame come from **`@gcu/stereonet`**
+(`ext/stereonet`, shared with the notebook's stereonet cell); the maths from **`@gcu/bearing`**.
 
 ## How it works
 
@@ -35,16 +73,29 @@ from, clear, and publish (Downloads CSV in the shell; a file download on desktop
 - **Shell-aware:** feature-detects the shell via `@gcu/leadacid`; `shell.present`
   false on desktop (native features simply absent), true in lead-acid.
 
+## Code
+
+`src/field.js` is the compass. The desk is one module per job: `model.js` (the project),
+`io.js` (readers), `layers.js` (model → @gcu/stereonet), `stats.js`, `commands.js`, `figure.js`
+(all pure, Node-tested) and the panels `desk-*.js` (`desk.js` only wires them). New features
+land as new modules.
+
 ## Build & test
 
 ```
-node build.js --target=wuffle     # → wuffle.html (registry build: bearing + leadacid + app)
-npm run test:wuffle               # committed smoke over the built file (boot, net, plot, entry, …)
+node build.js --target=wuffle     # → wuffle.html (registry build: bearing, leadacid, wmm, rails,
+                                  #   menu, dialog, loom, stereonet, compo + the src/ modules)
+npm run test:wuffle               # the compass, over the built file (?field)
+npm run test:wuffle:bench         # the compass in the mocked lead-acid shell
+npm run test:wuffle:desk          # the desk, dev tree AND built file (36 checks: real drags, console, figures…)
+node --test test/wuffle-*.test.mjs test/stereonet-*.test.mjs   # the pure modules (in npm test)
+node tools/wuffle/dev/gen-samples.mjs                          # after changing samples/*.csv
 ```
 
 `wuffle.html` is a gitignored build output. Deploy: a Pages site
-(gentropic.org/wuffle) and/or copied into the lead-acid APK's assets. Dev source
-imports `@gcu/bearing` + `@gcu/leadacid` via the import-map in `index.html`.
+(gentropic.org/wuffle) and/or copied into the lead-acid APK's assets. The build imports
+only the page's entry at boot (importing every module would run the compass on the desk).
+Dev source imports the ext packages by relative path; the build maps them to the bundle.
 
 ## Roadmap
 
