@@ -12,6 +12,7 @@ import { openBlob, openDrillholeLayer } from './open.js';
 import { setColorLabels, colorSelFor, setLayerColorBy } from './color.js';
 import { applyCatLegend } from './categories.js';
 import * as SC from './site-c.js';
+import { registerCommands } from './commands.js';
 import { reopenAs } from './reopen.js';
 import { followLayer, createLayerGroup, applyTreeVisibility } from './tree.js';
 import { renderLayers } from './layers-panel.js';
@@ -475,3 +476,7 @@ export async function openSiteC() {
   }
   $('#meta').textContent = 'Site C — gold in a folded banded iron formation: blocks by rock, the drill fences, the topography, cut across the fold, with grade–tonnage. The manual’s cover is drawn from this same model.';
 }
+// the palette's way in (the File menu's Sample data has it too)
+registerCommands([
+  { id: 'sample-site-c', group: 'File', title: 'Site C — gold in a folded BIF (the cover)', kw: 'sample example demo site c gold bif banded iron fold antiform granite skarn cover open', run: () => openSiteC() },
+]);

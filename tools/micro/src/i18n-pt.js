@@ -253,6 +253,7 @@ export default {
   // ── sample data ──
   'Bench scan — 2M points': 'Varredura de banco — 2M pontos', 'Bench scan — 10M points': 'Varredura de banco — 10M pontos', 'Bench scan — 50M points': 'Varredura de banco — 50M pontos',
   'Block model — 2M': 'Modelo de blocos — 2M',
+  'Site C — gold in a folded BIF (the cover)': 'Site C — ouro em BIF dobrada (a capa)',
   // ── settings (waves 5–6) and the plain-language bar ──
   'ambient occlusion': 'oclusão de ambiente', 'vector-section outlines': 'contornos da seção vetorial',
   'a soft shade where surfaces meet at an angle — inner corners, the foot of a pit wall, between benches; mostly for figures. Off under a projection and in software rendering': 'uma sombra suave onde as superfícies se encontram em ângulo — cantos internos, o pé de uma parede de cava, entre bancos; sobretudo para figuras. Desligada sob uma projeção e na renderização por software',
