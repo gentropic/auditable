@@ -9,7 +9,8 @@ import { rowsInShape, shapeOutline, greatCircleThrough, axialAngle } from '../..
 import { sceneLayers } from './layers.js';
 
 export const TOOLS = [['pick', 'pick', 'click a measurement (⇧ adds, Ctrl toggles)'], ['lasso', 'lasso', 'draw round measurements'],
-  ['cone', 'cone', 'drag from an axis: everything within that angle'], ['band', 'band', 'drag along a great circle: everything within the band']];
+  ['cone', 'cone', 'drag from an axis: everything within that angle'], ['band', 'band', 'drag along a great circle: everything within the band'],
+  ['measure', 'measure', 'drag between two directions: the angle and the great circle through them (⇧ the small circle on that diameter, ⌥ about the first)']];
 const NS = 'http://www.w3.org/2000/svg';
 
 // bearing's net.unproject returns a WORLD direction (its doc says so: it undoes the net's rotation itself),
@@ -87,7 +88,7 @@ export function createSelectTools({ project: p, onStatus = () => {} }) {
     let drag = null;
     const dirAt = (e) => { const q = view.svgPoint(e); if (!q) return null; const d = view.net.unproject(q.x, q.y); return d ? { q, d } : null; };
     view.stage.addEventListener('pointerdown', (e) => {
-      if (tool === 'pick' || e.button !== 0 || !view.net) return;
+      if (tool === 'pick' || tool === 'measure' || e.button !== 0 || !view.net) return;   // measure: desk-measure.js
       const a = dirAt(e); if (!a) return;
       e.preventDefault(); view.stage.setPointerCapture(e.pointerId);
       drag = { a, pts: [a], svg: [a.q], mode: modeOf(e) };

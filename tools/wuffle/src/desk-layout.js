@@ -8,7 +8,7 @@ import { RoseView, FabricView } from './desk-diagrams.js';
 
 const tabOf = (g) => ({ id: 'diag:' + g.id, title: g.name, closeable: false, diagramId: g.id });
 
-export function createLayout(host, { project: p, tree, table, stats, consoleView, select, rotate, onStatus }) {
+export function createLayout(host, { project: p, tree, table, stats, consoleView, select, rotate, measure, onStatus }) {
   const views = new Map();   // diagramId → NetView
   const panels = new Map();  // tab-id prefix → { render(tab), destroy(tab) } — other modules' tabs (figures)
   if (!p.diagrams.length) p.addDiagram('net');
@@ -29,13 +29,13 @@ export function createLayout(host, { project: p, tree, table, stats, consoleView
       if (tab.diagramId) {
         const kind = p.diagram(tab.diagramId)?.kind;
         const v = kind === 'rose' ? new RoseView(p, tab.diagramId) : kind === 'fabric' ? new FabricView(p, tab.diagramId) : new NetView(p, tab.diagramId, { onStatus });
-        views.set(tab.diagramId, v); if (kind === 'net') { select?.attach(v); rotate?.attach(v); } return v.el;
+        views.set(tab.diagramId, v); if (kind === 'net') { select?.attach(v); rotate?.attach(v); measure?.attach(v); } return v.el;
       }
       return document.createElement('div');
     },
     onPanelDestroy(tab) {
       for (const [pre, pn] of panels) if (tab.id.startsWith(pre)) { pn.destroy?.(tab); return; }
-      if (tab.diagramId) { const v = views.get(tab.diagramId); if (v) { select?.detach(v); v.destroy(); } views.delete(tab.diagramId); } },
+      if (tab.diagramId) { const v = views.get(tab.diagramId); if (v) { select?.detach(v); measure?.detach(v); v.destroy(); } views.delete(tab.diagramId); } },
   });
   rails.on('tab:activate', ({ tab }) => { if (tab.diagramId && p.activeDiagram !== tab.diagramId && p.diagram(tab.diagramId)) p.setActive(tab.diagramId); });
 

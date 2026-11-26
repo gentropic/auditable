@@ -68,6 +68,18 @@ body.desk > [hidden] { display:none !important; }   /* the field page's own disp
 .wsel-bar input { width:3.5em; font:11px var(--w-mono); background:var(--w-bg-bright); color:var(--w-text); border:1px solid var(--w-border); border-radius:3px; padding:1px 4px; }
 .wsel-shape { fill:none; stroke:var(--w-violet); stroke-width:1.4; stroke-dasharray:5 4; pointer-events:none; }
 .wsel-shape.live { stroke-dasharray:none; }
+/* the measure tool (desk-measure.js): the arc solid, the great circle and the arcs to its pole dotted (OS2's
+   measurelinegc), a small circle dashed; the ends and the pole marked; the readout a box on the net */
+.wmeas-g { pointer-events:none; }
+.wmeas-arc { fill:none; stroke:var(--w-blue); stroke-width:2; stroke-linecap:round; }
+.wmeas-gc { fill:none; stroke:var(--w-blue); stroke-width:1; stroke-dasharray:2 3; opacity:0.85; }
+.wmeas-sc { fill:none; stroke:var(--w-blue); stroke-width:1.3; stroke-dasharray:6 3; }
+.wmeas-pole { fill:none; stroke:var(--w-blue); stroke-width:1.4; }
+.wmeas-end { fill:var(--w-bg-raised); stroke:var(--w-blue); stroke-width:1.5; }
+.wmeas { position:absolute; left:8px; bottom:8px; max-width:calc(100% - 16px); background:var(--w-bg-raised); border:1px solid var(--w-border); border-radius:4px; padding:4px 6px; z-index:5; font:11px var(--w-mono); color:var(--w-text); }
+.wmeas-acts { display:flex; flex-wrap:wrap; gap:4px; margin-top:4px; }
+.wmeas-acts button { font:11px var(--w-mono); color:var(--w-text); background:var(--w-bg-bright); border:1px solid var(--w-border); border-radius:3px; padding:1px 6px; cursor:pointer; }
+.wmeas-acts button:hover { border-color:var(--w-blue); color:var(--w-blue); }
 
 /* the tree */
 .wtree { flex:1; min-height:0; overflow:auto; padding:6px 4px; font:13px var(--w-sans); background:var(--w-bg-raised); }

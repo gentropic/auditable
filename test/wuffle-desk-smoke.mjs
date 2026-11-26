@@ -337,6 +337,42 @@ for (const [label, url] of [['dev', '/tools/wuffle/index.html'], ['built', '/wuf
   chk(`${label}: “↻ from the net” keeps your legend edits (${JSON.stringify(keep.edit)}, ${keep.cols} columns) and your caption, while the legend follows the data (${keep.n0} → ${keep.n1} entries)`,
     keep.btn && keep.edit && keep.edit.label === 'joints (field)' && keep.cols === 2 && keep.cap === '# My caption\nwritten by hand' && keep.n1 === keep.n0 + 1);
 
+  // ── the MEASURE tool (after OpenStereo 2's): a drag between the strike and the dip line of 120/40 reads ~90°
+  //    and the great circle 120/40; "+ plane" adds it as data on that net; a ⇧-drag is the small circle on
+  //    that diameter. Real pointer drags, to the screen points of known directions ──
+  const net0 = await p.evaluate(() => { const W = window.__wuffleDesk, id = W.project.diagrams[0].id; W.project.setActive(id); W.rails.activateTab('diag:' + id); return id; });
+  await p.waitForTimeout(200);
+  const scr = (tr, pl) => p.evaluate(([tr, pl, id]) => {
+    const W = window.__wuffleDesk, v = W.views.get(id), D = Math.PI / 180;
+    const q = v.net.project([Math.sin(tr * D) * Math.cos(pl * D), Math.cos(tr * D) * Math.cos(pl * D), -Math.sin(pl * D)]);
+    const svg = v.stage.querySelector('svg'), pt = svg.createSVGPoint(); pt.x = q.x; pt.y = q.y;
+    const s = pt.matrixTransform(svg.getScreenCTM()); return { x: s.x, y: s.y };
+  }, [tr, pl, net0]);
+  const mdrag = async (a, b2, mods = []) => {
+    for (const m of mods) await p.keyboard.down(m);
+    await p.mouse.move(a.x, a.y); await p.mouse.down(); await p.mouse.move((a.x + b2.x) / 2, (a.y + b2.y) / 2, { steps: 4 }); await p.mouse.move(b2.x, b2.y, { steps: 4 }); await p.mouse.up();
+    for (const m of mods) await p.keyboard.up(m);
+    await p.waitForTimeout(200);
+  };
+  await p.evaluate(() => window.__wuffleDesk.select.setTool('measure'));
+  await p.evaluate((id) => window.__wuffleDesk.project.setDiagramProps(id, { matrix: null, rotation: null }), net0);   // an unrotated net: the strike / dip screen points
+  await p.waitForTimeout(200);
+  const nDs0 = await p.evaluate(() => window.__wuffleDesk.project.datasets.length);
+  await mdrag(await scr(30, 1), await scr(120, 40));
+  const meas1 = await p.evaluate(() => ({ read: document.querySelector('.wmeas')?.innerText || '', drawn: document.querySelectorAll('.wmeas-g .wmeas-gc').length }));
+  await p.click('.wmeas-acts button[data-offer="plane"]');
+  await mdrag(await scr(200, 20), await scr(260, 30), ['Shift']);
+  const meas2 = await p.evaluate(() => {
+    const W = window.__wuffleDesk, P = W.project, d = P.datasets.find((x) => x.lineage?.op === 'measure');
+    return { read: document.querySelector('.wmeas')?.innerText || '', sc: !!document.querySelector('.wmeas-g .wmeas-sc'), ds: d && d.name, kind: d && d.kind, nDs: P.datasets.length,
+      onNet: d ? P.layersOf(P.diagrams[0].id).some((L) => L.datasetId === d.id) : false };
+  });
+  await p.keyboard.press('Escape'); await p.evaluate(() => window.__wuffleDesk.select.setTool('pick'));
+  const gcM = /angle (\d+\.\d)° · great circle (\d{3})\/(\d+)/.exec(meas1.read);
+  chk(`${label}: measure — a drag reads “${gcM && gcM[0]}” and draws the great circle (${meas1.drawn} dotted paths); “+ plane” → ${meas2.ds} (${meas2.kind}) on the net; ⇧-drag → the small circle on that diameter`,
+    gcM && Math.abs(+gcM[1] - 90) < 2 && Math.abs(+gcM[2] - 120) <= 2 && Math.abs(+gcM[3] - 40) <= 2 && meas1.drawn === 3
+      && meas2.kind === 'planes' && meas2.onNet && meas2.nDs === nDs0 + 1 && meas2.sc && /small circle on that diameter/.test(meas2.read));
+
   // ── the console's own man, and a banner that starts the screen (it once started on a blank-looking row:
   //    written at 80 × 12 before the panel's size was known, then shifted by the resize) ──
   const manLs = await p.evaluate(async () => {

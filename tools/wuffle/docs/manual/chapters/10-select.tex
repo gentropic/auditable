@@ -12,7 +12,8 @@ make them a dataset, or hand them on to the console.
 
 \section{The tool strip}\label{sec:select-tools}
 
-Every net carries a strip of four tools at its top left:
+Every net carries a strip of five tools at its top left. Four select; the fifth, \ui{measure}, reads angles
+(\cref{sec:measure}):
 
 \begin{description}
 \item[\ui{pick}] a click selects the measurement under the pointer. This is the tool a net starts with.
@@ -20,6 +21,8 @@ Every net carries a strip of four tools at its top left:
 \item[\ui{cone}] press on a direction and drag outward: everything within that angle of it.
 \item[\ui{band}] drag along a great circle: everything within a band either side of it. Choosing it shows
 a field, \ui{±~10~°}, for the band's half-width, from 1° to 45°.
+\item[\ui{measure}] drag from one direction to another: the angle between them and the great circle
+through them. It selects nothing.
 \end{description}
 
 Hover over a tool for a reminder of what it does. A gesture selects in every \emph{visible} layer on that
@@ -164,5 +167,41 @@ outlines go; the selection stays.
 \item Right-click \ui{tocher} in the tree and choose \ui{Selection → new dataset}. The table shows the new
 dataset, the rows you chose and nothing else.
 \item Type \code{cat selection/tocher.rows} in the console to see their row numbers.
+\end{enumerate}
+\end{tryit}
+
+\section{Measuring}\label{sec:measure}
+
+The \ui{measure} tool reads the angle between two directions, and the circles they define, the way
+OpenStereo~2 did. Choose it in the tool strip, press on one direction and drag to another. While you drag,
+the net draws the measurement and a box at its foot reads it:
+
+\begin{description}
+\item[A drag] draws the great-circle arc between the two directions, solid, and dotted: the whole great
+circle through them, and the arcs from each to that circle's pole, which is marked \ui{+}. The box reads
+\ui{angle 89.7° · great circle 119/40 · its pole 299→50}, then the two directions.
+\item[\key{Shift}-drag] (or the middle button) draws the small circle with the two directions as its
+diameter: its axis is their mean, its radius half the angle between them.
+\item[\key{Alt}-drag] (or the right button) draws the small circle about the first direction, through
+the second.
+\end{description}
+
+The measurement stays drawn after you let go, and the box offers to keep it. \ui{+~plane} adds the great
+circle as a planes dataset, \ui{+~pole} its pole as a line, \ui{+~small circle} the small circle,
+\ui{+~axis} its axis, and \ui{+~the two ends} the two directions you measured between, as lines. Each lands
+in the tree with an arrow, drawn on that net, with a lineage that says it was measured (\code{measure},
+with the two directions and the angle), and is one undo step. \key{Esc} or \ui{×} clears the measurement.
+
+The measurement follows the net: rotate it (\cref{ch:rotation}) and the arcs stay on their directions.
+\ui{measure} selects nothing and leaves the selection as it was; choose \ui{pick} again to get back to
+picking and rotating.
+
+\begin{tryit}
+\begin{enumerate}
+\item Open the Tocher sample and choose \ui{measure} on the net.
+\item Press near the rim at the northeast and drag to a point about halfway toward the centre in the
+southeast. The box reads the angle and the great circle through the two points.
+\item Click \ui{+~plane}. A dataset \ui{measured plane …} appears in the tree, drawn on the net.
+\item Hold \key{Shift} and drag again: a dashed small circle passes through both points.
 \end{enumerate}
 \end{tryit}
