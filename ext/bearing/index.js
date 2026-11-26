@@ -1,4 +1,4 @@
-// ⚠ VENDORED — DO NOT EDIT. @gcu/bearing v0.2.4, built ESM bundle.
+// ⚠ VENDORED — DO NOT EDIT. @gcu/bearing v0.3.0, built ESM bundle.
 // Source of truth: gentropic/bearing.js (dist/bearing.mjs). Update with:
 //   node ext/bearing/sync.mjs
 // See ext/bearing/README.md.
@@ -422,8 +422,14 @@ function project(dcos) {
   return [x * scale2, y * scale2];
 }
 function inverse(px, py) {
-  const r23 = px * px + py * py;
-  if (r23 > 2) return null;
+  let r23 = px * px + py * py;
+  if (r23 > 2 * (1 + 1e-9)) return null;
+  if (r23 > 2) {
+    const k = Math.sqrt(2 / r23);
+    px *= k;
+    py *= k;
+    r23 = 2;
+  }
   const z = -(1 - r23 / 2);
   const scale2 = Math.sqrt(1 - r23 / 4);
   return [px * scale2, py * scale2, z];
@@ -446,8 +452,14 @@ function project2(dcos) {
   return [x / denom, y / denom];
 }
 function inverse2(px, py) {
-  const r23 = px * px + py * py;
-  if (r23 > 1) return null;
+  let r23 = px * px + py * py;
+  if (r23 > 1 * (1 + 1e-9)) return null;
+  if (r23 > 1) {
+    const k = Math.sqrt(1 / r23);
+    px *= k;
+    py *= k;
+    r23 = 1;
+  }
   const denom = 1 + r23;
   return [
     2 * px / denom,
@@ -830,6 +842,15 @@ var defaults = {
 
 // src/contouring.js
 var DEG2 = Math.PI / 180;
+function rimInverse(inverseFn, px, py, projR) {
+  const r23 = px * px + py * py, R2 = projR * projR;
+  if (r23 > R2) {
+    const k = projR / Math.sqrt(r23);
+    px *= k;
+    py *= k;
+  }
+  return inverseFn(px, py);
+}
 function densityGrid(dcos, options = {}) {
   if (options.grid) return options.grid;
   const {
@@ -862,7 +883,7 @@ function densityGrid(dcos, options = {}) {
           grid[j * gridSize + i] = NaN;
           continue;
         }
-        const d = inverseFn(px, py);
+        const d = rimInverse(inverseFn, px, py, projR);
         if (!d) {
           grid[j * gridSize + i] = NaN;
           continue;
@@ -888,7 +909,7 @@ function densityGrid(dcos, options = {}) {
         grid[j * gridSize + i] = NaN;
         continue;
       }
-      const d = inverseFn(px, py);
+      const d = rimInverse(inverseFn, px, py, projR);
       if (!d) {
         grid[j * gridSize + i] = NaN;
         continue;
@@ -896,7 +917,7 @@ function densityGrid(dcos, options = {}) {
       let density = 0;
       for (let m = 0; m < n; m++) {
         const rd = data[m];
-        const dot2 = d[0] * rd[0] + d[1] * rd[1] + d[2] * rd[2];
+        const dot2 = Math.abs(d[0] * rd[0] + d[1] * rd[1] + d[2] * rd[2]);
         density += Math.exp(kappa * (dot2 - 1));
       }
       grid[j * gridSize + i] = kappa * density / n;
@@ -1047,6 +1068,7 @@ function assembleSegments(segments) {
 // src/statistics.js
 var statistics_exports = {};
 __export(statistics_exports, {
+  alignToAxis: () => alignToAxis,
   bootstrapEigenvectorConfidence: () => bootstrapEigenvectorConfidence,
   bootstrapMeanConfidence: () => bootstrapMeanConfidence,
   commonMeanTest: () => commonMeanTest,
@@ -1262,15 +1284,22 @@ function resultant(dcos) {
   }
   return s;
 }
-function meanVector(dcos) {
-  return normalize(resultant(dcos));
+function alignToAxis(dcos) {
+  if (!dcos.length) return [];
+  const v1 = symmetricEigen3(orientationTensor(dcos)).vectors[0];
+  return dcos.map((d) => d[0] * v1[0] + d[1] * v1[1] + d[2] * v1[2] < 0 ? [-d[0], -d[1], -d[2]] : d);
 }
-function fisherStats(dcos) {
+var prep = (dcos, axial) => axial ? alignToAxis(dcos) : dcos;
+var lowerIf = (v, axial) => axial && v[2] > 0 ? [-v[0], -v[1], -v[2]] : v;
+function meanVector(dcos, { axial = false } = {}) {
+  return lowerIf(normalize(resultant(prep(dcos, axial))), axial);
+}
+function fisherStats(dcos, { axial = false } = {}) {
   const n = dcos.length;
-  const res = resultant(dcos);
+  const res = resultant(prep(dcos, axial));
   const R = length(res);
   const Rbar = R / n;
-  const mean = R > 1e-10 ? scale(res, 1 / R) : [0, 0, -1];
+  const mean = R > 1e-10 ? lowerIf(scale(res, 1 / R), axial) : [0, 0, -1];
   let kappa = Infinity;
   if (n > R + 1e-10) {
     kappa = n >= 3 ? (n - 2) / (n - R) : (n - 1) / (n - R);
@@ -1282,11 +1311,11 @@ function fisherStats(dcos) {
   }
   return { n, R, Rbar, mean, kappa, alpha95 };
 }
-function confidenceCone(dcos, confidence = 0.95) {
+function confidenceCone(dcos, confidence = 0.95, { axial = false } = {}) {
   const n = dcos.length;
-  const res = resultant(dcos);
+  const res = resultant(prep(dcos, axial));
   const R = length(res);
-  const meanVec = R > 1e-10 ? scale(res, 1 / R) : [0, 0, -1];
+  const meanVec = R > 1e-10 ? lowerIf(scale(res, 1 / R), axial) : [0, 0, -1];
   let halfAngle = 0;
   if (n >= 2 && R > 1e-10 && n - R > 1e-10) {
     const p = 1 - confidence;
@@ -3209,8 +3238,23 @@ __export(fault_exports, {
   michael: () => michael,
   principalStresses: () => principalStresses,
   ptAxes: () => ptAxes,
-  resolveSense: () => resolveSense
+  resolveSense: () => resolveSense,
+  strikeVector: () => strikeVector,
+  upwardNormal: () => upwardNormal
 });
+var EPS = 1e-9;
+function upwardNormal(normal) {
+  const n = normalize(normal);
+  if (n[2] > EPS) return n;
+  if (n[2] < -EPS) return negate(n);
+  if (n[0] > EPS || Math.abs(n[0]) <= EPS && n[1] > 0) return [n[0], n[1], 0];
+  return [-n[0], -n[1], 0];
+}
+function strikeVector(normal) {
+  const u = upwardNormal(normal);
+  const h = Math.hypot(u[0], u[1]);
+  return h < EPS ? [0, 1, 0] : [-u[1] / h, u[0] / h, 0];
+}
 function dipVector(normal) {
   let n = normalize(normal);
   if (n[2] > 0) n = negate(n);
@@ -3219,20 +3263,44 @@ function dipVector(normal) {
   const len = length(proj);
   return len < 1e-10 ? [1, 0, 0] : scale(proj, 1 / len);
 }
+var SENSE_WORDS = [
+  [/^(normal)\b/, "normal"],
+  [/^(reverse|inverse|thrust)\b/, "reverse"],
+  [/^(dextral|right[- ]?lateral)\b/, "dextral"],
+  [/^(sinistral|left[- ]?lateral)\b/, "sinistral"],
+  [/^(unknown|undefined)\b/, null]
+];
+var SENSE_CHARS = {
+  n: "normal",
+  2: "normal",
+  "-": "normal",
+  i: "reverse",
+  r: "reverse",
+  1: "reverse",
+  "+": "reverse",
+  d: "dextral",
+  3: "dextral",
+  s: "sinistral",
+  l: "sinistral",
+  4: "sinistral"
+};
+function senseKind(sense) {
+  const str = sense == null ? "" : String(sense).trim().toLowerCase();
+  for (const [re, kind] of SENSE_WORDS) if (re.test(str)) return kind;
+  return str.length === 1 ? SENSE_CHARS[str] || null : null;
+}
 function resolveSense(normal, line, sense) {
-  let n = normalize(normal);
-  if (n[2] > 0) n = negate(n);
-  const s = String(sense).toLowerCase()[0];
-  if (s === "u" || s === "f" || s === "0" || s === "5" || s === "?") return { slip: line, defined: false };
-  if (s === "n" || s === "2" || s === "-") return { slip: line, defined: true };
-  if (s === "i" || s === "1" || s === "+") return { slip: negate(line), defined: true };
-  const lineSense = dot(dipVector(n), line);
-  if (s === "d" || s === "3") return { slip: lineSense > 0 ? line : negate(line), defined: true };
-  if (s === "s" || s === "4") return { slip: lineSense < 0 ? line : negate(line), defined: true };
-  return { slip: line, defined: true };
+  const kind = senseKind(sense);
+  if (!kind) return { slip: line, defined: false };
+  const l = normalize(line);
+  if (kind === "normal") return { slip: l[2] <= 0 ? l : negate(l), defined: true };
+  if (kind === "reverse") return { slip: l[2] >= 0 ? l : negate(l), defined: true };
+  const along = dot(strikeVector(normal), l);
+  if (kind === "dextral") return { slip: along < 0 ? l : negate(l), defined: true };
+  return { slip: along >= 0 ? l : negate(l), defined: true };
 }
 function ptAxes(normal, slip) {
-  const n = normalize(normal);
+  const n = upwardNormal(normal);
   const s = normalize(slip);
   return { p: normalize(sub(n, s)), t: normalize(add(n, s)) };
 }
@@ -3258,7 +3326,7 @@ function michael(planes, slips) {
   const Atb = new Array(5).fill(0);
   let btb = 0;
   for (let i = 0; i < planes.length; i++) {
-    const [n1, n2, n3] = planes[i];
+    const [n1, n2, n3] = negate(upwardNormal(planes[i]));
     const s = slips[i];
     const rows = [
       [n1 - n1 ** 3 + n1 * n3 ** 2, n2 - 2 * n2 * n1 ** 2, n3 - 2 * n3 * n1 ** 2, -n1 * n2 ** 2 + n1 * n3 ** 2, -2 * n1 * n2 * n3],
@@ -3285,6 +3353,15 @@ function principalStresses(stress) {
   const { values, vectors } = symmetricEigen3(stress);
   return { axes: [vectors[2], vectors[1], vectors[0]], values: [values[2], values[1], values[0]] };
 }
+function rimInverse2(inverseFn, px, py, projR) {
+  const r23 = px * px + py * py, R2 = projR * projR;
+  if (r23 > R2) {
+    const k = projR / Math.sqrt(r23);
+    px *= k;
+    py *= k;
+  }
+  return inverseFn(px, py);
+}
 function dihedraGrid(planes, slips, options = {}) {
   const projection = options.projection || "equal-area";
   const gridSize = options.gridSize || 40;
@@ -3293,6 +3370,7 @@ function dihedraGrid(planes, slips, options = {}) {
   const grid = new Float64Array(gridSize * gridSize);
   const inverseFn = projection === "equal-angle" ? inverse2 : inverse;
   const m = planes.length || 1;
+  const downPoles = planes.map((p) => negate(upwardNormal(p)));
   for (let j = 0; j < gridSize; j++) {
     const py = projR - j * step;
     for (let i = 0; i < gridSize; i++) {
@@ -3301,14 +3379,14 @@ function dihedraGrid(planes, slips, options = {}) {
         grid[j * gridSize + i] = NaN;
         continue;
       }
-      const d = inverseFn(px, py);
+      const d = rimInverse2(inverseFn, px, py, projR);
       if (!d) {
         grid[j * gridSize + i] = NaN;
         continue;
       }
       let sum = 0;
       for (let k = 0; k < planes.length; k++) {
-        const n = planes[k], s = slips[k];
+        const n = downPoles[k], s = slips[k];
         sum += 2 * (d[0] * n[0] + d[1] * n[1] + d[2] * n[2]) * (d[0] * s[0] + d[1] * s[1] + d[2] * s[2]);
       }
       grid[j * gridSize + i] = sum / m;
