@@ -19,7 +19,7 @@ From the top:
 \item[The title.] \ui{wuffle} and a subtitle saying where the reading comes from (\cref{sec:field-msgs}).
 \item[Mode.] \ui{plane} or \ui{line}: what the next measurement is.
 \item[The strip.] Inside the shell, the position's accuracy (\ui{±4 m}) and which north the readings use
-(\ui{true N · decl −15.2°}).
+(\ui{true N · decl -17.8°}).
 \item[The net.] An equal-area, lower-hemisphere net, labelled \ui{Schmidt lower hemi} in its corner.
 Measured planes are drawn as great circles in orange, lines as points in blue.
 \item[The reading.] In the net's top-left corner, the live attitude in large figures: \ui{dip dir} and
@@ -87,7 +87,7 @@ Every measurement records which it was. The log's \col{north} column says \code{
 browser whose sensor has no north at all says \code{none} (\cref{sec:compass-browsers}).
 
 The model is valid from 2025.0 to 2030.0. After that wuffle still applies it, and the strip says so:
-\ui{true N · decl −15.2° · model past 2030}. A newer wuffle carries the next model.
+\ui{true N · decl -17.8° · model past 2030}. A newer wuffle carries the next model.
 
 \begin{caution}
 Outside the shell (wuffle in an ordinary phone browser) there is no position, so readings stay magnetic.
@@ -119,7 +119,7 @@ and the message line giving the picture's size.}
 
 \ui{photo} opens the camera's viewfinder. \ui{capture} takes a picture and attaches it to the \emph{last}
 measurement; \ui{cancel} closes the viewfinder without one. The row gets a camera mark, the message line
-says \ui{photo attached to \#3 (11 KB)}, and the log's \col{photo} column names the file
+says \ui{photo attached to \#2 (11 KB)}, and the log's \col{photo} column names the file
 (\file{wuffle-002-2026-11-20T140540.jpg}: the measurement's number, then its date and time to the second).
 Measure first, then photograph.
 
@@ -164,8 +164,8 @@ On a computer, \ui{publish →} downloads the CSV and the photos, and says \ui{d
 The compass keeps its log on the phone, in the browser's own storage, after every measurement, photos
 included. Close the tab, reload it, or let the phone close the browser to save memory, and the log comes
 back when wuffle opens: the message line says \ui{kept from last time: 3 measurements not yet cleared —
-publish to send them}. It is kept per address, so a compass opened from a file and one opened from
-gentropic.org/wuffle keep separate logs.
+publish to send them}. Each place the compass opens from keeps its own log: a file on the phone, under
+its own path, and gentropic.org/wuffle, one for the site.
 
 \ui{clear} asks before it deletes: the first tap only says \ui{tap clear again to delete all 3
 measurements — publish first to keep them}, and a second tap within three seconds empties the log, on
@@ -190,10 +190,13 @@ itself is kept as it came (\cref{sec:field-logs}).
 The subtitle says where readings come from:
 
 \begin{description}
-\item[\ui{compass · magnetic N}] inside the shell, before the fused sensor has answered.
+\item[\ui{compass · magnetic N}] inside the shell, before the fused sensor has answered, or when it
+couldn't be opened (the reading then comes from the browser's orientation events). It is the subtitle,
+not the north in use: the strip beside it says whether a reading is true.
 \item[\ui{compass · fused · high}] (or \ui{medium}, \ui{low}, \ui{unreliable}) the fused sensor, with the
 magnetometer's calibration as the phone reports it.
-\item[\ui{stereonet · manual}] a browser with no shell: on a computer, typed measurements only.
+\item[\ui{stereonet · manual}] outside the shell. On a computer that means typed measurements only; in a
+phone's browser the compass still reads live from the browser's orientation (\cref{sec:compass-browsers}).
 \end{description}
 
 And the message line under the log, besides the ones above:

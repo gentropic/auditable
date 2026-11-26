@@ -158,8 +158,9 @@ Each axis contributes a Fisher density of concentration $\kappa$ centred on it. 
 $s = 90^\circ/\sqrt{N}$ (6.36° for Tocher), and
 \[ \kappa = \frac{1}{1 - \cos s}, \qquad f(\mathbf{g}) = \frac{\kappa}{N}\sum_{i=1}^{N} \exp\!\bigl(\kappa\,(|\mathbf{g}\cdot\mathbf{d}_i| - 1)\bigr). \]
 For uniformly spread axes the expected value of $f$ is $1 - e^{-\kappa} \approx 1$, so $f$ is in
-\emph{multiples of uniform density} (MUD). Averaged over 400 random directions, 200 and 4000 uniform axes
-give 0.95 and 0.98. The default levels are 2, 4, 6 and 8.
+\emph{multiples of uniform density} (MUD). Averaged over 400 random directions, random draws of 200 or 4000
+uniform axes come out within about 5\% of 1 (0.95 to 1.04 over repeated draws). The default levels are 2,
+4, 6 and 8.
 
 \subsection{Across the primitive}
 
@@ -322,7 +323,8 @@ $\theta_0$) along the horizontal part of the slip, the azimuth $\psi = \mathrm{a
 direction splits into a part away from the centre and a part round it,
 \[ h_r = \cos(\psi - \theta_0), \qquad h_t = \sin(\psi - \theta_0), \]
 and a step of $k$ degrees along the arrow moves the point to plunge $\varphi_0 - h_r k$ and trend
-$\theta_0 + h_t k/\cos\varphi_0$. The shaft is 7° long and the head's barbs sit at 55\% of it, 2.4° to
+$\theta_0 + h_t k/\cos\varphi_0$, the plunge kept within 0–90° and $\cos\varphi_0$ not taken below 0.15, so
+an arrow near the centre stays short. The shaft is 7° long and the head's barbs sit at 55\% of it, 2.4° to
 either side. Where the arrow would leave the lower hemisphere ($\varphi_0 - 7 h_r < 0$, pointing outward
 near the rim) it is drawn ending at $\mathbf{q}$ instead of starting there. A vertical slip has no
 horizontal part and no arrow (\cref{sec:slip-arrows}).

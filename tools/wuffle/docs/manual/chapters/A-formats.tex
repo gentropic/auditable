@@ -19,10 +19,10 @@ dip\_dir\_or\_trend & a plane's dip direction or a line's trend: a whole number 
 dip\_or\_plunge & a plane's dip or a line's plunge: a whole number of degrees, 0–90 \\
 strike & a plane's strike by the right-hand rule (dip direction − 90°); empty for a line \\
 timestamp & when it was measured, ISO 8601 in UTC (\code{2026-11-20T14:02:11.000Z}) \\
-lat, lon & the position in decimal degrees (six places), empty with no GNSS fix \\
+lat, lon & the position in decimal degrees, rounded to six places with trailing zeros dropped (\code{-30.0712}), empty with no GNSS fix \\
 acc\_m & the position's accuracy in whole metres, empty with no fix \\
-north & \code{true}, \code{magnetic} or \code{as-typed}: what the azimuths are referred to (\cref{sec:true-north}) \\
-declination\_deg & the declination applied, east positive (two places); empty unless \col{north} is \code{true} \\
+north & \code{true}, \code{magnetic}, \code{as-typed}, or \code{none} (a browser whose compass has no north): what the azimuths are referred to (\cref{sec:true-north}) \\
+declination\_deg & the declination applied, east positive, rounded to two places with trailing zeros dropped (\code{-17.8}); empty unless \col{north} is \code{true} \\
 photo & the file name of the station's photo, or empty \\
 \bottomrule\end{tabularx}
 \end{center}

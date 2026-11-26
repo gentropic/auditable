@@ -31,7 +31,7 @@ With \ui{pick}, click a pole or a line. wuffle takes the nearest measurement wit
 pointer:
 
 \begin{itemize}
-\item a click replaces the selection with that one measurement;
+\item a click replaces that dataset's selection with that one measurement (other datasets' selections stay);
 \item \key{Shift}+click adds it to the selection;
 \item \key{Ctrl}+click (\key{⌘}+click on a Mac) toggles it: in if it was out, out if it was in;
 \item a click on empty space clears the selection.
@@ -83,7 +83,7 @@ The status line at the foot of the window says which it was: \ui{band: 58 of 200
 keeps the total, \ui{1 dataset · 200 measurements · 56 selected}.
 
 \shot{select-band}{The band tool chosen, with its half-width field. A band of ±10° about \code{040/50}
-added to the cone of \cref{fig:select-cone} with \key{Shift}: 45 selected.}
+added to the cone of \cref{fig:select-cone} (\code{select + band 040/50 10}, the same as a \key{Shift} drag): 45 selected.}
 
 \section{On the sphere, not the screen}\label{sec:select-sphere}
 

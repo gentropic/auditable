@@ -25,11 +25,15 @@ Several files can be opened at once. A name already in the project gets a number
 \begin{itemize}
 \item Blank lines are skipped, and so are comment lines starting with \code{\#} or \code{//}.
 \item The \term{delimiter} is the one most lines agree on, out of comma, semicolon, tab and
-\code{|}: the one that splits at least four lines in five into the same number of fields. One odd line
-doesn't make the file unreadable. With none of them, wuffle splits on spaces.
+\code{|}: the one that splits at least three lines in four into the same number of fields. One odd line
+doesn't make the file unreadable, even a short one: in \code{dd,dip} / \code{10,20} / \code{hello} /
+\code{30,40} the comma still wins, and \code{hello} is counted as skipped. When two delimiters split the
+lines equally well, the one whose fields read as numbers wins. With none of them, wuffle splits on
+spaces.
 \item Fields in double quotes may hold the delimiter: \code{"open, iron-stained"} is one field.
 \item A \term{decimal comma} is recognised when the comma isn't the delimiter: \code{120,5;40,2}
-reads as 120.5 and 40.2.
+reads as 120.5 and 40.2, with or without a header line. (It splits evenly on the comma too, but there
+\code{5;40} is no number, so the semicolon wins.)
 \item The first line is a \term{header} when it holds a word, something that isn't a number or an
 attitude. Without one, the columns are called \col{c1}, \col{c2}, and so on.
 \item A line that can't be split into at least two fields (a stray word in a numeric file) is not a row;
@@ -110,8 +114,8 @@ wuffle saw, and nothing is silently dropped.
 
 The compass's own log (\cref{sec:publish}) is recognised by its \col{type} and
 \col{dip\_dir\_or\_trend} columns. Its planes and lines become two datasets,
-\code{<name> · planes} and \code{<name> · lines}, both drawn on the active net. Opened with its
-\file{.sig} and photos, it is also kept as a signed original (\cref{sec:field-logs}).
+\code{<name> · planes} and \code{<name> · lines}, both drawn on the active net. The log itself is
+kept as it came, as an \emph{original}, with its \file{.sig} and photos if they are opened with it (\cref{sec:field-logs}).
 
 \begin{tryit}
 \begin{enumerate}
@@ -134,8 +138,9 @@ Click a dataset in the tree's \ui{data} section, or a layer, and the \ui{table} 
 \begin{itemize}
 \item The heading names the dataset, its kind and its row count, and when the column roles were guessed,
 how they were read.
-\item The first column is the \term{attitude} wuffle read from the row: dip direction and dip for planes,
-trend and plunge for lines. It is computed, not stored, and can't be edited. \ui{—} marks a row it
+\item The first column is the \term{attitude} wuffle read from the row: dip direction and dip for planes
+and faults (headed \ui{dip dir/dip}), trend and plunge for lines (\ui{trend→plunge}), and the axis of a
+small circle (\ui{axis trend→plunge}). It is computed, not stored, and can't be edited. \ui{—} marks a row it
 couldn't read.
 \item The other columns are the file's, as they came.
 \end{itemize}

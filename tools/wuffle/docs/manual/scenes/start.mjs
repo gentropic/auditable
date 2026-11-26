@@ -128,10 +128,10 @@ export const SCENES = {
         const W = window.__wuffleDesk, enc = new TextEncoder();
         const b64 = (b) => btoa(String.fromCharCode(...new Uint8Array(b)));
         const log = 'type,dip_dir_or_trend,dip_or_plunge,strike,timestamp,lat,lon,acc_m,north,declination_deg,photo\n'
-          + 'plane,120,45,30,2026-11-20T14:02:11.000Z,-30.10012,-51.20034,4,true,-15.21,\n'
-          + 'plane,118,47,28,2026-11-20T14:05:40.000Z,-30.10020,-51.20041,4,true,-15.21,wuffle-002-2026-11-20T140540.jpg\n'
-          + 'plane,124,43,34,2026-11-20T14:07:13.000Z,-30.10024,-51.20052,3,true,-15.21,\n'
-          + 'line,200,20,,2026-11-20T14:09:02.000Z,-30.10031,-51.20060,5,true,-15.21,\n';
+          + 'plane,120,45,30,2026-11-20T14:02:11.000Z,-30.10012,-51.20034,4,true,-17.74,\n'
+          + 'plane,118,47,28,2026-11-20T14:05:40.000Z,-30.1002,-51.20041,4,true,-17.74,wuffle-002-2026-11-20T140540.jpg\n'
+          + 'plane,124,43,34,2026-11-20T14:07:13.000Z,-30.10024,-51.20052,3,true,-17.74,\n'
+          + 'line,200,20,,2026-11-20T14:09:02.000Z,-30.10031,-51.2006,5,true,-17.74,\n';
         const bytes = enc.encode(log);
         const kp = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign', 'verify']);
         const sig = JSON.stringify({ file: 'wuffle-log.csv', alg: 'ECDSA-P256-SHA256', sig: b64(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, kp.privateKey, bytes)),

@@ -53,8 +53,8 @@ What does lose it:
 measurements — publish first to keep them}); the second, within three seconds, empties the log for
 good.
 \item clearing the browser's data for the page, or a private window, which keeps nothing once it closes.
-\item a different address: the log is kept per site, so the same compass opened from a file and from
-gentropic.org/wuffle has two logs.
+\item a different place: each place the compass opens from keeps its own log (the site, or a file
+under its own path), so the compass opened from a file and from gentropic.org/wuffle has two logs.
 \end{itemize}
 
 Publish as you go all the same: \ui{publish →} at each station, or every few, costs nothing, and a later
@@ -156,20 +156,22 @@ dataset (\cref{sec:select-dataset}), draw that, and label only it (\cref{sec:lab
 
 \section{The console}\label{sec:trouble-console}
 
-\shot{it-redirect}{The redirect trap: in \file{/home}, \code{select cone 150>60 10} made a file called
-\file{60}; quoted, the same attitude reaches the command.}
+\shot{it-redirect}{The redirect trap: in \file{/home}, \code{select cone 150>60 10} made an empty file
+called \file{60} and the command failed; quoted, the same attitude reaches the command.}
 
 \subsection{A command with \code{>} failed, or made a file}
 
-In the console \code{>} belongs to the shell: it sends a command's output to a file. \code{select cone
-150>60 10} is read as \code{select cone 150 10} with its output sent to \file{60}. In \file{/project}
-the shell can't make that file and says \ui{geas: redirect: nothing can be made here: /60}; in
-\file{/home} it makes it. Either way the command saw the wrong words. Type the arrow (\code{150→60}) or
+In the console \code{>} belongs to the shell: it sends a command's output to a file. In \code{select
+cone 150>60 10} the shell takes \code{150>} as a redirection (\code{150} as a file-descriptor number,
+as any Unix shell does) into a file called \file{60}, so the command sees only \code{select cone 10} and
+answers \ui{“10” — a plane 045/30 or a line 045→30}. In \file{/project} the shell can't make the file and
+also says \ui{geas: redirect: nothing can be made here: /60}; in \file{/home} it leaves an empty
+\file{60}. Either way the command saw the wrong words. Type the arrow (\code{150→60}) or
 quote the attitude (\code{'150>60'}), and \code{rm 60} the stray file.
 
 \subsection{\code{rm} refuses to delete data}
 
-\ui{rm: data/tocher.csv: “tocher” is drawn on Net 1 — remove those layers first}, naming every
+\ui{rm: data/tocher.csv: “tocher” is drawn on Net 1 — remove those layers first: /data/tocher.csv}, naming every
 diagram that draws it. A dataset that a
 diagram draws can't be removed from the console: remove its layers (\code{rm "diagrams/Net 1/layers/tocher.csv"})
 and then the data. The tree's \ui{Delete dataset} asks you instead, and removes both.
@@ -194,8 +196,9 @@ status line says \ui{restored your last session (…)}. It didn't, because:
 
 \begin{itemize}
 \item the window was private, or the browser's data for the site was cleared;
-\item wuffle opened from a different place: the file on your desktop and the website keep separate
-copies (\cref{sec:where-kept});
+\item wuffle opened from a different place: the website and a file on your disk keep separate copies,
+and so does each copy of the file in a folder of its own; a file moved or renamed starts afresh
+(\cref{sec:where-kept});
 \item it is a page that carries a project: each such page keeps its own copy, apart from the plain
 wuffle's;
 \item \menu{File>New project} was chosen, which forgets the kept copy.

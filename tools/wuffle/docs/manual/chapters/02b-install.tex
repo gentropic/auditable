@@ -5,8 +5,9 @@ Android shell), learn where your work is kept, and what each browser can and can
 \end{goals}
 
 wuffle is one file, \file{wuffle.html}, about 770~KB. Everything it needs is inside it: the program, the
-World Magnetic Model, the Tocher sample, the shell. Nothing is fetched when it opens
-(\cref{sec:local}). There is no installer, so \enquote{installing} wuffle means only choosing where the
+World Magnetic Model, the Tocher sample, the shell. wuffle itself fetches nothing when it opens
+(\cref{sec:local}); the website's copy has a service worker that checks for a newer version in the
+background (\cref{sec:run-site}). There is no installer, so \enquote{installing} wuffle means only choosing where the
 file comes from.
 
 \section{Three ways to run it}\label{sec:run-ways}
@@ -92,17 +93,20 @@ Three places, from the most fleeting to the most durable:
 \begin{description}
 \item[The tab.] What you see is held in the page while it is open.
 \item[The kept copy.] A second after each change, the desk copies the whole project into the browser's
-storage for this site (\cref{sec:autosave}). Close the tab and reopen wuffle from the same place, and
-your session is back. A page that carries a project (\cref{sec:save-page}) keeps a copy of its own, so
-two such pages never overwrite each other's work.
+storage (\cref{sec:autosave}). Close the tab and reopen wuffle from the same place, and your session is
+back. Each \file{wuffle.html} on your disk keeps its own copy, under its own path, so a copy beside each
+project keeps that project's session; the website keeps one copy for the site; and a page that carries a
+project (\cref{sec:save-page}) keeps a copy of its own, so two such pages never overwrite each other's
+work.
 \item[Your files.] A \file{.zip.wuffle} project, a \file{.wuffle.html} page, an exported figure: these
 are yours, in your folders, and nothing in the browser can take them away.
 \end{description}
 
 \begin{caution}
-The kept copy is per browser and per site. The file opened from your desktop and the same version opened
-from \file{gentropic.org/wuffle} keep separate copies; a private window keeps none past its closing; and
-clearing the browser's data for the site deletes it. It is a convenience between saves. Save the project
+The kept copy belongs to the browser and to where the page opened from. A file on your disk and the
+website keep separate copies, and so do two copies of the file in different folders; moving or renaming
+the file starts it afresh. A private window keeps none past its closing, and clearing the browser's data
+deletes it. It is a convenience between saves. Save the project
 for anything you mean to keep.
 \end{caution}
 
@@ -121,8 +125,8 @@ fresh one (\cref{sec:undo}).
 \subsection{The desk}
 
 The desk runs in any current browser: Chrome, Edge, Firefox or Safari. It needs one that can unpack
-gzip by itself (the program inside the file is compressed): Chrome and Edge 80 or later, Firefox 113 or
-later, Safari 16.4 or later. In an older browser the page stays blank.
+gzip by itself (the program inside the file is compressed) and is recent enough for the rest of it:
+Chrome and Edge 93 or later, Firefox 113 or later, Safari 16.4 or later. In an older browser the page stays blank.
 
 \subsection{The compass}\label{sec:compass-browsers}
 
@@ -137,8 +141,8 @@ and wuffle doesn't ask yet. The compass reads nothing there. Typed measurements
 (\cref{sec:manual-entry}) and the whole desk work.
 \item[Other Android browsers] may report only orientation relative to where the phone pointed when the
 page opened, not to north. When that is all wuffle gets, it says so once (\ui{this browser's compass
-has no north — dips and plunges are good, azimuths are not}) and marks each reading it takes with
-\col{north} = \code{none}. Use Chrome, or the shell.
+has no north — dips and plunges are good, azimuths are not; measurements are marked north = none}) and
+marks each reading it takes with \col{north} = \code{none}. Use Chrome, or the shell.
 \end{description}
 
 Browsers give orientation only to pages they consider secure: the site, served over https, is. A copy

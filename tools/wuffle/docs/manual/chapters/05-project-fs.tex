@@ -104,7 +104,7 @@ It is an ordinary SVG, but not a small one: every contour and great circle is a 
 circles make a file of about 900~KB. For a page in a report, make a figure (\cref{ch:figures}).
 
 \paragraph{\file{.pdf}} a figure's \file{.pdf} renders the page when you read it, so
-\code{cp "figures/Net 1 · figure.pdf" /home/} keeps a PDF of the figure in the project (about 130~KB for a
+\code{cp "figures/Net 1 · figure.pdf" /home/} keeps a PDF of the figure in the project (about 150~KB for a
 net of the Tocher sample).
 
 \paragraph{The selection} \file{selection/tocher.rows} lists the selected rows by number (from 1), one to
@@ -136,9 +136,12 @@ The undo step is \ui{diagram settings}.
 (\code{style}: \code{color}, \code{size}) and switches what it draws (\code{elements}). Again, write only
 what changes:
 \begin{lstlisting}
-echo '{"elements":{"greatCircles":{"on":true},"poles":{"on":false}}}' > "diagrams/Net 1/layers/tocher.json"
-echo '{"style":{"color":"#3a7bd5","size":6}}' > "diagrams/Net 1/layers/tocher.json"
-echo '{"visible":false}' > "diagrams/Net 1/layers/tocher.json"
+cd "diagrams/Net 1/layers"
+echo '{"elements":{"greatCircles":{"on":true}}}' > tocher.json
+echo '{"elements":{"poles":{"on":false}}}' > tocher.json
+echo '{"style":{"color":"#3a7bd5","size":6}}' > tocher.json
+echo '{"visible":false}' > tocher.json
+cd /project
 \end{lstlisting}
 Each is one undo step, \ui{layer settings}. An element's own settings go the same way, such as a contour
 method (\cref{sec:contours}).
@@ -176,7 +179,11 @@ found (\cref{sec:undo}).
 
 \section{Refusals}\label{sec:project-refusals}
 
-The rules don't loosen because you are typing. Every refusal changes nothing and says why:
+The rules don't loosen because you are typing. Every refusal changes nothing and says why. The shell
+wraps each answer with the command and the path, as Unix tools do:
+\ui{rm: data/tocher.csv: “tocher” is drawn on Net 1, Joints — remove those layers first:
+/data/tocher.csv}, or, for a write through \code{>}, \ui{geas: redirect: read-only: /diagrams/Net
+1/net.svg}. The table gives the middle part, wuffle's own:
 
 \begin{center}\small
 \begin{tabularx}{\linewidth}{@{}>{\raggedright}p{0.36\linewidth}L@{}}\toprule

@@ -94,7 +94,8 @@ your browser and in the files you save (\cref{sec:local}).
 
 \section{Local, and honest about it}\label{sec:local}
 
-wuffle fetches nothing when it opens. Your data stays in the browser tab, and between saves wuffle keeps
+wuffle fetches nothing when it opens. (The website's copy has a service worker that checks for a newer
+version in the background; that is the site, not wuffle, \cref{sec:run-site}.) Your data stays in the browser tab, and between saves wuffle keeps
 a copy of the project in the browser's own storage, on your machine (\cref{sec:autosave}). The only
 things that can reach the network are things you type in the console, such as a package install.
 
@@ -110,5 +111,5 @@ wuffle's maths is \code{@gcu/bearing}, a library of orientation geometry: projec
 eigen statistics, contouring, rotations and fault-slip inversion. The compass's true north comes from
 \code{@gcu/wmm}, the World Magnetic Model. The nets, selections and figure frames come from \code{@gcu/stereonet}, which the
 GCU notebook's stereonet cell also uses. Figures are \code{@gcu/compo} pages. The console is \code{geas},
-a shell written for the browser. All of it ships inside the one file, which \menu{Help>About wuffle}
-summarizes along with the source of the sample data.
+a shell written for the browser. All of it ships inside the one file. \menu{Help>About wuffle} names its maths and its nets, gives the
+source of the sample data, and the build.

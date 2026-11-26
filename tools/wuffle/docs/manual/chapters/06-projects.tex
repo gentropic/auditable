@@ -33,7 +33,7 @@ though undoing a step puts the selection back as it was then. The theme isn't pa
 \end{itemize}
 
 wuffle remembers the last 200 steps. Opening a project, and \menu{File>New project}, start the list afresh:
-\ui{New project} asks first, because undo can't bring the old one back.
+\ui{New project} asks first when there is data to lose, because undo can't bring the old one back.
 
 \subsection{The names of the steps}
 
@@ -42,15 +42,16 @@ The name says what kind of change a step was:
 \begin{center}\small
 \begin{tabularx}{\linewidth}{@{}>{\raggedright}p{0.36\linewidth}L@{}}\toprule
 \sffamily\bfseries step & \sffamily\bfseries made by \\\midrule
-\ui{open tocher.csv}, \ui{open field log …} & opening a file: the data and its layer together \\
+\ui{open tocher.csv}, \ui{open field log …}, \ui{open data} & opening a file: the data and its layer together (\ui{open data} for a dataset added on its own) \\
 \ui{new data …}, \ui{edit rows}, \ui{rename}, \ui{delete data} & a dataset made, its rows replaced, renamed, deleted \\
 \ui{new net}, \ui{new rose}, \ui{new fabric}, \ui{new diagram} & a diagram made, from the menu, the console or \code{mkdir} \\
 \ui{diagram settings}, \ui{rename diagram}, \ui{remove diagram} & a diagram's projection, hemisphere, rotation, name; removing it \\
-\ui{add layer}, \ui{add view}, \ui{move layer}, \ui{remove layer}, \ui{remove from everywhere} & layers \\
+\ui{add layer}, \ui{add view}, \ui{move layer}, \ui{remove layer}, \ui{remove layers}, \ui{remove from everywhere} & layers (\ui{remove layers}: \code{rm -r} of a diagram's \file{layers/}) \\
 \ui{show / hide}, \ui{show / hide elements}, \ui{style}, \ui{element settings}, \ui{layer properties}, \ui{layer settings} & what a layer draws and how \\
 \ui{derive}, \ui{selection → dataset} & a result kept as a dataset \\
 \ui{new figure}, \ui{edit figure}, \ui{rename figure}, \ui{delete figure} & figures \\
 \ui{keep original}, \ui{remove original} & field originals \\
+\ui{rename project} & the project's name (\cref{sec:project-name}) \\
 \bottomrule\end{tabularx}
 \end{center}
 
@@ -89,7 +90,8 @@ echo '{"name": "Serra do Mar"}' > /project/project.json
 Only the name can be written there; the rest of \file{project.json} is counted, not set, and anything
 else is refused with \ui{write \{"name": "…"\} — the rest of project.json is counted, not set}. The name
 is an undo step (\ui{rename project}), the browser tab's title follows it (\ui{Serra do Mar — wuffle}),
-and files are saved under it, with anything but letters, digits, dots and hyphens made an underscore:
+and files are saved under it, each run of characters other than letters, digits, underscores, dots and
+hyphens made one underscore:
 \file{Serra\_do\_Mar.zip.wuffle}.
 
 \subsection{Opened by another program}

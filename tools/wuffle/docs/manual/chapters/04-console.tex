@@ -52,8 +52,10 @@ use \textvisiblespace & "Net 1" \enskip tocher & several names: listed \\
 \bottomrule\end{tabularx}
 \end{center}
 
-At the start of a line it completes command names; after a command, a dataset, layer or diagram name,
-then a path.
+At the start of a line it completes command names (and shell functions you have defined). After a file
+command (\code{cat}, \code{ls}, \code{cd}, \code{rm}, \code{ln}, \code{mv}, \code{cp}, \code{head}…), or
+once a word holds a \code{/}, it completes a path; after other commands, a dataset, layer or diagram
+name.
 
 \section{wuffle's commands}\label{sec:commands}
 
@@ -91,9 +93,11 @@ A selection command adds to the selection with \code{+} and takes from it with \
 \code{150→60} a line.
 
 \begin{caution}
-In the console, \code{>} is the shell's: it sends output to a file. \code{select cone 150>60 10} is
-read as \enquote{\code{select cone 150}, output into a file called \file{60}}, and in \file{/home} it
-would make that file. Type the arrow, or quote the attitude: \code{select cone '150>60' 10}. (The
+In the console, \code{>} is the shell's: it sends output to a file. In \code{select cone 150>60 10}
+the shell takes \code{150>} as a redirection (digits right before \code{>} are a file-descriptor number,
+as in any Unix shell) into a file called \file{60}, so the command sees only \code{select cone 10} and
+fails: \ui{“10” — a plane 045/30 or a line 045→30}. In \file{/home} it still leaves an empty file
+\file{60} behind. Type the arrow, or quote the attitude: \code{select cone '150>60' 10}. (The
 compass's typed entry, which is not a shell, takes \code{150>60} as it is.)
 \end{caution}
 
@@ -211,7 +215,7 @@ log with its .sig)} and the line prints \ui{check the field logs}.
 \item Open the Tocher sample, then type \code{printf 'contour kamb 3\textbackslash nshow mean\textbackslash nstats\textbackslash n' > /home/fabric.sh}.
 \item Type \code{. /home/fabric.sh}. The net is contoured, the mean drawn, and the statistics print.
 \item Choose \menu{File>New project}, open the Tocher sample again and run \code{. /home/fabric.sh}: it
-answers \ui{source: /home/fabric.sh: no such file or directory}, because a new project starts with an
+answers \ui{source: /home/fabric.sh: no such file or directory: /home/fabric.sh}, because a new project starts with an
 empty \file{/home}. Save the routine in a
 project (or keep a copy of the file) to carry it on.
 \end{enumerate}
