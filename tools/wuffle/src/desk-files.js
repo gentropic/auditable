@@ -10,6 +10,7 @@ import { alert } from '../../../ext/dialog/index.js';
 import { readTable } from './io.js';
 import { writeProject, readProject, isZip } from './project-file.js';
 import { projectBlock, projectFromPage, pageWithProject, blockText, isPage, hashText } from './page.js';
+import { gather, verifyLog, describe } from './field-log.js';
 
 // ── the autosave: one key in one IndexedDB store; every access may fail (private window, blocked storage) ──
 const DB = 'wuffle', STORE = 'autosave';
@@ -60,9 +61,28 @@ export function createFiles(root, { project: p, dropHost, onOpened, home = null,
     if (first && onOpened) onOpened(first);
     return first;
   };
+  /** a field log (+ its .sig, + its photos) → an ORIGINAL kept verbatim + the datasets read from it, one undo step → the check */
+  const addFieldLog = async ({ log, sig, photos }) => {
+    const text = new TextDecoder().decode(log.bytes);
+    const day = (text.match(/\b(\d{4}-\d{2}-\d{2})T/) || [])[1];
+    const verdict = await verifyLog(log.bytes, sig?.bytes || null);
+    let first = null;
+    p.batch(`open field log ${log.name}`, () => {
+      const oid = p.addOriginal({ name: day ? `field ${day}` : log.name.replace(/\.[^.]+$/, ''), file: log.name, bytes: log.bytes, sig: sig?.bytes || null,
+        photos: photos.map((f) => ({ name: f.name, bytes: f.bytes })) });
+      const o = p.original(oid);
+      for (const s of readTable(text, o.name)) {
+        const id = p.addDataset({ ...s, lineage: { op: 'field log', original: o.name, file: log.name, sources: [{ id: null, name: `field/${o.name}/${log.name}` }], at: new Date().toISOString() } }); first = first || id;
+        if (!p.activeDiagram) p.addDiagram('net');
+        p.addLayer(p.activeDiagram, id);
+      }
+    });
+    if (first && onOpened) onOpened(first);
+    return verdict;
+  };
   /** another Project replaces this one IN PLACE, so every listener stays attached */
   const adopt = (q) => {
-    Object.assign(p, { name: q.name, datasets: q.datasets, diagrams: q.diagrams, layers: q.layers, figures: q.figures, selection: q.selection, activeDiagram: q.activeDiagram, _seq: q._seq });
+    Object.assign(p, { name: q.name, datasets: q.datasets, originals: q.originals, diagrams: q.diagrams, layers: q.layers, figures: q.figures, selection: q.selection, activeDiagram: q.activeDiagram, _seq: q._seq });
     p.clearHistory();
     p._emit('project-loaded');
   };
@@ -73,9 +93,20 @@ export function createFiles(root, { project: p, dropHost, onOpened, home = null,
     if (home) await home.restore(files);
     return warnings;
   };
-  const open = async (files) => {
-    for (const f of files) {
-      const bytes = new Uint8Array(await f.arrayBuffer());
+  const open = async (picked) => {
+    const files = [];
+    for (const f of picked) files.push({ name: f.name, bytes: new Uint8Array(await f.arrayBuffer()) });
+    // a field log gathers its .sig and photos from the same drop; everything else opens on its own
+    const { logs, rest, stray } = gather(files);
+    for (const g of logs) {
+      const v = await addFieldLog(g);
+      const missing = g.wanted - g.photos.length;
+      onStatus(`opened field log ${g.log.name} — ${describe(v)}${g.photos.length ? ` · ${g.photos.length} photo${g.photos.length === 1 ? '' : 's'}` : ''}${missing > 0 ? ` (${missing} named in the log weren't in the drop)` : ''}`);
+      if (v.state === 'mismatch') await alert(`${g.log.name}: the signature does not match.\n\n${v.why}\n\nThe log is open, kept exactly as it came, but don't treat it as the phone's record.`);
+    }
+    if (stray.length && !logs.length && !rest.length) onStatus(`${stray.map((f) => f.name).join(', ')}: open them together with the field log they belong to`);
+    for (const f of rest) {
+      const bytes = f.bytes;
       const head = new TextDecoder().decode(bytes.subarray(0, 200));
       if (isPage(head)) {                                   // a wuffle page: its project, never its code
         try {
@@ -140,7 +171,7 @@ export function createFiles(root, { project: p, dropHost, onOpened, home = null,
   };
 
   const picker = document.createElement('input');
-  picker.type = 'file'; picker.multiple = true; picker.accept = '.csv,.txt,.tsv,.dat,.wuffle,.zip,.html'; picker.hidden = true;
+  picker.type = 'file'; picker.multiple = true; picker.accept = '.csv,.txt,.tsv,.dat,.wuffle,.zip,.html,.sig,.jpg,.jpeg'; picker.hidden = true;
   picker.onchange = () => { open([...picker.files]); picker.value = ''; };
   root.append(picker);
 

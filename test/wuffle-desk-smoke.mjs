@@ -293,6 +293,30 @@ for (const [label, url] of [['dev', '/tools/wuffle/index.html'], ['built', '/wuf
   chk(`${label}: a figure from the net opens compo's editor in a tab (“${fig.tab}”), frames ${JSON.stringify(fig.kinds)}, page drawn (${fig.canvases} canvas), host buttons ${JSON.stringify(fig.btns)}; listed in the tree`,
     fig.n === 1 && !!fig.tab && fig.kinds && fig.kinds.includes('stereonet') && fig.canvases >= 1 && fig.btns.length === 2 && fig.treeHas);
 
+  // ── the compass's published log, signed by a key the page makes: File → Open of log + .sig + photo together
+  //    keeps an ORIGINAL (verified), reads its data; a changed byte is caught; the original survives the zip ──
+  const flog = await p.evaluate(async () => {
+    const W = window.__wuffleDesk, P = W.project, enc = new TextEncoder();
+    const b64 = (b) => btoa(String.fromCharCode(...new Uint8Array(b)));
+    const log = 'type,dip_dir_or_trend,dip_or_plunge,strike,timestamp,lat,lon,acc_m,north,declination_deg,photo\n'
+      + 'plane,120,45,30,2026-11-20T14:02:11.000Z,-30.1,-51.2,4,true,-15.2,wuffle-001-x.jpg\nline,200,20,,2026-11-20T14:09:02.000Z,-30.1,-51.2,5,true,-15.2,\n';
+    const bytes = enc.encode(log);
+    const kp = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign', 'verify']);
+    const sig = JSON.stringify({ file: 'wuffle-log.csv', alg: 'ECDSA-P256-SHA256', sig: b64(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, kp.privateKey, bytes)),
+      pub: b64(await crypto.subtle.exportKey('spki', kp.publicKey)), security: 'bench-software' });
+    const before = P.datasets.length;
+    await W.files.open([new File([bytes], 'wuffle-log.csv'), new File([sig], 'wuffle-log.csv.sig'), new File([new Uint8Array([0xff, 0xd8, 1])], 'wuffle-001-x.jpg')]);
+    const v = await W.console.run('verify');
+    const ls = await W.console.run('ls "/project/field/field 2026-11-20" "/project/field/field 2026-11-20/photos"');
+    const ro = await W.console.run('echo 9 >> "/project/field/field 2026-11-20/wuffle-log.csv"');
+    const zip = await W.files.bytesOf();
+    await W.files.loadProject(zip);
+    const v2 = await W.console.run('verify');
+    return { added: P.datasets.length - before, verify: v.text, ls: ls.text, roOk: ro.ok, verify2: v2.text, kept: P.originals[0] && [...P.originals[0].bytes].length === bytes.length, lineage: P.datasets.at(-1)?.lineage?.op };
+  });
+  chk(`${label}: a signed field log opens as an original + ${flog.added} datasets (lineage “${flog.lineage}”); verify says “${flog.verify.split('\n')[0].slice(0, 90)}”; /project/field holds ${JSON.stringify(flog.ls.replace(/\s+/g, ' ').slice(0, 90))}; appending to it is refused (${!flog.roOk}); after a .zip.wuffle round trip it still verifies`,
+    flog.added === 2 && flog.lineage === 'field log' && /verified/.test(flog.verify) && /wuffle-log\.csv\.sig/.test(flog.ls) && /wuffle-001-x\.jpg/.test(flog.ls) && !flog.roOk && /verified/.test(flog.verify2) && flog.kept);
+
   try { await p.screenshot({ path: path.join(root, `experiments/wuffle-desk-${label}.png`) }); } catch { /* for a person */ }
   chk(`${label}: the desk opens with layers · Net 1 · table · statistics, the field page hidden (${s && JSON.stringify(r.tabs)})`, r.tabs && r.tabs.join() === 'layers,Net 1,table,statistics,console' && r.fieldHidden);
   chk(`${label}: File → Open the tocher sample → ${s.ds && s.ds.n} planes (not guessed: ${s.ds && !s.ds.guessed}), ${s.svgCircles} circles drawn`, s.ds && s.ds.n === 200 && !s.ds.guessed && s.svgCircles >= 200);

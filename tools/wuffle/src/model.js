@@ -49,8 +49,9 @@ export class Project {
     this.layers = [];              // each knows its diagram; order within a diagram = draw order (last on top)
     this.selection = new Map();    // datasetId → Set(row index)
     this.figures = [];             // compo pages: { id, name, doc, from } — `from` the diagram a figure was made of
+    this.originals = [];           // files kept VERBATIM (a signed field log, its .sig, its photos): { id, name, file, bytes, sig, photos }
     this.activeDiagram = null;
-    this._seq = { d: 0, n: 0, l: 0, f: 0 };
+    this._seq = { d: 0, n: 0, l: 0, f: 0, o: 0 };
     this._listeners = new Set();
     this._undo = []; this._redo = []; this._depth = 0;   // the journal (see below)
   }
@@ -257,6 +258,19 @@ export class Project {
   removeFigure(id) { this.figures = this.figures.filter((f) => f.id !== id); this._emit('figure-removed', { id }); }
   renameFigure(id, name) { const f = this.figure(id); if (!f) throw new Error(`no figure ${id}`); f.name = String(name).trim() || f.name; this._emit('figure-changed', { id }); }
 
+  // ── originals: files kept byte for byte, never edited (a signature is over exact bytes). The data read from
+  //    one is an ordinary dataset beside it (lineage { op: 'field log', original: name }) — edit that freely. ──
+  original(id) { return this.originals.find((o) => o.id === id) || null; }
+  /** @param {{ name, file, bytes: Uint8Array, sig?: Uint8Array|null, photos?: [{ name, bytes }] }} spec → id */
+  addOriginal({ name, file, bytes, sig = null, photos = [] }) {
+    if (!(bytes instanceof Uint8Array)) throw new Error('an original is bytes');
+    let n = String(name || file || 'original').trim(), k = 2;
+    while (this.originals.some((o) => o.name === n)) n = `${name} ${k++}`;
+    const o = Object.freeze({ id: this._id('o'), name: n, file: String(file || 'log.csv'), bytes, sig, photos: Object.freeze(photos.map((x) => Object.freeze({ name: x.name, bytes: x.bytes }))) });
+    this.originals = [...this.originals, o]; this._emit('original-added', { id: o.id }); return o.id;
+  }
+  removeOriginal(id) { if (!this.original(id)) throw new Error(`no original ${id}`); this.originals = this.originals.filter((o) => o.id !== id); this._emit('original-removed', { id }); }
+
   // (the project FILE is project-file.js: the /project tree, zipped — built from these methods, read back through them)
 
   _need(id) { const d = this.dataset(id); if (!d) throw new Error(`no dataset ${id}`); return d; }
@@ -279,20 +293,22 @@ const JOURNALED = {
   addLayer: 'add layer', addView: 'add view', moveLayer: 'move layer', removeLayer: 'remove layer', removeEverywhere: 'remove from everywhere',
   setLayerVisible: 'show / hide', setLayerStyle: 'style', setElement: 'show / hide elements', setElementSettings: 'element settings',
   addFigure: 'new figure', setFigureDoc: 'edit figure', renameFigure: 'rename figure', removeFigure: 'delete figure',
+  addOriginal: 'keep original', removeOriginal: 'remove original',
 };
 const COALESCE = new Set(['setDiagramProps', 'setLayerStyle', 'setElementSettings', 'setFigureDoc', 'editRows']);
 const COALESCE_MS = 800;
 
 Project.prototype._snap = function () {
-  return { datasets: this.datasets.slice(), diagrams: clone(this.diagrams), layers: clone(this.layers), figures: clone(this.figures),
+  return { datasets: this.datasets.slice(), originals: this.originals.slice(), diagrams: clone(this.diagrams), layers: clone(this.layers), figures: clone(this.figures),
     selection: new Map([...this.selection].map(([k, v]) => [k, new Set(v)])), active: this.activeDiagram };
 };
 Project.prototype._restore = function (s) {
-  this.datasets = s.datasets.slice(); this.diagrams = clone(s.diagrams); this.layers = clone(s.layers); this.figures = clone(s.figures);
+  this.datasets = s.datasets.slice(); this.originals = s.originals.slice(); this.diagrams = clone(s.diagrams); this.layers = clone(s.layers); this.figures = clone(s.figures);
   this.selection = new Map([...s.selection].map(([k, v]) => [k, new Set(v)]));
   this.activeDiagram = this.diagram(s.active) ? s.active : (this.diagrams[0]?.id || null);
 };
 const sameState = (a, b) => a.datasets.length === b.datasets.length && a.datasets.every((d, i) => d === b.datasets[i])
+  && a.originals.length === b.originals.length && a.originals.every((o, i) => o === b.originals[i])
   && JSON.stringify([a.diagrams, a.layers, a.figures]) === JSON.stringify([b.diagrams, b.layers, b.figures]);
 
 Project.prototype._journal = function (label, method, args, run) {

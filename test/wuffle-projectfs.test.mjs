@@ -30,7 +30,7 @@ async function mk() {
 describe('/project — reading', () => {
   it('the tree: data, diagrams with layers, figures, selection, project.json', async () => {
     const { run } = await mk();
-    assert.deepEqual((await run('ls')).out.trim().split(/\s+/), ['data', 'diagrams', 'figures', 'project.json', 'selection']);
+    assert.deepEqual((await run('ls')).out.trim().split(/\s+/), ['data', 'diagrams', 'field', 'figures', 'project.json', 'selection']);
     assert.match((await run('ls data')).out, /tocher\.csv[\s\S]*tocher\.json/);
     assert.match((await run('ls "diagrams/Net 1"')).out, /diagram\.json[\s\S]*layers[\s\S]*net\.svg/);
     assert.match((await run('cat project.json')).out, /"name": "study"[\s\S]*"datasets": 1/);

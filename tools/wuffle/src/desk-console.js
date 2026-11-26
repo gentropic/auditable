@@ -17,6 +17,7 @@ import { exportPDF } from '../../../ext/compo/index.js';
 import { createCommands } from './commands.js';
 import { projectFs } from './project-fs.js';
 import { diagramSvg } from './diagram-svg.js';
+import { verifyLog, describe } from './field-log.js';
 
 const h = (tag, cls) => { const e = document.createElement(tag); if (cls) e.className = cls; return e; };
 const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;
@@ -102,6 +103,19 @@ export class ConsoleView {
       };
     }
     out.history = async (argv, sctx) => { await sctx.stdout(this.history.map((l, i) => `${String(i + 1).padStart(4)}  ${l}`).join('\n') + (this.history.length ? '\n' : '')); return 0; };
+    // verify [name…] — check each field original's signature against its bytes (WebCrypto: async, hence here)
+    out.verify = async (argv, sctx) => {
+      const want = argv.slice(1).join(' ').trim();
+      const os = this.p.originals.filter((o) => !want || o.name === want || o.name.startsWith(want));
+      if (!os.length) { await sctx.stderr(want ? `no field original “${want}”\n` : 'no field originals in this project (open a field log with its .sig)\n'); return 1; }
+      let bad = 0;
+      for (const o of os) {
+        const v = await verifyLog(o.bytes, o.sig);
+        if (v.state === 'mismatch' || v.state === 'unreadable') bad++;
+        await sctx.stdout(`${o.name}  (field/${o.name}/${o.file}): ${describe(v)}\n`);
+      }
+      return bad ? 1 : 0;
+    };
     const help = out.help;
     out.help = async (argv, sctx) => {
       const s = await help(argv, sctx);

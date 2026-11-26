@@ -97,16 +97,26 @@ export function projectFs(p, { renderSvg = null, figurePdf = null, mount = '/pro
       const m = s.length === 2 && /^(.*)\.(rows|csv)$/.exec(a); if (!m) return null;
       const d = dsByFile(m[1]); return d ? { kind: m[2] === 'rows' ? 'selrows' : 'selcsv', d } : null;
     }
+    if (top === 'field') {                                   // originals: read-only, byte for byte
+      if (s.length === 1) return { kind: 'dir', name: 'field' };
+      const o = p.originals.find((x) => F(x.name) === a); if (!o) return null;
+      if (s.length === 2) return { kind: 'original', o };
+      if (s.length === 3 && b === F(o.file)) return { kind: 'origfile', o, bytes: o.bytes };
+      if (s.length === 3 && b === `${F(o.file)}.sig` && o.sig) return { kind: 'origfile', o, bytes: o.sig };
+      if (b !== 'photos' || !o.photos.length || rest.length) return null;
+      if (s.length === 3) return { kind: 'photos', o };
+      const ph = o.photos.find((x) => F(x.name) === c); return ph ? { kind: 'origfile', o, bytes: ph.bytes } : null;
+    }
     return null;
   }
   const need = (sub) => { const n = locate(sub); if (!n) throw err('ENOENT', sub); return n; };
-  const isDir = (n) => ['root', 'dir', 'diagram', 'layers'].includes(n.kind);
+  const isDir = (n) => ['root', 'dir', 'diagram', 'layers', 'original', 'photos'].includes(n.kind);
   const linkTarget = (l) => `../../../data/${F(p.dataset(l.datasetId).name)}.csv`;
 
   // ── reading ──
   async function content(n, sub) {
     switch (n.kind) {
-      case 'project': return json({ name: p.name, datasets: p.datasets.length, diagrams: p.diagrams.length, layers: p.layers.length, figures: p.figures.length,
+      case 'project': return json({ name: p.name, datasets: p.datasets.length, diagrams: p.diagrams.length, layers: p.layers.length, figures: p.figures.length, originals: p.originals.length,
         active: p.diagram(p.activeDiagram)?.name || null });
       case 'data': case 'layerlink': { const d = n.d || p.dataset(n.l.datasetId); return toCsv(d.columns, d.rows); }
       case 'datameta': { const d = n.d; return json({ name: d.name, kind: d.kind, rows: d.rows.length, columns: d.columns, roles: d.roles, notation: d.notation, lineage: d.lineage,
@@ -118,6 +128,7 @@ export function projectFs(p, { renderSvg = null, figurePdf = null, mount = '/pro
       case 'pdf': { if (!figurePdf) throw err('ENOTSUP', sub, 'no PDF export here'); return await figurePdf(n.f.id); }
       case 'selrows': return p.selected(n.d.id).map((i) => i + 1).join('\n') + (p.selected(n.d.id).length ? '\n' : '');
       case 'selcsv': return toCsv(n.d.columns, p.selected(n.d.id).map((i) => n.d.rows[i]));
+      case 'origfile': return n.bytes;
       default: throw err('EISDIR', sub);
     }
   }
@@ -153,8 +164,10 @@ export function projectFs(p, { renderSvg = null, figurePdf = null, mount = '/pro
         if (rows.some((r) => !Number.isInteger(r) || r < 1 || r > n.d.rows.length)) throw err('EINVAL', sub, `row numbers run 1–${n.d.rows.length}`);
         p.select(n.d.id, rows.map((r) => r - 1)); return;
       }
+      case 'origfile': throw err('EACCES', sub, 'an original is kept exactly as it came (its signature is over these bytes) — edit the data read from it, in data/');
       default: throw err('EACCES', sub, 'read-only');
     }
+    if (s[0] === 'field') throw err('EACCES', sub, 'field/ holds originals as they came — open a field log to add one');
     // a new file
     if (s.length === 2 && s[0] === 'data' && /\.csv$/i.test(s[1])) {
       const name = s[1].replace(/\.csv$/i, '').replace(/∕/g, '/');
@@ -179,6 +192,8 @@ export function projectFs(p, { renderSvg = null, figurePdf = null, mount = '/pro
       case 'layers': if (!recursive) { if (p.layersOf(n.g.id).length) throw err('ENOTEMPTY', sub); return; }
         p.batch('remove layers', () => { for (const l of p.layersOf(n.g.id)) p.removeLayer(l.id); }); return;
       case 'datameta': throw err('EACCES', sub, `the data is ${sub.replace(/\.json$/, '.csv')}`);
+      case 'original': if (!recursive) throw err('ENOTEMPTY', sub); p.removeOriginal(n.o.id); return;   // the whole original or nothing
+      case 'origfile': case 'photos': throw err('EACCES', sub, 'an original goes whole (rm -r field/<name>) or not at all');
       default: throw err('EACCES', sub, 'this can only go with what it belongs to');
     }
   }
@@ -215,8 +230,11 @@ export function projectFs(p, { renderSvg = null, figurePdf = null, mount = '/pro
     async readdir(sub) {
       const n = need(sub);
       switch (n.kind) {
-        case 'root': return ['data', 'diagrams', 'figures', 'project.json', 'selection'];
+        case 'root': return ['data', 'diagrams', 'field', 'figures', 'project.json', 'selection'];
+        case 'original': return [F(n.o.file), ...(n.o.sig ? [`${F(n.o.file)}.sig`] : []), ...(n.o.photos.length ? ['photos'] : [])].sort();
+        case 'photos': return n.o.photos.map((x) => F(x.name)).sort();
         case 'dir':
+          if (n.name === 'field') return p.originals.map((o) => F(o.name)).sort();
           if (n.name === 'data') return p.datasets.flatMap((d) => [`${F(d.name)}.csv`, `${F(d.name)}.json`]).sort();
           if (n.name === 'diagrams') return p.diagrams.map((g) => F(g.name)).sort();
           if (n.name === 'figures') return p.figures.flatMap((f) => [`${F(f.name)}.compo.json`, ...(figurePdf ? [`${F(f.name)}.pdf`] : [])]).sort();

@@ -10,6 +10,9 @@
 //                                   symlinks; /project shows the same thing as a link), visibility, style
 //   figures/<name>.compo.json       a figure page
 //   selection/<name>.rows           the selected rows, 1-based (only data with a selection)
+//   field/<name>/<log>.csv (+ .sig) an ORIGINAL — the compass's published log, BYTE FOR BYTE (its signature
+//   field/<name>/photos/*.jpg       is over those exact bytes), and the station photos; the data read from
+//                                   it lives in data/ like any other, edit that freely
 //   home/…                          your files
 //
 // Not stored: what is computed (svg, pdf, selection/<name>.csv) and the undo history.
@@ -29,7 +32,8 @@ export function projectEntries(p, { home = [] } = {}) {
   const out = new Map();
   out.set('project.json', json({ format: FORMAT, version: VERSION, name: p.name, active: p.diagram(p.activeDiagram)?.name || null,
     data: p.datasets.map((d) => d.name), diagrams: p.diagrams.map((g) => g.name),
-    figures: p.figures.map((f) => ({ name: f.name, from: p.diagram(f.from)?.name || null })) }));
+    figures: p.figures.map((f) => ({ name: f.name, from: p.diagram(f.from)?.name || null })),
+    ...(p.originals.length ? { field: p.originals.map((o) => ({ name: o.name, file: o.file })) } : {}) }));
   for (const d of p.datasets) {
     out.set(`data/${F(d.name)}.csv`, toCsv(d.columns, d.rows));
     out.set(`data/${F(d.name)}.json`, json({ name: d.name, kind: d.kind, columns: d.columns, roles: d.roles, notation: d.notation, lineage: d.lineage, meta: d.meta }));
@@ -42,6 +46,12 @@ export function projectEntries(p, { home = [] } = {}) {
     }
   }
   for (const f of p.figures) out.set(`figures/${F(f.name)}.compo.json`, json(f.doc));
+  for (const o of p.originals) {                          // byte for byte, as they came: a signature is over exact bytes
+    const dir = `field/${F(o.name)}`;
+    out.set(`${dir}/${F(o.file)}`, o.bytes);
+    if (o.sig) out.set(`${dir}/${F(o.file)}.sig`, o.sig);
+    for (const ph of o.photos) out.set(`${dir}/photos/${F(ph.name)}`, ph.bytes);
+  }
   for (const d of p.datasets) { const s = p.selected(d.id); if (s.length) out.set(`selection/${F(d.name)}.rows`, s.map((i) => i + 1).join('\n') + '\n'); }
   for (const h of home) {                                 // home files carry their VFS path: /home/notes.txt → home/notes.txt
     const rel = String(h.path).replace(/^\/+/, '');
@@ -74,8 +84,9 @@ export async function readProject(bytes) {
   if (!manifest || manifest.format !== FORMAT) throw new Error('not a wuffle project (no project.json saying so)');
   const warnings = [];
   const p = new Project({ name: manifest.name || 'untitled' });
-  const listed = (prefix, suffix) => z.list().map((e) => e.name).filter((n) => n.startsWith(prefix) && n.endsWith(suffix) && !n.slice(prefix.length, -suffix.length).includes('/'))
-    .map((n) => n.slice(prefix.length, -suffix.length));
+  const stem = (n, prefix, suffix) => n.slice(prefix.length, n.length - suffix.length);   // (suffix may be '')
+  const listed = (prefix, suffix) => z.list().map((e) => e.name).filter((n) => n.startsWith(prefix) && n.endsWith(suffix) && stem(n, prefix, suffix) && !stem(n, prefix, suffix).includes('/'))
+    .map((n) => stem(n, prefix, suffix));
   const ordered = (names, files) => [...names.map(F).filter((n) => files.includes(n)), ...files.filter((f) => !names.map(F).includes(f)).sort()];   // the manifest's order, then anything added by hand
 
   const dsByFile = new Map();
@@ -113,6 +124,19 @@ export async function readProject(bytes) {
     const t = await text(`selection/${f}.rows`); if (!t) continue;
     const n = p.dataset(id).rows.length, rows = t.split(/\s+/).filter(Boolean).map(Number).filter((r) => Number.isInteger(r) && r >= 1 && r <= n).map((r) => r - 1);
     if (rows.length) p.select(id, rows);
+  }
+  // originals: each field/<dir>/ holds one log (+ .sig, + photos/); the manifest gives its name and file, a
+  // directory added by hand is read too (its one non-.sig file is the log)
+  const fieldDirs = [...new Set(z.list().map((e) => e.name).filter((n) => n.startsWith('field/') && !n.endsWith('/')).map((n) => n.split('/')[1]))];
+  const fmeta = new Map((manifest.field || []).map((x) => [F(x.name), x]));
+  for (const dir of ordered((manifest.field || []).map((x) => x.name), fieldDirs)) {
+    const m = fmeta.get(dir), inDir = listed(`field/${dir}/`, '');
+    const logName = m?.file && inDir.includes(F(m.file)) ? F(m.file) : inDir.find((n) => !n.endsWith('.sig'));
+    if (!logName) { warnings.push(`field/${dir}: no log in it`); continue; }
+    const photos = [];
+    for (const e of z.list()) if (e.name.startsWith(`field/${dir}/photos/`) && !e.dir) photos.push({ name: e.name.slice(`field/${dir}/photos/`.length), bytes: await z.bytes(e) });
+    try { p.addOriginal({ name: m?.name || dir.replace(/∕/g, '/'), file: m?.file || logName, bytes: await file(`field/${dir}/${logName}`), sig: await file(`field/${dir}/${logName}.sig`), photos }); }
+    catch (e) { warnings.push(`field/${dir}: ${e.message}`); }
   }
   if (manifest.active && gByName.has(manifest.active)) p.setActive(gByName.get(manifest.active));
   const home = [];

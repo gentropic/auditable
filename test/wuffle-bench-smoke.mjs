@@ -112,10 +112,21 @@ const pub = await p.evaluate(async () => {
   const ok = await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, b64(lp.signed.sig), lp.bytes);
   const tampered = new Uint8Array(lp.bytes); tampered[0] ^= 1;
   const okBad = await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, b64(lp.signed.sig), tampered);
-  return { signed: true, ok, okBad, security: lp.signed.security, msg: document.getElementById('msg').textContent };
+  return { signed: true, ok, okBad, security: lp.signed.security, msg: document.getElementById('msg').textContent,
+    bytes: [...lp.bytes], sigText: JSON.stringify(lp.signed, null, 1) };   // the .sig exactly as field.js publishes it
 });
 chk(`publish → attest-signed .sig sidecar verifies against the log bytes (valid ${pub.ok}, tampered-rejected ${pub.okBad === false}, ${pub.security}; "${pub.msg}")`,
   pub.signed && pub.ok === true && pub.okBad === false && /\+ \.sig/.test(pub.msg));
+
+// 4b'. the DESK reads what the compass published: the drop gathers log + .sig, and the desk's own check verifies
+if (pub.signed) {
+  const { gather, verifyLog } = await import('../tools/wuffle/src/field-log.js');
+  const enc = new TextEncoder(), log = new Uint8Array(pub.bytes);
+  const g = gather([{ name: 'wuffle-log.csv', bytes: log }, { name: 'wuffle-log.csv.sig', bytes: enc.encode(pub.sigText) }]);
+  const v = g.logs.length ? await verifyLog(g.logs[0].log.bytes, g.logs[0].sig?.bytes) : { state: 'not gathered' };
+  chk(`the desk takes the compass's published log + .sig as one field original, and verifies it (${g.logs.length} log, sig ${!!g.logs[0]?.sig}, ${v.state})`,
+    g.logs.length === 1 && !!g.logs[0].sig && v.state === 'verified');
+} else chk('the desk takes the compass\'s published log (nothing was published)', false);
 
 // 4c. intake: a csv "shared" to wuffle reloads into the log (share's inbound twin)
 const taken = await p.evaluate(async () => {

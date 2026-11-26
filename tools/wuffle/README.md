@@ -83,6 +83,14 @@ says *local*, not *sealed* — there is no CSP enforcing it, so it doesn't claim
   straight into the data (and their edits survive a reload, kept apart from any other page's).
   The project is a block of its own, apart from the (gzipped) runtime, so File → Open takes any
   wuffle page and reads just its project, never running the other page.
+- **Field logs come in signed.** Open the compass's `wuffle-log.csv` together with its
+  `wuffle-log.csv.sig` and the station photos (one drop, or one pick). The desk keeps all three
+  **byte for byte** as an original under `/project/field/<name>/`, read-only, because the
+  signature is over those exact bytes. It reads the measurements into ordinary datasets beside it,
+  which you can edit freely. The signature is checked on open and by `verify` in the console. A
+  changed byte reads as "does not match". The signer's key shows as a short fingerprint: that
+  it's *your* phone's key is for you to recognise, and the "strongbox" word is the phone's own
+  claim.
 
 Text everywhere: planes as dip direction/dip (`045/72`), lines as trend→plunge (`045→32`).
 Sample data: Tocher, F. E. (1979), *The computer contouring of fabric diagrams*, Computers &
@@ -120,7 +128,7 @@ node build.js --target=wuffle     # → wuffle.html (registry build: bearing, le
                                   #   menu, dialog, loom, stereonet, compo + the src/ modules)
 npm run test:wuffle               # the compass, over the built file (?field)
 npm run test:wuffle:bench         # the compass in the mocked lead-acid shell
-npm run test:wuffle:desk          # the desk, dev tree AND built file (45 checks: real drags, the shell, /project, undo, figures, autosave, save as page…)
+npm run test:wuffle:desk          # the desk, dev tree AND built file (47 checks: real drags, the shell, /project, undo, figures, autosave, save as page, a signed field log…)
 node --test test/wuffle-*.test.mjs test/stereonet-*.test.mjs   # the pure modules (in npm test)
 node tools/wuffle/dev/gen-samples.mjs                          # after changing samples/*.csv
 ```
