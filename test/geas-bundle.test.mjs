@@ -14,6 +14,13 @@ const run = async (line) => {
 };
 
 describe('the built geas bundle', () => {
+  it('a redirect that cannot be written fails the command (status 1), not only a message', async () => {
+    let out = '';
+    const vfs = { writeFile: async () => { throw new Error('EACCES: read-only'); }, readFile: async () => 'old\n' };
+    const sh = createShell({ vfs, cwd: '/', stdout: (t) => { out += t; }, stderr: (t) => { out += t; } });
+    await sh.exec('echo x >> /ro.txt && echo landed || echo refused\n');
+    assert.match(out, /redirect: EACCES/); assert.match(out, /refused/); assert.doesNotMatch(out, /landed/);
+  });
   it('command substitution', async () => assert.equal(await run('echo $(echo sub)'), 'sub\n'));
   it('eval', async () => assert.equal(await run('eval echo ev'), 'ev\n'));
   it('nested substitution in a string', async () => assert.equal(await run('x=$(echo a); echo "[$x $(echo b)]"'), '[a b]\n'));

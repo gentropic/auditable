@@ -14467,7 +14467,8 @@ async function _execSimpleCommand(node, ctx) {
     // Redirects buffered their writes; flush them now that the command
     // has produced all its output. Runs even if the command exited via
     // `_exit` or threw — `> file` should land its bytes either way.
-    if (subCtx !== ctx) await _flushRedirects(subCtx);
+    // A redirect that couldn't land fails the command (bash gives status 1), beyond the message.
+    if (subCtx !== ctx && !(await _flushRedirects(subCtx))) exitCode = 1;
   }
   ctx.lastStatus = exitCode;
   return { exitCode };
@@ -14773,17 +14774,20 @@ async function _applyRedirects(redirects, ctx) {
 // Drain a context's pending redirect-flush callbacks. Called at the
 // boundary of any scope that applied redirects (simple command, brace
 // group, subshell). Failures during flush emit a stderr diagnostic but
-// don't unwind further — the command's exit code is already decided.
+// don't unwind further. Returns true when every write landed (a simple command then fails on false).
 async function _flushRedirects(ctx) {
-  if (!ctx._redirectFlush || ctx._redirectFlush.length === 0) return;
+  if (!ctx._redirectFlush || ctx._redirectFlush.length === 0) return true;
   const queue = ctx._redirectFlush;
   ctx._redirectFlush = null;
+  let ok = true;
   for (const flush of queue) {
     try { await flush(); }
     catch (e) {
+      ok = false;
       try { await ctx.stderr(`geas: redirect: ${e.message || e}\n`); } catch { /* ignore */ }
     }
   }
+  return ok;
 }
 
 function _requireVfs(ctx, what) {
