@@ -126,6 +126,14 @@ for (const entry of importEntries) {
   src = src.replace(/^export\s*\{[^}]*\};?\s*$/gm, '');
   src = src.replace(/^export\s+default\s+.*$/gm, '');
 
+  // Lazy sibling imports (`await import('./parser.js')`, used by $(…), eval and
+  // word expansion to dodge a circular import in src/) have no file to load
+  // once everything is one bundle: there is no parser.js next to index.js, and
+  // inside a blob: module there is nothing next to anything. In the bundle
+  // those names are already in scope, so the import becomes the bundle's own
+  // namespace object (defined once, at the end).
+  src = src.replace(/await import\(\s*'\.\/(parser|executor|word-parts)\.js'\s*\)/g, '__geasSelf');
+
   // Trim leading/trailing blank lines
   src = src.replace(/^\n+/, '').replace(/\n+$/, '');
 
@@ -135,8 +143,13 @@ for (const entry of importEntries) {
 const header = '// ⚠ GENERATED FILE — DO NOT EDIT. Source: ext/geas/src/  Build: node ext/geas/build.js\n'
   + '// @gcu/geas — the GCU shell. POSIX-syntax with typed-pipe extensions.\n';
 
+const leftover = chunks.join('\n').match(/import\(\s*'\.\/[^']+'\s*\)/g);
+if (leftover) { console.error(`geas build: a relative dynamic import would not resolve in the bundle: ${[...new Set(leftover)].join(', ')}`); process.exit(1); }
+
 const output = header + '\n' + chunks.join('\n\n')
-  + '\n\nexport { tokenize, parse, parseWordParts, execute, defaultBuiltins, createShell, mkTyped, isTyped, NODE, createHeadlessAdapter, createTermAdapter, createXtermAdapter, adapterHooks, makeLineEditor, createGeasClient, setupGeasWorker, serveVFS, createVfsClient, createLoopback, procToWorker, geasProcEntry };\n';
+  + '\n\n// the bundle\'s own namespace — what the lazy sibling imports in src/ become (see the rewrite above)\n'
+  + 'const __geasSelf = { parse, execute, parseWordParts, tokenize };\n'
+  + '\nexport { tokenize, parse, parseWordParts, execute, defaultBuiltins, createShell, mkTyped, isTyped, NODE, createHeadlessAdapter, createTermAdapter, createXtermAdapter, adapterHooks, makeLineEditor, createGeasClient, setupGeasWorker, serveVFS, createVfsClient, createLoopback, procToWorker, geasProcEntry };\n';
 
 const outPath = path.join(__dirname, 'index.js');
 fs.writeFileSync(outPath, output);

@@ -124,7 +124,7 @@ export function makeLineEditor(adapter) {
     return null;
   }
   return function readLine(lineOpts = {}) {
-    const { prompt, silent, nChars, delim, timeout, onHistory } = lineOpts;
+    const { prompt, silent, nChars, delim, timeout, onHistory, onComplete } = lineOpts;
     return new Promise((resolve) => {
       let buffer = '';
       let done = false;
@@ -204,6 +204,18 @@ export function makeLineEditor(adapter) {
             try { adapter.write('^C'); } catch { /* ignore */ }
             finish({ eof: true });
             return;
+          }
+          // Tab: completion, when the caller offers it. onComplete(buffer) →
+          // { buffer?, list? }: a new buffer replaces the typed one; a list of
+          // candidates prints below and the prompt comes back with the buffer.
+          if (ch === '\t' && typeof onComplete === 'function' && !silent) {
+            i++;
+            let r = null; try { r = onComplete(buffer); } catch { r = null; }
+            if (r && Array.isArray(r.list) && r.list.length) {
+              try { adapter.write('\r\n' + r.list.join('  ') + '\r\n' + (prompt || '') + buffer); } catch { /* ignore */ }
+            }
+            if (r && typeof r.buffer === 'string' && r.buffer !== buffer) replaceBuffer(r.buffer);
+            continue;
           }
           // Skip other control chars.
           if (ch.charCodeAt(0) < 0x20) { i++; continue; }
