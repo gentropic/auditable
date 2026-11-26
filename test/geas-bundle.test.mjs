@@ -23,6 +23,26 @@ describe('the built geas bundle', () => {
     await sh.exec('hello a b | tr a-z A-Z\n');
     assert.equal(out, 'HI A B\n');
   });
+  it('tail -n +K starts at line K (POSIX); -n K is the last K', async () => {
+    assert.equal(await run('printf "h\\n1\\n2\\n3\\n" | tail -n +2'), '1\n2\n3\n');
+    assert.equal(await run('printf "h\\n1\\n2\\n3\\n" | tail -n 2'), '2\n3\n');
+  });
+  it('grep -o prints each match on its own line', async () => {
+    assert.equal(await run('printf "a1b22\\nc\\n" | grep -o "[0-9]*[0-9]"'), '1\n22\n');
+    assert.equal(await run('printf "a1\\nb\\n" | grep -on "[0-9]"'), '1:1\n');
+  });
+  it('ln -s makes a symlink (into a directory: by the target\'s name); rm -r goes through vfs.rm', async () => {
+    const { VFS } = await import('../ext/vfs/index.js');
+    const vfs = new VFS(); await vfs.mount('/', { type: 'memory' });
+    await vfs.mkdir('/d'); await vfs.writeFile('/d/f.txt', 'x');
+    let out = ''; const sh = createShell({ vfs, cwd: '/', stdout: (t) => { out += t; }, stderr: (t) => { out += t; } });
+    await sh.exec('ln -s ../d/f.txt /d/g.txt; mkdir /e; ln -s /d/f.txt /e\n');
+    assert.equal(await vfs.readlink('/d/g.txt'), '../d/f.txt'); assert.equal(await vfs.readlink('/e/f.txt'), '/d/f.txt');
+    let rmCalls = 0; const rm = vfs.rm.bind(vfs); vfs.rm = (p, o) => { rmCalls++; return rm(p, o); };
+    await sh.exec('rm -r /d\n');
+    assert.equal(rmCalls, 1); assert.equal(await vfs.exists('/d'), false);
+    out = ''; await sh.exec('ln /e/f.txt /x\n'); assert.match(out, /only symbolic links/);
+  });
   it('the line editor completes on Tab when asked to', async () => {
     const subs = new Set(); let shown = '';
     const adapter = { write: (t) => { shown += t; }, onInput: (cb) => { subs.add(cb); return () => subs.delete(cb); } };

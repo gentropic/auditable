@@ -3359,7 +3359,11 @@ class VFS extends EventEmitter {
   }
 
   async _rmRecursive(absPath, backend, subpath) {
-    const info = await backend.stat(subpath);
+    // lstat, not stat: a symlink is removed, never followed — a link into the
+    // same tree dangles once its target goes, and stat would throw ENOENT
+    // halfway through the removal (or, for a link to a directory, recurse
+    // into somewhere else entirely).
+    const info = await (backend.lstat ? backend.lstat(subpath) : backend.stat(subpath));
     if (info.type === 'directory') {
       const entries = await backend.readdir(subpath);
       for (const name of entries) {

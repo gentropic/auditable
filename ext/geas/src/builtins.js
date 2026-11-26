@@ -57,6 +57,7 @@ export function defaultBuiltins() {
     // Filesystem
     mkdir:    _mkdir,
     rm:       _rm,
+    ln:       _ln,
     touch:    _touch,
     cp:       _cp,
     mv:       _mv,
@@ -577,6 +578,29 @@ async function _mkdir(argv, ctx) {
   return anyError;
 }
 
+// ln -s TARGET LINK   — a symbolic link (TARGET is stored as given, so a
+//                       relative target resolves from the link's directory).
+// ln -s TARGET DIR    — the link is DIR/basename(TARGET).
+// Hard links aren't a VFS notion: plain `ln` says so.
+async function _ln(argv, ctx) {
+  if (!ctx.vfs) { await ctx.stderr('ln: no VFS configured\n'); return 1; }
+  const { opts, positionals } = _bParseArgs(argv, { s: { short: 's' }, f: { short: 'f' } });
+  if (!opts.s) { await ctx.stderr('ln: only symbolic links (ln -s TARGET LINK)\n'); return 1; }
+  if (positionals.length !== 2) { await ctx.stderr('ln: usage: ln -s TARGET LINK\n'); return 1; }
+  const [target, linkArg] = positionals;
+  let link = _bResolvePath(linkArg, ctx);
+  try {
+    const st = await ctx.vfs.stat(link).catch(() => null);
+    if (st && st.type === 'directory') link = (link.endsWith('/') ? link : link + '/') + target.replace(/\/+$/, '').split('/').pop();
+    if (opts.f) { try { await ctx.vfs.unlink(link); } catch { /* nothing there */ } }
+    await ctx.vfs.symlink(target, link);
+    return 0;
+  } catch (e) {
+    await ctx.stderr(`ln: ${linkArg}: ${e.message || 'cannot link'}\n`);
+    return 1;
+  }
+}
+
 async function _rm(argv, ctx) {
   if (!ctx.vfs) { await ctx.stderr('rm: no VFS configured\n'); return 1; }
   const { opts, positionals } = _bParseArgs(argv, {
@@ -600,8 +624,12 @@ async function _rm(argv, ctx) {
           anyError = 1;
           continue;
         }
-        // Recursive delete: walk entries, unlink files, rmdir folders.
-        await _rmRecursive(ctx.vfs, path);
+        // Recursive delete: the VFS's own rm when it has one (a backend may
+        // remove a subtree natively — one op, or one that keeps its own
+        // rules, like a view over a data model), else walk entries, unlink
+        // files, rmdir folders.
+        if (typeof ctx.vfs.rm === 'function') await ctx.vfs.rm(path, { recursive: true });
+        else await _rmRecursive(ctx.vfs, path);
       } else {
         await ctx.vfs.unlink(path);
       }
@@ -1279,13 +1307,16 @@ async function _headStream(queue, n, ctx) {
 async function _tail(argv, ctx) {
   const normalized = argv.map(a => /^-\d+$/.test(a) ? ['-n', a.slice(1)] : [a]).flat();
   const { opts, positionals } = _bParseArgs(normalized, { n: { short: 'n', arg: true, default: '10' } });
-  const n = Math.max(0, parseInt(opts.n, 10) || 0);
+  // POSIX: `-n +K` starts AT line K (1-based) — "skip the header" is `tail -n +2`;
+  // a bare or minus count is the last N lines.
+  const fromStart = /^\+/.test(String(opts.n));
+  const n = Math.max(0, parseInt(String(opts.n).replace(/^[+-]/, ''), 10) || 0);
   try {
     const text = await _bReadInput(positionals, ctx);
     const lines = text.split('\n');
     const trailingNL = text.endsWith('\n');
     const effective = trailingNL ? lines.slice(0, -1) : lines;
-    const take = effective.slice(Math.max(0, effective.length - n));
+    const take = fromStart ? effective.slice(Math.max(0, n - 1)) : effective.slice(Math.max(0, effective.length - n));
     await ctx.stdout(take.join('\n') + (take.length > 0 ? '\n' : ''));
     return 0;
   } catch (e) {
@@ -1322,7 +1353,7 @@ async function _wc(argv, ctx) {
 async function _grep(argv, ctx) {
   const { opts, positionals } = _bParseArgs(argv, {
     i: { short: 'i' }, v: { short: 'v' }, n: { short: 'n' },
-    F: { short: 'F' }, c: { short: 'c' },
+    F: { short: 'F' }, c: { short: 'c' }, o: { short: 'o' },
   });
   if (positionals.length === 0) {
     await ctx.stderr('grep: missing pattern\n');
@@ -1351,7 +1382,13 @@ async function _grep(argv, ctx) {
       const matched = regex.test(line);
       if (opts.v ? !matched : matched) {
         count++;
-        if (!opts.c) {
+        if (opts.o && !opts.c) {
+          // -o: each (non-empty) match on its own line; with -v there is no match to print (GNU)
+          if (!opts.v) {
+            const g = new RegExp(regex.source, regex.flags + 'g');
+            for (const m of line.matchAll(g)) if (m[0] !== '') out.push(opts.n ? `${i + 1}:${m[0]}` : m[0]);
+          }
+        } else if (!opts.c) {
           out.push(opts.n ? `${i + 1}:${line}` : line);
         }
       }
