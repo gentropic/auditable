@@ -1,0 +1,151 @@
+\chapter{Installing and running}\label{ch:install}
+\begin{goals}
+\textbf{In this chapter} you choose how to run wuffle (a file, the website, an installed app, or the
+Android shell), learn where your work is kept, and what each browser can and can't do.
+\end{goals}
+
+wuffle is one file, \file{wuffle.html}, about 770~KB. Everything it needs is inside it: the program, the
+World Magnetic Model, the Tocher sample, the shell. Nothing is fetched when it opens
+(\cref{sec:local}). There is no installer, so \enquote{installing} wuffle means only choosing where the
+file comes from.
+
+\section{Three ways to run it}\label{sec:run-ways}
+
+\subsection{As a file}
+
+Save \file{wuffle.html} anywhere and open it: double-click it, or drag it onto a browser window. It runs
+offline from the first moment, because it never needed the network. You can copy it to a USB stick,
+attach it to an e-mail, or keep one beside each project; every copy is the whole program.
+
+A file is also the simplest way to keep a version: the copy you used for a report still opens, years
+later, exactly as it was.
+
+\subsection{From the website}\label{sec:run-site}
+
+The same file is published at \file{gentropic.org/wuffle}. Opened there, it behaves as the file does,
+with two additions:
+
+\begin{description}
+\item[It keeps working offline.] On the first visit the browser stores the page (a \term{service
+worker} does this; it is part of the site, not of wuffle). After that, the address opens with no
+network, in the field included.
+\item[It can be installed as an app.] Browsers that install web apps offer it for this one: in Chrome
+and Edge on a computer, an install button at the right of the address bar or an install item in the
+browser's menu (its wording changes between versions); in Chrome on Android, \ui{Add to Home screen} or
+\ui{Install app} in the menu. The
+installed wuffle opens in a window of its own, with its own icon, and still works offline.
+\end{description}
+
+\begin{note}
+Installing a web app copies nothing new to your machine beyond what the browser already stored on the
+first visit. It changes how wuffle opens, not what it is. Uninstall it from the same browser menu, or
+from the system's app list on Android.
+\end{note}
+
+\subsection{Inside the lead-acid shell}\label{sec:run-shell}
+
+On Android, wuffle also runs inside \term{lead-acid}, a small Android app that hosts single-file GCU
+instruments and lends them what a browser can't. wuffle notices the shell and uses it; nothing changes
+in how you work, but the compass gains:
+
+\begin{itemize}
+\item \textbf{The fused orientation sensor}, read directly, with the magnetometer's own calibration
+report: \ui{compass low — wave the phone in a figure-8 to calibrate} when it needs it
+(\cref{sec:measuring}).
+\item \textbf{A position} from the phone's GNSS, stamped on every measurement, and with it \textbf{true
+north} from the World Magnetic Model (\cref{sec:true-north}).
+\item \textbf{A signature}: the published log is signed with a key in the phone's secure hardware
+(\cref{sec:publish}).
+\item \textbf{Publishing to the phone's own folders}: the log and its signature to \file{Downloads},
+the photos to \file{Pictures}, where a file manager or a cable finds them.
+\item \textbf{Opening shared files}: a CSV shared to wuffle, or opened with it from a file manager, is
+read back into the log.
+\item \textbf{The screen kept on} while the compass is open.
+\end{itemize}
+
+Outside the shell, in an ordinary phone browser, the compass still measures, but without a position (so
+readings stay magnetic), without a signature, and publishing downloads the files instead.
+
+\section{Updating}\label{sec:updating}
+
+\begin{description}
+\item[A file] is updated by replacing it with a newer \file{wuffle.html}. Your projects are files of
+their own (\cref{sec:project-file}), so nothing is lost; the kept copy of your last session
+(\cref{sec:autosave}) belongs to the place the file opens from, so it carries over when the new file
+takes the old one's place.
+\item[The website] updates itself. Each time you open it with a network, the browser shows the copy it
+already has, at once, and checks for a newer one in the background. When there is one, it is what opens
+the \emph{next} time. There is no prompt and nothing to click.
+\end{description}
+
+\begin{tip}
+To use a new version straight away, open the site, wait a few seconds, and reload it.
+\end{tip}
+
+The compass page names the build it is at its foot, as in \ui{wuffle · 0.1.0 · d772489 · 2026-11-26}: the version, a fingerprint of the build, and its date.
+On the desk, \menu{Help>About wuffle} gives the same line under its description.
+
+\section{Where your work is kept}\label{sec:where-kept}
+
+Three places, from the most fleeting to the most durable:
+
+\begin{description}
+\item[The tab.] What you see is held in the page while it is open.
+\item[The kept copy.] A second after each change, the desk copies the whole project into the browser's
+storage for this site (\cref{sec:autosave}). Close the tab and reopen wuffle from the same place, and
+your session is back. A page that carries a project (\cref{sec:save-page}) keeps a copy of its own, so
+two such pages never overwrite each other's work.
+\item[Your files.] A \file{.zip.wuffle} project, a \file{.wuffle.html} page, an exported figure: these
+are yours, in your folders, and nothing in the browser can take them away.
+\end{description}
+
+\begin{caution}
+The kept copy is per browser and per site. The file opened from your desktop and the same version opened
+from \file{gentropic.org/wuffle} keep separate copies; a private window keeps none past its closing; and
+clearing the browser's data for the site deletes it. It is a convenience between saves. Save the project
+for anything you mean to keep.
+\end{caution}
+
+\subsection{Moving to another computer}
+
+Save the project (\menu{File>Save project (.zip.wuffle)}) and open the \file{.zip.wuffle} on the other
+computer, in any copy of wuffle. Or save it as a page (\menu{File>Save as page (one .html, the project
+inside)}) and take that single file: it is wuffle and the project together, and opens straight into the
+data.
+
+The kept copy does not travel. Neither does the undo history: a project opened anywhere starts with a
+fresh one (\cref{sec:undo}).
+
+\section{Browsers}\label{sec:browsers}
+
+\subsection{The desk}
+
+The desk runs in any current browser: Chrome, Edge, Firefox or Safari. It needs one that can unpack
+gzip by itself (the program inside the file is compressed): Chrome and Edge 80 or later, Firefox 113 or
+later, Safari 16.4 or later. In an older browser the page stays blank.
+
+\subsection{The compass}\label{sec:compass-browsers}
+
+The compass needs the phone's orientation sensors, and browsers differ more there:
+
+\begin{description}
+\item[Chrome on Android] is what the compass is made and tested on. It reads the
+compass-referenced orientation the browser reports (\code{deviceorientationabsolute}); inside the
+lead-acid shell, the fused sensor directly.
+\item[iPhone and iPad.] Safari only reports orientation to a page that asks the user's permission first,
+and wuffle doesn't ask yet. The compass reads nothing there. Typed measurements
+(\cref{sec:manual-entry}) and the whole desk work.
+\item[Other Android browsers] may report only orientation relative to where the phone pointed when the
+page opened, not to north. When that is all wuffle gets, it says so once (\ui{this browser's compass
+has no north — dips and plunges are good, azimuths are not}) and marks each reading it takes with
+\col{north} = \code{none}. Use Chrome, or the shell.
+\end{description}
+
+Browsers give orientation only to pages they consider secure: the site, served over https, is. A copy
+served from a plain \file{http://} address isn't, and its compass stays blank.
+
+\begin{why}
+wuffle could ask for the iPhone's permission, but it would then also need to say when the reading is
+relative, not absolute, and it doesn't yet know how to on that platform. A compass that might point
+anywhere is worse than none, so it shows nothing rather than a number that looks right.
+\end{why}

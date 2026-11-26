@@ -1,33 +1,64 @@
 \chapter{Projects and files}\label{ch:projects}
 \begin{goals}
-\textbf{In this chapter} you undo, save and reopen projects, send a whole project as one page, and bring
-a signed field log home with its signature checked.
+\textbf{In this chapter} you undo, save and reopen projects, read a project file with other tools, send a
+whole project as one page, and bring a signed field log home with its signature checked.
 \end{goals}
+
+A wuffle project is everything you have opened, drawn and derived: datasets, diagrams, layers, figures,
+the selection, field originals, and your files in \file{/home}. This chapter is about keeping it: from one
+mistake (undo), between sessions (the kept copy), on disk (the project file), and in someone else's hands
+(a page).
 
 \section{Undo}\label{sec:undo}
 
+\shot[0.5\linewidth]{edit-menu}{The Edit menu names the step it would undo: here ticking contours on a
+layer.}
+
 Every change to a project can be undone, whoever made it: a menu, a drag on the tree, a rotation of the
-net, a command or a file written in the console. \menu{Edit} names the step: \ui{Undo add layer},
-\ui{Redo rename}.
+net, a command or a file written in the console. \menu{Edit} names the step: \ui{Undo show / hide
+elements}, \ui{Redo rename}. The console's \code{undo} and \code{redo} say the same in their answer,
+\ui{undid derive}, and the status line does for the keys.
 
 \begin{itemize}
 \item \key{Ctrl}+\key{Z} undoes, \key{Ctrl}+\key{Shift}+\key{Z} (or \key{Ctrl}+\key{Y}) redoes. While you
 type in a field or the console, the keys belong to what you are typing; use \menu{Edit} or the console's
-\code{undo} and \code{redo}.
+\code{undo} and \code{redo}. Inside a figure the keys belong to the figure editor, which keeps its own
+undo for the page (\cref{ch:figures}).
 \item A change made of several parts is one step: opening a file is one step even though it adds a
-dataset, perhaps a net, and a layer.
+dataset, perhaps a net, and a layer; so is one \ui{Apply} in a layer's properties.
 \item Quick repeats of one setting on one thing (dragging the net round, typing in a figure) merge into
 one step, as long as each follows the last within a moment.
 \item What you look at is not a step. Choosing rows and switching tabs change nothing in the project,
-though undoing a step puts the selection back as it was then.
+though undoing a step puts the selection back as it was then. The theme isn't part of the project either.
 \end{itemize}
 
-wuffle remembers the last 200 steps. Opening a project starts the list afresh.
+wuffle remembers the last 200 steps. Opening a project, and \menu{File>New project}, start the list afresh:
+\ui{New project} asks first, because undo can't bring the old one back.
+
+\subsection{The names of the steps}
+
+The name says what kind of change a step was:
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}>{\raggedright}p{0.36\linewidth}L@{}}\toprule
+\sffamily\bfseries step & \sffamily\bfseries made by \\\midrule
+\ui{open tocher.csv}, \ui{open field log …} & opening a file: the data and its layer together \\
+\ui{new data …}, \ui{edit rows}, \ui{rename}, \ui{delete data} & a dataset made, its rows replaced, renamed, deleted \\
+\ui{new net}, \ui{new rose}, \ui{new fabric}, \ui{new diagram} & a diagram made, from the menu, the console or \code{mkdir} \\
+\ui{diagram settings}, \ui{rename diagram}, \ui{remove diagram} & a diagram's projection, hemisphere, rotation, name; removing it \\
+\ui{add layer}, \ui{add view}, \ui{move layer}, \ui{remove layer}, \ui{remove from everywhere} & layers \\
+\ui{show / hide}, \ui{show / hide elements}, \ui{style}, \ui{element settings}, \ui{layer properties}, \ui{layer settings} & what a layer draws and how \\
+\ui{derive}, \ui{selection → dataset} & a result kept as a dataset \\
+\ui{new figure}, \ui{edit figure}, \ui{rename figure}, \ui{delete figure} & figures \\
+\ui{keep original}, \ui{remove original} & field originals \\
+\bottomrule\end{tabularx}
+\end{center}
 
 \section{The project file}\label{sec:project-file}
 
-\menu{File>Save project (.zip.wuffle)} (\key{Ctrl}+\key{S}) writes \file{<name>.zip.wuffle}. It is an
-ordinary zip of the \file{/project} tree (\cref{ch:project-fs}) and your \file{/home}:
+\menu{File>Save project (.zip.wuffle)} (\key{Ctrl}+\key{S}) writes \file{untitled.zip.wuffle}, and the
+status line says \ui{saved untitled.zip.wuffle}. It is an ordinary zip of the \file{/project} tree
+(\cref{ch:project-fs}) and your \file{/home}:
 
 \begin{center}\small
 \begin{tabularx}{\linewidth}{@{}>{\raggedright}p{0.46\linewidth}L@{}}\toprule
@@ -44,9 +75,48 @@ ordinary zip of the \file{/project} tree (\cref{ch:project-fs}) and your \file{/
 \bottomrule\end{tabularx}
 \end{center}
 
+\cref{app:formats} gives every key of every file.
+
+\subsection{The project's name}\label{sec:project-name}
+
+A new project is called \code{untitled}. Name it with \menu{File>Rename project…}, or from the console
+by writing the name into \file{project.json}:
+
+\begin{lstlisting}
+echo '{"name": "Serra do Mar"}' > /project/project.json
+\end{lstlisting}
+
+Only the name can be written there; the rest of \file{project.json} is counted, not set, and anything
+else is refused with \ui{write \{"name": "…"\} — the rest of project.json is counted, not set}. The name
+is an undo step (\ui{rename project}), the browser tab's title follows it (\ui{Serra do Mar — wuffle}),
+and files are saved under it, with anything but letters, digits, dots and hyphens made an underscore:
+\file{Serra\_do\_Mar.zip.wuffle}.
+
+\subsection{Opened by another program}
+
 The files \emph{are} the project. There is no second, hidden copy of it inside, so unzip one and every
 dataset is a plain CSV any program reads; edit one by hand, zip it back, and wuffle opens it as edited.
-A file wuffle can't use is skipped, and wuffle tells you what it skipped.
+Here is a saved project of the Tocher sample, with a note and an exported net in \file{/home}, listed by
+Python's own zip module (\code{python -m zipfile -l untitled.zip.wuffle}):
+
+\begin{lstlisting}
+File Name                                     Modified             Size
+project.json                           1980-01-01 00:00:00          164
+data/tocher.csv                        1980-01-01 00:00:00         2883
+data/tocher.json                       1980-01-01 00:00:00          390
+diagrams/Net 1/diagram.json            1980-01-01 00:00:00          211
+diagrams/Net 1/layers/tocher.json      1980-01-01 00:00:00          761
+home/net-1.svg                         1980-01-01 00:00:00       940145
+home/tocher-stats.txt                  1980-01-01 00:00:00          109
+\end{lstlisting}
+
+Every member is dated 1980-01-01, the earliest date a zip can hold: wuffle writes no times, so saving
+the same project twice gives the same bytes, and a changed file means a changed project.
+
+A CSV added by hand (with no \file{.json} beside it) is read the way \menu{File>Open} reads a file
+(\cref{sec:data-read}). A file wuffle can't use is skipped, and wuffle tells you what it skipped: the
+status line says \ui{opened untitled.zip.wuffle — 1 thing skipped}, and a dialog lists each one with its
+reason.
 
 Not stored: what is computed (the SVG, the PDFs, the selected rows as CSV) and the undo history.
 
@@ -57,34 +127,65 @@ program, and of you, the day wuffle wasn't there.
 \end{why}
 
 To open a project, use \menu{File>Open data or a project…} or drop the file on the window. It replaces
-the project you have.
+the project you have, \file{/home} included, and the undo list starts afresh.
 
 \section{Kept between saves}\label{sec:autosave}
 
-A second after each change, wuffle copies the whole project into the browser's own storage, on your
-machine. Close the tab, open \file{wuffle.html} again, and your session is back; the status line says
-when that copy was made.
+A second after each change (to the project, or to a file in \file{/home}), wuffle copies the whole project
+into the browser's own storage, on your machine. Close the tab, open \file{wuffle.html} again, and your
+session is back; the status line says when that copy was made: \ui{restored your last session
+(11/26/2026, 12:38:03 PM)}.
 
-This is a convenience, not a save: clearing the browser's data, or a private window, loses it. Save the
-project file for anything you mean to keep. \menu{File>New project} starts over and forgets the kept copy.
+This is a convenience, not a save:
+
+\begin{itemize}
+\item it lives in this browser, on this computer: another browser, or another computer, doesn't see it;
+\item clearing the browser's data loses it, and a private window keeps nothing after it closes;
+\item there is one kept copy per page: the last session, not a history.
+\end{itemize}
+
+Save the project file for anything you mean to keep. \menu{File>New project} starts over and forgets the
+kept copy.
 
 \section{A project inside a page}\label{sec:save-page}
 
-\menu{File>Save as page (one .html, the project inside)} writes \file{<name>.wuffle.html}: wuffle itself,
-with your project inside it. Send that one file to someone and it opens straight into your data, on any
-computer with a browser, with nothing to install. Their edits are kept between visits like yours, kept
-apart from any other page's.
+\menu{File>Save as page (one .html, the project inside)} writes \file{untitled.wuffle.html}: wuffle itself,
+with your project inside it, about 770~KB for the Tocher sample. The status line says \ui{saved
+untitled.wuffle.html — one file, the project inside}. Send that one file to someone and it opens straight
+into your data, on any computer with a browser, with nothing to install: the status line says \ui{opened
+the project inside this page}.
+
+A page that carries a project keeps its own kept copy (\cref{sec:autosave}), apart from plain
+\file{wuffle.html}'s and from any other page's. The person you sent it to can work in it, close it, and
+find their edits there next time, without touching their own wuffle sessions.
 
 The project rides in the page as a block of its own, apart from wuffle's program. So
 \menu{File>Open data or a project…} also takes a saved page and reads only its project; the other page's
-program never runs.
+program never runs. The status line says \ui{opened the project inside untitled.wuffle.html}. An HTML file
+that isn't a wuffle page with a project is refused with \ui{other.html is a page without a wuffle project
+in it}.
+
+\begin{tryit}
+\begin{enumerate}
+\item Open the Tocher sample, contour it, and choose \menu{File>Save as page (one .html, the project
+inside)}. \file{untitled.wuffle.html} downloads.
+\item Open the downloaded file in your browser. It opens on the desk, contoured, without asking.
+\item In your first wuffle, choose \menu{File>New project}, then \menu{File>Open data or a project…} and
+pick the page. Its project opens into this wuffle.
+\end{enumerate}
+\end{tryit}
 
 \begin{note}
 Save as page works from the published \file{wuffle.html}. A copy run from the source tree, as
-developers do, has no single page to copy, and the menu item is greyed out there.
+developers do, has no single page to copy, and the menu item is greyed out there. A page saved from the
+web site leaves the site's own pieces (the install manifest and the offline worker) behind, so what you
+send is a standalone file.
 \end{note}
 
 \section{Field logs}\label{sec:field-logs}
+
+\shot{fieldlog-open}{A signed field log opened: two datasets in the tree (the arrow marks them as read from
+an original) and the signature's verdict in the status line.}
 
 The compass publishes three kinds of file (\cref{sec:publish}): \file{wuffle-log.csv}, its signature
 \file{wuffle-log.csv.sig}, and a JPEG per photographed station. Open them together, by selecting them all
@@ -94,32 +195,51 @@ in \menu{File>Open data or a project…} or dropping them on the window at once,
 \item the CSV and its \file{.sig} go into the project as an \term{original}, kept byte for byte under
 \file{/project/field/<name>/}, with the photos the log names in a \file{photos/} directory beside them;
 \item the measurements are read into two ordinary datasets, \code{<name> · planes} and
-\code{<name> · lines}, drawn on the active net. The name is the log's day: \code{field 2026-11-20}.
+\code{<name> · lines}, drawn on the active net. The name is the log's day: \code{field 2026-11-20}. A
+second log from the same day becomes \code{field 2026-11-20 2}.
 \end{itemize}
 
 Edit the datasets as you like. The original never changes, and it travels in the project file under
-\file{field/} exactly as it came.
+\file{field/} exactly as it came. The datasets' lineage names it: hover one in the tree.
+
+A \file{.sig} is matched to its log by name (\file{wuffle-log.csv.sig} goes with \file{wuffle-log.csv}; a
+browser that renamed both to \file{wuffle-log (1).csv} and \file{wuffle-log (1).csv.sig} keeps them
+paired). Photos are matched by the names in the log's \col{photo} column. A \file{.sig} or a photo opened
+on its own goes nowhere, and the status line says so: \ui{wuffle-log.csv.sig: open them together with
+the field log they belong to}.
 
 \subsection{The signature}
 
-On opening, wuffle checks the signature against the CSV's bytes and says what it found:
+On opening, wuffle checks the signature against the CSV's bytes, and the status line says what it found:
 
 \begin{description}
-\item[\ui{signature verified}] the bytes are exactly what the key signed. The status line names the key
-by a short fingerprint (\code{b2eb 7f10 \ldots}), what kind of key the phone said it was, and when it
-signed.
-\item[\ui{SIGNATURE DOES NOT MATCH}] the CSV was changed after signing, or the \file{.sig} belongs to
-another log. wuffle still opens it, and tells you plainly not to treat it as the phone's record.
-\item[\ui{unsigned}] no \file{.sig} came with it.
+\item[Verified.] \ui{opened field log wuffle-log.csv — signature verified — key 6d80 2a8d f427 b4e4,
+strongbox, signed 2026-11-20T15:02:40Z · 1 photo}. The bytes are exactly what the key signed. The key is
+named by a short fingerprint, followed by what kind of key the phone said it was and when it signed.
+\item[Does not match.] \ui{… SIGNATURE DOES NOT MATCH — the bytes are NOT what the key signed — the log
+was changed after signing, or the .sig belongs to another log}. wuffle still opens it, and a dialog says
+plainly: \ui{The log is open, kept exactly as it came, but don't treat it as the phone's record.}
+\item[Unsigned.] \ui{opened field log wuffle-log.csv — unsigned}: no \file{.sig} came with it.
 \end{description}
 
-The console's \code{verify} checks every original in the project again, at any time; it fails (exit
-status 1) if one doesn't match, so a routine can stop on it.
+When a photo the log names wasn't in the drop, the line ends \ui{(1 named in the log weren't in the
+drop)}: open them again together, or keep going without it.
+
+The console's \code{verify} checks every original in the project again, at any time, one line each:
+
+\begin{lstlisting}
+field 2026-11-20  (field/field 2026-11-20/wuffle-log.csv): signature verified — key 10ef 13b6 8b38 2479, strongbox, signed 2026-11-20T15:00:00Z
+field 2026-11-20 2  (field/field 2026-11-20 2/wuffle-log.csv): unsigned
+\end{lstlisting}
+
+It fails (exit status 1) if one doesn't match or can't be read, so a routine can stop on it
+(\cref{sec:routines}).
 
 \begin{caution}
 A verified signature proves the bytes come from \emph{that key}. Whether that key is your phone's is for
-you to know: compare the fingerprint with the one your phone shows. The kind of key it reports
-(\code{strongbox}, say) is the phone's own statement, which wuffle passes on and can't check.
+you to know: note the fingerprint of the first log you publish from a phone, and expect it on every log
+after. The kind of key it reports (\code{strongbox}, say) is the phone's own statement, which wuffle
+passes on and can't check.
 \end{caution}
 
 \begin{why}

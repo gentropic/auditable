@@ -1,47 +1,69 @@
 \chapter{In the field}\label{ch:field}
 \begin{goals}
 \textbf{In this chapter} you measure planes and lines with the phone, refer them to true north, attach
-outcrop photos, and publish the log, signed, for the desk.
+outcrop photos, read every message the compass gives, and publish the log, signed, for the desk.
 \end{goals}
 
 On a phone, wuffle reads the device's orientation and turns it into an attitude. The net fills as you
 work, so you see the fabric take shape at the outcrop instead of that evening.
 
-\shot[0.5\linewidth]{field-net}{The compass: the mode switch, the live reading over the net, the measure
-button, and the log below.}
+\shot[0.5\linewidth]{field-net}{The compass: the mode switch, the net, typed entry, the log's buttons and
+the log, newest first. (Opened on a computer, so the subtitle says \ui{stereonet · manual} and there is no
+live reading.)}
 
 \section{The screen}\label{sec:field-screen}
 
 From the top:
 
 \begin{description}
+\item[The title.] \ui{wuffle} and a subtitle saying where the reading comes from (\cref{sec:field-msgs}).
 \item[Mode.] \ui{plane} or \ui{line}: what the next measurement is.
-\item[The strip.] The position's accuracy (\ui{±4 m}) and which north the readings use
+\item[The strip.] Inside the shell, the position's accuracy (\ui{±4 m}) and which north the readings use
 (\ui{true N · decl −15.2°}).
-\item[The net.] An equal-area, lower-hemisphere net. The live reading is a dashed ghost: a great circle
-for a plane, a point for a line. In the corners: the reading as numbers (dip direction and dip, or trend
-and plunge), a bar that fills with the dip, and the measure button \ui{◎}.
+\item[The net.] An equal-area, lower-hemisphere net, labelled \ui{Schmidt lower hemi} in its corner.
+Measured planes are drawn as great circles in orange, lines as points in blue.
+\item[The reading.] In the net's top-left corner, the live attitude in large figures: \ui{dip dir} and
+\ui{dip} in plane mode, \ui{trend} and \ui{plunge} in line mode. A bar under them fills with the dip, so
+you can see a near-horizontal surface at a glance. On a computer there is no sensor, and they show
+\ui{—}.
+\item[The measure button] \ui{◎}, the large round button fixed at the foot of the screen, under your thumb: keep the reading.
 \item[Typed entry.] A field for measurements you type (\cref{sec:manual-entry}).
-\item[The log.] The count, \ui{photo}, \ui{clear} and \ui{publish →}, then every measurement, newest
-first. A plane shows its strike too. The \ui{×} on a row deletes it.
+\item[The log's buttons.] The count (\ui{3 measurements}), \ui{photo}, \ui{clear} and \ui{publish →}.
+\item[The log.] Every measurement, newest first. A plane shows its dip direction and dip and its strike
+(\ui{118/47 plane · strike 028}); a line its trend and plunge (\ui{200→20 line}). A camera mark means a
+photo is attached. The \ui{×} on a row deletes it.
+\item[The message] line under the log (\cref{sec:field-msgs}).
 \end{description}
 
 \section{Measuring}\label{sec:measuring}
 
+\shot[0.55\linewidth]{field-live-plane}{Plane mode, a live reading: the dashed great circle is where the
+plane the phone lies in would land, and the corner reads it, \ui{243° dip dir, 43° dip}. The orange circles
+are planes already measured.}
+
 For a \textbf{plane}, lay the phone flat on the surface, screen up. wuffle reads the plane the phone lies
-in: its dip direction and dip.
+in: its dip direction and dip. The live reading is a dashed great circle that moves as you tilt the phone.
 
 For a \textbf{line}, choose \ui{line} and lay the phone's long edge along the lineation, top edge pointing
-down the plunge. The trend and plunge are those of the phone's long axis, toward its top.
+down the plunge. The trend and plunge are those of the phone's long axis, toward its top. The live reading
+is a point.
 
-Tap \ui{◎} to keep the reading. The phone buzzes, the measurement is drawn in place of the ghost and it
-joins the log.
+\shot[0.55\linewidth]{field-live-line}{Line mode: the live reading is a point, and the corner reads trend
+and plunge.}
+
+Tap \ui{◎} to keep the reading. The phone buzzes, the measurement is drawn in place of the ghost, it
+joins the log, and the message line says what was kept: \ui{measured 243/43}, or \ui{measured
+200→20} for a line. Tapping \ui{◎} before the phone has reported any orientation keeps nothing and says
+\ui{no orientation yet — tilt the phone (or type a measurement)}.
 
 \begin{tip}
 Inside the lead-acid shell, wuffle reads the phone's fused orientation sensor, which also reports how
 well the magnetometer is calibrated. When it says \ui{compass low} or \ui{unreliable}, wave the phone in a
-figure of eight until it says \ui{calibrated}, then measure.
+figure of eight until it says \ui{calibrated}, then measure. Steel (a hammer, a vehicle, a fence) bends
+the field near it: put the hammer down a step away before you measure.
 \end{tip}
+
+The shell also keeps the screen awake while wuffle is open, so it doesn't lock between readings.
 
 \section{True north}\label{sec:true-north}
 
@@ -55,9 +77,17 @@ needs a position for that, so the correction starts with the first GNSS fix:
 moved about a tenth of a degree (some 10~km).
 \end{itemize}
 
+The first fix also prints its position in the message line: \ui{position -30.10012, -51.20034 (±4 m)}.
+If the phone refuses the location permission, the message says \ui{location denied — measurements will
+not carry a position}, and every reading stays magnetic.
+
 Every measurement records which it was. The log's \col{north} column says \code{true} or
 \code{magnetic}, and \col{declination\_deg} gives the correction applied. A typed measurement says
-\code{as-typed}: it is referred to whatever north you used when you wrote it down.
+\code{as-typed}: it is referred to whatever north you used when you wrote it down. A reading taken from a
+browser whose sensor has no north at all says \code{none} (\cref{sec:compass-browsers}).
+
+The model is valid from 2025.0 to 2030.0. After that wuffle still applies it, and the strip says so:
+\ui{true N · decl −15.2° · model past 2030}. A newer wuffle carries the next model.
 
 \begin{caution}
 Outside the shell (wuffle in an ordinary phone browser) there is no position, so readings stay magnetic.
@@ -66,43 +96,88 @@ The \col{north} column says so on every row; correct them before comparing with 
 
 \section{Typing measurements}\label{sec:manual-entry}
 
-The field under the net takes typed measurements: \code{045/30} is a plane, \code{310→70} a line, and
-\code{310>70} is the same line without hunting for the arrow. You can also type \code{310-70 line}; and
-with the \ui{line} mode on, \code{310/70} is taken as a line.
-Press \key{Enter} or \ui{add}. This is how the compass works on a computer, and how you correct a reading
-in the field: delete it and type the right one.
+The field under the net takes typed measurements:
+
+\begin{itemize}
+\item \code{045/30} is a plane;
+\item \code{310→70} is a line, and so is \code{310>70}, without hunting for the arrow;
+\item \code{310-70 line} (or \code{310-70 l}) is a line too;
+\item with the \ui{line} mode on, \code{310/70} is taken as a line.
+\end{itemize}
+
+Press \key{Enter} or \ui{add}. The message line confirms it, \ui{added 045/30}, or says what's wrong:
+\ui{type e.g. 045/30 (plane) or 310→70 line} for something it can't read, \ui{dip/plunge must be 0–90}
+for a dip of 95.
+
+This is how the compass works on a computer, and how you correct a reading in the field: delete it with
+its \ui{×} and type the right one.
 
 \section{Photos}\label{sec:photos}
 
-\ui{photo} opens the camera. \ui{capture} takes a picture and attaches it to the \emph{last}
-measurement: the row gets a camera mark and the log's \col{photo} column names the file
-(\file{wuffle-002-2026-11-20T140540.jpg}: the measurement's number and time). Measure first, then
-photograph.
+\shot[0.5\linewidth]{field-photo}{A photo attached to the last measurement: the camera mark on its row,
+and the message line giving the picture's size.}
+
+\ui{photo} opens the camera's viewfinder. \ui{capture} takes a picture and attaches it to the \emph{last}
+measurement; \ui{cancel} closes the viewfinder without one. The row gets a camera mark, the message line
+says \ui{photo attached to \#3 (11 KB)}, and the log's \col{photo} column names the file
+(\file{wuffle-002-2026-11-20T140540.jpg}: the measurement's number, then its date and time to the second).
+Measure first, then photograph.
+
+The messages you may see instead:
+
+\begin{description}
+\item[\ui{measure first — the photo attaches to the last measurement}] the log is empty.
+\item[\ui{camera denied}] inside the shell, the camera permission was refused (on Android: Settings,
+Apps, the shell, Permissions).
+\item[\ui{camera: …}] the browser itself refused or failed to open the camera; the rest of the message is
+the browser's reason.
+\item[\ui{no camera API here} or \ui{no camera in this build}] the browser, or this build of the shell,
+has no camera to offer.
+\end{description}
 
 \section{Publishing the log}\label{sec:publish}
 
-\ui{publish →} writes the log out:
+\ui{publish →} writes the log out. Inside the shell:
 
 \begin{itemize}
 \item \file{wuffle-log.csv} to \file{Downloads}: one row per measurement, with its kind, attitude,
-strike, time, position and accuracy, north, declination and photo;
-\item \file{wuffle-log.csv.sig} beside it, the phone's \term{signature} over the exact bytes of the CSV
-(inside the shell, when the phone has a hardware key);
+strike, time, position and accuracy, north, declination and photo (\cref{sec:format-log});
+\item \file{wuffle-log.csv.sig} beside it, the phone's \term{signature} over the exact bytes of the CSV,
+when the phone has a hardware key (\cref{sec:format-sig});
 \item each photo to \file{Pictures}.
 \end{itemize}
 
+The message line sums it up: \ui{published 12 → Downloads/wuffle-log.csv + .sig (strongbox) + 3 photos →
+Pictures}. Without a hardware key it says \ui{(unsigned)} instead of the \file{.sig}. An empty log says
+\ui{nothing to publish}.
+
 The signature is made by a key that lives in the phone's secure hardware and never leaves it. It lets
 anyone check later that the CSV is byte for byte what this phone wrote, and the desk does exactly that
-when it opens the log (\cref{sec:field-logs}).
+when it opens the log (\cref{sec:field-logs}). Publish once, at the end of the day, and open that file:
+it's the one the signature is over.
 
-On a computer, \ui{publish →} downloads the CSV and the photos; there is no hardware key there, so there
-is no signature.
+On a computer, \ui{publish →} downloads the CSV and the photos, and says \ui{downloaded wuffle-log.csv
+(3 measurements)}; there is no hardware key there, so there is no signature.
+
+\section{The log is kept}\label{sec:field-kept}
+
+The compass keeps its log on the phone, in the browser's own storage, after every measurement, photos
+included. Close the tab, reload it, or let the phone close the browser to save memory, and the log comes
+back when wuffle opens: the message line says \ui{kept from last time: 3 measurements not yet cleared —
+publish to send them}. It is kept per address, so a compass opened from a file and one opened from
+gentropic.org/wuffle keep separate logs.
+
+\ui{clear} asks before it deletes: the first tap only says \ui{tap clear again to delete all 3
+measurements — publish first to keep them}, and a second tap within three seconds empties the log, on
+the phone too. There is no undo after that, so publish before you clear.
 
 \begin{tryit}
 \begin{enumerate}
-\item On a computer, open wuffle with \code{?field} at the end of the address.
+\item On a computer, open wuffle with \code{?field} at the end of the address. The subtitle says
+\ui{stereonet · manual} and the message line \ui{desktop · type measurements above, or open in lead-acid
+for live compass}.
 \item Type \code{120/45}, \key{Enter}; \code{118/47}, \key{Enter}; \code{200>20}, \key{Enter}. Two
-planes and a line are drawn.
+planes and a line are drawn, and the log counts \ui{3 measurements}.
 \item Press \ui{publish →}. \file{wuffle-log.csv} downloads.
 \item Open it on the desk (\menu{File>Open data or a project…}). The planes and the line become two
 datasets, \code{field … · planes} and \code{field … · lines}, named for the log's day, and the CSV
@@ -110,8 +185,37 @@ itself is kept as it came (\cref{sec:field-logs}).
 \end{enumerate}
 \end{tryit}
 
+\section{Messages}\label{sec:field-msgs}
+
+The subtitle says where readings come from:
+
+\begin{description}
+\item[\ui{compass · magnetic N}] inside the shell, before the fused sensor has answered.
+\item[\ui{compass · fused · high}] (or \ui{medium}, \ui{low}, \ui{unreliable}) the fused sensor, with the
+magnetometer's calibration as the phone reports it.
+\item[\ui{stereonet · manual}] a browser with no shell: on a computer, typed measurements only.
+\end{description}
+
+And the message line under the log, besides the ones above:
+
+\begin{description}
+\item[\ui{lead-acid ready · lay the phone on a surface to measure}] the compass has started in the shell.
+\item[\ui{compass calibrated · lay the phone on a surface to measure}] the magnetometer reports high accuracy.
+\item[\ui{compass medium — a figure-8 would sharpen it}] usable; a figure of eight would improve it.
+\item[\ui{compass low — wave the phone in a figure-8 to calibrate}] (or \ui{unreliable}) calibrate before
+measuring. It shows as a warning.
+\item[\ui{fused compass unavailable (…) — using device orientation events}] the fused sensor couldn't
+start; wuffle falls back to the browser's orientation events, which carry no calibration report.
+\end{description}
+
 \section{Taking a log back}
 
 Inside the shell, a CSV shared to wuffle (or opened with it from a file manager) is read back into the
 log, as long as it has the log's \col{type}, \col{dip\_dir\_or\_trend} and \col{dip\_or\_plunge}
-columns. That is how you carry on a log another day, or on another phone.
+columns. The message line says \ui{loaded 12 measurements from wuffle-log.csv}. That is how you carry on a
+log another day, or on another phone.
+
+A log taken back keeps everything a row says: its kind, attitude, strike, time, position, which north
+it is referred to and the declination applied, and the name of its photo. The photo itself stays in
+\file{Pictures}; publishing again writes the row with its photo's name but doesn't send the picture a
+second time.

@@ -1,0 +1,411 @@
+\chapter{A day's work}\label{ch:workflow}
+\begin{goals}
+\textbf{In this chapter} you take one day at an outcrop from start to finish: the compass's signed log
+opened and checked, the readings split into sets, each set described, the fold axis found four ways, a
+figure for the report, the project saved and sent, and a routine that does it again next time.
+\end{goals}
+
+The other chapters describe one thing each. This one strings them together, the way a working day
+does. The outcrop is small and easy to picture: beds folded about one axis, two joint sets cutting them,
+and a few hinge lineations measured where they could be seen. That is 37 readings in all: 31 planes and
+6 lines.
+
+Follow along on your own computer. Every number below is what wuffle prints for this log, and every
+step points to the chapter that covers it in full.
+
+\section{The day's log}\label{sec:wf-log}
+
+In the field the log comes from the compass: \ui{publish →} writes \file{wuffle-log.csv} to
+\file{Downloads}, its signature \file{wuffle-log.csv.sig} beside it, and the outcrop photos to
+\file{Pictures} (\cref{sec:publish}). To follow this chapter without a phone, copy the listing below
+into a plain-text file and save it as \file{wuffle-log.csv}. It is printed small so that each row stays
+on one line; copy it exactly as it is.
+
+\begin{lstlisting}[basicstyle=\ttfamily\tiny\color{ink}]
+type,dip_dir_or_trend,dip_or_plunge,strike,timestamp,lat,lon,acc_m,north,declination_deg,photo
+plane,164,75,74,2026-11-20T13:02:10.000Z,-30.071200,-51.120300,4,true,-15.21,
+plane,44,63,314,2026-11-20T13:04:21.000Z,-30.071220,-51.120270,5,true,-15.21,
+plane,62,44,332,2026-11-20T13:06:32.000Z,-30.071240,-51.120240,6,true,-15.21,
+line,115,23,,2026-11-20T13:08:43.000Z,-30.071260,-51.120210,4,true,-15.21,
+line,124,28,,2026-11-20T13:10:54.000Z,-30.071280,-51.120180,5,true,-15.21,wuffle-005-2026-11-20T131054.jpg
+plane,86,29,356,2026-11-20T13:13:05.000Z,-30.071300,-51.120150,6,true,-15.21,
+plane,201,68,111,2026-11-20T13:15:16.000Z,-30.071320,-51.120120,4,true,-15.21,
+plane,65,36,335,2026-11-20T13:17:27.000Z,-30.071340,-51.120090,5,true,-15.21,
+plane,192,54,102,2026-11-20T13:19:38.000Z,-30.071360,-51.120060,6,true,-15.21,
+plane,167,71,77,2026-11-20T13:21:49.000Z,-30.071380,-51.120030,4,true,-15.21,
+plane,288,83,198,2026-11-20T13:24:00.000Z,-30.071400,-51.120000,5,true,-15.21,
+plane,79,31,349,2026-11-20T13:26:11.000Z,-30.071420,-51.119970,6,true,-15.21,
+plane,50,54,320,2026-11-20T13:28:22.000Z,-30.071440,-51.119940,4,true,-15.21,
+line,124,28,,2026-11-20T13:30:33.000Z,-30.071460,-51.119910,5,true,-15.21,
+plane,290,86,200,2026-11-20T13:32:44.000Z,-30.071480,-51.119880,6,true,-15.21,
+plane,172,72,82,2026-11-20T13:34:55.000Z,-30.071500,-51.119850,4,true,-15.21,
+plane,179,45,89,2026-11-20T13:37:06.000Z,-30.071520,-51.119820,5,true,-15.21,
+plane,295,85,205,2026-11-20T13:39:17.000Z,-30.071540,-51.119790,6,true,-15.21,wuffle-018-2026-11-20T133917.jpg
+plane,159,73,69,2026-11-20T13:41:28.000Z,-30.071560,-51.119760,4,true,-15.21,
+plane,292,84,202,2026-11-20T13:43:39.000Z,-30.071580,-51.119730,5,true,-15.21,
+plane,169,77,79,2026-11-20T13:45:50.000Z,-30.071600,-51.119700,6,true,-15.21,
+plane,296,83,206,2026-11-20T13:48:01.000Z,-30.071620,-51.119670,4,true,-15.21,
+plane,201,72,111,2026-11-20T13:50:12.000Z,-30.071640,-51.119640,5,true,-15.21,
+plane,293,82,203,2026-11-20T13:52:23.000Z,-30.071660,-51.119610,6,true,-15.21,
+plane,36,72,306,2026-11-20T13:54:34.000Z,-30.071680,-51.119580,4,true,-15.21,
+plane,195,63,105,2026-11-20T13:56:45.000Z,-30.071700,-51.119550,5,true,-15.21,
+plane,55,50,325,2026-11-20T13:58:56.000Z,-30.071720,-51.119520,6,true,-15.21,
+line,123,23,,2026-11-20T14:01:07.000Z,-30.071740,-51.119490,4,true,-15.21,
+plane,190,49,100,2026-11-20T14:03:18.000Z,-30.071760,-51.119460,5,true,-15.21,
+line,116,28,,2026-11-20T14:05:29.000Z,-30.071780,-51.119430,6,true,-15.21,
+plane,160,70,70,2026-11-20T14:07:40.000Z,-30.071800,-51.119400,4,true,-15.21,
+plane,171,34,81,2026-11-20T14:09:51.000Z,-30.071820,-51.119370,5,true,-15.21,
+line,116,21,,2026-11-20T14:12:02.000Z,-30.071840,-51.119340,6,true,-15.21,
+plane,296,84,206,2026-11-20T14:14:13.000Z,-30.071860,-51.119310,4,true,-15.21,
+plane,160,77,70,2026-11-20T14:16:24.000Z,-30.071880,-51.119280,5,true,-15.21,
+plane,175,39,85,2026-11-20T14:18:35.000Z,-30.071900,-51.119250,6,true,-15.21,
+plane,291,83,201,2026-11-20T14:20:46.000Z,-30.071920,-51.119220,4,true,-15.21,
+\end{lstlisting}
+
+Each row is one reading as the compass recorded it: its kind, its attitude (dip direction and dip for a
+plane, trend and plunge for a line), the strike, the time, where you stood and how well the phone knew
+it, the north it refers to, and the photo taken there, if any. \cref{sec:format-log} gives every column.
+Two things to notice before opening it. The \col{north} column says \code{true} on every row: the phone
+had a position all day, so the readings were corrected for a declination of −15.21° as they were
+taken (\cref{sec:true-north}). And two rows name a photo.
+
+\section{Opening it}\label{sec:wf-open}
+
+Open the desk (\cref{sec:opening}) and choose \menu{File>Open data or a project…}. Select the log, its
+\file{.sig} and the two photos together, in one go, or drop all of them on the window at once. wuffle
+gathers them into one field log and says what it found in the status line at the foot of the window:
+
+\begin{lstlisting}
+opened field log wuffle-log.csv — signature verified — key 3032 58b6 adb2 2e2f,
+strongbox, signed 2026-11-20T18:40:02.311Z · 2 photos
+\end{lstlisting}
+
+The key's fingerprint is yours, not this one: it is your phone's key, and it is the same on every log
+that phone signs. Compare it once with the fingerprint your phone shows, and after that the line tells
+you at a glance that the file is your phone's record, byte for byte (\cref{sec:field-logs}).
+
+The copy you typed from the listing has no \file{.sig} and no photos, so for it the line says instead:
+
+\begin{lstlisting}
+opened field log wuffle-log.csv — unsigned (2 named in the log weren't in the drop)
+\end{lstlisting}
+
+That is the honest answer for a file nobody signed. Everything else in this chapter works the same.
+
+\shot{wf-opened}{The log opened: its planes and lines as two datasets on \ui{Net 1}, the planes' table
+below, and the signature's verdict in the status line.}
+
+The log becomes two datasets, \code{field 2026-11-20 · planes} (31 rows) and
+\code{field 2026-11-20 · lines} (6 rows), named for the day the readings were taken and drawn on
+\ui{Net 1}. The file itself is kept as it came, under \file{/project/field/field 2026-11-20/}, with its
+signature and a \file{photos/} folder. In the console:
+
+\begin{lstlisting}
+wuffle /project $ verify
+field 2026-11-20  (field/field 2026-11-20/wuffle-log.csv): signature verified — key 3032 58b6 adb2 2e2f, strongbox, signed 2026-11-20T18:40:02.311Z
+wuffle /project $ ls -l "/project/field/field 2026-11-20"
+d        0  photos
+-     3040  wuffle-log.csv
+-      374  wuffle-log.csv.sig
+\end{lstlisting}
+
+The datasets are yours to edit; the original never changes. In the tree's \ui{data} section both have
+the arrow of a derived dataset, and hovering one says where it came from: \ui{made by field log from
+field/field 2026-11-20/wuffle-log.csv} (\cref{sec:lineage}).
+
+\subsection{A first look}
+
+Look at the net before doing anything to it. The poles of the planes fall into three groups. Some trail
+in an arc from the north round to the west-southwest: a spread like that, along a great circle, is what
+the poles of folded beds do. Eight sit in a tight knot near the east of the primitive, and seven in
+another near the north. The six lines, in their own colour, sit just inside the east-southeast rim.
+
+The table confirms what the net suggests. Its first column, \col{dip dir/dip}, is wuffle's reading of
+each row as an attitude (\cref{sec:table}); the planes read cleanly, and the heading says
+\ui{field 2026-11-20 · planes · planes · 31 rows} with nothing skipped.
+
+\section{Splitting the sets}\label{sec:wf-split}
+
+The three groups are three different things: bedding, and two joint sets. Mixed together their
+statistics mean nothing: the \code{stats} of all 31 planes is a mean of \code{146/63} with
+$\kappa$~2.8, a description of no surface in the outcrop. Each set needs to be a dataset of its own.
+
+Split them with selections (\cref{ch:select}). Selections are drawn on the sphere, so a cone means the
+same rows whatever the net's projection or rotation, and a selection made into a dataset keeps a record
+of where it came from.
+
+\begin{tryit}
+\begin{enumerate}
+\item Open the console (\key{`}) and type \code{select cone 292/84 15}. A cone about a plane is a cone
+about its pole, so this takes every pole within 15° of the pole to \code{292/84}. The console answers
+\ui{cone: 8 selected}, and the eight poles of the eastern knot turn violet inside a dashed outline.
+\item Right-click the planes layer in the tree and choose \ui{Selection → new dataset}. A dataset called
+\code{field 2026-11-20 · planes · selection} appears in the \ui{data} section. Right-click it, choose
+\ui{Rename…} and call it \code{J1}.
+\item Type \code{select cone 166/74 15} (\ui{cone: 7 selected}), make it a dataset the same way, and
+call it \code{J2}.
+\item For the bedding, take everything and then remove the joints: \code{select all}, then
+\code{select - cone 292/84 15} and \code{select - cone 166/74 15}. The 16 planes left are the beds.
+Make them a dataset called \code{bedding}.
+\item Type \code{select none}.
+\end{enumerate}
+\end{tryit}
+
+\shot{wf-split}{The first joint set selected by a cone typed in the console: eight poles violet inside
+the dashed cone, and the console's answer.}
+
+You can draw the same cones with the mouse instead, with the \ui{cone} tool above the net
+(\cref{sec:shapes}); typing them gives round numbers you can write in your notes and repeat. In step~4,
+\code{select all} also selects the six lines, which does no harm: \ui{Selection → new dataset} on the
+planes layer takes only the planes' selected rows.
+
+The \ui{data} section now lists \code{J1} (8 rows), \code{J2} (7) and \code{bedding} (16), each with
+the lineage \ui{made by selection from field 2026-11-20 · planes} (\cref{sec:select-dataset}). Nothing
+was copied out of the project or retyped: if you find a misread plane tomorrow and correct it in the
+log's dataset, you know exactly which sets were cut from it.
+
+\section{A net of the sets}\label{sec:wf-sets}
+
+Give the sets a net of their own, and keep \ui{Net 1} as the raw day.
+
+\begin{enumerate}
+\item Choose \menu{Diagram>New net}. The new net starts with \ui{Net 1}'s two layers, as views of the
+same data (\cref{sec:views}). Right-click it in the tree, choose \ui{Rename…} and call it \code{Sets}.
+\item Remove the two layers it came with: right-click each and choose \ui{Remove from this diagram}.
+The data stays.
+\item From the \ui{data} section, draw \code{bedding}, \code{J1}, \code{J2} and the log's lines on
+\ui{Sets}, in that order: right-click each and choose \menu{Draw on>Sets}, or drag it onto the net's
+name in the tree.
+\item Give each a colour you can tell apart in the layer's properties (double-click it,
+\cref{sec:properties}). The figures here use blue for the bedding, orange for J1, green for J2 and brown
+for the lines.
+\end{enumerate}
+
+Now choose what each layer draws (\cref{ch:elements}). The tree's checkboxes do it, or, in the console,
+with \ui{Sets} active:
+
+\begin{lstlisting}
+use Sets
+contour kamb 3 bedding
+show v3 bedding
+show mean J1
+show mean J2
+show mean field
+\end{lstlisting}
+
+The bedding is contoured (with 16 poles the contours are patches along the girdle rather than a band),
+and its third eigenvector, V3, is drawn as a point. Each joint set and the lines get their Fisher mean with its cone of confidence. (\code{field} is
+enough to name the lines layer: a layer is found by the start of its name, \cref{sec:commands}.)
+
+\shot{wf-sets}{The \ui{Sets} net: the bedding contoured with its V3, the means and cones of J1, J2 and
+the hinge lines; the statistics tab below shows a card per layer.}
+
+\subsection{Reading the cards}
+
+The \ui{statistics} tab has one card per visible layer (\cref{sec:stats-card}). For this outcrop:
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}>{\raggedright}p{0.17\linewidth}>{\raggedright}p{0.22\linewidth}>{\raggedright}p{0.1\linewidth}>{\raggedright}p{0.1\linewidth}L@{}}\toprule
+\sffamily\bfseries layer & \sffamily\bfseries mean & \sffamily\bfseries $\kappa$ & \sffamily\bfseries $\alpha_{95}$ & \sffamily\bfseries shape \\\midrule
+bedding & \code{152/29} & 2.6 & 27.3° & K 0.01, C 6.80: a girdle; V3 \code{120→25} \\
+J1 & \code{293/84} & 557.7 & 2.2° & K 3.72, C 7.73: a tight cluster \\
+J2 & \code{164/74} & 174.1 & 4.2° & K 4.74, C 6.16: a cluster \\
+lines & \code{120→25} & 201.6 & 4.2° & K 4.81, C 6.40: a cluster \\
+\bottomrule\end{tabularx}
+\end{center}
+
+The joint sets are what the field suggested: steep, well defined, J1 dipping 84° toward 293 and J2
+74° toward 164. Their cones of confidence are a few degrees across.
+
+The bedding is the interesting card. Its mean, \code{152/29} with $\kappa$~2.6 and a cone of
+confidence 27° wide, is not the attitude of any bed: it is the average of two limbs that dip in
+opposite directions. The eigen analysis is what describes it. The eigenvalues are
+\code{0.516 0.483 0.001}: two large and one almost nothing, which is a girdle, and Woodcock's
+K~0.01 says the same \parencite{woodcock1977}. The poles lie on a great circle, \code{girdle 300/65},
+whose pole V3 is \code{120→25}. That is the fold axis, and the girdle is the fold's profile plane
+(\cref{sec:stats-eigen}).
+
+\shot[0.7\linewidth]{wf-card}{The bedding's card: a girdle (S3 0.001, K 0.01), with V3 at \code{120→25}
+and the girdle \code{300/65}.}
+
+\section{Roses and a fabric plot}\label{sec:wf-rose}
+
+With \ui{Sets} active, choose \menu{Diagram>New rose diagram}. Like a new net, the rose starts with the
+active diagram's layers, and by default it bins strikes, which skips the lines by itself
+(\cref{sec:rose}).
+
+\shot[0.55\linewidth]{wf-rose}{A rose of the strikes of the bedding, J1 and J2 together, in 10° sectors.}
+
+The longest pair of petals, toward 020 and 200, is J1, whose eight strikes all lie between 198 and 206.
+J2's strikes, 069 to 082, make the petals toward the east-northeast and west-southwest. The bedding's
+strikes are spread round the rest of the rose: the two limbs strike apart, and between them they fill
+it. A rose is a good summary of the joints for a report, and a poor one of folded beds, which the net
+shows better.
+
+A fabric plot compares the shape of each set's distribution in one picture (\cref{sec:fabric}). With
+\ui{Sets} active, choose \menu{Diagram>New fabric plot}, then right-click it in the tree and choose
+\menu{Plot>Woodcock K–C}.
+
+\shot[0.55\linewidth]{wf-fabric}{The fabric plot, Woodcock's form: the bedding far down to the right (a
+girdle), J1, J2 and the hinge lines up to the left (clusters).}
+
+The bedding sits at the bottom right: a girdle, with K close to zero. J1, J2 and the lines sit high on
+the left, well above the line K~=~1: clusters, J1 the strongest. On the default Vollmer triangle all three
+clusters sit at the P corner together, their labels stacked one under another; the Woodcock form spreads
+them apart by strength, which is what a day like this wants to show.
+
+\section{A figure of the sets}\label{sec:wf-figure}
+
+The net of the sets is the figure the report wants. Make \ui{Sets} the active tab and choose
+\menu{Figure>New figure from the active net} (\cref{sec:new-figure}).
+
+\shot{wf-figure}{The figure from the \ui{Sets} net, open in its own tab: the title, the net, a legend, the
+statistics table and a caption, each a frame you can move.}
+
+The page has five frames: the title \code{Sets}; the net, drawn as vectors; a legend of the four
+layers with their counts, \code{bedding (16)}, \code{J1 (8)}, \code{J2 (7)} and
+\code{field 2026-11-20 · lines (6)}; a table of the statistics; and a caption that says what is drawn and
+where each dataset came from:
+
+\begin{quote}\small
+Equal-area (Schmidt), lower hemisphere · Kamb contours at 2σ intervals (k = 3). Planes as dip
+direction/dip, lines as trend→plunge. Derived: bedding: selection of field 2026-11-20 · planes; J1:
+selection of field 2026-11-20 · planes; J2: selection of field 2026-11-20 · planes;
+field 2026-11-20 · lines: field log of field/field 2026-11-20/wuffle-log.csv. Made with wuffle,
+\textit{(today's date)}.
+\end{quote}
+
+The caption is written from the project, not typed: the lineage you built by selecting the sets is what
+it reports. Click it to add a sentence of your own, such as where the outcrop is. Then
+\ui{Export PDF} writes \file{Sets\_figure.pdf}, the page as a vector PDF (\cref{sec:figure-export}). If
+you change the net later, \ui{↻ from the net} redraws the figure and keeps your layout.
+
+\section{The fold axis, four ways}\label{sec:wf-axis}
+
+The bedding's V3 says the fold axis is \code{120→25}. One estimate is a claim; several independent ones
+that agree are a result. This log holds three more.
+
+\paragraph{β.} On the bedding's card, press \ui{β → dataset}. wuffle intersects every pair of the 16
+beds, 120 lines in all, and keeps them as a dataset, \code{bedding · β}, drawn on \ui{Sets}
+(\cref{sec:derived}). Its own card gives their mean: \code{120→24}, $\kappa$~131.4.
+
+\begin{note}
+The 120 lines of a $\beta$ diagram come from only 16 measurements, so they are far from independent:
+their $\alpha_{95}$ of 1.1° says how well the mean of those lines is known, not how well the axis is.
+Read the spread of the points instead.
+\end{note}
+
+\paragraph{The limbs' intersection.} Split the bedding into its two limbs. On \ui{Sets}, choose the
+\ui{lasso} tool and draw round the eight bedding poles in the west-southwest of the net; make them a
+dataset from the bedding layer's menu and call it \code{NE limb}. Lasso the eight poles near the north
+and call them \code{SW limb}. Draw both on \ui{Sets}. Their cards give the two limbs' mean planes,
+\code{056/46} and \code{190/53}. On the \code{NE limb} card, choose \ui{SW limb} from \ui{∩ intersect
+with…}: wuffle keeps the line where the two mean planes meet as \code{NE limb ∩ SW limb}, at
+\code{120→24} (\cref{sec:stats-intersect}). Its table gives the angle between the two planes as well:
+88.71°.
+
+\paragraph{The hinge lines.} The six lineations measured on the hinge have a mean of \code{120→25},
+$\kappa$~201.6, with a cone of confidence of 4.2°: the card of the lines layer already says so. Press
+its \ui{mean → dataset} to keep it as a dataset with the others.
+
+The same in the console, with \ui{Sets} active (and the limbs drawn there):
+
+\begin{lstlisting}
+wuffle /project $ beta bedding
+→ bedding · β (120 rows), drawn on Sets
+wuffle /project $ intersect NE SW
+→ NE limb ∩ SW limb (1 row), drawn on Sets
+wuffle /project $ mean field
+→ field 2026-11-20 · lines · mean (1 row), drawn on Sets
+\end{lstlisting}
+
+\shot[0.8\linewidth]{wf-axis}{The fold axis four ways. The bedding poles lie on their best-fit girdle;
+in the east-southeast, the grey $\beta$ points, the hinge lines with their mean and cone, the bedding's
+V3 and the limbs' intersection all crowd round \code{120→25}. (The joint sets are hidden, and the limbs'
+layers too, since their poles are the bedding's.)}
+
+To draw that picture, untick \code{J1} and \code{J2} and the two limb layers, untick the bedding's
+contours and tick its \ui{V3 great circle}, and give the $\beta$ layer a small grey symbol in its
+properties so it doesn't hide the rest.
+
+All four agree within a degree:
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}>{\raggedright}p{0.36\linewidth}>{\raggedright}p{0.16\linewidth}L@{}}\toprule
+\sffamily\bfseries estimate & \sffamily\bfseries axis & \sffamily\bfseries from \\\midrule
+V3 of the bedding girdle & \code{120→25} & the 16 bedding poles, by their eigen analysis \\
+mean of the $\beta$ lines & \code{120→24} & every pair of beds \\
+the limbs' intersection & \code{120→24} & the two limbs' mean planes \\
+the hinge lineations' mean & \code{120→25} & six lines measured on the hinge \\
+\bottomrule\end{tabularx}
+\end{center}
+
+That agreement is the finding. The fold is cylindrical, its axis plunges 25° toward 120, and its limbs
+stand at about 90° to each other. Three of the estimates come from the same beds by different
+arithmetic, but the fourth comes from different measurements altogether, which is what makes it
+worth having.
+
+\section{Saving, and sending}\label{sec:wf-save}
+
+First give the project a name: \menu{File>Rename project…}, and type \code{serra-2026-11-20}
+(\cref{sec:project-name}). The tab's title becomes \ui{serra-2026-11-20 — wuffle}, and the files are
+saved under that name.
+
+\menu{File>Save project (.zip.wuffle)} (\key{Ctrl}+\key{S}) writes the whole day as one file,
+\file{serra-2026-11-20.zip.wuffle} (\cref{sec:project-file}). Inside it are the log, byte for byte, with
+its signature and photos under \file{field/}; every dataset as a plain CSV, the sets and the derived ones
+with their lineage; both nets, the rose, the fabric plot and the figure. For this day it comes to about
+55~KB.
+
+To send the day to someone who doesn't have wuffle, choose \menu{File>Save as page (one .html, the
+project inside)} (\cref{sec:save-page}). It writes \file{serra-2026-11-20.wuffle.html}, about 800~KB: wuffle
+itself with the project inside. Whoever opens it lands on the desk with your nets, sets and figure in
+front of them, offline, with nothing to install, and their changes are kept in their own browser, apart
+from yours. The signed log travels inside it too, so they can run \code{verify} themselves.
+
+\section{Doing it again}\label{sec:wf-routine}
+
+Tomorrow brings another log from the same outcrop. The sets will need choosing again, since that takes
+a look at the net, but the description of them is the same every time. Keep it as a routine
+(\cref{sec:routines}): a script in \file{/home}, which is saved with the project.
+
+\begin{tryit}
+\begin{enumerate}
+\item In the console, write the routine:
+\begin{lstlisting}
+printf 'use Sets\nfor s in bedding J1 J2 field; do stats $s; done\n' > /home/sets.sh
+\end{lstlisting}
+\item Run it, keeping what it prints in a report:
+\begin{lstlisting}
+. /home/sets.sh > /home/report.txt
+\end{lstlisting}
+\item Read the report back with \code{cat /home/report.txt}. It has 13 lines: the active diagram, then
+the count, mean and eigenvalues of each set.
+\end{enumerate}
+\end{tryit}
+
+\shot{wf-routine}{The routine written into \file{/home}, run into a report, and the first six lines of
+the report read back.}
+
+The report starts like this:
+
+\begin{lstlisting}
+● Sets
+bedding · n 16
+mean 152/29 · pole 332→61 · κ 2.6 · α95 27.3°
+S 0.516 0.483 0.001 · K 0.01 · C 6.80
+J1 · n 8
+mean 293/84 · pole 113→06 · κ 557.7 · α95 2.2°
+\end{lstlisting}
+
+The routine and its report are files in \file{/home}, so they go into the next save and into a page you
+send. Grow the routine as the work settles: \code{beta bedding} and \code{intersect NE SW} when the
+limbs are drawn, \code{contour kamb 3 bedding}, \code{verify} at the top to put the log's signature in the
+report. \cref{ch:console} has the commands and \cref{app:commands} every one of them.
+
+\begin{why}
+The selections that make the sets are judgement: where one set ends and the next begins is a call you
+make looking at the net. What follows from them is arithmetic. Keeping the judgement in the open (each
+set's lineage names its cone) and the arithmetic in a routine means tomorrow's numbers come out the same
+way as today's, and anyone you send the project to can see both.
+\end{why}

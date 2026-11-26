@@ -1,25 +1,27 @@
 \chapter{Getting started}\label{ch:start}
 \begin{goals}
-\textbf{In this chapter} you open wuffle, find your way around the desk, and draw your first data.
+\textbf{In this chapter} you open wuffle, find your way around the desk, read its status line, choose a
+theme, and spend a first ten minutes with real data.
 \end{goals}
 
 \section{Opening wuffle}\label{sec:opening}
 
 wuffle is the file \file{wuffle.html}. Open it in a current browser (Chrome, Edge, Firefox or Safari)
-by double-clicking it or from the web address it is published at. Nothing is installed.
+by double-clicking it or from the web address it is published at. Nothing is installed; \cref{ch:install}
+covers keeping it on a computer or a phone.
 
 Which of its two homes you get depends on where it opens:
 
 \begin{itemize}
-\item On a narrow screen (a phone held upright) or inside the lead-acid Android shell, wuffle opens as the
-\emph{field} compass.
+\item On a narrow screen (a phone held upright, a window under 720 pixels wide) or inside the lead-acid
+Android shell, wuffle opens as the \emph{field} compass.
 \item Anywhere else it opens as the \emph{desk}.
 \item A page that carries a project (\cref{sec:save-page}) always opens on the desk, into its project.
 \end{itemize}
 
 You can choose explicitly by adding \code{?field} or \code{?desk} to the address. From the desk,
-\menu{View>Field mode (the compass)} switches to the compass; on a computer it takes typed measurements
-instead of reading a sensor (\cref{sec:manual-entry}).
+\menu{View>Field mode (the compass)} reopens the page as the compass. On a computer the compass has no
+sensor to read, so it takes typed measurements instead (\cref{sec:manual-entry}).
 
 \section{The desk}\label{sec:desk}
 
@@ -33,25 +35,101 @@ The desk is one window in three regions, each made of tabs you can drag and rear
 draws: poles, great circles, contours, the mean, eigenvectors, labels. A \ui{data} section at the foot
 lists every dataset, whether or not it is drawn. Double-click a layer for its properties.
 \item[The diagrams] (middle). One tab per net, rose diagram, fabric plot or figure. The tab in front is
-the \term{active diagram}: the menus and the console act on it.
-\item[Table, statistics, console] (below). The rows of the dataset you clicked, the statistics of the
-active diagram's layers, and the shell.
+the \term{active diagram}: the menus and the console act on it (\cref{sec:active}).
+\item[Table, statistics, console] (below). The rows of the dataset you clicked (\cref{sec:table}), the
+statistics of the active diagram's layers (\cref{sec:stats-card}), and the shell (\cref{ch:console}).
 \end{description}
 
-The menus run along the top: \menu{File}, \menu{Edit}, \menu{Diagram}, \menu{Figure}, \menu{View} and
-\menu{Help}. The badge at the right says \ui{● local} (\cref{sec:local}).
+A net carries its own tool strip at the top left (\ui{pick}, \ui{lasso}, \ui{cone}, \ui{band}) for
+selecting (\cref{ch:select}).
 
-\section{Your first data}\label{sec:first-data}
+\subsection{The menus}
+
+\begin{description}
+\item[\menu{File}] new project, open data or a project, the Tocher sample, save, save as page
+(\cref{ch:projects}).
+\item[\menu{Edit}] undo and redo, each naming its step (\cref{sec:undo}).
+\item[\menu{Diagram}] a new net, rose diagram or fabric plot; remove the active diagram
+(\cref{ch:diagrams}).
+\item[\menu{Figure}] a new figure from the active net, and the figures already made (\cref{ch:figures}).
+\item[\menu{View}] the theme, the console, field mode.
+\item[\menu{Help}] \ui{About wuffle}: what it is built on and where the sample data comes from.
+\end{description}
+
+\shot[0.5\linewidth]{file-menu}{The File menu. Its keys work anywhere on the desk: \key{Ctrl}+\key{O} opens,
+\key{Ctrl}+\key{S} saves.}
+
+On a Mac, \key{⌘} stands in for \key{Ctrl} in every shortcut in this book.
+
+\section{The status line}\label{sec:status}
+
+\shot{status-line}{The status line: the project's counts on the left, then what the pointer is over, and
+the theme on the right.}
+
+The strip along the foot of the window has three parts:
+
+\begin{description}
+\item[Counts.] How many datasets the project holds, how many measurements in all, and how many are
+selected: \ui{1 dataset · 200 measurements · 3 selected}. An empty project says \ui{0 datasets}.
+\item[The message.] What the pointer is over, or what just happened. Over a net it reads the direction
+under the pointer and the measurement nearest to it: \ui{cursor · pole of 055/39 · line 235→51 · tocher
+\#184 053/37} (\cref{sec:pick}). After an action it says what was done: \ui{undid add layer},
+\ui{saved untitled.zip.wuffle}, \ui{restored your last session (11/26/2026, 12:38:03 PM)}.
+\item[The theme] in use (\cref{sec:themes}).
+\end{description}
+
+When something is opened, saved, refused or restored, look here first.
+
+\section{Themes}\label{sec:themes}
+
+\shot{desk-dark}{The same desk in the basalt theme.}
+
+\menu{View>Theme} offers three:
+
+\begin{description}
+\item[\ui{System}] follows the computer's own light or dark setting. The status line says which:
+\ui{system · light} or \ui{system · dark}. This is the default.
+\item[\ui{Basalt (dark)}] the GCU dark theme. The status line says \ui{basalt}.
+\item[\ui{Equipment gray (light)}] the light one. The status line says \ui{equipment gray}.
+\end{description}
+
+The choice is kept in this browser and comes back next time. It changes the desk only: figures always
+print on white paper (\cref{ch:figures}), and the net you export as \file{net.svg} is drawn on paper too
+(\cref{sec:project-read}). The console's \code{theme dark}, \code{theme light} and \code{theme system} do
+the same as the menu.
+
+\section{Your first ten minutes}\label{sec:first-data}
+
+The Tocher sample is 200 planes from \textcite{tocher1979}, which wuffle carries. Everything below works
+on it.
 
 \begin{tryit}
 \begin{enumerate}
-\item Choose \menu{File>Open the tocher sample}. 200 planes open as a dataset called \code{tocher} and
-are drawn as poles on \ui{Net 1}.
-\item In the layers tree, open \ui{tocher} on \ui{Net 1} and tick \ui{contours}. The poles are contoured.
-\item Click a pole. Its row is selected: it turns violet on the net and the table shows it.
-\item Press \key{Ctrl}+\key{Z}. The contours go off again: \menu{Edit} names the step it undid.
+\item Choose \menu{File>Open the tocher sample}. 200 planes open as a dataset called \code{tocher}
+and are drawn as poles on \ui{Net 1}. The status line counts \ui{1 dataset · 200 measurements}.
+\item In the layers tree, open \ui{tocher} on \ui{Net 1} (the small arrow) and tick \ui{contours}. The
+poles are contoured.
+\item Click a pole. Its row is selected: it turns violet on the net, and the \ui{table} tab shows it
+washed in violet.
+\item Press \key{Ctrl}+\key{Z}. The contours go off again; \menu{Edit} would have named the step,
+\ui{Undo show / hide elements}.
 \end{enumerate}
 \end{tryit}
+
+\begin{tryit}
+\begin{enumerate}
+\item Choose \ui{cone} in the net's tool strip, press on the dense cluster in the south-west of the net
+and drag outward until the status line reads about 20°. Let go: the poles inside turn violet.
+\item Open the \ui{statistics} tab. The card for \code{tocher} gives its mean, $\kappa$ and $\alpha_{95}$
+and its eigenvalues (\cref{ch:stats}).
+\item Choose \menu{Diagram>New rose diagram}. A rose of the Tocher strikes opens in a tab of its own,
+drawing the same dataset (\cref{ch:roses}).
+\item Choose \menu{File>Save project (.zip.wuffle)}. \file{untitled.zip.wuffle} downloads, and the
+status line says so (\cref{sec:project-file}).
+\end{enumerate}
+\end{tryit}
+
+\section{Your own data}
 
 To open your own data, choose \menu{File>Open data or a project…} (\key{Ctrl}+\key{O}) or drop files on
 the window. A delimited text file (CSV, TSV, or columns separated by spaces or semicolons) becomes a
@@ -66,18 +144,20 @@ dataset, drawn on the active net. wuffle reads the header to find the attitude:
 
 wuffle never refuses a file for being odd. Rows it can't read are counted and left out of the drawing,
 and when it had to guess which columns hold the attitude (no header, say), the table's heading says
-how it read them.
+how it read them. \cref{ch:data} has the whole story.
 
 \section{The console, briefly}
 
-Press \key{`} (the backquote key) or choose \menu{View>Console}. The console is a shell, and its
-working directory is the project itself. \cref{ch:console} explains it; for now, try this:
+Press \key{`} (the backquote key, when no text field has the focus) or choose \menu{View>Console}. The
+console is a shell, and its working directory is the project itself. \cref{ch:console} explains it; for
+now, try this:
 
 \begin{tryit}
 \begin{enumerate}
-\item With the Tocher sample open, type \code{stats} and press \key{Enter}. The count, mean, $\kappa$,
-$\alpha_{95}$ and eigenvalues of the first visible layer print.
+\item With the Tocher sample open, type \code{stats} and press \key{Enter}. The count, the mean as a plane
+and as its pole, $\kappa$, $\alpha_{95}$ and the eigenvalues of the first visible layer print:
+\code{mean 027/89 · pole 207→01 · κ 3.1 · α95 6.8°}.
 \item Type \code{ls data} to list the datasets as files, then \code{head -3 data/tocher.csv} to read the
-first rows.
+first rows: the header \code{dip direction,dip}, then \code{147.704,64.813}.
 \end{enumerate}
 \end{tryit}

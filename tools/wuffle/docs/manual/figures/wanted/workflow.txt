@@ -1,0 +1,10 @@
+# name | what the shot shows — "A day's work" (scenes/workflow.mjs)
+wf-opened | the signed log opened: two datasets on Net 1, the planes' table, the verdict in the status line
+wf-split | J1's cone typed in the console, its eight poles violet
+wf-sets | the Sets net: bedding contoured with V3, means of J1, J2 and the hinge lines; the cards
+wf-card | the bedding's statistics card: a girdle, V3 120→25
+wf-rose | a rose of the strikes of bedding, J1 and J2
+wf-fabric | the fabric plot: bedding a girdle, the joints and the hinge lines clusters
+wf-axis | the fold axis four ways: V3 and its girdle, the β points, the limbs' intersection, the hinge lines' mean
+wf-figure | the figure from the Sets net, in compo's editor
+wf-routine | the routine written to /home, run into a report, and read back

@@ -1,0 +1,4 @@
+# name | what the shot shows (scenes/install.mjs)
+it-guess | the table heading of a file whose columns were guessed
+it-note | the net's corner note: a second contoured layer isn't contoured
+it-redirect | the console: `>` makes a file in /home; the quoted attitude selects

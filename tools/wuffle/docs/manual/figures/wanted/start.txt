@@ -1,4 +1,14 @@
-# name | what the shot shows (scenes.mjs stages each)
+# name | what the shot shows (scenes/start.mjs stages each)
 desk-tour | the desk, Tocher open, contoured, one pole selected
+status-line | the status line: counts, the pointer's reading, the theme
+file-menu | the File menu
+desk-dark | the desk in the basalt theme
 console | the console after sample tocher, contour kamb 3, select cone, stats
+console-routine | a routine written into /home and run
+project-ls | /project listed: a layer is a symlink; diagram.json
+edit-menu | the Edit menu naming the step it undoes
+fieldlog-open | a signed field log opened: the verdict in the status line, its datasets in the tree
 field-net | the compass on a phone, three typed measurements
+field-live-plane | plane mode, a live reading over the net
+field-live-line | line mode, a live reading over the net
+field-photo | the log with a photo attached to the last measurement

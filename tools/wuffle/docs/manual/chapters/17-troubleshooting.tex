@@ -1,0 +1,239 @@
+\chapter{When something looks wrong}\label{ch:trouble}
+\begin{goals}
+\textbf{In this chapter} you find the symptom you are seeing, why wuffle does it, and what to do. Every
+case here was reproduced on the program itself; none is a guess.
+\end{goals}
+
+The cases are grouped as the book is: the compass, opening data, the nets, the console, and projects.
+Each starts with what you see.
+
+\section{The compass}\label{sec:trouble-field}
+
+\subsection{The compass reads nothing}
+
+The status line says \ui{no orientation yet — tilt the phone (or type a measurement)} when you press
+\ui{◎}. The browser is giving wuffle no orientation:
+
+\begin{itemize}
+\item on an iPhone or iPad, Safari never does, because wuffle doesn't ask its permission
+(\cref{sec:compass-browsers});
+\item a page served from a plain \file{http://} address gets no sensors; open the site, which is https;
+\item a computer has no orientation sensor at all.
+\end{itemize}
+
+Typed measurements work everywhere (\cref{sec:manual-entry}).
+
+\subsection{The status line says the compass is low or unreliable}
+
+Inside the lead-acid shell, wuffle shows the magnetometer's own calibration report:
+\ui{compass low — wave the phone in a figure-8 to calibrate}. A phone's compass drifts near steel,
+vehicles, power lines and in pockets with keys. Wave it through a figure of eight a few times, away from
+anything magnetic, until the status says \ui{compass calibrated}.
+
+\subsection{The readings are magnetic, not true}
+
+The log's \col{north} column says \code{magnetic} and \col{declination\_deg} is empty. wuffle corrects to
+true north only from a position (\cref{sec:true-north}), and it gets a position only inside the shell,
+after the first GNSS fix. Readings taken before the fix, or outside the shell, stay magnetic, and say so
+on every row. Correct them before mixing them with true-north data: add the declination for the place and
+date to each azimuth.
+
+A typed measurement says \code{as-typed}: wuffle takes it as you wrote it.
+
+\subsection{The log was empty when I came back}
+
+The compass keeps its log on the phone, in the browser's own storage, after every measurement, and
+brings it back when the page opens again: the message line says \ui{kept from last time: 14 measurements
+not yet cleared — publish to send them}. A closed tab, a reload, or the phone closing the browser to
+save memory loses nothing.
+
+What does lose it:
+\begin{itemize}
+\item \ui{clear}, tapped twice. The first tap only asks (\ui{tap clear again to delete all 14
+measurements — publish first to keep them}); the second, within three seconds, empties the log for
+good.
+\item clearing the browser's data for the page, or a private window, which keeps nothing once it closes.
+\item a different address: the log is kept per site, so the same compass opened from a file and from
+gentropic.org/wuffle has two logs.
+\end{itemize}
+
+Publish as you go all the same: \ui{publish →} at each station, or every few, costs nothing, and a later
+publish writes the whole log again. A published log can be taken back into the compass inside the shell
+(share the CSV to wuffle), or opened on the desk.
+
+\subsection{A line I typed went in as a plane}
+
+\code{200/20} is a plane, \code{200→20} and \code{200>20} are lines. With the \ui{line} mode on,
+\code{200/20} is taken as a line too. Delete the row with its \ui{×} and type it again.
+
+\section{Opening data}\label{sec:trouble-data}
+
+\subsection{The file opened, but with the wrong columns}
+
+Look at the table's heading. When wuffle had to guess which columns hold the attitude, it says so, and
+how it read them:
+
+\shot{it-guess}{A file whose columns, \col{azimuth} and \col{inclination}, aren't names wuffle knows: it
+read the first two numeric columns as dip direction and dip, and says so in the heading.}
+
+The guess is the first two numeric columns, as dip direction then dip, swapped when the second runs past
+90. If that is wrong for your file, rename its header to names wuffle knows and open it again:
+\col{dipdir} and \col{dip} for planes, \col{strike} and \col{dip} for the right-hand rule, \col{trend}
+and \col{plunge} for lines (\cref{sec:data-roles} lists every name it recognises). A pair that mixes
+kinds, such as \col{azimuth} (a trend) with \col{inclination} (a dip), is no pair, and falls to the
+guess.
+
+\subsection{Some rows aren't drawn}
+
+A row whose attitude can't be read (a dip of \code{abc}, a dip over 90, an empty cell) stays in the
+table, with \code{—} in the first column, and is left off every diagram. The layer's properties count
+them: \ui{tocher · planes · 198 of 200 rows read}. Fix the cells in the source file, or in the table
+(\cref{sec:table}), and they are drawn.
+
+\subsection{My file of \code{045→30} turned into two datasets}
+
+A single column holding attitudes is split by the arrow: rows with one are lines, the rest planes, and a
+column with both opens as \code{<name> · planes} and \code{<name> · lines}. That is deliberate: planes
+and lines don't share a statistics card.
+
+\subsection{The log's photos didn't come in}
+
+Open the photos \emph{with} the log, in the same pick or the same drop. wuffle takes the photos the
+log's \col{photo} column names, and says how many it found: \ui{(2 named in the log weren't in the
+drop)}. Photos opened on their own are ignored, with the same advice in the status line.
+
+\section{The nets}\label{sec:trouble-nets}
+
+\subsection{A note in the net's corner}
+
+What the net couldn't draw, it says, in yellow at the bottom left:
+
+\shot{it-note}{Two layers of one dataset, both with contours on: the net draws one set, and says
+whose.}
+
+\begin{description}
+\item[\ui{contours: one set per net — “…” isn’t contoured; the contours are “…”’s}] A net draws the
+contours of the first contoured layer only. Contour the other dataset on a net of its own
+(\menu{Diagram>New net}). When both layers show the same dataset, the note names it twice; a layer
+drawn from the console with a link name of its own
+(\code{ln -s ../../../data/tocher.csv "diagrams/Net 1/layers/second look.csv"}) carries that name, and
+the note uses it.
+\item[\ui{right dihedra aren’t drawn on a rotated net (Reset rotation to see them)}] The right
+dihedra are computed on the unrotated net. Right-click the net's name and choose \ui{Reset rotation}
+(\cref{sec:rotate-reset}).
+\end{description}
+
+\subsection{Contours are switched on but nothing is drawn}
+
+Contours need at least three readable measurements. A layer with fewer draws none, and the net's corner
+says so: \ui{contours: “east” has 2 measurements — contours need three}. Check the row count beside the
+layer in the tree, and the rows it couldn't read (\cref{sec:data-read}).
+
+\subsection{The mean sits where there is no data}
+
+On a girdle (the Tocher sample is one) the Fisher mean of the poles lands wherever the spread happens to
+balance, which need not be where the poles gather, and its cone is wide: on Tocher, $\kappa$ is 3.1 and
+$\alpha_{95}$ 6.8°. That is the mean of a distribution a mean doesn't describe. Turn on the eigenvectors: V3, the girdle's axis, and the V3 great
+circle, the girdle itself, describe it (\cref{sec:eigen}).
+
+\subsection{A cone selected nothing, or the wrong poles}
+
+\code{select cone 040/50 20} is a cone about the \emph{pole} of the plane 040/50, which is
+\code{220→40}: on the Tocher sample both select 18 poles. \code{040→50} is a different direction
+altogether (6 poles). Type a plane when you mean \enquote{planes like this one}, a line when you mean
+\enquote{poles near this direction}. The cone tool on the net, dragged from the centre you want, has no
+such ambiguity (\cref{sec:shapes}).
+
+\subsection{A rose has petals at both ends}
+
+A strike rose always does: a strike of 030 is the same line as 210. A dip-direction or trend rose has
+them only when \ui{Count both ends (axial)} is ticked in its menu (\cref{sec:rose}); untick it.
+
+\subsection{Labels cover the net}
+
+Labels name every measurement of a layer, so 200 of them are a blur. Select the few to name, make them a
+dataset (\cref{sec:select-dataset}), draw that, and label only it (\cref{sec:labels}).
+
+\section{The console}\label{sec:trouble-console}
+
+\shot{it-redirect}{The redirect trap: in \file{/home}, \code{select cone 150>60 10} made a file called
+\file{60}; quoted, the same attitude reaches the command.}
+
+\subsection{A command with \code{>} failed, or made a file}
+
+In the console \code{>} belongs to the shell: it sends a command's output to a file. \code{select cone
+150>60 10} is read as \code{select cone 150 10} with its output sent to \file{60}. In \file{/project}
+the shell can't make that file and says \ui{geas: redirect: nothing can be made here: /60}; in
+\file{/home} it makes it. Either way the command saw the wrong words. Type the arrow (\code{150→60}) or
+quote the attitude (\code{'150>60'}), and \code{rm 60} the stray file.
+
+\subsection{\code{rm} refuses to delete data}
+
+\ui{rm: data/tocher.csv: “tocher” is drawn on Net 1 — remove those layers first}, naming every
+diagram that draws it. A dataset that a
+diagram draws can't be removed from the console: remove its layers (\code{rm "diagrams/Net 1/layers/tocher.csv"})
+and then the data. The tree's \ui{Delete dataset} asks you instead, and removes both.
+
+\subsection{Ctrl+Z does nothing in the console}
+
+While you type in the console, keys belong to the shell. Type \code{undo} (and \code{redo}), or click
+outside the console and press \key{Ctrl}+\key{Z} (\cref{sec:undo}).
+
+\subsection{The arrow keys don't move along the line}
+
+The console's line editor appends and deletes at the end only: \key{←} and \key{→} do nothing, and
+\key{↑} \key{↓} recall earlier lines. Press \key{Backspace} to the mistake, or recall the line and retype
+its end. \key{Ctrl}+\key{C} abandons a line.
+
+\section{Projects and files}\label{sec:trouble-projects}
+
+\subsection{My last session didn't come back}
+
+The desk keeps a copy of the project between saves (\cref{sec:autosave}), and when it restores one the
+status line says \ui{restored your last session (…)}. It didn't, because:
+
+\begin{itemize}
+\item the window was private, or the browser's data for the site was cleared;
+\item wuffle opened from a different place: the file on your desktop and the website keep separate
+copies (\cref{sec:where-kept});
+\item it is a page that carries a project: each such page keeps its own copy, apart from the plain
+wuffle's;
+\item \menu{File>New project} was chosen, which forgets the kept copy.
+\end{itemize}
+
+The kept copy is a convenience. Save the project for anything you mean to keep.
+
+\subsection{Save as page is greyed out}
+
+It works from the published \file{wuffle.html}, which carries the page it copies. A wuffle run from its
+source folder, as developers do, has no single page to copy (\cref{sec:save-page}).
+
+\subsection{A project opened \enquote{but} some things were skipped}
+
+\ui{… opened, but:} lists each part wuffle couldn't use, such as \ui{diagrams/Net 1/layers/x.json:
+its data (data/x.csv) isn't in the file}: a layer whose dataset was removed from the zip by hand. The rest
+of the project is open. Put the missing file back in the zip, or draw the data again.
+
+\subsection{The signature does not match}
+
+wuffle opens the log anyway, keeps it exactly as it came, and says:
+
+\begin{lstlisting}
+wuffle-log.csv: the signature does not match.
+
+the bytes are NOT what the key signed — the log was changed after signing,
+or the .sig belongs to another log
+\end{lstlisting}
+
+Either the CSV was edited (by a spreadsheet that \enquote{helpfully} resaved it, say), or the
+\file{.sig} came from another publish. Find the copy the phone wrote, untouched, in its
+\file{Downloads}, and open that. Don't treat a log that fails as the phone's record
+(\cref{sec:field-logs}).
+
+\subsection{The log says \enquote{unsigned}}
+
+No \file{.sig} came with it, as far as wuffle could tell. The signature must be opened with its log and
+named after it: \file{wuffle-log.csv.sig} beside \file{wuffle-log.csv}. A browser that renames a second
+download (\file{wuffle-log (1).csv}) may rename one file and not the other; rename the \file{.sig} to
+match its log, plus \file{.sig}. A \file{.sig} opened alone is ignored, and the status line says to open
+it with its log. A log published outside the shell has no signature at all (\cref{sec:publish}).

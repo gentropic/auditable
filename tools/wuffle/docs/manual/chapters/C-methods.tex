@@ -1,0 +1,385 @@
+\chapter{Methods}\label{app:methods}
+\begin{goals}
+\textbf{This appendix} gives every number and drawing wuffle makes as it is computed: the formula, the
+conventions, and what happens at the edges. Where wuffle departs from the textbook, it says so. Each
+formula here was recomputed independently against wuffle's own code on the Tocher sample and on
+synthetic data, and the two agreed.
+\end{goals}
+
+The maths lives in \code{@gcu/bearing} and \code{@gcu/stereonet}; wuffle's own modules only arrange
+it. Angles are in degrees unless a formula says otherwise.
+
+\section{Conventions}\label{sec:m-conventions}
+
+\subsection{The frame}
+
+A direction is a unit vector $(x, y, z)$ with $x$ east, $y$ north and $z$ \emph{up}. Downward directions
+have $z < 0$.
+
+A \textbf{line} with trend $\theta$ and plunge $\varphi$ (plunge positive downward) is
+\[ \mathbf{l} = (\cos\varphi \sin\theta,\; \cos\varphi \cos\theta,\; -\sin\varphi). \]
+
+A \textbf{plane} with dip direction $\alpha$ and dip $\delta$ is represented by its \term{pole}, the
+downward normal:
+\[ \mathbf{p} = (-\sin\delta \sin\alpha,\; -\sin\delta \cos\alpha,\; -\cos\delta), \]
+which plunges $90^\circ - \delta$ towards $\alpha + 180^\circ$. The pole of \code{120/40} plunges 50°
+towards 300.
+
+Going back, a vector is first folded onto the lower hemisphere (if $z > 0$, every component changes
+sign), then
+\[ \theta = \mathrm{atan2}(x, y), \qquad \varphi = \arcsin(-z), \]
+and for a pole, $\alpha = \mathrm{atan2}(-x, -y)$ and $\delta = \arccos(-z)$, each azimuth taken into
+$[0, 360)$.
+
+\subsection{Strike and quadrant notation}
+
+A strike is read by the right-hand rule: the plane dips to the right of it, so the dip direction is
+the strike plus 90°, and the rose's strike is the dip direction plus 270°.
+
+An attitude written in quadrant form, such as \code{N30E 40SE}, is a strike and a dip:
+\code{N30E} is 030, \code{S40W} is 220, \code{N30W} is 330. The dip's letters choose which of the two
+dip directions perpendicular to the strike is meant: the one nearer the letters' azimuth (\code{SE} is
+135, so \code{N30E 40SE} is \code{120/40}). Without letters the right-hand rule applies. A direction
+written as a number, as in \code{120/40}, is always a dip direction, and letters after its dip are not
+used.
+
+\subsection{Axes}
+
+A pole, or a line without a sense of motion, is an \term{axis}: $\mathbf{d}$ and $-\mathbf{d}$ are the
+same measurement. Every count, every selection test and the mean treat measurements as axes. A fault's
+slip is the one directed quantity (\cref{sec:m-faults}).
+
+\section{Projections}\label{sec:m-projection}
+
+A vector is folded onto the lower hemisphere, then projected. The equal-area (Lambert, Schmidt) and
+equal-angle (stereographic, Wulff) projections are
+\[ (X, Y)_{\mathrm{area}} = \sqrt{\frac{2}{1 - z}}\,(x, y), \qquad (X, Y)_{\mathrm{angle}} = \frac{1}{1 - z}\,(x, y). \]
+For a line plunging $\varphi$ the distance from the centre is
+\[ r_{\mathrm{area}} = 2 \sin\frac{90^\circ - \varphi}{2}, \qquad r_{\mathrm{angle}} = \tan\frac{90^\circ - \varphi}{2}, \]
+so the primitive circle has radius $\sqrt{2}$ in the first and 1 in the second, and wuffle scales either
+to the drawn net. The point sits at azimuth $\theta$ from north, clockwise: $X = r\sin\theta$,
+$Y = r\cos\theta$ \parencite{snyder1987}.
+
+\begin{center}
+\begin{tikzpicture}[scale=1.6, every node/.style={font=\sffamily\footnotesize}]
+  \draw[rule, line width=0.6pt] (0,0) circle (1.414);
+  \draw[faint, line width=0.3pt] (-1.55,0) -- (1.55,0) (0,-1.55) -- (0,1.55);
+  \node[above, text=muted] at (0,1.55) {N};
+  \node[right, text=muted] at (1.55,0) {E};
+  % a line 057→30: r = 2 sin 30° = 1, at azimuth 57°
+  \draw[amber, line width=0.8pt] (0,0) -- (0.839,0.545);
+  \fill[amber] (0.839,0.545) circle (0.045);
+  \node[right, text=ink] at (0.88,0.58) {$057\!\to\!30$};
+  \draw[ink, ->, line width=0.4pt] (0,0.55) arc (90:33:0.55);
+  \node[text=ink] at (0.36,0.70) {$\theta$};
+  \node[below right, text=ink] at (0.36,0.25) {$r$};
+  \node[text=muted, align=center] at (0,-1.9) {equal-area, lower hemisphere: $r = 2\sin\frac{90^\circ - 30^\circ}{2} = 1$, primitive $\sqrt{2}$};
+\end{tikzpicture}
+\end{center}
+
+\subsection{The upper hemisphere}
+
+An upper-hemisphere net draws each axis at its upper end, seen from above. wuffle reflects the vector
+through the horizontal ($z \to -z$) and projects that, so a line plots at its trend plus 180°, at the
+same distance from the centre.
+
+\subsection{Rotation}\label{sec:m-rotation}
+
+A rotated net applies a rotation matrix $\mathbf{R}$ to every direction before projecting it.
+\begin{itemize}
+\item \code{rotate 120→40} builds the shortest rotation that takes the direction $\mathbf{l}$ of
+\code{120→40} to the centre of the net, $(0, 0, -1)$: about the axis $\mathbf{l} \times (0,0,-1)$, by the
+angle between them.
+\item A drag is an \emph{arcball}: the points under the pointer at the start and end of each movement
+are taken back onto the sphere (through the inverse projection; a point outside the primitive is put on
+it), and the shortest rotation between them is multiplied onto the current one. The product is
+re-orthonormalised after every step, so a long drag never drifts away from a rotation. The matrix is
+what the diagram stores.
+\end{itemize}
+Selections, statistics and the data are unaffected: they live in the unrotated frame, and only the
+drawing turns (\cref{ch:rotation}).
+
+\section{The compass}\label{sec:m-compass}
+
+The phone reports its orientation as three angles, $\alpha$ (about the vertical), $\beta$ and $\gamma$,
+in the W3C device-orientation convention: the device's frame is reached from east--north--up by turning
+$\alpha$ about $z$, then $\beta$ about the new $x$, then $\gamma$ about the new $y$. wuffle builds that
+rotation matrix and reads two of its columns:
+\begin{itemize}
+\item for a \textbf{plane}, the device's $z$ axis (the normal to the screen) is the plane's normal;
+\item for a \textbf{line}, the device's $y$ axis (along the long edge, towards the top) is the line.
+\end{itemize}
+Each is converted as in \cref{sec:m-conventions}, which folds it onto the lower hemisphere. The azimuth
+(dip direction or trend) is then corrected for declination, $\mathrm{true} = \mathrm{magnetic} + D$, east
+positive.
+
+\subsection{Declination}\label{sec:m-wmm}
+
+$D$ comes from the World Magnetic Model 2025 \parencite{chulliat2025}, evaluated in the page: a
+spherical-harmonic expansion of the main field to degree 12, with Schmidt semi-normalised Legendre
+functions. The position is converted from geodetic (WGS84, $a = 6378.137$\,km, $f = 1/298.257223563$) to
+geocentric coordinates, the field is evaluated there at the reference radius 6371.2\,km, and rotated
+back to north, east and down components $X, Y, Z$; then $D = \mathrm{atan2}(Y, X)$. The height is the
+GNSS fix's altitude. The coefficients are generated from NOAA's published file, and wuffle's tests pin
+the result to the model's twelve published test values. The model is valid from 2025.0 to 2030.0; the
+compass doesn't stop using it after that. It recomputes $D$ when the position has moved about a tenth
+of a degree (\cref{sec:true-north}).
+
+\section{Contours}\label{sec:m-contours}
+
+Densities are evaluated on a square grid laid over the projected net, 40 nodes a side, each node taken
+back to a direction by the inverse projection. Nodes more than about 1\% outside the primitive are left out.
+Each contour level is traced by marching squares, and the segments are joined into lines.
+
+\subsection{Kamb}
+
+For $N$ axes and a chosen $k$ (3 unless you change it, \cref{sec:contours}), the counting area is a pair
+of opposite caps of half-angle $\vartheta$ with
+\[ \cos\vartheta = \frac{N}{N + k^2}. \]
+The caps cover the fraction $A = 1 - \cos\vartheta$ of the sphere. For a uniform distribution the count
+in them has expectation and standard deviation
+\[ E = NA, \qquad \sigma = \sqrt{NA(1 - A)}, \]
+and the choice of $\vartheta$ makes $E = k\sigma$ \parencite{kamb1959}. At each node $\mathbf{g}$ wuffle
+counts the axes with $|\mathbf{g} \cdot \mathbf{d}| \ge \cos\vartheta$ and stores
+\[ \frac{\mathrm{count} - E}{\sigma}, \]
+the excess over a uniform distribution, in $\sigma$. The default levels are 2, 4, 6, 8, 10 and 12.
+
+For the Tocher sample ($N = 200$, $k = 3$): $\vartheta = 16.88^\circ$, $A = 0.0431$, $E = 8.61$,
+$\sigma = 2.87$.
+
+\begin{note}
+Some programs contour the count itself in units of $\sigma$, so that their lowest meaningful level is $k$.
+wuffle's level $L$ is their level $k + L$: with $k = 3$, wuffle's 2\,$\sigma$ line is their 5\,$\sigma$.
+\end{note}
+
+\subsection{Fisher kernel}
+
+Each axis contributes a Fisher density of concentration $\kappa$ centred on it. The kernel's width is
+$s = 90^\circ/\sqrt{N}$ (6.36° for Tocher), and
+\[ \kappa = \frac{1}{1 - \cos s}, \qquad f(\mathbf{g}) = \frac{\kappa}{N}\sum_{i=1}^{N} \exp\!\bigl(\kappa\,(|\mathbf{g}\cdot\mathbf{d}_i| - 1)\bigr). \]
+For uniformly spread axes the expected value of $f$ is $1 - e^{-\kappa} \approx 1$, so $f$ is in
+\emph{multiples of uniform density} (MUD). Averaged over 400 random directions, 200 and 4000 uniform axes
+give 0.95 and 0.98. The default levels are 2, 4, 6 and 8.
+
+\subsection{Across the primitive}
+
+Axes near horizontal are counted at both ends, so a cluster on the primitive belongs as much to the
+opposite side of the net as to its own. Grid nodes just outside the primitive are therefore taken to
+directions just above the horizon, by the same inverse formula continued past the rim; the axial count
+there sees the axes near the opposite rim. The contours then run across the primitive and reappear on
+the other side, as \textcite{tocher1979} recommends, instead of stopping at the edge.
+
+\subsection{On a rotated or upper-hemisphere net}
+
+On a rotated net the data are rotated and the density evaluated in the rotated frame, so the contours
+turn with the points. An upper-hemisphere net is one more transformation of the same kind: the points
+are drawn as the lower-hemisphere projection of the z-reflected vector, $(x, y, z) \mapsto (x, y, -z)$,
+so the grid is evaluated on the data transformed by the rotation \emph{and} the reflection, one matrix
+$Z R$ with $Z = \mathrm{diag}(1, 1, -1)$. The right dihedra are reflected the same way: the field's sign,
+$\mathrm{sign}((\mathbf{g}\cdot\mathbf{n})(\mathbf{g}\cdot\mathbf{s}))$, is unchanged when the grid
+direction $\mathbf{g}$, the pole $\mathbf{n}$ and the slip $\mathbf{s}$ are all reflected, so reflecting
+the faults gives the field at the drawn spot. (Before bearing 0.3.2 the grid had the rotation alone, and
+on an upper-hemisphere net the contours sat mirrored through the centre from their points.)
+
+\section{The mean}\label{sec:m-mean}
+
+wuffle's mean is Fisher's \parencite{fisher1953}, made axial. First each axis is turned to the side of the
+principal eigenvector $\mathbf{v}_1$ (\cref{sec:m-eigen}): $\mathbf{d}_i \to -\mathbf{d}_i$ when
+$\mathbf{d}_i \cdot \mathbf{v}_1 < 0$. Then, with the resultant $\mathbf{S} = \sum \mathbf{d}_i$ and its
+length $R$,
+\[ \bar{\mathbf{d}} = \mathbf{S}/R, \qquad \bar{R} = R/N, \]
+the mean folded onto the lower hemisphere. The concentration is estimated as
+\[ \kappa = \frac{N - 2}{N - R} \quad (N \ge 3), \qquad \kappa = \frac{N - 1}{N - R} \quad (N = 2), \]
+the first being the small-sample correction of the usual $(N-1)/(N-R)$ \parencite{fisher1987}. When all the
+axes coincide ($R = N$), $\kappa$ is infinite. The cone of confidence at level $1 - p$ has half-angle
+$\alpha$ with
+\[ \cos\alpha = 1 - \frac{N - R}{R}\left[\left(\frac{1}{p}\right)^{1/(N-1)} - 1\right], \]
+which at 95\% ($1/p = 20$) is $\alpha_{95}$ \parencite{fisher1953}. It needs $N \ge 2$.
+
+For the Tocher sample: $R = 136.02$, $\kappa = 3.09$, $\alpha_{95} = 6.85^\circ$, and the mean pole gives
+the plane 026.7/89.2.
+
+\begin{note}
+Turning every axis towards $\mathbf{v}_1$ first is wuffle's way of making Fisher's mean work on axes. On a
+cluster it gives the textbook answer. On a girdle, such as Tocher's, the axes have no one side to be
+turned to, and the mean and its cone describe little; the eigenvectors are the description to use there
+(\cref{sec:mean}).
+\end{note}
+
+\section{Eigen analysis}\label{sec:m-eigen}
+
+The orientation tensor of $N$ axes is
+\[ \mathbf{T} = \frac{1}{N}\sum_{i=1}^{N} \mathbf{d}_i\,\mathbf{d}_i^{\mathsf{T}}, \]
+which is the same for $\mathbf{d}_i$ and $-\mathbf{d}_i$, so the signs of the axes don't matter. Its
+eigenvalues $S_1 \ge S_2 \ge S_3$ sum to 1, and its eigenvectors $\mathbf{v}_1, \mathbf{v}_2,
+\mathbf{v}_3$ are drawn at their lower ends. From the eigenvalues \parencite{woodcock1977,vollmer1990}:
+\[ K = \frac{\ln(S_1/S_2)}{\ln(S_2/S_3)}, \qquad C = \ln\frac{S_1}{S_3}, \]
+\[ P = S_1 - S_2, \qquad G = 2(S_2 - S_3), \qquad R = 3S_3, \qquad P + G + R = 1. \]
+$K > 1$ is a cluster, $K < 1$ a girdle; $C$ grows with the strength of the fabric. $P$, $G$ and $R$ are
+the point, girdle and random parts. Eigen analysis needs three measurements.
+
+For the Tocher sample: $S = 0.548, 0.383, 0.069$; $K = 0.21$, $C = 2.07$; $P = 0.165$, $G = 0.628$,
+$R = 0.207$, a girdle.
+
+\subsection{The fabric plots}
+
+The Woodcock diagram places a dataset at $(\ln(S_2/S_3), \ln(S_1/S_2))$, with both axes running from 0 to
+7 (larger values are drawn at the edge); the line $K = 1$ is the diagonal. The Vollmer triangle places it
+at the weighted mean of its corners, $P$ at the top, $G$ at the lower left and $R$ at the lower right,
+with $P$, $G$ and $R$ as the weights (\cref{sec:fabric}).
+
+\begin{center}
+\begin{tikzpicture}[scale=3.2, every node/.style={font=\sffamily\footnotesize}]
+  \draw[rule, line width=0.6pt] (0,0.866) -- (-0.5,0) -- (0.5,0) -- cycle;
+  \node[above, text=muted] at (0,0.866) {P (cluster)};
+  \node[below left, text=muted] at (-0.5,0) {G (girdle)};
+  \node[below right, text=muted] at (0.5,0) {R (random)};
+  % Tocher: P 0.165, G 0.628, R 0.207 → x = −0.5 G + 0.5 R, y = 0.866 P
+  \fill[amber] (-0.2105,0.1429) circle (0.022);
+  \node[above right, text=ink] at (-0.2105,0.1429) {Tocher};
+\end{tikzpicture}
+\end{center}
+
+\section{Intersections}\label{sec:m-derived}
+
+The line common to two planes is the cross product of their poles, normalised and folded onto the lower
+hemisphere:
+\[ \mathbf{b} = \frac{\mathbf{p}_1 \times \mathbf{p}_2}{|\mathbf{p}_1 \times \mathbf{p}_2|}. \]
+\begin{itemize}
+\item \textbf{Intersection of two datasets} uses each dataset's mean pole (\cref{sec:m-mean}), or the
+single plane of a one-row dataset. It reports the angle between the planes, $\arccos|\mathbf{p}_1 \cdot
+\mathbf{p}_2|$, and refuses parallel planes.
+\item \textbf{The $\beta$ diagram} takes every pair of planes in a dataset: $N(N-1)/2$ lines, each
+remembering its pair. Pairs that are parallel to $10^{-9}$ are skipped. A dataset of more than 600 planes
+is refused (it would make some 180\,000 lines).
+\end{itemize}
+For Tocher's 200 planes the $\beta$ diagram has 19\,900 lines.
+
+\section{Selection shapes}\label{sec:m-select}
+
+Every shape is a test on the sphere, applied to a plane's pole or a line, and every test is axial
+(\cref{sec:shapes}).
+\begin{description}
+\item[Cone] of half-angle $\vartheta$ about $\mathbf{a}$: selected when $|\mathbf{d}\cdot\mathbf{a}| \ge
+\cos\vartheta$. A plane given as the cone's centre stands for its pole.
+\item[Band] of half-width $w$ about the great circle with pole $\mathbf{n}$: selected when
+$|\mathbf{d}\cdot\mathbf{n}| \le \sin w$.
+\item[Lasso] with vertices $\mathbf{v}_j$ joined by great-circle arcs. The test is made in a
+\term{gnomonic projection} centred on $\mathbf{c} = \sum\mathbf{v}_j / |\sum\mathbf{v}_j|$, which
+turns great circles into straight lines: with $\mathbf{u}, \mathbf{w}$ two unit vectors perpendicular to
+$\mathbf{c}$ and to each other, a direction goes to
+\[ \left(\frac{\mathbf{d}\cdot\mathbf{u}}{\mathbf{d}\cdot\mathbf{c}},\; \frac{\mathbf{d}\cdot\mathbf{w}}{\mathbf{d}\cdot\mathbf{c}}\right). \]
+An axis is tested at its end on $\mathbf{c}$'s side, by the even--odd rule against the projected polygon.
+A lasso wider than a hemisphere selects nothing (none can be drawn on a net).
+\end{description}
+Because the shapes are on the sphere, the same rows stay selected however the net is rotated or
+projected.
+
+\section{Roses}\label{sec:m-rose}
+
+The sectors are centred on multiples of the sector width $w$: an azimuth $a$ falls in sector
+$\lfloor (a + w/2)/w \rfloor \bmod (360/w)$, so with 10° sectors, 4.9° counts in the sector centred on
+0 and 5.0° in the one centred on 10. A strike is the dip direction plus 270. With \ui{Count both ends}
+each azimuth is also counted at $a + 180^\circ$, which a strike rose always does
+(\cref{ch:roses}).
+
+The petal of a sector with count $c$, in a rose whose largest count is $c_{\max}$, reaches
+\[ r = r_{\max}\sqrt{c/c_{\max}} \quad\mbox{(area-true)}, \qquad r = r_{\max}\,c/c_{\max} \quad\mbox{(linear)}. \]
+The area of a sector grows as $r^2$, so the area-true petal's area is proportional to its count.
+
+\section{Faults}\label{sec:m-faults}
+
+\subsection{The sense, and the slip}
+
+A fault row gives a plane (its pole $\mathbf{p}$), a slickenline $\mathbf{l}$ and a sense. Senses are
+read as words or single characters:
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}\toprule
+\sffamily\bfseries sense & \sffamily\bfseries written as \\\midrule
+normal & \code{normal}, \code{n}, \code{2}, \code{-} \\
+reverse & \code{reverse}, \code{inverse}, \code{thrust}, \code{i}, \code{r}, \code{1}, \code{+} \\
+dextral & \code{dextral}, \code{right-lateral}, \code{d}, \code{3} \\
+sinistral & \code{sinistral}, \code{left-lateral}, \code{s}, \code{l}, \code{4} \\
+unknown & anything else, \code{unknown}, empty \\
+\bottomrule\end{tabularx}
+\end{center}
+The sense picks the \emph{slip} $\mathbf{s}$, the hanging wall's direction of motion, from $\pm\mathbf{l}$:
+\begin{itemize}
+\item normal: the one pointing down ($s_z \le 0$); reverse: the one pointing up;
+\item dextral: the one opposite the strike vector, sinistral: the one along it. The strike vector is
+horizontal, perpendicular to the upward normal $\mathbf{u} = (u_x, u_y, u_z)$, with the plane dipping to
+its right: $(-u_y, u_x, 0)/\sqrt{u_x^2 + u_y^2}$. On a fault striking 090 and dipping south, a dextral
+slip points west.
+\end{itemize}
+A vertical plane has two upward normals; wuffle takes the one pointing east (or, for an east--west plane,
+north). A fault of unknown sense is drawn, but gets no arrow and is left out of the P and T axes, the
+dihedra and the inversion.
+
+\subsection{The slip arrow}
+
+The arrow is drawn at the slickenline's plotted point $\mathbf{q}$ (plunge $\varphi_0$, trend
+$\theta_0$) along the horizontal part of the slip, the azimuth $\psi = \mathrm{atan2}(s_x, s_y)$. That
+direction splits into a part away from the centre and a part round it,
+\[ h_r = \cos(\psi - \theta_0), \qquad h_t = \sin(\psi - \theta_0), \]
+and a step of $k$ degrees along the arrow moves the point to plunge $\varphi_0 - h_r k$ and trend
+$\theta_0 + h_t k/\cos\varphi_0$. The shaft is 7° long and the head's barbs sit at 55\% of it, 2.4° to
+either side. Where the arrow would leave the lower hemisphere ($\varphi_0 - 7 h_r < 0$, pointing outward
+near the rim) it is drawn ending at $\mathbf{q}$ instead of starting there. A vertical slip has no
+horizontal part and no arrow (\cref{sec:slip-arrows}).
+
+\subsection{P and T axes}
+
+With $\mathbf{u}$ the upward unit normal and $\mathbf{s}$ the unit slip (perpendicular to it),
+\[ \mathbf{P} = \frac{\mathbf{u} - \mathbf{s}}{|\mathbf{u} - \mathbf{s}|}, \qquad \mathbf{T} = \frac{\mathbf{u} + \mathbf{s}}{|\mathbf{u} + \mathbf{s}|}, \]
+each at 45° to the plane, in the plane that holds the normal and the slip.
+
+\subsection{Right dihedra}\label{sec:m-dihedra}
+
+For each fault $k$, with downward normal $\mathbf{n}_k$ and slip $\mathbf{s}_k$, the function
+$2(\mathbf{g}\cdot\mathbf{n}_k)(\mathbf{g}\cdot\mathbf{s}_k)$ is positive in the fault's compressional
+quadrants and negative in its extensional ones: $+1$ at its P axis and $-1$ at its T axis. wuffle
+averages it over the $m$ faults of known sense,
+\[ f(\mathbf{g}) = \frac{1}{m}\sum_{k} 2\,(\mathbf{g}\cdot\mathbf{n}_k)(\mathbf{g}\cdot\mathbf{s}_k), \]
+on a 64-node grid, and draws the line $f = 0$ (\cref{sec:dihedra}).
+
+\begin{note}
+\textcite{angelier1977} count, at each direction, the faults whose compressional dihedron contains it.
+wuffle sums the smooth quadrant function instead, which weighs each fault by how deep in its quadrant
+the direction lies. For a single fault the two zero lines are the same, its two nodal planes. For many
+faults they are close but not identical, and wuffle's line is the smoother.
+\end{note}
+
+The dihedra are computed in the unrotated projection, so they are not drawn on a rotated net.
+
+\subsection{The stress inversion}\label{sec:m-michael}
+
+\textcite{michael1984}'s inversion assumes that each fault slipped along the shear traction the stress
+puts on it, and that the shear tractions are of similar size on all the faults. The deviatoric stress
+tensor has five unknowns, $\sigma_{11}, \sigma_{12}, \sigma_{13}, \sigma_{22}, \sigma_{23}$, with
+$\sigma_{33} = -(\sigma_{11} + \sigma_{22})$. With compression counted positive and the downward normal $\mathbf{n} = (n_1, n_2, n_3)$,
+each fault adds the three equations
+\[ \sigma\mathbf{n} - (\mathbf{n}\cdot\sigma\mathbf{n})\,\mathbf{n} = \mathbf{s}, \]
+linear in the unknowns, to a least-squares system, solved through its normal equations. The principal
+axes are the eigenvectors of the result: $\sigma_1$ (the most compressive), $\sigma_2$ and $\sigma_3$,
+with the stress ratio
+\[ \phi = \frac{\sigma_2 - \sigma_3}{\sigma_1 - \sigma_3}, \qquad 0 \le \phi \le 1. \]
+It needs at least four faults of known sense (\cref{sec:stress}).
+
+\begin{why}
+On 60 synthetic faults cut through a stress with $\sigma_1$ east--west and horizontal, $\sigma_3$
+vertical and $\phi = 0.4$, wuffle's inversion returns $\sigma_1$ at 090→00 and $\sigma_3$ vertical, to a
+tenth of a degree, and $\phi = 0.43$. The axes come back exactly; $\phi$ carries the method's assumption
+of equal shear stress, which synthetic faults through one tensor don't meet.
+\end{why}
+
+\section{The signature}\label{sec:m-signature}
+
+The compass signs the exact bytes of \file{wuffle-log.csv} with ECDSA on the curve P-256 and SHA-256, a
+key held in the phone's keystore. The \file{.sig} carries the signature as the 64-byte $r\,\|\,s$ pair and
+the public key as SubjectPublicKeyInfo, both in base64 (\cref{sec:format-sig}). wuffle verifies with the
+browser's own Web Crypto against the CSV's bytes as they are in the project; the \code{hash} field of the
+\file{.sig} is not used.
+
+The key's \term{fingerprint} is the first 8 bytes of SHA-256 over the SubjectPublicKeyInfo, written as 16
+hexadecimal digits in groups of four (\code{b2eb 7f10 \ldots}). Two logs with the same fingerprint were
+signed by the same key (\cref{sec:field-logs}).

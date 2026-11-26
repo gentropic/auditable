@@ -1,31 +1,33 @@
 \chapter{wuffle}\label{ch:wuffle}
 \begin{goals}
 \textbf{In this chapter} you learn what wuffle is: one file with two homes, a project that keeps each
-dataset once and shows it through layers, and a posture that keeps your data on your machine.
+dataset once and shows it through layers, and a posture that keeps your data on your machine. You also
+see what it is not, and how it maps onto the stereonet programs you may know.
 \end{goals}
 
 wuffle is a stereonet program in a single HTML file. It has no installer and no server, and it needs no
 account. You open the file in a browser and it runs there, offline.
 
 The name puns on the Wulff net. Orientation data belongs on an \term[equal-area net]{equal-area}
-(Schmidt) net, though, so that is what wuffle draws unless you ask for another projection.
+(Schmidt) net, though, so that is what wuffle draws unless you ask for another projection
+(\cref{sec:net-settings}).
 
 \section{Two homes, one file}\label{sec:two-homes}
 
-The same file is two programs, chosen by where it opens:
+The same file is two programs, chosen by where it opens (\cref{sec:opening}):
 
 \begin{description}
 \item[The field.] On a phone, wuffle is a \term[compass]{compass--clinometer}. Lay the phone on a
-bedding plane and it reads dip direction and dip; point it along a lineation and it reads trend and
-plunge. Each measurement lands on a live net and goes into a log you can publish
-(\cref{ch:field}).
+bedding plane and it reads dip direction and dip; lay its long edge along a lineation and it reads trend
+and plunge. Each measurement lands on a live net and goes into a log you can publish (\cref{ch:field}).
 \item[The desk.] On a computer, wuffle is a \term{workbench}: nets, rose diagrams and fabric plots,
-selections drawn on the sphere, statistics, a shell, and figures for a report.
+selections drawn on the sphere, statistics, a shell, and figures for a report (Part~II).
 \end{description}
 
 The two meet in the project. A log published from the phone opens on the desk with its signature
 checked, and its original bytes are kept untouched beside the data read from them
-(\cref{sec:field-logs}).
+(\cref{sec:field-logs}). The same file also opens on a computer as the compass, without the sensor, for
+typing a notebook's worth of readings into a net (\cref{sec:manual-entry}).
 
 \section{Data once, layers per diagram}\label{sec:data-once}
 
@@ -33,16 +35,16 @@ A wuffle project holds three kinds of thing:
 
 \begin{description}
 \item[Datasets.] A \term{dataset} is a table of measurements: rows, columns, and which columns hold the
-attitude. It lives in the project once, whatever draws it.
+attitude. It lives in the project once, whatever draws it (\cref{ch:data}).
 \item[Diagrams.] A \term{diagram} is a net, a rose diagram or a fabric plot. Each has its own settings
-(projection, hemisphere, rotation) and its own tab.
-\item[Layers.] A \term{layer} is one dataset drawn on one diagram, with its own style: poles or great
-circles, contours, a mean, eigenvectors.
+(projection, hemisphere, rotation) and its own tab (\cref{ch:diagrams}).
+\item[Layers.] A \term{layer} is one dataset drawn on one diagram, with its own style and its own choice
+of what to draw: poles or great circles, contours, a mean, eigenvectors (\cref{ch:elements}).
 \end{description}
 
 Every layer of a dataset is a view of the same rows. Edit a row and every view changes. Select poles
 on one net and the same rows are selected on every other net and in the table, because the selection
-belongs to the data, not to the drawing.
+belongs to the data, not to the drawing (\cref{ch:select}).
 
 \begin{why}
 A dataset copied into each diagram goes out of step the first time one copy is edited, and then you
@@ -52,7 +54,43 @@ only one set of rows to be right or wrong.
 
 Results are datasets too. A mean, the eigenvectors, a $\beta$ intersection, or a selection made into a
 set becomes a new dataset that records where it came from, its \term{lineage}, so it can be drawn,
-styled, saved and questioned like the measurements it was computed from.
+styled, saved and questioned like the measurements it was computed from (\cref{sec:lineage}).
+
+\section{If you have used OpenStereo}\label{sec:openstereo}
+
+wuffle grew up in the same tradition as OpenStereo, and much of it will feel familiar. The ideas map
+like this:
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}>{\raggedright}p{0.34\linewidth}L@{}}\toprule
+\sffamily\bfseries in OpenStereo & \sffamily\bfseries in wuffle \\\midrule
+a data file imported into the project & a \emph{dataset}, kept once (\cref{ch:data}) \\
+a plot & a \emph{diagram}: a net, a rose or a fabric plot, each in its own tab \\
+a data item drawn in a plot & a \emph{layer}: the same dataset may be drawn in several diagrams, each a view of the same rows (\cref{sec:views}) \\
+the item's checkboxes for poles, circles, contours, statistics & the layer's nested checkboxes (\cref{ch:elements}) \\
+the item's properties dialog & the layer's properties, by double-click (\cref{sec:properties}) \\
+a project file & a \file{.zip.wuffle}: plain CSV and JSON inside a zip (\cref{sec:project-file}) \\
+\bottomrule\end{tabularx}
+\end{center}
+
+What is new: selections drawn on the sphere and shared by every view, results kept as datasets with their
+lineage, undo for everything, a shell whose working directory is the project, a project inside a single
+page you can send, and the compass on the phone in the same file.
+
+\section{What wuffle is not}\label{sec:not}
+
+\begin{itemize}
+\item \textbf{Not a map.} wuffle keeps each reading's position, but it draws nets, not maps. Take the
+CSV to a GIS for that.
+\item \textbf{Not a certified instrument.} A phone's magnetometer is sensitive to steel, magnets and
+electronics nearby, and its calibration drifts. Treat the compass as a fast notebook that knows north,
+check it against a clinometer on a few planes a day, and keep the readings it can't support out of the
+analysis.
+\item \textbf{Not a modelling package.} wuffle analyses orientations: means, fabrics, intersections,
+fault-slip inversion. It doesn't build 3D surfaces or fold models.
+\item \textbf{Not a cloud service.} There is no account and no server holding your data. A project lives in
+your browser and in the files you save (\cref{sec:local}).
+\end{itemize}
 
 \section{Local, and honest about it}\label{sec:local}
 
@@ -60,13 +98,17 @@ wuffle fetches nothing when it opens. Your data stays in the browser tab, and be
 a copy of the project in the browser's own storage, on your machine (\cref{sec:autosave}). The only
 things that can reach the network are things you type in the console, such as a package install.
 
-The badge in the corner says \ui{● local}. It does not say \emph{sealed}: a sealed page is one whose
-browser policy forbids the network outright, and wuffle doesn't carry that policy, so it makes the
-smaller claim.
+The badge in the corner says \ui{● local}. Hover over it and it says so in full: \ui{Runs entirely in
+this page. Nothing is fetched when it loads; only commands you type may reach the network (pkg install, a
+URL). Your project stays in this browser and in the files you save.} It does not say \emph{sealed}: a
+sealed page is one whose browser policy forbids the network outright, and wuffle doesn't carry that
+policy, so it makes the smaller claim.
 
 \section{What it is built on}
 
 wuffle's maths is \code{@gcu/bearing}, a library of orientation geometry: projections, the Fisher and
-eigen statistics, contouring, rotations. The nets, selections and figure frames come from
-\code{@gcu/stereonet}, which the GCU notebook's stereonet cell also uses. The console is
-\code{geas}, a shell written for the browser. All of it ships inside the one file.
+eigen statistics, contouring, rotations and fault-slip inversion. The compass's true north comes from
+\code{@gcu/wmm}, the World Magnetic Model. The nets, selections and figure frames come from \code{@gcu/stereonet}, which the
+GCU notebook's stereonet cell also uses. Figures are \code{@gcu/compo} pages. The console is \code{geas},
+a shell written for the browser. All of it ships inside the one file, which \menu{Help>About wuffle}
+summarizes along with the source of the sample data.

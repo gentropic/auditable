@@ -1,14 +1,18 @@
 \chapter{The project as files}\label{ch:project-fs}
 \begin{goals}
 \textbf{In this chapter} you read and change a project through \file{/project}, where every dataset,
-diagram, layer and figure is a file.
+diagram, layer and figure is a file, and learn what it refuses and why.
 \end{goals}
 
 The console starts in \file{/project}. It is not a copy of the project: it \emph{is} the project, shown
 as files. Read a file and you read the project as it is now; write one and you change the project,
-through the same rules as the menus, and the change can be undone like any other.
+through the same rules as the menus, and the change can be undone like any other. Everything you already
+know about files (listing, reading, piping, copying) works on your measurements.
 
 \section{The tree}\label{sec:project-tree}
+
+\shot{project-ls}{\file{/project} listed: the six entries at its root, and a layer that is a symbolic link
+to its dataset.}
 
 \begin{center}\small
 \begin{tabularx}{\linewidth}{@{}>{\raggedright}p{0.5\linewidth}L@{}}\toprule
@@ -27,19 +31,88 @@ through the same rules as the menus, and the change can be undone like any other
 \bottomrule\end{tabularx}
 \end{center}
 
+A diagram's directory is named after the diagram, a dataset's files after the dataset, a layer's after the
+layer's own name, or its dataset's when it has none. A name with a \file{/} in it is written with a
+look-alike slash, \file{∕}, so it stays one file name.
+
 A layer is a \term[symbolic link]{symbolic link} to its dataset. That is the \enquote{data once, layers
-per diagram} rule of \cref{sec:data-once} made visible: \code{ls -l} shows every layer pointing at the
-one file that holds the rows.
-
-\section{Reading}
-
-Everything reads with the usual tools. \file{net.svg} is the diagram as vector graphics, ready to copy
-out; \file{.pdf} files render the figure when you read them.
+per diagram} rule of \cref{sec:data-once} made visible: \code{ls -l} shows every layer pointing at the one
+file that holds the rows.
 
 \begin{lstlisting}
-head -5 data/tocher.csv
-cat diagrams/Net\ 1/layers/tocher.json
+wuffle /project $ ls -l "diagrams/Net 1/layers"
+l       24  tocher.csv -> ../../../data/tocher.csv
+-      752  tocher.json
+\end{lstlisting}
+
+\section{Reading}\label{sec:project-read}
+
+Everything reads with the usual tools. The files you will read most:
+
+\paragraph{\file{project.json}} the project in brief:
+
+\begin{lstlisting}
+{
+  "name": "untitled",
+  "datasets": 1,
+  "diagrams": 1,
+  "layers": 1,
+  "figures": 0,
+  "originals": 0,
+  "active": "Net 1"
+}
+\end{lstlisting}
+
+\paragraph{\file{data/tocher.json}} what wuffle knows about a dataset beyond its rows, including where it
+is drawn:
+
+\begin{lstlisting}
+{
+  "name": "tocher",
+  "kind": "planes",
+  "rows": 200,
+  "columns": ["dip direction", "dip"],
+  "roles": { "dipDir": "dip direction", "dip": "dip" },
+  "notation": "dd",
+  "lineage": null,
+  "drawnOn": ["Net 1"]
+}
+\end{lstlisting}
+
+(The console prints JSON one value to a line; it is condensed here.)
+
+\paragraph{\file{diagram.json}} a diagram's settings and its layers, in draw order:
+
+\begin{lstlisting}
+{
+  "name": "Net 1",
+  "kind": "net",
+  "props": { "projection": "equal-area", "hemisphere": "lower",
+             "rotation": null, "matrix": null, "graticule": 10 },
+  "layers": ["tocher"]
+}
+\end{lstlisting}
+
+\paragraph{\file{net.svg}} the diagram as vector graphics, drawn on paper (white ground, dark ink)
+whatever the desk's theme. Copy it out to keep it with the project, or to take it to a drawing program:
+
+\begin{lstlisting}
+cp "diagrams/Net 1/net.svg" /home/net-1.svg
+\end{lstlisting}
+
+It is an ordinary SVG, but not a small one: every contour and great circle is a path, so 200 great
+circles make a file of about 900~KB. For a page in a report, make a figure (\cref{ch:figures}).
+
+\paragraph{\file{.pdf}} a figure's \file{.pdf} renders the page when you read it, so
+\code{cp "figures/Net 1 · figure.pdf" /home/} keeps a PDF of the figure in the project (about 130~KB for a
+net of the Tocher sample).
+
+\paragraph{The selection} \file{selection/tocher.rows} lists the selected rows by number (from 1), one to
+a line, and \file{selection/tocher.csv} gives those rows themselves, ready to pipe:
+
+\begin{lstlisting}
 grep -c . selection/tocher.rows
+cat selection/tocher.csv
 \end{lstlisting}
 
 \section{Writing}\label{sec:project-write}
@@ -47,12 +120,31 @@ grep -c . selection/tocher.rows
 A write is an action on the project:
 
 \begin{description}
-\item[A dataset's CSV.] Writing \file{data/<name>.csv} replaces its rows; every layer redraws. A new
-name in \file{data/} is a new dataset, read the way \menu{File>Open} reads a file.
-\item[A settings file.] Writing \file{diagram.json} changes the diagram (its name, projection,
-rotation); writing a layer's \file{.json} shows, hides or restyles what it draws.
-\item[A selection.] Writing row numbers to \file{selection/<name>.rows} selects those rows; \code{rm}
-clears the selection.
+\item[A dataset's CSV.] Writing \file{data/<name>.csv} replaces its rows; every layer redraws. The undo
+step is \ui{edit rows}. A new name in \file{data/} is a new dataset, read the way \menu{File>Open} reads a
+file (\cref{sec:data-read}): \code{printf 'dd,dip\textbackslash n120,40\textbackslash n' > data/joints.csv}
+makes \code{joints}, two planes, in one step called \ui{new data joints}. It is in the project but not drawn
+until you draw it (below).
+\item[A diagram's settings.] Writing \file{diagram.json} changes the diagram. Write only what you change,
+under \code{props} for its settings or \code{name} to rename it:
+\begin{lstlisting}
+echo '{"props":{"projection":"equal-angle"}}' > "diagrams/Net 1/diagram.json"
+echo '{"name":"Tocher net"}' > "diagrams/Net 1/diagram.json"
+\end{lstlisting}
+The undo step is \ui{diagram settings}.
+\item[A layer's settings.] Writing a layer's \file{.json} shows or hides it (\code{visible}), restyles it
+(\code{style}: \code{color}, \code{size}) and switches what it draws (\code{elements}). Again, write only
+what changes:
+\begin{lstlisting}
+echo '{"elements":{"greatCircles":{"on":true},"poles":{"on":false}}}' > "diagrams/Net 1/layers/tocher.json"
+echo '{"style":{"color":"#3a7bd5","size":6}}' > "diagrams/Net 1/layers/tocher.json"
+echo '{"visible":false}' > "diagrams/Net 1/layers/tocher.json"
+\end{lstlisting}
+Each is one undo step, \ui{layer settings}. An element's own settings go the same way, such as a contour
+method (\cref{sec:contours}).
+\item[A selection.] Writing row numbers to \file{selection/<name>.rows} selects those rows:
+\code{echo 2 5 9 > selection/tocher.rows}. Numbers may be separated by spaces, commas or new lines.
+\code{rm} clears the selection. A number outside the table is refused: \ui{row numbers run 1–200}.
 \item[A figure.] Writing \file{figures/<name>.compo.json} replaces the page; a new name is a new figure.
 \end{description}
 
@@ -61,17 +153,14 @@ And the directory operations mean what they look like:
 \begin{description}
 \item[\code{mkdir diagrams/Joints}] makes a new net called \ui{Joints}.
 \item[\code{ln -s ../../../data/tocher.csv diagrams/Joints/layers/}] draws \code{tocher} on it. The
-link's name is the layer's name.
-\item[\code{mv}] renames a dataset, a diagram or a figure; moving a layer's file into another diagram's
-\file{layers/} moves the layer there.
-\item[\code{rm -r diagrams/Joints}] removes the net.
+link's name is the layer's name, so linking to \file{diagrams/Joints/layers/west.csv} makes a layer called
+\code{west}. If the dataset is drawn elsewhere already, the new layer is a view of it, with that layer's
+style (\cref{sec:views}).
+\item[\code{mv}] renames a dataset, a diagram or a figure (\code{mv data/joints.csv
+data/joints-west.csv}); moving a layer's file into another diagram's \file{layers/} moves the layer there.
+\item[\code{rm}] removes a layer (its link or its \file{.json}), a dataset no diagram draws, a figure, or
+the selection. \code{rm -r diagrams/Joints} removes the net and its layers; the data stays.
 \end{description}
-
-\begin{why}
-The rules don't loosen because you are typing. \code{rm data/tocher.csv} refuses while \code{tocher}
-is drawn somewhere, as deleting it from the tree asks first; remove its layers, then the data. Files
-that are computed (\file{net.svg}, \file{.pdf}, \file{selection/<name>.csv}) are read-only and say so.
-\end{why}
 
 \begin{tryit}
 \begin{enumerate}
@@ -85,9 +174,34 @@ found (\cref{sec:undo}).
 \end{enumerate}
 \end{tryit}
 
-\section{Field originals}
+\section{Refusals}\label{sec:project-refusals}
+
+The rules don't loosen because you are typing. Every refusal changes nothing and says why:
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}>{\raggedright}p{0.36\linewidth}L@{}}\toprule
+\sffamily\bfseries you type & \sffamily\bfseries wuffle answers \\\midrule
+\code{rm data/tocher.csv} & \ui{“tocher” is drawn on Net 1, Joints — remove those layers first} \\
+\code{echo x > "diagrams/Net 1/net.svg"} & \ui{read-only} (computed files: \file{net.svg}, \file{.pdf}, \file{selection/<name>.csv}) \\
+\code{mkdir data/x} & \ui{only a diagram can be made here (mkdir diagrams/<name>)} \\
+\code{ln -s ../../../project.json …/a.csv} & \ui{a layer links to data/<name>.csv (got ../../../project.json)} \\
+\code{echo hi > notes.txt} & \ui{nothing can be made here}; write notes in \file{/home} \\
+\code{rm project.json} & \ui{this can only go with what it belongs to} \\
+\code{rm data/tocher.json} & \ui{the data is /data/tocher.csv} \\
+\code{echo 9 >> field/…/wuffle-log.csv} & \ui{an original is kept exactly as it came (its signature is over these bytes) — edit the data read from it, in data/} \\
+\bottomrule\end{tabularx}
+\end{center}
+
+\begin{why}
+\code{rm data/tocher.csv} refusing while \code{tocher} is drawn is the same rule as the tree asking
+before it deletes data that is drawn. The menu can ask you; a script can't, so it refuses, and you remove
+the layers first. A script that runs to the end has done only what it said.
+\end{why}
+
+\section{Field originals}\label{sec:project-field}
 
 \file{field/} holds the field logs brought into the project, each in a directory of its own: the CSV
 as the phone wrote it, its \file{.sig}, and a \file{photos/} directory. They are read-only. An original
-goes whole (\code{rm -r field/<name>}) or not at all, and nothing can be written into one, because its
-signature is over exactly those bytes. \cref{sec:field-logs} explains why.
+goes whole (\code{rm -r "field/field 2026-11-20"}) or not at all, and nothing can be written into one,
+because its signature is over exactly those bytes. \cref{sec:field-logs} explains why, and
+\code{verify} checks them (\cref{sec:routines}).

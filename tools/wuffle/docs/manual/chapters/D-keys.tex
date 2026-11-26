@@ -1,0 +1,129 @@
+\chapter{Keys and mouse}\label{app:keys}
+\begin{goals}
+\textbf{This appendix} lists every keyboard shortcut and mouse gesture in wuffle, read from the program
+itself. On a Mac, \key{⌘} works wherever \key{Ctrl} is given.
+\end{goals}
+
+\section{The desk}
+
+\subsection{Keys}
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}>{\raggedright}p{0.3\linewidth}L@{}}\toprule
+\sffamily\bfseries key & \sffamily\bfseries what it does \\\midrule
+\key{Ctrl}+\key{O} & open data, a project or a wuffle page (\cref{ch:data}) \\
+\key{Ctrl}+\key{S} & save the project as \file{.zip.wuffle} (\cref{sec:project-file}) \\
+\key{Ctrl}+\key{Z} & undo the last change, whoever made it (\cref{sec:undo}) \\
+\key{Ctrl}+\key{Shift}+\key{Z}, \key{Ctrl}+\key{Y} & redo \\
+\key{`} (backquote) & open the console (\cref{ch:console}) \\
+\key{Esc} & clear the outlines of the selection shapes from the nets; the selection itself stays \\
+\bottomrule\end{tabularx}
+\end{center}
+
+None of these act while you type in a field, a dialog or the console, where the keys belong to what you
+are typing. Undo and redo also leave a figure tab alone: a figure has its own undo (below).
+
+\subsection{On a net}
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}>{\raggedright}p{0.3\linewidth}L@{}}\toprule
+\sffamily\bfseries gesture & \sffamily\bfseries what it does \\\midrule
+\multicolumn{2}{@{}l}{\sffamily\itshape with the \ui{pick} tool} \\
+click a measurement & select its row, alone (\cref{sec:pick}) \\
+\key{Shift}+click & add its row to the selection \\
+\key{Ctrl}+click & add or remove its row \\
+click empty space & clear the selection \\
+drag & rotate the net (\cref{ch:rotation}); a click that moves under 4 pixels is still a click \\
+\multicolumn{2}{@{}l}{\sffamily\itshape with \ui{lasso}, \ui{cone} or \ui{band}} \\
+drag & draw the shape; the rows inside it become the selection (\cref{sec:shapes}) \\
+\key{Shift}+drag & add the rows inside it \\
+\key{Alt}+drag & take the rows inside it away \\
+\multicolumn{2}{@{}l}{\sffamily\itshape always} \\
+move the pointer & the status line reads the attitude under it, and the row under it if any \\
+\bottomrule\end{tabularx}
+\end{center}
+
+\subsection{In the layers tree}
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}>{\raggedright}p{0.3\linewidth}L@{}}\toprule
+\sffamily\bfseries gesture & \sffamily\bfseries what it does \\\midrule
+click the small arrow & open or close a diagram, a layer, a group \\
+click a checkbox & show or hide a layer or one of its elements (\cref{ch:elements}) \\
+click a layer or a dataset & show its rows in the table \\
+double-click a layer & its properties (\cref{sec:properties}) \\
+right-click & the menu of a diagram, a layer, a dataset or a figure \\
+drag a layer onto a diagram's name & add a view of it there (\cref{sec:views}) \\
+\key{Shift} while dropping a layer & move it there instead \\
+drag a dataset onto a diagram's name & draw it there, as a new layer \\
+\bottomrule\end{tabularx}
+\end{center}
+
+\subsection{Elsewhere on the desk}
+
+\begin{description}
+\item[Drop files on the window] to open them, as \menu{File>Open data or a project…} does: data, a
+\file{.zip.wuffle}, a wuffle page, or a field log with its \file{.sig} and photos together.
+\item[Drag a tab] by its title to put it beside, below or above the others; the desk's regions are
+tabs you arrange.
+\item[In the table,] click a row, or drag down several, to select them everywhere; the arrow keys,
+\key{Home}, \key{End} and \key{Page Up}/\key{Page Down} move about it, and \key{Shift} extends a range.
+\end{description}
+
+\section{The console}
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}>{\raggedright}p{0.3\linewidth}L@{}}\toprule
+\sffamily\bfseries key & \sffamily\bfseries what it does \\\midrule
+\key{Enter} & run the line \\
+\key{Tab} & complete: a command at the start of the line, then a name, then a path \\
+\key{↑} \key{↓} & earlier and later lines \\
+\key{Backspace} & delete the last character \\
+\key{Ctrl}+\key{C} & abandon the line; a fresh prompt \\
+\bottomrule\end{tabularx}
+\end{center}
+
+The line editor works at the end of the line only: \key{←} and \key{→} don't move the cursor. Undo and
+redo are the commands \code{undo} and \code{redo} here.
+
+\section{A figure tab}
+
+A figure is a page of \code{@gcu/compo} frames (\cref{ch:figures}), with an editor of its own:
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}>{\raggedright}p{0.3\linewidth}L@{}}\toprule
+\sffamily\bfseries key or gesture & \sffamily\bfseries what it does \\\midrule
+click a frame & select it; \key{Shift}+click adds to the selection \\
+drag on the empty page & select the frames the box touches \\
+drag a frame & move it, snapping to the others' edges \\
+drag a handle & resize \\
+arrow keys & nudge the selected frames; with \key{Shift}, ten times as far \\
+\key{Delete}, \key{Backspace} & delete the selected frames (locked ones stay) \\
+\key{Ctrl}+\key{D} & duplicate \\
+\key{Ctrl}+\key{A} & select every frame \\
+\key{Ctrl}+\key{G}, \key{Ctrl}+\key{Shift}+\key{G} & group, ungroup \\
+\key{Ctrl}+\key{]}, \key{Ctrl}+\key{[} & one step forward, back; with \key{Shift}, to the front, to the back \\
+\key{Ctrl}+\key{Z}, \key{Ctrl}+\key{Shift}+\key{Z} or \key{Ctrl}+\key{Y} & the figure's own undo and redo \\
+\key{Esc} & select nothing \\
+\bottomrule\end{tabularx}
+\end{center}
+
+\section{The compass}
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}>{\raggedright}p{0.3\linewidth}L@{}}\toprule
+\sffamily\bfseries key or gesture & \sffamily\bfseries what it does \\\midrule
+\ui{plane}, \ui{line} & what the next measurement is (\cref{sec:measuring}) \\
+\ui{◎} & keep the live reading \\
+\key{Enter} in the typed field, or \ui{add} & add the typed measurement (\cref{sec:manual-entry}) \\
+\ui{×} on a row & delete that measurement \\
+\ui{photo}, then \ui{capture} or \ui{cancel} & photograph the outcrop for the last measurement (\cref{sec:photos}) \\
+\ui{clear} & empty the log \\
+\ui{publish →} & write the log out (\cref{sec:publish}) \\
+\bottomrule\end{tabularx}
+\end{center}
+
+\begin{caution}
+\ui{clear} asks first: one tap says \ui{tap clear again to delete all …}, and only a second tap within
+three seconds empties the log. There is no undo after that. Publish first.
+\end{caution}
