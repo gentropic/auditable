@@ -131,15 +131,19 @@ if (pub.signed) {
 // 4c. intake: a csv "shared" to wuffle reloads into the log (share's inbound twin)
 const taken = await p.evaluate(async () => {
   const w = window.__wuffle; const before = w.count();
-  const csv = 'type,dip_dir_or_trend,dip_or_plunge,strike,timestamp\nplane,120,35,30,2026-10-07T00:00:00Z\nline,250,12,,2026-10-07T00:00:01Z\n';
+  // a published log carries north / declination / photo: they must survive the round trip (they were dropped,
+  // so a true-north row republished as "magnetic")
+  const csv = 'type,dip_dir_or_trend,dip_or_plunge,strike,timestamp,lat,lon,acc_m,north,declination_deg,photo\nplane,120,35,30,2026-10-07T00:00:00Z,,,,true,-15.2,wuffle-001-x.jpg\nline,250,12,,2026-10-07T00:00:01Z,,,,true,-15.2,\n';
   window.__bench.files['log.csv'] = new TextEncoder().encode(csv);
   window.__bench.intake([{ kind: 'file', token: 'log.csv', name: 'log.csv', size: csv.length, mime: 'text/csv' }]);
   for (let i = 0; i < 30 && w.count() < before + 2; i++) await new Promise((r) => setTimeout(r, 100));
-  const last = w.log[w.log.length - 1];
-  return { before, after: w.count(), last, msg: document.getElementById('msg').textContent };
+  const last = w.log[w.log.length - 1], prev = w.log[w.log.length - 2];
+  return { before, after: w.count(), last, prev, msg: document.getElementById('msg').textContent };
 });
 chk(`intake: a shared csv reloads into the log (${taken.before} → ${taken.after}, last ${taken.last && taken.last.mode} ${taken.last && taken.last.d1}→${taken.last && taken.last.d2}; "${taken.msg}")`,
   taken.after === taken.before + 2 && taken.last && taken.last.mode === 'line' && taken.last.d1 === 250 && /loaded 2 measurements from log\.csv/.test(taken.msg));
+chk(`intake keeps each row's north, declination and photo name (${taken.prev?.north} ${taken.prev?.decl} ${taken.prev?.photo})`,
+  taken.prev?.north === 'true' && taken.prev?.decl === -15.2 && taken.prev?.photo === 'wuffle-001-x.jpg' && taken.last?.north === 'true');
 
 // 4d. gnss: the bench fix stamps a measurement with lat/lon (+ it round-trips through the csv columns)
 const pos = await p.evaluate(async () => {

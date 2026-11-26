@@ -69,8 +69,11 @@ export function mountDesk() {
   const menus = createMenus($('.wmenus'), { project: p, files, layout, theme, figures, onStatus: status });
   tree.onOpenFigure = (id) => figures.open(id);
 
+  // the tab's title names the project, as a saved page's own <title> does (page.js): "<name> — wuffle"
+  const title = () => { document.title = `${p.name || 'untitled'} — wuffle`; };
   p.on((e) => {
     if (e.type === 'project-loaded') table.show(null);
+    if (e.type === 'project-loaded' || e.type === 'project-renamed' || e.type === 'history') title();
     const n = p.datasets.reduce((a, d) => a + d.rows.length, 0), s = [...p.selection.values()].reduce((a, x) => a + x.size, 0);
     $('.wst-count').textContent = `${p.datasets.length} dataset${p.datasets.length === 1 ? '' : 's'} · ${n} measurements${s ? ` · ${s} selected` : ''}`;
   });

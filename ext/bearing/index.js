@@ -1,4 +1,4 @@
-// ⚠ VENDORED — DO NOT EDIT. @gcu/bearing v0.3.1, built ESM bundle.
+// ⚠ VENDORED — DO NOT EDIT. @gcu/bearing v0.3.2, built ESM bundle.
 // Source of truth: gentropic/bearing.js (dist/bearing.mjs). Update with:
 //   node ext/bearing/sync.mjs
 // See ext/bearing/README.md.
@@ -1772,6 +1772,17 @@ var Stereonet = class _Stereonet {
   _reflect(p) {
     return this.hemisphere === "upper" ? [p[0], p[1], -p[2]] : p;
   }
+  /**
+   * The whole view as ONE matrix: the rotation, then the hemisphere's z-reflection — what a density grid
+   * needs, since it works in the lower-hemisphere projection of the transformed data. (Until 0.3.2 the grids
+   * got the rotation alone, so on an upper-hemisphere net the contours and the heatmap were drawn mirrored
+   * through the centre, away from the points they counted.) null when the view is the identity.
+   */
+  _viewMatrix() {
+    if (this.hemisphere !== "upper") return this.rotation || null;
+    const Z = [1, 0, 0, 0, 1, 0, 0, 0, -1];
+    return this.rotation ? multiply(Z, this.rotation) : Z;
+  }
   /** Rotate a 3D point by the stereonet's rotation, then orient to the hemisphere. */
   _rotate(p) {
     return this._reflect(this.rotation ? transformVec3(this.rotation, p) : p);
@@ -1924,7 +1935,7 @@ var Stereonet = class _Stereonet {
     }
     this._contourPaths = computeContours(this._contourDcos, {
       projection: this.projection,
-      rotation: this.rotation,
+      rotation: this._viewMatrix(),
       ...this._contourOptions
     });
   }
@@ -1970,7 +1981,7 @@ var Stereonet = class _Stereonet {
     }
     this._heatmapData = densityGrid(this._heatmapDcos, {
       projection: this.projection,
-      rotation: this.rotation,
+      rotation: this._viewMatrix(),
       gridSize: 48,
       ...this._heatmapOptions
     });
@@ -4079,6 +4090,13 @@ function woodcockPoint(dcos) {
   const y = Math.log(s1 / s2);
   return { x, y, K: x !== 0 ? y / x : Infinity, C: x + y, eigenvalues };
 }
+function placeLabel(placed, x, y, text) {
+  const w = String(text).length * 5.6 + 2, hgt = 11;
+  let ty = y;
+  for (let k = 0; k < 50 && placed.some((b) => x < b.x + b.w && b.x < x + w && ty - hgt < b.y && b.y - hgt < ty); k++) ty += hgt;
+  placed.push({ x, y: ty, w });
+  return ty;
+}
 function woodcockSVG(datasets, options = {}) {
   const size = options.size || 320;
   const pad = options.padding ?? 44;
@@ -4092,10 +4110,14 @@ function woodcockSVG(datasets, options = {}) {
   svg.text(sx(max) - 4, sy(max) + 12, "K=1", { fill: "#888", "font-size": 10, "text-anchor": "end" });
   svg.text(pad + plot / 2, size - 10, "ln(S2/S3)  \u2014 girdle \u2192", { fill: "#555", "font-size": 11, "text-anchor": "middle" });
   svg.text(14, pad + plot / 2, "ln(S1/S2)  \u2014 cluster \u2192", { fill: "#555", "font-size": 11, "text-anchor": "middle", transform: `rotate(-90 14 ${pad + plot / 2})` });
+  const placed = [];
   for (const ds of asDatasets(datasets)) {
     const p = woodcockPoint(ds.dcos);
     svg.circle(sx(Math.min(max, p.x)), sy(Math.min(max, p.y)), 4, { fill: ds.color || "#e8920c", stroke: "#333", "stroke-width": 0.7 });
-    if (ds.label) svg.text(sx(Math.min(max, p.x)) + 7, sy(Math.min(max, p.y)) + 3, ds.label, { fill: "#333", "font-size": 10 });
+    if (ds.label) {
+      const x = sx(Math.min(max, p.x)) + 7;
+      svg.text(x, placeLabel(placed, x, sy(Math.min(max, p.y)) + 3, ds.label), ds.label, { fill: "#333", "font-size": 10 });
+    }
   }
   return svg.toString();
 }
@@ -4120,12 +4142,13 @@ function vollmerSVG(datasets, options = {}) {
   svg.text(P[0], P[1] - 8, "P", { fill: "#555", "font-size": 12, "text-anchor": "middle" });
   svg.text(G[0] - 4, G[1] + 14, "G", { fill: "#555", "font-size": 12, "text-anchor": "middle" });
   svg.text(R[0] + 4, R[1] + 14, "R", { fill: "#555", "font-size": 12, "text-anchor": "middle" });
+  const placed = [];
   for (const ds of asDatasets(datasets)) {
     const { P: p, G: g, R: r } = vollmerPoint(ds.dcos);
     const x = p * P[0] + g * G[0] + r * R[0];
     const y = p * P[1] + g * G[1] + r * R[1];
     svg.circle(x, y, 4, { fill: ds.color || "#1aa39a", stroke: "#333", "stroke-width": 0.7 });
-    if (ds.label) svg.text(x + 7, y + 3, ds.label, { fill: "#333", "font-size": 10 });
+    if (ds.label) svg.text(x + 7, placeLabel(placed, x + 7, y + 3, ds.label), ds.label, { fill: "#333", "font-size": 10 });
   }
   return svg.toString();
 }

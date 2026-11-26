@@ -104,7 +104,7 @@ describe('/project — writing goes through the model', () => {
     const { p, d, n1, run } = await mk();
     await run('mv data/tocher.csv data/joints.csv'); assert.equal(p.dataset(d).name, 'joints');
     await run('mv "diagrams/Net 1" diagrams/Main'); assert.equal(p.diagram(n1).name, 'Main');
-    assert.match((await run('echo x > project.json')).errs, /read-only/);
+    assert.match((await run('echo x > project.json')).errs, /project.json is JSON/);   // only {"name": …} is writable
     assert.match((await run('rm "diagrams/Main/net.svg"')).errs, /only go with what it belongs to/);
     assert.match((await run('mkdir data/x')).errs, /only a diagram/);
   });

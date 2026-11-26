@@ -87,6 +87,7 @@ function stereonetCore(B) {
       const axes = data.map((d) => d.pole || d.dcos);
       const on = (n) => !!E[n]?.on;
 
+      if (on('contours') && axes.length <= 2) notes.push(`contours: “${L.id}” has ${axes.length} measurement${axes.length === 1 ? '' : 's'} — contours need three`);
       if (on('contours') && axes.length > 2) {
         if (contoured) notes.push(`contours: one set per net — “${L.id}” isn’t contoured; the contours are “${contoured}”’s`);
         else {
@@ -199,7 +200,11 @@ function stereonetCore(B) {
       else if (p.type === 'curve') net.curve(p.points, p.style);
       else if (p.type === 'text') net.text(p.trend, p.plunge, p.content, p.style);
       else if (p.type === 'dihedra' && !options.rotation && !options.center) {   // the field is computed in the unrotated projection
-        net.contour(p.planes, { grid: fault.dihedraGrid(p.planes, p.slips, { projection: options.projection || 'equal-area', gridSize: 64 }), levels: [0], stroke: p.style.stroke, strokeWidth: p.style.strokeWidth });
+        // the grid is in the LOWER projection: on an upper-hemisphere net reflect the faults (z → −z) so the
+        // field's value at each drawn spot is the one for the direction drawn there (sign((g·n)(g·s)) is
+        // unchanged when g, n and s are all reflected)
+        const Z = (v) => (options.hemisphere === 'upper' ? [v[0], v[1], -v[2]] : v);
+        net.contour(p.planes, { grid: fault.dihedraGrid(p.planes.map(Z), p.slips.map(Z), { projection: options.projection || 'equal-area', gridSize: 64 }), levels: [0], stroke: p.style.stroke, strokeWidth: p.style.strokeWidth });
       }
       if (p.ref && p.dcos && (p.type === 'pole' || p.type === 'line')) { const q = net.project(p.dcos); picks.push({ x: q.x, y: q.y, ref: p.ref }); }
     }

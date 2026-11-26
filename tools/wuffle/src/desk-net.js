@@ -57,7 +57,13 @@ export class NetView {
     for (const fn of this.drawn) fn(this);
   }
 
-  _layerName(id) { const L = this.p.layer(id); return L ? (L.name || this.p.dataset(L.datasetId)?.name || id) : id; }
+  /** a layer's name in a note; two layers of one diagram that share a name are told apart by their place (2nd …) */
+  _layerName(id) {
+    const L = this.p.layer(id); if (!L) return id;
+    const nm = (x) => x.name || this.p.dataset(x.datasetId)?.name || x.id;
+    const same = this.p.layersOf(L.diagramId).filter((x) => nm(x) === nm(L));
+    return same.length > 1 ? `${nm(L)}, layer ${same.indexOf(L) + 1} of ${same.length}` : nm(L);
+  }
 
   /** a pointer event → svg units on the net (and the scale from css px) */
   svgPoint(e) { return this._svgPoint(e); }

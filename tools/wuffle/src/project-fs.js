@@ -140,6 +140,12 @@ export function projectFs(p, { renderSvg = null, figurePdf = null, mount = '/pro
   function write(sub, data) {
     const s = split(sub), n = locate(sub), t = text(data);
     if (n) switch (n.kind) {
+      case 'project': {                                   // only the name is the project's to change; the rest is counted
+        let o; try { o = JSON.parse(t); } catch { throw err('EINVAL', sub, 'project.json is JSON: {"name": "…"}'); }
+        if (typeof o?.name !== 'string' || !o.name.trim()) throw err('EINVAL', sub, 'write {"name": "…"} — the rest of project.json is counted, not set');
+        if (o.name.trim() !== p.name) p.renameProject(o.name);
+        return;
+      }
       case 'data': case 'layerlink': {
         const d = n.d || p.dataset(n.l.datasetId), tbl = parseDelimited(t);
         p.editRows(d.id, () => tbl.rows); return;

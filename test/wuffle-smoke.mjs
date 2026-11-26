@@ -91,7 +91,17 @@ await p.evaluate(() => document.querySelector('#list li .del').click());
 const afterDel = await p.evaluate(() => ({ count: window.__wuffle.count(), rows: document.querySelectorAll('#list li').length }));
 chk(`delete a measurement (count ${afterDel.count}, rows ${afterDel.rows})`, afterDel.count === 4 && afterDel.rows === 4);
 
-// 7. clear → empty net + log
+// 7. the log is KEPT on the phone: a reload brings it back (it lived in memory only); clear asks for a
+//    second tap, and once cleared a reload stays empty
+await p.evaluate(() => window.__wuffle.kept());
+await p.reload({ waitUntil: 'load' });
+await p.waitForFunction(() => window.__wuffle && window.__wuffle.count() === 4, null, { timeout: 5000 }).catch(() => {});
+const kept = await p.evaluate(() => ({ count: window.__wuffle.count(), msg: document.getElementById('msg').textContent }));
+chk(`the log survives a reload (count ${kept.count}; "${kept.msg}")`, kept.count === 4 && /kept from last time: 4/.test(kept.msg));
+await p.click('#clear');
+const armed = await p.evaluate(() => ({ count: window.__wuffle.count(), msg: document.getElementById('msg').textContent }));
+chk(`one tap of clear asks first (count ${armed.count}; "${armed.msg}")`, armed.count === 4 && /tap clear again/.test(armed.msg));
+// 7b. clear (the second tap) → empty net + log
 await p.click('#clear');
 const afterClear = await p.evaluate(() => ({
   count: window.__wuffle.count(),
@@ -122,6 +132,14 @@ const live = async (mode, beta) => p.evaluate(([mode, beta]) => {
 const pl = await live('plane', 30), ln = await live('line', -30);
 chk(`live attitudes by hand (plane ${pl.join('/')} want 180/30, line ${ln.join('/')} want 0/30)`,
   Math.round(pl[0]) === 180 && Math.round(pl[1]) === 30 && Math.round(ln[0]) % 360 === 0 && Math.round(ln[1]) === 30);
+
+// 10. cleared stays cleared across a reload
+await p.evaluate(() => window.__wuffle.kept());
+await p.reload({ waitUntil: 'load' });
+await p.waitForFunction(() => window.__wuffle, null, { timeout: 5000 });
+await new Promise((r) => setTimeout(r, 400));
+const after = await p.evaluate(() => window.__wuffle.count());
+chk(`a cleared log stays cleared after a reload (count ${after})`, after === 0);
 
 await browser.close();
 server.close();

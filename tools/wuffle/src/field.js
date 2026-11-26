@@ -5,12 +5,15 @@
 import { compass, Stereonet, conversions, curves } from '@gcu/bearing';
 import { shell } from '@gcu/leadacid';
 import { declination as wmmDeclination } from '@gcu/wmm';
+import { loadKept, keep, settled } from './field-store.js';
 
 const $ = id => document.getElementById(id);
 let mode = 'plane';          // 'plane' | 'line'
 let cur = null;              // last computed reading
 let haveOrientation = false;
 const log = [];
+// a measurement's number, never reused (log.length + 1 repeated a number after a delete, and photos are keyed by it)
+const nextI = () => log.reduce((m, e) => Math.max(m, e.i), 0) + 1;
 
 // keep the screen lit in the field (dogfoods shell.keepAwake)
 if (shell.present) shell.keepAwake(true);
@@ -103,7 +106,13 @@ function onOrient(e) {
 }
 // absolute frame carries a compass-referenced alpha (Android); fall back.
 window.addEventListener('deviceorientationabsolute', (e) => { if (source !== 'fused') onOrient(e); });
-window.addEventListener('deviceorientation', (e) => { if (source !== 'fused' && !haveOrientation) onOrient(e); });
+window.addEventListener('deviceorientation', (e) => {
+  if (source === 'fused' || haveOrientation) return;
+  // a plain event whose alpha isn't referenced to north (absolute === false): azimuths would be relative to
+  // wherever the phone pointed when the page opened. Say so once, and mark what it measures.
+  if (e.absolute === false && e.alpha != null && !northless) { northless = true; msg("this browser's compass has no north — dips and plunges are good, azimuths are not; measurements are marked north = none", true); }
+  onOrient(e);
+});
 
 // v2: inside the shell, read the FUSED rotation vector through the sensor
 // plugin instead of the event — same math downstream, but we get the compass
@@ -136,11 +145,13 @@ let lastFix = null;
 // true north: the WMM declination at the fix (east positive; true = magnetic + decl).
 // null until a fix arrives → readings stay magnetic and the label says so.
 let decl = null;
+let northless = false;             // the only orientation is a plain, non-absolute event: no north at all
 let declAt = null;                 // the fix the declination was computed at (recomputed after ~0.1° of travel)
 function updateDeclination(f) {
   declAt = f;
   decl = wmmDeclination(f.lat, f.lon, new Date(), (f.alt || 0) / 1000);
-  $('north').textContent = 'true N · decl ' + (decl >= 0 ? '+' : '') + decl.toFixed(1) + '°';
+  // WMM2025 is valid to 2030.0; past it the declination is an extrapolation, and the strip says so
+  $('north').textContent = 'true N · decl ' + (decl >= 0 ? '+' : '') + decl.toFixed(1) + '°' + (new Date() >= new Date('2030-01-01') ? ' · model past 2030' : '');
 }
 async function startGnss() {
   if (!shell.present) return;
@@ -215,6 +226,7 @@ async function snapPhoto() {
       const m = log[log.length - 1];
       m.photo = 'wuffle-' + String(m.i).padStart(3, '0') + '-' + m.ts.replace(/[:.]/g, '').slice(0, 17) + '.jpg';
       photos.set(m.i, blob);
+      keep(log, photos);
       lastShot = { width: c.width, height: c.height, size: blob.size };
       renderLog();
       msg('photo attached to #' + m.i + ' (' + Math.round(blob.size / 1024) + ' KB)');
@@ -251,12 +263,18 @@ function loadCsv(text, name) {
     const d1 = +f[iD1], d2 = +f[iD2];
     if (!Number.isFinite(d1) || !Number.isFinite(d2)) continue;
     const s = iS >= 0 && f[iS] !== undefined && f[iS].trim() !== '' ? +f[iS] : (m === 'plane' ? (fmt(d1) + 270) % 360 : null);
-    const e = { i: log.length + 1, mode: m, d1: fmt(d1), d2: Math.round(d2), strike: s, ts: (iTs >= 0 && f[iTs]) || new Date().toISOString() };
+    const e = { i: nextI(), mode: m, d1: fmt(d1), d2: Math.round(d2), strike: s, ts: (iTs >= 0 && f[iTs]) || new Date().toISOString() };
     if (iLat >= 0 && iLon >= 0 && f[iLat] !== '' && Number.isFinite(+f[iLat])) { e.lat = +f[iLat]; e.lon = +f[iLon]; e.acc = iAcc >= 0 && f[iAcc] !== '' ? +f[iAcc] : null; }
+    // what north the reading was referred to travels with it: dropped, a true-north row republished as
+    // "magnetic" with no declination (a log without the column keeps the old default, magnetic)
+    const iN = col('north'), iDe = col('declination_deg'), iPh = col('photo');
+    if (iN >= 0 && f[iN] && f[iN].trim()) e.north = f[iN].trim();
+    if (iDe >= 0 && f[iDe] !== undefined && f[iDe].trim() !== '' && Number.isFinite(+f[iDe])) e.decl = +f[iDe];
+    if (iPh >= 0 && f[iPh] && f[iPh].trim()) e.photo = f[iPh].trim();   // the name only: the picture itself stayed in Pictures
     log.push(e);
     n++;
   }
-  renderLog(); updateCount(); drawStatic();
+  renderLog(); updateCount(); drawStatic(); keep(log, photos);
   msg('loaded ' + n + ' measurement' + (n === 1 ? '' : 's') + ' from ' + name);
 }
 async function startIntake() {
@@ -289,7 +307,7 @@ function renderLog() {
       : `<b>${String(m.d1).padStart(3, '0')}→${String(m.d2).padStart(2, '0')}</b><span>line</span>`;
     li.innerHTML = label + (m.photo ? '<span class="pic" title="' + m.photo + '">📷</span>' : '') + '<button class="del" aria-label="delete measurement">×</button>';
     li.querySelector('.del').onclick = () => {
-      log.splice(k, 1); renderLog(); updateCount(); drawStatic();
+      log.splice(k, 1); renderLog(); updateCount(); drawStatic(); keep(log, photos);
       if (navigator.vibrate) navigator.vibrate(10);
     };
     list.appendChild(li);
@@ -297,14 +315,14 @@ function renderLog() {
 }
 
 function record(d1, d2, m, src = 'live') {
-  const e = { i: log.length + 1, mode: m, d1: fmt(d1), d2: Math.round(d2),
+  const e = { i: nextI(), mode: m, d1: fmt(d1), d2: Math.round(d2),
     strike: m === 'plane' ? (fmt(d1) + 270) % 360 : null, ts: new Date().toISOString() };
   if (lastFix) { e.lat = +lastFix.lat.toFixed(6); e.lon = +lastFix.lon.toFixed(6); e.acc = lastFix.acc == null ? null : Math.round(lastFix.acc); }
   // what north this reading is referred to — a manual entry is whatever the user typed
-  e.north = src === 'manual' ? 'as-typed' : (decl == null ? 'magnetic' : 'true');
+  e.north = src === 'manual' ? 'as-typed' : northless && source !== 'fused' ? 'none' : (decl == null ? 'magnetic' : 'true');
   if (decl != null && src !== 'manual') e.decl = +decl.toFixed(2);
   log.push(e);
-  renderLog(); updateCount(); drawStatic();
+  renderLog(); updateCount(); drawStatic(); keep(log, photos);
 }
 
 $('measure').onclick = () => {
@@ -330,7 +348,13 @@ function addManual(text) {
 $('add').onclick = () => { if (addManual($('manual').value)) $('manual').value = ''; };
 $('manual').addEventListener('keydown', (e) => { if (e.key === 'Enter' && addManual($('manual').value)) $('manual').value = ''; });
 
-$('clear').onclick = () => { log.length = 0; renderLog(); updateCount(); msg(''); drawStatic(); };
+// clear asks for a second tap: it empties the log on this phone too, and there is no undo
+let clearArmed = 0;
+$('clear').onclick = () => {
+  if (!log.length) { msg('the log is already empty'); return; }
+  if (Date.now() - clearArmed > 3000) { clearArmed = Date.now(); msg('tap clear again to delete all ' + log.length + ' measurement' + (log.length === 1 ? '' : 's') + ' — publish first to keep them', true); return; }
+  clearArmed = 0; log.length = 0; photos.clear(); renderLog(); updateCount(); msg('log cleared'); drawStatic(); keep(log, photos);
+};
 
 $('publish').onclick = async () => {
   if (!log.length) { msg('nothing to publish', true); return; }
@@ -387,5 +411,14 @@ window.__wuffle = {
   plot: (d1, d2, m) => record(d1, d2, m), log, count: () => log.length, shell,
   get source() { return source; }, get accuracy() { return accuracy; }, get reading() { return cur; },
   get lastPublish() { return lastPublish; }, get fix() { return lastFix; },
-  photos, openCamera, snapPhoto, closeCamera, get lastShot() { return lastShot; },
+  photos, openCamera, snapPhoto, closeCamera, get lastShot() { return lastShot; }, kept: settled,
 };
+
+// the log kept on this phone from the last visit (field-store.js): back before anything new is measured
+loadKept().then((k) => {
+  if (!k || !k.log || !k.log.length || log.length) return;
+  for (const e of k.log) log.push(e);
+  for (const [i, blob] of k.photos || []) photos.set(i, blob);
+  renderLog(); updateCount(); drawStatic();
+  msg('kept from last time: ' + log.length + ' measurement' + (log.length === 1 ? '' : 's') + ' not yet cleared — publish to send them');
+});

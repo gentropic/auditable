@@ -63,6 +63,9 @@ export class Project {
   _emit(type, detail = {}) { for (const fn of this._listeners) fn({ type, ...detail }); }
   _id(k) { this._seq[k] += 1; return `${k}${this._seq[k]}`; }
 
+  // ── the project's own name (files are saved under it; a page carrying it is titled with it) ──
+  renameProject(name) { this.name = String(name).trim() || this.name; this._emit('project-renamed', {}); }
+
   // ── datasets ──
   dataset(id) { return this.datasets.find((d) => d.id === id) || null; }
   /**
@@ -295,21 +298,21 @@ const JOURNALED = {
   addLayer: 'add layer', addView: 'add view', moveLayer: 'move layer', removeLayer: 'remove layer', removeEverywhere: 'remove from everywhere',
   setLayerVisible: 'show / hide', setLayerStyle: 'style', setElement: 'show / hide elements', setElementSettings: 'element settings',
   addFigure: 'new figure', setFigureDoc: 'edit figure', renameFigure: 'rename figure', removeFigure: 'delete figure',
-  addOriginal: 'keep original', removeOriginal: 'remove original',
+  addOriginal: 'keep original', removeOriginal: 'remove original', renameProject: 'rename project',
 };
 const COALESCE = new Set(['setDiagramProps', 'setLayerStyle', 'setElementSettings', 'setFigureDoc', 'editRows']);
 const COALESCE_MS = 800;
 
 Project.prototype._snap = function () {
-  return { datasets: this.datasets.slice(), originals: this.originals.slice(), diagrams: clone(this.diagrams), layers: clone(this.layers), figures: clone(this.figures),
+  return { name: this.name, datasets: this.datasets.slice(), originals: this.originals.slice(), diagrams: clone(this.diagrams), layers: clone(this.layers), figures: clone(this.figures),
     selection: new Map([...this.selection].map(([k, v]) => [k, new Set(v)])), active: this.activeDiagram };
 };
 Project.prototype._restore = function (s) {
-  this.datasets = s.datasets.slice(); this.originals = s.originals.slice(); this.diagrams = clone(s.diagrams); this.layers = clone(s.layers); this.figures = clone(s.figures);
+  this.name = s.name; this.datasets = s.datasets.slice(); this.originals = s.originals.slice(); this.diagrams = clone(s.diagrams); this.layers = clone(s.layers); this.figures = clone(s.figures);
   this.selection = new Map([...s.selection].map(([k, v]) => [k, new Set(v)]));
   this.activeDiagram = this.diagram(s.active) ? s.active : (this.diagrams[0]?.id || null);
 };
-const sameState = (a, b) => a.datasets.length === b.datasets.length && a.datasets.every((d, i) => d === b.datasets[i])
+const sameState = (a, b) => a.name === b.name && a.datasets.length === b.datasets.length && a.datasets.every((d, i) => d === b.datasets[i])
   && a.originals.length === b.originals.length && a.originals.every((o, i) => o === b.originals[i])
   && JSON.stringify([a.diagrams, a.layers, a.figures]) === JSON.stringify([b.diagrams, b.layers, b.figures]);
 

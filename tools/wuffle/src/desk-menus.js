@@ -3,7 +3,7 @@
 // call the same thing later.
 
 import { MenuBar } from '../../../ext/menu/index.js';
-import { alert, confirm } from '../../../ext/dialog/index.js';
+import { alert, confirm, prompt } from '../../../ext/dialog/index.js';
 import { THEMES } from './desk-theme.js';
 import { TOCHER } from './samples.js';
 
@@ -31,7 +31,9 @@ export function createMenus(host, { project: p, files, layout, theme, figures, o
     newfabric: () => newDiagram('fabric'),
     rmnet: () => { if (p.activeDiagram) p.removeDiagram(p.activeDiagram); },
     field: () => { const u = new URL(location.href); u.searchParams.delete('desk'); u.searchParams.set('field', ''); location.href = u.toString(); },
-    about: () => alert(ABOUT),
+    // the build stamp is the page's own footer (the build writes it there; the desk hides the footer)
+    about: () => { const v = (document.querySelector('.vfoot')?.textContent || '').trim(); return alert(ABOUT + '\n\n' + (v && !/__WUFFLE_BUILD__/.test(v) ? v : 'the development tree (unbuilt)')); },
+    rename: async () => { const n = await prompt('Name of the project — files are saved under it', { defaultValue: p.name }); if (n && n.trim() && n.trim() !== p.name) { p.renameProject(n); onStatus?.(`the project is “${p.name}” — saved as ${p.name.replace(/[^\w.-]+/g, '_')}.zip.wuffle`); } },
     figure: async () => { try { figures.newFigure(); } catch (e) { await alert(e.message); } },
     console: () => { layout.focusConsole(); setTimeout(() => document.querySelector('.wcon textarea')?.focus(), 0); },
   };
@@ -41,6 +43,7 @@ export function createMenus(host, { project: p, files, layout, theme, figures, o
       { label: 'Open data or a project…', action: 'open', shortcut: 'Ctrl+O' },
       { label: 'Open the tocher sample', action: 'tocher' },
       '---',
+      { label: 'Rename project…', action: 'rename' },
       { label: 'Save project (.zip.wuffle)', action: 'save', shortcut: 'Ctrl+S' },
       { label: 'Save as page (one .html, the project inside)', action: 'savepage', disabled: !files.canSavePage() },
     ] },

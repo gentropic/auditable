@@ -50,7 +50,7 @@ body.desk > [hidden] { display:none !important; }   /* the field page's own disp
 .wn-stage { position:absolute; inset:0; display:grid; place-items:center; }
 .wn-stage svg { display:block; cursor:crosshair; touch-action:none; }
 /* what the net couldn't draw, said in its corner (caution: a gap in the drawing, not an error) */
-.wn-notes { position:absolute; left:10px; bottom:8px; max-width:60%; font:11px/1.4 var(--w-mono, monospace); color:var(--w-yellow, #b8892c); pointer-events:none; }
+.wn-notes { position:absolute; left:10px; bottom:8px; max-width:34%;   /* narrow: clear of the net's S at the bottom centre */ font:11px/1.4 var(--w-mono, monospace); color:var(--w-yellow, #b8892c); pointer-events:none; }
 .wn-notes[hidden] { display:none; }
 /* the selection tools, top-left of each net */
 .wsel-bar { position:absolute; left:8px; top:8px; display:flex; gap:2px; align-items:center; background:var(--w-bg-raised); border:1px solid var(--w-border); border-radius:4px; padding:2px; z-index:5; font:11px var(--w-mono); }
