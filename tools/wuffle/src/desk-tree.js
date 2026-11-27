@@ -4,6 +4,7 @@
 // drag a dataset onto a diagram = a layer. Double-click a layer (or its menu) for its properties.
 
 import { Menu } from '../../../ext/menu/index.js';
+import { weightColumns } from './diagram-svg.js';
 import { Dialog, confirm, prompt } from '../../../ext/dialog/index.js';
 import { orientations } from './io.js';
 
@@ -161,6 +162,7 @@ export class TreeView {
       { label: 'Quantity', children: [['strike', 'strike (planes, axial)'], ['dipDirection', 'dip direction (planes)'], ['trend', 'trend (lines)']].map(([k, t]) => ({ label: t, action: 'q:' + k, checked: (g.props.quantity || 'strike') === k, group: 'q' })) },
       { label: 'Sector', children: [5, 10, 15, 20, 30].map((b) => ({ label: `${b}°`, action: 'bins:' + b, checked: g.props.bins === b, group: 'b' })) },
       { label: 'Scale', children: [['area', 'area-true (√)'], ['linear', 'linear']].map(([k, t]) => ({ label: t, action: 'scale:' + k, checked: (g.props.scale || 'area') === k, group: 's' })) },
+      { label: 'Weight by', children: [{ label: 'count (each one 1)', action: 'w:', checked: !g.props.weight, group: 'w' }, ...weightColumns(this.p, g).map((c) => ({ label: c, action: 'w:' + c, checked: g.props.weight === c, group: 'w' }))] },
       { label: 'Count both ends (axial)', action: 'axial', checked: (g.props.quantity || 'strike') === 'strike' || !!g.props.axial, disabled: (g.props.quantity || 'strike') === 'strike' },
     ] : g.kind === 'fabric' ? [
       { label: 'Plot', children: [['vollmer', 'Vollmer P–G–R'], ['woodcock', 'Woodcock K–C']].map(([k, t]) => ({ label: t, action: 'plot:' + k, checked: g.props.plot === k, group: 'f' })) },
@@ -181,6 +183,7 @@ export class TreeView {
     else if (a.startsWith('q:')) this.p.setDiagramProps(g.id, { quantity: a.slice(2) });
     else if (a.startsWith('bins:')) this.p.setDiagramProps(g.id, { bins: +a.slice(5) });
     else if (a.startsWith('scale:')) this.p.setDiagramProps(g.id, { scale: a.slice(6) });
+    else if (a.startsWith('w:')) this.p.setDiagramProps(g.id, { weight: a.slice(2) || null });
     else if (a === 'axial') this.p.setDiagramProps(g.id, { axial: !g.props.axial });
     else if (a.startsWith('plot:')) this.p.setDiagramProps(g.id, { plot: a.slice(5) });
     else if (a === 'remove') { if (await confirm(`Remove “${g.name}”? Its layers go; the data stays.`, { okLabel: 'Remove', danger: true })) this.p.removeDiagram(g.id); }
@@ -222,8 +225,9 @@ export class TreeView {
         const color = row('color', inp('color', L.style.color || '#e8836b'));
         const size = row('symbol size', inp('number', L.style.size || 4, { min: 1, max: 12, step: 0.5 }));
         let cm, cs, mc;
-        let cf, cl;
+        let cf, cl, cof;
         if (E.contours) { cm = row('contours', sel([['kamb', 'Kamb (σ)'], ['fisher', 'Fisher kernel (MUD)']], E.contours.method)); cs = row('Kamb k (E = kσ)', inp('number', E.contours.sigma ?? 3, { min: 1, max: 6, step: 0.5 }));
+          if (ds.kind === 'faults') cof = row('contour', sel([['poles', 'the planes\' poles'], ['slip', 'the slip lines']], E.contours.of || 'poles'));
           cf = row('filled bands', inp('checkbox', '', { checked: !!E.contours.filled })); cl = row('levels', inp('text', (E.contours.levels || []).join(', '), { placeholder: E.contours.method === 'fisher' ? '2, 4, 6, 8 (MUD)' : '2, 4, 6, 8, 10, 12 (σ)' })); }
         if (E.mean) mc = row('cone confidence', sel([['0.95', '95 %'], ['0.99', '99 %'], ['0.9', '90 %']], String(E.mean.confidence ?? 0.95)));
         const lab = E.labels ? row('labels from', sel([['', '— row number'], ...ds.columns.map((c) => [c, c])], E.labels.column || '')) : null;
@@ -231,7 +235,7 @@ export class TreeView {
         const cancel = h('button', null, 'Cancel'); cancel.type = 'button';
         bar.append(cancel, ok); body.append(bar);
         cancel.onclick = () => ctx.close(null);
-        ok.onclick = () => ctx.close({ color: color.value, size: +size.value, cm: cm?.value, cs: cs ? +cs.value : null, cf: cf ? cf.checked : null, cl: cl ? cl.value : null, mc: mc ? +mc.value : null, lab: lab ? lab.value : null });
+        ok.onclick = () => ctx.close({ color: color.value, size: +size.value, cm: cm?.value, cs: cs ? +cs.value : null, cf: cf ? cf.checked : null, cl: cl ? cl.value : null, cof: cof ? cof.value : null, mc: mc ? +mc.value : null, lab: lab ? lab.value : null });
       },
     }).show();
     if (!res) return;
@@ -239,7 +243,7 @@ export class TreeView {
       p.setLayerStyle(layerId, { color: res.color, size: res.size });
       if (res.cm) {
         const lv = String(res.cl || '').split(/[,\s]+/).map(Number).filter(Number.isFinite).sort((a, b) => a - b);
-        p.setElementSettings(layerId, 'contours', { method: res.cm, sigma: res.cs, filled: !!res.cf, levels: lv.length ? lv : null });
+        p.setElementSettings(layerId, 'contours', { method: res.cm, sigma: res.cs, filled: !!res.cf, levels: lv.length ? lv : null, ...(res.cof ? { of: res.cof } : {}) });
       }
       if (res.mc) p.setElementSettings(layerId, 'mean', { confidence: res.mc });
       if (res.lab != null && E.labels) p.setElementSettings(layerId, 'labels', { column: res.lab || null });

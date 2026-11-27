@@ -79,8 +79,11 @@ export function stereonetCore(B) {
       const axes = data.map((d) => d.pole || d.dcos);
       const on = (n) => !!E[n]?.on;
 
-      if (on('contours') && axes.length <= 2) notes.push(`contours: “${L.id}” has ${axes.length} measurement${axes.length === 1 ? '' : 's'} — contours need three`);
-      if (on('contours') && axes.length > 2) {
+      // what is contoured: the axes (poles, lines) — or, for faults asked to (contours.of = 'slip'), the slip lines
+      const slipC = on('contours') && E.contours.of === 'slip';
+      const cdata = slipC ? data.filter((d) => d.lineDcos) : data, caxes = slipC ? cdata.map((d) => d.lineDcos) : axes;
+      if (on('contours') && caxes.length <= 2) notes.push(`contours: “${L.id}” has ${caxes.length} ${slipC ? 'slip line' : 'measurement'}${caxes.length === 1 ? '' : 's'} — contours need three`);
+      if (on('contours') && caxes.length > 2) {
         if (contoured) notes.push(`contours: one set per net — “${L.id}” isn’t contoured; the contours are “${contoured}”’s`);
         else {
           contoured = L.id;
@@ -89,11 +92,11 @@ export function stereonetCore(B) {
           // levels: the user's (any sorted list); weights: a datum's `weight` (a Terzaghi correction, …) when any has one
           const levels = (Array.isArray(E.contours.levels) && E.contours.levels.length ? [...E.contours.levels].map(Number).filter(Number.isFinite).sort((a, b) => a - b) : null)
             || (kamb ? [2, 4, 6, 8, 10, 12] : [2, 4, 6, 8]);
-          const weights = data.some((d) => d.weight != null) ? data.map((d) => (d.weight != null ? +d.weight : 1)) : null;
+          const weights = cdata.some((d) => d.weight != null) ? cdata.map((d) => (d.weight != null ? +d.weight : 1)) : null;
           const base = { method: kamb ? 'kamb' : 'fisher', kambSigma: E.contours.sigma ?? 3, ...(weights ? { weights } : {}) };
           // filled: bands between the levels, light to the layer's colour, UNDER the lines (bearing's banded heatmap)
-          if (E.contours.filled) primitives.push({ type: 'fill', dcos: axes, layer: L.id, options: { ...base, gridSize: 96, levels, colors: bandColors(col, levels.length), opacity: 1 } });
-          primitives.push({ type: 'contour', dcos: axes, layer: L.id, options: { ...base, levels, stroke: col, strokeWidth: 0.9 } });
+          if (E.contours.filled) primitives.push({ type: 'fill', dcos: caxes, layer: L.id, options: { ...base, gridSize: 96, levels, colors: bandColors(col, levels.length), opacity: 1 } });
+          primitives.push({ type: 'contour', dcos: caxes, layer: L.id, options: { ...base, levels, stroke: col, strokeWidth: 0.9 } });
         }
       }
       const isPlane = L.kind === 'planes' || L.kind === 'faults';

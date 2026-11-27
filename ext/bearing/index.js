@@ -3091,15 +3091,18 @@ function roseBins(azimuths, options = {}) {
   const axial = !!options.axial;
   const nBins = Math.round(360 / binWidth);
   const counts = new Array(nBins).fill(0);
-  const add2 = (az) => {
+  const W = Array.isArray(options.weights) && options.weights.length === azimuths.length ? options.weights : null;
+  const add2 = (az, w = 1) => {
     const a = (az % 360 + 360) % 360;
     const idx = Math.floor((a + binWidth / 2) / binWidth) % nBins;
-    counts[idx]++;
+    counts[idx] += w;
   };
-  for (const az of azimuths) {
+  for (let i = 0; i < azimuths.length; i++) {
+    const az = azimuths[i];
     if (!Number.isFinite(az)) continue;
-    add2(az);
-    if (axial) add2(az + 180);
+    const w = W ? Number.isFinite(+W[i]) && +W[i] > 0 ? +W[i] : 0 : 1;
+    add2(az, w);
+    if (axial) add2(az + 180, w);
   }
   let n = 0, maxCount = 0;
   for (const c of counts) {

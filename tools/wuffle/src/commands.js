@@ -13,6 +13,7 @@ import { sceneLayers } from './layers.js';
 import { orientations } from './io.js';
 import { rowsWhere } from './calc.js';
 import { joinTable } from './join.js';
+import { weightColumns } from './diagram-svg.js';
 import { layerStats, deriveMean, deriveEigen, deriveBeta, deriveIntersection, applyTerzaghi, deriveRotated, deriveUntilted, deriveDeclination, detectSets, compareMeans, deriveLineations, applyKinematic, foldAnalysis, fitSmallCircle } from './stats.js';
 import { declination as wmmDeclination } from '../../../ext/wmm/index.js';
 
@@ -127,7 +128,8 @@ const HELP = {
   new: 'new net|rose|fabric — a new diagram with the active one\'s layers',
   layers: 'layers — the active diagram\'s layers',
   show: 'show <element> [layer] / hide <element> [layer] — poles, circles, contours, mean, eigen, labels, v1…v3',
-  contour: 'contour kamb [k] | fisher [layer] [--filled | --lines] [--levels 2,4,6] — contours on, their method, filled bands, your levels',
+  contour: 'contour kamb [k] | fisher [layer] [--filled | --lines] [--levels 2,4,6] [--of poles|slip] — contours on, their method, filled bands, your levels',
+  weight: 'weight [column] | weight off — the active rose\'s sectors weighted by a column (a trace length, a thickness), or counted',
   terzaghi: 'terzaghi [layer] <tr/pl> [--max 10] | terzaghi [layer] off — weight the planes for a scanline or borehole along tr/pl (contours use it)',
   add: 'add p 045/30 [more…] | l 120/40 | sc 120/40 15 | f 045/30 120/20 [n|r|d|s] (or f 045/30 r35 n: a rake) — typed in, into "typed <kind>"\n'
     + '    045/30, 045,30 or 45 30 · 030/40SE = strike/dip + quadrant · --rhr (strike/dip) · --to <dataset> · --net <diagram> · --label <text>',
@@ -259,6 +261,7 @@ export function createCommands(ctx) {
       for (let i = 0; i < args0.length; i++) {
         const a = args0[i];
         if (a === '--filled') flags.filled = true; else if (a === '--lines') flags.filled = false;
+        else if (a === '--of') { const v = args0[++i]; if (!['poles', 'slip'].includes(v)) throw new Error('--of poles | slip (a fault layer: its planes\' poles, or its slip lines)'); flags.of = v; }
         else if (a === '--levels') { const v = String(args0[++i] || '').split(/[,\s]+/).map(Number).filter(Number.isFinite); if (!v.length) throw new Error('--levels 2,4,6'); flags.levels = v.sort((x, y) => x - y); }
         else rest.push(a);
       }
@@ -266,9 +269,9 @@ export function createCommands(ctx) {
       if (!['kamb', 'fisher'].includes(method)) throw new Error('contour kamb [k] | fisher');
       const kk = method === 'kamb' && k && /^\d/.test(k) ? +k : null;
       const L = layerNamed((kk == null && k ? [k, ...name] : name).join(' '), { required: true });
-      p.batch('contours', () => { p.setElementSettings(L.id, 'contours', { method, ...(kk ? { sigma: kk } : {}), ...('filled' in flags ? { filled: flags.filled } : {}), ...(flags.levels ? { levels: flags.levels } : {}) }); p.setElement(L.id, 'contours', true); });
+      p.batch('contours', () => { p.setElementSettings(L.id, 'contours', { method, ...(kk ? { sigma: kk } : {}), ...('filled' in flags ? { filled: flags.filled } : {}), ...(flags.levels ? { levels: flags.levels } : {}), ...(flags.of ? { of: flags.of } : {}) }); p.setElement(L.id, 'contours', true); });
       const E = p.layer(L.id).elements.contours;
-      return `${dsName(L)}: contours ${method}${method === 'kamb' ? ` ${E.sigma ?? 3}σ` : ''}${E.filled ? ', filled' : ''}${E.levels ? ` at ${E.levels.join(', ')}` : ''}`;
+      return `${dsName(L)}: contours ${method}${method === 'kamb' ? ` ${E.sigma ?? 3}σ` : ''}${E.filled ? ', filled' : ''}${E.levels ? ` at ${E.levels.join(', ')}` : ''}${E.of === 'slip' ? ', of the slip lines' : ''}`;
     },
     select(args) {
       let mode = 'replace'; if (args[0] === '+') { mode = 'add'; args = args.slice(1); } else if (args[0] === '-') { mode = 'subtract'; args = args.slice(1); }
@@ -303,6 +306,12 @@ export function createCommands(ctx) {
       else if (what === 'band') { if (!a.plane) throw new Error('a band is about a plane: band 045/30 10'); shape = { type: 'band', pole: a.dcos, width: v }; }
       else throw new Error('select cone | band | all | none | invert');
       return `${what}: ${applyShape(shape, mode)} selected`;
+    },
+    weight([col]) {
+      const g = active(); if (g.kind !== 'rose') throw new Error(`${g.name} is a ${g.kind} — weight is a rose's (use it on a rose: use <rose>)`);
+      if (!col || col === 'off') { p.setDiagramProps(g.id, { weight: null }); return `${g.name}: sectors counted`; }
+      const cols = weightColumns(p, g); if (!cols.includes(col)) throw new Error(`no numeric column “${col}” on ${g.name}'s layers — ${cols.join(', ') || 'none'}`);
+      p.setDiagramProps(g.id, { weight: col }); return `${g.name}: sectors weighted by ${col}`;
     },
     terzaghi(args) {
       let max = 10; const rest = [];

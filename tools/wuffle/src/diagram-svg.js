@@ -13,23 +13,36 @@ const core = stereonetCore(bearing);
 export const INK = { selected: '#793A8D', ink: '#232322', inkMid: '#504F4C', halo: '#FFFFFF' };
 
 /** a dataset's azimuths for a rose: planes by STRIKE (axial) or DIP DIRECTION, lines by TREND */
-export function roseAzimuths(ds, quantity) {
-  const out = [];
-  for (const o of orientations(ds)) {
-    if (!o) continue;
-    if (o.plane) { if (quantity === 'trend') continue; out.push(quantity === 'strike' ? (o.plane[0] + 270) % 360 : o.plane[0]); }
-    else if (o.line) { if (quantity !== 'trend') continue; out.push(o.line[0]); }
-  }
-  return out;
+export function roseAzimuths(ds, quantity) { return roseData(ds, quantity).az; }
+/** the azimuths and, with a weight column, each one's weight (a trace length, a thickness — a blank or a text
+ *  weighs 0). → { az, w | null } */
+export function roseData(ds, quantity, weight = null) {
+  const az = [], w = weight && ds.columns.includes(weight) ? [] : null;
+  orientations(ds).forEach((o, i) => {
+    if (!o) return;
+    let a = null;
+    if (o.plane) { if (quantity !== 'trend') a = quantity === 'strike' ? (o.plane[0] + 270) % 360 : o.plane[0]; }
+    else if (o.line) { if (quantity === 'trend') a = o.line[0]; }
+    if (a == null) return;
+    az.push(a); if (w) { const v = +ds.rows[i][weight]; w.push(Number.isFinite(v) && v > 0 ? v : 0); }
+  });
+  return { az, w };
+}
+/** the numeric columns a diagram's layers could weight a rose by */
+export function weightColumns(p, g) {
+  const out = new Set();
+  for (const L of p.layersOf(g.id)) { const ds = p.dataset(L.datasetId); for (const c of ds.columns) if (!Object.values(ds.roles || {}).includes(c) && ds.rows.slice(0, 50).some((r) => r[c] !== '' && Number.isFinite(+r[c]))) out.add(c); }
+  return [...out];
 }
 
 /** → { svg, n } or { note } (nothing to draw, and why) */
 export function roseMarkup(p, g, { size = 400, fill = '#C2562B', petalStroke = '#FFFFFF', frameStroke = '#5A5856' } = {}) {
   const q = g.props.quantity || 'strike', layers = p.layersOf(g.id).filter((L) => L.visible);
-  const az = layers.flatMap((L) => roseAzimuths(p.dataset(L.datasetId), q));
+  const per = layers.map((L) => roseData(p.dataset(L.datasetId), q, g.props.weight || null));
+  const az = per.flatMap((x) => x.az), weights = g.props.weight ? per.flatMap((x) => x.w || x.az.map(() => 0)) : null;
   if (!az.length) return { note: layers.length ? `no ${q === 'trend' ? 'lines' : 'planes'} to bin by ${q} — choose another quantity in the diagram's menu` : 'drag a dataset or a layer here' };
   const axial = q === 'strike' ? true : !!g.props.axial;
-  return { n: az.length, svg: rose.roseSVG(az, { size, binWidth: g.props.bins || 10, axial, scale: g.props.scale === 'linear' ? 'linear' : 'sqrt', rings: 4,
+  return { n: az.length, weighted: !!weights, svg: rose.roseSVG(az, { size, binWidth: g.props.bins || 10, axial, scale: g.props.scale === 'linear' ? 'linear' : 'sqrt', rings: 4, ...(weights ? { weights } : {}),
     fill: layers[0].style.color || fill, fillOpacity: 0.75, petalStroke, frameStroke, background: 'none' }) };
 }
 

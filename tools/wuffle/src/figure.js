@@ -14,7 +14,7 @@ import { createDocument, refreshLegend, freeSpot } from '../../../ext/compo/inde
 import { stereonetCore, formatPlane, formatLine } from '../../../ext/stereonet/index.js';
 import { sceneLayers } from './layers.js';
 import { layerStats } from './stats.js';
-import { roseAzimuths } from './diagram-svg.js';
+import { roseData } from './diagram-svg.js';
 
 const core = stereonetCore(bearing);
 const INK = { selected: '#793A8D', ink: '#232322', inkMid: '#504F4C', halo: '#FFFFFF' };
@@ -46,14 +46,15 @@ function contents(p, diagramId, view = {}) {
 
   if (g.kind === 'rose') {
     const q = g.props.quantity || 'strike', axial = q === 'strike' ? true : !!g.props.axial;
-    const per = vis.map((L) => ({ L, az: roseAzimuths(p.dataset(L.datasetId), q) }));
-    const az = per.flatMap((x) => x.az);
+    const wc = g.props.weight || null;
+    const per = vis.map((L) => ({ L, ...roseData(p.dataset(L.datasetId), q, wc) }));
+    const az = per.flatMap((x) => x.az), weights = wc ? per.flatMap((x) => x.w || x.az.map(() => 0)) : null;
     const rows = per.map(({ L, az: a }) => { const m = a.length ? circularMean(a, axial) : null; return [named(L), String(a.length), m ? `${String(Math.round(m.mean)).padStart(3, '0')}°` : '—', m ? m.Rbar.toFixed(2) : '—']; });
     return { ...head,
-      diagram: { azimuths: az, binWidth: g.props.bins || 10, axial, scale: g.props.scale === 'linear' ? 'linear' : 'sqrt', color: (vis[0] && vis[0].color) || '#C2562B', quantity: q },
+      diagram: { azimuths: az, ...(weights ? { weights, weight: wc } : {}), binWidth: g.props.bins || 10, axial, scale: g.props.scale === 'linear' ? 'linear' : 'sqrt', color: (vis[0] && vis[0].color) || '#C2562B', quantity: q },
       legend: { title: 'layers', size: 8, entries: legendEntries },
       stats: { title: `${QUANTITY[q] || q} — circular statistics`, columns: ['layer', 'n', 'mean', 'R̄'], rows, size: 7.5, note: axial ? 'axial: the mean of doubled angles' : '' },
-      caption: { md: `Rose diagram of ${QUANTITY[q] || q}${axial ? ' (both ends counted)' : ''}, ${g.props.bins || 10}° sectors, ${g.props.scale === 'linear' ? 'linear' : 'area-true (√)'} scale; the rings are quarters of the largest sector.${made}`, size: 8 },
+      caption: { md: `Rose diagram of ${QUANTITY[q] || q}${axial ? ' (both ends counted)' : ''}${wc ? `, sectors weighted by ${wc}` : ''}, ${g.props.bins || 10}° sectors, ${g.props.scale === 'linear' ? 'linear' : 'area-true (√)'} scale; the rings are quarters of the largest sector.${made}`, size: 8 },
     };
   }
   if (g.kind === 'fabric') {

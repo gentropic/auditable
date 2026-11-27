@@ -18,7 +18,7 @@ export function roseKind(rose) {
       const cx = box[0] + box[2] / 2, cy = box[1] + box[3] / 2 + 1, R = Math.max(2, Math.min(box[2] / 2 - 5.2, box[3] / 2 - 4.6));
       ctx.save();
       ctx.lineWidth = 0.12; ctx.strokeStyle = SOFT;
-      const binned = az.length ? rose.roseBins(az, { binWidth: +c.binWidth || 10, axial: !!c.axial }) : null;
+      const binned = az.length ? rose.roseBins(az, { binWidth: +c.binWidth || 10, axial: !!c.axial, ...(c.weights ? { weights: c.weights } : {}) }) : null;
       const max = binned ? binned.maxCount || 1 : 1, sqrt = c.scale !== 'linear';
       // rings at a quarter, half, three quarters and all of the largest petal's count
       for (let k = 1; k <= 4; k++) { const f = sqrt ? Math.sqrt(k / 4) : k / 4; ctx.beginPath(); ctx.arc(cx, cy, R * f, 0, 2 * Math.PI); ctx.stroke(); }
@@ -38,7 +38,7 @@ export function roseKind(rose) {
       ctx.textAlign = 'center'; ctx.textBaseline = 'top'; ctx.fillText('180', cx, cy + R + 0.5);
       // the outer ring's count, and n
       ctx.textAlign = 'left'; ctx.textBaseline = 'bottom'; ctx.fillText(`${max}`, cx + R * 0.71 + 0.6, cy - R * 0.71 - 0.2);
-      ctx.textBaseline = 'top'; ctx.fillText(`n ${az.length}${c.axial ? ' · axial' : ''}`, box[0], box[1]);
+      ctx.textBaseline = 'top'; ctx.fillText(`n ${az.length}${c.axial ? ' · axial' : ''}${c.weight ? ` · by ${c.weight}` : ''}`, box[0], box[1]);
       ctx.restore();
     },
   };

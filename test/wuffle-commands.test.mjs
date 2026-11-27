@@ -325,3 +325,38 @@ describe('calc, tables, joins', () => {
     assert.match(c.run('select where bogus = 1').text, /unknown column: bogus/);
   });
 });
+
+describe('a rose weighted by a column', () => {
+  it('weight <column>: sectors sum it (a long trace counts for more); off counts again; only numeric columns', async () => {
+    const { roseMarkup } = await import('../tools/wuffle/src/diagram-svg.js');
+    const { buildFigure } = await import('../tools/wuffle/src/figure.js');
+    const { p, c } = mk();
+    const id = p.addDataset({ name: 'traces', kind: 'lines', rows: [{ trend: 10, plunge: 0, length: 50 }, { trend: 100, plunge: 0, length: 1 }, { trend: 102, plunge: 0, length: 1 }], roles: { trend: 'trend', plunge: 'plunge' }, notation: 'dd' });
+    c.run('new rose'); const g = p.diagram(p.activeDiagram); p.addLayer(g.id, id); p.setDiagramProps(g.id, { quantity: 'trend' });
+    assert.match(c.run('weight nope').text, /no numeric column “nope”/);
+    assert.match(c.run('weight length').text, /weighted by length/);
+    assert.equal(p.diagram(g.id).props.weight, 'length');
+    assert.ok(roseMarkup(p, p.diagram(g.id)).weighted);
+    const fig = buildFigure(p, g.id), rose = fig.frames.find((f) => f.kind === 'rose');
+    assert.deepEqual(rose.content.weights, [50, 1, 1]); assert.match(fig.frames.find((f) => f.source.wuffle === 'caption').content.md, /weighted by length/);
+    c.run('weight off'); assert.equal(p.diagram(g.id).props.weight, null);
+  });
+});
+
+describe('contouring faults', () => {
+  it('a fault layer contours its poles, or its slip lines (--of slip); an old layer without the element gets it', async () => {
+    const { sceneLayers } = await import('../tools/wuffle/src/layers.js');
+    const { stereonetCore } = await import('../ext/stereonet/index.js');
+    const { p, c } = mk();
+    c.run('add f 090/60 090/60 n 092/62 092/62 n 088/58 088/58 n 270/30 270/30 r');
+    const L = p.layersOf(p.activeDiagram)[0];
+    delete p.layer(L.id).elements.contours;                      // as a layer saved before faults had contours
+    assert.match(c.run('contour kamb --of slip').text, /of the slip lines/);
+    const core = stereonetCore(BB), s = core.buildScene({ layers: sceneLayers(p, p.activeDiagram) });
+    const cont = s.primitives.find((q) => q.type === 'contour'); assert.ok(cont, 'contoured');
+    const slip = sceneLayers(p, p.activeDiagram)[0].data[0].lineDcos;
+    assert.deepEqual(cont.dcos[0], slip, 'the slip lines, not the poles');
+    c.run('contour kamb --of poles');
+    assert.deepEqual(core.buildScene({ layers: sceneLayers(p, p.activeDiagram) }).primitives.find((q) => q.type === 'contour').dcos[0], sceneLayers(p, p.activeDiagram)[0].data[0].pole);
+  });
+});

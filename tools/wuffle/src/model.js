@@ -18,7 +18,7 @@ export const DIAGRAM_KINDS = ['net', 'rose', 'fabric'];
 export const ELEMENTS = {
   planes: ['poles', 'greatCircles', 'contours', 'mean', { eigen: ['v1Pole', 'v1Circle', 'v2Pole', 'v2Circle', 'v3Pole', 'v3Circle'] }, 'labels'],
   lines: ['points', 'contours', 'mean', { eigen: ['v1Pole', 'v1Circle', 'v2Pole', 'v2Circle', 'v3Pole', 'v3Circle'] }, 'labels'],
-  faults: ['greatCircles', 'slip', 'ptAxes', 'dihedra', 'labels'],
+  faults: ['greatCircles', 'slip', 'contours', 'ptAxes', 'dihedra', 'labels'],   // contours: the poles, or (of: 'slip') the slip lines
   smallcircles: ['circles', 'axes', 'labels'],
   table: [],                                               // nothing to draw
 };
@@ -34,7 +34,7 @@ export const DIAGRAM_DEFAULTS = {
   net: { projection: 'equal-area', hemisphere: 'lower', rotation: null, matrix: null, graticule: 10 },   // rotation: a centre [tr, pl]; matrix: a dragged rotation
   // axial (count each azimuth at both ends) applies to dip direction and trend only when asked: a strike is
   // always axial (diagram-svg.js), but a dip direction counted at +180° too drew every rose mirrored
-  rose: { bins: 10, axial: false, scale: 'area', quantity: 'strike', column: null },
+  rose: { bins: 10, axial: false, scale: 'area', quantity: 'strike', weight: null },   // weight: a column the sectors sum (else they count)
   fabric: { plot: 'vollmer' },
 };
 
@@ -241,13 +241,20 @@ export class Project {
     const l = this._needLayer(layerId), kind = this._need(l.datasetId).kind;
     const group = ELEMENTS[kind].find((e) => typeof e === 'object' && Object.keys(e)[0] === name);
     const names = group ? Object.values(group)[0] : [name];
-    for (const n of names) { if (!l.elements[n]) throw new Error(`${kind} layers have no element “${n}”`); l.elements[n].on = !!on; }
+    for (const n of names) { this._ensureElement(l, kind, n); l.elements[n].on = !!on; }
     this._emit('layer-changed', { id: layerId });
+  }
+  /** an element the layer's kind HAS but this layer doesn't (a layer saved before the kind gained it: a fault's
+   *  contours) comes from the defaults; one the kind hasn't is refused */
+  _ensureElement(l, kind, n) {
+    if (l.elements[n]) return;
+    if (!leafNames(kind).includes(n)) throw new Error(`${kind} layers have no element “${n}”`);
+    l.elements[n] = { on: false, ...clone(DEFAULT_SETTINGS[n] || {}) };
   }
   /** settings of one element (contour method, cone confidence…), merged */
   setElementSettings(layerId, name, settings) {
     const l = this._needLayer(layerId);
-    if (!l.elements[name]) throw new Error(`no element “${name}”`);
+    this._ensureElement(l, this._need(l.datasetId).kind, name);
     Object.assign(l.elements[name], settings);
     this._emit('layer-changed', { id: layerId });
   }
