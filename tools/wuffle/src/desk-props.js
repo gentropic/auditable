@@ -74,17 +74,19 @@ export async function layerProperties(p, layerId) {
         const cb = st.colorBy || {};
         v.cbCol = row(S, 'colour by', sel([['', '— the layer’s colour'], ...ds.columns.map((c) => [c, c])], cb.column || ''));
         v.cbMode = row(S, '… as', sel([['cat', 'categories (one colour each)'], ['num', 'a ramp over its numbers']], cb.mode || 'cat'));
+        v.cbFilt = row(S, '… over', sel([['all', 'every row (colours stay put as the filter changes)'], ['filtered', 'the rows the filter keeps']], cb.filtered ? 'filtered' : 'all'));
         const cbKey = h('div', 'wpt-key'); S.append(cbKey);
         const showKey = () => {
-          const col = v.cbCol.value; v.cbMode.disabled = !col; v.color.disabled = !!col;
+          const col = v.cbCol.value; v.cbMode.disabled = v.cbFilt.disabled = !col; v.color.disabled = !!col;
           if (col && !numCols.includes(col) && v.cbMode.value === 'num') v.cbMode.value = 'cat';
           cbKey.replaceChildren();
-          const k = col ? colorByOf(ds, { column: col, mode: v.cbMode.value }) : null; if (!k) return;
+          const filt = v.cbFilt.value === 'filtered', keep = filt ? layerFilterRows(ds, v.filter.value) : null;
+          const k = col ? colorByOf(ds, { column: col, mode: v.cbMode.value, filtered: filt }, keep) : null; if (!k) return;
           if (k.key.kind === 'ramp') { cbKey.append(h('span', null, `${+k.key.lo.toPrecision(4)}`), Object.assign(h('span', 'wpt-ramp'), { style: `background:linear-gradient(90deg,${k.key.stops.join(',')})` }), h('span', null, `${+k.key.hi.toPrecision(4)}`)); return; }
           for (const e of k.key.entries.slice(0, 12)) { const s = h('span', 'wpt-sw'); s.append(Object.assign(h('i'), { style: `background:${e.color}` }), document.createTextNode(e.label)); cbKey.append(s); }
           if (k.key.entries.length > 12) cbKey.append(h('span', null, `… ${k.key.entries.length - 12} more`));
         };
-        v.cbCol.onchange = showKey; v.cbMode.onchange = showKey; showKey();
+        v.cbCol.onchange = showKey; v.cbMode.onchange = showKey; v.cbFilt.onchange = showKey; v.filter.addEventListener('change', showKey); showKey();
         const sb = st.sizeBy || {};
         v.sbCol = row(S, 'size by', sel([['', '— the same size'], ...numCols.map((c) => [c, c])], sb.column || ''));
         const sbr = h('span', 'wpt-inline'); v.sbMin = inp('number', sb.min || 2, { min: 1, max: 30, step: 0.5 }); v.sbMax = inp('number', sb.max || 10, { min: 1, max: 30, step: 0.5 });
@@ -161,7 +163,7 @@ export async function layerProperties(p, layerId) {
     if (v.color) Object.assign(style, {
       color: v.color.value, symbol: v.symbol.value === 'circle' ? null : v.symbol.value, size: num(v.size, 4), hollow: v.hollow.checked || null,
       opacity: +v.opacity.value >= 100 ? null : +v.opacity.value / 100,
-      colorBy: v.cbCol.value ? { column: v.cbCol.value, mode: v.cbMode.value } : null,
+      colorBy: v.cbCol.value ? { column: v.cbCol.value, mode: v.cbMode.value, ...(v.cbFilt.value === 'filtered' ? { filtered: true } : {}) } : null,
       sizeBy: v.sbCol.value ? { column: v.sbCol.value, min: num(v.sbMin, 2), max: num(v.sbMax, 10) } : null,
     });
     if (v.lineWidth) Object.assign(style, { lineColor: v.lineOwn.checked ? v.lineColor.value : null, lineWidth: num(v.lineWidth), lineDash: v.lineDash.value === 'solid' ? null : v.lineDash.value });

@@ -18,15 +18,17 @@ const num = (v) => { const x = typeof v === 'number' ? v : parseFloat(String(v ?
  * colour by a column: { column, mode: 'cat' | 'num' } → row → colour (null: the layer's own), and the key
  * (what each colour means — a legend's entries). Categories take the palette in the order the values sort.
  */
-export function colorByOf(ds, cb) {
+export function colorByOf(ds, cb, keep = null) {
   if (!cb || !cb.column || !ds.columns.includes(cb.column)) return null;
   const vals = ds.rows.map((r) => r[cb.column]);
+  // cb.filtered: the ramp's range and the categories come from the rows the filter keeps, not every row
+  const seen = cb.filtered && keep ? vals.filter((_, i) => keep.has(i)) : vals;
   if (cb.mode === 'num') {
-    const xs = vals.map(num).filter((v) => v != null); if (!xs.length) return null;
+    const xs = seen.map(num).filter((v) => v != null); if (!xs.length) return null;
     const lo = cb.min != null ? +cb.min : Math.min(...xs), hi = cb.max != null ? +cb.max : Math.max(...xs), span = hi - lo || 1;
     return { of: (row) => { const v = num(vals[row]); return v == null ? null : rampColor((v - lo) / span); }, key: { kind: 'ramp', lo, hi, stops: RAMP.slice() } };
   }
-  const cats = [...new Set(vals.map((v) => String(v ?? '')))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  const cats = [...new Set(seen.map((v) => String(v ?? '')))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
   const colours = new Map(cats.map((c, i) => [c, (cb.colors && cb.colors[c]) || PALETTE[i % PALETTE.length]]));
   return { of: (row) => colours.get(String(vals[row] ?? '')) || null, key: { kind: 'cat', entries: cats.map((c) => ({ label: c || '(blank)', color: colours.get(c) })) } };
 }
@@ -52,7 +54,7 @@ export function sceneLayers(project, diagramId) {
     // a weight per datum when the dataset names a weight column (a Terzaghi correction, a length): contours use it
     const wcol = ds.roles && ds.roles.weight && ds.columns.includes(ds.roles.weight) ? ds.roles.weight : null;
     const wOf = (row) => { const v = +ds.rows[row][wcol]; return Number.isFinite(v) && v >= 0 ? v : 0; };
-    const st = L.style || {}, keep = layerFilterRows(ds, st.filter), cby = colorByOf(ds, st.colorBy), sby = sizeByOf(ds, st.sizeBy);
+    const st = L.style || {}, keep = layerFilterRows(ds, st.filter), cby = colorByOf(ds, st.colorBy, keep), sby = sizeByOf(ds, st.sizeBy);
     const data = orientations(ds).map((o, row) => {
       if (!o || (keep && !keep.has(row))) return null;
       const c = cby ? cby.of(row) : null, z = sby ? sby(row) : null;

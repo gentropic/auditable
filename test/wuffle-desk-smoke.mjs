@@ -764,6 +764,28 @@ for (const [label, url] of [['dev', '/tools/wuffle/index.html'], ['built', '/wuf
   })();
   chk(`${label}: properties in tabs (${pr && JSON.stringify(Object.keys(pr))}) — triangles drawn (${pr.tri}), coloured by dip (${pr.colours} colours), only dip > 45 (${pr.picks} of 200 picks), dashed great circles (${pr.dashed}), contours by the Schmidt % method (${pr.method}), one undo step (“${pr.undo}”)`,
     pr.tri > 50 && pr.colours > 5 && pr.picks > 50 && pr.picks < 200 && pr.dashed > 50 && pr.method === 'percent' && /layer properties/.test(pr.undo || ''));
+  // colour by over the filtered rows: the ramp starts at the lowest KEPT dip, so that pole's colour changes
+  const cf = await (async () => {
+    const lowFill = () => p.evaluate(() => {
+      const W = window.__wuffleDesk, P = W.project, v = W.views.get(P.activeDiagram), L = P.layers.find((l) => P.dataset(l.datasetId).name === 'tocher');
+      const fills = [...v.stage.querySelectorAll('svg path.wn-pole')].map((e) => e.getAttribute('fill'));
+      return { fills: fills.join('|'), filtered: !!(L.style.colorBy && L.style.colorBy.filtered), id: L.id };
+    });
+    const before = await lowFill();
+    await p.evaluate((id) => { window.__wuffleDesk.tree.properties(id); }, before.id);   // its promise settles on close
+    await p.waitForFunction(() => [...document.querySelectorAll('.gcu-dialog .wpt-pane[data-tab="symbols"] .wprow')].some((r) => r.firstChild.textContent === '… over'));
+    await p.waitForTimeout(150);
+    await p.evaluate(() => {
+      const d = [...document.querySelectorAll('.gcu-dialog')].at(-1);
+      const el = [...d.querySelectorAll('.wpt-pane[data-tab="symbols"] .wprow')].find((r) => r.firstChild.textContent === '… over').lastChild;
+      el.value = 'filtered'; el.dispatchEvent(new Event('change', { bubbles: true }));
+      [...d.querySelectorAll('button')].find((x) => x.textContent === 'Apply').click();
+    });
+    await p.waitForTimeout(400);
+    return { before, after: await lowFill() };
+  })();
+  chk(`${label}: colour by can follow the filter (saved ${cf.after.filtered}; the poles' colours ${cf.before.fills === cf.after.fills ? 'did NOT change' : 'changed'} once the ramp spans only the kept rows)`,
+    !cf.before.filtered && cf.after.filtered && cf.before.fills !== cf.after.fills);
   chk(`${label}: no page errors after the keys, the measure menu and the properties (${errs.length ? errs.join(' ; ').slice(0, 200) : 'none'})`, errs.length === 0);
   await p.close();
 }
