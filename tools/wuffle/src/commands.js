@@ -98,9 +98,12 @@ export function createCommands(ctx) {
       const [what, att, num] = args;
       if (what === 'none') { p.clearSelection(); return 'selection cleared'; }
       if (what === 'all' || what === 'invert') {
+        // once per DATASET drawn (visibly) on the net — two views of one dataset used to invert it twice (no change)
+        // and count its rows twice; a hidden layer is left alone, as a gesture leaves it
         let n = 0;
-        for (const L of p.layersOf(active().id)) { const ds = p.dataset(L.datasetId), all = ds.rows.map((_, i) => i), cur = new Set(p.selected(ds.id));
-          const rows = what === 'all' ? all : all.filter((i) => !cur.has(i)); p.select(ds.id, rows); n += rows.length; }
+        const dsIds = [...new Set(p.layersOf(active().id).filter((L) => L.visible !== false).map((L) => L.datasetId))];
+        for (const id of dsIds) { const ds = p.dataset(id), all = ds.rows.map((_, i) => i), cur = new Set(p.selected(id));
+          const rows = what === 'all' ? all : all.filter((i) => !cur.has(i)); p.select(id, rows); n += rows.length; }
         return `${n} selected`;
       }
       const a = parseAttitude(att); if (!a) throw new Error(`“${att}” — a plane 045/30 or a line 045→30`);

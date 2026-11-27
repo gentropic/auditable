@@ -170,7 +170,9 @@ export function createFiles(root, { project: p, dropHost, onOpened, home = null,
   };
   /** File → New project: an empty project, /home emptied, the autosave cleared (the menu confirms first: Undo can't bring it back) */
   const newProject = async () => {
-    adopt(new (p.constructor)({ name: 'untitled' }));
+    const fresh = new (p.constructor)({ name: 'untitled' });
+    fresh.addDiagram('net');                         // a new project is a fresh desk: Net 1 (it used to leave no net at all)
+    adopt(fresh);
     if (home) await home.restore([]);
     await autosaveStore.clear();
   };

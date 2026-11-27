@@ -84,3 +84,31 @@ describe('commands', () => {
     assert.deepEqual(r.map((x) => x.ok), [true, true, false], 'stops at the first failure');
   });
 });
+
+// ── the 11-26 review's bugs, each with the case that showed it ──
+import { orientations } from '../tools/wuffle/src/io.js';
+import { rowsInShape } from '../ext/stereonet/index.js';
+describe('review fixes (11-26)', () => {
+  it('select all / invert count once per dataset, even with two views of it on the net', () => {
+    const { p, c } = mk(); const id = c.run('sample').ok && p.datasets[0].id;
+    p.addView(p.layersOf(p.activeDiagram)[0].id, p.activeDiagram);          // a second view of tocher on the same net
+    assert.equal(p.layersOf(p.activeDiagram).length, 2);
+    p.select(id, [0]);
+    const r = c.run('select invert');
+    assert.equal(p.selected(id).length, 199, 'inverted once (twice was no change)');
+    assert.match(r.text, /^199 selected/);
+    assert.match(c.run('select all').text, /^200 selected/);
+  });
+  it('strike, dip and a dip quadrant (030,40,SE) read as planes, the quadrant settling the dip direction', () => {
+    const [ds] = readTable('Strike,Dip,DipDir\n030,40,SE\n030,40,NW\n210,30,E\n', 'q');
+    assert.equal(ds.kind, 'planes'); assert.equal(ds.roles.quadrant, 'DipDir');
+    assert.deepEqual(orientations(ds).map((o) => o.plane), [[120, 40], [300, 40], [120, 30]]);
+  });
+  it('a shape round a fault’s slip point catches it (the net draws the slip; picking hits it)', () => {
+    const D = Math.PI / 180, line = (t, pl) => [Math.sin(t * D) * Math.cos(pl * D), Math.cos(t * D) * Math.cos(pl * D), -Math.sin(pl * D)];
+    const data = [{ row: 0, pole: line(270, 30), lineDcos: line(0, 1) }];
+    assert.deepEqual(rowsInShape(data, { type: 'cone', axis: line(0, 1), angle: 10 }), [0], 'round the slip point');
+    assert.deepEqual(rowsInShape(data, { type: 'cone', axis: line(270, 30), angle: 10 }), [0], 'round the pole, as before');
+    assert.deepEqual(rowsInShape(data, { type: 'cone', axis: line(135, 45), angle: 10 }), []);
+  });
+});

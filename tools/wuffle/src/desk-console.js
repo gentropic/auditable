@@ -170,8 +170,15 @@ export class ConsoleView {
   }
   async _start() {
     await this._sized;
-    this._write('\x1b[33mwuffle\x1b[0m \x1b[2m— the console is a shell, and /project is the project: try ls, help, cat data/*.csv. Tab completes, ↑ recalls\x1b[0m\n');
+    this._banner();
     this._loop();
+  }
+  // once, by whichever comes first: the console's first real size, or a line run() before it was ever shown
+  // (it once came AFTER such lines — the banner waited on the size and the lines didn't)
+  _banner() {
+    if (this._bannered) return;
+    this._bannered = true;
+    this._write('\x1b[33mwuffle\x1b[0m \x1b[2m— the console is a shell, and /project is the project: try ls, help, cat data/*.csv. Tab completes, ↑ recalls\x1b[0m\n');
   }
   _prompt() { return `\x1b[33mwuffle\x1b[0m \x1b[36m${this.shell.cwd}\x1b[0m $ `; }
   async _loop() {
@@ -201,6 +208,7 @@ export class ConsoleView {
   /** run a line as if it were typed: it shows on the console, then the prompt comes back → { ok, text } */
   async run(line) {
     await this.ready;
+    this._banner();
     this.term.write('\r\x1b[2K' + this._prompt() + line + '\r\n');
     const r = await this._exec(line);
     this.term.write(this._prompt());

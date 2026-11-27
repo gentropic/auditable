@@ -55,12 +55,17 @@ export function shapeTest(shape) {
 }
 
 /**
- * The rows of a layer's data inside a shape: [{ row, pole?|dcos? }] → rows. A plane is tested by its pole,
- * a line by its direction.
+ * The rows of a layer's data inside a shape: [{ row, pole?|dcos?, lineDcos? }] → rows. A plane is tested by its
+ * pole, a line by its direction — and a FAULT by either: its slip line is what the net draws (and what a click
+ * picks), so a shape drawn round the slip points must catch them; its pole still counts.
  */
 export function rowsInShape(data, shape) {
   const t = shapeTest(shape), out = [];
-  for (const d of data) { const v = d && (d.pole || d.dcos); if (v && t(v)) out.push(d.row); }
+  for (const d of data) {
+    if (!d) continue;
+    const v = d.pole || d.dcos;
+    if ((v && t(v)) || (d.lineDcos && t(d.lineDcos))) out.push(d.row);
+  }
   return out;
 }
 

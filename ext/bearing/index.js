@@ -881,7 +881,7 @@ function densityGrid(dcos, options = {}) {
       const py = projR - j * step;
       for (let i = 0; i < gridSize; i++) {
         const px = -projR + i * step;
-        if (px * px + py * py > projR * projR * 1.02) {
+        if (px * px + py * py > Math.max(projR * projR * 1.02, (projR + 1.5 * step) ** 2)) {
           grid[j * gridSize + i] = NaN;
           continue;
         }
@@ -907,7 +907,7 @@ function densityGrid(dcos, options = {}) {
     const py = projR - j * step;
     for (let i = 0; i < gridSize; i++) {
       const px = -projR + i * step;
-      if (px * px + py * py > projR * projR * 1.02) {
+      if (px * px + py * py > Math.max(projR * projR * 1.02, (projR + 1.5 * step) ** 2)) {
         grid[j * gridSize + i] = NaN;
         continue;
       }
@@ -3390,7 +3390,7 @@ function dihedraGrid(planes, slips, options = {}) {
     const py = projR - j * step;
     for (let i = 0; i < gridSize; i++) {
       const px = -projR + i * step;
-      if (px * px + py * py > projR * projR * 1.02) {
+      if (px * px + py * py > Math.max(projR * projR * 1.02, (projR + 1.5 * step) ** 2)) {
         grid[j * gridSize + i] = NaN;
         continue;
       }

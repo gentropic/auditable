@@ -110,6 +110,15 @@ export function sniffRoles(columns, rows) {
     return { kind: 'faults', roles: { ...(r.dipDir ? { dipDir: r.dipDir } : { strike: r.strike }), dip: r.dip, trend: r.trend, plunge: r.plunge, ...(r.sense ? { sense: r.sense } : {}), ...set }, notation: r.dipDir ? 'dd' : 'rhr', guessed: false, why: 'plane, line and sense columns' };
   }
   if (r.trend && r.plunge && r.angle) return { kind: 'smallcircles', roles: { trend: r.trend, plunge: r.plunge, angle: r.angle, ...set }, notation: 'dd', guessed: false, why: 'axis and angle columns' };
+  // strike, dip and a dip QUADRANT (030, 40, SE — common field notation): a "dip direction" column holding only
+  // compass letters is the quadrant the dip faces, and the strike's two perpendiculars are settled by it
+  const QUAD = /^\s*(N|NE|E|SE|S|SW|W|NW|NNE|ENE|ESE|SSE|SSW|WSW|WNW|NNW)\s*$/i;
+  const quadCol = [r.dipDir, ...columns].find((c) => c && c !== r.strike && c !== r.dip && rows.slice(0, 20).filter((o) => String(o[c] ?? '').trim()).length
+    && rows.slice(0, 20).every((o) => !String(o[c] ?? '').trim() || QUAD.test(String(o[c]))));
+  if ((r.strike || r.dipDir) && r.dip && quadCol) {
+    const strike = r.strike || (r.dipDir !== quadCol ? r.dipDir : null);
+    if (strike) return { kind: 'planes', roles: { strike, dip: r.dip, quadrant: quadCol, ...set }, notation: 'quadrant', guessed: false, why: `${strike} / ${r.dip}, dipping ${quadCol} (strike and quadrant)` };
+  }
   if (r.dipDir && r.dip) return { kind: 'planes', roles: { dipDir: r.dipDir, dip: r.dip, ...set }, notation: 'dd', guessed: false, why: `${r.dipDir} / ${r.dip}` };
   if (r.strike && r.dip) return { kind: 'planes', roles: { strike: r.strike, dip: r.dip, ...set }, notation: 'rhr', guessed: false, why: `${r.strike} / ${r.dip} (right-hand rule)` };
   if (r.trend && r.plunge) return { kind: 'lines', roles: { trend: r.trend, plunge: r.plunge, ...set }, notation: 'dd', guessed: false, why: `${r.trend} → ${r.plunge}` };
@@ -170,6 +179,11 @@ function planeOf(row, roles, notation) {
     } catch { return null; }
   }
   const dip = +row[roles.dip];
+  if (roles.quadrant && roles.strike) {                 // strike + the quadrant it dips toward
+    const st = +row[roles.strike], q = String(row[roles.quadrant] ?? '').trim();
+    if (row[roles.dip] === '' || !Number.isFinite(dip) || !Number.isFinite(st) || dip < 0 || dip > 90) return null;
+    try { return bio.translateAttitude(st, dip, q || null, true); } catch { return null; }
+  }
   const a = roles.dipDir ? +row[roles.dipDir] : roles.strike ? +row[roles.strike] + 90 : NaN;
   if (row[roles.dip] === '' || !Number.isFinite(dip) || !Number.isFinite(a) || dip < 0 || dip > 90) return null;
   return [((a % 360) + 360) % 360, dip];
