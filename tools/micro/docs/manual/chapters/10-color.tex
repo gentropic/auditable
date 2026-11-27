@@ -285,7 +285,7 @@ With the demo project open:
 \end{tryit}
 
 \subsection{Projection to grid: the same question, as numbers}\label{sec:color-projgrid}
-The projection is a \emph{picture}: it is drawn a budget at a time, and its value per pixel depends on the zoom. When you want the answer as data — a map you can contour, drape on the topography, export, or put in a figure — use \menu{View>Projection>Projection to grid…} (or \code{projection to grid} in the palette). It asks the same per-column question of the \emph{records}, every one of them, and writes the answer as a grid layer (\cref{ch:grids}).
+The projection is a \emph{picture}: it is drawn a budget at a time, and its value per pixel depends on the zoom. When you want the answer as data — a map you can contour, drape on the topography, export, or put in a figure — use \menu{View>Projection>Projection to grid…} (or \code{projection to grid} in the palette). It asks the same per-column question of the \emph{records}, every one of them, and writes the answer as a grid layer (\cref{ch:grids}): a data grid, opened as a flat sheet just above the model and coloured by the statistic, its value named for it (\code{FE\_max}, \code{thickness\_40}; \cref{sec:grids-elevation-from}).
 
 For every node of a plan lattice micro takes the node's vertical line through the model and the blocks it passes through. A block counts by the \emph{length of line inside it}, so a sub-block counts by its own size and a rotated model by its turned boxes, exactly as they are drawn. Of those blocks a node keeps one statistic:
 

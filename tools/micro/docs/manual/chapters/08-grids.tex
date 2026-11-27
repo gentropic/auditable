@@ -82,7 +82,7 @@ The \ui{style} tab of a surface's properties has four rows that a plain mesh doe
 setting & meaning & default \\ \midrule
 \ui{band} & which band of a multi-band GeoTIFF is shown & the first \\
 \ui{drape} & what colors the surface: its own \ui{elevation}, or the values of another loaded grid & elevation \\
-\ui{shape} & \ui{flatten} turns the relief into a horizontal sheet at the level typed in \ui{flat @ z} & relief \\
+\ui{elevation from} & \ui{its value (a relief)}, or none: a sheet at a level, at the top or bottom of a layer, or on a surface (\cref{sec:grids-elevation-from}) & its value \\
 \ui{shading} & \ui{smooth}, or \ui{faceted (flat)}, which shades each triangle by itself so the grid cells read & smooth \\
 \bottomrule
 \end{tabularx}
@@ -95,11 +95,18 @@ setting & meaning & default \\ \midrule
 
 The source is sampled by position, at each node of the surface, so the two grids need not share a cell size or an extent. The source must be another grid; load one first if the list offers only \ui{elevation}.
 
-\subsection{Flat sheets}
+\subsection{Elevation from: data grids}\label{sec:grids-elevation-from}
 
-Not every grid is an elevation. A grade map or a geochemical grid has values that are not heights, and drawing them as relief makes a meaningless landscape. Tick \ui{flatten} and type a level: the grid becomes a horizontal sheet at that elevation, colored by its value. It is a plan map floating in the scene where you put it, at a bench level under the drillholes, say.
+Not every grid is an elevation. A grade map, a projection of the model, a $\Delta z$ or a slope has values that are not heights, and drawing them as relief makes a meaningless landscape. The \ui{elevation from} row says what a grid's height is:
+\begin{description}
+\item[\ui{its value (a relief)}] the value is the elevation: a DEM, the topography.
+\item[\ui{none — a level}] a horizontal sheet at the level you type, coloured by the value: a plan map floating where you put it, at a bench level under the drillholes, say.
+\item[\ui{none — the top of a layer}, \ui{the bottom of a layer}] the sheet just above or below another layer: the top of the block model (the top of its top blocks), the bottom of a solid. An offset in metres moves it up or down.
+\item[\ui{none — on a surface}] the sheet laid on another grid: each node lifted to that surface's height where it stands, plus the offset. A grade map draped on the topography, readable from any angle; a node off that surface keeps the sheet's level.
+\end{description}
+A grid shown as points that chooses \ui{none} becomes a sheet. A grid whose value is not its height is a \term{data grid}: its value has its own column beside X, Y and Z in the table and the record panel, named for what it is when micro made it (\code{FE\_max} from a projection, \code{dz} from cut and fill, \code{slope} and \code{aspect}), and Z is where the sheet is drawn. Projections to grid, cut and fill, and slope and aspect all open as data grids on a sheet. A GeoTIFF export carries the value's name and unit the way GDAL and QGIS read them, and a GeoTIFF with a named band opens with its value named.
 
-Surface, drape, flat level and band are all saved with the project.
+Surface, drape, elevation from, the value's name and band are all saved with the project and in scenes.
 
 \begin{tryit}
 Work with the demo's topography. Start with the demo project open.
@@ -110,8 +117,8 @@ Work with the demo's topography. Start with the demo project open.
 \item Choose \menu{Data \& file>Reinterpret as…>surface (shaded relief)}. The relief returns.
 \item Open the layer's properties (right-click, \ui{Properties…}) and go to the \ui{style} tab.
 \item Set \ui{shading} to \ui{faceted (flat)} and zoom in. The grid's cells show as flat facets. Set it back to \ui{smooth}.
-\item Tick \ui{flatten}. A \ui{flat @ z} box appears, starting at 0, which is far below the demo.
-\item Type \code{950} in the box and press \key{Enter}. The terrain collapses to a sheet just above the model, still colored by elevation. Untick \ui{flatten}.
+\item Set \ui{elevation from} to \ui{none — a level}. A level box appears, starting at 0, which is far below the demo.
+\item Type \code{950} in the box and press \key{Enter}. The terrain collapses to a sheet just above the model, still colored by elevation. Set \ui{elevation from} back to \ui{its value (a relief)}.
 \item Set \ui{Z×} on the instrument rail to 3. Every layer stretches together, and the topography's relief becomes easy to read (\cref{ch:sections}).
 \end{enumerate}
 \end{tryit}
