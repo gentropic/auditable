@@ -1,4 +1,4 @@
-// ⚠ VENDORED — DO NOT EDIT. @gcu/bearing v0.3.2, built ESM bundle.
+// ⚠ VENDORED — DO NOT EDIT. @gcu/bearing v0.4.0, built ESM bundle.
 // Source of truth: gentropic/bearing.js (dist/bearing.mjs). Update with:
 //   node ext/bearing/sync.mjs
 // See ext/bearing/README.md.
@@ -474,35 +474,35 @@ function generateNet(interval = 10, type = "equatorial") {
   return type === "polar" ? generatePolarNet(interval) : generateEquatorialNet(interval);
 }
 function generateEquatorialNet(interval) {
-  const DEG10 = Math.PI / 180;
+  const DEG11 = Math.PI / 180;
   const greatCircles = [];
   const smallCircles = [];
   for (let alpha = 0; alpha < 180; alpha += interval) {
-    const alphaR = alpha * DEG10;
+    const alphaR = alpha * DEG11;
     greatCircles.push(
       greatCircle([Math.sin(alphaR), 0, Math.cos(alphaR)], 360)
     );
   }
   for (let alpha = interval; alpha < 180; alpha += interval) {
     smallCircles.push(
-      smallCircle([0, 1, 0], alpha * DEG10, 360)
+      smallCircle([0, 1, 0], alpha * DEG11, 360)
     );
   }
   return { greatCircles, smallCircles };
 }
 function generatePolarNet(interval) {
-  const DEG10 = Math.PI / 180;
+  const DEG11 = Math.PI / 180;
   const greatCircles = [];
   const smallCircles = [];
   for (let az = 0; az < 180; az += interval) {
-    const azR = az * DEG10;
+    const azR = az * DEG11;
     greatCircles.push(
       greatCircle([Math.cos(azR), -Math.sin(azR), 0], 360)
     );
   }
   for (let dip = interval; dip <= 90; dip += interval) {
     smallCircles.push(
-      smallCircle([0, 0, -1], dip * DEG10, 360)
+      smallCircle([0, 0, -1], dip * DEG11, 360)
     );
   }
   return { greatCircles, smallCircles };
@@ -841,11 +841,185 @@ var defaults = {
   }
 };
 
-// src/contouring.js
+// src/densityfield.js
 var DEG2 = Math.PI / 180;
+var TINY = 20.7;
+function kernelOf(n, options = {}) {
+  const method = options.method || "fisher";
+  if (method === "kamb") {
+    const k = options.kambSigma != null ? options.kambSigma : 3;
+    const cosTheta = n / (n + k * k), A = 1 - cosTheta, E = n * A, sd = Math.sqrt(n * A * (1 - A)) || 1;
+    return { method, cone: true, cosCut: cosTheta, term: () => 1, value: (s) => (s - E) / sd, E, sd };
+  }
+  if (method === "percent") {
+    const p = options.areaPercent > 0 && options.areaPercent < 100 ? options.areaPercent : 1;
+    return { method, cone: true, cosCut: 1 - p / 100, term: () => 1, value: (s) => 100 * s / n / p };
+  }
+  if (method === "cosine") {
+    const k = options.cosinePower > 0 ? options.cosinePower : 1 / (1 - Math.cos(90 / Math.sqrt(n) * DEG2));
+    return { method, cone: false, cosCut: Math.exp(-TINY / k), term: (c) => Math.pow(c, k), value: (s) => (k + 1) * s / n };
+  }
+  const sigma = (options.sigma != null ? options.sigma : 90 / Math.sqrt(n)) * DEG2;
+  const kappa = 1 / (1 - Math.cos(sigma));
+  return { method: "fisher", cone: false, kappa, cosCut: Math.max(-1, 1 - TINY / kappa), term: (c) => Math.exp(kappa * (c - 1)), value: (s) => kappa * s / n };
+}
+function scaledWeights(weights, n) {
+  if (!weights || weights.length !== n) return null;
+  let s = 0;
+  for (const w of weights) s += w > 0 && Number.isFinite(w) ? w : 0;
+  return s > 0 ? weights.map((w) => (w > 0 && Number.isFinite(w) ? w : 0) * n / s) : null;
+}
+function ringsOf(stepDeg) {
+  const R = Math.max(2, Math.round(90 / stepDeg)), dt = Math.PI / 2 / R;
+  const counts = new Int32Array(R + 1), offsets = new Int32Array(R + 2);
+  for (let r = 0; r <= R; r++) {
+    counts[r] = r === 0 ? 1 : Math.max(6, Math.round(2 * Math.PI * Math.sin(r * dt) / dt));
+    offsets[r + 1] = offsets[r] + counts[r];
+  }
+  return { R, dt, counts, offsets, total: offsets[R + 1] };
+}
+var nodeDir = (t, phi) => [Math.sin(t) * Math.sin(phi), Math.sin(t) * Math.cos(phi), -Math.cos(t)];
+function bucketsOf(data, cosCut) {
+  const chord = Math.sqrt(Math.max(0, 2 - 2 * cosCut));
+  const nc = Math.max(1, Math.min(64, Math.floor(2 / Math.max(chord, 1e-6))));
+  const size = 2 / nc, cell = (v) => Math.min(nc - 1, Math.max(0, Math.floor((v + 1) / size)));
+  const map = /* @__PURE__ */ new Map();
+  const put = (x, y, z, m) => {
+    const k = (cell(x) * nc + cell(y)) * nc + cell(z);
+    let b = map.get(k);
+    if (!b) {
+      b = [];
+      map.set(k, b);
+    }
+    b.push(m);
+  };
+  for (let m = 0; m < data.length; m++) {
+    const d = data[m];
+    put(d[0], d[1], d[2], m);
+    put(-d[0], -d[1], -d[2], ~m);
+  }
+  return { nc, cell, map };
+}
+function densityField(dcos, options = {}) {
+  const n = dcos.length, method = options.method || "fisher", stepDeg = options.step || 1.2;
+  const rings = ringsOf(stepDeg), values = new Float64Array(rings.total);
+  if (n === 0) {
+    values.fill(NaN);
+    return makeField(method, n, stepDeg, rings, values);
+  }
+  const K = kernelOf(n, options), wt = scaledWeights(options.weights, n);
+  const B = bucketsOf(dcos, K.cosCut);
+  for (let r = 0; r <= rings.R; r++) {
+    const t = r * rings.dt, c = rings.counts[r];
+    for (let k = 0; k < c; k++) {
+      const d = nodeDir(t, 2 * Math.PI * k / c);
+      const ci = B.cell(d[0]), cj = B.cell(d[1]), ck = B.cell(d[2]);
+      let acc = 0;
+      for (let a = ci - 1; a <= ci + 1; a++) {
+        if (a < 0 || a >= B.nc) continue;
+        for (let b = cj - 1; b <= cj + 1; b++) {
+          if (b < 0 || b >= B.nc) continue;
+          for (let e = ck - 1; e <= ck + 1; e++) {
+            if (e < 0 || e >= B.nc) continue;
+            const bucket = B.map.get((a * B.nc + b) * B.nc + e);
+            if (!bucket) continue;
+            for (const s of bucket) {
+              const m = s < 0 ? ~s : s, q = dcos[m], sg = s < 0 ? -1 : 1;
+              const dot2 = sg * (d[0] * q[0] + d[1] * q[1] + d[2] * q[2]);
+              if (dot2 < K.cosCut) continue;
+              if (K.cosCut <= 0 && dot2 < 0) continue;
+              const w = wt ? wt[m] : 1;
+              acc += w * K.term(dot2);
+            }
+          }
+        }
+      }
+      values[rings.offsets[r] + k] = K.value(acc);
+    }
+  }
+  return makeField(method, n, stepDeg, rings, values);
+}
+function makeField(method, n, step, rings, values) {
+  const { R, dt, counts, offsets } = rings;
+  const onRing = (r, phi) => {
+    const c = counts[r], o = offsets[r];
+    if (c === 1) return values[o];
+    let u = phi / (2 * Math.PI) * c;
+    u -= Math.floor(u / c) * c;
+    const k0 = Math.floor(u) % c, k1 = (k0 + 1) % c, f = u - Math.floor(u);
+    return values[o + k0] * (1 - f) + values[o + k1] * f;
+  };
+  return {
+    method,
+    n,
+    step,
+    values,
+    at(d) {
+      let x = d[0], y = d[1], z = d[2];
+      if (z > 0) {
+        x = -x;
+        y = -y;
+        z = -z;
+      }
+      const t = Math.acos(Math.max(-1, Math.min(1, -z))), phi = Math.atan2(x, y);
+      const u = t / dt, r0 = Math.min(R, Math.floor(u)), f = u - r0;
+      if (r0 >= R) return onRing(R, phi);
+      return onRing(r0, phi) * (1 - f) + onRing(r0 + 1, phi) * f;
+    }
+  };
+}
+var CACHE = /* @__PURE__ */ new Map();
+var CACHE_MAX = 8;
+var hits = 0;
+var misses = 0;
+function keyOf(dcos, options) {
+  let h = 2166136261;
+  const mix = (v) => {
+    const q = Math.round(v * 1e9) | 0;
+    h ^= q;
+    h = Math.imul(h, 16777619);
+    h ^= q >>> 16;
+    h = Math.imul(h, 16777619);
+  };
+  for (const d of dcos) {
+    mix(d[0]);
+    mix(d[1]);
+    mix(d[2]);
+  }
+  if (options.weights) for (const w of options.weights) mix(+w || 0);
+  return `${options.method || "fisher"}|${options.sigma ?? ""}|${options.kambSigma ?? ""}|${options.areaPercent ?? ""}|${options.cosinePower ?? ""}|${options.step || 1.2}|${dcos.length}|${options.weights ? options.weights.length : 0}|${h >>> 0}`;
+}
+function cachedDensityField(dcos, options = {}) {
+  const key = keyOf(dcos, options);
+  let f = CACHE.get(key);
+  if (f) {
+    hits++;
+    CACHE.delete(key);
+    CACHE.set(key, f);
+    return f;
+  }
+  misses++;
+  f = densityField(dcos, options);
+  CACHE.set(key, f);
+  if (CACHE.size > CACHE_MAX) CACHE.delete(CACHE.keys().next().value);
+  return f;
+}
+var densityFieldCache = {
+  get stats() {
+    return { size: CACHE.size, hits, misses };
+  },
+  clear() {
+    CACHE.clear();
+    hits = 0;
+    misses = 0;
+  }
+};
+
+// src/contouring.js
+var DEG3 = Math.PI / 180;
 function rimInverse(inverseFn, px, py, projR) {
-  const r23 = px * px + py * py, R2 = projR * projR;
-  if (r23 <= R2) return inverseFn(px, py);
+  const r23 = px * px + py * py, R22 = projR * projR;
+  if (r23 <= R22) return inverseFn(px, py);
   if (projR > 1) {
     if (r23 >= 4) return null;
     const s = Math.sqrt(1 - r23 / 4);
@@ -871,19 +1045,10 @@ function densityGrid(dcos, options = {}) {
     return { grid, gridSize, step, projR, projection, method };
   }
   const inverseFn = projection === "equal-angle" ? inverse2 : inverse;
-  const data = rotation ? dcos.map((d) => transformVec3(rotation, d)) : dcos;
-  let wt = null;
-  if (options.weights && options.weights.length === n) {
-    let s = 0;
-    for (const w of options.weights) s += w > 0 && Number.isFinite(w) ? w : 0;
-    if (s > 0) wt = options.weights.map((w) => (w > 0 && Number.isFinite(w) ? w : 0) * n / s);
-  }
-  if (method === "kamb") {
-    const k = options.kambSigma != null ? options.kambSigma : 3;
-    const cosTheta = n / (n + k * k);
-    const A = 1 - cosTheta;
-    const E = n * A;
-    const sd = Math.sqrt(n * A * (1 - A)) || 1;
+  const want = options.field ?? "auto";
+  const field = typeof want === "object" && want ? want : want === true || want === "auto" && n * gridSize * gridSize > 4e6 ? cachedDensityField(dcos, { method, sigma: options.sigma, kambSigma: options.kambSigma, areaPercent: options.areaPercent, cosinePower: options.cosinePower, weights: options.weights, step: options.fieldStep }) : null;
+  if (field) {
+    const Rt = rotation ? transpose(rotation) : null;
     for (let j = 0; j < gridSize; j++) {
       const py = projR - j * step;
       for (let i = 0; i < gridSize; i++) {
@@ -897,19 +1062,14 @@ function densityGrid(dcos, options = {}) {
           grid[j * gridSize + i] = NaN;
           continue;
         }
-        let count = 0;
-        for (let m = 0; m < n; m++) {
-          const rd = data[m];
-          if (Math.abs(d[0] * rd[0] + d[1] * rd[1] + d[2] * rd[2]) >= cosTheta) count += wt ? wt[m] : 1;
-        }
-        grid[j * gridSize + i] = (count - E) / sd;
+        grid[j * gridSize + i] = field.at(Rt ? transformVec3(Rt, d) : d);
       }
     }
-    return { grid, gridSize, step, projR, projection, method };
+    return { grid, gridSize, step, projR, projection, method, field: true };
   }
-  const sigma = (options.sigma != null ? options.sigma : 90 / Math.sqrt(n)) * DEG2;
-  const cosSigma = Math.cos(sigma);
-  const kappa = 1 / (1 - cosSigma);
+  const data = rotation ? dcos.map((d) => transformVec3(rotation, d)) : dcos;
+  const wt = scaledWeights(options.weights, n);
+  const K = kernelOf(n, options);
   for (let j = 0; j < gridSize; j++) {
     const py = projR - j * step;
     for (let i = 0; i < gridSize; i++) {
@@ -923,13 +1083,14 @@ function densityGrid(dcos, options = {}) {
         grid[j * gridSize + i] = NaN;
         continue;
       }
-      let density = 0;
+      let acc = 0;
       for (let m = 0; m < n; m++) {
         const rd = data[m];
         const dot2 = Math.abs(d[0] * rd[0] + d[1] * rd[1] + d[2] * rd[2]);
-        density += (wt ? wt[m] : 1) * Math.exp(kappa * (dot2 - 1));
+        if (K.cone && dot2 < K.cosCut) continue;
+        acc += (wt ? wt[m] : 1) * K.term(dot2);
       }
-      grid[j * gridSize + i] = kappa * density / n;
+      grid[j * gridSize + i] = K.value(acc);
     }
   }
   return { grid, gridSize, step, projR, projection, method };
@@ -1191,7 +1352,7 @@ var LANCZOS = [
   9984369578019572e-21,
   15056327351493116e-23
 ];
-var TINY = 1e-300;
+var TINY2 = 1e-300;
 function gammaln(x) {
   if (x < 0.5) {
     return Math.log(Math.PI / Math.sin(Math.PI * x)) - gammaln(1 - x);
@@ -1213,14 +1374,14 @@ function gser(a, x) {
   return sum * Math.exp(-x + a * Math.log(x) - gammaln(a));
 }
 function gcf(a, x) {
-  let b = x + 1 - a, c = 1 / TINY, d = 1 / b, h = d;
+  let b = x + 1 - a, c = 1 / TINY2, d = 1 / b, h = d;
   for (let i = 1; i < 300; i++) {
     const an = -i * (i - a);
     b += 2;
     d = an * d + b;
-    if (Math.abs(d) < TINY) d = TINY;
+    if (Math.abs(d) < TINY2) d = TINY2;
     c = b + an / c;
-    if (Math.abs(c) < TINY) c = TINY;
+    if (Math.abs(c) < TINY2) c = TINY2;
     d = 1 / d;
     const del = d * c;
     h *= del;
@@ -1242,23 +1403,23 @@ function chiSquareSF(x, k) {
 function betacf(a, b, x) {
   const qab = a + b, qap = a + 1, qam = a - 1;
   let c = 1, d = 1 - qab * x / qap;
-  if (Math.abs(d) < TINY) d = TINY;
+  if (Math.abs(d) < TINY2) d = TINY2;
   d = 1 / d;
   let h = d;
   for (let m = 1; m <= 300; m++) {
     const m2 = 2 * m;
     let aa = m * (b - m) * x / ((qam + m2) * (a + m2));
     d = 1 + aa * d;
-    if (Math.abs(d) < TINY) d = TINY;
+    if (Math.abs(d) < TINY2) d = TINY2;
     c = 1 + aa / c;
-    if (Math.abs(c) < TINY) c = TINY;
+    if (Math.abs(c) < TINY2) c = TINY2;
     d = 1 / d;
     h *= d * c;
     aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2));
     d = 1 + aa * d;
-    if (Math.abs(d) < TINY) d = TINY;
+    if (Math.abs(d) < TINY2) d = TINY2;
     c = 1 + aa / c;
-    if (Math.abs(c) < TINY) c = TINY;
+    if (Math.abs(c) < TINY2) c = TINY2;
     d = 1 / d;
     const del = d * c;
     h *= del;
@@ -1506,7 +1667,7 @@ function bootstrapEigenvectorConfidence(dcos, options = {}) {
 }
 
 // src/stereonet.js
-var DEG3 = Math.PI / 180;
+var DEG4 = Math.PI / 180;
 var SVG_NS = "http://www.w3.org/2000/svg";
 var nextClipId = 0;
 var HEATMAP_STOPS = [
@@ -1629,7 +1790,7 @@ var Stereonet = class _Stereonet {
   static rotationFromNorthPole(trend, plunge, spin = 0) {
     const north = [0, 1, 0];
     const target = lineToDcos(trend, plunge);
-    const Rspin = rotationFromAxisAngle(north, spin * DEG3);
+    const Rspin = rotationFromAxisAngle(north, spin * DEG4);
     const axis = cross(north, target);
     const len = length(axis);
     let Rtilt;
@@ -1870,8 +2031,8 @@ var Stereonet = class _Stereonet {
       type: "ellipse",
       centerDir,
       majorDir,
-      aRad: semiMajorDeg * DEG3,
-      bRad: semiMinorDeg * DEG3,
+      aRad: semiMajorDeg * DEG4,
+      bRad: semiMinorDeg * DEG4,
       style,
       _el: null
     });
@@ -2270,7 +2431,7 @@ var Stereonet = class _Stereonet {
       }
       case "cone": {
         const axis = lineToDcos(item.trend, item.plunge);
-        const halfAngle = item.halfAngle * DEG3;
+        const halfAngle = item.halfAngle * DEG4;
         const pts3d = smallCircle(axis, halfAngle, 180);
         const s = this._resolveCategory("cone", item.style);
         for (const seg of this._projectCurve(pts3d)) {
@@ -2534,7 +2695,7 @@ var Stereonet = class _Stereonet {
       }
       case "cone": {
         const axis = lineToDcos(item.trend, item.plunge);
-        const halfAngle = item.halfAngle * DEG3;
+        const halfAngle = item.halfAngle * DEG4;
         const pts3d = smallCircle(axis, halfAngle, 180);
         const d = segmentsToPathD(this._projectCurve(pts3d));
         const s = this._resolveCategory("cone", item.style);
@@ -3022,14 +3183,14 @@ __export(circular_exports, {
   resultant: () => resultant2,
   vonMisesKappa: () => vonMisesKappa
 });
-var DEG4 = Math.PI / 180;
+var DEG5 = Math.PI / 180;
 var RAD = 180 / Math.PI;
 function components(azimuths, axial) {
   const k = axial ? 2 : 1;
   let C = 0, S = 0, n = 0;
   for (const az of azimuths) {
     if (!Number.isFinite(az)) continue;
-    const a = az * k * DEG4;
+    const a = az * k * DEG5;
     C += Math.cos(a);
     S += Math.sin(a);
     n += 1;
@@ -3081,9 +3242,9 @@ __export(rose_exports, {
   rosePetals: () => rosePetals,
   roseSVG: () => roseSVG
 });
-var DEG5 = Math.PI / 180;
+var DEG6 = Math.PI / 180;
 function petalPoint(cx, cy, r, azDeg) {
-  const a = azDeg * DEG5;
+  const a = azDeg * DEG6;
   return [cx + r * Math.sin(a), cy - r * Math.cos(a)];
 }
 function roseBins(azimuths, options = {}) {
@@ -3236,9 +3397,9 @@ __export(compass_exports, {
   lineFromDeviceOrientation: () => lineFromDeviceOrientation,
   planeFromDeviceOrientation: () => planeFromDeviceOrientation
 });
-var DEG6 = Math.PI / 180;
+var DEG7 = Math.PI / 180;
 function deviceOrientationMatrix(alpha, beta, gamma) {
-  const a = alpha * DEG6, b = beta * DEG6, g = gamma * DEG6;
+  const a = alpha * DEG7, b = beta * DEG7, g = gamma * DEG7;
   const cA = Math.cos(a), sA = Math.sin(a);
   const cB = Math.cos(b), sB = Math.sin(b);
   const cG = Math.cos(g), sG = Math.sin(g);
@@ -3273,12 +3434,18 @@ function lineFromDeviceOrientation(alpha, beta, gamma, options = {}) {
 // src/fault.js
 var fault_exports = {};
 __export(fault_exports, {
+  bootstrapStress: () => bootstrapStress,
+  dihedraCountGrid: () => dihedraCountGrid,
   dihedraGrid: () => dihedraGrid,
   dipVector: () => dipVector,
+  fryInversion: () => fryInversion,
   michael: () => michael,
   principalStresses: () => principalStresses,
   ptAxes: () => ptAxes,
   resolveSense: () => resolveSense,
+  shearTraction: () => shearTraction,
+  slipMisfit: () => slipMisfit,
+  stressRatio: () => stressRatio,
   strikeVector: () => strikeVector,
   upwardNormal: () => upwardNormal
 });
@@ -3394,8 +3561,8 @@ function principalStresses(stress) {
   return { axes: [vectors[2], vectors[1], vectors[0]], values: [values[2], values[1], values[0]] };
 }
 function rimInverse2(inverseFn, px, py, projR) {
-  const r23 = px * px + py * py, R2 = projR * projR;
-  if (r23 <= R2) return inverseFn(px, py);
+  const r23 = px * px + py * py, R22 = projR * projR;
+  if (r23 <= R22) return inverseFn(px, py);
   if (projR > 1) {
     if (r23 >= 4) return null;
     const s = Math.sqrt(1 - r23 / 4);
@@ -3432,6 +3599,149 @@ function dihedraGrid(planes, slips, options = {}) {
         sum += 2 * (d[0] * n[0] + d[1] * n[1] + d[2] * n[2]) * (d[0] * s[0] + d[1] * s[1] + d[2] * s[2]);
       }
       grid[j * gridSize + i] = sum / m;
+    }
+  }
+  return { grid, gridSize, step, projR, projection };
+}
+var mulSV = (S, v) => [S[0] * v[0] + S[1] * v[1] + S[2] * v[2], S[3] * v[0] + S[4] * v[1] + S[5] * v[2], S[6] * v[0] + S[7] * v[1] + S[8] * v[2]];
+var dot3 = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+function shearTraction(stress, normal) {
+  const n = upwardNormal(normal), t = mulSV(stress, n), tn = dot3(t, n);
+  return [t[0] - tn * n[0], t[1] - tn * n[1], t[2] - tn * n[2]];
+}
+function slipMisfit(stress, planes, slips) {
+  const angles = planes.map((p, i) => {
+    const tau = shearTraction(stress, p), l = Math.hypot(...tau), sl = Math.hypot(...slips[i]);
+    if (l < EPS || sl < EPS) return NaN;
+    return Math.acos(Math.max(-1, Math.min(1, dot3(tau, slips[i]) / (l * sl)))) * 180 / Math.PI;
+  });
+  const ok = angles.filter(Number.isFinite);
+  return { angles, mean: ok.length ? ok.reduce((a, b) => a + b, 0) / ok.length : NaN };
+}
+function stressRatio(stress) {
+  const { values } = principalStresses(stress);
+  const d = values[0] - values[2];
+  return Math.abs(d) < EPS ? NaN : (values[1] - values[2]) / d;
+}
+function jacobi(A0) {
+  const n = A0.length, A = A0.map((r) => r.slice()), V = A0.map((_, i) => A0.map((__, j) => i === j ? 1 : 0));
+  for (let sweep = 0; sweep < 60; sweep++) {
+    let off = 0;
+    for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) off += A[i][j] * A[i][j];
+    if (off < 1e-24) break;
+    for (let p = 0; p < n; p++) for (let q = p + 1; q < n; q++) {
+      if (Math.abs(A[p][q]) < 1e-300) continue;
+      const th = (A[q][q] - A[p][p]) / (2 * A[p][q]);
+      const t = Math.sign(th || 1) / (Math.abs(th) + Math.sqrt(th * th + 1)), c = 1 / Math.sqrt(t * t + 1), sn = t * c;
+      for (let k = 0; k < n; k++) {
+        const akp = A[k][p], akq = A[k][q];
+        A[k][p] = c * akp - sn * akq;
+        A[k][q] = sn * akp + c * akq;
+      }
+      for (let k = 0; k < n; k++) {
+        const apk = A[p][k], aqk = A[q][k];
+        A[p][k] = c * apk - sn * aqk;
+        A[q][k] = sn * apk + c * aqk;
+      }
+      for (let k = 0; k < n; k++) {
+        const vkp = V[k][p], vkq = V[k][q];
+        V[k][p] = c * vkp - sn * vkq;
+        V[k][q] = sn * vkp + c * vkq;
+      }
+    }
+  }
+  const order = A.map((r, i) => [r[i], i]).sort((a, b) => a[0] - b[0]);
+  return { values: order.map(([v]) => v), vectors: order.map(([, i]) => V.map((r) => r[i])) };
+}
+var R2 = Math.SQRT1_2;
+var R6 = 1 / Math.sqrt(6);
+var DEV_BASIS = [
+  [R2, 0, 0, 0, -R2, 0, 0, 0, 0],
+  [R6, 0, 0, 0, R6, 0, 0, 0, -2 * R6],
+  [0, R2, 0, R2, 0, 0, 0, 0, 0],
+  [0, 0, R2, 0, 0, 0, R2, 0, 0],
+  [0, 0, 0, 0, 0, R2, 0, R2, 0]
+];
+function fryInversion(planes, slips) {
+  const M = Array.from({ length: 5 }, () => new Array(5).fill(0));
+  for (let i = 0; i < planes.length; i++) {
+    const n = upwardNormal(planes[i]), sv = normalize(slips[i]), b = cross(n, sv), bl = Math.hypot(...b);
+    if (bl < EPS) continue;
+    const bb = b.map((x) => x / bl);
+    const a = DEV_BASIS.map((E) => dot3(bb, mulSV(E, n)));
+    for (let r = 0; r < 5; r++) for (let c = 0; c < 5; c++) M[r][c] += a[r] * a[c];
+  }
+  const { values, vectors } = jacobi(M), y = vectors[0];
+  let stress = new Array(9).fill(0);
+  for (let m = 0; m < 5; m++) for (let k = 0; k < 9; k++) stress[k] += y[m] * DEV_BASIS[m][k];
+  let agree = 0;
+  for (let i = 0; i < planes.length; i++) agree += dot3(shearTraction(stress, planes[i]), slips[i]);
+  if (agree < 0) stress = stress.map((v) => -v);
+  return { stress, eigenvalues: values, misfit: slipMisfit(stress, planes, slips).mean };
+}
+function bootstrapStress(planes, slips, options = {}) {
+  const method = options.method === "fry" ? "fry" : "michael", N = options.n || 500;
+  const invert = (P, S) => method === "fry" ? fryInversion(P, S).stress : michael(P, S).stress;
+  const full = invert(planes, slips), ax = principalStresses(full).axes;
+  let st = (options.seed ?? 1) >>> 0;
+  const rnd = () => {
+    st = st + 1831565813 >>> 0;
+    let t = st;
+    t = Math.imul(t ^ t >>> 15, t | 1);
+    t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+  const a1 = [], a3 = [], phis = [];
+  const ang = (u, v) => Math.acos(Math.min(1, Math.abs(dot3(u, v)))) * 180 / Math.PI;
+  for (let k = 0; k < N; k++) {
+    const P = [], S = [];
+    for (let i = 0; i < planes.length; i++) {
+      const j = Math.floor(rnd() * planes.length);
+      P.push(planes[j]);
+      S.push(slips[j]);
+    }
+    const t = invert(P, S), p = principalStresses(t);
+    if (!p.axes.every((v) => v.every(Number.isFinite))) continue;
+    a1.push(ang(p.axes[0], ax[0]));
+    a3.push(ang(p.axes[2], ax[2]));
+    phis.push(stressRatio(t));
+  }
+  const q = (xs, f) => {
+    const s2 = xs.filter(Number.isFinite).sort((a, b) => a - b);
+    return s2.length ? s2[Math.min(s2.length - 1, Math.floor(f * s2.length))] : NaN;
+  };
+  return {
+    stress: full,
+    sigma1: { axis: ax[0], cone95: q(a1, 0.95) },
+    sigma3: { axis: ax[2], cone95: q(a3, 0.95) },
+    phi: { value: stressRatio(full), lo: q(phis, 0.025), hi: q(phis, 0.975) },
+    n: a1.length
+  };
+}
+function dihedraCountGrid(planes, slips, options = {}) {
+  const projection = options.projection || "equal-area";
+  const gridSize = options.gridSize || 40;
+  const projR = projection === "equal-angle" ? 1 : Math.SQRT2;
+  const step = 2 * projR / (gridSize - 1);
+  const grid = new Float64Array(gridSize * gridSize);
+  const inverseFn = projection === "equal-angle" ? inverse2 : inverse;
+  const ups = planes.map((p) => upwardNormal(p)), m = planes.length;
+  for (let j = 0; j < gridSize; j++) {
+    const py = projR - j * step;
+    for (let i = 0; i < gridSize; i++) {
+      const px = -projR + i * step;
+      if (px * px + py * py > Math.max(projR * projR * 1.02, (projR + 1.5 * step) ** 2)) {
+        grid[j * gridSize + i] = NaN;
+        continue;
+      }
+      const d = rimInverse2(inverseFn, px, py, projR);
+      if (!d || !m) {
+        grid[j * gridSize + i] = NaN;
+        continue;
+      }
+      let inP = 0;
+      for (let k = 0; k < m; k++) if (dot3(d, ups[k]) * dot3(d, slips[k]) < 0) inP++;
+      grid[j * gridSize + i] = 100 * inP / m;
     }
   }
   return { grid, gridSize, step, projR, projection };
@@ -3744,7 +4054,7 @@ __export(rotation_exports, {
   slerp: () => slerp2
 });
 var RAD2DEG2 = 180 / Math.PI;
-var DEG7 = Math.PI / 180;
+var DEG8 = Math.PI / 180;
 function frameFromPlaneLine(dd, dip, trend, plunge) {
   const z = normalize(planeToDcos(dd, dip));
   const l = lineToDcos(trend, plunge);
@@ -3757,8 +4067,8 @@ function frameFromPlaneLine(dd, dip, trend, plunge) {
   const y = cross(z, x);
   return [x[0], y[0], z[0], x[1], y[1], z[1], x[2], y[2], z[2]];
 }
-function misorientation(R1, R2) {
-  const dR = multiply(R2, transpose(R1));
+function misorientation(R1, R22) {
+  const dR = multiply(R22, transpose(R1));
   const { axis, angle: angle3 } = toAxisAngle(fromMatrix(dR));
   return { angle: angle3 * RAD2DEG2, axis };
 }
@@ -3822,11 +4132,11 @@ function applyToLine(R, trend, plunge) {
 function inverse3(R) {
   return transpose(R);
 }
-function relative(R1, R2) {
-  return multiply(R2, transpose(R1));
+function relative(R1, R22) {
+  return multiply(R22, transpose(R1));
 }
 function fromPoleAngle(trend, plunge, angle3) {
-  return rotationFromAxisAngle(lineToDcos(trend, plunge), angle3 * DEG7);
+  return rotationFromAxisAngle(lineToDcos(trend, plunge), angle3 * DEG8);
 }
 function rotationVector(R) {
   const { axis, angle: angle3 } = toAxisAngle(fromMatrix(R));
@@ -3855,14 +4165,14 @@ function bootstrapMeanRotation(rotations, options = {}) {
 }
 
 // src/simulate.js
-var DEG8 = Math.PI / 180;
+var DEG9 = Math.PI / 180;
 function tangentBasis2(mu) {
   const ref = Math.abs(mu[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
   const u = normalize(cross(mu, ref));
   return [u, cross(mu, u)];
 }
 function defaultKappa(n) {
-  const sigma = 90 / Math.sqrt(Math.max(1, n)) * DEG8;
+  const sigma = 90 / Math.sqrt(Math.max(1, n)) * DEG9;
   return 1 / (1 - Math.cos(sigma));
 }
 function sampleFisher(mean, kappa, n, rng = Math.random) {
@@ -3922,7 +4232,7 @@ function randomRotation(rng = Math.random) {
   return toMatrix(q);
 }
 function sampleRotation(meanR, sigmaDeg, n, rng = Math.random) {
-  const s = sigmaDeg * DEG8;
+  const s = sigmaDeg * DEG9;
   const out = [];
   for (let i = 0; i < n; i++) {
     const v = [gaussian(rng) * s, gaussian(rng) * s, gaussian(rng) * s];
@@ -3946,13 +4256,13 @@ __export(euler_exports, {
   matrixToGslib: () => matrixToGslib,
   quatToEuler: () => quatToEuler
 });
-var DEG9 = Math.PI / 180;
+var DEG10 = Math.PI / 180;
 var AXIS = { X: [1, 0, 0], Y: [0, 1, 0], Z: [0, 0, 1] };
 var IDX = { X: 0, Y: 1, Z: 2 };
 var EUL_NEXT = [1, 2, 0, 1];
 function eulerToMatrix(angles, order = "XYZ", options = {}) {
   const o = order.toUpperCase();
-  const k = options.radians ? 1 : DEG9;
+  const k = options.radians ? 1 : DEG10;
   const s = options.signs || [1, 1, 1];
   const Ra = rotationFromAxisAngle(AXIS[o[0]], angles[0] * s[0] * k);
   const Rb = rotationFromAxisAngle(AXIS[o[1]], angles[1] * s[1] * k);
@@ -4015,7 +4325,7 @@ function matrixToEuler(R, order = "XYZ", options = {}) {
     res = extractExtrinsic(R, o);
   }
   const s = options.signs || [1, 1, 1];
-  const div = options.radians ? 1 : DEG9;
+  const div = options.radians ? 1 : DEG10;
   return res.map((v, idx) => v * s[idx] / div);
 }
 function eulerToQuat(angles, order = "XYZ", options = {}) {
@@ -4041,13 +4351,13 @@ function matrixToDipDirRake(R) {
   const x = [R[0], R[3], R[6]];
   const z = [R[2], R[5], R[8]];
   const [dipDir, dip] = dcosToPlane(z);
-  const ddR = dipDir * DEG9, dR = dip * DEG9;
+  const ddR = dipDir * DEG10, dR = dip * DEG10;
   const s = [-Math.cos(ddR), Math.sin(ddR), 0];
   const d = [Math.cos(dR) * Math.sin(ddR), Math.cos(dR) * Math.cos(ddR), -Math.sin(dR)];
   const rake = Math.atan2(
     x[0] * d[0] + x[1] * d[1] + x[2] * d[2],
     x[0] * s[0] + x[1] * s[1] + x[2] * s[2]
-  ) / DEG9;
+  ) / DEG10;
   return [dipDir, dip, rake];
 }
 function bungeToMatrix(phi1, Phi, phi2, options = {}) {
@@ -4057,9 +4367,9 @@ function matrixToBunge(R, options = {}) {
   return matrixToEuler(R, "ZXZ", { intrinsic: true, radians: options.radians });
 }
 function gslibToMatrix(ang1, ang2, ang3) {
-  const alpha = (ang1 >= 0 && ang1 < 270 ? 90 - ang1 : 450 - ang1) * DEG9;
-  const beta = -ang2 * DEG9;
-  const theta = ang3 * DEG9;
+  const alpha = (ang1 >= 0 && ang1 < 270 ? 90 - ang1 : 450 - ang1) * DEG10;
+  const beta = -ang2 * DEG10;
+  const theta = ang3 * DEG10;
   const sa = Math.sin(alpha), ca = Math.cos(alpha);
   const sb = Math.sin(beta), cb = Math.cos(beta);
   const st = Math.sin(theta), ct = Math.cos(theta);
@@ -4088,10 +4398,10 @@ function matrixToGslib(R) {
     alpha = Math.atan2(-M(1, 0), M(1, 1));
     theta = 0;
   }
-  let ang1 = 90 - alpha / DEG9;
+  let ang1 = 90 - alpha / DEG10;
   ang1 = (ang1 % 360 + 360) % 360;
-  const ang2 = -beta / DEG9;
-  const ang3 = theta / DEG9;
+  const ang2 = -beta / DEG10;
+  const ang3 = theta / DEG10;
   return [ang1, ang2, ang3];
 }
 
@@ -4230,6 +4540,7 @@ export {
   Stereonet,
   SvgBuilder,
   analysis_exports as analysis,
+  cachedDensityField,
   cardinalPoints,
   circular_exports as circular,
   cluster_exports as cluster,
@@ -4238,6 +4549,8 @@ export {
   computeContours,
   conversions_exports as conversions,
   curves_exports as curves,
+  densityField,
+  densityFieldCache,
   densityGrid,
   equal_angle_exports as equalAngle,
   equal_area_exports as equalArea,
