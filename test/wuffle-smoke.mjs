@@ -141,6 +141,81 @@ await new Promise((r) => setTimeout(r, 400));
 const after = await p.evaluate(() => window.__wuffle.count());
 chk(`a cleared log stays cleared after a reload (count ${after})`, after === 0);
 
+// 11. a phone's BROWSER, not the shell: the compass, the position and the brand line come from the browser's own APIs
+const phone = await browser.newContext({
+  viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true,
+  permissions: ['geolocation'], geolocation: { latitude: -30.03, longitude: -51.23, accuracy: 8 },
+});
+const open = async (init) => {
+  const pg = await phone.newPage();
+  const perr = [];
+  pg.on('pageerror', (e) => perr.push(String(e)));
+  if (init) await pg.addInitScript(init);
+  await pg.goto(`http://127.0.0.1:${PORT}/wuffle.html`, { waitUntil: 'load' });   // no ?field: a phone width opens the compass
+  await pg.waitForFunction(() => !!window.__wuffle, null, { timeout: 15000 });
+  return { pg, perr };
+};
+// a deviceorientation event as a browser sends it (iOS adds webkitCompassHeading, which the constructor can't set)
+const orient = (pg, type, o) => pg.evaluate(([type, o]) => {
+  const e = new Event(type);
+  for (const k of Object.keys(o)) Object.defineProperty(e, k, { value: o[k] });
+  window.dispatchEvent(e);
+  return [parseFloat(document.getElementById('v1').textContent), parseFloat(document.getElementById('v2').textContent)];
+}, [type, o]);
+const sub = (pg) => pg.evaluate(() => document.getElementById('brandsub').textContent);
+
+{ // Android Chrome: an absolute stream, the browser's location → true north, a position on each measurement
+  const { pg, perr } = await open();
+  const m0 = await pg.evaluate(() => document.getElementById('msg').textContent);
+  chk(`phone browser: no "desktop" hint (${m0})`, !/desktop/.test(m0));
+  await pg.waitForFunction(() => window.__wuffle.fix, null, { timeout: 5000 }).catch(() => {});
+  await orient(pg, 'deviceorientationabsolute', { alpha: 0, beta: 30, gamma: 0, absolute: true });
+  const st = await pg.evaluate(() => ({ fix: window.__wuffle.fix, north: document.getElementById('north').textContent, pos: document.getElementById('pos').textContent }));
+  chk(`phone browser: the browser's location (${st.fix && st.fix.lat + ',' + st.fix.lon}; ${st.pos}; ${st.north})`,
+    st.fix && Math.abs(st.fix.lat + 30.03) < 1e-6 && /true N · decl/.test(st.north) && /±8 m/.test(st.pos));
+  const s = await sub(pg);
+  chk(`phone browser: the brand line names the compass (${s})`, s === 'compass · browser · true N');
+  await pg.click('#measure');
+  const rec = await pg.evaluate(() => window.__wuffle.log.at(-1));
+  chk(`phone browser: a measurement carries the position and true north (${rec.lat},${rec.lon} ±${rec.acc} · ${rec.north} ${rec.decl})`,
+    rec.lat === -30.03 && rec.lon === -51.23 && rec.acc === 8 && rec.north === 'true' && Number.isFinite(rec.decl));
+  chk(`phone browser: no page errors (${perr.join(' ; ') || 'none'})`, perr.length === 0);
+  await pg.close();
+}
+{ // plain events only (no absolute stream): the dial keeps following them, and after a moment says there's no north
+  const { pg } = await open();
+  const a = await orient(pg, 'deviceorientation', { alpha: 10, beta: 20, gamma: 0, absolute: false });
+  const b = await orient(pg, 'deviceorientation', { alpha: 10, beta: 40, gamma: 0, absolute: false });
+  chk(`plain events keep the dial moving (dip ${a[1]} → ${b[1]})`, Math.round(a[1]) === 20 && Math.round(b[1]) === 40);
+  await new Promise((r) => setTimeout(r, 1100));
+  await orient(pg, 'deviceorientation', { alpha: 10, beta: 40, gamma: 0, absolute: false });
+  const s1 = await sub(pg);
+  await orient(pg, 'deviceorientationabsolute', { alpha: 0, beta: 40, gamma: 0, absolute: true });
+  const s2 = await sub(pg);
+  chk(`no north is said, and unsaid when an absolute stream arrives (${s1} → ${s2})`, s1 === 'compass · browser · no north' && /true N|magnetic N/.test(s2));
+  await pg.close();
+}
+{ // iOS: a permission button; the heading turns into a north-referenced reading
+  const { pg } = await open(() => {
+    window.__asked = 0;
+    DeviceOrientationEvent.requestPermission = async () => { window.__asked++; return 'granted'; };
+  });
+  const shown = await pg.evaluate(() => !document.getElementById('compassOn').hidden);
+  await pg.click('#compassOn');
+  const after = await pg.evaluate(() => ({ asked: window.__asked, hidden: document.getElementById('compassOn').hidden }));
+  chk(`iOS: "enable compass" asks once and goes away (shown ${shown}, asked ${after.asked}, hidden ${after.hidden})`, shown && after.asked === 1 && after.hidden);
+  // top edge pointing magnetic East (heading 90), raised 30° → the plane dips magnetic West, 270/30 (cf. 180/30 facing
+  // North, check 9) — read in TRUE north once the context's location gives a declination (true = magnetic + decl)
+  await pg.waitForFunction(() => /decl/.test(document.getElementById('north').textContent), null, { timeout: 5000 }).catch(() => {});
+  const r = await orient(pg, 'deviceorientation', { alpha: 123, beta: 30, gamma: 0, absolute: false, webkitCompassHeading: 90 });
+  const dm = (await pg.evaluate(() => document.getElementById('north').textContent)).match(/decl ([+-][\d.]+)/);
+  const want = Math.round(((270 + (dm ? +dm[1] : 0)) % 360 + 360) % 360);
+  chk(`iOS: the heading is north (plane ${r.join('/')} want ${want}/30 = magnetic 270 ${dm ? dm[1] : '+0'}°; ${await sub(pg)})`,
+    dm && Math.abs(r[0] - want) <= 1 && Math.round(r[1]) === 30 && !/no north/.test(await sub(pg)));
+  await pg.close();
+}
+await phone.close();
+
 await browser.close();
 server.close();
 console.log(`\nwuffle-smoke: ${pass} passed, ${fail} failed`);

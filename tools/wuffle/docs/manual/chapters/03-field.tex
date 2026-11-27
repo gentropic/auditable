@@ -14,8 +14,8 @@ From the top (\cref{fig:field-net}):
 \begin{description}
 \item[The title.] \ui{wuffle} and a subtitle saying where the reading comes from (\cref{sec:field-msgs}).
 \item[Mode.] \ui{plane} or \ui{line}: what the next measurement is.
-\item[The strip.] Inside the shell, the position's accuracy (\ui{±4 m}) and which north the readings use
-(\ui{true N · decl -17.8°}).
+\item[The strip.] The position's accuracy (\ui{±4 m}) and which north the readings use
+(\ui{true N · decl -17.8°}); on an iPhone, until the compass is allowed, an \ui{enable compass} button.
 \item[The net.] An equal-area, lower-hemisphere net, labeled \ui{Schmidt lower hemi} in its corner.
 Measured planes are drawn as great circles in orange, lines as points in blue.
 \item[The reading.] In the net's top-left corner, the live attitude in large figures: \ui{dip dir} and
@@ -65,12 +65,14 @@ the field near it: put the hammer down a step away before you measure.
 \end{tip}
 
 The shell also keeps the screen awake while wuffle is open, so the phone doesn't lock between readings.
+In a phone's browser wuffle asks the browser to do the same; most do, though a battery saver can refuse.
 
 \section{True north}\label{sec:true-north}
 
 A phone's compass points to magnetic north. wuffle corrects each reading to \term{true north} with the
 \term{declination} at your position, from the World Magnetic Model (WMM2025) that ships inside it. It
-needs a position for that, so the correction starts with the first GNSS fix:
+needs a position for that, so the correction starts with the first fix: the shell's GNSS, or in a phone's
+browser the browser's own location, which it asks permission for once:
 
 \begin{itemize}
 \item before a fix, readings are magnetic, and the strip shows no declination;
@@ -80,7 +82,7 @@ moved about a tenth of a degree (some 10~km).
 
 The first fix also prints its position in the message line: \ui{position -30.10012, -51.20034 (±4 m)}.
 If the phone refuses the location permission, the message says \ui{location denied — measurements will
-not carry a position}, and every reading stays magnetic.
+not carry a position} (in a browser, \ui{…, and stay magnetic}), and every reading stays magnetic.
 
 Every measurement records which north it uses. The log's \col{north} column says \code{true} or
 \code{magnetic}, and \col{declination\_deg} gives the correction applied. A typed measurement says
@@ -91,8 +93,9 @@ The model is valid from 2025.0 to 2030.0. After that wuffle still applies it, an
 \ui{true N · decl -17.8° · model past 2030}. A newer wuffle carries the next model.
 
 \begin{caution}
-Outside the shell (wuffle in an ordinary phone browser) there is no position, so readings stay magnetic.
-The \col{north} column says so on every row; correct them before comparing with true-north data.
+Opened on a computer with \code{?field}, wuffle doesn't ask for a position, and nothing it reads is
+corrected. Wherever a reading stays magnetic, the \col{north} column says so on every row; correct those
+before comparing with true-north data.
 \end{caution}
 
 \section{Typing measurements}\label{sec:manual-entry}\index{typed measurements}
@@ -175,8 +178,8 @@ the phone too. There is no undo after that, so publish before you clear.
 \begin{tryit}
 \begin{enumerate}
 \item On a computer, open wuffle with \code{?field} at the end of the address. The subtitle says
-\ui{stereonet · manual} and the message line \ui{desktop · type measurements above, or open in lead-acid
-for live compass}.
+\ui{stereonet · manual} and the message line \ui{desktop · type measurements above; on a phone the
+compass is live}.
 \item Type \code{120/45}, \key{Enter}; \code{118/47}, \key{Enter}; \code{200>20}, \key{Enter}. Two
 planes and a line are drawn, and the log counts \ui{3 measurements}.
 \item Press \ui{publish →}. \file{wuffle-log.csv} downloads.
@@ -208,14 +211,20 @@ couldn't be opened (the reading then comes from the browser's orientation events
 not the north in use: the strip beside it says whether a reading is true.
 \item[\ui{compass · fused · high}] (or \ui{medium}, \ui{low}, \ui{unreliable}) the fused sensor, with the
 magnetometer's calibration as the phone reports it.
-\item[\ui{stereonet · manual}] outside the shell. On a computer that means typed measurements only; in a
-phone's browser the compass still reads live from the browser's orientation (\cref{sec:compass-browsers}).
+\item[\ui{stereonet · manual}] outside the shell, before any orientation has come: on a computer, typed
+measurements only.
+\item[\ui{compass · browser · true N}] (or \ui{magnetic N}, \ui{no north}) a phone's browser, reading its
+orientation (\cref{sec:compass-browsers}), with the north its readings are referred to.
 \end{description}
 
 And the message line under the log, besides the ones above:
 
 \begin{description}[style=nextline]
 \item[\ui{lead-acid ready · lay the phone on a surface to measure}] the compass has started in the shell.
+\item[\ui{waiting for the compass — tilt the phone, or type a measurement above}] a phone's browser,
+before its first orientation reading; \ui{compass on · lay the phone on a surface to measure} once it comes.
+\item[\ui{tap “enable compass” for the live compass, or type a measurement above}] an iPhone, before the
+compass has been allowed.
 \item[\ui{compass calibrated · lay the phone on a surface to measure}] the magnetometer reports high accuracy.
 \item[\ui{compass medium — a figure-8 would sharpen it}] usable; a figure eight would improve it.
 \item[\ui{compass low — wave the phone in a figure-8 to calibrate}] (or \ui{unreliable}) calibrate before

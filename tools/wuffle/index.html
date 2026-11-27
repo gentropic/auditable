@@ -122,6 +122,7 @@
   ol li .pic { margin-left:6px; color:var(--au-info); font-size:12px; }
   .strip { display:flex; gap:14px; min-height:16px; margin:-4px 0 8px; font-size:12px; color:var(--au-text-soft); letter-spacing:.02em; }
   .strip span:empty { display:none; }
+  .strip button { font:inherit; font-size:12px; padding:2px 10px; margin-left:auto; background:none; color:var(--au-action); border:1px solid var(--au-action); border-radius:3px; }
 </style>
 </head>
 <body>
@@ -132,8 +133,8 @@
     <button id="mLine">line</button>
   </div>
 </div>
-<!-- the status strip: position accuracy + which north the readings use (shell only) -->
-<div class="strip"><span id="pos"></span><span id="north"></span></div>
+<!-- the status strip: position accuracy + which north the readings use; iOS's compass permission button -->
+<div class="strip"><span id="pos"></span><span id="north"></span><button id="compassOn" hidden>enable compass</button></div>
 
 <div class="net" id="net">
   <div id="netHost"></div>

@@ -15,8 +15,20 @@ const log = [];
 // a measurement's number, never reused (log.length + 1 repeated a number after a delete, and photos are keyed by it)
 const nextI = () => log.reduce((m, e) => Math.max(m, e.i), 0) + 1;
 
-// keep the screen lit in the field (dogfoods shell.keepAwake)
-if (shell.present) shell.keepAwake(true);
+// keep the screen lit in the field: the shell's keepAwake, else the browser's Screen Wake Lock — which
+// the browser drops whenever the page is hidden, so it is asked for again on return (and on a tap, in
+// case the first ask came too early)
+let wakeLock = null;
+async function keepAwake() {
+  if (shell.present) { shell.keepAwake(true); return; }
+  if (!navigator.wakeLock || wakeLock || document.hidden) return;
+  try {
+    wakeLock = await navigator.wakeLock.request('screen');
+    wakeLock.addEventListener('release', () => { wakeLock = null; });
+  } catch { /* refused (battery saver…) — the screen dims as it always did */ }
+}
+keepAwake();
+if (!shell.present) document.addEventListener('pointerdown', keepAwake, { passive: true });
 
 // the Schmidt net (equal-area is the structural-geology convention; the name
 // puns on Wulff but orientation data belongs on an equal-area net)
@@ -99,20 +111,58 @@ function onOrient(e) {
     ? compass.planeFromDeviceOrientation(e.alpha, e.beta, e.gamma, opt)
     : compass.lineFromDeviceOrientation(e.alpha, e.beta, e.gamma, opt);
   cur = { d1, d2 };
+  if (source !== 'fused' && !browserCompass) { browserCompass = true; browserStatus(); }
   $('v1').innerHTML = fmt(d1) + '<small>°</small>';
   $('v2').innerHTML = Math.round(d2) + '<small>°</small>';
   $('lvl').style.width = Math.min(100, (d2 / 90) * 100) + '%';
   requestLive();
 }
 // absolute frame carries a compass-referenced alpha (Android); fall back.
-window.addEventListener('deviceorientationabsolute', (e) => { if (source !== 'fused') onOrient(e); });
-window.addEventListener('deviceorientation', (e) => {
-  if (source === 'fused' || haveOrientation) return;
-  // a plain event whose alpha isn't referenced to north (absolute === false): azimuths would be relative to
-  // wherever the phone pointed when the page opened. Say so once, and mark what it measures.
-  if (e.absolute === false && e.alpha != null && !northless) { northless = true; msg("this browser's compass has no north — dips and plunges are good, azimuths are not; measurements are marked north = none", true); }
+let haveAbsolute = false;        // a north-referenced stream is flowing → plain events are ignored
+let firstPlainAt = 0;            // when the first plain (maybe north-less) event came
+let browserCompass = false;      // a browser orientation reading has arrived (outside the shell)
+window.addEventListener('deviceorientationabsolute', (e) => {
+  if (source === 'fused' || e.alpha == null) return;
+  haveAbsolute = true;
+  if (northless) { northless = false; browserStatus(); }
   onOrient(e);
 });
+window.addEventListener('deviceorientation', (e) => {
+  // (this returned on haveOrientation, which the first plain event itself set: where plain events were
+  // the only stream, the dial froze on its first reading)
+  if (source === 'fused' || haveAbsolute || e.alpha == null) return;
+  // iOS: alpha is relative to wherever the phone pointed at load, but webkitCompassHeading is the magnetic
+  // heading (clockwise from north); the north-referenced alpha is its counterclockwise twin
+  if (typeof e.webkitCompassHeading === 'number' && e.webkitCompassHeading >= 0) {
+    if (northless) { northless = false; browserStatus(); }
+    onOrient({ alpha: (360 - e.webkitCompassHeading) % 360, beta: e.beta, gamma: e.gamma });
+    return;
+  }
+  // a plain event whose alpha isn't referenced to north: azimuths would be relative to wherever the phone
+  // pointed when the page opened. Chrome sends these beside its absolute stream, and sometimes first, so
+  // the verdict waits a second for an absolute one before saying so (once) and marking what it measures.
+  if (e.absolute === false && !northless) {
+    if (!firstPlainAt) firstPlainAt = performance.now();
+    else if (performance.now() - firstPlainAt > 1000) {
+      northless = true; browserStatus();
+      msg("this browser's compass has no north — dips and plunges are good, azimuths are not; measurements are marked north = none", true);
+    }
+  }
+  onOrient(e);
+});
+
+// iOS asks before it sends any orientation, and only from a tap
+if (!shell.present && typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+  const b = $('compassOn');
+  b.hidden = false;
+  b.onclick = async () => {
+    try {
+      const r = await DeviceOrientationEvent.requestPermission();
+      if (r === 'granted') { b.hidden = true; msg('compass allowed · tilt the phone'); }
+      else msg('compass not allowed — Settings › Safari › Motion & Orientation Access, then reload', true);
+    } catch (e) { msg('compass: ' + (e.message || e), true); }
+  };
+}
 
 // v2: inside the shell, read the FUSED rotation vector through the sensor
 // plugin instead of the event — same math downstream, but we get the compass
@@ -139,6 +189,14 @@ async function startFused() {
   }
 }
 startFused();
+// outside the shell: the brand line says which compass and which north
+function browserStatus() {
+  if (shell.present) return;
+  if (!browserCompass) { $('brandsub').textContent = 'stereonet · manual'; return; }
+  $('brandsub').textContent = 'compass · browser · ' + (northless ? 'no north' : decl == null ? 'magnetic N' : 'true N');
+  if (!northless) msg('compass on · lay the phone on a surface to measure');
+}
+
 // v3: position. Inside the shell, a gnss fix stream stamps every measurement
 // with lat/lon (+ accuracy) — the first open asks for the location permission.
 let lastFix = null;
@@ -153,18 +211,33 @@ function updateDeclination(f) {
   // WMM2025 is valid to 2030.0; past it the declination is an extrapolation, and the strip says so
   $('north').textContent = 'true N · decl ' + (decl >= 0 ? '+' : '') + decl.toFixed(1) + '°' + (new Date() >= new Date('2030-01-01') ? ' · model past 2030' : '');
 }
+function onFix(f) {
+  const first = !lastFix;
+  lastFix = f;
+  // (this compared the fix with itself — lastFix was already f — so the declination never moved on)
+  if (!declAt || Math.abs(f.lat - declAt.lat) > 0.1 || Math.abs(f.lon - declAt.lon) > 0.1) { const had = decl != null; updateDeclination(f); if (!had) browserStatus(); }
+  $('pos').textContent = '±' + (f.acc == null ? '?' : Math.round(f.acc)) + ' m';
+  if (first) msg('position ' + f.lat.toFixed(5) + ', ' + f.lon.toFixed(5) + ' (±' + (f.acc == null ? '?' : Math.round(f.acc)) + ' m)');
+}
+// outside the shell: the browser's own location — on a phone only (a desktop's ?field is a check of the
+// page, and a location prompt there would be noise). Asked once at start; the browser remembers.
+let browserGeo = false;
+function startBrowserLocation() {
+  if (browserGeo || !navigator.geolocation || !matchMedia('(pointer: coarse)').matches) return;
+  browserGeo = true;
+  navigator.geolocation.watchPosition(
+    (p) => onFix({ lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy, alt: p.coords.altitude }),
+    (err) => {
+      if (err.code === 1) { $('pos').textContent = ''; msg('location denied — measurements will not carry a position, and stay magnetic', true); }
+      else if (!lastFix) $('pos').textContent = 'no position yet';    // a timeout: the watch keeps trying
+    },
+    { enableHighAccuracy: true, maximumAge: 5000, timeout: 60000 });
+}
 async function startGnss() {
-  if (!shell.present) return;
+  if (!shell.present) { startBrowserLocation(); return; }
   try {
     const g = await shell.gnss.location({ minMs: 2000 });
-    g.on('fix', (f) => {
-      const first = !lastFix;
-      lastFix = f;
-      // (this compared the fix with itself — lastFix was already f — so the declination never moved on)
-      if (!declAt || Math.abs(f.lat - declAt.lat) > 0.1 || Math.abs(f.lon - declAt.lon) > 0.1) updateDeclination(f);
-      $('pos').textContent = '±' + (f.acc == null ? '?' : Math.round(f.acc)) + ' m';
-      if (first) msg('position ' + f.lat.toFixed(5) + ', ' + f.lon.toFixed(5) + ' (±' + (f.acc == null ? '?' : Math.round(f.acc)) + ' m)');
-    });
+    g.on('fix', onFix);
     g.onClose(() => { resumeNeeded.gnss = true; if (!document.hidden) startGnss(); });
   } catch (e) {
     lastFix = null;
@@ -242,6 +315,7 @@ $('snap').onclick = async () => { await snapPhoto(); closeCamera(); };
 const resumeNeeded = { fused: false, gnss: false };
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) return;
+  keepAwake();
   if (resumeNeeded.fused || source !== 'fused') { resumeNeeded.fused = false; startFused(); }
   if (resumeNeeded.gnss) { resumeNeeded.gnss = false; startGnss(); }
 });
@@ -402,8 +476,11 @@ function msg(t, warn) { const m = $('msg'); m.textContent = t; m.className = war
 
 setMode('plane');
 $('brandsub').textContent = shell.present ? 'compass · magnetic N' : 'stereonet · manual';
-msg(shell.present ? 'lead-acid ready · lay the phone on a surface to measure'
-                  : 'desktop · type measurements above, or open in lead-acid for live compass');
+if (shell.present) msg('lead-acid ready · lay the phone on a surface to measure');
+else if (!browserCompass) msg(!$('compassOn').hidden ? 'tap “enable compass” for the live compass, or type a measurement above'
+  : matchMedia('(pointer: coarse)').matches ? 'waiting for the compass — tilt the phone, or type a measurement above'
+  : 'desktop · type measurements above; on a phone the compass is live');
+else browserStatus();
 
 // programmatic hook — the smoke test and headless use plot through this;
 // `shell` is exposed so the bench smoke can exercise the mocked native layer.

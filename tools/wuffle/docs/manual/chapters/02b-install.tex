@@ -63,8 +63,10 @@ read back into the log.
 \item \textbf{The screen kept on} while the compass is open.
 \end{itemize}
 
-Outside the shell, in an ordinary phone browser, the compass still measures, but without a position (so
-readings stay magnetic), without a signature, and publishing downloads the files instead.
+Outside the shell, in an ordinary phone browser, the compass still measures. The position comes from the
+browser's location (it asks once), so readings are corrected to true north there too, and the browser keeps
+the screen on where it can. What the browser can't give is the compass's calibration report, the signature,
+and the publishing into \file{Downloads}: publishing downloads the files instead.
 
 \section{Updating}\label{sec:updating}\index{updating}
 
@@ -135,9 +137,11 @@ The compass needs the phone's orientation sensors, and browsers differ more ther
 \item[Chrome on Android] is what the compass is made and tested on. It reads the
 compass-referenced orientation the browser reports (\code{deviceorientationabsolute}); inside the
 lead-acid shell, the fused sensor directly.
-\item[iPhone and iPad.] Safari only reports orientation to a page that asks the user's permission first,
-and wuffle doesn't ask yet. The compass reads nothing there. Typed measurements
-(\cref{sec:manual-entry}) and the whole desk work.
+\item[iPhone and iPad.] Safari only reports orientation to a page that asks the user's permission, from a
+tap. wuffle shows an \ui{enable compass} button in the strip; tap it and allow, and the compass reads
+live, referred to north through the heading Safari reports. If you refused, the permission comes back
+through Settings, Safari, Motion \& Orientation Access, and a reload. (This is written to Safari's
+documented behavior; it hasn't been tried on an iPhone yet.)
 \item[Other Android browsers] may report only orientation relative to where the phone pointed when the
 page opened, not to north. When that is all wuffle gets, it says so once (\ui{this browser's compass
 has no north — dips and plunges are good, azimuths are not; measurements are marked north = none}) and
