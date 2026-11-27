@@ -8,7 +8,9 @@
 // Selection belongs to the DATA (a lasso on one net selects the rows on every net). Derived results
 // (a set mean, an intersection, a selection made a set) are datasets too, carrying their lineage.
 
-export const DATASET_KINDS = ['planes', 'lines', 'faults', 'smallcircles'];
+import { recalc, checkExpr } from './calc.js';
+
+export const DATASET_KINDS = ['planes', 'lines', 'faults', 'smallcircles', 'table'];   // a table: no attitudes — shown, joined, never drawn
 export const DIAGRAM_KINDS = ['net', 'rose', 'fabric'];
 
 // what a layer can draw, by dataset kind — the nested checkboxes, in tree order. A group (eigen)
@@ -18,10 +20,11 @@ export const ELEMENTS = {
   lines: ['points', 'contours', 'mean', { eigen: ['v1Pole', 'v1Circle', 'v2Pole', 'v2Circle', 'v3Pole', 'v3Circle'] }, 'labels'],
   faults: ['greatCircles', 'slip', 'ptAxes', 'dihedra', 'labels'],
   smallcircles: ['circles', 'axes', 'labels'],
+  table: [],                                               // nothing to draw
 };
 // what a new layer shows: poles (or points) — great circles too only for faults, where they're the point;
 // 200 great circles bury a net (OpenStereo's default is poles only too)
-const DEFAULT_ON = { planes: ['poles'], lines: ['points'], faults: ['greatCircles', 'slip'], smallcircles: ['circles'] };
+const DEFAULT_ON = { planes: ['poles'], lines: ['points'], faults: ['greatCircles', 'slip'], smallcircles: ['circles'], table: [] };
 const DEFAULT_SETTINGS = {
   contours: { method: 'kamb', sigma: 3, levels: null },
   mean: { axial: true, confidence: 0.95 },
@@ -81,6 +84,7 @@ export class Project {
     const columns = spec.columns ? [...spec.columns] : [...new Set(rows.flatMap((r) => Object.keys(r)))];
     const d = { id: this._id('d'), name: this._uniqueName(spec.name || kind), kind, rows, columns, roles: { ...(spec.roles || {}) },
       notation: spec.notation || null, lineage: spec.lineage ? clone(spec.lineage) : null, meta: clone(spec.meta || {}) };
+    if (d.meta.calc && d.meta.calc.length) { const r = recalc(d); d.rows = r.rows; d.columns = r.columns; }   // formulas arrive live (a CSV read their values back as text)
     this.datasets.push(d);
     this._emit('dataset-added', { id: d.id });
     return d.id;
@@ -100,6 +104,27 @@ export class Project {
     for (const [k, v] of Object.entries(roles || {})) { if (v == null) delete next[k]; else { if (!d.columns.includes(v)) throw new Error(`“${d.name}” has no column “${v}”`); next[k] = v; } }
     this._replaceDataset(d, { ...d, roles: next }); this._emit('dataset-changed', { id });
   }
+  /** a CALCULATED column: the formula kept with the dataset (meta.calc), its values written into the rows; the same
+   *  name again replaces the formula. Refused — with what's wrong — before anything changes */
+  setCalc(id, name, expr) {
+    const d = this._need(id), nm = String(name || '').trim();
+    if (!nm) throw new Error('a calculated column needs a name');
+    const calc = ((d.meta && d.meta.calc) || []).filter((c) => c.name !== nm);
+    if (d.columns.includes(nm) && !((d.meta && d.meta.calc) || []).some((c) => c.name === nm)) throw new Error(`“${nm}” is a column of the data — choose another name (a formula never overwrites measurements)`);
+    const err = checkExpr({ ...d, columns: d.columns.filter((c) => c !== nm) }, expr); if (err) throw new Error(err);
+    const next = { ...d, meta: { ...(d.meta || {}), calc: [...calc, { name: nm, expr: String(expr) }] }, rows: d.rows.map((r) => ({ ...r })), columns: [...d.columns] };
+    const r = recalc(next); next.rows = r.rows; next.columns = r.columns;
+    this._replaceDataset(d, next); this._emit('rows-changed', { id });
+    return r.broken;
+  }
+  /** a calculated column gone: the formula and its values */
+  dropCalc(id, name) {
+    const d = this._need(id), calc = (d.meta && d.meta.calc) || [];
+    if (!calc.some((c) => c.name === name)) throw new Error(`“${d.name}” has no calculated column “${name}”`);
+    const next = { ...d, meta: { ...d.meta, calc: calc.filter((c) => c.name !== name) }, rows: d.rows.map((r) => { const o = { ...r }; delete o[name]; return o; }), columns: d.columns.filter((c) => c !== name) };
+    const r = recalc(next); next.rows = r.rows; next.columns = r.columns;
+    this._replaceDataset(d, next); this._emit('rows-changed', { id });
+  }
   renameDataset(id, name) { const d = this._need(id); this._replaceDataset(d, { ...d, name: this._uniqueName(String(name).trim() || d.name) }); this._emit('dataset-changed', { id }); }
   /** edit rows in place: fn(rows) may mutate them or return a new array; every layer redraws */
   editRows(id, fn) {
@@ -107,6 +132,7 @@ export class Project {
     const out = fn(d.rows);
     if (Array.isArray(out)) d.rows = out;
     for (const r of d.rows) for (const k of Object.keys(r)) if (!d.columns.includes(k)) d.columns.push(k);
+    if (d.meta && d.meta.calc && d.meta.calc.length) { const r = recalc(d); d.rows = r.rows; d.columns = r.columns; }   // the formulas follow the data
     const sel = this.selection.get(id);
     if (sel) for (const i of [...sel]) if (i >= d.rows.length) sel.delete(i);
     this._emit('rows-changed', { id });
@@ -175,6 +201,7 @@ export class Project {
   /** a dataset onto a diagram: a new view (hard link) with default elements and the given style */
   addLayer(diagramId, datasetId, { style, elements, name } = {}) {
     this._needDiagram(diagramId); const d = this._need(datasetId);
+    if (d.kind === 'table') throw new Error(`“${d.name}” is a table — it has no attitudes to draw; join it onto measurements (join <data> ${d.name} on <column>)`);
     const l = { id: this._id('l'), diagramId, datasetId, name: name || null, visible: true,
       elements: elements ? clone(elements) : defaultElements(d.kind), style: { color: null, symbol: 'circle', size: 4, ...(style || {}) } };
     this.layers.push(l);
@@ -298,7 +325,7 @@ export class Project {
 // view state: restored with a step, never steps of their own.
 
 const JOURNALED = {
-  addDataset: 'open data', renameDataset: 'rename', setRoles: 'column roles', editRows: 'edit rows', removeDataset: 'delete data',
+  addDataset: 'open data', renameDataset: 'rename', setRoles: 'column roles', setCalc: 'calculated column', dropCalc: 'drop calculated column', editRows: 'edit rows', removeDataset: 'delete data',
   derive: 'derive', selectionToDataset: 'selection → dataset',
   addDiagram: 'new diagram', setDiagramProps: 'diagram settings', renameDiagram: 'rename diagram', removeDiagram: 'remove diagram',
   addLayer: 'add layer', addView: 'add view', moveLayer: 'move layer', removeLayer: 'remove layer', removeEverywhere: 'remove from everywhere',

@@ -52,6 +52,7 @@ const S = (v) => (isBlank(v) || typeof v === 'boolean' || typeof v === 'object' 
 // Eager pure functions: name → (args[], N) => value. Args are already-evaluated
 // values; N is the decimal-bound num. `if` is NOT here (lazy branches — handled in
 // each path). Every fn returns blank on bad/blank input unless it's an explicit cast.
+const D2R = Math.PI / 180, R2D = 180 / Math.PI;
 export const FN = {
   round: (a, N) => { const x = N(a[0]); if (x === null) return null; const d = a.length > 1 ? Math.trunc(N(a[1]) || 0) : 0; const f = Math.pow(10, d); return Math.round(x * f) / f; },
   int: (a, N) => { const x = N(a[0]); return x === null ? null : Math.trunc(x); },
@@ -80,7 +81,23 @@ export const FN = {
   floor: (a, N) => { const x = N(a[0]); return x === null ? null : Math.floor(x); },   // int() truncates — differs on negatives
   ceil: (a, N) => { const x = N(a[0]); return x === null ? null : Math.ceil(x); },
   mod: (a, N) => { const x = N(a[0]), y = N(a[1]); return (x === null || y === null || y === 0) ? null : ((x % y) + y) % y; },   // FLOORED (Excel MOD): mod(-7,3)=2
-  log10: (a, N) => { const x = N(a[0]); return x === null ? null : fin(Math.log10(x)); },   // log() is ln; grades are lognormal — log10 is the geochem transform
+  log10: (a, N) => { const x = N(a[0]); return x === null ? null : fin(Math.log10(x)); },
+  // TRIGONOMETRY IN DEGREES — attitudes are degrees, and an expression full of *pi()/180 is a bug waiting
+  sin: (a, N) => { const x = N(a[0]); return x === null ? null : fin(Math.sin(x * D2R)); },
+  cos: (a, N) => { const x = N(a[0]); return x === null ? null : fin(Math.cos(x * D2R)); },
+  tan: (a, N) => { const x = N(a[0]); return x === null ? null : fin(Math.tan(x * D2R)); },
+  asin: (a, N) => { const x = N(a[0]); return x === null || x < -1 || x > 1 ? null : Math.asin(x) * R2D; },
+  acos: (a, N) => { const x = N(a[0]); return x === null || x < -1 || x > 1 ? null : Math.acos(x) * R2D; },
+  atan: (a, N) => { const x = N(a[0]); return x === null ? null : Math.atan(x) * R2D; },
+  atan2: (a, N) => { const y = N(a[0]), x = N(a[1]); return (y === null || x === null) ? null : Math.atan2(y, x) * R2D; },
+  azimuth: (a, N) => { const x = N(a[0]); return x === null ? null : ((x % 360) + 360) % 360; },   // any angle → 0–360
+  // the AXIAL angle (0–90) between two directions given as trend/plunge — a line and its opposite are one axis
+  angle: (a, N) => {
+    const v = a.slice(0, 4).map((u) => N(u)); if (a.length < 4 || v.some((u) => u === null)) return null;
+    const d = (t, p) => [Math.cos(p * D2R) * Math.sin(t * D2R), Math.cos(p * D2R) * Math.cos(t * D2R), -Math.sin(p * D2R)];
+    const u = d(v[0], v[1]), w = d(v[2], v[3]), c = Math.abs(u[0] * w[0] + u[1] * w[1] + u[2] * w[2]);
+    return Math.acos(Math.min(1, c)) * R2D;
+  },   // log() is ln; grades are lognormal — log10 is the geochem transform
   ifnum: (a, N) => { const x = N(a[0]); return x === null ? a[1] : x; },          // x if numeric, else the default
   coalesce: (a) => { for (const v of a) if (!isBlank(v)) return v; return null; }, // first non-blank
   nullif: (a, N) => (eq(a[0], a[1], N) ? null : a[0]),    // sentinel scrub: nullif(AU, -99)

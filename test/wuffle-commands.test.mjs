@@ -283,3 +283,45 @@ describe('kinematic analysis, folds, cones', () => {
     }
   });
 });
+
+// ── calculated columns, tables, joins, select where ──
+describe('calc, tables, joins', () => {
+  it('calc: a formula kept with the data, its values in the rows, made again when the rows change; refused cleanly', () => {
+    const { p, c } = mk(); c.run('add p 045/30 120/60 --to M');
+    const id = p.datasets.find((d) => d.name === 'M').id;
+    assert.match(c.run("calc cls = if(dip > 50, 'steep', 'flat')").text, /\(flat, steep\)/);
+    assert.deepEqual(p.dataset(id).meta.calc, [{ name: 'cls', expr: "if(dip > 50, 'steep', 'flat')" }]);
+    c.run('add p 300/80 --to M');
+    assert.equal(p.dataset(id).rows[2].cls, 'steep', 'a new row gets the formula');
+    assert.match(c.run('calc pt = pole_trend').text, /225, 300, 120/, 'attitude columns: the pole of 045/30 trends 225');
+    assert.match(c.run('calc x = nope + 1').text, /unknown column: nope/);
+    assert.match(c.run('calc dip = 1').text, /a column of the data/, 'a formula never overwrites measurements');
+    c.run('calc --drop cls'); assert.ok(!p.dataset(id).columns.includes('cls'));
+    c.run('undo'); assert.ok(p.dataset(id).columns.includes('cls'), 'one undo step');
+  });
+  it('a file with no attitudes is a TABLE: never drawn, joinable; coordinates are not read as dip direction / dip', () => {
+    const [t] = readTable('station,x,y,lith\n1,350100,7800200,granite\n2,350300,7800400,schist\n', 'stations');
+    assert.equal(t.kind, 'table');
+    const [q] = readTable('a,b\n120,40\n200,30\n', 'q'); assert.equal(q.kind, 'planes', 'two plausible numbers are still read as planes');
+    const { p } = mk(); const id = p.addDataset(t);
+    assert.throws(() => p.addLayer(p.activeDiagram, id), /is a table/);
+  });
+  it('join: a left join by key, as a new dataset — unmatched and duplicated keys said; a clashing name kept apart', () => {
+    const { p, c } = mk();
+    c.run('add p 045/30 120/60 200/10 --to M'); c.run('calc stn = round(dipdir / 100)');
+    const [t] = readTable('station,lith,dip\n1,granite,x\n2,schist,y\n2,dup,z\n', 'stations'); p.addDataset(t);
+    const r = c.run('join M stations on stn=station').text;
+    assert.match(r, /2 of 3 matched/); assert.match(r, /no stations row for 0/); assert.match(r, /1 key twice in stations/);
+    const j = p.datasets.at(-1); assert.equal(j.lineage.op, 'join'); assert.equal(j.kind, 'planes');
+    assert.deepEqual(j.rows.map((x) => x.lith), ['', 'granite', 'schist']);
+    assert.ok(j.columns.includes('dip (stations)'), 'the table\'s "dip" kept apart from the measurement\'s');
+    assert.match(c.run('join M stations on nope').text, /has no column “nope”/);
+  });
+  it('select where: an expression over the rows of everything on the net', () => {
+    const { p, c } = mk(); c.run('sample');
+    const r = c.run('select where dip > 80 and pole_plunge < 10');
+    assert.match(r.text, /^where .*: \d+ of 200 selected/);
+    const n = p.selected(p.datasets[0].id).length; assert.ok(n > 0 && n < 200);
+    assert.match(c.run('select where bogus = 1').text, /unknown column: bogus/);
+  });
+});

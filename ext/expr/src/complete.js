@@ -54,6 +54,10 @@ export const FNDOC = {
   substr: ['substr(s, start[, len])', 'substring, 1-based start'],
   replace: ['replace(s, find, repl)', 'replace every literal find with repl'],
   concat: ['concat(a, b, …)', 'join as text, skipping blanks'],
+  sin: ['sin(deg)', 'sine of an angle in degrees'], cos: ['cos(deg)', 'cosine of an angle in degrees'], tan: ['tan(deg)', 'tangent of an angle in degrees'],
+  asin: ['asin(x)', 'arcsine, in degrees'], acos: ['acos(x)', 'arccosine, in degrees'], atan: ['atan(x)', 'arctangent, in degrees'],
+  atan2: ['atan2(y, x)', 'the angle of (x, y), in degrees'], azimuth: ['azimuth(deg)', 'any angle as 0–360'],
+  angle: ['angle(tr1, pl1, tr2, pl2)', 'the angle (0–90) between two directions as trend/plunge — axial'],
 };
 
 const CMP_OPS = ['=', '!=', '<', '>', '<=', '>=', '==', '<>'];

@@ -88,7 +88,7 @@ describe('never refuses', () => {
   });
   it('nothing usable still gives a dataset that says why', () => {
     const s = read1('name,comment\nfoo,bar\n');
-    assert.equal(s.meta.read.why, 'no orientation columns found');
+    assert.match(s.meta.read.why, /no orientation columns/); assert.equal(s.kind, 'table', 'a table, waiting to be joined — not planes with no roles');
   });
 });
 

@@ -192,7 +192,7 @@ export class TreeView {
     const p = this.p, nets = p.diagrams;
     const a = await Menu.show([
       { label: 'Show the table', action: 'table' },
-      { label: 'Draw on', disabled: !nets.length, children: nets.map((g) => ({ label: g.name, action: 'draw:' + g.id })) },
+      { label: ds.kind === 'table' ? 'Draw on (a table has no attitudes — join it onto measurements)' : 'Draw on', disabled: !nets.length || ds.kind === 'table', children: nets.map((g) => ({ label: g.name, action: 'draw:' + g.id })) },
       { label: 'Rename…', action: 'rename' },
       '---',
       { label: 'Delete dataset', action: 'delete', danger: true },

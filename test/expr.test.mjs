@@ -655,3 +655,17 @@ test('interp family PARITY: evaluate ≡ compile ≡ compileChunk over a row bat
     }
   }
 });
+
+// trigonometry in DEGREES and the axial angle between two directions (wuffle's calculated columns; any host)
+test('trig in degrees, azimuth, the axial angle between trend/plunge pairs — the tree-walk and the compiler agree', async () => {
+  const E = await import('../ext/expr/src/main.js');
+  const cases = [['sin(30)', 0.5], ['cos(60)', 0.5], ['tan(45)', 1], ['asin(1)', 90], ['acos(0)', 90], ['atan(1)', 45], ['atan2(1, -1)', 135],
+    ['azimuth(-30)', 330], ['azimuth(725)', 5], ['angle(0, 0, 90, 0)', 90], ['angle(0, 0, 180, 0)', 0], ['angle(10, 20, 10, 30)', 10], ['angle(0, 90, 123, 90)', 0]];
+  for (const [src, want] of cases) {
+    const a = E.evaluate(E.parse(src), {}), b = E.compileValue(src, [])([]);
+    assert.ok(Math.abs(a - want) < 1e-9 && Math.abs(b - want) < 1e-9, `${src} = ${a} / ${b}, want ${want}`);
+  }
+  assert.equal(E.compileValue('asin(2)', [])([]), null, 'out of domain → blank');
+  assert.throws(() => E.parse('angle(1, 2, 3)'), /angle\(\) expects 4/, 'the parser counts the arguments');
+  assert.equal(E.compileValue('angle(x, 2, 3, 4)', ['x'])(['']), null, 'a blank direction → blank');
+});

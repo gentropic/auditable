@@ -59,6 +59,7 @@ export function createFiles(root, { project: p, dropHost, onOpened, home = null,
     p.batch(`open ${name}`, () => {                         // the data and its layer: one undo step
       for (const s of specs) {
         const id = p.addDataset(s); first = first || id;
+        if (s.kind === 'table') continue;                     // a table isn't drawn: it waits to be joined
         if (!p.activeDiagram) p.addDiagram('net');
         p.addLayer(p.activeDiagram, id);
       }

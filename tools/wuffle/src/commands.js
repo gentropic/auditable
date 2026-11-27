@@ -11,6 +11,8 @@ import { conversions, io as bio } from '../../../ext/bearing/index.js';
 import { rowsInShape, formatPlane, formatLine } from '../../../ext/stereonet/index.js';
 import { sceneLayers } from './layers.js';
 import { orientations } from './io.js';
+import { rowsWhere } from './calc.js';
+import { joinTable } from './join.js';
 import { layerStats, deriveMean, deriveEigen, deriveBeta, deriveIntersection, applyTerzaghi, deriveRotated, deriveUntilted, deriveDeclination, detectSets, compareMeans, deriveLineations, applyKinematic, foldAnalysis, fitSmallCircle } from './stats.js';
 import { declination as wmmDeclination } from '../../../ext/wmm/index.js';
 
@@ -129,9 +131,11 @@ const HELP = {
   terzaghi: 'terzaghi [layer] <tr/pl> [--max 10] | terzaghi [layer] off — weight the planes for a scanline or borehole along tr/pl (contours use it)',
   add: 'add p 045/30 [more…] | l 120/40 | sc 120/40 15 | f 045/30 120/20 [n|r|d|s] (or f 045/30 r35 n: a rake) — typed in, into "typed <kind>"\n'
     + '    045/30, 045,30 or 45 30 · 030/40SE = strike/dip + quadrant · --rhr (strike/dip) · --to <dataset> · --net <diagram> · --label <text>',
-  select: 'select cone [p|l] <dd/dip|tr/pl> <angle> | band <dd/dip> <half-width> | all | none | invert   (+ adds, - subtracts: "select + cone …")',
+  select: 'select cone [p|l] <dd/dip|tr/pl> <angle> | band <dd/dip> <half-width> | where "<expression>" | all | none | invert   (+ adds, - subtracts: "select + cone …")',
   stats: 'stats [layer] [--selection] [--bootstrap [n]] — n, mean, κ, α95, the confidence ellipse, Bingham uniformity, eigenvalues (the selected rows only, with --selection)',
   compare: 'compare <layer> <layer> — Watson\'s test: could the two share one mean?',
+  calc: 'calc [--in <data>] <name> = "<expression>" | calc [--in <data>] (the formulas) | calc --drop <name> — a calculated column (@gcu/expr; dip, dipdir, strike, pole_trend, trend, plunge, rake are there too). QUOTE the expression: > and quotes are the shell\'s',
+  join: 'join <data> <table> on <column>[=<table column>] — the table\'s columns onto the measurements, by a key, as a new dataset',
   kinematic: 'kinematic [layer] <face dd/dip> [--phi 30] [--lateral 20] — planar, wedge and toppling failure against a slope face (Markland); draws the face and the friction cone',
   fold: 'fold [layer] [--recumbent] [--keep] — the π-girdle\'s axis, cylindricity, interlimb angle, axial plane, Fleuty\'s names; --keep draws the axis and the axial plane',
   cone: 'cone [layer] [--keep] — the small circle that best fits (a conical fold\'s poles): its axis and half-angle',
@@ -160,6 +164,12 @@ export function createCommands(ctx) {
     return L;
   };
   const dsName = (L) => L.name || p.dataset(L.datasetId).name;
+  const datasetNamed = (name) => {
+    const low = String(name || '').toLowerCase(), d = p.datasets.find((x) => x.name.toLowerCase() === low) || p.datasets.find((x) => x.name.toLowerCase().startsWith(low));
+    if (!d) throw new Error(`no dataset “${name}” — datasets: ${p.datasets.map((x) => x.name).join(', ') || 'none'}`); return d;
+  };
+  // a dataset named, or the active net's first visible layer's
+  const dataOf = (name) => { if (name) { try { return p.dataset(layerNamed(name).datasetId); } catch { return datasetNamed(name); } } return p.dataset(layerNamed('', { required: true }).datasetId); };
   const derived = (make) => { const id = p.batch('derive', () => { const x = make(); p.addLayer(active().id, x); return x; }); const d = p.dataset(id); return `→ ${d.name} (${d.rows.length} row${d.rows.length === 1 ? '' : 's'}), drawn on ${active().name}`; };
   const applyShape = (shape, mode) => {
     if (ctx.applyShape) return ctx.applyShape(shape, mode);
@@ -265,6 +275,18 @@ export function createCommands(ctx) {
       let [what, att, num] = args, as = null;
       if (ADD_KINDS[String(att).toLowerCase()] === 'planes' || ADD_KINDS[String(att).toLowerCase()] === 'lines') { as = ADD_KINDS[String(att).toLowerCase()] === 'planes' ? 'plane' : 'line'; [att, num] = [num, args[3]]; }
       if (what === 'none') { p.clearSelection(); return 'selection cleared'; }
+      if (what === 'where') {                                // an expression over the rows, on every dataset this net shows
+        const expr = args.slice(1).join(' ').trim(); if (!expr) throw new Error('select where "<expression>" — e.g. select where "dip > 60 and set = \'S1\'"');
+        const ids = [...new Set(p.layersOf(active().id).filter((L) => L.visible !== false).map((L) => L.datasetId))];
+        let n = 0, of = 0, errs = [];
+        for (const id of ids) {
+          const ds = p.dataset(id); of += ds.rows.length;
+          let rows; try { rows = rowsWhere(ds, expr); } catch (e) { errs.push(`${ds.name}: ${e.message}`); continue; }
+          p.select(id, rows, mode); n += rows.length;
+        }
+        if (errs.length === ids.length && ids.length) throw new Error(errs[0]);
+        return `where ${expr}: ${n} of ${of} selected${errs.length ? ` (skipped ${errs.map((e) => e.split(':')[0]).join(', ')}: ${errs[0].split(': ').slice(1).join(': ').split(' — ')[0]})` : ''}`;
+      }
       if (what === 'all' || what === 'invert') {
         // once per DATASET drawn (visibly) on the net — two views of one dataset used to invert it twice (no change)
         // and count its rows twice; a hidden layer is left alone, as a gesture leaves it
@@ -314,6 +336,28 @@ export function createCommands(ctx) {
       const A = layerNamed(a), B = layerNamed(b), r = compareMeans(p.dataset(A.datasetId), p.dataset(B.datasetId));
       return `${dsName(A)} (n ${r.nA}) vs ${dsName(B)} (n ${r.nB}) — Watson F ${r.F.toFixed(2)} (${r.df[0]}, ${r.df[1]}), p ${r.p < 0.001 ? '< 0.001' : r.p.toFixed(3)}: `
         + (r.p < 0.05 ? 'their means differ (at 95 %)' : 'one mean could serve both (the test can\'t tell them apart at 95 %)');
+    },
+    calc(args0) {
+      let into = null, drop = null; const args = [];
+      for (let i = 0; i < args0.length; i++) { if (args0[i] === '--in') into = args0[++i]; else if (args0[i] === '--drop') drop = args0[++i]; else args.push(args0[i]); }
+      const ds = dataOf(into);
+      if (drop) { p.dropCalc(ds.id, drop); return `${ds.name}: “${drop}” dropped (the formula and its column)`; }
+      const line = args.join(' ').trim();
+      if (!line) { const c = (ds.meta && ds.meta.calc) || []; return c.length ? c.map((x) => `${ds.name} · ${x.name} = ${x.expr}`).join('\n') : `${ds.name} has no calculated columns — calc <name> = "<expression>"`; }
+      const m = line.match(/^([^=\s][^=]*?)\s*=\s*([\s\S]+)$/); if (!m) throw new Error('calc <name> = "<expression>"');
+      const name = m[1].trim(), expr = m[2].trim();
+      const broken = p.setCalc(ds.id, name, expr), d2 = p.dataset(ds.id);
+      const sample = d2.rows.slice(0, 3).map((r) => r[name]).map((v) => (v === '' ? '·' : String(v))).join(', ');
+      return `${d2.name} · ${name} = ${expr}  (${sample}${d2.rows.length > 3 ? ', …' : ''})${broken.length ? ` — not computed: ${broken.join(', ')}` : ''}`;
+    },
+    join(args) {
+      const at = args.indexOf('on'); if (at !== 2 || !args[3]) throw new Error('join <data> <table> on <column>[=<table column>]');
+      const D = dataOf(args[0]), T = datasetNamed(args[1]), [a, b] = args[3].split('=');
+      const r = joinTable(p, D.id, T.id, { on: a, onTable: b || null });
+      const g = p.activeDiagram; if (g && p.layersOf(g).some((L) => L.datasetId === D.id)) p.addLayer(g, r.id);
+      return `→ ${p.dataset(r.id).name}: ${r.matched} of ${r.of} matched, ${r.columns.length} column${r.columns.length === 1 ? '' : 's'} brought (${r.columns.join(', ')})`
+        + (r.unmatched.length ? `; no ${T.name} row for ${r.unmatched.slice(0, 6).join(', ')}${r.unmatched.length > 6 ? ` and ${r.unmatched.length - 6} more` : ''}` : '')
+        + (r.dupes ? `; ${r.dupes} key${r.dupes === 1 ? '' : 's'} twice in ${T.name} (the first row taken)` : '');
     },
     kinematic(args0) {
       let phi = 30, lateral = 20; const args = [];

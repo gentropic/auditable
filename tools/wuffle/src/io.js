@@ -137,14 +137,19 @@ export function sniffRoles(columns, rows) {
     return { kind: 'planes', roles: { attitude: att, ...set }, notation: 'text', guessed: true, mixed: lines > 0, why: `“${att}” read as dip direction / dip (quadrant letters honored)${lines ? '; the rows with an arrow as trend → plunge' : ''}` };
   }
   // the first two numeric columns, as dip direction / dip — unless the second runs past 90
-  const numeric = columns.filter((c) => rows.slice(0, 50).every((o) => typeof o[c] === 'number' || o[c] === ''));
-  if (numeric.length >= 2) {
+  // two unnamed numeric columns are read as dip direction / dip only when their values CAN be (0–360 and 0–90, either
+  // way round) and they aren't coordinates: a stations table (x, y, lithology) is a TABLE, not planes
+  const COORD = /^(x|y|z|e|n|east|north|easting|northing|elev|elevation|rl|lat|lon|long|latitude|longitude|utmx|utmy|xcoord|ycoord|zcoord|depth|from|to|id|station|stn|site|n_?o)$/;
+  const inRange = (c, max) => rows.slice(0, 200).every((o) => o[c] === '' || (o[c] >= 0 && o[c] <= max));
+  const numeric = columns.filter((c) => !COORD.test(n(c)) && rows.slice(0, 50).every((o) => typeof o[c] === 'number' || o[c] === ''));
+  if (numeric.length >= 2 && ((inRange(numeric[0], 360) && inRange(numeric[1], 90)) || (inRange(numeric[1], 360) && inRange(numeric[0], 90)))) {
     const [a, b] = numeric, past = rows.some((o) => o[b] > 90), aOk = !rows.some((o) => o[a] > 90);
     const [dd, dip] = past && aOk ? [b, a] : [a, b];
     const named = columns.some((c) => !/^c\d+$/.test(c));   // c1, c2… are the names parseDelimited makes up
     return { kind: 'planes', roles: { dipDir: dd, dip, ...set }, notation: 'dd', guessed: true, why: `${named ? 'no column names wuffle knows' : 'no named columns'}: ${dd} / ${dip} read as dip direction / dip${past && aOk ? ' (swapped — the second column passes 90)' : ''}` };
   }
-  return { kind: 'planes', roles: {}, notation: 'dd', guessed: true, why: 'no orientation columns found' };
+  // nothing that reads as attitudes: a TABLE — stations, assays, a lookup — shown, joined onto measurements, never drawn
+  return { kind: 'table', roles: {}, notation: null, guessed: true, why: 'no orientation columns: a table (join it to measurements)' };
 }
 
 /**

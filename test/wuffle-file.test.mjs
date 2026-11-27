@@ -96,3 +96,19 @@ describe('.zip.wuffle', () => {
     await assert.rejects(readProject(other[0].length ? new Uint8Array(other.flatMap((c) => [...c])) : new Uint8Array()), /not a wuffle project/);
   });
 });
+
+describe('formulas and tables travel with the project', () => {
+  it('a calculated column comes back as a formula (still live), a table as a table', async () => {
+    const p = new Project({ name: 'calc' }); const n = p.addDiagram('net');
+    const id = p.addDataset(readTable(TOCHER, 'tocher')[0]); p.addLayer(n, id);
+    p.setCalc(id, 'steep', 'dip > 60');
+    p.addDataset(readTable('station,lith\n1,granite\n', 'stations')[0]);
+    const { project: q } = await readProject(await writeProject(p));
+    const T = q.datasets.find((x) => x.name === 'tocher');
+    assert.deepEqual(T.meta.calc, [{ name: 'steep', expr: 'dip > 60' }]);
+    assert.deepEqual(T.rows.map((r) => r.steep), p.dataset(id).rows.map((r) => r.steep));
+    q.editRows(T.id, (rows) => { rows[0][T.roles.dip] = 89; });
+    assert.equal(q.dataset(T.id).rows[0].steep, true, 'the formula is live after loading');
+    assert.equal(q.datasets.find((x) => x.name === 'stations').kind, 'table');
+  });
+});

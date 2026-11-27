@@ -252,6 +252,24 @@ for (const [label, url] of [['dev', '/tools/wuffle/index.html'], ['built', '/wuf
   chk(`${label}: add — “add p 045/30 030/40SE --to "my planes"” → ${JSON.stringify(ad.mine)} on the net (${ad.onNet}); add f two faults (${ad.faults}); select cone l → ${ad.sel}; man add / man ls (${ad.man})`,
     JSON.stringify(ad.mine) === '[[45,30],[120,40]]' && ad.onNet && ad.faults === 2 && /cone: [1-9]/.test(ad.sel) && ad.man);
 
+  // ── a calculated column from the table's ƒ (no shell quoting), and select where through the shell (quoted) ──
+  {
+    const fx = await p.evaluate(async () => {
+      const W = window.__wuffleDesk, P = W.project, ds = P.datasets.find((d) => d.name === 'tocher');
+      W.table.show(ds.id); await new Promise((r) => setTimeout(r, 200));
+      document.querySelector('.wt-head .wt-calc').click(); await new Promise((r) => setTimeout(r, 200));
+      const nm = document.querySelector('.wt-calc-name'), ex = document.querySelector('.wt-calc-expr');
+      nm.value = 'steep'; nm.dispatchEvent(new Event('input')); ex.value = 'dip > 60'; ex.dispatchEvent(new Event('input'));
+      [...document.querySelectorAll('.gcu-dialog button')].find((b) => b.textContent === 'Add').click();
+      await new Promise((r) => setTimeout(r, 300));
+      const d = P.dataset(ds.id);
+      const r = await W.console.run('select where "steep and pole_plunge < 25"');
+      return { calc: d.meta.calc, n: d.rows.filter((x) => x.steep === true).length, head: W.table.provider.header(d.columns.indexOf('steep') + 1).label, sel: r.text };
+    });
+    chk(`${label}: ƒ new column → ${JSON.stringify(fx.calc)} (${fx.n} steep; header “${fx.head}”); select where → ${fx.sel}`,
+      fx.calc && fx.calc[0].expr === 'dip > 60' && fx.n > 0 && fx.head === 'ƒ steep' && /^where .*: \d+ of \d+ selected/.test(fx.sel));
+  }
+
   // ── the net's right-click: on a pole (its row in the table), on empty net (add the plane there), on a circle;
   //    the selection's statistics (menu, console, panel); the picture ──
   {

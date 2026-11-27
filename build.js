@@ -2066,7 +2066,7 @@ if (target === 'wuffle') {
     // src/ modules import ext packages by relative path (so Node tests resolve them): the same bundled copy
     '../../../ext/bearing/index.js': '#bearing', '../../../ext/leadacid/index.js': '#leadacid', '../../../ext/wmm/index.js': '#wmm',
     // the desk workbench's GCU components
-    '../../../ext/rails/index.js': '#rails', '../../../ext/menu/index.js': '#menu', '../../../ext/dialog/index.js': '#dialog', '../../../ext/loom/index.js': '#loom', '../../../ext/stereonet/index.js': '#stereonet', '../../../ext/compo/index.js': '#compo', '../../../ext/qr/index.js': '#qr',
+    '../../../ext/rails/index.js': '#rails', '../../../ext/menu/index.js': '#menu', '../../../ext/dialog/index.js': '#dialog', '../../../ext/loom/index.js': '#loom', '../../../ext/stereonet/index.js': '#stereonet', '../../../ext/compo/index.js': '#compo', '../../../ext/qr/index.js': '#qr', '../../../ext/expr/index.js': '#expr',
     // the console: a terminal, the geas shell, its filesystem
     '../../../ext/term/index.js': '#term', '../../../ext/geas/index.js': '#geas', '../../../ext/vfs/index.js': '#vfs',
     // the project file: archive's self-contained streaming zip (not all of @gcu/archive — geas carries its own copy)
@@ -2082,6 +2082,7 @@ if (target === 'wuffle') {
     ['stereonet', 'ext/stereonet/index.js'],
     ['compo', 'ext/compo/index.js'],
     ['qr', 'ext/qr/index.js'],
+    ['expr', 'ext/expr/index.js'],              // @gcu/expr — calculated columns and select where (src/calc.js)
     ['term', 'ext/term/index.js'],
     ['geas', 'ext/geas/index.js'],
     ['vfs', 'ext/vfs/index.js'],
