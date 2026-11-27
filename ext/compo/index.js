@@ -294,6 +294,40 @@ function spacingSnap(others, box, k) {
   }
   return best;
 }
+// WHERE A NEW FRAME GOES: a w × h box that overlaps no visible frame (gap mm apart) and stays inside the margins —
+// beside `near` first (right of it, below it, left of it), else the first free place scanning the page top to
+// bottom, left to right. New frames used to land at the top-left margin, on top of whatever was there (a table on
+// the 3D view, five legends running off the page). → [x, y, w, h] (it may shrink the box to fit the free space
+// it finds only as a last resort: then the page's top-left, as before)
+function freeSpot(doc, w, h, { near = null, gap = 4, ignore = [], shrink = false } = {}) {
+  // shrink: a frame that re-flows (a chart, a table) may come smaller rather than land on another — the largest
+  // scale (down to half, aspect kept) that finds a free place
+  if (shrink) {
+    for (let k = 1; k >= 0.5 - 1e-9; k -= 0.05) {
+      const b = freeSpot(doc, +(w * k).toFixed(1), +(h * k).toFixed(1), { near, gap, ignore });
+      if (!b._fallback) return b;
+    }
+  }
+  const [W, H] = pageDims(doc.page), m = doc.page.margins || [10, 10, 10, 10];
+  const others = doc.frames.filter((f) => !f.hidden && !ignore.includes(f.id)).map((f) => f.box);
+  const fits = (x, y) => x >= m[3] - 1e-6 && y >= m[0] - 1e-6 && x + w <= W - m[1] + 1e-6 && y + h <= H - m[2] + 1e-6
+    && others.every((b) => x + w + gap <= b[0] || b[0] + b[2] + gap <= x || y + h + gap <= b[1] || b[1] + b[3] + gap <= y);
+  if (near) {
+    const b = near.box || near;
+    for (const [x, y] of [[b[0] + b[2] + gap, b[1]], [b[0], b[1] + b[3] + gap], [b[0] - gap - w, b[1]]]) {
+      if (fits(x, y)) return [x, y, w, h];
+      // slide along that side to the first free place
+      for (let t = 0; t <= Math.max(W, H); t += 2) {
+        if (x === b[0] + b[2] + gap || x === b[0] - gap - w) { if (fits(x, b[1] + t)) return [x, b[1] + t, w, h]; }
+        else if (fits(b[0] + t, y)) return [b[0] + t, y, w, h];
+      }
+    }
+  }
+  for (let y = m[0]; y + h <= H - m[2] + 1e-6; y += 2) for (let x = m[3]; x + w <= W - m[1] + 1e-6; x += 2) if (fits(x, y)) return [x, y, w, h];
+  const fb = [m[3] + 8, m[0] + 8, w, h];
+  Object.defineProperty(fb, '_fallback', { value: true });   // no free place: the page's top-left, as it used to
+  return fb;
+}
 // a moving box: its edges and centre snap to the lines above, or to an equal spacing — whichever
 // is nearer, per axis, within `tol` mm → { box, guides: { x, y, gaps: [segments] } }
 function snapBox(doc, box, { ignore = [], tol = 1.5 } = {}) {
@@ -886,10 +920,13 @@ function layoutText(ctx, text, width, { size = 9, mono = false, serif = false, l
   return { lines, lineHeight: body };
 }
 // lay out and draw markdown into a box (text frames, labels): { size, mono, serif, pad, align, color, lineHeight }
-function drawText(ctx, text, box, { size = 9, mono = false, serif = false, pad = 1, align = 'left', color = INK, lineHeight = 1.25 } = {}) {
+function drawText(ctx, text, box, { size = 9, mono = false, serif = false, pad = 1, align = 'left', color = INK, lineHeight = 1.25, valign = 'top' } = {}) {
   const { lines } = layoutText(ctx, text, box[2] - 2 * pad, { size, mono, serif, lineHeight });
   ctx.fillStyle = color; ctx.strokeStyle = color; ctx.textBaseline = 'top'; ctx.textAlign = 'left';
+  const total = lines.reduce((s, l) => s + (l.gap || 0) + l.lh, 0);
   let y = box[1] + pad;
+  if (valign === 'middle') y = box[1] + Math.max(pad, (box[3] - total) / 2);
+  else if (valign === 'bottom') y = box[1] + Math.max(pad, box[3] - pad - total);
   for (const line of lines) {
     y += line.gap || 0;
     if (line.rule) { ctx.lineWidth = 0.2; ctx.beginPath(); ctx.moveTo(box[0] + pad, y + line.lh / 2); ctx.lineTo(box[0] + box[2] - pad, y + line.lh / 2); ctx.stroke(); y += line.lh; continue; }
@@ -914,8 +951,9 @@ registerKind('text', {
   draw(ctx, box, frame, env) {
     const c = frame.content || {};
     const text = resolveFields(c.md || '', env, frame);
-    drawText(ctx, text, box, { size: +c.size || 9, mono: !!c.mono || c.font === 'mono', serif: c.font === 'serif', pad: c.pad ?? 1,
-      align: c.align || 'left', color: c.color || INK, lineHeight: +c.lineHeight || 1.25 });
+    const used = drawText(ctx, text, box, { size: +c.size || 9, mono: !!c.mono || c.font === 'mono', serif: c.font === 'serif', pad: c.pad ?? 1,
+      align: c.align || 'left', color: c.color || INK, lineHeight: +c.lineHeight || 1.25, valign: c.valign || 'top' });
+    frame._overflow = used > box[3] + 0.3 ? 'the text runs past the bottom of the frame' : undefined;   // the editor badges it
   },
 });
 
@@ -979,21 +1017,32 @@ registerKind('label', {
         }
       }
     }
-    if (off) {
-      const a = Math.atan2(anc.y - (box[1] + box[3] / 2), anc.x - (box[0] + box[2] / 2)), L = 1.6;
-      ctx.fillStyle = c.color || INK; ctx.beginPath();
-      ctx.moveTo(anc.x, anc.y); ctx.lineTo(anc.x - L * Math.cos(a - 0.4), anc.y - L * Math.sin(a - 0.4)); ctx.lineTo(anc.x - L * Math.cos(a + 0.4), anc.y - L * Math.sin(a + 0.4)); ctx.closePath(); ctx.fill();
+    // the words' own extent: the backing hugs them (a box-sized backing whited out what the label points at),
+    // and the leader leaves from it
+    const font = { mono: c.font === 'mono', serif: c.font === 'serif' };
+    const lay = layoutText(ctx, text, box[2] - 2 * pad, { size, ...font });
+    const tw = Math.min(box[2], Math.max(0, ...lay.lines.map((l) => l.reduce((s, w) => s + w.w, 0) + (l.indent || 0))) + 2 * pad);
+    const th = Math.min(box[3], lay.lines.reduce((s, l) => s + (l.gap || 0) + l.lh, 0) + 2 * pad);
+    const hx = c.align === 'center' ? box[0] + (box[2] - tw) / 2 : c.align === 'right' ? box[0] + box[2] - tw : box[0];
+    const hug = [hx, box[1], tw, th];
+    const leader = c.leader || 'line', ink = c.color || INK;
+    const head = (x, y, fx, fy) => {                     // an arrowhead at (x, y), pointing away from (fx, fy)
+      const a = Math.atan2(y - fy, x - fx), L = 1.6;
+      ctx.fillStyle = ink; ctx.beginPath();
+      ctx.moveTo(x, y); ctx.lineTo(x - L * Math.cos(a - 0.4), y - L * Math.sin(a - 0.4)); ctx.lineTo(x - L * Math.cos(a + 0.4), y - L * Math.sin(a + 0.4)); ctx.closePath(); ctx.fill();
+    };
+    if (anc && leader !== 'none') {
+      const inHug = anc.x >= hug[0] && anc.x <= hug[0] + hug[2] && anc.y >= hug[1] && anc.y <= hug[1] + hug[3];
+      const ex = Math.max(hug[0], Math.min(hug[0] + hug[2], anc.x)), ey = Math.max(hug[1], Math.min(hug[1] + hug[3], anc.y));
+      if (!inHug) { ctx.strokeStyle = ink; ctx.lineWidth = 0.2; ctx.beginPath(); ctx.moveTo(ex, ey); ctx.lineTo(anc.x, anc.y); ctx.stroke(); }
+      if (off || leader === 'arrow') head(anc.x, anc.y, ex, ey);
+      else { ctx.fillStyle = ink; ctx.beginPath(); ctx.arc(anc.x, anc.y, 0.55, 0, Math.PI * 2); ctx.fill(); }
     }
-    if (anc && !(anc.x >= box[0] && anc.x <= box[0] + box[2] && anc.y >= box[1] && anc.y <= box[1] + box[3])) {
-      const ex = Math.max(box[0], Math.min(box[0] + box[2], anc.x)), ey = Math.max(box[1], Math.min(box[1] + box[3], anc.y));
-      ctx.strokeStyle = c.color || INK; ctx.lineWidth = 0.2;
-      ctx.beginPath(); ctx.moveTo(ex, ey); ctx.lineTo(anc.x, anc.y); ctx.stroke();
-    }
-    if (anc && !off) { ctx.fillStyle = c.color || INK; ctx.beginPath(); ctx.arc(anc.x, anc.y, 0.55, 0, Math.PI * 2); ctx.fill(); }
     ctx.save();
     ctx.beginPath(); ctx.rect(box[0], box[1], box[2], box[3]); ctx.clip();
-    if (c.backing !== false) { ctx.fillStyle = 'rgba(255,255,255,0.85)'; ctx.fillRect(box[0], box[1], box[2], box[3]); }
-    drawText(ctx, text, box, { size, pad, color: c.color || INK, mono: c.font === 'mono', serif: c.font === 'serif', align: c.align || 'left' });
+    if (c.backing !== false) { ctx.fillStyle = 'rgba(255,255,255,0.85)'; ctx.fillRect(hug[0], hug[1], hug[2], hug[3]); }
+    const used = drawText(ctx, text, box, { size, pad, color: c.color || INK, mono: c.font === 'mono', serif: c.font === 'serif', align: c.align || 'left' });
+    frame._overflow = used > box[3] + 0.3 ? 'the label’s text runs past its box' : undefined;
     ctx.restore();
   },
 });
@@ -1084,9 +1133,10 @@ registerKind('legend', {
     const entries = legendEntries(c).filter((e) => !e.hidden).concat(c.tail ? [c.tail] : []);
     const cols = Math.max(1, Math.min(6, Math.round(+c.columns || 1))), colW = (box[2] - 0.5) / cols;
     ctx.textBaseline = 'middle';
+    let cut = 0;
     entries.forEach((e, i) => {
       const cx = box[0] + 0.5 + (i % cols) * colW, cy = y + Math.floor(i / cols) * row;
-      if (cy + row > box[1] + box[3] + 0.5) return;
+      if (cy + row > box[1] + box[3] + 0.5) { cut++; return; }
       const shape = e.swatch || c.swatch || 'square';
       ctx.fillStyle = e.color; ctx.strokeStyle = e.color;
       if (shape === 'circle') { ctx.beginPath(); ctx.arc(cx + sw / 2, cy + sw / 2, sw * 0.42, 0, Math.PI * 2); ctx.fill(); ctx.strokeStyle = 'rgba(0,0,0,0.45)'; ctx.lineWidth = 0.12; ctx.stroke(); }
@@ -1094,6 +1144,7 @@ registerKind('legend', {
       else { ctx.fillRect(cx, cy, sw, sw); ctx.strokeStyle = 'rgba(0,0,0,0.45)'; ctx.lineWidth = 0.12; ctx.strokeRect(cx, cy, sw, sw); }
       ctx.fillStyle = ink; ctx.fillText(String(e.label), cx + (shape === 'line' ? sw * 1.4 : sw) + 2, cy + sw / 2);
     });
+    frame._overflow = cut ? `${cut} entr${cut === 1 ? 'y doesn’t' : 'ies don’t'} fit — more columns, or a taller frame` : undefined;
   },
 });
 
@@ -1251,6 +1302,7 @@ registerKind('table', {
       if (c.zebra !== false && i % 2 === 1) { ctx.fillStyle = 'rgba(0,0,0,0.045)'; ctx.fillRect(x0, y, x1 - x0, lh); }
       cells(rows[i], y, false); y += lh;
     }
+    frame._overflow = shown < rows.length ? `${rows.length - shown} row${rows.length - shown === 1 ? '' : 's'} don’t fit` : undefined;
     if (shown < rows.length) { ctx.fillStyle = '#666'; ctx.font = fontMm(size); ctx.textAlign = 'left'; ctx.fillText(`… ${rows.length - shown} more row${rows.length - shown === 1 ? '' : 's'}`, x0 + pad, y + lh / 2); y += lh; }
     rule(y, 0.35);
     if (note) { ctx.fillStyle = '#555'; ctx.font = fontMm(size - 0.5); ctx.textAlign = 'left'; ctx.fillText(note, x0, y + lh * 0.55); }
@@ -1338,12 +1390,43 @@ const EXTRA = {
 };
 // WinAnsi codes 128..159
 const WIN_HIGH = { '€': 128, '‚': 130, 'ƒ': 131, '„': 132, '…': 133, '†': 134, '‡': 135, 'ˆ': 136, '‰': 137, 'Š': 138, '‹': 139, 'Œ': 140, 'Ž': 142, '‘': 145, '’': 146, '“': 147, '”': 148, '•': 149, '–': 150, '—': 151, '˜': 152, '™': 153, 'š': 154, '›': 155, 'œ': 156, 'ž': 158, 'Ÿ': 159 };
-// characters the encoding lacks, written as their plain forms
-const SUBST = { '−': '-', '≥': '>=', '≤': '<=', '→': '->', '←': '<-', '≠': '!=', '≈': '~', '′': "'", '″': '"', 'μ': 'µ', '∙': '·', '⋅': '·', ' ': ' ', ' ': ' ', ' ': ' ' };
+// characters neither WinAnsi nor Symbol has, written as their plain forms
+const SUBST = { 'μ': 'µ', '∙': '·', '⋅': '·', ' ': ' ', ' ': ' ', ' ': ' ' };
 
-// (the italics come after the uprights, so a page's F1…F6 tags stay what they were)
+// The standard SYMBOL font — every PDF reader carries it, like the others — has the Greek alphabet and the
+// mathematical signs WinAnsi lacks: κ α σ for the statistics, ≥ ≤ → for the notation. Text is written in runs:
+// what WinAnsi encodes in the page's font, these in Symbol (its own built-in encoding). [code, width /1000 em]
+// from the Symbol AFM. (SUBST above now holds only what neither font has.)
+const SYMBOL = {
+  'α': [0x61, 631], 'β': [0x62, 549], 'γ': [0x67, 411], 'δ': [0x64, 494], 'ε': [0x65, 439], 'ζ': [0x7a, 494], 'η': [0x68, 603], 'θ': [0x71, 521],
+  'ι': [0x69, 329], 'κ': [0x6b, 549], 'λ': [0x6c, 549], 'ν': [0x6e, 521], 'ξ': [0x78, 493], 'ο': [0x6f, 549], 'π': [0x70, 549], 'ρ': [0x72, 549],
+  'σ': [0x73, 603], 'ς': [0x56, 439], 'τ': [0x74, 439], 'υ': [0x75, 576], 'φ': [0x66, 521], 'χ': [0x63, 549], 'ψ': [0x79, 686], 'ω': [0x77, 686],
+  'Γ': [0x47, 603], 'Δ': [0x44, 612], 'Θ': [0x51, 741], 'Λ': [0x4c, 686], 'Ξ': [0x58, 645], 'Π': [0x50, 768], 'Σ': [0x53, 592], 'Υ': [0xa1, 620],
+  'Φ': [0x46, 763], 'Ψ': [0x59, 795], 'Ω': [0x57, 768], 'ϕ': [0x6a, 603], 'ϑ': [0x4a, 631],
+  '≥': [0xb3, 549], '≤': [0xa3, 549], '≠': [0xb9, 549], '≈': [0xbb, 549], '≡': [0xba, 549], '∞': [0xa5, 713], '∝': [0xb5, 713],
+  '→': [0xae, 987], '←': [0xac, 987], '↑': [0xad, 603], '↓': [0xaf, 603], '↔': [0xab, 1042], '⇒': [0xde, 987], '⇐': [0xdc, 987],
+  '−': [0x2d, 549], '′': [0xa2, 247], '″': [0xb2, 411], '√': [0xd6, 549], '∑': [0xe5, 713], '∏': [0xd5, 823], '∂': [0xb6, 494],
+  '∫': [0xf2, 274], '∇': [0xd1, 713], '∈': [0xce, 713], '∉': [0xcf, 713], '∩': [0xc7, 768], '∪': [0xc8, 768], '⊂': [0xcc, 713],
+  '∧': [0xd9, 603], '∨': [0xda, 603], '∀': [0x22, 713], '∃': [0x24, 549], '∅': [0xc6, 823], '∠': [0xd0, 768],
+  '⊥': [0x5e, 658], '∴': [0x5c, 863], '∼': [0x7e, 549],
+};
+const isSymbolChar = (ch) => Object.prototype.hasOwnProperty.call(SYMBOL, ch);
+/** text → runs: { symbol: bool, codes, text, missing } — WinAnsi runs for the page's font, Symbol runs for SYMBOL's */
+function encodeRuns(text) {
+  const runs = [], missing = new Set();
+  let cur = null;
+  for (const ch of String(text)) {
+    const sym = isSymbolChar(ch);
+    if (!cur || cur.symbol !== sym) { cur = { symbol: sym, codes: [], text: '' }; runs.push(cur); }
+    if (sym) { cur.codes.push(SYMBOL[ch][0]); cur.text += ch; }
+    else { const e = encodeWinAnsi(ch); cur.codes.push(...e.codes); cur.text += e.text; for (const m of e.missing) missing.add(m); }
+  }
+  return { runs, missing };
+}
+
+// (the italics come after the uprights, so a page's F1…F6 tags stay what they were; Symbol after them)
 const STANDARD_FONTS = ['Helvetica', 'Helvetica-Bold', 'Courier', 'Courier-Bold', 'Times-Roman', 'Times-Bold',
-  'Helvetica-Oblique', 'Helvetica-BoldOblique', 'Courier-Oblique', 'Courier-BoldOblique', 'Times-Italic', 'Times-BoldItalic'];
+  'Helvetica-Oblique', 'Helvetica-BoldOblique', 'Courier-Oblique', 'Courier-BoldOblique', 'Times-Italic', 'Times-BoldItalic', 'Symbol'];
 
 // a CSS font string → { name (a standard font), size (px of the user space), mono, serif, bold, italic }
 function parseFont(css) {
@@ -1402,9 +1485,11 @@ function encodeWinAnsi(text) {
 
 // the advance of a string, in the font's units × size (1/1000 em · px → px)
 function textWidth(name, size, text) {
-  const { text: t } = encodeWinAnsi(text);
   let w = 0;
-  for (const ch of t) w += charWidth(name, ch);
+  for (const r of encodeRuns(text).runs) {
+    if (r.symbol) for (const ch of r.text) w += SYMBOL[ch][1];
+    else for (const ch of r.text) w += charWidth(name, ch);
+  }
   return (w / 1000) * size;
 }
 
@@ -1687,9 +1772,9 @@ class PdfContext2D {
   strokeText(text, x, y, maxWidth) { this._text(text, x, y, maxWidth, 1); }
   _text(text, x, y, maxWidth, mode) {
     const f = parseFont(this._st.font);
-    const enc = encodeWinAnsi(text);
+    const enc = encodeRuns(text);                        // the page's font, with Greek and maths in Symbol runs
     if (enc.missing.size) this._warn('glyph:' + [...enc.missing].join(''), `characters ${[...enc.missing].map((c) => `“${c}”`).join(' ')} aren't in the standard PDF fonts — written as '?' (an embedded font would carry them)`);
-    if (!enc.codes.length) return;
+    if (!enc.runs.some((r) => r.codes.length)) return;
     let w = textWidth(f.name, f.size, text);
     let sx = 1;
     if (maxWidth != null && maxWidth > 0 && w > maxWidth) { sx = maxWidth / w; w = maxWidth; }
@@ -1700,9 +1785,10 @@ class PdfContext2D {
     const tm = mul(this._m, [sx, 0, 0, -1, x + dx, y + dy]);
     const col = this._colorOps(mode === 0, mode === 1);
     if (!col.visible) return;
-    const font = this._page._font(f.name);
     const sw = mode === 1 ? ` ${num(this._st.lineWidth * scaleOf(this._m))} w` : '';
-    this._out(`${col.ops}${sw}\nBT /${font} ${num(f.size)} Tf ${mode} Tr ${tm.map(num).join(' ')} Tm ${pdfString(enc.codes)} Tj ET`);
+    // one text object; a run switches font (Tj advances by each glyph's width, so the runs follow on)
+    const shows = enc.runs.filter((r) => r.codes.length).map((r) => `/${this._page._font(r.symbol ? 'Symbol' : f.name)} ${num(f.size)} Tf ${pdfString(r.codes)} Tj`);
+    this._out(`${col.ops}${sw}\nBT ${mode} Tr ${tm.map(num).join(' ')} Tm ${shows.join(' ')} ET`);
   }
 
   // ── images ──
@@ -1921,7 +2007,7 @@ class PdfDocument {
     // shared resources: fonts used anywhere, gs states, images
     const fontsUsed = new Set(); for (const p of this.pages) for (const n of p._fonts.keys()) fontsUsed.add(n);
     const fontIds = {};
-    for (const n of fontsUsed) fontIds[n] = add({ dict: `<< /Type /Font /Subtype /Type1 /BaseFont /${n} /Encoding /WinAnsiEncoding >>` });
+    for (const n of fontsUsed) fontIds[n] = add({ dict: `<< /Type /Font /Subtype /Type1 /BaseFont /${n}${n === 'Symbol' ? '' : ' /Encoding /WinAnsiEncoding'} >>` });   // Symbol keeps its own built-in encoding
     const gsIds = {};
     this._gsKeys.forEach((k, i) => { const [ca, CA] = k.split('/'); gsIds['GS' + i] = add({ dict: `<< /Type /ExtGState /ca ${ca} /CA ${CA} >>` }); });
     const imgIds = {};
@@ -2556,6 +2642,16 @@ function mountEditor(el, doc, opts = {}) {
   let D = doc, zoom = 3, sel = [];
   const hist = [], fut = [];
   const env = () => ({ ...(opts.env || {}) });
+  // the height a text or label frame's content needs, mm — laid out exactly as the kinds lay it out
+  let _mc = null;
+  function contentHeight(f) {
+    const c = f.content || {}, isLabel = f.kind === 'label';
+    if (!_mc) _mc = document.createElement('canvas').getContext('2d');
+    const size = +c.size || (isLabel ? 7 : 9), pad = isLabel ? 0.8 : (c.pad ?? 1);
+    const text = resolveFields(isLabel ? (c.text != null ? c.text : (c.md || '')) : (c.md || ''), { ...env(), doc: D, title: D.title }, f);
+    const { lines } = layoutText(_mc, text, f.box[2] - 2 * pad, { size, mono: !!c.mono || c.font === 'mono', serif: c.font === 'serif', lineHeight: +c.lineHeight || 1.25 });
+    return lines.reduce((s, l) => s + (l.gap || 0) + l.lh, 0) + 2 * pad;
+  }
   const root = h('div', { className: 'compo-root', tabIndex: 0 });
   const bar = h('div', { className: 'compo-bar' });
   const scroll = h('div', { className: 'compo-scroll' });
@@ -2802,11 +2898,15 @@ function mountEditor(el, doc, opts = {}) {
     bw.onchange = () => setStyle('borderWidth', +bw.value || null);
     insp.append(h('div', { className: 'row' }, h('span', { textContent: 'border' }), h('span', { className: 'ctl' }, bd, bc, bw)));
     // a fill behind the frame: a panel, a band, a highlight (empty = none)
+    // its opacity is kept beside the colour (a picked colour is #rrggbb — it used to drop an rgba fill's alpha)
+    const alpha0 = (() => { const m = /rgba\([^)]*,\s*([\d.]+)\s*\)/.exec(st.background || ''); return m ? Math.round(+m[1] * 100) : 100; })();
     const fillOn = h('input', { type: 'checkbox', checked: !!st.background, title: 'a fill behind the frame' });
     const fillC = h('input', { type: 'color', value: toHex(st.background, '#f2f2f0'), title: 'fill colour' });
-    fillOn.onchange = () => setStyle('background', fillOn.checked ? fillC.value : null);
-    fillC.onchange = () => { if (fillOn.checked) setStyle('background', fillC.value); };
-    insp.append(h('div', { className: 'row' }, h('span', { textContent: 'fill' }), h('span', { className: 'ctl' }, fillOn, fillC)));
+    const fillA = h('input', { type: 'number', min: 0, max: 100, step: 5, value: alpha0, title: 'fill opacity (%)', style: 'width:56px' });
+    const fillCss = () => { const a = Math.max(0, Math.min(100, +fillA.value || 0)); if (a >= 100) return fillC.value; const n = parseInt(fillC.value.slice(1), 16); return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a / 100})`; };
+    fillOn.onchange = () => setStyle('background', fillOn.checked ? fillCss() : null);
+    fillC.onchange = fillA.onchange = () => { if (fillOn.checked) setStyle('background', fillCss()); };
+    insp.append(h('div', { className: 'row' }, h('span', { textContent: 'fill' }), h('span', { className: 'ctl' }, fillOn, fillC, h('span', { className: 'pair' }, h('i', { textContent: '%' }), fillA))));
     const lk = h('input', { type: 'checkbox', checked: !!f.locked });
     lk.onchange = () => commit(() => { f.locked = lk.checked; });
     insp.append(h('label', { className: 'row', title: 'a locked frame won’t move, resize or delete' }, h('span', { textContent: 'locked' }), h('span', { className: 'ctl' }, lk)));
@@ -2841,8 +2941,13 @@ function mountEditor(el, doc, opts = {}) {
         commit(() => { f.content.md = ta.value.slice(0, a) + tok + ta.value.slice(b); });
         requestAnimationFrame(() => { const t2 = side.querySelector('textarea'); if (t2) { t2.focus(); t2.selectionStart = t2.selectionEnd = a + tok.length; } });
       };
-      insp.append(ta, h('div', { className: 'row' }, h('span', { textContent: 'size (pt)' }), h('span', { className: 'ctl' }, size, align)),
-        h('div', { className: 'row' }, h('span', { textContent: 'type' }), h('span', { className: 'ctl' }, fontSel, col)),
+      const va = h('select', { title: 'where the text sits in the frame, top to bottom' }, ...['top', 'middle', 'bottom'].map((v) => h('option', { value: v, textContent: v })));
+      va.value = f.content.valign || 'top';
+      va.onchange = () => commit(() => { if (va.value === 'top') delete f.content.valign; else f.content.valign = va.value; });
+      const fitB = h('button', { textContent: 'Fit to content', title: 'make the frame exactly as tall as its text' });
+      fitB.onclick = () => commit(() => { f.box[3] = Math.max(2, +contentHeight(f).toFixed(1)); });
+      insp.append(ta, h('div', { className: 'row' }, h('span', { textContent: 'size (pt)' }), h('span', { className: 'ctl' }, size, align, va)),
+        h('div', { className: 'row' }, h('span', { textContent: 'type' }), h('span', { className: 'ctl' }, fontSel, col, fitB)),
         h('div', { className: 'row' }, h('span', { textContent: 'spacing' }), h('span', { className: 'ctl' }, h('span', { className: 'pair' }, h('i', { textContent: '↕' }), lh), h('span', { className: 'pair' }, h('i', { textContent: '▢' }), pad))),
         h('div', { className: 'row' }, h('span', { textContent: 'fields' }), h('span', { className: 'ctl' }, fsel)),
         h('div', { className: 'hint', textContent: '# title · ## subtitle · - list · 1. list · --- rule · **bold** · *italic* · `code` · {name} fields, {count:,} · ${expr:,.2f}' }));
@@ -2922,7 +3027,22 @@ function mountEditor(el, doc, opts = {}) {
       lcol.onchange = () => commit(() => { f.content.color = lcol.value; });
       const back = h('input', { type: 'checkbox', checked: f.content.backing !== false, title: 'a white backing behind the words, so they read over the picture' });
       back.onchange = () => commit(() => { f.content.backing = back.checked; });
-      insp.append(h('div', { className: 'row' }, h('span', { textContent: 'type' }), h('span', { className: 'ctl' }, lsz, lfont, lcol)),
+      const lal = h('select', { title: 'the words’ alignment in the box' }, ...['left', 'center', 'right'].map((v) => h('option', { value: v, textContent: v })));
+      lal.value = f.content.align || 'left';
+      lal.onchange = () => commit(() => { if (lal.value === 'left') delete f.content.align; else f.content.align = lal.value; });
+      const lead = h('select', { title: 'the leader from the box to the point' }, ...[['line', 'line + dot'], ['arrow', 'arrow'], ['none', 'none']].map(([v, t]) => h('option', { value: v, textContent: t })));
+      lead.value = f.content.leader || 'line';
+      lead.onchange = () => commit(() => { if (lead.value === 'line') delete f.content.leader; else f.content.leader = lead.value; });
+      const lfit = h('button', { textContent: 'Fit', title: 'make the box exactly as tall as its words' });
+      lfit.onclick = () => commit(() => { f.box[3] = Math.max(2, +contentHeight(f).toFixed(1)); });
+      // the words show as you type (the page only; one undo step when you leave the box)
+      let lt0 = null;
+      tx.onfocus = () => { lt0 = snap(); };
+      tx.oninput = () => { f.content.text = tx.value; renderCanvas(); };
+      tx.onchange = () => { if (lt0) { hist.push(lt0); fut.length = 0; lt0 = null; } if (opts.onChange) opts.onChange(D); };
+      insp.append(h('div', { className: 'row' }, h('span', { textContent: 'size (pt)' }), h('span', { className: 'ctl' }, lsz, lal, lfit)),
+        h('div', { className: 'row' }, h('span', { textContent: 'type' }), h('span', { className: 'ctl' }, lfont, lcol)),
+        h('div', { className: 'row' }, h('span', { textContent: 'leader' }), h('span', { className: 'ctl' }, lead)),
         h('label', { className: 'row' }, h('span', { textContent: 'backing' }), h('span', { className: 'ctl' }, back)));
       const at = f.content.at || [0, 0, 0];
       const tgt = f.content.of ? frameById(D, f.content.of) : refFrame(D, f, null, canPin);
@@ -2957,11 +3077,6 @@ function mountEditor(el, doc, opts = {}) {
       });
       ta.onkeydown = (e) => e.stopPropagation();
       insp.append(h('div', { className: 'row' }, h('span', { textContent: 'rows' })), ta, h('div', { className: 'hint', textContent: 'one row a line — fields as in a text frame; the values come from properties…' }));
-    }
-    if (f.kind === 'legend') {
-      const t = h('input', { value: f.content.title || '' });
-      t.onchange = () => commit(() => { f.content.title = t.value; });
-      insp.append(h('div', { className: 'row' }, h('span', { textContent: 'title' }), h('span', { className: 'ctl' }, t)));
     }
     if (opts.inspector) opts.inspector(f, insp, api);
     if (f.produced) insp.append(h('div', { className: 'hint', textContent: `produced ${String(f.produced).replace('T', ' ').slice(0, 16)}` }));
@@ -3114,9 +3229,13 @@ function mountEditor(el, doc, opts = {}) {
   }
   // ── the item list: every frame, front first; groups as folders ──
   // a host's badge for a frame: opts.frameBadge(f) → null | 'text' | { text, title }
+  // compo's own: content that didn't fit its box (a kind sets frame._overflow while drawing — text, labels,
+  // legends, tables). A host's badge wins; the overflow one says what was cut and offers nothing silently.
   function badgeOf(f) {
-    if (!opts.frameBadge) return null;
-    try { const b = opts.frameBadge(f); return !b ? null : typeof b === 'string' ? { text: b } : b; } catch { return null; }
+    let b = null;
+    if (opts.frameBadge) { try { const x = opts.frameBadge(f); b = !x ? null : typeof x === 'string' ? { text: x } : x; } catch { b = null; } }
+    if (!b && f._overflow) b = { text: 'doesn’t fit', title: `${f._overflow} — make the frame bigger, or the text smaller (Fit to content in its panel)` };
+    return b;
   }
   // a label: at the host's point (opts.labelPoint(view) → [x,y,z]) or the middle of the view, beside it.
   // Any frame it can pin to: a 3D view (a world point) or a stereonet (a direction) — see kinds.js PINS
@@ -3242,7 +3361,7 @@ function mountEditor(el, doc, opts = {}) {
     if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
     if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); redo(); return; }
     if (mod && e.key.toLowerCase() === 'd') { e.preventDefault(); dup(); return; }
-    if (mod && e.key.toLowerCase() === 'a') { e.preventDefault(); sel = D.frames.map((f) => f.id); render(); return; }
+    if (mod && e.key.toLowerCase() === 'a') { e.preventDefault(); sel = D.frames.filter((f) => !f.hidden).map((f) => f.id); render(); return; }   // not the hidden ones: a Delete after it would take frames you can't see
     if (mod && e.key.toLowerCase() === 'g') { e.preventDefault(); e.shiftKey ? doUngroup() : doGroup(); return; }
     if (mod && (e.code === 'BracketRight' || e.code === 'BracketLeft')) {
       e.preventDefault(); if (!sel.length) return;
@@ -3358,6 +3477,7 @@ export {
   moveInStack,
   snapBox,
   snapResize,
+  freeSpot,
   LOAD_MIGRATIONS,
   SANS,
   MONO,

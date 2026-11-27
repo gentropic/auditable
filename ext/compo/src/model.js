@@ -289,6 +289,40 @@ function spacingSnap(others, box, k) {
   }
   return best;
 }
+// WHERE A NEW FRAME GOES: a w × h box that overlaps no visible frame (gap mm apart) and stays inside the margins —
+// beside `near` first (right of it, below it, left of it), else the first free place scanning the page top to
+// bottom, left to right. New frames used to land at the top-left margin, on top of whatever was there (a table on
+// the 3D view, five legends running off the page). → [x, y, w, h] (it may shrink the box to fit the free space
+// it finds only as a last resort: then the page's top-left, as before)
+export function freeSpot(doc, w, h, { near = null, gap = 4, ignore = [], shrink = false } = {}) {
+  // shrink: a frame that re-flows (a chart, a table) may come smaller rather than land on another — the largest
+  // scale (down to half, aspect kept) that finds a free place
+  if (shrink) {
+    for (let k = 1; k >= 0.5 - 1e-9; k -= 0.05) {
+      const b = freeSpot(doc, +(w * k).toFixed(1), +(h * k).toFixed(1), { near, gap, ignore });
+      if (!b._fallback) return b;
+    }
+  }
+  const [W, H] = pageDims(doc.page), m = doc.page.margins || [10, 10, 10, 10];
+  const others = doc.frames.filter((f) => !f.hidden && !ignore.includes(f.id)).map((f) => f.box);
+  const fits = (x, y) => x >= m[3] - 1e-6 && y >= m[0] - 1e-6 && x + w <= W - m[1] + 1e-6 && y + h <= H - m[2] + 1e-6
+    && others.every((b) => x + w + gap <= b[0] || b[0] + b[2] + gap <= x || y + h + gap <= b[1] || b[1] + b[3] + gap <= y);
+  if (near) {
+    const b = near.box || near;
+    for (const [x, y] of [[b[0] + b[2] + gap, b[1]], [b[0], b[1] + b[3] + gap], [b[0] - gap - w, b[1]]]) {
+      if (fits(x, y)) return [x, y, w, h];
+      // slide along that side to the first free place
+      for (let t = 0; t <= Math.max(W, H); t += 2) {
+        if (x === b[0] + b[2] + gap || x === b[0] - gap - w) { if (fits(x, b[1] + t)) return [x, b[1] + t, w, h]; }
+        else if (fits(b[0] + t, y)) return [b[0] + t, y, w, h];
+      }
+    }
+  }
+  for (let y = m[0]; y + h <= H - m[2] + 1e-6; y += 2) for (let x = m[3]; x + w <= W - m[1] + 1e-6; x += 2) if (fits(x, y)) return [x, y, w, h];
+  const fb = [m[3] + 8, m[0] + 8, w, h];
+  Object.defineProperty(fb, '_fallback', { value: true });   // no free place: the page's top-left, as it used to
+  return fb;
+}
 // a moving box: its edges and centre snap to the lines above, or to an equal spacing — whichever
 // is nearer, per axis, within `tol` mm → { box, guides: { x, y, gaps: [segments] } }
 export function snapBox(doc, box, { ignore = [], tol = 1.5 } = {}) {

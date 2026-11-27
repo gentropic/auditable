@@ -14,7 +14,7 @@
 
 import { renameFrame, sanitizeId, PAPER, pageDims, addFrame, frameById, removeFrames, bringToFront, sendToBack, bringForward, sendBackward, alignFrames, distributeFrames, matchSize, groupFrames, ungroupFrames, expandGroups, unitsOf, boundsOf, moveInStack, snapBox, snapResize, serializeDocument } from './model.js';
 import { renderPage, ensureImages } from './render.js';
-import { kindOf, canPin, pageToPin, legendEntries, legendKey } from './kinds.js';
+import { kindOf, canPin, pageToPin, legendEntries, legendKey, layoutText, resolveFields } from './kinds.js';
 import { fieldList, subjectFrame, refFrame } from './fields.js';
 import { hasProj } from './world.js';
 import { iconButton } from './icons.js';
@@ -134,6 +134,16 @@ export function mountEditor(el, doc, opts = {}) {
   let D = doc, zoom = 3, sel = [];
   const hist = [], fut = [];
   const env = () => ({ ...(opts.env || {}) });
+  // the height a text or label frame's content needs, mm — laid out exactly as the kinds lay it out
+  let _mc = null;
+  function contentHeight(f) {
+    const c = f.content || {}, isLabel = f.kind === 'label';
+    if (!_mc) _mc = document.createElement('canvas').getContext('2d');
+    const size = +c.size || (isLabel ? 7 : 9), pad = isLabel ? 0.8 : (c.pad ?? 1);
+    const text = resolveFields(isLabel ? (c.text != null ? c.text : (c.md || '')) : (c.md || ''), { ...env(), doc: D, title: D.title }, f);
+    const { lines } = layoutText(_mc, text, f.box[2] - 2 * pad, { size, mono: !!c.mono || c.font === 'mono', serif: c.font === 'serif', lineHeight: +c.lineHeight || 1.25 });
+    return lines.reduce((s, l) => s + (l.gap || 0) + l.lh, 0) + 2 * pad;
+  }
   const root = h('div', { className: 'compo-root', tabIndex: 0 });
   const bar = h('div', { className: 'compo-bar' });
   const scroll = h('div', { className: 'compo-scroll' });
@@ -380,11 +390,15 @@ export function mountEditor(el, doc, opts = {}) {
     bw.onchange = () => setStyle('borderWidth', +bw.value || null);
     insp.append(h('div', { className: 'row' }, h('span', { textContent: 'border' }), h('span', { className: 'ctl' }, bd, bc, bw)));
     // a fill behind the frame: a panel, a band, a highlight (empty = none)
+    // its opacity is kept beside the colour (a picked colour is #rrggbb — it used to drop an rgba fill's alpha)
+    const alpha0 = (() => { const m = /rgba\([^)]*,\s*([\d.]+)\s*\)/.exec(st.background || ''); return m ? Math.round(+m[1] * 100) : 100; })();
     const fillOn = h('input', { type: 'checkbox', checked: !!st.background, title: 'a fill behind the frame' });
     const fillC = h('input', { type: 'color', value: toHex(st.background, '#f2f2f0'), title: 'fill colour' });
-    fillOn.onchange = () => setStyle('background', fillOn.checked ? fillC.value : null);
-    fillC.onchange = () => { if (fillOn.checked) setStyle('background', fillC.value); };
-    insp.append(h('div', { className: 'row' }, h('span', { textContent: 'fill' }), h('span', { className: 'ctl' }, fillOn, fillC)));
+    const fillA = h('input', { type: 'number', min: 0, max: 100, step: 5, value: alpha0, title: 'fill opacity (%)', style: 'width:56px' });
+    const fillCss = () => { const a = Math.max(0, Math.min(100, +fillA.value || 0)); if (a >= 100) return fillC.value; const n = parseInt(fillC.value.slice(1), 16); return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a / 100})`; };
+    fillOn.onchange = () => setStyle('background', fillOn.checked ? fillCss() : null);
+    fillC.onchange = fillA.onchange = () => { if (fillOn.checked) setStyle('background', fillCss()); };
+    insp.append(h('div', { className: 'row' }, h('span', { textContent: 'fill' }), h('span', { className: 'ctl' }, fillOn, fillC, h('span', { className: 'pair' }, h('i', { textContent: '%' }), fillA))));
     const lk = h('input', { type: 'checkbox', checked: !!f.locked });
     lk.onchange = () => commit(() => { f.locked = lk.checked; });
     insp.append(h('label', { className: 'row', title: 'a locked frame won’t move, resize or delete' }, h('span', { textContent: 'locked' }), h('span', { className: 'ctl' }, lk)));
@@ -419,8 +433,13 @@ export function mountEditor(el, doc, opts = {}) {
         commit(() => { f.content.md = ta.value.slice(0, a) + tok + ta.value.slice(b); });
         requestAnimationFrame(() => { const t2 = side.querySelector('textarea'); if (t2) { t2.focus(); t2.selectionStart = t2.selectionEnd = a + tok.length; } });
       };
-      insp.append(ta, h('div', { className: 'row' }, h('span', { textContent: 'size (pt)' }), h('span', { className: 'ctl' }, size, align)),
-        h('div', { className: 'row' }, h('span', { textContent: 'type' }), h('span', { className: 'ctl' }, fontSel, col)),
+      const va = h('select', { title: 'where the text sits in the frame, top to bottom' }, ...['top', 'middle', 'bottom'].map((v) => h('option', { value: v, textContent: v })));
+      va.value = f.content.valign || 'top';
+      va.onchange = () => commit(() => { if (va.value === 'top') delete f.content.valign; else f.content.valign = va.value; });
+      const fitB = h('button', { textContent: 'Fit to content', title: 'make the frame exactly as tall as its text' });
+      fitB.onclick = () => commit(() => { f.box[3] = Math.max(2, +contentHeight(f).toFixed(1)); });
+      insp.append(ta, h('div', { className: 'row' }, h('span', { textContent: 'size (pt)' }), h('span', { className: 'ctl' }, size, align, va)),
+        h('div', { className: 'row' }, h('span', { textContent: 'type' }), h('span', { className: 'ctl' }, fontSel, col, fitB)),
         h('div', { className: 'row' }, h('span', { textContent: 'spacing' }), h('span', { className: 'ctl' }, h('span', { className: 'pair' }, h('i', { textContent: '↕' }), lh), h('span', { className: 'pair' }, h('i', { textContent: '▢' }), pad))),
         h('div', { className: 'row' }, h('span', { textContent: 'fields' }), h('span', { className: 'ctl' }, fsel)),
         h('div', { className: 'hint', textContent: '# title · ## subtitle · - list · 1. list · --- rule · **bold** · *italic* · `code` · {name} fields, {count:,} · ${expr:,.2f}' }));
@@ -500,7 +519,22 @@ export function mountEditor(el, doc, opts = {}) {
       lcol.onchange = () => commit(() => { f.content.color = lcol.value; });
       const back = h('input', { type: 'checkbox', checked: f.content.backing !== false, title: 'a white backing behind the words, so they read over the picture' });
       back.onchange = () => commit(() => { f.content.backing = back.checked; });
-      insp.append(h('div', { className: 'row' }, h('span', { textContent: 'type' }), h('span', { className: 'ctl' }, lsz, lfont, lcol)),
+      const lal = h('select', { title: 'the words’ alignment in the box' }, ...['left', 'center', 'right'].map((v) => h('option', { value: v, textContent: v })));
+      lal.value = f.content.align || 'left';
+      lal.onchange = () => commit(() => { if (lal.value === 'left') delete f.content.align; else f.content.align = lal.value; });
+      const lead = h('select', { title: 'the leader from the box to the point' }, ...[['line', 'line + dot'], ['arrow', 'arrow'], ['none', 'none']].map(([v, t]) => h('option', { value: v, textContent: t })));
+      lead.value = f.content.leader || 'line';
+      lead.onchange = () => commit(() => { if (lead.value === 'line') delete f.content.leader; else f.content.leader = lead.value; });
+      const lfit = h('button', { textContent: 'Fit', title: 'make the box exactly as tall as its words' });
+      lfit.onclick = () => commit(() => { f.box[3] = Math.max(2, +contentHeight(f).toFixed(1)); });
+      // the words show as you type (the page only; one undo step when you leave the box)
+      let lt0 = null;
+      tx.onfocus = () => { lt0 = snap(); };
+      tx.oninput = () => { f.content.text = tx.value; renderCanvas(); };
+      tx.onchange = () => { if (lt0) { hist.push(lt0); fut.length = 0; lt0 = null; } if (opts.onChange) opts.onChange(D); };
+      insp.append(h('div', { className: 'row' }, h('span', { textContent: 'size (pt)' }), h('span', { className: 'ctl' }, lsz, lal, lfit)),
+        h('div', { className: 'row' }, h('span', { textContent: 'type' }), h('span', { className: 'ctl' }, lfont, lcol)),
+        h('div', { className: 'row' }, h('span', { textContent: 'leader' }), h('span', { className: 'ctl' }, lead)),
         h('label', { className: 'row' }, h('span', { textContent: 'backing' }), h('span', { className: 'ctl' }, back)));
       const at = f.content.at || [0, 0, 0];
       const tgt = f.content.of ? frameById(D, f.content.of) : refFrame(D, f, null, canPin);
@@ -535,11 +569,6 @@ export function mountEditor(el, doc, opts = {}) {
       });
       ta.onkeydown = (e) => e.stopPropagation();
       insp.append(h('div', { className: 'row' }, h('span', { textContent: 'rows' })), ta, h('div', { className: 'hint', textContent: 'one row a line — fields as in a text frame; the values come from properties…' }));
-    }
-    if (f.kind === 'legend') {
-      const t = h('input', { value: f.content.title || '' });
-      t.onchange = () => commit(() => { f.content.title = t.value; });
-      insp.append(h('div', { className: 'row' }, h('span', { textContent: 'title' }), h('span', { className: 'ctl' }, t)));
     }
     if (opts.inspector) opts.inspector(f, insp, api);
     if (f.produced) insp.append(h('div', { className: 'hint', textContent: `produced ${String(f.produced).replace('T', ' ').slice(0, 16)}` }));
@@ -692,9 +721,13 @@ export function mountEditor(el, doc, opts = {}) {
   }
   // ── the item list: every frame, front first; groups as folders ──
   // a host's badge for a frame: opts.frameBadge(f) → null | 'text' | { text, title }
+  // compo's own: content that didn't fit its box (a kind sets frame._overflow while drawing — text, labels,
+  // legends, tables). A host's badge wins; the overflow one says what was cut and offers nothing silently.
   function badgeOf(f) {
-    if (!opts.frameBadge) return null;
-    try { const b = opts.frameBadge(f); return !b ? null : typeof b === 'string' ? { text: b } : b; } catch { return null; }
+    let b = null;
+    if (opts.frameBadge) { try { const x = opts.frameBadge(f); b = !x ? null : typeof x === 'string' ? { text: x } : x; } catch { b = null; } }
+    if (!b && f._overflow) b = { text: 'doesn’t fit', title: `${f._overflow} — make the frame bigger, or the text smaller (Fit to content in its panel)` };
+    return b;
   }
   // a label: at the host's point (opts.labelPoint(view) → [x,y,z]) or the middle of the view, beside it.
   // Any frame it can pin to: a 3D view (a world point) or a stereonet (a direction) — see kinds.js PINS
@@ -820,7 +853,7 @@ export function mountEditor(el, doc, opts = {}) {
     if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
     if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); redo(); return; }
     if (mod && e.key.toLowerCase() === 'd') { e.preventDefault(); dup(); return; }
-    if (mod && e.key.toLowerCase() === 'a') { e.preventDefault(); sel = D.frames.map((f) => f.id); render(); return; }
+    if (mod && e.key.toLowerCase() === 'a') { e.preventDefault(); sel = D.frames.filter((f) => !f.hidden).map((f) => f.id); render(); return; }   // not the hidden ones: a Delete after it would take frames you can't see
     if (mod && e.key.toLowerCase() === 'g') { e.preventDefault(); e.shiftKey ? doUngroup() : doGroup(); return; }
     if (mod && (e.code === 'BracketRight' || e.code === 'BracketLeft')) {
       e.preventDefault(); if (!sel.length) return;

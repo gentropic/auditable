@@ -18,7 +18,7 @@
 // operations other than source-over, Path2D. clearRect does nothing: a PDF page has no pixels.
 
 import { parseCssColor } from './color.js';
-import { parseFont, encodeWinAnsi, textWidth, pdfString, baselineShift } from './fonts.js';
+import { parseFont, encodeRuns, textWidth, pdfString, baselineShift } from './fonts.js';
 
 const KAPPA = 0.5522847498307936;
 // numbers as PDF writes them: short, never an exponent, no -0
@@ -253,9 +253,9 @@ export class PdfContext2D {
   strokeText(text, x, y, maxWidth) { this._text(text, x, y, maxWidth, 1); }
   _text(text, x, y, maxWidth, mode) {
     const f = parseFont(this._st.font);
-    const enc = encodeWinAnsi(text);
+    const enc = encodeRuns(text);                        // the page's font, with Greek and maths in Symbol runs
     if (enc.missing.size) this._warn('glyph:' + [...enc.missing].join(''), `characters ${[...enc.missing].map((c) => `“${c}”`).join(' ')} aren't in the standard PDF fonts — written as '?' (an embedded font would carry them)`);
-    if (!enc.codes.length) return;
+    if (!enc.runs.some((r) => r.codes.length)) return;
     let w = textWidth(f.name, f.size, text);
     let sx = 1;
     if (maxWidth != null && maxWidth > 0 && w > maxWidth) { sx = maxWidth / w; w = maxWidth; }
@@ -266,9 +266,10 @@ export class PdfContext2D {
     const tm = mul(this._m, [sx, 0, 0, -1, x + dx, y + dy]);
     const col = this._colorOps(mode === 0, mode === 1);
     if (!col.visible) return;
-    const font = this._page._font(f.name);
     const sw = mode === 1 ? ` ${num(this._st.lineWidth * scaleOf(this._m))} w` : '';
-    this._out(`${col.ops}${sw}\nBT /${font} ${num(f.size)} Tf ${mode} Tr ${tm.map(num).join(' ')} Tm ${pdfString(enc.codes)} Tj ET`);
+    // one text object; a run switches font (Tj advances by each glyph's width, so the runs follow on)
+    const shows = enc.runs.filter((r) => r.codes.length).map((r) => `/${this._page._font(r.symbol ? 'Symbol' : f.name)} ${num(f.size)} Tf ${pdfString(r.codes)} Tj`);
+    this._out(`${col.ops}${sw}\nBT ${mode} Tr ${tm.map(num).join(' ')} Tm ${shows.join(' ')} ET`);
   }
 
   // ── images ──

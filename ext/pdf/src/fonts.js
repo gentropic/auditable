@@ -24,12 +24,43 @@ const EXTRA = {
 };
 // WinAnsi codes 128..159
 const WIN_HIGH = { '€': 128, '‚': 130, 'ƒ': 131, '„': 132, '…': 133, '†': 134, '‡': 135, 'ˆ': 136, '‰': 137, 'Š': 138, '‹': 139, 'Œ': 140, 'Ž': 142, '‘': 145, '’': 146, '“': 147, '”': 148, '•': 149, '–': 150, '—': 151, '˜': 152, '™': 153, 'š': 154, '›': 155, 'œ': 156, 'ž': 158, 'Ÿ': 159 };
-// characters the encoding lacks, written as their plain forms
-const SUBST = { '−': '-', '≥': '>=', '≤': '<=', '→': '->', '←': '<-', '≠': '!=', '≈': '~', '′': "'", '″': '"', 'μ': 'µ', '∙': '·', '⋅': '·', ' ': ' ', ' ': ' ', ' ': ' ' };
+// characters neither WinAnsi nor Symbol has, written as their plain forms
+const SUBST = { 'μ': 'µ', '∙': '·', '⋅': '·', ' ': ' ', ' ': ' ', ' ': ' ' };
 
-// (the italics come after the uprights, so a page's F1…F6 tags stay what they were)
+// The standard SYMBOL font — every PDF reader carries it, like the others — has the Greek alphabet and the
+// mathematical signs WinAnsi lacks: κ α σ for the statistics, ≥ ≤ → for the notation. Text is written in runs:
+// what WinAnsi encodes in the page's font, these in Symbol (its own built-in encoding). [code, width /1000 em]
+// from the Symbol AFM. (SUBST above now holds only what neither font has.)
+const SYMBOL = {
+  'α': [0x61, 631], 'β': [0x62, 549], 'γ': [0x67, 411], 'δ': [0x64, 494], 'ε': [0x65, 439], 'ζ': [0x7a, 494], 'η': [0x68, 603], 'θ': [0x71, 521],
+  'ι': [0x69, 329], 'κ': [0x6b, 549], 'λ': [0x6c, 549], 'ν': [0x6e, 521], 'ξ': [0x78, 493], 'ο': [0x6f, 549], 'π': [0x70, 549], 'ρ': [0x72, 549],
+  'σ': [0x73, 603], 'ς': [0x56, 439], 'τ': [0x74, 439], 'υ': [0x75, 576], 'φ': [0x66, 521], 'χ': [0x63, 549], 'ψ': [0x79, 686], 'ω': [0x77, 686],
+  'Γ': [0x47, 603], 'Δ': [0x44, 612], 'Θ': [0x51, 741], 'Λ': [0x4c, 686], 'Ξ': [0x58, 645], 'Π': [0x50, 768], 'Σ': [0x53, 592], 'Υ': [0xa1, 620],
+  'Φ': [0x46, 763], 'Ψ': [0x59, 795], 'Ω': [0x57, 768], 'ϕ': [0x6a, 603], 'ϑ': [0x4a, 631],
+  '≥': [0xb3, 549], '≤': [0xa3, 549], '≠': [0xb9, 549], '≈': [0xbb, 549], '≡': [0xba, 549], '∞': [0xa5, 713], '∝': [0xb5, 713],
+  '→': [0xae, 987], '←': [0xac, 987], '↑': [0xad, 603], '↓': [0xaf, 603], '↔': [0xab, 1042], '⇒': [0xde, 987], '⇐': [0xdc, 987],
+  '−': [0x2d, 549], '′': [0xa2, 247], '″': [0xb2, 411], '√': [0xd6, 549], '∑': [0xe5, 713], '∏': [0xd5, 823], '∂': [0xb6, 494],
+  '∫': [0xf2, 274], '∇': [0xd1, 713], '∈': [0xce, 713], '∉': [0xcf, 713], '∩': [0xc7, 768], '∪': [0xc8, 768], '⊂': [0xcc, 713],
+  '∧': [0xd9, 603], '∨': [0xda, 603], '∀': [0x22, 713], '∃': [0x24, 549], '∅': [0xc6, 823], '∠': [0xd0, 768],
+  '⊥': [0x5e, 658], '∴': [0x5c, 863], '∼': [0x7e, 549],
+};
+export const isSymbolChar = (ch) => Object.prototype.hasOwnProperty.call(SYMBOL, ch);
+/** text → runs: { symbol: bool, codes, text, missing } — WinAnsi runs for the page's font, Symbol runs for SYMBOL's */
+export function encodeRuns(text) {
+  const runs = [], missing = new Set();
+  let cur = null;
+  for (const ch of String(text)) {
+    const sym = isSymbolChar(ch);
+    if (!cur || cur.symbol !== sym) { cur = { symbol: sym, codes: [], text: '' }; runs.push(cur); }
+    if (sym) { cur.codes.push(SYMBOL[ch][0]); cur.text += ch; }
+    else { const e = encodeWinAnsi(ch); cur.codes.push(...e.codes); cur.text += e.text; for (const m of e.missing) missing.add(m); }
+  }
+  return { runs, missing };
+}
+
+// (the italics come after the uprights, so a page's F1…F6 tags stay what they were; Symbol after them)
 export const STANDARD_FONTS = ['Helvetica', 'Helvetica-Bold', 'Courier', 'Courier-Bold', 'Times-Roman', 'Times-Bold',
-  'Helvetica-Oblique', 'Helvetica-BoldOblique', 'Courier-Oblique', 'Courier-BoldOblique', 'Times-Italic', 'Times-BoldItalic'];
+  'Helvetica-Oblique', 'Helvetica-BoldOblique', 'Courier-Oblique', 'Courier-BoldOblique', 'Times-Italic', 'Times-BoldItalic', 'Symbol'];
 
 // a CSS font string → { name (a standard font), size (px of the user space), mono, serif, bold, italic }
 export function parseFont(css) {
@@ -88,9 +119,11 @@ export function encodeWinAnsi(text) {
 
 // the advance of a string, in the font's units × size (1/1000 em · px → px)
 export function textWidth(name, size, text) {
-  const { text: t } = encodeWinAnsi(text);
   let w = 0;
-  for (const ch of t) w += charWidth(name, ch);
+  for (const r of encodeRuns(text).runs) {
+    if (r.symbol) for (const ch of r.text) w += SYMBOL[ch][1];
+    else for (const ch of r.text) w += charWidth(name, ch);
+  }
   return (w / 1000) * size;
 }
 

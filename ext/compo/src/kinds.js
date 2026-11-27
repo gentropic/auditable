@@ -94,10 +94,13 @@ export function layoutText(ctx, text, width, { size = 9, mono = false, serif = f
   return { lines, lineHeight: body };
 }
 // lay out and draw markdown into a box (text frames, labels): { size, mono, serif, pad, align, color, lineHeight }
-export function drawText(ctx, text, box, { size = 9, mono = false, serif = false, pad = 1, align = 'left', color = INK, lineHeight = 1.25 } = {}) {
+export function drawText(ctx, text, box, { size = 9, mono = false, serif = false, pad = 1, align = 'left', color = INK, lineHeight = 1.25, valign = 'top' } = {}) {
   const { lines } = layoutText(ctx, text, box[2] - 2 * pad, { size, mono, serif, lineHeight });
   ctx.fillStyle = color; ctx.strokeStyle = color; ctx.textBaseline = 'top'; ctx.textAlign = 'left';
+  const total = lines.reduce((s, l) => s + (l.gap || 0) + l.lh, 0);
   let y = box[1] + pad;
+  if (valign === 'middle') y = box[1] + Math.max(pad, (box[3] - total) / 2);
+  else if (valign === 'bottom') y = box[1] + Math.max(pad, box[3] - pad - total);
   for (const line of lines) {
     y += line.gap || 0;
     if (line.rule) { ctx.lineWidth = 0.2; ctx.beginPath(); ctx.moveTo(box[0] + pad, y + line.lh / 2); ctx.lineTo(box[0] + box[2] - pad, y + line.lh / 2); ctx.stroke(); y += line.lh; continue; }
@@ -122,8 +125,9 @@ registerKind('text', {
   draw(ctx, box, frame, env) {
     const c = frame.content || {};
     const text = resolveFields(c.md || '', env, frame);
-    drawText(ctx, text, box, { size: +c.size || 9, mono: !!c.mono || c.font === 'mono', serif: c.font === 'serif', pad: c.pad ?? 1,
-      align: c.align || 'left', color: c.color || INK, lineHeight: +c.lineHeight || 1.25 });
+    const used = drawText(ctx, text, box, { size: +c.size || 9, mono: !!c.mono || c.font === 'mono', serif: c.font === 'serif', pad: c.pad ?? 1,
+      align: c.align || 'left', color: c.color || INK, lineHeight: +c.lineHeight || 1.25, valign: c.valign || 'top' });
+    frame._overflow = used > box[3] + 0.3 ? 'the text runs past the bottom of the frame' : undefined;   // the editor badges it
   },
 });
 
@@ -187,21 +191,32 @@ registerKind('label', {
         }
       }
     }
-    if (off) {
-      const a = Math.atan2(anc.y - (box[1] + box[3] / 2), anc.x - (box[0] + box[2] / 2)), L = 1.6;
-      ctx.fillStyle = c.color || INK; ctx.beginPath();
-      ctx.moveTo(anc.x, anc.y); ctx.lineTo(anc.x - L * Math.cos(a - 0.4), anc.y - L * Math.sin(a - 0.4)); ctx.lineTo(anc.x - L * Math.cos(a + 0.4), anc.y - L * Math.sin(a + 0.4)); ctx.closePath(); ctx.fill();
+    // the words' own extent: the backing hugs them (a box-sized backing whited out what the label points at),
+    // and the leader leaves from it
+    const font = { mono: c.font === 'mono', serif: c.font === 'serif' };
+    const lay = layoutText(ctx, text, box[2] - 2 * pad, { size, ...font });
+    const tw = Math.min(box[2], Math.max(0, ...lay.lines.map((l) => l.reduce((s, w) => s + w.w, 0) + (l.indent || 0))) + 2 * pad);
+    const th = Math.min(box[3], lay.lines.reduce((s, l) => s + (l.gap || 0) + l.lh, 0) + 2 * pad);
+    const hx = c.align === 'center' ? box[0] + (box[2] - tw) / 2 : c.align === 'right' ? box[0] + box[2] - tw : box[0];
+    const hug = [hx, box[1], tw, th];
+    const leader = c.leader || 'line', ink = c.color || INK;
+    const head = (x, y, fx, fy) => {                     // an arrowhead at (x, y), pointing away from (fx, fy)
+      const a = Math.atan2(y - fy, x - fx), L = 1.6;
+      ctx.fillStyle = ink; ctx.beginPath();
+      ctx.moveTo(x, y); ctx.lineTo(x - L * Math.cos(a - 0.4), y - L * Math.sin(a - 0.4)); ctx.lineTo(x - L * Math.cos(a + 0.4), y - L * Math.sin(a + 0.4)); ctx.closePath(); ctx.fill();
+    };
+    if (anc && leader !== 'none') {
+      const inHug = anc.x >= hug[0] && anc.x <= hug[0] + hug[2] && anc.y >= hug[1] && anc.y <= hug[1] + hug[3];
+      const ex = Math.max(hug[0], Math.min(hug[0] + hug[2], anc.x)), ey = Math.max(hug[1], Math.min(hug[1] + hug[3], anc.y));
+      if (!inHug) { ctx.strokeStyle = ink; ctx.lineWidth = 0.2; ctx.beginPath(); ctx.moveTo(ex, ey); ctx.lineTo(anc.x, anc.y); ctx.stroke(); }
+      if (off || leader === 'arrow') head(anc.x, anc.y, ex, ey);
+      else { ctx.fillStyle = ink; ctx.beginPath(); ctx.arc(anc.x, anc.y, 0.55, 0, Math.PI * 2); ctx.fill(); }
     }
-    if (anc && !(anc.x >= box[0] && anc.x <= box[0] + box[2] && anc.y >= box[1] && anc.y <= box[1] + box[3])) {
-      const ex = Math.max(box[0], Math.min(box[0] + box[2], anc.x)), ey = Math.max(box[1], Math.min(box[1] + box[3], anc.y));
-      ctx.strokeStyle = c.color || INK; ctx.lineWidth = 0.2;
-      ctx.beginPath(); ctx.moveTo(ex, ey); ctx.lineTo(anc.x, anc.y); ctx.stroke();
-    }
-    if (anc && !off) { ctx.fillStyle = c.color || INK; ctx.beginPath(); ctx.arc(anc.x, anc.y, 0.55, 0, Math.PI * 2); ctx.fill(); }
     ctx.save();
     ctx.beginPath(); ctx.rect(box[0], box[1], box[2], box[3]); ctx.clip();
-    if (c.backing !== false) { ctx.fillStyle = 'rgba(255,255,255,0.85)'; ctx.fillRect(box[0], box[1], box[2], box[3]); }
-    drawText(ctx, text, box, { size, pad, color: c.color || INK, mono: c.font === 'mono', serif: c.font === 'serif', align: c.align || 'left' });
+    if (c.backing !== false) { ctx.fillStyle = 'rgba(255,255,255,0.85)'; ctx.fillRect(hug[0], hug[1], hug[2], hug[3]); }
+    const used = drawText(ctx, text, box, { size, pad, color: c.color || INK, mono: c.font === 'mono', serif: c.font === 'serif', align: c.align || 'left' });
+    frame._overflow = used > box[3] + 0.3 ? 'the label’s text runs past its box' : undefined;
     ctx.restore();
   },
 });
@@ -292,9 +307,10 @@ registerKind('legend', {
     const entries = legendEntries(c).filter((e) => !e.hidden).concat(c.tail ? [c.tail] : []);
     const cols = Math.max(1, Math.min(6, Math.round(+c.columns || 1))), colW = (box[2] - 0.5) / cols;
     ctx.textBaseline = 'middle';
+    let cut = 0;
     entries.forEach((e, i) => {
       const cx = box[0] + 0.5 + (i % cols) * colW, cy = y + Math.floor(i / cols) * row;
-      if (cy + row > box[1] + box[3] + 0.5) return;
+      if (cy + row > box[1] + box[3] + 0.5) { cut++; return; }
       const shape = e.swatch || c.swatch || 'square';
       ctx.fillStyle = e.color; ctx.strokeStyle = e.color;
       if (shape === 'circle') { ctx.beginPath(); ctx.arc(cx + sw / 2, cy + sw / 2, sw * 0.42, 0, Math.PI * 2); ctx.fill(); ctx.strokeStyle = 'rgba(0,0,0,0.45)'; ctx.lineWidth = 0.12; ctx.stroke(); }
@@ -302,6 +318,7 @@ registerKind('legend', {
       else { ctx.fillRect(cx, cy, sw, sw); ctx.strokeStyle = 'rgba(0,0,0,0.45)'; ctx.lineWidth = 0.12; ctx.strokeRect(cx, cy, sw, sw); }
       ctx.fillStyle = ink; ctx.fillText(String(e.label), cx + (shape === 'line' ? sw * 1.4 : sw) + 2, cy + sw / 2);
     });
+    frame._overflow = cut ? `${cut} entr${cut === 1 ? 'y doesn’t' : 'ies don’t'} fit — more columns, or a taller frame` : undefined;
   },
 });
 
@@ -459,6 +476,7 @@ registerKind('table', {
       if (c.zebra !== false && i % 2 === 1) { ctx.fillStyle = 'rgba(0,0,0,0.045)'; ctx.fillRect(x0, y, x1 - x0, lh); }
       cells(rows[i], y, false); y += lh;
     }
+    frame._overflow = shown < rows.length ? `${rows.length - shown} row${rows.length - shown === 1 ? '' : 's'} don’t fit` : undefined;
     if (shown < rows.length) { ctx.fillStyle = '#666'; ctx.font = fontMm(size); ctx.textAlign = 'left'; ctx.fillText(`… ${rows.length - shown} more row${rows.length - shown === 1 ? '' : 's'}`, x0 + pad, y + lh / 2); y += lh; }
     rule(y, 0.35);
     if (note) { ctx.fillStyle = '#555'; ctx.font = fontMm(size - 0.5); ctx.textAlign = 'left'; ctx.fillText(note, x0, y + lh * 0.55); }

@@ -146,7 +146,7 @@ export class PdfDocument {
     // shared resources: fonts used anywhere, gs states, images
     const fontsUsed = new Set(); for (const p of this.pages) for (const n of p._fonts.keys()) fontsUsed.add(n);
     const fontIds = {};
-    for (const n of fontsUsed) fontIds[n] = add({ dict: `<< /Type /Font /Subtype /Type1 /BaseFont /${n} /Encoding /WinAnsiEncoding >>` });
+    for (const n of fontsUsed) fontIds[n] = add({ dict: `<< /Type /Font /Subtype /Type1 /BaseFont /${n}${n === 'Symbol' ? '' : ' /Encoding /WinAnsiEncoding'} >>` });   // Symbol keeps its own built-in encoding
     const gsIds = {};
     this._gsKeys.forEach((k, i) => { const [ca, CA] = k.split('/'); gsIds['GS' + i] = add({ dict: `<< /Type /ExtGState /ca ${ca} /CA ${CA} >>` }); });
     const imgIds = {};

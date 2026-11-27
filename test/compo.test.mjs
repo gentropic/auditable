@@ -511,3 +511,22 @@ test('pins: a kind with project/unproject is pinnable; a label leader lands wher
   renderPage(d, spy, {});
   assert.ok(segs.some(([x, y]) => Math.abs(x - 35) < 1e-9 && Math.abs(y - 35) < 1e-9), `the leader ends on the pinned point (35, 35): ${JSON.stringify(segs)}`);
 });
+
+// ── where new frames go (model.js freeSpot): beside a frame when there's room, never on top of one ──
+import { freeSpot } from '../ext/compo/src/main.js';
+test('freeSpot: beside the view when it fits, else the first free place — never overlapping, always inside the margins', () => {
+  const d = createDocument({ page: { size: 'A4', orientation: 'landscape', margins: [10, 10, 10, 10] } });
+  d.frames.push({ id: 'view', kind: 'image', box: [10, 10, 200, 120], content: {} });
+  const a = freeSpot(d, 40, 30, { near: d.frames[0] });
+  assert.deepEqual(a, [214, 10, 40, 30], 'right of the view');
+  d.frames.push({ id: 'leg', kind: 'legend', box: a, content: {} });
+  const b = freeSpot(d, 40, 30, { near: d.frames[0] });
+  assert.ok(b[1] >= 44 && b[0] === 214, `slid down the view's right side: ${b}`);
+  const overlaps = (p, q) => p[0] < q[0] + q[2] && q[0] < p[0] + p[2] && p[1] < q[1] + q[3] && q[1] < p[1] + p[3];
+  for (let k = 0; k < 6; k++) {
+    const c = freeSpot(d, 40, 30, { near: d.frames[0] });
+    for (const f of d.frames) assert.ok(!overlaps(c, f.box), `${c} on ${f.id}`);
+    assert.ok(c[0] + 40 <= 287 + 1e-6 && c[1] + 30 <= 200 + 1e-6, `${c} inside the margins`);
+    d.frames.push({ id: 'x' + k, kind: 'text', box: c, content: {} });
+  }
+});

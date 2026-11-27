@@ -6,7 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import zlib from 'node:zlib';
-import { PdfDocument, readAttachments, pageSize, PAGE_SIZES, mm, parseFont, textWidth, encodeWinAnsi, parseCssColor } from '../ext/pdf/index.js';
+import { PdfDocument, readAttachments, pageSize, PAGE_SIZES, mm, parseFont, textWidth, encodeWinAnsi, encodeRuns, parseCssColor } from '../ext/pdf/index.js';
 
 const latin1 = (u8) => Buffer.from(u8).toString('latin1');
 const FIXED = new Date(Date.UTC(2026, 10, 22, 12, 0, 0));
@@ -115,8 +115,12 @@ test('text: standard fonts from CSS stacks, WinAnsi encoding with substitutions,
   assert.equal(textWidth('Helvetica-BoldOblique', 10, 'W'), textWidth('Helvetica-Bold', 10, 'W'));
   assert.equal(textWidth('Courier', 10, 'abc'), 18, "Courier is 0.6 em — @gcu/plot's layout advance");
   assert.equal(Math.round(textWidth('Helvetica', 10, 'W') * 100), 944);
-  const e = encodeWinAnsi('≥ 65 − é σ');
-  assert.equal(e.text, '>= 65 - é ?'); assert.deepEqual([...e.missing], ['σ']);
+  // Greek and the maths signs go to the standard Symbol font, in runs (κ α σ in a stats table, ≥ in a header, → in
+  // an attitude); only what neither font has becomes '?'
+  const e = encodeRuns('≥ 65 − é σ ☃');
+  assert.deepEqual(e.runs.map((r) => [r.symbol, r.text]), [[true, '≥'], [false, ' 65 '], [true, '−'], [false, ' é '], [true, 'σ'], [false, ' ?']]);
+  assert.deepEqual([...e.missing], ['☃']);
+  assert.equal(textWidth('Helvetica', 10, 'κ'), 5.49, 'a Symbol run measures with Symbol’s widths');
 
   const warned = [];
   const doc = new PdfDocument({ created: FIXED, onWarn: (m) => warned.push(m) });
@@ -124,13 +128,14 @@ test('text: standard fonts from CSS stacks, WinAnsi encoding with substitutions,
   ctx.font = '10px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
   ctx.fillText('(a)é', 100, 0);
   ctx.font = 'bold 12px sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
-  ctx.fillText('σ', 0, 50); ctx.fillText('σσ', 0, 60);
+  ctx.fillText('κ = 3.1', 0, 50); ctx.fillText('☃', 0, 60); ctx.fillText('☃☃', 0, 70);
   const bytes = await doc.save(), c = contentOf(bytes), { s } = parse(bytes);
   // centred: 4 chars × 6 = 24 wide → x = 88; 'top': baseline 0.8 em below the anchor → y = 100 − 8
-  assert.match(c, /BT \/F3 10 Tf 0 Tr 1 0 0 1 88 92 Tm \(\\\(a\\\)\\351\) Tj ET/);
-  assert.match(c, /BT \/F2 12 Tf/);
+  assert.match(c, /BT 0 Tr 1 0 0 1 88 92 Tm \/F3 10 Tf \(\\\(a\\\)\\351\) Tj ET/);
+  assert.match(c, /\/F13 12 Tf \(k\) Tj \/F2 12 Tf \( = 3\.1\) Tj ET/, 'κ in Symbol (its code is “k”), then back to the page’s font');
   assert.match(s, /\/BaseFont \/Courier \/Encoding \/WinAnsiEncoding/);
-  assert.equal(warned.filter((w) => /σ/.test(w)).length, 1, 'one warning per missing character set');
+  assert.match(s, /\/BaseFont \/Symbol >>/, 'Symbol keeps its own built-in encoding');
+  assert.equal(warned.filter((w) => /☃/.test(w)).length, 1, 'one warning per missing character set');
 });
 
 test('images: RGBA → an RGB XObject with a soft mask for alpha; smoothing → /Interpolate; one object per source', async () => {
