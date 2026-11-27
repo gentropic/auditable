@@ -10719,6 +10719,48 @@ if (take()) {
   chk(`Site C opens cut across the fold (normal ${r.secN && r.secN.map((v) => v.toFixed(2)).join(', ')}) and looks up the plunge (toward ${Math.round(r.look)}°)`,
     r.secOn && r.secN && Math.abs(r.secN[0] + Math.sin(40 * Math.PI / 180)) < 1e-6 && Math.abs(r.secN[1] + Math.cos(40 * Math.PI / 180)) < 1e-6 && Math.abs(r.look - 40) < 1);
   if (r.agree != null) chk(`Site C's blocks are site-c.js: ${r.agree} of ${r.sampled} sampled block centres carry the model's rock and grade`, r.agree === r.sampled);
+  // its pages come composed (src/site-c-figures.js): the map at 1 : 5 000 on A3, the three sections at 1 : 10 000
+  // as vector sections with a key plan — built while the sample opens, the 3D view put back after (the checks
+  // above ran after it), the composer closed again; made again by name, never twice; and the Figures window
+  // (QGIS's layout manager) lists them, duplicates one and deletes the copy
+  const f = await pg.evaluate(async () => {
+    const M = window._micro, figs = () => M.figures();
+    const views = (doc) => doc.frames.filter((x) => x.source && x.source.kind === 'view' && !x.source.keyFor);
+    const kinds = (doc) => doc.frames.map((x) => x.kind);
+    const map = figs().find((x) => x.name === 'Site C — geological map'), sec = figs().find((x) => x.name === 'Site C — sections A–A′, B–B′, C–C′');
+    const out = { names: figs().map((x) => x.name), composerOpen: !!document.querySelector('.composer-win') };
+    if (map) { const v = views(map.doc); out.map = { page: `${map.doc.page.size} ${map.doc.page.orientation}`, views: v.length, lock: v[0] && v[0].content.scaleLock, img: !!(v[0] && v[0].content.width > 100), kinds: kinds(map.doc) }; }
+    if (sec) {
+      const v = views(sec.doc), kp = sec.doc.frames.find((x) => x.source && x.source.keyFor);
+      out.sec = { page: `${sec.doc.page.size} ${sec.doc.page.orientation}`, views: v.length, locks: v.map((x) => x.content.scaleLock), vector: v.map((x) => { const ls = (x.content.vector && x.content.vector.layers) || []; return ls.some((l) => l.blocks > 0) && ls.some((l) => l.type === 'lines' && l.starts.length > 0); }),
+        errs: v.map((x) => x.content.vectorError || '').filter(Boolean), keys: kp ? [].concat(kp.source.keyFor).length : 0, kinds: kinds(sec.doc),
+        normals: v.map((x) => x.source.scene.section && x.source.scene.section.dipDir) };
+    }
+    // a refresh redraws them as made: the holes stay cut (the scene remembers it; the 3D view shows them whole)
+    const dhL = M.layers().find((L) => L.dh && L.docs.dhDoc && !L.trace);
+    out.viewWhole = dhL ? M.renderer.layerSectioned(dhL.id) === false : null;   // the sample's 3D view: holes whole across the cut, as before the figures
+    if (dhL) M.renderer.setLayerSectioned(dhL.id, false);                // (and so for the refresh, whatever the build left)
+    if (sec) { await M.refreshViews(sec); out.sec.afterRefresh = views(sec.doc).map((x) => { const ls = (x.content.vector && x.content.vector.layers) || []; return ls.some((l) => l.blocks > 0) && ls.some((l) => l.type === 'lines' && l.starts.length > 0); }); }
+    // the manager: a row per figure; duplicate → an independent copy; delete it again
+    M.openFiguresManager(); await new Promise((z) => setTimeout(z, 100));
+    out.rows = [...document.querySelectorAll('.cmp-figures .cmp-fig-row')].map((x) => x.dataset.name);
+    const c = map && M.duplicateFigure(map, 'map copy');
+    out.copy = c ? { frames: c.doc.frames.length === map.doc.frames.length, apart: c.doc !== map.doc && c.doc.frames[0] !== map.doc.frames[0], title: c.doc.title, img: !!views(c.doc)[0]?.content?.width } : null;
+    if (c) { c.doc.frames.pop(); out.copy.origKept = map.doc.frames.length !== c.doc.frames.length; await M.deleteFigure(c, { ask: false }); }
+    out.afterDelete = figs().length;
+    document.querySelector('.cmp-figures .fwin-close, .cmp-figures [title=close]')?.click();
+    // open the sample again: the figures are made again, not doubled
+    await M.openSiteC();
+    out.again = figs().filter((x) => /^Site C — /.test(x.name)).length;
+    return out;
+  });
+  chk(`Site C comes with its figures (${JSON.stringify(f.names)}), the composer closed again (${!f.composerOpen})`, f.names.includes('Site C — geological map') && f.names.includes('Site C — sections A–A′, B–B′, C–C′') && !f.composerOpen);
+  chk(`Site C map: ${f.map && f.map.page}, one view locked at 1 : ${f.map && f.map.lock} (rendered: ${f.map && f.map.img}), with ${f.map && f.map.kinds.join(', ')}`,
+    f.map && f.map.page === 'A3 landscape' && f.map.views === 1 && f.map.lock === 5000 && f.map.img && ['legend', 'scalebar', 'north', 'titleblock'].every((k) => f.map.kinds.includes(k)));
+  chk(`Site C sections: ${f.sec && f.sec.page}, ${f.sec && f.sec.views} views at 1 : ${f.sec && f.sec.locks.join(', ')}, blocks + holes as vectors ${f.sec && JSON.stringify(f.sec.vector)}, after a refresh ${f.sec && JSON.stringify(f.sec.afterRefresh)} (the 3D view keeps its holes whole: ${f.viewWhole})${f.sec && f.sec.errs.length ? ` (${f.sec.errs.join('; ')})` : ''}, cut at dip direction ${f.sec && f.sec.normals.join('/')}, a key plan of ${f.sec && f.sec.keys}`,
+    f.sec && f.sec.page === 'A4 portrait' && f.sec.views === 3 && f.sec.locks.every((x) => x === 10000) && f.sec.vector.every(Boolean) && f.sec.afterRefresh.every(Boolean) && f.viewWhole === true && f.sec.normals.every((x) => x === 40) && f.sec.keys === 3 && f.sec.kinds.includes('legend') && f.sec.kinds.includes('titleblock'));
+  chk(`Figures window lists ${JSON.stringify(f.rows)}; Duplicate makes an independent copy (${JSON.stringify(f.copy)}), deleted again (${f.afterDelete} left); opening Site C again makes its figures again, not twice (${f.again})`,
+    f.rows.length === f.names.length && f.copy && f.copy.frames && f.copy.apart && f.copy.title === 'map copy' && f.copy.img && f.copy.origKept && f.afterDelete === f.names.length && f.again === 2);
   await pg.close();
 }
 

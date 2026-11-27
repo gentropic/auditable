@@ -100,6 +100,8 @@ export function captureScene(name, withSel) {
       // the colour by NAME (a column position means another column in a file ordered differently),
       // and where the layer sits — so a figure made from this scene can follow other data
       try { const c = colorByName(L); if (c) o.color = c; } catch { /* no colour-by */ }
+      // whether the section cuts it (drillholes shown whole across a cut, a context mesh left uncut): a view frame redrawn later must cut what it cut
+      try { o.sectioned = S.renderer.layerSectioned(L.id); } catch { /* no renderer layer */ }
       const bx = layerWorldBox(L); if (bx) o.box = bx.map((p) => p.map((v) => +(+v).toFixed(3)));
       if (withSel && L._selMask && L._selCount) o.sel = rleEncode(L._selMask);   // opt-in; selection can be large (RLE'd)
       return o;
@@ -115,6 +117,7 @@ export async function applyScene(s) {
     if (!L) continue;
     L = await applyLayerSurface(L, sl) || L;   // surface/drape/flatZ/faceted/band FIRST (may reopen → fresh L), then vis/color/filter on it
     if (sl.visible != null) { L.visible = !!sl.visible; S.renderer.setLayerVisible(L.id, L.visible); }
+    if (sl.sectioned != null && S.renderer.layerSectioned(L.id) !== sl.sectioned) S.renderer.setLayerSectioned(L.id, sl.sectioned);   // (older scenes don't say: left as it is)
     let want = sl.colorSel;
     if (sl.color) {                                           // by name first; the stored position only for old scenes
       try { want = colorSelFor(L, sl.color); } catch { want = null; noCol.push(`${sl.name}: ${sl.color}`); }

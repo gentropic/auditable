@@ -42,7 +42,7 @@ import { openTurntable } from './turntable.js';
 import { openRecipeForm } from './recipe-form.js';
 import { openLibraryWindow } from './library.js';
 import { openRunsWindow } from './runs-ui.js';
-import { refreshAllFigures, openComposer } from './composer.js';
+import { refreshAllFigures, openComposer, openFiguresManager } from './composer.js';
 import { openLineageWindow } from './lineage-ui.js';
 import { openFilePicker, _remember, _recents, clearRecents } from './recents.js';
 import { renameActiveLayer, openBatchRename } from './rename.js';
@@ -107,6 +107,7 @@ registerCommands([
   { id: 'figure', group: 'File', title: 'Export figure (PNG)…', kw: 'decorations scale bar north legend title report', run: () => exportFigure() },
   { id: 'section-series', group: 'File', title: 'Export a section series…', kw: 'sections serial every pack sheets plates pdf print figures review slices zip', when: () => $('#secMode').value !== 'off', run: () => openSectionSeries() },
   { id: 'refresh-figures', group: 'File', title: 'Refresh all figures — render every composer 3D view again with the data as it is now', kw: 'composer figure update stale rerender atlas report', when: () => S.figures.length > 0, run: () => refreshAllFigures() },
+  { id: 'figures', group: 'File', title: 'Manage figures — every figure in the project: open, duplicate, rename, make a template, delete…', kw: 'composer layouts layout manager pages copy duplicate template list', run: () => openFiguresManager() },
   { id: 'composer', group: 'File', title: 'Composer — lay out a page (3D views, legends, scale bars, captions, plots) → PDF / PNG…', kw: 'page layout figure atlas pdf print report a4 a3 map compose plate', run: () => openComposer() },
   { id: 'turntable', group: 'File', title: 'Record a turntable video…', kw: 'orbit spin rotate movie animation webm mp4 presentation linkedin', run: () => openTurntable() },
   'structure', 'shell', 'pairing', 'composite', 'modelqa', 'meshqa', 'scatter', 'qq', 'xtab', 'dhqa', 'proj-max', 'proj-min', 'proj-mean', 'proj-off',

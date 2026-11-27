@@ -241,7 +241,8 @@ export default {
   'Ambient occlusion: on': 'Oclusão de ambiente: ligada', 'Ambient occlusion: off': 'Oclusão de ambiente: desligada',
   'Software rendering mode: on': 'Modo de renderização por software: ligado', 'Software rendering mode: off': 'Modo de renderização por software: desligado',
   // ── figures / composer ──
-  'Figures': 'Figuras', 'Composer…': 'Compositor…', 'composer': 'compositor', 'Refresh all figures': 'Atualizar todas as figuras',
+  'Figures': 'Figuras', 'Composer…': 'Compositor…', 'composer': 'compositor', 'Refresh all figures': 'Atualizar todas as figuras', 'Manage figures…': 'Gerenciar figuras…',
+  'Manage figures — every figure in the project: open, duplicate, rename, make a template, delete…': 'Gerenciar figuras — todas as figuras do projeto: abrir, duplicar, renomear, tornar modelo, excluir…',
   'Refresh all figures — render every composer 3D view again with the data as it is now': 'Atualizar todas as figuras — renderizar de novo cada vista 3D do compositor com os dados como estão agora',
   'Composer — lay out a page (3D views, legends, scale bars, captions, plots) → PDF / PNG…': 'Compositor — montar uma página (vistas 3D, legendas, barras de escala, textos, gráficos) → PDF / PNG…',
   'Add 3D view': 'Adicionar vista 3D', 'Add legend': 'Adicionar legenda', 'Add scale bar': 'Adicionar barra de escala', 'Add north arrow': 'Adicionar seta do norte',

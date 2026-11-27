@@ -85,7 +85,10 @@ export function colourerOf(L) {
     return { numeric: true, of: (v) => { if (!Number.isFinite(v)) return ndColor; const k = classIndex(br, v); return hidden[k] ? null : classColor(cfg, br, k); } };
   }
   if (spec.kind === 'classes' && (sel === 'cat' || sel.startsWith('catcol:'))) {
-    const by = new Map(spec.entries.map((e) => [String(e.label), e.color]));
+    // a row's value → its entry's colour: by the values an entry stands for (a legend relabels them —
+    // "gneiss basement" for GNEISS), else by its label (an entry per value)
+    const by = new Map();
+    for (const e of spec.entries) { if (!by.has(String(e.label))) by.set(String(e.label), e.color); for (const v of e.values || []) by.set(String(v), e.color); }
     return { numeric: false, of: (v) => (v == null || v === '' ? ndColor : by.get(String(v)) || null) };
   }
   return null;

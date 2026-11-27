@@ -24,6 +24,14 @@ If you only need one page today, read as far as the first exercise in \cref{sec:
 
 Open the composer with \menu{File>Composer…}, or \key{⌘K} and \code{composer}. It opens on the current figure, or creates \emph{figure 1}: an A4 landscape page with 12 mm margins. Once a project has figures, \menu{File>Figures} lists them by name, a ★ beside each template.
 
+A project holds as many figures as you like, each its own page, as QGIS keeps its layouts.\index{figures!the Figures window}
+\menu{File>Figures>Manage figures…} (or \key{⌘K} and \code{figures}) opens the \ui{figures} window: every
+figure with its page and what is on it (\ui{A3 landscape · 1 view, 6 other frames}), and for each
+\ui{open}, \ui{duplicate}, \ui{rename}, the template star and \ui{delete}. \ui{New figure…} at its foot
+starts one, blank or from a template, and \ui{Refresh all} makes every figure again. \ui{duplicate} copies
+a figure under a new name, frames, renders and properties included, so a variant (another scale, the
+next pit stage) starts from a finished page; the copy of a template is an ordinary figure.
+
 \shot{compo-window}{The composer: the figure bar on top, the page bar below it, the page on its desk with dashed margins, and at the right the frame list above the inspector of the selected view frame, ending in its \ui{fit}, \ui{coords}, \ui{scale} and \ui{captions} rows.}
 
 A \term{figure} is one page with its frames. In a project it is a file, \file{figures/}\emph{name}\file{.compo.json} — plain JSON with each view's last render stored inside, so a figure opens instantly without rendering anything (\cref{ch:projects}). Edits are saved as you make them. Without a project a figure lives for the session only.
@@ -87,6 +95,7 @@ control & what it does \\ \midrule
 \multicolumn{2}{@{}l}{\emph{the figure bar}} \\
 the figure list & switch to another figure; a ★ marks a template \\
 \ui{New figure} & a new figure, named in a prompt, starting from whatever the list beside it says: \ui{blank}, or \ui{from} a template \\
+\ui{Duplicate figure} & a copy of this figure under a new name (the two pages behind each other) \\
 \ui{Rename figure} / \ui{Delete figure} & rename this figure (its file is renamed too), or delete it after a confirmation. The pencil renames; the page with a cross deletes \\
 \ui{Refresh} (↻) & make the figure again with the data as it is now (\cref{sec:compo-refresh}) \\
 \ui{⇄ other data…} & make the figure with other layers (\cref{sec:compo-retarget}) \\

@@ -20,6 +20,7 @@ import { closeAllLayers, allocLayerId, fitFromHeader, recomputeUnion, setActiveL
 import { setMeshTint } from './layermenu.js';
 import { applySection, captureSection } from './section.js';
 import { renderer, setCameraWorld } from './viewport.js';
+import { buildSiteCFigures } from './site-c-figures.js';
 
 const $ = (s) => document.querySelector(s);
 
@@ -363,6 +364,9 @@ export async function openDemoProject() {
   $('#btnFit').click();
   // a grade–tonnage window on the model (FE grade, SG density) — computed, so the
   // newcomer sees the curve, not an empty panel — DOCKED RIGHT so the model stays the hero
+  // its pages, composed: the map at 1 : 5 000 and the three sections (File → Figures)
+  let figs = [];
+  if (bm) { $('#meta').textContent = 'Site C — composing the map and the sections…'; try { figs = await buildSiteCFigures({ blocks: bm, drillholes: dh }); } catch (e) { console.warn('micro: Site C figures —', e); } }
   if (bm) {
     setActiveLayer(bm.id);
     try {
@@ -466,6 +470,9 @@ export async function openSiteC() {
   $('#btnFit').click();
   try { setCameraWorld({ look: 40, elevation: 28 }); } catch { /* the fitted view stands */ }   // from the SW, up the plunge, onto the cut
   try { S.views = S.views.filter((v) => v.name !== 'Site C — section B–B′').concat([{ name: 'Site C — section B–B′', camera: captureCamera(), section: captureSection() }]); } catch { /* best-effort */ }
+  // its pages, composed: the map at 1 : 5 000 and the three sections (File → Figures)
+  let figs = [];
+  if (bm) { $('#meta').textContent = 'Site C — composing the map and the sections…'; try { figs = await buildSiteCFigures({ blocks: bm, drillholes: dh }); } catch (e) { console.warn('micro: Site C figures —', e); } }
   if (bm) {
     setActiveLayer(bm.id);
     try {
@@ -474,7 +481,7 @@ export async function openSiteC() {
       if (gtWin) { gtWin.style.left = Math.max(0, innerWidth - gtWin.offsetWidth - 14) + 'px'; gtWin.style.top = '70px'; }
     } catch { /* window optional */ }
   }
-  $('#meta').textContent = 'Site C — gold in a folded banded iron formation: blocks by rock, the drill fences, the topography, cut across the fold, with grade–tonnage. The manual’s cover is drawn from this same model.';
+  $('#meta').textContent = 'Site C — gold in a folded banded iron formation: blocks by rock, the drill fences, the topography, cut across the fold, with grade–tonnage. The manual’s cover is drawn from this same model.' + (figs.length ? ` Composed: ${figs.join(' and ')} (File → Figures).` : '');
 }
 // the palette's way in (the File menu's Sample data has it too)
 registerCommands([

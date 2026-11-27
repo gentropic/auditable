@@ -1018,6 +1018,106 @@ function newFigure(name, from = null) {
   S.figures.push(fig); S.figures.sort((a, b) => a.name.localeCompare(b.name));
   return fig;
 }
+// a name no figure has yet: "x", else "x (2)", "x (3)" …
+export function freeFigureName(nm) {
+  if (!S.figures.some((f) => f.name === nm)) return nm;
+  let k = 2; while (S.figures.some((f) => f.name === `${nm} (${k})`)) k++; return `${nm} (${k})`;
+}
+// ── the FIGURES, as a list (QGIS's layout manager): a project holds any number of them, each its own
+// page; these are what the composer's bar and the Figures window both do ──
+/** a copy of a figure under a new name: page, frames, their last renders, properties. A copy of a
+ *  template is a drawing (the star stays with the original). → the new figure, or null (the name is taken) */
+export function duplicateFigure(fig, name) {
+  const nm = String(name || '').trim(); if (!fig || !nm) return null;
+  if (S.figures.some((f) => f.name === nm)) { $('#meta').textContent = `a figure “${nm}” exists`; return null; }
+  const doc = parseDocument(serializeDocument(fig.doc));
+  doc.title = nm; delete doc.template;
+  const c = { name: nm, doc, file: 'figures/' + slug(nm) + '.compo.json' };
+  S.figures.push(c); S.figures.sort((a, b) => a.name.localeCompare(b.name));
+  persist(c);
+  $('#meta').textContent = `composer: “${nm}”, a copy of “${fig.name}”`;
+  return c;
+}
+export async function renameFigure(fig, name) {
+  const n = String(name || '').trim(); if (!fig || !n || n === fig.name) return false;
+  if (S.figures.some((f) => f.name === n)) { $('#meta').textContent = `a figure “${n}” exists`; return false; }
+  const old = fig.file; fig.name = n; fig.doc.title = n; fig.file = 'figures/' + slug(n) + '.compo.json';
+  if (S.project && old) { try { await removeFileAt(S.project.dir, old); } catch { /* not written yet */ } }
+  persist(fig); S.figures.sort((a, b) => a.name.localeCompare(b.name));
+  if (_win && fig === _fig) _win.sub.textContent = n;
+  return true;
+}
+/** asks first (unless ask: false); the composer, if it showed this one, moves to another */
+export async function deleteFigure(fig, { ask = true } = {}) {
+  if (!fig) return false;
+  if (ask && !(await microConfirm('delete figure', `Delete the figure “${fig.name}”${S.project ? ` and its file ${fig.file}` : ''}?`, 'Delete'))) return false;
+  if (S.project && fig.file) { try { await removeFileAt(S.project.dir, fig.file); } catch { /* not written */ } }
+  S.figures = S.figures.filter((f) => f !== fig);
+  if (fig === _fig) { _fig = null; if (_ed) showFigure(S.figures[0] || newFigure('figure 1')); }
+  return true;
+}
+export function closeComposer() { if (composerOpen()) _win.close(); }
+/** a view frame's options, set from code (a sample, a host): the scale locked at 1 : scaleLock, drawn as a vector
+ *  section — then rendered again with them */
+export async function setViewFrame(ed, id, { scaleLock = null, vectorOn = null } = {}) {
+  ed.update(id, (fr) => {
+    if (scaleLock != null) { if (scaleLock > 0) fr.content.scaleLock = scaleLock; else delete fr.content.scaleLock; }
+    if (vectorOn != null) { if (vectorOn) fr.content.vectorOn = true; else { delete fr.content.vectorOn; delete fr.content.vector; delete fr.content.vectorError; } }
+  });
+  const fr = frameById(ed.getDoc(), id); await rerender(fr, PREVIEW_PX_PER_MM); ed.render();
+  return fr;
+}
+
+// the Figures window: every figure in the project, its page, what is on it — open, duplicate, rename,
+// make a template, delete; and a new one (blank or from a template)
+let _mgr = null;
+export function openFiguresManager() {
+  if (_mgr && document.body.contains(_mgr.el)) { _mgr.el.style.zIndex = String(+_mgr.el.style.zIndex + 1); _mgr._fill(); return _mgr; }
+  _mgr = floatWin({ title: 'figures', sub: S.project ? S.project.name || '' : 'this session', x: 120, y: 90, w: 560, h: 380, onClose: () => { _mgr = null; } });
+  _mgr.el.classList.add('cmp-figures');
+  const body = _mgr.body; body.style.cssText += 'display:flex;flex-direction:column;gap:8px;padding:10px';
+  const list = document.createElement('div'); list.style.cssText = 'flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;gap:2px';
+  const bar = document.createElement('div'); bar.style.cssText = 'display:flex;gap:6px;align-items:center';
+  const mk = (t, title, fn) => { const b = document.createElement('button'); b.textContent = t; b.title = title; b.onclick = fn; return b; };
+  const what = (doc) => {
+    const n = { view: 0, other: 0 }; for (const f of doc.frames || []) { if (f.source && f.source.kind === 'view') n.view++; else n.other++; }
+    const pg = doc.page || {}, size = pg.size || (pg.width && pg.height ? `${pg.width}×${pg.height} mm` : 'A4');
+    return `${size} ${pg.orientation || ''} · ${n.view} view${n.view === 1 ? '' : 's'}, ${n.other} other frame${n.other === 1 ? '' : 's'}`;
+  };
+  const fill = () => {
+    list.replaceChildren();
+    if (!S.figures.length) { const e = document.createElement('div'); e.className = 'hint'; e.textContent = 'no figures yet — New makes one; a figure is a page you compose from the 3D view, legends, charts and tables'; list.append(e); }
+    for (const fig of S.figures) {
+      const row = document.createElement('div'); row.className = 'cmp-fig-row'; row.dataset.name = fig.name;
+      row.style.cssText = 'display:flex;gap:6px;align-items:center;padding:3px 4px;border-bottom:1px solid var(--line, #3334)';
+      const nm = document.createElement('div'); nm.style.cssText = 'flex:1;min-width:0;cursor:pointer';
+      const t = document.createElement('div'); t.textContent = fig.name + (fig.doc.template ? '  ★' : ''); t.style.fontWeight = fig === _fig && composerOpen() ? 'bold' : '';
+      const sub = document.createElement('div'); sub.className = 'hint'; sub.textContent = what(fig.doc) + (fig.doc.template ? ' · template' : '');
+      nm.append(t, sub); nm.ondblclick = () => openComposer(fig.name);
+      row.append(nm,
+        mk('open', 'open it in the composer', () => { openComposer(fig.name); fill(); }),
+        mk('duplicate', 'a copy under a new name', async () => { const n = ((await microPrompt('name of the copy', freeFigureName(`${fig.name} copy`))) || '').trim(); if (n && duplicateFigure(fig, n)) { fill(); if (_win && _win._fill) _win._fill(); } }),
+        mk('rename', 'its file is renamed too', async () => { const n = ((await microPrompt('rename figure', fig.name)) || '').trim(); if (await renameFigure(fig, n)) { fill(); if (_win && _win._fill) _win._fill(); } }),
+        mk(fig.doc.template ? '★' : '☆', fig.doc.template ? 'a template — click to make it an ordinary figure' : 'make it a template: new figures can start from it', () => { setTemplate(fig.doc, !fig.doc.template); persist(fig); fill(); if (_win && _win._fill) _win._fill(); }),
+        mk('delete', 'after a confirmation', async () => { if (await deleteFigure(fig)) { fill(); if (_win && _win._fill) _win._fill(); } }));
+      list.append(row);
+    }
+    // a new figure: blank, or from one of the templates
+    from.replaceChildren(...[['', 'blank'], ...S.figures.filter((f) => f.doc.template).map((f) => [f.name, 'from ' + f.name])].map(([v, tx]) => { const o = document.createElement('option'); o.value = v; o.textContent = tx; return o; }));
+  };
+  const from = document.createElement('select'); from.title = 'what a new figure starts from';
+  bar.append(mk('New figure…', 'a new page, blank or from the template chosen beside it', async () => {
+    const n = ((await microPrompt('figure name', freeFigureName(`figure ${S.figures.length + 1}`))) || '').trim(); if (!n) return;
+    const tpl = S.figures.find((f) => f.name === from.value && f.doc.template) || null;
+    if (!S.figures.some((f) => f.name === n)) { const fig = newFigure(n, tpl); persist(fig); }
+    openComposer(n); fill();
+  }), from, Object.assign(document.createElement('span'), { style: 'flex:1' }),
+  mk('Refresh all', 'every figure made again with the data as it is now', async () => { await refreshAllFigures(); fill(); }));
+  body.append(list, bar);
+  _mgr._fill = fill; fill();
+  return _mgr;
+}
+
 // every figure write goes through ONE queue: a debounced edit-save and the project save's flush
 // never open the same file at once (two writables on one file — the loser fails)
 let _writeQ = Promise.resolve();
@@ -1078,19 +1178,15 @@ export function openComposer(name) {
       if (fromSel.value === '@compare') { const n = ((await microPrompt('report name', 'model comparison')) || '').trim(); if (n) openCompareDialog({ name: n }); return; }
       const n = ((await microPrompt('figure name', `figure ${S.figures.length + 1}`)) || '').trim(); if (!n) return; const tpl = S.figures.find((f) => f.name === fromSel.value && f.doc.template) || null; showFigure(S.figures.find((f) => f.name === n) || newFigure(n, tpl)); fill(); }),
     fromSel,
+    ib('file-copy', 'Duplicate figure', 'a copy of this figure under a new name: its page, frames and properties — then change one without the other', async () => {
+      const n = ((await microPrompt('name of the copy', freeFigureName(`${_fig.name} copy`))) || '').trim(); if (!n) return;
+      const c = duplicateFigure(_fig, n); if (c) { showFigure(c); fill(); }
+    }),
     ib('rename', 'Rename figure', 'its file is renamed too', async () => {
       const n = ((await microPrompt('rename figure', _fig.name)) || '').trim(); if (!n || n === _fig.name) return;
-      if (S.figures.some((f) => f.name === n)) { $('#meta').textContent = `a figure “${n}” exists`; return; }
-      const old = _fig.file; _fig.name = n; _fig.doc.title = n; _fig.file = 'figures/' + slug(n) + '.compo.json';
-      if (S.project && old) { try { await removeFileAt(S.project.dir, old); } catch { /* not written yet */ } }
-      persist(_fig); fill(); _win.sub.textContent = n;
+      if (await renameFigure(_fig, n)) fill();
     }),
-    ib('file-x', 'Delete figure', 'after a confirmation', async () => {
-      if (!(await microConfirm('delete figure', `Delete the figure “${_fig.name}”${S.project ? ` and its file ${_fig.file}` : ''}?`, 'Delete'))) return;
-      if (S.project && _fig.file) { try { await removeFileAt(S.project.dir, _fig.file); } catch { /* not written */ } }
-      S.figures = S.figures.filter((f) => f !== _fig);
-      showFigure(S.figures[0] || newFigure('figure 1')); fill();
-    }));
+    ib('file-x', 'Delete figure', 'after a confirmation', async () => { if (await deleteFigure(_fig)) fill(); }));
   const sp = document.createElement('span'); sp.style.flex = '1';
   const dpiSel = document.createElement('select'); dpiSel.title = 'export resolution for the 3D views and the PNG';
   for (const d of [150, 300, 600]) { const o = document.createElement('option'); o.value = d; o.textContent = d + ' dpi'; dpiSel.append(o); }

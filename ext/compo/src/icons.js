@@ -59,6 +59,7 @@ export const ICONS = {
   // the figure: new, rename, delete; make again; export
   'file-new': [PAGE, FOLD, P('M12 12v6M9 15h6')],
   'file-x': [PAGE, FOLD, P('m9.5 12.5 5 5M14.5 12.5l-5 5')],
+  'file-copy': [R(8, 8, 13, 14, 2), P('M4 16a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2')],
   rename: [P('M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z'), P('m15 5 4 4')],
   refresh: [P('M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8'), P('M3 3v5h5'), P('M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16'), P('M16 16h5v5')],
   download: [P('M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4'), P('m7 10 5 5 5-5'), P('M12 15V3')],

@@ -160,7 +160,7 @@ export function legendSpec(L) {
     const hid = info.calc ? classHidden(L, info) : L.catHidden || new Set();
     const entries = leg.entries
       .filter((e) => { const cs = legendCodesOf(info, e); return info.calc ? cs.length && !cs.every((c) => hid.has(c)) : !cs.length || !cs.every((c) => hid.has(c)); })
-      .map((e) => ({ label: e.label, color: e.color }));
+      .map((e) => ({ label: e.label, color: e.color, ...(Array.isArray(e.values) && e.values.length ? { values: e.values.map(String) } : {}) }));   // values: what a row holds (a relabelled entry reads "gneiss basement" for GNEISS)
     // a text ƒ's blank results draw in the no-data colour: listed, unless hidden
     const nd = noDataOf(L), blanks = info.calc && L._calcDisplay && L._calcDisplay.col && L._calcDisplay.col.counts[0] > 0;
     return entries.length ? { kind: 'classes', entries, tail: blanks && !nd.hide ? { label: 'no data', color: nd.color } : undefined } : null;

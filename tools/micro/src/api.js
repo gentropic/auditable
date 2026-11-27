@@ -100,7 +100,7 @@ import { openRecipeForm } from './recipe-form.js';
 import { openLibraryWindow, libraryList, libraryPut, libraryGet, libraryDelete, packFromProject, packToYaml, packToZip, packFromFile, packIntoProject, runWithoutProject, offerRunOutputs, importPackFile } from './library.js';
 import { listRuns, acceptRun, findBaseline } from './runrecord.js';
 import { openRunsWindow } from './runs-ui.js';
-import { openComposer, retargetFigure, openRetargetDialog, setHouseProps, addTitleBlock, composerFrameMenu, composerEnv, addKeyPlan, smallMultiples, refreshViews, refreshData, addResourceFrame, refreshAllFigures, staleOf, openFigurePdf, addViewFrame, addCanvasFrame, addTableFrame, legendContentFor, figurePdfBytes, composerEditor, currentFigure, compoPage, writePages, makeAtlasRoutine } from './composer.js';
+import { openComposer, retargetFigure, openRetargetDialog, setHouseProps, addTitleBlock, composerFrameMenu, composerEnv, addKeyPlan, smallMultiples, refreshViews, refreshData, addResourceFrame, refreshAllFigures, staleOf, openFigurePdf, addViewFrame, addCanvasFrame, addTableFrame, legendContentFor, figurePdfBytes, composerEditor, currentFigure, compoPage, writePages, makeAtlasRoutine, duplicateFigure, renameFigure, deleteFigure, openFiguresManager, closeComposer } from './composer.js';
 import { openLineageWindow, exportLineageReport, lineageReportHtml } from './lineage-ui.js';
 import { compareModels, compareCompat, buildComparisonReport, openCompareDialog, compareContent } from './compare.js';
 import { renderEmptyProjects, addRecent } from './recents.js';
@@ -189,7 +189,7 @@ window._micro = {
   setHouseProps, addTitleBlock, house: () => S.house, composerFrameMenu, composerEnv, addKeyPlan,
   smallMultiples, refreshViews, refreshData, addResourceFrame, refreshAllFigures, staleOf, openFigurePdf,
   addViewFrame, addCanvasFrame, addTableFrame, legendContentFor, figurePdfBytes, composerEditor, currentFigure,
-  compoPage, writePages, makeAtlasRoutine, renderViewCanvas, figures: () => S.figures, copyStyle, pasteStyle,
+  compoPage, writePages, makeAtlasRoutine, renderViewCanvas, figures: () => S.figures, duplicateFigure, renameFigure, deleteFigure, openFiguresManager, closeComposer, copyStyle, pasteStyle,
   captureStyle, applyStyle, createView, setViewOffset, changeLayerFile, layerTableHeader, setLang,
   lang: () => document.documentElement.lang, translateDom, openGradeShell, gradeShell, readField, contourField,
   smoothField, recoverSession, recreateRenderer, createMemDir, openSectionSeries, renderSectionSeries,

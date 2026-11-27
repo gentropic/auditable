@@ -36,7 +36,7 @@ import { openSettingsWindow } from './settings.js';
 import { THEME_PREFS, _themePref, setTheme, customTheme } from './theme.js';
 import { openThemeEditor } from './theme-editor.js';
 import { openTurntable } from './turntable.js';
-import { openComposer, refreshAllFigures } from './composer.js';
+import { openComposer, refreshAllFigures, openFiguresManager } from './composer.js';
 import { openFilePicker, _remember, _recents, openRecent, clearRecents, setRemember } from './recents.js';
 import { openAttrTable } from './attrtable.js';
 import { armSelect, _selThrough, setSelThrough, clearSelection } from './selection.js';
@@ -92,6 +92,7 @@ $('#mFile').onclick = () => {
     ...(S.figures.length ? [{ label: 'Figures', submenu: () => [
       ...S.figures.map((f) => ({ label: f.name + (f.doc.template ? '  ★' : ''), action: () => openComposer(f.name) })),
       { sep: true },
+      { label: 'Manage figures…', action: () => openFiguresManager() },
       { label: 'Refresh all figures', action: () => refreshAllFigures() },
     ] }] : []),
     { label: 'Save viewport PNG', action: () => $('#btnShot').click() },
