@@ -257,7 +257,7 @@ for (const [label, url] of [['dev', '/tools/wuffle/index.html'], ['built', '/wuf
     const fx = await p.evaluate(async () => {
       const W = window.__wuffleDesk, P = W.project, ds = P.datasets.find((d) => d.name === 'tocher');
       W.table.show(ds.id); await new Promise((r) => setTimeout(r, 200));
-      document.querySelector('.wt-head .wt-calc').click(); await new Promise((r) => setTimeout(r, 200));
+      document.querySelector('.wt-head .wt-fx').click(); await new Promise((r) => setTimeout(r, 200));
       const nm = document.querySelector('.wt-calc-name'), ex = document.querySelector('.wt-calc-expr');
       nm.value = 'steep'; nm.dispatchEvent(new Event('input')); ex.value = 'dip > 60'; ex.dispatchEvent(new Event('input'));
       [...document.querySelectorAll('.gcu-dialog button')].find((b) => b.textContent === 'Add').click();
@@ -268,6 +268,26 @@ for (const [label, url] of [['dev', '/tools/wuffle/index.html'], ['built', '/wuf
     });
     chk(`${label}: ƒ new column → ${JSON.stringify(fx.calc)} (${fx.n} steep; header “${fx.head}”); select where → ${fx.sel}`,
       fx.calc && fx.calc[0].expr === 'dip > 60' && fx.n > 0 && fx.head === 'ƒ steep' && /^where .*: \d+ of \d+ selected/.test(fx.sel));
+  }
+
+  // ── the column-mapping dialog from the table's "columns…": change a form, see the rows counted, apply ──
+  {
+    const cm = await p.evaluate(async () => {
+      const W = window.__wuffleDesk, P = W.project, wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      const id = W.addData('dd,dp,quad\n030,40,SE\n210,30,E\n', 'mapme.csv'); await wait(200);
+      W.table.show(id); await wait(150);
+      document.querySelector('.wt-head .wt-cols').click(); await wait(200);
+      const dlg = document.querySelector('.gcu-dialog'), note0 = dlg.querySelector('.wpnote:last-of-type')?.textContent || '';
+      const form = dlg.querySelector('.wc-form'); form.value = '0'; form.dispatchEvent(new Event('change')); await wait(50);   // dip direction / dip
+      const pick = (role, col) => { const s = dlg.querySelector(`select[data-role="${role}"]`); s.value = col; s.dispatchEvent(new Event('change')); };
+      pick('dipDir', 'dd'); pick('dip', 'dp'); await wait(50);
+      const note1 = [...dlg.querySelectorAll('.wpnote')].map((x) => x.textContent).find((t) => /rows read/.test(t)) || '';
+      [...dlg.querySelectorAll('button')].find((b) => b.textContent === 'Apply').click(); await wait(200);
+      const d = P.dataset(id);
+      return { note1, roles: d.roles, guessed: d.meta.read.guessed };
+    });
+    chk(`${label}: columns… — dip direction / dip chosen (“${cm.note1}”) → roles ${JSON.stringify(cm.roles)}, no longer guessed (${!cm.guessed})`,
+      /2 of 2 rows read/.test(cm.note1) && cm.roles.dipDir === 'dd' && cm.roles.dip === 'dp' && !cm.roles.quadrant && cm.guessed === false);
   }
 
   // ── the net's right-click: on a pole (its row in the table), on empty net (add the plane there), on a circle;

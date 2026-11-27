@@ -137,6 +137,7 @@ const HELP = {
   stats: 'stats [layer] [--selection] [--bootstrap [n]] — n, mean, κ, α95, the confidence ellipse, Bingham uniformity, eigenvalues (the selected rows only, with --selection)',
   compare: 'compare <layer> <layer> — Watson\'s test: could the two share one mean?',
   calc: 'calc [--in <data>] <name> = "<expression>" | calc [--in <data>] (the formulas) | calc --drop <name> — a calculated column (@gcu/expr; dip, dipdir, strike, pole_trend, trend, plunge, rake are there too). QUOTE the expression: > and quotes are the shell\'s',
+  columns: 'columns <data> [planes|lines|faults|smallcircles|table] [role=column …] — how a dataset is read (roles: dipdir dip strike quadrant attitude trend plunge rake angle sense set weight); no roles: how it is read now',
   join: 'join <data> <table> on <column>[=<table column>] — the table\'s columns onto the measurements, by a key, as a new dataset',
   kinematic: 'kinematic [layer] <face dd/dip> [--phi 30] [--lateral 20] — planar, wedge and toppling failure against a slope face (Markland); draws the face and the friction cone',
   fold: 'fold [layer] [--recumbent] [--keep] — the π-girdle\'s axis, cylindricity, interlimb angle, axial plane, Fleuty\'s names; --keep draws the axis and the axial plane',
@@ -358,6 +359,23 @@ export function createCommands(ctx) {
       const broken = p.setCalc(ds.id, name, expr), d2 = p.dataset(ds.id);
       const sample = d2.rows.slice(0, 3).map((r) => r[name]).map((v) => (v === '' ? '·' : String(v))).join(', ');
       return `${d2.name} · ${name} = ${expr}  (${sample}${d2.rows.length > 3 ? ', …' : ''})${broken.length ? ` — not computed: ${broken.join(', ')}` : ''}`;
+    },
+    columns([name, ...rest]) {
+      if (!name) throw new Error('columns <data> [kind] [role=column …]');
+      const ds = dataOf(name);
+      if (!rest.length) return `${ds.name} · ${ds.kind} · ${Object.entries(ds.roles || {}).map(([k, v]) => `${k}=${v}`).join(' ') || 'no roles'}${ds.meta?.read?.guessed ? ` (guessed: ${ds.meta.read.why})` : ''}`;
+      const KEYS = { dipdir: 'dipDir', dipdirection: 'dipDir', dip: 'dip', strike: 'strike', quadrant: 'quadrant', attitude: 'attitude', trend: 'trend', plunge: 'plunge', rake: 'rake', angle: 'angle', sense: 'sense', set: 'set', weight: 'weight' };
+      let kind = ds.kind; const roles = {};
+      for (const t of rest) {
+        const m = t.match(/^([a-z]+)=(.+)$/i);
+        if (!m) { if (!['planes', 'lines', 'faults', 'smallcircles', 'table'].includes(t)) throw new Error(`“${t}”: a kind (planes, lines, faults, smallcircles, table) or role=column`); kind = t; continue; }
+        const k = KEYS[m[1].toLowerCase()]; if (!k) throw new Error(`no role “${m[1]}” — ${Object.keys(KEYS).join(', ')}`);
+        roles[k] = m[2];
+      }
+      const use = Object.keys(roles).length ? roles : (kind === ds.kind ? ds.roles : {});
+      p.setReading(ds.id, { kind, roles: use });
+      const d2 = p.dataset(ds.id), n = orientations(d2).filter(Boolean).length;
+      return `${d2.name} · ${d2.kind} · ${Object.entries(d2.roles).map(([k, v]) => `${k}=${v}`).join(' ') || 'no roles'} — ${d2.kind === 'table' ? 'not drawn' : `${n} of ${d2.rows.length} rows read`}`;
     },
     join(args) {
       const at = args.indexOf('on'); if (at !== 2 || !args[3]) throw new Error('join <data> <table> on <column>[=<table column>]');

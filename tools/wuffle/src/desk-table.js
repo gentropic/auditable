@@ -7,6 +7,7 @@ import { orientations } from './io.js';
 import { formatPlane, formatLine } from '../../../ext/stereonet/index.js';
 import { Dialog } from '../../../ext/dialog/index.js';
 import { checkExpr, schemaOf } from './calc.js';
+import { columnsDialog } from './desk-columns.js';
 
 function providerFor(p, datasetId) {
   const ds = () => p.dataset(datasetId);
@@ -69,10 +70,12 @@ export class TableView {
     txt.textContent = d ? `${d.name} · ${d.kind} · ${d.rows.length} rows${d.meta?.read?.guessed ? ` · ${d.meta.read.why}` : ''}` : 'no dataset — click a layer or a dataset in the tree';
     this.head.replaceChildren(txt);
     if (!d) return;
-    const fx = document.createElement('button'); fx.type = 'button'; fx.className = 'wt-calc'; fx.textContent = 'ƒ new column';
+    const fx = document.createElement('button'); fx.type = 'button'; fx.className = 'wt-calc wt-fx'; fx.textContent = 'ƒ new column';
     fx.title = 'a calculated column: a formula over the row (its columns, and dip, dipdir, strike, pole_trend, trend, plunge, rake), kept with the data and made again when the rows change';
     fx.onclick = () => this.calcDialog();
-    this.head.append(fx);
+    const cm = document.createElement('button'); cm.type = 'button'; cm.className = 'wt-calc wt-cols'; cm.textContent = d.meta?.read?.guessed ? 'columns… (guessed)' : 'columns…';
+    cm.title = 'how this data is read: its kind and which column is which'; cm.onclick = () => columnsDialog(this.p, this.datasetId);
+    this.head.append(cm, fx);
   }
   /** ƒ: name + expression, checked as you type (the console's calc, without the shell's quoting) */
   async calcDialog(prefill = {}) {

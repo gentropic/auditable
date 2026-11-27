@@ -360,3 +360,23 @@ describe('contouring faults', () => {
     assert.deepEqual(core.buildScene({ layers: sceneLayers(p, p.activeDiagram) }).primitives.find((q) => q.type === 'contour').dcos[0], sceneLayers(p, p.activeDiagram)[0].data[0].pole);
   });
 });
+
+describe('how a dataset is read, set by hand', () => {
+  it('columns: a wrong guess corrected — the kind, the roles, the notation; its layers follow; one undo step', () => {
+    const { p, c } = mk();
+    const [g] = readTable('a,b,c\n30,40,SE\n210,30,E\n', 'quad');      // the reader sees strike / dip / quadrant
+    const id = p.addDataset(g); p.addLayer(p.activeDiagram, id);
+    assert.match(c.run('columns quad').text, /quad · planes/);
+    // say: a is a DIP DIRECTION, b the dip (ignore the letters)
+    assert.match(c.run('columns quad planes dipdir=a dip=b').text, /2 of 2 rows read/);
+    assert.deepEqual(orientations(p.dataset(id)).map((o) => o.plane), [[30, 40], [210, 30]]);
+    assert.equal(p.dataset(id).meta.read.guessed, false);
+    // as lines: the layer gets a lines layer's elements
+    c.run('columns quad lines trend=a plunge=b');
+    assert.ok('points' in p.layersOf(p.activeDiagram)[0].elements && !('poles' in p.layersOf(p.activeDiagram)[0].elements));
+    // as a table: it comes off the net
+    c.run('columns quad table'); assert.equal(p.layersOf(p.activeDiagram).length, 0);
+    c.run('undo'); assert.equal(p.dataset(id).kind, 'lines'); assert.equal(p.layersOf(p.activeDiagram).length, 1);
+    assert.match(c.run('columns quad planes dipdir=nope dip=b').text, /has no column “nope”/);
+  });
+});

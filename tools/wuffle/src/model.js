@@ -98,6 +98,24 @@ export class Project {
   // datasets are COPY-ON-WRITE: a change replaces the object (and its rows array), never edits it — so the
   // undo journal can hold references to past datasets instead of copies of their rows
   _replaceDataset(d, next) { this.datasets = this.datasets.map((x) => (x === d ? next : x)); return next; }
+  /** HOW A DATASET IS READ, set by hand (the column-mapping dialog, `columns`): its kind and which column is which —
+   *  replacing what the reader guessed. Its layers follow: a new kind gets that kind's elements (their styles kept);
+   *  a TABLE is not drawn, so its layers go. The notation follows the roles (a strike column: right-hand rule). */
+  setReading(id, { kind, roles }) {
+    const d = this._need(id);
+    if (!DATASET_KINDS.includes(kind)) throw new Error(`kind: one of ${DATASET_KINDS.join(', ')}`);
+    for (const [k, c] of Object.entries(roles || {})) if (c != null && !d.columns.includes(c)) throw new Error(`“${d.name}” has no column “${c}” (for ${k})`);
+    const clean = Object.fromEntries(Object.entries(roles || {}).filter(([, c]) => c != null && c !== ''));
+    const notation = kind === 'table' ? null : clean.attitude ? 'text' : clean.quadrant ? 'quadrant' : clean.strike && !clean.dipDir ? 'rhr' : 'dd';
+    const meta = { ...(d.meta || {}), read: { ...((d.meta && d.meta.read) || {}), guessed: false, why: 'set by hand' } };
+    this._replaceDataset(d, { ...d, kind, roles: clean, notation, meta });
+    if (kind !== d.kind) {
+      if (kind === 'table') this.layers = this.layers.filter((l) => l.datasetId !== id);
+      else for (const l of this.layers) if (l.datasetId === id) l.elements = defaultElements(kind);
+      this._emit('layers-removed', {});
+    }
+    this._emit('dataset-changed', { id });
+  }
   /** which columns mean what: merged into the dataset's roles (null removes one) — a Terzaghi weight, a corrected mapping */
   setRoles(id, roles) {
     const d = this._need(id), next = { ...d.roles };
@@ -332,7 +350,7 @@ export class Project {
 // view state: restored with a step, never steps of their own.
 
 const JOURNALED = {
-  addDataset: 'open data', renameDataset: 'rename', setRoles: 'column roles', setCalc: 'calculated column', dropCalc: 'drop calculated column', editRows: 'edit rows', removeDataset: 'delete data',
+  addDataset: 'open data', renameDataset: 'rename', setRoles: 'column roles', setReading: 'how the data is read', setCalc: 'calculated column', dropCalc: 'drop calculated column', editRows: 'edit rows', removeDataset: 'delete data',
   derive: 'derive', selectionToDataset: 'selection → dataset',
   addDiagram: 'new diagram', setDiagramProps: 'diagram settings', renameDiagram: 'rename diagram', removeDiagram: 'remove diagram',
   addLayer: 'add layer', addView: 'add view', moveLayer: 'move layer', removeLayer: 'remove layer', removeEverywhere: 'remove from everywhere',

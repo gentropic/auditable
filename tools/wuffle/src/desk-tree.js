@@ -5,6 +5,7 @@
 
 import { Menu } from '../../../ext/menu/index.js';
 import { weightColumns } from './diagram-svg.js';
+import { columnsDialog } from './desk-columns.js';
 import { Dialog, confirm, prompt } from '../../../ext/dialog/index.js';
 import { orientations } from './io.js';
 
@@ -196,6 +197,7 @@ export class TreeView {
     const a = await Menu.show([
       { label: 'Show the table', action: 'table' },
       { label: ds.kind === 'table' ? 'Draw on (a table has no attitudes — join it onto measurements)' : 'Draw on', disabled: !nets.length || ds.kind === 'table', children: nets.map((g) => ({ label: g.name, action: 'draw:' + g.id })) },
+      { label: 'Columns… (how it is read)', action: 'columns' },
       { label: 'Rename…', action: 'rename' },
       '---',
       { label: 'Delete dataset', action: 'delete', danger: true },
@@ -203,6 +205,7 @@ export class TreeView {
     if (!a) return;
     if (a === 'table') this.onShowDataset(ds.id);
     else if (a.startsWith('draw:')) p.addLayer(a.slice(5), ds.id);
+    else if (a === 'columns') await columnsDialog(p, ds.id);
     else if (a === 'rename') { const n = await prompt('Name of the dataset', { defaultValue: ds.name }); if (n) p.renameDataset(ds.id, n); }
     else if (a === 'delete') {
       const uses = p.usesOf(ds.id);
