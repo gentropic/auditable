@@ -14,6 +14,8 @@ import { orientations } from './io.js';
 import { rowsWhere } from './calc.js';
 import { joinTable } from './join.js';
 import { weightColumns } from './diagram-svg.js';
+import { toGeoJSON } from './io.js';
+import { toCsv } from './project-fs.js';
 import { layerStats, deriveMean, deriveEigen, deriveBeta, deriveIntersection, applyTerzaghi, deriveRotated, deriveUntilted, deriveDeclination, detectSets, compareMeans, deriveLineations, applyKinematic, foldAnalysis, fitSmallCircle } from './stats.js';
 import { declination as wmmDeclination } from '../../../ext/wmm/index.js';
 
@@ -138,6 +140,7 @@ const HELP = {
   compare: 'compare <layer> <layer> — Watson\'s test: could the two share one mean?',
   calc: 'calc [--in <data>] <name> = "<expression>" | calc [--in <data>] (the formulas) | calc --drop <name> — a calculated column (@gcu/expr; dip, dipdir, strike, pole_trend, trend, plunge, rake are there too). QUOTE the expression: > and quotes are the shell\'s',
   columns: 'columns <data> [planes|lines|faults|smallcircles|table] [role=column …] — how a dataset is read (roles: dipdir dip strike quadrant attitude trend plunge rake angle sense set weight); no roles: how it is read now',
+  export: 'export <data> csv | geojson — a dataset to a file (downloaded); GeoJSON needs lon / lat or x / y columns',
   join: 'join <data> <table> on <column>[=<table column>] — the table\'s columns onto the measurements, by a key, as a new dataset',
   kinematic: 'kinematic [layer] <face dd/dip> [--phi 30] [--lateral 20] — planar, wedge and toppling failure against a slope face (Markland); draws the face and the friction cone',
   fold: 'fold [layer] [--recumbent] [--keep] — the π-girdle\'s axis, cylindricity, interlimb angle, axial plane, Fleuty\'s names; --keep draws the axis and the axial plane',
@@ -359,6 +362,16 @@ export function createCommands(ctx) {
       const broken = p.setCalc(ds.id, name, expr), d2 = p.dataset(ds.id);
       const sample = d2.rows.slice(0, 3).map((r) => r[name]).map((v) => (v === '' ? '·' : String(v))).join(', ');
       return `${d2.name} · ${name} = ${expr}  (${sample}${d2.rows.length > 3 ? ', …' : ''})${broken.length ? ` — not computed: ${broken.join(', ')}` : ''}`;
+    },
+    export([name, fmt = 'csv']) {
+      if (!name) throw new Error('export <data> csv | geojson');
+      const ds = dataOf(name), f = String(fmt).toLowerCase(), file = ds.name.replace(/[\\/:*?"<>|]+/g, '_');
+      if (f === 'csv') { ctx.download?.(new Blob([toCsv(ds.columns, ds.rows)], { type: 'text/csv' }), `${file}.csv`); return `↓ ${file}.csv (${ds.rows.length} rows, ${ds.columns.length} columns)`; }
+      if (f === 'geojson' || f === 'json') {
+        const r = toGeoJSON(ds); ctx.download?.(new Blob([r.geojson], { type: 'application/geo+json' }), `${file}.geojson`);
+        return `↓ ${file}.geojson (${r.n} points from ${r.columns.join(' / ')}${r.crs === 'projected' ? ' — projected coordinates: GeoJSON says WGS 84, so tell the reader your CRS' : ''}${r.skipped ? `; ${r.skipped} rows without coordinates left out` : ''})`;
+      }
+      throw new Error('export <data> csv | geojson');
     },
     columns([name, ...rest]) {
       if (!name) throw new Error('columns <data> [kind] [role=column …]');

@@ -380,3 +380,23 @@ describe('how a dataset is read, set by hand', () => {
     assert.match(c.run('columns quad planes dipdir=nope dip=b').text, /has no column “nope”/);
   });
 });
+
+describe('export', () => {
+  it('csv and geojson (points from x / y or lon / lat, the attitude as plain properties); no coordinates says so', async () => {
+    const { toGeoJSON } = await import('../tools/wuffle/src/io.js');
+    const got = [];
+    const p = new Project(); p.addDiagram('net');
+    const c = createCommands({ project: p, download: (blob, name) => got.push([name, blob]) });
+    const [ds] = readTable('station,x,y,dipaz,dip\nA,350100,7800200,120,40\nB,,,200,30\n', 'stations');
+    const id = p.addDataset(ds);
+    assert.equal(p.dataset(id).kind, 'planes', 'dipaz / dip read as a plane');
+    assert.match(c.run('export stations geojson').text, /1 points from x \/ y — projected coordinates.*1 rows without coordinates left out/);
+    const fc = JSON.parse(await got[0][1].text());
+    assert.deepEqual(fc.features[0].geometry.coordinates, [350100, 7800200]);
+    assert.equal(fc.features[0].properties.dip_direction, 120); assert.equal(fc.features[0].properties.strike, 30);
+    assert.match(c.run('export stations csv').text, /stations\.csv \(2 rows/);
+    assert.match(await got[1][1].text(), /^station,x,y,dipaz,dip/);
+    const q = p.addDataset({ name: 'bare', kind: 'planes', rows: [{ dd: 1, dip: 2 }], roles: { dipDir: 'dd', dip: 'dip' } });
+    assert.throws(() => toGeoJSON(p.dataset(q)), /no coordinate columns/);
+  });
+});

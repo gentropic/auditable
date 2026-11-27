@@ -6,7 +6,7 @@
 import { Menu } from '../../../ext/menu/index.js';
 import { weightColumns } from './diagram-svg.js';
 import { columnsDialog } from './desk-columns.js';
-import { Dialog, confirm, prompt } from '../../../ext/dialog/index.js';
+import { Dialog, confirm, prompt, alert } from '../../../ext/dialog/index.js';
 import { orientations } from './io.js';
 
 const LABEL = { poles: 'poles', points: 'points', greatCircles: 'great circles', contours: 'contours', mean: 'mean + cone', eigen: 'eigenvectors',
@@ -198,6 +198,7 @@ export class TreeView {
       { label: 'Show the table', action: 'table' },
       { label: ds.kind === 'table' ? 'Draw on (a table has no attitudes — join it onto measurements)' : 'Draw on', disabled: !nets.length || ds.kind === 'table', children: nets.map((g) => ({ label: g.name, action: 'draw:' + g.id })) },
       { label: 'Columns… (how it is read)', action: 'columns' },
+      { label: 'Export', children: [{ label: 'CSV', action: 'x:csv' }, { label: 'GeoJSON (points; needs lon / lat or x / y)', action: 'x:geojson' }] },
       { label: 'Rename…', action: 'rename' },
       '---',
       { label: 'Delete dataset', action: 'delete', danger: true },
@@ -206,6 +207,7 @@ export class TreeView {
     if (a === 'table') this.onShowDataset(ds.id);
     else if (a.startsWith('draw:')) p.addLayer(a.slice(5), ds.id);
     else if (a === 'columns') await columnsDialog(p, ds.id);
+    else if (a.startsWith('x:')) { const r = this.onCommand ? this.onCommand(`export "${ds.name}" ${a.slice(2)}`) : null; if (r && !r.ok) await alert(r.text); }
     else if (a === 'rename') { const n = await prompt('Name of the dataset', { defaultValue: ds.name }); if (n) p.renameDataset(ds.id, n); }
     else if (a === 'delete') {
       const uses = p.usesOf(ds.id);

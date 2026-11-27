@@ -66,7 +66,8 @@ export function mountDesk() {
   const consoleView = new ConsoleView({ project: p,
     // a typed selection goes through the active net's tool, so its shape is drawn too
     applyShape: (shape, mode) => { const v = layout.views.get(p.activeDiagram); return v && v.net ? select.apply(v, shape, mode) : null; },
-    setTheme: (t) => theme.set(t), focusDiagram: (id) => layout.focusDiagram(id), openSample: () => files.addData(TOCHER, 'tocher.csv') });
+    setTheme: (t) => theme.set(t), focusDiagram: (id) => layout.focusDiagram(id), openSample: () => files.addData(TOCHER, 'tocher.csv'),
+    download: (blob, name) => { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 4000); } });
   // the net's right-click: what's under the cursor, the selection, the net, the picture (desk-netmenu.js)
   const netMenu = createNetMenu({ project: p, tree, table, select, layout: { focusTable: () => layout.focusTable() }, commands: consoleView.cmd, onStatus: status });
   layout = createLayout($('.wwork'), { project: p, tree, table, stats, consoleView, select, rotate, measure, netMenu, onStatus: status });
@@ -74,6 +75,7 @@ export function mountDesk() {
   files = createFiles(root, { project: p, dropHost: $('.wwork'), onOpened: (id) => table.show(id), home: consoleView.home, onStatus: status });
   const menus = createMenus($('.wmenus'), { project: p, files, layout, theme, figures, onStatus: status });
   tree.onOpenFigure = (id) => figures.open(id);
+  tree.onCommand = (line) => consoleView.cmd.run(line);   // the tree's menu runs the console's own commands (export …)
 
   // the tab's title names the project, as a saved page's own <title> does (page.js): "<name> — wuffle"
   const title = () => { document.title = `${p.name || 'untitled'} — wuffle`; };

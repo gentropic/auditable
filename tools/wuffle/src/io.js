@@ -81,11 +81,11 @@ export function parseDelimited(text) {
 
 const norm = (s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, '');
 const ROLE_PATTERNS = {
-  dipDir: /^(dipdir|dipdirection|dipazimuth|dipaz|ddir|dd|dipdirn|azimuthofdip|dipdirectiontrend)$/,
+  dipDir: /^(dipdir|dipdirection|dipazimuth|dipaz|ddir|dd|dipdirn|azimuthofdip|dipdirectiontrend|dipazi|dipdirectionazimuth|planedipdirection|planeazimuth)$/,
   strike: /^(strike|str|rhr|strikerhr|strikedir)$/,
-  dip: /^(dip|dipangle|inclination|incl)$/,
-  trend: /^(trend|tr|trd|lineationtrend|azimuth|az|bearing)$/,
-  plunge: /^(plunge|pl|plg|lineationplunge)$/,
+  dip: /^(dip|dipangle|inclination|incl|planedip|dipvalue)$/,
+  trend: /^(trend|tr|trd|lineationtrend|azimuth|az|bearing|plungeazimuth|plungeaz|plungedirection|plungedir|trendazimuth|lineationazimuth)$/,
+  plunge: /^(plunge|pl|plg|lineationplunge|plungeangle|lineplunge)$/,
   sense: /^(sense|slipsense|kinematics|kin|movement)$/,
   rake: /^(rake|pitch|slickrake|striarake)$/,
   angle: /^(angle|opening|semiangle|cone|halfangle)$/,
@@ -235,4 +235,28 @@ export function orientations(ds) {
     }
     return out;
   });
+}
+
+// ── a dataset OUT as GeoJSON: each row with coordinates a Point, its attitude as plain properties (dip_direction,
+// dip, trend, plunge, strike — the same names whatever the file called them) beside every column. Coordinates:
+// lon / lat columns (WGS 84, as GeoJSON wants), else x / y (east / north: projected — the CRS is the user's to know,
+// and the answer says so). Rows without coordinates are left out and counted. → { geojson, n, skipped, crs }
+const COORD_PAIRS = [[/^(lon|long|longitude|lng)$/, /^(lat|latitude)$/, 'wgs84'], [/^(x|e|east|easting|utmx|xcoord)$/, /^(y|n|north|northing|utmy|ycoord)$/, 'projected']];
+export function toGeoJSON(ds) {
+  let pair = null;
+  for (const [rx, ry, crs] of COORD_PAIRS) { const cx = ds.columns.find((c) => rx.test(norm(c))), cy = ds.columns.find((c) => ry.test(norm(c))); if (cx && cy) { pair = { cx, cy, crs }; break; } }
+  if (!pair) throw new Error(`“${ds.name}” has no coordinate columns (lon / lat, or x / y) — GeoJSON needs a place for each row; export CSV instead`);
+  const zc = ds.columns.find((c) => /^(z|elev|elevation|rl|alt|altitude|height)$/.test(norm(c)));
+  const os = ds.kind === 'table' ? ds.rows.map(() => null) : orientations(ds), feats = []; let skipped = 0;
+  ds.rows.forEach((row, i) => {
+    const x = +row[pair.cx], y = +row[pair.cy];
+    if (row[pair.cx] === '' || row[pair.cy] === '' || !Number.isFinite(x) || !Number.isFinite(y)) { skipped++; return; }
+    const z = zc && row[zc] !== '' && Number.isFinite(+row[zc]) ? +row[zc] : null, o = os[i], att = {};
+    if (o && o.plane) { att.dip_direction = +o.plane[0].toFixed(2); att.dip = +o.plane[1].toFixed(2); att.strike = +((o.plane[0] + 270) % 360).toFixed(2); }
+    if (o && o.line) { att.trend = +(((o.line[0] % 360) + 360) % 360).toFixed(2); att.plunge = +o.line[1].toFixed(2); }
+    if (o && o.angle != null) att.half_angle = o.angle;
+    feats.push({ type: 'Feature', geometry: { type: 'Point', coordinates: z == null ? [x, y] : [x, y, z] }, properties: { ...row, ...att, kind: ds.kind } });
+  });
+  const fc = { type: 'FeatureCollection', name: ds.name, ...(pair.crs === 'projected' ? { 'wuffle:note': 'x / y are projected coordinates in the CRS they were measured in (not WGS 84)' } : {}), features: feats };
+  return { geojson: JSON.stringify(fc), n: feats.length, skipped, crs: pair.crs, columns: [pair.cx, pair.cy] };
 }
