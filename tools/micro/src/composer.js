@@ -24,10 +24,11 @@ import { setSectionWorld, sectionWorld, currentSection } from './section.js';
 import { sectionCutOf, sectionRecordMask, filterMaskOf } from './insection.js';
 import { rendererDocBbox, layerShown } from './layers.js';
 import { attrRowCountOf, layerBlob, layerTableHeader, schemaExt, layerWorldBox, meshVertexData } from './records.js';
+import { validate as validateExpr } from '../../../ext/expr/index.js';
 import { figureRefs, retargetDoc, guessLayer, guessColumn } from './retarget.js';
 import { computeResourceTable, numericColsOf, parseFactor } from './analysis.js';
 import { sourceHash, sourceHashSync } from './identity.js';
-import { createDocument, parseDocument, serializeDocument, mountEditor, iconButton, exportPDF, exportPNG, frameById, pageDims, tableFromTsv, subjectFrame, refFrame, figureFromPdf, registerKind, replayDrawList, HOUSE_KEYS, FIGURE_KEYS, setTemplate, docFromTemplate, addTitleBlock as compoTitleBlock, addImageFromFile as compoImageFromFile, multiplesGrid, smallMultiples as compoMultiples, groupDigits, significant, fmtBearing, refreshLegend } from '../../../ext/compo/index.js';
+import { createDocument, parseDocument, serializeDocument, mountEditor, iconButton, exportPDF, exportPNG, frameById, pageDims, tableFromTsv, subjectFrame, refFrame, figureFromPdf, registerKind, replayDrawList, HOUSE_KEYS, FIGURE_KEYS, setTemplate, docFromTemplate, addTitleBlock as compoTitleBlock, addImageFromFile as compoImageFromFile, multiplesGrid, smallMultiples as compoMultiples, groupDigits, significant, fmtBearing, refreshLegend, freeSpot } from '../../../ext/compo/index.js';
 import { chartFigure } from './analysis-ui.js';
 import { colorChoices, colorSelFor } from './color.js';
 import { rerunToolRecipe } from './tools.js';
@@ -66,6 +67,17 @@ function viewMeta(pxH, canvas) {
 // ── FACTS: what a view showed when it was rendered — the camera, the section, each shown layer
 // with its file, content hash, filter and record counts. A caption's fields read these, so a
 // caption describes the IMAGE (its scene), not whatever the 3D view shows now. ──
+// a layer's SOURCE and its fingerprint (the sampled content hash, src/identity.js): its file — and for a drillhole
+// set, its collar, survey and interval files together (a changed survey moves every hole). Drillholes had none,
+// so {sha} printed "…" and a changed assay file never made the figure say "older data".
+function layerSources(L) {
+  const b = L.docs && L.docs.dhDoc && L.docs.dhDoc.blobs;
+  if (b) { const bs = ['collar', 'survey', 'intervals'].map((k) => b[k]).filter(Boolean); return bs.length ? bs : null; }
+  const one = layerBlob(L); return one ? [one] : null;
+}
+function layerShaSync(L) { const bs = layerSources(L); if (!bs) return null; const h = bs.map((x) => sourceHashSync(x)); return h.every(Boolean) ? h.join('+') : null; }
+async function layerShaAsync(L) { const bs = layerSources(L); if (!bs) return null; return (await Promise.all(bs.map((x) => sourceHash(x)))).join('+'); }
+function layerFile(L) { const b = L.docs && L.docs.dhDoc && L.docs.dhDoc.blobs; const f = b ? b.intervals : layerBlob(L); return (f && f.name) || L.name; }
 function viewFacts() {
   const c = HK.cameraWorld ? HK.cameraWorld() : null;
   let sec = null; try { sec = sectionWorld(); } catch { /* nothing loaded */ }
@@ -75,8 +87,8 @@ function viewFacts() {
     const total = attrRowCountOf(L) || 0, m = L._filterMask;
     let shown = total;
     if (m && L.filterExpr) { shown = 0; for (let i = 0; i < m.length; i++) if (m[i]) shown++; }
-    const blob = layerBlob(L), l = { name: L.label || L.name, file: (blob && blob.name) || L.name, sha: blob ? sourceHashSync(blob) : null, filter: L.filterExpr || '', shown, total, ...(L.kind === 'mesh' || (L.docs && L.docs.gridDoc) ? { ctx: true } : {}) };   // ctx: a mesh / grid — context, not records anyone counts
-    Object.defineProperty(l, '_blob', { value: blob, enumerable: false });   // for completeFacts' hash; never saved
+    const l = { name: L.label || L.name, file: layerFile(L), sha: layerShaSync(L), filter: L.filterExpr || '', shown, total, ...(L.kind === 'mesh' || (L.docs && L.docs.gridDoc) ? { ctx: true } : {}) };   // ctx: a mesh / grid — context, not records anyone counts
+    Object.defineProperty(l, '_layer', { value: L, enumerable: false });   // for completeFacts' hash (layerShaAsync); never saved
     layers.push(l);
   }
   return {
@@ -117,7 +129,7 @@ async function completeFacts(doc, f) {
   }
   const baseMasks = new Map(S.layers.map((L) => [L, filterMaskOf(L)]));
   fx.statsScope = scope;
-  for (const l of fx.layers) if (l._blob && !l.sha) { try { l.sha = await sourceHash(l._blob); } catch { /* unreadable: no hash */ } }
+  for (const l of fx.layers) if (l._layer && !l.sha) { try { l.sha = await layerShaAsync(l._layer); } catch { /* unreadable: no hash */ } }
   if (f.content.vectorOn) { try { await buildVector(f); } catch (e) { f.content.vector = null; f.content.vectorError = e.message; } }
   // the records inside the section, ONE positions pass per layer, only when a caption counts
   // about this view; the masks then serve every statistic below (N captions, one pass)
@@ -242,13 +254,22 @@ function addLegendFrames(ed) {
   const vis = vf ? new Set(vf.source.scene.layers.filter((l) => l.visible).map((l) => l.name)) : null;
   const Ls = S.layers.filter((L) => (vis ? vis.has(L.name) : L.visible !== false) && legendSpec(L));
   if (!Ls.length) { $('#meta').textContent = 'composer: no layer has a legend to show (solid colour or file RGB)'; return; }
-  const x0 = vf ? vf.box[0] + vf.box[2] + 6 : 20; let y = vf ? vf.box[1] : 20;
+  // context meshes coloured by elevation (topography, pit shells) say nothing a reader needs a key for; two
+  // layers with the same key get one legend
+  const seen = new Set();
+  let n = 0;
   for (const L of Ls) {
-    const c = legendContentFor(L);
+    if (L.kind === 'mesh' && L.colorSel === 'elev' && Ls.some((x) => x.kind !== 'mesh')) continue;
+    const c0 = legendContentFor(L); if (!c0) continue;
+    const key = JSON.stringify([c0.kind, c0.title, c0.stops || c0.entries, c0.lo, c0.hi]);
+    if (seen.has(key)) continue; seen.add(key);
+    const c = { ...c0, title: `${L.label || L.name} · ${c0.title}` };
     const h = c.kind === 'ramp' ? 42 : Math.min(80, 7 + 4.4 * (c.entries.length + (c.tail ? 1 : 0)));
-    ed.addFrame({ kind: 'legend', box: [x0, y, 42, h], content: c, source: { app: 'micro', kind: 'legend', layer: L.name } });
-    y += h + 4;
+    const box = freeSpot(ed.getDoc(), 42, h, { near: vf || null });
+    ed.addFrame({ kind: 'legend', box, content: c, source: { app: 'micro', kind: 'legend', layer: L.name } });
+    n++;
   }
+  if (!n) $('#meta').textContent = 'composer: the visible layers are context (elevation-coloured meshes) — no legend to add';
 }
 // the points of interest as labels in a 3D-view frame (their leaders follow the points)
 function addPoiLabels(ed) {
@@ -279,9 +300,9 @@ export function staleOf(f) {
   for (const l of fx.layers) {
     const L = S.layers.find((x) => (x.label || x.name) === l.name);
     if (!L) { missing.push(l); continue; }
-    const blob = layerBlob(L); if (!blob || !l.sha) continue;
-    const cur = sourceHashSync(blob);
-    if (!cur) { if (!_hashing.has(blob)) { _hashing.add(blob); sourceHash(blob).then(() => { if (_ed) _ed.render(); }, () => {}); } continue; }
+    if (!l.sha || !layerSources(L)) continue;
+    const cur = layerShaSync(L);
+    if (!cur) { if (!_hashing.has(L)) { _hashing.add(L); layerShaAsync(L).then(() => { _hashing.delete(L); if (_ed) _ed.render(); }, () => {}); } continue; }
     if (cur !== l.sha) changed.push({ l, cur });
   }
   if (changed.length) return { text: 'older data', title: changed.map(({ l, cur }) => `${l.name}: rendered from ${l.file} ${l.sha.slice(0, 8)}, the layer is now ${cur.slice(0, 8)}`).join('\n') + '\nRefresh (↻) makes it again' };
@@ -290,6 +311,20 @@ export function staleOf(f) {
 }
 // render every view frame of a figure again from its own scene (the stored preview too), then
 // its facts; the user's view comes back after
+// a figure's legend frames read their layers again — a view re-renders with the layer's styling as it is now
+// (the scene keeps no palette), so a legend that didn't would disagree with its own view (a restyled model printed
+// in magma beside a viridis legend). Your edits to a legend stay (compo's refreshLegend). → how many changed
+function refreshLegendFrames(doc) {
+  let n = 0;
+  for (const lf of doc.frames) {
+    if (!(lf.source && lf.source.kind === 'legend')) continue;
+    const L = S.layers.find((x) => x.name === lf.source.layer);
+    const c = L && legendContentFor(L); if (!c) continue;
+    const next = refreshLegend(lf.content, { ...c, title: lf.content.title || c.title });
+    if (JSON.stringify(next) !== JSON.stringify(lf.content)) { lf.content = next; n++; }
+  }
+  return n;
+}
 export async function refreshViews(fig = _fig) {
   if (!fig) return 0;
   const views = fig.doc.frames.filter((f) => isView(f) && f.source.scene);
@@ -304,9 +339,10 @@ export async function refreshViews(fig = _fig) {
       await completeFacts(fig.doc, f);
     }
   } finally { await applyScene(mine); requestRender(); }
+  const nLeg = refreshLegendFrames(fig.doc);
   persist(fig);
   if (_ed && _fig === fig) { _ed.setDoc(fig.doc); }
-  $('#meta').textContent = `composer: “${fig.name}” — ${views.length} view${views.length === 1 ? '' : 's'} rendered again${nData ? `, ${nData} chart / table frame${nData === 1 ? '' : 's'} made again` : ''}`;
+  $('#meta').textContent = `composer: “${fig.name}” — ${views.length} view${views.length === 1 ? '' : 's'} rendered again${nData ? `, ${nData} chart / table frame${nData === 1 ? '' : 's'} made again` : ''}${nLeg ? `, ${nLeg} legend${nLeg === 1 ? '' : 's'} following the layers' colours` : ''}`;
   return views.length + nData;
 }
 // ── DATA FRAMES: a chart / table that came from an analysis window keeps its recipe, and a
@@ -324,8 +360,7 @@ async function stampFacts(f, names) {
   for (const nm of names) {
     const L = S.layers.find((x) => x.name === nm || (x.label || x.name) === nm);
     if (!L) { layers.push({ name: nm, file: nm, sha: null }); continue; }
-    const blob = layerBlob(L);
-    layers.push({ name: L.label || L.name, file: (blob && blob.name) || L.name, sha: blob ? await sourceHash(blob) : null });
+    layers.push({ name: L.label || L.name, file: layerFile(L), sha: await layerShaAsync(L) });
   }
   f.source = { ...f.source, facts: { layers, at: new Date().toISOString() } };
 }
@@ -400,7 +435,7 @@ export async function addResourceFrame(p) {
   const doc = ed.getDoc(), m = doc.page.margins || [12, 12, 12, 12];
   const content = await resourceContent(p);
   const rows = Math.min(content.rows.length, 30), w = Math.min(160, 20 + 18 * content.columns.length), h = +(9 + 4.2 * (rows + 2.5)).toFixed(1);
-  const f = ed.addFrame({ kind: 'table', box: [m[3] + 8, m[0] + 8, w, h], content, source: { app: 'micro', kind: 'resource', name: content.title, params: p } });
+  const f = ed.addFrame({ kind: 'table', box: freeSpot(doc, w, h, { near: viewFrameOf(doc, ed.selected()) }), content, source: { app: 'micro', kind: 'resource', name: content.title, params: p } });
   await stampFacts(f, [p.layer]); ed.render();
   $('#meta').textContent = `composer: a resource table (${content.rows.length} rows) went into “${_fig.name}” — Refresh (↻) makes it again`;
   return f;
@@ -448,7 +483,7 @@ function openResourceDialog() {
 export async function refreshAllFigures() {
   let n = 0;
   for (const fig of S.figures) n += await refreshViews(fig);
-  $('#meta').textContent = `composer: ${S.figures.length} figure${S.figures.length === 1 ? '' : 's'}, ${n} view${n === 1 ? '' : 's'} rendered again`;
+  $('#meta').textContent = `composer: ${S.figures.length} figure${S.figures.length === 1 ? '' : 's'} made again — ${n} frame${n === 1 ? '' : 's'} (views, charts and tables)`;   // n counts every frame refreshViews redid, not only views
   return n;
 }
 // a PDF the composer wrote carries its figure: open it as one (and say how its data compares)
@@ -675,7 +710,9 @@ export async function addKeyPlan(ed, target = null) {
   const bb = rendererDocBbox(); if (!bb || !(bb[3] > bb[0])) { $('#meta').textContent = 'composer: nothing loaded to plan'; return null; }
   const [W, H] = pageDims(doc.page), m = doc.page.margins || [10, 10, 10, 10];
   const dx = bb[3] - bb[0], dy = bb[4] - bb[1], w = 60, h = Math.max(30, Math.min(80, +(w * dy / Math.max(1e-9, dx)).toFixed(1)));
-  const box = [W - m[1] - w, H - m[2] - h, w, h];
+  const corner = [W - m[1] - w, H - m[2] - h, w, h];
+  const taken = doc.frames.some((x) => !x.hidden && corner[0] < x.box[0] + x.box[2] && x.box[0] < corner[0] + w && corner[1] < x.box[1] + x.box[3] && x.box[1] < corner[1] + h);
+  const box = taken ? freeSpot(doc, w, h, { near: target }) : corner;   // (it used to sit on the title block)
   const mine = captureScene('__composer');
   let f = null;
   try {
@@ -701,6 +738,19 @@ export async function smallMultiples(ed, f, { vary, values, cols, axis = 'z', th
   multiplesGrid(f.box, n, { cols });                      // too small → refused before the scene moves
   const mainName = (base.layers.find((sl) => sl.visible) || base.layers[0] || {}).name;
   const L = S.layers.find((x) => (x.label || x.name) === mainName || x.name === mainName);
+  // every value checked BEFORE anything moves: a filter that doesn't compile, or a column the layer hasn't, used
+  // to leave the previous panel's state on screen — a panel captioned "NOPE > 1" showing "AU > 1"
+  if (vary === 'colour' || vary === 'filter') {
+    if (!L) throw new Error(`small multiples: the view's layer “${mainName}” isn't loaded`);
+    const cols = layerCols(L), bad = [];
+    for (const v of values) {
+      if (vary === 'colour') { const sel = colorSelFor(L, v); if (!sel || !cols.has(String(v))) bad.push(`${v} (no such column on ${L.label || L.name})`); }
+      else { const r = validateExpr(String(v), [...cols]); if (!r.ok) bad.push(`${v} — ${(r.errors[0] && r.errors[0].message) || 'not a filter'}`); }
+    }
+    if (bad.length) throw new Error(`small multiples: ${bad.length === 1 ? 'this value doesn’t' : 'these values don’t'} work — ${bad.join('; ')}`);
+  }
+  const keep = f.source.bgFixed ? { bgFixed: f.source.bgFixed } : {};   // the panels keep the view's paper (they printed black)
+  const oldId = f.id;
   const mine = captureScene('__composer');
   let made;
   try {
@@ -713,7 +763,7 @@ export async function smallMultiples(ed, f, { vary, values, cols, axis = 'z', th
         if (vary === 'filter' && sl) sl.filter = String(v);
         await applyScene(scene);
         if (vary === 'section') setSectionWorld({ axis, position: +v, thickness: +thickness || 10 });
-        const vf = ed.addFrame({ kind: 'image', box, content: { photo: true }, source: { app: 'micro', kind: 'view' }, style: { border: true } });
+        const vf = ed.addFrame({ kind: 'image', box, content: { photo: true }, source: { app: 'micro', kind: 'view', ...keep }, style: { border: true } });
         ed.update(vf.id, (fr) => viewFrameContent(fr));
         afterFacts(ed, vf.id);
         return vf;
@@ -721,6 +771,14 @@ export async function smallMultiples(ed, f, { vary, values, cols, axis = 'z', th
       caption: (k) => (vary === 'section' ? '{section}' : String(values[k])),
     });
   } finally { await applyScene(mine); }
+  // a key plan that keyed the replaced view keys the panels now (its trace vanished, pointing at a frame gone)
+  if (made && made.length) {
+    const ids = made.map((x) => x.id);
+    for (const kp of ed.getDoc().frames) {
+      const kf = kp.source && kp.source.keyFor; if (!Array.isArray(kf) || !kf.includes(oldId)) continue;
+      ed.update(kp.id, (fr) => { fr.source.keyFor = [...new Set(fr.source.keyFor.flatMap((id) => (id === oldId ? ids : [id])))]; });
+    }
+  }
   persistSoon(_fig);
   $('#meta').textContent = `composer: ${n} small multiples (${vary}) in place of ${f.id} — a group; each is a view of its own`;
   return made;
@@ -1192,6 +1250,7 @@ function prepareFor(dpi) {
         await completeFacts(doc, f);
       }
     } finally { await applyScene(mine); requestRender(); }
+    refreshLegendFrames(doc);                              // the printed legend agrees with the printed view
   };
 }
 export async function figurePdfBytes(fig = _fig, dpi = 300, opts = {}) {
@@ -1343,7 +1402,7 @@ export function addDrawlistFrame(list, name, stereonet = null) {
   const ed = openComposer();
   const doc = ed.getDoc(), m = doc.page.margins || [12, 12, 12, 12];
   const w = 80, h = +(w * list.height / Math.max(1, list.width)).toFixed(1);
-  const f = ed.addFrame({ kind: 'drawlist', box: [m[3] + 8, m[0] + 8, w, h], content: { list }, source: { app: 'micro', kind: 'graphic', name, ...(stereonet ? { stereonet } : {}) } });
+  const f = ed.addFrame({ kind: 'drawlist', box: freeSpot(doc, w, h, { near: viewFrameOf(doc, ed.selected()) }), content: { list }, source: { app: 'micro', kind: 'graphic', name, ...(stereonet ? { stereonet } : {}) } });
   if (stereonet) stampFacts(f, [stereonet.layer]).then(() => { if (_ed) _ed.render(); });
   $('#meta').textContent = `composer: ${name} went into “${_fig.name}” (vector)`;
   return f;
@@ -1351,7 +1410,7 @@ export function addDrawlistFrame(list, name, stereonet = null) {
 export function addChartFrame(spec, name, recipe = null) {
   const ed = openComposer();
   const doc = ed.getDoc(), m = doc.page.margins || [12, 12, 12, 12];
-  const f = ed.addFrame({ kind: 'chart', box: [m[3] + 8, m[0] + 8, 120, 72], content: { spec }, source: { app: 'micro', kind: 'plot', name, ...(recipe ? { recipe } : {}) } });
+  const f = ed.addFrame({ kind: 'chart', box: freeSpot(doc, 120, 72, { near: viewFrameOf(doc, ed.selected()), shrink: true }), content: { spec }, source: { app: 'micro', kind: 'plot', name, ...(recipe ? { recipe } : {}) } });
   if (recipe) stampFacts(f, recipeLayers(recipe)).then(() => { if (_ed) _ed.render(); });
   $('#meta').textContent = `composer: ${name} went into “${_fig.name}” as a chart (vector; it re-flows when resized)`;
   return f;
@@ -1360,19 +1419,31 @@ export function addCanvasFrame(canvas, name) {
   const ed = openComposer();
   const doc = ed.getDoc(), m = doc.page.margins || [12, 12, 12, 12];
   const w = 110, h = (w * canvas.height) / Math.max(1, canvas.width);
-  const f = ed.addFrame({ kind: 'image', box: [m[3] + 8, m[0] + 8, w, +h.toFixed(1)], content: { width: canvas.width, height: canvas.height, src: canvas.toDataURL('image/png') }, source: { app: 'micro', kind: 'plot', name } });
+  const f = ed.addFrame({ kind: 'image', box: freeSpot(doc, w, +h.toFixed(1), { near: viewFrameOf(doc, ed.selected()), shrink: true }), content: { width: canvas.width, height: canvas.height, src: canvas.toDataURL('image/png') }, source: { app: 'micro', kind: 'plot', name } });
   const copy = document.createElement('canvas'); copy.width = canvas.width; copy.height = canvas.height; copy.getContext('2d').drawImage(canvas, 0, 0);
   f._img = copy; ed.render();
   $('#meta').textContent = `composer: ${name} went into “${_fig.name}”`;
   return f;
 }
+// a table cell as print wants it: a number grouped (2 882 758 820) when it is large, 4 significant figures when
+// not; text as it came
+function tableNumber(v) {
+  const t = String(v ?? '').trim();
+  if (!/^-?\d+(\.\d+)?(e[-+]?\d+)?$/i.test(t)) return v;
+  const x = +t; if (!Number.isFinite(x)) return v;
+  return Math.abs(x) >= 1000 ? groupDigits(Math.round(x)) : Number.isInteger(x) ? String(x) : sig(x, 4);
+}
 // an analysis window's table (its ⧉ table TSV) → a table frame, beside the plot when both came
 export function addTableFrame(tsv, name, near = null, recipe = null) {
   const c = tableFromTsv(tsv, ''); if (!c) return null;
+  c.rows = c.rows.map((row) => row.map(tableNumber));
   const ed = openComposer();
-  const doc = ed.getDoc(), m = doc.page.margins || [12, 12, 12, 12];
-  const rows = Math.min(c.rows.length, 30), w = Math.min(120, 14 + 16 * c.columns.length), h = +(5 + 4.2 * (rows + 1.5)).toFixed(1);
-  const box = near ? [near.box[0] + near.box[2] + 6, near.box[1], w, h] : [m[3] + 8, m[0] + 8, w, h];
+  const doc = ed.getDoc(), m = doc.page.margins || [12, 12, 12, 12], [, PH] = pageDims(doc.page);
+  const room = Math.floor((PH - m[0] - m[2] - 5) / 4.2 - 1.5);          // as many rows as the page holds
+  const rows = Math.min(c.rows.length, Math.max(5, room)), w = Math.min(120, 14 + 16 * c.columns.length), h = +(5 + 4.2 * (rows + 1.5)).toFixed(1);
+  // a table doesn't re-flow: the most rows that find a free place (its badge says what didn't fit), not a frame on the view
+  let box = freeSpot(doc, w, h, { near: near || viewFrameOf(doc, ed.selected()) });
+  for (let r = rows - 1; box._fallback && r >= 5; r--) box = freeSpot(doc, w, +(5 + 4.2 * (r + 1.5)).toFixed(1), { near: near || viewFrameOf(doc, ed.selected()) });
   const f = ed.addFrame({ kind: 'table', box, content: c, source: { app: 'micro', kind: 'table', name, ...(recipe ? { recipe } : {}) } });
   if (recipe) stampFacts(f, recipeLayers(recipe)).then(() => { if (_ed) _ed.render(); });
   $('#meta').textContent = `composer: the ${name} table (${c.rows.length} rows) went into “${_fig.name}”`;
