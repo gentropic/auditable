@@ -210,7 +210,7 @@ export function openGridExportDialog(L) {
   const decOf = () => { const t = dec.value.trim().toLowerCase(); if (t === '' || t === 'exact') return null; return /^\d+$/.test(t) && +t <= 12 ? +t : NaN; };
   dec.oninput = () => dec.classList.toggle('bad-in', Number.isNaN(decOf()));
   const delim = field('delim', 'delimiter', sel([[',', 'comma (.csv)'], ['\t', 'tab (.txt)'], [' ', 'space (.xyz)']]));
-  const vname = field('vname', 'value column', Object.assign(document.createElement('input'), { type: 'text', spellcheck: false, value: 'z' }));
+  const vname = field('vname', 'value column', Object.assign(document.createElement('input'), { type: 'text', spellcheck: false, value: (L.gridValue && L.gridValue.name) || 'z' }));
   const comp = field('comp', 'compression', sel([['deflate3', 'deflate + predictor 3 (smallest)'], ['deflate', 'deflate'], ['none', 'none']]));
   const layout = field('layout', 'layout', sel([['strips', 'strips'], ['tiles', 'tiles 256×256']]));
   const nameIn = field('name', 'file', Object.assign(document.createElement('input'), { type: 'text', spellcheck: false }));

@@ -7,7 +7,7 @@ import { S, layerById, requestRender } from './state.js';
 import { FACE_CUT, FACE_NAMES, FACE_NORMALS, decodeLasRecords, faceOfId, dmWorldToLocal, isMiss, layerOfId, layerSection, mat4Inverse } from '../../../ext/condenser/src/main.js';
 import { recordPosition } from './overlay.js';
 import { currentSection } from './section.js';
-import { attrRowCountOf, extendRow, fetchCsvRecord, fetchLayerRow, rawRecordOf, dmDocReader } from './records.js';
+import { attrRowCountOf, extendRow, fetchCsvRecord, fetchLayerRow, rawRecordOf, dmDocReader, gridValueLabel } from './records.js';
 import { gridNodeWorld, surfaceFromGrid, gridWorldBbox4, gridLocalXY } from './grid-ops.js';
 import { halfAt, volumeContextOf } from './analysis.js';
 import { rendererDocBbox } from './layers.js';
@@ -207,7 +207,7 @@ export async function showMeshRecord(L, cssX, cssY) {
   if (h.grid) {                                            // a grid shown as a surface: its node, its value, its slope
     const w2 = h.point, { dip: dip2, dipDir: dd2 } = dipOfNormal(h.normal);
     showRecPanel(`${tag} · surface · node ${h.grid.r},${h.grid.c}`, [
-      ['X', +w2[0].toFixed(3)], ['Y', +w2[1].toFixed(3)], [h.grid.flat ? 'value' : 'Z', +h.grid.value.toFixed(3)],
+      ['X', +w2[0].toFixed(3)], ['Y', +w2[1].toFixed(3)], [h.grid.flat ? gridValueLabel(L) : 'Z', +h.grid.value.toFixed(3)],
       ...(h.grid.flat ? [['Z (sheet)', +w2[2].toFixed(3)]] : [['slope', +dip2.toFixed(1)], ['slope dir', +dd2.toFixed(1)]]),
       ['row', h.grid.r], ['col', h.grid.c],
     ]);

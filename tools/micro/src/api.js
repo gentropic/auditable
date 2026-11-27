@@ -14,7 +14,7 @@ import { swathDir, dirTrendPlunge, frameDipDirDipRake } from './geom.js';
 import { writeEsriAsc, writeSurferGrd, readSurferGrd } from './grid-io.js';
 import { requestRender, layerById, S, activeDocs } from './state.js';
 import { createHostApi } from './host-api.js';
-import { attrRowCountOf, layerTableHeader, rowQualifier, rawRecordOf, locationsOf, hasRecords, primaryLocationOf, attrColumnsOf, fetchLayerRow, meshVertexData, meshVertexHeader, extendRow, schemaExt, calcFns, blockCaps, docPositionStream, layerRecords, fetchCsvRecord, colIsNumeric, qualifyPolicy } from './records.js';
+import { layerWorldBox, attrRowCountOf, layerTableHeader, rowQualifier, rawRecordOf, locationsOf, hasRecords, primaryLocationOf, attrColumnsOf, fetchLayerRow, meshVertexData, meshVertexHeader, extendRow, schemaExt, calcFns, blockCaps, docPositionStream, layerRecords, fetchCsvRecord, colIsNumeric, qualifyPolicy } from './records.js';
 import { setCsvColumnar, canScanColumnar, zoneKeeper } from './colscan.js';
 import { startChunkBuilder } from './chunkworker.js';
 import { rasterizeMeshToGrid, applyGridExtend, fillGridNearest, fillGridTrend, markGridExterior, surfaceFromGrid, buildEmptyGrid, buildEmptyBlockCsv, alignAxis, coverGeometry, gridAxesOf } from './grid-ops.js';
@@ -213,7 +213,7 @@ window._micro = {
   savePackAsFolder, addLayer, setColumnQualify, rowQualifier, rawRecordOf, pick: pickRecord, deliverBlob,
   toggleLayersPanel, closeProject, openWfrDialog, wfr: { runWfrJob, packLayers, partsSink, handleSink },
   packLayersToWfr, setAutoPack, renderEmptyProjects, attrRowCountOf, locationsOf, hasRecords,
-  primaryLocationOf, propKindLine, attrColumnsOf, fetchLayerRow, meshVertexData, meshVertexHeader, extendRow,
+  primaryLocationOf, propKindLine, attrColumnsOf, fetchLayerRow, layerWorldBox, meshVertexData, meshVertexHeader, extendRow,
   schemaExt, calcFns, blockCaps, docPositionStream, layerRecords, openBlob, openBatchRename, groupMenu,
   layerMenu, layerMenuSections, openMeshExportDialog, exportMeshes, selectionToColumn, filterToSelection,
   applyCalcCols, openSurfaceTools, gridOnLattice, setSwathBand, saveRecipe, loadRecipes, runRecipe, runRoutine,

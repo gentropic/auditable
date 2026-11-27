@@ -15,7 +15,7 @@
 // Plan view only for now: an oblique plane's grid needs a frame for the plane (ROADMAP: first-class
 // planes) — the pass is the same with another axis.
 import { S, layerById } from './state.js';
-import { attrRowCountOf, layerRecords, layerTableHeader, numOf, schemaExt } from './records.js';
+import { attrRowCountOf, layerRecords, layerTableHeader, numOf, schemaExt, layerWorldBox } from './records.js';
 import { volumeContextOf, halfAt, metalFactorOf, numericColsOf } from './analysis.js';
 import { gridAxesOf, latticeForBbox } from './grid-ops.js';
 import { layerWorldBbox } from './gridtools.js';
@@ -256,9 +256,17 @@ export async function projectGridLayer(L, opts = {}) {
     ...(stat === 'tonnes' || stat === 'metal' ? { density: opts.density ?? 1 } : {}),
     ...(opts.filter ? { filter: String(opts.filter) } : opts.scope !== 'all' && L.filterExpr && L._filterMask ? { filter: L.filterExpr } : {}), ...(r.limit ? { limit: r.limit } : {}) }, [L.lineage].filter(Boolean));
   replaceMade(name);
-  const id = await openBlob(new File([writeEsriAsc(r.grid)], name), name, S.layers.length ? 'add' : 'replace', null, { lineage: lin });
+  // a DATA grid, not a DEM: a flat sheet just above the model, coloured by the value, the value named for what
+  // it is (FE_max, thickness…) — it used to open as an elevation, a relief drawn at "Z" = the statistic
+  const top = (() => { try { const b = layerWorldBox(L); return b ? b[1][2] : null; } catch { return null; } })();
+  const flatZ = top != null ? +(top + Math.max(1, r.geom.dx)).toFixed(3) : null;
+  const vname = stat === 'thickness' || stat === 'tonnes' || stat === 'count' ? `${stat}${cut ? cut : ''}` : `${opts.col}_${stat}${cut}`;
+  const id = await openBlob(new File([writeEsriAsc(r.grid)], name), name, S.layers.length ? 'add' : 'replace', null, { lineage: lin, ...(flatZ != null ? { asKind: 'surface', flatZ } : {}) });
   const NL = id != null ? layerById(id) : null;
-  if (NL) NL.memoryOnly = true;                              // made in the session: a save writes it into the project
+  if (NL) {
+    NL.memoryOnly = true;                                    // made in the session: a save writes it into the project
+    NL.gridValue = { name: vname, ...(r.unit && r.unit !== opts.col ? { unit: r.unit } : {}) };   // (max / mean: the column's own unit — no more to say)
+  }
   return { id, name, ...r };
 }
 

@@ -37,7 +37,7 @@ import { CONTEXT_TRI_CAP } from './open-mesh.js';
 import { applyHoleFilter, ensureDhSetGroups, restoreSetDerived, noteCollarStyle } from './drillholes.js';
 import { applyTreeVisibility, treeFromManifest, treeToManifest, followLayer } from './tree.js';
 import { renderLayers } from './layers-panel.js';
-import { captureLayerSurface, recolorSurface } from './surfaces.js';
+import { captureLayerSurface, recolorSurface, rebuildSurface } from './surfaces.js';
 import { ensureValueTex, valueTexEligible, valueTexWant } from './color.js';
 import { flushViewsScenes, loadViewsScenes } from './views.js';
 import { flushPois, loadPois } from './poi.js';
@@ -808,6 +808,9 @@ export async function openProjectDir(dir, { pack = null } = {}) {
       const L = layerById(_got);
       if (!L) { plRow(i, 'failed to open', 'skip'); continue; }   // that open failed; its layer rolled back
       if (ls.drape && L.gridSurface) L._pendingDrape = ls.drape;   // apply after ALL layers land (the drape grid may come later)
+      if (ls.value && ls.value.name && L.docs && L.docs.gridDoc) L.gridValue = { ...ls.value };   // the grid's value, named
+      // the colour range (a Δz sheet's ±m, aspect's 0–360): saved, and never restored before
+      if (Array.isArray(ls.range) && ls.range.length === 2 && L.gridSurface) { L.surfaceRange = ls.range.map(Number); if (!L._pendingDrape) rebuildSurface(L); }
       // stats + bands are only good in the coordinate frame they were read in: a rotated
       // .dm's columns read in world now (another origin, or a sidecar from before
       // placement, would serve local XC ranges — a filter on XC would skip real matches)

@@ -170,6 +170,7 @@ export function captureLayerSurface(L) {
     if (Array.isArray(L.surfaceRange)) s.range = L.surfaceRange.slice();
   }
   if (gd.grid.band) s.band = gd.grid.band;
+  if (L.gridValue && L.gridValue.name) s.value = { name: L.gridValue.name, ...(L.gridValue.unit ? { unit: L.gridValue.unit } : {}) };
   return s;
 }
 
@@ -188,6 +189,7 @@ export async function applyLayerSurface(L, s) {
     const blob = gd.blob, name = L.name;
     L2 = await reopenReplacing(L, blob, () => openBlob(blob, name, 'add', null, { asKind: s.gridSurface ? 'surface' : 'points', band: s.band || 0, flatZ: s.gridSurface && s.flatZ != null ? s.flatZ : null, smooth: s.gridSurface ? !s.faceted : undefined }));
   }
+  if (L2 && s.value && s.value.name) L2.gridValue = { ...s.value };
   if (L2 && L2.gridSurface) {                                // drape: in-place rebuild, no reopen
     const want = s.drape || null;
     if ((L2.drapeSource || null) !== want) { const g = want ? S.layers.find((x) => x.name === want && x.docs && x.docs.gridDoc && x.docs.gridDoc.grid) : null; recolorSurface(L2, g); }
@@ -212,10 +214,12 @@ export function setSurfaceSmooth(L, smooth) {
 export async function setGridBand(L, band) {
   const gd = L.docs && L.docs.gridDoc; if (!gd || !(gd.grid.bands > 1)) return;
   const blob = gd.blob, name = L.name;
-  const wasSurface = !!L.gridSurface, drape = L.drapeSource, flatZ = L.surfaceFlatZ, smooth = L.surfaceSmooth;
+  const wasSurface = !!L.gridSurface, drape = L.drapeSource, flatZ = L.surfaceFlatZ, smooth = L.surfaceSmooth, range = L.surfaceRange;
   const L2 = await reopenReplacing(L, blob, () => openBlob(blob, name, 'add', null, { asKind: wasSurface ? 'surface' : 'points', band, flatZ: wasSurface ? flatZ : null, smooth: wasSurface ? smooth : undefined }));
   if (L2) {
+    if (wasSurface && Array.isArray(range)) L2.surfaceRange = range.slice();   // the colour range survives the band (it was dropped)
     if (wasSurface && drape) { const g = S.layers.find((x) => x.name === drape && x.docs && x.docs.gridDoc && x.docs.gridDoc.grid); if (g) recolorSurface(L2, g); }
+    else if (wasSurface && Array.isArray(range)) rebuildSurface(L2);
   }
   renderLayers(); markProjectDirty();
   $('#meta').textContent = `${name} — band ${band + 1} of ${gd.grid.bands}`;

@@ -59,7 +59,7 @@ export async function reopenReplacing(L, blob, open) {
 }
 
 export function captureReopenIdentity(L) {
-  return { label: L.label, visible: L.visible, handle: L.handle, storage: L.storage, oldId: L.id, slot: treeSlotOf(L.id) };
+  return { label: L.label, visible: L.visible, handle: L.handle, storage: L.storage, oldId: L.id, slot: treeSlotOf(L.id), gridValue: L.gridValue || null, memoryOnly: !!L.memoryOnly };
 }
 
 export function preregisterReopenHandle(blob, keep) {   // openBlob reads _fileHandles → must run BEFORE it
@@ -69,6 +69,8 @@ export function preregisterReopenHandle(blob, keep) {   // openBlob reads _fileH
 export function restoreReopenIdentity(L2, keep) {        // call with the fresh active layer AFTER openBlob
   if (!L2) return L2;
   if (keep.label) L2.label = keep.label;
+  if (keep.gridValue) L2.gridValue = keep.gridValue;        // a grid's value keeps its name (FE_max, Δz…)
+  if (keep.memoryOnly) L2.memoryOnly = true;                 // made in the session: still saved into the project
   L2.storage = keep.storage;
   if (keep.handle) L2.handle = keep.handle;
   if (keep.visible === false) { L2.visible = false; S.renderer.setLayerVisible(L2.id, false); }

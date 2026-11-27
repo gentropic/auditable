@@ -614,7 +614,10 @@ export async function fetchLayerRow(L, rec) {
     const i = g.dispIdx ? g.dispIdx[rec] : rec;
     const r = (i / g.grid.nx) | 0, c = i % g.grid.nx;
     const w = gridNodeWorld(g.grid, r, c);                  // a rotated / placed grid's node in world
-    return [+w[0].toFixed(3), +w[1].toFixed(3), +w[2].toFixed(3), r, c];
+    if (!isDataGrid(L)) return [+w[0].toFixed(3), +w[1].toFixed(3), +w[2].toFixed(3), r, c];
+    // a data grid: Z is where it is drawn (its flat sheet), the value its own column
+    const v = g.grid.data[r * g.grid.nx + c], z = L.gridSurface && L.surfaceFlatZ != null ? L.surfaceFlatZ : w[2];
+    return [+w[0].toFixed(3), +w[1].toFixed(3), +(+z).toFixed(3), v === g.grid.nodata || !Number.isFinite(v) ? null : +(+v).toPrecision(9), r, c];
   }
   if (d.tableDoc && d.tableDoc.xlsx) return d.tableDoc.xlsx.at(rec);
   if (d.tableDoc) return await fetchDelimitedRecord(d.tableDoc.blob, d.tableDoc.header, rec);
@@ -635,6 +638,11 @@ export async function fetchLayerRow(L, rec) {
   }
   return null;
 }
+/** a grid's value, named: { name, unit } (L.gridValue — set by what made it: a projection, Δz, slope…), else 'value' */
+export const gridValueName = (L) => (L && L.gridValue && L.gridValue.name) || 'value';
+export const gridValueLabel = (L) => (L && L.gridValue && L.gridValue.name ? `${L.gridValue.name}${L.gridValue.unit ? ` (${L.gridValue.unit})` : ''}` : 'value');
+/** a DATA grid: its value is not an elevation — named, or drawn as a flat sheet */
+export const isDataGrid = (L) => !!(L && L.docs && L.docs.gridDoc && ((L.gridValue && L.gridValue.name) || (L.gridSurface && L.surfaceFlatZ != null)));
 export function attrColumnsOf(L) {
   const h = layerTableHeader(L);
   if (h) {
@@ -643,7 +651,7 @@ export function attrColumnsOf(L) {
     for (const c of L.calcCols || []) cols.push({ name: 'ƒ ' + c.name, num: (c.ty || 'number') === 'number' });
     return cols;
   }
-  if (L.docs.gridDoc) return [{ name: 'X', num: true }, { name: 'Y', num: true }, { name: 'Z', num: true }, { name: 'row', num: true }, { name: 'col', num: true }];
+  if (L.docs.gridDoc) return [{ name: 'X', num: true }, { name: 'Y', num: true }, { name: 'Z', num: true }, ...(isDataGrid(L) ? [{ name: gridValueName(L), num: true }] : []), { name: 'row', num: true }, { name: 'col', num: true }];
   if (L.docs.plyDoc) return L.docs.plyDoc.header.columns.map((name) => ({ name, num: true }));
   if (L.docs.lasDoc && L.docs.lasDoc.fetchRecord && L.docs.lasDoc.header.columns) return L.docs.lasDoc.header.columns.map((name) => ({ name, num: true }));
   if (L.docs.lasDoc) return [{ name: 'X', num: true }, { name: 'Y', num: true }, { name: 'Z', num: true }, { name: 'intensity', num: true }, { name: 'classification', num: true }];

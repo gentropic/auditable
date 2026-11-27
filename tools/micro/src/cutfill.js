@@ -105,6 +105,7 @@ export async function cutFillLayer(res, beforeL, afterL, { name = null } = {}) {
   const L = id != null ? layerById(id) : null;
   if (L) {
     L.memoryOnly = true;
+    L.gridValue = { name: 'dz', unit: 'm' };                   // after − before
     const m = Math.max(Math.abs(res.range[0]), Math.abs(res.range[1])) || 1;
     L.surfaceRange = [-m, m];                                  // centred on 0: white = no change
     setRampCfg(L, { preset: 'rdbu' });

@@ -10283,6 +10283,9 @@ if (take()) {
       out.layer.x0 = gg && gg.x0; out.layer.y0 = gg && gg.y0;
       out.layer.at23 = gg && gg.data ? gg.data[nodeOf(gg, 1000 + 2 * DX + DX / 2, 2000 + 3 * DY + DY / 2)] : null;
       out.layer.want23 = brute('max', 2, 3); }
+    // a DATA grid now (Arthur 2026-11-26): a flat sheet above the model, its value named, a column of its own
+    { const cols = (M.attrColumnsOf(G) || []).map((c) => c.name), row = await M.fetchLayerRow(G, 0), top = M.layerWorldBox(L)[1][2];
+      out.data = { surface: !!G.gridSurface, flatZ: G.surfaceFlatZ, above: G.surfaceFlatZ > top, value: G.gridValue && G.gridValue.name, cols, rowZ: row[2], rowVal: row[cols.indexOf('FE_max')] }; }
     // the tool
     const tr = await M.runTool('projectgrid', { layer: 'pgrid.csv', col: 'FE', stat: 'thickness', cutoff: 40, cell: DX });
     out.tool = { values: tr.values, layers: tr.layers };
@@ -10312,6 +10315,8 @@ if (take()) {
   }
   chk(`projection to grid: the filter box applies (max ${r.filtered.mx.toFixed(2)} < 50; scope all → ${r.unfiltered.mx.toFixed(2)})`, r.filtered.mx < 50 && r.unfiltered.mx >= 50);
   chk(`projection to grid: the grid opens as a layer, in place (${JSON.stringify(r.layer)}): first node at the first column's centre 1005, 2065; column (2, 3) reads its own max from the layer`, r.layer.grid && r.layer.lineage === 'projectgrid' && r.layer.nx === 9 && r.layer.cell === 10 && Math.abs(r.layer.x0 - 1005) < 1e-6 && Math.abs(r.layer.y0 - 2065) < 1e-6 && Math.abs(r.layer.at23 - r.layer.want23) < 1e-4);
+  chk(`projection to grid opens as a data grid: a flat sheet (${r.data.surface}) at ${r.data.flatZ}, above the model (${r.data.above}), its value named ${r.data.value} and a column of its own (${r.data.cols.join(', ')}; Z ${r.data.rowZ}, FE_max ${r.data.rowVal})`,
+    r.data.surface && r.data.above && r.data.value === 'FE_max' && r.data.cols.join() === 'X,Y,Z,FE_max,row,col' && r.data.rowZ === r.data.flatZ && (r.data.rowVal == null || r.data.rowVal >= 0));
   chk(`projection to grid: the window makes the grid (“${r.dialog}”)`, /^projection to grid: pgrid_max_FE_10m\.asc — 378 blocks → 63 of 63 nodes/.test(r.dialog));
   chk(`projection to grid: the routine tool (${JSON.stringify(r.tool)})`, r.tool.values && r.tool.values.filled === 63 && r.tool.values.total > 0 && r.tool.layers.length === 1);
   chk(`projection to grid: a sub-blocked model's tonnes (density 1) total its volume exactly on its fine lattice (${r.sub.twin} vs ${r.sub.vol}, cell ${r.sub.twinCell}, sub-blocked ${r.sub.twinSub}); the ROTATED .dm twin within sampling (${r.sub.rot.toFixed(0)}, cell ${r.sub.rotCell}, rotated ${r.sub.rotated}, ${r.sub.rotWhere}), its tonnes where the twin's turn to (centroid off by ${r.sub.placed.toFixed(2)} m)`,

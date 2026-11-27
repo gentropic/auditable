@@ -190,6 +190,7 @@ export async function slopeAspectLayers(L, { what = 'both', name = null } = {}) 
     const G = id != null ? layerById(id) : null;
     if (G) {
       G.memoryOnly = true;
+      G.gridValue = { name: kind, unit: '°' };
       if (range) G.surfaceRange = range;                    // aspect: the whole circle, so the colours wrap
       setRampCfg(G, { preset });
       rebuildSurface(G);
