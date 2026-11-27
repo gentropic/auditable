@@ -94,6 +94,12 @@ export class Project {
   // datasets are COPY-ON-WRITE: a change replaces the object (and its rows array), never edits it — so the
   // undo journal can hold references to past datasets instead of copies of their rows
   _replaceDataset(d, next) { this.datasets = this.datasets.map((x) => (x === d ? next : x)); return next; }
+  /** which columns mean what: merged into the dataset's roles (null removes one) — a Terzaghi weight, a corrected mapping */
+  setRoles(id, roles) {
+    const d = this._need(id), next = { ...d.roles };
+    for (const [k, v] of Object.entries(roles || {})) { if (v == null) delete next[k]; else { if (!d.columns.includes(v)) throw new Error(`“${d.name}” has no column “${v}”`); next[k] = v; } }
+    this._replaceDataset(d, { ...d, roles: next }); this._emit('dataset-changed', { id });
+  }
   renameDataset(id, name) { const d = this._need(id); this._replaceDataset(d, { ...d, name: this._uniqueName(String(name).trim() || d.name) }); this._emit('dataset-changed', { id }); }
   /** edit rows in place: fn(rows) may mutate them or return a new array; every layer redraws */
   editRows(id, fn) {
@@ -292,7 +298,7 @@ export class Project {
 // view state: restored with a step, never steps of their own.
 
 const JOURNALED = {
-  addDataset: 'open data', renameDataset: 'rename', editRows: 'edit rows', removeDataset: 'delete data',
+  addDataset: 'open data', renameDataset: 'rename', setRoles: 'column roles', editRows: 'edit rows', removeDataset: 'delete data',
   derive: 'derive', selectionToDataset: 'selection → dataset',
   addDiagram: 'new diagram', setDiagramProps: 'diagram settings', renameDiagram: 'rename diagram', removeDiagram: 'remove diagram',
   addLayer: 'add layer', addView: 'add view', moveLayer: 'move layer', removeLayer: 'remove layer', removeEverywhere: 'remove from everywhere',

@@ -470,6 +470,7 @@ function inverse2(px, py) {
 
 // src/render/net.js
 function generateNet(interval = 10, type = "equatorial") {
+  if (!(interval > 0)) return { greatCircles: [], smallCircles: [] };
   return type === "polar" ? generatePolarNet(interval) : generateEquatorialNet(interval);
 }
 function generateEquatorialNet(interval) {
@@ -871,6 +872,12 @@ function densityGrid(dcos, options = {}) {
   }
   const inverseFn = projection === "equal-angle" ? inverse2 : inverse;
   const data = rotation ? dcos.map((d) => transformVec3(rotation, d)) : dcos;
+  let wt = null;
+  if (options.weights && options.weights.length === n) {
+    let s = 0;
+    for (const w of options.weights) s += w > 0 && Number.isFinite(w) ? w : 0;
+    if (s > 0) wt = options.weights.map((w) => (w > 0 && Number.isFinite(w) ? w : 0) * n / s);
+  }
   if (method === "kamb") {
     const k = options.kambSigma != null ? options.kambSigma : 3;
     const cosTheta = n / (n + k * k);
@@ -893,7 +900,7 @@ function densityGrid(dcos, options = {}) {
         let count = 0;
         for (let m = 0; m < n; m++) {
           const rd = data[m];
-          if (Math.abs(d[0] * rd[0] + d[1] * rd[1] + d[2] * rd[2]) >= cosTheta) count++;
+          if (Math.abs(d[0] * rd[0] + d[1] * rd[1] + d[2] * rd[2]) >= cosTheta) count += wt ? wt[m] : 1;
         }
         grid[j * gridSize + i] = (count - E) / sd;
       }
@@ -920,7 +927,7 @@ function densityGrid(dcos, options = {}) {
       for (let m = 0; m < n; m++) {
         const rd = data[m];
         const dot2 = Math.abs(d[0] * rd[0] + d[1] * rd[1] + d[2] * rd[2]);
-        density += Math.exp(kappa * (dot2 - 1));
+        density += (wt ? wt[m] : 1) * Math.exp(kappa * (dot2 - 1));
       }
       grid[j * gridSize + i] = kappa * density / n;
     }
@@ -1569,7 +1576,7 @@ var Stereonet = class _Stereonet {
     this.padding = options.padding ?? defaults.padding;
     this.projection = options.projection || "equal-area";
     this.net = options.net || "equatorial";
-    this.gridSpacing = options.gridSpacing || 10;
+    this.gridSpacing = options.gridSpacing === 0 ? 0 : options.gridSpacing || 10;
     this.hemisphere = options.hemisphere || "lower";
     this.rotation = options.rotation ?? (options.center ? _Stereonet.rotationFromCenter(options.center[0], options.center[1]) : options.northPole ? _Stereonet.rotationFromNorthPole(options.northPole[0], options.northPole[1], options.northPole[2] || 0) : null);
     this._instanceStyle = options.style || null;
@@ -1951,6 +1958,10 @@ var Stereonet = class _Stereonet {
    * @param {number} [options.max] - density value mapped to t=1 (default: grid maximum)
    * @param {number} [options.threshold=0.04] - skip cells whose normalised density is below this
    * @param {number} [options.opacity] - per-cell fill-opacity
+   * @param {number[]} [options.levels] - BANDED (filled contours): a cell takes colors[k] when its density is at or
+   *   above levels[k] (and below levels[k+1]); below levels[0] it is left empty. Same units as the contour lines
+   *   (Kamb σ, or MUD), so the fill and the lines agree.
+   * @param {string[]} [options.colors] - one colour per level (with levels)
    * @returns {this}
    */
   heatmap(dcos, options = {}) {
@@ -2010,12 +2021,25 @@ var Stereonet = class _Stereonet {
       for (let i = 0; i < gridSize; i++) {
         const v = grid[j * gridSize + i];
         if (Number.isNaN(v)) continue;
-        const t = v / max;
-        if (t < threshold) continue;
+        {
+          const qx = -projR + i * step;
+          if (qx * qx + py * py > projR * projR) continue;
+        }
+        let fill;
+        if (opts.levels && opts.colors) {
+          let k = -1;
+          for (let b = 0; b < opts.levels.length; b++) if (v >= opts.levels[b]) k = b;
+          if (k < 0) continue;
+          fill = opts.colors[Math.min(k, opts.colors.length - 1)];
+        } else {
+          const t = v / max;
+          if (t < threshold) continue;
+          fill = color(t);
+        }
         const px = -projR + i * step;
         const x = center + px * scale2;
         const y = center - py * scale2;
-        cb(x - cell / 2, y - cell / 2, cell, color(t));
+        cb(x - cell / 2, y - cell / 2, cell, fill);
       }
     }
   }

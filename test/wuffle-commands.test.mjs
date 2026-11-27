@@ -167,3 +167,33 @@ describe('statistics of the selection', () => {
     assert.ok(k(r.text) > k(whole.text), 'a cone round the cluster is tighter than the whole');
   });
 });
+
+// ── batch 5: filled contours, your levels, Terzaghi ──
+import { sceneLayers } from '../tools/wuffle/src/layers.js';
+import { terzaghiWeights } from '../tools/wuffle/src/stats.js';
+describe('contours and weights', () => {
+  it('contour kamb --filled --levels 6,2,4: the bands and your levels, one undo step', () => {
+    const { p, c } = mk(); c.run('sample');
+    const r = c.run('contour kamb --filled --levels 6,2,4');
+    assert.ok(r.ok, r.text); assert.match(r.text, /filled at 2, 4, 6/);
+    const E = p.layersOf(p.activeDiagram)[0].elements.contours;
+    assert.equal(E.filled, true); assert.deepEqual(E.levels, [2, 4, 6]); assert.equal(E.on, true);
+    const was = p.layersOf(p.activeDiagram)[0].elements.contours;
+    c.run('undo'); const back = p.layersOf(p.activeDiagram)[0].elements.contours;
+    assert.ok(!back.filled && !back.levels, `undone in one step: ${JSON.stringify(back)} (was ${JSON.stringify(was)})`);
+  });
+  it('terzaghi: 1/cos θ to the line, capped; the weights reach the contours; off unweights; one undo step', () => {
+    const { p, c } = mk(); c.run('sample');
+    const id = p.datasets[0].id;
+    const w = terzaghiWeights(p.dataset(id), [0, 90]);              // a vertical borehole
+    const ds = p.dataset(id), i = ds.rows.findIndex((r) => +r[ds.roles.dip] < 10), j = ds.rows.findIndex((r) => +r[ds.roles.dip] > 85);
+    assert.ok(w[i] < 1.02, 'a flat plane, crossed square: weight ~1'); assert.ok(w[j] > 5, 'a steep plane, nearly parallel to the hole: heavy');
+    assert.ok(w.every((x) => x == null || x <= 10));
+    const r = c.run('terzaghi 000/90'); assert.ok(r.ok, r.text); assert.match(r.text, /Terzaghi weights/);
+    assert.equal(p.dataset(id).roles.weight, 'terzaghi_w');
+    assert.ok(sceneLayers(p, p.activeDiagram)[0].data.every((d) => typeof d.weight === 'number'));
+    assert.match(c.run('terzaghi off').text, /unweighted/); assert.equal(p.dataset(id).roles.weight, undefined);
+    c.run('undo'); assert.equal(p.dataset(id).roles.weight, 'terzaghi_w', 'undo puts the weight back');
+    c.run('undo'); assert.equal(p.dataset(id).roles.weight, undefined); assert.ok(!p.dataset(id).columns.includes('terzaghi_w'), 'the column goes with it');
+  });
+});

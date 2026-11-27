@@ -9,7 +9,10 @@ export function sceneLayers(project, diagramId) {
     const ds = project.dataset(L.datasetId);
     // a label per row when the layer draws labels: the chosen column's value, else the row number (1-based)
     const lab = L.elements.labels?.on ? (L.elements.labels.column && ds.columns.includes(L.elements.labels.column) ? (row) => String(ds.rows[row][L.elements.labels.column] ?? '') : (row) => String(row + 1)) : null;
-    const data = orientations(ds).map((o, row) => (o ? { row, ...o, ...(lab ? { label: lab(row) } : {}) } : null)).filter(Boolean);
+    // a weight per datum when the dataset names a weight column (a Terzaghi correction, a length): contours use it
+    const wcol = ds.roles && ds.roles.weight && ds.columns.includes(ds.roles.weight) ? ds.roles.weight : null;
+    const wOf = (row) => { const v = +ds.rows[row][wcol]; return Number.isFinite(v) && v >= 0 ? v : 0; };
+    const data = orientations(ds).map((o, row) => (o ? { row, ...o, ...(lab ? { label: lab(row) } : {}), ...(wcol ? { weight: wOf(row) } : {}) } : null)).filter(Boolean);
     return { id: L.id, datasetId: ds.id, kind: ds.kind, visible: L.visible, color: L.style.color, size: L.style.size,
       elements: L.elements, data, selected: project.selected(ds.id) };
   });

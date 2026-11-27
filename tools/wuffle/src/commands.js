@@ -10,7 +10,7 @@
 import { conversions, io as bio } from '../../../ext/bearing/index.js';
 import { rowsInShape, formatPlane, formatLine } from '../../../ext/stereonet/index.js';
 import { sceneLayers } from './layers.js';
-import { layerStats, deriveMean, deriveEigen, deriveBeta, deriveIntersection } from './stats.js';
+import { layerStats, deriveMean, deriveEigen, deriveBeta, deriveIntersection, applyTerzaghi } from './stats.js';
 
 const ELEMENT_ALIASES = { poles: 'poles', pole: 'poles', points: 'points', circles: 'greatCircles', 'great-circles': 'greatCircles', greatcircles: 'greatCircles',
   contours: 'contours', contour: 'contours', mean: 'mean', eigen: 'eigen', eigenvectors: 'eigen', labels: 'labels', v1: 'v1Pole', v2: 'v2Pole', v3: 'v3Pole' };
@@ -113,7 +113,8 @@ const HELP = {
   new: 'new net|rose|fabric — a new diagram with the active one\'s layers',
   layers: 'layers — the active diagram\'s layers',
   show: 'show <element> [layer] / hide <element> [layer] — poles, circles, contours, mean, eigen, labels, v1…v3',
-  contour: 'contour kamb [k] | fisher [layer] — switch contours on, with their method',
+  contour: 'contour kamb [k] | fisher [layer] [--filled | --lines] [--levels 2,4,6] — contours on, their method, filled bands, your levels',
+  terzaghi: 'terzaghi [layer] <tr/pl> [--max 10] | terzaghi [layer] off — weight the planes for a scanline or borehole along tr/pl (contours use it)',
   add: 'add p 045/30 [more…] | l 120/40 | sc 120/40 15 | f 045/30 120/20 [n|r|d|s] — typed in, into "typed <kind>"\n'
     + '    045/30, 045,30 or 45 30 · 030/40SE = strike/dip + quadrant · --rhr (strike/dip) · --to <dataset> · --net <diagram> · --label <text>',
   select: 'select cone [p|l] <dd/dip|tr/pl> <angle> | band <dd/dip> <half-width> | all | none | invert   (+ adds, - subtracts: "select + cone …")',
@@ -221,12 +222,22 @@ export function createCommands(ctx) {
       const L = layerNamed(name.join(' '), { required: true }); p.setElement(L.id, key, on); return `${dsName(L)}: ${key} ${on ? 'on' : 'off'}`;
     },
     hide(args) { return C.show(args, false); },
-    contour([method = 'kamb', k, ...name]) {
+    contour(args0) {
+      // flags first: --filled / --lines, --levels a,b,c
+      const flags = {}, rest = [];
+      for (let i = 0; i < args0.length; i++) {
+        const a = args0[i];
+        if (a === '--filled') flags.filled = true; else if (a === '--lines') flags.filled = false;
+        else if (a === '--levels') { const v = String(args0[++i] || '').split(/[,\s]+/).map(Number).filter(Number.isFinite); if (!v.length) throw new Error('--levels 2,4,6'); flags.levels = v.sort((x, y) => x - y); }
+        else rest.push(a);
+      }
+      const [method = 'kamb', k, ...name] = rest;
       if (!['kamb', 'fisher'].includes(method)) throw new Error('contour kamb [k] | fisher');
       const kk = method === 'kamb' && k && /^\d/.test(k) ? +k : null;
       const L = layerNamed((kk == null && k ? [k, ...name] : name).join(' '), { required: true });
-      p.setElementSettings(L.id, 'contours', { method, ...(kk ? { sigma: kk } : {}) }); p.setElement(L.id, 'contours', true);
-      return `${dsName(L)}: contours ${method}${method === 'kamb' ? ` ${kk || L.elements.contours.sigma}σ` : ''}`;
+      p.batch('contours', () => { p.setElementSettings(L.id, 'contours', { method, ...(kk ? { sigma: kk } : {}), ...('filled' in flags ? { filled: flags.filled } : {}), ...(flags.levels ? { levels: flags.levels } : {}) }); p.setElement(L.id, 'contours', true); });
+      const E = p.layer(L.id).elements.contours;
+      return `${dsName(L)}: contours ${method}${method === 'kamb' ? ` ${E.sigma ?? 3}σ` : ''}${E.filled ? ', filled' : ''}${E.levels ? ` at ${E.levels.join(', ')}` : ''}`;
     },
     select(args) {
       let mode = 'replace'; if (args[0] === '+') { mode = 'add'; args = args.slice(1); } else if (args[0] === '-') { mode = 'subtract'; args = args.slice(1); }
@@ -249,6 +260,17 @@ export function createCommands(ctx) {
       else if (what === 'band') { if (!a.plane) throw new Error('a band is about a plane: band 045/30 10'); shape = { type: 'band', pole: a.dcos, width: v }; }
       else throw new Error('select cone | band | all | none | invert');
       return `${what}: ${applyShape(shape, mode)} selected`;
+    },
+    terzaghi(args) {
+      let max = 10; const rest = [];
+      for (let i = 0; i < args.length; i++) { if (args[i] === '--max') max = +args[++i]; else rest.push(args[i]); }
+      const last = rest[rest.length - 1];
+      if (last === 'off') { const L = layerNamed(rest.slice(0, -1).join(' '), { required: true }); p.setRoles(L.datasetId, { weight: null }); return `${dsName(L)}: unweighted (the terzaghi_w column stays)`; }
+      const a = parseAttitude(last || '', 'line'); if (!a) throw new Error('terzaghi [layer] <tr/pl> — the scanline or borehole, as trend/plunge');
+      const L = layerNamed(rest.slice(0, -1).join(' '), { required: true });
+      if (!['planes', 'faults'].includes(p.dataset(L.datasetId).kind)) throw new Error(`${dsName(L)} isn't planes — Terzaghi weights planes sampled along a line`);
+      const r = applyTerzaghi(p, L.datasetId, a.line, { max });
+      return `${dsName(L)}: Terzaghi weights for a line ${formatLine(a.line)} — ${r.n} planes, ${r.min.toFixed(2)}–${r.max.toFixed(2)}${r.capped ? `, ${r.capped} capped at ${max}` : ''}; contours weighted (statistics are not)`;
     },
     stats(args) {
       const part = args.some((a) => /^(--?sel(ection)?|sel(ection)?)$/i.test(a)), name = args.filter((a) => !/^(--?sel(ection)?|sel(ection)?)$/i.test(a));

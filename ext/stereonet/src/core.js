@@ -16,6 +16,17 @@
 
 const EIGEN = ['v1Pole', 'v1Circle', 'v2Pole', 'v2Circle', 'v3Pole', 'v3Circle'];
 
+/** n band colours from a pale tint of `hex` to `hex` itself (filled contours) */
+export function bandColors(hex, n) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || '')); const v = m ? parseInt(m[1], 16) : 0x8a8a8a;
+  const c = [v >> 16, (v >> 8) & 255, v & 255], out = [];
+  for (let k = 0; k < n; k++) {
+    const t = n === 1 ? 1 : 0.18 + 0.82 * (k / (n - 1));          // the lowest band a light tint, the highest full
+    out.push('#' + c.map((x) => Math.round(255 + (x - 255) * t).toString(16).padStart(2, '0')).join(''));
+  }
+  return out;
+}
+
 /** the pick nearest (x, y) in svg units, within radius; null if none */
 export function nearestPick(picks, x, y, radius = 8) {
   let best = null, bd = radius;
@@ -74,9 +85,15 @@ export function stereonetCore(B) {
         else {
           contoured = L.id;
           const kamb = (E.contours.method || 'kamb') === 'kamb';
-          // Kamb: sigma sets the counting area (E = kσ), contours in σ at 2σ intervals; Fisher: MUD levels
-          primitives.push({ type: 'contour', dcos: axes, layer: L.id, options: { method: kamb ? 'kamb' : 'fisher', kambSigma: E.contours.sigma ?? 3,
-            levels: E.contours.levels || (kamb ? [2, 4, 6, 8, 10, 12] : [2, 4, 6, 8]), stroke: col, strokeWidth: 0.9 } });
+          // Kamb: sigma sets the counting area (E = kσ), contours in σ at 2σ intervals; Fisher: MUD levels.
+          // levels: the user's (any sorted list); weights: a datum's `weight` (a Terzaghi correction, …) when any has one
+          const levels = (Array.isArray(E.contours.levels) && E.contours.levels.length ? [...E.contours.levels].map(Number).filter(Number.isFinite).sort((a, b) => a - b) : null)
+            || (kamb ? [2, 4, 6, 8, 10, 12] : [2, 4, 6, 8]);
+          const weights = data.some((d) => d.weight != null) ? data.map((d) => (d.weight != null ? +d.weight : 1)) : null;
+          const base = { method: kamb ? 'kamb' : 'fisher', kambSigma: E.contours.sigma ?? 3, ...(weights ? { weights } : {}) };
+          // filled: bands between the levels, light to the layer's colour, UNDER the lines (bearing's banded heatmap)
+          if (E.contours.filled) primitives.push({ type: 'fill', dcos: axes, layer: L.id, options: { ...base, gridSize: 96, levels, colors: bandColors(col, levels.length), opacity: 1 } });
+          primitives.push({ type: 'contour', dcos: axes, layer: L.id, options: { ...base, levels, stroke: col, strokeWidth: 0.9 } });
         }
       }
       const isPlane = L.kind === 'planes' || L.kind === 'faults';
@@ -162,7 +179,7 @@ export function stereonetCore(B) {
     const t = options.theme || {};
     const net = new Stereonet({
       size: options.size, padding: options.padding ?? 26, projection: options.projection || 'equal-area',
-      hemisphere: options.hemisphere || 'lower', gridSpacing: options.graticule || 10, classPrefix: options.classPrefix ?? 'gsn',
+      hemisphere: options.hemisphere || 'lower', gridSpacing: options.graticule === 0 ? 0 : (options.graticule || 10), classPrefix: options.classPrefix ?? 'gsn',   // 0: no graticule
       ...(options.rotation ? { rotation: options.rotation } : options.center ? { center: options.center } : {}),
       style: {
         background: t.background || '#101215',
@@ -174,6 +191,7 @@ export function stereonetCore(B) {
     const picks = [];
     for (const p of scene.primitives || []) {
       if (p.type === 'contour') net.contour(p.dcos, p.options);
+      else if (p.type === 'fill') net.heatmap(p.dcos, p.options);
       else if (p.type === 'plane') net.plane(p.dd, p.dip, p.style);
       else if (p.type === 'cone') net.cone(p.trend, p.plunge, p.angle, p.style);
       else if (p.type === 'pole') net.pole(p.dd, p.dip, p.style);

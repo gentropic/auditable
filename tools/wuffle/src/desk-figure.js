@@ -36,10 +36,10 @@ export function createFigures({ project: p, layout, onStatus = () => {} }) {
   // a net frame's own view, in the inspector: projection, hemisphere, graticule, selection — kept in source.view
   // (so ↻ keeps them) and applied at once
   const VIEW_OPTS = { projection: [['', 'as the diagram'], ['equal-area', 'equal-area (Schmidt)'], ['equal-angle', 'equal-angle (Wulff)']],
-    hemisphere: [['', 'as the diagram'], ['lower', 'lower'], ['upper', 'upper']], graticule: [['', 'as the diagram'], ['5', '5°'], ['10', '10°'], ['15', '15°'], ['30', '30°']] };
+    hemisphere: [['', 'as the diagram'], ['lower', 'lower'], ['upper', 'upper']], graticule: [['', 'as the diagram'], ['0', 'none'], ['5', '5°'], ['10', '10°'], ['15', '15°'], ['30', '30°']] };
   function netInspector(frame, panel, ed) {
     const s = frame.source || {}; if (frame.kind !== 'stereonet' || !s.wuffle || !p.diagram(s.diagram)) return;
-    const view = { ...(s.view || {}) };
+    const view = { ...(s.view || {}) };   // (graticule 0 = none: kept, it isn't 'as the diagram')
     const row = (label, el) => { const r = document.createElement('div'); r.className = 'row'; const a = document.createElement('span'); a.textContent = label; const b = document.createElement('span'); b.className = 'ctl'; b.append(el); r.append(a, b); panel.append(r); };
     const apply = () => {                                  // one undo step: the setting and the net it makes
       const doc = JSON.parse(JSON.stringify(ed.getDoc())), fx = doc.frames.find((x) => x.id === frame.id); if (!fx) return;

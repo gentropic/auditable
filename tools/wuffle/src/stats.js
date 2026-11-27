@@ -47,6 +47,30 @@ export function layerStats(ds, { confidence = 0.95, rows = null } = {}) {
   return out;
 }
 
+/**
+ * TERZAGHI (1965): a scanline or a borehole samples a set of planes in proportion to cos θ, θ between the line and
+ * the planes' pole — planes nearly parallel to it are undercounted. Each plane's weight is 1 / cos θ, capped (at a
+ * blind angle the weight would run away: max 10 is customary). → weights, one per row (null for an unreadable one)
+ */
+export function terzaghiWeights(ds, line, { max = 10 } = {}) {
+  const L = conversions.lineToDcos(line[0], line[1]), cap = Math.max(1, +max || 10);
+  return orientations(ds).map((o) => {
+    if (!o) return null;
+    const n = o.pole || o.dcos, c = Math.abs(n[0] * L[0] + n[1] * L[1] + n[2] * L[2]);
+    return +Math.min(cap, 1 / Math.max(c, 1 / cap)).toFixed(4);
+  });
+}
+/** the weights written to the dataset as a column (terzaghi_w) and named its weight — one undo step */
+export function applyTerzaghi(p, dsId, line, opts = {}) {
+  const w = terzaghiWeights(p.dataset(dsId), line, opts), col = 'terzaghi_w';
+  p.batch('Terzaghi correction', () => {
+    p.editRows(dsId, (rows) => rows.map((r, i) => ({ ...r, [col]: w[i] == null ? '' : w[i] })));
+    p.setRoles(dsId, { weight: col });
+  });
+  const ok = w.filter((x) => x != null);
+  return { n: ok.length, min: Math.min(...ok), max: Math.max(...ok), capped: ok.filter((x) => x >= (+opts.max || 10)).length };
+}
+
 export function deriveMean(p, dsId) {
   const ds = p.dataset(dsId), s = layerStats(ds);
   if (!s.mean) throw new Error(`“${ds.name}”: a mean needs at least two measurements`);

@@ -167,6 +167,7 @@ export class TreeView {
     ] : [
       { label: 'Projection', children: [{ label: 'equal-area (Schmidt)', action: 'proj:equal-area', checked: g.props.projection === 'equal-area', group: 'p' }, { label: 'equal-angle (Wulff)', action: 'proj:equal-angle', checked: g.props.projection === 'equal-angle', group: 'p' }] },
       { label: 'Hemisphere', children: [{ label: 'lower', action: 'hemi:lower', checked: g.props.hemisphere === 'lower', group: 'h' }, { label: 'upper', action: 'hemi:upper', checked: g.props.hemisphere === 'upper', group: 'h' }] },
+      { label: 'Graticule', children: [[0, 'none'], [5, '5°'], [10, '10°'], [15, '15°'], [30, '30°']].map(([v, t]) => ({ label: t, action: 'grat:' + v, checked: (g.props.graticule ?? 10) === v, group: 'g' })) },
       { label: 'Reset rotation', action: 'unrotate', disabled: !g.props.matrix && !g.props.rotation },
     ];
   }
@@ -175,6 +176,7 @@ export class TreeView {
     if (a === 'rename') { const n = await prompt('Name of the diagram', { defaultValue: g.name }); if (n) this.p.renameDiagram(g.id, n); }
     else if (a.startsWith('proj:')) this.p.setDiagramProps(g.id, { projection: a.slice(5) });
     else if (a.startsWith('hemi:')) this.p.setDiagramProps(g.id, { hemisphere: a.slice(5) });
+    else if (a.startsWith('grat:')) this.p.setDiagramProps(g.id, { graticule: +a.slice(5) });
     else if (a === 'unrotate') this.p.setDiagramProps(g.id, { matrix: null, rotation: null });
     else if (a.startsWith('q:')) this.p.setDiagramProps(g.id, { quantity: a.slice(2) });
     else if (a.startsWith('bins:')) this.p.setDiagramProps(g.id, { bins: +a.slice(5) });
@@ -220,20 +222,25 @@ export class TreeView {
         const color = row('color', inp('color', L.style.color || '#e8836b'));
         const size = row('symbol size', inp('number', L.style.size || 4, { min: 1, max: 12, step: 0.5 }));
         let cm, cs, mc;
-        if (E.contours) { cm = row('contours', sel([['kamb', 'Kamb (σ)'], ['fisher', 'Fisher kernel (MUD)']], E.contours.method)); cs = row('Kamb k (E = kσ)', inp('number', E.contours.sigma ?? 3, { min: 1, max: 6, step: 0.5 })); }
+        let cf, cl;
+        if (E.contours) { cm = row('contours', sel([['kamb', 'Kamb (σ)'], ['fisher', 'Fisher kernel (MUD)']], E.contours.method)); cs = row('Kamb k (E = kσ)', inp('number', E.contours.sigma ?? 3, { min: 1, max: 6, step: 0.5 }));
+          cf = row('filled bands', inp('checkbox', '', { checked: !!E.contours.filled })); cl = row('levels', inp('text', (E.contours.levels || []).join(', '), { placeholder: E.contours.method === 'fisher' ? '2, 4, 6, 8 (MUD)' : '2, 4, 6, 8, 10, 12 (σ)' })); }
         if (E.mean) mc = row('cone confidence', sel([['0.95', '95 %'], ['0.99', '99 %'], ['0.9', '90 %']], String(E.mean.confidence ?? 0.95)));
         const lab = E.labels ? row('labels from', sel([['', '— row number'], ...ds.columns.map((c) => [c, c])], E.labels.column || '')) : null;
         const bar = h('div', 'wpbar'); const ok = h('button', 'primary', 'Apply'); ok.type = 'button'; ok.dataset.default = 'true';
         const cancel = h('button', null, 'Cancel'); cancel.type = 'button';
         bar.append(cancel, ok); body.append(bar);
         cancel.onclick = () => ctx.close(null);
-        ok.onclick = () => ctx.close({ color: color.value, size: +size.value, cm: cm?.value, cs: cs ? +cs.value : null, mc: mc ? +mc.value : null, lab: lab ? lab.value : null });
+        ok.onclick = () => ctx.close({ color: color.value, size: +size.value, cm: cm?.value, cs: cs ? +cs.value : null, cf: cf ? cf.checked : null, cl: cl ? cl.value : null, mc: mc ? +mc.value : null, lab: lab ? lab.value : null });
       },
     }).show();
     if (!res) return;
     p.batch('layer properties', () => {                 // one Apply, one undo step
       p.setLayerStyle(layerId, { color: res.color, size: res.size });
-      if (res.cm) p.setElementSettings(layerId, 'contours', { method: res.cm, sigma: res.cs });
+      if (res.cm) {
+        const lv = String(res.cl || '').split(/[,\s]+/).map(Number).filter(Number.isFinite).sort((a, b) => a - b);
+        p.setElementSettings(layerId, 'contours', { method: res.cm, sigma: res.cs, filled: !!res.cf, levels: lv.length ? lv : null });
+      }
       if (res.mc) p.setElementSettings(layerId, 'mean', { confidence: res.mc });
       if (res.lab != null && E.labels) p.setElementSettings(layerId, 'labels', { column: res.lab || null });
     });

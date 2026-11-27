@@ -23,7 +23,7 @@ const QUANTITY = { strike: 'strike', dipDirection: 'dip direction', trend: 'tren
 
 /** a frame's view settings over the diagram's own (source.view: what the inspector changed for this frame alone) */
 const viewOf = (g, view = {}) => ({ projection: view.projection || g.props.projection, hemisphere: view.hemisphere || g.props.hemisphere,
-  graticule: view.graticule || g.props.graticule || 10, selection: !!view.selection });
+  graticule: view.graticule ?? g.props.graticule ?? 10, selection: !!view.selection });   // (0 = no graticule)
 
 /** circular mean of azimuths (axial: of doubled angles) → { mean, Rbar } */
 function circularMean(az, axial) {

@@ -153,3 +153,29 @@ describe('labels', () => {
     assert.match(core.renderScene(s, { size: 300 }).net.svg(), />S2</);
   });
 });
+
+describe('contours: filled, your levels, weights; the graticule off', () => {
+  it('filled contours: a banded fill UNDER the lines, at the same levels, light to the layer colour', () => {
+    const s = core.buildScene({ layers: [layer({ elements: { contours: { on: true, method: 'kamb', filled: true, levels: [6, 2, 4] } } })] });
+    const k = s.primitives.findIndex((p) => p.type === 'fill'), c = s.primitives.findIndex((p) => p.type === 'contour');
+    assert.ok(k >= 0 && k < c, 'the fill first, the lines over it');
+    assert.deepEqual(s.primitives[c].options.levels, [2, 4, 6], 'your levels, sorted');
+    assert.deepEqual(s.primitives[k].options.levels, [2, 4, 6]);
+    assert.equal(s.primitives[k].options.colors.length, 3); assert.equal(s.primitives[k].options.colors[2], '#e07a5f');
+    const net = core.renderScene(s, { size: 300 }).net.svg();
+    assert.ok((net.match(/<rect/g) || []).length > 50, 'the bands are drawn (cells)');
+  });
+  it('a datum with a weight weights the contours (a Terzaghi correction)', () => {
+    const w = tocher.map((d, i) => ({ ...d, weight: i < 20 ? 5 : 1 }));
+    const s = core.buildScene({ layers: [layer({ data: w, elements: { contours: { on: true } } })] });
+    const c = s.primitives.find((p) => p.type === 'contour');
+    assert.equal(c.options.weights.length, 200); assert.equal(c.options.weights[0], 5);
+    const plain = core.buildScene({ layers: [layer({ elements: { contours: { on: true } } })] }).primitives.find((p) => p.type === 'contour');
+    assert.equal(plain.options.weights, undefined, 'no weights, none passed');
+  });
+  it('graticule 0: a net with no graticule', () => {
+    const s = core.buildScene({ layers: [layer()] });
+    const on = core.renderScene(s, { size: 300 }).net.svg(), off = core.renderScene(s, { size: 300, graticule: 0 }).net.svg();
+    assert.ok(off.length < on.length, `${off.length} < ${on.length}`);
+  });
+});
