@@ -471,9 +471,13 @@ class PdfContext2D {
     const col = this._colorOps(mode === 0, mode === 1);
     if (!col.visible) return;
     const sw = mode === 1 ? ` ${num(this._st.lineWidth * scaleOf(this._m))} w` : '';
-    // one text object; a run switches font (Tj advances by each glyph's width, so the runs follow on)
-    const shows = enc.runs.filter((r) => r.codes.length).map((r) => `/${this._page._font(r.symbol ? 'Symbol' : f.name)} ${num(f.size)} Tf ${pdfString(r.codes)} Tj`);
-    this._out(`${col.ops}${sw}\nBT ${mode} Tr ${tm.map(num).join(' ')} Tm ${shows.join(' ')} ET`);
+    // one text object; a run switches font (Tj advances by each glyph's width, so the runs follow on). The first
+    // run's font is set BEFORE the text matrix, as it always was — `… Tf <m> Tm (text) Tj` — so a string with no
+    // Greek in it reads exactly as before; only a switch mid-string adds a Tf between the Tjs
+    const runs = enc.runs.filter((r) => r.codes.length); if (!runs.length) return;
+    const tf = (r) => `/${this._page._font(r.symbol ? 'Symbol' : f.name)} ${num(f.size)} Tf`;
+    const shows = runs.map((r, i) => `${i ? tf(r) + ' ' : ''}${pdfString(r.codes)} Tj`);
+    this._out(`${col.ops}${sw}\nBT ${tf(runs[0])} ${mode} Tr ${tm.map(num).join(' ')} Tm ${shows.join(' ')} ET`);
   }
 
   // ── images ──

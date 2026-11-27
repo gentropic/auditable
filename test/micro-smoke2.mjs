@@ -6346,7 +6346,7 @@ if (take()) {
     out.pdf = { head: s.slice(0, 5), jpeg: s.includes('/DCTDecode'), kb: Math.round(bytes.length / 1024) };
     const im = /\/Subtype \/Image \/Width (\d+) \/Height (\d+)/.exec(s);
     out.pdfImg = im ? [+im[1], +im[2]] : null;
-    out.pdfText = ['FE', 'N'].filter((t) => s.includes(`(${t})`));
+    out.pdfText = ['FE', 'N'].filter((t) => s.includes(`(${t})`) || s.includes(` ${t})`));   // a whole string, or one ending in it (the legend's “layer · FE”)
     out.lookAfter = Math.round(window.micro.view().look);
     // an analysis plot → an image frame
     const pc = document.createElement('canvas'); pc.width = 300; pc.height = 200; pc.getContext('2d').fillRect(0, 0, 300, 200);
@@ -6359,7 +6359,7 @@ if (take()) {
   const want = [Math.round(r.box[2] * 6), Math.round(r.box[3] * 6)];
   chk(`COMPOSER: a view frame renders at its own size (${r.px} px for ${r.box[2]}×${r.box[3]} mm at 6 px/mm), inked ${(r.inked * 100).toFixed(0)}%, kept as JPEG`, r.px[0] === want[0] && r.px[1] === want[1] && r.inked > 0.05 && r.srcJpeg);
   chk(`COMPOSER: a plan ortho view states its scale per pixel + north up (${JSON.stringify(r.meta)})`, r.meta.worldPerPx > 0 && r.meta.ortho && Math.abs(r.meta.north) < 1);
-  chk(`COMPOSER: the legend is the layer's (${JSON.stringify(r.legend)}); scale bar + north refer to the view frame`, r.legend && r.legend.title === 'FE' && r.legend.kind === 'ramp' && r.legend.stops === 32 && r.sbOf && r.northOf);
+  chk(`COMPOSER: the legend is the layer's (${JSON.stringify(r.legend)}); scale bar + north refer to the view frame`, r.legend && / · FE$/.test(r.legend.title) && r.legend.kind === 'ramp' && r.legend.stops === 32 && r.sbOf && r.northOf);
   chk(`COMPOSER: the scale follows the frame (${r.wpm0 && r.wpm0.toFixed(3)} → ${r.wpm1 && r.wpm1.toFixed(3)} world/mm at half size)`, r.wpm0 > 0 && Math.abs(r.wpm1 / r.wpm0 - 2) < 1e-6);
   chk(`COMPOSER: "show in view" puts the frame's camera back (look ${r.lookMoved} → ${r.lookBack}, ortho ${r.orthoBack})`, r.lookMoved === 90 && r.lookBack === 0 && r.orthoBack === true);
   const wantPdf = [Math.round(r.box[2] * 150 / 25.4), Math.round(r.box[3] * 150 / 25.4)];
@@ -6441,13 +6441,14 @@ if (take()) {
     }
     out.captions = [...text.matchAll(/\( ?Level ([\d.]+) m (?:\\\d{3}|\S) page (\d+) of (\d+)\) Tj/g)].map((m) => [+m[1], +m[2], +m[3]]);   // (the em dash: a WinAnsi escape)
     out.figs = [...text.matchAll(/\(Figure (\d+)\.\) Tj/g)].map((m) => +m[1]);
-    out.legend = /\(AU\) Tj/.test(text);
+    out.legend = /[( ]AU\) Tj/.test(text);   // the legend's title ends in its column (“Site C — drillholes · AU”)
     // a GT-style table through the same door as an analysis window's ⇥ figure
     const pc = document.createElement('canvas'); pc.width = 300; pc.height = 200; pc.getContext('2d').fillRect(0, 0, 300, 200);
     dispatchEvent(new CustomEvent('micro:to-composer', { detail: { canvas: pc, tsv: 'cutoff\ttonnes\tgrade\n0.5\t1200\t1.8\n1.0\t800\t2.4\n', name: 'gt-atl' } }));
     const fr = ed.getDoc().frames;
     const tf = fr.find((x) => x.kind === 'table'), pf = fr.find((x) => x.source && x.source.kind === 'plot');
-    out.table = tf && { cols: tf.content.columns, rows: tf.content.rows.length, beside: pf && Math.abs(tf.box[0] - (pf.box[0] + pf.box[2] + 6)) < 1e-9 };
+    out.table = tf && { cols: tf.content.columns, rows: tf.content.rows.length, beside: pf && !(tf.box[0] < pf.box[0] + pf.box[2] && pf.box[0] < tf.box[0] + tf.box[2] && tf.box[1] < pf.box[1] + pf.box[3] && pf.box[1] < tf.box[1] + tf.box[3])
+      && (Math.abs(tf.box[0] - (pf.box[0] + pf.box[2])) <= 8 || Math.abs(tf.box[1] - (pf.box[1] + pf.box[3])) <= 8 || Math.abs(pf.box[0] - (tf.box[0] + tf.box[2])) <= 8) };   // touching it, not on it
     return out;
   });
   if (r.fail) console.log('ATLAS DEBUG', r.fail, r.tracker);

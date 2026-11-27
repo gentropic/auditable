@@ -128,11 +128,12 @@ test('text: standard fonts from CSS stacks, WinAnsi encoding with substitutions,
   ctx.font = '10px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
   ctx.fillText('(a)é', 100, 0);
   ctx.font = 'bold 12px sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
-  ctx.fillText('κ = 3.1', 0, 50); ctx.fillText('☃', 0, 60); ctx.fillText('☃☃', 0, 70);
+  ctx.fillText('κ = 3.1', 0, 50); ctx.fillText('plain', 0, 80); ctx.fillText('☃', 0, 60); ctx.fillText('☃☃', 0, 70);
   const bytes = await doc.save(), c = contentOf(bytes), { s } = parse(bytes);
   // centred: 4 chars × 6 = 24 wide → x = 88; 'top': baseline 0.8 em below the anchor → y = 100 − 8
-  assert.match(c, /BT 0 Tr 1 0 0 1 88 92 Tm \/F3 10 Tf \(\\\(a\\\)\\351\) Tj ET/);
-  assert.match(c, /\/F13 12 Tf \(k\) Tj \/F2 12 Tf \( = 3\.1\) Tj ET/, 'κ in Symbol (its code is “k”), then back to the page’s font');
+  assert.match(c, /BT \/F3 10 Tf 0 Tr 1 0 0 1 88 92 Tm \(\\\(a\\\)\\351\) Tj ET/);
+  assert.match(c, /BT \/F13 12 Tf 0 Tr [-\d. ]+ Tm \(k\) Tj \/F2 12 Tf \( = 3\.1\) Tj ET/, 'κ in Symbol (its code is “k”), then back to the page’s font');
+  assert.match(c, /BT \/F2 12 Tf 0 Tr [-\d. ]+ Tm \(plain\) Tj ET/, 'a string with no Greek is written as it always was: Tf, then Tm (text) Tj');
   assert.match(s, /\/BaseFont \/Courier \/Encoding \/WinAnsiEncoding/);
   assert.match(s, /\/BaseFont \/Symbol >>/, 'Symbol keeps its own built-in encoding');
   assert.equal(warned.filter((w) => /☃/.test(w)).length, 1, 'one warning per missing character set');
