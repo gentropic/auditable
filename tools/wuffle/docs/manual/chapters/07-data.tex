@@ -166,7 +166,8 @@ dataset, counted in the status line. Rows selected on a net are washed in the ta
 \section{When wuffle guessed wrong}\label{sec:columns}\index{columns (how a dataset is read)}
 
 A guess can be wrong: a \col{dip} that is really a dip direction, a column of quadrant letters, a rake in
-place of a slip line. Right-click the dataset and choose \ui{Columns… (how it is read)}, or click
+place of a slip line. Right-click the dataset and choose \ui{Columns… (how it is read)}, choose it from \menu{Data>How a
+dataset is read…}, or click
 \ui{columns…} in the table's heading (it says \ui{columns… (guessed)} when wuffle guessed). Choose the
 kind, the form the attitudes are written in (dip direction and dip, right-hand strike and dip, strike and
 dip with the quadrant it dips toward, one text column; for faults, a slip line or a rake), then the column
@@ -180,7 +181,7 @@ their colors; a dataset made a table comes off the nets, after asking. From the 
 \section{Calculated columns}\label{sec:calc}\index{calculated columns}
 
 A calculated column is a formula over each row, kept with the dataset. Click \ui{ƒ new column} in the
-table's heading, give it a name and an expression, and \ui{Add}; the dialog checks the expression as you
+table's heading (or \menu{Data>Calculated column…}), give it a name and an expression, and \ui{Add}; the dialog checks the expression as you
 type. The values are written into the rows, so the table, the contours, a join and an export all see an
 ordinary column, and they are made again whenever the rows change. The column's heading says \ui{ƒ}, and
 its tooltip shows the formula. A later formula may use an earlier one; a formula never replaces a column
@@ -217,7 +218,8 @@ join joints stations on station\\
 join joints stations on stn=site
 \end{center}
 
-\noindent The second form names the key column in each when they differ. The join is a left join: every
+\noindent \menu{Data>Join a table…} asks for the same: the measurements, the table, and the key column
+in each. The second form names the key column in each when they differ. The join is a left join: every
 measurement stays, with the table's columns where its key matched and blanks where it didn't, as a new
 dataset (\ui{joints + stations}) with lineage. The dataset you measured is left alone. Keys match as text,
 trimmed, so \code{12} and \code{"12"} are one station. The answer counts the matches and names what
@@ -228,7 +230,7 @@ in as \col{lith (stations)}. Calculated columns come as their values; their form
 
 \section{Exporting a dataset}\label{sec:data-export}
 
-Right-click a dataset, \ui{Export}: \ui{CSV}, or \ui{GeoJSON} for points (the console: \code{export joints
+Right-click a dataset, \ui{Export} (or \menu{File>Export data}): \ui{CSV}, or \ui{GeoJSON} for points (the console: \code{export joints
 geojson}). GeoJSON needs a place for each row: \col{lon} / \col{lat} columns (WGS~84) or \col{x} / \col{y}
 (projected; GeoJSON assumes WGS~84, so the answer reminds you to name your CRS to whoever reads it). Each
 point carries the row's columns and its attitude under fixed names: \col{dip\_direction}, \col{dip},

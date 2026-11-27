@@ -161,3 +161,4 @@ body.desk > [hidden] { display:none !important; }   /* the field page's own disp
 .wpbar { display:flex; justify-content:flex-end; gap:8px; margin-top:12px; }
 .wpbar button { font:12px var(--w-sans); padding:3px 12px; border-radius:3px; border:1px solid var(--w-border); background:var(--w-bg-bright); color:var(--w-text); cursor:pointer; }
 .wpbar button.primary { background:var(--w-orange); border-color:var(--w-orange); color:var(--w-bg-deep); font-weight:600; }
+.wpbar button:disabled { opacity:.45; cursor:default; }

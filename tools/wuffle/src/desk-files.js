@@ -51,7 +51,7 @@ const safeName = (s) => String(s || 'untitled').replace(/[^\w.-]+/g, '_');
 /**
  * @param home { list(): Promise<[{path, bytes}]>, restore(files): Promise, onChange(fn) } — the console's /home
  */
-export function createFiles(root, { project: p, dropHost, onOpened, home = null, onStatus = () => {} }) {
+export function createFiles(root, { project: p, dropHost, onOpened, home = null, layoutOf = null, onStatus = () => {} }) {
   /** text → dataset(s), each drawn on the active net (made if there is none) → the first dataset's id */
   const addData = (text, name) => {
     const specs = readTable(text, String(name).replace(/\.[^.]+$/, ''));
@@ -88,7 +88,7 @@ export function createFiles(root, { project: p, dropHost, onOpened, home = null,
   };
   /** another Project replaces this one IN PLACE, so every listener stays attached */
   const adopt = (q) => {
-    Object.assign(p, { name: q.name, datasets: q.datasets, originals: q.originals, diagrams: q.diagrams, layers: q.layers, figures: q.figures, selection: q.selection, activeDiagram: q.activeDiagram, _seq: q._seq });
+    Object.assign(p, { name: q.name, datasets: q.datasets, originals: q.originals, diagrams: q.diagrams, layers: q.layers, figures: q.figures, selection: q.selection, activeDiagram: q.activeDiagram, _seq: q._seq, layout: q.layout || null });
     p.clearHistory();
     p._emit('project-loaded');
   };
@@ -134,7 +134,7 @@ export function createFiles(root, { project: p, dropHost, onOpened, home = null,
       addData(new TextDecoder().decode(bytes), f.name);
     }
   };
-  const bytesOf = async () => writeProject(p, { home: home ? await home.list() : [] });
+  const bytesOf = async () => writeProject(p, { home: home ? await home.list() : [], layout: layoutOf ? layoutOf() : null });
   const save = async () => {
     download(new Blob([await bytesOf()], { type: 'application/zip' }), `${safeName(p.name)}.zip.wuffle`);
     onStatus(`saved ${safeName(p.name)}.zip.wuffle`);
@@ -193,5 +193,5 @@ export function createFiles(root, { project: p, dropHost, onOpened, home = null,
   root.addEventListener('dragleave', (e) => { if (!root.contains(e.relatedTarget)) hide(); });
   root.addEventListener('drop', (e) => { if (!e.dataTransfer.files.length) return; e.preventDefault(); hide(); open([...e.dataTransfer.files]); });
 
-  return { addData, loadProject, adopt, open, save, savePage, pageHtml, canSavePage, bytesOf, restore, newProject, pick: () => picker.click() };
+  return { addData, loadProject, adopt, open, save, savePage, pageHtml, canSavePage, bytesOf, restore, newProject, touch: schedule, pick: () => picker.click() };
 }

@@ -10,7 +10,8 @@ from its bedding: axis, interlimb angle, axial plane, and Fleuty's names for the
 kinematic joints 300/65 --phi 30 --lateral 20
 \end{center}
 
-\noindent tests the planes of \code{joints} against a slope face dipping 65° toward 300, with a friction
+\noindent (\menu{Analysis>Slope stability (kinematic)…} asks for the layer, the face, $\phi$ and the
+limit) tests the planes of \code{joints} against a slope face dipping 65° toward 300, with a friction
 angle of 30° and a lateral limit of ±20° (the defaults are 30° and 20°). Each mode is tested on the
 attitudes themselves \parencite{markland1972,hoek1981,goodman1976}, so the result doesn't depend on the
 projection:
@@ -32,7 +33,7 @@ whole analysis is one undo step.
 
 \section{Folds}\label{sec:fold}\index{folds}
 
-\code{fold} describes a fold from bedding:
+\code{fold} (\menu{Analysis>Fold…}) describes a fold from bedding:
 
 \begin{description}
 \item[The axis] the pole of the best-fit great circle through the bedding poles (the $\pi$-girdle), with
@@ -53,5 +54,5 @@ interlimb angle changes with it.
 
 \noindent \code{fold --keep} draws the axis and the axial plane as datasets. When the poles sit poorly on
 one great circle, the answer suggests \code{cone}: the poles of a conical fold lie on a small circle, and
-\code{cone} finds the one that fits best (its axis, half-angle and the scatter about it), drawn with
-\code{--keep}.
+\code{cone} (\menu{Analysis>Best-fit cone…}) finds the one that fits best (its axis, half-angle and the
+scatter about it), drawn with \code{--keep}.

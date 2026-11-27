@@ -73,6 +73,7 @@ status line says \ui{saved untitled.zip.wuffle}. It is an ordinary zip of the \f
 \file{selection/<name>.rows} & the selected rows, numbered from 1 \\
 \file{field/<name>/} & field originals, byte for byte (\cref{sec:field-logs}) \\
 \file{home/} & your files \\
+\file{layout.json} & how the desk was arranged: tabs, splits, floating windows \\
 \bottomrule\end{tabularx}
 \end{center}
 
@@ -133,7 +134,7 @@ the project you have, \file{/home} included, and the undo list starts afresh.
 
 \section{Kept between saves}\label{sec:autosave}
 
-\index{kept copy}A second after each change (to the project, or to a file in \file{/home}), wuffle copies the whole project
+\index{kept copy}A second after each change (to the project, to a file in \file{/home}, or to how the desk is arranged), wuffle copies the whole project
 into the browser's own storage, on your machine. Close the tab, open \file{wuffle.html} again, and your
 session is back; the status line says when that copy was made: \ui{restored your last session
 (11/26/2026, 12:38:03 PM)}.

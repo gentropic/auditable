@@ -44,6 +44,11 @@ statistics of the active diagram's layers (\cref{sec:stats-card}), and the shell
 A net carries its own tool strip at the top left (\ui{pick}, \ui{lasso}, \ui{cone}, \ui{band}) for
 selecting (\cref{ch:select}), and \ui{measure} for reading angles (\cref{sec:measure}).
 
+The arrangement is part of the project. Move the statistics beside the tree, float the console, put
+the table on the right: the autosave keeps it (\cref{sec:autosave}), and a saved project or a saved page
+reopens arranged as it was left. A project with no arrangement of its own opens on the default one, and
+\menu{View>Reset layout} brings the default back.
+
 \shot{desk-tour}{The desk with the Tocher sample open: the layers tree on the left, the net in the middle,
 and the table, statistics and console tabs below.}
 
@@ -51,15 +56,32 @@ and the table, statistics and console tabs below.}
 
 \begin{description}
 \item[\menu{File}]\index{menus!File} new project, open data or a project, the Tocher sample, rename the project, save,
-save as page (\cref{ch:projects}).
-\item[\menu{Edit}]\index{menus!Edit} undo and redo, each naming its step (\cref{sec:undo}).
-\item[\menu{Diagram}]\index{menus!Diagram} a new net, rose diagram or fabric plot; remove the active diagram
-(\cref{ch:diagrams}).
+save as page (\cref{ch:projects}); export a dataset as CSV or GeoJSON, and the active diagram as SVG, PNG
+or a picture on the clipboard.
+\item[\menu{Edit}]\index{menus!Edit} undo and redo, each naming its step (\cref{sec:undo}); the selection: all,
+none, invert, in a cone, in a band, where an expression holds, to a new dataset, its statistics
+(\cref{ch:select}).
+\item[\menu{Data}]\index{menus!Data} add measurements by typing them, how a dataset is read, a calculated column,
+a join (\cref{ch:data}); rotate the data, untilt it, turn it from magnetic to true north (\cref{sec:turn}).
+\item[\menu{Diagram}]\index{menus!Diagram} a new net, rose diagram or fabric plot; the active diagram's layers and
+what each draws, its projection, hemisphere and graticule (or a rose's quantity, sectors and weight);
+contours, Terzaghi weighting, centring the net; rename or remove it (\cref{ch:diagrams}).
+\item[\menu{Analysis}]\index{menus!Analysis} statistics of a layer, finding sets, comparing two layers, the mean,
+eigenvectors and β-axis kept as data, intersections (\cref{ch:stats}); slope stability, folds and
+best-fit cones (\cref{ch:slopes-folds}).
 \item[\menu{Figure}]\index{menus!Figure} a new figure from the active net, and the figures already made (\cref{ch:figures}).
-\item[\menu{View}]\index{menus!View} the theme, the console, field mode.
-\item[\menu{Help}]\index{menus!Help} \ui{About wuffle}: what it is built on, where the sample data comes from, and the
-build.
+\item[\menu{Tools}]\index{menus!Tools} the net's tools, pick, lasso, cone, band, measure, with their keys.
+\item[\menu{View}]\index{menus!View} the theme, the panels, the console, \ui{Reset layout}, field mode.
+\item[\menu{Help}]\index{menus!Help} the console's commands, the keys and mouse, and \ui{About wuffle}: what it is
+built on, where the sample data comes from, and the build.
 \end{description}
+
+An item that changes the project runs the console's own command, and the console shows it as if you had
+typed it: \menu{Diagram>Contours…} with filled bands at 2\,$\sigma$ writes \code{contour kamb 2 tocher
+-{}-filled}. A menu and a typed line make the same change and land in the same history, so the console
+is also where to learn the commands, and a routine (\cref{sec:routines}) can repeat what you did with the
+mouse. An item that needs values (a slope face, an angle, a column) asks for them in a small form; it
+says what is missing, and \ui{OK} waits until nothing is.
 
 \shot[0.5\linewidth]{file-menu}{The File menu. Its keys work anywhere on the desk: \key{Ctrl}+\key{O} opens,
 \key{Ctrl}+\key{S} saves.}

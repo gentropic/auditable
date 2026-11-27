@@ -572,6 +572,10 @@ for (const [label, url] of [['dev', '/tools/wuffle/index.html'], ['built', '/wuf
   chk(`${label}: a click on a pole selects its row (${JSON.stringify(t.selected)}), drawn violet on BOTH nets (${JSON.stringify(t.violetOn)}); the table shows the dataset (“${(t.tableTitle || '').slice(0, 50)}”)`, t.selected.length === 1 && t.violetOn[0] >= 1 && t.violetOn[1] >= 1 && /tocher/.test(t.tableTitle || ''));
   chk(`${label}: the theme switches (${JSON.stringify(t.theme)})`, t.theme[0] !== t.theme[1] && t.theme[2] === 'light');
   chk(`${label}: a project round-trips through a .zip.wuffle (${JSON.stringify(t.reload)})`, t.zip && t.reload.diagrams === 2 && t.reload.layers === 2 && t.reload.rows === 200 && t.reload.selected.length === 1 && t.reload.tabs === 6);
+  // ── the layout is the project's: statistics moved beside the tree and the console floated come back after
+  //    the reload below (the autosave), through a saved file, and are put back by Reset layout ──
+  const stackHolding = `(id) => { const R = window.__wuffleDesk.rails, all = [], walk = (n) => { if (!n) return; if (n.children) n.children.forEach(walk); else all.push(n); }; walk(R.state.root); return all.find((s) => s.tabs.some((t) => t.id === id)) || null; }`;
+  await p.evaluate((sh) => { const R = window.__wuffleDesk.rails, of = eval(sh); R.moveTab('stats', { to: 'stack', stackId: of('tree').id }); R.floatTab('console'); }, stackHolding);
   // ── autosave: a file in /home and the data, then the page reloads — the session comes back ──
   await p.evaluate(async () => { const W = window.__wuffleDesk; await W.console.run('echo kept > /home/note.txt'); W.project.renameDiagram(W.project.diagrams[0].id, 'Autosaved net'); });
   await p.waitForTimeout(1800);
@@ -583,6 +587,28 @@ for (const [label, url] of [['dev', '/tools/wuffle/index.html'], ['built', '/wuf
   });
   chk(`${label}: autosave — after a reload the session is back (${as.ok}: ${JSON.stringify(as.names)}, ${as.n} datasets, /home/note.txt “${as.note}”), with a fresh history`,
     as.ok === true && as.names.includes('Autosaved net') && as.n >= 1 && as.note === 'kept' && !as.undo);
+  const lay = await p.evaluate(async (sh) => {
+    const W = window.__wuffleDesk, R = W.rails, of = eval(sh), P = W.project;
+    const where = () => ({ statsWithTree: of('stats') === of('tree'), consoleFloat: (R.state.floats || []).some((f) => f.stack.tabs.some((t) => t.id === 'console')),
+      net: [...document.querySelectorAll('.rails-tab')].some((t) => t.textContent.trim() === 'Autosaved net') });
+    const reloaded = where();
+    const bytes = await W.files.bytesOf();
+    await W.files.newProject(); const fresh = where();
+    await W.files.loadProject(bytes); const file = where();
+    // a layout naming a diagram that isn't there: that tab is dropped, the rest kept, nothing breaks
+    const snap = W.layout.snapshot();
+    const find = (n) => { if (!n) return null; if (n.children) { for (const c of n.children) { const x = find(c); if (x) return x; } return null; } return n.tabs.includes('tree') ? n : null; };
+    const st = find(snap.root); st.tabs.push('diagram:Gone net'); st.active = 'diagram:Gone net';
+    P.layout = snap; P._emit('project-loaded');
+    const gone = { tabs: [...document.querySelectorAll('.rails-tab')].map((t) => t.textContent.trim()), active: of('tree').active };
+    W.layout.reset(); const reset = where();
+    return { reloaded, fresh, file, gone, reset };
+  }, stackHolding);
+  chk(`${label}: the layout comes back after a reload (${JSON.stringify(lay.reloaded)}), a new project has the default (${JSON.stringify(lay.fresh)}), a saved file reopens as arranged (${JSON.stringify(lay.file)}), a tab for a missing diagram is dropped (active falls to ${lay.gone.active}), Reset layout gives the default (${JSON.stringify(lay.reset)})`,
+    lay.reloaded.statsWithTree && lay.reloaded.consoleFloat && lay.reloaded.net && !lay.fresh.statsWithTree && !lay.fresh.consoleFloat
+    && lay.file.statsWithTree && lay.file.consoleFloat && !lay.gone.tabs.includes('Gone net') && lay.gone.active === 'tree'
+    && !lay.reset.statsWithTree && !lay.reset.consoleFloat && lay.reset.net);
+
   chk(`${label}: no page errors (${errs.length ? errs.join(' ; ').slice(0, 200) : 'none'})`, errs.length === 0);
 
   // ── save as page (the built file only — the dev tree has no page to copy): the saved page opens on the
@@ -614,6 +640,40 @@ for (const [label, url] of [['dev', '/tools/wuffle/index.html'], ['built', '/wuf
       && /Sent|untitled/.test(got.title) && opened.includes('Sent net') && errs2.length === 0);
     await ctx2.close();
   }
+  // ── the menus: the analyses reachable without the console, through forms, each running the console's own command ──
+  const tops = await p.evaluate(() => [...document.querySelectorAll('#wdesk .wmenus .gcu-menubar-trigger')].map((x) => x.textContent.trim()));
+  chk(`${label}: the menubar is ${tops.join(' · ')}`, tops.join() === 'File,Edit,Data,Diagram,Analysis,Figure,Tools,View,Help');
+  const dialog = async (action, fill, okLabel) => {
+    await p.evaluate((a) => { window.__wuffleDesk.menus.run(a); }, action);
+    await p.waitForSelector('.gcu-dialog [data-key]', { timeout: 5000 });
+    await p.evaluate(([f, ok]) => {
+      const dlg = [...document.querySelectorAll('.gcu-dialog')].at(-1);
+      for (const [k, v] of Object.entries(f)) { const el = dlg.querySelector(`[data-key="${k}"]`); if (el.type === 'checkbox') el.checked = v; else el.value = v; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); }
+      [...dlg.querySelectorAll('button')].find((x) => x.textContent === ok).click();
+    }, [fill, okLabel]);
+    await p.waitForTimeout(500);
+    // a long answer comes in a box: read it, close it
+    return p.evaluate(() => { const d = [...document.querySelectorAll('.gcu-dialog')].at(-1); if (!d) return ''; const t = d.querySelector('.gcu-dialog-message')?.textContent || ''; [...d.querySelectorAll('button')].find((x) => x.textContent === 'OK')?.click(); return t; });
+  };
+  await p.evaluate(async () => { const W = window.__wuffleDesk; await W.files.newProject(); W.menus.run('tocher'); });
+  await p.waitForTimeout(400);
+  await dialog('contours', { filled: true, k: '2' }, 'Contour');
+  const kin = await dialog('kinematic', { face: '180/60', phi: '30' }, 'Analyse');
+  await dialog('selwhere', { expr: 'dip > 60' }, 'Select');
+  await dialog('add', { kind: 'p', text: '045/30\n120/60' }, 'Add');
+  const fold = await dialog('fold', { keep: false }, 'Analyse');
+  const m = await p.evaluate(() => {
+    const W = window.__wuffleDesk, P = W.project, ds = P.datasets.find((d) => /tocher/.test(d.name)), L = P.layers.find((l) => l.datasetId === ds.id);
+    W.menus.run('tool:lasso'); const tool = W.select.tool; W.menus.run('tool:pick');
+    const dipCol = ds.roles.dip, sel = P.selected(ds.id);
+    return { filled: !!(L.elements.contours.on && L.elements.contours.filled && L.elements.contours.sigma === 2), kinCol: ds.columns.includes('kinematic'),
+      steep: sel.length, allSteep: sel.length > 0 && sel.every((i) => +ds.rows[i][dipCol] > 60), steepAll: ds.rows.filter((r) => +r[dipCol] > 60).length,
+      typed: P.datasets.find((d) => d.name === 'typed planes')?.rows.length, tool, transcript: W.console.cmd.history.join('\n') };
+  });
+  chk(`${label}: Diagram → Contours… (filled, 2σ: ${m.filled}); Analysis → Slope stability… (“${(kin.split('\n')[1] || '').trim()}”, a kinematic column: ${m.kinCol}); Edit → Select where… (${m.steep} of ${m.steepAll} steep); Data → Add measurements… (${m.typed} typed); Analysis → Fold… (“${fold.slice(0, 50)}”); Tools → lasso (${m.tool}); each shows in the console as its command`,
+    m.filled && /planar/.test(kin) && m.kinCol && m.allSteep && m.steep === m.steepAll && m.typed === 2 && /fold axis/.test(fold) && m.tool === 'lasso'
+    && /contour kamb 2/.test(m.transcript) && /kinematic .*180\/60/.test(m.transcript) && /select where/.test(m.transcript) && /add p 045\/30 120\/60/.test(m.transcript));
+  chk(`${label}: no page errors after the menus (${errs.length ? errs.join(' ; ').slice(0, 200) : 'none'})`, errs.length === 0);
   await p.close();
 }
 await b.close(); server.close();

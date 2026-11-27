@@ -141,6 +141,11 @@ Only datasets with a selection have one.
 \item[\file{field/<name>/<log>.csv}, \file{<log>.csv.sig}, \file{photos/*.jpg}] a field original, the bytes
 exactly as they arrived (\cref{sec:field-logs}).
 \item[\file{home/…}] the files under \file{/home} in the console, at the same paths.
+\item[\file{layout.json}] how the desk was arranged, the @gcu/rails tree with its tabs named, not
+numbered: \code{"tree"}, \code{"table"}, \code{"stats"}, \code{"console"}, \code{"diagram:Net 1"},
+\code{"figure:Fig 1"}. A view, not data: a tab whose diagram or figure isn't in the project is dropped,
+a diagram the layout doesn't name gets a tab as usual, and a project without the file, or with one that
+doesn't hold together, opens on the default arrangement (a broken one is reported, never refused).
 \end{description}
 
 Not stored: the SVG and PDF renderings, the selected rows as CSV, and the undo history.

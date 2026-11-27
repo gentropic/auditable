@@ -14,6 +14,8 @@
 //   field/<name>/photos/*.jpg       is over those exact bytes), and the station photos; the data read from
 //                                   it lives in data/ like any other, edit that freely
 //   home/…                          your files
+//   layout.json                     how the desk was arranged (tabs, splits, floats), by diagram and figure
+//                                   NAME — a view, not data: a project without one opens on the default
 //
 // Not stored: what is computed (svg, pdf, selection/<name>.csv) and the undo history.
 // Pure: bytes in, bytes out (stored zip members — the page format gzips the whole thing; see page.js).
@@ -28,7 +30,7 @@ export const FORMAT = 'wuffle';
 export const VERSION = 1;
 
 /** the project (and home files [{ path, bytes }]) → { path → string | Uint8Array } */
-export function projectEntries(p, { home = [] } = {}) {
+export function projectEntries(p, { home = [], layout = null } = {}) {
   const out = new Map();
   out.set('project.json', json({ format: FORMAT, version: VERSION, name: p.name, active: p.diagram(p.activeDiagram)?.name || null,
     data: p.datasets.map((d) => d.name), diagrams: p.diagrams.map((g) => g.name),
@@ -53,6 +55,7 @@ export function projectEntries(p, { home = [] } = {}) {
     for (const ph of o.photos) out.set(`${dir}/photos/${F(ph.name)}`, ph.bytes);
   }
   for (const d of p.datasets) { const s = p.selected(d.id); if (s.length) out.set(`selection/${F(d.name)}.rows`, s.map((i) => i + 1).join('\n') + '\n'); }
+  if (layout) out.set('layout.json', json(layout));
   for (const h of home) {                                 // home files carry their VFS path: /home/notes.txt → home/notes.txt
     const rel = String(h.path).replace(/^\/+/, '');
     if (rel.startsWith('home/') && rel.length > 5) out.set(rel, h.bytes);
@@ -145,6 +148,8 @@ export async function readProject(bytes) {
   if (manifest.active && gByName.has(manifest.active)) p.setActive(gByName.get(manifest.active));
   const home = [];
   for (const e of z.list()) if (e.name.startsWith('home/') && !e.dir) home.push({ path: '/' + e.name, bytes: await z.bytes(e) });
+  // the arrangement: kept as it came (the desk drops what no longer fits); a broken one is just not used
+  try { p.layout = JSON.parse((await text('layout.json')) || 'null'); } catch { p.layout = null; warnings.push('layout.json: not JSON — the default layout'); }
   p.clearHistory();
   return { project: p, home, warnings };
 }

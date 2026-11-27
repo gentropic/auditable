@@ -15,7 +15,7 @@
 //   commands.js      the console's language (pure)  ·  desk-console.js  the console panel
 //   figure.js        a compo page from a net (pure)  ·  desk-figure.js   the figure editor
 //   desk-files.js    open / drop / save, the project file
-//   desk-menus.js    the menubar and its commands
+//   desk-menus.js    the menubar: every item runs the console's own command  ·  desk-ask.js  its forms
 //   desk.css         the styles, all under body.desk
 import { Project } from './model.js';
 import { nextColor } from './palette.js';
@@ -72,8 +72,9 @@ export function mountDesk() {
   const netMenu = createNetMenu({ project: p, tree, table, select, layout: { focusTable: () => layout.focusTable() }, commands: consoleView.cmd, onStatus: status });
   layout = createLayout($('.wwork'), { project: p, tree, table, stats, consoleView, select, rotate, measure, netMenu, onStatus: status });
   const figures = createFigures({ project: p, layout, onStatus: status });
-  files = createFiles(root, { project: p, dropHost: $('.wwork'), onOpened: (id) => table.show(id), home: consoleView.home, onStatus: status });
-  const menus = createMenus($('.wmenus'), { project: p, files, layout, theme, figures, onStatus: status });
+  files = createFiles(root, { project: p, dropHost: $('.wwork'), onOpened: (id) => table.show(id), home: consoleView.home, layoutOf: () => layout.snapshot(), onStatus: status });
+  layout.onChange(() => files.touch());          // the arrangement is the project's too: a drag or a tab switch autosaves
+  const menus = createMenus($('.wmenus'), { project: p, files, layout, theme, figures, tree, table, select, netMenu, consoleView, onStatus: status });
   tree.onOpenFigure = (id) => figures.open(id);
   tree.onCommand = (line) => consoleView.cmd.run(line);   // the tree's menu runs the console's own commands (export …)
 
@@ -89,7 +90,7 @@ export function mountDesk() {
   theme.onChange(() => { $('.wst-theme').textContent = theme.label(); layout.redrawAll(); table.applyTheme(); });
   theme.apply();
 
-  const api = { project: p, rails: layout.rails, views: layout.views, table, tree, menus, theme, select, measure, netMenu, stats, console: consoleView, figures, files,
+  const api = { project: p, layout, rails: layout.rails, views: layout.views, table, tree, menus, theme, select, measure, netMenu, stats, console: consoleView, figures, files,
     addData: files.addData, loadProject: files.loadProject, open: files.open, setTheme: (t) => theme.set(t),
     restored: files.restore() };                       // the last session, from this browser's autosave (a promise → true / false)
   window.__wuffleDesk = api;

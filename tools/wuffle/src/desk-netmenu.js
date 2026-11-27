@@ -133,11 +133,17 @@ export function createNetMenu({ project: p, tree, table, select, layout, command
       else if (a === 's:ds') { let last = null; for (const id of shown) if (p.selected(id).length) last = p.selectionToDataset(id); if (last) { p.addLayer(view.id, last); table.show(last); } }
       else if (a === 's:all' || a === 's:inv') { p.setActive(view.id); run(`select ${a === 's:all' ? 'all' : 'invert'}`); }
       else if (a === 's:none') p.clearSelection();
-      else if (a === 'x:svg') { const svg = diagramSvg(p, view.id, { size: 800 }); if (!svg) throw new Error('nothing to draw on this diagram yet'); download(new Blob([svg], { type: 'image/svg+xml' }), `${fileName(g.name)}.svg`); }
-      else if (a === 'x:png') download(await diagramPng(p, view.id), `${fileName(g.name)}.png`);
-      else if (a === 'x:copy') { const b = await diagramPng(p, view.id); await navigator.clipboard.write([new ClipboardItem({ 'image/png': b })]); onStatus(`${g.name} copied as a picture`); }
+      else if (a === 'x:svg' || a === 'x:png' || a === 'x:copy') await exportPicture(view.id, a.slice(2));
       else if (!a.startsWith('d:') && !a.startsWith('h:') && !a.startsWith('el:') && !a.startsWith('s:')) await tree.diagramAction(g, a);
     } catch (err) { onStatus(err.message); }
+  }
+
+  /** a diagram's picture: 'svg' | 'png' downloaded, or 'copy' to the clipboard (the File menu shares it) */
+  async function exportPicture(diagramId, how) {
+    const g = p.diagram(diagramId); if (!g) throw new Error('no diagram');
+    if (how === 'svg') { const svg = diagramSvg(p, diagramId, { size: 800 }); if (!svg) throw new Error('nothing to draw on this diagram yet'); download(new Blob([svg], { type: 'image/svg+xml' }), `${fileName(g.name)}.svg`); onStatus(`↓ ${fileName(g.name)}.svg`); }
+    else if (how === 'png') { download(await diagramPng(p, diagramId), `${fileName(g.name)}.png`); onStatus(`↓ ${fileName(g.name)}.png`); }
+    else { const b = await diagramPng(p, diagramId); await navigator.clipboard.write([new ClipboardItem({ 'image/png': b })]); onStatus(`${g.name} copied as a picture`); }
   }
 
   /** the selection's numbers, one block per dataset this net shows */
@@ -160,5 +166,5 @@ export function createNetMenu({ project: p, tree, table, select, layout, command
       e.preventDefault(); p.setActive(view.id); show(view, e);
     });
   }
-  return { attach, hitAt, show, selectionReport, png: (diagramId, opts) => diagramPng(p, diagramId, opts) };
+  return { attach, hitAt, show, selectionReport, exportPicture, png: (diagramId, opts) => diagramPng(p, diagramId, opts) };
 }

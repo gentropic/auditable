@@ -95,6 +95,22 @@ describe('.zip.wuffle', () => {
     const other = []; const zo = createZipStreamWriter({ write: async (b) => { other.push(b.slice()); } }); await zo.add('a.txt', 'x'); await zo.finish();
     await assert.rejects(readProject(other[0].length ? new Uint8Array(other.flatMap((c) => [...c])) : new Uint8Array()), /not a wuffle project/);
   });
+  it('the desk\'s layout travels as layout.json (by name), absent when there is none; a broken one is a warning, not a refusal', async () => {
+    const { p } = mk();
+    const layout = { version: 1, root: { id: 'r', dir: 'row', children: [{ id: 'a', tabs: ['tree', 'stats'], active: 'stats', size: 270 }, { id: 'b', tabs: ['diagram:Strikes', 'table'], active: 'diagram:Strikes', flex: 1 }] }, floats: [] };
+    assert.equal(projectEntries(p).has('layout.json'), false);
+    const { project: q } = await readProject(await writeProject(p, { layout }));
+    assert.deepEqual(q.layout, layout);
+    assert.equal((await readProject(await writeProject(p))).project.layout, null);
+    const entries = projectEntries(p); entries.set('layout.json', '{ not json');
+    const chunks = []; const zw = createZipStreamWriter({ write: async (b) => { chunks.push(b.slice()); } });
+    for (const [k, v] of entries) await zw.add(k, v);
+    await zw.finish();
+    const bytes = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0)); let o = 0; for (const c of chunks) { bytes.set(c, o); o += c.length; }
+    const { project: r, warnings } = await readProject(bytes);
+    assert.equal(r.layout, null); assert.match(warnings.join(' '), /layout\.json: not JSON/);
+    assert.equal(r.datasets.length, p.datasets.length);
+  });
 });
 
 describe('formulas and tables travel with the project', () => {

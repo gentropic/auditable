@@ -83,7 +83,8 @@ In the layer's \ui{Properties…} (\cref{sec:properties}), \ui{filled bands} sha
 levels, from a pale tint of the layer's color up to the color itself, under the lines. The bands are in
 the lines' own units ($\sigma$ for Kamb, MUD for the Fisher kernel), so the shading and the lines always
 agree, and in a figure they are vectors like the rest of the net. \ui{levels} takes your own list, for
-example \code{2, 3, 5, 8}; leave it empty for the defaults. From the console:
+example \code{2, 3, 5, 8}; leave it empty for the defaults. \menu{Diagram>Contours…} sets the method,
+$k$, the bands and the levels in one form. From the console:
 \code{contour kamb --filled --levels 2,4,6}, and \code{--lines} for lines alone.
 
 A fault layer can be contoured too: its planes' poles by default, or its slip lines with
@@ -101,7 +102,8 @@ terzaghi 000/90\\
 terzaghi tocher 135/10 --max 5
 \end{center}
 
-\noindent The first is a vertical borehole. The weights are written as a column, \col{terzaghi\_w}, and
+\noindent The first is a vertical borehole (\menu{Diagram>Terzaghi weighting…} asks for the layer and
+the line). The weights are written as a column, \col{terzaghi\_w}, and
 named the dataset's weight; the contours use it. The statistics don't: the answer says so.
 \code{terzaghi off} removes the weighting and keeps the column.
 
