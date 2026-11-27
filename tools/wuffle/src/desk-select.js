@@ -131,9 +131,8 @@ export function createSelectTools({ project: p, onStatus = () => {} }) {
     for (const v of views) v.stage.style.cursor = tool === 'pick' ? '' : 'crosshair';
   }
   function setTool(t) { tool = t; refreshBars(); }
-  function clearShapes() { shapes.clear(); for (const v of views) drawShape(v, null); }
+  function clearShapes() { const had = shapes.size > 0; shapes.clear(); for (const v of views) drawShape(v, null); return had; }
   function detach(view) { views.delete(view); shapes.delete(view); }
-  addEventListener('keydown', (e) => { if (e.key === 'Escape' && document.body.classList.contains('desk') && !/^(INPUT|TEXTAREA)$/.test(e.target?.tagName)) clearShapes(); });
   // P L C B M choose a tool — on the net or the bare page, never while typing (the console, a text box, a figure)
   const KEYS = Object.fromEntries(TOOLS.map(([id, , , k]) => [k.toLowerCase(), id]));
   addEventListener('keydown', (e) => {

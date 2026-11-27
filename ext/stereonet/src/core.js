@@ -10,8 +10,15 @@
 //   { id, kind: 'planes' | 'lines' | 'faults' | 'smallcircles', visible?, color, size?,
 //     elements: { poles, points, greatCircles, contours, mean, v1Pole … v3Circle, circles, axes, slip, … }
 //               each { on, …settings } (contours: method 'kamb'|'fisher', sigma, levels; mean: axial, confidence),
-//     data: [{ row, plane?: [dd, dip], pole?: dcos, line?: [trend, plunge], dcos?: dcos, angle? }],
-//     selected?: Iterable<row> }
+//     data: [{ row, plane?: [dd, dip], pole?: dcos, line?: [trend, plunge], dcos?: dcos, angle?, color?, size? }],
+//     selected?: Iterable<row>,
+//     -- the look, all optional (absent: as before) --
+//     symbol?: 'circle'|'square'|'triangle'|'diamond'|'cross'|'x', hollow?: bool, opacity?: 0–1   (the points)
+//     lines?: { color?, width?, dash? }     great and small circles (dash: 'dashed' | 'dotted' | a dasharray)
+//     contourWidth?, labelSize?, labelsSelectedOnly?
+//   a datum's color / size (colour or size by a column) win over the layer's.
+//   contours: method 'kamb' (sigma = k) | 'fisher' (kernel = width in degrees) | 'percent' (area = % of the
+//   hemisphere) | 'cosine' (power = k of Σ|cos|ᵏ); levels; filled; of ('slip' on a fault layer)
 // Draw order: layers in order (last on top); inside a layer, contours under circles under points.
 
 const EIGEN = ['v1Pole', 'v1Circle', 'v2Pole', 'v2Circle', 'v3Pole', 'v3Circle'];
@@ -74,6 +81,15 @@ export function stereonetCore(B) {
     for (const L of layers) {
       if (L.visible === false) continue;
       const E = L.elements || {}, col = L.color || C.ink, size = L.size || 4;
+      const LN = L.lines || {}, lineCol = LN.color || col, lineW = LN.width > 0 ? +LN.width : null;
+      const dash = LN.dash === 'dashed' ? '6,4' : LN.dash === 'dotted' ? '1.5,3' : LN.dash && LN.dash !== 'solid' ? String(LN.dash) : 'none';
+      // a point's style: the layer's symbol, hollow or filled, its opacity; a datum's colour / size win; selected: violet
+      const pointStyle = (d, s) => {
+        const c = d.color || col, r = (d.size > 0 ? d.size : size) / 2 + 0.5;
+        if (s) return { fill: C.selected, r: r + 1.5, stroke: C.halo, strokeWidth: 1, ...(L.symbol ? { symbol: L.symbol } : {}) };
+        return { fill: L.hollow ? 'none' : c, r, stroke: L.hollow ? c : 'none', strokeWidth: L.hollow ? 1.2 : 1,
+          ...(L.symbol ? { symbol: L.symbol } : {}), ...(L.opacity != null && L.opacity < 1 ? { opacity: +L.opacity } : {}) };
+      };
       const chosen = new Set(L.selected || []);
       const data = (L.data || []).filter((d) => d && (d.pole || d.dcos));
       const axes = data.map((d) => d.pole || d.dcos);
@@ -87,25 +103,29 @@ export function stereonetCore(B) {
         if (contoured) notes.push(`contours: one set per net — “${L.id}” isn’t contoured; the contours are “${contoured}”’s`);
         else {
           contoured = L.id;
-          const kamb = (E.contours.method || 'kamb') === 'kamb';
-          // Kamb: sigma sets the counting area (E = kσ), contours in σ at 2σ intervals; Fisher: MUD levels.
+          const method = ['kamb', 'fisher', 'percent', 'cosine'].includes(E.contours.method) ? E.contours.method : 'kamb', kamb = method === 'kamb';
+          // Kamb: sigma sets the counting area (E = kσ), contours in σ at 2σ intervals; Fisher and cosine: MUD;
+          // percent: % of the data per 1 % of the area.
           // levels: the user's (any sorted list); weights: a datum's `weight` (a Terzaghi correction, …) when any has one
           const levels = (Array.isArray(E.contours.levels) && E.contours.levels.length ? [...E.contours.levels].map(Number).filter(Number.isFinite).sort((a, b) => a - b) : null)
-            || (kamb ? [2, 4, 6, 8, 10, 12] : [2, 4, 6, 8]);
+            || (kamb ? [2, 4, 6, 8, 10, 12] : method === 'percent' ? [1, 2, 4, 6, 8, 10] : [2, 4, 6, 8]);
           const weights = cdata.some((d) => d.weight != null) ? cdata.map((d) => (d.weight != null ? +d.weight : 1)) : null;
-          const base = { method: kamb ? 'kamb' : 'fisher', kambSigma: E.contours.sigma ?? 3, ...(weights ? { weights } : {}) };
+          const base = { method, kambSigma: E.contours.sigma ?? 3, ...(weights ? { weights } : {}),
+            ...(method === 'fisher' && E.contours.kernel > 0 ? { sigma: +E.contours.kernel } : {}),
+            ...(method === 'percent' && E.contours.area > 0 ? { areaPercent: +E.contours.area } : {}),
+            ...(method === 'cosine' && E.contours.power > 0 ? { cosinePower: +E.contours.power } : {}) };
           // filled: bands between the levels, light to the layer's colour, UNDER the lines (bearing's banded heatmap)
           if (E.contours.filled) primitives.push({ type: 'fill', dcos: caxes, layer: L.id, options: { ...base, gridSize: 96, levels, colors: bandColors(col, levels.length), opacity: 1 } });
-          primitives.push({ type: 'contour', dcos: caxes, layer: L.id, options: { ...base, levels, stroke: col, strokeWidth: 0.9 } });
+          primitives.push({ type: 'contour', dcos: caxes, layer: L.id, options: { ...base, levels, stroke: col, strokeWidth: L.contourWidth > 0 ? +L.contourWidth : 0.9 } });
         }
       }
       const isPlane = L.kind === 'planes' || L.kind === 'faults';
       if (isPlane && on('greatCircles')) for (const d of data) if (d.plane) {
         const s = chosen.has(d.row);
-        primitives.push({ type: 'plane', dd: d.plane[0], dip: d.plane[1], style: { stroke: s ? C.selected : col, strokeWidth: s ? 1.6 : 0.7, fill: 'none' }, ref: { layer: L.id, row: d.row } });
+        primitives.push({ type: 'plane', dd: d.plane[0], dip: d.plane[1], style: { stroke: s ? C.selected : (LN.color ? lineCol : d.color || col), strokeWidth: s ? Math.max(1.6, (lineW || 0.7) + 0.9) : (lineW || 0.7), fill: 'none', strokeDasharray: s ? 'none' : dash }, ref: { layer: L.id, row: d.row } });
       }
       if (L.kind === 'smallcircles' && on('circles')) for (const d of data) if (d.line && d.angle > 0) {
-        primitives.push({ type: 'cone', trend: d.line[0], plunge: d.line[1], angle: d.angle, style: { stroke: chosen.has(d.row) ? C.selected : col, strokeWidth: 1, fill: 'none', strokeDasharray: 'none' }, ref: { layer: L.id, row: d.row } });
+        primitives.push({ type: 'cone', trend: d.line[0], plunge: d.line[1], angle: d.angle, style: { stroke: chosen.has(d.row) ? C.selected : (LN.color ? lineCol : d.color || col), strokeWidth: lineW || 1, fill: 'none', strokeDasharray: chosen.has(d.row) ? 'none' : dash }, ref: { layer: L.id, row: d.row } });
       }
       if (L.kind === 'faults') {
         const F = data.filter((d) => d.pole && d.lineDcos).map((d) => ({ d, ...fault.resolveSense(d.pole, d.lineDcos, d.sense) }));
@@ -117,7 +137,7 @@ export function stereonetCore(B) {
           const [tr, pl] = conversions.dcosToLine(f.d.lineDcos);
           const s = chosen.has(f.d.row), a = f.defined ? slipArrow(f.slip, conversions.lineToDcos(tr, pl)) : null, st = { stroke: s ? C.selected : C.ink, strokeWidth: 1.1, fill: 'none' };
           if (a) { primitives.push({ type: 'curve', points: a.shaft, style: st }); primitives.push({ type: 'curve', points: a.head, style: st }); }
-          primitives.push({ type: 'line', trend: tr, plunge: pl, dcos: f.d.lineDcos, style: { fill: s ? C.selected : col, r: s ? size / 2 + 2 : size / 2 + 0.5, stroke: s ? C.halo : 'none', strokeWidth: 1 }, ref: { layer: L.id, row: f.d.row } });
+          primitives.push({ type: 'line', trend: tr, plunge: pl, dcos: f.d.lineDcos, style: pointStyle(f.d, s), ref: { layer: L.id, row: f.d.row } });
         }
         if (on('ptAxes')) for (const f of F) if (f.defined) {
           const { p, t } = fault.ptAxes(f.d.pole, f.slip);
@@ -151,17 +171,18 @@ export function stereonetCore(B) {
       // the measurements themselves, on top of the layer's circles
       const points = L.kind === 'lines' ? on('points') : L.kind === 'smallcircles' ? on('axes') : L.kind === 'faults' ? false : on('poles');   // a fault's point is its slickenline, drawn above
       if (points) for (const d of data) {
-        const s = chosen.has(d.row), style = { fill: s ? C.selected : col, r: s ? size / 2 + 2 : size / 2 + 0.5, stroke: s ? C.halo : 'none', strokeWidth: 1 };
+        const s = chosen.has(d.row), style = pointStyle(d, s);
         if (d.plane) primitives.push({ type: 'pole', dd: d.plane[0], dip: d.plane[1], dcos: d.pole || conversions.planeToDcos(d.plane[0], d.plane[1]), style, ref: { layer: L.id, row: d.row } });
         else if (d.line) primitives.push({ type: 'line', trend: d.line[0], plunge: d.line[1], dcos: d.dcos || conversions.lineToDcos(d.line[0], d.line[1]), style, ref: { layer: L.id, row: d.row } });
       }
       // labels beside each measurement's point (the pole, the line, a fault's slickenline): d.label, else the row
       // number. Drawn whether or not the points are, so a net of great circles can still be read off.
       if (on('labels')) for (const d of data) {
+        if (L.labelsSelectedOnly && !chosen.has(d.row)) continue;
         const at = L.kind === 'faults' && d.lineDcos ? conversions.dcosToLine(d.lineDcos) : d.plane ? conversions.dcosToLine(d.pole || conversions.planeToDcos(d.plane[0], d.plane[1])) : d.line;
         if (!at) continue;
         primitives.push({ type: 'text', trend: at[0], plunge: at[1], content: d.label ?? String(d.row + 1),
-          style: { fill: chosen.has(d.row) ? C.selected : col, fontSize: 9, dx: 5, dy: -4, textAnchor: 'start' }, layer: L.id });
+          style: { fill: chosen.has(d.row) ? C.selected : (d.color || col), fontSize: L.labelSize > 0 ? +L.labelSize : 9, dx: 5, dy: -4, textAnchor: 'start' }, layer: L.id });
       }
     }
     return { primitives, stats, notes };

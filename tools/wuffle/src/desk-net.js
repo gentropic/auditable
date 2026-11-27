@@ -54,6 +54,14 @@ export class NetView {
     if (rotated && this.scene.primitives.some((q) => q.type === 'dihedra')) notes.push('right dihedra aren’t drawn on a rotated net (Reset rotation to see them)');
     this.notesEl.replaceChildren(...notes.map((n) => { const d = document.createElement('div'); d.textContent = n; return d; }));
     this.notesEl.hidden = !notes.length;
+    // a rotated net says so, with the way back (R does the same)
+    this.el.querySelector('.wn-rot')?.remove();
+    if (rotated && g.kind === 'net') {
+      const b = document.createElement('button'); b.type = 'button'; b.className = 'wn-rot'; b.textContent = '↺ rotated';
+      b.title = 'this net is rotated — click (or press R) to put it back, north up and the centre straight down';
+      b.onclick = (e) => { e.stopPropagation(); this.p.setDiagramProps(this.id, { matrix: null, rotation: null }); };
+      this.el.append(b);
+    }
     for (const fn of this.drawn) fn(this);
   }
 
@@ -76,6 +84,15 @@ export class NetView {
     const k = nearestPick(this.picks, pt.x, pt.y, 8 * pt.scale); if (!k) return null;
     const L = this.p.layer(k.ref.layer); return L ? { datasetId: L.datasetId, row: k.ref.row } : null;
   }
+  /** the direction of the one selected measurement this net shows (a plane's pole), else null */
+  _oneSelected() {
+    let found = null, n = 0;
+    for (const id of new Set(this.p.layersOf(this.id).filter((L) => L.visible !== false).map((L) => L.datasetId))) {
+      const rows = this.p.selected(id); n += rows.length; if (n > 1) return null;
+      if (rows.length) { const o = orientations(this.p.dataset(id))[rows[0]]; found = o ? (o.pole || o.dcos) : null; }
+    }
+    return n === 1 ? found : null;
+  }
   _click(e) {
     if (!this.net) return;
     this.p.setActive(this.id);
@@ -92,6 +109,9 @@ export class NetView {
     let s = `cursor · pole of ${formatPlane(bearing.conversions.dcosToPlane(d))} · line ${formatLine(bearing.conversions.dcosToLine(d))}`;
     const hit = this._hit(pt);
     if (hit) { const ds = this.p.dataset(hit.datasetId), o = orientations(ds)[hit.row]; s += ` · ${ds.name} #${hit.row + 1} ${o.plane ? formatPlane(o.plane) : formatLine(o.line)}`; }
+    // one measurement selected: how far the cursor is from it (axial — a plane by its pole)
+    const one = this._oneSelected();
+    if (one) { const c = Math.min(1, Math.abs(d[0] * one[0] + d[1] * one[1] + d[2] * one[2])); s += ` · ${(Math.acos(c) * 180 / Math.PI).toFixed(1)}° from the selected`; }
     this.onStatus(s);
   }
 }

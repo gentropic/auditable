@@ -179,3 +179,36 @@ describe('contours: filled, your levels, weights; the graticule off', () => {
     assert.ok(off.length < on.length, `${off.length} < ${on.length}`);
   });
 });
+
+describe('the layer look (all optional; absent draws as before)', () => {
+  const B2 = B, P = (dd, dip, row, extra = {}) => ({ row, plane: [dd, dip], pole: B2.conversions.planeToDcos(dd, dip), ...extra });
+  const base = { id: 'a', kind: 'planes', color: '#123456', elements: { poles: { on: true }, greatCircles: { on: true }, labels: { on: true } } };
+  it('symbol, hollow and opacity reach the points; a datum colour and size win; selected stays violet', () => {
+    const sc = core.buildScene({ layers: [{ ...base, symbol: 'triangle', hollow: true, opacity: 0.6, selected: [1], data: [P(10, 20, 0, { color: '#ff0000', size: 10 }), P(100, 40, 1)] }] });
+    const poles = sc.primitives.filter((q) => q.type === 'pole');
+    assert.equal(poles[0].style.symbol, 'triangle'); assert.equal(poles[0].style.fill, 'none'); assert.equal(poles[0].style.stroke, '#ff0000');
+    assert.equal(poles[0].style.opacity, 0.6); assert.equal(poles[0].style.r, 5.5);
+    assert.equal(poles[1].style.fill, '#EC9FFF');
+  });
+  it('lines: colour, width and dash on the great circles; a selected circle stays solid violet', () => {
+    const sc = core.buildScene({ layers: [{ ...base, lines: { color: '#00aa00', width: 1.4, dash: 'dashed' }, selected: [1], data: [P(10, 20, 0), P(100, 40, 1)] }] });
+    const gc = sc.primitives.filter((q) => q.type === 'plane');
+    assert.deepEqual([gc[0].style.stroke, gc[0].style.strokeWidth, gc[0].style.strokeDasharray], ['#00aa00', 1.4, '6,4']);
+    assert.equal(gc[1].style.strokeDasharray, 'none');
+  });
+  it("contours: 'percent' and 'cosine' with their parameters and default levels; a contour width", () => {
+    const data = Array.from({ length: 30 }, (_, i) => P((i * 37) % 360, 20 + (i % 50), i));
+    for (const [method, key, val] of [['percent', 'areaPercent', 2], ['cosine', 'cosinePower', 40], ['fisher', 'sigma', 12]]) {
+      const contours = { on: true, method, ...(method === 'percent' ? { area: val } : method === 'cosine' ? { power: val } : { kernel: val }) };
+      const sc = core.buildScene({ layers: [{ ...base, contourWidth: 1.5, elements: { contours }, data }] });
+      const c = sc.primitives.find((q) => q.type === 'contour');
+      assert.equal(c.options.method, method); assert.equal(c.options[key], val); assert.equal(c.options.strokeWidth, 1.5);
+      if (method === 'percent') assert.deepEqual(c.options.levels, [1, 2, 4, 6, 8, 10]);
+    }
+  });
+  it('labels: their size, and only the selected rows when asked', () => {
+    const sc = core.buildScene({ layers: [{ ...base, labelSize: 12, labelsSelectedOnly: true, selected: [1], data: [P(10, 20, 0), P(100, 40, 1)] }] });
+    const t = sc.primitives.filter((q) => q.type === 'text');
+    assert.equal(t.length, 1); assert.equal(t[0].content, '2'); assert.equal(t[0].style.fontSize, 12);
+  });
+});

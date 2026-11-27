@@ -6,7 +6,13 @@
 //   and always: the SELECTION (statistics, → a dataset, invert, clear), the net's own settings (the tree's
 //   menu shares them) and the picture — SVG, PNG, or copied to the clipboard.
 // With the measure tool chosen, the right button measures (desk-measure.js) and this menu stays away.
-// Typed additions go through the console's own `add`, so the net and the console make the same data.
+// Additions go through the console's own `add`, so the net and the console make the same data — into
+// "drawn planes" / "drawn lines", so what was picked on a net is told apart from what was typed ("typed …").
+// Two more ways in: "Measure from here" (the measure tool, A fixed here, B where you click next) and, on a
+// plane, "Intersect with another plane…" (the next plane you click: the line where they meet, into "drawn
+// lines" labelled with the two, and the angle between them in the status line). Esc cancels either.
+// show(view, e, { head, onAction }) puts a caller's items first (the measure tool's menu) and offers it
+// every action before handling its own.
 
 import { Menu } from '../../../ext/menu/index.js';
 import { alert } from '../../../ext/dialog/index.js';
@@ -38,7 +44,8 @@ export async function diagramPng(p, diagramId, { size = 800, scale = 2 } = {}) {
   } finally { URL.revokeObjectURL(url); }
 }
 
-export function createNetMenu({ project: p, tree, table, select, layout, commands, onStatus = () => {} }) {
+export function createNetMenu({ project: p, tree, table, select, layout, commands, measure = null, onStatus = () => {} }) {
+  let pendingIntersect = null;                      // { view, pole, name } — waiting for the second plane
   /**
    * What is under a pointer event on a net → { dir, datum? } — dir: the direction there (null off the net);
    * datum: { layer, datasetId, row, what: 'point' | 'circle', o } — a point within 8 px (the net's own picks),
@@ -74,10 +81,11 @@ export function createNetMenu({ project: p, tree, table, select, layout, command
   const r1 = (v) => Math.round(v * 10) / 10;
   const run = (line) => { const r = commands.run(line); onStatus(r.text.split('\n')[0]); return r; };
 
-  async function show(view, e) {
+  async function show(view, e, opts = {}) {
     const g = p.diagram(view.id); if (!g || !view.net) return;
     const { dir, datum } = hitAt(view, e);
-    const items = [];
+    const items = [...(opts.head || [])];
+    if (items.length) items.push('---');
     let here = null;
     if (datum) {
       const ds = p.dataset(datum.datasetId), L = p.layer(datum.layer), sel = new Set(p.selected(ds.id)), on = sel.has(datum.row);
@@ -86,6 +94,7 @@ export function createNetMenu({ project: p, tree, table, select, layout, command
       items.push(on ? { label: 'Remove from the selection', action: 'd:unsel' } : { label: 'Add to the selection', action: 'd:add', disabled: !sel.size });
       items.push({ label: 'Show its row in the table', action: 'd:row' });
       items.push({ label: 'Copy its attitude', action: 'd:copy' });
+      if (datum.o.plane) items.push({ label: 'Intersect with another plane…', action: 'd:int', title: 'then click another plane (its pole or its great circle): the line where they meet, into “drawn lines”' });
       if (L) items.push({ label: `Layer “${L.name || ds.name}”`, children: [
         ...ELEMENTS.filter(([k]) => L.elements[k]).map(([k, t]) => ({ label: t, action: 'el:' + k, checked: !!L.elements[k].on })),
         '---', { label: 'Properties…', action: 'd:props' }, { label: 'Hide this layer', action: 'd:hide' } ] });
@@ -96,6 +105,7 @@ export function createNetMenu({ project: p, tree, table, select, layout, command
       items.push({ label: `Add the plane ${formatPlane(plane)}`, action: 'h:plane', title: 'the plane whose pole is here, into “typed planes”' });
       items.push({ label: `Add the line ${formatLine(line)}`, action: 'h:line' });
       if (g.kind === 'net') items.push({ label: 'Center the net here', action: 'h:center' });
+      if (g.kind === 'net' && measure) items.push({ label: 'Measure from here', action: 'h:measure', title: 'the angle from here to wherever you click next (Esc cancels)' });
       items.push({ label: 'Copy this attitude', action: 'h:copy' });
     }
     // the selection, wherever it is (it's the data's): only what this net shows
@@ -111,6 +121,7 @@ export function createNetMenu({ project: p, tree, table, select, layout, command
 
     const a = await Menu.show(items, { x: e.clientX, y: e.clientY });
     if (!a) return;
+    if (opts.onAction && await opts.onAction(a)) return;
     try {
       if (datum) {
         const ds = p.dataset(datum.datasetId);
@@ -120,12 +131,14 @@ export function createNetMenu({ project: p, tree, table, select, layout, command
         else if (a === 'd:row') { table.reveal(ds.id, datum.row); layout.focusTable?.(); }
         else if (a === 'd:copy') await copy(attitudeText(datum.o));
         else if (a === 'd:props') tree.properties(datum.layer);
+        else if (a === 'd:int') { pendingIntersect = { view, pole: datum.o.pole, name: `${ds.name} ${datum.row + 1}` }; onStatus(`click another plane to intersect ${formatPlane(datum.o.plane)} with (Esc cancels)`); }
         else if (a === 'd:hide') p.setLayerVisible(datum.layer, false);
         else if (a.startsWith('el:')) { const L = p.layer(datum.layer); p.setElement(L.id, a.slice(3), !L.elements[a.slice(3)].on); }
       }
       if (here) {
-        if (a === 'h:plane') run(`add p ${here.plane.join('/')}`);
-        else if (a === 'h:line') run(`add l ${here.line.join('/')}`);
+        if (a === 'h:plane') run(`add p ${here.plane.join('/')} --to "drawn planes"`);
+        else if (a === 'h:line') run(`add l ${here.line.join('/')} --to "drawn lines"`);
+        else if (a === 'h:measure') { select.setTool('measure'); measure.startFrom(view, dir); }
         else if (a === 'h:center') run(`rotate "${here.line[0]}→${here.line[1]}"`);
         else if (a === 'h:copy') await copy(`${formatPlane(here.plane)} (pole ${formatLine(here.line)})`);
       }
@@ -160,7 +173,24 @@ export function createNetMenu({ project: p, tree, table, select, layout, command
     return out.join('\n') || 'nothing selected';
   }
 
+  // the second plane of an intersection: the next click on a plane, before the pick tool sees it
+  function intersectAt(view, e) {
+    const P = pendingIntersect; if (!P || P.view !== view) return false;
+    const { datum } = hitAt(view, e);
+    if (!datum || !datum.o.plane) { onStatus('that isn’t a plane — click a pole or a great circle (Esc cancels)'); return true; }
+    pendingIntersect = null;
+    const a = P.pole, b = datum.o.pole, c = [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]], l = Math.hypot(...c);
+    if (l < 1e-9) { onStatus('the two planes are parallel — they don’t meet in a line'); return true; }
+    let v = c.map((x) => x / l); if (v[2] > 0) v = v.map((x) => -x);
+    const line = conversions.dcosToLine(v).map(r1), apart = angle(a, b);
+    const other = `${p.dataset(datum.datasetId).name} ${datum.row + 1}`;   // (no '#': the console reads it as a comment)
+    run(`add l ${line.join('/')} --to "drawn lines" --label "${(P.name + ' × ' + other).replace(/"/g, '')}"`);
+    onStatus(`${P.name} and ${other} meet in ${formatLine(line)}, ${apart.toFixed(1)}° apart → drawn lines`);
+    return true;
+  }
+  addEventListener('keydown', (e) => { if (e.key === 'Escape' && pendingIntersect) { pendingIntersect = null; onStatus('intersection cancelled'); } });
   function attach(view) {
+    view.stage.addEventListener('click', (e) => { if (pendingIntersect && intersectAt(view, e)) { e.stopImmediatePropagation(); e.preventDefault(); } }, { capture: true });
     view.stage.addEventListener('contextmenu', (e) => {
       if (select.tool === 'measure') return;            // the right button measures (desk-measure.js)
       e.preventDefault(); p.setActive(view.id); show(view, e);

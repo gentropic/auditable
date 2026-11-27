@@ -14,7 +14,10 @@ import { measureOf, arcPoints, circlePoints, describeMeasure, measureOffers, der
 const NS = 'http://www.w3.org/2000/svg';
 const OFFER = { plane: '+ plane', pole: '+ pole', circle: '+ small circle', axis: '+ axis', ends: '+ the two ends' };
 
+// A right CLICK (no drag) opens the measure menu: the last measurement's actions, then the net's menu.
+// "Measure from here" (startFrom) fixes A; the arc follows the pointer and the next click sets B.
 export function createMeasure({ project: p, select, onStatus = () => {} }) {
+  let menuHook = null, pending = null;              // pending: { view, a } — measuring from a fixed A
   const last = new Map();                           // view → its measurement
   const boxes = new Map();                          // view → its readout box
 
@@ -76,24 +79,50 @@ export function createMeasure({ project: p, select, onStatus = () => {} }) {
     let drag = null;
     const dirAt = (e) => { const q = view.svgPoint(e); return q && view.net ? view.net.unproject(q.x, q.y) : null; };
     const active = () => select.tool === 'measure';
-    view.stage.addEventListener('contextmenu', (e) => { if (active()) e.preventDefault(); });   // the right button measures
+    // the right button measures (a drag); a right CLICK opens the measure menu. Browsers fire contextmenu on the
+    // press (Linux, macOS, headless) or on the release (Windows): the menu opens on whichever of the press's
+    // contextmenu and the release comes SECOND — opened first, the contextmenu that follows would close it.
+    // The keyboard's menu key (contextmenu with no button down) opens it at once.
+    let rightClick = false;
+    view.stage.addEventListener('contextmenu', (e) => {
+      if (!active()) return;
+      e.preventDefault();
+      if (drag && drag.button === 2 && !drag.moved) { drag.menu = true; return; }   // still pressed: wait for the release
+      if (rightClick) { rightClick = false; openMenu(view, e); return; }               // released already: now
+      if (!drag) openMenu(view, e);
+    });
     view.stage.addEventListener('pointerdown', (e) => {
       if (!active() || !view.net) return;
       const a = dirAt(e); if (!a) return;
-      e.preventDefault(); view.stage.setPointerCapture(e.pointerId);
+      e.preventDefault();
+      if (pending && pending.view === view && e.button === 0) {   // "measure from here": this click is B
+        const m = measureOf(pending.a, a, 'gc'); pending = null;
+        if (m.angle >= 0.05) { last.set(view, m); draw(view); readout(view, false); onStatus(describeMeasure(m)); } else clear(view);
+        return;
+      }
+      view.stage.setPointerCapture(e.pointerId);
       const mode = e.button === 1 || (e.button === 0 && e.shiftKey) ? 'diameter' : e.button === 2 || (e.button === 0 && e.altKey) ? 'about' : 'gc';
-      drag = { a, mode };
+      drag = { a, mode, button: e.button, sx: e.clientX, sy: e.clientY, moved: false };
     });
     view.stage.addEventListener('pointermove', (e) => {
+      if (!drag && pending && pending.view === view && active()) {   // the arc from A follows the pointer
+        const b = dirAt(e); if (!b) return;
+        const m = measureOf(pending.a, b, 'gc'); last.set(view, m); draw(view); readout(view, true); onStatus(`${describeMeasure(m)} — click to set B (Esc cancels)`);
+        return;
+      }
       if (!drag) return;
+      if (!drag.moved && Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy) < 4) return;
+      drag.moved = true;
       const b = dirAt(e); if (!b) return;
       const m = measureOf(drag.a, b, drag.mode);
       last.set(view, m); draw(view); readout(view, true); onStatus(describeMeasure(m));
     });
     const end = (e) => {
       if (!drag) return;
-      drag = null;
+      const was = drag; drag = null;
       try { view.stage.releasePointerCapture(e.pointerId); } catch { /* released */ }
+      if (was.button === 2 && !was.moved && e.type === 'pointerup') { if (was.menu) openMenu(view, e); else rightClick = true; return; }   // a right CLICK
+      if (!was.moved) { if (!last.get(view)) return; }
       const m = last.get(view);
       if (m && m.angle < 0.05) { clear(view); return; }             // a click, not a measurement
       readout(view, false);
@@ -101,7 +130,43 @@ export function createMeasure({ project: p, select, onStatus = () => {} }) {
     view.stage.addEventListener('pointerup', end);
     view.stage.addEventListener('pointercancel', end);
   }
+  // the measure menu: this tool's own items first, then the net's (selection, the net, the picture)
+  function openMenu(view, e) {
+    const m = last.get(view), offers = m ? measureOffers(m) : [];
+    const head = [];
+    if (m) {
+      head.push({ label: describeMeasure(m).split('\n')[0], disabled: true });
+      for (const what of offers) head.push({ label: `Add ${OFFER[what].replace(/^\+ /, 'the ')}`, action: 'm:' + what });
+      head.push({ label: 'Copy the reading', action: 'm:copy' }, { label: 'Clear the measurement', action: 'm:clear', shortcut: 'Esc' });
+    } else head.push({ label: 'nothing measured yet — drag between two directions', disabled: true });
+    head.push({ label: 'Measure from here', action: 'm:from', title: 'A here; the next click is B' });
+    head.push({ label: 'How to measure', children: [
+      { label: 'drag: the arc and its great circle', disabled: true },
+      { label: '⇧-drag or the middle button: the small circle on that diameter', disabled: true },
+      { label: '⌥-drag or the right button: the small circle about A', disabled: true } ] });
+    const here = dirAt(view, e);
+    const onAction = async (a) => {
+      if (!a.startsWith('m:')) return false;
+      const k = a.slice(2);
+      if (k === 'clear') clear(view);
+      else if (k === 'copy') { try { await navigator.clipboard.writeText(describeMeasure(m)); onStatus('copied the reading'); } catch { onStatus(describeMeasure(m)); } }
+      else if (k === 'from') { if (here) startFrom(view, here); }
+      else {
+        try { const id = p.batch('measure', () => { const x = deriveMeasure(p, m, k); p.addLayer(view.id, x); return x; }); onStatus(`→ ${p.dataset(id).name}, drawn on ${p.diagram(view.id)?.name || 'the net'}`); }
+        catch (err) { onStatus(err.message); }
+      }
+      return true;
+    };
+    if (menuHook) menuHook(view, e, { head, onAction });
+  }
+  function dirAt(view, e) { const q = view.svgPoint(e); return q && view.net ? view.net.unproject(q.x, q.y) : null; }
+  /** "measure from here": A fixed at `a`; the arc follows the pointer; the next click sets B */
+  function startFrom(view, a) { pending = { view, a }; onStatus('measuring from here — move to B and click (Esc cancels)'); }
   function detach(view) { last.delete(view); boxes.get(view)?.remove(); boxes.delete(view); }
-  addEventListener('keydown', (e) => { if (e.key === 'Escape' && document.body.classList.contains('desk') && !/^(INPUT|TEXTAREA)$/.test(e.target?.tagName)) for (const v of [...last.keys()]) clear(v); });
-  return { attach, detach, measurementOf: (v) => last.get(v) || null, clear };
+  addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || !document.body.classList.contains('desk') || /^(INPUT|TEXTAREA)$/.test(e.target?.tagName)) return;
+    if (pending) { const v = pending.view; pending = null; clear(v); return; }
+    for (const v of [...last.keys()]) clear(v);
+  });
+  return { attach, detach, measurementOf: (v) => last.get(v) || null, clear, startFrom, setMenu: (fn) => { menuHook = fn; }, get pending() { return pending; } };
 }

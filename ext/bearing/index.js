@@ -1667,6 +1667,39 @@ function bootstrapEigenvectorConfidence(dcos, options = {}) {
 }
 
 // src/stereonet.js
+var MARKERS = ["circle", "square", "triangle", "diamond", "cross", "x"];
+var STROKE_MARKERS = /* @__PURE__ */ new Set(["cross", "x"]);
+var f2 = (v) => +(+v).toFixed(2);
+function markerPath(symbol, x, y, r) {
+  switch (symbol) {
+    case "square": {
+      const h = r * 0.88;
+      return `M${f2(x - h)} ${f2(y - h)}H${f2(x + h)}V${f2(y + h)}H${f2(x - h)}Z`;
+    }
+    case "triangle":
+      return `M${f2(x)} ${f2(y - 1.25 * r)}L${f2(x + 1.08 * r)} ${f2(y + 0.62 * r)}L${f2(x - 1.08 * r)} ${f2(y + 0.62 * r)}Z`;
+    case "diamond":
+      return `M${f2(x)} ${f2(y - 1.25 * r)}L${f2(x + r)} ${f2(y)}L${f2(x)} ${f2(y + 1.25 * r)}L${f2(x - r)} ${f2(y)}Z`;
+    case "cross":
+      return `M${f2(x - 1.1 * r)} ${f2(y)}H${f2(x + 1.1 * r)}M${f2(x)} ${f2(y - 1.1 * r)}V${f2(y + 1.1 * r)}`;
+    case "x": {
+      const h = r * 0.85;
+      return `M${f2(x - h)} ${f2(y - h)}L${f2(x + h)} ${f2(y + h)}M${f2(x + h)} ${f2(y - h)}L${f2(x - h)} ${f2(y + h)}`;
+    }
+    default:
+      return null;
+  }
+}
+function markerAttrs(s, sx, sy) {
+  const sym = s.symbol && s.symbol !== "circle" ? s.symbol : null, stroky = sym && STROKE_MARKERS.has(sym);
+  const a = {
+    fill: stroky ? "none" : s.fill,
+    stroke: stroky ? s.fill && s.fill !== "none" ? s.fill : s.stroke : s.stroke,
+    ...stroky ? { "stroke-width": Math.max(1, (s.r || 3) * 0.45), "stroke-linecap": "round" } : s.strokeWidth != null ? { "stroke-width": s.strokeWidth } : {},
+    ...s.opacity != null && s.opacity < 1 ? { opacity: s.opacity } : {}
+  };
+  return { d: sym ? markerPath(sym, sx, sy, s.r) : null, attrs: a };
+}
 var DEG4 = Math.PI / 180;
 var SVG_NS = "http://www.w3.org/2000/svg";
 var nextClipId = 0;
@@ -2392,12 +2425,10 @@ var Stereonet = class _Stereonet {
         const d = this._rotate(dcos);
         const [px, py] = this._projectFn(d);
         const [sx, sy] = this._toSvg(px, py);
-        const s = this._resolveCategory("pole", item.style);
-        svg.circle(sx, sy, s.r, {
-          fill: s.fill,
-          stroke: s.stroke,
-          class: this._classFor("pole", item.style.class)
-        });
+        const s = this._resolveCategory("pole", item.style), m = markerAttrs(s, sx, sy);
+        const cls = { class: this._classFor("pole", item.style.class) };
+        if (m.d) svg.path(m.d, { ...m.attrs, ...cls });
+        else svg.circle(sx, sy, s.r, { ...m.attrs, ...cls });
         break;
       }
       case "line": {
@@ -2405,12 +2436,10 @@ var Stereonet = class _Stereonet {
         const d = this._rotate(dcos);
         const [px, py] = this._projectFn(d);
         const [sx, sy] = this._toSvg(px, py);
-        const s = this._resolveCategory("line", item.style);
-        svg.circle(sx, sy, s.r, {
-          fill: s.fill,
-          stroke: s.stroke,
-          class: this._classFor("line", item.style.class)
-        });
+        const s = this._resolveCategory("line", item.style), m = markerAttrs(s, sx, sy);
+        const cls = { class: this._classFor("line", item.style.class) };
+        if (m.d) svg.path(m.d, { ...m.attrs, ...cls });
+        else svg.circle(sx, sy, s.r, { ...m.attrs, ...cls });
         break;
       }
       case "plane": {
@@ -2422,6 +2451,8 @@ var Stereonet = class _Stereonet {
             svg.polyline(seg, {
               stroke: s.stroke,
               "stroke-width": s.strokeWidth,
+              ...s.strokeDasharray && s.strokeDasharray !== "none" ? { "stroke-dasharray": s.strokeDasharray } : {},
+              ...s.opacity != null && s.opacity < 1 ? { opacity: s.opacity } : {},
               fill: "none",
               class: this._classFor("plane", item.style.class)
             });
@@ -2640,19 +2671,17 @@ var Stereonet = class _Stereonet {
         const d = this._rotate(dcos);
         const [px, py] = this._projectFn(d);
         const [sx, sy] = this._toSvg(px, py);
-        const s = this._resolveCategory("pole", item.style);
+        const s = this._resolveCategory("pole", item.style), m = markerAttrs(s, sx, sy), tag = m.d ? "path" : "circle";
+        if (item._el && item._el.tagName !== tag) {
+          item._el.remove();
+          item._el = null;
+        }
         if (!item._el) {
-          item._el = document.createElementNS(SVG_NS, "circle");
+          item._el = document.createElementNS(SVG_NS, tag);
           setAttrs(item._el, { class: this._classFor("pole", item.style.class) });
           this._dataGroup.appendChild(item._el);
         }
-        setAttrs(item._el, {
-          cx: sx,
-          cy: sy,
-          r: s.r,
-          fill: s.fill,
-          stroke: s.stroke
-        });
+        setAttrs(item._el, m.d ? { d: m.d, ...m.attrs } : { cx: sx, cy: sy, r: s.r, ...m.attrs });
         break;
       }
       case "line": {
@@ -2660,19 +2689,17 @@ var Stereonet = class _Stereonet {
         const d = this._rotate(dcos);
         const [px, py] = this._projectFn(d);
         const [sx, sy] = this._toSvg(px, py);
-        const s = this._resolveCategory("line", item.style);
+        const s = this._resolveCategory("line", item.style), m = markerAttrs(s, sx, sy), tag = m.d ? "path" : "circle";
+        if (item._el && item._el.tagName !== tag) {
+          item._el.remove();
+          item._el = null;
+        }
         if (!item._el) {
-          item._el = document.createElementNS(SVG_NS, "circle");
+          item._el = document.createElementNS(SVG_NS, tag);
           setAttrs(item._el, { class: this._classFor("line", item.style.class) });
           this._dataGroup.appendChild(item._el);
         }
-        setAttrs(item._el, {
-          cx: sx,
-          cy: sy,
-          r: s.r,
-          fill: s.fill,
-          stroke: s.stroke
-        });
+        setAttrs(item._el, m.d ? { d: m.d, ...m.attrs } : { cx: sx, cy: sy, r: s.r, ...m.attrs });
         break;
       }
       case "plane": {
@@ -2689,6 +2716,9 @@ var Stereonet = class _Stereonet {
           d,
           stroke: s.stroke,
           "stroke-width": s.strokeWidth,
+          "stroke-dasharray": s.strokeDasharray || "none",
+          // a dashed great circle (it was dropped on the live net)
+          ...s.opacity != null && s.opacity < 1 ? { opacity: s.opacity } : {},
           fill: "none"
         });
         break;
@@ -4537,6 +4567,7 @@ function mapValue(name, value, min, max, options) {
 }
 export {
   CanvasBuilder,
+  MARKERS,
   Stereonet,
   SvgBuilder,
   analysis_exports as analysis,
@@ -4559,6 +4590,7 @@ export {
   fault_exports as fault,
   generateNet,
   io_exports as io,
+  markerPath,
   mat3_exports as mat3,
   deepMerge as mergeStyles,
   quat_exports as quat,

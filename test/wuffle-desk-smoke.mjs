@@ -312,10 +312,10 @@ for (const [label, url] of [['dev', '/tools/wuffle/index.html'], ['built', '/wuf
         const h = W.netMenu.hitAt(v, { clientX: x, clientY: y }); if (h.dir && !h.datum) return { x, y }; }
       return null;
     });
-    const before = await p.evaluate(() => (window.__wuffleDesk.project.datasets.find((d) => d.name === 'typed planes')?.rows.length) || 0);
+    const before = await p.evaluate(() => (window.__wuffleDesk.project.datasets.find((d) => d.name === 'drawn planes')?.rows.length) || 0);
     await rclick(empty); await p.waitForTimeout(300);
     const onEmpty = await items(); await click('^Add the plane'); await p.waitForTimeout(300);
-    const after = await p.evaluate(() => (window.__wuffleDesk.project.datasets.find((d) => d.name === 'typed planes')?.rows.length) || 0);
+    const after = await p.evaluate(() => (window.__wuffleDesk.project.datasets.find((d) => d.name === 'drawn planes')?.rows.length) || 0);
     const rest = await p.evaluate(async () => {
       const W = window.__wuffleDesk, P = W.project, g = P.diagrams[0], v = W.views.get(g.id), L = P.layersOf(g.id).find((x) => P.dataset(x.datasetId).rows.length > 100);
       P.setElement(L.id, 'greatCircles', true); await new Promise((r) => setTimeout(r, 300));
@@ -674,6 +674,97 @@ for (const [label, url] of [['dev', '/tools/wuffle/index.html'], ['built', '/wuf
     m.filled && /planar/.test(kin) && m.kinCol && m.allSteep && m.steep === m.steepAll && m.typed === 2 && /fold axis/.test(fold) && m.tool === 'lasso'
     && /contour kamb 2/.test(m.transcript) && /kinematic .*180\/60/.test(m.transcript) && /select where/.test(m.transcript) && /add p 045\/30 120\/60/.test(m.transcript));
   chk(`${label}: no page errors after the menus (${errs.length ? errs.join(' ; ').slice(0, 200) : 'none'})`, errs.length === 0);
+  // ── the keys and gestures on a net (desk-keys.js), the measure menu, intersect, and the properties tabs ──
+  await p.evaluate(async () => { const W = window.__wuffleDesk; await W.files.newProject(); W.menus.run('tocher'); });
+  await p.waitForTimeout(400);
+  const netBox = async () => p.evaluate(() => { const W = window.__wuffleDesk, v = W.views.get(W.project.activeDiagram), r = v.stage.querySelector('svg').getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; });
+  await p.evaluate(() => { document.activeElement?.blur(); });
+  const k = await (async () => {
+    const W = () => 'window.__wuffleDesk';
+    const out = {};
+    const props = () => p.evaluate(() => { const W = window.__wuffleDesk; return W.project.diagram(W.project.activeDiagram).props; });
+    await p.keyboard.press('ArrowRight'); await p.keyboard.press('ArrowUp'); await p.waitForTimeout(200);
+    out.turned = !!(await props()).matrix;
+    out.button = await p.evaluate(() => !!document.querySelector('.wn-rot'));
+    await p.keyboard.press('r'); await p.waitForTimeout(200);
+    out.reset = !(await props()).matrix && !(await p.evaluate(() => !!document.querySelector('.wn-rot')));
+    await p.keyboard.press('Control+a'); await p.waitForTimeout(150);
+    out.all = await p.evaluate(() => { const W = window.__wuffleDesk; return W.project.selected(W.project.datasets[0].id).length; });
+    await p.keyboard.press('Escape'); await p.waitForTimeout(150);
+    out.cleared = await p.evaluate(() => { const W = window.__wuffleDesk; return W.project.selected(W.project.datasets[0].id).length; });
+    // double-click a pole → its row in the table; hovering with one selected says the angle from it
+    const pos = await p.evaluate(() => { const W = window.__wuffleDesk, v = W.views.get(W.project.activeDiagram), r = v.stage.querySelector('svg').getBoundingClientRect(), s = r.width / v.net.size, pk = v.picks[17]; return { x: r.x + pk.x * s, y: r.y + pk.y * s, row: pk.ref.row }; });
+    await p.mouse.dblclick(pos.x, pos.y); await p.waitForTimeout(250);
+    out.dbl = await p.evaluate(() => { const R = window.__wuffleDesk.rails, all = []; const walk = (n) => { if (!n) return; if (n.children) n.children.forEach(walk); else all.push(n); }; walk(R.state.root); const st = all.find((x) => x.tabs.some((t) => t.id === 'table')); return st && st.active === 'table' ? 'table in front' : `the ${st && st.active} tab`; });
+    out.dblRow = pos.row;
+    await p.evaluate(() => { const W = window.__wuffleDesk; W.layout.focusDiagram(W.project.activeDiagram); });
+    const b = await netBox();
+    await p.mouse.move(b.x + b.w * 0.3, b.y + b.h * 0.4); await p.waitForTimeout(150);
+    out.hover = await p.evaluate(() => document.querySelector('.wst-hover').textContent);
+    // ? opens the keys help
+    await p.evaluate(() => { document.activeElement?.blur(); }); await p.keyboard.press('?'); await p.waitForTimeout(200);
+    out.help = await p.evaluate(() => { const d = [...document.querySelectorAll('.gcu-dialog')].at(-1); const t = d?.textContent || ''; d?.querySelector('button')?.click(); return t; });
+    return out;
+  })();
+  chk(`${label}: keys — arrows turn the net (${k.turned}) and it says so (${k.button}); R resets it (${k.reset}); Ctrl+A selects all (${k.all}); Esc clears the selection (${k.cleared}); a double-click shows the row (${k.dbl}); hovering, one selected: “${(k.hover.match(/[\d.]+° from the selected/) || [''])[0]}”; ? lists the keys (${/reset the active net/.test(k.help)})`,
+    k.turned && k.button && k.reset && k.all === 200 && k.cleared === 0 && /table/.test(k.dbl) && /° from the selected/.test(k.hover) && /reset the active net/.test(k.help));
+
+  // the measure tool: a right CLICK opens its menu; measure from here; intersect two planes into "drawn lines"
+  const mm = await (async () => {
+    const out = {};
+    await p.waitForFunction(() => !document.querySelector('.gcu-dialog-message'));   // the keys help, faded out (it caught the click)
+    await p.evaluate(() => { const W = window.__wuffleDesk; W.select.setTool('measure'); });
+    const b = await netBox();
+    await p.mouse.move(b.x + b.w * 0.5, b.y + b.h * 0.5); await p.mouse.down({ button: 'right' }); await p.mouse.up({ button: 'right' }); await p.waitForTimeout(300);
+    out.menu = await p.evaluate(() => [...document.querySelectorAll('.gcu-menu .gcu-menu-item, .gcu-menu [role=menuitem]')].map((x) => x.textContent.trim()).slice(0, 30));
+    await p.keyboard.press('Escape'); await p.waitForTimeout(100);
+    // measure from here: A at the centre, B where we click
+    await p.evaluate(() => { const W = window.__wuffleDesk, v = W.views.get(W.project.activeDiagram); W.measure.startFrom(v, [0, 0, -1]); });
+    await p.mouse.move(b.x + b.w * 0.75, b.y + b.h * 0.5); await p.waitForTimeout(100);
+    await p.mouse.click(b.x + b.w * 0.75, b.y + b.h * 0.5); await p.waitForTimeout(200);
+    out.measured = await p.evaluate(() => { const W = window.__wuffleDesk, v = W.views.get(W.project.activeDiagram), mm = W.measure.measurementOf(v); return mm ? +mm.angle.toFixed(1) : null; });
+    await p.evaluate(() => { const W = window.__wuffleDesk; W.select.setTool('pick'); });
+    await p.keyboard.press('Escape');
+    // intersect: the net menu on one pole, then a click on another
+    const poles = await p.evaluate(() => { const W = window.__wuffleDesk, v = W.views.get(W.project.activeDiagram), r = v.stage.querySelector('svg').getBoundingClientRect(), s = r.width / v.net.size; return [v.picks[3], v.picks[40]].map((pk) => ({ x: r.x + pk.x * s, y: r.y + pk.y * s })); });
+    await p.mouse.click(poles[0].x, poles[0].y, { button: 'right' }); await p.waitForTimeout(250);
+    await p.click('.gcu-menu >> text=Intersect with another plane…'); await p.waitForTimeout(150);
+    await p.mouse.click(poles[1].x, poles[1].y); await p.waitForTimeout(300);
+    out.drawn = await p.evaluate(() => { const d = window.__wuffleDesk.project.datasets.find((x) => x.name === 'drawn lines'); return d ? { n: d.rows.length, label: d.rows[0].label } : null; });
+    out.status = await p.evaluate(() => document.querySelector('.wst-hover').textContent);
+    return out;
+  })();
+  chk(`${label}: measure menu on a right click (${mm.menu.filter((x) => /Measure from here|nothing measured|How to measure/.test(x)).join(' · ')}); measure from here → ${mm.measured}°; intersect two planes → drawn lines ${JSON.stringify(mm.drawn)} (“${mm.status.slice(0, 70)}”)`,
+    mm.menu.some((x) => /Measure from here/.test(x)) && mm.measured > 10 && mm.drawn && mm.drawn.n === 1 && / × /.test(mm.drawn.label) && /meet in/.test(mm.status));
+
+  // the properties tabs: symbol, colour by a column, a filter, dashed circles, the Schmidt method — on the net
+  const pr = await (async () => {
+    const lid = await p.evaluate(() => { const W = window.__wuffleDesk, P = W.project, L = P.layers.find((l) => P.dataset(l.datasetId).name === 'tocher'); P.setElement(L.id, 'greatCircles', true); P.setElement(L.id, 'contours', true); W.tree.properties(L.id); return L.id; });
+    await p.waitForSelector('.gcu-dialog .wpt-tab'); await p.waitForTimeout(150);
+    const tabs = await p.evaluate(() => [...document.querySelectorAll('.gcu-dialog .wpt-tab')].map((t) => t.textContent));
+    await p.evaluate(() => {
+      const d = [...document.querySelectorAll('.gcu-dialog')].at(-1), set = (el, v) => { if (el.type === 'checkbox') el.checked = v; else el.value = v; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); };
+      const byLabel = (pane, label) => [...d.querySelectorAll(`.wpt-pane[data-tab="${pane}"] .wprow`)].find((r) => r.firstChild.textContent === label).lastChild;
+      set(byLabel('general', 'only rows where'), 'dip > 45');
+      set(byLabel('symbols', 'symbol'), 'triangle');
+      set(byLabel('symbols', 'colour by'), 'dip'); set(byLabel('symbols', '… as'), 'num');
+      set(byLabel('lines', 'line'), 'dashed');
+      set(byLabel('contours', 'method'), 'percent');
+      [...d.querySelectorAll('button')].find((x) => x.textContent === 'Apply').click();
+    });
+    await p.waitForTimeout(400);
+    return p.evaluate((id) => {
+      const W = window.__wuffleDesk, P = W.project, L = P.layer(id), ds = P.dataset(L.datasetId), v = W.views.get(P.activeDiagram), svg = v.stage.querySelector('svg');
+      const steep = ds.rows.filter((r, i) => true).length;
+      const tri = [...svg.querySelectorAll('path')].filter((e) => /\bwn-pole\b/.test(e.getAttribute('class') || '')).length;
+      const colours = new Set([...svg.querySelectorAll('path.wn-pole')].map((e) => e.getAttribute('fill')));
+      const dashed = [...svg.querySelectorAll('[class*="wn-plane"]')].filter((e) => e.getAttribute('stroke-dasharray') === '6,4').length;
+      return { tri, colours: colours.size, dashed, picks: v.picks.length, method: L.elements.contours.method, undo: P.undoLabel && P.undoLabel(), notesN: v.notesEl.textContent };
+    }, lid);
+  })();
+  chk(`${label}: properties in tabs (${pr && JSON.stringify(Object.keys(pr))}) — triangles drawn (${pr.tri}), coloured by dip (${pr.colours} colours), only dip > 45 (${pr.picks} of 200 picks), dashed great circles (${pr.dashed}), contours by the Schmidt % method (${pr.method}), one undo step (“${pr.undo}”)`,
+    pr.tri > 50 && pr.colours > 5 && pr.picks > 50 && pr.picks < 200 && pr.dashed > 50 && pr.method === 'percent' && /layer properties/.test(pr.undo || ''));
+  chk(`${label}: no page errors after the keys, the measure menu and the properties (${errs.length ? errs.join(' ; ').slice(0, 200) : 'none'})`, errs.length === 0);
   await p.close();
 }
 await b.close(); server.close();

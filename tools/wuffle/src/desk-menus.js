@@ -26,7 +26,10 @@ export const ABOUT = 'wuffle — a stereonet workbench and a field compass, one 
 
 const SHORTCUTS = [
   ['Ctrl+O', 'open data or a project'], ['Ctrl+S', 'save the project'], ['Ctrl+Z / Ctrl+Shift+Z', 'undo / redo'],
-  ['`', 'the console'], ['P L C B M', 'pick, lasso, cone, band, measure (on a net)'], ['Esc', 'clear the drawn selection shapes'],
+  ['`', 'the console'], ['P L C B M', 'pick, lasso, cone, band, measure (on a net)'], ['Esc', 'clear the drawn shapes; again, the selection'],
+  ['R', 'reset the active net’s rotation'], ['← → ↑ ↓', 'turn the active net 5° (Shift: 1°)'], ['Ctrl+A', 'select all the active net shows'],
+  ['Ctrl+C', 'copy the selected attitudes'], ['Ctrl+PgUp / PgDn', 'the previous / next diagram'], ['?', 'this list'],
+  ['double-click a measurement', 'its row in the table'], ['hover, one selected', 'the angle from it, in the status line'],
   ['right-click a net', 'what is under the cursor, the selection, the net, its picture'], ['drag a net (pick tool)', 'rotate it'],
   ['Tab (console)', 'complete a command, a path, a layer or a dataset'],
 ];

@@ -162,3 +162,21 @@ body.desk > [hidden] { display:none !important; }   /* the field page's own disp
 .wpbar button { font:12px var(--w-sans); padding:3px 12px; border-radius:3px; border:1px solid var(--w-border); background:var(--w-bg-bright); color:var(--w-text); cursor:pointer; }
 .wpbar button.primary { background:var(--w-orange); border-color:var(--w-orange); color:var(--w-bg-deep); font-weight:600; }
 .wpbar button:disabled { opacity:.45; cursor:default; }
+
+/* a rotated net's way back (desk-net.js) */
+body.desk .wn-host { position: relative; }
+body.desk .wn-rot { position: absolute; top: 6px; right: 8px; font: 11px var(--w-mono); padding: 2px 8px; border-radius: 3px; border: 1px solid var(--w-border); background: var(--w-bg-bright); color: var(--w-text-mid); cursor: pointer; z-index: 2; }
+body.desk .wn-rot:hover { color: var(--w-text); border-color: var(--w-orange); }
+
+/* a layer's properties, in tabs (desk-props.js) */
+body.desk .wpt-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--w-border); margin: -4px 0 10px; flex-wrap: wrap; }
+body.desk .wpt-tab { font: 12px var(--w-sans); padding: 4px 10px; border: 1px solid transparent; border-bottom: none; background: none; color: var(--w-text-mid); cursor: pointer; border-radius: 3px 3px 0 0; }
+body.desk .wpt-tab.on { color: var(--w-text); border-color: var(--w-border); background: var(--w-bg-bright); margin-bottom: -1px; }
+body.desk .wpt-body { min-height: 230px; }
+body.desk .wpt-key { display: flex; flex-wrap: wrap; gap: 4px 10px; margin: 2px 0 8px 140px; font: 11px var(--w-mono); color: var(--w-text-soft); align-items: center; }
+body.desk .wpt-sw { display: inline-flex; align-items: center; gap: 4px; }
+body.desk .wpt-sw i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+body.desk .wpt-ramp { width: 120px; height: 10px; border-radius: 2px; display: inline-block; }
+body.desk .wpt-inline { display: flex; align-items: center; gap: 4px; }
+body.desk .wpt-inline input { width: 64px; }
+body.desk .wpt-pane > button { margin-top: 8px; font: 12px var(--w-sans); padding: 3px 10px; border-radius: 3px; border: 1px solid var(--w-border); background: var(--w-bg-bright); color: var(--w-text); cursor: pointer; }

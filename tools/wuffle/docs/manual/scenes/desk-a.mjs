@@ -67,9 +67,12 @@ export const SCENES = {
         const W = window.__wuffleDesk, P = W.project;
         W.menus.run('tocher'); await new Promise((r) => setTimeout(r, 300));
         P.setElement(P.layers[0].id, 'contours', true);
+        P.setLayerStyle(P.layers[0].id, { symbol: 'triangle', colorBy: { column: 'dip', mode: 'num' } });
       });
       await wait(300);
       await p.locator('.wtree .wlayer').first().dblclick();
+      await p.waitForSelector('.gcu-dialog .wpt-tab');
+      await p.click('.gcu-dialog .wpt-tab[data-tab="symbols"]');   // the Symbols tab: the most to see
       return { el: '.gcu-dialog', wait: 600 };   // the dialog alone: in the whole window its text prints too small
     },
   },

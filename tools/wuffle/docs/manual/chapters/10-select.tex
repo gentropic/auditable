@@ -31,19 +31,24 @@ net, so hide a layer in the tree to leave it out of a selection.
 
 \section{The net's menu}\label{sec:net-menu}
 
-Right-click a net (with any tool but \ui{measure}, whose right button measures). What the menu offers
-depends on what is under the pointer:
+Right-click a net. (With \ui{measure}, a right \emph{drag} measures; a right \emph{click} opens this menu
+with the measure tool's own items first, \cref{sec:measure}.) What the menu offers depends on what is under
+the pointer:
 
 \begin{description}
 \item[A measurement] a pole or a line, or a great or small circle drawn on the net (within a few pixels of
 it). The menu heads with its row and attitude, \ui{tocher \#6 · 117/54}, then: \ui{Select}, \ui{Add to the
 selection} or \ui{Remove from the selection}; \ui{Show its row in the table}, which opens its dataset in the
-table and scrolls to the row; \ui{Copy its attitude}; and its layer, with its elements as checkboxes,
-\ui{Properties…} and \ui{Hide this layer}.
+table and scrolls to the row; \ui{Copy its attitude}; on a plane, \ui{Intersect with another plane…}; and its layer, with its elements
+as checkboxes, \ui{Properties…} and \ui{Hide this layer}. After \ui{Intersect with another plane…}, click a
+second plane (its pole or its great circle): the line where the two meet lands in \ui{drawn lines}, labelled
+with both (\ui{tocher 4 × tocher 41}), and the status line gives it and the angle between the planes
+(\ui{… meet in 105→27, 29.8° apart}). \key{Esc} cancels.
 \item[An empty spot] the attitude there, read both ways (\ui{here · pole of 269/15 · line 089→75}), then
 \ui{Add the plane 269/15} (the plane whose pole is there), \ui{Add the line 089→75}, \ui{Center the net
-here} and \ui{Copy this attitude}. The additions go through the console's \code{add}
-(\cref{sec:add}), into \ui{typed planes} or \ui{typed lines}.
+here}, \ui{Measure from here} and \ui{Copy this attitude}. The additions go through the console's
+\code{add} (\cref{sec:add}), into \ui{drawn planes} or \ui{drawn lines}, so what was picked on a net stays
+apart from what was typed (\ui{typed planes}, \ui{typed lines}).
 \end{description}
 
 \noindent And always: \ui{Selection} (\ui{Statistics of the selection}, \ui{Selection → new dataset},
@@ -215,6 +220,12 @@ circle as a planes dataset, \ui{+~pole} its pole as a line, \ui{+~small circle} 
 \ui{+~axis} its axis, and \ui{+~the two ends} the two directions you measured between, as lines. Each lands
 in the tree with an arrow, drawn on that net, with a lineage that says it was measured (\code{measure},
 with the two directions and the angle), and is one undo step. \key{Esc} or \ui{×} clears the measurement.
+
+A right \emph{click} (the right button pressed and let go without moving) opens the measure menu: the
+last measurement and its offers, \ui{Copy the reading}, \ui{Clear the measurement}, \ui{Measure from here},
+a reminder of the three drags, then the net's own menu. \ui{Measure from here}, here or in the net's menu,
+fixes the first direction where you clicked; the arc follows the pointer, and the next click sets the
+second. \key{Esc} cancels.
 
 The measurement follows the net: rotate it (\cref{ch:rotation}) and the arcs stay on their directions.
 \ui{measure} selects nothing and leaves the selection as it was; choose \ui{pick} again to get back to

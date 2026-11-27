@@ -16,6 +16,7 @@
 //   figure.js        a compo page from a net (pure)  ·  desk-figure.js   the figure editor
 //   desk-files.js    open / drop / save, the project file
 //   desk-menus.js    the menubar: every item runs the console's own command  ·  desk-ask.js  its forms
+//   desk-keys.js     the keys and small gestures on the nets (R, arrows, Ctrl+A/C, Esc, PgUp/PgDn, ?, double-click)
 //   desk.css         the styles, all under body.desk
 import { Project } from './model.js';
 import { nextColor } from './palette.js';
@@ -33,6 +34,7 @@ import { createMeasure } from './desk-measure.js';
 import { createNetMenu } from './desk-netmenu.js';
 import { createFiles } from './desk-files.js';
 import { createMenus } from './desk-menus.js';
+import { createKeys } from './desk-keys.js';
 
 export function mountDesk() {
   // the field compass's page is the same file: its elements stay, hidden (the desk never runs field.js)
@@ -69,12 +71,14 @@ export function mountDesk() {
     setTheme: (t) => theme.set(t), focusDiagram: (id) => layout.focusDiagram(id), openSample: () => files.addData(TOCHER, 'tocher.csv'),
     download: (blob, name) => { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 4000); } });
   // the net's right-click: what's under the cursor, the selection, the net, the picture (desk-netmenu.js)
-  const netMenu = createNetMenu({ project: p, tree, table, select, layout: { focusTable: () => layout.focusTable() }, commands: consoleView.cmd, onStatus: status });
+  const netMenu = createNetMenu({ project: p, tree, table, select, measure, layout: { focusTable: () => layout.focusTable() }, commands: consoleView.cmd, onStatus: status });
+  measure.setMenu((view, e, opts) => netMenu.show(view, e, opts));   // the measure tool's right click: its items, then the net's
   layout = createLayout($('.wwork'), { project: p, tree, table, stats, consoleView, select, rotate, measure, netMenu, onStatus: status });
   const figures = createFigures({ project: p, layout, onStatus: status });
   files = createFiles(root, { project: p, dropHost: $('.wwork'), onOpened: (id) => table.show(id), home: consoleView.home, layoutOf: () => layout.snapshot(), onStatus: status });
   layout.onChange(() => files.touch());          // the arrangement is the project's too: a drag or a tab switch autosaves
   const menus = createMenus($('.wmenus'), { project: p, files, layout, theme, figures, tree, table, select, netMenu, consoleView, onStatus: status });
+  const keys = createKeys({ project: p, layout, select, table, menus, onStatus: status });
   tree.onOpenFigure = (id) => figures.open(id);
   tree.onCommand = (line) => consoleView.cmd.run(line);   // the tree's menu runs the console's own commands (export …)
 
@@ -90,7 +94,7 @@ export function mountDesk() {
   theme.onChange(() => { $('.wst-theme').textContent = theme.label(); layout.redrawAll(); table.applyTheme(); });
   theme.apply();
 
-  const api = { project: p, layout, rails: layout.rails, views: layout.views, table, tree, menus, theme, select, measure, netMenu, stats, console: consoleView, figures, files,
+  const api = { project: p, layout, keys, rails: layout.rails, views: layout.views, table, tree, menus, theme, select, measure, netMenu, stats, console: consoleView, figures, files,
     addData: files.addData, loadProject: files.loadProject, open: files.open, setTheme: (t) => theme.set(t),
     restored: files.restore() };                       // the last session, from this browser's autosave (a promise → true / false)
   window.__wuffleDesk = api;

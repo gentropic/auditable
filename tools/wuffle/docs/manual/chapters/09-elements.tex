@@ -152,26 +152,34 @@ On 200 measurements labels are a blur. Select the few you want to name, make the
 
 \section{Properties}\label{sec:properties}
 
-\shot[0.6\linewidth]{layer-props}{A layer's properties: its color and symbol size, and the settings of its contours,
-mean cone and labels.}
+\shot[0.6\linewidth]{layer-props}{A layer's properties, in tabs: here its symbols — a triangle, coloured by a ramp over
+its dips.}
 
-Double-click a layer in the tree, or choose \ui{Properties…} from its menu. The dialog's first line says
-what it is reading: \ui{tocher · planes · 200 of 200 rows read}. Unreadable rows are counted here
-(\cref{sec:data-read}).
+Double-click a layer in the tree, or choose \ui{Properties…} from its menu. The settings are in tabs, and
+a tab appears only when the layer has the thing it sets:
 
-\begin{center}\small
-\begin{tabularx}{\linewidth}{@{}>{\raggedright}p{0.24\linewidth}L>{\raggedright\arraybackslash}p{0.16\linewidth}@{}}\toprule
-\sffamily\bfseries setting & \sffamily\bfseries meaning & \sffamily\bfseries default \\\midrule
-\ui{color} & the layer's color: its points, circles, contours and cone & the next palette color \\
-\ui{symbol size} & the size of its points, 1 to 12 & 4 \\
-\ui{contours} & \ui{Kamb (σ)} or \ui{Fisher kernel (MUD)} & Kamb \\
-\ui{Kamb k (E = kσ)} & the $k$ that sets Kamb's counting circle, 1 to 6 & 3 \\
-\ui{cone confidence} & the mean's cone: 90, 95 or 99\,\% & 95\,\% \\
-\ui{labels from} & the row number, or a column (see \cref{sec:labels}) & row number \\
-\bottomrule\end{tabularx}
-\end{center}
-
-Only the settings the layer's kind has are shown: a fault layer has no contours or cone. \ui{Apply} sets
+\begin{description}
+\item[\ui{General}] what it is reading (\ui{tocher · planes · 200 of 200 rows read}; unreadable rows are
+counted here, \cref{sec:data-read}); its \ui{name}, empty for its dataset's; \ui{shown}; \ui{only rows
+where}, a filter: an expression over each row (\code{dip > 45}, \code{set = 'S1'}), counted as you type
+(\ui{176 of 200 rows drawn}), so a layer can draw part of its dataset while the dataset stays whole; its
+place in the \ui{draw order}; and \ui{How the data is read…} (\cref{sec:columns}).
+\item[\ui{Symbols}] the points: \ui{colour}; \ui{symbol}: circle, square, triangle, diamond, cross or x;
+\ui{size}; \ui{hollow} (an outline, not a filled shape); \ui{opacity}. \ui{colour by} a column colours each
+row by its value, as \ui{categories} (one colour each: a set, a lithology; the key is shown under it) or
+\ui{a ramp over its numbers} (the dip, a length). \ui{size by} a numeric column scales the symbols between two
+sizes. Great circles and labels follow a row's colour too.
+\item[\ui{Lines}] the great and small circles: their \ui{own colour} (else the layer's, or each row's),
+\ui{width}, and \ui{solid}, \ui{dashed} or \ui{dotted}.
+\item[\ui{Contours}] the \ui{method} and its one setting: \ui{Kamb (σ)} with $k$; \ui{Fisher kernel
+(MUD)} with its width in degrees (empty: $90/\sqrt n$); \ui{Schmidt (\% per 1\,\% area)}, the classic
+counting circle, with its area; \ui{cosine power (MUD)} with its power. Then the \ui{levels} (empty: the
+method's own), \ui{filled bands}, the \ui{line width}, and, on a fault layer, whether the poles or the slip
+lines are contoured.
+\item[\ui{Statistics}] the mean's cone (90, 95 or 99\,\%), and whether the data are \ui{axial}.
+\item[\ui{Labels}] the column they read (else the row number), their \ui{size}, and \ui{only the selected}
+rows.
+\end{description} \ui{Apply} sets
 them; \ui{Cancel} or \key{Esc} leaves the layer as it was. The settings are the layer's, not the data's: a
 view of the same data on another net keeps its own.
 

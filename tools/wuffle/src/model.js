@@ -252,6 +252,8 @@ export class Project {
   }
   setLayerVisible(layerId, on) { this._needLayer(layerId).visible = !!on; this._emit('layer-changed', { id: layerId }); }
   setLayerStyle(layerId, style) { Object.assign(this._needLayer(layerId).style, style); this._emit('layer-changed', { id: layerId }); }
+  /** a layer's own name (empty: its dataset's) */
+  renameLayer(layerId, name) { const l = this._needLayer(layerId); l.name = String(name || '').trim() || null; this._emit('layer-changed', { id: layerId }); }
 
   // ── elements: the nested checkboxes ──
   /** switch an element (or a whole group, e.g. 'eigen') on or off */
@@ -354,7 +356,7 @@ const JOURNALED = {
   derive: 'derive', selectionToDataset: 'selection → dataset',
   addDiagram: 'new diagram', setDiagramProps: 'diagram settings', renameDiagram: 'rename diagram', removeDiagram: 'remove diagram',
   addLayer: 'add layer', addView: 'add view', moveLayer: 'move layer', removeLayer: 'remove layer', removeEverywhere: 'remove from everywhere',
-  setLayerVisible: 'show / hide', setLayerStyle: 'style', setElement: 'show / hide elements', setElementSettings: 'element settings',
+  setLayerVisible: 'show / hide', setLayerStyle: 'style', renameLayer: 'rename layer', setElement: 'show / hide elements', setElementSettings: 'element settings',
   addFigure: 'new figure', setFigureDoc: 'edit figure', renameFigure: 'rename figure', removeFigure: 'delete figure',
   addOriginal: 'keep original', removeOriginal: 'remove original', renameProject: 'rename project',
 };

@@ -54,8 +54,14 @@ moving. A pause of most of a second starts a new step, so a drag in two movement
 at a time. \code{rotate} is one step too; and as with a drag, \code{rotate} lines run within a moment
 of each other on one net (as in a routine) merge into one step.
 
-To go back to the plain net, right-click the net in the tree and choose \ui{Reset rotation}\index{rotation, reset} (grayed out when the net isn't rotated), or type \code{rotate off}. Either clears a dragged
-rotation or a named center.
+To go back to the plain net, press \key{R}, click the \ui{↺ rotated} button a rotated net shows at its
+top right, choose \menu{Diagram>Reset rotation} or the same in the net's menu in the tree\index{rotation, reset}
+(grayed out when the net isn't rotated), or type \code{rotate off}. Each clears a dragged rotation or a named
+center.
+
+The arrow keys turn the active net without the mouse: \key{←} and \key{→} spin it about its centre,
+\key{↑} and \key{↓} tilt it, 5° a press, or 1° with \key{Shift}. Presses in a row merge into one undo step,
+as a drag does.
 
 \section{What a rotation doesn't change}\label{sec:rotation-true}
 

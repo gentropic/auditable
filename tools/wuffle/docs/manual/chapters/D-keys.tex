@@ -16,12 +16,18 @@ itself. On a Mac, \key{⌘} works wherever \key{Ctrl} is given.
 \key{Ctrl}+\key{Z} & undo the last change, whoever made it (\cref{sec:undo}) \\
 \key{Ctrl}+\key{Shift}+\key{Z}, \key{Ctrl}+\key{Y} & redo \\
 \key{`} (backquote) & open the console (\cref{ch:console}) \\
-\key{Esc} & clear the outlines of the selection shapes from the nets; the selection itself stays \\
+\key{Esc} & clear the outlines of the selection shapes from the nets; again (or when there are none), the selection \\
 \key{P} \key{L} \key{C} \key{B} \key{M} & the net's tools: pick, lasso, cone, band, measure (\cref{sec:select-tools}) \\
+\key{R} & reset the active net's rotation, as its \ui{↺ rotated} button does (\cref{ch:rotation}) \\
+\key{←} \key{→} \key{↑} \key{↓} & turn the active net: spin about its centre, tilt it; 5° a press, 1° with \key{Shift} \\
+\key{Ctrl}+\key{A} & select everything the active net shows \\
+\key{Ctrl}+\key{C} & copy the selected attitudes, one per line \\
+\key{Ctrl}+\key{PgUp} / \key{PgDn} & the previous / next diagram \\
+\key{?} & the keys and the mouse, in short \\
 \bottomrule\end{tabularx}
 \end{center}
 
-The tool keys act on the net or the bare page only; \menu{Tools} lists them too.
+The tool keys, \key{R}, the arrows, \key{Ctrl}+\key{A}, \key{Ctrl}+\key{C} and \key{?} act on the net or the bare page only; \menu{Tools} lists them too.
 \menu{Help>Keyboard and mouse} shows the short version of this appendix. Undo, redo, \key{`} and \key{Esc} don't act while you type in a field, a dialog or the console, where
 the keys belong to what you are typing. \key{Ctrl}+\key{O} and \key{Ctrl}+\key{S} work everywhere,
 even there. Undo and redo also leave a figure tab alone: a figure has its own undo (below).
@@ -43,7 +49,9 @@ drag & draw the shape; the rows inside it become the selection (\cref{sec:shapes
 \key{Alt}+drag & take the rows inside it away \\
 \multicolumn{2}{@{}l}{\sffamily\itshape always} \\
 move the pointer & the status line reads the attitude under it, and the row under it if any \\
-right-click & the net's menu: what is under the pointer, the selection, the net, the picture (\cref{sec:net-menu}); with \ui{measure}, the right button measures instead \\
+right-click & the net's menu: what is under the pointer, the selection, the net, the picture (\cref{sec:net-menu}); with \ui{measure}, a right \emph{drag} measures and a right \emph{click} opens the measure menu \\
+double-click a measurement & its row in the table \\
+hover, one measurement selected & the status line adds the angle from it \\
 \bottomrule\end{tabularx}
 \end{center}
 

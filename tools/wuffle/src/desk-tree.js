@@ -3,6 +3,7 @@
 // dataset, drawn or not. Drag a layer onto another diagram = a new view of the same data (⇧ moves it);
 // drag a dataset onto a diagram = a layer. Double-click a layer (or its menu) for its properties.
 
+import { layerProperties } from './desk-props.js';
 import { Menu } from '../../../ext/menu/index.js';
 import { weightColumns } from './diagram-svg.js';
 import { columnsDialog } from './desk-columns.js';
@@ -171,7 +172,7 @@ export class TreeView {
       { label: 'Projection', children: [{ label: 'equal-area (Schmidt)', action: 'proj:equal-area', checked: g.props.projection === 'equal-area', group: 'p' }, { label: 'equal-angle (Wulff)', action: 'proj:equal-angle', checked: g.props.projection === 'equal-angle', group: 'p' }] },
       { label: 'Hemisphere', children: [{ label: 'lower', action: 'hemi:lower', checked: g.props.hemisphere === 'lower', group: 'h' }, { label: 'upper', action: 'hemi:upper', checked: g.props.hemisphere === 'upper', group: 'h' }] },
       { label: 'Graticule', children: [[0, 'none'], [5, '5°'], [10, '10°'], [15, '15°'], [30, '30°']].map(([v, t]) => ({ label: t, action: 'grat:' + v, checked: (g.props.graticule ?? 10) === v, group: 'g' })) },
-      { label: 'Reset rotation', action: 'unrotate', disabled: !g.props.matrix && !g.props.rotation },
+      { label: 'Reset rotation', action: 'unrotate', shortcut: 'R', disabled: !g.props.matrix && !g.props.rotation },
     ];
   }
   /** → true when it was one of the diagram's actions */
@@ -217,41 +218,6 @@ export class TreeView {
   }
 
   /** the OS2 rhythm: set a layer up once here, then look at the net */
-  async properties(layerId) {
-    const p = this.p, L = p.layer(layerId); if (!L) return;
-    const ds = p.dataset(L.datasetId), E = L.elements, n = orientations(ds).filter(Boolean).length;
-    const res = await new Dialog({
-      title: `${L.name || ds.name} · properties`, width: 380,
-      render(body, ctx) {
-        const row = (label, input) => { const r = h('label', 'wprow'); r.append(h('span', null, label), input); body.append(r); return input; };
-        const inp = (type, value, attrs = {}) => { const i = h('input'); i.type = type; i.value = value; Object.assign(i, attrs); return i; };
-        const sel = (opts, v) => { const s = h('select'); for (const [k, t] of opts) { const o = h('option', null, t); o.value = k; s.append(o); } s.value = v; return s; };
-        body.append(h('p', 'wpnote', `${ds.name} · ${ds.kind} · ${n} of ${ds.rows.length} rows read`));
-        const color = row('color', inp('color', L.style.color || '#e8836b'));
-        const size = row('symbol size', inp('number', L.style.size || 4, { min: 1, max: 12, step: 0.5 }));
-        let cm, cs, mc;
-        let cf, cl, cof;
-        if (E.contours) { cm = row('contours', sel([['kamb', 'Kamb (σ)'], ['fisher', 'Fisher kernel (MUD)']], E.contours.method)); cs = row('Kamb k (E = kσ)', inp('number', E.contours.sigma ?? 3, { min: 1, max: 6, step: 0.5 }));
-          if (ds.kind === 'faults') cof = row('contour', sel([['poles', 'the planes\' poles'], ['slip', 'the slip lines']], E.contours.of || 'poles'));
-          cf = row('filled bands', inp('checkbox', '', { checked: !!E.contours.filled })); cl = row('levels', inp('text', (E.contours.levels || []).join(', '), { placeholder: E.contours.method === 'fisher' ? '2, 4, 6, 8 (MUD)' : '2, 4, 6, 8, 10, 12 (σ)' })); }
-        if (E.mean) mc = row('cone confidence', sel([['0.95', '95 %'], ['0.99', '99 %'], ['0.9', '90 %']], String(E.mean.confidence ?? 0.95)));
-        const lab = E.labels ? row('labels from', sel([['', '— row number'], ...ds.columns.map((c) => [c, c])], E.labels.column || '')) : null;
-        const bar = h('div', 'wpbar'); const ok = h('button', 'primary', 'Apply'); ok.type = 'button'; ok.dataset.default = 'true';
-        const cancel = h('button', null, 'Cancel'); cancel.type = 'button';
-        bar.append(cancel, ok); body.append(bar);
-        cancel.onclick = () => ctx.close(null);
-        ok.onclick = () => ctx.close({ color: color.value, size: +size.value, cm: cm?.value, cs: cs ? +cs.value : null, cf: cf ? cf.checked : null, cl: cl ? cl.value : null, cof: cof ? cof.value : null, mc: mc ? +mc.value : null, lab: lab ? lab.value : null });
-      },
-    }).show();
-    if (!res) return;
-    p.batch('layer properties', () => {                 // one Apply, one undo step
-      p.setLayerStyle(layerId, { color: res.color, size: res.size });
-      if (res.cm) {
-        const lv = String(res.cl || '').split(/[,\s]+/).map(Number).filter(Number.isFinite).sort((a, b) => a - b);
-        p.setElementSettings(layerId, 'contours', { method: res.cm, sigma: res.cs, filled: !!res.cf, levels: lv.length ? lv : null, ...(res.cof ? { of: res.cof } : {}) });
-      }
-      if (res.mc) p.setElementSettings(layerId, 'mean', { confidence: res.mc });
-      if (res.lab != null && E.labels) p.setElementSettings(layerId, 'labels', { column: res.lab || null });
-    });
-  }
+  /** the layer's properties, in tabs (desk-props.js) */
+  async properties(layerId) { return layerProperties(this.p, layerId); }
 }
