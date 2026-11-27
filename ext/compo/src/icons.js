@@ -27,6 +27,7 @@ export const ICONS = {
   north: [['path', { d: 'M12 2.5 6.5 20.5 12 16.5Z', ...FILL }], P('M12 2.5l5.5 18-5.5-4-5.5 4Z')],
   text: [P('M4 7V4h16v3'), P('M12 4v16'), P('M9 20h6')],
   shape: [R(3, 3, 11, 11, 1), ['circle', { cx: 15.5, cy: 15.5, r: 5.5 }]],
+  fiducial: [R(3, 3, 18, 18, 1), ['rect', { x: 6, y: 6, width: 4, height: 4, ...FILL }], ['rect', { x: 12, y: 8, width: 6, height: 3, ...FILL }], ['rect', { x: 7, y: 13, width: 3, height: 5, ...FILL }], ['rect', { x: 13, y: 14, width: 4, height: 4, ...FILL }]],
   qr: [R(3, 3, 7, 7, 1), R(14, 3, 7, 7, 1), R(3, 14, 7, 7, 1), ['rect', { x: 5.5, y: 5.5, width: 2, height: 2, ...FILL }], ['rect', { x: 16.5, y: 5.5, width: 2, height: 2, ...FILL }], ['rect', { x: 5.5, y: 16.5, width: 2, height: 2, ...FILL }], P('M14 14h3v3M21 14v7h-4M14 18v3')],
   label: [R(11, 3, 10, 7), P('M14 6.5h4'), P('M11 10l-5 7'), ['circle', { cx: 5, cy: 18.5, r: 1.6, ...FILL }]],
   image: [R(3, 3, 18, 18, 2), ['circle', { cx: 9, cy: 9, r: 2 }], P('m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21')],

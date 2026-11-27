@@ -530,3 +530,58 @@ test('freeSpot: beside the view when it fits, else the first free place — neve
     d.frames.push({ id: 'x' + k, kind: 'text', box: c, content: {} });
   }
 });
+
+// ── batch 6: named styles, rotation, AprilTag markers, SVG, links, a running footer ──
+import { defineStyle, applyStyleToFrame, styleFromFrame, stylesOf, canRotate, TAG36H11, tagCells, exportSVG, exportPDF as exportPDF6, createDocument as createDoc6, addFrame as addFrame6 } from '../ext/compo/src/main.js';
+test('named styles: a frame wears one; redefining it rewrites every frame that wears it (a shape only its shape keys)', () => {
+  const d = createDoc6({});
+  const a = addFrame6(d, { kind: 'text', box: [10, 10, 50, 10], content: { md: 'a', size: 9 } });
+  const b = addFrame6(d, { kind: 'text', box: [10, 30, 50, 10], content: { md: 'b' } });
+  const s = addFrame6(d, { kind: 'shape', box: [10, 50, 20, 20], content: { shape: 'rect' } });
+  applyStyleToFrame(a, stylesOf(d).caption, 'caption'); applyStyleToFrame(b, stylesOf(d).caption, 'caption');
+  assert.equal(b.content.size, 9); assert.equal(b.styleName, 'caption');
+  a.content.size = 11; a.content.color = '#aa0000';
+  assert.equal(defineStyle(d, 'caption', styleFromFrame(a)), 2);
+  assert.equal(b.content.size, 11); assert.equal(b.content.color, '#aa0000');
+  applyStyleToFrame(s, { content: { size: 20, stroke: '#00aa00' }, style: {} }, 'x');
+  assert.equal(s.content.stroke, '#00aa00'); assert.equal(s.content.size, undefined, 'a shape takes the shape keys only');
+});
+test('rotation: allowed for a plain frame, not a view of 3D space', () => {
+  assert.ok(canRotate({ kind: 'text', content: {} }));
+  assert.ok(!canRotate({ kind: 'image', content: { meta: { proj: { m: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1] } } } }));
+});
+test('AprilTag 36h11: 587 codes; tag 0 as the reference image draws it (white ring, black ring, its data)', () => {
+  assert.equal(TAG36H11.codes.length, 587);
+  const g = tagCells(TAG36H11, 0).map((r) => r.map((v) => (v ? '.' : '#')).join(''));
+  assert.deepEqual(g, ['..........', '.########.', '.#..#.#.#.', '.##...#.#.', '.##..####.', '.#.#.####.', '.##.#..##.', '.####.###.', '.########.', '..........']);
+  assert.throws(() => tagCells(TAG36H11, 587), /0–586/);
+});
+test('SVG export: text stays text, a rotated frame carries its matrix, a link is an <a>, the title escaped', async () => {
+  const d = createDoc6({ title: 'a <b>' });
+  addFrame6(d, { kind: 'text', box: [10, 10, 100, 20], content: { md: 'see [it](https://gentropic.org)' } });
+  addFrame6(d, { kind: 'shape', box: [10, 40, 30, 20], rotate: 90, content: { shape: 'rect' } });
+  addFrame6(d, { kind: 'fiducial', box: [60, 40, 20, 20], content: { id: 3 } });
+  const s = await exportSVG(d);
+  assert.match(s, /^<\?xml/); assert.match(s, /<title>a &lt;b&gt;<\/title>/);
+  assert.match(s, /<text[^>]*>see <\/text>/); assert.match(s, /<a href="https:\/\/gentropic.org">/);
+  assert.match(s, /matrix\(0 1 -1 0 /, 'the 90° frame');
+});
+test('PDF: a markdown link is a URI annotation (only http(s) / mailto); a running footer on every page', async () => {
+  const a = createDoc6({}), b = createDoc6({});
+  addFrame6(a, { kind: 'text', box: [10, 10, 150, 20], content: { md: '[ok](https://gentropic.org) [no](javascript:alert(1)) [mail](mailto:x@y.z)' } });
+  const s = new TextDecoder('latin1').decode(await exportPDF6([a, b], { compress: false, running: { footer: 'book · page {page} of {pages}' } }));
+  assert.equal((s.match(/\/Subtype \/Link/g) || []).length, 2);
+  assert.match(s, /\/URI \(https:\/\/gentropic\.org\)/); assert.match(s, /\/URI \(mailto:x@y\.z\)/); assert.doesNotMatch(s, /\/URI \(javascript/);
+  assert.deepEqual(s.match(/page \d of 2/g), ['page 1 of 2', 'page 2 of 2']);
+});
+test('crop: a plain picture is drawn from the cropped source rectangle, at the cropped shape', async () => {
+  const { kindOf } = await import('../ext/compo/src/main.js');
+  const calls = [], ctx = new Proxy({}, { get: (t, k) => (k in t ? t[k] : (...a) => { if (k === 'drawImage') calls.push(a); }), set: (t, k, v) => { t[k] = v; return true; } });
+  const f = { id: 'i', kind: 'image', box: [0, 0, 80, 100], content: { width: 100, height: 50, crop: [0.1, 0, 0.1, 0.5], fit: 'contain' } };
+  f._img = { width: 100, height: 50 };
+  kindOf('image').draw(ctx, f.box, f, {});
+  const a = calls[0];
+  assert.equal(a.length, 9, 'the nine-argument form: a source rectangle');
+  assert.deepEqual(a.slice(1, 5), [10, 0, 80, 25], 'left 10 %, right 10 %, the bottom half trimmed');
+  assert.ok(Math.abs(a[7] / a[8] - 80 / 25) < 1e-9, 'drawn at the cropped shape');
+});

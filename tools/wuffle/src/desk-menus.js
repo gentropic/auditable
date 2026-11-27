@@ -35,6 +35,7 @@ export function createMenus(host, { project: p, files, layout, theme, figures, o
     about: () => { const v = (document.querySelector('.vfoot')?.textContent || '').trim(); return alert(ABOUT + '\n\n' + (v && !/__WUFFLE_BUILD__/.test(v) ? v : 'the development tree (unbuilt)')); },
     rename: async () => { const n = await prompt('Name of the project — files are saved under it', { defaultValue: p.name }); if (n && n.trim() && n.trim() !== p.name) { p.renameProject(n); onStatus?.(`the project is “${p.name}” — saved as ${p.name.replace(/[^\w.-]+/g, '_')}.zip.wuffle`); } },
     figure: async () => { try { figures.newFigure(); } catch (e) { await alert(e.message); } },
+    figbook: async () => { try { await figures.exportBook(); } catch (e) { await alert(e.message); } },
     console: () => { layout.focusConsole(); setTimeout(() => document.querySelector('.wcon textarea')?.focus(), 0); },
   };
   const bar = new MenuBar(host, () => [
@@ -60,6 +61,7 @@ export function createMenus(host, { project: p, files, layout, theme, figures, o
     ] },
     { label: 'Figure', items: () => [
       { label: 'New figure from the active diagram', action: 'figure', disabled: !p.diagram(p.activeDiagram) },
+      { label: 'Export all figures as one PDF…', action: 'figbook', disabled: p.figures.length < 1, title: 'every figure, in the order listed, one per page: numbered on across the book, a footer with the page' },
       ...(p.figures.length ? ['---', ...p.figures.map((f) => ({ label: f.name, action: 'openfig:' + f.id }))] : []),
     ] },
     { label: 'View', items: () => [

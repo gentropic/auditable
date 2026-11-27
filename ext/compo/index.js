@@ -111,7 +111,7 @@ const LOAD_MIGRATIONS = [];
 function addFrame(doc, frame) {
   const [W, H] = pageDims(doc.page), m = doc.page.margins || [0, 0, 0, 0];
   const box = frame.box || [m[3] + 10, m[0] + 10, Math.min(120, W - m[1] - m[3] - 20), Math.min(80, H - m[0] - m[2] - 20)];
-  const f = { id: frame.id || (frame.name && ID_RE.test(sanitizeId(frame.name)) && !doc.frames.some((x) => x.id === sanitizeId(frame.name)) ? sanitizeId(frame.name) : newId(doc, idPrefix(frame))), kind: frame.kind, box: box.map(Number), content: frame.content || {}, ...(frame.source ? { source: frame.source } : {}), ...(frame.style ? { style: frame.style } : {}), ...(frame.group ? { group: frame.group } : {}), ...(frame.locked ? { locked: true } : {}), ...(frame.hidden ? { hidden: true } : {}), produced: frame.produced || new Date().toISOString() };
+  const f = { id: frame.id || (frame.name && ID_RE.test(sanitizeId(frame.name)) && !doc.frames.some((x) => x.id === sanitizeId(frame.name)) ? sanitizeId(frame.name) : newId(doc, idPrefix(frame))), kind: frame.kind, box: box.map(Number), content: frame.content || {}, ...(frame.source ? { source: frame.source } : {}), ...(frame.style ? { style: frame.style } : {}), ...(frame.group ? { group: frame.group } : {}), ...(frame.locked ? { locked: true } : {}), ...(frame.hidden ? { hidden: true } : {}), ...(frame.styleName ? { styleName: frame.styleName } : {}), ...(frame.rotate ? { rotate: frame.rotate } : {}), produced: frame.produced || new Date().toISOString() };
   doc.frames.push(f);
   return f;
 }
@@ -299,6 +299,41 @@ function spacingSnap(others, box, k) {
 // bottom, left to right. New frames used to land at the top-left margin, on top of whatever was there (a table on
 // the 3D view, five legends running off the page). → [x, y, w, h] (it may shrink the box to fit the free space
 // it finds only as a last resort: then the page's top-left, as before)
+// ── NAMED STYLES: a document's styles (doc.styles: name → { content: {size, font, color, …}, style: {border,
+// background, …} }), heading / caption / note to start. A frame wearing one (frame.styleName) has its values copied
+// in; redefining a style rewrites every frame that wears it — change the captions once, they all follow ──
+const STYLE_CONTENT_KEYS = ['size', 'font', 'color', 'align', 'valign', 'lineHeight', 'pad', 'backing', 'leader', 'stroke', 'width', 'dash', 'fill', 'radius'];
+const STYLE_FRAME_KEYS = ['border', 'borderColor', 'borderWidth', 'background'];
+const DEFAULT_STYLES = {
+  heading: { content: { size: 13, font: 'sans', align: 'left' }, style: {} },
+  caption: { content: { size: 9, font: 'sans', align: 'left', color: '#1a1a1a' }, style: {} },
+  note: { content: { size: 7.5, font: 'sans', color: '#555555' }, style: {} },
+};
+const stylesOf = (doc) => ({ ...DEFAULT_STYLES, ...(doc.styles || {}) });
+/** the style a frame's values make (its style keys only) */
+function styleFromFrame(f) {
+  const c = f.content || {}, s = f.style || {}, out = { content: {}, style: {} };
+  for (const k of STYLE_CONTENT_KEYS) if (c[k] !== undefined) out.content[k] = c[k];
+  for (const k of STYLE_FRAME_KEYS) if (s[k] !== undefined) out.style[k] = s[k];
+  return out;
+}
+/** a style's values onto a frame: a shape takes the shape keys, a text the type (the keys that mean the same) */
+function applyStyleToFrame(f, st, name = null) {
+  const shapeKeys = ['stroke', 'width', 'dash', 'fill', 'radius'];
+  f.content = { ...(f.content || {}) };
+  for (const [k, v] of Object.entries(st.content || {})) if (shapeKeys.includes(k) === (f.kind === 'shape')) f.content[k] = v;
+  const fs = { ...(f.style || {}) }; for (const k of STYLE_FRAME_KEYS) delete fs[k]; Object.assign(fs, st.style || {});
+  if (Object.keys(fs).length) f.style = fs; else delete f.style;
+  if (name) f.styleName = name; else delete f.styleName;
+}
+/** a style defined (or redefined) from a frame's values; every frame wearing it follows → how many changed */
+function defineStyle(doc, name, st) {
+  doc.styles = { ...(doc.styles || {}), [name]: JSON.parse(JSON.stringify(st)) };
+  let n = 0;
+  for (const f of doc.frames) if (f.styleName === name) { applyStyleToFrame(f, st, name); n++; }
+  return n;
+}
+
 function freeSpot(doc, w, h, { near = null, gap = 4, ignore = [], shrink = false } = {}) {
   // shrink: a frame that re-flows (a chart, a table) may come smaller rather than land on another — the largest
   // scale (down to half, aspect kept) that finds a free place
@@ -361,6 +396,133 @@ function snapResize(doc, box, [hx, hy], { ignore = [], tol = 1.5, onlyX = false 
   one(0, hx, xs);
   if (!onlyX) one(1, hy, ys);
   return { box: out, guides };
+}
+
+// ── src/apriltag.js ──
+
+// The AprilTag 36h11 family (AprilRobotics/apriltag, tag36h11.c), GENERATED — never edit by hand. Regenerate from
+// the upstream file. The family: 587 codes of 36 bits, a 6 × 6 data grid inside a black ring inside a white ring
+// (10 × 10 cells in all; width at the border 8). Its licence, as the source carries it:
+/*
+Copyright (C) 2013-2016, The Regents of The University of Michigan.
+All rights reserved.
+This software was developed in the APRIL Robotics Lab under the
+direction of Edwin Olson, ebolson@umich.edu. This software may be
+available under alternative licensing terms; contact the address above.
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+The views and conclusions contained in the software and documentation are those
+of the authors and should not be interpreted as representing official policies,
+either expressed or implied, of the Regents of The University of Michigan.
+*/
+
+const TAG36H11 = {
+  name: 'tag36h11', nbits: 36, totalWidth: 10, widthAtBorder: 8, reversedBorder: false,
+  bitX: [1, 2, 3, 4, 5, 2, 3, 4, 3, 6, 6, 6, 6, 6, 5, 5, 5, 4, 6, 5, 4, 3, 2, 5, 4, 3, 4, 1, 1, 1, 1, 1, 2, 2, 2, 3],
+  bitY: [1, 1, 1, 1, 1, 2, 2, 2, 3, 1, 2, 3, 4, 5, 2, 3, 4, 3, 6, 6, 6, 6, 6, 5, 5, 5, 4, 6, 5, 4, 3, 2, 5, 4, 3, 4],
+  // the codes (36 bits each, as hex: within a double's 53 bits)
+  codes: [
+    'd7e00984b', 'dda664ca7', 'dc4a1c821', 'e17b470e9', 'ef91d01b1', 'f429cdd73', '05da29225', '1106cba43',
+    '223bed79d', '21f51213c', '33eb19ca6', '3f76eb0f8', '469a97414', '45dcfe0b0', '4a6465f72', '51801db96',
+    '5eb946b4e', '68a7cc2ec', '6f0ba2652', '78765559d', '87b83d129', '86cc4a5c5', '8b64df90f', '9c577b611',
+    'a3810f2f5', 'af4d75b83', 'b59a03fef', 'bb1096f85', 'd1b92fc76', 'd0dd509d2', 'e2cfda160', '2ff497c63',
+    '47240671b', '5047a2e55', '635ca87c7', '691254166', '68f43d94a', '6ef24bdb6', '8cdd8f886', '9de96b718',
+    'aff6e5a8a', 'bae46f029', 'd225b6d59', 'df8ba8c01', 'e3744a22f', 'fbb59375d', '18a916828', '22f29c1ba',
+    '286887d58', '41392322e', '75d18ecd1', '87c302743', '8c6317ba9', '9e40f36d7', 'c0e5a806a', 'cc78cb87c',
+    '12d2f2d01', '379f36a21', '6973f59ac', '7789ea9f4', '8f1c73e84', '8dd287a20', '94a4eee4c', 'a455379b5',
+    'a9e92987d', 'bd25cb40b', 'be98d3582', 'd3d5972b2', '14c53d7c7', '4f1796936', '4e71fed1a', '66d46fae0',
+    'a55abb933', 'ebee1acca', '1ad4ba6a4', '305b17571', '553611351', '59ca62775', '7819cb6a1', 'edb7bc9eb',
+    '5b2694212', '72e12d185', 'ed6152e2c', '5bcdadbf3', '78e0aa0c6', 'c60a0b909', 'ef9a34b0d', '398a6621a',
+    'a8a27c944', '4b564304e', '52902b4e2', '857280b56', 'a91b2c84b', 'e91df939b', '1fa405f28', '23793ab86',
+    '68c17729f', '9fbf3b840', '36922413c', '4eb5f946e', '533fe2404', '63de7d35e', '925eddc72', '99b8b3896',
+    'aace4c708', 'c22994af0', '8f1eae41b', 'd95fb486c', '13fb77857', '4fe0983a3', 'd559bf8a9', 'e1855d78d',
+    'fec8daaad', '71ecb6d95', 'dc9e50e4c', 'ca3a4c259', '740d12bbf', 'aeedd18e0', 'b509b9c8e', '5232fea1c',
+    '19282d18b', '76c22d67b', '936beb34b', '08a5ea8dd', '679eadc28', 'a08e119c5', '20a6e3e24', '7eab9c239',
+    '96632c32e', '470d06e44', '8a70212fb', '0a7e4251b', '9ec762cc0', 'd8a3a1f48', 'db680f346', '4a1e93a9d',
+    '638ddc04f', '4c2fcc993', '01ef28c95', 'bf0d9792d', '6d27557c3', '623f977f4', '35b43be57', 'bb0c428d5',
+    'a6f01474d', '5a70c9749', '20ddabc3b', '2eabd78cf', '90aa18f88', 'a9ea89350', '3cdb39b22', '839a08f34',
+    '169bb814e', '1a575ab08', 'a04d3d5a2', 'bf7902f2b', '095a5e65c', '92e8fce94', '67ef48d12', '6400dbcac',
+    'b12d8fb9f', '0347f45d3', 'b35826f56', 'c546ac6e4', '81cc35b66', '41d14bd57', '0c052b168', '7d6ce5018',
+    'ab4ed5ede', '5af817119', 'd1454b182', '2badb090b', '03fcb4c0c', '2f1c28fd8', '93608c6f7', '4c93ba2b5',
+    '07d950a5d', 'e54b3d3fc', '15560cf9d', '189e4958a', '62140e9d2', '723bc1cdb', '2063f26fa', 'fa08ab19f',
+    '7955641db', '646b01daa', '71cd427cc', '09a42f7d4', '717edc643', '15eb94367', '8392e6bb2', '832408542',
+    '2b9b874be', 'b21f4730d', 'b5d8f24c9', '7dbaf6931', '1b4e33629', '13452e710', 'e974af612', '1df61d29a',
+    '99f2532ad', 'e50ec71b4', '5df0a36e8', '4934e4cea', 'e34a0b4bd', 'b7b26b588', '0f255118d', 'd0c8fa31e',
+    '06a50c94f', 'f28aa9f06', '131d194d8', '622e3da79', 'ac7478303', 'c8f2521d7', '6c9c881f5', '49e38b60a',
+    '513d8df65', 'd7c2b0785', '9f6f9d75a', '9f6966020', '1e1a54e33', 'c04d63419', '946e04cd7', '1bdac5902',
+    '56469b830', 'ffad59569', '86970e7d8', '8a4b41e12', 'ad4688e3b', '85f8f5df4', 'd833a0893', '2a36fdd7c',
+    'd6a857cf2', '8829bc35c', '5e50d79bc', 'fbb8035e4', 'c1a95bebf', '036b0baf8', 'e0da964ea', 'b6483689b',
+    '7c8e2f4c1', '5b856a23b', '2fc183995', 'e914b6d70', 'b31041969', '1bb478493', '063e2b456', 'f2a082b9c',
+    '8e5e646ea', '08172f8f6', '0dacd923e', 'e5dcf0e2e', 'bf9446bae', '4822d50d1', '26e710bf5', 'b90ba2a24',
+    'f3b25aa73', '809ad589b', '94cc1e254', '5334a3adb', '592886b2f', 'bf64704aa', '566dbf24c', '72203e692',
+    '64e61e809', 'd7259aad6', '7b924aedc', '2df2184e8', '353d1eca7', 'fce30d7ce', 'f7b0f436e', '57e8d8f68',
+    '8c79e60db', '9c8362b2b', '63a5804f2', '9298353dc', '6f98a71c8', 'a5731f693', '21ca5c870', '1c2107fd3',
+    '6181f6c39', '19e574304', '329937606', '043d5c70d', '9b18ff162', '8e2ccfebf', '72b7b9b54', '9b71f4f3c',
+    '935d7393e', '65938881a', '6a5bd6f2d', 'a19783306', 'e6472f4d7', '81163df5a', 'a838e1cbd', '982748477',
+    '050c54feb', '0d82fbb58', '2c4c72799', '97d259ad6', '22d9a43ed', 'fdb162a9f', '0cb4a727d', '4fae2e371',
+    '535b5be8b', '48795908a', 'ce7c18962', '4ea154d80', '50c064889', '8d97fc75d', 'c8bd9ec61', '83ee8e8bb',
+    'c8431419a', '1aa78079d', '8111aa4a5', 'dfa3a69fe', '51630d83f', '2d930fb3f', '2133116e5', 'ae5395522',
+    'bc07a4e8a', '57bf08ba0', '6cb18036a', 'f0e2e4b75', '3eb692b6f', 'd8178a3fa', '238cce6a6', 'e97d5cdd7',
+    'fe10d8d5e', 'b39584a1d', 'ca03536fd', 'aa61f3998', '72ff23ec2', '15aa7d770', '57a3a1282', 'd1f3902dc',
+    '6554c9388', 'fd01283c7', 'e8baa42c5', '72cee6adf', 'f6614b3fa', '95c3778a2', '7da4cea7a', 'd18a5912c',
+    'd116426e5', '27c17bc1c', 'b95b53bc1', 'c8f937a05', 'ed220c9bd', '0c97d72ab', '8fb1217ae', '25ca8a5a1',
+    'b261b871b', '1bef0a056', '806a51179', 'eed249145', '3f82aeceb', 'cc56e9acf', '2e78d01eb', '102cee17f',
+    '37caad3d5', '16ac5b1ee', '2af164ece', 'd4cd81dc9', '12263a7e7', '57ac7d117', '9391d9740', '7aedaa77f',
+    '9675a3c72', '277f25191', 'ebb6e64b9', '7ad3ef747', '12759b181', '948257d4d', 'b63a850f6', '3a52a8f75',
+    '4a019532c', 'a021a7529', 'cc661876d', '4085afd05', 'e7048e089', '3f979cdc6', 'd9da9071b', 'ed2fc5b68',
+    '79d64c3a1', 'fd44e2361', '8eea46a74', '42233b9c2', 'ae4d1765d', '7303a094c', '2d7033abe', '3dcc2b0b4',
+    '0f0967d09', '06f0cd7de', '09807aca0', '3a295cad3', '2b106b202', '3f38a828e', '78af46596', 'bda2dc713',
+    '9a8c8c9d9', '6a0f2ddce', 'a76af6fe2', '086f66fa4', 'd52d63f8d', '89f7a6e73', 'cc6b23362', 'b4ebf3c39',
+    '564f300fa', 'e8de3a706', '79a033b61', '765e160c5', 'a266a4f85', 'a68c38c24', 'dca0711fb', '85fba85ba',
+    '37a207b46', '158fcc4d0', '0569d79b3', '7b1a25555', 'a8ae22468', '7c592bdfd', '0c59a5f66', 'b1115daa3',
+    'f17c87177', '6769d766b', '2b637356d', '13d8685ac', 'f24cb6ec0', '0bd0b56d1', '42ff0e26d', 'b41609267',
+    '96f9518af', 'c56f96636', '4a8e10349', '863512171', 'ea455d86c', 'bd0e25279', 'e65e3f761', '36c84a922',
+    '85fd1b38f', '657c91539', '15033fe04', '09051c921', 'ab27d80d8', 'f92f7d0a1', '8eb6bb737', '10b5b0f63',
+    '6c9c7ad63', 'f66fe70ae', 'ca579bd92', '956198e4d', '29e4405e5', 'e44eb885c', '41612456c', 'ea45e0abf',
+    'd326529bd', '7b2c33cef', '80bc9b558', '7169b9740', 'c37f99209', '31ff6dab9', 'c795190ed', 'a7636e95f',
+    '9df075841', '55a083932', 'a7cbdf630', '409ea4ef0', '92a1991b6', '4b078dee9', 'ae18ce9e4', '5a6e1ef35',
+    '1a403bd59', '31ea70a83', '2bc3c4f3a', '5c921b3cb', '042da05c5', '1f667d16b', '416a368cf', 'fbc0a7a3b',
+    '9419f0c7c', '81be2fa03', '34e2c172f', '28648d8ae', 'c7acbb885', '45f31eb6a', 'd1cfc0a7b', '42c4d260d',
+    'cf6584097', '94b132b14', '3c5c5df75', '8ae596fef', 'aea8054eb', '0ae9cc573', '496fb731b', 'ebf105662',
+    'af9c83a37', 'c0d64cd6b', '7b608159a', 'e74431642', 'd6fb9d900', '291e99de0', '10500ba9a', '5cd05d037',
+    'a87254fb2', '9d7824a37', '8b2c7b47c', '30c788145', '2f4e5a8be', 'badb884da', '026e0d5c9', '6fdbaa32e',
+    '34758eb31', '565cd1b4f', '2bfd90fb0', '093052a6b', 'd3c13c4b9', '2daea43bf', 'a279762bc', 'f1bd9f22c',
+    '4b7fec94f', '545761d5a', '7327df411', '1b52a442e', '49b0ce108', '24c764bc8', '374563045', 'a3e8f91c6',
+    '0e6bd2241', 'e0e52ee3c', '07e8e3caa', '96c2b7372', '33acbdfda', 'b15d91e54', '464759ac1', '6886a1998',
+    '57f5d3958', '5a1f5c1f5', '0b58158ad', 'e712053fb', '5352ddb25', '414b98ea0', '74f89f546', '38a56b3c3',
+    '38db0dc17', 'aa016a755', 'dc72366f5', '0cee93d75', 'b2fe7a56b', 'a847ed390', '8713ef88c', 'a217cc861',
+    '8bca25d7b', '455526818', 'ea3a7a180', 'a9536e5e0', '9b64a1975', '5bfc756bc', '046aa169b', '53a17f76f',
+    '4d6815274', 'cca9cf3f6', '4013fcb8b', '3d26cdfa5', '5786231f7', '7d4ab09ab', '960b5ffbc', '8914df0d4',
+    '2fc6f2213', 'ac235637e', '151b28ed3', '46f79b6db', '1382e0c9f', '53abf983a', '383c47ade', '3fcf88978',
+    'eb9079df7', '09af0714d', 'da19d1bb7', '9a02749f8', '1c62dab9b', '1a137e44b', '2867718c7', '35815525b',
+    '7cd35c550', '2164f73a0', 'e8b772fe0',
+  ],
+};
+
+/** a tag's cells, as apriltag_to_image draws them: a totalWidth × totalWidth grid of booleans, true = WHITE */
+function tagCells(fam, id) {
+  if (!(id >= 0 && id < fam.codes.length)) throw new Error(`${fam.name}: ids are 0–${fam.codes.length - 1}`);
+  const W = fam.totalWidth, code = parseInt(fam.codes[id], 16), g = Array.from({ length: W }, () => new Array(W).fill(false));
+  const wb = fam.widthAtBorder + (fam.reversedBorder ? 0 : 2), ws = (W - wb) / 2;   // the 1-cell white ring
+  for (let i = 0; i < wb - 1; i++) { g[ws][ws + i] = true; g[ws + i][W - 1 - ws] = true; g[W - 1 - ws][ws + i + 1] = true; g[ws + 1 + i][ws] = true; }
+  const bs = (W - fam.widthAtBorder) / 2;
+  for (let i = 0; i < fam.nbits; i++) if (Math.floor(code / 2 ** (fam.nbits - i - 1)) % 2 === 1) g[fam.bitY[i] + bs][fam.bitX[i] + bs] = true;
+  return g;
 }
 
 // ── src/type.js ──
@@ -846,6 +1008,9 @@ const kindOf = (k) => KINDS.get(k) || null;
 // null (page mm) and kind.unproject(frame, x, y) → p | null. A stereonet is the second: its points are
 // DIRECTIONS on the sphere, and a label pins to one. The matrix-only things (border ticks, overlays,
 // vector sections) keep asking hasProj. ──
+/** a frame that may be ROTATED: not a view of 3D space nor a net (their coordinates and pinned labels assume an
+ *  upright frame) */
+function canRotate(f) { return !!f && !hasProj(f) && !canPin(f); }
 function canPin(f) { if (hasProj(f)) return true; const k = f && kindOf(f.kind); return !!(k && typeof k.project === 'function'); }
 function pinToPage(f, p) {
   if (hasProj(f)) return worldToPage(f, p);
@@ -861,17 +1026,21 @@ const pinRect = (f) => (hasProj(f) ? imageRect(f) : f.box);
 // ── text: paragraphs (blank-line or newline separated), **bold** runs, word wrap to the box ──
 // ── MARKDOWN, the part a figure needs. Blocks, one per line: '# ', '## ', '### ' headings · '- ' / '* '
 // bullets and '1. ' numbered items (hanging indent) · '---' a rule · anything else a paragraph line (a blank
-// line a gap). Inline: **bold**, *italic* or _italic_, `code`. Fields ({date} …) are resolved before this. ──
+// line a gap). Inline: **bold**, *italic* or _italic_, `code`, [words](https://…) — a link, clickable in the PDF.
+// Fields ({date} …) are resolved before this. ──
+const LINK_INK = '#1f5fa8';
 const HEAD = { 1: 1.6, 2: 1.3, 3: 1.12 };
 function runsOf(line) {
   const out = [];
-  const re = /\*\*([^*]+)\*\*|\*([^*\s][^*]*?)\*|(?<![\w])_([^_\s][^_]*?)_(?![\w])|`([^`]+)`/g;
+  const re = /\[(?<lt>[^\]]+)\]\((?<href>(?:https?:|mailto:)[^)\s]+)\)|\*\*(?<b>[^*]+)\*\*|\*(?<i1>[^*\s][^*]*?)\*|(?<![\w])_(?<i2>[^_\s][^_]*?)_(?![\w])|`(?<m>[^`]+)`/g;
   let at = 0, m;
   while ((m = re.exec(line))) {
+    const g = m.groups;
     if (m.index > at) out.push({ t: line.slice(at, m.index) });
-    if (m[1] != null) out.push({ t: m[1], b: true });
-    else if (m[2] != null || m[3] != null) out.push({ t: m[2] != null ? m[2] : m[3], i: true });
-    else out.push({ t: m[4], m: true });
+    if (g.href != null) out.push({ t: g.lt, href: g.href });
+    else if (g.b != null) out.push({ t: g.b, b: true });
+    else if (g.i1 != null || g.i2 != null) out.push({ t: g.i1 != null ? g.i1 : g.i2, i: true });
+    else out.push({ t: g.m, m: true });
     at = m.index + m[0].length;
   }
   if (at < line.length) out.push({ t: line.slice(at) });
@@ -899,7 +1068,7 @@ function layoutText(ctx, text, width, { size = 9, mono = false, serif = false, l
     let mk = null, indent = 0;
     if (marker) { ctx.font = fontMm(lsize, { mono, serif }); const mw = ctx.measureText(marker + ' ').width; mk = { t: marker, w: mw }; indent = Math.max(mw, lsize * PT * 1.1); }
     const words = [];
-    for (const r of runsOf(para)) for (const t of r.t.split(/(\s+)/)) if (t) words.push({ t, b: r.b || bold, i: r.i, m: r.m, size: lsize });
+    for (const r of runsOf(para)) for (const t of r.t.split(/(\s+)/)) if (t) words.push({ t, b: r.b || bold, i: r.i, m: r.m, size: lsize, ...(r.href ? { href: r.href } : {}) });
     let line = [], lw = 0, first = true;
     const flush = () => {
       while (line.length && /^\s+$/.test(line[line.length - 1].t)) line.pop();
@@ -936,10 +1105,18 @@ function drawText(ctx, text, box, { size = 9, mono = false, serif = false, pad =
     let x = x0 + (line.indent || 0);
     // one string per run of the same look (a PDF gets one text object per run, not per word)
     for (let i = 0; i < line.length;) {
-      const k = styleOf(line[i], mono, serif, line.size);
+      const k = styleOf(line[i], mono, serif, line.size), href = line[i].href || null;
       let j = i, t = '', w = 0;
-      while (j < line.length && styleOf(line[j], mono, serif, line.size) === k) { t += line[j].t; w += line[j].w; j++; }
-      ctx.font = k; ctx.fillText(t, x, y); x += w; i = j;
+      while (j < line.length && styleOf(line[j], mono, serif, line.size) === k && (line[j].href || null) === href) { t += line[j].t; w += line[j].w; j++; }
+      ctx.font = k;
+      if (href) {                                            // a link: blue, underlined, and clickable where the page can be (a PDF)
+        ctx.fillStyle = LINK_INK; ctx.fillText(t, x, y);
+        const tw = w - (/\s$/.test(t) ? ctx.measureText(t.match(/\s+$/)[0]).width : 0), ub = y + line.size * PT * 0.95;
+        ctx.strokeStyle = LINK_INK; ctx.lineWidth = Math.max(0.1, line.size * PT * 0.06); ctx.beginPath(); ctx.moveTo(x, ub); ctx.lineTo(x + tw, ub); ctx.stroke();
+        if (typeof ctx.link === 'function') ctx.link(x, y, tw, line.lh, href);
+        ctx.fillStyle = color; ctx.strokeStyle = color;
+      } else ctx.fillText(t, x, y);
+      x += w; i = j;
     }
     y += line.lh;
   }
@@ -972,11 +1149,15 @@ registerKind('image', {
       if (c.ticks && c.ticks !== 'off' && hasProj(frame) && iw && ih) drawTicks(ctx, frame, c.ticks);   // the coordinates are known without the picture
       return;
     }
+    // a CROP (content.crop: [left, top, right, bottom] trimmed, as fractions of the picture) — plain pictures only: a
+    // view of 3D space keeps its whole frame (its coordinates, ticks and pinned labels are the frame's)
+    const cr = !hasProj(frame) && Array.isArray(c.crop) && c.crop.length === 4 ? c.crop.map((v) => Math.max(0, Math.min(0.95, +v || 0))) : null;
+    const cw = cr ? iw * Math.max(0.05, 1 - cr[0] - cr[2]) : iw, ch = cr ? ih * Math.max(0.05, 1 - cr[1] - cr[3]) : ih;
     const fit = c.fit || 'contain';
     let w = box[2], h = box[3];
     if (fit !== 'fill') {
-      const k = fit === 'cover' ? Math.max(box[2] / iw, box[3] / ih) : Math.min(box[2] / iw, box[3] / ih);
-      w = iw * k; h = ih * k;
+      const k = fit === 'cover' ? Math.max(box[2] / cw, box[3] / ch) : Math.min(box[2] / cw, box[3] / ch);
+      w = cw * k; h = ch * k;
     }
     const x = box[0] + (box[2] - w) / 2, y = box[1] + (box[3] - h) / 2;
     ctx.imageSmoothingEnabled = c.smooth !== false;
@@ -984,7 +1165,10 @@ registerKind('image', {
     if (c.vector && c.vectorOn !== false && hasProj(frame)) drawVector(ctx, frame, x, y, w, h);   // a vector section: cells, then the other layers' transparent render
     else {
       const src = ctx.acceptsImageData && frame._jpeg ? frame._jpeg : img;
-      ctx.drawImage(src, x, y, w, h);
+      if (cr) {                                              // the source rectangle, in the bitmap's own pixels
+        const sw0 = src.naturalWidth || src.width || iw, sh0 = src.naturalHeight || src.height || ih;
+        ctx.drawImage(src, cr[0] * sw0, cr[1] * sh0, sw0 * (cw / iw), sh0 * (ch / ih), x, y, w, h);
+      } else ctx.drawImage(src, x, y, w, h);
     }
     // a picture of 3D space (meta.proj) may wear its coordinates: ticks on the border, or a grid
     if (c.ticks && c.ticks !== 'off' && hasProj(frame)) drawTicks(ctx, frame, c.ticks);
@@ -1429,20 +1613,47 @@ registerKind('qr', {
     if (u < 0.25) frame._overflow = 'the modules are under 0.25 mm — a phone may not read it; make the frame bigger';
     const x0 = box[0] + (box[2] - side) / 2 + q * u, y0 = box[1] + q * u;
     ctx.fillStyle = '#ffffff'; ctx.fillRect(x0 - q * u, y0 - q * u, side, side);
-    ctx.fillStyle = INK;
-    for (let r = 0; r < n; r++) {                        // runs of dark modules per row: fewer, longer rectangles
-      let c0 = -1;
-      for (let k = 0; k <= n; k++) {
-        const dark = k < n && m[r][k];
-        if (dark && c0 < 0) c0 = k;
-        else if (!dark && c0 >= 0) { ctx.fillRect(x0 + c0 * u, y0 + r * u, (k - c0) * u + 0.005, u + 0.005); c0 = -1; }
-      }
-    }
+    fillCells(ctx, x0, y0, u, n, (r, k) => m[r][k]);
     if (c.caption) {
       ctx.font = fontMm(7); ctx.textAlign = 'center'; ctx.textBaseline = 'top';
       let t = text; while (t.length > 4 && ctx.measureText(t).width > box[2]) t = t.slice(0, -2);
       ctx.fillText(t === text ? t : t + '…', box[0] + box[2] / 2, box[1] + side + 0.5);
     }
+  },
+});
+
+// a grid's dark cells as ONE path, filled once: runs per row as rectangles, but a single fill — its coverage is the
+// union's, so rows leave no anti-aliased seam (separate fills did, in a raster and in a PDF reader), and a PDF gets one
+// path instead of hundreds of rectangles
+function fillCells(ctx, x0, y0, u, n, dark) {
+  ctx.fillStyle = INK; ctx.beginPath();
+  for (let r = 0; r < n; r++) {
+    let c0 = -1;
+    for (let k = 0; k <= n; k++) {
+      const d = k < n && dark(r, k);
+      if (d && c0 < 0) c0 = k;
+      else if (!d && c0 >= 0) { ctx.rect(x0 + c0 * u, y0 + r * u, (k - c0) * u, u); c0 = -1; }
+    }
+  }
+  ctx.fill();
+}
+
+// ── fiducial: an AprilTag (36h11 — BSD-2-Clause, apriltag.js) a camera or a scanner can find and identify: a page
+// that knows where it is in a photo. The cells as vector squares, the white quiet ring included; optionally its
+// family and id under it. content: { family: 'tag36h11', id, caption } ──
+registerKind('fiducial', {
+  label: 'marker (AprilTag)',
+  draw(ctx, box, frame) {
+    const c = frame.content || {}, id = Math.round(+c.id || 0);
+    frame._overflow = undefined;
+    let g;
+    try { g = tagCells(TAG36H11, id); } catch (e) { frame._overflow = e.message; ctx.fillStyle = '#b33'; ctx.font = fontMm(7); ctx.textBaseline = 'top'; ctx.textAlign = 'left'; ctx.fillText(e.message, box[0], box[1]); return; }
+    const capH = c.caption ? 7 * PT * 1.3 : 0, side = Math.min(box[2], box[3] - capH), W = g.length, u = side / W;
+    if (u < 0.6) frame._overflow = 'cells under 0.6 mm — a scan may not find it; make the frame bigger';
+    const x0 = box[0] + (box[2] - side) / 2, y0 = box[1];
+    ctx.fillStyle = '#ffffff'; ctx.fillRect(x0, y0, side, side);
+    fillCells(ctx, x0, y0, u, W, (r, k) => !g[r][k]);
+    if (c.caption) { ctx.font = fontMm(7); ctx.textAlign = 'center'; ctx.textBaseline = 'top'; ctx.fillText(`${TAG36H11.name} · ${id}`, box[0] + box[2] / 2, y0 + side + 0.5); }
   },
 });
 
@@ -1567,7 +1778,7 @@ const STANDARD_FONTS = ['Helvetica', 'Helvetica-Bold', 'Courier', 'Courier-Bold'
   'Helvetica-Oblique', 'Helvetica-BoldOblique', 'Courier-Oblique', 'Courier-BoldOblique', 'Times-Italic', 'Times-BoldItalic', 'Symbol'];
 
 // a CSS font string → { name (a standard font), size (px of the user space), mono, serif, bold, italic }
-function parseFont(css) {
+function parseFont$fonts(css) {
   const s = String(css || '10px sans-serif');
   const m = /(\d+(?:\.\d+)?)px/.exec(s);
   const size = m ? +m[1] : 10;
@@ -1687,7 +1898,7 @@ function num(v) {
   s = s.replace(/\.?0+$/, '');
   return s;
 }
-const mul = (m, n) => [
+const mul$context = (m, n) => [
   m[0] * n[0] + m[2] * n[1], m[1] * n[0] + m[3] * n[1],
   m[0] * n[2] + m[2] * n[3], m[1] * n[2] + m[3] * n[3],
   m[0] * n[4] + m[2] * n[5] + m[4], m[1] * n[4] + m[3] * n[5] + m[5],
@@ -1771,16 +1982,16 @@ class PdfContext2D {
   }
 
   // ── transforms ──
-  translate(x, y) { this._m = mul(this._m, [1, 0, 0, 1, x, y]); }
-  scale(x, y) { this._m = mul(this._m, [x, 0, 0, y, 0, 0]); }
-  rotate(a) { const c = Math.cos(a), s = Math.sin(a); this._m = mul(this._m, [c, s, -s, c, 0, 0]); }
-  transform(a, b, c, d, e, f) { this._m = mul(this._m, [a, b, c, d, e, f]); }
+  translate(x, y) { this._m = mul$context(this._m, [1, 0, 0, 1, x, y]); }
+  scale(x, y) { this._m = mul$context(this._m, [x, 0, 0, y, 0, 0]); }
+  rotate(a) { const c = Math.cos(a), s = Math.sin(a); this._m = mul$context(this._m, [c, s, -s, c, 0, 0]); }
+  transform(a, b, c, d, e, f) { this._m = mul$context(this._m, [a, b, c, d, e, f]); }
   setTransform(a, b, c, d, e, f) {
     if (a && typeof a === 'object') ({ a, b, c, d, e, f } = a);
-    this._m = mul(this._base, [a, b, c, d, e, f]);
+    this._m = mul$context(this._base, [a, b, c, d, e, f]);
   }
   resetTransform() { this._m = this._base.slice(); }
-  getTransform() { const u = mul(invert(this._base), this._m); return { a: u[0], b: u[1], c: u[2], d: u[3], e: u[4], f: u[5] }; }
+  getTransform() { const u = mul$context(invert(this._base), this._m); return { a: u[0], b: u[1], c: u[2], d: u[3], e: u[4], f: u[5] }; }
 
   // ── paths (page space as they're added) ──
   beginPath() { this._path = []; this._cur = null; this._start = null; }
@@ -1902,14 +2113,14 @@ class PdfContext2D {
 
   // ── text ──
   measureText(text) {
-    const f = parseFont(this._st.font);
+    const f = parseFont$fonts(this._st.font);
     const w = textWidth(f.name, f.size, text);
     return { width: w, actualBoundingBoxLeft: 0, actualBoundingBoxRight: w, actualBoundingBoxAscent: 0.72 * f.size, actualBoundingBoxDescent: 0.21 * f.size, fontBoundingBoxAscent: 0.8 * f.size, fontBoundingBoxDescent: 0.2 * f.size };
   }
   fillText(text, x, y, maxWidth) { this._text(text, x, y, maxWidth, 0); }
   strokeText(text, x, y, maxWidth) { this._text(text, x, y, maxWidth, 1); }
   _text(text, x, y, maxWidth, mode) {
-    const f = parseFont(this._st.font);
+    const f = parseFont$fonts(this._st.font);
     const enc = encodeRuns(text);                        // the page's font, with Greek and maths in Symbol runs
     if (enc.missing.size) this._warn('glyph:' + [...enc.missing].join(''), `characters ${[...enc.missing].map((c) => `“${c}”`).join(' ')} aren't in the standard PDF fonts — written as '?' (an embedded font would carry them)`);
     if (!enc.runs.some((r) => r.codes.length)) return;
@@ -1920,7 +2131,7 @@ class PdfContext2D {
     const dx = align === 'center' ? -w / 2 : (align === 'right' || (align === 'end' && !rtl) || (align === 'start' && rtl)) ? -w : 0;
     const dy = baselineShift(this._st.textBaseline, f.size);
     // text space: x right, y UP (glyphs upright) — flip the y-down user space under the anchor
-    const tm = mul(this._m, [sx, 0, 0, -1, x + dx, y + dy]);
+    const tm = mul$context(this._m, [sx, 0, 0, -1, x + dx, y + dy]);
     const col = this._colorOps(mode === 0, mode === 1);
     if (!col.visible) return;
     const sw = mode === 1 ? ` ${num(this._st.lineWidth * scaleOf(this._m))} w` : '';
@@ -1934,6 +2145,16 @@ class PdfContext2D {
   }
 
   // ── images ──
+  /** a LINK over a rectangle of the user space: clickable in a PDF reader (a canvas has no such thing — callers check
+   *  for ctx.link). Only http(s) and mailto: a figure is not a place for javascript: or file links. → true if added */
+  link(x, y, w, h, url) {
+    if (!/^(https?:|mailto:)/i.test(String(url || '').trim())) { this._warn('link', `not a web or mail link: ${String(url).slice(0, 60)}`); return false; }
+    const m = this._m, pt = (px, py) => [m[0] * px + m[2] * py + m[4], m[1] * px + m[3] * py + m[5]];
+    const cs = [pt(x, y), pt(x + w, y), pt(x, y + h), pt(x + w, y + h)];
+    const xs = cs.map((q) => q[0]), ys = cs.map((q) => q[1]);
+    this._page._links.push({ rect: [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)], url: String(url).trim() });
+    return true;
+  }
   drawImage(src, a, b, c, d, e, f, g, h) {
     let sx = 0, sy = 0, sw, sh, dx, dy, dw, dh;
     const iw = src && (src.naturalWidth || src.videoWidth || src.width), ih = src && (src.naturalHeight || src.videoHeight || src.height);
@@ -1943,7 +2164,7 @@ class PdfContext2D {
     const img = this._page._image(src, sx, sy, sw, sh, this._st.imageSmoothingEnabled, (k, m) => this._warn(k, m));
     if (!img) return;
     // the unit square (row 0 at the top, y = 1) onto the destination rect, y-down user space
-    const cm = mul(this._m, [dw, 0, 0, -dh, dx, dy + dh]);
+    const cm = mul$context(this._m, [dw, 0, 0, -dh, dx, dy + dh]);
     const ga = this._st.globalAlpha;
     let gs = '';
     if (ga !== this._alpha) { gs = `/${this._page._gs(ga, this._alphaS)} gs `; this._alpha = ga; }
@@ -1970,7 +2191,7 @@ class PdfContext2D {
 }
 
 // exposed for tests
-const _matrix = { mul, apply, invert, KAPPA };
+const _matrix = { mul: mul$context, apply, invert, KAPPA };
 
 // ── ../pdf/src/sizes.js ──
 
@@ -2036,12 +2257,17 @@ function idHash(chunks) {
   return [a, b, a ^ b, (a + b) >>> 0].map((v) => v.toString(16).padStart(8, '0')).join('');
 }
 
+// a URI as a PDF string: ASCII (anything else percent-encoded), the three specials escaped
+const uriString = (u) => '(' + encodeURI(decodeURISafe(u)).replace(/[\\()]/g, (c) => '\\' + c) + ')';
+function decodeURISafe(u) { try { return decodeURI(u); } catch { return u; } }
+
 class PdfPage {
   constructor(doc, width, height, units) {
     this._doc = doc;
     this.width = width; this.height = height;              // points
     this._ops = [];
     this._fonts = new Map(); this._gss = new Map(); this._images = new Map();
+    this._links = [];                                      // [{ rect: [x0, y0, x1, y1] in page points, url }]
     this._units = units;
   }
   // a 2D context over this page; units 'pt' (default) or 'mm' for the user space
@@ -2176,7 +2402,9 @@ class PdfDocument {
       if (p._fonts.size) res.push(`/Font << ${[...p._fonts].map(([n, tag]) => `/${tag} ${fontIds[n]} 0 R`).join(' ')} >>`);
       if (p._gss.size) res.push(`/ExtGState << ${[...p._gss.values()].map((g) => `/${g.name} ${gsIds[g.name]} 0 R`).join(' ')} >>`);
       if (p._images.size) res.push(`/XObject << ${[...p._images.keys()].map((n) => `/${n} ${imgIds[n]} 0 R`).join(' ')} >>`);
-      pageIds.push(add({ dict: `<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 ${num(p.width)} ${num(p.height)}] /Resources << ${res.join(' ')} >> /Contents ${cid} 0 R >>` }));
+      // LINKS: an annotation each — a clickable rectangle over what the page drew, no border
+      const annots = p._links.map((l) => add({ dict: `<< /Type /Annot /Subtype /Link /Rect [${l.rect.map(num).join(' ')}] /Border [0 0 0] /A << /S /URI /URI ${uriString(l.url)} >> >>` }));
+      pageIds.push(add({ dict: `<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 ${num(p.width)} ${num(p.height)}] /Resources << ${res.join(' ')} >> /Contents ${cid} 0 R${annots.length ? ` /Annots [${annots.map((i) => `${i} 0 R`).join(' ')}]` : ''} >>` }));
     }
     objs[pagesId - 1] = { dict: `<< /Type /Pages /Kids [${pageIds.map((i) => `${i} 0 R`).join(' ')}] /Count ${pageIds.length} >>` };
     // attachments: an EmbeddedFile stream + a file spec each; the catalog lists them (sorted by name)
@@ -2294,11 +2522,16 @@ function renderPage(doc, ctx, env = {}) {
     if (f.hidden) continue;
     const kind = kindOf(f.kind), b = f.box, st = f.style || {};
     ctx.save();
+    // ROTATED (frame.rotate, degrees clockwise, about the frame's centre): the whole frame turns — its fill, clip,
+    // content and border — so a text along a section line or a vertical axis label reads as drawn
+    const rot = +f.rotate && canRotate(f) ? +f.rotate : 0;
+    if (rot) { const cx = b[0] + b[2] / 2, cy = b[1] + b[3] / 2; ctx.translate(cx, cy); ctx.rotate((rot * Math.PI) / 180); ctx.translate(-cx, -cy); }
     if (st.background) { ctx.fillStyle = st.background; ctx.fillRect(b[0], b[1], b[2], b[3]); }
     if (!(kind && kind.overflow)) { ctx.beginPath(); ctx.rect(b[0], b[1], b[2], b[3]); ctx.clip(); }
     if (kind) {
       try { kind.draw(ctx, b, f, e); } catch (err) { drawError(ctx, b, `${f.kind}: ${err.message}`); }
     } else drawError(ctx, b, `no frame kind “${f.kind}”`);
+    if (rot && st.border) { ctx.restore(); ctx.save(); const cx = b[0] + b[2] / 2, cy = b[1] + b[3] / 2; ctx.translate(cx, cy); ctx.rotate((rot * Math.PI) / 180); ctx.translate(-cx, -cy); ctx.strokeStyle = st.borderColor || '#1a1a1a'; ctx.lineWidth = st.borderWidth || 0.25; ctx.strokeRect(b[0], b[1], b[2], b[3]); ctx.restore(); continue; }
     ctx.restore();
     if (st.border) { ctx.save(); ctx.strokeStyle = st.borderColor || '#1a1a1a'; ctx.lineWidth = st.borderWidth || 0.25; ctx.strokeRect(b[0], b[1], b[2], b[3]); ctx.restore(); }
   }
@@ -2354,6 +2587,14 @@ async function exportPDF(docs, opts = {}) {
     const [W, H] = pageDims(doc.page);
     const ctx = pdf.addPage({ width: (W * 72) / 25.4, height: (H * 72) / 25.4 }).getContext('2d', { units: 'mm' });
     renderPage(doc, ctx, { ...env, page: i + 1, pages: list.length, figStart: figAt });
+    // a RUNNING header / footer (opts.running: { header, footer, size }) — markdown with fields ({page} of {pages},
+    // {title}, {date}), in the page's top / bottom margin, the same on every page of a book
+    if (opts.running && (opts.running.header || opts.running.footer)) {
+      const m = doc.page.margins || [10, 10, 10, 10], size = +opts.running.size || 7.5, fenv = { ...env, doc, title: opts.title || doc.title, page: i + 1, pages: list.length };
+      const band = (md, y, h) => { if (!md) return; ctx.save(); drawText(ctx, resolveFields(md, fenv, { id: '_running', content: {} }), [m[3], y, W - m[1] - m[3], h], { size, pad: 0, align: opts.running.align || 'center', color: '#444444' }); ctx.restore(); };
+      band(opts.running.header, Math.max(2, m[0] - size * 0.3528 * 1.6 - 1.5), size * 0.3528 * 1.6);
+      band(opts.running.footer, H - m[2] + 1.5, size * 0.3528 * 1.6);
+    }
     figAt += doc.frames.filter((f) => f.kind === 'text' && /\{fig\}/.test((f.content && f.content.md) || '')).length;   // an atlas numbers on across pages
   }
   // the PDF carries its SOURCE: the compo document (a single page's own, or opts.source), so the
@@ -2382,6 +2623,147 @@ async function exportPNG(doc, opts = {}) {
   g.scale(k, k);
   renderPage(doc, g, { ...env, page: 1, pages: 1 });
   return cv.convertToBlob ? cv.convertToBlob({ type: 'image/png' }) : new Promise((r) => cv.toBlob(r, 'image/png'));
+}
+
+// ── src/svg.js ──
+
+// SVG EXPORT — a page as an SVG document: the frames draw through a 2D context that writes SVG elements instead of
+// pixels (as the PDF export writes PDF operators), so every kind — the host's too — comes out as vectors, editable in
+// Inkscape or Illustrator. Pictures are embedded (data: URLs); text stays text.
+//
+// The context records paths in user units (mm) and writes each with the CURRENT transform as a matrix; a clip opens
+// a <g clip-path>, closed when the save it belongs to is restored. Measuring text needs a real canvas (a browser);
+// without one, an estimate.
+
+
+const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const n = (v) => (Math.abs(v) < 1e-9 ? '0' : String(+(+v).toFixed(4)));
+const mul$svg = (a, b) => [a[0] * b[0] + a[2] * b[1], a[1] * b[0] + a[3] * b[1], a[0] * b[2] + a[2] * b[3], a[1] * b[2] + a[3] * b[3], a[0] * b[4] + a[2] * b[5] + a[4], a[1] * b[4] + a[3] * b[5] + a[5]];
+
+// "bold italic 3.175px "Barlow", sans-serif" → { weight, style, size, family }
+function parseFont$svg(f) {
+  const m = /^\s*((?:(?:italic|oblique|normal|bold|bolder|lighter|\d{3})\s+)*)([\d.]+)px\s+(.+)$/.exec(String(f || ''));
+  if (!m) return { weight: 'normal', style: 'normal', size: 3, family: 'sans-serif' };
+  const pre = m[1];
+  return { weight: /bold|[6-9]00/.test(pre) ? 'bold' : 'normal', style: /italic|oblique/.test(pre) ? 'italic' : 'normal', size: +m[2], family: m[3].replace(/"/g, "'") };
+}
+
+class SvgContext2D {
+  constructor(measure) {
+    this._out = []; this._defs = []; this._ids = 0; this._measure = measure;
+    this._m = [1, 0, 0, 1, 0, 0]; this._stack = []; this._open = 0;
+    Object.assign(this, { fillStyle: '#000000', strokeStyle: '#000000', lineWidth: 1, lineCap: 'butt', lineJoin: 'miter', globalAlpha: 1,
+      font: '10px sans-serif', textAlign: 'start', textBaseline: 'alphabetic', imageSmoothingEnabled: true });
+    this._dash = []; this._path = '';
+    this.acceptsImageData = false;
+  }
+  // ── state ──
+  save() { this._stack.push({ m: [...this._m], dash: [...this._dash], open: this._open, st: { fillStyle: this.fillStyle, strokeStyle: this.strokeStyle, lineWidth: this.lineWidth, lineCap: this.lineCap, lineJoin: this.lineJoin, globalAlpha: this.globalAlpha, font: this.font, textAlign: this.textAlign, textBaseline: this.textBaseline } }); this._open = 0; }
+  restore() {
+    const s = this._stack.pop(); if (!s) return;
+    while (this._open > 0) { this._out.push('</g>'); this._open--; }   // the clips this save opened
+    this._m = s.m; this._dash = s.dash; this._open = s.open; Object.assign(this, s.st);
+  }
+  translate(x, y) { this._m = mul$svg(this._m, [1, 0, 0, 1, x, y]); }
+  scale(x, y) { this._m = mul$svg(this._m, [x, 0, 0, y, 0, 0]); }
+  rotate(a) { const c = Math.cos(a), s = Math.sin(a); this._m = mul$svg(this._m, [c, s, -s, c, 0, 0]); }
+  transform(a, b, c, d, e, f) { this._m = mul$svg(this._m, [a, b, c, d, e, f]); }
+  setTransform(a, b, c, d, e, f) { this._m = typeof a === 'object' && a ? [a.a, a.b, a.c, a.d, a.e, a.f] : [a, b, c, d, e, f]; }
+  resetTransform() { this._m = [1, 0, 0, 1, 0, 0]; }
+  getTransform() { const [a, b, c, d, e, f] = this._m; return { a, b, c, d, e, f }; }
+  setLineDash(d) { this._dash = [...(d || [])]; }
+  getLineDash() { return [...this._dash]; }
+  // ── paths (user units) ──
+  beginPath() { this._path = ''; }
+  moveTo(x, y) { this._path += `M${n(x)} ${n(y)}`; }
+  lineTo(x, y) { this._path += `L${n(x)} ${n(y)}`; }
+  closePath() { this._path += 'Z'; }
+  bezierCurveTo(a, b, c, d, e, f) { this._path += `C${n(a)} ${n(b)} ${n(c)} ${n(d)} ${n(e)} ${n(f)}`; }
+  quadraticCurveTo(a, b, c, d) { this._path += `Q${n(a)} ${n(b)} ${n(c)} ${n(d)}`; }
+  rect(x, y, w, h) { this._path += `M${n(x)} ${n(y)}h${n(w)}v${n(h)}h${n(-w)}Z`; }
+  roundRect(x, y, w, h, r = 0) { const rr = Math.min(Math.abs(+(Array.isArray(r) ? r[0] : r) || 0), Math.abs(w) / 2, Math.abs(h) / 2); if (!rr) return this.rect(x, y, w, h);
+    this._path += `M${n(x + rr)} ${n(y)}H${n(x + w - rr)}A${n(rr)} ${n(rr)} 0 0 1 ${n(x + w)} ${n(y + rr)}V${n(y + h - rr)}A${n(rr)} ${n(rr)} 0 0 1 ${n(x + w - rr)} ${n(y + h)}H${n(x + rr)}A${n(rr)} ${n(rr)} 0 0 1 ${n(x)} ${n(y + h - rr)}V${n(y + rr)}A${n(rr)} ${n(rr)} 0 0 1 ${n(x + rr)} ${n(y)}Z`; }
+  arc(cx, cy, r, a0, a1, ccw = false) { this.ellipse(cx, cy, r, r, 0, a0, a1, ccw); }
+  ellipse(cx, cy, rx, ry, rot, a0, a1, ccw = false) {
+    // sampled into segments: exact enough at print size, and one code path for arcs of any sweep
+    let sweep = a1 - a0;
+    if (!ccw && sweep < 0) sweep = (sweep % (2 * Math.PI)) + 2 * Math.PI; if (ccw && sweep > 0) sweep = (sweep % (2 * Math.PI)) - 2 * Math.PI;
+    if (Math.abs(a1 - a0) >= 2 * Math.PI) sweep = ccw ? -2 * Math.PI : 2 * Math.PI;
+    const k = Math.max(8, Math.ceil(Math.abs(sweep) / (Math.PI / 32))), cr = Math.cos(rot), sr = Math.sin(rot);
+    for (let i = 0; i <= k; i++) {
+      const t = a0 + (sweep * i) / k, px = rx * Math.cos(t), py = ry * Math.sin(t), x = cx + px * cr - py * sr, y = cy + px * sr + py * cr;
+      this._path += `${i === 0 && !this._path ? 'M' : 'L'}${n(x)} ${n(y)}`;   // (an arc after a point joins it, as on a canvas)
+    }
+  }
+  arcTo(x1, y1) { this.lineTo(x1, y1); }
+  _tf() { const [a, b, c, d, e, f] = this._m; return a === 1 && b === 0 && c === 0 && d === 1 && e === 0 && f === 0 ? '' : ` transform="matrix(${[a, b, c, d, e, f].map(n).join(' ')})"`; }
+  _alpha() { return this.globalAlpha < 1 ? this.globalAlpha : null; }
+  _paint(kind) {
+    const style = this[kind === 'fill' ? 'fillStyle' : 'strokeStyle'];
+    if (typeof style !== 'string') return '';
+    const op = this._alpha();
+    if (kind === 'fill') return ` fill="${esc(style)}" stroke="none"${op != null ? ` fill-opacity="${n(op)}"` : ''}`;
+    return ` fill="none" stroke="${esc(style)}" stroke-width="${n(this.lineWidth)}" stroke-linecap="${this.lineCap}" stroke-linejoin="${this.lineJoin}"${this._dash.length ? ` stroke-dasharray="${this._dash.map(n).join(' ')}"` : ''}${op != null ? ` stroke-opacity="${n(op)}"` : ''}`;
+  }
+  fill(rule) { if (this._path) this._out.push(`<path d="${this._path}"${this._paint('fill')}${rule === 'evenodd' ? ' fill-rule="evenodd"' : ''}${this._tf()}/>`); }
+  stroke() { if (this._path) this._out.push(`<path d="${this._path}"${this._paint('stroke')}${this._tf()}/>`); }
+  clip() {
+    const id = `c${++this._ids}`;
+    this._defs.push(`<clipPath id="${id}"><path d="${this._path || 'M0 0'}"${this._tf()}/></clipPath>`);
+    this._out.push(`<g clip-path="url(#${id})">`); this._open++;
+  }
+  fillRect(x, y, w, h) { const p = this._path; this.beginPath(); this.rect(x, y, w, h); this.fill(); this._path = p; }
+  strokeRect(x, y, w, h) { const p = this._path; this.beginPath(); this.rect(x, y, w, h); this.stroke(); this._path = p; }
+  clearRect() { /* a page starts blank; nothing to clear */ }
+  // ── text ──
+  measureText(t) { if (this._measure) { this._measure.font = this.font; return this._measure.measureText(String(t)); } const f = parseFont$svg(this.font); return { width: String(t).length * f.size * 0.52 }; }
+  fillText(t, x, y) { this._text(t, x, y, this._paint('fill')); }
+  strokeText(t, x, y) { this._text(t, x, y, this._paint('stroke')); }
+  _text(t, x, y, paint) {
+    const f = parseFont$svg(this.font), al = this.textAlign;
+    const anchor = al === 'center' ? 'middle' : (al === 'right' || al === 'end') ? 'end' : 'start';
+    const base = { top: 'text-before-edge', hanging: 'hanging', middle: 'central', bottom: 'text-after-edge', ideographic: 'ideographic' }[this.textBaseline];
+    this._out.push(`<text x="${n(x)}" y="${n(y)}" font-family="${esc(f.family)}" font-size="${n(f.size)}"${f.weight !== 'normal' ? ` font-weight="${f.weight}"` : ''}${f.style !== 'normal' ? ` font-style="${f.style}"` : ''} text-anchor="${anchor}"${base ? ` dominant-baseline="${base}"` : ''} xml:space="preserve"${paint}${this._tf()}>${esc(t)}</text>`);
+  }
+  // ── pictures: a data: URL each ──
+  drawImage(src, a, b, c, d, e, f, g, h) {
+    const url = dataUrlOf(src); if (!url) return;
+    const iw = src.naturalWidth || src.videoWidth || src.width, ih = src.naturalHeight || src.videoHeight || src.height;
+    let sx = 0, sy = 0, sw = iw, sh = ih, dx, dy, dw, dh;
+    if (e === undefined) { dx = a; dy = b; dw = c ?? iw; dh = d ?? ih; } else { sx = a; sy = b; sw = c; sh = d; dx = e; dy = f; dw = g; dh = h; }
+    const op = this._alpha();
+    this._out.push(`<svg x="${n(dx)}" y="${n(dy)}" width="${n(dw)}" height="${n(dh)}" viewBox="${n(sx)} ${n(sy)} ${n(sw)} ${n(sh)}" preserveAspectRatio="none" overflow="hidden"${this._tf()}${op != null ? ` opacity="${n(op)}"` : ''}><image width="${n(iw)}" height="${n(ih)}" href="${url}"${this.imageSmoothingEnabled === false ? ' style="image-rendering:pixelated"' : ''}/></svg>`);
+  }
+  // a link: an <a> over the rectangle (the SVG equivalent of the PDF's)
+  link(x, y, w, h, url) { if (!/^(https?:|mailto:)/i.test(String(url))) return false; this._out.push(`<a href="${esc(url)}"><rect x="${n(x)}" y="${n(y)}" width="${n(w)}" height="${n(h)}" fill="transparent"${this._tf()}/></a>`); return true; }
+  createLinearGradient() { return { addColorStop() {} }; }
+  createRadialGradient() { return { addColorStop() {} }; }
+  isPointInPath() { return false; }
+}
+function dataUrlOf(src) {
+  if (!src) return null;
+  if (typeof src.src === 'string' && /^data:/.test(src.src)) return src.src;
+  if (typeof document === 'undefined') return null;
+  try {
+    const iw = src.naturalWidth || src.videoWidth || src.width, ih = src.naturalHeight || src.videoHeight || src.height;
+    const cv = Object.assign(document.createElement('canvas'), { width: iw, height: ih });
+    cv.getContext('2d').drawImage(src, 0, 0);
+    return cv.toDataURL('image/png');
+  } catch { return null; }
+}
+
+/** a compo document → an SVG string (mm units: width/height in mm, viewBox in mm). opts.env as renderPage's */
+async function exportSVG(doc, opts = {}) {
+  const env = opts.env || {};
+  if (env.prepare) await env.prepare(doc, { dpi: opts.dpi || 200, page: 1 });   // a host re-renders its pictures (micro's 3D views)
+  await ensureImages(doc);
+  const [W, H] = pageDims(doc.page);
+  const measure = typeof document !== 'undefined' ? document.createElement('canvas').getContext('2d') : null;
+  const ctx = new SvgContext2D(measure);
+  renderPage(doc, ctx, { ...env, page: 1, pages: 1 });
+  while (ctx._stack.length) ctx.restore();
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${n(W)}mm" height="${n(H)}mm" viewBox="0 0 ${n(W)} ${n(H)}">\n`
+    + `<title>${esc(doc.title || 'figure')}</title>\n${ctx._defs.length ? `<defs>${ctx._defs.join('')}</defs>\n` : ''}${ctx._out.join('\n')}\n</svg>\n`;
 }
 
 // ── src/house.js ──
@@ -2590,6 +2972,7 @@ const ICONS = {
   north: [['path', { d: 'M12 2.5 6.5 20.5 12 16.5Z', ...FILL }], P('M12 2.5l5.5 18-5.5-4-5.5 4Z')],
   text: [P('M4 7V4h16v3'), P('M12 4v16'), P('M9 20h6')],
   shape: [R(3, 3, 11, 11, 1), ['circle', { cx: 15.5, cy: 15.5, r: 5.5 }]],
+  fiducial: [R(3, 3, 18, 18, 1), ['rect', { x: 6, y: 6, width: 4, height: 4, ...FILL }], ['rect', { x: 12, y: 8, width: 6, height: 3, ...FILL }], ['rect', { x: 7, y: 13, width: 3, height: 5, ...FILL }], ['rect', { x: 13, y: 14, width: 4, height: 4, ...FILL }]],
   qr: [R(3, 3, 7, 7, 1), R(14, 3, 7, 7, 1), R(3, 14, 7, 7, 1), ['rect', { x: 5.5, y: 5.5, width: 2, height: 2, ...FILL }], ['rect', { x: 16.5, y: 5.5, width: 2, height: 2, ...FILL }], ['rect', { x: 5.5, y: 16.5, width: 2, height: 2, ...FILL }], P('M14 14h3v3M21 14v7h-4M14 18v3')],
   label: [R(11, 3, 10, 7), P('M14 6.5h4'), P('M11 10l-5 7'), ['circle', { cx: 5, cy: 18.5, r: 1.6, ...FILL }]],
   image: [R(3, 3, 18, 18, 2), ['circle', { cx: 9, cy: 9, r: 2 }], P('m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21')],
@@ -2721,6 +3104,7 @@ const CSS = `
 .compo-side .pair > input { flex: 1 1 0; min-width: 0; width: auto; }
 .compo-side .row input:not([type=checkbox]), .compo-side .row select { box-sizing: border-box; height: 22px; }
 .compo-side textarea { width: 100%; box-sizing: border-box; min-height: 90px; resize: vertical; font-family: var(--compo-mono, monospace); }
+.compo-cells { white-space: pre; overflow-x: auto; tab-size: 12; font-size: 11px; }
 .compo-side .hint { color: var(--compo-dim, var(--dim, #9a9a9a)); font-size: 11px; }
 .compo-fr.locked::after { content: 'locked'; position: absolute; right: 1px; top: 1px; font: 9px/1 system-ui, sans-serif; padding: 1px 3px; background: rgba(40,40,40,0.75); color: #fff; border-radius: 2px; pointer-events: none; }
 .compo-grp { position: absolute; border: 1px dashed #3c82e6; pointer-events: none; box-sizing: border-box; }
@@ -2880,7 +3264,8 @@ function mountEditor(el, doc, opts = {}) {
     grp(...hostBtns, ib('label', 'Add label', '', 'a label pinned to a point in a 3D view, or a direction on a stereonet (the host may supply the point)', () => addLabel()),
       ib('text', 'Add text', '', 'a text frame — a caption (fields: {fig} {page} {date} ${…})', () => add({ kind: 'text', content: { md: '**Figure {fig}.** caption', size: 9 } })),
       ib('shape', 'Add shape', '', 'a rectangle, an ellipse, a line or an arrow — a box round something, a pointer', () => add({ kind: 'shape', box: freeSpot(D, 40, 25), content: { shape: 'rect' } })),
-      ib('qr', 'Add QR code', '', 'a link or a text, scannable from the printed page', () => addQr())),
+      ib('qr', 'Add QR code', '', 'a link or a text, scannable from the printed page', () => addQr()),
+      ib('fiducial', 'Add marker', '', 'an AprilTag (36h11) a camera or scanner can find: a printed page that knows where it is', () => add({ kind: 'fiducial', box: freeSpot(D, 15, 15), content: { family: 'tag36h11', id: D.frames.filter((x) => x.kind === 'fiducial').length } }))),
     sep(), grp(...alignBtns, ...distBtns, ...sizeBtns), sep(), grp(groupBtn, ungroupBtn), sep(), grp(frontBtn, fwdBtn, bwdBtn, backBtn, delBtn),
     sep(), grp(sizeSel, oriSel, customSpan, zoomSel, gridSel, rulersBtn), status);
 
@@ -2912,12 +3297,13 @@ function mountEditor(el, doc, opts = {}) {
       if (f.hidden) continue;                              // hidden: not drawn, not picked (the list still has it)
       const b = f.box;
       const d = h('div', { className: 'compo-fr' + (sel.includes(f.id) ? ' sel' : '') + (f.locked ? ' locked' : ''), title: `${(kindOf(f.kind) && kindOf(f.kind).label) || f.kind}` });
-      d.style.cssText = `left:${b[0] * zoom}px;top:${b[1] * zoom}px;width:${b[2] * zoom}px;height:${b[3] * zoom}px`;
+      d.style.cssText = `left:${b[0] * zoom}px;top:${b[1] * zoom}px;width:${b[2] * zoom}px;height:${b[3] * zoom}px`
+        + (+f.rotate && canRotate(f) ? `;transform:rotate(${+f.rotate}deg);transform-origin:50% 50%` : '');   // the box turns with the frame: clicks land on what is drawn
       d.dataset.id = f.id;
       const bdg = badgeOf(f);
       if (bdg) d.append(h('span', { className: 'compo-badge', textContent: bdg.text, title: bdg.title || bdg.text }));
       overlay.append(d);
-      if (sel.length === 1 && sel[0] === f.id && !f.locked) {
+      if (sel.length === 1 && sel[0] === f.id && !f.locked && !(+f.rotate && canRotate(f))) {   // (a rotated frame: sized in its panel)
         for (const [hx, hy] of [[0, 0], [0.5, 0], [1, 0], [1, 0.5], [1, 1], [0.5, 1], [0, 1], [0, 0.5]]) {
           const k = h('div', { className: 'compo-h' });
           k.style.left = `${b[0] * zoom + hx * b[2] * zoom}px`; k.style.top = `${b[1] * zoom + hy * b[3] * zoom}px`;
@@ -3039,6 +3425,14 @@ function mountEditor(el, doc, opts = {}) {
     };
     insp.append(h('div', { className: 'row' }, h('span', { textContent: 'position' }), h('span', { className: 'ctl' }, num('x', 0), num('y', 1))));
     insp.append(h('div', { className: 'row' }, h('span', { textContent: 'size' }), h('span', { className: 'ctl' }, num('w', 2), num('h', 3))));
+    if (canRotate(f)) {                                     // ROTATION about the centre, degrees clockwise
+      const ri = h('input', { type: 'number', min: -180, max: 180, step: 1, value: +f.rotate || 0, style: 'width:56px', title: 'degrees, clockwise, about the frame\'s centre' });
+      const setR = (v) => commit(() => { const d = ((((+v || 0) + 180) % 360) + 360) % 360 - 180; if (d) f.rotate = +d.toFixed(2); else delete f.rotate; });
+      ri.onchange = () => setR(ri.value);
+      const qb = (t, v) => { const b2 = h('button', { textContent: t, title: v ? `${v}°` : 'upright' }); b2.onclick = () => setR(v); return b2; };
+      insp.append(h('div', { className: 'row' }, h('span', { textContent: 'rotate °' }), h('span', { className: 'ctl' }, ri, qb('0', 0), qb('⟲90', -90), qb('⟳90', 90))));
+      if (+f.rotate) insp.append(h('div', { className: 'hint', textContent: 'a rotated frame is sized here (w, h), not by handles' }));
+    }
     const st = f.style || {};
     const setStyle = (k, v) => commit(() => { f.style = { ...(f.style || {}) }; if (v == null || v === '' || v === false) delete f.style[k]; else f.style[k] = v; });
     const bd = h('input', { type: 'checkbox', checked: !!st.border });
@@ -3109,6 +3503,14 @@ function mountEditor(el, doc, opts = {}) {
       fit.value = f.content.fit || 'contain';
       fit.onchange = () => commit(() => { f.content.fit = fit.value; });
       insp.append(h('div', { className: 'row' }, h('span', { textContent: 'fit' }), h('span', { className: 'ctl' }, fit)));
+      if (!hasProj(f)) {                                    // CROP a plain picture: % trimmed from each edge
+        const cr = Array.isArray(f.content.crop) ? f.content.crop : [0, 0, 0, 0];
+        const ins = ['left', 'top', 'right', 'bottom'].map((t, i) => { const x = h('input', { type: 'number', min: 0, max: 90, step: 1, value: Math.round(cr[i] * 100), title: `% trimmed from the ${t}`, style: 'width:46px' });
+          x.onchange = () => commit(() => { const v = [...(Array.isArray(f.content.crop) ? f.content.crop : [0, 0, 0, 0])]; v[i] = Math.max(0, Math.min(90, +x.value || 0)) / 100; f.content = { ...f.content, crop: v }; if (v.every((q) => !q)) delete f.content.crop; }); return x; });
+        const fitc = h('button', { textContent: 'Fit frame', title: 'make the frame the cropped picture\'s shape (its width kept)' });
+        fitc.onclick = () => commit(() => { const c0 = f.content, v = c0.crop || [0, 0, 0, 0], iw = c0.width || (f._img && f._img.width), ih = c0.height || (f._img && f._img.height); if (iw && ih) f.box[3] = +(f.box[2] * (ih * (1 - v[1] - v[3])) / (iw * (1 - v[0] - v[2]))).toFixed(1); });
+        insp.append(h('div', { className: 'row' }, h('span', { textContent: 'crop %' }), h('span', { className: 'ctl' }, ...ins.map((x, i) => h('span', { className: 'pair' }, h('i', { textContent: '←↑→↓'[i] }), x)), fitc)));
+      }
       if (hasProj(f)) {                                     // a view of 3D space: coordinates on its border
         const tk = h('select', { className: 'compo-ticks', title: 'coordinate ticks on the border (orthographic views), or a grid across' }, ...['off', 'ticks', 'grid'].map((v) => h('option', { value: v, textContent: v })));
         tk.value = f.content.ticks || 'off';
@@ -3116,11 +3518,13 @@ function mountEditor(el, doc, opts = {}) {
         insp.append(h('div', { className: 'row' }, h('span', { textContent: 'coords' }), h('span', { className: 'ctl' }, tk)));
       }
     }
+    if (['text', 'label', 'table', 'shape', 'legend'].includes(f.kind)) stylePanel(f);
     if (f.kind === 'table') tablePanel(f);
     if (f.kind === 'scalebar') scalebarPanel(f);
     if (f.kind === 'north') northPanel(f);
     if (f.kind === 'shape') shapePanel(f);
     if (f.kind === 'qr') qrPanel(f);
+    if (f.kind === 'fiducial') fiducialPanel(f);
     if (f.kind === 'legend') {
       // the look, then each entry: show/hide, colour, label, order. Your edits sit beside the host's data
       // (content.edit / order — kinds.js), so refreshing the legend from the data keeps them
@@ -3545,6 +3949,36 @@ function mountEditor(el, doc, opts = {}) {
   const numIn = (value, attrs = {}) => h('input', { type: 'number', value: value ?? '', style: 'width:64px', ...attrs });
   const selIn = (opts2, value, title = '') => { const s = h('select', { title }, ...opts2.map(([v, t]) => h('option', { value: v, textContent: t }))); s.value = value; return s; };
   const setC = (f, k, v) => commit(() => { f.content = { ...(f.content || {}) }; if (v == null || v === '' || v === false) delete f.content[k]; else f.content[k] = v; });
+  // NAMED STYLES: wear one (its values copied in), make one from this frame, or redefine the one it wears from it —
+  // every frame wearing a style follows its redefinition
+  function stylePanel(f) {
+    const all = stylesOf(D), names = Object.keys(all);
+    const s0 = selIn([['', '— none'], ...names.map((n) => [n, n]), ['+new', '+ new style from this frame…']], f.styleName && all[f.styleName] ? f.styleName : '', 'a named style: change it once and every frame wearing it follows');
+    s0.onchange = async () => {
+      if (s0.value === '+new') {
+        const nm = await askName(); if (!nm) { s0.value = f.styleName || ''; return; }
+        commit(() => { const n = defineStyle(D, nm, styleFromFrame(f)); f.styleName = nm; say(`style “${nm}” — ${n} frame${n === 1 ? '' : 's'} wear it`); });
+      } else commit(() => { if (s0.value) applyStyleToFrame(f, all[s0.value], s0.value); else delete f.styleName; });
+    };
+    const parts = [s0];
+    if (f.styleName && all[f.styleName]) {
+      const differs = JSON.stringify(styleFromFrame(f)) !== JSON.stringify({ content: { ...all[f.styleName].content }, style: { ...all[f.styleName].style } });
+      const up = h('button', { textContent: 'Update style', title: `make “${f.styleName}” this frame's look — every frame wearing it follows`, disabled: !differs });
+      up.onclick = () => commit(() => { const n = defineStyle(D, f.styleName, styleFromFrame(f)); say(`“${f.styleName}” redefined — ${n} frame${n === 1 ? '' : 's'} follow`); });
+      parts.push(up);
+    }
+    insp.append(row('style', ...parts));
+  }
+  // a name for a new style, asked in the side panel (no window.prompt: some hosts forbid it)
+  function askName() {
+    return new Promise((res) => {
+      const inp = h('input', { placeholder: 'style name', spellcheck: false }), ok = h('button', { textContent: 'Make' }), no = h('button', { textContent: '×' });
+      const r = row('name', inp, ok, no); insp.append(r); inp.focus();
+      const done = (v) => { r.remove(); res(v); };
+      inp.onkeydown = (e) => { e.stopPropagation(); if (e.key === 'Enter') done(inp.value.trim() || null); if (e.key === 'Escape') done(null); };
+      ok.onclick = () => done(inp.value.trim() || null); no.onclick = () => done(null);
+    });
+  }
   function pagePanel() {
     const pg = D.page, m = pg.margins || [10, 10, 10, 10];
     insp.append(h('div', { textContent: 'page', style: 'font-weight:bold' }));
@@ -3589,6 +4023,12 @@ function mountEditor(el, doc, opts = {}) {
     const fit = h('button', { textContent: 'Fit height', title: 'make the frame as tall as all its rows' });
     fit.onclick = () => commit(() => { const lh = (+c.size || 7.5) * 0.3528 * 1.55; f.box[3] = +(0.3 + (c.title ? lh * 1.15 : 0) + lh * (1 + (c.rows || []).length) + (c.note ? lh : 0) + 1.2).toFixed(1); });
     insp.append(row('title', ti), row('note', no), row('size (pt)', sz, zb, h('span', { textContent: 'stripes' })), row('decimals', dc, fit));
+    // the CELLS, as tab-separated text (the header first): edit here, or paste over it from a spreadsheet
+    const toTsv = (cc) => [(cc.columns || []).join('\t'), ...(cc.rows || []).map((r) => (r || []).map((v) => (v == null ? '' : String(v))).join('\t'))].join('\n');
+    const cells = h('textarea', { className: 'compo-cells', value: toTsv(c), spellcheck: false, rows: Math.min(10, 2 + (c.rows || []).length), title: 'the table as tab-separated text, the header row first — edit it, or paste cells from a spreadsheet; applied when you leave the box' });
+    cells.onkeydown = (e) => { e.stopPropagation(); if (e.key === 'Tab') { e.preventDefault(); const a = cells.selectionStart; cells.setRangeText('\t', a, cells.selectionEnd, 'end'); } };
+    cells.onchange = () => { const t2 = tableFromTsv(cells.value, ''); if (!t2) { say('a table needs a header row'); return; } commit(() => { f.content = { ...f.content, columns: t2.columns, rows: t2.rows }; }); };
+    insp.append(h('div', { className: 'row' }, h('span', { textContent: 'cells' }), h('span', { className: 'hint', textContent: 'tab-separated, header first (Tab types a tab)' })), cells);
     const cols = (c.columns || []).slice(0, 12);
     if (cols.length) {
       const al = cols.map((name, j) => { const s = selIn([['', 'auto'], ['l', 'left'], ['c', 'centre'], ['r', 'right']], (c.align && c.align[j]) || '', `column “${name}”`);
@@ -3642,6 +4082,15 @@ function mountEditor(el, doc, opts = {}) {
     insp.append(row('text', tx), row('level', ec, cap, h('span', { textContent: 'caption' })));
     if (!hasQrEncoder()) insp.append(h('div', { className: 'hint', textContent: 'this app can print QR codes but not make new ones' }));
   }
+  function fiducialPanel(f) {
+    const c = f.content || {};
+    const id = numIn(c.id || 0, { min: 0, max: 586, step: 1, title: 'the tag\'s id in its family (36h11: 0–586) — each marker on a page a different one' });
+    id.onchange = () => setC(f, 'id', Math.max(0, Math.min(586, Math.round(+id.value || 0))));
+    const cap = h('input', { type: 'checkbox', checked: !!c.caption, title: 'its family and id printed under it' }); cap.onchange = () => setC(f, 'caption', cap.checked);
+    const dup = D.frames.filter((x) => x !== f && x.kind === 'fiducial' && Math.round(+x.content.id || 0) === Math.round(+c.id || 0)).length;
+    insp.append(row('tag id', id, cap, h('span', { textContent: 'caption' })));
+    if (dup) insp.append(h('div', { className: 'hint', textContent: `another marker on this page has id ${c.id || 0} — give each its own, so a scan can tell them apart` }));
+  }
   function addQr() {
     if (!hasQrEncoder()) { say('this app can’t make QR codes'); return; }
     const f = add({ kind: 'qr', box: freeSpot(D, 28, 28), content: { ecc: 'M' } });
@@ -3693,7 +4142,15 @@ function mountEditor(el, doc, opts = {}) {
   root.addEventListener('paste', (e) => {
     if (/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
     const t = e.clipboardData && e.clipboardData.getData('text/plain');
-    if (t && pasteFrames(t)) e.preventDefault();
+    if (t && pasteFrames(t)) { e.preventDefault(); return; }
+    // cells copied from a spreadsheet (tab-separated, a header and a row at least) → a TABLE frame, in free space
+    if (t && /\t/.test(t) && t.replace(/\r/g, '').trim().split('\n').length >= 2) {
+      const c = tableFromTsv(t, ''); if (!c) return;
+      e.preventDefault();
+      const w = Math.min(160, 14 + 18 * c.columns.length), hh = Math.min(180, +(5 + 7.5 * 0.3528 * 1.55 * (c.rows.length + 1.5)).toFixed(1));
+      add({ kind: 'table', box: freeSpot(D, w, hh, { shrink: true }), content: c });
+      say(`a table: ${c.columns.length} columns × ${c.rows.length} rows — edit its cells in its panel`);
+    }
   });
   function copyStyle() {
     const f = frameById(D, sel[0]); if (!f) return;
@@ -3822,6 +4279,14 @@ export {
   snapResize,
   freeSpot,
   LOAD_MIGRATIONS,
+  DEFAULT_STYLES,
+  STYLE_CONTENT_KEYS,
+  stylesOf,
+  styleFromFrame,
+  applyStyleToFrame,
+  defineStyle,
+  TAG36H11,
+  tagCells,
   SANS,
   MONO,
   SERIF,
@@ -3829,6 +4294,7 @@ export {
   registerKind,
   kindOf,
   canPin,
+  canRotate,
   pinToPage,
   pageToPin,
   resolveFields,
@@ -3872,6 +4338,8 @@ export {
   exportPDF,
   exportPNG,
   figureFromPdf,
+  exportSVG,
+  SvgContext2D,
   HOUSE_KEYS,
   FIGURE_KEYS,
   setTemplate,

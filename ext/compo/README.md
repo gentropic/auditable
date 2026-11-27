@@ -59,9 +59,17 @@ const bytes = await exportPDF(ed.getDoc(), { env: { evalField: (expr, vars) => v
 | `scalebar` | `worldPerMm` + `units`, or `of: <frame id>` → that frame's `content.meta`. A view frame states `meta.worldPerPx` (world units per image pixel) so the bar follows the frame's drawn size: resize it and the scale stays true (`frameWorldPerMm(frame)`) |
 | `table` | `columns`, `rows`, `title`, `note`, `size` (pt), `align` (per column `l`/`r`/`c`), `zebra`. Book style: rules above and below, numbers right-aligned, light striping; the type shrinks to fit the width (down to 4.5 pt); rows that don't fit are counted (`… N more rows`). `tableFromTsv(tsv, title)` builds one |
 | `north` | `north` (degrees clockwise from page-up; `null` = the view looks along north: the out-of-the-page sign ⊙ and the words, wrapped and shrunk to the frame), or `of` as above |
+| `shape` | `shape` (`rect`/`ellipse`/`line`/`arrow`), `stroke` (`''` none), `width` (mm), `fill`, `dash`, `radius` (a rect's corners), `dir` (a line's way: `h`/`v`/`down`/`up`), `heads` (`both`) |
+| `qr` | `text`, `ecc` (`L`/`M`/`Q`/`H`), `caption`, `matrix` (stored when the text is set: a saved page prints its code anywhere). Making one needs the host's encoder: `setQrEncoder(toMatrix)` with [@gcu/qr](../qr) |
+| `fiducial` | an AprilTag 36h11 marker: `id` (0–586), `caption`. `TAG36H11` + `tagCells(fam, id)`; checked cell for cell against AprilRobotics' published images |
 | `titleblock` | `rows: [[md, size pt, height mm], …]` — ruled rows stacked in the box (heights scaled to fill it), each drawn as a `text` frame's `md` with its fields, about this frame. Default `TITLE_BLOCK_ROWS` |
 
 `registerKind(name, { label, draw(ctx, box, frame, env) })` adds one. The context is in **mm**, y down.
+
+Any frame but a view of 3D space or a net may be **rotated**: `frame.rotate`, degrees clockwise about its centre
+(`canRotate(frame)`). **Named styles** live in `doc.styles` (`heading`, `caption`, `note` to start): a frame wearing
+one has `frame.styleName`, and `defineStyle(doc, name, styleFromFrame(f))` rewrites every frame that wears it. Text
+takes markdown links, `[words](https://…)`: blue and underlined, and clickable in a PDF (`http(s)` and `mailto` only).
 
 ## Views of 3D space
 
@@ -127,7 +135,9 @@ Also exported: `formatNumber`, `formatDate`, `fieldList`, and the small formatte
   - `env.prepare(doc, { dpi, page })` runs before each page is drawn, so a host can re-render its frames at print resolution.
   - **The PDF carries its source.** A one-page export embeds its document as `<title>.compo.json` (a PDF attachment). An atlas embeds `opts.source` when given, e.g. the figure its pages were made from. `source: false` embeds nothing, and `attach: [{ name, data, mime, description }]` adds more files.
 - `figureFromPdf(bytes)` → `{ doc, name, attachments }`: the figure a compo PDF carries (`doc` is null when it carries none), so the PDF opens again as an editable figure.
+- `running: { header, footer, size, align }` on `exportPDF`: markdown with fields, in the margins of every page (a book's `page {page} of {pages}`).
 - `exportPNG(doc, { dpi, env })` → a PNG `Blob`.
+- `exportSVG(doc, { dpi, env })` → an SVG string, the page drawn through an SVG 2D context: vectors (text stays text) to edit in Inkscape or Illustrator, pictures embedded.
 - `renderPage(doc, ctx, env)` draws onto any 2D context in mm.
 
 ## The editor
@@ -165,3 +175,8 @@ Also exported: `formatNumber`, `formatDate`, `fieldList`, and the small formatte
 
 - `test/compo.test.mjs` (npm test): the model, snapping, fields and formatters, house style, templates, the small-multiples grid, kinds through a PDF page, and atlas export.
 - `test/compo-smoke.mjs` (Playwright): the editor driven by mouse and keys, the insertions (title block, image, small multiples), then the PDF read back by pdf.js and its render probed. Add `--bundled` to run it against `index.js`.
+
+## Third party
+
+`src/apriltag.js` is generated from AprilRobotics' `tag36h11.c` (the AprilTag 36h11 code table and bit layout),
+© 2013–2016 The Regents of the University of Michigan, BSD 2-Clause; its notice is kept in the file and in the bundle.

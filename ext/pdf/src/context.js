@@ -277,6 +277,16 @@ export class PdfContext2D {
   }
 
   // ── images ──
+  /** a LINK over a rectangle of the user space: clickable in a PDF reader (a canvas has no such thing — callers check
+   *  for ctx.link). Only http(s) and mailto: a figure is not a place for javascript: or file links. → true if added */
+  link(x, y, w, h, url) {
+    if (!/^(https?:|mailto:)/i.test(String(url || '').trim())) { this._warn('link', `not a web or mail link: ${String(url).slice(0, 60)}`); return false; }
+    const m = this._m, pt = (px, py) => [m[0] * px + m[2] * py + m[4], m[1] * px + m[3] * py + m[5]];
+    const cs = [pt(x, y), pt(x + w, y), pt(x, y + h), pt(x + w, y + h)];
+    const xs = cs.map((q) => q[0]), ys = cs.map((q) => q[1]);
+    this._page._links.push({ rect: [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)], url: String(url).trim() });
+    return true;
+  }
   drawImage(src, a, b, c, d, e, f, g, h) {
     let sx = 0, sy = 0, sw, sh, dx, dy, dw, dh;
     const iw = src && (src.naturalWidth || src.videoWidth || src.width), ih = src && (src.naturalHeight || src.videoHeight || src.height);

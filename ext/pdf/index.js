@@ -481,6 +481,16 @@ class PdfContext2D {
   }
 
   // ── images ──
+  /** a LINK over a rectangle of the user space: clickable in a PDF reader (a canvas has no such thing — callers check
+   *  for ctx.link). Only http(s) and mailto: a figure is not a place for javascript: or file links. → true if added */
+  link(x, y, w, h, url) {
+    if (!/^(https?:|mailto:)/i.test(String(url || '').trim())) { this._warn('link', `not a web or mail link: ${String(url).slice(0, 60)}`); return false; }
+    const m = this._m, pt = (px, py) => [m[0] * px + m[2] * py + m[4], m[1] * px + m[3] * py + m[5]];
+    const cs = [pt(x, y), pt(x + w, y), pt(x, y + h), pt(x + w, y + h)];
+    const xs = cs.map((q) => q[0]), ys = cs.map((q) => q[1]);
+    this._page._links.push({ rect: [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)], url: String(url).trim() });
+    return true;
+  }
   drawImage(src, a, b, c, d, e, f, g, h) {
     let sx = 0, sy = 0, sw, sh, dx, dy, dw, dh;
     const iw = src && (src.naturalWidth || src.videoWidth || src.width), ih = src && (src.naturalHeight || src.videoHeight || src.height);
@@ -583,12 +593,17 @@ function idHash(chunks) {
   return [a, b, a ^ b, (a + b) >>> 0].map((v) => v.toString(16).padStart(8, '0')).join('');
 }
 
+// a URI as a PDF string: ASCII (anything else percent-encoded), the three specials escaped
+const uriString = (u) => '(' + encodeURI(decodeURISafe(u)).replace(/[\\()]/g, (c) => '\\' + c) + ')';
+function decodeURISafe(u) { try { return decodeURI(u); } catch { return u; } }
+
 class PdfPage {
   constructor(doc, width, height, units) {
     this._doc = doc;
     this.width = width; this.height = height;              // points
     this._ops = [];
     this._fonts = new Map(); this._gss = new Map(); this._images = new Map();
+    this._links = [];                                      // [{ rect: [x0, y0, x1, y1] in page points, url }]
     this._units = units;
   }
   // a 2D context over this page; units 'pt' (default) or 'mm' for the user space
@@ -723,7 +738,9 @@ class PdfDocument {
       if (p._fonts.size) res.push(`/Font << ${[...p._fonts].map(([n, tag]) => `/${tag} ${fontIds[n]} 0 R`).join(' ')} >>`);
       if (p._gss.size) res.push(`/ExtGState << ${[...p._gss.values()].map((g) => `/${g.name} ${gsIds[g.name]} 0 R`).join(' ')} >>`);
       if (p._images.size) res.push(`/XObject << ${[...p._images.keys()].map((n) => `/${n} ${imgIds[n]} 0 R`).join(' ')} >>`);
-      pageIds.push(add({ dict: `<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 ${num(p.width)} ${num(p.height)}] /Resources << ${res.join(' ')} >> /Contents ${cid} 0 R >>` }));
+      // LINKS: an annotation each — a clickable rectangle over what the page drew, no border
+      const annots = p._links.map((l) => add({ dict: `<< /Type /Annot /Subtype /Link /Rect [${l.rect.map(num).join(' ')}] /Border [0 0 0] /A << /S /URI /URI ${uriString(l.url)} >> >>` }));
+      pageIds.push(add({ dict: `<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 ${num(p.width)} ${num(p.height)}] /Resources << ${res.join(' ')} >> /Contents ${cid} 0 R${annots.length ? ` /Annots [${annots.map((i) => `${i} 0 R`).join(' ')}]` : ''} >>` }));
     }
     objs[pagesId - 1] = { dict: `<< /Type /Pages /Kids [${pageIds.map((i) => `${i} 0 R`).join(' ')}] /Count ${pageIds.length} >>` };
     // attachments: an EmbeddedFile stream + a file spec each; the catalog lists them (sorted by name)

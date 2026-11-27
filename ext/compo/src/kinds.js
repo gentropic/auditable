@@ -12,6 +12,7 @@ export const kindOf = (k) => KINDS.get(k) || null;
 
 // ── fields live in fields.js; resolveFields is re-exported from here for the kinds' sake ──
 import { resolveFields, registerField, subjectFrame, formatNumber } from './fields.js';
+import { TAG36H11, tagCells } from './apriltag.js';
 import { hasProj, worldToPage, pageToWorld, drawTicks, imageRect, drawOverlays, drawVector } from './world.js';
 export { resolveFields };
 
@@ -20,6 +21,9 @@ export { resolveFields };
 // null (page mm) and kind.unproject(frame, x, y) → p | null. A stereonet is the second: its points are
 // DIRECTIONS on the sphere, and a label pins to one. The matrix-only things (border ticks, overlays,
 // vector sections) keep asking hasProj. ──
+/** a frame that may be ROTATED: not a view of 3D space nor a net (their coordinates and pinned labels assume an
+ *  upright frame) */
+export function canRotate(f) { return !!f && !hasProj(f) && !canPin(f); }
 export function canPin(f) { if (hasProj(f)) return true; const k = f && kindOf(f.kind); return !!(k && typeof k.project === 'function'); }
 export function pinToPage(f, p) {
   if (hasProj(f)) return worldToPage(f, p);
@@ -35,17 +39,21 @@ const pinRect = (f) => (hasProj(f) ? imageRect(f) : f.box);
 // ── text: paragraphs (blank-line or newline separated), **bold** runs, word wrap to the box ──
 // ── MARKDOWN, the part a figure needs. Blocks, one per line: '# ', '## ', '### ' headings · '- ' / '* '
 // bullets and '1. ' numbered items (hanging indent) · '---' a rule · anything else a paragraph line (a blank
-// line a gap). Inline: **bold**, *italic* or _italic_, `code`. Fields ({date} …) are resolved before this. ──
+// line a gap). Inline: **bold**, *italic* or _italic_, `code`, [words](https://…) — a link, clickable in the PDF.
+// Fields ({date} …) are resolved before this. ──
+const LINK_INK = '#1f5fa8';
 const HEAD = { 1: 1.6, 2: 1.3, 3: 1.12 };
 function runsOf(line) {
   const out = [];
-  const re = /\*\*([^*]+)\*\*|\*([^*\s][^*]*?)\*|(?<![\w])_([^_\s][^_]*?)_(?![\w])|`([^`]+)`/g;
+  const re = /\[(?<lt>[^\]]+)\]\((?<href>(?:https?:|mailto:)[^)\s]+)\)|\*\*(?<b>[^*]+)\*\*|\*(?<i1>[^*\s][^*]*?)\*|(?<![\w])_(?<i2>[^_\s][^_]*?)_(?![\w])|`(?<m>[^`]+)`/g;
   let at = 0, m;
   while ((m = re.exec(line))) {
+    const g = m.groups;
     if (m.index > at) out.push({ t: line.slice(at, m.index) });
-    if (m[1] != null) out.push({ t: m[1], b: true });
-    else if (m[2] != null || m[3] != null) out.push({ t: m[2] != null ? m[2] : m[3], i: true });
-    else out.push({ t: m[4], m: true });
+    if (g.href != null) out.push({ t: g.lt, href: g.href });
+    else if (g.b != null) out.push({ t: g.b, b: true });
+    else if (g.i1 != null || g.i2 != null) out.push({ t: g.i1 != null ? g.i1 : g.i2, i: true });
+    else out.push({ t: g.m, m: true });
     at = m.index + m[0].length;
   }
   if (at < line.length) out.push({ t: line.slice(at) });
@@ -73,7 +81,7 @@ export function layoutText(ctx, text, width, { size = 9, mono = false, serif = f
     let mk = null, indent = 0;
     if (marker) { ctx.font = fontMm(lsize, { mono, serif }); const mw = ctx.measureText(marker + ' ').width; mk = { t: marker, w: mw }; indent = Math.max(mw, lsize * PT * 1.1); }
     const words = [];
-    for (const r of runsOf(para)) for (const t of r.t.split(/(\s+)/)) if (t) words.push({ t, b: r.b || bold, i: r.i, m: r.m, size: lsize });
+    for (const r of runsOf(para)) for (const t of r.t.split(/(\s+)/)) if (t) words.push({ t, b: r.b || bold, i: r.i, m: r.m, size: lsize, ...(r.href ? { href: r.href } : {}) });
     let line = [], lw = 0, first = true;
     const flush = () => {
       while (line.length && /^\s+$/.test(line[line.length - 1].t)) line.pop();
@@ -110,10 +118,18 @@ export function drawText(ctx, text, box, { size = 9, mono = false, serif = false
     let x = x0 + (line.indent || 0);
     // one string per run of the same look (a PDF gets one text object per run, not per word)
     for (let i = 0; i < line.length;) {
-      const k = styleOf(line[i], mono, serif, line.size);
+      const k = styleOf(line[i], mono, serif, line.size), href = line[i].href || null;
       let j = i, t = '', w = 0;
-      while (j < line.length && styleOf(line[j], mono, serif, line.size) === k) { t += line[j].t; w += line[j].w; j++; }
-      ctx.font = k; ctx.fillText(t, x, y); x += w; i = j;
+      while (j < line.length && styleOf(line[j], mono, serif, line.size) === k && (line[j].href || null) === href) { t += line[j].t; w += line[j].w; j++; }
+      ctx.font = k;
+      if (href) {                                            // a link: blue, underlined, and clickable where the page can be (a PDF)
+        ctx.fillStyle = LINK_INK; ctx.fillText(t, x, y);
+        const tw = w - (/\s$/.test(t) ? ctx.measureText(t.match(/\s+$/)[0]).width : 0), ub = y + line.size * PT * 0.95;
+        ctx.strokeStyle = LINK_INK; ctx.lineWidth = Math.max(0.1, line.size * PT * 0.06); ctx.beginPath(); ctx.moveTo(x, ub); ctx.lineTo(x + tw, ub); ctx.stroke();
+        if (typeof ctx.link === 'function') ctx.link(x, y, tw, line.lh, href);
+        ctx.fillStyle = color; ctx.strokeStyle = color;
+      } else ctx.fillText(t, x, y);
+      x += w; i = j;
     }
     y += line.lh;
   }
@@ -146,11 +162,15 @@ registerKind('image', {
       if (c.ticks && c.ticks !== 'off' && hasProj(frame) && iw && ih) drawTicks(ctx, frame, c.ticks);   // the coordinates are known without the picture
       return;
     }
+    // a CROP (content.crop: [left, top, right, bottom] trimmed, as fractions of the picture) — plain pictures only: a
+    // view of 3D space keeps its whole frame (its coordinates, ticks and pinned labels are the frame's)
+    const cr = !hasProj(frame) && Array.isArray(c.crop) && c.crop.length === 4 ? c.crop.map((v) => Math.max(0, Math.min(0.95, +v || 0))) : null;
+    const cw = cr ? iw * Math.max(0.05, 1 - cr[0] - cr[2]) : iw, ch = cr ? ih * Math.max(0.05, 1 - cr[1] - cr[3]) : ih;
     const fit = c.fit || 'contain';
     let w = box[2], h = box[3];
     if (fit !== 'fill') {
-      const k = fit === 'cover' ? Math.max(box[2] / iw, box[3] / ih) : Math.min(box[2] / iw, box[3] / ih);
-      w = iw * k; h = ih * k;
+      const k = fit === 'cover' ? Math.max(box[2] / cw, box[3] / ch) : Math.min(box[2] / cw, box[3] / ch);
+      w = cw * k; h = ch * k;
     }
     const x = box[0] + (box[2] - w) / 2, y = box[1] + (box[3] - h) / 2;
     ctx.imageSmoothingEnabled = c.smooth !== false;
@@ -158,7 +178,10 @@ registerKind('image', {
     if (c.vector && c.vectorOn !== false && hasProj(frame)) drawVector(ctx, frame, x, y, w, h);   // a vector section: cells, then the other layers' transparent render
     else {
       const src = ctx.acceptsImageData && frame._jpeg ? frame._jpeg : img;
-      ctx.drawImage(src, x, y, w, h);
+      if (cr) {                                              // the source rectangle, in the bitmap's own pixels
+        const sw0 = src.naturalWidth || src.width || iw, sh0 = src.naturalHeight || src.height || ih;
+        ctx.drawImage(src, cr[0] * sw0, cr[1] * sh0, sw0 * (cw / iw), sh0 * (ch / ih), x, y, w, h);
+      } else ctx.drawImage(src, x, y, w, h);
     }
     // a picture of 3D space (meta.proj) may wear its coordinates: ticks on the border, or a grid
     if (c.ticks && c.ticks !== 'off' && hasProj(frame)) drawTicks(ctx, frame, c.ticks);
@@ -603,20 +626,47 @@ registerKind('qr', {
     if (u < 0.25) frame._overflow = 'the modules are under 0.25 mm — a phone may not read it; make the frame bigger';
     const x0 = box[0] + (box[2] - side) / 2 + q * u, y0 = box[1] + q * u;
     ctx.fillStyle = '#ffffff'; ctx.fillRect(x0 - q * u, y0 - q * u, side, side);
-    ctx.fillStyle = INK;
-    for (let r = 0; r < n; r++) {                        // runs of dark modules per row: fewer, longer rectangles
-      let c0 = -1;
-      for (let k = 0; k <= n; k++) {
-        const dark = k < n && m[r][k];
-        if (dark && c0 < 0) c0 = k;
-        else if (!dark && c0 >= 0) { ctx.fillRect(x0 + c0 * u, y0 + r * u, (k - c0) * u + 0.005, u + 0.005); c0 = -1; }
-      }
-    }
+    fillCells(ctx, x0, y0, u, n, (r, k) => m[r][k]);
     if (c.caption) {
       ctx.font = fontMm(7); ctx.textAlign = 'center'; ctx.textBaseline = 'top';
       let t = text; while (t.length > 4 && ctx.measureText(t).width > box[2]) t = t.slice(0, -2);
       ctx.fillText(t === text ? t : t + '…', box[0] + box[2] / 2, box[1] + side + 0.5);
     }
+  },
+});
+
+// a grid's dark cells as ONE path, filled once: runs per row as rectangles, but a single fill — its coverage is the
+// union's, so rows leave no anti-aliased seam (separate fills did, in a raster and in a PDF reader), and a PDF gets one
+// path instead of hundreds of rectangles
+function fillCells(ctx, x0, y0, u, n, dark) {
+  ctx.fillStyle = INK; ctx.beginPath();
+  for (let r = 0; r < n; r++) {
+    let c0 = -1;
+    for (let k = 0; k <= n; k++) {
+      const d = k < n && dark(r, k);
+      if (d && c0 < 0) c0 = k;
+      else if (!d && c0 >= 0) { ctx.rect(x0 + c0 * u, y0 + r * u, (k - c0) * u, u); c0 = -1; }
+    }
+  }
+  ctx.fill();
+}
+
+// ── fiducial: an AprilTag (36h11 — BSD-2-Clause, apriltag.js) a camera or a scanner can find and identify: a page
+// that knows where it is in a photo. The cells as vector squares, the white quiet ring included; optionally its
+// family and id under it. content: { family: 'tag36h11', id, caption } ──
+registerKind('fiducial', {
+  label: 'marker (AprilTag)',
+  draw(ctx, box, frame) {
+    const c = frame.content || {}, id = Math.round(+c.id || 0);
+    frame._overflow = undefined;
+    let g;
+    try { g = tagCells(TAG36H11, id); } catch (e) { frame._overflow = e.message; ctx.fillStyle = '#b33'; ctx.font = fontMm(7); ctx.textBaseline = 'top'; ctx.textAlign = 'left'; ctx.fillText(e.message, box[0], box[1]); return; }
+    const capH = c.caption ? 7 * PT * 1.3 : 0, side = Math.min(box[2], box[3] - capH), W = g.length, u = side / W;
+    if (u < 0.6) frame._overflow = 'cells under 0.6 mm — a scan may not find it; make the frame bigger';
+    const x0 = box[0] + (box[2] - side) / 2, y0 = box[1];
+    ctx.fillStyle = '#ffffff'; ctx.fillRect(x0, y0, side, side);
+    fillCells(ctx, x0, y0, u, W, (r, k) => !g[r][k]);
+    if (c.caption) { ctx.font = fontMm(7); ctx.textAlign = 'center'; ctx.textBaseline = 'top'; ctx.fillText(`${TAG36H11.name} · ${id}`, box[0] + box[2] / 2, y0 + side + 0.5); }
   },
 });
 

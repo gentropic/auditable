@@ -6,7 +6,7 @@
 // kept in the project.
 
 import * as bearing from '../../../ext/bearing/index.js';
-import { mountEditor, registerKind, exportPDF, exportPNG, setQrEncoder } from '../../../ext/compo/index.js';
+import { mountEditor, registerKind, exportPDF, exportPNG, exportSVG, setQrEncoder } from '../../../ext/compo/index.js';
 import { Menu } from '../../../ext/menu/index.js';
 import { toMatrix as qrMatrix } from '../../../ext/qr/index.js';
 setQrEncoder(qrMatrix);                                   // a figure's QR frames
@@ -97,6 +97,7 @@ export function createFigures({ project: p, layout, onStatus = () => {} }) {
           } },
           { label: 'Export PDF', title: 'a vector PDF of the page', run: async (e) => { download(new Blob([await exportPDF(e.getDoc(), { title: f.name, creator: 'wuffle' })], { type: 'application/pdf' }), `${fileName(f.name)}.pdf`); } },
           { label: 'Export PNG', title: 'the page as a picture', run: async (e) => { download(await exportPNG(e.getDoc(), { dpi: 200 }), `${fileName(f.name)}.png`); } },
+          { label: 'Export SVG', title: 'the page as SVG: vectors to edit in Inkscape or Illustrator', run: async (e) => { download(new Blob([await exportSVG(e.getDoc())], { type: 'image/svg+xml' }), `${fileName(f.name)}.svg`); } },
         ],
       });
       editors.set(f.id, ed);
@@ -121,5 +122,16 @@ export function createFigures({ project: p, layout, onStatus = () => {} }) {
     if (['figure-removed', 'project-loaded', 'history'].includes(e.type)) for (const id of [...editors.keys()]) if (!p.figure(id)) layout.closeTab(tabId(id));
     if (e.type === 'history') for (const [id, ed] of editors) { const f = p.figure(id); if (f && JSON.stringify(f.doc) !== JSON.stringify(ed.getDoc())) ed.setDoc(f.doc); }   // an undone figure edit shows
   });
-  return { newFigure, open, editors };
+  /** every figure as ONE PDF: a page each, in the project's order, figure numbers running on, a footer naming the
+   *  project and the page. → bytes (and downloads them) */
+  async function exportBook({ download: dl = true } = {}) {
+    if (!p.figures.length) throw new Error('no figures yet — Figure ▸ New figure from the active diagram');
+    const docs = p.figures.map((f) => (editors.get(f.id) ? editors.get(f.id).getDoc() : f.doc));
+    const bytes = await exportPDF(docs, { title: p.name || 'wuffle figures', creator: 'wuffle', source: false,
+      running: { footer: `${(p.name || 'wuffle').replace(/[{}]/g, '')} · page {page} of {pages}` } });
+    if (dl) download(new Blob([bytes], { type: 'application/pdf' }), `${fileName(p.name || 'figures')}-figures.pdf`);
+    onStatus(`${docs.length} figure${docs.length === 1 ? '' : 's'} in one PDF`);
+    return bytes;
+  }
+  return { newFigure, open, editors, exportBook };
 }

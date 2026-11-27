@@ -12,10 +12,10 @@
 // mountEditor(el, doc, { env, onChange(doc), toolbar: [{ label, title, run(editor) }],
 //   frameMenu(frame, editor) → [{ label, run }], inspector(frame, panelEl, editor) }) → editor
 
-import { freeSpot } from './model.js';
+import { freeSpot, stylesOf, styleFromFrame, applyStyleToFrame, defineStyle } from './model.js';
 import { renameFrame, sanitizeId, PAPER, pageDims, addFrame, frameById, removeFrames, bringToFront, sendToBack, bringForward, sendBackward, alignFrames, distributeFrames, matchSize, groupFrames, ungroupFrames, expandGroups, unitsOf, boundsOf, moveInStack, snapBox, snapResize, serializeDocument } from './model.js';
 import { renderPage, ensureImages } from './render.js';
-import { kindOf, canPin, pageToPin, legendEntries, legendKey, layoutText, resolveFields, hasQrEncoder, qrContent } from './kinds.js';
+import { kindOf, canPin, canRotate, pageToPin, legendEntries, legendKey, layoutText, resolveFields, hasQrEncoder, qrContent, tableFromTsv } from './kinds.js';
 import { fieldList, subjectFrame, refFrame } from './fields.js';
 import { hasProj } from './world.js';
 import { iconButton } from './icons.js';
@@ -70,6 +70,7 @@ const CSS = `
 .compo-side .pair > input { flex: 1 1 0; min-width: 0; width: auto; }
 .compo-side .row input:not([type=checkbox]), .compo-side .row select { box-sizing: border-box; height: 22px; }
 .compo-side textarea { width: 100%; box-sizing: border-box; min-height: 90px; resize: vertical; font-family: var(--compo-mono, monospace); }
+.compo-cells { white-space: pre; overflow-x: auto; tab-size: 12; font-size: 11px; }
 .compo-side .hint { color: var(--compo-dim, var(--dim, #9a9a9a)); font-size: 11px; }
 .compo-fr.locked::after { content: 'locked'; position: absolute; right: 1px; top: 1px; font: 9px/1 system-ui, sans-serif; padding: 1px 3px; background: rgba(40,40,40,0.75); color: #fff; border-radius: 2px; pointer-events: none; }
 .compo-grp { position: absolute; border: 1px dashed #3c82e6; pointer-events: none; box-sizing: border-box; }
@@ -229,7 +230,8 @@ export function mountEditor(el, doc, opts = {}) {
     grp(...hostBtns, ib('label', 'Add label', '', 'a label pinned to a point in a 3D view, or a direction on a stereonet (the host may supply the point)', () => addLabel()),
       ib('text', 'Add text', '', 'a text frame — a caption (fields: {fig} {page} {date} ${…})', () => add({ kind: 'text', content: { md: '**Figure {fig}.** caption', size: 9 } })),
       ib('shape', 'Add shape', '', 'a rectangle, an ellipse, a line or an arrow — a box round something, a pointer', () => add({ kind: 'shape', box: freeSpot(D, 40, 25), content: { shape: 'rect' } })),
-      ib('qr', 'Add QR code', '', 'a link or a text, scannable from the printed page', () => addQr())),
+      ib('qr', 'Add QR code', '', 'a link or a text, scannable from the printed page', () => addQr()),
+      ib('fiducial', 'Add marker', '', 'an AprilTag (36h11) a camera or scanner can find: a printed page that knows where it is', () => add({ kind: 'fiducial', box: freeSpot(D, 15, 15), content: { family: 'tag36h11', id: D.frames.filter((x) => x.kind === 'fiducial').length } }))),
     sep(), grp(...alignBtns, ...distBtns, ...sizeBtns), sep(), grp(groupBtn, ungroupBtn), sep(), grp(frontBtn, fwdBtn, bwdBtn, backBtn, delBtn),
     sep(), grp(sizeSel, oriSel, customSpan, zoomSel, gridSel, rulersBtn), status);
 
@@ -261,12 +263,13 @@ export function mountEditor(el, doc, opts = {}) {
       if (f.hidden) continue;                              // hidden: not drawn, not picked (the list still has it)
       const b = f.box;
       const d = h('div', { className: 'compo-fr' + (sel.includes(f.id) ? ' sel' : '') + (f.locked ? ' locked' : ''), title: `${(kindOf(f.kind) && kindOf(f.kind).label) || f.kind}` });
-      d.style.cssText = `left:${b[0] * zoom}px;top:${b[1] * zoom}px;width:${b[2] * zoom}px;height:${b[3] * zoom}px`;
+      d.style.cssText = `left:${b[0] * zoom}px;top:${b[1] * zoom}px;width:${b[2] * zoom}px;height:${b[3] * zoom}px`
+        + (+f.rotate && canRotate(f) ? `;transform:rotate(${+f.rotate}deg);transform-origin:50% 50%` : '');   // the box turns with the frame: clicks land on what is drawn
       d.dataset.id = f.id;
       const bdg = badgeOf(f);
       if (bdg) d.append(h('span', { className: 'compo-badge', textContent: bdg.text, title: bdg.title || bdg.text }));
       overlay.append(d);
-      if (sel.length === 1 && sel[0] === f.id && !f.locked) {
+      if (sel.length === 1 && sel[0] === f.id && !f.locked && !(+f.rotate && canRotate(f))) {   // (a rotated frame: sized in its panel)
         for (const [hx, hy] of [[0, 0], [0.5, 0], [1, 0], [1, 0.5], [1, 1], [0.5, 1], [0, 1], [0, 0.5]]) {
           const k = h('div', { className: 'compo-h' });
           k.style.left = `${b[0] * zoom + hx * b[2] * zoom}px`; k.style.top = `${b[1] * zoom + hy * b[3] * zoom}px`;
@@ -388,6 +391,14 @@ export function mountEditor(el, doc, opts = {}) {
     };
     insp.append(h('div', { className: 'row' }, h('span', { textContent: 'position' }), h('span', { className: 'ctl' }, num('x', 0), num('y', 1))));
     insp.append(h('div', { className: 'row' }, h('span', { textContent: 'size' }), h('span', { className: 'ctl' }, num('w', 2), num('h', 3))));
+    if (canRotate(f)) {                                     // ROTATION about the centre, degrees clockwise
+      const ri = h('input', { type: 'number', min: -180, max: 180, step: 1, value: +f.rotate || 0, style: 'width:56px', title: 'degrees, clockwise, about the frame\'s centre' });
+      const setR = (v) => commit(() => { const d = ((((+v || 0) + 180) % 360) + 360) % 360 - 180; if (d) f.rotate = +d.toFixed(2); else delete f.rotate; });
+      ri.onchange = () => setR(ri.value);
+      const qb = (t, v) => { const b2 = h('button', { textContent: t, title: v ? `${v}°` : 'upright' }); b2.onclick = () => setR(v); return b2; };
+      insp.append(h('div', { className: 'row' }, h('span', { textContent: 'rotate °' }), h('span', { className: 'ctl' }, ri, qb('0', 0), qb('⟲90', -90), qb('⟳90', 90))));
+      if (+f.rotate) insp.append(h('div', { className: 'hint', textContent: 'a rotated frame is sized here (w, h), not by handles' }));
+    }
     const st = f.style || {};
     const setStyle = (k, v) => commit(() => { f.style = { ...(f.style || {}) }; if (v == null || v === '' || v === false) delete f.style[k]; else f.style[k] = v; });
     const bd = h('input', { type: 'checkbox', checked: !!st.border });
@@ -458,6 +469,14 @@ export function mountEditor(el, doc, opts = {}) {
       fit.value = f.content.fit || 'contain';
       fit.onchange = () => commit(() => { f.content.fit = fit.value; });
       insp.append(h('div', { className: 'row' }, h('span', { textContent: 'fit' }), h('span', { className: 'ctl' }, fit)));
+      if (!hasProj(f)) {                                    // CROP a plain picture: % trimmed from each edge
+        const cr = Array.isArray(f.content.crop) ? f.content.crop : [0, 0, 0, 0];
+        const ins = ['left', 'top', 'right', 'bottom'].map((t, i) => { const x = h('input', { type: 'number', min: 0, max: 90, step: 1, value: Math.round(cr[i] * 100), title: `% trimmed from the ${t}`, style: 'width:46px' });
+          x.onchange = () => commit(() => { const v = [...(Array.isArray(f.content.crop) ? f.content.crop : [0, 0, 0, 0])]; v[i] = Math.max(0, Math.min(90, +x.value || 0)) / 100; f.content = { ...f.content, crop: v }; if (v.every((q) => !q)) delete f.content.crop; }); return x; });
+        const fitc = h('button', { textContent: 'Fit frame', title: 'make the frame the cropped picture\'s shape (its width kept)' });
+        fitc.onclick = () => commit(() => { const c0 = f.content, v = c0.crop || [0, 0, 0, 0], iw = c0.width || (f._img && f._img.width), ih = c0.height || (f._img && f._img.height); if (iw && ih) f.box[3] = +(f.box[2] * (ih * (1 - v[1] - v[3])) / (iw * (1 - v[0] - v[2]))).toFixed(1); });
+        insp.append(h('div', { className: 'row' }, h('span', { textContent: 'crop %' }), h('span', { className: 'ctl' }, ...ins.map((x, i) => h('span', { className: 'pair' }, h('i', { textContent: '←↑→↓'[i] }), x)), fitc)));
+      }
       if (hasProj(f)) {                                     // a view of 3D space: coordinates on its border
         const tk = h('select', { className: 'compo-ticks', title: 'coordinate ticks on the border (orthographic views), or a grid across' }, ...['off', 'ticks', 'grid'].map((v) => h('option', { value: v, textContent: v })));
         tk.value = f.content.ticks || 'off';
@@ -465,11 +484,13 @@ export function mountEditor(el, doc, opts = {}) {
         insp.append(h('div', { className: 'row' }, h('span', { textContent: 'coords' }), h('span', { className: 'ctl' }, tk)));
       }
     }
+    if (['text', 'label', 'table', 'shape', 'legend'].includes(f.kind)) stylePanel(f);
     if (f.kind === 'table') tablePanel(f);
     if (f.kind === 'scalebar') scalebarPanel(f);
     if (f.kind === 'north') northPanel(f);
     if (f.kind === 'shape') shapePanel(f);
     if (f.kind === 'qr') qrPanel(f);
+    if (f.kind === 'fiducial') fiducialPanel(f);
     if (f.kind === 'legend') {
       // the look, then each entry: show/hide, colour, label, order. Your edits sit beside the host's data
       // (content.edit / order — kinds.js), so refreshing the legend from the data keeps them
@@ -894,6 +915,36 @@ export function mountEditor(el, doc, opts = {}) {
   const numIn = (value, attrs = {}) => h('input', { type: 'number', value: value ?? '', style: 'width:64px', ...attrs });
   const selIn = (opts2, value, title = '') => { const s = h('select', { title }, ...opts2.map(([v, t]) => h('option', { value: v, textContent: t }))); s.value = value; return s; };
   const setC = (f, k, v) => commit(() => { f.content = { ...(f.content || {}) }; if (v == null || v === '' || v === false) delete f.content[k]; else f.content[k] = v; });
+  // NAMED STYLES: wear one (its values copied in), make one from this frame, or redefine the one it wears from it —
+  // every frame wearing a style follows its redefinition
+  function stylePanel(f) {
+    const all = stylesOf(D), names = Object.keys(all);
+    const s0 = selIn([['', '— none'], ...names.map((n) => [n, n]), ['+new', '+ new style from this frame…']], f.styleName && all[f.styleName] ? f.styleName : '', 'a named style: change it once and every frame wearing it follows');
+    s0.onchange = async () => {
+      if (s0.value === '+new') {
+        const nm = await askName(); if (!nm) { s0.value = f.styleName || ''; return; }
+        commit(() => { const n = defineStyle(D, nm, styleFromFrame(f)); f.styleName = nm; say(`style “${nm}” — ${n} frame${n === 1 ? '' : 's'} wear it`); });
+      } else commit(() => { if (s0.value) applyStyleToFrame(f, all[s0.value], s0.value); else delete f.styleName; });
+    };
+    const parts = [s0];
+    if (f.styleName && all[f.styleName]) {
+      const differs = JSON.stringify(styleFromFrame(f)) !== JSON.stringify({ content: { ...all[f.styleName].content }, style: { ...all[f.styleName].style } });
+      const up = h('button', { textContent: 'Update style', title: `make “${f.styleName}” this frame's look — every frame wearing it follows`, disabled: !differs });
+      up.onclick = () => commit(() => { const n = defineStyle(D, f.styleName, styleFromFrame(f)); say(`“${f.styleName}” redefined — ${n} frame${n === 1 ? '' : 's'} follow`); });
+      parts.push(up);
+    }
+    insp.append(row('style', ...parts));
+  }
+  // a name for a new style, asked in the side panel (no window.prompt: some hosts forbid it)
+  function askName() {
+    return new Promise((res) => {
+      const inp = h('input', { placeholder: 'style name', spellcheck: false }), ok = h('button', { textContent: 'Make' }), no = h('button', { textContent: '×' });
+      const r = row('name', inp, ok, no); insp.append(r); inp.focus();
+      const done = (v) => { r.remove(); res(v); };
+      inp.onkeydown = (e) => { e.stopPropagation(); if (e.key === 'Enter') done(inp.value.trim() || null); if (e.key === 'Escape') done(null); };
+      ok.onclick = () => done(inp.value.trim() || null); no.onclick = () => done(null);
+    });
+  }
   function pagePanel() {
     const pg = D.page, m = pg.margins || [10, 10, 10, 10];
     insp.append(h('div', { textContent: 'page', style: 'font-weight:bold' }));
@@ -938,6 +989,12 @@ export function mountEditor(el, doc, opts = {}) {
     const fit = h('button', { textContent: 'Fit height', title: 'make the frame as tall as all its rows' });
     fit.onclick = () => commit(() => { const lh = (+c.size || 7.5) * 0.3528 * 1.55; f.box[3] = +(0.3 + (c.title ? lh * 1.15 : 0) + lh * (1 + (c.rows || []).length) + (c.note ? lh : 0) + 1.2).toFixed(1); });
     insp.append(row('title', ti), row('note', no), row('size (pt)', sz, zb, h('span', { textContent: 'stripes' })), row('decimals', dc, fit));
+    // the CELLS, as tab-separated text (the header first): edit here, or paste over it from a spreadsheet
+    const toTsv = (cc) => [(cc.columns || []).join('\t'), ...(cc.rows || []).map((r) => (r || []).map((v) => (v == null ? '' : String(v))).join('\t'))].join('\n');
+    const cells = h('textarea', { className: 'compo-cells', value: toTsv(c), spellcheck: false, rows: Math.min(10, 2 + (c.rows || []).length), title: 'the table as tab-separated text, the header row first — edit it, or paste cells from a spreadsheet; applied when you leave the box' });
+    cells.onkeydown = (e) => { e.stopPropagation(); if (e.key === 'Tab') { e.preventDefault(); const a = cells.selectionStart; cells.setRangeText('\t', a, cells.selectionEnd, 'end'); } };
+    cells.onchange = () => { const t2 = tableFromTsv(cells.value, ''); if (!t2) { say('a table needs a header row'); return; } commit(() => { f.content = { ...f.content, columns: t2.columns, rows: t2.rows }; }); };
+    insp.append(h('div', { className: 'row' }, h('span', { textContent: 'cells' }), h('span', { className: 'hint', textContent: 'tab-separated, header first (Tab types a tab)' })), cells);
     const cols = (c.columns || []).slice(0, 12);
     if (cols.length) {
       const al = cols.map((name, j) => { const s = selIn([['', 'auto'], ['l', 'left'], ['c', 'centre'], ['r', 'right']], (c.align && c.align[j]) || '', `column “${name}”`);
@@ -991,6 +1048,15 @@ export function mountEditor(el, doc, opts = {}) {
     insp.append(row('text', tx), row('level', ec, cap, h('span', { textContent: 'caption' })));
     if (!hasQrEncoder()) insp.append(h('div', { className: 'hint', textContent: 'this app can print QR codes but not make new ones' }));
   }
+  function fiducialPanel(f) {
+    const c = f.content || {};
+    const id = numIn(c.id || 0, { min: 0, max: 586, step: 1, title: 'the tag\'s id in its family (36h11: 0–586) — each marker on a page a different one' });
+    id.onchange = () => setC(f, 'id', Math.max(0, Math.min(586, Math.round(+id.value || 0))));
+    const cap = h('input', { type: 'checkbox', checked: !!c.caption, title: 'its family and id printed under it' }); cap.onchange = () => setC(f, 'caption', cap.checked);
+    const dup = D.frames.filter((x) => x !== f && x.kind === 'fiducial' && Math.round(+x.content.id || 0) === Math.round(+c.id || 0)).length;
+    insp.append(row('tag id', id, cap, h('span', { textContent: 'caption' })));
+    if (dup) insp.append(h('div', { className: 'hint', textContent: `another marker on this page has id ${c.id || 0} — give each its own, so a scan can tell them apart` }));
+  }
   function addQr() {
     if (!hasQrEncoder()) { say('this app can’t make QR codes'); return; }
     const f = add({ kind: 'qr', box: freeSpot(D, 28, 28), content: { ecc: 'M' } });
@@ -1042,7 +1108,15 @@ export function mountEditor(el, doc, opts = {}) {
   root.addEventListener('paste', (e) => {
     if (/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
     const t = e.clipboardData && e.clipboardData.getData('text/plain');
-    if (t && pasteFrames(t)) e.preventDefault();
+    if (t && pasteFrames(t)) { e.preventDefault(); return; }
+    // cells copied from a spreadsheet (tab-separated, a header and a row at least) → a TABLE frame, in free space
+    if (t && /\t/.test(t) && t.replace(/\r/g, '').trim().split('\n').length >= 2) {
+      const c = tableFromTsv(t, ''); if (!c) return;
+      e.preventDefault();
+      const w = Math.min(160, 14 + 18 * c.columns.length), hh = Math.min(180, +(5 + 7.5 * 0.3528 * 1.55 * (c.rows.length + 1.5)).toFixed(1));
+      add({ kind: 'table', box: freeSpot(D, w, hh, { shrink: true }), content: c });
+      say(`a table: ${c.columns.length} columns × ${c.rows.length} rows — edit its cells in its panel`);
+    }
   });
   function copyStyle() {
     const f = frameById(D, sel[0]); if (!f) return;

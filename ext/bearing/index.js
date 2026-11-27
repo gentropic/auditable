@@ -2039,7 +2039,7 @@ var Stereonet = class _Stereonet {
         const px = -projR + i * step;
         const x = center + px * scale2;
         const y = center - py * scale2;
-        cb(x - cell / 2, y - cell / 2, cell, fill);
+        cb(x - cell * 0.52, y - cell * 0.52, cell * 1.04, fill);
       }
     }
   }

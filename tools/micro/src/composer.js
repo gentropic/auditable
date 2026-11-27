@@ -28,7 +28,7 @@ import { validate as validateExpr } from '../../../ext/expr/index.js';
 import { figureRefs, retargetDoc, guessLayer, guessColumn } from './retarget.js';
 import { computeResourceTable, numericColsOf, parseFactor } from './analysis.js';
 import { sourceHash, sourceHashSync } from './identity.js';
-import { createDocument, parseDocument, serializeDocument, mountEditor, iconButton, exportPDF, exportPNG, frameById, pageDims, tableFromTsv, subjectFrame, refFrame, figureFromPdf, registerKind, replayDrawList, HOUSE_KEYS, FIGURE_KEYS, setTemplate, docFromTemplate, addTitleBlock as compoTitleBlock, addImageFromFile as compoImageFromFile, multiplesGrid, smallMultiples as compoMultiples, groupDigits, significant, fmtBearing, refreshLegend, freeSpot, setQrEncoder } from '../../../ext/compo/index.js';
+import { createDocument, parseDocument, serializeDocument, mountEditor, iconButton, exportPDF, exportPNG, frameById, pageDims, tableFromTsv, subjectFrame, refFrame, figureFromPdf, registerKind, replayDrawList, HOUSE_KEYS, FIGURE_KEYS, setTemplate, docFromTemplate, addTitleBlock as compoTitleBlock, addImageFromFile as compoImageFromFile, multiplesGrid, smallMultiples as compoMultiples, groupDigits, significant, fmtBearing, refreshLegend, freeSpot, setQrEncoder, exportSVG } from '../../../ext/compo/index.js';
 import { toMatrix as qrMatrix } from '../../../ext/qr/index.js';
 import * as bearingNs from '../../../ext/bearing/index.js';
 import { stereonetCore } from '../../../ext/stereonet/index.js';
@@ -1105,7 +1105,7 @@ export function openComposer(name) {
   top.append(btn('⇄ other data…', 'make this figure with other data: each layer it used → a layer loaded now, missing columns swapped, the views moved with the data — then everything made again', () => openRetargetDialog(_fig)));
   top.append(tplBtn, btn('properties…', 'the figure\'s drawing number and revision, and the project\'s house properties — {prop:key} in captions and the title block', () => openPropsDialog()));
   top.append(sep(), btn('atlas…', 'a routine that renders this figure once per section level into one PDF (Tools → Recipes)', () => makeAtlasRoutine(_fig)));
-  top.append(sp, embLab, dpiSel, ib('download', 'Export PDF', 'the page as a vector PDF (the 3D views re-rendered at the dpi)', () => exportFigurePdf(+dpiSel.value), 'btn-p', 'PDF'), ib('download', 'Export PNG', 'the page as a PNG at the dpi', () => exportFigurePng(+dpiSel.value), '', 'PNG'));
+  top.append(sp, embLab, dpiSel, ib('download', 'Export PDF', 'the page as a vector PDF (the 3D views re-rendered at the dpi)', () => exportFigurePdf(+dpiSel.value), 'btn-p', 'PDF'), ib('download', 'Export PNG', 'the page as a PNG at the dpi', () => exportFigurePng(+dpiSel.value), '', 'PNG'), ib('download', 'Export SVG', 'the page as SVG — vectors to edit in Inkscape or Illustrator (the 3D views as pictures at the dpi)', () => exportFigureSvg(+dpiSel.value), '', 'SVG'));
   const host = document.createElement('div'); host.style.cssText = 'flex:1;min-height:0';
   body.append(top, host);
   _win._fill = fill;
@@ -1315,6 +1315,16 @@ async function exportFigurePdf(dpi) {
     await deliverBlob(new Blob([bytes], { type: 'application/pdf' }), slug(_fig.name) + '.pdf');
     $('#meta').textContent = `composer: ${slug(_fig.name)}.pdf (${(bytes.length / 1024).toFixed(0)} KB)`;
   } catch (e) { $('#meta').textContent = `composer: PDF failed — ${e.message}`; }
+  if (_ed) _ed.render();
+}
+async function exportFigureSvg(dpi) {
+  if (!_fig) return;
+  $('#meta').textContent = `composer: writing “${_fig.name}” as SVG…`;
+  try {
+    const svg = await exportSVG(_fig.doc, { dpi, env: envFor({ prepare: prepareFor(dpi) }) });
+    await deliverBlob(new Blob([svg], { type: 'image/svg+xml' }), slug(_fig.name) + '.svg');
+    $('#meta').textContent = `composer: ${slug(_fig.name)}.svg`;
+  } catch (e) { $('#meta').textContent = `composer: SVG failed — ${e.message}`; }
   if (_ed) _ed.render();
 }
 async function exportFigurePng(dpi) {

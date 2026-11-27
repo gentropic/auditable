@@ -106,7 +106,7 @@ export const LOAD_MIGRATIONS = [];
 export function addFrame(doc, frame) {
   const [W, H] = pageDims(doc.page), m = doc.page.margins || [0, 0, 0, 0];
   const box = frame.box || [m[3] + 10, m[0] + 10, Math.min(120, W - m[1] - m[3] - 20), Math.min(80, H - m[0] - m[2] - 20)];
-  const f = { id: frame.id || (frame.name && ID_RE.test(sanitizeId(frame.name)) && !doc.frames.some((x) => x.id === sanitizeId(frame.name)) ? sanitizeId(frame.name) : newId(doc, idPrefix(frame))), kind: frame.kind, box: box.map(Number), content: frame.content || {}, ...(frame.source ? { source: frame.source } : {}), ...(frame.style ? { style: frame.style } : {}), ...(frame.group ? { group: frame.group } : {}), ...(frame.locked ? { locked: true } : {}), ...(frame.hidden ? { hidden: true } : {}), produced: frame.produced || new Date().toISOString() };
+  const f = { id: frame.id || (frame.name && ID_RE.test(sanitizeId(frame.name)) && !doc.frames.some((x) => x.id === sanitizeId(frame.name)) ? sanitizeId(frame.name) : newId(doc, idPrefix(frame))), kind: frame.kind, box: box.map(Number), content: frame.content || {}, ...(frame.source ? { source: frame.source } : {}), ...(frame.style ? { style: frame.style } : {}), ...(frame.group ? { group: frame.group } : {}), ...(frame.locked ? { locked: true } : {}), ...(frame.hidden ? { hidden: true } : {}), ...(frame.styleName ? { styleName: frame.styleName } : {}), ...(frame.rotate ? { rotate: frame.rotate } : {}), produced: frame.produced || new Date().toISOString() };
   doc.frames.push(f);
   return f;
 }
@@ -294,6 +294,41 @@ function spacingSnap(others, box, k) {
 // bottom, left to right. New frames used to land at the top-left margin, on top of whatever was there (a table on
 // the 3D view, five legends running off the page). → [x, y, w, h] (it may shrink the box to fit the free space
 // it finds only as a last resort: then the page's top-left, as before)
+// ── NAMED STYLES: a document's styles (doc.styles: name → { content: {size, font, color, …}, style: {border,
+// background, …} }), heading / caption / note to start. A frame wearing one (frame.styleName) has its values copied
+// in; redefining a style rewrites every frame that wears it — change the captions once, they all follow ──
+export const STYLE_CONTENT_KEYS = ['size', 'font', 'color', 'align', 'valign', 'lineHeight', 'pad', 'backing', 'leader', 'stroke', 'width', 'dash', 'fill', 'radius'];
+const STYLE_FRAME_KEYS = ['border', 'borderColor', 'borderWidth', 'background'];
+export const DEFAULT_STYLES = {
+  heading: { content: { size: 13, font: 'sans', align: 'left' }, style: {} },
+  caption: { content: { size: 9, font: 'sans', align: 'left', color: '#1a1a1a' }, style: {} },
+  note: { content: { size: 7.5, font: 'sans', color: '#555555' }, style: {} },
+};
+export const stylesOf = (doc) => ({ ...DEFAULT_STYLES, ...(doc.styles || {}) });
+/** the style a frame's values make (its style keys only) */
+export function styleFromFrame(f) {
+  const c = f.content || {}, s = f.style || {}, out = { content: {}, style: {} };
+  for (const k of STYLE_CONTENT_KEYS) if (c[k] !== undefined) out.content[k] = c[k];
+  for (const k of STYLE_FRAME_KEYS) if (s[k] !== undefined) out.style[k] = s[k];
+  return out;
+}
+/** a style's values onto a frame: a shape takes the shape keys, a text the type (the keys that mean the same) */
+export function applyStyleToFrame(f, st, name = null) {
+  const shapeKeys = ['stroke', 'width', 'dash', 'fill', 'radius'];
+  f.content = { ...(f.content || {}) };
+  for (const [k, v] of Object.entries(st.content || {})) if (shapeKeys.includes(k) === (f.kind === 'shape')) f.content[k] = v;
+  const fs = { ...(f.style || {}) }; for (const k of STYLE_FRAME_KEYS) delete fs[k]; Object.assign(fs, st.style || {});
+  if (Object.keys(fs).length) f.style = fs; else delete f.style;
+  if (name) f.styleName = name; else delete f.styleName;
+}
+/** a style defined (or redefined) from a frame's values; every frame wearing it follows → how many changed */
+export function defineStyle(doc, name, st) {
+  doc.styles = { ...(doc.styles || {}), [name]: JSON.parse(JSON.stringify(st)) };
+  let n = 0;
+  for (const f of doc.frames) if (f.styleName === name) { applyStyleToFrame(f, st, name); n++; }
+  return n;
+}
+
 export function freeSpot(doc, w, h, { near = null, gap = 4, ignore = [], shrink = false } = {}) {
   // shrink: a frame that re-flows (a chart, a table) may come smaller rather than land on another — the largest
   // scale (down to half, aspect kept) that finds a free place

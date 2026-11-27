@@ -33,12 +33,17 @@ function idHash(chunks) {
   return [a, b, a ^ b, (a + b) >>> 0].map((v) => v.toString(16).padStart(8, '0')).join('');
 }
 
+// a URI as a PDF string: ASCII (anything else percent-encoded), the three specials escaped
+const uriString = (u) => '(' + encodeURI(decodeURISafe(u)).replace(/[\\()]/g, (c) => '\\' + c) + ')';
+function decodeURISafe(u) { try { return decodeURI(u); } catch { return u; } }
+
 export class PdfPage {
   constructor(doc, width, height, units) {
     this._doc = doc;
     this.width = width; this.height = height;              // points
     this._ops = [];
     this._fonts = new Map(); this._gss = new Map(); this._images = new Map();
+    this._links = [];                                      // [{ rect: [x0, y0, x1, y1] in page points, url }]
     this._units = units;
   }
   // a 2D context over this page; units 'pt' (default) or 'mm' for the user space
@@ -173,7 +178,9 @@ export class PdfDocument {
       if (p._fonts.size) res.push(`/Font << ${[...p._fonts].map(([n, tag]) => `/${tag} ${fontIds[n]} 0 R`).join(' ')} >>`);
       if (p._gss.size) res.push(`/ExtGState << ${[...p._gss.values()].map((g) => `/${g.name} ${gsIds[g.name]} 0 R`).join(' ')} >>`);
       if (p._images.size) res.push(`/XObject << ${[...p._images.keys()].map((n) => `/${n} ${imgIds[n]} 0 R`).join(' ')} >>`);
-      pageIds.push(add({ dict: `<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 ${num(p.width)} ${num(p.height)}] /Resources << ${res.join(' ')} >> /Contents ${cid} 0 R >>` }));
+      // LINKS: an annotation each — a clickable rectangle over what the page drew, no border
+      const annots = p._links.map((l) => add({ dict: `<< /Type /Annot /Subtype /Link /Rect [${l.rect.map(num).join(' ')}] /Border [0 0 0] /A << /S /URI /URI ${uriString(l.url)} >> >>` }));
+      pageIds.push(add({ dict: `<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 ${num(p.width)} ${num(p.height)}] /Resources << ${res.join(' ')} >> /Contents ${cid} 0 R${annots.length ? ` /Annots [${annots.map((i) => `${i} 0 R`).join(' ')}]` : ''} >>` }));
     }
     objs[pagesId - 1] = { dict: `<< /Type /Pages /Kids [${pageIds.map((i) => `${i} 0 R`).join(' ')}] /Count ${pageIds.length} >>` };
     // attachments: an EmbeddedFile stream + a file spec each; the catalog lists them (sorted by name)

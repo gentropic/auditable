@@ -3,7 +3,7 @@
 // page (units mm). Each frame is clipped to its box, its background under it and its border over.
 
 import { pageDims, parseDocument, serializeDocument } from './model.js';
-import { kindOf, fontMm } from './kinds.js';
+import { canRotate, kindOf, fontMm, drawText, resolveFields } from './kinds.js';
 import { PdfDocument, readAttachments } from '../../pdf/src/main.js';
 
 // figure numbers: text frames that say {fig}, numbered in page order (back-to-front), from env.figStart
@@ -20,11 +20,16 @@ export function renderPage(doc, ctx, env = {}) {
     if (f.hidden) continue;
     const kind = kindOf(f.kind), b = f.box, st = f.style || {};
     ctx.save();
+    // ROTATED (frame.rotate, degrees clockwise, about the frame's centre): the whole frame turns — its fill, clip,
+    // content and border — so a text along a section line or a vertical axis label reads as drawn
+    const rot = +f.rotate && canRotate(f) ? +f.rotate : 0;
+    if (rot) { const cx = b[0] + b[2] / 2, cy = b[1] + b[3] / 2; ctx.translate(cx, cy); ctx.rotate((rot * Math.PI) / 180); ctx.translate(-cx, -cy); }
     if (st.background) { ctx.fillStyle = st.background; ctx.fillRect(b[0], b[1], b[2], b[3]); }
     if (!(kind && kind.overflow)) { ctx.beginPath(); ctx.rect(b[0], b[1], b[2], b[3]); ctx.clip(); }
     if (kind) {
       try { kind.draw(ctx, b, f, e); } catch (err) { drawError(ctx, b, `${f.kind}: ${err.message}`); }
     } else drawError(ctx, b, `no frame kind “${f.kind}”`);
+    if (rot && st.border) { ctx.restore(); ctx.save(); const cx = b[0] + b[2] / 2, cy = b[1] + b[3] / 2; ctx.translate(cx, cy); ctx.rotate((rot * Math.PI) / 180); ctx.translate(-cx, -cy); ctx.strokeStyle = st.borderColor || '#1a1a1a'; ctx.lineWidth = st.borderWidth || 0.25; ctx.strokeRect(b[0], b[1], b[2], b[3]); ctx.restore(); continue; }
     ctx.restore();
     if (st.border) { ctx.save(); ctx.strokeStyle = st.borderColor || '#1a1a1a'; ctx.lineWidth = st.borderWidth || 0.25; ctx.strokeRect(b[0], b[1], b[2], b[3]); ctx.restore(); }
   }
@@ -80,6 +85,14 @@ export async function exportPDF(docs, opts = {}) {
     const [W, H] = pageDims(doc.page);
     const ctx = pdf.addPage({ width: (W * 72) / 25.4, height: (H * 72) / 25.4 }).getContext('2d', { units: 'mm' });
     renderPage(doc, ctx, { ...env, page: i + 1, pages: list.length, figStart: figAt });
+    // a RUNNING header / footer (opts.running: { header, footer, size }) — markdown with fields ({page} of {pages},
+    // {title}, {date}), in the page's top / bottom margin, the same on every page of a book
+    if (opts.running && (opts.running.header || opts.running.footer)) {
+      const m = doc.page.margins || [10, 10, 10, 10], size = +opts.running.size || 7.5, fenv = { ...env, doc, title: opts.title || doc.title, page: i + 1, pages: list.length };
+      const band = (md, y, h) => { if (!md) return; ctx.save(); drawText(ctx, resolveFields(md, fenv, { id: '_running', content: {} }), [m[3], y, W - m[1] - m[3], h], { size, pad: 0, align: opts.running.align || 'center', color: '#444444' }); ctx.restore(); };
+      band(opts.running.header, Math.max(2, m[0] - size * 0.3528 * 1.6 - 1.5), size * 0.3528 * 1.6);
+      band(opts.running.footer, H - m[2] + 1.5, size * 0.3528 * 1.6);
+    }
     figAt += doc.frames.filter((f) => f.kind === 'text' && /\{fig\}/.test((f.content && f.content.md) || '')).length;   // an atlas numbers on across pages
   }
   // the PDF carries its SOURCE: the compo document (a single page's own, or opts.source), so the

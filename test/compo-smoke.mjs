@@ -454,6 +454,44 @@ chk('PNG at 96 dpi: 1123 × 794', out.pngW === 1123 && out.pngH === 794 && out.p
   chk(`a PDF with the shape, the QR code, the ticked scale bar, the table: ${(pdf / 1024).toFixed(0)} KB`, pdf > 2000);
 }
 
+// ── batch 6: a spreadsheet pasted as a table and its cells edited; a named style followed; a crop; a rotated frame
+// (its box turns, no handles); a marker; SVG ──
+{
+  const r6 = await page.evaluate(async () => {
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms)), root = document.querySelector('.compo-root');
+    ed.select([]); ed.render(); root.focus();
+    const dt = new DataTransfer(); dt.setData('text/plain', 'hole\tAu\nDH1\t1.2\nDH2\t0.8\n');
+    const n0 = ed.getDoc().frames.length;
+    root.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true })); await wait(100);
+    const t = ed.getDoc().frames.at(-1);
+    const out = { pasted: ed.getDoc().frames.length === n0 + 1 && t.kind === 'table' && t.content.columns.join() === 'hole,Au' && t.content.rows.length === 2 };
+    ed.select([t.id]); ed.render(); await wait(50);
+    const cells = document.querySelector('.compo-cells'); cells.value = 'hole\tAu\tAg\nDH1\t1.2\t5\n'; cells.dispatchEvent(new Event('change', { bubbles: true })); await wait(50);
+    out.cells = JSON.stringify(ed.getDoc().frames.find((x) => x.id === t.id).content);
+    // a named style: two captions wear "caption", one is redefined from, the other follows
+    const a = ed.addFrame({ kind: 'text', box: [20, 120, 60, 10], content: { md: 'a' } }), b = ed.addFrame({ kind: 'text', box: [20, 135, 60, 10], content: { md: 'b' } });
+    for (const id of [a.id, b.id]) { ed.select([id]); ed.render(); await wait(30); const s = document.querySelector('.compo-insp select[title^="a named style"]'); s.value = 'caption'; s.dispatchEvent(new Event('change', { bubbles: true })); await wait(30); }
+    ed.update(a.id, (fr) => { fr.content.size = 12; }); ed.select([a.id]); ed.render(); await wait(30);
+    [...document.querySelectorAll('.compo-insp button')].find((x) => x.textContent === 'Update style').click(); await wait(50);
+    out.style = ed.getDoc().frames.find((x) => x.id === b.id).content.size;
+    // rotation: the panel sets it, the overlay box turns, the handles go
+    ed.select([a.id]); ed.render(); await wait(30);
+    [...document.querySelectorAll('.compo-insp button')].find((x) => x.textContent === '⟳90').click(); await wait(50);
+    const box = document.querySelector(`.compo-fr[data-id="${a.id}"]`);
+    out.rot = [ed.getDoc().frames.find((x) => x.id === a.id).rotate, /rotate\(90deg\)/.test(box.style.transform), document.querySelectorAll('.compo-h').length];
+    // a marker from the toolbar
+    document.querySelector('button[aria-label="Add marker"]').click(); await wait(50);
+    out.marker = ed.getDoc().frames.filter((x) => x.kind === 'fiducial').map((x) => x.content.id);
+    const svg = await C.exportSVG(ed.getDoc());
+    out.svg = [/<svg[^>]*viewBox/.test(svg), (svg.match(/<text/g) || []).length > 5, /rotate|matrix\(/.test(svg)];
+    return out;
+  });
+  chk(`pasted spreadsheet cells → a table (${r6.pasted}); its cells edited as tab-separated text (${r6.cells.includes('"Ag"')})`, r6.pasted && r6.cells.includes('"columns":["hole","Au","Ag"]'));
+  chk(`named style: two captions; one redefines it at 12 pt and the other follows (${r6.style})`, r6.style === 12);
+  chk(`rotated 90° from its panel: the overlay box turns (${r6.rot[1]}), no resize handles (${r6.rot[2]})`, r6.rot[0] === 90 && r6.rot[1] && r6.rot[2] === 0);
+  chk(`a marker from the toolbar (${JSON.stringify(r6.marker)}); an SVG with the page's text and the rotation (${r6.svg})`, r6.marker.length === 1 && r6.svg.every(Boolean));
+}
+
 await browser.close(); server.close();
 console.log(fails ? `\n${fails} FAILED` : '\nPASS');
 process.exit(fails ? 1 : 0);
