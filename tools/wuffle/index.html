@@ -4,6 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>wuffle — geological compass</title>
+<!-- hidden until the boot script below has chosen field or desk: the field compass's markup is static, and a
+     desktop showed it for the moment the desk took to load (a safety timer reveals the page if boot ever stalls) -->
+<style>html.wf-boot body { visibility:hidden; }</style>
+<script>document.documentElement.classList.add('wf-boot'); setTimeout(function () { document.documentElement.classList.remove('wf-boot'); }, 8000);</script>
 <script type="importmap">
 { "imports": {
   "@gcu/bearing": "../../ext/bearing/index.js",
@@ -181,8 +185,10 @@ const q = new URLSearchParams(location.search);
 // a page that carries a project (Save as page) opens on the desk, where the project is
 const carries = !!document.getElementById('wuffle-project');
 const field = q.has('field') || (!q.has('desk') && !carries && (shell.present || matchMedia('(max-width: 720px)').matches));
-if (field) await import('./src/field.js');
-else { const { mountDesk } = await import('./src/desk.js'); mountDesk(); }
+try {
+  if (field) await import('./src/field.js');
+  else { const { mountDesk } = await import('./src/desk.js'); mountDesk(); }
+} finally { document.documentElement.classList.remove('wf-boot'); }
 </script>
 </body>
 </html>
