@@ -464,3 +464,13 @@ test('writeGeoTiff: geographic EPSG codes go in GeographicTypeGeoKey, projected 
     assert.strictEqual(t.geo.crs, crs);
   }
 });
+
+test('a band keeps its name and unit (GDAL_METADATA, as GDAL and QGIS read them)', async () => {
+  const grid = { nx: 3, ny: 2, x0: 100, y0: 200, dx: 10, dy: 10, data: new Float32Array([1, 2, 3, 4, 5, 6]), nodata: -9999 };
+  const bytes = await writeGeoTiff(grid, { bandName: 'FE_max & co <a>', bandUnit: '%' });
+  const g = await gridFromGTiff(await readGTiff(bytes));
+  assert.strictEqual(g.bandName, 'FE_max & co <a>');
+  assert.strictEqual(g.bandUnit, '%');
+  const plain = await gridFromGTiff(await readGTiff(await writeGeoTiff(grid)));
+  assert.strictEqual(plain.bandName, undefined);
+});

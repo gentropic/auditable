@@ -300,6 +300,19 @@ function parseGeo(tags, warnings) {
       if (id === 2048 && !geo.crs && val > 0 && val < 32767) geo.crs = `EPSG:${val}`;
     }
   }
+  // GDAL_METADATA (ascii XML): a band's name (role="description") and unit (role="unittype"), as GDAL and QGIS
+  // write and read them — <Item name="DESCRIPTION" sample="0" role="description">FE_max</Item>
+  const gm = tags.get(42112);
+  if (typeof gm === 'string') {
+    geo.bandNames = []; geo.bandUnits = [];
+    const unesc = (t) => t.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
+    for (const m of gm.matchAll(/<Item(\s[^>]*)>([\s\S]*?)<\/Item>/g)) {
+      const at = (k) => { const x = m[1].match(new RegExp(`(?:^|\\s)${k}="([^"]*)"`)); return x ? x[1] : null; };
+      const sample = at('sample'), role = (at('role') || '').toLowerCase(); if (sample == null) continue;
+      if (role === 'description') geo.bandNames[+sample] = unesc(m[2].trim());
+      else if (role === 'unittype') geo.bandUnits[+sample] = unesc(m[2].trim());
+    }
+  }
   const nd = tags.get(42113);                              // GDAL_NODATA (ascii)
   if (typeof nd === 'string') { const v = parseFloat(nd); if (Number.isFinite(v)) geo.nodata = v; else if (/^\s*[+-]?nan\s*$/i.test(nd)) geo.nodata = NaN; }   // GDAL writes "nan" for float rasters
   return geo;
@@ -479,7 +492,8 @@ async function gridFromGTiff(g, level = 0, band = 0) {
     x0 = g.geo.origin[0] + half * dx;
     y0 = g.geo.origin[1] - half * dy;
   }
-  return { nx: img.width, ny: img.height, data, x0, y0, dx, dy, nodata: g.geo.nodata, crs: g.geo.crs, pixelIsPoint: g.geo.pixelIsPoint, bands: img.samplesPerPixel, band };
+  const bandName = (g.geo.bandNames && g.geo.bandNames[band]) || null, bandUnit = (g.geo.bandUnits && g.geo.bandUnits[band]) || null;
+  return { nx: img.width, ny: img.height, data, x0, y0, dx, dy, nodata: g.geo.nodata, crs: g.geo.crs, pixelIsPoint: g.geo.pixelIsPoint, bands: img.samplesPerPixel, band, ...(bandName ? { bandName } : {}), ...(bandUnit ? { bandUnit } : {}) };
 }
 
 // geo of a level as functions (no pixel decode): world ↔ pixel, cell size
@@ -612,6 +626,7 @@ function applyPredictor3(bytes, rowWidth, rows) {
  *                     become this value
  *   opts.crs          'EPSG:n' — GeoKeys only for a known EPSG code; anything else → none
  *   opts.description  ImageDescription text (e.g. provenance JSON)
+ *   opts.bandName / opts.bandUnit  the band's name and unit, as GDAL_METADATA (42112) — what GDAL and QGIS show
  *   opts.software     Software tag
  *   opts.transform    [a, b, c, d, e, f] — a ROTATED raster's affine over pixel corners
  *                     (X = a·i + b·j + c, Y = d·i + e·j + f): written as ModelTransformation
@@ -666,6 +681,10 @@ async function writeGeoTiff(grid, opts = {}) {
   T(259, 3, [compression === 'deflate' ? 8 : 1]);
   T(262, 3, [1]);                                           // BlackIsZero
   if (opts.description) T(270, 2, String(opts.description));
+  if (opts.bandName || opts.bandUnit) {
+    const esc = (t) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    T(42112, 2, `<GDALMetadata>${opts.bandName ? `<Item name="DESCRIPTION" sample="0" role="description">${esc(opts.bandName)}</Item>` : ''}${opts.bandUnit ? `<Item name="UNITTYPE" sample="0" role="unittype">${esc(opts.bandUnit)}</Item>` : ''}</GDALMetadata>`);
+  }
   if (!tiled) T(273, 4, segs.map(() => 0));                 // StripOffsets — patched below
   T(277, 3, [1]);
   if (!tiled) { T(278, 4, [rowsPerStrip]); T(279, 4, encoded.map((e) => e.length)); }

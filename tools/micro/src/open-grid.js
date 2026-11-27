@@ -79,6 +79,9 @@ async function readAnyGrid(blob, name, displayCache = null, band = 0, worldFile 
       `${level > 0 ? ` · overview ${lvl.width}×${lvl.height} of ${img.width}×${img.height}` : ''}` +
       `${step > 1 ? ` · display ÷${step} (${grid.nx}×${grid.ny})` : ''}`;
     grid.bands = img.samplesPerPixel; grid.band = band; grid._src = { g, level, name, step, band };                  // windowable full-res source (eval + export)
+    // the band's name and unit, where the file says them (GDAL_METADATA — what micro, GDAL and QGIS write)
+    if (g.geo && g.geo.bandNames && g.geo.bandNames[band]) grid.bandName = g.geo.bandNames[band];
+    if (g.geo && g.geo.bandUnits && g.geo.bandUnits[band]) grid.bandUnit = g.geo.bandUnits[band];
     if (rp) { grid.filePlace = rp.place; grid.placeNote = rp.note; grid.form += ` · ${rp.note}`; }
     return grid;
   }
@@ -109,6 +112,7 @@ export async function openGridBlob(blob, name, opts = {}) {
   const localBox = { min: [grid.x0, grid.y0 - (ny - 1) * grid.dy, zmin], max: [grid.x0 + (nx - 1) * grid.dx, grid.y0, zmax] };
   const header = { count: shown, bbox: grid.place ? placeBbox(grid.place, localBox) : localBox };
   const gridDoc = { blob, name, grid, stride, source: grid._src || null, level: grid._src ? grid._src.level : 0, fullRes: !grid._src || (grid._src.level === 0 && grid._src.step === 1), worldFile: opts.worldFile || null };
+  { const Lg1 = layerById(lid); if (Lg1 && grid.bandName && !Lg1.gridValue) Lg1.gridValue = { name: grid.bandName, ...(grid.bandUnit ? { unit: grid.bandUnit } : {}) }; }   // a named band: a named value
   { const Lg0 = layerById(lid); if (Lg0 && Lg0.lineage) { const pp = { ...(Lg0.lineage.params || {}) }; if (Lg0.placement) pp.placement = Lg0.placement; else delete pp.placement; if (grid.placeNote) pp.rasterRotation = grid.placeNote; Lg0.lineage.params = pp; } }
   // "Show as surface": a grid IS a heightfield — triangulate it into a shaded
   // relief mesh coloured by elevation (§17 heightfield-drape Phase 1), instead of

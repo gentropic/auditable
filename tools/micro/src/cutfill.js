@@ -100,6 +100,7 @@ export async function cutFillLayer(res, beforeL, afterL, { name = null } = {}) {
   const lin = mkLineage('cutfill', { before: beforeL.name, after: afterL.name, cell: res.geom.dx, ...(res.limit ? { limit: res.limit, limitArea: +res.limitArea.toPrecision(10) } : {}), cut: +res.cut.toPrecision(8), fill: +res.fill.toPrecision(8) }, [beforeL.lineage, afterL.lineage].filter(Boolean));
   const flatZ = +(res.top + Math.max(1, res.geom.dx)).toFixed(3);
   replaceMade(nm);                                             // a re-run replaces its own earlier Δz layer
+  if (res.dz.place) { res.dz.bandName = 'dz'; res.dz.bandUnit = 'm'; }   // a rotated Δz goes as a GeoTIFF: it carries its name
   const gf = res.dz.place ? await gridLayerFile(res.dz, nm) : { blob: new Blob([writeEsriAsc(res.dz, { decimals: 4 })]), name: nm };   // a rotated Δz: a GeoTIFF that keeps its rotation
   const id = await openBlob(new File([gf.blob], gf.name), gf.name, S.layers.length ? 'add' : 'replace', null, { lineage: lin, asKind: 'surface', flatZ });
   const L = id != null ? layerById(id) : null;

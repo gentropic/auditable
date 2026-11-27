@@ -153,6 +153,7 @@ export async function buildGridExport(L, opts = {}) {
         compression: opts.compression === 'none' ? 'none' : 'deflate', predictor: opts.predictor === 1 ? 1 : 3,
         layout: opts.layout === 'tiles' ? 'tiles' : 'strips', tileSize: 256, nodata: nd, crs,
         description: JSON.stringify({ micro: { lineage } }), software: `micro ${S.build || ''}`.trim(),
+        ...(L.gridValue && L.gridValue.name ? { bandName: L.gridValue.name, ...(L.gridValue.unit ? { bandUnit: L.gridValue.unit } : {}) } : {}),   // the value's name, as GDAL and QGIS read it
       });
       if (!bytes.info.geoKeys) notes.push('no CRS written — the layer carries no EPSG code (the coordinates are kept; set the CRS in your GIS)');
       blob = new Blob([bytes], { type: 'image/tiff' });
@@ -168,7 +169,7 @@ export async function buildGridExport(L, opts = {}) {
 export async function gridLayerFile(grid, name) {
   const base = String(name).replace(/\.(asc|tif|tiff)$/i, '');
   if (!grid.place) return { blob: new Blob([esriAscParts(grid, {}).join('')], { type: 'text/plain' }), name: `${base}.asc` };
-  const bytes = await writeGeoTiff(grid, { transform: gridAffine(grid), nodata: defaultNodata(grid), compression: 'deflate' });
+  const bytes = await writeGeoTiff(grid, { transform: gridAffine(grid), nodata: defaultNodata(grid), compression: 'deflate', ...(grid.bandName ? { bandName: grid.bandName, ...(grid.bandUnit ? { bandUnit: grid.bandUnit } : {}) } : {}) });
   return { blob: new Blob([bytes], { type: 'image/tiff' }), name: `${base}.tif` };
 }
 

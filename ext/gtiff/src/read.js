@@ -139,6 +139,19 @@ function parseGeo(tags, warnings) {
       if (id === 2048 && !geo.crs && val > 0 && val < 32767) geo.crs = `EPSG:${val}`;
     }
   }
+  // GDAL_METADATA (ascii XML): a band's name (role="description") and unit (role="unittype"), as GDAL and QGIS
+  // write and read them — <Item name="DESCRIPTION" sample="0" role="description">FE_max</Item>
+  const gm = tags.get(42112);
+  if (typeof gm === 'string') {
+    geo.bandNames = []; geo.bandUnits = [];
+    const unesc = (t) => t.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
+    for (const m of gm.matchAll(/<Item(\s[^>]*)>([\s\S]*?)<\/Item>/g)) {
+      const at = (k) => { const x = m[1].match(new RegExp(`(?:^|\\s)${k}="([^"]*)"`)); return x ? x[1] : null; };
+      const sample = at('sample'), role = (at('role') || '').toLowerCase(); if (sample == null) continue;
+      if (role === 'description') geo.bandNames[+sample] = unesc(m[2].trim());
+      else if (role === 'unittype') geo.bandUnits[+sample] = unesc(m[2].trim());
+    }
+  }
   const nd = tags.get(42113);                              // GDAL_NODATA (ascii)
   if (typeof nd === 'string') { const v = parseFloat(nd); if (Number.isFinite(v)) geo.nodata = v; else if (/^\s*[+-]?nan\s*$/i.test(nd)) geo.nodata = NaN; }   // GDAL writes "nan" for float rasters
   return geo;
@@ -318,7 +331,8 @@ export async function gridFromGTiff(g, level = 0, band = 0) {
     x0 = g.geo.origin[0] + half * dx;
     y0 = g.geo.origin[1] - half * dy;
   }
-  return { nx: img.width, ny: img.height, data, x0, y0, dx, dy, nodata: g.geo.nodata, crs: g.geo.crs, pixelIsPoint: g.geo.pixelIsPoint, bands: img.samplesPerPixel, band };
+  const bandName = (g.geo.bandNames && g.geo.bandNames[band]) || null, bandUnit = (g.geo.bandUnits && g.geo.bandUnits[band]) || null;
+  return { nx: img.width, ny: img.height, data, x0, y0, dx, dy, nodata: g.geo.nodata, crs: g.geo.crs, pixelIsPoint: g.geo.pixelIsPoint, bands: img.samplesPerPixel, band, ...(bandName ? { bandName } : {}), ...(bandUnit ? { bandUnit } : {}) };
 }
 
 // geo of a level as functions (no pixel decode): world ↔ pixel, cell size

@@ -181,7 +181,7 @@ export async function slopeAspectLayers(L, { what = 'both', name = null } = {}) 
   const flatZ = rng ? +(rng[1] + Math.max(1, g.dx * (g.place ? g.place.s : 1))).toFixed(3) : 0;
   for (const [kind, data, preset, range] of [['slope', r.slope, 'magma', null], ['aspect', r.aspect, 'aspect', [0, 360]]]) {
     if (what !== 'both' && what !== kind) continue;
-    const grid = { nx: g.nx, ny: g.ny, x0: g.x0, y0: g.y0, dx: g.dx, dy: g.dy || g.dx, data, nodata: r.nodata, crs: g.crs || null, form: kind, ...(g.place ? { place: g.place } : {}) };
+    const grid = { nx: g.nx, ny: g.ny, x0: g.x0, y0: g.y0, dx: g.dx, dy: g.dy || g.dx, data, nodata: r.nodata, crs: g.crs || null, form: kind, bandName: kind, bandUnit: '°', ...(g.place ? { place: g.place } : {}) };
     const nm = `${kind}_${base}`;
     const gf = await gridLayerFile(grid, nm);             // .asc, or a GeoTIFF keeping a rotated grid's rotation
     replaceMade(gf.name);

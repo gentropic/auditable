@@ -64,6 +64,7 @@ function applyPredictor3(bytes, rowWidth, rows) {
  *                     become this value
  *   opts.crs          'EPSG:n' — GeoKeys only for a known EPSG code; anything else → none
  *   opts.description  ImageDescription text (e.g. provenance JSON)
+ *   opts.bandName / opts.bandUnit  the band's name and unit, as GDAL_METADATA (42112) — what GDAL and QGIS show
  *   opts.software     Software tag
  *   opts.transform    [a, b, c, d, e, f] — a ROTATED raster's affine over pixel corners
  *                     (X = a·i + b·j + c, Y = d·i + e·j + f): written as ModelTransformation
@@ -118,6 +119,10 @@ export async function writeGeoTiff(grid, opts = {}) {
   T(259, 3, [compression === 'deflate' ? 8 : 1]);
   T(262, 3, [1]);                                           // BlackIsZero
   if (opts.description) T(270, 2, String(opts.description));
+  if (opts.bandName || opts.bandUnit) {
+    const esc = (t) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    T(42112, 2, `<GDALMetadata>${opts.bandName ? `<Item name="DESCRIPTION" sample="0" role="description">${esc(opts.bandName)}</Item>` : ''}${opts.bandUnit ? `<Item name="UNITTYPE" sample="0" role="unittype">${esc(opts.bandUnit)}</Item>` : ''}</GDALMetadata>`);
+  }
   if (!tiled) T(273, 4, segs.map(() => 0));                 // StripOffsets — patched below
   T(277, 3, [1]);
   if (!tiled) { T(278, 4, [rowsPerStrip]); T(279, 4, encoded.map((e) => e.length)); }
