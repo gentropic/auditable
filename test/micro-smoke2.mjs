@@ -10764,6 +10764,41 @@ if (take()) {
   await pg.close();
 }
 
+// ── COLOURING BY ELEVATION gets the histogram (props-style.js; Arthur 2026-11-26: "a bug for every layer"):
+// it returned before the histogram, which only channels / ratios / calc columns had. Now elevation is the
+// layer's z column (blocks: scan it), or, with no z column, its positions (drillholes by their desurvey) or
+// its node values (a grid) — the same histogram, breaks and quantiles. A heightfield SURFACE colours in
+// surfaces.js and has no ramp section (the grid "elevation from" work).
+if (take()) {
+  const pg = await mkPage('sm2elevhist');
+  const r = await pg.evaluate(async () => {
+    const M = window._micro, out = {};
+    await M.openSiteC();
+    const rows = []; for (let rr = 0; rr < 20; rr++) { const row = []; for (let c = 0; c < 30; c++) row.push((100 + c * 2 + (19 - rr)).toFixed(1)); rows.push(row.join(' ')); }
+    const asc = ['ncols 30', 'nrows 20', 'xllcorner 612000', 'yllcorner 7784000', 'cellsize 20', 'NODATA_value -9999', ...rows, ''].join(String.fromCharCode(10));
+    await M.openBlob(new Blob([asc]), 'plain-grid.asc', 'add');
+    (await M.mod('props.js')).setPropTab('style');
+    for (const L of M.layers()) {
+      if (L.gridSurface) continue;
+      M.setActiveLayer(L.id); M.setLayerColorSel(L, 'elev'); M.openProps();
+      await new Promise((z) => setTimeout(z, 150));
+      const btn = document.querySelector('#ppBody .pp-scan');
+      const label = btn ? btn.textContent : null;
+      if (btn) { btn.click(); for (let i = 0; i < 80 && !document.querySelector('#ppBody .pp-hist'); i++) await new Promise((z) => setTimeout(z, 150)); }
+      const c = document.querySelector('#ppBody .pp-hist');
+      let bars = 0;
+      if (c) { const g = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; for (let x = 4; x < c.width; x += 10) { for (let y = c.height - 2; y > 14; y--) if (g[(y * c.width + x) * 4 + 3] > 0) { bars++; break; } } }
+      out[L.kind === 'blocks' ? 'blocks' : L.dh ? 'drillholes' : /plain-grid/.test(L.name) ? 'grid' : L.name] = { colorSel: L.colorSel, label, hist: !!c, bars };
+    }
+    return out;
+  });
+  chk(`colouring by elevation gets a histogram: blocks by scanning their z column (${JSON.stringify(r.blocks)}), drillholes from their desurveyed positions (${JSON.stringify(r.drillholes)}), a grid from its nodes (${JSON.stringify(r.grid)})`,
+    r.blocks && r.blocks.colorSel === 'elev' && /scan ZC/.test(r.blocks.label) && r.blocks.bars > 20
+    && r.drillholes && /read the elevations/.test(r.drillholes.label) && r.drillholes.bars > 10
+    && r.grid && /read the elevations/.test(r.grid.label) && r.grid.bars >= 3);
+  await pg.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

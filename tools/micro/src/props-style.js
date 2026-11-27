@@ -27,7 +27,8 @@ import { menuXY } from './menu.js';
 import { ruleDefaultColor } from './columns.js';
 import { pushUndo } from './undo.js';
 import { fmtStat } from './analysis-ui.js';
-import { histogramFromCentroids, quantileFromCentroids, cdfFromCentroids } from '../../../ext/sluice/index.js';
+import { histogramFromCentroids, quantileFromCentroids, cdfFromCentroids, tdigest } from '../../../ext/sluice/index.js';
+import { layerPositions } from './bygeom.js';
 import { microPrompt } from './prompts.js';
 const $ = (s) => document.querySelector(s);
 
@@ -494,6 +495,30 @@ function renderNoDataRow(body, L) {
   ct.textContent = stat && stat.nulls != null ? `${stat.nulls.toLocaleString()} blank` : '';
   body.appendChild(mkRow('no data', chip, lab, ct));
 }
+// ── elevations without a z column: from the positions (a grid: its node values) → a column-scan-shaped
+// summary under ELEV_KEY, so the histogram, its breaks and the quantiles work as for any column ──
+const ELEV_KEY = '@elevation';
+export async function elevationStats(L) {
+  const td = tdigest(), st = td.create();
+  let n = 0, min = Infinity, max = -Infinity;
+  const take = (arr, count = arr.length) => {
+    const a = arr.length === count ? arr : arr.subarray ? arr.subarray(0, count) : arr.slice(0, count);
+    td.pushArray(st, a);
+    for (let i = 0; i < a.length; i++) { const v = a[i]; if (Number.isFinite(v)) { n++; if (v < min) min = v; if (v > max) max = v; } }
+  };
+  const g = L.docs && L.docs.gridDoc && L.docs.gridDoc.grid;
+  if (g && g.data) {
+    const nd = g.nodata, a = new Float64Array(g.data.length);
+    for (let i = 0; i < a.length; i++) { const v = g.data[i]; a[i] = v === nd ? NaN : v; }
+    take(a);
+  } else {
+    for await (const part of layerPositions(L)) take(part.z, part.count);
+  }
+  const r = td.result(st);
+  L._colStats = { ...(L._colStats || {}), [ELEV_KEY]: { kind: 'num', n, min, max, centroids: r.centroids, total: r.count } };
+  return L._colStats[ELEV_KEY];
+}
+
 function renderRampSection(body, L) {
   const cfg = rampCfgOf(L) || { preset: 'viridis', classed: false, breaks: [] };
   const sec = document.createElement('div'); sec.className = 'pp-sec'; sec.textContent = 'ramp';
@@ -553,10 +578,25 @@ function renderRampSection(body, L) {
       bIn.value = (((rampCfgOf(L) || {}).breaks) || []).slice().sort((a, b2) => a - b2).map((v) => fmtStat(v)).join(', ');
     };
   }
-  if (!isChan && !isRatio && !isCalc) return;              // the histogram is scan-fed — channels, ratio and calc columns have stats
+  // the histogram is scan-fed: a channel, a ratio or a calc column has its own; ELEVATION is the layer's z
+  // column (world z, the units the elevation ramp runs in) — a grid's nodes, a model's centroids, a cloud's points
   const h = layerTableHeader(L);
-  const colName = isRatio ? String(selv).slice(6) : isCalc ? String(selv).slice(5) : (h && h.columns[+String(selv).slice(5)]);
+  const zi = h && h.mapping ? h.mapping.z : null;
+  // a layer with no z column (a grid's nodes, drillholes placed by their desurvey, a mesh's vertices) reads
+  // its elevations from its positions instead, into the same summary a column scan makes
+  const colName = isElev ? (zi != null && zi >= 0 && h.columns[zi] ? h.columns[zi] : ELEV_KEY) : isRatio ? String(selv).slice(6) : isCalc ? String(selv).slice(5) : (h && h.columns[+String(selv).slice(5)]);
   const stat = colName && L._colStats && L._colStats[colName];
+  if ((!stat || stat.kind !== 'num' || !stat.centroids) && colName === ELEV_KEY) {
+    const btn = document.createElement('button'); btn.className = 'pp-scan';
+    btn.textContent = 'read the elevations for their histogram + quantiles';
+    btn.onclick = async () => {
+      btn.disabled = true; btn.textContent = 'reading the elevations…';
+      try { await elevationStats(L); } catch (e) { btn.textContent = `couldn't read them — ${e.message}`; return; }
+      renderProps();
+    };
+    body.appendChild(btn);
+    return;
+  }
   if (!stat || stat.kind !== 'num' || !stat.centroids) {
     const btn = document.createElement('button'); btn.className = 'pp-scan';
     btn.textContent = `scan ${colName || 'the channel'} for its histogram + quantiles`;
