@@ -383,6 +383,77 @@ const near = (a, b, t = 40) => a.slice(0, 3).every((v, i) => Math.abs(v - b[i]) 
 chk('PDF render: the image lands in its frame (centre orange, edge blue)', near(out.centre, [0xe0, 0xa0, 0x20]) && near(out.edge, [0x30, 0x70, 0xc0]), `${out.centre} / ${out.edge}`);
 chk('PNG at 96 dpi: 1123 × 794', out.pngW === 1123 && out.pngH === 794 && out.pngType === 'image/png', `${out.pngW}×${out.pngH}`);
 
+// ── batch 3 (2026-11-26): the table / scale bar / north / shape / QR panels, the page panel, copy & paste of
+// frames and of a style, a run of nudges as ONE undo step, and a PDF with all of it ──
+{
+  await page.evaluate(async (bundled) => {
+    const Q = await import('/ext/qr/index.js'); C.setQrEncoder(Q.toMatrix);
+    const d = ed.getDoc();
+    C.addFrame(d, { kind: 'table', box: [20, 170, 90, 20], content: { title: 'Grades', columns: ['zone', 'Au g/t'], rows: [['A', '1.23456'], ['B', '0.5'], ['C', '2']] } });
+    ed.setDoc ? ed.setDoc(d) : ed.render();
+  }, bundled);
+  await page.waitForTimeout(150);
+  const setVal = (sel, v) => page.evaluate(([sel, v]) => { const e = document.querySelector(sel); e.value = v; e.dispatchEvent(new Event('change', { bubbles: true })); return true; }, [sel, v]);
+  const selectId = (kind) => page.evaluate((kind) => { const f = ed.getDoc().frames.find((x) => x.kind === kind); ed.select([f.id]); ed.render(); return f.id; }, kind);
+  // table: decimals through its panel
+  await selectId('table');
+  const tPanel = await page.evaluate(() => document.querySelector('.compo-insp').textContent);
+  await setVal('.compo-insp input[placeholder="as is"]', '1');
+  const dec = await page.evaluate(() => ed.getDoc().frames.find((x) => x.kind === 'table').content.decimals);
+  chk(`table panel: title · note · decimals · align (${/decimals/.test(tPanel) && /align/.test(tPanel)}), decimals → ${dec}`, /decimals/.test(tPanel) && /align/.test(tPanel) && dec === 1);
+  // scale bar: ticks + the ratio
+  await selectId('scalebar');
+  await page.evaluate(() => { const s = [...document.querySelectorAll('.compo-insp select')].find((x) => [...x.options].some((o) => o.value === 'ticks')); s.value = 'ticks'; s.dispatchEvent(new Event('change', { bubbles: true })); });
+  await page.evaluate(() => { const c = [...document.querySelectorAll('.compo-insp input[type=checkbox]')].find((x) => /1 : 2/.test(x.title)); c.checked = true; c.dispatchEvent(new Event('change', { bubbles: true })); });
+  const sb = await page.evaluate(() => ed.getDoc().frames.find((x) => x.kind === 'scalebar').content);
+  chk(`scale bar panel: style ${sb.style}, ratio ${sb.ratio}`, sb.style === 'ticks' && sb.ratio === true);
+  // shape + QR from the toolbar
+  await page.click('button[aria-label="Add shape"]'); await page.waitForTimeout(100);
+  await page.evaluate(() => { const s = [...document.querySelectorAll('.compo-insp select')].find((x) => [...x.options].some((o) => o.value === 'arrow')); s.value = 'arrow'; s.dispatchEvent(new Event('change', { bubbles: true })); });
+  await page.click('button[aria-label="Add QR code"]'); await page.waitForTimeout(150);
+  await setVal('.compo-insp input[placeholder^="https"]', 'https://gentropic.org/wuffle');
+  const sq = await page.evaluate(() => { const d = ed.getDoc(); const s = d.frames.find((x) => x.kind === 'shape'), q = d.frames.find((x) => x.kind === 'qr');
+    const overlap = (a, b) => a[0] < b[0] + b[2] && b[0] < a[0] + a[2] && a[1] < b[1] + b[3] && b[1] < a[1] + a[3];
+    return { shape: s && s.content.shape, qr: q && q.content.matrix && q.content.matrix.length, free: !!s && !!q && !d.frames.some((x) => x !== s && overlap(s.box, x.box)) && !d.frames.some((x) => x !== q && overlap(q.box, x.box)) }; });
+  chk(`shape (${sq.shape}) and QR (${sq.qr} modules a side) added from the toolbar, each in free space (${sq.free})`, sq.shape === 'arrow' && sq.qr >= 21 && sq.free);
+  // the page panel: nothing selected
+  await page.evaluate(() => { ed.select([]); ed.render(); });
+  await setVal('.compo-insp select[title^="the typeface of every"]', 'serif');
+  const pf = await page.evaluate(() => ed.getDoc().page.font);
+  chk(`page panel (nothing selected): margins, paper, the page's typeface → ${pf}`, pf === 'serif');
+  // copy & paste frames (the clipboard carries them as JSON), then a style
+  const cp = await page.evaluate(() => {
+    const d = ed.getDoc(), t = d.frames.find((x) => x.kind === 'text'); ed.select([t.id]); ed.render();
+    const root = document.querySelector('.compo-root'), dt = new DataTransfer();
+    root.dispatchEvent(new ClipboardEvent('copy', { clipboardData: dt, bubbles: true, cancelable: true }));
+    const text = dt.getData('text/plain'), n0 = ed.getDoc().frames.length;
+    const dt2 = new DataTransfer(); dt2.setData('text/plain', text);
+    root.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt2, bubbles: true, cancelable: true }));
+    const d2 = ed.getDoc(), pasted = d2.frames[d2.frames.length - 1];
+    return { head: text.split('\n')[0], n0, n1: d2.frames.length, moved: pasted.box[0] - t.box[0], id: pasted.id !== t.id };
+  });
+  chk(`copy → “${cp.head}” on the clipboard; paste → ${cp.n0}→${cp.n1} frames, offset ${cp.moved} mm, a new id (${cp.id})`, cp.head === 'compo-frames/1' && cp.n1 === cp.n0 + 1 && cp.moved === 5 && cp.id);
+  await page.evaluate(() => { const d = ed.getDoc(), t = d.frames.find((x) => x.kind === 'text'); t.content.color = '#aa2200'; t.content.size = 14; t.style = { border: true }; ed.select([t.id]); ed.render(); document.querySelector('.compo-root').focus(); });
+  await page.keyboard.press('Control+Alt+KeyC');
+  await page.evaluate(() => { const d = ed.getDoc(), l = d.frames.filter((x) => x.kind === 'text').at(-1); ed.select([l.id]); ed.render(); document.querySelector('.compo-root').focus(); });
+  await page.keyboard.press('Control+Alt+KeyV');
+  const ps = await page.evaluate(() => { const l = ed.getDoc().frames.filter((x) => x.kind === 'text').at(-1); return [l.content.color, l.content.size, !!(l.style && l.style.border)]; });
+  chk(`copy style (⌘⌥C) → paste style (⌘⌥V): ${ps}`, ps[0] === '#aa2200' && ps[1] === 14 && ps[2]);
+  // a run of nudges = one undo
+  const nu = await page.evaluate(() => { const f = ed.getDoc().frames.find((x) => x.kind === 'shape'); ed.select([f.id]); ed.render(); document.querySelector('.compo-root').focus(); return f.box[0]; });
+  for (let k = 0; k < 4; k++) await page.keyboard.press('ArrowRight');
+  const after = await page.evaluate(() => ed.getDoc().frames.find((x) => x.kind === 'shape').box[0]);
+  await page.keyboard.press('Control+z');
+  const back = await page.evaluate(() => ed.getDoc().frames.find((x) => x.kind === 'shape').box[0]);
+  chk(`four nudges (${nu} → ${after}) undone by ONE ⌘Z (→ ${back})`, Math.abs(after - nu - 2) < 1e-9 && Math.abs(back - nu) < 1e-9);
+  // multi-select: what they share
+  const ms = await page.evaluate(() => { const ids = ed.getDoc().frames.filter((x) => x.kind === 'text').map((x) => x.id); ed.select(ids); ed.render(); return document.querySelector('.compo-insp').textContent; });
+  chk('several text frames selected: their size, colour, typeface together', /size \(pt\)/.test(ms) && /typeface/.test(ms));
+  // all of it into a PDF
+  const pdf = await page.evaluate(async () => { const b = await C.exportPDF(ed.getDoc(), { title: 't' }); return b.length; });
+  chk(`a PDF with the shape, the QR code, the ticked scale bar, the table: ${(pdf / 1024).toFixed(0)} KB`, pdf > 2000);
+}
+
 await browser.close(); server.close();
 console.log(fails ? `\n${fails} FAILED` : '\nPASS');
 process.exit(fails ? 1 : 0);

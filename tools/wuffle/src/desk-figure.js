@@ -3,7 +3,9 @@
 // net is a 'stereonet' frame, not a picture) and Export PNG. Figures are kept in the project.
 
 import * as bearing from '../../../ext/bearing/index.js';
-import { mountEditor, registerKind, exportPDF, exportPNG } from '../../../ext/compo/index.js';
+import { mountEditor, registerKind, exportPDF, exportPNG, setQrEncoder } from '../../../ext/compo/index.js';
+import { toMatrix as qrMatrix } from '../../../ext/qr/index.js';
+setQrEncoder(qrMatrix);                                   // a figure's QR frames
 import { stereonetCore } from '../../../ext/stereonet/index.js';
 import { buildFigure, refreshFigure } from './figure.js';
 import { sceneLayers } from './layers.js';

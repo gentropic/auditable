@@ -28,7 +28,9 @@ import { validate as validateExpr } from '../../../ext/expr/index.js';
 import { figureRefs, retargetDoc, guessLayer, guessColumn } from './retarget.js';
 import { computeResourceTable, numericColsOf, parseFactor } from './analysis.js';
 import { sourceHash, sourceHashSync } from './identity.js';
-import { createDocument, parseDocument, serializeDocument, mountEditor, iconButton, exportPDF, exportPNG, frameById, pageDims, tableFromTsv, subjectFrame, refFrame, figureFromPdf, registerKind, replayDrawList, HOUSE_KEYS, FIGURE_KEYS, setTemplate, docFromTemplate, addTitleBlock as compoTitleBlock, addImageFromFile as compoImageFromFile, multiplesGrid, smallMultiples as compoMultiples, groupDigits, significant, fmtBearing, refreshLegend, freeSpot } from '../../../ext/compo/index.js';
+import { createDocument, parseDocument, serializeDocument, mountEditor, iconButton, exportPDF, exportPNG, frameById, pageDims, tableFromTsv, subjectFrame, refFrame, figureFromPdf, registerKind, replayDrawList, HOUSE_KEYS, FIGURE_KEYS, setTemplate, docFromTemplate, addTitleBlock as compoTitleBlock, addImageFromFile as compoImageFromFile, multiplesGrid, smallMultiples as compoMultiples, groupDigits, significant, fmtBearing, refreshLegend, freeSpot, setQrEncoder } from '../../../ext/compo/index.js';
+import { toMatrix as qrMatrix } from '../../../ext/qr/index.js';
+setQrEncoder(qrMatrix);                                   // the composer's QR frames (a link to the data, the report)
 import { chartFigure } from './analysis-ui.js';
 import { colorChoices, colorSelFor } from './color.js';
 import { rerunToolRecipe } from './tools.js';

@@ -1769,6 +1769,7 @@ if (target === 'micro') {
     '../../ext/bearing/index.js': '#bearing',       // @gcu/bearing — the stereonet + Fisher statistics (also clar's, by bare name)
     '../../ext/omf1/index.js': '#omf1',             // @gcu/omf1 — Open Mining Format v1 (zero-dep; inflate on the platform)
     '../../ext/compo/index.js': '#compo',           // @gcu/compo — the composer page (with @gcu/pdf inlined)
+    '../../ext/qr/index.js': '#qr',                 // @gcu/qr — the composer's QR frames (encode only)
     '../../ext/plot/index.js': '#plot',             // @gcu/plot — the analysis windows' charts (on screen, and vector in the composer)
     '../../ext/archive/src/zipstream.js': '#zipstream', // @gcu/archive's ranged/streaming Zip64 module alone — project backups
     '../../ext/shp/index.js': '#shp',               // @gcu/shp — shapefiles in and out (strings & polygons, src/poly-io.js)
@@ -1804,6 +1805,7 @@ if (target === 'micro') {
     ['clar',      'ext/clar/index.js'],                // @gcu/clar — structural analysis on an outcrop mesh (src/structure.js)
     ['omf1',     'ext/omf1/index.js'],                // @gcu/omf1 — .omf v1 projects → layers (src/omf.js)
     ['compo',     'ext/compo/index.js'],               // @gcu/compo — figure / page composer → PDF (src/composer.js)
+    ['qr',        'ext/qr/index.js'],                  // @gcu/qr — QR frames in the composer (setQrEncoder)
     ['plot',      'ext/plot/index.js'],                // @gcu/plot — analysis charts (src/analysis-ui.js chartFigure)
     ['zipstream', 'ext/archive/src/zipstream.js'],     // zero-import module: the src file IS the shippable one (no fflate, no WASM)
     ['shp',       'ext/shp/index.js'],                 // @gcu/shp — .shp/.shx/.dbf/.prj (node ext/shp/build.js)
@@ -2062,7 +2064,7 @@ if (target === 'wuffle') {
     // src/ modules import ext packages by relative path (so Node tests resolve them): the same bundled copy
     '../../../ext/bearing/index.js': '#bearing', '../../../ext/leadacid/index.js': '#leadacid', '../../../ext/wmm/index.js': '#wmm',
     // the desk workbench's GCU components
-    '../../../ext/rails/index.js': '#rails', '../../../ext/menu/index.js': '#menu', '../../../ext/dialog/index.js': '#dialog', '../../../ext/loom/index.js': '#loom', '../../../ext/stereonet/index.js': '#stereonet', '../../../ext/compo/index.js': '#compo',
+    '../../../ext/rails/index.js': '#rails', '../../../ext/menu/index.js': '#menu', '../../../ext/dialog/index.js': '#dialog', '../../../ext/loom/index.js': '#loom', '../../../ext/stereonet/index.js': '#stereonet', '../../../ext/compo/index.js': '#compo', '../../../ext/qr/index.js': '#qr',
     // the console: a terminal, the geas shell, its filesystem
     '../../../ext/term/index.js': '#term', '../../../ext/geas/index.js': '#geas', '../../../ext/vfs/index.js': '#vfs',
     // the project file: archive's self-contained streaming zip (not all of @gcu/archive — geas carries its own copy)
@@ -2077,6 +2079,7 @@ if (target === 'wuffle') {
     ['loom', 'ext/loom/index.js'],
     ['stereonet', 'ext/stereonet/index.js'],
     ['compo', 'ext/compo/index.js'],
+    ['qr', 'ext/qr/index.js'],
     ['term', 'ext/term/index.js'],
     ['geas', 'ext/geas/index.js'],
     ['vfs', 'ext/vfs/index.js'],

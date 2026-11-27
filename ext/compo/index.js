@@ -951,7 +951,8 @@ registerKind('text', {
   draw(ctx, box, frame, env) {
     const c = frame.content || {};
     const text = resolveFields(c.md || '', env, frame);
-    const used = drawText(ctx, text, box, { size: +c.size || 9, mono: !!c.mono || c.font === 'mono', serif: c.font === 'serif', pad: c.pad ?? 1,
+    const fam = c.font || (c.mono ? 'mono' : (env.doc && env.doc.page && env.doc.page.font) || 'sans');   // the page's typeface by default
+    const used = drawText(ctx, text, box, { size: +c.size || 9, mono: fam === 'mono', serif: fam === 'serif', pad: c.pad ?? 1,
       align: c.align || 'left', color: c.color || INK, lineHeight: +c.lineHeight || 1.25, valign: c.valign || 'top' });
     frame._overflow = used > box[3] + 0.3 ? 'the text runs past the bottom of the frame' : undefined;   // the editor badges it
   },
@@ -1019,7 +1020,8 @@ registerKind('label', {
     }
     // the words' own extent: the backing hugs them (a box-sized backing whited out what the label points at),
     // and the leader leaves from it
-    const font = { mono: c.font === 'mono', serif: c.font === 'serif' };
+    const fam0 = c.font || (env.doc && env.doc.page && env.doc.page.font) || 'sans';
+    const font = { mono: fam0 === 'mono', serif: fam0 === 'serif' };
     const lay = layoutText(ctx, text, box[2] - 2 * pad, { size, ...font });
     const tw = Math.min(box[2], Math.max(0, ...lay.lines.map((l) => l.reduce((s, w) => s + w.w, 0) + (l.indent || 0))) + 2 * pad);
     const th = Math.min(box[3], lay.lines.reduce((s, l) => s + (l.gap || 0) + l.lh, 0) + 2 * pad);
@@ -1041,7 +1043,7 @@ registerKind('label', {
     ctx.save();
     ctx.beginPath(); ctx.rect(box[0], box[1], box[2], box[3]); ctx.clip();
     if (c.backing !== false) { ctx.fillStyle = 'rgba(255,255,255,0.85)'; ctx.fillRect(hug[0], hug[1], hug[2], hug[3]); }
-    const used = drawText(ctx, text, box, { size, pad, color: c.color || INK, mono: c.font === 'mono', serif: c.font === 'serif', align: c.align || 'left' });
+    const used = drawText(ctx, text, box, { size, pad, color: c.color || INK, mono: font.mono, serif: font.serif, align: c.align || 'left' });
     frame._overflow = used > box[3] + 0.3 ? 'the label’s text runs past its box' : undefined;
     ctx.restore();
   },
@@ -1194,18 +1196,43 @@ const metaOf = (frame, doc) => {
 };
 registerKind('scalebar', {
   label: 'scale bar',
+  // content: { length (world units; else the nicest that fits 80 % of the frame), segments (4), style:
+  //   'alternating' (the default) | 'line' | 'ticks', ratio (true: "1 : 2 500" under it, for a view in metres) }
   draw(ctx, box, frame, env) {
-    const meta = metaOf(frame, env.doc), wpm = +meta.worldPerMm;
+    const c = frame.content || {}, meta = metaOf(frame, env.doc), wpm = +meta.worldPerMm;
     const units = meta.units || 'm';
     ctx.fillStyle = INK; ctx.font = fontMm(8); ctx.textBaseline = 'top'; ctx.textAlign = 'left';
+    frame._overflow = undefined;
     if (!(wpm > 0)) { ctx.fillText('no scale (a perspective view)', box[0], box[1]); return; }
-    const len = niceBelow(box[2] * 0.8 * wpm), barMm = len / wpm, n = 4, h = Math.min(2, box[3] * 0.25);
-    const x0 = box[0] + (box[2] - barMm) / 2, y0 = box[1] + 0.5;
-    for (let i = 0; i < n; i++) { ctx.fillStyle = i % 2 ? '#ffffff' : INK; ctx.fillRect(x0 + (i * barMm) / n, y0, barMm / n, h); }
-    ctx.strokeStyle = INK; ctx.lineWidth = 0.2; ctx.strokeRect(x0, y0, barMm, h);
-    ctx.fillStyle = INK; ctx.textAlign = 'center';
+    const len = +c.length > 0 ? +c.length : niceBelow(box[2] * 0.8 * wpm), barMm = len / wpm;
+    const n = Math.max(1, Math.min(10, Math.round(+c.segments || 4))), style = c.style || 'alternating';
+    if (barMm > box[2] + 0.01) frame._overflow = `${len} ${units} is ${barMm.toFixed(1)} mm at this scale — wider than the frame`;
+    const h = Math.min(2, box[3] * 0.25), x0 = box[0] + Math.max(0, (box[2] - barMm) / 2), y0 = box[1] + 0.5;
     const fmt = (v) => (v >= 1000 && units === 'm' ? `${+(v / 1000).toPrecision(3)} km` : `${+v.toPrecision(4)} ${units}`);
-    ctx.fillText('0', x0, y0 + h + 0.8); ctx.fillText(fmt(len), x0 + barMm, y0 + h + 0.8);
+    const fmtBare = (v) => (len >= 1000 && units === 'm' ? `${+(v / 1000).toPrecision(3)}` : `${+v.toPrecision(4)}`);
+    ctx.strokeStyle = INK; ctx.lineWidth = 0.2;
+    let labelY = y0 + h + 0.8;
+    if (style === 'alternating') {
+      for (let i = 0; i < n; i++) { ctx.fillStyle = i % 2 ? '#ffffff' : INK; ctx.fillRect(x0 + (i * barMm) / n, y0, barMm / n, h); }
+      ctx.strokeRect(x0, y0, barMm, h);
+      ctx.fillStyle = INK; ctx.textAlign = 'center';
+      ctx.fillText('0', x0, labelY); ctx.fillText(fmt(len), x0 + barMm, labelY);
+    } else {
+      // a line with a tick at each segment: 'line' labels its ends, 'ticks' every tick
+      const yl = y0 + h;
+      ctx.lineWidth = 0.3; ctx.beginPath(); ctx.moveTo(x0, yl); ctx.lineTo(x0 + barMm, yl); ctx.stroke();
+      ctx.lineWidth = 0.2;
+      for (let i = 0; i <= n; i++) { const x = x0 + (i * barMm) / n, t = i === 0 || i === n ? h : h * 0.55; ctx.beginPath(); ctx.moveTo(x, yl); ctx.lineTo(x, yl - t); ctx.stroke(); }
+      ctx.fillStyle = INK; ctx.textAlign = 'center'; labelY = yl + 0.8;
+      if (style === 'ticks') {
+        for (let i = 0; i <= n; i++) ctx.fillText(i === n ? fmt(len) : fmtBare((len * i) / n), x0 + (i * barMm) / n, labelY);
+      } else { ctx.fillText('0', x0, labelY); ctx.fillText(fmt(len), x0 + barMm, labelY); }
+    }
+    if (c.ratio && (units === 'm' || units === 'metres' || units === 'meters')) {
+      const den = Math.round(wpm * 1000);                // 1 mm of paper = wpm metres = wpm·1000 mm of ground
+      const nice = den >= 100 ? +den.toPrecision(3) : den;
+      ctx.textAlign = 'center'; ctx.fillText(`1 : ${String(nice).replace(/\B(?=(\d{3})+(?!\d))/g, ' ')}`   /* a thin space groups the digits */, x0 + barMm / 2, labelY + 8 * PT * 1.2);
+    }
   },
 });
 registerKind('north', {
@@ -1237,11 +1264,27 @@ registerKind('north', {
       return;
     }
     const bearing = Number.isFinite(+meta.north) ? +meta.north : 0;   // degrees clockwise from page-up to north
+    const look = (frame.content && frame.content.style) || 'arrow';      // 'arrow' | 'needle' | 'star' | 'line'
     const cx = box[0] + box[2] / 2, cy = box[1] + box[3] / 2 + 1.5, r = Math.min(box[2], box[3] - 4) / 2;
     ctx.save(); ctx.translate(cx, cy); ctx.rotate((bearing * Math.PI) / 180);
-    ctx.fillStyle = INK; ctx.beginPath(); ctx.moveTo(0, -r); ctx.lineTo(r * 0.45, r * 0.7); ctx.lineTo(0, r * 0.35); ctx.closePath(); ctx.fill();
-    ctx.fillStyle = '#ffffff'; ctx.strokeStyle = INK; ctx.lineWidth = 0.15;
-    ctx.beginPath(); ctx.moveTo(0, -r); ctx.lineTo(-r * 0.45, r * 0.7); ctx.lineTo(0, r * 0.35); ctx.closePath(); ctx.fill(); ctx.stroke();
+    const half = (w, tip, tail, dark) => {               // one half of a blade, from the tip to the tail
+      ctx.beginPath(); ctx.moveTo(0, tip); ctx.lineTo(w, 0); ctx.lineTo(0, tail); ctx.closePath();
+      if (dark) { ctx.fillStyle = INK; ctx.fill(); } else { ctx.fillStyle = '#ffffff'; ctx.fill(); ctx.strokeStyle = INK; ctx.lineWidth = 0.15; ctx.stroke(); }
+    };
+    if (look === 'needle') {                             // a slim needle: north dark, south light
+      half(r * 0.16, -r, 0, true); half(-r * 0.16, -r, 0, false); half(r * 0.16, r, 0, false); half(-r * 0.16, r, 0, true);
+    } else if (look === 'star') {                        // a compass star: four points, north the longest
+      for (const [ang, len] of [[0, r], [90, r * 0.62], [180, r * 0.62], [270, r * 0.62]]) {
+        ctx.save(); ctx.rotate((ang * Math.PI) / 180); half(len * 0.2, -len, 0, true); half(-len * 0.2, -len, 0, false); ctx.restore();
+      }
+    } else if (look === 'line') {                        // a plain line with a head
+      ctx.strokeStyle = INK; ctx.lineWidth = 0.3; ctx.beginPath(); ctx.moveTo(0, r); ctx.lineTo(0, -r); ctx.stroke();
+      ctx.fillStyle = INK; ctx.beginPath(); ctx.moveTo(0, -r); ctx.lineTo(r * 0.22, -r * 0.55); ctx.lineTo(-r * 0.22, -r * 0.55); ctx.closePath(); ctx.fill();
+    } else {
+      ctx.fillStyle = INK; ctx.beginPath(); ctx.moveTo(0, -r); ctx.lineTo(r * 0.45, r * 0.7); ctx.lineTo(0, r * 0.35); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#ffffff'; ctx.strokeStyle = INK; ctx.lineWidth = 0.15;
+      ctx.beginPath(); ctx.moveTo(0, -r); ctx.lineTo(-r * 0.45, r * 0.7); ctx.lineTo(0, r * 0.35); ctx.closePath(); ctx.fill(); ctx.stroke();
+    }
     ctx.fillStyle = INK; ctx.font = fontMm(9, { bold: true }); ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
     ctx.fillText('N', 0, -r - 0.4);
     ctx.restore();
@@ -1259,7 +1302,11 @@ const cellText = (v) => (v == null ? '' : typeof v === 'number' ? formatNumber(v
 registerKind('table', {
   label: 'table',
   draw(ctx, box, frame, env) {
-    const c = frame.content || {}, cols = (c.columns || []).map(String), rows = (c.rows || []).map((r) => (r || []).map(cellText));
+    const c = frame.content || {}, cols = (c.columns || []).map(String);
+    // decimals: every number shown to that many places (null: as it came — float noise trimmed)
+    const dec = c.decimals != null && c.decimals !== '' && Number.isFinite(+c.decimals) ? Math.max(0, Math.min(8, +c.decimals)) : null;
+    const asCell = (v) => { if (dec == null) return cellText(v); const t = v == null ? '' : String(v).trim(); return t !== '' && /^[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?$/.test(t) ? (+t).toFixed(dec) : cellText(v); };
+    const rows = (c.rows || []).map((r) => (r || []).map(asCell));
     if (!cols.length) return;
     const pad = 1.1, avail = box[2] - 0.5;
     const isNum = cols.map((_, j) => (c.align && c.align[j]) ? c.align[j] === 'r' : rows.length > 0 && rows.every((r) => r[j] === '' || NUMERIC.test(r[j].trim())));
@@ -1308,6 +1355,97 @@ registerKind('table', {
     if (note) { ctx.fillStyle = '#555'; ctx.font = fontMm(size - 0.5); ctx.textAlign = 'left'; ctx.fillText(note, x0, y + lh * 0.55); }
   },
 });
+// ── shape: a rectangle (rounded or not), an ellipse, a line or an arrow across the frame ──
+// content: { shape: 'rect' | 'ellipse' | 'line' | 'arrow', stroke (colour, '' none), width (mm), fill (colour, '' none),
+//   dash (bool), radius (mm, a rect's corners), dir: a line's way across the box — 'h' | 'v' | 'down' (↘) | 'up' (↗),
+//   arrow head at the end (and at the start too with heads: 'both') }
+registerKind('shape', {
+  label: 'shape',
+  draw(ctx, box, frame) {
+    const c = frame.content || {}, kind = c.shape || 'rect', lw = +c.width > 0 ? +c.width : 0.35;
+    const stroke = c.stroke === '' ? null : c.stroke || INK, fill = c.fill || null;
+    ctx.lineWidth = lw; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    if (stroke) ctx.strokeStyle = stroke;
+    if (ctx.setLineDash) ctx.setLineDash(c.dash ? [lw * 4, lw * 3] : []);
+    const i = lw / 2, x = box[0] + i, y = box[1] + i, w = Math.max(0, box[2] - lw), hh = Math.max(0, box[3] - lw);
+    if (kind === 'rect' || kind === 'ellipse') {
+      ctx.beginPath();
+      if (kind === 'ellipse') ctx.ellipse(x + w / 2, y + hh / 2, w / 2, hh / 2, 0, 0, 2 * Math.PI);
+      else if (+c.radius > 0 && ctx.roundRect) ctx.roundRect(x, y, w, hh, Math.min(+c.radius, w / 2, hh / 2));
+      else ctx.rect(x, y, w, hh);
+      if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+      if (stroke) ctx.stroke();
+    } else {
+      const d = c.dir || 'h';
+      const [ax, ay, bx, by] = d === 'v' ? [x + w / 2, y, x + w / 2, y + hh] : d === 'down' ? [x, y, x + w, y + hh] : d === 'up' ? [x, y + hh, x + w, y] : [x, y + hh / 2, x + w, y + hh / 2];
+      const head = (tx, ty, fx, fy) => {                 // a filled head at (tx, ty), pointing away from (fx, fy)
+        const L = Math.hypot(tx - fx, ty - fy) || 1, ux = (tx - fx) / L, uy = (ty - fy) / L, s = Math.max(1.6, lw * 5);
+        ctx.setLineDash && ctx.setLineDash([]);
+        ctx.beginPath(); ctx.moveTo(tx, ty); ctx.lineTo(tx - ux * s - uy * s * 0.45, ty - uy * s + ux * s * 0.45); ctx.lineTo(tx - ux * s + uy * s * 0.45, ty - uy * s - ux * s * 0.45); ctx.closePath();
+        ctx.fillStyle = stroke || INK; ctx.fill();
+        return s;
+      };
+      let sx = ax, sy = ay, ex = bx, ey = by;
+      if (kind === 'arrow') {                            // the line stops short of the heads, so they stay sharp
+        const L = Math.hypot(bx - ax, by - ay) || 1, ux = (bx - ax) / L, uy = (by - ay) / L, s = Math.max(1.6, lw * 5) * 0.8;
+        ex = bx - ux * s; ey = by - uy * s; if (c.heads === 'both') { sx = ax + ux * s; sy = ay + uy * s; }
+      }
+      if (stroke) { if (ctx.setLineDash) ctx.setLineDash(c.dash ? [lw * 4, lw * 3] : []); ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(ex, ey); ctx.stroke(); }
+      if (kind === 'arrow') { head(bx, by, ax, ay); if (c.heads === 'both') head(ax, ay, bx, by); }
+    }
+    if (ctx.setLineDash) ctx.setLineDash([]);
+  },
+});
+
+// ── QR code: a link or a text, scannable from the printed page (vector squares; the quiet zone inside the frame) ──
+// content: { text, ecc: 'L' | 'M' | 'Q' | 'H', caption (bool: the text under it), matrix: ['0101…', …] }
+// The MATRIX is stored with the frame — computed when the text is set (qrContent), by the encoder the host
+// registers (setQrEncoder: @gcu/qr's toMatrix). So a saved figure prints its code in any host, encoder or not.
+let _qrEncoder = null;
+function setQrEncoder(fn) { _qrEncoder = typeof fn === 'function' ? fn : null; }
+const hasQrEncoder = () => !!_qrEncoder;
+/** a QR frame's content with its matrix made for this text (throws when the host has no encoder, or it's too long) */
+function qrContent(content) {
+  const c = { ...(content || {}) }, text = String(c.text || '');
+  if (!text) { delete c.matrix; return c; }
+  if (!_qrEncoder) throw new Error('this host has no QR encoder (setQrEncoder)');
+  c.matrix = _qrEncoder(text, { ecc: c.ecc || 'M' }).map((row) => row.map((d) => (d ? '1' : '0')).join(''));
+  return c;
+}
+registerKind('qr', {
+  label: 'QR code',
+  draw(ctx, box, frame) {
+    const c = frame.content || {}, text = String(c.text || '');
+    frame._overflow = undefined;
+    const note = (t, col = '#888') => { ctx.fillStyle = col; ctx.font = fontMm(7); ctx.textBaseline = 'top'; ctx.textAlign = 'left'; ctx.fillText(t, box[0], box[1]); };
+    if (!text) { note('QR: no text yet'); return; }
+    let m = Array.isArray(c.matrix) && c.matrix.length ? c.matrix.map((r) => [...String(r)].map((d) => d === '1')) : null;
+    if (!m) {                                            // made elsewhere without its matrix: make it now, if this host can
+      try { m = _qrEncoder ? _qrEncoder(text, { ecc: c.ecc || 'M' }) : null; } catch (e) { frame._overflow = e.message; note('too long for a QR code', '#b33'); return; }
+      if (!m) { frame._overflow = 'this host can’t encode QR codes'; note('QR: no encoder here'); return; }
+    }
+    const capH = c.caption ? 7 * PT * 1.3 : 0, n = m.length, q = 2;          // a 2-module quiet zone (the frame's margin adds to it)
+    const side = Math.min(box[2], box[3] - capH), u = side / (n + 2 * q);
+    if (u < 0.25) frame._overflow = 'the modules are under 0.25 mm — a phone may not read it; make the frame bigger';
+    const x0 = box[0] + (box[2] - side) / 2 + q * u, y0 = box[1] + q * u;
+    ctx.fillStyle = '#ffffff'; ctx.fillRect(x0 - q * u, y0 - q * u, side, side);
+    ctx.fillStyle = INK;
+    for (let r = 0; r < n; r++) {                        // runs of dark modules per row: fewer, longer rectangles
+      let c0 = -1;
+      for (let k = 0; k <= n; k++) {
+        const dark = k < n && m[r][k];
+        if (dark && c0 < 0) c0 = k;
+        else if (!dark && c0 >= 0) { ctx.fillRect(x0 + c0 * u, y0 + r * u, (k - c0) * u + 0.005, u + 0.005); c0 = -1; }
+      }
+    }
+    if (c.caption) {
+      ctx.font = fontMm(7); ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+      let t = text; while (t.length > 4 && ctx.measureText(t).width > box[2]) t = t.slice(0, -2);
+      ctx.fillText(t === text ? t : t + '…', box[0] + box[2] / 2, box[1] + side + 0.5);
+    }
+  },
+});
+
 // a TSV (an analysis window's ⧉ table) → table content
 function tableFromTsv(tsv, title = '') {
   const lines = String(tsv || '').replace(/\r/g, '').split('\n').filter((l) => l.trim() !== '');
@@ -2447,6 +2585,8 @@ const ICONS = {
   scalebar: [P('M3 15h18'), P('M3 9v6M21 9v6M12 11v4M7.5 13v2M16.5 13v2')],
   north: [['path', { d: 'M12 2.5 6.5 20.5 12 16.5Z', ...FILL }], P('M12 2.5l5.5 18-5.5-4-5.5 4Z')],
   text: [P('M4 7V4h16v3'), P('M12 4v16'), P('M9 20h6')],
+  shape: [R(3, 3, 11, 11, 1), ['circle', { cx: 15.5, cy: 15.5, r: 5.5 }]],
+  qr: [R(3, 3, 7, 7, 1), R(14, 3, 7, 7, 1), R(3, 14, 7, 7, 1), ['rect', { x: 5.5, y: 5.5, width: 2, height: 2, ...FILL }], ['rect', { x: 16.5, y: 5.5, width: 2, height: 2, ...FILL }], ['rect', { x: 5.5, y: 16.5, width: 2, height: 2, ...FILL }], P('M14 14h3v3M21 14v7h-4M14 18v3')],
   label: [R(11, 3, 10, 7), P('M14 6.5h4'), P('M11 10l-5 7'), ['circle', { cx: 5, cy: 18.5, r: 1.6, ...FILL }]],
   image: [R(3, 3, 18, 18, 2), ['circle', { cx: 9, cy: 9, r: 2 }], P('m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21')],
   titleblock: [R(3, 3, 18, 18), P('M10 21v-8h11'), P('M10 17h11'), P('M15.5 13v4')],
@@ -2649,7 +2789,8 @@ function mountEditor(el, doc, opts = {}) {
     if (!_mc) _mc = document.createElement('canvas').getContext('2d');
     const size = +c.size || (isLabel ? 7 : 9), pad = isLabel ? 0.8 : (c.pad ?? 1);
     const text = resolveFields(isLabel ? (c.text != null ? c.text : (c.md || '')) : (c.md || ''), { ...env(), doc: D, title: D.title }, f);
-    const { lines } = layoutText(_mc, text, f.box[2] - 2 * pad, { size, mono: !!c.mono || c.font === 'mono', serif: c.font === 'serif', lineHeight: +c.lineHeight || 1.25 });
+    const fam = c.font || (c.mono ? 'mono' : (D.page && D.page.font) || 'sans');
+    const { lines } = layoutText(_mc, text, f.box[2] - 2 * pad, { size, mono: fam === 'mono', serif: fam === 'serif', lineHeight: +c.lineHeight || 1.25 });
     return lines.reduce((s, l) => s + (l.gap || 0) + l.lh, 0) + 2 * pad;
   }
   const root = h('div', { className: 'compo-root', tabIndex: 0 });
@@ -2671,7 +2812,9 @@ function mountEditor(el, doc, opts = {}) {
   const snap = () => serializeDocument(D);
   const imgCache = new Map();                              // frame id → decoded bitmap (survives undo)
   const keepImgs = () => { for (const f of D.frames) if (f._img) imgCache.set(f.id, { img: f._img, jpeg: f._jpeg }); };
+  let _nudge = null;                                       // a run of arrow nudges in progress (one undo step); any other change ends it
   function commit(fn) {
+    _nudge = null;
     keepImgs();
     hist.push(snap()); if (hist.length > 80) hist.shift(); fut.length = 0;
     fn();
@@ -2683,8 +2826,8 @@ function mountEditor(el, doc, opts = {}) {
     for (const f of next.frames) { const c = imgCache.get(f.id); if (c) { f._img = c.img; f._jpeg = c.jpeg; } }
     D = next; sel = sel.filter((id) => frameById(D, id)); changed();
   }
-  const undo = () => { if (!hist.length) return; fut.push(snap()); restoreFrom(hist.pop()); };
-  const redo = () => { if (!fut.length) return; hist.push(snap()); restoreFrom(fut.pop()); };
+  const undo = () => { if (!hist.length) return; _nudge = null; fut.push(snap()); restoreFrom(hist.pop()); };
+  const redo = () => { if (!fut.length) return; _nudge = null; hist.push(snap()); restoreFrom(fut.pop()); };
   function changed() { render(); if (opts.onChange) opts.onChange(D); }
 
   // ── toolbar ──
@@ -2731,7 +2874,9 @@ function mountEditor(el, doc, opts = {}) {
   const hostBtns = (opts.toolbar || []).map((t) => { const run = () => t.run(api); return t.icon ? ib(t.icon, t.label, t.keys || '', t.title || '', run) : btn(t.label, t.title || '', run); });
   bar.append(grp(undoBtn, redoBtn), sep(),
     grp(...hostBtns, ib('label', 'Add label', '', 'a label pinned to a point in a 3D view, or a direction on a stereonet (the host may supply the point)', () => addLabel()),
-      ib('text', 'Add text', '', 'a text frame — a caption (fields: {fig} {page} {date} ${…})', () => add({ kind: 'text', content: { md: '**Figure {fig}.** caption', size: 9 } }))),
+      ib('text', 'Add text', '', 'a text frame — a caption (fields: {fig} {page} {date} ${…})', () => add({ kind: 'text', content: { md: '**Figure {fig}.** caption', size: 9 } })),
+      ib('shape', 'Add shape', '', 'a rectangle, an ellipse, a line or an arrow — a box round something, a pointer', () => add({ kind: 'shape', box: freeSpot(D, 40, 25), content: { shape: 'rect' } })),
+      ib('qr', 'Add QR code', '', 'a link or a text, scannable from the printed page', () => addQr())),
     sep(), grp(...alignBtns, ...distBtns, ...sizeBtns), sep(), grp(groupBtn, ungroupBtn), sep(), grp(frontBtn, fwdBtn, bwdBtn, backBtn, delBtn),
     sep(), grp(sizeSel, oriSel, customSpan, zoomSel, gridSel, rulersBtn), status);
 
@@ -2851,6 +2996,7 @@ function mountEditor(el, doc, opts = {}) {
   function buildSide() {
     insp.replaceChildren();
     if (sel.length !== 1) {
+      if (!sel.length) pagePanel();
       if (sel.length) {
         const nu = unitsOf(D, sel).length, locked = sel.filter((id) => frameById(D, id).locked).length;
         insp.append(h('div', { className: 'hint', textContent: `${sel.length} frames${nu < sel.length ? ` in ${nu} unit${nu === 1 ? '' : 's'} (groups move as one)` : ''} — align / distribute / match size from the toolbar; the FIRST selected is the size key` }));
@@ -2858,6 +3004,7 @@ function mountEditor(el, doc, opts = {}) {
         lk.indeterminate = locked > 0 && locked < sel.length;
         lk.onchange = () => commit(() => { for (const id of sel) frameById(D, id).locked = lk.checked; });
         insp.append(h('label', { className: 'row' }, h('span', { textContent: 'locked' }), h('span', { className: 'ctl' }, lk)));
+        multiPanel();
       } else insp.append(h('div', { className: 'hint', textContent: 'click a frame to edit it · drag to move (snaps to edges, centres and equal gaps; ⌥ off) · drag on the empty page to box-select · handles resize · arrows nudge (⇧ ×10) · ⌘G group · ⌘Z undo' }));
       return;
     }
@@ -2965,6 +3112,11 @@ function mountEditor(el, doc, opts = {}) {
         insp.append(h('div', { className: 'row' }, h('span', { textContent: 'coords' }), h('span', { className: 'ctl' }, tk)));
       }
     }
+    if (f.kind === 'table') tablePanel(f);
+    if (f.kind === 'scalebar') scalebarPanel(f);
+    if (f.kind === 'north') northPanel(f);
+    if (f.kind === 'shape') shapePanel(f);
+    if (f.kind === 'qr') qrPanel(f);
     if (f.kind === 'legend') {
       // the look, then each entry: show/hide, colour, label, order. Your edits sit beside the host's data
       // (content.edit / order — kinds.js), so refreshing the legend from the data keeps them
@@ -3361,6 +3513,8 @@ function mountEditor(el, doc, opts = {}) {
     if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
     if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); redo(); return; }
     if (mod && e.key.toLowerCase() === 'd') { e.preventDefault(); dup(); return; }
+    if (mod && e.altKey && e.code === 'KeyC') { e.preventDefault(); copyStyle(); return; }
+    if (mod && e.altKey && e.code === 'KeyV') { e.preventDefault(); pasteStyle(); return; }
     if (mod && e.key.toLowerCase() === 'a') { e.preventDefault(); sel = D.frames.filter((f) => !f.hidden).map((f) => f.id); render(); return; }   // not the hidden ones: a Delete after it would take frames you can't see
     if (mod && e.key.toLowerCase() === 'g') { e.preventDefault(); e.shiftKey ? doUngroup() : doGroup(); return; }
     if (mod && (e.code === 'BracketRight' || e.code === 'BracketLeft')) {
@@ -3372,8 +3526,193 @@ function mountEditor(el, doc, opts = {}) {
     if (e.key === 'Delete' || e.key === 'Backspace') { if (sel.length) { e.preventDefault(); del(); } return; }
     if (e.key === 'Escape') { sel = []; render(); return; }
     const step = e.shiftKey ? 5 : 0.5, dir = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key];
-    if (dir && sel.length) { e.preventDefault(); commit(() => { for (const id of sel) { const f = frameById(D, id); if (!f.locked) { f.box[0] += dir[0] * step; f.box[1] += dir[1] * step; } } }); }
+    if (dir && sel.length) {
+      e.preventDefault();
+      const move = () => { for (const id of sel) { const f = frameById(D, id); if (!f.locked) { f.box[0] += dir[0] * step; f.box[1] += dir[1] * step; } } };
+      // a run of nudges (the same frames, no pause over a second) is ONE undo step — ⌘Z takes the run back, not 0.5 mm
+      const key = sel.join(','), now = Date.now();
+      if (_nudge && _nudge.key === key && now - _nudge.t < 1000 && hist.length) { move(); _nudge.t = now; changed(); }
+      else { commit(move); _nudge = { key, t: now }; }
+    }
   });
+
+  // ── inspector panels ──
+  const row = (label, ...ctl) => h('div', { className: 'row' }, h('span', { textContent: label }), h('span', { className: 'ctl' }, ...ctl));
+  const numIn = (value, attrs = {}) => h('input', { type: 'number', value: value ?? '', style: 'width:64px', ...attrs });
+  const selIn = (opts2, value, title = '') => { const s = h('select', { title }, ...opts2.map(([v, t]) => h('option', { value: v, textContent: t }))); s.value = value; return s; };
+  const setC = (f, k, v) => commit(() => { f.content = { ...(f.content || {}) }; if (v == null || v === '' || v === false) delete f.content[k]; else f.content[k] = v; });
+  function pagePanel() {
+    const pg = D.page, m = pg.margins || [10, 10, 10, 10];
+    insp.append(h('div', { textContent: 'page', style: 'font-weight:bold' }));
+    const mIn = ['top', 'right', 'bottom', 'left'].map((t, i) => { const x = numIn(m[i], { min: 0, max: 60, step: 1, title: `${t} margin (mm)`, style: 'width:48px' });
+      x.onchange = () => commit(() => { const mm = [...(D.page.margins || [10, 10, 10, 10])]; mm[i] = Math.max(0, +x.value || 0); D.page.margins = mm; }); return x; });
+    insp.append(row('margins', ...mIn.map((x, i) => h('span', { className: 'pair' }, h('i', { textContent: '↑→↓←'[i] }), x))));
+    const bgOn = h('input', { type: 'checkbox', checked: !!pg.background && pg.background !== '#ffffff', title: 'a paper colour other than white' });
+    const bgC = h('input', { type: 'color', value: toHex(pg.background, '#ffffff') });
+    bgOn.onchange = () => commit(() => { if (bgOn.checked) D.page.background = bgC.value; else delete D.page.background; });
+    bgC.onchange = () => { if (bgOn.checked) commit(() => { D.page.background = bgC.value; }); };
+    insp.append(row('paper', bgOn, bgC));
+    const fnt = selIn([['sans', 'sans'], ['serif', 'serif'], ['mono', 'monospace']], pg.font || 'sans', 'the typeface of every text that names none');
+    fnt.onchange = () => commit(() => { if (fnt.value === 'sans') delete D.page.font; else D.page.font = fnt.value; });
+    insp.append(row('typeface', fnt));
+  }
+  function multiPanel() {
+    const fs = sel.map((id) => frameById(D, id)).filter(Boolean);
+    const bd = h('input', { type: 'checkbox', checked: fs.every((f) => f.style && f.style.border) });
+    bd.indeterminate = !bd.checked && fs.some((f) => f.style && f.style.border);
+    bd.onchange = () => commit(() => { for (const f of fs) { f.style = { ...(f.style || {}) }; if (bd.checked) f.style.border = true; else delete f.style.border; } });
+    insp.append(row('border', bd));
+    const texts = fs.filter((f) => f.kind === 'text' || f.kind === 'label');
+    if (texts.length === fs.length) {                       // all text: the type, together
+      const sizes = new Set(texts.map((f) => +f.content.size || (f.kind === 'label' ? 7 : 9)));
+      const sz = numIn(sizes.size === 1 ? [...sizes][0] : '', { min: 4, max: 72, step: 0.5, placeholder: 'mixed' });
+      sz.onchange = () => commit(() => { for (const f of texts) f.content.size = +sz.value || f.content.size; });
+      const col = h('input', { type: 'color', value: toHex(texts[0].content.color), title: 'text colour, all of them' });
+      col.onchange = () => commit(() => { for (const f of texts) f.content.color = col.value; });
+      const fnt = selIn([['', '— as they are'], ['sans', 'sans'], ['serif', 'serif'], ['mono', 'monospace']], '', 'their typeface');
+      fnt.onchange = () => { if (fnt.value) commit(() => { for (const f of texts) { f.content.font = fnt.value; delete f.content.mono; } }); };
+      insp.append(row('size (pt)', sz, col), row('typeface', fnt));
+    }
+    insp.append(h('div', { className: 'hint', textContent: '⌘C / ⌘V copy and paste frames (between figures too) · ⌘⌥C / ⌘⌥V copy one frame’s style onto others' }));
+  }
+  function tablePanel(f) {
+    const c = f.content || {};
+    const ti = h('input', { value: c.title || '', placeholder: 'title (fields work)' }); ti.onchange = () => setC(f, 'title', ti.value);
+    const no = h('input', { value: c.note || '', placeholder: 'a note under it (source, units…)' }); no.onchange = () => setC(f, 'note', no.value);
+    const sz = numIn(c.size || 7.5, { min: 4.5, max: 14, step: 0.5, title: 'type size (pt) — it shrinks to fit the width' }); sz.onchange = () => setC(f, 'size', +sz.value || null);
+    const zb = h('input', { type: 'checkbox', checked: c.zebra !== false, title: 'light stripes on alternate rows' }); zb.onchange = () => commit(() => { f.content = { ...c, zebra: zb.checked }; });
+    const dc = numIn(c.decimals ?? '', { min: 0, max: 8, step: 1, placeholder: 'as is', title: 'every number to this many decimal places (empty: as it came)' }); dc.onchange = () => setC(f, 'decimals', dc.value === '' ? null : Math.max(0, Math.min(8, Math.round(+dc.value))));
+    const fit = h('button', { textContent: 'Fit height', title: 'make the frame as tall as all its rows' });
+    fit.onclick = () => commit(() => { const lh = (+c.size || 7.5) * 0.3528 * 1.55; f.box[3] = +(0.3 + (c.title ? lh * 1.15 : 0) + lh * (1 + (c.rows || []).length) + (c.note ? lh : 0) + 1.2).toFixed(1); });
+    insp.append(row('title', ti), row('note', no), row('size (pt)', sz, zb, h('span', { textContent: 'stripes' })), row('decimals', dc, fit));
+    const cols = (c.columns || []).slice(0, 12);
+    if (cols.length) {
+      const al = cols.map((name, j) => { const s = selIn([['', 'auto'], ['l', 'left'], ['c', 'centre'], ['r', 'right']], (c.align && c.align[j]) || '', `column “${name}”`);
+        s.onchange = () => commit(() => { const a = [...(f.content.align || [])]; while (a.length < cols.length) a.push(''); a[j] = s.value; f.content = { ...f.content, align: a.some(Boolean) ? a : undefined }; if (!f.content.align) delete f.content.align; }); return h('span', { className: 'pair', title: name }, h('i', { textContent: String(name).slice(0, 6) }), s); });
+      insp.append(h('div', { className: 'row' }, h('span', { textContent: 'align' }), h('span', { className: 'ctl', style: 'flex-wrap:wrap' }, ...al)));
+    }
+  }
+  function scalebarPanel(f) {
+    const c = f.content || {};
+    const ln = numIn(c.length ?? '', { min: 0, step: 'any', placeholder: 'auto', title: 'the bar’s length in the view’s units (empty: the roundest that fits)' }); ln.onchange = () => setC(f, 'length', +ln.value > 0 ? +ln.value : null);
+    const sg = numIn(c.segments || 4, { min: 1, max: 10, step: 1, title: 'divisions' }); sg.onchange = () => setC(f, 'segments', Math.max(1, Math.min(10, Math.round(+sg.value || 4))));
+    const st = selIn([['alternating', 'alternating'], ['line', 'line'], ['ticks', 'ticks, each labelled']], c.style || 'alternating'); st.onchange = () => setC(f, 'style', st.value === 'alternating' ? null : st.value);
+    const ra = h('input', { type: 'checkbox', checked: !!c.ratio, title: 'the representative fraction under it (1 : 2 500) — a view in metres' }); ra.onchange = () => setC(f, 'ratio', ra.checked);
+    insp.append(row('length', ln, sg, h('span', { textContent: 'parts' })), row('style', st, ra, h('span', { textContent: '1 : N' })));
+  }
+  function northPanel(f) {
+    const st = selIn([['arrow', 'arrow'], ['needle', 'needle'], ['star', 'compass star'], ['line', 'line']], (f.content && f.content.style) || 'arrow');
+    st.onchange = () => setC(f, 'style', st.value === 'arrow' ? null : st.value);
+    insp.append(row('style', st));
+  }
+  function shapePanel(f) {
+    const c = f.content || {}, kind = c.shape || 'rect';
+    const sh = selIn([['rect', 'rectangle'], ['ellipse', 'ellipse'], ['line', 'line'], ['arrow', 'arrow']], kind); sh.onchange = () => setC(f, 'shape', sh.value);
+    const sOn = h('input', { type: 'checkbox', checked: c.stroke !== '', title: 'an outline' });
+    const sC = h('input', { type: 'color', value: toHex(c.stroke) }); const sW = numIn(c.width || 0.35, { min: 0.05, max: 5, step: 0.05, title: 'line width (mm)' });
+    sOn.onchange = () => commit(() => { f.content = { ...f.content }; if (sOn.checked) { if (f.content.stroke === '') delete f.content.stroke; } else f.content.stroke = ''; });
+    sC.onchange = () => setC(f, 'stroke', sC.value); sW.onchange = () => setC(f, 'width', +sW.value || null);
+    const dsh = h('input', { type: 'checkbox', checked: !!c.dash, title: 'dashed' }); dsh.onchange = () => setC(f, 'dash', dsh.checked);
+    insp.append(row('shape', sh), row('line', sOn, sC, sW, dsh, h('span', { textContent: 'dashed' })));
+    if (kind === 'rect' || kind === 'ellipse') {
+      const fOn = h('input', { type: 'checkbox', checked: !!c.fill }); const fC = h('input', { type: 'color', value: toHex(c.fill, '#f2e7c9') });
+      fOn.onchange = () => setC(f, 'fill', fOn.checked ? fC.value : null); fC.onchange = () => { if (fOn.checked) setC(f, 'fill', fC.value); };
+      const parts = [fOn, fC];
+      if (kind === 'rect') { const rr = numIn(c.radius || 0, { min: 0, max: 30, step: 0.5, title: 'rounded corners (mm)' }); rr.onchange = () => setC(f, 'radius', +rr.value || null); parts.push(h('span', { className: 'pair' }, h('i', { textContent: '◜' }), rr)); }
+      insp.append(row('fill', ...parts));
+    } else {
+      const dr = selIn([['h', '→ across'], ['v', '↓ down'], ['down', '↘ diagonal'], ['up', '↗ diagonal']], c.dir || 'h', 'the way across its frame (the frame’s corners are its ends)'); dr.onchange = () => setC(f, 'dir', dr.value === 'h' ? null : dr.value);
+      const parts = [dr];
+      if (kind === 'arrow') { const hd = selIn([['end', 'head at the end'], ['both', 'heads at both ends']], c.heads || 'end'); hd.onchange = () => setC(f, 'heads', hd.value === 'end' ? null : hd.value); parts.push(hd); }
+      insp.append(row('way', ...parts));
+    }
+  }
+  function qrPanel(f) {
+    const c = f.content || {};
+    const tx = h('input', { value: c.text || '', placeholder: 'https://… or any text', spellcheck: false });
+    const ec = selIn([['L', 'L — 7 %'], ['M', 'M — 15 %'], ['Q', 'Q — 25 %'], ['H', 'H — 30 %']], c.ecc || 'M', 'error correction: how much of it can be damaged and still read');
+    const cap = h('input', { type: 'checkbox', checked: !!c.caption, title: 'the text under the code' });
+    const apply = (patch) => { try { const next = qrContent({ ...f.content, ...patch }); commit(() => { f.content = next; if (!next.caption) delete f.content.caption; }); } catch (e) { say(e.message); } };
+    tx.onchange = () => apply({ text: tx.value.trim() }); ec.onchange = () => apply({ ecc: ec.value }); cap.onchange = () => commit(() => { f.content = { ...f.content, caption: cap.checked }; });
+    tx.disabled = ec.disabled = !hasQrEncoder();
+    insp.append(row('text', tx), row('level', ec, cap, h('span', { textContent: 'caption' })));
+    if (!hasQrEncoder()) insp.append(h('div', { className: 'hint', textContent: 'this app can print QR codes but not make new ones' }));
+  }
+  function addQr() {
+    if (!hasQrEncoder()) { say('this app can’t make QR codes'); return; }
+    const f = add({ kind: 'qr', box: freeSpot(D, 28, 28), content: { ecc: 'M' } });
+    requestAnimationFrame(() => { const t = side.querySelector('input[placeholder^="https"]'); if (t) t.focus(); });
+    return f;
+  }
+
+  // ── copy / paste: frames (as JSON on the clipboard, so another figure — in this app or the other — takes them) and
+  // a frame's STYLE (its border and fill, its type) onto others ──
+  const CLIP = 'compo-frames/1\n';
+  const STYLE_KEYS = ['size', 'font', 'color', 'align', 'valign', 'lineHeight', 'pad', 'backing', 'leader', 'stroke', 'width', 'dash', 'fill', 'radius'];
+  let styleClip = null;
+  function copyFrames() {
+    const fs = sel.map((id) => frameById(D, id)).filter(Boolean); if (!fs.length) return null;
+    return CLIP + serializeDocument({ frames: fs.map((f) => ({ ...f })) });
+  }
+  function pasteFrames(text) {
+    if (!String(text).startsWith(CLIP)) return false;
+    let data; try { data = JSON.parse(String(text).slice(CLIP.length)); } catch { return false; }
+    const fr = (data.frames || []).filter((f) => f && f.kind && f.box), unknown = fr.filter((f) => !kindOf(f.kind)).map((f) => f.kind);
+    const made = [];
+    commit(() => {
+      const groups = new Map();
+      for (const c of fr) {
+        if (!kindOf(c.kind)) continue;
+        const ownId = !frameById(D, c.id);                 // from another figure: its id may stay; here: a fresh one
+        const box = [...c.box]; if (!ownId) { box[0] += 5; box[1] += 5; }
+        const g = c.group; const nf = addFrame(D, { ...c, box, id: ownId ? c.id : undefined, group: undefined });
+        if (g) { if (!groups.has(g)) groups.set(g, []); groups.get(g).push(nf.id); }
+        made.push(nf);
+      }
+      for (const ids of groups.values()) if (ids.length > 1) groupFrames(D, ids);
+    });
+    sel = made.map((f) => f.id); render();
+    ensureImages(D).then(() => renderCanvas(), () => {});
+    say(`${made.length} frame${made.length === 1 ? '' : 's'} pasted${unknown.length ? ` — ${unknown.length} left out (${[...new Set(unknown)].join(', ')}: not something this app draws)` : ''}`);
+    return true;
+  }
+  root.addEventListener('copy', (e) => {
+    if (/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
+    const t = copyFrames(); if (!t) return;
+    e.preventDefault(); e.clipboardData.setData('text/plain', t); say(`${sel.length} frame${sel.length === 1 ? '' : 's'} copied`);
+  });
+  root.addEventListener('cut', (e) => {
+    if (/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
+    const t = copyFrames(); if (!t) return;
+    e.preventDefault(); e.clipboardData.setData('text/plain', t); del();
+  });
+  root.addEventListener('paste', (e) => {
+    if (/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
+    const t = e.clipboardData && e.clipboardData.getData('text/plain');
+    if (t && pasteFrames(t)) e.preventDefault();
+  });
+  function copyStyle() {
+    const f = frameById(D, sel[0]); if (!f) return;
+    const c = f.content || {}, content = {}; for (const k of STYLE_KEYS) if (c[k] !== undefined) content[k] = c[k];
+    styleClip = { style: { ...(f.style || {}) }, content, from: f.kind };
+    say(`style copied from ${f.id} — ⌘⌥V puts it on the selected frames`);
+  }
+  function pasteStyle() {
+    if (!styleClip || !sel.length) return;
+    commit(() => {
+      for (const id of sel) {
+        const f = frameById(D, id); if (!f || f.locked) continue;
+        f.style = { ...styleClip.style }; if (!Object.keys(f.style).length) delete f.style;
+        f.content = { ...(f.content || {}) };
+        for (const [k, v] of Object.entries(styleClip.content)) {
+          // a shape's colours stay a shape's, a text's type a text's: only the keys that mean the same on both
+          const shapeKey = ['stroke', 'width', 'dash', 'fill', 'radius'].includes(k);
+          if (shapeKey === (f.kind === 'shape')) f.content[k] = v;
+        }
+      }
+    });
+    say(`style put on ${sel.length} frame${sel.length === 1 ? '' : 's'}`);
+  }
 
   // ── actions ──
   function add(frame) { let f; commit(() => { f = addFrame(D, frame); }); sel = [f.id]; render(); return f; }
@@ -3499,6 +3838,9 @@ export {
   niceBelow,
   frameWorldPerMm,
   tableFromTsv,
+  setQrEncoder,
+  hasQrEncoder,
+  qrContent,
   registerField,
   fieldList,
   formatNumber,

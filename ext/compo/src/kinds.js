@@ -125,7 +125,8 @@ registerKind('text', {
   draw(ctx, box, frame, env) {
     const c = frame.content || {};
     const text = resolveFields(c.md || '', env, frame);
-    const used = drawText(ctx, text, box, { size: +c.size || 9, mono: !!c.mono || c.font === 'mono', serif: c.font === 'serif', pad: c.pad ?? 1,
+    const fam = c.font || (c.mono ? 'mono' : (env.doc && env.doc.page && env.doc.page.font) || 'sans');   // the page's typeface by default
+    const used = drawText(ctx, text, box, { size: +c.size || 9, mono: fam === 'mono', serif: fam === 'serif', pad: c.pad ?? 1,
       align: c.align || 'left', color: c.color || INK, lineHeight: +c.lineHeight || 1.25, valign: c.valign || 'top' });
     frame._overflow = used > box[3] + 0.3 ? 'the text runs past the bottom of the frame' : undefined;   // the editor badges it
   },
@@ -193,7 +194,8 @@ registerKind('label', {
     }
     // the words' own extent: the backing hugs them (a box-sized backing whited out what the label points at),
     // and the leader leaves from it
-    const font = { mono: c.font === 'mono', serif: c.font === 'serif' };
+    const fam0 = c.font || (env.doc && env.doc.page && env.doc.page.font) || 'sans';
+    const font = { mono: fam0 === 'mono', serif: fam0 === 'serif' };
     const lay = layoutText(ctx, text, box[2] - 2 * pad, { size, ...font });
     const tw = Math.min(box[2], Math.max(0, ...lay.lines.map((l) => l.reduce((s, w) => s + w.w, 0) + (l.indent || 0))) + 2 * pad);
     const th = Math.min(box[3], lay.lines.reduce((s, l) => s + (l.gap || 0) + l.lh, 0) + 2 * pad);
@@ -215,7 +217,7 @@ registerKind('label', {
     ctx.save();
     ctx.beginPath(); ctx.rect(box[0], box[1], box[2], box[3]); ctx.clip();
     if (c.backing !== false) { ctx.fillStyle = 'rgba(255,255,255,0.85)'; ctx.fillRect(hug[0], hug[1], hug[2], hug[3]); }
-    const used = drawText(ctx, text, box, { size, pad, color: c.color || INK, mono: c.font === 'mono', serif: c.font === 'serif', align: c.align || 'left' });
+    const used = drawText(ctx, text, box, { size, pad, color: c.color || INK, mono: font.mono, serif: font.serif, align: c.align || 'left' });
     frame._overflow = used > box[3] + 0.3 ? 'the label’s text runs past its box' : undefined;
     ctx.restore();
   },
@@ -368,18 +370,43 @@ const metaOf = (frame, doc) => {
 };
 registerKind('scalebar', {
   label: 'scale bar',
+  // content: { length (world units; else the nicest that fits 80 % of the frame), segments (4), style:
+  //   'alternating' (the default) | 'line' | 'ticks', ratio (true: "1 : 2 500" under it, for a view in metres) }
   draw(ctx, box, frame, env) {
-    const meta = metaOf(frame, env.doc), wpm = +meta.worldPerMm;
+    const c = frame.content || {}, meta = metaOf(frame, env.doc), wpm = +meta.worldPerMm;
     const units = meta.units || 'm';
     ctx.fillStyle = INK; ctx.font = fontMm(8); ctx.textBaseline = 'top'; ctx.textAlign = 'left';
+    frame._overflow = undefined;
     if (!(wpm > 0)) { ctx.fillText('no scale (a perspective view)', box[0], box[1]); return; }
-    const len = niceBelow(box[2] * 0.8 * wpm), barMm = len / wpm, n = 4, h = Math.min(2, box[3] * 0.25);
-    const x0 = box[0] + (box[2] - barMm) / 2, y0 = box[1] + 0.5;
-    for (let i = 0; i < n; i++) { ctx.fillStyle = i % 2 ? '#ffffff' : INK; ctx.fillRect(x0 + (i * barMm) / n, y0, barMm / n, h); }
-    ctx.strokeStyle = INK; ctx.lineWidth = 0.2; ctx.strokeRect(x0, y0, barMm, h);
-    ctx.fillStyle = INK; ctx.textAlign = 'center';
+    const len = +c.length > 0 ? +c.length : niceBelow(box[2] * 0.8 * wpm), barMm = len / wpm;
+    const n = Math.max(1, Math.min(10, Math.round(+c.segments || 4))), style = c.style || 'alternating';
+    if (barMm > box[2] + 0.01) frame._overflow = `${len} ${units} is ${barMm.toFixed(1)} mm at this scale — wider than the frame`;
+    const h = Math.min(2, box[3] * 0.25), x0 = box[0] + Math.max(0, (box[2] - barMm) / 2), y0 = box[1] + 0.5;
     const fmt = (v) => (v >= 1000 && units === 'm' ? `${+(v / 1000).toPrecision(3)} km` : `${+v.toPrecision(4)} ${units}`);
-    ctx.fillText('0', x0, y0 + h + 0.8); ctx.fillText(fmt(len), x0 + barMm, y0 + h + 0.8);
+    const fmtBare = (v) => (len >= 1000 && units === 'm' ? `${+(v / 1000).toPrecision(3)}` : `${+v.toPrecision(4)}`);
+    ctx.strokeStyle = INK; ctx.lineWidth = 0.2;
+    let labelY = y0 + h + 0.8;
+    if (style === 'alternating') {
+      for (let i = 0; i < n; i++) { ctx.fillStyle = i % 2 ? '#ffffff' : INK; ctx.fillRect(x0 + (i * barMm) / n, y0, barMm / n, h); }
+      ctx.strokeRect(x0, y0, barMm, h);
+      ctx.fillStyle = INK; ctx.textAlign = 'center';
+      ctx.fillText('0', x0, labelY); ctx.fillText(fmt(len), x0 + barMm, labelY);
+    } else {
+      // a line with a tick at each segment: 'line' labels its ends, 'ticks' every tick
+      const yl = y0 + h;
+      ctx.lineWidth = 0.3; ctx.beginPath(); ctx.moveTo(x0, yl); ctx.lineTo(x0 + barMm, yl); ctx.stroke();
+      ctx.lineWidth = 0.2;
+      for (let i = 0; i <= n; i++) { const x = x0 + (i * barMm) / n, t = i === 0 || i === n ? h : h * 0.55; ctx.beginPath(); ctx.moveTo(x, yl); ctx.lineTo(x, yl - t); ctx.stroke(); }
+      ctx.fillStyle = INK; ctx.textAlign = 'center'; labelY = yl + 0.8;
+      if (style === 'ticks') {
+        for (let i = 0; i <= n; i++) ctx.fillText(i === n ? fmt(len) : fmtBare((len * i) / n), x0 + (i * barMm) / n, labelY);
+      } else { ctx.fillText('0', x0, labelY); ctx.fillText(fmt(len), x0 + barMm, labelY); }
+    }
+    if (c.ratio && (units === 'm' || units === 'metres' || units === 'meters')) {
+      const den = Math.round(wpm * 1000);                // 1 mm of paper = wpm metres = wpm·1000 mm of ground
+      const nice = den >= 100 ? +den.toPrecision(3) : den;
+      ctx.textAlign = 'center'; ctx.fillText(`1 : ${String(nice).replace(/\B(?=(\d{3})+(?!\d))/g, ' ')}`   /* a thin space groups the digits */, x0 + barMm / 2, labelY + 8 * PT * 1.2);
+    }
   },
 });
 registerKind('north', {
@@ -411,11 +438,27 @@ registerKind('north', {
       return;
     }
     const bearing = Number.isFinite(+meta.north) ? +meta.north : 0;   // degrees clockwise from page-up to north
+    const look = (frame.content && frame.content.style) || 'arrow';      // 'arrow' | 'needle' | 'star' | 'line'
     const cx = box[0] + box[2] / 2, cy = box[1] + box[3] / 2 + 1.5, r = Math.min(box[2], box[3] - 4) / 2;
     ctx.save(); ctx.translate(cx, cy); ctx.rotate((bearing * Math.PI) / 180);
-    ctx.fillStyle = INK; ctx.beginPath(); ctx.moveTo(0, -r); ctx.lineTo(r * 0.45, r * 0.7); ctx.lineTo(0, r * 0.35); ctx.closePath(); ctx.fill();
-    ctx.fillStyle = '#ffffff'; ctx.strokeStyle = INK; ctx.lineWidth = 0.15;
-    ctx.beginPath(); ctx.moveTo(0, -r); ctx.lineTo(-r * 0.45, r * 0.7); ctx.lineTo(0, r * 0.35); ctx.closePath(); ctx.fill(); ctx.stroke();
+    const half = (w, tip, tail, dark) => {               // one half of a blade, from the tip to the tail
+      ctx.beginPath(); ctx.moveTo(0, tip); ctx.lineTo(w, 0); ctx.lineTo(0, tail); ctx.closePath();
+      if (dark) { ctx.fillStyle = INK; ctx.fill(); } else { ctx.fillStyle = '#ffffff'; ctx.fill(); ctx.strokeStyle = INK; ctx.lineWidth = 0.15; ctx.stroke(); }
+    };
+    if (look === 'needle') {                             // a slim needle: north dark, south light
+      half(r * 0.16, -r, 0, true); half(-r * 0.16, -r, 0, false); half(r * 0.16, r, 0, false); half(-r * 0.16, r, 0, true);
+    } else if (look === 'star') {                        // a compass star: four points, north the longest
+      for (const [ang, len] of [[0, r], [90, r * 0.62], [180, r * 0.62], [270, r * 0.62]]) {
+        ctx.save(); ctx.rotate((ang * Math.PI) / 180); half(len * 0.2, -len, 0, true); half(-len * 0.2, -len, 0, false); ctx.restore();
+      }
+    } else if (look === 'line') {                        // a plain line with a head
+      ctx.strokeStyle = INK; ctx.lineWidth = 0.3; ctx.beginPath(); ctx.moveTo(0, r); ctx.lineTo(0, -r); ctx.stroke();
+      ctx.fillStyle = INK; ctx.beginPath(); ctx.moveTo(0, -r); ctx.lineTo(r * 0.22, -r * 0.55); ctx.lineTo(-r * 0.22, -r * 0.55); ctx.closePath(); ctx.fill();
+    } else {
+      ctx.fillStyle = INK; ctx.beginPath(); ctx.moveTo(0, -r); ctx.lineTo(r * 0.45, r * 0.7); ctx.lineTo(0, r * 0.35); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#ffffff'; ctx.strokeStyle = INK; ctx.lineWidth = 0.15;
+      ctx.beginPath(); ctx.moveTo(0, -r); ctx.lineTo(-r * 0.45, r * 0.7); ctx.lineTo(0, r * 0.35); ctx.closePath(); ctx.fill(); ctx.stroke();
+    }
     ctx.fillStyle = INK; ctx.font = fontMm(9, { bold: true }); ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
     ctx.fillText('N', 0, -r - 0.4);
     ctx.restore();
@@ -433,7 +476,11 @@ const cellText = (v) => (v == null ? '' : typeof v === 'number' ? formatNumber(v
 registerKind('table', {
   label: 'table',
   draw(ctx, box, frame, env) {
-    const c = frame.content || {}, cols = (c.columns || []).map(String), rows = (c.rows || []).map((r) => (r || []).map(cellText));
+    const c = frame.content || {}, cols = (c.columns || []).map(String);
+    // decimals: every number shown to that many places (null: as it came — float noise trimmed)
+    const dec = c.decimals != null && c.decimals !== '' && Number.isFinite(+c.decimals) ? Math.max(0, Math.min(8, +c.decimals)) : null;
+    const asCell = (v) => { if (dec == null) return cellText(v); const t = v == null ? '' : String(v).trim(); return t !== '' && /^[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?$/.test(t) ? (+t).toFixed(dec) : cellText(v); };
+    const rows = (c.rows || []).map((r) => (r || []).map(asCell));
     if (!cols.length) return;
     const pad = 1.1, avail = box[2] - 0.5;
     const isNum = cols.map((_, j) => (c.align && c.align[j]) ? c.align[j] === 'r' : rows.length > 0 && rows.every((r) => r[j] === '' || NUMERIC.test(r[j].trim())));
@@ -482,6 +529,97 @@ registerKind('table', {
     if (note) { ctx.fillStyle = '#555'; ctx.font = fontMm(size - 0.5); ctx.textAlign = 'left'; ctx.fillText(note, x0, y + lh * 0.55); }
   },
 });
+// ── shape: a rectangle (rounded or not), an ellipse, a line or an arrow across the frame ──
+// content: { shape: 'rect' | 'ellipse' | 'line' | 'arrow', stroke (colour, '' none), width (mm), fill (colour, '' none),
+//   dash (bool), radius (mm, a rect's corners), dir: a line's way across the box — 'h' | 'v' | 'down' (↘) | 'up' (↗),
+//   arrow head at the end (and at the start too with heads: 'both') }
+registerKind('shape', {
+  label: 'shape',
+  draw(ctx, box, frame) {
+    const c = frame.content || {}, kind = c.shape || 'rect', lw = +c.width > 0 ? +c.width : 0.35;
+    const stroke = c.stroke === '' ? null : c.stroke || INK, fill = c.fill || null;
+    ctx.lineWidth = lw; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    if (stroke) ctx.strokeStyle = stroke;
+    if (ctx.setLineDash) ctx.setLineDash(c.dash ? [lw * 4, lw * 3] : []);
+    const i = lw / 2, x = box[0] + i, y = box[1] + i, w = Math.max(0, box[2] - lw), hh = Math.max(0, box[3] - lw);
+    if (kind === 'rect' || kind === 'ellipse') {
+      ctx.beginPath();
+      if (kind === 'ellipse') ctx.ellipse(x + w / 2, y + hh / 2, w / 2, hh / 2, 0, 0, 2 * Math.PI);
+      else if (+c.radius > 0 && ctx.roundRect) ctx.roundRect(x, y, w, hh, Math.min(+c.radius, w / 2, hh / 2));
+      else ctx.rect(x, y, w, hh);
+      if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+      if (stroke) ctx.stroke();
+    } else {
+      const d = c.dir || 'h';
+      const [ax, ay, bx, by] = d === 'v' ? [x + w / 2, y, x + w / 2, y + hh] : d === 'down' ? [x, y, x + w, y + hh] : d === 'up' ? [x, y + hh, x + w, y] : [x, y + hh / 2, x + w, y + hh / 2];
+      const head = (tx, ty, fx, fy) => {                 // a filled head at (tx, ty), pointing away from (fx, fy)
+        const L = Math.hypot(tx - fx, ty - fy) || 1, ux = (tx - fx) / L, uy = (ty - fy) / L, s = Math.max(1.6, lw * 5);
+        ctx.setLineDash && ctx.setLineDash([]);
+        ctx.beginPath(); ctx.moveTo(tx, ty); ctx.lineTo(tx - ux * s - uy * s * 0.45, ty - uy * s + ux * s * 0.45); ctx.lineTo(tx - ux * s + uy * s * 0.45, ty - uy * s - ux * s * 0.45); ctx.closePath();
+        ctx.fillStyle = stroke || INK; ctx.fill();
+        return s;
+      };
+      let sx = ax, sy = ay, ex = bx, ey = by;
+      if (kind === 'arrow') {                            // the line stops short of the heads, so they stay sharp
+        const L = Math.hypot(bx - ax, by - ay) || 1, ux = (bx - ax) / L, uy = (by - ay) / L, s = Math.max(1.6, lw * 5) * 0.8;
+        ex = bx - ux * s; ey = by - uy * s; if (c.heads === 'both') { sx = ax + ux * s; sy = ay + uy * s; }
+      }
+      if (stroke) { if (ctx.setLineDash) ctx.setLineDash(c.dash ? [lw * 4, lw * 3] : []); ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(ex, ey); ctx.stroke(); }
+      if (kind === 'arrow') { head(bx, by, ax, ay); if (c.heads === 'both') head(ax, ay, bx, by); }
+    }
+    if (ctx.setLineDash) ctx.setLineDash([]);
+  },
+});
+
+// ── QR code: a link or a text, scannable from the printed page (vector squares; the quiet zone inside the frame) ──
+// content: { text, ecc: 'L' | 'M' | 'Q' | 'H', caption (bool: the text under it), matrix: ['0101…', …] }
+// The MATRIX is stored with the frame — computed when the text is set (qrContent), by the encoder the host
+// registers (setQrEncoder: @gcu/qr's toMatrix). So a saved figure prints its code in any host, encoder or not.
+let _qrEncoder = null;
+export function setQrEncoder(fn) { _qrEncoder = typeof fn === 'function' ? fn : null; }
+export const hasQrEncoder = () => !!_qrEncoder;
+/** a QR frame's content with its matrix made for this text (throws when the host has no encoder, or it's too long) */
+export function qrContent(content) {
+  const c = { ...(content || {}) }, text = String(c.text || '');
+  if (!text) { delete c.matrix; return c; }
+  if (!_qrEncoder) throw new Error('this host has no QR encoder (setQrEncoder)');
+  c.matrix = _qrEncoder(text, { ecc: c.ecc || 'M' }).map((row) => row.map((d) => (d ? '1' : '0')).join(''));
+  return c;
+}
+registerKind('qr', {
+  label: 'QR code',
+  draw(ctx, box, frame) {
+    const c = frame.content || {}, text = String(c.text || '');
+    frame._overflow = undefined;
+    const note = (t, col = '#888') => { ctx.fillStyle = col; ctx.font = fontMm(7); ctx.textBaseline = 'top'; ctx.textAlign = 'left'; ctx.fillText(t, box[0], box[1]); };
+    if (!text) { note('QR: no text yet'); return; }
+    let m = Array.isArray(c.matrix) && c.matrix.length ? c.matrix.map((r) => [...String(r)].map((d) => d === '1')) : null;
+    if (!m) {                                            // made elsewhere without its matrix: make it now, if this host can
+      try { m = _qrEncoder ? _qrEncoder(text, { ecc: c.ecc || 'M' }) : null; } catch (e) { frame._overflow = e.message; note('too long for a QR code', '#b33'); return; }
+      if (!m) { frame._overflow = 'this host can’t encode QR codes'; note('QR: no encoder here'); return; }
+    }
+    const capH = c.caption ? 7 * PT * 1.3 : 0, n = m.length, q = 2;          // a 2-module quiet zone (the frame's margin adds to it)
+    const side = Math.min(box[2], box[3] - capH), u = side / (n + 2 * q);
+    if (u < 0.25) frame._overflow = 'the modules are under 0.25 mm — a phone may not read it; make the frame bigger';
+    const x0 = box[0] + (box[2] - side) / 2 + q * u, y0 = box[1] + q * u;
+    ctx.fillStyle = '#ffffff'; ctx.fillRect(x0 - q * u, y0 - q * u, side, side);
+    ctx.fillStyle = INK;
+    for (let r = 0; r < n; r++) {                        // runs of dark modules per row: fewer, longer rectangles
+      let c0 = -1;
+      for (let k = 0; k <= n; k++) {
+        const dark = k < n && m[r][k];
+        if (dark && c0 < 0) c0 = k;
+        else if (!dark && c0 >= 0) { ctx.fillRect(x0 + c0 * u, y0 + r * u, (k - c0) * u + 0.005, u + 0.005); c0 = -1; }
+      }
+    }
+    if (c.caption) {
+      ctx.font = fontMm(7); ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+      let t = text; while (t.length > 4 && ctx.measureText(t).width > box[2]) t = t.slice(0, -2);
+      ctx.fillText(t === text ? t : t + '…', box[0] + box[2] / 2, box[1] + side + 0.5);
+    }
+  },
+});
+
 // a TSV (an analysis window's ⧉ table) → table content
 export function tableFromTsv(tsv, title = '') {
   const lines = String(tsv || '').replace(/\r/g, '').split('\n').filter((l) => l.trim() !== '');

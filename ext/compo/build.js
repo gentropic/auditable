@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Bundle ext/compo/src/ into ext/compo/index.js via @gcu/build. @gcu/pdf is INLINED (it is the
-// export path, 41 KB) so the bundle drops into a host on its own.
+// export path, 41 KB) so the bundle drops into a host on its own. (@gcu/qr is NOT inlined — its vendored encoder uses var; a host registers it: setQrEncoder.)
 import { bundle } from '../build/src/main.js';
 
 const r = await bundle({
