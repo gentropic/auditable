@@ -17,10 +17,11 @@ itself. On a Mac, \key{⌘} works wherever \key{Ctrl} is given.
 \key{Ctrl}+\key{Shift}+\key{Z}, \key{Ctrl}+\key{Y} & redo \\
 \key{`} (backquote) & open the console (\cref{ch:console}) \\
 \key{Esc} & clear the outlines of the selection shapes from the nets; the selection itself stays \\
+\key{P} \key{L} \key{C} \key{B} \key{M} & the net's tools: pick, lasso, cone, band, measure (\cref{sec:select-tools}) \\
 \bottomrule\end{tabularx}
 \end{center}
 
-Undo, redo, \key{`} and \key{Esc} don't act while you type in a field, a dialog or the console, where
+The tool keys act on the net or the bare page only. Undo, redo, \key{`} and \key{Esc} don't act while you type in a field, a dialog or the console, where
 the keys belong to what you are typing. \key{Ctrl}+\key{O} and \key{Ctrl}+\key{S} work everywhere,
 even there. Undo and redo also leave a figure tab alone: a figure has its own undo (below).
 
@@ -41,6 +42,7 @@ drag & draw the shape; the rows inside it become the selection (\cref{sec:shapes
 \key{Alt}+drag & take the rows inside it away \\
 \multicolumn{2}{@{}l}{\sffamily\itshape always} \\
 move the pointer & the status line reads the attitude under it, and the row under it if any \\
+right-click & the net's menu: what is under the pointer, the selection, the net, the picture (\cref{sec:net-menu}); with \ui{measure}, the right button measures instead \\
 \bottomrule\end{tabularx}
 \end{center}
 
@@ -98,9 +100,11 @@ click a frame & select it; \key{Shift}+click adds to the selection \\
 drag on the empty page & select the frames the box touches \\
 drag a frame & move it, snapping to the others' edges \\
 drag a handle & resize \\
-arrow keys & nudge the selected frames; with \key{Shift}, ten times as far \\
+arrow keys & nudge the selected frames; with \key{Shift}, ten times as far. A run of nudges is one undo step \\
 \key{Delete}, \key{Backspace} & delete the selected frames (locked ones stay) \\
 \key{Ctrl}+\key{D} & duplicate \\
+\key{Ctrl}+\key{C}, \key{Ctrl}+\key{X}, \key{Ctrl}+\key{V} & copy, cut and paste frames, also from one figure to another \\
+\key{Ctrl}+\key{Alt}+\key{C}, \key{Ctrl}+\key{Alt}+\key{V} & copy one frame's style (border, fill, type), put it on the selected frames \\
 \key{Ctrl}+\key{A} & select every frame \\
 \key{Ctrl}+\key{G}, \key{Ctrl}+\key{Shift}+\key{G} & group, ungroup \\
 \key{Ctrl}+\key{]}, \key{Ctrl}+\key{[} & one step forward, back; with \key{Shift}, to the front, to the back \\

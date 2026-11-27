@@ -69,9 +69,9 @@ says *local*, not *sealed* — there is no CSP enforcing it, so it doesn't claim
   `rm data/tocher.csv` refuses while the data is drawn somewhere. `/home` is yours, `/tmp` scratch.
 - **Undo / redo** (Ctrl+Z, Ctrl+Shift+Z, Edit menu, `undo` in the console): every change to the
   project, whoever made it — the menus, a drag, the console.
-- **Figures**: Figure → *New figure from the active net* opens a @gcu/compo page (the net
+- **Figures**: Figure → *New figure from the active diagram* opens a @gcu/compo page (the net
   as vectors, a legend, the statistics, a caption saying what is drawn); export PDF or PNG;
-  *↻ from the net* redraws it after changes. Figures are kept in the project.
+  *↻ from the diagrams* redraws it after changes. Roses and fabric plots make figures too; *+ diagram* adds another. Figures are kept in the project.
 - **Files**: any delimited text (dip direction/dip, right-hand-rule strike/dip, trend/plunge,
   faults, small circles, single attitude columns like `N30E 40SE`) — never refused: what
   couldn't be read is counted, and a guessed column mapping says so.

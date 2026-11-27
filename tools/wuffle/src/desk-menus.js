@@ -59,7 +59,7 @@ export function createMenus(host, { project: p, files, layout, theme, figures, o
       { label: 'Remove the active diagram', action: 'rmnet', disabled: !p.activeDiagram, danger: true },
     ] },
     { label: 'Figure', items: () => [
-      { label: 'New figure from the active net', action: 'figure', disabled: p.diagram(p.activeDiagram)?.kind !== 'net' },
+      { label: 'New figure from the active diagram', action: 'figure', disabled: !p.diagram(p.activeDiagram) },
       ...(p.figures.length ? ['---', ...p.figures.map((f) => ({ label: f.name, action: 'openfig:' + f.id }))] : []),
     ] },
     { label: 'View', items: () => [

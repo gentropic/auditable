@@ -73,10 +73,11 @@ new net|rose|fabric & a new diagram showing the active one's layers \\
 layers & the active diagram's layers, \code{☑} visible \\
 show|hide \emph{element} [\emph{layer}] & poles, circles, contours, mean, eigen, labels, v1, v2, v3 \\
 contour kamb [\emph{k}] | fisher & contours on\index{commands!contour}, by Kamb's method \parencite{kamb1959} at \emph{k}\,$\sigma$, or with a Fisher kernel \\
-select cone \emph{att} \emph{angle} & the poles within \emph{angle} of a direction (a plane's pole, or a line) \\
+add p|l|sc|f \emph{attitudes} & measurements typed in (\cref{sec:add}) \\
+select cone [p|l] \emph{att} \emph{angle} & the poles within \emph{angle} of a direction (a plane's pole, or a line) \\
 select band \emph{plane} \emph{width} & the poles within \emph{width} of a great circle \\
 select all|none|invert & on every layer of the active diagram \\
-stats [\emph{layer}] & n, the Fisher mean with $\kappa$ and $\alpha_{95}$ \parencite{fisher1953}, the eigenvalues, and Woodcock's K and C \parencite{woodcock1977} \\
+stats [\emph{layer}] [-{}-selection] & n, the Fisher mean with $\kappa$ and $\alpha_{95}$ \parencite{fisher1953}, the eigenvalues, and Woodcock's K and C \parencite{woodcock1977} \\
 mean|eigen|beta [\emph{layer}] & keep the result as a dataset, drawn on this diagram \\
 intersect \emph{a} \emph{b} & where two layers' mean planes meet, as a dataset \\
 rotate \emph{tr→pl} | off & center the net on a direction, or back to normal \\
@@ -100,6 +101,33 @@ fails: \ui{“10” — a plane 045/30 or a line 045→30}. In \file{/home} it s
 \file{60} behind. Type the arrow, or quote the attitude: \code{select cone '150>60' 10}. (The
 compass's typed entry, which is not a shell, takes \code{150>60} as it is.)
 \end{caution}
+
+\subsection{Typing measurements in}\label{sec:add}
+
+\code{add} puts attitudes into the project as data, drawn on the active diagram. The first word says what
+the numbers are, so a slash, a comma or a space all read the same:
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}>{\ttfamily\raggedright}p{0.4\linewidth}L@{}}\toprule
+\normalfont\sffamily\bfseries typed & \sffamily\bfseries what it adds \\\midrule
+add p 045/30 120/60 & two planes, dip direction/dip; a list is just more of them \\
+add l 120/40 & a line, trend/plunge (no arrow needed: \code{l} says it is a line) \\
+add sc 120/40 15 & a small circle: its axis, then its half-angle \\
+add f 045/30 120/20 n & a fault: the plane, the slip line, and a sense (\code{n}, \code{r}, \code{d}, \code{s}, or the words), optional \\
+add p 030/40SE & strike/dip and the quadrant it dips toward: the plane 120/40 \\
+add p 030/40 -{}-rhr & strike/dip by the right-hand rule \\
+\bottomrule\end{tabularx}
+\end{center}
+
+The rows collect in a dataset called \ui{typed planes} (or \ui{typed lines}, \ui{typed small circles},
+\ui{typed faults}), drawn on the active diagram; each \code{add} is one undo step. \code{-{}-to
+\emph{name}} adds to another dataset instead, in its own columns (a new name makes a new one; quote a name
+with a space: \code{-{}-to "west limb"}), \code{-{}-net \emph{diagram}} draws it on another diagram, and
+\code{-{}-label \emph{text}} sets a \file{label} column. A fault whose slip line lies more than 10° off its
+plane is added, and the answer says so: more often than not it is a typo.
+
+\code{select cone} takes the same first word, so a line needs no arrow either:
+\code{select cone l 150/60 20}.
 
 \subsection{Answers and failures}
 

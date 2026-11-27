@@ -12,8 +12,9 @@ make them a dataset, or hand them on to the console.
 
 \section{The tool strip}\label{sec:select-tools}
 
-Every net carries a strip of five tools at its top left. Four select; the fifth, \ui{measure}, reads angles
-(\cref{sec:measure}):
+Every net carries a strip of five tools in a row above it. Four select; the fifth, \ui{measure}, reads
+angles (\cref{sec:measure}). Each has a key, shown beside its name: \key{P}, \key{L}, \key{C}, \key{B} and
+\key{M} choose it while the net or the page has the focus, never while you type in a field or the console:
 
 \begin{description}
 \item[\ui{pick}] a click selects the measurement under the pointer. This is the tool a net starts with.
@@ -27,6 +28,28 @@ through them. It selects nothing.
 
 Hover over a tool for a reminder of what it does. A gesture selects in every \emph{visible} layer on that
 net, so hide a layer in the tree to leave it out of a selection.
+
+\section{The net's menu}\label{sec:net-menu}
+
+Right-click a net (with any tool but \ui{measure}, whose right button measures). What the menu offers
+depends on what is under the pointer:
+
+\begin{description}
+\item[A measurement] a pole or a line, or a great or small circle drawn on the net (within a few pixels of
+it). The menu heads with its row and attitude, \ui{tocher \#6 · 117/54}, then: \ui{Select}, \ui{Add to the
+selection} or \ui{Remove from the selection}; \ui{Show its row in the table}, which opens its dataset in the
+table and scrolls to the row; \ui{Copy its attitude}; and its layer, with its elements as checkboxes,
+\ui{Properties…} and \ui{Hide this layer}.
+\item[An empty spot] the attitude there, read both ways (\ui{here · pole of 269/15 · line 089→75}), then
+\ui{Add the plane 269/15} (the plane whose pole is there), \ui{Add the line 089→75}, \ui{Center the net
+here} and \ui{Copy this attitude}. The additions go through the console's \code{add}
+(\cref{sec:add}), into \ui{typed planes} or \ui{typed lines}.
+\end{description}
+
+\noindent And always: \ui{Selection} (\ui{Statistics of the selection}, \ui{Selection → new dataset},
+\ui{Select all}, \ui{Invert}, \ui{Clear}); the net's own settings, the same as its menu in the tree
+(\cref{sec:net-settings}); and the picture: \ui{Export SVG}, \ui{Export PNG} and \ui{Copy as a picture}.
+The picture is the net as a figure draws it: on paper, ink on white, whatever the desk's theme.
 
 \section{Picking}\label{sec:pick}
 

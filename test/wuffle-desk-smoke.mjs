@@ -365,7 +365,7 @@ for (const [label, url] of [['dev', '/tools/wuffle/index.html'], ['built', '/wuf
     const host = document.querySelector('.wfig-host');
     const kinds = f && f.doc.frames.map((x) => x.kind);
     const canvases = host ? host.querySelectorAll('canvas').length : 0;
-    const btns = host ? [...host.querySelectorAll('button')].map((b) => b.textContent.trim()).filter((t) => /Export PDF|from the net/.test(t)) : [];
+    const btns = host ? [...host.querySelectorAll('button')].map((b) => b.textContent.trim()).filter((t) => /Export PDF|from the diagrams/.test(t)) : [];
     const treeHas = [...document.querySelectorAll('.wtree .wsec')].some((e) => /figures/i.test(e.textContent));
     return { n: P.figures.length, tab, kinds, canvases, btns, treeHas };
   });
@@ -393,7 +393,7 @@ for (const [label, url] of [['dev', '/tools/wuffle/index.html'], ['built', '/wuf
     lab.btn && lab.n === 2 && lab.centre && lab.centre.of === lab.net && lab.unitC   // (an earlier step rotated the net: its centre needn't be the vertical)
       && lab.pole && lab.pole.of === lab.net && lab.unitP && /^\d{3}\/\d{2}$/.test(lab.pole.text) && lab.pole.at[2] < 0);
 
-  // ── "↻ from the net" refreshes the figure WITHOUT undoing your edits: a renamed, recoloured legend entry and
+  // ── "↻ from the diagrams" refreshes the figure WITHOUT undoing your edits: a renamed, recoloured legend entry and
   //    a rewritten caption stay; the legend still follows the data (a new layer's entry arrives) ──
   const keep = await p.evaluate(async () => {
     const W = window.__wuffleDesk, P = W.project, wait = (ms) => new Promise((z) => setTimeout(z, ms));
@@ -408,13 +408,31 @@ for (const [label, url] of [['dev', '/tools/wuffle/index.html'], ['built', '/wuf
     P.setFigureDoc(f.id, doc);
     const n0 = leg.content.entries.length;
     await W.console.run('mean tocher');                                 // a new layer on the net → a new legend entry
-    const btn = [...document.querySelectorAll('.wfig-host button')].find((b) => /from the net/.test(b.textContent));
+    const btn = [...document.querySelectorAll('.wfig-host button')].find((b) => /from the diagrams/.test(b.textContent));
     W.rails.activateTab('fig:' + f.id); await wait(200); btn && btn.click(); await wait(300);
     const d2 = P.figure(f.id).doc, L2 = d2.frames.find((x) => x.kind === 'legend'), C2 = d2.frames.find((x) => x.id === 'wuffle-caption');
     return { btn: !!btn, n0, n1: L2.content.entries.length, edit: L2.content.edit && L2.content.edit[k0], cols: L2.content.columns, cap: C2.content.md };
   });
-  chk(`${label}: “↻ from the net” keeps your legend edits (${JSON.stringify(keep.edit)}, ${keep.cols} columns) and your caption, while the legend follows the data (${keep.n0} → ${keep.n1} entries)`,
+  chk(`${label}: “↻ from the diagrams” keeps your legend edits (${JSON.stringify(keep.edit)}, ${keep.cols} columns) and your caption, while the legend follows the data (${keep.n0} → ${keep.n1} entries)`,
     keep.btn && keep.edit && keep.edit.label === 'joints (field)' && keep.cols === 2 && keep.cap === '# My caption\nwritten by hand' && keep.n1 === keep.n0 + 1);
+
+  // ── a rose makes a figure too (vectors, from data); a figure whose diagram changed says "older data" ──
+  {
+    const rf = await p.evaluate(async () => {
+      const W = window.__wuffleDesk, P = W.project, net = P.diagrams.find((g) => g.kind === 'net');
+      let rose = P.diagrams.find((g) => g.kind === 'rose');
+      if (!rose) { W.menus.run('newrose'); await new Promise((r) => setTimeout(r, 300)); rose = P.diagrams.find((g) => g.kind === 'rose'); }
+      if (!P.layersOf(rose.id).length) for (const L of P.layersOf(net.id)) P.addView(L.id, rose.id);
+      const fid = W.figures.newFigure(rose.id); await new Promise((r) => setTimeout(r, 500));
+      const ed = W.figures.editors.get(fid), kinds = ed.getDoc().frames.map((f) => f.kind);
+      const badge0 = [...document.querySelectorAll('.compo-badge')].map((x) => x.textContent);
+      P.setDiagramProps(rose.id, { bins: (rose.props.bins || 10) === 30 ? 15 : 30 }); await new Promise((r) => setTimeout(r, 200)); ed.render();
+      const badge1 = [...document.querySelectorAll('.compo-badge')].map((x) => x.textContent);
+      return { kinds, badge0, badge1 };
+    });
+    chk(`${label}: a rose makes a figure (${JSON.stringify(rf.kinds)}); changing the rose flags it (${JSON.stringify(rf.badge0)} → ${JSON.stringify(rf.badge1)})`,
+      rf.kinds.includes('rose') && rf.kinds.includes('table') && !rf.badge0.includes('older data') && rf.badge1.includes('older data'));
+  }
 
   // ── the MEASURE tool (after OpenStereo 2's): a drag between the strike and the dip line of 120/40 reads ~90°
   //    and the great circle 120/40; "+ plane" adds it as data on that net; a ⇧-drag is the small circle on

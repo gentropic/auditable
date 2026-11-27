@@ -1,7 +1,7 @@
 \chapter{Figures}\label{ch:figures}
 \begin{goals}
-\textbf{In this chapter} you turn a net into a page for a report: the net as vectors, a legend, the
-statistics and a caption, laid out as you like and exported as PDF or PNG.
+\textbf{In this chapter} you turn a diagram into a page for a report: the net, rose or fabric plot as
+vectors, a legend, the statistics and a caption, laid out as you like and exported as PDF or PNG.
 \end{goals}
 
 A net on the desk is drawn for working: it follows the theme, shows the selection, and changes as you
@@ -10,7 +10,7 @@ with compo\index{compo}, the GCU page compositor, and keeps it in the project li
 
 \section{Making one}\label{sec:new-figure}
 
-Make the net you want active, then choose \menu{Figure>New figure from the active net}. A tab called
+Make the net you want active, then choose \menu{Figure>New figure from the active diagram}. A tab called
 \ui{<net> · figure} opens with an A4 landscape page holding five frames:
 
 \begin{description}
@@ -18,16 +18,21 @@ Make the net you want active, then choose \menu{Figure>New figure from the activ
 \item[The net] drawn as vectors, not as a picture, so it stays sharp at any size and in the PDF. It is
 drawn on a white page whatever the desk's theme (the layers keep their colors, the graticule and
 arrows are ink), and it shows the data, not the selection.
-\item[The legend] each visible layer with its color and its count, \ui{tocher (200)}.
-\item[The statistics] a table: for each layer, n, the axial Fisher mean, $\kappa$, $\alpha_{95}$ and
-Woodcock's K (\cref{ch:stats}).
+\item[The legend] each visible layer with its color and its count, \ui{tocher (200)}, and for a contoured
+layer a line saying what its contours are (\ui{tocher · Kamb, 2σ steps (k = 3)}).
+\item[The statistics] a table: for each layer, n, the axial Fisher mean, $\kappa$, $\alpha_{95}$,
+Woodcock's K and V3 (\cref{ch:stats}). A layer with K below 1 is a girdle, which has no center: its mean is
+marked with an asterisk and a note under the table says to read V3, the girdle's pole (β on folded beds).
 \item[The caption] what the reader is looking at, in words: the projection and hemisphere, the rotation if
 any (\cref{ch:rotation}), how the contours were made, the notation (\enquote{Planes as dip direction/dip,
 lines as trend→plunge}), the lineage of any derived dataset on the net, and \enquote{Made with wuffle} with
 the date.
 \end{description}
 
-Only nets make figures. The menu item is grayed out while a rose diagram or a fabric plot is active.
+A rose diagram or a fabric plot makes a figure the same way, and it too is drawn from the data rather
+than pasted in as a picture. A rose figure's table gives each layer's circular mean and R̄ (axial when the
+rose counts both ends); a fabric figure's gives the eigenvalues S1–S3, K, C and whether the layer is a
+cluster or a girdle.
 
 The caption is generated, so it can't disagree with the net. For the Tocher net contoured by Kamb's
 method it reads:
@@ -50,15 +55,31 @@ above the page sets the paper size, orientation, zoom and grid, and adds new fra
 Inside the figure tab \key{Ctrl}+\key{Z} is compo's own undo, step by step through your edits to the
 page. Outside it, the figure's changes are part of the project's history like any other (\cref{sec:undo}).
 
-\section{Keeping it in step with the net}\label{sec:figure-refresh}
+\section{More than one diagram}
 
-A figure is a copy of the net at the moment you made it. When the net changes (more data, a different
-contour method, a rotation), click \ui{↻ from the net} in the figure's bar. The five frames are made again
-from the diagram as it is now; where you put them, how big you made them and any frames you added are
-kept.
+\ui{+ diagram} in the figure's bar lists the project's diagrams; choose one and its diagram, legend and
+statistics frames are added to the page in free space, beside what is already there. If the page has no
+room left, they are added on top and the status bar says so: move or shrink them, or make room first.
 
-If the diagram the figure was made from has been removed, \ui{↻ from the net} says so and changes
-nothing.
+\section{One net's own settings}
+
+Select a net frame and the panel on the right has a section \ui{this net}: projection, hemisphere,
+graticule spacing and \ui{selection}. They change that frame only, not the diagram on the desk, so one
+page can show the same data in two projections. \ui{selection} prints the selected measurements in
+violet; without it a figure shows the data, not the selection. The settings are kept when the figure is
+made again.
+
+\section{Keeping it in step with the diagrams}\label{sec:figure-refresh}
+
+A figure is a copy of its diagrams at the moment you made it. When one changes (more data, a different
+contour method, a rotation), its diagram and statistics frames show a yellow \ui{older data} badge. Click
+\ui{↻ from the diagrams} in the figure's bar: every frame wuffle made is made again from its own diagram as
+it is now. Where you put them, how big you made them, the frames you added and your own edits are kept: a
+legend keeps the labels, colors and order you gave it, a title or caption you rewrote stays yours, and a
+table keeps its type size, decimals and alignment.
+
+If a diagram the figure was made from has been removed, its frames are kept as they were and the status
+bar says how many diagrams are gone.
 
 \section{Export}\label{sec:figure-export}
 
@@ -87,10 +108,11 @@ copy in the project.
 \begin{tryit}
 \begin{enumerate}
 \item Open the Tocher sample and, in the tree, tick \ui{contours} and \ui{mean + cone} on \ui{tocher}.
-\item Choose \menu{Figure>New figure from the active net}. The figure opens in its own tab.
+\item Choose \menu{Figure>New figure from the active diagram}. The figure opens in its own tab.
 \item Drag the legend frame down the page.
 \item In the console, type \code{contour fisher}. The net on the desk changes; the figure doesn't.
-\item Back in the figure, click \ui{↻ from the net}. The contours change and the caption now reads
+\item Back in the figure, the net carries an \ui{older data} badge. Click \ui{↻ from the diagrams}. The
+contours change and the caption now reads
 \enquote{Fisher-kernel density contours}; the legend stays where you put it.
 \item Click \ui{Export PDF}.
 \end{enumerate}

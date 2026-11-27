@@ -1,17 +1,24 @@
-// wuffle desk — figures: compo's editor in a tab, over a page made from a net (figure.js). The host buttons:
-// "↻ from the net" (the frames again from the diagram as it is now, layout kept), Export PDF (vectors — the
-// net is a 'stereonet' frame, not a picture) and Export PNG. Figures are kept in the project.
+// wuffle desk — figures: compo's editor in a tab, over a page made from a diagram — a net, a rose or a fabric plot
+// (figure.js). The host buttons: "+ diagram" (another diagram's frames on this page), "↻ from the diagrams" (every
+// frame again from its diagram as it is now, layout kept), Export PDF (vectors — the net, the rose and the fabric
+// plot are frames drawn from data, not pictures) and Export PNG. A frame whose diagram has changed says "older
+// data"; a net frame has its own projection / hemisphere / graticule / selection in the inspector. Figures are
+// kept in the project.
 
 import * as bearing from '../../../ext/bearing/index.js';
 import { mountEditor, registerKind, exportPDF, exportPNG, setQrEncoder } from '../../../ext/compo/index.js';
+import { Menu } from '../../../ext/menu/index.js';
 import { toMatrix as qrMatrix } from '../../../ext/qr/index.js';
 setQrEncoder(qrMatrix);                                   // a figure's QR frames
 import { stereonetCore } from '../../../ext/stereonet/index.js';
-import { buildFigure, refreshFigure } from './figure.js';
+import { buildFigure, refreshFigure, diagramFrames, staleOf } from './figure.js';
+import { roseKind, fabricKind } from './figure-kinds.js';
 import { sceneLayers } from './layers.js';
 import { formatPlane, formatLine } from '../../../ext/stereonet/index.js';
 
 registerKind('stereonet', stereonetCore(bearing).compoKind());
+registerKind('rose', roseKind(bearing.rose));
+registerKind('fabric', fabricKind());
 
 const download = (blob, name) => {
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; a.click();
@@ -22,6 +29,35 @@ const fileName = (s) => String(s || 'figure').replace(/[^\w.-]+/g, '_');
 export function createFigures({ project: p, layout, onStatus = () => {} }) {
   const editors = new Map();   // figureId → compo editor
   const tabId = (id) => 'fig:' + id;
+  // "older data" badges: the diagrams' contents, computed once per change of the project (a badge is asked for on
+  // every redraw of the page)
+  let staleCache = new Map();
+  p.on((e) => { if (!/^figure/.test(e.type)) staleCache = new Map(); });
+  // a net frame's own view, in the inspector: projection, hemisphere, graticule, selection — kept in source.view
+  // (so ↻ keeps them) and applied at once
+  const VIEW_OPTS = { projection: [['', 'as the diagram'], ['equal-area', 'equal-area (Schmidt)'], ['equal-angle', 'equal-angle (Wulff)']],
+    hemisphere: [['', 'as the diagram'], ['lower', 'lower'], ['upper', 'upper']], graticule: [['', 'as the diagram'], ['5', '5°'], ['10', '10°'], ['15', '15°'], ['30', '30°']] };
+  function netInspector(frame, panel, ed) {
+    const s = frame.source || {}; if (frame.kind !== 'stereonet' || !s.wuffle || !p.diagram(s.diagram)) return;
+    const view = { ...(s.view || {}) };
+    const row = (label, el) => { const r = document.createElement('div'); r.className = 'row'; const a = document.createElement('span'); a.textContent = label; const b = document.createElement('span'); b.className = 'ctl'; b.append(el); r.append(a, b); panel.append(r); };
+    const apply = () => {                                  // one undo step: the setting and the net it makes
+      const doc = JSON.parse(JSON.stringify(ed.getDoc())), fx = doc.frames.find((x) => x.id === frame.id); if (!fx) return;
+      const v2 = Object.fromEntries(Object.entries(view).filter(([, v]) => v !== '' && v != null && v !== false));
+      fx.source = { ...fx.source, view: v2 }; if (!Object.keys(v2).length) delete fx.source.view;
+      const mine = refreshFigure(p, { ...doc, frames: [fx] }).frames[0];
+      ed.update(frame.id, (fr) => { fr.source = mine.source; fr.content = mine.content; });
+    };
+    const h = document.createElement('div'); h.textContent = 'this net'; h.style.cssText = 'font-weight:bold;margin-top:8px'; panel.append(h);
+    for (const [k, opts] of Object.entries(VIEW_OPTS)) {
+      const sel = document.createElement('select'); for (const [v, t] of opts) sel.append(new Option(t, v)); sel.value = view[k] != null ? String(view[k]) : '';
+      sel.onchange = () => { view[k] = k === 'graticule' && sel.value ? +sel.value : sel.value; apply(); };
+      row(k, sel);
+    }
+    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = !!view.selection; cb.title = 'print the selected measurements, in violet';
+    cb.onchange = () => { view.selection = cb.checked; apply(); };
+    row('selection', cb);
+  }
 
   layout.registerPanel('fig:', {
     render(tab) {
@@ -43,10 +79,21 @@ export function createFigures({ project: p, layout, onStatus = () => {} }) {
           }
           return null;
         },
+        frameBadge: (fr) => staleOf(p, fr, staleCache),
+        inspector: (fr, panel, ed2) => netInspector(fr, panel, ed2),
         toolbar: [
-          { label: '↻ from the net', title: 'make the net, legend, statistics and caption again from the diagram as it is now (your layout stays)', run: (e) => {
-            if (!p.diagram(f.from)) { onStatus('the diagram this figure was made from is gone'); return; }
-            e.setDoc(refreshFigure(p, e.getDoc(), f.from)); p.setFigureDoc(f.id, e.getDoc()); onStatus('figure made again from the net');
+          { label: '+ diagram', title: 'another diagram on this page — its frames land in free space', run: async (e) => {
+            const r = e.el ? e.el.getBoundingClientRect() : { left: 200, top: 120 };
+            const a = await Menu.show(p.diagrams.length ? p.diagrams.map((g) => ({ label: `${g.name} (${g.kind})`, action: g.id })) : [{ label: 'no diagrams', disabled: true }], { x: r.left + 260, y: r.top + 40 });
+            if (!a) return;
+            const fs = diagramFrames(p, e.getDoc(), a); for (const fr of fs) e.addFrame(fr);
+            p.setFigureDoc(f.id, e.getDoc()); onStatus(fs.crowded ? `${p.diagram(a).name} added — the page had no room left, so its frames sit on top: move or shrink them (or make room first)` : `${p.diagram(a).name} added to the page`);
+          } },
+          { label: '↻ from the diagrams', title: 'make every diagram, legend, statistics and caption frame again from its diagram as it is now (your layout and your edits stay)', run: (e) => {
+            const ids = [...new Set(e.getDoc().frames.map((x) => x.source && x.source.diagram).filter(Boolean))];
+            const gone = ids.filter((id) => !p.diagram(id));
+            e.setDoc(refreshFigure(p, e.getDoc())); p.setFigureDoc(f.id, e.getDoc());
+            onStatus(`figure made again from ${ids.length - gone.length} diagram${ids.length - gone.length === 1 ? '' : 's'}${gone.length ? ` — ${gone.length} gone (their frames kept as they were)` : ''}`);
           } },
           { label: 'Export PDF', title: 'a vector PDF of the page', run: async (e) => { download(new Blob([await exportPDF(e.getDoc(), { title: f.name, creator: 'wuffle' })], { type: 'application/pdf' }), `${fileName(f.name)}.pdf`); } },
           { label: 'Export PNG', title: 'the page as a picture', run: async (e) => { download(await exportPNG(e.getDoc(), { dpi: 200 }), `${fileName(f.name)}.png`); } },
