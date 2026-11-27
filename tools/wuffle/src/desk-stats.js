@@ -41,6 +41,8 @@ export class StatsView {
         row('mean', isPlane ? `${formatPlane(s.mean.plane)} · pole ${formatLine(s.mean.line)}` : formatLine(s.mean.line), 'axial Fisher mean (poles and lines are axes)');
         row('κ', f(s.mean.kappa, 1), 'Fisher concentration'); row(`α${Math.round(s.mean.confidence * 100)}`, `${f(s.mean.alpha, 1)}°`, 'cone of confidence about the mean');
       } else row('mean', 'needs ≥ 2');
+      if (s.ellipse) row('ellipse', `${f(s.ellipse.a, 1)}° × ${f(s.ellipse.b, 1)}° → ${formatLine(s.ellipse.azimuth)}`, 'the 95 % confidence ellipse about the mean (Kent-style): not a circle when the cluster is drawn out; its long axis toward');
+      if (s.uniformity) row('uniform?', s.uniformity.p < 0.05 ? `no (p ${s.uniformity.p < 0.001 ? '< 0.001' : f(s.uniformity.p, 3)})` : `can't tell (p ${f(s.uniformity.p, 2)})`, 'Bingham’s test of uniformity: a small p says there IS a preferred orientation');
       if (s.eigen) {
         row('S1 S2 S3', s.eigen.values.map((v) => f(v, 3)).join('  '), 'normalised eigenvalues of the orientation tensor');
         const VT = ['the largest eigenvalue’s axis: a cluster’s center', 'the intermediate axis', 'the smallest eigenvalue’s axis: a girdle’s pole (on folded beds, the fold axis)'];

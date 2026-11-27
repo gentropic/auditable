@@ -87,6 +87,7 @@ const ROLE_PATTERNS = {
   trend: /^(trend|tr|trd|lineationtrend|azimuth|az|bearing)$/,
   plunge: /^(plunge|pl|plg|lineationplunge)$/,
   sense: /^(sense|slipsense|kinematics|kin|movement)$/,
+  rake: /^(rake|pitch|slickrake|striarake)$/,
   angle: /^(angle|opening|semiangle|cone|halfangle)$/,
   set: /^(set|family|group|class|domain)$/,
 };
@@ -108,6 +109,10 @@ export function sniffRoles(columns, rows) {
   const set = r.set ? { set: r.set } : {};
   if ((r.dipDir || r.strike) && r.dip && r.trend && r.plunge) {
     return { kind: 'faults', roles: { ...(r.dipDir ? { dipDir: r.dipDir } : { strike: r.strike }), dip: r.dip, trend: r.trend, plunge: r.plunge, ...(r.sense ? { sense: r.sense } : {}), ...set }, notation: r.dipDir ? 'dd' : 'rhr', guessed: false, why: 'plane, line and sense columns' };
+  }
+  // a fault given by its RAKE (pitch) on the plane instead of a slip trend/plunge — the common field form
+  if ((r.dipDir || r.strike) && r.dip && r.rake && !(r.trend && r.plunge)) {
+    return { kind: 'faults', roles: { ...(r.dipDir ? { dipDir: r.dipDir } : { strike: r.strike }), dip: r.dip, rake: r.rake, ...(r.sense ? { sense: r.sense } : {}), ...set }, notation: r.dipDir ? 'dd' : 'rhr', guessed: false, why: `plane, rake (${r.rake}, from the strike, right-hand rule) and sense columns` };
   }
   if (r.trend && r.plunge && r.angle) return { kind: 'smallcircles', roles: { trend: r.trend, plunge: r.plunge, angle: r.angle, ...set }, notation: 'dd', guessed: false, why: 'axis and angle columns' };
   // strike, dip and a dip QUADRANT (030, 40, SE — common field notation): a "dip direction" column holding only
@@ -214,8 +219,13 @@ export function orientations(ds) {
     if (!plane) return null;
     const out = { plane, pole: conversions.planeToDcos(plane[0], plane[1]) };
     if (ds.kind === 'faults') {
-      const tr = +row[roles.trend], pl = +row[roles.plunge];
-      if (Number.isFinite(tr) && Number.isFinite(pl)) { out.line = [tr, pl]; out.lineDcos = conversions.lineToDcos(tr, pl); }
+      if (roles.rake) {                                   // the slip as a rake on the plane: 0–180 from the strike (right-hand rule)
+        const rk = +row[roles.rake];
+        if (row[roles.rake] !== '' && Number.isFinite(rk) && rk >= -180 && rk <= 180) { out.lineDcos = conversions.rakeToDcos(plane[0], plane[1], ((rk % 180) + 180) % 180); out.line = conversions.dcosToLine(out.lineDcos); }
+      } else {
+        const tr = +row[roles.trend], pl = +row[roles.plunge];
+        if (Number.isFinite(tr) && Number.isFinite(pl)) { out.line = [tr, pl]; out.lineDcos = conversions.lineToDcos(tr, pl); }
+      }
       if (roles.sense) out.sense = row[roles.sense];
     }
     return out;

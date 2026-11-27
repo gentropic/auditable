@@ -10,7 +10,8 @@
 import { conversions, io as bio } from '../../../ext/bearing/index.js';
 import { rowsInShape, formatPlane, formatLine } from '../../../ext/stereonet/index.js';
 import { sceneLayers } from './layers.js';
-import { layerStats, deriveMean, deriveEigen, deriveBeta, deriveIntersection, applyTerzaghi } from './stats.js';
+import { layerStats, deriveMean, deriveEigen, deriveBeta, deriveIntersection, applyTerzaghi, deriveRotated, deriveUntilted, deriveDeclination, detectSets, compareMeans, deriveLineations } from './stats.js';
+import { declination as wmmDeclination } from '../../../ext/wmm/index.js';
 
 const ELEMENT_ALIASES = { poles: 'poles', pole: 'poles', points: 'points', circles: 'greatCircles', 'great-circles': 'greatCircles', greatcircles: 'greatCircles',
   contours: 'contours', contour: 'contours', mean: 'mean', eigen: 'eigen', eigenvectors: 'eigen', labels: 'labels', v1: 'v1Pole', v2: 'v2Pole', v3: 'v3Pole' };
@@ -58,6 +59,12 @@ export function parseAdd(args) {
       if (['to', 'net', 'label', 'name'].includes(k)) { const v = words[++i]; if (v == null) throw new Error(`--${k} needs a value`); flags[k === 'name' ? 'to' : k] = v; continue; }
       throw new Error(`add: unknown flag ${w} — --to <dataset> · --net <diagram> · --rhr · --label <text>`);
     }
+    // a fault's slip as a RAKE on its plane: r35 (0–180 from the strike, right-hand rule) — two slots, like a trend/plunge
+    if (kind === 'faults' && /^r\d+(\.\d+)?$/i.test(w)) {
+      const rk = +w.slice(1); if (!(rk >= 0 && rk <= 180)) throw new Error(`“${w}”: a rake is 0–180 from the strike`);
+      if (vals.length % 4 !== 2) throw new Error(`“${w}”: a rake comes after a fault's plane (add f 045/30 r35 n)`);
+      vals.push({ v: rk, rake: true }, { v: 0, rake: true }); continue;
+    }
     if (kind === 'faults' && SENSE_RE.test(w)) {
       if (vals.length % 4 !== 0 || !vals.length) throw new Error(`“${w}”: a sense comes after a fault's four numbers (add f 045/30 120/20 n)`);
       vals[vals.length - 1].sense = SENSE_NAME[w.toLowerCase()] ?? w.toLowerCase(); continue;
@@ -94,7 +101,11 @@ export function parseAdd(args) {
     else if (kind === 'smallcircles') {
       if (g[2].q || !(g[2].v > 0 && g[2].v < 180)) throw new Error(`${at}: a half-angle of ${g[2].v} — between 0 and 180`);
       items.push({ line: line(g[0], g[1], at), angle: g[2].v });
-    } else items.push({ plane: plane(g[0], g[1], at), line: line(g[2], g[3], at), sense: g[3].sense ?? '' });
+    } else {
+      const pl = plane(g[0], g[1], at);
+      const ln = g[2].rake ? conversions.dcosToLine(conversions.rakeToDcos(pl[0], pl[1], g[2].v)).map((x, i) => +(i ? x : ((x % 360) + 360) % 360).toFixed(2) % 360) : line(g[2], g[3], at);
+      items.push({ plane: pl, line: ln, sense: g[3].sense ?? '', ...(g[2].rake ? { rake: g[2].v } : {}) });
+    }
   }
   return { kind, items, flags };
 }
@@ -115,10 +126,16 @@ const HELP = {
   show: 'show <element> [layer] / hide <element> [layer] — poles, circles, contours, mean, eigen, labels, v1…v3',
   contour: 'contour kamb [k] | fisher [layer] [--filled | --lines] [--levels 2,4,6] — contours on, their method, filled bands, your levels',
   terzaghi: 'terzaghi [layer] <tr/pl> [--max 10] | terzaghi [layer] off — weight the planes for a scanline or borehole along tr/pl (contours use it)',
-  add: 'add p 045/30 [more…] | l 120/40 | sc 120/40 15 | f 045/30 120/20 [n|r|d|s] — typed in, into "typed <kind>"\n'
+  add: 'add p 045/30 [more…] | l 120/40 | sc 120/40 15 | f 045/30 120/20 [n|r|d|s] (or f 045/30 r35 n: a rake) — typed in, into "typed <kind>"\n'
     + '    045/30, 045,30 or 45 30 · 030/40SE = strike/dip + quadrant · --rhr (strike/dip) · --to <dataset> · --net <diagram> · --label <text>',
   select: 'select cone [p|l] <dd/dip|tr/pl> <angle> | band <dd/dip> <half-width> | all | none | invert   (+ adds, - subtracts: "select + cone …")',
-  stats: 'stats [layer] [--selection] — n, mean, κ, α95, eigenvalues (of the selected rows only, with --selection)',
+  stats: 'stats [layer] [--selection] [--bootstrap [n]] — n, mean, κ, α95, the confidence ellipse, Bingham uniformity, eigenvalues (the selected rows only, with --selection)',
+  compare: 'compare <layer> <layer> — Watson\'s test: could the two share one mean?',
+  sets: 'sets [layer] [k] — find the sets (a mixture of Fisher distributions; without k the number is chosen by BIC), written as a set column',
+  turn: 'turn [layer] about <tr/pl> <angle> — the DATA rotated (clockwise looking down the axis), as a new dataset (rotate turns the view)',
+  untilt: 'untilt [layer] <dd/dip> — the data with a bedding\'s tilt taken out (rotated about its strike until it is flat), as a new dataset',
+  declination: 'declination [layer] <degrees, east +> | --at <lat,lon> [--date YYYY-MM-DD] — magnetic → true north (WMM2025), as a new dataset',
+  lineations: 'lineations <layer> <layer> — every plane of one against every plane of the other: the lines they meet in, as a dataset',
   mean: 'mean [layer] / eigen [layer] / beta [layer] — keep the result as a dataset, drawn on this diagram',
   intersect: 'intersect <layer> <layer> — where their mean planes meet, as a dataset',
   rotate: 'rotate <tr→pl> | rotate off — center the net on a direction',
@@ -272,16 +289,65 @@ export function createCommands(ctx) {
       const r = applyTerzaghi(p, L.datasetId, a.line, { max });
       return `${dsName(L)}: Terzaghi weights for a line ${formatLine(a.line)} — ${r.n} planes, ${r.min.toFixed(2)}–${r.max.toFixed(2)}${r.capped ? `, ${r.capped} capped at ${max}` : ''}; contours weighted (statistics are not)`;
     },
-    stats(args) {
+    stats(args0) {
+      let boot = 0; const args = [];
+      for (let i = 0; i < args0.length; i++) { if (args0[i] === '--bootstrap') { boot = /^\d+$/.test(args0[i + 1] || '') ? +args0[++i] : 1000; } else args.push(args0[i]); }
       const part = args.some((a) => /^(--?sel(ection)?|sel(ection)?)$/i.test(a)), name = args.filter((a) => !/^(--?sel(ection)?|sel(ection)?)$/i.test(a));
       const L = layerNamed(name.join(' '), { required: true }), ds = p.dataset(L.datasetId), isPlane = ds.kind !== 'lines';
       const rows = part ? p.selected(ds.id) : null;
       if (part && !rows.length) throw new Error(`nothing selected in ${dsName(L)} — select some (select cone …, or on the net), then stats --selection`);
-      const s = layerStats(ds, rows ? { rows } : {});
+      const s = layerStats(ds, { ...(rows ? { rows } : {}), bootstrap: boot });
       const out = [`${dsName(L)}${part ? ` · selection` : ''} · n ${s.n}${part ? ` of ${ds.rows.length}` : ''}`];
       if (s.mean) out.push(`mean ${isPlane ? formatPlane(s.mean.plane) + ' · pole ' : ''}${formatLine(s.mean.line)} · κ ${s.mean.kappa.toFixed(1)} · α95 ${s.mean.alpha.toFixed(1)}°`);
+      if (s.ellipse) out.push(`95 % ellipse ${s.ellipse.a.toFixed(1)}° × ${s.ellipse.b.toFixed(1)}°, long axis toward ${formatLine(s.ellipse.azimuth)}`);
+      if (s.bootstrap) out.push(`bootstrap cone ${s.bootstrap.halfAngle.toFixed(1)}° (${s.bootstrap.iterations} resamplings)`);
       if (s.eigen) out.push(`S ${s.eigen.values.map((x) => x.toFixed(3)).join(' ')} · K ${s.eigen.K.toFixed(2)} · C ${s.eigen.C.toFixed(2)}`);
+      if (s.uniformity) out.push(`uniformity (Bingham): p ${s.uniformity.p < 0.001 ? '< 0.001' : s.uniformity.p.toFixed(3)} — ${s.uniformity.p < 0.05 ? 'a preferred orientation' : 'no preferred orientation shown (could be uniform)'}`);
       return out.join('\n');
+    },
+    compare([a, b]) {
+      if (!a || !b) throw new Error('compare <layer> <layer>');
+      const A = layerNamed(a), B = layerNamed(b), r = compareMeans(p.dataset(A.datasetId), p.dataset(B.datasetId));
+      return `${dsName(A)} (n ${r.nA}) vs ${dsName(B)} (n ${r.nB}) — Watson F ${r.F.toFixed(2)} (${r.df[0]}, ${r.df[1]}), p ${r.p < 0.001 ? '< 0.001' : r.p.toFixed(3)}: `
+        + (r.p < 0.05 ? 'their means differ (at 95 %)' : 'one mean could serve both (the test can\'t tell them apart at 95 %)');
+    },
+    sets([...args]) {
+      const k = /^\d+$/.test(args[args.length - 1] || '') ? +args.pop() : null;
+      if (k != null && !(k >= 1 && k <= 9)) throw new Error('sets [layer] [k 1–9]');
+      const L = layerNamed(args.join(' '), { required: true }), r = detectSets(p, L.datasetId, k);
+      return [`${dsName(L)}: ${r.k} set${r.k === 1 ? '' : 's'}${r.chose ? ' (the number chosen by BIC)' : ''} — written as the column “set”`,
+        ...r.sets.map((x) => `  ${x.name}  n ${x.n} (${(x.weight * 100).toFixed(0)} %)  ${x.plane ? formatPlane(x.plane) + ' · pole ' : ''}${formatLine(x.axis)}  κ ${x.kappa.toFixed(1)}`)].join('\n');
+    },
+    turn(args) {
+      const at = args.indexOf('about'); if (at < 0 || args.length < at + 3) throw new Error('turn [layer] about <tr/pl> <angle>');
+      const a = parseAttitude(args[at + 1], 'line'), ang = +args[at + 2];
+      if (!a || !Number.isFinite(ang)) throw new Error('turn [layer] about <tr/pl> <angle> — e.g. turn about 045/30 20');
+      const L = layerNamed(args.slice(0, at).join(' '), { required: true });
+      return derived(() => deriveRotated(p, L.datasetId, { axis: a.line, angle: ang }));
+    },
+    untilt(args) {
+      const a = parseAttitude(args[args.length - 1] || '', 'plane'); if (!a) throw new Error('untilt [layer] <dd/dip> — the bedding to take back to horizontal');
+      const L = layerNamed(args.slice(0, -1).join(' '), { required: true });
+      return derived(() => deriveUntilted(p, L.datasetId, a.plane));
+    },
+    declination(args0) {
+      let at = null, date = new Date(); const args = [];
+      for (let i = 0; i < args0.length; i++) {
+        if (args0[i] === '--at') { const m = String(args0[++i] || '').split(',').map(Number); if (m.length !== 2 || !m.every(Number.isFinite)) throw new Error('--at lat,lon (decimal degrees)'); at = m; }
+        else if (args0[i] === '--date') { const d = new Date(args0[++i]); if (isNaN(d)) throw new Error('--date YYYY-MM-DD'); date = d; }
+        else args.push(args0[i]);
+      }
+      let deg, source = null;
+      if (at) { deg = wmmDeclination(at[0], at[1], date); source = `WMM2025 at ${at[0]}, ${at[1]} on ${date.toISOString().slice(0, 10)}`; }
+      else { const v = args.pop(); deg = +v; if (!Number.isFinite(deg)) throw new Error('declination [layer] <degrees, east +> | --at lat,lon [--date YYYY-MM-DD]'); }
+      if (Math.abs(deg) > 90) throw new Error(`a declination of ${deg}° — near a magnetic pole a compass can't be corrected`);
+      const L = layerNamed(args.join(' '), { required: true });
+      const out = derived(() => deriveDeclination(p, L.datasetId, deg, { source }));
+      return `${source ? `declination ${deg >= 0 ? '+' : ''}${deg.toFixed(2)}° (${source}) ` : ''}${out}`;
+    },
+    lineations([a, b]) {
+      if (!a || !b) throw new Error('lineations <layer> <layer>');
+      return derived(() => deriveLineations(p, layerNamed(a).datasetId, layerNamed(b).datasetId));
     },
     mean([...name]) { const L = layerNamed(name.join(' '), { required: true }); return derived(() => deriveMean(p, L.datasetId)); },
     eigen([...name]) { const L = layerNamed(name.join(' '), { required: true }); return derived(() => deriveEigen(p, L.datasetId)); },

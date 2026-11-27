@@ -197,3 +197,50 @@ describe('contours and weights', () => {
     c.run('undo'); assert.equal(p.dataset(id).roles.weight, undefined); assert.ok(!p.dataset(id).columns.includes('terzaghi_w'), 'the column goes with it');
   });
 });
+
+// ── batch 5, the data turned and the statistics that ask questions ──
+describe('turning data, sets, tests, rakes', () => {
+  const lines = (p, rows) => p.addDataset({ name: 'L', kind: 'lines', rows, roles: { trend: 'trend', plunge: 'plunge' }, notation: 'dd' });
+  it('turn, untilt and declination: new datasets with lineage, other columns kept', () => {
+    const { p, c } = mk(); const L = lines(p, [{ trend: 0, plunge: 30, note: 'x' }]); p.addLayer(p.activeDiagram, L);
+    assert.match(c.run('declination L 10').text, /true north \(\+10\.00°\)/);
+    const d = p.datasets.at(-1); assert.deepEqual([d.rows[0].trend, d.rows[0].plunge, d.rows[0].note], [10, 30, 'x']); assert.equal(d.lineage.op, 'declination');
+    c.run('turn L about 000/90 90'); assert.equal(p.datasets.at(-1).rows[0].trend, 90, 'clockwise looking down the axis');
+    const P = p.addDataset({ name: 'P', kind: 'planes', rows: [{ dd: 120, dip: 40 }, { dd: 120, dip: 70 }], roles: { dipDir: 'dd', dip: 'dip' }, notation: 'dd' }); p.addLayer(p.activeDiagram, P);
+    c.run('untilt P 120/40'); const u = p.datasets.at(-1).rows;
+    assert.equal(u[0].dip, 0, 'the bedding itself flat'); assert.equal(u[1].dip, 30);
+    assert.match(c.run('declination L --at -20,-44 --date 2026-01-01').text, /WMM2025 at -20, -44 on 2026-01-01/);
+  });
+  it('sets: a set column, S1 the largest; k given or chosen; reproducible', () => {
+    const { p, c } = mk(); c.run('sample');
+    const r1 = c.run('sets 2').text, r2 = c.run('sets 2').text;
+    assert.equal(r1, r2, 'the same answer each time'); assert.match(r1, /2 sets/);
+    const ds = p.datasets[0]; assert.equal(ds.roles.set, 'set');
+    const n = (s) => ds.rows.filter((r) => r.set === s).length; assert.ok(n('S1') >= n('S2') && n('S1') + n('S2') === 200);
+    assert.match(c.run('sets').text, /chosen by BIC/);
+  });
+  it('compare: Watson says two different clusters differ, and one split in halves does not', () => {
+    const { p, c } = mk();
+    c.run('add p 045/30 047/32 043/29 046/31 044/33 --to A'); c.run('add p 135/60 137/62 133/59 136/61 --to B'); c.run('add p 046/30 045/32 044/31 045/29 --to C');
+    assert.match(c.run('compare A B').text, /their means differ/);
+    assert.match(c.run('compare A C').text, /one mean could serve both/);
+  });
+  it('stats: the ellipse, Bingham uniformity, a bootstrap cone when asked', () => {
+    const { c } = mk(); c.run('sample');
+    const t = c.run('stats --bootstrap 200').text;
+    assert.match(t, /95 % ellipse [\d.]+° × [\d.]+°/); assert.match(t, /uniformity \(Bingham\): p < 0\.001 — a preferred orientation/); assert.match(t, /bootstrap cone [\d.]+° \(200 resamplings\)/);
+  });
+  it('lineations: every plane of one against every plane of the other', () => {
+    const { p, c } = mk(); c.run('add p 090/30 --to A'); c.run('add p 000/30 --to B');
+    assert.match(c.run('lineations A B').text, /A ∩ B \(1 row\)/);
+    const r = p.datasets.at(-1).rows[0]; assert.ok(Math.abs(r.trend - 45) < 0.5 && Math.abs(r.plunge - 22.2) < 0.5, JSON.stringify(r));
+  });
+  it('a fault by its rake: typed (r35) and read from a rake column', () => {
+    assert.deepEqual(parseAdd(['f', '090/60', 'r90', 'n']).items[0].line, [90, 60], 'rake 90: down the dip');
+    assert.deepEqual(parseAdd(['f', '090/60', 'r0']).items[0].line, [0, 0], 'rake 0: along the strike (right-hand rule)');
+    assert.throws(() => parseAdd(['f', 'r35', '090/60']), /after a fault's plane/);
+    const [ds] = readTable('dd,dip,rake,sense\n090,60,90,n\n', 'f');
+    assert.equal(ds.kind, 'faults'); assert.equal(ds.roles.rake, 'rake');
+    assert.deepEqual(orientations(ds)[0].line.map((x) => Math.round(x)), [90, 60]);
+  });
+});

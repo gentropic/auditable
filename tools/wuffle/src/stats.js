@@ -5,8 +5,13 @@
 //   deriveEigen(p, dsId)      V1–V3 as a lines dataset (with their eigenvalues)
 //   deriveBeta(p, dsId)       a β diagram: every pairwise intersection of a planes dataset, as lines
 //   deriveIntersection(p, a, b)  the line where two datasets' mean planes meet
+//   deriveRotated / deriveUntilted / deriveDeclination   the data turned (about an axis, back from a bedding
+//                             tilt, by a magnetic declination) — every non-orientation column kept
+//   detectSets(p, dsId, k?)   sets found by a mixture of Fisher distributions (bearing's EM, BIC picks k)
+//   compareMeans(a, b)        Watson's test: could the two sets share one mean?
+//   deriveLineations(p, a, b) every plane of one set against every plane of another, as lines
 
-import { statistics, conversions, fault } from '../../../ext/bearing/index.js';
+import { statistics, conversions, fault, analysis, cluster } from '../../../ext/bearing/index.js';
 import { orientations } from './io.js';
 
 const LINE_ROLES = { trend: 'trend', plunge: 'plunge' };
@@ -30,7 +35,7 @@ export function faultStress(ds) {
 }
 
 /** @returns {{ n, mean?, eigen? }} — mean and eigen need ≥ 2 and ≥ 3 measurements */
-export function layerStats(ds, { confidence = 0.95, rows = null } = {}) {
+export function layerStats(ds, { confidence = 0.95, rows = null, bootstrap = 0 } = {}) {
   // rows: only these (a selection) — the same statistics, of a part of the data
   if (rows) ds = { ...ds, rows: rows.filter((i) => i >= 0 && i < ds.rows.length).map((i) => ds.rows[i]) };
   const axes = axesOf(ds), n = axes.length, out = { n, of: ds.rows.length, kind: ds.kind, ...(rows ? { part: true } : {}) };
@@ -42,6 +47,13 @@ export function layerStats(ds, { confidence = 0.95, rows = null } = {}) {
     const pa = statistics.principalAxes(axes);
     out.eigen = { values: pa.eigenvalues, vectors: pa.eigenvectors.map((v) => ({ dcos: v, line: conversions.dcosToLine(v), plane: conversions.dcosToPlane(v) })),
       K: pa.K, C: pa.C, P: pa.P, G: pa.G, R: pa.R };
+  }
+  if (n >= 3) {
+    // the KENT-style confidence ellipse (its cone is not round when the cluster isn't) and BINGHAM's test of
+    // uniformity: is there a preferred orientation at all? (p small: yes)
+    try { const e = statistics.confidenceEllipse(axes, { confidence }); out.ellipse = { a: e.a, b: e.b, azimuth: e.azimuth, center: e.center }; } catch { /* degenerate */ }
+    try { const u = statistics.uniformityTest(axes); out.uniformity = { statistic: u.statistic, p: u.p }; } catch { /* */ }
+    if (bootstrap > 0) { const b = statistics.bootstrapMeanConfidence(axes, { confidence, iterations: bootstrap, rng: seeded(1) }); out.bootstrap = { halfAngle: b.halfAngle, iterations: b.iterations }; }
   }
   if (ds.kind === 'faults') out.stress = faultStress(ds);
   return out;
@@ -69,6 +81,92 @@ export function applyTerzaghi(p, dsId, line, opts = {}) {
   });
   const ok = w.filter((x) => x != null);
   return { n: ok.length, min: Math.min(...ok), max: Math.max(...ok), capped: ok.filter((x) => x >= (+opts.max || 10)).length };
+}
+
+// a reproducible random stream (sets and bootstraps come out the same each time you ask)
+function seeded(a) { return () => { a |= 0; a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+
+// ── the data TURNED: about an axis, back from a tilt, by a declination. Every row keeps its other columns (a set,
+// a label, a note); the orientation columns are written as dip direction/dip and trend/plunge ──
+const ROLES_OF = { planes: PLANE_ROLES, lines: LINE_ROLES, smallcircles: { ...LINE_ROLES, angle: 'angle' },
+  faults: { ...PLANE_ROLES, trend: 'trend', plunge: 'plunge', sense: 'sense' } };
+function rowsFor(ds, turn) {
+  const os = orientations(ds), roleCols = new Set(Object.values(ds.roles || {}).filter((c) => c !== ds.roles.set && c !== ds.roles.weight));
+  const rows = []; let skipped = 0;
+  os.forEach((o, i) => {
+    if (!o) { skipped++; return; }
+    const keep = {}; for (const [k, v] of Object.entries(ds.rows[i])) if (!roleCols.has(k)) keep[k] = v;
+    let row;
+    if (ds.kind === 'lines' || ds.kind === 'smallcircles') row = { ...lineRow(turn(o.dcos)), ...(ds.kind === 'smallcircles' ? { angle: o.angle } : {}) };
+    else { row = planeRow(turn(o.pole)); if (ds.kind === 'faults') { if (o.lineDcos) Object.assign(row, lineRow(turn(o.lineDcos))); row.sense = o.sense ?? ''; } }
+    rows.push({ ...keep, ...row });
+  });
+  return { rows, skipped };
+}
+const turned = (p, ds, dsId, turn, name, op, params) => {
+  const { rows } = rowsFor(ds, turn);
+  if (!rows.length) throw new Error(`“${ds.name}” has nothing readable to turn`);
+  return p.derive({ name, kind: ds.kind, rows, roles: { ...ROLES_OF[ds.kind], ...(ds.roles.set && rows[0] && ds.roles.set in rows[0] ? { set: ds.roles.set } : {}) }, notation: 'dd', op, params, sources: [dsId] });
+};
+const fmtL = ([t, p]) => `${String(Math.round(t)).padStart(3, '0')}→${Math.round(p)}`;
+/** rotated by `angle`° about the line axis [trend, plunge] (right-handed: clockwise looking down the axis) */
+export function deriveRotated(p, dsId, { axis, angle }) {
+  const ds = p.dataset(dsId), A = conversions.lineToDcos(axis[0], axis[1]);
+  return turned(p, ds, dsId, (d) => conversions.rotateDcos(d, A, angle), `${ds.name} · rotated ${angle}° about ${fmtL(axis)}`, 'rotate', { axis, angle });
+}
+/** the data with a bedding's tilt taken out: rotated about the bedding's strike until it is horizontal */
+export function deriveUntilted(p, dsId, bedding) {
+  const ds = p.dataset(dsId);
+  return turned(p, ds, dsId, (d) => analysis.unfold([d], bedding[0], bedding[1])[0], `${ds.name} · untilted (${String(Math.round(bedding[0])).padStart(3, '0')}/${Math.round(bedding[1])})`, 'untilt', { bedding });
+}
+/** azimuths turned by a magnetic declination (east positive): magnetic → true. The plunges and dips stay */
+export function deriveDeclination(p, dsId, declination, { source = null } = {}) {
+  const ds = p.dataset(dsId), V = [0, 0, -1];                    // down: a positive angle about it turns azimuths clockwise
+  return turned(p, ds, dsId, (d) => conversions.rotateDcos(d, V, declination), `${ds.name} · true north (${declination >= 0 ? '+' : ''}${declination.toFixed(2)}°)`, 'declination', { declination, ...(source ? { source } : {}) });
+}
+
+// ── SETS: a mixture of Fisher distributions fitted to the poles (bearing's EM; BIC chooses k when you don't) —
+// written as a column, so a set is selectable, colourable, its own dataset when you want ──
+export function detectSets(p, dsId, k = null, { kMax = 5, column = 'set' } = {}) {
+  const ds = p.dataset(dsId), os = orientations(ds), idx = [], axes = [];
+  os.forEach((o, i) => { if (o) { idx.push(i); axes.push(o.pole || o.dcos); } });
+  if (axes.length < 6) throw new Error(`“${ds.name}”: finding sets needs at least 6 measurements (${axes.length})`);
+  const rng = seeded(7);
+  const fit = k ? cluster.fitSetsEM(axes, k, { rng }) : cluster.selectSets(axes, { kMin: 1, kMax, rng }).best;
+  // the sets in order of size, S1 the largest
+  const order = fit.components.map((c, j) => j).sort((a, b) => fit.components[b].weight - fit.components[a].weight), rank = new Map(order.map((j, r) => [j, r]));
+  const name = (j) => `S${rank.get(j) + 1}`;
+  p.batch('find sets', () => {
+    p.editRows(dsId, (rows) => { const out = rows.map((r) => ({ ...r, [column]: '' })); idx.forEach((i, m) => { out[i][column] = name(fit.assignments[m]); }); return out; });
+    p.setRoles(dsId, { set: column });
+  });
+  const isPlane = ds.kind !== 'lines';
+  return { k: fit.components.length, chose: !k, sets: order.map((j) => { const c = fit.components[j]; return { name: name(j), n: fit.assignments.filter((a) => a === j).length, weight: c.weight, kappa: c.kappa, axis: c.axis, plane: isPlane ? conversions.dcosToPlane(c.axisDir) : null }; }) };
+}
+
+/** WATSON's test for a common mean (F test on the resultants): could two sets of axes share one mean? */
+export function compareMeans(dsA, dsB) {
+  const a = axesOf(dsA), b = axesOf(dsB);
+  if (a.length < 2 || b.length < 2) throw new Error('each set needs at least two measurements');
+  // axial data: align b's axes to a's mean before testing (an axis and its opposite are one direction)
+  const ma = statistics.fisherStats(a, { axial: true }).mean, align = (arr) => arr.map((d) => (d[0] * ma[0] + d[1] * ma[1] + d[2] * ma[2] < 0 ? [-d[0], -d[1], -d[2]] : d));
+  const t = statistics.commonMeanTest(align(a), align(b));
+  return { F: t.F, p: t.p, df: [t.df1, t.df2], nA: a.length, nB: b.length };
+}
+
+/** every plane of A against every plane of B: the lines they meet in (intersection lineations; β across two sets) */
+export function deriveLineations(p, aId, bId, { max = 20000 } = {}) {
+  const A = p.dataset(aId), B = p.dataset(bId);
+  const pa = orientations(A).filter((o) => o && o.plane), pb = orientations(B).filter((o) => o && o.plane);
+  if (!pa.length || !pb.length) throw new Error('lineations need two plane datasets');
+  if (pa.length * pb.length > max) throw new Error(`${pa.length} × ${pb.length} = ${pa.length * pb.length} lines — more than ${max}; select fewer (a set, a selection → dataset)`);
+  const rows = [];
+  for (const x of pa) for (const y of pb) {
+    const c = [x.pole[1] * y.pole[2] - x.pole[2] * y.pole[1], x.pole[2] * y.pole[0] - x.pole[0] * y.pole[2], x.pole[0] * y.pole[1] - x.pole[1] * y.pole[0]];
+    const L = Math.hypot(...c); if (L < 1e-6) continue;          // parallel planes meet nowhere
+    rows.push(lineRow(c.map((v) => v / L)));
+  }
+  return p.derive({ name: `${A.name} ∩ ${B.name}`, kind: 'lines', rows, roles: LINE_ROLES, notation: 'dd', op: 'lineations', params: {}, sources: [aId, bId] });
 }
 
 export function deriveMean(p, dsId) {
