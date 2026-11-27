@@ -809,6 +809,7 @@ export async function openProjectDir(dir, { pack = null } = {}) {
       if (!L) { plRow(i, 'failed to open', 'skip'); continue; }   // that open failed; its layer rolled back
       if (ls.drape && L.gridSurface) L._pendingDrape = ls.drape;   // apply after ALL layers land (the drape grid may come later)
       if (ls.value && ls.value.name && L.docs && L.docs.gridDoc) L.gridValue = { ...ls.value };   // the grid's value, named
+      if (ls.place && ls.place.kind && L.gridSurface) L.surfacePlace = { ...ls.place };       // where its sheet sits (draped on a surface: rebuilt below, once every layer is in)
       // the colour range (a Δz sheet's ±m, aspect's 0–360): saved, and never restored before
       if (Array.isArray(ls.range) && ls.range.length === 2 && L.gridSurface) { L.surfaceRange = ls.range.map(Number); if (!L._pendingDrape) rebuildSurface(L); }
       // stats + bands are only good in the coordinate frame they were read in: a rotated
@@ -865,6 +866,8 @@ export async function openProjectDir(dir, { pack = null } = {}) {
       L._pendingDrape = null;
       if (g) { try { recolorSurface(L, g); } catch { /* drape grid gone/incompatible → stays elevation */ } }
     }
+    // a sheet draped ON a surface: rebuilt once that surface is in (recolorSurface above rebuilt the drape ones)
+    for (const L of S.layers) if (L.gridSurface && L.surfacePlace && L.surfacePlace.kind === 'onto' && !L.drapeSource) { try { rebuildSurface(L); } catch { /* the surface is gone: the flat level stands */ } }
     await settleQualifyReopens();                          // stored <x / >x policies: re-read a channel the open coloured by the default
     await loadRecipes(dir);                               // recipes/ *.yaml → Tools → Recipes
     // pinned analysis windows come back configured (after ALL layers landed —

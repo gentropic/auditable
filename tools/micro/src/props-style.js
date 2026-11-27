@@ -3,10 +3,10 @@
 // and interval table, the rule list, the class list and its legend, stick radius and
 // mesh tint. The engines they drive live in src/ramp.js, src/categories.js and
 // src/rules.js; the panel itself in src/props.js.
-import { setGridBand, recolorSurface, setSurfaceFlatZ, setSurfaceSmooth } from './surfaces.js';
+import { setGridBand, recolorSurface, setSurfaceFlatZ, setSurfaceSmooth, setSurfacePlace, surfacePlaceZ, applyLayerSurface, captureLayerSurface } from './surfaces.js';
 import { tok } from './theme.js';
 import { mkRow, stageGate, renderProps, ppNote, refreshProps, wireScanButton } from './props.js';
-import { layerHeaderOf, layerTableHeader, colIsNumeric, schemaExt } from './records.js';
+import { layerHeaderOf, layerTableHeader, colIsNumeric, schemaExt, layerWorldBox } from './records.js';
 import { S, requestRender, activeLayer } from './state.js';
 import { setMeshTint, convertMeshLayer, applyLayerOpacity } from './layermenu.js';
 import { markProjectDirty } from './project.js';
@@ -32,6 +32,54 @@ import { layerPositions } from './bygeom.js';
 import { microPrompt } from './prompts.js';
 const $ = (s) => document.querySelector(s);
 
+// ── ELEVATION FROM: a grid's z is its value (a relief, a DEM) or not (a data grid: FE_max, Δz, slope) — then a
+// sheet placed at a level, at the top or bottom of a layer's box (+ an offset), or draped on a surface. One
+// choice, saved with the project and the scenes (surfaces.js setSurfacePlace / captureLayerSurface). ──
+function elevationFromRow(L) {
+  const wrap = document.createElement('span'); wrap.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:6px';
+  const mk = (tag, props = {}) => Object.assign(document.createElement(tag), props);
+  const sel = mk('select');
+  for (const [v, t] of [['value', 'its value (a relief)'], ['level', 'none — a level'], ['top', 'none — the top of a layer'], ['bottom', 'none — the bottom of a layer'], ['onto', 'none — on a surface']]) sel.append(new Option(t, v));
+  const P = L.surfacePlace, flat = L.gridSurface && L.surfaceFlatZ != null;
+  sel.value = !flat ? 'value' : P ? P.kind : 'level';
+  const zIn = mk('input', { type: 'number', step: 'any', value: flat ? L.surfaceFlatZ : 0, title: 'the sheet\u2019s level (world z)' }); zIn.style.width = '84px';
+  const ly = mk('select', { title: 'the layer it is placed by' });
+  const offIn = mk('input', { type: 'number', step: 'any', value: P && P.offset != null ? P.offset : 0, title: 'metres above (+) or below (\u2212)' }); offIn.style.width = '64px';
+  const offLab = mk('span', { className: 'pp-val', textContent: '\u00b1' });
+  const fill = () => {
+    const k = sel.value, want = k === 'onto' ? S.layers.filter((x) => x !== L && x.docs && x.docs.gridDoc && x.docs.gridDoc.grid) : S.layers.filter((x) => x !== L && layerWorldBox(x));
+    ly.replaceChildren(...want.map((x) => new Option(x.label || x.name, x.name)));
+    if (P && P.layer && want.some((x) => x.name === P.layer)) ly.value = P.layer;
+    zIn.style.display = k === 'level' ? '' : 'none';
+    ly.style.display = offIn.style.display = offLab.style.display = k === 'top' || k === 'bottom' || k === 'onto' ? '' : 'none';
+  };
+  let busy = false;
+  const apply = async () => {
+    const k = sel.value;
+    // one change at a time, and only while this row's layer is still the loaded one: a points grid made a sheet
+    // is reopened as a new layer (the pane redraws onto it) — a second change on the old one made a second copy
+    if (busy || !S.layers.includes(L)) return;
+    busy = true;
+    try {
+      if (!L.gridSurface) {                                  // a points grid: "none" turns it into a sheet (a reopen)
+        if (k === 'value') return;
+        const z = k === 'level' ? +zIn.value || 0 : surfacePlaceZ({ kind: k, layer: ly.value, offset: +offIn.value || 0 });
+        await applyLayerSurface(L, { ...captureLayerSurface(L), gridSurface: true, flatZ: z, ...(k === 'level' ? {} : { place: { kind: k, layer: ly.value, offset: +offIn.value || 0 } }) });
+        renderProps(); return;
+      }
+      if (k === 'value') setSurfacePlace(L, null);
+      else if (k === 'level') setSurfacePlace(L, { kind: 'level', z: +zIn.value || 0 });
+      else if (ly.value) setSurfacePlace(L, { kind: k, layer: ly.value, offset: +offIn.value || 0 });
+    } catch (e) { $('#meta').textContent = e.message; }
+    finally { busy = false; }
+  };
+  sel.onchange = () => { fill(); apply(); };
+  zIn.onchange = apply; ly.onchange = apply; offIn.onchange = apply;
+  fill();
+  wrap.append(sel, zIn, ly, offLab, offIn);
+  return wrap;
+}
+
 export function renderStyleTab(body, L) {
   const gdoc = L.docs && L.docs.gridDoc;                    // multi-band GeoTIFF: pick the band (like a channel) — points OR surface
   if (gdoc && gdoc.grid && gdoc.grid.bands > 1) {
@@ -41,6 +89,8 @@ export function renderStyleTab(body, L) {
     sel.onchange = () => setGridBand(L, +sel.value);
     body.appendChild(mkRow('band', sel));
   }
+  // a grid drawn as points: its value is its elevation; "none" makes it a flat sheet (a data grid)
+  if (L.docs && L.docs.gridDoc && !L.gridSurface) body.appendChild(mkRow('elevation from', elevationFromRow(L)));
   if (L.kind === 'mesh') {
     const h = layerHeaderOf(L);
     if (L.gridSurface) {                                    // a heightfield surface: colour by elevation or a draped grid
@@ -51,16 +101,7 @@ export function renderStyleTab(body, L) {
       sel.value = L.drapeSource || '';
       sel.onchange = () => { const g = grids.find((x) => x.name === sel.value); recolorSurface(L, g || null); };
       body.appendChild(mkRow('drape', sel));
-      // shape: relief heightfield, or a FLAT horizontal sheet at a world z (for a
-      // 2D data grid with no DEM — appears as a plan sheet coloured by its value)
-      const shp = document.createElement('span'); shp.style.cssText = 'display:flex;align-items:center;gap:6px';
-      const flatChk = document.createElement('input'); flatChk.type = 'checkbox'; flatChk.checked = L.surfaceFlatZ != null;
-      const zIn = document.createElement('input'); zIn.type = 'number'; zIn.step = 'any'; zIn.style.width = '84px'; zIn.value = L.surfaceFlatZ != null ? L.surfaceFlatZ : 0; zIn.style.display = L.surfaceFlatZ != null ? '' : 'none';
-      const zLab = document.createElement('span'); zLab.className = 'pp-val'; zLab.textContent = 'flat @ z'; zLab.style.display = L.surfaceFlatZ != null ? '' : 'none';
-      flatChk.onchange = () => { const on = flatChk.checked; zIn.style.display = on ? '' : 'none'; zLab.style.display = on ? '' : 'none'; setSurfaceFlatZ(L, on ? (+zIn.value || 0) : null); };
-      zIn.onchange = () => { if (flatChk.checked) setSurfaceFlatZ(L, +zIn.value || 0); };
-      shp.append(flatChk, document.createTextNode(' flatten'), zLab, zIn);
-      body.appendChild(mkRow('shape', shp));
+      body.appendChild(mkRow('elevation from', elevationFromRow(L)));
       // shading: smooth grid-gradient normals vs faceted (flat per-triangle — reads the cells)
       const shd = document.createElement('select');
       for (const [v, t] of [['smooth', 'smooth'], ['faceted', 'faceted (flat)']]) { const o = document.createElement('option'); o.value = v; o.textContent = t; shd.appendChild(o); }

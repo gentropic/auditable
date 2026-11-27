@@ -10804,6 +10804,50 @@ if (take()) {
   await pg.close();
 }
 
+// ── ELEVATION FROM (props-style.js elevationFromRow · surfaces.js setSurfacePlace): a grid's z is its value, or —
+// a data grid — a sheet placed at a level, the top / bottom of a layer, or draped ON a surface; saved with scenes.
+if (take()) {
+  const pg = await mkPage('sm2elevfrom');
+  const r = await pg.evaluate(async () => {
+    const M = window._micro, out = {}, wait = (ms) => new Promise((z) => setTimeout(z, ms));
+    await M.openSiteC();
+    const rows = []; for (let rr = 0; rr < 20; rr++) { const row = []; for (let c = 0; c < 30; c++) row.push((1 + c * 0.1).toFixed(2)); rows.push(row.join(' ')); }
+    const asc = ['ncols 30', 'nrows 20', 'xllcorner 612100', 'yllcorner 7784100', 'cellsize 20', 'NODATA_value -9999', ...rows, ''].join(String.fromCharCode(10));
+    await M.openBlob(new Blob([asc]), 'grade-grid.asc', 'add');
+    const G = () => M.layers().find((x) => /grade-grid/.test(x.name));
+    const blocks = M.layers().find((x) => x.kind === 'blocks'), topo = M.layers().find((x) => x.gridSurface);
+    (await M.mod('props.js')).setPropTab('style');
+    const choose = async (kind, layerName, offset) => {
+      M.setActiveLayer(G().id); M.openProps(); await wait(150);
+      const row = [...document.querySelectorAll('#ppBody .row, #ppBody label, #ppBody div')].find((x) => x.firstChild && x.firstChild.textContent === 'elevation from');
+      const [sel, , ly, , off] = row.querySelector('span').children;
+      sel.value = kind; sel.dispatchEvent(new Event('change'));
+      if (layerName) { ly.value = layerName; } if (offset != null) off.value = offset;
+      if (layerName || offset != null) ly.dispatchEvent(new Event('change'));
+      for (let k = 0; k < 40 && (!G() || (kind !== 'value' && !G().gridSurface)); k++) await wait(100);
+      await wait(200);
+    };
+    await choose('top', blocks.name, 0);
+    const top = M.layerWorldBox(blocks)[1][2];
+    out.top = { surface: !!G().gridSurface, flatZ: G().surfaceFlatZ, want: top, place: G().surfacePlace && G().surfacePlace.kind };
+    await choose('onto', topo.name, 5);
+    const o = M.frame ? M.frame.origin : [0, 0, 0], bb = G().bboxLocal;
+    out.onto = { place: G().surfacePlace && G().surfacePlace.kind, zSpan: bb ? bb[5] - bb[2] : 0, zMin: bb ? bb[2] + o[2] : null };
+    const sc = M.captureScene ? M.captureScene('t') : null;
+    out.sceneHasPlace = !!(sc && sc.layers.find((l) => /grade-grid/.test(l.name)) && sc.layers.find((l) => /grade-grid/.test(l.name)).place);
+    await choose('value');
+    out.value = { flatZ: G().surfaceFlatZ, place: G().surfacePlace };
+    if (sc) { await M.applyScene(sc); await wait(300); out.back = { place: G().surfacePlace && G().surfacePlace.kind, flatZ: G().surfaceFlatZ }; }
+    out.copies = M.layers().filter((x) => /grade-grid/.test(x.name)).length;
+
+    return out;
+  });
+  chk(`elevation from: the top of the blocks → a sheet at ${r.top.flatZ} (the top blocks' centres at ${r.top.want}, their tops 5 m above; ${r.top.place}); draped on the topography +5 m → ${r.onto.place}, its z spans ${r.onto.zSpan.toFixed(1)} m; its value → a relief (flat ${r.value.flatZ}); a scene brings the drape back (${JSON.stringify(r.back)}), one copy of the grid (${r.copies})`,
+    r.top.surface && r.top.flatZ - r.top.want === 5 && r.top.place === 'top' && r.onto.place === 'onto' && r.onto.zSpan > 20
+    && r.value.flatZ == null && r.value.place == null && r.sceneHasPlace && r.back && r.back.place === 'onto' && r.copies === 1);
+  await pg.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

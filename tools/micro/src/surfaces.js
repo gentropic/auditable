@@ -18,6 +18,7 @@ import { gridBuildFrame, placeHeightfield } from './placement.js';
 import { applyP, invertP } from './placement-core.js';
 import { gridLayerFile } from './grid-export.js';
 import { sceneOrigin } from './coords.js';
+import { layerWorldBox } from './records.js';
 const $ = (s) => document.querySelector(s);
 
 // A see-through context surface must not steal the click meant for the block
@@ -120,6 +121,21 @@ export function rebuildSurface(L) {
   const gd = L.docs && L.docs.gridDoc; if (!gd || !L.gridSurface) return;
   const flatZ = L.surfaceFlatZ != null ? L.surfaceFlatZ : null;
   const hf = gridHeightfield(gd.grid, gd.stride, flatZ); if (!hf) return;
+  // draped ON another surface (elevation from: none, on a surface): each vertex lifted to that surface's height
+  // where it stands (+ the offset); a vertex off that surface stays at the sheet's level
+  const P = L.surfacePlace;
+  if (P && P.kind === 'onto') {
+    const og = S.layers.find((x) => x.name === P.layer && x.docs && x.docs.gridDoc && x.docs.gridDoc.grid);
+    if (og) {
+      const smp = surfaceFromGrid(og.docs.gridDoc.grid), o = sceneOrigin(), off = +P.offset || 0, bb = hf.bboxLocal;
+      bb[2] = Infinity; bb[5] = -Infinity;
+      for (let i = 0; i < hf.pos.length; i += 3) {
+        const z = smp.sampleZ(hf.pos[i] + o[0], hf.pos[i + 1] + o[1]);
+        if (Number.isFinite(z)) hf.pos[i + 2] = z + off - o[2];
+        if (hf.pos[i + 2] < bb[2]) bb[2] = hf.pos[i + 2]; if (hf.pos[i + 2] > bb[5]) bb[5] = hf.pos[i + 2];
+      }
+    }
+  }
   let zmin = Infinity, zmax = -Infinity;                    // grid VALUE range (= colour range for elevation/value)
   for (let i = 0; i < hf.count; i++) { const z = hf.values[i]; if (z < zmin) zmin = z; if (z > zmax) zmax = z; }
   const drapeLayer = L.drapeSource ? S.layers.find((x) => x.name === L.drapeSource && x.docs && x.docs.gridDoc && x.docs.gridDoc.grid) : null;
@@ -159,6 +175,37 @@ export function setSurfaceFlatZ(L, flatZ) {
 // manifest AND scenes both call these, so adding a field is ONE edit and the two
 // paths can't silently diverge (the parity smoke enforces it). Empty {} for a
 // non-grid or an un-styled grid.
+// WHERE a grid's sheet sits when its value is not its elevation ("elevation from: none"):
+//   { kind: 'level', z } · { kind: 'top' | 'bottom', layer, offset } (of that layer's box) · { kind: 'onto', layer,
+//   offset } (draped on that surface) — or null: the value is the elevation (a relief). Sets L.surfaceFlatZ (the
+//   sheet's level; for 'onto' the level a vertex off that surface keeps) and rebuilds.
+export function surfacePlaceZ(place) {
+  if (!place) return null;
+  if (place.kind === 'level') return Number.isFinite(+place.z) ? +place.z : 0;
+  const o = S.layers.find((x) => x.name === place.layer || (x.label || x.name) === place.layer);
+  const zr = o ? worldZRange(o) : null; if (!zr) return null;
+  const off = +place.offset || 0;
+  return place.kind === 'bottom' ? zr[0] + off : zr[1] + off;   // 'top' and 'onto' (a vertex off the surface: at its top)
+}
+/** a layer's elevation range in world z: a grid's from its values (through its placement — layerWorldBox says
+ *  0..0 for a grid), a drawn mesh or surface from what it draws, anything else from its world box */
+export function worldZRange(o) {
+  const g = o.docs && o.docs.gridDoc && o.docs.gridDoc.grid;
+  if (g && !(o.gridSurface && o.surfaceFlatZ != null)) {
+    let lo = Infinity, hi = -Infinity; const nd = g.nodata, s = g.place ? g.place.s : 1, t = g.place ? g.place.t[2] : 0;
+    for (const v of g.data) { if (Number.isNaN(v) || v === nd) continue; const z = t + s * v; if (z < lo) lo = z; if (z > hi) hi = z; }
+    return lo <= hi ? [lo, hi] : null;
+  }
+  if (o.bboxLocal && o.bboxLocal.length >= 6) { const oz = sceneOrigin()[2]; return [o.bboxLocal[2] + oz, o.bboxLocal[5] + oz]; }
+  const b = layerWorldBox(o); return b ? [b[0][2], b[1][2]] : null;
+}
+export function setSurfacePlace(L, place) {
+  L.surfacePlace = place && place.kind !== 'level' ? { ...place } : null;
+  const z = place ? surfacePlaceZ(place) : null;
+  if (place && z == null) throw new Error(`“${place.layer}” isn’t loaded — no box to place the sheet by`);
+  L.surfaceFlatZ = place ? z : null;
+  rebuildSurface(L);
+}
 export function captureLayerSurface(L) {
   const gd = L && L.docs && L.docs.gridDoc; if (!gd) return {};
   const s = {};
@@ -168,6 +215,7 @@ export function captureLayerSurface(L) {
     if (L.surfaceFlatZ != null) s.flatZ = L.surfaceFlatZ;
     if (L.surfaceSmooth === false) s.faceted = true;
     if (Array.isArray(L.surfaceRange)) s.range = L.surfaceRange.slice();
+    if (L.surfacePlace) s.place = { ...L.surfacePlace };   // top / bottom of a layer, or onto a surface (flatZ is its level)
   }
   if (gd.grid.band) s.band = gd.grid.band;
   if (L.gridValue && L.gridValue.name) s.value = { name: L.gridValue.name, ...(L.gridValue.unit ? { unit: L.gridValue.unit } : {}) };
@@ -194,7 +242,11 @@ export async function applyLayerSurface(L, s) {
     const want = s.drape || null;
     if ((L2.drapeSource || null) !== want) { const g = want ? S.layers.find((x) => x.name === want && x.docs && x.docs.gridDoc && x.docs.gridDoc.grid) : null; recolorSurface(L2, g); }
     const rg = Array.isArray(s.range) && s.range.length === 2 ? s.range.map(Number) : null;   // the colour range (a Δz sheet's ±m)
+    const pl = s.place && s.place.kind ? { ...s.place } : null;
+    const placeChanged = JSON.stringify(L2.surfacePlace || null) !== JSON.stringify(pl);
+    if (placeChanged) L2.surfacePlace = pl;
     if (JSON.stringify(L2.surfaceRange || null) !== JSON.stringify(rg)) { L2.surfaceRange = rg; rebuildSurface(L2); }
+    else if (placeChanged) rebuildSurface(L2);
   }
   return L2;
 }
