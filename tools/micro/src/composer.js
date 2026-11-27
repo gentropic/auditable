@@ -30,6 +30,9 @@ import { computeResourceTable, numericColsOf, parseFactor } from './analysis.js'
 import { sourceHash, sourceHashSync } from './identity.js';
 import { createDocument, parseDocument, serializeDocument, mountEditor, iconButton, exportPDF, exportPNG, frameById, pageDims, tableFromTsv, subjectFrame, refFrame, figureFromPdf, registerKind, replayDrawList, HOUSE_KEYS, FIGURE_KEYS, setTemplate, docFromTemplate, addTitleBlock as compoTitleBlock, addImageFromFile as compoImageFromFile, multiplesGrid, smallMultiples as compoMultiples, groupDigits, significant, fmtBearing, refreshLegend, freeSpot, setQrEncoder } from '../../../ext/compo/index.js';
 import { toMatrix as qrMatrix } from '../../../ext/qr/index.js';
+import * as bearingNs from '../../../ext/bearing/index.js';
+import { stereonetCore } from '../../../ext/stereonet/index.js';
+registerKind('stereonet', stereonetCore(bearingNs).compoKind());   // the structure stereonet as a frame (labels pin to its poles)
 setQrEncoder(qrMatrix);                                   // the composer's QR frames (a link to the data, the report)
 import { chartFigure } from './analysis-ui.js';
 import { colorChoices, colorSelFor } from './color.js';
@@ -397,6 +400,13 @@ export async function refreshData(fig = _fig) {
         if (f.kind === 'chart' && r.spec) { f.content = { ...f.content, spec: r.spec }; f._list = null; }
         else if (f.kind === 'table' && r.tsv) { const c = tableFromTsv(r.tsv, f.content.title || ''); if (c) f.content = { ...f.content, columns: c.columns, rows: c.rows }; }
         await stampFacts(f, recipeLayers(src.recipe)); f.produced = new Date().toISOString(); n++;
+      } else if (src.stereonet && f.kind === 'stereonet' && HK.stereonetContent) {   // a stereonet frame: the sets again
+        const L = S.layers.find((x) => x.name === src.stereonet.layer);
+        if (!L) throw new Error(`layer “${src.stereonet.layer}” isn't loaded`);
+        const c = await HK.stereonetContent(L);
+        f.content = { ...c.net, ...(f.content && f.content.theme ? { theme: f.content.theme } : {}) };
+        for (const lf of fig.doc.frames) if (lf.kind === 'legend' && lf.source && lf.source.stereonetLegend === f.id) lf.content = refreshLegend(lf.content, c.legend);
+        await stampFacts(f, [src.stereonet.layer]); f.produced = new Date().toISOString(); n++;
       } else if (src.stereonet && HK.stereonetFigure) {      // a stereonet: the planes measured again, the net redrawn
         const L = S.layers.find((x) => x.name === src.stereonet.layer);
         if (!L) throw new Error(`layer “${src.stereonet.layer}” isn't loaded`);
@@ -652,6 +662,43 @@ function viewInspector(f, el) {
   sctl.append(ssel);
   if (!sec) { const nh = document.createElement('span'); nh.className = 'hint'; nh.textContent = 'no section'; nh.title = 'this view has no section: its captions count the whole model either way'; sctl.append(nh); }
   srow.append(slab, sctl); el.append(srow);
+  // PAPER: the 3D view's background (it follows that), or this frame's own — a map on white in a report whose
+  // 3D view is basalt. Kept through re-captures (source.bgFixed) and by small multiples
+  const fixed = f.source && f.source.bgFixed;
+  const prow = document.createElement('div'); prow.className = 'row';
+  const plab = document.createElement('span'); plab.textContent = 'paper';
+  const pctl = document.createElement('span'); pctl.className = 'ctl';
+  const psel = document.createElement('select'); psel.className = 'cmp-paper';
+  for (const [v, t] of [['', 'as the 3D view'], ['#ffffff', 'white'], ['custom', 'a colour…']]) { const o = document.createElement('option'); o.value = v; o.textContent = t; psel.append(o); }
+  psel.value = !fixed ? '' : fixed.toLowerCase() === '#ffffff' ? '#ffffff' : 'custom';
+  const pcol = document.createElement('input'); pcol.type = 'color'; pcol.value = /^#[0-9a-f]{6}$/i.test(fixed || '') ? fixed : '#f4f1ea'; pcol.style.display = psel.value === 'custom' ? '' : 'none';
+  psel.title = 'the background this view is rendered on: the 3D view’s own (it follows that), or one of this frame’s';
+  const setPaper = async (bg) => {
+    _ed.update(f.id, (fr) => { const s2 = { ...fr.source }; if (bg) { s2.bgFixed = bg; s2.bg = bg; } else { delete s2.bgFixed; s2.bg = _bgColor; } fr.source = s2; });
+    const fr = frameById(_ed.getDoc(), f.id); if (fr) { await rerender(fr, PREVIEW_PX_PER_MM); _ed.render(); }
+  };
+  psel.onkeydown = pcol.onkeydown = (e) => e.stopPropagation();
+  psel.onchange = () => { pcol.style.display = psel.value === 'custom' ? '' : 'none'; setPaper(psel.value === 'custom' ? pcol.value : psel.value); };
+  pcol.onchange = () => setPaper(pcol.value);
+  pctl.append(psel, pcol); prow.append(plab, pctl); el.append(prow);
+  // PROJECTION: a perspective view has no scale (no scale bar, no ticks, no 1 : N) — one click makes it orthographic,
+  // the camera otherwise as it was
+  const cam = f.source && f.source.scene && f.source.scene.camera;
+  if (cam) {
+    const orow = document.createElement('div'); orow.className = 'row';
+    const olab = document.createElement('span'); olab.textContent = 'projection';
+    const octl = document.createElement('span'); octl.className = 'ctl';
+    const ob = document.createElement('button'); ob.className = 'cmp-ortho';
+    ob.textContent = cam.ortho ? 'make perspective' : 'make orthographic';
+    ob.title = cam.ortho ? 'render it in perspective (it loses its scale)' : 'render it orthographic: it gets a scale — scale bars, coordinate ticks and 1 : N work';
+    const oh = document.createElement('span'); oh.className = 'hint'; oh.textContent = cam.ortho ? 'orthographic' : 'perspective';
+    ob.onclick = async () => {
+      _ed.update(f.id, (fr) => { fr.source = { ...fr.source, scene: { ...fr.source.scene, camera: { ...fr.source.scene.camera, ortho: !cam.ortho } } }; });
+      const fr = frameById(_ed.getDoc(), f.id); if (fr) { await rerender(fr, PREVIEW_PX_PER_MM); _ed.render(); }
+      $('#meta').textContent = `composer: ${f.id} is ${cam.ortho ? 'in perspective' : 'orthographic — it has a scale now'}`;
+    };
+    octl.append(oh, ob); orow.append(olab, octl); el.append(orow);
+  }
 }
 // ── double-click a view frame: work it in the 3D view, at the frame's shape; Done re-captures it ──
 let _editing = null;
@@ -1378,6 +1425,18 @@ export async function makeAtlasRoutine(fig = _fig, { save = true } = {}) {
   return r;
 }
 
+// the structure stereonet as a frame (structure-ui.js stereonetContent): the net + a legend of its sets beside it
+function addStereonetFrame(c, name, stereonet) {
+  const ed = openComposer(), doc = ed.getDoc();
+  const box = freeSpot(doc, 90, 90, { near: viewFrameOf(doc, ed.selected()), shrink: true });
+  const f = ed.addFrame({ kind: 'stereonet', name, box, content: c.net, source: { app: 'micro', kind: 'stereonet', stereonet } });
+  const lb = freeSpot(ed.getDoc(), 70, Math.min(60, 8 + 4.4 * c.legend.entries.length), { near: f });
+  ed.addFrame({ kind: 'legend', box: lb, content: c.legend, source: { app: 'micro', kind: 'legend', stereonetLegend: f.id } });
+  if (stereonet) stampFacts(f, [stereonet.layer]).then(() => { if (_ed) _ed.render(); });
+  persistSoon(_fig);
+  $('#meta').textContent = `composer: the stereonet of ${stereonet ? stereonet.layer : name} — Add label pins to a pole; ↻ makes it again from the painted sets`;
+  return f;
+}
 // an analysis window's plot → an image frame on the current figure (micro:to-composer)
 // ── a CHART frame: an analysis window's chart as its spec, laid out by @gcu/plot at the frame's
 // own size each time it draws (resize it and the chart re-flows — text stays its size) and
@@ -1453,6 +1512,7 @@ export function addTableFrame(tsv, name, near = null, recipe = null) {
 }
 addEventListener('micro:to-composer', (e) => {
   const d = e.detail || {};
+  if (d.stereonetContent) { addStereonetFrame(d.stereonetContent, d.name || 'stereonet', d.stereonet); return; }
   const p = d.drawlist ? addDrawlistFrame(d.drawlist, d.name || 'graphic', d.stereonet || null) : d.spec ? addChartFrame(d.spec, d.name || 'chart', d.recipe) : d.canvas ? addCanvasFrame(d.canvas, d.name || 'plot') : null;
   if (d.tsv) addTableFrame(d.tsv, d.name || 'table', p, d.recipe);
 });

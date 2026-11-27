@@ -6366,6 +6366,25 @@ if (take()) {
   chk(`COMPOSER: the PDF re-renders the view at 150 dpi (${JSON.stringify(r.pdfImg)} vs ${wantPdf}), JPEG, text (${r.pdfText}), ${r.pdf.kb} KB`, r.pdf.head === '%PDF-' && r.pdf.jpeg && r.pdfImg && r.pdfImg[0] === wantPdf[0] && r.pdfImg[1] === wantPdf[1] && r.pdfText.includes('FE'));
   chk(`COMPOSER: export gives the user's view back (look ${r.lookAfter})`, r.lookAfter === 45);
   chk(`COMPOSER: a plot arrives as an image frame (${JSON.stringify(r.plot)})`, r.plot && r.plot.png && r.plot.aspect === 1.5);
+  // a view's own PAPER and PROJECTION from its inspector: white paper re-renders it on white (kept as bgFixed);
+  // "make perspective" / "make orthographic" flip the frame's camera and re-render it
+  const pp = await p.evaluate(async () => {
+    const M_ = window._micro, ed = M_.composerEditor(), wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const f = ed.getDoc().frames.find((x) => x.source && x.source.kind === 'view' && !x.source.keyFor);
+    ed.select([f.id]); ed.render(); await wait(100);
+    const ps = document.querySelector('.compo-insp .cmp-paper'); ps.value = '#ffffff'; ps.dispatchEvent(new Event('change', { bubbles: true }));
+    for (let t = 0; t < 40; t++) { await wait(100); const fr = ed.getDoc().frames.find((x) => x.id === f.id); if (fr.source.bgFixed) break; }
+    const fr = ed.getDoc().frames.find((x) => x.id === f.id), g = fr._img.getContext('2d'), c = g.getImageData(1, 1, 1, 1).data;
+    const out = { bg: fr.source.bgFixed, corner: [c[0], c[1], c[2]] };
+    const ob = () => document.querySelector('.compo-insp .cmp-ortho');
+    out.label0 = ob().textContent; ob().click(); await wait(900); ed.render(); await wait(100);
+    out.ortho1 = ed.getDoc().frames.find((x) => x.id === f.id).source.scene.camera.ortho; out.label1 = ob().textContent;
+    ob().click(); await wait(900);
+    out.ortho2 = ed.getDoc().frames.find((x) => x.id === f.id).source.scene.camera.ortho;
+    return out;
+  });
+  chk(`COMPOSER: a view's own paper (${pp.bg}, corner ${pp.corner}) and projection (“${pp.label0}” → ortho ${pp.ortho1}, “${pp.label1}” → ortho ${pp.ortho2})`,
+    pp.bg === '#ffffff' && pp.corner.every((v) => v > 245) && pp.label0 === 'make perspective' && pp.ortho1 === false && pp.label1 === 'make orthographic' && pp.ortho2 === true);
   await saveProject(p);
   const onDisk = await p.evaluate(async () => {
     const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2compo');

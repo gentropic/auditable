@@ -14,7 +14,7 @@ import { nextZ } from './windows.js';
 import { statsScan } from './stats.js';
 import { setSeriesHooks } from './section-series.js';
 import { recoverSession } from './gpu-restore.js';
-import { stereonetFigure } from './structure-ui.js';
+import { stereonetFigure, stereonetContent } from './structure-ui.js';
 import { saveRecipe, routineEval, runRecipe } from './recipes.js';
 import { openRoutineWindow } from './routine-ui.js';
 import { saveProject } from './project.js';
@@ -282,7 +282,7 @@ export function renderViewCanvas(pw, ph) {
 setDecoHooks({ renderFigureCanvas, openTurntable });
 setTurntableHooks({ renderFigureCanvas });
 setFigurePdfOpener(openFigurePdf);
-setComposerHooks({ renderViewCanvas, setCameraWorld, saveRecipe, openRoutineWindow, cameraWorld, statsScan, evalField: routineEval, runRecipe, stereonetFigure });
+setComposerHooks({ renderViewCanvas, setCameraWorld, saveRecipe, openRoutineWindow, cameraWorld, statsScan, evalField: routineEval, runRecipe, stereonetFigure, stereonetContent });
 setSeriesHooks({ renderFigureCanvas });
 
 applyBg();                                                 // restore the saved background at boot

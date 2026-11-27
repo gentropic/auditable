@@ -268,22 +268,25 @@ const planesOf = (p) => p.evaluate(() => { const w = [...document.querySelectorA
     s0.poles === 2 && w1.dx < -10 && Math.abs(w1.dy) < 3 && w2.dx > Math.abs(w1.dx) && Math.abs(w2.dy) < 3 && /J1 · 1 · 090\/30/.test(s0.sets[0]) && /J2 · 1 · 270\/60/.test(s0.sets[1]));
 
 
-  // ⇥ figure: the net on paper, recorded through bearing's draw(ctx) into a draw list → a vector composer frame
+  // ⇥ figure: the net as a STEREONET FRAME (@gcu/stereonet's compo kind, data on the page: labels pin to its poles)
+  // with a legend of the sets — vectors in the PDF. (The draw list is still what it records with the wheel shown.)
   const fig = await p2.evaluate(async (lid) => {
     const M_ = window._micro, hd = M_.structureWins.get(lid);
     const list = hd.stereo.toFigure();
     const ed = M_.openComposer('net');
     [...hd.stereo.win.el.querySelectorAll('button')].find((b2) => b2.textContent === '⇥ figure').click();
-    const fr = ed.getDoc().frames.find((f) => f.kind === 'drawlist');
+    for (let t = 0; t < 60 && !ed.getDoc().frames.some((f) => f.kind === 'stereonet'); t++) await new Promise((r) => setTimeout(r, 100));
+    const fr = ed.getDoc().frames.find((f) => f.kind === 'stereonet');
+    const lg = ed.getDoc().frames.find((f) => f.kind === 'legend' && f.source && f.source.stereonetLegend === (fr && fr.id));
     const bytes = await M_.figurePdfBytes(M_.currentFigure(), 72, { compress: false });
     const s = new TextDecoder('latin1').decode(bytes);
-    const out = { ops: list.ops.length, w: list.width, h: list.height, frame: !!fr, images: (s.match(/\/Subtype \/Image/g) || []).length, n: /\(N\) Tj/.test(s), j1: /J1 [^)]*090\/30/.test(s), domBack: !!hd.stereo.sn.element().querySelector('circle') };
+    const out = { ops: list.ops.length, w: list.width, h: list.height, frame: !!fr && !!lg && fr.content.scene.primitives.filter((q) => q.type === 'pole').length >= 2, pin: !!fr && window._micro.canPinFrame ? window._micro.canPinFrame(fr) : true, images: (s.match(/\/Subtype \/Image/g) || []).length, n: /\(N\) Tj/.test(s), j1: /J1 [^)]*090\/30/.test(s), domBack: !!hd.stereo.sn.element().querySelector('circle') };
     if (window.__dumpNet) { const C = await import('/ext/compo/index.js'); const png = await C.exportPNG(M_.currentFigure().doc, { dpi: 200 }); out.png = await new Promise((res) => { const f2 = new FileReader(); f2.onload = () => res(f2.result); f2.readAsDataURL(png); }); }
     const cw = document.querySelector('.composer-win'); if (cw) cw.querySelector('.fwin-head button:last-child').click();   // out of the way of the lasso below
     return out;
   }, re.id);
   if (fig.png) { const fs = await import('node:fs'); fs.writeFileSync(process.env.NET_DUMP, Buffer.from(fig.png.split(',')[1], 'base64')); }
-  chk(`⇥ figure: the net as a draw list (${fig.ops} ops, ${fig.w}×${fig.h}) → a vector frame; the PDF has no image, the cardinals and the set means as text (${JSON.stringify({ frame: fig.frame, images: fig.images, n: fig.n, j1: fig.j1 })}); the window's net is back (${fig.domBack})`,
+  chk(`⇥ figure: a stereonet frame + a legend of the sets (the wheel's draw list still records: ${fig.ops} ops, ${fig.w}×${fig.h}); the PDF has no image, the cardinals and the set means as text (${JSON.stringify({ frame: fig.frame, images: fig.images, n: fig.n, j1: fig.j1 })}); the window's net is back (${fig.domBack})`,
     fig.ops > 50 && fig.frame && fig.images === 0 && fig.n && fig.j1 && fig.domBack);
 
   // lasso J1's pole on the net → select → move it to a NEW set: the paint follows, one undo step
@@ -302,11 +305,12 @@ const planesOf = (p) => p.evaluate(() => { const w = [...document.querySelectorA
 
   // the stereonet frame keeps its layer: ↻ refresh measures the planes again and redraws the net — J3 is on it now
   const reNet = await p2.evaluate(async () => {
-    const M_ = window._micro, fig = M_.figures().find((f) => f.name === 'net'), fr = fig.doc.frames.find((f) => f.kind === 'drawlist');
-    const had = JSON.stringify(fr.content.list.ops).includes('J3');
+    const M_ = window._micro, fig = M_.figures().find((f) => f.name === 'net'), fr = fig.doc.frames.find((f) => f.kind === 'stereonet');
+    const legendOf = () => fig.doc.frames.find((f) => f.kind === 'legend' && f.source && f.source.stereonetLegend === fr.id);
+    const had = JSON.stringify(legendOf().content).includes('J3');
     const n = await M_.refreshData(fig);
-    const fr2 = fig.doc.frames.find((f) => f.kind === 'drawlist');
-    return { source: fr2.source.stereonet, n, had, has: JSON.stringify(fr2.content.list.ops).includes('J3'), stale: M_.staleOf(fr2), open: [...document.querySelectorAll('.fwin')].filter((e) => e._stereo).length };
+    const fr2 = fig.doc.frames.find((f) => f.kind === 'stereonet');
+    return { source: fr2.source.stereonet, n, had, has: JSON.stringify(legendOf().content).includes('J3'), stale: M_.staleOf(fr2), open: [...document.querySelectorAll('.fwin')].filter((e) => e._stereo).length };
   });
   chk(`a stereonet frame keeps its layer (${JSON.stringify(reNet.source)}); ↻ refresh redraws it from the sets as they are now — J3 before ${reNet.had}, after ${reNet.has}; the window stays as it was (${reNet.open})`, reNet.source && reNet.n === 1 && !reNet.had && reNet.has && reNet.stale === null && reNet.open === 1);
   await p2.keyboard.press('Control+z');

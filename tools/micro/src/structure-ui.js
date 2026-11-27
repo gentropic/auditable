@@ -13,7 +13,9 @@ import { setHTML, trusted } from './html.js';
 import { resolvedTheme, tok } from './theme.js';
 import { plotExportBtns, fmtStat } from './analysis-ui.js';
 import { prepareStructure, structureOf, structureCost, regionAt, seedOf, fitRegion, toFile, weldedCodes, measurePlanes, tracePlanes, traceTubes, surfacePath, fileOf, setStats, poleOf, orientationColors, orientationRgb, vertexColors, discMesh, QUALITY, traceNetwork, nodeMarkers, snapToTraces, NODE_COLORS } from './structure.js';
-import { Stereonet } from '../../../ext/bearing/index.js';
+import * as bearingNs from '../../../ext/bearing/index.js';
+import { stereonetCore } from '../../../ext/stereonet/index.js';
+const { Stereonet } = bearingNs;
 import { recordingContext } from '../../../ext/plot/index.js';
 import { detectSets } from '../../../ext/clar/index.js';
 import { buildMeshChunk, writeDxf } from '../../../ext/condenser/src/main.js';
@@ -790,6 +792,40 @@ function setGhost(hd, r) {
 // the stereonet figure of a layer, made again from its painted sets (the composer's ↻ refresh): the
 // planes measured afresh, the net drawn on paper — the window opened for it and closed after if it
 // wasn't open
+// the stereonet as a FRAME the composer draws itself (@gcu/stereonet's compo kind, as wuffle's figures are): one
+// scene layer per set (its poles, optional great circles, its Fisher mean and α95 cone), the density of all poles
+// under them, and a legend of the sets with their means. Unlike a draw list it is data on the page: labels pin to
+// its poles, ↻ makes it again from the painted sets. (The orientation wheel is a picture — with it shown, the
+// figure stays a draw list.)
+export async function stereonetContent(L) {
+  if (!L || L.kind !== 'mesh') throw new Error('a stereonet needs a mesh layer');
+  await structureAfterEdit(L);
+  const hd = _structWins.get(L.id) || L._structView;
+  if (!hd) throw new Error(`open the structure window for ${L.label || L.name} once`);
+  const planes = hd.planes || [], col = setColOf(L);
+  const colorOf = (code) => (col && col.colors[code]) || '#8a8a8a';
+  const datum = (p, i) => ({ row: i, plane: [p.dip_direction, p.dip], pole: poleOf(p) });
+  const layers = [];
+  if (prefs.contour && planes.length >= 3) layers.push({ id: 'all', kind: 'planes', color: '#7f8a96', elements: { contours: { on: true, method: 'fisher' } }, data: planes.map(datum) });
+  const codes = col ? liveCodes(col) : [];
+  const entries = [];
+  for (const code of [...codes, 0]) {                     // the sets, then the planes no set claims
+    const rows = planes.map((p, i) => [p, i]).filter(([p]) => (code ? p.code === code : !codes.includes(p.code)));
+    if (!rows.length) continue;
+    const id = code ? `set${code}` : 'unassigned', color = colorOf(code);
+    layers.push({ id, kind: 'planes', color, size: 3.5, elements: { poles: { on: true }, greatCircles: { on: !!prefs.gc }, ...(code && rows.length > 1 ? { mean: { on: true, confidence: 0.95 } } : {}) },
+      data: rows.map(([p, i]) => datum(p, i)), selected: [] });
+    if (code) { const m = setStats(planes, code); entries.push({ key: id, color, label: `${col.dict[code]} · ${m.n} · ${att(m.dip_direction, m.dip)}${m.n > 1 ? ` · κ ${fmtKappa(m.kappa)} · α95 ${m.alpha95.toFixed(1)}°` : ''}` }); }
+    else entries.push({ key: id, color, label: `no set · ${rows.length}` });
+  }
+  const scene = netCore().buildScene({ layers, colors: { selected: '#793A8D', ink: '#232322', inkMid: '#504F4C', halo: '#FFFFFF' } });
+  return {
+    net: { scene, net: { projection: 'equal-area', hemisphere: 'lower', graticule: 10 }, title: L.label || L.name },
+    legend: { title: 'sets · n · mean · κ · α95', size: 7.5, entries },
+  };
+}
+let _netCore = null;
+const netCore = () => _netCore || (_netCore = stereonetCore(bearingNs));
 export async function stereonetFigure(L) {
   if (!L || L.kind !== 'mesh') throw new Error('a stereonet needs a mesh layer');
   await structureAfterEdit(L);
@@ -954,8 +990,13 @@ export function openStereonet(L) {
     } finally { paper = false; bgFor = null; render(); }
   }
   const figBtn = document.createElement('button'); figBtn.className = 'awin-btn'; figBtn.textContent = '⇥ figure';
-  figBtn.title = 'the net into the composer — vector, on paper, with the set means beneath';
-  figBtn.onclick = () => dispatchEvent(new CustomEvent('micro:to-composer', { detail: { drawlist: toFigure(), stereonet: { layer: L.name }, name: `stereonet-${(L.label || L.name).replace(/\.[^.]+$/, '')}` } }));
+  figBtn.title = 'the net into the composer — a stereonet frame on paper (labels pin to its poles) with a legend of the sets; with the orientation wheel shown, a drawing of the net over it';
+  figBtn.onclick = async () => {
+    const name = `stereonet-${(L.label || L.name).replace(/\.[^.]+$/, '')}`;
+    if (prefs.orient) { dispatchEvent(new CustomEvent('micro:to-composer', { detail: { drawlist: toFigure(), stereonet: { layer: L.name }, name } })); return; }   // the wheel is a picture
+    try { dispatchEvent(new CustomEvent('micro:to-composer', { detail: { stereonetContent: await stereonetContent(L), stereonet: { layer: L.name }, name } })); }
+    catch (e) { $('#meta').textContent = `stereonet: ${e.message}`; }
+  };
   opts.append(figBtn);
   win.el._onResized = () => render();                     // the theme-change repaint (windows.js calls it on resize too)
   hd.stereo = { win, render, sn, toFigure };

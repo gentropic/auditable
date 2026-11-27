@@ -1770,6 +1770,7 @@ if (target === 'micro') {
     '../../ext/omf1/index.js': '#omf1',             // @gcu/omf1 — Open Mining Format v1 (zero-dep; inflate on the platform)
     '../../ext/compo/index.js': '#compo',           // @gcu/compo — the composer page (with @gcu/pdf inlined)
     '../../ext/qr/index.js': '#qr',                 // @gcu/qr — the composer's QR frames (encode only)
+    '../../ext/stereonet/index.js': '#stereonet',   // @gcu/stereonet — the structure stereonet as a composer frame
     '../../ext/plot/index.js': '#plot',             // @gcu/plot — the analysis windows' charts (on screen, and vector in the composer)
     '../../ext/archive/src/zipstream.js': '#zipstream', // @gcu/archive's ranged/streaming Zip64 module alone — project backups
     '../../ext/shp/index.js': '#shp',               // @gcu/shp — shapefiles in and out (strings & polygons, src/poly-io.js)
@@ -1806,6 +1807,7 @@ if (target === 'micro') {
     ['omf1',     'ext/omf1/index.js'],                // @gcu/omf1 — .omf v1 projects → layers (src/omf.js)
     ['compo',     'ext/compo/index.js'],               // @gcu/compo — figure / page composer → PDF (src/composer.js)
     ['qr',        'ext/qr/index.js'],                  // @gcu/qr — QR frames in the composer (setQrEncoder)
+    ['stereonet', 'ext/stereonet/index.js'],           // @gcu/stereonet — the structure stereonet's composer frame
     ['plot',      'ext/plot/index.js'],                // @gcu/plot — analysis charts (src/analysis-ui.js chartFigure)
     ['zipstream', 'ext/archive/src/zipstream.js'],     // zero-import module: the src file IS the shippable one (no fflate, no WASM)
     ['shp',       'ext/shp/index.js'],                 // @gcu/shp — .shp/.shx/.dbf/.prj (node ext/shp/build.js)
