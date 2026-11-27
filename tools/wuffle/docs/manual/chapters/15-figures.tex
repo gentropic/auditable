@@ -52,6 +52,23 @@ and equal gaps), and pull its handles to resize it; the arrow keys nudge. A righ
 duplicate, group (when two or more frames are selected), the stacking order, lock and delete. The bar
 above the page sets the paper size, orientation, zoom and grid, and adds new frames, such as text.
 
+The bar also adds shapes (a rectangle, an ellipse, a line, an arrow), QR codes and \term{markers}: AprilTags
+of the 36h11 family that a camera or scanner can find on the printed page, each with its own id
+(0–586). Paste cells copied from a spreadsheet onto the page and they become a table; select a table and
+its cells are editable in its panel, as tab-separated text.
+
+In a text frame, \code{[the data](https://gentropic.org/wuffle)} is a link: blue and underlined on the page,
+and clickable in the PDF and the SVG (web and mail addresses only). A frame's panel can \term{rotate} it
+(\ui{rotate °}, with quick 90° turns), except a net, whose labels are pinned to its directions; a rotated
+frame is sized in its panel. A picture can be cropped (\ui{crop \%}, trimmed from each edge).
+
+\subsection{Named styles}\index{figure!named styles}
+
+A text frame, label, table, shape or legend can wear a \term{named style}: \ui{heading}, \ui{caption},
+\ui{note}, or one of your own (\ui{+ new style from this frame…}). Wearing one copies its look in. Change a
+frame and click \ui{Update style}: every frame wearing that style follows. Restyling every caption on a
+page is then one change. The styles are kept with the figure.
+
 Inside the figure tab \key{Ctrl}+\key{Z} is compo's own undo, step by step through your edits to the
 page. Outside it, the figure's changes are part of the project's history like any other (\cref{sec:undo}).
 
@@ -86,7 +103,13 @@ bar says how many diagrams are gone.
 \begin{description}
 \item[\ui{Export PDF}\index{figure!export as PDF}] the page as a vector PDF, \file{<name>.pdf}.
 \item[\ui{Export PNG}\index{figure!export as PNG}] the page as a picture at 200 dpi, \file{<name>.png}.
+\item[\ui{Export SVG}\index{figure!export as SVG}] the page as SVG, \file{<name>.svg}: vectors to edit in
+Inkscape or Illustrator, text as text.
 \end{description}
+
+\menu{Figure>Export all figures as one PDF…} puts every figure in one file, a page each in the order the
+\ui{figures} list shows. Figure numbers run on across the book, and each page has a footer naming the project
+and \ui{page 2 of 5}.
 
 In the file name, each run of characters other than letters, digits, underscores, dots and hyphens
 becomes one \code{\_}: the figure \ui{Net 1 · figure} exports as \file{Net\_1\_figure.pdf}.
