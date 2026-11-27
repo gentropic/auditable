@@ -1,7 +1,7 @@
 // @gcu/compo — a figure / page composer. See README.md.
 export { COMPO_FORMAT, COMPO_VERSION, PAPER, pageDims, createDocument, parseDocument, serializeDocument, newId, addFrame, frameById, renameFrame, sanitizeId, ID_RE, idPrefix, removeFrames, bringToFront, sendToBack, bringForward, sendBackward, alignFrames, distributeFrames, matchSize, groupFrames, ungroupFrames, expandGroups, unitsOf, boundsOf, gatherGroup, pruneGroups, moveInStack, snapBox, snapResize, freeSpot, LOAD_MIGRATIONS, DEFAULT_STYLES, STYLE_CONTENT_KEYS, stylesOf, styleFromFrame, applyStyleToFrame, defineStyle } from './model.js';
 export { TAG36H11, tagCells } from './apriltag.js';
-export { SANS, MONO, SERIF, fontMm, registerKind, kindOf, canPin, canRotate, pinToPage, pageToPin, resolveFields, layoutText, drawText, refreshLegend, legendEntries, legendKey, LEGEND_USER_KEYS, replayDrawList, niceBelow, frameWorldPerMm, tableFromTsv, setQrEncoder, hasQrEncoder, qrContent } from './kinds.js';
+export { SANS, MONO, SERIF, fontMm, registerKind, kindOf, canPin, canRotate, pinToPage, pageToPin, resolveFields, layoutText, drawText, refreshLegend, legendEntries, legendKey, LEGEND_USER_KEYS, replayDrawList, niceBelow, frameWorldPerMm, tableFromTsv, setQrEncoder, hasQrEncoder, qrContent, northAnglesOf } from './kinds.js';
 export { registerField, fieldList, formatNumber, formatDate, refFrame, subjectFrame, isFormatSpec, groupDigits, significant, fmtBearing } from './fields.js';
 export { hasProj, isOrthoProj, imageRect, worldToPage, pageToWorld, worldTicks, drawTicks, niceStep, fmtCoord, planeTrace, drawOverlays, drawVector } from './world.js';
 export { renderPage, ensureImages, exportPDF, exportPNG, figureFromPdf } from './render.js';

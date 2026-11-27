@@ -15,7 +15,7 @@
 import { freeSpot, stylesOf, styleFromFrame, applyStyleToFrame, defineStyle } from './model.js';
 import { renameFrame, sanitizeId, PAPER, pageDims, addFrame, frameById, removeFrames, bringToFront, sendToBack, bringForward, sendBackward, alignFrames, distributeFrames, matchSize, groupFrames, ungroupFrames, expandGroups, unitsOf, boundsOf, moveInStack, snapBox, snapResize, serializeDocument } from './model.js';
 import { renderPage, ensureImages } from './render.js';
-import { kindOf, canPin, canRotate, pageToPin, legendEntries, legendKey, layoutText, resolveFields, hasQrEncoder, qrContent, tableFromTsv } from './kinds.js';
+import { kindOf, canPin, canRotate, pageToPin, legendEntries, legendKey, layoutText, resolveFields, hasQrEncoder, qrContent, tableFromTsv, northAnglesOf } from './kinds.js';
 import { fieldList, subjectFrame, refFrame } from './fields.js';
 import { hasProj } from './world.js';
 import { iconButton } from './icons.js';
@@ -761,6 +761,7 @@ export function mountEditor(el, doc, opts = {}) {
     let b = null;
     if (opts.frameBadge) { try { const x = opts.frameBadge(f); b = !x ? null : typeof x === 'string' ? { text: x } : x; } catch { b = null; } }
     if (!b && f._overflow) b = { text: 'doesn’t fit', title: `${f._overflow} — make the frame bigger, or the text smaller (Fit to content in its panel)` };
+    if (!b && f._needs) b = f._needs;                     // a kind that needs something it wasn't given (a north arrow's place)
     return b;
   }
   // a label: at the host's point (opts.labelPoint(view) → [x,y,z]) or the middle of the view, beside it.
@@ -1011,9 +1012,36 @@ export function mountEditor(el, doc, opts = {}) {
     insp.append(row('length', ln, sg, h('span', { textContent: 'parts' })), row('style', st, ra, h('span', { textContent: '1 : N' })));
   }
   function northPanel(f) {
-    const st = selIn([['arrow', 'arrow'], ['needle', 'needle'], ['star', 'compass star'], ['line', 'line']], (f.content && f.content.style) || 'arrow');
+    const c = f.content || {}, ref = c.reference || 'grid';
+    const st = selIn([['arrow', 'arrow'], ['needle', 'needle'], ['star', 'compass star'], ['line', 'line']], c.style || 'arrow');
     st.onchange = () => setC(f, 'style', st.value === 'arrow' ? null : st.value);
-    insp.append(row('style', st));
+    const rf = selIn([['grid', 'grid north (the map’s +Y)'], ['true', 'true north'], ['magnetic', 'magnetic north'], ['all', 'all three (a north diagram)']], ref);
+    rf.onchange = () => setC(f, 'reference', rf.value === 'grid' ? null : rf.value);
+    insp.append(row('north', rf));
+    if (ref !== 'all') insp.append(row('style', st));
+    if (ref === 'grid') return;
+    // the angles: the host's (from where the view is), unless typed here
+    const meta = (() => { try { const t = subjectFrame({ doc: D }, f, (x) => x.content && x.content.meta); return (t && t.content && t.content.meta) || {}; } catch { return {}; } })();
+    const A = northAnglesOf(f, opts.env || {}, meta);
+    const ang = (key, label, title) => {
+      const typed = c[key] != null && c[key] !== '';
+      const inp = numIn(typed ? c[key] : '', { step: 'any', placeholder: !typed && A[key] != null ? `${(+A[key]).toFixed(2)} (here)` : 'needed', title });
+      inp.onchange = () => setC(f, key, inp.value === '' ? null : +inp.value);
+      return row(label, inp, h('span', { textContent: '°' }));
+    };
+    insp.append(ang('convergence', 'γ grid → true', 'the grid convergence: degrees from grid north to true north, clockwise positive. Empty: from the project’s coordinate system where the view is'));
+    if (ref !== 'true') insp.append(ang('declination', 'δ true → mag.', 'the magnetic declination: degrees from true north to magnetic north, east (clockwise) positive. Empty: from the World Magnetic Model where the view is'));
+    // where the view is, for a host that works the angles out (its own coordinate system wins; this is the fallback)
+    if (opts.env && typeof opts.env.northAngles === 'function') {
+      const ll = (key, ph) => { const inp = numIn(c[key] ?? '', { step: 'any', placeholder: ph, title: `the view's ${key === 'lat' ? 'latitude' : 'longitude'} in decimal degrees, when the project has no coordinate system to say it` }); inp.style.width = '64px'; inp.onchange = () => setC(f, key, inp.value === '' ? null : +inp.value); return inp; };
+      insp.append(row('place', ll('lat', 'lat'), ll('lon', 'lon')));
+    }
+    if (ref !== 'all') {
+      const sh = h('input', { type: 'checkbox', checked: c.angles !== false, title: 'its angle written under the arrow' });
+      sh.onchange = () => setC(f, 'angles', sh.checked ? null : false);
+      insp.append(row('caption', sh, h('span', { textContent: 'the angle under it' })));
+    }
+    if (A.source) insp.append(h('div', { className: 'hint', textContent: `here: ${A.source}` }));
   }
   function shapePanel(f) {
     const c = f.content || {}, kind = c.shape || 'rect';

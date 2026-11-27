@@ -254,6 +254,17 @@ These three follow a view frame. Select the view first (otherwise they take the 
 
 \paragraph{\ui{Add north arrow}} adds a north arrow on the view's top-right corner, on a light backing, rotated to the view's north. Its inspector chooses the look: \ui{arrow}, \ui{needle}, \ui{compass star} or \ui{line}. For a view looking horizontally along north–south there is no direction to point: it draws the cartographer's sign for an axis out of the page — a circle with a dot, under its \emph{N} — with the words \emph{out of the page} beneath, broken onto two lines and set smaller until they fit the frame.
 
+\paragraph{Which north.}\index{north arrow!grid, true, magnetic} The arrow's \ui{north} chooses what it points at.
+\begin{description}
+\item[\ui{grid north (the map's +Y)}] the default: up the view's northing axis, which is what a projected map's grid lines show.
+\item[\ui{true north}] the meridian, grid north turned by the grid convergence $\gamma$; the angle is written under the arrow (\ui{true N · γ 0.37°}).
+\item[\ui{magnetic north}] true north turned by the declination $\delta$, for the year it is drawn (\ui{magnetic N · δ −23.08° (2026)}).
+\item[\ui{all three (a north diagram)}] the map-sheet diagram: grid north labelled \emph{GN}, true north under a star, magnetic north with a half arrow labelled \emph{MN}, from one foot at their real angles, with $\gamma$ and $\delta$ written below. Two lines a few degrees apart keep their labels to either side.
+\end{description}
+micro works both angles out where the view is. $\gamma$ comes from the project's coordinate system (\cref{ch:crs}): a step north in grid coordinates, turned into longitude and latitude, against the meridian there. $\delta$ comes from the World Magnetic Model 2025 at that place, on the figure's date or today. For Site C in SIRGAS 2000 / UTM zone 23S, the centre of the map gives $\gamma = 0.37°$ and $\delta = -23.08°$ in 2026.
+
+Without a coordinate system micro can't say where the view is. The arrow then draws grid north labelled \emph{GN}, and its badge says \ui{needs a place}. Its panel asks: type $\gamma$ and $\delta$ yourself, or a \ui{place} (latitude, longitude) for $\delta$ from the model. A typed angle always wins over the computed one; empty fields show the computed value as a hint.
+
 \subsection{Text}
 
 \ui{Add text} adds a text frame holding \code{**Figure \{fig\}.** caption}. Its inspector is a text box and these settings:

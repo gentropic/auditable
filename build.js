@@ -1778,9 +1778,11 @@ if (target === 'micro') {
     '../../ext/dxf/index.js': '#dxf',               // @gcu/dxf — features out to DXF, and DXF read as features
     '../../ext/proj/index.js': '#proj',             // @gcu/proj — CRS: proj4 (vendored) + the EPSG table + reprojection on read (src/crs.js)
     '../../ext/frame/index.js': '#frame',           // @gcu/frame — world ↔ local, through src/coords.js (the one place micro converts)
+    '../../ext/wmm/index.js': '#wmm',               // @gcu/wmm — the declination for a composer north arrow (true → magnetic)
   };
   const libs = [
     ['frame',     'ext/frame/index.js'],             // @gcu/frame — src/coords.js's conversions
+    ['wmm',       'ext/wmm/index.js'],               // @gcu/wmm — a north arrow's declination (World Magnetic Model 2025)
     ['condenser', 'ext/condenser/index.js'],
     ['leadacid',  'ext/leadacid/index.js'],           // @gcu/leadacid — intake + fileBlob inside the Android shell
     ['dispatch',  'ext/dispatch/index.js'],           // session-trained NL → command (zero-dep, no WASM: Sealed holds)

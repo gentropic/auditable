@@ -432,10 +432,29 @@ registerKind('scalebar', {
     }
   },
 });
+// Which north an arrow shows (content.reference): 'grid' — the view's +Y, what meta.north measures (the
+// default; a projected map's grid north) · 'true' — the geographic north, grid north turned by the grid
+// convergence γ · 'magnetic' — true north turned by the declination δ · 'all' — the three together, the
+// classic north diagram, with their angles. γ (grid → true) and δ (true → magnetic) are degrees, clockwise
+// positive: the frame's own (content.convergence / content.declination, typed in its panel) or the host's,
+// env.northAngles({ frame, meta }) → { convergence?, declination?, year?, source? } | null. A frame that
+// needs an angle nobody can give says so (frame._needs → its badge) and draws grid north labelled GN.
+export function northAnglesOf(frame, env, meta) {
+  const c = frame.content || {};
+  let host = null;
+  if (env && typeof env.northAngles === 'function') { try { host = env.northAngles({ frame, meta }) || null; } catch { host = null; } }
+  const num = (v) => (v === '' || v == null || !Number.isFinite(+v) ? null : +v);
+  const conv = num(c.convergence) ?? (host ? num(host.convergence) : null);
+  const decl = num(c.declination) ?? (host ? num(host.declination) : null);
+  return { convergence: conv, declination: decl, year: (host && host.year) || null, source: host && host.source,
+    typed: { convergence: num(c.convergence) != null, declination: num(c.declination) != null } };
+}
+const fmtAngle = (v) => `${v < 0 ? '−' : ''}${Math.abs(v).toFixed(Math.abs(v) < 10 ? 2 : 1)}°`;
 registerKind('north', {
   label: 'north arrow',
   draw(ctx, box, frame, env) {
     const meta = metaOf(frame, env.doc);
+    frame._needs = undefined;
     if (meta.north === null) {                             // a view looking along north: no arrow to draw
       // the axis-out-of-the-page sign (⊙) under its N, and the words under it — their type
       // shrunk, and broken onto two lines, until they fit the frame (it used to read “out of the p”)
@@ -460,9 +479,23 @@ registerKind('north', {
       lines.forEach((l, i) => ctx.fillText(l, x, cy + r + 0.8 + i * lh));
       return;
     }
-    const bearing = Number.isFinite(+meta.north) ? +meta.north : 0;   // degrees clockwise from page-up to north
-    const look = (frame.content && frame.content.style) || 'arrow';      // 'arrow' | 'needle' | 'star' | 'line'
-    const cx = box[0] + box[2] / 2, cy = box[1] + box[3] / 2 + 1.5, r = Math.min(box[2], box[3] - 4) / 2;
+    const grid = Number.isFinite(+meta.north) ? +meta.north : 0;   // degrees clockwise from page-up to grid north
+    const c0 = frame.content || {}, ref = c0.reference || 'grid';
+    const A = ref === 'grid' ? null : northAnglesOf(frame, env, meta);
+    const needs = (what) => { frame._needs = { text: 'needs a place', title: `${what} — set the project's coordinate system, or type the angle${what.includes('and') ? 's' : ''} in the arrow's panel` }; };
+    if (ref === 'all') { drawNorthDiagram(ctx, box, grid, A, needs); return; }
+    let bearing = grid, letter = 'N';
+    if (ref === 'true' || ref === 'magnetic') {
+      if (A.convergence == null) { needs('true north needs the grid convergence where the view is'); letter = 'GN'; }
+      else if (ref === 'magnetic' && A.declination == null) { needs('magnetic north needs the declination where the view is'); bearing = grid + A.convergence; }
+      else { bearing = grid + A.convergence + (ref === 'magnetic' ? A.declination : 0); letter = ref === 'magnetic' ? 'MN' : 'N'; }
+    }
+    const look = c0.style || 'arrow';                     // 'arrow' | 'needle' | 'star' | 'line'
+    const cap = ref !== 'grid' && c0.angles !== false && !frame._needs
+      ? (ref === 'true' ? `true N · γ ${fmtAngle(A.convergence)}` : `magnetic N · δ ${fmtAngle(A.declination)}${A.year ? ` (${A.year})` : ''}`) : null;
+    const capH = cap ? 5 * PT * 1.3 : 0;
+    const cx = box[0] + box[2] / 2, cy = box[1] + (box[3] - capH) / 2 + 1.5, r = Math.min(box[2], box[3] - 4 - capH) / 2;
+    if (cap) { ctx.fillStyle = INK; ctx.font = fontMm(5); ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'; ctx.fillText(cap, cx, box[1] + box[3]); }
     ctx.save(); ctx.translate(cx, cy); ctx.rotate((bearing * Math.PI) / 180);
     const half = (w, tip, tail, dark) => {               // one half of a blade, from the tip to the tail
       ctx.beginPath(); ctx.moveTo(0, tip); ctx.lineTo(w, 0); ctx.lineTo(0, tail); ctx.closePath();
@@ -483,10 +516,49 @@ registerKind('north', {
       ctx.beginPath(); ctx.moveTo(0, -r); ctx.lineTo(-r * 0.45, r * 0.7); ctx.lineTo(0, r * 0.35); ctx.closePath(); ctx.fill(); ctx.stroke();
     }
     ctx.fillStyle = INK; ctx.font = fontMm(9, { bold: true }); ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
-    ctx.fillText('N', 0, -r - 0.4);
+    ctx.fillText(letter, 0, -r - 0.4);
     ctx.restore();
   },
 });
+// the north diagram: true north (a line under a star), grid north (GN), magnetic north (a half arrow, MN),
+// from one foot, at their real angles, and the angles written under it
+function drawNorthDiagram(ctx, box, grid, A, needs) {
+  const has = { t: A.convergence != null, m: A.convergence != null && A.declination != null };
+  if (!has.t) needs('the north diagram needs the grid convergence (and the declination) where the view is');
+  else if (!has.m) needs('magnetic north needs the declination where the view is');
+  const lines = [];
+  if (has.t) lines.push(`γ ${fmtAngle(A.convergence)} grid → true`);
+  if (has.m) lines.push(`δ ${fmtAngle(A.declination)}${A.year ? ` (${A.year})` : ''} true → magnetic`);
+  const lh = 5 * PT * 1.25, capH = lines.length * lh + 0.6;
+  const fx = box[0] + box[2] / 2, fy = box[1] + box[3] - capH - 0.5, L = Math.max(4, Math.min(box[3] - capH - 6, box[2] * 1.6));
+  // side: where a label goes when two lines are close (under 6°) — beside its own tip, away from the other
+  const ray = (deg, label, mark, side = 0) => {
+    const a = (deg * Math.PI) / 180, tx = fx + Math.sin(a) * L, ty = fy - Math.cos(a) * L;
+    ctx.strokeStyle = INK; ctx.lineWidth = 0.25; ctx.beginPath(); ctx.moveTo(fx, fy); ctx.lineTo(tx, ty); ctx.stroke();
+    ctx.save(); ctx.translate(tx, ty); ctx.rotate(a);
+    ctx.fillStyle = INK;
+    if (mark === 'star') {                                 // a five-pointed star on true north
+      const R = 1.3, rr = 0.55; ctx.beginPath();
+      for (let k = 0; k < 10; k++) { const q = (k * Math.PI) / 5 - Math.PI / 2, d = k % 2 ? rr : R; ctx[k ? 'lineTo' : 'moveTo'](Math.cos(q) * d, Math.sin(q) * d - 1.3); }
+      ctx.closePath(); ctx.fill();
+    } else if (mark === 'half') {                          // magnetic: a half arrowhead
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0.9, 2.2); ctx.lineTo(0, 1.6); ctx.closePath(); ctx.fill();
+    }
+    ctx.font = fontMm(6, { bold: true }); ctx.textBaseline = 'bottom';
+    if (label) {
+      if (side) { ctx.rotate(-a); ctx.textAlign = side < 0 ? 'right' : 'left'; ctx.textBaseline = 'middle'; ctx.fillText(label, side * 1.2, 0.6); }
+      else { ctx.textAlign = 'center'; ctx.fillText(label, 0, mark === 'star' ? -2.9 : -0.6); }
+    }
+    ctx.restore();
+  };
+  const g = A.convergence, d = A.declination, near = (x) => x != null && Math.abs(x) < 6;
+  // grid north's label goes to the side away from true north when they're close; magnetic's away from true
+  ray(grid, 'GN', null, has.t && near(g) ? (g > 0 ? -1 : 1) : 0);
+  if (has.t) ray(grid + g, '', 'star');
+  if (has.m) ray(grid + g + d, 'MN', 'half', near(d) ? (d > 0 ? 1 : -1) : 0);
+  ctx.fillStyle = INK; ctx.font = fontMm(5); ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  lines.forEach((l, i) => ctx.fillText(l, fx, fy + 0.8 + i * lh));
+}
 
 // ── table: a title, a header row and rows — book style (a rule above and below, a thin one under
 // the header, no vertical lines), numbers right-aligned, light striping. The type shrinks to fit

@@ -42,6 +42,8 @@ import { gridAxesOf } from './grid-ops.js';
 import { xyFigure } from './xyplot.js';
 import { compareField, refreshCompareFrame, lineageMd as compareLineageMd, openCompareDialog } from './compare.js';
 import { sceneOrigin } from './coords.js';
+import { toLonLat } from '../../../ext/proj/index.js';
+import { declination as wmmDeclination } from '../../../ext/wmm/index.js';
 const $ = (s) => document.querySelector(s);
 
 // the app's side (setComposerHooks): renderViewCanvas(pxW, pxH) → a canvas rendered to convergence
@@ -1267,9 +1269,39 @@ async function rerender(f, pxPerMm) {
 function storeImageQuiet(f, canvas, meta) { f._img = canvas; f._jpeg = null; f.content = { ...f.content, width: canvas.width, height: canvas.height, meta }; }
 
 export const composerEnv = (extra) => envFor(extra);   // the page env micro draws with (fields, overlays) — for hosts and tests
+// a north arrow's angles where its view is (compo's north kind asks; content may carry a typed place):
+//   γ, grid → true: the project CRS's grid north at the view's centre, against the meridian there (a step
+//   north in grid coordinates, turned into longitude / latitude) — none without a CRS;
+//   δ, true → magnetic: the World Magnetic Model 2025 at that place on the figure's date (content.date, else
+//   today) — the place from the CRS, else the arrow's own (content.lat / content.lon).
+export function northAnglesAt(world, content = {}) {
+  const crs = S.crs || null, out = { convergence: null, declination: null, year: null, source: null };
+  let lat = Number.isFinite(+content.lat) && content.lat !== '' && content.lat != null ? +content.lat : null;
+  let lon = Number.isFinite(+content.lon) && content.lon !== '' && content.lon != null ? +content.lon : null;
+  const parts = [];
+  if (crs && world) {
+    try {
+      const step = 100, [p, q] = toLonLat(crs, [[world[0], world[1]], [world[0], world[1] + step]]);
+      if ([...p, ...q].every(Number.isFinite)) {
+        const az = Math.atan2((q[0] - p[0]) * Math.cos((p[1] * Math.PI) / 180), q[1] - p[1]) * 180 / Math.PI;   // grid north's bearing from true north
+        out.convergence = +(-az).toFixed(4);              // grid → true
+        if (lat == null) { lat = p[1]; lon = p[0]; }
+        parts.push(`γ from ${crs.name || 'the project CRS'}`);
+      }
+    } catch { /* a CRS proj4 can't invert: no convergence */ }
+  }
+  if (lat != null && lon != null && Math.abs(lat) <= 90) {
+    const date = content.date && !isNaN(new Date(content.date)) ? new Date(content.date) : new Date();
+    try { out.declination = +wmmDeclination(lat, lon, date).toFixed(3); out.year = date.getFullYear(); parts.push(`δ from WMM2025 at ${lat.toFixed(3)}, ${lon.toFixed(3)}`); } catch { /* outside the model's years */ }
+  }
+  out.source = parts.join(' · ') || null;
+  return out;
+}
+
 function envFor(extra = {}) {
   return {
     ...extra,
+    northAngles: ({ frame, meta }) => northAnglesAt(meta && meta.proj && meta.proj.focus, (frame && frame.content) || {}),
     fields: MICRO_FIELDS, fieldHelp: MICRO_FIELD_HELP, overlaysFor,
     get props() { return (S.house && S.house.props) || {}; },
     get crs() { return S.crs ? { name: S.crs.name, code: S.crs.epsg ? `EPSG:${S.crs.epsg}` : null } : null; },   // {crs} (compo's field; src/crs.js)

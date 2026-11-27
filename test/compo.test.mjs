@@ -1,7 +1,7 @@
 // @gcu/compo: the document model, fields, snapping, and the one drawing path onto a PDF page.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createDocument, parseDocument, serializeDocument, addFrame, alignFrames, distributeFrames, snapBox, bringToFront, sendToBack, pageDims, resolveFields, niceBelow, renderPage, exportPDF, kindOf, registerKind } from '../ext/compo/src/main.js';
+import { createDocument, parseDocument, serializeDocument, addFrame, alignFrames, distributeFrames, snapBox, bringToFront, sendToBack, pageDims, resolveFields, niceBelow, renderPage, exportPDF, kindOf, registerKind, northAnglesOf } from '../ext/compo/src/main.js';
 import { PdfDocument } from '../ext/pdf/src/main.js';
 
 test('page sizes: named, oriented, custom', () => {
@@ -584,4 +584,21 @@ test('crop: a plain picture is drawn from the cropped source rectangle, at the c
   assert.equal(a.length, 9, 'the nine-argument form: a source rectangle');
   assert.deepEqual(a.slice(1, 5), [10, 0, 80, 25], 'left 10 %, right 10 %, the bottom half trimmed');
   assert.ok(Math.abs(a[7] / a[8] - 80 / 25) < 1e-9, 'drawn at the cropped shape');
+});
+
+test('north arrow: angles typed on the frame win, else the host gives them; a reference that needs one nobody gives says so', () => {
+  const host = { northAngles: () => ({ convergence: 0.37, declination: -23.1, year: 2026, source: 'here' }) };
+  const a = northAnglesOf({ content: {} }, host, {});
+  assert.equal(a.convergence, 0.37); assert.equal(a.declination, -23.1); assert.equal(a.year, 2026);
+  const b = northAnglesOf({ content: { convergence: 1.5, declination: '' } }, host, {});
+  assert.equal(b.convergence, 1.5, 'a typed angle wins'); assert.equal(b.declination, -23.1, 'an empty field asks the host');
+  assert.equal(northAnglesOf({ content: {} }, {}, {}).convergence, null, 'no host, nothing typed: none');
+  // drawn: grid needs nothing; true / all without angles set frame._needs (its badge), and draw grid north
+  const kind = kindOf('north'), calls = [];
+  const ctx = new Proxy({}, { get: (t, k) => (k in t ? t[k] : (...args) => { calls.push(k); return { width: 1 }; }), set: (t, k, v) => { t[k] = v; return true; } });
+  for (const [ref, env, needs] of [['grid', {}, false], ['true', {}, true], ['all', {}, true], ['true', host, false], ['magnetic', host, false], ['all', host, false]]) {
+    const f = { kind: 'north', content: { reference: ref, north: 10 }, box: [0, 0, 20, 30] };
+    kind.draw(ctx, f.box, f, { ...env, doc: null });
+    assert.equal(!!f._needs, needs, `${ref} with ${env.northAngles ? 'a host' : 'no host'}`);
+  }
 });
