@@ -149,6 +149,29 @@ gives:
 and \ui{∩ intersect with… › west} on the \code{east} card keeps \code{east ∩ west}: the line
 \code{123→33}, the mean planes 56° apart.
 
+\section{Questions of a set}\label{sec:stats-tests}
+
+\begin{description}
+\item[Is there a preferred orientation at all?]\index{Bingham test} The card's \ui{uniform?} line is
+Bingham's test of uniformity on the orientation tensor \parencite{fisher1987}: a small $p$ says there is a
+preferred orientation (\ui{no (p < 0.001)}); a large one says the data can't be told from a uniform spread.
+\item[How sure is the mean?]\index{confidence ellipse} The cone of confidence is round; the
+\ui{ellipse} line gives the 95\,\% confidence ellipse about the mean, its two half-angles and the direction
+of the long one. A cluster drawn out along a girdle has a long, thin ellipse
+(\ui{27.6° × 4.0° → 295→42} for Tocher). \code{stats --bootstrap} adds a bootstrap cone, by resampling (1000
+times, or the number you give).
+\item[Could two sets share one mean?]\index{Watson's test} \code{compare east west} is Watson's F test for a
+common mean: \ui{their means differ (at 95 \%)}, or \ui{one mean could serve both}.
+\end{description}
+
+\section{Finding the sets}\label{sec:sets}\index{sets (finding)}
+
+\code{sets} fits a mixture of Fisher distributions to the poles. With a number, \code{sets 3}, it finds
+that many; without one the number is chosen by the Bayesian information criterion, from one to five. The
+answer lists each set, S1 the largest, with its size, mean and $\kappa$, and writes a \col{set} column on
+the data, which you can color by, select (\code{select where "set = 'S2'"}) or split into datasets. The
+fit is seeded, so the same data gives the same sets every time.
+
 \section{From the console}\label{sec:stats-console}
 \index{commands!stats}\index{commands!mean}\index{commands!eigen}\index{commands!beta}%
 \index{commands!intersect}%

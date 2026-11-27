@@ -1,0 +1,57 @@
+\chapter{Slopes and folds}\label{ch:slopes-folds}
+\begin{goals}
+\textbf{In this chapter} you test a rock slope for planar, wedge and toppling failure, and describe a fold
+from its bedding: axis, interlimb angle, axial plane, and Fleuty's names for them.
+\end{goals}
+
+\section{Kinematic analysis of a slope}\label{sec:kinematic}\index{kinematic analysis}
+
+\begin{center}\small\ttfamily
+kinematic joints 300/65 --phi 30 --lateral 20
+\end{center}
+
+\noindent tests the planes of \code{joints} against a slope face dipping 65° toward 300, with a friction
+angle of 30° and a lateral limit of ±20° (the defaults are 30° and 20°). Each mode is tested on the
+attitudes themselves \parencite{markland1972,hoek1981,goodman1976}, so the result doesn't depend on the
+projection:
+
+\begin{description}
+\item[planar] a plane that dips out of the face (its dip direction within the lateral limit of the
+face's), less steeply than the face (so it daylights) and more steeply than $\phi$.
+\item[wedge] two planes whose line of intersection plunges out of the face, less steeply than the face
+in that direction, and more steeply than $\phi$. Every pair is tested; past 50\,000 pairs wuffle asks you to
+use the set means or a selection instead.
+\item[flexural toppling] a plane that dips into the slope (within the lateral limit of the face's
+opposite), steep enough that its pole plunges less than the face's dip less $\phi$.
+\end{description}
+
+The answer counts each mode, and every plane gets a \col{kinematic} column naming the modes it takes part
+in (\code{planar wedge}), so \code{select where "kinematic \textasciitilde{} 'wedge'"} picks them. The face
+and the friction cone ($90 - \phi$ about the vertical) are drawn on the net as datasets of their own. The
+whole analysis is one undo step.
+
+\section{Folds}\label{sec:fold}\index{folds}
+
+\code{fold} describes a fold from bedding:
+
+\begin{description}
+\item[The axis] the pole of the best-fit great circle through the bedding poles (the $\pi$-girdle), with
+its cylindricity: how well the poles sit on one great circle.
+\item[The limbs] the two sets the poles fall into.
+\item[The interlimb angle] measured across the hinge, and Fleuty's word for it: gentle (180–120°), open
+(120–70°), close (70–30°), tight, isoclinal \parencite{fleuty1964}.
+\item[The axial plane] the plane that holds the axis and bisects the limbs, and Fleuty's names for the
+fold's attitude (upright, inclined, recumbent) and its plunge (horizontal to vertical).
+\end{description}
+
+\begin{caution}
+Two limbs have two bisecting planes, both holding the axis. Which one is the axial plane is a fact about
+the fold, not about the orientations. wuffle takes the steeper, which is right for every fold but a
+recumbent one, and says so. For a recumbent fold, \code{fold --recumbent} takes the other, and the
+interlimb angle changes with it.
+\end{caution}
+
+\noindent \code{fold --keep} draws the axis and the axial plane as datasets. When the poles sit poorly on
+one great circle, the answer suggests \code{cone}: the poles of a conical fold lie on a small circle, and
+\code{cone} finds the one that fits best (its axis, half-angle and the scatter about it), drawn with
+\code{--keep}.

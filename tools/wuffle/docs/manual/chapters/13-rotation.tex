@@ -71,6 +71,21 @@ describe the measurements, which don't move.
 \item \textbf{The data.} Nothing in the tables changes.
 \end{itemize}
 
+\section{Turning the data itself}\label{sec:turn}\index{rotation!of the data}
+
+Everything above turns the \emph{view}. Three commands turn the \emph{data}, each into a new dataset with
+lineage that keeps every other column (a set, a label, a note):
+
+\begin{description}
+\item[\code{turn tocher about 045/30 20}] 20° about the axis 045→30, clockwise looking down it.
+\item[\code{untilt tocher 120/40}]\index{untilting} the data with a bedding's tilt taken out: turned about the
+bedding's strike until the bedding is horizontal, as in restoring the attitude of a structure measured in
+tilted beds.
+\item[\code{declination tocher 10}]\index{declination} azimuths turned by a magnetic declination, east
+positive: magnetic to true north. With \code{--at -20,-44} (and \code{--date 2024-05-01} for an older
+survey) wuffle computes it from the World Magnetic Model 2025 and records where and when in the lineage.
+\end{description}
+
 \section{In the files}
 
 A rotation is one of the diagram's settings, under \code{"props"} in \file{diagrams/<name>/diagram.json}

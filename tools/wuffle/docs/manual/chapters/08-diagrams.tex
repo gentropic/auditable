@@ -45,6 +45,8 @@ Right-click a net's name in the tree:
 \item[\ui{Projection}]\index{projection} \ui{equal-area (Schmidt)}, the default and the right one for counting and
 contouring, or \ui{equal-angle (Wulff)}, which keeps angles true and draws every circle as a circle.
 \item[\ui{Hemisphere}]\index{hemisphere} \ui{lower}, the structural-geology default, or \ui{upper}.
+\item[\ui{Graticule}]\index{graticule} \ui{none}, 5°, 10° (the default), 15° or 30°. \ui{none} gives a clean net for
+print; the primitive and the cardinal letters stay.
 \item[\ui{Reset rotation}] back to north up, when the net has been rotated (\cref{ch:rotation}).
 \item[\ui{Remove diagram}] asks first. \ui{Its layers go; the data stays.}
 \end{description}
@@ -52,8 +54,8 @@ contouring, or \ui{equal-angle (Wulff)}, which keeps angles true and draws every
 Rose diagrams and fabric plots have their own settings in the same menu (\cref{ch:roses}). Every setting
 is an undo step (\ui{diagram settings}).
 
-The \term{graticule} is drawn every 10°. There is no menu for it; set \code{"graticule"} in the diagram's
-\file{diagram.json} from the console if you need another spacing (\cref{sec:project-write}).
+The \term{graticule} is drawn every 10° unless you choose otherwise in \ui{Graticule}. The same menu is
+on the net itself, under its name in the right-click menu (\cref{sec:net-menu}).
 
 \section{Layers}\label{sec:layers}
 

@@ -83,9 +83,13 @@ Two fallbacks cover files without those names. Both are \emph{guesses}, and the 
 \code{N30E 40SE} is read as planes, with quadrant letters honored: \code{N30E 40SE} is a strike of
 N30°E dipping 40° to the southeast, the plane \code{120/40}. A file with one attitude per line and
 nothing else is read this way, even though its values contain spaces.
-\item \textbf{The first two numeric columns} are read as dip direction and dip. If the second column has
-values over 90 and the first doesn't, they are swapped, since a dip can't pass 90.
+\item \textbf{The first two numeric columns} are read as dip direction and dip, if their values can be:
+one from 0 to 360, the other from 0 to 90. If the second column has values over 90 and the first doesn't,
+they are swapped, since a dip can't pass 90. Columns named like coordinates or identifiers (\col{x},
+\col{y}, \col{east}, \col{lat}, \col{station}, \col{from}, \col{to}…) are never taken for attitudes.
 \end{itemize}
+
+A file with nothing that reads as attitudes is a \term{table} (\cref{sec:tables}).
 
 In a one-column file the arrow decides. Attitudes written with an arrow (\code{045→30}, or
 \code{045>30}) are lines, and the rest are planes. A column of only lines opens as a lines dataset; a
@@ -158,6 +162,77 @@ else is kept as text. Each edit is an undo step, \ui{edit rows}.
 Click a row, or drag down several, and they are selected everywhere: violet on every net that draws the
 dataset, counted in the status line. Rows selected on a net are washed in the table the same way.
 \cref{ch:select} is about selections.
+
+\section{When wuffle guessed wrong}\label{sec:columns}\index{columns (how a dataset is read)}
+
+A guess can be wrong: a \col{dip} that is really a dip direction, a column of quadrant letters, a rake in
+place of a slip line. Right-click the dataset and choose \ui{Columns… (how it is read)}, or click
+\ui{columns…} in the table's heading (it says \ui{columns… (guessed)} when wuffle guessed). Choose the
+kind, the form the attitudes are written in (dip direction and dip, right-hand strike and dip, strike and
+dip with the quadrant it dips toward, one text column; for faults, a slip line or a rake), then the column
+for each part. Optional columns: \ui{sense} for faults, \ui{set} and \ui{weight}. The dialog counts the rows
+that read the way you chose as you change it: \ui{2 of 2 rows read this way}.
+
+\ui{Apply} is one undo step. The dataset's layers follow: a new kind gets that kind's elements, keeping
+their colors; a dataset made a table comes off the nets, after asking. From the console:
+\code{columns quad planes dipdir=a dip=b}, or just \code{columns quad} to see how it is read now.
+
+\section{Calculated columns}\label{sec:calc}\index{calculated columns}
+
+A calculated column is a formula over each row, kept with the dataset. Click \ui{ƒ new column} in the
+table's heading, give it a name and an expression, and \ui{Add}; the dialog checks the expression as you
+type. The values are written into the rows, so the table, the contours, a join and an export all see an
+ordinary column, and they are made again whenever the rows change. The column's heading says \ui{ƒ}, and
+its tooltip shows the formula. A later formula may use an earlier one; a formula never replaces a column
+you measured.
+
+The expressions are \code{@gcu/expr}'s, the language of micro's and lamina's filters: comparisons,
+\code{and} / \code{or} / \code{not}, \code{if(cond, then, else)}, \code{\textasciitilde} for \emph{contains},
+\code{in (…)}, \code{like}, arithmetic, and functions such as \code{round}, \code{abs}, \code{sqrt}, \code{min},
+\code{max}, \code{bin}, \code{coalesce}, and the angles in degrees: \code{sin}, \code{cos}, \code{tan},
+\code{asin}, \code{acos}, \code{atan}, \code{atan2}, \code{azimuth} (any angle as 0–360) and
+\code{angle(tr1, pl1, tr2, pl2)}, the angle between two directions. Besides the dataset's columns an
+expression can read each row's attitude, as wuffle read it: \col{dip}, \col{dipdir}, \col{strike},
+\col{pole\_trend}, \col{pole\_plunge}, \col{trend}, \col{plunge} and \col{rake}.
+
+\begin{center}\small\ttfamily
+if(dip > 60, 'steep', 'shallow')\\
+angle(pole\_trend, pole\_plunge, 135, 40) < 15\\
+round(azimuth(dipdir + 23.1))
+\end{center}
+
+\noindent In the console the command is \code{calc}, with the expression in double quotes:
+\code{calc steep = "dip > 60"}. The shell would otherwise take \code{>} for a redirection and strip the
+quotes around words. \code{calc} alone lists the formulas, \code{calc --drop steep} removes one. The same
+expressions select rows: \code{select where "steep and set = 'S1'"} (\cref{sec:select-console}).
+
+\section{Tables and joins}\label{sec:tables}\index{tables}\index{joins}
+
+A file with no attitudes (a stations list with coordinates and lithology, assays by sample) opens as a
+\term{table}. It is listed in the data section and shown in the table, but it isn't drawn. Its use is to
+be \emph{joined} onto measurements:
+
+\begin{center}\small\ttfamily
+join joints stations on station\\
+join joints stations on stn=site
+\end{center}
+
+\noindent The second form names the key column in each when they differ. The join is a left join: every
+measurement stays, with the table's columns where its key matched and blanks where it didn't, as a new
+dataset (\ui{joints + stations}) with lineage. The dataset you measured is left alone. Keys match as text,
+trimmed, so \code{12} and \code{"12"} are one station. The answer counts the matches and names what
+didn't match:
+\ui{→ joints + stations: 182 of 200 matched, 3 columns brought (x, y, lith); no stations row for 7, 9; 1 key
+twice in stations (the first row taken)}. A table column whose name the measurements already have comes
+in as \col{lith (stations)}. Calculated columns come as their values; their formulas stay with the source.
+
+\section{Exporting a dataset}\label{sec:data-export}
+
+Right-click a dataset, \ui{Export}: \ui{CSV}, or \ui{GeoJSON} for points (the console: \code{export joints
+geojson}). GeoJSON needs a place for each row: \col{lon} / \col{lat} columns (WGS~84) or \col{x} / \col{y}
+(projected; GeoJSON assumes WGS~84, so the answer reminds you to name your CRS to whoever reads it). Each
+point carries the row's columns and its attitude under fixed names: \col{dip\_direction}, \col{dip},
+\col{strike}, \col{trend}, \col{plunge}. Rows without coordinates are left out and counted.
 
 \section{The data section}\label{sec:data-section}
 

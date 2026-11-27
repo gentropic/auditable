@@ -60,6 +60,13 @@ times the area, and the largest petal dominates the picture far beyond its share
 what you see in proportion to what was measured.
 \end{why}
 
+\subsection{Weighting the sectors}\label{sec:rose-weight}\index{rose diagram!weighted}
+
+By default a sector counts measurements. \ui{Weight by} in the rose's menu (or \code{weight length} in the
+console) makes it sum a column instead, such as a trace length or a vein thickness. A long fracture then
+counts for more than a short one. Only numeric columns are offered; a blank or a text weighs nothing.
+\ui{count} goes back to counting. A figure of the rose says what it was weighted by.
+
 \section{Fabric plots}\label{sec:fabric}
 
 \shot[0.6\linewidth]{fabric-vollmer}{A Vollmer plot of the Tocher sample and the two sets it splits into by
