@@ -10,7 +10,8 @@
 import { conversions, io as bio } from '../../../ext/bearing/index.js';
 import { rowsInShape, formatPlane, formatLine } from '../../../ext/stereonet/index.js';
 import { sceneLayers } from './layers.js';
-import { layerStats, deriveMean, deriveEigen, deriveBeta, deriveIntersection, applyTerzaghi, deriveRotated, deriveUntilted, deriveDeclination, detectSets, compareMeans, deriveLineations } from './stats.js';
+import { orientations } from './io.js';
+import { layerStats, deriveMean, deriveEigen, deriveBeta, deriveIntersection, applyTerzaghi, deriveRotated, deriveUntilted, deriveDeclination, detectSets, compareMeans, deriveLineations, applyKinematic, foldAnalysis, fitSmallCircle } from './stats.js';
 import { declination as wmmDeclination } from '../../../ext/wmm/index.js';
 
 const ELEMENT_ALIASES = { poles: 'poles', pole: 'poles', points: 'points', circles: 'greatCircles', 'great-circles': 'greatCircles', greatcircles: 'greatCircles',
@@ -131,6 +132,9 @@ const HELP = {
   select: 'select cone [p|l] <dd/dip|tr/pl> <angle> | band <dd/dip> <half-width> | all | none | invert   (+ adds, - subtracts: "select + cone …")',
   stats: 'stats [layer] [--selection] [--bootstrap [n]] — n, mean, κ, α95, the confidence ellipse, Bingham uniformity, eigenvalues (the selected rows only, with --selection)',
   compare: 'compare <layer> <layer> — Watson\'s test: could the two share one mean?',
+  kinematic: 'kinematic [layer] <face dd/dip> [--phi 30] [--lateral 20] — planar, wedge and toppling failure against a slope face (Markland); draws the face and the friction cone',
+  fold: 'fold [layer] [--recumbent] [--keep] — the π-girdle\'s axis, cylindricity, interlimb angle, axial plane, Fleuty\'s names; --keep draws the axis and the axial plane',
+  cone: 'cone [layer] [--keep] — the small circle that best fits (a conical fold\'s poles): its axis and half-angle',
   sets: 'sets [layer] [k] — find the sets (a mixture of Fisher distributions; without k the number is chosen by BIC), written as a set column',
   turn: 'turn [layer] about <tr/pl> <angle> — the DATA rotated (clockwise looking down the axis), as a new dataset (rotate turns the view)',
   untilt: 'untilt [layer] <dd/dip> — the data with a bedding\'s tilt taken out (rotated about its strike until it is flat), as a new dataset',
@@ -310,6 +314,49 @@ export function createCommands(ctx) {
       const A = layerNamed(a), B = layerNamed(b), r = compareMeans(p.dataset(A.datasetId), p.dataset(B.datasetId));
       return `${dsName(A)} (n ${r.nA}) vs ${dsName(B)} (n ${r.nB}) — Watson F ${r.F.toFixed(2)} (${r.df[0]}, ${r.df[1]}), p ${r.p < 0.001 ? '< 0.001' : r.p.toFixed(3)}: `
         + (r.p < 0.05 ? 'their means differ (at 95 %)' : 'one mean could serve both (the test can\'t tell them apart at 95 %)');
+    },
+    kinematic(args0) {
+      let phi = 30, lateral = 20; const args = [];
+      for (let i = 0; i < args0.length; i++) {
+        if (args0[i] === '--phi') phi = +args0[++i]; else if (args0[i] === '--lateral') lateral = +args0[++i]; else args.push(args0[i]);
+      }
+      if (!(phi >= 0 && phi < 90)) throw new Error('--phi: the friction angle, 0–90');
+      if (!(lateral > 0 && lateral <= 90)) throw new Error('--lateral: the lateral limit, 1–90 (20 is customary)');
+      const f = parseAttitude(args[args.length - 1] || '', 'plane'); if (!f) throw new Error('kinematic [layer] <face dd/dip> — the slope face, e.g. kinematic 180/60 --phi 30');
+      const L = layerNamed(args.slice(0, -1).join(' '), { required: true }), g = active();
+      if (!['planes', 'faults'].includes(p.dataset(L.datasetId).kind)) throw new Error(`${dsName(L)} isn't planes`);
+      const r = applyKinematic(p, L.datasetId, { face: f.plane, phi, lateral });
+      p.batch('draw the slope', () => { p.addLayer(g.id, r.faceId); p.addLayer(g.id, r.coneId); });
+      const pc = (k) => `${k} (${((k / Math.max(1, r.n)) * 100).toFixed(0)} %)`;
+      return [`${dsName(L)} against the face ${formatPlane(f.plane)}, φ ${phi}°, lateral limit ±${lateral}° — ${r.n} planes`,
+        `  planar   ${pc(r.planar)}`, `  wedge    ${r.wedges} of ${r.pairs} pairs (${((r.wedges / Math.max(1, r.pairs)) * 100).toFixed(1)} %)`, `  toppling ${pc(r.toppling)}`,
+        '  each plane\'s modes are in its “kinematic” column (sort the table by it to see them); the face and the friction cone are drawn'].join('\n');
+    },
+    fold(args0) {
+      const recumbent = args0.includes('--recumbent'), keep = args0.includes('--keep'), args = args0.filter((a) => !/^--/.test(a));
+      const L = layerNamed(args.join(' '), { required: true }), ds = p.dataset(L.datasetId), r = foldAnalysis(ds, { recumbent });
+      const out = [`${dsName(L)} · n ${r.n} — fold axis ${formatLine(r.axis)} (${r.plunge}), π-girdle ${formatPlane(r.girdle)}, cylindricity ${(r.cylindricity * 100).toFixed(1)} %`];
+      if (r.limbs) out.push(`  limbs ${r.limbs.map(formatPlane).join(' and ')} — interlimb ${r.interlimb.toFixed(0)}° (${r.tightness}); axial plane ${formatPlane(r.axialPlane)} (${r.attitude})`,
+        `  ${recumbent ? 'the shallower bisector taken as the axial plane (--recumbent)' : 'the steeper bisector taken as the axial plane — a recumbent fold: --recumbent'}`);
+      if (r.cylindricity < 0.9) out.push('  the poles don\'t sit well on one great circle: a conical fold? try cone');
+      if (keep) {
+        const id = p.batch('fold', () => {
+          const a = p.derive({ name: `${ds.name} · fold axis`, kind: 'lines', rows: [{ trend: +r.axis[0].toFixed(2), plunge: +r.axis[1].toFixed(2) }], roles: { trend: 'trend', plunge: 'plunge' }, notation: 'dd', op: 'fold axis', params: {}, sources: [ds.id] });
+          p.addLayer(active().id, a);
+          if (r.axialPlane) { const b = p.derive({ name: `${ds.name} · axial plane`, kind: 'planes', rows: [{ 'dip direction': +r.axialPlane[0].toFixed(2), dip: +r.axialPlane[1].toFixed(2) }], roles: { dipDir: 'dip direction', dip: 'dip' }, notation: 'dd', op: 'axial plane', params: { recumbent }, sources: [ds.id] }); p.addLayer(active().id, b); }
+          return a;
+        });
+        out.push(`  → ${p.dataset(id).name}${r.axialPlane ? ' and the axial plane' : ''}, drawn on ${active().name}`);
+      }
+      return out.join('\n');
+    },
+    cone(args0) {
+      const keep = args0.includes('--keep'), args = args0.filter((a) => !/^--/.test(a));
+      const L = layerNamed(args.join(' '), { required: true }), ds = p.dataset(L.datasetId);
+      const dirs = orientations(ds).filter(Boolean).map((o) => o.pole || o.dcos), r = fitSmallCircle(dirs);
+      const out = `${dsName(L)} · n ${dirs.length} — best small circle: axis ${formatLine(r.axis)}, half-angle ${r.angle.toFixed(1)}°, rms ${r.rms.toFixed(1)}°`;
+      if (!keep) return out;
+      return out + '\n' + derived(() => p.derive({ name: `${ds.name} · best cone`, kind: 'smallcircles', rows: [{ trend: r.axis[0], plunge: r.axis[1], angle: r.angle }], roles: { trend: 'trend', plunge: 'plunge', angle: 'angle' }, notation: 'dd', op: 'small-circle fit', params: { rms: r.rms }, sources: [ds.id] }));
     },
     sets([...args]) {
       const k = /^\d+$/.test(args[args.length - 1] || '') ? +args.pop() : null;

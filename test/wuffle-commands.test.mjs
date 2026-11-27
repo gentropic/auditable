@@ -244,3 +244,42 @@ describe('turning data, sets, tests, rakes', () => {
     assert.deepEqual(orientations(ds)[0].line.map((x) => Math.round(x)), [90, 60]);
   });
 });
+
+// ── batch 5: slopes and folds ──
+import { kinematicAnalysis, foldAnalysis, fitSmallCircle } from '../tools/wuffle/src/stats.js';
+import * as BB from '../ext/bearing/index.js';
+describe('kinematic analysis, folds, cones', () => {
+  const planes = (rows) => ({ name: 't', kind: 'planes', rows: rows.map(([dd, dip]) => ({ dd, dip })), roles: { dipDir: 'dd', dip: 'dip' }, notation: 'dd', columns: ['dd', 'dip'] });
+  it('Markland: each mode tested on the attitudes (face 180/60, φ 30)', () => {
+    const r = kinematicAnalysis(planes([[180, 45], [180, 20], [180, 70], [0, 80], [135, 60], [225, 60]]), { face: [180, 60], phi: 30 });
+    assert.match(r.rows[0], /planar/, 'out of the face, under it, over φ');
+    assert.equal(r.rows[1], '', 'below the friction angle'); assert.equal(r.rows[2], '', 'steeper than the face: does not daylight');
+    assert.equal(r.rows[3], 'toppling', 'steep, into the slope');
+    assert.match(r.rows[4], /wedge/); assert.match(r.rows[5], /wedge/);
+    assert.throws(() => kinematicAnalysis(planes([[1, 1]]), { face: [180, 0] }), /dip above 0/);
+  });
+  it('kinematic: a column on the data, the face and the friction cone drawn, one undo step', () => {
+    const { p, c } = mk(); c.run('sample');
+    const r = c.run('kinematic 300/65 --phi 30'); assert.ok(r.ok, r.text); assert.match(r.text, /planar +\d+/);
+    assert.ok('kinematic' in p.datasets[0].rows[0]);
+    assert.ok(p.datasets.some((d) => d.kind === 'smallcircles' && d.rows[0].angle === 60), 'the friction cone: 90 − φ about the vertical');
+    c.run('undo'); c.run('undo'); assert.equal(p.datasets.length, 1); assert.ok(!('kinematic' in p.datasets[0].rows[0]));
+  });
+  it('fold: the interlimb angle across the hinge, Fleuty\'s names (the steeper bisector as the axial plane)', () => {
+    const near = (rows) => rows.flatMap(([dd, dip]) => [-2, 0, 2].map((e) => [dd + e, dip + e / 2]));
+    const a = foldAnalysis(planes(near([[90, 40], [270, 60]])));
+    assert.ok(Math.abs(a.interlimb - 80) < 1.5, `${a.interlimb}`); assert.equal(a.tightness, 'open'); assert.equal(a.plunge, 'horizontal');
+    assert.ok(Math.abs(a.axis[1]) < 3 && (Math.abs(a.axis[0]) < 3 || Math.abs(a.axis[0] - 180) < 3 || Math.abs(a.axis[0] - 360) < 3), `axis ${a.axis}`);
+    const g = foldAnalysis(planes(near([[90, 10], [270, 10]]))); assert.ok(Math.abs(g.interlimb - 160) < 1.5); assert.equal(g.tightness, 'gentle'); assert.equal(g.attitude, 'upright');
+    const t = foldAnalysis(planes(near([[90, 80], [270, 85]]))); assert.equal(t.tightness, 'tight');
+  });
+  it('cone: a small circle found wherever its axis is, narrow or wide', () => {
+    for (const [tr, pl, h] of [[30, 40, 50], [200, 75, 25], [100, 5, 70]]) {
+      const ax = BB.conversions.lineToDcos(tr, pl), o = Math.abs(ax[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+      let k = [ax[1] * o[2] - ax[2] * o[1], ax[2] * o[0] - ax[0] * o[2], ax[0] * o[1] - ax[1] * o[0]]; const kn = Math.hypot(...k); k = k.map((v) => v / kn);
+      const ph = BB.conversions.rotateDcos(ax, k, h), dirs = []; for (let a = 0; a < 360; a += 20) dirs.push(BB.conversions.rotateDcos(ph, ax, a));
+      const r = fitSmallCircle(dirs);
+      assert.ok(Math.abs(r.axis[0] - tr) < 1 && Math.abs(r.axis[1] - pl) < 1 && Math.abs(r.angle - h) < 1, `${tr}/${pl}/${h} → ${JSON.stringify(r)}`);
+    }
+  });
+});
