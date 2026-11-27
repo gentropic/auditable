@@ -11,7 +11,8 @@
 // run(line) runs a line as if typed and resolves { ok, text } (what it printed, colour codes stripped).
 
 import { Terminal, DomRenderer, Input } from '../../../ext/term/index.js';
-import { createShell, createTermAdapter, makeLineEditor } from '../../../ext/geas/index.js';
+import { createShell, createTermAdapter, makeLineEditor, defaultBuiltins } from '../../../ext/geas/index.js';
+const geasMan = defaultBuiltins().get('man');            // the shell's own manual, for everything not wuffle's
 import { VFS } from '../../../ext/vfs/index.js';
 import { exportPDF } from '../../../ext/compo/index.js';
 import { createCommands } from './commands.js';
@@ -126,6 +127,16 @@ export class ConsoleView {
       const s = await help(argv, sctx);
       if (argv.length < 2) await sctx.stdout(`\nand a shell (geas): ${[...this.shell.builtins.keys()].filter((n) => !this.cmd.names.includes(n) && n !== 'history').sort().join(' ')}\npipes, $(…), for / while / if, functions, > files in /home and /tmp. a routine is a script: . /home/routine.sh\n`);
       return s;
+    };
+    // man <wuffle command> — the shell's manual knows only its own commands; wuffle's answer with their help
+    out.man = async (argv, sctx) => {
+      const name = argv[1];
+      if (name && this.cmd.names.includes(name)) {
+        const r = this.cmd.run(`help ${quote(name)}`);
+        await sctx.stdout(`NAME\n    ${name} — a wuffle command\n\nSYNOPSIS\n${r.text.split('\n').map((l) => '    ' + l).join('\n')}\n`);
+        return 0;
+      }
+      return geasMan(argv, sctx);
     };
     return out;
   }

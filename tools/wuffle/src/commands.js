@@ -7,7 +7,7 @@
 //   ctx.applyShape(shape, mode) → n   (draws the shape on the active net too)   ctx.setTheme(t)
 //   ctx.focusDiagram(id)   ctx.openSample(name) → datasetId
 
-import { conversions } from '../../../ext/bearing/index.js';
+import { conversions, io as bio } from '../../../ext/bearing/index.js';
 import { rowsInShape, formatPlane, formatLine } from '../../../ext/stereonet/index.js';
 import { sceneLayers } from './layers.js';
 import { layerStats, deriveMean, deriveEigen, deriveBeta, deriveIntersection } from './stats.js';
@@ -15,13 +15,88 @@ import { layerStats, deriveMean, deriveEigen, deriveBeta, deriveIntersection } f
 const ELEMENT_ALIASES = { poles: 'poles', pole: 'poles', points: 'points', circles: 'greatCircles', 'great-circles': 'greatCircles', greatcircles: 'greatCircles',
   contours: 'contours', contour: 'contours', mean: 'mean', eigen: 'eigen', eigenvectors: 'eigen', labels: 'labels', v1: 'v1Pole', v2: 'v2Pole', v3: 'v3Pole' };
 
-/** "045/30" → plane [dd, dip] ; "045→30" / "045>30" → line [trend, plunge] ; else null */
-export function parseAttitude(s) {
-  const m = String(s).trim().match(/^(\d+(?:\.\d+)?)\s*([/→>])\s*(\d+(?:\.\d+)?)$/);
+/**
+ * "045/30" → plane [dd, dip] ; "045→30" / "045>30" → line [trend, plunge] ; else null.
+ * as: 'plane' | 'line' — the kind is already known (add l 120/40, select cone l 150/60 20), so the
+ * separator is only a separator: "/", "," or the arrow all read the same.
+ */
+export function parseAttitude(s, as = null) {
+  const m = String(s).trim().match(/^(\d+(?:\.\d+)?)\s*([/,→>])\s*(\d+(?:\.\d+)?)$/);
   if (!m) return null;
   const a = +m[1], b = +m[3];
   if (b > 90 || a > 360) return null;
-  return m[2] === '/' ? { plane: [a % 360, b], dcos: conversions.planeToDcos(a % 360, b) } : { line: [a % 360, b], dcos: conversions.lineToDcos(a % 360, b) };
+  const kind = as || (m[2] === '/' || m[2] === ',' ? 'plane' : 'line');
+  return kind === 'plane' ? { plane: [a % 360, b], dcos: conversions.planeToDcos(a % 360, b) } : { line: [a % 360, b], dcos: conversions.lineToDcos(a % 360, b) };
+}
+
+// ── add: attitudes typed in. The kind word says what the numbers are; the numbers are read as a stream and
+// grouped by the kind's size — so "045/30", "045,30" and "45 30" all read the same, and a list is just more ──
+const ADD_KINDS = {
+  p: 'planes', plane: 'planes', planes: 'planes',
+  l: 'lines', line: 'lines', lines: 'lines', lineation: 'lines', lineations: 'lines',
+  sc: 'smallcircles', small: 'smallcircles', smallcircle: 'smallcircles', smallcircles: 'smallcircles', cone: 'smallcircles',
+  f: 'faults', fault: 'faults', faults: 'faults', slip: 'faults',
+};
+const ARITY = { planes: 2, lines: 2, smallcircles: 3, faults: 4 };
+const NOUN = { planes: ['plane', 'planes'], lines: ['line', 'lines'], smallcircles: ['small circle', 'small circles'], faults: ['fault', 'faults'] };
+const SENSE_RE = /^(n|r|i|d|s|\?|normal|reverse|inverse|thrust|dextral|sinistral|unknown)$/i;
+const SENSE_NAME = { n: 'normal', r: 'reverse', i: 'reverse', d: 'dextral', s: 'sinistral', '?': '' };
+const QUAD_RE = /^(N|NE|E|SE|S|SW|W|NW|NNE|ENE|ESE|SSE|SSW|WSW|WNW|NNW)$/i;
+const fmt = (x) => String(+x.toFixed(1)).padStart(3, '0');
+
+/** add's words → { kind, items: [{ plane?, line?, angle?, sense? }], flags } (throws, saying what to type) */
+export function parseAdd(args) {
+  const words = [...args], flags = {};
+  const kind = ADD_KINDS[String(words.shift() || '').toLowerCase()];
+  if (!kind) throw new Error('add p|l|sc|f <attitudes> — e.g. add p 045/30 · add l 120/40 · add sc 120/40 15 · add f 045/30 120/20 n');
+  const vals = [];                                       // { v, q? } — q: a quadrant letter after a dip (030/40SE)
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    if (/^--/.test(w)) {
+      const k = w.slice(2).toLowerCase();
+      if (k === 'rhr' || k === 'strike') { flags.rhr = true; continue; }
+      if (['to', 'net', 'label', 'name'].includes(k)) { const v = words[++i]; if (v == null) throw new Error(`--${k} needs a value`); flags[k === 'name' ? 'to' : k] = v; continue; }
+      throw new Error(`add: unknown flag ${w} — --to <dataset> · --net <diagram> · --rhr · --label <text>`);
+    }
+    if (kind === 'faults' && SENSE_RE.test(w)) {
+      if (vals.length % 4 !== 0 || !vals.length) throw new Error(`“${w}”: a sense comes after a fault's four numbers (add f 045/30 120/20 n)`);
+      vals[vals.length - 1].sense = SENSE_NAME[w.toLowerCase()] ?? w.toLowerCase(); continue;
+    }
+    const m = w.match(/^(\d+(?:\.\d+)?)\s*[/,→>]\s*(\d+(?:\.\d+)?)\s*([A-Za-z]{1,3})?$/);
+    if (m) {
+      if (m[3] && !QUAD_RE.test(m[3])) throw new Error(`“${w}”: ${m[3]} isn't a compass quadrant`);
+      vals.push({ v: +m[1] }, { v: +m[2], ...(m[3] ? { q: m[3].toUpperCase() } : {}) }); continue;
+    }
+    const q = w.match(/^(\d+(?:\.\d+)?)([A-Za-z]{1,3})?$/);
+    if (q && (!q[2] || QUAD_RE.test(q[2]))) { vals.push({ v: +q[1], ...(q[2] ? { q: q[2].toUpperCase() } : {}) }); continue; }
+    throw new Error(`“${w}” — not an attitude (045/30) or a number`);
+  }
+  const A = ARITY[kind];
+  if (!vals.length) throw new Error(`add ${args[0]} what? e.g. ${{ planes: 'add p 045/30', lines: 'add l 120/40', smallcircles: 'add sc 120/40 15', faults: 'add f 045/30 120/20 n' }[kind]}`);
+  if (vals.length % A) throw new Error(`add ${args[0]}: ${NOUN[kind][1]} take ${A} numbers each (${{ planes: 'dip direction / dip', lines: 'trend / plunge', smallcircles: 'axis trend / plunge, then the half-angle', faults: 'plane dip direction / dip, slip trend / plunge, [sense]' }[kind]}) — ${vals.length} given`);
+  const plane = (a, b, at) => {                         // → [dd, dip]
+    if (!(b.v >= 0 && b.v <= 90)) throw new Error(`${at}: a dip of ${b.v} — dips are 0–90`);
+    if (!(a.v >= 0 && a.v <= 360)) throw new Error(`${at}: a direction of ${a.v} — 0–360`);
+    if (b.q) return bio.translateAttitude(a.v, b.v, b.q, true);    // strike / dip + the quadrant it dips toward
+    return [flags.rhr ? (a.v + 90) % 360 : a.v % 360, b.v];
+  };
+  const line = (a, b, at) => {
+    if (a.q || b.q) throw new Error(`${at}: a quadrant is for a plane's dip`);
+    if (!(b.v >= 0 && b.v <= 90)) throw new Error(`${at}: a plunge of ${b.v} — plunges are 0–90`);
+    if (!(a.v >= 0 && a.v <= 360)) throw new Error(`${at}: a trend of ${a.v} — 0–360`);
+    return [a.v % 360, b.v];
+  };
+  const items = [];
+  for (let k = 0; k < vals.length; k += A) {
+    const g = vals.slice(k, k + A), at = `${NOUN[kind][0]} ${k / A + 1}`;
+    if (kind === 'planes') items.push({ plane: plane(g[0], g[1], at) });
+    else if (kind === 'lines') items.push({ line: line(g[0], g[1], at) });
+    else if (kind === 'smallcircles') {
+      if (g[2].q || !(g[2].v > 0 && g[2].v < 180)) throw new Error(`${at}: a half-angle of ${g[2].v} — between 0 and 180`);
+      items.push({ line: line(g[0], g[1], at), angle: g[2].v });
+    } else items.push({ plane: plane(g[0], g[1], at), line: line(g[2], g[3], at), sense: g[3].sense ?? '' });
+  }
+  return { kind, items, flags };
 }
 
 /** split a line into words, keeping "quoted names" whole */
@@ -39,7 +114,9 @@ const HELP = {
   layers: 'layers — the active diagram\'s layers',
   show: 'show <element> [layer] / hide <element> [layer] — poles, circles, contours, mean, eigen, labels, v1…v3',
   contour: 'contour kamb [k] | fisher [layer] — switch contours on, with their method',
-  select: 'select cone <tr→pl|dd/dip> <angle> | band <dd/dip> <half-width> | all | none | invert   (+ adds, - subtracts: "select + cone …")',
+  add: 'add p 045/30 [more…] | l 120/40 | sc 120/40 15 | f 045/30 120/20 [n|r|d|s] — typed in, into "typed <kind>"\n'
+    + '    045/30, 045,30 or 45 30 · 030/40SE = strike/dip + quadrant · --rhr (strike/dip) · --to <dataset> · --net <diagram> · --label <text>',
+  select: 'select cone [p|l] <dd/dip|tr/pl> <angle> | band <dd/dip> <half-width> | all | none | invert   (+ adds, - subtracts: "select + cone …")',
   stats: 'stats [layer] — n, mean, κ, α95, eigenvalues',
   mean: 'mean [layer] / eigen [layer] / beta [layer] — keep the result as a dataset, drawn on this diagram',
   intersect: 'intersect <layer> <layer> — where their mean planes meet, as a dataset',
@@ -70,7 +147,65 @@ export function createCommands(ctx) {
     return n;
   };
 
+  const ROLE_OF = { planes: { dipDir: 'dipdir', dip: 'dip' }, lines: { trend: 'trend', plunge: 'plunge' },
+    smallcircles: { trend: 'trend', plunge: 'plunge', angle: 'angle' }, faults: { dipDir: 'dipdir', dip: 'dip', trend: 'trend', plunge: 'plunge', sense: 'sense' } };
+  // an item as a row of a dataset — in ITS columns and notation (dip direction, or strike for a right-hand-rule set)
+  const rowFor = (ds, it, label) => {
+    const r = ds.roles, row = {};
+    if (it.plane) {
+      if (r.attitude) row[r.attitude] = `${fmt(it.plane[0])}/${fmt(it.plane[1]).replace(/^0(?=\d\d)/, '')}`;
+      else if (r.dipDir) { row[r.dipDir] = it.plane[0]; row[r.dip] = it.plane[1]; }
+      else if (r.strike && !r.quadrant) { row[r.strike] = (it.plane[0] + 270) % 360; row[r.dip] = it.plane[1]; }
+      else throw new Error(`“${ds.name}” keeps its planes as strike + quadrant — add to a new dataset (--to <new name>)`);
+    }
+    if (it.line) { if (r.attitude && ds.kind === 'lines') row[r.attitude] = `${fmt(it.line[0])}→${it.line[1]}`; else { row[r.trend] = it.line[0]; row[r.plunge] = it.line[1]; } }
+    if (it.angle != null) row[r.angle] = it.angle;
+    if (ds.kind === 'faults' && r.sense) row[r.sense] = it.sense || '';
+    if (label != null) row.label = label;
+    return row;
+  };
+  const diagramNamed = (name) => {
+    const n = name.toLowerCase(), g = p.diagrams.find((x) => x.name.toLowerCase() === n) || p.diagrams.find((x) => x.name.toLowerCase().startsWith(n));
+    if (!g) throw new Error(`no diagram “${name}” — diagrams: ${p.diagrams.map((x) => x.name).join(', ') || 'none'}`); return g;
+  };
+
   const C = {
+    add(args) {
+      const { kind, items, flags } = parseAdd(args);
+      const g = flags.net ? diagramNamed(flags.net) : active();
+      const want = flags.to || `typed ${kind === 'smallcircles' ? 'small circles' : kind}`;
+      const low = want.toLowerCase();
+      let ds = p.datasets.find((d) => d.name.toLowerCase() === low) || (flags.to ? p.datasets.find((d) => d.name.toLowerCase().startsWith(low)) : null);
+      if (ds && ds.kind !== kind) {
+        if (flags.to) throw new Error(`“${ds.name}” holds ${ds.kind}, not ${kind} — add ${args[0]} … --to <another name>`);
+        ds = null;                                         // a "typed planes" that someone made lines: start another
+      }
+      // a slip line off its plane is a typo more often than not: said, not refused (the numbers are yours)
+      const notes = [];
+      if (kind === 'faults') items.forEach((it, i) => {
+        const pole = conversions.planeToDcos(it.plane[0], it.plane[1]), l = conversions.lineToDcos(it.line[0], it.line[1]);
+        const off = Math.abs(90 - Math.acos(Math.min(1, Math.abs(pole[0] * l[0] + pole[1] * l[1] + pole[2] * l[2]))) * 180 / Math.PI);
+        if (off > 10) notes.push(`fault ${i + 1}: the slip line is ${off.toFixed(0)}° off its plane — check the numbers`);
+      });
+      const made = !ds;
+      const id = p.batch(`add ${NOUN[kind][items.length === 1 ? 0 : 1]}`, () => {
+        let did = ds && ds.id;
+        if (!did) {
+          const roles = { ...ROLE_OF[kind] };
+          const probe = { name: want, kind, roles };
+          const rows = items.map((it) => rowFor(probe, it, flags.label));
+          did = p.addDataset({ name: want, kind, rows, roles, notation: 'dd', lineage: { op: 'typed', params: {}, sources: [], at: new Date().toISOString() } });
+        } else {
+          const d0 = p.dataset(did); p.editRows(did, (rows) => [...rows, ...items.map((it) => rowFor(d0, it, flags.label))]);
+        }
+        if (!p.layersOf(g.id).some((L) => L.datasetId === did)) p.addLayer(g.id, did);
+        return did;
+      });
+      const d = p.dataset(id), what = items.map((it) => it.plane && it.line ? `${formatPlane(it.plane)} ${formatLine(it.line)}${it.sense ? ' ' + it.sense : ''}`
+        : it.plane ? formatPlane(it.plane) : `${formatLine(it.line)}${it.angle != null ? ` ±${it.angle}°` : ''}`);
+      const head = `+${items.length} ${NOUN[kind][items.length === 1 ? 0 : 1]} → ${d.name}${made ? ' (new)' : ''} · ${d.rows.length} row${d.rows.length === 1 ? '' : 's'}, on ${g.name}`;
+      return [head, '  ' + what.join(' · '), ...notes].join('\n');
+    },
     help([name]) { if (name && HELP[name]) return HELP[name]; return Object.values(HELP).join('\n'); },
     sample([name = 'tocher']) { if (name !== 'tocher') throw new Error('samples: tocher'); const id = ctx.openSample ? ctx.openSample(name) : null; return id ? `opened ${p.dataset(id).name} (${p.dataset(id).rows.length} planes)` : 'no sample here'; },
     diagrams() { return p.diagrams.map((g) => `${g.id === p.activeDiagram ? '●' : '○'} ${g.name} (${g.kind}, ${p.layersOf(g.id).length} layers)`).join('\n') || 'none'; },
@@ -95,7 +230,8 @@ export function createCommands(ctx) {
     },
     select(args) {
       let mode = 'replace'; if (args[0] === '+') { mode = 'add'; args = args.slice(1); } else if (args[0] === '-') { mode = 'subtract'; args = args.slice(1); }
-      const [what, att, num] = args;
+      let [what, att, num] = args, as = null;
+      if (ADD_KINDS[String(att).toLowerCase()] === 'planes' || ADD_KINDS[String(att).toLowerCase()] === 'lines') { as = ADD_KINDS[String(att).toLowerCase()] === 'planes' ? 'plane' : 'line'; [att, num] = [num, args[3]]; }
       if (what === 'none') { p.clearSelection(); return 'selection cleared'; }
       if (what === 'all' || what === 'invert') {
         // once per DATASET drawn (visibly) on the net — two views of one dataset used to invert it twice (no change)
@@ -106,7 +242,7 @@ export function createCommands(ctx) {
           const rows = what === 'all' ? all : all.filter((i) => !cur.has(i)); p.select(id, rows); n += rows.length; }
         return `${n} selected`;
       }
-      const a = parseAttitude(att); if (!a) throw new Error(`“${att}” — a plane 045/30 or a line 045→30`);
+      const a = parseAttitude(att, as); if (!a) throw new Error(`“${att}” — a plane 045/30 or a line 045→30 (or say which: cone l 150/60 20)`);
       const v = +num; if (!(v > 0 && v <= 90)) throw new Error('an angle 0–90');
       let shape;
       if (what === 'cone') shape = { type: 'cone', axis: a.dcos, angle: v };          // a plane's cone is about its pole

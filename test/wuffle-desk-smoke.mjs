@@ -221,6 +221,20 @@ for (const [label, url] of [['dev', '/tools/wuffle/index.html'], ['built', '/wuf
   chk(`${label}: a pipe (stats | grep -c), a for loop (contour → ${sh.method}), $(…) into a file in /home, Tab completed “sam” → sample; run() answers ${JSON.stringify(sh.run).slice(0, 60)}`,
     /^1$/m.test(sh.tr) && sh.method === 'kamb' && /\d+ layer lines/.test(sh.tr) && sh.hist.includes('sample tocher') && sh.run.ok && /undid/.test(sh.run.text));
 
+  // ── add: attitudes typed into the console land as a dataset on the net (the shell quotes a name; a list is more of them) ──
+  await typed('add p 045/30 030/40SE --to "my planes"');
+  const ad = await p.evaluate(async () => {
+    const W = window.__wuffleDesk, P = W.project;
+    const f = await W.console.run('add f 045/30 120/20 n 200/60 290/10');
+    const sel = await W.console.run('select cone l 120/20 3');
+    const manAdd = (await W.console.run('man add')).text || '', manLs = (await W.console.run('man ls')).text || '';
+    const mine = P.datasets.find((d) => d.name === 'my planes'), typed = P.datasets.find((d) => d.name === 'typed faults');
+    return { mine: mine && mine.rows.map((r) => [r.dipdir, r.dip]), onNet: !!mine && P.layersOf(P.activeDiagram).some((L) => L.datasetId === mine.id),
+      faults: typed && typed.rows.length, f: f.text, sel: sel.text, man: /add p 045\/30/.test(manAdd) && /NAME\s+ls/.test(manLs) };
+  });
+  chk(`${label}: add — “add p 045/30 030/40SE --to "my planes"” → ${JSON.stringify(ad.mine)} on the net (${ad.onNet}); add f two faults (${ad.faults}); select cone l → ${ad.sel}; man add / man ls (${ad.man})`,
+    JSON.stringify(ad.mine) === '[[45,30],[120,40]]' && ad.onNet && ad.faults === 2 && /cone: [1-9]/.test(ad.sel) && ad.man);
+
   // ── /project: the model as a filesystem — mkdir makes a net (its tab appears), ln -s draws data on it, Tab completes paths ──
   await typed('mkdir "diagrams/Shell net"');
   await typed('ln -s ../../../data/tocher.csv "diagrams/Shell net/layers/"');

@@ -112,3 +112,46 @@ describe('review fixes (11-26)', () => {
     assert.deepEqual(rowsInShape(data, { type: 'cone', axis: line(135, 45), angle: 10 }), []);
   });
 });
+
+// ── add: attitudes typed in ──
+import { parseAdd } from '../tools/wuffle/src/commands.js';
+describe('add', () => {
+  it('reads every spelling of an attitude the same, and lists as more of them', () => {
+    for (const w of [['045/30'], ['045,30'], ['45', '30']]) assert.deepEqual(parseAdd(['p', ...w]).items, [{ plane: [45, 30] }], w.join(' '));
+    assert.deepEqual(parseAdd(['l', '120/40', '200,10', '310→5']).items.map((i) => i.line), [[120, 40], [200, 10], [310, 5]]);
+    assert.deepEqual(parseAdd(['sc', '120/40', '15']).items, [{ line: [120, 40], angle: 15 }]);
+    assert.deepEqual(parseAdd(['f', '045/30', '120/20', 'n', '200/60', '290/10']).items,
+      [{ plane: [45, 30], line: [120, 20], sense: 'normal' }, { plane: [200, 60], line: [290, 10], sense: '' }]);
+  });
+  it('--rhr reads strike / dip; a quadrant after the dip settles it (030/40SE)', () => {
+    assert.deepEqual(parseAdd(['p', '030/40', '--rhr']).items[0].plane, [120, 40]);
+    assert.deepEqual(parseAdd(['p', '030/40SE']).items[0].plane, [120, 40]);
+    assert.deepEqual(parseAdd(['p', '030/40NW']).items[0].plane, [300, 40]);
+  });
+  it('says what to type when the numbers don\'t fit', () => {
+    assert.throws(() => parseAdd(['x', '1/2']), /add p\|l\|sc\|f/);
+    assert.throws(() => parseAdd(['p', '045/95']), /dips are 0–90/);
+    assert.throws(() => parseAdd(['p', '045/30', '12']), /2 numbers each/);
+    assert.throws(() => parseAdd(['sc', '120/40']), /half-angle/);
+    assert.throws(() => parseAdd(['l', '120/40', '--colour', 'red']), /unknown flag/);
+  });
+  it('collects into "typed planes" on the active net — one undo step per add — or --to another dataset', () => {
+    const { p, c } = mk();
+    let r = c.run('add p 045/30 120/60'); assert.ok(r.ok, r.text);
+    const ds = p.datasets.find((d) => d.name === 'typed planes');
+    assert.equal(ds.rows.length, 2); assert.ok(p.layersOf(p.activeDiagram).some((L) => L.datasetId === ds.id));
+    r = c.run('add p 200/10'); assert.match(r.text, /typed planes · 3 rows/);
+    c.run('undo'); assert.equal(p.datasets.find((d) => d.name === 'typed planes').rows.length, 2);
+    r = c.run('add l 120/40 --to "west limb"'); assert.match(r.text, /west limb \(new\)/);
+    assert.equal(p.datasets.find((d) => d.name === 'west limb').kind, 'lines');
+    assert.match(c.run('add p 010/10 --to west').text, /holds lines, not planes/);
+  });
+  it('a slip line off its plane is said, not refused', () => {
+    const { c } = mk();
+    const r = c.run('add f 045/30 045/80 r'); assert.ok(r.ok); assert.match(r.text, /off its plane/);
+  });
+  it('select cone l 150/60 20 reads the attitude as a line', () => {
+    const { p, c } = mk(); c.run('add l 150/60 152/58 330/10');
+    assert.match(c.run('select cone l 150/60 5').text, /cone: 2 selected/);
+  });
+});
