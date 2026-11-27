@@ -8,9 +8,10 @@
 import { rowsInShape, shapeOutline, greatCircleThrough, axialAngle } from '../../../ext/stereonet/index.js';
 import { sceneLayers } from './layers.js';
 
-export const TOOLS = [['pick', 'pick', 'click a measurement (⇧ adds, Ctrl toggles)'], ['lasso', 'lasso', 'draw round measurements'],
-  ['cone', 'cone', 'drag from an axis: everything within that angle'], ['band', 'band', 'drag along a great circle: everything within the band'],
-  ['measure', 'measure', 'drag between two directions: the angle and the great circle through them (⇧ the small circle on that diameter, ⌥ about the first)']];
+// [id, label, title, key] — the key chooses it while the net (not a text box) has the focus
+export const TOOLS = [['pick', 'pick', 'click a measurement (⇧ adds, Ctrl toggles)', 'P'], ['lasso', 'lasso', 'draw round measurements', 'L'],
+  ['cone', 'cone', 'drag from an axis: everything within that angle', 'C'], ['band', 'band', 'drag along a great circle: everything within the band', 'B'],
+  ['measure', 'measure', 'drag between two directions: the angle and the great circle through them (⇧ the small circle on that diameter, ⌥ about the first)', 'M']];
 const NS = 'http://www.w3.org/2000/svg';
 
 // bearing's net.unproject returns a WORLD direction (its doc says so: it undoes the net's rotation itself),
@@ -72,8 +73,9 @@ export function createSelectTools({ project: p, onStatus = () => {} }) {
     views.add(view);
     // the strip of tools
     const bar = document.createElement('div'); bar.className = 'wsel-bar'; bar.setAttribute('role', 'toolbar'); bar.setAttribute('aria-label', 'selection tools');
-    for (const [id, label, title] of TOOLS) {
-      const b = document.createElement('button'); b.type = 'button'; b.textContent = label; b.title = title; b.dataset.tool = id;
+    for (const [id, label, title, key] of TOOLS) {
+      const b = document.createElement('button'); b.type = 'button'; b.textContent = label; b.title = `${title} — key ${key}`; b.dataset.tool = id;
+      const k = document.createElement('kbd'); k.textContent = key; b.append(k);
       b.onclick = () => setTool(id); bar.append(b);
     }
     const wl = document.createElement('label'); wl.title = 'the band\'s half-width, degrees';
@@ -132,6 +134,14 @@ export function createSelectTools({ project: p, onStatus = () => {} }) {
   function clearShapes() { shapes.clear(); for (const v of views) drawShape(v, null); }
   function detach(view) { views.delete(view); shapes.delete(view); }
   addEventListener('keydown', (e) => { if (e.key === 'Escape' && document.body.classList.contains('desk') && !/^(INPUT|TEXTAREA)$/.test(e.target?.tagName)) clearShapes(); });
+  // P L C B M choose a tool — on the net or the bare page, never while typing (the console, a text box, a figure)
+  const KEYS = Object.fromEntries(TOOLS.map(([id, , , k]) => [k.toLowerCase(), id]));
+  addEventListener('keydown', (e) => {
+    if (!document.body.classList.contains('desk') || e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
+    const t = e.target; if (!(t === document.body || t?.closest?.('.wn-host'))) return;
+    const id = KEYS[String(e.key).toLowerCase()]; if (!id) return;
+    e.preventDefault(); setTool(id); onStatus(`tool: ${id}`);
+  });
 
   return { attach, detach, setTool, get tool() { return tool; }, apply, clearShapes, setBandWidth: (w) => { bandWidth = w; }, shapeOf: (v) => shapes.get(v) || null };
 }

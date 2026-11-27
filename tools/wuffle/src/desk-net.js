@@ -23,7 +23,7 @@ export class NetView {
     this.net = null; this.picks = []; this.scene = null;
     this.drawn = new Set();   // hooks run after every draw (a tool's overlay, …): fn(view)
     this._ro = new ResizeObserver(() => this.draw());
-    this._ro.observe(this.el);
+    this._ro.observe(this.stage);                       // the stage: the space under the tool strip
     this._off = project.on((e) => { if (this._concerns(e)) this.draw(); });
     this.stage.addEventListener('click', (e) => this._click(e));
     this.stage.addEventListener('mousemove', (e) => this._hover(e));
@@ -40,7 +40,7 @@ export class NetView {
 
   draw() {
     const g = this.p.diagram(this.id); if (!g) return;
-    const r = this.el.getBoundingClientRect();
+    const r = this.stage.getBoundingClientRect();
     if (!r.width || !r.height) return;                    // a background tab: drawn when it's shown
     const size = Math.max(160, Math.floor(Math.min(r.width, r.height)) - 8);
     this.scene = core.buildScene({ layers: sceneLayers(this.p, this.id),

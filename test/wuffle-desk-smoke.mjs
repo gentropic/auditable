@@ -152,6 +152,23 @@ for (const [label, url] of [['dev', '/tools/wuffle/index.html'], ['built', '/wuf
   const rotGot = await p.evaluate(() => { const W = window.__wuffleDesk, P = W.project, v = W.views.get(P.diagrams[0].id); const a = W.select.shapeOf(v).axis; return a; });
   const rotErr = Math.acos(Math.min(1, Math.abs(rotGot[0] * rot.want[0] + rotGot[1] * rot.want[1] + rotGot[2] * rot.want[2]) / Math.hypot(...rotGot))) * 180 / Math.PI;
   await p.evaluate(() => { const W = window.__wuffleDesk; W.project.setDiagramProps(W.project.diagrams[0].id, { rotation: null }); W.select.setTool('pick'); });
+
+  // ── the tool keys (P L C B M, on the net — never while typing) and the strip ABOVE the net, not over it ──
+  {
+    await p.evaluate(() => { const W = window.__wuffleDesk; W.views.get(W.project.diagrams[0].id).el.focus(); });
+    const seen = [];
+    for (const k of ['l', 'c', 'b', 'm', 'p']) { await p.keyboard.press(k); seen.push(await p.evaluate(() => window.__wuffleDesk.select.tool)); }
+    const typing = await p.evaluate(() => { const i = document.createElement('input'); document.body.append(i); i.focus(); return true; });
+    await p.keyboard.press('l');
+    const stayed = await p.evaluate(() => { document.querySelector('body > input:last-of-type')?.remove(); return window.__wuffleDesk.select.tool; });
+    const lay = await p.evaluate(() => {
+      const W = window.__wuffleDesk, v = W.views.get(W.project.diagrams[0].id);
+      const bar = v.el.querySelector('.wsel-bar').getBoundingClientRect(), svg = v.stage.querySelector('svg').getBoundingClientRect();
+      return { barBottom: Math.round(bar.bottom), svgTop: Math.round(svg.top) };
+    });
+    chk(`${label}: tool keys l c b m p → ${seen.join(' ')}; typing in a box leaves the tool (${stayed}); the strip sits above the net (strip ends ${lay.barBottom}, net starts ${lay.svgTop})`,
+      seen.join(' ') === 'lasso cone band measure pick' && typing && stayed === 'pick' && lay.barBottom <= lay.svgTop);
+  }
   chk(`${label}: a cone dragged on the net (${cone.angle.toFixed(1)}°) selects exactly the poles within it (${cone.got.length}, counted independently ${cone.want.length}) · “${cone.status}”`,
     cone.type === 'cone' && cone.got.length > 0 && JSON.stringify(cone.got) === JSON.stringify(cone.want));
   chk(`${label}: ⇧-lasso adds (${before} → ${lasso.n}), its outline drawn`, lasso.type === 'polygon' && lasso.n > before && lasso.outline);
