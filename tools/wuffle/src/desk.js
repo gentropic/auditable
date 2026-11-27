@@ -8,6 +8,7 @@
 //   desk-net.js      one net, drawn by @gcu/stereonet's core; pick + hover
 //   desk-select.js   lasso / cone / band on a net, in attitude space (rotation-proof)
 //   desk-rotate.js   drag a net to rotate it (arcball)
+//   desk-netmenu.js  the net's right-click menu (what's under the cursor, the selection, export)
 //   desk-tree.js     the tree: diagrams, layers, nested checkboxes, data; drag, menus, properties
 //   desk-table.js    the table (@gcu/loom over a dataset's rows)
 //   stats.js         statistics + derived datasets (pure)  ·  desk-stats.js  the statistics panel
@@ -29,6 +30,7 @@ import { createLayout } from './desk-layout.js';
 import { createSelectTools } from './desk-select.js';
 import { createRotate } from './desk-rotate.js';
 import { createMeasure } from './desk-measure.js';
+import { createNetMenu } from './desk-netmenu.js';
 import { createFiles } from './desk-files.js';
 import { createMenus } from './desk-menus.js';
 
@@ -65,7 +67,9 @@ export function mountDesk() {
     // a typed selection goes through the active net's tool, so its shape is drawn too
     applyShape: (shape, mode) => { const v = layout.views.get(p.activeDiagram); return v && v.net ? select.apply(v, shape, mode) : null; },
     setTheme: (t) => theme.set(t), focusDiagram: (id) => layout.focusDiagram(id), openSample: () => files.addData(TOCHER, 'tocher.csv') });
-  layout = createLayout($('.wwork'), { project: p, tree, table, stats, consoleView, select, rotate, measure, onStatus: status });
+  // the net's right-click: what's under the cursor, the selection, the net, the picture (desk-netmenu.js)
+  const netMenu = createNetMenu({ project: p, tree, table, select, layout: { focusTable: () => layout.focusTable() }, commands: consoleView.cmd, onStatus: status });
+  layout = createLayout($('.wwork'), { project: p, tree, table, stats, consoleView, select, rotate, measure, netMenu, onStatus: status });
   const figures = createFigures({ project: p, layout, onStatus: status });
   files = createFiles(root, { project: p, dropHost: $('.wwork'), onOpened: (id) => table.show(id), home: consoleView.home, onStatus: status });
   const menus = createMenus($('.wmenus'), { project: p, files, layout, theme, figures, onStatus: status });
@@ -83,7 +87,7 @@ export function mountDesk() {
   theme.onChange(() => { $('.wst-theme').textContent = theme.label(); layout.redrawAll(); table.applyTheme(); });
   theme.apply();
 
-  const api = { project: p, rails: layout.rails, views: layout.views, table, tree, menus, theme, select, measure, stats, console: consoleView, figures, files,
+  const api = { project: p, rails: layout.rails, views: layout.views, table, tree, menus, theme, select, measure, netMenu, stats, console: consoleView, figures, files,
     addData: files.addData, loadProject: files.loadProject, open: files.open, setTheme: (t) => theme.set(t),
     restored: files.restore() };                       // the last session, from this browser's autosave (a promise → true / false)
   window.__wuffleDesk = api;

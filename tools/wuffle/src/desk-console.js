@@ -128,12 +128,44 @@ export class ConsoleView {
       if (argv.length < 2) await sctx.stdout(`\nand a shell (geas): ${[...this.shell.builtins.keys()].filter((n) => !this.cmd.names.includes(n) && n !== 'history').sort().join(' ')}\npipes, $(…), for / while / if, functions, > files in /home and /tmp. a routine is a script: . /home/routine.sh\n`);
       return s;
     };
+    // download <file>… — a file from the console's filesystem to the browser's downloads: a routine's report in
+    // /home, a net's picture (/project/diagrams/<net>/net.svg), a dataset as CSV (/project/data/<name>.csv)
+    out.download = async (argv, sctx) => {
+      const files = argv.slice(1);
+      if (!files.length) { await sctx.stderr('usage: download <file>… — e.g. download "/project/diagrams/Net 1/net.svg"\n'); return 1; }
+      let bad = 0;
+      for (const f of files) {
+        const path = f.startsWith('/') ? f : `${(sctx.cwd || '/').replace(/\/$/, '')}/${f}`;
+        try {
+          const bytes = await sctx.vfs.readFile(path, 'bytes'), name = path.split('/').pop() || 'file';
+          const type = /\.svg$/i.test(name) ? 'image/svg+xml' : /\.png$/i.test(name) ? 'image/png' : /\.(csv|txt|tsv|md|sh)$/i.test(name) ? 'text/plain' : 'application/octet-stream';
+          const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([bytes], { type })); a.download = name; a.click();
+          setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+          await sctx.stdout(`↓ ${name} (${bytes.length} bytes)\n`);
+        } catch (e) { await sctx.stderr(`download: ${f}: ${e.message || 'cannot read'}\n`); bad = 1; }
+      }
+      return bad;
+    };
     // man <wuffle command> — the shell's manual knows only its own commands; wuffle's answer with their help
     out.man = async (argv, sctx) => {
       const name = argv[1];
       if (name && this.cmd.names.includes(name)) {
         const r = this.cmd.run(`help ${quote(name)}`);
         await sctx.stdout(`NAME\n    ${name} — a wuffle command\n\nSYNOPSIS\n${r.text.split('\n').map((l) => '    ' + l).join('\n')}\n`);
+        return 0;
+      }
+      if (name === 'download') {
+        await sctx.stdout(`NAME
+    download — a file from this console to the browser's downloads
+
+SYNOPSIS
+    download <file>…
+
+EXAMPLES
+    download "/project/diagrams/Net 1/net.svg"
+    download /project/data/tocher.csv
+    download /home/report.txt
+`);
         return 0;
       }
       return geasMan(argv, sctx);

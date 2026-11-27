@@ -63,6 +63,11 @@ export class TableView {
     const d = this.datasetId && this.p.dataset(this.datasetId);
     this.head.textContent = d ? `${d.name} · ${d.kind} · ${d.rows.length} rows${d.meta?.read?.guessed ? ` · ${d.meta.read.why}` : ''}` : 'no dataset — click a layer or a dataset in the tree';
   }
+  /** a picked measurement's row: the table shows its dataset and scrolls to it */
+  reveal(datasetId, row) {
+    if (this.datasetId !== datasetId) this.show(datasetId);
+    if (this.grid && row >= 0) { try { this.grid.revealCell(row, 0); } catch { /* an older loom: shown, not scrolled */ } }
+  }
   show(datasetId) {
     this.grid?.destroy(); this.grid = null;
     this.datasetId = datasetId && this.p.dataset(datasetId) ? datasetId : null;

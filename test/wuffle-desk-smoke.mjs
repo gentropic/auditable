@@ -235,6 +235,54 @@ for (const [label, url] of [['dev', '/tools/wuffle/index.html'], ['built', '/wuf
   chk(`${label}: add — “add p 045/30 030/40SE --to "my planes"” → ${JSON.stringify(ad.mine)} on the net (${ad.onNet}); add f two faults (${ad.faults}); select cone l → ${ad.sel}; man add / man ls (${ad.man})`,
     JSON.stringify(ad.mine) === '[[45,30],[120,40]]' && ad.onNet && ad.faults === 2 && /cone: [1-9]/.test(ad.sel) && ad.man);
 
+  // ── the net's right-click: on a pole (its row in the table), on empty net (add the plane there), on a circle;
+  //    the selection's statistics (menu, console, panel); the picture ──
+  {
+    const pole = await p.evaluate(async () => {
+      const W = window.__wuffleDesk, P = W.project, g = P.diagrams[0]; W.console.cmd.run(`use ${g.name}`); await new Promise((r) => setTimeout(r, 600));   // its tab in front (a background net has no size), redrawn
+      const v = W.views.get(g.id), k = v.picks[5], svg = v.stage.querySelector('svg'), r = svg.getBoundingClientRect(), s = v.net.size / r.width;
+      return { x: r.left + k.x / s, y: r.top + k.y / s, row: k.ref.row };
+    });
+    const rclick = (pt) => p.evaluate((pt) => { const W = window.__wuffleDesk, v = W.views.get(W.project.diagrams[0].id);
+      v.stage.dispatchEvent(new MouseEvent('contextmenu', { clientX: pt.x, clientY: pt.y, bubbles: true, cancelable: true, button: 2 })); }, pt);
+    const items = () => p.evaluate(() => [...document.querySelectorAll('.gcu-menu .gcu-menu-item')].map((e) => e.textContent.trim()));
+    const click = (src) => p.evaluate((src) => { const r = new RegExp(src); const it = [...document.querySelectorAll('.gcu-menu .gcu-menu-item')].find((e) => r.test(e.textContent)); if (it) it.click(); return !!it; }, src);
+    await rclick(pole); await p.waitForTimeout(300);
+    const onPole = await items(); const clicked = await click('Show its row'); await p.waitForTimeout(300);
+    const tbl = await p.evaluate(() => window.__wuffleDesk.table.datasetId);
+    const empty = await p.evaluate(() => {
+      const W = window.__wuffleDesk, v = W.views.get(W.project.diagrams[0].id), r = v.stage.querySelector('svg').getBoundingClientRect();
+      const cx = r.left + r.width / 2, cy = r.top + r.height / 2, R = r.width * 0.42;
+      for (let k = 0; k < 400; k++) { const t = k * 0.37, rr = R * (0.2 + 0.75 * ((k * 0.618) % 1)), x = cx + rr * Math.cos(t), y = cy + rr * Math.sin(t);
+        const h = W.netMenu.hitAt(v, { clientX: x, clientY: y }); if (h.dir && !h.datum) return { x, y }; }
+      return null;
+    });
+    const before = await p.evaluate(() => (window.__wuffleDesk.project.datasets.find((d) => d.name === 'typed planes')?.rows.length) || 0);
+    await rclick(empty); await p.waitForTimeout(300);
+    const onEmpty = await items(); await click('^Add the plane'); await p.waitForTimeout(300);
+    const after = await p.evaluate(() => (window.__wuffleDesk.project.datasets.find((d) => d.name === 'typed planes')?.rows.length) || 0);
+    const rest = await p.evaluate(async () => {
+      const W = window.__wuffleDesk, P = W.project, g = P.diagrams[0], v = W.views.get(g.id), L = P.layersOf(g.id).find((x) => P.dataset(x.datasetId).rows.length > 100);
+      P.setElement(L.id, 'greatCircles', true); await new Promise((r) => setTimeout(r, 300));
+      const R = v.stage.querySelector('svg').getBoundingClientRect(); let circle = false;
+      for (let y = R.top + 30; y < R.bottom - 30 && !circle; y += 9) for (let x = R.left + 30; x < R.right - 30; x += 9) { const h = W.netMenu.hitAt(v, { clientX: x, clientY: y }); if (h.datum && h.datum.what === 'circle') { circle = true; break; } }
+      P.setElement(L.id, 'greatCircles', false);
+      await W.console.run('select cone 150/60 20');
+      const rep = W.netMenu.selectionReport(v), con = (await W.console.run(`stats ${P.dataset(L.datasetId).name} --selection`)).text;
+      await new Promise((r) => setTimeout(r, 200));
+      const panel = !!W.stats.el.querySelector('.wst-sel');
+      const png = await W.netMenu.png(g.id, { size: 200 });
+      P.clearSelection(); W.console.focus();           // the next steps type into the console
+      return { circle, rep, con, panel, png: png && png.type };
+    });
+    chk(`${label}: net menu — on a pole “${onPole[0]}” → its row in the table (${clicked}, ${tbl}); on empty net “${onEmpty[0]}” → Add the plane (${before}→${after}); a circle is hit (${rest.circle}); selection stats in menu / console / panel (${/κ/.test(rest.rep)} / ${/selection · n/.test(rest.con)} / ${rest.panel}); png ${rest.png}`,
+      /^.+ #\d+ · /.test(onPole[0]) && onPole.some((t) => /Export PNG/.test(t)) && clicked && !!tbl
+      && /^here · pole of/.test(onEmpty[0]) && after === before + 1 && rest.circle && /κ/.test(rest.rep) && /selection · n/.test(rest.con) && rest.panel && rest.png === 'image/png');
+    // back to the console, as a person would (the menus took the focus)
+    await p.keyboard.press('Escape'); await p.evaluate(() => document.activeElement?.blur()); await p.keyboard.press('`'); await p.waitForTimeout(200);
+    if (!(await p.evaluate(() => !!document.activeElement?.closest?.('.wcon')))) { await p.keyboard.press('`'); await p.waitForTimeout(200); }
+  }
+
   // ── /project: the model as a filesystem — mkdir makes a net (its tab appears), ln -s draws data on it, Tab completes paths ──
   await typed('mkdir "diagrams/Shell net"');
   await typed('ln -s ../../../data/tocher.csv "diagrams/Shell net/layers/"');

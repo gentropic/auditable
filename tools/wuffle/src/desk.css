@@ -126,6 +126,7 @@ body.desk > [hidden] { display:none !important; }   /* the field page's own disp
 .wst-n { margin-left:auto; font:11px var(--w-mono); color:var(--w-text-soft); }
 .wst-dl { display:grid; grid-template-columns:auto 1fr; gap:1px 12px; margin:0; font:11.5px var(--w-mono); font-variant-numeric:tabular-nums; }
 .wst-dl dt { color:var(--w-text-soft); } .wst-dl dd { margin:0; color:var(--w-text); }
+.wst-sel { margin-top:5px; padding:3px 0 0 6px; border-left:2px solid var(--w-violet); } .wst-sel dt { color:var(--w-violet); }
 .wst-acts { display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; }
 .wst-acts button, .wst-acts select { font:11px var(--w-sans); padding:2px 8px; border-radius:3px; border:1px solid var(--w-border); background:var(--w-bg-bright); color:var(--w-text); cursor:pointer; }
 .wst-acts button:disabled { opacity:.45; cursor:default; }

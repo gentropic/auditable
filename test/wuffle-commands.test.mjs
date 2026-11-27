@@ -155,3 +155,15 @@ describe('add', () => {
     assert.match(c.run('select cone l 150/60 5').text, /cone: 2 selected/);
   });
 });
+
+describe('statistics of the selection', () => {
+  it('stats --selection: the selected rows only; nothing selected says so', () => {
+    const { p, c } = mk(); c.run('sample');
+    assert.match(c.run('stats --selection').text, /nothing selected/);
+    c.run('select cone 150/60 20');
+    const r = c.run('stats --selection'), whole = c.run('stats');
+    assert.match(r.text, /^tocher · selection · n \d+ of 200/);
+    const k = (t) => +t.match(/κ ([\d.]+)/)[1];
+    assert.ok(k(r.text) > k(whole.text), 'a cone round the cluster is tighter than the whole');
+  });
+});

@@ -53,6 +53,21 @@ export class StatsView {
         row('φ', f(s.stress.phi), 'stress ratio (σ2 − σ3)/(σ1 − σ3)');
       } else if (ds.kind === 'faults') row('stress', 'needs ≥ 4 faults with a known sense');
       card.append(dl);
+      // the SELECTED part, when there is one: the same numbers for those rows — "is this cluster tighter than
+      // the whole?" answered without making a dataset first
+      const sel = p.selected(ds.id);
+      if (sel.length && sel.length < ds.rows.length) {
+        const ss = layerStats(ds, { rows: sel });
+        const sub = h('dl', 'wst-dl wst-sel'); sub.dataset.selected = String(sel.length);
+        const srow = (k, v, title) => { const dt = h('dt', null, k); if (title) dt.title = title; sub.append(dt, h('dd', null, v)); };
+        srow('selected', `n ${ss.n}${ss.n !== sel.length ? ` of ${sel.length}` : ''}`, 'the selected rows of this dataset (on any net or in the table)');
+        if (ss.mean) {
+          srow('mean', isPlane ? `${formatPlane(ss.mean.plane)} · pole ${formatLine(ss.mean.line)}` : formatLine(ss.mean.line));
+          srow('κ · α95', `${f(ss.mean.kappa, 1)} · ${f(ss.mean.alpha, 1)}°`, 'Fisher concentration and cone of confidence of the selection');
+        } else srow('mean', 'select ≥ 2');
+        if (ss.eigen) srow('K · C', `${f(ss.eigen.K)} · ${f(ss.eigen.C)}`, 'Woodcock shape and strength of the selection');
+        card.append(sub);
+      }
       const acts = h('div', 'wst-acts');
       const btn = (label, title, fn, on = true) => { const b = h('button', null, label); b.type = 'button'; b.title = title; b.disabled = !on; b.onclick = () => this._derive(fn); acts.append(b); };
       btn('mean → dataset', 'keep the mean as a dataset (drawn on this net, with its lineage)', () => deriveMean(p, ds.id), !!s.mean);

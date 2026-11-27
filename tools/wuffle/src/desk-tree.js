@@ -147,7 +147,17 @@ export class TreeView {
   }
   async _diagramMenu(e, g) {
     e.preventDefault();
-    const kindItems = g.kind === 'rose' ? [
+    const a = await Menu.show([
+      { label: 'Rename…', action: 'rename' },
+      ...this.diagramItems(g),
+      '---',
+      { label: 'Remove diagram', action: 'remove', danger: true },
+    ], { x: e.clientX, y: e.clientY });
+    if (a) await this.diagramAction(g, a);
+  }
+  /** a diagram's own settings, as menu items — the tree's menu and the net's right-click share them */
+  diagramItems(g) {
+    return g.kind === 'rose' ? [
       { label: 'Quantity', children: [['strike', 'strike (planes, axial)'], ['dipDirection', 'dip direction (planes)'], ['trend', 'trend (lines)']].map(([k, t]) => ({ label: t, action: 'q:' + k, checked: (g.props.quantity || 'strike') === k, group: 'q' })) },
       { label: 'Sector', children: [5, 10, 15, 20, 30].map((b) => ({ label: `${b}°`, action: 'bins:' + b, checked: g.props.bins === b, group: 'b' })) },
       { label: 'Scale', children: [['area', 'area-true (√)'], ['linear', 'linear']].map(([k, t]) => ({ label: t, action: 'scale:' + k, checked: (g.props.scale || 'area') === k, group: 's' })) },
@@ -159,13 +169,9 @@ export class TreeView {
       { label: 'Hemisphere', children: [{ label: 'lower', action: 'hemi:lower', checked: g.props.hemisphere === 'lower', group: 'h' }, { label: 'upper', action: 'hemi:upper', checked: g.props.hemisphere === 'upper', group: 'h' }] },
       { label: 'Reset rotation', action: 'unrotate', disabled: !g.props.matrix && !g.props.rotation },
     ];
-    const a = await Menu.show([
-      { label: 'Rename…', action: 'rename' },
-      ...kindItems,
-      '---',
-      { label: 'Remove diagram', action: 'remove', danger: true },
-    ], { x: e.clientX, y: e.clientY });
-    if (!a) return;
+  }
+  /** → true when it was one of the diagram's actions */
+  async diagramAction(g, a) {
     if (a === 'rename') { const n = await prompt('Name of the diagram', { defaultValue: g.name }); if (n) this.p.renameDiagram(g.id, n); }
     else if (a.startsWith('proj:')) this.p.setDiagramProps(g.id, { projection: a.slice(5) });
     else if (a.startsWith('hemi:')) this.p.setDiagramProps(g.id, { hemisphere: a.slice(5) });
@@ -176,6 +182,8 @@ export class TreeView {
     else if (a === 'axial') this.p.setDiagramProps(g.id, { axial: !g.props.axial });
     else if (a.startsWith('plot:')) this.p.setDiagramProps(g.id, { plot: a.slice(5) });
     else if (a === 'remove') { if (await confirm(`Remove “${g.name}”? Its layers go; the data stays.`, { okLabel: 'Remove', danger: true })) this.p.removeDiagram(g.id); }
+    else return false;
+    return true;
   }
   async _dataMenu(e, ds) {
     e.preventDefault();

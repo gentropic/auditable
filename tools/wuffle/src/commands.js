@@ -117,7 +117,7 @@ const HELP = {
   add: 'add p 045/30 [more…] | l 120/40 | sc 120/40 15 | f 045/30 120/20 [n|r|d|s] — typed in, into "typed <kind>"\n'
     + '    045/30, 045,30 or 45 30 · 030/40SE = strike/dip + quadrant · --rhr (strike/dip) · --to <dataset> · --net <diagram> · --label <text>',
   select: 'select cone [p|l] <dd/dip|tr/pl> <angle> | band <dd/dip> <half-width> | all | none | invert   (+ adds, - subtracts: "select + cone …")',
-  stats: 'stats [layer] — n, mean, κ, α95, eigenvalues',
+  stats: 'stats [layer] [--selection] — n, mean, κ, α95, eigenvalues (of the selected rows only, with --selection)',
   mean: 'mean [layer] / eigen [layer] / beta [layer] — keep the result as a dataset, drawn on this diagram',
   intersect: 'intersect <layer> <layer> — where their mean planes meet, as a dataset',
   rotate: 'rotate <tr→pl> | rotate off — center the net on a direction',
@@ -250,9 +250,13 @@ export function createCommands(ctx) {
       else throw new Error('select cone | band | all | none | invert');
       return `${what}: ${applyShape(shape, mode)} selected`;
     },
-    stats([...name]) {
-      const L = layerNamed(name.join(' '), { required: true }), ds = p.dataset(L.datasetId), s = layerStats(ds), isPlane = ds.kind !== 'lines';
-      const out = [`${dsName(L)} · n ${s.n}`];
+    stats(args) {
+      const part = args.some((a) => /^(--?sel(ection)?|sel(ection)?)$/i.test(a)), name = args.filter((a) => !/^(--?sel(ection)?|sel(ection)?)$/i.test(a));
+      const L = layerNamed(name.join(' '), { required: true }), ds = p.dataset(L.datasetId), isPlane = ds.kind !== 'lines';
+      const rows = part ? p.selected(ds.id) : null;
+      if (part && !rows.length) throw new Error(`nothing selected in ${dsName(L)} — select some (select cone …, or on the net), then stats --selection`);
+      const s = layerStats(ds, rows ? { rows } : {});
+      const out = [`${dsName(L)}${part ? ` · selection` : ''} · n ${s.n}${part ? ` of ${ds.rows.length}` : ''}`];
       if (s.mean) out.push(`mean ${isPlane ? formatPlane(s.mean.plane) + ' · pole ' : ''}${formatLine(s.mean.line)} · κ ${s.mean.kappa.toFixed(1)} · α95 ${s.mean.alpha.toFixed(1)}°`);
       if (s.eigen) out.push(`S ${s.eigen.values.map((x) => x.toFixed(3)).join(' ')} · K ${s.eigen.K.toFixed(2)} · C ${s.eigen.C.toFixed(2)}`);
       return out.join('\n');

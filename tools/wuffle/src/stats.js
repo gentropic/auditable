@@ -30,8 +30,10 @@ export function faultStress(ds) {
 }
 
 /** @returns {{ n, mean?, eigen? }} — mean and eigen need ≥ 2 and ≥ 3 measurements */
-export function layerStats(ds, { confidence = 0.95 } = {}) {
-  const axes = axesOf(ds), n = axes.length, out = { n, of: ds.rows.length, kind: ds.kind };
+export function layerStats(ds, { confidence = 0.95, rows = null } = {}) {
+  // rows: only these (a selection) — the same statistics, of a part of the data
+  if (rows) ds = { ...ds, rows: rows.filter((i) => i >= 0 && i < ds.rows.length).map((i) => ds.rows[i]) };
+  const axes = axesOf(ds), n = axes.length, out = { n, of: ds.rows.length, kind: ds.kind, ...(rows ? { part: true } : {}) };
   if (n >= 2) {
     const f = statistics.fisherStats(axes, { axial: true }), c = statistics.confidenceCone(axes, confidence, { axial: true });
     out.mean = { dcos: f.mean, plane: conversions.dcosToPlane(f.mean), line: conversions.dcosToLine(f.mean), kappa: f.kappa, R: f.R, Rbar: f.Rbar, alpha: c.halfAngle, confidence };
