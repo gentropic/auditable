@@ -95,7 +95,7 @@ the figure list & switch to another figure; a ★ marks a template \\
 \ui{atlas…} & write a routine that prints this figure once per section level (\cref{ch:atlas}) \\
 \ui{embed figure} & whether the PDF carries the figure inside it; on by default (\cref{sec:compo-pdf}) \\
 the dpi list & 150, 300 or 600 dpi for export; 300 by default \\
-\ui{Export PDF} / \ui{Export PNG} & export the page (\cref{sec:compo-pdf}) \\[3pt]
+\ui{Export PDF} / \ui{Export PNG} / \ui{Export SVG} & export the page (\cref{sec:compo-pdf}) \\[3pt]
 \multicolumn{2}{@{}l}{\emph{the page bar: its start and its end}} \\
 \ui{Undo} / \ui{Redo} & the same as \key{⌘Z} and \key{⌘⇧Z}; greyed out when there is nothing to undo or redo \\
 paper size & A5, A4, A3, A2, Letter, Legal, Tabloid, or \ui{custom} with a width and height in mm; A4 by default \\
@@ -117,7 +117,9 @@ The page behaves like a drawing program, and most of it will be familiar.
 \item \emph{Click} a frame to select it; \key{Shift}-click adds or removes one. \emph{Drag on the empty page} to box-select.
 \item \emph{Drag} a frame to move it. It snaps to the margins, to guides, to the edges and centers of other frames, and to equal gaps between them: magenta lines show what it snapped to, and the gap is labeled in mm. Hold \key{Alt} to move freely.
 \item A single selected frame has eight \emph{handles}; drag one to resize. Resizing snaps the same way.
-\item The \emph{arrow keys} nudge the selection by 0.5 mm, or 5 mm with \key{Shift}.
+\item The \emph{arrow keys} nudge the selection by 0.5 mm, or 5 mm with \key{Shift}. A run of nudges (the same frames, no pause of a second) is one undo step.
+\item \emph{Copy and paste} frames with \key{⌘C} and \key{⌘V} (\key{⌘X} cuts). The clipboard carries them as data, so a frame copied in one figure pastes into another, in micro or in wuffle; kinds this app doesn't draw are left out, and the status line says so. Pasted onto the same page, copies come 5 mm down and right, with ids of their own. Cells copied from a spreadsheet and pasted onto the page become a table.
+\item \key{⌘⌥C} copies the selected frame's \emph{style} (its border and fill, its type) and \key{⌘⌥V} puts it on the selected frames. A shape's colors go only onto shapes, and a text's type only onto frames with text.
 \item \emph{Double-click} a text frame to edit its text, or a view frame to work on its view (\cref{sec:compo-view}).
 \item \emph{Right-click} a frame for its menu: the frame kind's own items first, then duplicate, group, size, stacking order, lock and delete.
 \end{itemize}
@@ -129,6 +131,8 @@ With two or more frames selected, the page bar's arranging buttons come alive: s
 key & action \\ \midrule
 \key{⌘Z} · \key{⌘⇧Z} or \key{⌘Y} & undo · redo \\
 \key{⌘D} & duplicate the selection \\
+\key{⌘C} · \key{⌘X} · \key{⌘V} & copy · cut · paste frames (also between figures) \\
+\key{⌘⌥C} · \key{⌘⌥V} & copy a frame's style · put it on the selection \\
 \key{⌘A} & select every frame \\
 \key{⌘G} · \key{⌘⇧G} & group · ungroup \\
 \key{⌘]} · \key{⌘[} & forward · backward one step \\
@@ -175,7 +179,15 @@ row & meaning \\ \midrule
 
 Below them come the kind's own rows, described with each kind. A frame that was produced from data ends with the time it was last made: \emph{produced 2026-11-22 14:05}.
 
-Select several frames and the inspector shows how many, reminds you that the first selected is the size key, and offers \ui{locked} for all of them at once.
+Below the common rows, \ui{rotate °} turns the frame about its center (with quick buttons for upright and for 90° either way). Any frame can turn except a 3D view or a stereonet, whose coordinates and pinned labels need an upright frame. A rotated frame has no resize handles; set its width and height here, or turn it back to 0. A text, label, table, shape or legend frame also has a \ui{style} row (\cref{sec:compo-styles}).
+
+Select several frames and the inspector shows how many, reminds you that the first selected is the size key, and offers \ui{locked} and \ui{border} for all of them at once. When they are all text, it also offers their type size, color and typeface, set together.
+
+Select nothing and the inspector is the \emph{page}: its margins, a paper color other than white, and the typeface of every text that names none.
+
+\subsection{Named styles}\label{sec:compo-styles}\index{composer!named styles}
+
+A frame can wear a \term{named style}: \ui{heading}, \ui{caption} and \ui{note} to start, or one of your own. Choose one in the \ui{style} row and its look (type size, typeface, color, alignment, spacing, border and fill) is copied in. To make a new one from the frame's current look, choose \ui{+ new style from this frame…} and name it. Change a frame that wears a style, then press \ui{Update style}: every frame wearing that style follows. Restyling every caption in a report is one change. The styles are saved with the figure.
 
 \subsection{Refers to}\label{sec:compo-refers}
 
@@ -187,7 +199,7 @@ When nearest is wrong, set \ui{refers to} to a named frame. And inside a caption
 
 \section{The frame kinds}\label{sec:compo-kinds}
 
-Most frames are added with a button on the page bar — \ui{Add 3D view}, \ui{Add legend}, \ui{Add scale bar}, \ui{Add north arrow}, \ui{Add text}, \ui{Add label}, \ui{Add image}, \ui{+ key plan}, \ui{+ points of interest} (a label on each, \cref{sec:picking-poi}), \ui{Add resource table} and \ui{Add title block}. Charts, tables and stereonets are sent from the windows that made them.
+Most frames are added with a button on the page bar — \ui{Add 3D view}, \ui{Add legend}, \ui{Add scale bar}, \ui{Add north arrow}, \ui{Add text}, \ui{Add shape}, \ui{Add QR code}, \ui{Add marker}, \ui{Add label}, \ui{Add image}, \ui{+ key plan}, \ui{+ points of interest} (a label on each, \cref{sec:picking-poi}), \ui{Add resource table} and \ui{Add title block}. Charts, tables and stereonets are sent from the windows that made them. A new frame lands in free space beside the selected view, not on top of what is already on the page. When the page has no room, a chart comes smaller and a table takes fewer rows; its badge says how many more there are.
 
 \subsection{3D view}\label{sec:compo-view}
 
@@ -217,7 +229,7 @@ menu item & what it does \\ \midrule
 
 \paragraph{Editing a view in place.} Double-click a view frame. The composer steps aside and the 3D view takes the frame's scene, with a dashed outline in the frame's exact proportions and everything outside it dimmed. Navigate, move the section, change a filter or a color — what is inside the outline is what the frame will show. Press \ui{Done} to capture it, or \ui{Cancel} to leave the frame as it was. Either way your own view is put back afterwards.
 
-The inspector of a view frame has four rows of its own: \ui{fit} (\ui{contain}, \ui{cover} or \ui{fill} — how the render sits in the box), \ui{coords} and \ui{scale}, both described in \cref{sec:compo-drawing}, and \ui{captions} — \ui{in the section} or \ui{whole model} — which says what the counts and statistics in captions about this view cover (\cref{sec:compo-statsscope}).
+The inspector of a view frame has rows of its own: \ui{fit} (\ui{contain}, \ui{cover} or \ui{fill} — how the render sits in the box), \ui{coords} and \ui{scale}, both described in \cref{sec:compo-drawing}, \ui{captions} — \ui{in the section} or \ui{whole model} — which says what the counts and statistics in captions about this view cover (\cref{sec:compo-statsscope}), \ui{paper}, and \ui{projection}. \ui{paper} is the background the view is rendered on: the 3D view's own (it follows that), white, or a color of your choice. A map in a report can sit on white while you work on basalt, and the frame keeps its paper through updates and small multiples. \ui{projection} turns a perspective view orthographic with one click, so it gets a scale, and scale bars, ticks and \emph{1\,:\,N} work; or back to perspective.
 
 \begin{why}
 Every operation that renders a frame — an update, a refresh, an export, an atlas page — borrows the 3D view for a moment and then gives it back exactly as it was. A frame keeps its own scene so that it does not depend on what you happen to be looking at, and so that making a figure never disturbs your work.
@@ -227,26 +239,29 @@ Every operation that renders a frame — an update, a refresh, an export, an atl
 
 These three follow a view frame. Select the view first (otherwise they take the topmost view on the page).
 
-\paragraph{\ui{Add legend}} adds one legend frame for each layer the view shows that has a legend — a ramp bar with its ends, or swatches for classes, categories, rules or painted values, exactly as the decorations draw them (\cref{ch:figures}). They are placed in a column to the right of the view. The inspector has one row, \ui{title}; a legend's menu has \ui{Update from the layer}, which re-reads the layer's current colors. A layer in a solid color has no legend, and the status line says so if none of the layers has one.
+\paragraph{\ui{Add legend}} adds a legend frame for each distinct legend among the layers the view shows — a ramp bar with its ends, or swatches for classes, categories, rules or painted values, exactly as the decorations draw them (\cref{ch:figures}). Each is titled with its layer's name and the column, and placed in free space beside the view. Two layers with the same key share one legend. A mesh colored by elevation (a topography, a pit shell) is context, and gets none. A legend follows its layer: when the view is made again or exported, the legend re-reads the layer's current colors and keeps your own labels, order and look. A legend's menu has \ui{Update from the layer} to do it at once. A layer in a solid color has no legend, and the status line says so if none of the layers has one.
 
-\paragraph{\ui{Add scale bar}} adds a scale bar under the view: a four-part bar of a round length, labeled 0 and its length, in m or km. It is computed from the view's scale and the frame's size \emph{each time the page is drawn}, so it stays true when you resize the view. A perspective view has no single scale, and the bar says \emph{no scale (a perspective view)} instead of drawing a wrong one.
+\paragraph{\ui{Add scale bar}} adds a scale bar under the view: a four-part bar of a round length, labeled 0 and its length, in m or km. It is computed from the view's scale and the frame's size \emph{each time the page is drawn}, so it stays true when you resize the view. Its inspector sets a fixed \ui{length} (else the roundest that fits; a badge says when the fixed one is wider than the frame), the number of parts, the style (\ui{alternating}, \ui{line}, or \ui{ticks, each labelled}), and \emph{1\,:\,N}, the representative fraction printed under it for a view in metres. A perspective view has no single scale, and the bar says \emph{no scale (a perspective view)} instead of drawing a wrong one.
 
-\paragraph{\ui{Add north arrow}} adds a north arrow on the view's top-right corner, on a light backing, rotated to the view's north. For a view looking horizontally along north–south there is no direction to point: it draws the cartographer's sign for an axis out of the page — a circle with a dot, under its \emph{N} — with the words \emph{out of the page} beneath, broken onto two lines and set smaller until they fit the frame.
+\paragraph{\ui{Add north arrow}} adds a north arrow on the view's top-right corner, on a light backing, rotated to the view's north. Its inspector chooses the look: \ui{arrow}, \ui{needle}, \ui{compass star} or \ui{line}. For a view looking horizontally along north–south there is no direction to point: it draws the cartographer's sign for an axis out of the page — a circle with a dot, under its \emph{N} — with the words \emph{out of the page} beneath, broken onto two lines and set smaller until they fit the frame.
 
 \subsection{Text}
 
-\ui{Add text} adds a text frame holding \code{**Figure \{fig\}.** caption}. Its inspector is a text box and three settings:
+\ui{Add text} adds a text frame holding \code{**Figure \{fig\}.** caption}. Its inspector is a text box and these settings:
 
 \begin{table}[htbp]\small
 \begin{tabularx}{\linewidth}{@{}lMD@{}}\toprule
 setting & meaning & default \\ \midrule
-the text & Line breaks are kept; text wraps to the frame's width. \code{**bold**} makes a bold run. & \\
-\ui{size (pt)} & type size, with the alignment beside it: left, center or right & 9, left \\
-\ui{monospace} & set the text in the monospaced face & off \\
+the text & Markdown, the part a figure needs: \code{\#}, \code{\#\#}, \code{\#\#\#} headings; \code{-} and \code{1.} lists; \code{---} a rule; \code{**bold**}, \code{*italic*}, \code{`code`}; and \code{[words](https://…)} for a link, blue and underlined, and clickable in the PDF and the SVG (web and mail addresses only). Text wraps to the frame's width. & \\
+\ui{size (pt)} & type size, the alignment (left, center, right) and where the text sits in the frame (top, middle, bottom) & 9, left, top \\
+\ui{type} & the typeface (sans, serif, monospace; the page's when none is chosen), the color, and \ui{Fit to content}, which makes the frame exactly as tall as its text & sans \\
+\ui{spacing} & the line spacing (× the size) and the padding inside the frame, in mm & 1.25, 1 \\
 \ui{fields} & \ui{insert field…} lists every field; choosing one inserts it at the cursor. Hover an entry for what it means. & \\ \bottomrule
 \end{tabularx}
 \caption{A text frame's inspector.}\label{tab:compo-text}
 \end{table}
+
+When the text runs past the bottom of its frame, the frame wears a \emph{doesn't fit} badge.
 
 The page updates as you type. Fields are what make a text frame worth having, and they have a section of their own (\cref{sec:compo-fields}).
 
@@ -262,7 +277,9 @@ Charts and tables come from the analysis windows. Every one of them — grade–
 
 A \term{chart frame} is not an image. It holds the chart's description — its series, axes and labels — and lays it out afresh at the frame's size every time it draws. Resize it and the chart re-flows: the plot area grows while the text stays the size it was. In the PDF it is vector line work and real text.
 
-A \term{table frame} is set as a book table: a rule above and below, a thin one under the header, no vertical lines, numbers right-aligned, light striping. The type shrinks to fit the frame's width, down to 4.5 pt; rows that do not fit are replaced by a line saying how many more there are, so a table never silently loses its end.
+A \term{table frame} is set as a book table: a rule above and below, a thin one under the header, no vertical lines, numbers right-aligned, light striping. The type shrinks to fit the frame's width, down to 4.5 pt; rows that do not fit are replaced by a line saying how many more there are, so a table never silently loses its end. A table sent from a window prints its numbers readably (\emph{2\,882\,758\,820}, four significant figures), with as many rows as the page holds.
+
+A table's inspector sets its \ui{title} and \ui{note}, the type size, the stripes, the number of \ui{decimals} for every number (empty: as they came), each column's alignment, and \ui{Fit height}. Its \ui{cells} are editable as tab-separated text, the header first: type in them, or paste over them from a spreadsheet.
 
 Those from grade–tonnage, swath, stats, scatter and Q-Q remember the analysis that made them — its recipe — which is what lets \ui{Refresh} make them again (\cref{sec:compo-refresh}). A cross-tab or validation chart has no recipe behind it: it is kept as it was sent, and a refresh leaves it alone.
 
@@ -274,11 +291,23 @@ Press \ui{Add}. The table arrives titled with the model's name and \emph{resourc
 
 \subsection{Image}
 
-\ui{Add image} places a picture from a file — a logo, a photograph, a hand sketch. Its inspector has \ui{fit}.
+\ui{Add image} places a picture from a file — a logo, a photograph, a hand sketch. Its inspector has \ui{fit} and \ui{crop \%}: the percentage trimmed from each edge, with \ui{Fit frame} to give the frame the cropped picture's shape.
+
+\subsection{Shape}
+
+\ui{Add shape} adds a rectangle; its inspector turns it into an ellipse, a line or an arrow. A shape has an outline (color, width, dashed) and, for a rectangle or an ellipse, a fill and rounded corners. A line or an arrow runs across its frame (across, down, or either diagonal), and an arrow can have a head at both ends. Shapes draw a box round a feature, point at something, or rule a page. They are vectors in the PDF and the SVG.
+
+\subsection{QR code}
+
+\ui{Add QR code} adds a code for a link or a text, scannable from the printed page: a link to the data, the report, a project page. Its inspector sets the text, the error-correction level (\ui{L} to \ui{H}: how much of it can be damaged and still read) and an optional caption. The code is stored with the frame, so a saved figure prints it anywhere. When its modules are under 0.25 mm the frame warns that a phone may not read it.
+
+\subsection{Marker}
+
+\ui{Add marker} adds an \term{AprilTag}: a black-and-white square of the 36h11 family that a camera or a scanner can find and identify. Each marker on a page should have its own id (0–586); the inspector warns when two share one, and a caption can print the family and id under it. Printed in a figure's corners, markers let a photograph or a scan of the page be located against it. Reading them back from a scan is planned, not yet in micro.
 
 \subsection{Stereonet}
 
-A stereonet sent from the structure window with its \ui{⇥ figure} arrives as a vector graphic with the set statistics printed beneath (\cref{ch:structure}).
+A stereonet sent from the structure window with its \ui{⇥ figure} arrives as a stereonet frame, with a legend of the sets beside it giving each set's count, mean, $\kappa$ and $\alpha_{95}$ (\cref{ch:structure}). The frame holds the net's data, not a picture: \ui{Add label} pins to its poles, and \ui{Refresh} makes it again from the sets as they are painted now, the legend with it. While the structure window shows its orientation wheel, the net is sent as a drawing over the wheel instead, since the wheel is a picture.
 
 \begin{tryit}
 \begin{enumerate}
@@ -507,7 +536,7 @@ setting & meaning & default \\ \midrule
 \caption{The small multiples dialog.}\label{tab:compo-multiples}
 \end{table}
 
-Press \ui{Make}. The view is replaced by a grid of copies fitted into the box it occupied, each with a centered caption beneath saying which it is — the column's name, the filter, or \code{\{section\}} for a level. The copies form a group, so they move as one; but each is an ordinary view frame with its own scene, so you can ungroup and adjust any one. If the box is too small for that many, the dialog says so; make the view bigger first.
+Press \ui{Make}. The view is replaced by a grid of copies fitted into the box it occupied, each with a centered caption beneath saying which it is — the column's name, the filter, or \code{\{section\}} for a level. The copies form a group, so they move as one; but each is an ordinary view frame with its own scene, so you can ungroup and adjust any one. They keep the view's paper, and a key plan that keyed the view keys the copies. If the box is too small for that many, the dialog says so; make the view bigger first. Every value is checked before anything moves: a filter that doesn't read, or a column the layer hasn't, is refused with the reason, and the page is left as it was.
 
 \shot{compo-multiples}{Small multiples: one plan repeated at four bench levels, each captioned with its own section.}
 
@@ -607,15 +636,19 @@ One entry in that list is not a figure: \ui{comparison report…} asks for a nam
 A template's view frames carry over too, scenes and all. For a house template that should start empty, delete its views before marking it. For a \emph{report} template that should start full — the standard plan, the two standard sections — keep them, and point the copy at the new data with \ui{⇄ other data…}.
 \end{tip}
 
-\section{Exporting: PDF and PNG}\label{sec:compo-pdf}
+\section{Exporting: PDF, PNG and SVG}\label{sec:compo-pdf}
 
-Choose a resolution in the figure bar's dpi list (300 by default) and press \ui{Export PDF} or \ui{Export PNG}. The file is named after the figure. The dpi is the resolution of the rendered views in a PDF, and of the whole page in a PNG.
+Choose a resolution in the figure bar's dpi list (300 by default) and press \ui{Export PDF}, \ui{Export PNG} or \ui{Export SVG}. The file is named after the figure. The dpi is the resolution of the rendered views in a PDF, and of the whole page in a PNG.
 
 Before writing, micro renders every view frame again from its scene at the chosen dpi — 150 for a draft, 300 for print, 600 for fine line work. A very large frame is capped at 6000 pixels on its longer side.
 
 \paragraph{What is vector.} In the PDF, text is text — selectable and searchable. Charts, tables, legends, scale bars, north arrows, coordinate ticks, labels, stereonets and vector sections are line work. Only the rendered 3D views and placed images are pictures. A page built from vector sections and charts has no image in it at all, and a few hundred kilobytes is typical.
 
 \paragraph{PNG} exports the page as one image at the chosen dpi — for a slide, or a system that takes no PDF.
+
+\paragraph{SVG} exports the page as vectors to edit in Inkscape or Illustrator: text stays text, line work stays line work, and the 3D views are embedded as pictures rendered at the chosen dpi. Links in text are links in the SVG too.
+
+\paragraph{Links.} A \code{[link](https://…)} in a text frame is a clickable area in the PDF.
 
 \subsection{The figure inside the PDF}
 
