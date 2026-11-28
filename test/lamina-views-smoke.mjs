@@ -229,6 +229,24 @@ for (const [tag, url] of [['dev', '/tools/lamina/index.html'], ['built', '/lamin
     && comp.raw && comp.raw[1] === '200,0,FR,extra␊',
   `[${tag}] the rows a filter leaves out open beside it (150 | 150); a "wrong number of fields" flag → row 201's bytes`, comp);
 
+  // 13 ── the interpretation popover shows the first lines cut as they're read, and follows a change
+  const pane = await E(async () => {
+    const l = window._lamina, wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (const v of l.views) l.rails.closeTab(v.tabId);
+    await l.openInTab(new File(['# exported 2026\nHOLE;FROM;AU\nDH1;0;"1,5"\nDH2;1;2;9\r\n'], 'semi.csv')); await wait(300);
+    l.openOpts(); await wait(300);
+    const read = () => [...document.querySelectorAll('#optRaw .or-l')].map((r) => [r.className.replace('or-l ', ''), r.querySelector('.or-t').textContent, r.querySelector('.or-c').textContent, r.querySelector('.or-c').classList.contains('bad')]);
+    const before = read();
+    const sel = document.getElementById('optDelim'); sel.value = ','; sel.dispatchEvent(new Event('change')); await wait(600);
+    const after = read();
+    document.getElementById('opts').classList.remove('show');
+    return { before, after, delims: document.querySelectorAll('#optRaw b.dl').length };
+  });
+  const pb = pane.before;
+  check(pb.length === 4 && pb[0][0] === 'skipped' && pb[1][0] === 'header' && pb[1][2] === '3' && pb[2][2] === '3' && pb[3][2] === '4' && pb[3][3] === true
+    && /␍␊$/.test(pb[3][1]) && pane.after[1][2] === '1',
+  `[${tag}] the popover's first lines: preamble struck, header, field counts (a 4 in red), CRLF shown; delimiter → comma redraws them`, pane);
+
   check(!errors.length, `[${tag}] no page errors`, errors);
   await page.context().close();
 }

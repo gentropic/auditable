@@ -788,6 +788,7 @@ function mountView(vs, info = {}, keepVScroll = false, c = current) {
   if (c !== current) return;                             // a view behind another tab: its grid is ready, the chrome isn't its to set
   grid = g;
   syncViewChrome(c);
+  if ($('#opts').classList.contains('show')) fillOpts();   // the popover follows a re-read (its facts + the first lines)
   $('#selStats').textContent = '';                      // fresh grid → no selection yet
   if (_colPanelOpen) renderColPanel();                  // keep the columns panel in sync (gutter-ready, menu-hide, new file)
   if (_recPanelOpen) renderRecordCard(_recRow);         // re-resolve the record after a sort/filter/new file
@@ -2685,6 +2686,14 @@ function openOpts() {
   if (!current) return;
   const opts = $('#opts');
   if (opts.classList.contains('show')) return closeOpts();
+  fillOpts();
+  opts.classList.add('show');
+  setTimeout(() => document.addEventListener('mousedown', onOptsDown), 0);
+}
+// the popover's contents for the focused view: what auto-detect found, the overrides, and the
+// file's first lines cut the way they're being read — refilled after each change re-reads the file
+function fillOpts() {
+  if (!current) return;
   const facts = detectedFacts(current.d);
   $('#optDetected').innerHTML = facts.length
     ? '<div class="od-cap">Detected</div>' + facts.map(([k, v]) => `<div class="od-k">${k}</div><div class="od-v">${_escHtml(v)}</div>`).join('')
@@ -2697,8 +2706,42 @@ function openOpts() {
   $('#optComment').value = f.comment != null ? f.comment : '';
   $('#optDecimal').value = f.decimal === ',' ? ',' : '';
   $('#optEncoding').value = f.encoding || '';
-  opts.classList.add('show');
-  setTimeout(() => document.addEventListener('mousedown', onOptsDown), 0);
+  renderOptRaw(current);
+}
+const OR_GLYPH = (ch) => { const k = ch.charCodeAt(0); return k === 9 ? '⇥' : k < 32 ? String.fromCharCode(0x2400 + k) : k === 0x7f ? '␡' : k === 0xfeff ? '⟨BOM⟩' : k === 0xa0 ? '⍽' : ch; };
+async function renderOptRaw(c) {
+  const box = $('#optRaw'); if (!box) return;
+  const ro = c && c.rawOf;
+  if (!ro || !ro.textual || !(ro.file || ro.bytes) || c.raw) { box.innerHTML = ''; return; }
+  const src = await rawByteSource(ro);
+  const bytes = await src.readRange(0, Math.min(src.totalBytes, 16384));
+  if (current !== c) return;
+  const text = new TextDecoder(c.d.encoding || 'utf-8', { fatal: false }).decode(bytes);
+  const lines = text.split('\n');
+  if (bytes.length < src.totalBytes || lines[lines.length - 1] === '') lines.pop();   // the last may be cut mid-line (or be the nothing after a final newline)
+  const dl = c.d.kind === 'delimited' ? c.d.delimiter : null, q = c.d.quote || '"', want = (c.d.schema || []).length;
+  const skip = c.d.skip || 0, hdr = c.d.hasHeader ? skip : -1;
+  let inQ = false, fields = 1, h = '';
+  for (let i = 0; i < Math.min(14, lines.length); i++) {
+    let L = lines[i], eol = '␊';
+    if (L.endsWith('\r')) { L = L.slice(0, -1); eol = '␍␊'; }
+    if (i === lines.length - 1 && bytes.length >= src.totalBytes && !text.endsWith('\n')) eol = '';   // a last line with no newline at all
+    const startsInQ = inQ;
+    const role = i < skip ? 'skipped' : i === hdr ? 'header' : startsInQ ? 'cont' : (c.d.comment && L.startsWith(c.d.comment)) ? 'skipped' : 'data';
+    let t = '';
+    for (const ch of L) {
+      if (dl && ch === q) inQ = !inQ;
+      const g = _escHtml(OR_GLYPH(ch));
+      t += (dl && ch === dl && !inQ && role !== 'skipped') ? `<b class="dl">${g}</b>` : g;
+      if (dl && ch === dl && !inQ && role !== 'skipped') fields++;
+    }
+    const counted = dl && role !== 'skipped' && !inQ;
+    const tag = role === 'header' ? 'header' : role === 'skipped' ? (i < skip ? 'skipped' : 'comment') : inQ ? '↩ quoted' : role === 'cont' ? '' : '';
+    const n = counted ? `<span class="or-c${fields !== want ? ' bad' : ''}" title="${fields} field${fields === 1 ? '' : 's'}${fields !== want ? ` — the table has ${want}` : ''}">${fields}</span>` : '<span class="or-c"></span>';
+    h += `<div class="or-l ${role}"><span class="or-n">${i + 1}</span><span class="or-t">${t}<span class="eol">${eol}</span></span><span class="or-r">${tag}</span>${n}</div>`;
+    if (!inQ) fields = 1;
+  }
+  box.innerHTML = `<div class="or-cap"><span>the first lines, as they're read</span><span>${dl ? 'fields' : ''}</span></div><div class="or-lines">${h}</div>`;
 }
 function closeOpts() { $('#opts').classList.remove('show'); document.removeEventListener('mousedown', onOptsDown); }
 function onOptsDown(e) { if (!$('#opts').contains(e.target) && e.target.id !== 'kindBadge') closeOpts(); }
@@ -4505,7 +4548,7 @@ _host = createHostApi({
 });
 window.lamina = _host.api;
 
-window._lamina = { complementView, showRawOfRecord, buildLensFile, applyLensV2, rememberDoc, saveSession, offerSession, set askForFiles(f) { _askForFiles = f; }, openInTab, setFocus, newViewOfFocused, openRawOfFocused, ensureRawView, showRawOfRow, showRowOfRaw, switchRawAt, revealOffset, get views() { return [...views.values()]; }, get focused() { return focused; }, get rails() { return rails; }, shell, deliverBytes, doExport, laminaStatus, laminaColumnStats, open, openFile, applyFilter, toggleSort, reopen, gotoRow, hideColumn, showColumn, showAllColumns, setColType, setColFormat, toggleColorScale, setColScaleOpt, autofitAll, resetColWidths, showAllColumns, toggleColPanel, reorderCol, togglePin, scrollToColumn, residentEstimate, statsToTSV, gutterSampleRows, scanColumnStats, scanAllColumnStats, scanGroupBy, scanDataQuality, precomputeStats, showSummary, openGroupBy, computeGroupBy, openGradeTonnage, computeGradeTonnage, openGridSummary, computeGridSummary, openSampleData, showDataQuality, setGutterLog, toggleRecordPanel, renderRecordCard, updateSelStats, openFind, closeFind, findNext, findCountAll, addRecent, clearRecents, setRemember, openRecent, get recents() { return _recents; }, showColumnStats, copySelection, filterByValue, addCalc, removeCalc, openCalcEditor, openCalcManager, brushFilter, showBrushTip, showGutterTip, gutterClick, gutterDblClick, gutterTapFilter, gutterBrush, setBrushMode, exportToString, openExportDialog, saveLens, buildLens, applyLensView, applyLens, applyLensFromFile, sniffLens, setTheme, get theme() { return theme; }, pickFile, showHelp, cache: idbCache, build: __LAMINA_BUILD__, get brushMode() { return brushMode; }, get grid() { return grid; }, get lastScan() { return lastScan; }, get current() { return current; }, get calcs() { return current && current.calcs; }, get gutter() { return current && current.gutter; }, canWorker };
+window._lamina = { openOpts, renderOptRaw, complementView, showRawOfRecord, buildLensFile, applyLensV2, rememberDoc, saveSession, offerSession, set askForFiles(f) { _askForFiles = f; }, openInTab, setFocus, newViewOfFocused, openRawOfFocused, ensureRawView, showRawOfRow, showRowOfRaw, switchRawAt, revealOffset, get views() { return [...views.values()]; }, get focused() { return focused; }, get rails() { return rails; }, shell, deliverBytes, doExport, laminaStatus, laminaColumnStats, open, openFile, applyFilter, toggleSort, reopen, gotoRow, hideColumn, showColumn, showAllColumns, setColType, setColFormat, toggleColorScale, setColScaleOpt, autofitAll, resetColWidths, showAllColumns, toggleColPanel, reorderCol, togglePin, scrollToColumn, residentEstimate, statsToTSV, gutterSampleRows, scanColumnStats, scanAllColumnStats, scanGroupBy, scanDataQuality, precomputeStats, showSummary, openGroupBy, computeGroupBy, openGradeTonnage, computeGradeTonnage, openGridSummary, computeGridSummary, openSampleData, showDataQuality, setGutterLog, toggleRecordPanel, renderRecordCard, updateSelStats, openFind, closeFind, findNext, findCountAll, addRecent, clearRecents, setRemember, openRecent, get recents() { return _recents; }, showColumnStats, copySelection, filterByValue, addCalc, removeCalc, openCalcEditor, openCalcManager, brushFilter, showBrushTip, showGutterTip, gutterClick, gutterDblClick, gutterTapFilter, gutterBrush, setBrushMode, exportToString, openExportDialog, saveLens, buildLens, applyLensView, applyLens, applyLensFromFile, sniffLens, setTheme, get theme() { return theme; }, pickFile, showHelp, cache: idbCache, build: __LAMINA_BUILD__, get brushMode() { return brushMode; }, get grid() { return grid; }, get lastScan() { return lastScan; }, get current() { return current; }, get calcs() { return current && current.calcs; }, get gutter() { return current && current.gutter; }, canWorker };
 
 // Build stamp in the footer (far right) — set once; persists past file meta updates.
 $('#build').textContent = __LAMINA_BUILD__;
