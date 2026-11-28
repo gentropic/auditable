@@ -5,9 +5,11 @@
 //   · plain data out — a host never holds a live internal object;
 //   · columns by NAME (case-insensitive, like the filter language);
 //   · actions return promises that reject with the reason; getters are sync.
-// lamina holds ONE table at a time, so v1's verbs act on the open table. When
-// a second table arrives (the keyed compare view), an optional table id is an
-// additive change.
+// lamina can hold several VIEWS now (tabs and splits: several files, two views of
+// one file, a raw view). v1's verbs act on the FOCUSED view, as they acted on the
+// one table before; views() lists them by id and focus(id) picks the one the next
+// calls act on — both additive. open() replaces the focused view unless asked for
+// a new one ({ newView: true }); info().view is the id of the view it describes.
 //
 // window._lamina stays what it is — the smokes' and the manual's reach into the
 // app's internals, unstable by definition. This is a thin layer over the
@@ -30,7 +32,7 @@ export function createHostApi(d) {
   const info = () => {
     const c = d.current(); if (!c) return null;
     return {
-      name: c.label, format: formatOf(c), bytes: c.totalBytes,
+      view: c.tabId, name: c.label, format: formatOf(c), bytes: c.totalBytes,
       rows: view(c).rowCount(), totalRows: c.baseVs.rowCount(),
       columns: c.schema.map((s) => s.name),
       filter: c.filterResult ? d.filterText() : '',
@@ -88,6 +90,9 @@ export function createHostApi(d) {
     // file (sniffed: CSV/TSV, .dm, Parquet, .xlsx, archives…). Resolves to info().
     open: verb(async (input, o = {}) => { await d.open(input, o); return info(); }),
     info,
+    // ── the views: every tab, by id; focus(id) chooses the one the verbs act on ──
+    views: () => d.views(),
+    focus: verb((id) => { d.focus(id); return info(); }),
     columns: () => { const c = table(); return c.schema.map((_, i) => column(c, i)); },
     setColumn: verb(async (name, o = {}) => {
       const c = table(), i = colIndex(c, name);
@@ -200,10 +205,12 @@ export function createHostApi(d) {
 
     // ── the whole view as data: the .lamina lens (filter · sort · calc columns ·
     // formats · hidden · order · widths), columns by name ──
-    lens: () => { table(); return d.buildLens(); },
+    // lens() is the focused view (v1 shape, as ever); lens({ file: true }) is every view of its
+    // file and their layout, lens({ all: true }) every open file — the v2 shape Save lens… writes
+    lens: (o = {}) => { if (o.all || o.file) { const L = d.buildLensFile(o.all ? 'all' : 'file'); if (!L) throw new Error('lamina: no table is open'); return L; } table(); return d.buildLens(); },
     applyLens: verb(async (lens) => {
       if (!lens || lens.kind !== 'lamina-lens') throw new Error('lamina: not a lens (kind must be "lamina-lens")');
-      table();
+      if (!(lens.version >= 2)) table();                  // a v2 lens names its files: it can open them
       const skipped = await d.applyLens(lens);
       return { skipped: skipped || [] };
     }),

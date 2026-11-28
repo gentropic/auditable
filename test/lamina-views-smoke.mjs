@@ -164,6 +164,50 @@ for (const [tag, url] of [['dev', '/tools/lamina/index.html'], ['built', '/lamin
   });
   check(encoding.utf8 === 'caf�␊' && encoding.latin1 === 'café␊', `[${tag}] raw lines in another encoding: caf�␊ → café␊`, encoding);
 
+  // 10 ── lens v2: a file's views + their layout, saved; everything closed; the lens asks for the file
+  //       (a slot), reopens it and brings back both views, their filters, the raw view and the split
+  const lens2 = await E(async () => {
+    const l = window._lamina, wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (const v of l.views) l.rails.closeTab(v.tabId);
+    const body = 'a,b,c\n' + Array.from({ length: 400 }, (_, i) => `${i},${i * 2},x${i % 3}`).join('\n');
+    const file = new File([body], 'lensed.csv');
+    await l.openInTab(file); await wait(300);
+    await l.applyFilter('a < 50'); document.getElementById('filter').value = 'a < 50';
+    await l.newViewOfFocused(); await wait(300);
+    document.getElementById('filter').value = 'c = "x1"'; await l.applyFilter('c = "x1"');
+    await l.openRawOfFocused('lines'); await wait(400);
+    const lens = l.buildLensFile('file');
+    for (const v of l.views) l.rails.closeTab(v.tabId);
+    let asked = null;
+    l.askForFiles = async (list) => { asked = list.map((x) => x.file); return new Map([[list[0], file]]); };
+    const skipped = await l.applyLensV2(JSON.parse(JSON.stringify(lens))); await wait(500);
+    const vs = l.views.map((v) => ({ label: v.label, raw: v.raw || null, filter: v === l.current ? document.getElementById('filter').value : (v.filterText || ''), x: Math.round(v.panel.getBoundingClientRect().left), shown: v.panel.getBoundingClientRect().width > 0 }));
+    return { shape: lens.sources.map((x) => [x.file, x.views.map((w) => w.raw || w.filter)]), asked, skipped, vs };
+  });
+  const tables = lens2.vs.filter((v) => !v.raw), rawv = lens2.vs.find((v) => v.raw === 'lines');
+  check(JSON.stringify(lens2.shape) === '[["lensed.csv",["a < 50","c = \\"x1\\"","lines"]]]' && JSON.stringify(lens2.asked) === '["lensed.csv"]' && !lens2.skipped.length
+    && tables.length === 2 && tables.map((v) => v.filter).sort().join('|') === 'a < 50|c = "x1"' && rawv && rawv.shown && tables.some((v) => v.shown && v.x < rawv.x),
+  `[${tag}] lens v2: one file, three views, the split — saved, closed, asked for, all back`, lens2);
+
+  // 11 ── reopening a file brings back its last view (recents); the session is offered on the empty page
+  const recall = await E(async () => {
+    const l = window._lamina, wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (const v of l.views) l.rails.closeTab(v.tabId);
+    const file = new File(['k,v\n' + Array.from({ length: 50 }, (_, i) => `${i},${i % 5}`).join('\n')], 'again.csv');
+    await l.openInTab(file); await wait(200);
+    document.getElementById('filter').value = 'v = 3'; await l.applyFilter('v = 3'); await wait(900);   // remembered (debounced)
+    l.saveSession(); await wait(200);
+    for (const v of l.views) l.rails.closeTab(v.tabId); await wait(200);
+    await l.openInTab(file); await wait(400);
+    const back = { filter: document.getElementById('filter').value, meta: document.getElementById('meta').textContent };
+    for (const v of l.views) l.rails.closeTab(v.tabId); await wait(200);
+    await l.offerSession(); await wait(100);
+    const offer = document.querySelector('.session-offer');
+    return { back, offer: offer && offer.textContent };
+  });
+  check(recall.back.filter === 'v = 3' && /^10 of 50 rows/.test(recall.back.meta) && /brought back/.test(recall.back.meta) && /reopen the file you had open \(again\.csv\)/.test(recall.offer || ''),
+    `[${tag}] a file opened again brings back its last view; the empty page offers the session`, recall);
+
   check(!errors.length, `[${tag}] no page errors`, errors);
   await page.context().close();
 }

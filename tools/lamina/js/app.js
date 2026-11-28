@@ -125,7 +125,13 @@ function showBinary(name, totalBytes) {
 // ── views ─────────────────────────────────────────────────────────────────────────
 // A file the user opens lands in a NEW tab; a file read again (interpretation, lens
 // re-read, the host API) replaces the focused view in place, keeping its tab.
-function openInTab(file, force) { _openNext = 'tab'; return openFile(file, force); }
+async function openInTab(file, force) {
+  _openNext = 'tab';
+  const before = current;
+  await openFile(file, force);
+  if (force || !current || current === before) return;
+  await restoreRememberedViews(current, file);
+}
 
 function makePanel(tabId) {
   const el = document.createElement('div');
@@ -185,7 +191,7 @@ function setFocus(v) {
   if (v && v.note && v.note.lazy) {                     // a tab that reads its file the first time it's looked at
     const load = v.note.lazy; v.note.lazy = null;
     _openNext = 'replace';                               // …in its own tab
-    Promise.resolve().then(load).catch((e) => showNote(v.label, v.note.badge, "couldn't read this", e.message || String(e), v.note.meta));
+    v.note.loading = Promise.resolve().then(load).catch((e) => showNote(v.label, v.note.badge, "couldn't read this", e.message || String(e), v.note.meta));
   }
   if (_colPanelOpen) renderColPanel();
   if (_recPanelOpen) { if (current) { const s = grid && grid.getSelection(); renderRecordCard(s ? s.r0 : 0); } else toggleRecordPanel(false); }
@@ -212,12 +218,13 @@ function dropView(tabId) {
 function initWorkspace() {
   rails = createRails($('#grid'), {
     renderPanel: (tab) => (views.get(tab.id) || {}).panel || document.createElement('div'),
-    onPanelDestroy: (tab) => dropView(tab.id),
+    onPanelDestroy: (tab) => { const v = views.get(tab.id); if (v && !_restoringLayout) rememberDoc(v, true); dropView(tab.id); },
     // a phone or the shell's narrow window: tabs only — no splits, no floats (spec §2)
     canDropOn: (zone) => !(innerWidth < 720 && /edge|gap|float/.test(zone.type)),
   });
   rails.on('tab:activate', ({ tab }) => { const v = views.get(tab.id); if (v && v !== focused) setFocus(v); });
-  rails.on('tab:close', () => { if (!focused || !alive(focused)) setFocus(anyActiveView()); syncMulti(); });
+  rails.on('tab:close', () => { if (!focused || !alive(focused)) setFocus(anyActiveView()); syncMulti(); scheduleSession(); });
+  rails.on('layout:change', () => scheduleSession());
 }
 
 // "New view of this file": read the focused view's source again into a new tab and give
@@ -229,6 +236,263 @@ async function newViewOfFocused() {
   _openNext = 'tab';
   await c.again();
   if (current && current !== c) { delete lens.interpretation; await applyLensView(lens); }
+}
+
+// ── lens v2: sources · views · layout ─────────────────────────────────────────────
+// A lens is lamina's one native file. v2 holds SOURCES (a file, by name), each with any number of
+// VIEWS (today's lens fields per view, plus sheet / raw), and the LAYOUT. One source with no file
+// applies to whatever is open; a source whose file is open applies to it; one that isn't is found
+// in recents or asked for (one slot per file). The same shape remembers a file's last views
+// (recents) and the whole session. v1 lenses still load (one source, one view).
+let _restoringLayout = false;
+const docIdOf = (v) => { const r = v && v.rawOf; return r ? (r.file || r.bytes || r.openStream || r.reader) : v; };
+const fileNameOf = (v) => (v && ((v.rawOf && v.rawOf.file && v.rawOf.file.name) || (v.label || '').split(' › ')[0].replace(/ · (raw|hex)$/, ''))) || '';
+const sheetNameOf = (v) => (v.d && v.d.xlsx) || (v.note && v.note.lazy && v.label.includes(' › ') ? v.label.split(' › ').pop() : null);
+function tabOrder() {
+  const ids = [];
+  const walk = (n) => { if (!n) return; if (isSplit(n)) n.children.forEach(walk); else n.tabs.forEach((t) => ids.push(t.id)); };
+  walk(rails.state.root);
+  for (const f of rails.state.floats || []) f.stack.tabs.forEach((t) => ids.push(t.id));
+  return ids.map((id) => views.get(id)).filter(Boolean);
+}
+const docViews = (doc) => tabOrder().filter((v) => docIdOf(v) === doc);
+function lensViewOf(v) {
+  if (v.note) return v.note.lazy ? { sheet: sheetNameOf(v) } : null;
+  const L = buildLens(v); if (!L) return null;
+  delete L.kind; delete L.version; delete L.source; delete L.interpretation;
+  if (v.raw) { delete L.columns; delete L.order; delete L.pinned; delete L.calcs; delete L.gt; L.raw = v.raw; }
+  if (v.d && v.d.xlsx) L.sheet = v.d.xlsx;
+  return L;
+}
+function sourceOf(group, ids, n) {
+  const first = group[0], file = first.rawOf && first.rawOf.file;
+  const src = { id: 's' + n, file: fileNameOf(first) || null };
+  if (file) src.size = file.size;
+  const table = group.find((v) => !v.note && !v.raw);
+  if (table) { const interp = buildLens(table).interpretation; if (interp) src.interpretation = interp; }
+  src.views = [];
+  for (const v of group) { const lv = lensViewOf(v); if (!lv) continue; lv.id = 'v' + (ids.size + 1); ids.set(v.tabId, lv.id); src.views.push(lv); }
+  return src;
+}
+// rails' state with tab ids → lens view ids (tabs not in the lens dropped, emptied stacks removed)
+function layoutOf(ids) {
+  const st = JSON.parse(rails.serialize());
+  const prune = (n) => {
+    if (!n) return null;
+    if (isSplit(n)) { n.children = n.children.map(prune).filter(Boolean); return n.children.length ? n : null; }
+    n.tabs = n.tabs.filter((t) => ids.has(t.id)).map((t) => ({ id: ids.get(t.id), title: t.title }));
+    if (!n.tabs.length) return null;
+    n.active = ids.get(n.active) || n.tabs[0].id;
+    return n;
+  };
+  st.root = prune(st.root);
+  st.floats = (st.floats || []).map((f) => { f.stack = prune(f.stack); return f.stack ? f : null; }).filter(Boolean);
+  return st;
+}
+function buildLensFile(scope = 'file') {
+  if (!focused) return null;
+  const groups = new Map();
+  for (const v of tabOrder()) { const id = docIdOf(v); if (!groups.has(id)) groups.set(id, []); groups.get(id).push(v); }
+  const picked = scope === 'all' ? [...groups.values()] : [groups.get(docIdOf(focused))].filter(Boolean);
+  const ids = new Map();
+  const sources = picked.map((g, i) => sourceOf(g, ids, i + 1)).filter((x) => x.views.length);
+  if (!sources.length) return null;
+  return { kind: 'lamina-lens', version: 2, sources, layout: layoutOf(ids) };
+}
+// restore a layout: lens view ids → the tabs made for them; open tabs the lens doesn't name keep a place
+function restoreLayout(layout, tabFor) {
+  if (!layout || !layout.root) return;
+  const st = JSON.parse(JSON.stringify(layout));
+  const used = new Set();
+  const map = (n) => {
+    if (!n) return null;
+    if (isSplit(n)) { n.children = n.children.map(map).filter(Boolean); return n.children.length ? n : null; }
+    n.tabs = n.tabs.map((t) => tabFor.get(t.id)).filter((id) => id && views.has(id) && !used.has(id)).map((id) => { used.add(id); return { id, title: findTab(rails.state, id).tab.title }; });
+    if (!n.tabs.length) return null;
+    n.active = tabFor.get(n.active) && used.has(tabFor.get(n.active)) ? tabFor.get(n.active) : n.tabs[0].id;
+    return n;
+  };
+  st.root = map(st.root);
+  st.floats = (st.floats || []).map((f) => { f.stack = map(f.stack); return f.stack ? f : null; }).filter(Boolean);
+  const rest = tabOrder().filter((v) => !used.has(v.tabId)).map((v) => ({ id: v.tabId, title: findTab(rails.state, v.tabId).tab.title }));
+  if (!st.root) st.root = { id: 'sRest', tabs: rest, active: rest[0] ? rest[0].id : null };
+  else if (rest.length) {
+    const first = (n) => (isSplit(n) ? first(n.children[0]) : n);
+    const s0 = first(st.root); s0.tabs.push(...rest);
+  }
+  if (!st.root.tabs && !st.root.children) return;
+  if (st.root.tabs && !st.root.tabs.length) return;
+  _restoringLayout = true;
+  try { rails.deserialize(JSON.stringify(st)); } catch (e) { console.warn('[lamina] layout not restored', e); } finally { _restoringLayout = false; }
+  setFocus(anyActiveView()); syncMulti();
+}
+// a second view of the doc without copying any state (the lens fills it)
+async function freshViewOf(v) { setFocus(v); _openNext = 'tab'; await v.again(); return current; }
+const interpDiffers = (c, want) => want && ['kind', 'delimiter', 'hasHeader', 'decimal', 'skip', 'comment', 'encoding'].some((k) => want[k] != null && want[k] !== '' && want[k] !== (c.force || {})[k]);
+// apply a source's views to the document a view `t` belongs to
+async function applyViewsToDoc(t, src, tabFor, skipped) {
+  const doc = docIdOf(t);
+  const claimed = new Set();
+  let reread = false;
+  const tableOf = () => docViews(doc).find((v) => !v.note && !v.raw && alive(v));
+  for (const lv of src.views || []) {
+    let v = null;
+    if (lv.raw) {
+      const base = tableOf() || docViews(doc).find((x) => x.rawOf);
+      if (!base || !base.rawOf) { skipped.push(`raw ${lv.raw} view (no bytes to show)`); continue; }
+      v = await ensureRawView(base, lv.raw === 'lines' && !base.rawOf.textual ? 'hex' : lv.raw);
+    } else if (lv.sheet) {
+      let sv = docViews(doc).find((x) => sheetNameOf(x) === lv.sheet && !x.raw);
+      if (!sv) { skipped.push(`sheet "${lv.sheet}" (missing)`); continue; }
+      if (sv.note && sv.note.lazy) { rails.activateTab(sv.tabId); setFocus(sv); }
+      if (sv.note && sv.note.loading) { await sv.note.loading; sv = views.get(sv.tabId); }
+      if (!sv || sv.note) { skipped.push(`sheet "${lv.sheet}" (couldn't be read)`); continue; }
+      v = claimed.has(sv) ? await freshViewOf(sv) : sv;
+    } else {
+      v = docViews(doc).find((x) => !x.note && !x.raw && !claimed.has(x) && alive(x));
+      if (!v) { const base = tableOf(); if (!base) { skipped.push('a view (no table to show it on)'); continue; } v = await freshViewOf(base); }
+    }
+    if (!v) continue;
+    rails.activateTab(v.tabId); setFocus(v);
+    if (!reread && !v.raw && interpDiffers(v, src.interpretation) && (v.file || v.bytes)) {   // read the file the way the lens says, once
+      reread = true; _openNext = 'replace';
+      await reopen(src.interpretation);
+      v = current;
+    }
+    if (lv.raw) { if (lv.filter) { $('#filter').value = lv.filter; syncFilterClear(); await applyFilter(lv.filter, v); } }
+    else { const sk = await applyLensView({ kind: 'lamina-lens', version: 1, ...lv }); if (Array.isArray(sk)) skipped.push(...sk); }
+    claimed.add(current || v);
+    if (lv.id) tabFor.set(lv.id, (current || v).tabId);
+  }
+}
+// a file by name from recents (a kept handle; asks once for permission)
+async function recentFileFor(src) {
+  const name = String(src.file || '').toLowerCase();
+  const hit = _recents.find((e) => e.name.toLowerCase() === name && (!src.size || e.size === src.size) && e.handle && e.handle.getFile);
+  if (!hit) return null;
+  try {
+    const h = hit.handle;
+    if (h.queryPermission) { let q = await h.queryPermission({ mode: 'read' }); if (q !== 'granted' && h.requestPermission) q = await h.requestPermission({ mode: 'read' }); if (q !== 'granted') return null; }
+    return await h.getFile();
+  } catch { return null; }
+}
+// the files a lens needs and lamina can't find: one slot per file, picked or dropped
+function askForFiles(list) {
+  return new Promise((resolve) => {
+    const got = new Map();
+    const row = (src, i) => `<div class="slot" data-i="${i}" style="display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px dashed var(--bd2);border-radius:5px;margin:6px 0">
+      <span style="flex:1"><b>${_escHtml(src.file || 'a file')}</b>${src.size ? ` <span style="color:var(--dim)">${fmtBytes(src.size)}</span>` : ''}<br><span class="slot-st" style="color:var(--muted);font-size:11px">drop it here, or pick it</span></span>
+      <button class="slot-pick stats-apply">Pick…</button></div>`;
+    showOverlay('Open the files this lens reads', `<div style="color:var(--muted);margin-bottom:6px">lamina keeps no files — point it at each one (any file with the same columns will do).</div>${list.map(row).join('')}
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px"><button id="slotGo" class="stats-apply" disabled>Open</button></div>`);
+    const body = $('#helpBody');
+    const set = (i, f) => { got.set(list[i], f); const st = body.querySelector(`.slot[data-i="${i}"] .slot-st`); if (st) { st.textContent = `→ ${f.name} (${fmtBytes(f.size)})`; st.style.color = 'var(--ok)'; } $('#slotGo').disabled = false; };
+    body.querySelectorAll('.slot').forEach((el) => {
+      const i = +el.dataset.i;
+      el.addEventListener('dragover', (e) => { e.preventDefault(); e.stopPropagation(); });
+      el.addEventListener('drop', (e) => { e.preventDefault(); e.stopPropagation(); document.body.classList.remove('dragging'); const f = e.dataTransfer.files && e.dataTransfer.files[0]; if (f) set(i, f); });
+      el.querySelector('.slot-pick').onclick = async () => {
+        let f = null;
+        if (window.showOpenFilePicker) { try { const [h] = await window.showOpenFilePicker({}); f = h && await h.getFile(); if (f) addRecent(f, h); } catch { /* cancelled */ } }
+        else f = await new Promise((r) => { const inp = document.createElement('input'); inp.type = 'file'; inp.onchange = () => r(inp.files[0] || null); inp.click(); });
+        if (f) set(i, f);
+      };
+    });
+    let done = false;
+    const finish = (m) => { if (done) return; done = true; $('#help').classList.remove('show'); resolve(m); };
+    $('#slotGo').onclick = () => finish(got);
+    const close = $('#helpClose'), prev = close.onclick;
+    close.onclick = (e) => { close.onclick = prev; if (prev) prev(e); finish(null); };
+  });
+}
+let _askForFiles = askForFiles;   // the smokes stand in for the person
+async function applyLensV2(L) {
+  const skipped = [];
+  const srcs = (L.sources || []).filter((x) => x && Array.isArray(x.views));
+  if (!srcs.length) return skipped;
+  const tabFor = new Map();
+  const open = tabOrder();
+  const openNamed = (name) => open.find((v) => !v.raw && fileNameOf(v).toLowerCase() === String(name || '').toLowerCase());
+  const targets = new Map();
+  if (srcs.length === 1 && focused && (!srcs[0].file || !openNamed(srcs[0].file))) targets.set(srcs[0], focused);   // "apply this lens to this file"
+  else for (const src of srcs) { const v = openNamed(src.file); if (v) targets.set(src, v); }
+  const missing = srcs.filter((x) => !targets.has(x));
+  const files = new Map();
+  for (const src of missing) { const f = await recentFileFor(src); if (f) files.set(src, f); }
+  const ask = missing.filter((x) => !files.has(x));
+  if (ask.length) { const got = await _askForFiles(ask); if (got) for (const [src, f] of got) files.set(src, f); }
+  for (const src of missing) {
+    const f = files.get(src);
+    if (!f) { skipped.push(`${src.file || 'a source'} (no file given)`); continue; }
+    _openNext = 'tab';
+    const before = current;
+    await openFile(f);
+    if (current && current !== before) targets.set(src, current);
+    else if (focused && focused.note && focused.note.lazy) targets.set(src, focused);
+    else skipped.push(`${src.file} (couldn't be opened)`);
+  }
+  for (const src of srcs) { const t = targets.get(src); if (t) await applyViewsToDoc(t, src, tabFor, skipped); }
+  if (L.layout && tabFor.size) restoreLayout(L.layout, tabFor);
+  if (current) say(current, skipped.length ? `lens applied — skipped: ${skipped.join('; ')}` : 'lens applied');
+  return skipped;
+}
+
+// ── a file's last views come back (recents) · the session ──
+const _remTimers = new Map();
+function scheduleRemember(v) {
+  if (!_remember || !v || v.raw || !v.rawOf || !v.rawOf.file) return;
+  const k = fileKey(v.rawOf.file);
+  clearTimeout(_remTimers.get(k));
+  _remTimers.set(k, setTimeout(() => { _remTimers.delete(k); rememberDoc(v); }, 700));
+  scheduleSession();
+}
+function rememberDoc(v, closing = false) {
+  if (!_remember || !v || !v.rawOf || !v.rawOf.file) return;
+  const file = v.rawOf.file;
+  let group = docViews(docIdOf(v)).filter((x) => !x.raw && !x.note && !(closing && x === v));   // a view being closed isn't remembered…
+  if (!group.length && closing && !v.raw && !v.note) group = [v];                              // …unless it's the file's last
+  if (!group.length) return;
+  const src = sourceOf(group, new Map(), 1);
+  if (!src.views.some((lv) => Object.keys(lv).some((k) => k !== 'id' && k !== 'sheet'))) { idbCache.set('views::' + fileKey(file), null); return; }   // nothing set → nothing to bring back
+  idbCache.set('views::' + fileKey(file), { v: CACHE_VERSION, lens: { kind: 'lamina-lens', version: 2, sources: [src] } });
+}
+async function restoreRememberedViews(t, file) {
+  if (!_remember || !file || typeof file.name !== 'string') return;
+  const key = fileKey(file);
+  if (tabOrder().some((v) => v !== t && v.rawOf && v.rawOf.file && v.rawOf.file !== file && fileKey(v.rawOf.file) === key)) return;   // already open elsewhere
+  let rec; try { rec = await idbCache.get('views::' + key); } catch { return; }
+  if (!cacheFresh(rec) || !rec.lens || !rec.lens.sources || !rec.lens.sources[0]) return;
+  const skipped = [];
+  await applyViewsToDoc(t, rec.lens.sources[0], new Map(), skipped);
+  const c = current; if (!c) return;
+  noteOnMeta(c, 'your last view of this file, brought back');
+}
+// a short note riding on a view's footer line (survives its redraws) for a few seconds
+function noteOnMeta(c, text, ms = 7000) {
+  c._metaNote = text;
+  if (c._meta && c === current) $('#meta').textContent = c._meta.includes(text) ? c._meta : `${c._meta} · ${text}`;
+  setTimeout(() => { if (c._metaNote !== text) return; c._metaNote = null; if (c._meta) c._meta = c._meta.replace(' · ' + text, ''); if (c === current && c._meta) $('#meta').textContent = c._meta; }, ms);
+}
+let _sessTimer = null;
+function scheduleSession() { if (!_remember) return; clearTimeout(_sessTimer); _sessTimer = setTimeout(saveSession, 900); }
+function saveSession() {
+  if (!_remember) return;
+  try {
+    const L = views.size ? buildLensFile('all') : null;
+    if (L) L.sources = L.sources.filter((x) => x.size != null);   // only real files can be found again
+    idbCache.set('session', L && L.sources.length ? { v: CACHE_VERSION, lens: L, at: Date.now() } : null);
+  } catch (e) { console.warn('[lamina] session not kept', e); }
+}
+window.addEventListener('pagehide', () => { if (_remember && views.size) saveSession(); });
+async function offerSession() {
+  let rec; try { rec = await idbCache.get('session'); } catch { return; }
+  const box = $('#emptyRecents'); if (!box || !cacheFresh(rec) || !rec.lens || views.size) return;
+  const n = rec.lens.sources.length;
+  const a = document.createElement('a'); a.href = '#'; a.className = 'session-offer';
+  a.textContent = `↻ reopen the ${n === 1 ? 'file' : n + ' files'} you had open (${rec.lens.sources.map((x) => x.file).join(', ')})`;
+  a.style.cssText = 'display:block;margin-bottom:8px;pointer-events:auto;color:var(--accent)';
+  a.onclick = (e) => { e.preventDefault(); a.remove(); applyLensV2(rec.lens); };
+  box.prepend(a);
 }
 
 // ── the raw view ──────────────────────────────────────────────────────────────────
@@ -501,8 +765,9 @@ function mountView(vs, info = {}, keepVScroll = false, c = current) {
   const kindLabel = c.d.raw ? `raw ${c.d.raw}` : c.d.dm ? 'dm' : c.d.parquet ? 'parquet' : c.d.kind;
   const resident = residentEstimate(c);                  // the never-resident superpower, made visible
   const resTerm = (resident != null && resident < c.totalBytes * 0.6) ? ` · ~${fmtBytes(resident)} resident` : '';
-  c._meta = `${rows} × ${cols} · ${fmtBytes(c.totalBytes)}${resTerm} · ${kindLabel}${skipped}`;   // remembered so a copy-flash can restore it
+  c._meta = `${rows} × ${cols} · ${fmtBytes(c.totalBytes)}${resTerm} · ${kindLabel}${skipped}${c._metaNote ? ' · ' + c._metaNote : ''}`;   // remembered so a copy-flash can restore it
   g.onSelect((sel) => { if (c === current) onSelectionChanged(sel); });   // drives the record card + footer selection stats
+  scheduleRemember(c);
   if (c !== current) return;                             // a view behind another tab: its grid is ready, the chrome isn't its to set
   grid = g;
   syncViewChrome(c);
@@ -1497,15 +1762,15 @@ const LENS_VERSION = 1;
 let _pendingLens = null;        // a lens opened with no file yet → apply when one mounts
 let _pendingLensView = null;    // a lens mid-apply across an interpretation re-read
 
-function buildLens() {
-  const c = current; if (!c) return null;
+function buildLens(c = current) {
+  if (!c || c.note) return null;
   const nameOf = (uc) => (c.schema[uc] && c.schema[uc].name);
   const lens = { kind: 'lamina-lens', version: LENS_VERSION, source: c.label || null };
   const f = c.force || {};                                  // interpretation — only the bits the user forced (auto handles the rest)
   const interp = {};
   for (const k of ['kind', 'delimiter', 'hasHeader', 'decimal', 'skip', 'comment', 'quote']) if (f[k] != null && f[k] !== '') interp[k] = f[k];
   if (Object.keys(interp).length) lens.interpretation = interp;
-  const box = $('#filter').value.trim(); if (box) lens.filter = box;
+  const box = (c === current ? $('#filter').value : (c.filterText || '')).trim(); if (box) lens.filter = box;
   if (c.sort && c.sort.length) lens.sort = c.sort.map((s) => ({ col: nameOf(s.col), dir: s.dir })).filter((s) => s.col);
   if (c.calcs && c.calcs.length) lens.calcs = c.calcs.map((x) => ({ name: x.name, expr: x.expr, type: x.type }));
   const cols = {};
@@ -1526,21 +1791,22 @@ function buildLens() {
   if (c.pinned && c.pinned.size) lens.pinned = order.filter((uc) => c.pinned.has(uc)).map(nameOf).filter(Boolean);
   // grade–tonnage setup (only if the user configured GT this session) — by NAME
   // so it re-applies to any file with a matching schema, like everything else
-  if (_gtConfig && Array.isArray(_gtConfig.grades) && _gtConfig.grades.length) {
-    const grades = _gtConfig.grades
-      .map((uc, i) => ({ col: nameOf(uc), unit: _gtConfig.gradeUnits[i] || '', cutoffs: _gtConfig.cutoffs[i] || '', ranges: _gtConfig.ranges[i] || '' }))
+  const gt = c._gtCfg;
+  if (gt && Array.isArray(gt.grades) && gt.grades.length) {
+    const grades = gt.grades
+      .map((uc, i) => ({ col: nameOf(uc), unit: gt.gradeUnits[i] || '', cutoffs: gt.cutoffs[i] || '', ranges: gt.ranges[i] || '' }))
       .filter((g) => g.col);
-    if (grades.length) lens.gt = { group: _gtConfig.group != null ? nameOf(_gtConfig.group) : null,
-      volume: _gtConfig.volume, density: _gtConfig.density, densityUnit: _gtConfig.densityUnit, proportion: _gtConfig.proportion, grades };
+    if (grades.length) lens.gt = { group: gt.group != null ? nameOf(gt.group) : null,
+      volume: gt.volume, density: gt.density, densityUnit: gt.densityUnit, proportion: gt.proportion, grades };
   }
   return lens;
 }
 
-async function saveLens() {
-  const lens = buildLens(); if (!lens) return;
+async function saveLens(scope = 'file') {
+  const lens = buildLensFile(scope); if (!lens) return;
   closeMenu();
   const text = JSON.stringify(lens, null, 2);
-  const fname = ((current.label || 'view').replace(/\.[^.]*$/, '')) + '.lamina';
+  const fname = scope === 'all' ? 'lamina-session.lamina' : ((fileNameOf(focused) || 'view').replace(/\.[^.]*$/, '')) + '.lamina';
   if (window.showSaveFilePicker && !shell.present && !hostDoor()) {   // the WebView defines the picker but aborts it — the shell/host take the fallback door
     try {
       const h = await window.showSaveFilePicker({ suggestedName: fname, types: [{ description: 'lamina lens', accept: { 'application/json': ['.lamina', '.lam'] } }] });
@@ -1562,6 +1828,7 @@ function sniffLens(bytes) {
 // Apply a lens to the current file (or hold it if none open yet). Re-reads first
 // when the lens's interpretation differs, then applies the view by name.
 function applyLens(lens) {
+  if (lens && lens.version >= 2 && Array.isArray(lens.sources)) return applyLensV2(lens);
   if (!current) { _pendingLens = lens; $('#empty').style.display = ''; $('#meta').textContent = 'lens loaded — open a data file to apply it to'; return; }
   const c = current, want = lens.interpretation, cur = c.force || {};
   const differs = want && ['kind', 'delimiter', 'hasHeader', 'decimal', 'skip', 'comment'].some((k) => want[k] != null && want[k] !== '' && want[k] !== cur[k]);
@@ -2359,8 +2626,8 @@ function reopen(patch) {
   }
   const force = { ...(c.force || {}), ...patch };
   Object.keys(force).forEach((k) => { if (force[k] === '' || force[k] == null) delete force[k]; });   // '' = auto
-  if (c.file) openFile(c.file, force);
-  else if (c.bytes) open(c.label, c.bytes, force);
+  if (c.file) return openFile(c.file, force);
+  if (c.bytes) return open(c.label, c.bytes, force);
 }
 
 // Human name + the literal glyph for a delimiter byte (tab/whitespace get a
@@ -2616,7 +2883,8 @@ $('#mData').onclick = () => menuAt($('#mData'), [
   { label: 'Interpretation (delimiter / header / skip)…', action: () => { if (hasFile()) openOpts(); } },
   { label: 'Export…', action: () => { if (hasFile()) openExportDialog(); } },
   { sep: true },
-  { label: 'Save lens…', action: () => { if (hasFile()) saveLens(); } },
+  { label: 'Save lens…', action: () => { if (focused) saveLens('file'); } },
+  { label: 'Save a lens of every open file…', action: () => { if (focused) saveLens('all'); } },
   { label: 'Apply lens…', action: applyLensFromFile },
   { sep: true },
   { label: 'Calculated columns…', action: () => { if (hasFile()) openCalcManager(); } },
@@ -3456,7 +3724,8 @@ function openGradeTonnage() {
   const d3 = c.schema.filter((s) => /^d[xyz]$/i.test(s.name));   // block dims → volume = dx·dy·dz
   const firstCat = c.schema.findIndex((s) => s.type !== 'number');
   const grade = num.find((o) => !/^(id|x|y|z|dx|dy|dz|east|north|elev|rl|row)$/i.test(o.s.name));
-  _gtConfig = {   // volume/density/proportion are EXPRESSIONS (a column, a constant, dx*dy*dz, or blank = 1)
+  const kept = c._gtCfg && [c._gtCfg.group, ...c._gtCfg.grades].every((i) => i == null || i < c.schema.length) ? c._gtCfg : null;
+  _gtConfig = kept || {   // volume/density/proportion are EXPRESSIONS (a column, a constant, dx*dy*dz, or blank = 1)
     group: firstCat >= 0 ? firstCat : null,
     volume: d3.length === 3 ? d3.map((s) => colRef(s.name)).join(' * ') : (colName(/vol/i) || '1'),
     density: colName(/dens|(^|_)sg($|_)/i) || '2.7',
@@ -3467,6 +3736,7 @@ function openGradeTonnage() {
     cutoffs: [''],   // per grade field: comma-separated cutoffs, blank = auto (round bin edges)
     ranges: [''],    // per grade field: manual plot ranges "x:0..2 t:5e6 g:3" — blank = auto
   };
+  c._gtCfg = _gtConfig;    // the setup is the VIEW's: reopening the dialog keeps it, and its lens carries it
   // seed from a lens's GT setup (consumed once — after this the live config wins).
   // Names → indices; a grade whose column is gone is dropped (auto if none left).
   if (c._lensGt) {
@@ -4129,9 +4399,10 @@ window.addEventListener('keydown', (e) => {
 
 // ── the host API (window.lamina — js/host-api.js) ─────────────────────────────
 // What it needs from the app, as functions the UI itself calls.
-async function hostOpen(input, { name } = {}) {
+async function hostOpen(input, { name, newView = false } = {}) {
   _hostNote = null;
   const before = current;
+  _openNext = newView ? 'tab' : 'replace';
   if (input instanceof ArrayBuffer) input = new Uint8Array(input);
   if (input instanceof Uint8Array) await open(name || 'data', input);
   else if (input && typeof input.getFile === 'function') await openFile(await input.getFile());   // a FileSystemFileHandle
@@ -4196,8 +4467,10 @@ _host = createHostApi({
     grid.setSelection({ r0: from, r1: to, c0: Math.min(...dcs), c1: Math.max(...dcs) });
     grid.revealCell(from, Math.min(...dcs));
   },
-  addCalc, removeCalc, buildLens,
+  addCalc, removeCalc, buildLens, buildLensFile,
   applyLens: async (lens) => applyLens(lens),
+  views: () => tabOrder().map((v) => ({ id: v.tabId, name: v.label, kind: v.note ? 'note' : v.raw ? `raw ${v.raw}` : 'table', focused: v === focused })),
+  focus: (id) => { const v = views.get(id); if (!v) throw new Error(`lamina: no view ${JSON.stringify(id)} — the views are ${[...views.keys()].join(', ')}`); rails.activateTab(id); setFocus(v); },
   columnStats: (uc, o) => laminaColumnStats(uc, o),
   groupBy: (g, vs, w) => scanGroupBy(current.source, { groupCol: g, valueCols: vs, weightCol: w, dataStart: current.dataStart, decimal: current.d.decimal, rows: current.filterResult ? current.filterResult.nums : null }),
   gradeTonnage: hostGradeTonnage,
@@ -4205,7 +4478,7 @@ _host = createHostApi({
 });
 window.lamina = _host.api;
 
-window._lamina = { openInTab, setFocus, newViewOfFocused, openRawOfFocused, ensureRawView, showRawOfRow, showRowOfRaw, switchRawAt, revealOffset, get views() { return [...views.values()]; }, get focused() { return focused; }, get rails() { return rails; }, shell, deliverBytes, doExport, laminaStatus, laminaColumnStats, open, openFile, applyFilter, toggleSort, reopen, gotoRow, hideColumn, showColumn, showAllColumns, setColType, setColFormat, toggleColorScale, setColScaleOpt, autofitAll, resetColWidths, showAllColumns, toggleColPanel, reorderCol, togglePin, scrollToColumn, residentEstimate, statsToTSV, gutterSampleRows, scanColumnStats, scanAllColumnStats, scanGroupBy, scanDataQuality, precomputeStats, showSummary, openGroupBy, computeGroupBy, openGradeTonnage, computeGradeTonnage, openGridSummary, computeGridSummary, openSampleData, showDataQuality, setGutterLog, toggleRecordPanel, renderRecordCard, updateSelStats, openFind, closeFind, findNext, findCountAll, addRecent, clearRecents, setRemember, openRecent, get recents() { return _recents; }, showColumnStats, copySelection, filterByValue, addCalc, removeCalc, openCalcEditor, openCalcManager, brushFilter, showBrushTip, showGutterTip, gutterClick, gutterDblClick, gutterTapFilter, gutterBrush, setBrushMode, exportToString, openExportDialog, saveLens, buildLens, applyLensView, applyLens, applyLensFromFile, sniffLens, setTheme, get theme() { return theme; }, pickFile, showHelp, cache: idbCache, build: __LAMINA_BUILD__, get brushMode() { return brushMode; }, get grid() { return grid; }, get lastScan() { return lastScan; }, get current() { return current; }, get calcs() { return current && current.calcs; }, get gutter() { return current && current.gutter; }, canWorker };
+window._lamina = { buildLensFile, applyLensV2, rememberDoc, saveSession, offerSession, set askForFiles(f) { _askForFiles = f; }, openInTab, setFocus, newViewOfFocused, openRawOfFocused, ensureRawView, showRawOfRow, showRowOfRaw, switchRawAt, revealOffset, get views() { return [...views.values()]; }, get focused() { return focused; }, get rails() { return rails; }, shell, deliverBytes, doExport, laminaStatus, laminaColumnStats, open, openFile, applyFilter, toggleSort, reopen, gotoRow, hideColumn, showColumn, showAllColumns, setColType, setColFormat, toggleColorScale, setColScaleOpt, autofitAll, resetColWidths, showAllColumns, toggleColPanel, reorderCol, togglePin, scrollToColumn, residentEstimate, statsToTSV, gutterSampleRows, scanColumnStats, scanAllColumnStats, scanGroupBy, scanDataQuality, precomputeStats, showSummary, openGroupBy, computeGroupBy, openGradeTonnage, computeGradeTonnage, openGridSummary, computeGridSummary, openSampleData, showDataQuality, setGutterLog, toggleRecordPanel, renderRecordCard, updateSelStats, openFind, closeFind, findNext, findCountAll, addRecent, clearRecents, setRemember, openRecent, get recents() { return _recents; }, showColumnStats, copySelection, filterByValue, addCalc, removeCalc, openCalcEditor, openCalcManager, brushFilter, showBrushTip, showGutterTip, gutterClick, gutterDblClick, gutterTapFilter, gutterBrush, setBrushMode, exportToString, openExportDialog, saveLens, buildLens, applyLensView, applyLens, applyLensFromFile, sniffLens, setTheme, get theme() { return theme; }, pickFile, showHelp, cache: idbCache, build: __LAMINA_BUILD__, get brushMode() { return brushMode; }, get grid() { return grid; }, get lastScan() { return lastScan; }, get current() { return current; }, get calcs() { return current && current.calcs; }, get gutter() { return current && current.gutter; }, canWorker };
 
 // Build stamp in the footer (far right) — set once; persists past file meta updates.
 $('#build').textContent = __LAMINA_BUILD__;
@@ -4232,7 +4505,7 @@ if ('launchQueue' in window && 'LaunchParams' in window) {
   });
 }
 
-refreshRecents();   // load the recents list (empty-state + File menu) on boot
+refreshRecents().then(() => offerSession());   // the recents list (empty-state + File menu) + the last session, offered
 
 // Jump-list "Open file…" shortcut (manifest shortcuts → ./?open=1): pop the
 // picker on launch. Best-effort — the launch may not carry a user gesture, in

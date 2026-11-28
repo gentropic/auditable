@@ -192,6 +192,25 @@ async function run(url, label) {
   chk(`rejections: ${JSON.stringify(r.rej)}`, /NOPE/.test(r.rej.badFilter) && /no column "NOPE"/.test(r.rej.badCol) && /not in the view/.test(r.rej.badRow) && /taken/.test(r.rej.takenCalc) && /binary/.test(r.rej.binary) && /not a lens/.test(r.rej.notLens));
   chk(`open(bytes, { name }) → ${JSON.stringify([r.fromBytes.format, r.fromBytes.rows])}; events ${JSON.stringify(r.ev)}`,
     r.fromBytes.format === 'parquet' && r.fromBytes.rows === N && r.ev.opened.length === 2 && r.ev.opened[0][1] === 'parquet' && r.ev.failed.includes('blob.bin'));
+  // ── views (additive): open() replaces the focused view unless { newView }, views() lists them,
+  //    focus(id) picks the one the verbs act on, lens({ file }) is the v2 shape
+  const vw = await page.evaluate(async () => {
+    const L = window.lamina, csv = (n, k) => new File([`a,b\n${Array.from({ length: k }, (_, i) => `${i},${i % 2}`).join('\n')}`], n);
+    const before = L.views().length;
+    const a = await L.open(csv('first.csv', 10));                     // replaces the focused view
+    const b = await L.open(csv('second.csv', 20), { newView: true });  // a new tab
+    const list = L.views();
+    await L.focus(a.view); await L.filter('b = 1');
+    const onA = L.info();
+    await L.focus(b.view);
+    const onB = L.info();
+    const v2 = L.lens({ file: true });
+    let bad = null; try { await L.focus('nope'); } catch (e) { bad = e.message; }
+    return { before, after: list.length, ids: [a.view, b.view], names: list.map((x) => x.name), onA: [onA.name, onA.rows, onA.filter], onB: [onB.name, onB.rows, onB.filter], v2: [v2.version, v2.sources.length, v2.sources[0].file], bad };
+  });
+  chk(`views: open replaces (${vw.before} → ${vw.after - 1}), { newView } adds; focus(id) → ${JSON.stringify(vw.onA)} / ${JSON.stringify(vw.onB)}; lens({ file }) v${vw.v2[0]} of ${vw.v2[2]}; ${vw.bad}`,
+    vw.after === vw.before + 1 && vw.ids[0] !== vw.ids[1] && vw.onA[0] === 'first.csv' && vw.onA[1] === 5 && vw.onA[2] === 'b = 1'
+    && vw.onB[0] === 'second.csv' && vw.onB[1] === 20 && vw.onB[2] === '' && vw.v2[0] === 2 && vw.v2[1] === 1 && vw.v2[2] === 'second.csv' && /no view "nope"/.test(vw.bad));
   chk(`no page errors (${errors.length ? errors.join(' | ') : 'none'})`, errors.length === 0);
   await page.close();
 
